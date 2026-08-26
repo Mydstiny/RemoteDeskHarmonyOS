@@ -189,16 +189,17 @@ export class SshForwardingProfileStore {
   }
 
   private owner(ownerHostId: string): OwnerState | null {
-    if (!this.initialized || ownerHostId.length === 0) { return null; }
-    const cached: OwnerState | undefined = this.owners.get(ownerHostId);
+    const owner: string = ownerHostId.trim();
+    if (!this.initialized || owner.length === 0) { return null; }
+    const cached: OwnerState | undefined = this.owners.get(owner);
     if (cached !== undefined) { return cached; }
-    const key: string = forwardingProfilePreferenceKey(ownerHostId);
+    const key: string = forwardingProfilePreferenceKey(owner);
     const read: SshForwardingPreferenceRead = forwardingPreferenceAdapter.read(
       this.context as common.Context, SSH_FORWARDING_PROFILE_PREFERENCES_NAME, key);
     if (!read.ok) { return null; }
     const parsed: SshForwardingProfilesEnvelopeV1 | null = deserializeSshForwardingProfilesEnvelope(read.value);
     const state: OwnerState = { profiles: parsed === null ? [] : parsed.profiles, raw: read.value, readable: parsed !== null };
-    this.owners.set(ownerHostId, state);
+    this.owners.set(owner, state);
     return state;
   }
 

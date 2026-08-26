@@ -1,11 +1,13 @@
 # RemoteDeskHarmonyOS Moonlight / Sunshine 串流能力完备升级计划
 
-> 文档状态：完成第四次“当前源码漂移、统一 UI、云数据生命周期”深度审计，待后续立项实施
+> 文档状态：第四次深度审计完成；已于 2026-08-09 从 G0 开始实施
 > 首次评估日期：2026-07-28；二次完成性审计日期：2026-07-29；第三次 HarmonyOS 人因/UI 审计日期：2026-08-01；第四次源码对齐日期：2026-08-08
-> 当前评估收口快照：活动任务 `ssh-terminal-complete-upgrade`；分支 `codex/ssh-terminal-complete-upgrade`，HEAD `4646fb910`；本地 `main` `d2769ad4b`；当前分支相对本地 `main` ahead 155、behind 0
+> 当前实施基线：任务 `moonlight-complete-upgrade`；分支 `codex/moonlight-complete-upgrade`；基线 `main@aeb0cdac5`，与 `origin/main` 一致
+> 当前实施进度：分支 HEAD `348b28083`；`9eadb35be`、`326f329f5`、`348b28083` 已形成手柄、Sunshine 串流 runtime 与本地 UI/设置 checkpoint。当前工作树正在完成 owner-store v5、可选第九云表、逐记录下载隔离、selection/reconcile/delete/backup 生命周期和旧八表兼容；真实 Sunshine、实体手柄、ARM64 与长稳回执仍是最终验收门，而不是继续实现云/UI 的前置阻塞。
+> 2026-08-19 产品范围覆盖声明：2026-08-10 的“Moonlight 暂不接入云同步”已被用户明确撤销。本文后续所有 `PARKED_CLOUD`、`当前仅本地`、`不得注册 moonlightrecordv1` 文字仅保留为历史决策记录；当前有效合同以第 7.0 节的 2026-08-19 覆盖条款和实施台账最新状态为准。覆盖不改变两条永久边界：`moonlightlocalrecords`/`moonlightappcache` 永不注册为云表，配对私钥、客户端身份、证书与 trust receipt 继续只在设备本地。
 > 适用仓库：/Users/mydestiny/Desktop/RemoteDesktop/RemoteDeskHarmonyOS
-> 上游评估快照：协议细节仍以已审计的 moonlight-common-c `e41355ea01670fd4c830b384009d31dd0339a705`、Moonlight Android `f10085f552b367cf7203007693d91c322a0a2936`、Moonlight Qt `546cb72e32e5ac04bbc7e0b3a254176e5696685a`、Sunshine `3893c5bcdadc5f0beaa127670531afbfd60519ea` 和 MoonlightOH `a48821e2d309c4282d79a053e6a85245eb438a7b` 为证据基线；2026-08-08 官方仓库活跃度复核已确认上游继续演进，P0 必须从官方仓库重新锁定 commit、子模块和安全公告，不能把上述旧快照直接作为实施 pin
-> 本轮变更边界：只更新本计划文件；不修改 ArkTS、C/C++、Rust、配置、依赖、云表、测试或构建流程代码。
+> 上游实施锁定：2026-08-09 已只读复核并固定 moonlight-common-c `e41355ea01670fd4c830b384009d31dd0339a705`（ENet `aca87840b57f045a1f7f9299e4b1b9b8e2a5e2f1`、nanors `b1e3c22ca0cdc0bb83e3cd6ed1a2fc77869ed99a`）、Moonlight Android `f10085f552b367cf7203007693d91c322a0a2936`、Moonlight Qt `2e13ed9977bc31c73caf8428f08f58d793313ece`、Sunshine 测试 pin `v2026.808.164219` / `25c06d79b54f3d092d3fedd5f5ba44989f394692`；完整哈希、许可证和能力证据见 `docs/codex/plans/2026-08-09-moonlight-implementation-ledger.md`
+> 原评估轮次仅更新计划文件；2026-08-09 起的实施变更严格按第 15 节任务 ID、仓库门禁和 fail-closed feature policy 推进。
 
 ## 0. 结论先行
 
@@ -29,7 +31,7 @@ Moonlight/GameStream 的核心价值是低延迟音视频和游戏输入闭环�
 - 用项目现有 C/C++ NAPI、OH_AVCodec、NativeImage、GLRenderer、OHAudio、ArkUI 和会话生命周期能力做 HarmonyOS 平台适配；
 - 第一版只保证局域网或用户已配置的可达网络、Sunshine 现代版本、H.264 + Opus、键鼠/触摸/实体手柄的可验证闭环；
 - HEVC、AV1、HDR、YUV 4:4:4、7.1、触觉高级反馈和复杂公网网络在能力探测通过后逐项开放；
-- 新增且只新增一张版本化物理云同步表 `moonlightrecordv1`，使用 `recordType` 区分 settings、host、profile、trust、secret；本地另有不注册云同步的 `moonlightlocalrecords` 镜像和 `moonlightappcache` 可重建缓存；不把 Moonlight 数据写入 `remotehosts`、`usersettings`、`rustdeskrelays`、实际 VNC 云表 `vncrecordv2` 或 SSH 表；
+- owner-store 继续以 `moonlightlocalrecords` 作为本地事实覆盖层、`moonlightappcache` 作为可重建缓存；新增且仅新增一张可选云表 `moonlightrecordv1` 承载用户明确选择的 settings/host/profile 公共配置。旧八张云表先注册且保持原语义，第九表只有在 AGC 精确 schema 已部署并写入构建 revision 后才尝试；不把 Moonlight 数据写入 `remotehosts`、`usersettings`、`rustdeskrelays`、`vncrecordv2` 或 SSH 表；
 - 配对私钥默认只保存在本机安全存储，不默认上云；跨设备恢复必须是用户明确开启、加密就绪且经过重新确认的可选能力。
 
 ### 0.2 当前可行性等级
@@ -43,7 +45,7 @@ Moonlight/GameStream 的核心价值是低延迟音视频和游戏输入闭环�
 | 实体手柄 | 中，必须先做 API 23 编译探针 | Game Controller Kit 有官方 C/C++ 能力，但本地 API 23 SDK 和目标设备是否完整提供必须以编译和真机结果为准 |
 | 背景/PIP | 中高 | 现有生命周期、PIP、后台长时任务已经存在；Moonlight 的视频丢帧、关键帧和音频策略需要单独定义 |
 | 公网串流 | 中低 | GameStream 不是浏览器 WebSocket 流；需要 TCP/UDP 端口、NAT/IPv6/MTU 和用户网络环境，不能仅靠一个 HTTP relay 地址 |
-| 云同步 | 高 | 当前已有正式 CloudStore/Coordinator/加密 envelope 体系，可复制 VNC 的单表隔离思路 |
+| 本地持久化 | 高 | 当前已有 owner-store、MoonlightRepository、20 列 local envelope、app cache、journal、备份/删除基础；本阶段不依赖 CloudStore |
 | 开源合规 | 中高风险 | moonlight-common-c、Moonlight Android/Qt 和 Sunshine 均涉及 GPL 体系；必须锁定来源、依赖、SBOM、源码提供和发布 notice |
 | 产品交付风险 | 中高 | 最大风险不在 UI，而在 API 23 手柄/解码能力、真实 Sunshine 主机、UDP 网络矩阵、温控和旧回调生命周期 |
 
@@ -93,9 +95,9 @@ Moonlight/GameStream 的核心价值是低延迟音视频和游戏输入闭环�
 | ArkTS 会话状态 | entry/src/main/ets/services/RemoteSessionState.ets | connecting/connected/background/foreground/disconnecting/failed 状态和时间戳 | Moonlight 需要在通用状态下增加细粒度 stage，不应让 UI 用一条 connected 猜完整可用性 |
 | Native handle 生命周期 | entry/src/main/ets/services/NativeSessionHandles.ets | 后台只脱附 renderer、前台重新绑定 Surface、请求关键帧、完全断连 | Moonlight 需要补充视频暂停/丢帧、音频 flush、输入关闭和 RTSP/UDP 关闭顺序 |
 | PIP/后台 | entry/src/main/ets/services/RemoteSessionPipLifecyclePolicy.ets、RemoteSessionBackgroundTaskService.ets | decoderReady、远端尺寸、PIP 准备、multiDeviceConnection、audioPlayback | Moonlight 的背景播放必须依赖实际媒体状态和 AVSession/长时任务准入，不可只复用 RDP 文案 |
-| 云同步 | entry/src/main/ets/services/CloudStore.ets、CloudSyncCoordinator.ets、CloudSyncLifecyclePolicy.ets | 显式表选择、持久生命周期状态、云优先启动、重试、journal、冲突阻断 | Moonlight 必须新增独立 physical table 和 logical record type，不可被普通 selectedTables 无上下文上传 |
-| VNC 隔离数据设计 | entry/src/main/ets/model/VncRecord.ets、services/VncRecordPolicy.ets | 实际云表 `vncrecordv2` 的 19 列单表 envelope、recordType、hash、resetEpoch、secret opt-in、`vnclocalrecords` mirror | Moonlight 建立自己的 `moonlightrecordv1`，只复用物理 envelope 和生命周期原则，不复制 VNC 业务字段、逻辑 scope、secret/trust owner 或历史表名 |
-| 便携备份 V3 | entry/src/main/ets/services/LocalBackupPolicy.ets、LocalBackupService.ets、BackupManifestV3.ets | 已支持按表 inventory、full/redacted、owner 校验、quarantine 和事务恢复；VNC 云记录与本地覆盖层均参与 | Moonlight 必须显式登记云表与本地覆盖层，不能沿用旧计划中“mirror 一律排除”的错误假设；身份私钥仍需更严格排除 |
+| 本地主机存储 | entry/src/main/ets/services/CloudStore.ets 的 owner-store 本地 RDB、MoonlightRepository.ets、MoonlightStoragePolicy.ets | owner/lease 隔离、20 列本地 envelope、journal、幂等读回、删除/恢复和 app cache | Moonlight 当前不得进入 CloudSyncCoordinator、selectedTables、setDistributedTables 或云传输 |
+| VNC 隔离数据设计 | entry/src/main/ets/model/VncRecord.ets、services/VncRecordPolicy.ets | 仅借鉴 envelope、journal、删除和备份的安全性质 | Moonlight 使用独立本地表和自己的 record policy，不复用 VNC 业务字段、表、key 或 coordinator |
+| 便携备份 V3 | entry/src/main/ets/services/LocalBackupPolicy.ets、LocalBackupService.ets、BackupManifestV3.ets | 按本地表 inventory、full/redacted、owner 校验、quarantine 和事务恢复 | Moonlight 只登记 `moonlightlocalrecords`；`moonlightappcache`、session/cache、PIN、私钥和云停靠表均不进入当前本地主机备份 |
 
 ### 1.4 当前缺口
 
@@ -109,8 +111,8 @@ Moonlight/GameStream 的核心价值是低延迟音视频和游戏输入闭环�
 6. InputHandler 没有 Game Controller Kit、控制器槽位、振动、LED、运动、触摸点和可靠输入 flush 的专用接口。
 7. ExtensionLoader 和 decoder/audio pipeline 仍有全局 active 路径；Moonlight 的网络线程、视频线程、音频线程、输入线程和 UI generation 必须成组销毁。
 8. `HostProtocolPicker` 当前已在 RDP、RustDesk、SSH、VNC 后展示禁用的 Moonlight 预告项；设置策略仍只有 RDP、RustDesk、SSH、VNC，Moonlight 实施时需要独立设置 section/route owner。
-9. 当前 cloud sync 实际注册 `cryptoparams`、`usersettings`、`remotehosts`、`rdpcredentials`、`rustdeskrelays`、`sshkeys`、`totpentries`、`vncrecordv2`；新增 Moonlight 时只增加一个版本化物理业务表 `moonlightrecordv1`，且必须先在所有目标 AGC 环境部署 schema，再进入客户端注册清单。
-10. 当前 `CloudSyncSelectionPolicy` 新安装默认空数组；Moonlight 物理表不能因升级自动选中。VNC 逻辑 scope 是专有实现，不存在可直接复用的通用“隔离领域插件”，Moonlight 要按相同安全性质新增独立 coordinator/service wiring，同时禁止在本任务中顺带重构成熟 VNC 行为。
+9. 当前 cloud sync 实际注册仍只有 `cryptoparams`、`usersettings`、`remotehosts`、`rdpcredentials`、`rustdeskrelays`、`sshkeys`、`totpentries`、`vncrecordv2`；Moonlight 当前不新增云表、不进入注册清单、不创建 Moonlight 云 coordinator。
+10. 当前 `CloudSyncSelectionPolicy` 继续只服务既有协议；Moonlight 不新增物理/逻辑云选择项。Moonlight 只复用本地 owner-store、journal、backup 和 deletion 基础设施，禁止在本任务中顺带重构成熟云同步行为。
 11. 当前只有已验证平台云身份能打开 canonical `remotedesktop.db` 并注册云表；未验证账号使用 `remotedesktop_owner-<sha>.db`，设备本地使用 `remotedesktop_device_local.db`，两者始终 local-only。旧计划中“每个账号各自云数据库”的表述已废弃。
 12. 当前添加主机 FAB 已显示灰色 Moonlight 入口、“即将支持”和低延迟说明，点击无副作用；预览图标仍是 `sys.symbol.gamecontroller_fill`。正式开放前才替换为经品牌许可/来源确认的官方 Moonlight 资产，并保留系统 Symbol 无障碍/缺失回退。
 
@@ -124,7 +126,7 @@ Moonlight/GameStream 的核心价值是低延迟音视频和游戏输入闭环�
 | 媒体底层 | 当前 OH_AVCodec、NativeImage/Surface、OHAudio；API 23 SDK 头文件/库 | decode unit 桥、音视频加密、FEC、首帧、IDR、音频焦点、功耗和降级 |
 | 输入 | 当前键鼠/触摸路径；API 23 Game Controller Kit | 多输入 owner、全量释放、实体手柄映射、虚拟控制、系统快捷键保护 |
 | 生命周期 | 当前 RemoteSessionState、PIP、后台任务、NativeSessionHandles | 前后台、PIP、锁屏、旋转、切网、进程重建、停止和账户切换顺序 |
-| 云和账户 | 当前 AccountScopePolicy、AccountSessionCoordinator、SensitiveDataBarrier、CloudStore/Coordinator | 单物理表、账户隔离、lease/generation、cloud-first、迁移隔离、secret 默认不上云 |
+| 本地数据和账户 | 当前 AccountScopePolicy、AccountSessionCoordinator、SensitiveDataBarrier、owner-store/CloudStore 本地 RDB | 独立本地表、账户隔离、lease/generation、迁移隔离、secret 默认只进安全存储；不依赖 cloud-first |
 | UI 一致性 | Theme、BreakpointUtil、HostProtocolPicker、ResourceFabPicker、HostListPage、设置路由 | 复用现有 token、卡片、单 sheet、断点和动效；覆盖所有空/错/离线/同步状态 |
 | 用户全生命周期 | 安装、首次使用、升级、跨设备、删除、退出、卸载 | 每个阶段的数据、权限、提示、恢复、隐私、失败和可撤销行为 |
 | 发布质量 | 仓库构建门禁、合规文档、上游安全公告 | 双 ABI、真机/主机/网络矩阵、fuzz、SBOM、源码提供、灰度与回滚 |
@@ -163,8 +165,8 @@ Moonlight/GameStream 的核心价值是低延迟音视频和游戏输入闭环�
 | moonlight-common-c | `e41355ea01670fd4c830b384009d31dd0339a705` | 协议、线程、媒体和输入的主要实现证据 |
 | common-c ENet submodule | `aca87840b57f045a1f7f9299e4b1b9b8e2a5e2f1`，来源 `cgutman/enet` | 必须与 common-c 一起锁定；禁止替换成系统/任意 ENet |
 | Moonlight Android | `f10085f552b367cf7203007693d91c322a0a2936` | 配对、NvHTTP、证书 pin、launch 参数和移动端生命周期参考 |
-| Moonlight Qt | `546cb72e32e5ac04bbc7e0b3a254176e5696685a` | 设置能力、桌面输入、HDR/高阶 codec、产品诊断参考 |
-| Sunshine | `3893c5bcdadc5f0beaa127670531afbfd60519ea` | 现代服务端互操作和测试环境参考；不打包 |
+| Moonlight Qt | `2e13ed9977bc31c73caf8428f08f58d793313ece`（2026-08-09 实施复核） | 设置能力、桌面输入、HDR/高阶 codec、产品诊断参考；其 common-c gitlink与本次 pin 一致 |
+| Sunshine | `v2026.808.164219` / `25c06d79b54f3d092d3fedd5f5ba44989f394692`（2026-08-09 实施复核） | 现代服务端互操作和测试环境参考；不打包；最低安全基线仍为 `v2026.516.143833` |
 | MoonlightOH | `a48821e2d309c4282d79a053e6a85245eb438a7b`（2026-08-01 审计） | HarmonyOS 原生页面、输入、媒体和生命周期的人因/UI 可行性对照；不作为协议依赖或视觉资产来源 |
 
 这些 revision 是“本计划评估过的证据快照”，不是未来实施时可无条件直接合入的依赖版本。P0 必须先比较新旧 revision、检查 security advisory、submodule、ABI/API、许可证和协议变化，再决定继续使用本快照还是升级；任何升级都要重新跑 parser/fuzz/真机/合规门禁。
@@ -260,12 +262,12 @@ P0 必须用 Sunshine 的 launch/resume/cancel 和“由另一官方 Moonlight �
 
 安全数据边界：
 
-| 数据 | 默认位置 | 云同步默认值 | 处理 |
+| 数据 | 默认位置 | 当前云边界 | 处理 |
 | --- | --- | --- | --- |
-| server UUID、主机名、地址、端口 | 本地加密记录 | 同步 | 用于发现和主机卡片 |
-| 服务器证书指纹 | 本地 trust 记录 | 可同步 | 同步后仍需显示指纹变更 |
-| 客户端证书公钥 | owner-scoped 本地 identity/trust 记录 | 默认不同步 | 配对前已生成；发送给主机不等于允许跨账号复用 |
-| 客户端私钥/配对身份 | owner-scoped 本机安全存储 | 默认不同步 | 只有端到端加密恢复另行通过安全评审后才允许 |
+| server UUID、主机名、地址、端口 | 本地加密记录 | 当前仅本地 | 用于发现和主机卡片 |
+| 服务器证书指纹 | 本地 trust 记录 | 当前仅本地 | 变更时仍需显示旧/新指纹并重新确认 |
+| 客户端证书公钥 | owner-scoped 本地 identity/trust 记录 | 当前仅本地 | 配对前已生成；发送给主机不等于允许跨账户复用 |
+| 客户端私钥/配对身份 | owner-scoped 本机安全存储 | 永不进入当前云路径 | 未来跨设备恢复另立项目；当前只允许本机重新配对 |
 | PIN | 临时内存 | 永不同步 | 配对失败后立即清理 |
 | 访问令牌、HTTP 会话缓存 | 本地短期缓存 | 永不同步 | 过期、切换账号或撤销时清理 |
 
@@ -277,7 +279,7 @@ P0 必须用 Sunshine 的 launch/resume/cancel 和“由另一官方 Moonlight �
 
 - `encryptionFlags` 使用 `ENCFLG_NONE`、`ENCFLG_AUDIO`、`ENCFLG_VIDEO`、`ENCFLG_ALL` 表达音视频流加密请求；输入流始终按协议加密。
 - launch/resume 生成的 `rikey`/`rikeyid` 是会话级材料，必须与 common-c `remoteInputAesKey`/IV 及主机参数一致；它们只存在于当前 session owner 的安全内存中。
-- `rikey`、`rikeyid`、派生 key、IV、认证 tag 不写日志、不进诊断快照、不进 `moonlightrecordv1`、不进入崩溃上报；停止、失败、账户切换和进程退出时清零。
+- `rikey`、`rikeyid`、派生 key、IV、认证 tag 不写日志、不进诊断快照、不进本地记录、不进入崩溃上报；停止、失败、账户切换和进程退出时清零。
 - 现代 Sunshine 首选音频+视频全流加密；只有在设备 AES 性能探针显示全流加密会破坏目标帧率/温控时，才允许根据产品策略降级。
 - 设置项只提供“自动（推荐）”“要求全流加密”“兼容模式”三态；“要求全流加密”协商失败必须 fail closed，不能静默退回未加密。
 - “兼容模式”仅面向明确识别的旧主机，显示风险、作用域和本次/长期选择；不得把 legacy SHA-1 配对和媒体不加密混成一个总开关。
@@ -483,7 +485,7 @@ Moonlight RTP audio → common-c RTP audio queue/FEC/重排 → AES-CBC 解密�
 | RemoteSessionBackgroundTaskService 的 multiDeviceConnection/audioPlayback | 复用生命周期服务；新增 Moonlight 的 media-ready、input-ready、pause/resume 条件 |
 | RemoteSessionPipLifecyclePolicy 的 decoderReady/source dimensions | 复用 PIP 决策接口；Moonlight 首帧和关键帧恢复必须成为显式条件 |
 | Input Kit 的现有键鼠/触摸桥 | 复用底层事件读取；Moonlight 增加相对鼠标、触摸 id、手柄和按键释放 |
-| CloudStore/CloudSyncCoordinator/VncRecordPolicy | 复用 envelope、冲突和 journal 机制；新建 Moonlight namespace，不复制 VNC 业务逻辑 |
+| CloudStore/CloudSyncCoordinator/VncRecordPolicy | 当前只复用本地 RDB、envelope、journal、备份和删除的安全性质；不接 Moonlight CloudSync，不复制 VNC 业务逻辑 |
 
 ### 3.4 能力降级原则
 
@@ -605,10 +607,10 @@ ArkTS 只消费稳定的事件模型，不消费 common-c 的原始结构。事�
 
 | generation | 所有者 | 保护对象 | 回调接受条件 |
 | --- | --- | --- | --- |
-| account/store generation | AccountSessionCoordinator | 当前用户、数据库实例、云绑定和本地 mirror | ownerScopeId、storeIdentity、storeInstanceId、generation 全部匹配当前 lease |
+| account/store generation | AccountSessionCoordinator | 当前用户、数据库实例和本地 Moonlight store | ownerScopeId、storeIdentity、storeInstanceId、generation 全部匹配当前 lease |
 | Moonlight session generation | MoonlightSessionService/native owner | 当前主机串流、Surface、音频、输入和网络线程 | sessionId、session generation、对应 media/input generation 全部匹配 |
 
-任何 Moonlight 持久化、云回调或 secret 恢复必须先通过账户 lease，再通过 Moonlight session generation；任意一层过期都静默丢弃结果、递增 stale-callback 诊断计数，且不得重开 mutation gate。
+任何 Moonlight 本地持久化、secure-store 操作或 secret 恢复必须先通过账户 lease，再通过 Moonlight session generation；当前不存在 Moonlight 云回调。任意一层过期都静默丢弃结果、递增 stale-callback 诊断计数，且不得重开 mutation gate。
 
 Moonlight 还必须作为 `SensitiveDataBarrier` 的正式参与者：
 
@@ -616,7 +618,7 @@ Moonlight 还必须作为 `SensitiveDataBarrier` 的正式参与者：
 2. 停止 PIP/后台/实况窗等所有外部可见会话，并要求终态回执。
 3. 停止所有 Moonlight native session，释放输入、音频、视频、控制/RTSP/HTTP 和在途回调。
 4. 清零 PIN、`rikey`/`rikeyid`、session token 和解密中间态，撤销当前 secure-store lease。
-5. 等 Moonlight journal/CloudStore mutation 归零，才能让 Coordinator quiesce 旧 store。
+5. 等 Moonlight local journal/RDB mutation 归零，才能让 Coordinator quiesce 旧 store；不等待、不创建 Moonlight 云任务。
 6. 新账户/设备本地作用域绑定成功后，只加载新 owner 的 host/profile/trust/secret 元数据；旧回调不能触发 UI 或写新 store。
 
 Moonlight 的“连接仍在运行”不能成为账户切换的软提示后继续执行。若安全停止失败，账户切换必须 fail closed，并给用户提供“重试停止”或“返回当前账户”的明确路径。
@@ -650,7 +652,7 @@ Moonlight 的“连接仍在运行”不能成为账户切换的软提示后继�
 | P5 音频 MVP | Opus stereo 低时延播放 | Opus decoder、PCM adapter、OHAudio、音频焦点、underrun 统计 | P3 | 视频音频同步稳定；焦点丢失、后台、断连不残留播放 |
 | P6 输入 MVP | 键鼠、触摸和实体手柄输入；反馈默认关闭 | InputBridge、按键释放保险、控制器映射、反馈 capability fail-closed 门 | P3、Game Controller probe | 至少两类手柄、触摸多点、键鼠在真实主机可用；页面退出无悬挂输入；无反馈 API 时 UI 不暴露 |
 | P7 会话产品化 | 做好前后台、网络切换、重连、退出和资源回收 | lifecycle state、PIP、后台任务、reconnect policy、诊断页 | P4-P6 | 20 次 connect/disconnect/rebind 循环无 native 崩溃和旧画面 |
-| P8 数据和 UI | 加入独立主机、应用、设置和单云表 | Moonlight model/policy/pages、`moonlightrecordv1`、owner/lease/barrier、迁移隔离、云冲突、UI/无障碍和功能开关 | P2、P7 的接口稳定；云生命周期总门具备 | 新/老/多设备/切账号用户完成全流程；云开关关闭时零上传；旧协议 UI 无回归 |
+| P8 数据和 UI | 加入独立本地主机、应用、设置和本地备份 | Moonlight model/policy/pages、`moonlightlocalrecords`、owner/lease/barrier、迁移隔离、本地冲突、UI/无障碍和功能开关；云表停靠 | P2、P7 的接口稳定；本地 store/备份/删除门具备 | 新/老/多账号/切账号用户完成本地全流程；Moonlight 零云调用；旧协议 UI 无回归 |
 | P9 硬化与发布 | 兼容、性能、安全、合规和灰度 | fuzz、网络矩阵、功耗/温控、SBOM、第三方 notice、源码包、发布开关 | P0-P8 | 第 13 节所有 release gate 通过 |
 
 ### 5.2 P0 的具体决策清单
@@ -668,7 +670,7 @@ P0 不能只写“评估完成”，必须产出以下可审计结论：
 9. manifest 权限/backgroundModes 的差异表、申请时机、拒绝降级和隐私声明更新。
 10. 当前 Theme/Breakpoint/sheet/settings route 的 UI 基线截图与无障碍基线。
 11. raw relative mouse、pointer capture/constraint、焦点丢失释放和每个系统快捷键的真机支持矩阵。
-12. Sunshine 最低安全版本/advisory 结果，以及 `moonlightrecordv1` 19 列 schema、长度、索引、owner 规则和三个 AGC 环境的部署审批。
+12. Sunshine 最低安全版本/advisory 结果，以及 `moonlightlocalrecords` 20 列 schema、长度、owner 规则、本地备份/删除和 owner-store 迁移证据；`moonlightrecordv1` 云 schema 与 AGC 审批属于停靠项目，不是本阶段退出条件。
 13. ActiveRemoteSessionRegistry 的跨协议互斥和进程异常退出 SessionRecoveryMarker 的架构评审。
 
 任何一项没有证据，都只能标记为 pending，不能在设置项里显示为已支持。
@@ -790,17 +792,135 @@ stateDiagram-v2
 - 重连成功后以关键帧为恢复边界，不能把旧视频帧重新送入新 decoder；
 - 连续失败后保留最近一次诊断快照，并提供“复制诊断信息”但脱敏主机地址、证书和 secret。
 
-## 7. 单张云同步表设计
+## 7. Moonlight 本地主机存储与可选云同步设计
 
-### 7.1 物理表边界
+### 7.0 2026-08-19 当前有效合同：本地事实层常驻、可选第九表增量启用
 
-Moonlight 只增加一张云端业务表：
+本节覆盖后面的 2026-08-10 历史停靠文本。实现和发布必须同时满足：
 
-- 云端物理表：`moonlightrecordv1`；这是唯一新增的 AGC/分布式业务表。
-- 本地覆盖层：`moonlightlocalrecords`；位于当前 owner 的物理数据库，不调用 `setDistributedTables()`。
-- 本地应用缓存：`moonlightappcache`；只缓存主机返回的应用目录、封面 ETag/摘要和过期时间，不进云、不进便携备份。
+1. 旧版兼容优先。既有八表是不可变 baseline，启动时先单独注册；`moonlightrecordv1` 只能作为后续九表 superset 尝试。第九表缺失、权限错误或 schema 不匹配时，立即把 Moonlight 标记为 runtime unavailable，并重新确认八表 baseline；不得清空 durable selection，不得让旧协议失去拉取能力。
+2. 首次安装和老版本升级均不自动选择 Moonlight。物理表与 `settings`、`hosts`、`profiles` 逻辑范围默认 `[]`，只接受用户显式选择；`trust`、`secret`、客户端身份、私钥和证书没有 v1 云能力。
+3. 下载兼容优先于整表拒绝。云传输可拉取 Moonlight 表，应用按记录执行 exact shape、业务语义、owner 和版本校验；合法行与脱敏 quarantine 在同一事务提交，坏行、未来版本行和跨 owner 行不能阻断其余 Moonlight 行或既有八表。
+4. 手动“以云端为准”仅对完全有效快照执行 selected-scope replacement。快照含隔离行时自动降级为非破坏性 merge：应用合法行、记录 quarantine、保留快照中缺失的本地行，绝不把部分数据解释成远端删除。
+5. 上传仍严格。native-first 必须证明 exact 19 列、当前 owner、公共 recordType、当前逻辑选择和 durable mutation journal；未选择范围的干净云镜像可保留，但未授权的本地 mutation 不得借物理整表同步外泄。
+6. owner-store v4→v5 只做三张 additive `CREATE TABLE IF NOT EXISTS`；三表必须按顺序验证 `name/type/pk`，完整 fingerprint receipt 可读后才推进版本。失败保持 v4 和全部旧表数据，重启幂等重试，不执行 DROP/DELETE/重建旧表。
+7. `MOONLIGHT_CLOUD_SCHEMA_DEPLOYED_REVISION=0` 是建表前熔断，不是永久禁用。用户完成目标 AGC 环境建表并确认 19 列合同后，单独提交 revision 1，再进行真实注册、core-eight coexistence、下载/上传/删除/冲突/账号切换/crypto reset 回归。
+8. UI、数据层和底层全部实现完成后才进行最终 HDC/截图验收；每次只使用最终新包的新截图。
 
-`moonlightlocalrecords` 不是第二张云业务表，而是与当前 `vnclocalrecords` 相同性质的本地事实层：所有合法写入先在这里形成 owner-scoped 可恢复状态，物理表和逻辑 scope 均获准时再向云端投影。journal、quarantine、bootstrap marker、selection、恢复 receipt 和 session recovery marker 仍用各自现有基础设施，不塞进业务 row。不得另建 `moonlightsettings`、`moonlighthosts`、`moonlightapps`、`moonlighttrust` 或 `moonlightsecrets` 云表。
+### 7.0-HISTORY 2026-08-10 范围变更：本地优先、云同步停靠（已被 7.0 覆盖）
+
+本节的当前实施合同已经由产品决策改为 **Moonlight 只做本地主机存储**。此前设计的
+`moonlightrecordv1`、Moonlight CloudSyncSelection、MoonlightCloudSyncService、云端
+secret 恢复和三套 AGC schema 全部进入 `PARKED_CLOUD`，不是当前版本的交付内容；保留它们
+只为了未来重新评审时有可追溯的设计，不得被实现者当作当前 TODO 自动接入。
+
+当前版本的唯一持久化事实层如下：
+
+| 层 | 物理对象 | 当前用途 | 允许写入 | 云边界 |
+| --- | --- | --- | --- | --- |
+| 本地主机事实 | `moonlightlocalrecords`，20 列 | settings、host、profile、trust 的 owner-scoped envelope；secret 只保存不可恢复元数据 | `MoonlightRepository` → 当前 owner 本地 RDB 事务 | 永不进入 `CLOUD_SYNC_TABLES`、`setDistributedTables`、CloudSyncCoordinator 或云 transfer |
+| 本地目录缓存 | `moonlightappcache`，16 列 | Sunshine app catalog、图标 ETag/摘要、过期时间和排序 | `MoonlightAppCacheService`，可丢弃重建 | 永不上传、永不作为业务事实 |
+| 本机安全存储 | HUKS/既有安全存储 owner | 客户端私钥、配对身份 alias、必要的本机 trust receipt | 专用 secure identity owner | 永不进入普通 RDB payload、便携备份或云 |
+| 运行时内存 | session/HTTP token/PIN/`rikey`/`rikeyid`/媒体状态 | 当前连接和配对短期状态 | 当前 session generation | 停止、取消、切账号和进程退出时清零 |
+
+当前版本的硬性禁止项：
+
+1. 不在 `CloudSyncPolicy.CLOUD_SYNC_TABLES` 增加 `moonlightrecordv1`。
+2. 不在 CloudStore 启动时创建或注册 Moonlight 云表；本地 RDB 只创建
+   `moonlightlocalrecords` 和 `moonlightappcache`。
+3. 不实例化 MoonlightCloudSyncService、MoonlightCloudSyncSelectionStore、
+   CloudSensitiveTransferPolicy 的 Moonlight 路径，不新增云同步设置项、云状态 badge 或待上传状态。
+4. 不把 Moonlight host/profile/trust/secret 写入 `remotehosts`、`usersettings`、
+   `vncrecordv2` 或其他协议表。
+5. 不把“本地保存成功”描述成“已同步”；当前 UI 只允许显示“已保存在此设备”。
+6. 不因华为账号登录、云空间可用或其他协议云同步成功而自动改变 Moonlight 的本地边界。
+
+#### 7.0.1 本地主机存储的实际写入合同
+
+所有 Moonlight 数据访问必须经过当前 `AccountSessionLease`：
+
+```text
+UI/HostService
+  → MoonlightRepository / MoonlightAppCacheService
+  → AccountSessionLease 校验
+  → Moonlight local RDB transaction
+  → local mutation journal
+  → readback + hash/owner 校验
+  → materialized UI snapshot
+```
+
+每次读写都要校验 `ownerScopeId + storeIdentity + generation + storeInstanceId`。账号切换、
+锁定、退出或数据库实例替换后，旧 lease 的读、写、目录刷新、删除和回调全部返回
+`stale_lease`，不能写入新账号的本地主机列表。Repository 的 `cloudAttempted` 必须恒为
+`false`；当前实施不提供把 `localonly=1` 改成云投影 `localonly=0` 的产品入口。
+
+#### 7.0.2 本地主机记录类型
+
+仍使用现有独立 `recordType`，但只在本地 envelope 中解释：
+
+| 类型 | owner | 保存内容 | 禁止保存 |
+| --- | --- | --- | --- |
+| `settings` | 当前本地账号 scope | 用户选择的默认视频/音频/输入/网络设置 | 当前能力探针、会话状态、临时协商结果 |
+| `host` | 当前本地账号 scope | server UUID、显示名、地址候选、端口、Sunshine 类型、WOL 偏好、最近成功地址摘要 | PIN、HTTP token、session key、明文私钥 |
+| `profile` | host record id | appId、title snapshot、收藏/排序、针对该应用的用户覆盖项 | 完整目录缓存、在线状态、运行中状态 |
+| `trust` | host record id | 服务器证书指纹候选、用户确认时间、信任版本和变更提示 | 私钥、PIN、服务器秘密、绕过确认的“已信任”结论 |
+| `secret` | 当前本地账号 scope | secure-store alias、证书公钥摘要、身份版本、是否需要重新配对 | 客户端私钥、可恢复 ciphertext、rikey、session token |
+
+`secret` row 只是本地索引；真正私钥仍由现有 secure identity owner 管理。删除 host 时，
+先停止使用并撤销关联 identity/trust，再对 host/profile/trust/secret 生成本地 tombstone；
+任何删除失败都返回可重试的部分状态，不能假报“已解除配对”。
+
+#### 7.0.3 本地主机生命周期
+
+1. **首次安装**：创建 owner-store schema v5、本地记录表和目录缓存表；不创建 Moonlight 云表。
+2. **打开主机列表**：只加载当前 owner 的未删除 host rows；目录缓存按 TTL 显示“已缓存/已过期”，不因缓存过期删除 host。
+3. **手动添加/自动发现**：先做格式校验、serverinfo 和可达性检查；只有用户确认保存后才写 host row。
+4. **配对**：PIN 只留内存；生成 identity 后先写 secure store，再以最小 metadata 写本地 secret/trust row，失败则回滚临时状态。
+5. **目录刷新**：host/profile 先持久化，app catalog 进入 `moonlightappcache`；部分失败保留旧目录并显示过期原因。
+6. **编辑设置**：settings/profile 使用 mutationId 和 readback；连续点击、进程重启和重复提交必须幂等。
+7. **启动串流**：只读取本地主机快照和当前 session generation；运行时 negotiated settings 不反写用户默认值，除非用户明确保存。
+8. **断开/后台/PIP/崩溃恢复**：清运行时状态、保留 host/profile/trust；清理 token/PIN/key，目录缓存仍可下次使用。
+9. **账号切换/退出**：关闭 Moonlight mutation gate，等待 native/session/store callback drain，再绑定新 owner；旧 owner 数据不在新账号列表出现。
+10. **删除主机**：展示 host、profile、trust、secret 和本地缓存影响；用户确认后事务写 tombstone、清 secure identity、删除 artwork 文件并 readback。
+11. **清除应用数据/卸载**：按系统数据清除语义移除本地记录和安全身份；卸载前不承诺可恢复，除非用户已经导出本地备份。
+
+#### 7.0.4 本地备份、导入和恢复
+
+本地主机存储必须接入现有 Local Backup V3，但不改变其他协议云同步：
+
+- 当前备份只增加 `localTables.moonlightlocalrecords`；`moonlightappcache`、journal、
+  quarantine、session marker、PIN、HTTP token、私钥和 secure-store alias 均排除。
+- 脱敏备份包含 host/profile 的非秘密配置；trust 候选和地址按现有隐私规则处理；完整备份
+  首版仍不包含可恢复私钥，恢复后需要重新配对。
+- 恢复先进入 quarantine，校验 owner、schema、payload hash、引用和 tombstone，再展示新增、
+  覆盖、冲突、忽略和隔离数量；用户确认后在当前 lease 内原子写入本地表。
+- 旧备份没有 Moonlight local section 等价于“无 Moonlight 数据”；新备份被旧客户端拒绝时
+  必须明确提示版本过新，禁止静默丢失主机。
+- 本地备份恢复不执行任何云 bootstrap、云合并、上传或云 tombstone；恢复后的所有记录仍是
+  `localonly=1`，UI 统一显示“已恢复到此设备”。
+
+#### 7.0.5 云同步停靠区的重新启动条件
+
+未来重新评估 Moonlight 云同步时，必须新建独立任务，不得在当前 N2/S1 任务中顺手打开。
+重新启动前至少要有：现有 CloudStore 问题关闭记录、dev/test/prod schema/auth/index receipt、
+跨账号物理隔离证明、secret E2E 设计与恢复演练、空快照/冲突/tombstone 测试、用户明确选择
+和隐私文案。届时先做只读 schema/adapter 探针，再做独立 feature flag 和迁移设计；当前版本
+不为这些未来条件预留可点击 UI。
+
+### 7.1 [ACTIVE_AFTER_PROVISIONING] 可选云表物理边界
+
+以下 7.1～7.11 的数据结构、冲突和生命周期设计重新进入当前实施路径；如果其中仍残留
+“未来”“停靠”或“当前不执行”措辞，以 2026-08-19 第 7.0 节为准。客户端在 revision 0
+阶段只创建本地 RDB 表和验证 receipt，不调用未知 AGC 表；用户确认云端精确结构后才启用
+revision 1 的可选注册和传输。
+
+未来重新启动云同步项目时，才考虑一张独立云端业务表；当前版本不创建、不注册、不上传：
+
+- 未来云端物理表：`moonlightrecordv1`；仅作为未来 AGC/分布式方案草案。
+- 当前本地主机事实层：`moonlightlocalrecords`；位于当前 owner 的物理数据库，永不调用 `setDistributedTables()`。
+- 当前本地应用缓存：`moonlightappcache`；只缓存主机返回的应用目录、封面 ETag/摘要和过期时间，不进云、不进当前便携备份。
+
+`moonlightlocalrecords` 是当前唯一 Moonlight 业务事实层：所有合法写入都在这里形成 owner-scoped 可恢复状态，当前没有向云端投影的步骤。journal、quarantine、bootstrap marker、selection、恢复 receipt 和 session recovery marker 仍用各自现有基础设施，不塞进业务 row。不得另建 `moonlightsettings`、`moonlighthosts`、`moonlightapps`、`moonlighttrust` 或 `moonlightsecrets` 表。
 
 版本后缀是物理 schema 合同的一部分：首版直接命名 `moonlightrecordv1`，未来不在生产中原地改变列语义；若确需不兼容物理结构，另立 `moonlightrecordv2` 迁移项目。`CloudSyncPolicy` 只增加 `moonlightrecordv1`，所有逻辑记录由 `recordtype` 区分。不得写入当前 `remotehosts`、`usersettings`、`vncrecordv2` 或任一其他协议表。
 
@@ -1184,9 +1304,9 @@ flowchart TD
 - 设置和非敏感记录也遵守数据最小化；IP/域名、MAC/WOL、主机名可能构成个人网络信息，应在隐私说明、导出和诊断中脱敏。
 - 给用户提供账户级“删除所有 Moonlight 云数据”流程：先阻止新写、生成/确认删除集、等待云终态、清理本地 bootstrap/selection，失败时可重试且不谎报完成。
 
-### 7.11 本地便携备份、导出和恢复
+### 7.11 [ACTIVE_AFTER_PROVISIONING] 便携备份、导出和恢复
 
-第四次审计时 `LOCAL_BACKUP_VERSION=3` 且 `PORTABLE_BACKUP_V3_WRITE_ENABLED=true`，当前备份 manifest 以表 inventory 承载内容，VNC 的云表和 local overlay 都会参与 full/redacted 选择。Moonlight 必须显式登记 `moonlightrecordv1` 与 `moonlightlocalrecords`，否则未开启云同步的本地主机会在备份中丢失；`moonlightappcache`、journal、quarantine、receipt、bootstrap、selection 和 recovery marker 明确排除。
+第四次审计时 `LOCAL_BACKUP_VERSION=3` 且 `PORTABLE_BACKUP_V3_WRITE_ENABLED=true`，当前备份 manifest 以表 inventory 承载内容。当前本地-only 版本只登记 `moonlightlocalrecords`；`moonlightrecordv1` 的云 section、`moonlightappcache`、journal、quarantine、receipt、bootstrap、selection 和 recovery marker 明确排除。以下涉及云表的内容仅作为未来恢复兼容参考。
 
 格式决策：保持 `LOCAL_BACKUP_VERSION=3`，把两张本地 RDB 表作为新的可选 inventory section；原因是当前 V3 已是 table-driven envelope，无需只为新增协议改变公共格式。实施前必须添加兼容测试证明：旧 V3 文件在新版本恢复时 Moonlight section 缺失等价于“无 Moonlight 数据”；带 Moonlight section 的新文件若被旧客户端拒绝，应明确提示“备份来自较新版本”，不能部分导入。若测试发现旧 reader 会静默丢弃未知 section，则停止并升级为 Backup V4，不能带风险发布。
 
@@ -1211,7 +1331,7 @@ manifest 记录 App/备份/Moonlight schema 版本、两个表 section、各 rec
 2. 验证 manifest/hash、版本、所有 row validator、owner kind、AAD 和引用完整性；
 3. 显示新增/覆盖/冲突/忽略/隔离计数，用户确认目标 owner；
 4. 对同 id 使用第 7.4 节 19 列 envelope + `_meta` 合同，host identity/trust 冲突阻断；不按导入文件创建时间覆盖；
-5. 已登录且该表启用云同步时，先完成 cloud-first/bootstrap，再决定导入数据是否可排队上传；
+5. 当前 Moonlight 本地恢复不执行 cloud-first/bootstrap、上传或云 tombstone；未来云版本若重新立项，需另行增加恢复门禁；
 6. 在当前 `AccountSessionLease` 内原子提交，任何失败整批回滚；切换账号、锁屏或取消立即撤销 restore lease；
 7. device-local 备份默认仍恢复为 device-local；迁入账号 scope 必须经过单独、逐类的数据迁移确认，secret 永不随普通迁移。
 
@@ -1491,7 +1611,7 @@ Moonlight 同时面对“只想立即开玩”的熟练用户和“不理解主�
 5. **错误预防优先**：不允许点击应用卡片后无确认地占用计费网络、强退主机现有应用或覆盖 profile；地址、证书、能力和网络问题在对应字段/阶段就地显示。
 6. **控制—反馈邻近**：用户改变模式后 100ms 内出现按下/选中反馈；需要网络/native 的动作立即进入 pending 状态，400ms 后展示阶段，3s 后展示已等待时长，10s 后提供诊断/取消，不出现无限 spinner。
 7. **沉浸与安全并存**：串流画面默认无永久大工具栏，但边缘控制柄、系统返回逻辑和键盘/手柄可达路径保证停止不依赖隐藏手势。
-8. **同协议内一致、跨协议可迁移**：先把 VNC `VncSheetScaffold` 的 header/滚动 body/固定 footer/短屏 density 抽成协议无关 `RemoteConfigSheetScaffold`，VNC 保留零行为差异 wrapper，Moonlight 再提供自己的品牌 header；设置沿用 HostListPage accordion + leaf Sheet；连接内沿用 VNC 紧凑工具栏、RustDesk 自动收起顶栏、RemoteModifierPanel 和 DiagnosticsHud 的交互语法，但颜色全部走 Theme，不照抄 RustDesk 现有硬编码白色视觉。
+8. **Moonlight 直接沿用 RustDesk 视觉语法**：FAB 打开、协议选择、单 Sheet owner、返回/关闭、步骤标题、模式卡、输入框、主按钮和错误提示都以现有 `HostProtocolPicker` + `RustDeskAddFlow` 为唯一 UI/交互基线；Moonlight 只替换协议文案、官方图标和业务步骤，不以 VNC 页面作为设计或抽取来源，也不重构 RustDesk 业务状态。设置沿用 HostListPage accordion + leaf Sheet；连接内沿用 RustDesk 自动收起顶栏、RemoteModifierPanel 和 DiagnosticsHud 的交互语法，颜色统一走 Theme token。
 9. **模式状态可见**：触控、触控板、相对鼠标、键盘捕获、控制器槽位、静音、HDR/降级、PIP 和重连都必须同时有图标、短文本和无障碍状态，不能只改变颜色。
 10. **中断可恢复**：来电、锁屏、切网、旋转、折叠、PIP、软键盘、鼠标捕获和焦点变化均先完成输入 release，再改变媒体/Surface；UI 不用“页面还在”推断 native 会话仍有效。
 
@@ -1533,7 +1653,7 @@ Moonlight 主机卡片
 
 #### 8.14.3 Moonlight 添加主机 Sheet
 
-整体外观使用 `MoonlightSheetScaffold(RemoteConfigSheetScaffold)`：继承当前 `VNC_SHEET_MAX_WIDTH=620vp`、短屏 density、固定 header/滚动 body/固定 footer，手机 `SheetType.BOTTOM`、其他断点 `CENTER`；header 显示统一品牌图标、标题、“n/4 + 步骤名”和返回。抽取顺序必须是“先锁定 VNC layout/policy/截图测试→提取协议无关 scaffold→VNC wrapper 回归零差异→Moonlight 接入”，不能为了 Moonlight 一次性重写 VNC。软键盘采用 `RESIZE_ONLY`，不把 footer 顶出可视区。退出时若已有手输地址、已选主机或已生成临时 identity，弹出“继续添加 / 丢弃草稿”，扫描结果本身不算脏数据。
+整体外观直接复用 RustDesk 添加流程的设计合同：由现有 `HostListPage.showAddSheet` 单 owner 挂载，手机保持 `SheetType.BOTTOM`、其他断点保持 `CENTER`；20vp 横向留白、36vp 圆形返回、20vp 标题、12vp 步骤说明、12–16vp 圆角模式卡/输入框和 44vp 主按钮均与 `RustDeskAddFlow` 对齐。Moonlight header 显示官方可着色图标、标题以及“n/4 + 步骤名”，业务仍为四步，但不复制或改写 RustDesk relay/TOTP/保存状态。长内容在同一 Sheet 内滚动，软键盘和 footer 遵循现有 RustDesk add Sheet 的避让与关闭生命周期。退出时若已有手输地址、已选主机或已生成临时 identity，弹出“继续添加 / 丢弃草稿”，扫描结果本身不算脏数据。
 
 **1/4 查找主机**
 
@@ -1590,7 +1710,7 @@ Moonlight 主机卡片
 
 #### 8.14.5 设置首页、作用域与完整设置项
 
-Settings accordion 在 VNC 后加入 Moonlight，摘要为“串流、音频、输入、网络、安全、后台和云同步”。展开后使用与 VNC 相同的卡片和 `protocolActionRow`，包含以下叶页：
+Settings accordion 在 VNC 后加入 Moonlight，摘要为“串流、音频、输入、网络、安全和后台”。展开后的卡片、`protocolActionRow`、留白、圆角、标题层级和 Sheet 生命周期直接沿用 RustDesk 设置分组的视觉/交互语法；数据和路由仍由 Moonlight 独立 owner 持有，包含以下叶页：
 
 1. **快速设置**：体验预设、有效配置摘要、恢复推荐值。
 2. **视频与画面**：分辨率、帧率、码率、codec、HDR、色彩、帧节奏和缩放。
@@ -1720,6 +1840,12 @@ Settings accordion 在 VNC 后加入 Moonlight，摘要为“串流、音频、�
 | 停止确认 Sheet | 点断开/第二次返回 | 默认“仅断开并保留主机应用”、危险“同时退出主机应用”、取消 | 默认焦点在仅断开；主机 quit 失败不得阻塞本地 cleanup；结果分成功/失败/未知 |
 | 系统/应用 toast | 短暂完成反馈 | 已切换模式、已保存 profile 等 | 只有真实终态才宣称成功；错误不用瞬时 toast 承载全部说明 |
 
+Moonlight 操控模式中的实体与虚拟手柄都不得在 ArkTS 编码或直发协议。实体手柄事件由 native
+GameController listener 进入 N3-05；虚拟控件在后续 UI 阶段只通过窄 typed NAPI 提交语义状态，
+由 native 聚合为 button/stick/trigger/dpad full-state，再统一经过 N3-05 mapper、N3-01 bridge 和
+official common-c port。两类 source 使用独立 generation；source 切换、编辑态、退出和后台必须先
+经 N3-07 neutral，禁止双 owner、双 slot 写入或按下状态跨 source 泄漏。
+
 #### 8.14.11 输入、手势与误触防护
 
 - 画面单击默认只负责远端点击；“单击显示 HUD”只在用户轻点边缘空白/控制柄或显式开启时生效，不能和直接触控模式争用同一手势。三指轻点可以作为快捷入口，但控制柄/返回键必须提供等价可发现路径。
@@ -1749,14 +1875,14 @@ Settings accordion 在 VNC 后加入 Moonlight，摘要为“串流、音频、�
 
 | 组件/页面 owner | 职责 | 复用来源 |
 | --- | --- | --- |
-| `RemoteConfigSheetScaffold` + `MoonlightHostAddFlow` | 通用布局无协议状态；Moonlight owner 负责四步草稿、异步 generation、保存/打开 | 从 VncSheetScaffold 小步抽取，VNC wrapper 保持兼容；发现逻辑只借鉴 RustDesk 任务模型 |
+| `HostAddWizardSheet` + `MoonlightHostAddFlow` | 复用 RustDesk 同款单 Sheet 路由与视觉语法；Moonlight owner 只负责四步草稿、异步 generation、保存/打开 | `HostProtocolPicker`/`RustDeskAddFlow` 的 FAB、header、卡片、字段、按钮和返回合同；不复制 RustDesk relay/TOTP 业务状态 |
 | `MoonlightHostDetailPage` | 主机摘要、状态、目录 owner 和详情动作 | HostCard/HostList 响应式布局 |
 | `MoonlightAppCatalog` | 搜索/筛选/封面/缓存/更多菜单 | MoonlightOH app grid 的任务模型，不复制视觉代码 |
 | `MoonlightLaunchSheet` | 有效配置、计费网络、主机忙、开始串流 | 进入现有 remote-host/preflight Sheet owner 与队列，不新挂 root bindSheet |
 | `MoonlightConnectStageOverlay` | 阶段进度、取消、降级和失败恢复 | RemoteSessionState + 非模态事务卡 |
-| `MoonlightSessionToolbar` | 最多 5/7 项快捷控制、收起、固定 | VncSessionToolbar + RemoteSessionTopBar |
+| `MoonlightSessionToolbar` | 最多 5/7 项快捷控制、收起、固定 | RustDesk 会话顶栏的自动收起/固定语法 + protocol-neutral `RemoteSessionTopBar` 能力 |
 | `MoonlightControlCenter` | 六组本次设置和保存 profile | RemoteDesktop control panel + settings leaf components |
-| `MoonlightDiagnosticsHud` | 简洁 chip、详细 dock、拖动/吸附 | RustDesk/VNC DiagnosticsHud；新增 Moonlight 指标 |
+| `MoonlightDiagnosticsHud` | 简洁 chip、详细 dock、拖动/吸附 | RustDesk 诊断浮层的层级/动效语法 + protocol-neutral diagnostics primitives；新增 Moonlight 指标 |
 | `RemoteModifierPanel` | 修饰键、Fn、组合键 | 原组件直接复用，仅通过 capability 配置 |
 | `MoonlightControllerOverlay` | 虚拟控制器、布局编辑、实体手柄状态 | 独立 owner，不混进键盘/鼠标面板 |
 
@@ -2411,8 +2537,8 @@ hvigorw --mode module -p module=entry -p product=default assembleHap --analyze=n
 - [BreakpointUtil.ets](/Users/mydestiny/Desktop/RemoteDesktop/RemoteDeskHarmonyOS/entry/src/main/ets/utils/BreakpointUtil.ets)
 - [HostProtocolPicker.ets](/Users/mydestiny/Desktop/RemoteDesktop/RemoteDeskHarmonyOS/entry/src/main/ets/components/hostadd/HostProtocolPicker.ets)
 - [HostAddConnectionHandoffPolicy.ets](/Users/mydestiny/Desktop/RemoteDesktop/RemoteDeskHarmonyOS/entry/src/main/ets/services/HostAddConnectionHandoffPolicy.ets)
-- [VncSheetScaffold.ets](/Users/mydestiny/Desktop/RemoteDesktop/RemoteDeskHarmonyOS/entry/src/main/ets/components/vnc/VncSheetScaffold.ets)
-- [VncSheetLayoutPolicy.ets](/Users/mydestiny/Desktop/RemoteDesktop/RemoteDeskHarmonyOS/entry/src/main/ets/services/VncSheetLayoutPolicy.ets)
+- [HostAddWizardSheet.ets](/Users/mydestiny/Desktop/RemoteDesktop/RemoteDeskHarmonyOS/entry/src/main/ets/components/hostadd/HostAddWizardSheet.ets)
+- [RustDeskAddFlow.ets](/Users/mydestiny/Desktop/RemoteDesktop/RemoteDeskHarmonyOS/entry/src/main/ets/components/hostadd/RustDeskAddFlow.ets)
 - [ResourceFabPicker.ets](/Users/mydestiny/Desktop/RemoteDesktop/RemoteDeskHarmonyOS/entry/src/main/ets/components/resourceadd/ResourceFabPicker.ets)
 - [ProtocolIconPolicy.ets](/Users/mydestiny/Desktop/RemoteDesktop/RemoteDeskHarmonyOS/entry/src/main/ets/services/ProtocolIconPolicy.ets)
 - [HostListPage.ets](/Users/mydestiny/Desktop/RemoteDesktop/RemoteDeskHarmonyOS/entry/src/main/ets/pages/HostListPage.ets)
@@ -2472,7 +2598,7 @@ hvigorw --mode module -p module=entry -p product=default assembleHap --analyze=n
 
 ### 15.1 执行纪律和单步完成格式
 
-每次开始工作必须先执行仓库 `AGENTS.md` 的启动流程，继续当时未完成的 `codex/<task>` 分支，不切走、不 stash、不 reset、不覆盖用户修改。正式 Moonlight 实施应在当前 SSH 活动任务闭环并回到最新 `main` 后另行立项；本计划留在当前分支只代表文档评估，不授权现在实施。
+每次开始工作必须先执行仓库 `AGENTS.md` 的启动流程，继续当时未完成的 `codex/<task>` 分支，不切走、不 stash、不 reset、不覆盖用户修改。前置 SSH 与隐私任务已经闭环；Moonlight 已于 2026-08-09 从干净 `main@aeb0cdac5` 立项并进入 `codex/moonlight-complete-upgrade`，后续实施以任务台账和仓库门禁为准。
 
 每个任务 ID 都使用以下五段式记录，缺一项不得标为完成：
 
@@ -2500,8 +2626,8 @@ hvigorw --mode module -p module=entry -p product=default assembleHap --analyze=n
 ~~~mermaid
 flowchart LR
   G0["G0 基线、上游、安全、能力探针"] --> D1["D1 领域模型与纯策略"]
-  D1 --> D2["D2 本地覆盖层与单云表"]
-  D2 --> D3["D3 账户、云选择、备份恢复"]
+  D1 --> D2["D2 本地主机存储"]
+  D2 --> D3["D3 本地账户、备份恢复"]
   G0 --> N1["N1 common-c 与主机控制面"]
   N1 --> N2["N2 视频与音频"]
   N1 --> N3["N3 输入与控制器"]
@@ -2521,8 +2647,8 @@ flowchart LR
 | `moonlightBrandAssetReady` | false | 官方资产 provenance/许可证/视觉验收完成 | 当前 system Symbol 占位；入口仍可显示“即将支持” |
 | `moonlightHostControlReady` | false | 真实 Sunshine 完成 serverinfo/pair/catalog/launch/quit | 不出现可交互添加/配对入口 |
 | `moonlightStreamingReady` | false | H.264+Opus+输入+生命周期 MVP 真机门通过 | 主机管理即使灰度可用，也不出现“开始串流” |
-| `moonlightCloudSchemaReady` | false（构建期） | 三个 AGC 环境表/权限/索引 receipt 完整 | 不把表名加入分布式注册清单；local-only 可独立工作 |
-| `moonlightCloudIdentityReady` | false | remote crypto lifecycle、E2E、恢复/撤销评审通过 | identity scope 置灰且零 secret row 上传 |
+| `moonlightCloudSchemaReady` | false（deployed revision 0） | 用户按第 7.2 节创建并确认目标 AGC 表，客户端 revision 1，真实 optional registration/空表读写 receipt 通过 | 只移除 Moonlight runtime admission；旧 8 表、本地 repository 和 durable user intent 保持可用 |
+| `moonlightCloudIdentityReady` | false（v1 不开放） | 未来独立完成 remote crypto lifecycle、E2E、恢复/撤销评审 | identity/trust/证书/私钥只留本机，不影响 settings/hosts/profiles 云同步 |
 | `moonlightProtocolAvailable` | false | G0–S1 MVP 全部通过 | FAB 项保持禁用和“即将支持”，点击零副作用 |
 
 这些名称是计划语义，实施时应集中到 `MoonlightFeaturePolicy.ets`/native build config，不能在页面散落布尔值。构建期开关只控制尚未部署的 schema/依赖，用户级开关只控制已安全交付能力；远端开关不能替代缺失的本地 schema 或 ABI。
@@ -2552,9 +2678,31 @@ flowchart LR
 | D1-06 | 新建 `MoonlightCapabilityPolicy.ets` 和 `MoonlightFeaturePolicy.ets`：把 probe/host/native/云/发布能力变为可测试 truth，默认 fail closed | capability 组合表，确保一个下层 false 不会被 UI 子开关越权 | 不读取页面状态，不硬编码“所有设备支持” |
 | D1-07 | 新建 `MoonlightSessionState.ets`：disconnected/discovering/verifying/pairing/catalog/launching/negotiating/video/audio/input/firstFrame/streaming/reconnecting/stopping/failed，并定义合法迁移和错误码映射 | 合法/非法迁移、cancel、迟到 generation、降级、first-frame gate | 通用 `RemoteSessionState` 暂不修改；提交 `domain-policy` checkpoint |
 
-### 15.5 D2：`moonlightrecordv1`、local overlay 与云适配
+### 15.5-HISTORY D2-local：本地主机存储基础合同（已完成并继续保留）
 
-本阶段先完成本地 schema 和纯 adapter，再部署 AGC，最后才改注册表清单。每一步都要从当前源码重新确认 `CloudStore` schema version，使用“当前版本 + 1”，不得照抄本文假设值。
+D2-local 曾是唯一执行路线；现在作为可选云同步下方不可回退的本地基础层继续有效。
+`moonlightlocalrecords` 与 `moonlightappcache` 的 owner/lease/backup/delete 合同不得因上云
+削弱；其中“零云调用”“不得创建 optional projection”只描述 2026-08-10 历史阶段，已被
+第 7.0 节覆盖。
+
+| ID | 文件与精确动作 | 定向测试/数据合同 | 完成证据/停止条件 |
+| --- | --- | --- | --- |
+| D2-L01 | 审计 `CloudSyncPolicy.ets`、CloudStore startup 和 Moonlight imports；将 Moonlight 当前写入/读取路径收束到 local table，保证启动/登录/账号切换不会创建 Moonlight 云注册或投影任务 | `CLOUD_SYNC_TABLES` 仍精确 8 项；启动、账号 A/B、云可用/不可用四矩阵；source scan 禁止 Moonlight 调用 `setDistributedTables`/CloudSyncCoordinator | 只允许 `moonlightlocalrecords`/`moonlightappcache` 的本地 SQL；云表/selection/transfer 代码仅作 parked reference，不进入 runtime wiring |
+| D2-L02 | 校准 `MoonlightStoragePolicy.ets`、owner-store migration 和 `MoonlightRecord.ets`：20 列本地 envelope、16 列可重建 cache、schema v5；每个本地写入固定 `localonly=1` | 首次安装、v4→v5、重复打开、schema 列顺序/类型、失败回滚、localonly 非 1 拒绝 | API 23/24 可重建 RDB receipt；不能新增 Moonlight 云表或修改其他协议 schema |
+| D2-L03 | 收束 `MoonlightRepository.ets`：所有 upsert/tombstone 只落 local overlay；携带完整 `AccountSessionLease`，读写前后 owner/generation/storeInstance 二次校验，事务后 readback | 新建/编辑/重复 mutation、stale lease、账号 A/B 同 id、数据库写失败、进程中断恢复；每个结果 `cloudAttempted=false` | local-only 主机增删改可重试、幂等；旧 lease 零污染新 owner；不提供 local→cloud promotion API |
+| D2-L04 | 收束 `MoonlightAppCacheService.ets`：owner+host+app key、ETag/hash/expiry/artwork path、完整/部分刷新、过期优先+稳定 LRU、有界总量 | 空目录、部分目录失败、过期、重复 app、损坏封面、磁盘不足、账号切换；cache 删除不触碰 profile/host | `moonlightappcache` 永不进入业务备份、云注册或 host truth；目录可丢弃并由主机重建 |
+| D2-L05 | 接现有 Local Backup V3 的 local section：备份/导入只包含 `moonlightlocalrecords` 的允许 recordType；cache、journal、quarantine、session marker、PIN、token、私钥和 secure-store alias 排除 | 旧 V3→新版本、新 V3→旧 reader、redacted/full、损坏 hash、owner A→B、重复恢复、磁盘满、恢复中切账号 | 恢复 quarantine→用户预览→当前 lease 内原子本地提交；全部恢复记录仍 `localonly=1`；不触发 cloud-first/upload |
+| D2-L06 | 接 `MoonlightDeletionCommandService` 的本地命令：删除 host、profile、trust、secret metadata、cache、journal/restore marker 的 exact impact preview；unpair 仍等待真实 Host Control port | 取消/重复/过期 preview、删除失败、孤立 secure identity、无 Host Control、部分本地清理；本地终态与远端 warning 分离 | 本地删除可准确重试；没有远端 port 时零伪造 unpair 成功，不创建 cloud tombstone |
+| D2-L07 | 增加 local-only wiring/静态审计 receipt，更新 CURRENT/QUEUE；不加入任何 Moonlight 云 UI、CloudStatus、selectedTables 或上传按钮 | native/ArkTS 定向测试、8 表集合、source scan、Light、双 Hvigor；Moonlight 入口仍 disabled | 提交 `d2-local-storage` checkpoint；当前版本本地主机存储完成后才进入 Host/UI/media 装配 |
+
+### 15.5-CLOUD-ACTIVE：D2 云表、CloudSync 和 AGC 适配
+
+以下 D2 云任务已由 2026-08-19 用户决定重新激活。代码部分必须先完成并审查；唯一外部
+停点是 D2-05/06 的 AGC 建表 receipt。客户端不得在 receipt 前把 deployed revision 从 0
+改为 1，也不得用可选表失败覆盖旧八表 baseline。
+
+执行顺序固定为：本地 exact schema/adapter → core-eight + optional-nine 隔离实现 → 用户创建
+AGC 表 → revision 1 → 真实注册与传输矩阵。不得颠倒。
 
 | ID | 文件与精确动作 | 定向测试/数据合同 | 完成证据/停止条件 |
 | --- | --- | --- | --- |
@@ -2569,7 +2717,25 @@ flowchart LR
 | D2-09 | 新建 `MoonlightCloudSyncSelectionPolicy.ets`/`Store.ets`：五 scope、默认 `[]`、ownerScopeId preference key、stage→RDB projection→persist 回滚合同 | normalization、owner A/B、Preferences 写失败、identity capability false | 不读取 VNC prefs；UI 与 durable selection 不分裂 |
 | D2-10 | 新建 `MoonlightCloudSyncService.ets`：recordType→scope、pull validate/materialize、local promotion、tombstone、quarantine；页面不可调用 CloudStore | physical off/logical off/identity off/cloud-first/promotion/malformed/partial table failure | 单表失败不回滚其他协议或登录；提交 `cloud-table-adapter` checkpoint |
 
-### 15.6 D3：CloudCoordinator、账户切换、敏感屏障和备份恢复
+### 15.6-HISTORY D3-local：本地账户、删除、备份恢复基础合同（继续有效）
+
+D3-local 的本地 owner/store、备份恢复和安全删除保证继续有效；“不得创建云 selection/request”
+只描述历史 local-only 阶段。当前云路径必须建立在这些本地保证之上，并继续证明 Moonlight
+不会改变既有协议云同步合同。
+
+| ID | 文件与精确动作 | 必须验证 | 完成证据/提交点 |
+| --- | --- | --- | --- |
+| D3-L01 | 在 `AccountSessionCoordinator.ets`/`SensitiveDataBarrier.ets` 接入 Moonlight local drain：切换前关闭 host edit/pair/launch、停止 session/identity/local journal，撤销旧 lease，再绑定新 owner | 正常/失败/超时/强杀/重复切换；旧 callback 不能更新新列表；云可用性变化不改变 Moonlight local read | local account lifecycle receipt；阻塞时保持旧 owner，不泄漏新 owner |
+| D3-L02 | 完成本地恢复 resolver：验证 manifest、owner、schema、hash、引用、tombstone 和 secure identity metadata，先 quarantine 后预览/原子提交 | 同 id、owner A→B、非法 row、孤儿 profile/trust、重复导入、磁盘满、恢复中切账号 | 恢复只提交 `moonlightlocalrecords`，全部 `localonly=1`；不触发 cloud-first、upload 或 cloud tombstone |
+| D3-L03 | 完成“删除全部 Moonlight 数据”本地 exact set：settings、host/profile/trust、identity metadata、cache、local journal/quarantine/restore marker；私钥先通过 secure owner 清理 | 预览重算、取消、重复、部分清理、孤立 secure identity、进程中断后重试 | 删除报告区分 RDB、cache、secure identity；不把远端 unpair 伪造为完成 |
+| D3-L04 | 生成 local-only 数据状态 snapshot：`localSaved`、`localDirty`、`localRestorePending`、`localQuarantined`、`secureIdentityState`；禁止 `synced/pendingUpload` 等 Moonlight UI 状态 | owner A/B、云登录/退出、云失败/恢复、备份/恢复、空库；状态只能由真实本地记录推导 | U1/S1 只订阅此 snapshot；没有 Moonlight cloud badge 或同步设置 |
+| D3-L05 | 更新 local backup inventory/manifest 和删除命令的文档/receipt；验证现有 8 表云同步回归未变 | Local Backup V3、既有 8 表集合、RDP/RustDesk/SSH/VNC 云回归、Light、双 Hvigor | 提交 `d3-local-lifecycle` checkpoint；云同步问题不再阻断本地主机开发 |
+
+### 15.6-CLOUD-ACTIVE：D3 CloudCoordinator、云选择和多设备
+
+以下 D3 云任务进入当前路线：CloudCoordinator wiring、cloud-first、physical/logical selection、
+云 tombstone、跨设备冲突和双设备矩阵。v1 明确排除 secret/identity/trust 云恢复；任何实现或 UI
+都不得借“完整功能”扩大这一隐私边界。
 
 | ID | 文件与精确动作 | 必须验证 | 完成证据/提交点 |
 | --- | --- | --- | --- |
@@ -2582,6 +2748,33 @@ flowchart LR
 | D3-07 | 扩展云设置状态模型：physical selection、五 scope、bootstrap、pending upload、quarantine、last success/error 独立展示 | offline、无 platform identity、crypto locked、partial failure、empty selection | 不用一个“已同步”布尔覆盖所有状态 |
 | D3-08 | 运行双设备/双账号/设备本地数据矩阵和便携备份恢复矩阵，保存脱敏 receipt | 第 7.5–7.11 全矩阵，其他 8 表同步回归 | `data-lifecycle` checkpoint；未通过不做 UI 的云开关 |
 
+#### 15.6.1 D3 实施校准（2026-08-19 覆盖）
+
+下表保留 2026-08-10 的代码基线说明；当前状态与剩余动作以实施台账第 10 节为准，不能仅凭
+旧状态字符串重复实现或重新停靠已经接通的 coordinator/selection/deletion 合同：
+
+| ID | 当前源码状态 | 已完成边界 | 唯一剩余边界 |
+| --- | --- | --- | --- |
+| D3-01 | ONLINE BLOCKED / STATUS POLICY PASS | 独立状态 policy 已覆盖 physical、五 scope、bootstrap、pending、quarantine、last success/error、identity crypto lock | 真实 request/retry/bootstrap wiring 依赖 D2-07；不得提前改八表集合 |
+| D3-02 | LOCAL/DORMANT PASS | repository、selection、materializer、barrier 均使用完整 `AccountSessionLease` 并在事务边界复核 | D2-07 后补真实 coordinator callback 的 A→B 迟到污染测试 |
+| D3-03 | CONTRACT PASS / RUNTIME PENDING | `SensitiveDataBarrier` 已在 store quiesce 前按 mutation/launch→session→pairing→identity restore→cloud/journal→runtime secrets 排序 drain；新 store 激活后绑定 lease | N1/S1 注册真实 runtime port 后补超时、强杀、旧 callback 和 secret 清零验收 |
+| D3-04 | PASS | Backup V3 optional descriptor 和 cloud/local 双 section 已落地；旧 V3 无 section 可读，新 V3 对旧 inventory fail closed；redacted/full 矩阵固定 | 任何旧 reader 静默忽略未知 section 的新证据都会触发 Backup V4，不允许带风险兼容 |
+| D3-05 | LOCAL RESTORE PASS / CLOUD PROMOTION BLOCKED | exact/owner/semantic validation、冲突/孤儿 quarantine、tombstone、目标 owner rebound 和最终仅 `moonlightlocalrecords`/`localonly=1` 已落地 | D2-07 后才能做 cloud-first/promotion；设备级故障原子性归 D3-08 |
+| D3-06 | LOCAL EXECUTION PASS / CLOUD+HOST PENDING | 六类命令从当前 owner 的 exact 业务行、cache、journal/quarantine/restore marker 与 secure identity inventory 生成预览并在执行前重算；settings 已纳入删全部；本地删除/忘记 host/删 profile 使用 CloudStore 单事务，identity 安全材料先清且单独报告终态 | checkpoint `ea32ffa`；D2-07/terminal port 前 cloud tombstone 返回 unavailable，N1 Host Control 前 unpair 返回 unavailable；U1 不得提前暴露 |
+| D3-07 | POLICY PASS / UI PENDING | 不使用“已同步”单布尔，状态输出已独立建模 | U1-11 消费此 snapshot；physical/schema truth 为 false 时必须显示 off/unavailable |
+| D3-08 | EXTERNAL PENDING | 138 个 Moonlight 测试用例覆盖纯策略、备份和本地生命周期编译合同 | 双设备/双账号/device-local/真实云/恢复故障/旧八表回归需要外部环境 receipt |
+
+D3-04/05 的不可变实现合同如下：
+
+1. 备份格式仍为 V3；Moonlight descriptor 和两个 section 都是 V3 的可选扩展，旧文件缺失等价于 Moonlight 记录数为零。
+2. redacted 只允许 settings、host、profile；full 在此基础上只增加 trust candidate。两种模式都排除 secret/client identity、PIN、token、私钥、本机 trust receipt、app cache、journal、quarantine、bootstrap、selection 和 recovery marker。
+3. 源库 admission 对未知/缺失列、外来 owner、重复 id、非法 `localonly` 和语义损坏整批失败；不能把坏行静默过滤后生成不完整备份。
+4. 恢复同时裁决 cloud/local section，但最终只原子提交目标 owner 的 local overlay，全部 `localonly=1`；不会直接触发云上传，也不会设置会冻结 RDP/SSH/VNC/RustDesk 的公共恢复 marker。
+5. 相同 id 的等 envelope 歧义或 identity 冲突隔离双方；live profile/trust 没有 active host 时隔离；trust 恢复后仍是候选，配对身份始终要求重新配对。
+6. D3-03 代码 checkpoint 为 `05e96d3`，D3-04/05 checkpoint 为 `b27a58a`，D3-06 本地命令 checkpoint 为 `ea32ffa`；19 个 describe、138 个 Moonlight test 只具备编译注册证据，当前不宣称 Hypium 设备执行。
+7. D3-06 的预览不能信任 UI 传入计数：执行器从当前 lease 的 owner 行、cache 和 runtime state 重新生成 exact set；新增/删除任一目标会得到 `stale_preview`。删除全部包含 settings、host/profile/trust、identity metadata、cache、Moonlight local journal/runtime quarantine/restore marker，并在安全身份端口可枚举时清理没有 metadata row 的 owner 孤立身份。
+8. 普通本地删除不制造 cloud tombstone；需要 tombstone 的忘记/unpair/profile/删云命令在 terminal cloud port 缺失时零写入。unpair 在 Host Control port 缺失时零写入；真实端口返回失败时允许保留已完成的本地安全终态，但必须以 warning 明示远端未确认。
+
 ### 15.7 N1：官方 common-c、Host API、配对与应用控制
 
 | ID | 文件与精确动作 | 必须验证 | 完成证据/提交点 |
@@ -2593,62 +2786,1731 @@ flowchart LR
 | N1-05 | 新建 secure identity bridge：owner-scoped RSA/client cert 生命周期、HUKS/Asset Store alias metadata、内存清零；OpenSSL 只获得最短期签名/解密能力 | owner A/B、重装、删除、并发 pairing、alias 不可跨 owner、日志扫描 | 无明文私钥落盘；探针不支持时 blocker |
 | N1-06 | 实现官方兼容 pairing 状态机：生成 PIN→challenge→主机确认→server cert candidate→用户 trust→commit；取消/超时 best-effort unpair | 真实 Sunshine、错误 PIN、超时、证书变化、取消时临时 identity 清理 | UI 尚不接入；事件序列/错误码稳定 |
 | N1-07 | 实现 app catalog、launch/resume/quit 命令；区分“仅断开”和“退出主机应用”，记录 success/failure/unknown | 官方客户端互操作、主机忙、已有 app、quit 无响应、id 失效 | 请求发出不算成功；不会默认 quit |
-| N1-08 | 新建 `moonlight/moonlight_napi.cpp` 和 ArkTS `MoonlightNativeApi.d.ts`/`MoonlightHostService.ets`：typed request/event，所有事件含 session/request generation | NAPI 参数错误、回调线程 marshal、取消、页面销毁、迟到事件 | 不扩张通用 `ProtocolAdapter` 承载 pairing/catalog；提交 `host-control` checkpoint |
+| N1-08 | 新建 `moonlight/bridge/MoonlightNativeBridge.*`、`moonlight/moonlight_napi.*` 和 ArkTS `MoonlightHostService.ets`，并更新唯一发布 d.ts：typed request/event，所有事件含 request/session generation | NAPI 参数错误、回调线程 marshal、取消、页面销毁、账户切换和迟到事件 | 不扩张通用 `ProtocolAdapter` 承载 pairing/catalog；提交 `typed-host-bridge` checkpoint |
+
+#### 15.7.1 N1-01 已完成事实与 N1-02 唯一执行合同（2026-08-10）
+
+N1-01 已由 checkpoint `0013ba034` 完成：117 个上游文件原样保存在独立目录，common-c、ENet、nanors 的 commit/tree/license/content manifest 已机器锁定；校验器可在普通无 `.git` 源码归档中重建三个官方 Git tree，并以 `160000` 模式验证 common-c 的两个 gitlink。shell/PowerShell 7 双 ABI静态构建都匹配锁文件中的四个 deterministic receipt；NOTICE/SPDX/hash/source offer、patch 分离与幂等生成门禁已落地。产品 `CMakeLists.txt`、NAPI、ArkTS、云表注册和 UI 未接线，签名 HAP 与 `rdpnapi` 仍不含 Moonlight 符号。
+
+N1-02 只能修改主 CMake、项目拥有的 `moonlight/CMakeLists.txt`、N1-01 standalone wrapper 及必要的构建验证脚本/文档，按顺序执行：
+
+1. 记录两 ABI `rdpnapi` export/undefined symbol inventory、签名 HAP 内容和现有 native/Hvigor 基线；不以包含 build timestamp 的整库 hash 判断 ABI 回归。
+2. 在 `moonlight/CMakeLists.txt` 唯一定义静态 common-c/ENet target：复用 `libs/openssl/install`，目录作用域关闭 shared build/install，校验 ABI输入和 target 类型，只给两个第三方 target 加狭窄 Clang 诊断豁免。
+3. standalone `vendor-build` 必须改为消费同一边界并继续命中 N1-01 四个 archive receipt；不得复制第二套 CMake 配置或编辑 upstream。
+4. 主 CMake 在既有 OpenSSL imported target 之后 `add_subdirectory(moonlight)`，只以 `PRIVATE`/`LINK_ONLY` 语义链接包装 target；不得新增全局 include、definition、link directory 或 whole-archive。
+5. 不新增 NAPI/ArkTS/runtime source，不注册协议/云表，不改变六个 capability truth、FAB、设置或路由；静态 archive 因尚无引用而不应凭空形成用户可调用能力。
+6. 两 ABI验证目标参与依赖图、无未解析 `Li*`/`enet_*`/OpenSSL 符号、无新增 NAPI export、上游 include 未全局泄漏；再跑现有协议 native tests、N1 receipt、双 Hvigor、signed HAP、TOTP/Light、diff/state。
+7. N1-02 单独提交；任一 ABI、现有协议或产品隔离证据失败就回退该构建边，不进入 N1-03。
+
+#### 15.7.2 N1-02 已完成事实与 N1-03 唯一执行合同（2026-08-10）
+
+N1-02 已由 checkpoint `99edc58` 完成：`entry/src/main/cpp/moonlight/CMakeLists.txt` 是 product 与 standalone 唯一共享的 common-c/ENet target 定义，限定 static、PIC、API 23 ABI、既有 OpenSSL crypto 和两个上游 target 的窄 warning 豁免。主产品只通过 `PRIVATE`/`LINK_ONLY` 接入；两 ABI link graph 有静态 archive，47 个产品 compile command 均无 upstream include 泄漏。链接前后 `librdpnapi.so` 的 exported/undefined/NAPI-related inventories 逐字一致，没有未解析 Moonlight/ENet/OpenSSL symbol；签名 HAP 前后都是同一 423 项路径 inventory。host native 342/342、shell/PowerShell 四个 deterministic receipt、两项 Hvigor、signed HAP、vendor/TOTP/Light/diff/state 全部通过。NAPI、ArkTS、云注册、feature truth 和灰色 FAB 均未改变。
+
+N1-03 只能修改主 CMake、新建的 `moonlight/core/MoonlightSessionOwner.h/.cpp`、一个 focused native test 文件及必要状态文档，按顺序执行：
+
+1. 以 `99edc58` 保存 host native count、两 ABI symbol/HAP inventory 和产品构建基线；任何旧协议回归都停止 N1-03。
+2. public owner header 只定义项目自有 C++17 类型，不包含 `Limelight.h` 或其他 upstream header；key 必须同时含非零 `sessionId`、`generation`、不可复用 `ownerToken`，不能只凭当前全局连接判断 callback/stop 归属。
+3. 生命周期固定为 `idle → starting → running → stopping → stopped/failed`；每个 owner 有 cancel token、callback/worker admission gate、in-flight counts 和只读 snapshot。非法迁移 fail closed，不自动重绑 key。
+4. 唯一 process-wide coordinator 通过窄 callable/driver seam 串行 future common-c operations。一个 start 占用车道后，其他 start 返回稳定 `busy`，不排队、不抢占；测试 seam 不伪造 serverinfo/stream config，生产在 N1-03 仍没有 callable NAPI。
+5. starting 期间 stop 只触发一次 cancel/interrupt，必须等 start callable 返回后才可 stop；running stop 最多执行一次；start 失败按 common-c 已自行 cleanup 处理，不再双 stop。stale/repeated stop 零副作用且结果稳定。
+6. stop 先关闭新 callback/worker admission，再等待已发 lease 归零。lease 不可复制、析构精确减计数；drain 超时后保持 `stopping` 并继续占用全局车道，禁止下一连接，不用 detach 或清空指针伪装停止。
+7. 测试用 condition/barrier 和有界 deadline 证明两个并发 start、blocked-start 中 stop、一次 interrupt/stop、start failure、重复/stale stop、callback/worker drain、timeout fail closed、旧 generation callback 拒绝、snapshot/count 和 driver exception；禁止以 sleep 猜竞态。
+8. 生产 `MOONLIGHT_SOURCES` 与 host test source 只登记 owner；不新增 Host API、NAPI/ArkTS、媒体/输入、secure identity、云/UI/资源或 capability true。新增定向测试和既有 native 全回归、双 ABI/符号/HAP 隔离、双 Hvigor、TOTP/Light/diff/state 均通过后单独提交，才允许 N1-04。
+
+#### 15.7.3 N1-03 已完成事实与 N1-04 唯一执行合同（2026-08-10）
+
+N1-03 已由代码 checkpoint `18cdd39aa` 完成。`MoonlightSessionOwner` 只使用
+项目自有 hidden C++ 类型，key 固定为非零 `sessionId + generation + ownerToken`；
+生产只有 process singleton，测试实例仅在既有 native-test define 下开放。一个 owner
+从 start admission 到 callback/worker drain、interrupt 和 stop 全程占用唯一车道；
+cancel 在 common-c interrupt flag 初始化后的显式 fence 才触发。interrupt 从预留到
+返回都计入 control operation，因此新 start 和 stop 不能越过一个尚未返回的
+interrupt。超时保持 `stopping` 和车道占用，不 detach、不清指针伪装成功。
+
+13 个 barrier/deadline 用例覆盖真实并发 start、stop-during-start、late interruptible
+fence、interrupt/stop 串行、start/stop/interrupt 异常、stale generation、重复 stop、
+callback/worker drain、timeout fail closed 与析构 join；沙箱外 native **355/355
+PASS**。两 ABI产品各有 48 个非上游 compile command、恰一个 owner command、零
+upstream include leak；defined/undefined/`napi|init|register` inventory 与基线逐字
+相同，签名 HAP 仍为同一 423 项。双 Hvigor、vendor、TOTP、Light、diff/state 均
+通过。NAPI、ArkTS、云、资源、UI 和所有 feature truth 没有改变。
+
+N1-04 必须把锁定的官方 Android `NvHTTP`/`PairingManager` revision 当作 wire 事实，
+但不能复制 Android/OkHttp/XmlPullParser 实现，也不能把后续 pairing/identity/UI
+提前塞进本步。按以下原子步骤执行：
+
+1. 以 `18cdd39aa` 保存 355 项 native、两 ABI symbol/NAPI audit、每 ABI 48 条
+   产品命令和 423 项 HAP inventory。代码范围只允许主 CMake、新建
+   `moonlight/core/MoonlightHostApi.h/.cpp` 与一个 focused native test 文件；若
+   发现必须改旧协议/公共网络层，先停下补计划和旧协议回归，不复制 VNC/RDP 私有
+   socket helper。
+2. public header 只包含项目自有 C++17 value type/PIMPL：endpoint、operation、
+   immutable request/response、server-info、app、launch/quit terminal result、stable
+   error 与 diagnostic snapshot。不得包含 common-c/OpenSSL/NAPI/ArkUI header，
+   不得接受/返回 PIN、PEM 私钥、session token 或原始 `rikey` bytes。
+3. 每个操作携带不可重绑定的非零 `requestId + generation + ownerToken` 和 shared
+   cancel state；开始、每次 attempt、transport 返回、解析 commit 前都复核 exact
+   key 与同一 monotonic absolute deadline。迟到 response 只能成为 stale/cancelled，
+   不能发布给新 generation；析构 cancel 并 drain，不 detach worker。
+4. URL builder 固定官方兼容值：HTTP 默认 `47989`、HTTPS 默认 `47984`、
+   `uniqueid=0123456789ABCDEF`、每请求独立 UUID。IPv6 authority 正确加 bracket，
+   SNI/serverName 与连接地址分离，query 逐值 percent-encode；只允许 GET、
+   `http/https`、端口 `1..65535` 与白名单 endpoint，拒绝 redirect/proxy/user-info/
+   fragment/CRLF 和重复保留参数。
+5. `serverinfo` 可在未配对 HTTP 读取候选；已有 pin 时先走 HTTPS。`applist`、
+   `appasset`、pair challenge、launch/resume/cancel 必须 authenticated HTTPS。证书
+   不匹配只返回 `trustConflict`；为重新配对读取的 HTTP candidate 不能维持 paired/
+   launch truth。N1-04 可形成 pair/unpair request shape，但不执行 N1-06 密码学；
+   launch/resume 只消费 caller 提供的 opaque launch material，不生成/持久化 rikey；
+   `rikey` 仅接受 32 hex、`rikeyid` 兼容官方 signed 32-bit，且固定 `corever=1`。
+   cancel 的 200 不是完成证据，必须再以 authenticated `serverinfo/currentgame=0`
+   确认；busy、复核失败或歧义都返回稳定的非成功终态。
+6. 唯一 transport seam 接收 immutable request、absolute deadline、cancel probe 与
+   response budget，返回 DNS/connect/TLS/HTTP/body stage 以及
+   `notSent / sentResponseUnknown / confirmedResponse`。read-only 可按冻结的地址
+   优先级顺序尝试；mutation 一旦可能已发送就禁止换地址自动重放，返回 unknown
+   交给显式复核。N1-05 再实现 owner-scoped TLS client identity adapter；N1-04
+   没有 NAPI caller，也不持久化 transport secret。
+7. budget 固定为 URL ≤ 8 KiB、body ≤ 4 MiB、XML depth ≤ 32、elements ≤ 16384、
+   attributes ≤ 16/element、name ≤ 64 bytes、attribute ≤ 1 KiB、单 text ≤ 256 KiB、
+   apps ≤ 2048、title ≤ 1 KiB。只允许一个有界且位于 root 前的 XML declaration；
+   拒绝其他 processing instruction、DTD/DOCTYPE、外部或自定义 entity、NUL、非法
+   UTF-8、未闭合/错配标签、重复 root 和 trailing non-whitespace；只解码五个
+   builtin entity 与合法 numeric entity。
+8. XML root 必须有唯一十进制 `status_code`；按官方行为接受 `0..UINT32_MAX` 后
+   映射 signed 32-bit（含 `0xFFFFFFFF → -1`），只有 200 提交业务结果。serverinfo
+   必填 `uniqueid/appversion/state/PairStatus/currentgame`，appversion 必须四段有界
+   整数；其他 host/version/port/address/GPU/codec/luma 字段是有界 optional。
+   applist 只提交正整数唯一 ID、非空 title 和可选 HDR；缺字段计入 bounded partial，
+   冲突 duplicate ID 或同 ID 不同 title 整批失败。
+9. timeout 只使用一个 absolute budget，不能因 DNS、地址切换或 body progress
+   重置；参考官方 3s short-connect、5s long-connect、7s read，caller 下限固定
+   100ms，普通操作上限 30s，只有用户正在等待 PIN 的初始 `getservercert` pair
+   阶段允许 120s。HTTP status 与 XML status 分开；404/401、TLS version/chain/pin、timeout、
+   cancel、body-too-large、malformed XML、host busy、action unknown 都使用 stable
+   code。diagnostics 只保留 operation/stage/attempt/family/port/status/bytes/duration/
+   masked endpoint，禁止完整 host、query、UUID、证书、PIN、token、rikey、XML body
+   或 app title；debug formatter redact 所有 query value。
+10. focused tests 覆盖官方 serverinfo/applist/launch/resume/cancel fixtures、未知字段、
+    partial app、duplicate ID、`0xFFFFFFFF`、DTD/entity bomb、深度/数量/长度/UTF-8/
+    截断、IPv4/IPv6/percent encoding、HTTP/XML status、TLS/pin error、deadline/cancel/
+    stale generation、read-only fallback、mutation no-replay、unknown result 和 secret
+    canary。全量 native、双 ABI产品/符号/HAP、双 Hvigor、vendor/TOTP/Light/diff/
+    state 全通过并单独 checkpoint 后，才允许 N1-05。
+
+#### 15.7.4 N1-04 已完成事实与 N1-05 唯一执行合同（2026-08-10）
+
+N1-04 已由代码 checkpoint `fd2d7ec92` 完成。`MoonlightHostApi` 是无 NAPI caller
+的 project-owned C++17/PIMPL core；15 个定向用例覆盖 official endpoint/query、
+transactional bounded XML、512 个确定性 fuzz body、exact request key/cancel/stale、
+单 absolute deadline、IPv4/IPv6/SNI、read-only fallback、mutation no-replay/unknown、
+trust conflict、authenticated cancel verification 和 secret canary。沙箱外 native 与
+ASan/UBSan 都是 **370/370 PASS**。两 ABI各保持 48 个 `rdpnapi` compile command，
+新增 Host API 恰好各一个 private archive command、零 upstream include leak；
+defined/undefined/`napi|init|register` inventory 与 N1-03 基线逐字一致，签名 HAP
+仍为 423 项。双 Hvigor、platform probe、四个 vendor receipt、三 tree/117 文件、
+合规生成幂等、TOTP、Light 和 diff 均通过。生产 transport、identity、pairing、
+ArkTS/UI、云、媒体、输入和 feature truth 均未接入。
+
+N1-05 只建立 owner-scoped secure identity bridge 和平台能力证据，不实现 PIN/challenge
+配对状态机，不把 identity 暴露给 ArkTS。按以下原子步骤执行：
+
+1. 以 `fd2d7ec92` 保存 370 项 native、两 ABI symbol/NAPI/HAP inventory、每 ABI
+   48+1 条产品/private-archive compile command 与双 Hvigor结果。代码范围优先限定
+   为主 CMake、新建 `moonlight/security/MoonlightSecureIdentity.h/.cpp`、必要的窄
+   platform backend/probe 和一个 focused native test；不得改 `host_locker.cpp` 的
+   TODO 实现、通用 `DataCrypto`、旧协议 credential store、云表、NAPI、资源或 UI。
+2. identity key 固定为 caller 已验证的 `ownerScopeFingerprint + installationId`，经
+   domain-separated SHA-256 派生不可逆 alias；原始 owner/UnionID/installationId 不进
+   alias metadata、文件名或日志。public API 只返回 version、certificate SHA-256、
+   storage mode、opaque local ref、created/rotated time和 stable capability/error，绝不
+   返回可复制 private-key bytes、PIN、pair token 或可跨 owner 使用的 handle。
+3. 兼容材料固定为 RSA-2048、public exponent 65537、SHA256withRSA、自签名 X.509、
+   互操作 CN `NVIDIA GameStream Client`、安全随机正 serial 和约 20 年有效期；生成
+   后必须重新解析并验证 key/cert match、算法、位数、subject、serial、时间窗、DER/
+   PEM 长度与 certificate fingerprint，任何 partial 结果都先清临时材料再失败。
+4. 平台 backend 先探测“不可导出 HUKS RSA 是否可经受控 signer/provider 完成 OpenSSL
+   mTLS”；只有真实签名和 handshake-compatible probe 通过才选择 direct-key 模式。
+   否则只允许 HUKS AES-256-GCM wrapping key 包裹 PKCS#8：随机 nonce、alias/version/
+   owner fingerprint 作 AAD、ciphertext/tag 有界且原子存入安全 backend。Asset Store
+   的短 secret 限额不能靠静默截断或多条拼接绕过；若没有可证明的 app-private
+   encrypted-blob backend，能力返回 unavailable，严禁明文文件/Preferences/RDB/云
+   fallback。
+5. OpenSSL 只能获得 move-only、exact alias+generation 的短期 identity lease。
+   wrapped 模式在 lease 内解封到不可复制 secure buffer，尽力锁页并记录 capability，
+   所有 exit/exception/cancel 路径都以明确不被优化掉的 cleanse 清零 private DER、
+   EVP/RSA 临时量和序列化 scratch；certificate public bytes 可单独有界缓存，private
+   material 不能进入 exception text、diagnostic snapshot、core dump helper 或测试输出。
+6. 每个 alias 只有一个生成/轮换 mutation owner；并发 ensure 复用同一 terminal
+   result 或返回稳定 busy，不生成两个身份。delete/rotate 先关闭新 lease admission，
+   drain 已发 lease，再删 encrypted blob/Asset metadata/HUKS alias；任一步失败保留
+   可重试 tombstone 状态，不能删除 metadata 后留下不可枚举 secret。旧 generation、
+   旧 owner、重装后的 installationId 和删除后的迟到 callback 必须零副作用。
+7. bridge 提供 owner-scoped inventory/count/delete contract，语义与既有 D3
+   `MoonlightIdentityDeletionPort` 对齐，但 N1-05 不新增 ArkTS adapter；N1-08 只能薄接
+   这一个 owner。普通 host 删除、单 host unpair 和“重建整个 owner identity”保持
+   三个不同命令；轮换前必须能列出受影响 identity/host metadata，不能自动轮换。
+8. focused tests 至少覆盖 alias 确定性/域隔离/无原始 ID、RSA/cert golden 与坏随机源、
+   owner A/B、installation change、并发 ensure/rotate/delete、lease-drain/timeout、
+   backend partial write/rollback、HUKS direct probe false、wrapped tamper/AAD mismatch、
+   oversize Asset、wrong owner/ref、枚举孤立项、幂等删除、全部零化路径与日志 canary；
+   platform API 用真实 API 23 双 ABI compile-link probe，不能用 fake 结果宣称可用。
+9. N1-05 后 production pairing/NAPI/UI 和全部 capability truth 仍为 false。HAP/
+   AppSpawn 内 HUKS→OpenSSL runtime receipt 缺失时，允许 secure identity core 形成静态
+   checkpoint，但 N1-06 只能做 injected/dormant pairing state machine，真实配对和
+   Host Control 继续阻断，绝不以软件明文 key 解锁。
+10. 定向与全量 native/ASan、双 ABI严格产品构建、symbol/NAPI/HAP 隔离、双 Hvigor、
+    vendor receipt/platform probe、TOTP/Light/diff/state 全通过后单独 checkpoint；任何
+    secret 落盘/日志 canary、owner 穿透、未清零路径或旧协议回归都必须停止 N1-05。
+
+#### 15.7.5 N1-05 已完成事实与 N1-06 唯一执行合同（2026-08-10）
+
+N1-05 已由代码 checkpoint `599882ada` 完成。新增实现只有 hidden pure-native
+`MoonlightSecureIdentity` core、窄 API 23 platform backend/probe、focused test 与私有
+静态归档接线；没有 NAPI/ArkTS/UI、production pairing、云 identity、媒体、输入或
+feature truth。alias 固定为 owner fingerprint + installation ID 的 domain-separated
+SHA-256，长度精确满足 HUKS 64-byte 上限且不泄漏原值。RSA-2048/65537、
+SHA256withRSA、自签 X.509 v3、单一 `NVIDIA GameStream Client` CN、正随机 serial、
+约 20 年有效期、PEM LF/PKCS#8 与锁定 Android revision 一致，并在生成/加载后完成
+canonical parse、self-signature、key pair、subject/time/fingerprint 验证。
+
+private material 只存在于 move-only secure buffer/lease，尽力锁页、显式记录结果，
+退出时 `OPENSSL_cleanse` 后解锁；lease 只提供 SHA256withRSA 签名与 TLS context 配置。
+每个 alias 的 ensure/rotate/delete 由 exact `requestId + generation + ownerToken` 串行，
+delete/rotate 先关 admission 再 drain；cancel-before-commit、commit-wins、unknown
+outcome repair、cross-owner、orphan inventory 和 rollback 都有确定合同。产品平台边界
+只证明 API 23 HUKS RSA/AES-GCM 与 Asset metadata symbol 可编译链接，不能证明
+AppSpawn 权限、TLS provider、硬件语义或原子 encrypted-blob storage，因此 backend
+保持 `RuntimeProofRequired`/unavailable，绝无 plaintext fallback。
+
+14 个 focused case 加入后，沙箱外 native 与 ASan/UBSan 均为 **384/384 PASS**；
+strict warning/analyzer、API 23 双 ABI probe、两项 Hvigor、signed HAP、vendor/TOTP/
+Light/diff 均通过。两 ABI的 product dynamic defined/undefined/NAPI inventories 与
+N1-04 基线逐字一致，签名 HAP 仍是 423 项，每 ABI仍只有 48 个 `rdpnapi`、1 个
+private Host API 和 2 个 private identity compile command。HDC 当前为
+`Connect server failed`，没有 HAP runtime HUKS、真实 Sunshine、Hypium 或用户实机
+receipt。
+
+N1-06 只实现依赖注入且在 signed HAP 中不可达的 native pairing state machine。
+wire 事实锁定 Moonlight Android
+`f10085f552b367cf7203007693d91c322a0a2936` 的 `PairingManager` 与 N1-04 已冻结的
+request builder；不得复制第二套 HTTP/XML/TLS、client certificate、private-key store
+或当前-operation singleton。按以下原子步骤逐一执行：
+
+1. 以 `599882ada` 保存 384 项 native、ASan/UBSan、两 ABI
+   16103/698/716 与 15634/696/711 symbol inventories、每 ABI 48+1+2 compile
+   command 和 423 项 HAP inventory。允许范围优先限定为主 CMake、新建
+   `moonlight/pairing/MoonlightPairingManager.h/.cpp`、一个 focused native test 与
+   必要 probe/state 文档；若必须改变 N1-04/N1-05 合同，先补失败测试和计划，不在
+   pairing 内旁路。
+2. public header 只使用 project-owned C++17 value type/PIMPL。每次 pair 固定非零
+   `requestId + generation + ownerToken`、owner fingerprint、installation ID、冻结的
+   host identity/address candidate 和一次 monotonic absolute deadline；PIN 只能经
+   move-only/cleansed secret 输入，不能存入普通 result、exception、event、日志或
+   callable capture。迟到 response、trust decision、commit callback 或 cancel 只能
+   命中 exact operation key。
+3. 状态机固定为 `idle → preflight → waitingForServerCertificate → awaitingTrust →
+   clientChallenge → serverChallenge → secretVerification → clientSecret →
+   finalChallenge → committing → paired`，并有 `cancelling/failed/cancelled` 终态。
+   非法、重复或跨 owner transition fail closed；一个 owner+host 只允许一个 mutation
+   owner，并发请求返回 stable busy，不排队、不替换。
+4. preflight 必须先证明 injected Host API transport、N1-05 exact identity lease、
+   entropy source、trust-decision port 和 atomic local commit/rollback port 全部可用，
+   再发任何会改变主机状态的请求。产品 backend 为 unavailable 或 commit port 未注册
+   时必须在首包前返回 unavailable；不得远端已 pair 后才发现本地无法保存。
+5. PIN 固定四个 ASCII 十进制数字，salt 与 client/server secret/challenge 都由受控
+   CSPRNG 各生成 16 bytes。server major version `>=7` 使用 SHA-256；`<7` 的 SHA-1
+   只作为明确 legacy compatibility 分支并默认被当前 Sunshine 最低安全版本 policy
+   阻断，禁止协商失败后自动 downgrade。pairing wire 的历史 AES-128 block transform
+   必须明确标为 protocol-compatible ECB/zero-block-padding，不能与 N1-05 at-rest
+   AES-256-GCM 混用或抽成同一个“通用加密 helper”。
+6. 第一阶段严格经 N1-04 构造
+   `phrase=getservercert&salt=<HEX>&clientcert=<HEX-PEM>` 的未认证 HTTP pair 请求，
+   最长只可使用 N1-04 明示的 120s user-PIN budget。只接受唯一 `paired=1` 与有界
+   `plaincert` hex X.509；空证书映射 `alreadyInProgress`。证书必须 canonical parse、
+   算法/位数/时间/长度有界并计算 SHA-256 candidate，不能在用户 trust 前写 durable
+   trust 或把 HTTP candidate 当 authenticated host。
+7. `awaitingTrust` 只发布有界的 host label、certificate SHA-256、subject/issuer、
+   validity 与变更分类，不发布 DER/PEM 到 UI event；测试注入 accept/reject/timeout，
+   production N1-06 没有 UI port。accept 只把 candidate 冻结为本次最终 HTTPS
+   challenge 的 TLS pin，reject/timeout 进入 cleanup；任何 host/address/generation
+   变化使 decision stale。
+8. 严格保持官方线序：`clientchallenge`、`serverchallengeresp` 和
+   `clientpairingsecret` 三个 `/pair` mutation 仍走 HTTP；主机尚未完成配对前不能把
+   它们臆改为 HTTPS，其协议认证来自 PIN-derived AES、server cert signature 与
+   client identity signature。AES key 为所选 hash `Hash(salt || UTF8(PIN))` 的前
+   16 bytes。发送 16-byte encrypted client challenge；解密 `challengeresponse` 后
+   严格取 `hashLength` bytes server response 与 16-byte server challenge，拒绝奇数
+   hex、非 hex、短包、超限、非法 trailing shape。`Hash(serverChallenge ||
+   clientCert.signature || clientSecret)` 加密后发送 `serverchallengeresp`。
+9. `pairingsecret` 必须是 16-byte server secret 加 server signature；使用 candidate
+   certificate 公钥和 SHA256withRSA/ECDSA（按证书 key type）验证签名。随后常量时间
+   比较 `Hash(clientChallenge || serverCert.signature || serverSecret)` 与 server
+   response；不相等映射 `pinWrong`，签名不对映射 `serverAuthenticationFailed`，两者
+   都不得提交 trust。所有 parse/verify 在 bounded scratch 中完成并及时清零。
+10. client secret 只经 N1-05 lease 的 `signSha256()` 签名，发送
+    `clientpairingsecret=<HEX(secret||signature)>`；不得导出 private key。`paired=1`
+    后还必须以 frozen candidate pin 和同一 identity lease 执行官方 HTTPS final
+    `phrase=pairchallenge`。每次 mutation 都继承 N1-04 的
+    not-sent/maybe-sent/confirmed 事实；maybe-sent 不自动换地址重放。HTTP/XML 200、
+    主机 `paired=1` 或请求已发送都不能单独成为本地成功。
+11. final challenge 后通过 injected atomic commit port 一次提交 exact owner+host 的
+    trust candidate、identity metadata/version 与 paired marker；commit 前再次检查
+    account/session generation。commit known-failure 必须清本地 staged state并发起一次
+    best-effort unpair；commit outcome unknown 返回 repair-required 并冻结该 host 新
+    pair admission，不能伪装 paired 或盲目重试。
+12. cancel/timeout/reject/验证失败在第一条 pair mutation 可能发送后都只发一次
+    best-effort unpair，并分别报告 local cleanup 与 remote cleanup 的 confirmed/
+    unknown/failed；cleanup 失败不阻塞 secret zeroization。析构关闭 admission、取消
+    exact operation、等待所有 transport/trust/commit callback drain，不 detach；drain
+    超时保持 owner blocked。PIN、salt、AES key、challenge、client/server secret、
+    hash、signature assembly 和解密块在所有 success/error/cancel/exception 路径清零。
+13. diagnostics/event 只允许 stage、stable code、attempt、HTTP/XML status、duration、
+    masked host、certificate fingerprint 和 cleanup truth；禁止 PIN、salt、AES key、
+    secret、challenge、signature、完整 query/response、certificate bytes、owner/install
+    原值。error strings、fake transport capture 和 test output 必须跑 secret canary。
+14. focused tests 至少覆盖官方 SHA-256 golden transcript、明确关闭的 SHA-1 legacy、
+    wrong PIN、server signature MITM、空/坏/超长 cert、trust accept/reject/timeout、
+    candidate/address change、每阶段 HTTP/XML/hex/length failure、cancel/deadline/stale、
+    concurrent pair、maybe-sent no replay、best-effort unpair confirmed/unknown、commit
+    rollback/outcome unknown、entropy failure、identity lease unavailable、所有 secret
+    cleanse 和日志 canary；用 barrier/condition 和 fake monotonic clock，不用 sleep 猜
+    竞态，不把 fake seam 写成 production capability。
+15. N1-06 结束后仍不新增 NAPI/ArkTS/UI、真实 trust repository wiring、云、catalog、
+    launch、媒体、输入或 capability true。全量 native/ASan、双 ABI strict product/
+    probe、symbol/NAPI/HAP 隔离、两项 Hvigor、vendor/TOTP/Light/diff/state 全通过后
+    单独 checkpoint；HAP runtime identity 与真实 Sunshine receipt 缺失时状态只能是
+    dormant contract pass，不能宣称“可配对”。
+
+#### 15.7.6 N1-06 已完成事实与 N1-07 唯一执行合同（2026-08-10）
+
+N1-06 已由代码 checkpoint `6f7094038` 完成。新增的
+`MoonlightPairingManager` 是 hidden、依赖注入、signed-HAP 不可达的 pure-native
+状态机；它逐包复用 N1-04 `MoonlightHostApi`，逐次签名/TLS 配置复用 N1-05 exact
+identity lease，没有第二套 HTTP/XML、证书生成器、private-key store、NAPI、ArkTS、
+UI、云或 capability truth。Host API 仅增加 pure validation 与 pairing wire scratch
+清零合同。
+
+实现固定官方线序：`getservercert`、`clientchallenge`、`serverchallengeresp`、
+`clientpairingsecret` 四步 HTTP，最后才以 frozen certificate pin 和同一 client
+identity 执行 HTTPS `pairchallenge`。Sunshine generation 7+ 使用 SHA-256；SHA-1
+必须 caller 显式许可且默认阻断；PIN、salt、AES-128 ECB/zero-padding key、challenge、
+client/server secret、hash 与 signature assembly 全部由 move-only secure buffer 管理并
+在各终态清零。证书候选做 canonical DER、自签、时间、RSA>=2048/EC>=256、fingerprint
+和签名验证，trust event 只有有界 label/subject/validity/fingerprint 与 masked host。
+
+每个 `owner+host` 只有一个 mutation lane；operation key 固定为非零
+`requestId+generation+ownerToken`。所有 packet 共用一次 absolute deadline，剩余预算
+不足 Host API 100ms 下限时不发包；Host、identity、trust、TLS bind、commit 都有 exact
+cancel/drain。maybe-sent 永不重放；失败后最多一次独立 2s best-effort unpair。atomic
+commit known-failure 回滚并 unpair，commit/rollback unknown 持久化 repair fence 并冻结
+该 lane，late cancel 不覆盖已确认 commit。
+
+15 组 pairing 用例与 16 组 Host API、14 组 identity、13 组 owner 用例共同覆盖官方
+SHA-256 transcript、显式 SHA-1、wrong PIN/MITM、空/坏/超长 cert、跨阶段字段、后半段
+HTTP/XML/hex/paired failure、trust reject/timeout/stale、deadline 不延长、maybe-sent、
+cleanup unknown、rollback/repair、并发/cancel 与 trust/TLS/commit/destructor drain。
+沙箱外 native 与 ASan/UBSan 均为 **400/400 PASS**；strict `-Werror` 和三份
+`clang --analyze` 为零诊断。最终两项 Hvigor、双 ABI API 23 probe、vendor/TOTP/Light
+均通过；`rdpnapi` inventories 仍为 arm64 16103/698/716、x86_64 15634/696/711，
+HAP 仍为 423 路径，每 ABI保持 48 个 `rdpnapi`、1 个 Host API、2 个 identity 和
+1 个 pairing compile command，pairing command 零 upstream include leak。HDC 仍为
+`Connect server failed`，所以没有 HAP runtime identity、真实 Sunshine 或真机配对
+声明。
+
+N1-07 只能建立同样 injected/dormant 的 app catalog 与 host-command orchestrator，按
+以下原子步骤执行；runtime identity blocker 未解除前仍不得进入 NAPI/UI：
+
+1. 以 `6f7094038` 保存 400 项 native/ASan、双 ABI symbol/NAPI/HAP inventory、
+   compile-command 计数和上述门禁为新基线。允许范围优先为主 CMake、新建
+   `moonlight/control/MoonlightHostControl.h/.cpp`、一个 focused native test 和状态文档。
+2. public header 仍只含 project-owned C++17 value/PIMPL；不得 include common-c、NAPI、
+   ArkUI、RDB 或云 SDK。所有 HTTP/XML、scheme、地址 fallback、parser 和 diagnostic
+   必须只调用 N1-04，不复制 request builder/parser/transport。
+3. 每次 catalog/asset/launch/resume/quit 固定非零
+   `requestId+generation+ownerToken`、owner fingerprint、host ID、server UUID、冻结的
+   endpoint/pin 和一次 absolute deadline；迟到结果只能 stale/cancelled，析构
+   cancel/drain，不 detach。
+4. preflight 在首包前验证 Host API、authenticated endpoint pin、client identity/TLS
+   transport、caller generation 和所需 command input；product transport/identity 尚
+   unavailable 时返回 unavailable，不能通过 HTTP candidate 伪造 paired/catalog truth。
+5. catalog 只发 authenticated HTTPS `applist`。结果事务式返回唯一正整数 app ID、
+   有界 title、optional HDR、bounded partial count、observedAt 与 generation；一个坏/重
+   复 ID 使整批失败。N1-07 不写 `MoonlightAppCacheService`，缓存提交留给 N1-08 ArkTS
+   service 的 owner/store lease。
+6. app asset 只经 N1-04 `appasset` 获取有界 bytes；N1-07 不猜 MIME、不解码图片、不
+   落盘、不把坏封面升级为 catalog failure。asset request 与 catalog generation 不匹配
+   时丢弃。
+7. 所有 mutation 前先读 authenticated HTTPS `serverinfo`，要求 paired=true、server
+   UUID/host generation 未变化，并冻结 `currentgame`；candidate-only HTTP 结果永远不
+   能进入 mutation。
+8. `launch` 只允许 `currentgame=0`；若同 app 已运行，返回 stable
+   `resumeRequired`，若其他 app 运行，返回 `hostBusy`，绝不自动 quit。`resume` 只允许
+   currentgame 精确等于目标 app；app ID 失效或状态变化 fail closed。
+9. launch/resume 的 `rikey`、`rikeyid` 和流参数只从 caller 提供的 move-only
+   `MoonlightLaunchMaterial` 短期消费；本步不生成、不持久化、不日志输出，也不与
+   identity secret 混用。query scratch 与 transient RTSP URL 在 transfer/终态后清零。
+10. launch/resume 的 2xx 或 request sent 都不是 success；必须先有 N1-04 action
+    accepted 和有界 RTSP output，再做 authenticated serverinfo postcondition，只有
+    `currentgame==target` 才返回 confirmed。postcheck 超时/坏 XML/状态冲突返回
+    outcomeUnknown，不自动重发 mutation。
+11. `quit` 必须是用户显式命令，并直接复用 N1-04 已实现的 cancel+authenticated
+    `serverinfo/currentgame=0` verification；“仅断开”不调用 Host API quit。主机已 idle
+    可返回 idempotent no-op，其他客户端启动的 app 在真实互操作证据前保持 policy
+    阻断或二次确认，不靠 fixed uniqueid 猜成功。
+12. 同一 owner+host 的 mutation lane 串行；catalog/asset 不得越过正在执行的
+    launch/resume/quit 写回旧 generation。不同 host 的 read-only operation 可并行，
+    但 mutation 不得建立第二个 process-wide active-session owner。
+13. 结果固定区分 `confirmed/failed/outcomeUnknown/cancelled/stale/busy/unavailable`，并
+    分开记录 preflight/action/postcondition truth；diagnostic 只含 stage、stable code、
+    attempt、HTTP/XML status、masked host、app ID hash 和 byte count，不含 title、地址、
+    UUID、rikey、RTSP URL 或 body。
+14. focused tests 至少覆盖 complete/partial/empty/duplicate catalog、asset bounds、
+    unpaired/pin conflict、launch idle、same-app resume、other-app busy、invalid app、
+    launch/resume postcondition、explicit quit/idempotent idle/quit unknown、not-sent retry、
+    maybe-sent no replay、deadline/cancel/stale、并发 lane、destructor drain、secret/log
+    canary；用 barrier/fake clock，不用 sleep 猜竞态。
+15. N1-07 结束仍无 NAPI/ArkTS/UI/cache/cloud/media/input/runtime feature truth。native/
+    ASan、strict/analyzer、双 ABI build/probe/symbol/NAPI/HAP isolation、两项 Hvigor、
+    vendor/TOTP/Light/diff/state 全通过并单独 checkpoint 后，才允许 N1-08 typed bridge。
+
+#### 15.7.7 N1-07 已完成事实与 N1-08 唯一执行合同（2026-08-10）
+
+N1-07 已由代码 checkpoint `019ed98b4` 完成。新增 hidden、依赖注入且此前无产品
+caller 的 `MoonlightHostControl`，只消费 N1-04 `MoonlightHostApi`：authenticated
+HTTPS catalog/asset、launch/resume 和用户显式 quit 没有复制 HTTP、XML、TLS、parser
+或 secret store。catalog 以 owner+host+server UUID+generation 事务提交唯一正 app ID；
+asset 只接受同 catalog generation 的已知 app，且不猜 MIME、不解码、不落盘。
+
+launch 只允许 authenticated `currentgame=0`，同 app 返回 `ResumeRequired`、其他 app
+返回 `HostBusy`；resume 只允许 exact app。move-only launch material 和 transient RTSP
+scratch 在终态清零；2xx/request-sent 不算成功，必须同时满足 accepted、有效 RTSP 与
+authenticated postcondition `currentgame==target`。maybe-sent 或 postcheck 不确定只返回
+`OutcomeUnknown`，永不重放。quit 只接受显式确认，复用 N1-04 cancel+idle verification；
+主机已 idle 才是 idempotent no-op。“仅断开”仍没有调用 quit 的路径。
+
+同 owner+host 的 read/write lane 有 generation watermark，catalog/asset 不越过 mutation；
+不同主机 read 可并行，但全进程同一时刻只有一个 launch/resume/quit mutation。exact
+cancel、absolute deadline、析构 drain、preflight/action/postcondition truth 和只含稳定
+枚举/状态/计数/app hash 的脱敏 diagnostic 均已固定。26 组新用例使 sandbox 外 native
+与 ASan/UBSan 都达到 **426/426 PASS**；strict `-Werror`、Host Control 与测试 analyzer
+零诊断。最终两项 Hvigor、双 ABI API 23 probe、vendor/TOTP/Light 均通过；产品动态
+inventories 仍为 arm64 16103/698/716、x86_64 15634/696/711，HAP 仍为 423 路径。
+每 ABI 有 86 条 compile command：48 条 `rdpnapi`、1 条 Host API、2 条 identity、
+1 条 pairing、1 条 Host Control；Host Control 零 upstream include，符号只在 private
+archive。HDC 仍为 `Connect server failed`，故没有真实 Sunshine、HAP runtime 或真机
+Host Control 声明。
+
+N1-08 只能把已冻结的 N1-03/N1-06/N1-07 合同做成 typed、可取消、代际安全的薄桥；
+它不是解封产品 transport/identity、入口或串流的任务。后续模型必须依次完成以下原子
+步骤，不得把“导出 NAPI”写成“Moonlight 已可用”：
+
+1. 以 `019ed98b4` 的 426 项 native/ASan、双 ABI dynamic symbol/NAPI/HAP inventory、
+   86 条 compile command 和上述门禁作为基线。先盘点 `napi_init.cpp`、唯一发布声明
+   `entry/src/main/cpp/types/librdpnapi/index.d.ts`、账户 lease、
+   `MoonlightAppCacheService` 和既有 async-work teardown；不得直接扩张
+   `ExtensionLoaderNapi` 或通用 `ProtocolAdapter` 承载 pairing/catalog。
+2. 允许的主要落点限定为主 CMake、`napi_init.cpp`、新建
+   `moonlight/bridge/MoonlightNativeBridge.h/.cpp`、`moonlight/moonlight_napi.h/.cpp`、
+   发布 d.ts、`services/MoonlightHostService.ets`、对应 focused native/ArkTS tests 和
+   状态文档。`entry/src/main/ets/types/rdpnapi.d.ts` 只有被证明是同一声明的源码镜像时
+   才同步；不得顺手整理其他 NAPI 或旧协议。
+3. `MoonlightNativeBridge` 是 NAPI-free 的 process owner：持有唯一 production factory
+   port、N1-06 pairing manager、N1-07 Host Control 和 async request registry。生产 factory
+   在 HAP identity/transport/trust/commit 回执缺失时必须返回 stable
+   `runtime_proof_required/unavailable`，并证明零 DNS/socket/TLS/secret/cache 副作用；
+   host tests 可注入 fake factory，但 fake capability 绝不编入 release truth。
+4. typed request 必须使用不可重绑定的非零 `requestId+generation+ownerToken`，并同时
+   携带 owner fingerprint、host ID、server UUID、冻结 endpoint/pin 与 timeout；ArkTS
+   service 再绑定完整 `AccountSessionLease(ownerScopeId/storeIdentity/generation/
+   storeInstanceId)`。native 不接受 userId、数据库对象、页面引用或通用 username/
+   password config，也不从全局 active connection 推断归属。
+5. NAPI 导出使用独立 `moonlight*` 前缀，最小闭包只含 capability snapshot、pair、
+   catalog、asset、launch、resume、quit、cancel、subscribe/unsubscribe 或等价单一事件
+   channel。所有网络/密码学操作在 async work 线程运行；completion 只在 ArkTS 线程
+   创建 JS value。不得同步阻塞 UI、不得让 native worker 直接调用页面对象、不得为
+   每个操作各建一套线程/handle registry。
+6. 入参 parser 必须 exact：拒绝缺失/未知关键字段、错误 JS type、NaN/Infinity、负数、
+   超过 JS safe-integer 的 key、越界字符串/数组/ArrayBuffer、重复 app、非法端口和
+   timeout；不能用 `napi_get_value_*` 失败后的零值继续。`rikey` 只接受 exact 16-byte
+   ArrayBuffer/TypedArray 并立即复制进 move-only native material；PIN、key、RTSP、body
+   不进入 exception message、event debug、HiLog 或 analytics。
+7. result/event 只暴露冻结的 stable string code、operation/stage/truth、generation、
+   monotonic sequence/timestamp、bounded apps/asset/RTSP success payload 和脱敏 diagnostic。
+   event 必须至少携带 `requestId+generation+ownerToken`；pair trust candidate 可携带
+   计划允许的 fingerprint/subject/validity/masked host，但 PIN 仅属于当前 pair request，
+   不进入普通 snapshot。不得把 native enum ordinal 当永久 ArkTS ABI。
+8. 每个 request 只有一个 settlement。JS Promise 被 resolve/reject、取消、页面 owner
+   dispose、NAPI env cleanup 或账户 barrier 关闭后，先关闭 callback admission，再 exact
+   cancel N1-06/N1-07，等待 async work/TSFN/lease drain，最后释放 reference；不得 detach、
+   不得 late resolve、新 env 或新 generation 不能收到旧事件。cancel 重复幂等，错误 key
+   零副作用。
+9. trust review 如果本步形成双向事件，必须由一个 exact-key pending decision registry
+   将 ArkTS 的 accept/reject/cancel 回给 N1-06 trust port；超时/页面销毁/account switch
+   只能返回 fail-closed，不得默认接受。production identity unavailable 时 pair 必须在
+   trust event 前失败，测试 seam 不得伪造 runtime receipt。
+10. `MoonlightHostService` 只接受注入的 `MoonlightNativePort`、账户 lease port 与现有
+    `MoonlightAppCacheService`。调用前和 Promise/event/缓存提交前后都复核同一 lease 与
+    request generation；stale completion 静默丢弃并计数，绝不能写新 owner/store。
+    service 不 import 页面、不持有 `UIAbilityContext`、不直接访问 RDB/CloudStore 表。
+11. catalog 只有 native `confirmed` 且 `partialAppCount==0` 才转换为现有
+    `MoonlightAppCacheEntry` 并调用一次 complete refresh；partial/failed/unknown/stale
+    都不把 missing app 标 unavailable。asset 只能更新同 owner+host+app+catalog
+    generation 的 local cache/artwork port；app cache 仍不进云、不进备份。缓存失败不
+    反写 native Host Control success，也必须以独立 stable code 返回。
+12. launch/resume 的 ArkTS 输入只能来自 D1 effective settings 与 native launch-material
+    provider；service 不生成弱随机 `rikey`、不持久化 key/RTSP。quit 与 disconnect 保持
+    两个命令；Host Service 不提供“断开时顺便 quit”选项，不自动 resume/quit。
+13. bridge capability 与六项发布 truth 分离：可以报告 `bridgeCompiled=true`，但 production
+    `identityReady/transportReady/hostControlReady/pairingReady` 在 runtime receipt 前全为
+    false；`MoonlightFeaturePolicy`、FAB、路由、资源、云注册和设置页不得因 N1-08 改为
+    true/可点击。调用不可用桥得到 stable fail-closed result，而不是 crash 或假 success。
+14. native focused tests 至少覆盖 exact DTO/bounds、安全整数、ArrayBuffer cleanse、单次
+    settlement、async cancel-before-start/during-work/after-result、env cleanup、页面 dispose、
+    stale generation、跨 owner、event sequence、trust response、destructor drain、factory
+    unavailable 零网络和日志 canary；使用 barrier/fake clock，不用 sleep 猜竞态。
+15. ArkTS focused tests 至少覆盖 native port 注入、账户 A 请求→切 B→A 成功/失败/事件
+    迟到、storeInstance 重开、complete/partial catalog cache、asset generation、cache
+    rollback/error、launch/resume/quit stable mapping、dispose/cancel 幂等、feature truth false。
+    若当前 Hypium task 仍未注册，只能声明 compile-registered，不能虚报设备执行。
+16. 更新唯一发布 d.ts 后执行类型消费者搜索，保证没有 duplicated drifting declaration；
+    HAP/`librdpnapi.so` 允许且只允许计划内新增的 `moonlight*` NAPI surface，必须生成新的
+    双 ABI symbol/NAPI baseline，并证明旧 export/undefined inventories 的差异仅来自精确
+    allowlist，423 项 HAP path inventory 不因 bridge 偷带资源/上游文件。
+17. N1-08 完成时运行 native/ASan、strict/analyzer、ArkTS compile registration、双 ABI
+    probe/build/symbol/include/HAP audit、两项 Hvigor、vendor/TOTP/Light/diff/state。独立
+    checkpoint 后才能进入 N2-01 stream config；真实 pairing/catalog/launch 和 runtime
+    feature truth 仍等待 HAP identity/transport 与 Sunshine 回执，不能由 N1-08 宣称通过。
+
+#### 15.7.8 N1-08 已完成事实与 N2-01 唯一执行合同（2026-08-10）
+
+N1-08 已由代码 checkpoint `aecd2ea4e` 完成；同轮 sanitizer 暴露的既有 deferred-owner
+成员初始化竞态以独立 checkpoint `aa3b947` 修复。新增边界严格限定为 NAPI-free
+`MoonlightNativeBridge`、独立 `moonlight*` NAPI、唯一发布 d.ts、ArkTS
+`MoonlightHostService` 和 focused tests；没有修改 `ProtocolAdapter`、`HostListPage`、
+`MoonlightFeaturePolicy`、`CloudSyncPolicy`、媒体、输入、资源、路由或三张 Moonlight
+数据表。灰色 FAB 与“即将支持”保持不变，在线云注册仍精确为既有 8 表。
+
+native bridge 固定 exact 非零 `requestId+generation+ownerToken`、owner/host generation
+watermark、同 lane duplicate retirement、bounded 256 event queue、exact cancel/cancelOwner、
+shutdown cancel/drain 和 PIN/RI key/RTSP 清零。product runtime port 的
+identity/transport/trust/commit/pairing/host-control capability 全为 false，所有操作于
+DNS/socket/TLS 前返回 `runtime_proof_required`；测试 fake 不进入 release truth。NAPI 只
+注册 `moonlightGetBridgeCapabilities`、`moonlightRequestAsync`、
+`moonlightCancelRequest`、`moonlightCancelOwner`、`moonlightPollEvents` 五个属性，严格
+拒绝未知字段、错误类型、非 safe integer 和越界 binary；worker 不创建 JS value，env
+cleanup 先关 admission、取消 async work、再 shutdown/drain。ArkTS service 在调用前、
+completion/event/cache 前后复核完整 `AccountSessionLease` 和 store instance；只有
+confirmed、complete、零 partial、唯一正 app ID 的目录才提交既有 local app cache，
+cache 错误不改写 native truth，launch material 在 NAPI 复制后立即释放并清零。
+
+14 个新增 native case 使全量普通测试达到 **440/440 PASS**；ASan/UBSan 修复成员初始化
+顺序后连续三轮均为 **440/440 PASS**。13 个 ArkTS case 使 Moonlight 聚合器达到 20 个
+describe、151 个 compile-registered test。bridge/NAPI/test/deferred-owner 四份 analyzer
+均零诊断，产品双 ABI strict `-Werror` 通过。arm64 动态 inventory 为
+16103 defined / 705 undefined / 716 `napi|init|register`，x86_64 为
+15634 / 703 / 711；defined 和 NAPI-filtered 集合与 N1-07 逐项相同，undefined 无删除且
+只增加 7 个计划内系统 NAPI import。每 ABI 88 条 compile command 中 48 条仍属于
+`rdpnapi`，bridge/NAPI 两条位于 `--exclude-libs` private archive，upstream include leak
+为 0；signed HAP 仍为同一 423 路径。最终两项 Hvigor、双 ABI API 23 probe、vendor 三
+tree/117 文件、TOTP 251 项和 Light 全通过。HDC 仍为 `Connect server failed`，所以没有
+新增 Hypium、HAP runtime HUKS/TLS、真实 Sunshine、真实配对/目录/launch 或 ARM64
+实体机声明。
+
+N2-01 只定义“从当前 D1 设置快照到 common-c 可消费 offer 之间”的纯配置合同，不启动
+RTSP，不创建 decoder/audio/input，不扩张 NAPI，也不让入口可用。后续模型必须按以下
+原子顺序实现，不得把 `offer_ready` 写成“已协商”或“已连接”：
+
+1. 以 `aecd2ea4e` 和 `aa3b947` 为基线，保存 440 项 native/ASan、151 项 ArkTS
+   compile registration、双 ABI symbol/NAPI/include 和 423 路径 HAP inventory。允许的
+   代码落点只为主 CMake、新建 `moonlight/media/MoonlightStreamConfig.h/.cpp`、新建
+   `test/moonlight_stream_config_test.cpp` 及聚合登记；只有发现现有 D1 合同自相矛盾时
+   才先停下更新计划，不顺手改 NAPI、Host Service、renderer/audio 或 UI。
+2. 新 header 只暴露项目自有 C++17 value types/PIMPL，不 include `Limelight.h`、ArkTS、
+   NAPI、OH_AVCodec、OHAudio、页面或数据库。实现进入 hidden/private archive，产品双
+   ABI必须实际编译但不产生新动态 export/import；common-c 的
+   `STREAM_CONFIGURATION` 数字常量和回调注册只允许在 N2-02 的单一 adapter 中映射。
+3. 输入分三份且都不可变：`MoonlightRequestedStreamConfig` 保存 D1 requested 与既有
+   adjustment；`MoonlightStreamCapabilitySnapshot` 保存经来源/版本/expiry 验证的 host、
+   platform、network/display 能力；`MoonlightStreamConfigIdentity` 保存 owner token、
+   session generation、host ID、server UUID、settings revision、host capability generation
+   和 platform-probe generation。不得接受 userId、页面对象、地址明文、PIN、RI key、
+   RTSP URL、decoder handle 或全局 active adapter。
+4. D1 是唯一持久设置真源：N2-01 不重做 global→host→profile→session 合并，不修改
+   `MoonlightSettingsPolicy` 的 durable schema，也不把 native adjustment 回写云表。
+   native 只做“启动瞬间能力可能已漂移”的第二次 intersection，并把新增 adjustment 以
+   stable code 追加；UI 后续同时显示用户 requested、D1 effective 和本次 runtime
+   effective，不能只显示最终数字掩盖降级。
+5. 当前 `MoonlightSettings` schemaVersion=1 的码率是 1000～200000 的显式
+   `bitrateKbps`，不存在 auto sentinel。N2-01 禁止把 0、负数或缺字段解释成自动；未来
+   UI 若提供“自动码率”，必须先做独立领域/schema migration。纯 resolver 使用 checked
+   arithmetic，保证传给 common-c 的 kbps、FEC 计算和诊断不会溢出 32-bit signed int。
+6. 分辨率预设固定映射为 720p=1280×720、1080p=1920×1080、1440p=2560×1440、
+   2160p=3840×2160；custom 使用现有 bounded width/height。`host` 表示可信 host
+   recommended mode，必须由 capability snapshot 给出；不存在、过期或 generation 不符
+   时返回 `host_mode_pending`，不得猜成客户端 viewport、默认 1080p 或 custom 字段。
+   最终尺寸必须在 host/device 交集内、为正且满足 codec chroma alignment；任何向下
+   对齐或 4K→1080p fallback 都产生显式 adjustment。
+7. codec 结果分为 `offeredCodecs` 和 RTSP 后才可能出现的 `selectedCodec`。N2-01 只产出
+   offer，`selectedCodec` 必须 absent；H.264 是 MVP 必需 fallback，但只有 HAP 内 decoder
+   probe 和 host 同时 supported 才可进入 offer。HEVC/AV1/10-bit/YUV444/HDR 逐 profile
+   相交，pending 等价 unavailable。requested=auto 可按已证明优先级给出多个候选；用户
+   指定 codec 失效时沿用 D1 的 fail-safe H.264 adjustment；无 H.264 时整体
+   `mvp_codec_unavailable`，绝不把空 mask 送入 common-c。
+8. 高级组合单独裁决：仅 H.264 时不得接受宽或高超过 4096；HDR 必须同时具备 host
+   HDR、显示链、10-bit HEVC/AV1 profile、Surface/PIP 色彩证据；YUV444 必须匹配具体
+   8/10-bit profile 和 renderer 证据。关闭 HDR/YUV444 时保留 requested 和 reason，不能
+   静默切色域；N2-01 的安全 SDR 输出只能是已证明的 Rec.709/limited 或明确 absent，
+   不能复制 Android 平台常量猜 HarmonyOS 色彩能力。
+9. `launchRefreshRate`、stream fps 与 `clientRefreshRateX100` 是三个字段：前两者来自
+   D1 effective fps 和 host/device 上限，display refresh 只来自当前窗口/显示探针；缺失
+   时 `clientRefreshRateX100=0`，不得伪造 60Hz。latencyMode 只作为后续 queue/frame
+   pacing policy 输入，N2-01 不改现有 renderer 队列，也不声称 fps 已实际送达。
+10. `bitrateKbps` 必须同时受 D1 范围、host encoder、device decode/thermal tier 和
+    network budget 上限约束；任一必要上限 pending 时配置只能 `capability_pending`，不能
+    用固定经验值冒充实测。高质量音频约 15Mbps 阈值和 common-c 20% FEC 语义仅用于
+    checked projection/test，不二次增加 20%，诊断同时保留 configured 与预计 encoder
+    budget，避免把两者混为一谈。
+11. packet/remote mode 不是用户持久设置。未证明的路径和公网/计费路径有效 packet size
+    固定 1024；大于 1024 只在本地路径、地址族、VPN/NAT64 和 MTU receipt 明确后允许，
+    并保持 16-byte/encryption overhead 约束。`remote=auto` 只能在 N2-02 由单一网络
+    detector 解析；N2-01 记录 unresolved，不复制 Android 1392 或自己再建 RFC1918
+    heuristic。计费网络未确认直接返回 `metered_confirmation_required`。
+12. audio 只允许 disabled 或已证明的 Opus stereo MVP；5.1/7.1 必须 host、common-c
+    multistream、Harmony 输出 route 和 OHAudio channel layout 同时通过。输出同时包含
+    project-owned layout 与 launch 所需 surround semantics，但 N2-02 才映射官方
+    `AUDIO_CONFIGURATION_*`；`playOnHost` 保持用户意图。audio disabled 的 common-c
+    discard/no-audio callback 路线未证明前标记 pending，不以 stereo 占位宣称已静音。
+13. encryption 输出是 policy requirement，不是已协商事实：remote input 永远要求 exact
+    ephemeral key/IV；`required` 必须等待 host/common-c 对目标 data streams 的证明并在
+    缺一项时阻断，`compatible` 也不得关闭 remote-input protection，`auto` 保留候选。
+    N2-01 类型禁止携带 key/IV；N2-02 在 owner lease 内最后注入并在 start/失败/stop 清零。
+14. resolver 一次性产出同源的 `effectiveStreamOffer` 与 `launchProjection`，width/height/
+    launch fps/HDR/audio layout/playOnHost 必须逐字段一致；不得由 Host Service 和
+    common-c adapter 分别再算一遍。controller bitmap、persist gamepad 和 input key material
+    在 N3 前固定安全零/false，不能由 stream config 猜测实体手柄。
+15. result 状态至少区分 `invalid_request`、`capability_pending`、`confirmation_required`、
+    `offer_ready`、`rejected`；adjustment 使用 bounded stable field/code/requested/effective，
+    不含本地化文案和敏感值。只有 N2-02 收到合法 RTSP/renderer selection 后才能生成
+    `negotiated`，只有 decoder 首帧后 D1 session state 才能进入 streaming。
+16. resolver 必须 deterministic、无时钟/网络/线程/global state；capability expiry 由调用方
+    传入单调时刻后判定。相同 identity+input 得到 byte-equivalent result；任一 owner、
+    session、host/server UUID、settings/capability generation 变化都要求重新 resolve，旧
+    offer 不得用于 launch 或连接。
+17. focused tests 必须覆盖全部预设/custom/host-pending、奇数尺寸、边界/溢出、H.264
+    MVP、forced/auto codec、4K fallback、HDR/10-bit/YUV444 组合、fps/display 三字段、
+    bitrate/FEC 上限、local/remote/IPv6/NAT64 packet、计费确认、audio disabled/stereo/
+    surround、encryption 三模式、stale generations、launch/stream projection 一致、
+    adjustment 稳定性和 deterministic property/fuzz corpus；不以 sleep 或真实网络测试纯函数。
+18. 完成时重跑普通 native 与 ASan/UBSan、strict/analyzer、双 ABI compile/symbol/include/
+    HAP isolation、两项 Hvigor、platform probe、vendor/TOTP/Light/diff/state。defined/NAPI
+    集合、7 个 N1-08 NAPI import allowlist和 423 路径 HAP 必须保持不变；新增配置源码只
+    能作为 private command 出现。独立 checkpoint 后 N2-02 才能建立唯一 common-c
+    adapter/RTSP callback owner，且产品 capability truth 仍不得因纯配置合同变为 true。
+
+#### 15.7.9 N2-01 已完成事实与 N2-02 唯一执行合同（2026-08-10）
+
+N2-01 已由代码 checkpoint `db5865c53` 完成。新增
+`MoonlightStreamConfig.h/.cpp` 只暴露 project-owned C++17 值类型，在 private/hidden
+archive 中被 arm64-v8a 与 x86_64 产品命令实际编译；没有 include `Limelight.h`、NAPI、
+ArkTS、OH_AVCodec、OHAudio、页面、RDB 或云 SDK，也没有运行时 caller。resolver 对
+requested、D1 effective、既有 adjustment、owner/session/host/settings generation 以及
+host/platform/network/display 四类带 source/version/expiry 的 capability snapshot 做一次
+确定性交集，同时生成同源 launch projection。结果严格区分 invalid、pending、confirmation、
+offer-ready 与 rejected；`selectedCodec` 在所有 N2-01 路径都 absent。
+
+36 个 focused native case 覆盖固定预设、host/custom、奇数与越界尺寸、H.264 MVP、
+forced/auto codec、HDR/10-bit/YUV444、fps/display/launch 三字段、bitrate/FEC、local/remote/
+IPv6/NAT64 packet、计费确认、audio disabled/stereo/surround、三种 encryption、stale
+generation、adjustment、同源 projection 和 deterministic/malformed corpus，使全量测试达到
+**476/476 PASS**，ASan/UBSan 连续三轮也为 **476/476 PASS**。strict `-Werror` 与 analyzer
+零诊断；每 ABI 由 88 条增至 89 条命令且只增加 1 条 stream-config command，48 条
+`rdpnapi` 命令不变。两 ABI defined/undefined/NAPI inventories 仍精确为 arm64
+16103/705/716、x86_64 15634/703/711，与 N1-08 逐项相同；signed HAP 仍为 423 路径，
+SHA-256 为 `095700a5af1823645689d913b4c995f5cca662eafa6202fec12b0eb68156a0ac`。
+两项 Hvigor、API 23 双 ABI probe、三棵官方 Git tree/117 文件、TOTP 251、Light、diff
+均通过。在线 `CloudSyncPolicy` 仍精确 8 表，`HostProtocolPicker` 中 Moonlight 仍为
+disabled 并显示“即将支持”，所有 feature truth 仍 false。当前 HDC `list targets` 无输出，
+人工中断后退出；本 checkpoint 不声明 Hypium、HAP runtime、真实 Sunshine 或实体机通过。
+
+N2-02 只把 N2-01 的 offer 映射进当前锁定
+`moonlight-common-c@e41355ea01670fd4c830b384009d31dd0339a705` 的公共 C API，
+并把其 process-global、non-thread-safe 的 start/interrupt/stop 与 callback 生命周期收束到
+既有 `MoonlightSessionOwner`。官方 `Limelight.h` 明确 `LiStartConnection()` 非线程安全，
+`LiInterruptConnection()` 后必须等原 start 返回才能开始下一连接；`Connection.c` 又持有
+全局 `StreamConfig/ListenerCallbacks/VideoCallbacks/AudioCallbacks/NegotiatedVideoFormat`。
+因此不得为 RTSP、媒体或输入再创建平行 active-session owner。后续模型必须按以下原子
+顺序执行，一次只完成这个 dormant native 边界：
+
+1. 以 `db5865c53` 保存 476 项 native/ASan、151 项 ArkTS compile registration、两 ABI
+   89/48 command、symbol/NAPI/include 与 423 路径 HAP 基线。允许修改的代码范围只为主
+   CMake、新建 `moonlight/media/MoonlightCommonCAdapter.h/.cpp`、新建
+   `test/moonlight_common_c_adapter_test.cpp` 及必要聚合登记；如确需改
+   `MoonlightSessionOwner` 或 `MoonlightHostControl`，必须先用失败测试证明现有合同无法
+   表达的 exact lifecycle/secret handoff，并在本计划中记录最小增量。当前已识别的唯一
+   owner 缺口是 deadline 线程不能安全调用 blocking `stop()`；先以失败测试证明，再只加
+   exact-key、non-blocking、与 `stop()` 共用状态转换的 `requestStop()`。禁止顺手改 NAPI、
+   ArkTS service、renderer/audio/input、UI、数据或旧协议。
+2. adapter header 只暴露 project-owned C++17 request/result/event/PIMPL，不 include
+   `Limelight.h`。仅 `.cpp` 的单一 translation unit 可见 `SERVER_INFORMATION`、
+   `STREAM_CONFIGURATION`、callback structs、`VIDEO_FORMAT_*`、`AUDIO_CONFIGURATION_*`、
+   `ENCFLG_*` 与 `Li*`；所有官方数字映射集中在这里并有 compile-time/asserted golden
+   tests，其他源码不得复制 common-c mask。
+3. request 在 admission 前只携带非零 `sessionId+generation`、独立命名的 account owner
+   token、N2-01 identity/canonical offer、host/server generation、masked endpoint 的实际
+   连接地址、appversion、optional
+   GFE version、server codec mode、RTSP session URL、absolute overall deadline 和每阶段
+   deadline。不得接受 userId、页面/JS value、数据库对象、可变全局设置、PIN、证书私钥、
+   任意 query/body 或 decoder handle；request 入 owner 后不可重绑定。
+4. 新建 move-only、不可复制的 `MoonlightRtspLaunchLease`，只在一次 launch/resume 与一次
+   start 间携带 exact 16-byte RI key、signed 32-bit `rikeyid`、RTSP URL 和对应 account
+   owner/session/host/settings generation；它只能在 driver.start 中从
+   `StartContext.key()` 一次性绑定 N1-03 生成的 `MoonlightSessionKey.ownerToken`，两个
+   owner token 不得复用字段名或相互推导。当前 N1-08 会把 RI key 作为 ArkTS 输入再立即
+   清零，不能作为最终产品密钥所有权；N2-02 仍不扩 NAPI，product wiring 前必须把随机
+   生成、launch query 与 adapter 消费收回同一 native session owner。官方 Moonlight
+   Android `NvConnection`（已锁定 `f10085f552b367cf7203007693d91c322a0a2936`）使用
+   128-bit AES key、随机 signed int key ID，并以 Java 默认 big-endian
+   `ByteBuffer.allocate(16).putInt(rikeyid)` 构造 IV；为正/负/边界 key ID 建 16-byte
+   golden vector，禁止 native-endian `memcpy`。
+5. `STREAM_CONFIGURATION` 必须先调用 `LiInitializeStreamConfiguration()`，再逐字段映射
+   N2-01 effective offer：width/height/fps/bitrate/packet、resolved local/remote（永不传
+   `STREAM_CFG_AUTO`）、audio layout、offered profile mask、display refresh、color、
+   encryption flags；最后复制 RI key/IV。所有 int 转换 checked，packet 已是 16-byte
+   对齐，H.264/10-bit/444/profile mask 与 offer 一一对应，空 codec mask 或 unknown enum
+   在 `LiStartConnection()` 前失败。
+6. `SERVER_INFORMATION` 必须先调用 `LiInitializeServerInformation()`；address、appversion、
+   GFE version、RTSP URL 的 backing storage 由 invocation 持有到 stop/drain 完成，不能
+   指向临时 `std::string::c_str()`。`serverCodecModeSupport` 只能来自同 generation 的
+   authenticated host capability，不从 offered mask 反推。RTSP URL 只允许受限 scheme/
+   长度/端口形态且永不进入日志、事件或崩溃诊断。
+7. 因 connection/video/audio callbacks 多数没有 context 参数，adapter 只能有一个
+   process-global callback routing slot；该 slot 不是第二个 session owner，只能由
+   `MoonlightSessionOwner` accepted key 安装。slot 保存 invocation weak/shared state 与
+   exact key，高水位阻止旧 generation 重入；安装、读取、退休在一把窄 mutex 下完成，
+   不持锁调用 common-c 或下游 callback。旧 slot 完全退休前绝不安装新 slot。
+8. adapter 的 `start()` 只构造一份 `MoonlightSessionOwner::Driver`：driver.start 先用
+   `StartContext.key()` 一次性绑定 invocation/launch lease 并安装 router，再唯一调用
+   `LiStartConnection()`；driver.interrupt 唯一调用 `LiInterruptConnection()`，driver.stop
+   唯一调用 `LiStopConnection()`。首个合法 `stageStarting` 回调必须立即调用
+   `StartContext.markInterruptible()`，从而关闭 cancel-before-first-stage 的 lost-cancel
+   窗口；禁止在调用 `LiStartConnection()` 前盲调 interrupt，也禁止 adapter 自建并行
+   start semaphore/active pointer。
+9. stage callback 映射使用 project-owned enum，精确覆盖官方 1～11：platform、name
+   resolution、audio init、RTSP handshake、control/video/input init 与 control/video/audio/
+   input start。状态机只接受 `starting(S) → complete(S)` 或 `starting(S) → failed(S)`，
+   stage 单调前进；duplicate、reverse、unknown、complete-without-start 都置 protocol
+   violation 并请求 interrupt。仅在 0～11 范围内才可调用 `LiGetStageName()`，用户文案
+   后续由 ArkTS stable code 本地化，不能把上游英文当永久 ABI。
+10. 每个 adapter 只有一个 joinable deadline scheduler，等待 injected monotonic clock/
+    condition variable 上当前 exact key 的 overall 或 stage deadline；它不持有 invocation
+    强引用，超时只调用 N1 owner 的 non-blocking `requestStop(key)`，由 owner 唯一 control
+    lane 决定 interrupt/stop，不直接并发调用 common-c API。正常终态清除登记；adapter
+    析构先确认无 active owner，再停止并 join scheduler，不 detach、不用 sleep 猜时序。
+    timeout、user cancel、account drain、host generation 失效使用同一状态转换。
+11. `DecoderRendererSetup(videoFormat, width, height, redrawRate, context, flags)` 是唯一
+    negotiated video profile 来源。只接受一个已 offered 的官方 exact profile bit，且尺寸/
+    refresh 与 effective offer 相容；然后产出 project-owned selected codec/profile 快照。
+    多 bit、unknown、未 offered、10-bit/444/HDR 不一致或 media port 拒绝立即失败。不得读
+    common-c internal `NegotiatedVideoFormat`，也不得在 RTSP stage complete 时提前声称
+    negotiated。
+12. `AudioRendererInit(audioConfiguration, opusConfig, ...)` 是唯一 negotiated audio 来源；
+    验证 0xCA magic、channel count/mask、sampleRate/streams/coupledStreams/samplesPerFrame/
+    mapping 边界及 N2-01 offered layout。N2-06 前 product audio port 不 ready 时 setup
+    必须失败；测试 fake 可证明 stereo/surround mapping，但不能改变产品 capability truth。
+13. N2-03/N2-06 前不实现 payload 管线。video submit、audio sample、start/stop/cleanup
+    callbacks 只转发给 injected readiness-aware media ports；product 缺 port 时在 setup/init
+    阶段 fail closed，绝不默默丢 payload 后报告连接成功。callback 入口先从 router 获取
+    exact invocation，再获取 `MoonlightSessionOwner::AdmissionLease`；stale/cancelled/closed
+    admission 只安全丢弃并计数，绝不触达新 session。
+14. connectionStarted 只表示 common-c transport stages 已建立，不能令 D1 进入
+    `streaming`；只有 N2-03/04 decoder 提交并确认首帧后才允许。connection status/HDR
+    callback 形成 bounded stable event；rumble、motion、LED、adaptive trigger 在 N3 前
+    保持 disabled/no-op 并不得声称输入支持。上游 variadic log callback 进入固定长度脱敏
+    sink，地址、RTSP、key、UUID、媒体 payload 以 canary 测试证明不会外泄。
+15. start 非零返回、stageFailed、connectionTerminated、media setup failure、deadline 与
+    cancel 都映射为单一 terminal result；保存 project code、mapped stage、raw bounded
+    error、port flags 和 sequence，不保存完整 endpoint。上游 `Connection.c` 的 termination
+    callback 可能从 detached thread 到达，adapter callback lease 与 router retirement
+    fence 必须保证 stop/析构后无 UAF、无 late terminal、无旧事件投递。
+16. stop 顺序固定为：关闭新 callback/media admission → 清除 deadline 登记 → 标记
+    cancellation → starting 时 interrupt、running 时 stop → 等 `LiStartConnection()` 返回 →
+    等 common-c stop/cleanup 与所有 callback/worker lease drain → 退休 router slot → 清零
+    secret/config/string backing → 释放 owner。scheduler 只在 adapter 析构
+    且无 active invocation 时 join；重复 stop 幂等，错误 key 只返回 stale，绝不停止新 owner。
+17. RI key、IV、signed key ID scratch、RTSP URL 与包含它们的 `STREAM_CONFIGURATION`
+    在 start failure、interrupt、normal stop、external termination、deadline、account drain、
+    exception 和析构全部显式 cleanse；move-from 对象也归零。测试提供 cleanse counter 和
+    secret/log/event canary；key/IV 不进入 canonical result、云表、备份、diagnostic 或 NAPI。
+18. result/event 至少区分 invalid、busy、runtime-proof-required、starting、stage-progress、
+    negotiated、transport-ready、cancelled、timeout、terminated、failed、stale；所有事件带
+    exact key、monotonic sequence、stage 和 generation。`negotiated` 必须同时包含经 setup
+    验证的 selected video profile及实际 audio layout；`transport-ready` 仍不是 first-frame、
+    running UI 或 release-ready。
+19. focused tests 使用 injected common-c driver/callback harness、fake clock、barrier 和
+    property corpus，至少覆盖全部字段/mask golden mapping、big-endian RI IV、string lifetime、
+    owner busy、cancel-before-first-stage/during-each-stage/after-start、stage 乱序/重复/unknown、
+    setup selected codec、audio Opus shape、media-not-ready、callback stale/late、termination
+    thread、deadline、stop idempotence、exception、destructor drain、cleanse/log canary；不连
+    真实网络、不依赖 sleep。另做锁定 common-c 的 compile-link smoke，证明 production
+    `.cpp` 实际调用官方初始化与 start/interrupt/stop，而不是测试 fake-only 实现。
+20. 完成时重跑普通 native 与连续三轮 ASan/UBSan、TSan 可用环境或等价 deterministic
+    race harness、strict/analyzer、双 ABI compile/symbol/include/HAP isolation、两项 Hvigor、
+    platform/vendor/TOTP/Light/diff/state。不得新增 NAPI export/import、HAP path、云表、路由、
+    UI 资源或 feature truth；独立 checkpoint 后唯一下一任务才是 N2-03 video decode-unit
+    bridge，N2-04 首帧前仍不得把 FAB、streaming/protocol truth 改为 true。
+
+#### 15.7.10 N2-02 已完成事实与 N2-03 唯一执行合同（2026-08-10）
+
+N2-02 已由代码 checkpoint `248e704ab` 完成。新增实现只有一个 hidden/private
+`MoonlightCommonCAdapter` archive、EXCLUDE_FROM_ALL 官方 link probe、20 个 adapter
+focused case，以及先由失败测试证明后给既有 `MoonlightSessionOwner` 增加的 exact-key、
+non-blocking `requestStop` 与 1 个 focused case；没有 NAPI、ArkTS、UI、云表、renderer、
+audio player 或 input caller。adapter public header 只含 project-owned C++17 类型，唯一
+`.cpp` 才 include 锁定 `Limelight.h`，官方 stage/mask 由 static assert 与 golden vectors
+锁定。product driver 初始化全部 common-c struct/callback，唯一调用 start/interrupt/stop；
+product media port 仍 unavailable，因此真实 start 在网络前返回 runtime-proof-required。
+
+launch lease move-only 地绑定 account/session/host/settings generation 与 owner accepted key，
+128-bit RI key、signed key ID、big-endian 16-byte IV 和 RTSP backing 在 invalid、failure、
+cancel、deadline、termination、exception、normal stop 与析构路径全部 cleanse。process-global
+router 不是第二 owner，只保留 weak invocation/exact key/owner-token high-water；回调不持
+router 锁进入 common-c 或 media，owner admission 加本地 callback fence 保证 finalization
+等待异步 media/lifecycle callback 后才退休 router 和清秘密。单 joinable scheduler 不持
+invocation，只向 owner 投递 requestStop；析构不 detach、不 sleep 猜测时序。
+
+11 个官方 stage 只接受严格 starting→complete/failed 单调序列，首个 platform stage 关闭
+cancel-before-first-stage 窗口；unknown/duplicate/reverse、stage failure、deadline、external
+termination 和 driver exception 都形成单一 bounded terminal。video setup 与 Opus audio init
+是 negotiated 的唯一真值，精确验证 offered profile、尺寸/刷新率、0xCA audio layout 与
+stereo/5.1/7.1 mapping；transport-ready 仍令 `firstFrameReady=false`，不能进入 D1
+streaming。payload 仅经 injected lease-fenced media port；N2-03/N2-06 前 product port 不可用。
+
+验证结果：普通 **497/497**，ASan/UBSan 连续三轮 **497/497**，strict `-Werror`、四份
+analyzer 和 async blocked-callback/termination/destructor deterministic race harness 通过。
+TSan 可构建，但全量运行在进入 Moonlight 前停于既有 RustDesk continuity timing assertion，
+此前无 ThreadSanitizer/race 输出，不宣称全量 TSan PASS。两 ABI 官方 adapter link probe、
+两项 Hvigor、platform probe、三 tree/117 文件、TOTP 251、Light、diff 全通过。每 ABI
+90 条 command 中 `rdpnapi` 仍 48、adapter 仅 1，零 upstream include leak；defined/
+undefined 与 147-entry NAPI ABI 子集逐项等于 N2-01 基线。signed HAP SHA-256
+`3d67e3a743207d39df8e4bb81ba7f49efd7acd8896f412000defc6670af05578`，423 路径
+零变化。在线云注册仍 8 表，FAB 灰色“即将支持”和 11 个 false feature inputs 不变。
+第二个允许的 `gpt-5.6-sol low` reviewer 只读审查 `49735f1a1..248e704ab` 后 PASS、无
+P0/P1/P2；后续阶段必须复用既有 reviewer task ID，不得创建第三个实例。
+
+N2-03 只能按以下原子顺序执行，不回开 N2-02 的 router/owner/stage/secret 边界：
+
+1. 先保存 `248e704ab` 的 497 项普通/ASan、两 ABI 90/48/1 command、symbol/NAPI/include、
+   423-path HAP、双 Hvigor 和 truth 基线。代码范围优先限定为主 CMake、新建
+   `moonlight/media/MoonlightVideoBridge.h/.cpp` 与 focused native test；公共 decoder 若无
+   失败测试证明现有 generation/ownership 合同不足不得修改。
+2. bridge 输入必须是只在 callback lease 内有效的 `DECODE_UNIT` view；立即校验非空链、
+   `fullLength`、entry 数量、每项 `length/data`、整数溢出、buffer type、frame type、
+   `frameNumber` 与 codec profile。锁定 common-c 的 `LENTRY` 没有 offset 字段，
+   `DECODE_UNIT` 也没有 decodeNumber；offset 只能由本地按链顺序计算。设置单 frame/单
+   entry/总 payload 有界上限，任何
+   malformed、cycle、截断、重复 config 或长度不一致在读 payload 前 fail closed。
+3. 不把 LENTRY 首指针当连续 buffer。按链顺序建立 project-owned immutable fragment view；
+   只有下游需要连续 Annex-B/access unit 时才在有界 owner buffer 中一次组装。明确复制与
+   borrowed 生命周期、allocation/backpressure 结果，回调返回后绝不保存 upstream pointer。
+4. 区分 codec configuration、IDR/reference/non-reference frame 与 unknown。H.264 保存并
+   限界 SPS/PPS，HEVC/AV1 只冻结结构合同且 feature truth 继续关闭；config generation 与
+   exact session/codec generation 绑定，旧 config/frame 不得进入新 session。
+5. 输出只允许 stable `accepted/drop/need-idr/backpressure/malformed/stale/unsupported`
+   truth、bounded metadata 和 owned payload lease；不得携带 endpoint、RTSP、RI key、原始
+   payload 到日志/事件/NAPI。drop/backpressure 与 malformed 分离，只有可恢复丢失才请求
+   IDR，避免 malformed 输入触发无界 keyframe storm。
+6. N2-03 只提供 injected decoder sink fake 与 dormant product unavailable sink，不调用
+   OH_AVCodec、Surface、现有 renderer 或 ArkTS。N2-04 才可在失败测试保护旧协议后，把
+   owned access unit 接入现有 generation-aware decoder owner；不得创建 Moonlight 私有
+   第二 decoder singleton/thread pool。
+7. teardown 顺序为关闭 submit admission→等待 in-flight bridge lease→清 config/payload
+   owner buffers→释放 session generation；旧 callback、重复 stop、sink exception、析构中
+   blocked submit 都必须有 deterministic barrier 测试，不 detach、不 sleep 猜时序。
+8. focused tests 至少覆盖单/多 LENTRY、config+IDR、fragment 顺序、本地计算的
+   offset/fullLength、空/cycle/过长/溢出/截断/unknown type、frame number 边界、stale generation、
+   backpressure/need-IDR、sink exception、blocked submit teardown、payload/log canary 和
+   deterministic malformed corpus；普通/三轮 ASan、strict/analyzer、TSan 或等价 race
+   harness、双 ABI/HAP/NAPI/include、双 Hvigor、vendor/TOTP/Light/diff/state 全通过后
+   单独 checkpoint。N2-04 前 first-frame/streaming/protocol truth 必须继续 false。
+
+#### 15.7.11 N2-03 已完成事实与 N2-04 唯一执行合同（2026-08-10）
+
+N2-03 已由代码 checkpoint `34d2ffa7a` 完成。新增 hidden/private
+`MoonlightVideoBridge`、项目自有 borrowed view/owned access-unit DTO、一个 dormant
+unavailable product sink 和 8 个 focused case；N2-02 adapter 的唯一 `.cpp` 同步把官方
+`PDECODE_UNIT/LENTRY` 投影到固定 64 项 project view，header、bridge 和测试都不暴露
+`Limelight.h`。单 fragment、单 AU、codec config 上限分别为 4 MiB、16 MiB、1 MiB；
+`fullLength`、cycle、数量、长度加法、type、frame/profile/time/colorspace 和 H.264/HEVC/AV1
+锁定链形状在复制前 fail closed。callback 返回前完成连续 owned bytes 与本地 fragment
+offset 复制，绝不保留 upstream pointer；H.264 保存 SPS/PPS，HEVC 保存 VPS/SPS/PPS，
+AV1 只接受 picture data。config generation 只在新的 accepted IDR 内容变化时增长。
+
+bridge 复用 N1-03 的 exact `MoonlightSessionKey` 和 owner-token high-water，不创建线程池或
+第二 session/decoder owner。submission 串行化；P frame 在 accepted IDR 前、sink
+backpressure/need-IDR 后保持 gated，IDR 请求按 invocation 合并，accepted IDR 才重新打开。
+stop 先关闭 admission，再有界等待 in-flight；timeout 后仍保持关闭，后续 stop 可完成 drain，
+析构等待最后 lease。product sink 永远 unavailable，`firstFrameReady` 硬保持 false；无
+OH_AVCodec、Surface、NAPI、ArkTS、UI、云、音频或输入 caller。
+
+验证结果：普通、strict `-Werror` 与完整 TSan 均 **506/506 PASS**；ASan/UBSan 连续三轮
+**506/506 PASS**，scan-build 全目标零报告。两 ABI 产品和 adapter link probe 通过；每 ABI
+91 条永久 command 中 `rdpnapi` 仍 48、adapter 1、video bridge 1。arm64
+16103/705、x86_64 15634/703 的 defined/undefined 集合及各 147 条 NAPI 子集与 N2-02 基线
+逐项一致。两项 Hvigor、API 23 双 ABI platform probe、三 tree/117 文件、TOTP 251、Light、
+diff 均通过；signed HAP SHA-256
+`d5311acdf2d8e02385cf7bf2d33bd737e971584058b0c90d9ef7c1a0bfa9d045`，423 路径不变。
+在线注册仍精确 8 表，FAB 只有一个 disabled Moonlight 和一个“即将支持”；11 个 feature
+input 默认 false，平台能力默认 11 pending/1 unsupported/0 supported。两个 reviewer 实例此前
+均已建立，本 checkpoint 只有完整机器门禁与逐文件自审；后续复用既有 task ID，不伪造审查回执。
+
+N2-04 只能按以下原子顺序执行；不得回开已经冻结的 common-c router、bridge ownership、
+云模型或 UI：
+
+1. 以 `34d2ffa7a` 保存 506 项普通/ASan/TSan、两 ABI 91/48/1/1 command、symbol/NAPI、
+   423-path HAP、双 Hvigor和 8 表/灰入口/全 false truth 基线。先为现有 RDP/RustDesk/VNC
+   decoder owner、display、Surface bind/rebind、teardown 和 keyframe recovery 补失败回归；
+   公共 `hw_decoder` 改动必须由这些测试证明且不得改变旧协议结果码或锁顺序。
+2. 新增一个窄的 project-owned Moonlight decoder sink/port 实现文件；只有该实现可 include
+   `render/hw_decoder.h` 和平台媒体头。`MoonlightVideoBridge` 继续只认识 owned AU 与抽象
+   sink，不 include NAPI/OH_AVCodec/Surface。不得复制 `HardwareDecoder`、registry、
+   `SharedSessionSinkOwnerLease`、renderer owner、callback gate 或 retire owner。
+3. decoder start request 必须携带 exact Moonlight key、映射后的 `DecoderSessionIdentity`、
+   negotiated profile、width/height、renderer handle、surface/display generation 和 runtime
+   proof。任一值 absent、owner lease 不接受、active owner/handle 不匹配、renderer 已被别的
+   协议占用或平台 capability 未证实时，必须在创建 codec/网络继续前返回 unavailable/stale；
+   不得调用 `SetActiveSessionId/SetActiveDisplay` 抢占旧协议全局 owner。
+4. 若公共 API 缺少 pure-native exact-owner create/decode/detach/destroy，先用测试冻结后只加
+   最窄 overload，并内部复用既有 registry generation、callback identity-before-start、
+   `BindVideoPipeline`、pipeline transition mutex、deferred retire 和 shared sink lease。
+   禁止把内部 handle 暴露到 ArkTS/NAPI，也禁止建立 Moonlight 私有 active pointer。
+5. MVP 只启用 runtime-proven H.264 8-bit 4:2:0；HEVC/AV1/HDR/YUV444 继续返回
+   unsupported/pending。把 accepted owned AU 的连续 Annex-B bytes、`presentationTimeUs`、
+   IDR flag、negotiated dimensions 和 codec 精确投影为现有 `VideoFrame`；配置必须随 IDR
+   同一 AU 提交。config generation 改变时只在新 IDR 上 flush/recreate，旧 generation AU
+   不得进入新 codec。
+6. 把现有 decoder admission 结果翻译为 stable sink truth：成功才 `Accepted`；pipeline
+   busy/queue pressure 为 `Backpressure`；hardware/software keyframe-required 为 `NeedIdr`；
+   owner/display/generation 不匹配为 `Stale`；capability 不满足为 `Unsupported`；平台错误为
+   `Failed`。不得把通用 `-1` 猜成成功，也不得在持有 decoder/pipeline/owner 锁时进入
+   common-c 或调用 IDR 请求。
+7. `submit accepted`、`OH_VideoDecoder_PushInputBuffer` 成功和 output callback 都不是单独的
+   首帧证据。只有 exact key/generation 的 output buffer 成功交给 NativeImage、
+   `UpdateSurfaceImage` 成功且 renderer owner 接受该纹理后，才能发布一次 first-frame receipt；
+   Surface absent/rebind/teardown、旧 callback 或仅 telemetry 增长均保持 false。若现有 void
+   render callback 无法证明接受，N2-04 必须新增 project-owned ack seam，而不能推断。
+8. teardown 固定为 bridge close admission→decoder sink close→停止 frame/error callback
+   admission→detach renderer/Surface→等待 codec/image/render worker lease→destroy registry
+   handle→清 config/first-frame receipt；blocked submit、late input/output/frame callback、
+   callback 中 stop、重复 stop、Surface rebind 和 owner replacement 必须确定性通过，不
+   detach、不 sleep 猜测。
+9. product wiring 仍不得经 NAPI/UI 启动；只有 HAP/AppSpawn API 23 的 H.264 decode、
+   NativeImage/renderer first-frame 与 teardown probe 都有 receipt，product sink 的
+   `available()` 才可针对该 exact profile 返回 true。N2-04 checkpoint 后 FAB、云表、
+   `streaming/protocolAvailable` 仍 false；N2-05 才处理 Surface 缺失/PIP/后台策略。
+10. focused tests 必须覆盖 exact-owner create/bind/decode/detach/destroy、H.264 config+IDR、
+    P-before-IDR、config generation recreate、queue pressure/IDR 合并、旧 owner/display/surface
+    generation、renderer 拒绝、output/NativeImage/renderer ack 三段首帧、blocked callbacks、
+    20 次 rebind/teardown 和旧协议全量回归。普通/三轮 ASan、完整 TSan、strict/analyzer、
+    双 ABI/HAP/NAPI/include、双 Hvigor、vendor/TOTP/Light/diff/state 全通过后单独 checkpoint。
+
+#### 15.7.12 N2-04 已完成事实与 N2-05 唯一执行合同（2026-08-10）
+
+N2-04 已由代码 checkpoint `bee0ac1da` 完成。新增内容是一个 NAPI-free、hidden/private 的
+`MoonlightOwnedVideoDecoderSink`、一个只在 OHOS 产品目标编译的
+`MoonlightHardwareDecoderPort` 和 9 个 focused case；静态 archive 私有链接到 `rdpnapi`，
+但产品没有 factory caller、NAPI/ArkTS 路由或会话协调器。bridge 继续不 include
+`hw_decoder`、NAPI、Surface 或平台媒体头，只在 accepted IDR 上提交 prospective codec
+configuration generation；sink/port 才把 owned Annex-B AU 投影为现有 `VideoFrame`。
+
+start 必须同时匹配 exact `MoonlightSessionKey`、既有 `DecoderSessionIdentity`、active decoder
+handle/generation、display/generation、renderer handle/generation、H.264 8-bit 4:2:0、尺寸、
+handle ownership 和显式 runtime proof。port 只读取既有 active owner，不调用
+`SetActiveSessionId`、`SetActiveDisplay`，也不创建第二 decoder registry、renderer owner、
+callback gate、线程池或 retire lane。HEVC/AV1/HDR/YUV444 仍不支持。配置变化仅在携带新
+SPS/PPS 的 IDR 上触发现有 recovery/recreate；返回的新 decoder generation 必须与除 decoder
+generation 外完全相同的 binding 原子提交，任何非精确重绑都会永久关闭该 sink admission。
+
+公共 decoder 只增加 hidden typed exact-owner seam：queue pressure、pipeline transition、
+need-keyframe、stale generation 和 platform failure 不再由通用 `-1/0` 猜测；既有
+`Decode/DecodeNative/RenderNative` 返回与调用路径保持不变。首帧要求同一 exact binding 下
+`RenderOutputBuffer` 成功、NativeImage `UpdateSurfaceImage` 成功、实际 EGL swap 成功三段
+计数均非零；renderer 在 swap 返回前被替换时二次 active handle/generation 核验会拒绝旧
+Surface ack。stop 先关闭提交 admission、等待 in-flight，再复用既有 exact detach/destroy
+和 deferred retirement；20 次 start/stop、blocked submit timeout+retry、旧 owner token、
+callback transition 和旧协议全量回归均已冻结。
+
+验证结果：host 普通、strict `-Werror` 与完整 TSan 均 **515/515 PASS**；ASan/UBSan
+clean rebuild 连续三轮 **515/515 PASS**，scan-build 全 native 目标零报告。两 ABI 产品库、
+Moonlight sink archive 与 callback-entry carrier 均通过；每 ABI 93 条永久 command 中
+`rdpnapi=48`、common-c adapter=1、video bridge=1、decoder sink=2。arm64
+16103/705、x86_64 15634/703 的 defined/undefined name+type 集合和两 ABI 各 147 条 NAPI
+name+type+size 子集与 N2-03 基线逐项一致。两项 Hvigor 均 BUILD SUCCESSFUL；signed HAP
+SHA-256 为 `65db3cb5d303dd37c86fbefac514fa2bc7f9749ba6a5487151a14648b752e1bd`，排序后
+423 paths 与 N2-03 基线逐项相同。在线云注册仍精确 8 表，FAB 仍只有一个 disabled
+Moonlight 和一个“即将支持”，11 个 feature inputs 默认 false，平台能力默认
+11 pending/1 unsupported/0 supported。两个 reviewer 实例已建立，本 checkpoint 只有完整
+机器门禁和逐文件自审；后续复用既有 task ID，不新建第三个实例或伪造独立回执。
+
+N2-05 只能按以下原子顺序执行；它只冻结视频 Surface 生命周期，不接 ArkTS 页面、PIP
+controller、后台任务、音频、输入、云或可点击产品入口：
+
+1. 以 `bee0ac1da` 保存 515 项普通/strict/TSan/ASan、双 ABI 93/48/1/1/2 command、
+   callback carrier、symbol/NAPI、423-path HAP、双 Hvigor和 8 表/灰入口/全 false truth
+   基线。先为 RDP/RustDesk/VNC 现有 `BindVideoPipeline`、
+   `RebindActiveVideoPipeline`、`DetachVideoPipeline`、renderer active generation、
+   `NativeSessionHandles`、`RemoteSessionPipLifecyclePolicy` 和 `RemoteDesktop` Surface/PIP
+   顺序保存测试/源码快照；不得改它们来迁就 Moonlight。
+2. 首选新增唯一 pure-native `MoonlightVideoSurfaceLifecycle.h/.cpp` 与 focused test，组合
+   N2-04 sink/port，不继承或复制 decoder/renderer。状态固定为
+   `AwaitingSurface → Bound → Suspending → SuspendedNoSurface → Rebinding → Bound`，另有
+   terminal `Stopping/Stopped`；每个命令携带 exact key、operation generation、renderer
+   handle/generation 和 runtime-proof generation，旧/重复/逆序事件返回 typed
+   `stale/already-applied/busy`，绝不靠当前全局指针猜 owner。
+3. 初始 setup 没有真实 Surface 时不得启动 decoder sink，也不得把 pbuffer/off-screen EGL
+   当展示目标；common-c transport 可以保持运行，但 video payload 在复制/排队前以
+   `NoSurface` 丢弃并只合并一次 IDR 需求。不得缓存 AU、NAL、纹理或无限增长计数；只保留
+   bounded codec configuration（沿用 bridge 1 MiB 上限）和最后一个 generation receipt。
+4. Surface detach、Home 后台且无可用 PIP Surface、锁屏或 renderer owner replacement 的顺序
+   固定为：关闭新 video submit → 等 in-flight submit drain → 清 first-frame receipt → 停止
+   frame/error callback admission → exact `DetachVideoPipeline` → 等 render/NativeImage callback
+   lease → 标记 `SuspendedNoSurface`。临时 suspend 不销毁 common-c connection、session owner
+   或 decoder registry handle；显式 disconnect/terminal stop 才走 N2-04 destroy/retire。
+5. N2-04 sink/port 若缺少 temporary suspend/rebind seam，先写失败测试，再加最窄 hidden typed
+   overload。suspend 必须保留 exact decoder handle/owner 但关闭 admission；rebind 只接受同一
+   key/decoder handle/display、严格更新的 renderer handle/generation 和新的 runtime-proof
+   generation，并复用既有 reactivation/configure path。不得调用全局 owner/display setter，
+   不得把 handle 暴露到 NAPI/ArkTS。
+6. 新 Surface attach/rebind 必须先证明 active renderer owner、handle、generation 和真实
+   Surface ready，再安装 callback 并原子发布 binding；发布前到达的旧 output/frame callback
+   只能命中旧 generation 并被丢弃。rebind 后 first-frame 清零、视频 admission 重开但保持
+   `waitingForIdr`，向上返回一次 `requestIdr=true`，只有新 IDR accepted 后才允许 P frame。
+7. PIP 迁移合同与现有 RustDesk 顺序一致：前台 controller 可预备，但 PIP free-node Surface
+   未给出有效 id/尺寸/renderer generation 前不拆页面 renderer；有效后先 suspend decoder，
+   再绑定 PIP renderer。恢复前台先等 PIP terminal barrier，再 suspend PIP binding、释放
+   PIP renderer、绑定当前 page Surface。N2-05 只实现/测试 native policy port，不修改
+   `RemoteSessionPipService` 或 `RemoteDesktop.ets`；S1-08 才装配页面事件。
+8. 同一 renderer generation 的 resize 只更新 viewport/surface dimensions，不 flush codec、
+   不改变 remote negotiated width/height，也不清已展示首帧；Surface id、renderer handle 或
+   renderer generation 改变才走完整 suspend/rebind。旋转、折叠和自由窗若仅尺寸变化走
+   resize；ArkUI 实际重建 Surface 时走新 generation，不能把旧尺寸 callback 覆盖新状态。
+9. 无 Surface 期间的 video callback 必须 O(1) 返回、零 owned AU retention、零 decoder queue
+   增长；`NoSurface` 与 decoder `Backpressure`、`NeedIdr`、`Stale`、terminal failure 分开计数。
+   Surface 恢复只请求一次 IDR，不重启网络、不 replay 丢弃 payload；若 host 不发 IDR，保持
+   paused/diagnostic truth，绝不把旧纹理或音频 ready 当新首帧。
+10. stop 可从 Bound、Suspending、Suspended、Rebinding 任一状态进入；顺序为关闭 lifecycle
+    admission→取消 pending rebind generation→drain submit/callback→exact detach→N2-04
+    stop/destroy→清 config/first-frame/surface receipt。错误 key 不影响当前 owner，重复 stop
+    幂等，timeout 后 admission 仍关闭且下一次 stop 能完成；析构不 detach thread、不 sleep
+    猜测时序。
+11. focused tests 至少覆盖：无 Surface setup、detach 前后 payload、单次 IDR 合并、旧/重复
+    Surface generation、page→PIP→page、后台无 PIP、renderer replacement、same-generation
+    resize、旋转重建、detach/rebind 中 blocked submit/output/frame callback、stop 与 rebind
+    竞态、host 不回 IDR、20 次 page/PIP/foreground 循环、零 payload retention/high-water 和
+    RDP/RustDesk/VNC 回归。使用 fake port、barrier、fake clock；不得用 sleep 或真实网络。
+12. 普通/三轮 ASan、完整 TSan、strict/analyzer、双 ABI产品与 callback carrier、ABI/NAPI、
+    HAP path、双 Hvigor、platform/vendor/TOTP/Light/diff/state 全通过后单独 checkpoint。
+    无 HAP/AppSpawn Surface/PIP runtime receipt 时 product wiring、FAB、六项 truth 仍关闭；
+    N2-06 才开始 Opus bridge，S1-08 才把 N2-05 接到 ArkTS/PIP/后台生命周期。
+
+#### 15.7.13 N2-05/N2-06 已完成事实与 N2-07 唯一下一合同（2026-08-10）
+
+N2-05 已由代码 checkpoint `7992279c7` 完成。新增内容是 NAPI-free、hidden/private 的
+`MoonlightVideoSurfaceLifecycle` 和 8 个 focused case；它组合 N2-03 bridge 与 N2-04 sink，
+没有 product factory caller，也没有修改 ArkTS、PIP service、NAPI、云、音频或输入。无
+Surface gate 位于 bridge copy/queue 之前，typed `NoSurface` 不保留 AU 且只合并一次 IDR；
+temporary suspend 关闭 admission、drain submit、清 first-frame 并 exact detach，但保留 decoder
+registry handle/config generation。rebind 只接受同 key/decoder/profile/display 和严格更高的
+Surface、renderer、runtime-proof generation；它清首帧并等待新 IDR。同 generation resize 只改
+viewport。stop exact、幂等、timeout 后可重试，并可由更高 owner token 重新使用。
+
+验证结果：host 普通、strict `-Werror`、完整 TSan 与最终三轮 ASan/UBSan 均
+**523/523 PASS**，scan-build 全目标零报告；双 ABI 产品、sink/lifecycle archive 和 callback
+carrier 通过，每 ABI 94 条永久 command 为 `rdpnapi=48`、adapter=1、video bridge=1、
+decoder sink/lifecycle=3。动态 ABI 与 N2-04 完全一致：arm64 16103/705、x86_64
+15634/703 defined/undefined，两 ABI NAPI 子集各 147。两项 Hvigor BUILD SUCCESSFUL；signed
+HAP SHA-256 为 `e2598c67896e04949409dbe93d26ec8a7ee390a53e1052aa0c7c8e0c692453c8`，
+423 paths 与基线一致。在线云注册仍是 8 表，FAB 仍只有一个 disabled Moonlight 和一个
+“即将支持”，11 个 feature inputs 默认 false，平台能力默认 11 pending/1 unsupported/0
+supported；HDC 为 `[Empty]`，不声明 Surface/PIP/H.264 runtime 或真实首帧可用。
+
+N2-06 的源码审计基线也已冻结：官方 common-c 的 audio init 已投影为
+`MoonlightCommonCAudioSelection {layout, opus}`，其中 opus 包含 sampleRate/channelCount/
+streams/coupledStreams/samplesPerFrame/mapping；官方 `AudioStream.c` 单个 UDP packet 上限为
+1400 bytes，并用 `decodeAndPlaySample(nullptr, 0)` 表示一个丢包的 PLC 请求。当前 adapter
+却会跳过 `count==0`，且 `onAudioPayload()` 会拒绝 null+0；这是 N2-06 必须先用失败测试修正的
+既有 seam，不能通过定时器猜丢包。项目已有唯一 OHAudio owner/registry、callback admission、
+120–300 ms prebuffer 与有界 PCM queue（`audio_player.*`/`audio_queue_policy.*`），但 N2-06
+不得接入或复制它们。`scripts/build_opus_ohos.sh` 以固定 SHA-256 构建 libopus 1.5.2；两个 ABI
+现有 `libs/opus-ohos/<ABI>/libopus.a` 已由 RustDesk FFI 的最终链接消费，并包含 mono/stereo 与
+multistream decoder symbols。N2-06 必须证明最终链接只有这一版本/一组定义，不能再引入
+Homebrew/FFmpeg/另一份 vendored Opus 到产品。
+
+N2-06 只能按以下原子顺序执行；它只冻结 borrowed Opus callback→owned bounded decode→PCM
+handoff，不创建 OHAudio renderer，不接产品会话：
+
+1. 以 `7992279c7` 保存 523 项普通/strict/TSan/ASan、双 ABI 94/48/1/1/3 command、
+   symbol/NAPI、423-path HAP、双 Hvigor、Opus archive hash/symbol inventory，以及现有
+   RustDesk audio owner/registry/queue 与 RDP/VNC 回归基线。允许修改范围仅为新建
+   `MoonlightAudioBridge.h/.cpp`、必要的 OHOS-only private Opus port、focused tests、最窄
+   CMake source/link 声明，以及为 PLC seam 增加的 adapter test/实现；不得修改
+   `audio_player.*`、`audio_queue_policy.*`、RustDesk worker、NAPI/ArkTS/UI/cloud/input。
+2. 先写失败测试冻结官方 callback 语义：`bytes==nullptr && count==0` 是一个 PLC work item；
+   `nullptr+positive`、`non-null+zero`、negative C count 和 `count>1400` 均拒绝。adapter 的
+   1 MiB 通用上限不得成为 bridge 分配上限；`commonAudioPayload()` 和
+   `Invocation::onAudioPayload()` 只做最窄改动，把合法 null+0 在 active audio stage 内同步
+   转交 media port。PLC 也必须持有 callback/owner lease，stop/cleanup 后的 PLC 一律 stale。
+3. 新增 project-owned hidden `MoonlightAudioDecoderPort` 与 `MoonlightAudioPcmSink`，由
+   `MoonlightAudioBridge` 注入；bridge 不 include `Limelight.h`、NAPI、OHAudio、
+   `audio_player.h` 或 RustDesk 头。port 只负责 decoder create/decode/destroy，sink 只接收
+   本次调用期有效的 PCM view 和 exact stream identity；二者都不得保存 process-global active
+   pointer、另建 session owner、线程、无限队列或 detached cleanup。
+4. stream identity 固定为 exact `MoonlightSessionKey + audioConfigurationGeneration`；状态固定
+   为 `Idle → Configured → Started → Stopping → Stopped → Cleaned`，另有 terminal `Failed`。
+   setup/start/submit/stop/cleanup 每次都校验 exact key/generation 和单调 operation generation；
+   旧 owner、重复/逆序事件分别返回 typed `Stale/AlreadyApplied/InvalidState/Busy`，错误 key
+   不能停止或清理当前 decoder。一次 bridge 只持有一个 decoder，重配必须先 exact cleanup。
+5. MVP admission 只接受 N2-01 offered `Stereo` 和官方 48 kHz family-1 stereo multistream：
+   `channelCount=2`、`streams=1`、`coupledStreams=1`、mapping 前两项 `{0,1}` 且余项为 0，
+   `samplesPerFrame` 为 120..5760 且 120 对齐。`Disabled` 不创建 bridge；mono、5.1、7.1、
+   mapping 置换、未知 layout、降混和重采样均 typed `Unsupported`，不静默变成立体声，也不把
+   common-c 对 1–8 声道的结构校验误写成产品已支持。
+6. OHOS-only port 使用 libopus multistream integer decode ABI，输出 frame count 必须
+   `>0 && <= configured samplesPerFrame`；普通 packet 固定 `decode_fec=0`，null+0 固定调用
+   decoder PLC，frame size 使用 negotiated `samplesPerFrame`。本 checkpoint 不主动 FEC、
+   不根据 sequence 猜 PLC 次数、不重采样、不做音量/降混；损坏包和 codec error 返回 typed
+   `Malformed/DecodeFailed`，保持 decoder 可继续，只有 decoder state corruption 才 terminal。
+7. borrowed packet 在 callback 返回前同步复制到 bridge-owned、容量最多 1400 bytes 的 work
+   item；每 bridge 同时最多一个 decode in flight，竞争 submit 返回 `Backpressure`，不阻塞
+   common-c 网络线程排队。PLC work item 长度为 0。解码 scratch 最多
+   `5760 frames × 2 channels × sizeof(int16_t)=23040 bytes`；有效 PCM 严格按实际 frame count
+   截断并显式序列化为 interleaved S16LE，禁止暴露未初始化尾部、宿主 endian 或 float
+   rounding 差异。sink 返回前 PCM 只读；需要保留时由 N2-07 现有 player 自己同步复制。
+8. 结果至少区分 `Accepted/PlcAccepted/Backpressure/Malformed/Unsupported/Stale/
+   InvalidState/SinkRejected/DecodeFailed/Terminal`，receipt 携带 exact key/config generation、
+   operation generation、input bytes、decoded frames/PCM bytes 和是否 PLC；不携带 payload、
+   PCM、host 地址、key/token。计数器饱和/有界，日志采样且脱敏。普通音频包失败不能请求
+   video IDR，也不能改变 video bridge、Surface lifecycle 或首帧 receipt。
+9. stop 顺序固定为关闭新 submit admission→等待 in-flight decode/sink callback drain→清
+   started truth→decoder reset/destroy；cleanup 再清 packet/PCM scratch、selection、generation
+   和计数敏感临时状态。timeout 后 admission 保持关闭，decoder 不提前释放，下一次 exact
+   stop/cleanup 可重试。析构走同一同步/延迟清理合同，不 detach thread、不 sleep 猜时序；
+   packet、PCM scratch 和 mapping backing 在 release 前 secure wipe，测试用 poison/observer
+   证明没有跨 session residual audio。
+10. PCM sink accepted、`audioReady()`、common-c `AudioStreamStart` 和任意音频计数都不是
+    video first-frame、streaming ready 或 protocol available。N2-06 archive 无 product media
+    port caller时 `audioReady()` 继续 false；不因 decoder compile/link 成功改变 FAB、
+    capability snapshot、六项 release truth 或连接阶段 UI。音频失败/无音频继续的用户决策
+    属于 N2-07/S1，不在本 checkpoint 制造假回调。
+11. Opus 依赖只解析到固定的 1.5.2 artifact。优先让新 private port 由现有最终链接中的同一
+    archive 满足；若静态库顺序需要调整，只改最窄 target order/group，并保存 link map，证明
+    `opus_multistream_decoder_create/decode/destroy/get_version_string` 各只有一个产品定义，
+    RustDesk 原有 `opus_decoder_*` 仍解析、动态 ABI/NAPI 不变。禁止 `--whole-archive`、复制
+    `.a`、改 RustDesk Cargo feature 或把 Opus symbols 导出为产品 API。
+12. focused tests 至少覆盖：合法 stereo setup/start、tracked Opus packet→golden S16LE、
+    null+0 PLC、损坏/截断/1/1400/1401-byte packet、frame count 0/过大、5.1/7.1/mono/mapping
+    unsupported、错误/旧 key 与 generation、重复/逆序 lifecycle、sink reject、decode failure
+    后恢复、并发 backpressure、blocked decode/sink stop timeout+retry、cleanup zeroization、
+    20 次 setup/start/PLC/stop/cleanup 和旧协议 audio/video 回归。时序只用 barrier/fake port；
+    不 sleep。golden fixture 必须记录 Opus 版本、编码参数、packet hash 与 expected PCM hash；
+    product 1.5.2 compile-link 和真实解码运行时 receipt 分开陈述，不能用 fake port 冒充真机。
+13. 普通/三轮 ASan、完整 TSan、strict/analyzer、双 ABI 产品与 callback carrier、Opus single-
+    definition/link-map、ABI/NAPI/HAP path、双 Hvigor、platform/vendor/TOTP/Light/diff/state 全通过
+    后单独 checkpoint。若 host golden 使用系统 codec，必须额外报告其版本且不能把它写成
+    产品 1.5.2 runtime receipt；HDC/实机未执行仍保持 blocker。
+14. N2-07 才把 bridge PCM sink 按 exact `DecoderSessionIdentity` 接到现有
+    `AudioPlayerNapi::DispatchActiveNative(owner, ...)`、`g_audioRegistry` 和既有有界 queue，
+    并处理 mute/focus/background/pause/resume/flush。N2-06 不调用
+    `SetActiveSessionOwner/ClearActiveSessionOwner`，不建 Moonlight 私有 renderer。S1-08 才接
+    ArkTS/PIP/后台；HAP/AppSpawn audio runtime receipt 前用户入口和发布 truth 继续关闭。
+
+#### 15.7.14 N2-07 已完成事实与 N2-08 唯一下一合同（2026-08-11）
+
+N2-07 已由代码 checkpoint `9272f1c9c` 完成。新增 hidden/private
+`MoonlightAudioPlayerSink`、production port 和 10 个 focused case；sink 将
+`MoonlightAudioStreamIdentity.key` 精确映射到既有 `DecoderSessionIdentity`，并仅通过
+`AudioPlayerNapi::DispatchActiveNative`、`SuspendActiveNative`、`TakeActiveNative` 与
+`SharedSessionSinkOwnerLease` 使用现有 OHAudio owner、registry 和有界 queue。48 kHz stereo
+PCM 的长度/帧数、owner/config/operation generation、mute、focus/background pause、resume、
+stop、cleanup、owner 丢失、blocked dispatch drain 与 late PCM 均由 typed 合同保护。
+
+本 checkpoint 没有修改 `audio_player.*`、共享 queue 或 RDP/RustDesk/SSH/VNC 业务源码；没有
+新增 OHAudio renderer、registry、queue、线程、singleton、NAPI、ArkTS、UI、云或 product
+caller。音频接受/静音/失败均不改变视频首帧、streaming、FAB 或六项 release truth。
+
+验证结果：host normal、strict `-Werror`、ASan/UBSan 与最终 TSan 都是 **548 total / 532 pass /
+16 fail**，10 个 N2-07 用例全 PASS，16 项均为既有 VNC 本地 TLS fixture `start()` 失败；首次
+TSan 曾为 531/17 且无 sanitizer 报告，立即和最终复跑均恢复 532/16。arm64-v8a/x86_64 产品
+native 均重配/链接成功，新 translation units 实际进入 `rdpnapi`，动态符号无
+`MoonlightAudioPlayer`/production factory export。双 Hvigor BUILD SUCCESSFUL；signed HAP
+SHA-256 为 `a1d6e72894e2596e431f5dd4806c833611adea942559e5b52afe615abd766ef3`，333 paths；Light
+和 diff 门禁通过。HDC 当前无 target，故不声明 OHAudio/AppSpawn、真实 Sunshine 或 ARM64
+实机运行时能力。
+
+在 N2-07 checkpoint 完成时，N2-08 的合同是建立纯 native、generation-fenced media clock/stats，低开销汇总
+network→decode→render、audio queue、FEC/丢包与 p50/p95；不可用值保持 absent，日志采样有界
+且默认不含地址、token 或媒体 payload。N2-08 不接 NAPI/ArkTS/UI/cloud，不开放用户入口或
+release truth。
+
+#### 15.7.15 N2-08 已完成事实与 N2-09 外部门禁/N3-01 唯一可执行合同（2026-08-11）
+
+N2-08 已由代码 checkpoint `57b1d7da4` 完成。新增 hidden pure-native
+`MoonlightMediaClockStats`、13 个 focused case 和独立私有 archive；使用 exact
+`MoonlightSessionKey + windowGeneration`、owner/window/source generation fence 和固定最多
+256 槽窗口，严格区分 absent 与 measured zero。它有界汇总 network assembly、decode queue、
+decode、render、end-to-end、common-c host processing latency、audio queue 的
+p50/p95/max/current count/total，并精确投影 RTP media/FEC/recovered/recovery failure/OOS/
+invalid/invalid FEC、audio underrun/drop 增量；累计源 reset/decrease baseline、video stride、
+RTP/audio 时间节流、计数饱和、stop/cleanup/stale callback 均有确定性合同。
+
+host normal、strict `-Wall -Wextra -Wpedantic -Werror`、ASan/UBSan 连续三轮和最终 TSan 均为
+**561 total / 545 pass / 16 fail**；13 个 N2-08 用例全 PASS，16 项仍全是既有 VNC 本地 TLS
+fixture `start()` 失败，sanitizer 无报告；focused clang analyzer 零诊断。arm64-v8a/x86_64
+产品 native 均重配/链接成功；两个私有 archive 非空，但没有 runtime caller，object 未被拉入
+`rdpnapi`，本地/动态符号均无 `MoonlightMediaClockStats`。动态 defined/undefined 集合与 N2-07
+逐项相同：arm64 **16114/705**、x86_64 **15645/703**，没有新增 NAPI export 或跨协议 ABI 面。
+双 Hvigor、signed HAP 和 Light 通过；HAP SHA-256
+`5bf7cd91809c7c9e46cf15aa1d8b963946f0d805b91a867ef98492aa441860fe`，333 paths。
+
+本 checkpoint 未修改 common-c、共享 telemetry/render/audio 或 RDP/RustDesk/SSH/VNC 业务源码，
+未新增线程、队列、singleton、NAPI、ArkTS、UI、云、日志或 product caller。N2-09 需要真实
+Sunshine 与用户 ARM64 实机完成媒体/温控/生命周期矩阵，当前保持 EXTERNAL PENDING；计划允许
+跨过该外部门禁继续无产品接线的 dormant N3-01。N3-01 是当前唯一可直接执行的代码任务，只建立
+exact session/generation/device/source/timestamp 输入桥、旧 session 丢弃和失焦释放合同；不得接
+ArkTS/UI/product caller，不改变灰色 FAB、现有八张云表或六项 release truth。
+
+#### 15.7.16 N3-01 已完成事实与 N3-02 唯一可执行合同（2026-08-11）
+
+N3-01 已由代码 checkpoint `fe46025ef` 完成。新增 hidden pure-native
+`MoonlightInputBridge`、12 个 focused case 和独立私有 archive；每个 bounded event 都携带
+exact `MoonlightSessionKey + inputGeneration`、device、source/source generation、sequence 和
+monotonic timestamp，固定最多 32 个 source lane 与 64-byte payload。它复用唯一
+`MoonlightSessionOwner` 和既有共享跨协议 `SessionSinkOwnerLease`，只在 exact Running owner、
+admission open 且未取消时同步执行；Starting、旧 owner、其他协议 owner、旧 source generation、
+乱序 timestamp/sequence、重复事件与 source capacity 均有 typed fail-closed 结果。focus loss、
+stop、失败重试、resume、cleanup、析构和并发 dispatch/stop 均冻结 neutral flush 与 generation
+边界，且没有新增队列、线程、singleton 或活动 adapter。
+
+host normal 连续三轮、strict `-Wall -Wextra -Wpedantic -Werror`、ASan/UBSan 连续三轮和 TSan 均为
+**573 total / 557 pass / 16 fail**；12 个 N3-01 用例全 PASS，16 项仍全是既有 VNC 本地 TLS
+fixture `start()` 失败，sanitizer 无报告；focused clang analyzer 零诊断。arm64-v8a/x86_64
+产品 native 均重配/链接成功；两个私有 archive 非空，但没有 runtime caller，object 未被拉入
+`rdpnapi`。产品与 HAP 中都没有 `MoonlightInput` 本地/动态符号，动态 defined/undefined 数量
+保持 arm64 **16114/705**、x86_64 **15645/703**，与 N2-08 基线一致。双 Hvigor、signed HAP
+和 Light 通过；HAP SHA-256
+`645308dff61bb65c959ddb9f704eba1334f04fca5af74af59131183965326ba9`，333 paths。
+
+本 checkpoint 未修改 common-c、公共 `InputHandler`、共享 telemetry/render/audio 或
+RDP/RustDesk/SSH/VNC 业务源码，未新增 NAPI、ArkTS、UI、云、日志或 product caller。N2-09
+继续 EXTERNAL PENDING；N3-02 是当前唯一可直接执行的代码任务，只在 N3-01 bounded command
+body 内建立 HarmonyOS key→Moonlight key、修饰键 once/lock、text vs physical key、全量 key-up
+和本地逃生键的纯 native 合同。它仍不得连接公共 `InputHandler`、NAPI、ArkTS、UI 或产品路径，
+不得改变灰色 FAB、现有八张云表或六项 release truth。
+
+#### 15.7.17 N3-02 已完成事实与 N3-03 唯一可执行合同（2026-08-11）
+
+N3-02 已由代码 checkpoint `a552b30a2` 完成。新增 hidden/private
+`MoonlightKeyboardMapper`、15 个 focused case 和独立私有 archive；它把工程现有 HarmonyOS
+key namespace 严格映射为官方 common-c `0x8000 | Win32 VK`、down/up、modifier mask 与
+non-normalized flag。物理键与严格 UTF-8 on-screen text 分流，物理 Escape 永远只作为本地逃生；
+固定容量为 8 个普通按键和双侧四类修饰键，单次完整释放最多 16 条命令。once/locked modifier、
+逐命令状态提交、backpressure/port failure 未接受后缀精确续传、错误设备 key-up 拒绝、反序全释放、
+owner loss 与 pending payload 清理由有界状态机覆盖，没有新增线程、队列、singleton 或第二 owner。
+
+host normal 连续三轮、strict `-Wall -Wextra -Wpedantic -Werror`、ASan/UBSan 连续三轮和 TSan
+最终均为 **588 total / 572 pass / 16 fail**；15 个 N3-02 用例全 PASS，16 项仍全为既有 VNC
+本地 TLS fixture `start()` 失败，sanitizer 无报告；focused clang analyzer 零诊断。N3-01 并发测试
+只修正为同时接受 duplicate-first 与 stop-first 两种合法 mutex 串行结果，生产 bridge 未修改。
+arm64-v8a/x86_64 产品 native 均重新配置并链接；私有 archive 非空但没有 runtime caller，object
+未进入 `rdpnapi`。两 ABI 动态 defined/undefined 数量仍为 arm64 **16114/705**、x86_64
+**15645/703**，产品/HAP 均无 `MoonlightKeyboard` 或 `MoonlightInput` 本地/动态符号。双 Hvigor、
+signed HAP 与 Light 通过；signed HAP 共 333 paths。
+
+本 checkpoint 未修改生产 common-c、公共 `InputHandler`、共享 telemetry/render/audio 或
+RDP/RustDesk/SSH/VNC 业务源码，未新增 NAPI、ArkTS、UI、云、日志或 product caller。N2-09
+继续 EXTERNAL PENDING；N3-03 是当前唯一可直接执行的代码任务，只建立 dormant pure-native
+绝对/相对鼠标、按钮、滚轮与 content-rect mapping 合同。capture/constraint/raw-relative 在
+API 23/HAP/实机证据前保持 fail closed，且不得改变灰色 FAB、现有八张云表或六项 release truth。
+
+#### 15.7.18 N3-03 已完成事实与 N3-04 唯一可执行合同（2026-08-11）
+
+N3-03 已由代码 checkpoint `1787da821` 完成。新增 hidden/private
+`MoonlightPointerMapper`、18 个 focused case 和独立私有 archive；没有 product caller。
+absolute mapping 明确以 physical surface pixel 和 generation-fenced content rect 为输入，覆盖
+letterbox/fill/1:1/pan、四向旋转与 DPI 不变映射，黑边/outside content 不 clamp 或 teleport。
+relative mapping 保存 sensitivity 后的小数残差，对非有限值与 int16 overflow fail closed。wire body
+只输出官方 common-c 的 relative/absolute、五键、纵向/横向滚轮合同；按钮状态按 device/source
+精确归属，absolute press 将位置与按键组成有界原子事务，出界 press 抑制但 release 仍可送达，
+release-all 反序发送。逐命令状态提交、single pending transaction、backpressure/port failure 未接受
+后缀精确续传、cancel-only-if-unsent、destructor 清理均由固定容量状态覆盖。
+
+host normal 连续三轮与 strict `-Wall -Wextra -Wpedantic -Werror` 最终均为 **606 total /
+590 pass / 16 fail**；18 个 N3-03 用例全 PASS，16 项仍全为既有 VNC 本地 TLS fixture
+`start()` 失败。ASan/UBSan 连续三轮与最终 TSan 同为 **590/16** 且无 sanitizer report；focused
+clang analyzer 零诊断。arm64-v8a/x86_64 产品构建均生成含
+`MoonlightPointerMapper.cpp.o` 的非空私有 archive；无 caller 时 object 未进入 `rdpnapi`。
+两 ABI 动态 defined/undefined 仍为 arm64 **16114/705**、x86_64 **15645/703**，产品/HAP 无
+`MoonlightPointer`、`MoonlightKeyboard` 或 `MoonlightInput` 本地/动态符号。双 Hvigor、signed
+HAP、Light 与 `git diff --check` 通过；HAP 共 333 paths。
+
+本 checkpoint 只新增 Moonlight pointer 私有实现/header、focused test 和 CMake target；未修改
+common-c、公共 `InputHandler`、共享 telemetry/render/audio、RDP/RustDesk/SSH/VNC 生产业务源、
+NAPI、ArkTS、UI、云、日志或产品状态。capture/constraint/raw-relative 当前只有显式 capability
+resolution，平台 wiring 仍 unavailable，不声明 HAP/真机输入能力。N2-09 继续 EXTERNAL PENDING；
+当前唯一可执行代码任务为 dormant N3-04：建立直接触控与触控板手势、稳定多点 id、cancel、
+rotation/scale transform 与 overlay/远端 hit-map 互斥合同；仍不得接公共 `InputHandler`、NAPI、
+ArkTS、UI、云或 product caller，模式切换前必须统一 flush，不改变 FAB 或六项 release truth。
+
+#### 15.7.19 N3-04 已完成事实与 N3-05 唯一可执行合同（2026-08-11）
+
+N3-04 已由代码 checkpoint `ebd2fa0bc5` 完成。新增 hidden/private `MoonlightTouchMapper`、
+21 个 focused case 和独立私有 archive；仅给 N3-03 pointer mapper 增加共享 normalized content
+transform、原子 press+release click 与双轴 scroll 事务，未另建第二套鼠标发送器。direct touch
+严格生成官方 common-c `LiSendTouchEvent()` 对应的 28-byte body，只接受明确 host
+`LI_FF_PEN_TOUCH_EVENTS` 能力；最多 10 个稳定非零 wire id，覆盖 down/move/up、pointer cancel、
+cancel-all、pressure/contact ellipse/rotation、四向旋转、physical-pixel content rect 与黑边拒绝。
+overlay/down 和 outside-content contact 由本地持有到 up/cancel；活动 contact 进入 overlay 或黑边时
+先向远端 cancel，禁止离开后重放。geometry/hit-map generation 变化要求先 flush，模式切换在提交
+新模式前发送 cancel-all 或释放拖拽按键。
+
+touchpad 最多 3 个固定 contact：一指相对光标和左键轻点、双指 centroid 滚动和右键轻点、长按
+拖拽、三指轻点只产生本地 `ToggleToolbar`；overlay-owned contact 不计入远端手势，进入 overlay
+会先释放 drag 并抑制全部当前手势。固定 16 个 observed device/source lane 约束 generation、
+sequence 与 monotonic timestamp；single pending、逐命令状态提交、partial click 精确 suffix retry、
+cancel-only-if-unsent 与 destructor 清理由有界状态机覆盖。模块无线程、队列、singleton、平台
+listener、NAPI、ArkTS、UI、云或 product caller。
+
+host normal 连续三轮与 strict `-Wall -Wextra -Wpedantic -Werror` 最终均为 **627 total /
+611 pass / 16 fail**；21 个 N3-04 用例全 PASS，16 项仍全为既有 VNC 本地 TLS fixture
+`start()` 失败。ASan/UBSan 连续三轮与最终 TSan 同为 **611/16** 且无 sanitizer report；focused
+clang analyzer 对 touch/pointer 零诊断。arm64-v8a/x86_64 均生成含
+`MoonlightTouchMapper.cpp.o` 的私有 archive，无 caller 时 object 未进入 `rdpnapi`。两 ABI
+动态 defined/undefined 仍为 arm64 **16114/705**、x86_64 **15645/703**，产品/HAP 本地与动态
+符号均无 `MoonlightTouch`/`MoonlightPointer`/`MoonlightInput`。双 Hvigor、signed HAP、Light、
+117-file vendor gate 和 `git diff --check` 通过；HAP 共 333 paths。HDC 返回
+`Connect server failed`，因此不声明 API 23/HAP/真机 direct-touch、touchpad 或 Sunshine runtime。
+
+本 checkpoint 未修改 common-c、公共 `InputHandler`、共享 telemetry/render/audio 或
+RDP/RustDesk/SSH/VNC 生产业务源码，未新增日志或改变云表、灰色 FAB、first-frame、streaming/
+protocolAvailable 和六项 release truth。N2-09 继续 EXTERNAL PENDING；当前唯一可执行代码任务
+为 dormant N3-05：先依据 API 23 probe 建立实体控制器稳定 device→slot、轴/trigger/dead-zone、
+断开 neutral 合同；多玩家能力没有真实设备证据时限制为一个 slot，不接公共 `InputHandler`、
+NAPI、ArkTS、UI 或 product caller。
+
+#### 15.7.20 N3-05 已完成事实与 N3-06 唯一可执行合同（2026-08-11）
+
+N3-05 已由代码 checkpoint `1aadfba24` 完成。新增 hidden/private
+`MoonlightControllerMapper`、16 个 focused case 和独立私有 archive；platform link probe 只增加
+API 23 GameControllerKit device online/offline、button、双摇杆、双 trigger、event device id 与
+source type 的 compile-link 证明，不注册 listener。项目自有 28-byte command body 直接投影 pinned
+common-c `LiSendControllerArrivalEvent()`/`LiSendMultiControllerEvent()` 参数；只接受当前枚举且属于
+API 23 保守集合的 A/B/X/Y、dpad、肩键、Menu/Play 与 stick click。Home 保留为本地系统逃生，
+Back/Special 不伪造。arrival 只声明 Unknown/Xbox/PlayStation/Nintendo 类型和已枚举 analog-trigger
+输入能力；rumble、LED、motion、battery、touchpad 与 adaptive trigger 一律不声明。
+
+映射合同固定一个物理 slot 0，直到两控制器真实设备证据成立；最多 8 个 observed lane，以 exact
+device/source generation、sequence 和 monotonic timestamp 拒绝 stale/duplicate/cross-device 事件。
+摇杆使用成熟 Moonlight Android 的 7% radial deadzone、`0x7FFE` 量程、不做 deadzone 后重缩放，
+并把 API positive-down Y 反向到 common-c/XInput；trigger 使用 13% deadzone，analog profile 缩放到
+0..255，digital profile 只发 0/255；hat 以 ±0.5 阈值形成 dpad。每次发送完整状态，bridge 接受后
+才提交；background neutral 保留 active-mask=1，disconnect 发送 active-mask=0 的全中立 frame，
+接受后才释放 slot，backpressure 可精确重试。
+
+host normal 连续三轮与 strict `-Wall -Wextra -Wpedantic -Werror` 最终均为 **643 total /
+627 pass / 16 fail**；16 个 N3-05 用例全 PASS，16 项仍全为既有 VNC 本地 TLS fixture
+`start()` 失败。ASan/UBSan 连续三轮与最终 TSan 同为 **627/16**，无 sanitizer report；focused
+clang analyzer 零诊断。arm64-v8a/x86_64 均生成 controller archive，API 23 probe 双 ABI通过；
+无 caller 时 archive object 未进入 `rdpnapi`，dynamic defined/undefined 仍为 arm64
+**16114/705**、x86_64 **15645/703**，产品库没有 mapper 符号或 controller runtime 依赖。双
+Hvigor、signed 333-path HAP、Light、117-file vendor、TOTP brand manifest 与 `git diff --check`
+通过。HDC 返回 `Connect server failed`，不声明 HAP/真机实体控制器、双手柄或 Sunshine runtime。
+
+本 checkpoint 未修改 common-c、公共 `InputHandler`、共享 telemetry/render/audio、
+RDP/RustDesk/SSH/VNC 生产业务源码、NAPI、ArkTS、UI 或云，也不改变 first-frame、灰色 FAB、
+streaming/protocolAvailable 或六项 release truth。N2-09 继续 EXTERNAL PENDING；当前唯一可执行
+代码任务为 dormant N3-06：建立按能力拆分的 controller feedback 合同。API 23 当前未发现官方
+rumble/LED/motion/battery 输出 API，所以默认必须 unsupported 且零调用；只有未来官方 API 与真机
+证据同时存在才允许开启，仍不接 NAPI、ArkTS、UI 或 product caller。
+
+#### 15.7.21 N3-06 已完成事实与 N3-07 唯一可执行合同（2026-08-11）
+
+N3-06 已由代码 checkpoint `baa9cafef` 完成。新增 hidden/private
+`MoonlightControllerFeedback`、16 个 focused case 和独立私有 archive；不注册 GameControllerKit
+listener，不接 common-c callbacks、NAPI、ArkTS、UI、云或 product caller。合同按 pinned common-c
+能力拆分 rumble `0x02`、trigger rumble `0x04`、accelerometer `0x10`、gyroscope `0x20`、battery
+`0x40` 与 RGB LED `0x80`，adaptive trigger 因无 `LI_CCAP` bit 独立门禁。能力只有 official API
+evidence 与 exact physical-device evidence 同时成立才启用；API 23 product evidence 固定全 false，
+所以当前每种 feedback 都 explicit unsupported 且零 port 调用，不以空成功伪装支持。
+
+未来双证据路径仍固定 slot 0，并要求 exact session/owner/input、controller、device/device generation、
+operation generation 与 monotonic timestamp；只有一个 pending command，backpressure 只接受同 context
+同 payload 精确重试。motion report 上限 200Hz，未请求 sensor、非有限/越界 sample、重复或过快
+sample 均 fail closed；battery 同状态 120 秒限频，状态变化可立即上报。port 返回 unsupported 只降级
+对应能力。suspend/unbind/cleanup/destructor 释放本地 haptics、sensor registration、LED ownership 和
+adaptive effect；release backpressure 阻止状态推进直到同操作精确重试，resume 不重放旧 effect。
+
+host normal 连续三轮与 strict 最终均为 **659 total / 643 pass / 16 fail**；16 个 N3-06 用例
+全 PASS，16 项失败仍仅为既有 VNC 本地 TLS fixture `start()`。ASan/UBSan 最终连续三轮与 TSan
+同为 **643/16**，无 sanitizer report；focused clang analyzer 零诊断。arm64-v8a/x86_64 archive
+分别为 352518/343878 bytes；无 caller 时 feedback object 未进入 `rdpnapi`，dynamic defined/
+undefined 仍为 arm64 **16114/705**、x86_64 **15645/703**，产品库无 feedback 符号或
+`ohgame_controller` 依赖。双 Hvigor、signed 333-path HAP、Light、117-file vendor、TOTP 与
+`git diff --check` 通过。HDC 返回 `Connect server failed`，不声明真机 feedback runtime。
+
+本 checkpoint 未修改 common-c、公共 `InputHandler`、共享 telemetry/render/audio、
+RDP/RustDesk/SSH/VNC 生产业务源码、NAPI、ArkTS、UI 或云，也不改变 first-frame、灰色 FAB、
+streaming/protocolAvailable 或六项 release truth。N2-09 继续 EXTERNAL PENDING；当前唯一可执行
+代码任务为 dormant N3-07：建立统一 `MoonlightInputFlushPolicy`，复用 N3-01～N3-05 既有 owner/
+bridge/mappers，在 overlay、mode change、失焦、PIP/后台、Surface、reconnect、stop 与 generation
+change 触发 exact key-up/mouse-up/touch-cancel/controller-neutral；必须幂等，且远端 stop 超时仍
+完成本地释放，不接 NAPI、ArkTS、UI、云或 product caller。
+
+#### 15.7.22 N3-07 已完成事实与 N3-08 唯一可执行合同（2026-08-11）
+
+N3-07 由代码 checkpoint `02cb13aae`、审查修复 `36b4e13df`/`337c4f35e` 和终止回放证据补强 `ee073afcb` 完成。新增 hidden/private
+`MoonlightInputFlushPolicy`、26 个 focused case 和独立私有 archive；没有定义第二套 input port 或
+owner，而是直接组合 N3-01～N3-05 已有 bridge/mappers。统一顺序固定为 touch cancel→pointer
+release→keyboard release→controller neutral/disconnect→bridge neutral；覆盖 overlay、control mode、
+rotation、focus loss、PIP、background、screen lock、Surface detach、reconnect、session stop、input
+generation change 与 controller disconnect。策略持有 exact owner/input identity、各 source context、
+operation generation 与 monotonic timestamp；每个 backpressure 只续传当前 mapper 的 exact pending
+suffix，其他请求不能越过，重复请求不重发。
+
+`beginFlush()` 在任一 mapper release 前把唯一 bridge 原子推进到 `ReleasePending`，随后只接受 boundary
+内由 mapper 标记的 lifecycle release；普通键鼠、触摸和手柄输入无法并发插入。非终止 trigger 进入
+suspend，只有更高 operation generation 才能 resume；reconnect、stop 和 generation change 终止旧输入。
+失败的 suspend boundary 只用更高 generation 重试且不重放 release；session stop 可从任一 component
+pending 或 suspended 状态升级。terminal 遇永久 component failure/owner loss 时丢弃全部 mapper
+本地状态后继续 remote stop；remote stop 也失败则 bridge 本地 stopped，返回 `AppliedLocally`。stale
+terminal request 不得清状态；pending→terminal 的 drain context 与 completion replay key 分离，remote/
+local-terminal exact stop 重放都为 `AlreadyApplied`。controller disconnect 使用 active-mask=0 removal。
+
+host normal 与 strict 均为 **685 total / 669 pass / 16 fail**；26 个 N3-07 用例全 PASS，16 项仍仅为
+既有 VNC 本地 TLS fixture `start()`。ASan/UBSan 顺序连续三轮与 TSan 同为 **669/16**，无
+sanitizer/data-race report；focused host clang analyzer 为七份零诊断。arm64-v8a/x86_64 archive 分别为
+369470/361710 bytes；无 caller 时 object 未进入 `rdpnapi`，dynamic defined/undefined
+仍为 arm64 **16114/705**、x86_64 **15645/703**，产品库无 flush-policy 符号。双 Hvigor、signed
+333-path HAP、Light、117-file vendor、TOTP 与 `git diff --check` 通过。HDC 返回
+`Connect server failed`，不声明 HAP/虚拟机/真机输入 runtime。
+
+本 checkpoint 未修改 common-c、公共 `InputHandler`、共享 telemetry/render/audio、
+RDP/RustDesk/SSH/VNC 生产业务源码、NAPI、ArkTS、UI 或云，也不改变 first-frame、灰色 FAB、
+streaming/protocolAvailable 或六项 release truth。N2-09 继续 EXTERNAL PENDING；当前唯一可执行
+代码任务为 dormant N3-08：定义虚拟控制器模型和确定性布局 validator，覆盖 safe area、冲突热区、
+坏布局 fallback 和编辑态零远端发送；button/stick/trigger/dpad full-state 必须复用 N3-05
+`MoonlightControllerMapper`→N3-01 `MoonlightInputBridge`→official common-c 原生链路，退出/后台
+通过 N3-07 neutral。MVP feature flag 保持 false，不创建可见占位 UI，不接 NAPI、ArkTS、云或
+product caller，不创建第二套 input owner/port。
+
+最终复核复用既有 `gpt-5.6-sol low` task `019fe966-d99a-7ce1-8b53-4ef725597053`，没有创建第三个
+reviewer；`ee073afcb` 上 P0/P1/P2/P3 均为 0。复核确认 remote/local-terminal 两条 replay 都固定
+旧 suspend sequence/timestamp 和 event/flush 零增量，并确认 dormant 私有 archive 不进入产品路径、
+不影响 RDP/RustDesk/SSH/VNC 或公共输入的功能与性能；实体/虚拟手柄的原生 full-state 及
+`activeGamepadMask=0` source handoff 合同也完整。
+
+N3-08 必须按以下原子步骤实现，任何一步都不能绕开既有 native 输入边界：
+
+1. 新建 project-owned、fixed-capacity 的虚拟控制器 state/layout value objects；按钮、方向键、
+   双摇杆、双扳机、肩键、菜单键只使用归一化语义值，不包含 ArkTS、像素坐标或 common-c wire bytes。
+2. validator 先校验版本、元素枚举、唯一 id、有限数值、最小触控热区、safe area、遮挡/冲突热区、
+   互斥组合和最大元素数，再执行确定性 clamp；任何未知/损坏/跨版本数据整体回退内置安全布局，
+   不做部分猜测恢复，也不读云数据。
+3. native state aggregator 以独立 virtual source/device/source-generation 接收 press/release/axis/trigger，
+   生成与 N3-05 相同的单槽 full-state sample；它只能调用既有 `MoonlightControllerMapper`，由该 mapper
+   经唯一 `MoonlightInputBridge` 调用 official common-c controller port，不得复制 packet encoder、
+   owner、slot、thread、queue 或 retry lane。
+4. physical GameController 与 virtual overlay 使用不同 device/source generation，但共享远端 slot 0。
+   source handoff 不得使用保留 slot 的普通 `neutralize()`：必须先关闭 admission，调用 N3-05
+   `disconnect()`，确认 accepted `activeGamepadMask=0` 且 mapper slot 0 inactive/cleared，再以更高
+   operation generation resume bridge，并以更高 source generation `connect()` 新 source。若 removal
+   无法送达，则升级 N3-07 terminal/local-terminal，当前 session 禁止接新 source；只可在完整 cleanup
+   后用新 input/session generation 重建。两类 source 的按键、摇杆和扳机状态永不合并。
+5. backpressure 时只保留一份 exact pending full-state；更高 sequence 不能越过，retry 不重复提交本地
+   state。stale owner/input/source/layout generation、非单调 timestamp、越界值和 edit-mode event 全部
+   fail closed，编辑态必须证明 common-c port 调用数为零。
+6. overlay open/close、control-mode change、layout swap、rotation、focus/PIP/background/lock、Surface
+   detach、reconnect、stop 和 controller disconnect 全部复用 N3-07。实体 listener 的 arrival/state 与
+   虚拟 typed ingress 的语义事件只允许在 native aggregator 生成 full-state；ArkTS 不得生成 wire bytes、
+   调 official port 或直发手柄信号。退出编辑态必须从 neutral 状态重新开始。
+7. focused native tests 至少覆盖 ABXY/dpad/双轴/双 trigger、同时按键、pointer-id cancel、layout
+   fallback、safe-area/冲突、physical↔virtual arbitration、accepted removal→slot clear→higher-generation
+   connect、failed removal 禁止接管、generation、backpressure exact retry、12 类 lifecycle neutral、
+   edit zero-send、stop failure local terminal 和并发串行化。
+8. N3-08 checkpoint 仍为 dormant archive：无 NAPI、ArkTS、UI、云或 product caller，双 ABI 无 caller
+   时不得把 object 拉入 `rdpnapi`。后续 S1-05A 才增加一个窄 typed NAPI ingress 和 native listener；
+   runtime receipt 前 FAB、MVP flag、input capability 与 release truth 继续关闭。
+
+#### 15.7.23 N3-08 已完成事实与 U1-01 唯一可执行合同（2026-08-11）
+
+N3-08 由代码 checkpoint `fef723770` 与审查修复 `6787cc3fb` 完成。新增 hidden/private、fixed-capacity
+`MoonlightControllerAggregator`、归一化 virtual-controller layout value objects 与 deterministic validator；
+validator 校验版本、枚举、唯一 id、finite 值、最小触控热区、safe area、冲突区、互斥 dpad 布局和
+最大容量，合法布局确定性 clamp，任何损坏布局整体回退固定安全布局。编辑态和布局安装均零远端发送。
+
+物理路径的 `ingestPhysical()` 接收纯 native 完整 `MoonlightControllerSample`，固定来源为
+`GameController`；虚拟语义固定来源为 `VirtualController`。两者共享 N3-05 slot 0，但由
+source/device/source-generation/sequence/timestamp fence 隔离，并且都只调用既有 N3-05 mapper，继而
+走 N3-01 bridge 与 official common-c。没有第二 controller encoder、input owner、port、slot、queue、
+thread 或 listener。HarmonyOS GameControllerKit 的实际 connected/disconnected/state listener 和
+`MoonlightControllerOverlay` 窄 typed NAPI ingress 明确保留到 S1-05A；ArkTS 永远不编码或直发协议。
+
+physical↔virtual 双向换源固定 remove-first：关闭新输入，N3-07 接受 controller disconnect 并发送
+`activeGamepadMask=0`，确认 mapper 的 active/device/source/source-generation 全部清空，再以更高
+operation generation resume，并以更高 source generation 连接目标。removal/clear/connect 永久失败均
+升级 N3-07 SessionStop/local-terminal；同一 session 不接纳目标来源。single exact pending frame 阻止
+overtake，全部 12 类生命周期触发继续复用 N3-07。审查修复进一步分离 boundary-retry/resume
+generation，增加 HandoffBoundaryPending/HandoffResuming、retired-lane tombstone 原位复用，并使未知
+phase 与 inactive-hat NaN fail closed；20 次双向换源后只保留两条来源 lane，旧 generation 仍拒绝。
+
+host normal/strict、ASan/UBSan 顺序三轮与 TSan 均为 **714 total / 698 pass / 16 fail**；16 项失败
+仍仅为既有 VNC 本地 TLS fixture `start()`，28 个 aggregator 与 17 个 mapper tests 全 PASS，
+sanitizer/race report 为零，四份 analyzer 零诊断。arm64-v8a/x86_64 archive 各含一个 object；
+无 caller 时 object 未进入 `rdpnapi`，无 aggregator 动态符号，defined/undefined 仍为 arm64
+**16114/705**、x86_64 **15645/703**。两项 Hvigor、signed HAP、Light/vendor/TOTP 与 diff check PASS。
+
+本 checkpoint 未修改 production common-c、公共 `InputHandler`、共享 telemetry/render/audio、
+RDP/RustDesk/SSH/VNC 业务源码、NAPI、ArkTS、UI 或云，也不改变 first-frame、streaming、灰色 FAB、
+protocolAvailable 或六项 release truth。N2-09 继续 EXTERNAL PENDING。当前唯一可直接执行的代码任务
+为 U1-01：冻结 RustDesk 的 FAB→现代协议选择→单 Sheet 路由、返回/关闭、68vp 协议卡和添加页视觉
+基线，新增只承载可用性/点击路由的纯 picker policy；不抽取或修改任何其他协议页面。U1-01 不接
+Moonlight runtime，不解除本地-only、灰色入口或发布门禁。
+
+复用 reviewer task `019fe966-d99a-7ce1-8b53-4ef725597053` 对 `fef723770..6787cc3fb` 完成最终复核，
+P0/P1/P2/P3 全 0；receipt `moonlight-n3-08-gpt5-6787cc3fb-2026-08-11`。复核确认 staged boundary
+retry、retired lane、20 次换源、fail-closed 值域和 dormant 产品隔离全部闭环，未创建新 reviewer。
+
+#### 15.7.24 U1 RustDesk UI 基线覆盖决定（2026-08-11）
+
+产品决定 Moonlight UI 不再以 VNC 页面为参考。U1 的唯一设计基线改为当前 RustDesk：FAB 仍走
+`resetForm()`、`resolveFabAddStyle()`、`openSheetSafely()` 和唯一 `showAddSheet`；现代选择页继续由
+`HostAddWizardSheet`/`HostProtocolPicker` 承载，Moonlight 与 RustDesk 调用同一个
+`protocolOption()`，保持 68vp 高度、18vp 水平内边距、16vp 圆角、标题/副标题字号、卡片间距与
+关闭行为一致。当前 Moonlight 仍为末项、0.58 opacity、唯一“即将支持”且点击零路由。
+
+品牌资源锁定 Moonlight Qt `2e13ed9977bc31c73caf8428f08f58d793313ece` 的
+`app/res/moonlight.svg`，原始 SHA-256 为
+`6fd0ee4fe5b4aad5abaa5d5c9acb9f7d1bda0abadfe9d1582115de9b4ba16aa2`。产品资源只做确定性单色
+转换：保留 256 viewBox、128/96 半径与原 starburst 坐标，把白色内圆改为透明孔、统一
+`currentColor`，由 ArkUI `fillColor()` 适配主题/禁用色；加载失败回退
+`sys.symbol.gamecontroller_fill`。provenance、NOTICE、SPDX、artifact hash 与 source offer 必须同步。
+
+U1-04 的 Moonlight 四步添加页只复用 RustDesk 的视觉和交互语法：36vp 返回按钮、标题/步骤说明、
+模式卡、字段、错误提示、44vp 主按钮、同一 Sheet owner、返回协议列表和关闭生命周期。不得复制
+RustDesk relay/TOTP/credential 业务状态，也不得引入第二个 add Sheet、固定延迟或 Moonlight 云路径。
+实体/虚拟手柄产品接线仍归 S1-05A，ArkTS 不编码或直发 Moonlight 手柄协议。
+
+#### 15.7.25 U1-01～U1-03 RustDesk 风格灰色入口 checkpoint（2026-08-11）
+
+`c38ff6265` 完成 U1-01～U1-03，审查修复 `71e9902c9`、`7eaad950b` 收紧合规、计划来源和定向测试。
+`HostProtocolPicker` 没有复制第二套卡片，也没有修改
+`RustDeskAddFlow`：RustDesk 与 Moonlight 继续调用同一个 `protocolOption()`；Moonlight 只增加默认
+为 false 的 `moonlightProtocolAvailable`、纯 `HostProtocolPickerPolicy` 和品牌图标分支。默认状态固定
+为末项、0.58 opacity、唯一“即将支持”，禁用点击返回空 route；未来显式 enable 时 route 合同与
+RustDesk 相同。`HostAddWizardSheet` 只透传该 fail-closed prop，`HostListPage` 的 FAB owner、
+`resetForm()`、`openSheetSafely()` 和 `showAddSheet` 未改。
+
+图标来自 Moonlight Qt revision `2e13ed9977bc31c73caf8428f08f58d793313ece` 的
+`app/res/moonlight.svg`。上游 SHA-256 为
+`6fd0ee4fe5b4aad5abaa5d5c9acb9f7d1bda0abadfe9d1582115de9b4ba16aa2`，确定性单色可着色资源
+SHA-256 为 `4f5ef547e33767287e3438a6d1598a1bdef6e49df4678a5f7f214ec58c9e5886`；资源加载失败回退
+`sys.symbol.gamecontroller_fill`。provenance、NOTICE、SPDX、source offer、artifact hash 与 Light
+门禁同步完成。
+
+两项强制 Hvigor 均 BUILD SUCCESSFUL，并生成 signed HAP。该 HAP 已通过沙箱外 HDC 安装并启动；
+协议选择页实际渲染官方几何的禁用色 Moonlight 图标，点击卡片后 UI tree 仍同时包含“添加远程主机”、
+“Moonlight”和唯一“即将支持”，证明没有进入添加路由。Light、117-file vendor、SBOM JSON、资源
+SHA 与 `git diff --check` 均通过。新增 3 个 pure policy 测试已注册，Moonlight focused 总数为
+154 tests / 21 describe；`ohosTest` task 仍未注册，因此不声明设备 Hypium 执行通过。
+
+隔离范围为精确 diff：未修改 `RustDeskAddFlow.ets`、`HostListPage.ets`、CloudStore、
+`CloudSyncPolicy.ets`、任何 native 文件或其他协议业务文件；在线云表仍精确为原 8 表。该入口不创建
+Moonlight host、不访问 repository/native/network，不产生轮询、线程或后台任务，因此不会改变其他
+组件的运行时路径或性能。U1-04 后续已按第 15.7.26 节完成；该 checkpoint 当时的下一 UI 任务为 U1-05，
+U1-05 现已按第 15.7.27 节完成，当前下一 UI 任务为 U1-06。
+
+`71e9902c9` 为图标增加 exact-path GPL-3.0-only REUSE override 与 Moonlight Game Streaming Project
+contributors 归属，并让 Light 精确验证 REUSE、NOTICE、source offer、SBOM package/file/checksum/
+license/relationships；权威计划的设置、toolbar、HUD 实施来源统一为 RustDesk 或协议无关公共构件。
+禁用回调次数、enabled route、品牌加载失败 fallback mode 和 enabled/disabled tint 也都由组件实际
+消费的 pure policy 覆盖。修复后两项 Hvigor、signed HAP、Light 与 diff check 重新通过。
+`7eaad950b` 进一步补齐根 `LICENSES/GPL-3.0-only.txt` 和 exact hash 门禁、SPDX 单文件 package
+verification code，并将 descriptor、`protocolIcon()` 与组件渲染 fallback 统一到唯一
+`moonlightSystemFallbackIcon()` 字面资源映射；对应定向断言和双 Hvigor/Light 再次通过。
+复用 reviewer task `019fe966-d99a-7ce1-8b53-4ef725597053` 完成最终复核，P0/P1/P2/P3 全 0；
+receipt `moonlight-u1-01-03-gpt5-7eaad950b-2026-08-11`。复核独立确认 GPL 正文/hash、SPDX 单文件
+verification code、唯一 fallback 映射、RustDesk-only UI 来源和其他组件隔离全部闭环。
+
+#### 15.7.26 U1-04 RustDesk 风格四步本地添加合同 checkpoint（2026-08-11）
+
+`dd6ec9c5` 新增 dormant `MoonlightHostAddFlow.ets` 与 `MoonlightHostAddFlowPolicy.ets`。UI 只采用
+RustDesk 既有 20vp 页面留白、36vp 圆形返回、20/12vp 标题层级、模式卡、44vp 字段/主按钮、
+错误提示与单 add Sheet owner；四步为查找→验证→配对与信任→完成。未复制 RustDesk relay、TOTP、
+credential 或保存状态，也未建立第二 Sheet owner。
+
+自动发现使用独立 owner/generation key，外部 candidates/running 只有 exact key 匹配才可见；离开、
+切手动、验证和重扫均 cancel-before-restart。验证、配对、信任、目录和保存使用 operation generation。
+PIN 只接受 4 位数字，绝对 deadline 在 await 返回后再次校验；异常、返回、取消、过期和组件消失统一
+停止 timer、取消 owner、增长 generation 并清除 PIN/expiry。证书指纹必须是 64 位 SHA-256；
+changed certificate 在调用 trust port 前阻断，显式拒绝清 paired/temporary identity 并要求重新配对，
+trust persistence failure 则保留 paired/pending 供安全重试。duplicate UUID 不创建第二条 host。
+
+所有外部 callbacks 默认 fail closed。完成页只有在 local persistence port 返回
+`localCommitted=true` 时设置 `savedLocally` 并调用 `onSaved`；当前 `HostListPage` 不传 discovery、
+Host Control、trust、catalog 或 repository callback。它只增加 thin dormant route/owner token，并显式
+向 picker 传 `moonlightProtocolAvailable: false`，所以组件不会在产品路径挂载，也不会启动 network、
+native、repository、timer、thread 或后台工作。Moonlight 云路径继续 parked，在线表仍为既有 8 表。
+
+新增 10 个 policy cases 后聚合为 161 tests / 21 describe；两项 Hvigor、signed HAP、Light、
+117-file vendor 与 `git diff --check` PASS。最终 HAP SHA-256 为
+`847874f51e54a4bac23c779fcb1c544cda7a6b7d17a6f473ba8c4da9c9937d97`，沙箱外 HDC 安装/启动成功；
+点击禁用 Moonlight 后仍只有“添加远程主机”“Moonlight”“即将支持”，没有进入添加页。
+复用 reviewer task `019fe966-d99a-7ce1-8b53-4ef725597053`，修复 discovery fence、changed certificate、
+reject retry 和 PIN lifecycle/deadline 后，最终 P0/P1/P2/P3 全 0。该 checkpoint 当时以 U1-05 为下一
+UI 任务；它只能
+增加 dormant save-and-open handoff，仍不得开放 picker 或伪造 local/runtime truth。
+
+#### 15.7.27 U1-05 RustDesk 单 Sheet 保存后交接合同 checkpoint（2026-08-11）
+
+`46a2e7d3` 新增 protocol-neutral `HostAddPostSaveHandoff`，只承载 destination、稳定本地主机 ID、
+owner token 与 generation；禁止携带 host snapshot、route object、callback、secret 或协议私有状态。
+`HostListPage` 只在共享 Add Sheet 的原生 `onDisappear` 后消费 handoff，不增加 fixed delay、第二 Sheet、
+Navigation route、timer、network、native、repository 或 cloud 调用。目标页必须在 U1-06 按稳定 ID 从
+本地 repository/cache 重读，不能直接信任 Sheet 回调中的对象副本。
+
+`MoonlightLocalSaveResult` 分离 repository 的 `localCommitted` 事实与 `hostId` 的交接资格；正常
+“保存并打开”只有已提交且 ID 有效才创建 `moonlight_catalog` handoff。`a73b8959` 在 repository port
+前增加 `activeOperation/savedLocally` 门禁，使极快双击只能产生一次写入。`094a8b3b` 修复
+`localCommitted=true + blank hostId`：仍保持 terminal committed 并禁止重写，只在 page active、Sheet
+未 closing、owner exact 时安全关闭，不创建目录 handoff。所有迟到 owner/generation callback 均拒绝。
+
+共享 handoff policy 当前 8 cases，覆盖 rapid tap、原生 Sheet animation、page close、stale owner、late
+generation、invalid payload 与 committed-without-ID；Moonlight 聚合为 162 tests / 21 describe，均只声明
+compile-registered。最终代码 `094a8b3b` 后两项 Hvigor、Light、117-file vendor、`git diff --check`、
+signed HAP 与沙箱外 HDC 安装/启动/禁用点击均 PASS；HAP SHA-256 为
+`89ab30e1327e9f902e2370cfa9308fc5a29f9d559e7aaedf2168becb5e3883af`（当前证书重签）。复用 reviewer task
+`019fe966-d99a-7ce1-8b53-4ef725597053`，首轮唯一 P2 修复后最终 P0/P1/P2/P3 全 0。
+
+该 checkpoint 未实现实际目录 Navigation 页面、主机详情、设置页、连接页或串流内浮层，也未开放
+picker、真实保存、Host Control、runtime、NAPI 或云。UI 后续继续只以 RustDesk 与通用 Theme token
+为设计/交互基线；VNC 只保留跨协议隔离与回归检查意义。U1-06 是唯一下一 UI 任务。
+
+#### 15.7.28 U1-06～U1-12 本地 UI shell closeout（2026-08-11）
+
+代码 checkpoint `2c37b0edf` 将后续 UI 合同落到当前源码，但保持所有真实能力 fail closed：
+
+- `MoonlightHostDetailPage.ets`、`MoonlightAppCatalogPage.ets`、`MoonlightSettingsPage.ets` 和
+  `MoonlightStreamPage.ets` 已注册到 Navigation。共享 RustDesk add Sheet 的原生 `onDisappear`
+  handoff 只传稳定本地主机 ID；目录/详情按 ID 重读本地 records/cache，并用 owner/generation
+  fence 刷新空、旧、部分、离线、主机忙、大目录和坏封面状态。
+- `MoonlightLaunchSheet`、`MoonlightConnectStageOverlay`、`MoonlightSessionToolbar`、
+  `MoonlightControlCenter`、`MoonlightControllerOverlay` 和 `MoonlightDiagnosticsHud` 已按 RustDesk
+  语法与 Theme token 建立 UI 壳。它们不代表真实 launch、RTSP、首帧、OHAudio、实体手柄或 Sunshine
+  连接可用；没有 runtime proof 时不发起网络/Host Control。
+- Moonlight 设置统一进入一个 surface，共 9 个 section：快速、画面、音频、输入、网络安全、后台、
+  诊断、云范围、Trust。公共 display/PIP 不重复，冗余“主机管理”已删除；首页是唯一主机管理入口。
+  `SettingsSheetRoutePolicy` 统一解析连续 24–32 leaf route，每个入口都进入同一 bindSheet 生命周期。
+- PC 新增独立灰色 Moonlight sidebar slot，FAB 仍传 `moonlightProtocolAvailable=false`；保持 0.58 parent
+  opacity、唯一“即将支持”和点击零路由，不创建 timer、network、native、repository、cloud 或后台任务。
+- 本次 fresh signed HAP 已由沙箱外 HDC 安装/启动到 PC `127.0.0.1:5555` 和手机 `127.0.0.1:5557`。
+  唯一使用的截图证据为 `/private/tmp/moonlight-final-20260811-pc-full.jpeg` 与
+  `/private/tmp/moonlight-final-20260811-phone-settings.jpeg`（对应 `.json` UI tree）；PC 证明 RDP
+  主页面与独立灰色 Moonlight 栏位并存，手机证明设置副标题为“串流画面、音频、控制与本地安全设置”且
+  没有“主机管理”。不引用旧截图。
+- 两项强制 Hvigor 与 signed HAP 通过；162 Moonlight focused tests/21 describe 加 8 shared handoff
+  cases 为 compile-registered，`ohosTest` 仍受 `00306054` 未注册阻塞。静态增量隔离确认没有改动
+  RustDesk、RDP、SSH/SFTP、VNC 业务源、native、`CloudSyncPolicy` 或在线 8 表注册；用户未提交的
+  `CloudStore.ets` 云同步改动明确不在本 checkpoint 内。
+
+U1-06～U1-12 的完成含义是“本地 UI/路由/设置合同已落地”，不是产品已开放 Moonlight。当前 S1-01/S1-02
+的唯一 remote-session registry/coordinator dormant contract 已在 `8b1ccd22` 完成；下一实现边界为 S1-03。
+S1-05A 才接真实 HarmonyOS GameController
+listener 与窄 typed NAPI，N2-09 才能由真实 Sunshine 与用户 ARM64 设备提供媒体/生命周期回执。
+
+#### 15.7.29 U1 UI review-fix closeout（2026-08-11）
+
+`6b0c1aa8` 收口了 U1 UI 增量复核发现，并保持所有 Moonlight 真实能力 fail closed：
+
+- `MoonlightRecordPolicy.ets` 将旧记录可读字段与新写入 allowlist 分离；旧记录允许读入后 normalize，新写入拒绝旧设置路径；`MoonlightRecordPolicy.test.ets` 增加 baseline replay/normalization 回归。
+- `MoonlightSettingsPage.ets` 的两个证书变化开关按安全合同固定为开启且不可操作，并解释变化时必须重新核对与配对；保存以 `localCommitted` 作为本地提交终态，即使回读确认暂失败也清理 dirty，避免重复写入；`MoonlightSettingsLocalService.test.ets` 覆盖 `readback_failed + localCommitted`。
+- `MoonlightStreamPage.ets` 负责 bindSheet reopen timer 的 page-active、generation、取消和离开清理，避免离页后旧 timer 重开浮窗；PC sidebar 使用 `MoonlightBrandIcon` 官方几何可着色资源/回退图标，仍为 0.58 灰态、唯一“即将支持”、点击无 route。
+- 复用 reviewer task `019fe966-d99a-7ce1-8b53-4ef725597053` 对 `2c37b0edf..6b0c1aa8` 复核，P0/P1/P2/P3 全 0；RDP、RustDesk、SSH/SFTP、VNC、公共输入、native/CMake/NAPI、`CloudSyncPolicy` 和现有云表注册未变更，用户 `CloudStore.ets` 排除且未暂存。
+- 最新 fresh r2 证据只使用本次最新 HAP 重装后生成的文件：PC `/private/tmp/moonlight-final-20260811-r2-pc-full.jpeg`；phone `/private/tmp/moonlight-final-20260811-r2-phone-settings.jpeg`、`...-scroll.jpeg`；accordion `/private/tmp/moonlight-final-20260811-r2-moonlight-accordion.jpeg`、`...-lower.jpeg`；quick `/private/tmp/moonlight-final-20260811-r2-quick-sheet.jpeg`；network `/private/tmp/moonlight-final-20260811-r2-network-sheet.jpeg`，每项均有对应 `.json` UI tree。它们证明 RDP 主页未受影响、Moonlight 独立灰栏位存在、手机九段设置统一排版、无重复“主机管理”、网络安全开关为不可操作的安全状态。
+- `default@OhosTestCompileArkTS`、`assembleHap` 均按强制命令重新 BUILD SUCCESSFUL；最终签名 HAP SHA-256 为 `7a723ce9b300d6b8e131006472ed2efa8d7985a8cd672385857e468a84181b87`；沙箱外 HDC 已在 `127.0.0.1:5555` 与 `127.0.0.1:5557` 安装并启动。`ohosTest` 仍因 `00306054` 未注册而不宣称设备 PASS。
+
+本节完成的是 U1 UI shell 的审查收口，不是 Moonlight 串流能力发布。下一实现边界仍为 S1-01/S1-02；真实
+Sunshine、媒体首帧、OHAudio/Surface、实体手柄和 ARM64 长稳验收仍需外部 runtime receipt。
+
+#### 15.7.30 S1-01/S1-02 dormant session coordinator closeout（2026-08-12）
+
+`8b1ccd22` 将 S1-01/S1-02 落成可复核但仍 dormant 的连接合同，未打开 Moonlight 产品能力：
+
+- `RemoteProtocol.moonlight` 已进入通用状态/能力类型；clipboard、file transfer、multi-display 明确 unavailable，Moonlight streaming 需要 runtime、Host Control、streaming transport 三项 truth 同时成立，当前因无 runtime port 继续为 false。
+- `ActiveRemoteSessionRegistry` 保持唯一 active-session owner。Moonlight 只在 future native launch accepted 后写入最小 marker，endpoint 固定为空；transient host address 不进 AppStorage、registry、local record 或云。清理要求 exact ownerScopeId/accountGeneration/sessionId/protocol，避免 stale callback 影响其他协议。
+- 新 `MoonlightSessionCoordinator` 负责 scope/request validation、discovery/launch/first-frame/stream-stable/transport-loss/stop/cancel 过渡、generation/sequence fence、Surface ID 校验、跨协议仲裁和 owner/account 失效；无 socket、native handle、media queue、secret、cloud 或 background work。
+- `MoonlightAppCatalogPage` 是唯一薄入口，未来只把一次性 host address 交给 runtime port；`MoonlightStreamPage` 监听 `AccountSessionCoordinator`，账户切换使旧 session 失效，页面退出取消 route-owned session 并退订。没有改 CloudStore 或任何现有协议业务实现。
+- 新增 9 个 coordinator focused cases、1 个 capability case并注册测试列表；exact `default@OhosTestCompileArkTS` 与 `assembleHap` 在 `4548499c` 后均通过，签名 HAP SHA-256 为 `c4af9e1396acada1a213ba68bce9ce999f3cec9c3ffac7525a57382ffb866d0d`。HDC 已在 PC `127.0.0.1:5555` 和手机 `127.0.0.1:5557` 安装/启动。
+- 本次视觉验收只使用 2026-08-12 新截图及 UI tree：`/private/tmp/moonlight-final-20260812-s1-final-pc-root.jpeg`、`...-pc-picker.jpeg`、`...-pc-picker-click.jpeg`。PC RDP 页面仍正常，Moonlight 维持灰色官方可着色图标与“即将支持”；点击后 route 仍为 `pages/HostListPage`。
+- 复用 reviewer task `019fe966-d99a-7ce1-8b53-4ef725597053` 对 `6b0c1aa8..8b1ccd22` 做增量复核；在回执确认前，该条只记为 pending，不提前写成 review PASS。唯一下一实现边界为 S1-03，N2-09 与 S1-05A 仍需真实外部/设备证据。
+- `4548499c` closes the first review findings: atomic shared-session reservation/promotion, prelaunch cancel and stop failure local-terminal cleanup, and strict post-launch native-session callback fencing. `647113a5` adds the actual 5-second watchdog and corrects the prelaunch-cancel contract test. The coordinator suite now has nine cases; exact gates after the final code checkpoint passed and the final deployed signed HAP SHA-256 is `95d9cc17067981b7e5c4bdae3ec7fe3d0de14060a0dc75e87b638dca328fe504`.
+- The latest visual acceptance uses only fresh 2026-08-12 files captured after installing that final `647113a5` HAP: PC large-screen sidebar `/private/tmp/moonlight-final-20260812-s1-final4-pc-maximized2.jpeg`, PC picker/disabled-click `/private/tmp/moonlight-final-20260812-s1-final4-pc-picker2.jpeg` and `/private/tmp/moonlight-final-20260812-s1-final4-pc-picker-click.jpeg`, phone root/picker/disabled-click `/private/tmp/moonlight-final-20260812-s1-final4-phone-root.jpeg`, `/private/tmp/moonlight-final-20260812-s1-final4-phone-picker2.jpeg`, `/private/tmp/moonlight-final-20260812-s1-final4-phone-picker-click.jpeg`, and phone settings/accordion/bindSheet `/private/tmp/moonlight-final-20260812-s1-final4-phone-settings-top.jpeg`, `/private/tmp/moonlight-final-20260812-s1-final4-phone-settings-lower2.jpeg`, `/private/tmp/moonlight-final-20260812-s1-final4-phone-moonlight-accordion2.jpeg`, `/private/tmp/moonlight-final-20260812-s1-final4-phone-quick-sheet3.jpeg`; each was viewed during this checkpoint. PC RDP remains unchanged, the separate Moonlight sidebar slot is grey with “即将支持”, disabled clicks are no-ops, and the phone keeps the consolidated Moonlight settings section without a duplicate host-management entry.
+- The reused reviewer task rechecked `6b0c1aa8..647113a5` and returned PASS with no actionable findings. The next implementation boundary remains S1-03; N2-09 and S1-05A still require external/runtime evidence.
 
 ### 15.8 N2：RTSP、视频、音频和媒体时钟
 
 | ID | 文件与精确动作 | 必须验证 | 完成证据/提交点 |
 | --- | --- | --- | --- |
-| N2-01 | 定义 `MoonlightStreamConfig`/协商结果，严格区分 requested/effective；只允许 capability intersection | H.264 baseline MVP、unsupported codec/fps/size、host fallback | UI 后续只能显示 effective，不猜测 |
-| N2-02 | 桥接 common-c RTSP/SDP、video/audio/control callbacks 到 owner；建立阶段事件和 cancel 边界 | 每阶段超时/取消/乱序/失败；无首帧不进入 streaming | 事件序列匹配 D1 状态机 |
-| N2-03 | 新建 `moonlight/media/MoonlightVideoBridge.*`：把 `DECODE_UNIT` 的 LENTRY 链按 buffer type 组装/零拷贝边界，保存 SPS/PPS/VPS、frameType、decode number | 分片、配置帧、IDR、乱序/丢包、过大帧、fuzz/ASan 可用环境 | 不把链首指针当单 buffer |
-| N2-04 | 通过现有 `hw_decoder` owner/generation API 接 OH_AVCodec；补 Moonlight codec config/keyframe request/queue policy，不回退现有 renderer lease | Surface 创建/销毁/重绑、旧 generation、首帧、20 次 PIP/rebind、黑屏恢复 | 若需公共 decoder 改动，先加旧协议回归测试 |
-| N2-05 | 定义无 Surface 策略：继续网络但丢弃视频/按 capability 暂停，不无限缓存；重新绑定后请求 IDR | 后台、锁屏、PIP、旋转、fold/window resize、Surface 丢失 | 内存稳定，恢复首帧有时限 |
-| N2-06 | 新建 `MoonlightAudioBridge.*`：Opus/Opus multistream→S16LE PCM，首版 stereo；明确采样率、frame size、PLC/FEC、降混 | golden PCM、损坏包、丢包、stereo、unsupported surround、内存清零 | 复用现有 Opus 时避免重复符号/版本冲突 |
-| N2-07 | 接现有 owner/generation-aware `audio_player`，实现 queue/flush/pause/resume/focus；音频失败允许用户选择无音频继续 | underrun、焦点丢失、切后台、断开后无残音、旧 callback | 不把音频 ready 当视频 first-frame |
-| N2-08 | 建立 media clock/stats：network→decode→render、audio queue、FEC/丢包、p50/p95；采样节流，native 汇总后低频送 ArkTS | 统计正确性、不可用值为 absent 而非 0、性能开销 | 默认日志不含地址/token/媒体 payload |
-| N2-09 | 真实设备完成 720p/1080p、30/60fps、2 小时、温控、前后台/PIP/旋转；H.264+Opus 为唯一 release blocker | 第 10.5 节阈值和录屏/log receipt | HEVC/AV1/HDR/7.1 不通过只保持关闭；提交 `media-mvp` checkpoint |
+| N2-01 | **CONTRACT PASS / DORMANT `db5865c53`**：定义 `MoonlightStreamConfig` requested/effective/offer，严格区分 capability intersection 与 negotiated | 36 focused；全量与 ASan/UBSan 476/476；双 ABI/HAP/NAPI 隔离不变 | UI 后续同时显示 requested/D1 effective/runtime effective，不猜测；当前无 runtime caller |
+| N2-02 | **CONTRACT PASS / DORMANT `248e704ab`**：唯一 hidden adapter 把 N2-01 offer 映射到官方 common-c，并复用既有 owner 收束 process-global callbacks、11-stage/deadline/termination、setup-derived video/audio 与 secret cleanse | 21 focused；普通/ASan/UBSan 497/497；strict/analyzer/race harness、双 ABI/HAP/NAPI/include、双 Hvigor与合规通过；最终 `sol low` review 无 P0/P1/P2 | product media port unavailable，无 NAPI/UI/cloud caller；transport-ready 不是 first-frame；N2-03 只接 decode-unit bridge |
+| N2-03 | **CONTRACT PASS / DORMANT `34d2ffa7a`**：bounded `DECODE_UNIT/LENTRY` projection、owned AU、SPS/PPS/VPS generation、IDR/backpressure/teardown；上游无 offset/decodeNumber | 8 focused；普通/strict/TSan 506/506、ASan/UBSan 三轮、analyzer、双 ABI/HAP/NAPI/include、双 Hvigor与合规通过 | product sink unavailable、first-frame 恒 false；N2-04 只接既有 decoder owner |
+| N2-04 | **CONTRACT PASS / DORMANT `bee0ac1da`**：窄 sink/port 复用既有 decoder/renderer exact owner；H.264 Annex-B、typed admission/config recreate、output→NativeImage→actual swap 三段首帧 | 9 focused；全量/strict/TSan 515/515、ASan 三轮、analyzer、双 ABI/callback/HAP/NAPI/双 Hvigor通过 | archive 无 caller，不新增 singleton/NAPI/UI；HAP runtime proof 前仍 unavailable，N2-05 只加 Surface lifecycle |
+| N2-05 | **CONTRACT PASS / DORMANT `7992279c7`**：pure-native exact-generation Surface lifecycle；无 Surface copy 前 typed drop，temporary suspend 保留 connection/decoder handle，exact rebind 后等新 IDR，同 generation resize 不清首帧 | 8 focused；全量/strict/TSan 523/523、ASan 三轮、analyzer、双 ABI/callback/HAP/NAPI/双 Hvigor通过 | 无 ArkTS/PIP/NAPI/product caller；423 paths、ABI、8 表、灰 FAB 和六项 truth 不变；S1-08 才接产品生命周期 |
+| N2-06 | **CONTRACT PASS / DORMANT `8d2fd15b3`**：hidden `MoonlightAudioBridge` 完成 48 kHz exact stereo family-1 Opus multistream→interleaved S16LE；修正官方 null+0 PLC seam，冻结 owner/config/operation generation、有界 ownership、typed result 与 teardown | host normal 533 total/517 pass/16 既有 VNC fixture fail；10 个新增 audio tests 全 PASS；strict native、arm64/x86_64 native product、两 ABI Opus link probe PASS；后续 N2-07 已重新通过双 Hvigor | 只复用现有 pinned 1.5.2，不直接接 `audio_player`/OHAudio/NAPI/UI；audio ready 永不替代视频首帧；N2-07 已用独立 sink 复用现有 owner/queue；FAB、8 表、六项 truth 仍关闭 |
+| N2-07 | **CONTRACT PASS / DORMANT `9272f1c9c`**：hidden exact-owner sink 只委托现有 `DispatchActiveNative`/`SuspendActiveNative`/`TakeActiveNative` 和 owner lease；完成 48 kHz stereo PCM、mute/focus/background/pause/resume/stop/cleanup generation fence | 10 focused 全 PASS；normal/strict/ASan/UBSan/最终 TSan 为 532 pass/16 既有 VNC fixture fail；双 ABI、双 Hvigor、signed HAP、Light 通过 | 不新增 renderer/registry/queue/worker/singleton/NAPI/ArkTS/product caller；音频不改变视频首帧或发布 truth；N2-08 已完成 |
+| N2-08 | **CONTRACT PASS / DORMANT `57b1d7da4`**：hidden exact-generation media clock/stats；最多 256 槽，absent/zero 分离，network/decode/render/end-to-end/audio queue p50/p95/max，RTP/FEC/audio counter reset、节流和饱和合同 | 13 focused 全 PASS；normal/strict/ASan/UBSan/TSan 545 pass/16 既有 VNC fixture fail；analyzer、双 ABI、ABI 精确不变、双 Hvigor、signed HAP、Light 通过 | 私有 archive 无 caller 时不进入 `rdpnapi`；无 NAPI/ArkTS/UI/cloud/log/product caller；N2-09 外部 pending，N3-01 已完成 |
+| N2-09 | **EXTERNAL PENDING**：真实设备完成 720p/1080p、30/60fps、2 小时、温控、前后台/PIP/旋转；H.264+Opus 为唯一 release blocker | 第 10.5 节阈值和录屏/log receipt；必须真实 Sunshine + 用户 ARM64 实机 | HEVC/AV1/HDR/7.1 不通过只保持关闭；外部回执完成后提交 `media-mvp` checkpoint |
 
 ### 15.9 N3：键鼠、触摸、实体/虚拟控制器和输入释放
 
 | ID | 文件与精确动作 | 必须验证 | 完成证据/提交点 |
 | --- | --- | --- | --- |
-| N3-01 | 新建 `MoonlightInputBridge.*`，输入事件均带 session/generation/device/source/timestamp；owner 路由不依赖现有全局 active adapter | 旧 session 丢弃、两协议仲裁、失焦、重复事件 | 对公共 InputHandler 的改动有旧协议测试 |
-| N3-02 | 建立 HarmonyOS key→Moonlight key 合同、修饰键 once/lock、text vs physical key、全量 key-up | 常用键、Ctrl/Alt/Shift/Win/Fn、IME、软硬键盘、异常退出 | 永远保留本地逃生键 |
-| N3-03 | 实现绝对鼠标、相对鼠标、capture/constraint、滚轮、按钮和 content-rect 映射；不支持 raw 时降级并解释 | letterbox/fill/1:1、DPI、窗口失焦、Esc 两段、按钮释放 | 不产生坐标越界/幽灵按键 |
-| N3-04 | 实现直接触控与触控板手势，多点 id 稳定；overlay hit map 与远端区域互斥 | 多点、手势 cancel、旋转/缩放、软键盘、L3/L4 overlay | 模式切换前统一 flush |
-| N3-05 | 用 API 23 probe 结果接实体控制器：稳定 device→slot 映射、轴/死区/trigger、断开 neutral；多玩家能力未验证就限制一槽 | 至少两类手柄、热插拔、蓝牙断开、后台、slot 冲突 | 未枚举能力不出 UI |
-| N3-06 | rumble/LED/motion/battery 分能力接口；默认返回 unsupported，只有官方 API+真机证据才开启 | capability false 零调用，支持设备生命周期/频率限制 | 不以空成功模拟反馈 |
-| N3-07 | 新建统一 `MoonlightInputFlushPolicy`：overlay、mode change、失焦、PIP、后台、Surface、reconnect、stop、generation change 全部 key-up/mouse-up/touch-cancel/controller-neutral | 每一触发点事件序列和幂等；stop 超时仍本地释放 | 这是 S1 UI 的前置硬门 |
-| N3-08 | 虚拟控制器只先定义模型/布局验证/编辑态不发送；MVP 若未排期则 feature flag 关闭 | safe area、冲突热区、布局坏数据、编辑/退出 neutral | 不让占位 UI 暗示已支持；提交 `input-mvp` checkpoint |
+| N3-01 | **CONTRACT PASS / DORMANT `fe46025ef`**：hidden `MoonlightInputBridge`；exact session/owner/input/source generation、device/source/sequence/timestamp、固定 32 lanes/64-byte body、typed ordering/backpressure 与 neutral-release lifecycle；owner 路由复用唯一 Moonlight owner 和共享跨协议 lease | 12 focused 全 PASS；normal/strict/ASan/UBSan/TSan 557 pass/16 既有 VNC fixture fail；analyzer、双 ABI、ABI 不变、双 Hvigor、signed HAP、Light 通过 | 未修改公共 InputHandler；archive 无 caller 时不进入 `rdpnapi`；无 NAPI/ArkTS/UI/cloud/product caller；N3-02 下一 |
+| N3-02 | **CONTRACT PASS / DORMANT `a552b30a2`**：hidden bounded keyboard mapper；HarmonyOS namespace→官方 prefixed VK、双侧 modifier once/lock、严格 UTF-8 text、逐命令状态提交、精确续传、跨设备 key-up 拒绝、16-command 全释放、物理 Esc 本地逃生 | 15 focused 全 PASS；normal/strict/ASan/UBSan/TSan 572 pass/16 既有 VNC fixture fail；analyzer、双 ABI、ABI 不变、双 Hvigor、signed HAP、Light 通过 | archive 无 caller 时不进入 `rdpnapi`；无公共 InputHandler/NAPI/ArkTS/UI/cloud/product caller；N3-03 下一 |
+| N3-03 | **CONTRACT PASS / DORMANT `1787da821`**：hidden bounded pointer mapper；absolute/relative、官方五键与双轴滚轮、physical-pixel content rect、letterbox/fill/1:1/pan、四向旋转、DPI/fraction residual、exact generation 与精确续传 | 18 focused 全 PASS；normal/strict/ASan/UBSan/最终 TSan 590 pass/16 既有 VNC fixture fail；analyzer、双 ABI、ABI 不变、双 Hvigor、signed HAP、Light 通过 | capture/constraint/raw-relative 仅解析能力且平台 unavailable；archive 无 caller 时不进入 `rdpnapi`；无公共 InputHandler/NAPI/ArkTS/UI/cloud/product caller；N3-04 下一 |
+| N3-04 | **CONTRACT PASS / DORMANT `ebd2fa0bc5`**：官方 28-byte direct touch、稳定 10-contact id、cancel/cancel-all、rotation/content transform 与 overlay lifetime ownership；触控板复用 pointer mapper 完成一/双/三指和拖拽，固定 3 contacts/16 lanes、exact generation 与 retry | 21 focused 全 PASS；normal/strict/ASan/UBSan/最终 TSan 611 pass/16 既有 VNC fixture fail；analyzer、双 ABI、ABI 不变、双 Hvigor、signed HAP、Light/vendor 通过 | host direct capability 与平台 listener 均 fail closed；archive 无 caller 时不进入 `rdpnapi`；无公共 InputHandler/NAPI/ArkTS/UI/cloud/product caller；N3-05 下一 |
+| N3-05 | **CONTRACT PASS / DORMANT `1aadfba24`**：official arrival/full-state 参数投影；API 23 button/axis/trigger/hat、7%/13% deadzone、Y 反向、stable slot 0、background neutral、disconnect active-mask clear、exact generation 与 retry | 16 focused 全 PASS；normal/strict/ASan/UBSan/最终 TSan 627 pass/16 既有 VNC fixture fail；analyzer、GameControllerKit 双 ABI probe、ABI 不变、双 Hvigor、signed HAP、Light/vendor/TOTP 通过 | 一槽直到双手柄真机证据；archive 无 caller 时不进入 `rdpnapi`；无公共 InputHandler/NAPI/ArkTS/UI/cloud/product caller；N3-06 下一 |
+| N3-06 | **CONTRACT PASS / DORMANT `baa9cafef`**：official API∩physical-device evidence；rumble/trigger rumble/RGB LED/adaptive trigger/motion/battery typed command、single retry、200Hz/120s、exact owner/device/operation generation 与 release lifecycle | 16 focused 全 PASS；normal/strict/ASan/UBSan/TSan 643 pass/16 既有 VNC fixture fail；analyzer、双 ABI、ABI 不变、双 Hvigor、signed HAP、Light/vendor/TOTP 通过 | API 23 evidence 全 false，unsupported 零 port 调用；archive 无 caller 时不进入 `rdpnapi`；无公共 InputHandler/NAPI/ArkTS/UI/cloud/product caller；N3-07 下一 |
+| N3-07 | **CONTRACT PASS / DORMANT `02cb13aae` + `36b4e13df` + `337c4f35e` + `ee073afcb`**：bridge admission 在 mapper release 前原子关闭且只放行 lifecycle release；统一 touch→pointer→keyboard→controller→bridge，覆盖 12 trigger、component failure/owner loss、pending/suspended stop、exact terminal replay、stale stop 和 local-terminal | 26 focused 全 PASS；normal/strict/ASan/UBSan/TSan 669 pass/16 既有 VNC fixture fail；analyzer、双 ABI、ABI 不变、双 Hvigor、signed HAP、Light/vendor/TOTP 通过 | archive 无 caller 时不进入 `rdpnapi`；无公共 InputHandler/NAPI/ArkTS/UI/cloud/product caller；N3-08 下一 |
+| N3-08 | **CONTRACT PASS / DORMANT `fef723770` + `6787cc3fb`**：fixed-capacity physical/virtual aggregator/layout validator；独立 boundary retry/resume、retired-lane tombstone；full-state 只走 N3-05→N3-01→common-c | 28 aggregator/17 mapper tests 全 PASS；normal/strict/ASan/UBSan/TSan 698 pass/16 既有 VNC fixture fail；analyzer、双 ABI、ABI 不变、双 Hvigor、signed HAP、Light/vendor/TOTP 通过 | 20 次双向换源与旧回放；真实 listener/NAPI 留到 S1-05A；无第二 owner/port/slot/queue、公共 InputHandler/ArkTS/UI/云/product caller；U1-05 已完成，U1-06 下一 |
 
 ### 15.10 U1：统一视觉、添加流程、主机/目录与设置
 
 | ID | 文件与精确动作 | 必须验证 | 完成证据/提交点 |
 | --- | --- | --- | --- |
-| U1-01 | 快照 `VncSheetLayoutPolicy.test.ets` 和 VNC sm/md/lg/xl、短屏、大字体截图；提取 `RemoteConfigSheetScaffold.ets`，`VncSheetScaffold` 变薄 wrapper | VNC DOM/截图/交互零差异、620vp、density/footer/返回 | scaffold 不持有协议状态/图标硬编码；独立提交 |
-| U1-02 | P0 品牌门通过后添加官方 SVG/确定性转换输出、provenance/SHA/notice；扩展 `ProtocolIconPolicy` 为 system/branded descriptor | light/dark/disabled/high contrast/load failure/accessibility | 门未通过则保留 `gamecontroller_fill`；不自行重绘 |
-| U1-03 | 扩展 `HostProtocolPicker.test`（若不存在则创建）：当前预告态位置、灰色、“即将支持”、点击零副作用；随后仅由 `moonlightProtocolAvailable` 控制启用 | disabled/enabled、键盘/读屏/手柄焦点 | 不改 `ResourceFabPicker`；入口提交可独立回滚 |
-| U1-04 | 新建 `components/hostadd/MoonlightHostAddFlow.ets` 和四步纯 state policy；挂入现有 add Sheet owner | 自动/手动、重复 host、PIN、trust、dirty dismiss、cancel/迟到 generation、短屏/键盘 | 保存成功以 local overlay commit 为准 |
-| U1-05 | “保存并打开”复用 `HostAddConnectionHandoffPolicy.onDisappear`；禁止 fixed delay；目录 page 由 Navigation 打开 | 快速双击、关闭页面、sheet animation、迟到 callback | 同时只有一个 add/preflight sheet |
-| U1-06 | 新建 `MoonlightHostDetailPage.ets`/`MoonlightAppCatalogPage.ets`，HostList 只做薄聚合和导航；目录读 local cache 并异步刷新 | 空/旧缓存/部分失败/离线/主机忙/大目录/封面坏/搜索/焦点 | app cache 失败不删 profile |
-| U1-07 | 新建 `MoonlightLaunchSheet.ets`，接现有 preflight owner/queue；显示 effective config、计费网络、输入和主机忙，开始前不 launch | 400ms/3s/10s、取消、降级、重复开始、主机现有 app | app 单击不直接占网/quit |
-| U1-08 | 修改 `SettingsAccordionPolicy.ets` 在 VNC 后、安全前增加 Moonlight；64vp header、20vp radius、blur/palette/action row 与现有一致 | section order、折叠互斥、light/dark/xl/大字号 | 不在 HostListPage 内硬编码独立视觉 |
-| U1-09 | 修改 `SettingsSheetRoutePolicy.ets` 从当时最大 mode+1 分配连续 Moonlight routes；增加 route→title/height/owner test | 无重复/无 magic number/返回/rapid route | 不复用 VNC 12–22/Terminal 23 |
-| U1-10 | 新建 Moonlight 设置 leaf components：快速、视频、音频、输入、网络安全、后台、诊断、云范围、身份 Trust、主机管理；共享 scope header 与 inheritance controls | 全局/host/profile/session、能力禁用原因、draft/commit failure、reset inheritance | Slider 结束才持久化；session 值不自动上云 |
-| U1-11 | 云范围页消费 D3 状态，物理表和五 scope 默认关闭；identity 显示高敏感说明且首版 disabled | 无账号/未验证账号/crypto off/bootstrap/pending/error/delete cloud | 不显示五张物理表，不宣称 queued 为 synced |
-| U1-12 | 完成 Theme/Breakpoint/无障碍验收：只用 `AppTheme` token；sm<600、md 600–839、lg 840–1439、xl≥1440；PC 300vp sidebar 现状不回退 | light/dark/accent/wallpaper/halo/reduce motion/transparency、200% 字体、读屏、键盘/手柄焦点 | `product-ui` checkpoint；视觉差异有截图批准 |
+| U1-01 | **PASS `c38ff6265` + `71e9902c9` + `7eaad950b`**：冻结 RustDesk FAB→`HostProtocolPicker`→`RustDeskAddFlow` 的单 Sheet 路由和视觉合同；新增纯 `HostProtocolPickerPolicy`，不重构 RustDesk 业务状态 | RustDesk/Moonlight enabled route 等价；Moonlight disabled callback=0；single owner/返回/关闭 | 未修改 RustDesk 或其他协议页面；入口提交可独立回滚 |
+| U1-02 | **PASS `c38ff6265` + `71e9902c9` + `7eaad950b`**：固定 Moonlight Qt 官方 SVG 的确定性单色可着色转换、provenance/SHA/NOTICE/SPDX/source offer/REUSE/license text；扩展 `ProtocolIconPolicy` 为 system/branded descriptor | 原始 SHA `6fd0ee4f...`、本地 SHA `4f5ef547...`、package verification；exact Light/vendor/HDC 渲染通过 | 加载失败保留 `gamecontroller_fill`；不凭记忆重绘 |
+| U1-03 | **PASS `c38ff6265` + `71e9902c9` + `7eaad950b`**：Moonlight 继续调用 RustDesk 同款 `protocolOption`：末项、灰色、0.58 opacity、唯一“即将支持”、点击零副作用；只由 `moonlightProtocolAvailable` 控制未来启用 | disabled/enabled dispatch、唯一 fallback resource、tint policy、HDC 点击零导航；双 Hvigor与 signed HAP 通过 | `ResourceFabPicker` 未改；默认 false，不开放添加页或 runtime |
+| U1-04 | **CONTRACT PASS / DORMANT `dd6ec9c5`**：新增 `MoonlightHostAddFlow.ets` 与纯四步 state policy；RustDesk header/步骤/模式卡/字段/按钮和同一 add Sheet owner；所有外部 port 默认 fail closed | 10 cases：自动/手动、重复 host、PIN/deadline、trust/change/reject、dirty dismiss、operation/discovery owner-generation；双 Hvigor、HDC、Light/vendor/review PASS | picker 仍 false；只有 `localCommitted=true` 才成功；未接 Host Control/repository/native/cloud，U1-05 已完成 |
+| U1-05 | **CONTRACT PASS / LOCAL ONLY `46a2e7d3` + `a73b8959` + `094a8b3b` + `db750cdb`**：“保存并打开”复用 `HostAddConnectionHandoffPolicy.onDisappear`；本地主机保存通过现有 `MoonlightRepositoryPort`，只交接稳定 ID + owner/generation，禁止 fixed delay、第二 Sheet、快照传递；提交事实、恢复状态和目录资格分离 | shared handoff 加 1 个 existing-host detail case；新增 8 个本地 persistence cases 与 1 个 partial/uncertain retry case；双 Hvigor、HDC、review PASS | 只写已有 `moonlightlocalrecords` 的 `localOnly=1` host/trust rows；不注册云表、不上传、不接 Host Control/runtime/cloud；partial/uncertain 禁止普通重试 |
+| U1-06 | **UI CONTRACT PASS / DORMANT `6b0c1aa8`**：`MoonlightHostDetailPage.ets`/`MoonlightAppCatalogPage.ets` 已注册；HostList 只做稳定 ID handoff/薄导航；目录读 local records/cache 并 owner/generation-fenced 刷新 | 空/旧缓存/部分失败/离线/主机忙/大目录/封面坏/搜索/焦点 | app cache 失败不删 profile；真实 Host Control/online status 仍关闭 |
+| U1-07 | **UI CONTRACT PASS / DORMANT `6b0c1aa8`**：`MoonlightLaunchSheet`、connect-stage overlay 与 preflight 壳已接目录；显示 effective config/网络/输入/主机忙，runtime proof 前不 launch | 400ms/3s/10s、取消、降级、重复开始、主机现有 app | UI 不宣称真实 launch/RTSP/首帧；S1-01/S1-02 装配 coordinator |
+| U1-08 | **UI CONTRACT PASS `6b0c1aa8`**：`SettingsAccordionPolicy` 在 VNC 后、安全前增加 Moonlight；单 card、RustDesk/Theme token、64vp header/20vp radius 语法一致 | section order、折叠互斥、light/dark/xl/大字号 | 公共 display/PIP 不重复；不在 HostListPage 硬编码独立视觉 |
+| U1-09 | **UI CONTRACT PASS `6b0c1aa8`**：`SettingsSheetRoutePolicy` 统一解析连续 24–32 Moonlight leaf routes，所有入口进入同一 bindSheet 生命周期 | 无重复/无 magic number/返回/rapid route | 不复用 VNC 12–22/Terminal 23；不允许大杂烩跨入口跳转 |
+| U1-10 | **UI CONTRACT PASS / LOCAL ONLY `6b0c1aa8`**：快速、画面、音频、输入、网络安全、后台、诊断、云范围、身份 Trust 九个 leaf；本地 settings service 负责 normalize/read/save；legacy readable metadata 与 new-write allowlist 已分离 | global/host/profile/session、能力禁用原因、draft/commit failure、reset inheritance | 删除冗余“主机管理”；首页负责 host management；session 值不自动上云 |
+| U1-11 | **UI CONTRACT PASS / PARKED CLOUD `6b0c1aa8`**：云范围页消费 D3 状态并明确 local-only/disabled；不显示物理表、不注册 `moonlightrecordv1` | 无账号/未验证账号/crypto off/bootstrap/pending/error/delete cloud | 本轮不改 CloudStore；queued/quarantine 不得宣称 synced |
+| U1-12 | **PARTIAL VISUAL ACCEPTANCE `6b0c1aa8`**：Theme/Breakpoint/无障碍 token、PC 300vp 独立 sidebar、latest fresh r2 PC/phone/accordion/quick/network/lower sheets 已验收；证书变化开关显示为强制安全且不可操作 | light/dark/accent/wallpaper/halo/reduce motion/transparency、200% 字体、读屏、键盘/手柄焦点 | 真实能力开放后仍需重做可达 add/connection/stream runtime 验收；只使用当次 fresh evidence |
+| U1-13 | **CONTRACT PASS / LOCAL ONLY `db750cdb`**：`MoonlightLocalHostService` 将 RustDesk 风格四步添加流的完成态接入已有本地仓储；host/trust 两行使用 stable ID、lease/generation fence、readback 与前向补偿/复活；Sheet `onDisappear` 后才进入详情/目录 | 8 local host persistence cases、1 recovery policy case、1 detail handoff case；双 Hvigor、signed HAP、HDC PC/phone、增量 reviewer PASS | Moonlight 仍 `moonlightProtocolAvailable=false`；无 network/native/media/input/cache/cloud/release truth；云同步继续 parked |
 
 ### 15.11 S1：连接页、浮层、PIP、后台和全生命周期
 
 | ID | 文件与精确动作 | 必须验证 | 完成证据/提交点 |
 | --- | --- | --- | --- |
-| S1-01 | 在 `RemoteSessionState.ets`、`ActiveRemoteSessionRegistry.ets`、`RemoteSessionCapabilityPolicy.ets` 增加 moonlight；registry 只存最小恢复信息，不存 token/PIN/地址明文 | protocol union、account generation、capability truth、旧版本 marker | clipboard/file transfer/multi-display 等不支持能力明确 false |
-| S1-02 | 新建 `MoonlightSessionCoordinator.ets`，串起 launch→common-c→firstFrame→streaming→stop；`RemoteDesktop.ets` 只增加薄入口/组件装配 | 每阶段 cancel/fail/degrade、重复 start、跨协议仲裁、迟到 callback | 不建立第二个 active remote session |
-| S1-03 | 新建 `MoonlightConnectStageOverlay.ets`：400ms 后阶段、3s 时长、10s 诊断；首帧前不显示 connected | 快速 LAN 不闪、audio/input 降级、错误动作、取消 | 技术码折叠/脱敏 |
-| S1-04 | 新建 `MoonlightSessionToolbar.ets`：sm edge rail、md/lg 5/7 项、xl 顶部自动收起；交互借鉴 VNC/RustDesk，颜色走 Theme-adapted streaming tokens | auto-hide/pin/hover/focus/safe area/44–48vp/危险间距 | 不复制 `RemoteSessionTopBar` 的硬编码白色 |
+| S1-01 | **CONTRACT PASS / DORMANT `647113a5`**：在 `RemoteSessionState.ets`、`ActiveRemoteSessionRegistry.ets`、`RemoteSessionCapabilityPolicy.ets` 增加 Moonlight；registry 只存最小、无 endpoint 的恢复 marker，并用 owner/account/session/protocol 精确清理；reservation/promotion 防止跨协议覆盖 | protocol union、account generation、capability truth、旧版本 marker；9 个 coordinator cases 加入 compile-registered suite | clipboard/file transfer/multi-display 等不支持能力明确 false；host address 只允许作为未来 runtime 输入，不能进入 registry/AppStorage |
+| S1-02 | **CONTRACT PASS / DORMANT `647113a5`**：新建 `MoonlightSessionCoordinator.ets`，串起 discovery→launchAccepted→firstFrame→streamStable→stop/cancel/transportLost；`MoonlightAppCatalogPage` 与 `MoonlightStreamPage` 仅做薄装配；stop failure/actual watchdog timeout 与 native session callback fence 已补齐 | runtime/Host Control/transport 三重 gate、runtime port 缺失、重复 start、跨协议仲裁、surface 顺序、迟到 callback、owner/account 切换、精确 stop 清理；复用 reviewer PASS | 不建立第二个 active remote session；无 common-c/NAPI/OHAudio/Surface/product caller，真实能力与 picker 继续关闭 |
+| S1-03 | **CONTRACT PASS / DORMANT `75d769c2`**：`MoonlightSessionCoordinator` 增加 owner/account/host/app 精确过滤的 snapshot subscription；`MoonlightStreamPage` 按页面/账号生命周期绑定、退订、取消和清理 elapsed timer，连接浮层消费真实 phase/error/degradation/first-frame；disconnected 文案单独收束 | 快照立即回放、foreign route 不可见、scope 变化清 null、首帧前不显示 connected、取消/stop/failed/disconnected 收束、监听器异常隔离；新增 coordinator scoped-delivery case，UI policy 增加 disconnected 断言；复用 reviewer PASS | 仍不打开 picker、Host Control、transport、media、input、OHAudio/Surface、NAPI、云或 release truth；技术码保持脱敏/可诊断 |
+| S1-04 | **CONTRACT PASS / DORMANT `665df714`**：`MoonlightSessionToolbar` 完成 sm phone/pad edge rail、md/lg 5/7 项、xl 顶部工具条与 RustDesk 主题 token；edge rail 使用 360vp 上限滚动，non-xl 使用显式收起，xl 才使用 pin/5 秒自动收起；`MoonlightStreamPage` 传入 Sheet 状态并按 breakpoint/menuOpen watch 协调 timer | responsive layout、bounded Scroll、collapse/pin/hover、queued callback 最新策略复核、safe area/44–50vp/危险间距；新增 Sheet 开关与 xl→lg policy cases；fresh PC/phone HDC evidence | 不复制 `RemoteSessionTopBar` 的硬编码白色；不接 runtime/media/native/input/cloud/release truth |
 | S1-05 | 复用 `RemoteModifierHandle/Panel`、`RemoteShortcutSurface`，通过 capability/catalog 配置；打开 L3 前统一 input flush | once/locked、拖动/吸附、组合键完整、关闭归零 | 不 fork 修饰键状态机 |
-| S1-06 | 新建 `MoonlightControlCenter.ets`，进入现有单 Sheet owner；分会话/控制/画面/音频/网络/诊断，临时变更有“仅本次” | 关闭不保存、保存 profile、需重连项、危险 quit 区 | 不嵌套 bindSheet，不改变画面缩放 |
+| S1-05A | 将实体 GameController native listener 与 `MoonlightControllerOverlay` 的窄 typed NAPI ingress 接到 N3-05/N3-08；实体 arrival/state 和虚拟语义事件均由 native 聚合 full-state，再只走 N3-01/common-c | connected/disconnected、ABXY/dpad/stick/trigger、active-mask=0 source handoff、failed removal 禁止接管、编辑零发送、backpressure、20 次前后台/模式切换 | ArkTS 不编码/直发协议；不接公共 `InputHandler`，不建第二 owner/slot/queue；真实设备 receipt 前 capability false |
+| S1-06 | **PASS `1af10374`**：复用现有单 Sheet owner，将设置收敛为画面、音频、控制与手柄、网络与安全、诊断、配对与信任六个 Moonlight 专属 bindSheet；删除隐藏 quick/background/cloud 路由，协议独有后台/重连项归位 | 草稿/保存、异常保护、账号 lease、commit 后 durable readback、手机进程重启回读、PC/手机逐页最新截图 | 不嵌套 bindSheet；公共显示/PIP/音量/主机管理去重；云同步 PARKED |
 | S1-07 | 新建 `MoonlightDiagnosticsHud.ets`，复用现有 drag/snap/safe-area policy；native 低频 snapshot，compact/expanded | unavailable=`—`、采样节流、拖动不触发远端输入、脱敏复制 | 默认关闭，性能开销达标 |
 | S1-08 | 接 `NativeSessionHandles`、PIP policy、background task、音频焦点、Surface rebind；无 Surface 时按 N2 策略，回前台请求 IDR | 前后台/PIP/锁屏/旋转/折叠/自由窗/来电/焦点/强杀 | 20 次循环无旧画面/残音/悬挂输入 |
 | S1-09 | 实现有限预算重连与网络切换：冻结输入、停止旧 generation、重新协商、保留静帧并标“画面已暂停” | Wi-Fi↔蜂窝、IPv4↔IPv6、断网/恢复、用户取消、预算耗尽 | 不并行两个 common-c connection |
@@ -2692,7 +4554,8 @@ flowchart LR
 Moonlight 能从“即将支持”变成可点击，仅当下列事实同时成立：
 
 - 官方品牌资产与协议依赖 provenance 完整，许可证/SBOM/source offer/Light 通过；
-- `moonlightrecordv1` 已在全部目标 AGC 环境部署，local-only/verified cloud/账号切换/备份恢复无数据越界；
+- 当前 local-only rollout 的 owner-scoped 本地存储、账号切换、删除和备份恢复无数据越界；
+  parked 的 `moonlightrecordv1`/CloudSync 不作为本轮入口前置，也不得被入口代码创建或注册；
 - 真实 Sunshine 安全版本完成配对、目录、launch、H.264+Opus、至少键鼠/触控和一类已承诺手柄；
 - 视频首帧、音频、输入释放、Surface/PIP/后台/切网/停止的 owner+generation 证据完整；
 - 添加、设置、目录、启动、浮层、错误和删除流程在四断点、主题、无障碍下通过；
@@ -2700,5 +4563,498 @@ Moonlight 能从“即将支持”变成可点击，仅当下列事实同时成�
 - 所有未完成高级能力保持隐藏/禁用并有真实原因，不影响 MVP 的诚实交付。
 
 在此之前，当前灰色 Moonlight FAB 入口和“即将支持”就是唯一正确的用户可见状态。
+
+### 15.14 当前源码事实、已创建文件与唯一继续点（2026-08-12）
+
+本节是后续执行者进入仓库后的防漂移索引。它只记录当前分支中已经存在且有证据的事实；UI shell 文件已经创建，但
+“已存在”只代表代码合同与本地 UI 壳落地，不代表真实 Sunshine、Host Control、首帧、实体手柄或云能力开放。
+
+| 层次 | 当前源码事实 | 当前可声明能力 | 下一任务边界 |
+| --- | --- | --- | --- |
+| 领域模型 | `MoonlightModels.ets`、`MoonlightRecord.ets`、领域 policy/state、删除影响/执行、云状态和备份策略已存在；D1-D3 共 138 个测试用例 | DTO、canonical/hash、19/20 列 envelope、冲突、设置裁剪、feature truth、session 状态、删除 exact preview/partial terminal 和备份/恢复裁决可编译 | D1 合同只有发现缺陷时才回开；U1 删除确认只消费既有 preview/impact/result，不再平行定义语义 |
+| 本地数据 | `MoonlightStoragePolicy.ets`、`MoonlightRepository.ets`、`MoonlightAppCache.ets`、`MoonlightAppCacheService.ets`、`MoonlightDeletionCommandService.ets` 已存在；`CloudStore.ets` owner schema 为 v5 | owner-store 中 19/20/16 三表、lease fenced local-first upsert/tombstone、目录 cache 与有界 LRU；V3 restore 最终只写 local overlay；本地删除 exact set 单事务并清关联 journal/runtime state | D3 本地命令不再回开；N1 secure identity/Host Control 只实现端口，D2-07 后才实现 cloud terminal port；不得另建删除存储或偷偷注册云表 |
+| 账户生命周期 | `MoonlightDataLifecycleBarrier` 已接入 `SensitiveDataBarrier` 和 `AccountSessionCoordinator`；无 runtime port 时安全 no-op | 账户切换顺序、失败回开旧 gate 和新 lease bind 的纯合同已编译 | N1/S1 注册唯一 runtime port 后补真实 session/pairing/native drain；页面不得旁路 barrier |
+| 云适配 | exact 19 列 adapter、row-sensitive transfer、五 scope selection store、dormant materializer 和独立云状态 policy 已存在；`CloudSyncPolicy.TABLES` 仍是原有 8 表 | 可以验证/隔离/本地物化候选 row，所有结果明确 `cloudAttempted=false`；状态不会把 pending/quarantine 伪装成 synced | D2-07 必须等三环境 AGC receipt；之后才做 D3-01 coordinator、cloud-first promotion 和 D3-08 |
+| 云数据 | `moonlightrecordv1` 是唯一未来分布式物理表；`moonlightlocalrecords` 和 `moonlightappcache` 永远本地 | 19 列 schema 已在 ARM64 API 24 owner-store 实例化和重开验证 | cache 不进云/备份；local mirror 只有 promotion 后才投影；identity 继续默认关闭 |
+| 便携备份 | Backup V3 optional Moonlight descriptor、cloud/local 双 section、exact admission 和 local-only resolver 已存在 | redacted=settings/host/profile，full 额外 trust candidate；identity/secret/cache/marker 永远排除；旧 V3 可读 | cloud-enabled restore promotion 与设备故障矩阵仍 pending；不能另建含 identity 的“完整备份”旁路 |
+| Native | N1-01～N1-08、N2-01～N2-08、N3-01～N3-08 均已 checkpoint；N3-08 `fef723770` + `6787cc3fb` 增加 fixed-capacity physical/virtual aggregator、layout validator、native full-state seam、staged handoff 与 retired-lane tombstone；product 无 caller，archive object 未进入 `rdpnapi` | 可声明固定上游、official common-c compile-link、owned video/PCM、共享 audio owner、有界 stats、exact generation-fenced dormant input admission/release、各 mapper、feedback、统一 lifecycle flush 与控制器 source arbitration 合同；HAP runtime backend 仍 unavailable，不能声明真实配对、目录、launch、解码、音频、实体手柄、输入、feedback 或首帧可用 | N2-09 等真实 Sunshine/ARM64 外部回执；S1-05A 才接真实 GameController listener/typed NAPI；U1-06 不解除 runtime、云表或发布 truth 门禁 |
+| UI | U1-01～03 提供 RustDesk 同款灰色 picker、PC 独立 sidebar slot 与官方图标；U1-04/05 建立 RustDesk 风格四步 add 与原生 Sheet `onDisappear` 稳定 ID handoff；`2c37b0edf` 完成 U1-06～U1-12 本地-only UI shell；`75d769c2` 完成 S1-03 snapshot binding；`fae7c36dd` + `f7f39c0f` + `665df714` 完成 S1-04 toolbar/control-center contract，并保持 `moonlightProtocolAvailable=false` | 可声明统一 RustDesk/Theme UI 合同、首页主机管理、local records/cache 读取、9 section bindSheet 路由、connection overlay 的 dormant state、响应式 session toolbar/control center 和 fresh PC/phone 壳验收；不能声明真实配对、保存、Host Control、online catalog、launch、首帧、实体 listener、云同步或串流可用 | S1-05A 接 native GameController/typed NAPI；S1-06/S1-07/S1-08 按 runtime 前置继续；N2-09 需真实 Sunshine/ARM64 receipt；picker enable 仍需所有 runtime truth |
+| 品牌 | Moonlight Qt 官方 SVG 与确定性单色转换已固定原始/本地 hash，provenance/NOTICE/SPDX/source offer 已落盘，系统 Symbol 保留为加载失败回退 | HDC light/disabled 视觉、资源打包和 Light 合规门通过，可声明入口品牌资产完成 | 图标存在不代表协议可用或官方背书；runtime truth 继续关闭 |
+| 验证 | `665df714` 后两项 exact Hvigor、signed HAP、diff/isolation 与 fresh sandbox-external HDC 安装/启动均通过；最终当前工作区 HAP SHA-256 为 `cb1086ccaf57ada2e7cc1d879e5df6d75ee1b249c2cfdc58d176f7e9545d1d99`；只使用本次最终 HAP 新抓取并查看的 `moonlight-s104-final-cb1086-*` PC/phone root、max、picker、disabled-click 截图；165 个 documented Moonlight focused tests/21 describe + 8 个 shared handoff cases 仅 compile-registered；reviewer PASS P0/P1/P2=0，P3=1 为可接受的 ArkUI timer 单测可测性限制 | 可声明 local-only UI shell、RustDesk 风格 add/save handoff、settings consolidation、disabled fail-closed 隔离、dormant connection-stage snapshot binding 和 S1-04 toolbar/control-center contract；不声明 Hypium、真实添加/保存/配对/目录在线刷新、实体 listener、真实 Sunshine、首帧或串流可用 | `ohosTest` 任务仍未注册；S1-05A、S1-06/S1-08 和 N2-09 等待后续 runtime/外部阶段；用户 `CloudStore.ets` 改动不属于本 checkpoint |
+
+当前数据流只能是：
+
+~~~text
+UI（首页主机管理；目录/详情/设置/串流 shell 已存在；FAB 仍禁用，所有 runtime port fail-closed）
+  -> MoonlightLocalViewService / MoonlightSettingsLocalService（按稳定 host ID 读本地 records/cache）
+  -> MoonlightHostService / MoonlightRepository（真实 Host Control/runtime 仍 unavailable）
+  -> moonlightlocalrecords + cloudsyncjournal（仅已有 local commit path；不创建云表）
+  -> D3 lifecycle barrier（账号切换前 drain；runtime port 尚未注册）
+  -> D3 deletion exact preview -> local transaction / fail-closed external port
+  -> D2-08～D2-10 dormant validate/materialize/projection（已实现，零 cloud I/O）
+  -> Backup V3（cloud/local 双 section）-> restore resolver -> localonly=1
+  -> [D2-07 尚关闭：不得调用 Moonlight setDistributedTables]
+  -> [AGC dev/test/prod receipt 齐全后才可能启用 moonlightrecordv1]
+
+Sunshine common-c runtime / production transport / media / input 当前仍不在这条已实现链路
+中；N1-08 typed NAPI 可以被加载，但 product runtime port 会在 DNS/socket/TLS 前返回
+`runtime_proof_required`，不会实例化可用的 N1-06/N1-07 pairing/Host Control backend。
+因此不能据此声明 serverinfo、pairing、catalog、launch 或 streaming 可用。
+~~~
+
+后续模型每次只领取一个最小任务 ID，并严格执行以下循环：
+
+1. 运行 workspace status，读取 `CURRENT.md`、`QUEUE.md`、`STATE.json` 和实施台账；以 Git 和文件为准，不以聊天摘要猜测。
+2. 在台账中确认该 ID 的前置任务均为 `PASS`；如果前置是 `EXTERNAL PENDING`，只做被计划明确允许的 dormant/fail-closed 部分。
+3. 列出本任务允许修改的精确文件和明确不允许触碰的邻接协议；发现公共抽象需要改动时，先在计划中补充原因和回归面。
+4. 先增加能失败的定向测试或可重复探针，再实现最小合同；不使用硬编码 true、空回调、虚构 receipt 或仅 UI 演示推进状态。
+5. 核对 owner、account generation、storeInstance/session generation、取消、迟到 callback、事务失败、日志脱敏、能力降级和 teardown；任何一项无合同就不提交。
+6. 执行定向验证、`git diff --check`；阶段检查点执行项目规定的 `default@OhosTestCompileArkTS`、`assembleHap`、受影响 native/双 ABI 和 Light 门禁。
+7. 需要运行时事实的任务必须保存 HAP/AppSpawn、RDB、AGC、Sunshine 或用户真机 receipt；模拟器证据不得冒充 API 23/实体手柄/用户实机结果。
+8. 更新实施台账中的状态、证据、blocker 和唯一下一任务；同步 `CURRENT/QUEUE/STATE`，再用精确文件列表形成一个可回滚提交。
+9. 只有当任务合同、测试和对应门禁均通过时标记 `PASS`；“代码写完”“构建通过”“请求已排队”均不是产品能力完成。
+
+N2-08、N3-01～N3-08 已完成并保持 dormant。N2-09 只能由真实 Sunshine 与用户 ARM64 实机
+提供媒体、温控、网络和生命周期回执，当前为 EXTERNAL PENDING。N3-08 已固定纯 native
+physical/virtual full-state 聚合、remove-first handoff 与布局 validator；真实 HarmonyOS GameController
+listener 和窄 typed NAPI 仍只在 S1-05A 接线。U1-01～U1-12 已完成 local-only UI shell：Moonlight
+直接复用 RustDesk FAB/现代协议选择/单 Sheet 路由基线，接入官方几何可着色图标，以 `dd6ec9c5` 建立四步
+本地添加 component/policy，并以 `46a2e7d3` + `a73b8959` + `094a8b3b` 建立无 fixed delay/第二 Sheet
+的稳定 ID 保存后交接合同；`2c37b0edf` 再落地首页主机管理、主机详情/应用目录、9 段设置和
+launch/连接/串流 UI shell。picker 仍保持灰色“即将支持”点击零副作用，全部外部 port 默认 fail closed。
+S1-01/S1-02/S1-03/S1-04 已完成 dormant registry/coordinator、connection-stage snapshot contract 和 RustDesk
+风格 session toolbar/control-center；不得把 cache 或请求态伪装成在线/已刷新，也不接真实 Host Control/runtime/cloud。
+当前唯一直接实现边界改为 S1-05A：只接真实 HarmonyOS GameController listener 与窄 typed NAPI，保持
+ArkTS 不编码/直发控制器线协议；不得因此打开 streaming、媒体、首帧、FAB 或 cloud truth。
+MVP feature flag 保持 false，不接 Moonlight runtime、NAPI 或云，也不改变 video
+first-frame、FAB、streaming 或 protocolAvailable。
+D2-05/06 由 AGC 外部环境提供证据，D2-07 依赖二者；D3 的 cloud terminal、真实
+unpair 和多设备矩阵分别等待 D2-07、N1 Host Control 和外部设备。任何执行者都
+不得因为云端受阻而把 `moonlightrecordv1` 塞入现有八表注册清单，也不得因为
+UI shell 或模拟器截图已存在就打开 runtime、media、input、first-frame 或 release truth。
+
+### 15.15 S1-03 实际落地与验收交接单（2026-08-12）
+
+阶段/任务 ID：S1-03 connection-stage snapshot contract
+
+基线 branch / HEAD / main：`codex/moonlight-complete-upgrade` / `75d769c2` / `main@aeb0cdac5`
+
+本提交修改文件：
+
+- `entry/src/main/ets/pages/MoonlightStreamPage.ets`
+- `entry/src/main/ets/services/MoonlightSessionCoordinator.ets`
+- `entry/src/main/ets/services/MoonlightUiPolicy.ets`
+- `entry/src/test/MoonlightSessionCoordinator.test.ets`
+- `entry/src/test/MoonlightUiPolicy.test.ets`
+
+明确未修改的相邻系统：`CloudStore.ets`（用户未提交改动）、RDP/RustDesk/SSH/SFTP/VNC 业务页、
+公共 `InputHandler`、common-c/native/CMake/NAPI、GameController/OHAudio/Surface、CloudSyncPolicy、
+现有 8 张云表和其它模块的性能路径。
+
+合同已实现：
+
+1. coordinator 的订阅按 owner scope、account generation、host ID、app ID 精确可见；立即回放、scope 变化
+   清 null、监听器异常隔离、退订和 reset 都有合同。
+2. 页面出现、账号切换、消失、cancel/stop 和 terminal cleanup 均与订阅/timer 对齐；只以 snapshot 的真实
+   phase/error/degradation/firstFrame 驱动 overlay，首帧前不显示 connected，disconnected 有独立终态文案。
+3. 真实 runtime port 缺失时继续 fail closed；重试只提示运行时未开放，不开启 transport、media、input、
+   native、cloud 或后台工作。
+
+定向测试与结果：新增 scoped snapshot delivery coordinator case；UI policy 增加 disconnected presentation
+断言。文档聚合为 163 个 focused Moonlight tests / 21 describe，加 8 个 shared handoff cases，均已编译注册；
+`ohosTest@OhosTestCompileArkTS` 仍因 `00306054` 未注册，未宣称 Hypium 执行。
+
+全量门禁与结果：精确 `default@OhosTestCompileArkTS` 与 `assembleHap` 均 `BUILD SUCCESSFUL`；
+`git diff --check`、`node scripts/codex_state.mjs validate` 和静态隔离通过。signed HAP SHA-256：
+`a89fc076f3edc9ca502d94fd53b0fdbb4b61c14c14bf242a250225f76917e077`。
+
+真机/AGC/主机证据路径：最终 HAP 通过沙箱外 HDC 安装/启动于 PC `127.0.0.1:5555` 与手机
+`127.0.0.1:5557`。本次只查看新截图：`/private/tmp/moonlight-s103-final-20260812-pc-root.jpeg`、
+`...-pc-max.jpeg`、`...-pc-picker.jpeg`、`...-pc-picker-click.jpeg`、`...-phone-root.jpeg`、
+`...-phone-picker.jpeg`。PC 侧栏与两端 picker 中 Moonlight 保持灰色官方可着色图标和“即将支持”；点击禁用项
+无导航副作用，PC RDP 页面保持原样。上述只是模拟器 UI 证据，不是 Sunshine/ARM64/实体手柄能力证据。
+
+许可证/SBOM/品牌证据：本 checkpoint 不修改品牌、vendor、SBOM、NOTICE、SPDX 或上游来源资产；沿用已审计
+的官方 Moonlight Qt 几何可着色资源和系统 Symbol fallback。
+
+当前 feature flags：`moonlightProtocolAvailable=false`；runtime、media、input、first-frame、streaming、
+cloud 和 release truth 继续关闭；Moonlight 仍 local-only。
+
+已知限制与 blocker：未有真实 Sunshine transport/media/首帧、OHAudio/Surface、HarmonyOS GameController
+listener/typed NAPI、AppSpawn secure identity、on-device Hypium、长稳/功耗/网络/用户 ARM64 证据；云同步继续
+parked，CloudStore 用户改动不在本任务。
+
+上一阶段交接已由 S1-04 的 RustDesk 风格 session toolbar/control-center contract 完成；当前下一任务唯一入口为
+S1-05A，继续复用现有 session/overlay/input policy，不新建第二 owner/queue。
+
+回滚 commit/动作：回滚 `75d769c2` 即可撤销前一 checkpoint；S1-04 代码可按 `fae7c36dd`、`f7f39c0f`、
+`665df714` 逐级回滚；不触碰 `CloudStore.ets` 用户改动。
+
+### 15.16 S1-04 session toolbar/control-center 实际落地与验收交接单（2026-08-12）
+
+阶段/任务 ID：S1-04 RustDesk-aligned session toolbar/control-center contract
+
+基线 branch / HEAD / main：`codex/moonlight-complete-upgrade` / `665df714` / `main@aeb0cdac5`
+
+本提交修改文件：
+
+- `entry/src/main/ets/services/MoonlightUiPolicy.ets`
+- `entry/src/main/ets/components/moonlight/MoonlightSessionToolbar.ets`
+- `entry/src/main/ets/pages/MoonlightStreamPage.ets`
+- `entry/src/test/MoonlightUiPolicy.test.ets`
+
+其中 `fae7c36dd` 落地 responsive toolbar/control-center contract，`f7f39c0f` 补齐 edge-rail bounded
+Scroll 与 non-xl explicit collapse，`665df714` 修复 Sheet/breakpoint 变化时的 timer reconciliation。
+
+明确未修改的相邻系统：用户未提交的 `entry/src/main/ets/services/CloudStore.ets`、RDP/RustDesk/SSH/SFTP
+业务页与共享协议业务、公共输入 owner、common-c/native/CMake/NAPI、GameController/OHAudio/Surface、
+CloudSyncPolicy、现有云表注册和 product runtime caller。
+
+合同已实现：
+
+1. phone 与 pad edge rail 使用 360vp `maxHeight` 和 `Scroll`，避免短窗口裁切；desktop md/lg 采用 5/7
+   项响应式布局，desktop xl 采用顶部工具条；颜色、浮层、危险动作和无障碍文本沿用 RustDesk/Theme 语法。
+2. non-xl 布局显示明确的收起按钮；只有 xl 布局显示 pin 并使用 5 秒自动隐藏。`menuOpen` 与 breakpoint
+   通过 `@Watch` 清理/重建 timer，timer callback 重新读取最新 layout/menuOpen/pin policy 后才折叠。
+3. `MoonlightStreamPage` 传递 Sheet ownership，control center 按断点计算宽度、padding、section gap 和行高；
+   diagnostics、controller、audio、PIP 和所有 runtime action 仍以真实 capability false fail closed。
+
+定向测试与结果：新增 responsive layout/edge-rail boundary 与 Sheet-open、close、xl→lg auto-hide policy
+cases；Moonlight documented focused aggregate 为 165 tests / 21 describe，加 8 个 shared handoff cases，
+均 compile-registered。纯策略测试无法直接实例化 ArkUI timer，复核记录为一个不阻塞的 P3。
+
+全量门禁与结果：精确 `default@OhosTestCompileArkTS` 与 `assembleHap` 均 `BUILD SUCCESSFUL`；当前工作区
+signed HAP SHA-256：`cb1086ccaf57ada2e7cc1d879e5df6d75ee1b249c2cfdc58d176f7e9545d1d99`。
+
+真机/AGC/主机证据路径：最新 signed HAP 由沙箱外 HDC 安装/启动于 PC `127.0.0.1:5555` 与手机
+`127.0.0.1:5557`。只查看本次 HAP 新抓取的证据：
+`/private/tmp/moonlight-s104-final-cb1086-20260812-pc-root.jpeg`、
+`...-pc-max2.jpeg`、`...-pc-picker2.jpeg`、`...-pc-picker-click.jpeg`、
+`...-phone-root.jpeg`、`...-phone-picker2.jpeg`、`...-phone-picker-click.jpeg`。
+PC 大屏有独立灰色 Moonlight 侧栏；PC/手机 picker 显示灰色图标与“即将支持”；两端点击禁用行后仍停留
+在添加弹层；PC RDP 页面保持原样。所有图片均为本次最新 HAP 重新抓取并查看，不使用旧截图；这些只是模拟器
+UI 证据，不是 Sunshine/ARM64/实体手柄能力证据。
+
+许可证/SBOM/品牌证据：本 checkpoint 不修改品牌、vendor、SBOM、NOTICE、SPDX 或上游来源资产；沿用已审计
+的官方 Moonlight Qt 几何可着色资源和系统 Symbol fallback。
+
+当前 feature flags：`moonlightProtocolAvailable=false`；runtime、media、input、first-frame、streaming、
+cloud 和 release truth 继续关闭；Moonlight 仍 local-only。
+
+已知限制与 blocker：真实 Sunshine transport/media/首帧、OHAudio/Surface、HarmonyOS GameController
+listener/typed NAPI、AppSpawn secure identity、on-device Hypium、长稳/功耗/网络/用户 ARM64 证据仍缺失；
+云同步继续 parked，CloudStore 用户改动不属于本任务。
+
+下一任务唯一入口条件：S1-05A 只接 HarmonyOS GameController listener 与窄 typed NAPI，复用 N3-08/N3-05/N3-01/
+common-c 链，保持真实设备 capability false 直到 receipts 完整；不得创建公共 InputHandler 的第二 owner/queue，
+不得把 ArkTS 变成控制器线协议编码器。
+
+回滚 commit/动作：回滚 `665df714`、`f7f39c0f`、`fae7c36dd` 可逐级撤销 S1-04；不触碰 `CloudStore.ets` 用户改动。
+
+### 15.17 当前收尾复核与 S1-05A 边界（2026-08-12）
+
+本次收尾没有新增 Moonlight 运行时代码，原因是实体手柄的底层链路已经可以精确定位但尚未闭环：
+
+- pinned common-c `src/Limelight.h` 已提供 `LiSendControllerArrivalEvent()` 与
+  `LiSendMultiControllerEvent()`；`MoonlightControllerMapper` 已把 API 23 的按钮、轴、扳机、帽子轴
+  投影为官方 full-state/arrival 语义，`MoonlightControllerAggregator` 已完成物理/虚拟源仲裁、neutral、
+  disconnect、retired-lane 与 generation fence。
+- 当前 `ProductDriverPort` 在 `MoonlightCommonCAdapter.cpp` 只装配视频、音频和连接回调，没有
+  session-owned controller input port；工程也没有把 HarmonyOS GameControllerKit 的 device monitor/button/axis
+  listener 接到 typed NAPI。因此当前不能声称实体手柄信号已经发送到 Sunshine。
+- S1-05A 的正确实现顺序固定为：GameControllerKit listener（设备上下线、按钮、轴、生命周期）→ 单一
+  session-owned typed input port → N3-08 aggregator → N3-05 mapper → N3-01 bridge → common-c arrival/state
+  API。不得在 ArkTS 编码线协议，不得复用公共输入 owner 建第二队列，也不得在没有真实设备 receipt 时
+  将 `api23InputAvailable` 或 `moonlightProtocolAvailable` 改为 true。
+- listener 必须只向注入的 typed sink 投递 bounded full-state，必须处理全量 neutral/disconnect、回调注册
+  失败回滚、设备 ID 稳定化、重复/迟到事件、前后台和 stop drain；GameControllerKit 返回的设备信息必须
+  按 SDK destroy contract 释放，不能直接释放返回的字符串指针。产品 port 才能在 exact session owner、
+  input/source/operation generation 都匹配时调用 common-c。
+
+本次只用当前工作区 HAP 重新抓取并查看的证据，不用历史截图：
+
+- `/private/tmp/moonlight-current-pc-20260812-01.png`、`moonlight-current-phone-20260812-01.png`：
+  PC/手机添加主机协议选择器均显示灰色 Moonlight 与“即将支持”。
+- `/private/tmp/moonlight-current-pc-20260812-02.png`、`moonlight-current-phone-20260812-02.png`：
+  首页仍是主机管理唯一入口；PC 保留大屏主机列表，手机保留空状态和底部 FAB。
+- `/private/tmp/moonlight-settings-phone-real-20260812-06.png`：
+  Moonlight 设置展开后只有快速设置、画面、音频、控制与手柄、网络与安全、后台串流、诊断、云同步范围
+  和 Trust 对应的协议设置内容，没有重复的“主机管理”项；公共“主页与主机列表”仍由应用公共设置拥有。
+
+### 15.18 U1-13 本地主机保存实际落地与最终 UI/隔离验收（2026-08-12）
+
+阶段/任务 ID：U1-13 local-only Moonlight host-add persistence and closeout
+
+代码 checkpoint：`db750cdb`，基线为 `codex/moonlight-complete-upgrade` / `main@aeb0cdac5`。
+
+本 checkpoint 修改范围严格限定为：
+
+- `entry/src/main/ets/components/hostadd/MoonlightHostAddFlow.ets`
+- `entry/src/main/ets/pages/HostListPage.ets`
+- `entry/src/main/ets/services/HostAddConnectionHandoffPolicy.ets`
+- `entry/src/main/ets/services/MoonlightHostAddFlowPolicy.ets`
+- `entry/src/main/ets/services/MoonlightLocalHostService.ets`
+- 对应的 `MoonlightLocalHostService`、`MoonlightHostAddFlowPolicy`、`HostAddConnectionHandoffPolicy` 定向测试及 `List.test.ets` 注册
+
+用户的 `entry/src/main/ets/services/CloudStore.ets` 明确未修改、未暂存、未提交。
+
+实现合同：
+
+1. `MoonlightLocalHostService` 只接入现有 `MoonlightRepositoryPort`，不接 CloudStore 的云同步方法、不新增表、
+   不写 `moonlightrecordv1`。它在保存前检查 step 4、paired、trusted、证书 SHA-256、owner token、account lease、
+   state generation 和 save operation；同一账户下按 `ownerScopeId + serverUuid` 生成稳定 host ID，trust ID 由 host ID
+   派生，重复 UUID 只返回已有 host，不创建第二条。
+2. host/trust 的 business record 在第一条本地写入前全部构造完成。每条写入都由现有 repository readback 确认；
+   第二条失败、readback 失败或异常时，使用更高 `syncVersion` 的前向 tombstone/restore candidate 补偿。新主机失败
+   可在后续有效保存中以 `resetEpoch + 1` 显式复活，已有主机失败恢复旧业务 payload；结果分为 `not_committed`、`partial`、
+   `uncertain`，后两者设置 recovery lock，保存按钮和普通目录 handoff 均停止，避免重复写入/错误导航。
+3. `HostListPage` 只负责 thin adapter 与生命周期交接：普通保存写入本地 host/trust；“保存并打开目录”和重复主机“查看已有主机”
+   只携带稳定 host ID、owner token、generation，并在共享 add Sheet 原生 `onDisappear` 后导航到现有目录/详情 shell。没有
+   fixed delay、第二 Sheet、snapshot callback、网络、native、media、audio、input、cache 或后台调用。
+4. `localOnly=1` 是本 checkpoint 的唯一持久化模式；新 Moonlight 数据不进入云选择、云传输、secret recovery、备份 promotion 或
+   其它协议数据路径。首页继续是主机管理唯一入口，设置页不再增加“主机管理”，公共 display/PIP 仍由公共设置拥有。
+
+定向验证：新增 8 个 local persistence cases（成功写入、trust 失败补偿、untrusted/stale lease、replayed generation、tombstone revival、
+existing-host restore、host readback rollback、partial compensation），新增 1 个 recovery policy case 和 1 个 existing-host detail handoff case。
+全部 compile-registered；`ohosTest@OhosTestCompileArkTS` 仍因 `00306054` 未注册，未宣称设备 Hypium PASS。
+
+强制门禁与部署：精确 `default@OhosTestCompileArkTS --analyze=normal --parallel --incremental --no-daemon` 和
+`assembleHap --analyze=normal --parallel --incremental --no-daemon` 均 `BUILD SUCCESSFUL`。最终 HAP 为
+`entry/build/default/outputs/default/entry-default-signed.hap`，SHA-256 为
+`8b54784ac3112b30a5630ef074d35150fd7271099920e54ab97809ef1546263e`；已通过沙箱外 HDC 安装/启动于 PC `127.0.0.1:5555` 和手机
+`127.0.0.1:5557`。
+
+最终 UI 验收只使用并查看本次最新 HAP 安装后新生成的 `/private/tmp/moonlight-final-gate.bIGtZD/`：
+
+- `pc-root.png`、`phone-root.png`：PC/手机首页主机管理保持原状，主机管理仍归首页；
+- `pc-picker-open.png`、`phone-picker-open.png`：RustDesk 风格 FAB 协议选择器中 Moonlight 使用灰色可着色图标并显示“即将支持”；
+- `pc-max.png`：PC 大屏侧栏拥有独立的灰色 Moonlight 栏位，显示“即将支持”；
+- `phone-settings-open.png`：公共“主页与主机列表”仍是主机管理入口，Moonlight 作为独立协议设置分组；
+- `phone-moon-expanded.png`：Moonlight 展开为快速设置、画面、音频、控制与手柄、网络与安全、后台串流、诊断等专属子项；
+- `phone-quick.png`：实际打开 Moonlight“快速设置”bindSheet，含低延迟/均衡/画质优先、接收音频、自动重连和保存入口；
+  所有截图均来自当前 HAP，不使用旧截图。
+
+复用 reviewer task `019fe966-d99a-7ce1-8b53-4ef725597053` 完成 `665df714..db750cdb` 增量复核，结果 PASS，
+P0/P1/P2=0；唯一 P3 是测试端口尚未直接抛异常导致的外层 catch/补偿异常分支覆盖限制，不阻塞当前本地数据收口。
+审查确认本 checkpoint 没有改变 RDP、RustDesk、SSH/SFTP、VNC、公共输入、native/CMake/NAPI、CloudSyncPolicy、既有云表、
+video first-frame、streaming、FAB availability 或 release truth。
+
+当前可交付范围：RustDesk 统一视觉的首页主机管理、本地主机详情/目录 shell、九段设置 bindSheet、连接/串流 UI 壳、灰色 FAB/PC
+栏位、dormant native/session contracts，以及已接入现有本地仓储的安全 host/trust 保存。当前不可交付范围仍是：真实配对、在线目录刷新、
+launch、视频首帧、OHAudio、实体手柄、Sunshine 串流和 release truth。下一任务唯一入口为 S1-05A；其完成后还必须通过真实设备手柄 receipt，
+再由 N2-09/S1-08 继续媒体和生命周期运行时验收。
+
+回滚 commit/动作：回滚 `db750cdb` 可撤销 U1-13 本地主机保存适配；不触碰用户 `CloudStore.ets` 改动。
+
+### 15.19 设置/FAB/本地数据最终收口复核（2026-08-12）
+
+本轮只做当前 HAP 的 UI 和数据边界复核，没有新增代码，也没有触碰用户的 `CloudStore.ets`。最新沙箱外 HDC 证据保存在
+`/private/tmp/moonlight-ui-closeout2.PFyRlJ/`，并已实际查看截图与对应 UI tree：
+
+- `root-5557.jpeg`：手机首页仍是主机管理唯一入口，空状态与底部 FAB 正常；此前同一当前 HAP 的 `root-5555.jpeg` 证明 PC 大屏首页连续性。
+- `settings-toggle-check.jpeg`：Moonlight 行真实展开，图标、标题、副标题、旋转箭头和 RustDesk/Theme 卡片排版一致；展开内容进入同一设置容器，不产生第二页面或重复主机管理。
+- `settings-lower-closeout.jpeg` 与其 UI tree：九个 Moonlight leaf 全部可见且顺序固定为快速设置、画面、音频、控制与手柄、网络与安全、后台串流、诊断、云同步范围、配对与信任。
+- `moonlight-quick-sheet-closeout.jpeg`：快速设置从唯一 `bindSheet` 真实打开，三档体验预设、接收音频、自动重连和保存状态可见；副标题明确当前账号为本地范围。
+
+收口判定：设置入口已经完成“应用公共设置 → Moonlight 协议分组 → leaf → 单 bindSheet”链路；FAB/PC 栏位继续由
+`moonlightProtocolAvailable=false` fail-closed，灰色可着色官方图标与“即将支持”是当前正确产品状态；本地主机保存继续只写已有本地
+`MoonlightRepositoryPort` 的 host/trust 记录，`localOnly=1`，不注册或上传 `moonlightrecordv1`。本轮未改 RDP、RustDesk、SSH/SFTP、VNC、
+公共输入、native/CMake/NAPI、CloudSyncPolicy 或既有云表。
+
+本轮不会把 UI/HAP 验收扩大为真实 Moonlight 发布能力：真实 Sunshine 配对、Host Control、视频首帧、OHAudio/Surface、实体手柄
+GameControllerKit→typed NAPI→common-c、网络/温控/长稳和 device Hypium 仍分别由 S1-05A、S1-08、N2-09 与设备门禁负责。
+
+### 15.20 当前签名 HAP 最终验收（2026-08-12）
+
+为避免把历史包误当作当前包，本次最终验收只认最新签名 HAP：
+`entry/build/default/outputs/default/entry-default-signed.hap`，SHA-256 为
+`8a5209d438b253ccb78df6e29734bb1afdde2eb3da281aea8e3ed30c04862419`。该包已通过沙箱外 HDC 安装/启动于 PC
+`127.0.0.1:5555` 和手机 `127.0.0.1:5557`。
+
+当前包截图和 UI tree 全部落在 `/private/tmp/moonlight-current-hap-20260812/`：PC/手机首页、PC/手机 FAB 协议选择器、
+手机 Moonlight 展开、设置下半段和快速设置 bindSheet 均已重新抓取并实际查看。它们确认 Moonlight 官方可着色图标、灰态“即将支持”、
+首页主机管理归属、PC 大屏连续性、九个协议 leaf、单一 bindSheet 以及本地-only 设置文案；本条记录替代此前包的 UI 证据，不能用旧截图
+替代当前验收。
+
+本次仍为文档/验收收口，没有新增代码；`CloudStore.ets` 仍是用户-owned 未暂存修改。构建、HDC 安装启动和 UI 检查不改变
+`moonlightProtocolAvailable=false`、本地主机 `host/trust` 仓储边界或实体手柄 S1-05A 的未开放状态。
+
+### 15.21 U1-14 adaptive FAB/add-shell and S1-05A isolation closeout（2026-08-12）
+
+本节覆盖此前 U1-14 工作树增量，并以本节取代旧的“FAB 仍为 `即将支持`/不可进入”描述。
+
+#### 产品/UI 合同
+
+- Moonlight FAB 入口沿用 RustDesk 的“FAB → 单协议选择 Sheet → 单添加 Sheet”路由，首页仍是主机管理唯一入口；不新增设置页主机管理、不新增第二个主机列表。
+- `moonlightFabEntryAvailable` 只代表可审查的四步本地添加壳入口；`moonlightProtocolAvailable` 仍为 `false`，不能由入口可达性推导 pairing、Host Control、目录、串流、保存或 release truth 已开放。
+- 为避免“可点击即代表可串流”的误导，协议选择卡在 shell-only 状态显示官方可着色 Moonlight 图标与 `仅添加`，不显示运行能力 chevron；点击仍只进入添加壳，壳内运行时步骤继续 fail closed。
+- `MoonlightHostAddFlow` 按 RustDesk 的自适应结构使用 `currentBreakpoint`、intrinsic `FIT_CONTENT` 高度和统一 Theme token；动态发现候选单独放入手机 260vp/大屏 320vp 有界 `Scroll`，发现/完成操作组在 Scroll 外以至少 12vp（大屏 10vp）间距排列，底部按钮不再粘连且始终可见。
+
+#### 原生边界与实体手柄合同
+
+- GameControllerKit listener 仅保留为 test-only/future-session native foundation，不进入产品 `MOONLIGHT_SOURCES`、`rdpnapi`、共享 NAPI、ArkTS 类型声明或 common-c product input port；不注册进其他协议进程路径，不引入公共输入 owner、第二队列或新的线程。
+- listener 的注册失败路径会关闭 admission、等待已获得 callback lease 的回调排空后再返回；`start/stop` 继续由 lifecycle mutex 串行化；所有 GameControllerKit callback 通过单一 dispatch mutex 完成有序 sink transaction，防止断开/重连时 generation/sequence 乱序。
+- S1-05A 仍是唯一的后续实体手柄落地点：listener → 单一 session-owned typed sink → N3-08 aggregator → N3-05 mapper → N3-01/common-c；在真实 session port 和实体设备 receipt 之前保持 controller/runtime capability false。
+
+#### 当前验证与隔离事实
+
+- 精确 `default@OhosTestCompileArkTS --analyze=normal --parallel --incremental --no-daemon` 与 `assembleHap --analyze=normal --parallel --incremental --no-daemon` 均 `BUILD SUCCESSFUL`；当前签名 HAP SHA-256 为 `dfb5ec2c4dd9e67630c805fcce34b6d3eb9871765fccc910a77d86d6cbb1f16d`。
+- 当前 HAP 已通过沙箱外 HDC 安装/启动于 PC `127.0.0.1:5555` 与手机 `127.0.0.1:5557`；只使用新抓取并实际查看的 `/private/tmp/moonlight-fab-final2-20260812/` 证据。PC/手机 picker UI tree 均记录 Moonlight、官方图标和 `仅添加`；首页未受影响。
+- native focused target 编译成功；全量结果为 `701 passed, 16 failed, 717 total`，16 个失败均为既有本地 TLS fixture 启动失败，Moonlight listener/controller 合同测试通过。
+- 本 checkpoint 未改用户 `CloudStore.ets` 的业务内容，不接入云同步；未改 RDP、RustDesk、SSH/SFTP 的业务实现、公共输入路径或其性能/功能开关。`git diff --check` 通过。
+
+#### 收口边界
+
+本节完成的是自适应 UI/本地添加壳和原生隔离安全收口，不是 Moonlight 串流发布。真实 Sunshine 配对、Host Control、视频/Opus 首帧、OHAudio/Surface、session-owned 手柄发送、网络/温控/长稳及设备 Hypium 仍由 S1-05A、S1-08、N2-09 和设备门禁负责；下一实现任务唯一为 S1-05A。
+
+### 15.22 最终提交前验证收口（2026-08-12）
+
+- listener 的 callback registry 现在以 `shared_ptr<Impl>` 保持已进入 SDK callback 的对象存活；注册失败会排空 admitted callback lease，注销会释放 registry owner；sink 内同步 `stop()` 只标记 deferred stop，实际注销由 callback lease 在最外层 callback 返回后执行，避免自等待和悬空对象。
+- 当前产品精确 `default@OhosTestCompileArkTS` 与 `assembleHap` 均 `BUILD SUCCESSFUL`。最新签名 HAP 为
+  `entry/build/default/outputs/default/entry-default-signed.hap`，SHA-256 为
+  `dfa10941f60946e30a7f288688da655c53c5f50b98a13bdcbc563b555267377d`；最终包已重新安装/启动于 PC `5555` 与手机 `5557`，新首页证据为
+  `/private/tmp/moonlight-final-committed-ui.JX0JXs/`；详细 FAB/add-sheet 证据仍只认
+  `/private/tmp/moonlight-fab-final2-20260812/`。
+- host `rdp_native_tests` 从当前工作树重新配置/编译/运行，结果 `701 passed, 16 failed, 717 total`；失败仍为既有本地 TLS fixture 启动失败，Moonlight listener/controller 用例通过；API 23 arm64 listener syntax check 通过。
+- 本次提交继续只收口 Moonlight UI/隔离 foundation；`CloudStore.ets` 不暂存、不修改、不接入 Moonlight 云同步。产品不含 listener、GameControllerKit link、公共 controller NAPI 或 common-c controller port，因此不改变其他协议的性能/功能路径。真实 session-owned 手柄传输仍属于后续 S1-05A。
+
+### 15.23 S1-05A 与 N2-09 产品可行性接线交接单（2026-08-13）
+
+本节是当前实施事实的最高优先级补丁，并取代此前“FAB 仅添加/即将支持、产品无 Host Control/media/input
+caller、GameController listener 仅测试”的旧当前态描述。历史 checkpoint 不删除，但后续模型必须从本节继续。
+
+#### A. 当前完成范围
+
+- UI/用户流：RustDesk 风格 FAB→添加 Sheet、本地主机目录/详情/重命名/删除、按主机应用目录、launch Sheet、
+  connection/stream page、toolbar/control center、虚拟手柄、手机与 PC 独立 Moonlight tab 均已产品接线。首页
+  仍是唯一主机管理入口；Moonlight 设置不重复公共 display/PIP/主机管理。
+- 数据：只使用 owner-scoped local repository、host/trust/profile/settings 和 local app cache；Moonlight 云表、
+  CloudSync 注册/selection/transfer/secret recovery 继续 PARKED。用户-owned `CloudStore.ets` 增量不属于本任务。
+- Host Control：LAN discovery/verify、pair、catalog、launch 使用现有 `MoonlightHostService` typed NAPI；所有请求
+  绑定 owner token、operation generation、current account lease、installation ID、store identity/instance，离页、
+  换账号、导航或 reservation 失败会取消 owner，迟到 completion 不得改 UI/缓存/路由。
+- Media：官方 common-c transport→HarmonyOS Surface H.264 decoder、Opus→OHAudio 已进入产品。当前唯一可声明
+  offer 是 H.264/8-bit/YUV420/stereo/low-latency；bitrate live。video/audio readiness 读取真实 sink live receipt；
+  streaming truth 仍要求 first frame；stop 使用 worker terminal teardown 和可轮询 terminal receipt。
+- Input：keyboard/pointer/touch/virtual/physical controller 共用一个 native session owner 和 common-c ingress；
+  ArkTS 只发送语义事件。backpressure 只保留一个 exact pending；source handoff remove-first；终态 neutral/release
+  不在 UI 线程执行。实体 GameControllerKit 只在 Moonlight 会话激活时动态解析，失败只降级实体手柄。
+- Isolation：主页渲染保持 capability=false 且不查询 Moonlight runtime；只在用户明确点击 FAB 后执行真实 capability
+  探测，因此普通首页/其他协议不初始化 Moonlight identity/Asset。双 ABI `librdpnapi.so` 无 GameControllerKit `DT_NEEDED` 和 unresolved GameController symbol；
+  相邻协议业务文件、公共 input owner、云注册和 feature flags 未被复用为 Moonlight 实现。
+
+#### B. 当前门禁事实
+
+| 门禁 | 2026-08-13 结果 |
+|---|---|
+| exact ArkTS test compile | PASS |
+| exact signed assembleHap | PASS，SHA-256 `3ec6e5abb4c685d83097ce49793c408301679d8aed19f8376f611456b8a26d85` |
+| arm64-v8a / x86_64 native product | PASS / PASS |
+| 双 ABI GameController ELF 隔离 | PASS，无 mandatory dependency / unresolved symbol |
+| host native | 711/727 PASS；Moonlight 全 PASS，16 个无关的既有 local TLS fixture start failure |
+| diff/isolation | PASS；CloudStore 用户 diff 排除 |
+| 双 reviewer | PASS，ArkTS/UI 与 native/media 均 P0/P1/P2=0；最终 checkpoint `bc630af34` |
+| 当前包设备部署/UI | PASS：精确 HAP 已安装/启动于手机 5555 与 PC 5557；当前包新截图通过 FAB、添加/发现页、PC 分类和六个可见设置 Sheet 验收 |
+
+#### C. 后续模型一步一验收执行顺序
+
+1. **N2-09A 安全身份门禁**：当前包已完成 PC/手机部署与基础 UI 验收；下一步在目标设备证明或修复 Asset Store
+   安全身份。FAB 只以 `bridgeCompiled && transportReady` 开放 LAN discovery/HTTP verify；PIN pairing 必须重新检查
+   `hostControlReady`，不可用时在 PIN 和任何 trust/save mutation 前 fail closed。
+2. **N2-09B Sunshine 最小闭环**：同一 LAN 搜索 Sunshine；verify UUID/证书；PIN pair；保存 local host/trust；
+   online catalog；launch 一个已知应用；要求 common-c transport ready、真实 videoReady/audioReady/inputReady、
+   firstFrame；发送键鼠、触摸、虚拟控制器；stop 必须在 5 秒内收到 native terminal receipt且 registry 清空。
+3. **N2-09C 实体手柄**：连接一个物理手柄，证明 dynamic library 在 Moonlight 激活前不加载；激活后记录 arrival、
+   full-state、neutral/remove；virtual↔physical 两向 handoff 均 remove-first；拔出/后台/stop 无卡键。再在缺库或
+   listener start failure 注入下证明视频、音频、键鼠、触摸和虚拟手柄继续可用。
+4. **S1-06 settings closeout — 已完成 `1af10374`**：六个 Moonlight 专属 bindSheet 已接本地设置；隐藏旧路由与 builder
+   已删除，后台音频、无 Surface 画面策略、重连和诊断已归位；公共 display/PIP/系统音量/主机管理保持去重。
+5. **S1-07 lifecycle**：逐项验证 rotation/surface recreate、foreground/background、network loss/recovery、owner/account
+   switch、host app exit、stop during startup、late callback、PIP 公共路由；每项必须证明 neutral、media release、owner
+   cleanup、无旧 generation 写回。
+6. **S1-08 / R1 acceptance**：720p/1080p、30/60fps，弱网/切网、热状态、内存、两小时长稳、ARM64 真机、PC/phone
+   UI fresh screenshots、许可证/SBOM 和回滚。只有全部 PASS 后才能把“产品可行性框架”升级为“发布可用”。
+7. **Cloud remains parked**：上述任何步骤不得新增 `moonlightrecordv1`、云表注册、云同步 selection/transfer 或 secret
+   recovery；云恢复必须由用户另行显式解除。
+
+#### D. 当前不可宣称
+
+在真实 Sunshine、安全身份、首帧/音频/输入/实体手柄和长稳回执完成前，不得宣称完整 Moonlight 模组、
+发布级串流、全设置 live、物理手柄实机支持或 PC/手机 UI 最终验收。当前准确说法是：本地-only discovery、Host
+Control、catalog/launch、保守 H.264/Opus stream 和统一 input/controller 的可测试产品框架已完成编译与隔离门禁。
+
+### 15.24 N2-09A 安全身份与 Host Control 运行时关闭（2026-08-13）
+
+本节取代 15.23 中“N2-09A 待证明或修复安全身份”的当前态；历史描述保留作 checkpoint 证据。
+
+1. API-23 Asset Store identity/probe 的 add、exact query、remove、inventory 统一选择 credential-encrypted 数据库。
+   无 alias 的批量操作只返回 attributes；manifest 明文仅通过精确 alias/identity/kind/owner 查询。
+2. runtime probe 使用时间戳+随机 owner。live probe 不互删；崩溃孤儿在五分钟后以持续取得进展的批次回收；
+   identity list 对跨进程 erase 使用两次有界快照尝试，无法稳定时返回 Busy 而不是 Corrupt。
+3. capability probe 仍只由显式 FAB 动作触发，不进入首页 render/startup。手机与 PC 模拟器均实测
+   `bridge=identity=transport=pairing=hostControl=1 blocker=none`；这只关闭 Host Control 本机运行时门禁，不等于
+   已有真实 Sunshine pairing/stream receipt。
+4. 最终 checkpoint `ef13ca19`；签名 HAP SHA-256
+   `7e84303d06b33926fa702a2384584010612a2517b88aa38aad8d7e4c23096318`。双 Hvigor、双 ABI probe、vendor
+   117 files、Light、GameControllerKit ELF 隔离和 diff 均 PASS；复用 Luna Max reviewer 后 P0/P1/P2/P3=0。
+5. 本步只修改 Moonlight secure identity、Moonlight capability truth 和显式 FAB 诊断；用户 `CloudStore.ets`、
+   云注册、相邻协议业务实现、公共输入 owner 和首页性能路径均未改变。
+
+### 15.25 S1-06 六路设置与本地保存关闭（2026-08-13）
+
+1. `1af10374` 将 Moonlight 设置收敛为画面、音频、控制与手柄、网络与安全、诊断、配对与信任六路；删除隐藏
+   quick/background/cloud route 与 builder。预设和无 Surface 策略归画面，后台音频归音频，重连归网络与安全。
+2. Moonlight 设置继续按当前账号本地保存。空 public ciphertext 校验不再经过设备空 TextEncoder；本地 record 与
+   mutation journal 原子提交后做 owner-scoped durable readback。手机实测保存、重启回读与恢复默认通过。
+3. 公共显示、PIP、系统音量和首页主机管理不复制；Moonlight 未加入云表注册、云选择、传输或恢复。
+4. 手机和 PC 六页 bindSheet、PC 独立栏位、手机 FAB picker、自动发现、手动地址和自定义端口均使用最终包最新截图
+   验收。双 Hvigor PASS；签名 HAP SHA-256 `83815f082b62dbe1f773a64ffcb224facd9b30cf8253298f36530e3a1cd4e027`，
+   已安装并启动于两个模拟器。
+5. 本增量不修改 native/session 热路径或相邻协议业务文件。后续唯一顺序为 N2-09B 真实 Sunshine 最小闭环，随后
+   N2-09C 实体手柄与 S1-07/S1-08/R1 生命周期、ARM64 和长稳验收；云同步继续 PARKED。
+
+
+
+### 15.26 设置诚实状态与计费网络启动闸门（2026-08-18）
+
+1. 未接线选项改为诚实状态行，不再保存假可用开关：HDR/YUV444、后台音频、HUD/日志、震动、
+   系统快捷键转发、重连预算、Surface 销毁策略。
+2. 计费网络成为真实启动闸门。未知网络按计费处理；`ask` 需要启动页一次性批准；`startSelected()`
+   启动前再次检查。
+3. `CloudStore.commitMoonlightLocalRecord()` 只报告事务提交真值；readback/lease 校验回到
+   `MoonlightRepository`，避免 durable write 后被误报成未提交。
+4. 本增量仍为本地-only，不接入云同步。精确 compile/assemble 已通过；当前签名 HAP SHA-256
+   `93a666c1e35ba539132231758816baf0312b4abff6e6f542a0bfcb24f765e662`。启动确认 Sheet 的动作区已改为
+   纵向自适应栈，不再让计费网络的四个动作横向粘连；不可用设置状态统一弱化为灰色。`hdc list targets`
+   已恢复，但 `hdc install -r` 仍被外部审批服务拒绝，设备安装与 PC 六页新截图尚未完成，不得用旧截图代替。
+
+### 15.27 非云产品实现关闭与统一验收边界（2026-08-19）
+
+本节取代 15.26 中“重连、后台音频、HUD 等仍未接线”的旧当前态；旧节仅保留历史增量证据。
+
+1. FAB/主机面：Moonlight 入口按用户显式打开 FAB 后的真实 transport capability 决定可达性；可达时进入与
+   RustDesk 同构的自适应添加流程，不再固定显示“即将支持”。发现、手动地址、验证、PIN、证书信任、本地
+   host/trust 原子保存、详情、重命名、忘记、远端 unpair、按主机应用目录和 launch 均使用同一 owner/account/
+   generation/store fence。
+2. 串流面：官方 pinned common-c、H.264 Surface 解码、Opus/OHAudio、首帧、音视频 readiness、计费网络一次
+   放行、显式只断开/退出主机应用、终态回执均进入产品调用链。自动重连使用有限预算和新 session generation；
+   页面/Surface/PIP/后台/网络变化先冻结并释放输入，再执行媒体生命周期变化。
+3. 输入面：键盘、文本、鼠标、触摸、触控板、虚拟手柄和 GameControllerKit 实体手柄统一进入 native
+   `MoonlightProductInputRuntime`。终态只在远端 neutral、boundary 与 teardown 三项均有正向证据时才报告安全；
+   permanent backpressure、port failure、owner loss/local-only 与重复 terminal receipt 均保持保守失败。
+4. 生命周期面：有限自动重连、崩溃恢复的 Resume/结束主机应用/清除标记、Surface 重建、PIP、后台音频、
+   host rename/forget/unpair、local records/cache/recovery/secure identity 删除均已接入生产 service；账号切换通过
+   `MoonlightDataLifecycleRuntime` 排空运行态，旧 lease/callback 不能写入新 owner。
+5. 设置/UI 面：六个协议设置 leaf（画面、音频、控制与手柄、网络与安全、诊断、配对与信任）和一个数据管理
+   leaf 继续使用统一 bindSheet；公共显示/PIP/系统音量/首页主机管理不重复。HDR、YUV444、系统保留快捷键转发
+   与手柄反馈属于首版明确关闭的能力，不以假开关宣称支持；普通键鼠/触控/控制器输入不受影响。
+6. 隔离与验证：精确 `default@OhosTestCompileArkTS`、`assembleHap`、`git diff --check`、117-file vendor gate
+   全部 PASS；signed HAP SHA-256 为
+   `fe3ecf3b7c2b70f23d1e658fc6d5836710dff7f0e8f84700712b92293661ad9e`。沙箱外 host native 为
+   `773 passed, 0 failed`；双 ABI 均无 GameControllerKit `DT_NEEDED` 或未解析 `OH_Game*` 符号。最终 product-input/
+   runtime 复审 P0/P1/P2/P3 全 0。
+7. 云与验收边界：`MOONLIGHT_CLOUD_SCHEMA_DEPLOYED_REVISION` 继续为 0；用户明确确认目标 AGC 中 19 列
+   `moonlightrecordv1` 建表前不得启用。非云代码已经关闭，但按用户要求不在此时安装 HAP、截图或做阶段性
+   UI 验收；云接入完成后，统一执行 PC/手机、真实 Sunshine、实体手柄、ARM64、切网/生命周期和长稳验收。
 
 <!-- PLAN_BODY_END -->

@@ -2,8 +2,8 @@
  * Physical-keyboard policy for RDP and RustDesk remote sessions.
  *
  * RDP is a Windows-only remote desktop protocol in this app, so it always
- * uses the Windows layout. RustDesk and VNC can target macOS or Windows and
- * therefore require an explicit per-session choice.
+ * uses the Windows layout. RustDesk, VNC and Moonlight can target macOS or
+ * Windows and therefore require an explicit choice.
  */
 export enum RemoteKeyboardLayout {
   WINDOWS = 'windows',
@@ -43,7 +43,7 @@ export function shouldChoosePhysicalKeyboardLayout(protocol: string, _isDesktopD
   // 键盘布局描述的是远端系统，不取决于控制端是 PC、Pad 还是 Phone。
   // RDP 目标固定为 Windows；RustDesk/VNC must not infer a remote OS from
   // the controller, so they use an explicit session choice.
-  return protocol === 'rustdesk' || protocol === 'vnc';
+  return protocol === 'rustdesk' || protocol === 'vnc' || protocol === 'moonlight';
 }
 
 /** RDP always targets Windows, including when a session surface is reused. */

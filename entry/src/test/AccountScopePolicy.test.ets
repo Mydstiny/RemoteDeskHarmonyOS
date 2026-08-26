@@ -3,6 +3,7 @@ import {
   accountSessionLease,
   accountSessionLeaseEquals,
   accountCloudStoreIdentity,
+  accountScopeRebindSucceeded,
   accountScopeToken,
   accountStoreIdentity,
   cloudAccountBindingForScope,
@@ -182,6 +183,54 @@ export default function accountScopePolicyTest(): void {
       expect(cloudTransferAllowed(
         cloudAccountBindingForScope(bound))).assertFalse();
     });
+
+    it('accepts_only_the_same_owner_canonical_to_hashed_local_rebind_fallback', 0,
+      (): void => {
+        const proof: PlatformCloudIdentityProof = platformProof();
+        const requested = accountScopeToken(
+          'union-a', 9, 'bound', 'validating', proof);
+        expect(requested === null).assertFalse();
+        if (requested === null) { return; }
+        const active = verifyAccountScopeCloudBinding({
+          kind: requested.kind,
+          ownerScopeId: requested.ownerScopeId,
+          generation: requested.generation,
+          sessionState: requested.sessionState,
+          cloudBindingState: 'validating',
+          storeIdentity: accountStoreIdentity(requested.ownerScopeId),
+          schemaRevision: 5,
+          selectionRevision: requested.selectionRevision,
+          platformIdentityFingerprint: requested.platformIdentityFingerprint
+        }, 'union-a', proof);
+        expect(active.cloudBindingState).assertEqual('validating');
+        expect(accountScopeRebindSucceeded(requested, active)).assertTrue();
+
+        const otherOwner = accountScopeToken(
+          'union-b', 9, 'bound', 'validating', proof);
+        expect(otherOwner === null).assertFalse();
+        if (otherOwner === null) { return; }
+        expect(accountScopeRebindSucceeded(requested, otherOwner)).assertFalse();
+
+        const wrongGeneration = {
+          kind: active.kind,
+          ownerScopeId: active.ownerScopeId,
+          generation: active.generation + 1,
+          sessionState: active.sessionState,
+          cloudBindingState: active.cloudBindingState,
+          storeIdentity: active.storeIdentity,
+          schemaRevision: active.schemaRevision,
+          selectionRevision: active.selectionRevision,
+          platformIdentityFingerprint: active.platformIdentityFingerprint
+        };
+        expect(accountScopeRebindSucceeded(requested, wrongGeneration)).assertFalse();
+
+        active.platformIdentityFingerprint = 'foreign-platform-proof';
+        expect(accountScopeRebindSucceeded(requested, active)).assertFalse();
+        active.platformIdentityFingerprint =
+          requested.platformIdentityFingerprint;
+        active.cloudBindingState = 'blocked';
+        expect(accountScopeRebindSucceeded(requested, active)).assertFalse();
+      });
 
     it('never_promotes_device_local_data_to_account_cloud', 0, (): void => {
       const local = verifyAccountScopeCloudBinding(

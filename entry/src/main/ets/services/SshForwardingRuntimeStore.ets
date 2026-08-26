@@ -58,6 +58,16 @@ export class SshForwardingRuntimeStore {
     this.maxEntries = Math.max(1, Math.floor(maxEntries));
   }
 
+  /**
+   * Check admission before a native rule is configured. The native side has
+   * no notion of this ArkTS runtime ledger, so configuring first would leave
+   * an untracked listener when the bounded ledger is full.
+   */
+  canUpsert(handle: SshSessionHandle, profileId: string): boolean {
+    const key: string = runtimeKey(handle, profileId);
+    return this.records.has(key) || this.records.size < this.maxEntries;
+  }
+
   upsert(handle: SshSessionHandle, profile: SshForwardingProfile,
     state: SshForwardingRuntimeState, error: number = 0): SshForwardingRuntimeRecord | null {
     const key: string = runtimeKey(handle, profile.id);
@@ -156,6 +166,18 @@ export class SshForwardingRuntimeStore {
     this.records.forEach((runtime: SshForwardingRuntimeRecord, key: string): void => {
       if (runtime.sessionId === handle.sessionId && runtime.channelId === handle.channelId &&
         runtime.generation === handle.generation) { keys.push(key); }
+    });
+    for (let index: number = 0; index < keys.length; index++) { this.records.delete(keys[index]); }
+    return keys.length;
+  }
+
+  /** Remove every generation of one native session after its final teardown. */
+  clearSession(handle: SshSessionHandle): number {
+    const keys: string[] = [];
+    this.records.forEach((runtime: SshForwardingRuntimeRecord, key: string): void => {
+      if (runtime.sessionId === handle.sessionId && runtime.channelId === handle.channelId) {
+        keys.push(key);
+      }
     });
     for (let index: number = 0; index < keys.length; index++) { this.records.delete(keys[index]); }
     return keys.length;

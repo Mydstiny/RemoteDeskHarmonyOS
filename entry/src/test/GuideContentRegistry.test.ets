@@ -1,7 +1,17 @@
 import { describe, it, expect } from '@ohos/hypium';
 import {
+  clampGuidePageIndex,
+  ensureGuidePages,
   firstInstallGuidePages,
+  guideDeviceFor,
   GuideContentPage,
+  GuideDevice,
+  GuideLesson,
+  guideLessonsFor,
+  GuideProtocol,
+  GuideProtocolOption,
+  guideProtocolOptions,
+  handsOnUsageGuidePages,
   settingsUsageGuidePages
 } from '../main/ets/services/GuideContentRegistry';
 
@@ -9,47 +19,109 @@ function containsPage(pages: GuideContentPage[], id: string): boolean {
   return pages.some((page: GuideContentPage): boolean => page.id === id);
 }
 
+function containsLesson(lessons: GuideLesson[], id: string): boolean {
+  return lessons.some((lesson: GuideLesson): boolean => lesson.id === id);
+}
+
+function containsProtocol(options: GuideProtocolOption[], id: GuideProtocol): boolean {
+  return options.some((option: GuideProtocolOption): boolean => option.id === id);
+}
+
 export default function guideContentRegistryTest(): void {
   describe('GuideContentRegistry', (): void => {
-    it('keeps_first_install_and_settings_guides_equal_except_final_page', 0, (): void => {
-      const firstInstall: GuideContentPage[] = firstInstallGuidePages();
-      const settings: GuideContentPage[] = settingsUsageGuidePages();
-      expect(firstInstall.length).assertEqual(10);
-      expect(settings.length).assertEqual(firstInstall.length);
-      for (let i = 0; i < firstInstall.length - 1; i++) {
-        expect(settings[i].id).assertEqual(firstInstall[i].id);
-        expect(settings[i].title).assertEqual(firstInstall[i].title);
-        expect(settings[i].desc).assertEqual(firstInstall[i].desc);
-      }
-      expect(firstInstall[firstInstall.length - 1].id).assertEqual('start-first-host');
+    it('keeps_first_install_short_and_device_adaptive', 0, (): void => {
+      const phone: GuideContentPage[] = firstInstallGuidePages('phone');
+      const desktop: GuideContentPage[] = firstInstallGuidePages('desktop');
+      const settings: GuideContentPage[] = settingsUsageGuidePages('phone');
+      expect(phone.length).assertEqual(7);
+      expect(settings.length).assertEqual(phone.length);
+      expect(containsPage(phone, 'welcome-five-protocols')).assertTrue();
+      expect(containsPage(phone, 'device-path-phone')).assertTrue();
+      expect(containsPage(desktop, 'device-path-desktop')).assertTrue();
+      expect(phone[phone.length - 1].id).assertEqual('start-first-host');
       expect(settings[settings.length - 1].id).assertEqual('revisit');
-      expect(firstInstall[firstInstall.length - 1].title).assertEqual('从第一台主机开始');
-      expect(settings[settings.length - 1].title).assertEqual('需要时随时回来');
     });
 
-    it('covers_current_user_facing_capabilities', 0, (): void => {
-      const pages: GuideContentPage[] = firstInstallGuidePages();
-      expect(containsPage(pages, 'four-protocol-workspace')).assertTrue();
-      expect(containsPage(pages, 'vnc-first-steps')).assertTrue();
-      expect(containsPage(pages, 'add-and-organize')).assertTrue();
-      expect(containsPage(pages, 'verify-before-trust')).assertTrue();
-      expect(containsPage(pages, 'session-controls')).assertTrue();
-      expect(containsPage(pages, 'ssh-workspace')).assertTrue();
-      expect(containsPage(pages, 'files-and-tools')).assertTrue();
-      expect(containsPage(pages, 'two-factor-and-credentials')).assertTrue();
-      expect(containsPage(pages, 'cloud-and-backup')).assertTrue();
+    it('detects_physical_device_before_window_breakpoint', 0, (): void => {
+      expect(guideDeviceFor(true, false, 'sm')).assertEqual('desktop');
+      expect(guideDeviceFor(false, true, 'sm')).assertEqual('tablet');
+      expect(guideDeviceFor(false, false, 'md')).assertEqual('phone');
+      expect(guideDeviceFor(false, false, 'lg')).assertEqual('tablet');
     });
 
-    it('uses_unique_non_empty_page_content', 0, (): void => {
-      const pages: GuideContentPage[] = firstInstallGuidePages();
-      const ids = new Set<string>();
-      pages.forEach((page: GuideContentPage): void => {
-        expect(page.id.length > 0).assertTrue();
-        expect(page.title.length > 0).assertTrue();
-        expect(page.desc.length > 0).assertTrue();
-        expect(ids.has(page.id)).assertFalse();
-        ids.add(page.id);
+    it('covers_all_five_user_facing_protocols', 0, (): void => {
+      const pages: GuideContentPage[] = firstInstallGuidePages('tablet');
+      expect(containsPage(pages, 'welcome-five-protocols')).assertTrue();
+      const options: GuideProtocolOption[] = guideProtocolOptions();
+      expect(options.length).assertEqual(6);
+      expect(containsProtocol(options, 'rdp')).assertTrue();
+      expect(containsProtocol(options, 'rustdesk')).assertTrue();
+      expect(containsProtocol(options, 'ssh')).assertTrue();
+      expect(containsProtocol(options, 'vnc')).assertTrue();
+      expect(containsProtocol(options, 'moonlight')).assertTrue();
+    });
+
+    it('keeps_swiper_content_non_empty_and_index_in_range', 0, (): void => {
+      const empty: GuideContentPage[] = [];
+      const fallback: GuideContentPage[] = ensureGuidePages(empty, 'desktop');
+      expect(fallback.length).assertEqual(7);
+      expect(containsPage(fallback, 'device-path-desktop')).assertTrue();
+      expect(clampGuidePageIndex(-1, fallback.length)).assertEqual(0);
+      expect(clampGuidePageIndex(99, fallback.length)).assertEqual(fallback.length - 1);
+      expect(clampGuidePageIndex(2, fallback.length)).assertEqual(2);
+      expect(clampGuidePageIndex(2, 0)).assertEqual(0);
+    });
+
+    it('does_not_share_mutable_swiper_page_objects', 0, (): void => {
+      const source: GuideContentPage[] = firstInstallGuidePages('phone');
+      const copy: GuideContentPage[] = ensureGuidePages(source);
+      copy[0].title = 'changed';
+      expect(source[0].title === 'changed').assertFalse();
+    });
+
+    it('filters_detailed_lessons_by_protocol_and_device', 0, (): void => {
+      const phoneRdp: GuideLesson[] = guideLessonsFor('phone', 'rdp');
+      const desktopMoonlight: GuideLesson[] = guideLessonsFor('desktop', 'moonlight');
+      expect(phoneRdp[0].id).assertEqual('rdp-prepare');
+      expect(containsLesson(phoneRdp, 'common-phone-controls')).assertFalse();
+      expect(containsLesson(phoneRdp, 'rdp-prepare')).assertTrue();
+      expect(containsLesson(phoneRdp, 'ssh-sftp')).assertFalse();
+      expect(desktopMoonlight[0].id).assertEqual('moonlight-prepare');
+      expect(containsLesson(desktopMoonlight, 'common-desktop-controls')).assertFalse();
+      expect(containsLesson(desktopMoonlight, 'moonlight-desktop-control')).assertTrue();
+      expect(containsLesson(desktopMoonlight, 'moonlight-lifecycle')).assertTrue();
+      expect(containsLesson(desktopMoonlight, 'moonlight-control')).assertFalse();
+      const desktopSsh: GuideLesson[] = guideLessonsFor('desktop', 'ssh');
+      expect(containsLesson(desktopSsh, 'ssh-workspace')).assertTrue();
+      expect(containsLesson(desktopSsh, 'ssh-productivity')).assertTrue();
+    });
+
+    it('provides_complete_non_empty_steps_for_every_path', 0, (): void => {
+      const devices: GuideDevice[] = ['phone', 'tablet', 'desktop'];
+      const protocols: GuideProtocol[] = ['all', 'rdp', 'rustdesk', 'ssh', 'vnc', 'moonlight'];
+      devices.forEach((device: GuideDevice): void => {
+        protocols.forEach((protocol: GuideProtocol): void => {
+          const lessons: GuideLesson[] = guideLessonsFor(device, protocol);
+          expect(lessons.length >= 4).assertTrue();
+          const ids = new Set<string>();
+          lessons.forEach((lesson: GuideLesson): void => {
+            expect(lesson.title.length > 0).assertTrue();
+            expect(lesson.summary.length > 0).assertTrue();
+            expect(lesson.steps.length >= 4).assertTrue();
+            expect(ids.has(lesson.id)).assertFalse();
+            ids.add(lesson.id);
+          });
+        });
       });
+    });
+
+    it('keeps_legacy_operation_pages_available', 0, (): void => {
+      const pages: GuideContentPage[] = handsOnUsageGuidePages();
+      expect(pages.length >= 20).assertTrue();
+      expect(containsPage(pages, 'rdp-files')).assertTrue();
+      expect(containsPage(pages, 'ssh-sftp')).assertTrue();
+      expect(containsPage(pages, 'vnc-gateway')).assertTrue();
+      expect(containsPage(pages, 'moonlight-quality')).assertTrue();
     });
   });
 }

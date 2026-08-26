@@ -180,10 +180,12 @@ private:
     mutable std::mutex mutex_;
     std::condition_variable cv_;
     std::deque<std::shared_ptr<Executor::Impl>> pending_;
-    std::thread worker_;
     bool stopping_ = false;
     bool workerDone_ = false;
     std::size_t active_ = 0;
+    // Keep the thread last: C++ initializes members in declaration order, and
+    // run() may observe every state member as soon as worker_ starts.
+    std::thread worker_;
 };
 
 std::mutex g_executorOwnerMutex;

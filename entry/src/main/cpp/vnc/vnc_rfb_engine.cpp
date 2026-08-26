@@ -1409,6 +1409,8 @@ uint32_t VncRfbEngine::keySymForHarmonyCode(uint32_t keyCode) {
     if (keyCode >= 2000 && keyCode <= 2009) return '0' + (keyCode - 2000);
     if (keyCode >= 2017 && keyCode <= 2042) return 'a' + (keyCode - 2017);
     if (keyCode >= 2090 && keyCode <= 2101) return 0xFFBE + (keyCode - 2090);
+    if (keyCode >= 2816 && keyCode <= 2827) return 0xFFCA + (keyCode - 2816);
+    if (keyCode >= 2103 && keyCode <= 2112) return 0xFFB0 + (keyCode - 2103);
     switch (keyCode) {
         case 2045: return 0xFFE9; // Alt left
         case 2046: return 0xFFEA; // Alt right
@@ -1433,6 +1435,19 @@ uint32_t VncRfbEngine::keySymForHarmonyCode(uint32_t keyCode) {
         case 2082: return 0xFF57;
         case 2083: return 0xFF63;
         case 2102: return 0xFF7F;
+        case 2079: return 0xFF61; // Print Screen / SysRq
+        case 2080: return 0xFF13; // Pause / Break
+        case 2113: return 0xFFAF; // Keypad divide
+        case 2114: return 0xFFAA; // Keypad multiply
+        case 2115: return 0xFFAD; // Keypad subtract
+        case 2116: return 0xFFAB; // Keypad add
+        case 2117: return 0xFFAE; // Keypad decimal
+        case 2118: return 0xFFAC; // Keypad separator/comma
+        case 2119: return 0xFF8D; // Keypad enter
+        case 2120: return 0xFFBD; // Keypad equals
+        case 2121: return 0xFF9D; // Keypad left parenthesis
+        case 2122: return 0xFF9E; // Keypad right parenthesis
+        case 2078: return 0;      // Fn is a local layer selector, not an RFB key
         case 2012: return 0xFF52;
         case 2013: return 0xFF54;
         case 2014: return 0xFF51;
@@ -1454,6 +1469,12 @@ uint32_t VncRfbEngine::keySymForHarmonyCode(uint32_t keyCode) {
         default: return keyCode <= 0x10FFFF ? keyCode : 0;
     }
 }
+
+#if defined(RDP_NATIVE_CALLBACK_TESTING)
+uint32_t VncRfbEngine::keySymForHarmonyCodeForTesting(uint32_t keyCode) {
+    return keySymForHarmonyCode(keyCode);
+}
+#endif
 
 uint8_t VncRfbEngine::reverseBits(uint8_t value) {
     value = static_cast<uint8_t>(((value & 0xF0) >> 4) | ((value & 0x0F) << 4));

@@ -13,6 +13,7 @@ import {
   LocalBackupDocument,
   LOCAL_BACKUP_MAX_BYTES,
   localBackupSha256,
+  portableBackupScopeLeaseAllowed,
   PortableBackupRestorePlan,
   validateLocalBackupDocument
 } from './LocalBackupPolicy';
@@ -25,18 +26,21 @@ import {
   portableBackupExportAllowed,
   portableBackupRestoreAllowed
 } from './CloudLifecycleSafetyPolicy';
+import {
+  AccountSessionLease,
+  accountSessionLeaseEquals
+} from './AccountScopePolicy';
 
 export class LocalBackupService {
   private static instance: LocalBackupService;
   private readonly cloud: CloudStore = CloudStore.getInstance();
   private lastErrorCode: BoundedDocumentIoCode | 'cancelled' | 'invalid_backup' |
     'unsafe_legacy_backup' | 'snapshot_failed' | 'owner_mismatch' |
-    'account_scope_required' |
+    'local_scope_required' |
     'selection_expired' | 'restore_failed' = 'cancelled';
   private selectedPreview: BackupRestorePreview | null = null;
   private selectedDocumentFingerprint: string = '';
-  private selectedOwnerScopeId: string = '';
-  private selectedGeneration: number = 0;
+  private selectedLease: AccountSessionLease | null = null;
 
   static getInstance(): LocalBackupService {
     if (!LocalBackupService.instance) { LocalBackupService.instance = new LocalBackupService(); }
@@ -51,16 +55,16 @@ export class LocalBackupService {
     if (this.lastErrorCode === 'short_write') { return '备份文件写入不完整，请更换保存位置后重试'; }
     if (this.lastErrorCode === 'invalid_backup') { return '备份文件格式或完整性校验失败'; }
     if (this.lastErrorCode === 'snapshot_failed') {
-      return '无法取得一致的账号数据快照，未生成备份文件';
+      return '无法取得一致的本地数据快照，未生成备份文件';
     }
     if (this.lastErrorCode === 'owner_mismatch') {
-      return '备份属于其他华为账号，已拒绝导入当前账号';
+      return '备份属于其他账号或本机数据作用域，已拒绝跨作用域导入';
     }
-    if (this.lastErrorCode === 'account_scope_required') {
-      return '当前尚未建立华为账号本地作用域，请先切换到华为账号后重试';
+    if (this.lastErrorCode === 'local_scope_required') {
+      return '当前本地数据作用域尚未就绪，请重新进入应用后重试';
     }
     if (this.lastErrorCode === 'selection_expired') {
-      return '账号会话或备份内容已变化，请重新选择备份文件';
+      return '本地数据作用域、数据库会话或备份内容已变化，请重新选择备份文件';
     }
     if (this.lastErrorCode === 'restore_failed') {
       return '恢复未完成；数据仍处于恢复隔离状态，请重试或检查诊断信息';
@@ -83,6 +87,15 @@ export class LocalBackupService {
       'backup export start mode=' + sensitivityMode);
     if (!portableBackupExportAllowed()) {
       this.lastErrorCode = 'unsafe_legacy_backup';
+      hilog.error(0x0001, 'LocalBackupService',
+        'backup export blocked code=' + this.lastErrorCode);
+      return false;
+    }
+    const exportScope = this.cloud.currentScope();
+    const exportLease: AccountSessionLease | null =
+      this.cloud.currentAccountLease();
+    if (!portableBackupScopeLeaseAllowed(exportScope, exportLease)) {
+      this.lastErrorCode = 'local_scope_required';
       hilog.error(0x0001, 'LocalBackupService',
         'backup export blocked code=' + this.lastErrorCode);
       return false;
@@ -238,12 +251,13 @@ export class LocalBackupService {
   async selectAndValidate(): Promise<LocalBackupDocument | null> {
     this.selectedPreview = null;
     this.selectedDocumentFingerprint = '';
-    this.selectedOwnerScopeId = '';
-    this.selectedGeneration = 0;
+    this.selectedLease = null;
     const selectionScope = this.cloud.currentScope();
-    if (selectionScope.kind !== 'huawei_account' ||
-      selectionScope.ownerScopeId.trim() === '') {
-      this.lastErrorCode = 'account_scope_required';
+    const selectionLease: AccountSessionLease | null =
+      this.cloud.currentAccountLease();
+    if (!portableBackupScopeLeaseAllowed(
+      selectionScope, selectionLease)) {
+      this.lastErrorCode = 'local_scope_required';
       return null;
     }
     const uris: string[] = await new picker.DocumentViewPicker().select();
@@ -261,8 +275,7 @@ export class LocalBackupService {
           createLocalBackupRestorePreview(document);
         this.selectedDocumentFingerprint =
           localBackupSha256(JSON.stringify(document));
-        this.selectedOwnerScopeId = selectionScope.ownerScopeId;
-        this.selectedGeneration = selectionScope.generation;
+        this.selectedLease = selectionLease;
       }
       return document;
     } finally { fileIo.closeSync(file); }
@@ -277,9 +290,10 @@ export class LocalBackupService {
       return false;
     }
     const currentScope = this.cloud.currentScope();
-    if (currentScope.kind !== 'huawei_account' ||
-      currentScope.ownerScopeId !== this.selectedOwnerScopeId ||
-      currentScope.generation !== this.selectedGeneration ||
+    const currentLease: AccountSessionLease | null =
+      this.cloud.currentAccountLease();
+    if (!portableBackupScopeLeaseAllowed(currentScope, currentLease) ||
+      !accountSessionLeaseEquals(currentLease, this.selectedLease) ||
       this.selectedDocumentFingerprint === '' ||
       localBackupSha256(JSON.stringify(document)) !==
         this.selectedDocumentFingerprint) {
@@ -302,8 +316,7 @@ export class LocalBackupService {
     if (restored) {
       this.selectedPreview = null;
       this.selectedDocumentFingerprint = '';
-      this.selectedOwnerScopeId = '';
-      this.selectedGeneration = 0;
+      this.selectedLease = null;
     }
     return restored;
   }

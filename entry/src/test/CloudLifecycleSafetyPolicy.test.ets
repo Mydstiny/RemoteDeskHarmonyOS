@@ -4,6 +4,9 @@ import {
   cloudAccountBindingIsValid,
   cloudDistributedRegistrationAllowed,
   cloudRegistrationRetryAllowed,
+  cloudRegistrationRetrySucceeded,
+  moonlightCloudSchemaProvisioned,
+  optionalCloudTableRegistrationAllowed,
   cloudTransferAllowed,
   legacyCloudRestTransferAllowed,
   portableBackupExportAllowed,
@@ -86,5 +89,43 @@ export default function cloudLifecycleSafetyPolicyTest(): void {
         true, true, true, unboundCloudAccountBinding(), false, false,
         16000, 0, 15000)).assertFalse();
     });
+
+    it('never_masks_a_failed_core_rebind_with_optional_table_work', 0,
+      (): void => {
+        expect(cloudRegistrationRetrySucceeded(true, true, true))
+          .assertTrue();
+        expect(cloudRegistrationRetrySucceeded(true, true, false))
+          .assertFalse();
+        expect(cloudRegistrationRetrySucceeded(true, false, true))
+          .assertFalse();
+        expect(cloudRegistrationRetrySucceeded(false, true, true))
+          .assertFalse();
+      });
+
+    it('requires_every_isolation_proof_before_optional_table_registration', 0,
+      (): void => {
+        expect(optionalCloudTableRegistrationAllowed(
+          true, true, true, true, true, true)).assertTrue();
+        expect(optionalCloudTableRegistrationAllowed(
+          false, true, true, true, true, true)).assertFalse();
+        expect(optionalCloudTableRegistrationAllowed(
+          true, false, true, true, true, true)).assertFalse();
+        expect(optionalCloudTableRegistrationAllowed(
+          true, true, false, true, true, true)).assertFalse();
+        expect(optionalCloudTableRegistrationAllowed(
+          true, true, true, false, true, true)).assertFalse();
+        expect(optionalCloudTableRegistrationAllowed(
+          true, true, true, true, false, true)).assertFalse();
+        expect(optionalCloudTableRegistrationAllowed(
+          true, true, true, true, true, false)).assertFalse();
+      });
+
+    it('requires_an_explicit_remote_schema_deployment_receipt', 0,
+      (): void => {
+        expect(moonlightCloudSchemaProvisioned()).assertTrue();
+        expect(moonlightCloudSchemaProvisioned(0)).assertFalse();
+        expect(moonlightCloudSchemaProvisioned(1)).assertTrue();
+        expect(moonlightCloudSchemaProvisioned(2)).assertTrue();
+      });
   });
 }

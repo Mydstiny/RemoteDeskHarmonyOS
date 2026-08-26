@@ -51,6 +51,19 @@
       color: transparent !important;
       background: transparent !important;
     }
+    @keyframes ssh-terminal-unfocused-cursor-blink {
+      0%, 49% { opacity: 1; }
+      50%, 100% { opacity: 0; }
+    }
+    /* ArkUI owns IME focus on HarmonyOS. Preserve the configured cursor blink
+       when xterm renders its unfocused cursor behind that native input anchor.
+       xterm uses a separate class for each configured cursor style. */
+    #terminal.ssh-cursor-blink-enabled .xterm-cursor.xterm-cursor-outline,
+    #terminal.ssh-cursor-blink-enabled .xterm-cursor.xterm-cursor-bar,
+    #terminal.ssh-cursor-blink-enabled .xterm-cursor.xterm-cursor-block,
+    #terminal.ssh-cursor-blink-enabled .xterm-cursor.xterm-cursor-underline {
+      animation: ssh-terminal-unfocused-cursor-blink 1s steps(1, end) infinite;
+    }
   </style>
 </head>
 <body>
@@ -62,13 +75,28 @@
     (function () {
       'use strict';
 
+      // Keep page-side recovery bounded just like the ArkTS lifecycle fences.
+      // A document that never exposes xterm or the native bridge must stop
+      // scheduling work instead of keeping a dead WebView alive forever.
+      var PAGE_RETRY_MAX_ATTEMPTS = 240;
+
       var state = {
         terminal: null,
         fitAddon: null,
         searchAddon: null,
-        pendingWrites: [],
+        searchResults: { resultIndex: -1, resultCount: 0 },
+        lastModeSignature: '',
         readyNotified: false,
         readyRetryCount: 0,
+        readyRetryTimer: 0,
+        bootRetryCount: 0,
+        bootRetryTimer: 0,
+        webMessagePort: null,
+        webMessageSessionKey: '',
+        webMessageGeneration: 0,
+        webMessageNextSequence: 1,
+        webMessageLastReceivedSequence: 0,
+        webMessageReady: false,
         fitTimer: 0,
         fitGeneration: 0,
         config: {
@@ -77,8 +105,14 @@
           fontSize: 18,
           lineHeight: 1.12,
           fontFamily: 'monospace',
+          fontWeight: 'normal',
           foreground: '#33ff33',
           background: '#0d0d0d',
+          palette: [],
+          cursorStyle: 'bar',
+          cursorBlink: true,
+          scrollback: 10000,
+          bellStyle: 'none',
           bottomAlignSparseContent: false,
           bottomAlignSafeRows: 0,
           bottomInsetPx: 10
@@ -96,24 +130,249 @@
           // A page can outlive its ArkTS component during route replacement.
           // Dropping only the callback is safe; terminal bytes stay in the
           // native owner and the next page receives a fresh view.
-          try { console.warn('ssh bridge ' + method + ' failed', error); } catch (_) {}
+          // Never forward a raw exception object to the Web console: bridge
+          // errors can carry implementation details or sensitive URL/path
+          // context. Keep only the fixed phase/method label.
+          try { console.warn('ssh bridge ' + method + ' failed'); } catch (_) {}
         }
         return false;
+      }
+
+      // API 23+ ArkWeb exposes a transferable WebMessagePort. Keep the page
+      // endpoint deliberately small and string-only: the native policy owns
+      // identity, sequence, queue and generation validation while this side
+      // only accepts the port transferred by the current document.
+      function allowedWebMessageKind(kind) {
+        return ['hello', 'hello_ack', 'ready', 'output', 'input', 'resize',
+          'search', 'ack', 'error', 'close'].indexOf(kind) >= 0;
+      }
+
+      function validWebMessageIdentity(sessionKey, generation) {
+        return typeof sessionKey === 'string' && sessionKey.trim().length > 0 &&
+          typeof generation === 'number' && isFinite(generation) &&
+          Math.floor(generation) === generation && generation > 0;
+      }
+
+      function webMessageUtf8ByteLength(value) {
+        var text = String(value || '');
+        var bytes = 0;
+        for (var index = 0; index < text.length; index += 1) {
+          var code = text.charCodeAt(index);
+          if (code <= 0x7f) {
+            bytes += 1;
+          } else if (code <= 0x7ff) {
+            bytes += 2;
+          } else if (code >= 0xd800 && code <= 0xdbff && index + 1 < text.length) {
+            var next = text.charCodeAt(index + 1);
+            if (next >= 0xdc00 && next <= 0xdfff) {
+              bytes += 4;
+              index += 1;
+            } else {
+              bytes += 3;
+            }
+          } else {
+            bytes += 3;
+          }
+        }
+        return bytes;
+      }
+
+      function decodeWebMessage(raw) {
+        if (typeof raw !== 'string' || raw.length === 0 || raw.length > 131072) return null;
+        try {
+          var parsed = JSON.parse(raw);
+          if (!parsed || typeof parsed !== 'object' ||
+              typeof parsed.version !== 'number' || parsed.version !== 1 ||
+              typeof parsed.kind !== 'string' || !allowedWebMessageKind(parsed.kind) ||
+              typeof parsed.sessionKey !== 'string' ||
+              !validWebMessageIdentity(parsed.sessionKey, parsed.generation) ||
+              typeof parsed.sequence !== 'number' || !isFinite(parsed.sequence) ||
+              Math.floor(parsed.sequence) !== parsed.sequence || parsed.sequence <= 0 ||
+              typeof parsed.ackSequence !== 'number' || !isFinite(parsed.ackSequence) ||
+              Math.floor(parsed.ackSequence) !== parsed.ackSequence || parsed.ackSequence < 0 ||
+              typeof parsed.payload !== 'string') {
+            return null;
+          }
+          var payload = parsed.payload;
+          if (payload.length > 65536 || webMessageUtf8ByteLength(payload) > 65536) return null;
+          return {
+            version: 1,
+            kind: parsed.kind,
+            sessionKey: parsed.sessionKey.trim(),
+            generation: parsed.generation,
+            sequence: parsed.sequence,
+            ackSequence: parsed.ackSequence,
+            payload: payload
+          };
+        } catch (_) {
+          return null;
+        }
+      }
+
+      function sendWebMessage(kind, payload, allowOpening) {
+        var port = state.webMessagePort;
+        if (!port || !validWebMessageIdentity(state.webMessageSessionKey,
+            state.webMessageGeneration) || (!state.webMessageReady && !allowOpening)) {
+          return false;
+        }
+        var text = payload === undefined || payload === null ? '' : String(payload);
+        if (text.length > 65536 || webMessageUtf8ByteLength(text) > 65536 ||
+            !allowedWebMessageKind(kind)) return false;
+        var envelope = {
+          version: 1,
+          kind: kind,
+          sessionKey: state.webMessageSessionKey,
+          generation: state.webMessageGeneration,
+          sequence: state.webMessageNextSequence++,
+          ackSequence: state.webMessageLastReceivedSequence,
+          payload: text
+        };
+        try {
+          port.postMessage(JSON.stringify(envelope));
+          return true;
+        } catch (error) {
+          try { console.warn('ssh web message post failed'); } catch (_) {}
+          state.webMessageReady = false;
+          try { port.close(); } catch (_) {}
+          state.webMessagePort = null;
+          return false;
+        }
+      }
+
+      function acceptWebMessage(envelope) {
+        if (!envelope || !state.webMessagePort ||
+            envelope.sessionKey !== state.webMessageSessionKey ||
+            envelope.generation !== state.webMessageGeneration ||
+            envelope.sequence !== state.webMessageLastReceivedSequence + 1 ||
+            envelope.ackSequence >= state.webMessageNextSequence) {
+          return false;
+        }
+        state.webMessageLastReceivedSequence = envelope.sequence;
+        return true;
+      }
+
+      function handleWebMessage(raw) {
+        var envelope = decodeWebMessage(raw);
+        if (!envelope) return;
+        if (envelope.kind === 'hello') {
+          if (envelope.sequence !== 1 || envelope.ackSequence !== 0) return;
+          if (state.webMessagePort && state.webMessageSessionKey &&
+              (envelope.sessionKey !== state.webMessageSessionKey ||
+               envelope.generation !== state.webMessageGeneration)) return;
+          state.webMessageSessionKey = envelope.sessionKey;
+          state.webMessageGeneration = envelope.generation;
+          state.webMessageNextSequence = 1;
+          state.webMessageLastReceivedSequence = envelope.sequence;
+          state.webMessageReady = false;
+          sendWebMessage('hello_ack', '', true);
+          return;
+        }
+        if (!acceptWebMessage(envelope)) return;
+        if (envelope.kind === 'ready') {
+          state.webMessageReady = true;
+          sendWebMessage('ack', JSON.stringify({ ready: true }), false);
+          return;
+        }
+        if (envelope.kind === 'close' || envelope.kind === 'error') {
+          state.webMessageReady = false;
+          try { state.webMessagePort.close(); } catch (_) {}
+          state.webMessagePort = null;
+          return;
+        }
+        if (!state.webMessageReady) return;
+        if (envelope.kind === 'output') {
+          try {
+            var output = JSON.parse(envelope.payload);
+            var batchSequence = Math.floor(Number(output && output.batchSequence));
+            var values = output && output.values;
+            if (!Array.isArray(values) || !isFinite(batchSequence) || batchSequence <= 0 ||
+                typeof window.__sshXtermWriteBatch !== 'function') return;
+            window.__sshXtermWriteBatch(values, batchSequence, true);
+          } catch (_) {}
+          return;
+        }
+      }
+
+      window.addEventListener('message', function (event) {
+        var ports = event && event.ports;
+        if (!ports || !ports.length || state.webMessagePort) return;
+        var port = ports[0];
+        if (!port || typeof port.postMessage !== 'function') return;
+        state.webMessagePort = port;
+        state.webMessageReady = false;
+        try {
+          port.onmessage = function (messageEvent) {
+            handleWebMessage(messageEvent && messageEvent.data);
+          };
+          if (typeof port.start === 'function') port.start();
+        } catch (_) {
+          state.webMessagePort = null;
+        }
+      });
+
+      function terminalInput(data) {
+        if (!sendWebMessage('input', data, false)) {
+          bridgeCall('onInput', [data]);
+        }
+      }
+
+      function terminalResize(cols, rows) {
+        var payload = JSON.stringify({ cols: Number(cols), rows: Number(rows) });
+        if (!sendWebMessage('resize', payload, false)) {
+          bridgeCall('onResize', [Number(cols), Number(rows)]);
+        }
+      }
+
+      // Mode changes are sparse control telemetry, so keep them on the
+      // identity-fenced JavaScript proxy even when bulk output uses a message
+      // port. Never publish a guessed safe state when the xterm API is absent.
+      function notifyTerminalMode(force) {
+        if (!state.terminal) return false;
+        try {
+          var modes = state.terminal.modes;
+          var active = state.terminal.buffer && state.terminal.buffer.active;
+          if (!modes || typeof modes.mouseTrackingMode !== 'string' ||
+              typeof modes.applicationCursorKeysMode !== 'boolean' ||
+              typeof modes.applicationKeypadMode !== 'boolean' || !active ||
+              (active.type !== 'normal' && active.type !== 'alternate')) return false;
+          var mouseTracking = modes.mouseTrackingMode !== 'none';
+          var applicationCursorKeys = modes.applicationCursorKeysMode === true;
+          var applicationKeypad = modes.applicationKeypadMode === true;
+          var alternateBuffer = active.type === 'alternate';
+          var signature = [mouseTracking, applicationCursorKeys,
+            applicationKeypad, alternateBuffer].join(':');
+          if (force !== true && signature === state.lastModeSignature) return true;
+          if (!bridgeCall('onMode', [mouseTracking, applicationCursorKeys,
+              applicationKeypad, alternateBuffer])) return false;
+          state.lastModeSignature = signature;
+          return true;
+        } catch (_) {
+          return false;
+        }
       }
 
       function notifyReady() {
         if (state.readyNotified || !state.terminal) return;
         if (bridgeCall('onReady', [Number(state.terminal.cols), Number(state.terminal.rows)])) {
+          if (state.readyRetryTimer) {
+            window.clearTimeout(state.readyRetryTimer);
+            state.readyRetryTimer = 0;
+          }
           state.readyRetryCount = 0;
           state.readyNotified = true;
+          notifyTerminalMode(true);
           return;
         }
+        if (state.readyRetryTimer || state.readyRetryCount >= PAGE_RETRY_MAX_ATTEMPTS) return;
         state.readyRetryCount += 1;
         // ArkTS can register the proxy after the document has booted during a
         // keyed host switch. Keep retrying at a low rate after the fast boot
-        // window instead of permanently leaving the parent behind its mask.
+        // window, but stop after one bounded document lifecycle.
         var retryDelay = state.readyRetryCount < 150 ? 32 : 250;
-        window.setTimeout(notifyReady, retryDelay);
+        state.readyRetryTimer = window.setTimeout(function () {
+          state.readyRetryTimer = 0;
+          notifyReady();
+        }, retryDelay);
       }
 
       function fitTerminal() {
@@ -203,17 +462,41 @@
         try {
           document.documentElement.style.setProperty(
             '--ssh-terminal-bottom-inset', bottomInsetPx + 'px');
+          document.documentElement.style.backgroundColor = state.config.background || '#0d0d0d';
+          document.body.style.backgroundColor = state.config.background || '#0d0d0d';
+          var terminalRoot = document.getElementById('terminal');
+          if (terminalRoot) {
+            terminalRoot.style.backgroundColor = state.config.background || '#0d0d0d';
+            terminalRoot.classList.toggle('ssh-cursor-blink-enabled',
+              state.config.cursorBlink !== false);
+          }
         } catch (_) {}
         try {
-          terminal.options.fontSize = fontSize;
-          terminal.options.lineHeight = lineHeight;
-          terminal.options.fontFamily = state.config.fontFamily || 'monospace';
-          terminal.options.theme = {
+          var palette = Array.isArray(state.config.palette) && state.config.palette.length === 16
+            ? state.config.palette : [];
+          var terminalTheme = {
             foreground: state.config.foreground || '#33ff33',
             background: state.config.background || '#0d0d0d',
             cursor: state.config.foreground || '#33ff33',
             selectionBackground: 'rgba(90, 140, 255, 0.42)'
           };
+          var paletteNames = ['black', 'red', 'green', 'yellow', 'blue', 'magenta', 'cyan', 'white',
+            'brightBlack', 'brightRed', 'brightGreen', 'brightYellow', 'brightBlue', 'brightMagenta',
+            'brightCyan', 'brightWhite'];
+          paletteNames.forEach(function (name, index) {
+            if (palette[index]) terminalTheme[name] = palette[index];
+          });
+          terminal.options.fontSize = fontSize;
+          terminal.options.lineHeight = lineHeight;
+          terminal.options.fontFamily = state.config.fontFamily || 'monospace';
+          terminal.options.fontWeight = state.config.fontWeight === 'bold' ? 'bold' : 'normal';
+          terminal.options.cursorStyle = state.config.cursorStyle || 'bar';
+          terminal.options.cursorInactiveStyle = state.config.cursorStyle || 'bar';
+          terminal.options.cursorBlink = state.config.cursorBlink !== false;
+          terminal.options.scrollback = Math.max(1000, Math.min(100000,
+            Math.floor(Number(state.config.scrollback) || 10000)));
+          terminal.options.bellStyle = state.config.bellStyle || 'none';
+          terminal.options.theme = terminalTheme;
         } catch (_) {}
         applyBottomSafeInset();
         var fitted = fitTerminal();
@@ -259,16 +542,6 @@
         }
       }
 
-      function flushPendingWrites() {
-        if (!state.terminal) return;
-        var terminal = state.terminal;
-        var pending = state.pendingWrites;
-        state.pendingWrites = [];
-        pending.forEach(function (value) {
-          try { terminal.write(value); } catch (_) {}
-        });
-      }
-
       function loadAddonSafely(addon, name) {
         try {
           state.terminal.loadAddon(addon);
@@ -277,7 +550,7 @@
           // ArkWeb builds differ in the canvas APIs exposed to Web. The
           // xterm DOM renderer remains a complete VT frontend, so one addon
           // failure must not prevent input, output, or configuration wiring.
-          try { console.warn('ssh addon ' + name + ' unavailable', error); } catch (_) {}
+          try { console.warn('ssh addon ' + name + ' unavailable'); } catch (_) {}
           return false;
         }
       }
@@ -285,25 +558,38 @@
       function boot() {
         if (state.terminal) return;
         if (!window.Terminal || !document.getElementById('terminal')) {
-          window.setTimeout(boot, 16);
+          if (!state.bootRetryTimer && state.bootRetryCount < PAGE_RETRY_MAX_ATTEMPTS) {
+            state.bootRetryCount += 1;
+            state.bootRetryTimer = window.setTimeout(function () {
+              state.bootRetryTimer = 0;
+              boot();
+            }, 16);
+          }
           return;
         }
         try {
           var terminal = new window.Terminal({
             cols: Number(state.config.cols) || 80,
             rows: Number(state.config.rows) || 24,
-            scrollback: 10000,
+            scrollback: Math.max(1000, Math.min(100000,
+              Math.floor(Number(state.config.scrollback) || 10000))),
             fontSize: Number(state.config.fontSize) || 18,
             fontFamily: state.config.fontFamily || 'monospace',
+            fontWeight: state.config.fontWeight === 'bold' ? 'bold' : 'normal',
             lineHeight: Number(state.config.lineHeight) || 1.12,
-            cursorBlink: true,
-            cursorStyle: 'bar',
-            cursorInactiveStyle: 'bar',
+            cursorBlink: state.config.cursorBlink !== false,
+            cursorStyle: state.config.cursorStyle || 'bar',
+            cursorInactiveStyle: state.config.cursorStyle || 'bar',
             cursorWidth: 2,
+            bellStyle: state.config.bellStyle || 'none',
             convertEol: false,
             // Keep xterm's mature helper input enabled as a fallback when the
             // ArkUI IME anchor cannot acquire focus during a page handoff.
             disableStdin: false,
+            // SearchAddon 0.13 renders match highlights through xterm 5.3's
+            // registerDecoration API. Both assets are bundled and versioned
+            // together here, so explicitly allow that paired API surface.
+            allowProposedApi: true,
             allowTransparency: false,
             rightClickSelectsWord: true,
             scrollOnUserInput: true,
@@ -317,6 +603,10 @@
             }
           });
           state.terminal = terminal;
+          if (state.bootRetryTimer) {
+            window.clearTimeout(state.bootRetryTimer);
+            state.bootRetryTimer = 0;
+          }
           var terminalElement = document.getElementById('terminal');
           terminal.open(terminalElement);
           var touchPointerId = -1;
@@ -365,6 +655,9 @@
           function finishTouchPointer(event) {
             if (!event || Number(event.pointerId) !== touchPointerId) return;
             if (!touchMoved && event.type === 'pointerup') {
+              // ArkUI is the sole HarmonyOS IME owner. Report the user tap but
+              // do not focus xterm's helper textarea: ArkWeb cannot reliably
+              // attach the phone/Pad software keyboard to that hidden field.
               bridgeCall('onFocus', [true]);
             }
             try { terminalElement.releasePointerCapture(event.pointerId); } catch (_) {}
@@ -380,17 +673,28 @@
             loadAddonSafely(state.fitAddon, 'fit');
           }
           if (window.SearchAddon && typeof window.SearchAddon.SearchAddon === 'function') {
-            state.searchAddon = new window.SearchAddon.SearchAddon();
-            loadAddonSafely(state.searchAddon, 'search');
+            state.searchAddon = new window.SearchAddon.SearchAddon({ highlightLimit: 500 });
+            if (loadAddonSafely(state.searchAddon, 'search') &&
+                typeof state.searchAddon.onDidChangeResults === 'function') {
+              state.searchAddon.onDidChangeResults(function (results) {
+                state.searchResults = {
+                  resultIndex: Number(results && results.resultIndex) || 0,
+                  resultCount: Math.max(0, Number(results && results.resultCount) || 0)
+                };
+                if (state.searchResults.resultCount === 0) {
+                  state.searchResults.resultIndex = -1;
+                }
+              });
+            }
           }
 
           // Keep xterm's DOM renderer as the stable device path. CanvasAddon
           // can leave ArkWeb with only a cursor after a GPU surface loss.
           terminal.onData(function (data) {
-            bridgeCall('onInput', [data]);
+            terminalInput(data);
           });
           terminal.onResize(function (size) {
-            bridgeCall('onResize', [Number(size.cols), Number(size.rows)]);
+            terminalResize(Number(size.cols), Number(size.rows));
           });
           terminal.onRender(function () {
             alignSparseContent();
@@ -416,10 +720,13 @@
           }
 
           applyConfig(state.config);
-          flushPendingWrites();
           refreshTerminal();
           alignSparseContent();
           notifyReady();
+          // Only reset the boot budget after the complete xterm wiring has
+          // succeeded; constructor/open/listener failures must still count
+          // toward the same document-level bound.
+          state.bootRetryCount = 0;
         } catch (error) {
           // A transient ArkWeb DOM/renderer failure must be retryable. Leave
           // pending output intact and never report xterm ready in this state.
@@ -428,8 +735,14 @@
           state.searchAddon = null;
           var terminalRoot = document.getElementById('terminal');
           if (terminalRoot) terminalRoot.innerHTML = '';
-          try { console.warn('ssh xterm boot failed', error); } catch (_) {}
-          window.setTimeout(boot, 80);
+          try { console.warn('ssh xterm boot failed'); } catch (_) {}
+          if (!state.bootRetryTimer && state.bootRetryCount < PAGE_RETRY_MAX_ATTEMPTS) {
+            state.bootRetryCount += 1;
+            state.bootRetryTimer = window.setTimeout(function () {
+              state.bootRetryTimer = 0;
+              boot();
+            }, 80);
+          }
         }
       }
 
@@ -450,20 +763,15 @@
         notifyReady();
       };
 
-      window.__sshXtermWrite = function (value) {
-        var text = value === undefined || value === null ? '' : String(value);
-        if (text.length === 0) return;
-        if (!state.terminal) {
-          state.pendingWrites.push(text);
-          return;
-        }
-        try { state.terminal.write(text); } catch (_) {}
-      };
-
-      window.__sshXtermWriteBatch = function (values, batchSequence) {
+      window.__sshXtermWriteBatch = function (values, batchSequence, portMode) {
         var sequence = Number(batchSequence) || 0;
         if (!Array.isArray(values)) {
-          bridgeCall('onFrameError', [sequence, 0]);
+          if (portMode === true) {
+            sendWebMessage('error', JSON.stringify({ batchSequence: sequence,
+              consumedCount: 0 }), false);
+          } else {
+            bridgeCall('onFrameError', [sequence, 0]);
+          }
           return;
         }
         var texts = [];
@@ -475,11 +783,20 @@
           // The parent still owns this batch. Queueing it in an untracked
           // document and ACKing here would lose it if the document reloads
           // before xterm boots.
-          bridgeCall('onFrameError', [sequence, 0]);
+          if (portMode === true) {
+            sendWebMessage('error', JSON.stringify({ batchSequence: sequence,
+              consumedCount: 0 }), false);
+          } else {
+            bridgeCall('onFrameError', [sequence, 0]);
+          }
           return;
         }
         if (texts.length === 0) {
-          bridgeCall('onFrame', [sequence]);
+          if (portMode === true) {
+            sendWebMessage('ack', JSON.stringify({ batchSequence: sequence }), false);
+          } else {
+            bridgeCall('onFrame', [sequence]);
+          }
           return;
         }
         var completed = false;
@@ -488,7 +805,12 @@
           completed = true;
           refreshTerminal();
           alignSparseContent();
-          bridgeCall('onFrame', [sequence]);
+          notifyTerminalMode();
+          if (portMode === true) {
+            sendWebMessage('ack', JSON.stringify({ batchSequence: sequence }), false);
+          } else {
+            bridgeCall('onFrame', [sequence]);
+          }
         }
         var nextIndex = 0;
         function failBatch() {
@@ -499,7 +821,12 @@
           // document, preserving the global SSH FIFO without reordering it.
           refreshTerminal();
           alignSparseContent();
-          bridgeCall('onFrameError', [sequence, nextIndex]);
+          if (portMode === true) {
+            sendWebMessage('error', JSON.stringify({ batchSequence: sequence,
+              consumedCount: nextIndex }), false);
+          } else {
+            bridgeCall('onFrameError', [sequence, nextIndex]);
+          }
         }
         function writeNext() {
           if (completed) return;
@@ -530,10 +857,10 @@
       };
 
       window.__sshXtermReset = function () {
-        state.pendingWrites = [];
         if (state.terminal) {
           try { state.terminal.reset(); } catch (_) {}
           alignSparseContent();
+          notifyTerminalMode(true);
         }
       };
 
@@ -565,14 +892,77 @@
         return state.terminal ? (state.terminal.getSelection() || '') : '';
       };
 
-      window.__sshXtermSearch = function (query, forward) {
-        if (!state.searchAddon || !query) return false;
-        try {
-          return forward === false ? state.searchAddon.findPrevious(String(query)) :
-            state.searchAddon.findNext(String(query));
-        } catch (_) {
-          return false;
+      window.__sshXtermSearch = function (request, legacyForward) {
+        // Preserve the old two-argument boolean API for any retained caller.
+        if (typeof request !== 'object' || request === null) {
+          if (!state.searchAddon || !request) return false;
+          try {
+            return legacyForward === false ? state.searchAddon.findPrevious(String(request)) :
+              state.searchAddon.findNext(String(request));
+          } catch (_) {
+            return false;
+          }
         }
+        var requestId = Math.max(0, Math.floor(Number(request.requestId) || 0));
+        var startedAt = window.performance && typeof window.performance.now === 'function' ?
+          window.performance.now() : Date.now();
+        function result(found, errorCode) {
+          var endedAt = window.performance && typeof window.performance.now === 'function' ?
+            window.performance.now() : Date.now();
+          return JSON.stringify({
+            requestId: requestId,
+            found: found === true,
+            resultIndex: Number(state.searchResults.resultIndex) ||
+              (state.searchResults.resultIndex === 0 ? 0 : -1),
+            resultCount: Math.max(0, Number(state.searchResults.resultCount) || 0),
+            elapsedMs: Math.max(0, endedAt - startedAt),
+            errorCode: errorCode || ''
+          });
+        }
+        if (!state.searchAddon) return result(false, 'search_unavailable');
+        var query = request.query === undefined || request.query === null ? '' :
+          String(request.query);
+        if (!query) return result(false, 'empty_query');
+        if (query.length > 512) return result(false, 'query_too_long');
+        var options = request.options || {};
+        if (options.regex === true) {
+          try { new RegExp(query, options.caseSensitive === true ? '' : 'i'); } catch (_) {
+            return result(false, 'invalid_regex');
+          }
+        }
+        state.searchResults = { resultIndex: -1, resultCount: 0 };
+        var searchOptions = {
+          caseSensitive: options.caseSensitive === true,
+          wholeWord: options.wholeWord === true,
+          regex: options.regex === true,
+          decorations: {
+            matchBackground: 'rgba(255, 193, 7, 0.34)',
+            matchBorder: 'rgba(255, 213, 79, 0.72)',
+            matchOverviewRuler: 'rgba(255, 193, 7, 0.82)',
+            activeMatchBackground: 'rgba(88, 166, 255, 0.62)',
+            activeMatchBorder: '#C7E2FF',
+            activeMatchColorOverviewRuler: '#58A6FF'
+          }
+        };
+        try {
+          var found = request.direction === 'previous' ?
+            state.searchAddon.findPrevious(query, searchOptions) :
+            state.searchAddon.findNext(query, searchOptions);
+          return result(found === true, '');
+        } catch (error) {
+          return result(false, options.regex === true ? 'invalid_regex' : 'execution_failed');
+        }
+      };
+
+      window.__sshXtermClearSearch = function () {
+        state.searchResults = { resultIndex: -1, resultCount: 0 };
+        if (state.searchAddon && typeof state.searchAddon.clearDecorations === 'function') {
+          try { state.searchAddon.clearDecorations(); } catch (_) {}
+        }
+        if (state.terminal) {
+          try { state.terminal.clearSelection(); } catch (_) {}
+        }
+        return true;
       };
 
       window.addEventListener('resize', function () {

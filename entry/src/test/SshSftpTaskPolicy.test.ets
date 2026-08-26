@@ -189,6 +189,18 @@ export default function sshSftpTaskPolicyTest(): void {
       unsubscribe();
     });
 
+    it('requeues an orphaned in-flight task only after it is detached', 0, (): void => {
+      const store: SshSftpTaskStore = new SshSftpTaskStore();
+      const interrupted: SshSftpTaskRecord = task('route-loss-task', 20);
+      interrupted.stage = 'transferring';
+      expect(store.upsert(interrupted)).assertTrue();
+      expect(store.command(interrupted.taskId, { kind: 'retry' }).accepted).assertFalse();
+      expect(store.command(interrupted.taskId, { kind: 'detach' }).accepted).assertTrue();
+      expect(store.get(interrupted.taskId)?.stage).assertEqual('waitingForConnection');
+      expect(store.command(interrupted.taskId, { kind: 'retry' }).accepted).assertTrue();
+      expect(store.get(interrupted.taskId)?.stage).assertEqual('queued');
+    });
+
     it('creates durable file and directory tasks from an accepted batch plan', 0, (): void => {
       const item = (path: string, name: string, size: number): SshSftpTreeItem => ({
         relativePath: path, name, isDirectory: false, isSymbolicLink: false,

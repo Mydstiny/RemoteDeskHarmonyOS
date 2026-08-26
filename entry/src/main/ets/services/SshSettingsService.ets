@@ -11,12 +11,15 @@ import {
   SSH_LEGACY_LINE_SPACING_KEY,
   SSH_SETTINGS_SCHEMA_VERSION,
   SSH_SETTINGS_SCHEMA_VERSION_KEY,
+  SSH_SESSION_LOCALE_KEY,
   SSH_TERMINAL_FONT_SIZE_KEY,
   SSH_TERMINAL_FOREGROUND_COLOR_KEY,
   SSH_TERMINAL_LINE_SPACING_KEY,
   SshTerminalAppearance,
   defaultSshTerminalAppearance,
   hasSshTerminalAppearanceCloudSettings,
+  normalizeSshSessionLocale,
+  sshSessionLocalePreferenceKey,
   normalizeSshTerminalLineSpacing,
   normalizeSshTerminalFontSize,
   normalizeSshTerminalForegroundColor,
@@ -26,10 +29,11 @@ import {
 
 const SSH_PREFERENCES_NAME: string = 'RemoteDesktopAppPrefs';
 
-/** Owns the global SSH terminal appearance without owning host trust data. */
+/** Owns global SSH terminal/session preferences without owning host trust data. */
 export class SshSettingsService {
   private static instance: SshSettingsService;
   private values: SshTerminalAppearance = defaultSshTerminalAppearance();
+  private sessionLocale: string = '';
   private context: common.Context | null = null;
   private initialized: boolean = false;
 
@@ -50,6 +54,7 @@ export class SshSettingsService {
       const storedLegacyFontSize: Object = prefs.getSync(SSH_LEGACY_FONT_SIZE_KEY, 0) as Object;
       const storedPreferredLineSpacing: Object = prefs.getSync(SSH_TERMINAL_LINE_SPACING_KEY, 0) as Object;
       const storedLegacyLineSpacing: Object = prefs.getSync(SSH_LEGACY_LINE_SPACING_KEY, 0) as Object;
+      const storedSessionLocale: Object = prefs.getSync(SSH_SESSION_LOCALE_KEY, '') as Object;
       const preferredColor: string = typeof storedPreferredColor === 'string' ? storedPreferredColor as string : '';
       const legacyColor: string = typeof storedLegacyColor === 'string' ? storedLegacyColor as string : '';
       const preferredFontSize: number = typeof storedPreferredFontSize === 'number'
@@ -63,9 +68,12 @@ export class SshSettingsService {
       this.values = resolveSshTerminalAppearance(
         preferredColor, legacyColor, preferredFontSize, legacyFontSize,
         preferredLineSpacing, legacyLineSpacing);
+      this.sessionLocale = normalizeSshSessionLocale(
+        typeof storedSessionLocale === 'string' ? storedSessionLocale as string : '');
       this.writeRuntimeAndLocal(prefs);
     } catch (_e) {
       this.values = defaultSshTerminalAppearance();
+      this.sessionLocale = '';
       this.writeRuntimeAndLocal(null);
     }
     this.initialized = true;
@@ -82,6 +90,48 @@ export class SshSettingsService {
 
   isInitialized(): boolean {
     return this.initialized;
+  }
+
+  getSshSessionLocale(hostId: string = ''): string {
+    const key: string = sshSessionLocalePreferenceKey(hostId);
+    const runtimeLocale: Object = AppStorage.get<string>(key) as Object;
+    if (typeof runtimeLocale === 'string') {
+      return normalizeSshSessionLocale(runtimeLocale as string);
+    }
+    if (hostId.trim().length === 0) { return this.sessionLocale; }
+    try {
+      const prefs = this.context === null ? null :
+        preferences.getPreferencesSync(this.context, { name: SSH_PREFERENCES_NAME });
+      if (prefs === null) { return ''; }
+      const storedLocale: Object = prefs.getSync(key, '') as Object;
+      const normalized: string = normalizeSshSessionLocale(
+        typeof storedLocale === 'string' ? storedLocale as string : '');
+      AppStorage.setOrCreate(key, normalized);
+      return normalized;
+    } catch (_e) {
+      return '';
+    }
+  }
+
+  /** Locale is device-local because available locales are a property of the target server. */
+  saveSshSessionLocale(value: string, hostId: string = ''): string {
+    const normalized: string = normalizeSshSessionLocale(value);
+    if (hostId.trim().length === 0) {
+      this.sessionLocale = normalized;
+      this.writeRuntimeAndLocal(null);
+      return this.sessionLocale;
+    }
+    const key: string = sshSessionLocalePreferenceKey(hostId);
+    AppStorage.setOrCreate(key, normalized);
+    try {
+      const prefs = this.context === null ? null :
+        preferences.getPreferencesSync(this.context, { name: SSH_PREFERENCES_NAME });
+      if (prefs !== null) {
+        prefs.putSync(key, normalized);
+        prefs.flushSync();
+      }
+    } catch (_e) { /* AppStorage remains authoritative for the active process. */ }
+    return normalized;
   }
 
   saveForegroundColor(value: string): string {
@@ -141,6 +191,7 @@ export class SshSettingsService {
     AppStorage.setOrCreate(SSH_TERMINAL_FOREGROUND_COLOR_KEY, this.values.foregroundColor);
     AppStorage.setOrCreate(SSH_TERMINAL_FONT_SIZE_KEY, this.values.fontSize);
     AppStorage.setOrCreate(SSH_TERMINAL_LINE_SPACING_KEY, this.values.lineSpacing);
+    AppStorage.setOrCreate(SSH_SESSION_LOCALE_KEY, this.sessionLocale);
     // Keep aliases synchronized for older releases during the migration cycle.
     AppStorage.setOrCreate(SSH_LEGACY_FOREGROUND_COLOR_KEY, this.values.foregroundColor);
     AppStorage.setOrCreate(SSH_LEGACY_FONT_SIZE_KEY, this.values.fontSize);
@@ -152,6 +203,7 @@ export class SshSettingsService {
       prefs.putSync(SSH_TERMINAL_FOREGROUND_COLOR_KEY, this.values.foregroundColor);
       prefs.putSync(SSH_TERMINAL_FONT_SIZE_KEY, this.values.fontSize);
       prefs.putSync(SSH_TERMINAL_LINE_SPACING_KEY, this.values.lineSpacing);
+      prefs.putSync(SSH_SESSION_LOCALE_KEY, this.sessionLocale);
       prefs.putSync(SSH_LEGACY_FOREGROUND_COLOR_KEY, this.values.foregroundColor);
       prefs.putSync(SSH_LEGACY_FONT_SIZE_KEY, this.values.fontSize);
       prefs.putSync(SSH_LEGACY_LINE_SPACING_KEY, this.values.lineSpacing);

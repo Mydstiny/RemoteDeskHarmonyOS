@@ -1,16 +1,23 @@
 import { expect } from '@ohos/hypium';
+import { common } from '@kit.AbilityKit';
 import { TotpAlgorithm, TotpCode, TotpEntry } from '../main/ets/model/TotpEntry';
 import { TotpEngine } from '../main/ets/services/TotpEngine';
 import { RemoteHost, RemoteHostJSON } from '../main/ets/model/RemoteHost';
 import {
+  copyRustDeskPeerTwoFactorRuntime,
   hydrateRustDeskPeerTwoFactorHost,
   scrubRustDeskPeerTwoFactorRuntime,
   rustDeskPeerTwoFactorBindingFromHost,
   RustDeskPeerTwoFactorBinding,
   RustDeskPeerTwoFactorBindingMemory,
+  RustDeskPeerTwoFactorPreferenceAdapter,
+  RustDeskPeerTwoFactorPreferenceRead,
   RustDeskPeerTwoFactorBindingStore,
-  rustDeskPeerTwoFactorEndpointIdentity
+  rustDeskPeerTwoFactorEndpointIdentity,
+  setRustDeskPeerTwoFactorPreferenceAdapterForTest,
+  shouldRemoveDanglingRustDeskPeerTwoFactorBinding
 } from '../main/ets/services/RustDeskPeerTwoFactorBindingStore';
+import { RustDeskAuthDraftStore } from '../main/ets/services/RustDeskAuthDraftStore';
 import {
   decodeRustDeskPeerTwoFactorLegacyBackupRows,
   decodeRustDeskPeerTwoFactorLegacyDisplayConfig,
@@ -38,6 +45,21 @@ function makeLegacyPeerHost(hostId: string): RemoteHost {
   host.host = 'peer-' + hostId;
   host.rustdeskRelayId = 'relay-a';
   return host;
+}
+
+class MemoryPeerTwoFactorPreferences implements RustDeskPeerTwoFactorPreferenceAdapter {
+  private values: Map<string, string> = new Map<string, string>();
+
+  read(_context: common.Context, storeName: string,
+    key: string): RustDeskPeerTwoFactorPreferenceRead {
+    return { ok: true, value: this.values.get(storeName + '\u001f' + key) ?? '' };
+  }
+
+  write(_context: common.Context, storeName: string,
+    key: string, value: string): boolean {
+    this.values.set(storeName + '\u001f' + key, value);
+    return true;
+  }
 }
 
 export default function rustDeskPeerTwoFactorPolicyTest(): void {
@@ -595,6 +617,94 @@ export default function rustDeskPeerTwoFactorPolicyTest(): void {
         (_entryId: string): boolean => false, 'test-device')).assertFalse();
       expect(restored.rustdeskTotpEntryId).assertEqual('');
       expect(restored.rustdeskTotpAutoSubmit).assertFalse();
+    });
+
+    it('defers_dangling_binding_cleanup_until_keyvault_snapshot_is_authoritative', 0,
+      (): void => {
+        expect(shouldRemoveDanglingRustDeskPeerTwoFactorBinding(
+          true, false, false)).assertFalse();
+        expect(shouldRemoveDanglingRustDeskPeerTwoFactorBinding(
+          true, true, false)).assertTrue();
+        expect(shouldRemoveDanglingRustDeskPeerTwoFactorBinding(
+          true, true, true)).assertFalse();
+        expect(shouldRemoveDanglingRustDeskPeerTwoFactorBinding(
+          false, true, false)).assertFalse();
+      });
+
+    it('restores_device_local_peer_binding_from_preferences_after_store_restart', 0,
+      (): void => {
+        const adapter: MemoryPeerTwoFactorPreferences =
+          new MemoryPeerTwoFactorPreferences();
+        setRustDeskPeerTwoFactorPreferenceAdapterForTest(adapter);
+        try {
+          const context: common.Context = undefined as common.Context;
+          const first: RustDeskPeerTwoFactorBindingStore =
+            new RustDeskPeerTwoFactorBindingStore();
+          expect(first.bindContext(context, 'owner-a')).assertTrue();
+          const host: RemoteHost = makeLegacyPeerHost('persistent-binding-host');
+          host.rustdeskTotpEntryId = 'persistent-entry';
+          host.rustdeskTotpAutoSubmit = true;
+          const binding: RustDeskPeerTwoFactorBinding | null =
+            rustDeskPeerTwoFactorBindingFromHost('owner-a', host);
+          expect(binding === null).assertFalse();
+          if (binding !== null) {
+            binding.deviceIdentity = first.deviceIdentity();
+            expect(first.save(binding)).assertTrue();
+          }
+
+          const restored: RustDeskPeerTwoFactorBindingStore =
+            new RustDeskPeerTwoFactorBindingStore();
+          expect(restored.bindContext(context, 'owner-a')).assertTrue();
+          expect(restored.deviceIdentity()).assertEqual(first.deviceIdentity());
+          const saved: RustDeskPeerTwoFactorBinding | null = restored.get(
+            host.id, rustDeskPeerTwoFactorEndpointIdentity(host));
+          expect(saved === null).assertFalse();
+          if (saved !== null) {
+            expect(saved.entryId).assertEqual('persistent-entry');
+            expect(saved.autoSubmit).assertTrue();
+            expect(saved.deviceIdentity).assertEqual(first.deviceIdentity());
+          }
+        } finally {
+          setRustDeskPeerTwoFactorPreferenceAdapterForTest(null);
+        }
+      });
+
+    it('copies_local_peer_binding_only_when_a_session_clone_needs_it', 0, (): void => {
+      const source: RemoteHost = makeLegacyPeerHost('runtime-copy-host');
+      source.rustdeskTotpEntryId = 'runtime-entry';
+      source.rustdeskTotpAutoSubmit = true;
+      const target: RemoteHost = RemoteHost.fromJSON(source.toJSON());
+      expect(target.rustdeskTotpEntryId).assertEqual('');
+      copyRustDeskPeerTwoFactorRuntime(source, target);
+      expect(target.rustdeskTotpEntryId).assertEqual('runtime-entry');
+      expect(target.rustdeskTotpAutoSubmit).assertTrue();
+      expect(JSON.stringify(target.toJSON()).indexOf('runtime-entry')).assertEqual(-1);
+    });
+
+    it('keeps_password_drafts_in_memory_and_fences_them_by_owner_generation', 0, (): void => {
+      const drafts: RustDeskAuthDraftStore = new RustDeskAuthDraftStore();
+      expect(drafts.save({
+        ownerScopeId: 'owner-a', accountGeneration: 3, hostId: 'draft-host',
+        authChoice: 'password', password: 'temporary-secret', passwordMode: 1,
+        rememberPassword: false, updatedAt: 0
+      })).assertTrue();
+      const sameScope = drafts.load('owner-a', 3, 'draft-host');
+      expect(sameScope === null).assertFalse();
+      if (sameScope !== null) {
+        expect(sameScope.password).assertEqual('temporary-secret');
+        expect(sameScope.rememberPassword).assertFalse();
+      }
+      expect(drafts.load('owner-b', 3, 'draft-host') === null).assertTrue();
+      expect(drafts.load('owner-a', 4, 'draft-host') === null).assertTrue();
+      drafts.clearHost('draft-host');
+      expect(drafts.load('owner-a', 3, 'draft-host') === null).assertTrue();
+      expect(drafts.save({
+        ownerScopeId: 'owner-a', accountGeneration: 3, hostId: 'scope-transition-host',
+        authChoice: 'password', password: 'must-be-cleared', passwordMode: 0,
+        rememberPassword: true, updatedAt: 0
+      })).assertTrue();
+      drafts.clearAll();
+      expect(drafts.load('owner-a', 3, 'scope-transition-host') === null).assertTrue();
     });
 
     it('scrubs_runtime_binding_when_store_persistence_fails', 0, (): void => {

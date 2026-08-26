@@ -137,6 +137,7 @@ namespace {
         const std::string* password = nullptr;
         const std::vector<std::string>* explicitResponses = nullptr;
         size_t* presetIndex = nullptr;
+        bool* passwordFallbackUsed = nullptr;
         std::string targetHost;
         std::string hopLabel;
         bool allowPasswordFallback = false;
@@ -151,14 +152,15 @@ namespace {
             return;
         }
         auto* context = static_cast<SshJumpKeyboardContext*>(*abstract);
-        if (context->adapter == nullptr || context->presetIndex == nullptr) {
+        if (context->adapter == nullptr || context->presetIndex == nullptr ||
+            context->passwordFallbackUsed == nullptr) {
             return;
         }
         const int result = context->adapter->fillKeyboardInteractiveResponses(
             name, nameLen, instruction, instructionLen, numPrompts, prompts, responses,
             context->explicitResponses, context->password,
             context->allowPasswordFallback, context->targetHost, context->hopLabel,
-            *context->presetIndex);
+            *context->presetIndex, *context->passwordFallbackUsed);
         if (result != 0) {
             context->adapter->recordAuthPromptFailure(result);
         }
@@ -2080,7 +2082,8 @@ int SshAdapter::connectThroughSshJump(const ConnectionConfig& cfg) {
         const std::string hopLabel = "hop-" + std::to_string(index + 1);
         const int hostKeyResult = verifyHostKey(
             runtime->session, hop.expectedHostKeyRawBase64,
-            hop.expectedHostKeyFingerprintSha256, true, hopLabel.c_str());
+            hop.expectedHostKeyFingerprintSha256, true, hopLabel.c_str(),
+            hop.host, hop.port, static_cast<int>(index));
         if (hostKeyResult != 0) { return fail(hostKeyResult); }
 
         const std::string authMethod = hop.authMethod.empty() ? "password" : hop.authMethod;
@@ -2119,9 +2122,10 @@ int SshAdapter::connectThroughSshJump(const ConnectionConfig& cfg) {
             authPromptHop_ = hopLabel;
             authPromptPresetIndex_ = 0;
             authPromptFailure_.store(0, std::memory_order_release);
+            bool passwordFallbackUsed = false;
             SshJumpKeyboardContext context {
-                this, &password, &responses, &authPromptPresetIndex_, hop.host,
-                hopLabel, allowPasswordFallback
+                this, &password, &responses, &authPromptPresetIndex_,
+                &passwordFallbackUsed, hop.host, hopLabel, allowPasswordFallback
             };
             *abstract = &context;
             int authResult = 0;
@@ -2402,68 +2406,78 @@ void SshAdapter::stopSshJumpRelay() {
 int SshAdapter::verifyHostKey(LIBSSH2_SESSION* session,
                               const std::string& expectedRawBase64,
                               const std::string& expectedFingerprintSha256,
-                              bool required, const char* endpointLabel) {
+                              bool required, const char* endpointLabel,
+                              const std::string& endpointHost, int endpointPort,
+                              int hopIndex) {
     if (session == nullptr) {
         return ERR_SSH_SESSION_INIT;
     }
-    if (expectedRawBase64.empty() && expectedFingerprintSha256.empty()) {
-        if (required) {
-            OH_LOG_ERROR(LOG_APP, "[SSH] %{public}s 缺少 host-key trust binding",
-                         endpointLabel ? endpointLabel : "SSH endpoint");
-            return ERR_SSH_HOSTKEY_MISMATCH;
-        }
-        return 0;
-    }
-
+    const bool hasExpectedKey = !expectedRawBase64.empty() ||
+        !expectedFingerprintSha256.empty();
+    if (!hasExpectedKey && !required && !savedCfg_.sshHostKeyPromptEnabled) { return 0; }
     const char* fingerprint = libssh2_hostkey_hash(session, LIBSSH2_HOSTKEY_HASH_SHA256);
-    if (!expectedRawBase64.empty()) {
-        size_t keyLen = 0;
-        int keyType = LIBSSH2_HOSTKEY_TYPE_UNKNOWN;
-        const char* rawKey = libssh2_session_hostkey(session, &keyLen, &keyType);
-        if (!rawKey || keyLen == 0) {
-            OH_LOG_ERROR(LOG_APP, "[SSH] %{public}s host key raw 读取失败",
-                         endpointLabel ? endpointLabel : "SSH endpoint");
-            return ERR_SSH_HOSTKEY_MISMATCH;
-        }
-        const std::string currentRaw = encodeBase64(
-            reinterpret_cast<const unsigned char*>(rawKey), keyLen);
-        if (currentRaw != expectedRawBase64) {
-            std::string currentFp;
-            if (fingerprint) {
-                std::string fpB64 = encodeBase64(
-                    reinterpret_cast<const unsigned char*>(fingerprint), 32);
-                while (!fpB64.empty() && fpB64.back() == '=') { fpB64.pop_back(); }
-                currentFp = "SHA256:" + fpB64;
-            }
-            OH_LOG_ERROR(LOG_APP,
-                "[SSH] %{public}s host key raw mismatch keyType=%{public}d algorithm=%{public}s currentFp=%{public}s expectedFp=%{public}s",
-                endpointLabel ? endpointLabel : "SSH endpoint", keyType,
-                sshHostKeyTypeName(keyType), currentFp.c_str(),
-                expectedFingerprintSha256.c_str());
-            return ERR_SSH_HOSTKEY_MISMATCH;
-        }
-        OH_LOG_INFO(LOG_APP, "[SSH] %{public}s host key raw 校验通过",
-                    endpointLabel ? endpointLabel : "SSH endpoint");
-        return 0;
-    }
-
-    if (!fingerprint) {
-        OH_LOG_ERROR(LOG_APP, "[SSH] %{public}s SHA256 host key fingerprint 读取失败",
+    size_t keyLen = 0;
+    int keyType = LIBSSH2_HOSTKEY_TYPE_UNKNOWN;
+    const char* rawKey = libssh2_session_hostkey(session, &keyLen, &keyType);
+    if (!rawKey || keyLen == 0 || !fingerprint) {
+        OH_LOG_ERROR(LOG_APP, "[SSH] %{public}s host key 读取失败",
                      endpointLabel ? endpointLabel : "SSH endpoint");
         return ERR_SSH_HOSTKEY_MISMATCH;
     }
+    const std::string currentRaw = encodeBase64(
+        reinterpret_cast<const unsigned char*>(rawKey), keyLen);
     std::string currentFpB64 = encodeBase64(
         reinterpret_cast<const unsigned char*>(fingerprint), 32);
     while (!currentFpB64.empty() && currentFpB64.back() == '=') { currentFpB64.pop_back(); }
     const std::string currentFp = "SHA256:" + currentFpB64;
-    if (currentFp != expectedFingerprintSha256) {
+    const bool matches = !expectedRawBase64.empty()
+        ? currentRaw == expectedRawBase64
+        : (!expectedFingerprintSha256.empty() && currentFp == expectedFingerprintSha256);
+    if (matches) {
+        OH_LOG_INFO(LOG_APP, "[SSH] %{public}s host key 校验通过",
+                    endpointLabel ? endpointLabel : "SSH endpoint");
+        return 0;
+    }
+    if (!savedCfg_.sshHostKeyPromptEnabled) {
         OH_LOG_ERROR(LOG_APP,
-            "[SSH] %{public}s host key mismatch expected=%{public}s current=%{public}s",
+            "[SSH] %{public}s host key %{public}s expected=%{public}s current=%{public}s",
             endpointLabel ? endpointLabel : "SSH endpoint",
+            hasExpectedKey ? "mismatch" : "missing",
             expectedFingerprintSha256.c_str(), currentFp.c_str());
         return ERR_SSH_HOSTKEY_MISMATCH;
     }
-    OH_LOG_INFO(LOG_APP, "[SSH] %{public}s host key fingerprint 校验通过",
+
+    setSshLifecycleState(SshSessionLifecycleState::NeedsAuthentication);
+    const SshAuthPromptWaitResult waitResult = authPromptBroker_.waitForHostKeyDecision(
+        diagnostics_.snapshot().sessionId, diagnostics_.sessionGeneration(), savedCfg_.host,
+        endpointLabel ? endpointLabel : "SSH endpoint", savedCfg_.sshTrustHostId,
+        endpointHost, endpointPort, hopIndex, sshHostKeyTypeName(keyType), currentFp,
+        currentRaw, expectedFingerprintSha256, hasExpectedKey);
+    setSshLifecycleState(SshSessionLifecycleState::Authenticating);
+    switch (waitResult) {
+        case SshAuthPromptWaitResult::Cancelled:
+            return ERR_SSH_AUTH_CANCELLED;
+        case SshAuthPromptWaitResult::TimedOut:
+            return ERR_SSH_AUTH_TIMEOUT;
+        case SshAuthPromptWaitResult::Closed:
+            return ERR_SSH_SESSION_CLOSED;
+        case SshAuthPromptWaitResult::Responded:
+            break;
+    }
+    if (hopIndex >= 0) {
+        const size_t index = static_cast<size_t>(hopIndex);
+        if (index >= savedCfg_.sshRoute.hops.size()) { return ERR_SSH_PROXY_INVALID; }
+        savedCfg_.sshRoute.hops[index].expectedHostKeyRawBase64 = currentRaw;
+        savedCfg_.sshRoute.hops[index].expectedHostKeyFingerprintSha256 = currentFp;
+        if (index == 0) {
+            savedCfg_.sshJumpHostKeyRawBase64 = currentRaw;
+            savedCfg_.sshJumpHostKeyFingerprintSha256 = currentFp;
+        }
+    } else {
+        savedCfg_.expectedHostKeyRawBase64 = currentRaw;
+        savedCfg_.expectedHostKeyFingerprintSha256 = currentFp;
+    }
+    OH_LOG_INFO(LOG_APP, "[SSH] %{public}s host key 已由用户确认",
                 endpointLabel ? endpointLabel : "SSH endpoint");
     return 0;
 }
@@ -2526,7 +2540,8 @@ int SshAdapter::sshHandshake() {
     // 二次校验 expected host key (防 probe/connect 间 TOCTOU)。
     const int hostKeyResult = verifyHostKey(
         session_, savedCfg_.expectedHostKeyRawBase64,
-        savedCfg_.expectedHostKeyFingerprintSha256, false, "目标主机");
+        savedCfg_.expectedHostKeyFingerprintSha256, false, "目标主机",
+        savedCfg_.host, savedCfg_.port, -1);
     if (hostKeyResult != 0) {
         libssh2_session_free(session_);
         session_ = nullptr;
@@ -2617,7 +2632,7 @@ int SshAdapter::fillKeyboardInteractiveResponses(
     const std::vector<std::string>* explicitResponses,
     const std::string* password, bool allowPasswordFallback,
     const std::string& targetHost, const std::string& hop,
-    size_t& presetIndex) {
+    size_t& presetIndex, bool& passwordFallbackUsed) {
     if (numPrompts <= 0) {
         return 0;
     }
@@ -2653,18 +2668,13 @@ int SshAdapter::fillKeyboardInteractiveResponses(
                       explicitResponses->begin() + presetIndex + promptCount);
         presetIndex += promptCount;
     } else {
-        bool canUsePassword = allowPasswordFallback && password != nullptr &&
-            !password->empty();
+        const bool canUsePassword = allowPasswordFallback && password != nullptr &&
+            !password->empty() &&
+            sshKeyboardInteractivePasswordFallbackCanAutofill(
+                promptCount, promptList.front().echo, passwordFallbackUsed);
         if (canUsePassword) {
-            for (const SshAuthPrompt& prompt : promptList) {
-                if (!sshKeyboardInteractivePromptCanUsePassword(prompt.echo)) {
-                    canUsePassword = false;
-                    break;
-                }
-            }
-        }
-        if (canUsePassword) {
-            values.assign(promptCount, *password);
+            values.push_back(*password);
+            passwordFallbackUsed = true;
         } else {
             setSshLifecycleState(SshSessionLifecycleState::NeedsAuthentication);
             const SshAuthPromptWaitResult waitResult = authPromptBroker_.waitForResponse(
@@ -2715,7 +2725,7 @@ int SshAdapter::keyboardInteractiveResponseRound(
         name, nameLen, instruction, instructionLen, numPrompts, prompts, responses,
         &savedCfg_.sshKeyboardInteractiveResponses, &savedCfg_.password,
         authPromptAllowPasswordFallback_, savedCfg_.host, authPromptHop_,
-        authPromptPresetIndex_);
+        authPromptPresetIndex_, authPromptPasswordFallbackUsed_);
 }
 
 int SshAdapter::authenticateKeyboardInteractive(bool allowPasswordFallback) {
@@ -2748,6 +2758,7 @@ int SshAdapter::authenticateKeyboardInteractive(bool allowPasswordFallback) {
     authPromptAllowPasswordFallback_ = allowPasswordFallback;
     authPromptHop_ = "target";
     authPromptPresetIndex_ = 0;
+    authPromptPasswordFallbackUsed_ = false;
     authPromptFailure_.store(0, std::memory_order_release);
     int rc;
     while ((rc = libssh2_userauth_keyboard_interactive(
@@ -2891,6 +2902,36 @@ int SshAdapter::requestPty(int cols, int rows) {
     return 0;
 }
 
+int SshAdapter::requestSessionLocale(const std::string& locale) {
+    if (locale.empty()) { return 0; }
+    if (!assertSessionOwner("request_session_locale") || !channel_) {
+        return LIBSSH2_ERROR_BAD_USE;
+    }
+
+    int rc;
+    while ((rc = libssh2_channel_setenv(channel_, "LANG", locale.c_str())) ==
+           LIBSSH2_ERROR_EAGAIN) {
+        const int waitResult = waitSocket(2, 15);
+        if (waitResult != 0) {
+            OH_LOG_WARN(LOG_APP,
+                        "[SSH] LANG 环境请求等待超时 locale=%{public}s",
+                        locale.c_str());
+            return LIBSSH2_ERROR_TIMEOUT;
+        }
+    }
+    if (rc != 0) {
+        // OpenSSH may reject this when AcceptEnv does not include LANG. The
+        // shell is still usable, so locale negotiation is intentionally
+        // best-effort and the caller proceeds to PTY allocation.
+        OH_LOG_WARN(LOG_APP,
+                    "[SSH] 服务器拒绝 LANG 环境请求 locale=%{public}s rc=%{public}d",
+                    locale.c_str(), rc);
+        return rc;
+    }
+    OH_LOG_INFO(LOG_APP, "[SSH] 已请求会话 LANG=%{public}s", locale.c_str());
+    return 0;
+}
+
 int SshAdapter::startShell() {
     if (!assertSessionOwner("start_shell")) {
         return ERR_SSH_SHELL_FAILED;
@@ -2955,6 +2996,7 @@ int SshAdapter::connectInternal(const ConnectionConfig& cfg, bool preserveOwner)
     authPromptHop_ = "target";
     authPromptAllowPasswordFallback_ = false;
     authPromptPresetIndex_ = 0;
+    authPromptPasswordFallbackUsed_ = false;
     if (connectCancelRequested_.load(std::memory_order_acquire)) {
         OH_LOG_INFO(LOG_APP, "[SSH] 连接在开始前已取消");
         if (preserveOwner) {
@@ -3014,7 +3056,11 @@ int SshAdapter::connectInternal(const ConnectionConfig& cfg, bool preserveOwner)
             OH_LOG_WARN(LOG_APP,
                         "[SSH] password method failed; trying advertised keyboard-interactive fallback");
             const int interactiveResult = authenticateKeyboardInteractive(true);
-            return interactiveResult == 0 ? 0 : passwordResult;
+            // Once the advertised keyboard-interactive method is attempted,
+            // its outcome is authoritative. Preserve cancellation, timeout,
+            // prompt expiry and authentication failure instead of masking
+            // them with the earlier "password not advertised" result.
+            return sshPasswordFallbackFinalResult(passwordResult, interactiveResult);
         };
         if (cfg.authMethod == "kbd-interactive" || cfg.authMethod == "keyboard-interactive") {
             ret = authenticateKeyboardInteractive(true);
@@ -3037,7 +3083,12 @@ int SshAdapter::connectInternal(const ConnectionConfig& cfg, bool preserveOwner)
             return {ret, "SSH channel open failed [" + std::to_string(ret) + "]"};
         }
 
-        // Step 6: 请求 PTY (SSH 调用方将 cfg.width/height 传为终端 cols/rows)
+        // Step 6: LANG is a channel environment request, not terminal input.
+        // Refusal is non-fatal because many servers deliberately omit LANG
+        // from AcceptEnv while still providing a fully usable shell.
+        (void)requestSessionLocale(cfg.sshLocale);
+
+        // Step 7: 请求 PTY (SSH 调用方将 cfg.width/height 传为终端 cols/rows)
         int ptyCols = cfg.width > 0 ? cfg.width : 80;
         int ptyRows = cfg.height > 0 ? cfg.height : 24;
         ret = requestPty(ptyCols, ptyRows);
@@ -3047,7 +3098,7 @@ int SshAdapter::connectInternal(const ConnectionConfig& cfg, bool preserveOwner)
                 std::to_string(lastPtyLibssh2Error_) + "]"};
         }
 
-        // Step 7: 启动远程 Shell
+        // Step 8: 启动远程 Shell
         ret = startShell();
         if (ret < 0) {
             return {ret, "SSH shell start failed [" + std::to_string(ret) + "]"};
@@ -5082,6 +5133,14 @@ void SshAdapter::detachOnDataCallback() {
     // The owner reactor remains alive and can be rebound by a later page.
     reactorCommandCondition_.notify_one();
     OH_LOG_INFO(LOG_APP, "[SSH] onDataCallback 已脱离, session reactor 保持");
+}
+
+void SshAdapter::redeliverTerminalOutputAfterDetach(
+    const std::vector<uint8_t>& data) {
+    // DataTsfnCallJs runs on the ArkTS thread. deliverTerminalOutput owns the
+    // callback/FIFO locks, so this is safe whether the target window has
+    // already installed its new consumer or is still mounting.
+    deliverTerminalOutput(data);
 }
 
 void SshAdapter::deliverTerminalOutput(const std::vector<uint8_t>& data) {

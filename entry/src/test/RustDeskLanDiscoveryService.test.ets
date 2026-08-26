@@ -4,7 +4,9 @@ import { describe, it, expect } from '@ohos/hypium';
 import {
   encodeRustDeskLanPeerDiscovery,
   encodeRustDeskLanPing,
+  DiscoveredRustDeskPeer,
   parseRustDeskLanPeerDiscovery,
+  RustDeskLanDiscoveryService,
   RustDeskLanPeerDiscovery
 } from '../main/ets/services/RustDeskLanDiscoveryService';
 
@@ -44,6 +46,17 @@ export default function rustDeskLanDiscoveryServiceTest() {
       expect(parsed.hostname).assertEqual('office-pc');
       expect(parsed.platform).assertEqual('Windows');
       expect(parsed.mac).assertEqual('00:11:22:33:44:55');
+    });
+  });
+
+  describe('RustDeskLanDiscoveryService_Lifecycle', () => {
+    it('stop_should_resolve_the_active_scan', 0, async (): Promise<void> => {
+      const service: RustDeskLanDiscoveryService = new RustDeskLanDiscoveryService();
+      const pending: Promise<DiscoveredRustDeskPeer[]> = service.startScan(5000);
+      service.stopScan();
+      const peers = await pending;
+      expect(peers.length).assertEqual(0);
+      expect(service.isScanning()).assertFalse();
     });
   });
 }

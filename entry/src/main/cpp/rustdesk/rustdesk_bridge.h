@@ -41,6 +41,12 @@ struct RustDeskDiagnosticsStats {
     int width = 0;
     int height = 0;
     int connectionPath = 0; // 0=rendezvous/relay, 1=direct
+    bool remoteInputPermissionKnown = false;
+    bool remoteInputAllowed = true;
+    bool remoteClipboardPermissionKnown = false;
+    bool remoteClipboardAllowed = true;
+    bool remoteFilePermissionKnown = false;
+    bool remoteFileAllowed = true;
     uint64_t lastFrameAtMs = 0;
     uint64_t presentedFrames = 0;
     uint64_t presentationWindowSamples = 0;
@@ -181,6 +187,7 @@ public:
 
     // ---- 输入事件 ----
     void sendKey(uint32_t scancode, bool pressed) override;
+    bool sendKeyEvents(const std::vector<RemoteKeyEvent>& events) override;
     void sendMouse(int x, int y, MouseButton button, bool pressed) override;
     void sendMouseWheel(int x, int y, int delta) override;
     bool sendTouchpadWheel(int x, int y);
@@ -257,6 +264,7 @@ private:
     static void onFfiDisplay(const void* snapshot, void* userData);
     static void onFfiAuth(int state, const char* message, void* userData);
     static void onFfiProgress(int stage, const char* message, void* userData);
+    static bool onFfiPeerPlatform(const char* platform, void* userData);
     static void onFfiDisconnect(int state, const char* message, void* userData) noexcept;
 #endif
 

@@ -4,7 +4,15 @@
  * HarmonyOS 6 沉浸式窗口 + 主题初始化。
  * 网络权限由系统授予；移动端握姿权限由主机页首屏渲染后异步申请。
  */
-import { AbilityConstant, common, ConfigurationConstant, UIAbility, Want, Configuration } from '@kit.AbilityKit';
+import {
+  AbilityConstant,
+  bundleManager,
+  common,
+  ConfigurationConstant,
+  UIAbility,
+  Want,
+  Configuration
+} from '@kit.AbilityKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { window } from '@kit.ArkUI';
 import { buffer } from '@kit.ArkTS';
@@ -12,8 +20,12 @@ import { preferences } from '@kit.ArkData';
 import { KeyVaultService } from '../services/KeyVaultService';
 import { HostSyncService } from '../services/HostSyncService';
 import { DataCrypto } from '../services/DataCrypto';
-import { CloudSyncCoordinator } from '../services/CloudSyncCoordinator';
+import {
+  CloudSyncCoordinator,
+  CloudSyncOperationResult
+} from '../services/CloudSyncCoordinator';
 import { CloudStore } from '../services/CloudStore';
+import { AccountSessionLease } from '../services/AccountScopePolicy';
 import { AccountSessionCoordinator } from '../services/AccountSessionCoordinator';
 import { BreakpointUtil } from '../utils/BreakpointUtil';
 import { ExtensionLoader } from '../services/ExtensionLoader';
@@ -21,6 +33,9 @@ import { RemoteSessionBackgroundTaskService } from '../services/RemoteSessionBac
 import { RemoteSessionPipService } from '../services/RemoteSessionPipService';
 import { SshTerminalBackgroundTaskService } from '../services/SshTerminalBackgroundTaskService';
 import { SshTerminalPipService } from '../services/SshTerminalPipService';
+import { RemoteSessionWindowCoordinator } from '../services/RemoteSessionWindowCoordinator';
+import { GuideVisibilityService } from '../services/GuideVisibilityService';
+import { RemoteKeyboardSettingsService } from '../services/RemoteKeyboardSettingsService';
 import {
   DEFAULT_DARK_HALO_COLOR,
   DEFAULT_LIGHT_HALO_COLOR,
@@ -36,6 +51,7 @@ import {
   PersonalizationDefaultsProfile,
   resolvePersonalizationDefaultsProfile
 } from '../services/PersonalizationDefaultsPolicy';
+import { startupContentPathForAttempt } from '../services/AppStartupPolicy';
 import auth from '@hw-agconnect/auth';
 
 const DOMAIN = 0x0000;
@@ -51,6 +67,49 @@ export default class EntryAbility extends UIAbility {
   private windowStage: window.WindowStage | null = null;
   private avoidAreaCallback: ((data: window.AvoidAreaOptions) => void) | null = null;
   private shutdownPromise: Promise<void> | null = null;
+  private foregroundCloudResumePromise: Promise<void> | null = null;
+
+  /**
+   * Foreground recovery is Ability-owned so a pending account/cloud barrier
+   * cannot depend on the user revisiting HostListPage. Re-register the fenced
+   * core baseline first; CloudStore may then recover an explicitly selected
+   * optional Moonlight table. A failed optional registration leaves
+   * cloudAvailable true only when the legacy eight-table baseline was safely
+   * re-asserted, so the following pull remains backward compatible.
+   */
+  private resumeCloudAfterForeground(): void {
+    if (this.foregroundCloudResumePromise !== null) { return; }
+    const cloud: CloudStore = CloudStore.getInstance();
+    const lease: AccountSessionLease | null = cloud.currentAccountLease();
+    if (lease === null || !cloud.isLeaseCurrent(lease)) { return; }
+    const operation: Promise<void> = (async (): Promise<void> => {
+      const coreReady: boolean = await cloud.retryCloudRegistration();
+      if (!coreReady || !cloud.isCloudAvailable() ||
+          !cloud.isLeaseCurrent(lease)) {
+        return;
+      }
+      const result: CloudSyncOperationResult =
+        await CloudSyncCoordinator.getInstance().requestForegroundPull();
+      if (!cloud.isLeaseCurrent(lease)) { return; }
+      hilog.info(DOMAIN, TAG,
+        'foreground cloud recovery ok=%{public}s tables=%{public}s failed=%{public}s',
+        result.ok.toString(), result.tables.join(','),
+        result.failedTables.join(','));
+    })();
+    this.foregroundCloudResumePromise = operation;
+    void operation.then((): void => {
+      if (this.foregroundCloudResumePromise === operation) {
+        this.foregroundCloudResumePromise = null;
+      }
+    }, (error: Error): void => {
+      if (this.foregroundCloudResumePromise === operation) {
+        this.foregroundCloudResumePromise = null;
+      }
+      hilog.warn(DOMAIN, TAG,
+        'foreground cloud recovery failed: %{public}s',
+        JSON.stringify(error));
+    });
+  }
 
   private disconnectRemoteSessions(source: string): void {
     try {
@@ -70,6 +129,17 @@ export default class EntryAbility extends UIAbility {
    * two native teardown requests for the same renderer.
    */
   private requestShutdown(source: string): void {
+    const sessionWindows: RemoteSessionWindowCoordinator =
+      RemoteSessionWindowCoordinator.getInstance();
+    if (sessionWindows.hasOpenOrPendingWindows()) {
+      // EntryAbility owns the host library only. Independent multiton session
+      // abilities own their native connections and must survive closing the
+      // library window.
+      hilog.info(DOMAIN, TAG,
+        'main-window shutdown skipped; independent sessions=%{public}d source=%{public}s',
+        sessionWindows.activeWindowCount(), source);
+      return;
+    }
     AppStorage.setOrCreate<boolean>(BG_FLAG_KEY, false);
     if (this.shutdownPromise !== null) {
       hilog.info(DOMAIN, TAG, 'shutdown already in progress source=%{public}s', source);
@@ -185,6 +255,8 @@ export default class EntryAbility extends UIAbility {
       // Preferences 中已有的值会由 HostListPage.aboutToAppear 加载覆盖
       AppStorage.setOrCreate<boolean>('liveViewEnabled', true);
       AppStorage.setOrCreate<number>('liveViewMode', 1);
+      RemoteKeyboardSettingsService.getInstance().init(this.context);
+      GuideVisibilityService.getInstance().init(this.context);
       this.migrateTerminalFontUnit();
       // 初始化 AGC Auth SDK (读取 agconnect-services.json)
       try {
@@ -273,14 +345,26 @@ export default class EntryAbility extends UIAbility {
     } catch (err) {
       hilog.warn(DOMAIN, TAG, '预初始化 ArkUI environment 失败: %{public}s', JSON.stringify(err));
     }
+    await this.loadStartupContent(windowStage);
+  }
 
-    windowStage.loadContent('pages/GuidePage', (err) => {
-      if (err.code) {
-        hilog.error(DOMAIN, TAG, '加载页面失败: %{public}s', JSON.stringify(err));
+  private async loadStartupContent(windowStage: window.WindowStage): Promise<void> {
+    for (let attempt: number = 0; ; attempt++) {
+      const page: string = startupContentPathForAttempt(attempt);
+      if (page.length === 0) { break; }
+      try {
+        await windowStage.loadContent(page);
+        hilog.info(DOMAIN, TAG,
+          '启动页面加载成功: page=%{public}s attempt=%{public}d', page, attempt + 1);
+        await this.initImmersiveWindow();
         return;
+      } catch (err) {
+        hilog.error(DOMAIN, TAG,
+          '启动页面加载失败: page=%{public}s attempt=%{public}d err=%{public}s',
+          page, attempt + 1, JSON.stringify(err));
       }
-      this.initImmersiveWindow();
-    });
+    }
+    hilog.error(DOMAIN, TAG, '所有启动页面均加载失败，WindowStage 无可用 UIContent');
   }
 
   onWindowStageDestroy(): void {
@@ -301,19 +385,40 @@ export default class EntryAbility extends UIAbility {
     // 注意: 实况窗由 RemoteDesktop.restoreFromBackground() 控制, 不在此处提前关闭
     AppStorage.setOrCreate<boolean>(BG_FLAG_KEY, false);
     this.syncEffectiveTheme('foreground');
-    try {
-      RemoteSessionBackgroundTaskService.getInstance().stopSessionTask(this.context);
-    } catch (err) {
-      hilog.warn(DOMAIN, TAG, 'stopSessionTask on foreground failed: %{public}s', JSON.stringify(err));
+    const sessionWindows: RemoteSessionWindowCoordinator =
+      RemoteSessionWindowCoordinator.getInstance();
+    const hasIndependentRemoteWindow: boolean =
+      sessionWindows.hasOpenOrPendingWindowForProtocol('rdp') ||
+      sessionWindows.hasOpenOrPendingWindowForProtocol('rustdesk') ||
+      sessionWindows.hasOpenOrPendingWindowForProtocol('vnc') ||
+      sessionWindows.hasOpenOrPendingWindowForProtocol('moonlight');
+    if (!hasIndependentRemoteWindow) {
+      try {
+        RemoteSessionBackgroundTaskService.getInstance().stopSessionTask(this.context);
+      } catch (err) {
+        hilog.warn(DOMAIN, TAG, 'stopSessionTask on foreground failed: %{public}s',
+          JSON.stringify(err));
+      }
+    } else {
+      hilog.info(DOMAIN, TAG,
+        'remote background task stop skipped: independent session window remains owned');
     }
-    try {
-      void SshTerminalPipService.getInstance().stop();
-      void SshTerminalBackgroundTaskService.getInstance().stop(
-        this.context as common.UIAbilityContext);
-    } catch (err) {
-      hilog.warn(DOMAIN, TAG, 'SSH background task stop on foreground failed: %{public}s',
-        JSON.stringify(err));
+    const hasIndependentSshWindow: boolean =
+      sessionWindows.hasOpenOrPendingWindowForProtocol('ssh');
+    if (!hasIndependentSshWindow) {
+      try {
+        void SshTerminalPipService.getInstance().stop();
+        void SshTerminalBackgroundTaskService.getInstance().stop(
+          this.context as common.UIAbilityContext);
+      } catch (err) {
+        hilog.warn(DOMAIN, TAG, 'SSH background task stop on foreground failed: %{public}s',
+          JSON.stringify(err));
+      }
+    } else {
+      hilog.info(DOMAIN, TAG,
+        'SSH background task stop skipped: independent SSH window remains owned');
     }
+    this.resumeCloudAfterForeground();
     hilog.info(DOMAIN, TAG, 'Ability onForeground');
   }
 
@@ -447,6 +552,41 @@ export default class EntryAbility extends UIAbility {
   /**
    * 沉浸式窗口：全屏布局 + 透明系统栏
    */
+  private async configureDesktopWindowModes(mainWindow: window.Window): Promise<void> {
+    // Do not cap maxWidth/maxHeight: a fixed 2560x1600 ceiling prevented the
+    // system maximize action from filling larger PC/2-in-1 displays.
+    try {
+      await mainWindow.setWindowLimits({ minWidth: 360, minHeight: 480 });
+    } catch (err) {
+      hilog.warn(DOMAIN, TAG, '窗口最小尺寸配置失败: %{public}s', JSON.stringify(err));
+    }
+    try {
+      if (this.windowStage !== null) {
+        await this.windowStage.setSupportedWindowModes([
+          bundleManager.SupportWindowMode.FULL_SCREEN,
+          bundleManager.SupportWindowMode.FLOATING
+        ], false);
+      }
+    } catch (err) {
+      hilog.warn(DOMAIN, TAG, '窗口模式配置失败: %{public}s', JSON.stringify(err));
+    }
+    try {
+      // recover() restores the pre-maximize floating rectangle; auto-save
+      // also preserves that independent window rectangle across launches.
+      if (this.windowStage !== null) {
+        await this.windowStage.setWindowRectAutoSave(true);
+      }
+    } catch (err) {
+      hilog.warn(DOMAIN, TAG, '窗口位置自动保存配置失败: %{public}s', JSON.stringify(err));
+    }
+    try {
+      mainWindow.setWindowTitleMoveEnabled(true);
+      await mainWindow.setResizeByDragEnabled(true);
+    } catch (err) {
+      hilog.warn(DOMAIN, TAG, '浮动窗口拖拽配置失败: %{public}s', JSON.stringify(err));
+    }
+  }
+
   private async initImmersiveWindow(): Promise<void> {
     try {
       if (!this.windowStage) {
@@ -459,8 +599,7 @@ export default class EntryAbility extends UIAbility {
       // 初始化响应式断点系统 (PC 自由窗口适配)
       BreakpointUtil.init(mainWindow);
       this.syncAvoidAreas(mainWindow);
-      // PC 自由窗口尺寸限制 (防止缩到不可用)
-      mainWindow.setWindowLimits({ minWidth: 360, minHeight: 480, maxWidth: 2560, maxHeight: 1600 });
+      await this.configureDesktopWindowModes(mainWindow);
       const follow: boolean = AppStorage.get<boolean>('followSystem') ?? true;
       const isDark: boolean = follow ? this.resolveSystemColorMode() === ConfigurationConstant.ColorMode.COLOR_MODE_DARK
         : (AppStorage.get<string>('currentTheme') ?? 'light') === 'dark';

@@ -1,4 +1,22 @@
+import { curves } from '@kit.ArkUI';
 import { OverlayPlacement, emptyOverlayPlacement } from '../services/RemoteOverlayViewportPolicy';
+import {
+  REMOTE_SESSION_COLLAPSED_RAIL_BACKGROUND,
+  REMOTE_SESSION_COLLAPSED_RAIL_BORDER,
+  REMOTE_SESSION_COLLAPSED_RAIL_HEIGHT,
+  REMOTE_SESSION_COLLAPSED_RAIL_ICON,
+  REMOTE_SESSION_COLLAPSED_RAIL_TOUCH_WIDTH,
+  REMOTE_SESSION_COLLAPSED_RAIL_WIDTH,
+  REMOTE_SESSION_COLLAPSED_TOP_HEIGHT,
+  REMOTE_SESSION_COLLAPSED_TOP_TOUCH_HEIGHT,
+  REMOTE_SESSION_COLLAPSED_TOP_WIDTH,
+  remoteSessionRailDragOffset,
+  remoteSessionRailShouldCollapse
+} from '../services/RemoteSessionTopBarPolicy';
+import {
+  VncToolbarPrimaryActionId,
+  vncToolbarPrimaryActionIds
+} from '../services/VncSessionUiPolicy';
 
 export interface VncSessionToolbarActions {
   onExpand: () => void;
@@ -8,8 +26,8 @@ export interface VncSessionToolbarActions {
   onOpenShortcuts: () => void;
   onCycleDisplayScale: () => void;
   onToggleDiagnostics: () => void;
-  onOpenConsole: () => void;
   onDisconnect: () => void;
+  onCollapsedPointerMove: (x: number, y: number) => void;
 }
 
 export interface VncSessionToolbarPlacementActions {
@@ -26,7 +44,9 @@ export struct VncSessionToolbar {
   @Prop displayScaleLabel: string = '适应';
   @Prop diagnosticsEnabled: boolean = false;
   @Prop collapsed: boolean = false;
+  @Prop viewportWidth: number = 0;
   @Prop placement: OverlayPlacement = emptyOverlayPlacement('vnc-toolbar');
+  @State private railSwipeX: number = 0;
   placementActions: VncSessionToolbarPlacementActions = {
     onDrag: (_offsetX: number, _offsetY: number): void => {}
   };
@@ -38,8 +58,8 @@ export struct VncSessionToolbar {
     onOpenShortcuts: (): void => {},
     onCycleDisplayScale: (): void => {},
     onToggleDiagnostics: (): void => {},
-    onOpenConsole: (): void => {},
-    onDisconnect: (): void => {}
+    onDisconnect: (): void => {},
+    onCollapsedPointerMove: (_x: number, _y: number): void => {}
   };
 
   @Builder
@@ -52,39 +72,114 @@ export struct VncSessionToolbar {
           .textOverflow({ overflow: TextOverflow.Ellipsis }).margin({ top: 2 })
       }.justifyContent(FlexAlign.Center)
     }
-    .width(this.deviceClass === 'pc' ? 40 : 64)
-    .height(this.deviceClass === 'pc' ? 42 : 44)
+    .width(56)
+    .height(44)
     .padding(0).borderRadius(9)
     .backgroundColor(danger ? '#D93B3B' : (active ? '#168C78' : this.accentColor))
     .accessibilityText(label)
     .onClick(action)
   }
 
-  private isPhoneDevice(): boolean {
-    return this.deviceClass === 'phone';
+  @Builder
+  private primaryActionButton(actionId: VncToolbarPrimaryActionId) {
+    if (actionId === 'keyboard') {
+      this.actionButton($r('sys.symbol.keyboard'), this.keyboardOpen ? '收键盘' : '键盘',
+        this.keyboardOpen, (): void => { this.actions.onToggleKeyboard(); })
+    } else if (actionId === 'controlMode') {
+      this.actionButton($r('sys.symbol.arrow_up_left'), this.controlModeLabel, false,
+        (): void => { this.actions.onCycleControlMode(); })
+    } else if (actionId === 'shortcuts') {
+      this.actionButton($r('sys.symbol.bolt_fill'), '组合键', false,
+        (): void => { this.actions.onOpenShortcuts(); })
+    } else if (actionId === 'displayScale') {
+      this.actionButton($r('sys.symbol.desktop_fill'), this.displayScaleLabel, false,
+        (): void => { this.actions.onCycleDisplayScale(); })
+    } else if (actionId === 'diagnostics') {
+      this.actionButton($r('sys.symbol.list_bullet'), '性能', this.diagnosticsEnabled,
+        (): void => { this.actions.onToggleDiagnostics(); })
+    } else {
+      this.actionButton($r('sys.symbol.xmark'), '断开', false,
+        (): void => { this.actions.onDisconnect(); }, true)
+    }
+  }
+
+  @Builder
+  private primaryActionButtons(vertical: boolean) {
+    if (vertical) {
+      Column({ space: 5 }) {
+        ForEach(vncToolbarPrimaryActionIds(),
+          (actionId: VncToolbarPrimaryActionId): void => {
+            this.primaryActionButton(actionId)
+          }, (actionId: VncToolbarPrimaryActionId): string => actionId)
+      }
+    } else {
+      Row({ space: 5 }) {
+        ForEach(vncToolbarPrimaryActionIds(),
+          (actionId: VncToolbarPrimaryActionId): void => {
+            this.primaryActionButton(actionId)
+          }, (actionId: VncToolbarPrimaryActionId): string => actionId)
+      }
+    }
+  }
+
+  private mobileRailHeight(fallback: number): number {
+    return this.placement.railRect.height > 0 ? this.placement.railRect.height : fallback;
+  }
+
+  private resetRailSwipe(): void {
+    animateTo({ duration: 220, curve: curves.responsiveSpringMotion() }, (): void => {
+      this.railSwipeX = 0;
+    });
+  }
+
+  private updateRailSwipe(event: GestureEvent): void {
+    if (this.placement.side !== 'right' ||
+        Math.abs(event.offsetX) < Math.abs(event.offsetY)) { return; }
+    this.railSwipeX = remoteSessionRailDragOffset(event.offsetX);
+  }
+
+  private finishRailSwipe(event: GestureEvent): void {
+    const collapse: boolean = this.placement.side === 'right' &&
+      remoteSessionRailShouldCollapse(event.offsetX, event.velocityX);
+    this.resetRailSwipe();
+    if (collapse) {
+      animateTo({ duration: 180, curve: curves.responsiveSpringMotion() }, (): void => {
+        this.actions.onCollapse();
+      });
+      return;
+    }
+    this.placementActions.onDrag(event.offsetX, event.offsetY);
   }
 
   @Builder
   private mobileCollapsedRail() {
     Stack() {
       Row() {
-        if (this.placement.side === 'left') {
-          SymbolGlyph($r('sys.symbol.arrow_right')).fontSize(16).fontColor(['#FFFFFF'])
-        } else {
-          SymbolGlyph($r('sys.symbol.arrow_left')).fontSize(16).fontColor(['#FFFFFF'])
-        }
+        SymbolGlyph(this.placement.side === 'left' ?
+          $r('sys.symbol.chevron_right') : $r('sys.symbol.chevron_left'))
+          .fontSize(15).fontColor([REMOTE_SESSION_COLLAPSED_RAIL_ICON])
       }
-      .width(24).height(44)
+      .width(REMOTE_SESSION_COLLAPSED_RAIL_WIDTH)
+      .height(this.mobileRailHeight(REMOTE_SESSION_COLLAPSED_RAIL_HEIGHT))
       .justifyContent(FlexAlign.Center)
-      .backgroundColor(this.viewOnly ? 'rgba(92,96,104,0.90)' : 'rgba(20,24,32,0.90)')
+      .backgroundColor(REMOTE_SESSION_COLLAPSED_RAIL_BACKGROUND)
+      .backdropBlur(16)
+      .border({ width: 0.5, color: REMOTE_SESSION_COLLAPSED_RAIL_BORDER })
       .borderRadius(this.placement.side === 'left' ?
-        { topLeft: 0, topRight: 9, bottomLeft: 0, bottomRight: 9 } :
-        { topLeft: 9, topRight: 0, bottomLeft: 9, bottomRight: 0 })
-      .shadow({ radius: 8, color: 'rgba(0,0,0,0.24)', offsetY: 2 })
-      .position({ x: this.placement.side === 'left' ? 0 : 20, y: 0 })
+        { topLeft: 0, topRight: 10, bottomLeft: 0, bottomRight: 10 } :
+        { topLeft: 10, topRight: 0, bottomLeft: 10, bottomRight: 0 })
+      .shadow({ radius: 6, color: 'rgba(0,0,0,0.14)',
+        offsetX: this.placement.side === 'left' ? 1 : -1 })
+      .position({
+        x: this.placement.side === 'left' ? 0 :
+          REMOTE_SESSION_COLLAPSED_RAIL_TOUCH_WIDTH -
+            REMOTE_SESSION_COLLAPSED_RAIL_WIDTH,
+        y: 0
+      })
     }
-    .width(44).height(44)
-    .position({ x: this.placement.handleRect.x, y: this.placement.handleRect.y })
+    .width(REMOTE_SESSION_COLLAPSED_RAIL_TOUCH_WIDTH)
+    .height(this.mobileRailHeight(REMOTE_SESSION_COLLAPSED_RAIL_HEIGHT))
+    .position({ x: this.placement.railRect.x, y: this.placement.railRect.y })
     .gesture(PanGesture({ fingers: 1, distance: 5 })
       .onActionEnd((event: GestureEvent): void => {
         this.placementActions.onDrag(event.offsetX, event.offsetY);
@@ -98,67 +193,81 @@ export struct VncSessionToolbar {
     Column({ space: 5 }) {
       Stack() {
         Row() {
-          if (this.placement.side === 'left') {
-            SymbolGlyph($r('sys.symbol.arrow_left')).fontSize(16).fontColor(['#FFFFFF'])
-          } else {
-            SymbolGlyph($r('sys.symbol.arrow_right')).fontSize(16).fontColor(['#FFFFFF'])
-          }
+          SymbolGlyph(this.placement.side === 'left' ?
+            $r('sys.symbol.chevron_left') : $r('sys.symbol.chevron_right'))
+            .fontSize(16).fontColor(['#444444'])
         }
-        .width(28).height(28)
+        .width(56).height(30)
         .justifyContent(FlexAlign.Center)
-        .backgroundColor(this.viewOnly ? 'rgba(92,96,104,0.90)' : 'rgba(20,24,32,0.90)')
-        .borderRadius(14)
-        .position({ x: this.placement.side === 'left' ? 0 : 48, y: 8 })
+        .backgroundColor('rgba(255,255,255,0.92)')
+        .borderRadius(7)
+        .position({ x: 0, y: 7 })
       }
       .width('100%').height(44)
       .accessibilityText('收起 VNC 会话工具栏')
       .onClick((): void => { this.actions.onCollapse(); })
-      if (this.viewOnly) {
-        Row() {
-          SymbolGlyph($r('sys.symbol.eye')).fontSize(13).fontColor(['#FFFFFF'])
-          Text('只读').fontSize(10).fontColor('#FFFFFF').margin({ left: 4 })
+      Scroll() {
+        Column({ space: 5 }) {
+          if (this.viewOnly) {
+            Row() {
+              SymbolGlyph($r('sys.symbol.eye')).fontSize(13).fontColor(['#FFFFFF'])
+              Text('只读').fontSize(10).fontColor('#FFFFFF').margin({ left: 4 })
+            }
+            .height(24).width('100%').justifyContent(FlexAlign.Center)
+          }
+          this.primaryActionButtons(true)
         }
-        .height(24).width('100%').justifyContent(FlexAlign.Center)
       }
-      this.actionButton($r('sys.symbol.keyboard'), this.keyboardOpen ? '收键盘' : '键盘',
-        this.keyboardOpen, (): void => { this.actions.onToggleKeyboard(); })
-      this.actionButton($r('sys.symbol.arrow_up_left'), this.controlModeLabel, false,
-        (): void => { this.actions.onCycleControlMode(); })
-      this.actionButton($r('sys.symbol.bolt_fill'), '组合键', false,
-        (): void => { this.actions.onOpenShortcuts(); })
-      this.actionButton($r('sys.symbol.desktop_fill'), this.displayScaleLabel, false,
-        (): void => { this.actions.onCycleDisplayScale(); })
-      if (!this.isPhoneDevice()) {
-        this.actionButton($r('sys.symbol.list_bullet'), '性能', this.diagnosticsEnabled,
-          (): void => { this.actions.onToggleDiagnostics(); })
-      }
-      this.actionButton($r('sys.symbol.xmark'), '断开', false,
-        (): void => { this.actions.onDisconnect(); }, true)
+      .width('100%').layoutWeight(1)
+      .scrollBar(BarState.Auto).edgeEffect(EdgeEffect.Spring)
     }
-    .width(this.placement.railRect.width > 0 ? this.placement.railRect.width : 76)
+    .width(this.placement.railRect.width > 0 ? this.placement.railRect.width : 68)
+    .height(this.mobileRailHeight(350))
     .padding(6)
-    .borderRadius(12)
-    .backgroundColor('rgba(20,24,32,0.86)')
-    .shadow({ radius: 8, color: 'rgba(0,0,0,0.24)', offsetY: 2 })
+    .borderRadius(this.placement.side === 'left' ?
+      { topLeft: 0, bottomLeft: 0, topRight: 10, bottomRight: 10 } :
+      { topLeft: 10, bottomLeft: 10, topRight: 0, bottomRight: 0 })
+    .backgroundColor('rgba(255,255,255,0.94)')
+    .shadow({ radius: 10, color: 'rgba(0,0,0,0.24)',
+      offsetX: this.placement.side === 'left' ? 2 : -2 })
     .position({ x: this.placement.railRect.x, y: this.placement.railRect.y })
+    .translate({ x: this.railSwipeX })
     .gesture(PanGesture({ fingers: 1, distance: 5 })
+      .onActionUpdate((event: GestureEvent): void => { this.updateRailSwipe(event); })
       .onActionEnd((event: GestureEvent): void => {
-        this.placementActions.onDrag(event.offsetX, event.offsetY);
-      }))
+        this.finishRailSwipe(event);
+      })
+      .onActionCancel((): void => { this.resetRailSwipe(); }))
   }
 
   @Builder
   private pcCollapsedToolbar() {
-    Button() {
-      Row({ space: 5 }) {
-        SymbolGlyph($r('sys.symbol.arrow_up_left')).fontSize(16).fontColor(['#FFFFFF'])
-        Text(this.viewOnly ? 'VNC 只读' : 'VNC 控制').fontSize(10).fontColor('#FFFFFF')
+    Stack() {
+      Row() {
+        SymbolGlyph($r('sys.symbol.chevron_down')).fontSize(15)
+          .fontColor([REMOTE_SESSION_COLLAPSED_RAIL_ICON])
       }
+      .width(REMOTE_SESSION_COLLAPSED_TOP_WIDTH)
+      .height(REMOTE_SESSION_COLLAPSED_TOP_HEIGHT)
+      .justifyContent(FlexAlign.Center)
+      .borderRadius({ topLeft: 0, topRight: 0, bottomLeft: 10, bottomRight: 10 })
+      .backgroundColor(REMOTE_SESSION_COLLAPSED_RAIL_BACKGROUND)
+      .backdropBlur(16)
+      .border({ width: 0.5, color: REMOTE_SESSION_COLLAPSED_RAIL_BORDER })
+      .shadow({ radius: 6, color: 'rgba(0,0,0,0.14)', offsetY: 1 })
+      .position({ x: 0, y: 0 })
     }
-    .height(36).padding({ left: 12, right: 12 }).borderRadius(18)
-    .backgroundColor(this.viewOnly ? 'rgba(92,96,104,0.90)' : 'rgba(20,24,32,0.86)')
-    .shadow({ radius: 8, color: 'rgba(0,0,0,0.24)', offsetY: 2 })
-    .position({ x: '50%', y: 8 }).markAnchor({ x: '50%', y: 0 })
+    .width(REMOTE_SESSION_COLLAPSED_TOP_WIDTH)
+    .height(REMOTE_SESSION_COLLAPSED_TOP_TOUCH_HEIGHT)
+    .position({ x: '50%', y: 0 }).markAnchor({ x: '50%', y: 0 })
+    .onMouse((event: MouseEvent): void => {
+      if (event.action !== MouseAction.Move && event.action !== MouseAction.Hover) {
+        return;
+      }
+      const left: number = Math.max(0,
+        (this.viewportWidth - REMOTE_SESSION_COLLAPSED_TOP_WIDTH) / 2);
+      this.actions.onCollapsedPointerMove(left + (event.x as number), event.y as number);
+    })
     .accessibilityText(this.viewOnly ? '展开 VNC 只读会话工具栏' : '展开 VNC 会话工具栏')
     .onClick((): void => { this.actions.onExpand(); })
   }
@@ -169,39 +278,32 @@ export struct VncSessionToolbar {
       if (this.viewOnly) {
         Row() {
           SymbolGlyph($r('sys.symbol.eye')).fontSize(13).fontColor(['#FFFFFF'])
-          Text('VNC 只读：输入已禁用').fontSize(10).fontColor('#FFFFFF').margin({ left: 5 })
+          Text('只读').fontSize(10).fontColor('#FFFFFF').margin({ left: 5 })
         }
         .height(24).padding({ left: 10, right: 10 })
         .borderRadius({ topLeft: 9, topRight: 9, bottomLeft: 0, bottomRight: 0 })
         .backgroundColor('rgba(20,24,32,0.84)')
       }
       Row({ space: 5 }) {
-        this.actionButton($r('sys.symbol.keyboard'), this.keyboardOpen ? '收键盘' : '键盘',
-          this.keyboardOpen, (): void => { this.actions.onToggleKeyboard(); })
-        this.actionButton($r('sys.symbol.arrow_up_left'), this.controlModeLabel, false,
-          (): void => { this.actions.onCycleControlMode(); })
-        this.actionButton($r('sys.symbol.bolt_fill'), '组合键', false,
-          (): void => { this.actions.onOpenShortcuts(); })
-        this.actionButton($r('sys.symbol.desktop_fill'), this.displayScaleLabel, false,
-          (): void => { this.actions.onCycleDisplayScale(); })
-        if (!this.isPhoneDevice()) {
-          this.actionButton($r('sys.symbol.list_bullet'), '性能', this.diagnosticsEnabled,
-            (): void => { this.actions.onToggleDiagnostics(); })
-        }
-        if (this.deviceClass === 'pc') {
-          this.actionButton($r('sys.symbol.gearshape_fill'), '控制台', false,
-            (): void => { this.actions.onOpenConsole(); })
-        }
-        this.actionButton($r('sys.symbol.xmark'), '断开', false,
-          (): void => { this.actions.onDisconnect(); }, true)
+        this.primaryActionButtons(false)
       }
       .padding(6)
       .borderRadius(this.viewOnly ?
         { topLeft: 0, topRight: 0, bottomLeft: 10, bottomRight: 10 } : 10)
-      .backgroundColor('rgba(20,24,32,0.82)')
+      .backgroundColor('rgba(255,255,255,0.94)')
       .shadow({ radius: 8, color: 'rgba(0,0,0,0.24)', offsetY: 2 })
+      Row() {
+        SymbolGlyph($r('sys.symbol.chevron_up')).fontSize(16).fontColor(['#444444'])
+      }
+      .width(56).height(28).justifyContent(FlexAlign.Center)
+      .borderRadius({ topLeft: 0, topRight: 0, bottomLeft: 8, bottomRight: 8 })
+      .backgroundColor(REMOTE_SESSION_COLLAPSED_RAIL_BACKGROUND)
+      .backdropBlur(16)
+      .border({ width: 0.5, color: REMOTE_SESSION_COLLAPSED_RAIL_BORDER })
+      .accessibilityText('收起 VNC 会话工具栏')
+      .onClick((): void => { this.actions.onCollapse(); })
     }
-    .position({ x: '50%', y: 8 })
+    .position({ x: '50%', y: 0 })
     .markAnchor({ x: '50%', y: 0 })
   }
 

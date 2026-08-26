@@ -31,6 +31,7 @@ export struct SshKeyInstallSheet {
   @State verifying: boolean = false;
   @State installResult: SshPublicKeyInstallResult | null = null;
   @State verifyResult: SshAuthTestResult | null = null;
+  @State hostSwitchSaveError: string = '';
   @State step: number = 0; // 0=select host, 1=install, 2=verify, 3=done
   @State switchToNewKey: boolean = true;
   @State hostViewRevision: number = 0;
@@ -103,6 +104,7 @@ export struct SshKeyInstallSheet {
     this.step = 1;
     this.installResult = null;
     this.verifyResult = null;
+    this.hostSwitchSaveError = '';
 
     try {
       const host: RemoteHost = this.selectedHost;
@@ -131,7 +133,10 @@ export struct SshKeyInstallSheet {
           updated.sshUseKey = true;
           updated.sshKeyData = this.targetKey.privateKey;
           updated.sshKeyPath = 'KeyVault: ' + this.targetKey.label;
-          this.hostSync.updateHost(updated);
+          if (!this.hostSync.updateHost(updated)) {
+            this.hostSwitchSaveError = '新密钥已安装并验证成功，但主机认证方式未能保存；请返回主机编辑页重试。';
+            promptAction.showToast({ message: this.hostSwitchSaveError, duration: 3000 });
+          }
         }
 
         this.step = 3;
@@ -239,7 +244,8 @@ export struct SshKeyInstallSheet {
             this.stepLine(1)
             this.stepDot(2, this.step >= 2 ? (this.verifyResult ? (this.verifyResult['ok'] ? 'done' : 'fail') : 'active') : 'pending', '验证')
             this.stepLine(2)
-            this.stepDot(3, this.step >= 3 ? 'done' : 'pending', '完成')
+            this.stepDot(3, this.step >= 3 ?
+              (this.hostSwitchSaveError === '' ? 'done' : 'fail') : 'pending', '完成')
           }.width('100%').justifyContent(FlexAlign.Center).margin({ bottom: 16 })
 
           if (this.installResult !== null) {
@@ -276,12 +282,20 @@ export struct SshKeyInstallSheet {
             .backgroundColor(this.pal().card).margin({ bottom: 8 })
           }
 
+          if (this.hostSwitchSaveError !== '') {
+            Text(this.hostSwitchSaveError)
+              .fontSize(11).fontColor(this.pal().danger).maxLines(4)
+              .width('100%').padding(12).borderRadius(10)
+              .backgroundColor(this.pal().card).margin({ bottom: 8 })
+          }
+
           if (this.installing || this.verifying) {
             LoadingProgress().width(32).height(32).color(this.accentColor)
           }
 
           if (this.step >= 3) {
-            Button('完成').width('100%').height(40).fontSize(14).fontWeight(FontWeight.Medium)
+            Button(this.hostSwitchSaveError === '' ? '完成' : '关闭（配置未保存）')
+              .width('100%').height(40).fontSize(14).fontWeight(FontWeight.Medium)
               .backgroundColor(this.accentColor).fontColor('#FFFFFF').borderRadius(10)
               .margin({ top: 12 })
               .onClick(() => { if (this.onComplete) { this.onComplete(); } })

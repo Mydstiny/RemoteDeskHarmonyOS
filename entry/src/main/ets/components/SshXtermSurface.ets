@@ -8,35 +8,262 @@
  */
 import { webview } from '@kit.ArkWeb';
 import { hilog } from '@kit.PerformanceAnalysisKit';
+import { sshDiagnosticErrorCode } from
+  '../services/ssh/observability/SshDiagnosticPolicy';
+import {
+  decodeSshTerminalSearchRequest,
+  decodeSshTerminalSearchResult,
+  encodeSshTerminalSearchRequest,
+  invalidSshTerminalSearchResult,
+  SshTerminalSearchRequest,
+  SshTerminalSearchResult
+} from '../services/ssh/search/SshTerminalSearchPolicy';
+import {
+  SshWebMessagePortChannel,
+  SshWebMessagePortLike
+} from '../services/ssh/web/SshWebMessagePortChannel';
+import {
+  decodeSshWebMessageOutputFailure,
+  sshUtf8ByteLength,
+  SshWebMessageEnvelopeV1,
+  SshWebMessageOutputFailureV1
+} from '../services/ssh/web/SshWebMessagePortPolicy';
+import { matchesSshXtermCopyFence } from '../services/SshXtermTabSurfacePolicy';
 
 const XTERM_DOMAIN: number = 0x0000;
 const XTERM_TAG: string = 'SshXtermSurface';
 const XTERM_DOCUMENT_RELOAD_TIMEOUT_MS: number = 3000;
+export const SSH_XTERM_RETRY_MAX_ATTEMPTS: number = 240;
+export const SSH_XTERM_OUTPUT_BUFFER_MAX_BYTES: number = 8 * 1024 * 1024;
+export const SSH_XTERM_OUTPUT_BUFFER_MAX_CHUNKS: number = 512;
+export const SSH_XTERM_OUTPUT_CHUNK_MAX_BYTES: number = 64 * 1024;
+
+/** Retry loops must stop when a WebView remains unavailable for one lifecycle. */
+export function sshXtermRetryAllowed(attempt: number): boolean {
+  return Number.isFinite(attempt) && Math.floor(attempt) === attempt && attempt >= 0 &&
+    attempt < SSH_XTERM_RETRY_MAX_ATTEMPTS;
+}
+
+/** Keep a proxy bridge call within one UTF-8 frame after chunk admission. */
+export function sshXtermOutputBatchFitsByteBudget(currentBytes: number, next: string,
+  maxBytes: number = SSH_XTERM_OUTPUT_CHUNK_MAX_BYTES): boolean {
+  const current: number = Number.isFinite(currentBytes) ? Math.max(0, Math.floor(currentBytes)) : 0;
+  const budget: number = Number.isFinite(maxBytes) && maxBytes > 0
+    ? Math.max(1, Math.floor(maxBytes)) : SSH_XTERM_OUTPUT_CHUNK_MAX_BYTES;
+  const nextBytes: number = sshUtf8ByteLength(next);
+  // Keep the legacy single-chunk escape hatch; XtermOutputBuffer normally
+  // admits chunks at or below this budget, while the aggregate gate below
+  // prevents multibyte chunks from multiplying a bridge payload.
+  return current === 0 || current + nextBytes <= budget;
+}
+
+interface XtermOutputEntry {
+  value: string;
+  bytes: number;
+}
 
 /** Decoded SSH output waiting for the visible xterm page to consume it. */
 export class XtermOutputBuffer {
-  private pending: Array<string> = [];
+  private pending: Array<XtermOutputEntry> = [];
+  private pendingBytes: number = 0;
+  private listeners: Array<() => void> = [];
+  private overflowed: boolean = false;
+  /**
+   * A document transcript replacement is readable only after xterm.reset().
+   * Live SSH output can still append while this fence is held, but no renderer
+   * may drain either the snapshot or those later bytes into the pre-reset DOM.
+   */
+  private documentResetPending: boolean = false;
+  private readonly onOverflow: (() => void) | null;
+  private readonly maxBytes: number;
+  private readonly maxChunks: number;
+  private readonly maxChunkBytes: number;
 
-  enqueue(value: string): void {
-    if (value.length > 0) { this.pending.push(value); }
+  constructor(onOverflow: (() => void) | null = null,
+    maxBytes: number = SSH_XTERM_OUTPUT_BUFFER_MAX_BYTES,
+    maxChunks: number = SSH_XTERM_OUTPUT_BUFFER_MAX_CHUNKS,
+    maxChunkBytes: number = SSH_XTERM_OUTPUT_CHUNK_MAX_BYTES) {
+    this.onOverflow = onOverflow;
+    this.maxBytes = Math.max(1, Math.floor(maxBytes));
+    this.maxChunks = Math.max(1, Math.floor(maxChunks));
+    this.maxChunkBytes = Math.max(1,
+      Math.min(this.maxBytes, Math.floor(maxChunkBytes)));
   }
 
-  prepend(values: Array<string>): void {
-    if (values.length > 0) { this.pending = values.concat(this.pending); }
+  enqueue(value: string): boolean {
+    if (value.length === 0) { return true; }
+    const entries: Array<XtermOutputEntry> = this.splitEntries(value);
+    let admittedBytes: number = 0;
+    for (let index: number = 0; index < entries.length; index++) {
+      admittedBytes += entries[index].bytes;
+    }
+    if (entries.length === 0 || this.pending.length + entries.length > this.maxChunks ||
+      this.pendingBytes + admittedBytes > this.maxBytes) {
+      this.notifyOverflow();
+      return false;
+    }
+    this.pending = this.pending.concat(entries);
+    this.pendingBytes += admittedBytes;
+    this.notifyReadable();
+    return true;
   }
 
-  drain(): Array<string> {
-    const values: Array<string> = this.pending;
-    this.pending = [];
+  prepend(values: Array<string>): boolean {
+    if (values.length === 0) { return true; }
+    let entries: Array<XtermOutputEntry> = [];
+    let restoredBytes: number = 0;
+    for (let index: number = 0; index < values.length; index++) {
+      const next: Array<XtermOutputEntry> = this.splitEntries(values[index]);
+      entries = entries.concat(next);
+      for (let entryIndex: number = 0; entryIndex < next.length; entryIndex++) {
+        restoredBytes += next[entryIndex].bytes;
+      }
+    }
+    if (entries.length === 0) { return true; }
+    // A renderer frame is temporarily outside this FIFO while awaiting its
+    // xterm ACK. New SSH output can fill the capacity released by drain();
+    // restoring a timed-out frame must re-run the same hard admission gate
+    // instead of growing beyond the documented byte/chunk ceiling.
+    if (this.pending.length + entries.length > this.maxChunks ||
+      this.pendingBytes + restoredBytes > this.maxBytes) {
+      this.notifyOverflow();
+      return false;
+    }
+    this.pending = entries.concat(this.pending);
+    this.pendingBytes += restoredBytes;
+    return true;
+  }
+
+  drain(maxChunks: number = -1, maxBytes: number = -1): Array<string> {
+    if (this.documentResetPending || this.pending.length === 0) { return []; }
+    const chunkLimit: number = Number.isFinite(maxChunks) && maxChunks > 0
+      ? Math.max(1, Math.floor(maxChunks)) : this.pending.length;
+    const byteLimit: number = Number.isFinite(maxBytes) && maxBytes > 0
+      ? Math.max(1, Math.floor(maxBytes)) : Number.MAX_SAFE_INTEGER;
+    let count: number = 0;
+    let drainedBytes: number = 0;
+    while (count < this.pending.length && count < chunkLimit) {
+      const next: XtermOutputEntry = this.pending[count];
+      if (count > 0 && drainedBytes + next.bytes > byteLimit) { break; }
+      drainedBytes += next.bytes;
+      count++;
+      if (drainedBytes >= byteLimit) { break; }
+    }
+    const drained: Array<XtermOutputEntry> = this.pending.splice(0, count);
+    this.pendingBytes = Math.max(0, this.pendingBytes - drainedBytes);
+    const values: Array<string> = [];
+    for (let index: number = 0; index < drained.length; index++) {
+      values.push(drained[index].value);
+    }
     return values;
   }
 
   clear(): void {
     this.pending = [];
+    this.pendingBytes = 0;
+    this.overflowed = false;
+    this.documentResetPending = false;
+  }
+
+  /** Atomically replace the queue and fence it until the new document resets. */
+  replaceForDocumentReset(value: string): boolean {
+    const entries: Array<XtermOutputEntry> = this.splitEntries(value);
+    let admittedBytes: number = 0;
+    for (let index: number = 0; index < entries.length; index++) {
+      admittedBytes += entries[index].bytes;
+    }
+    if (entries.length > this.maxChunks || admittedBytes > this.maxBytes) {
+      this.notifyOverflow();
+      return false;
+    }
+    this.pending = entries;
+    this.pendingBytes = admittedBytes;
+    this.overflowed = false;
+    this.documentResetPending = true;
+    return true;
+  }
+
+  isDocumentResetPending(): boolean {
+    return this.documentResetPending;
+  }
+
+  /** Release the authoritative snapshot only after xterm.reset() completes. */
+  completeDocumentReset(): void {
+    if (!this.documentResetPending) { return; }
+    this.documentResetPending = false;
+    if (this.pending.length > 0) { this.notifyReadable(); }
   }
 
   size(): number {
     return this.pending.length;
+  }
+
+  byteLength(): number {
+    return this.pendingBytes;
+  }
+
+  /** Wake the renderer without routing terminal payload through ArkUI state. */
+  subscribe(listener: () => void): () => void {
+    this.listeners.push(listener);
+    return (): void => {
+      const index: number = this.listeners.indexOf(listener);
+      if (index >= 0) { this.listeners.splice(index, 1); }
+    };
+  }
+
+  private notifyReadable(): void {
+    const listeners: Array<() => void> = this.listeners.slice();
+    for (let index: number = 0; index < listeners.length; index++) {
+      try { listeners[index](); } catch (_err) {
+        // A stale renderer must not break the SSH reader or later listeners.
+      }
+    }
+  }
+
+  private notifyOverflow(): void {
+    if (this.overflowed) { return; }
+    this.overflowed = true;
+    if (this.onOverflow !== null) {
+      try { this.onOverflow(); } catch (_err) {
+        // The bounded queue still rejects the chunk if page cleanup is stale.
+      }
+    }
+  }
+
+  /** Split by UTF-8 bytes without cutting a UTF-16 surrogate pair. */
+  private splitEntries(value: string): Array<XtermOutputEntry> {
+    const entries: Array<XtermOutputEntry> = [];
+    let start: number = 0;
+    let index: number = 0;
+    let bytes: number = 0;
+    while (index < value.length) {
+      const code: number = value.charCodeAt(index);
+      let scalarBytes: number = 3;
+      let nextIndex: number = index + 1;
+      if (code <= 0x7f) {
+        scalarBytes = 1;
+      } else if (code <= 0x7ff) {
+        scalarBytes = 2;
+      } else if (code >= 0xd800 && code <= 0xdbff && nextIndex < value.length) {
+        const next: number = value.charCodeAt(nextIndex);
+        if (next >= 0xdc00 && next <= 0xdfff) {
+          scalarBytes = 4;
+          nextIndex++;
+        }
+      }
+      if (bytes > 0 && bytes + scalarBytes > this.maxChunkBytes) {
+        entries.push({ value: value.slice(start, index), bytes });
+        start = index;
+        bytes = 0;
+      }
+      bytes += scalarBytes;
+      index = nextIndex;
+    }
+    if (start < value.length) {
+      const chunk: string = value.slice(start);
+      entries.push({ value: chunk, bytes: sshUtf8ByteLength(chunk) });
+    }
+    return entries;
   }
 }
 
@@ -49,6 +276,10 @@ class SshXtermBridgeProxy {
   onResizeCallback: (cols: number, rows: number) => void = (_cols: number, _rows: number): void => {};
   onSelectionCallback: (text: string) => void = (_text: string): void => {};
   onFocusCallback: (focused: boolean) => void = (_focused: boolean): void => {};
+  onModeCallback: (mouseTracking: boolean, applicationCursorKeys: boolean,
+    applicationKeypad: boolean, alternateBuffer: boolean) => void =
+    (_mouseTracking: boolean, _applicationCursorKeys: boolean,
+      _applicationKeypad: boolean, _alternateBuffer: boolean): void => {};
 
   onReady(cols: number, rows: number): void {
     this.onReadyCallback(cols, rows);
@@ -77,6 +308,33 @@ class SshXtermBridgeProxy {
   onFocus(focused: boolean): void {
     this.onFocusCallback(focused);
   }
+
+  onMode(mouseTracking: boolean, applicationCursorKeys: boolean,
+    applicationKeypad: boolean, alternateBuffer: boolean): void {
+    this.onModeCallback(mouseTracking, applicationCursorKeys,
+      applicationKeypad, alternateBuffer);
+  }
+}
+
+/** Explicit ArkWeb adapter; ArkTS does not permit structural assignment. */
+class SshArkWebMessagePortAdapter implements SshWebMessagePortLike {
+  private readonly delegate: webview.WebMessagePort;
+
+  constructor(delegate: webview.WebMessagePort) {
+    this.delegate = delegate;
+  }
+
+  postMessageEvent(message: string | ArrayBuffer): void {
+    this.delegate.postMessageEvent(message);
+  }
+
+  onMessageEvent(callback: (message: string | ArrayBuffer) => void): void {
+    this.delegate.onMessageEvent(callback);
+  }
+
+  close(): void {
+    this.delegate.close();
+  }
 }
 
 @Component
@@ -99,8 +357,26 @@ export struct SshXtermSurface {
   @Prop @Watch('onAppearanceChange') bottomAlignSparseContent: boolean = false;
   @Prop @Watch('onAppearanceChange') bottomAlignSafeRows: number = 0;
   @Prop @Watch('onAppearanceChange') bottomInsetPx: number = 10;
+  @Prop @Watch('onAppearanceChange') profileEnabled: boolean = false;
+  @Prop @Watch('onAppearanceChange') profileForegroundColor: string = '#33FF33';
+  @Prop @Watch('onAppearanceChange') profileBackgroundColor: string = '#0D0D0D';
+  @Prop @Watch('onAppearanceChange') profilePalette: string[] = [];
+  @Prop @Watch('onAppearanceChange') profileFontFamily: string = 'monospace';
+  @Prop @Watch('onAppearanceChange') profileFontWeight: string = 'normal';
+  @Prop @Watch('onAppearanceChange') profileCursorStyle: string = 'bar';
+  @Prop @Watch('onAppearanceChange') profileCursorBlink: boolean = true;
+  @Prop @Watch('onAppearanceChange') profileScrollback: number = 10000;
+  @Prop @Watch('onAppearanceChange') profileBellStyle: string = 'none';
+  @Prop profileCopyOnSelect: boolean = false;
   @StorageProp('sshTerminalForegroundColor') @Watch('onAppearanceChange') terminalFgColor: string = '#33FF33';
+  /** Low-frequency lifecycle wake; live output is delivered by outputBuffer. */
   @Prop @Watch('onOutputSequenceChange') outputSequence: number = 0;
+  /**
+   * API 23+ WebMessagePort transport. It is deliberately capability-gated
+   * and defaults off so existing xterm proxy traffic remains the safe path
+   * until the device/runtime acceptance matrix enables it.
+   */
+  @Prop @Watch('onWebMessageBridgeEnabledChange') webMessageBridgeEnabled: boolean = false;
   /** Replace the current document with one host transcript after a revision handoff. */
   @Prop transcriptResetIdentity: string = '';
   @Prop @Watch('onTranscriptResetRequestChange') transcriptResetRequest: number = 0;
@@ -110,6 +386,10 @@ export struct SshXtermSurface {
   @Prop @Watch('onForceScrollToBottomRequest') forceScrollToBottomRequest: number = 0;
   @Prop @Watch('onExternalScrollRequest') externalScrollRequest: number = 0;
   @Prop externalScrollLines: number = 0;
+  /** JSON-whitelisted request; only the active host receives a non-empty value. */
+  @Prop @Watch('onSearchRequestChange') searchRequest: string = '';
+  /** Monotonic clear fence, replayed when a previously hidden tab becomes active. */
+  @Prop @Watch('onSearchClearRequestChange') searchClearRequest: number = 0;
   /** Ordinary reference: it is deliberately outside ArkUI observation. */
   outputBuffer: XtermOutputBuffer = new XtermOutputBuffer();
   @Link copiedText: string;
@@ -117,9 +397,17 @@ export struct SshXtermSurface {
   onResize?: (cols: number, rows: number, surfaceKey: string) => void;
   onReady?: (surfaceKey: string) => void;
   onTerminalFocus?: (focused: boolean, surfaceKey: string) => void;
+  onTerminalMode?: (mouseTracking: boolean, applicationCursorKeys: boolean,
+    applicationKeypad: boolean, alternateBuffer: boolean, surfaceKey: string) => void;
+  onSearchResult?: (result: SshTerminalSearchResult, surfaceKey: string) => void;
 
   private controller: webview.WebviewController = new webview.WebviewController();
   private bridge: SshXtermBridgeProxy = new SshXtermBridgeProxy();
+  private webMessageChannel: SshWebMessagePortChannel = new SshWebMessagePortChannel();
+  private webMessagePortConnected: boolean = false;
+  private webMessagePortReady: boolean = false;
+  private webMessagePortInstallAttempted: boolean = false;
+  private webMessagePortToken: number = 0;
   private bridgeRegistered: boolean = false;
   private bridgeRetryTimer: number = -1;
   private bridgeRetryCount: number = 0;
@@ -139,6 +427,9 @@ export struct SshXtermSurface {
   private documentReloadPending: boolean = false;
   private outputPumpRunning: boolean = false;
   private outputPumpRetryTimer: number = -1;
+  private outputPumpRetryCount: number = 0;
+  private outputBufferWakeTimer: number = -1;
+  private outputBufferUnsubscribe: (() => void) | null = null;
   private outputBatchAckTimer: number = -1;
   private fitTimer: number = -1;
   private readyReportTimer: number = -1;
@@ -155,6 +446,8 @@ export struct SshXtermSurface {
   private pendingOutputBuffer: XtermOutputBuffer | null = null;
   private disposed: boolean = false;
   private lifecycleToken: number = 0;
+  private lastSearchExecutionKey: string = '';
+  private appliedSearchClearRequest: number = -1;
 
   private logLifecycle(message: string): void {
     hilog.info(XTERM_DOMAIN, XTERM_TAG, message);
@@ -168,10 +461,191 @@ export struct SshXtermSurface {
     return key + ':render:' + revision.toString();
   }
 
+  private webMessageGeneration(): number {
+    const requested: number = Number(this.renderRevision);
+    if (!Number.isFinite(requested)) { return 0; }
+    return Math.max(1, Math.floor(requested));
+  }
+
+  private webMessagePortEligible(): boolean {
+    return this.webMessageBridgeEnabled && !this.disposed && this.pageFinished &&
+      this.coreKey.trim().length > 0 && this.webMessageGeneration() > 0;
+  }
+
+  private detachWebMessagePort(resetAttempted: boolean = true): boolean {
+    this.webMessagePortToken++;
+    this.webMessagePortConnected = false;
+    this.webMessagePortReady = false;
+    if (resetAttempted) { this.webMessagePortInstallAttempted = false; }
+    let restored: boolean = true;
+    if (this.outputPumpRunning || this.inFlightWrites.length > 0 || this.pendingWrites.length > 0) {
+      restored = this.restoreQueuedWrites();
+    }
+    this.webMessageChannel.detach();
+    return restored;
+  }
+
+  private disableWebMessagePort(code: string): void {
+    this.webMessagePortConnected = false;
+    this.webMessagePortReady = false;
+    hilog.warn(XTERM_DOMAIN, XTERM_TAG, 'web message port disabled code=' + code);
+    this.webMessageChannel.detach();
+    let restored: boolean = true;
+    if (this.outputPumpRunning || this.inFlightWrites.length > 0 || this.pendingWrites.length > 0) {
+      restored = this.restoreQueuedWrites();
+    }
+    if (!restored) { return; }
+    if (!this.disposed && this.active && this.pageReady) {
+      this.scheduleOutputPumpRetry(this.lifecycleToken);
+    }
+  }
+
+  private handleWebMessageEnvelope(envelope: SshWebMessageEnvelopeV1,
+    lifecycleToken: number): void {
+    if (lifecycleToken !== this.lifecycleToken || this.disposed ||
+      !this.webMessagePortConnected || envelope.sessionKey !== this.surfaceIdentity() ||
+      envelope.generation !== this.webMessageGeneration()) {
+      return;
+    }
+    if (envelope.kind === 'ack') {
+      try {
+        const source: Record<string, Object> = JSON.parse(envelope.payload) as Record<string, Object>;
+        if (source['ready'] === true) {
+          this.webMessagePortReady = true;
+          this.flushOutputBuffer();
+          return;
+        }
+        const batchSequence: number = Number(source['batchSequence']);
+        if (Number.isFinite(batchSequence) && Math.floor(batchSequence) > 0) {
+          this.handleOutputFrame(Math.floor(batchSequence));
+        }
+      } catch (_err) {
+        // Transport ACKs without an application batch are valid; ignore them.
+      }
+      return;
+    }
+    if (envelope.kind === 'error') {
+      const failure: SshWebMessageOutputFailureV1 | null =
+        decodeSshWebMessageOutputFailure(envelope.payload);
+      if (failure !== null && this.outputPumpRunning &&
+        failure.batchSequence === this.awaitingOutputBatch) {
+        // Match the proxy callback path: a partially rendered document must
+        // be rebuilt before replaying the complete unconfirmed batch, or the
+        // prefix already accepted by xterm would appear twice.
+        this.handleOutputFrameError(failure.batchSequence, failure.consumedCount);
+        return;
+      }
+      this.disableWebMessagePort('page_error');
+      return;
+    }
+    if (envelope.kind === 'input') {
+      if (this.onData && envelope.payload.length > 0 && this.active) {
+        this.onData(envelope.payload, this.surfaceIdentity());
+      }
+      return;
+    }
+    if (envelope.kind === 'resize') {
+      try {
+        const source: Record<string, Object> = JSON.parse(envelope.payload) as Record<string, Object>;
+        const cols: number = Number(source['cols']);
+        const rows: number = Number(source['rows']);
+        if (this.onResize && Number.isFinite(cols) && Number.isFinite(rows) &&
+          cols > 0 && rows > 0 && this.active) {
+          this.onResize(Math.floor(cols), Math.floor(rows), this.surfaceIdentity());
+        }
+      } catch (_err) {
+        // Invalid resize payloads are rejected at the owner boundary.
+      }
+    }
+  }
+
+  private installWebMessagePort(lifecycleToken: number = this.lifecycleToken): void {
+    if (!this.webMessagePortEligible() || lifecycleToken !== this.lifecycleToken ||
+      this.webMessagePortInstallAttempted) {
+      return;
+    }
+    this.webMessagePortInstallAttempted = true;
+    const sessionKey: string = this.surfaceIdentity();
+    const generation: number = this.webMessageGeneration();
+    const portToken: number = ++this.webMessagePortToken;
+    try {
+      const ports: Array<webview.WebMessagePort> = this.controller.createWebMessagePorts(false);
+      if (ports.length < 2) {
+        this.disableWebMessagePort('ports_unavailable');
+        return;
+      }
+      const nativePort: SshWebMessagePortLike = new SshArkWebMessagePortAdapter(ports[0]);
+      const pagePort: webview.WebMessagePort = ports[1];
+      const attached: boolean = this.webMessageChannel.attach(nativePort, sessionKey, generation, {
+        onReady: (): void => {
+          if (portToken !== this.webMessagePortToken || lifecycleToken !== this.lifecycleToken ||
+            this.disposed) { return; }
+          this.webMessagePortConnected = true;
+          this.logLifecycle('web message port ready');
+        },
+        onEnvelope: (envelope: SshWebMessageEnvelopeV1): void => {
+          this.handleWebMessageEnvelope(envelope, lifecycleToken);
+        },
+        onError: (code: string): void => {
+          if (portToken !== this.webMessagePortToken || lifecycleToken !== this.lifecycleToken) {
+            return;
+          }
+          this.disableWebMessagePort(code);
+        }
+      });
+      if (!attached) {
+        this.disableWebMessagePort('attach_rejected');
+        return;
+      }
+      // The page receives the transferred endpoint through the standard
+      // message event. Prefer ArkWeb's current rawfile URI; the wildcard is
+      // only a compatibility fallback for runtimes that report it as empty.
+      let targetUri: string = '*';
+      try {
+        const currentUri: string = this.controller.getUrl();
+        if (currentUri.trim().length > 0) { targetUri = currentUri; }
+      } catch (_err) {
+        // The controller can briefly report no URL during a keyed load.
+      }
+      this.controller.postMessage('sshTerminalWebMessagePort', [pagePort], targetUri);
+    } catch (err) {
+      hilog.debug(XTERM_DOMAIN, XTERM_TAG,
+        'web message port unavailable code=' + sshDiagnosticErrorCode(err));
+      this.disableWebMessagePort('install_failed');
+    }
+  }
+
+  private onWebMessageBridgeEnabledChange(): void {
+    if (!this.webMessageBridgeEnabled) {
+      this.detachWebMessagePort();
+      return;
+    }
+    if (this.webMessagePortEligible()) {
+      this.installWebMessagePort();
+    }
+  }
+
   aboutToAppear(): void {
     this.restoreQueuedWrites();
+    if (!this.detachWebMessagePort()) { return; }
     const lifecycleToken: number = ++this.lifecycleToken;
     this.disposed = false;
+    if (this.outputBufferWakeTimer !== -1) {
+      clearTimeout(this.outputBufferWakeTimer);
+      this.outputBufferWakeTimer = -1;
+    }
+    if (this.outputBufferUnsubscribe !== null) {
+      this.outputBufferUnsubscribe();
+      this.outputBufferUnsubscribe = null;
+    }
+    this.outputBufferUnsubscribe = this.outputBuffer.subscribe((): void => {
+      // A document reload advances lifecycleToken without recreating this
+      // component or its parent-owned output buffer subscription. Resolve the
+      // token at notification time so live SSH echo can wake the replacement
+      // document instead of being rejected as a stale pre-reload callback.
+      this.scheduleOutputBufferWake();
+    });
+    this.scheduleOutputBufferWake();
     if (this.readyReportTimer !== -1) {
       clearTimeout(this.readyReportTimer);
       this.readyReportTimer = -1;
@@ -207,7 +681,10 @@ export struct SshXtermSurface {
     this.pendingCoreKeyReload = false;
     this.reloadRequestedDocumentKey = '';
     this.documentReloadPending = false;
+    this.outputPumpRetryCount = 0;
     this.awaitingOutputBatch = 0;
+    this.lastSearchExecutionKey = '';
+    this.appliedSearchClearRequest = this.normalizedSearchClearRequest();
     // Give every document its own proxy. A late callback from the previous
     // document must not satisfy the readiness gate of the new host.
     this.bridge = new SshXtermBridgeProxy();
@@ -219,8 +696,17 @@ export struct SshXtermSurface {
 
   aboutToDisappear(): void {
     this.restoreQueuedWrites();
+    if (!this.detachWebMessagePort()) { return; }
     const lifecycleToken: number = ++this.lifecycleToken;
     this.disposed = true;
+    if (this.outputBufferUnsubscribe !== null) {
+      this.outputBufferUnsubscribe();
+      this.outputBufferUnsubscribe = null;
+    }
+    if (this.outputBufferWakeTimer !== -1) {
+      clearTimeout(this.outputBufferWakeTimer);
+      this.outputBufferWakeTimer = -1;
+    }
     this.clearBridgeRetry();
     this.bridgeRetryCount = 0;
     this.pageStarted = false;
@@ -231,9 +717,12 @@ export struct SshXtermSurface {
     this.pendingCoreKeyReload = false;
     this.reloadRequestedDocumentKey = '';
     this.documentReloadPending = false;
+    this.outputPumpRetryCount = 0;
     this.pendingWrites = [];
     this.outputPumpRunning = false;
     this.awaitingOutputBatch = 0;
+    this.lastSearchExecutionKey = '';
+    this.appliedSearchClearRequest = this.normalizedSearchClearRequest();
     if (this.outputPumpRetryTimer !== -1) {
       clearTimeout(this.outputPumpRetryTimer);
       this.outputPumpRetryTimer = -1;
@@ -291,10 +780,22 @@ export struct SshXtermSurface {
         this.onResize(cols, rows, this.surfaceIdentity());
       }
     };
-    this.bridge.onSelectionCallback = (_text: string): void => {};
+    this.bridge.onSelectionCallback = (text: string): void => {
+      if (lifecycleToken === this.lifecycleToken && !this.disposed &&
+        this.active && this.profileEnabled && this.profileCopyOnSelect && text.length > 0) {
+        this.copiedText = text;
+      }
+    };
     this.bridge.onFocusCallback = (focused: boolean): void => {
       if (lifecycleToken === this.lifecycleToken && this.onTerminalFocus && !this.disposed) {
         this.onTerminalFocus(focused, this.surfaceIdentity());
+      }
+    };
+    this.bridge.onModeCallback = (mouseTracking: boolean, applicationCursorKeys: boolean,
+      applicationKeypad: boolean, alternateBuffer: boolean): void => {
+      if (lifecycleToken === this.lifecycleToken && this.onTerminalMode && !this.disposed) {
+        this.onTerminalMode(mouseTracking === true, applicationCursorKeys === true,
+          applicationKeypad === true, alternateBuffer === true, this.surfaceIdentity());
       }
     };
   }
@@ -308,6 +809,10 @@ export struct SshXtermSurface {
 
   private scheduleBridgeRetry(lifecycleToken: number): void {
     if (this.bridgeRetryTimer !== -1 || this.disposed || lifecycleToken !== this.lifecycleToken) {
+      return;
+    }
+    if (!sshXtermRetryAllowed(this.bridgeRetryCount)) {
+      hilog.error(XTERM_DOMAIN, XTERM_TAG, 'bridge retry budget exhausted');
       return;
     }
     // ArkWeb can bind the WebviewController after onPageBegin during route
@@ -328,12 +833,13 @@ export struct SshXtermSurface {
       this.controller.registerJavaScriptProxy(
         this.bridge,
         'sshTerminalBridge',
-        ['onReady', 'onFrame', 'onFrameError', 'onInput', 'onResize', 'onSelection', 'onFocus']
+        ['onReady', 'onFrame', 'onFrameError', 'onInput', 'onResize', 'onSelection', 'onFocus',
+          'onMode']
       );
       this.bridgeRegistered = true;
       this.bridgeRetryCount = 0;
       this.clearBridgeRetry();
-      this.logLifecycle('bridge registered key=' + this.coreKey);
+      this.logLifecycle('bridge registered');
       if (this.pageStarted) {
         // ArkWeb exposes a newly registered proxy only after the next page
         // load. The initial Web component load may already be in progress.
@@ -349,7 +855,7 @@ export struct SshXtermSurface {
     } catch (err) {
       this.scheduleBridgeRetry(lifecycleToken);
       hilog.debug(XTERM_DOMAIN, XTERM_TAG,
-        'register bridge deferred: ' + JSON.stringify(err));
+        'register bridge deferred code=' + sshDiagnosticErrorCode(err));
     }
   }
 
@@ -365,9 +871,16 @@ export struct SshXtermSurface {
       rows: Math.max(3, Math.floor(this.rows)),
       fontSize: normalizedFontSize,
       lineHeight: normalizedLineSpacing,
-      fontFamily: 'monospace',
-      foreground: this.terminalFgColor,
-      background: '#0D0D0D',
+      fontFamily: this.profileEnabled && this.profileFontFamily !== 'monospace' ?
+        this.profileFontFamily + ', monospace' : 'monospace',
+      fontWeight: this.profileEnabled ? this.profileFontWeight : 'normal',
+      foreground: this.profileEnabled ? this.profileForegroundColor : this.terminalFgColor,
+      background: this.profileEnabled ? this.profileBackgroundColor : '#0D0D0D',
+      palette: this.profileEnabled ? this.profilePalette : [],
+      cursorStyle: this.profileEnabled ? this.profileCursorStyle : 'bar',
+      cursorBlink: this.profileEnabled ? this.profileCursorBlink : true,
+      scrollback: this.profileEnabled ? this.profileScrollback : 10000,
+      bellStyle: this.profileEnabled ? this.profileBellStyle : 'none',
       bottomAlignSparseContent: this.bottomAlignSparseContent,
       bottomAlignSafeRows: Math.max(0, Math.min(6, Math.floor(this.bottomAlignSafeRows))),
       bottomInsetPx: Math.max(0, Math.min(20, Math.floor(this.bottomInsetPx)))
@@ -400,6 +913,84 @@ export struct SshXtermSurface {
       });
     } catch (_err) {
       if (onFailure) { onFailure(); }
+    }
+  }
+
+  private normalizedSearchClearRequest(): number {
+    const requested: number = Number(this.searchClearRequest);
+    return Number.isFinite(requested) ? Math.max(0, Math.floor(requested)) : 0;
+  }
+
+  private searchExecutionCurrent(lifecycleToken: number, surfaceIdentity: string,
+    payload: string): boolean {
+    return lifecycleToken === this.lifecycleToken && !this.disposed && this.active &&
+      this.pageReady && surfaceIdentity === this.surfaceIdentity() &&
+      payload === this.searchRequest.trim();
+  }
+
+  private reportSearchResult(result: SshTerminalSearchResult, lifecycleToken: number,
+    surfaceIdentity: string, payload: string): void {
+    if (!this.searchExecutionCurrent(lifecycleToken, surfaceIdentity, payload)) { return; }
+    if (this.onSearchResult) { this.onSearchResult(result, surfaceIdentity); }
+  }
+
+  private executeSearchRequest(): void {
+    if (!this.active || !this.pageReady || this.documentReloadPending || this.disposed) { return; }
+    const requestedPayload: string = this.searchRequest.trim();
+    if (requestedPayload.length === 0) { return; }
+    const request: SshTerminalSearchRequest | null =
+      decodeSshTerminalSearchRequest(requestedPayload);
+    if (request === null) { return; }
+    const payload: string = encodeSshTerminalSearchRequest(request);
+    if (payload.length === 0) { return; }
+    const lifecycleToken: number = this.lifecycleToken;
+    const surfaceIdentity: string = this.surfaceIdentity();
+    const executionKey: string = lifecycleToken.toString() + ':' + surfaceIdentity + ':' + payload;
+    if (executionKey === this.lastSearchExecutionKey) { return; }
+    this.lastSearchExecutionKey = executionKey;
+    const script: string = '(function(request){' +
+      'if(typeof window.__sshXtermSearch!=="function"){' +
+      'return JSON.stringify({requestId:request.requestId,found:false,resultIndex:-1,' +
+      'resultCount:0,elapsedMs:0,errorCode:"search_unavailable"});}' +
+      'return window.__sshXtermSearch(request);' +
+      '})(' + payload + ');';
+    try {
+      this.controller.runJavaScript(script).then((rawResult: string): void => {
+        if (!this.searchExecutionCurrent(lifecycleToken, surfaceIdentity, payload)) { return; }
+        const result: SshTerminalSearchResult =
+          decodeSshTerminalSearchResult(rawResult ?? '', request.requestId);
+        this.reportSearchResult(result, lifecycleToken, surfaceIdentity, payload);
+      }).catch((_err: Error): void => {
+        if (!this.searchExecutionCurrent(lifecycleToken, surfaceIdentity, payload)) { return; }
+        this.lastSearchExecutionKey = '';
+        this.reportSearchResult(
+          invalidSshTerminalSearchResult(request.requestId, 'execution_failed'),
+          lifecycleToken, surfaceIdentity, payload);
+      });
+    } catch (_err) {
+      if (!this.searchExecutionCurrent(lifecycleToken, surfaceIdentity, payload)) { return; }
+      this.lastSearchExecutionKey = '';
+      this.reportSearchResult(
+        invalidSshTerminalSearchResult(request.requestId, 'execution_failed'),
+        lifecycleToken, surfaceIdentity, payload);
+    }
+  }
+
+  private executeSearchClear(): void {
+    if (!this.active || !this.pageReady || this.documentReloadPending || this.disposed) { return; }
+    const request: number = this.normalizedSearchClearRequest();
+    if (request === this.appliedSearchClearRequest) { return; }
+    this.appliedSearchClearRequest = request;
+    this.lastSearchExecutionKey = '';
+    this.runPageScript(
+      'if(typeof window.__sshXtermClearSearch==="function"){window.__sshXtermClearSearch();}');
+  }
+
+  private reconcileSearchState(): void {
+    if (this.searchRequest.trim().length > 0) {
+      this.executeSearchRequest();
+    } else {
+      this.executeSearchClear();
     }
   }
 
@@ -447,6 +1038,7 @@ export struct SshXtermSurface {
       return;
     }
     const lifecycleToken: number = ++this.lifecycleToken;
+    if (!this.detachWebMessagePort()) { return; }
     this.clearBridgeRetry();
     if (this.readyReportTimer !== -1) {
       clearTimeout(this.readyReportTimer);
@@ -484,7 +1076,7 @@ export struct SshXtermSurface {
       this.scheduleDocumentReloadWatchdog(lifecycleToken, requestedDocumentKey);
     } catch (err) {
       hilog.warn(XTERM_DOMAIN, XTERM_TAG,
-        'reload xterm document failed: ' + JSON.stringify(err));
+        'reload xterm document failed code=' + sshDiagnosticErrorCode(err));
       // Keep the old document fenced off. Replaying the timeout batch into it
       // can duplicate output that was rendered before the ACK was lost.
       this.scheduleDocumentReloadRetry(lifecycleToken, requestedDocumentKey);
@@ -497,6 +1089,10 @@ export struct SshXtermSurface {
       lifecycleToken !== this.lifecycleToken || !this.active ||
       !this.documentReloadPending ||
       this.reloadRequestedDocumentKey !== requestedDocumentKey) {
+      return;
+    }
+    if (!sshXtermRetryAllowed(this.documentReloadRetryCount)) {
+      hilog.error(XTERM_DOMAIN, XTERM_TAG, 'document reload retry budget exhausted');
       return;
     }
     const retryDelay: number = this.documentReloadRetryCount < 180 ? 64 : 250;
@@ -515,6 +1111,10 @@ export struct SshXtermSurface {
   private schedulePageConfigRetry(lifecycleToken: number): void {
     if (this.pageConfigRetryTimer !== -1 || this.disposed ||
       lifecycleToken !== this.lifecycleToken || !this.pageFinished) {
+      return;
+    }
+    if (!sshXtermRetryAllowed(this.pageConfigRetryCount)) {
+      hilog.error(XTERM_DOMAIN, XTERM_TAG, 'page config retry budget exhausted');
       return;
     }
     const retryDelay: number = this.pageConfigRetryCount < 180 ? 32 : 250;
@@ -583,15 +1183,22 @@ export struct SshXtermSurface {
   private handlePageReady(cols: number, rows: number): void {
     if (this.disposed) { return; }
     this.pageReady = true;
+    this.outputPumpRetryCount = 0;
     this.logLifecycle('page ready cols=' + cols.toString() + ' rows=' + rows.toString() +
-      ' finished=' + (this.pageFinished ? '1' : '0') + ' key=' + this.coreKey);
+      ' finished=' + (this.pageFinished ? '1' : '0'));
     this.documentReloadPending = false;
     this.reloadRequestedDocumentKey = '';
     this.clearDocumentReloadRetry();
     this.documentReloadRetryCount = 0;
     if (!this.active) { return; }
     this.applyPageConfigAfterLoad();
-    this.flushOutputBuffer();
+    if (this.outputBuffer.isDocumentResetPending() &&
+      this.transcriptResetIdentity.trim() === this.surfaceIdentity()) {
+      this.onTranscriptResetRequestChange();
+    } else {
+      this.flushOutputBuffer();
+    }
+    this.reconcileSearchState();
     if (this.onResize && cols > 0 && rows > 0) {
       this.onResize(cols, rows, this.surfaceIdentity());
     }
@@ -637,6 +1244,7 @@ export struct SshXtermSurface {
     this.inFlightOutputBuffer = null;
     this.awaitingOutputBatch = 0;
     this.outputPumpRunning = false;
+    this.outputPumpRetryCount = 0;
     this.flushOutputBuffer();
     this.maybeReportReady();
   }
@@ -660,11 +1268,16 @@ export struct SshXtermSurface {
       this.pendingOutputBuffer ?? this.outputBuffer;
     const pendingTarget: XtermOutputBuffer = this.pendingOutputBuffer ??
       this.inFlightOutputBuffer ?? this.outputBuffer;
+    let restored: boolean = true;
     if (inFlightTarget === pendingTarget) {
-      inFlightTarget.prepend(replayBatch.concat(this.pendingWrites));
+      restored = inFlightTarget.prepend(replayBatch.concat(this.pendingWrites));
     } else {
-      if (replayBatch.length > 0) { inFlightTarget.prepend(replayBatch); }
-      if (this.pendingWrites.length > 0) { pendingTarget.prepend(this.pendingWrites); }
+      if (replayBatch.length > 0) {
+        restored = inFlightTarget.prepend(replayBatch) && restored;
+      }
+      if (this.pendingWrites.length > 0) {
+        restored = pendingTarget.prepend(this.pendingWrites) && restored;
+      }
     }
     this.clearOutputBatchAckTimer();
     this.inFlightWrites = [];
@@ -673,6 +1286,11 @@ export struct SshXtermSurface {
     this.pendingOutputBuffer = null;
     this.awaitingOutputBatch = 0;
     this.outputPumpRunning = false;
+    if (!restored) {
+      hilog.error(XTERM_DOMAIN, XTERM_TAG,
+        'xterm output replay rejected after renderer backlog overflow');
+      return;
+    }
     hilog.warn(XTERM_DOMAIN, XTERM_TAG,
       'xterm output write failed, replaying batch=' + replayBatch.length.toString() +
       ' after consumed=' + consumed.toString());
@@ -682,15 +1300,16 @@ export struct SshXtermSurface {
   private reportReadyOnce(): void {
     if (this.readyReported) { return; }
     this.readyReported = true;
-    this.logLifecycle('report ready key=' + this.coreKey);
+    this.logLifecycle('report ready');
     if (this.onReady) { this.onReady(this.surfaceIdentity()); }
   }
 
   private handlePageEnd(): void {
     if (this.disposed) { return; }
     this.pageFinished = true;
-    this.logLifecycle('page end ready=' + (this.pageReady ? '1' : '0') + ' key=' + this.coreKey);
+    this.logLifecycle('page end ready=' + (this.pageReady ? '1' : '0'));
     this.registerBridge();
+    this.installWebMessagePort();
     // A late registration normally needs one reload to expose the proxy to
     // the document. If the document already delivered pageReady, the proxy
     // is active and reloading would only add cold-start latency.
@@ -727,6 +1346,7 @@ export struct SshXtermSurface {
     if (this.documentReloadPending && this.reloadRequestedDocumentKey === requestedDocumentKey) {
       return;
     }
+    if (!this.detachWebMessagePort()) { return; }
     const lifecycleToken: number = ++this.lifecycleToken;
     this.clearBridgeRetry();
     if (this.outputPumpRetryTimer !== -1) {
@@ -756,8 +1376,11 @@ export struct SshXtermSurface {
     this.pageReady = false;
     this.readyReported = false;
     this.pendingCoreReset = false;
+    this.lastSearchExecutionKey = '';
+    this.appliedSearchClearRequest = this.normalizedSearchClearRequest();
     this.documentReloadPending = true;
     this.reloadRequestedDocumentKey = requestedDocumentKey;
+    this.outputPumpRetryCount = 0;
     try { this.controller.deleteJavaScriptRegister('sshTerminalBridge'); } catch (_err) {
       // The old document may already have been detached.
     }
@@ -776,18 +1399,23 @@ export struct SshXtermSurface {
   }
 
   /** Return local queues before a document/lifecycle handoff can invalidate them. */
-  private restoreQueuedWrites(): void {
+  private restoreQueuedWrites(): boolean {
     this.clearOutputBatchAckTimer();
     const inFlightTarget: XtermOutputBuffer = this.inFlightOutputBuffer ??
       this.pendingOutputBuffer ?? this.outputBuffer;
     const pendingTarget: XtermOutputBuffer = this.pendingOutputBuffer ??
       this.inFlightOutputBuffer ?? this.outputBuffer;
+    let restored: boolean = true;
     if (this.inFlightWrites.length > 0 && this.pendingWrites.length > 0 &&
       inFlightTarget === pendingTarget) {
-      inFlightTarget.prepend(this.inFlightWrites.concat(this.pendingWrites));
+      restored = inFlightTarget.prepend(this.inFlightWrites.concat(this.pendingWrites));
     } else {
-      if (this.inFlightWrites.length > 0) { inFlightTarget.prepend(this.inFlightWrites); }
-      if (this.pendingWrites.length > 0) { pendingTarget.prepend(this.pendingWrites); }
+      if (this.inFlightWrites.length > 0) {
+        restored = inFlightTarget.prepend(this.inFlightWrites) && restored;
+      }
+      if (this.pendingWrites.length > 0) {
+        restored = pendingTarget.prepend(this.pendingWrites) && restored;
+      }
     }
     this.inFlightWrites = [];
     this.inFlightOutputBuffer = null;
@@ -795,6 +1423,7 @@ export struct SshXtermSurface {
     this.pendingOutputBuffer = null;
     this.outputPumpRunning = false;
     this.awaitingOutputBatch = 0;
+    return restored;
   }
 
   private scheduleOutputBatchAckTimeout(lifecycleToken: number, batchSequence: number): void {
@@ -807,14 +1436,19 @@ export struct SshXtermSurface {
       }
       hilog.warn(XTERM_DOMAIN, XTERM_TAG,
         'xterm output frame ack timeout, reloading document');
-      this.restoreQueuedWrites();
-      this.reloadDocumentForCoreKey();
+      if (this.restoreQueuedWrites()) {
+        this.reloadDocumentForCoreKey();
+      } else {
+        hilog.error(XTERM_DOMAIN, XTERM_TAG,
+          'xterm output timeout recovery stopped after renderer backlog overflow');
+      }
     }, 640);
   }
 
   private enqueueOutput(): void {
     if (!this.active || this.disposed) { return; }
-    const values: Array<string> = this.outputBuffer.drain();
+    const values: Array<string> = this.outputBuffer.drain(8,
+      SSH_XTERM_OUTPUT_CHUNK_MAX_BYTES);
     if (values.length === 0) { return; }
     if (this.pendingOutputBuffer === null) { this.pendingOutputBuffer = this.outputBuffer; }
     for (let index = 0; index < values.length; index++) {
@@ -822,9 +1456,27 @@ export struct SshXtermSurface {
     }
   }
 
+  private scheduleOutputBufferWake(): void {
+    if (this.disposed || this.outputBufferWakeTimer !== -1) { return; }
+    const lifecycleToken: number = this.lifecycleToken;
+    this.outputBufferWakeTimer = setTimeout((): void => {
+      this.outputBufferWakeTimer = -1;
+      if (this.disposed || lifecycleToken !== this.lifecycleToken ||
+        !this.active || this.documentReloadPending) {
+        return;
+      }
+      this.flushOutputBuffer();
+    }, 0);
+  }
+
   private flushOutputBuffer(): void {
     if (!this.active || this.disposed) { return; }
-    this.enqueueOutput();
+    // Keep admitted output in the bounded parent-owned FIFO until the prior
+    // xterm frame is acknowledged; pendingWrites must never become a second
+    // unbounded queue while ArkWeb is slow.
+    if (!this.outputPumpRunning && this.pendingWrites.length === 0) {
+      this.enqueueOutput();
+    }
     this.pumpOutput();
   }
 
@@ -839,17 +1491,37 @@ export struct SshXtermSurface {
     this.awaitingOutputBatch = batchSequence;
     this.outputPumpRunning = true;
     const batch: Array<string> = [];
-    let batchLength: number = 0;
+    let batchBytes: number = 0;
     while (this.pendingWrites.length > 0 && batch.length < 8) {
       const next: string = this.pendingWrites[0];
       // Keep a bridge call below one frame-sized payload while allowing a
       // single oversized SSH chunk to pass through without being truncated.
-      if (batch.length > 0 && batchLength + next.length > 65536) { break; }
+      if (batch.length > 0 && !sshXtermOutputBatchFitsByteBudget(batchBytes, next)) { break; }
       batch.push(this.pendingWrites.shift() as string);
-      batchLength += next.length;
+      batchBytes += sshUtf8ByteLength(next);
     }
     this.inFlightWrites = batch;
     this.inFlightOutputBuffer = this.pendingOutputBuffer ?? this.outputBuffer;
+    if (this.webMessagePortReady && this.webMessageChannel.isReady()) {
+      const payload: string = JSON.stringify({ batchSequence: batchSequence, values: batch });
+      this.scheduleOutputBatchAckTimeout(lifecycleToken, batchSequence);
+      const accepted: boolean = this.webMessageChannel.send('output', payload);
+      if (accepted) { return; }
+      // A bounded transport queue may reject a burst. Preserve the same
+      // xterm FIFO and let the mature proxy path retry without dropping the
+      // frame or changing the session identity.
+      if (!this.outputPumpRunning || this.awaitingOutputBatch !== batchSequence) { return; }
+      this.clearOutputBatchAckTimer();
+      this.inFlightWrites = [];
+      this.inFlightOutputBuffer = null;
+      this.awaitingOutputBatch = 0;
+      for (let index: number = batch.length - 1; index >= 0; index--) {
+        this.pendingWrites.unshift(batch[index]);
+      }
+      this.outputPumpRunning = false;
+      this.scheduleOutputPumpRetry(lifecycleToken);
+      return;
+    }
     const script: string = 'window.__sshXtermWriteBatch(' + JSON.stringify(batch) + ', ' +
       batchSequence.toString() + ');';
     try {
@@ -891,6 +1563,11 @@ export struct SshXtermSurface {
 
   private scheduleOutputPumpRetry(lifecycleToken: number): void {
     if (this.outputPumpRetryTimer !== -1 || this.disposed) { return; }
+    if (!sshXtermRetryAllowed(this.outputPumpRetryCount)) {
+      hilog.error(XTERM_DOMAIN, XTERM_TAG, 'xterm output retry budget exhausted');
+      return;
+    }
+    this.outputPumpRetryCount++;
     this.outputPumpRetryTimer = setTimeout((): void => {
       this.outputPumpRetryTimer = -1;
       if (lifecycleToken === this.lifecycleToken) { this.pumpOutput(); }
@@ -899,6 +1576,9 @@ export struct SshXtermSurface {
 
   private onCoreKeyChange(): void {
     if (this.disposed) { return; }
+    if (this.webMessagePortConnected || this.webMessagePortInstallAttempted) {
+    if (!this.detachWebMessagePort()) { return; }
+    }
     if (!this.active) {
       this.pendingCoreKeyReload = true;
       return;
@@ -916,6 +1596,9 @@ export struct SshXtermSurface {
 
   private onRenderRevisionChange(): void {
     if (this.disposed) { return; }
+    if (this.webMessagePortConnected || this.webMessagePortInstallAttempted) {
+      if (!this.detachWebMessagePort()) { return; }
+    }
     if (!this.active) {
       this.pendingCoreKeyReload = true;
       return;
@@ -964,6 +1647,7 @@ export struct SshXtermSurface {
       this.reloadDocumentForCoreKey();
       return;
     }
+    this.outputPumpRetryCount = 0;
     // A hidden tab may have finished loading while active=false. In that
     // state handlePageReady intentionally defers the parent ready callback;
     // activation must therefore use the full post-load path so the target
@@ -972,6 +1656,7 @@ export struct SshXtermSurface {
     this.flushOutputBuffer();
     this.pumpOutput();
     this.scheduleFit();
+    this.reconcileSearchState();
   }
 
   private onSurfaceRefreshRequestChange(): void {
@@ -983,6 +1668,7 @@ export struct SshXtermSurface {
     this.flushOutputBuffer();
     this.pumpOutput();
     this.scheduleFit();
+    this.reconcileSearchState();
   }
 
   private onReadyProbeRequestChange(): void {
@@ -1014,13 +1700,13 @@ export struct SshXtermSurface {
 
   private onFontChange(): void {
     this.logLifecycle('appearance font=' + this.fontSize.toString() +
-      ' lineSpacing=' + this.lineSpacing.toString() + ' key=' + this.coreKey);
+      ' lineSpacing=' + this.lineSpacing.toString());
     this.runPageScript(this.pageConfigScript());
   }
 
   private onLineSpacingChange(): void {
     this.logLifecycle('appearance font=' + this.fontSize.toString() +
-      ' lineSpacing=' + this.lineSpacing.toString() + ' key=' + this.coreKey);
+      ' lineSpacing=' + this.lineSpacing.toString());
     this.runPageScript(this.pageConfigScript());
   }
 
@@ -1039,7 +1725,18 @@ export struct SshXtermSurface {
       return;
     }
     const lifecycleToken: number = this.lifecycleToken;
-    this.logLifecycle('reset document transcript key=' + this.coreKey);
+    // The authoritative parent snapshot already contains every byte admitted
+    // before this reset fence. Discard any copy that the replacement document
+    // managed to drain before ArkUI delivered the watched reset property.
+    this.clearOutputBatchAckTimer();
+    this.inFlightWrites = [];
+    this.inFlightOutputBuffer = null;
+    this.pendingWrites = [];
+    this.pendingOutputBuffer = null;
+    this.awaitingOutputBatch = 0;
+    this.outputPumpRunning = false;
+    this.outputPumpRetryCount = 0;
+    this.logLifecycle('reset document transcript');
     this.runPageScript('window.__sshXtermReset();', (): void => {
       if (lifecycleToken !== this.lifecycleToken || this.disposed || !this.active ||
         this.transcriptResetIdentity.trim() !== this.surfaceIdentity()) {
@@ -1048,9 +1745,25 @@ export struct SshXtermSurface {
       // The parent replaced the host queue with its bounded transcript before
       // advancing this request. Drain it only after xterm.reset() completes so
       // a retained DOM cannot show both its old rows and the restored rows.
+      this.outputBuffer.completeDocumentReset();
       this.flushOutputBuffer();
       this.scheduleFit();
+      this.lastSearchExecutionKey = '';
+      this.executeSearchRequest();
     });
+  }
+
+  private onSearchRequestChange(): void {
+    if (this.searchRequest.trim().length === 0) {
+      this.lastSearchExecutionKey = '';
+      this.executeSearchClear();
+      return;
+    }
+    this.executeSearchRequest();
+  }
+
+  private onSearchClearRequestChange(): void {
+    if (this.searchRequest.trim().length === 0) { this.executeSearchClear(); }
   }
 
   private onFocusRequest(): void {
@@ -1060,9 +1773,18 @@ export struct SshXtermSurface {
 
   private onCopyRequest(): void {
     if (!this.active || !this.pageReady || this.disposed) { return; }
+    const lifecycleToken: number = this.lifecycleToken;
+    const surfaceIdentity: string = this.surfaceIdentity();
+    const copyRequest: number = Number.isFinite(this.copyRequest)
+      ? Math.max(0, Math.floor(this.copyRequest)) : 0;
     try {
       this.controller.runJavaScript('window.__sshXtermGetSelection();').then((result: string): void => {
-        if (this.disposed) { return; }
+        if (!matchesSshXtermCopyFence(
+          lifecycleToken, surfaceIdentity, copyRequest,
+          this.lifecycleToken, this.surfaceIdentity(), this.copyRequest,
+          this.active && this.pageReady && !this.documentReloadPending && !this.disposed)) {
+          return;
+        }
         let selection: string = result ?? '';
         try {
           const decoded: Object = JSON.parse(selection) as Object;
@@ -1100,21 +1822,29 @@ export struct SshXtermSurface {
       // retained SSH session separate from the previous host's DOM/document
       // when ArkUI performs the keyed surface remount.
       .id('ssh-xterm-' + this.coreKey + '-render-' + this.renderRevision.toString())
+      // xterm renders and receives pointer gestures, but ArkUI's TextArea is
+      // the sole keyboard/IME owner. Prevent ArkWeb's rootWebArea from keeping
+      // native focus after a canvas tap; pointer hit testing remains enabled.
+      .focusable(false)
+      .focusOnTouch(false)
       .javaScriptAccess(true)
       // The page and its vendored xterm assets are bundled rawfiles. ArkWeb
       // needs local file access enabled to resolve the relative vendor URLs.
       .fileAccess(true)
       .domStorageAccess(false)
+      // The page converts two-finger pinch into terminal font size so xterm,
+      // its measured grid and the remote PTY resize as one unit.
+      .zoomAccess(false)
       // API 23 exposes the controller before navigation begins. Registering
       // here lets the first rawfile document see the proxy and avoids the old
       // mandatory activation reload after onPageBegin.
       .onControllerAttached((): void => {
-        this.logLifecycle('controller attached key=' + this.coreKey);
+        this.logLifecycle('controller attached');
         this.registerBridge();
       })
       .onPageBegin((): void => {
         this.pageStarted = true;
-        this.logLifecycle('page begin key=' + this.coreKey);
+        this.logLifecycle('page begin');
         this.registerBridge();
       })
       .onPageEnd((): void => { this.handlePageEnd(); })

@@ -44,6 +44,11 @@ enum class MouseButton {
     RIGHT  = 2
 };
 
+struct RemoteKeyEvent {
+    uint32_t keyCode = 0;
+    bool pressed = false;
+};
+
 /** 连接状态 */
 enum class ConnectionState {
     DISCONNECTED = 0,
@@ -99,6 +104,7 @@ struct ConnectionConfig {
     std::string privateKeyPem;    // 🆕 SSH 私钥 PEM (临时明文, 仅 publickey 认证)
     std::string privateKeyPassphrase; // 🆕 SSH 私钥口令 (可选)
     std::vector<std::string> sshKeyboardInteractiveResponses; // SSH keyboard-interactive/MFA responses
+    std::string sshLocale;             // optional bounded LANG request for the target shell
     std::string sshProxyType;          // direct | http_connect | socks5 | frp_* | ssh_jump
     std::string sshProxyHost;          // proxy, FRP mapped, or jump endpoint
     int         sshProxyPort;
@@ -117,6 +123,10 @@ struct ConnectionConfig {
     bool sshRouteExplicit = false;
     std::string expectedHostKeyRawBase64;       // 🆕 SSH 预期主机密钥 raw blob base64 (二次校验)
     std::string expectedHostKeyFingerprintSha256; // 🆕 SSH 预期主机指纹 SHA256
+    // Opt-in only: let the SSH owner pause after KEX and ask ArkUI to persist
+    // an unknown/changed key before any authentication material is sent.
+    bool        sshHostKeyPromptEnabled;
+    std::string sshTrustHostId;                 // durable RemoteHost/profile owner id
     // ProxyJump 的跳板机与目标机是两个独立的 SSH endpoint，必须分别绑定 key。
     std::string sshJumpHostKeyRawBase64;
     std::string sshJumpHostKeyFingerprintSha256;
@@ -134,8 +144,14 @@ struct ConnectionConfig {
     std::string expectedRdpGatewayCertificateFingerprintSha256; // RDP Gateway: 独立证书 SHA256
     bool        rdpAllowUntrustedRoot; // RDP: 当前连接允许无法回溯根证书
     bool        rdpAllowHostMismatch;  // RDP: 当前连接允许证书名称不匹配
+    bool        rdpCertificateAllowUnpinnedOnce; // RDP: 用户已明确允许本次未知证书
+    bool        rdpAllowStandardSecurityOnce; // RDP: 用户已明确允许本次 Standard Security
+    bool        rdpTlsWithoutNla; // RDP: explicit direct TLS compatibility mode; not a host field
+    bool        rdpCertificateAllowTimeAnomalyOnce; // RDP: 用户已明确允许本次时间异常
     bool        rdpGatewayAllowUntrustedRoot;
     bool        rdpGatewayAllowHostMismatch;
+    bool        rdpGatewayCertificateAllowUnpinnedOnce;
+    bool        rdpGatewayCertificateAllowTimeAnomalyOnce;
     int         rdPasswordMode;    // RustDesk: 0=一次性, 1=永久
     int         rdAuthMode;        // RustDesk: 0=设备密码, 1=请求被控端点击批准
     int         rdPasswordLength;  // RustDesk: 临时密码长度
@@ -181,11 +197,16 @@ struct ConnectionConfig {
           multiMonitor(false), monitorCount(1),
           colorDepth(32), rdpAuthIdentityMode(0), rdpAuthMode(RdpAuthenticationMode::Password),
           rdpRestrictedAdminSecretSource(RdpRestrictedAdminSecretSource::NtlmHash), authMethod("password"),
-          sshProxyPort(0),
+          sshProxyPort(0), sshHostKeyPromptEnabled(false),
           rdImageQuality(1), rdDirectIp(false), rdConnectionStrategy(), rdDirectPort(21118),
           rdLanDiscovery(true), rdPrivacyMode(false), rdAudioEnabled(true), rdClipboardEnabled(true),
           rdDriveName("RemoteDesktop"), rdpAllowUntrustedRoot(false), rdpAllowHostMismatch(false),
+          rdpCertificateAllowUnpinnedOnce(false), rdpAllowStandardSecurityOnce(false),
+          rdpTlsWithoutNla(false),
+          rdpCertificateAllowTimeAnomalyOnce(false),
           rdpGatewayAllowUntrustedRoot(false), rdpGatewayAllowHostMismatch(false),
+          rdpGatewayCertificateAllowUnpinnedOnce(false),
+          rdpGatewayCertificateAllowTimeAnomalyOnce(false),
           rdPasswordMode(0), rdAuthMode(0), rdPasswordLength(6), rdServerKeyMode(0),
           rdRelayPort(21117),
           vncTransport("direct_tcp"), vncGatewayPort(5901), vncGatewayPath("/vnc"),
@@ -252,6 +273,8 @@ struct RdpCertificateInfo {
     bool hostMismatch = false;
     int errorCode = 0;
     std::string errorMessage;
+    std::string preflightStatus = "unavailable";
+    std::vector<std::string> riskFlags;
 };
 
 /** RDP 原生渲染统计, 用于 ArkTS 侧识别已连接但未出画面的异常 */
@@ -418,6 +441,21 @@ public:
      * @param pressed   true=按下, false=释放
      */
     virtual void sendKey(uint32_t scancode, bool pressed) = 0;
+
+    /**
+     * Submit one logical keyboard transaction. Adapters with replaceable
+     * transport handles override this to pin one native handle for every
+     * event; other adapters inherit the ordered implementation.
+     */
+    virtual bool sendKeyEvents(const std::vector<RemoteKeyEvent>& events) {
+        if (events.empty()) {
+            return false;
+        }
+        for (const auto& event : events) {
+            sendKey(event.keyCode, event.pressed);
+        }
+        return true;
+    }
 
     /**
      * 发送鼠标事件

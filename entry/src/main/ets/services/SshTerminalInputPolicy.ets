@@ -4,11 +4,134 @@
  * 页面层只负责采集 ArkUI 事件；这里统一决定最终发送给远端 PTY 的字节序列。
  */
 import { KeyCode } from '@kit.InputKit';
+import { sshUtf8ByteLength } from './ssh/web/SshWebMessagePortPolicy';
 
 export interface TerminalModifierState {
   ctrl: boolean;
   alt: boolean;
   shift: boolean;
+}
+
+/** Exactly one frontend owns text input for a terminal surface. */
+export type SshTerminalInputOwner = 'arkui' | 'xterm';
+
+/**
+ * HarmonyOS ArkWeb does not reliably attach the system IME to xterm's helper
+ * textarea on phone/Pad. Keep the proven ArkUI anchor as the only input owner
+ * on every device family; the Web surface remains renderer-only.
+ */
+export function resolveSshTerminalInputOwner(_isDesktopDevice: boolean): SshTerminalInputOwner {
+  return 'arkui';
+}
+
+/** Every retained container above the selected ArkUI editor must join its focus scope. */
+export function sshTerminalInputAncestorsFocusable(isDesktopDevice: boolean): boolean {
+  return resolveSshTerminalInputOwner(isDesktopDevice) === 'arkui';
+}
+
+/** Programmatic terminal focus must never summon the software keyboard. */
+export function sshTerminalSoftwareKeyboardFocusEnabled(
+  virtualKeyBarRequested: boolean,
+  softwareKeyboardRequested: boolean
+): boolean {
+  return virtualKeyBarRequested && softwareKeyboardRequested;
+}
+
+/**
+ * A silently focused TextInput reports editing=true even when no software IME
+ * owns it. Treat that callback as IME evidence only in the virtual-keyboard
+ * layout; otherwise PC/Pad physical keys must stay on the direct encoder.
+ */
+export function sshTerminalSoftwareKeyboardOwnsKeyEvents(
+  virtualKeyBarRequested: boolean,
+  softwareKeyboardRequested: boolean,
+  softwareKeyboardVisible: boolean,
+  refocusInFlight: boolean,
+  editingObserved: boolean
+): boolean {
+  if (softwareKeyboardRequested) { return true; }
+  return virtualKeyBarRequested &&
+    (softwareKeyboardVisible || refocusInFlight || editingObserved);
+}
+
+/**
+ * Phone and Pad need a real ArkUI editor touch to attach the system IME.
+ * Desktop keeps the small off-screen anchor because pointer gestures belong
+ * to xterm and focus is restored programmatically for hardware keyboards.
+ */
+export function sshTerminalUsesNativeTouchInputAnchor(isDesktopDevice: boolean): boolean {
+  return !isDesktopDevice;
+}
+
+/**
+ * Only a non-virtual alphabetic keyboard or keypad can own the terminal's
+ * hardware-key path. HarmonyOS also exposes power, fingerprint, pen and IME
+ * controls through the generic `keyboard` source, so source membership alone
+ * is not evidence that a command keyboard is attached.
+ */
+export function sshTerminalInputDeviceIsPhysicalKeyboard(
+  hasKeyboardSource: boolean,
+  isVirtual: boolean | undefined,
+  keyboardType: number
+): boolean {
+  return hasKeyboardSource && isVirtual !== true &&
+    (keyboardType === 2 || keyboardType === 3);
+}
+
+export type SshTerminalKeyInputOwner = 'hardware' | 'ime';
+
+/**
+ * Keep committed IME text and external keyboard scan codes on separate paths.
+ * System keyboards may report KeySource.Keyboard and KEYCODE_* just like a
+ * physical device, so those fields are only a fallback after active IME and
+ * exact device-ID evidence have been considered.
+ */
+export function resolveSshTerminalKeyInputOwner(
+  isDesktopDevice: boolean,
+  hardwareOnlyMode: boolean,
+  knownPhysicalDevice: boolean,
+  knownVirtualDevice: boolean,
+  softwareKeyboardActive: boolean,
+  physicalKeyboardAvailable: boolean,
+  likelyHardwareKey: boolean
+): SshTerminalKeyInputOwner {
+  if (knownVirtualDevice) { return 'ime'; }
+  if (knownPhysicalDevice) { return 'hardware'; }
+  if (hardwareOnlyMode) { return 'hardware'; }
+  if (softwareKeyboardActive) { return 'ime'; }
+  if (isDesktopDevice) { return 'hardware'; }
+  if (physicalKeyboardAvailable && likelyHardwareKey) { return 'hardware'; }
+  return 'ime';
+}
+
+/**
+ * A native touch anchor already receives focus from the user's pointer event.
+ * Re-focusing it in the same event turn clears the just-created IME client on
+ * API 23. Mobile lifecycle restoration therefore waits for the next real
+ * terminal touch; a terminal gesture may also silently focus the anchor when
+ * the user selected entity-keyboard mode, without opening a software IME.
+ */
+export function sshTerminalShouldProgrammaticallyFocusInput(
+  isDesktopDevice: boolean,
+  softwareKeyboardRequested: boolean,
+  nativeTouchOwnsFocus: boolean,
+  explicitTerminalGesture: boolean = false,
+  physicalKeyboardAvailable: boolean = false
+): boolean {
+  if (isDesktopDevice) { return true; }
+  if (nativeTouchOwnsFocus) { return false; }
+  return softwareKeyboardRequested || explicitTerminalGesture || physicalKeyboardAvailable;
+}
+
+/** A confirmed focus request must not be replayed into the live IME client. */
+export function sshTerminalShouldRetryInputFocus(focusRequestSucceeded: boolean): boolean {
+  return !focusRequestSucceeded;
+}
+
+/** A modal/editor surface must never lose focus to the terminal input owner. */
+export function sshTerminalInputFocusAllowed(connected: boolean, sessionId: number,
+  terminalFocusMode: boolean, modalOwnsKeyboard: boolean): boolean {
+  return connected && sessionId > 0 && terminalFocusMode && !modalOwnsKeyboard;
 }
 
 export interface SshPhysicalKeyInput extends TerminalModifierState {
@@ -54,6 +177,65 @@ export interface SshImeChangeDecision {
   remoteInsert: string;
   /** Text removed through the non-system-IME fallback path. */
   remoteDelete: string;
+}
+
+/** Match the native SSH queue's std::string byte accounting. */
+export function sshTerminalInputByteLength(value: string): number {
+  return sshUtf8ByteLength(value);
+}
+
+/**
+ * Split a text producer into bounded ArkTS strings without separating a
+ * valid UTF-16 surrogate pair across two NAPI conversions.
+ */
+export function splitSshTerminalInputText(value: string,
+  maxCodeUnits: number): Array<string> {
+  const chunks: Array<string> = [];
+  const limit: number = Math.max(1, Math.floor(maxCodeUnits));
+  let start: number = 0;
+  while (start < value.length) {
+    let end: number = Math.min(value.length, start + limit);
+    if (end < value.length && end > start) {
+      const finalCode: number = value.charCodeAt(end - 1);
+      const nextCode: number = value.charCodeAt(end);
+      if (finalCode >= 0xD800 && finalCode <= 0xDBFF &&
+        nextCode >= 0xDC00 && nextCode <= 0xDFFF) {
+        end--;
+      }
+    }
+    // A one-code-unit test limit must still keep one scalar and make progress.
+    if (end === start) { end = Math.min(value.length, start + 2); }
+    chunks.push(value.substring(start, end));
+    start = end;
+  }
+  return chunks;
+}
+
+/** Double the native 256/64/192 item budget for the ArkTS retry buffer. */
+export const SSH_TERMINAL_INPUT_PENDING_MAX_ITEMS: number = 512;
+export const SSH_TERMINAL_INPUT_PENDING_CONTROL_MAX_ITEMS: number = 128;
+export const SSH_TERMINAL_INPUT_PENDING_DATA_MAX_ITEMS: number = 384;
+
+/** Keep tiny input events from bypassing byte-only memory bounds. */
+export function admitsSshTerminalInputPendingItems(
+  controlItems: number,
+  dataItems: number,
+  incomingControlItems: number,
+  incomingDataItems: number
+): boolean {
+  const values: Array<number> = [
+    controlItems, dataItems, incomingControlItems, incomingDataItems
+  ];
+  for (let index: number = 0; index < values.length; index++) {
+    if (!Number.isFinite(values[index]) || values[index] < 0 ||
+      Math.floor(values[index]) !== values[index]) {
+      return false;
+    }
+  }
+  return controlItems + incomingControlItems <= SSH_TERMINAL_INPUT_PENDING_CONTROL_MAX_ITEMS &&
+    dataItems + incomingDataItems <= SSH_TERMINAL_INPUT_PENDING_DATA_MAX_ITEMS &&
+    controlItems + dataItems + incomingControlItems + incomingDataItems <=
+      SSH_TERMINAL_INPUT_PENDING_MAX_ITEMS;
 }
 
 interface SshImeTextChange {
@@ -113,6 +295,34 @@ export function recordSshImeWillInsert(
   state.pendingDelete = null;
   // Let the IME keep its pre-edit/candidate buffer local. Nothing is sent yet.
   return true;
+}
+
+/**
+ * A direct English-keyboard keystroke can cross the terminal boundary from
+ * onWillInsert without ever mutating the hidden editor. Keeping that editor
+ * empty by rejecting the insertion (instead of inserting and then clearing)
+ * prevents HarmonyOS IMEs from treating every character as a new field start
+ * and automatically re-enabling Shift. Multi-unit and non-ASCII values stay
+ * on the composition-aware onDid/onChange path.
+ */
+export function sshImeShouldCommitDirectAscii(insertValue: string): boolean {
+  if (insertValue.length !== 1) { return false; }
+  const code: number = insertValue.charCodeAt(0);
+  return code >= 0x20 && code <= 0x7E;
+}
+
+/**
+ * Backspace on the direct-ASCII path targets an intentionally empty hidden
+ * editor. Reassigning that editor to empty and moving its caret back to zero
+ * makes HarmonyOS IMEs treat the next character as a fresh field start and
+ * re-enable automatic Shift. Composition/local-text deletes still need the
+ * normal editor reset after their committed value is forwarded to SSH.
+ */
+export function sshImeShouldResetEditorAfterDelete(
+  deleteValue: string,
+  editorValue: string
+): boolean {
+  return deleteValue.length > 0 || editorValue.length > 0;
 }
 
 export function consumeSshImeDidInsert(

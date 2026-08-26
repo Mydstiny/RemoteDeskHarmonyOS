@@ -37,6 +37,7 @@ export struct VncAddFlow {
   @Prop gateways: VncGatewayView[] = [];
   @Prop initialHost: VncHostView | null = null;
   @Prop editingId: string = '';
+  @Prop fitContent: boolean = false;
   onBackToProtocols: () => void = (): void => {};
   onOpenSettings: () => void = (): void => {};
   onSave: (values: VncHostValues, password: string, connectNow: boolean,
@@ -589,6 +590,7 @@ export struct VncAddFlow {
       subtitle: this.stepDetail(),
       stepText: (this.step + 1).toString() + '/' + VNC_HOST_ADD_STEP_COUNT.toString() + '  ' + this.stepTitle(),
       leadingBack: true,
+      fitContent: this.fitContent,
       onLeadingAction: (): void => { this.back(); },
       contentBuilder: (): void => { this.flowBody(); },
       footerBuilder: (): void => { this.actionBar(); }

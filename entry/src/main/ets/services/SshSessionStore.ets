@@ -8,6 +8,8 @@
  */
 
 import { SshSessionSnapshot } from '../types/rdpnapi';
+import { DiagnosticOutcome } from './DiagnosticCapturePolicy';
+import { recordDiagnosticEvent } from './DiagnosticCaptureRuntime';
 
 export type SshSessionLifecycleState =
   | 'Created'
@@ -73,6 +75,32 @@ export const SSH_SESSION_DEFAULT_CHANNEL: string = 'shell';
 export const SSH_SESSION_MAX_SESSIONS: number = 32;
 export const SSH_SESSION_MAX_EVENTS: number = 128;
 const SSH_SESSION_MAX_EVENT_PAYLOAD: number = 2048;
+
+function diagnosticSshLifecycleCode(state: SshSessionLifecycleState): number {
+  switch (state) {
+    case 'Created': return 1;
+    case 'Connecting': return 2;
+    case 'Authenticating': return 3;
+    case 'Ready': return 4;
+    case 'NetworkLost': return 5;
+    case 'ReconnectScheduled': return 6;
+    case 'Reconnecting': return 7;
+    case 'NeedsAuthentication': return 8;
+    case 'Failed': return 9;
+    case 'Closing': return 10;
+    case 'Closed': return 11;
+  }
+}
+
+function diagnosticSshLifecycleOutcome(state: SshSessionLifecycleState): DiagnosticOutcome {
+  if (state === 'Failed') { return 'failed'; }
+  if (state === 'NetworkLost' || state === 'ReconnectScheduled' || state === 'Reconnecting') {
+    return 'retry';
+  }
+  if (state === 'Created' || state === 'Connecting') { return 'started'; }
+  if (state === 'Closed') { return 'succeeded'; }
+  return 'state';
+}
 
 export function isValidSshSessionHandle(handle: SshSessionHandle): boolean {
   return Number.isFinite(handle.sessionId) && handle.sessionId > 0 &&
@@ -234,7 +262,8 @@ export class SshSessionStore {
   }
 
   private appendEvent(record: SshSessionRecord, type: string, payloadJson: string = '',
-    priority: number = 0): SshSessionStoreEvent {
+    priority: number = 0,
+    diagnosticState: SshSessionLifecycleState | null = null): SshSessionStoreEvent {
     const boundedPayload: string = payloadJson.substring(0, SSH_SESSION_MAX_EVENT_PAYLOAD);
     const context: SshSessionContext = record.context;
     context.eventSequence++;
@@ -252,6 +281,12 @@ export class SshSessionStore {
     };
     record.events.push(event);
     while (record.events.length > this.maxEvents) { record.events.shift(); }
+    if (!type.startsWith('terminal.output.')) {
+      const stateForDiagnostics: SshSessionLifecycleState = diagnosticState ?? context.state;
+      recordDiagnosticEvent('connection.ssh_sftp', 'ssh_session_event',
+        diagnosticSshLifecycleOutcome(stateForDiagnostics), context.sessionId,
+        context.generation, diagnosticSshLifecycleCode(stateForDiagnostics));
+    }
     return event;
   }
 
@@ -270,7 +305,7 @@ export class SshSessionStore {
   /** Reserve a new native identity before its asynchronous connect settles. */
   reserve(hostId: string, label: string, address: string, handle: SshSessionHandle): boolean {
     const owner: string = normalizeHostId(hostId);
-    if (owner.length === 0 || !isValidSshSessionHandle(handle) || this.records.size >= this.maxSessions) {
+    if (owner.length === 0 || !isValidSshSessionHandle(handle)) {
       return false;
     }
     const oldSessionId: number | undefined = this.hostToSession.get(owner);
@@ -281,7 +316,10 @@ export class SshSessionStore {
       }
       this.removeRecord(oldSessionId);
     }
-    if (this.records.has(handle.sessionId)) { return false; }
+    // Reclaiming a terminal owner above can free the only slot. Enforce the
+    // global bound only after that host-local stale record has been removed;
+    // otherwise a full registry permanently blocks reconnecting that host.
+    if (this.records.size >= this.maxSessions || this.records.has(handle.sessionId)) { return false; }
     const context: SshSessionContext = {
       schemaVersion: SSH_SESSION_SCHEMA_VERSION,
       sessionId: handle.sessionId,
@@ -310,17 +348,25 @@ export class SshSessionStore {
   registerExisting(hostId: string, label: string, address: string,
     handle: SshSessionHandle, state: SshSessionLifecycleState = 'Ready'): boolean {
     if (!isValidSshSessionHandle(handle)) { return false; }
+    const owner: string = normalizeHostId(hostId);
+    if (owner.length === 0) { return false; }
     const existing: SshSessionRecord | undefined = this.records.get(handle.sessionId);
     if (existing !== undefined) {
       if (existing.context.channelId !== handle.channelId ||
-        existing.context.generation !== handle.generation) { return false; }
+        existing.context.generation !== handle.generation ||
+        existing.context.hostId !== owner) {
+        // A native session identity is not a host identity.  A late adoption
+        // callback for another host must not relabel the live owner or create
+        // a second host-to-session mapping around the existing record.
+        return false;
+      }
       existing.context.label = label;
       existing.context.address = address;
       existing.context.detached = false;
-      this.hostToSession.set(existing.context.hostId, handle.sessionId);
+      this.hostToSession.set(owner, handle.sessionId);
       return this.transition(handle, state, 'session.adopted');
     }
-    if (!this.reserve(hostId, label, address, handle)) { return false; }
+    if (!this.reserve(owner, label, address, handle)) { return false; }
     const record: SshSessionRecord | undefined = this.records.get(handle.sessionId);
     if (record === undefined) { return false; }
     if (state !== 'Created') {
@@ -332,7 +378,8 @@ export class SshSessionStore {
         this.removeRecord(handle.sessionId);
         return false;
       }
-      const event: SshSessionStoreEvent = this.appendEvent(record, 'session.adopted');
+      const event: SshSessionStoreEvent = this.appendEvent(
+        record, 'session.adopted', '', 0, state);
       record.context.state = state;
       this.notify({ kind: 'changed', context: cloneContext(record.context), event: cloneEvent(event) });
     }

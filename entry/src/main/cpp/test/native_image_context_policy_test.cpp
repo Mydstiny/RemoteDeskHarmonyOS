@@ -1,5 +1,6 @@
 #include "test_runner.h"
 #include "render/native_image_context_policy.h"
+#include "rustdesk/rustdesk_peer_presentation_policy.h"
 
 #include <limits>
 
@@ -17,12 +18,14 @@ RDP_TEST_CASE(native_image_policy_retries_failed_attach_once) {
     RDP_ASSERT(!Render::ShouldRetryNativeImageAttach(60001000, true));
     RDP_ASSERT(!Render::ShouldRetryNativeImageAttach(0, false));
     RDP_ASSERT(Render::ShouldRetryNativeImageUpdate(Render::kNativeErrorNoBuffer, 0));
-    RDP_ASSERT(Render::ShouldRetryNativeImageUpdate(Render::kNativeErrorNoBuffer, 1));
-    RDP_ASSERT(Render::ShouldRetryNativeImageUpdate(Render::kNativeErrorNoBuffer, 2));
+    RDP_ASSERT(!Render::ShouldRetryNativeImageUpdate(Render::kNativeErrorNoBuffer, 1));
+    RDP_ASSERT(!Render::ShouldRetryNativeImageUpdate(Render::kNativeErrorNoBuffer, 2));
     RDP_ASSERT(!Render::ShouldRetryNativeImageUpdate(Render::kNativeErrorNoBuffer, 3));
     RDP_ASSERT(!Render::ShouldRetryNativeImageUpdate(41207000, 0));
     RDP_ASSERT(!Render::ShouldRetryNativeImageUpdate(0, 0));
-    RDP_ASSERT(!Render::IsCoalescedNativeImageNotification(
+    RDP_ASSERT(Render::IsCoalescedNativeImageNotification(
+        Render::kNativeErrorNoBuffer, 1));
+    RDP_ASSERT(Render::IsCoalescedNativeImageNotification(
         Render::kNativeErrorNoBuffer, 2));
     RDP_ASSERT(Render::IsCoalescedNativeImageNotification(
         Render::kNativeErrorNoBuffer, 3));
@@ -47,23 +50,7 @@ RDP_TEST_CASE(native_image_policy_consumes_latest_notification_sequence) {
         Render::kNativeImageSurfaceRecoveryThreshold));
 }
 
-RDP_TEST_CASE(native_image_policy_keeps_mobile_orientation_contract) {
-    const float desktopFlip[16] = {
-        1.0f, 0.0f, 0.0f, 0.0f,
-        0.0f, -1.0f, 0.0f, 0.0f,
-        0.0f, 0.0f, 1.0f, 0.0f,
-        0.0f, 1.0f, 0.0f, 1.0f
-    };
-    const Render::NativeImageTransform identity =
-        Render::IdentityNativeImageTransform();
-    const Render::NativeImageTransform mobile =
-        Render::ResolveNativeImagePresentationTransform(
-            false, 0, desktopFlip, identity);
-    RDP_ASSERT(mobile == identity);
-    RDP_ASSERT(!Render::ShouldRenderNativeImageImmediately(false));
-}
-
-RDP_TEST_CASE(native_image_policy_applies_valid_desktop_transform) {
+RDP_TEST_CASE(native_image_policy_keeps_identity_presentation_contract) {
     const float desktopFlip[16] = {
         1.0f, 0.0f, 0.0f, 0.0f,
         0.0f, -1.0f, 0.0f, 0.0f,
@@ -74,13 +61,47 @@ RDP_TEST_CASE(native_image_policy_applies_valid_desktop_transform) {
         Render::IdentityNativeImageTransform();
     const Render::NativeImageTransform desktop =
         Render::ResolveNativeImagePresentationTransform(
-            true, 0, desktopFlip, identity);
-    RDP_ASSERT(desktop[5] == -1.0f);
-    RDP_ASSERT(desktop[13] == 1.0f);
+            Render::NativeImagePresentationMode::Identity,
+            0, desktopFlip, identity);
+    RDP_ASSERT(desktop == identity);
+    // A producer-side vertical flip must not leak into the renderer's
+    // top-left texture contract.
+    RDP_ASSERT(desktop[5] != desktopFlip[5]);
+    RDP_ASSERT(desktop[13] != desktopFlip[13]);
+    RDP_ASSERT(!Render::ShouldRenderNativeImageImmediately(false));
+}
+
+RDP_TEST_CASE(native_image_policy_selects_producer_transform_only_for_desktop_surface) {
+    RDP_ASSERT(Render::NativeImageModeForDesktopSurface(false) ==
+        Render::NativeImagePresentationMode::Identity);
+    RDP_ASSERT(Render::NativeImageModeForDesktopSurface(true) ==
+        Render::NativeImagePresentationMode::ProducerTransform);
+}
+
+RDP_TEST_CASE(native_image_policy_applies_valid_producer_transform_and_keeps_desktop_output_immediate) {
+    const float desktopFlip[16] = {
+        1.0f, 0.0f, 0.0f, 0.0f,
+        0.0f, -1.0f, 0.0f, 0.0f,
+        0.0f, 0.0f, 1.0f, 0.0f,
+        0.0f, 1.0f, 0.0f, 1.0f
+    };
+    const Render::NativeImageTransform identity =
+        Render::IdentityNativeImageTransform();
+    const Render::NativeImageTransform desktop =
+        Render::ResolveNativeImagePresentationTransform(
+            Render::NativeImagePresentationMode::ProducerTransform,
+            0, desktopFlip, identity);
+    const Render::NativeImageTransform expectedFlip {
+        1.0f, 0.0f, 0.0f, 0.0f,
+        0.0f, -1.0f, 0.0f, 0.0f,
+        0.0f, 0.0f, 1.0f, 0.0f,
+        0.0f, 1.0f, 0.0f, 1.0f
+    };
+    RDP_ASSERT(desktop == expectedFlip);
     RDP_ASSERT(Render::ShouldRenderNativeImageImmediately(true));
 }
 
-RDP_TEST_CASE(native_image_policy_rejects_incomplete_desktop_transform) {
+RDP_TEST_CASE(native_image_policy_retains_last_valid_transform_after_failed_read) {
     float invalid[16] = {
         1.0f, 0.0f, 0.0f, 0.0f,
         0.0f, 1.0f, 0.0f, 0.0f,
@@ -88,11 +109,28 @@ RDP_TEST_CASE(native_image_policy_rejects_incomplete_desktop_transform) {
         0.0f, 0.0f, 0.0f, 1.0f
     };
     invalid[6] = std::numeric_limits<float>::quiet_NaN();
-    Render::NativeImageTransform previous =
+    const Render::NativeImageTransform identity =
         Render::IdentityNativeImageTransform();
+    Render::NativeImageTransform previous = identity;
     previous[12] = 0.25f;
     RDP_ASSERT(Render::ResolveNativeImagePresentationTransform(
-        true, 40001000, invalid, previous) == previous);
+        Render::NativeImagePresentationMode::ProducerTransform,
+        40001000, invalid, previous) == previous);
     RDP_ASSERT(Render::ResolveNativeImagePresentationTransform(
-        true, 0, invalid, previous) == previous);
+        Render::NativeImagePresentationMode::ProducerTransform,
+        0, invalid, previous) == previous);
+}
+
+RDP_TEST_CASE(rustdesk_peer_presentation_policy_targets_only_windows) {
+    using Render::NativeImagePresentationMode;
+    RDP_ASSERT(RustDeskPresentation::NativeImageModeForPeerPlatform(
+        "Windows") == NativeImagePresentationMode::ProducerTransform);
+    RDP_ASSERT(RustDeskPresentation::NativeImageModeForPeerPlatform(
+        "Windows 11") == NativeImagePresentationMode::ProducerTransform);
+    RDP_ASSERT(RustDeskPresentation::NativeImageModeForPeerPlatform(
+        "macOS") == NativeImagePresentationMode::Identity);
+    RDP_ASSERT(RustDeskPresentation::NativeImageModeForPeerPlatform(
+        "Linux") == NativeImagePresentationMode::Identity);
+    RDP_ASSERT(RustDeskPresentation::NativeImageModeForPeerPlatform(
+        "") == NativeImagePresentationMode::Identity);
 }

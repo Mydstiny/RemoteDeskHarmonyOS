@@ -52,6 +52,13 @@ fi
 prepend_path "$deveco_root/tools/node/bin"
 prepend_path "$deveco_root/tools/hvigor/bin"
 prepend_path "$deveco_root/tools/ohpm/bin"
+remote_desktop_real_hvigorw="$deveco_root/tools/hvigor/bin/hvigorw"
+if [ -n "$remote_desktop_real_hvigorw" ] && [ -x "$script_dir/macos_hvigorw.sh" ]; then
+    export REMOTE_DESKTOP_REAL_HVIGORW="$remote_desktop_real_hvigorw"
+    hvigorw() {
+        "$script_dir/macos_hvigorw.sh" "$@"
+    }
+fi
 # DevEco's hdc is shipped in the SDK toolchains directory, not in the
 # application-level tools directory. Prefer the full HarmonyOS SDK hdc used by
 # DevEco, while keeping the standalone API 23 toolchain available as a fallback.
@@ -97,8 +104,11 @@ printf 'Mac toolchain environment: DEVECO_SDK_HOME=%s\n' "$DEVECO_SDK_HOME"
 printf 'Mac toolchain environment: OHOS_SDK_HOME=%s\n' "$OHOS_SDK_HOME"
 printf 'Mac toolchain environment: node=%s hvigorw=%s ohpm=%s\n' \
     "$(command -v node 2>/dev/null || printf '%s' unavailable)" \
-    "$(command -v hvigorw 2>/dev/null || printf '%s' unavailable)" \
+    "${REMOTE_DESKTOP_REAL_HVIGORW:-$(command -v hvigorw 2>/dev/null || printf '%s' unavailable)}" \
     "$(command -v ohpm 2>/dev/null || printf '%s' unavailable)"
+if [ -n "${REMOTE_DESKTOP_REAL_HVIGORW:-}" ]; then
+    printf '%s\n' 'Mac toolchain environment: Hvigor local-cache/incomplete-build guard=enabled'
+fi
 printf 'Mac toolchain environment: hdc=%s\n' \
     "$(command -v hdc 2>/dev/null || printf '%s' unavailable)"
 printf 'Mac toolchain environment: java=%s JAVA_HOME=%s\n' \

@@ -62,6 +62,21 @@ export struct SshKeyCard {
     }
   }
 
+  private sshKeyMenuWidth(): number {
+    const labels: string[] = ['管理', this.sshKey.locked ? '解锁' : '上锁', '多选', '删除'];
+    let longestTextVp: number = 0;
+    const uiContext = this.getUIContext();
+    labels.forEach((label: string): void => {
+      const measuredPx: number = uiContext.getMeasureUtils().measureText({
+        textContent: label,
+        fontSize: 13
+      });
+      longestTextVp = Math.max(longestTextVp, uiContext.px2vp(measuredPx));
+    });
+    // Popup shell padding + row padding + 16vp icon + 8vp text gap.
+    return Math.ceil(longestTextVp + 64);
+  }
+
   @Builder sshKeyMenuBuilder() {
     Column() {
       Row() {
@@ -99,7 +114,7 @@ export struct SshKeyCard {
       .width('100%').padding({ left: 12, right: 12, top: 8, bottom: 8 })
       .onClick(() => { animateTo({ duration: 150 }, () => { this.menuVisible = false; }); if (this.onDelete) { this.onDelete(); } })
     }
-    .width(148).padding({ top: 2, bottom: 2 }).borderRadius(12)
+    .width('100%').padding({ top: 2, bottom: 2 }).borderRadius(12)
     .transition(TransitionEffect.asymmetric(
       TransitionEffect.scale({ x: 0.85, y: 0.85 }).combine(TransitionEffect.OPACITY)
         .animation({ duration: 200, curve: Curve.FastOutSlowIn }),
@@ -198,6 +213,7 @@ export struct SshKeyCard {
           placement: Placement.BottomRight,
           enableArrow: true,
           popupColor: this.pal().card,
+          width: this.sshKeyMenuWidth(),
           onStateChange: (e: Object) => {
             const ev: Record<string, boolean> = e as Record<string, boolean>;
             if (!ev['isVisible']) { this.menuVisible = false; }

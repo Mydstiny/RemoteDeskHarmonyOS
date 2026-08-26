@@ -25,6 +25,17 @@ export interface SshSftpCheckpoint {
   generation: number;
 }
 
+export interface SshSftpSkipRemovalDecision {
+  committedSkip: boolean;
+  clearCheckpoint: boolean;
+  publishError: boolean;
+}
+
+export type SshSftpPayloadWriter = (payload: ArrayBuffer) => Promise<number>;
+
+export type SshSftpCommittedDisposition =
+  'normal' | 'cancelled-after-commit' | 'paused-after-commit' | 'request-stale';
+
 /** Resume is fail-closed when either the source or the partial identity changed. */
 export function sshSftpIdentityMatches(expected: SshSftpFileIdentity,
   observed: SshSftpFileIdentity): boolean {
@@ -43,6 +54,67 @@ export function sshSftpOffsetIsValid(offset: number, totalSize: number): boolean
 export function sshSftpCommitSizeMatches(actualSize: number, expectedSize: number): boolean {
   return Number.isFinite(actualSize) && Number.isFinite(expectedSize) &&
     actualSize >= 0 && expectedSize >= 0 && actualSize === expectedSize;
+}
+
+/**
+ * Removing the partial is the commit point for a conflict skip. Once it has
+ * succeeded, a later pause/cancel must not retain a checkpoint for the file
+ * that no longer exists. A replacement attempt never inherits that result.
+ */
+export function sshSftpSkipRemovalDecision(errorCode: number, attemptCurrent: boolean,
+  requestStopped: boolean): SshSftpSkipRemovalDecision {
+  if (errorCode < 0) {
+    return {
+      committedSkip: false,
+      clearCheckpoint: false,
+      publishError: attemptCurrent && !requestStopped
+    };
+  }
+  if (!attemptCurrent) {
+    return { committedSkip: false, clearCheckpoint: false, publishError: false };
+  }
+  return { committedSkip: true, clearCheckpoint: true, publishError: false };
+}
+
+/** A successful remote rename is authoritative even when a stop arrives immediately after it. */
+export function sshSftpCommittedDisposition(commitReceiptStale: boolean,
+  userCancellationRequested: boolean, userPauseRequested: boolean): SshSftpCommittedDisposition {
+  if (userCancellationRequested) { return 'cancelled-after-commit'; }
+  if (userPauseRequested) { return 'paused-after-commit'; }
+  return commitReceiptStale ? 'request-stale' : 'normal';
+}
+
+/**
+ * Opening a local export target with TRUNC crosses its irreversible boundary.
+ * A stop before that open is honored; afterwards the current attempt must
+ * finish the verified local copy instead of deliberately leaving a truncated
+ * overwrite target. A replacement attempt always fences the old writer.
+ */
+export function sshSftpLocalExportShouldContinue(destinationOpened: boolean,
+  attemptCurrent: boolean, stopRequested: boolean): boolean {
+  if (!attemptCurrent) { return false; }
+  return destinationOpened || !stopRequested;
+}
+
+/** Complete one bounded local-export payload across legal short writes. */
+export async function writeSshSftpPayloadFully(payload: ArrayBuffer,
+  writer: SshSftpPayloadWriter): Promise<boolean> {
+  let offset: number = 0;
+  while (offset < payload.byteLength) {
+    const remaining: ArrayBuffer = offset === 0 ? payload : payload.slice(offset);
+    let written: number = -1;
+    try {
+      written = await writer(remaining);
+    } catch (_err) {
+      return false;
+    }
+    if (!Number.isFinite(written) || !Number.isInteger(written) ||
+      written <= 0 || written > remaining.byteLength) {
+      return false;
+    }
+    offset += written;
+  }
+  return offset === payload.byteLength;
 }
 
 export function sshSftpPartialSuffix(taskId: string): string {

@@ -14,10 +14,27 @@ import {
   createSshImeCallbackState,
   recordSshImeWillInsert,
   consumeSshImeDidInsert,
+  sshImeShouldCommitDirectAscii,
+  sshImeShouldResetEditorAfterDelete,
   recordSshImeWillDelete,
   consumeSshImeDidDelete,
   inspectSshImeChange,
-  resetSshImeShadow
+  resetSshImeShadow,
+  sshTerminalInputByteLength,
+  splitSshTerminalInputText,
+  admitsSshTerminalInputPendingItems,
+  resolveSshTerminalInputOwner,
+  sshTerminalInputAncestorsFocusable,
+  sshTerminalSoftwareKeyboardFocusEnabled,
+  sshTerminalSoftwareKeyboardOwnsKeyEvents,
+  sshTerminalUsesNativeTouchInputAnchor,
+  sshTerminalInputDeviceIsPhysicalKeyboard,
+  resolveSshTerminalKeyInputOwner,
+  sshTerminalShouldProgrammaticallyFocusInput,
+  sshTerminalShouldRetryInputFocus,
+  sshTerminalInputFocusAllowed,
+  SSH_TERMINAL_INPUT_PENDING_CONTROL_MAX_ITEMS,
+  SSH_TERMINAL_INPUT_PENDING_DATA_MAX_ITEMS
 } from '../main/ets/services/SshTerminalInputPolicy';
 
 const NONE: TerminalModifierState = { ctrl: false, alt: false, shift: false };
@@ -29,6 +46,119 @@ const CTRL_SHIFT: TerminalModifierState = { ctrl: true, alt: false, shift: true 
 
 export default function sshTerminalInputPolicyTest(): void {
   describe('SshTerminalInputPolicy', (): void => {
+    it('should_keep_one_input_owner_per_device_family', 0, (): void => {
+      expect(resolveSshTerminalInputOwner(false)).assertEqual('arkui');
+      expect(resolveSshTerminalInputOwner(true)).assertEqual('arkui');
+      expect(sshTerminalInputAncestorsFocusable(false)).assertTrue();
+      expect(sshTerminalInputAncestorsFocusable(true)).assertTrue();
+    });
+
+    it('should_open_software_keyboard_only_after_an_explicit_request', 0, (): void => {
+      expect(sshTerminalSoftwareKeyboardFocusEnabled(false, false)).assertFalse();
+      expect(sshTerminalSoftwareKeyboardFocusEnabled(false, true)).assertFalse();
+      expect(sshTerminalSoftwareKeyboardFocusEnabled(true, false)).assertFalse();
+      expect(sshTerminalSoftwareKeyboardFocusEnabled(true, true)).assertTrue();
+    });
+
+    it('should_not_mistake_silent_physical_focus_for_a_software_keyboard', 0, (): void => {
+      // PC/entity mode: the hidden editor can report editing=true while no IME
+      // exists. Physical key events must still reach the direct encoder.
+      expect(sshTerminalSoftwareKeyboardOwnsKeyEvents(
+        false, false, false, false, true)).assertFalse();
+      // Phone/Pad or explicit virtual mode retains its composition path.
+      expect(sshTerminalSoftwareKeyboardOwnsKeyEvents(
+        true, false, false, false, true)).assertTrue();
+      expect(sshTerminalSoftwareKeyboardOwnsKeyEvents(
+        true, false, true, false, false)).assertTrue();
+      expect(sshTerminalSoftwareKeyboardOwnsKeyEvents(
+        false, true, false, false, false)).assertTrue();
+    });
+
+    it('should_use_real_touch_focus_on_phone_and_pad_without_refocus_races', 0, (): void => {
+      expect(sshTerminalUsesNativeTouchInputAnchor(false)).assertTrue();
+      expect(sshTerminalUsesNativeTouchInputAnchor(true)).assertFalse();
+      expect(sshTerminalShouldProgrammaticallyFocusInput(false, true, true)).assertFalse();
+      expect(sshTerminalShouldProgrammaticallyFocusInput(false, false, false)).assertFalse();
+      expect(sshTerminalShouldProgrammaticallyFocusInput(false, false, false, true)).assertTrue();
+      expect(sshTerminalShouldProgrammaticallyFocusInput(
+        false, false, false, false, true)).assertTrue();
+      expect(sshTerminalShouldProgrammaticallyFocusInput(false, true, false)).assertTrue();
+      expect(sshTerminalShouldProgrammaticallyFocusInput(true, false, false)).assertTrue();
+      expect(sshTerminalShouldRetryInputFocus(true)).assertFalse();
+      expect(sshTerminalShouldRetryInputFocus(false)).assertTrue();
+    });
+
+    it('should_only_treat_real_text_keyboards_as_physical_terminal_devices', 0, (): void => {
+      expect(sshTerminalInputDeviceIsPhysicalKeyboard(true, false, 2)).assertTrue();
+      expect(sshTerminalInputDeviceIsPhysicalKeyboard(true, false, 3)).assertTrue();
+      expect(sshTerminalInputDeviceIsPhysicalKeyboard(true, true, 2)).assertFalse();
+      expect(sshTerminalInputDeviceIsPhysicalKeyboard(true, false, 1)).assertFalse();
+      expect(sshTerminalInputDeviceIsPhysicalKeyboard(false, false, 2)).assertFalse();
+      expect(sshTerminalInputDeviceIsPhysicalKeyboard(true, undefined, 2)).assertTrue();
+    });
+
+    it('should_separate_mobile_ime_events_from_external_keyboard_events', 0, (): void => {
+      expect(resolveSshTerminalKeyInputOwner(
+        false, false, false, false, true, true, true)).assertEqual('ime');
+      expect(resolveSshTerminalKeyInputOwner(
+        false, false, true, false, true, true, true)).assertEqual('hardware');
+      expect(resolveSshTerminalKeyInputOwner(
+        false, false, false, true, false, true, true)).assertEqual('ime');
+      expect(resolveSshTerminalKeyInputOwner(
+        false, true, false, false, false, true, true)).assertEqual('hardware');
+      expect(resolveSshTerminalKeyInputOwner(
+        false, false, false, false, false, true, true)).assertEqual('hardware');
+      expect(resolveSshTerminalKeyInputOwner(
+        false, false, false, false, false, false, true)).assertEqual('ime');
+      expect(resolveSshTerminalKeyInputOwner(
+        true, false, false, false, false, false, true)).assertEqual('hardware');
+      expect(resolveSshTerminalKeyInputOwner(
+        true, false, false, false, true, false, true)).assertEqual('ime');
+    });
+
+    it('should_block_terminal_focus_while_a_modal_owns_the_keyboard', 0, (): void => {
+      expect(sshTerminalInputFocusAllowed(true, 7, true, false)).assertTrue();
+      expect(sshTerminalInputFocusAllowed(true, 7, true, true)).assertFalse();
+      expect(sshTerminalInputFocusAllowed(false, 7, true, false)).assertFalse();
+      expect(sshTerminalInputFocusAllowed(true, -1, true, false)).assertFalse();
+      expect(sshTerminalInputFocusAllowed(true, 7, false, false)).assertFalse();
+    });
+
+    it('should_measure_pending_input_as_native_utf8_bytes', 0, (): void => {
+      expect(sshTerminalInputByteLength('ascii')).assertEqual(5);
+      expect(sshTerminalInputByteLength('密码')).assertEqual(6);
+      expect(sshTerminalInputByteLength('🙂')).assertEqual(4);
+      expect(sshTerminalInputByteLength('\uD800')).assertEqual(3);
+    });
+
+    it('should_split_paste_without_separating_surrogate_pairs', 0, (): void => {
+      const source: string = 'a'.repeat(4095) + '🙂b';
+      const chunks: Array<string> = splitSshTerminalInputText(source, 4096);
+      expect(chunks.length).assertEqual(2);
+      expect(chunks[0].length).assertEqual(4095);
+      expect(chunks[1]).assertEqual('🙂b');
+      expect(chunks.join('')).assertEqual(source);
+
+      const oneUnitChunks: Array<string> = splitSshTerminalInputText('🙂a', 1);
+      expect(oneUnitChunks.length).assertEqual(2);
+      expect(oneUnitChunks[0]).assertEqual('🙂');
+      expect(oneUnitChunks[1]).assertEqual('a');
+    });
+
+    it('should_bound_tiny_pending_input_items_and_reserve_control_capacity', 0, (): void => {
+      expect(admitsSshTerminalInputPendingItems(
+        0, SSH_TERMINAL_INPUT_PENDING_DATA_MAX_ITEMS, 1, 0)).assertTrue();
+      expect(admitsSshTerminalInputPendingItems(
+        0, SSH_TERMINAL_INPUT_PENDING_DATA_MAX_ITEMS, 0, 1)).assertFalse();
+      expect(admitsSshTerminalInputPendingItems(
+        SSH_TERMINAL_INPUT_PENDING_CONTROL_MAX_ITEMS - 1,
+        SSH_TERMINAL_INPUT_PENDING_DATA_MAX_ITEMS, 1, 0)).assertTrue();
+      expect(admitsSshTerminalInputPendingItems(
+        SSH_TERMINAL_INPUT_PENDING_CONTROL_MAX_ITEMS,
+        SSH_TERMINAL_INPUT_PENDING_DATA_MAX_ITEMS, 1, 0)).assertFalse();
+      expect(admitsSshTerminalInputPendingItems(-1, 0, 0, 1)).assertFalse();
+    });
+
     it('should_pass_soft_keyboard_committed_text_through', 0, (): void => {
       expect(encodeTextInput('ls -la', NONE)).assertEqual('ls -la');
       expect(encodeTextInput('中文😀', NONE)).assertEqual('中文😀');
@@ -173,6 +303,23 @@ export default function sshTerminalInputPolicyTest(): void {
       const duplicateChange = inspectSshImeChange(state, '你', 0);
       expect(duplicateChange.sendRemote).assertFalse();
       expect(duplicateChange.resetLocal).assertTrue();
+    });
+
+    it('should_keep_direct_english_keys_out_of_the_hidden_editor', 0, (): void => {
+      expect(sshImeShouldCommitDirectAscii('a')).assertTrue();
+      expect(sshImeShouldCommitDirectAscii('A')).assertTrue();
+      expect(sshImeShouldCommitDirectAscii(' ')).assertTrue();
+      expect(sshImeShouldCommitDirectAscii('1')).assertTrue();
+      expect(sshImeShouldCommitDirectAscii('-')).assertTrue();
+      expect(sshImeShouldCommitDirectAscii('ab')).assertFalse();
+      expect(sshImeShouldCommitDirectAscii('你')).assertFalse();
+      expect(sshImeShouldCommitDirectAscii('🙂')).assertFalse();
+    });
+
+    it('should_not_reset_an_already_empty_editor_after_backspace', 0, (): void => {
+      expect(sshImeShouldResetEditorAfterDelete('', '')).assertFalse();
+      expect(sshImeShouldResetEditorAfterDelete('a', '')).assertTrue();
+      expect(sshImeShouldResetEditorAfterDelete('', 'composition')).assertTrue();
     });
 
     it('should_drop_cumulative_change_after_did_insert_and_clear_editor', 0, (): void => {

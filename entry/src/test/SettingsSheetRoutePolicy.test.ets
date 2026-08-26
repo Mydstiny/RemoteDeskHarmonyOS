@@ -1,6 +1,19 @@
 import { describe, it, expect } from '@ohos/hypium';
 import {
   SETTINGS_SHEET_ACCOUNT,
+  SETTINGS_SHEET_DIAGNOSTIC_LOG,
+  SETTINGS_SHEET_VIRTUAL_KEYBOARD,
+  SETTINGS_SHEET_VIRTUAL_KEYBOARD_BEHAVIOR,
+  SETTINGS_SHEET_VIRTUAL_KEYBOARD_CUSTOM,
+  SETTINGS_SHEET_VIRTUAL_KEYBOARD_FUNCTIONS,
+  SETTINGS_SHEET_VIRTUAL_KEYBOARD_SHORTCUTS,
+  SETTINGS_SHEET_MOONLIGHT_AUDIO,
+  SETTINGS_SHEET_MOONLIGHT_DIAGNOSTICS,
+  SETTINGS_SHEET_MOONLIGHT_INPUT,
+  SETTINGS_SHEET_MOONLIGHT_NETWORK_SECURITY,
+  SETTINGS_SHEET_MOONLIGHT_VIDEO,
+  SETTINGS_SHEET_MOONLIGHT_TRUST,
+  SETTINGS_SHEET_MOONLIGHT_DATA,
   SETTINGS_PANEL_DISMISS_TO_LEAF_OPEN_MS,
   SETTINGS_SHEET_VNC_CLIPBOARD,
   SETTINGS_SHEET_VNC_CONNECTION,
@@ -15,6 +28,14 @@ import {
   settingsLeafSheetUsesSystemCloseButton,
   shouldDelaySettingsLeafOpenForPanel,
   settingsLeafOpenDelayMs,
+  diagnosticLogSettingsLeafSheetHeight,
+  isVirtualKeyboardSettingsMode,
+  moonlightSettingsLeafSheetHeight,
+  moonlightSettingsRouteSpec,
+  moonlightSettingsRouteSpecs,
+  virtualKeyboardSettingsLeafSheetHeight,
+  virtualKeyboardSettingsRouteSpec,
+  virtualKeyboardSettingsRouteSpecs,
   vncSettingsLeafSheetHeight
 } from '../main/ets/services/SettingsSheetRoutePolicy';
 
@@ -34,6 +55,41 @@ export default function settingsSheetRoutePolicyTest() {
       expect(settingsLeafSheetUsesSystemCloseButton()).assertFalse();
     });
 
+    it('allocates_one_independent_global_diagnostic_log_leaf', 0, (): void => {
+      expect(SETTINGS_SHEET_DIAGNOSTIC_LOG).assertEqual(31);
+      expect(diagnosticLogSettingsLeafSheetHeight(SETTINGS_SHEET_DIAGNOSTIC_LOG))
+        .assertEqual(740);
+      expect(diagnosticLogSettingsLeafSheetHeight(SETTINGS_SHEET_ACCOUNT)).assertEqual(0);
+      expect(moonlightSettingsRouteSpec(SETTINGS_SHEET_DIAGNOSTIC_LOG)).assertNull();
+    });
+
+    it('allocates_five_independent_virtual_keyboard_leaves', 0, (): void => {
+      expect(SETTINGS_SHEET_VIRTUAL_KEYBOARD).assertEqual(32);
+      expect(SETTINGS_SHEET_VIRTUAL_KEYBOARD_BEHAVIOR).assertEqual(33);
+      expect(SETTINGS_SHEET_VIRTUAL_KEYBOARD_SHORTCUTS).assertEqual(34);
+      expect(SETTINGS_SHEET_VIRTUAL_KEYBOARD_FUNCTIONS).assertEqual(35);
+      expect(SETTINGS_SHEET_VIRTUAL_KEYBOARD_CUSTOM).assertEqual(36);
+      const specs = virtualKeyboardSettingsRouteSpecs();
+      expect(specs.length).assertEqual(5);
+      expect(specs[0].section).assertEqual('system');
+      expect(specs[1].section).assertEqual('behavior');
+      expect(specs[2].section).assertEqual('shortcuts');
+      expect(specs[3].section).assertEqual('functions');
+      expect(specs[4].section).assertEqual('custom');
+      for (let i = 0; i < specs.length; i++) {
+        expect(specs[i].mode).assertEqual(32 + i);
+        expect(specs[i].height > 0).assertTrue();
+        expect(specs[i].title.length > 0).assertTrue();
+        expect(isVirtualKeyboardSettingsMode(specs[i].mode)).assertTrue();
+        expect(virtualKeyboardSettingsLeafSheetHeight(specs[i].mode)).assertEqual(specs[i].height);
+      }
+      expect(virtualKeyboardSettingsRouteSpec(SETTINGS_SHEET_VIRTUAL_KEYBOARD_CUSTOM)?.title)
+        .assertEqual('自定义组合键');
+      expect(virtualKeyboardSettingsRouteSpec(SETTINGS_SHEET_ACCOUNT)).assertNull();
+      expect(isVirtualKeyboardSettingsMode(SETTINGS_SHEET_ACCOUNT)).assertFalse();
+      expect(virtualKeyboardSettingsLeafSheetHeight(SETTINGS_SHEET_ACCOUNT)).assertEqual(0);
+    });
+
     it('sizes_vnc_settings_leaves_to_their_content_density', 0, (): void => {
       expect(vncSettingsLeafSheetHeight(SETTINGS_SHEET_VNC_DISPLAY)).assertEqual(700);
       expect(vncSettingsLeafSheetHeight(SETTINGS_SHEET_VNC_INPUT)).assertEqual(560);
@@ -46,6 +102,50 @@ export default function settingsSheetRoutePolicyTest() {
       expect(vncSettingsLeafSheetHeight(SETTINGS_SHEET_VNC_HOSTS)).assertEqual(260);
       expect(vncSettingsLeafSheetHeight(SETTINGS_SHEET_VNC_GATEWAY)).assertEqual(260);
       expect(vncSettingsLeafSheetHeight(SETTINGS_SHEET_ACCOUNT)).assertEqual(0);
+    });
+
+    it('allocates_contiguous_owned_moonlight_routes_after_existing_modes', 0, (): void => {
+      const specs = moonlightSettingsRouteSpecs();
+      expect(specs.length).assertEqual(7);
+      expect(specs[0].mode).assertEqual(SETTINGS_SHEET_MOONLIGHT_VIDEO);
+      for (let i = 0; i < specs.length; i++) {
+        expect(specs[i].mode).assertEqual(24 + i);
+        expect(specs[i].owner).assertEqual('moonlight');
+        expect(specs[i].height > 0).assertTrue();
+        expect(specs[i].title.length > 0).assertTrue();
+      }
+      expect(moonlightSettingsRouteSpec(SETTINGS_SHEET_MOONLIGHT_VIDEO)?.section).assertEqual('video');
+      expect(moonlightSettingsRouteSpec(SETTINGS_SHEET_MOONLIGHT_VIDEO)?.title).assertEqual('画面');
+      expect(moonlightSettingsLeafSheetHeight(SETTINGS_SHEET_MOONLIGHT_VIDEO)).assertEqual(820);
+      expect(moonlightSettingsRouteSpec(SETTINGS_SHEET_MOONLIGHT_AUDIO)?.section).assertEqual('audio');
+      expect(moonlightSettingsRouteSpec(SETTINGS_SHEET_MOONLIGHT_AUDIO)?.title).assertEqual('音频');
+      expect(moonlightSettingsLeafSheetHeight(SETTINGS_SHEET_MOONLIGHT_AUDIO)).assertEqual(620);
+      expect(moonlightSettingsRouteSpec(SETTINGS_SHEET_MOONLIGHT_INPUT)?.section).assertEqual('input');
+      expect(moonlightSettingsRouteSpec(SETTINGS_SHEET_MOONLIGHT_INPUT)?.title).assertEqual('控制与手柄');
+      expect(moonlightSettingsLeafSheetHeight(SETTINGS_SHEET_MOONLIGHT_INPUT)).assertEqual(680);
+      expect(moonlightSettingsRouteSpec(SETTINGS_SHEET_MOONLIGHT_NETWORK_SECURITY)?.section)
+        .assertEqual('networkSecurity');
+      expect(moonlightSettingsRouteSpec(SETTINGS_SHEET_MOONLIGHT_NETWORK_SECURITY)?.title)
+        .assertEqual('网络与安全');
+      expect(moonlightSettingsLeafSheetHeight(SETTINGS_SHEET_MOONLIGHT_NETWORK_SECURITY))
+        .assertEqual(820);
+      expect(moonlightSettingsRouteSpec(SETTINGS_SHEET_MOONLIGHT_DIAGNOSTICS)?.section)
+        .assertEqual('diagnostics');
+      expect(moonlightSettingsRouteSpec(SETTINGS_SHEET_MOONLIGHT_DIAGNOSTICS)?.title).assertEqual('诊断');
+      expect(moonlightSettingsLeafSheetHeight(SETTINGS_SHEET_MOONLIGHT_DIAGNOSTICS)).assertEqual(560);
+      expect(moonlightSettingsRouteSpec(SETTINGS_SHEET_MOONLIGHT_TRUST)?.section).assertEqual('trust');
+      expect(moonlightSettingsRouteSpec(SETTINGS_SHEET_MOONLIGHT_TRUST)?.title).assertEqual('配对与信任');
+      expect(moonlightSettingsLeafSheetHeight(SETTINGS_SHEET_MOONLIGHT_TRUST)).assertEqual(520);
+      expect(SETTINGS_SHEET_MOONLIGHT_TRUST).assertEqual(29);
+      expect(moonlightSettingsRouteSpec(SETTINGS_SHEET_MOONLIGHT_DATA)?.section)
+        .assertEqual('data');
+      expect(moonlightSettingsRouteSpec(SETTINGS_SHEET_MOONLIGHT_DATA)?.title)
+        .assertEqual('数据管理');
+      expect(moonlightSettingsLeafSheetHeight(SETTINGS_SHEET_MOONLIGHT_DATA))
+        .assertEqual(720);
+      expect(moonlightSettingsLeafSheetHeight(SETTINGS_SHEET_VNC_CONNECTION)).assertEqual(0);
+      expect(moonlightSettingsRouteSpec(23)).assertNull();
+      expect(moonlightSettingsRouteSpec(31)).assertNull();
     });
   });
 }

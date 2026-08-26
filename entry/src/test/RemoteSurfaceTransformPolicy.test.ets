@@ -2,6 +2,7 @@ import { describe, it, expect } from '@ohos/hypium';
 import {
   remotePointToSurface,
   surfacePointToRemote,
+  surfaceDeltaToRemote,
   RemoteSurfaceTransform
 } from '../main/ets/services/RemoteSurfaceTransformPolicy';
 
@@ -54,6 +55,48 @@ export default function remoteSurfaceTransformPolicyTest(): void {
       expect(Math.abs(remote.x - 960) < 0.1).assertTrue();
       expect(Math.abs(remote.y - 540) < 0.1).assertTrue();
       expect(remote.inside).assertTrue();
+    });
+
+    it('round-trips a clockwise quarter-turn using raw remote coordinates', 0, (): void => {
+      const rotated: RemoteSurfaceTransform = {
+        remoteWidth: 400,
+        remoteHeight: 200,
+        viewportX: 0,
+        viewportY: 0,
+        viewportW: 200,
+        viewportH: 400,
+        surfaceWidthPx: 200,
+        surfaceHeightPx: 400,
+        surfaceWidthVp: 200,
+        surfaceHeightVp: 400,
+        rotation: 1
+      };
+      const local = remotePointToSurface(rotated, 200, 100);
+      expect(Math.abs(local.x - 100) < 0.01).assertTrue();
+      expect(Math.abs(local.y - 200) < 0.01).assertTrue();
+      const remote = surfacePointToRemote(rotated, local.x, local.y);
+      expect(Math.abs(remote.x - 200) < 0.1).assertTrue();
+      expect(Math.abs(remote.y - 100) < 0.1).assertTrue();
+      expect(remote.inside).assertTrue();
+    });
+
+    it('rotates relative pointer deltas with the displayed canvas', 0, (): void => {
+      const rotated: RemoteSurfaceTransform = {
+        remoteWidth: 400,
+        remoteHeight: 200,
+        viewportX: 0,
+        viewportY: 0,
+        viewportW: 200,
+        viewportH: 400,
+        surfaceWidthPx: 200,
+        surfaceHeightPx: 400,
+        surfaceWidthVp: 200,
+        surfaceHeightVp: 400,
+        rotation: 1
+      };
+      const delta = surfaceDeltaToRemote(rotated, 10, 20);
+      expect(Math.abs(delta.x - 20) < 0.01).assertTrue();
+      expect(Math.abs(delta.y + 10) < 0.01).assertTrue();
     });
   });
 }

@@ -41,7 +41,9 @@ import {
   SftpListAsyncResult,
   SftpReadAsyncResult,
   SftpWriteAsyncResult,
-  SftpMutationAsyncResult
+  SftpMutationAsyncResult,
+  NativeSessionOwnerIdentity,
+  NativeDisconnectReceipt
 } from '../types/rdpnapi';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import {
@@ -53,6 +55,25 @@ import {
   errResult
 } from './ExtensionResult';
 import { shouldBindSurfaceBeforeForegroundRenderer } from './RemoteForegroundRestorePolicy';
+import { rdpRouteIdentityForValues } from '../model/RemoteHost';
+import {
+  nativeFacadeStateAfterDisconnectSubmission,
+  nativeDisconnectOwnerMatchesFacade,
+  nativeDisconnectReceiptCanReleaseRegistry,
+  nativeDisconnectStateIsFailed,
+  nativeDisconnectStateIsSuccessful,
+  RemoteSessionExactDisconnectIdentity,
+  RemoteSessionExactDisconnectSubmission,
+  RemoteSessionNativeFacadeState,
+  RemoteSessionNativeDisconnectOwner
+} from './RemoteSessionTerminationPolicy';
+import { DiagnosticOutcome } from './DiagnosticCapturePolicy';
+import {
+  diagnosticCaptureIdForModule,
+  isDiagnosticModuleCapturing,
+  recordDiagnosticEvent
+} from './DiagnosticCaptureRuntime';
+import { sshDiagnosticErrorCode } from './ssh/observability/SshDiagnosticPolicy';
 
 const TAG = 'ExtensionLoader';
 const DOMAIN = 0x0013;
@@ -61,6 +82,67 @@ interface DetachedSshSession {
   sessionId: number;
   hostId: string;
   detachedAt: number;
+}
+
+type DiagnosticConnectionModule =
+  'connection.rdp' | 'connection.rustdesk' | 'connection.ssh_sftp' | 'connection.vnc';
+
+type DiagnosticConnectionEventKind = 'request' | 'state' | 'disconnect';
+
+interface DiagnosticConnectionObservation {
+  captureId: string;
+  state: number;
+}
+
+function diagnosticConnectionModule(protocol: string): DiagnosticConnectionModule | null {
+  switch (protocol.trim().toLowerCase()) {
+    case 'rdp': return 'connection.rdp';
+    case 'rustdesk': return 'connection.rustdesk';
+    case 'ssh':
+    case 'sftp': return 'connection.ssh_sftp';
+    case 'vnc': return 'connection.vnc';
+    default: return null;
+  }
+}
+
+function diagnosticConnectionEventCode(moduleId: DiagnosticConnectionModule,
+  kind: DiagnosticConnectionEventKind): string {
+  if (moduleId === 'connection.rdp') {
+    return kind === 'request' ? 'rdp_connection_request' :
+      (kind === 'state' ? 'rdp_state_changed' : 'rdp_disconnect');
+  }
+  if (moduleId === 'connection.rustdesk') {
+    return kind === 'request' ? 'rustdesk_connection_request' :
+      (kind === 'state' ? 'rustdesk_state_changed' : 'rustdesk_disconnect');
+  }
+  if (moduleId === 'connection.vnc') {
+    return kind === 'request' ? 'vnc_connection_request' :
+      (kind === 'state' ? 'vnc_state_changed' : 'vnc_disconnect');
+  }
+  return kind === 'disconnect' ? 'ssh_disconnect' : 'ssh_session_event';
+}
+
+function diagnosticRouteTypeCode(value: string): number {
+  switch (value.trim().toLowerCase()) {
+    case 'direct':
+    case 'direct_rdp':
+    case 'direct_ip': return 1;
+    case 'http':
+    case 'http_connect': return 2;
+    case 'rpc': return 3;
+    case 'websocket': return 4;
+    case 'socks5': return 5;
+    case 'ssh_jump': return 6;
+    case 'force_relay': return 7;
+    case 'auto': return 8;
+    case 'frp_tcp': return 9;
+    case 'frp_visitor': return 10;
+    case 'frp_stcp': return 11;
+    case 'frp_sudp': return 12;
+    case 'frp_xtcp': return 13;
+    case 'legacy_gateway': return 14;
+    default: return 0;
+  }
 }
 
 export interface SshNativeConnectPromise extends Promise<number> {
@@ -74,9 +156,17 @@ export interface SshPendingConnectIdentity {
   foreground: boolean;
 }
 
+export interface NativeDisconnectSubmission extends
+  RemoteSessionExactDisconnectSubmission {}
+
+export interface NativeDisconnectIdentity extends
+  RemoteSessionExactDisconnectIdentity {}
+
 export class ExtensionLoader {
   private static instance: ExtensionLoader;
+  private static nextFacadeGeneration: number = 1;
   private currentSessionId: number = -1;
+  private facadeGeneration: number = 0;
   private sshConnectGeneration: number = 0;
   private pendingSshConnects: Map<number, SshPendingConnectIdentity> =
     new Map<number, SshPendingConnectIdentity>();
@@ -86,6 +176,176 @@ export class ExtensionLoader {
   private teardownRequestId: number = 0;
   private diagnosticsLastErrorAtMs: number = 0;
   private detachedSshSessions: DetachedSshSession[] = [];
+  private diagnosticSessionModules: Map<number, DiagnosticConnectionModule> =
+    new Map<number, DiagnosticConnectionModule>();
+  private diagnosticConnectionStates: Map<number, DiagnosticConnectionObservation> =
+    new Map<number, DiagnosticConnectionObservation>();
+
+  private recordDiagnosticConnection(moduleId: DiagnosticConnectionModule | null,
+    kind: DiagnosticConnectionEventKind, outcome: DiagnosticOutcome,
+    sessionId: number = 0, generation: number = 0, code: number = 0): void {
+    try {
+      if (moduleId === null) { return; }
+      recordDiagnosticEvent(moduleId, diagnosticConnectionEventCode(moduleId, kind), outcome,
+        sessionId > 0 ? sessionId : 0, generation > 0 ? generation : 0, code);
+    } catch (_err) {
+      // Diagnostic side effects can never participate in a business transaction.
+    }
+  }
+
+  private trackDiagnosticSession(sessionId: number,
+    moduleId: DiagnosticConnectionModule | null): void {
+    try {
+      if (moduleId === null || sessionId <= 0) { return; }
+      // Keep only protocol identity outside a capture so a later capture can
+      // observe an already-live connection. No host or credential is retained.
+      this.diagnosticSessionModules.set(sessionId, moduleId);
+      this.diagnosticConnectionStates.delete(sessionId);
+    } catch (_err) {
+      // Losing diagnostic identity must not change connection success.
+    }
+  }
+
+  private forgetDiagnosticSession(sessionId: number): void {
+    try {
+      if (sessionId <= 0) { return; }
+      this.diagnosticSessionModules.delete(sessionId);
+      this.diagnosticConnectionStates.delete(sessionId);
+    } catch (_err) {
+      // Best effort only; stale diagnostic identity cannot own native state.
+    }
+  }
+
+  private diagnosticModuleForSession(sessionId: number): DiagnosticConnectionModule | null {
+    try {
+      if (sessionId <= 0) { return null; }
+      return this.diagnosticSessionModules.get(sessionId) ?? null;
+    } catch (_err) {
+      return null;
+    }
+  }
+
+  private recordDiagnosticConnectionState(sessionId: number, state: number): void {
+    try {
+      const moduleId: DiagnosticConnectionModule | null =
+        this.diagnosticModuleForSession(sessionId);
+      if (moduleId === null) { return; }
+      const captureId: string = diagnosticCaptureIdForModule(moduleId);
+      if (captureId.length === 0) {
+        this.diagnosticConnectionStates.delete(sessionId);
+        return;
+      }
+      const previous: DiagnosticConnectionObservation | undefined =
+        this.diagnosticConnectionStates.get(sessionId);
+      if (previous !== undefined && previous.captureId === captureId &&
+        previous.state === state) { return; }
+      this.diagnosticConnectionStates.set(sessionId, { captureId, state });
+      this.recordDiagnosticConnection(moduleId, 'state', 'state', sessionId, 0, state);
+    } catch (_err) {
+      // A failed diagnostic update must not replace the native state result.
+    }
+  }
+
+  private recordDiagnosticConnectionStateFailure(sessionId: number): void {
+    try {
+      const moduleId: DiagnosticConnectionModule | null =
+        this.diagnosticModuleForSession(sessionId);
+      this.recordDiagnosticConnection(moduleId, 'state', 'failed', sessionId, 0, -1);
+    } catch (_err) {
+      // Best effort only.
+    }
+  }
+
+  private transferDiagnosticSessionTo(target: ExtensionLoader, sessionId: number): void {
+    let moduleId: DiagnosticConnectionModule | undefined;
+    let observation: DiagnosticConnectionObservation | undefined;
+    try { moduleId = this.diagnosticSessionModules.get(sessionId); } catch (_err) {}
+    try { observation = this.diagnosticConnectionStates.get(sessionId); } catch (_err) {}
+    target.forgetDiagnosticSession(sessionId);
+    if (moduleId !== undefined) {
+      try { target.diagnosticSessionModules.set(sessionId, moduleId); } catch (_err) {}
+    }
+    if (observation !== undefined) {
+      try {
+        target.diagnosticConnectionStates.set(sessionId, {
+          captureId: observation.captureId,
+          state: observation.state
+        });
+      } catch (_err) {}
+    }
+    try { this.diagnosticSessionModules.delete(sessionId); } catch (_err) {}
+    try { this.diagnosticConnectionStates.delete(sessionId); } catch (_err) {}
+  }
+
+  private recordAndForgetAllDiagnosticSessions(submitted: boolean, requestId: number): void {
+    try {
+      this.diagnosticSessionModules.forEach(
+        (moduleId: DiagnosticConnectionModule, sessionId: number): void => {
+          this.recordDiagnosticConnection(moduleId, 'disconnect',
+            submitted ? (requestId > 0 ? 'started' : 'succeeded') : 'failed', sessionId, 0,
+            submitted ? (requestId > 0 ? 1 : 0) : -1);
+        });
+    } catch (_err) {}
+    try { this.diagnosticSessionModules.clear(); } catch (_err) {}
+    try { this.diagnosticConnectionStates.clear(); } catch (_err) {}
+  }
+
+  private recordDiagnosticDisconnectSubmission(moduleId: DiagnosticConnectionModule | null,
+    sessionId: number, generation: number,
+    submission: NativeDisconnectSubmission): void {
+    try {
+      const outcome: DiagnosticOutcome = !submission.accepted ? 'failed' :
+        (submission.terminal ? (submission.successful ? 'succeeded' : 'failed') : 'started');
+      // Export a stable status category, never the process-local teardown request id.
+      const code: number = submission.successful ? 0 :
+        (!submission.accepted ? -1 : (submission.terminal ? -2 : 1));
+      this.recordDiagnosticConnection(moduleId, 'disconnect', outcome,
+        sessionId, generation, code);
+    } catch (_err) {
+      // Best effort only.
+    }
+  }
+
+  private recordDiagnosticRoutes(config: SessionConfig, outcome: DiagnosticOutcome,
+    sessionId: number = 0, generation: number = 0, code: number = 0): void {
+    try {
+      if (!isDiagnosticModuleCapturing('network.routing')) { return; }
+      const protocol: string = config.protocol.trim().toLowerCase();
+      if (protocol === 'rdp' &&
+        (config.rdpEndpointMode === 'microsoft_rd_gateway' ||
+          (config.gatewayHost ?? '').trim().length > 0)) {
+        recordDiagnosticEvent('network.routing', 'routing_rdp_gateway', outcome,
+          sessionId > 0 ? sessionId : 0, generation > 0 ? generation : 0,
+          code !== 0 ? code : diagnosticRouteTypeCode(config.rdpGatewayTransport ?? 'auto'));
+      }
+      if (protocol === 'rustdesk') {
+        const strategy: string = config.rdConnectionStrategy ?? 'auto';
+        if (strategy !== 'direct_ip' || (config.rdRelayId ?? '').trim().length > 0) {
+          recordDiagnosticEvent('network.routing', 'routing_rustdesk_relay', outcome,
+            sessionId > 0 ? sessionId : 0, generation > 0 ? generation : 0,
+            code !== 0 ? code : diagnosticRouteTypeCode(strategy));
+        }
+        if ((config.rdAccessToken ?? '').length > 0) {
+          recordDiagnosticEvent('network.routing', 'routing_rustdesk_pro', outcome,
+            sessionId > 0 ? sessionId : 0, generation > 0 ? generation : 0, code);
+        }
+      }
+      if (protocol === 'vnc' && (config.vncGatewayHost ?? '').trim().length > 0) {
+        recordDiagnosticEvent('network.routing', 'routing_vnc_gateway', outcome,
+          sessionId > 0 ? sessionId : 0, generation > 0 ? generation : 0, code);
+      }
+      if ((protocol === 'ssh' || protocol === 'sftp')) {
+        const proxyType: string = config.sshProxyType ?? config.sshRoute?.type ?? 'direct';
+        if (proxyType !== 'direct') {
+          recordDiagnosticEvent('network.routing', 'routing_ssh_proxy', outcome,
+            sessionId > 0 ? sessionId : 0, generation > 0 ? generation : 0,
+            code !== 0 ? code : diagnosticRouteTypeCode(proxyType));
+        }
+      }
+    } catch (_err) {
+      // Reading optional routing metadata is never part of connection success.
+    }
+  }
 
   static getInstance(): ExtensionLoader {
     if (!ExtensionLoader.instance) { ExtensionLoader.instance = new ExtensionLoader(); }
@@ -95,17 +355,36 @@ export class ExtensionLoader {
   // ====== 协议连接 ======
 
   connect(config: SessionConfig): number {
+    const diagnosticModule: DiagnosticConnectionModule | null =
+      diagnosticConnectionModule(config.protocol);
+    this.recordDiagnosticConnection(diagnosticModule, 'request', 'started');
+    this.recordDiagnosticRoutes(config, 'started');
     this.sshConnectGeneration++;
     try {
-      this.currentSessionId = rdpnapi.connect(config) as number;
+      const sessionId: number = rdpnapi.connect(config) as number;
+      this.currentSessionId = sessionId;
+      this.facadeGeneration = sessionId > 0 ? this.allocateFacadeGeneration() : 0;
+      this.trackDiagnosticSession(sessionId, diagnosticModule);
+      this.recordDiagnosticConnection(diagnosticModule, 'request',
+        sessionId > 0 ? 'succeeded' : 'failed', sessionId,
+        this.facadeGeneration, sessionId > 0 ? 0 : sessionId);
+      this.recordDiagnosticRoutes(config, sessionId > 0 ? 'succeeded' : 'failed',
+        sessionId, this.facadeGeneration, sessionId > 0 ? 0 : sessionId);
       return this.currentSessionId;
     } catch (err) {
+      this.currentSessionId = -1;
+      this.facadeGeneration = 0;
+      this.recordDiagnosticConnection(diagnosticModule, 'request', 'failed', 0, 0, -1);
+      this.recordDiagnosticRoutes(config, 'failed', 0, 0, -1);
       hilog.error(DOMAIN, TAG, '[ExtensionLoader] connect: code=' + ((err as Record<string, Object>)['code'] || 'ERR') + ' msg=' + JSON.stringify(err));
       return -1;
     }
   }
 
   connectSshAsync(config: SessionConfig, foreground: boolean = true): SshNativeConnectPromise {
+    const diagnosticModule: DiagnosticConnectionModule = 'connection.ssh_sftp';
+    this.recordDiagnosticConnection(diagnosticModule, 'request', 'started');
+    this.recordDiagnosticRoutes(config, 'started');
     try {
       const nativePromise: SshNativeConnectPromise =
         rdpnapi.connectSshAsync(config, foreground) as SshNativeConnectPromise;
@@ -115,31 +394,48 @@ export class ExtensionLoader {
         foreground
       };
       if (identity.sessionId <= 0 || identity.generation <= 0) {
+        this.recordDiagnosticConnection(diagnosticModule, 'request', 'failed', 0, 0, -2);
+        this.recordDiagnosticRoutes(config, 'failed', 0, 0, -2);
         hilog.error(DOMAIN, TAG, '[ExtensionLoader] connectSshAsync: native identity missing');
         const rejected: SshNativeConnectPromise = Promise.resolve(-1) as SshNativeConnectPromise;
         rejected.sessionId = -1;
         rejected.generation = 0;
         return rejected;
       }
+      this.trackDiagnosticSession(identity.sessionId, diagnosticModule);
       this.pendingSshConnects.set(identity.sessionId, identity);
       // Only the foreground owner updates the legacy facade target. Detached
       // SFTP sessions remain addressable through their explicit session id.
       if (foreground) {
         this.currentSessionId = identity.sessionId;
+        this.facadeGeneration = this.allocateFacadeGeneration();
       }
       const settled: SshNativeConnectPromise = nativePromise.then(
         (result: number): number => {
           this.pendingSshConnects.delete(identity.sessionId);
           if (foreground && this.currentSessionId === identity.sessionId) {
             this.currentSessionId = result > 0 ? result : -1;
+            if (result <= 0) { this.facadeGeneration = 0; }
           }
+          this.recordDiagnosticConnection(diagnosticModule, 'request',
+            result > 0 ? 'succeeded' : 'failed', identity.sessionId,
+            identity.generation, result > 0 ? 0 : result);
+          this.recordDiagnosticRoutes(config, result > 0 ? 'succeeded' : 'failed',
+            identity.sessionId, identity.generation, result > 0 ? 0 : result);
+          if (result <= 0) { this.forgetDiagnosticSession(identity.sessionId); }
           return result;
         },
         (err: Object): number => {
           this.pendingSshConnects.delete(identity.sessionId);
           if (foreground && this.currentSessionId === identity.sessionId) {
             this.currentSessionId = -1;
+            this.facadeGeneration = 0;
           }
+          this.recordDiagnosticConnection(diagnosticModule, 'request', 'failed',
+            identity.sessionId, identity.generation, -1);
+          this.recordDiagnosticRoutes(config, 'failed', identity.sessionId,
+            identity.generation, -1);
+          this.forgetDiagnosticSession(identity.sessionId);
           hilog.error(DOMAIN, TAG, '[ExtensionLoader] connectSshAsync: ' + JSON.stringify(err));
           return -1;
         }) as SshNativeConnectPromise;
@@ -147,6 +443,8 @@ export class ExtensionLoader {
       settled.generation = identity.generation;
       return settled;
     } catch (err) {
+      this.recordDiagnosticConnection(diagnosticModule, 'request', 'failed', 0, 0, -1);
+      this.recordDiagnosticRoutes(config, 'failed', 0, 0, -1);
       hilog.error(DOMAIN, TAG, '[ExtensionLoader] connectSshAsync: ' + JSON.stringify(err));
       const rejected: SshNativeConnectPromise = Promise.resolve(-1) as SshNativeConnectPromise;
       rejected.sessionId = -1;
@@ -187,7 +485,10 @@ export class ExtensionLoader {
       if (!replaced) {
         this.detachedSshSessions.push({ sessionId, hostId: normalizedHostId, detachedAt: Date.now() });
       }
-      if (this.currentSessionId === sessionId) { this.currentSessionId = -1; }
+      if (this.currentSessionId === sessionId) {
+        this.currentSessionId = -1;
+        this.facadeGeneration = 0;
+      }
       return true;
     } catch (err) {
       hilog.warn(DOMAIN, TAG, '[ExtensionLoader] detachSshSession: ' + JSON.stringify(err));
@@ -210,6 +511,7 @@ export class ExtensionLoader {
       }
       this.detachedSshSessions.splice(index, 1);
       this.currentSessionId = candidate.sessionId;
+      this.facadeGeneration = this.allocateFacadeGeneration();
       return candidate.sessionId;
     }
     return -1;
@@ -244,51 +546,145 @@ export class ExtensionLoader {
 
   /** Explicitly close one SSH session, including a detached session. */
   disconnectSshSession(sessionId: number): number {
-    if (sessionId <= 0) { return 0; }
+    const identity: NativeDisconnectIdentity | null =
+      this.captureExplicitDisconnectIdentity(sessionId);
+    return this.disconnectSshSessionWithReceipt(sessionId, identity).requestId;
+  }
+
+  /**
+   * Submit teardown for one exact SSH session. Facade ownership is retained
+   * when the NAPI boundary rejects the request so the caller can retry without
+   * making a still-live native session look disconnected.
+   */
+  disconnectSshSessionWithReceipt(sessionId: number,
+    identity: NativeDisconnectIdentity | null = null): NativeDisconnectSubmission {
+    if (sessionId <= 0) {
+      return this.completedDisconnectSubmission();
+    }
+    const expected: NativeDisconnectIdentity | null = identity ??
+      this.captureExplicitDisconnectIdentity(sessionId);
+    if (expected === null || expected.sessionId !== sessionId ||
+        !this.explicitDisconnectIdentityIsCurrent(expected)) {
+      const rejected: NativeDisconnectSubmission = this.rejectedDisconnectSubmission(false);
+      this.recordDiagnosticDisconnectSubmission('connection.ssh_sftp', sessionId, 0, rejected);
+      return rejected;
+    }
+    let receipt: NativeDisconnectReceipt;
+    try {
+      receipt = rdpnapi.beginDisconnectWithReceipt(
+        expected.sessionId, expected.generation, expected.ownerToken,
+        -1, -1, -1) as NativeDisconnectReceipt;
+    } catch (err) {
+      hilog.warn(DOMAIN, TAG, '[ExtensionLoader] disconnectSshSession: ' + JSON.stringify(err));
+      const rejected: NativeDisconnectSubmission = this.rejectedDisconnectSubmission(true);
+      this.recordDiagnosticDisconnectSubmission(
+        'connection.ssh_sftp', sessionId, expected.generation, rejected);
+      return rejected;
+    }
+    const submission: NativeDisconnectSubmission =
+      this.disconnectSubmissionFromNativeReceipt(receipt);
+    this.recordDiagnosticDisconnectSubmission(
+      'connection.ssh_sftp', sessionId, expected.generation, submission);
+    if (!submission.accepted) {
+      return submission;
+    }
     this.pendingSshConnects.delete(sessionId);
     this.detachedSshSessions = this.detachedSshSessions.filter(
       (candidate: DetachedSshSession): boolean => candidate.sessionId !== sessionId);
-    let requestId: number = 0;
-    try { requestId = rdpnapi.disconnect(sessionId, -1, -1, -1) as number; } catch (err) {
-      hilog.warn(DOMAIN, TAG, '[ExtensionLoader] disconnectSshSession: ' + JSON.stringify(err));
+    if (this.currentSessionId === sessionId &&
+        this.facadeGeneration === expected.facadeGeneration) {
+      this.currentSessionId = -1;
+      this.facadeGeneration = 0;
     }
-    if (this.currentSessionId === sessionId) { this.currentSessionId = -1; }
-    if (requestId > 0) { this.teardownRequestId = requestId; }
-    return requestId;
+    if (submission.requestId > 0) {
+      this.teardownRequestId = submission.requestId;
+    }
+    this.forgetDiagnosticSession(sessionId);
+    return submission;
   }
 
   disconnect(): number {
-    if (this.currentSessionId > 0) { this.pendingSshConnects.delete(this.currentSessionId); }
-    let requestId: number = 0;
+    return this.disconnectWithReceipt(this.captureDisconnectIdentity()).requestId;
+  }
+
+  /**
+   * Submit one exact native teardown without erasing the facade handles when
+   * the NAPI boundary rejects the request. A zero request id is terminal only
+   * when the native call itself returned successfully (synchronous fallback or
+  * no remaining native resources).
+  */
+  disconnectWithReceipt(
+    identity: RemoteSessionExactDisconnectIdentity | null = null
+  ): NativeDisconnectSubmission {
+    const diagnosticSessionId: number = identity === null ? this.currentSessionId : identity.sessionId;
+    const diagnosticModule: DiagnosticConnectionModule | null =
+      this.diagnosticModuleForSession(diagnosticSessionId);
+    const hasNativeOwner: boolean = this.currentSessionId > 0 || this.rendererHandle > 0 ||
+      this.decoderHandle > 0 || this.audioPlayerHandle > 0;
+    if (!hasNativeOwner) {
+      return this.completedDisconnectSubmission();
+    }
+    const expected: RemoteSessionExactDisconnectIdentity | null = identity ??
+      this.captureDisconnectIdentity();
+    if (expected === null || !this.disconnectIdentityIsCurrent(expected)) {
+      const rejected: NativeDisconnectSubmission = this.rejectedDisconnectSubmission(false);
+      this.recordDiagnosticDisconnectSubmission(
+        diagnosticModule, diagnosticSessionId, 0, rejected);
+      return rejected;
+    }
+    let submission: NativeDisconnectSubmission;
     try {
-      if (this.currentSessionId > 0 || this.rendererHandle > 0 ||
-        this.decoderHandle > 0 || this.audioPlayerHandle > 0) {
-        requestId = rdpnapi.beginDisconnect(this.currentSessionId, this.rendererHandle,
-          this.decoderHandle, this.audioPlayerHandle) as number;
-      }
+      const receipt: NativeDisconnectReceipt = rdpnapi.beginDisconnectWithReceipt(
+        expected.sessionId, expected.generation, expected.ownerToken,
+        this.rendererHandle, this.decoderHandle,
+        this.audioPlayerHandle) as NativeDisconnectReceipt;
+      submission = this.disconnectSubmissionFromNativeReceipt(receipt);
     } catch (err) {
       hilog.error(DOMAIN, TAG, '[ExtensionLoader] disconnect: ' + JSON.stringify(err));
+      submission = this.rejectedDisconnectSubmission(true);
     }
-    this.currentSessionId = -1;
-    this.rendererHandle = -1;
-    this.decoderHandle = -1;
-    this.audioPlayerHandle = -1;
-    if (requestId > 0) {
-      this.teardownRequestId = requestId;
+    const nextFacade: RemoteSessionNativeFacadeState =
+      nativeFacadeStateAfterDisconnectSubmission({
+        sessionId: this.currentSessionId,
+        facadeGeneration: this.facadeGeneration,
+        rendererHandle: this.rendererHandle,
+        decoderHandle: this.decoderHandle,
+        audioPlayerHandle: this.audioPlayerHandle
+      }, submission.accepted);
+    this.currentSessionId = nextFacade.sessionId;
+    this.facadeGeneration = nextFacade.facadeGeneration;
+    this.rendererHandle = nextFacade.rendererHandle;
+    this.decoderHandle = nextFacade.decoderHandle;
+    this.audioPlayerHandle = nextFacade.audioPlayerHandle;
+    this.recordDiagnosticDisconnectSubmission(
+      diagnosticModule, expected.sessionId, expected.generation, submission);
+    if (!submission.accepted) {
+      return submission;
     }
-    return requestId;
+    if (expected.sessionId > 0) {
+      this.pendingSshConnects.delete(expected.sessionId);
+    }
+    if (submission.requestId > 0) {
+      this.teardownRequestId = submission.requestId;
+    }
+    this.forgetDiagnosticSession(expected.sessionId);
+    return submission;
   }
 
   disconnectAll(): number {
     this.pendingSshConnects.clear();
     let requestId: number = 0;
+    let submitted: boolean = true;
     try {
       requestId = rdpnapi.disconnectAll(
         this.rendererHandle, this.decoderHandle, this.audioPlayerHandle) as number;
     } catch (err) {
+      submitted = false;
       hilog.error(DOMAIN, TAG, '[ExtensionLoader] disconnectAll: ' + JSON.stringify(err));
     }
+    this.recordAndForgetAllDiagnosticSessions(submitted, requestId);
     this.currentSessionId = -1;
+    this.facadeGeneration = 0;
     this.rendererHandle = -1;
     this.decoderHandle = -1;
     this.audioPlayerHandle = -1;
@@ -302,22 +698,33 @@ export class ExtensionLoader {
     try {
       return rdpnapi.getDisconnectState(requestId) as number;
     } catch (_err) {
-      return 0;
+      // Keep a NAPI query failure distinct from native Unknown(0). Neither is
+      // proof that the exact request completed successfully.
+      return -1;
     }
   }
 
   async waitForPendingTeardown(timeoutMs: number = 10000): Promise<boolean> {
-    if (this.teardownRequestId <= 0) {
-      return true;
+    const requestId: number = this.teardownRequestId;
+    if (requestId <= 0) { return true; }
+    return await this.waitForTeardownRequest(requestId, timeoutMs);
+  }
+
+  /** Wait only for the supplied disconnect receipt; a later request cannot satisfy it. */
+  async waitForTeardownRequest(requestId: number,
+    timeoutMs: number = 10000): Promise<boolean> {
+    if (!Number.isSafeInteger(requestId) || requestId <= 0 ||
+        !Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) {
+      return false;
     }
     const startedAtMs: number = Date.now();
     while (Date.now() - startedAtMs < timeoutMs) {
-      const state: number = this.getDisconnectState(this.teardownRequestId);
-      if (state === 3 || state === 0) {
-        this.teardownRequestId = 0;
+      const state: number = this.getDisconnectState(requestId);
+      if (nativeDisconnectStateIsSuccessful(state)) {
+        if (this.teardownRequestId === requestId) { this.teardownRequestId = 0; }
         return true;
       }
-      if (state === 4) {
+      if (nativeDisconnectStateIsFailed(state)) {
         return false;
       }
       await new Promise<void>((resolve: () => void): void => {
@@ -340,10 +747,214 @@ export class ExtensionLoader {
 
   getSessionId(): number { return this.currentSessionId; }
 
-  probeRdpCertificate(host: string, port: number, serverName: string): RdpCertificateInfo {
+  /** Capture the exact facade/native owner for a later asynchronous teardown. */
+  captureDisconnectIdentity(
+    expectedSessionId: number = this.currentSessionId
+  ): NativeDisconnectIdentity | null {
+    if (expectedSessionId !== this.currentSessionId) { return null; }
+    if (expectedSessionId > 0) {
+      const owner: NativeSessionOwnerIdentity | null =
+        this.readNativeSessionOwner(expectedSessionId);
+      if (owner === null || this.facadeGeneration <= 0) { return null; }
+      return {
+        sessionId: owner.sessionId,
+        generation: owner.generation,
+        ownerToken: owner.ownerToken,
+        facadeGeneration: this.facadeGeneration,
+        rendererHandle: this.rendererHandle,
+        decoderHandle: this.decoderHandle,
+        audioPlayerHandle: this.audioPlayerHandle
+      };
+    }
+    if (this.rendererHandle <= 0 && this.decoderHandle <= 0 &&
+        this.audioPlayerHandle <= 0) {
+      return null;
+    }
+    if (this.facadeGeneration <= 0) {
+      this.facadeGeneration = this.allocateFacadeGeneration();
+    }
+    return {
+      sessionId: -1,
+      generation: 0,
+      ownerToken: 0,
+      facadeGeneration: this.facadeGeneration,
+      rendererHandle: this.rendererHandle,
+      decoderHandle: this.decoderHandle,
+      audioPlayerHandle: this.audioPlayerHandle
+    };
+  }
+
+  /** Capture an exact native session even when it is currently detached. */
+  captureExplicitDisconnectIdentity(sessionId: number,
+    expectedGeneration: number = 0): NativeDisconnectIdentity | null {
+    if (sessionId <= 0) { return null; }
+    const owner: NativeSessionOwnerIdentity | null =
+      this.readNativeSessionOwner(sessionId);
+    if (owner === null || (expectedGeneration > 0 &&
+        owner.generation !== expectedGeneration)) {
+      return null;
+    }
+    return {
+      sessionId: owner.sessionId,
+      generation: owner.generation,
+      ownerToken: owner.ownerToken,
+      facadeGeneration: this.currentSessionId === sessionId ?
+        this.facadeGeneration : 0,
+      rendererHandle: this.currentSessionId === sessionId ? this.rendererHandle : -1,
+      decoderHandle: this.currentSessionId === sessionId ? this.decoderHandle : -1,
+      audioPlayerHandle: this.currentSessionId === sessionId ? this.audioPlayerHandle : -1
+    };
+  }
+
+  ownsDisconnectIdentity(identity: NativeDisconnectIdentity | null): boolean {
+    return identity !== null && this.disconnectIdentityIsCurrent(identity);
+  }
+
+  /**
+   * Move the ArkTS facade ownership of one live native session to another
+   * window-local loader without reconnecting or copying credentials.
+   *
+   * The native session and media handles remain unchanged. The source is
+   * cleared only after the target has passed every ownership precondition, so
+   * an independent-window launch can roll the move back transactionally.
+   */
+  transferActiveSessionTo(target: ExtensionLoader, expectedSessionId: number): boolean {
+    if (target === this || expectedSessionId <= 0 ||
+      this.currentSessionId !== expectedSessionId ||
+      target.currentSessionId > 0 || target.rendererHandle > 0 ||
+      target.decoderHandle > 0 || target.audioPlayerHandle > 0) {
+      return false;
+    }
+    target.currentSessionId = this.currentSessionId;
+    target.facadeGeneration = this.facadeGeneration;
+    target.rendererHandle = this.rendererHandle;
+    target.decoderHandle = this.decoderHandle;
+    target.audioPlayerHandle = this.audioPlayerHandle;
+    target.sshConnectGeneration = Math.max(
+      target.sshConnectGeneration, this.sshConnectGeneration);
+    const pending: SshPendingConnectIdentity | undefined =
+      this.pendingSshConnects.get(expectedSessionId);
+    if (pending !== undefined) {
+      target.pendingSshConnects.set(expectedSessionId, pending);
+      this.pendingSshConnects.delete(expectedSessionId);
+    }
+    this.currentSessionId = -1;
+    this.facadeGeneration = 0;
+    this.rendererHandle = -1;
+    this.decoderHandle = -1;
+    this.audioPlayerHandle = -1;
+    this.transferDiagnosticSessionTo(target, expectedSessionId);
+    hilog.info(DOMAIN, TAG, '[ExtensionLoader] session facade transferred session=' +
+      expectedSessionId.toString());
+    return true;
+  }
+
+  private readNativeSessionOwner(sessionId: number): NativeSessionOwnerIdentity | null {
     try {
-      return rdpnapi.probeRdpCertificate(host, port, serverName) as RdpCertificateInfo;
+      const owner: NativeSessionOwnerIdentity | null =
+        rdpnapi.getSessionOwnerIdentity(sessionId) as NativeSessionOwnerIdentity | null;
+      if (owner === null || owner.sessionId !== sessionId ||
+          !Number.isSafeInteger(owner.generation) || owner.generation <= 0 ||
+          !Number.isSafeInteger(owner.ownerToken) || owner.ownerToken <= 0) {
+        return null;
+      }
+      return owner;
+    } catch (_err) {
+      return null;
+    }
+  }
+
+  private disconnectIdentityIsCurrent(
+    identity: RemoteSessionExactDisconnectIdentity
+  ): boolean {
+    if (identity.sessionId <= 0) {
+      return this.currentSessionId <= 0 && identity.generation === 0 &&
+        identity.ownerToken === 0 && identity.facadeGeneration > 0 &&
+        identity.facadeGeneration === this.facadeGeneration &&
+        identity.rendererHandle === this.rendererHandle &&
+        identity.decoderHandle === this.decoderHandle &&
+        identity.audioPlayerHandle === this.audioPlayerHandle;
+    }
+    const owner: NativeSessionOwnerIdentity | null =
+      this.readNativeSessionOwner(identity.sessionId);
+    if (owner === null) { return false; }
+    const current: RemoteSessionNativeDisconnectOwner = {
+      sessionId: owner.sessionId,
+      generation: owner.generation,
+      ownerToken: owner.ownerToken,
+      facadeGeneration: this.facadeGeneration
+    };
+    return this.currentSessionId === identity.sessionId &&
+      nativeDisconnectOwnerMatchesFacade(identity, current);
+  }
+
+  private explicitDisconnectIdentityIsCurrent(identity: NativeDisconnectIdentity): boolean {
+    const owner: NativeSessionOwnerIdentity | null =
+      this.readNativeSessionOwner(identity.sessionId);
+    if (owner === null || owner.generation !== identity.generation ||
+        owner.ownerToken !== identity.ownerToken) {
+      return false;
+    }
+    if (this.currentSessionId === identity.sessionId) {
+      return identity.facadeGeneration > 0 &&
+        identity.facadeGeneration === this.facadeGeneration;
+    }
+    return identity.facadeGeneration === 0;
+  }
+
+  private allocateFacadeGeneration(): number {
+    const value: number = ExtensionLoader.nextFacadeGeneration;
+    ExtensionLoader.nextFacadeGeneration =
+      value >= Number.MAX_SAFE_INTEGER ? 1 : value + 1;
+    return value;
+  }
+
+  private completedDisconnectSubmission(): NativeDisconnectSubmission {
+    return {
+      accepted: true, requestId: 0, terminal: true,
+      successful: true, retryable: false
+    };
+  }
+
+  private rejectedDisconnectSubmission(retryable: boolean): NativeDisconnectSubmission {
+    return {
+      accepted: false, requestId: 0, terminal: false,
+      successful: false, retryable
+    };
+  }
+
+  private disconnectSubmissionFromNativeReceipt(
+    receipt: NativeDisconnectReceipt
+  ): NativeDisconnectSubmission {
+    if (receipt === null || receipt.accepted !== true ||
+        !Number.isSafeInteger(receipt.requestId) || receipt.requestId < 0 ||
+        !Number.isSafeInteger(receipt.terminalState)) {
+      return this.rejectedDisconnectSubmission(false);
+    }
+    const successful: boolean = nativeDisconnectReceiptCanReleaseRegistry(
+      true, receipt.terminalState);
+    const failed: boolean = nativeDisconnectStateIsFailed(receipt.terminalState);
+    const malformedTerminal: boolean = receipt.requestId <= 0 &&
+      !successful && !failed;
+    return {
+      accepted: true,
+      requestId: receipt.requestId,
+      terminal: successful || failed || malformedTerminal,
+      successful,
+      retryable: false
+    };
+  }
+
+  probeRdpCertificate(host: string, port: number, serverName: string): RdpCertificateInfo {
+    recordDiagnosticEvent('connection.rdp', 'rdp_preflight', 'started');
+    try {
+      const result: RdpCertificateInfo =
+        rdpnapi.probeRdpCertificate(host, port, serverName) as RdpCertificateInfo;
+      recordDiagnosticEvent('connection.rdp', 'rdp_preflight',
+        result.ok ? 'succeeded' : 'failed', 0, 0, result.errorCode);
+      return result;
     } catch (err) {
+      recordDiagnosticEvent('connection.rdp', 'rdp_preflight', 'failed', 0, 0, -1);
       hilog.error(DOMAIN, TAG, '[ExtensionLoader] probeRdpCertificate: ' + JSON.stringify(err));
       return {
         ok: false,
@@ -360,15 +971,23 @@ export class ExtensionLoader {
         rootTrusted: false,
         hostMismatch: false,
         errorCode: -1,
-        errorMessage: 'RDP 证书探测异常'
+        errorMessage: 'RDP 证书探测异常',
+        preflightStatus: 'unavailable',
+        riskFlags: []
       };
     }
   }
 
   async probeRdpCertificateAsync(host: string, port: number, serverName: string): Promise<RdpCertificateInfo> {
+    recordDiagnosticEvent('connection.rdp', 'rdp_preflight', 'started');
     try {
-      return await rdpnapi.probeRdpCertificateAsync(host, port, serverName) as RdpCertificateInfo;
+      const result: RdpCertificateInfo =
+        await rdpnapi.probeRdpCertificateAsync(host, port, serverName) as RdpCertificateInfo;
+      recordDiagnosticEvent('connection.rdp', 'rdp_preflight',
+        result.ok ? 'succeeded' : 'failed', 0, 0, result.errorCode);
+      return result;
     } catch (err) {
+      recordDiagnosticEvent('connection.rdp', 'rdp_preflight', 'failed', 0, 0, -1);
       hilog.error(DOMAIN, TAG, '[ExtensionLoader] probeRdpCertificateAsync: ' + JSON.stringify(err));
       return {
         ok: false,
@@ -385,30 +1004,75 @@ export class ExtensionLoader {
         rootTrusted: false,
         hostMismatch: false,
         errorCode: -1,
-        errorMessage: 'RDP 证书探测异常 [E-RDP-CERT-ASYNC]'
+        errorMessage: 'RDP 证书探测异常 [E-RDP-CERT-ASYNC]',
+        preflightStatus: 'unavailable',
+        riskFlags: []
       };
     }
   }
 
   async probeRdpCertificateRouteAsync(
     request: RdpPreflightRequest): Promise<RdpPreflightResult> {
+    recordDiagnosticEvent('connection.rdp', 'rdp_preflight', 'started',
+      0, request.generation ?? 0);
+    const gatewayRoute: boolean = (request.route.gatewayHost ?? '').trim().length > 0 ||
+      request.route.endpointMode === 'microsoft_rd_gateway';
+    if (gatewayRoute) {
+      recordDiagnosticEvent('network.routing', 'routing_rdp_gateway', 'started',
+        0, request.generation ?? 0,
+        diagnosticRouteTypeCode(request.route.gatewayTransport ?? 'auto'));
+    }
     try {
-      return await rdpnapi.probeRdpCertificateRouteAsync(request) as RdpPreflightResult;
+      const result: RdpPreflightResult =
+        await rdpnapi.probeRdpCertificateRouteAsync(request) as RdpPreflightResult;
+      recordDiagnosticEvent('connection.rdp', 'rdp_preflight',
+        result.ok ? 'succeeded' : 'failed', 0, result.generation, result.ok ? 0 : -1);
+      if (gatewayRoute) {
+        recordDiagnosticEvent('network.routing', 'routing_rdp_gateway',
+          result.ok ? 'succeeded' : 'failed', 0, result.generation,
+          result.ok ? diagnosticRouteTypeCode(result.gatewayTransportNegotiated) : -1);
+      }
+      return result;
     } catch (err) {
+      recordDiagnosticEvent('connection.rdp', 'rdp_preflight', 'failed',
+        0, request.generation ?? 0, -1);
+      if (gatewayRoute) {
+        recordDiagnosticEvent('network.routing', 'routing_rdp_gateway', 'failed',
+          0, request.generation ?? 0, -1);
+      }
       hilog.error(DOMAIN, TAG,
         '[ExtensionLoader] probeRdpCertificateRouteAsync: ' + JSON.stringify(err));
       const route = request.route;
+      const endpointMode: string = route.endpointMode ??
+        (route.gatewayHost ? 'microsoft_rd_gateway' : 'direct_rdp');
+      const routeIdentity: string = rdpRouteIdentityForValues(
+        endpointMode,
+        route.targetHost,
+        route.targetPort ?? 3389,
+        route.targetServerName ?? route.targetHost,
+        route.gatewayHost ?? '',
+        route.gatewayPort ?? 443,
+        route.gatewayServerName ?? route.gatewayHost ?? '',
+        route.gatewayTransport ?? 'auto');
+      const gatewayRisk: string[] = endpointMode === 'microsoft_rd_gateway'
+        ? ['GATEWAY_CERTIFICATE_RISK'] : [];
+      const targetRisk: string[] = ['TARGET_CERTIFICATE_RISK'];
       const emptyCertificate: RdpCertificateRecord = {
         present: false, rootTrusted: false, hostMismatch: false, flags: 0,
         host: route.targetHost, port: route.targetPort ?? 3389,
         stage: 'target', serverName: route.targetServerName ?? route.targetHost,
         commonName: '', subject: '', issuer: '', fingerprintSha256: '',
-        notBeforeMs: 0, notAfterMs: 0
+        notBeforeMs: 0, notAfterMs: 0,
+        riskFlags: ['CERTIFICATE_METADATA_UNAVAILABLE']
       };
       return {
         ok: false,
-        endpointMode: route.endpointMode ?? (route.gatewayHost ? 'microsoft_rd_gateway' : 'direct_rdp'),
-        routeIdentity: '',
+        preflightStatus: 'unavailable',
+        riskFlags: gatewayRisk.concat(targetRisk),
+        gatewayRiskFlags: gatewayRisk,
+        targetRiskFlags: targetRisk,
+        endpointMode,
+        routeIdentity,
         generation: request.generation ?? 0,
         requestId: request.requestId ?? '',
         stage: 'endpoint',
@@ -418,13 +1082,14 @@ export class ExtensionLoader {
         gatewayTransportNegotiated: 'unknown',
         gatewayTransportSelected: route.gatewayTransport ?? 'auto',
         requiresGatewayAuth: false,
-        requiresUserDecision: false,
+        requiresUserDecision: true,
         gatewayCertificate: {
           present: false, rootTrusted: false, hostMismatch: false, flags: 0,
           host: route.gatewayHost ?? '', port: route.gatewayPort ?? 443,
           stage: 'gateway', serverName: route.gatewayServerName ?? route.gatewayHost ?? '',
           commonName: '', subject: '', issuer: '', fingerprintSha256: '',
-          notBeforeMs: 0, notAfterMs: 0
+          notBeforeMs: 0, notAfterMs: 0,
+          riskFlags: ['CERTIFICATE_METADATA_UNAVAILABLE']
         },
         targetCertificate: emptyCertificate
       } as RdpPreflightResult;
@@ -433,10 +1098,17 @@ export class ExtensionLoader {
 
   async probeRustDeskPresenceAsync(host: string, port: number, serverKey: string,
     peerId: string, token: string, direct: boolean, keyMode: number): Promise<RustDeskPresenceResult> {
+    recordDiagnosticEvent('connection.rustdesk', 'rustdesk_presence', 'started');
     try {
-      return await rdpnapi.probeRustDeskPresenceAsync(host, port, serverKey, peerId, token,
-        direct, keyMode) as RustDeskPresenceResult;
+      const result: RustDeskPresenceResult =
+        await rdpnapi.probeRustDeskPresenceAsync(host, port, serverKey, peerId, token,
+          direct, keyMode) as RustDeskPresenceResult;
+      recordDiagnosticEvent('connection.rustdesk', 'rustdesk_presence',
+        result.errorCode === 0 ? 'succeeded' : 'failed', 0, 0,
+        result.errorCode, result.latencyMs > 0 ? result.latencyMs : 0);
+      return result;
     } catch (err) {
+      recordDiagnosticEvent('connection.rustdesk', 'rustdesk_presence', 'failed', 0, 0, -1);
       hilog.error(DOMAIN, TAG, '[ExtensionLoader] probeRustDeskPresenceAsync: ' + JSON.stringify(err));
       return { state: 0, latencyMs: -1, errorCode: 5 };
     }
@@ -444,9 +1116,21 @@ export class ExtensionLoader {
 
   probeVncCertificateAsync(host: string, port: number, serverName: string,
     timeoutMs: number = 10000): VncCertificateProbePromise {
+    recordDiagnosticEvent('connection.vnc', 'vnc_preflight', 'started');
     try {
-      return rdpnapi.probeVncCertificateAsync(host, port, serverName, timeoutMs) as VncCertificateProbePromise;
+      const probe: VncCertificateProbePromise =
+        rdpnapi.probeVncCertificateAsync(host, port, serverName, timeoutMs) as VncCertificateProbePromise;
+      void probe.then((result): void => {
+        recordDiagnosticEvent('connection.vnc', 'vnc_preflight',
+          result.ok ? 'succeeded' : 'failed', probe.requestId > 0 ? probe.requestId : 0,
+          0, result.errorCode);
+      }, (): void => {
+        recordDiagnosticEvent('connection.vnc', 'vnc_preflight', 'failed',
+          probe.requestId > 0 ? probe.requestId : 0, 0, -1);
+      });
+      return probe;
     } catch (err) {
+      recordDiagnosticEvent('connection.vnc', 'vnc_preflight', 'failed', 0, 0, -1);
       hilog.error(DOMAIN, TAG, '[ExtensionLoader] probeVncCertificateAsync: ' + JSON.stringify(err));
       // A synchronous NAPI failure cannot provide a cancellable request id;
       // propagate it so callers fail closed instead of receiving an
@@ -469,12 +1153,27 @@ export class ExtensionLoader {
     timeoutMs: number, ownerType: string, ownerId: string, userId: string,
     storeIdentityFingerprint: string, endpointBindingFingerprint: string,
     accountGeneration: number, enabled: boolean): VncGatewayDeepHealthPromise {
+    recordDiagnosticEvent('network.routing', 'routing_vnc_gateway', 'started',
+      0, accountGeneration, diagnosticRouteTypeCode(transport));
     try {
-      return rdpnapi.probeVncGatewayDeepAsync(host, port, transport, repeaterMode, target,
+      const probe: VncGatewayDeepHealthPromise =
+        rdpnapi.probeVncGatewayDeepAsync(host, port, transport, repeaterMode, target,
         tls, expectedFingerprint, timeoutMs, ownerType, ownerId, userId,
         storeIdentityFingerprint, endpointBindingFingerprint, accountGeneration,
         enabled) as VncGatewayDeepHealthPromise;
+      void probe.then((result): void => {
+        recordDiagnosticEvent('network.routing', 'routing_vnc_gateway',
+          result.protocolReady ? 'succeeded' : 'failed',
+          probe.requestId > 0 ? probe.requestId : 0, accountGeneration,
+          result.protocolReady ? diagnosticRouteTypeCode(transport) : -1);
+      }, (): void => {
+        recordDiagnosticEvent('network.routing', 'routing_vnc_gateway', 'failed',
+          probe.requestId > 0 ? probe.requestId : 0, accountGeneration, -1);
+      });
+      return probe;
     } catch (err) {
+      recordDiagnosticEvent('network.routing', 'routing_vnc_gateway', 'failed',
+        0, accountGeneration, -1);
       hilog.error(DOMAIN, TAG, '[ExtensionLoader] probeVncGatewayDeepAsync: ' + JSON.stringify(err));
       const failure: VncGatewayDeepHealthResult = {
         stage: 'FAILED', code: 'E-VNC-GATEWAY-DEEP', message: 'Gateway 深度检查失败', protocolReady: false,
@@ -585,6 +1284,9 @@ export class ExtensionLoader {
         supported: false, sessionActive: false, protocolSnapshotAvailable: false,
         videoSeen: false, receivedRateAvailable: false, presentedRateAvailable: false,
         decodeRateAvailable: false, sessionId, latencyMs: -1, targetBitrateKbps: 0,
+        remoteInputPermissionKnown: false, remoteInputAllowed: true,
+        remoteClipboardPermissionKnown: false, remoteClipboardAllowed: true,
+        remoteFilePermissionKnown: false, remoteFileAllowed: true,
         videoMessages: 0, receivedFrames: 0, keyframes: 0, receivedBytes: 0,
         audioFrames: 0, cadenceGaps: 0, maxCadenceGapMs: 0, testDelayCount: 0,
         receivedFps: 0, displayFps: 0, decodeFps: 0, bitrateKbps: 0,
@@ -881,9 +1583,11 @@ export class ExtensionLoader {
     }
   }
 
-  setRendererCanvasTransform(handle: number, scale: number, panX: number, panY: number): number {
+  setRendererCanvasTransform(handle: number, scale: number, panX: number, panY: number,
+    rotationQuarterTurns: number = 0): number {
     try {
-      return rdpnapi.setRendererCanvasTransform(handle, scale, panX, panY) as number;
+      return rdpnapi.setRendererCanvasTransform(handle, scale, panX, panY,
+        rotationQuarterTurns) as number;
     } catch (err) {
       hilog.error(DOMAIN, TAG, '[ExtensionLoader] setRendererCanvasTransform: ' + JSON.stringify(err));
       return 0;
@@ -932,6 +1636,24 @@ export class ExtensionLoader {
       rdpnapi.sendKey(sessionId, scancode, pressed);
     } catch (err) {
       hilog.error(DOMAIN, TAG, '[ExtensionLoader] sendKey: ' + JSON.stringify(err));
+    }
+  }
+
+  sendKeySequence(sessionId: number, keyCodes: Array<number>): boolean {
+    try {
+      return rdpnapi.sendKeySequence(sessionId, keyCodes);
+    } catch (err) {
+      hilog.error(DOMAIN, TAG, '[ExtensionLoader] sendKeySequence: ' + JSON.stringify(err));
+      return false;
+    }
+  }
+
+  sendKeyEvents(sessionId: number, keyCodes: Array<number>, pressed: Array<boolean>): boolean {
+    try {
+      return rdpnapi.sendKeyEvents(sessionId, keyCodes, pressed);
+    } catch (err) {
+      hilog.error(DOMAIN, TAG, '[ExtensionLoader] sendKeyEvents: ' + JSON.stringify(err));
+      return false;
     }
   }
 
@@ -1384,8 +2106,11 @@ export class ExtensionLoader {
 
   getConnectionState(sessionId: number): number {
     try {
-      return rdpnapi.getConnectionState(sessionId) as number;
+      const state: number = rdpnapi.getConnectionState(sessionId) as number;
+      this.recordDiagnosticConnectionState(sessionId, state);
+      return state;
     } catch (err) {
+      this.recordDiagnosticConnectionStateFailure(sessionId);
       hilog.error(DOMAIN, TAG, '[ExtensionLoader] getConnectionState: ' + JSON.stringify(err));
       return 0;
     }
@@ -1395,7 +2120,8 @@ export class ExtensionLoader {
     try {
       return rdpnapi.getSshAuthPrompt(sessionId, sessionGeneration) as SshAuthPromptRequest | null;
     } catch (err) {
-      hilog.warn(DOMAIN, TAG, '[ExtensionLoader] getSshAuthPrompt: ' + JSON.stringify(err));
+      hilog.warn(DOMAIN, TAG, '[ExtensionLoader] getSshAuthPrompt code=' +
+        sshDiagnosticErrorCode(err));
       return null;
     }
   }
@@ -1404,7 +2130,8 @@ export class ExtensionLoader {
     try {
       return rdpnapi.respondSshAuthPrompt(response) as boolean;
     } catch (err) {
-      hilog.warn(DOMAIN, TAG, '[ExtensionLoader] respondSshAuthPrompt: ' + JSON.stringify(err));
+      hilog.warn(DOMAIN, TAG, '[ExtensionLoader] respondSshAuthPrompt code=' +
+        sshDiagnosticErrorCode(err));
       return false;
     }
   }
@@ -1414,7 +2141,8 @@ export class ExtensionLoader {
       return rdpnapi.cancelSshAuthPrompt(
         sessionId, sessionGeneration, requestId) as boolean;
     } catch (err) {
-      hilog.warn(DOMAIN, TAG, '[ExtensionLoader] cancelSshAuthPrompt: ' + JSON.stringify(err));
+      hilog.warn(DOMAIN, TAG, '[ExtensionLoader] cancelSshAuthPrompt code=' +
+        sshDiagnosticErrorCode(err));
       return false;
     }
   }
@@ -1594,8 +2322,14 @@ export class ExtensionLoader {
 
   submitRustDesk2FA(sessionId: number, code: string): boolean {
     try {
-      return rdpnapi.submitRustDesk2FA(sessionId, code) as boolean;
+      const accepted: boolean = rdpnapi.submitRustDesk2FA(sessionId, code) as boolean;
+      recordDiagnosticEvent('connection.rustdesk', 'rustdesk_two_factor',
+        accepted ? 'succeeded' : 'failed', sessionId > 0 ? sessionId : 0, 0,
+        accepted ? 0 : -1);
+      return accepted;
     } catch (err) {
+      recordDiagnosticEvent('connection.rustdesk', 'rustdesk_two_factor',
+        'failed', sessionId > 0 ? sessionId : 0, 0, -1);
       hilog.error(DOMAIN, TAG, '[ExtensionLoader] submitRustDesk2FA: ' + JSON.stringify(err));
       return false;
     }
@@ -1668,9 +2402,16 @@ export class ExtensionLoader {
    * @param passphrase 私钥加密密码 (""=无密码)
    */
   generateSshKeyPair(keyType: string, bits: number, comment: string, passphrase: string): GeneratedSshKeyPair {
+    recordDiagnosticEvent('security.ssh_key', 'ssh_key_generate', 'started');
     try {
-      return rdpnapi.generateSshKeyPair(keyType, bits, comment, passphrase) as GeneratedSshKeyPair;
+      const result: GeneratedSshKeyPair =
+        rdpnapi.generateSshKeyPair(keyType, bits, comment, passphrase) as GeneratedSshKeyPair;
+      recordDiagnosticEvent('security.ssh_key', 'ssh_key_generate',
+        result.ok ? 'succeeded' : 'failed', 0, 0, result.ok ? 0 : -1,
+        0, result.keyBits > 0 ? result.keyBits : 0);
+      return result;
     } catch (err) {
+      recordDiagnosticEvent('security.ssh_key', 'ssh_key_generate', 'failed', 0, 0, -1);
       hilog.error(DOMAIN, TAG, '[ExtensionLoader] generateSshKeyPair: ' + JSON.stringify(err));
       return { ok: false, privateKeyPem: '', publicKeyOpenSsh: '', fingerprintSha256: '',
                 keyType: '', keyBits: 0, error: '[CC-SSHKEYTOOL-01] generateSshKeyPair NAPI error: ' + JSON.stringify(err) };
@@ -1683,9 +2424,16 @@ export class ExtensionLoader {
    * @param passphrase 解密密码 (""=尝试无密码)
    */
   inspectSshPrivateKey(privateKeyPem: string, passphrase: string): SshPrivateKeyInfo {
+    recordDiagnosticEvent('security.ssh_key', 'ssh_key_inspect', 'started');
     try {
-      return rdpnapi.inspectSshPrivateKey(privateKeyPem, passphrase) as SshPrivateKeyInfo;
+      const result: SshPrivateKeyInfo =
+        rdpnapi.inspectSshPrivateKey(privateKeyPem, passphrase) as SshPrivateKeyInfo;
+      recordDiagnosticEvent('security.ssh_key', 'ssh_key_inspect',
+        result.ok || result.encrypted ? 'succeeded' : 'failed',
+        0, 0, result.encrypted ? 1 : 0);
+      return result;
     } catch (err) {
+      recordDiagnosticEvent('security.ssh_key', 'ssh_key_inspect', 'failed', 0, 0, -1);
       hilog.error(DOMAIN, TAG, '[ExtensionLoader] inspectSshPrivateKey: ' + JSON.stringify(err));
       return { ok: false, keyType: '', publicKeyOpenSsh: '', fingerprintSha256: '',
                 encrypted: false, error: '[CC-SSHKEYTOOL-02] inspectSshPrivateKey NAPI error: ' + JSON.stringify(err) };
@@ -1697,9 +2445,15 @@ export class ExtensionLoader {
    * @return 新 PEM; 失败返回 ""
    */
   changeSshPrivateKeyPassphrase(privateKeyPem: string, oldPassphrase: string, newPassphrase: string): string {
+    recordDiagnosticEvent('security.ssh_key', 'ssh_key_passphrase', 'started');
     try {
-      return rdpnapi.changeSshPrivateKeyPassphrase(privateKeyPem, oldPassphrase, newPassphrase) as string;
+      const result: string =
+        rdpnapi.changeSshPrivateKeyPassphrase(privateKeyPem, oldPassphrase, newPassphrase) as string;
+      recordDiagnosticEvent('security.ssh_key', 'ssh_key_passphrase',
+        result.length > 0 ? 'succeeded' : 'failed', 0, 0, result.length > 0 ? 0 : -1);
+      return result;
     } catch (err) {
+      recordDiagnosticEvent('security.ssh_key', 'ssh_key_passphrase', 'failed', 0, 0, -1);
       hilog.error(DOMAIN, TAG, '[ExtensionLoader] changeSshPrivateKeyPassphrase: ' + JSON.stringify(err));
       return '';
     }
@@ -1723,10 +2477,17 @@ export class ExtensionLoader {
   installSshPublicKey(host: string, port: number, username: string, password: string,
                       privateKeyPem: string, passphrase: string,
                       publicKey: string): SshPublicKeyInstallResult {
+    recordDiagnosticEvent('security.ssh_key', 'ssh_key_install', 'started');
     try {
-      return rdpnapi.installSshPublicKey(host, port, username, password,
-                                          privateKeyPem, passphrase, publicKey) as SshPublicKeyInstallResult;
+      const result: SshPublicKeyInstallResult =
+        rdpnapi.installSshPublicKey(host, port, username, password,
+          privateKeyPem, passphrase, publicKey) as SshPublicKeyInstallResult;
+      recordDiagnosticEvent('security.ssh_key', 'ssh_key_install',
+        result.ok ? 'succeeded' : 'failed', 0, 0, result.code,
+        0, result.alreadyInstalled ? 1 : 0);
+      return result;
     } catch (err) {
+      recordDiagnosticEvent('security.ssh_key', 'ssh_key_install', 'failed', 0, 0, -99);
       hilog.error(DOMAIN, TAG, '[ExtensionLoader] installSshPublicKey: ' + JSON.stringify(err));
       return { ok: false, alreadyInstalled: false, verified: false, code: -99,
                message: '[CC-SSHKEY-07] installSshPublicKey NAPI error: ' + JSON.stringify(err) };
@@ -1739,9 +2500,15 @@ export class ExtensionLoader {
   testSshKeyAuth(host: string, port: number, username: string,
                  privateKeyPem: string, passphrase: string,
                  proxy?: SshProxyConfig): SshAuthTestResult {
+    recordDiagnosticEvent('security.ssh_key', 'ssh_key_auth_test', 'started');
     try {
-      return rdpnapi.testSshKeyAuth(host, port, username, privateKeyPem, passphrase, proxy) as SshAuthTestResult;
+      const result: SshAuthTestResult =
+        rdpnapi.testSshKeyAuth(host, port, username, privateKeyPem, passphrase, proxy) as SshAuthTestResult;
+      recordDiagnosticEvent('security.ssh_key', 'ssh_key_auth_test',
+        result.ok ? 'succeeded' : 'failed', 0, 0, result.code);
+      return result;
     } catch (err) {
+      recordDiagnosticEvent('security.ssh_key', 'ssh_key_auth_test', 'failed', 0, 0, -99);
       hilog.error(DOMAIN, TAG, '[ExtensionLoader] testSshKeyAuth: ' + JSON.stringify(err));
       return { ok: false, code: -99,
                message: '[CC-SSHKEY-08] testSshKeyAuth NAPI error: ' + JSON.stringify(err) };
@@ -1752,10 +2519,15 @@ export class ExtensionLoader {
   async testSshKeyAuthAsync(host: string, port: number, username: string,
                             privateKeyPem: string, passphrase: string,
                             proxy?: SshProxyConfig): Promise<SshAuthTestResult> {
+    recordDiagnosticEvent('security.ssh_key', 'ssh_key_auth_test', 'started');
     try {
-      return await rdpnapi.testSshKeyAuthAsync(
+      const result: SshAuthTestResult = await rdpnapi.testSshKeyAuthAsync(
         host, port, username, privateKeyPem, passphrase, proxy) as SshAuthTestResult;
+      recordDiagnosticEvent('security.ssh_key', 'ssh_key_auth_test',
+        result.ok ? 'succeeded' : 'failed', 0, 0, result.code);
+      return result;
     } catch (err) {
+      recordDiagnosticEvent('security.ssh_key', 'ssh_key_auth_test', 'failed', 0, 0, -99);
       hilog.error(DOMAIN, TAG, '[ExtensionLoader] testSshKeyAuthAsync: ' + JSON.stringify(err));
       return { ok: false, code: -99,
                message: '[CC-SSHKEY-08] testSshKeyAuthAsync NAPI error: ' + JSON.stringify(err) };
@@ -1767,9 +2539,27 @@ export class ExtensionLoader {
    * 同步阻塞 1-5s, 调用方应显示 loading 状态
    */
   probeSshHostKey(host: string, port: number, proxy?: SshProxyConfig): SshHostKeyInfo {
+    recordDiagnosticEvent('connection.ssh_sftp', 'ssh_preflight', 'started');
+    if ((proxy?.type ?? 'direct') !== 'direct') {
+      recordDiagnosticEvent('network.routing', 'routing_ssh_proxy', 'started',
+        0, 0, diagnosticRouteTypeCode(proxy?.type ?? ''));
+    }
     try {
-      return rdpnapi.probeSshHostKey(host, port, proxy) as SshHostKeyInfo;
+      const result: SshHostKeyInfo =
+        rdpnapi.probeSshHostKey(host, port, proxy) as SshHostKeyInfo;
+      recordDiagnosticEvent('connection.ssh_sftp', 'ssh_preflight',
+        result.ok ? 'succeeded' : 'failed', 0, 0, result.errorCode);
+      if ((proxy?.type ?? 'direct') !== 'direct') {
+        recordDiagnosticEvent('network.routing', 'routing_ssh_proxy',
+          result.ok ? 'succeeded' : 'failed', 0, 0,
+          result.ok ? diagnosticRouteTypeCode(proxy?.type ?? '') : result.errorCode);
+      }
+      return result;
     } catch (err) {
+      recordDiagnosticEvent('connection.ssh_sftp', 'ssh_preflight', 'failed', 0, 0, -99);
+      if ((proxy?.type ?? 'direct') !== 'direct') {
+        recordDiagnosticEvent('network.routing', 'routing_ssh_proxy', 'failed', 0, 0, -99);
+      }
       hilog.error(DOMAIN, TAG, '[ExtensionLoader] probeSshHostKey: ' + JSON.stringify(err));
       return {
         ok: false, host: host, port: port, algorithm: '',
@@ -1783,9 +2573,27 @@ export class ExtensionLoader {
   /** 探测 SSH 主机公钥；native DNS/TCP/KEX 在线程池执行。 */
   async probeSshHostKeyAsync(host: string, port: number,
                              proxy?: SshProxyConfig): Promise<SshHostKeyInfo> {
+    recordDiagnosticEvent('connection.ssh_sftp', 'ssh_preflight', 'started');
+    if ((proxy?.type ?? 'direct') !== 'direct') {
+      recordDiagnosticEvent('network.routing', 'routing_ssh_proxy', 'started',
+        0, 0, diagnosticRouteTypeCode(proxy?.type ?? ''));
+    }
     try {
-      return await rdpnapi.probeSshHostKeyAsync(host, port, proxy) as SshHostKeyInfo;
+      const result: SshHostKeyInfo =
+        await rdpnapi.probeSshHostKeyAsync(host, port, proxy) as SshHostKeyInfo;
+      recordDiagnosticEvent('connection.ssh_sftp', 'ssh_preflight',
+        result.ok ? 'succeeded' : 'failed', 0, 0, result.errorCode);
+      if ((proxy?.type ?? 'direct') !== 'direct') {
+        recordDiagnosticEvent('network.routing', 'routing_ssh_proxy',
+          result.ok ? 'succeeded' : 'failed', 0, 0,
+          result.ok ? diagnosticRouteTypeCode(proxy?.type ?? '') : result.errorCode);
+      }
+      return result;
     } catch (err) {
+      recordDiagnosticEvent('connection.ssh_sftp', 'ssh_preflight', 'failed', 0, 0, -99);
+      if ((proxy?.type ?? 'direct') !== 'direct') {
+        recordDiagnosticEvent('network.routing', 'routing_ssh_proxy', 'failed', 0, 0, -99);
+      }
       hilog.error(DOMAIN, TAG, '[ExtensionLoader] probeSshHostKeyAsync: ' + JSON.stringify(err));
       return {
         ok: false, host: host, port: port, algorithm: '',
@@ -1944,6 +2752,7 @@ export class ExtensionLoader {
       hilog.error(DOMAIN, TAG, '[ExtensionLoader] disconnectForExit: ' + JSON.stringify(err));
     }
     this.currentSessionId = -1;
+    this.facadeGeneration = 0;
     this.rendererHandle = -1;
     this.decoderHandle = -1;
     this.audioPlayerHandle = -1;

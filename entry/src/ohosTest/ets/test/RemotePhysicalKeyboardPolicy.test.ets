@@ -22,6 +22,10 @@ export default function remotePhysicalKeyboardPolicyTest(): void {
         HARMONY_KEYCODE_CTRL_LEFT)).assertEqual(HARMONY_KEYCODE_CTRL_LEFT);
       expect(mapPhysicalKeyForRemoteLayout(RemoteKeyboardLayout.WINDOWS,
         HARMONY_KEYCODE_META_RIGHT)).assertEqual(HARMONY_KEYCODE_META_RIGHT);
+      const completeWindowsChord: number[] = [2076, 2045, 2047, 2034];
+      const mappedWindowsChord: number[] = completeWindowsChord.map((keyCode: number): number =>
+        mapPhysicalKeyForRemoteLayout(RemoteKeyboardLayout.WINDOWS, keyCode));
+      expect(mappedWindowsChord.join(',')).assertEqual('2076,2045,2047,2034');
     });
 
     it('distinguishes_macos_caps_short_and_long_press', 0, (): void => {
@@ -40,13 +44,49 @@ export default function remotePhysicalKeyboardPolicyTest(): void {
         HARMONY_KEYCODE_META_LEFT)).assertEqual(HARMONY_KEYCODE_CTRL_LEFT);
       expect(mapPhysicalKeyForRemoteLayout(RemoteKeyboardLayout.MACOS,
         HARMONY_KEYCODE_META_RIGHT)).assertEqual(HARMONY_KEYCODE_CTRL_RIGHT);
+      // Option/Alt, Shift and the complete ordinary/function key catalog are
+      // shared with Windows and must not be remapped by the macOS modifier
+      // adaptation.
+      expect(mapPhysicalKeyForRemoteLayout(RemoteKeyboardLayout.MACOS, 2045))
+        .assertEqual(2045);
+      expect(mapPhysicalKeyForRemoteLayout(RemoteKeyboardLayout.MACOS, 2046))
+        .assertEqual(2046);
+      expect(mapPhysicalKeyForRemoteLayout(RemoteKeyboardLayout.MACOS, 2047))
+        .assertEqual(2047);
+      expect(mapPhysicalKeyForRemoteLayout(RemoteKeyboardLayout.MACOS, 2048))
+        .assertEqual(2048);
+      expect(mapPhysicalKeyForRemoteLayout(RemoteKeyboardLayout.MACOS, 2019))
+        .assertEqual(2019);
+      expect(mapPhysicalKeyForRemoteLayout(RemoteKeyboardLayout.MACOS, 2059))
+        .assertEqual(2059);
+      expect(mapPhysicalKeyForRemoteLayout(RemoteKeyboardLayout.MACOS, 2100))
+        .assertEqual(2100);
+      expect(mapPhysicalKeyForRemoteLayout(RemoteKeyboardLayout.MACOS, 2823))
+        .assertEqual(2823);
     });
 
-    it('asks_for_layout_only_for_cross_platform_rustdesk_sessions', 0, (): void => {
+    it('maps_complete_macos_shortcuts_without_losing_side_or_order', 0, (): void => {
+      const commandOptionShiftR: number[] = [2076, 2045, 2047, 2034];
+      const mappedCommandOptionShiftR: number[] = commandOptionShiftR.map(
+        (keyCode: number): number =>
+          mapPhysicalKeyForRemoteLayout(RemoteKeyboardLayout.MACOS, keyCode));
+      expect(mappedCommandOptionShiftR.join(','))
+        .assertEqual('2072,2045,2047,2034');
+
+      const rightControlSpace: number[] = [2073, 2050];
+      const mappedRightControlSpace: number[] = rightControlSpace.map(
+        (keyCode: number): number =>
+          mapPhysicalKeyForRemoteLayout(RemoteKeyboardLayout.MACOS, keyCode));
+      expect(mappedRightControlSpace.join(',')).assertEqual('2077,2050');
+    });
+
+    it('asks_for_layout_for_every_cross_platform_remote_keyboard', 0, (): void => {
       expect(shouldChoosePhysicalKeyboardLayout('rdp', true, 'xl')).assertFalse();
       expect(shouldChoosePhysicalKeyboardLayout('rustdesk', true, 'xl')).assertTrue();
       expect(shouldChoosePhysicalKeyboardLayout('rdp', true, 'lg')).assertFalse();
       expect(shouldChoosePhysicalKeyboardLayout('rustdesk', false, 'md')).assertTrue();
+      expect(shouldChoosePhysicalKeyboardLayout('vnc', false, 'md')).assertTrue();
+      expect(shouldChoosePhysicalKeyboardLayout('moonlight', false, 'md')).assertTrue();
       expect(shouldChoosePhysicalKeyboardLayout('rdp', false, 'sm')).assertFalse();
       expect(shouldChoosePhysicalKeyboardLayout('ssh', true, 'xl')).assertFalse();
       expect(remoteKeyboardLayoutDescription(RemoteKeyboardLayout.MACOS).indexOf('Command') >= 0)

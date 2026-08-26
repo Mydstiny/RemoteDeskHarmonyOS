@@ -8,8 +8,12 @@
 import { common, wantAgent, WantAgent } from '@kit.AbilityKit';
 import { backgroundTaskManager } from '@kit.BackgroundTasksKit';
 import { notificationManager } from '@kit.NotificationKit';
-import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
+import {
+  buildSshBackgroundNotificationContent,
+  SshBackgroundNotificationContent
+} from './ssh/notification/SshNotificationService';
+import { sshDiagnosticErrorCode } from './ssh/observability/SshDiagnosticPolicy';
 
 const TAG = 'SshTerminalBgTask';
 const DOMAIN = 0x0016;
@@ -39,6 +43,78 @@ export interface SshTerminalBackgroundInfo {
   sessionId: number;
   hostLabel: string;
   hostAddress: string;
+}
+
+/**
+ * Page-local ownership of tasks started from the live Ability background
+ * signal. The page can be torn down while the process-wide background service
+ * is still draining an async start/stop operation, so this registry must be
+ * reset at every page lifecycle boundary. Keeping the identity keyed by the
+ * normalized host/session pair also prevents duplicate signal callbacks from
+ * growing an unbounded list.
+ */
+export class SshBackgroundSignalTaskRegistry {
+  private readonly tasks: Map<string, SshTerminalBackgroundInfo> =
+    new Map<string, SshTerminalBackgroundInfo>();
+
+  private key(info: SshTerminalBackgroundInfo): string {
+    const hostId: string = info.hostId.trim();
+    if (hostId.length === 0 || info.sessionId <= 0) { return ''; }
+    return hostId + '#' + info.sessionId.toString();
+  }
+
+  track(info: SshTerminalBackgroundInfo): void {
+    const key: string = this.key(info);
+    if (key.length === 0) { return; }
+    this.tasks.set(key, {
+      hostId: info.hostId.trim(),
+      sessionId: info.sessionId,
+      hostLabel: info.hostLabel,
+      hostAddress: info.hostAddress
+    });
+  }
+
+  snapshot(): SshTerminalBackgroundInfo[] {
+    const result: SshTerminalBackgroundInfo[] = [];
+    this.tasks.forEach((info: SshTerminalBackgroundInfo): void => {
+      result.push({
+        hostId: info.hostId,
+        sessionId: info.sessionId,
+        hostLabel: info.hostLabel,
+        hostAddress: info.hostAddress
+      });
+    });
+    return result;
+  }
+
+  clear(): void { this.tasks.clear(); }
+
+  size(): number { return this.tasks.size; }
+}
+
+export enum SshBackgroundSignalAction {
+  none = 0,
+  start = 1,
+  stop = 2
+}
+
+/**
+ * A normal Home/lock transition keeps the ArkUI page mounted, so
+ * aboutToDisappear cannot be the only continuous-task trigger. Page teardown
+ * remains the owner while terminalClosing is true; otherwise the live Ability
+ * background signal starts the current sessions and the matching foreground
+ * signal stops only tasks registered by that page.
+ */
+export function decideSshBackgroundSignalAction(isBackground: boolean,
+  terminalClosing: boolean, activeSessionCount: number,
+  pageTrackedTaskCount: number): SshBackgroundSignalAction {
+  if (terminalClosing) { return SshBackgroundSignalAction.none; }
+  if (isBackground) {
+    return activeSessionCount > 0 ? SshBackgroundSignalAction.start :
+      SshBackgroundSignalAction.none;
+  }
+  return pageTrackedTaskCount > 0 ? SshBackgroundSignalAction.stop :
+    SshBackgroundSignalAction.none;
 }
 
 export class SshTerminalBackgroundTaskService {
@@ -140,7 +216,6 @@ export class SshTerminalBackgroundTaskService {
         hilog.info(DOMAIN, TAG, 'SSH background task started id=' + taskId.toString());
         return true;
       } catch (err) {
-        const be: BusinessError = err as BusinessError;
         this.tasks.set(key, {
           sessionId: info.sessionId,
           continuousTaskId: -1,
@@ -152,7 +227,7 @@ export class SshTerminalBackgroundTaskService {
         });
         await this.publishAggregateNotification();
         hilog.warn(DOMAIN, TAG, 'SSH background task rejected code=' +
-          this.errorCode(be) + ' message=' + this.errorMessage(be));
+          sshDiagnosticErrorCode(err));
         return false;
       }
     });
@@ -204,9 +279,8 @@ export class SshTerminalBackgroundTaskService {
         await backgroundTaskManager.stopBackgroundRunning(context, taskId);
         hilog.info(DOMAIN, TAG, 'SSH background task stopped id=' + taskId.toString());
       } catch (err) {
-        const be: BusinessError = err as BusinessError;
         hilog.warn(DOMAIN, TAG, 'SSH background task stop failed code=' +
-          this.errorCode(be) + ' message=' + this.errorMessage(be));
+          sshDiagnosticErrorCode(err));
       }
     }
     if (notificationId > 0 && notificationId !== SSH_NOTIFICATION_ID) {
@@ -270,20 +344,14 @@ export class SshTerminalBackgroundTaskService {
     const runningCount: number = snapshots.filter(
       (snapshot: SshTerminalBackgroundSnapshot): boolean => snapshot.state === 'running').length;
     const limitedCount: number = snapshots.length - runningCount;
-    const hostSummary: string = snapshots.map(
-      (snapshot: SshTerminalBackgroundSnapshot): string =>
-        snapshot.hostLabel.length > 0 ? snapshot.hostLabel : snapshot.hostAddress).join('、');
-    const title: string = limitedCount > 0 && runningCount === 0
-      ? 'SSH 后台受限' : 'SSH 后台连接';
-    const text: string = runningCount > 0
-      ? '保持 ' + runningCount.toString() + ' 个连接 · ' + hostSummary
-      : '后台受限，未保持持续连接 · ' + hostSummary;
+    const content: SshBackgroundNotificationContent =
+      buildSshBackgroundNotificationContent(runningCount, limitedCount);
     const request: notificationManager.NotificationRequest = {
       content: {
         notificationContentType: notificationManager.ContentType.NOTIFICATION_CONTENT_BASIC_TEXT,
         normal: {
-          title,
-          text
+          title: content.title,
+          text: content.text
         }
       },
       id: SSH_NOTIFICATION_ID,
@@ -294,9 +362,8 @@ export class SshTerminalBackgroundTaskService {
     try {
       await notificationManager.publish(request);
     } catch (err) {
-      const be: BusinessError = err as BusinessError;
       hilog.warn(DOMAIN, TAG, 'SSH notification publish failed code=' +
-        this.errorCode(be) + ' message=' + this.errorMessage(be));
+        sshDiagnosticErrorCode(err));
     }
   }
 
@@ -313,13 +380,5 @@ export class SshTerminalBackgroundTaskService {
     const queued: Promise<T> = this.operationTail.then(operation, operation);
     this.operationTail = queued.then((): void => undefined, (): void => undefined);
     return queued;
-  }
-
-  private errorCode(error: BusinessError): string {
-    return error.code === undefined ? 'unknown' : error.code.toString();
-  }
-
-  private errorMessage(error: BusinessError): string {
-    return error.message === undefined ? JSON.stringify(error) : error.message;
   }
 }

@@ -1,5 +1,5 @@
 export interface SessionCapabilityState {
-  protocol: 'rdp' | 'rustdesk' | 'ssh' | 'vnc' | string;
+  protocol: 'rdp' | 'rustdesk' | 'ssh' | 'vnc' | 'moonlight' | string;
   connected: boolean;
   rdpDriveMounted: boolean;
   rdpClipboardEnabled: boolean;
@@ -12,6 +12,8 @@ export interface SessionCapabilityState {
   vncClipboardEnabled: boolean;
   vncClipboardReady: boolean;
   vncViewOnly: boolean;
+  moonlightRuntimeAvailable?: boolean;
+  moonlightHostControlReady?: boolean;
 }
 
 export interface CapabilityAvailability {
@@ -44,6 +46,16 @@ function unsupported(protocol: string): CapabilityAvailability {
   return unavailable('当前版本尚未提供 ' + protocol.toUpperCase() + ' 会话能力');
 }
 
+function moonlightConnectAvailability(state: SessionCapabilityState): CapabilityAvailability {
+  if (state.moonlightRuntimeAvailable !== true) {
+    return unavailable('Moonlight 串流运行时尚未开放');
+  }
+  if (state.moonlightHostControlReady !== true) {
+    return unavailable('Moonlight Host Control 尚未就绪');
+  }
+  return available();
+}
+
 export function resolveSessionCapabilities(state: SessionCapabilityState): RemoteSessionCapabilities {
   if (state.protocol === 'vnc') {
     const vncSend = !state.connected
@@ -65,6 +77,19 @@ export function resolveSessionCapabilities(state: SessionCapabilityState): Remot
       fileUpload: unavailable('VNC RFB 不提供文件传输能力'),
       fileDownload: unavailable('VNC RFB 不提供文件传输能力'),
       multiDisplay: unavailable('当前 VNC 会话仅支持单帧缓冲区')
+    };
+  }
+
+  if (state.protocol === 'moonlight') {
+    const connect = moonlightConnectAvailability(state);
+    const unsupportedMoonlight = unavailable('Moonlight 不提供此通用远程桌面能力');
+    return {
+      connect: connect,
+      clipboardSend: unsupportedMoonlight,
+      clipboardReceive: unsupportedMoonlight,
+      fileUpload: unsupportedMoonlight,
+      fileDownload: unsupportedMoonlight,
+      multiDisplay: unavailable('Moonlight 当前只提供单路串流画面')
     };
   }
 

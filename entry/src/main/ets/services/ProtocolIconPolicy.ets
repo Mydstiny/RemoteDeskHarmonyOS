@@ -1,9 +1,9 @@
 /**
  * Protocol identity icons shared by settings, host add flows and relay cards.
  *
- * Keep protocol identity on API 23 SymbolGlyph resources.  This prevents a
- * raw SVG from silently becoming the visual owner of a protocol in one
- * surface while another surface uses a different icon family.
+ * Existing protocols keep their API 23 SymbolGlyph resources. Moonlight may
+ * use its audited official-geometry asset on surfaces that support a branded
+ * descriptor, with the original system symbol retained as a fail-safe.
  */
 export type ProtocolIconKey =
   | 'rdp'
@@ -17,6 +17,22 @@ export type ProtocolIconKey =
   | 'totp'
   | 'settings';
 
+export type ProtocolIconKind = 'system' | 'brand';
+export const MOONLIGHT_ICON_FALLBACK_SYMBOL: string = 'gamecontroller_fill';
+
+export interface ProtocolIconDescriptor {
+  kind: ProtocolIconKind;
+  resource: Resource;
+  fallback: Resource;
+  fallbackName: string;
+  tintable: boolean;
+}
+
+/** Single resource owner for the literal Moonlight fallback mapping. */
+export function moonlightSystemFallbackIcon(): Resource {
+  return $r('sys.symbol.gamecontroller_fill');
+}
+
 export function protocolIcon(key: ProtocolIconKey): Resource {
   switch (key) {
     case 'rdp':
@@ -28,7 +44,7 @@ export function protocolIcon(key: ProtocolIconKey): Resource {
     case 'vnc':
       return $r('sys.symbol.display');
     case 'moonlight':
-      return $r('sys.symbol.gamecontroller_fill');
+      return moonlightSystemFallbackIcon();
     case 'rustdesk_relay':
       return $r('sys.symbol.cloud_fill');
     case 'vnc_gateway':
@@ -42,6 +58,26 @@ export function protocolIcon(key: ProtocolIconKey): Resource {
     default:
       return $r('sys.symbol.display');
   }
+}
+
+export function protocolIconDescriptor(key: ProtocolIconKey): ProtocolIconDescriptor {
+  const fallback: Resource = protocolIcon(key);
+  if (key === 'moonlight') {
+    return {
+      kind: 'brand',
+      resource: $r('app.media.icon_moonlight'),
+      fallback: fallback,
+      fallbackName: MOONLIGHT_ICON_FALLBACK_SYMBOL,
+      tintable: true
+    };
+  }
+  return {
+    kind: 'system',
+    resource: fallback,
+    fallback: fallback,
+    fallbackName: '',
+    tintable: true
+  };
 }
 
 export function protocolIconLabel(key: ProtocolIconKey): string {

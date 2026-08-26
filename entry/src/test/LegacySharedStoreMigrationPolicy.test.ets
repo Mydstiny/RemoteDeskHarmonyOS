@@ -9,8 +9,10 @@ import {
 
 export default function legacySharedStoreMigrationPolicyTest(): void {
   describe('LegacySharedStoreMigrationPolicy', (): void => {
-    it('never_assigns_blank_owner_to_the_first_account', 0, (): void => {
+    it('claims_blank_legacy_owner_only_for_a_verified_account', 0, (): void => {
       expect(legacyRowOwnershipDecision('', 'huawei_account', 'union-a'))
+        .assertEqual('target');
+      expect(legacyRowOwnershipDecision('', 'huawei_account', ''))
         .assertEqual('quarantine_missing_owner');
       expect(legacyRowOwnershipDecision('', 'device_local', ''))
         .assertEqual('quarantine_missing_owner');
@@ -21,6 +23,9 @@ export default function legacySharedStoreMigrationPolicyTest(): void {
         .assertEqual('target');
       expect(legacyRowOwnershipDecision('union-a', 'huawei_account', 'union-a'))
         .assertEqual('target');
+      expect(legacyRowOwnershipDecision(
+        'owner-a', 'huawei_account', 'union-a', 'owner-a'))
+        .assertEqual('target');
       expect(legacyRowOwnershipDecision('union-b', 'huawei_account', 'union-a'))
         .assertEqual('other_owner');
     });
@@ -29,6 +34,8 @@ export default function legacySharedStoreMigrationPolicyTest(): void {
       expect(legacyCryptoParamsMayMigrate([], 'device_local', '')).assertTrue();
       expect(legacyCryptoParamsMayMigrate(
         ['union-a'], 'huawei_account', 'union-a')).assertTrue();
+      expect(legacyCryptoParamsMayMigrate(
+        [], 'huawei_account', 'union-a')).assertTrue();
       expect(legacyCryptoParamsMayMigrate(
         ['union-a', 'union-b'], 'huawei_account', 'union-a')).assertFalse();
     });

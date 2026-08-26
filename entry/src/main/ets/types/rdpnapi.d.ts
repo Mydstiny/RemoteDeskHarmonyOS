@@ -15,11 +15,17 @@ declare module 'librdpnapi.so' {
     decoderHandle?: number, audioHandle?: number): number;
   export function beginDisconnect(sessionId: number, rendererHandle: number,
     decoderHandle: number, audioHandle: number): number;
+  export function getSessionOwnerIdentity(sessionId: number): NativeSessionOwnerIdentity | null;
+  export function beginDisconnectWithReceipt(sessionId: number, generation: number,
+    ownerToken: number, rendererHandle: number, decoderHandle: number,
+    audioHandle: number): NativeDisconnectReceipt;
   export function disconnectAll(rendererHandle?: number, decoderHandle?: number,
     audioHandle?: number): number;
   export function getDisconnectState(requestId: number): number;
 
   export function sendKey(sessionId: number, scancode: number, pressed: boolean): void;
+  export function sendKeySequence(sessionId: number, keyCodes: number[]): boolean;
+  export function sendKeyEvents(sessionId: number, keyCodes: number[], pressed: boolean[]): boolean;
   export function sendMouse(sessionId: number, x: number, y: number, button: number, pressed: boolean): void;
   export function sendMouseWheel(sessionId: number, x: number, y: number, delta: number): void;
   export function sendRustDeskTouchpadWheel(sessionId: number, x: number, y: number): boolean;
@@ -164,7 +170,8 @@ declare module 'librdpnapi.so' {
   export function renderFrame(handle: number, textureId: number): void;
   export function renderRawBGRA(handle: number, data: ArrayBuffer, width: number, height: number, stride: number): void;
   export function resizeRenderer(handle: number, width: number, height: number): void;
-  export function setRendererCanvasTransform(handle: number, scale: number, panX: number, panY: number): number;
+  export function setRendererCanvasTransform(handle: number, scale: number, panX: number, panY: number,
+    rotationQuarterTurns?: number): number;
   export function testRender(handle: number): void;
   export function registerNativeXComponent(): boolean;
   export function setXComponentSurfaceId(surfaceId: string, width: number, height: number): boolean;
@@ -182,6 +189,25 @@ declare module 'librdpnapi.so' {
   export function detachVideoPipeline(decoderHandle: number): boolean;
   export function requestDecoderRecovery(decoderHandle: number): boolean;
   export function rebindActiveVideoPipeline(): boolean;
+  export interface HardwareVideoDecoderCapability {
+    available: boolean;
+    name: string;
+    minWidth: number;
+    maxWidth: number;
+    minHeight: number;
+    maxHeight: number;
+    minFps: number;
+    maxFps: number;
+    widthAlignment: number;
+    heightAlignment: number;
+    lowLatency: boolean;
+  }
+  export interface HardwareVideoDecoderCapabilities {
+    h264: HardwareVideoDecoderCapability;
+    hevc: HardwareVideoDecoderCapability;
+    av1: HardwareVideoDecoderCapability;
+  }
+  export function getHardwareVideoDecoderCapabilities(): HardwareVideoDecoderCapabilities;
 
   export function initAudioPlayer(sampleRate?: number, channels?: number): number;
   export function destroyAudioPlayer(handle: number): void;
@@ -277,7 +303,11 @@ export interface RdpCertificateInfo {
   hostMismatch: boolean;
   errorCode: number;
   errorMessage: string;
+  preflightStatus: RdpPreflightStatus;
+  riskFlags: string[];
 }
+
+export type RdpPreflightStatus = 'completed' | 'inconclusive' | 'unavailable' | 'transportFailed';
 
 export type RdpEndpointMode = 'direct_rdp' | 'transparent_tcp_rdp' |
   'microsoft_rd_gateway' | 'vendor_https_bastion' | 'azure_bastion' | 'unknown_gateway';
@@ -294,6 +324,18 @@ export interface RdpPreflightRoute {
   gatewayTransport?: RdpGatewayTransport;
 }
 
+export interface NativeSessionOwnerIdentity {
+  sessionId: number;
+  generation: number;
+  ownerToken: number;
+}
+
+export interface NativeDisconnectReceipt {
+  accepted: boolean;
+  requestId: number;
+  terminalState: number;
+}
+
 export interface RdpPreflightRequest {
   route: RdpPreflightRoute;
   username?: string;
@@ -304,8 +346,10 @@ export interface RdpPreflightRequest {
   expectedGatewayFingerprintSha256?: string;
   targetAllowUntrustedRoot?: boolean;
   targetAllowHostMismatch?: boolean;
+  targetAllowTimeAnomaly?: boolean;
   gatewayAllowUntrustedRoot?: boolean;
   gatewayAllowHostMismatch?: boolean;
+  gatewayAllowTimeAnomaly?: boolean;
   generation?: number;
   requestId?: string;
 }
@@ -325,10 +369,15 @@ export interface RdpCertificateRecord {
   fingerprintSha256: string;
   notBeforeMs: number;
   notAfterMs: number;
+  riskFlags: string[];
 }
 
 export interface RdpPreflightResult {
   ok: boolean;
+  preflightStatus: RdpPreflightStatus;
+  riskFlags: string[];
+  gatewayRiskFlags: string[];
+  targetRiskFlags: string[];
   endpointMode: RdpEndpointMode | string;
   routeIdentity: string;
   generation: number;
@@ -473,6 +522,12 @@ export interface RustDeskDiagnosticsSnapshot {
   receivedRateAvailable: boolean;
   presentedRateAvailable: boolean;
   decodeRateAvailable: boolean;
+  remoteInputPermissionKnown: boolean;
+  remoteInputAllowed: boolean;
+  remoteClipboardPermissionKnown: boolean;
+  remoteClipboardAllowed: boolean;
+  remoteFilePermissionKnown: boolean;
+  remoteFileAllowed: boolean;
   sessionId: number;
   latencyMs: number;
   targetBitrateKbps: number;
@@ -634,6 +689,8 @@ export interface SessionConfig {
   privateKeyPem: string;
   privateKeyPassphrase: string;
   keyboardInteractiveResponses?: string[];
+  /** Optional LANG sent as an SSH channel environment request before PTY/shell startup. */
+  sshLocale?: string;
   sshProxyType?: 'direct' | 'http_connect' | 'socks5' | 'frp_tcp' | 'frp_visitor' |
     'frp_stcp' | 'frp_sudp' | 'frp_xtcp' | 'ssh_jump' | 'legacy_gateway';
   sshProxyHost?: string;
@@ -648,14 +705,23 @@ export interface SessionConfig {
   sshJumpHopHandoffs?: SshJumpHopHandoff[];
   expectedHostKeyRawBase64?: string;
   expectedHostKeyFingerprintSha256?: string;
+  sshHostKeyPromptEnabled?: boolean;
+  sshTrustHostId?: string;
   sshJumpHostKeyRawBase64?: string;
   sshJumpHostKeyFingerprintSha256?: string;
   expectedRdpCertificateFingerprintSha256?: string;
   expectedRdpGatewayCertificateFingerprintSha256?: string;
   rdpAllowUntrustedRoot?: boolean;
   rdpAllowHostMismatch?: boolean;
+  rdpCertificateAllowUnpinnedOnce?: boolean;
+  rdpAllowStandardSecurityOnce?: boolean;
+  /** Explicit direct TLS compatibility mode. Default false; never enables Standard RDP Security. */
+  rdpTlsWithoutNla?: boolean;
+  rdpCertificateAllowTimeAnomalyOnce?: boolean;
   rdpGatewayAllowUntrustedRoot?: boolean;
   rdpGatewayAllowHostMismatch?: boolean;
+  rdpGatewayCertificateAllowUnpinnedOnce?: boolean;
+  rdpGatewayCertificateAllowTimeAnomalyOnce?: boolean;
   // RustDesk 扩展字段
   rdImageQuality?: number;   // 0=fast, 1=balanced, 2=quality
   rdDirectIp?: boolean;      // 直连IP模式
@@ -804,6 +870,17 @@ export interface SshAuthPromptRequest {
   instruction: string;
   prompts: SshAuthPrompt[];
   expiresAtMs: number;
+  kind: 'keyboard_interactive' | 'host_key';
+  trustHostId: string;
+  endpointHost: string;
+  endpointPort: number;
+  hostKeyHopIndex: number;
+  hostKeyAlgorithm: string;
+  hostKeyFingerprintSha256: string;
+  /** Internal persistence payload; never display or log this raw key blob. */
+  hostKeyRawBase64: string;
+  expectedHostKeyFingerprintSha256: string;
+  hostKeyChanged: boolean;
 }
 
 export interface SshAuthPromptResponse {

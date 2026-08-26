@@ -3,6 +3,15 @@ import { util } from '@kit.ArkTS';
 import {
   cloudUserSettingIsSyncable
 } from './CloudSyncSettingsPolicy';
+import {
+  MOONLIGHT_CLOUD_TABLE,
+  MOONLIGHT_LOCAL_TABLE,
+  MOONLIGHT_SCHEMA_VERSION
+} from '../model/MoonlightRecord';
+import {
+  filterMoonlightBackupRows,
+  MoonlightBackupFilterResult
+} from './MoonlightBackupPolicy';
 
 export type BackupSectionKind = 'cloud_table' | 'local_extensions' |
   'local_table';
@@ -10,11 +19,12 @@ export type BackupSectionState = 'absent' | 'empty' | 'rows';
 export type BackupRestoreMode = 'merge' | 'replace_selected';
 /**
  * redacted: portable config only (no passwords/private keys/2FA/tokens).
- * full: complete backup chosen by the user; secrets are kept as stored
+ * full: complete backup chosen by the user; existing protocol secrets are kept as stored
  * (ciphertext when the source has crypto, plaintext otherwise by the user's
  * explicit choice), public device trust is kept as data. VNC trust rows are
  * candidates/metadata only; the device-local confirmation marker is never
- * portable.
+ * portable. Moonlight client identity remains device-bound and is omitted in
+ * both modes; only its trust candidates are added by full mode.
  */
 export type BackupSensitivityMode = 'redacted' | 'full';
 
@@ -47,6 +57,15 @@ export interface BackupTrustDescriptorV3 {
   loginTokensIncluded: boolean;
 }
 
+export interface BackupMoonlightDescriptorV3 {
+  schemaVersion: number;
+  settingsHostsProfilesIncluded: boolean;
+  trustCandidatesIncluded: boolean;
+  clientIdentityIncluded: boolean;
+  clientIdentityOmitted: boolean;
+  restoreLocalOnly: boolean;
+}
+
 export interface BackupManifestV3 {
   formatVersion: number;
   rdbSchemaVersion: number;
@@ -57,6 +76,8 @@ export interface BackupManifestV3 {
   sections: BackupSectionManifestV3[];
   crypto: BackupCryptoDescriptorV3;
   trust: BackupTrustDescriptorV3;
+  /** Optional so V3 artifacts created before Moonlight remain readable. */
+  moonlight?: BackupMoonlightDescriptorV3;
 }
 
 export interface PortableBackupData {
@@ -85,6 +106,10 @@ export interface BackupRestorePreview {
   deviceTrustIncluded: boolean;
   vncTrustCandidatesIncluded: boolean;
   vncLocalConfirmationMarkerIncluded: boolean;
+  moonlightIncluded: boolean;
+  moonlightTrustCandidatesIncluded: boolean;
+  moonlightClientIdentityIncluded: boolean;
+  moonlightRepairPairingRequired: boolean;
 }
 
 const SECRET_COLUMNS: Record<string, string[]> = {
@@ -361,6 +386,13 @@ export function redactPortableBackupData(
       redactedTables[table] = portable;
       continue;
     }
+    if (table === MOONLIGHT_CLOUD_TABLE) {
+      const portable: MoonlightBackupFilterResult =
+        filterMoonlightBackupRows(sourceRows, 'redacted', false);
+      excludedRows += portable.excludedRows;
+      redactedTables[table] = portable.rows;
+      continue;
+    }
     if (table === 'usersettings') {
       const portable: Array<Record<string, string>> = [];
       for (let r = 0; r < sourceRows.length; r++) {
@@ -424,6 +456,11 @@ export function redactPortableBackupData(
         redactVncRows(sourceRows);
       excludedRows += sourceRows.length - portable.length;
       redactedLocal[table] = portable;
+    } else if (table === MOONLIGHT_LOCAL_TABLE) {
+      const portable: MoonlightBackupFilterResult =
+        filterMoonlightBackupRows(sourceRows, 'redacted', true);
+      excludedRows += portable.excludedRows;
+      redactedLocal[table] = portable.rows;
     } else {
       redactedLocal[table] = copyRows(sourceRows);
     }
@@ -439,10 +476,12 @@ export function redactPortableBackupData(
 }
 
 /**
- * Complete backup selected explicitly by the user: every column (including
+ * Complete backup selected explicitly by the user: existing protocol columns (including
  * passwords/private keys/2FA/tokens as stored, device trust, cryptoparams,
  * VNC secret rows and trust candidate metadata) is preserved. The local VNC
  * confirmation marker remains device-only and is never part of this data.
+ * Moonlight is stricter: its client identity is omitted even here, while its
+ * non-secret settings/host/profile rows and trust candidates are preserved.
  * When the source has crypto configured, the secrets are ciphertext and the backup
  * carries cryptoparams so the same master password can unlock them on the
  * target; otherwise they are plaintext by the user's explicit choice.
@@ -453,16 +492,33 @@ export function fullPortableBackupData(
   localTables: Record<string, Array<Record<string, string>>>
 ): PortableBackupRedactionResult {
   const fullTables: Record<string, Array<Record<string, string>>> = {};
+  let excludedRows: number = 0;
   const names: string[] = Object.keys(tables);
   for (let i = 0; i < names.length; i++) {
-    fullTables[names[i]] = copyRows(tables[names[i]] || []);
+    if (names[i] === MOONLIGHT_CLOUD_TABLE) {
+      const portable: MoonlightBackupFilterResult =
+        filterMoonlightBackupRows(
+          tables[names[i]] || [], 'full', false);
+      fullTables[names[i]] = portable.rows;
+      excludedRows += portable.excludedRows;
+    } else {
+      fullTables[names[i]] = copyRows(tables[names[i]] || []);
+    }
   }
   const fullExtensions: Array<Record<string, string>> =
     copyRows(extensions);
   const fullLocal: Record<string, Array<Record<string, string>>> = {};
   const localNames: string[] = Object.keys(localTables);
   for (let i = 0; i < localNames.length; i++) {
-    fullLocal[localNames[i]] = copyRows(localTables[localNames[i]] || []);
+    if (localNames[i] === MOONLIGHT_LOCAL_TABLE) {
+      const portable: MoonlightBackupFilterResult =
+        filterMoonlightBackupRows(
+          localTables[localNames[i]] || [], 'full', true);
+      fullLocal[localNames[i]] = portable.rows;
+      excludedRows += portable.excludedRows;
+    } else {
+      fullLocal[localNames[i]] = copyRows(localTables[localNames[i]] || []);
+    }
   }
   return {
     tables: fullTables,
@@ -470,7 +526,7 @@ export function fullPortableBackupData(
     localTables: fullLocal,
     removedSecretFields: 0,
     removedDeviceTrustFields: 0,
-    excludedRows: 0
+    excludedRows
   };
 }
 
@@ -527,6 +583,8 @@ export function backupManifestV3IsStructurallyValid(
     ? manifest.crypto.mode : '';
   const trust: BackupTrustDescriptorV3 | null = manifest && manifest.trust
     ? manifest.trust : null;
+  const moonlight: BackupMoonlightDescriptorV3 | undefined =
+    manifest ? manifest.moonlight : undefined;
   if (!manifest || manifest.formatVersion !== 3 ||
     !Number.isFinite(manifest.rdbSchemaVersion) ||
     manifest.rdbSchemaVersion < 1 ||
@@ -545,6 +603,17 @@ export function backupManifestV3IsStructurallyValid(
     trust.vncLocalConfirmationMarkerIncluded === true ||
     (typeof trust.vncLocalConfirmationMarkerIncluded !== 'undefined' &&
       typeof trust.vncLocalConfirmationMarkerIncluded !== 'boolean')) {
+    return false;
+  }
+  if (moonlight !== undefined &&
+    (moonlight.schemaVersion !== MOONLIGHT_SCHEMA_VERSION ||
+      moonlight.settingsHostsProfilesIncluded !== true ||
+      typeof moonlight.trustCandidatesIncluded !== 'boolean' ||
+      moonlight.clientIdentityIncluded !== false ||
+      moonlight.clientIdentityOmitted !== true ||
+      moonlight.restoreLocalOnly !== true ||
+      (mode === 'redacted' &&
+        moonlight.trustCandidatesIncluded))) {
     return false;
   }
   // Redacted configs must never carry verifier or secret material; full

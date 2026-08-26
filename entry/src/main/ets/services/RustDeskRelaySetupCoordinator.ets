@@ -17,6 +17,7 @@ import {
   RustDeskRelayCloudSyncState,
   RustDeskRelaySaveResult
 } from './RustDeskRelaySavePolicy';
+import { recordDiagnosticEvent } from './DiagnosticCaptureRuntime';
 
 export type RustDeskRelaySaveOperation =
   'create' | 'update';
@@ -46,6 +47,13 @@ export class RustDeskRelaySetupCoordinator {
   private hosts: HostSyncService =
     HostSyncService.getInstance();
   private attemptSequence: number = 0;
+
+  private diagnosticResult(result: RustDeskRelaySaveResult): RustDeskRelaySaveResult {
+    recordDiagnosticEvent('network.routing', 'routing_rustdesk_relay',
+      result.ok ? 'succeeded' : 'failed', 0, 0, result.ok ? 0 : -1,
+      0, result.localCommitted ? 1 : 0);
+    return result;
+  }
 
   static getInstance(): RustDeskRelaySetupCoordinator {
     if (!RustDeskRelaySetupCoordinator.instance) {
@@ -185,7 +193,7 @@ export class RustDeskRelaySetupCoordinator {
       this.prepare(
         draft, existing, resolvedAttemptId);
     if (prepared.failure !== null) {
-      return prepared.failure;
+      return this.diagnosticResult(prepared.failure);
     }
     const relay: RustDeskRelayConfig =
       prepared.relay as RustDeskRelayConfig;
@@ -198,7 +206,7 @@ export class RustDeskRelaySetupCoordinator {
     if (result.ok) {
       void this.hosts.retryRelayCloudSync();
     }
-    return result;
+    return this.diagnosticResult(result);
   }
 
   async saveAsync(
@@ -226,7 +234,7 @@ export class RustDeskRelaySetupCoordinator {
       if (onStage !== null) {
         onStage(prepared.failure.stage);
       }
-      return prepared.failure;
+      return this.diagnosticResult(prepared.failure);
     }
     const relay: RustDeskRelayConfig =
       prepared.relay as RustDeskRelayConfig;
@@ -241,7 +249,7 @@ export class RustDeskRelaySetupCoordinator {
     if (onStage !== null) {
       onStage(result.stage);
     }
-    return result;
+    return this.diagnosticResult(result);
   }
 
   private validPort(port: number): boolean {

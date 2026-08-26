@@ -31,6 +31,8 @@ import { VncCertificateTrustManagerSheet } from '../components/VncCertificateTru
 import { buildVncTrustDirectory, VncTrustDirectoryItem } from '../services/VncTrustEndpointDirectory';
 import { SETTINGS_PANEL_DISMISS_TO_LEAF_OPEN_MS } from '../services/SettingsSheetRoutePolicy';
 import { isSelectableVncDefaultGateway, VncSelectableGateway } from '../services/VncHostDefaultsPolicy';
+import { RemoteSessionConnectionIntent } from '../services/RemoteSessionConnectionIntent';
+import { VncSessionCredentialHandoff } from '../services/VncSessionCredentialHandoff';
 
 @Entry
 @Component
@@ -534,7 +536,18 @@ export struct VncSettingsPage {
   }
 
   private connectHost(host: VncHostView): void {
-    router.pushUrl({ url: 'pages/RemoteDesktop', params: { vncHostId: host.id } });
+    this.openVncSession(host);
+  }
+
+  private openVncSession(host: VncHostView): void {
+    // The settings page is not an authentication owner on any device class.
+    // HostList owns lock, certificate and password preflight before either
+    // Phone/Pad navigation or PC independent-window staging can begin.
+    if (!RemoteSessionConnectionIntent.getInstance().put('vnc', host.id)) {
+      promptAction.showToast({ message: 'VNC 连接请求无效', duration: 2200 });
+      return;
+    }
+    void router.back();
   }
 
   private openHostFlow(host: VncHostView | null = null): void {
@@ -555,6 +568,10 @@ export struct VncSettingsPage {
     if (!result.ok) {
       promptAction.showToast({ message: result.message || 'VNC 主机保存失败', duration: 2200 });
       return;
+    }
+    if (connectNow && !values.rememberPassword && password.length > 0) {
+      VncSessionCredentialHandoff.getInstance().put(
+        this.hostService.currentUserId(), result.id, password);
     }
     this.pendingHostFlowConnectId = connectNow ? result.id : '';
     promptAction.showToast({
@@ -583,9 +600,8 @@ export struct VncSettingsPage {
   }
 
   private connectHostById(id: string): void {
-    if (this.hostService.find(id) !== null) {
-      router.pushUrl({ url: 'pages/RemoteDesktop', params: { vncHostId: id } });
-    }
+    const host: VncHostView | null = this.hostService.find(id);
+    if (host !== null) { this.connectHost(host); }
   }
 
   private openGatewayDirectory(): void {
@@ -890,7 +906,7 @@ export struct VncSettingsPage {
     this.showTrustManagerSheet = false;
     setTimeout((): void => {
       if (this.pageActive) {
-        router.pushUrl({ url: 'pages/RemoteDesktop', params: { vncHostId: host.id } });
+        this.connectHost(host);
       }
     }, 360);
   }

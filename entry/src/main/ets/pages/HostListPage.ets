@@ -20,6 +20,7 @@ import {
 } from '../services/AccountSessionCoordinator';
 import { DataCrypto } from '../services/DataCrypto';
 import { CloudStore } from '../services/CloudStore';
+import { AccountSessionLease, accountSessionLeaseEquals } from '../services/AccountScopePolicy';
 import { cloudUserSettingIsSyncable } from '../services/CloudSyncSettingsPolicy';
 import {
   VncTrustService,
@@ -38,8 +39,12 @@ import {
   isVncHostProjection, projectVncHost, vncHostRecordIdFromUiId, vncHostUiId
 } from '../services/VncHostListProjectionPolicy';
 import { CloudSyncCoordinator } from '../services/CloudSyncCoordinator';
+import { cloudFirstCompatibleTablesAfterOptionalFailure } from '../services/CloudSyncCoordinatorPolicy';
 import { CloudSyncSelectionStore } from '../services/CloudSyncSelectionStore';
 import { cloudSyncSelectableTables, effectiveCloudSyncTables } from '../services/CloudSyncSelectionPolicy';
+import {
+  moonlightForcedCloudSyncSelection
+} from '../services/MoonlightCloudSyncSelectionPolicy';
 import { LocalBackupDocument } from '../services/LocalBackupPolicy';
 import { LocalBackupService } from '../services/LocalBackupService';
 import { BackupRestorePreview } from '../services/BackupManifestV3';
@@ -60,6 +65,15 @@ import {
 import { RustDeskRelayConfig } from '../model/RustDeskRelayConfig';
 import { RustDeskAccount } from '../model/RustDeskAccount';
 import { TotpEntry } from '../model/TotpEntry';
+import {
+  MoonlightAddress,
+  MoonlightAddressFamily,
+  MoonlightHost,
+  MoonlightHostType,
+  MOONLIGHT_DEFAULT_HTTPS_PORT,
+  moonlightAddressKey
+} from '../model/MoonlightModels';
+import { MOONLIGHT_CLOUD_TABLE } from '../model/MoonlightRecord';
 import { RdpCredential } from '../model/RdpCredential';
 import { RustDeskRelayPage } from './RustDeskRelayPage';
 import { RustDeskProSyncService } from '../services/RustDeskProSyncService';
@@ -69,12 +83,91 @@ import {
   isRustDeskPeerTwoFactorManualCode,
   rustDeskPeerTwoFactorAutoSubmitError
 } from '../services/RustDeskPeerTwoFactorPolicy';
+import {
+  RustDeskAuthDraft,
+  RustDeskAuthDraftStore
+} from '../services/RustDeskAuthDraftStore';
+import { copyRustDeskPeerTwoFactorRuntime } from '../services/RustDeskPeerTwoFactorBindingStore';
 import { AppConfig, AppTheme, Palette, buildDark, buildLight } from '../common/Theme';
 import { LockGateResult, showLockGate, lockGateErrorMessage } from '../components/LockGate';
 import { ColorPickerSheet } from '../components/ColorPickerSheet';
 import { HostAddWizardSheet } from '../components/hostadd/HostAddWizardSheet';
+import {
+  resolveActiveHostAddProtocol,
+  resolveHostAddSheetContentMode,
+  resolveHostAddSheetHeightMode,
+  resolveHostAddSheetKeyboardAvoidMode
+} from '../services/HostAddSheetLayoutPolicy';
 import { RdpAddFlow } from '../components/hostadd/RdpAddFlow';
 import { RustDeskAddFlow } from '../components/hostadd/RustDeskAddFlow';
+import {
+  MoonlightHostAddFlow,
+  MoonlightLocalSaveResult,
+  MoonlightPairingPreparation,
+  MoonlightPairingCompletion
+} from '../components/hostadd/MoonlightHostAddFlow';
+import { MoonlightBrandIcon } from '../components/moonlight/MoonlightBrandIcon';
+import { MoonlightSettingsSurface } from './MoonlightSettingsPage';
+import {
+  MoonlightAppCatalogSurface,
+  MoonlightCatalogLaunchHandoff,
+  presentMoonlightCatalogLaunchHandoff,
+  rejectMoonlightCatalogLaunchHandoff
+} from './MoonlightAppCatalogPage';
+import {
+  MoonlightSettingsSection,
+  MoonlightCatalogItem,
+  moonlightHostRouteParams
+} from '../services/MoonlightUiPolicy';
+import {
+  MoonlightHostAddOperationKey,
+  MoonlightHostAddState,
+  MoonlightHostAddCandidate,
+  MoonlightHostAddDiscoveryKey,
+  MoonlightHostAddVerification,
+  MoonlightHostAddCatalogSummary,
+  parseMoonlightHostAddAddress
+} from '../services/MoonlightHostAddFlowPolicy';
+import {
+  MoonlightLocalHostMutationResult,
+  MoonlightLocalHostSaveResult,
+  MoonlightLocalHostService
+} from '../services/MoonlightLocalHostService';
+import {
+  MoonlightDeletionCommandResult,
+  MoonlightDeletionPreview
+} from '../services/MoonlightDeletionCommandService';
+import { MoonlightDeletionRuntime } from '../services/MoonlightDeletionRuntime';
+import { MoonlightSettingsLocalService } from '../services/MoonlightSettingsLocalService';
+import {
+  MoonlightHostDirectoryView,
+  MoonlightHostLocalView,
+  MoonlightLocalViewService
+} from '../services/MoonlightLocalViewService';
+import {
+  MoonlightLanDiscoveryCandidate,
+  MoonlightLanDiscoveryService
+} from '../services/MoonlightLanDiscoveryService';
+import {
+  MoonlightHostOperationFence,
+  MoonlightLanProbeService,
+  cloneMoonlightHostOperationFence,
+  createMoonlightHostOperationFence,
+  moonlightHostOperationFenceEquals,
+  moonlightVerificationUuidHint,
+  moonlightVerificationMatchesFence
+} from '../services/MoonlightLanProbeService';
+import {
+  MoonlightBridgeCapabilities,
+  MoonlightHostContext,
+  MoonlightHostService,
+  MoonlightHostServiceResult
+} from '../services/MoonlightHostService';
+import {
+  moonlightInstallationId,
+  moonlightOwnerScopeFingerprint,
+  moonlightPairingPin
+} from '../services/MoonlightRuntimeSupport';
 import { SshAddFlow } from '../components/hostadd/SshAddFlow';
 import { VncAddFlow } from '../components/hostadd/VncAddFlow';
 import {
@@ -82,6 +175,11 @@ import {
   RustDeskHostAddHandoff
 } from '../services/RustDeskHostAddHandoff';
 import { VncSessionCredentialHandoff } from '../services/VncSessionCredentialHandoff';
+import {
+  vncCredentialPreflightMessage,
+  vncCredentialPreflightNeedsPrompt,
+  VncCredentialPreflightState
+} from '../services/VncCredentialPreflightPolicy';
 import { VncSettingsService } from '../services/VncSettingsService';
 import { VncSettingsSheet } from '../components/VncSettingsSheet';
 import { VncCertificateTrustManagerSheet } from '../components/VncCertificateTrustManagerSheet';
@@ -103,17 +201,49 @@ import {
   rdpGatewayTransportSummary,
   rdpCertificateLegacyProbeErrorCode,
   rdpCertificateLegacyProbeStage,
+  rdpCertificateEffectiveRiskFlags,
+  rdpCertificatePreflightAllowsRealConnection,
+  rdpCertificateRoutePreflightAllowsRealConnection,
   rdpCertificateValidityState,
+  rdpCertificateRiskSummary,
+  rdpPreflightStatusLabel,
   rdpCertificateWarningMessage,
+  shouldEnableStandardRdpSecurityOnce,
   shouldRouteRdpCertificateAfterSheetDisappear,
   shouldShowRdpCertificateProbeSheetBeforeProbe,
   shouldPersistRdpCertificateTrust
 } from '../services/RdpCertificatePreflightPolicy';
-import { ExtensionLoader } from '../services/ExtensionLoader';
+import {
+  ExtensionLoader,
+  NativeDisconnectIdentity,
+  NativeDisconnectSubmission
+} from '../services/ExtensionLoader';
+import { RemoteSessionWindowLauncher } from '../services/RemoteSessionWindowLauncher';
+import {
+  RemoteSessionWindowProtocol,
+  RemoteSessionWindowRequest,
+  RemoteSessionWindowTarget
+} from '../services/RemoteSessionWindowPolicy';
+import {
+  RemoteSessionWindowAuthorizationKind,
+  RemoteSessionWindowAuthorizationService
+} from '../services/RemoteSessionWindowAuthorization';
+import { RemoteSessionWindowNativeHandoff } from '../services/RemoteSessionWindowCoordinator';
+import {
+  RemoteSessionConnectionIntent,
+  RemoteSessionConnectionIntentValue
+} from '../services/RemoteSessionConnectionIntent';
 import { SshKeyImportService, SshKeyImportResult } from '../services/SshKeyImportService';
 import { SshXtermPrewarmSurface } from '../components/SshXtermSurface';
 import { SshProxyEditor } from '../components/ssh/SshProxyEditor';
 import { SshSettingsService } from '../services/SshSettingsService';
+import { SshNotificationService } from '../services/ssh/notification/SshNotificationService';
+import {
+  SSH_WORKBENCH_V2_DEFAULT_ENABLED,
+  SSH_WORKBENCH_V2_FLAG_KEY
+} from '../services/ssh/workspace/SshWorkspaceCapabilityPolicy';
+import { SshWorkspaceCapabilityStore } from
+  '../services/ssh/workspace/SshWorkspaceCapabilityStore';
 import { SshProxyProfileV1 } from '../services/SshProxyProfilePolicy';
 import { SshProxyProfileStore } from '../services/SshProxyProfileStore';
 import {
@@ -157,7 +287,21 @@ import {
   vncTlsHostInput
 } from '../services/VncTlsEndpointPolicy';
 import { VncCertificateDecisionHandoff } from '../services/VncCertificateDecisionHandoff';
+import { VncPlaintextDecisionHandoff } from '../services/VncPlaintextDecisionHandoff';
 import { RustDeskLanDiscoveryService, DiscoveredRustDeskPeer } from '../services/RustDeskLanDiscoveryService';
+import {
+  DiscoveredRdpHost,
+  rdpLanProbeRecognized,
+  RdpLanDiscoveryService,
+  RdpLanIdentityProbeResult,
+  RdpLanScanStatus
+} from '../services/RdpLanDiscoveryService';
+import {
+  lanHostNeedsAddressRefresh,
+  lanHostRefreshCandidateMatches,
+  LanHostRefreshCandidate,
+  lanHostUsesLocalOnlyStorage
+} from '../services/LanHostAddressPolicy';
 import {
   hostListProtocolForTab,
   searchHosts,
@@ -241,6 +385,7 @@ import {
 import {
   SETTINGS_SHEET_ACCOUNT,
   SETTINGS_SHEET_ACCENT_COLOR,
+  SETTINGS_SHEET_DIAGNOSTIC_LOG,
   SETTINGS_SHEET_FEEDBACK,
   SETTINGS_SHEET_HALO_COLOR,
   SETTINGS_SHEET_KEY_VAULT,
@@ -251,6 +396,13 @@ import {
   SETTINGS_SHEET_TERMINAL_FG_COLOR,
   SETTINGS_SHEET_TERMINAL_FONT_SIZE,
   SETTINGS_SHEET_TERMINAL_LINE_SPACING,
+  SETTINGS_SHEET_MOONLIGHT_VIDEO,
+  SETTINGS_SHEET_MOONLIGHT_AUDIO,
+  SETTINGS_SHEET_MOONLIGHT_INPUT,
+  SETTINGS_SHEET_MOONLIGHT_NETWORK_SECURITY,
+  SETTINGS_SHEET_MOONLIGHT_DIAGNOSTICS,
+  SETTINGS_SHEET_MOONLIGHT_TRUST,
+  SETTINGS_SHEET_MOONLIGHT_DATA,
   SETTINGS_SHEET_VNC_CLIPBOARD,
   SETTINGS_SHEET_VNC_CONNECTION,
   SETTINGS_SHEET_VNC_DISPLAY,
@@ -261,10 +413,23 @@ import {
   SETTINGS_SHEET_VNC_SECURITY,
   SETTINGS_SHEET_VNC_TIMEOUT,
   SETTINGS_SHEET_VNC_TRUST,
+  SETTINGS_SHEET_VIRTUAL_KEYBOARD,
+  SETTINGS_SHEET_VIRTUAL_KEYBOARD_BEHAVIOR,
+  SETTINGS_SHEET_VIRTUAL_KEYBOARD_CUSTOM,
+  SETTINGS_SHEET_VIRTUAL_KEYBOARD_FUNCTIONS,
+  SETTINGS_SHEET_VIRTUAL_KEYBOARD_SHORTCUTS,
   SETTINGS_SHEET_WALLPAPER,
   SETTINGS_PANEL_DISMISS_TO_LEAF_OPEN_MS,
+  MoonlightSettingsRouteSpec,
+  VirtualKeyboardSettingsSection,
+  VirtualKeyboardSettingsRouteSpec,
+  diagnosticLogSettingsLeafSheetHeight,
+  isVirtualKeyboardSettingsMode,
+  moonlightSettingsLeafSheetHeight,
+  moonlightSettingsRouteSpec,
   settingsLeafSheetUsesSystemCloseButton,
   settingsLeafOpenDelayMs,
+  virtualKeyboardSettingsRouteSpec,
   vncSettingsLeafSheetHeight
 } from '../services/SettingsSheetRoutePolicy';
 import { protocolIcon } from '../services/ProtocolIconPolicy';
@@ -278,8 +443,10 @@ import {
   SETTINGS_SECTION_CLOUD_SYNC,
   SETTINGS_SECTION_CONNECTION_LIVE,
   SETTINGS_SECTION_DISPLAY_INTERACTION,
+  SETTINGS_SECTION_VIRTUAL_KEYBOARD,
   SETTINGS_SECTION_HOME,
   SETTINGS_SECTION_NONE,
+  SETTINGS_SECTION_MOONLIGHT,
   SETTINGS_SECTION_RDP,
   SETTINGS_SECTION_RUSTDESK,
   SETTINGS_SECTION_SSH,
@@ -287,12 +454,14 @@ import {
   SETTINGS_SECTION_SECURITY,
   SETTINGS_SECTION_TUTORIAL,
   SETTINGS_VNC_ACTION_ROW_COUNT,
+  SETTINGS_MOONLIGHT_ACTION_ROW_COUNT,
   SettingsFeedbackLaunchAttempt,
   settingsFeedbackLaunchAttempts,
   settingsFeedbackMailPanelParams,
   settingsNextExpandedSection,
   settingsRatingUriCandidates,
   settingsRatingWantAction,
+  settingsMoonlightExpandedMaxHeight,
   settingsVncExpandedMaxHeight
 } from '../services/SettingsAccordionPolicy';
 import {
@@ -310,6 +479,17 @@ import {
   resolveInitialRemoteDisplayScaleMode
 } from '../services/RemoteCanvasTransformPolicy';
 import {
+  PC_SESSION_TOP_BAR_HIDDEN_KEY,
+  REMOTE_SESSION_CONTROL_BAR_HIDDEN_MOONLIGHT_KEY,
+  REMOTE_SESSION_CONTROL_BAR_HIDDEN_RDP_KEY,
+  REMOTE_SESSION_CONTROL_BAR_HIDDEN_RUSTDESK_KEY,
+  REMOTE_SESSION_CONTROL_BAR_HIDDEN_VNC_KEY,
+  RemoteSessionControlBarVisibility,
+  remoteSessionControlBarHidden,
+  remoteSessionControlBarSelectionSummary,
+  resolveRemoteSessionControlBarVisibility
+} from '../services/RemoteSessionTopBarPolicy';
+import {
   resolveCanvasGestureZoomPreference
 } from '../services/RemoteCanvasZoomPreferencePolicy';
 import {
@@ -317,6 +497,22 @@ import {
   PersonalizationDefaults,
   personalizationDefaults
 } from '../services/PersonalizationDefaultsPolicy';
+import {
+  HOST_CARD_SENSITIVE_INFO_HIDDEN_KEY,
+  hostCardDisplayLabel,
+  hostCardSensitiveValue,
+  shouldHideHostCardSensitiveInfo
+} from '../services/HostCardPrivacyPolicy';
+import {
+  buildUnifiedHostCardRefs,
+  mergeVisibleHostOrder,
+  moonlightHostCardKey as unifiedMoonlightHostCardKey,
+  moonlightHostIdFromCardKey,
+  moveUnifiedHostCard,
+  remoteHostCardKey,
+  remoteHostIdFromCardKey,
+  UnifiedHostCardRef
+} from '../services/UnifiedHostCardPolicy';
 import {
   CLOUD_SYNC_SHEET_ACTIONS,
   CLOUD_SYNC_SHEET_DOWNLOADING,
@@ -342,7 +538,9 @@ import {
 } from '../services/HaloColorPolicy';
 import { CURRENT_RELEASE_VERSION } from '../services/ReleaseNotesRegistry';
 import { AboutSettingsSheet } from '../components/AboutSettingsSheet';
+import { DiagnosticCaptureSettingsSheet } from '../components/DiagnosticCaptureSettingsSheet';
 import { FeedbackSettingsSheet } from '../components/FeedbackSettingsSheet';
+import { VirtualKeyboardSettingsSheet } from '../components/VirtualKeyboardSettingsSheet';
 import {
   VncCertificateInfo,
   RdpCertificateInfo,
@@ -356,8 +554,23 @@ import {
   SshProxyConfig
 } from '../types/rdpnapi';
 import { SessionConfig } from '../types/rdpnapi';
-import { ActiveRemoteSessionRegistry, ActiveRemoteSessionRecord } from '../services/ActiveRemoteSessionRegistry';
+import {
+  ActiveRemoteSessionRegistry,
+  ActiveRemoteSessionRecord,
+  ActiveRemoteSessionTermination
+} from '../services/ActiveRemoteSessionRegistry';
+import { MoonlightSessionCoordinator } from '../services/MoonlightSessionCoordinator';
 import { RemoteProtocol } from '../services/RemoteSessionState';
+import {
+  nativeDisconnectStateIsFailed,
+  nextRemoteSessionHandoffGeneration,
+  remoteSessionExactDisconnectIdentityEquals,
+  remoteSessionHandoffFailureOwnsSession,
+  RemoteSessionExactDisconnectCallbackPort,
+  RemoteSessionExactDisconnectIdentity,
+  RemoteSessionExactDisconnectSubmission,
+  submitRemoteSessionExactDisconnectWithRetry
+} from '../services/RemoteSessionTerminationPolicy';
 import {
   RustDeskProPreflightState,
   rustDeskProPeerIdForConnection,
@@ -377,16 +590,22 @@ import {
   resolveRustDeskConnectionContext,
   RustDeskConnectionContext
 } from '../services/RustDeskConnectionContextPolicy';
-import { shouldFallbackToNativeRdpConnectionAfterResolverFailure } from '../services/RdpCertificatePreflightPolicy';
 import {
   nextConnectionAttemptGeneration,
   shouldBeginConnectionAttempt,
   shouldApplyConnectionAttempt
 } from '../services/ConnectionAttemptPolicy';
 import {
+  createHostAddPostSaveHandoff,
+  emptyHostAddPostSaveHandoff,
+  HostAddPostSaveHandoff,
+  hostAddPostSaveHandoffIsPending,
   pendingHostIdForHostAddSave,
+  shouldAcceptHostAddPostSaveHandoff,
   shouldAcceptHostAddSave,
-  shouldStartHostAddConnectionAfterDisappear
+  shouldCloseHostAddAfterCommittedSave,
+  shouldStartHostAddConnectionAfterDisappear,
+  shouldStartHostAddPostSaveAfterDisappear
 } from '../services/HostAddConnectionHandoffPolicy';
 import { motion } from '@kit.MultimodalAwarenessKit';
 import { HostDataSource } from '../datasources/DataSources';
@@ -418,8 +637,14 @@ interface RdpCertificateCredentialParts {
 const ENV_COLOR_MODE_UNKNOWN = -1;
 const ENV_COLOR_MODE_LIGHT = 0;
 const ENV_COLOR_MODE_DARK = 1;
+const DYNAMIC_LAN_ADDRESS_FRESHNESS_MS: number = 5 * 60 * 1000;
+const DYNAMIC_LAN_SWEEP_COOLDOWN_MS: number = 30 * 1000;
 const RDP_DRIVE_REDIRECTION_ENABLED = true;
 const SETTINGS_ACCORDION_ANIMATION_MS = 280;
+// A native Sheet can finish its dismiss animation before ArkUI has completed
+// the pointer-up dispatch that closed it. Keep the host list covered for one
+// short release window so that pointer-up cannot activate the card underneath.
+const SHEET_RELEASE_FENCE_MS = 420;
 // The appearance card is taller than the original 620vp cap after the
 // touchpad cursor controls are restored. Keep a stable expansion floor so an
 // animation's intermediate layout height cannot collapse the card into a
@@ -436,6 +661,15 @@ const REMOTE_HOST_SHEET_PASSPHRASE = 4;
 const REMOTE_HOST_SHEET_PUBLIC_KEY = 5;
 const REMOTE_HOST_SHEET_RUSTDESK_TOTP_BINDING = 6;
 const REMOTE_HOST_SHEET_VNC_CERTIFICATE = 7;
+const REMOTE_HOST_SHEET_VNC_CREDENTIAL = 8;
+// Moonlight host cards use the same host-list Sheet host as every other
+// protocol.  Keeping this as a mode (instead of a second bindSheet) also
+// preserves the list's single-dismiss lifecycle and prevents route switches
+// from racing a card expansion.
+const REMOTE_HOST_SHEET_MOONLIGHT_DETAIL = 9;
+const REMOTE_HOST_SHEET_MOONLIGHT_CATALOG = 10;
+const REMOTE_HOST_SHEET_MOONLIGHT_EDIT = 11;
+const DESKTOP_MOONLIGHT_TAB = 7;
 
 @Entry
 @Component
@@ -471,6 +705,7 @@ struct HostListPage {
   @State hostPageTitle: string = '远程主机';
   @State loginRefreshKey: number = 0;
   @StorageLink('groupedHostCards') groupedHostCards: boolean = false;
+  @StorageLink(HOST_CARD_SENSITIVE_INFO_HIDDEN_KEY) hostCardSensitiveInfoHidden: boolean = false;
   @StorageLink('rustdeskPresenceDetectionEnabled') rustdeskPresenceDetectionEnabled: boolean = false;
   @State expandedHostGroup: string = '';
   @State activeRemoteHostId: string = '';
@@ -478,6 +713,10 @@ struct HostListPage {
   @State accountAvatarUrl: string = '';
   @State hostSelectionMode: boolean = false;
   @State hostSelectedIds: Set<string> = new Set();
+  @State hostReorderEnabled: boolean = false;
+  private hostManualOrder: string[] = [];
+  private hostReorderOriginalOrder: string[] = [];
+  private draggingHostId: string = '';
   @State hostPresenceProbeBusyIds: Set<string> = new Set();
   @State hostGroupProbeBusyType: string = '';
   // The service snapshot is persisted asynchronously and can be replaced by
@@ -501,8 +740,24 @@ struct HostListPage {
   @State showAddSheet: boolean = false;
   @State addSheetShowsModernPicker: boolean = false;
   @State modernAddProtocol: string = '';
+  @State moonlightAddOwnerToken: number = 1;
+  @State moonlightLanCandidates: MoonlightHostAddCandidate[] = [];
+  @State moonlightDiscoveryRunning: boolean = false;
+  @State moonlightDiscoveryResultOwnerToken: number = 0;
+  @State moonlightDiscoveryResultGeneration: number = 0;
+  @State moonlightProtocolAvailable: boolean = false;
+  @State moonlightHosts: MoonlightHostLocalView[] = [];
+  @State moonlightDirectoryCode: string = 'loading';
+  private readonly moonlightSettingsService: MoonlightSettingsLocalService =
+    new MoonlightSettingsLocalService(CloudStore.getInstance());
+  private moonlightDirectoryOwnerScopeId: string = '';
+  private moonlightDirectoryAccountGeneration: number = 0;
+  private moonlightDirectoryStoreInstanceId: number = 0;
   @State vncAddFromModernPicker: boolean = false;
   @State addSheetClosing: boolean = false;
+  @State sheetReleaseFenceActive: boolean = false;
+  private sheetReleaseFenceGeneration: number = 0;
+  private sheetReleaseFenceTimer: number = -1;
   // Keep the released storage/cloud key while exposing the broader FAB-style semantics in UI code.
   @StorageLink('hostAddMode') fabAddStyle: string = 'modern';
   @StorageLink('virtualMouseStyle') virtualMouseStyle: string = 'arrow';
@@ -510,6 +765,14 @@ struct HostListPage {
   @State lanScanning: boolean = false;
   @State lanScanResults: DiscoveredRustDeskPeer[] = [];
   private lanDiscovery: RustDeskLanDiscoveryService = new RustDeskLanDiscoveryService();
+  @State rdpLanScanning: boolean = false;
+  @State rdpLanScanResults: DiscoveredRdpHost[] = [];
+  @State rdpLanStatusText: string = '';
+  private rdpLanDiscovery: RdpLanDiscoveryService = new RdpLanDiscoveryService();
+  private dynamicRustDeskDiscovery: RustDeskLanDiscoveryService = new RustDeskLanDiscoveryService();
+  private dynamicRdpDiscovery: RdpLanDiscoveryService = new RdpLanDiscoveryService();
+  private dynamicLanRefreshPromise: Promise<void> | null = null;
+  private dynamicLanLastSweepAt: number = 0;
   @State label: string = '';
   @State proto: string = 'rdp';
   @State hostAddr: string = '';
@@ -528,8 +791,10 @@ struct HostListPage {
   @State showSettingsLeafSheet: boolean = false;
   @State settingsLeafSheetMode: number = SETTINGS_SHEET_NONE;
   @State vncSettingsLeafDirty: boolean = false;
+  @State moonlightSettingsLeafDirty: boolean = false;
+  @State moonlightSettingsLeafHostId: string = '';
   @State expandedSettingsSection: string = SETTINGS_SECTION_NONE;
-  @State aboutSheetMode: number = 0; // 0=使用教程 1=关于应用 2=隐私政策 3=前置操作 4=更新日志
+  @State aboutSheetMode: number = 0; // 0=简单教程 1=关于应用 2=隐私政策 3=连接前准备 4=更新日志 5=操作引导中心
   // 合并 Sheet: 单 bindSheet + mode 切换 (避免 $$ 多 bindSheet 错位)
   @State showPopupSheet: boolean = false;
   @State popupSheetMode: number = 0; // 0=crypto, 1=about(用 aboutSheetMode 子路由), 2=SSH host key, 4=RDP certificate
@@ -539,6 +804,8 @@ struct HostListPage {
   @State backupFullMode: boolean = false;
   @State cloudSyncError: string = '';
   @State cloudSyncSelectedTables: string[] = [];
+  @State moonlightCloudSelectedScopes: string[] = [];
+  @State moonlightRestoreActivationState: string = 'clear';
   @State appearanceContentHeight: number = 0;
   private pendingLocalRestore: LocalBackupDocument | null = null;
   @State sheetPwd: string = '';
@@ -563,6 +830,22 @@ struct HostListPage {
   @State showSshPreflight: boolean = false;
   @State showRemoteHostSheet: boolean = false;
   @State remoteHostSheetMode: number = REMOTE_HOST_SHEET_NONE;
+  @State moonlightSheetHostId: string = '';
+  @State moonlightEditName: string = '';
+  @State moonlightEditAddress: string = '';
+  @State moonlightEditPortText: string = '';
+  @State moonlightEditHttpsPortText: string = '';
+  @State moonlightEditHostType: MoonlightHostType = 'sunshine';
+  @State moonlightEditWakeEnabled: boolean = false;
+  @State moonlightEditWakeMac: string = '';
+  @State moonlightEditWakeBroadcast: string = '';
+  @State moonlightEditError: string = '';
+  private pendingMoonlightCatalogHostId: string = '';
+  private pendingMoonlightSettingsHostId: string = '';
+  private pendingMoonlightCatalogNavigation: string = '';
+  private pendingMoonlightCatalogLaunch: MoonlightCatalogLaunchHandoff | null = null;
+  private moonlightCatalogReturnsToDetail: boolean = false;
+  @State moonlightCatalogDismissAllowed: boolean = true;
   @State sshPreflightState: number = 0;
   private sshPreflightOpenedAt: number = 0;
   private sshPreflightGeneration: number = 0;
@@ -599,6 +882,7 @@ struct HostListPage {
   private rdpGatewayPreflightOneTimeFingerprint: string = '';
   private rdpGatewayPreflightOneTimeAllowUntrustedRoot: boolean = false;
   private rdpGatewayPreflightOneTimeAllowHostMismatch: boolean = false;
+  private rdpGatewayPreflightOneTimeAllowTimeAnomaly: boolean = false;
   private rdpGatewayPreflightOneTimeRouteIdentity: string = '';
   private rdpCertificatePendingRouteParams: Record<string, Object> | null = null;
   private rdpCertificateProbeGeneration: number = 0;
@@ -632,6 +916,32 @@ struct HostListPage {
   private vncCertificateAccountGeneration: number = 0;
   private vncCertificateHandoff: VncCertificateDecisionHandoff =
     VncCertificateDecisionHandoff.getInstance();
+  private vncPlaintextHandoff: VncPlaintextDecisionHandoff =
+    VncPlaintextDecisionHandoff.getInstance();
+  @State vncCredentialHostId: string = '';
+  @State vncCredentialHostLabel: string = '';
+  @State vncCredentialPassword: string = '';
+  @State vncCredentialRememberPassword: boolean = false;
+  @State vncCredentialNoPassword: boolean = false;
+  @State vncCredentialPasswordVisible: boolean = false;
+  @State vncCredentialState: VncCredentialPreflightState = 'missing';
+  @State vncCredentialError: string = '';
+  private vncCredentialRouteHostId: string = '';
+  private vncCredentialPendingRouteParams: Record<string, Object> | null = null;
+  private vncCredentialRouteAfterClose: boolean = false;
+  private vncCredentialClosing: boolean = false;
+  private vncCredentialRetryHostId: string = '';
+  private vncCredentialRetryReplaceSavedHostId: string = '';
+  private vncCredentialReplacingFailedPassword: boolean = false;
+  private vncCredentialEndpointBinding: string = '';
+  private vncCredentialOwnerScopeId: string = '';
+  private vncCredentialAccountGeneration: number = 0;
+  private vncCredentialCertificateFingerprint: string = '';
+  private vncCredentialCertificateGeneration: number = 0;
+  private vncCredentialCertificateEndpointBinding: string = '';
+  private vncCredentialCertificateOwnerScopeId: string = '';
+  private vncCredentialCertificateStoreFingerprint: string = '';
+  private vncCredentialCertificateAccountGeneration: number = 0;
   @State showRustDeskProPreflight: boolean = false;
   @State rustDeskProPreflightState: number = RustDeskProPreflightState.IDLE;
   @State rustDeskProPreflightHostId: string = '';
@@ -649,11 +959,17 @@ struct HostListPage {
   @State rustDeskProTwoFactorSelectedEntryId: string = '';
   private rustDeskProTwoFactorSessionId: number = -1;
   private rustDeskProTwoFactorAutoAttemptSessionId: number = -1;
+  private rustDeskProDisconnectIdentity: NativeDisconnectIdentity | null = null;
   private rustDeskProPreflightGeneration: number = 0;
   // RustDesk preflight Sheet 退出动画完成前，不允许复用同一 bindSheet 宿主。
   private rustDeskProPreflightClosing: boolean = false;
   private rustDeskProPreflightClosingHostId: string = '';
   private rustDeskProPreflightPendingHostId: string = '';
+  private rustDeskProBackgroundResumeHostId: string = '';
+  private rustDeskProBackgroundDismissConfirmed: boolean = false;
+  private rustDeskProDismissClassificationTimer: number = -1;
+  private readonly rustDeskAuthDrafts: RustDeskAuthDraftStore =
+    RustDeskAuthDraftStore.getInstance();
   private rustDeskProPreflightPendingRouteParams: Record<string, Object> | null = null;
   private remoteHostSheetClosing: boolean = false;
   private remoteHostSheetClosingMode: number = REMOTE_HOST_SHEET_NONE;
@@ -668,10 +984,15 @@ struct HostListPage {
   // 保存并连接必须等新增主机 Sheet 的 native onDisappear 后再交给鉴权 Sheet。
   private pendingAddSheetConnectHostId: string = '';
   private pendingVncConnectHostId: string = '';
+  private moonlightCatalogHandoffGeneration: number = 0;
+  private pendingMoonlightCatalogHandoff: HostAddPostSaveHandoff =
+    emptyHostAddPostSaveHandoff();
+  private moonlightAddCommitted: boolean = false;
   private pendingVncGatewayDirectoryOpen: boolean = false;
   private pendingRustDeskRelayDirectoryOpen: boolean = false;
   private connectionAttemptGeneration: number = 0;
   private connectionAttemptHostId: string = '';
+  private rustDeskWindowHandoffGeneration: number = 0;
   @StorageLink('rustdeskImageQuality') rustdeskImageQuality: number = 1; // 0=fast, 1=balanced, 2=quality
   @StorageLink('rustdeskCodec') rustdeskCodec: number = 0; // 0=auto, 1=VP8, 2=VP9, 3=AV1, 4=H264, 5=H265
   @StorageLink('rustdeskDirectIp') rustdeskDirectIp: boolean = false;
@@ -695,6 +1016,15 @@ struct HostListPage {
   @StorageLink('rdpDesktopResolutionId') rdpDesktopResolutionId: string = '1920x1080';
   @StorageLink('remoteDisplayScaleMode') remoteDisplayScaleMode: string = 'fit';
   @StorageLink('remoteDisplayCustomScalePercent') remoteDisplayCustomScalePercent: number = 100;
+  @StorageLink(REMOTE_SESSION_CONTROL_BAR_HIDDEN_RDP_KEY)
+  sessionControlBarHiddenRdp: boolean = false;
+  @StorageLink(REMOTE_SESSION_CONTROL_BAR_HIDDEN_RUSTDESK_KEY)
+  sessionControlBarHiddenRustDesk: boolean = false;
+  @StorageLink(REMOTE_SESSION_CONTROL_BAR_HIDDEN_VNC_KEY)
+  sessionControlBarHiddenVnc: boolean = false;
+  @StorageLink(REMOTE_SESSION_CONTROL_BAR_HIDDEN_MOONLIGHT_KEY)
+  sessionControlBarHiddenMoonlight: boolean = false;
+  @State sessionControlBarProtocolPickerExpanded: boolean = false;
   @StorageLink('canvasGestureZoomEnabled') canvasGestureZoomEnabled: boolean = false;
   @StorageLink('rdpColorDepth') rdpColorDepth: number = 32;
   @StorageLink('rdpAudioEnabled') rdpAudioEnabled: boolean = true;
@@ -704,6 +1034,7 @@ struct HostListPage {
   @StorageLink('rdpDriveName') rdpDriveName: string = 'RemoteDesktop';
   @StorageLink('rdpControlMode') rdpControlMode: number = 0; // 0=触控板, 1=直接触控, 2=键鼠
   @StorageLink('rdpAuthIdentityMode') rdpAuthIdentityMode: number = 1; // 0=MicrosoftAccount\\邮箱, 1=域+邮箱, 2=裸邮箱, 3=.\\AzureAD\\邮箱, 4=AzureAD域
+  @StorageLink('rdpTlsWithoutNla') rdpTlsWithoutNla: boolean = false;
   @State sheetPwdMode: number = 0; // 0=一次性密码, 1=永久密码
   @State sheetRustdeskAuthMode: string = 'password'; // password | request_approval
   @State sheetRustdeskDirectEnabled: boolean = false; // per-host 直连开关
@@ -746,6 +1077,10 @@ struct HostListPage {
   @StorageLink('sshTerminalFontSize') terminalFontSize: number = 18;
   @StorageLink('sshTerminalLineSpacing') terminalLineSpacing: number = 1.12;
   @StorageLink('sshInputMode') sshInputMode: number = 1; // 0=自动, 1=虚拟键盘, 2=实体键鼠
+  @StorageLink(SSH_WORKBENCH_V2_FLAG_KEY)
+  sshWorkbenchEnabled: boolean = SSH_WORKBENCH_V2_DEFAULT_ENABLED;
+  @State sshSystemNotificationsEnabled: boolean = false;
+  @State sshNotificationAuthorizationPending: boolean = false;
   @State showTerminalFontSize: boolean = false;
   @State showRdpCredentialSheet: boolean = false;
   @State showRdpCredentialEditorSheet: boolean = false;
@@ -827,9 +1162,27 @@ struct HostListPage {
   private readonly vncGateways: VncGatewayService = VncGatewayService.getInstance();
   private readonly vncTrust: VncTrustService = VncTrustService.getInstance();
   private readonly vncSettings: VncSettingsService = VncSettingsService.getInstance();
+  private readonly moonlightLocalHostService: MoonlightLocalHostService =
+    new MoonlightLocalHostService(CloudStore.getInstance(), CloudStore.getInstance());
+  private readonly moonlightDeletionRuntime: MoonlightDeletionRuntime =
+    MoonlightDeletionRuntime.getInstance();
+  private readonly moonlightLocalViewService: MoonlightLocalViewService =
+    new MoonlightLocalViewService(CloudStore.getInstance());
+  private readonly moonlightHostService: MoonlightHostService = new MoonlightHostService();
+  private readonly moonlightLanProbeService: MoonlightLanProbeService =
+    new MoonlightLanProbeService();
+  private moonlightDiscovery: MoonlightLanDiscoveryService | null = null;
+  private moonlightActiveVerification: MoonlightHostAddVerification | null = null;
+  private moonlightPendingVerificationFence: MoonlightHostOperationFence | null = null;
+  private moonlightActiveVerificationFence: MoonlightHostOperationFence | null = null;
+  private moonlightPairingExpiresAt: number = 0;
   private loader: ExtensionLoader = ExtensionLoader.getInstance();
   private sshKeyImporter: SshKeyImportService = new SshKeyImportService();
   private readonly sshSettings: SshSettingsService = SshSettingsService.getInstance();
+  private readonly sshNotificationService: SshNotificationService =
+    SshNotificationService.getInstance();
+  private readonly sshWorkspaceCapabilityStore: SshWorkspaceCapabilityStore =
+    new SshWorkspaceCapabilityStore();
   private readonly sshProxyProfiles: SshProxyProfileStore = new SshProxyProfileStore();
   private lightSensing: LightSensingService = LightSensingService.getInstance();
   @State showPassphraseSheet: boolean = false;
@@ -905,6 +1258,7 @@ struct HostListPage {
   private searchTimer: number = -1;
   private presetColors: string[] = ['#FFFFFF','#F0F0F0','#F0F5FA','#FFF8F0','#F5F0F8','#1A1A2E','#1E4377','#2D1B4E'];
   @State wallpaperItems: WallpaperItem[] = [];
+  @State pageViewportHeight: number = 720;
   private inputDeviceListenerRegistered: boolean = false;
   private inputDevicePromptVisible: boolean = false;
   private externalInputPromptedThisSession: boolean = false;
@@ -920,10 +1274,73 @@ struct HostListPage {
 
   private onRemoteDesktopBgFlagChange(): void {
     if (this.appInBackground) {
+      this.clearRustDeskProDismissClassificationTimer();
+      if (this.showRustDeskProPreflight && this.rustDeskProPreflightHostId !== '') {
+        this.saveRustDeskProAuthDraft();
+        this.rustDeskProBackgroundResumeHostId = this.rustDeskProPreflightHostId;
+      }
+      if (this.rustDeskProBackgroundResumeHostId !== '') {
+        this.rustDeskProBackgroundDismissConfirmed = true;
+      }
       this.pauseForegroundSensors('ability-background');
     } else {
       this.resumeForegroundSensors('ability-foreground');
+      this.resumeRustDeskProPreflightAfterBackground();
     }
+  }
+
+  private clearRustDeskProDismissClassificationTimer(): void {
+    if (this.rustDeskProDismissClassificationTimer >= 0) {
+      clearTimeout(this.rustDeskProDismissClassificationTimer);
+      this.rustDeskProDismissClassificationTimer = -1;
+    }
+  }
+
+  private settleRustDeskProImplicitDismiss(): void {
+    this.clearRustDeskProDismissClassificationTimer();
+    const hostId: string = this.rustDeskProBackgroundResumeHostId;
+    if (hostId === '') { return; }
+    if (this.appInBackground) {
+      this.rustDeskProBackgroundDismissConfirmed = true;
+      return;
+    }
+    if (this.rustDeskProBackgroundDismissConfirmed) {
+      setTimeout((): void => { this.resumeRustDeskProPreflightAfterBackground(); }, 0);
+      return;
+    }
+    // ArkUI may dismiss a Sheet just before the ability background flag is
+    // delivered. Keep the process-memory draft through that short ordering
+    // window; if no background signal arrives, the dismissal was an explicit
+    // gesture and the draft is securely cleared without reopening the Sheet.
+    this.rustDeskProDismissClassificationTimer = setTimeout((): void => {
+      this.rustDeskProDismissClassificationTimer = -1;
+      if (this.appInBackground ||
+        this.rustDeskProBackgroundResumeHostId !== hostId) {
+        return;
+      }
+      this.clearRustDeskProAuthDraft(hostId);
+    }, 180);
+  }
+
+  private resumeRustDeskProPreflightAfterBackground(): void {
+    const hostId: string = this.rustDeskProBackgroundResumeHostId;
+    if (hostId === '' || !this.pageActive || this.appInBackground ||
+      this.showRustDeskProPreflight ||
+      this.showRemoteHostSheet || this.rustDeskProPreflightClosing ||
+      this.remoteHostSheetClosing) {
+      return;
+    }
+    this.rustDeskProBackgroundResumeHostId = '';
+    this.rustDeskProBackgroundDismissConfirmed = false;
+    setTimeout((): void => {
+      if (!this.pageActive || this.appInBackground) { return; }
+      const host: RemoteHost | undefined = this.srv.getHost(hostId);
+      if (host === undefined) {
+        this.rustDeskAuthDrafts.clearHost(hostId);
+        return;
+      }
+      void this.connectToHost(host);
+    }, 0);
   }
 
   private pauseForegroundSensors(source: string): void {
@@ -939,6 +1356,7 @@ struct HostListPage {
     }
     this.syncAmbientLightMonitor();
     this.ensureGripMonitorOnPageShow();
+    void this.refreshDynamicLanHosts(false);
     hilog.info(0x0000, 'HostListPage', 'foreground sensors resumed source=' + source);
   }
 
@@ -957,6 +1375,7 @@ struct HostListPage {
     this.closeLegacySettingsSheetFlags();
     if (this.hostSelectionMode) {
       this.hostSelectionMode = false;
+      this.hostReorderEnabled = false;
       this.hostSelectedIds = new Set();
     }
     if (this.groupedHostCardsActive()) {
@@ -978,6 +1397,14 @@ struct HostListPage {
     }
   }
 
+  onBackPress(): boolean {
+    if (this.hostSelectionMode) {
+      this.cancelHostEdit();
+      return true;
+    }
+    return false;
+  }
+
   async aboutToAppear(): Promise<void> {
     this.pageActive = true;
     this.cloudConnectionAvailable =
@@ -996,6 +1423,9 @@ struct HostListPage {
     this.updateWindowMetrics();
     this.refreshHaloPresets();
     this.sshSettings.init(getContext(this) as common.Context);
+    this.sshWorkbenchEnabled = this.sshWorkspaceCapabilityStore.load(
+      getContext(this) as common.Context);
+    this.refreshSshNotificationAuthorization();
     this.sshProxyProfiles.init(getContext(this) as common.Context);
     this.proSync.init(getContext(this) as common.Context);
     // 恢复 TOTP 隐私保护状态 (Preferences 持久化)
@@ -1012,13 +1442,27 @@ struct HostListPage {
       const savedAmbientLightEffect: boolean = prefs.getSync('ambientLightEffectEnabled', false) as boolean;
       const savedLiveViewEnabled: boolean =
         prefs.getSync('liveViewEnabled', defaults.liveViewEnabled) as boolean;
-      const savedLiveViewMode: number = prefs.getSync('liveViewMode', 1) as number;
+      const savedLiveViewMode: number = prefs.getSync('liveViewMode', defaults.liveViewMode) as number;
       const savedHostAddMode: string = prefs.getSync('hostAddMode', 'modern') as string;
       const savedVirtualMouseStyle: string =
         prefs.getSync('virtualMouseStyle', defaults.virtualMouseStyle) as string;
       const savedTotpLogoMode: string = prefs.getSync('totpLogoMode', defaults.totpLogoMode) as string;
       const savedGroupedHostCards: boolean =
         prefs.getSync('groupedHostCards', defaults.groupedHostCards) as boolean;
+      const savedHostCardSensitiveInfoHidden: boolean =
+        prefs.getSync(HOST_CARD_SENSITIVE_INFO_HIDDEN_KEY, false) as boolean;
+      const sessionControlBarVisibility: RemoteSessionControlBarVisibility =
+        resolveRemoteSessionControlBarVisibility({
+          rdpHidden: prefs.getSync(REMOTE_SESSION_CONTROL_BAR_HIDDEN_RDP_KEY, false) as boolean,
+          rustDeskHidden:
+            prefs.getSync(REMOTE_SESSION_CONTROL_BAR_HIDDEN_RUSTDESK_KEY, false) as boolean,
+          vncHidden: prefs.getSync(REMOTE_SESSION_CONTROL_BAR_HIDDEN_VNC_KEY, false) as boolean,
+          moonlightHidden:
+            prefs.getSync(REMOTE_SESSION_CONTROL_BAR_HIDDEN_MOONLIGHT_KEY, false) as boolean
+        }, {
+          rustDeskPresent: prefs.hasSync(REMOTE_SESSION_CONTROL_BAR_HIDDEN_RUSTDESK_KEY),
+          vncPresent: prefs.hasSync(REMOTE_SESSION_CONTROL_BAR_HIDDEN_VNC_KEY)
+        }, prefs.getSync(PC_SESSION_TOP_BAR_HIDDEN_KEY, false) as boolean);
       const savedRustDeskPresenceDetection: boolean =
         prefs.getSync('rustdeskPresenceDetectionEnabled',
           defaults.rustdeskPresenceDetectionEnabled) as boolean;
@@ -1048,7 +1492,8 @@ struct HostListPage {
       AppStorage.setOrCreate('gripAlignmentEnabled', this.gripAlignmentEnabled);
       this.liveViewEnabled = savedLiveViewEnabled;
       AppStorage.setOrCreate('liveViewEnabled', this.liveViewEnabled);
-      this.liveViewMode = savedLiveViewMode >= 0 && savedLiveViewMode <= 2 ? savedLiveViewMode : 1;
+      this.liveViewMode = savedLiveViewMode >= 0 && savedLiveViewMode <= 2 ?
+        savedLiveViewMode : defaults.liveViewMode;
       AppStorage.setOrCreate('liveViewMode', this.liveViewMode);
       this.fabAddStyle = savedHostAddMode === 'classic' ? 'classic' : 'modern';
       AppStorage.setOrCreate('hostAddMode', this.fabAddStyle);
@@ -1058,6 +1503,28 @@ struct HostListPage {
       AppStorage.setOrCreate('totpLogoMode', this.totpLogoMode);
       this.groupedHostCards = savedGroupedHostCards;
       AppStorage.setOrCreate('groupedHostCards', this.groupedHostCards);
+      // 恢复主机手动排序顺序 (纯本地持久化)
+      const savedManualOrder: string = prefs.getSync('hostManualSortOrder', '') as string;
+      if (savedManualOrder.length > 0) {
+        try { this.hostManualOrder = JSON.parse(savedManualOrder) as string[]; } catch (_) {
+          this.hostManualOrder = [];
+        }
+      }
+      this.hostCardSensitiveInfoHidden = savedHostCardSensitiveInfoHidden;
+      AppStorage.setOrCreate(HOST_CARD_SENSITIVE_INFO_HIDDEN_KEY,
+        this.hostCardSensitiveInfoHidden);
+      this.sessionControlBarHiddenRdp = sessionControlBarVisibility.rdpHidden;
+      this.sessionControlBarHiddenRustDesk = sessionControlBarVisibility.rustDeskHidden;
+      this.sessionControlBarHiddenVnc = sessionControlBarVisibility.vncHidden;
+      this.sessionControlBarHiddenMoonlight = sessionControlBarVisibility.moonlightHidden;
+      AppStorage.setOrCreate(REMOTE_SESSION_CONTROL_BAR_HIDDEN_RDP_KEY,
+        this.sessionControlBarHiddenRdp);
+      AppStorage.setOrCreate(REMOTE_SESSION_CONTROL_BAR_HIDDEN_RUSTDESK_KEY,
+        this.sessionControlBarHiddenRustDesk);
+      AppStorage.setOrCreate(REMOTE_SESSION_CONTROL_BAR_HIDDEN_VNC_KEY,
+        this.sessionControlBarHiddenVnc);
+      AppStorage.setOrCreate(REMOTE_SESSION_CONTROL_BAR_HIDDEN_MOONLIGHT_KEY,
+        this.sessionControlBarHiddenMoonlight);
       this.rustdeskPresenceDetectionEnabled = savedRustDeskPresenceDetection;
       AppStorage.setOrCreate('rustdeskPresenceDetectionEnabled', this.rustdeskPresenceDetectionEnabled);
       if (savedWallpaper !== '') { AppStorage.setOrCreate('wallpaperColor', savedWallpaper); }
@@ -1111,6 +1578,7 @@ struct HostListPage {
       const savedRdpAudioEnabled: boolean = prefs.getSync('rdpAudioEnabled', true) as boolean;
       const savedRdpClipboardEnabled: boolean = prefs.getSync('rdpClipboardEnabled', true) as boolean;
       const savedRdpShowDiagnostics: boolean = prefs.getSync('rdpShowDiagnostics', false) as boolean;
+      const savedRdpTlsWithoutNla: boolean = prefs.getSync('rdpTlsWithoutNla', false) as boolean;
       const rdpDriveDefaultVersion: number = prefs.getSync('rdpDriveDefaultVersion', 0) as number;
       const hasSavedRdpDriveEnabled: boolean = prefs.hasSync('rdpDriveEnabled');
       let savedRdpDriveEnabled: boolean = prefs.getSync('rdpDriveEnabled', true) as boolean;
@@ -1136,6 +1604,7 @@ struct HostListPage {
         prefs.putSync('rdpAuthIdentityModeDefaultVersion', 1);
       }
       if (!prefs.hasSync('liveViewEnabled')) { prefs.putSync('liveViewEnabled', savedLiveViewEnabled); }
+      if (!prefs.hasSync('liveViewMode')) { prefs.putSync('liveViewMode', defaults.liveViewMode); }
       if (!prefs.hasSync('virtualMouseStyle')) { prefs.putSync('virtualMouseStyle', savedVirtualMouseStyle); }
       if (!prefs.hasSync('totpLogoMode')) { prefs.putSync('totpLogoMode', savedTotpLogoMode); }
       if (!prefs.hasSync('groupedHostCards')) { prefs.putSync('groupedHostCards', savedGroupedHostCards); }
@@ -1147,6 +1616,14 @@ struct HostListPage {
       if (!prefs.hasSync('rdpControlMode')) { prefs.putSync('rdpControlMode', savedRdpControlMode); }
       if (!prefs.hasSync('canvasGestureZoomEnabled')) {
         prefs.putSync('canvasGestureZoomEnabled', savedCanvasGestureZoomEnabled);
+      }
+      if (!prefs.hasSync(REMOTE_SESSION_CONTROL_BAR_HIDDEN_RUSTDESK_KEY)) {
+        prefs.putSync(REMOTE_SESSION_CONTROL_BAR_HIDDEN_RUSTDESK_KEY,
+          this.sessionControlBarHiddenRustDesk);
+      }
+      if (!prefs.hasSync(REMOTE_SESSION_CONTROL_BAR_HIDDEN_VNC_KEY)) {
+        prefs.putSync(REMOTE_SESSION_CONTROL_BAR_HIDDEN_VNC_KEY,
+          this.sessionControlBarHiddenVnc);
       }
       this.totpPageLocked = savedLock;
       this.rustdeskImageQuality = savedQuality >= 0 && savedQuality <= 2 ? savedQuality : 1;
@@ -1195,6 +1672,7 @@ struct HostListPage {
       this.rdpDriveName = this.normalizeRdpDriveName(savedRdpDriveName);
       this.rdpControlMode = this.clampRdpControlMode(savedRdpControlMode);
       this.rdpAuthIdentityMode = this.clampRdpAuthIdentityMode(savedRdpAuthIdentityMode);
+      this.rdpTlsWithoutNla = savedRdpTlsWithoutNla;
       AppStorage.setOrCreate('totpLocked', savedLock);
       AppStorage.setOrCreate('rustdeskImageQuality', this.rustdeskImageQuality);
       AppStorage.setOrCreate('rustdeskCodec', this.rustdeskCodec);
@@ -1228,10 +1706,14 @@ struct HostListPage {
       AppStorage.setOrCreate('rdpDriveName', this.rdpDriveName);
       AppStorage.setOrCreate('rdpControlMode', this.rdpControlMode);
       AppStorage.setOrCreate('rdpAuthIdentityMode', this.rdpAuthIdentityMode);
+      AppStorage.setOrCreate('rdpTlsWithoutNla', this.rdpTlsWithoutNla);
     } catch (_err) { /* ignore */ }
     // The home page is a core path.  Loading it must not await an optional
     // permission dialog or sensor service.
     await this.load(true, true);
+    void this.refreshDynamicLanHosts(false);
+    this.consumeRemoteSessionConnectionIntent();
+    this.refreshMoonlightDirectory();
     this.registerDataRefreshListeners();
     this.loadAfterServiceReady();
     this.registerInputDeviceWatcher();
@@ -1245,6 +1727,7 @@ struct HostListPage {
     this.pageActive = true;
     this.cloudConnectionAvailable =
       CloudStore.getInstance().isCloudAvailable();
+    this.refreshMoonlightDirectory();
     this.refreshCloudRegistration();
     CloudSyncCoordinator.getInstance().flushDeferredAutomaticPushes();
     this.updateWindowMetrics();
@@ -1256,12 +1739,35 @@ struct HostListPage {
       } else {
         this.reapplyManualTheme('page-show');
       }
-      this.load(true, false);
+      void this.load(true, false).then((): void => {
+        this.consumeRemoteSessionConnectionIntent();
+      });
     }
     this.refreshCryptoStatus();
+    this.refreshSshNotificationAuthorization();
     this.syncAmbientLightMonitor();
     this.ensureGripMonitorOnPageShow();
+    void this.refreshDynamicLanHosts(false);
     this.handleVncRelayRouteRequest();
+    this.consumeRemoteSessionConnectionIntent();
+  }
+
+  private consumeRemoteSessionConnectionIntent(): void {
+    if (!this.pageActive || !this.vncHosts.isReady()) { return; }
+    const intent: RemoteSessionConnectionIntentValue | null =
+      RemoteSessionConnectionIntent.getInstance().take();
+    if (intent === null) { return; }
+    if (intent.protocol === 'vnc') {
+      const host: VncHostView | null = this.vncHosts.find(intent.hostId);
+      if (host === null) {
+        promptAction.showToast({ message: 'VNC 主机不存在，未开始连接', duration: 2200 });
+        return;
+      }
+      this.vncCredentialRetryHostId = intent.reason === 'authentication_retry' ? host.id : '';
+      this.vncCredentialRetryReplaceSavedHostId = intent.reason === 'authentication_retry' &&
+        intent.replaceSavedCredential ? host.id : '';
+      void this.connectToHost(projectVncHost(host));
+    }
   }
 
   private openSheetSafely(openAction: () => void, allowDuringConnectionAttempt: boolean = false): void {
@@ -1303,11 +1809,26 @@ struct HostListPage {
   }
 
   private beginRemoteHostSheetClose(mode: number): void {
+    this.activateSheetReleaseFence();
     if (!this.remoteHostSheetClosing) {
       this.remoteHostSheetClosing = true;
       this.remoteHostSheetClosingMode = mode;
     }
     this.lastSheetDismissAtMs = Date.now();
+  }
+
+  private activateSheetReleaseFence(): void {
+    const generation: number = this.sheetReleaseFenceGeneration + 1;
+    this.sheetReleaseFenceGeneration = generation;
+    this.sheetReleaseFenceActive = true;
+    if (this.sheetReleaseFenceTimer !== -1) {
+      clearTimeout(this.sheetReleaseFenceTimer);
+    }
+    this.sheetReleaseFenceTimer = setTimeout((): void => {
+      if (this.sheetReleaseFenceGeneration !== generation) { return; }
+      this.sheetReleaseFenceTimer = -1;
+      this.sheetReleaseFenceActive = false;
+    }, SHEET_RELEASE_FENCE_MS);
   }
 
   private openRemoteHostSheet(mode: number, makeVisible: () => void): void {
@@ -1442,12 +1963,9 @@ struct HostListPage {
         promptAction.showToast({ message: '主机已不存在，请重新打开编辑', duration: 2200 });
         return;
       }
-      const updated: RemoteHost = RemoteHost.fromJSON(current.toJSON());
-      updated.rustdeskTotpEntryId = entry.id;
       // A successful binding is immediately usable on the next connection.
       // The user can turn this off from the compact binding row afterwards.
-      updated.rustdeskTotpAutoSubmit = true;
-      if (!this.srv.updateHost(updated)) {
+      if (!this.srv.setRustDeskPeerTwoFactorBinding(current.id, entry.id, true)) {
         promptAction.showToast({ message: 'RustDesk 2FA 绑定保存失败', duration: 2200 });
         return;
       }
@@ -1455,7 +1973,11 @@ struct HostListPage {
     this.sheetRustdeskTotpEntryId = entry.id;
     this.sheetRustdeskTotpAutoSubmit = true;
     this.updateRustDeskTotpResumeDraft(entry.id, true);
-    promptAction.showToast({ message: 'RustDesk 2FA 已绑定', duration: 1600 });
+    promptAction.showToast({
+      message: this.editingHostId !== '' ?
+        'RustDesk 2FA 已绑定' : 'RustDesk 2FA 已选择，保存主机后生效',
+      duration: 1800
+    });
     this.closeRustDeskTotpBinding(true);
   }
 
@@ -1464,10 +1986,7 @@ struct HostListPage {
     if (this.editingHostId !== '') {
       const current: RemoteHost | undefined = this.srv.getHost(this.editingHostId);
       if (current !== undefined && current.protocol === 'rustdesk') {
-        const updated: RemoteHost = RemoteHost.fromJSON(current.toJSON());
-        updated.rustdeskTotpEntryId = '';
-        updated.rustdeskTotpAutoSubmit = false;
-        if (!this.srv.updateHost(updated)) {
+        if (!this.srv.clearRustDeskPeerTwoFactorBinding(current.id)) {
           promptAction.showToast({ message: '解除 RustDesk 2FA 绑定失败', duration: 2200 });
           return;
         }
@@ -1476,7 +1995,11 @@ struct HostListPage {
     this.sheetRustdeskTotpEntryId = '';
     this.sheetRustdeskTotpAutoSubmit = false;
     this.updateRustDeskTotpResumeDraft('', false);
-    promptAction.showToast({ message: 'RustDesk 2FA 已解除绑定', duration: 1600 });
+    promptAction.showToast({
+      message: this.editingHostId !== '' ?
+        'RustDesk 2FA 已解除绑定' : '已从新增主机草稿移除 RustDesk 2FA',
+      duration: 1800
+    });
     this.closeRustDeskTotpBinding(true);
   }
 
@@ -1489,10 +2012,9 @@ struct HostListPage {
     if (this.editingHostId === '') { return; }
     const current: RemoteHost | undefined = this.srv.getHost(this.editingHostId);
     if (current === undefined || current.protocol !== 'rustdesk') { return; }
-    const updated: RemoteHost = RemoteHost.fromJSON(current.toJSON());
-    updated.rustdeskTotpEntryId = this.sheetRustdeskTotpEntryId;
-    updated.rustdeskTotpAutoSubmit = enabled;
-    if (!this.srv.updateHost(updated)) {
+    if (!this.srv.setRustDeskPeerTwoFactorBinding(
+      current.id, this.sheetRustdeskTotpEntryId, enabled)) {
+      this.sheetRustdeskTotpAutoSubmit = !enabled;
       promptAction.showToast({ message: '自动提交设置保存失败', duration: 2200 });
     }
   }
@@ -1540,6 +2062,10 @@ struct HostListPage {
     const requiresLocalRestrictedAdminHash: boolean = host.protocol === 'rdp' &&
       host.rdpAuthMode === 'restricted_admin' &&
       host.rdpRestrictedAdminSecretSource === 'ntlm_hash';
+    const rustDeskTotpEntryId: string = host.protocol === 'rustdesk' ?
+      host.rustdeskTotpEntryId.trim() : '';
+    const rustDeskTotpAutoSubmit: boolean = host.protocol === 'rustdesk' &&
+      host.rustdeskTotpAutoSubmit && rustDeskTotpEntryId !== '';
     if (requiresLocalRestrictedAdminHash &&
       !CloudStore.getInstance().saveRdpRestrictedAdminHash(host, restrictedAdminHash)) {
       promptAction.showToast({ message: '无法加密保存 NTLM Hash，请先解锁本地凭据存储后重试', duration: 2600 });
@@ -1550,6 +2076,18 @@ struct HostListPage {
         CloudStore.getInstance().clearRdpRestrictedAdminHash(host.id);
       }
       promptAction.showToast({ message: '保存主机失败，请稍后重试', duration: 1800 });
+      return;
+    }
+    if (host.protocol === 'rustdesk' && rustDeskTotpEntryId !== '' &&
+      !this.srv.setRustDeskPeerTwoFactorBinding(
+        host.id, rustDeskTotpEntryId, rustDeskTotpAutoSubmit)) {
+      const rolledBack: boolean = this.srv.removeHost(host.id);
+      promptAction.showToast({
+        message: rolledBack ?
+          'RustDesk 2FA 绑定保存失败，主机新增已撤销，请重试' :
+          'RustDesk 2FA 绑定保存失败，且主机回滚未完成；请返回列表检查',
+        duration: 3000
+      });
       return;
     }
     this.refreshHostSnapshotAfterMutation();
@@ -1614,7 +2152,1206 @@ struct HostListPage {
     this.requestAddSheetClose();
   }
 
+  private invalidateMoonlightCatalogHandoff(): void {
+    this.moonlightCatalogHandoffGeneration += 1;
+    this.pendingMoonlightCatalogHandoff = emptyHostAddPostSaveHandoff();
+  }
+
+  private refreshMoonlightDirectory(): void {
+    const lease: AccountSessionLease | null = CloudStore.getInstance().currentAccountLease();
+    if (lease === null || !CloudStore.getInstance().isLeaseCurrent(lease)) {
+      this.moonlightDirectoryOwnerScopeId = '';
+      this.moonlightDirectoryAccountGeneration = 0;
+      this.moonlightDirectoryStoreInstanceId = 0;
+      this.moonlightDirectoryCode = 'account_scope_unavailable';
+      this.moonlightHosts = [];
+      return;
+    }
+    const sameScope: boolean =
+      lease.ownerScopeId === this.moonlightDirectoryOwnerScopeId &&
+      lease.generation === this.moonlightDirectoryAccountGeneration &&
+      lease.storeInstanceId === this.moonlightDirectoryStoreInstanceId;
+    this.moonlightDirectoryOwnerScopeId = lease.ownerScopeId;
+    this.moonlightDirectoryAccountGeneration = lease.generation;
+    this.moonlightDirectoryStoreInstanceId = lease.storeInstanceId;
+    const directory: MoonlightHostDirectoryView =
+      this.moonlightLocalViewService.loadHosts(Date.now());
+    this.moonlightDirectoryCode = directory.code;
+    if (directory.ok) {
+      this.moonlightHosts = directory.hosts.slice();
+    } else if (!sameScope) {
+      // Never carry cards across accounts/stores. A transient read failure in
+      // the same local database keeps the last known-good cards, matching the
+      // other protocol lists instead of flashing an empty Moonlight section.
+      this.moonlightHosts = [];
+    }
+  }
+
+  private visibleMoonlightHosts(): MoonlightHostLocalView[] {
+    const query: string = this.searchText.trim().toLowerCase();
+    if (query === '') { return this.moonlightHosts.slice(); }
+    return this.moonlightHosts.filter((view: MoonlightHostLocalView): boolean => {
+      const host: MoonlightHost | null = view.host;
+      if (host === null) { return false; }
+      if (host.displayName.toLowerCase().indexOf(query) >= 0 ||
+          host.serverUuid.toLowerCase().indexOf(query) >= 0) { return true; }
+      for (let index: number = 0; index < host.addresses.length; index++) {
+        if (host.addresses[index].host.toLowerCase().indexOf(query) >= 0) { return true; }
+      }
+      return false;
+    });
+  }
+
+  private flatHostCardRefs(): UnifiedHostCardRef[] {
+    const remoteIds: string[] = [];
+    const moonlightIds: string[] = [];
+    const desktopProtocolTab: boolean = this.isDesktopDevice && this.breakpoint === 'xl';
+    if (!desktopProtocolTab || this.curTab !== DESKTOP_MOONLIGHT_TAB) {
+      for (let index: number = 0; index < this.filteredHosts.length; index++) {
+        remoteIds.push(this.filteredHosts[index].id);
+      }
+    }
+    // Phone/Pad unclassified mode is one host collection. On desktop, the
+    // dedicated protocol tabs still filter that same collection and only the
+    // Moonlight tab receives Moonlight rows. A workspace chip excludes
+    // Moonlight because Moonlight currently has no workspace-group field.
+    if ((desktopProtocolTab && this.curTab === DESKTOP_MOONLIGHT_TAB) ||
+        (!desktopProtocolTab && this.workspaceGroupId === '')) {
+      const views: MoonlightHostLocalView[] = this.visibleMoonlightHosts();
+      for (let index: number = 0; index < views.length; index++) {
+        if (views[index].host !== null) { moonlightIds.push((views[index].host as MoonlightHost).id); }
+      }
+    }
+    return buildUnifiedHostCardRefs(remoteIds, moonlightIds, this.hostManualOrder);
+  }
+
+  private allHostCardRefsForOrder(): UnifiedHostCardRef[] {
+    const remoteIds: string[] = this.hosts.map((host: RemoteHost): string => host.id);
+    const moonlightIds: string[] = [];
+    for (let index: number = 0; index < this.moonlightHosts.length; index++) {
+      if (this.moonlightHosts[index].host !== null) {
+        moonlightIds.push((this.moonlightHosts[index].host as MoonlightHost).id);
+      }
+    }
+    return buildUnifiedHostCardRefs(remoteIds, moonlightIds, this.hostManualOrder);
+  }
+
+  private remoteHostForCardRef(ref: UnifiedHostCardRef): RemoteHost | null {
+    if (ref.kind !== 'remote') { return null; }
+    const host: RemoteHost | undefined = this.filteredHosts.find(
+      (candidate: RemoteHost): boolean => candidate.id === ref.hostId);
+    return host === undefined ? null : host;
+  }
+
+  private moonlightViewForCardRef(ref: UnifiedHostCardRef): MoonlightHostLocalView | null {
+    if (ref.kind !== 'moonlight') { return null; }
+    const view: MoonlightHostLocalView | undefined = this.visibleMoonlightHosts().find(
+      (candidate: MoonlightHostLocalView): boolean =>
+        candidate.host !== null && candidate.host.id === ref.hostId);
+    return view === undefined ? null : view;
+  }
+
+  private selectionKeysForCurrentView(): string[] {
+    if (!this.groupedHostCardsActive()) {
+      return this.flatHostCardRefs().map((ref: UnifiedHostCardRef): string => ref.key);
+    }
+    const keys: string[] = this.filteredHosts.map(
+      (host: RemoteHost): string => remoteHostCardKey(host.id));
+    const moonlight: MoonlightHostLocalView[] = this.visibleMoonlightHosts();
+    for (let index: number = 0; index < moonlight.length; index++) {
+      if (moonlight[index].host !== null) {
+        keys.push(unifiedMoonlightHostCardKey((moonlight[index].host as MoonlightHost).id));
+      }
+    }
+    return keys;
+  }
+
+  private beginHostSelection(selectionKey: string, reorderEnabled: boolean,
+    preserveActiveDrag: boolean = false): void {
+    const currentOrder: string[] = this.flatHostCardRefs().map(
+      (ref: UnifiedHostCardRef): string => ref.key);
+    this.hostReorderOriginalOrder = this.hostManualOrder.slice();
+    if (reorderEnabled) {
+      this.hostManualOrder = mergeVisibleHostOrder(
+        this.hostManualOrder, currentOrder, currentOrder);
+    }
+    if (preserveActiveDrag) {
+      // onDragStart already owns a live platform drag session. Re-keying the
+      // ForEach here would destroy its source ListItem before onDrop. @State
+      // updates are enough to reveal selection controls without replacing the
+      // card identity; the final drop performs the ordered revision refresh.
+      this.hostSelectionMode = true;
+      this.hostReorderEnabled = reorderEnabled;
+      this.hostSelectedIds = selectionKey === ''
+        ? new Set<string>() : new Set<string>([selectionKey]);
+      return;
+    }
+    animateTo({ duration: 250, curve: Curve.FastOutSlowIn }, (): void => {
+      this.hostSelectionMode = true;
+      this.hostReorderEnabled = reorderEnabled;
+      this.hostSelectedIds = selectionKey === ''
+        ? new Set<string>() : new Set<string>([selectionKey]);
+      this.hostViewRevision += 1;
+    });
+  }
+
+  private moonlightHostCardKey(view: MoonlightHostLocalView): string {
+    const hostId: string = view.host?.id || 'invalid-moonlight-host';
+    const displayName: string = view.host?.displayName || '';
+    const preferredAddressKey: string =
+      view.host?.preferredAddressKey || '';
+    const userOrder: number = view.host?.userOrder || 0;
+    let newestCatalogAt: number = 0;
+    let availableCount: number = 0;
+    for (let index: number = 0; index < view.catalogItems.length; index++) {
+      newestCatalogAt = Math.max(newestCatalogAt, view.catalogItems[index].lastCatalogAt);
+      if (view.catalogItems[index].available && !view.catalogItems[index].stale) {
+        availableCount++;
+      }
+    }
+    return hostId + ':' + view.updatedAt.toString() + ':' +
+      displayName + ':' + preferredAddressKey + ':' + userOrder.toString() + ':' +
+      (view.host?.locked === true ? 'locked' : 'unlocked') + ':' +
+      (view.paired ? 'paired' : 'unpaired') + ':' +
+      view.catalogItems.length.toString() + ':' + availableCount.toString() + ':' +
+      newestCatalogAt.toString();
+  }
+
+  private moonlightAddressLabel(host: MoonlightHost): string {
+    const selected: MoonlightAddress | null = this.moonlightPreferredAddress(host);
+    return selected === null ? '未保存地址' : selected.host + ':' + selected.port.toString();
+  }
+
+  private moonlightPreferredAddress(host: MoonlightHost): MoonlightAddress | null {
+    if (host.addresses.length === 0) { return null; }
+    let selected: MoonlightAddress = host.addresses[0];
+    for (let index: number = 0; index < host.addresses.length; index++) {
+      const address: MoonlightAddress = host.addresses[index];
+      if (moonlightAddressKey(address) === host.preferredAddressKey) {
+        selected = address;
+        break;
+      }
+    }
+    return selected;
+  }
+
+  private moonlightAddressFamily(value: string): MoonlightAddressFamily {
+    const host: string = value.trim();
+    if (host.indexOf(':') >= 0) { return 'ipv6'; }
+    return /^\d{1,3}(\.\d{1,3}){3}$/.test(host) ? 'ipv4' : 'hostname';
+  }
+
+  private protectedMoonlightCardValue(host: MoonlightHost, visibleValue: string): string {
+    return hostCardSensitiveValue(shouldHideHostCardSensitiveInfo(
+      this.hostCardSensitiveInfoHidden, host.locked === true), visibleValue);
+  }
+
+  private async openMoonlightHost(hostId: string, catalog: boolean = false): Promise<void> {
+    const params: Record<string, Object> | null = moonlightHostRouteParams(hostId);
+    if (params === null) { return; }
+    const view: MoonlightHostLocalView | undefined = this.moonlightHosts.find(
+      (candidate: MoonlightHostLocalView): boolean =>
+        candidate.host !== null && candidate.host.id === hostId);
+    if (view === undefined || view.host === null) { return; }
+    if (view.host.locked === true) {
+      const gate: LockGateResult = await showLockGate(view.host.displayName, 'biometric');
+      if (!gate.ok) {
+        const message: string = lockGateErrorMessage(gate);
+        if (message !== '') { promptAction.showToast({ message: message, duration: 2000 }); }
+        return;
+      }
+    }
+    if (!this.pageActive) { return; }
+    // A card tap is an in-place expansion, matching the RDP/RustDesk/SSH/VNC
+    // host-list contract.  Full pages remain explicit actions from the Sheet
+    // (catalog/settings), never an implicit card navigation.
+    if (!catalog) {
+      this.openMoonlightHostSheet(hostId);
+      return;
+    }
+    this.openMoonlightCatalogSheet(hostId);
+  }
+
+  private handleMoonlightHostCardClick(hostId: string, catalog: boolean = false): void {
+    const key: string = unifiedMoonlightHostCardKey(hostId);
+    if (this.hostSelectionMode) {
+      this.toggleHostSelect(key, !this.hostSelectedIds.has(key));
+      return;
+    }
+    void this.openMoonlightHost(hostId, catalog);
+  }
+
+  private async openMoonlightEditSheet(view: MoonlightHostLocalView): Promise<void> {
+    if (view.host === null || this.remoteHostSheetClosing || this.showRemoteHostSheet ||
+        this.addSheetClosing) { return; }
+    const hostId: string = view.host.id;
+    // Swipe actions must obey the same lock boundary as a card tap. Reload the
+    // latest local record first so a stale rendered card cannot bypass a lock
+    // that was just enabled on another surface.
+    this.refreshMoonlightDirectory();
+    let current: MoonlightHostLocalView | undefined = this.moonlightHosts.find(
+      (candidate: MoonlightHostLocalView): boolean =>
+        candidate.host !== null && candidate.host.id === hostId);
+    if (current === undefined || current.host === null) { return; }
+    if (current.host.locked === true) {
+      const gate: LockGateResult = await showLockGate(current.host.displayName, 'biometric');
+      if (!gate.ok) {
+        const message: string = lockGateErrorMessage(gate);
+        if (message !== '') { promptAction.showToast({ message: message, duration: 2000 }); }
+        return;
+      }
+    }
+    if (!this.pageActive || this.remoteHostSheetClosing || this.showRemoteHostSheet ||
+        this.addSheetClosing) { return; }
+    this.refreshMoonlightDirectory();
+    current = this.moonlightHosts.find(
+      (candidate: MoonlightHostLocalView): boolean =>
+        candidate.host !== null && candidate.host.id === hostId);
+    if (current === undefined || current.host === null) { return; }
+    const preferred: MoonlightAddress | null = this.moonlightPreferredAddress(current.host);
+    this.moonlightSheetHostId = hostId;
+    this.moonlightEditName = current.host.displayName;
+    this.moonlightEditAddress = preferred === null ? '' : preferred.host;
+    this.moonlightEditPortText = preferred === null ? '47989' : preferred.port.toString();
+    this.moonlightEditHttpsPortText = (current.host.httpsPort === undefined
+      ? MOONLIGHT_DEFAULT_HTTPS_PORT : current.host.httpsPort).toString();
+    this.moonlightEditHostType = current.host.hostType;
+    this.moonlightEditWakeEnabled = current.host.wakeOnLan.enabled;
+    this.moonlightEditWakeMac = current.host.wakeOnLan.mac;
+    this.moonlightEditWakeBroadcast = current.host.wakeOnLan.broadcast;
+    this.moonlightEditError = '';
+    this.openSheetSafely((): void => {
+      if (!this.pageActive || this.moonlightSheetHostId !== hostId) { return; }
+      this.openRemoteHostSheet(REMOTE_HOST_SHEET_MOONLIGHT_EDIT, (): void => {});
+    }, true);
+  }
+
+  private saveMoonlightEdit(): void {
+    const hostId: string = this.moonlightSheetHostId;
+    const view: MoonlightHostLocalView | null = this.moonlightSheetView();
+    if (view === null || view.host === null || view.host.id !== hostId) {
+      this.moonlightEditError = '主机记录已变化，请关闭后重试';
+      return;
+    }
+    const port: number = Number(this.moonlightEditPortText);
+    const httpsPort: number = Number(this.moonlightEditHttpsPortText);
+    if (this.moonlightEditName.trim() === '' || this.moonlightEditName.trim().length > 128) {
+      this.moonlightEditError = '主机名称需为 1–128 个字符';
+      return;
+    }
+    if (this.moonlightEditAddress.trim() === '') {
+      this.moonlightEditError = '请输入 Sunshine / GameStream 主机地址';
+      return;
+    }
+    if (!Number.isSafeInteger(port) || port < 1 || port > 65535 ||
+        !Number.isSafeInteger(httpsPort) || httpsPort < 1 || httpsPort > 65535) {
+      this.moonlightEditError = '端口必须在 1–65535 之间';
+      return;
+    }
+    if (this.moonlightEditWakeEnabled) {
+      if (!/^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$/.test(this.moonlightEditWakeMac.trim())) {
+        this.moonlightEditError = 'MAC 地址格式应为 AA:BB:CC:DD:EE:FF';
+        return;
+      }
+      if (this.moonlightEditWakeBroadcast.trim() === '') {
+        this.moonlightEditError = '启用网络唤醒后必须填写广播地址';
+        return;
+      }
+    }
+    const current: MoonlightHost = view.host;
+    const previousPreferred: MoonlightAddress | null = this.moonlightPreferredAddress(current);
+    const preferred: MoonlightAddress = {
+      host: this.moonlightEditAddress.trim(),
+      family: this.moonlightAddressFamily(this.moonlightEditAddress),
+      port: port
+    };
+    const addresses: MoonlightAddress[] = [];
+    let replaced: boolean = false;
+    for (let index: number = 0; index < current.addresses.length; index++) {
+      const address: MoonlightAddress = current.addresses[index];
+      if (!replaced && previousPreferred !== null &&
+          moonlightAddressKey(address) === moonlightAddressKey(previousPreferred)) {
+        addresses.push(preferred);
+        replaced = true;
+      } else {
+        addresses.push({ host: address.host, family: address.family, port: address.port });
+      }
+    }
+    if (!replaced) { addresses.push(preferred); }
+    const edited: MoonlightHost = {
+      id: current.id,
+      serverUuid: current.serverUuid,
+      displayName: this.moonlightEditName.trim(),
+      addresses: addresses,
+      preferredAddressKey: moonlightAddressKey(preferred),
+      httpsPort: httpsPort,
+      hostType: this.moonlightEditHostType,
+      wakeOnLan: {
+        enabled: this.moonlightEditWakeEnabled,
+        mac: this.moonlightEditWakeMac.trim(),
+        broadcast: this.moonlightEditWakeBroadcast.trim()
+      },
+      locked: current.locked === true,
+      userOrder: current.userOrder
+    };
+    const result: MoonlightLocalHostMutationResult =
+      this.moonlightLocalHostService.updateHost(edited, Date.now());
+    if (!result.ok) {
+      this.moonlightEditError = result.errorText || 'Moonlight 主机配置保存失败';
+      return;
+    }
+    this.refreshMoonlightDirectory();
+    this.hostViewRevision += 1;
+    this.beginRemoteHostSheetClose(REMOTE_HOST_SHEET_MOONLIGHT_EDIT);
+    this.showRemoteHostSheet = false;
+    promptAction.showToast({ message: 'Moonlight 主机配置已保存', duration: 1600 });
+  }
+
+  private async toggleMoonlightLock(view: MoonlightHostLocalView): Promise<void> {
+    if (view.host === null) { return; }
+    const gate: LockGateResult = await showLockGate(view.host.displayName, 'biometric');
+    if (!gate.ok) {
+      const message: string = lockGateErrorMessage(gate);
+      if (message !== '') { promptAction.showToast({ message: message, duration: 2000 }); }
+      return;
+    }
+    const nextLocked: boolean = view.host.locked !== true;
+    const result: MoonlightLocalHostMutationResult = this.moonlightLocalHostService.updateLocked(
+      view.host.id, nextLocked, Date.now());
+    if (!result.ok) {
+      promptAction.showToast({ message: result.errorText || '保存主机状态失败', duration: 2200 });
+      return;
+    }
+    this.refreshMoonlightDirectory();
+    this.hostViewRevision += 1;
+    promptAction.showToast({ message: nextLocked ? '已锁定' : '已解锁', duration: 1500 });
+  }
+
+  private async doDeleteMoonlightHost(view: MoonlightHostLocalView): Promise<void> {
+    if (view.host === null) { return; }
+    const hostId: string = view.host.id;
+    const hostName: string = view.host.displayName;
+    if (view.host.locked === true) {
+      const gate: LockGateResult = await showLockGate(hostName, 'biometric');
+      if (!gate.ok) {
+        const message: string = lockGateErrorMessage(gate);
+        if (message !== '') { promptAction.showToast({ message: message, duration: 2000 }); }
+        return;
+      }
+    }
+    const lease: AccountSessionLease | null = this.moonlightDeletionRuntime.currentLease();
+    if (lease === null || !this.moonlightDeletionRuntime.isLeaseCurrent(lease)) {
+      promptAction.showToast({ message: '当前账号数据域已变化，请刷新后重试', duration: 2200 });
+      return;
+    }
+    const preview: MoonlightDeletionPreview = this.moonlightDeletionRuntime.preview(
+      lease, 'forget_host', hostId);
+    if (preview.code !== 'ok') {
+      promptAction.showToast({
+        message: preview.code === 'cloud_unavailable' ?
+          'Moonlight 云端状态尚未就绪，未删除任何数据' :
+          '主机数据已变化，请刷新后重试：' + preview.code,
+        duration: 2400
+      });
+      return;
+    }
+    const dialogResult: Object = await promptAction.showDialog({
+      title: '确认删除',
+      message: '确定要删除 Moonlight 主机“' + hostName + '”吗？将同时清理本机配对信任、应用配置和目录缓存。',
+      buttons: [
+        { text: '取消', color: this.pal().text2 },
+        { text: '删除', color: this.pal().danger }
+      ]
+    });
+    const selected: Record<string, number> = dialogResult as Record<string, number>;
+    if (selected['index'] !== 1 || !this.pageActive) { return; }
+    const currentLease: AccountSessionLease | null = this.moonlightDeletionRuntime.currentLease();
+    if (currentLease === null || !accountSessionLeaseEquals(currentLease, lease) ||
+        !this.moonlightDeletionRuntime.isLeaseCurrent(lease)) {
+      promptAction.showToast({ message: '账号状态已变化，未执行删除', duration: 2200 });
+      return;
+    }
+    const result: MoonlightDeletionCommandResult =
+      await this.moonlightDeletionRuntime.execute(lease, preview);
+    if (!this.pageActive) { return; }
+    if (result.ok) {
+      const key: string = unifiedMoonlightHostCardKey(hostId);
+      this.hostManualOrder = this.hostManualOrder.filter(
+        (stored: string): boolean => stored !== key);
+      this.persistHostManualOrder();
+    }
+    this.refreshMoonlightDirectory();
+    this.hostViewRevision += 1;
+    promptAction.showToast({
+      message: result.ok ? (result.code === 'pending_cloud' ?
+        '本机主机已删除，云端删除标记正在安全上传' : 'Moonlight 主机已删除') :
+        '删除失败：' + result.code,
+      duration: 2400
+    });
+  }
+
+  private moonlightSheetView(): MoonlightHostLocalView | null {
+    if (this.moonlightSheetHostId === '') { return null; }
+    for (let index: number = 0; index < this.moonlightHosts.length; index++) {
+      const view: MoonlightHostLocalView = this.moonlightHosts[index];
+      if (view.host !== null && view.host.id === this.moonlightSheetHostId) {
+        return view;
+      }
+    }
+    return null;
+  }
+
+  private openMoonlightHostSheet(hostId: string): void {
+    if (hostId.trim() === '' || this.remoteHostSheetClosing ||
+        this.showRemoteHostSheet || this.addSheetClosing) {
+      return;
+    }
+    const view: MoonlightHostLocalView | null = this.moonlightHosts.find(
+      (candidate: MoonlightHostLocalView): boolean =>
+        candidate.host !== null && candidate.host.id === hostId) ?? null;
+    if (view === null || view.host === null) { return; }
+    this.moonlightSheetHostId = hostId;
+    this.openSheetSafely((): void => {
+      if (!this.pageActive || this.moonlightSheetHostId !== hostId) { return; }
+      this.openRemoteHostSheet(REMOTE_HOST_SHEET_MOONLIGHT_DETAIL, (): void => {});
+    }, true);
+  }
+
+  private openMoonlightCatalogSheet(hostId: string): void {
+    if (hostId.trim() === '' || this.remoteHostSheetClosing ||
+        this.showRemoteHostSheet || this.addSheetClosing) {
+      return;
+    }
+    const view: MoonlightHostLocalView | null = this.moonlightHosts.find(
+      (candidate: MoonlightHostLocalView): boolean =>
+        candidate.host !== null && candidate.host.id === hostId) ?? null;
+    if (view === null || view.host === null) { return; }
+    this.moonlightSheetHostId = hostId;
+    this.moonlightCatalogReturnsToDetail = false;
+    this.moonlightCatalogDismissAllowed = true;
+    this.openSheetSafely((): void => {
+      if (!this.pageActive || this.moonlightSheetHostId !== hostId) { return; }
+      this.openRemoteHostSheet(REMOTE_HOST_SHEET_MOONLIGHT_CATALOG, (): void => {});
+    }, true);
+  }
+
+  private openMoonlightHostSettings(hostId: string): void {
+    this.openMoonlightSettingsSheet(hostId, SETTINGS_SHEET_MOONLIGHT_VIDEO);
+  }
+
+  private openMoonlightSettingsSheet(hostId: string, mode: number): void {
+    const spec: MoonlightSettingsRouteSpec | null = moonlightSettingsRouteSpec(mode);
+    if (hostId.trim() === '' || spec === null || spec.owner !== 'moonlight' || !this.pageActive) {
+      return;
+    }
+    const view: MoonlightHostLocalView | null = this.moonlightHosts.find(
+      (candidate: MoonlightHostLocalView): boolean =>
+        candidate.host !== null && candidate.host.id === hostId) ?? null;
+    if (view === null || view.host === null) { return; }
+    this.moonlightSettingsLeafHostId = hostId;
+    this.openSettingsLeafSheet(mode);
+  }
+
+  private closeMoonlightCatalogSheet(navigation: string = ''): void {
+    if (this.remoteHostSheetMode !== REMOTE_HOST_SHEET_MOONLIGHT_CATALOG ||
+        this.moonlightSheetHostId === '') {
+      return;
+    }
+    if ((navigation === 'detail' ||
+        (navigation === '' && this.moonlightCatalogReturnsToDetail)) &&
+        this.showRemoteHostSheet && !this.remoteHostSheetClosing) {
+      this.moonlightCatalogReturnsToDetail = false;
+      this.pendingMoonlightCatalogNavigation = '';
+      this.pendingMoonlightCatalogLaunch = null;
+      this.moonlightCatalogDismissAllowed = true;
+      this.remoteHostSheetMode = REMOTE_HOST_SHEET_MOONLIGHT_DETAIL;
+      hilog.info(0x0001, 'Moonlight', 'catalog returned to host detail in shared Sheet');
+      return;
+    }
+    this.moonlightCatalogReturnsToDetail = false;
+    this.moonlightCatalogDismissAllowed = true;
+    this.pendingMoonlightCatalogNavigation = navigation;
+    this.beginRemoteHostSheetClose(REMOTE_HOST_SHEET_MOONLIGHT_CATALOG);
+    this.showRemoteHostSheet = false;
+  }
+
+  private requestMoonlightCatalogLaunch(handoff: MoonlightCatalogLaunchHandoff): void {
+    if (this.remoteHostSheetMode !== REMOTE_HOST_SHEET_MOONLIGHT_CATALOG ||
+        this.moonlightSheetHostId === '' ||
+        handoff.hostId !== this.moonlightSheetHostId) {
+      this.rejectMoonlightCatalogLaunch(handoff);
+      return;
+    }
+    // Store launch ownership before hiding the outer Catalog Sheet. Actual
+    // navigation is drained only by that Sheet's onDisappear callback.
+    this.pendingMoonlightCatalogLaunch = handoff;
+    this.closeMoonlightCatalogSheet('launch');
+  }
+
+  private rejectMoonlightCatalogLaunch(handoff: MoonlightCatalogLaunchHandoff): void {
+    try {
+      const context: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
+      rejectMoonlightCatalogLaunchHandoff(context, handoff);
+    } catch (_error) {
+      this.moonlightHostService.disposeOwner(handoff.ownerToken);
+    }
+  }
+
+  private async presentMoonlightCatalogLaunch(
+    handoff: MoonlightCatalogLaunchHandoff
+  ): Promise<void> {
+    let context: common.UIAbilityContext;
+    try {
+      context = getContext(this) as common.UIAbilityContext;
+    } catch (_error) {
+      this.moonlightHostService.disposeOwner(handoff.ownerToken);
+      return;
+    }
+    if (!this.pageActive) {
+      rejectMoonlightCatalogLaunchHandoff(context, handoff);
+      return;
+    }
+    const opened: boolean = await presentMoonlightCatalogLaunchHandoff(
+      context, this.isDesktopDevice, handoff);
+    if (opened) { return; }
+    rejectMoonlightCatalogLaunchHandoff(context, handoff);
+    if (this.pageActive) {
+      promptAction.showToast({ message: '无法打开 Moonlight 串流窗口，启动租约已安全释放', duration: 2200 });
+    }
+  }
+
+  private closeMoonlightHostSheet(openCatalog: boolean = false,
+    openSettings: boolean = false): void {
+    const hostId: string = this.moonlightSheetHostId;
+    if (hostId === '') { return; }
+    const params: Record<string, Object> | null = moonlightHostRouteParams(hostId);
+    if (openCatalog && this.remoteHostSheetMode === REMOTE_HOST_SHEET_MOONLIGHT_DETAIL &&
+        this.showRemoteHostSheet && !this.remoteHostSheetClosing) {
+      // Detail and catalog are two states of the same native BindSheet. Keeping
+      // the Sheet mounted avoids an ArkUI nativeRef race on foldables and also
+      // removes the transient interval in which a closing tap can reach a host
+      // card underneath it.
+      this.pendingMoonlightCatalogHostId = '';
+      this.pendingMoonlightSettingsHostId = '';
+      this.pendingMoonlightCatalogNavigation = '';
+      this.pendingMoonlightCatalogLaunch = null;
+      this.moonlightCatalogReturnsToDetail = true;
+      this.moonlightCatalogDismissAllowed = true;
+      this.remoteHostSheetMode = REMOTE_HOST_SHEET_MOONLIGHT_CATALOG;
+      hilog.info(0x0001, 'Moonlight', 'host detail switched to catalog in shared Sheet');
+      return;
+    }
+    // Route only after the Sheet has fully disappeared. This keeps a card tap
+    // in-place and avoids a page transition being rendered underneath the
+    // native Sheet exit animation.
+    if (openCatalog) {
+      this.pendingMoonlightCatalogHostId = hostId;
+    }
+    if (params !== null && openSettings) {
+      this.pendingMoonlightSettingsHostId = hostId;
+    }
+    // Record the handoff before changing Sheet visibility so even a platform
+    // that dispatches dismissal callbacks eagerly cannot lose the next panel.
+    this.beginRemoteHostSheetClose(REMOTE_HOST_SHEET_MOONLIGHT_DETAIL);
+    this.showRemoteHostSheet = false;
+  }
+
+  private probeMoonlightCapabilityForPicker(): void {
+    // Called only after an explicit FAB action. Homepage rendering remains
+    // side-effect free. The add route requires the compiled HTTP transport,
+    // which is sufficient for LAN discovery and host verification. Pairing
+    // remains separately gated on the stronger secure-identity capability.
+    const capabilities: MoonlightBridgeCapabilities =
+      this.moonlightHostService.capabilities();
+    this.moonlightProtocolAvailable =
+      capabilities.bridgeCompiled && capabilities.transportReady;
+    hilog.info(0x0001, 'Moonlight',
+      'FAB capability bridge=' + (capabilities.bridgeCompiled ? '1' : '0') +
+      ' identity=' + (capabilities.identityReady ? '1' : '0') +
+      ' transport=' + (capabilities.transportReady ? '1' : '0') +
+      ' pairing=' + (capabilities.pairingReady ? '1' : '0') +
+      ' hostControl=' + (capabilities.hostControlReady ? '1' : '0') +
+      ' blocker=' + capabilities.blocker);
+  }
+
+  private moonlightDiscoveryCandidate(
+    key: MoonlightHostAddDiscoveryKey,
+    candidate: MoonlightLanDiscoveryCandidate
+  ): void {
+    if (!this.pageActive || key.ownerToken !== this.moonlightAddOwnerToken ||
+        key.generation !== this.moonlightDiscoveryResultGeneration ||
+        !this.moonlightDiscoveryRunning) {
+      return;
+    }
+    const hostText: string = candidate.family === 'ipv6' ?
+      '[' + candidate.host + ']' : candidate.host;
+    const parsed = parseMoonlightHostAddAddress(hostText, candidate.port.toString());
+    if (!parsed.ok) { return; }
+    const serverUuid: string = candidate.serverUuid.trim() !== '' ?
+      candidate.serverUuid.trim() : parsed.canonical;
+    const nextCandidate: MoonlightHostAddCandidate = {
+      serverUuid: serverUuid,
+      displayName: candidate.serviceName.trim() || parsed.address.host,
+      address: parsed.address,
+      paired: false,
+      reachable: true,
+      lastSeenAt: Date.now()
+    };
+    const next: MoonlightHostAddCandidate[] = this.moonlightLanCandidates.slice();
+    let replaceIndex: number = -1;
+    for (let index = 0; index < next.length; index++) {
+      if (next[index].serverUuid === serverUuid ||
+          next[index].address.host === parsed.address.host &&
+          next[index].address.port === parsed.address.port) {
+        replaceIndex = index;
+        break;
+      }
+    }
+    if (replaceIndex >= 0) {
+      next[replaceIndex] = nextCandidate;
+    } else if (next.length < 32) {
+      next.push(nextCandidate);
+    }
+    this.moonlightLanCandidates = next;
+  }
+
+  private startMoonlightLanDiscovery(key: MoonlightHostAddDiscoveryKey): void {
+    this.stopMoonlightLanDiscovery();
+    this.moonlightLanCandidates = [];
+    this.moonlightDiscoveryResultOwnerToken = key.ownerToken;
+    this.moonlightDiscoveryResultGeneration = key.generation;
+    try {
+      this.moonlightDiscovery = new MoonlightLanDiscoveryService(
+        getContext(this) as common.Context);
+      const started: boolean = this.moonlightDiscovery.start(
+        key.ownerToken.toString(), key.generation,
+        (candidate: MoonlightLanDiscoveryCandidate): void => {
+          this.moonlightDiscoveryCandidate(key, candidate);
+        });
+      this.moonlightDiscoveryRunning = started;
+    } catch (_error) {
+      this.moonlightDiscovery = null;
+      this.moonlightDiscoveryRunning = false;
+    }
+  }
+
+  private stopMoonlightLanDiscovery(): void {
+    if (this.moonlightDiscovery !== null) {
+      this.moonlightDiscovery.stop();
+    }
+    this.moonlightDiscovery = null;
+    this.moonlightDiscoveryRunning = false;
+  }
+
+  private clearMoonlightVerificationState(): void {
+    this.moonlightActiveVerification = null;
+    this.moonlightPendingVerificationFence = null;
+    this.moonlightActiveVerificationFence = null;
+    this.moonlightPairingExpiresAt = 0;
+  }
+
+  private async revokeMoonlightTemporaryPairing(
+    capturedFence: MoonlightHostOperationFence | null = null
+  ): Promise<void> {
+    const verification: MoonlightHostAddVerification | null =
+      this.moonlightActiveVerification;
+    const fence: MoonlightHostOperationFence | null = capturedFence === null ?
+      this.moonlightActiveVerificationFence : capturedFence;
+    let context: MoonlightHostContext | null = null;
+    if (verification !== null && verification.paired && fence !== null &&
+        moonlightVerificationMatchesFence(verification, fence)) {
+      const key = new MoonlightHostAddOperationKey();
+      key.ownerToken = fence.ownerToken;
+      key.generation = fence.generation;
+      key.operation = 'trust';
+      context = this.moonlightRuntimeContext(key, verification, true, fence);
+      if (context !== null) { context.timeoutMs = 7000; }
+    }
+
+    // Invalidate the page projection immediately. ProductRuntime independently
+    // revokes its local trust before attempting the best-effort Sunshine call.
+    this.clearMoonlightVerificationState();
+    if (context === null) { return; }
+
+    try {
+      const result: MoonlightHostServiceResult =
+        await this.moonlightHostService.unpair(context);
+      if (result.nativeResult === null ||
+          result.nativeResult.postconditionTruth !== 'confirmed') {
+        hilog.warn(0x0001, 'Moonlight',
+          'temporary pairing local revoke was not confirmed code=' + result.code);
+      } else if (!result.ok) {
+        hilog.warn(0x0001, 'Moonlight',
+          'temporary pairing revoked locally; remote unpair warning code=' + result.code);
+      }
+    } catch (_error) {
+      hilog.warn(0x0001, 'Moonlight',
+        'temporary pairing native unpair bridge failed');
+    }
+  }
+
+  private invalidateMoonlightOwnerFence(ownerToken: number): void {
+    if (ownerToken !== this.moonlightAddOwnerToken) { return; }
+    this.moonlightPendingVerificationFence = null;
+    this.moonlightPairingExpiresAt = 0;
+    const verification: MoonlightHostAddVerification | null =
+      this.moonlightActiveVerification;
+    const current: MoonlightHostOperationFence | null =
+      this.moonlightActiveVerificationFence;
+    if (verification === null || current === null ||
+        current.generation >= Number.MAX_SAFE_INTEGER ||
+        !this.moonlightFenceLeaseCurrent(current) ||
+        !moonlightVerificationMatchesFence(verification, current)) {
+      this.moonlightActiveVerificationFence = null;
+      return;
+    }
+    this.moonlightActiveVerificationFence = createMoonlightHostOperationFence(
+      current.ownerToken, current.generation + 1,
+      current.ownerScopeId, current.accountGeneration,
+      verification.serverUuid, verification.address);
+  }
+
+  private moonlightFenceLeaseCurrent(fence: MoonlightHostOperationFence): boolean {
+    const store: CloudStore = CloudStore.getInstance();
+    const lease: AccountSessionLease | null = store.currentAccountLease();
+    return lease !== null && store.isLeaseCurrent(lease) &&
+      lease.ownerScopeId === fence.ownerScopeId &&
+      lease.generation === fence.accountGeneration;
+  }
+
+  private adoptMoonlightVerificationFence(
+    key: MoonlightHostAddOperationKey
+  ): MoonlightHostOperationFence | null {
+    const verification: MoonlightHostAddVerification | null =
+      this.moonlightActiveVerification;
+    const current: MoonlightHostOperationFence | null =
+      this.moonlightActiveVerificationFence;
+    if (verification === null || current === null ||
+        key.ownerToken !== this.moonlightAddOwnerToken ||
+        current.ownerToken !== key.ownerToken || key.generation < current.generation ||
+        !this.moonlightFenceLeaseCurrent(current) ||
+        !moonlightVerificationMatchesFence(verification, current)) {
+      return null;
+    }
+    if (key.generation === current.generation) {
+      return cloneMoonlightHostOperationFence(current);
+    }
+    const next: MoonlightHostOperationFence | null = createMoonlightHostOperationFence(
+      key.ownerToken, key.generation, current.ownerScopeId, current.accountGeneration,
+      verification.serverUuid, verification.address);
+    if (next === null) { return null; }
+    this.moonlightPendingVerificationFence = null;
+    this.moonlightPairingExpiresAt = 0;
+    this.moonlightActiveVerificationFence = next;
+    return cloneMoonlightHostOperationFence(next);
+  }
+
+  private currentMoonlightVerificationFence(
+    key: MoonlightHostAddOperationKey
+  ): MoonlightHostOperationFence | null {
+    const verification: MoonlightHostAddVerification | null =
+      this.moonlightActiveVerification;
+    const current: MoonlightHostOperationFence | null =
+      this.moonlightActiveVerificationFence;
+    if (verification === null || current === null ||
+        key.ownerToken !== this.moonlightAddOwnerToken ||
+        key.ownerToken !== current.ownerToken || key.generation !== current.generation ||
+        !this.moonlightFenceLeaseCurrent(current) ||
+        !moonlightVerificationMatchesFence(verification, current)) {
+      return null;
+    }
+    return cloneMoonlightHostOperationFence(current);
+  }
+
+  private moonlightRuntimeContext(
+    key: MoonlightHostAddOperationKey,
+    verification: MoonlightHostAddVerification,
+    pinnedTrustAvailable: boolean,
+    fence: MoonlightHostOperationFence
+  ): MoonlightHostContext | null {
+    const store: CloudStore = CloudStore.getInstance();
+    const lease: AccountSessionLease | null = store.currentAccountLease();
+    const fingerprint: string = verification.fingerprintSha256.trim().toLowerCase();
+    if (lease === null || !store.isLeaseCurrent(lease) ||
+        lease.ownerScopeId !== fence.ownerScopeId ||
+        lease.generation !== fence.accountGeneration ||
+        key.ownerToken !== fence.ownerToken || key.generation !== fence.generation ||
+        key.ownerToken <= 0 || key.generation <= 0 ||
+        verification.serverUuid.trim() === '' || verification.address.host.trim() === '' ||
+        pinnedTrustAvailable && !/^[0-9a-f]{64}$/.test(fingerprint)) {
+      return null;
+    }
+    const family: 'unspecified' | 'ipv4' | 'ipv6' = verification.address.family === 'ipv4' ?
+      'ipv4' : verification.address.family === 'ipv6' ? 'ipv6' : 'unspecified';
+    const context: MoonlightHostContext = {
+      lease: lease,
+      ownerScopeFingerprint: moonlightOwnerScopeFingerprint(lease.ownerScopeId),
+      ownerToken: key.ownerToken,
+      generation: key.generation,
+      hostId: verification.serverUuid,
+      serverUuid: verification.serverUuid,
+      installationId: moonlightInstallationId(lease.storeIdentity),
+      endpoint: {
+        serverName: verification.serverName.trim() || verification.address.host,
+        addresses: [{ value: verification.address.host, family: family }],
+        httpPort: verification.address.port,
+        httpsPort: verification.httpsPort === undefined ? MOONLIGHT_DEFAULT_HTTPS_PORT :
+          verification.httpsPort,
+        pinnedTrustAvailable: pinnedTrustAvailable,
+        allowHttpPairingCandidate: !pinnedTrustAvailable
+      },
+      timeoutMs: 120000
+    };
+    if (pinnedTrustAvailable) {
+      context.pinnedCertificateSha256 = fingerprint;
+    }
+    return context;
+  }
+
+  private moonlightPairingPreparation(
+    key: MoonlightHostAddOperationKey
+  ): Promise<MoonlightPairingPreparation> {
+    const capabilities: MoonlightBridgeCapabilities =
+      this.moonlightHostService.capabilities();
+    if (!capabilities.hostControlReady) {
+      hilog.warn(0x0001, 'Moonlight',
+        'pairing blocked identity=' + (capabilities.identityReady ? '1' : '0') +
+        ' transport=' + (capabilities.transportReady ? '1' : '0') +
+        ' pairing=' + (capabilities.pairingReady ? '1' : '0') +
+        ' blocker=' + capabilities.blocker);
+      const unavailable: MoonlightPairingPreparation = {
+        ok: false,
+        pin: '',
+        expiresAt: 0,
+        errorText: '当前设备的本地安全身份能力不可用，暂时无法完成主机配对'
+      };
+      return Promise.resolve(unavailable);
+    }
+    const fence: MoonlightHostOperationFence | null = key.operation === 'pair' ?
+      this.adoptMoonlightVerificationFence(key) : null;
+    if (fence === null) {
+      const rejected: MoonlightPairingPreparation = {
+        ok: false, pin: '', expiresAt: 0, errorText: '请先完成主机验证'
+      };
+      return Promise.resolve(rejected);
+    }
+    const pin: string = moonlightPairingPin();
+    const expiresAt: number = Math.min(Number.MAX_SAFE_INTEGER, Date.now() + 120000);
+    this.moonlightPairingExpiresAt = expiresAt;
+    const prepared: MoonlightPairingPreparation = {
+      ok: true, pin: pin, expiresAt: expiresAt, errorText: ''
+    };
+    return Promise.resolve(prepared);
+  }
+
+  private async moonlightAwaitPairing(
+    pin: string,
+    key: MoonlightHostAddOperationKey
+  ): Promise<MoonlightPairingCompletion> {
+    if (key.operation !== 'pair') {
+      return { paired: false, errorText: '当前主机连接上下文已失效' };
+    }
+    const capturedFence: MoonlightHostOperationFence | null =
+      this.currentMoonlightVerificationFence(key);
+    const verification: MoonlightHostAddVerification | null = this.moonlightActiveVerification;
+    const context: MoonlightHostContext | null = verification === null || capturedFence === null ? null :
+      this.moonlightRuntimeContext(key, verification, false, capturedFence);
+    const expiresAt: number = this.moonlightPairingExpiresAt;
+    const installationId: string = context === null || context.installationId === undefined ?
+      '' : context.installationId;
+    if (context === null || installationId === '' ||
+        !/^[0-9]{4}$/.test(pin) || expiresAt <= Date.now()) {
+      return { paired: false, errorText: '当前主机连接上下文已失效' };
+    }
+    const pinBytes: Uint8Array = new Uint8Array([
+      pin.charCodeAt(0), pin.charCodeAt(1), pin.charCodeAt(2), pin.charCodeAt(3)
+    ]);
+    let result: MoonlightHostServiceResult | null = null;
+    try {
+      result = await this.moonlightHostService.pair(
+        context, installationId, pinBytes,
+        this.moonlightSettingsService.load().settings.network.allowLegacySha1);
+    } finally {
+      pinBytes.fill(0);
+    }
+    if (result === null) {
+      return { paired: false, errorText: '主机配对请求未完成' };
+    }
+    const nativeResult = result.nativeResult;
+    const fingerprint: string = nativeResult === null ||
+      nativeResult.certificateSha256 === undefined ? '' :
+      nativeResult.certificateSha256.toLowerCase();
+    const currentFence: MoonlightHostOperationFence | null =
+      this.currentMoonlightVerificationFence(key);
+    const stillCurrent: boolean = currentFence !== null &&
+      moonlightHostOperationFenceEquals(currentFence, capturedFence) &&
+      Date.now() < expiresAt;
+    const succeeded: boolean = result.ok && nativeResult !== null &&
+      nativeResult.code === 'ok' && /^[0-9a-f]{64}$/.test(fingerprint);
+    if (!stillCurrent) {
+      return { paired: false, errorText: '当前主机连接上下文已失效' };
+    }
+    this.moonlightPairingExpiresAt = 0;
+    if (!succeeded || verification === null) {
+      return {
+        paired: false,
+        errorText: '主机未完成配对（' + result.code + '）'
+      };
+    }
+    this.moonlightActiveVerification = {
+      serverUuid: verification.serverUuid,
+      serverName: verification.serverName,
+      hostType: verification.hostType,
+      version: verification.version,
+      address: {
+        host: verification.address.host,
+        family: verification.address.family,
+        port: verification.address.port
+      },
+      httpsPort: verification.httpsPort,
+      paired: true,
+      fingerprintSha256: fingerprint,
+      certificateChanged: false,
+      udpVerified: verification.udpVerified,
+      duplicateHostId: verification.duplicateHostId
+    };
+    return {
+      paired: true,
+      certificateSha256: fingerprint,
+      errorText: ''
+    };
+  }
+
+  private async moonlightVerifyHost(
+    address: MoonlightAddress,
+    selectedServerUuid: string,
+    key: MoonlightHostAddOperationKey
+  ): Promise<MoonlightHostAddVerification | null> {
+    if (!this.pageActive || key.ownerToken !== this.moonlightAddOwnerToken ||
+        key.operation !== 'verify') {
+      return null;
+    }
+    const store: CloudStore = CloudStore.getInstance();
+    const capturedLease: AccountSessionLease | null = store.currentAccountLease();
+    if (capturedLease === null || !store.isLeaseCurrent(capturedLease)) { return null; }
+    const verificationUuidHint: string =
+      moonlightVerificationUuidHint(address, selectedServerUuid);
+    const previousVerification: MoonlightHostAddVerification | null =
+      this.moonlightActiveVerification;
+    const targetMatchesPrevious: boolean = previousVerification !== null &&
+      ((verificationUuidHint !== '' &&
+        verificationUuidHint === previousVerification.serverUuid) ||
+       (address.host === previousVerification.address.host &&
+        address.port === previousVerification.address.port));
+    if (previousVerification !== null && previousVerification.paired &&
+        !targetMatchesPrevious) {
+      await this.revokeMoonlightTemporaryPairing();
+      if (!this.pageActive || key.ownerToken !== this.moonlightAddOwnerToken ||
+          !store.isLeaseCurrent(capturedLease)) {
+        return null;
+      }
+    }
+    const requestedFence: MoonlightHostOperationFence | null =
+      createMoonlightHostOperationFence(
+        key.ownerToken, key.generation,
+        capturedLease.ownerScopeId, capturedLease.generation,
+        verificationUuidHint, address);
+    if (requestedFence === null) { return null; }
+    this.clearMoonlightVerificationState();
+    this.moonlightPendingVerificationFence = requestedFence;
+    const verification: MoonlightHostAddVerification | null =
+      await this.moonlightLanProbeService.verify(address, verificationUuidHint);
+    if (verification === null || !this.pageActive ||
+        !store.isLeaseCurrent(capturedLease) ||
+        key.ownerToken !== this.moonlightAddOwnerToken ||
+        !moonlightHostOperationFenceEquals(
+          this.moonlightPendingVerificationFence, requestedFence) ||
+        !moonlightVerificationMatchesFence(verification, requestedFence)) {
+      if (moonlightHostOperationFenceEquals(
+        this.moonlightPendingVerificationFence, requestedFence)) {
+        this.moonlightPendingVerificationFence = null;
+      }
+      return null;
+    }
+    const activeFence: MoonlightHostOperationFence | null =
+      createMoonlightHostOperationFence(
+        key.ownerToken, key.generation,
+        capturedLease.ownerScopeId, capturedLease.generation,
+        verification.serverUuid, verification.address);
+    if (activeFence === null) {
+      this.moonlightPendingVerificationFence = null;
+      return null;
+    }
+    this.moonlightActiveVerification = verification;
+    this.moonlightActiveVerificationFence = activeFence;
+    this.moonlightPendingVerificationFence = null;
+    return verification;
+  }
+
+  private async moonlightLoadCatalog(
+    key: MoonlightHostAddOperationKey
+  ): Promise<MoonlightHostAddCatalogSummary> {
+    const adoptedFence: MoonlightHostOperationFence | null = key.operation === 'catalog' ?
+      this.adoptMoonlightVerificationFence(key) : null;
+    const verification: MoonlightHostAddVerification | null = this.moonlightActiveVerification;
+    const context: MoonlightHostContext | null = adoptedFence === null || verification === null ? null :
+      this.moonlightRuntimeContext(key, verification, true, adoptedFence);
+    if (context === null) {
+      return { appCount: 0, titles: [], stale: false, errorText: '主机连接上下文已失效' };
+    }
+    const result: MoonlightHostServiceResult =
+      await this.moonlightHostService.catalogRuntime(context);
+    const currentFence: MoonlightHostOperationFence | null =
+      this.currentMoonlightVerificationFence(key);
+    if (currentFence === null ||
+        !moonlightHostOperationFenceEquals(currentFence, adoptedFence)) {
+      return { appCount: 0, titles: [], stale: true,
+        errorText: '主机连接上下文已失效' };
+    }
+    if (!result.ok || result.nativeResult === null) {
+      return { appCount: 0, titles: [], stale: result.stale,
+        errorText: '应用目录加载失败（' + result.code + '）' };
+    }
+    const titles: string[] = [];
+    for (let index = 0; index < result.nativeResult.apps.length && index < 128; index++) {
+      titles.push(result.nativeResult.apps[index].title);
+    }
+    return { appCount: titles.length, titles: titles, stale: false, errorText: '' };
+  }
+
+  private async moonlightCommitTrust(
+    accepted: boolean,
+    key: MoonlightHostAddOperationKey
+  ): Promise<boolean> {
+    const fence: MoonlightHostOperationFence | null = key.operation === 'trust' ?
+      this.adoptMoonlightVerificationFence(key) : null;
+    if (!accepted) {
+      await this.revokeMoonlightTemporaryPairing(fence);
+      return true;
+    }
+    const verification: MoonlightHostAddVerification | null = this.moonlightActiveVerification;
+    return fence !== null && verification !== null && verification.paired &&
+      /^[0-9a-f]{64}$/.test(verification.fingerprintSha256);
+  }
+
+  private saveMoonlightHostLocally(
+    state: MoonlightHostAddState,
+    _openCatalog: boolean,
+    key: MoonlightHostAddOperationKey
+  ): Promise<MoonlightLocalSaveResult> {
+    return this.saveMoonlightHostLocallyWithRetry(state, key);
+  }
+
+  private async saveMoonlightHostLocallyWithRetry(
+    state: MoonlightHostAddState,
+    key: MoonlightHostAddOperationKey
+  ): Promise<MoonlightLocalSaveResult> {
+    let result: MoonlightLocalHostSaveResult =
+      this.moonlightLocalHostService.save(state, key, Date.now());
+    // A normal cloud-first apply briefly owns the RDB transaction gate. Match
+    // the forgiving behavior users expect from the other host editors by
+    // waiting for that short operation instead of surfacing an immediate,
+    // misleading permanent write failure. Never retry an uncertain/committed
+    // result, so this cannot duplicate a durable host or trust record.
+    const retryDelays: number[] = [250, 500, 1000, 1500, 2000, 3000];
+    for (let i = 0; i < retryDelays.length && !result.ok &&
+        !result.localCommitted && result.code === 'local_write_failed'; i++) {
+      await new Promise<void>((resolve: () => void): void => {
+        setTimeout(resolve, retryDelays[i]);
+      });
+      result = this.moonlightLocalHostService.save(
+        state, key, Date.now());
+    }
+    if (!result.ok) {
+      const failed: MoonlightLocalSaveResult = {
+        localCommitted: false,
+        hostId: result.hostId,
+        errorText: result.errorText,
+        commitState: result.commitState
+      };
+      return Promise.resolve(failed);
+    }
+    const saved: MoonlightLocalSaveResult = {
+      localCommitted: true,
+      hostId: result.hostId,
+      errorText: '',
+      commitState: result.commitState
+    };
+    return Promise.resolve(saved);
+  }
+
+  private openExistingMoonlightHost(hostId: string, ownerToken: number): void {
+    if (!shouldAcceptHostAddPostSaveHandoff(
+      this.pageActive,
+      this.addSheetClosing,
+      this.pendingMoonlightCatalogHandoff,
+      this.moonlightAddOwnerToken,
+      ownerToken,
+      hostId
+    )) {
+      hilog.info(0x0001, 'HostList',
+        'ignored stale or repeated Moonlight existing-host handoff');
+      return;
+    }
+    const generation: number = this.moonlightCatalogHandoffGeneration + 1;
+    this.moonlightCatalogHandoffGeneration = generation;
+    this.pendingMoonlightCatalogHandoff = createHostAddPostSaveHandoff(
+      'moonlight_host_detail', hostId, ownerToken, generation);
+    this.requestAddSheetClose();
+  }
+
+  private handleMoonlightHostSaved(
+    hostId: string,
+    openCatalog: boolean,
+    ownerToken: number
+  ): void {
+    this.moonlightAddCommitted = true;
+    if (hostId.trim() === '') {
+      if (shouldCloseHostAddAfterCommittedSave(
+        this.pageActive,
+        this.addSheetClosing,
+        this.moonlightAddOwnerToken,
+        ownerToken
+      )) {
+        hilog.warn(0x0001, 'HostList',
+          'Moonlight host committed without stable ID; closing add Sheet without catalog handoff');
+        this.requestAddSheetClose();
+      }
+      return;
+    }
+    if (!shouldAcceptHostAddPostSaveHandoff(
+      this.pageActive,
+      this.addSheetClosing,
+      this.pendingMoonlightCatalogHandoff,
+      this.moonlightAddOwnerToken,
+      ownerToken,
+      hostId
+    )) {
+      hilog.info(0x0001, 'HostList',
+        'ignored stale or repeated Moonlight post-save handoff');
+      return;
+    }
+    if (openCatalog) {
+      const generation: number = this.moonlightCatalogHandoffGeneration + 1;
+      this.moonlightCatalogHandoffGeneration = generation;
+      this.pendingMoonlightCatalogHandoff = createHostAddPostSaveHandoff(
+        'moonlight_catalog', hostId, ownerToken, generation);
+    }
+    this.refreshMoonlightDirectory();
+    this.requestAddSheetClose();
+  }
+
   private handleAddSheetDisappear(): void {
+    const moonlightDraftWasOpen: boolean = this.modernAddProtocol === 'moonlight';
+    const moonlightDraftWasCommitted: boolean = this.moonlightAddCommitted;
+    if (moonlightDraftWasOpen && !moonlightDraftWasCommitted) {
+      void this.revokeMoonlightTemporaryPairing();
+    } else if (moonlightDraftWasOpen) {
+      // The durable local host owns this pairing now. Drop only the add-flow
+      // projection; the host record will restore trust for later operations.
+      this.clearMoonlightVerificationState();
+    }
+    this.moonlightAddCommitted = false;
     this.noteSheetDismissed();
     this.addSheetClosing = false;
     this.addSheetShowsModernPicker = false;
@@ -1624,6 +3361,9 @@ struct HostListPage {
     this.pendingVncConnectHostId = '';
     const pendingHostId: string = this.pendingAddSheetConnectHostId;
     this.pendingAddSheetConnectHostId = '';
+    const pendingMoonlightDestination: HostAddPostSaveHandoff =
+      this.pendingMoonlightCatalogHandoff;
+    this.pendingMoonlightCatalogHandoff = emptyHostAddPostSaveHandoff();
     const openVncGatewayDirectory: boolean = this.pendingVncGatewayDirectoryOpen;
     this.pendingVncGatewayDirectoryOpen = false;
     const openRustDeskRelayDirectory: boolean = this.pendingRustDeskRelayDirectoryOpen;
@@ -1653,6 +3393,32 @@ struct HostListPage {
     if (!preserveForm) {
       this.resetForm();
       this.rustDeskAddResumeDraft = null;
+    }
+
+    if (hostAddPostSaveHandoffIsPending(pendingMoonlightDestination)) {
+      if (!shouldStartHostAddPostSaveAfterDisappear(
+        this.pageActive,
+        this.addSheetClosing,
+        this.moonlightAddOwnerToken,
+        this.moonlightCatalogHandoffGeneration,
+        pendingMoonlightDestination,
+        pendingMoonlightDestination.destination
+      )) {
+        hilog.info(0x0001, 'HostList',
+          'dropped stale Moonlight catalog handoff after add-host Sheet disappeared');
+        return;
+      }
+      hilog.info(0x0001, 'HostList',
+        'Moonlight post-save handoff accepted after add-host Sheet disappeared');
+      if (pendingMoonlightDestination.destination === 'moonlight_catalog') {
+        this.openMoonlightCatalogSheet(pendingMoonlightDestination.hostId);
+      } else {
+        // Existing Moonlight hosts follow the same in-place card expansion as
+        // every normal host-list tap. Do not revive the retired full-page
+        // detail route after the add Sheet disappears.
+        this.openMoonlightHostSheet(pendingMoonlightDestination.hostId);
+      }
+      return;
     }
 
     if (openVncGatewayDirectory || openRustDeskRelayDirectory) {
@@ -1757,6 +3523,7 @@ struct HostListPage {
       clearTimeout(this.pendingSheetOpenTimer);
       this.pendingSheetOpenTimer = -1;
     }
+    this.activateSheetReleaseFence();
     this.addSheetClosing = true;
     this.showAddSheet = false;
   }
@@ -1896,30 +3663,37 @@ struct HostListPage {
     this.resetSettingsLeafSheetAfterDismiss();
   }
 
-  private dismissVncSettingsIfNeeded(continueAction: () => void): void {
-    if (!this.vncSettingsLeafDirty) {
+  private settingsLeafHasUnsavedChanges(): boolean {
+    return this.vncSettingsLeafDirty || this.moonlightSettingsLeafDirty;
+  }
+
+  private dismissSettingsLeafIfNeeded(continueAction: () => void): void {
+    if (!this.settingsLeafHasUnsavedChanges()) {
       continueAction();
       return;
     }
+    const moonlightDirty: boolean = this.moonlightSettingsLeafDirty;
     promptAction.showDialog({
-      title: '放弃未保存的 VNC 设置？',
-      message: '当前叶子设置还有未保存修改。放弃后这些修改不会写入本地或云端。',
+      title: moonlightDirty ? '放弃未保存的 Moonlight 设置？' : '放弃未保存的 VNC 设置？',
+      message: moonlightDirty ? '当前修改只在本地草稿中，放弃后不会写入 Moonlight 本地记录。' :
+        '当前叶子设置还有未保存修改。放弃后这些修改不会写入本地或云端。',
       buttons: [{ text: '继续编辑', color: this.pal().text2 }, { text: '放弃修改', color: this.pal().danger }]
     }).then((result: Object): void => {
       const dialogResult: Record<string, number> = result as Record<string, number>;
       if (dialogResult['index'] === 1) {
         this.vncSettingsLeafDirty = false;
+        this.moonlightSettingsLeafDirty = false;
         continueAction();
       }
     });
   }
 
-  private handleVncSettingsLeafWillDismiss(action: DismissSheetAction): void {
-    if (!this.vncSettingsLeafDirty) {
+  private handleSettingsLeafWillDismiss(action: DismissSheetAction): void {
+    if (!this.settingsLeafHasUnsavedChanges()) {
       action.dismiss();
       return;
     }
-    this.dismissVncSettingsIfNeeded((): void => { action.dismiss(); });
+    this.dismissSettingsLeafIfNeeded((): void => { action.dismiss(); });
   }
 
   private resetSettingsLeafSheetAfterDismiss(): void {
@@ -1950,6 +3724,10 @@ struct HostListPage {
     this.closeLegacySettingsSheetFlags();
     this.resetSettingsLeafSheetAfterDismiss();
     this.vncSettingsLeafDirty = false;
+    this.moonlightSettingsLeafDirty = false;
+    if (moonlightSettingsRouteSpec(dismissedMode) !== null) {
+      this.moonlightSettingsLeafHostId = '';
+    }
     if (this.pendingSettingsLeafSheetMode !== SETTINGS_SHEET_NONE) {
       this.scheduleSettingsLeafSheetOpen(this.pendingSettingsLeafSheetMode,
         this.pendingSettingsLeafPrepare,
@@ -1968,7 +3746,14 @@ struct HostListPage {
   private refreshCloudRegistration(): void {
     const cloud: CloudStore = CloudStore.getInstance();
     this.cloudConnectionAvailable = cloud.isCloudAvailable();
-    if (this.cloudConnectionAvailable) { return; }
+    if (this.cloudConnectionAvailable) {
+      if (CloudSyncSelectionStore.getInstance()
+        .persistedSelectedBusinessTables()
+        .indexOf(MOONLIGHT_CLOUD_TABLE) >= 0) {
+        void cloud.retryMoonlightCloudRegistration();
+      }
+      return;
+    }
     void cloud.retryCloudRegistration().then((restored: boolean): void => {
       this.cloudConnectionAvailable = cloud.isCloudAvailable();
       if (!restored) { return; }
@@ -1992,7 +3777,12 @@ struct HostListPage {
   private openCloudSyncSheet(initialStep: string = ''): void {
     this.refreshCloudRegistration();
     this.openSettingsLeafSheet(SETTINGS_SHEET_POPUP, (): void => {
-      this.cloudSyncSelectedTables = CloudSyncSelectionStore.getInstance().selectedBusinessTables();
+      this.cloudSyncSelectedTables = CloudSyncSelectionStore.getInstance()
+        .persistedSelectedBusinessTables();
+      this.moonlightCloudSelectedScopes = CloudStore.getInstance()
+        .moonlightSelectedCloudScopes();
+      this.moonlightRestoreActivationState = CloudStore.getInstance()
+        .moonlightRestoredDataActivationState();
       this.cloudSyncError = '';
       this.cloudSyncStep = initialStep !== '' ? initialStep :
         (!CloudStore.getInstance().requiresCloudServiceGuidance()
@@ -2018,7 +3808,10 @@ struct HostListPage {
 
   private cloudDirectionConfirmationAvailable():
     boolean {
-    return this.cloudSyncSelectedTables.length > 0 ||
+    // Keep dormant optional-table intent visible in the management UI, but
+    // only runtime-admitted tables may enable a transfer action.
+    return CloudSyncSelectionStore.getInstance()
+      .selectedBusinessTables().length > 0 ||
       CloudStore.getInstance()
         .requiresRestoreDirectionDecision();
   }
@@ -2032,8 +3825,42 @@ struct HostListPage {
     const cloud: CloudStore = CloudStore.getInstance();
     const resolvingRestore: boolean =
       cloud.requiresRestoreDirectionDecision();
+    const moonlightRestoreState: string =
+      table === MOONLIGHT_CLOUD_TABLE ?
+        cloud.moonlightRestoredDataActivationState() : 'clear';
+    if (table === MOONLIGHT_CLOUD_TABLE &&
+        !cloud.moonlightCloudSelectionChangesAllowed()) {
+      this.cloudSyncError =
+        'Moonlight 云端删除正在完成；为避免数据重新出现，暂不能修改同步范围';
+      return;
+    }
+    if (index < 0 && table === MOONLIGHT_CLOUD_TABLE) {
+      const logical = await cloud.replaceMoonlightCloudScopes(
+        moonlightForcedCloudSyncSelection());
+      this.moonlightCloudSelectedScopes = logical.selected.slice();
+      if (!logical.ok && logical.code !== 'reconcile_pending') {
+        this.cloudSyncError =
+          'Moonlight 整体同步状态未能恢复，请稍后重试';
+        return;
+      }
+    }
+    if (index < 0 && table === MOONLIGHT_CLOUD_TABLE &&
+        !await cloud.retryMoonlightCloudRegistration()) {
+      this.cloudSyncError = cloud.isCloudAvailable() ?
+        'Moonlight 云表尚未就绪；现有协议云同步未受影响' :
+        'Moonlight 云表检查后旧版云连接需要恢复，请稍后重试';
+      return;
+    }
+    if (index < 0 && table === MOONLIGHT_CLOUD_TABLE &&
+        moonlightRestoreState === 'blocked') {
+      this.cloudSyncError =
+        'Moonlight 恢复隔离状态不可读；为保护本机和旧版云数据，已拒绝启用';
+      return;
+    }
     if (index < 0 &&
       !resolvingRestore &&
+      !(table === MOONLIGHT_CLOUD_TABLE &&
+        moonlightRestoreState === 'pending') &&
       !cloud.beginSelectionReenableBarrier(table)) {
       this.cloudSyncError =
         '同步范围禁写门禁未能保存，已拒绝重新启用';
@@ -2042,17 +3869,29 @@ struct HostListPage {
     if (!CloudSyncSelectionStore.getInstance()
       .replaceSelectedBusinessTables(getContext(this), next)) {
       if (index < 0 && !resolvingRestore) {
-        cloud.abortSelectionReenableBarrier(table);
+        if (!(table === MOONLIGHT_CLOUD_TABLE &&
+          moonlightRestoreState === 'pending')) {
+          cloud.abortSelectionReenableBarrier(table);
+        }
       }
       this.cloudSyncError = '同步范围未能安全保存，请重试';
       return;
     }
-    this.cloudSyncSelectedTables = CloudSyncSelectionStore.getInstance().selectedBusinessTables();
+    this.cloudSyncSelectedTables = CloudSyncSelectionStore.getInstance()
+      .persistedSelectedBusinessTables();
+    this.moonlightRestoreActivationState =
+      cloud.moonlightRestoredDataActivationState();
     // Every re-enabled physical table crosses a fresh cloud-first barrier.
     // This is especially important after a local crypto reset: pending local
     // deletes must never become native-first merely because the user later
     // turned the table back on.
     if (index < 0) {
+      if (table === MOONLIGHT_CLOUD_TABLE &&
+          moonlightRestoreState === 'pending') {
+        this.cloudSyncError =
+          '已保留 Moonlight 同步选择；恢复的数据仍仅在本机，需完成云端核对并再次确认后才会上传';
+        return;
+      }
       if (resolvingRestore) {
         this.cloudSyncError =
           '恢复数据等待方向确认：请选择“上传本机”或“下载云端”完成同步';
@@ -2075,6 +3914,59 @@ struct HostListPage {
       table)) {
       this.cloudSyncError =
         '同步范围已关闭，但旧门禁清理失败；上传仍保持暂停';
+    }
+  }
+
+  private confirmMoonlightRestoreActivation(): void {
+    promptAction.showDialog({
+      title: '允许恢复的 Moonlight 数据上传？',
+      message: '应用会先下载并核对当前账号的 Moonlight 云端数据，再解除本机恢复隔离并排队上传已选择的串流设置、主机和配置档。配对信任、证书与客户端私钥始终不会上传。',
+      buttons: [
+        { text: '暂不启用', color: this.pal().text2 },
+        { text: '核对并启用', color: this.accentColor }
+      ]
+    }).then((value: Object): void => {
+      const result: Record<string, number> =
+        value as Record<string, number>;
+      if (result['index'] === 1) {
+        void this.activateMoonlightRestoredData();
+      }
+    });
+  }
+
+  private async activateMoonlightRestoredData(): Promise<void> {
+    const cloud: CloudStore = CloudStore.getInstance();
+    const result = await cloud.activateMoonlightRestoredData();
+    this.moonlightRestoreActivationState =
+      cloud.moonlightRestoredDataActivationState();
+    this.moonlightCloudSelectedScopes =
+      cloud.moonlightSelectedCloudScopes();
+    if (result.ok) {
+      this.cloudSyncError = '';
+      promptAction.showToast({
+        message: '云端核对完成，Moonlight 恢复数据已进入安全上传队列',
+        duration: 2600
+      });
+      return;
+    }
+    if (result.code === 'selection_required') {
+      this.cloudSyncError =
+        'Moonlight 云表尚未完成自动注册，请稍后重试';
+    } else if (result.code === 'bootstrap_pending') {
+      this.cloudSyncError =
+        '当前账号的基础云端核对尚未完成；旧版数据保持可用，请稍后重试';
+    } else if (result.code === 'registration_unavailable') {
+      this.cloudSyncError =
+        'Moonlight 云表尚未就绪；现有协议云同步未受影响';
+    } else if (result.code === 'metadata_blocked' ||
+        result.code === 'marker_clear_failed') {
+      this.cloudSyncError =
+        '恢复隔离状态未能安全确认；数据仍只保存在本机，未执行上传';
+    } else if (result.code === 'stale_lease') {
+      this.cloudSyncError = '账号状态已变化，请重新打开数据管理后再试';
+    } else {
+      this.cloudSyncError =
+        'Moonlight 云端核对未完成；恢复数据仍只保存在本机';
     }
   }
 
@@ -2134,7 +4026,7 @@ struct HostListPage {
       return '尚未选择备份文件';
     }
     const legacy: string = preview.legacyOwnerUnbound
-      ? '；旧版文件将在确认后绑定当前账号' : '';
+      ? '；旧版文件将在确认后绑定当前本地数据作用域' : '';
     const redacted: string = !preview.secretsIncluded
       ? '；该备份为脱敏配置，不含密码、SSH 私钥、2FA 与设备信任（SSH 公钥/RDP 证书），恢复后需重新导入/确认' : '';
     return '格式 v' + preview.formatVersion.toString() +
@@ -2203,6 +4095,19 @@ struct HostListPage {
       this.closeSettingsLeafSheet();
       return;
     }
+    const compatibilityTables: string[] =
+      cloudFirstCompatibleTablesAfterOptionalFailure(
+        'cloudFirst', result.tables, result.failedTables);
+    if (compatibilityTables.length > 0) {
+      if (compatibilityTables.indexOf('usersettings') >= 0) {
+        this.applyCloudUserSettings();
+      }
+      this.cloudSyncError =
+        '老版本云数据已成功下载并保留；Moonlight 云表本次未完成，' +
+        'Moonlight 本地数据保持不变并等待重试，其他协议数据没有回滚。';
+      this.cloudSyncStep = CLOUD_SYNC_SHEET_DOWNLOAD_CONFIRM;
+      return;
+    }
     if (cloud.requiresCloudServiceGuidance()) {
       this.cloudSyncStep = CLOUD_SYNC_SHEET_UNAVAILABLE;
       return;
@@ -2247,7 +4152,7 @@ struct HostListPage {
   }
 
   private openVncHostManagerFromSettings(): void {
-    this.dismissVncSettingsIfNeeded((): void => {
+    this.dismissSettingsLeafIfNeeded((): void => {
       this.closeSettingsLeafSheet();
       setTimeout((): void => {
         if (this.pageActive) { router.pushUrl({ url: 'pages/VncSettingsPage' }); }
@@ -2256,7 +4161,7 @@ struct HostListPage {
   }
 
   private openVncGatewayManagerFromSettings(): void {
-    this.dismissVncSettingsIfNeeded((): void => {
+    this.dismissSettingsLeafIfNeeded((): void => {
       this.closeSettingsLeafSheet();
       setTimeout((): void => {
         if (!this.pageActive) { return; }
@@ -2278,6 +4183,13 @@ struct HostListPage {
     });
   }
 
+  private openMoonlightSettingsFromSettings(mode: number): void {
+    const spec: MoonlightSettingsRouteSpec | null = moonlightSettingsRouteSpec(mode);
+    if (spec === null || spec.owner !== 'moonlight' || !this.pageActive) { return; }
+    this.moonlightSettingsLeafHostId = '';
+    this.openSettingsLeafSheet(mode);
+  }
+
   private recheckVncTrust(trust: VncTrustView, selectedHostId: string): void {
     const hosts: VncHostView[] = this.vncHosts.list();
     const gateways: VncGatewayView[] = this.vncGateways.list();
@@ -2296,7 +4208,10 @@ struct HostListPage {
     this.closeSettingsLeafSheet();
     setTimeout((): void => {
       if (this.pageActive) {
-        router.pushUrl({ url: 'pages/RemoteDesktop', params: { vncHostId: host.id } });
+        // A trust-manager recheck is still a new connection request. Re-enter
+        // the existing VNC lock/certificate preflight instead of constructing
+        // an independent window before that flow has committed.
+        void this.connectToHost(projectVncHost(host));
       }
     }, SETTINGS_PANEL_DISMISS_TO_LEAF_OPEN_MS);
   }
@@ -2370,7 +4285,10 @@ struct HostListPage {
       return 520;
     }
     if (section === SETTINGS_SECTION_DISPLAY_INTERACTION) {
-      return 680;
+      return 1040;
+    }
+    if (section === SETTINGS_SECTION_VIRTUAL_KEYBOARD) {
+      return 390;
     }
     if (section === SETTINGS_SECTION_RDP) {
       return 820;
@@ -2379,16 +4297,19 @@ struct HostListPage {
       return 980;
     }
     if (section === SETTINGS_SECTION_SSH) {
-      return 760;
+      return 830;
     }
     if (section === SETTINGS_SECTION_VNC) {
       return settingsVncExpandedMaxHeight(SETTINGS_VNC_ACTION_ROW_COUNT);
+    }
+    if (section === SETTINGS_SECTION_MOONLIGHT) {
+      return settingsMoonlightExpandedMaxHeight(SETTINGS_MOONLIGHT_ACTION_ROW_COUNT);
     }
     if (section === SETTINGS_SECTION_SECURITY) {
       return 560;
     }
     if (section === SETTINGS_SECTION_TUTORIAL) {
-      return 240;
+      return 300;
     }
     if (section === SETTINGS_SECTION_ABOUT) {
       return 300;
@@ -2631,6 +4552,29 @@ struct HostListPage {
 
   aboutToDisappear(): void {
     this.pageActive = false;
+    this.sheetReleaseFenceGeneration += 1;
+    this.sheetReleaseFenceActive = false;
+    if (this.sheetReleaseFenceTimer !== -1) {
+      clearTimeout(this.sheetReleaseFenceTimer);
+      this.sheetReleaseFenceTimer = -1;
+    }
+    this.lanDiscovery.stopScan();
+    this.rdpLanDiscovery.stopScan();
+    this.dynamicRustDeskDiscovery.stopScan();
+    this.dynamicRdpDiscovery.stopScan();
+    this.lanScanning = false;
+    this.rdpLanScanning = false;
+    this.stopMoonlightLanDiscovery();
+    if (!this.moonlightAddCommitted) {
+      void this.revokeMoonlightTemporaryPairing();
+    }
+    this.moonlightHostService.disposeOwner(this.moonlightAddOwnerToken);
+    this.clearMoonlightVerificationState();
+    this.moonlightDiscoveryResultOwnerToken = 0;
+    this.moonlightDiscoveryResultGeneration = 0;
+    this.moonlightLanCandidates = [];
+    this.moonlightAddOwnerToken += 1;
+    this.invalidateMoonlightCatalogHandoff();
     this.hostPresencePageGeneration += 1;
     this.hostLoadRefreshPresence = false;
     if (this.hostLoadRefreshTimer !== -1) {
@@ -2877,6 +4821,10 @@ struct HostListPage {
     if (showLoading) { this.isLoading = true; }
     try {
       this.refreshCryptoStatus();
+      // The Moonlight overlay and app cache can change without changing the
+      // account lease. Reload it on the same lifecycle/data-change cadence as
+      // the RDP/RustDesk/SSH/VNC cards.
+      this.refreshMoonlightDirectory();
       this.refreshHostListView();
       this.rdpCredentials = this.srv.getAllRdpCredentials();
       this.rdpCount = this.srv.getRdpCount();
@@ -2916,7 +4864,10 @@ struct HostListPage {
     if (!this.srv.isReady()) {
       this.srv.whenReady().then((): void => {
         this.applyCloudUserSettings();
-        if (this.pageActive) { this.scheduleHostListLoad(true); }
+        if (this.pageActive) {
+          this.scheduleHostListLoad(true);
+          void this.refreshDynamicLanHosts(false);
+        }
       });
     }
     const keyVault: KeyVaultService = KeyVaultService.getInstance();
@@ -2977,6 +4928,7 @@ struct HostListPage {
   private refreshHostListView(force: boolean = false): void {
     // 用新对象快照驱动列表和详情，避免服务层原地更新同一 RemoteHost
     // 引用时，LazyForEach/卡片内部只收到 reload 却继续显示旧字段。
+    MoonlightSessionCoordinator.getInstance().reconcileNativeTerminalReceipt();
     const activeSession: ActiveRemoteSessionRecord | null = ActiveRemoteSessionRegistry.getInstance().getActive();
     const nextActiveRemoteHostId: string = activeSession === null ? '' : activeSession.hostId;
     const activeSessionChanged: boolean = this.activeRemoteHostId !== nextActiveRemoteHostId;
@@ -3011,8 +4963,29 @@ struct HostListPage {
   // their header and detail snapshots.
   private refreshFilteredHostView(): void {
     this.filteredHosts = this.visibleHostsForCurrentMode();
+    // 非分类模式下应用本地手动排序
+    if (!this.groupedHostCardsActive() && this.hostManualOrder.length > 0) {
+      this.filteredHosts = this.applyManualSortOrder(this.filteredHosts);
+    }
     this.hostDataSource.replaceAll(this.filteredHosts);
     this.hostViewRevision += 1;
+  }
+
+  /** 根据本地保存的手动排序顺序重排主机列表。已排序的主机按保存顺序排列，新主机追加到末尾。 */
+  private applyManualSortOrder(hosts: RemoteHost[]): RemoteHost[] {
+    if (this.hostManualOrder.length === 0) { return hosts; }
+    const orderMap: Map<string, number> = new Map<string, number>();
+    for (let i = 0; i < this.hostManualOrder.length; i++) {
+      orderMap.set(this.hostManualOrder[i], i);
+    }
+    const sorted: RemoteHost[] = hosts.slice();
+    sorted.sort((a: RemoteHost, b: RemoteHost): number => {
+      const oa: number = orderMap.has(a.id) ? (orderMap.get(a.id) as number) : Number.MAX_SAFE_INTEGER;
+      const ob: number = orderMap.has(b.id) ? (orderMap.get(b.id) as number) : Number.MAX_SAFE_INTEGER;
+      if (oa !== ob) { return oa - ob; }
+      return 0;
+    });
+    return sorted;
   }
 
   // CRUD handlers use the same immediate snapshot refresh as the classic list.
@@ -3088,7 +5061,9 @@ struct HostListPage {
       const d: display.Display = display.getDefaultDisplaySync();
       this.windowW = d.width;
       this.isFullScreen = (d.width >= d.width - 4);
-    } catch (_err) { this.windowW = 360; }
+    } catch (_err) {
+      this.windowW = 360;
+    }
   }
 
   // 手动切换主题时同步更新状态栏 (与 EntryAbility.updateStatusBar 一致)
@@ -3158,12 +5133,9 @@ struct HostListPage {
     this.haloColor = hex;
     AppStorage.setOrCreate(key, hex);
     AppStorage.setOrCreate(HALO_COLOR_LEGACY_KEY, hex);
-    try {
-      const prefs = preferences.getPreferencesSync(getContext(this), { name: 'RemoteDesktopAppPrefs' });
-      prefs.putSync(key, hex);
-      prefs.flushSync();
-    } catch (_e) { /* ignore */ }
-    CloudStore.getInstance().upsertUserSetting(key, hex);
+    const localSaved: boolean = this.persistPreferenceValue(key, hex);
+    const cloudSaved: boolean = CloudStore.getInstance().upsertUserSetting(key, hex);
+    this.reportPreferencePersistence(localSaved, cloudSaved);
   }
 
   private currentSystemColorMode(ctx: common.UIAbilityContext, preferEnvironment: boolean): number {
@@ -3290,42 +5262,226 @@ struct HostListPage {
     return w;
   }
 
-  private doHostBatchDelete(): void {
-    promptAction.showDialog({
+  private mutationFailureMessage(fallback: string): string {
+    const message: string = CloudStore.getInstance().getLastMutationResult().message.trim();
+    return message === '' ? fallback : message;
+  }
+
+  private async doHostBatchDelete(): Promise<void> {
+    const selectedKeys: string[] = Array.from(this.hostSelectedIds);
+    if (selectedKeys.length === 0) { return; }
+    const remoteHosts: RemoteHost[] = [];
+    const moonlightViews: MoonlightHostLocalView[] = [];
+    for (let index: number = 0; index < selectedKeys.length; index++) {
+      const key: string = selectedKeys[index];
+      const remoteId: string = remoteHostIdFromCardKey(key) ||
+        (this.hosts.some((host: RemoteHost): boolean => host.id === key) ? key : '');
+      const moonlightId: string = moonlightHostIdFromCardKey(key);
+      if (remoteId !== '') {
+        const host: RemoteHost | undefined = this.hosts.find(
+          (candidate: RemoteHost): boolean => candidate.id === remoteId);
+        if (host !== undefined) { remoteHosts.push(host); }
+      } else if (moonlightId !== '') {
+        const view: MoonlightHostLocalView | undefined = this.moonlightHosts.find(
+          (candidate: MoonlightHostLocalView): boolean =>
+            candidate.host !== null && candidate.host.id === moonlightId);
+        if (view !== undefined && view.host !== null) { moonlightViews.push(view); }
+      }
+    }
+    for (let index: number = 0; index < remoteHosts.length; index++) {
+      if (!remoteHosts[index].locked) { continue; }
+      const gate: LockGateResult = await showLockGate(remoteHosts[index].label, 'biometric');
+      if (!gate.ok) {
+        const message: string = lockGateErrorMessage(gate);
+        if (message !== '') { promptAction.showToast({ message: message, duration: 2000 }); }
+        return;
+      }
+    }
+    for (let index: number = 0; index < moonlightViews.length; index++) {
+      const host: MoonlightHost = moonlightViews[index].host as MoonlightHost;
+      if (host.locked !== true) { continue; }
+      const gate: LockGateResult = await showLockGate(host.displayName, 'biometric');
+      if (!gate.ok) {
+        const message: string = lockGateErrorMessage(gate);
+        if (message !== '') { promptAction.showToast({ message: message, duration: 2000 }); }
+        return;
+      }
+    }
+    const moonlightLease: AccountSessionLease | null = moonlightViews.length === 0
+      ? null : this.moonlightDeletionRuntime.currentLease();
+    const moonlightPreviews: MoonlightDeletionPreview[] = [];
+    if (moonlightViews.length > 0 && (moonlightLease === null ||
+        !this.moonlightDeletionRuntime.isLeaseCurrent(moonlightLease))) {
+      promptAction.showToast({ message: 'Moonlight 数据域已变化，请刷新后重试', duration: 2200 });
+      return;
+    }
+    for (let index: number = 0; index < moonlightViews.length; index++) {
+      const host: MoonlightHost = moonlightViews[index].host as MoonlightHost;
+      const preview: MoonlightDeletionPreview = this.moonlightDeletionRuntime.preview(
+        moonlightLease as AccountSessionLease, 'forget_host', host.id);
+      if (preview.code !== 'ok') {
+        promptAction.showToast({
+          message: preview.code === 'cloud_unavailable'
+            ? 'Moonlight 云端状态尚未就绪，未删除任何主机'
+            : 'Moonlight 主机数据已变化，请刷新后重试：' + preview.code,
+          duration: 2400
+        });
+        return;
+      }
+      moonlightPreviews.push(preview);
+    }
+    const dialogResult: Object = await promptAction.showDialog({
       title: '批量删除',
-      message: '确定要删除选中的 ' + this.hostSelectedIds.size + ' 个主机吗？',
+      message: '确定要删除选中的 ' + selectedKeys.length +
+        ' 个主机吗？Moonlight 主机还会清理配对信任、应用配置和目录缓存。',
       buttons: [
         { text: '取消', color: this.pal().text2 },
         { text: '删除', color: this.pal().danger }
       ]
-    }).then((result: Object): void => {
-      const r: Record<string, number> = result as Record<string, number>;
-      if (r['index'] === 1) {
-        const remoteIds: string[] = [];
-        const vncIds: string[] = [];
-        this.hostSelectedIds.forEach((id: string): void => {
-          // Do not classify by the display prefix alone: a legacy remotehosts
-          // row may legally contain an arbitrary ID beginning with "vnc:".
-          // Resolve the selected snapshot first so deletion stays with the
-          // actual owner service.
-          const selectedHost: RemoteHost | undefined = this.hosts.find(
-            (host: RemoteHost): boolean => host.id === id);
-          const vncId: string = selectedHost === undefined ? '' : this.vncRecordIdForHost(selectedHost);
-          if (vncId !== '') { vncIds.push(vncId); } else { remoteIds.push(id); }
-        });
-        if (remoteIds.length > 0) { this.srv.removeHosts(remoteIds); }
-        for (let i = 0; i < vncIds.length; i++) { this.vncHosts.remove(vncIds[i]); }
-        this.refreshHostSnapshotAfterMutation();
-        this.hostSelectionMode = false;
-        this.hostSelectedIds = new Set<string>();
-      }
     });
+    const selected: Record<string, number> = dialogResult as Record<string, number>;
+    if (selected['index'] !== 1 || !this.pageActive) { return; }
+    if (moonlightLease !== null) {
+      const currentLease: AccountSessionLease | null = this.moonlightDeletionRuntime.currentLease();
+      if (currentLease === null || !this.moonlightDeletionRuntime.isLeaseCurrent(moonlightLease) ||
+          !accountSessionLeaseEquals(currentLease, moonlightLease)) {
+        promptAction.showToast({ message: '账号状态已变化，未执行删除', duration: 2200 });
+        return;
+      }
+    }
+    const failedKeys: Set<string> = new Set<string>();
+    const regularIds: string[] = [];
+    for (let index: number = 0; index < remoteHosts.length; index++) {
+      const host: RemoteHost = remoteHosts[index];
+      const vncId: string = this.vncRecordIdForHost(host);
+      if (vncId !== '') {
+        if (!this.vncHosts.remove(vncId)) { failedKeys.add(remoteHostCardKey(host.id)); }
+      } else {
+        regularIds.push(host.id);
+      }
+    }
+    if (regularIds.length > 0) { this.srv.removeHosts(regularIds); }
+    for (let index: number = 0; index < regularIds.length; index++) {
+      if (this.srv.getHost(regularIds[index]) !== undefined) {
+        failedKeys.add(remoteHostCardKey(regularIds[index]));
+      }
+    }
+    for (let index: number = 0; index < moonlightPreviews.length; index++) {
+      const result: MoonlightDeletionCommandResult = await this.moonlightDeletionRuntime.execute(
+        moonlightLease as AccountSessionLease, moonlightPreviews[index]);
+      if (!result.ok) {
+        failedKeys.add(unifiedMoonlightHostCardKey(moonlightPreviews[index].hostId));
+      }
+    }
+    const succeeded: Set<string> = new Set<string>();
+    for (let index: number = 0; index < selectedKeys.length; index++) {
+      if (!failedKeys.has(selectedKeys[index])) { succeeded.add(selectedKeys[index]); }
+    }
+    this.hostManualOrder = this.hostManualOrder.filter(
+      (key: string): boolean => !succeeded.has(key));
+    this.persistHostManualOrder();
+    this.refreshHostSnapshotAfterMutation();
+    this.refreshMoonlightDirectory();
+    this.hostViewRevision += 1;
+    this.hostSelectionMode = failedKeys.size > 0;
+    this.hostReorderEnabled = false;
+    this.hostSelectedIds = failedKeys;
+    if (failedKeys.size > 0) {
+      promptAction.showToast({
+        message: failedKeys.size.toString() + ' 个主机删除失败，已保留选择，请重试',
+        duration: 2600
+      });
+    } else {
+      promptAction.showToast({ message: '已删除 ' + succeeded.size.toString() + ' 个主机', duration: 1800 });
+    }
   }
 
   private toggleHostSelect(id: string, checked: boolean): void {
     const next: Set<string> = new Set(this.hostSelectedIds);
     if (checked) { next.add(id); } else { next.delete(id); }
     this.hostSelectedIds = next;
+  }
+
+  /** 拖拽重排回调: 在同一个未分类卡片序列中移动任意协议。 */
+  private handleHostMove(draggingKey: string, targetKey: string): void {
+    const refs: UnifiedHostCardRef[] = this.flatHostCardRefs();
+    const previousVisible: string[] = refs.map((ref: UnifiedHostCardRef): string => ref.key);
+    const nextVisible: string[] = moveUnifiedHostCard(previousVisible, draggingKey, targetKey);
+    this.hostManualOrder = mergeVisibleHostOrder(this.hostManualOrder, previousVisible, nextVisible);
+    this.hostViewRevision += 1;
+  }
+
+  /** 完成排序: 将当前显示顺序持久化到本地 Preferences 并退出编辑模式 */
+  private commitHostReorder(): void {
+    this.persistHostManualOrder();
+    const refs: UnifiedHostCardRef[] = this.allHostCardRefsForOrder();
+    let orderFailed: boolean = false;
+    let moonlightOrder: number = 0;
+    const now: number = Date.now();
+    for (let index: number = 0; index < refs.length; index++) {
+      if (refs[index].kind !== 'moonlight') { continue; }
+      const result: MoonlightLocalHostMutationResult = this.moonlightLocalHostService.updateUserOrder(
+        refs[index].hostId, moonlightOrder, now + moonlightOrder);
+      orderFailed = !result.ok || orderFailed;
+      moonlightOrder += 1;
+    }
+    this.refreshMoonlightDirectory();
+    this.hostReorderOriginalOrder = [];
+    animateTo({ duration: 200, curve: Curve.FastOutSlowIn }, (): void => {
+      this.hostSelectionMode = false;
+      this.hostReorderEnabled = false;
+      this.hostSelectedIds = new Set();
+      this.hostViewRevision += 1;
+    });
+    if (orderFailed) {
+      promptAction.showToast({ message: '排序已保存到本机，但部分 Moonlight 云同步顺序更新失败', duration: 2400 });
+    }
+  }
+
+  /** 取消编辑: 丢弃拖拽变更, 从 Preferences 恢复原始排序 */
+  private cancelHostEdit(): void {
+    this.hostManualOrder = this.hostReorderOriginalOrder.slice();
+    this.hostReorderOriginalOrder = [];
+    animateTo({ duration: 200, curve: Curve.FastOutSlowIn }, (): void => {
+      this.hostSelectionMode = false;
+      this.hostReorderEnabled = false;
+      this.hostSelectedIds = new Set();
+      this.hostViewRevision += 1;
+    });
+    // 从服务层重新加载原始排序
+    this.refreshHostSnapshotAfterMutation();
+  }
+
+  /** 将手动排序顺序写入本地 Preferences (不触发云同步) */
+  private persistHostManualOrder(): void {
+    this.reportPreferencePersistence(this.persistPreferenceValue(
+      'hostManualSortOrder', JSON.stringify(this.hostManualOrder)));
+  }
+
+  @Builder hostDragPreviewBuilder(host: RemoteHost) {
+    Row() {
+      Column() {
+        Image(host.protocol === 'ssh' ? $r('app.media.icon_terminal') :
+          (host.protocol === 'rdp' ? $r('app.media.icon_desktop') : $r('app.media.icon_laptop')))
+          .width(24).height(24).fillColor(Color.White)
+      }
+      .width(42).height(42).borderRadius(21)
+      .backgroundColor(host.protocol === 'ssh' ? this.pal().editColor :
+        (host.protocol === 'rdp' ? this.accentColor : this.pal().success))
+      .justifyContent(FlexAlign.Center)
+      .margin({ right: 10 })
+
+      Text(host.label || host.host)
+        .fontSize(16).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
+        .layoutWeight(1)
+
+      SymbolGlyph($r('sys.symbol.line_3_horizontal'))
+        .fontSize(20).fontColor([this.pal().text3])
+    }
+    .width(this.windowW > 0 ? Math.min(this.windowW - 32, 600) : 320)
+    .height(66).padding(12)
+    .borderRadius(14).backgroundColor(this.pal().card)
+    .shadow({ radius: 16, color: '#33000000', offsetY: 4 })
   }
 
   private onSearchChange(value: string): void {
@@ -3366,20 +5522,268 @@ struct HostListPage {
     this.releaseConnectionAttempt(hostId);
   }
 
+  /**
+   * PC/2-in-1 sessions are independent multiton abilities. Phone and tablet
+   * keep the existing in-app router flow. Desktop must never silently fall
+   * back to an in-window route: that would turn a window-launch failure into
+   * the exact single-window navigation regression this boundary prevents.
+   */
+  private openSessionDestination(url: string, params: Record<string, Object>,
+    authorizationKind: RemoteSessionWindowAuthorizationKind): void {
+    if (!this.isDesktopDevice) {
+      void router.pushUrl({ url, params });
+      return;
+    }
+    let target: RemoteSessionWindowTarget;
+    let protocol: RemoteSessionWindowProtocol;
+    let hostId: string = '';
+    let title: string = '远程会话';
+    if (url === 'pages/SshTerminal') {
+      target = 'ssh_terminal';
+      protocol = 'ssh';
+      hostId = ((params['hostId'] as string) || '').trim();
+      const host: RemoteHost | undefined = this.srv.getHost(hostId);
+      title = host === undefined ? 'SSH 终端' : host.label + ' — SSH';
+    } else if (url === 'pages/RemoteDesktop') {
+      target = 'remote_desktop';
+      const vncHostId: string = ((params['vncHostId'] as string) || '').trim();
+      if (vncHostId.length > 0) {
+        protocol = 'vnc';
+        hostId = vncHostId;
+        const vncHost: VncHostView | null = this.vncHosts.find(vncHostId);
+        title = vncHost === null ? 'VNC 会话' : vncHost.label + ' — VNC';
+      } else {
+        hostId = ((params['hostId'] as string) || '').trim();
+        const host: RemoteHost | undefined = this.srv.getHost(hostId);
+        if (host === undefined || (host.protocol !== 'rdp' && host.protocol !== 'rustdesk')) {
+          promptAction.showToast({ message: '无法识别远程会话，未打开窗口', duration: 2200 });
+          return;
+        }
+        protocol = host.protocol === 'rustdesk' ? 'rustdesk' : 'rdp';
+        title = host.label + (protocol === 'rdp' ? ' — RDP' : ' — RustDesk');
+      }
+    } else { return; }
+    const routeParams: Record<string, Object> = {};
+    Object.keys(params).forEach((key: string): void => { routeParams[key] = params[key]; });
+    // The HostList lock gate has already committed before any authorization
+    // handoff can be staged. Preserve that original result so the existing
+    // session page cannot ask for the same biometric twice.
+    routeParams['authenticated'] = true;
+    if (protocol === 'rdp' || protocol === 'vnc' || protocol === 'ssh') {
+      // Certificate/host-key preflight is not the remote protocol's login
+      // commit. Keep the original RemoteDesktop/SshTerminal authentication UI
+      // in this ability, then let that page transfer the connected native
+      // session to a new PC window. No window is created on cancel/failure.
+      routeParams['pcWindowAfterAuthentication'] = true;
+      routeParams['pcWindowPreflightKind'] = authorizationKind;
+      void router.pushUrl({ url, params: routeParams }).catch((_err: Error): void => {
+        promptAction.showToast({ message: '无法打开原鉴权流程，未创建会话窗口', duration: 2200 });
+      });
+      return;
+    }
+    const authorizationToken: string =
+      RemoteSessionWindowAuthorizationService.getInstance().issue(
+        protocol, hostId, authorizationKind);
+    if (authorizationToken.length === 0) {
+      promptAction.showToast({ message: '连接鉴权状态无效，未打开独立窗口', duration: 2200 });
+      return;
+    }
+    const request: RemoteSessionWindowRequest = {
+      target,
+      protocol,
+      hostId,
+      title,
+      authorizationToken,
+      routeParams
+    };
+    let nativeHandoff: RemoteSessionWindowNativeHandoff | null = null;
+    let rustDeskHandoffIdentity: ActiveRemoteSessionRecord | null = null;
+    let rustDeskDisconnectIdentity: NativeDisconnectIdentity | null = null;
+    let rustDeskHandoffGeneration: number = 0;
+    if (protocol === 'rustdesk') {
+      const registry: ActiveRemoteSessionRegistry = ActiveRemoteSessionRegistry.getInstance();
+      const active: ActiveRemoteSessionRecord | null = registry.getActive();
+      if (active === null || active.hostId !== hostId ||
+        active.protocol !== RemoteProtocol.rustdesk || !active.protocolConnected ||
+        active.sessionId <= 0 || this.loader.getSessionId() !== active.sessionId) {
+        RemoteSessionWindowAuthorizationService.getInstance().revoke(authorizationToken);
+        promptAction.showToast({ message: 'RustDesk 已鉴权会话交接失败，未打开窗口', duration: 2400 });
+        return;
+      }
+      rustDeskDisconnectIdentity =
+        this.loader.captureDisconnectIdentity(active.sessionId);
+      if (rustDeskDisconnectIdentity === null) {
+        RemoteSessionWindowAuthorizationService.getInstance().revoke(authorizationToken);
+        promptAction.showToast({ message: 'RustDesk 会话所有权已变化，未打开窗口', duration: 2400 });
+        return;
+      }
+      const authenticatedHandoff: RemoteSessionWindowNativeHandoff =
+        new RemoteSessionWindowNativeHandoff(this.loader, registry, active);
+      nativeHandoff = authenticatedHandoff;
+      rustDeskHandoffIdentity = active;
+      rustDeskHandoffGeneration = nextRemoteSessionHandoffGeneration(
+        this.rustDeskWindowHandoffGeneration);
+      this.rustDeskWindowHandoffGeneration = rustDeskHandoffGeneration;
+    }
+    let context: common.UIAbilityContext;
+    try {
+      context = getContext(this) as common.UIAbilityContext;
+    } catch (_err) {
+      RemoteSessionWindowAuthorizationService.getInstance().revoke(authorizationToken);
+      promptAction.showToast({ message: '独立窗口上下文不可用，未打开会话', duration: 2200 });
+      return;
+    }
+    void RemoteSessionWindowLauncher.open(context, request, nativeHandoff).then((opened: boolean): void => {
+      if (opened) { return; }
+      if (rustDeskHandoffIdentity !== null) {
+        this.discardFailedRustDeskWindowHandoff(
+          rustDeskHandoffIdentity, rustDeskHandoffGeneration,
+          rustDeskDisconnectIdentity);
+      }
+      promptAction.showToast({ message: '独立窗口启动失败，未打开会话', duration: 2200 });
+    }).catch((_err: Error): void => {
+      if (rustDeskHandoffIdentity !== null) {
+        this.discardFailedRustDeskWindowHandoff(
+          rustDeskHandoffIdentity, rustDeskHandoffGeneration,
+          rustDeskDisconnectIdentity);
+      }
+      promptAction.showToast({ message: '独立窗口启动失败', duration: 2200 });
+    });
+  }
+
+  private discardFailedRustDeskWindowHandoff(expected: ActiveRemoteSessionRecord,
+    operationGeneration: number,
+    disconnectIdentity: NativeDisconnectIdentity | null): void {
+    const registry: ActiveRemoteSessionRegistry = ActiveRemoteSessionRegistry.getInstance();
+    const active: ActiveRemoteSessionRecord | null = registry.getActive();
+    if (disconnectIdentity === null || !remoteSessionHandoffFailureOwnsSession(
+      expected, active, this.loader.getSessionId(), operationGeneration,
+      this.rustDeskWindowHandoffGeneration)) {
+      return;
+    }
+    this.rustDeskWindowHandoffGeneration = nextRemoteSessionHandoffGeneration(
+      this.rustDeskWindowHandoffGeneration);
+    const termination: ActiveRemoteSessionTermination | null =
+      registry.beginTermination(active as ActiveRemoteSessionRecord, null);
+    if (termination === null) { return; }
+    this.submitFailedRustDeskWindowHandoffTeardown(
+      registry, termination, disconnectIdentity);
+  }
+
+  private submitFailedRustDeskWindowHandoffTeardown(
+    registry: ActiveRemoteSessionRegistry,
+    termination: ActiveRemoteSessionTermination,
+    disconnectIdentity: NativeDisconnectIdentity
+  ): void {
+    if (!registry.isTerminationCurrent(termination)) { return; }
+    const submission: NativeDisconnectSubmission =
+      this.loader.disconnectWithReceipt(disconnectIdentity);
+    if (!submission.accepted) {
+      if (!submission.retryable) {
+        hilog.error(0x0001, 'HostList',
+          'RustDesk failed-window teardown owner changed before submission');
+        return;
+      }
+      setTimeout((): void => {
+        this.submitFailedRustDeskWindowHandoffTeardown(
+          registry, termination, disconnectIdentity);
+      }, 250);
+      return;
+    }
+    if (submission.terminal) {
+      if (submission.successful) {
+        registry.completeTermination(termination);
+      } else {
+        hilog.error(0x0001, 'HostList',
+          'RustDesk failed-window synchronous teardown failed');
+      }
+      return;
+    }
+    this.waitForFailedRustDeskWindowHandoffTeardown(
+      registry, termination, submission.requestId);
+  }
+
+  private waitForFailedRustDeskWindowHandoffTeardown(
+    registry: ActiveRemoteSessionRegistry,
+    termination: ActiveRemoteSessionTermination,
+    requestId: number
+  ): void {
+    void this.loader.waitForTeardownRequest(requestId).then((completed: boolean): void => {
+      if (!registry.isTerminationCurrent(termination)) { return; }
+      if (completed) {
+        registry.completeTermination(termination);
+        return;
+      }
+      const state: number = this.loader.getDisconnectState(requestId);
+      if (nativeDisconnectStateIsFailed(state) || state === 0) {
+        hilog.error(0x0001, 'HostList',
+          'RustDesk failed-window teardown not successful request=' +
+          requestId.toString() + ' state=' + state.toString());
+        return;
+      }
+      setTimeout((): void => {
+        this.waitForFailedRustDeskWindowHandoffTeardown(
+          registry, termination, requestId);
+      }, 250);
+    }).catch((err: Error): void => {
+      if (!registry.isTerminationCurrent(termination)) { return; }
+      hilog.warn(0x0001, 'HostList',
+        'RustDesk failed-window teardown wait unavailable request=' +
+        requestId.toString() + ' err=' +
+        (err.message ? err.message : JSON.stringify(err)));
+      setTimeout((): void => {
+        this.waitForFailedRustDeskWindowHandoffTeardown(
+          registry, termination, requestId);
+      }, 250);
+    });
+  }
+
   private async connectToHost(host: RemoteHost): Promise<void> {
     hilog.info(0x0001, 'HostList', 'connectToHost: proto=' + host.protocol +
       ' host=' + maskHost(host.host) + ':' + host.port);
+    const moonlightReleased: boolean = MoonlightSessionCoordinator.getInstance()
+      .reconcileNativeTerminalReceipt();
+    const processActive: ActiveRemoteSessionRecord | null =
+      ActiveRemoteSessionRegistry.getInstance().getActive();
+    if (!moonlightReleased && processActive !== null &&
+        processActive.protocol === RemoteProtocol.moonlight) {
+      this.clearPendingVncCredentialForRemoteHost(host);
+      promptAction.showToast({
+        message: 'Moonlight 正在安全释放媒体与输入资源，请稍后重试', duration: 2200
+      });
+      return;
+    }
     const protocolNeedsArbitration: boolean = host.protocol === 'rdp' ||
       host.protocol === 'rustdesk' || host.protocol === 'vnc';
     const connectionGeneration: number = protocolNeedsArbitration ?
       this.beginConnectionAttempt(host.id) : 0;
     if (protocolNeedsArbitration && connectionGeneration === 0) {
+      if (host.id !== this.connectionAttemptHostId) {
+        this.clearPendingVncCredentialForRemoteHost(host);
+      }
       promptAction.showToast({ message: '已有连接请求正在处理，请等待当前弹窗结束', duration: 1800 });
       return;
     }
+    if (lanHostUsesLocalOnlyStorage(host)) {
+      promptAction.showToast({ message: '正在刷新局域网动态地址…', duration: 1200 });
+      await this.refreshDynamicLanHosts(true, host.id);
+      const refreshed: RemoteHost | undefined = this.srv.getHost(host.id);
+      if (refreshed !== undefined && lanHostUsesLocalOnlyStorage(refreshed)) {
+        host = RemoteHost.fromJSON(refreshed.toJSON());
+      }
+      if (protocolNeedsArbitration &&
+        !this.isCurrentConnectionAttempt(host.id, connectionGeneration)) {
+        return;
+      }
+    }
     if (host.locked) {
       const r = await showLockGate(host.label, 'biometric');
+      if (protocolNeedsArbitration &&
+        !this.isCurrentConnectionAttempt(host.id, connectionGeneration)) {
+        return;
+      }
       if (!r.ok) {
+        this.clearPendingVncCredentialForRemoteHost(host);
         this.releaseConnectionAttempt(host.id);
         const msg: string = lockGateErrorMessage(r);
         if (msg !== '') { promptAction.showToast({ message: msg, duration: 2000 }); }
@@ -3412,7 +5816,7 @@ struct HostListPage {
           const sshParams: Record<string, Object> = {};
           sshParams['hostId'] = host.id;
           sshParams['authenticated'] = true;
-          router.pushUrl({ url: 'pages/SshTerminal', params: sshParams });
+          this.openSessionDestination('pages/SshTerminal', sshParams, 'ssh_broker_handoff');
           return;
         }
       }
@@ -3445,29 +5849,31 @@ struct HostListPage {
       if (shouldOpenRustDeskProPreflight(host.protocol, host.sourceType, host.rustdeskProManaged)) {
         this.openRustDeskProPreflight(host);
       } else {
-        const params: Record<string, Object> = {};
-        params['hostId'] = host.id;
-        router.pushUrl({ url: 'pages/RemoteDesktop', params: params });
+        // Fail closed if a future policy ever removes this host from the
+        // preflight owner. A desktop window may only receive an already-live,
+        // authenticated RustDesk session through the atomic handoff below.
         this.releaseConnectionAttempt(host.id);
+        promptAction.showToast({ message: 'RustDesk 鉴权流程不可用，未打开独立窗口', duration: 2400 });
       }
     } else if (host.protocol === 'vnc') {
       const vncHostId: string = this.vncRecordIdForHost(host);
       if (vncHostId === '') {
+        this.clearPendingVncCredentialForRemoteHost(host);
         this.releaseConnectionAttempt(host.id);
         promptAction.showToast({ message: 'VNC 主机记录无效，请重新添加', duration: 2200 });
         return;
       }
       const vncHost: VncHostView | null = this.vncHosts.find(vncHostId);
       if (vncHost === null) {
+        this.clearPendingVncCredentialForRemoteHost(host);
         this.releaseConnectionAttempt(host.id);
         promptAction.showToast({ message: 'VNC 主机记录不存在，请刷新后重试', duration: 2200 });
         return;
       }
       this.openVncCertificatePreflight(vncHost, host.id, connectionGeneration);
     } else {
-      const params: Record<string, Object> = {};
-      params['hostId'] = host.id;
-      router.pushUrl({ url: 'pages/RemoteDesktop', params: params });
+      this.releaseConnectionAttempt(host.id);
+      promptAction.showToast({ message: '暂不支持该连接协议', duration: 2000 });
     }
   }
 
@@ -3500,6 +5906,7 @@ struct HostListPage {
     this.rdpGatewayPreflightOneTimeFingerprint = '';
     this.rdpGatewayPreflightOneTimeAllowUntrustedRoot = false;
     this.rdpGatewayPreflightOneTimeAllowHostMismatch = false;
+    this.rdpGatewayPreflightOneTimeAllowTimeAnomaly = false;
     this.rdpGatewayPreflightOneTimeRouteIdentity = '';
     this.showRdpCertificatePreflight = shouldShowRdpCertificateProbeSheetBeforeProbe(
       host.rdpCertificateTrustMode,
@@ -3603,12 +6010,15 @@ struct HostListPage {
         this.rdpGatewayPreflightOneTimeFingerprint : host.rdpGatewayCertificateFingerprintSha256,
       targetAllowUntrustedRoot: host.rdpCertificateAllowUntrustedRoot,
       targetAllowHostMismatch: host.rdpCertificateAllowHostMismatch,
+      targetAllowTimeAnomaly: false,
       gatewayAllowUntrustedRoot: useOneTimeGatewayTrust ?
         this.rdpGatewayPreflightOneTimeAllowUntrustedRoot :
         host.rdpGatewayCertificateAllowUntrustedRoot,
       gatewayAllowHostMismatch: useOneTimeGatewayTrust ?
         this.rdpGatewayPreflightOneTimeAllowHostMismatch :
         host.rdpGatewayCertificateAllowHostMismatch,
+      gatewayAllowTimeAnomaly: useOneTimeGatewayTrust &&
+        this.rdpGatewayPreflightOneTimeAllowTimeAnomaly,
       generation,
       requestId: host.id + ':' + generation.toString()
     };
@@ -3630,7 +6040,9 @@ struct HostListPage {
       rootTrusted: record.rootTrusted,
       hostMismatch: record.hostMismatch,
       errorCode: record.present ? 0 : -1,
-      errorMessage: record.present ? '' : '未收到该阶段的证书'
+      errorMessage: record.present ? '' : '未收到该阶段的证书',
+      preflightStatus: record.present ? 'completed' : 'inconclusive',
+      riskFlags: record.riskFlags || []
     };
   }
 
@@ -3638,6 +6050,11 @@ struct HostListPage {
     info: RdpCertificateInfo, generation: number): RdpPreflightResult {
     return {
       ok: info.ok && info.fingerprintSha256.length > 0,
+      preflightStatus: info.ok ? 'completed' :
+        (info.preflightStatus || 'unavailable'),
+      riskFlags: info.riskFlags || [],
+      gatewayRiskFlags: [],
+      targetRiskFlags: info.riskFlags || [],
       endpointMode: this.rdpCertificateRouteMode(host),
       routeIdentity: rdpRouteIdentity(host),
       generation,
@@ -3649,16 +6066,17 @@ struct HostListPage {
       gatewayTransportNegotiated: 'unknown',
       gatewayTransportSelected: host.rdpGatewayTransport || 'auto',
       requiresGatewayAuth: false,
-      requiresUserDecision: info.ok,
+      requiresUserDecision: info.ok || rdpCertificatePreflightAllowsRealConnection(
+        info.preflightStatus, info.errorCode),
       gatewayCertificate: {
         present: false, rootTrusted: false, hostMismatch: false, flags: 0,
         host: host.gatewayHost, port: host.gatewayPort, stage: 'gateway',
         serverName: host.rdpGatewayServerName || host.gatewayHost,
         commonName: '', subject: '', issuer: '', fingerprintSha256: '',
-        notBeforeMs: 0, notAfterMs: 0
+        notBeforeMs: 0, notAfterMs: 0, riskFlags: []
       },
       targetCertificate: {
-        present: info.ok,
+        present: info.ok && info.fingerprintSha256.length > 0,
         rootTrusted: info.rootTrusted,
         hostMismatch: info.hostMismatch,
         flags: info.flags,
@@ -3671,7 +6089,8 @@ struct HostListPage {
         issuer: info.issuer,
         fingerprintSha256: info.fingerprintSha256,
         notBeforeMs: info.notBeforeMs,
-        notAfterMs: info.notAfterMs
+        notAfterMs: info.notAfterMs,
+        riskFlags: info.riskFlags || []
       }
     };
   }
@@ -3695,11 +6114,31 @@ struct HostListPage {
 
   private rdpCertificateWarningForRoute(host: RemoteHost,
     target: RdpCertificateInfo, gateway: RdpCertificateInfo): string {
-    const gatewayWarning: string = !gateway.rootTrusted ? 'Gateway 根证书未受信。' :
-      (gateway.hostMismatch ? 'Gateway 证书名称不匹配。' : 'Gateway 证书已通过名称和根证书检查。');
-    const targetWarning: string = !target.rootTrusted ? '目标 RDP 根证书未受信。' :
-      (target.hostMismatch ? '目标 RDP 证书名称不匹配。' : '目标 RDP 证书已通过名称和根证书检查。');
-    return '连接将先经过 RD Gateway，再进入目标 RDP。' + gatewayWarning + targetWarning;
+    const result: RdpPreflightResult | null = this.rdpCertificateRouteResult;
+    const gatewayFlags: string[] = result === null ? gateway.riskFlags :
+      rdpCertificateEffectiveRiskFlags(result.gatewayRiskFlags, gateway.riskFlags);
+    const targetFlags: string[] = result === null ? target.riskFlags :
+      rdpCertificateEffectiveRiskFlags(result.targetRiskFlags, target.riskFlags);
+    const structuredRisk: string = rdpCertificateRiskSummary(
+      gatewayFlags.concat(targetFlags));
+    const gatewayRisk: string = rdpCertificateRiskSummary(gatewayFlags);
+    const targetRisk: string = rdpCertificateRiskSummary(targetFlags);
+    const gatewayWarning: string = !gateway.ok
+      ? (gatewayRisk.length > 0 ? 'Gateway 证书未取得，风险：' + gatewayRisk + '。'
+        : 'Gateway 证书尚未取得。')
+      : (gatewayRisk.length > 0 ? 'Gateway 风险：' + gatewayRisk + '。'
+        : (gateway.rootTrusted
+          ? (gateway.hostMismatch ? 'Gateway 证书名称不匹配。' : 'Gateway 证书链已受信。')
+          : 'Gateway 证书链不受信。'));
+    const targetWarning: string = !target.ok
+      ? (targetRisk.length > 0 ? '目标 RDP 证书未取得，风险：' + targetRisk + '。'
+        : '目标 RDP 证书尚未取得。')
+      : (targetRisk.length > 0 ? '目标 RDP 风险：' + targetRisk + '。'
+        : (target.rootTrusted
+          ? (target.hostMismatch ? '目标 RDP 证书名称不匹配。' : '目标 RDP 证书链已受信。')
+          : '目标 RDP 证书链不受信。'));
+    return '连接将先经过 RD Gateway，再进入目标 RDP。' + gatewayWarning + targetWarning +
+      (structuredRisk.length > 0 ? ' 风险：' + structuredRisk + '。' : '');
   }
 
   private isRdpCertificateBusy(): boolean {
@@ -3718,6 +6157,7 @@ struct HostListPage {
     this.rdpGatewayPreflightOneTimeFingerprint = '';
     this.rdpGatewayPreflightOneTimeAllowUntrustedRoot = false;
     this.rdpGatewayPreflightOneTimeAllowHostMismatch = false;
+    this.rdpGatewayPreflightOneTimeAllowTimeAnomaly = false;
     this.rdpGatewayPreflightOneTimeRouteIdentity = '';
     this.rdpCertificateClosingHostId = hostId;
     this.rdpCertificateClosingAttemptGeneration = this.rdpCertificateAttemptGeneration;
@@ -3759,6 +6199,7 @@ struct HostListPage {
     this.rdpGatewayPreflightOneTimeFingerprint = '';
     this.rdpGatewayPreflightOneTimeAllowUntrustedRoot = false;
     this.rdpGatewayPreflightOneTimeAllowHostMismatch = false;
+    this.rdpGatewayPreflightOneTimeAllowTimeAnomaly = false;
     this.rdpGatewayPreflightOneTimeRouteIdentity = '';
     this.rdpCertificateAttemptGeneration = 0;
     // 取消时已经释放过；generation 检查避免旧 Sheet 的 onDisappear 清掉同一主机的新请求。
@@ -3769,7 +6210,7 @@ struct HostListPage {
         this.releaseConnectionAttempt(nextHostId);
       }
       setTimeout((): void => {
-        router.pushUrl({ url: 'pages/RemoteDesktop', params: params });
+        this.openSessionDestination('pages/RemoteDesktop', params, 'rdp_preflight_complete');
       }, rdpCertificateRouteDelayMsAfterSheetClose());
       return;
     }
@@ -3872,7 +6313,9 @@ struct HostListPage {
       flags: gateway.flags,
       rootTrusted: gateway.rootTrusted,
       hostMismatch: gateway.hostMismatch,
-      errorMessage: gateway.errorMessage
+      errorMessage: gateway.errorMessage,
+      preflightStatus: gateway.preflightStatus,
+      riskFlags: gateway.riskFlags
     }, {
       trustMode: host.rdpGatewayCertificateTrustMode,
       savedFingerprintSha256: host.rdpGatewayCertificateFingerprintSha256,
@@ -3937,7 +6380,9 @@ struct HostListPage {
             serverName: host.customHostname || host.host, commonName: '', subject: '', issuer: '',
             fingerprintSha256: '', notBeforeMs: 0, notAfterMs: 0,
             flags: 0, rootTrusted: false, hostMismatch: false,
-            errorCode: -1, errorMessage: routeResult.errorMessage
+            errorCode: -1, errorMessage: routeResult.errorMessage,
+            preflightStatus: routeResult.preflightStatus,
+            riskFlags: routeResult.riskFlags || []
           };
         // Apply the gateway view only after the full result has passed the
         // generation and route-identity checks below.
@@ -3968,15 +6413,12 @@ struct HostListPage {
       if (this.rdpGatewayConfirmationPending(routeResult)) {
         this.rdpCertificateInfo = null;
         this.rdpCertificateState = this.classifyRdpGatewayCertificate(host, routeResult);
-        this.rdpCertificateWarning =
-          '已在不发送账号密码的独立 TLS 连接中取得 Gateway 证书。' +
-          '确认该证书后，才会使用凭据建立 Gateway 隧道并检查目标 RDP 证书。';
-        if (this.rdpCertificateState === RdpCertificatePreflightState.ERROR) {
-          this.rdpCertificateErrorStage = 'gateway';
-          this.rdpCertificateErrorCode = 'E-RDP-GATEWAY-CERT';
-          this.rdpCertificateError =
-            'Gateway 证书已过期、尚未生效或元数据无效，不能发送凭据 [E-RDP-GATEWAY-CERT]';
-        }
+        const gatewayRiskSummary: string = rdpCertificateRiskSummary(
+          rdpCertificateEffectiveRiskFlags(
+            routeResult.gatewayRiskFlags, routeResult.gatewayCertificate.riskFlags));
+        this.rdpCertificateWarning = (gatewayRiskSummary || '已取得 Gateway 证书') +
+          '。已在不发送账号密码的独立 TLS 连接中取得 Gateway 证书；' +
+          '确认后才会使用凭据建立 Gateway 隧道并检查目标 RDP 证书。';
         if (!this.showRdpCertificatePreflight) {
           this.openSheetSafely((): void => {
             this.openRemoteHostSheet(REMOTE_HOST_SHEET_RDP_CERTIFICATE, (): void => {
@@ -3987,26 +6429,46 @@ struct HostListPage {
         return;
       }
       if (!routeResult.ok || !info.ok || info.fingerprintSha256.length === 0) {
-        if (!this.rdpCertificateUsesRouteProbe(host) &&
-          shouldFallbackToNativeRdpConnectionAfterResolverFailure(
-          info.errorCode,
-          host.rdpCertificateTrustMode,
-          host.rdpCertificateFingerprintSha256,
-          host.rdpCertificateRouteIdentity,
-          rdpRouteIdentity(host)
-        )) {
-          hilog.warn(0x0001, 'HostList',
-            'RDP certificate probe resolver failed; using saved fingerprint with native connection');
-          this.doRdpCertificateRoute(host);
+        // `requiresUserDecision` is diagnostic metadata from native code, not
+        // an admission control. Only a known transport/configuration failure
+        // may prevent the user from handing the route to real FreeRDP.
+        const advisory: boolean = rdpCertificateRoutePreflightAllowsRealConnection(
+          routeResult.preflightStatus, routeResult.errorCode, routeResult.riskFlags || []);
+        if (!advisory) {
+          this.rdpCertificateInfo = info.ok ? info : null;
+          this.rdpCertificateState = RdpCertificatePreflightState.ERROR;
+          this.rdpCertificateErrorStage = routeResult.stage;
+          this.rdpCertificateErrorCode = routeResult.errorCode;
+          const riskSummary: string = rdpCertificateRiskSummary(routeResult.riskFlags || []);
+          const errorMessage: string = routeResult.errorMessage || info.errorMessage ||
+            'RDP 连接通道无法建立';
+          this.rdpCertificateError = riskSummary.length > 0
+            ? '风险：' + riskSummary + '。' + errorMessage
+            : errorMessage;
+          this.rdpCertificateWarning = rdpPreflightStatusLabel(routeResult.preflightStatus) +
+            '：' + this.rdpCertificateError;
+          if (!this.showRdpCertificatePreflight) {
+            this.openSheetSafely((): void => {
+              this.openRemoteHostSheet(REMOTE_HOST_SHEET_RDP_CERTIFICATE, (): void => {
+                this.showRdpCertificatePreflight = true;
+              });
+            }, true);
+          }
           return;
         }
-        this.rdpCertificateState = RdpCertificatePreflightState.ERROR;
+        // A certificate probe is advisory. Standard RDP Security, an
+        // intermediary reset, or a protocol-compatible probe that cannot
+        // expose a certificate is a risk result, not a user decision made by
+        // the program. The real FreeRDP callback remains authoritative.
+        this.rdpCertificateInfo = info.ok ? info : null;
+        this.rdpCertificateState = RdpCertificatePreflightState.TRUST_FIRST_TIME;
         this.rdpCertificateErrorStage = routeResult.stage;
         this.rdpCertificateErrorCode = routeResult.errorCode;
-        this.rdpCertificateError = !this.rdpCertificateUsesRouteProbe(host) && info.errorCode === -11 ?
-          '当前设备无法解析该 RDP 地址，请检查设备 DNS、VPN 或 TUN；Windows 侧可解析不代表本设备可用。' :
-          (routeResult.errorMessage || info.errorMessage || '无法读取 RDP 主机证书') +
-          (routeResult.errorCode ? ' [' + routeResult.errorCode + ']' : '');
+        const riskSummary: string = rdpCertificateRiskSummary(routeResult.riskFlags || []);
+        const diagnosticMessage: string = riskSummary || routeResult.errorMessage ||
+          info.errorMessage || '无法完整读取 RDP 主机证书';
+        this.rdpCertificateWarning = rdpPreflightStatusLabel(routeResult.preflightStatus) +
+          '：' + diagnosticMessage + ' 最终是否继续由你决定。';
         if (!this.showRdpCertificatePreflight) {
           this.openSheetSafely((): void => {
             this.openRemoteHostSheet(REMOTE_HOST_SHEET_RDP_CERTIFICATE, (): void => {
@@ -4030,7 +6492,11 @@ struct HostListPage {
         flags: info.flags,
         rootTrusted: info.rootTrusted,
         hostMismatch: info.hostMismatch,
-        errorMessage: info.errorMessage
+        errorMessage: info.errorMessage,
+        preflightStatus: routeResult.preflightStatus,
+        riskFlags: rdpCertificateEffectiveRiskFlags(
+          routeResult.targetRiskFlags, info.riskFlags),
+        requiresUserDecision: routeResult.requiresUserDecision
       };
       this.rdpCertificateState = classifyRdpCertificateProbe(probeView, {
         trustMode: host.rdpCertificateTrustMode,
@@ -4056,7 +6522,11 @@ struct HostListPage {
           flags: gatewayInfo.flags,
           rootTrusted: gatewayInfo.rootTrusted,
           hostMismatch: gatewayInfo.hostMismatch,
-          errorMessage: gatewayInfo.errorMessage
+          errorMessage: gatewayInfo.errorMessage,
+          preflightStatus: gatewayInfo.preflightStatus,
+          riskFlags: rdpCertificateEffectiveRiskFlags(
+            routeResult.gatewayRiskFlags, gatewayInfo.riskFlags),
+          requiresUserDecision: routeResult.requiresUserDecision
         }, {
           trustMode: oneTimeGatewayTrust ? RDP_CERTIFICATE_EXPLICIT_TRUST_MODE :
             host.rdpGatewayCertificateTrustMode,
@@ -4077,7 +6547,8 @@ struct HostListPage {
       this.rdpCertificateWarning = rdpCertificateWarningMessage(
         host.host,
         info.rootTrusted,
-        info.hostMismatch
+        info.hostMismatch,
+        rdpCertificateEffectiveRiskFlags(routeResult.targetRiskFlags, info.riskFlags)
       );
       if (gatewayInfo !== null) {
         this.rdpCertificateWarning = this.rdpCertificateWarningForRoute(host, info, gatewayInfo);
@@ -4101,13 +6572,57 @@ struct HostListPage {
         return;
       }
       const elapsed: number = Date.now() - startedAt;
-      this.rdpCertificateState = RdpCertificatePreflightState.ERROR;
-      this.rdpCertificateErrorStage = 'endpoint';
-      this.rdpCertificateErrorCode = 'E-RDP-PREFLIGHT-EXCEPTION';
-      this.rdpCertificateError = '探测 RDP 证书异常: ' + (e instanceof Error ? e.message : JSON.stringify(e));
+      const routeMode: string = this.rdpCertificateRouteMode(host);
+      const gatewayRoute: boolean = routeMode === 'microsoft_rd_gateway';
+      const exceptionMessage: string = e instanceof Error ? e.message : JSON.stringify(e);
+      const exceptionRiskFlags: string[] = gatewayRoute
+        ? ['GATEWAY_CERTIFICATE_RISK', 'TARGET_CERTIFICATE_RISK']
+        : ['TARGET_CERTIFICATE_RISK'];
+      const emptyRecord = (stage: string, endpointHost: string, endpointPort: number,
+        serverName: string): RdpCertificateRecord => ({
+        present: false, rootTrusted: false, hostMismatch: false, flags: 0,
+        host: endpointHost, port: endpointPort, stage, serverName,
+        commonName: '', subject: '', issuer: '', fingerprintSha256: '',
+        notBeforeMs: 0, notAfterMs: 0,
+        riskFlags: ['CERTIFICATE_METADATA_UNAVAILABLE']
+      });
+      const advisoryResult: RdpPreflightResult = {
+        ok: false,
+        preflightStatus: 'unavailable',
+        riskFlags: exceptionRiskFlags,
+        gatewayRiskFlags: gatewayRoute ? ['GATEWAY_CERTIFICATE_RISK'] : [],
+        targetRiskFlags: ['TARGET_CERTIFICATE_RISK'],
+        endpointMode: routeMode,
+        routeIdentity: rdpRouteIdentity(host),
+        generation,
+        requestId: host.id + ':' + generation.toString(),
+        stage: gatewayRoute ? 'gateway' : 'target',
+        errorCode: 'E-RDP-PREFLIGHT-EXCEPTION',
+        errorMessage: 'RDP 证书预检不可用：' + exceptionMessage,
+        gatewayTransportRequested: host.rdpGatewayTransport || 'auto',
+        gatewayTransportNegotiated: 'unknown',
+        gatewayTransportSelected: host.rdpGatewayTransport || 'auto',
+        requiresGatewayAuth: false,
+        requiresUserDecision: true,
+        gatewayCertificate: emptyRecord('gateway', host.gatewayHost,
+          host.gatewayPort > 0 ? host.gatewayPort : 443,
+          host.rdpGatewayServerName || host.gatewayHost),
+        targetCertificate: emptyRecord('target', host.host, host.port,
+          host.customHostname || host.host)
+      };
+      this.rdpCertificateRouteResult = advisoryResult;
+      this.rdpCertificateInfo = null;
+      this.rdpGatewayCertificateInfo = null;
+      this.rdpCertificateState = RdpCertificatePreflightState.TRUST_FIRST_TIME;
+      this.rdpCertificateErrorStage = advisoryResult.stage;
+      this.rdpCertificateErrorCode = advisoryResult.errorCode;
+      this.rdpCertificateError = advisoryResult.errorMessage;
+      this.rdpCertificateWarning = rdpPreflightStatusLabel(advisoryResult.preflightStatus) +
+        '：' + rdpCertificateRiskSummary(advisoryResult.riskFlags) +
+        '。最终是否继续由你决定。';
       hilog.error(0x0001, 'HostList',
         'RDP certificate probe exception host=' + maskHost(host.host) + ':' + host.port.toString() +
-          ' elapsedMs=' + elapsed.toString() + ' err=' + this.rdpCertificateError);
+          ' elapsedMs=' + elapsed.toString() + ' err=' + exceptionMessage);
       if (!this.showRdpCertificatePreflight) {
         this.openSheetSafely((): void => {
           this.openRemoteHostSheet(REMOTE_HOST_SHEET_RDP_CERTIFICATE, (): void => {
@@ -4171,12 +6686,17 @@ struct HostListPage {
     }
     const gateway: RdpCertificateInfo = this.rdpCertificateInfoFromRecord(
       result.gatewayCertificate);
-    if (rdpCertificateValidityState(gateway.notBeforeMs, gateway.notAfterMs) !== 'valid') {
-      this.rdpCertificateState = RdpCertificatePreflightState.ERROR;
-      this.rdpCertificateErrorStage = 'gateway';
-      this.rdpCertificateErrorCode = 'E-RDP-GATEWAY-CERT';
-      this.rdpCertificateError =
-        'Gateway 证书当前无效，不能发送凭据 [E-RDP-GATEWAY-CERT]';
+    const gatewayRiskFlags: string[] = rdpCertificateEffectiveRiskFlags(
+      result.gatewayRiskFlags, gateway.riskFlags);
+    const gatewayTimeAnomaly: boolean = gatewayRiskFlags.indexOf(
+      'CERTIFICATE_TIME_INVALID') >= 0;
+    const gatewayMetadataUnavailable: boolean = gatewayRiskFlags.indexOf(
+      'CERTIFICATE_METADATA_UNAVAILABLE') >= 0;
+    const gatewayNeedsOneTimeDiagnosticAllowance: boolean =
+      gatewayTimeAnomaly || gatewayMetadataUnavailable;
+    if (shouldPersistRdpCertificateTrust(decision) && gateway.fingerprintSha256.trim() === '') {
+      this.rdpCertificateWarning =
+        '预检未取得可保存的 Gateway 证书；请选择“确认并检查目标”一次，或返回修改配置。';
       return;
     }
 
@@ -4195,22 +6715,36 @@ struct HostListPage {
       updated.rdpGatewayCertificateAllowUntrustedRoot = !gateway.rootTrusted;
       updated.rdpGatewayCertificateAllowHostMismatch = gateway.hostMismatch;
       if (!this.srv.updateHost(updated)) {
-        this.rdpCertificateState = RdpCertificatePreflightState.ERROR;
-        this.rdpCertificateErrorStage = 'gateway';
-        this.rdpCertificateErrorCode = 'E-RDP-CERT-PERSIST';
-        this.rdpCertificateError =
-          '无法保存 Gateway 证书信任，已停止发送凭据 [E-RDP-CERT-PERSIST]';
+        // Persistence is not a transport failure. Keep the observed risk and
+        // let the user explicitly fall back to a one-time connection.
+        this.rdpCertificateState = RdpCertificatePreflightState.TRUST_FIRST_TIME;
+        this.rdpCertificateErrorStage = '';
+        this.rdpCertificateErrorCode = '';
+        this.rdpCertificateError = '';
+        this.rdpCertificateWarning =
+          '无法保存 Gateway 证书信任；风险仍保留。可选择继续连接一次，或返回修改配置。';
         return;
       }
       probeHost = updated;
-      this.rdpGatewayPreflightOneTimeFingerprint = '';
-      this.rdpGatewayPreflightOneTimeAllowUntrustedRoot = false;
-      this.rdpGatewayPreflightOneTimeAllowHostMismatch = false;
-      this.rdpGatewayPreflightOneTimeRouteIdentity = '';
+      // Persist the observed pin, but keep the time/metadata exception scoped
+      // to this probe and real connection. A later connection shows the risk
+      // again instead of silently accepting it.
+      this.rdpGatewayPreflightOneTimeFingerprint = gatewayNeedsOneTimeDiagnosticAllowance ?
+        gateway.fingerprintSha256 : '';
+      this.rdpGatewayPreflightOneTimeAllowUntrustedRoot =
+        gatewayNeedsOneTimeDiagnosticAllowance && !gateway.rootTrusted;
+      this.rdpGatewayPreflightOneTimeAllowHostMismatch =
+        gatewayNeedsOneTimeDiagnosticAllowance && gateway.hostMismatch;
+      this.rdpGatewayPreflightOneTimeAllowTimeAnomaly = gatewayNeedsOneTimeDiagnosticAllowance;
+      this.rdpGatewayPreflightOneTimeRouteIdentity = gatewayNeedsOneTimeDiagnosticAllowance ?
+        result.routeIdentity : '';
     } else {
       this.rdpGatewayPreflightOneTimeFingerprint = gateway.fingerprintSha256;
       this.rdpGatewayPreflightOneTimeAllowUntrustedRoot = !gateway.rootTrusted;
       this.rdpGatewayPreflightOneTimeAllowHostMismatch = gateway.hostMismatch;
+      this.rdpGatewayPreflightOneTimeAllowTimeAnomaly =
+        gatewayRiskFlags.indexOf('CERTIFICATE_TIME_INVALID') >= 0 ||
+        gatewayRiskFlags.indexOf('CERTIFICATE_METADATA_UNAVAILABLE') >= 0;
       this.rdpGatewayPreflightOneTimeRouteIdentity = result.routeIdentity;
     }
 
@@ -4234,9 +6768,15 @@ struct HostListPage {
         host, result, RdpCertificatePreflightDecision.CONTINUE_ONCE);
       return;
     }
-    if (!this.rdpCertificateInfo) { return; }
     if (!this.rdpCertificateResultMatchesLiveRoute(host, result)) {
       this.rejectStaleRdpCertificateResult();
+      return;
+    }
+    if (!this.rdpCertificateInfo) {
+      // Continue without a one-time pin.  The real FreeRDP certificate
+      // callback remains authoritative and can present a fresh risk to the
+      // user when the advisory probe could not observe a certificate.
+      this.doRdpCertificateRoute(host, result, true);
       return;
     }
     const routed: RemoteHost = this.applyRdpCertificateDecisionToHost(
@@ -4244,7 +6784,7 @@ struct HostListPage {
       result,
       RdpCertificatePreflightDecision.CONTINUE_ONCE
     );
-    this.doRdpCertificateRoute(routed, result);
+    this.doRdpCertificateRoute(routed, result, true);
   }
 
   private doRdpCertificateTrust(host: RemoteHost): void {
@@ -4255,7 +6795,10 @@ struct HostListPage {
         host, result, RdpCertificatePreflightDecision.TRUST);
       return;
     }
-    if (!this.rdpCertificateInfo) { return; }
+    if (!this.rdpCertificateInfo || this.rdpCertificateInfo.fingerprintSha256.trim() === '') {
+      this.rdpCertificateWarning = '预检未取得可保存的证书，不能保存未知证书；请选择“继续连接”一次。';
+      return;
+    }
     if (!this.rdpCertificateResultMatchesLiveRoute(host, result)) {
       this.rejectStaleRdpCertificateResult();
       return;
@@ -4266,38 +6809,83 @@ struct HostListPage {
       RdpCertificatePreflightDecision.TRUST
     );
     if (!this.srv.updateHost(updated)) {
-      this.rdpCertificateState = RdpCertificatePreflightState.ERROR;
-      this.rdpCertificateErrorStage = result.endpointMode === 'microsoft_rd_gateway' ?
-        'gateway' : 'target';
-      this.rdpCertificateErrorCode = 'E-RDP-CERT-PERSIST';
-      this.rdpCertificateError =
-        '无法保存 RDP 证书信任，已停止连接 [E-RDP-CERT-PERSIST]';
+      // Saving a pin can fail independently of connection viability. Leave
+      // the user at the decision point rather than converting it into a
+      // preflight veto.
+      this.rdpCertificateState = RdpCertificatePreflightState.TRUST_FIRST_TIME;
+      this.rdpCertificateErrorStage = '';
+      this.rdpCertificateErrorCode = '';
+      this.rdpCertificateError = '';
+      this.rdpCertificateWarning =
+        '无法保存 RDP 证书信任；风险仍保留。可选择继续连接一次，或返回修改配置。';
       return;
     }
     this.doRdpCertificateRoute(updated);
   }
 
-  private doRdpCertificateRoute(host: RemoteHost, oneTimeResult?: RdpPreflightResult): void {
+  private doRdpCertificateRoute(host: RemoteHost, oneTimeResult?: RdpPreflightResult,
+    userApprovedAdvisory: boolean = false): void {
     if (this.rdpCertificateClosing) {
       return;
     }
-    if (oneTimeResult && !this.rdpCertificateResultMatchesLiveRoute(host, oneTimeResult)) {
+    const diagnosticResult: RdpPreflightResult | null = oneTimeResult ||
+      this.rdpCertificateRouteResult;
+    if (diagnosticResult && !this.rdpCertificateResultMatchesLiveRoute(host, diagnosticResult)) {
       this.rejectStaleRdpCertificateResult();
       return;
     }
     const params: Record<string, Object> = {};
     params['hostId'] = host.id;
-    if (oneTimeResult) {
-      const target = oneTimeResult.targetCertificate;
-      params['rdpCertificateOneTimeFingerprintSha256'] = target.fingerprintSha256;
-      params['rdpCertificateOneTimeAllowUntrustedRoot'] = !target.rootTrusted;
-      params['rdpCertificateOneTimeAllowHostMismatch'] = target.hostMismatch;
-      params['rdpCertificateOneTimeRouteIdentity'] = oneTimeResult.routeIdentity;
-      if (oneTimeResult.gatewayCertificate.present) {
-        const gateway = oneTimeResult.gatewayCertificate;
+    if (diagnosticResult) {
+      const target = diagnosticResult.targetCertificate;
+      const gateway = diagnosticResult.gatewayCertificate;
+      const targetRiskFlags: string[] = rdpCertificateEffectiveRiskFlags(
+        diagnosticResult.targetRiskFlags, target.riskFlags);
+      const gatewayRiskFlags: string[] = rdpCertificateEffectiveRiskFlags(
+        diagnosticResult.gatewayRiskFlags, gateway.riskFlags);
+      const preflightAllowsRealConnection: boolean =
+        rdpCertificateRoutePreflightAllowsRealConnection(
+          diagnosticResult.preflightStatus, diagnosticResult.errorCode,
+          diagnosticResult.riskFlags || []);
+      params['rdpCertificateOneTimeRouteIdentity'] = diagnosticResult.routeIdentity;
+      params['rdpCertificatePreflightStatus'] = diagnosticResult.preflightStatus;
+      params['rdpCertificatePreflightRiskFlags'] = diagnosticResult.riskFlags;
+      params['rdpGatewayCertificatePreflightRiskFlags'] = diagnosticResult.gatewayRiskFlags;
+      const standardSecurityRisk: boolean =
+        targetRiskFlags.indexOf(
+          'STANDARD_RDP_SECURITY') >= 0;
+      // A diagnostic risk must not enable Standard RDP Security by itself.
+      // Only the explicit Continue Once action can set this transient flag.
+      params['rdpAllowStandardSecurityOnce'] = shouldEnableStandardRdpSecurityOnce(
+        userApprovedAdvisory, targetRiskFlags.length > 0
+          ? targetRiskFlags : diagnosticResult.riskFlags);
+      if (target.present && target.fingerprintSha256.length > 0) {
+        params['rdpCertificateOneTimeFingerprintSha256'] = target.fingerprintSha256;
+        params['rdpCertificateOneTimeAllowUntrustedRoot'] = !target.rootTrusted;
+        params['rdpCertificateOneTimeAllowHostMismatch'] = target.hostMismatch;
+        params['rdpCertificateAllowTimeAnomalyOnce'] =
+          targetRiskFlags.indexOf('CERTIFICATE_TIME_INVALID') >= 0 ||
+          targetRiskFlags.indexOf('CERTIFICATE_METADATA_UNAVAILABLE') >= 0;
+        params['rdpCertificateAllowUnpinnedOnce'] = userApprovedAdvisory &&
+          targetRiskFlags.indexOf(
+            'CERTIFICATE_METADATA_UNAVAILABLE') >= 0;
+      } else if (userApprovedAdvisory && preflightAllowsRealConnection &&
+        !standardSecurityRisk) {
+        params['rdpCertificateAllowUnpinnedOnce'] = true;
+      }
+      if (gateway.present && gateway.fingerprintSha256.length > 0) {
         params['rdpGatewayCertificateOneTimeFingerprintSha256'] = gateway.fingerprintSha256;
         params['rdpGatewayCertificateOneTimeAllowUntrustedRoot'] = !gateway.rootTrusted;
         params['rdpGatewayCertificateOneTimeAllowHostMismatch'] = gateway.hostMismatch;
+        params['rdpGatewayCertificateAllowTimeAnomalyOnce'] =
+          gatewayRiskFlags.indexOf('CERTIFICATE_TIME_INVALID') >= 0 ||
+          gatewayRiskFlags.indexOf('CERTIFICATE_METADATA_UNAVAILABLE') >= 0;
+        params['rdpGatewayCertificateAllowUnpinnedOnce'] = userApprovedAdvisory &&
+          gatewayRiskFlags.indexOf(
+            'CERTIFICATE_METADATA_UNAVAILABLE') >= 0;
+      } else if (userApprovedAdvisory && preflightAllowsRealConnection &&
+        diagnosticResult.endpointMode === 'microsoft_rd_gateway') {
+        params['rdpGatewayCertificateAllowUnpinnedOnce'] = true;
       }
     }
     if (shouldRouteRdpCertificateAfterSheetDisappear(this.showRdpCertificatePreflight)) {
@@ -4314,7 +6902,7 @@ struct HostListPage {
     this.rdpCertificateHostId = '';
     this.releaseConnectionAttempt(host.id);
     setTimeout((): void => {
-      router.pushUrl({ url: 'pages/RemoteDesktop', params: params });
+      this.openSessionDestination('pages/RemoteDesktop', params, 'rdp_preflight_complete');
     }, rdpCertificateRouteDelayMsAfterSheetClose());
   }
 
@@ -4548,6 +7136,12 @@ struct HostListPage {
     }
     const hostId: string = this.vncCertificateClosingHostId.length > 0
       ? this.vncCertificateClosingHostId : this.vncCertificateHostId;
+    const vncHost: VncHostView | null = this.vncHosts.find(this.vncCertificateHostId);
+    if (vncHost !== null) {
+      VncSessionCredentialHandoff.getInstance().clear(vncHost.userId, vncHost.id);
+      this.vncCertificateHandoff.clear(vncHost.userId, 'vnc-cert:' + vncHost.id);
+      this.vncPlaintextHandoff.clear(vncHost.userId, 'vnc-cert:' + vncHost.id);
+    }
     this.vncCertificateProbeGeneration = nextVncCertificateProbeGeneration(
       this.vncCertificateProbeGeneration);
     if (this.vncCertificateProbeRequestId > 0) {
@@ -4650,15 +7244,48 @@ struct HostListPage {
     if (vncHostId === '') { this.releaseConnectionAttempt(hostId); return; }
     const params: Record<string, Object> = {};
     params['vncHostId'] = vncHostId;
-    if (tlsHandoff && this.vncCertificateInfo !== null &&
-      isVncSha256Fingerprint(this.vncCertificateInfo.fingerprintSha256) &&
-      !this.stageVncCertificateHandoff(this.vncCertificateInfo.fingerprintSha256)) {
+    const host: VncHostView | null = this.vncHosts.find(vncHostId);
+    const endpoint: VncTlsEndpointResolution | null = this.vncCertificateEndpoint;
+    const scope = AccountSessionCoordinator.getInstance().currentScope();
+    const storeFingerprint: string = this.vncCertificateStoreFingerprint();
+    if (host === null || endpoint === null || !endpoint.ok ||
+      !isVncSha256Fingerprint(endpoint.endpointBindingFingerprint) ||
+      !isVncSha256Fingerprint(storeFingerprint) ||
+      scope.ownerScopeId.trim() !== host.userId.trim() || scope.generation <= 0) {
       this.vncCertificateState = VncCertificatePreflightState.ERROR;
       this.vncCertificateError = 'E-VNC-CERT-HANDOFF';
       return;
     }
+    this.vncCredentialCertificateEndpointBinding = endpoint.endpointBindingFingerprint;
+    this.vncCredentialCertificateOwnerScopeId = scope.ownerScopeId.trim();
+    this.vncCredentialCertificateStoreFingerprint = storeFingerprint;
+    this.vncCredentialCertificateAccountGeneration = scope.generation;
+    if (tlsHandoff) {
+      const fingerprint: string = this.vncCertificateInfo === null ? '' :
+        this.vncCertificateInfo.fingerprintSha256.trim().toLowerCase();
+      if (!isVncSha256Fingerprint(fingerprint)) {
+        this.vncCertificateState = VncCertificatePreflightState.ERROR;
+        this.vncCertificateError = 'E-VNC-CERT-HANDOFF';
+        return;
+      }
+      this.vncCredentialCertificateFingerprint = fingerprint;
+      this.vncCredentialCertificateGeneration = this.vncCertificateProbeGeneration;
+    } else {
+      this.vncCredentialCertificateFingerprint = '';
+      this.vncCredentialCertificateGeneration = this.vncCertificateProbeGeneration;
+    }
     if (tlsHandoff) { params['vncCertificateHandoffGeneration'] = this.vncCertificateProbeGeneration; }
-    if (plaintextConfirmed) { params['vncPlaintextPreflightConfirmed'] = true; }
+    if (plaintextConfirmed) {
+      if (endpoint.tlsRequired || !this.vncPlaintextHandoff.put(
+        host.userId, 'vnc-cert:' + host.id, this.vncCertificateProbeGeneration,
+        endpoint.endpointBindingFingerprint, scope.ownerScopeId.trim(), storeFingerprint,
+        scope.generation)) {
+        this.vncCertificateState = VncCertificatePreflightState.ERROR;
+        this.vncCertificateError = 'E-VNC-PLAINTEXT-HANDOFF';
+        return;
+      }
+      params['vncPlaintextHandoffGeneration'] = this.vncCertificateProbeGeneration;
+    }
     this.vncCertificatePendingRouteParams = params;
     if (this.showRemoteHostSheet && !this.vncCertificateClosing) {
       this.vncCertificateClosing = true;
@@ -4669,10 +7296,11 @@ struct HostListPage {
       this.showRemoteHostSheet = false;
       return;
     }
-    this.releaseConnectionAttempt(hostId);
     const route: Record<string, Object> = params;
     this.vncCertificatePendingRouteParams = null;
-    setTimeout((): void => { router.pushUrl({ url: 'pages/RemoteDesktop', params: route }); }, 0);
+    setTimeout((): void => {
+      this.prepareVncCredentialPreflight(route, hostId);
+    }, 0);
   }
 
   private handleVncCertificatePreflightDisappear(): void {
@@ -4693,17 +7321,289 @@ struct HostListPage {
     this.vncCertificateError = '';
     this.vncCertificateShowDetails = false;
     this.vncCertificateState = VncCertificatePreflightState.IDLE;
-    this.releaseConnectionAttempt(hostId);
     if (route !== null && this.pageActive) {
-      setTimeout((): void => { router.pushUrl({ url: 'pages/RemoteDesktop', params: route }); }, 0);
+      setTimeout((): void => {
+        this.prepareVncCredentialPreflight(route, hostId);
+      }, 0);
       return;
     }
+    this.releaseConnectionAttempt(hostId);
+    this.clearVncCredentialCertificateRoute();
     const nextHostId: string = this.vncCertificatePendingHostId;
     this.vncCertificatePendingHostId = '';
     if (nextHostId !== '') {
       const nextHost: RemoteHost | undefined = this.srv.getHost(nextHostId);
       if (nextHost !== undefined) { void this.connectToHost(nextHost); }
     }
+  }
+
+  private clearVncCredentialCertificateRoute(): void {
+    this.vncCredentialCertificateFingerprint = '';
+    this.vncCredentialCertificateGeneration = 0;
+    this.vncCredentialCertificateEndpointBinding = '';
+    this.vncCredentialCertificateOwnerScopeId = '';
+    this.vncCredentialCertificateStoreFingerprint = '';
+    this.vncCredentialCertificateAccountGeneration = 0;
+  }
+
+  private refreshVncCertificateHandoffForRoute(host: VncHostView,
+    route: Record<string, Object>): boolean {
+    const scope = AccountSessionCoordinator.getInstance().currentScope();
+    const endpoint: VncTlsEndpointResolution = this.resolveVncCertificateEndpoint(host);
+    if (!endpoint.ok ||
+      endpoint.endpointBindingFingerprint !== this.vncCredentialCertificateEndpointBinding ||
+      scope.ownerScopeId.trim() !== this.vncCredentialCertificateOwnerScopeId ||
+      scope.generation !== this.vncCredentialCertificateAccountGeneration ||
+      this.vncCertificateStoreFingerprint() !== this.vncCredentialCertificateStoreFingerprint) {
+      return false;
+    }
+    if (this.vncCredentialCertificateFingerprint === '') {
+      const plaintextGeneration: number =
+        typeof route['vncPlaintextHandoffGeneration'] === 'number' ?
+          route['vncPlaintextHandoffGeneration'] as number : 0;
+      return !endpoint.tlsRequired && plaintextGeneration > 0 &&
+        plaintextGeneration === this.vncCredentialCertificateGeneration &&
+        this.vncPlaintextHandoff.put(
+          host.userId, 'vnc-cert:' + host.id, this.vncCredentialCertificateGeneration,
+          this.vncCredentialCertificateEndpointBinding,
+          this.vncCredentialCertificateOwnerScopeId,
+          this.vncCredentialCertificateStoreFingerprint,
+          this.vncCredentialCertificateAccountGeneration);
+    }
+    return this.vncCertificateHandoff.put(
+      host.userId, 'vnc-cert:' + host.id, this.vncCredentialCertificateGeneration,
+      this.vncCredentialCertificateEndpointBinding,
+      this.vncCredentialCertificateFingerprint,
+      this.vncCredentialCertificateOwnerScopeId,
+      this.vncCredentialCertificateStoreFingerprint,
+      this.vncCredentialCertificateAccountGeneration);
+  }
+
+  private prepareVncCredentialPreflight(route: Record<string, Object>, routeHostId: string): void {
+    const vncHostId: string = typeof route['vncHostId'] === 'string' ?
+      (route['vncHostId'] as string).trim() : '';
+    const host: VncHostView | null = vncHostId === '' ? null : this.vncHosts.find(vncHostId);
+    if (!this.pageActive || host === null ||
+      host.userId.trim() !== this.vncHosts.currentUserId().trim()) {
+      if (vncHostId !== '') {
+        VncSessionCredentialHandoff.getInstance().clear(
+          this.vncHosts.currentUserId(), vncHostId);
+        this.vncPlaintextHandoff.clear(
+          this.vncHosts.currentUserId(), 'vnc-cert:' + vncHostId);
+      }
+      this.releaseConnectionAttempt(routeHostId);
+      this.clearVncCredentialCertificateRoute();
+      promptAction.showToast({ message: 'VNC 主机或账号状态已变化，连接已停止', duration: 2200 });
+      return;
+    }
+    const endpoint: VncTlsEndpointResolution = this.resolveVncCertificateEndpoint(host);
+    const scope = AccountSessionCoordinator.getInstance().currentScope();
+    if (!endpoint.ok ||
+      endpoint.endpointBindingFingerprint !== this.vncCredentialCertificateEndpointBinding ||
+      scope.ownerScopeId.trim() !== host.userId.trim() ||
+      scope.ownerScopeId.trim() !== this.vncCredentialCertificateOwnerScopeId ||
+      scope.generation !== this.vncCredentialCertificateAccountGeneration ||
+      this.vncCertificateStoreFingerprint() !== this.vncCredentialCertificateStoreFingerprint) {
+      VncSessionCredentialHandoff.getInstance().clear(host.userId, host.id);
+      this.vncPlaintextHandoff.clear(host.userId, 'vnc-cert:' + host.id);
+      this.releaseConnectionAttempt(routeHostId);
+      this.clearVncCredentialCertificateRoute();
+      promptAction.showToast({ message: 'VNC endpoint 或账号状态已变化，连接已停止', duration: 2200 });
+      return;
+    }
+    this.vncCredentialEndpointBinding = this.vncCredentialCertificateEndpointBinding;
+    this.vncCredentialOwnerScopeId = this.vncCredentialCertificateOwnerScopeId;
+    this.vncCredentialAccountGeneration = this.vncCredentialCertificateAccountGeneration;
+    const forcePrompt: boolean = this.vncCredentialRetryHostId === host.id;
+    const replaceSavedPassword: boolean =
+      this.vncCredentialRetryReplaceSavedHostId === host.id;
+    this.vncCredentialRetryHostId = '';
+    this.vncCredentialRetryReplaceSavedHostId = '';
+    const state: VncCredentialPreflightState = this.vncHosts.passwordStateFor(host.id).state;
+    const transientAvailable: boolean = VncSessionCredentialHandoff.getInstance().bind(
+      host.userId, host.id, this.vncCredentialEndpointBinding,
+      this.vncCredentialOwnerScopeId, this.vncCredentialAccountGeneration);
+    if (!vncCredentialPreflightNeedsPrompt(state, transientAvailable, forcePrompt)) {
+      this.routePreparedVncSession(route, routeHostId, host);
+      return;
+    }
+    this.vncCredentialHostId = host.id;
+    this.vncCredentialHostLabel = host.label;
+    this.vncCredentialPassword = '';
+    this.vncCredentialRememberPassword = false;
+    this.vncCredentialNoPassword = false;
+    this.vncCredentialPasswordVisible = false;
+    this.vncCredentialState = state;
+    this.vncCredentialError = vncCredentialPreflightMessage(state, forcePrompt);
+    this.vncCredentialRouteHostId = routeHostId;
+    this.vncCredentialPendingRouteParams = route;
+    this.vncCredentialRouteAfterClose = false;
+    this.vncCredentialClosing = false;
+    this.vncCredentialReplacingFailedPassword = replaceSavedPassword;
+    this.openSheetSafely((): void => {
+      this.openRemoteHostSheet(REMOTE_HOST_SHEET_VNC_CREDENTIAL, (): void => {});
+    }, true);
+  }
+
+  private finishVncCredentialPreflight(password: string, remember: boolean,
+    allowPlaintext: boolean): void {
+    const host: VncHostView | null = this.vncHosts.find(this.vncCredentialHostId);
+    if (host === null || this.vncCredentialPendingRouteParams === null) { return; }
+    if (!this.vncCredentialBindingIsCurrent(host)) {
+      this.vncCredentialError = 'VNC endpoint 或账号状态已变化，请取消后重新预检。';
+      return;
+    }
+    if (remember) {
+      const saved = this.vncHosts.savePassword(host.id, password, true, allowPlaintext);
+      if (!saved.ok) {
+        promptAction.showToast({
+          message: (saved.message || 'VNC 密码保存失败') + '；本次仍使用临时密码连接',
+          duration: 2400
+        });
+      }
+    } else if (this.vncCredentialReplacingFailedPassword) {
+      const removed = this.vncHosts.savePassword(host.id, '', false, false);
+      if (!removed.ok) {
+        promptAction.showToast({
+          message: (removed.message || '旧 VNC 密码清理失败') + '；本次仍使用临时选择连接',
+          duration: 2400
+        });
+      }
+    }
+    if (!VncSessionCredentialHandoff.getInstance().put(
+      host.userId, host.id, password, this.vncCredentialEndpointBinding,
+      this.vncCredentialOwnerScopeId, this.vncCredentialAccountGeneration)) {
+      this.vncCredentialError = 'VNC 一次性凭据交接失败，请重试。';
+      return;
+    }
+    this.vncCredentialPassword = '';
+    this.vncCredentialRouteAfterClose = true;
+    this.vncCredentialClosing = true;
+    this.beginRemoteHostSheetClose(REMOTE_HOST_SHEET_VNC_CREDENTIAL);
+    this.showRemoteHostSheet = false;
+  }
+
+  private confirmVncCredentialPreflight(): void {
+    if (this.vncCredentialNoPassword) {
+      this.finishVncCredentialPreflight('', false, false);
+      return;
+    }
+    if (this.vncCredentialPassword.length === 0) {
+      this.vncCredentialError = '请输入 VNC 密码，或明确选择“无密码连接”。';
+      return;
+    }
+    const crypto: DataCrypto = DataCrypto.getInstance();
+    if (this.vncCredentialRememberPassword && crypto.isSetupComplete() && !crypto.isReady()) {
+      this.vncCredentialError = '应用加密已锁定；请先解锁，或关闭“记住密码”后连接。';
+      return;
+    }
+    if (this.vncCredentialRememberPassword && !crypto.isSetupComplete()) {
+      promptAction.showDialog({
+        title: '确认保存未加密密码',
+        message: '应用加密未启用。记住此密码会以未加密形式保存；也可以关闭后仅本次使用。',
+        buttons: [{ text: '取消', color: this.pal().text2 },
+          { text: '确认保存', color: this.pal().danger }]
+      }).then((dialog: Object): void => {
+        const values: Record<string, number> = dialog as Record<string, number>;
+        if (values['index'] === 1) {
+          this.finishVncCredentialPreflight(this.vncCredentialPassword, true, true);
+        }
+      });
+      return;
+    }
+    this.finishVncCredentialPreflight(
+      this.vncCredentialPassword, this.vncCredentialRememberPassword, false);
+  }
+
+  private useSavedVncCredential(): void {
+    const host: VncHostView | null = this.vncHosts.find(this.vncCredentialHostId);
+    if (host === null || !this.vncCredentialBindingIsCurrent(host)) {
+      this.vncCredentialError = 'VNC endpoint 或账号状态已变化，请取消后重新预检。';
+      return;
+    }
+    if (!this.vncHosts.grantPlaintextPasswordConsent(host.id)) {
+      this.vncCredentialError = '本地确认失败，请重新输入一次性密码。';
+      return;
+    }
+    const loaded = this.vncHosts.passwordStateFor(host.id);
+    if (loaded.state !== 'available') {
+      this.vncCredentialError = '已保存密码不可用，请重新输入一次性密码。';
+      return;
+    }
+    this.finishVncCredentialPreflight(loaded.plaintext, false, false);
+  }
+
+  private vncCredentialBindingIsCurrent(host: VncHostView): boolean {
+    const endpoint: VncTlsEndpointResolution = this.resolveVncCertificateEndpoint(host);
+    const scope = AccountSessionCoordinator.getInstance().currentScope();
+    return endpoint.ok &&
+      endpoint.endpointBindingFingerprint === this.vncCredentialEndpointBinding &&
+      scope.ownerScopeId.trim() === this.vncCredentialOwnerScopeId &&
+      scope.generation === this.vncCredentialAccountGeneration &&
+      this.vncCertificateStoreFingerprint() === this.vncCredentialCertificateStoreFingerprint;
+  }
+
+  private cancelVncCredentialPreflight(closeSheet: boolean = true): void {
+    if (this.vncCredentialClosing) { return; }
+    const host: VncHostView | null = this.vncHosts.find(this.vncCredentialHostId);
+    if (host !== null) {
+      VncSessionCredentialHandoff.getInstance().clear(host.userId, host.id);
+      this.vncCertificateHandoff.clear(host.userId, 'vnc-cert:' + host.id);
+      this.vncPlaintextHandoff.clear(host.userId, 'vnc-cert:' + host.id);
+    }
+    this.vncCredentialRouteAfterClose = false;
+    this.vncCredentialClosing = true;
+    this.beginRemoteHostSheetClose(REMOTE_HOST_SHEET_VNC_CREDENTIAL);
+    if (closeSheet) { this.showRemoteHostSheet = false; }
+  }
+
+  private handleVncCredentialPreflightDisappear(): void {
+    const route: Record<string, Object> | null = this.vncCredentialPendingRouteParams;
+    const routeHostId: string = this.vncCredentialRouteHostId;
+    const host: VncHostView | null = this.vncHosts.find(this.vncCredentialHostId);
+    const shouldRoute: boolean = this.vncCredentialRouteAfterClose && route !== null && host !== null;
+    this.vncCredentialHostId = '';
+    this.vncCredentialHostLabel = '';
+    this.vncCredentialPassword = '';
+    this.vncCredentialRememberPassword = false;
+    this.vncCredentialNoPassword = false;
+    this.vncCredentialPasswordVisible = false;
+    this.vncCredentialState = 'missing';
+    this.vncCredentialError = '';
+    this.vncCredentialRouteHostId = '';
+    this.vncCredentialPendingRouteParams = null;
+    this.vncCredentialRouteAfterClose = false;
+    this.vncCredentialClosing = false;
+    this.vncCredentialReplacingFailedPassword = false;
+    this.vncCredentialEndpointBinding = '';
+    this.vncCredentialOwnerScopeId = '';
+    this.vncCredentialAccountGeneration = 0;
+    this.noteSheetDismissed();
+    if (shouldRoute) {
+      setTimeout((): void => {
+        this.routePreparedVncSession(route as Record<string, Object>, routeHostId,
+          host as VncHostView);
+      }, 0);
+      return;
+    }
+    this.releaseConnectionAttempt(routeHostId);
+    this.clearVncCredentialCertificateRoute();
+  }
+
+  private routePreparedVncSession(route: Record<string, Object>, routeHostId: string,
+    host: VncHostView): void {
+    if (!this.refreshVncCertificateHandoffForRoute(host, route)) {
+      VncSessionCredentialHandoff.getInstance().clear(host.userId, host.id);
+      this.vncCertificateHandoff.clear(host.userId, 'vnc-cert:' + host.id);
+      this.vncPlaintextHandoff.clear(host.userId, 'vnc-cert:' + host.id);
+      this.releaseConnectionAttempt(routeHostId);
+      this.clearVncCredentialCertificateRoute();
+      promptAction.showToast({ message: 'VNC endpoint 已变化，请重新进行证书预检', duration: 2400 });
+      return;
+    }
+    this.releaseConnectionAttempt(routeHostId);
+    this.clearVncCredentialCertificateRoute();
+    this.openSessionDestination('pages/RemoteDesktop', route, 'vnc_preflight_complete');
   }
 
   /** T-210: 打开 SSH 前置校验 Sheet (通过统一 bindSheet) */
@@ -4779,7 +7679,7 @@ struct HostListPage {
     this.sshPreflightError = '';
     if (routeParams !== null) {
       setTimeout((): void => {
-        router.pushUrl({ url: 'pages/SshTerminal', params: routeParams });
+        this.openSessionDestination('pages/SshTerminal', routeParams, 'ssh_preflight_complete');
       }, 0);
       return;
     }
@@ -4941,7 +7841,11 @@ struct HostListPage {
     if (this.sshPreflightUsesJump(host) && !this.sshPreflightJumpHostKeyInfo) { return; }
     const updated: RemoteHost = RemoteHost.fromJSON(host.toJSON());
     this.applySshPreflightTrust(updated, info, this.sshPreflightJumpHostKeyInfo);
-    this.srv.updateHost(updated);
+    if (!this.srv.updateHost(updated)) {
+      this.sshPreflightState = SshPreflightState.ERROR;
+      this.sshPreflightError = 'SSH 指纹验证成功，但信任记录保存失败；连接已停止。';
+      return;
+    }
     this.doSshPreflightCheckPassphrase(updated, generation);
   }
 
@@ -4952,7 +7856,11 @@ struct HostListPage {
     if (this.sshPreflightUsesJump(host) && !this.sshPreflightJumpHostKeyInfo) { return; }
     const updated: RemoteHost = RemoteHost.fromJSON(host.toJSON());
     this.applySshPreflightTrust(updated, info, this.sshPreflightJumpHostKeyInfo);
-    this.srv.updateHost(updated);
+    if (!this.srv.updateHost(updated)) {
+      this.sshPreflightState = SshPreflightState.ERROR;
+      this.sshPreflightError = 'SSH 新指纹验证成功，但信任记录保存失败；连接已停止。';
+      return;
+    }
     this.doSshPreflightCheckPassphrase(updated, generation);
   }
 
@@ -5092,8 +8000,14 @@ struct HostListPage {
         return;
       }
       if (this.sshPreflightProxyPassphraseSaveToHost) {
-        host.sshProxyKeyPassphrase = this.sshPreflightProxyPassphraseInput;
-        this.srv.updateHost(host);
+        const updated: RemoteHost = RemoteHost.fromJSON(host.toJSON());
+        updated.sshProxyKeyPassphrase = this.sshPreflightProxyPassphraseInput;
+        if (!this.srv.updateHost(updated)) {
+          this.sshPreflightState = SshPreflightState.PASSPHRASE_REQUIRED;
+          this.sshPreflightError = '跳板机私钥密码验证成功，但保存失败；连接已停止。';
+          return;
+        }
+        host = updated;
       }
       this.sshPreflightPassphraseScope = 'target';
       this.sshPreflightPassphraseInput = '';
@@ -5129,8 +8043,14 @@ struct HostListPage {
       if (!this.isCurrentSshPreflight(host, generation)) { return; }
       if (result.ok) {
         if (this.sshPreflightPassphraseSaveToHost) {
-          host.sshKeyPassphrase = this.sshPreflightPassphraseInput;
-          this.srv.updateHost(host);
+          const updated: RemoteHost = RemoteHost.fromJSON(host.toJSON());
+          updated.sshKeyPassphrase = this.sshPreflightPassphraseInput;
+          if (!this.srv.updateHost(updated)) {
+            this.sshPreflightState = SshPreflightState.PASSPHRASE_REQUIRED;
+            this.sshPreflightError = '私钥密码验证成功，但保存失败；连接已停止。';
+            return;
+          }
+          host = updated;
         }
         this.doSshPreflightReady(host, generation);
       } else {
@@ -5174,7 +8094,8 @@ struct HostListPage {
 
   private handleHostCardClick(host: RemoteHost): void {
     if (this.hostSelectionMode) {
-      this.toggleHostSelect(host.id, !this.hostSelectedIds.has(host.id));
+      const key: string = remoteHostCardKey(host.id);
+      this.toggleHostSelect(key, !this.hostSelectedIds.has(key));
       return;
     }
     this.connectToHost(host);
@@ -5477,6 +8398,17 @@ struct HostListPage {
     return isVncHostProjection(host) ? vncHostRecordIdFromUiId(host.id) : '';
   }
 
+  private clearPendingVncCredentialForRemoteHost(host: RemoteHost): void {
+    const vncHostId: string = this.vncRecordIdForHost(host);
+    if (vncHostId === '') { return; }
+    const owner: VncHostView | null = this.vncHosts.find(vncHostId);
+    const userId: string = owner === null ? host.userId.trim() : owner.userId.trim();
+    if (userId === '') { return; }
+    VncSessionCredentialHandoff.getInstance().clear(userId, vncHostId);
+    this.vncCertificateHandoff.clear(userId, 'vnc-cert:' + vncHostId);
+    this.vncPlaintextHandoff.clear(userId, 'vnc-cert:' + vncHostId);
+  }
+
   private async toggleLock(host: RemoteHost): Promise<void> {
     const r = await showLockGate(host.label, 'biometric');
     if (!r.ok) {
@@ -5496,26 +8428,32 @@ struct HostListPage {
       promptAction.showToast({ message: nextLocked ? '已锁定' : '已解锁', duration: 1500 });
       return;
     }
-    host.locked = !host.locked;
-    host.lockType = host.locked ? LockType.BIOMETRIC : LockType.NONE;
-    if (!this.srv.updateHost(host)) {
+    const updated: RemoteHost = RemoteHost.fromJSON(host.toJSON());
+    updated.locked = !host.locked;
+    updated.lockType = updated.locked ? LockType.BIOMETRIC : LockType.NONE;
+    if (!this.srv.updateHost(updated)) {
       promptAction.showToast({ message: '保存主机状态失败', duration: 2000 });
       return;
     }
     this.refreshHostSnapshotAfterMutation();
-    promptAction.showToast({ message: host.locked ? '已锁定' : '已解锁', duration: 1500 });
+    promptAction.showToast({ message: updated.locked ? '已锁定' : '已解锁', duration: 1500 });
   }
 
   private prepareRustDeskProPreflight(host: RemoteHost): number {
     this.rustDeskProPreflightGeneration += 1;
     const generation: number = this.rustDeskProPreflightGeneration;
+    const scope = AccountSessionCoordinator.getInstance().currentScope();
+    const draft: RustDeskAuthDraft | null = this.rustDeskAuthDrafts.load(
+      scope.ownerScopeId, scope.generation, host.id);
     this.rustDeskProPreflightHostId = host.id;
     this.rustDeskProAuthMode = host.rustdeskDirectEnabled ? 'password' :
-      (host.rustdeskAuthMode === 'request_approval' ? 'request_approval' : 'password');
-    this.rustDeskProPassword = host.password;
-    this.rustDeskProPasswordMode = host.rustdeskPasswordMode === 1 ? 1 : 0;
+      (draft !== null ? draft.authChoice :
+        (host.rustdeskAuthMode === 'request_approval' ? 'request_approval' : 'password'));
+    this.rustDeskProPassword = draft === null ? host.password : draft.password;
+    this.rustDeskProPasswordMode = draft === null ?
+      (host.rustdeskPasswordMode === 1 ? 1 : 0) : draft.passwordMode;
     this.rustDeskProPasswordVisible = false;
-    this.rustDeskProRememberPassword = true;
+    this.rustDeskProRememberPassword = draft === null ? true : draft.rememberPassword;
     this.rustDeskProPreflightError = '';
     this.rustDeskProPreflightState = RustDeskProPreflightState.IDLE;
     this.rustDeskProTwoFactorActive = false;
@@ -5526,7 +8464,34 @@ struct HostListPage {
     this.rustDeskProTwoFactorSubmitting = false;
     this.rustDeskProTwoFactorEntryOptions = [];
     this.rustDeskProTwoFactorSelectedEntryId = '';
+    this.rustDeskProDisconnectIdentity = null;
     return generation;
+  }
+
+  private saveRustDeskProAuthDraft(): void {
+    const hostId: string = this.rustDeskProPreflightHostId.trim();
+    if (hostId === '') { return; }
+    const scope = AccountSessionCoordinator.getInstance().currentScope();
+    this.rustDeskAuthDrafts.save({
+      ownerScopeId: scope.ownerScopeId,
+      accountGeneration: scope.generation,
+      hostId,
+      authChoice: this.rustDeskProAuthMode === 'request_approval' ?
+        'request_approval' : 'password',
+      password: this.rustDeskProPassword,
+      passwordMode: this.rustDeskProPasswordMode === 1 ? 1 : 0,
+      rememberPassword: this.rustDeskProRememberPassword,
+      updatedAt: Date.now()
+    });
+  }
+
+  private clearRustDeskProAuthDraft(hostId: string): void {
+    const scope = AccountSessionCoordinator.getInstance().currentScope();
+    this.rustDeskAuthDrafts.clear(scope.ownerScopeId, scope.generation, hostId);
+    if (this.rustDeskProBackgroundResumeHostId === hostId) {
+      this.rustDeskProBackgroundResumeHostId = '';
+      this.rustDeskProBackgroundDismissConfirmed = false;
+    }
   }
 
   private openRustDeskProPreflight(host: RemoteHost): void {
@@ -5555,11 +8520,72 @@ struct HostListPage {
     return host !== undefined && host.rustdeskDirectEnabled;
   }
 
-  private cancelRustDeskProPreflight(closeSheet: boolean = true): void {
+  /**
+   * Retry a RustDesk preflight teardown with the identity captured when that
+   * exact native session was created. Delayed Sheet callbacks must never ask
+   * ExtensionLoader to recapture whichever facade happens to be current.
+   */
+  private submitRustDeskProExactDisconnect(
+    identity: NativeDisconnectIdentity
+  ): void {
+    const retryPort: RemoteSessionExactDisconnectCallbackPort =
+      new RemoteSessionExactDisconnectCallbackPort(
+      (expected: RemoteSessionExactDisconnectIdentity):
+        RemoteSessionExactDisconnectSubmission => {
+        return this.loader.disconnectWithReceipt(expected);
+      },
+      (expected: RemoteSessionExactDisconnectIdentity,
+        submission: RemoteSessionExactDisconnectSubmission): void => {
+        if (!submission.accepted) {
+          if (!submission.retryable) {
+            hilog.warn(0x0001, 'HostList',
+              'ignored stale RustDesk preflight teardown session=' +
+              expected.sessionId.toString());
+          }
+          return;
+        }
+        if (remoteSessionExactDisconnectIdentityEquals(
+          this.rustDeskProDisconnectIdentity, expected)) {
+          this.rustDeskProDisconnectIdentity = null;
+        }
+        if (!submission.terminal && submission.requestId > 0) {
+          void this.loader.waitForTeardownRequest(submission.requestId).then(
+            (completed: boolean): void => {
+              if (!completed) {
+                hilog.error(0x0001, 'HostList',
+                  'RustDesk preflight teardown did not complete request=' +
+                  submission.requestId.toString());
+              }
+            });
+          return;
+        }
+        if (!submission.successful) {
+          hilog.error(0x0001, 'HostList',
+            'RustDesk preflight synchronous teardown failed');
+        }
+      },
+      (task: () => void, delayMs: number): void => {
+        setTimeout(task, delayMs);
+      });
+    submitRemoteSessionExactDisconnectWithRetry(identity, retryPort);
+  }
+
+  private cancelRustDeskProPreflight(closeSheet: boolean = true,
+    preserveDraft: boolean = false): void {
     const hostId: string = this.rustDeskProPreflightHostId;
+    if (preserveDraft) {
+      this.saveRustDeskProAuthDraft();
+      this.rustDeskProBackgroundResumeHostId = hostId;
+    } else {
+      this.rustDeskProBackgroundDismissConfirmed = false;
+      this.clearRustDeskProAuthDraft(hostId);
+    }
+    const disconnectIdentity: NativeDisconnectIdentity | null =
+      this.rustDeskProDisconnectIdentity;
     this.rustDeskProPreflightGeneration += 1;
-    if (this.rustDeskProPreflightState === RustDeskProPreflightState.CONNECTING) {
-      this.loader.disconnect();
+    if (this.rustDeskProPreflightState === RustDeskProPreflightState.CONNECTING &&
+        disconnectIdentity !== null) {
+      this.submitRustDeskProExactDisconnect(disconnectIdentity);
     }
     this.rustDeskProTwoFactorActive = false;
     this.rustDeskProTwoFactorSessionId = -1;
@@ -5614,12 +8640,13 @@ struct HostListPage {
         this.releaseConnectionAttempt(nextHostId);
       }
       setTimeout((): void => {
-        router.pushUrl({ url: 'pages/RemoteDesktop', params: routeParams });
+        this.openSessionDestination('pages/RemoteDesktop', routeParams, 'rustdesk_authenticated');
       }, 0);
       return;
     }
 
     if (nextHostId.length === 0) {
+      this.settleRustDeskProImplicitDismiss();
       return;
     }
     const nextHost: RemoteHost | undefined = this.srv.getHost(nextHostId);
@@ -5925,8 +8952,12 @@ struct HostListPage {
   }
 
   private cancelRustDeskProTwoFactor(): void {
+    const disconnectIdentity: NativeDisconnectIdentity | null =
+      this.rustDeskProDisconnectIdentity;
     this.rustDeskProPreflightGeneration += 1;
-    this.loader.disconnect();
+    if (disconnectIdentity !== null) {
+      this.submitRustDeskProExactDisconnect(disconnectIdentity);
+    }
     this.rustDeskProTwoFactorActive = false;
     this.rustDeskProTwoFactorSessionId = -1;
     this.rustDeskProTwoFactorAutoAttemptSessionId = -1;
@@ -5984,6 +9015,7 @@ struct HostListPage {
     }
     const connectionScope = AccountSessionCoordinator.getInstance().currentScope();
     const host: RemoteHost = RemoteHost.fromJSON(stored.toJSON());
+    copyRustDeskPeerTwoFactorRuntime(stored, host);
     const relay: RustDeskRelayConfig | undefined = this.srv.getAllRelays()
       .find((item: RustDeskRelayConfig): boolean => item.id === host.rustdeskRelayId);
     let controlPlaneProfile: RustDeskControlPlaneProfile =
@@ -6012,6 +9044,7 @@ struct HostListPage {
     this.rustDeskProTwoFactorEntryOptions = [];
     this.rustDeskProTwoFactorSelectedEntryId = '';
     this.rustDeskProPreflightState = RustDeskProPreflightState.CONNECTING;
+    let preflightDisconnectIdentity: NativeDisconnectIdentity | null = null;
     try {
       if (!await this.loader.waitForPendingTeardown(5000)) {
         throw new Error('上一连接尚未完全结束，请稍后重试。');
@@ -6044,13 +9077,22 @@ struct HostListPage {
       }
       const sid: number = this.loader.connect(sessionConfig);
       if (sid <= 0) { throw new Error('无法启动 RustDesk 连接 [E-RUSTDESK-PREFLIGHT-' + Math.abs(sid).toString() + ']'); }
+      preflightDisconnectIdentity = this.loader.captureDisconnectIdentity(sid);
+      if (preflightDisconnectIdentity === null) {
+        throw new Error('RustDesk 会话所有权回执不可用，已停止预鉴权流程。');
+      }
+      this.rustDeskProDisconnectIdentity = preflightDisconnectIdentity;
       const timeoutMs: number = 120000;
       const startedAt: number = Date.now();
       while (Date.now() - startedAt < timeoutMs) {
-        if (generation !== this.rustDeskProPreflightGeneration) { return; }
+        if (generation !== this.rustDeskProPreflightGeneration) {
+          this.submitRustDeskProExactDisconnect(preflightDisconnectIdentity);
+          return;
+        }
         const activeConnectionScope = AccountSessionCoordinator.getInstance().currentScope();
         if (activeConnectionScope.ownerScopeId !== connectionScope.ownerScopeId ||
           activeConnectionScope.generation !== connectionScope.generation) {
+          this.submitRustDeskProExactDisconnect(preflightDisconnectIdentity);
           return;
         }
         const state: number = this.loader.getConnectionState(sid);
@@ -6067,8 +9109,11 @@ struct HostListPage {
           const saved: RemoteHost = RemoteHost.fromJSON(stored.toJSON());
           saved.rustdeskAuthMode = host.rustdeskAuthMode;
           saved.rustdeskPasswordMode = host.rustdeskPasswordMode;
-          if (this.rustDeskProRememberPassword && host.rustdeskAuthMode === 'password') {
-            saved.password = host.password;
+          if (host.rustdeskAuthMode === 'password') {
+            saved.password = this.rustDeskProRememberPassword ? host.password : '';
+          }
+          if (!this.srv.updateHost(saved)) {
+            throw new Error('远端鉴权已通过，但设备密码保存失败；会话已安全停止，请重试。');
           }
           const now: number = Date.now();
           const record: ActiveRemoteSessionRecord = {
@@ -6081,7 +9126,7 @@ struct HostListPage {
           if (!ActiveRemoteSessionRegistry.getInstance().setActive(record)) {
             throw new Error('远程会话账号作用域未登记，无法交接预鉴权会话。');
           }
-          this.srv.updateHost(saved);
+          this.clearRustDeskProAuthDraft(host.id);
           const params: Record<string, Object> = {};
           params['hostId'] = host.id;
           params['rustdeskPreauthenticated'] = true;
@@ -6092,6 +9137,10 @@ struct HostListPage {
           this.lastSheetDismissAtMs = Date.now();
           this.showRustDeskProPreflight = false;
           this.showRemoteHostSheet = false;
+          if (remoteSessionExactDisconnectIdentityEquals(
+            this.rustDeskProDisconnectIdentity, preflightDisconnectIdentity)) {
+            this.rustDeskProDisconnectIdentity = null;
+          }
           return;
         }
         if (state === 5) {
@@ -6110,13 +9159,15 @@ struct HostListPage {
       }
       throw new Error(host.rustdeskAuthMode === 'request_approval' ? '等待远端批准超时，请重新发起。' : '鉴权超时，请检查网络或密码。');
     } catch (err) {
+      if (preflightDisconnectIdentity !== null) {
+        this.submitRustDeskProExactDisconnect(preflightDisconnectIdentity);
+      }
       if (generation !== this.rustDeskProPreflightGeneration) { return; }
       const failureScope = AccountSessionCoordinator.getInstance().currentScope();
       if (failureScope.ownerScopeId !== connectionScope.ownerScopeId ||
         failureScope.generation !== connectionScope.generation) {
         return;
       }
-      this.loader.disconnect();
       this.rustDeskProTwoFactorActive = false;
       this.rustDeskProTwoFactorSessionId = -1;
       this.rustDeskProTwoFactorAutoAttemptSessionId = -1;
@@ -6374,7 +9425,17 @@ struct HostListPage {
     } else {
       removed = this.srv.removeHost(host.id);
     }
-    if (removed) { this.refreshHostSnapshotAfterMutation(); }
+    if (removed) {
+      const key: string = remoteHostCardKey(host.id);
+      this.hostManualOrder = this.hostManualOrder.filter(
+        (stored: string): boolean => stored !== key && stored !== host.id);
+      this.persistHostManualOrder();
+      this.refreshHostSnapshotAfterMutation();
+    } else {
+      promptAction.showToast({
+        message: this.mutationFailureMessage('删除主机失败，请稍后重试'), duration: 2400
+      });
+    }
   }
 
   // PC大屏模式 + 滑动删除共用: 锁验证 + 确认弹窗 + 动画移除
@@ -6401,7 +9462,17 @@ struct HostListPage {
         const removed: boolean = vncHostId !== ''
           ? this.vncHosts.remove(vncHostId)
           : this.srv.removeHost(host.id);
-        if (removed) { this.refreshHostSnapshotAfterMutation(); }
+        if (removed) {
+          const key: string = remoteHostCardKey(host.id);
+          this.hostManualOrder = this.hostManualOrder.filter(
+            (stored: string): boolean => stored !== key && stored !== host.id);
+          this.persistHostManualOrder();
+          this.refreshHostSnapshotAfterMutation();
+        } else {
+          promptAction.showToast({
+            message: this.mutationFailureMessage('删除主机失败，请稍后重试'), duration: 2400
+          });
+        }
       }
     });
   }
@@ -6473,6 +9544,7 @@ struct HostListPage {
       this.accountAvatarUrl = avatarUri;
       this.loginRefreshKey++;
       this.applyCloudUserSettings();
+      this.refreshMoonlightDirectory();
       this.scheduleHostListLoad(false);
       promptAction.showToast({ message: '登录成功', duration: 1500 });
     } catch (_err) {
@@ -6481,35 +9553,49 @@ struct HostListPage {
   }
 
   private saveTotpLock(locked: boolean): void {
+    if (this.persistPreferenceValue('totpLocked', locked)) { return; }
+    this.totpPageLocked = !locked;
+    promptAction.showToast({ message: '2FA 隐私保护设置保存失败，已恢复原状态', duration: 2600 });
+  }
+
+  private persistPreferenceValue(key: string,
+    value: string | number | boolean): boolean {
     try {
-      const prefs = preferences.getPreferencesSync(getContext(this), { name: 'RemoteDesktopAppPrefs' });
-      prefs.putSync('totpLocked', locked);
+      const prefs = preferences.getPreferencesSync(
+        getContext(this), { name: 'RemoteDesktopAppPrefs' });
+      prefs.putSync(key, value);
       prefs.flushSync();
-    } catch (_err) { /* ignore */ }
+      return true;
+    } catch (_error) {
+      return false;
+    }
+  }
+
+  private reportPreferencePersistence(localSaved: boolean,
+    cloudSaved: boolean = true): void {
+    if (localSaved && cloudSaved) { return; }
+    promptAction.showToast({
+      message: localSaved ?
+        '设置已保存在本机，但云同步失败，请稍后重试' :
+        '设置未能写入本机，当前仅在本次运行中生效',
+      duration: 2600
+    });
   }
 
   private persistRustDeskNumberPref(key: string, value: number): void {
     AppStorage.setOrCreate(key, value);
-    try {
-      const prefs = preferences.getPreferencesSync(getContext(this), { name: 'RemoteDesktopAppPrefs' });
-      prefs.putSync(key, value);
-      prefs.flushSync();
-    } catch (_e) { /* ignore */ }
-    if (cloudUserSettingIsSyncable(key)) {
+    const localSaved: boolean = this.persistPreferenceValue(key, value);
+    const cloudSaved: boolean = !cloudUserSettingIsSyncable(key) ||
       CloudStore.getInstance().upsertUserSetting(key, value);
-    }
+    this.reportPreferencePersistence(localSaved, cloudSaved);
   }
 
   private persistRustDeskBooleanPref(key: string, value: boolean): void {
     AppStorage.setOrCreate(key, value);
-    try {
-      const prefs = preferences.getPreferencesSync(getContext(this), { name: 'RemoteDesktopAppPrefs' });
-      prefs.putSync(key, value);
-      prefs.flushSync();
-    } catch (_e) { /* ignore */ }
-    if (cloudUserSettingIsSyncable(key)) {
+    const localSaved: boolean = this.persistPreferenceValue(key, value);
+    const cloudSaved: boolean = !cloudUserSettingIsSyncable(key) ||
       CloudStore.getInstance().upsertUserSetting(key, value);
-    }
+    this.reportPreferencePersistence(localSaved, cloudSaved);
   }
 
   /** RustDesk diagnostics are device-local UI preferences; never cloud-sync them. */
@@ -6520,24 +9606,16 @@ struct HostListPage {
   /** Device-local preference; layout choices do not enter cloud host settings. */
   private persistLocalBooleanPref(key: string, value: boolean): void {
     AppStorage.setOrCreate(key, value);
-    try {
-      const prefs = preferences.getPreferencesSync(getContext(this), { name: 'RemoteDesktopAppPrefs' });
-      prefs.putSync(key, value);
-      prefs.flushSync();
-    } catch (_e) { /* best effort: AppStorage remains available for this process */ }
+    this.reportPreferencePersistence(this.persistPreferenceValue(key, value));
   }
 
   /** 通用设置持久化 — 同时写 AppStorage + Preferences, 杀后台不丢失 */
   private persistPref(key: string, value: string | number | boolean): void {
     AppStorage.setOrCreate(key, value);
-    try {
-      const prefs = preferences.getPreferencesSync(getContext(this), { name: 'RemoteDesktopAppPrefs' });
-      prefs.putSync(key, value);
-      prefs.flushSync();
-    } catch (_e) { /* ignore */ }
-    if (cloudUserSettingIsSyncable(key)) {
+    const localSaved: boolean = this.persistPreferenceValue(key, value);
+    const cloudSaved: boolean = !cloudUserSettingIsSyncable(key) ||
       CloudStore.getInstance().upsertUserSetting(key, value);
-    }
+    this.reportPreferencePersistence(localSaved, cloudSaved);
   }
 
   /** 初始云端恢复完成后覆盖本地的可同步偏好；账号/锁定状态不会进入此路径。 */
@@ -6592,6 +9670,7 @@ struct HostListPage {
     this.persistRustDeskNumberPref('rustdeskDirectPort', this.rustdeskDirectPort);
     if (this.rustdeskDirectPort === previousPort) { return; }
     const hosts: RemoteHost[] = this.srv.getAllHosts();
+    let failed: number = 0;
     for (let i: number = 0; i < hosts.length; i++) {
       const host: RemoteHost = hosts[i];
       if (!shouldAdoptRustDeskDirectPort(host.rustdeskDirectEnabled,
@@ -6599,7 +9678,13 @@ struct HostListPage {
       const next: RemoteHost = RemoteHost.fromJSON(host.toJSON());
       next.rustdeskDirectPort = this.rustdeskDirectPort;
       next.port = this.rustdeskDirectPort;
-      this.srv.updateHost(next);
+      if (!this.srv.updateHost(next)) { failed++; }
+    }
+    if (failed > 0) {
+      promptAction.showToast({
+        message: failed.toString() + ' 个 RustDesk 主机的直连端口保存失败，请逐项检查',
+        duration: 2800
+      });
     }
   }
 
@@ -6629,6 +9714,59 @@ struct HostListPage {
     AppStorage.setOrCreate('groupedHostCards', this.groupedHostCards);
     this.persistLocalBooleanPref('groupedHostCards', this.groupedHostCards);
     this.updateHostFilter();
+  }
+
+  private saveHostCardSensitiveInfoHidden(on: boolean): void {
+    this.hostCardSensitiveInfoHidden = on;
+    this.persistLocalBooleanPref(HOST_CARD_SENSITIVE_INFO_HIDDEN_KEY, on);
+    // LazyForEach keys include this revision so every visible card immediately
+    // drops or restores its connection summary without reloading host data.
+    this.hostViewRevision += 1;
+  }
+
+  private sessionControlBarVisibility(): RemoteSessionControlBarVisibility {
+    return {
+      rdpHidden: this.sessionControlBarHiddenRdp,
+      rustDeskHidden: this.sessionControlBarHiddenRustDesk,
+      vncHidden: this.sessionControlBarHiddenVnc,
+      moonlightHidden: this.sessionControlBarHiddenMoonlight
+    };
+  }
+
+  private sessionControlBarHidden(protocol: string): boolean {
+    return remoteSessionControlBarHidden(protocol, this.sessionControlBarVisibility());
+  }
+
+  private sessionControlBarProtocolLabel(protocol: string): string {
+    if (protocol === 'rdp') { return 'RDP'; }
+    if (protocol === 'rustdesk') { return 'RustDesk'; }
+    if (protocol === 'vnc') { return 'VNC'; }
+    return 'Moonlight';
+  }
+
+  private setSessionControlBarHidden(protocol: string, hidden: boolean): void {
+    if (protocol === 'rdp') {
+      this.sessionControlBarHiddenRdp = hidden;
+      this.persistLocalBooleanPref(REMOTE_SESSION_CONTROL_BAR_HIDDEN_RDP_KEY, hidden);
+    } else if (protocol === 'rustdesk') {
+      this.sessionControlBarHiddenRustDesk = hidden;
+      this.persistLocalBooleanPref(REMOTE_SESSION_CONTROL_BAR_HIDDEN_RUSTDESK_KEY, hidden);
+    } else if (protocol === 'vnc') {
+      this.sessionControlBarHiddenVnc = hidden;
+      this.persistLocalBooleanPref(REMOTE_SESSION_CONTROL_BAR_HIDDEN_VNC_KEY, hidden);
+    } else if (protocol === 'moonlight') {
+      this.sessionControlBarHiddenMoonlight = hidden;
+      this.persistLocalBooleanPref(REMOTE_SESSION_CONTROL_BAR_HIDDEN_MOONLIGHT_KEY, hidden);
+    }
+  }
+
+  private saveSessionControlBarHidden(protocol: string, on: boolean): void {
+    const label: string = this.sessionControlBarProtocolLabel(protocol);
+    this.setSessionControlBarHidden(protocol, on);
+    promptAction.showToast({
+      message: label + (on ? ' 会话控制栏已隐藏' : ' 会话控制栏已恢复'),
+      duration: 1400
+    });
   }
 
   private saveRustDeskPresenceDetection(on: boolean): void {
@@ -6663,23 +9801,182 @@ struct HostListPage {
     });
   }
 
+  private startRdpLanScan(port: number): void {
+    if (this.rdpLanScanning) { return; }
+    this.rdpLanScanResults = [];
+    this.rdpLanStatusText = '正在检查当前局域网和 RDP 端口…';
+    this.rdpLanScanning = true;
+    void this.rdpLanDiscovery.startScan(port,
+      async (address: string, candidatePort: number): Promise<RdpLanIdentityProbeResult> => {
+        const info: RdpCertificateInfo = await this.loader.probeRdpCertificateAsync(
+          address, candidatePort, address);
+        return {
+          recognized: rdpLanProbeRecognized(info.preflightStatus, info.errorCode),
+          fingerprintSha256: info.fingerprintSha256,
+          commonName: info.commonName
+        };
+      }, (host: DiscoveredRdpHost): void => {
+        this.rdpLanScanResults = this.rdpLanScanResults.concat([host]);
+      }).then((hosts: DiscoveredRdpHost[]): void => {
+        this.rdpLanScanResults = hosts;
+        this.rdpLanScanning = false;
+        this.rdpLanStatusText = this.rdpLanScanStatusMessage(
+          this.rdpLanDiscovery.getLastScanStatus(), hosts.length);
+      }).catch((_err: Error): void => {
+        this.rdpLanScanning = false;
+        this.rdpLanStatusText = '搜索失败，请检查网络权限后重试';
+      });
+  }
+
+  private rdpLanScanStatusMessage(status: RdpLanScanStatus, count: number): string {
+    if (status === 'completed') { return '已发现 ' + count.toString() + ' 台可用 RDP 主机'; }
+    if (status === 'no_private_network') { return '当前网络没有可扫描的私有 IPv4 地址'; }
+    if (status === 'network_error') { return '无法读取当前网络信息，请检查网络权限'; }
+    if (status === 'no_open_port') { return '当前子网未发现开放此端口的主机'; }
+    if (status === 'preflight_rejected') { return '发现开放端口，但未通过 RDP 证书预检'; }
+    if (status === 'invalid_port') { return '扫描端口无效，请填写 1-65535'; }
+    return status === 'cancelled' ? '搜索已取消' : '';
+  }
+
+  private async refreshDynamicLanHosts(force: boolean = false, targetHostId: string = ''): Promise<void> {
+    if (!this.srv.isReady()) { return; }
+    if (this.dynamicLanRefreshPromise !== null) {
+      await this.dynamicLanRefreshPromise;
+      // A background sweep may have excluded this still-fresh target before
+      // the user pressed Connect. Re-run the explicit target after the active
+      // work completes so connection never silently proceeds on that basis.
+      if (force && targetHostId !== '' && this.srv.isReady()) {
+        await this.refreshDynamicLanHosts(true, targetHostId);
+      }
+      return;
+    }
+    const now: number = Date.now();
+    if (targetHostId === '' && !force &&
+      now - this.dynamicLanLastSweepAt < DYNAMIC_LAN_SWEEP_COOLDOWN_MS) {
+      return;
+    }
+    const task: Promise<void> = this.performDynamicLanRefresh(force, targetHostId);
+    this.dynamicLanRefreshPromise = task;
+    try {
+      await task;
+    } finally {
+      if (this.dynamicLanRefreshPromise === task) { this.dynamicLanRefreshPromise = null; }
+    }
+  }
+
+  private async performDynamicLanRefresh(force: boolean, targetHostId: string): Promise<void> {
+    const scope = CloudStore.getInstance().currentScope();
+    const now: number = Date.now();
+    const targets: RemoteHost[] = this.srv.getAllHosts().filter((host: RemoteHost): boolean => {
+      if (!lanHostUsesLocalOnlyStorage(host)) { return false; }
+      if (targetHostId !== '' && host.id !== targetHostId) { return false; }
+      return force || lanHostNeedsAddressRefresh(
+        host, now, DYNAMIC_LAN_ADDRESS_FRESHNESS_MS);
+    });
+    if (targets.length === 0) {
+      if (targetHostId === '') { this.dynamicLanLastSweepAt = now; }
+      return;
+    }
+
+    const rustDeskTargets: RemoteHost[] = targets.filter((host: RemoteHost): boolean =>
+      host.protocol === 'rustdesk');
+    if (rustDeskTargets.length > 0) {
+      const peers: DiscoveredRustDeskPeer[] =
+        await this.dynamicRustDeskDiscovery.startScan(3000);
+      for (let i = 0; i < peers.length; i++) {
+        const peer: DiscoveredRustDeskPeer = peers[i];
+        const candidate: LanHostRefreshCandidate = {
+          protocol: 'rustdesk', identity: peer.peerId,
+          host: peer.host, port: peer.port, observedAt: Date.now()
+        };
+        this.applyDynamicLanCandidate(rustDeskTargets, candidate, scope.ownerScopeId,
+          scope.storeIdentity, scope.generation);
+      }
+    }
+
+    const rdpPorts: number[] = [];
+    for (let i = 0; i < targets.length; i++) {
+      if (targets[i].protocol === 'rdp' && rdpPorts.indexOf(targets[i].port) < 0) {
+        rdpPorts.push(targets[i].port);
+      }
+    }
+    for (let i = 0; i < rdpPorts.length; i++) {
+      const port: number = rdpPorts[i];
+      const rdpTargets: RemoteHost[] = targets.filter((host: RemoteHost): boolean =>
+        host.protocol === 'rdp' && host.port === port);
+      const found: DiscoveredRdpHost[] = await this.dynamicRdpDiscovery.startScan(port,
+        async (address: string, candidatePort: number): Promise<RdpLanIdentityProbeResult> => {
+          const info: RdpCertificateInfo = await this.loader.probeRdpCertificateAsync(
+            address, candidatePort, address);
+          return {
+            recognized: rdpLanProbeRecognized(info.preflightStatus, info.errorCode),
+            fingerprintSha256: info.fingerprintSha256,
+            commonName: info.commonName
+          };
+        });
+      for (let j = 0; j < found.length; j++) {
+        if (!found[j].dynamicCapable) { continue; }
+        const candidate: LanHostRefreshCandidate = {
+          protocol: 'rdp', identity: found[j].fingerprintSha256,
+          host: found[j].host, port: found[j].port, observedAt: Date.now()
+        };
+        this.applyDynamicLanCandidate(rdpTargets, candidate, scope.ownerScopeId,
+          scope.storeIdentity, scope.generation);
+      }
+    }
+    if (targetHostId === '') { this.dynamicLanLastSweepAt = Date.now(); }
+  }
+
+  private applyDynamicLanCandidate(targets: RemoteHost[], candidate: LanHostRefreshCandidate,
+    ownerScopeId: string, storeIdentity: string, generation: number): void {
+    const currentScope = CloudStore.getInstance().currentScope();
+    if (currentScope.ownerScopeId !== ownerScopeId || currentScope.storeIdentity !== storeIdentity ||
+      currentScope.generation !== generation) {
+      return;
+    }
+    for (let i = 0; i < targets.length; i++) {
+      if (!lanHostRefreshCandidateMatches(targets[i], candidate)) { continue; }
+      const latest: RemoteHost | undefined = this.srv.getHost(targets[i].id);
+      if (latest === undefined || !lanHostRefreshCandidateMatches(latest, candidate)) { continue; }
+      const next: RemoteHost = RemoteHost.fromJSON(latest.toJSON());
+      next.host = candidate.host;
+      next.port = candidate.port;
+      next.lanLastResolvedAt = candidate.observedAt;
+      if (next.protocol === 'rustdesk') {
+        next.rustdeskDirectHost = candidate.host;
+        next.rustdeskDirectPort = candidate.port;
+      } else if (next.protocol === 'rdp' &&
+        next.rdpCertificateFingerprintSha256.trim().toLowerCase() ===
+          candidate.identity.trim().toLowerCase()) {
+        // Exact fingerprint discovery is the authority for this DHCP move;
+        // retain the prior explicit certificate decision for the new route.
+        next.rdpCertificateRouteIdentity = rdpRouteIdentity(next);
+      }
+      if (this.srv.updateDynamicLanAddress(next)) {
+        hilog.info(0x0001, 'HostList',
+          'dynamic LAN address refreshed hostId=' + hashForLog(next.id));
+      }
+    }
+  }
+
   private addLanPeer(peer: DiscoveredRustDeskPeer): void {
-    // 从发现的设备创建 RustDesk Host: 预填直连配置
-    this.label = peer.deviceName;
-    this.proto = 'rustdesk';
-    this.chn = peer.peerId;
-    this.sheetPwdMode = 1;
-    this.sheetRustdeskDirectEnabled = true;
-    this.sheetRustdeskDirectHost = peer.host;
-    this.sheetRustdeskDirectPort = peer.port;
-    this.sheetRustdeskTargetDevice = 'computer';
-    this.sheetRustdeskAdaptiveOrientation = false;
-    this.sheetPwd = '';
-    this.sheetErr = '';
-    this.selectedRelayId = '';
-    this.selectedAccountId = '';
-    this.selectedRdpCredentialId = '';
-    this.editingHostId = '';
+    // Settings LAN discovery shares the same next-step strategy chooser as
+    // the modern add flow; it must not bypass static/dynamic selection.
+    const draft = new RustDeskHostAddDraft();
+    draft.step = 2;
+    draft.direct = true;
+    draft.useLan = true;
+    draft.selectedLanPeerId = peer.peerId;
+    draft.lanAddressMode = '';
+    draft.label = peer.deviceName;
+    draft.controlId = peer.peerId;
+    draft.directHost = peer.host;
+    draft.directPortText = peer.port.toString();
+    draft.passwordMode = 1;
+    this.rustDeskAddResumeDraft = draft;
+    this.rustDeskAddResumeRevision += 1;
+    this.modernAddProtocol = 'rustdesk';
+    this.addSheetShowsModernPicker = false;
     this.openSheetSafely((): void => { this.showAddSheet = true; });
   }
 
@@ -6726,6 +10023,41 @@ struct HostListPage {
   private saveSshInputMode(mode: number): void {
     this.sshInputMode = this.clampSshInputMode(mode);
     this.persistPref('sshInputMode', this.sshInputMode);
+  }
+
+  private saveSshWorkbenchEnabled(enabled: boolean): void {
+    this.sshWorkbenchEnabled = enabled;
+    this.sshWorkspaceCapabilityStore.save(getContext(this) as common.Context, enabled);
+  }
+
+  private refreshSshNotificationAuthorization(): void {
+    void this.sshNotificationService.isEnabled().then((enabled: boolean): void => {
+      if (!this.pageActive) { return; }
+      this.sshSystemNotificationsEnabled = enabled;
+    });
+  }
+
+  private requestSshNotificationAuthorization(): void {
+    if (this.sshSystemNotificationsEnabled || this.sshNotificationAuthorizationPending) { return; }
+    this.sshNotificationAuthorizationPending = true;
+    void this.requestSshNotificationAuthorizationForeground();
+  }
+
+  private async requestSshNotificationAuthorizationForeground(): Promise<void> {
+    let enabled: boolean = false;
+    try {
+      const context: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
+      enabled = await this.sshNotificationService.ensureEnabled(context);
+    } catch (_err) {
+      enabled = false;
+    }
+    this.sshNotificationAuthorizationPending = false;
+    if (!this.pageActive) { return; }
+    this.sshSystemNotificationsEnabled = enabled;
+    promptAction.showToast({
+      message: enabled ? 'SSH 系统通知已开启' : '系统通知未开启，SSH 提醒保持关闭',
+      duration: enabled ? 1500 : 2200
+    });
   }
 
   private saveSshLineSpacing(value: number): void {
@@ -6885,6 +10217,27 @@ struct HostListPage {
   private saveRdpShowDiagnostics(on: boolean): void {
     this.rdpShowDiagnostics = on;
     this.persistPref('rdpShowDiagnostics', this.rdpShowDiagnostics);
+  }
+
+  private saveRdpTlsWithoutNla(on: boolean): void {
+    if (!on) {
+      this.rdpTlsWithoutNla = false;
+      this.persistPref('rdpTlsWithoutNla', false);
+      return;
+    }
+    promptAction.showDialog({
+      title: '启用 TLS 兼容登录？',
+      message: '仅当被控 Windows 已取消“需要使用网络级别身份验证”时使用。此模式仍验证 TLS 证书，但登录保护弱于 NLA，并且只支持直连和普通密码。',
+      buttons: [
+        { text: '取消', color: this.pal().text2 },
+        { text: '仍然启用', color: this.accentColor }
+      ]
+    }).then((result: Object): void => {
+      const value: Record<string, number> = result as Record<string, number>;
+      if (value['index'] !== 1) { return; }
+      this.rdpTlsWithoutNla = true;
+      this.persistPref('rdpTlsWithoutNla', true);
+    }).catch((_err: Error): void => { });
   }
 
   private saveRdpDriveEnabled(on: boolean): void {
@@ -7050,6 +10403,8 @@ struct HostListPage {
       this.rdpCertificatePanel();
     } else if (this.remoteHostSheetMode === REMOTE_HOST_SHEET_VNC_CERTIFICATE) {
       this.vncCertificatePanel();
+    } else if (this.remoteHostSheetMode === REMOTE_HOST_SHEET_VNC_CREDENTIAL) {
+      this.vncCredentialPanel();
     } else if (this.remoteHostSheetMode === REMOTE_HOST_SHEET_RUSTDESK_PREFLIGHT) {
       this.rustDeskProPreflightPanel();
     } else if (this.remoteHostSheetMode === REMOTE_HOST_SHEET_RUSTDESK_TOTP_BINDING) {
@@ -7058,10 +10413,21 @@ struct HostListPage {
       this.hlPassphraseBuilder();
     } else if (this.remoteHostSheetMode === REMOTE_HOST_SHEET_PUBLIC_KEY) {
       this.sshPublicKeyInstallPanel();
+    } else if (this.remoteHostSheetMode === REMOTE_HOST_SHEET_MOONLIGHT_DETAIL) {
+      this.moonlightHostDetailSheet();
+    } else if (this.remoteHostSheetMode === REMOTE_HOST_SHEET_MOONLIGHT_CATALOG) {
+      this.moonlightCatalogSheet();
+    } else if (this.remoteHostSheetMode === REMOTE_HOST_SHEET_MOONLIGHT_EDIT) {
+      this.moonlightEditSheet();
     }
   }
 
   private handleRemoteHostSheetWillDismiss(action: DismissSheetAction): void {
+    if (this.remoteHostSheetMode === REMOTE_HOST_SHEET_MOONLIGHT_CATALOG &&
+        !this.moonlightCatalogDismissAllowed) {
+      promptAction.showToast({ message: '正在处理 Moonlight 请求，请稍候', duration: 1500 });
+      return;
+    }
     switch (this.remoteHostSheetMode) {
       case REMOTE_HOST_SHEET_SSH_PREFLIGHT:
         this.doSshPreflightCancel(false);
@@ -7072,8 +10438,13 @@ struct HostListPage {
       case REMOTE_HOST_SHEET_VNC_CERTIFICATE:
         this.cancelVncCertificatePreflight(false);
         break;
+      case REMOTE_HOST_SHEET_VNC_CREDENTIAL:
+        this.cancelVncCredentialPreflight(false);
+        break;
       case REMOTE_HOST_SHEET_RUSTDESK_PREFLIGHT:
-        this.cancelRustDeskProPreflight(false);
+        if (!this.rustDeskProPreflightClosing) {
+          this.cancelRustDeskProPreflight(false, true);
+        }
         break;
       case REMOTE_HOST_SHEET_PASSPHRASE:
         this.beginRemoteHostSheetClose(REMOTE_HOST_SHEET_PASSPHRASE);
@@ -7083,6 +10454,15 @@ struct HostListPage {
         break;
       case REMOTE_HOST_SHEET_RUSTDESK_TOTP_BINDING:
         this.closeRustDeskTotpBinding(false);
+        break;
+      case REMOTE_HOST_SHEET_MOONLIGHT_DETAIL:
+        this.beginRemoteHostSheetClose(REMOTE_HOST_SHEET_MOONLIGHT_DETAIL);
+        break;
+      case REMOTE_HOST_SHEET_MOONLIGHT_CATALOG:
+        this.beginRemoteHostSheetClose(REMOTE_HOST_SHEET_MOONLIGHT_CATALOG);
+        break;
+      case REMOTE_HOST_SHEET_MOONLIGHT_EDIT:
+        this.beginRemoteHostSheetClose(REMOTE_HOST_SHEET_MOONLIGHT_EDIT);
         break;
       default:
         return;
@@ -7108,8 +10488,10 @@ struct HostListPage {
         this.doRdpCertificateCancel(false);
       } else if (mode === REMOTE_HOST_SHEET_VNC_CERTIFICATE) {
         this.cancelVncCertificatePreflight(false);
+      } else if (mode === REMOTE_HOST_SHEET_VNC_CREDENTIAL) {
+        this.cancelVncCredentialPreflight(false);
       } else if (mode === REMOTE_HOST_SHEET_RUSTDESK_PREFLIGHT) {
-        this.cancelRustDeskProPreflight(false);
+        this.cancelRustDeskProPreflight(false, true);
       } else if (mode === REMOTE_HOST_SHEET_RUSTDESK_TOTP_BINDING) {
         this.closeRustDeskTotpBinding(false);
       }
@@ -7123,6 +10505,9 @@ struct HostListPage {
         break;
       case REMOTE_HOST_SHEET_VNC_CERTIFICATE:
         this.handleVncCertificatePreflightDisappear();
+        break;
+      case REMOTE_HOST_SHEET_VNC_CREDENTIAL:
+        this.handleVncCredentialPreflightDisappear();
         break;
       case REMOTE_HOST_SHEET_RUSTDESK_PREFLIGHT:
         this.handleRustDeskProPreflightDisappear();
@@ -7139,6 +10524,64 @@ struct HostListPage {
         this.resetSshPublicKeyInstallSheetState();
         this.noteSheetDismissed();
         break;
+      case REMOTE_HOST_SHEET_MOONLIGHT_DETAIL: {
+        const nextCatalogHostId: string = this.pendingMoonlightCatalogHostId;
+        const nextSettingsHostId: string = this.pendingMoonlightSettingsHostId;
+        this.pendingMoonlightCatalogHostId = '';
+        this.pendingMoonlightSettingsHostId = '';
+        this.moonlightSheetHostId = '';
+        this.noteSheetDismissed();
+        if (nextCatalogHostId !== '' && this.pageActive) {
+          setTimeout((): void => {
+            if (this.pageActive) { this.openMoonlightCatalogSheet(nextCatalogHostId); }
+          }, 0);
+        } else if (nextSettingsHostId !== '' && this.pageActive) {
+          setTimeout((): void => {
+            if (this.pageActive) {
+              this.openMoonlightSettingsSheet(nextSettingsHostId, SETTINGS_SHEET_MOONLIGHT_VIDEO);
+            }
+          }, 0);
+        }
+        break;
+      }
+      case REMOTE_HOST_SHEET_MOONLIGHT_CATALOG: {
+        const hostId: string = this.moonlightSheetHostId;
+        const navigation: string = this.pendingMoonlightCatalogNavigation;
+        const launch: MoonlightCatalogLaunchHandoff | null =
+          this.pendingMoonlightCatalogLaunch;
+        this.pendingMoonlightCatalogNavigation = '';
+        this.pendingMoonlightCatalogLaunch = null;
+        this.moonlightCatalogReturnsToDetail = false;
+        this.moonlightCatalogDismissAllowed = true;
+        this.moonlightSheetHostId = '';
+        this.noteSheetDismissed();
+        if (navigation === 'launch' && launch !== null) {
+          setTimeout((): void => { void this.presentMoonlightCatalogLaunch(launch); }, 0);
+        } else if (navigation !== '' && hostId !== '') {
+          setTimeout((): void => {
+            if (!this.pageActive) { return; }
+            if (navigation === 'settings') {
+              this.openMoonlightSettingsSheet(hostId, SETTINGS_SHEET_MOONLIGHT_VIDEO);
+            } else {
+              this.openMoonlightHostSheet(hostId);
+            }
+          }, 0);
+        }
+        break;
+      }
+      case REMOTE_HOST_SHEET_MOONLIGHT_EDIT:
+        this.moonlightSheetHostId = '';
+        this.moonlightEditName = '';
+        this.moonlightEditAddress = '';
+        this.moonlightEditPortText = '';
+        this.moonlightEditHttpsPortText = '';
+        this.moonlightEditHostType = 'sunshine';
+        this.moonlightEditWakeEnabled = false;
+        this.moonlightEditWakeMac = '';
+        this.moonlightEditWakeBroadcast = '';
+        this.moonlightEditError = '';
+        this.noteSheetDismissed();
+        break;
       default:
         break;
     }
@@ -7147,6 +10590,13 @@ struct HostListPage {
     this.remoteHostSheetMode = REMOTE_HOST_SHEET_NONE;
     this.remoteHostSheetClosing = false;
     this.remoteHostSheetClosingMode = REMOTE_HOST_SHEET_NONE;
+  }
+
+  private remoteHostSheetHeight(): SheetSize | string {
+    // Moonlight detail and catalog surfaces are both content-sized. The
+    // catalog component grows with its visible row count and caps itself at
+    // two rows; LARGE leaves a conspicuous white tail for short catalogs.
+    return SheetSize.FIT_CONTENT;
   }
 
   private drainRemoteHostSheetQueue(dismissedMode: number): void {
@@ -7209,7 +10659,7 @@ struct HostListPage {
       // 所有连接/安全弹窗共用一个 bindSheet 宿主。面板内容由 mode 路由，
       // 关闭和路由统一在宿主 onDisappear 后完成，避免多个 native Sheet 同时退场。
       .bindSheet($$this.showRemoteHostSheet, this.remoteHostSheetBuilder(), {
-        height: SheetSize.FIT_CONTENT,
+        height: this.remoteHostSheetHeight(),
         preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
         dragBar: this.breakpoint === 'sm',
         backgroundColor: this.pal().sheetBg,
@@ -7244,13 +10694,13 @@ struct HostListPage {
         showClose: settingsLeafSheetUsesSystemCloseButton(),
         maskColor: 'rgba(0,0,0,0.4)',
         onWillDismiss: (action: DismissSheetAction): void => {
-          this.handleVncSettingsLeafWillDismiss(action);
+          this.handleSettingsLeafWillDismiss(action);
         },
         onWillSpringBackWhenDismiss: (action: SpringBackAction): void => {
           // Only an unsaved VNC editor must stay open while its confirmation
           // dialog is shown. Ordinary settings Sheets skip the default bounce
           // and dismiss with the same single native transition as the FAB.
-          if (this.vncSettingsLeafDirty) {
+          if (this.settingsLeafHasUnsavedChanges()) {
             action.springBack();
           }
         },
@@ -7279,6 +10729,7 @@ struct HostListPage {
                   this.sidebarTab('SSH 终端', protocolIcon('ssh'), 2)
                   this.sidebarTab('VNC 主机', protocolIcon('vnc'), 3)
                 }
+                this.sidebarMoonlightTab()
                 this.sidebarTab('密钥保险库', protocolIcon('key_vault'), 4)
                 this.sidebarTab('2FA 验证器', protocolIcon('totp'), 5)
                 this.sidebarRelayTab('中继服务器', 6)
@@ -7292,7 +10743,7 @@ struct HostListPage {
 
             // 主内容区 (hostContent 使用 updateHostFilter 预过滤的数据源)
             Column() {
-              if (this.curTab <= 3) { this.hostContent() }
+              if (this.curTab <= 3 || this.curTab === DESKTOP_MOONLIGHT_TAB) { this.hostContent() }
               else if (this.curTab === 6) { this.relayContent() }
               else { this.keyVaultContent() }
             }.layoutWeight(1).height('100%')
@@ -7368,14 +10819,16 @@ struct HostListPage {
         .backgroundColor(this.accentColor)
         .onClick(() => {
           if (this.isDesktopDevice && this.breakpoint === 'xl') {
-            // PC 全屏侧边栏: RDP/RustDesk/SSH/密钥/2FA/中继
-            if (this.curTab <= 3) {
+            // PC 全屏侧边栏: 所有主机协议共用同一添加 Sheet 宿主。
+            if (this.curTab <= 3 || this.curTab === DESKTOP_MOONLIGHT_TAB) {
               this.resetForm();
               const nextProto: string = this.activeFilterProto !== '' ? this.activeFilterProto : 'rdp';
               this.switchHostProtocol(nextProto, RemoteHost.getDefaultPort(nextProto));
               const modernPicker: boolean =
+                this.curTab === DESKTOP_MOONLIGHT_TAB ||
                 resolveFabAddStyle(this.fabAddStyle, this.isDesktopDevice) === 'modern';
               this.addSheetShowsModernPicker = modernPicker;
+              if (modernPicker) { this.probeMoonlightCapabilityForPicker(); }
               this.modernAddProtocol = '';
               if (shouldPrepareClassicVncEditor(nextProto, modernPicker)) {
                 this.prepareClassicVncEditor(null);
@@ -7395,6 +10848,7 @@ struct HostListPage {
               this.resetForm();
               this.addSheetShowsModernPicker =
                 resolveFabAddStyle(this.fabAddStyle, this.isDesktopDevice) === 'modern';
+              if (this.addSheetShowsModernPicker) { this.probeMoonlightCapabilityForPicker(); }
               this.modernAddProtocol = '';
               this.openSheetSafely((): void => { this.showAddSheet = true; });
             }
@@ -7423,7 +10877,25 @@ struct HostListPage {
       .translate({ y: (!this.isDesktopDevice && this.curTab === 3 ? 120 : (this.breakpoint === 'sm' ? -120 : -100)) })
       .opacity(!this.pageActive || (!this.isDesktopDevice && this.curTab === 3) ? 0 : 1)
       .animation({ curve: curves.interpolatingSpring(0, 1, 200, 17) })
+
+      if (this.sheetReleaseFenceActive) {
+        // Render last in the Stack so the native Sheet's closing pointer-up
+        // cannot fall through to a host card or FAB. The overlay is invisible
+        // and exists only for SHEET_RELEASE_FENCE_MS.
+        Column()
+          .width('100%').height('100%')
+          .backgroundColor(Color.Transparent)
+          .hitTestBehavior(HitTestMode.Block)
+          .zIndex(1000)
+      }
     }.width('100%').height('100%').backgroundColor(this.pal().bg)
+    .onAreaChange((_oldArea: Area, nextArea: Area): void => {
+      const nextHeight: number = nextArea.height as number;
+      if (Number.isFinite(nextHeight) && nextHeight > 0 &&
+        Math.abs(nextHeight - this.pageViewportHeight) >= 1) {
+        this.pageViewportHeight = nextHeight;
+      }
+    })
     .bindSheet($$this.showSettingsPanel, this.settingsContent(), {
       height: this.breakpoint === 'xl' ? 760 : SheetSize.FIT_CONTENT,
       preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
@@ -7531,6 +11003,29 @@ struct HostListPage {
         this.hostPageTitle = titles[index] || '';
       }
       this.updateHostFilter();
+    })
+  }
+
+  @Builder sidebarMoonlightTab() {
+    Row() {
+      MoonlightBrandIcon({
+        iconSize: 28,
+        tint: this.curTab === DESKTOP_MOONLIGHT_TAB ? this.accentColor : this.pal().text3,
+        accessibilityLabel: 'Moonlight 主机'
+      })
+      Text('Moonlight').fontSize(16).fontWeight(FontWeight.Medium)
+        .fontColor(this.curTab === DESKTOP_MOONLIGHT_TAB ? this.accentColor : this.pal().text3)
+        .fontFamily(this.font()).margin({ left: 14 })
+    }
+    .width('100%').height(56).padding({ left: 24, right: 24 })
+    .borderRadius(12).margin({ left: 12, right: 12, bottom: 4 })
+    .backgroundColor(this.curTab === DESKTOP_MOONLIGHT_TAB ? this.pal().surface : Color.Transparent)
+    .accessibilityText('Moonlight 主机')
+    .onClick((): void => {
+      this.curTab = DESKTOP_MOONLIGHT_TAB;
+      this.hostPageTitle = 'Moonlight 主机';
+      this.searchText = '';
+      this.refreshMoonlightDirectory();
     })
   }
 
@@ -7886,30 +11381,40 @@ struct HostListPage {
     return host.gatewayHost.trim() === '' ? '直连屏幕' : '网关屏幕';
   }
 
+  private protectedHostCardValue(host: RemoteHost, visibleValue: string): string {
+    return hostCardSensitiveValue(shouldHideHostCardSensitiveInfo(
+      this.hostCardSensitiveInfoHidden, host.locked), visibleValue);
+  }
+
   @Builder hostGroupedProtocolDetails(host: RemoteHost) {
     Row() {
       if (host.protocol === 'rustdesk') {
         Text('ID').fontSize(this.breakpoint === 'sm' ? 12 : 13).fontColor(this.pal().text3).width(30)
-        Text(hostIdentifier(host)).fontSize(this.breakpoint === 'sm' ? 15 : 16)
+        Text(this.protectedHostCardValue(host, hostIdentifier(host)))
+          .fontSize(this.breakpoint === 'sm' ? 15 : 16)
           .fontWeight(FontWeight.Medium).fontColor(this.pal().text2).fontFamily(this.font()).layoutWeight(1)
           .textOverflow({ overflow: TextOverflow.Ellipsis }).maxLines(1)
-          .accessibilityText(hostIdentifier(host))
+          .accessibilityText(this.protectedHostCardValue(host, hostIdentifier(host)))
       } else if (host.protocol === 'ssh') {
         Text('SSH').fontSize(11).fontColor(this.pal().text3).width(30)
-        Text((host.username.trim() === '' ? '' : host.username + '@') + host.host + ':' + host.port.toString())
+        Text(this.protectedHostCardValue(host,
+          (host.username.trim() === '' ? '' : host.username + '@') +
+            host.host + ':' + host.port.toString()))
           .fontSize(this.breakpoint === 'sm' ? 12 : 13).fontColor(this.pal().text2)
           .fontFamily(this.font()).layoutWeight(1)
           .textOverflow({ overflow: TextOverflow.Ellipsis }).maxLines(1)
       } else if (host.protocol === 'vnc') {
         Text('VNC').fontSize(11).fontColor(this.pal().text3).width(30)
-        Text(host.gatewayHost.trim() === '' ? host.host + ':' + host.port.toString() :
-          host.host + ':' + host.port.toString() + ' · 网关 ' + host.gatewayHost)
+        Text(this.protectedHostCardValue(host, host.gatewayHost.trim() === '' ?
+          host.host + ':' + host.port.toString() :
+          host.host + ':' + host.port.toString() + ' · 网关 ' + host.gatewayHost))
           .fontSize(this.breakpoint === 'sm' ? 12 : 13).fontColor(this.pal().text2)
           .fontFamily(this.font()).layoutWeight(1)
           .textOverflow({ overflow: TextOverflow.Ellipsis }).maxLines(1)
       } else {
         Text('RDP').fontSize(11).fontColor(this.pal().text3).width(30)
-        Text(host.host + ':' + host.port.toString()).fontSize(this.breakpoint === 'sm' ? 12 : 13)
+        Text(this.protectedHostCardValue(host, host.host + ':' + host.port.toString()))
+          .fontSize(this.breakpoint === 'sm' ? 12 : 13)
           .fontColor(this.pal().text2).fontFamily(this.font()).layoutWeight(1)
           .textOverflow({ overflow: TextOverflow.Ellipsis }).maxLines(1)
       }
@@ -7920,10 +11425,12 @@ struct HostListPage {
     Row() {
       if (this.hostSelectionMode) {
         Checkbox()
-          .select(this.hostSelectedIds.has(host.id)).selectedColor(this.accentColor)
+          .select(this.hostSelectedIds.has(remoteHostCardKey(host.id))).selectedColor(this.accentColor)
           .margin({ right: 7 })
           .monopolizeEvents(true)
-          .onChange((checked: boolean): void => { this.toggleHostSelect(host.id, checked); })
+          .onChange((checked: boolean): void => {
+            this.toggleHostSelect(remoteHostCardKey(host.id), checked);
+          })
       }
       Column() {
         SymbolGlyph(this.hostGroupIconForHost(host)).fontSize(this.breakpoint === 'sm' ? 21 : 23)
@@ -7938,7 +11445,9 @@ struct HostListPage {
       .onClick((): void => { this.handleHostCardClick(host); })
       Column() {
         Row() {
-          Text(host.label === '' ? '未命名主机' : host.label)
+          Text(hostCardDisplayLabel(
+            shouldHideHostCardSensitiveInfo(this.hostCardSensitiveInfoHidden, host.locked),
+            host.protocol, host.label, host.rustdeskProPeerId, host.customHostname))
             .fontSize(this.breakpoint === 'sm' ? 15 : 16)
             .fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())
             .layoutWeight(1).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
@@ -8011,11 +11520,9 @@ struct HostListPage {
     .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
     // Grouped cards intentionally have no swipe actions. Long press remains
     // the explicit entry point for multi-select.
-    .gesture(LongPressGesture().onAction((): void => {
+    .priorityGesture(LongPressGesture({ duration: 450 }).onAction((): void => {
       if (!this.hostSelectionMode) {
-        this.hostSelectionMode = true;
-        this.hostSelectedIds = new Set<string>();
-        this.hostSelectedIds.add(host.id);
+        this.beginHostSelection(remoteHostCardKey(host.id), false);
       }
     }))
   }
@@ -8108,6 +11615,152 @@ struct HostListPage {
     .width('100%').margin({ bottom: 10 })
   }
 
+  private moonlightGroupCatalogCount(): number {
+    const hosts: MoonlightHostLocalView[] = this.visibleMoonlightHosts();
+    let count: number = 0;
+    for (let index: number = 0; index < hosts.length; index++) {
+      count += hosts[index].catalogItems.length;
+    }
+    return count;
+  }
+
+  private toggleMoonlightGroup(): void {
+    animateTo({ duration: 220, curve: Curve.FastOutSlowIn }, (): void => {
+      this.expandedHostGroup = this.expandedHostGroup === 'moonlight' ? '' : 'moonlight';
+    });
+  }
+
+  @Builder moonlightGroupTypeCard() {
+    Column() {
+      Row() {
+        Column() {
+          MoonlightBrandIcon({ iconSize: this.breakpoint === 'sm' ? 20 : 24,
+            tint: this.accentColor, accessibilityLabel: 'Moonlight' })
+        }
+        .width(this.breakpoint === 'sm' ? 38 : 44)
+        .height(this.breakpoint === 'sm' ? 38 : 44)
+        .borderRadius(this.breakpoint === 'sm' ? 19 : 14)
+        .backgroundColor(this.pal().surface)
+        .justifyContent(FlexAlign.Center)
+        Column() {
+          Text('Moonlight').fontSize(this.breakpoint === 'sm' ? 16 : 18)
+            .fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())
+            .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+          Text('Sunshine / GameStream').fontSize(this.breakpoint === 'sm' ? 10 : 11)
+            .fontColor(this.pal().text3).fontFamily(this.font()).margin({ top: 3 })
+            .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+        }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+          .margin({ left: this.breakpoint === 'sm' ? 8 : 10 })
+        SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(this.breakpoint === 'sm' ? 16 : 18)
+          .fontColor([this.pal().text3])
+          .rotate({ angle: this.expandedHostGroup === 'moonlight' ? 90 : 0 })
+          .animation({ duration: 220, curve: Curve.FastOutSlowIn })
+      }.width('100%')
+      Row() {
+        Text(this.visibleMoonlightHosts().length.toString() + ' 台主机')
+          .fontSize(this.breakpoint === 'sm' ? 10 : 11)
+          .fontColor(this.pal().text2).fontFamily(this.font())
+        Blank()
+        Text(this.moonlightGroupCatalogCount().toString() + ' 个应用')
+          .fontSize(this.breakpoint === 'sm' ? 9 : 10)
+          .fontColor(this.pal().text3).fontFamily(this.font()).maxLines(1)
+      }.width('100%').margin({ top: this.breakpoint === 'sm' ? 8 : 10 })
+    }
+    .layoutWeight(1).height(this.hostGroupCardHeight())
+    .padding(this.breakpoint === 'sm' ? 10 : 12)
+    .borderRadius(this.breakpoint === 'sm' ? 16 : 14)
+    .backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
+    .border({ width: this.expandedHostGroup === 'moonlight' ? 1.5 : 0.5,
+      color: this.expandedHostGroup === 'moonlight' ? this.accentColor : this.pal().cardBorder,
+      style: BorderStyle.Solid })
+    .onClick((): void => { this.toggleMoonlightGroup(); })
+  }
+
+  private moonlightGroupDetailPanelHeight(): number {
+    const count: number = this.visibleMoonlightHosts().length;
+    const padding: number = this.breakpoint === 'sm' ? 12 : 14;
+    const header: number = this.breakpoint === 'sm' ? 34 : 38;
+    const content: number = count === 0
+      ? header + (this.breakpoint === 'sm' ? 92 : 100)
+      : header + 10 + this.hostGroupHostGridHeight(count);
+    return padding * 2 + content;
+  }
+
+  @Builder moonlightGroupedDetailPanel() {
+    Column() {
+      Row() {
+        Column() {
+          Text('Moonlight 主机').fontSize(this.breakpoint === 'sm' ? 15 : 17)
+            .fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())
+          Text(this.visibleMoonlightHosts().length.toString() + ' 台 · ' +
+            this.moonlightGroupCatalogCount().toString() + ' 个应用')
+            .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font()).margin({ top: 4 })
+        }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+        Button() {
+          MoonlightBrandIcon({ iconSize: 15, tint: this.accentColor, accessibilityLabel: '应用目录' })
+        }
+        .width(28).height(28).borderRadius(14).padding(0).backgroundColor(this.pal().surface)
+        .accessibilityText('打开 Moonlight 应用目录')
+        .enabled(this.visibleMoonlightHosts().length > 0)
+        .onClick((): void => {
+          const first: MoonlightHostLocalView | undefined = this.visibleMoonlightHosts()[0];
+          if (first !== undefined && first.host !== null) {
+            void this.openMoonlightHost(first.host.id, true);
+          }
+        })
+      }.width('100%')
+      if (this.visibleMoonlightHosts().length === 0) {
+        Column() {
+          MoonlightBrandIcon({ iconSize: 32, tint: this.pal().text3 })
+          Text('暂无 Moonlight 主机').fontSize(13).fontColor(this.pal().text2)
+            .fontFamily(this.font()).margin({ top: 10 })
+          Text('点击底部按钮添加主机').fontSize(11).fontColor(this.pal().text3)
+            .fontFamily(this.font()).margin({ top: 4 })
+        }.width('100%').height(this.breakpoint === 'sm' ? 92 : 100)
+          .justifyContent(FlexAlign.Center).alignItems(HorizontalAlign.Center)
+      } else {
+        Grid() {
+          ForEach(this.visibleMoonlightHosts(), (view: MoonlightHostLocalView): void => {
+            GridItem() { this.moonlightGroupedHostCard(view) }
+          }, (view: MoonlightHostLocalView): string =>
+            this.moonlightHostCardKey(view) + ':' + this.hostViewRevision.toString())
+        }
+        .columnsTemplate(hostGroupColumnsForBreakpoint(this.breakpoint) === 1 ? '1fr' : '1fr 1fr')
+        .rowsGap(10).columnsGap(10).width('100%')
+        .height(this.hostGroupHostGridHeight(this.visibleMoonlightHosts().length)).margin({ top: 10 })
+      }
+    }
+    .width('100%').height(this.expandedHostGroup === 'moonlight' ?
+      this.moonlightGroupDetailPanelHeight() : 0)
+    .padding(this.expandedHostGroup === 'moonlight' ? (this.breakpoint === 'sm' ? 12 : 14) : 0)
+    .opacity(this.expandedHostGroup === 'moonlight' ? 1 : 0).clip(true)
+    .borderRadius(this.breakpoint === 'sm' ? 16 : 15)
+    .backgroundColor(this.pal().surface).backgroundBlurStyle(BlurStyle.Regular)
+    .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
+    .margin({ top: this.expandedHostGroup === 'moonlight' ? 8 : 0,
+      bottom: this.expandedHostGroup === 'moonlight' ? 10 : 0 })
+    .animation({ duration: 220, curve: Curve.FastOutSlowIn })
+  }
+
+  @Builder moonlightGroupedPhoneGroup() {
+    Column() {
+      Row() { this.moonlightGroupTypeCard() }
+        .width('100%').height(this.hostGroupCardHeight())
+      this.moonlightGroupedDetailPanel()
+    }.width('100%').margin({ bottom: 10 })
+  }
+
+  @Builder moonlightGroupedDesktopRow() {
+    Column() {
+      Row() {
+        this.moonlightGroupTypeCard()
+        Blank().width(10)
+        Blank().layoutWeight(1)
+      }.width('100%').height(this.hostGroupCardHeight()).alignItems(VerticalAlign.Top)
+      this.moonlightGroupedDetailPanel()
+    }.width('100%').margin({ bottom: 10 })
+  }
+
   @Builder hostGroupedContent() {
     Column() {
       if (this.breakpoint === 'sm') {
@@ -8115,12 +11768,810 @@ struct HostListPage {
         this.hostGroupedPhoneGroup('rustdesk')
         this.hostGroupedPhoneGroup('ssh')
         this.hostGroupedPhoneGroup('vnc')
+        this.moonlightGroupedPhoneGroup()
       } else {
         this.hostGroupedDesktopRow('rdp', 'rustdesk')
         this.hostGroupedDesktopRow('ssh', 'vnc')
+        this.moonlightGroupedDesktopRow()
       }
     }
     .width('100%').padding({ top: 8, bottom: 140 })
+  }
+
+  @Builder moonlightFlatHostCard(view: MoonlightHostLocalView) {
+    if (view.host !== null) {
+      Row() {
+        if (this.hostSelectionMode) {
+          Checkbox()
+            .select(this.hostSelectedIds.has(unifiedMoonlightHostCardKey(view.host.id)))
+            .selectedColor(this.accentColor).margin({ right: 8 })
+            .onChange((checked: boolean): void => {
+              this.toggleHostSelect(unifiedMoonlightHostCardKey(view.host?.id || ''), checked);
+            })
+        }
+        Column() {
+          MoonlightBrandIcon({ iconSize: this.breakpoint === 'sm' ? 24 : 26,
+            tint: '#FFFFFF', accessibilityLabel: 'Moonlight 主机' })
+        }
+        .width(this.breakpoint === 'sm' ? 42 : 46)
+        .height(this.breakpoint === 'sm' ? 42 : 46)
+        .borderRadius(this.breakpoint === 'sm' ? 21 : 14)
+        .backgroundColor(this.accentColor)
+        .justifyContent(FlexAlign.Center)
+        .margin({ right: this.breakpoint === 'sm' ? 10 : 12 })
+        .onClick((): void => {
+          this.handleMoonlightHostCardClick(view.host?.id || '');
+        })
+        Column() {
+          Row() {
+            Text(view.host.displayName)
+              .fontSize(this.breakpoint === 'sm' ? (AppTheme.fontSize.body as number) : 17)
+              .fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())
+              .layoutWeight(1).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+            if (view.host.locked === true) {
+              SymbolGlyph($r('sys.symbol.ohos_lock'))
+                .fontSize(this.breakpoint === 'sm' ? 14 : 18).fontColor([this.pal().danger])
+                .margin({ left: this.breakpoint === 'sm' ? 6 : 8 })
+            }
+          }.width('100%')
+          if (view.host.locked === true) {
+            Text('已锁定 · 需验证')
+              .fontSize(this.breakpoint === 'sm' ? 12 : 13).fontColor(this.pal().text3)
+              .fontFamily(this.font()).margin({ top: this.breakpoint === 'sm' ? 3 : 4 })
+          } else {
+            Text('MOONLIGHT  ·  ' + this.protectedMoonlightCardValue(
+              view.host, this.moonlightAddressLabel(view.host)) + '  ·  ' +
+              view.catalogItems.length.toString() + ' 个应用')
+              .fontSize(this.breakpoint === 'sm' ? 12 : 14).fontColor(this.pal().text2)
+              .fontFamily(this.font()).margin({ top: this.breakpoint === 'sm' ? 3 : 4 })
+              .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+          }
+        }
+        .alignItems(HorizontalAlign.Start).layoutWeight(1)
+        .onClick((): void => {
+          this.handleMoonlightHostCardClick(view.host?.id || '');
+        })
+        Column() {
+          if (this.hostSelectionMode && this.hostReorderEnabled) {
+            SymbolGlyph($r('sys.symbol.line_3_horizontal'))
+              .fontSize(20).fontColor([this.pal().text3]).margin({ left: 8 })
+          }
+          if (!this.hostSelectionMode && this.isDesktopDevice) {
+            Button() {
+              Text('⋯').fontSize(18).fontColor(this.pal().text)
+            }
+            .width(36).height(36).borderRadius(18).backgroundColor(this.pal().surface)
+            .bindPopup(this.hostActionPopupId === unifiedMoonlightHostCardKey(view.host.id), {
+              builder: this.moonlightActionMenuBuilder(view),
+              placement: Placement.BottomRight,
+              enableArrow: true,
+              popupColor: this.pal().card,
+              width: 152,
+              onStateChange: (event: Object): void => {
+                const value: Record<string, boolean> = event as Record<string, boolean>;
+                if (!value['isVisible']) { this.hostActionPopupId = ''; }
+              }
+            })
+            .onClick((): void => {
+              const key: string = unifiedMoonlightHostCardKey(view.host?.id || '');
+              this.hostActionPopupId = this.hostActionPopupId === key ? '' : key;
+            })
+          }
+        }.alignItems(HorizontalAlign.End).margin({ left: 6 })
+      }
+      .width('100%').constraintSize({ minHeight: this.breakpoint === 'sm' ? 66 : 80 })
+      .padding(this.breakpoint === 'sm' ? { left: 12, right: 14, top: 12, bottom: 12 } : 14)
+      .borderRadius(14).backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
+      .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
+    }
+  }
+
+  @Builder moonlightGroupedHostCard(view: MoonlightHostLocalView) {
+    if (view.host !== null) {
+      Row() {
+        if (this.hostSelectionMode) {
+          Checkbox()
+            .select(this.hostSelectedIds.has(unifiedMoonlightHostCardKey(view.host.id)))
+            .selectedColor(this.accentColor).margin({ right: 7 }).monopolizeEvents(true)
+            .onChange((checked: boolean): void => {
+              this.toggleHostSelect(unifiedMoonlightHostCardKey(view.host?.id || ''), checked);
+            })
+        }
+        Column() {
+          MoonlightBrandIcon({ iconSize: this.breakpoint === 'sm' ? 21 : 23,
+            tint: '#FFFFFF', accessibilityLabel: 'Moonlight 主机' })
+        }
+        .width(this.breakpoint === 'sm' ? 40 : 42)
+        .height(this.breakpoint === 'sm' ? 40 : 42)
+        .borderRadius(this.breakpoint === 'sm' ? 12 : 13)
+        .backgroundColor(this.accentColor)
+        .justifyContent(FlexAlign.Center)
+        .margin({ right: this.breakpoint === 'sm' ? 9 : 10 })
+        .onClick((): void => {
+          this.handleMoonlightHostCardClick(view.host?.id || '');
+        })
+        Column() {
+          Text(view.host.displayName)
+            .fontSize(this.breakpoint === 'sm' ? 15 : 16)
+            .fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())
+            .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+          Text(view.catalogItems.length.toString() + ' 个应用')
+            .fontSize(this.breakpoint === 'sm' ? 12 : 13)
+            .fontColor(this.pal().text2).fontFamily(this.font())
+            .margin({ top: 2 }).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+          Row() {
+            Text('端点').fontSize(11).fontColor(this.pal().text3).width(30)
+            Text(this.protectedMoonlightCardValue(view.host, this.moonlightAddressLabel(view.host)))
+              .fontSize(this.breakpoint === 'sm' ? 12 : 13)
+              .fontColor(this.pal().text2).fontFamily(this.font()).layoutWeight(1)
+              .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+          }.width('100%').margin({ top: 3 })
+        }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+          .onClick((): void => {
+            this.handleMoonlightHostCardClick(view.host?.id || '');
+          })
+        Column() {
+          Row() {
+            Button() {
+              MoonlightBrandIcon({ iconSize: 18, tint: this.accentColor,
+                accessibilityLabel: '应用目录' })
+            }
+            .width(this.breakpoint === 'sm' ? 38 : 40)
+            .height(this.breakpoint === 'sm' ? 38 : 40).borderRadius(19).padding(0)
+            .backgroundColor(this.pal().surface).accessibilityText('打开 Moonlight 应用目录')
+            .onClick((): void => {
+              if (!this.hostSelectionMode) {
+                void this.openMoonlightHost(view.host?.id || '', true);
+              }
+            })
+          }
+          Row() {
+            Button() {
+              SymbolGlyph($r('sys.symbol.square_and_pencil')).fontSize(16).fontColor([this.pal().text2])
+            }
+            .width(36).height(36).borderRadius(18).padding(0).backgroundColor(this.pal().surface)
+            .accessibilityText('编辑')
+            .onClick((): void => {
+              if (!this.hostSelectionMode) { void this.openMoonlightEditSheet(view); }
+            })
+            Button() {
+              SymbolGlyph(view.host.locked === true ? $r('sys.symbol.lock_open') :
+                $r('sys.symbol.ohos_lock')).fontSize(16).fontColor([this.pal().text2])
+            }
+            .width(36).height(36).borderRadius(18).padding(0).backgroundColor(this.pal().surface)
+            .margin({ left: 8 }).accessibilityText(view.host.locked === true ? '解锁' : '上锁')
+            .onClick((): void => {
+              if (!this.hostSelectionMode) { void this.toggleMoonlightLock(view); }
+            })
+            Button() {
+              SymbolGlyph($r('sys.symbol.ohos_trash')).fontSize(16).fontColor([this.pal().danger])
+            }
+            .width(36).height(36).borderRadius(18).padding(0).backgroundColor(this.pal().surface)
+            .margin({ left: 8 }).accessibilityText('删除')
+            .onClick((): void => {
+              if (!this.hostSelectionMode) { void this.doDeleteMoonlightHost(view); }
+            })
+          }.margin({ top: 7 })
+        }.alignItems(HorizontalAlign.End).margin({ left: 10 })
+      }
+      .width('100%').height(this.hostGroupHostCardHeight()).padding(6)
+      .borderRadius(12).backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
+      .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
+      .priorityGesture(LongPressGesture({ duration: 450 }).onAction((): void => {
+        if (!this.hostSelectionMode) {
+          this.beginHostSelection(unifiedMoonlightHostCardKey(view.host?.id || ''), false);
+        }
+      }))
+    }
+  }
+
+  @Builder moonlightActionMenuBuilder(view: MoonlightHostLocalView) {
+    if (view.host !== null) {
+      Column() {
+        Row() {
+          SymbolGlyph($r('sys.symbol.square_and_pencil')).fontSize(16).fontColor([this.pal().text])
+          Text('编辑').fontSize(13).fontColor(this.pal().text).fontFamily(this.font()).margin({ left: 8 })
+        }.width('100%').padding({ left: 12, right: 12, top: 8, bottom: 8 })
+          .onClick((): void => {
+            this.hostActionPopupId = '';
+            void this.openMoonlightEditSheet(view);
+          })
+        Divider().strokeWidth(0.5).color(this.pal().cardBorder).width('100%')
+        Row() {
+          SymbolGlyph(view.host.locked === true ? $r('sys.symbol.lock_open') : $r('sys.symbol.ohos_lock'))
+            .fontSize(16).fontColor([this.pal().text])
+          Text(view.host.locked === true ? '解锁' : '上锁').fontSize(13)
+            .fontColor(this.pal().text).fontFamily(this.font()).margin({ left: 8 })
+        }.width('100%').padding({ left: 12, right: 12, top: 8, bottom: 8 })
+          .onClick((): void => {
+            this.hostActionPopupId = '';
+            void this.toggleMoonlightLock(view);
+          })
+        Divider().strokeWidth(0.5).color(this.pal().cardBorder).width('100%')
+        Row() {
+          SymbolGlyph($r('sys.symbol.list_bullet')).fontSize(16).fontColor([this.pal().text])
+          Text('多选 / 排序').fontSize(13).fontColor(this.pal().text)
+            .fontFamily(this.font()).margin({ left: 8 })
+        }.width('100%').padding({ left: 12, right: 12, top: 8, bottom: 8 })
+          .onClick((): void => {
+            this.hostActionPopupId = '';
+            this.beginHostSelection('', true);
+          })
+        Divider().strokeWidth(0.5).color(this.pal().cardBorder).width('100%')
+        Row() {
+          SymbolGlyph($r('sys.symbol.ohos_trash')).fontSize(16).fontColor([this.pal().danger])
+          Text('删除').fontSize(13).fontColor(this.pal().danger)
+            .fontFamily(this.font()).margin({ left: 8 })
+        }.width('100%').padding({ left: 12, right: 12, top: 8, bottom: 8 })
+          .onClick((): void => {
+            this.hostActionPopupId = '';
+            void this.doDeleteMoonlightHost(view);
+          })
+      }.width('100%').padding({ top: 2, bottom: 2 }).borderRadius(12)
+    }
+  }
+
+  @Builder moonlightEditLockRow(view: MoonlightHostLocalView) {
+    if (view.host !== null) {
+      Row() {
+        Button() {
+          SymbolGlyph($r('sys.symbol.square_and_pencil')).fontSize(17).fontColor([Color.White])
+        }
+        .width(48).height(48).borderRadius(12).backgroundColor(this.pal().editColor)
+        .accessibilityText('编辑')
+        .onClick((): void => { void this.openMoonlightEditSheet(view); })
+        Button() {
+          SymbolGlyph($r('sys.symbol.ohos_lock')).fontSize(17).fontColor([Color.White])
+        }
+        .width(48).height(48).borderRadius(12)
+        .backgroundColor(view.host.locked === true ? this.pal().success : this.accentColor)
+        .margin({ left: 4 }).accessibilityText(view.host.locked === true ? '解锁' : '上锁')
+        .onClick((): void => { void this.toggleMoonlightLock(view); })
+      }
+      .height('100%').alignItems(VerticalAlign.Center).borderRadius(14)
+    }
+  }
+
+  @Builder moonlightDeleteBtn(view: MoonlightHostLocalView) {
+    Column() {
+      SymbolGlyph($r('sys.symbol.ohos_trash')).fontSize(24).fontColor([Color.White])
+        .symbolEffect(new PulseSymbolEffect(), true)
+        .symbolEffect(new BounceSymbolEffect(EffectScope.WHOLE, EffectDirection.UP), true)
+      Text('删除').fontSize(9).fontColor(Color.White).margin({ top: 2 })
+    }
+    .width(60).height(60).justifyContent(FlexAlign.Center)
+    .borderRadius(14).backgroundColor(this.pal().danger)
+    .onClick((): void => { void this.doDeleteMoonlightHost(view); })
+  }
+
+  private moonlightSheetHost(): MoonlightHost | null {
+    const view: MoonlightHostLocalView | null = this.moonlightSheetView();
+    return view === null ? null : view.host;
+  }
+
+  private moonlightSheetItems(): MoonlightCatalogItem[] {
+    const view: MoonlightHostLocalView | null = this.moonlightSheetView();
+    return view === null ? [] : view.catalogItems;
+  }
+
+  private moonlightSheetRecentListHeight(): number {
+    const count: number = Math.min(this.moonlightSheetItems().length, 6);
+    // Keep a short sheet when only one or two cached apps exist; a fixed
+    // 160vp panel left a conspicuous empty block below the last row.
+    return count === 0 ? 68 : Math.min(160, 18 + count * 48);
+  }
+
+  @Builder moonlightHostDetailSheet() {
+    if (this.moonlightSheetHost() === null) {
+      Column() {
+        Text('Moonlight 主机已不存在').fontSize(16).fontWeight(FontWeight.Medium)
+          .fontColor(this.pal().text)
+        Button('关闭').width('100%').height(42).margin({ top: 16 }).borderRadius(11)
+          .backgroundColor(this.accentColor).fontColor(Color.White)
+          .onClick((): void => { this.closeMoonlightHostSheet(); })
+      }.width('100%').padding(22).backgroundColor(this.pal().sheetBg)
+    } else {
+    Column() {
+      Row() {
+        Column() {
+          MoonlightBrandIcon({ iconSize: 26, tint: '#FFFFFF', accessibilityLabel: 'Moonlight 主机' })
+        }.width(48).height(48).borderRadius(14).backgroundColor(this.accentColor)
+          .justifyContent(FlexAlign.Center)
+        Column() {
+          Text(this.moonlightSheetHost()?.displayName || '').fontSize(19).fontWeight(FontWeight.Bold)
+            .fontColor(this.pal().text).fontFamily(this.font()).maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+          Text('Moonlight 主机 · ' + this.moonlightAddressLabel(this.moonlightSheetHost() as MoonlightHost))
+            .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
+            .margin({ top: 4 }).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+        }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 12 })
+      }.width('100%')
+
+      Row() {
+        Text('地址').fontSize(11).fontColor(this.pal().text3).width(48)
+        Text(this.moonlightAddressLabel(this.moonlightSheetHost() as MoonlightHost)).fontSize(13).fontColor(this.pal().text2)
+          .fontFamily('monospace').layoutWeight(1).maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+      }.width('100%').margin({ top: 18 })
+      Row() {
+        Text('目录').fontSize(11).fontColor(this.pal().text3).width(48)
+        Text(this.moonlightSheetItems().length.toString() + ' 个应用 · 本地缓存')
+          .fontSize(13).fontColor(this.pal().text2).fontFamily(this.font()).layoutWeight(1)
+      }.width('100%').margin({ top: 9 })
+
+      Text('最近使用的应用').fontSize(13).fontWeight(FontWeight.Medium)
+        .fontColor(this.pal().text).width('100%').margin({ top: 20, bottom: 8 })
+      Scroll() {
+        Column() {
+          if (this.moonlightSheetItems().length === 0) {
+            Text('主机上线后刷新应用目录').fontSize(12).fontColor(this.pal().text3)
+              .width('100%').padding({ top: 18, bottom: 18 }).textAlign(TextAlign.Center)
+          } else {
+            ForEach(this.moonlightSheetItems().slice(0, 6), (item: MoonlightCatalogItem): void => {
+              Row() {
+                MoonlightBrandIcon({ iconSize: 18, tint: this.accentColor })
+                Column() {
+                  Text(item.title).fontSize(13).fontColor(this.pal().text)
+                    .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+                  Text(item.available && !item.stale ? '可用' : '缓存/当前不可用')
+                    .fontSize(10)
+                    .fontColor(item.available && !item.stale ? this.pal().success : this.pal().text3)
+                    .margin({ top: 2 })
+                }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 10 })
+              }.width('100%').height(48).padding({ left: 8, right: 8 })
+            }, (item: MoonlightCatalogItem): string => item.id)
+          }
+        }.width('100%')
+      }.width('100%').height(this.moonlightSheetRecentListHeight()).scrollBar(BarState.Off)
+        .backgroundColor(this.pal().surface).borderRadius(12)
+
+      Row({ space: 8 }) {
+        Button('应用目录').layoutWeight(1).height(42).borderRadius(11)
+          .backgroundColor(this.accentColor).fontColor(Color.White)
+          .onClick((): void => { this.closeMoonlightHostSheet(true, false); })
+        Button('设置').layoutWeight(1).height(42).borderRadius(11)
+          .backgroundColor(this.pal().surface).fontColor(this.pal().text2)
+          .onClick((): void => { this.closeMoonlightHostSheet(false, true); })
+      }.width('100%').margin({ top: 16 })
+      Button('关闭').width('100%').height(40).borderRadius(11)
+        .backgroundColor(Color.Transparent).fontColor(this.pal().text3)
+        .margin({ top: 4 }).onClick((): void => { this.closeMoonlightHostSheet(); })
+    }.width('100%').padding({ left: 22, right: 22, top: 20, bottom: 24 })
+      .backgroundColor(this.pal().sheetBg)
+    }
+  }
+
+  @Builder moonlightCatalogSheet() {
+    MoonlightAppCatalogSurface({
+      embedded: true,
+      requestedHostId: this.moonlightSheetHostId,
+      onClose: (): void => { this.closeMoonlightCatalogSheet(); },
+      onOpenSettings: (): void => { this.closeMoonlightCatalogSheet('settings'); },
+      onOpenHostDetail: (): void => { this.closeMoonlightCatalogSheet('detail'); },
+      onLaunchRequested: (handoff: MoonlightCatalogLaunchHandoff): void => {
+        this.requestMoonlightCatalogLaunch(handoff);
+      },
+      onDismissAllowedChanged: (allowed: boolean): void => {
+        this.moonlightCatalogDismissAllowed = allowed;
+      }
+    })
+  }
+
+  @Builder moonlightEditSheet() {
+    Column() {
+      Row() {
+        Column() {
+          MoonlightBrandIcon({ iconSize: 22, tint: '#FFFFFF', accessibilityLabel: 'Moonlight 主机' })
+        }.width(42).height(42).borderRadius(12).backgroundColor(this.accentColor)
+          .justifyContent(FlexAlign.Center)
+        Column() {
+          Text('编辑 Moonlight 主机').fontSize(18).fontWeight(FontWeight.Bold)
+            .fontColor(this.pal().text).fontFamily(this.font())
+          Text('主机信息、连接端点与网络唤醒').fontSize(11)
+            .fontColor(this.pal().text3).fontFamily(this.font()).margin({ top: 3 })
+        }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 12 })
+        Button() {
+          SymbolGlyph($r('sys.symbol.xmark')).fontSize(16).fontColor([this.pal().text2])
+        }.width(34).height(34).borderRadius(17).padding(0).backgroundColor(this.pal().surface)
+          .accessibilityText('关闭编辑')
+          .onClick((): void => {
+            this.beginRemoteHostSheetClose(REMOTE_HOST_SHEET_MOONLIGHT_EDIT);
+            this.showRemoteHostSheet = false;
+          })
+      }.width('100%')
+
+      Scroll() {
+        Column() {
+          Text('主机名称').fontSize(12).fontColor(this.pal().text2).fontFamily(this.font())
+            .width('100%').margin({ bottom: 7 })
+          TextInput({ text: this.moonlightEditName, placeholder: 'Moonlight 主机名称' })
+            .width('100%').height(44).borderRadius(11).backgroundColor(this.pal().surface)
+            .fontColor(this.pal().text).fontFamily(this.font())
+            .onChange((value: string): void => {
+              this.moonlightEditName = value;
+              this.moonlightEditError = '';
+            })
+
+          Text('连接端点').fontSize(12).fontColor(this.pal().text2).fontFamily(this.font())
+            .width('100%').margin({ top: 16, bottom: 7 })
+          Row({ space: 8 }) {
+            TextInput({ text: this.moonlightEditAddress, placeholder: '主机名或 IP 地址' })
+              .layoutWeight(1).height(44).borderRadius(11).backgroundColor(this.pal().surface)
+              .fontColor(this.pal().text).fontFamily(this.font())
+              .onChange((value: string): void => {
+                this.moonlightEditAddress = value;
+                this.moonlightEditError = '';
+              })
+            TextInput({ text: this.moonlightEditPortText, placeholder: '47989' })
+              .width(92).height(44).type(InputType.Number).borderRadius(11)
+              .backgroundColor(this.pal().surface).fontColor(this.pal().text).fontFamily(this.font())
+              .onChange((value: string): void => {
+                this.moonlightEditPortText = value;
+                this.moonlightEditError = '';
+              })
+          }.width('100%')
+
+          Row() {
+            Column() {
+              Text('HTTPS 控制端口').fontSize(12).fontColor(this.pal().text2).fontFamily(this.font())
+              Text('用于鉴权、配对和应用目录').fontSize(10).fontColor(this.pal().text3)
+                .fontFamily(this.font()).margin({ top: 3 })
+            }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+            TextInput({ text: this.moonlightEditHttpsPortText,
+              placeholder: MOONLIGHT_DEFAULT_HTTPS_PORT.toString() })
+              .width(104).height(40).type(InputType.Number).borderRadius(10)
+              .backgroundColor(this.pal().surface).fontColor(this.pal().text).fontFamily(this.font())
+              .onChange((value: string): void => {
+                this.moonlightEditHttpsPortText = value;
+                this.moonlightEditError = '';
+              })
+          }.width('100%').margin({ top: 14 })
+
+          Text('主机实现').fontSize(12).fontColor(this.pal().text2).fontFamily(this.font())
+            .width('100%').margin({ top: 16, bottom: 7 })
+          Row({ space: 8 }) {
+            Button('Sunshine').layoutWeight(1).height(38).borderRadius(10)
+              .backgroundColor(this.moonlightEditHostType === 'sunshine' ?
+                this.accentColor : this.pal().surface)
+              .fontColor(this.moonlightEditHostType === 'sunshine' ? Color.White : this.pal().text2)
+              .onClick((): void => { this.moonlightEditHostType = 'sunshine'; })
+            Button('GameStream').layoutWeight(1).height(38).borderRadius(10)
+              .backgroundColor(this.moonlightEditHostType === 'gamestream' ?
+                this.accentColor : this.pal().surface)
+              .fontColor(this.moonlightEditHostType === 'gamestream' ? Color.White : this.pal().text2)
+              .onClick((): void => { this.moonlightEditHostType = 'gamestream'; })
+          }.width('100%')
+
+          Row() {
+            Column() {
+              Text('网络唤醒').fontSize(13).fontColor(this.pal().text).fontFamily(this.font())
+              Text('保存目标网卡与广播地址').fontSize(10).fontColor(this.pal().text3)
+                .fontFamily(this.font()).margin({ top: 3 })
+            }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+            Toggle({ type: ToggleType.Switch, isOn: this.moonlightEditWakeEnabled })
+              .selectedColor(this.accentColor)
+              .onChange((enabled: boolean): void => {
+                this.moonlightEditWakeEnabled = enabled;
+                this.moonlightEditError = '';
+              })
+          }.width('100%').margin({ top: 18 })
+          if (this.moonlightEditWakeEnabled) {
+            TextInput({ text: this.moonlightEditWakeMac, placeholder: 'MAC，例如 AA:BB:CC:DD:EE:FF' })
+              .width('100%').height(42).borderRadius(10).backgroundColor(this.pal().surface)
+              .fontColor(this.pal().text).fontFamily(this.font()).margin({ top: 10 })
+              .onChange((value: string): void => { this.moonlightEditWakeMac = value; })
+            TextInput({ text: this.moonlightEditWakeBroadcast, placeholder: '广播地址，例如 192.168.1.255' })
+              .width('100%').height(42).borderRadius(10).backgroundColor(this.pal().surface)
+              .fontColor(this.pal().text).fontFamily(this.font()).margin({ top: 8 })
+              .onChange((value: string): void => { this.moonlightEditWakeBroadcast = value; })
+          }
+
+          Column() {
+            Text('配对身份').fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
+            Text(this.moonlightSheetHost()?.serverUuid || '—').fontSize(11)
+              .fontColor(this.pal().text2).fontFamily('monospace').margin({ top: 4 })
+              .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+          }.alignItems(HorizontalAlign.Start).width('100%').padding(10)
+            .borderRadius(10).backgroundColor(this.pal().surface).margin({ top: 14 })
+
+          if (this.moonlightEditError !== '') {
+            Text(this.moonlightEditError).fontSize(12).fontColor(this.pal().danger)
+              .fontFamily(this.font()).width('100%').margin({ top: 12 })
+          }
+        }.width('100%')
+      }.width('100%').constraintSize({ maxHeight: this.breakpoint === 'sm' ? 520 : 560 })
+        .scrollBar(BarState.Auto).edgeEffect(EdgeEffect.Spring).margin({ top: 18 })
+
+      Row({ space: 8 }) {
+        Button('取消').layoutWeight(1).height(42).borderRadius(11)
+          .backgroundColor(this.pal().surface).fontColor(this.pal().text2)
+          .onClick((): void => {
+            this.beginRemoteHostSheetClose(REMOTE_HOST_SHEET_MOONLIGHT_EDIT);
+            this.showRemoteHostSheet = false;
+          })
+        Button('保存').layoutWeight(1).height(42).borderRadius(11)
+          .backgroundColor(this.accentColor).fontColor(Color.White)
+          .enabled(this.moonlightEditName.trim().length > 0 &&
+            this.moonlightEditName.trim().length <= 128 && this.moonlightEditAddress.trim().length > 0)
+          .onClick((): void => { this.saveMoonlightEdit(); })
+      }.width('100%').margin({ top: 20 })
+    }.width('100%').padding({ left: 22, right: 22, top: 20, bottom: 24 })
+      .backgroundColor(this.pal().sheetBg)
+  }
+
+  @Builder moonlightHostCard(view: MoonlightHostLocalView) {
+    if (this.groupedHostCardsActive()) {
+      this.moonlightGroupedHostCard(view)
+    } else {
+      this.moonlightFlatHostCard(view)
+    }
+  }
+
+  @Builder moonlightDirectorySection() {
+    Column() {
+      ForEach(this.visibleMoonlightHosts(), (view: MoonlightHostLocalView): void => {
+        this.moonlightHostCard(view)
+        Blank().height(8)
+      }, (view: MoonlightHostLocalView): string => this.moonlightHostCardKey(view))
+    }.width('100%')
+  }
+
+  @Builder moonlightDirectoryContent() {
+    Column() {
+      Row() {
+        Column() {
+          Text('Moonlight 主机').fontSize(27).fontWeight(FontWeight.Bold)
+            .fontColor(this.pal().text).fontFamily(this.font())
+          Text('局域网发现、配对与低延迟串流').fontSize(12).fontColor(this.pal().text3)
+            .fontFamily(this.font()).margin({ top: 4 })
+        }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+      }.width('100%').padding({ left: 28, right: 28,
+        top: this.topSafeHeightVp() + this.titleOffsetY() + 14, bottom: 16 })
+      List({ space: 8 }) {
+        if (this.moonlightDirectoryCode === 'loading') {
+          ListItem() {
+            Column() { LoadingProgress().width(32).height(32).color(this.accentColor) }
+              .width('100%').height(280).justifyContent(FlexAlign.Center)
+          }
+        } else if (this.visibleMoonlightHosts().length === 0) {
+          ListItem() {
+            Column() {
+              MoonlightBrandIcon({ iconSize: 48, tint: this.pal().text3 })
+              Text(this.moonlightDirectoryCode === 'ok' || this.moonlightDirectoryCode === 'cache_read_failed'
+                ? '还没有 Moonlight 主机' : '本地主机数据暂不可用')
+                .fontSize(17).fontWeight(FontWeight.Medium).fontColor(this.pal().text).margin({ top: 16 })
+              Text('点击底部 + 添加主机，自动发现局域网中的 Sunshine / GameStream')
+                .fontSize(12).fontColor(this.pal().text3).margin({ top: 7 }).textAlign(TextAlign.Center)
+            }.width('100%').height(360).justifyContent(FlexAlign.Center)
+          }
+        } else {
+          ForEach(this.visibleMoonlightHosts(), (view: MoonlightHostLocalView): void => {
+            ListItem() { this.moonlightFlatHostCard(view) }
+              .swipeAction((this.hostSelectionMode ||
+                (this.isDesktopDevice && this.breakpoint === 'xl')) ? {
+                start: { builder: () => {} }, end: { builder: () => {} },
+                edgeEffect: SwipeEdgeEffect.Spring
+              } : {
+                start: { builder: () => { this.moonlightEditLockRow(view); } },
+                end: { builder: () => { this.moonlightDeleteBtn(view); } },
+                edgeEffect: SwipeEdgeEffect.Spring
+              })
+          }, (view: MoonlightHostLocalView): string => this.moonlightHostCardKey(view))
+        }
+        ListItem() { Column().height(110) }
+      }.layoutWeight(1).width('100%').padding({ left: 28, right: 28 })
+        .scrollBar(BarState.Off).edgeEffect(EdgeEffect.Spring)
+    }.width('100%').height('100%')
+  }
+
+  @Builder flatRemoteHostListItem(host: RemoteHost) {
+    ListItem() {
+      Row() {
+        if (this.hostSelectionMode) {
+          Checkbox()
+            .select(this.hostSelectedIds.has(remoteHostCardKey(host.id)))
+            .selectedColor(this.accentColor).margin({ right: 8 })
+            .onChange((checked: boolean): void => {
+              this.toggleHostSelect(remoteHostCardKey(host.id), checked);
+            })
+        }
+        Column() {
+          Image(host.protocol === 'ssh' ? $r('app.media.icon_terminal') :
+            (host.protocol === 'rdp' ? $r('app.media.icon_desktop') : $r('app.media.icon_laptop')))
+            .width(this.breakpoint === 'sm' ? 24 : 26)
+            .height(this.breakpoint === 'sm' ? 24 : 26).fillColor(Color.White)
+        }
+        .width(this.breakpoint === 'sm' ? 42 : 46).height(this.breakpoint === 'sm' ? 42 : 46)
+        .borderRadius(this.breakpoint === 'sm' ? 21 : 14)
+        .backgroundColor(host.protocol === 'ssh' ? this.pal().editColor :
+          (host.protocol === 'rdp' ? this.accentColor : this.pal().success))
+        .justifyContent(FlexAlign.Center).margin({ right: this.breakpoint === 'sm' ? 10 : 12 })
+        .onClick((): void => { this.handleHostCardClick(host); })
+
+        Column() {
+          Row() {
+            Text(hostCardDisplayLabel(
+              shouldHideHostCardSensitiveInfo(this.hostCardSensitiveInfoHidden, host.locked),
+              host.protocol, host.label, host.rustdeskProPeerId, host.customHostname))
+              .fontSize(this.breakpoint === 'sm' ? (AppTheme.fontSize.body as number) : 17)
+              .fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())
+              .layoutWeight(1).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+            if (host.protocol === 'ssh' &&
+              displayConnectionHealth(host.lastHealth, host.lastLatency).length > 0) {
+              Text(displayConnectionHealth(host.lastHealth, host.lastLatency))
+                .fontSize(10).fontColor(this.pal().text3).fontFamily(this.font())
+                .padding({ left: 6, right: 6, top: 2, bottom: 2 })
+                .borderRadius(6).backgroundColor(this.pal().surface).margin({ left: 6 })
+            }
+            if (host.locked) {
+              SymbolGlyph($r('sys.symbol.ohos_lock')).fontSize(this.breakpoint === 'sm' ? 14 : 18)
+                .fontColor([this.pal().danger]).margin({ left: this.breakpoint === 'sm' ? 6 : 8 })
+            }
+          }.width('100%')
+          if (!host.locked) {
+            Text(this.hostPlatformText(host) + '  ·  ' + this.protectedHostCardValue(host,
+              host.protocol === 'rustdesk' ? rustDeskCardEndpoint(host.rustdeskDirectEnabled,
+                host.rustdeskDirectHost, host.rustdeskDirectPort, host.host, host.port) :
+                host.host + ':' + host.port))
+              .fontSize(this.breakpoint === 'sm' ? 12 : 14).fontColor(this.pal().text2)
+              .margin({ top: this.breakpoint === 'sm' ? 3 : 4 }).fontFamily(this.font())
+              .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+          } else {
+            Text('已锁定 · 需验证').fontSize(this.breakpoint === 'sm' ? 12 : 13)
+              .fontColor(this.pal().text3).margin({ top: this.breakpoint === 'sm' ? 3 : 4 })
+              .fontFamily(this.font())
+          }
+          Row() {
+            this.HostGroupChip(host)
+            if (host.groupId.length > 0) { Blank().width(6) }
+            if (host.protocol !== 'ssh' && host.protocol !== 'rustdesk') {
+              this.HostConnectionHealth(host)
+            }
+          }.margin({ top: 2 })
+        }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+          .onClick((): void => { this.handleHostCardClick(host); })
+
+        Column() {
+          if (host.protocol === 'rustdesk') {
+            Row() {
+              ForEach(resolveRustDeskBadges(host.rustdeskDirectEnabled,
+                host.rustdeskProManaged || host.sourceType === 'rustdesk_pro'), (badge: string): void => {
+                Text(badge).fontSize(10)
+                  .fontColor(badge === 'Pro' ? this.accentColor :
+                    (badge === '直连' ? this.pal().success : this.pal().text2))
+                  .fontFamily(this.font()).padding({ left: 6, right: 6, top: 2, bottom: 2 })
+                  .borderRadius(6).backgroundColor(this.pal().surface).margin({ left: 6 })
+              })
+            }.justifyContent(FlexAlign.End)
+            if (!host.rustdeskDirectEnabled && this.rustdeskPresenceDetectionEnabled) {
+              Text(this.rustDeskPresenceStatusText(host)).fontSize(this.breakpoint === 'sm' ? 11 : 12)
+                .fontColor(this.rustDeskPresenceStatusColor(host)).fontFamily(this.font()).margin({ top: 3 })
+                .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+            }
+          }
+          if (this.hostSelectionMode && this.hostReorderEnabled) {
+            SymbolGlyph($r('sys.symbol.line_3_horizontal')).fontSize(20)
+              .fontColor([this.pal().text3]).margin({ left: 8 })
+          }
+          if (!this.hostSelectionMode && this.isDesktopDevice) {
+            Row() {
+              if (host.protocol === 'rustdesk' && !host.rustdeskDirectEnabled &&
+                this.breakpoint === 'xl') {
+                Button() {
+                  if (this.hostPresenceProbeBusyIds.has(host.id)) {
+                    LoadingProgress().width(18).height(18).color(this.accentColor)
+                  } else {
+                    SymbolGlyph($r('sys.symbol.bolt_fill')).fontSize(17).fontColor([this.accentColor])
+                  }
+                }.width(36).height(36).borderRadius(18).padding(0).backgroundColor(this.pal().surface)
+                  .accessibilityText('检测 RustDesk 在线状态')
+                  .enabled(!this.hostPresenceProbeBusyIds.has(host.id))
+                  .onClick((): void => { void this.probeHostConnectivity(host); })
+              }
+              Button() { Text('⋯').fontSize(18).fontColor(this.pal().text) }
+                .width(36).height(36).borderRadius(18).backgroundColor(this.pal().surface)
+                .margin({ left: 4 })
+                .bindPopup(this.hostActionPopupId === remoteHostCardKey(host.id), {
+                  builder: this.hostActionMenuBuilder(host), placement: Placement.BottomRight,
+                  enableArrow: true, popupColor: this.pal().card, width: this.hostActionPopupWidth(host),
+                  onStateChange: (event: Object): void => {
+                    const value: Record<string, boolean> = event as Record<string, boolean>;
+                    if (!value['isVisible']) { this.hostActionPopupId = ''; }
+                  }
+                })
+                .onClick((): void => {
+                  const key: string = remoteHostCardKey(host.id);
+                  this.hostActionPopupId = this.hostActionPopupId === key ? '' : key;
+                })
+            }
+          }
+        }.alignItems(HorizontalAlign.End).margin({ left: 6 })
+      }
+      .width('100%').constraintSize({ minHeight: this.breakpoint === 'sm' ? 66 : 80 })
+      .padding(this.breakpoint === 'sm' ? { left: 12, right: 14, top: 12, bottom: 12 } : 14)
+      .borderRadius(14).backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
+      .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
+    }
+    .swipeAction((this.hostSelectionMode || (this.isDesktopDevice && this.breakpoint === 'xl')) ? {
+      start: { builder: () => {} }, end: { builder: () => {} }, edgeEffect: SwipeEdgeEffect.Spring
+    } : {
+      start: { builder: () => { this.hostEditLockRow(host); } },
+      end: { builder: () => { this.hostDeleteBtn(host); } }, edgeEffect: SwipeEdgeEffect.Spring
+    })
+    .transition(TransitionEffect.asymmetric(
+      TransitionEffect.translate({ x: -200 }).animation({ duration: 250, curve: Curve.FastOutSlowIn }),
+      TransitionEffect.translate({ x: -200, y: -10 })
+        .combine(TransitionEffect.scale({ x: 0.7, y: 0.7 })).combine(TransitionEffect.OPACITY)
+        .animation({ duration: 350, curve: curves.interpolatingSpring(0, 0.8, 300, 20) })
+    ))
+    .onDragStart((_event: DragEvent): DragItemInfo => {
+      const key: string = remoteHostCardKey(host.id);
+      if (!this.hostSelectionMode) {
+        // Let the platform's native drag recognizer own the initial long
+        // press. Entering selection here keeps that same pointer sequence
+        // alive so the card can move immediately instead of requiring a
+        // second long press after the list rebuilds.
+        this.beginHostSelection(key, true, true);
+      } else if (!this.hostReorderEnabled) {
+        return {};
+      }
+      this.draggingHostId = key;
+      return { extraInfo: key };
+    })
+    .onDrop((_event: DragEvent): void => {
+      const dragging: string = this.draggingHostId;
+      this.draggingHostId = '';
+      const target: string = remoteHostCardKey(host.id);
+      if (this.hostSelectionMode && this.hostReorderEnabled && dragging !== '' && dragging !== target) {
+        this.handleHostMove(dragging, target);
+      }
+    })
+    .onDragEnd((_event: DragEvent): void => { this.draggingHostId = ''; })
+  }
+
+  @Builder flatMoonlightHostListItem(view: MoonlightHostLocalView) {
+    if (view.host !== null) {
+      ListItem() { this.moonlightFlatHostCard(view) }
+        .swipeAction((this.hostSelectionMode || (this.isDesktopDevice && this.breakpoint === 'xl')) ? {
+          start: { builder: () => {} }, end: { builder: () => {} }, edgeEffect: SwipeEdgeEffect.Spring
+        } : {
+          start: { builder: () => { this.moonlightEditLockRow(view); } },
+          end: { builder: () => { this.moonlightDeleteBtn(view); } }, edgeEffect: SwipeEdgeEffect.Spring
+        })
+        .transition(TransitionEffect.asymmetric(
+          TransitionEffect.translate({ x: -200 }).animation({ duration: 250, curve: Curve.FastOutSlowIn }),
+          TransitionEffect.translate({ x: -200, y: -10 })
+            .combine(TransitionEffect.scale({ x: 0.7, y: 0.7 })).combine(TransitionEffect.OPACITY)
+            .animation({ duration: 350, curve: curves.interpolatingSpring(0, 0.8, 300, 20) })
+        ))
+        .onDragStart((_event: DragEvent): DragItemInfo => {
+          const key: string = unifiedMoonlightHostCardKey(view.host?.id || '');
+          if (!this.hostSelectionMode) {
+            this.beginHostSelection(key, true, true);
+          } else if (!this.hostReorderEnabled) {
+            return {};
+          }
+          this.draggingHostId = key;
+          return { extraInfo: key };
+        })
+        .onDrop((_event: DragEvent): void => {
+          const dragging: string = this.draggingHostId;
+          this.draggingHostId = '';
+          const target: string = unifiedMoonlightHostCardKey(view.host?.id || '');
+          if (this.hostSelectionMode && this.hostReorderEnabled && dragging !== '' && dragging !== target) {
+            this.handleHostMove(dragging, target);
+          }
+        })
+        .onDragEnd((_event: DragEvent): void => { this.draggingHostId = ''; })
+    }
+  }
+
+  @Builder unifiedFlatHostListItem(ref: UnifiedHostCardRef) {
+    if (ref.kind === 'remote' && this.remoteHostForCardRef(ref) !== null) {
+      this.flatRemoteHostListItem(this.remoteHostForCardRef(ref) as RemoteHost)
+    } else if (ref.kind === 'moonlight' && this.moonlightViewForCardRef(ref) !== null) {
+      this.flatMoonlightHostListItem(this.moonlightViewForCardRef(ref) as MoonlightHostLocalView)
+    }
   }
 
   @Builder hostContent() {
@@ -8139,12 +12590,13 @@ struct HostListPage {
             // desktop: 按钮全部左移 (侧边栏右侧); 手机/平板: 两端分布
             if (this.isDesktopDevice) {
               Row() {
-                Button(this.hostSelectedIds.size === this.filteredHosts.length ? '取消全选' : '全选').fontSize(12)
+                Button(this.hostSelectedIds.size === this.selectionKeysForCurrentView().length ? '取消全选' : '全选').fontSize(12)
                   .height(32).borderRadius(8)
                   .backgroundColor(this.pal().surface).fontColor(this.accentColor)
                   .onClick(() => {
-                    if (this.hostSelectedIds.size === this.filteredHosts.length) { this.hostSelectedIds = new Set(); }
-                    else { this.hostSelectedIds = new Set(this.filteredHosts.map((h: RemoteHost) => h.id)); }
+                    if (this.hostSelectedIds.size === this.selectionKeysForCurrentView().length) {
+                      this.hostSelectedIds = new Set();
+                    } else { this.hostSelectedIds = new Set(this.selectionKeysForCurrentView()); }
                   })
                 Text('已选 ' + this.hostSelectedIds.size).fontSize(13).fontColor(this.pal().text2)
                   .margin({ left: 12, right: 12 })
@@ -8153,16 +12605,18 @@ struct HostListPage {
                     .height(32).borderRadius(8)
                     .backgroundColor(this.pal().danger).fontColor('#FFFFFF')
                     .margin({ right: 6 })
-                    .onClick(() => { this.doHostBatchDelete(); })
+                    .onClick(() => { void this.doHostBatchDelete(); })
+                }
+                if (this.hostReorderEnabled) {
+                  Button('完成').fontSize(12).height(32).borderRadius(8)
+                    .backgroundColor(this.accentColor).fontColor('#FFFFFF')
+                    .margin({ right: 6 })
+                    .onClick(() => { this.commitHostReorder(); })
                 }
                 Button('取消').fontSize(12)
                   .height(32).borderRadius(8)
                   .backgroundColor(this.pal().surface).fontColor(this.pal().text2)
-                  .onClick(() => {
-                    animateTo({ duration: 200, curve: Curve.FastOutSlowIn }, () => {
-                      this.hostSelectionMode = false; this.hostSelectedIds = new Set();
-                    });
-                  })
+                  .onClick(() => { this.cancelHostEdit(); })
               }.width('100%').padding({ left: 20, right: 20, bottom: 6 })
                 .transition(
                   TransitionEffect.asymmetric(
@@ -8174,31 +12628,36 @@ struct HostListPage {
                 )
             } else {
               Row() {
-                Button(this.hostSelectedIds.size === this.filteredHosts.length ? '取消全选' : '全选').fontSize(12)
+                Button(this.hostSelectedIds.size === this.selectionKeysForCurrentView().length ? '取消全选' : '全选').fontSize(12)
                   .height(32).borderRadius(8)
                   .backgroundColor(this.pal().surface).fontColor(this.accentColor)
                   .onClick(() => {
-                    if (this.hostSelectedIds.size === this.filteredHosts.length) { this.hostSelectedIds = new Set(); }
-                    else { this.hostSelectedIds = new Set(this.filteredHosts.map((h: RemoteHost) => h.id)); }
+                    if (this.hostSelectedIds.size === this.selectionKeysForCurrentView().length) {
+                      this.hostSelectedIds = new Set();
+                    } else { this.hostSelectedIds = new Set(this.selectionKeysForCurrentView()); }
                   })
                 Blank()
-                Text('已选 ' + this.hostSelectedIds.size).fontSize(13).fontColor(this.pal().text2)
+                if (!this.hostReorderEnabled) {
+                  Text('已选 ' + this.hostSelectedIds.size).fontSize(13).fontColor(this.pal().text2)
+                }
                 Blank()
                 if (this.hostSelectedIds.size > 0) {
                   Button('删除(' + this.hostSelectedIds.size + ')').fontSize(12)
                     .height(32).borderRadius(8)
                     .backgroundColor(this.pal().danger).fontColor('#FFFFFF')
                     .margin({ right: 6 })
-                    .onClick(() => { this.doHostBatchDelete(); })
+                    .onClick(() => { void this.doHostBatchDelete(); })
+                }
+                if (this.hostReorderEnabled) {
+                  Button('完成').fontSize(12).height(32).borderRadius(8)
+                    .backgroundColor(this.accentColor).fontColor('#FFFFFF')
+                    .margin({ right: 6 })
+                    .onClick(() => { this.commitHostReorder(); })
                 }
                 Button('取消').fontSize(12)
                   .height(32).borderRadius(8)
                   .backgroundColor(this.pal().surface).fontColor(this.pal().text2)
-                  .onClick(() => {
-                    animateTo({ duration: 200, curve: Curve.FastOutSlowIn }, () => {
-                      this.hostSelectionMode = false; this.hostSelectedIds = new Set();
-                    });
-                  })
+                  .onClick(() => { this.cancelHostEdit(); })
               }.width('100%').padding({ left: 20, right: 20, bottom: 6 })
                 .transition(
                   TransitionEffect.asymmetric(
@@ -8224,7 +12683,7 @@ struct HostListPage {
           ForEach([this.hostViewRevision], (_revision: number): void => {
             ListItem() { this.hostGroupedContent() }
           }, (revision: number): string => 'host-grouped-item-' + revision.toString())
-        } else if (this.filteredHosts.length === 0) {
+        } else if (this.flatHostCardRefs().length === 0) {
           ListItem() {
             Column() {
               SymbolGlyph($r('sys.symbol.desktop_fill'))
@@ -8238,183 +12697,11 @@ struct HostListPage {
             }.width('100%').constraintSize({ minHeight: 400 }).justifyContent(FlexAlign.Center)
               .alignItems(HorizontalAlign.Center)
           }
-        } else {
-          LazyForEach(this.hostDataSource, (host: RemoteHost, idx: number) => {
-            ListItem() {
-              Row() {
-                if (this.hostSelectionMode) {
-                  Checkbox()
-                    .select(this.hostSelectedIds.has(host.id))
-                    .selectedColor(this.accentColor)
-                    .margin({ right: 8 })
-                    .onChange((v: boolean) => { this.toggleHostSelect(host.id, v); })
-                }
-                // 协议图标 (sm: 42 circle, md+: 46 rounded)
-                Column() {
-                  Image(host.protocol === 'ssh' ? $r('app.media.icon_terminal') :
-                    (host.protocol === 'rdp' ? $r('app.media.icon_desktop') : $r('app.media.icon_laptop')))
-                    .width(this.breakpoint === 'sm' ? 24 : 26)
-                    .height(this.breakpoint === 'sm' ? 24 : 26).fillColor(Color.White)
-                }
-                .width(this.breakpoint === 'sm' ? 42 : 46)
-                .height(this.breakpoint === 'sm' ? 42 : 46)
-                .borderRadius(this.breakpoint === 'sm' ? 21 : 14)
-                .backgroundColor(host.protocol === 'ssh' ? this.pal().editColor :
-                  (host.protocol === 'rdp' ? this.accentColor : this.pal().success))
-                .justifyContent(FlexAlign.Center)
-                .margin({ right: this.breakpoint === 'sm' ? 10 : 12 })
-                .onClick(() => { this.handleHostCardClick(host); })
-
-                // 主机信息 (sm: old smaller, md+: new larger)
-                Column() {
-                  Row() {
-                    Text(host.label)
-                      .fontSize(this.breakpoint === 'sm' ? (AppTheme.fontSize.body as number) : 17)
-                      .fontWeight(FontWeight.Medium)
-                      .fontColor(this.pal().text).fontFamily(this.font()).layoutWeight(1)
-                    if (host.protocol === 'ssh' &&
-                      displayConnectionHealth(host.lastHealth, host.lastLatency).length > 0) {
-                      Text(displayConnectionHealth(host.lastHealth, host.lastLatency))
-                        .fontSize(10).fontColor(this.pal().text3).fontFamily(this.font())
-                        .padding({ left: 6, right: 6, top: 2, bottom: 2 })
-                        .borderRadius(6).backgroundColor(this.pal().surface).margin({ left: 6 })
-                    }
-                    if (host.locked) {
-                      SymbolGlyph($r('sys.symbol.ohos_lock'))
-                        .fontSize(this.breakpoint === 'sm' ? 14 : 18)
-                        .fontColor([this.pal().danger])
-                        .margin({ left: this.breakpoint === 'sm' ? 6 : 8 })
-                    }
-                  }
-                  if (!host.locked) {
-                    Text(this.hostPlatformText(host) + '  ·  ' +
-                      (host.protocol === 'rustdesk' ? rustDeskCardEndpoint(host.rustdeskDirectEnabled,
-                        host.rustdeskDirectHost, host.rustdeskDirectPort, host.host, host.port) :
-                        host.host + ':' + host.port))
-                      .fontSize(this.breakpoint === 'sm' ? 12 : 14)
-                      .fontColor(this.pal().text2).margin({ top: this.breakpoint === 'sm' ? 3 : 4 })
-                      .fontFamily(this.font())
-                  } else {
-                    Text('已锁定 · 需验证')
-                      .fontSize(this.breakpoint === 'sm' ? 12 : 13)
-                      .fontColor(this.pal().text3).margin({ top: this.breakpoint === 'sm' ? 3 : 4 })
-                      .fontFamily(this.font())
-                  }
-                  Row() {
-                    this.HostGroupChip(host)
-                    if (host.groupId.length > 0) {
-                      Blank().width(6)
-                    }
-                    if (host.protocol !== 'ssh' && host.protocol !== 'rustdesk') {
-                      this.HostConnectionHealth(host)
-                    }
-                  }
-                  .margin({ top: 2 })
-                }
-                .alignItems(HorizontalAlign.Start).layoutWeight(1)
-                .onClick(() => {
-                  if (this.hostSelectionMode) { this.toggleHostSelect(host.id, !this.hostSelectedIds.has(host.id)); }
-                  else { this.connectToHost(host); }
-                })
-
-                Column() {
-                  if (host.protocol === 'rustdesk') {
-                    Row() {
-                      ForEach(resolveRustDeskBadges(host.rustdeskDirectEnabled,
-                        host.rustdeskProManaged || host.sourceType === 'rustdesk_pro'), (badge: string) => {
-                        Text(badge).fontSize(10)
-                          .fontColor(badge === 'Pro' ? this.accentColor :
-                            (badge === '直连' ? this.pal().success : this.pal().text2))
-                          .fontFamily(this.font()).padding({ left: 6, right: 6, top: 2, bottom: 2 })
-                          .borderRadius(6).backgroundColor(this.pal().surface).margin({ left: 6 })
-                      })
-                    }.justifyContent(FlexAlign.End)
-                    if (!host.rustdeskDirectEnabled && this.rustdeskPresenceDetectionEnabled) {
-                      Text(this.rustDeskPresenceStatusText(host))
-                        .fontSize(this.breakpoint === 'sm' ? 11 : 12)
-                        .fontColor(this.rustDeskPresenceStatusColor(host))
-                        .fontFamily(this.font()).margin({ top: 3 })
-                        .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-                    }
-                  }
-                  if (!this.hostSelectionMode && this.isDesktopDevice) {
-                    Row() {
-                      if (host.protocol === 'rustdesk' && !host.rustdeskDirectEnabled &&
-                        this.breakpoint === 'xl') {
-                        Button() {
-                          if (this.hostPresenceProbeBusyIds.has(host.id)) {
-                            LoadingProgress().width(18).height(18).color(this.accentColor)
-                          } else {
-                            SymbolGlyph($r('sys.symbol.bolt_fill')).fontSize(17).fontColor([this.accentColor])
-                          }
-                        }
-                        .width(36).height(36).borderRadius(18).padding(0)
-                        .backgroundColor(this.pal().surface)
-                        .accessibilityText('检测 RustDesk 在线状态')
-                        .enabled(!this.hostPresenceProbeBusyIds.has(host.id))
-                        .onClick((): void => { void this.probeHostConnectivity(host); })
-                      }
-                      // PC/2in1: 省略号按钮 → bindPopup 气泡弹窗 (编辑/上锁/多选/删除)
-                      Button() {
-                        Text('⋯')
-                          .fontSize(18)
-                          .fontColor(this.pal().text)
-                      }
-                      .width(36).height(36).borderRadius(18)
-                      .backgroundColor(this.pal().surface)
-                      .margin({ left: 4 })
-                      .bindPopup(this.hostActionPopupId === host.id, {
-                        builder: this.hostActionMenuBuilder(host),
-                        placement: Placement.BottomRight,
-                        enableArrow: true,
-                        popupColor: this.pal().card,
-                        onStateChange: (e: Object) => {
-                          const ev: Record<string, boolean> = e as Record<string, boolean>;
-                          if (!ev['isVisible']) { this.hostActionPopupId = ''; }
-                        }
-                      })
-                      .onClick(() => {
-                        animateTo({ duration: 200, curve: Curve.FastOutSlowIn }, () => {
-                          this.hostActionPopupId = (this.hostActionPopupId === host.id ? '' : host.id);
-                        });
-                      })
-                    }
-                  }
-                }.alignItems(HorizontalAlign.End).margin({ left: 6 })
-              }
-              .width('100%').constraintSize({ minHeight: this.breakpoint === 'sm' ? 66 : 80 })
-              .padding(this.breakpoint === 'sm' ? { left: 12, right: 14, top: 12, bottom: 12 } : 14)
-              .borderRadius(14).backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
-              .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
-            }
-            .gesture(
-              LongPressGesture().onAction(() => {
-                if (!this.hostSelectionMode) {
-                  animateTo({ duration: 250, curve: Curve.FastOutSlowIn }, () => {
-                    this.hostSelectionMode = true; this.hostSelectedIds = new Set(); this.hostSelectedIds.add(host.id);
-                  });
-                }
-              })
-            )
-            .swipeAction((this.hostSelectionMode ||
-              (this.isDesktopDevice && this.breakpoint === 'xl')) ? {
-              start: { builder: () => {} }, end: { builder: () => {} }, edgeEffect: SwipeEdgeEffect.Spring
-            } : {
-              start: { builder: () => { this.hostEditLockRow(host); } },
-              end: { builder: () => { this.hostDeleteBtn(host); } },
-              edgeEffect: SwipeEdgeEffect.Spring
-            })
-            .transition(
-              TransitionEffect.asymmetric(
-                TransitionEffect.translate({ x: -200 })
-                  .animation({ duration: 250, curve: Curve.FastOutSlowIn }),
-                TransitionEffect.translate({ x: -200, y: -10 })
-                  .combine(TransitionEffect.scale({ x: 0.7, y: 0.7 }))
-                  .combine(TransitionEffect.OPACITY)
-                  .animation({ duration: 350, curve: curves.interpolatingSpring(0, 0.8, 300, 20) })
-              )
-            )
-          }, (host: RemoteHost, idx: number) => host.id + ':' + this.hostViewRevision.toString())
+        } else if (!this.groupedHostCardsActive()) {
+          ForEach(this.flatHostCardRefs(), (ref: UnifiedHostCardRef): void => {
+            this.unifiedFlatHostListItem(ref)
+          }, (ref: UnifiedHostCardRef): string =>
+            ref.key + ':' + this.hostViewRevision.toString())
         }
 
         // 底部 FAB 占位
@@ -8661,6 +12948,26 @@ struct HostListPage {
   }
 
   // PC/2in1: 省略号弹出操作菜单 (小巧精致 + 过渡动画)
+  private hostActionPopupWidth(host: RemoteHost): number {
+    const labels: string[] = ['编辑', host.locked ? '解锁' : '上锁', '多选 / 排序', '删除'];
+    if (host.protocol === 'ssh') { labels.push('部署公钥'); }
+    if (!isVncHostProjection(host)) {
+      labels.push(host.groupId === 'ops' ? '移出工作组' : '加入 ops 工作组');
+    }
+    let longestTextVp: number = 0;
+    const uiContext = this.getUIContext();
+    labels.forEach((label: string): void => {
+      const measuredPx: number = uiContext.getMeasureUtils().measureText({
+        textContent: label,
+        fontSize: 13,
+        fontFamily: this.font()
+      });
+      longestTextVp = Math.max(longestTextVp, uiContext.px2vp(measuredPx));
+    });
+    // Popup shell padding + row padding + 16vp icon + 8vp text gap.
+    return Math.ceil(longestTextVp + 64);
+  }
+
   @Builder hostActionMenuBuilder(host: RemoteHost) {
     Column() {
       Row() {
@@ -8700,12 +13007,12 @@ struct HostListPage {
       Row() {
         SymbolGlyph($r('sys.symbol.list_bullet'))
           .fontSize(16).fontColor([this.pal().text])
-        Text('多选').fontSize(13).fontColor(this.pal().text).fontFamily(this.font()).margin({ left: 8 })
+        Text('多选 / 排序').fontSize(13).fontColor(this.pal().text).fontFamily(this.font()).margin({ left: 8 })
       }
       .width('100%').padding({ left: 12, right: 12, top: 8, bottom: 8 })
       .onClick(() => {
         animateTo({ duration: 150 }, () => { this.hostActionPopupId = ''; });
-        this.hostSelectionMode = true; this.hostSelectedIds = new Set();
+        this.beginHostSelection('', !this.groupedHostCardsActive());
       })
 
       Divider().strokeWidth(0.5).color(this.pal().cardBorder).width('100%')
@@ -8737,7 +13044,7 @@ struct HostListPage {
       .width('100%').padding({ left: 12, right: 12, top: 8, bottom: 8 })
       .onClick(() => { animateTo({ duration: 150 }, () => { this.hostActionPopupId = ''; }); this.doDeleteHost(host); })
     }
-    .width(148).padding({ top: 2, bottom: 2 }).borderRadius(12)
+    .width('100%').padding({ top: 2, bottom: 2 }).borderRadius(12)
     .transition(TransitionEffect.asymmetric(
       TransitionEffect.scale({ x: 0.8, y: 0.8 }).combine(TransitionEffect.OPACITY)
         .animation({ duration: 200, curve: Curve.FastOutSlowIn }),
@@ -8828,7 +13135,47 @@ struct HostListPage {
       this.settingsLeafSheetMode <= SETTINGS_SHEET_VNC_CLIPBOARD;
   }
 
+  private isMoonlightSettingsLeafSheet(): boolean {
+    return moonlightSettingsRouteSpec(this.settingsLeafSheetMode) !== null;
+  }
+
+  private isVirtualKeyboardSettingsLeafSheet(): boolean {
+    return isVirtualKeyboardSettingsMode(this.settingsLeafSheetMode);
+  }
+
+  private virtualKeyboardSettingsSectionForLeaf(): VirtualKeyboardSettingsSection {
+    const spec: VirtualKeyboardSettingsRouteSpec | null =
+      virtualKeyboardSettingsRouteSpec(this.settingsLeafSheetMode);
+    return spec === null ? 'system' : spec.section;
+  }
+
+  private moonlightSettingsSectionForLeaf(): MoonlightSettingsSection {
+    const spec: MoonlightSettingsRouteSpec | null =
+      moonlightSettingsRouteSpec(this.settingsLeafSheetMode);
+    if (spec === null) { return 'video'; }
+    return spec.section as MoonlightSettingsSection;
+  }
+
   private settingsLeafSheetHeight(): SheetSize | number {
+    if (this.settingsLeafSheetMode === SETTINGS_SHEET_POPUP && this.popupSheetMode === 1 &&
+      this.aboutSheetMode === 3) {
+      return SheetSize.LARGE;
+    }
+    if (this.settingsLeafSheetMode === SETTINGS_SHEET_POPUP && this.popupSheetMode === 1 &&
+      this.aboutSheetMode === 5) {
+      // The operation guide owns its measured height. FIT_CONTENT lets it
+      // shrink for short lessons and grow only up to the live window.
+      return SheetSize.FIT_CONTENT;
+    }
+    // Virtual-keyboard leaves own their scrolling body. Let the native large
+    // sheet follow the current phone, tablet, or freeform-window height.
+    if (this.isVirtualKeyboardSettingsLeafSheet()) {
+      return SheetSize.LARGE;
+    }
+    const diagnosticHeight: number = diagnosticLogSettingsLeafSheetHeight(this.settingsLeafSheetMode);
+    if (diagnosticHeight > 0) { return diagnosticHeight; }
+    const moonlightHeight: number = moonlightSettingsLeafSheetHeight(this.settingsLeafSheetMode);
+    if (moonlightHeight > 0) { return moonlightHeight; }
     const vncHeight: number = vncSettingsLeafSheetHeight(this.settingsLeafSheetMode);
     return vncHeight > 0 ? vncHeight : SheetSize.FIT_CONTENT;
   }
@@ -8862,17 +13209,36 @@ struct HostListPage {
       this.rdpCredentialEditorSheet()
     } else if (this.settingsLeafSheetMode === SETTINGS_SHEET_KEY_VAULT) {
       this.keyVaultSheet()
+    } else if (this.settingsLeafSheetMode === SETTINGS_SHEET_DIAGNOSTIC_LOG) {
+      DiagnosticCaptureSettingsSheet({
+        onClose: (): void => { this.closeSettingsLeafSheet(); }
+      })
     } else if (this.settingsLeafSheetMode === SETTINGS_SHEET_FEEDBACK) {
       FeedbackSettingsSheet({
         onClose: (): void => { this.closeSettingsLeafSheet(); },
         onOpenMail: (): void => { this.openFeedbackEmail(); }
+      })
+    } else if (this.isVirtualKeyboardSettingsLeafSheet()) {
+      VirtualKeyboardSettingsSheet({
+        requestedSection: this.virtualKeyboardSettingsSectionForLeaf(),
+        onClose: (): void => { this.closeSettingsLeafSheet(); }
+      })
+    } else if (this.isMoonlightSettingsLeafSheet()) {
+      MoonlightSettingsSurface({
+        embedded: true,
+        requestedSection: this.moonlightSettingsSectionForLeaf(),
+        requestedHostId: this.moonlightSettingsLeafHostId,
+        onClose: (): void => {
+          this.dismissSettingsLeafIfNeeded((): void => { this.closeSettingsLeafSheet(); });
+        },
+        onDirtyChanged: (dirty: boolean): void => { this.moonlightSettingsLeafDirty = dirty; }
       })
     } else if (this.settingsLeafSheetMode >= SETTINGS_SHEET_VNC_CONNECTION &&
       this.settingsLeafSheetMode <= SETTINGS_SHEET_VNC_CLIPBOARD) {
       VncSettingsSheet({
         mode: this.settingsLeafSheetMode,
         onClose: (): void => {
-          this.dismissVncSettingsIfNeeded((): void => { this.closeSettingsLeafSheet(); });
+          this.dismissSettingsLeafIfNeeded((): void => { this.closeSettingsLeafSheet(); });
         },
         onOpenHostManager: (): void => { this.openVncHostManagerFromSettings(); },
         onOpenGatewayManager: (): void => { this.openVncGatewayManagerFromSettings(); },
@@ -8889,7 +13255,7 @@ struct HostListPage {
   }
 
   @Builder settingsAccordionHeader(section: string, icon: Resource, title: string, subtitle: string,
-    terminalStyle: boolean = false) {
+    terminalStyle: boolean = false, moonlightStyle: boolean = false) {
     Row() {
       Stack({ alignContent: Alignment.Center }) {
         Column()
@@ -8902,7 +13268,13 @@ struct HostListPage {
             y: this.settingsSectionExpanded(section) ? 1 : 0.92 })
           .animation({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn })
 
-        if (terminalStyle) {
+        if (moonlightStyle) {
+          MoonlightBrandIcon({
+            iconSize: 21,
+            tint: this.settingsSectionExpanded(section) ? this.accentColor : this.pal().text,
+            accessibilityLabel: 'Moonlight'
+          })
+        } else if (terminalStyle) {
           Image($r('app.media.icon_terminal'))
             .width(21).height(21).fillColor(this.pal().text)
             .opacity(this.settingsSectionExpanded(section) ? 0 : 1)
@@ -9155,6 +13527,20 @@ struct HostListPage {
                   .scale({ x: 0.88, y: 0.88 })
                   .onChange((on: boolean): void => { this.saveAmbientLightEffectEnabled(on); })
               }.width('100%').height(62).padding({ left: 16, right: 16 })
+              this.cardDivider()
+              Row() {
+                Row() { SymbolGlyph($r('sys.symbol.eye_slash')).fontSize(22).fontColor([this.pal().text]) }
+                  .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
+                Column() {
+                  Text('隐藏主机卡片敏感信息').fontSize(AppTheme.fontSize.body)
+                    .fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())
+                  Text('隐藏地址、端口、用户名和 RustDesk ID；自定义主机名称仍显示')
+                    .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
+                }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
+                Toggle({ type: ToggleType.Switch, isOn: this.hostCardSensitiveInfoHidden })
+                  .selectedColor(this.accentColor).scale({ x: 0.88, y: 0.88 })
+                  .onChange((on: boolean): void => { this.saveHostCardSensitiveInfoHidden(on); })
+              }.width('100%').height(66).padding({ left: 16, right: 16 })
             }.borderRadius(24).backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
             .shadow({ radius: 16, color: 'rgba(0,0,0,0.04)', offsetY: 4 })
             .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
@@ -9224,7 +13610,7 @@ struct HostListPage {
                 Column() {
                   Text('按主机类型分组').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
                     .fontColor(this.pal().text).fontFamily(this.font())
-                  Text('手机、Pad 和 PC 小屏固定显示四张类型卡；PC 大屏保留侧栏分类')
+                  Text('手机、Pad 和 PC 小屏按协议显示分类卡；PC 大屏保留侧栏分类')
                     .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
                 }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
                 Toggle({ type: ToggleType.Switch, isOn: this.groupedHostCards })
@@ -9352,8 +13738,8 @@ struct HostListPage {
                 }, true)
               this.cardDivider()
               // 模式选择: AVSession
-              this.liveViewModeRow('系统媒体胶囊',
-                '有真实视频时尝试 VIDEO_PLAY 画中画；AVSession 负责系统媒体控制胶囊',
+              this.liveViewModeRow('画中画模式',
+                '应用退到后台时优先进入 VIDEO_PLAY 画中画，并同步系统媒体控制胶囊',
                 1)
               this.cardDivider()
               // 模式选择: 普通后台通知。第三方远程连接不能直接创建系统实况窗。
@@ -9375,7 +13761,7 @@ struct HostListPage {
 
         ListItem() {
           this.settingsAccordionHeader(SETTINGS_SECTION_DISPLAY_INTERACTION, $r('sys.symbol.desktop_fill'),
-            '显示与交互', '本地缩放、滚轮方向与双指画布缩放')
+            '显示与交互', '本地缩放、滚轮方向与会话控制栏')
         }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 10 })
 
         ListItem() {
@@ -9386,6 +13772,8 @@ struct HostListPage {
               this.remoteDisplayScaleRow()
               this.cardDivider()
               this.remoteWheelDirectionRow()
+              this.cardDivider()
+              this.sessionControlBarVisibilityRow()
               if (!this.isDesktopDevice) {
                 this.cardDivider()
                 this.canvasGestureZoomRow()
@@ -9440,6 +13828,50 @@ struct HostListPage {
         .animation({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn })
 
         ListItem() {
+          this.settingsAccordionHeader(SETTINGS_SECTION_VIRTUAL_KEYBOARD,
+            $r('sys.symbol.keyboard'), '虚拟键盘',
+            'HarmonyOS 输入法、Windows/macOS 组合键、功能键与自定义')
+        }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 10 })
+
+        ListItem() {
+          Column() {
+            Text('虚拟键盘').fontSize(13).fontWeight(FontWeight.Medium)
+              .fontColor(this.pal().text3).fontFamily(this.font()).padding({ left: 8, bottom: 8 })
+            Column() {
+              this.cardActionRow($r('app.media.icon_phone'), '系统输入法',
+                '当前输入法、语言子类型与 HarmonyOS 官方设置',
+                (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_VIRTUAL_KEYBOARD); })
+              this.cardDivider()
+              this.protocolActionRow($r('sys.symbol.keyboard'), '输入行为',
+                '精简键盘、文本发送与候选预编辑规则',
+                (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_VIRTUAL_KEYBOARD_BEHAVIOR); })
+              this.cardDivider()
+              this.cardActionRow($r('app.media.icon_desktop'), '快捷键平台',
+                'Windows 与 macOS 默认组合键语义',
+                (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_VIRTUAL_KEYBOARD_SHORTCUTS); })
+              this.cardDivider()
+              this.cardActionRow($r('app.media.icon_info'), '功能键与面板',
+                'F1–F12、导航键、连续发送与面板触控',
+                (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_VIRTUAL_KEYBOARD_FUNCTIONS); })
+              this.cardDivider()
+              this.cardActionRow($r('app.media.icon_palette'), '自定义组合键',
+                '创建、编辑与删除跨连接复用的快捷键',
+                (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_VIRTUAL_KEYBOARD_CUSTOM); })
+            }.borderRadius(24).backgroundColor(this.pal().card)
+              .backgroundBlurStyle(BlurStyle.Regular)
+              .shadow({ radius: 16, color: 'rgba(0,0,0,0.04)', offsetY: 4 })
+              .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
+          }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 20 })
+        }
+        .constraintSize({ maxHeight: this.settingsSectionExpanded(SETTINGS_SECTION_VIRTUAL_KEYBOARD) ?
+          this.settingsSectionExpandedMaxHeight(SETTINGS_SECTION_VIRTUAL_KEYBOARD) : 0 })
+        .opacity(this.settingsSectionExpanded(SETTINGS_SECTION_VIRTUAL_KEYBOARD) ? 1 : 0)
+        .scale({ x: 1, y: this.settingsSectionExpanded(SETTINGS_SECTION_VIRTUAL_KEYBOARD) ? 1 : 0.98 })
+        .translate({ y: this.settingsSectionExpanded(SETTINGS_SECTION_VIRTUAL_KEYBOARD) ? 0 : -8 })
+        .clip(true)
+        .animation({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn })
+
+        ListItem() {
           this.settingsAccordionHeader(SETTINGS_SECTION_RDP, protocolIcon('rdp'),
             'Windows RDP', '分辨率、色深、输入、音频和凭据')
         }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 10 })
@@ -9457,6 +13889,11 @@ struct HostListPage {
               this.rdpControlModeRow()
               this.cardDivider()
               this.rdpAuthIdentityModeRow()
+              this.cardDivider()
+              this.rustdeskSwitchRow($r('app.media.icon_info'), 'TLS 兼容登录',
+                '仅用于已取消强制 NLA 的 Windows；直连密码登录，安全性低于 NLA',
+                this.rdpTlsWithoutNla,
+                (on: boolean): void => { this.saveRdpTlsWithoutNla(on); }, true)
               this.cardDivider()
               this.rustdeskSwitchRow($r('app.media.icon_audio'), '远端音频',
                 '播放 Windows 远端会话声音', this.rdpAudioEnabled,
@@ -9628,6 +14065,38 @@ struct HostListPage {
               }.width('100%').height(60).padding({ left: 16, right: 16 })
                 .onClick(() => { this.openSettingsLeafSheet(SETTINGS_SHEET_TERMINAL_LINE_SPACING); })
               this.cardDivider()
+              Row() {
+                Column() {
+                  Text('新 SSH 工作台').fontSize(AppTheme.fontSize.body)
+                    .fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())
+                  Text('启用终端搜索、命名 Profile 与后续分屏能力；关闭时沿用现有终端')
+                    .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
+                    .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
+                }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 16 })
+                Toggle({ type: ToggleType.Switch, isOn: this.sshWorkbenchEnabled })
+                  .selectedColor(this.accentColor)
+                  .onChange((enabled: boolean): void => {
+                    this.saveSshWorkbenchEnabled(enabled);
+                  })
+              }.width('100%').height(66).padding({ right: 16 })
+              this.cardDivider()
+              Row() {
+                Column() {
+                  Text('SSH 系统通知').fontSize(AppTheme.fontSize.body)
+                    .fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())
+                  Text('用于后台连接与命令完成提醒；不显示命令、IP、用户名或路径')
+                    .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
+                    .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
+                }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 16 })
+                Button(this.sshSystemNotificationsEnabled ? '已开启' :
+                  (this.sshNotificationAuthorizationPending ? '请求中' : '开启'))
+                  .height(32).fontSize(12).borderRadius(8)
+                  .fontColor(this.sshSystemNotificationsEnabled ? this.pal().text3 : '#FFFFFF')
+                  .backgroundColor(this.sshSystemNotificationsEnabled ? this.pal().surface : this.accentColor)
+                  .enabled(!this.sshSystemNotificationsEnabled && !this.sshNotificationAuthorizationPending)
+                  .onClick((): void => { this.requestSshNotificationAuthorization(); })
+              }.width('100%').height(68).padding({ right: 16 })
+              this.cardDivider()
               this.sshInputModeRow()
               this.cardDivider()
               Row() {
@@ -9745,6 +14214,60 @@ struct HostListPage {
         .opacity(this.settingsSectionExpanded(SETTINGS_SECTION_VNC) ? 1 : 0)
         .scale({ x: 1, y: this.settingsSectionExpanded(SETTINGS_SECTION_VNC) ? 1 : 0.98 })
         .translate({ y: this.settingsSectionExpanded(SETTINGS_SECTION_VNC) ? 0 : -8 })
+        .clip(true)
+        .animation({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn })
+
+        ListItem() {
+          this.settingsAccordionHeader(SETTINGS_SECTION_MOONLIGHT, protocolIcon('moonlight'),
+            'Moonlight', '串流画面、音频、控制与本地安全设置', false, true)
+        }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 10 })
+
+        ListItem() {
+          if (this.settingsSectionExpanded(SETTINGS_SECTION_MOONLIGHT)) {
+            Column() {
+              Text('Moonlight').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text3)
+                .fontFamily(this.font()).padding({ left: 8, bottom: 8 })
+              Column() {
+              this.protocolActionRow($r('sys.symbol.display'), '画面',
+                '预设、H.264、分辨率、帧率、码率与无画面策略',
+                (): void => { this.openMoonlightSettingsFromSettings(SETTINGS_SHEET_MOONLIGHT_VIDEO); })
+              this.cardDivider()
+              this.protocolActionRow($r('sys.symbol.circle'), '音频',
+                '接收音频、后台音频、系统音量与主机播放',
+                (): void => { this.openMoonlightSettingsFromSettings(SETTINGS_SHEET_MOONLIGHT_AUDIO); })
+              this.cardDivider()
+              this.protocolActionRow($r('sys.symbol.mouse'), '控制与手柄',
+                '触控、鼠标、键盘、虚拟与实体控制器',
+                (): void => { this.openMoonlightSettingsFromSettings(SETTINGS_SHEET_MOONLIGHT_INPUT); })
+              this.cardDivider()
+              this.protocolActionRow($r('sys.symbol.link'), '网络与安全',
+                '局域网发现、计费网络、重连、加密与兼容',
+                (): void => {
+                  this.openMoonlightSettingsFromSettings(SETTINGS_SHEET_MOONLIGHT_NETWORK_SECURITY);
+                })
+              this.cardDivider()
+              this.protocolActionRow($r('sys.symbol.performance'), '诊断',
+                '性能浮窗、脱敏日志与会话指标',
+                (): void => { this.openMoonlightSettingsFromSettings(SETTINGS_SHEET_MOONLIGHT_DIAGNOSTICS); })
+              this.cardDivider()
+              this.protocolActionRow($r('sys.symbol.lock_shield'), '配对与信任',
+                '证书变化、本地安全身份与重新配对边界',
+                (): void => { this.openMoonlightSettingsFromSettings(SETTINGS_SHEET_MOONLIGHT_TRUST); })
+              this.cardDivider()
+              this.protocolActionRow($r('sys.symbol.cloud_fill'), '数据管理',
+                '停止同步、分别删除云端或本机 Moonlight 数据',
+                (): void => { this.openMoonlightSettingsFromSettings(SETTINGS_SHEET_MOONLIGHT_DATA); })
+              }.borderRadius(24).backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
+                .shadow({ radius: 16, color: 'rgba(0,0,0,0.04)', offsetY: 4 })
+                .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
+            }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 20 })
+          }
+        }
+        .constraintSize({ maxHeight: this.settingsSectionExpanded(SETTINGS_SECTION_MOONLIGHT) ?
+          this.settingsSectionExpandedMaxHeight(SETTINGS_SECTION_MOONLIGHT) : 0 })
+        .opacity(this.settingsSectionExpanded(SETTINGS_SECTION_MOONLIGHT) ? 1 : 0)
+        .scale({ x: 1, y: this.settingsSectionExpanded(SETTINGS_SECTION_MOONLIGHT) ? 1 : 0.98 })
+        .translate({ y: this.settingsSectionExpanded(SETTINGS_SECTION_MOONLIGHT) ? 0 : -8 })
         .clip(true)
         .animation({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn })
 
@@ -9926,7 +14449,7 @@ struct HostListPage {
 
         ListItem() {
           this.settingsAccordionHeader(SETTINGS_SECTION_TUTORIAL, $r('sys.symbol.doc_plaintext'),
-            '教程', '更新内容、快速使用和前置操作指南')
+            '教程', '快速认识、按设备操作和连接前准备')
         }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 10 })
 
         // --- 教程卡片 ---
@@ -9944,7 +14467,7 @@ struct HostListPage {
                   });
                 })
               this.cardDivider()
-              this.cardActionRow($r('app.media.icon_info'), '简单使用教程', '了解连接、传输、同步、安全与反馈',
+              this.cardActionRow($r('app.media.icon_info'), '快速认识应用', '用 7 页了解协议、设备、安全与数据',
                 (): void => {
                   this.openSettingsLeafSheet(SETTINGS_SHEET_POPUP, (): void => {
                     this.aboutSheetMode = 0;
@@ -9952,7 +14475,16 @@ struct HostListPage {
                   });
                 })
               this.cardDivider()
-              this.cardActionRow($r('app.media.icon_info'), '如何进行前置操作', 'FreeRDP 与 RustDesk 部署指南',
+              this.cardActionRow($r('app.media.icon_desktop'), '操作引导中心',
+                '按手机、Pad、PC 和五种协议查看具体步骤',
+                (): void => {
+                  this.openSettingsLeafSheet(SETTINGS_SHEET_POPUP, (): void => {
+                    this.aboutSheetMode = 5;
+                    this.popupSheetMode = 1;
+                  });
+                })
+              this.cardDivider()
+              this.cardActionRow($r('app.media.icon_info'), '连接前准备', 'RDP、RustDesk、SSH、VNC 与 Sunshine',
                 (): void => {
                   this.openSettingsLeafSheet(SETTINGS_SHEET_POPUP, (): void => {
                     this.aboutSheetMode = 3;
@@ -10014,6 +14546,12 @@ struct HostListPage {
         .animation({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn })
 
         ListItem() {
+          this.settingsActionHeader($r('sys.symbol.doc_plaintext'), '日志',
+            '抓取连接、同步与数据模组的脱敏诊断事件',
+            (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_DIAGNOSTIC_LOG); })
+        }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 10 })
+
+        ListItem() {
           this.settingsActionHeader($r('sys.symbol.message'), '反馈',
             '邮箱反馈或加入畅联群聊',
             (): void => { this.openFeedbackSheet(); })
@@ -10068,6 +14606,14 @@ struct HostListPage {
           this.rdpCertificateInfoCard()
         }
       } else {
+        if (this.rdpCertificateRouteResult !== null) {
+          Text(rdpPreflightStatusLabel(this.rdpCertificateRouteResult.preflightStatus) +
+            ((this.rdpCertificateRouteResult.riskFlags || []).length > 0
+              ? ' · 风险：' + rdpCertificateRiskSummary(this.rdpCertificateRouteResult.riskFlags || [])
+              : ''))
+            .fontSize(12).fontColor(this.pal().text2).fontFamily(this.font())
+            .width('100%').margin({ bottom: 10 })
+        }
         Row() {
           SymbolGlyph($r('sys.symbol.lock_shield_fill'))
             .fontSize(58).fontColor(['#A87300'])
@@ -10145,6 +14691,11 @@ struct HostListPage {
       Text(this.rdpCertificateValidityText(info))
         .fontSize(12).fontColor(this.pal().text).fontFamily(this.font())
         .width('100%').margin({ top: 4 })
+      if (info.riskFlags.length > 0) {
+        Text('风险: ' + rdpCertificateRiskSummary(info.riskFlags))
+          .fontSize(12).fontColor('#B45309').fontFamily(this.font())
+          .width('100%').margin({ top: 4 })
+      }
       Text('SHA-256: ' + (info.fingerprintSha256 || '(无)'))
         .fontSize(12).fontColor(this.pal().text).fontFamily('monospace')
         .width('100%').margin({ top: 8 })
@@ -10364,6 +14915,96 @@ struct HostListPage {
       .borderRadius(this.breakpoint === 'sm' ?
         { topLeft: 20, topRight: 20, bottomLeft: 0, bottomRight: 0 } : 20)
       .constraintSize({ maxWidth: 760 })
+      .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.BOTTOM])
+  }
+
+  @Builder vncCredentialPanel() {
+    Column() {
+      Row() {
+        SymbolGlyph($r('sys.symbol.key_fill'))
+          .fontSize(40).fontColor([this.accentColor])
+        Column() {
+          Text('VNC 连接认证')
+            .fontSize(17).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
+            .fontFamily(this.font())
+          Text(this.vncCredentialHostLabel)
+            .fontSize(13).fontColor(this.pal().text3).margin({ top: 5 })
+        }.layoutWeight(1).margin({ left: 14 })
+      }.width('100%')
+
+      Text('证书或明文风险确认已完成。请先完成密码选择，再进入连接界面。')
+        .fontSize(13).fontColor(this.pal().text2).lineHeight(19)
+        .width('100%').margin({ top: 14 })
+
+      if (this.vncCredentialState === 'consent_required') {
+        Button('确认使用本机已保存密码')
+          .width('100%').height(40).fontSize(13).margin({ top: 14 })
+          .backgroundColor(this.pal().surface).fontColor(this.pal().text).borderRadius(10)
+          .onClick((): void => { this.useSavedVncCredential(); })
+      }
+
+      Row() {
+        TextInput({
+          placeholder: this.vncCredentialNoPassword ? '已选择无密码连接' : '输入 VNC 密码',
+          text: this.vncCredentialPassword
+        })
+          .type(this.vncCredentialPasswordVisible ? InputType.Normal : InputType.Password)
+          .enabled(!this.vncCredentialNoPassword)
+          .layoutWeight(1).height(42)
+          .backgroundColor(this.pal().surface).fontColor(this.pal().text)
+          .onChange((value: string): void => {
+            this.vncCredentialPassword = value;
+            this.vncCredentialError = '';
+          })
+          .onSubmit((): void => { this.confirmVncCredentialPreflight(); })
+        SymbolGlyph(this.vncCredentialPasswordVisible ?
+          $r('sys.symbol.eye_slash') : $r('sys.symbol.eye'))
+          .fontSize(20).fontColor([this.pal().text2]).margin({ left: 10 })
+          .enabled(!this.vncCredentialNoPassword)
+          .onClick((): void => {
+            this.vncCredentialPasswordVisible = !this.vncCredentialPasswordVisible;
+          })
+      }.width('100%').margin({ top: 14 })
+
+      Row() {
+        Toggle({ type: ToggleType.Switch, isOn: this.vncCredentialRememberPassword })
+          .enabled(!this.vncCredentialNoPassword)
+          .onChange((value: boolean): void => {
+            this.vncCredentialRememberPassword = value;
+            this.vncCredentialError = '';
+          })
+        Text('记住密码').fontSize(13).fontColor(this.pal().text2).margin({ left: 8 })
+        Blank()
+        Toggle({ type: ToggleType.Switch, isOn: this.vncCredentialNoPassword })
+          .onChange((value: boolean): void => {
+            this.vncCredentialNoPassword = value;
+            if (value) {
+              this.vncCredentialPassword = '';
+              this.vncCredentialRememberPassword = false;
+            }
+            this.vncCredentialError = '';
+          })
+        Text('无密码连接').fontSize(13).fontColor(this.pal().text2).margin({ left: 8 })
+      }.width('100%').margin({ top: 12 }).alignItems(VerticalAlign.Center)
+
+      if (this.vncCredentialError !== '') {
+        Text(this.vncCredentialError).fontSize(12).fontColor(this.pal().danger)
+          .lineHeight(18).width('100%').margin({ top: 10 })
+      }
+
+      Row() {
+        Button('取消').height(40).layoutWeight(1).fontSize(14)
+          .backgroundColor(this.pal().surface).fontColor(this.pal().text2).borderRadius(10)
+          .onClick((): void => { this.cancelVncCredentialPreflight(); })
+        Button('验证并连接').height(40).layoutWeight(1).fontSize(14)
+          .backgroundColor(this.accentColor).fontColor(Color.White).borderRadius(10)
+          .margin({ left: 12 }).onClick((): void => { this.confirmVncCredentialPreflight(); })
+      }.width('100%').margin({ top: 18 })
+    }.width('100%').padding(20).backgroundColor(this.pal().bg)
+      .backgroundBlurStyle(BlurStyle.Regular)
+      .borderRadius(this.breakpoint === 'sm' ?
+        { topLeft: 20, topRight: 20, bottomLeft: 0, bottomRight: 0 } : 20)
+      .constraintSize({ maxWidth: 620 })
       .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.BOTTOM])
   }
 
@@ -10658,6 +15299,7 @@ struct HostListPage {
     } else {
       AboutSettingsSheet({
         aboutSheetMode: this.aboutSheetMode,
+        guideViewportHeight: this.pageViewportHeight,
         onClose: (): void => { this.closeSettingsLeafSheet(); }
       })
     }
@@ -10693,7 +15335,7 @@ struct HostListPage {
               .width(46).height(46).borderRadius(23).backgroundColor(this.pal().surface).justifyContent(FlexAlign.Center)
             Column() {
               Text('华为云空间').fontSize(16).fontWeight(FontWeight.Bold).fontColor(this.pal().text).fontFamily(this.font())
-              Text('主机、RDP 凭据、SSH 密钥、2FA、VNC 与个性化设置共 7 类业务数据')
+              Text('主机、凭据、密钥、2FA、VNC、自动启用的 Moonlight 与个性化设置共 8 类业务数据')
                 .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font()).maxLines(2).margin({ top: 3 })
             }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 12 })
           }.width('100%').alignItems(VerticalAlign.Center)
@@ -10753,6 +15395,44 @@ struct HostListPage {
           }
           Text('取消勾选不会删除数据，只会停止此设备未来的上传和下载。加密参数会随敏感数据自动保护。')
             .fontSize(12).fontColor(this.pal().text3).fontFamily(this.font()).lineHeight(19).margin({ top: 8, bottom: 14 })
+          Row() {
+            Checkbox()
+              .select(this.cloudSyncSelectedTables.indexOf(
+                MOONLIGHT_CLOUD_TABLE) >= 0)
+              .selectedColor(this.accentColor).enabled(false)
+            Column() {
+              Text('Moonlight 串流数据')
+                .fontSize(14).fontWeight(FontWeight.Medium)
+                .fontColor(this.pal().text).fontFamily(this.font())
+              Text('设置、主机目录和应用配置固定整体同步（自动启用）')
+                .fontSize(11).fontColor(this.pal().text3)
+                .fontFamily(this.font()).margin({ top: 3 })
+            }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+              .margin({ left: 10 })
+          }.width('100%').padding(14).borderRadius(14)
+            .backgroundColor(this.pal().surface).margin({ bottom: 8 })
+          if (this.moonlightRestoreActivationState === 'pending' ||
+              this.moonlightRestoreActivationState === 'blocked') {
+            Column() {
+              Text(this.moonlightRestoreActivationState === 'blocked' ?
+                'Moonlight 恢复隔离状态不可读，传输暂时暂停' :
+                '从备份恢复的 Moonlight 数据仍处于仅本地隔离，需要先核对云端。')
+                .fontSize(11).fontColor(this.moonlightRestoreActivationState ===
+                  'blocked' ? this.pal().danger : '#B66A00')
+                .fontFamily(this.font()).lineHeight(18).width('100%')
+              if (this.moonlightRestoreActivationState === 'pending') {
+                Button('核对云端并允许恢复数据上传')
+                  .fontSize(12).fontWeight(FontWeight.Medium)
+                  .fontColor(Color.White).backgroundColor(this.accentColor)
+                  .height(38).borderRadius(12).width('100%')
+                  .margin({ top: 10 })
+                  .onClick((): void => {
+                    this.confirmMoonlightRestoreActivation();
+                  })
+              }
+            }.width('100%').padding(12).borderRadius(12)
+              .backgroundColor(this.pal().surface).margin({ bottom: 8 })
+          }
           ForEach(cloudSyncSelectableTables(), (table: string) => {
             Row() {
               Checkbox().select(this.cloudSyncSelectedTables.indexOf(table) >= 0).selectedColor(this.accentColor)
@@ -10760,7 +15440,7 @@ struct HostListPage {
                   void this.toggleCloudSyncTable(table);
                 })
               Column() {
-                Text(table === 'usersettings' ? '跨设备外观设置' : table === 'remotehosts' ? '远程主机' : table === 'rdpcredentials' ? 'Windows 登录凭据' : table === 'rustdeskrelays' ? 'RustDesk 中继配置' : table === 'sshkeys' ? 'SSH 密钥' : table === 'totpentries' ? '双重验证动态口令' : 'VNC 记录（vncrecord）')
+                Text(table === 'usersettings' ? '跨设备外观设置' : table === 'remotehosts' ? '远程主机' : table === 'rdpcredentials' ? 'Windows 登录凭据' : table === 'rustdeskrelays' ? 'RustDesk 中继配置' : table === 'sshkeys' ? 'SSH 密钥' : table === 'totpentries' ? '双重验证动态口令' : table === 'vncrecordv2' ? 'VNC 记录（vncrecord）' : 'Moonlight 串流数据')
                   .fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())
                 Text(table === 'usersettings' ? '仅同步主题、壁纸等可跨设备复用的外观偏好' : table === 'vncrecordv2' ? 'VNC 设置、主机、Gateway、加密机密和 trust 候选元数据' : '包含敏感数据，启用时自动同步加密参数')
                   .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font()).margin({ top: 3 })
@@ -11654,6 +16334,55 @@ struct HostListPage {
       .onClick((): void => { this.saveRemoteReverseWheel(reverse); })
   }
 
+  @Builder sessionControlBarVisibilityRow() {
+    Column() {
+      Row() {
+        Row() {
+          Image($r('app.media.icon_desktop')).width(22).height(22).fillColor(this.pal().text3)
+        }.width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
+        Column() {
+          Text('会话侧栏与顶栏').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
+            .fontColor(this.pal().text).fontFamily(this.font())
+          Text(remoteSessionControlBarSelectionSummary(this.sessionControlBarVisibility()))
+            .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
+            .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+        }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
+        Button(this.sessionControlBarProtocolPickerExpanded ? '收起' : '选择协议')
+          .height(34).padding({ left: 12, right: 12 }).fontSize(12)
+          .fontColor(this.accentColor).backgroundColor(this.pal().surface).borderRadius(8)
+          .onClick((): void => {
+            this.sessionControlBarProtocolPickerExpanded =
+              !this.sessionControlBarProtocolPickerExpanded;
+          })
+      }.width('100%').height(64).padding({ left: 16, right: 16 })
+      if (this.sessionControlBarProtocolPickerExpanded) {
+        Text('选中的协议会同时隐藏手机/平板侧栏和 PC 顶栏；可在此随时恢复。')
+          .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
+          .width('100%').padding({ left: 20, right: 20, bottom: 6 })
+        this.sessionControlBarProtocolSwitchRow('rdp', 'RDP')
+        this.sessionControlBarProtocolSwitchRow('rustdesk', 'RustDesk')
+        this.sessionControlBarProtocolSwitchRow('vnc', 'VNC')
+        this.sessionControlBarProtocolSwitchRow('moonlight', 'Moonlight')
+      }
+    }.width('100%')
+  }
+
+  @Builder sessionControlBarProtocolSwitchRow(protocol: string, label: string) {
+    Row() {
+      Column() {
+        Text(label).fontSize(13).fontWeight(FontWeight.Medium)
+          .fontColor(this.pal().text).fontFamily(this.font())
+        Text(this.sessionControlBarHidden(protocol) ? '侧栏和顶栏均已隐藏' : '显示会话控制栏')
+          .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
+      }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+      Toggle({ type: ToggleType.Switch, isOn: this.sessionControlBarHidden(protocol) })
+        .selectedColor(this.accentColor).scale({ x: 0.88, y: 0.88 })
+        .accessibilityText((this.sessionControlBarHidden(protocol) ? '显示 ' : '隐藏 ') +
+          label + ' 会话控制栏')
+        .onChange((on: boolean): void => { this.saveSessionControlBarHidden(protocol, on); })
+    }.width('100%').height(58).padding({ left: 52, right: 16 })
+  }
+
   @Builder canvasGestureZoomRow() {
     if (!this.isDesktopDevice) {
       this.rustdeskSwitchRow($r('app.media.icon_desktop'), '双指画布缩放',
@@ -12131,21 +16860,20 @@ struct HostListPage {
   }
 
   // ==================== Sheet builder ====================
-  private isClassicVncAddSheet(): boolean {
-    return !this.addSheetShowsModernPicker && this.modernAddProtocol === '' && this.proto === 'vnc';
-  }
-
-  private isVncAddSheet(): boolean {
-    return this.isClassicVncAddSheet() || this.modernAddProtocol === 'vnc';
+  private activeHostAddProtocol(): string {
+    return resolveActiveHostAddProtocol(
+      this.modernAddProtocol, this.proto, this.addSheetShowsModernPicker);
   }
 
   private hostAddSheetHeight(): SheetSize {
-    return this.isVncAddSheet() || this.modernAddProtocol === 'ssh'
+    const protocol: string = this.activeHostAddProtocol();
+    return resolveHostAddSheetHeightMode(protocol, this.breakpoint) === 'large'
       ? SheetSize.LARGE : SheetSize.FIT_CONTENT;
   }
 
   private hostAddSheetKeyboardAvoidMode(): SheetKeyboardAvoidMode {
-    return this.isVncAddSheet()
+    const protocol: string = this.activeHostAddProtocol();
+    return resolveHostAddSheetKeyboardAvoidMode(protocol, this.breakpoint) === 'resize'
       ? SheetKeyboardAvoidMode.RESIZE_ONLY
       : SheetKeyboardAvoidMode.TRANSLATE_AND_SCROLL;
   }
@@ -12153,9 +16881,17 @@ struct HostListPage {
   @Builder hostAddSheetContent() {
     if (this.addSheetShowsModernPicker) {
       HostAddWizardSheet({
+        moonlightFabEntryAvailable: false,
+        moonlightProtocolAvailable: this.moonlightProtocolAvailable,
         onSelectProtocol: (protocol: string): void => {
           this.modernAddProtocol = protocol;
           this.addSheetShowsModernPicker = false;
+          if (protocol === 'moonlight') {
+            this.invalidateMoonlightCatalogHandoff();
+            this.clearMoonlightVerificationState();
+            this.moonlightAddCommitted = false;
+            this.moonlightAddOwnerToken += 1;
+          }
           if (protocol === 'vnc') {
             this.prepareVncAddFlow();
             this.vncAddFromModernPicker = true;
@@ -12169,8 +16905,12 @@ struct HostListPage {
     } else if (this.modernAddProtocol === 'rdp') {
       RdpAddFlow({
         credentials: this.rdpCredentials,
+        lanScanning: this.rdpLanScanning,
+        lanHosts: this.rdpLanScanResults,
+        lanStatusText: this.rdpLanStatusText,
         onBackToProtocols: (): void => { this.modernAddProtocol = ''; this.addSheetShowsModernPicker = true; },
         onAddCredential: (): void => { this.openRdpCredentialManager(); },
+        onStartLanScan: (port: number): void => { this.startRdpLanScan(port); },
         onSave: (host: RemoteHost, connectNow: boolean, restrictedAdminHash: string): void => {
           this.saveHostFromAddFlow(host, connectNow, restrictedAdminHash);
         }
@@ -12214,6 +16954,65 @@ struct HostListPage {
           this.saveHostFromAddFlow(host, connectNow);
         }
       })
+    } else if (this.modernAddProtocol === 'moonlight') {
+      MoonlightHostAddFlow({
+        ownerToken: this.moonlightAddOwnerToken,
+        candidates: this.moonlightLanCandidates,
+        discoveryRunning: this.moonlightDiscoveryRunning,
+        discoveryResultOwnerToken: this.moonlightDiscoveryResultOwnerToken,
+        discoveryResultGeneration: this.moonlightDiscoveryResultGeneration,
+        initialDiscoveryEnabled:
+          this.moonlightSettingsService.load().settings.network.discovery !== 'manualOnly',
+        onStartDiscovery: (key: MoonlightHostAddDiscoveryKey): void => {
+          this.startMoonlightLanDiscovery(key);
+        },
+        onPauseDiscovery: (_key: MoonlightHostAddDiscoveryKey): void => {
+          this.stopMoonlightLanDiscovery();
+        },
+        onCancelOwner: (ownerToken: number): void => {
+          this.invalidateMoonlightOwnerFence(ownerToken);
+          this.moonlightHostService.cancelOwner(ownerToken);
+        },
+        onVerify: (
+          address: MoonlightAddress,
+          selectedServerUuid: string,
+          key: MoonlightHostAddOperationKey
+        ): Promise<MoonlightHostAddVerification | null> =>
+          this.moonlightVerifyHost(address, selectedServerUuid, key),
+        onPreparePairing: (key: MoonlightHostAddOperationKey):
+          Promise<MoonlightPairingPreparation> => this.moonlightPairingPreparation(key),
+        onAwaitPairing: (
+          pin: string,
+          key: MoonlightHostAddOperationKey
+        ): Promise<MoonlightPairingCompletion> => this.moonlightAwaitPairing(pin, key),
+        onCommitTrust: (accepted: boolean, key: MoonlightHostAddOperationKey): Promise<boolean> =>
+          this.moonlightCommitTrust(accepted, key),
+        onLoadCatalog: (key: MoonlightHostAddOperationKey):
+          Promise<MoonlightHostAddCatalogSummary> => this.moonlightLoadCatalog(key),
+        onSaveLocal: (
+          state: MoonlightHostAddState,
+          openCatalog: boolean,
+          key: MoonlightHostAddOperationKey
+        ): Promise<MoonlightLocalSaveResult> =>
+          this.saveMoonlightHostLocally(state, openCatalog, key),
+        onOpenExistingHost: (hostId: string, ownerToken: number): void => {
+          this.openExistingMoonlightHost(hostId, ownerToken);
+        },
+        onBackToProtocols: (): void => {
+          this.stopMoonlightLanDiscovery();
+          this.moonlightHostService.disposeOwner(this.moonlightAddOwnerToken);
+          this.clearMoonlightVerificationState();
+          this.invalidateMoonlightCatalogHandoff();
+          this.moonlightAddOwnerToken += 1;
+          this.modernAddProtocol = '';
+          this.addSheetShowsModernPicker = true;
+        },
+        onDiscardTemporaryState: (): Promise<void> =>
+          this.revokeMoonlightTemporaryPairing(),
+        onSaved: (hostId: string, openCatalog: boolean, ownerToken: number): void => {
+          this.handleMoonlightHostSaved(hostId, openCatalog, ownerToken);
+        }
+      })
     } else if (this.modernAddProtocol === 'ssh') {
       SshAddFlow({
         keys: this.keyVault.getAllSshKeys(),
@@ -12226,6 +17025,8 @@ struct HostListPage {
     } else if (this.modernAddProtocol === 'vnc') {
       VncAddFlow({
         gateways: this.vncGateways.list(),
+        fitContent: resolveHostAddSheetContentMode(
+          this.activeHostAddProtocol(), this.breakpoint) === 'fitContent',
         onBackToProtocols: (): void => {
           this.modernAddProtocol = '';
           this.addSheetShowsModernPicker = this.vncAddFromModernPicker;
@@ -12493,24 +17294,20 @@ struct HostListPage {
     if (this.proto === 'vnc') {
       Column() {
         this.classicHostEditorForm()
-      }.width('100%').height('100%')
+      }.width('100%')
+        .height(resolveHostAddSheetContentMode(this.proto, this.breakpoint) === 'fitContent'
+          ? 'auto' : '100%')
     } else {
       this.classicHostEditorForm()
     }
   }
 
-  @Builder private classicHostEditorForm() {
-    Column() {
-      // 标题
-      Text(this.editingHostId !== '' ? '编辑主机' :
-        (this.proto === 'ssh' ? '添加 SSH 终端' :
-          (this.proto === 'rustdesk' ? '添加 RustDesk 主机' :
-            (this.proto === 'vnc' ? '添加 VNC 主机' : '添加 RDP 主机'))))
-        .fontSize(16).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
-        .width('100%').margin({ bottom: 12 }).fontFamily(this.font())
+  private classicHostEditorUsesIntrinsicLayout(): boolean {
+    return resolveHostAddSheetContentMode(this.proto, this.breakpoint) === 'fitContent';
+  }
 
-      Scroll() {
-        Column() {
+  @Builder private classicHostEditorFields() {
+    Column() {
           // 协议选择
           Row() {
             this.protoBtn('RDP', 'rdp', 3389)
@@ -12794,24 +17591,49 @@ struct HostListPage {
               .borderRadius(10).margin({ top: 16 })
               .onClick((): void => { this.doAdd(); })
           }
-        }.width('100%')
+    }.width('100%')
+  }
+
+  @Builder private classicHostEditorTitle() {
+    Text(this.editingHostId !== '' ? '编辑主机' :
+      (this.proto === 'ssh' ? '添加 SSH 终端' :
+        (this.proto === 'rustdesk' ? '添加 RustDesk 主机' :
+          (this.proto === 'vnc' ? '添加 VNC 主机' : '添加 RDP 主机'))))
+      .fontSize(16).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
+      .width('100%').margin({ bottom: 12 }).fontFamily(this.font())
+  }
+
+  @Builder private classicVncEditorFooter() {
+    Row() {
+      Button(this.editingHostId === '' ? '添加' : '保存').width('100%').height(40).fontSize(14)
+        .fontWeight(FontWeight.Medium).backgroundColor(this.accentColor).fontColor('#FFFFFF')
+        .borderRadius(10).onClick((): void => { this.doAdd(); })
+    }.width('100%').margin({ top: 12 })
+  }
+
+  @Builder private classicHostEditorForm() {
+    Column() {
+      this.classicHostEditorTitle()
+      if (this.classicHostEditorUsesIntrinsicLayout()) {
+        // Phone VNC follows the FIT_CONTENT Sheet contract: no nested Scroll
+        // or remaining-space weight participates in intrinsic measurement.
+        this.classicHostEditorFields()
+      } else {
+        Scroll() {
+          this.classicHostEditorFields()
+        }
+        // Bounded VNC/SSH surfaces keep their established internal viewport.
+        .constraintSize({ maxHeight: this.proto === 'vnc' ? '100%' : 420 })
+        .layoutWeight(this.proto === 'vnc' ? 1 : 0)
+        .scrollBar(BarState.Auto)
+        .edgeEffect(EdgeEffect.Spring)
+        .width('100%')
       }
-      // The VNC editor owns a large Sheet. Its Scroll receives only the space
-      // above the fixed footer, including while the keyboard resizes the Sheet.
-      .constraintSize({ maxHeight: this.proto === 'vnc' ? '100%' : 420 })
-      .layoutWeight(this.proto === 'vnc' ? 1 : 0)
-      .scrollBar(BarState.Auto)
-      .edgeEffect(EdgeEffect.Spring)
-      .width('100%')
       if (this.proto === 'vnc') {
-        Row() {
-          Button(this.editingHostId === '' ? '添加' : '保存').width('100%').height(40).fontSize(14)
-            .fontWeight(FontWeight.Medium).backgroundColor(this.accentColor).fontColor('#FFFFFF')
-            .borderRadius(10).onClick((): void => { this.doAdd(); })
-        }.width('100%').margin({ top: 12 })
+        this.classicVncEditorFooter()
       }
     }
-    .layoutWeight(this.proto === 'vnc' ? 1 : 0)
+    .layoutWeight(this.proto === 'vnc' && !this.classicHostEditorUsesIntrinsicLayout() ? 1 : 0)
     .padding({ left: 24, right: 24, top: 24, bottom: 24 })
     .safeAreaPadding({ bottom: 20 })
     .borderRadius(this.breakpoint === 'sm' ? 0 : 20)
@@ -13371,13 +18193,21 @@ struct HostListPage {
           .backgroundColor(this.rustDeskProAuthMode === 'password' ? this.accentColor : this.pal().surface)
           .fontColor(this.rustDeskProAuthMode === 'password' ? Color.White : this.pal().text)
           .enabled(this.rustDeskProPreflightState !== RustDeskProPreflightState.CONNECTING)
-          .onClick((): void => { this.rustDeskProAuthMode = 'password'; this.rustDeskProPreflightError = ''; })
+          .onClick((): void => {
+            this.rustDeskProAuthMode = 'password';
+            this.rustDeskProPreflightError = '';
+            this.saveRustDeskProAuthDraft();
+          })
         if (!this.isCurrentRustDeskPreflightDirect()) {
           Button('请求远端批准')
             .backgroundColor(this.rustDeskProAuthMode === 'request_approval' ? this.accentColor : this.pal().surface)
             .fontColor(this.rustDeskProAuthMode === 'request_approval' ? Color.White : this.pal().text)
             .enabled(this.rustDeskProPreflightState !== RustDeskProPreflightState.CONNECTING)
-            .onClick((): void => { this.rustDeskProAuthMode = 'request_approval'; this.rustDeskProPreflightError = ''; })
+            .onClick((): void => {
+              this.rustDeskProAuthMode = 'request_approval';
+              this.rustDeskProPreflightError = '';
+              this.saveRustDeskProAuthDraft();
+            })
         }
       }.width('100%')
 
@@ -13387,7 +18217,11 @@ struct HostListPage {
           .showPasswordIcon(true)
           .enabled(this.rustDeskProPreflightState !== RustDeskProPreflightState.CONNECTING)
           .height(48).width('100%').backgroundColor(this.pal().surface).borderRadius(10)
-          .onChange((value: string): void => { this.rustDeskProPassword = value; this.rustDeskProPreflightError = ''; })
+          .onChange((value: string): void => {
+            this.rustDeskProPassword = value;
+            this.rustDeskProPreflightError = '';
+            this.saveRustDeskProAuthDraft();
+          })
         Text('密码类型').fontSize(12).fontColor(this.pal().text2)
           .margin({ top: 2, bottom: 5 })
         Row({ space: 8 }) {
@@ -13395,12 +18229,18 @@ struct HostListPage {
             .backgroundColor(this.rustDeskProPasswordMode === 0 ? this.accentColor : this.pal().surface)
             .fontColor(this.rustDeskProPasswordMode === 0 ? Color.White : this.pal().text2)
             .enabled(this.rustDeskProPreflightState !== RustDeskProPreflightState.CONNECTING)
-            .onClick((): void => { this.rustDeskProPasswordMode = 0; })
+            .onClick((): void => {
+              this.rustDeskProPasswordMode = 0;
+              this.saveRustDeskProAuthDraft();
+            })
           Button('永久密码').layoutWeight(1).height(36).fontSize(12)
             .backgroundColor(this.rustDeskProPasswordMode === 1 ? this.accentColor : this.pal().surface)
             .fontColor(this.rustDeskProPasswordMode === 1 ? Color.White : this.pal().text2)
             .enabled(this.rustDeskProPreflightState !== RustDeskProPreflightState.CONNECTING)
-            .onClick((): void => { this.rustDeskProPasswordMode = 1; })
+            .onClick((): void => {
+              this.rustDeskProPasswordMode = 1;
+              this.saveRustDeskProAuthDraft();
+            })
         }.width('100%').margin({ bottom: 6 })
         Text(this.rustDeskProPasswordMode === 0 ?
           '一次性密码过期后，下次连接需要重新输入。' :
@@ -13409,7 +18249,10 @@ struct HostListPage {
         Row({ space: 8 }) {
           Checkbox({ name: 'rememberRustDeskProPassword', group: 'rustDeskProAuth' })
             .select(this.rustDeskProRememberPassword)
-            .onChange((value: boolean): void => { this.rustDeskProRememberPassword = value; })
+            .onChange((value: boolean): void => {
+              this.rustDeskProRememberPassword = value;
+              this.saveRustDeskProAuthDraft();
+            })
           Text('记住设备密码').fontSize(14).fontColor(this.pal().text2)
         }.width('100%')
       } else {
@@ -14072,10 +18915,13 @@ struct HostListPage {
       this.sheetErr = 'SSH 连接方式保存失败，主机未修改';
       return;
     }
+    const desiredRustDeskTotpEntryId: string = h.protocol === 'rustdesk' ?
+      h.rustdeskTotpEntryId.trim() : '';
+    const desiredRustDeskTotpAutoSubmit: boolean = h.protocol === 'rustdesk' &&
+      h.rustdeskTotpAutoSubmit && desiredRustDeskTotpEntryId !== '';
     let saved: boolean = false;
     if (editingId !== '') {
       saved = this.srv.updateHost(h);
-      if (saved) { this.editingHostId = ''; }
     } else {
       saved = this.srv.addHost(h);
     }
@@ -14105,6 +18951,27 @@ struct HostListPage {
       previousRestrictedAdminHash = '';
       return;
     }
+    if (h.protocol === 'rustdesk') {
+      const hadBinding: boolean = existingHost !== undefined &&
+        existingHost.rustdeskTotpEntryId !== '';
+      const bindingSaved: boolean = desiredRustDeskTotpEntryId !== '' ?
+        this.srv.setRustDeskPeerTwoFactorBinding(
+          h.id, desiredRustDeskTotpEntryId, desiredRustDeskTotpAutoSubmit) :
+        (!hadBinding || this.srv.clearRustDeskPeerTwoFactorBinding(h.id));
+      if (!bindingSaved) {
+        if (editingId === '') {
+          const rolledBack: boolean = this.srv.removeHost(h.id);
+          this.sheetErr = rolledBack ?
+            'RustDesk 2FA 绑定保存失败，主机新增已撤销，请重试' :
+            'RustDesk 2FA 绑定保存失败，且主机新增回滚未完成；请返回列表检查';
+        } else {
+          this.sheetErr = '主机配置已保存，但 RustDesk 2FA 绑定未能落盘，请重试绑定';
+        }
+        previousRestrictedAdminHash = '';
+        return;
+      }
+    }
+    if (editingId !== '') { this.editingHostId = ''; }
     if (existingHost !== undefined && existingHost.protocol === 'ssh' && h.protocol !== 'ssh') {
       this.sshProxyProfiles.remove(existingHost.id);
     }
@@ -14129,7 +18996,12 @@ struct HostListPage {
     credential.username = this.username.trim();
     credential.password = this.sheetPwd;
     credential.label = credential.username.indexOf('@') > 0 ? credential.username : credential.username;
-    this.srv.addRdpCredential(credential);
+    if (!this.srv.addRdpCredential(credential)) {
+      promptAction.showToast({
+        message: this.mutationFailureMessage('Windows 凭据保存失败，请重试'), duration: 2400
+      });
+      return;
+    }
     this.rdpCredentials = this.srv.getAllRdpCredentials();
     this.selectRdpCredential(credential.id);
     promptAction.showToast({ message: 'Windows 凭据已保存', duration: 1500 });
@@ -14183,12 +19055,25 @@ struct HostListPage {
     credential.label = this.rdpCredLabel.trim();
     credential.username = username;
     credential.password = this.rdpCredPassword;
+    let saved: boolean = false;
     if (this.rdpCredEditId === '') {
-      this.srv.addRdpCredential(credential);
+      saved = this.srv.addRdpCredential(credential);
+      if (!saved) {
+        promptAction.showToast({
+          message: this.mutationFailureMessage('Windows 凭据保存失败，请重试'), duration: 2400
+        });
+        return;
+      }
       this.selectRdpCredential(credential.id);
       promptAction.showToast({ message: 'Windows 凭据已保存', duration: 1500 });
     } else {
-      this.srv.updateRdpCredential(credential);
+      saved = this.srv.updateRdpCredential(credential);
+      if (!saved) {
+        promptAction.showToast({
+          message: this.mutationFailureMessage('Windows 凭据更新失败，请重试'), duration: 2400
+        });
+        return;
+      }
       promptAction.showToast({ message: 'Windows 凭据已更新', duration: 1500 });
     }
     this.rdpCredentials = this.srv.getAllRdpCredentials();
@@ -14208,7 +19093,12 @@ struct HostListPage {
     }).then((result: Object): void => {
       const r: Record<string, number> = result as Record<string, number>;
       if (r['index'] === 1) {
-        this.srv.removeRdpCredential(credential.id);
+        if (!this.srv.removeRdpCredential(credential.id)) {
+          promptAction.showToast({
+            message: this.mutationFailureMessage('Windows 凭据删除失败，请重试'), duration: 2400
+          });
+          return;
+        }
         if (this.selectedRdpCredentialId === credential.id) { this.selectedRdpCredentialId = ''; }
         if (this.rdpCredEditId === credential.id) { this.resetRdpCredentialEditor(); }
         this.rdpCredentials = this.srv.getAllRdpCredentials();
@@ -14243,7 +19133,11 @@ struct HostListPage {
   private toggleRustDeskAuthTrust(host: RemoteHost): void {
     const updated: RemoteHost = RemoteHost.fromJSON(host.toJSON());
     updated.rustdeskAuthMode = host.rustdeskAuthMode === 'request_approval' ? 'password' : 'request_approval';
-    this.srv.updateHost(updated);
+    if (!this.srv.updateHost(updated)) {
+      promptAction.showToast({
+        message: this.mutationFailureMessage('RustDesk 认证方式保存失败'), duration: 2200
+      });
+    }
   }
 
   private clearRustDeskSavedPassword(host: RemoteHost): void {
@@ -14251,6 +19145,10 @@ struct HostListPage {
     updated.password = '';
     if (this.srv.updateHost(updated)) {
       promptAction.showToast({ message: '已清除保存的 RustDesk 密码', duration: 1500 });
+    } else {
+      promptAction.showToast({
+        message: this.mutationFailureMessage('RustDesk 密码清除失败'), duration: 2200
+      });
     }
   }
 
@@ -14260,6 +19158,10 @@ struct HostListPage {
     updated.password = '';
     if (this.srv.updateHost(updated)) {
       promptAction.showToast({ message: '下次连接将重新询问认证方式', duration: 1500 });
+    } else {
+      promptAction.showToast({
+        message: this.mutationFailureMessage('RustDesk 认证记录清除失败'), duration: 2200
+      });
     }
   }
 
@@ -14319,8 +19221,13 @@ struct HostListPage {
       updated.sshJumpHostKeyRawBase64 = '';
       updated.sshJumpHostKeyTrustedAt = 0;
       updated.sshJumpHostKeyTrustMode = 0;
-      this.srv.updateHost(updated);
-      promptAction.showToast({ message: '已忘记 SSH 指纹', duration: 1500 });
+      if (this.srv.updateHost(updated)) {
+        promptAction.showToast({ message: '已忘记 SSH 指纹', duration: 1500 });
+      } else {
+        promptAction.showToast({
+          message: this.mutationFailureMessage('SSH 指纹删除失败'), duration: 2200
+        });
+      }
     });
   }
 
@@ -14358,8 +19265,13 @@ struct HostListPage {
       }
       const updated: RemoteHost = RemoteHost.fromJSON(host.toJSON());
       this.applySshPreflightTrust(updated, info, jumpInfo);
-      this.srv.updateHost(updated);
-      promptAction.showToast({ message: 'SSH 指纹已更新', duration: 1500 });
+      if (this.srv.updateHost(updated)) {
+        promptAction.showToast({ message: 'SSH 指纹已更新', duration: 1500 });
+      } else {
+        promptAction.showToast({
+          message: this.mutationFailureMessage('SSH 指纹保存失败'), duration: 2200
+        });
+      }
     } catch (err) {
       promptAction.showToast({ message: '重新获取异常: ' + JSON.stringify(err), duration: 2500 });
     } finally {
@@ -14401,8 +19313,13 @@ struct HostListPage {
       updated.rdpGatewayCertificateAllowUntrustedRoot = false;
       updated.rdpGatewayCertificateAllowHostMismatch = false;
       updated.rdpGatewayCertificateRouteIdentity = '';
-      this.srv.updateHost(updated);
-      promptAction.showToast({ message: '已忘记 RDP 证书', duration: 1500 });
+      if (this.srv.updateHost(updated)) {
+        promptAction.showToast({ message: '已忘记 RDP 证书', duration: 1500 });
+      } else {
+        promptAction.showToast({
+          message: this.mutationFailureMessage('RDP 证书删除失败'), duration: 2200
+        });
+      }
     });
   }
 
@@ -14436,6 +19353,10 @@ struct HostListPage {
         });
         return;
       }
+      const targetRiskFlags: string[] = rdpCertificateEffectiveRiskFlags(
+        result.targetRiskFlags, result.targetCertificate.riskFlags);
+      const gatewayRiskFlags: string[] = rdpCertificateEffectiveRiskFlags(
+        result.gatewayRiskFlags, result.gatewayCertificate.riskFlags);
       if (!this.rdpCertificateResultMatchesLiveRoute(host, result)) {
         promptAction.showToast({
           message: 'RDP 路由在证书刷新期间发生变化，请重新获取 [E-RDP-CERT-ROUTE-STALE]',
@@ -14470,8 +19391,18 @@ struct HostListPage {
         updated.rdpGatewayCertificateAllowHostMismatch = gateway.hostMismatch;
         updated.rdpGatewayCertificateRouteIdentity = result.routeIdentity;
       }
-      this.srv.updateHost(updated);
-      promptAction.showToast({ message: 'RDP 证书已更新并信任', duration: 1500 });
+      if (!this.srv.updateHost(updated)) {
+        promptAction.showToast({ message: 'RDP 证书已读取，但保存信任失败', duration: 2200 });
+        return;
+      }
+      const riskSummary: string = rdpCertificateRiskSummary(
+        targetRiskFlags.concat(gatewayRiskFlags));
+      promptAction.showToast({
+        message: riskSummary.length > 0 ?
+          'RDP 证书已更新并信任；仍需注意：' + riskSummary :
+          'RDP 证书已更新并信任',
+        duration: riskSummary.length > 0 ? 2800 : 1500
+      });
     } catch (err) {
       promptAction.showToast({ message: '重新获取异常: ' + JSON.stringify(err), duration: 2500 });
     } finally {

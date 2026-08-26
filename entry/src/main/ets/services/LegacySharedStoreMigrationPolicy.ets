@@ -10,23 +10,38 @@ export type LegacyVncRowMigrationDecision =
 export function legacyRowOwnershipDecision(
   legacyUserId: string,
   targetKind: AccountScopeKind,
-  verifiedUnionId: string
+  verifiedUnionId: string,
+  targetOwnerScopeId: string = ''
 ): LegacyRowOwnershipDecision {
   const owner: string = legacyUserId.trim();
-  if (owner.length === 0) { return 'quarantine_missing_owner'; }
+  const unionId: string = verifiedUnionId.trim();
+  const targetScope: string = targetOwnerScopeId.trim();
+  // 1.0.7/1.0.8 wrote account rows into the single physical cloud store
+  // before ownerScopeId existed.  A blank owner is therefore compatible only
+  // when the active Huawei account has already supplied a stable UnionID.
+  // Device-local data keeps the old fail-closed behavior.
+  if (owner.length === 0) {
+    return targetKind === 'huawei_account' && unionId.length > 0
+      ? 'target' : 'quarantine_missing_owner';
+  }
   if (targetKind === 'device_local') {
     return owner === 'local' || owner === 'device-local'
       ? 'target' : 'other_owner';
   }
-  const unionId: string = verifiedUnionId.trim();
   if (unionId.length === 0) { return 'other_owner'; }
-  return owner === unionId ? 'target' : 'other_owner';
+  // Rows produced by the 1.0.9/1.0.10 account-scoped store may already carry
+  // the canonical opaque owner. Accept that exact owner when the source is
+  // being opened as a local compatibility store.
+  return owner === unionId ||
+    (targetScope.length > 0 && owner === targetScope)
+    ? 'target' : 'other_owner';
 }
 
 export function legacyCryptoParamsMayMigrate(
   distinctNonLocalOwners: string[],
   targetKind: AccountScopeKind,
-  verifiedUnionId: string
+  verifiedUnionId: string,
+  targetOwnerScopeId: string = ''
 ): boolean {
   const owners: string[] = distinctNonLocalOwners
     .map((value: string): string => value.trim())
@@ -37,7 +52,16 @@ export function legacyCryptoParamsMayMigrate(
     if (unique.indexOf(owners[i]) < 0) { unique.push(owners[i]); }
   }
   if (targetKind === 'device_local') { return unique.length === 0; }
-  return unique.length === 1 && unique[0] === verifiedUnionId.trim();
+  const unionId: string = verifiedUnionId.trim();
+  const targetScope: string = targetOwnerScopeId.trim();
+  if (unionId.length === 0) { return false; }
+  // cryptoparams has no userid column. In the legacy physical cloud store an
+  // empty owner set is the only safe proof available for rows written before
+  // owner scoping; a single exact UnionID/ownerScopeId is equally unambiguous.
+  return unique.length === 0 ||
+    (unique.length === 1 &&
+      (unique[0] === unionId ||
+        (targetScope.length > 0 && unique[0] === targetScope)));
 }
 
 /**

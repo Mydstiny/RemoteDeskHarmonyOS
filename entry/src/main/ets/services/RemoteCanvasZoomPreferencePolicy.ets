@@ -2,7 +2,7 @@
  * Version the canvas-zoom default independently from the user's later toggle.
  * Existing installations used a device-dependent default. A stored value is
  * user state and must survive an update; only a genuinely missing value takes
- * the 1.1.0 clean-install default.
+ * the 1.1.1 clean-install default.
  */
 export const CANVAS_GESTURE_ZOOM_PREFERENCE_VERSION: number = 2;
 

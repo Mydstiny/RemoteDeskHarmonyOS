@@ -1,4 +1,9 @@
-import { CloudSyncDirection, cloudPullOrder } from './CloudSyncPolicy';
+import {
+  CloudSyncDirection,
+  cloudPullOrder,
+  coreCloudSyncTableNames,
+  optionalCloudSyncTableNames
+} from './CloudSyncPolicy';
 import { effectiveCloudSyncTables } from './CloudSyncSelectionPolicy';
 
 export type CloudSyncSource =
@@ -30,7 +35,7 @@ export interface CloudSyncRetryRecord {
 export type CloudSyncFailureKind =
   'none' | 'version_conflict' | 'empty_snapshot' | 'tombstone_cleanup' |
   'unsafe_payload' | 'cloud_service' | 'network' | 'indeterminate' |
-  'restore_pending' | 'unknown';
+  'restore_pending' | 'no_selection' | 'unknown';
 
 export type CloudSyncWatchdogTimeoutKind =
   'none' | 'accept_timeout' | 'idle_timeout' | 'overall_timeout';
@@ -168,6 +173,62 @@ export function shouldRejectAutomaticEmptyCloudSnapshot(
     !authoritativeEmptyProof;
 }
 
+/**
+ * Moonlight has a device-local overlay behind its optional physical cloud
+ * table. An automatic empty result must be stopped before that overlay is
+ * materialized or promoted, otherwise an old local row can recreate a remote
+ * deletion in the same cloud-first completion.
+ */
+export function shouldProtectMoonlightBeforeEmptyCloudMaterialization(
+  source: string,
+  direction: CloudSyncDirection,
+  beforeVisibleRows: number,
+  cloudVisibleRows: number
+): boolean {
+  return shouldRejectAutomaticEmptyCloudSnapshot(
+    source, direction, beforeVisibleRows, cloudVisibleRows, false);
+}
+
+/**
+ * Preserve a completed legacy-table pull when every failed table belongs to
+ * the optional rollout set. The result is deliberately empty for a
+ * Moonlight-only request: without an independently completed core table there
+ * is no compatibility success to commit, so the ordinary rollback contract
+ * remains in force.
+ */
+export function cloudFirstCompatibleTablesAfterOptionalFailure(
+  direction: CloudSyncDirection,
+  tables: string[],
+  failedTables: string[]
+): string[] {
+  if (direction !== 'cloudFirst' || tables.length === 0 ||
+      failedTables.length === 0) {
+    return [];
+  }
+  const optional: string[] = optionalCloudSyncTableNames();
+  const core: string[] = coreCloudSyncTableNames();
+  const failed: string[] = [];
+  for (let i = 0; i < failedTables.length; i++) {
+    const table: string = failedTables[i];
+    if (table === '' || tables.indexOf(table) < 0 ||
+        optional.indexOf(table) < 0) {
+      return [];
+    }
+    if (failed.indexOf(table) < 0) { failed.push(table); }
+  }
+  const completed: string[] = [];
+  let completedCore: boolean = false;
+  for (let i = 0; i < tables.length; i++) {
+    const table: string = tables[i];
+    if (failed.indexOf(table) >= 0 || completed.indexOf(table) >= 0) {
+      continue;
+    }
+    completed.push(table);
+    if (core.indexOf(table) >= 0) { completedCore = true; }
+  }
+  return completedCore ? completed : [];
+}
+
 /** These failures must stop native-first retries until the user resolves them. */
 export function shouldBlockAutomaticRetry(kind: CloudSyncFailureKind): boolean {
   return kind === 'version_conflict' || kind === 'empty_snapshot' ||
@@ -199,6 +260,9 @@ export function cloudSyncFailureMessage(kind: CloudSyncFailureKind): string {
   }
   if (kind === 'restore_pending') {
     return '本地恢复数据尚未确认上传，已保持恢复隔离；首次云端核对和自动上传均未执行。请明确选择保留本地恢复或从云端重新下载。';
+  }
+  if (kind === 'no_selection') {
+    return '尚未选择可同步的数据类型；未启动云端传输，也未改变现有同步状态。';
   }
   return '云同步未完成，数据未确认全部同步，请稍后重试。';
 }
@@ -280,6 +344,28 @@ export function cloudLocalMutationAllowed(manualDownloadActive: boolean, localRe
   // read-only.
   return !manualDownloadActive && !localRestoreActive &&
     !cloudDownloadActive && !indeterminateTransferActive;
+}
+
+/**
+ * The platform reports dataChange for rows materialized by this app's own
+ * cloud-first transfer. Re-enqueuing that callback creates an endless pull
+ * loop, so only an external/idle notification may start another pull. A late
+ * indeterminate terminal has its own explicit recovery pull.
+ */
+export function cloudDataChangeShouldRequestPull(
+  cloudDownloadActive: boolean,
+  indeterminateTransferActive: boolean,
+  nowMs: number = 0,
+  lastCloudFirstCompletedAtMs: number = 0,
+  selfApplyQuietPeriodMs: number = 3000
+): boolean {
+  if (cloudDownloadActive || indeterminateTransferActive) { return false; }
+  if (lastCloudFirstCompletedAtMs <= 0 || selfApplyQuietPeriodMs <= 0) {
+    return true;
+  }
+  return Number.isSafeInteger(nowMs) &&
+    nowMs >= lastCloudFirstCompletedAtMs &&
+    nowMs - lastCloudFirstCompletedAtMs >= selfApplyQuietPeriodMs;
 }
 
 export function exclusiveVncSelectionAdmissionAllowed(

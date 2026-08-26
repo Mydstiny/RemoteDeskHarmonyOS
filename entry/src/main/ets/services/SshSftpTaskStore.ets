@@ -27,6 +27,7 @@ import {
   upsertSshSftpTask,
   sshSftpTaskMaxCount
 } from './SshSftpTaskPolicy';
+import { recordDiagnosticEvent } from './DiagnosticCaptureRuntime';
 
 const PREFS_NAME: string = 'RemoteDesktopSshSftpPrefs';
 const TASKS_KEY: string = 'ssh.sftp.tasks.v1';
@@ -532,6 +533,17 @@ export class SshSftpTaskStore {
   }
 
   private publish(event: SshSftpTaskEvent): void {
+    const stage: SshSftpTaskStage = event.record.stage;
+    if (stage === 'queued') {
+      recordDiagnosticEvent('connection.ssh_sftp', 'sftp_task_started', 'started',
+        0, event.record.sessionGeneration, event.record.direction === 'upload' ? 1 : 2,
+        0, 1, event.record.totalBytes > 0 ? event.record.totalBytes : 0);
+    } else if (stage === 'completed' || stage === 'failed' || stage === 'cancelled') {
+      recordDiagnosticEvent('connection.ssh_sftp', 'sftp_task_completed',
+        stage === 'completed' ? 'succeeded' : (stage === 'cancelled' ? 'cancelled' : 'failed'),
+        0, event.record.sessionGeneration, event.record.direction === 'upload' ? 1 : 2,
+        0, 1, event.record.verifiedOffset > 0 ? event.record.verifiedOffset : 0);
+    }
     const listeners: SshSftpTaskListener[] = this.listeners.slice();
     for (let index = 0; index < listeners.length; index++) {
       try { listeners[index](event); } catch (_err) { /* observers cannot break persistence */ }

@@ -1,3 +1,335 @@
+export type MoonlightNativeOperation =
+  'pair' | 'catalog' | 'asset' | 'launch' | 'resume' | 'quit' | 'unpair' |
+  'delete_identity';
+export type MoonlightNativeCode =
+  'ok' | 'invalid_argument' | 'busy' | 'runtime_proof_required' | 'unavailable' |
+  'unpaired' | 'app_not_found' | 'invalid_catalog' | 'resume_required' |
+  'host_busy' | 'confirmation_required' | 'action_rejected' | 'outcome_unknown' |
+  'cancelled' | 'stale' | 'deadline_exceeded' | 'transport_failure' |
+  'protocol_failure' | 'repair_required' | 'shutting_down';
+export type MoonlightNativeTruth =
+  'not_attempted' | 'confirmed' | 'failed' | 'unknown';
+export type MoonlightNativeTerminalStage = 'complete' | 'failed' | 'cancelled';
+
+export interface NativeSessionOwnerIdentity {
+  sessionId: number;
+  generation: number;
+  ownerToken: number;
+}
+
+export interface NativeDisconnectReceipt {
+  accepted: boolean;
+  requestId: number;
+  terminalState: number;
+}
+
+export interface MoonlightNativeRequestKey {
+  requestId: number;
+  generation: number;
+  ownerToken: number;
+}
+
+export interface MoonlightNativeAddress {
+  value: string;
+  family: 'unspecified' | 'ipv4' | 'ipv6';
+}
+
+export interface MoonlightNativeEndpoint {
+  serverName: string;
+  addresses: MoonlightNativeAddress[];
+  httpPort?: number;
+  httpsPort?: number;
+  pinnedTrustAvailable?: boolean;
+  allowHttpPairingCandidate?: boolean;
+}
+
+export interface MoonlightNativeLaunchConfiguration {
+  width?: number;
+  height?: number;
+  refreshRate?: number;
+  additionalStates?: boolean;
+  sops?: boolean;
+  hdr?: boolean;
+  playAudioOnHost?: boolean;
+  surroundAudioInfo?: number;
+  remoteControllersBitmap?: number;
+  gamepadMask?: number;
+  persistGamepads?: boolean;
+  videoCodec?: 'h264' | 'hevc' | 'av1';
+  resolutionPolicy?: 'exact' | 'hostCapability';
+}
+
+export interface MoonlightNativeStreamStartRequest {
+  launchKey: MoonlightNativeRequestKey;
+  hostId: string;
+  serverUuid: string;
+  appId: number;
+  rendererHandle: number;
+  surfaceWidth: number;
+  surfaceHeight: number;
+  configuredBitrateKbps: number;
+  codecPreference: 'h264' | 'hevc' | 'av1';
+  hdr: boolean;
+  yuv444: boolean;
+  latencyMode: 'lowLatency' | 'balanced' | 'smooth';
+  audioEnabled: boolean;
+  audioChannels: 'stereo' | 'surround51' | 'surround71';
+  playAudioOnHost: boolean;
+  resetRemoteInputBeforeAdmission: boolean;
+  desktopSurfaceCompatibility: boolean;
+  streamEncryption: 'auto' | 'required' | 'compatible';
+}
+
+export interface MoonlightNativeStreamStartResult {
+  accepted: boolean;
+  code: string;
+  sessionId: number;
+  generation: number;
+  ownerToken: number;
+}
+
+export interface MoonlightNativeStreamSnapshot {
+  matched: boolean;
+  code: string;
+  sessionId: number;
+  generation: number;
+  ownerToken: number;
+  transportReady: boolean;
+  videoReady: boolean;
+  audioReady: boolean;
+  inputReady: boolean;
+  controllerReady: boolean;
+  physicalControllerReady: boolean;
+  inputMayBeStuck: boolean;
+  presentationFrameReady: boolean;
+  firstFrameReady: boolean;
+  terminal: boolean;
+  lastSequence: number;
+  sampledAtMonotonicMs?: number;
+  acceptedVideoFrames?: number;
+  droppedVideoFrames?: number;
+  acceptedVideoBytes?: number;
+  rendererPresentedFrames?: number;
+  acceptedAudioPackets?: number;
+  rejectedAudioPackets?: number;
+  acceptedAudioBytes?: number;
+  acceptedInputEvents?: number;
+  rejectedInputEvents?: number;
+  decoderQueueDepth?: number;
+  decoderInputDroppedFrames?: number;
+  decoderWaitKeyframeDrops?: number;
+  decoderInputTruncated?: number;
+  decoderRenderOutputFailures?: number;
+  decoderSurfaceUpdateFailures?: number;
+  decoderSurfaceCoalescedNotifications?: number;
+  decoderCodecLatencyMs?: number;
+  decoderCodecLatencyMaxMs?: number;
+  decoderLowLatencyEnabled?: boolean;
+  streamWidth?: number;
+  streamHeight?: number;
+  targetFps?: number;
+  configuredBitrateKbps?: number;
+  codec?: 'h264' | 'hevc' | 'av1';
+}
+
+export interface MoonlightSurfaceRebindRequest {
+  launchKey: MoonlightNativeRequestKey;
+  rendererHandle: number;
+}
+
+export interface MoonlightAudioLifecycleRequest {
+  launchKey: MoonlightNativeRequestKey;
+  paused: boolean;
+}
+
+export interface MoonlightKeyInputRequest {
+  launchKey: MoonlightNativeRequestKey;
+  keyCode: number;
+  pressed: boolean;
+  normalizedToUsLayout: boolean;
+}
+
+export interface MoonlightTextInputRequest {
+  launchKey: MoonlightNativeRequestKey;
+  text: string;
+}
+
+export interface MoonlightPointerInputRequest {
+  launchKey: MoonlightNativeRequestKey;
+  action: 'relative' | 'absolute' | 'absoluteButton' | 'button' | 'scroll';
+  x?: number;
+  y?: number;
+  contentLeft?: number;
+  contentTop?: number;
+  contentWidth?: number;
+  contentHeight?: number;
+  referenceWidth?: number;
+  referenceHeight?: number;
+  geometryGeneration?: number;
+  button?: number;
+  pressed?: boolean;
+  horizontal?: boolean;
+  scrollAmount?: number;
+}
+
+export interface MoonlightTouchInputRequest {
+  launchKey: MoonlightNativeRequestKey;
+  contactId: number;
+  phase: 'down' | 'move' | 'up' | 'cancel';
+  pointX: number;
+  pointY: number;
+  pressure: number;
+  contactAreaMajor: number;
+  contactAreaMinor: number;
+  rotation: number;
+  contentLeft: number;
+  contentTop: number;
+  contentWidth: number;
+  contentHeight: number;
+  referenceWidth: number;
+  referenceHeight: number;
+  geometryGeneration: number;
+  hitMapGeneration: number;
+}
+
+export interface MoonlightInputLifecycleRequest {
+  launchKey: MoonlightNativeRequestKey;
+  reason: 'overlay_opened' | 'control_mode_changed' | 'display_rotated' |
+    'focus_lost' | 'pip_entered' | 'backgrounded' | 'surface_detached' |
+    'reconnect_started';
+  suspended: boolean;
+}
+
+export interface MoonlightTouchModeRequest {
+  launchKey: MoonlightNativeRequestKey;
+  direct: boolean;
+}
+
+export type MoonlightVirtualControllerElement =
+  'faceA' | 'faceB' | 'faceX' | 'faceY' | 'dpad' | 'leftStick' |
+  'rightStick' | 'leftTrigger' | 'rightTrigger' | 'leftShoulder' |
+  'rightShoulder' | 'leftStickClick' | 'rightStickClick' | 'menu' |
+  'back' | 'special';
+
+export interface MoonlightVirtualControllerModeRequest {
+  launchKey: MoonlightNativeRequestKey;
+  enabled: boolean;
+  editing: boolean;
+}
+
+export interface MoonlightVirtualControllerRequest {
+  launchKey: MoonlightNativeRequestKey;
+  element: MoonlightVirtualControllerElement;
+  phase: 'begin' | 'change' | 'end' | 'cancel';
+  pointerId: number;
+  primary: number;
+  secondary: number;
+}
+
+export interface MoonlightNativeRequest {
+  operation: MoonlightNativeOperation;
+  key: MoonlightNativeRequestKey;
+  ownerScopeFingerprint: string;
+  installationId?: string;
+  hostId?: string;
+  serverUuid?: string;
+  pinnedCertificateSha256?: string;
+  endpoint?: MoonlightNativeEndpoint;
+  timeoutMs?: number;
+  appId?: number;
+  catalogGeneration?: number;
+  expectedCurrentAppId?: number;
+  userConfirmedTermination?: boolean;
+  allowLegacySha1?: boolean;
+  pin?: ArrayBuffer | Uint8Array;
+  launchConfiguration?: MoonlightNativeLaunchConfiguration;
+}
+
+export interface MoonlightNativeApp {
+  id: number;
+  title: string;
+  hdrSupported?: boolean;
+}
+
+export interface MoonlightNativeDiagnostic {
+  stage: string;
+  code: string;
+  httpStatus: number;
+  xmlStatus: number;
+  transportAttempts: number;
+  byteCount: number;
+  appIdFingerprint: number;
+}
+
+export interface MoonlightNativeResult {
+  operation: MoonlightNativeOperation;
+  key: MoonlightNativeRequestKey;
+  code: MoonlightNativeCode;
+  terminalStage: MoonlightNativeTerminalStage;
+  preflightTruth: MoonlightNativeTruth;
+  actionTruth: MoonlightNativeTruth;
+  postconditionTruth: MoonlightNativeTruth;
+  partialAppCount: number;
+  observedAtMs: number;
+  idempotent: boolean;
+  mutationMayHaveBeenSent: boolean;
+  identityExistingCount: number;
+  identityDeletedCount: number;
+  identityRemainingCount: number;
+  apps: MoonlightNativeApp[];
+  asset: ArrayBuffer;
+  certificateSha256?: string;
+  rtspSessionUrl?: string;
+  diagnostics: MoonlightNativeDiagnostic[];
+}
+
+export interface MoonlightBridgeCapabilities {
+  bridgeCompiled: boolean;
+  identityReady: boolean;
+  identityDeletionReady: boolean;
+  transportReady: boolean;
+  trustReady: boolean;
+  commitReady: boolean;
+  pairingReady: boolean;
+  hostControlReady: boolean;
+  blocker: string;
+}
+
+export interface MoonlightNativeEvent {
+  sequence: number;
+  monotonicTimestampMs: number;
+  operation: MoonlightNativeOperation;
+  key: MoonlightNativeRequestKey;
+  code: MoonlightNativeCode;
+  terminalStage: MoonlightNativeTerminalStage;
+}
+
+export function moonlightGetBridgeCapabilities(): MoonlightBridgeCapabilities;
+export function moonlightRequestAsync(request: MoonlightNativeRequest):
+  Promise<MoonlightNativeResult> & MoonlightNativeRequestKey;
+export function moonlightCancelRequest(key: MoonlightNativeRequestKey): boolean;
+export function moonlightCancelOwner(ownerToken: number): number;
+export function moonlightPollEvents(ownerToken: number, afterSequence?: number,
+  limit?: number): MoonlightNativeEvent[];
+export function moonlightStartStream(request: MoonlightNativeStreamStartRequest):
+  MoonlightNativeStreamStartResult;
+export function moonlightGetStreamSnapshot(key: MoonlightNativeRequestKey):
+  MoonlightNativeStreamSnapshot;
+export function moonlightStopStream(key: MoonlightNativeRequestKey): boolean;
+export function moonlightSuspendSurface(key: MoonlightNativeRequestKey): boolean;
+export function moonlightRebindSurface(request: MoonlightSurfaceRebindRequest): boolean;
+export function moonlightSetAudioPaused(request: MoonlightAudioLifecycleRequest): boolean;
+export function moonlightSendKey(request: MoonlightKeyInputRequest): boolean;
+export function moonlightSendText(request: MoonlightTextInputRequest): boolean;
+export function moonlightSendPointer(request: MoonlightPointerInputRequest): boolean;
+export function moonlightSendTouch(request: MoonlightTouchInputRequest): boolean;
+export function moonlightSetInputSuspended(request: MoonlightInputLifecycleRequest): boolean;
+export function moonlightSetTouchMode(request: MoonlightTouchModeRequest): boolean;
+export function moonlightSetVirtualControllerMode(
+  request: MoonlightVirtualControllerModeRequest): boolean;
+export function moonlightSendVirtualController(
+  request: MoonlightVirtualControllerRequest): boolean;
+
 export const VERSION: SessionVersionInfo;
 
   export function listProtocols(): ProtocolInfo[];
@@ -14,11 +346,17 @@ export const VERSION: SessionVersionInfo;
     decoderHandle?: number, audioHandle?: number): number;
   export function beginDisconnect(sessionId: number, rendererHandle: number,
     decoderHandle: number, audioHandle: number): number;
+  export function getSessionOwnerIdentity(sessionId: number): NativeSessionOwnerIdentity | null;
+  export function beginDisconnectWithReceipt(sessionId: number, generation: number,
+    ownerToken: number, rendererHandle: number, decoderHandle: number,
+    audioHandle: number): NativeDisconnectReceipt;
   export function disconnectAll(rendererHandle?: number, decoderHandle?: number,
     audioHandle?: number): number;
   export function getDisconnectState(requestId: number): number;
 
   export function sendKey(sessionId: number, scancode: number, pressed: boolean): void;
+  export function sendKeySequence(sessionId: number, keyCodes: number[]): boolean;
+  export function sendKeyEvents(sessionId: number, keyCodes: number[], pressed: boolean[]): boolean;
   export function sendMouse(sessionId: number, x: number, y: number, button: number, pressed: boolean): void;
   export function sendMouseWheel(sessionId: number, x: number, y: number, delta: number): void;
   export function sendRustDeskTouchpadWheel(sessionId: number, x: number, y: number): boolean;
@@ -169,7 +507,8 @@ export const VERSION: SessionVersionInfo;
   export function renderFrame(handle: number, textureId: number): void;
   export function renderRawBGRA(handle: number, data: ArrayBuffer, width: number, height: number, stride: number): void;
   export function resizeRenderer(handle: number, width: number, height: number): void;
-  export function setRendererCanvasTransform(handle: number, scale: number, panX: number, panY: number): number;
+  export function setRendererCanvasTransform(handle: number, scale: number, panX: number, panY: number,
+    rotationQuarterTurns?: number): number;
   export function testRender(handle: number): void;
   export function registerNativeXComponent(): boolean;
   export function setXComponentSurfaceId(surfaceId: string, width: number, height: number): boolean;
@@ -188,6 +527,25 @@ export const VERSION: SessionVersionInfo;
   export function detachVideoPipeline(decoderHandle: number): boolean;
   export function requestDecoderRecovery(decoderHandle: number): boolean;
   export function rebindActiveVideoPipeline(): boolean;
+  export interface HardwareVideoDecoderCapability {
+    available: boolean;
+    name: string;
+    minWidth: number;
+    maxWidth: number;
+    minHeight: number;
+    maxHeight: number;
+    minFps: number;
+    maxFps: number;
+    widthAlignment: number;
+    heightAlignment: number;
+    lowLatency: boolean;
+  }
+  export interface HardwareVideoDecoderCapabilities {
+    h264: HardwareVideoDecoderCapability;
+    hevc: HardwareVideoDecoderCapability;
+    av1: HardwareVideoDecoderCapability;
+  }
+  export function getHardwareVideoDecoderCapabilities(): HardwareVideoDecoderCapabilities;
 
   export function initAudioPlayer(sampleRate?: number, channels?: number): number;
   export function destroyAudioPlayer(handle: number): void;
@@ -281,7 +639,11 @@ export interface RdpCertificateInfo {
   hostMismatch: boolean;
   errorCode: number;
   errorMessage: string;
+  preflightStatus: RdpPreflightStatus;
+  riskFlags: string[];
 }
+
+export type RdpPreflightStatus = 'completed' | 'inconclusive' | 'unavailable' | 'transportFailed';
 
 export type RdpEndpointMode = 'direct_rdp' | 'transparent_tcp_rdp' |
   'microsoft_rd_gateway' | 'vendor_https_bastion' | 'azure_bastion' | 'unknown_gateway';
@@ -308,8 +670,10 @@ export interface RdpPreflightRequest {
   expectedGatewayFingerprintSha256?: string;
   targetAllowUntrustedRoot?: boolean;
   targetAllowHostMismatch?: boolean;
+  targetAllowTimeAnomaly?: boolean;
   gatewayAllowUntrustedRoot?: boolean;
   gatewayAllowHostMismatch?: boolean;
+  gatewayAllowTimeAnomaly?: boolean;
   generation?: number;
   requestId?: string;
 }
@@ -329,10 +693,15 @@ export interface RdpCertificateRecord {
   fingerprintSha256: string;
   notBeforeMs: number;
   notAfterMs: number;
+  riskFlags: string[];
 }
 
 export interface RdpPreflightResult {
   ok: boolean;
+  preflightStatus: RdpPreflightStatus;
+  riskFlags: string[];
+  gatewayRiskFlags: string[];
+  targetRiskFlags: string[];
   endpointMode: RdpEndpointMode | string;
   routeIdentity: string;
   generation: number;
@@ -459,6 +828,12 @@ export interface RustDeskDiagnosticsSnapshot {
   receivedRateAvailable: boolean;
   presentedRateAvailable: boolean;
   decodeRateAvailable: boolean;
+  remoteInputPermissionKnown: boolean;
+  remoteInputAllowed: boolean;
+  remoteClipboardPermissionKnown: boolean;
+  remoteClipboardAllowed: boolean;
+  remoteFilePermissionKnown: boolean;
+  remoteFileAllowed: boolean;
   sessionId: number;
   latencyMs: number;
   targetBitrateKbps: number;
@@ -621,6 +996,8 @@ export interface SessionConfig {
   privateKeyPem: string;
   privateKeyPassphrase: string;
   keyboardInteractiveResponses?: string[];
+  /** Optional LANG sent as an SSH channel environment request before PTY/shell startup. */
+  sshLocale?: string;
   sshProxyType?: 'direct' | 'http_connect' | 'socks5' | 'frp_tcp' | 'frp_visitor' |
     'frp_stcp' | 'frp_sudp' | 'frp_xtcp' | 'ssh_jump' | 'legacy_gateway';
   sshProxyHost?: string;
@@ -641,8 +1018,15 @@ export interface SessionConfig {
   expectedRdpGatewayCertificateFingerprintSha256?: string;
   rdpAllowUntrustedRoot?: boolean;
   rdpAllowHostMismatch?: boolean;
+  rdpCertificateAllowUnpinnedOnce?: boolean;
+  rdpAllowStandardSecurityOnce?: boolean;
+  /** Explicit direct TLS compatibility mode. Default false; never enables Standard RDP Security. */
+  rdpTlsWithoutNla?: boolean;
+  rdpCertificateAllowTimeAnomalyOnce?: boolean;
   rdpGatewayAllowUntrustedRoot?: boolean;
   rdpGatewayAllowHostMismatch?: boolean;
+  rdpGatewayCertificateAllowUnpinnedOnce?: boolean;
+  rdpGatewayCertificateAllowTimeAnomalyOnce?: boolean;
   // RustDesk 扩展字段
   rdImageQuality?: number;   // 0=fast, 1=balanced, 2=quality
   rdDirectIp?: boolean;      // 直连IP模式

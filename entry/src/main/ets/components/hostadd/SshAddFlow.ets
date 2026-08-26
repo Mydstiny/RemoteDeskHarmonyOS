@@ -17,7 +17,6 @@ import {
 export struct SshAddFlow {
   @StorageProp('currentTheme') theme: string = 'light';
   @StorageProp('accentColor') accentColor: string = '#007DFF';
-  @StorageProp('currentBreakpoint') breakpoint: string = 'sm';
   @Prop @Watch('onKeysChanged') keys: SshKey[] = [];
   onBackToProtocols: () => void = (): void => {};
   onClose: () => void = (): void => {};
@@ -123,79 +122,103 @@ export struct SshAddFlow {
       })
     } else {
       Column() {
-      this.header()
-      if (this.step === 1) {
-        this.field('名称', this.label, '例如：生产服务器', (v: string): void => { this.label = v; })
-        this.field('地址', this.address, 'IP 地址或域名', (v: string): void => { this.address = v; })
-        this.field('端口', this.portText, '22', (v: string): void => { this.portText = v; })
-        this.field('用户名', this.username, 'SSH 登录用户名', (v: string): void => { this.username = v; })
-        SshProxyEditor({
-          keys: this.availableKeys(),
-          onChange: (value: SshProxyEditorValue): void => { this.proxyEditorValue = value; }
-        })
-        Button('下一步').width('100%').height(44).borderRadius(12).backgroundColor(this.accentColor)
-          .fontColor(Color.White).onClick((): void => {
-            const port: number = parseInt(this.portText);
-            if (this.label.trim() === '' || this.address.trim() === '' || this.username.trim() === '' ||
-              isNaN(port) || port <= 0 || port > 65535) { this.errorText = '请完整填写基础信息和有效端口'; return; }
-            const proxy: SshProxyEditorBuildResult = buildSshProxyProfile(
-              'draft-host', this.address, port, this.proxyEditorValue);
-            if (!proxy.valid) { this.errorText = proxy.message || '连接方式配置无效'; return; }
-            this.errorText = ''; this.step = 2;
-          })
-      } else {
-        Row() {
-          Button('密码登录').layoutWeight(1).height(38).borderRadius(10)
-            .backgroundColor(!this.useKey ? this.accentColor : this.pal().surface)
-            .fontColor(!this.useKey ? Color.White : this.pal().text2).onClick((): void => { this.useKey = false; })
-          Button('密钥登录').layoutWeight(1).height(38).borderRadius(10).margin({ left: 8 })
-            .backgroundColor(this.useKey ? this.accentColor : this.pal().surface)
-            .fontColor(this.useKey ? Color.White : this.pal().text2).onClick((): void => {
-              const keys = this.availableKeys();
-              this.useKey = true; if (this.keyId === '' && keys.length > 0) { this.keyId = keys[0].id; }
-            })
-        }.width('100%').margin({ bottom: 14 })
-        if (!this.useKey) {
-          this.field('密码', this.password, 'SSH 登录密码', (v: string): void => { this.password = v; }, true)
-        } else {
-          if (this.availableKeys().length === 0) {
-            Text('密钥保险库为空，请添加或导入 SSH 私钥。').fontSize(12).fontColor(this.pal().text3)
-              .width('100%').textAlign(TextAlign.Center).padding(14)
-          } else {
-            ForEach(this.availableKeys(), (key: SshKey) => {
+        Column() {
+            this.header()
+            if (this.step === 1) {
+              this.field('名称', this.label, '例如：生产服务器', (v: string): void => { this.label = v; })
+              this.field('地址', this.address, 'IP 地址或域名', (v: string): void => { this.address = v; })
+              this.field('端口', this.portText, '22', (v: string): void => { this.portText = v; })
+              this.field('用户名', this.username, 'SSH 登录用户名', (v: string): void => { this.username = v; })
+              SshProxyEditor({
+                keys: this.availableKeys(),
+                onChange: (value: SshProxyEditorValue): void => { this.proxyEditorValue = value; }
+              })
+              Button('下一步').width('100%').height(44).borderRadius(12).backgroundColor(this.accentColor)
+                .fontColor(Color.White).onClick((): void => {
+                  const port: number = parseInt(this.portText);
+                  if (this.label.trim() === '' || this.address.trim() === '' || this.username.trim() === '' ||
+                    isNaN(port) || port <= 0 || port > 65535) {
+                    this.errorText = '请完整填写基础信息和有效端口'; return;
+                  }
+                  const proxy: SshProxyEditorBuildResult = buildSshProxyProfile(
+                    'draft-host', this.address, port, this.proxyEditorValue);
+                  if (!proxy.valid) { this.errorText = proxy.message || '连接方式配置无效'; return; }
+                  this.errorText = ''; this.step = 2;
+                })
+            } else {
               Row() {
-                Column() {
-                  Text(key.label !== '' ? key.label : SshKey.typeLabel(key.keyType)).fontSize(14).fontColor(this.pal().text)
-                  Text(key.fingerprint !== '' ? key.fingerprint : SshKey.typeLabel(key.keyType))
-                    .fontSize(10).fontColor(this.pal().text3).maxLines(1)
-                }.alignItems(HorizontalAlign.Start).layoutWeight(1)
-                if (this.keyId === key.id) { SymbolGlyph($r('sys.symbol.checkmark')).fontColor([this.accentColor]) }
-              }.width('100%').padding(11).borderRadius(10).backgroundColor(this.pal().surface).margin({ bottom: 6 })
-              .onClick((): void => { this.keyId = key.id; })
-            }, (key: SshKey): string => key.id + ':' + key.createdAt.toString())
-          }
-          Button('添加到 SSH 密钥保险库').width('100%').height(38).borderRadius(10)
-            .backgroundColor(this.pal().surface).fontColor(this.accentColor)
-            .onClick((): void => { this.addingKey = true; }).margin({ bottom: 12 })
-          this.field('私钥密码（如有）', this.passphrase, '加密私钥的 passphrase',
-            (v: string): void => { this.passphrase = v; }, true)
-        }
-        Row() {
-          Button('保存').layoutWeight(1).height(44).borderRadius(12).backgroundColor(this.pal().surface)
-            .fontColor(this.accentColor).onClick((): void => {
-              const host = this.buildHost();
-              if (host && this.pendingProxyProfile) { this.onSave(host, false, this.pendingProxyProfile); }
-            })
-          Button('保存并连接').layoutWeight(1).height(44).borderRadius(12).margin({ left: 8 })
-            .backgroundColor(this.accentColor).fontColor(Color.White)
-            .onClick((): void => {
-              const host = this.buildHost();
-              if (host && this.pendingProxyProfile) { this.onSave(host, true, this.pendingProxyProfile); }
-            })
-        }.width('100%')
+                Button('密码登录').layoutWeight(1).height(38).borderRadius(10)
+                  .backgroundColor(!this.useKey ? this.accentColor : this.pal().surface)
+                  .fontColor(!this.useKey ? Color.White : this.pal().text2)
+                  .onClick((): void => { this.useKey = false; })
+                Button('密钥登录').layoutWeight(1).height(38).borderRadius(10).margin({ left: 8 })
+                  .backgroundColor(this.useKey ? this.accentColor : this.pal().surface)
+                  .fontColor(this.useKey ? Color.White : this.pal().text2).onClick((): void => {
+                    const keys = this.availableKeys();
+                    this.useKey = true;
+                    if (this.keyId === '' && keys.length > 0) { this.keyId = keys[0].id; }
+                  })
+              }.width('100%').margin({ bottom: 14 })
+              if (!this.useKey) {
+                this.field('密码', this.password, 'SSH 登录密码',
+                  (v: string): void => { this.password = v; }, true)
+              } else {
+                if (this.availableKeys().length === 0) {
+                  Text('密钥保险库为空，请添加或导入 SSH 私钥。').fontSize(12).fontColor(this.pal().text3)
+                    .width('100%').textAlign(TextAlign.Center).padding(14)
+                } else {
+                  ForEach(this.availableKeys(), (key: SshKey) => {
+                    Row() {
+                      Column() {
+                        Text(key.label !== '' ? key.label : SshKey.typeLabel(key.keyType))
+                          .fontSize(14).fontColor(this.pal().text)
+                        Text(key.fingerprint !== '' ? key.fingerprint : SshKey.typeLabel(key.keyType))
+                          .fontSize(10).fontColor(this.pal().text3).maxLines(1)
+                      }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+                      if (this.keyId === key.id) {
+                        SymbolGlyph($r('sys.symbol.checkmark')).fontColor([this.accentColor])
+                      }
+                    }.width('100%').padding(11).borderRadius(10)
+                      .backgroundColor(this.pal().surface).margin({ bottom: 6 })
+                      .onClick((): void => { this.keyId = key.id; })
+                  }, (key: SshKey): string => key.id + ':' + key.createdAt.toString())
+                }
+                Button('添加到 SSH 密钥保险库').width('100%').height(38).borderRadius(10)
+                  .backgroundColor(this.pal().surface).fontColor(this.accentColor)
+                  .onClick((): void => { this.addingKey = true; }).margin({ bottom: 12 })
+                this.field('私钥密码（如有）', this.passphrase, '加密私钥的 passphrase',
+                  (v: string): void => { this.passphrase = v; }, true)
+              }
+              Row() {
+                Button('保存').layoutWeight(1).height(44).borderRadius(12)
+                  .backgroundColor(this.pal().surface).fontColor(this.accentColor)
+                  .onClick((): void => {
+                    const host = this.buildHost();
+                    if (host && this.pendingProxyProfile) {
+                      this.onSave(host, false, this.pendingProxyProfile);
+                    }
+                  })
+                Button('保存并连接').layoutWeight(1).height(44).borderRadius(12).margin({ left: 8 })
+                  .backgroundColor(this.accentColor).fontColor(Color.White)
+                  .onClick((): void => {
+                    const host = this.buildHost();
+                    if (host && this.pendingProxyProfile) {
+                      this.onSave(host, true, this.pendingProxyProfile);
+                    }
+                  })
+              }.width('100%')
+            }
+            if (this.errorText !== '') {
+              Text(this.errorText).fontSize(12).fontColor(this.pal().danger).margin({ top: 10 })
+            }
+          }.width('100%')
       }
-      if (this.errorText !== '') { Text(this.errorText).fontSize(12).fontColor(this.pal().danger).margin({ top: 10 }) }
-      }.width(this.breakpoint === 'xl' ? 900 : '100%')
+      // The host-add sheet owns the responsive width on PC. A fixed 900vp
+      // child overflows the centered system sheet (roughly 500vp on the
+      // current PC profile), clipping the proxy choices and action buttons.
+      // Keep the SSH flow inside its parent just like the other host flows.
+      .width('100%')
+      .height('auto')
         .padding({ left: 20, right: 20, top: 20, bottom: 22 }).backgroundColor(this.pal().card)
     }
   }

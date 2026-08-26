@@ -3,6 +3,8 @@ import {
   VNC_CERTIFICATE_DECISION_HANDOFF_TTL_MS,
   VncCertificateDecisionHandoff
 } from '../main/ets/services/VncCertificateDecisionHandoff';
+import { VncPlaintextDecisionHandoff } from
+  '../main/ets/services/VncPlaintextDecisionHandoff';
 
 const FINGERPRINT: string = 'c'.repeat(64);
 const BINDING: string = 'd'.repeat(64);
@@ -50,6 +52,25 @@ export default function vncCertificateDecisionHandoffTest(): void {
         'user-1', STORE, 5, 501)).assertEqual('');
       expect(handoff.take('user-1', 'attempt-1', 1, BINDING,
         'user-1', 'f'.repeat(64), 4, 502)).assertEqual('');
+    });
+  });
+
+  describe('VncPlaintextDecisionHandoff', (): void => {
+    it('accepts_only_the_confirmed_endpoint_and_account_generation_once', 0, (): void => {
+      const handoff: VncPlaintextDecisionHandoff = new VncPlaintextDecisionHandoff();
+      expect(handoff.put(
+        'user-1', 'attempt-plain', 3, BINDING, 'user-1', STORE, 9, 100)).assertTrue();
+      expect(handoff.take(
+        'user-1', 'attempt-plain', 3, 'a'.repeat(64), 'user-1', STORE, 9, 101)).assertFalse();
+      expect(handoff.take(
+        'user-1', 'attempt-plain', 3, BINDING, 'user-1', STORE, 9, 102)).assertFalse();
+
+      expect(handoff.put(
+        'user-1', 'attempt-plain', 4, BINDING, 'user-1', STORE, 10, 200)).assertTrue();
+      expect(handoff.take(
+        'user-1', 'attempt-plain', 4, BINDING, 'user-1', STORE, 10, 201)).assertTrue();
+      expect(handoff.take(
+        'user-1', 'attempt-plain', 4, BINDING, 'user-1', STORE, 10, 202)).assertFalse();
     });
   });
 }

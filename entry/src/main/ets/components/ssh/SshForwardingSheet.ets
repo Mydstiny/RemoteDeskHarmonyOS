@@ -1,7 +1,9 @@
 import { Palette, buildDark } from '../../common/Theme';
 import {
+  resolveSshForwardingEditorSheetLayout,
   SshForwardingMode,
   SshForwardingProfile,
+  SshForwardingSheetLayout,
   SshForwardingStartPolicy
 } from '../../services/SshForwardingPolicy';
 import {
@@ -28,6 +30,9 @@ export struct SshForwardingSheet {
   @Prop connected: boolean = false;
   @Prop hostLabel: string = '';
   @Prop statusMessage: string = '';
+  @Prop viewportWidthVp: number = 0;
+  @Prop viewportHeightVp: number = 0;
+  @Prop phone: boolean = true;
   onClose: () => void = (): void => {};
   onSave: (profile: SshForwardingProfile) => void = (_profile: SshForwardingProfile): void => {};
   onStart: (profileId: string) => void = (_profileId: string): void => {};
@@ -56,6 +61,16 @@ export struct SshForwardingSheet {
     return buildDark(this.accentColor);
   }
 
+  private ruleEditorSheetLayout(): SshForwardingSheetLayout {
+    return resolveSshForwardingEditorSheetLayout(
+      this.viewportWidthVp, this.viewportHeightVp, this.phone);
+  }
+
+  private ruleEditorSheetWidth(): Dimension {
+    const layout: SshForwardingSheetLayout = this.ruleEditorSheetLayout();
+    return layout.bottomAnchored ? '100%' : layout.widthVp;
+  }
+
   private newId(): string {
     this.idNonce++;
     return makeSshForwardingProfileId(Date.now(), this.idNonce);
@@ -69,6 +84,15 @@ export struct SshForwardingSheet {
       maxBytesText: value.maxBytesText, enabled: value.enabled,
       startPolicy: value.startPolicy, allowPublicBind: value.allowPublicBind
     };
+  }
+
+  private fieldFocusId(title: string): string {
+    if (title === '监听地址') { return 'sshForwardingBindHost'; }
+    if (title === '监听端口') { return 'sshForwardingBindPort'; }
+    if (title === '目标地址') { return 'sshForwardingTargetHost'; }
+    if (title === '目标端口') { return 'sshForwardingTargetPort'; }
+    if (title === '最大连接数') { return 'sshForwardingMaxConnections'; }
+    return 'sshForwardingMaxBytes';
   }
 
   private mutateDraft(update: (draft: SshForwardingDraft) => void): void {
@@ -256,10 +280,23 @@ export struct SshForwardingSheet {
     Column({ space: 5 }) {
       Text(title).fontSize(12).fontColor(this.pal().text2)
       TextInput({ text: value, placeholder: hint })
+        .id(this.fieldFocusId(title))
         .width('100%').height(44).fontSize(14).fontColor(this.pal().text)
         .placeholderColor(this.pal().text3).backgroundColor(this.pal().surface)
         .borderRadius(10).padding({ left: 12, right: 12 }).enabled(!disabled)
-        .opacity(disabled ? 0.58 : 1).onChange(change)
+        // Desktop sheets do not implicitly grant touch focus to TextInput on
+        // API 23/26. Keep every forwarding field keyboard-focusable so a
+        // pointer click cannot fall through to the terminal surface.
+        .focusable(!disabled).focusOnTouch(!disabled).enableKeyboardOnFocus(!disabled)
+        .opacity(disabled ? 0.58 : 1)
+        .onClick((): void => {
+          if (disabled) { return; }
+          const focusId: string = this.fieldFocusId(title);
+          setTimeout((): void => {
+            try { focusControl.requestFocus(focusId); } catch (_err) {}
+          }, 32);
+        })
+        .onChange(change)
     }.width('100%').alignItems(HorizontalAlign.Start)
   }
 
@@ -661,10 +698,11 @@ export struct SshForwardingSheet {
       .backgroundColor(this.pal().sheetBg)
       .bindSheet($$this.showRuleEditorSheet,
         this.NewRuleEditorContent(this.ruleEditorMountToken), {
-        height: this.breakpoint === 'sm' ? SheetSize.LARGE : 520,
-        preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
-        width: this.breakpoint === 'sm' ? '100%' : 560,
-        dragBar: this.breakpoint === 'sm',
+        height: this.ruleEditorSheetLayout().heightVp,
+        preferType: this.ruleEditorSheetLayout().bottomAnchored
+          ? SheetType.BOTTOM : SheetType.CENTER,
+        width: this.ruleEditorSheetWidth(),
+        dragBar: this.ruleEditorSheetLayout().bottomAnchored,
         backgroundColor: this.pal().sheetBg,
         blurStyle: BlurStyle.NONE,
         showClose: false,

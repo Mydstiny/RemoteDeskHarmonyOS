@@ -102,5 +102,30 @@ export default function remoteSessionCapabilityPolicyTest(): void {
       });
       expect(capabilities.multiDisplay.enabled).assertTrue();
     });
+
+    it('moonlight_should_keep_common_capabilities_closed_until_runtime_and_host_control_are_ready',
+      0, (): void => {
+        const blocked = resolveSessionCapabilities({
+          protocol: 'moonlight', connected: true, rdpDriveMounted: false,
+          rdpClipboardEnabled: false, rdpClipboardReady: false, sftpConnected: false,
+          rustDeskVerifiedPeer: false, rustDeskInboundClipboard: false,
+          rustDeskTransferConfirmed: false, vncClipboardEnabled: false,
+          vncClipboardReady: false, vncViewOnly: false
+        });
+        expect(blocked.connect.enabled).assertFalse();
+        expect(blocked.fileUpload.enabled).assertFalse();
+        expect(blocked.multiDisplay.enabled).assertFalse();
+        const ready = resolveSessionCapabilities({
+          protocol: 'moonlight', connected: true, rdpDriveMounted: false,
+          rdpClipboardEnabled: false, rdpClipboardReady: false, sftpConnected: false,
+          rustDeskVerifiedPeer: false, rustDeskInboundClipboard: false,
+          rustDeskTransferConfirmed: false, vncClipboardEnabled: false,
+          vncClipboardReady: false, vncViewOnly: false,
+          moonlightRuntimeAvailable: true, moonlightHostControlReady: true
+        });
+        expect(ready.connect.enabled).assertTrue();
+        expect(ready.clipboardSend.enabled).assertFalse();
+        expect(ready.fileDownload.enabled).assertFalse();
+      });
   });
 }

@@ -31,6 +31,21 @@ RDP_TEST_CASE(ssh_terminal_resume_policy_keeps_reconnecting_page_bound) {
     RDP_ASSERT(!Policy::acceptsPageBinding(ConnectionState::ERROR, true));
     RDP_ASSERT(Policy::shouldResumeInput(ConnectionState::CONNECTED));
     RDP_ASSERT(!Policy::shouldResumeInput(ConnectionState::RECONNECTING));
+    RDP_ASSERT(Policy::acceptsSharedSinkActivation(false, false));
+    RDP_ASSERT(Policy::acceptsSharedSinkActivation(false, true));
+    RDP_ASSERT(Policy::acceptsSharedSinkActivation(true, true));
+    RDP_ASSERT(!Policy::acceptsSharedSinkActivation(true, false));
+    RDP_ASSERT(Policy::shouldReleaseSharedSinkOnDetach(true, true));
+    RDP_ASSERT(!Policy::shouldReleaseSharedSinkOnDetach(true, false));
+    RDP_ASSERT(!Policy::shouldReleaseSharedSinkOnDetach(false, true));
+    RDP_ASSERT(Policy::acceptsDetachSharedSinkRelease(true, false, false));
+    RDP_ASSERT(Policy::acceptsDetachSharedSinkRelease(false, true, false));
+    RDP_ASSERT(Policy::acceptsDetachSharedSinkRelease(true, true, true));
+    RDP_ASSERT(!Policy::acceptsDetachSharedSinkRelease(true, true, false));
+    RDP_ASSERT(!Policy::shouldRedeliverCallback(true, false));
+    RDP_ASSERT(!Policy::shouldRedeliverCallback(true, true));
+    RDP_ASSERT(!Policy::shouldRedeliverCallback(false, false));
+    RDP_ASSERT(Policy::shouldRedeliverCallback(false, true));
 }
 
 RDP_TEST_CASE(ssh_terminal_input_queue_policy_reserves_control_capacity) {

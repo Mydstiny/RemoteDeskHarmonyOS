@@ -10,9 +10,22 @@ import {
   rdpCertificateErrorTitle,
   rdpGatewayTransportSummary,
   rdpCertificateValidityState,
+  rdpCertificateRiskLabel,
+  rdpCertificateRiskSummary,
+  rdpPreflightStatusLabel,
+  RDP_PREFLIGHT_INCONCLUSIVE,
+  RDP_PREFLIGHT_TRANSPORT_FAILED,
+  RDP_PREFLIGHT_UNAVAILABLE,
   rdpCertificateRouteIsCurrent,
+  rdpCertificateEffectiveRiskFlags,
+  rdpCertificateLegacyProbeErrorCode,
+  rdpCertificateLegacyProbeStage,
+  rdpCertificatePreflightAllowsRealConnection,
+  rdpCertificateRoutePreflightAllowsRealConnection,
   shouldRouteRdpCertificateAfterSheetDisappear,
   shouldShowRdpCertificateProbeSheetBeforeProbe,
+  shouldEnableStandardRdpSecurityOnce,
+  shouldUseRdpTlsWithoutNla,
   shouldPersistRdpCertificateTrust,
   shouldRequireRdpCertificateConfirmation,
   shouldFallbackToNativeRdpConnectionAfterResolverFailure
@@ -125,6 +138,27 @@ export default function rdpCertificatePreflightPolicyTest() {
       expect(shouldRequireRdpCertificateConfirmation(state)).assertTrue();
     });
 
+    it('callback_changed_risk_should_not_auto_trust', 0, (): void => {
+      const state = classifyRdpCertificateProbe({
+        ok: true,
+        fingerprintSha256: 'SHA256:same',
+        commonName: 'server',
+        subject: 'CN=server',
+        issuer: 'CN=Root',
+        notBeforeMs: validBeforeMs,
+        notAfterMs: validAfterMs,
+        flags: 0,
+        rootTrusted: true,
+        hostMismatch: false,
+        errorMessage: '',
+        riskFlags: ['CERTIFICATE_CHANGED']
+      }, {
+        trustMode: RDP_CERTIFICATE_EXPLICIT_TRUST_MODE,
+        savedFingerprintSha256: 'SHA256:same', routeBound: true
+      });
+      expect(state).assertEqual(RdpCertificatePreflightState.CERTIFICATE_CHANGED);
+    });
+
     it('probe_error_should_be_error_state', 0, (): void => {
       const state = classifyRdpCertificateProbe({
         ok: false,
@@ -172,7 +206,7 @@ export default function rdpCertificatePreflightPolicyTest() {
       expect(rdpCertificateValidityState(0, 0, nowMs)).assertEqual('unknown');
     });
 
-    it('expired_certificate_should_not_become_trusted_by_pin', 0, (): void => {
+    it('expired_certificate_should_remain_a_user_decidable_risk', 0, (): void => {
       const state = classifyRdpCertificateProbe({
         ok: true,
         fingerprintSha256: 'SHA256:same',
@@ -191,7 +225,7 @@ export default function rdpCertificatePreflightPolicyTest() {
         routeBound: true,
         savedAllowUntrustedRoot: true
       });
-      expect(state).assertEqual(RdpCertificatePreflightState.ERROR);
+      expect(state).assertEqual(RdpCertificatePreflightState.TRUST_FIRST_TIME);
     });
 
     it('stage_error_title_should_identify_gateway_and_target_failures', 0, (): void => {
@@ -205,6 +239,116 @@ export default function rdpCertificatePreflightPolicyTest() {
         .assertEqual('目标 RDP 协商失败');
       expect(rdpCertificateErrorTitle('gateway', 'E-RDP-CERT-PERSIST'))
         .assertEqual('RDP 证书信任保存失败');
+    });
+
+    it('inconclusive_probe_should_remain_user_decidable', 0, (): void => {
+      const state = classifyRdpCertificateProbe({
+        ok: false,
+        fingerprintSha256: '',
+        commonName: '',
+        subject: '',
+        issuer: '',
+        notBeforeMs: 0,
+        notAfterMs: 0,
+        flags: 0,
+        rootTrusted: false,
+        hostMismatch: false,
+        errorMessage: 'RDP TLS handshake reset',
+        preflightStatus: RDP_PREFLIGHT_INCONCLUSIVE,
+        riskFlags: ['TLS_PROBE_RESET']
+      }, { trustMode: 0, savedFingerprintSha256: '' });
+      expect(state).assertEqual(RdpCertificatePreflightState.TRUST_FIRST_TIME);
+      expect(shouldRequireRdpCertificateConfirmation(state)).assertTrue();
+      expect(rdpCertificateRiskLabel('STANDARD_RDP_SECURITY'))
+        .assertEqual('服务器未提供 TLS 证书，连接安全性较低');
+      expect(rdpCertificateRiskSummary(['TLS_PROBE_RESET', 'TLS_PROBE_RESET']))
+        .assertEqual('预检无法完成，可能是服务端、网关或协议兼容性问题');
+      expect(rdpPreflightStatusLabel(RDP_PREFLIGHT_INCONCLUSIVE)).assertEqual('预检结果不确定');
+    });
+
+    it('risk_flagged_unavailable_probe_should_remain_user_decidable', 0, (): void => {
+      const state = classifyRdpCertificateProbe({
+        ok: false,
+        fingerprintSha256: '',
+        commonName: '',
+        subject: '',
+        issuer: '',
+        notBeforeMs: 0,
+        notAfterMs: 0,
+        flags: 0,
+        rootTrusted: false,
+        hostMismatch: false,
+        errorMessage: 'Gateway protocol cannot be identified',
+        preflightStatus: RDP_PREFLIGHT_UNAVAILABLE,
+        riskFlags: ['UNKNOWN_GATEWAY_PROTOCOL']
+      }, { trustMode: 0, savedFingerprintSha256: '' });
+      expect(state).assertEqual(RdpCertificatePreflightState.TRUST_FIRST_TIME);
+      expect(shouldRequireRdpCertificateConfirmation(state)).assertTrue();
+    });
+
+    it('only_transport_failures_stop_the_real_connection_attempt', 0, (): void => {
+      expect(rdpCertificatePreflightAllowsRealConnection(
+        RDP_PREFLIGHT_INCONCLUSIVE, -22)).assertTrue();
+      expect(rdpCertificatePreflightAllowsRealConnection(
+        RDP_PREFLIGHT_UNAVAILABLE, -15)).assertTrue();
+      expect(rdpCertificatePreflightAllowsRealConnection(
+        RDP_PREFLIGHT_TRANSPORT_FAILED, -11)).assertFalse();
+      expect(rdpCertificatePreflightAllowsRealConnection(
+        RDP_PREFLIGHT_TRANSPORT_FAILED, -13)).assertTrue();
+      expect(rdpCertificatePreflightAllowsRealConnection(
+        RDP_PREFLIGHT_TRANSPORT_FAILED, -22)).assertTrue();
+      expect(rdpCertificatePreflightAllowsRealConnection(
+        RDP_PREFLIGHT_UNAVAILABLE, -11)).assertFalse();
+      expect(rdpCertificatePreflightAllowsRealConnection(
+        RDP_PREFLIGHT_UNAVAILABLE, -13)).assertTrue();
+      expect(rdpCertificatePreflightAllowsRealConnection(
+        RDP_PREFLIGHT_UNAVAILABLE, -14)).assertFalse();
+      expect(rdpCertificateLegacyProbeStage(-13)).assertEqual('negotiation');
+      expect(rdpCertificateLegacyProbeErrorCode(-13)).assertEqual('E-RDP-NEGOTIATION');
+      expect(rdpCertificateRoutePreflightAllowsRealConnection(
+        RDP_PREFLIGHT_UNAVAILABLE, 'E-RDP-TARGET-TLS')).assertTrue();
+      expect(rdpCertificateRoutePreflightAllowsRealConnection(
+        RDP_PREFLIGHT_UNAVAILABLE, 'E-RDP-NEGOTIATION')).assertTrue();
+      expect(rdpCertificateRoutePreflightAllowsRealConnection(
+        RDP_PREFLIGHT_TRANSPORT_FAILED, 'E-RDP-TARGET-TLS')).assertTrue();
+      expect(rdpCertificateRoutePreflightAllowsRealConnection(
+        RDP_PREFLIGHT_TRANSPORT_FAILED, 'E-RDP-NEGOTIATION')).assertTrue();
+      expect(rdpCertificateRoutePreflightAllowsRealConnection(
+        RDP_PREFLIGHT_TRANSPORT_FAILED, 'E-RDP-GATEWAY-CERT')).assertTrue();
+      expect(rdpCertificateRoutePreflightAllowsRealConnection(
+        RDP_PREFLIGHT_UNAVAILABLE, 'E-RDP-BASTION-UNSUPPORTED')).assertTrue();
+      expect(rdpCertificateRoutePreflightAllowsRealConnection(
+        RDP_PREFLIGHT_INCONCLUSIVE, 'E-RDP-GATEWAY-AUTH-REQUIRED')).assertTrue();
+      expect(rdpCertificateRoutePreflightAllowsRealConnection(
+        RDP_PREFLIGHT_TRANSPORT_FAILED, 'E-RDP-GATEWAY-AUTH')).assertFalse();
+      expect(rdpCertificateRoutePreflightAllowsRealConnection(
+        RDP_PREFLIGHT_UNAVAILABLE, 'E-RDP-TARGET-TIMEOUT')).assertFalse();
+      expect(rdpCertificateRoutePreflightAllowsRealConnection(
+        RDP_PREFLIGHT_INCONCLUSIVE, 'E-RDP-TARGET-TIMEOUT')).assertTrue();
+      expect(rdpCertificateRoutePreflightAllowsRealConnection(
+        RDP_PREFLIGHT_TRANSPORT_FAILED, 'E-RDP-TARGET-TIMEOUT',
+        ['TLS_PROBE_RESET'])).assertTrue();
+      expect(rdpCertificateEffectiveRiskFlags([], ['TLS_PROBE_RESET']).indexOf(
+        'TLS_PROBE_RESET')).assertEqual(0);
+      expect(rdpCertificateEffectiveRiskFlags(
+        ['TARGET_CERTIFICATE_RISK'], ['UNTRUSTED_ROOT']).length).assertEqual(2);
+    });
+
+    it('standard_security_requires_an_explicit_continue_once', 0, (): void => {
+      expect(shouldEnableStandardRdpSecurityOnce(
+        false, ['STANDARD_RDP_SECURITY'])).assertFalse();
+      expect(shouldEnableStandardRdpSecurityOnce(
+        true, [])).assertFalse();
+      expect(shouldEnableStandardRdpSecurityOnce(
+        true, ['STANDARD_RDP_SECURITY'])).assertTrue();
+    });
+
+    it('tls_without_nla_is_opt_in_direct_password_only', 0, (): void => {
+      expect(shouldUseRdpTlsWithoutNla(false, 'direct_rdp', 'password')).assertFalse();
+      expect(shouldUseRdpTlsWithoutNla(true, 'direct_rdp', 'password')).assertTrue();
+      expect(shouldUseRdpTlsWithoutNla(true, 'microsoft_rd_gateway', 'password')).assertFalse();
+      expect(shouldUseRdpTlsWithoutNla(true, 'direct_rdp', 'restricted_admin')).assertFalse();
+      expect(shouldUseRdpTlsWithoutNla(true, 'direct_rdp', 'blank_password')).assertFalse();
     });
 
     it('gateway_transport_summary_should_not_infer_negotiated_mode', 0, (): void => {
@@ -254,10 +398,10 @@ export default function rdpCertificatePreflightPolicyTest() {
         'SHA256:same', false)).assertTrue();
     });
 
-    it('allows_a_trusted_host_to_try_the_real_rdp_resolver_after_dns_probe_failure', 0, (): void => {
+    it('dns_or_tcp_probe_failure_should_not_fallback_to_native_connection', 0, (): void => {
       expect(shouldFallbackToNativeRdpConnectionAfterResolverFailure(
         -11, RDP_CERTIFICATE_EXPLICIT_TRUST_MODE, 'SHA256:same',
-        'route-current', 'route-current')).assertTrue();
+        'route-current', 'route-current')).assertFalse();
       expect(shouldFallbackToNativeRdpConnectionAfterResolverFailure(
         -11, RDP_CERTIFICATE_UNKNOWN_TRUST_MODE, '',
         'route-current', 'route-current')).assertFalse();

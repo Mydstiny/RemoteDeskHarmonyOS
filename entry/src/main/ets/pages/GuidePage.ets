@@ -13,7 +13,14 @@ import {
   StartupMode
 } from '../services/ReleaseNotesPolicy';
 import { CURRENT_RELEASE_VERSION, pagesForReleasedVersion, ReleaseNotePage } from '../services/ReleaseNotesRegistry';
-import { firstInstallGuidePages, GuideContentPage } from '../services/GuideContentRegistry';
+import {
+  clampGuidePageIndex,
+  ensureGuidePages,
+  firstInstallGuidePages,
+  guideDeviceFor,
+  GuideContentPage,
+  GuideDevice
+} from '../services/GuideContentRegistry';
 
 const GUIDE_KEY = 'guide_shown_v4';
 const LAST_SEEN_RELEASE_KEY = 'last_seen_release_version';
@@ -30,6 +37,10 @@ struct GuidePage {
   @StorageLink('currentTheme') theme: string = 'light';
   @StorageProp('accentColor') accentColor: string = '#007DFF';
   @StorageLink('currentBreakpoint') @Watch('onBreakpointChange') breakpoint: string = 'sm';
+  @StorageProp('isDesktopDevice') @Watch('onGuideDeviceChange')
+  isDesktopDevice: boolean = false;
+  @StorageProp('isPadDevice') @Watch('onGuideDeviceChange')
+  isPadDevice: boolean = false;
   @StorageLink('remoteDesktopBgFlag') @Watch('onBackgroundFlagChange') appInBackground: boolean = false;
   @State currentIndex: number = 0;
   @State showContent: boolean = false;
@@ -42,6 +53,7 @@ struct GuidePage {
   private guideSheetReopenTimer: number = -1;
 
   async aboutToAppear(): Promise<void> {
+    this.refreshTutorialPages();
     try {
       const ctx = getContext(this);
       const prefs = preferences.getPreferencesSync(ctx, { name: 'RemoteDesktopAppPrefs' });
@@ -54,9 +66,10 @@ struct GuidePage {
         router.replaceUrl({ url: 'pages/LoginPage' });
         return;
       }
-      this.activePages = this.mode === StartupMode.RELEASE_NOTES ? releasePages : this.tutorialPages;
+      this.replaceActivePages(
+        this.mode === StartupMode.RELEASE_NOTES ? releasePages : this.tutorialPages);
     } catch (_e) { /* 出错继续显示 */ }
-    if (this.activePages.length === 0) { this.activePages = this.tutorialPages; }
+    this.replaceActivePages(this.activePages);
     this.cancelGuideSheetEnter();
     this.guideSheetEnterTimer = setTimeout((): void => {
       this.guideSheetEnterTimer = -1;
@@ -71,7 +84,24 @@ struct GuidePage {
     return this.theme === 'light' ? buildLight(this.accentColor) : buildDark(this.accentColor);
   }
 
+  private refreshTutorialPages(): void {
+    const device: GuideDevice = guideDeviceFor(
+      this.isDesktopDevice, this.isPadDevice, this.breakpoint);
+    this.tutorialPages = ensureGuidePages(firstInstallGuidePages(device), device);
+    if (this.mode === StartupMode.FIRST_INSTALL_GUIDE) {
+      this.replaceActivePages(this.tutorialPages);
+    }
+  }
+
+  private replaceActivePages(pages: GuideContentPage[]): void {
+    const fallback: GuideContentPage[] = pages.length > 0 ? pages : this.tutorialPages;
+    const nextPages: GuideContentPage[] = ensureGuidePages(fallback);
+    this.currentIndex = clampGuidePageIndex(this.currentIndex, nextPages.length);
+    this.activePages = nextPages;
+  }
+
   private onBreakpointChange(): void {
+    this.refreshTutorialPages();
     if (!this.showContent || this.mode === StartupMode.LOGIN) { return; }
     if (!this.usesGuideSheet() || !this.showGuideSheet) { return; }
     // preferType 在 Sheet 已显示时不会可靠地从 BOTTOM 切换为 CENTER，
@@ -79,8 +109,17 @@ struct GuidePage {
     this.showGuideSheet = false;
   }
 
+  private onGuideDeviceChange(): void {
+    // EntryAbility publishes physical-device flags after the first breakpoint.
+    // Re-evaluate so PC/Pad do not keep that short-lived fallback selection.
+    this.refreshTutorialPages();
+  }
+
   private usesGuideSheet(): boolean {
-    return this.mode !== StartupMode.LOGIN;
+    // 首次安装引导必须先作为页面首屏渲染。冷启动时系统 bindSheet 可能
+    // 尚未完成宿主挂载，若把首屏完全交给 Sheet，挂载竞态会再次呈现白屏。
+    // 版本更新说明继续使用既有 Sheet，不改变更新弹窗的显示路径。
+    return this.mode === StartupMode.RELEASE_NOTES;
   }
 
   private onBackgroundFlagChange(): void {
@@ -138,46 +177,64 @@ struct GuidePage {
 
   @Builder guidePanel(isSheet: boolean) {
     Column() {
-      Swiper(this.swiperController) {
-        ForEach(this.activePages, (page: GuideContentPage, index: number) => {
-          Column() {
+      if (this.activePages.length > 0) {
+        Swiper(this.swiperController) {
+          ForEach(this.activePages, (page: GuideContentPage, index: number) => {
             Column() {
               Column() {
-                Image(page.symbol).width(50).height(50).fillColor(this.accentColor)
+                Column() {
+                  Image(page.symbol).width(50).height(50).fillColor(this.accentColor)
+                }
+                .width(this.currentIndex === index ? 104 : 92)
+                .height(this.currentIndex === index ? 104 : 92)
+                .borderRadius(28)
+                .backgroundColor(this.pal().card)
+                .justifyContent(FlexAlign.Center)
+                .margin({ bottom: 20 })
+                .shadow({ radius: 24, color: this.pal().fabGlow, offsetY: 8 })
+                .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
+                .scale({ x: this.currentIndex === index ? 1 : 0.8,
+                         y: this.currentIndex === index ? 1 : 0.8 })
+                .animation({ duration: 250, curve: Curve.EaseOut })
+
+                Text(page.title)
+                  .fontSize(24).fontWeight(FontWeight.Bold)
+                  .fontColor(this.pal().text).textAlign(TextAlign.Center)
+                  .margin({ bottom: 12 })
+                  .animation({ duration: 200, curve: Curve.EaseOut })
+
+                Text(page.desc)
+                  .fontSize(15).fontColor(this.pal().text2).textAlign(TextAlign.Center)
+                  .lineHeight(22).width('88%')
+                  .animation({ duration: 200, curve: Curve.EaseOut })
               }
-              .width(this.currentIndex === index ? 104 : 92)
-              .height(this.currentIndex === index ? 104 : 92)
-              .borderRadius(28)
-              .backgroundColor(this.pal().card)
-              .justifyContent(FlexAlign.Center)
-              .margin({ bottom: 20 })
-              .shadow({ radius: 24, color: this.pal().fabGlow, offsetY: 8 })
-              .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
-              .scale({ x: this.currentIndex === index ? 1 : 0.8,
-                       y: this.currentIndex === index ? 1 : 0.8 })
-              .animation({ duration: 250, curve: Curve.EaseOut })
-
-              Text(page.title)
-                .fontSize(24).fontWeight(FontWeight.Bold)
-                .fontColor(this.pal().text).textAlign(TextAlign.Center)
-                .margin({ bottom: 12 })
-                .animation({ duration: 200, curve: Curve.EaseOut })
-
-              Text(page.desc)
-                .fontSize(15).fontColor(this.pal().text2).textAlign(TextAlign.Center)
-                .lineHeight(22).width('88%')
-                .animation({ duration: 200, curve: Curve.EaseOut })
+              .width('100%')
             }
-            .width('100%')
-          }
-          .width('100%').height('100%')
-          .justifyContent(FlexAlign.Center)
+            .width('100%').height('100%')
+            .justifyContent(FlexAlign.Center)
+          }, (page: GuideContentPage) => page.id)
+        }
+        .loop(false).indicator(false)
+        .duration(250).curve(Curve.EaseOut)
+        .onChange((i: number) => {
+          this.currentIndex = clampGuidePageIndex(i, this.activePages.length);
         })
+        .layoutWeight(1)
+      } else {
+        // 理论上 ensureGuidePages 已阻止空数组；这里保留最终可见兜底，
+        // 即使未来注册表或框架状态异常，新用户也不会只看到白屏。
+        Column() {
+          Image($rawfile('icons/computer-desktop.svg'))
+            .width(50).height(50).fillColor(this.accentColor).margin({ bottom: 20 })
+          Text('欢迎使用 RemoteDesktop')
+            .fontSize(24).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
+            .textAlign(TextAlign.Center).margin({ bottom: 12 })
+          Text('引导内容暂时无法载入，你仍可立即进入工作台，并从“设置 → 教程”重新打开。')
+            .fontSize(15).fontColor(this.pal().text2).textAlign(TextAlign.Center)
+            .lineHeight(22).width('88%')
+        }
+        .width('100%').layoutWeight(1).justifyContent(FlexAlign.Center)
       }
-      .loop(false).indicator(false)
-      .duration(250).curve(Curve.EaseOut)
-      .onChange((i: number) => { this.currentIndex = i; })
-      .layoutWeight(1)
 
       Row() {
         Text(this.currentIndex > 0 ? '上一步' :
@@ -245,7 +302,13 @@ struct GuidePage {
 
   build() {
     Stack() {
-      Column().width('100%').height('100%').backgroundColor(this.pal().bg)
+      if (this.usesGuideSheet()) {
+        // 更新说明由系统 Sheet 承载，底层只需要提供全屏宿主节点。
+        Column().width('100%').height('100%').backgroundColor(this.pal().bg)
+      } else {
+        // 首次安装引导直接占据页面，保证即使 Sheet 首次挂载失败也有可见内容。
+        this.guidePanel(false)
+      }
     }
     .width('100%').height('100%')
     .backgroundColor(this.pal().bg)
@@ -292,6 +355,11 @@ struct GuidePage {
     this.cancelGuideSheetEnter();
     this.cancelGuideSheetReopen();
     this.persistCompletion();
+    if (!this.usesGuideSheet()) {
+      // 首次引导不是 Sheet，没有 onDisappear 回调负责路由；完成后直接进入登录页。
+      router.replaceUrl({ url: 'pages/LoginPage' });
+      return;
+    }
     this.showGuideSheet = false;
   }
 }

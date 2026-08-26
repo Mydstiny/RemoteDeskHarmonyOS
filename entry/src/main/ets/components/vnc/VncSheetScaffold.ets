@@ -16,6 +16,7 @@ export struct VncSheetScaffold {
   @Prop stepText: string = '';
   @Prop leadingBack: boolean = false;
   @Prop showFooter: boolean = true;
+  @Prop fitContent: boolean = false;
   @Prop bottomSafePadding: number = 18;
   @State measuredHeight: number = 0;
   onLeadingAction: () => void = (): void => {};
@@ -89,50 +90,71 @@ export struct VncSheetScaffold {
     })
   }
 
+  @Builder
+  private body(inlineFooter: boolean) {
+    Column() {
+      if (this.subtitle !== '' && (this.stepText !== '' || this.compactHeight())) {
+        Text(this.subtitle).fontSize(11).fontColor(this.pal().text3)
+          .lineHeight(17).width('100%')
+          .margin({ bottom: this.compactHeight() ? 8 : 14 })
+      }
+      this.contentBuilder()
+      if (inlineFooter && this.showFooter) {
+        this.footerBuilder()
+      }
+    }.width('100%').padding({
+      left: 20,
+      right: 20,
+      bottom: this.compactHeight() ? 8 : 18
+    })
+  }
+
+  @Builder
+  private boundedFooter() {
+    Column() {
+      Divider().strokeWidth(0.5).color(this.pal().divider)
+      Row() {
+        this.footerBuilder()
+      }.width('100%').padding({
+        left: 20,
+        right: 20,
+        top: this.compactHeight() ? 6 : 12,
+        bottom: this.compactHeight() ? 4 : 10
+      })
+    }
+    .width('100%')
+    .safeAreaPadding({ bottom: this.bottomSafePadding })
+    .backgroundColor(this.pal().card)
+  }
+
   build() {
     Column() {
       if (!this.actionOnlyHeight()) {
         this.header()
       }
-      Scroll() {
-        Column() {
-          if (this.subtitle !== '' && (this.stepText !== '' || this.compactHeight())) {
-            Text(this.subtitle).fontSize(11).fontColor(this.pal().text3)
-              .lineHeight(17).width('100%')
-              .margin({ bottom: this.compactHeight() ? 8 : 14 })
-          }
-          this.contentBuilder()
-        }.width('100%').padding({
-          left: 20,
-          right: 20,
-          bottom: this.compactHeight() ? 8 : 18
-        })
-      }
-      .layoutWeight(1)
-      .width('100%')
-      .scrollBar(BarState.Auto)
-      .edgeEffect(EdgeEffect.Spring)
-      if (this.showFooter) {
-        Column() {
-          Divider().strokeWidth(0.5).color(this.pal().divider)
-          Row() {
-            this.footerBuilder()
-          }.width('100%').padding({
-            left: 20,
-            right: 20,
-            top: this.compactHeight() ? 6 : 12,
-            bottom: this.compactHeight() ? 4 : 10
-          })
+      if (this.fitContent) {
+        // Phone host-add sheets share one intrinsic content tree with their
+        // action row so bindSheet can translate and scroll it above the IME.
+        this.body(true)
+      } else {
+        // Settings, trust, Gateway, Pad and PC callers retain a bounded body
+        // and reachable footer inside their LARGE/fixed-height sheet host.
+        Scroll() {
+          this.body(false)
         }
+        .layoutWeight(1)
         .width('100%')
-        .safeAreaPadding({ bottom: this.bottomSafePadding })
-        .backgroundColor(this.pal().card)
+        .scrollBar(BarState.Auto)
+        .edgeEffect(EdgeEffect.Spring)
+        if (this.showFooter) {
+          this.boundedFooter()
+        }
       }
     }
     .width('100%')
-    .height('100%')
+    .height(this.fitContent ? 'auto' : '100%')
     .constraintSize({ maxWidth: VNC_SHEET_MAX_WIDTH })
-    .backgroundColor(this.pal().bg)
+    .backgroundColor(this.pal().card)
     .onAreaChange((_old: Area, next: Area): void => {
       const height: number = next.height as number;
       if (Number.isFinite(height) && height > 0 && Math.abs(height - this.measuredHeight) >= 0.5) {

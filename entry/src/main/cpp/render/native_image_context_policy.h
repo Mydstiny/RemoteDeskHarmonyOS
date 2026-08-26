@@ -1,13 +1,25 @@
 #pragma once
 
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
-#include <cmath>
 
 namespace Render {
 
 using NativeImageTransform = std::array<float, 16>;
+
+enum class NativeImagePresentationMode : uint8_t {
+    Identity = 0,
+    ProducerTransform = 1,
+};
+
+inline NativeImagePresentationMode NativeImageModeForDesktopSurface(
+    bool desktopSurfaceCompatibility) noexcept {
+    return desktopSurfaceCompatibility
+        ? NativeImagePresentationMode::ProducerTransform
+        : NativeImagePresentationMode::Identity;
+}
 
 inline NativeImageTransform IdentityNativeImageTransform() {
     return NativeImageTransform {
@@ -19,18 +31,19 @@ inline NativeImageTransform IdentityNativeImageTransform() {
 }
 
 /**
- * Desktop NativeImage producers can publish a texture-origin transform that
- * differs from Phone/Pad AVCodec surfaces. Mobile presentation is already a
- * released contract, so only the explicit desktop compatibility path consumes
- * the producer matrix. Invalid reads retain the last complete matrix to avoid
- * one-frame orientation flicker.
+ * Return the texture transform for an encoded remote-desktop frame.
+ *
+ * The transform source is an explicit protocol decision. Moonlight and the
+ * released mobile paths retain the renderer's top-left identity contract,
+ * while a RustDesk PC session connected to a Windows peer consumes the valid
+ * NativeImage producer matrix to bridge the AVCodec texture-origin mismatch.
  */
 inline NativeImageTransform ResolveNativeImagePresentationTransform(
-    bool desktopSurfaceCompatibility,
+    NativeImagePresentationMode mode,
     int32_t readResult,
     const float matrix[16],
     const NativeImageTransform& previous) {
-    if (!desktopSurfaceCompatibility) {
+    if (mode != NativeImagePresentationMode::ProducerTransform) {
         return IdentityNativeImageTransform();
     }
     if (readResult != 0 || matrix == nullptr) {
@@ -46,6 +59,12 @@ inline NativeImageTransform ResolveNativeImagePresentationTransform(
     return resolved;
 }
 
+inline const char* NativeImagePresentationModeName(
+    NativeImagePresentationMode mode) {
+    return mode == NativeImagePresentationMode::ProducerTransform
+        ? "producer" : "identity";
+}
+
 inline bool ShouldRenderNativeImageImmediately(bool desktopSurfaceCompatibility) {
     return desktopSurfaceCompatibility;
 }
@@ -53,7 +72,12 @@ inline bool ShouldRenderNativeImageImmediately(bool desktopSurfaceCompatibility)
 constexpr int kNativeErrorNoBuffer = 40601000;
 // A failed acquire can be a short producer/consumer handoff race. Bound the
 // retry work so a missing surface buffer cannot monopolize the render thread.
-constexpr int kNativeImageUpdateRetryBudget = 3;
+// API 23 drop-buffer mode can emit several stale callbacks in one display
+// interval. One short handoff retry is enough; waiting 2+4+8 ms for every
+// stale callback can occupy nearly the full 60 Hz frame budget and looks like
+// a frozen stream even though decode continues. The next producer callback
+// carries the newest buffer, so coalesce immediately after this single retry.
+constexpr int kNativeImageUpdateRetryBudget = 1;
 constexpr int kNativeImageSurfaceRecoveryThreshold = 6;
 
 inline bool ShouldDetachNativeImageOnRenderThreadStop(bool attached, bool hasNativeImage) {

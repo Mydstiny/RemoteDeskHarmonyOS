@@ -5,7 +5,7 @@
  */
 
 function isRemoteDesktopProtocol(protocol: string): boolean {
-  return protocol === 'rdp' || protocol === 'rustdesk';
+  return protocol === 'rdp' || protocol === 'rustdesk' || protocol === 'vnc';
 }
 export function shouldHideRemoteNavigation(protocol: string, connected: boolean): boolean {
   return connected && isRemoteDesktopProtocol(protocol);
@@ -20,10 +20,11 @@ export function shouldHideRemoteStatusBar(protocol: string, connected: boolean,
   if (!connected || isDesktopDevice) {
     return false;
   }
-  // RDP's canvas owns the complete mobile/Pad input surface. Keep the system
-  // status bar out of that hit area for every RDP control mode. RustDesk keeps
-  // its existing keyboard/mouse-only rule because its touch modes use the bar.
-  return protocol === 'rdp' ||
+  // RDP/VNC canvases own the complete mobile/Pad input surface. Keep both
+  // official system bars out of that hit area for every control mode.
+  // RustDesk retains its keyboard/mouse-only rule because its touch modes use
+  // the status bar as part of the existing interaction contract.
+  return protocol === 'rdp' || protocol === 'vnc' ||
     (protocol === 'rustdesk' && rustdeskControlMode === 2);
 }
 

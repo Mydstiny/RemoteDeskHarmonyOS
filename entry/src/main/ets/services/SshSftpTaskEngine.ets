@@ -20,7 +20,8 @@ import {
   sshSftpCommitSizeMatches,
   sshSftpIdentityMatches,
   sshSftpOffsetIsValid,
-  sshSftpPartialSuffix
+  sshSftpPartialSuffix,
+  writeSshSftpPayloadFully
 } from './SshSftpIntegrityPolicy';
 import {
   SshSftpCommitRecoveryDecision,
@@ -64,6 +65,181 @@ export interface SshSftpTaskEngineEvent {
 
 export type SshSftpTaskEngineListener = (event: SshSftpTaskEngineEvent) => void;
 
+/** Keep provider bindings only when the SSH page explicitly survives in background. */
+export function shouldReleaseSshSftpRuntimeOnPageTeardown(
+  preserveSshInBackground: boolean): boolean {
+  return !preserveSshInBackground;
+}
+
+export interface SshSftpStagingDiscardPlan {
+  accepted: boolean;
+  deferUntilWorkerStops: boolean;
+  cleanupStagingRoot: boolean;
+}
+
+export function planSshSftpStagingDiscard(bindingFound: boolean, workerRunning: boolean,
+  cleanupLocalRoot: boolean, sourceKind: string): SshSftpStagingDiscardPlan {
+  if (!bindingFound) {
+    return { accepted: false, deferUntilWorkerStops: false, cleanupStagingRoot: false };
+  }
+  return {
+    accepted: true,
+    deferUntilWorkerStops: workerRunning,
+    cleanupStagingRoot: cleanupLocalRoot && sourceKind === 'local'
+  };
+}
+
+export function reconcileSshSftpStoppedUploadCheckpoint(current: SshSftpTaskRecord,
+  offset: number, partialIdentity: SshSftpFileIdentity, sequence: number,
+  updatedAt: number): SshSftpTaskRecord | null {
+  if ((current.stage !== 'paused' && current.stage !== 'cancelled') ||
+    !sshSftpOffsetIsValid(offset, current.sourceSize >= 0 ? current.sourceSize : current.totalBytes) ||
+    partialIdentity.size !== offset || partialIdentity.mtime < 0) {
+    return null;
+  }
+  return {
+    taskId: current.taskId,
+    schemaVersion: current.schemaVersion,
+    batchId: current.batchId,
+    relativePath: current.relativePath,
+    hostId: current.hostId,
+    direction: current.direction,
+    isDirectory: current.isDirectory,
+    remotePath: current.remotePath,
+    fileName: current.fileName,
+    totalBytes: current.totalBytes,
+    verifiedOffset: offset,
+    sourceSize: current.sourceSize,
+    sourceMtime: current.sourceMtime,
+    partialSize: partialIdentity.size,
+    partialMtime: partialIdentity.mtime,
+    sessionGeneration: current.sessionGeneration,
+    sequence,
+    stage: current.stage,
+    updatedAt,
+    sourceEndpoint: current.sourceEndpoint,
+    targetEndpoint: current.targetEndpoint,
+    sourcePath: current.sourcePath,
+    targetPath: current.targetPath,
+    partialIdentity: { size: partialIdentity.size, mtime: partialIdentity.mtime },
+    checksumPolicy: current.checksumPolicy,
+    commitState: current.commitState
+  };
+}
+
+/**
+ * A successful atomic rename is an irreversible remote commit. A cancel or
+ * pause accepted while that native call was in flight must not leave the
+ * durable task resumable after the final path has already been installed.
+ * Only the exact stopped task and target crossed by the committing attempt may
+ * be completed through this exceptional path.
+ */
+export function reconcileSshSftpStoppedRemoteCommit(current: SshSftpTaskRecord,
+  attempted: SshSftpTaskRecord, expectedSize: number, sequence: number,
+  updatedAt: number): SshSftpTaskRecord | null {
+  const currentTarget: string = (current.targetPath || current.remotePath).trim();
+  const attemptedTarget: string = (attempted.targetPath || attempted.remotePath).trim();
+  const currentSource: string = (current.sourcePath || current.relativePath).trim();
+  const attemptedSource: string = (attempted.sourcePath || attempted.relativePath).trim();
+  if ((current.stage !== 'paused' && current.stage !== 'cancelled') ||
+    attempted.commitState !== 'renaming' || expectedSize < 0 ||
+    current.taskId !== attempted.taskId || current.batchId !== attempted.batchId ||
+    current.hostId !== attempted.hostId || current.direction !== attempted.direction ||
+    currentTarget.length === 0 || currentTarget !== attemptedTarget ||
+    currentSource !== attemptedSource || current.totalBytes !== expectedSize ||
+    attempted.totalBytes !== expectedSize || current.sourceSize !== attempted.sourceSize ||
+    current.sourceMtime !== attempted.sourceMtime || !Number.isFinite(sequence) ||
+    sequence <= current.sequence || !Number.isFinite(updatedAt) || updatedAt < 0) {
+    return null;
+  }
+  return {
+    taskId: current.taskId,
+    schemaVersion: current.schemaVersion,
+    batchId: current.batchId,
+    relativePath: current.relativePath,
+    hostId: current.hostId,
+    direction: current.direction,
+    isDirectory: current.isDirectory,
+    remotePath: current.remotePath,
+    fileName: current.fileName,
+    totalBytes: current.totalBytes,
+    verifiedOffset: expectedSize,
+    sourceSize: current.sourceSize,
+    sourceMtime: current.sourceMtime,
+    partialSize: -1,
+    partialMtime: -1,
+    sessionGeneration: current.sessionGeneration,
+    sequence,
+    stage: 'completed',
+    updatedAt,
+    sourceEndpoint: current.sourceEndpoint,
+    targetEndpoint: current.targetEndpoint,
+    sourcePath: current.sourcePath,
+    targetPath: current.targetPath,
+    partialIdentity: undefined,
+    checksumPolicy: current.checksumPolicy,
+    commitState: 'renamed'
+  };
+}
+
+/**
+ * A verified Picker export is the download commit point. Preserve a cancel or
+ * pause only until that export succeeds; afterwards the same stopped task must
+ * become completed so retry cannot duplicate an already delivered file.
+ */
+export function reconcileSshSftpStoppedDownloadExport(current: SshSftpTaskRecord,
+  attempted: SshSftpTaskRecord, expectedSize: number, sequence: number,
+  updatedAt: number): SshSftpTaskRecord | null {
+  const currentSource: string = (current.sourcePath || current.remotePath).trim();
+  const attemptedSource: string = (attempted.sourcePath || attempted.remotePath).trim();
+  const currentTarget: string = (current.targetPath || current.relativePath).trim();
+  const attemptedTarget: string = (attempted.targetPath || attempted.relativePath).trim();
+  const totalMatches: boolean = current.totalBytes === attempted.totalBytes &&
+    (current.totalBytes === expectedSize || current.totalBytes < 0);
+  const sourceSizeMatches: boolean = current.sourceSize === attempted.sourceSize &&
+    (current.sourceSize === expectedSize || current.sourceSize < 0);
+  if ((current.stage !== 'paused' && current.stage !== 'cancelled') ||
+    current.direction !== 'download' || attempted.direction !== 'download' ||
+    !Number.isFinite(expectedSize) || expectedSize < 0 ||
+    current.taskId !== attempted.taskId || current.batchId !== attempted.batchId ||
+    current.hostId !== attempted.hostId || current.relativePath !== attempted.relativePath ||
+    current.remotePath !== attempted.remotePath || current.fileName !== attempted.fileName ||
+    currentSource.length === 0 || currentSource !== attemptedSource ||
+    currentTarget !== attemptedTarget || !totalMatches || !sourceSizeMatches ||
+    current.sourceMtime !== attempted.sourceMtime || !Number.isFinite(sequence) ||
+    sequence <= current.sequence || !Number.isFinite(updatedAt) || updatedAt < 0) {
+    return null;
+  }
+  return {
+    taskId: current.taskId,
+    schemaVersion: current.schemaVersion,
+    batchId: current.batchId,
+    relativePath: current.relativePath,
+    hostId: current.hostId,
+    direction: current.direction,
+    isDirectory: current.isDirectory,
+    remotePath: current.remotePath,
+    fileName: current.fileName,
+    totalBytes: expectedSize,
+    verifiedOffset: expectedSize,
+    sourceSize: current.sourceSize < 0 ? expectedSize : current.sourceSize,
+    sourceMtime: current.sourceMtime,
+    partialSize: -1,
+    partialMtime: -1,
+    sessionGeneration: current.sessionGeneration,
+    sequence,
+    stage: 'completed',
+    updatedAt,
+    sourceEndpoint: current.sourceEndpoint,
+    targetEndpoint: current.targetEndpoint,
+    sourcePath: current.sourcePath,
+    targetPath: current.targetPath,
+    partialIdentity: undefined,
+    checksumPolicy: current.checksumPolicy,
+    commitState: undefined
+  };
+}
+
 interface SshSftpBatchBinding {
   batchId: string;
   hostId: string;
@@ -73,6 +249,7 @@ interface SshSftpBatchBinding {
   sourceEndpoint: SftpEndpoint;
   targetEndpoint: SftpEndpoint;
   conflictPolicy: SshSftpConflictPolicy;
+  cleanupLocalRootOnComplete: boolean;
 }
 
 interface SshSftpResolvedSessions {
@@ -106,7 +283,7 @@ export class SshSftpTaskEngine {
   private static instance: SshSftpTaskEngine | null = null;
   private readonly loader: ExtensionLoader = ExtensionLoader.getInstance();
   private readonly store: SshSftpTaskStore = SshSftpTaskStore.getInstance();
-  private readonly provider: SshLocalFileProvider = new SshLocalFileProvider();
+  private readonly provider: SshLocalFileProvider = SshLocalFileProvider.getInstance();
   private readonly bindings: Map<string, SshSftpBatchBinding> = new Map<string, SshSftpBatchBinding>();
   private readonly sessionOwners: SshSftpSessionOwnerPolicy =
     new SshSftpSessionOwnerPolicy();
@@ -116,6 +293,10 @@ export class SshSftpTaskEngine {
   /** A queued batch can be admitted before one of its SSH endpoints is ready. */
   private readonly pendingBatches: Set<string> = new Set<string>();
   private readonly activeTasks: Map<string, string> = new Map<string, string>();
+  /** Final user discard is deferred until an active file operation releases the staging root. */
+  private readonly discardRequested: Set<string> = new Set<string>();
+  /** Page teardown releases provider grants without deleting durable task records. */
+  private readonly runtimeReleaseRequested: Set<string> = new Set<string>();
   private readonly listeners: SshSftpTaskEngineListener[] = [];
   /** Sessions can be adopted while local-provider authorization restores. */
   private readonly pendingSessions: Map<string, SshSftpEngineSession> =
@@ -160,7 +341,8 @@ export class SshSftpTaskEngine {
   }
 
   bindBatch(batchId: string, hostId: string, localRoot: string, remoteRoot: string,
-    conflictPolicy: SshSftpConflictPolicy = 'ask'): boolean {
+    conflictPolicy: SshSftpConflictPolicy = 'ask',
+    cleanupLocalRootOnComplete: boolean = false): boolean {
     const id: string = batchId.trim();
     const owner: string = hostId.trim();
     const local: string = localRoot.trim();
@@ -181,6 +363,7 @@ export class SshSftpTaskEngine {
         ? { kind: 'ssh', hostId: owner } as SftpEndpoint
         : { kind: 'local' } as SftpEndpoint)
       : first.targetEndpoint;
+    this.runtimeReleaseRequested.delete(id);
     this.bindings.set(id, {
       batchId: id,
       hostId: owner,
@@ -189,9 +372,10 @@ export class SshSftpTaskEngine {
       remoteRoot: remote,
       sourceEndpoint,
       targetEndpoint,
-      conflictPolicy
+      conflictPolicy,
+      cleanupLocalRootOnComplete
     });
-    this.logDiagnostic('bind batch=' + id + ' owner=' + owner +
+    this.logDiagnostic('bind batch=' + id +
       ' source=' + this.endpointDiagnostic(sourceEndpoint) +
       ' target=' + this.endpointDiagnostic(targetEndpoint) +
       ' records=' + records.length.toString());
@@ -201,6 +385,7 @@ export class SshSftpTaskEngine {
   unbindBatch(batchId: string): void {
     const id: string = batchId.trim();
     if (this.running.has(id)) { return; }
+    this.runtimeReleaseRequested.delete(id);
     const binding: SshSftpBatchBinding | undefined = this.bindings.get(id);
     this.bindings.delete(id);
     this.pendingBatches.delete(id);
@@ -210,6 +395,29 @@ export class SshSftpTaskEngine {
       for (let index = 0; index < tasks.length; index++) {
         this.conflictPolicies.delete(tasks[index].taskId);
       }
+    }
+  }
+
+  /**
+   * Release page-only provider bindings while retaining durable task records.
+   * An active worker finishes its current operation before the binding is
+   * dropped, so a later page must bind fresh local/remote roots explicitly.
+   */
+  releaseBatchRuntime(batchId: string): void {
+    const id: string = batchId.trim();
+    if (id.length === 0 || this.discardRequested.has(id)) { return; }
+    const binding: SshSftpBatchBinding | undefined = this.bindings.get(id);
+    if (binding === undefined) { return; }
+    this.pendingBatches.delete(id);
+    this.runtimeReleaseRequested.add(id);
+    if (!this.running.has(id)) { this.finalizeBatchRuntimeRelease(binding); }
+  }
+
+  /** Release every page-only provider binding that is not being discarded. */
+  releaseAllBatchRuntimes(): void {
+    const bindings: SshSftpBatchBinding[] = Array.from(this.bindings.values());
+    for (let index = 0; index < bindings.length; index++) {
+      this.releaseBatchRuntime(bindings[index].batchId);
     }
   }
 
@@ -223,8 +431,7 @@ export class SshSftpTaskEngine {
       const snapshot = this.loader.getSshSessionSnapshot(session.sessionId, session.generation);
       if (!sshSftpSessionSnapshotCanAttach(
         session.sessionId, session.generation, nativeState, snapshot)) {
-        this.logDiagnostic('stale session attach rejected host=' + hostId +
-          ' session=' + session.sessionId.toString() +
+        this.logDiagnostic('stale session attach rejected session=' + session.sessionId.toString() +
           ' generation=' + session.generation.toString() +
           ' snapshotError=' + snapshot.errorCode.toString(), true);
         return null;
@@ -233,7 +440,7 @@ export class SshSftpTaskEngine {
     } catch (_err) {
       return null;
     }
-    this.logDiagnostic('attach host=' + hostId + ' session=' + session.sessionId.toString() +
+    this.logDiagnostic('attach session=' + session.sessionId.toString() +
       ' generation=' + session.generation.toString() +
       ' recoveryEpoch=' + recoveryEpoch.toString() +
       ' initialized=' + this.initialized.toString());
@@ -297,7 +504,7 @@ export class SshSftpTaskEngine {
       this.logDiagnostic('start ignored batch=' + id + ' reason=binding-missing', true);
       return;
     }
-    this.logDiagnostic('start requested batch=' + id + ' owner=' + binding.hostId +
+    this.logDiagnostic('start requested batch=' + id +
       ' pending=' + this.pendingBatches.has(id).toString());
     const resolved: SshSftpResolvedSessions | null = this.resolveBindingSessions(binding);
     if (resolved === null) {
@@ -346,6 +553,23 @@ export class SshSftpTaskEngine {
         }
       }
     }
+  }
+
+  /**
+   * Permanently discard a terminal batch. Cancel keeps staging retryable;
+   * clearing the final history record calls this method to release it.
+   */
+  discardBatch(batchId: string): void {
+    const id: string = batchId.trim();
+    const binding: SshSftpBatchBinding | undefined = this.bindings.get(id);
+    const plan: SshSftpStagingDiscardPlan = planSshSftpStagingDiscard(
+      binding !== undefined, this.running.has(id),
+      binding?.cleanupLocalRootOnComplete === true, binding?.sourceEndpoint.kind || '');
+    if (!plan.accepted || binding === undefined) { return; }
+    this.runtimeReleaseRequested.delete(id);
+    this.discardRequested.add(id);
+    this.pendingBatches.delete(id);
+    if (!plan.deferUntilWorkerStops) { void this.finalizeBatchDiscard(binding); }
   }
 
   pauseBatch(batchId: string): void {
@@ -409,6 +633,11 @@ export class SshSftpTaskEngine {
               task.stage !== 'completed' && task.stage !== 'cancelled');
           if (remaining.length === 0) {
             this.logDiagnostic('pump completed batch=' + binding.batchId);
+            if (binding.cleanupLocalRootOnComplete && binding.sourceEndpoint.kind === 'local') {
+              const cleaned: boolean = await this.provider.remove(binding.localRoot, true);
+              this.logDiagnostic('staging cleanup batch=' + binding.batchId +
+                ' accepted=' + cleaned.toString(), !cleaned);
+            }
             this.publish('batchCompleted', binding.batchId, null, 'completed');
           }
           return;
@@ -441,17 +670,46 @@ export class SshSftpTaskEngine {
         if (!completed) { return; }
       }
     } finally {
-      const restartAfterCleanup: boolean = this.pendingBatches.has(binding.batchId) &&
+      const discardAfterCleanup: boolean = this.discardRequested.has(binding.batchId);
+      const releaseAfterCleanup: boolean = !discardAfterCleanup &&
+        this.runtimeReleaseRequested.has(binding.batchId);
+      const restartAfterCleanup: boolean = !discardAfterCleanup && !releaseAfterCleanup &&
+        this.pendingBatches.has(binding.batchId) &&
         this.bindings.has(binding.batchId);
       this.activeTasks.delete(binding.batchId);
       this.running.delete(binding.batchId);
       this.logDiagnostic('pump end batch=' + binding.batchId +
         ' pending=' + this.pendingBatches.has(binding.batchId).toString());
-      if (restartAfterCleanup) {
+      if (discardAfterCleanup) {
+        void this.finalizeBatchDiscard(binding);
+      } else if (releaseAfterCleanup) {
+        this.finalizeBatchRuntimeRelease(binding);
+      } else if (restartAfterCleanup) {
         this.logDiagnostic('pump restart batch=' + binding.batchId + ' after lifecycle change');
         this.startBatch(binding.batchId);
       }
     }
+  }
+
+  private async finalizeBatchDiscard(binding: SshSftpBatchBinding): Promise<void> {
+    const current: SshSftpBatchBinding | undefined = this.bindings.get(binding.batchId);
+    if (current !== binding || this.running.has(binding.batchId)) { return; }
+    const plan: SshSftpStagingDiscardPlan = planSshSftpStagingDiscard(
+      true, false, binding.cleanupLocalRootOnComplete, binding.sourceEndpoint.kind);
+    if (plan.cleanupStagingRoot) {
+      const cleaned: boolean = await this.provider.remove(binding.localRoot, true);
+      this.logDiagnostic('staging discard batch=' + binding.batchId +
+        ' accepted=' + cleaned.toString(), !cleaned);
+    }
+    this.discardRequested.delete(binding.batchId);
+    this.unbindBatch(binding.batchId);
+  }
+
+  private finalizeBatchRuntimeRelease(binding: SshSftpBatchBinding): void {
+    const current: SshSftpBatchBinding | undefined = this.bindings.get(binding.batchId);
+    if (current !== binding || this.running.has(binding.batchId)) { return; }
+    this.logDiagnostic('runtime release batch=' + binding.batchId);
+    this.unbindBatch(binding.batchId);
   }
 
   private bindingUsesHost(binding: SshSftpBatchBinding, hostId: string): boolean {
@@ -469,12 +727,12 @@ export class SshSftpTaskEngine {
   }
 
   private endpointDiagnostic(endpoint: SftpEndpoint): string {
-    return endpoint.kind === 'ssh' ? 'ssh/' + endpoint.hostId : endpoint.kind;
+    return endpoint.kind;
   }
 
   private sessionDiagnostic(session: SshSftpEngineSession | null): string {
-    return session === null ? 'none' : session.hostId + '/' + session.sessionId.toString() +
-      '/' + session.generation.toString();
+    return session === null ? 'none' : session.sessionId.toString() + '/' +
+      session.generation.toString();
   }
 
   private endpointSessionReady(endpoint: SftpEndpoint): boolean {
@@ -518,12 +776,11 @@ export class SshSftpTaskEngine {
     // A CONNECTED reattach publishes a new object/recovery epoch. A callback
     // captured by the old transport must not invalidate that recovered owner.
     if (!this.sessionOwners.markTransportLost(tracked)) {
-      this.logDiagnostic('stale transport loss ignored host=' + session.hostId +
-        ' session=' + session.sessionId.toString() + ' reason=' + reason, true);
+      this.logDiagnostic('stale transport loss ignored session=' + session.sessionId.toString() +
+        ' reason=' + reason, true);
       return;
     }
-    this.logDiagnostic('transport lost host=' + session.hostId +
-      ' session=' + session.sessionId.toString() +
+    this.logDiagnostic('transport lost session=' + session.sessionId.toString() +
       ' generation=' + session.generation.toString() + ' reason=' + reason, true);
   }
 
@@ -609,9 +866,15 @@ export class SshSftpTaskEngine {
         diagnosticPrefix + '-commit-marker-persist-failed');
     }
     if (this.taskIsStopped(task.taskId)) { return false; }
+    const renameAttempt: SshSftpTaskRecord = committing;
     const renamed: SftpMutationAsyncResult = await this.loader.renameRemotePathAsync(
       targetSession.sessionId, partialPath, targetPath, true, targetSession.generation);
-    if (this.taskIsStopped(task.taskId)) { return false; }
+    const renameCommitted: boolean = renamed.transportLost !== true &&
+      renamed.errorCode >= 0 && renamed.atomic === true;
+    if (this.taskIsStopped(task.taskId)) {
+      return renameCommitted && this.completeStoppedRemoteCommit(
+        binding, renameAttempt, expectedSize, diagnosticPrefix + '-completed-after-remote-commit');
+    }
     if (renamed.transportLost === true) {
       return this.failOperationOrWait(binding, committing, targetSession,
         diagnosticPrefix + '-atomic-commit-unconfirmed', true);
@@ -623,10 +886,16 @@ export class SshSftpTaskEngine {
     committing = this.updateTask(committing, 'committing', expectedSize, -1, -1,
       targetPath, committing.fileName, targetSession.generation, targetPath,
       committing.sourcePath, 'renamed');
-    if (committing.stage === 'paused' || committing.stage === 'cancelled') { return false; }
+    if (committing.stage === 'paused' || committing.stage === 'cancelled') {
+      return this.completeStoppedRemoteCommit(
+        binding, renameAttempt, expectedSize, diagnosticPrefix + '-completed-after-remote-commit');
+    }
     const targetResult: SshSftpEngineIdentityResult = await this.readRemoteIdentityResult(
       targetSession.sessionId, targetPath, targetSession.generation);
-    if (this.taskIsStopped(task.taskId)) { return false; }
+    if (this.taskIsStopped(task.taskId)) {
+      return this.completeStoppedRemoteCommit(
+        binding, renameAttempt, expectedSize, diagnosticPrefix + '-completed-after-remote-commit');
+    }
     if (targetResult.transportLost) {
       return this.failOperationOrWait(binding, committing, targetSession,
         diagnosticPrefix + '-target-stat-lost', true);
@@ -644,11 +913,9 @@ export class SshSftpTaskEngine {
     sourceSession: SshSftpEngineSession, targetSession: SshSftpEngineSession,
     task: SshSftpTaskRecord): Promise<boolean> {
     const diagnosticPrefix: string = '[sftp-remote] batch=' + binding.batchId +
-      ' task=' + task.taskId + ' source=' + sourceSession.hostId + '/' +
-      sourceSession.sessionId.toString() + '/' + sourceSession.generation.toString() +
-      ' target=' + targetSession.hostId + '/' + targetSession.sessionId.toString() + '/' +
-      targetSession.generation.toString() + ' sourcePath=' + (task.sourcePath || '') +
-      ' targetPath=' + (task.targetPath || task.remotePath);
+      ' task=' + task.taskId + ' sourceSession=' + sourceSession.sessionId.toString() + '/' +
+      sourceSession.generation.toString() + ' targetSession=' +
+      targetSession.sessionId.toString() + '/' + targetSession.generation.toString();
     hilog.info(0x0017, 'SshTerminal', diagnosticPrefix + ' remote-copy begin');
     if (this.taskIsStopped(task.taskId)) { return false; }
     if (!this.remoteSessionsActive(sourceSession, targetSession)) {
@@ -857,8 +1124,7 @@ export class SshSftpTaskEngine {
         partialPath, targetPath, sourceIdentity.size, finalPartial,
         'remote-copy');
     } catch (_err) {
-      hilog.error(0x0017, 'SshTerminal', diagnosticPrefix +
-        ' remote-copy-exception ' + String(_err));
+      hilog.error(0x0017, 'SshTerminal', diagnosticPrefix + ' remote-copy-exception');
       return this.failRemoteOperationOrWait(binding, effectiveTask, sourceSession, targetSession,
         'remote-copy-exception');
     }
@@ -943,7 +1209,12 @@ export class SshSftpTaskEngine {
       partialIdentity === null ? -1 : partialIdentity.mtime);
     let source: fileIo.File | null = null;
     try {
-      source = await fileIo.open(sourceUri, fileIo.OpenMode.READ_ONLY);
+      // Resumed async I/O against a re-opened authorized docs URI can remain
+      // pending on API 24 after pause closes the original descriptor. A task
+      // with a verified offset uses deterministic local I/O around its seek.
+      source = offset > 0
+        ? fileIo.openSync(sourceUri, fileIo.OpenMode.READ_ONLY)
+        : await fileIo.open(sourceUri, fileIo.OpenMode.READ_ONLY);
       if (fileIo.lseek(source.fd, offset) !== offset) {
         return this.failTask(binding, effectiveTask, 'upload-local-seek-failed');
       }
@@ -966,7 +1237,10 @@ export class SshSftpTaskEngine {
         if (identity === null || identity.size !== 0 || identity.mtime < 0) {
           return this.failTask(binding, effectiveTask, 'upload-empty-partial-unverified');
         }
-        effectiveTask = this.updateTask(effectiveTask, 'transferring', 0, identity.size, identity.mtime);
+        const checkpointed: SshSftpTaskRecord | null =
+          this.checkpointConfirmedUploadWrite(effectiveTask, 0, identity);
+        if (checkpointed === null) { return false; }
+        effectiveTask = checkpointed;
         if (this.taskIsStopped(effectiveTask.taskId)) { return false; }
       }
       while (uploaded < sourceIdentity.size) {
@@ -976,7 +1250,9 @@ export class SshSftpTaskEngine {
         if (this.taskIsStopped(effectiveTask.taskId)) { return false; }
         const chunkSize: number = Math.min(UPLOAD_CHUNK_BYTES, sourceIdentity.size - uploaded);
         const chunk = new ArrayBuffer(chunkSize);
-        const readLength: number = await fileIo.read(source.fd, chunk);
+        const readLength: number = offset > 0
+          ? fileIo.readSync(source.fd, chunk)
+          : await fileIo.read(source.fd, chunk);
         if (readLength <= 0) { return this.failTask(binding, effectiveTask, 'upload-local-read-failed'); }
         const payload: ArrayBuffer = readLength === chunkSize ? chunk : chunk.slice(0, readLength);
         const written: SftpWriteAsyncResult = await this.loader.writeRemoteFileChunkAsync(
@@ -997,8 +1273,10 @@ export class SshSftpTaskEngine {
         if (identity === null || identity.size !== uploaded || identity.mtime < 0) {
           return this.failTask(binding, effectiveTask, 'upload-partial-unverified');
         }
-        effectiveTask = this.updateTask(effectiveTask, 'transferring', uploaded,
-          identity.size, identity.mtime);
+        const checkpointed: SshSftpTaskRecord | null =
+          this.checkpointConfirmedUploadWrite(effectiveTask, uploaded, identity);
+        if (checkpointed === null) { return false; }
+        effectiveTask = checkpointed;
         if (this.taskIsStopped(effectiveTask.taskId)) { return false; }
       }
       if (this.taskIsStopped(effectiveTask.taskId)) { return false; }
@@ -1128,8 +1406,13 @@ export class SshSftpTaskEngine {
         return this.failTask(binding, task, 'download-final-identity-mismatch');
       }
       if (this.taskIsStopped(task.taskId)) { return false; }
+      const exportAttempt: SshSftpTaskRecord = task;
       if (!await this.exportPartial(partialPath, targetUri, remoteIdentity.size)) {
         return this.failTask(binding, task, 'download-atomic-export-failed');
+      }
+      if (this.taskIsStopped(task.taskId)) {
+        return this.completeStoppedDownloadExport(binding, exportAttempt,
+          remoteIdentity.size, 'completed-after-picker-export');
       }
       return this.completeFileTask(binding, task, 'completed');
     } catch (_err) {
@@ -1216,9 +1499,9 @@ export class SshSftpTaskEngine {
         ? { action: 'failed', targetPath: target, fileName: task.fileName }
         : { action: 'ready', targetPath: keepBoth, fileName: name };
     }
-    if (!await this.provider.remove(target, false)) {
-      return { action: 'failed', targetPath: target, fileName: task.fileName };
-    }
+    // Keep the existing target intact while the remote bytes are still being
+    // downloaded. The verified-partial export owns the destructive TRUNC
+    // boundary, so a cancel before export cannot delete the user's old file.
     return { action: 'ready', targetPath: target, fileName: task.fileName };
   }
 
@@ -1249,6 +1532,36 @@ export class SshSftpTaskEngine {
       return false;
     }
     this.publish('taskChanged', binding.batchId, completed, reason);
+    return true;
+  }
+
+  private completeStoppedRemoteCommit(binding: SshSftpBatchBinding,
+    attempted: SshSftpTaskRecord, expectedSize: number, reason: string): boolean {
+    const current: SshSftpTaskRecord | null = this.store.get(attempted.taskId);
+    if (current === null) { return false; }
+    this.sequence = Math.max(this.sequence + 1, Date.now(), current.sequence + 1,
+      attempted.sequence + 1);
+    const completed: SshSftpTaskRecord | null = reconcileSshSftpStoppedRemoteCommit(
+      current, attempted, expectedSize, this.sequence, Date.now());
+    if (completed === null || !this.store.upsert(completed)) { return false; }
+    const stored: SshSftpTaskRecord | null = this.store.get(attempted.taskId);
+    if (stored === null || stored.stage !== 'completed') { return false; }
+    this.publish('taskChanged', binding.batchId, stored, reason);
+    return true;
+  }
+
+  private completeStoppedDownloadExport(binding: SshSftpBatchBinding,
+    attempted: SshSftpTaskRecord, expectedSize: number, reason: string): boolean {
+    const current: SshSftpTaskRecord | null = this.store.get(attempted.taskId);
+    if (current === null) { return false; }
+    this.sequence = Math.max(this.sequence + 1, Date.now(), current.sequence + 1,
+      attempted.sequence + 1);
+    const completed: SshSftpTaskRecord | null = reconcileSshSftpStoppedDownloadExport(
+      current, attempted, expectedSize, this.sequence, Date.now());
+    if (completed === null || !this.store.upsert(completed)) { return false; }
+    const stored: SshSftpTaskRecord | null = this.store.get(attempted.taskId);
+    if (stored === null || stored.stage !== 'completed') { return false; }
+    this.publish('taskChanged', binding.batchId, stored, reason);
     return true;
   }
 
@@ -1322,9 +1635,27 @@ export class SshSftpTaskEngine {
     return stored === null ? next : stored;
   }
 
+  private checkpointConfirmedUploadWrite(task: SshSftpTaskRecord, offset: number,
+    partialIdentity: SshSftpFileIdentity): SshSftpTaskRecord | null {
+    const current: SshSftpTaskRecord | null = this.store.get(task.taskId);
+    if (current === null) { return null; }
+    if (current.stage !== 'paused' && current.stage !== 'cancelled') {
+      return this.updateTask(task, 'transferring', offset,
+        partialIdentity.size, partialIdentity.mtime);
+    }
+    this.sequence = Math.max(this.sequence + 1, Date.now(), current.sequence + 1);
+    const reconciled: SshSftpTaskRecord | null = reconcileSshSftpStoppedUploadCheckpoint(
+      current, offset, partialIdentity, this.sequence, Date.now());
+    if (reconciled === null || !this.store.upsert(reconciled)) { return current; }
+    const stored: SshSftpTaskRecord | null = this.store.get(task.taskId);
+    return stored === null ? reconciled : stored;
+  }
+
   private taskIsStopped(taskId: string): boolean {
     const current: SshSftpTaskRecord | null = this.store.get(taskId);
-    return current !== null && (current.stage === 'paused' || current.stage === 'cancelled');
+    // Removing the final cancelled history row must also stop an in-flight
+    // worker; otherwise a stale worker could recreate the discarded record.
+    return current === null || current.stage === 'paused' || current.stage === 'cancelled';
   }
 
   private publish(kind: SshSftpTaskEngineEventKind, batchId: string,
@@ -1523,6 +1854,7 @@ export class SshSftpTaskEngine {
       source = await fileIo.open(partialPath, fileIo.OpenMode.READ_ONLY);
       destination = await fileIo.open(finalUri,
         fileIo.OpenMode.READ_WRITE | fileIo.OpenMode.CREATE | fileIo.OpenMode.TRUNC);
+      const destinationFd: number = destination.fd;
       let copied: number = 0;
       while (copied < expectedSize) {
         const chunkSize: number = Math.min(DOWNLOAD_CHUNK_BYTES, expectedSize - copied);
@@ -1530,9 +1862,12 @@ export class SshSftpTaskEngine {
         const readLength: number = await fileIo.read(source.fd, chunk);
         if (readLength <= 0) { return false; }
         const payload: ArrayBuffer = readLength === chunkSize ? chunk : chunk.slice(0, readLength);
-        const written: number = await fileIo.write(destination.fd, payload);
-        if (written !== readLength) { return false; }
-        copied += written;
+        if (!await writeSshSftpPayloadFully(payload,
+          async (remaining: ArrayBuffer): Promise<number> =>
+            await fileIo.write(destinationFd, remaining))) {
+          return false;
+        }
+        copied += readLength;
       }
       await fileIo.fsync(destination.fd);
       await fileIo.close(destination);

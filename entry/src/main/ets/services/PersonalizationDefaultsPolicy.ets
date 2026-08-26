@@ -1,5 +1,5 @@
 /**
- * 1.1.0 personalization bootstrap.
+ * 1.1.1 personalization bootstrap.
  *
  * The profile is captured before LoginPage writes its first-launch marker, so
  * a clean install can receive the new defaults without turning an app update
@@ -21,6 +21,8 @@ export interface PersonalizationDefaults {
   canvasGestureZoomEnabled: boolean;
   virtualMouseStyle: string;
   liveViewEnabled: boolean;
+  /** LiveViewMode.AVSESSION (1): video sessions enter system picture-in-picture. */
+  liveViewMode: number;
   totpLogoMode: string;
   rustdeskPresenceDetectionEnabled: boolean;
   groupedHostCards: boolean;
@@ -46,9 +48,9 @@ export function resolvePersonalizationDefaultsProfile(storedVersion: number,
 }
 
 /**
- * Missing keys on an update retain the historical experience. Missing keys on
- * a clean 1.1.0 install receive the new device-class defaults. Callers still
- * use Preferences.hasSync first, so saved user choices always win.
+ * Missing keys on an update receive the same device-class SSH input default as
+ * a clean install. Callers still use Preferences.hasSync first, so saved user
+ * choices always win.
  */
 export function personalizationDefaults(freshInstall: boolean,
   isDesktopDevice: boolean): PersonalizationDefaults {
@@ -57,13 +59,17 @@ export function personalizationDefaults(freshInstall: boolean,
       canvasGestureZoomEnabled: !isDesktopDevice,
       virtualMouseStyle: 'circle',
       liveViewEnabled: true,
+      liveViewMode: 1,
       totpLogoMode: 'logo',
       rustdeskPresenceDetectionEnabled: true,
       groupedHostCards: false,
       rdpControlMode: 0,
       rustdeskControlMode: 0,
       vncControlMode: 0,
-      sshInputMode: 0
+      // A phone/Pad must not infer its input owner from a built-in keyboard
+      // device that the platform may report as physical. Desktop keeps the
+      // explicit hardware path, matching the clean-install default.
+      sshInputMode: isDesktopDevice ? 2 : 1
     };
   }
   const remoteControlMode: number = isDesktopDevice ? 2 : 0;
@@ -71,6 +77,7 @@ export function personalizationDefaults(freshInstall: boolean,
     canvasGestureZoomEnabled: false,
     virtualMouseStyle: 'arrow',
     liveViewEnabled: true,
+    liveViewMode: 1,
     totpLogoMode: 'logo',
     rustdeskPresenceDetectionEnabled: false,
     groupedHostCards: false,

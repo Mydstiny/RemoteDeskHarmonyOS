@@ -7,14 +7,19 @@ import {
   normalizeRdpNtlmHash
 } from '../../model/RemoteHost';
 import { Palette, buildDark, buildLight } from '../../common/Theme';
+import { DiscoveredRdpHost } from '../../services/RdpLanDiscoveryService';
 
 @Component
 export struct RdpAddFlow {
   @StorageProp('currentTheme') theme: string = 'light';
   @StorageProp('accentColor') accentColor: string = '#007DFF';
   @Prop @Watch('onCredentialsChanged') credentials: RdpCredential[] = [];
+  @Prop lanScanning: boolean = false;
+  @Prop lanHosts: DiscoveredRdpHost[] = [];
+  @Prop lanStatusText: string = '';
   onBackToProtocols: () => void = (): void => {};
   onAddCredential: () => void = (): void => {};
+  onStartLanScan: (port: number) => void = (_port: number): void => {};
   onSave: (host: RemoteHost, connectNow: boolean, restrictedAdminHash: string) => void =
     (_host: RemoteHost, _connectNow: boolean, _restrictedAdminHash: string): void => {};
   @State step: number = 1;
@@ -30,6 +35,10 @@ export struct RdpAddFlow {
   @State restrictedAdminHash: string = '';
   @State errorText: string = '';
   @State credentialsViewRevision: number = 0;
+  @State useLanSearch: boolean = false;
+  @State selectedLanStableId: string = '';
+  @State selectedLanDynamicCapable: boolean = false;
+  @State lanAddressMode: string = '';
   private awaitingNewCredential: boolean = false;
   private credentialIdsBeforeAdd: string[] = [];
 
@@ -65,6 +74,21 @@ export struct RdpAddFlow {
     if (this.label.trim() === '') { this.errorText = '请输入主机名称'; return null; }
     if (this.hostAddress.trim() === '') { this.errorText = '请输入主机地址'; return null; }
     if (isNaN(port) || port <= 0 || port > 65535) { this.errorText = '端口必须在 1-65535 之间'; return null; }
+    if (this.useLanSearch && this.selectedLanStableId === '') {
+      this.errorText = '请先选择局域网搜索结果'; return null;
+    }
+    const selectedLanHost: DiscoveredRdpHost | undefined = this.lanHosts.find(
+      (item: DiscoveredRdpHost): boolean => item.stableId === this.selectedLanStableId);
+    if (this.useLanSearch && (selectedLanHost === undefined ||
+      selectedLanHost.host !== this.hostAddress.trim() || selectedLanHost.port !== port)) {
+      this.errorText = '局域网搜索结果已变化，请返回并重新选择'; return null;
+    }
+    if (this.useLanSearch && this.lanAddressMode !== 'static' && this.lanAddressMode !== 'dynamic') {
+      this.errorText = '请选择静态 IP 或动态 IP 策略'; return null;
+    }
+    if (this.useLanSearch && this.lanAddressMode === 'dynamic' && !this.selectedLanDynamicCapable) {
+      this.errorText = '该主机没有可用于自动更新的稳定证书身份，请选择静态 IP'; return null;
+    }
     if (this.authMode === 'password') {
       if (this.credentialId === '' && (this.username.trim() === '' || this.password === '')) {
         this.errorText = '请输入账号和密码，或选择 Windows 凭据'; return null;
@@ -86,6 +110,11 @@ export struct RdpAddFlow {
     host.label = this.label.trim();
     host.host = this.hostAddress.trim();
     host.port = port;
+    if (this.useLanSearch) {
+      host.lanAddressMode = this.lanAddressMode === 'dynamic' ? 'dynamic' : 'static';
+      host.lanDiscoveryIdentity = this.selectedLanDynamicCapable ? this.selectedLanStableId : '';
+      host.lanLastResolvedAt = Date.now();
+    }
     host.rdpAuthMode = this.authMode;
     host.rdpRestrictedAdminSecretSource = this.restrictedAdminSource;
     if (this.authMode === 'password') {
@@ -102,13 +131,14 @@ export struct RdpAddFlow {
   }
 
   @Builder private inputField(title: string, value: string, hint: string,
-    onChange: (value: string) => void, password: boolean = false) {
+    onChange: (value: string) => void, password: boolean = false, enabled: boolean = true) {
     Column() {
       Text(title).fontSize(12).fontColor(this.pal().text2).margin({ bottom: 5 })
       TextInput({ text: value, placeholder: hint }).height(44).fontSize(14)
         .type(password ? InputType.Password : InputType.Normal)
         .fontColor(this.pal().text).placeholderColor(this.pal().text3)
         .backgroundColor(this.pal().surface).borderRadius(11).padding({ left: 12, right: 12 })
+        .enabled(enabled).opacity(enabled ? 1 : 0.68)
         .onChange(onChange)
     }.alignItems(HorizontalAlign.Start).width('100%').margin({ bottom: 12 })
   }
@@ -119,6 +149,96 @@ export struct RdpAddFlow {
       .fontColor(this.authMode === mode ? Color.White : this.pal().text2)
       .fontSize(12)
       .onClick((): void => { this.selectAuthMode(mode); })
+  }
+
+  @Builder private addressPolicyChoice() {
+    Text('局域网地址策略（必选）').fontSize(12).fontColor(this.pal().text2)
+      .width('100%').margin({ bottom: 8 })
+    Row({ space: 8 }) {
+      Column() {
+        Text('静态 IP').fontSize(14).fontWeight(FontWeight.Medium)
+          .fontColor(this.lanAddressMode === 'static' ? Color.White : this.pal().text)
+        Text('按当前地址保存；正常参与云同步，不自动改地址')
+          .fontSize(10).fontColor(this.lanAddressMode === 'static' ? '#EAF3FF' : this.pal().text3)
+          .margin({ top: 4 })
+      }.alignItems(HorizontalAlign.Start).layoutWeight(1).padding(12).borderRadius(10)
+      .backgroundColor(this.lanAddressMode === 'static' ? this.accentColor : this.pal().surface)
+      .onClick((): void => { this.lanAddressMode = 'static'; this.errorText = ''; })
+      Column() {
+        Text('动态 IP').fontSize(14).fontWeight(FontWeight.Medium)
+          .fontColor(this.lanAddressMode === 'dynamic' ? Color.White : this.pal().text)
+        Text(this.selectedLanDynamicCapable
+          ? '仅保存在本机；连接前按证书身份自动更新 IP'
+          : '未取得稳定证书身份，当前主机不可选')
+          .fontSize(10).fontColor(this.lanAddressMode === 'dynamic' ? '#EAF3FF' : this.pal().text3)
+          .margin({ top: 4 })
+      }.alignItems(HorizontalAlign.Start).layoutWeight(1).padding(12).borderRadius(10)
+      .backgroundColor(this.lanAddressMode === 'dynamic' ? this.accentColor : this.pal().surface)
+      .opacity(this.selectedLanDynamicCapable ? 1 : 0.5)
+      .enabled(this.selectedLanDynamicCapable)
+      .onClick((): void => { this.lanAddressMode = 'dynamic'; this.errorText = ''; })
+    }.width('100%').margin({ bottom: 16 })
+  }
+
+  @Builder private endpointSourceChoice() {
+    Row({ space: 8 }) {
+      Button('手动填写').layoutWeight(1).height(38).borderRadius(10)
+        .backgroundColor(!this.useLanSearch ? this.accentColor : this.pal().surface)
+        .fontColor(!this.useLanSearch ? Color.White : this.pal().text2)
+        .onClick((): void => {
+          this.useLanSearch = false;
+          this.selectedLanStableId = '';
+          this.selectedLanDynamicCapable = false;
+          this.lanAddressMode = '';
+          this.errorText = '';
+        })
+      Button('局域网搜索').layoutWeight(1).height(38).borderRadius(10)
+        .backgroundColor(this.useLanSearch ? this.accentColor : this.pal().surface)
+        .fontColor(this.useLanSearch ? Color.White : this.pal().text2)
+        .onClick((): void => { this.useLanSearch = true; this.errorText = ''; })
+    }.width('100%').margin({ bottom: 14 })
+  }
+
+  @Builder private lanSearchResults() {
+    Text('使用上方当前端口扫描同一局域网；只显示通过 RDP 预检的主机。')
+      .fontSize(11).fontColor(this.pal().text3).width('100%').margin({ bottom: 8 })
+    Button(this.lanScanning ? '正在搜索…' : '搜索 RDP 主机')
+      .width('100%').height(40).borderRadius(10).enabled(!this.lanScanning)
+      .backgroundColor(this.pal().surface).fontColor(this.accentColor).margin({ bottom: 10 })
+      .onClick((): void => {
+        const port: number = parseInt(this.portText);
+        if (isNaN(port) || port <= 0 || port > 65535) {
+          this.errorText = '请先填写 1-65535 之间的扫描端口'; return;
+        }
+        this.onStartLanScan(port);
+      })
+    if (this.lanStatusText !== '') {
+      Text(this.lanStatusText).fontSize(11).fontColor(this.pal().text3)
+        .width('100%').margin({ bottom: 8 })
+    }
+    ForEach(this.lanHosts, (item: DiscoveredRdpHost) => {
+      Row() {
+        Column() {
+          Text(item.deviceName).fontSize(14).fontColor(this.pal().text)
+          Text(item.host + ':' + item.port.toString() +
+            (item.dynamicCapable ? ' · 支持动态 IP' : ' · 仅静态 IP'))
+            .fontSize(11).fontColor(this.pal().text3).margin({ top: 3 })
+        }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+        if (this.selectedLanStableId === item.stableId) {
+          SymbolGlyph($r('sys.symbol.checkmark')).fontSize(18).fontColor([this.accentColor])
+        }
+      }.width('100%').padding(12).borderRadius(10).margin({ bottom: 6 })
+      .backgroundColor(this.pal().surface)
+      .onClick((): void => {
+        this.selectedLanStableId = item.stableId;
+        this.selectedLanDynamicCapable = item.dynamicCapable;
+        this.label = item.deviceName;
+        this.hostAddress = item.host;
+        this.portText = item.port.toString();
+        this.lanAddressMode = '';
+        this.errorText = '';
+      })
+    }, (item: DiscoveredRdpHost): string => item.stableId)
   }
 
   @Builder private passwordAuthenticationFields() {
@@ -208,9 +328,15 @@ export struct RdpAddFlow {
     Column() {
       this.header()
       if (this.step === 1) {
+        this.endpointSourceChoice()
         this.inputField('名称', this.label, '例如：办公室电脑', (v: string): void => { this.label = v; })
-        this.inputField('地址', this.hostAddress, 'IP 地址或域名', (v: string): void => { this.hostAddress = v; })
-        this.inputField('端口', this.portText, '3389', (v: string): void => { this.portText = v; })
+        this.inputField('地址', this.hostAddress, 'IP 地址或域名',
+          (v: string): void => { this.hostAddress = v; }, false,
+          !this.useLanSearch || this.selectedLanStableId === '')
+        this.inputField('端口', this.portText, '3389',
+          (v: string): void => { this.portText = v; }, false,
+          !this.useLanSearch || this.selectedLanStableId === '')
+        if (this.useLanSearch) { this.lanSearchResults() }
         Button('下一步').width('100%').height(44).borderRadius(12)
           .backgroundColor(this.accentColor).fontColor(Color.White)
           .onClick((): void => {
@@ -218,9 +344,13 @@ export struct RdpAddFlow {
             if (this.label.trim() === '' || this.hostAddress.trim() === '' || isNaN(port) || port <= 0 || port > 65535) {
               this.errorText = '请完整填写名称、地址和有效端口'; return;
             }
+            if (this.useLanSearch && this.selectedLanStableId === '') {
+              this.errorText = '请从局域网搜索结果中选择一台主机'; return;
+            }
             this.errorText = ''; this.step = 2;
           })
       } else {
+        if (this.useLanSearch) { this.addressPolicyChoice() }
         Text('认证方式').fontSize(12).fontColor(this.pal().text2).width('100%').margin({ bottom: 8 })
         Row() {
           this.authModeButton('普通密码/凭据', 'password')

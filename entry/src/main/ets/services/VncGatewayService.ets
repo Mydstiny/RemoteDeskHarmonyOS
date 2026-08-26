@@ -11,6 +11,7 @@ import { VncSecretService } from './VncSecretService';
 import { vncGatewayAvailability } from './VncGatewayProtocolPolicy';
 import { VncTrustService } from './VncTrustService';
 import { vncGatewayTrustEndpointChanged } from './VncTrustInvalidationPolicy';
+import { recordDiagnosticEvent } from './DiagnosticCaptureRuntime';
 
 export interface VncGatewayView extends VncGatewayValues {
   id: string;
@@ -37,6 +38,12 @@ export class VncGatewayService {
   private initialized: boolean = false;
   private listenerBound: boolean = false;
   private listeners: Array<() => void> = [];
+
+  private diagnosticSaveResult(result: VncGatewaySaveResult): VncGatewaySaveResult {
+    recordDiagnosticEvent('network.routing', 'routing_vnc_gateway',
+      result.ok ? 'succeeded' : 'failed', 0, 0, result.ok ? 0 : -1);
+    return result;
+  }
 
   static getInstance(): VncGatewayService {
     if (!VncGatewayService.instance) { VncGatewayService.instance = new VncGatewayService(); }
@@ -93,9 +100,13 @@ export class VncGatewayService {
 
   save(values: VncGatewayValues, id: string = '', accessToken: string = '',
     allowPlaintext: boolean = false): VncGatewaySaveResult {
+    recordDiagnosticEvent('network.routing', 'routing_vnc_gateway', 'started');
     const result: VncGatewaySaveResult = { ok: false, message: '', id };
     const errors: string[] = validateVncGateway(values);
-    if (errors.length > 0) { result.message = errors[0]; return result; }
+    if (errors.length > 0) {
+      result.message = errors[0];
+      return this.diagnosticSaveResult(result);
+    }
     const currentRecord: VncRecord | null = id === '' ? null : this.findActiveRecord(id);
     const current: VncGatewayView | null = currentRecord === null ? null : this.toView(currentRecord);
     const record: VncRecord = new VncRecord();
@@ -123,7 +134,7 @@ export class VncGatewayService {
     finalizeVncRecord(record);
     if (!this.cloud.upsertVncRecord(record)) {
       result.message = this.cloud.getLastMutationResult().message || 'VNC 网关保存失败';
-      return result;
+      return this.diagnosticSaveResult(result);
     }
     result.id = record.id;
     if (current !== null && vncGatewayTrustEndpointChanged(current, values)) {
@@ -137,7 +148,7 @@ export class VncGatewayService {
         result.message = rolledBack
           ? invalidation.message + '；网关配置已回滚'
           : invalidation.message + '；网关配置回滚失败，请检查 VNC 数据状态';
-        return result;
+        return this.diagnosticSaveResult(result);
       }
     }
     if (accessToken.length > 0) {
@@ -154,26 +165,30 @@ export class VncGatewayService {
         result.message = rolledBack
           ? secretResult.message + '；网关配置已回滚'
           : secretResult.message + '；网关配置回滚失败，请检查 VNC 数据状态';
-        return result;
+        return this.diagnosticSaveResult(result);
       }
     }
     result.ok = true;
     this.emitChange();
-    return result;
+    return this.diagnosticSaveResult(result);
   }
 
   remove(id: string): boolean {
+    recordDiagnosticEvent('network.routing', 'routing_vnc_gateway', 'started');
     const previousRecord: VncRecord | null = this.findActiveRecord(id);
     const ok: boolean = this.cloud.deleteVncRecord(this.getUserId(), id);
     if (ok) {
       const invalidation = this.trust.invalidateOwner('gateway', id);
       if (!invalidation.ok) {
         if (previousRecord !== null) { this.cloud.upsertVncRecord(previousRecord); }
+        recordDiagnosticEvent('network.routing', 'routing_vnc_gateway', 'failed', 0, 0, -1);
         return false;
       }
       this.secrets.remove(this.getUserId(), id, 'gateway_token');
       this.emitChange();
     }
+    recordDiagnosticEvent('network.routing', 'routing_vnc_gateway',
+      ok ? 'succeeded' : 'failed', 0, 0, ok ? 0 : -1);
     return ok;
   }
 

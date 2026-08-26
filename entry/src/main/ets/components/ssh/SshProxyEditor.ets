@@ -108,6 +108,13 @@ export struct SshProxyEditor {
       .onClick((): void => { this.selectKind(value); })
   }
 
+  @Builder private compactRouteButton(label: string, value: SshProxyEditorKind) {
+    Button(label).layoutWeight(1).height(40).borderRadius(10).fontSize(11)
+      .backgroundColor(this.kind === value ? this.accentColor : this.pal().surface)
+      .fontColor(this.kind === value ? Color.White : this.pal().text2)
+      .onClick((): void => { this.selectKind(value); })
+  }
+
   @Builder private routeSelector() {
     Column({ space: 8 }) {
       this.routeButton('直连', 'direct')
@@ -201,43 +208,23 @@ export struct SshProxyEditor {
   }
 
   @Builder private jumpContent() {
-    if (this.breakpoint === 'sm') {
-      Column() {
-        Row({ space: 8 }) {
-          ForEach(this.hops, (hop: SshProxyHopDraft, index: number): void => {
-            Button((index + 1).toString()).width(44).height(44).borderRadius(10)
-              .backgroundColor(this.selectedHop === index ? this.accentColor : this.pal().surface)
-              .fontColor(this.selectedHop === index ? Color.White : this.pal().text2)
-              .onClick((): void => { this.selectedHop = index; })
-          }, (hop: SshProxyHopDraft): string => hop.hopId)
-          if (this.hops.length < 3) {
-            Button('+').width(44).height(44).borderRadius(10).backgroundColor(this.pal().surface)
-              .fontColor(this.accentColor).onClick((): void => { this.addHop(); })
-          }
-        }.width('100%').margin({ bottom: 14 })
-        this.hopEditor(this.selectedHop)
-      }.width('100%')
-    } else {
-      Row({ space: 16 }) {
-        Column({ space: 8 }) {
-          ForEach(this.hops, (hop: SshProxyHopDraft, index: number): void => {
-            Row() {
-              Text((index + 1).toString()).width(24).fontSize(12).fontColor(this.accentColor)
-              Text(hop.label.trim().length > 0 ? hop.label : '跳板机').fontSize(13)
-                .fontColor(this.pal().text).maxLines(1).layoutWeight(1)
-            }.width('100%').height(44).padding({ left: 10, right: 10 })
-              .borderRadius(10).backgroundColor(this.selectedHop === index ? this.pal().surface : Color.Transparent)
-              .onClick((): void => { this.selectedHop = index; })
-          }, (hop: SshProxyHopDraft): string => 'wide-' + hop.hopId)
-          if (this.hops.length < 3) {
-            Button('+ 添加一跳').width('100%').height(44).borderRadius(10)
-              .backgroundColor(this.pal().surface).fontColor(this.accentColor)
-              .onClick((): void => { this.addHop(); })
-          }
-        }.width(180).alignItems(HorizontalAlign.Start)
-        Column() { this.hopEditor(this.selectedHop) }.layoutWeight(1)
-      }.width('100%').alignItems(VerticalAlign.Top)
-    }
+    // Keep every form factor on one predictable vertical flow. This avoids
+    // the route selector changing shape between phone, tablet, and PC sheets.
+    Column() {
+      Row({ space: 8 }) {
+        ForEach(this.hops, (hop: SshProxyHopDraft, index: number): void => {
+          Button((index + 1).toString()).width(44).height(44).borderRadius(10)
+            .backgroundColor(this.selectedHop === index ? this.accentColor : this.pal().surface)
+            .fontColor(this.selectedHop === index ? Color.White : this.pal().text2)
+            .onClick((): void => { this.selectedHop = index; })
+        }, (hop: SshProxyHopDraft): string => hop.hopId)
+        if (this.hops.length < 3) {
+          Button('+').width(44).height(44).borderRadius(10).backgroundColor(this.pal().surface)
+            .fontColor(this.accentColor).onClick((): void => { this.addHop(); })
+        }
+      }.width('100%').margin({ bottom: 14 })
+      this.hopEditor(this.selectedHop)
+    }.width('100%')
   }
 
   @Builder private details() {
@@ -299,38 +286,20 @@ export struct SshProxyEditor {
           Text('路由与认证相互独立').fontSize(11).fontColor(this.pal().text3)
         }.alignItems(HorizontalAlign.Start).layoutWeight(1)
       }.width('100%')
-      if (this.breakpoint === 'sm') {
-        Scroll() {
-          Row({ space: 8 }) {
-            Button('直连').height(40).borderRadius(10).fontSize(12)
-              .backgroundColor(this.kind === 'direct' ? this.accentColor : this.pal().surface)
-              .fontColor(this.kind === 'direct' ? Color.White : this.pal().text2)
-              .onClick((): void => { this.selectKind('direct'); })
-            Button('HTTP').height(40).borderRadius(10).fontSize(12)
-              .backgroundColor(this.kind === 'http_connect' ? this.accentColor : this.pal().surface)
-              .fontColor(this.kind === 'http_connect' ? Color.White : this.pal().text2)
-              .onClick((): void => { this.selectKind('http_connect'); })
-            Button('SOCKS5').height(40).borderRadius(10).fontSize(12)
-              .backgroundColor(this.kind === 'socks5' ? this.accentColor : this.pal().surface)
-              .fontColor(this.kind === 'socks5' ? Color.White : this.pal().text2)
-              .onClick((): void => { this.selectKind('socks5'); })
-            Button('跳板').height(40).borderRadius(10).fontSize(12)
-              .backgroundColor(this.kind === 'ssh_jump' ? this.accentColor : this.pal().surface)
-              .fontColor(this.kind === 'ssh_jump' ? Color.White : this.pal().text2)
-              .onClick((): void => { this.selectKind('ssh_jump'); })
-            Button('FRP').height(40).borderRadius(10).fontSize(12)
-              .backgroundColor(this.kind === 'frp_tcp' ? this.accentColor : this.pal().surface)
-              .fontColor(this.kind === 'frp_tcp' ? Color.White : this.pal().text2)
-              .onClick((): void => { this.selectKind('frp_tcp'); })
-          }.width('100%')
-        }.scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off).width('100%')
-        this.details()
-      } else {
-        Row({ space: 20 }) {
-          Column() { this.routeSelector() }.width(190)
-          Scroll() { this.details() }.layoutWeight(1).scrollBar(BarState.Auto)
-        }.width('100%').alignItems(VerticalAlign.Top)
-      }
+      // Keep the phone-style compact selector on phone, tablet, and PC.
+      Column({ space: 8 }) {
+        Row({ space: 8 }) {
+          this.compactRouteButton('直连', 'direct')
+          this.compactRouteButton('HTTP CONNECT', 'http_connect')
+          this.compactRouteButton('SOCKS5', 'socks5')
+        }.width('100%')
+        Row({ space: 8 }) {
+          this.compactRouteButton('SSH 跳板', 'ssh_jump')
+          this.compactRouteButton('FRP TCP', 'frp_tcp')
+          Blank().layoutWeight(1)
+        }.width('100%')
+      }.width('100%').margin({ bottom: 2 })
+      this.details()
     }.width('100%').padding(16).borderRadius(12).backgroundColor(this.pal().card)
   }
 }

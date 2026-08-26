@@ -15,6 +15,7 @@ import {
 } from './SshForwardingRuntimeStore';
 import { SshNativeFacade } from './SshNativeFacade';
 import { SshSessionHandle, SshSessionLifecycleState } from './SshSessionStore';
+import { recordDiagnosticEvent } from './DiagnosticCaptureRuntime';
 
 export type SshForwardingOperation = 'configure' | 'start' | 'stop' | 'remove' |
   'acquire' | 'release' | 'reconcile' | 'snapshot';
@@ -91,8 +92,17 @@ function nativeState(value: number): SshForwardingRuntimeState {
 function operationResult(operation: SshForwardingOperation, profileId: string, code: number,
   state: SshForwardingRuntimeState, message: string = ''): SshForwardingOperationResult {
   const stale: boolean = code === SSH_FORWARDING_STALE;
-  return { operation, profileId, code, accepted: code === SSH_FORWARDING_OK,
+  const result: SshForwardingOperationResult = {
+    operation, profileId, code, accepted: code === SSH_FORWARDING_OK,
     stale, state, message };
+  const operationCode: number = operation === 'configure' ? 1 :
+    (operation === 'start' ? 2 : (operation === 'stop' ? 3 :
+      (operation === 'remove' ? 4 : (operation === 'acquire' ? 5 :
+        (operation === 'release' ? 6 : (operation === 'reconcile' ? 7 : 8))))));
+  recordDiagnosticEvent('network.routing', 'routing_ssh_forwarding',
+    result.accepted ? 'succeeded' : (result.stale ? 'skipped' : 'failed'),
+    0, 0, code === SSH_FORWARDING_OK ? operationCode : code);
+  return result;
 }
 
 export class SshForwardingController {
@@ -120,6 +130,10 @@ export class SshForwardingController {
         'failed', validation.code + ': ' + validation.message);
     }
     if (!this.native.accepts(handle)) { return this.rejectStale(handle, 'configure', profile.id); }
+    if (!this.runtimes.canUpsert(handle, validation.profile.id)) {
+      return operationResult('configure', validation.profile.id, SSH_FORWARDING_PROFILE_LIMIT,
+        'failed', 'forwarding runtime limit reached');
+    }
     const code: number = this.native.configureSshForwarding(handle,
       sshForwardingNativeConfig(validation.profile));
     const state: SshForwardingRuntimeState = code === SSH_FORWARDING_OK ? 'configured' :
@@ -269,7 +283,10 @@ export class SshForwardingController {
 
   releaseSession(handle: SshSessionHandle): SshForwardingOperationResult[] {
     const results: SshForwardingOperationResult[] = this.stopAll(handle);
-    this.runtimes.clear(handle);
+    // A reconnect can leave an old generation without a successful reconcile
+    // boundary. Teardown owns the whole session identity, not just its latest
+    // generation, so stale runtime records must not survive into later slots.
+    this.runtimes.clearSession(handle);
     return results;
   }
 

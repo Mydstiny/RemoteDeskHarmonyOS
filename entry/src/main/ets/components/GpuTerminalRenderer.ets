@@ -14,6 +14,7 @@ import { SshTerminalRendererBridge, SshTerminalRendererConfig } from '../napi/Ss
 import { TerminalCoreMode } from '../napi/TerminalCoreBridge';
 import { SshTerminalRendererRegistry } from '../services/SshTerminalRendererRegistry';
 import { makeSshTerminalSurfaceOwnerId } from '../services/SshTerminalSurfaceBindingPolicy';
+import { sshDiagnosticErrorCode } from '../services/ssh/observability/SshDiagnosticPolicy';
 import { TerminalInputBuffer } from './SshTerminalSurface';
 
 /** 与 NativeTerminalRenderer 一致的单帧输入预算。 */
@@ -39,7 +40,7 @@ class GpuTerminalSurfaceController extends XComponentController {
   }
 
   onSurfaceDestroyed(surfaceId: string): void {
-    hilog.info(0x0000, 'GpuTerminal', 'surface destroyed: %{public}s', surfaceId);
+    hilog.info(0x0000, 'GpuTerminal', 'surface destroyed');
     if (this.onSurfaceGone !== null) { this.onSurfaceGone(surfaceId); }
   }
 }
@@ -505,7 +506,8 @@ export struct GpuTerminalRenderer {
     try {
       handle = this.registry.attach(this.coreKey, config, this.bridge, this.rendererOwnerId());
     } catch (err) {
-      hilog.warn(0x0000, 'GpuTerminal', 'attach exception: %{public}s', JSON.stringify(err));
+      hilog.warn(0x0000, 'GpuTerminal',
+        'attach exception code=' + sshDiagnosticErrorCode(err));
       this.reportUnavailable();
       return;
     }
@@ -517,7 +519,7 @@ export struct GpuTerminalRenderer {
         this.reportUnavailable();
         return;
       }
-      hilog.warn(0x0000, 'GpuTerminal', 'attach failed for key %{public}s', this.coreKey);
+      hilog.warn(0x0000, 'GpuTerminal', 'attach failed');
       this.scheduleSurfaceAttachRetry();
       return;
     }
@@ -573,7 +575,7 @@ export struct GpuTerminalRenderer {
       refreshed = this.bridge.refresh(this.handle);
     } catch (err) {
       hilog.warn(0x0000, 'GpuTerminal',
-        'surface refresh exception: %{public}s', JSON.stringify(err));
+        'surface refresh exception code=' + sshDiagnosticErrorCode(err));
     }
     if (refreshed) {
       this.fullRefreshPending = false;

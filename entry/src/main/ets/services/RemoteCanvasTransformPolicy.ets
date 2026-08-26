@@ -34,6 +34,9 @@ export interface CanvasTransform {
   // Translation in physical surface pixels, using a top-left origin.
   panX: number;
   panY: number;
+  // Clockwise quarter turns applied to the remote canvas.  Keep this optional
+  // so persisted/legacy transform literals continue to be valid.
+  rotation?: number;
 }
 
 interface CanvasScaleLimits {
@@ -47,6 +50,27 @@ function positive(value: number, fallback: number): number {
 
 function clamp(value: number, minimum: number, maximum: number): number {
   return Math.max(minimum, Math.min(maximum, value));
+}
+
+/** Normalize a canvas rotation to clockwise quarter turns in [0, 3]. */
+export function normalizeCanvasRotation(value: number | undefined): number {
+  if (value === undefined || !Number.isFinite(value)) {
+    return 0;
+  }
+  const rounded: number = Math.round(value) % 4;
+  return rounded < 0 ? rounded + 4 : rounded;
+}
+
+function displayedSourceWidth(transform: CanvasTransform, viewport: CanvasViewport): number {
+  const sourceWidth: number = positive(viewport.sourceWidth, 1);
+  const sourceHeight: number = positive(viewport.sourceHeight, 1);
+  return normalizeCanvasRotation(transform.rotation) % 2 === 1 ? sourceHeight : sourceWidth;
+}
+
+function displayedSourceHeight(transform: CanvasTransform, viewport: CanvasViewport): number {
+  const sourceWidth: number = positive(viewport.sourceWidth, 1);
+  const sourceHeight: number = positive(viewport.sourceHeight, 1);
+  return normalizeCanvasRotation(transform.rotation) % 2 === 1 ? sourceWidth : sourceHeight;
 }
 
 export function normalizeLocalViewScaleMode(value: string): LocalViewScaleMode {
@@ -91,10 +115,22 @@ export function containScale(viewport: CanvasViewport): number {
   return Math.min(surfaceWidth / sourceWidth, surfaceHeight / sourceHeight);
 }
 
-function scaleLimits(viewport: CanvasViewport): CanvasScaleLimits {
-  const fit: number = containScale(viewport);
+function containScaleForRotation(viewport: CanvasViewport, rotation: number): number {
+  const surfaceWidth: number = positive(viewport.surfaceWidth, 1);
+  const surfaceHeight: number = positive(viewport.surfaceHeight, 1);
   const sourceWidth: number = positive(viewport.sourceWidth, 1);
   const sourceHeight: number = positive(viewport.sourceHeight, 1);
+  const displayWidth: number = rotation % 2 === 1 ? sourceHeight : sourceWidth;
+  const displayHeight: number = rotation % 2 === 1 ? sourceWidth : sourceHeight;
+  return Math.min(surfaceWidth / displayWidth, surfaceHeight / displayHeight);
+}
+
+function scaleLimits(viewport: CanvasViewport, rotation: number): CanvasScaleLimits {
+  const fit: number = containScaleForRotation(viewport, rotation);
+  const sourceWidth: number = rotation % 2 === 1 ?
+    positive(viewport.sourceHeight, 1) : positive(viewport.sourceWidth, 1);
+  const sourceHeight: number = rotation % 2 === 1 ?
+    positive(viewport.sourceWidth, 1) : positive(viewport.sourceHeight, 1);
   const surfaceWidth: number = positive(viewport.surfaceWidth, 1);
   const surfaceHeight: number = positive(viewport.surfaceHeight, 1);
   return {
@@ -107,7 +143,8 @@ function scaleLimits(viewport: CanvasViewport): CanvasScaleLimits {
 }
 
 function absoluteScale(transform: CanvasTransform, viewport: CanvasViewport): number {
-  return containScale(viewport) * Math.max(0.01, transform.scale);
+  return containScaleForRotation(viewport, normalizeCanvasRotation(transform.rotation)) *
+    Math.max(0.01, transform.scale);
 }
 
 function freePanInsetRatio(transformScale: number, viewport: CanvasViewport): number {
@@ -122,12 +159,15 @@ function freePanInsetRatio(transformScale: number, viewport: CanvasViewport): nu
 }
 
 export function clampCanvasTransform(transform: CanvasTransform, viewport: CanvasViewport): CanvasTransform {
-  const fit: number = containScale(viewport);
-  const limits: CanvasScaleLimits = scaleLimits(viewport);
+  const rotation: number = normalizeCanvasRotation(transform.rotation);
+  const fit: number = containScaleForRotation(viewport, rotation);
+  const limits: CanvasScaleLimits = scaleLimits(viewport, rotation);
   const physicalScale: number = clamp(absoluteScale(transform, viewport), limits.min, limits.max);
   const scale: number = physicalScale / fit;
-  const contentWidth: number = positive(viewport.sourceWidth, 1) * physicalScale;
-  const contentHeight: number = positive(viewport.sourceHeight, 1) * physicalScale;
+  const contentWidth: number = (rotation % 2 === 1 ?
+    positive(viewport.sourceHeight, 1) : positive(viewport.sourceWidth, 1)) * physicalScale;
+  const contentHeight: number = (rotation % 2 === 1 ?
+    positive(viewport.sourceWidth, 1) : positive(viewport.sourceHeight, 1)) * physicalScale;
   const surfaceWidth: number = positive(viewport.surfaceWidth, 1);
   const surfaceHeight: number = positive(viewport.surfaceHeight, 1);
   const insetRatio: number = freePanInsetRatio(scale, viewport);
@@ -138,7 +178,8 @@ export function clampCanvasTransform(transform: CanvasTransform, viewport: Canva
   return {
     scale,
     panX: clamp(Number.isFinite(transform.panX) ? transform.panX : 0, -maxPanX, maxPanX),
-    panY: clamp(Number.isFinite(transform.panY) ? transform.panY : 0, -maxPanY, maxPanY)
+    panY: clamp(Number.isFinite(transform.panY) ? transform.panY : 0, -maxPanY, maxPanY),
+    rotation
   };
 }
 
@@ -149,8 +190,8 @@ export function canvasTransformCanPan(transform: CanvasTransform, viewport: Canv
     return true;
   }
   const physicalScale: number = absoluteScale(clamped, viewport);
-  const sourceWidth: number = positive(viewport.sourceWidth, 1);
-  const sourceHeight: number = positive(viewport.sourceHeight, 1);
+  const sourceWidth: number = displayedSourceWidth(clamped, viewport);
+  const sourceHeight: number = displayedSourceHeight(clamped, viewport);
   const surfaceWidth: number = positive(viewport.surfaceWidth, 1);
   const surfaceHeight: number = positive(viewport.surfaceHeight, 1);
   return sourceWidth * physicalScale > surfaceWidth + 0.5 ||
@@ -166,16 +207,23 @@ export function panCanvasTransform(current: CanvasTransform, viewport: CanvasVie
   return clampCanvasTransform({
     scale: old.scale,
     panX: old.panX + deltaX,
-    panY: old.panY + deltaY
+    panY: old.panY + deltaY,
+    rotation: old.rotation
   }, viewport);
 }
 
 export function baseCanvasTransform(mode: LocalViewScaleMode, customPercent: number,
-  viewport: CanvasViewport): CanvasTransform {
-  const fit: number = containScale(viewport);
+  viewport: CanvasViewport, rotation: number = 0): CanvasTransform {
+  const normalizedRotation: number = normalizeCanvasRotation(rotation);
+  const fit: number = containScaleForRotation(viewport, normalizedRotation);
   const percent: number = localViewScalePercent(mode, customPercent);
   const physicalScale: number = percent > 0 ? percent / 100 : fit;
-  return clampCanvasTransform({ scale: physicalScale / fit, panX: 0, panY: 0 }, viewport);
+  return clampCanvasTransform({
+    scale: physicalScale / fit,
+    panX: 0,
+    panY: 0,
+    rotation: normalizedRotation
+  }, viewport);
 }
 
 /** Apply a RustDesk-mobile-style relative pinch plus focal-point pan. */
@@ -187,8 +235,8 @@ export function pinchCanvasTransform(current: CanvasTransform, viewport: CanvasV
   const nextScale: number = oldScale * clamp(relativeScale, 0.5, 2.0);
   const surfaceWidth: number = positive(viewport.surfaceWidth, 1);
   const surfaceHeight: number = positive(viewport.surfaceHeight, 1);
-  const sourceWidth: number = positive(viewport.sourceWidth, 1);
-  const sourceHeight: number = positive(viewport.sourceHeight, 1);
+  const sourceWidth: number = displayedSourceWidth(old, viewport);
+  const sourceHeight: number = displayedSourceHeight(old, viewport);
   const oldLeft: number = (surfaceWidth - sourceWidth * oldScale) / 2 + old.panX;
   const oldTop: number = (surfaceHeight - sourceHeight * oldScale) / 2 + old.panY;
   const remoteAtFocalX: number = (focalX - oldLeft) / oldScale;
@@ -196,8 +244,9 @@ export function pinchCanvasTransform(current: CanvasTransform, viewport: CanvasV
   const newLeft: number = (surfaceWidth - sourceWidth * nextScale) / 2;
   const newTop: number = (surfaceHeight - sourceHeight * nextScale) / 2;
   return clampCanvasTransform({
-    scale: nextScale / containScale(viewport),
+    scale: nextScale / containScaleForRotation(viewport, normalizeCanvasRotation(old.rotation)),
     panX: focalX - newLeft - remoteAtFocalX * nextScale + panDeltaX,
-    panY: focalY - newTop - remoteAtFocalY * nextScale + panDeltaY
+    panY: focalY - newTop - remoteAtFocalY * nextScale + panDeltaY,
+    rotation: old.rotation
   }, viewport);
 }

@@ -1,9 +1,9 @@
 # RemoteDeskHarmonyOS
 
-面向 HarmonyOS NEXT PC 的原生多协议远程桌面客户端。当前版本为
-**1.1.0**（`versionCode 1001000`），在一个 ArkUI 工作台中提供 RDP、
-RustDesk 和 SSH/SFTP 连接，并保留正在验证的 VNC 原生适配路径；同时集成
-华为云数据同步、本地加密与备份、后台视频、画中画和多窗口响应式体验。
+面向 HarmonyOS NEXT 的原生多协议远程桌面客户端。当前版本为
+**1.1.2**（`versionCode 1001002`），在一个 ArkUI 工作台中提供 RDP、
+RustDesk、SSH/SFTP、VNC 和 Moonlight 连接；同时集成华为云数据同步、
+本地加密与备份、后台视频、画中画以及手机、Pad、PC 响应式体验。
 
 > 当前仓库仍处于测试与发布验证阶段。GitHub 中标记为 `unsigned` 的 HAP
 > 未经应用签名，仅用于开发测试；它不是 AppGallery 或生产分发安装包。
@@ -14,17 +14,18 @@ RustDesk 和 SSH/SFTP 连接，并保留正在验证的 VNC 原生适配路径�
 |---|---|
 | RDP | 基于 FreeRDP/WinPR，支持证书预检、Microsoft/Azure AD 凭据、音视频、输入、纯文本剪贴板和共享目录 |
 | RustDesk | 原生 Rust FFI 客户端链路，支持 rendezvous/relay/direct、视频、音频、输入、纯文本剪贴板和文件传输，并改进异步会话恢复 |
-| SSH/SFTP | 终端、密钥与密码认证、主屏 scrollback、文件浏览、上传/下载、取消和安全续传 |
-| VNC | 保留原生适配代码，当前版本尚未开放可用连接入口，仍需完成设备验证 |
+| SSH/SFTP | 多标签与多窗格终端、密钥/密码认证、搜索/命令/广播、隧道转发、SFTP 双栏与传输中心 |
+| VNC | 标准 VNC 连接、TLS/明文预检、证书与凭据确认、画面输入、剪贴板和网关配置 |
+| Moonlight | Sunshine 发现、配对、应用目录与启动，支持串流、键鼠/触控/控制器输入和会话生命周期管理 |
 | 主机工作台 | 主机添加与编辑、工作组、连接入口、协议筛选与真实能力状态 |
 | 数据与安全 | RDB、本地 AES-256-GCM 数据保护、HUKS/生物认证集成、备份恢复与主机安全锁建设 |
-| 华为云同步 | 七张固定业务表的显式同步、选择控制、重试、下载回滚与本地恢复隔离 |
+| 华为云同步 | 八张固定业务表与可选 Moonlight 数据的显式同步、选择控制、重试、下载回滚与本地恢复隔离 |
 | HarmonyOS 体验 | PC/Pad/Phone 响应式布局、沉浸式浮动导航、后台视频、画中画与前后台恢复 |
-| 1.1.0 更新 | 汇总 1.0.8 以来的四协议、输入、数据安全与云同步改进 |
+| 1.1.2 更新 | 汇总 1.1.1 以来的 Moonlight、SSH 工作台、输入、安全校验与自适应引导改进 |
 | 反馈与社区 | 设置内支持邮箱反馈、获取远程更新的畅联群聊二维码以及保存到相册 |
 
 部分能力依赖远端服务器配置、HarmonyOS 设备形态、系统权限和本地私有
-AGConnect 配置。正式 Release 还需要通过完整四协议设备矩阵与凭据轮换
+AGConnect 配置。正式 Release 还需要通过完整五协议设备矩阵与凭据轮换
 确认；仓库不会把未完成的外部验证描述为已经通过。
 
 ## 支持平台与技术栈
@@ -47,6 +48,7 @@ ArkUI pages/components
               ├── rustdesk_ffi ───── RustDesk
               ├── libssh2 / terminal core ── SSH/SFTP
               ├── VNC adapter
+              ├── Moonlight / Sunshine runtime
               └── decoder / renderer / audio / input bridges
 ```
 

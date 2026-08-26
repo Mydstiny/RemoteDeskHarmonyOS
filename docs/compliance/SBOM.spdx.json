@@ -15,7 +15,7 @@
     {
       "name": "RemoteDeskHarmonyOS",
       "SPDXID": "SPDXRef-Package-RemoteDeskHarmonyOS",
-      "versionInfo": "1.1.0",
+      "versionInfo": "1.1.2",
       "downloadLocation": "https://github.com/Mydstiny/RemoteDeskHarmonyOS",
       "filesAnalyzed": false,
       "licenseConcluded": "AGPL-3.0-or-later",
@@ -981,9 +981,100 @@
       "copyrightText": "NOASSERTION",
       "externalRefs": [],
       "comment": "Reviewed supplier logo assets selected for offline TOTP matching; each source, hash, license assertion and trademark guidance is recorded in the officialOverrides section of the single-source TOTP manifest; svglogos-catalog entries are not asserted to be official brand-kit assets."
+    },
+    {
+      "name": "moonlight-qt-official-protocol-icon",
+      "SPDXID": "SPDXRef-Package-Moonlight-Qt-Icon",
+      "versionInfo": "2e13ed9977bc31c73caf8428f08f58d793313ece",
+      "downloadLocation": "https://github.com/moonlight-stream/moonlight-qt/tree/2e13ed9977bc31c73caf8428f08f58d793313ece",
+      "filesAnalyzed": true,
+      "packageVerificationCode": {
+        "packageVerificationCodeValue": "b87433cda9e9811ef51c3a784e6c31c3a3b00a82"
+      },
+      "licenseConcluded": "GPL-3.0-only",
+      "licenseDeclared": "GPL-3.0-only",
+      "copyrightText": "Moonlight Game Streaming Project contributors",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:github/moonlight-stream/moonlight-qt@2e13ed9977bc31c73caf8428f08f58d793313ece"
+        }
+      ],
+      "comment": "Official app/res/moonlight.svg originalSha256=6fd0ee4fe5b4aad5abaa5d5c9acb9f7d1bda0abadfe9d1582115de9b4ba16aa2; packaged deterministic monochrome tintable transform; geometry and trademark boundary documented in docs/compliance/MOONLIGHT_ICON_PROVENANCE.md"
+    },
+    {
+      "name": "moonlight-common-c",
+      "SPDXID": "SPDXRef-Package-Moonlight-Common-C",
+      "versionInfo": "e41355ea01670fd4c830b384009d31dd0339a705",
+      "downloadLocation": "https://github.com/moonlight-stream/moonlight-common-c/tree/e41355ea01670fd4c830b384009d31dd0339a705",
+      "filesAnalyzed": true,
+      "licenseConcluded": "GPL-3.0-only",
+      "licenseDeclared": "GPL-3.0-only",
+      "copyrightText": "See vendored license and THIRD_PARTY_NOTICES.md",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:github/moonlight-stream/moonlight-common-c@e41355ea01670fd4c830b384009d31dd0339a705"
+        }
+      ],
+      "comment": "Exact unmodified source snapshot; repository=https://github.com/moonlight-stream/moonlight-common-c; revision=e41355ea01670fd4c830b384009d31dd0339a705; tree=405b39fdc543dceb7644bdcda65e1bb4c7a28ab2; contentManifestSha256=63074450596d46d1dc48e80f23f44d6ee909cee8b2a650a6c00fb8fdfefa3cc2"
+    },
+    {
+      "name": "Moonlight ENet fork",
+      "SPDXID": "SPDXRef-Package-Moonlight-ENet",
+      "versionInfo": "aca87840b57f045a1f7f9299e4b1b9b8e2a5e2f1",
+      "downloadLocation": "https://github.com/cgutman/enet/tree/aca87840b57f045a1f7f9299e4b1b9b8e2a5e2f1",
+      "filesAnalyzed": true,
+      "licenseConcluded": "MIT",
+      "licenseDeclared": "MIT",
+      "copyrightText": "See vendored license and THIRD_PARTY_NOTICES.md",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:github/cgutman/enet@aca87840b57f045a1f7f9299e4b1b9b8e2a5e2f1"
+        }
+      ],
+      "comment": "Exact unmodified source snapshot; repository=https://github.com/cgutman/enet; revision=aca87840b57f045a1f7f9299e4b1b9b8e2a5e2f1; tree=0995d597d91e071eb1e673d93bee797246a00c76; contentManifestSha256=500e83281fa8546c3ce25b1d1513956ee56035d03af9e2320e26804f1809d2a9"
+    },
+    {
+      "name": "nanors",
+      "SPDXID": "SPDXRef-Package-Moonlight-Nanors",
+      "versionInfo": "b1e3c22ca0cdc0bb83e3cd6ed1a2fc77869ed99a",
+      "downloadLocation": "https://github.com/sleepybishop/nanors/tree/b1e3c22ca0cdc0bb83e3cd6ed1a2fc77869ed99a",
+      "filesAnalyzed": true,
+      "licenseConcluded": "MIT",
+      "licenseDeclared": "MIT",
+      "copyrightText": "See vendored license and THIRD_PARTY_NOTICES.md",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:github/sleepybishop/nanors@b1e3c22ca0cdc0bb83e3cd6ed1a2fc77869ed99a"
+        }
+      ],
+      "comment": "Exact unmodified source snapshot; repository=https://github.com/sleepybishop/nanors; revision=b1e3c22ca0cdc0bb83e3cd6ed1a2fc77869ed99a; tree=b06686f843269415217ebeb90c8975be297f0d30; contentManifestSha256=6e35c00ffe6361ee5fb45fd4c4bc470f94d6ead3596778c633e007f8f3e9b2e0"
     }
   ],
   "files": [
+    {
+      "SPDXID": "SPDXRef-File-Moonlight-Qt-Icon",
+      "fileName": "entry/src/main/resources/base/media/icon_moonlight.svg",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "4f5ef547e33767287e3438a6d1598a1bdef6e49df4678a5f7f214ec58c9e5886"
+        }
+      ],
+      "licenseConcluded": "GPL-3.0-only",
+      "licenseInfoInFiles": [
+        "GPL-3.0-only"
+      ],
+      "copyrightText": "Moonlight Game Streaming Project contributors",
+      "comment": "sourceUrl=https://github.com/moonlight-stream/moonlight-qt/blob/2e13ed9977bc31c73caf8428f08f58d793313ece/app/res/moonlight.svg; originalSha256=6fd0ee4fe5b4aad5abaa5d5c9acb9f7d1bda0abadfe9d1582115de9b4ba16aa2; deterministic monochrome tintable transform; packagedSha256=4f5ef547e33767287e3438a6d1598a1bdef6e49df4678a5f7f214ec58c9e5886"
+    },
     {
       "SPDXID": "SPDXRef-File-TotpBrand-apple",
       "fileName": "entry/src/main/resources/rawfile/totp-brands/apple.svg",
@@ -5463,6 +5554,1878 @@
       ],
       "copyrightText": "NOASSERTION",
       "comment": "sourceUrl=https://github.com/gilbarbara/logos/blob/4de741f8503d5e81abf5dfa05214690e938296bf/logos/authy.svg; brandSourceUrl=https://www.authy.com/; brandGuidelines=https://www.twilio.com/en-us/legal/trademark-list; license=CC0-1.0; licenseUrl=https://github.com/gilbarbara/logos/blob/4de741f8503d5e81abf5dfa05214690e938296bf/LICENSE.txt; trademarkGuidelines=https://github.com/gilbarbara/logos/blob/4de741f8503d5e81abf5dfa05214690e938296bf/README.md; CC0 catalog vector; not an official brand-kit assertion; use only for supplier identification; officialAssetVerified=false; assetSha256=fe77d7d1ca1169a02e3c8d5daeb687e897bbbe392f934c87aee8f242cce6c73d"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-8bcbe6feafe10d42e6eea8bd",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/.github/dependabot.yml",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "b35064039696940710e1afa64ccd83f58fd23b0bd71103d1ad7f53464c8ec0f1"
+        }
+      ],
+      "licenseConcluded": "GPL-3.0-only",
+      "licenseInfoInFiles": [
+        "GPL-3.0-only"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/moonlight-stream/moonlight-common-c; revision=e41355ea01670fd4c830b384009d31dd0339a705; tree=405b39fdc543dceb7644bdcda65e1bb4c7a28ab2"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-71e12ba638148dfed8dae4eb",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/.github/workflows/ci.yml",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "73ab0135f951f4437df8d90f80a3aa4d0ee1e4f4d8e5445e102fc4e789cd8fa2"
+        }
+      ],
+      "licenseConcluded": "GPL-3.0-only",
+      "licenseInfoInFiles": [
+        "GPL-3.0-only"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/moonlight-stream/moonlight-common-c; revision=e41355ea01670fd4c830b384009d31dd0339a705; tree=405b39fdc543dceb7644bdcda65e1bb4c7a28ab2"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-44ae6f5e57a37d07ed71ff78",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/.github/workflows/codeql.yml",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "2aadf0f1ff684693678997fab03ecbb0a9e456519678452f7967321ab6bde7a1"
+        }
+      ],
+      "licenseConcluded": "GPL-3.0-only",
+      "licenseInfoInFiles": [
+        "GPL-3.0-only"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/moonlight-stream/moonlight-common-c; revision=e41355ea01670fd4c830b384009d31dd0339a705; tree=405b39fdc543dceb7644bdcda65e1bb4c7a28ab2"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-dce1935c9dfb34141d0ec3d4",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/.gitignore",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "1fd217bd0a395c025342dcc320cbb742bfb0a4f614a0594c15bdcefc388b12f9"
+        }
+      ],
+      "licenseConcluded": "GPL-3.0-only",
+      "licenseInfoInFiles": [
+        "GPL-3.0-only"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/moonlight-stream/moonlight-common-c; revision=e41355ea01670fd4c830b384009d31dd0339a705; tree=405b39fdc543dceb7644bdcda65e1bb4c7a28ab2"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-4ce4231451f9adf5aca382f4",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/.gitmodules",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "190068cbdbdacde16ded9f17eeb5d4497e7093b12680560dc1383f51240c1beb"
+        }
+      ],
+      "licenseConcluded": "GPL-3.0-only",
+      "licenseInfoInFiles": [
+        "GPL-3.0-only"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/moonlight-stream/moonlight-common-c; revision=e41355ea01670fd4c830b384009d31dd0339a705; tree=405b39fdc543dceb7644bdcda65e1bb4c7a28ab2"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-538ec5d7f94c6ecd9b3ea4c0",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/CMakeLists.txt",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "c5d7a06546a60fd72283639eafd7fd4ac09ae440386f2d9d96aa051af0272234"
+        }
+      ],
+      "licenseConcluded": "GPL-3.0-only",
+      "licenseInfoInFiles": [
+        "GPL-3.0-only"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/moonlight-stream/moonlight-common-c; revision=e41355ea01670fd4c830b384009d31dd0339a705; tree=405b39fdc543dceb7644bdcda65e1bb4c7a28ab2"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-bd6e5ca0d027f7027c5fcfb4",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/LICENSE.txt",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "589ed823e9a84c56feb95ac58e7cf384626b9cbf4fda2a907bc36e103de1bad2"
+        }
+      ],
+      "licenseConcluded": "GPL-3.0-only",
+      "licenseInfoInFiles": [
+        "GPL-3.0-only"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/moonlight-stream/moonlight-common-c; revision=e41355ea01670fd4c830b384009d31dd0339a705; tree=405b39fdc543dceb7644bdcda65e1bb4c7a28ab2"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-aaf8f9a52c7d13d5066ae2d3",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/README.md",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "1e1d1979d26659524a0116c94ca0e1a16c04aa75666bcc27d037eb733ab3b88f"
+        }
+      ],
+      "licenseConcluded": "GPL-3.0-only",
+      "licenseInfoInFiles": [
+        "GPL-3.0-only"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/moonlight-stream/moonlight-common-c; revision=e41355ea01670fd4c830b384009d31dd0339a705; tree=405b39fdc543dceb7644bdcda65e1bb4c7a28ab2"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-50adfe449e43f68ede0c39d6",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/cmake/FindMbedTLS.cmake",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "4ee1004279313ddb33786ebd25e1fe595aaf28647db46ff4e9d6bd2074e16962"
+        }
+      ],
+      "licenseConcluded": "GPL-3.0-only",
+      "licenseInfoInFiles": [
+        "GPL-3.0-only"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/moonlight-stream/moonlight-common-c; revision=e41355ea01670fd4c830b384009d31dd0339a705; tree=405b39fdc543dceb7644bdcda65e1bb4c7a28ab2"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-c7172553ed682d245d6f7c3d",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/enet/.github/workflows/cmake.yml",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "239f1e9e895cfd6b828010d56dbe1e5f24a0e85cdb4cd93fcabb5a8f8685d33c"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/cgutman/enet; revision=aca87840b57f045a1f7f9299e4b1b9b8e2a5e2f1; tree=0995d597d91e071eb1e673d93bee797246a00c76"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-289cb901d37266d7462fe12c",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/enet/CMakeLists.txt",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "22d8502a47e3ec9a9ea9ad65f041ae5ea69f09a318ae4e29b17d69213c206d04"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/cgutman/enet; revision=aca87840b57f045a1f7f9299e4b1b9b8e2a5e2f1; tree=0995d597d91e071eb1e673d93bee797246a00c76"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-50c291e1e94ca6ce6eec8658",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/enet/ChangeLog",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "e14b2b215c104bd4ed9c79f3a32a6bf12dcda94e79f960266cce7ffff4bc436e"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/cgutman/enet; revision=aca87840b57f045a1f7f9299e4b1b9b8e2a5e2f1; tree=0995d597d91e071eb1e673d93bee797246a00c76"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-0e5d7a38d29933214e79eb1a",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/enet/Doxyfile",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "b75c0239ee0af8ca857a1475159b8fa5da3fe3127db9fd84001fe9223a297ea6"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/cgutman/enet; revision=aca87840b57f045a1f7f9299e4b1b9b8e2a5e2f1; tree=0995d597d91e071eb1e673d93bee797246a00c76"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-79c6fde569998f4c7b8d5cea",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/enet/DoxygenLayout.xml",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "ec4edca623a06ee3a33222db87f932c1cc2343acd94850091ccacd8236acf9d5"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/cgutman/enet; revision=aca87840b57f045a1f7f9299e4b1b9b8e2a5e2f1; tree=0995d597d91e071eb1e673d93bee797246a00c76"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-248a947dd02f608efbe100d3",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/enet/LICENSE",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "77f94e3be39938801163844b8bf9a4f12badcc0da136e9886e7da14a816d74d3"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/cgutman/enet; revision=aca87840b57f045a1f7f9299e4b1b9b8e2a5e2f1; tree=0995d597d91e071eb1e673d93bee797246a00c76"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-d293dd5de56207f8281adaf1",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/enet/Makefile.am",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "5263d614a1560e7ce27944cfd3cee47e348e1d9c080f96d6ef7a87e3515d3e01"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/cgutman/enet; revision=aca87840b57f045a1f7f9299e4b1b9b8e2a5e2f1; tree=0995d597d91e071eb1e673d93bee797246a00c76"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-30943a4ec62ffc471c136874",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/enet/README",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "30355fcc7dba245ab2462f17cd7ef9ba5eb141ef055cea36972480b66cd879eb"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/cgutman/enet; revision=aca87840b57f045a1f7f9299e4b1b9b8e2a5e2f1; tree=0995d597d91e071eb1e673d93bee797246a00c76"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-c96d3d77066fd74cb96bd172",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/enet/callbacks.c",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "0d42c2a191c7d22ed0da2b14617b958cce2efd2a185b3aef9fe51a0fb6704ba2"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/cgutman/enet; revision=aca87840b57f045a1f7f9299e4b1b9b8e2a5e2f1; tree=0995d597d91e071eb1e673d93bee797246a00c76"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-8199434313bdc33f25a73025",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/enet/compress.c",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "6af9da787bf5aaeb44befcf4e4a822d6e4d0972279bac73004f628bf06788774"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/cgutman/enet; revision=aca87840b57f045a1f7f9299e4b1b9b8e2a5e2f1; tree=0995d597d91e071eb1e673d93bee797246a00c76"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-d98247a42cb58630778105ea",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/enet/configure.ac",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "f389248a2ebaa8cd5e88c60b031994ea96c7e07246aa1e6ef952b430bbf1a67a"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/cgutman/enet; revision=aca87840b57f045a1f7f9299e4b1b9b8e2a5e2f1; tree=0995d597d91e071eb1e673d93bee797246a00c76"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-74681706dc4438e9ae601830",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/enet/docs/FAQ.dox",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "215f8aba15290ceb298fca2188ce2dd1f6ad9dfea71c960250fd31fa12070e4b"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/cgutman/enet; revision=aca87840b57f045a1f7f9299e4b1b9b8e2a5e2f1; tree=0995d597d91e071eb1e673d93bee797246a00c76"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-3029df9e2c9d61117914d20c",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/enet/docs/design.dox",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "8f585611da934b246932ca786e2dd9acfb380044b752d805be360c123865c67c"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/cgutman/enet; revision=aca87840b57f045a1f7f9299e4b1b9b8e2a5e2f1; tree=0995d597d91e071eb1e673d93bee797246a00c76"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-edb1fa658aafb24348893486",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/enet/docs/install.dox",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "80f6a04cc1e5afffc0a5ecd5a23196211469f5e40b40a28ddea05943b1c296af"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/cgutman/enet; revision=aca87840b57f045a1f7f9299e4b1b9b8e2a5e2f1; tree=0995d597d91e071eb1e673d93bee797246a00c76"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-3f478bdef00f6c4897b48cfb",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/enet/docs/license.dox",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "c3a3268b32afa0988f51bb19381c1642bcdb2df77e5534a74901db971d876922"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/cgutman/enet; revision=aca87840b57f045a1f7f9299e4b1b9b8e2a5e2f1; tree=0995d597d91e071eb1e673d93bee797246a00c76"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-ba800a0dbbbe2b375554eaba",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/enet/docs/mainpage.dox",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "8550f5c674ca44144983bd773af25a5310618efd8129b782c46bcea02065cfcd"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/cgutman/enet; revision=aca87840b57f045a1f7f9299e4b1b9b8e2a5e2f1; tree=0995d597d91e071eb1e673d93bee797246a00c76"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-fb49facd5bb0b4c4451e3530",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/enet/docs/tutorial.dox",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "b1e758701964b8ed01d13131da9170d229c1de22c466b49756cd592b370f6d0f"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/cgutman/enet; revision=aca87840b57f045a1f7f9299e4b1b9b8e2a5e2f1; tree=0995d597d91e071eb1e673d93bee797246a00c76"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-918b06e7c1916697ed2101de",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/enet/enet.dsp",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "e616f4088ce8fcb38efd2372b6264d01f37241bdec4ccf461a297e3a0782a0e4"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/cgutman/enet; revision=aca87840b57f045a1f7f9299e4b1b9b8e2a5e2f1; tree=0995d597d91e071eb1e673d93bee797246a00c76"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-c4665d93d0b8a5d248228632",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/enet/enet_dll.cbp",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "5f1f789e47651f950c26f091e791b89ff981d931b3cac42592640a9df7d352cb"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/cgutman/enet; revision=aca87840b57f045a1f7f9299e4b1b9b8e2a5e2f1; tree=0995d597d91e071eb1e673d93bee797246a00c76"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-3e0c267a89ed4e5182d9ecc4",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/enet/host.c",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "23eba7152caebba1e7ab1fd6197792c7f6e40810ef02d61c8fbe736bd3f8b62c"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/cgutman/enet; revision=aca87840b57f045a1f7f9299e4b1b9b8e2a5e2f1; tree=0995d597d91e071eb1e673d93bee797246a00c76"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-f6067e61c670be1917f60891",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/enet/include/enet/callbacks.h",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "20b3d8834bd19b77d9e8b6bcef4cd6fccb9875a4c1cdb0e5f7881b1b285c8d16"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/cgutman/enet; revision=aca87840b57f045a1f7f9299e4b1b9b8e2a5e2f1; tree=0995d597d91e071eb1e673d93bee797246a00c76"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-79e00721f0951e5b482aebbb",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/enet/include/enet/enet.h",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "eea62219d5abb6d6b6ef996fe1f413a0bc86ad7bb0125e4f83d3615fdc46e6cd"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/cgutman/enet; revision=aca87840b57f045a1f7f9299e4b1b9b8e2a5e2f1; tree=0995d597d91e071eb1e673d93bee797246a00c76"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-04027b68ec84280d2f5025e9",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/enet/include/enet/list.h",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "845120efb4ad1633eb2f61c8d8f5529b33de2170152779bc6046ac0453cab46b"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/cgutman/enet; revision=aca87840b57f045a1f7f9299e4b1b9b8e2a5e2f1; tree=0995d597d91e071eb1e673d93bee797246a00c76"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-e578a7aab997934f93bef67c",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/enet/include/enet/protocol.h",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "e135dfbd0fd2cf60d9b5f92cc3ed7ce4f6fa2e46e5281915380437dc3c255159"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/cgutman/enet; revision=aca87840b57f045a1f7f9299e4b1b9b8e2a5e2f1; tree=0995d597d91e071eb1e673d93bee797246a00c76"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-9ff7c415cd290307338dea28",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/enet/include/enet/time.h",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "808d5c402c908c14afd0df385855a1b8713e5f69a04008c341a70928647d3e6e"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/cgutman/enet; revision=aca87840b57f045a1f7f9299e4b1b9b8e2a5e2f1; tree=0995d597d91e071eb1e673d93bee797246a00c76"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-3d3eec281b7b490fc27a1136",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/enet/include/enet/types.h",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "543482db06a0086983641f550effec827e0ccf722667d4e1956cc92cb074dca6"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/cgutman/enet; revision=aca87840b57f045a1f7f9299e4b1b9b8e2a5e2f1; tree=0995d597d91e071eb1e673d93bee797246a00c76"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-8e2c775779dd31c9e12fcccf",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/enet/include/enet/unix.h",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "c37171b9f5f37e813059f6e37f247d32ae96037b6f2165d743fc757c6ea80c83"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/cgutman/enet; revision=aca87840b57f045a1f7f9299e4b1b9b8e2a5e2f1; tree=0995d597d91e071eb1e673d93bee797246a00c76"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-c130e4e9c70ae31fed12f3c2",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/enet/include/enet/utility.h",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "5f9f3b9f5110d6a0e4be94bcf7950031985c278b49c922f637074e30784fc392"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/cgutman/enet; revision=aca87840b57f045a1f7f9299e4b1b9b8e2a5e2f1; tree=0995d597d91e071eb1e673d93bee797246a00c76"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-ee79e5259c499d9a6d2cfc2f",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/enet/include/enet/win32.h",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "4228d63b7065d9af011c96417057d6a8f1195be1b9b749bf184fae2d6acd036c"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/cgutman/enet; revision=aca87840b57f045a1f7f9299e4b1b9b8e2a5e2f1; tree=0995d597d91e071eb1e673d93bee797246a00c76"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-64908388e7a75cbf140262e7",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/enet/libenet.pc.in",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "00f3fcb315a33c8fe3860bdcacf5d25a46f5ac38e93e77f91ebae94fda2d9c84"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/cgutman/enet; revision=aca87840b57f045a1f7f9299e4b1b9b8e2a5e2f1; tree=0995d597d91e071eb1e673d93bee797246a00c76"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-1f5c28c8c1814ab6b115e94f",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/enet/list.c",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "c5350bfa7b7d3cc49fa4b2ebab92e359995e4b1ca47c2c17b0fa338dad87e5a4"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/cgutman/enet; revision=aca87840b57f045a1f7f9299e4b1b9b8e2a5e2f1; tree=0995d597d91e071eb1e673d93bee797246a00c76"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-0296fd11bc53133655d9e00c",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/enet/m4/.keep",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/cgutman/enet; revision=aca87840b57f045a1f7f9299e4b1b9b8e2a5e2f1; tree=0995d597d91e071eb1e673d93bee797246a00c76"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-210aa64d52e1954ba51ff81c",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/enet/packet.c",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "cfa444c3bf8460a1a14909166b08efc2cf82112b4368011814396d6d09a3bce7"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/cgutman/enet; revision=aca87840b57f045a1f7f9299e4b1b9b8e2a5e2f1; tree=0995d597d91e071eb1e673d93bee797246a00c76"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-7d11a75589f5e9b29179d61d",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/enet/peer.c",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "a967be4d6b03e8059838587f6f0e13fe092109121f51bec4ed039721ddc1a157"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/cgutman/enet; revision=aca87840b57f045a1f7f9299e4b1b9b8e2a5e2f1; tree=0995d597d91e071eb1e673d93bee797246a00c76"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-b687f9e85fdeee9d7162b56c",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/enet/premake4.lua",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "5a85499504e4be9187baf1baecbca1be5a4933ade0eea5b19cc7016e4bcd668b"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/cgutman/enet; revision=aca87840b57f045a1f7f9299e4b1b9b8e2a5e2f1; tree=0995d597d91e071eb1e673d93bee797246a00c76"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-e99318882e8672d1aab4425e",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/enet/protocol.c",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "08072968184824810e0aebf3120b8811bc3fc6334f49dfa18967ac473e14b82f"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/cgutman/enet; revision=aca87840b57f045a1f7f9299e4b1b9b8e2a5e2f1; tree=0995d597d91e071eb1e673d93bee797246a00c76"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-dbb19468b6f797087a136c09",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/enet/unix.c",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "8c3d246b07c5c1d99546f7db59bbe6509860e26dd77f031518e7de6ada1f2bfa"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/cgutman/enet; revision=aca87840b57f045a1f7f9299e4b1b9b8e2a5e2f1; tree=0995d597d91e071eb1e673d93bee797246a00c76"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-ad18aeb2ddeea0b577716e71",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/enet/win32.c",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "ad8513c46fbbea73228200e6acc88e8292b043e0f62745da7f83e4abebcd70a9"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/cgutman/enet; revision=aca87840b57f045a1f7f9299e4b1b9b8e2a5e2f1; tree=0995d597d91e071eb1e673d93bee797246a00c76"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-fe3eeecbae5fe23012dc6731",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/nanors/.clang-format",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "a108a5ca339d1dae3d949adb41c2150a11072f3d7ac8d6071c5a8d38f953855e"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/sleepybishop/nanors; revision=b1e3c22ca0cdc0bb83e3cd6ed1a2fc77869ed99a; tree=b06686f843269415217ebeb90c8975be297f0d30"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-43fabc22df2b8c33c7704429",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/nanors/.github/workflows/ci.yml",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "0add0726912989f22573bbdc013366da671f3092f42083ea53b4bde050ed4261"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/sleepybishop/nanors; revision=b1e3c22ca0cdc0bb83e3cd6ed1a2fc77869ed99a; tree=b06686f843269415217ebeb90c8975be297f0d30"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-b5c473717fc4f1dce3a60c4f",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/nanors/.gitignore",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "5e00d3cef9560c24b1c5dfc53b8439cc5786a8ce99461107e397f22d1db469ba"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/sleepybishop/nanors; revision=b1e3c22ca0cdc0bb83e3cd6ed1a2fc77869ed99a; tree=b06686f843269415217ebeb90c8975be297f0d30"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-2a73b7e08a27efe16796a618",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/nanors/LICENSE",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "3fdda5f011d8490331950398e86427d67dfae05e048681476c2c6b8c34bdd033"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/sleepybishop/nanors; revision=b1e3c22ca0cdc0bb83e3cd6ed1a2fc77869ed99a; tree=b06686f843269415217ebeb90c8975be297f0d30"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-e030ba36dc2b532e0494eb19",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/nanors/Makefile",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "27808ec248a7675b057b74857b83417601dbb25cd7aa9846b2cb3915fdf3c697"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/sleepybishop/nanors; revision=b1e3c22ca0cdc0bb83e3cd6ed1a2fc77869ed99a; tree=b06686f843269415217ebeb90c8975be297f0d30"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-5f80c9ba25783223bb7a0b29",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/nanors/README.md",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "c560c4b58a3f85a89ed08b050dde5a0d69e2e14ffeb32593cf41079eaad12e43"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/sleepybishop/nanors; revision=b1e3c22ca0cdc0bb83e3cd6ed1a2fc77869ed99a; tree=b06686f843269415217ebeb90c8975be297f0d30"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-e374aa5a3abde1170c527130",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/nanors/deps/obl/gf2_8_affine_mat.h",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "7742dcb53c95a6c04771b60ebd60f281a50684faf4599b4a9b0962daa5161d2a"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/sleepybishop/nanors; revision=b1e3c22ca0cdc0bb83e3cd6ed1a2fc77869ed99a; tree=b06686f843269415217ebeb90c8975be297f0d30"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-b2d42bb5410d5bbd1ff3705f",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/nanors/deps/obl/gf2_8_tables.h",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "ed4480ba7cb72217724b24ae2cb51c58c74a10456bb0d7c8317f9a5e613a31db"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/sleepybishop/nanors; revision=b1e3c22ca0cdc0bb83e3cd6ed1a2fc77869ed99a; tree=b06686f843269415217ebeb90c8975be297f0d30"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-8fbd33b58066da1b2242e990",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/nanors/deps/obl/oblas16.c",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "4bd240760e5ec4814d508ff20993cb6703983503f3d9e136f81e4081de31bb47"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/sleepybishop/nanors; revision=b1e3c22ca0cdc0bb83e3cd6ed1a2fc77869ed99a; tree=b06686f843269415217ebeb90c8975be297f0d30"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-508b2cff0a3d523e3d645dd4",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/nanors/deps/obl/oblas16.h",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "49a42a51d20c2f819440b68cd83421deb2a5e4d7732d82bf3c13eb5d3118b183"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/sleepybishop/nanors; revision=b1e3c22ca0cdc0bb83e3cd6ed1a2fc77869ed99a; tree=b06686f843269415217ebeb90c8975be297f0d30"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-1083f8aa8ba4f37ebb8e2d3c",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/nanors/deps/obl/oblas16_afft.c",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "460bd2420e0b1ea28d9ef698df05cee36a7d27545c046643d7972806d46d4247"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/sleepybishop/nanors; revision=b1e3c22ca0cdc0bb83e3cd6ed1a2fc77869ed99a; tree=b06686f843269415217ebeb90c8975be297f0d30"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-6dd6dd3bfa82e7e7fc1e5c57",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/nanors/deps/obl/oblas16_afft.h",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "3f694ce4ff8ee5cb7ff805ae718c8cdcb71a0cfaffaccb94f2a7ff56bdb2f8c6"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/sleepybishop/nanors; revision=b1e3c22ca0cdc0bb83e3cd6ed1a2fc77869ed99a; tree=b06686f843269415217ebeb90c8975be297f0d30"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-9cad04708c0689022bc97eb6",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/nanors/deps/obl/oblas_common.c",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "187336b73b29d89ffc52d19566047618b03251aa4a35a05d685111fd57dc2397"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/sleepybishop/nanors; revision=b1e3c22ca0cdc0bb83e3cd6ed1a2fc77869ed99a; tree=b06686f843269415217ebeb90c8975be297f0d30"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-15f6823d8f41460f4bf1ea56",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/nanors/deps/obl/oblas_common.h",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "06e632ab5a2f781e887ac539e0804add644dfa367c3086b1972af7c74085552c"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/sleepybishop/nanors; revision=b1e3c22ca0cdc0bb83e3cd6ed1a2fc77869ed99a; tree=b06686f843269415217ebeb90c8975be297f0d30"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-8b209342e57342e8d0bec6bf",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/nanors/deps/obl/oblas_lite.c",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "34c357667ffd1c43e28dbd53c9da7ba6e6317c46d3afe09d0066252eb46172d3"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/sleepybishop/nanors; revision=b1e3c22ca0cdc0bb83e3cd6ed1a2fc77869ed99a; tree=b06686f843269415217ebeb90c8975be297f0d30"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-511028e091a42962c0693894",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/nanors/deps/obl/oblas_lite.h",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "ff68e76d40146de1273b7ea013fc6b741096681664df885938235f6fbc0a38c7"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/sleepybishop/nanors; revision=b1e3c22ca0cdc0bb83e3cd6ed1a2fc77869ed99a; tree=b06686f843269415217ebeb90c8975be297f0d30"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-af2a29b91f0b6a884eb8726f",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/nanors/graph.png",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "b69b4f5219202b795ec05862f7f7f868a378fed7ac640e6c314ed79e7e67b869"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/sleepybishop/nanors; revision=b1e3c22ca0cdc0bb83e3cd6ed1a2fc77869ed99a; tree=b06686f843269415217ebeb90c8975be297f0d30"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-3d187a5b640cf2c8fd76da28",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/nanors/rs.c",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "e650cec353c2d3430e48c3a171d86622495d9ec1023bb7793d17bb5f05ba50c9"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/sleepybishop/nanors; revision=b1e3c22ca0cdc0bb83e3cd6ed1a2fc77869ed99a; tree=b06686f843269415217ebeb90c8975be297f0d30"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-67efcd23bb25d48b1e9b98e0",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/nanors/rs.h",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "cc17817b06ddd89b8bb438fe1c8b61e1f6c639670e98f9d035839c86340c5164"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/sleepybishop/nanors; revision=b1e3c22ca0cdc0bb83e3cd6ed1a2fc77869ed99a; tree=b06686f843269415217ebeb90c8975be297f0d30"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-6d7cd9c13d290f0e02a61aeb",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/nanors/rs16.c",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "d2305801fdf4255bff9314a201eb444e6bd04049eda7d2150c98de12e6926ed3"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/sleepybishop/nanors; revision=b1e3c22ca0cdc0bb83e3cd6ed1a2fc77869ed99a; tree=b06686f843269415217ebeb90c8975be297f0d30"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-db068f83f35360ebd22ba32b",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/nanors/rs16.h",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "f37b7ccaac15489200bdc87e0f817f2b1068f588ff7d709408a300e62af28a6f"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/sleepybishop/nanors; revision=b1e3c22ca0cdc0bb83e3cd6ed1a2fc77869ed99a; tree=b06686f843269415217ebeb90c8975be297f0d30"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-70a5c8614ac361b42bf79dd9",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/nanors/rs16_afft.c",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "2ff4f59fb661716e44134c76c46eb7a1d4843211857db282cf8569ceedbf6b2e"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/sleepybishop/nanors; revision=b1e3c22ca0cdc0bb83e3cd6ed1a2fc77869ed99a; tree=b06686f843269415217ebeb90c8975be297f0d30"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-b036e9d3dc01b4d264c071cc",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/nanors/rs16_afft.h",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "1e9b5e4d6403ba54fcf2fa9368f05385868819479771e8a9df0fcd3ef069ab8f"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/sleepybishop/nanors; revision=b1e3c22ca0cdc0bb83e3cd6ed1a2fc77869ed99a; tree=b06686f843269415217ebeb90c8975be297f0d30"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-a220d4f5e11804067cae4584",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/nanors/t/00util/bench.c",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "f0d8ba5c1bd4f7f33249dbad95d8e7d659ad55af612b7f1dca25703c526bbbb4"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/sleepybishop/nanors; revision=b1e3c22ca0cdc0bb83e3cd6ed1a2fc77869ed99a; tree=b06686f843269415217ebeb90c8975be297f0d30"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-da15a63beabbb53cb34a19c7",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/nanors/t/00util/bench16.c",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "ab86584d303f79c19fac82bd27cc864ae1a4eff044974292f416133a250d52f1"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/sleepybishop/nanors; revision=b1e3c22ca0cdc0bb83e3cd6ed1a2fc77869ed99a; tree=b06686f843269415217ebeb90c8975be297f0d30"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-26117fa21ef8944548bb159c",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/nanors/t/00util/bench16_afft.c",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "19eca5a3a3ade0cfb7b4c4a9702b9b9e8d6a7ef48f24a3e45320cc1a25d74a08"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/sleepybishop/nanors; revision=b1e3c22ca0cdc0bb83e3cd6ed1a2fc77869ed99a; tree=b06686f843269415217ebeb90c8975be297f0d30"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-2dab1d3aaafdb3079961d15c",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/nanors/t/00util/test.c",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "7e35d7ddf9216d9a7a56889843d511c00f5211af9abc4be615273da74018c72b"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/sleepybishop/nanors; revision=b1e3c22ca0cdc0bb83e3cd6ed1a2fc77869ed99a; tree=b06686f843269415217ebeb90c8975be297f0d30"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-7557dfc609300715148cc6f0",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/nanors/t/00util/test16.c",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "1fc8fdd072dd3ec5b45bdac4b7877d83b6d6d0dcc5244805972e57125c43e80a"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/sleepybishop/nanors; revision=b1e3c22ca0cdc0bb83e3cd6ed1a2fc77869ed99a; tree=b06686f843269415217ebeb90c8975be297f0d30"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-c83cb1c911c3e2486686f4c3",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/nanors/t/00util/test16_afft.c",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "159e9b48dd3fe84b3cefde14b4c10461763e52b027d870f851983a12e5dcb7f7"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/sleepybishop/nanors; revision=b1e3c22ca0cdc0bb83e3cd6ed1a2fc77869ed99a; tree=b06686f843269415217ebeb90c8975be297f0d30"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-36913fcce3e621a88dc05733",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/nanors/t/10random_schemes.t",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "36de1ef605fc3074848aef6265598177d6fd7e0c4cbff97bd04850a9917d0b3f"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/sleepybishop/nanors; revision=b1e3c22ca0cdc0bb83e3cd6ed1a2fc77869ed99a; tree=b06686f843269415217ebeb90c8975be297f0d30"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-4ce3e87ae0d9c0b7831b1ed4",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/nanors/t/15random_schemes16.t",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "7ab6bd8a5a6a9abab05e26b5cff88401d2e329bd57af9e52c4f50b727d59fcf4"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/sleepybishop/nanors; revision=b1e3c22ca0cdc0bb83e3cd6ed1a2fc77869ed99a; tree=b06686f843269415217ebeb90c8975be297f0d30"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-4f6fac0eaa9d57837c4c02f0",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/nanors/t/16random_schemes16_afft.t",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "b4a29d97ef66b0d7663fd484c159dac8540f92801fdc2b4203ebb42e3710fd38"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/sleepybishop/nanors; revision=b1e3c22ca0cdc0bb83e3cd6ed1a2fc77869ed99a; tree=b06686f843269415217ebeb90c8975be297f0d30"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-10b430822b7b2500c5e67979",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/nanors/t/20sample_bench.t",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "6efb43d22e61addbf6a62a67f7493ba984d3f52ed6c20061d5f0ca673fd7d14b"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/sleepybishop/nanors; revision=b1e3c22ca0cdc0bb83e3cd6ed1a2fc77869ed99a; tree=b06686f843269415217ebeb90c8975be297f0d30"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-c4ca351031b673c241a3c532",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/nanors/t/25sample_bench16.t",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "10b21d839e914ea494603e98db9a9bdbe6d1fff677ca3acc05384f4c73ae0014"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/sleepybishop/nanors; revision=b1e3c22ca0cdc0bb83e3cd6ed1a2fc77869ed99a; tree=b06686f843269415217ebeb90c8975be297f0d30"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-9d8bc34bca4cdb7eeaf4b4e2",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/nanors/t/26sample_bench16_afft.t",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "3144a740a43ca74167d19ade18d4f81f66c6cb8dd0dd21ddc738831efb653aa1"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/sleepybishop/nanors; revision=b1e3c22ca0cdc0bb83e3cd6ed1a2fc77869ed99a; tree=b06686f843269415217ebeb90c8975be297f0d30"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-cdd30d11f5c5dbdfc026b9b9",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/nanors/t/Util.pm",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "41d8b23da2e550d35b7d2c302863158212d773ca412b1b4c80e7be6ca4b043dd"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/sleepybishop/nanors; revision=b1e3c22ca0cdc0bb83e3cd6ed1a2fc77869ed99a; tree=b06686f843269415217ebeb90c8975be297f0d30"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-87fa557d9b9df45ca99a5e4f",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/src/AudioStream.c",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "1b0d9f1c41b79c294073e0e6c5e5939a8ecd14c1c4b0a3cd62dd8fd416fdd9c0"
+        }
+      ],
+      "licenseConcluded": "GPL-3.0-only",
+      "licenseInfoInFiles": [
+        "GPL-3.0-only"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/moonlight-stream/moonlight-common-c; revision=e41355ea01670fd4c830b384009d31dd0339a705; tree=405b39fdc543dceb7644bdcda65e1bb4c7a28ab2"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-25791118ee7f58e7dbeb21b2",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/src/ByteBuffer.c",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "5d05e7492c3b741589a89fbd6cd17525531202aafc8288ba3c129f89147f3a49"
+        }
+      ],
+      "licenseConcluded": "GPL-3.0-only",
+      "licenseInfoInFiles": [
+        "GPL-3.0-only"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/moonlight-stream/moonlight-common-c; revision=e41355ea01670fd4c830b384009d31dd0339a705; tree=405b39fdc543dceb7644bdcda65e1bb4c7a28ab2"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-3cd447f58b96e8ecce7aeae0",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/src/ByteBuffer.h",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "dbd38a71b40d786a057f5d0b9322246a9f60e6446bdc88f33722d68de30451be"
+        }
+      ],
+      "licenseConcluded": "GPL-3.0-only",
+      "licenseInfoInFiles": [
+        "GPL-3.0-only"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/moonlight-stream/moonlight-common-c; revision=e41355ea01670fd4c830b384009d31dd0339a705; tree=405b39fdc543dceb7644bdcda65e1bb4c7a28ab2"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-9ba0f5bb35ebc426af6bf8ad",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/src/Connection.c",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "3e95815001e259f4a0102b4c40754dff90acf7105824ee79f7d48ee1068e5488"
+        }
+      ],
+      "licenseConcluded": "GPL-3.0-only",
+      "licenseInfoInFiles": [
+        "GPL-3.0-only"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/moonlight-stream/moonlight-common-c; revision=e41355ea01670fd4c830b384009d31dd0339a705; tree=405b39fdc543dceb7644bdcda65e1bb4c7a28ab2"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-038956660c01989b1bd4fd1c",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/src/ConnectionTester.c",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "25a4a6c0bdbd5388c2dac6cd25ee24a919e43605cb776a45fe39c4f42d7fc73c"
+        }
+      ],
+      "licenseConcluded": "GPL-3.0-only",
+      "licenseInfoInFiles": [
+        "GPL-3.0-only"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/moonlight-stream/moonlight-common-c; revision=e41355ea01670fd4c830b384009d31dd0339a705; tree=405b39fdc543dceb7644bdcda65e1bb4c7a28ab2"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-e709ecc9e5a7370a8587a39e",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/src/ControlStream.c",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "214c7b6652727a9f1657e37a8296967e628053ec399c55812f5e6f6850278bab"
+        }
+      ],
+      "licenseConcluded": "GPL-3.0-only",
+      "licenseInfoInFiles": [
+        "GPL-3.0-only"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/moonlight-stream/moonlight-common-c; revision=e41355ea01670fd4c830b384009d31dd0339a705; tree=405b39fdc543dceb7644bdcda65e1bb4c7a28ab2"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-929edaa1e178f8c6657dba65",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/src/FakeCallbacks.c",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "3132065741475d7c3190a51a46fc04c41a800763f745be0cf334b5049d7559b3"
+        }
+      ],
+      "licenseConcluded": "GPL-3.0-only",
+      "licenseInfoInFiles": [
+        "GPL-3.0-only"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/moonlight-stream/moonlight-common-c; revision=e41355ea01670fd4c830b384009d31dd0339a705; tree=405b39fdc543dceb7644bdcda65e1bb4c7a28ab2"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-28424b2f6f987b8737c240b4",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/src/Input.h",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "14e57986d7d1b5a3ec7bdb670fcd0ee81ddc161b23bff111beba9f95ad79b591"
+        }
+      ],
+      "licenseConcluded": "GPL-3.0-only",
+      "licenseInfoInFiles": [
+        "GPL-3.0-only"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/moonlight-stream/moonlight-common-c; revision=e41355ea01670fd4c830b384009d31dd0339a705; tree=405b39fdc543dceb7644bdcda65e1bb4c7a28ab2"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-26a9f95970d292203c61a175",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/src/InputStream.c",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "9e76a7aef0f5fb06848562e669e72ac751db1ec272d2377281b852dc86b3d23b"
+        }
+      ],
+      "licenseConcluded": "GPL-3.0-only",
+      "licenseInfoInFiles": [
+        "GPL-3.0-only"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/moonlight-stream/moonlight-common-c; revision=e41355ea01670fd4c830b384009d31dd0339a705; tree=405b39fdc543dceb7644bdcda65e1bb4c7a28ab2"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-488809a7548acfdd1d94d7f6",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/src/Limelight-internal.h",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "94f2bafb77d61dc004f65305df1763ac2d32bf1d5060535d0ffe26cad8e347ce"
+        }
+      ],
+      "licenseConcluded": "GPL-3.0-only",
+      "licenseInfoInFiles": [
+        "GPL-3.0-only"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/moonlight-stream/moonlight-common-c; revision=e41355ea01670fd4c830b384009d31dd0339a705; tree=405b39fdc543dceb7644bdcda65e1bb4c7a28ab2"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-c4b2e29928f158054fd27872",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/src/Limelight.h",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "fb175cc97d8448f25cb2bd2016f07693ca7544ecec05c07cd1c2e6258526b6ce"
+        }
+      ],
+      "licenseConcluded": "GPL-3.0-only",
+      "licenseInfoInFiles": [
+        "GPL-3.0-only"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/moonlight-stream/moonlight-common-c; revision=e41355ea01670fd4c830b384009d31dd0339a705; tree=405b39fdc543dceb7644bdcda65e1bb4c7a28ab2"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-fab66b194dccf3be6868dcfb",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/src/LinkedBlockingQueue.c",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "4e95cbf1abc64ad8f5357d76615f81e8f8310b9d2974b058ddf2fc03935e71c6"
+        }
+      ],
+      "licenseConcluded": "GPL-3.0-only",
+      "licenseInfoInFiles": [
+        "GPL-3.0-only"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/moonlight-stream/moonlight-common-c; revision=e41355ea01670fd4c830b384009d31dd0339a705; tree=405b39fdc543dceb7644bdcda65e1bb4c7a28ab2"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-469c5dbafe41f8db205d7ff4",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/src/LinkedBlockingQueue.h",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "1a3c14e1767ae7ab968ac52ad930d98ccf0d94778048b2d9493bd81d576f7a13"
+        }
+      ],
+      "licenseConcluded": "GPL-3.0-only",
+      "licenseInfoInFiles": [
+        "GPL-3.0-only"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/moonlight-stream/moonlight-common-c; revision=e41355ea01670fd4c830b384009d31dd0339a705; tree=405b39fdc543dceb7644bdcda65e1bb4c7a28ab2"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-dc618bce70d922b05fbdd12d",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/src/Misc.c",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "77dccdd6ce4006cbdb586370eaaf5c83ae81b638854d28edb7a6f6e17bf72320"
+        }
+      ],
+      "licenseConcluded": "GPL-3.0-only",
+      "licenseInfoInFiles": [
+        "GPL-3.0-only"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/moonlight-stream/moonlight-common-c; revision=e41355ea01670fd4c830b384009d31dd0339a705; tree=405b39fdc543dceb7644bdcda65e1bb4c7a28ab2"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-a2ed14063f979bf2720d9d5c",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/src/Platform.c",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "73e796b911508ede27853617f5b59b3db9c250a7250e06fb0d29b3a53046a361"
+        }
+      ],
+      "licenseConcluded": "GPL-3.0-only",
+      "licenseInfoInFiles": [
+        "GPL-3.0-only"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/moonlight-stream/moonlight-common-c; revision=e41355ea01670fd4c830b384009d31dd0339a705; tree=405b39fdc543dceb7644bdcda65e1bb4c7a28ab2"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-2f3bb829a47f27b590c7d710",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/src/Platform.h",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "f7065361eae4f6a7171bfc934e792cc6913d777d82ba5f8f58a98b5c94b3c86e"
+        }
+      ],
+      "licenseConcluded": "GPL-3.0-only",
+      "licenseInfoInFiles": [
+        "GPL-3.0-only"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/moonlight-stream/moonlight-common-c; revision=e41355ea01670fd4c830b384009d31dd0339a705; tree=405b39fdc543dceb7644bdcda65e1bb4c7a28ab2"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-bfd762b9f2a06669a05fd3b1",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/src/PlatformCrypto.c",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "650502f9d46b3b1ae4437b44110e4e5c0511a902e308693182a8f4ba03ce89e1"
+        }
+      ],
+      "licenseConcluded": "GPL-3.0-only",
+      "licenseInfoInFiles": [
+        "GPL-3.0-only"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/moonlight-stream/moonlight-common-c; revision=e41355ea01670fd4c830b384009d31dd0339a705; tree=405b39fdc543dceb7644bdcda65e1bb4c7a28ab2"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-e07481743647314167293f06",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/src/PlatformCrypto.h",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "2aad4c3d7a1feba5e52d2a1ecc08f9f9f38e2bb8ca77758884dc39869345952d"
+        }
+      ],
+      "licenseConcluded": "GPL-3.0-only",
+      "licenseInfoInFiles": [
+        "GPL-3.0-only"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/moonlight-stream/moonlight-common-c; revision=e41355ea01670fd4c830b384009d31dd0339a705; tree=405b39fdc543dceb7644bdcda65e1bb4c7a28ab2"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-562755e241e93d1bda95786a",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/src/PlatformSockets.c",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "54410723e33b101cb73f5d2f930d4db0f295ce5a86349d6519c05ffd28f9c945"
+        }
+      ],
+      "licenseConcluded": "GPL-3.0-only",
+      "licenseInfoInFiles": [
+        "GPL-3.0-only"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/moonlight-stream/moonlight-common-c; revision=e41355ea01670fd4c830b384009d31dd0339a705; tree=405b39fdc543dceb7644bdcda65e1bb4c7a28ab2"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-1228ad61e633c6d92d7f25e0",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/src/PlatformSockets.h",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "4c8886435aa13d3c154a21ed98f3f7bfcf83bc39bc48f6880cbf287f56320c96"
+        }
+      ],
+      "licenseConcluded": "GPL-3.0-only",
+      "licenseInfoInFiles": [
+        "GPL-3.0-only"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/moonlight-stream/moonlight-common-c; revision=e41355ea01670fd4c830b384009d31dd0339a705; tree=405b39fdc543dceb7644bdcda65e1bb4c7a28ab2"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-e65b15b0cc067588d30eb5b8",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/src/PlatformThreads.h",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "3c863b1a309af4965d7bd95e9fa0136e5fd2da30e4b5eb2337bdce0441da9d85"
+        }
+      ],
+      "licenseConcluded": "GPL-3.0-only",
+      "licenseInfoInFiles": [
+        "GPL-3.0-only"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/moonlight-stream/moonlight-common-c; revision=e41355ea01670fd4c830b384009d31dd0339a705; tree=405b39fdc543dceb7644bdcda65e1bb4c7a28ab2"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-ba0213ef7d706f8b4abf59bc",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/src/RecorderCallbacks.c",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "59831736308b18f30b01b8d190a8d085b2e3d87b49098eefb26cebffac6cce42"
+        }
+      ],
+      "licenseConcluded": "GPL-3.0-only",
+      "licenseInfoInFiles": [
+        "GPL-3.0-only"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/moonlight-stream/moonlight-common-c; revision=e41355ea01670fd4c830b384009d31dd0339a705; tree=405b39fdc543dceb7644bdcda65e1bb4c7a28ab2"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-c873f29cc0b3a0dd545f41b4",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/src/RtpAudioQueue.c",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "ab339c371e2549787c575f6dbc3042f3be49170783a278c03f5f6fff8c898ae0"
+        }
+      ],
+      "licenseConcluded": "GPL-3.0-only",
+      "licenseInfoInFiles": [
+        "GPL-3.0-only"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/moonlight-stream/moonlight-common-c; revision=e41355ea01670fd4c830b384009d31dd0339a705; tree=405b39fdc543dceb7644bdcda65e1bb4c7a28ab2"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-058dbb580714fe5326ce6b57",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/src/RtpAudioQueue.h",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "4f848bd9504380effa9ffec77c181e1d8220cf9b0608b48f94bbc2a1f6046487"
+        }
+      ],
+      "licenseConcluded": "GPL-3.0-only",
+      "licenseInfoInFiles": [
+        "GPL-3.0-only"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/moonlight-stream/moonlight-common-c; revision=e41355ea01670fd4c830b384009d31dd0339a705; tree=405b39fdc543dceb7644bdcda65e1bb4c7a28ab2"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-2aa9edb0a27213e48993bc44",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/src/RtpVideoQueue.c",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "bd61187bdacf049b954638d2de79408a6a41dfd9dc7bbedf0fcc2664e3a0fc4b"
+        }
+      ],
+      "licenseConcluded": "GPL-3.0-only",
+      "licenseInfoInFiles": [
+        "GPL-3.0-only"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/moonlight-stream/moonlight-common-c; revision=e41355ea01670fd4c830b384009d31dd0339a705; tree=405b39fdc543dceb7644bdcda65e1bb4c7a28ab2"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-b89250db40d2164ac40411bd",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/src/RtpVideoQueue.h",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "6fd2a99c190a160df76613a46149fbee363e456189fa62217087d5eea0bcfcab"
+        }
+      ],
+      "licenseConcluded": "GPL-3.0-only",
+      "licenseInfoInFiles": [
+        "GPL-3.0-only"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/moonlight-stream/moonlight-common-c; revision=e41355ea01670fd4c830b384009d31dd0339a705; tree=405b39fdc543dceb7644bdcda65e1bb4c7a28ab2"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-154f2abd590ee58bbdcec69a",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/src/Rtsp.h",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "f6373aad91951d6c5155c826b23a28fa40e6bff3e62304ef088b12b1cb44e253"
+        }
+      ],
+      "licenseConcluded": "GPL-3.0-only",
+      "licenseInfoInFiles": [
+        "GPL-3.0-only"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/moonlight-stream/moonlight-common-c; revision=e41355ea01670fd4c830b384009d31dd0339a705; tree=405b39fdc543dceb7644bdcda65e1bb4c7a28ab2"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-453fdc08ca7d0639097a091c",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/src/RtspConnection.c",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "44cfd110f637c64c1108a10e1c0efbc4dd2c938613979a645a61346d1979e75f"
+        }
+      ],
+      "licenseConcluded": "GPL-3.0-only",
+      "licenseInfoInFiles": [
+        "GPL-3.0-only"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/moonlight-stream/moonlight-common-c; revision=e41355ea01670fd4c830b384009d31dd0339a705; tree=405b39fdc543dceb7644bdcda65e1bb4c7a28ab2"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-90fe349b11b31f0fa19950a5",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/src/RtspParser.c",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "ba6e39ee53c0ba93eaf0083c0b2c24aae2cc1610c4ebda82ad658004615ee049"
+        }
+      ],
+      "licenseConcluded": "GPL-3.0-only",
+      "licenseInfoInFiles": [
+        "GPL-3.0-only"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/moonlight-stream/moonlight-common-c; revision=e41355ea01670fd4c830b384009d31dd0339a705; tree=405b39fdc543dceb7644bdcda65e1bb4c7a28ab2"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-6856c4a5974c5bc3b2e25570",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/src/SdpGenerator.c",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "c0ef395dd701b9f30defc9ae94ba2333c0cf7cdaa7108f7fb1b9300241f1a6aa"
+        }
+      ],
+      "licenseConcluded": "GPL-3.0-only",
+      "licenseInfoInFiles": [
+        "GPL-3.0-only"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/moonlight-stream/moonlight-common-c; revision=e41355ea01670fd4c830b384009d31dd0339a705; tree=405b39fdc543dceb7644bdcda65e1bb4c7a28ab2"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-1e51b5f333859a254ed0c850",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/src/SimpleStun.c",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "31a46260b360f4c9153cc1b62bc98c38c05354d8a6d57c9d81f344e63af292ae"
+        }
+      ],
+      "licenseConcluded": "GPL-3.0-only",
+      "licenseInfoInFiles": [
+        "GPL-3.0-only"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/moonlight-stream/moonlight-common-c; revision=e41355ea01670fd4c830b384009d31dd0339a705; tree=405b39fdc543dceb7644bdcda65e1bb4c7a28ab2"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-ee5e1c566915928de4c2696d",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/src/Video.h",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "3a71fa2dc671bb41caa96a25c12f7201fd5224727b173ee77de69592a39521db"
+        }
+      ],
+      "licenseConcluded": "GPL-3.0-only",
+      "licenseInfoInFiles": [
+        "GPL-3.0-only"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/moonlight-stream/moonlight-common-c; revision=e41355ea01670fd4c830b384009d31dd0339a705; tree=405b39fdc543dceb7644bdcda65e1bb4c7a28ab2"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-156c29f2d39521b03a0c0b43",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/src/VideoDepacketizer.c",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "8c84109789896a34934f7a775bfbc0023c21e027a0f919c2c3d3e0b88f7442c4"
+        }
+      ],
+      "licenseConcluded": "GPL-3.0-only",
+      "licenseInfoInFiles": [
+        "GPL-3.0-only"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/moonlight-stream/moonlight-common-c; revision=e41355ea01670fd4c830b384009d31dd0339a705; tree=405b39fdc543dceb7644bdcda65e1bb4c7a28ab2"
+    },
+    {
+      "SPDXID": "SPDXRef-File-MoonlightVendor-0de47e80321fe0e484c886fd",
+      "fileName": "entry/src/main/cpp/moonlight/upstream/moonlight-common-c/src/VideoStream.c",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "7e1e3170ace7a96d9e61743dde9b8a60dc72c1fb2ffda8ba79f9fd505743d498"
+        }
+      ],
+      "licenseConcluded": "GPL-3.0-only",
+      "licenseInfoInFiles": [
+        "GPL-3.0-only"
+      ],
+      "copyrightText": "See vendored source and license",
+      "comment": "repository=https://github.com/moonlight-stream/moonlight-common-c; revision=e41355ea01670fd4c830b384009d31dd0339a705; tree=405b39fdc543dceb7644bdcda65e1bb4c7a28ab2"
     }
   ],
   "relationships": [
@@ -6865,6 +8828,626 @@
       "spdxElementId": "SPDXRef-Package-TOTP-Official-Brand-Assets",
       "relationshipType": "CONTAINS",
       "relatedSpdxElement": "SPDXRef-File-TotpOfficialBrand-authy"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-Qt-Icon",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-Moonlight-Qt-Icon"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-Common-C",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-8bcbe6feafe10d42e6eea8bd"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-Common-C",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-71e12ba638148dfed8dae4eb"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-Common-C",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-44ae6f5e57a37d07ed71ff78"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-Common-C",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-dce1935c9dfb34141d0ec3d4"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-Common-C",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-4ce4231451f9adf5aca382f4"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-Common-C",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-538ec5d7f94c6ecd9b3ea4c0"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-Common-C",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-bd6e5ca0d027f7027c5fcfb4"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-Common-C",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-aaf8f9a52c7d13d5066ae2d3"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-Common-C",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-50adfe449e43f68ede0c39d6"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-ENet",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-c7172553ed682d245d6f7c3d"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-ENet",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-289cb901d37266d7462fe12c"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-ENet",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-50c291e1e94ca6ce6eec8658"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-ENet",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-0e5d7a38d29933214e79eb1a"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-ENet",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-79c6fde569998f4c7b8d5cea"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-ENet",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-248a947dd02f608efbe100d3"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-ENet",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-d293dd5de56207f8281adaf1"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-ENet",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-30943a4ec62ffc471c136874"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-ENet",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-c96d3d77066fd74cb96bd172"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-ENet",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-8199434313bdc33f25a73025"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-ENet",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-d98247a42cb58630778105ea"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-ENet",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-74681706dc4438e9ae601830"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-ENet",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-3029df9e2c9d61117914d20c"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-ENet",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-edb1fa658aafb24348893486"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-ENet",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-3f478bdef00f6c4897b48cfb"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-ENet",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-ba800a0dbbbe2b375554eaba"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-ENet",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-fb49facd5bb0b4c4451e3530"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-ENet",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-918b06e7c1916697ed2101de"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-ENet",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-c4665d93d0b8a5d248228632"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-ENet",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-3e0c267a89ed4e5182d9ecc4"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-ENet",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-f6067e61c670be1917f60891"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-ENet",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-79e00721f0951e5b482aebbb"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-ENet",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-04027b68ec84280d2f5025e9"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-ENet",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-e578a7aab997934f93bef67c"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-ENet",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-9ff7c415cd290307338dea28"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-ENet",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-3d3eec281b7b490fc27a1136"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-ENet",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-8e2c775779dd31c9e12fcccf"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-ENet",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-c130e4e9c70ae31fed12f3c2"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-ENet",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-ee79e5259c499d9a6d2cfc2f"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-ENet",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-64908388e7a75cbf140262e7"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-ENet",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-1f5c28c8c1814ab6b115e94f"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-ENet",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-0296fd11bc53133655d9e00c"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-ENet",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-210aa64d52e1954ba51ff81c"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-ENet",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-7d11a75589f5e9b29179d61d"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-ENet",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-b687f9e85fdeee9d7162b56c"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-ENet",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-e99318882e8672d1aab4425e"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-ENet",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-dbb19468b6f797087a136c09"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-ENet",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-ad18aeb2ddeea0b577716e71"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-Nanors",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-fe3eeecbae5fe23012dc6731"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-Nanors",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-43fabc22df2b8c33c7704429"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-Nanors",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-b5c473717fc4f1dce3a60c4f"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-Nanors",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-2a73b7e08a27efe16796a618"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-Nanors",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-e030ba36dc2b532e0494eb19"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-Nanors",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-5f80c9ba25783223bb7a0b29"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-Nanors",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-e374aa5a3abde1170c527130"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-Nanors",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-b2d42bb5410d5bbd1ff3705f"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-Nanors",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-8fbd33b58066da1b2242e990"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-Nanors",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-508b2cff0a3d523e3d645dd4"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-Nanors",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-1083f8aa8ba4f37ebb8e2d3c"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-Nanors",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-6dd6dd3bfa82e7e7fc1e5c57"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-Nanors",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-9cad04708c0689022bc97eb6"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-Nanors",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-15f6823d8f41460f4bf1ea56"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-Nanors",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-8b209342e57342e8d0bec6bf"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-Nanors",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-511028e091a42962c0693894"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-Nanors",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-af2a29b91f0b6a884eb8726f"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-Nanors",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-3d187a5b640cf2c8fd76da28"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-Nanors",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-67efcd23bb25d48b1e9b98e0"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-Nanors",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-6d7cd9c13d290f0e02a61aeb"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-Nanors",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-db068f83f35360ebd22ba32b"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-Nanors",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-70a5c8614ac361b42bf79dd9"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-Nanors",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-b036e9d3dc01b4d264c071cc"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-Nanors",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-a220d4f5e11804067cae4584"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-Nanors",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-da15a63beabbb53cb34a19c7"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-Nanors",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-26117fa21ef8944548bb159c"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-Nanors",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-2dab1d3aaafdb3079961d15c"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-Nanors",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-7557dfc609300715148cc6f0"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-Nanors",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-c83cb1c911c3e2486686f4c3"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-Nanors",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-36913fcce3e621a88dc05733"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-Nanors",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-4ce3e87ae0d9c0b7831b1ed4"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-Nanors",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-4f6fac0eaa9d57837c4c02f0"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-Nanors",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-10b430822b7b2500c5e67979"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-Nanors",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-c4ca351031b673c241a3c532"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-Nanors",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-9d8bc34bca4cdb7eeaf4b4e2"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-Nanors",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-cdd30d11f5c5dbdfc026b9b9"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-Common-C",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-87fa557d9b9df45ca99a5e4f"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-Common-C",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-25791118ee7f58e7dbeb21b2"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-Common-C",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-3cd447f58b96e8ecce7aeae0"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-Common-C",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-9ba0f5bb35ebc426af6bf8ad"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-Common-C",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-038956660c01989b1bd4fd1c"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-Common-C",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-e709ecc9e5a7370a8587a39e"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-Common-C",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-929edaa1e178f8c6657dba65"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-Common-C",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-28424b2f6f987b8737c240b4"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-Common-C",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-26a9f95970d292203c61a175"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-Common-C",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-488809a7548acfdd1d94d7f6"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-Common-C",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-c4b2e29928f158054fd27872"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-Common-C",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-fab66b194dccf3be6868dcfb"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-Common-C",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-469c5dbafe41f8db205d7ff4"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-Common-C",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-dc618bce70d922b05fbdd12d"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-Common-C",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-a2ed14063f979bf2720d9d5c"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-Common-C",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-2f3bb829a47f27b590c7d710"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-Common-C",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-bfd762b9f2a06669a05fd3b1"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-Common-C",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-e07481743647314167293f06"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-Common-C",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-562755e241e93d1bda95786a"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-Common-C",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-1228ad61e633c6d92d7f25e0"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-Common-C",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-e65b15b0cc067588d30eb5b8"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-Common-C",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-ba0213ef7d706f8b4abf59bc"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-Common-C",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-c873f29cc0b3a0dd545f41b4"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-Common-C",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-058dbb580714fe5326ce6b57"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-Common-C",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-2aa9edb0a27213e48993bc44"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-Common-C",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-b89250db40d2164ac40411bd"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-Common-C",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-154f2abd590ee58bbdcec69a"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-Common-C",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-453fdc08ca7d0639097a091c"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-Common-C",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-90fe349b11b31f0fa19950a5"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-Common-C",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-6856c4a5974c5bc3b2e25570"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-Common-C",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-1e51b5f333859a254ed0c850"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-Common-C",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-ee5e1c566915928de4c2696d"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-Common-C",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-156c29f2d39521b03a0c0b43"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-Common-C",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-0de47e80321fe0e484c886fd"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-RemoteDeskHarmonyOS",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Package-Moonlight-Qt-Icon"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-RemoteDeskHarmonyOS",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Package-Moonlight-Common-C"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-RemoteDeskHarmonyOS",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Package-Moonlight-ENet"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-RemoteDeskHarmonyOS",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Package-Moonlight-Nanors"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-Common-C",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Package-Moonlight-ENet"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-Common-C",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Package-Moonlight-Nanors"
     }
   ]
 }

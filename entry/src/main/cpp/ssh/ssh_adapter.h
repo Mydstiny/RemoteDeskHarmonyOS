@@ -238,7 +238,7 @@ public:
         const std::vector<std::string>* explicitResponses,
         const std::string* password, bool allowPasswordFallback,
         const std::string& targetHost, const std::string& hop,
-        size_t& presetIndex);
+        size_t& presetIndex, bool& passwordFallbackUsed);
     void recordAuthPromptFailure(int error) noexcept;
 
     /** Explicit SSH session identity used by background/UI facades. */
@@ -267,6 +267,8 @@ public:
     void setOnDataCallback(DataCallback cb);
     /** Detach the consumer without stopping the session owner reactor. */
     void detachOnDataCallback();
+    /** Return a callback queued for a detached page to the live session FIFO. */
+    void redeliverTerminalOutputAfterDetach(const std::vector<uint8_t>& data);
     /** Suspend/resume terminal input while a page view is detached. */
     void suspendTerminalInput();
     void resumeTerminalInput();
@@ -353,6 +355,7 @@ private:
     std::string authPromptHop_ = "target";
     bool authPromptAllowPasswordFallback_ = false;
     size_t authPromptPresetIndex_ = 0;
+    bool authPromptPasswordFallbackUsed_ = false;
 
     // ---- libssh2 会话和通道 ----
     LIBSSH2_SESSION* session_;
@@ -428,7 +431,8 @@ private:
     /** 验证指定 SSH endpoint 的 host key；ProxyJump 跳板机要求必须有预期 key。 */
     int verifyHostKey(LIBSSH2_SESSION* session, const std::string& expectedRawBase64,
                       const std::string& expectedFingerprintSha256, bool required,
-                      const char* endpointLabel);
+                      const char* endpointLabel, const std::string& endpointHost,
+                      int endpointPort, int hopIndex);
 
     /** 密码认证 */
     int authenticatePassword();
@@ -444,6 +448,9 @@ private:
 
     /** 请求 PTY (终端类型 + 初始尺寸) */
     int requestPty(int cols, int rows);
+
+    /** Send the optional bounded LANG channel request before PTY/shell startup. */
+    int requestSessionLocale(const std::string& locale);
 
     /** 启动远程 Shell */
     int startShell();

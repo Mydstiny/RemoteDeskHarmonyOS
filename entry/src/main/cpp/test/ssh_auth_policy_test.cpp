@@ -18,6 +18,13 @@ RDP_TEST_CASE(ssh_password_fallback_requires_advertised_keyboard_interactive) {
         "publickey,keyboard-interactive", 0));
 }
 
+RDP_TEST_CASE(ssh_password_fallback_preserves_interactive_outcome) {
+    RDP_ASSERT(sshPasswordFallbackFinalResult(-33, -35) == -35);
+    RDP_ASSERT(sshPasswordFallbackFinalResult(-31, -32) == -32);
+    RDP_ASSERT(sshPasswordFallbackFinalResult(-31, -34) == -34);
+    RDP_ASSERT(sshPasswordFallbackFinalResult(-33, 0) == 0);
+}
+
 RDP_TEST_CASE(ssh_password_auth_respects_advertised_methods) {
     RDP_ASSERT(sshPasswordAuthShouldAttempt(""));
     RDP_ASSERT(sshPasswordAuthShouldAttempt("publickey,password"));
@@ -28,4 +35,11 @@ RDP_TEST_CASE(ssh_password_auth_respects_advertised_methods) {
 RDP_TEST_CASE(ssh_keyboard_interactive_password_fallback_requires_hidden_prompt) {
     RDP_ASSERT(sshKeyboardInteractivePromptCanUsePassword(false));
     RDP_ASSERT(!sshKeyboardInteractivePromptCanUsePassword(true));
+}
+
+RDP_TEST_CASE(ssh_keyboard_interactive_password_fallback_is_single_use) {
+    RDP_ASSERT(sshKeyboardInteractivePasswordFallbackCanAutofill(1, false, false));
+    RDP_ASSERT(!sshKeyboardInteractivePasswordFallbackCanAutofill(1, true, false));
+    RDP_ASSERT(!sshKeyboardInteractivePasswordFallbackCanAutofill(2, false, false));
+    RDP_ASSERT(!sshKeyboardInteractivePasswordFallbackCanAutofill(1, false, true));
 }

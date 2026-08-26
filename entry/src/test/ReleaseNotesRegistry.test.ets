@@ -11,22 +11,22 @@ function containsPage(pages: ReleaseNotePage[], id: string): boolean {
 
 export default function releaseNotesRegistryTest(): void {
   describe('ReleaseNotesRegistry', (): void => {
-    it('describes_the_complete_1_1_0_update', 0, (): void => {
+    it('describes_the_complete_1_1_2_delta_from_1_1_1', 0, (): void => {
       const pages: ReleaseNotePage[] = pagesForReleasedVersion(CURRENT_RELEASE_VERSION);
       expect(pages.length).assertEqual(12);
-      expect(containsPage(pages, 'release-1-1-0')).assertTrue();
-      expect(containsPage(pages, 'release-vnc-performance')).assertTrue();
-      expect(containsPage(pages, 'release-vnc-input')).assertTrue();
-      expect(containsPage(pages, 'release-rustdesk-performance')).assertTrue();
-      expect(containsPage(pages, 'release-rustdesk-account')).assertTrue();
-      expect(containsPage(pages, 'release-host-workspace')).assertTrue();
-      expect(containsPage(pages, 'release-ssh-multi-session')).assertTrue();
-      expect(containsPage(pages, 'release-sftp-forwarding')).assertTrue();
-      expect(containsPage(pages, 'release-rdp-security')).assertTrue();
-      expect(containsPage(pages, 'release-authenticator-logos')).assertTrue();
-      expect(containsPage(pages, 'release-input-fixes')).assertTrue();
-      expect(pages[pages.length - 1].id).assertEqual('welcome-1-1-0');
-      expect(pages[pages.length - 1].title).assertEqual('欢迎使用 1.1.0');
+      expect(containsPage(pages, 'release-1-1-2')).assertTrue();
+      expect(containsPage(pages, 'release-moonlight-workflow')).assertTrue();
+      expect(containsPage(pages, 'release-moonlight-session')).assertTrue();
+      expect(containsPage(pages, 'release-ssh-workspace')).assertTrue();
+      expect(containsPage(pages, 'release-ssh-productivity')).assertTrue();
+      expect(containsPage(pages, 'release-session-keyboard')).assertTrue();
+      expect(containsPage(pages, 'release-device-layouts')).assertTrue();
+      expect(containsPage(pages, 'release-lan-discovery')).assertTrue();
+      expect(containsPage(pages, 'release-security-preflight')).assertTrue();
+      expect(containsPage(pages, 'release-guidance')).assertTrue();
+      expect(containsPage(pages, 'release-data-diagnostics')).assertTrue();
+      expect(pages[pages.length - 1].id).assertEqual('welcome-1-1-2');
+      expect(pages[pages.length - 1].title).assertEqual('欢迎使用 1.1.2');
     });
 
     it('does_not_advertise_unverified_or_removed_features', 0, (): void => {
@@ -42,7 +42,7 @@ export default function releaseNotesRegistryTest(): void {
 
     it('returns_no_pages_for_unreleased_versions', 0, (): void => {
       expect(pagesForReleasedVersion('1.0.8').length).assertEqual(0);
-      expect(pagesForReleasedVersion('1.0.10').length).assertEqual(0);
+      expect(pagesForReleasedVersion('1.1.1').length).assertEqual(0);
     });
   });
 }

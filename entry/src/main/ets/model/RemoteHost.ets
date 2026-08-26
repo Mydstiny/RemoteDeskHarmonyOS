@@ -5,6 +5,11 @@
  * 支持 JSON 序列化/反序列化，用于本地 Preferences 存储和 CloudDB 云同步。
  */
 import { cryptoFramework } from '@kit.CryptoArchitectureKit';
+import {
+  LanHostAddressMode,
+  LanHostAddressView,
+  normalizeLanHostAddressMode
+} from '../services/LanHostAddressPolicy';
 
 export enum LockType {
   NONE = 0,
@@ -245,8 +250,10 @@ export interface RemoteHostJSON {
   rustdeskDirectPort: number
   rustdeskTargetDevice?: string
   rustdeskAdaptiveOrientation?: boolean
+  /** Legacy read-only migration input. New serializations omit these fields. */
   rustdeskTotpEntryId?: string
-  rustdeskTotpAutoSubmit?: boolean
+  rustdeskTotpAutoSubmit?: boolean | string
+  rustdeskTotpDeviceId?: string
   rdpCredentialId: string
   rdpAuthMode?: string
   rdpRestrictedAdminSecretSource?: string
@@ -257,6 +264,9 @@ export interface RemoteHostJSON {
   rustdeskProManaged: boolean
   rustdeskProLastSeenAt: number
   rustdeskProSyncError: string
+  lanAddressMode?: string
+  lanDiscoveryIdentity?: string
+  lanLastResolvedAt?: number
 }
 
 /** 显示器配置 */
@@ -313,7 +323,7 @@ export enum ConnectionHealth {
   BAD = 5         // > 200ms
 }
 
-export class RemoteHost {
+export class RemoteHost implements LanHostAddressView {
   id: string = '';             // 主机唯一 ID (UUID)
   userId: string = '';         // 关联的华为账号 UnionID
   label: string = '';          // 主机显示名
@@ -386,9 +396,13 @@ export class RemoteHost {
   rustdeskDirectPort: number = 21118; // 直连端口 (默认 21118; RustDesk peer TCP)
   rustdeskTargetDevice: string = 'computer'; // 控制目标: computer | phone
   rustdeskAdaptiveOrientation: boolean = false; // 手机目标的自适应翻转，默认关闭
-  // 可选的本机 TOTP 条目绑定；只保存条目 ID，不保存 TOTP secret。
+  // Peer 2FA 绑定的运行时投影。权威值位于 owner/device 本地 Preferences，
+  // 这些字段不得进入 RemoteHost JSON、云扩展或备份。
   rustdeskTotpEntryId: string = '';
   rustdeskTotpAutoSubmit: boolean = false;
+  // 仅用于读取旧 JSON/云扩展后的一次性迁移，迁移完成后立即清除。
+  rustdeskTotpLegacyDeviceId: string = '';
+  rustdeskTotpLegacySource: string = '';
   rdpCredentialId: string = ''; // RDP 绑定的 Windows 凭据 ID
   // Restricted Admin 的 NTLM Hash 保存在本机加密扩展中，不进入 RemoteHost/JSON。
   rdpAuthMode: RdpAuthMode = 'password';
@@ -400,6 +414,11 @@ export class RemoteHost {
   rustdeskProManaged: boolean = false; // 是否由 Server Pro 地址簿管理
   rustdeskProLastSeenAt: number = 0; // 最近一次地址簿同步看到该 peer 的时间
   rustdeskProSyncError: string = ''; // not_seen 或最近一次同步错误码
+  // LAN search provenance. Manual entry remains the legacy/static behavior.
+  // Dynamic rows are persisted only in the device-local host namespace.
+  lanAddressMode: LanHostAddressMode = 'manual';
+  lanDiscoveryIdentity: string = '';
+  lanLastResolvedAt: number = 0;
   syncVersion: number = 0;     // 同步版本号 (冲突检测)
   groupId: string = '';        // 工作区分组 ID
   sortOrder: number = 0;       // 手动排序序号
@@ -590,8 +609,6 @@ export class RemoteHost {
       rustdeskDirectPort: this.rustdeskDirectPort,
       rustdeskTargetDevice: this.rustdeskTargetDevice,
       rustdeskAdaptiveOrientation: this.rustdeskAdaptiveOrientation,
-      rustdeskTotpEntryId: this.rustdeskTotpEntryId,
-      rustdeskTotpAutoSubmit: this.rustdeskTotpAutoSubmit,
       rdpCredentialId: this.rdpCredentialId,
       rdpAuthMode: this.rdpAuthMode,
       rdpRestrictedAdminSecretSource: this.rdpRestrictedAdminSecretSource,
@@ -601,7 +618,10 @@ export class RemoteHost {
       rustdeskProPlatform: this.rustdeskProPlatform,
       rustdeskProManaged: this.rustdeskProManaged,
       rustdeskProLastSeenAt: this.rustdeskProLastSeenAt,
-      rustdeskProSyncError: this.rustdeskProSyncError
+      rustdeskProSyncError: this.rustdeskProSyncError,
+      lanAddressMode: this.lanAddressMode,
+      lanDiscoveryIdentity: this.lanDiscoveryIdentity,
+      lanLastResolvedAt: this.lanLastResolvedAt
     };
   }
 
@@ -750,8 +770,17 @@ export class RemoteHost {
     if (json.rustdeskAdaptiveOrientation !== undefined) {
       host.rustdeskAdaptiveOrientation = json.rustdeskAdaptiveOrientation;
     }
-    if (json.rustdeskTotpEntryId) { host.rustdeskTotpEntryId = json.rustdeskTotpEntryId; }
-    if (json.rustdeskTotpAutoSubmit !== undefined) { host.rustdeskTotpAutoSubmit = json.rustdeskTotpAutoSubmit; }
+    if (json.rustdeskTotpEntryId) {
+      host.rustdeskTotpEntryId = json.rustdeskTotpEntryId;
+      host.rustdeskTotpLegacySource = 'remote_json';
+    }
+    if (json.rustdeskTotpAutoSubmit !== undefined) {
+      host.rustdeskTotpAutoSubmit = json.rustdeskTotpAutoSubmit === true ||
+        json.rustdeskTotpAutoSubmit === 'true' || json.rustdeskTotpAutoSubmit === '1';
+    }
+    if (json.rustdeskTotpDeviceId) {
+      host.rustdeskTotpLegacyDeviceId = json.rustdeskTotpDeviceId;
+    }
     if (json.rdpCredentialId) { host.rdpCredentialId = json.rdpCredentialId; }
     host.rdpAuthMode = normalizeRdpAuthMode(json.rdpAuthMode);
     host.rdpRestrictedAdminSecretSource = normalizeRdpRestrictedAdminSecretSource(
@@ -763,6 +792,14 @@ export class RemoteHost {
     if (json.rustdeskProManaged !== undefined) { host.rustdeskProManaged = json.rustdeskProManaged; }
     if (json.rustdeskProLastSeenAt !== undefined) { host.rustdeskProLastSeenAt = json.rustdeskProLastSeenAt; }
     if (json.rustdeskProSyncError) { host.rustdeskProSyncError = json.rustdeskProSyncError; }
+    host.lanAddressMode = normalizeLanHostAddressMode(json.lanAddressMode);
+    if (json.lanDiscoveryIdentity !== undefined) {
+      host.lanDiscoveryIdentity = json.lanDiscoveryIdentity || '';
+    }
+    if (json.lanLastResolvedAt !== undefined && Number.isFinite(json.lanLastResolvedAt) &&
+      json.lanLastResolvedAt >= 0) {
+      host.lanLastResolvedAt = json.lanLastResolvedAt;
+    }
     host.normalizeRdpAuthentication();
     return host;
   }

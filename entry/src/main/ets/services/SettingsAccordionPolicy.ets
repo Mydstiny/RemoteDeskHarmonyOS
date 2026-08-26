@@ -4,10 +4,12 @@ export const SETTINGS_SECTION_HOME: string = 'homeLayout';
 export const SETTINGS_SECTION_CLOUD_SYNC: string = 'cloudSync';
 export const SETTINGS_SECTION_CONNECTION_LIVE: string = 'connectionLive';
 export const SETTINGS_SECTION_DISPLAY_INTERACTION: string = 'displayInteraction';
+export const SETTINGS_SECTION_VIRTUAL_KEYBOARD: string = 'virtualKeyboard';
 export const SETTINGS_SECTION_RDP: string = 'windowsRdp';
 export const SETTINGS_SECTION_RUSTDESK: string = 'rustdesk';
 export const SETTINGS_SECTION_SSH: string = 'ssh';
 export const SETTINGS_SECTION_VNC: string = 'vnc';
+export const SETTINGS_SECTION_MOONLIGHT: string = 'moonlight';
 export const SETTINGS_SECTION_SECURITY: string = 'security';
 export const SETTINGS_SECTION_TUTORIAL: string = 'tutorial';
 export const SETTINGS_SECTION_ABOUT: string = 'about';
@@ -15,6 +17,7 @@ export const SETTINGS_SECTION_FEEDBACK: string = 'feedback';
 export const SETTINGS_SECTION_RATING: string = 'rating';
 
 export const SETTINGS_VNC_ACTION_ROW_COUNT: number = 11;
+export const SETTINGS_MOONLIGHT_ACTION_ROW_COUNT: number = 7;
 const SETTINGS_VNC_ACTION_ROW_HEIGHT_VP: number = 62;
 const SETTINGS_VNC_ACTION_DIVIDER_HEIGHT_VP: number = 0.5;
 const SETTINGS_VNC_SECTION_CHROME_HEIGHT_VP: number = 73;
@@ -68,6 +71,17 @@ export function settingsNextExpandedSection(current: string, selected: string): 
 
 export function settingsVncExpandedMaxHeight(actionRowCount: number = SETTINGS_VNC_ACTION_ROW_COUNT): number {
   const boundedCount: number = Number.isFinite(actionRowCount) ? Math.max(0, Math.floor(actionRowCount)) : 0;
+  const dividerCount: number = Math.max(0, boundedCount - 1);
+  return Math.ceil(SETTINGS_VNC_SECTION_CHROME_HEIGHT_VP +
+    boundedCount * SETTINGS_VNC_ACTION_ROW_HEIGHT_VP +
+    dividerCount * SETTINGS_VNC_ACTION_DIVIDER_HEIGHT_VP);
+}
+
+export function settingsMoonlightExpandedMaxHeight(
+  actionRowCount: number = SETTINGS_MOONLIGHT_ACTION_ROW_COUNT
+): number {
+  const boundedCount: number = Number.isFinite(actionRowCount) ?
+    Math.max(0, Math.floor(actionRowCount)) : 0;
   const dividerCount: number = Math.max(0, boundedCount - 1);
   return Math.ceil(SETTINGS_VNC_SECTION_CHROME_HEIGHT_VP +
     boundedCount * SETTINGS_VNC_ACTION_ROW_HEIGHT_VP +

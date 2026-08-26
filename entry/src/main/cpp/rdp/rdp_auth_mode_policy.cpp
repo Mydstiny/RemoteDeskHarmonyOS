@@ -49,3 +49,29 @@ RdpAuthenticationPolicy ParseRdpAuthenticationPolicy(const std::string& mode,
     result.valid = true;
     return result;
 }
+
+RdpTransportSecurityPolicy ResolveRdpTransportSecurityPolicy(
+    bool tlsWithoutNlaRequested,
+    bool nonDirectRoute,
+    RdpAuthenticationPolicyMode authenticationMode) {
+    RdpTransportSecurityPolicy result;
+    if (!tlsWithoutNlaRequested) {
+        result.valid = true;
+        return result;
+    }
+    if (nonDirectRoute) {
+        result.errorCode = "E-RDP-TLS-COMPAT-GATEWAY";
+        return result;
+    }
+    if (authenticationMode != RdpAuthenticationPolicyMode::Password) {
+        result.errorCode = "E-RDP-TLS-COMPAT-AUTH-MODE";
+        return result;
+    }
+    result.valid = true;
+    result.mode = RdpTransportSecurityMode::TlsWithoutNla;
+    result.nlaSecurity = false;
+    result.tlsSecurity = true;
+    result.rdpSecurity = false;
+    result.requestedProtocols = 0x00000001; // SSL only
+    return result;
+}

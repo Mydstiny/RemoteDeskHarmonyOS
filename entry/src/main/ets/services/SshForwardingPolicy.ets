@@ -42,6 +42,12 @@ export interface SshForwardingProfilesValidationResult {
   profiles: SshForwardingProfile[];
 }
 
+export interface SshForwardingSheetLayout {
+  heightVp: number;
+  widthVp: number;
+  bottomAnchored: boolean;
+}
+
 export const SSH_FORWARDING_MAX_PROFILES: number = 32;
 export const SSH_FORWARDING_MAX_CONNECTIONS: number = 64;
 export const SSH_FORWARDING_DEFAULT_BIND_HOST: string = '127.0.0.1';
@@ -49,6 +55,45 @@ export const SSH_FORWARDING_DEFAULT_MAX_CONNECTIONS: number = 16;
 export const SSH_FORWARDING_DEFAULT_MIN_BIND_PORT: number = 1;
 export const SSH_FORWARDING_DEFAULT_MAX_BIND_PORT: number = 65535;
 const SSH_FORWARDING_MAX_SAFE_INTEGER: number = 9007199254740991;
+
+function forwardingViewport(value: number, fallback: number): number {
+  return Number.isFinite(value) && value > 0 ? value : fallback;
+}
+
+function forwardingSheetLayout(viewportWidthVp: number, viewportHeightVp: number,
+  phone: boolean, preferredHeightVp: number, preferredWidthVp: number,
+  minimumHeightVp: number): SshForwardingSheetLayout {
+  const width: number = forwardingViewport(viewportWidthVp, phone ? 360 : 800);
+  const height: number = forwardingViewport(viewportHeightVp, phone ? 720 : 640);
+  const maximumHeight: number = Math.max(1, height - (phone ? 24 : 48));
+  const minimumHeight: number = Math.min(minimumHeightVp, maximumHeight);
+  return {
+    heightVp: Math.max(minimumHeight, Math.min(preferredHeightVp, maximumHeight)),
+    widthVp: phone ? width : Math.max(1, Math.min(preferredWidthVp, width - 40)),
+    bottomAnchored: phone
+  };
+}
+
+/** Root tunnel workspace grows when rules exist and clamps to the live window. */
+export function resolveSshForwardingSheetLayout(viewportWidthVp: number,
+  viewportHeightVp: number, profileCount: number, phone: boolean): SshForwardingSheetLayout {
+  const hasProfiles: boolean = Number.isFinite(profileCount) && profileCount > 0;
+  return forwardingSheetLayout(
+    viewportWidthVp,
+    viewportHeightVp,
+    phone,
+    hasProfiles ? (phone ? 500 : 460) : (phone ? 320 : 360),
+    hasProfiles ? 660 : 560,
+    phone ? 280 : 320
+  );
+}
+
+/** The full rule form scrolls inside a viewport-clamped editor Sheet. */
+export function resolveSshForwardingEditorSheetLayout(viewportWidthVp: number,
+  viewportHeightVp: number, phone: boolean): SshForwardingSheetLayout {
+  return forwardingSheetLayout(
+    viewportWidthVp, viewportHeightVp, phone, 680, 560, phone ? 320 : 420);
+}
 
 function isForwardingMode(value: string): boolean {
   return value === 'local' || value === 'remote' || value === 'dynamic';

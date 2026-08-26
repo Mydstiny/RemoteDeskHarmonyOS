@@ -91,6 +91,8 @@ export default function sshForwardingProfileStoreTest(): void {
       expect(store.upsert('host-a', forwardingProfile('rule-a'))).assertTrue();
       expect(store.upsert('host-b', forwardingProfile('rule-b'))).assertTrue();
       expect(store.load('host-a').length).assertEqual(1);
+      expect(store.load('  host-a  ')[0].id).assertEqual('rule-a');
+      expect(store.list('  host-a  ')[0].id).assertEqual('rule-a');
       expect(store.list('host-a')[0].id).assertEqual('rule-a');
       expect(store.list('host-b')[0].id).assertEqual('rule-b');
       expect(store.list('host-a').some((item: SshForwardingProfile): boolean =>

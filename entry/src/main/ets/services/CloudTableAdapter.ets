@@ -5,6 +5,12 @@
  * 方便在 CRUD、备份和测试中复用；敏感值仍由 CloudStore/DataCrypto 负责加密。
  */
 
+import {
+  MOONLIGHT_CLOUD_TABLE,
+  MOONLIGHT_LOCAL_RECORD_COLUMNS,
+  MOONLIGHT_RECORD_COLUMNS
+} from '../model/MoonlightRecord';
+
 const CLOUD_COLUMNS: Record<string, string[]> = {
   'cryptoparams': ['id', 'key', 'value'],
   'rdpcredentials': [
@@ -37,6 +43,14 @@ const CLOUD_COLUMNS: Record<string, string[]> = {
     'id', 'userid', 'recordtype', 'ownerid', 'ownertype', 'secretkind', 'payload', 'ciphertext',
     'envelopeversion', 'cryptoversion', 'keyversion', 'aadversion', 'payloadhashsha256',
     'syncversion', 'schemaversion', 'resetepoch', 'createdat', 'updatedat', 'deletedat'
+  ],
+  // D2 only defines the exact adapter contract. This does not register the
+  // table in CloudSyncPolicy; distributed registration waits for all AGC
+  // environment receipts.
+  'moonlightrecordv1': [
+    'id', 'userid', 'recordtype', 'ownerid', 'ownertype', 'secretkind', 'payload', 'ciphertext',
+    'envelopeversion', 'cryptoversion', 'keyversion', 'aadversion', 'payloadhashsha256',
+    'syncversion', 'schemaversion', 'resetepoch', 'createdat', 'updatedat', 'deletedat'
   ]
 };
 
@@ -62,7 +76,8 @@ const LOCAL_ONLY_COLUMNS: Record<string, string[]> = {
     'rustdesktargetdevice', 'rustdeskadaptiveorientation'
   ],
   'sshkeys': ['formatversion', 'privatekeyencrypted'],
-  'usersettings': ['key', 'value']
+  'usersettings': ['key', 'value'],
+  'moonlightrecordv1': ['localonly']
 };
 
 // 这些字段在既有 remotehosts 云表中没有独立列，但属于跨设备连接配置。
@@ -75,7 +90,8 @@ const REMOTE_HOST_CLOUD_EXTENSION_COLUMNS: string[] = [
   'sshproxyauthmethod', 'sshproxykeyid',
   'rdpcredentialid', 'rdpauthmode', 'rdprestrictedadminsecretsource', 'sourcetype',
   'rdpendpointmode', 'rdpgatewaytransport', 'rdpgatewayservername',
-  'rustdesktargetdevice', 'rustdeskadaptiveorientation'
+  'rustdesktargetdevice', 'rustdeskadaptiveorientation',
+  'lanaddressmode', 'landiscoveryidentity', 'lanlastresolvedat'
 ];
 
 const REMOTE_HOST_EXTENSION_KEY: string = '_remoteDeskExtensionV1';
@@ -121,6 +137,55 @@ export function normalizeCloudRow(table: string, cloud: Record<string, string>):
   }
   if (table === 'remotehosts' && cloud['passward'] !== undefined) {
     result['password'] = cloud['passward'];
+  }
+  return result;
+}
+
+function rowHasExactColumns(row: Record<string, string>, columns: string[]): boolean {
+  const keys: string[] = Object.keys(row);
+  if (keys.length !== columns.length) { return false; }
+  for (let i = 0; i < columns.length; i++) {
+    if (row[columns[i]] === undefined) { return false; }
+  }
+  return true;
+}
+
+/** Moonlight cloud downloads fail closed on every missing or unknown column. */
+export function moonlightCloudRowHasExactColumns(
+  row: Record<string, string>
+): boolean {
+  return rowHasExactColumns(row, MOONLIGHT_RECORD_COLUMNS);
+}
+
+/**
+ * Project an eligible 20-column local mirror row to the exact 19-column cloud
+ * envelope. `localonly=1` is a hard denial, never a value to normalize away.
+ */
+export function projectMoonlightLocalRowForCloud(
+  local: Record<string, string>
+): Record<string, string> | null {
+  if (!rowHasExactColumns(local, MOONLIGHT_LOCAL_RECORD_COLUMNS) ||
+      local['localonly'] !== '0') { return null; }
+  const projected: Record<string, string> = {};
+  for (let i = 0; i < MOONLIGHT_RECORD_COLUMNS.length; i++) {
+    const key: string = MOONLIGHT_RECORD_COLUMNS[i];
+    projected[key] = local[key];
+  }
+  return rowHasExactColumns(projected, cloudTableColumns(MOONLIGHT_CLOUD_TABLE)) ?
+    projected : null;
+}
+
+/** Copy only after exact shape admission; no default values are manufactured. */
+export function normalizeMoonlightCloudRowExact(
+  cloud: Record<string, string>
+): Record<string, string> | null {
+  if (!moonlightCloudRowHasExactColumns(cloud) ||
+      !rowHasExactColumns(cloud, cloudTableColumns(MOONLIGHT_CLOUD_TABLE))) {
+    return null;
+  }
+  const result: Record<string, string> = {};
+  for (let i = 0; i < MOONLIGHT_RECORD_COLUMNS.length; i++) {
+    result[MOONLIGHT_RECORD_COLUMNS[i]] = cloud[MOONLIGHT_RECORD_COLUMNS[i]];
   }
   return result;
 }

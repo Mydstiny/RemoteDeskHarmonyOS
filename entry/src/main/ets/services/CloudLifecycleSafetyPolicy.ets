@@ -20,6 +20,17 @@ export const REMOTE_CRYPTO_LIFECYCLE_V2_ENABLED: boolean = false;
 export const PORTABLE_BACKUP_V3_WRITE_ENABLED: boolean = true;
 export const LEGACY_CLOUD_REST_TRANSFER_ENABLED: boolean = false;
 export const CLOUD_REGISTRATION_RETRY_INTERVAL_MS: number = 15000;
+/**
+ * Build-time deployment receipt for the optional Moonlight AGC table.
+ *
+ * Revision 1 is enabled only after the exact `moonlightrecordv1` schema was
+ * created, inspected and explicitly confirmed deployed in the target cloud
+ * environment. Local RDB readiness alone is deliberately insufficient:
+ * attempting an unknown cloud table could disturb the already-deployed
+ * eight-table registration on upgraded devices.
+ */
+export const MOONLIGHT_CLOUD_SCHEMA_REQUIRED_REVISION: number = 1;
+export const MOONLIGHT_CLOUD_SCHEMA_DEPLOYED_REVISION: number = 1;
 
 export const CLOUD_LIFECYCLE_BLOCKED_REASON: string =
   'cloud_lifecycle_v2_account_binding_required';
@@ -79,6 +90,43 @@ export function cloudRegistrationRetryAllowed(
   if (lastAttemptAtMs <= 0) { return true; }
   return nowMs >= lastAttemptAtMs &&
     nowMs - lastAttemptAtMs >= Math.max(0, minimumIntervalMs);
+}
+
+/**
+ * A retry is successful only while it still owns the same store/lease and the
+ * core cloud baseline remains admitted. Optional-table recovery is allowed to
+ * fail independently, but it must never mask a failed legacy-table rebind.
+ */
+export function cloudRegistrationRetrySucceeded(
+  sameStore: boolean,
+  leaseCurrent: boolean,
+  coreCloudAvailable: boolean
+): boolean {
+  return sameStore && leaseCurrent && coreCloudAvailable;
+}
+
+export function moonlightCloudSchemaProvisioned(
+  deployedRevision: number = MOONLIGHT_CLOUD_SCHEMA_DEPLOYED_REVISION
+): boolean {
+  return Number.isSafeInteger(deployedRevision) &&
+    deployedRevision >= MOONLIGHT_CLOUD_SCHEMA_REQUIRED_REVISION;
+}
+
+/**
+ * An optional table can never be used as proof that the deployed cloud
+ * baseline is healthy. Its local schema receipt must be durably readable
+ * before the platform registration call is attempted.
+ */
+export function optionalCloudTableRegistrationAllowed(
+  sameStore: boolean,
+  leaseCurrent: boolean,
+  coreCloudAvailable: boolean,
+  schemaReceiptReady: boolean,
+  remoteSchemaProvisioned: boolean,
+  transferAllowed: boolean
+): boolean {
+  return sameStore && leaseCurrent && coreCloudAvailable &&
+    schemaReceiptReady && remoteSchemaProvisioned && transferAllowed;
 }
 
 export function remoteCryptoLifecycleMutationAllowed(

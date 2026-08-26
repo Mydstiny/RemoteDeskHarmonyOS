@@ -21,22 +21,34 @@ const KEYCODE_SHIFT_RIGHT = 2048;
 const KEYCODE_META_LEFT = 2076;
 const KEYCODE_META_RIGHT = 2077;
 const KEYCODE_FORWARD_DEL = 2071;
+const KEYCODE_MOVE_END = 2082;
 
 type LatchGetter = (mod: string) => string;
 type LatchSetter = (mod: string, val: string) => void;
 type RemoteDownGetter = (mod: string) => boolean;
-type RemoteDownSetter = (mod: string, down: boolean) => void;
+type RemoteDownSetter = (mod: string, down: boolean, wireCode?: number) => void;
 type SourceSpaceFn = (x: number, y: number) => Record<string, number>;
+type KeyCodeMapper = (keyCode: number) => number;
 
 export class RemoteKeyDispatcher {
 
   /** 发送单键 down+up */
   sendVirtualKeyTap(loader: ExtensionLoader, sessionId: number,
     keyCode: number, label: string): void {
+    this.sendVirtualKeyTapMapped(loader, sessionId, keyCode, label, null);
+  }
+
+  /** 发送单键 down+up，并允许面板为协议附加私有传输标记。 */
+  sendVirtualKeyTapMapped(loader: ExtensionLoader, sessionId: number,
+    keyCode: number, label: string, mapKeyCode: KeyCodeMapper | null): void {
     try {
-      loader.sendKey(sessionId, keyCode, true);
-      loader.sendKey(sessionId, keyCode, false);
-      hilog.info(DOMAIN, TAG, 'key-tap: ' + label + ' code=' + keyCode.toString());
+      const wireCode: number = this.transportCode(keyCode, mapKeyCode);
+      if (loader.sendKeySequence(sessionId, [wireCode])) {
+        hilog.info(DOMAIN, TAG, 'key-tap batch: ' + label + ' code=' + keyCode.toString() +
+          ' wire=' + wireCode.toString());
+      } else {
+        hilog.warn(DOMAIN, TAG, 'key-tap batch rejected: ' + label);
+      }
     } catch (err) {
       hilog.error(DOMAIN, TAG, 'key-tap failed: ' + JSON.stringify(err));
     }
@@ -47,31 +59,68 @@ export class RemoteKeyDispatcher {
     keyCode: number, label: string,
     getLatch: LatchGetter, setLatch: LatchSetter,
     isRemoteDown: RemoteDownGetter | null): void {
+    this.sendModifiedKeyMapped(loader, sessionId, keyCode, label,
+      getLatch, setLatch, isRemoteDown, null);
+  }
+
+  /** 发送带修饰键的按键序列，并在发送边界映射整组键码。 */
+  sendModifiedKeyMapped(loader: ExtensionLoader, sessionId: number,
+    keyCode: number, label: string,
+    getLatch: LatchGetter, setLatch: LatchSetter,
+    isRemoteDown: RemoteDownGetter | null,
+    mapKeyCode: KeyCodeMapper | null,
+    setRemoteDown: RemoteDownSetter | null = null): void {
     try {
       const mods: number[] = this.collectModifierCodes(getLatch);
       if (mods.length === 0) {
-        this.sendVirtualKeyTap(loader, sessionId, keyCode, label);
+        this.sendVirtualKeyTapMapped(loader, sessionId, keyCode, label, mapKeyCode);
         return;
       }
-      // P0-2: locked 且已 remote-down 的修饰键不重复发 down (由 setLatch 锁定时刻发送)
+      const eventCodes: Array<number> = [];
+      const eventPressed: Array<boolean> = [];
+      const onceMods: Array<string> = [];
+      const newlyLockedMods: Array<string> = [];
+      const transientWireCodes: Array<number> = [];
       for (let i = 0; i < mods.length; i++) {
         const modName: string = this.modifierName(mods[i]);
         if (getLatch(modName) === 'locked' && isRemoteDown && isRemoteDown(modName)) {
-          continue; // 已按下, 跳过
+          continue;
         }
-        loader.sendKey(sessionId, mods[i], true);
-      }
-      loader.sendKey(sessionId, keyCode, true);
-      loader.sendKey(sessionId, keyCode, false);
-      // 逆序释放 once 状态的修饰键 (locked 保持)
-      for (let i = mods.length - 1; i >= 0; i--) {
-        const modName: string = this.modifierName(mods[i]);
-        if (getLatch(modName) === 'once') {
-          loader.sendKey(sessionId, mods[i], false);
-          setLatch(modName, 'off');
+        const wireModifierCode: number = this.transportCode(mods[i], mapKeyCode);
+        eventCodes.push(wireModifierCode);
+        eventPressed.push(true);
+        if (getLatch(modName) === 'locked') {
+          newlyLockedMods.push(modName);
+        } else {
+          onceMods.push(modName);
+          transientWireCodes.push(wireModifierCode);
         }
       }
-      hilog.info(DOMAIN, TAG, 'modified-key: ' + label + ' mods=' + mods.length.toString());
+      const wireKeyCode: number = this.transportCode(keyCode, mapKeyCode);
+      eventCodes.push(wireKeyCode);
+      eventPressed.push(true);
+      eventCodes.push(wireKeyCode);
+      eventPressed.push(false);
+      for (let i = transientWireCodes.length - 1; i >= 0; i--) {
+        eventCodes.push(transientWireCodes[i]);
+        eventPressed.push(false);
+      }
+      const accepted: boolean = loader.sendKeyEvents(sessionId, eventCodes, eventPressed);
+      for (let i = 0; i < onceMods.length; i++) {
+        setLatch(onceMods[i], 'off');
+      }
+      if (!accepted) {
+        hilog.warn(DOMAIN, TAG, 'modified-key batch rejected: ' + label);
+        return;
+      }
+      if (setRemoteDown !== null) {
+        for (let i = 0; i < newlyLockedMods.length; i++) {
+          const modName: string = newlyLockedMods[i];
+          const sourceCode: number = this.modifierCode(modName);
+          setRemoteDown(modName, true, this.transportCode(sourceCode, mapKeyCode));
+        }
+      }
+      hilog.info(DOMAIN, TAG, 'modified-key batch: ' + label + ' mods=' + mods.length.toString());
     } catch (err) {
       hilog.error(DOMAIN, TAG, 'modified-key failed: ' + JSON.stringify(err));
     }
@@ -83,32 +132,57 @@ export class RemoteKeyDispatcher {
     getLatch: LatchGetter | null = null,
     isRemoteDown: RemoteDownGetter | null = null,
     setRemoteDown: RemoteDownSetter | null = null): void {
+    this.sendShortcutSequenceMapped(loader, sessionId, keyCodes, label,
+      getLatch, isRemoteDown, setRemoteDown, null);
+  }
+
+  /** 发送快捷键序列，并在发送边界映射整组键码。 */
+  sendShortcutSequenceMapped(loader: ExtensionLoader, sessionId: number,
+    keyCodes: number[], label: string,
+    getLatch: LatchGetter | null,
+    isRemoteDown: RemoteDownGetter | null,
+    setRemoteDown: RemoteDownSetter | null,
+    mapKeyCode: KeyCodeMapper | null): void {
     try {
-      const pressedCodes: number[] = [];
+      const eventCodes: Array<number> = [];
+      const eventPressed: Array<boolean> = [];
+      const transientCodes: Array<number> = [];
+      const newlyLockedNames: Array<string> = [];
       for (let i = 0; i < keyCodes.length; i++) {
         const modName: string = this.modifierName(keyCodes[i]);
         const isLockedModifier: boolean = modName.length > 0 &&
           getLatch !== null && getLatch(modName) === 'locked';
         if (isLockedModifier) {
           if (isRemoteDown === null || !isRemoteDown(modName)) {
-            loader.sendKey(sessionId, keyCodes[i], true);
-            if (setRemoteDown !== null) {
-              setRemoteDown(modName, true);
-            }
-            hilog.info(DOMAIN, TAG, 'shortcut restore locked modifier down: ' + modName);
-          } else {
-            hilog.info(DOMAIN, TAG, 'shortcut keep locked modifier down: ' + modName);
+            const wireModifierCode: number = this.transportCode(keyCodes[i], mapKeyCode);
+            eventCodes.push(wireModifierCode);
+            eventPressed.push(true);
+            newlyLockedNames.push(modName);
           }
           continue;
         }
-        loader.sendKey(sessionId, keyCodes[i], true);
-        pressedCodes.push(keyCodes[i]);
+        const wireCode: number = this.transportCode(keyCodes[i], mapKeyCode);
+        eventCodes.push(wireCode);
+        eventPressed.push(true);
+        transientCodes.push(wireCode);
       }
-      for (let i = pressedCodes.length - 1; i >= 0; i--) {
-        loader.sendKey(sessionId, pressedCodes[i], false);
+      for (let i = transientCodes.length - 1; i >= 0; i--) {
+        eventCodes.push(transientCodes[i]);
+        eventPressed.push(false);
       }
-      hilog.info(DOMAIN, TAG, 'shortcut: ' + label + ' keys=' + keyCodes.length.toString() +
-        ' transient=' + pressedCodes.length.toString());
+      if (!loader.sendKeyEvents(sessionId, eventCodes, eventPressed)) {
+        hilog.warn(DOMAIN, TAG, 'shortcut batch rejected: ' + label);
+        return;
+      }
+      if (setRemoteDown !== null) {
+        for (let i = 0; i < newlyLockedNames.length; i++) {
+          const modName: string = newlyLockedNames[i];
+          const sourceCode: number = this.modifierCode(modName);
+          setRemoteDown(modName, true, this.transportCode(sourceCode, mapKeyCode));
+        }
+      }
+      hilog.info(DOMAIN, TAG, 'shortcut batch: ' + label + ' keys=' + keyCodes.length.toString() +
+        ' transient=' + transientCodes.length.toString());
     } catch (err) {
       hilog.error(DOMAIN, TAG, 'shortcut failed: ' + JSON.stringify(err));
     }
@@ -118,10 +192,13 @@ export class RemoteKeyDispatcher {
   sendCtrlAltDel(loader: ExtensionLoader, sessionId: number, accentColor: string,
     getLatch: LatchGetter | null = null,
     isRemoteDown: RemoteDownGetter | null = null,
-    setRemoteDown: RemoteDownSetter | null = null): void {
+    setRemoteDown: RemoteDownSetter | null = null,
+    rdpSession: boolean = false): void {
     promptAction.showDialog({
       title: 'Ctrl+Alt+Del',
-      message: '这是 Windows 安全序列，远程桌面普通按键模拟通常无效。\n\nRDP 需 FreeRDP SAS 支持；RustDesk 需远端服务模式。\n\n是否尝试发送按键序列？',
+      message: rdpSession ?
+        'RDP 会把该操作按远程安全键 Ctrl+Alt+End 提交给 Windows。是否继续？' :
+        '这是 Windows 安全序列，RustDesk 需要远端服务模式支持。是否尝试发送？',
       buttons: [
         { text: '取消', color: 'rgba(255,255,255,0.6)' },
         { text: '尝试发送', color: accentColor }
@@ -130,10 +207,12 @@ export class RemoteKeyDispatcher {
       const r: Record<string, number> = result as Record<string, number>;
       if (r['index'] === 1) {
         this.sendShortcutSequence(loader, sessionId,
-          [KEYCODE_CTRL_LEFT, KEYCODE_ALT_LEFT, KEYCODE_FORWARD_DEL], 'Ctrl+Alt+Del',
+          [KEYCODE_CTRL_LEFT, KEYCODE_ALT_LEFT,
+            rdpSession ? KEYCODE_MOVE_END : KEYCODE_FORWARD_DEL], 'Ctrl+Alt+Del',
           getLatch, isRemoteDown, setRemoteDown);
         promptAction.showToast({
-          message: '已尝试发送，如无效需协议级 SAS 支持',
+          message: rdpSession ? '已发送 RDP 远程安全键 Ctrl+Alt+End' :
+            '已尝试发送；若无效，请确认远端服务权限',
           duration: 3000
         });
       }
@@ -193,6 +272,10 @@ export class RemoteKeyDispatcher {
     return codes;
   }
 
+  private transportCode(keyCode: number, mapKeyCode: KeyCodeMapper | null): number {
+    return mapKeyCode === null ? keyCode : mapKeyCode(keyCode);
+  }
+
   private modifierName(keyCode: number): string {
     if (keyCode === KEYCODE_CTRL_LEFT || keyCode === KEYCODE_CTRL_RIGHT) {
       return 'ctrl';
@@ -207,5 +290,21 @@ export class RemoteKeyDispatcher {
       return 'win';
     }
     return '';
+  }
+
+  private modifierCode(modifierName: string): number {
+    if (modifierName === 'ctrl') {
+      return KEYCODE_CTRL_LEFT;
+    }
+    if (modifierName === 'alt') {
+      return KEYCODE_ALT_LEFT;
+    }
+    if (modifierName === 'shift') {
+      return KEYCODE_SHIFT_LEFT;
+    }
+    if (modifierName === 'win') {
+      return KEYCODE_META_LEFT;
+    }
+    return 0;
   }
 }

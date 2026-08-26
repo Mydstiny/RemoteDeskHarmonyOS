@@ -103,8 +103,14 @@ export class SshPreflightController {
 
   trustAndContinue(): void {
     if (!this.hostKeyInfo || (this.usesJump() && !this.jumpHostKeyInfo)) { return; }
-    this.applyTrust();
-    this.srv.updateHost(this.host);
+    const updated: RemoteHost = RemoteHost.fromJSON(this.host.toJSON());
+    this.applyTrust(updated);
+    if (!this.srv.updateHost(updated)) {
+      this.state = SshPreflightState.ERROR;
+      this.error = 'SSH 指纹验证成功，但信任记录保存失败；连接已停止。';
+      return;
+    }
+    this.host = updated;
     this.checkPassphrase();
   }
 
@@ -112,8 +118,14 @@ export class SshPreflightController {
 
   async updateTrustAndContinue(): Promise<void> {
     if (!this.hostKeyInfo || (this.usesJump() && !this.jumpHostKeyInfo)) { return; }
-    this.applyTrust();
-    this.srv.updateHost(this.host);
+    const updated: RemoteHost = RemoteHost.fromJSON(this.host.toJSON());
+    this.applyTrust(updated);
+    if (!this.srv.updateHost(updated)) {
+      this.state = SshPreflightState.ERROR;
+      this.error = 'SSH 新指纹验证成功，但信任记录保存失败；连接已停止。';
+      return;
+    }
+    this.host = updated;
     this.checkPassphrase();
   }
 
@@ -144,20 +156,20 @@ export class SshPreflightController {
     };
   }
 
-  private applyTrust(): void {
+  private applyTrust(host: RemoteHost): void {
     const trustedAt: number = Date.now();
-    this.host.sshHostKeyAlgorithm = this.hostKeyInfo?.algorithm || this.host.sshHostKeyAlgorithm;
-    this.host.sshHostKeyFingerprintSha256 = this.hostKeyInfo?.fingerprintSha256 ||
-      this.host.sshHostKeyFingerprintSha256;
-    this.host.sshHostKeyRawBase64 = this.hostKeyInfo?.rawBase64 || this.host.sshHostKeyRawBase64;
-    this.host.sshHostKeyTrustedAt = trustedAt;
-    this.host.sshHostKeyTrustMode = 1;
+    host.sshHostKeyAlgorithm = this.hostKeyInfo?.algorithm || host.sshHostKeyAlgorithm;
+    host.sshHostKeyFingerprintSha256 = this.hostKeyInfo?.fingerprintSha256 ||
+      host.sshHostKeyFingerprintSha256;
+    host.sshHostKeyRawBase64 = this.hostKeyInfo?.rawBase64 || host.sshHostKeyRawBase64;
+    host.sshHostKeyTrustedAt = trustedAt;
+    host.sshHostKeyTrustMode = 1;
     if (this.jumpHostKeyInfo) {
-      this.host.sshJumpHostKeyAlgorithm = this.jumpHostKeyInfo.algorithm;
-      this.host.sshJumpHostKeyFingerprintSha256 = this.jumpHostKeyInfo.fingerprintSha256;
-      this.host.sshJumpHostKeyRawBase64 = this.jumpHostKeyInfo.rawBase64;
-      this.host.sshJumpHostKeyTrustedAt = trustedAt;
-      this.host.sshJumpHostKeyTrustMode = 1;
+      host.sshJumpHostKeyAlgorithm = this.jumpHostKeyInfo.algorithm;
+      host.sshJumpHostKeyFingerprintSha256 = this.jumpHostKeyInfo.fingerprintSha256;
+      host.sshJumpHostKeyRawBase64 = this.jumpHostKeyInfo.rawBase64;
+      host.sshJumpHostKeyTrustedAt = trustedAt;
+      host.sshJumpHostKeyTrustMode = 1;
     }
   }
 
@@ -194,8 +206,14 @@ export class SshPreflightController {
       );
       if (result.ok) {
         if (this.passphraseSaveToHost) {
-          this.host.sshKeyPassphrase = this.passphraseInput;
-          this.srv.updateHost(this.host);
+          const updated: RemoteHost = RemoteHost.fromJSON(this.host.toJSON());
+          updated.sshKeyPassphrase = this.passphraseInput;
+          if (!this.srv.updateHost(updated)) {
+            this.state = SshPreflightState.PASSPHRASE_REQUIRED;
+            this.error = '私钥密码验证成功，但保存失败；连接已停止。';
+            return;
+          }
+          this.host = updated;
         }
         this.ready();
       } else {

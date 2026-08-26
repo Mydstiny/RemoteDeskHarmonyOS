@@ -56,6 +56,9 @@ import vncTrustInvalidationPolicyTest from '../../../test/VncTrustInvalidationPo
 import vncHostDefaultsPolicyTest from '../../../test/VncHostDefaultsPolicy.test';
 import vncGatewayHealthPolicyTest from '../../../test/VncGatewayHealthPolicy.test';
 import vncRendererSurfacePolicyTest from '../../../test/VncRendererSurfacePolicy.test';
+import vncPhysicalKeyboardPolicyTest from '../../../test/VncPhysicalKeyboardPolicy.test';
+import vncPhysicalWheelPolicyTest from '../../../test/VncPhysicalWheelPolicy.test';
+import hostAddSheetLayoutPolicyTest from '../../../test/HostAddSheetLayoutPolicy.test';
 import localBackupPolicyTest from '../../../test/LocalBackupPolicy.test';
 // Reuse the same source-of-truth unit suites in the on-device runner.  These
 // imports intentionally avoid a second copy that could drift from entry/src/test.
@@ -66,6 +69,7 @@ import remoteCanvasInteractionPolicyTest from '../../../test/RemoteCanvasInterac
 import remoteKeyboardLayoutSelectionPolicyTest from '../../../test/RemoteKeyboardLayoutSelectionPolicy.test';
 import remoteModifierStateControllerTest from '../../../test/RemoteModifierStateController.test';
 import remoteSessionTopBarPolicyTest from '../../../test/RemoteSessionTopBarPolicy.test';
+import remoteSessionSidebarLayoutPolicyTest from '../../../test/RemoteSessionSidebarLayoutPolicy.test';
 import remotePointerFocusPolicyTest from '../../../test/RemotePointerFocusPolicy.test';
 import totpBrandServiceTest from '../../../test/TotpBrandService.test';
 import rustDeskProAddressBookTest from '../../../test/RustDeskProAddressBook.test';
@@ -74,6 +78,32 @@ import rustDeskProAddressBookSyncServiceTest from '../../../test/RustDeskProAddr
 import rustDeskProAddressBookUiPolicyTest from '../../../test/RustDeskProAddressBookUiPolicy.test';
 import totpBrandResourceIntegrationTest from './TotpBrandResourceIntegration.test';
 import nativeCallbackEntryIntegrationTest from './NativeCallbackEntryIntegration.test';
+import moonlightSunshineInteropIntegrationTest from './MoonlightSunshineInteropIntegration.test';
+import moonlightModelsTest from '../../../test/MoonlightModels.test';
+import moonlightRecordTest from '../../../test/MoonlightRecord.test';
+import moonlightRecordPolicyTest from '../../../test/MoonlightRecordPolicy.test';
+import moonlightCapabilityPolicyTest from '../../../test/MoonlightCapabilityPolicy.test';
+import moonlightSettingsPolicyTest from '../../../test/MoonlightSettingsPolicy.test';
+import moonlightRecordConflictPolicyTest from '../../../test/MoonlightRecordConflictPolicy.test';
+import moonlightSessionStateTest from '../../../test/MoonlightSessionState.test';
+import moonlightStoragePolicyTest from '../../../test/MoonlightStoragePolicy.test';
+import moonlightCloudTableAdapterTest from '../../../test/MoonlightCloudTableAdapter.test';
+import moonlightRepositoryTest from '../../../test/MoonlightRepository.test';
+import moonlightAppCacheServiceTest from '../../../test/MoonlightAppCacheService.test';
+import moonlightSensitiveTransferPolicyTest from '../../../test/MoonlightSensitiveTransferPolicy.test';
+import moonlightCloudSyncSelectionPolicyTest from '../../../test/MoonlightCloudSyncSelectionPolicy.test';
+import moonlightCloudSyncServiceTest from '../../../test/MoonlightCloudSyncService.test';
+import moonlightDataLifecycleBarrierTest from '../../../test/MoonlightDataLifecycleBarrier.test';
+import moonlightDeletionPolicyTest from '../../../test/MoonlightDeletionPolicy.test';
+import moonlightCloudDeletionPolicyTest from '../../../test/MoonlightCloudDeletionPolicy.test';
+import moonlightDeletionCommandServiceTest from '../../../test/MoonlightDeletionCommandService.test';
+import moonlightCloudStatusPolicyTest from '../../../test/MoonlightCloudStatusPolicy.test';
+import moonlightBackupPolicyTest from '../../../test/MoonlightBackupPolicy.test';
+import moonlightReconnectPolicyTest from '../../../test/MoonlightReconnectPolicy.test';
+import moonlightRuntimeContextFactoryTest from '../../../test/MoonlightRuntimeContextFactory.test';
+import remoteSessionWindowPolicyTest from '../../../test/RemoteSessionWindowPolicy.test';
+import remoteSessionServiceLeasePolicyTest from '../../../test/RemoteSessionServiceLeasePolicy.test';
+import moonlightNetworkHandlePolicyTest from '../../../test/MoonlightNetworkHandlePolicy.test';
 import { FOCUSED_TEST_REGISTRATION_AUDIT } from '../../../main/ets/services/FocusedTestRegistrationAudit';
 
 function requestedClassScope(): string {
@@ -97,6 +127,8 @@ function registerFocusedRepairSuite(scope: string): number {
     totpBrandResourceIntegrationTest();
   } else if (scope === 'NativeCallbackEntryIntegration') {
     nativeCallbackEntryIntegrationTest();
+  } else if (scope === 'MoonlightSunshineInteropIntegration') {
+    moonlightSunshineInteropIntegrationTest();
   } else if (scope === 'RustDeskProAddressBookPolicy') {
     rustDeskProAddressBookTest();
   } else if (scope === 'RustDeskProAddressBookApiService') {
@@ -121,6 +153,31 @@ function registerFocusedRepairSuite(scope: string): number {
     remoteModifierStateControllerTest();
   } else if (scope === 'RemoteSessionTopBarPolicy') {
     remoteSessionTopBarPolicyTest();
+  } else if (scope === 'MoonlightDomainPolicy') {
+    moonlightModelsTest();
+    moonlightRecordTest();
+    moonlightRecordPolicyTest();
+    moonlightCapabilityPolicyTest();
+    moonlightSettingsPolicyTest();
+    moonlightRecordConflictPolicyTest();
+    moonlightSessionStateTest();
+    moonlightStoragePolicyTest();
+    moonlightCloudTableAdapterTest();
+    moonlightRepositoryTest();
+    moonlightAppCacheServiceTest();
+    moonlightSensitiveTransferPolicyTest();
+    moonlightCloudSyncSelectionPolicyTest();
+    moonlightCloudSyncServiceTest();
+    moonlightDataLifecycleBarrierTest();
+    moonlightDeletionPolicyTest();
+    moonlightCloudDeletionPolicyTest();
+    moonlightDeletionCommandServiceTest();
+    moonlightCloudStatusPolicyTest();
+    moonlightBackupPolicyTest();
+    moonlightReconnectPolicyTest();
+    moonlightRuntimeContextFactoryTest();
+    remoteSessionServiceLeasePolicyTest();
+    moonlightNetworkHandlePolicyTest();
   } else {
     return 0;
   }
@@ -139,6 +196,20 @@ function focusedDescribeNames(scope: string): string[] {
   if (scope === 'RemoteOverlayViewportPolicy_contract') {
     return ['RemoteOverlayViewportPolicy_contract'];
   }
+  if (scope === 'MoonlightDomainPolicy') {
+    return ['MoonlightModels', 'MoonlightRecord', 'MoonlightRecordPolicy',
+      'MoonlightCapabilityPolicy', 'MoonlightSettingsPolicy', 'MoonlightRecordConflictPolicy',
+      'MoonlightSessionState', 'MoonlightStoragePolicy', 'MoonlightCloudTableAdapter',
+      'MoonlightRepository', 'MoonlightAppCacheService',
+      'MoonlightSensitiveTransferPolicy', 'MoonlightCloudSyncSelectionPolicy',
+      'MoonlightCloudSyncService', 'MoonlightDataLifecycleBarrier',
+      'MoonlightDeletionPolicy', 'MoonlightCloudDeletionPolicy',
+      'MoonlightDeletionCommandService',
+      'MoonlightCloudStatusPolicy',
+      'MoonlightBackupPolicy', 'MoonlightReconnectPolicy',
+      'MoonlightRuntimeContextFactory', 'RemoteSessionServiceLeasePolicy',
+      'MoonlightNetworkHandlePolicy'];
+  }
   if (scope === 'RustDeskProAddressBookPolicy') {
     return ['RustDeskProAddressBookPolicy'];
   }
@@ -156,6 +227,9 @@ function focusedDescribeNames(scope: string): string[] {
   }
   if (scope === 'NativeCallbackEntryIntegration') {
     return ['NativeCallbackEntryIntegration'];
+  }
+  if (scope === 'MoonlightSunshineInteropIntegration') {
+    return ['MoonlightSunshineInteropIntegration'];
   }
   if (scope === 'RemoteOverlayRegistry_generation_and_cleanup') {
     return ['RemoteOverlayRegistry_generation_and_cleanup'];
@@ -200,12 +274,14 @@ function focusedDescribeNames(scope: string): string[] {
 }
 
 function expectedFocusedCount(scope: string): number {
+  if (scope === 'MoonlightDomainPolicy') { return 200; }
   if (scope === 'RustDeskProAddressBookPolicy') { return 8; }
   if (scope === 'RustDeskProAddressBookApiService') { return 4; }
   if (scope === 'RustDeskProAddressBookSyncService') { return 7; }
   if (scope === 'RustDeskProAddressBookUiPolicy') { return 3; }
   if (scope === 'TotpBrandResourceIntegration') { return 2; }
   if (scope === 'NativeCallbackEntryIntegration') { return 1; }
+  if (scope === 'MoonlightSunshineInteropIntegration') { return 1; }
   if (scope === 'RemoteOverlayViewportPolicy_contract') { return 7; }
   if (scope === 'RemoteOverlayRegistry_generation_and_cleanup') { return 4; }
   if (scope === 'RemoteShortcutCatalog_protocol_matrix') { return 12; }
@@ -213,7 +289,7 @@ function expectedFocusedCount(scope: string): number {
   if (scope === 'RemoteCanvasInteractionPolicy_real_surface_contract') { return 3; }
   if (scope === 'RemoteKeyboardLayoutSelection_owner_session_generation') { return 3; }
   if (scope === 'RemoteModifierStateController_lifecycle_mirror') { return 1; }
-  if (scope === 'RemoteSessionTopBarPolicy') { return 21; }
+  if (scope === 'RemoteSessionTopBarPolicy') { return 23; }
   if (scope === 'TotpBrandService') { return 23; }
   return 0;
 }
@@ -281,6 +357,9 @@ export default function testsuite() {
   rustDeskCardBadgePolicyTest();
   rustDeskDiagnosticsPolicyTest();
   remotePhysicalKeyboardPolicyTest();
+  vncPhysicalKeyboardPolicyTest();
+  vncPhysicalWheelPolicyTest();
+  hostAddSheetLayoutPolicyTest();
   touchpadPointerCurvePolicyTest();
   remotePhysicalTouchpadPolicyTest();
   remoteSurfaceTransformPolicyTest();
@@ -314,8 +393,34 @@ export default function testsuite() {
   remoteKeyboardLayoutSelectionPolicyTest();
   remoteModifierStateControllerTest();
   remoteSessionTopBarPolicyTest();
+  remoteSessionSidebarLayoutPolicyTest();
   remotePointerFocusPolicyTest();
   totpBrandServiceTest();
   totpBrandResourceIntegrationTest();
   nativeCallbackEntryIntegrationTest();
+  moonlightModelsTest();
+  moonlightRecordTest();
+  moonlightRecordPolicyTest();
+  moonlightCapabilityPolicyTest();
+  moonlightSettingsPolicyTest();
+  moonlightRecordConflictPolicyTest();
+  moonlightSessionStateTest();
+  moonlightStoragePolicyTest();
+  moonlightCloudTableAdapterTest();
+  moonlightRepositoryTest();
+  moonlightAppCacheServiceTest();
+  moonlightSensitiveTransferPolicyTest();
+  moonlightCloudSyncSelectionPolicyTest();
+  moonlightCloudSyncServiceTest();
+  moonlightDataLifecycleBarrierTest();
+  moonlightDeletionPolicyTest();
+  moonlightCloudDeletionPolicyTest();
+  moonlightDeletionCommandServiceTest();
+  moonlightCloudStatusPolicyTest();
+  moonlightBackupPolicyTest();
+  moonlightReconnectPolicyTest();
+  moonlightRuntimeContextFactoryTest();
+  remoteSessionWindowPolicyTest();
+  remoteSessionServiceLeasePolicyTest();
+  moonlightNetworkHandlePolicyTest();
 }

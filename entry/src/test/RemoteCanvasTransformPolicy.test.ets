@@ -47,6 +47,14 @@ export default function remoteCanvasTransformPolicyTest() {
       expect(original.panX).assertEqual(0);
     });
 
+    it('fits a rotated canvas against the swapped display dimensions', 0, (): void => {
+      const rotated = baseCanvasTransform('fit', 100, viewport, 1);
+      expect(rotated.rotation).assertEqual(1);
+      expect(rotated.scale).assertEqual(1);
+      expect(rotated.panX).assertEqual(0);
+      expect(rotated.panY).assertEqual(0);
+    });
+
     it('keeps the focal remote point stable during a pinch', 0, () => {
       const before = baseCanvasTransform('fit', 100, viewport);
       const after = pinchCanvasTransform(before, viewport, 500, 300, 2, 0, 0);

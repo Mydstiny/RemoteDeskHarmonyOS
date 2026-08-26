@@ -231,6 +231,10 @@ public:
             if (!lock_.owns_lock() || !owner.valid() || registry_ == nullptr) {
                 return false;
             }
+            if (registry_->active_.valid() &&
+                !SessionOwnerMatches(registry_->active_, owner)) {
+                return false;
+            }
             registry_->active_ = owner;
             registry_->ready_ = false;
             return true;

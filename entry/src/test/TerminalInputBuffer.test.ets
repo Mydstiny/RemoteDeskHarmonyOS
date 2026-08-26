@@ -1,7 +1,12 @@
-import { TerminalInputBuffer } from '../main/ets/components/SshTerminalSurface';
+import {
+  sshTerminalInputBufferStateCountForTest,
+  TerminalInputBuffer
+} from '../main/ets/components/SshTerminalSurface';
 
 export default function terminalInputBufferTest(): void {
+  const baselineStates: number = sshTerminalInputBufferStateCountForTest();
   const queue: TerminalInputBuffer = new TerminalInputBuffer();
+  expect(sshTerminalInputBufferStateCountForTest()).assertEqual(baselineStates);
   const first: ArrayBuffer = new ArrayBuffer(2);
   const second: ArrayBuffer = new ArrayBuffer(3);
 
@@ -11,6 +16,7 @@ export default function terminalInputBufferTest(): void {
   const otherQueue: TerminalInputBuffer = new TerminalInputBuffer();
   const other: ArrayBuffer = new ArrayBuffer(4);
   otherQueue.enqueue(other);
+  expect(sshTerminalInputBufferStateCountForTest()).assertEqual(baselineStates + 2);
   expect(queue.size()).assertEqual(2);
   expect(queue.byteLength()).assertEqual(5);
   expect(otherQueue.size()).assertEqual(1);
@@ -27,8 +33,10 @@ export default function terminalInputBufferTest(): void {
 
   queue.enqueue(first);
   queue.clear();
+  expect(sshTerminalInputBufferStateCountForTest()).assertEqual(baselineStates + 1);
   expect(queue.size()).assertEqual(0);
   expect(queue.byteLength()).assertEqual(0);
+  expect(sshTerminalInputBufferStateCountForTest()).assertEqual(baselineStates + 2);
 
   queue.enqueue(first);
   queue.enqueue(second);
@@ -68,4 +76,8 @@ export default function terminalInputBufferTest(): void {
   expect(remainderView[1]).assertEqual(55);
   expect(queue.size()).assertEqual(0);
   expect(queue.byteLength()).assertEqual(0);
+
+  queue.clear();
+  otherQueue.clear();
+  expect(sshTerminalInputBufferStateCountForTest()).assertEqual(baselineStates);
 }

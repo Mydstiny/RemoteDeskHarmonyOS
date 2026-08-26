@@ -103,10 +103,10 @@ export function shouldUseSftpExpandedWorkspace(isPad: boolean, isDesktop: boolea
   return (isPad || isDesktop) && width >= 980 && height >= 580;
 }
 
-/** Active/recovered task controls take priority over list height on short wide windows. */
-export function sftpExpandedWorkspaceMinHeight(transferBusy: boolean,
-  hasRecoveredTasks: boolean): number {
-  return transferBusy || hasRecoveredTasks ? 150 : 300;
+/** Keep footer actions reachable on short wide windows; layoutWeight still expands on roomy windows. */
+export function sftpExpandedWorkspaceMinHeight(_transferBusy: boolean,
+  _hasRecoveredTasks: boolean): number {
+  return 150;
 }
 
 /**

@@ -63,8 +63,10 @@ export default function cloudSyncSheetPolicyTest() {
     it('describes_v3_backup_as_redacted_and_non_destructive', 0, (): void => {
       const spec = cloudSyncSheetSpec(
         CLOUD_SYNC_SHEET_BACKUP_CONFIRM);
-      expect(spec.title).assertEqual('导出脱敏配置备份？');
+      expect(spec.title).assertEqual('导出本地备份？');
       expect(spec.message.indexOf('v3') >= 0).assertTrue();
+      expect(spec.message.indexOf('本地数据作用域') >= 0).assertTrue();
+      expect(spec.message.indexOf('本机离线作用域') >= 0).assertTrue();
       expect(spec.message.indexOf('密码') >= 0).assertTrue();
       expect(spec.message.indexOf('设备信任') >= 0).assertTrue();
       expect(spec.primaryDestructive).assertFalse();

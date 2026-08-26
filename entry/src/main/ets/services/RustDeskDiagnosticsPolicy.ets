@@ -55,7 +55,7 @@ export function formatDiagnosticFrameRate(value: number, rateAvailable: boolean,
     return '等待视频流';
   }
   if (stale) {
-    return '已停滞';
+    return '静止 / 待更新';
   }
   if (!rateAvailable) {
     return '采样中';
@@ -68,7 +68,7 @@ export function rustDeskDiagnosticsStreamState(videoSeen: boolean, lastFrameAgeM
     return '等待视频流';
   }
   if (isFiniteDiagnosticNumber(lastFrameAgeMs) && lastFrameAgeMs >= 3000) {
-    return '已停滞';
+    return '画面静止或停滞';
   }
   return '正在接收';
 }

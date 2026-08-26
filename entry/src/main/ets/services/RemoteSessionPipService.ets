@@ -10,6 +10,15 @@ import { common } from '@kit.AbilityKit';
 import { PiPWindow, typeNode, UIContext } from '@kit.ArkUI';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
+import {
+  RemoteSessionServiceLease,
+  RemoteSessionServiceProtocol,
+  cloneRemoteSessionServiceLease,
+  remoteSessionServiceLeaseCanClaim,
+  remoteSessionServiceLeaseEquals,
+  remoteSessionServiceLeaseIsValid,
+  remoteSessionServiceLeaseMatchesSession
+} from './RemoteSessionServiceLeasePolicy';
 
 const TAG = 'RemoteSessionPip';
 const DOMAIN = 0x0015;
@@ -20,6 +29,12 @@ export interface RemoteSessionPipSurface {
   surfaceId: string;
   surfaceWidth: number;
   surfaceHeight: number;
+}
+
+/** Exact ArkUI page/navigation owner to restore when the user expands PIP. */
+export interface RemoteSessionPipRestoreTarget {
+  navigationId?: string;
+  handleId?: number;
 }
 
 type PipSurfaceReadyHandler = (surface: RemoteSessionPipSurface,
@@ -218,6 +233,7 @@ export class RemoteSessionPipService {
   private operationTail: Promise<void> = Promise.resolve();
   /** Includes a prepare queued behind another PIP operation. */
   private prepareRequestCount: number = 0;
+  private currentLease: RemoteSessionServiceLease | null = null;
 
   static getInstance(): RemoteSessionPipService {
     if (RemoteSessionPipService.instance === null) {
@@ -233,13 +249,22 @@ export class RemoteSessionPipService {
    */
   async prepare(context: common.UIAbilityContext, uiContext: UIContext,
     contentWidth: number, contentHeight: number,
+    lease: RemoteSessionServiceLease,
     onStopped: ((reason: string) => void) | null = null,
-    onSurfaceChanged: PipSurfaceChangedHandler | null = null): Promise<boolean> {
+    onSurfaceChanged: PipSurfaceChangedHandler | null = null,
+    restoreTarget: RemoteSessionPipRestoreTarget | null = null): Promise<boolean> {
+    if (!this.claimLease(lease)) {
+      hilog.warn(DOMAIN, TAG, '[PIP-LEASE] prepare rejected for non-owner');
+      return false;
+    }
+    const captured: RemoteSessionServiceLease = cloneRemoteSessionServiceLease(lease);
     this.prepareRequestCount += 1;
     return this.enqueueOperation<boolean>(async (): Promise<boolean> => {
       try {
+        if (!remoteSessionServiceLeaseEquals(this.currentLease, captured)) { return false; }
         return await this.prepareInternal(
-          context, uiContext, contentWidth, contentHeight, onStopped, onSurfaceChanged);
+          context, uiContext, contentWidth, contentHeight, captured,
+          onStopped, onSurfaceChanged, restoreTarget);
       } finally {
         this.prepareRequestCount = Math.max(0, this.prepareRequestCount - 1);
       }
@@ -248,16 +273,20 @@ export class RemoteSessionPipService {
 
   private async prepareInternal(context: common.UIAbilityContext, uiContext: UIContext,
     contentWidth: number, contentHeight: number,
+    lease: RemoteSessionServiceLease,
     onStopped: ((reason: string) => void) | null,
-    onSurfaceChanged: PipSurfaceChangedHandler | null): Promise<boolean> {
+    onSurfaceChanged: PipSurfaceChangedHandler | null,
+    restoreTarget: RemoteSessionPipRestoreTarget | null): Promise<boolean> {
+    if (!remoteSessionServiceLeaseEquals(this.currentLease, lease)) { return false; }
     if (!PiPWindow.isPiPEnabled()) {
       hilog.info(DOMAIN, TAG, 'PIP unsupported or disabled by system');
+      await this.stopInternal();
       return false;
     }
     this.stoppedHandler = onStopped;
     this.surfaceChangedHandler = onSurfaceChanged;
     if (this.prepared && this.controller !== null) {
-      this.updateContentSize(contentWidth, contentHeight);
+      this.updateContentSize(contentWidth, contentHeight, lease);
       if (this.pipComponentController !== null) {
         this.pipComponentController.setSurfaceChangedHandler(onSurfaceChanged);
       }
@@ -269,6 +298,7 @@ export class RemoteSessionPipService {
         hilog.warn(DOMAIN, TAG, '[PIP-PREPARE] previous controller did not reach terminal state');
         return false;
       }
+      this.currentLease = cloneRemoteSessionServiceLease(lease);
       this.stoppedHandler = onStopped;
     }
 
@@ -293,12 +323,24 @@ export class RemoteSessionPipService {
         defaultWindowSizeType: 1,
         cornerAdsorptionEnabled: true
       };
+      if (restoreTarget !== null) {
+        if (typeof restoreTarget.navigationId === 'string' &&
+            restoreTarget.navigationId.trim() !== '') {
+          config.navigationId = restoreTarget.navigationId.trim();
+        }
+        const handleId: number | undefined = restoreTarget.handleId;
+        if (typeof handleId === 'number' && Number.isSafeInteger(handleId) &&
+            handleId > 0) {
+          config.handleId = handleId;
+        }
+      }
       createdNode = typeNode.createNode(uiContext, 'XComponent', {
         type: XComponentType.SURFACE,
         controller: pipController
       });
       created = await PiPWindow.create(config, createdNode);
-      if (generation !== this.operationGeneration) {
+      if (generation !== this.operationGeneration ||
+          !remoteSessionServiceLeaseEquals(this.currentLease, lease)) {
         await this.disposeCreatedController(created, createdNode, null);
         return false;
       }
@@ -311,20 +353,22 @@ export class RemoteSessionPipService {
       this.windowStarted = false;
       this.lastState = null;
       callback = (state: PiPWindow.PiPState, reason: string): void => {
-        this.handleStateChange(created as PiPWindow.PiPController, state, reason);
+        this.handleStateChange(created as PiPWindow.PiPController, lease, state, reason);
       };
       this.stateCallback = callback;
       created.on('stateChange', callback);
       // Arm this while the foreground main window is valid. The system will
       // create the PIP window on the next Home/background transition.
       created.setAutoStartEnabled(true);
-      if (generation !== this.operationGeneration) {
+      if (generation !== this.operationGeneration ||
+          !remoteSessionServiceLeaseEquals(this.currentLease, lease)) {
         if (this.controller === created) {
           await this.stopInternal();
         }
         return false;
       }
-      if (this.controller !== created || !this.prepared) {
+      if (this.controller !== created || !this.prepared ||
+          !remoteSessionServiceLeaseEquals(this.currentLease, lease)) {
         return false;
       }
       hilog.info(DOMAIN, TAG, 'PIP VIDEO_PLAY prepared for system autoStart size=' +
@@ -345,7 +389,9 @@ export class RemoteSessionPipService {
           // Best-effort node cleanup.
         }
       }
-      this.clearState();
+      if (remoteSessionServiceLeaseEquals(this.currentLease, lease)) {
+        this.clearState();
+      }
       return false;
     }
   }
@@ -357,21 +403,30 @@ export class RemoteSessionPipService {
    */
   async start(context: common.UIAbilityContext, uiContext: UIContext,
     contentWidth: number, contentHeight: number,
+    lease: RemoteSessionServiceLease,
     onSurfaceReady: PipSurfaceReadyHandler | null = null,
     onStopped: ((reason: string) => void) | null = null,
     onSurfaceChanged: PipSurfaceChangedHandler | null = null): Promise<boolean> {
+    if (!remoteSessionServiceLeaseIsValid(lease)) { return false; }
+    const captured: RemoteSessionServiceLease = cloneRemoteSessionServiceLease(lease);
     return this.enqueueOperation<boolean>(() => this.startInternal(
       context, uiContext, contentWidth, contentHeight,
-      onSurfaceReady, onStopped, onSurfaceChanged));
+      captured, onSurfaceReady, onStopped, onSurfaceChanged));
   }
 
   private async startInternal(context: common.UIAbilityContext, uiContext: UIContext,
     contentWidth: number, contentHeight: number,
+    lease: RemoteSessionServiceLease,
     onSurfaceReady: PipSurfaceReadyHandler | null,
     onStopped: ((reason: string) => void) | null,
     onSurfaceChanged: PipSurfaceChangedHandler | null): Promise<boolean> {
+    if (!remoteSessionServiceLeaseEquals(this.currentLease, lease)) {
+      hilog.warn(DOMAIN, TAG, '[PIP-LEASE] start rejected for non-owner');
+      return false;
+    }
     if (!PiPWindow.isPiPEnabled()) {
       hilog.info(DOMAIN, TAG, 'PIP unsupported or disabled by system');
+      await this.stopInternal();
       return false;
     }
     this.stoppedHandler = onStopped;
@@ -390,13 +445,14 @@ export class RemoteSessionPipService {
       return false;
     }
     pipController.setSurfaceChangedHandler(onSurfaceChanged);
-    this.updateContentSize(contentWidth, contentHeight);
+    this.updateContentSize(contentWidth, contentHeight, lease);
 
     try {
       hilog.info(DOMAIN, TAG, 'PIP waiting for system autoStart after background transition');
       const surface: RemoteSessionPipSurface | null = await pipController.waitForSurface(
         PIP_SURFACE_WAIT_TIMEOUT_MS);
-      if (generation !== this.operationGeneration || this.controller !== owner || !this.prepared) {
+      if (generation !== this.operationGeneration || this.controller !== owner || !this.prepared ||
+          !remoteSessionServiceLeaseEquals(this.currentLease, lease)) {
         return false;
       }
       if (surface === null || surface.surfaceId.length === 0 ||
@@ -406,7 +462,8 @@ export class RemoteSessionPipService {
       if (onSurfaceReady !== null && !(await onSurfaceReady(surface, generation))) {
         throw new Error('native renderer could not attach to PIP surface');
       }
-      if (generation !== this.operationGeneration || this.controller !== owner || !this.prepared) {
+      if (generation !== this.operationGeneration || this.controller !== owner || !this.prepared ||
+          !remoteSessionServiceLeaseEquals(this.currentLease, lease)) {
         return false;
       }
       // The first SurfaceRect can be the full-display placeholder. Re-read
@@ -420,7 +477,7 @@ export class RemoteSessionPipService {
         Math.max(1, Math.round(contentHeight)).toString() +
         ' surface=' + surface.surfaceWidth.toString() + 'x' +
         surface.surfaceHeight.toString());
-      return this.isActive();
+      return this.isActive(lease);
     } catch (err) {
       const be: BusinessError = err as BusinessError;
       hilog.warn(DOMAIN, TAG, '[PIP-AUTOSTART] failed code=' + this.errorCode(be) +
@@ -439,11 +496,36 @@ export class RemoteSessionPipService {
    * this promise returns true; false means the controller is still owned by
    * the system and its state callback remains responsible for final cleanup.
    */
-  async stop(): Promise<boolean> {
-    return this.enqueueOperation<boolean>(() => this.stopInternal());
+  async stop(lease?: RemoteSessionServiceLease): Promise<boolean> {
+    const captured: RemoteSessionServiceLease | null = lease === undefined ? null :
+      cloneRemoteSessionServiceLease(lease);
+    if (captured !== null && !remoteSessionServiceLeaseEquals(this.currentLease, captured)) {
+      return true;
+    }
+    // Invalidate create/surface waits immediately; the serialized teardown
+    // below may be queued behind the operation that is currently awaiting WMS.
+    this.operationGeneration += 1;
+    return this.enqueueOperation<boolean>(() => {
+      if (captured !== null &&
+          !remoteSessionServiceLeaseEquals(this.currentLease, captured)) { return Promise.resolve(true); }
+      return this.stopInternal();
+    });
   }
 
-  updateContentSize(width: number, height: number): void {
+  /** Snapshot the exact predecessor owner for a registry restore CAS. */
+  leaseForMatchingSession(protocol: RemoteSessionServiceProtocol,
+    hostId: string, sessionId: number): RemoteSessionServiceLease | null {
+    if (!remoteSessionServiceLeaseMatchesSession(
+        this.currentLease, protocol, hostId, sessionId)) {
+      return null;
+    }
+    return cloneRemoteSessionServiceLease(
+      this.currentLease as RemoteSessionServiceLease);
+  }
+
+  updateContentSize(width: number, height: number,
+    lease: RemoteSessionServiceLease): void {
+    if (!remoteSessionServiceLeaseEquals(this.currentLease, lease)) { return; }
     this.contentWidth = Math.max(1, Math.round(width));
     this.contentHeight = Math.max(1, Math.round(height));
     if (this.controller === null) {
@@ -458,18 +540,21 @@ export class RemoteSessionPipService {
     }
   }
 
-  isActive(): boolean {
-    return this.active && this.controller !== null;
+  isActive(lease: RemoteSessionServiceLease): boolean {
+    return this.active && this.controller !== null &&
+      remoteSessionServiceLeaseEquals(this.currentLease, lease);
   }
 
   /** True while a foreground-prepared controller is armed for auto-start. */
-  isPrepared(): boolean {
-    return this.prepared && this.controller !== null;
+  isPrepared(lease: RemoteSessionServiceLease): boolean {
+    return this.prepared && this.controller !== null &&
+      remoteSessionServiceLeaseEquals(this.currentLease, lease);
   }
 
   /** True when prepare is already armed or queued from the foreground. */
-  isPreparedOrPreparing(): boolean {
-    return this.isPrepared() || this.prepareRequestCount > 0;
+  isPreparedOrPreparing(lease: RemoteSessionServiceLease): boolean {
+    if (!remoteSessionServiceLeaseEquals(this.currentLease, lease)) { return false; }
+    return this.isPrepared(lease) || this.prepareRequestCount > 0;
   }
 
   /**
@@ -477,15 +562,19 @@ export class RemoteSessionPipService {
    * revoking the controller. Page code must reject the stale callback before
    * it moves a native renderer to the free-node surface.
    */
-  isOperationCurrent(operationGeneration: number): boolean {
+  isOperationCurrent(operationGeneration: number,
+    lease: RemoteSessionServiceLease): boolean {
     return operationGeneration === this.operationGeneration &&
-      this.prepared && this.controller !== null;
+      this.prepared && this.controller !== null &&
+      remoteSessionServiceLeaseEquals(this.currentLease, lease);
   }
 
   private handleStateChange(owner: PiPWindow.PiPController,
+    lease: RemoteSessionServiceLease,
     state: PiPWindow.PiPState, reason: string): void {
     hilog.info(DOMAIN, TAG, 'PIP state=' + state.toString() + ' reason=' + reason);
-    if (this.controller !== owner) {
+    if (this.controller !== owner ||
+        !remoteSessionServiceLeaseEquals(this.currentLease, lease)) {
       return;
     }
     this.lastState = state;
@@ -700,6 +789,15 @@ export class RemoteSessionPipService {
     this.windowStarted = false;
     this.lastState = null;
     this.stateCallback = null;
+    this.currentLease = null;
+  }
+
+  private claimLease(lease: RemoteSessionServiceLease): boolean {
+    if (!remoteSessionServiceLeaseCanClaim(this.currentLease, lease)) { return false; }
+    if (this.currentLease === null) {
+      this.currentLease = cloneRemoteSessionServiceLease(lease);
+    }
+    return true;
   }
 
   private async disposeCreatedController(controller: PiPWindow.PiPController,

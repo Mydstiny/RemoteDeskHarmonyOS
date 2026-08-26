@@ -62,6 +62,11 @@ const terminalInputBufferStates: Map<string, TerminalInputBufferState> =
   new Map<string, TerminalInputBufferState>();
 let terminalInputBufferSequence: number = 0;
 
+/** Test receipt for the module-level non-observed state lifecycle. */
+export function sshTerminalInputBufferStateCountForTest(): number {
+  return terminalInputBufferStates.size;
+}
+
 export class TerminalInputBuffer {
   /** ArkUI may proxy this object; keep the only object-owned value primitive. */
   private readonly stateId: string;
@@ -69,7 +74,6 @@ export class TerminalInputBuffer {
   constructor() {
     terminalInputBufferSequence += 1;
     this.stateId = 'ssh-terminal-input-' + terminalInputBufferSequence.toString();
-    terminalInputBufferStates.set(this.stateId, new TerminalInputBufferState());
   }
 
   private state(): TerminalInputBufferState {
@@ -127,9 +131,10 @@ export class TerminalInputBuffer {
   }
 
   clear(): void {
-    const state: TerminalInputBufferState = this.state();
-    state.buffers = [];
-    state.bytes = 0;
+    // The stable wrapper may be reused after a renderer fallback, so state()
+    // recreates storage lazily on the next enqueue/read. Removing the entry
+    // here also releases module-level ownership when a host tab is closed.
+    terminalInputBufferStates.delete(this.stateId);
   }
 
   size(): number {

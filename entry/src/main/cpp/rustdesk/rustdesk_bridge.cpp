@@ -18,7 +18,9 @@
 #include "rustdesk_ipc.h"
 #include "common/safe_log.h"
 #include "extensions/extension_registry.h"
+#include "render/hw_decoder.h"
 #include "render/video_perf_counters.h"
+#include "rustdesk_peer_presentation_policy.h"
 #include <hilog/log.h>
 #include <algorithm>
 #include <condition_variable>
@@ -65,6 +67,17 @@ extern "C" {
         void (*on_auth)(int, const char*, void*),
         void (*on_progress)(int, const char*, void*),
         void* user_data);
+    void* rustdesk_connect_v5(
+        const void* cfg,
+        void (*on_frame)(const void*, void*),
+        void (*on_audio)(const void*, void*),
+        void (*on_cursor)(const void*, void*),
+        void (*on_disconnect)(int, const char*, void*),
+        void (*on_display)(const void*, void*),
+        void (*on_auth)(int, const char*, void*),
+        void (*on_progress)(int, const char*, void*),
+        bool (*on_peer_platform)(const char*, void*),
+        void* user_data);
     void  rustdesk_disconnect(void* handle);
     void  rustdesk_cancel_pending_connect();
     void  rustdesk_cancel_pending_connect_for_session(uint64_t session_id);
@@ -107,6 +120,13 @@ extern "C" {
         int32_t connection_path;
     };
     bool  rustdesk_get_stream_stats(void* handle, RustDeskFfiStreamStats* out_stats);
+    struct RustDeskFfiPermissionState {
+        uint32_t version;
+        uint32_t knownMask;
+        uint32_t enabledMask;
+        uint32_t reserved;
+    };
+    bool  rustdesk_get_permission_state(void* handle, RustDeskFfiPermissionState* out_state);
     struct RustDeskFfiDisplaySnapshot {
         uint32_t version;
         int32_t currentDisplay;
@@ -150,6 +170,10 @@ extern "C" {
 }
 
 static constexpr uint32_t kRustDeskStreamStatsVersion = 1;
+static constexpr uint32_t kRustDeskPermissionStateVersion = 1;
+static constexpr uint32_t kRustDeskPermissionKeyboard = 1U << 0;
+static constexpr uint32_t kRustDeskPermissionClipboard = 1U << 2;
+static constexpr uint32_t kRustDeskPermissionFile = 1U << 4;
 static constexpr uint32_t kRustDeskDisplaySnapshotVersion = 1;
 static constexpr uint32_t kRustDeskVideoFrameAbiVersion = 2;
 static_assert(sizeof(RustDeskFfiStreamStats) == 96,
@@ -172,6 +196,10 @@ static_assert(offsetof(RustDeskFfiStreamStats, actual_codec) == 80);
 static_assert(offsetof(RustDeskFfiStreamStats, width) == 84);
 static_assert(offsetof(RustDeskFfiStreamStats, height) == 88);
 static_assert(offsetof(RustDeskFfiStreamStats, connection_path) == 92);
+static_assert(sizeof(RustDeskFfiPermissionState) == 16,
+              "RustDeskPermissionState ABI size changed; update both sides together");
+static_assert(alignof(RustDeskFfiPermissionState) == 4,
+              "RustDeskPermissionState ABI alignment changed");
 static_assert(sizeof(RustDeskFfiDisplaySnapshot) == 36,
               "RustDeskDisplaySnapshot ABI size changed; update both sides together");
 static_assert(alignof(RustDeskFfiDisplaySnapshot) == 4,
@@ -702,7 +730,7 @@ struct RustDeskBridge::Impl {
     // Workers handed to the process-wide deferred join owner keep the FFI
     // callback context alive until their underlying Rust thread has joined.
     std::atomic<uint32_t> ffiDeferredJoinCount {0};
-    // Count every rustdesk_connect_v4() call until its returned handle has
+    // Count every rustdesk_connect_v5() call until its returned handle has
     // completed rustdesk_disconnect(). A raw callback user-data pointer may
     // be read before the callback-active counter can be incremented.
     std::atomic<uint32_t> ffiHandleJoinPending {0};
@@ -1466,6 +1494,44 @@ void RustDeskBridge::onFfiProgress(int stage, const char* message, void* userDat
     impl->setState(ConnectionState::CONNECTING, progressMessage);
 }
 
+bool RustDeskBridge::onFfiPeerPlatform(const char* platform, void* userData) {
+    RustDeskFfiCallbackScope callbackScope;
+    const auto context = rdAcquireFfiCallbackContext(userData);
+    auto* impl = context ? static_cast<RustDeskBridge::Impl*>(context->impl) : nullptr;
+    if (impl) {
+        callbackScope.track(&impl->ffiCallbackActive, &impl->ffiCallbackMutex,
+                            &impl->ffiCallbackCv);
+    }
+    if (!context || !impl || context->generation == 0 ||
+        context->generation != impl->cursorGeneration.load(std::memory_order_acquire) ||
+        context->ownerToken == 0 ||
+        context->ownerToken != impl->ownerToken.load(std::memory_order_acquire) ||
+        context->admissionEpoch == 0 ||
+        context->admissionEpoch != impl->ffiAdmissionEpoch.load(std::memory_order_acquire) ||
+        impl->disconnectRequested.load(std::memory_order_acquire) ||
+        impl->ffiStreamEnded.load(std::memory_order_acquire) ||
+        !IsRustDeskCallbackOwnerActive(impl, context.get())) {
+        return false;
+    }
+
+    const char* peerPlatform = platform ? platform : "";
+    const Render::NativeImagePresentationMode presentationMode =
+        RustDeskPresentation::NativeImageModeForPeerPlatform(peerPlatform);
+    const Render::DecoderSessionIdentity presentationOwner {
+        impl->sessionId.load(std::memory_order_acquire),
+        context->generation,
+        context->ownerToken,
+    };
+    const bool published = DecoderNapi::SetActiveNativeImagePresentationMode(
+        presentationOwner, presentationMode);
+    OH_LOG_INFO(LOG_APP,
+                "[RustDesk-FFI] authenticated peer platform=%{public}s NativeImage presentation=%{public}s ownerPublished=%{public}s",
+                peerPlatform[0] == '\0' ? "unknown" : peerPlatform,
+                Render::NativeImagePresentationModeName(presentationMode),
+                published ? "yes" : "no");
+    return published;
+}
+
 void RustDeskBridge::onFfiDisconnect(int state, const char* message, void* userData) noexcept try {
     RustDeskFfiCallbackScope callbackScope;
     const auto context = rdAcquireFfiCallbackContext(userData);
@@ -2124,6 +2190,22 @@ RustDeskDiagnosticsStats RustDeskBridge::getDiagnostics() const {
                 "[RustDesk-FFI] stream diagnostics snapshot rejected: unsupported ABI version=%{public}u",
                 ffiStats.version);
         }
+        RustDeskFfiPermissionState permissionState {};
+        if (rustdesk_get_permission_state(handleLease.get(), &permissionState) &&
+            permissionState.version == kRustDeskPermissionStateVersion) {
+            result.remoteInputPermissionKnown =
+                (permissionState.knownMask & kRustDeskPermissionKeyboard) != 0;
+            result.remoteInputAllowed = !result.remoteInputPermissionKnown ||
+                (permissionState.enabledMask & kRustDeskPermissionKeyboard) != 0;
+            result.remoteClipboardPermissionKnown =
+                (permissionState.knownMask & kRustDeskPermissionClipboard) != 0;
+            result.remoteClipboardAllowed = !result.remoteClipboardPermissionKnown ||
+                (permissionState.enabledMask & kRustDeskPermissionClipboard) != 0;
+            result.remoteFilePermissionKnown =
+                (permissionState.knownMask & kRustDeskPermissionFile) != 0;
+            result.remoteFileAllowed = !result.remoteFilePermissionKnown ||
+                (permissionState.enabledMask & kRustDeskPermissionFile) != 0;
+        }
     }
 #endif
     return result;
@@ -2676,9 +2758,10 @@ int RustDeskBridge::connectInternal(
             // the callback context before crossing the FFI boundary and keep
             // the reservation until the returned handle is disconnected.
             RustDeskFfiConnectReservation handleReservation(impl);
-            void* ffiHandle = rustdesk_connect_v4(
+            void* ffiHandle = rustdesk_connect_v5(
                 &ffiCfg, onFfiFrame, onFfiAudio, onFfiCursor, onFfiDisconnect,
-                onFfiDisplay, onFfiAuth, onFfiProgress, callbackUserData);
+                onFfiDisplay, onFfiAuth, onFfiProgress, onFfiPeerPlatform,
+                callbackUserData);
             if (ffiHandle != nullptr) {
                 handleReservation.transferToHandleOwner();
             }
@@ -3042,6 +3125,43 @@ void RustDeskBridge::sendKey(uint32_t scancode, bool pressed) {
         send(impl_->ipcFd, buf, sizeof(buf), 0);
     }
     OH_LOG_DEBUG(LOG_APP, "[RustDesk] key sc=%{public}u p=%{public}s", scancode, pressed ? "down" : "up");
+}
+
+bool RustDeskBridge::sendKeyEvents(const std::vector<RemoteKeyEvent>& events) {
+    if (events.empty()) {
+        return false;
+    }
+#ifdef RUSTDESK_USE_REAL_CORE
+    // One lease pins one concrete FFI generation for the complete chord.
+    // Continuity detach waits for the lease, so a batch can never straddle
+    // the retired and replacement handles.
+    auto handleLease = impl_->displayControl.acquireHandle();
+    if (mode_ == RustDeskMode::FFI) {
+        if (!handleLease) {
+            OH_LOG_INFO(LOG_APP,
+                "[RustDesk-FFI] key transaction rejected without live handle events=%{public}zu",
+                events.size());
+            return false;
+        }
+        for (const auto& event : events) {
+            rustdesk_send_key(handleLease.get(), event.keyCode, event.pressed);
+        }
+        OH_LOG_INFO(LOG_APP,
+            "[RustDesk-FFI] key transaction submitted events=%{public}zu",
+            events.size());
+        return true;
+    }
+#endif
+    if (mode_ == RustDeskMode::IPC && impl_->ipcFd >= 0) {
+        for (const auto& event : events) {
+            sendKey(event.keyCode, event.pressed);
+        }
+        return true;
+    }
+    OH_LOG_INFO(LOG_APP,
+        "[RustDesk] key transaction rejected without active transport events=%{public}zu",
+        events.size());
+    return false;
 }
 
 void RustDeskBridge::sendMouse(int x, int y, MouseButton button, bool pressed) {

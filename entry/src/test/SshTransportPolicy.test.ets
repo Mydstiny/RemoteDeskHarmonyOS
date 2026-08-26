@@ -3,7 +3,8 @@ import {
   isSshFrpControlPlaneTransport,
   normalizeSshEndpointTransport,
   sshEditorTransportForStoredHost,
-  sshTransportHasNativeImplementation
+  sshTransportHasNativeImplementation,
+  shouldPollSshNativeConnectionState
 } from '../main/ets/services/SshTransportPolicy';
 
 export default function sshTransportPolicyTest(): void {
@@ -41,5 +42,13 @@ export default function sshTransportPolicyTest(): void {
       expect(sshEditorTransportForStoredHost('jump.example', 'ssh_jump'))
         .assertEqual('ssh_jump');
     });
+
+    it('keeps polling a retained native session while the page waits for recovery', 0,
+      (): void => {
+        expect(shouldPollSshNativeConnectionState(7, false)).assertTrue();
+        expect(shouldPollSshNativeConnectionState(0, false)).assertFalse();
+        expect(shouldPollSshNativeConnectionState(-1, false)).assertFalse();
+        expect(shouldPollSshNativeConnectionState(7, true)).assertFalse();
+      });
   });
 }

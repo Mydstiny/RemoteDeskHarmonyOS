@@ -3,11 +3,17 @@ import {
   makeSshTerminalSurfaceBindingKey,
   makeSshTerminalSurfaceOwnerId,
   makeSshTerminalSurfaceRenderKey,
+  SSH_TERMINAL_PTY_RESIZE_COALESCE_MS,
   shouldRebindSshTerminalSurface
 } from '../main/ets/services/SshTerminalSurfaceBindingPolicy';
 
 export default function sshTerminalSurfaceBindingPolicyTest(): void {
   describe('SshTerminalSurfaceBindingPolicy', (): void => {
+    it('keeps_pty_resize_coalescing_inside_the_ssh_performance_contract', 0, (): void => {
+      expect(SSH_TERMINAL_PTY_RESIZE_COALESCE_MS >= 50).assertTrue();
+      expect(SSH_TERMINAL_PTY_RESIZE_COALESCE_MS <= 100).assertTrue();
+    });
+
     it('rebinds_when_the_platform_reuses_a_surface_id_for_a_new_owner', 0, (): void => {
       expect(shouldRebindSshTerminalSurface('42', '42', 'host-a:binding-1',
         'host-b:binding-2')).assertTrue();

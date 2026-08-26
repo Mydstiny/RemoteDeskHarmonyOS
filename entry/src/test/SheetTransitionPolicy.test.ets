@@ -113,8 +113,8 @@ export default function sheetTransitionPolicyTest() {
       expect(shouldUseSftpExpandedWorkspace(false, false, 1280, 760)).assertFalse();
     });
 
-    it('reserves_footer_space_when_a_wide_workspace_has_task_controls', 0, (): void => {
-      expect(sftpExpandedWorkspaceMinHeight(false, false)).assertEqual(300);
+    it('keeps_footer_actions_reachable_in_short_wide_workspaces', 0, (): void => {
+      expect(sftpExpandedWorkspaceMinHeight(false, false)).assertEqual(150);
       expect(sftpExpandedWorkspaceMinHeight(true, false)).assertEqual(150);
       expect(sftpExpandedWorkspaceMinHeight(false, true)).assertEqual(150);
     });

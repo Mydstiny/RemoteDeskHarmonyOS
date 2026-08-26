@@ -8,6 +8,16 @@ license identifiers.
 
 Current high-risk boundaries are RustDesk protocol definitions, prebuilt
 FreeRDP/WinPR, OpenSSL, FFmpeg, libssh2, Mbed TLS, Opus and Huawei packages.
+The Moonlight boundary additionally includes the exact GPL-3.0-only
+moonlight-common-c source and its pinned MIT ENet/nanors gitlinks. Those three
+trees must remain byte-verified, separately identified in the SPDX SBOM and
+available in every corresponding source archive; project adaptations must not
+be hidden inside the upstream snapshot.
+The packaged Moonlight protocol icon is a deterministic tintable transform of
+the official Moonlight Qt SVG at a pinned revision. Its original and packaged
+hashes, transformation, fallback and trademark boundary are recorded in
+`MOONLIGHT_ICON_PROVENANCE.md`; it remains a separate SPDX package/file from
+the common-c protocol implementation.
 RustDesk protocol provenance must record both the outer RustDesk revision and
 its `hbb_common` gitlink revision; local normalized and upstream byte hashes
 are separate facts and must not be presented as identical.

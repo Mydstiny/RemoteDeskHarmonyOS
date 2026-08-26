@@ -1,7 +1,21 @@
+import { curves } from '@kit.ArkUI';
 import {
+  REMOTE_SESSION_COLLAPSED_RAIL_BACKGROUND,
+  REMOTE_SESSION_COLLAPSED_RAIL_BORDER,
+  REMOTE_SESSION_COLLAPSED_RAIL_HEIGHT,
+  REMOTE_SESSION_COLLAPSED_RAIL_ICON,
+  REMOTE_SESSION_COLLAPSED_RAIL_TOUCH_WIDTH,
+  REMOTE_SESSION_COLLAPSED_RAIL_WIDTH,
+  REMOTE_SESSION_COLLAPSED_TOP_HEIGHT,
+  REMOTE_SESSION_COLLAPSED_TOP_TOUCH_HEIGHT,
+  REMOTE_SESSION_COLLAPSED_TOP_WIDTH,
+  RemoteSessionPrimaryActionId,
   RemoteTopBarLayout,
+  remoteSessionPrimaryActionIds,
+  remoteSessionRailDragOffset,
+  remoteSessionRailShouldCollapse,
   rustDeskTopBarAutoCollapseDelayMs,
-  rustDeskActionAvailability
+  remoteSessionActionAvailability
 } from '../services/RemoteSessionTopBarPolicy';
 import { RemoteSessionCapabilities } from '../services/RemoteSessionCapabilityPolicy';
 import {
@@ -10,6 +24,13 @@ import {
   RustDeskDisplayResolution
 } from '../types/rdpnapi';
 import { RustDeskDisplaySwitchState } from '../services/RustDeskDisplaySwitchPolicy';
+import {
+  remoteSessionSidebarAnchoredMenuTop,
+  remoteSessionSidebarCanvasHeight,
+  remoteSessionSidebarMenuMaxHeight,
+  remoteSessionSidebarMenuWidth,
+  remoteSessionSidebarVisibleRailHeight
+} from '../services/RemoteSessionSidebarLayoutPolicy';
 
 const EMPTY_RUSTDESK_DISPLAY_CAPABILITIES: RustDeskDisplayCapabilities = {
   supported: false,
@@ -43,8 +64,10 @@ const EMPTY_RUSTDESK_DISPLAY_RESOLUTION: RustDeskDisplayResolution = {
 
 export interface RemoteSessionTopBarActions {
   onDisconnect: () => void;
+  onHideTopBar: () => void;
   onRefreshFrame: () => void;
   onOpenKeyboard: () => void;
+  onOpenModifiers: () => void;
   onOpenFileTransfer: () => void;
   onCtrlAltDel: () => void;
   onLockRemote: () => void;
@@ -54,6 +77,7 @@ export interface RemoteSessionTopBarActions {
   onToggleFilePaste: (on: boolean) => void;
   onSetViewScaleMode: (mode: string) => void;
   onResetCanvasTransform: () => void;
+  onRotateRemoteDisplay: () => void;
   onOpenRustDeskResolution: () => void;
   onSelectRustDeskDisplay: (display: number) => void;
   onSetRustDeskDisplayResolution: (width: number, height: number) => void;
@@ -65,17 +89,19 @@ export interface RemoteSessionTopBarActions {
   onToggleReverseWheel: (on: boolean) => void;
   onToggleSwapMouseButtons: (on: boolean) => void;
   onSetTouchpadSpeed: (speed: number) => void;
+  onToggleDiagnostics: (on: boolean) => void;
   onUnsupported: (actionId: string, reason: string) => void;
 }
 
 @Component
 export struct RemoteSessionTopBar {
+  @Prop protocol: string = 'rustdesk';
   @Prop layout: RemoteTopBarLayout = {
     deviceClass: 'pc',
     iconSize: 44,
     itemGap: 8,
-    topOffset: 8,
-    maxVisibleButtons: 7,
+    topOffset: 0,
+    maxVisibleButtons: 8,
     menuWidth: 360
   };
   @Prop @Watch('onEdgeRailChanged') edgeRail: boolean = false;
@@ -92,7 +118,9 @@ export struct RemoteSessionTopBar {
   @Prop reverseWheel: boolean = false;
   @Prop swapMouseButtons: boolean = false;
   @Prop touchpadSpeed: number = 1.0;
+  @Prop rustDeskPhoneTarget: boolean = false;
   @Prop keyboardOpen: boolean = false;
+  @Prop diagnosticsEnabled: boolean = false;
   @Prop rustDeskDisplayCapabilities: RustDeskDisplayCapabilities = EMPTY_RUSTDESK_DISPLAY_CAPABILITIES;
   @Prop rustDeskDisplaySwitchState: RustDeskDisplaySwitchState = EMPTY_RUSTDESK_DISPLAY_SWITCH_STATE;
   @Prop pendingDisplayResolution: RustDeskDisplayResolution = EMPTY_RUSTDESK_DISPLAY_RESOLUTION;
@@ -108,12 +136,17 @@ export struct RemoteSessionTopBar {
   @State private collapsed: boolean = false;
   @State private pinned: boolean = false;
   @State private activeMenu: string = '';
+  @State private railSwipeX: number = 0;
+  @State private viewportWidth: number = 360;
+  @State private viewportHeight: number = 640;
   private autoCollapseTimer: number = -1;
 
   actions: RemoteSessionTopBarActions = {
     onDisconnect: (): void => {},
+    onHideTopBar: (): void => {},
     onRefreshFrame: (): void => {},
     onOpenKeyboard: (): void => {},
+    onOpenModifiers: (): void => {},
     onOpenFileTransfer: (): void => {},
     onCtrlAltDel: (): void => {},
     onLockRemote: (): void => {},
@@ -123,6 +156,7 @@ export struct RemoteSessionTopBar {
     onToggleFilePaste: (_on: boolean): void => {},
     onSetViewScaleMode: (_mode: string): void => {},
     onResetCanvasTransform: (): void => {},
+    onRotateRemoteDisplay: (): void => {},
     onOpenRustDeskResolution: (): void => {},
     onSelectRustDeskDisplay: (_display: number): void => {},
     onSetRustDeskDisplayResolution: (_width: number, _height: number): void => {},
@@ -134,12 +168,14 @@ export struct RemoteSessionTopBar {
     onToggleReverseWheel: (_on: boolean): void => {},
     onToggleSwapMouseButtons: (_on: boolean): void => {},
     onSetTouchpadSpeed: (_speed: number): void => {},
+    onToggleDiagnostics: (_on: boolean): void => {},
     onUnsupported: (_actionId: string, _reason: string): void => {}
   };
 
   private runAction(actionId: string, action: () => void): void {
     this.noteUserActivity();
-    const availability = rustDeskActionAvailability(actionId, this.capabilities);
+    const availability = remoteSessionActionAvailability(
+      actionId, this.protocol, this.capabilities);
     if (!availability.enabled) {
       this.actions.onUnsupported(actionId, availability.reason);
       return;
@@ -162,6 +198,28 @@ export struct RemoteSessionTopBar {
       clearTimeout(this.autoCollapseTimer);
       this.autoCollapseTimer = -1;
     }
+  }
+
+  private resetRailSwipe(): void {
+    animateTo({ duration: 220, curve: curves.responsiveSpringMotion() }, (): void => {
+      this.railSwipeX = 0;
+    });
+  }
+
+  private updateRailSwipe(event: GestureEvent): void {
+    if (Math.abs(event.offsetX) < Math.abs(event.offsetY)) { return; }
+    this.railSwipeX = remoteSessionRailDragOffset(event.offsetX);
+  }
+
+  private finishRailSwipe(event: GestureEvent): void {
+    const collapse: boolean = remoteSessionRailShouldCollapse(
+      event.offsetX, event.velocityX);
+    this.resetRailSwipe();
+    if (!collapse) { return; }
+    this.closeMenus();
+    animateTo({ duration: 180, curve: curves.responsiveSpringMotion() }, (): void => {
+      this.collapsed = true;
+    });
   }
 
   private scheduleAutoCollapse(): void {
@@ -210,7 +268,11 @@ export struct RemoteSessionTopBar {
     return count * this.layout.iconSize + (count + 1) * this.layout.itemGap;
   }
 
-  private menuLeft(width: number = this.layout.menuWidth): number {
+  private effectiveMenuWidth(): number {
+    return this.edgeRail ? this.sidebarMenuWidth() : this.layout.menuWidth;
+  }
+
+  private menuLeft(width: number = this.effectiveMenuWidth()): number {
     if (this.edgeRail) {
       return 0;
     }
@@ -222,12 +284,51 @@ export struct RemoteSessionTopBar {
     return this.edgeRail ? 0 : this.layout.iconSize + 12;
   }
 
+  private keyboardMenuHeight(): number {
+    return this.menuHeaderHeight() + this.menuPadding() * 2 + this.menuItemHeight() * 2;
+  }
+
+  private keyboardButtonIndex(): number {
+    return 4;
+  }
+
+  private keyboardMenuLeft(): number {
+    if (this.edgeRail) {
+      return 0;
+    }
+    const width: number = this.effectiveMenuWidth();
+    const anchorCenter: number = this.layout.itemGap +
+      this.keyboardButtonIndex() * (this.layout.iconSize + this.layout.itemGap) +
+      this.layout.iconSize / 2;
+    const maxLeft: number = Math.max(0, this.toolbarWidth() - width);
+    return Math.max(0, Math.min(anchorCenter - width / 2, maxLeft));
+  }
+
+  private keyboardMenuTop(): number {
+    if (!this.edgeRail) {
+      return this.menuTop();
+    }
+    const anchorTop: number = this.edgeRailOffsetY() + 6 +
+      this.keyboardButtonIndex() * (this.layout.iconSize + this.layout.itemGap);
+    return remoteSessionSidebarAnchoredMenuTop(this.viewportHeight, anchorTop,
+      this.layout.iconSize, this.keyboardMenuHeight());
+  }
+
   private edgeRailWidth(): number {
     return this.layout.iconSize + 12;
   }
 
+  private sidebarMenuWidth(): number {
+    return remoteSessionSidebarMenuWidth(this.viewportWidth, this.layout.menuWidth,
+      this.edgeRailWidth(), this.layout.itemGap);
+  }
+
+  private sidebarMenuMaxHeight(): number {
+    return remoteSessionSidebarMenuMaxHeight(this.viewportHeight, this.menuTop());
+  }
+
   private edgeRailButtonCount(): number {
-    return this.layout.deviceClass === 'phone' ? 5 : 6;
+    return remoteSessionPrimaryActionIds(this.protocol).length;
   }
 
   private edgeRailHeight(): number {
@@ -238,12 +339,40 @@ export struct RemoteSessionTopBar {
   }
 
   private edgeRailCanvasHeight(): number {
-    return Math.max(520, this.edgeRailHeight());
+    return remoteSessionSidebarCanvasHeight(this.viewportHeight);
+  }
 
+  private edgeRailVisibleHeight(): number {
+    return remoteSessionSidebarVisibleRailHeight(this.viewportHeight, this.edgeRailHeight());
   }
 
   private edgeRailOffsetY(): number {
-    return Math.max(0, (this.edgeRailCanvasHeight() - this.edgeRailHeight()) / 2);
+    return Math.max(0, (this.edgeRailCanvasHeight() - this.edgeRailVisibleHeight()) / 2);
+  }
+
+  private compactMenu(): boolean {
+    return this.layout.deviceClass === 'phone' || this.viewportHeight < 440;
+  }
+
+  private menuItemHeight(): number {
+    return this.compactMenu() ? 38 : 44;
+  }
+
+  private menuFontSize(): number {
+    if (this.layout.deviceClass === 'pc') { return 15; }
+    return this.compactMenu() ? 13 : 14;
+  }
+
+  private menuPadding(): number {
+    return this.compactMenu() ? 8 : 12;
+  }
+
+  private menuHeaderHeight(): number {
+    return this.compactMenu() ? 40 : 44;
+  }
+
+  private menuScrollMaxHeight(): number {
+    return Math.max(88, this.sidebarMenuMaxHeight() - this.menuHeaderHeight());
   }
 
   private qualityLabel(value: number): string {
@@ -360,7 +489,8 @@ export struct RemoteSessionTopBar {
   }
 
   @Builder
-  private iconButton(icon: Resource, bgColor: string, action: () => void, fontSize?: number) {
+  private iconButton(icon: Resource, bgColor: string, action: () => void, fontSize?: number,
+    accessibilityLabel: string = 'RustDesk 会话工具栏操作') {
     Button() {
       SymbolGlyph(icon)
         .fontSize(fontSize ?? 20)
@@ -371,6 +501,7 @@ export struct RemoteSessionTopBar {
       .backgroundColor(bgColor)
       .borderRadius(10)
       .padding(0)
+      .accessibilityText(accessibilityLabel)
       .onClick((): void => {
         this.noteUserActivity();
         action();
@@ -391,14 +522,15 @@ export struct RemoteSessionTopBar {
         Blank().width(30)
       }
       Text(label)
-        .fontSize(16)
-        .fontColor(rustDeskActionAvailability(actionId, this.capabilities).enabled ? '#111111' : '#777777')
+        .fontSize(this.menuFontSize())
+        .fontColor(remoteSessionActionAvailability(
+          actionId, this.protocol, this.capabilities).enabled ? '#111111' : '#777777')
         .layoutWeight(1)
         .maxLines(1)
         .textOverflow({ overflow: TextOverflow.Ellipsis })
     }
     .width('100%')
-    .height(40)
+    .height(this.menuItemHeight())
     .padding({ left: 8, right: 8 })
     .borderRadius(6)
     .onClick((): void => {
@@ -407,31 +539,62 @@ export struct RemoteSessionTopBar {
   }
 
   @Builder
+  private menuHeader(title: string, icon: Resource) {
+    Row() {
+      SymbolGlyph(icon).fontSize(18).fontColor([this.accentColor])
+      Text(title).fontSize(this.compactMenu() ? 14 : 16).fontWeight(FontWeight.Bold)
+        .fontColor('#111827').margin({ left: 8 }).layoutWeight(1)
+      Button() {
+        SymbolGlyph($r('sys.symbol.xmark')).fontSize(14).fontColor(['#4B5563'])
+      }
+      .width(34).height(34).padding(0).borderRadius(17)
+      .backgroundColor('rgba(17,24,39,0.06)')
+      .accessibilityText('关闭' + title)
+      .onClick((): void => { this.closeMenus(); })
+    }
+    .width('100%').height(this.menuHeaderHeight())
+    .padding({ left: this.menuPadding(), right: this.menuPadding() })
+    .border({ width: { bottom: 0.5 }, color: 'rgba(17,24,39,0.10)' })
+  }
+
+  @Builder
   private controlMenu() {
     Column() {
-      this.menuItem('发送剪贴板按键', 'toggleClipboard', (): void => {
-        this.actions.onToggleClipboard(!this.clipboardEnabled);
-      }, this.clipboardEnabled)
-      this.menuItem('传输文件', 'fileTransfer', (): void => { this.actions.onOpenFileTransfer(); })
-      this.menuItem('插入 Ctrl + Alt + Del', 'ctrlAltDel', (): void => { this.actions.onCtrlAltDel(); })
-      this.menuItem('锁定远程电脑', 'lockRemote', (): void => { this.actions.onLockRemote(); })
-      this.menuItem('刷新画面', 'refreshFrame', (): void => { this.actions.onRefreshFrame(); })
-      this.menuItem('截屏', 'screenshot', (): void => {})
-      this.menuItem('文字聊天', 'textChat', (): void => {})
-      this.menuItem('语音通话', 'voiceCall', (): void => {})
-      this.menuItem('录制', 'recordSession', (): void => {})
+      this.menuHeader('会话控制', $r('sys.symbol.gearshape_fill'))
+      Scroll() {
+        Column() {
+          this.menuItem('发送剪贴板按键', 'toggleClipboard', (): void => {
+            this.actions.onToggleClipboard(!this.clipboardEnabled);
+          }, this.clipboardEnabled)
+          this.menuItem('传输文件', 'fileTransfer', (): void => { this.actions.onOpenFileTransfer(); })
+          this.menuItem('插入 Ctrl + Alt + Del', 'ctrlAltDel', (): void => { this.actions.onCtrlAltDel(); })
+          this.menuItem('刷新画面', 'refreshFrame', (): void => { this.actions.onRefreshFrame(); })
+          if (this.protocol === 'rustdesk') {
+            this.menuItem('锁定远程电脑', 'lockRemote', (): void => { this.actions.onLockRemote(); })
+            this.menuItem('截屏', 'screenshot', (): void => {})
+            this.menuItem('文字聊天', 'textChat', (): void => {})
+            this.menuItem('语音通话', 'voiceCall', (): void => {})
+            this.menuItem('录制', 'recordSession', (): void => {})
+          }
+        }
+        .width('100%').padding(this.menuPadding())
+      }
+      .width('100%').constraintSize({ maxHeight: this.menuScrollMaxHeight() })
+      .scrollable(ScrollDirection.Vertical).scrollBar(BarState.Auto)
     }
-    .width(this.layout.menuWidth)
-    .padding(12)
+    .width(this.effectiveMenuWidth())
+    .constraintSize({ maxHeight: this.sidebarMenuMaxHeight() })
     .backgroundColor('rgba(255,255,255,0.96)')
-    .borderRadius(10)
+    .borderRadius(16).clip(true)
     .shadow({ radius: 10, color: 'rgba(0,0,0,0.22)', offsetY: 2 })
     .position({ x: this.menuLeft(), y: this.menuTop() })
+    .hitTestBehavior(HitTestMode.BLOCK_HIERARCHY)
   }
 
   @Builder
   private displayMenu() {
     Column() {
+      this.menuHeader('显示与画质', $r('sys.symbol.display'))
       Scroll() {
         Column() {
           this.menuItem('适应窗口', 'displaySettings', (): void => {
@@ -458,8 +621,14 @@ export struct RemoteSessionTopBar {
           this.menuItem('重新居中画面', 'displaySettings', (): void => {
             this.actions.onResetCanvasTransform();
           })
+          if (this.protocol === 'rustdesk') {
+            if (this.rustDeskPhoneTarget) {
+              this.menuItem('旋转远端画面（顺时针 90°）', 'rotateDisplay', (): void => {
+                this.actions.onRotateRemoteDisplay();
+              })
+            }
 
-          if (this.hasRustDeskDisplayData()) {
+            if (this.hasRustDeskDisplayData()) {
             Column({ space: 6 }) {
               Text('远端显示器').fontSize(12).fontColor('#6B7280')
                 .margin({ left: 8, top: 4 }).alignSelf(ItemAlign.Start)
@@ -550,11 +719,11 @@ export struct RemoteSessionTopBar {
                 this.actions.onOpenRustDeskResolution();
               })
             }.width('100%')
-          } else {
-            this.menuItem('显示器与分辨率', 'resolutionSettings', (): void => {
-              this.actions.onOpenRustDeskResolution();
-            })
-          }
+            } else {
+              this.menuItem('显示器与分辨率', 'resolutionSettings', (): void => {
+                this.actions.onOpenRustDeskResolution();
+              })
+            }
 
           this.menuItem('画质: ' + this.qualityLabel(this.imageQuality), 'displaySettings', (): void => {
             const next: number = this.imageQuality >= 2 ? 0 : this.imageQuality + 1;
@@ -571,55 +740,94 @@ export struct RemoteSessionTopBar {
           this.menuItem('静音', 'toggleAudio', (): void => {
             this.actions.onToggleAudio(!this.audioEnabled);
           }, !this.audioEnabled)
-          this.menuItem('允许复制粘贴文件', 'toggleFilePaste', (): void => {
-            this.actions.onToggleFilePaste(!this.filePasteEnabled);
-          }, this.filePasteEnabled)
+            this.menuItem('允许复制粘贴文件', 'toggleFilePaste', (): void => {
+              this.actions.onToggleFilePaste(!this.filePasteEnabled);
+            }, this.filePasteEnabled)
+          }
         }
       }
       .width('100%')
-      .constraintSize({ maxHeight: 500 })
-      .scrollBar(BarState.Off)
+      .constraintSize({ maxHeight: this.menuScrollMaxHeight() })
+      .scrollBar(BarState.Auto)
     }
-    .width(this.layout.menuWidth)
-    .padding(12)
+    .width(this.effectiveMenuWidth())
+    .constraintSize({ maxHeight: this.sidebarMenuMaxHeight() })
+    .padding({ left: this.menuPadding(), right: this.menuPadding(), bottom: this.menuPadding() })
     .backgroundColor('rgba(255,255,255,0.96)')
-    .borderRadius(10)
+    .borderRadius(16).clip(true)
     .shadow({ radius: 10, color: 'rgba(0,0,0,0.22)', offsetY: 2 })
     .position({ x: this.menuLeft(), y: this.menuTop() })
+    .hitTestBehavior(HitTestMode.BLOCK_HIERARCHY)
+  }
+
+  @Builder
+  private keyboardMenu() {
+    Column() {
+      this.menuHeader('键盘', $r('sys.symbol.keyboard'))
+      Column() {
+        this.menuItem(this.keyboardOpen ? '关闭虚拟键盘' : '打开虚拟键盘',
+          'toggleKeyboard', (): void => {
+            this.closeMenus();
+            this.actions.onOpenKeyboard();
+          }, this.keyboardOpen)
+        this.menuItem('组合键与功能键', 'toggleModifiers', (): void => {
+          this.closeMenus();
+          this.actions.onOpenModifiers();
+        })
+      }
+      .width('100%').padding(this.menuPadding())
+    }
+    .width(this.effectiveMenuWidth())
+    .constraintSize({ maxHeight: this.sidebarMenuMaxHeight() })
+    .backgroundColor('rgba(255,255,255,0.96)')
+    .borderRadius(16).clip(true)
+    .shadow({ radius: 10, color: 'rgba(0,0,0,0.22)', offsetY: 2 })
+    .position({ x: this.keyboardMenuLeft(), y: this.keyboardMenuTop() })
+    .hitTestBehavior(HitTestMode.BLOCK_HIERARCHY)
   }
 
   @Builder
   private keyboardMouseMenu() {
     Column() {
-      this.menuItem(this.keyboardOpen ? '关闭虚拟键盘' : '打开虚拟键盘', 'toggleKeyboard', (): void => {
-        this.actions.onOpenKeyboard();
-      }, this.keyboardOpen)
-      this.menuItem('浏览模式', 'browseMode', (): void => {
-        this.actions.onToggleBrowseMode(!this.browseMode);
-      }, this.browseMode)
-      this.menuItem('显示我的光标', 'keyboardMouseSettings', (): void => {
-        this.actions.onToggleShowLocalCursor(!this.showLocalCursor);
-      }, this.showLocalCursor)
-      this.menuItem('相对鼠标模式', 'keyboardMouseSettings', (): void => {
-        this.actions.onToggleRelativeMouse(!this.relativeMouseMode);
-      }, this.relativeMouseMode)
-      this.menuItem('远程滚轮反向', 'keyboardMouseSettings', (): void => {
-        this.actions.onToggleReverseWheel(!this.reverseWheel);
-      }, this.reverseWheel)
-      this.menuItem('交换鼠标左右键', 'keyboardMouseSettings', (): void => {
-        this.actions.onToggleSwapMouseButtons(!this.swapMouseButtons);
-      }, this.swapMouseButtons)
-      this.menuItem('触控板速度 ' + this.touchpadSpeed.toFixed(1) + 'x', 'keyboardMouseSettings', (): void => {
-        const next: number = this.touchpadSpeed >= 1.6 ? 0.8 : this.touchpadSpeed + 0.4;
-        this.actions.onSetTouchpadSpeed(next);
-      })
+      this.menuHeader('鼠标与触控', $r('sys.symbol.mouse'))
+      Scroll() {
+        Column() {
+          if (this.protocol === 'rustdesk') {
+            this.menuItem('浏览模式', 'browseMode', (): void => {
+              this.actions.onToggleBrowseMode(!this.browseMode);
+            }, this.browseMode)
+            this.menuItem('显示我的光标', 'keyboardMouseSettings', (): void => {
+              this.actions.onToggleShowLocalCursor(!this.showLocalCursor);
+            }, this.showLocalCursor)
+            this.menuItem('相对鼠标模式', 'keyboardMouseSettings', (): void => {
+              this.actions.onToggleRelativeMouse(!this.relativeMouseMode);
+            }, this.relativeMouseMode)
+          }
+          this.menuItem('远程滚轮反向', 'keyboardMouseSettings', (): void => {
+            this.actions.onToggleReverseWheel(!this.reverseWheel);
+          }, this.reverseWheel)
+          if (this.protocol === 'rustdesk') {
+            this.menuItem('交换鼠标左右键', 'keyboardMouseSettings', (): void => {
+              this.actions.onToggleSwapMouseButtons(!this.swapMouseButtons);
+            }, this.swapMouseButtons)
+            this.menuItem('触控板速度 ' + this.touchpadSpeed.toFixed(1) + 'x', 'keyboardMouseSettings', (): void => {
+              const next: number = this.touchpadSpeed >= 1.6 ? 0.8 : this.touchpadSpeed + 0.4;
+              this.actions.onSetTouchpadSpeed(next);
+            })
+          }
+        }
+        .width('100%').padding(this.menuPadding())
+      }
+      .width('100%').constraintSize({ maxHeight: this.menuScrollMaxHeight() })
+      .scrollable(ScrollDirection.Vertical).scrollBar(BarState.Auto)
     }
-    .width(this.layout.menuWidth)
-    .padding(12)
+    .width(this.effectiveMenuWidth())
+    .constraintSize({ maxHeight: this.sidebarMenuMaxHeight() })
     .backgroundColor('rgba(255,255,255,0.96)')
-    .borderRadius(10)
+    .borderRadius(16).clip(true)
     .shadow({ radius: 10, color: 'rgba(0,0,0,0.22)', offsetY: 2 })
     .position({ x: this.menuLeft(), y: this.menuTop() })
+    .hitTestBehavior(HitTestMode.BLOCK_HIERARCHY)
   }
 
   @Builder
@@ -637,47 +845,83 @@ export struct RemoteSessionTopBar {
   }
 
   @Builder
+  private primaryActionButton(actionId: RemoteSessionPrimaryActionId) {
+    if (actionId === 'pin') {
+      this.iconButton(this.pinned ? $r('sys.symbol.pin_fill') : $r('sys.symbol.pin'),
+        this.pinned ? '#3A3A3A' : this.accentColor, (): void => {
+          this.pinned = !this.pinned;
+          this.scheduleAutoCollapse();
+        }, 18, this.pinned ? '取消固定会话工具栏' : '固定会话工具栏')
+    } else if (actionId === 'control') {
+      this.iconButton($r('sys.symbol.gearshape_fill'), this.accentColor,
+        (): void => { this.toggleMenu('control'); }, 18, '打开会话控制')
+    } else if (actionId === 'display') {
+      this.iconButton($r('sys.symbol.display'), this.accentColor,
+        (): void => { this.toggleMenu('display'); }, 18, '打开显示与画质')
+    } else if (actionId === 'keyboardMouse') {
+      this.iconButton($r('sys.symbol.mouse'), this.accentColor,
+        (): void => { this.toggleMenu('keyboardMouse'); }, 18, '打开鼠标与触控设置')
+    } else if (actionId === 'keyboard') {
+      this.iconButton($r('sys.symbol.keyboard'), this.keyboardOpen ? '#2A9D8F' : this.accentColor,
+        (): void => { this.toggleMenu('keyboard'); }, 18, '选择虚拟键盘或组合键')
+    } else if (actionId === 'fileTransfer') {
+      this.iconButton($r('sys.symbol.doc'), this.accentColor, (): void => {
+        this.runAction('fileTransfer', (): void => { this.actions.onOpenFileTransfer(); });
+      }, 18, '发送文件')
+    } else if (actionId === 'diagnostics') {
+      this.iconButton($r('sys.symbol.performance'),
+        this.diagnosticsEnabled ? '#2A9D8F' : this.accentColor, (): void => {
+          this.runAction('diagnostics', (): void => {
+            this.actions.onToggleDiagnostics(!this.diagnosticsEnabled);
+          });
+        }, 18, this.diagnosticsEnabled ? '关闭性能面板' : '打开性能面板')
+    } else {
+      this.iconButton($r('sys.symbol.xmark_circle_fill'), '#FF5353',
+        (): void => { this.actions.onDisconnect(); }, 18, '断开 RustDesk 会话')
+    }
+  }
+
+  @Builder
+  private primaryActionButtons(vertical: boolean) {
+    if (vertical) {
+      Column({ space: this.layout.itemGap }) {
+        ForEach(remoteSessionPrimaryActionIds(this.protocol),
+          (actionId: RemoteSessionPrimaryActionId): void => {
+            this.primaryActionButton(actionId)
+          }, (actionId: RemoteSessionPrimaryActionId): string => actionId)
+      }
+    } else {
+      Row({ space: this.layout.itemGap }) {
+        ForEach(remoteSessionPrimaryActionIds(this.protocol),
+          (actionId: RemoteSessionPrimaryActionId): void => {
+            this.primaryActionButton(actionId)
+          }, (actionId: RemoteSessionPrimaryActionId): string => actionId)
+      }
+    }
+  }
+
+  @Builder
   private toolbarBody() {
     Stack() {
       Row() {
-        this.iconButton(this.pinned ? $r('sys.symbol.lock_fill') : $r('sys.symbol.ohos_lock'), this.pinned ? '#3A3A3A' : this.accentColor, (): void => {
-          this.pinned = !this.pinned;
-          this.scheduleAutoCollapse();
-        })
-        Blank().width(this.layout.itemGap)
-        this.iconButton($r('sys.symbol.bolt_fill'), this.accentColor, (): void => { this.toggleMenu('control'); })
-        Blank().width(this.layout.itemGap)
-        this.iconButton($r('sys.symbol.desktop_fill'), this.accentColor, (): void => { this.toggleMenu('display'); })
-        Blank().width(this.layout.itemGap)
-        this.iconButton($r('sys.symbol.keyboard'), this.keyboardOpen ? '#2A9D8F' : this.accentColor,
-          (): void => { this.toggleMenu('keyboardMouse'); })
-        Blank().width(this.layout.itemGap)
-        if (this.layout.deviceClass !== 'phone') {
-          this.iconButton($r('sys.symbol.message'), this.accentColor, (): void => { this.toggleMenu('chat'); })
-          Blank().width(this.layout.itemGap)
-        }
-        if (this.layout.deviceClass === 'pc') {
-          this.iconButton($r('sys.symbol.record_circle'), this.accentColor, (): void => {
-            this.runAction('recordSession', (): void => {});
-          }, 18)
-          Blank().width(this.layout.itemGap)
-        }
-        this.iconButton($r('sys.symbol.xmark'), '#FF5353', (): void => { this.actions.onDisconnect(); }, 18)
+        this.primaryActionButtons(false)
       }
       .height(this.layout.iconSize + 12)
       .padding({ left: this.layout.itemGap, right: this.layout.itemGap })
       .backgroundColor('rgba(255,255,255,0.94)')
-      .borderRadius(8)
+      .backdropBlur(16)
+      .border({ width: 0.5, color: REMOTE_SESSION_COLLAPSED_RAIL_BORDER })
+      .borderRadius({ topLeft: 0, topRight: 0, bottomLeft: 10, bottomRight: 10 })
       .shadow({ radius: 10, color: 'rgba(0,0,0,0.24)', offsetY: 2 })
       .position({ x: 0, y: 0 })
 
       Row() {
         SymbolGlyph($r('sys.symbol.chevron_down'))
           .fontSize(16)
-          .fontColor(['#444444'])
+          .fontColor([REMOTE_SESSION_COLLAPSED_RAIL_ICON])
         Text('收起')
           .fontSize(10)
-          .fontColor('#444444')
+          .fontColor(REMOTE_SESSION_COLLAPSED_RAIL_ICON)
           .margin({ left: 4 })
       }
       .height(28)
@@ -699,6 +943,9 @@ export struct RemoteSessionTopBar {
       if (this.activeMenu === 'keyboardMouse') {
         this.keyboardMouseMenu()
       }
+      if (this.activeMenu === 'keyboard') {
+        this.keyboardMenu()
+      }
       if (this.activeMenu === 'chat') {
         this.chatMenu()
       }
@@ -717,57 +964,44 @@ export struct RemoteSessionTopBar {
   @Builder
   private edgeRailBody() {
     Stack() {
-      Column() {
-        this.iconButton(this.pinned ? $r('sys.symbol.lock_fill') : $r('sys.symbol.ohos_lock'),
-          this.pinned ? '#3A3A3A' : this.accentColor, (): void => {
-            this.pinned = !this.pinned;
-            this.scheduleAutoCollapse();
-          })
-        Blank().height(this.layout.itemGap)
-        this.iconButton($r('sys.symbol.bolt_fill'), this.accentColor, (): void => {
-          this.toggleMenu('control');
-        })
-        Blank().height(this.layout.itemGap)
-        this.iconButton($r('sys.symbol.desktop_fill'), this.accentColor, (): void => {
-          this.toggleMenu('display');
-        })
-        Blank().height(this.layout.itemGap)
-        this.iconButton($r('sys.symbol.keyboard'), this.keyboardOpen ? '#2A9D8F' : this.accentColor,
-          (): void => { this.toggleMenu('keyboardMouse'); })
-        if (this.layout.deviceClass !== 'phone') {
+      Scroll() {
+        Column() {
+          this.primaryActionButtons(true)
           Blank().height(this.layout.itemGap)
-          this.iconButton($r('sys.symbol.message'), this.accentColor, (): void => {
-            this.toggleMenu('chat');
+          Row() {
+            SymbolGlyph($r('sys.symbol.chevron_right'))
+              .fontSize(16)
+              .fontColor([REMOTE_SESSION_COLLAPSED_RAIL_ICON])
+            Text('收起').fontSize(10)
+              .fontColor(REMOTE_SESSION_COLLAPSED_RAIL_ICON).margin({ left: 4 })
+          }
+          .height(30)
+          .width(this.edgeRailWidth() - 12)
+          .justifyContent(FlexAlign.Center)
+          .backgroundColor('rgba(255,255,255,0.92)')
+          .borderRadius(7)
+          .accessibilityText('收起会话贴边栏')
+          .onClick((): void => {
+            this.collapsed = true;
+            this.closeMenus();
           })
         }
-        Blank().height(this.layout.itemGap)
-        this.iconButton($r('sys.symbol.xmark'), '#FF5353', (): void => {
-          this.actions.onDisconnect();
-        }, 18)
-        Blank().height(this.layout.itemGap)
-        Row() {
-          SymbolGlyph($r('sys.symbol.chevron_right'))
-            .fontSize(16)
-            .fontColor(['#444444'])
-          Text('隐藏').fontSize(10).fontColor('#444444').margin({ left: 4 })
-        }
-        .height(30)
-        .width(this.edgeRailWidth() - 12)
-        .justifyContent(FlexAlign.Center)
-        .backgroundColor('rgba(255,255,255,0.92)')
-        .borderRadius(7)
-        .accessibilityText('隐藏 RustDesk 贴边栏')
-        .onClick((): void => {
-          this.collapsed = true;
-          this.closeMenus();
-        })
+        .width('100%').padding(6)
       }
       .width(this.edgeRailWidth())
-      .padding(6)
+      .height(this.edgeRailVisibleHeight())
+      .scrollable(ScrollDirection.Vertical).scrollBar(BarState.Auto)
       .backgroundColor('rgba(255,255,255,0.94)')
+      .backdropBlur(16)
+      .border({ width: 0.5, color: REMOTE_SESSION_COLLAPSED_RAIL_BORDER })
       .borderRadius({ topLeft: 10, bottomLeft: 10, topRight: 0, bottomRight: 0 })
       .shadow({ radius: 10, color: 'rgba(0,0,0,0.24)', offsetX: -2 })
-      .position({ x: this.layout.menuWidth + this.layout.itemGap, y: this.edgeRailOffsetY() })
+      .position({ x: this.effectiveMenuWidth() + this.layout.itemGap, y: this.edgeRailOffsetY() })
+      .gesture(PanGesture({ fingers: 1, direction: PanDirection.Horizontal, distance: 5 })
+        .onActionUpdate((event: GestureEvent): void => { this.updateRailSwipe(event); })
+        .onActionEnd((event: GestureEvent): void => { this.finishRailSwipe(event); })
+        .onActionCancel((): void => { this.resetRailSwipe(); }))
+      .hitTestBehavior(HitTestMode.BLOCK_HIERARCHY)
 
       if (this.activeMenu === 'control') {
         this.controlMenu()
@@ -778,32 +1012,77 @@ export struct RemoteSessionTopBar {
       if (this.activeMenu === 'keyboardMouse') {
         this.keyboardMouseMenu()
       }
+      if (this.activeMenu === 'keyboard') {
+        this.keyboardMenu()
+      }
       if (this.activeMenu === 'chat') {
         this.chatMenu()
       }
     }
-    .width(this.layout.menuWidth + this.edgeRailWidth() + this.layout.itemGap)
+    .width(this.effectiveMenuWidth() + this.edgeRailWidth() + this.layout.itemGap)
     .height(this.edgeRailCanvasHeight())
     .position({ x: '100%', y: '50%' })
     .markAnchor({ x: '100%', y: '50%' })
+    .translate({ x: this.railSwipeX })
+    .hitTestBehavior(HitTestMode.Transparent)
   }
 
   @Builder
   private edgeRailHandle() {
-    Row() {
-      SymbolGlyph($r('sys.symbol.chevron_left'))
-        .fontSize(18)
-        .fontColor(['#444444'])
+    Stack() {
+      Row() {
+        SymbolGlyph($r('sys.symbol.chevron_left'))
+          .fontSize(15)
+          .fontColor([REMOTE_SESSION_COLLAPSED_RAIL_ICON])
+      }
+      .width(REMOTE_SESSION_COLLAPSED_RAIL_WIDTH)
+      .height(REMOTE_SESSION_COLLAPSED_RAIL_HEIGHT)
+      .justifyContent(FlexAlign.Center)
+      .backgroundColor(REMOTE_SESSION_COLLAPSED_RAIL_BACKGROUND)
+      .backdropBlur(16)
+      .border({ width: 0.5, color: REMOTE_SESSION_COLLAPSED_RAIL_BORDER })
+      .borderRadius({ topLeft: 10, bottomLeft: 10, topRight: 0, bottomRight: 0 })
+      .shadow({ radius: 6, color: 'rgba(0,0,0,0.14)', offsetX: -1 })
+      .position({
+        x: REMOTE_SESSION_COLLAPSED_RAIL_TOUCH_WIDTH -
+          REMOTE_SESSION_COLLAPSED_RAIL_WIDTH,
+        y: 0
+      })
     }
-    .width(30)
-    .height(72)
-    .justifyContent(FlexAlign.Center)
-    .backgroundColor('rgba(255,255,255,0.92)')
-    .borderRadius({ topLeft: 10, bottomLeft: 10, topRight: 0, bottomRight: 0 })
-    .shadow({ radius: 8, color: 'rgba(0,0,0,0.22)', offsetX: -2 })
-    .accessibilityText('展开 RustDesk 贴边栏')
+    .width(REMOTE_SESSION_COLLAPSED_RAIL_TOUCH_WIDTH)
+    .height(REMOTE_SESSION_COLLAPSED_RAIL_HEIGHT)
+    .hitTestBehavior(HitTestMode.BLOCK_HIERARCHY)
+    .accessibilityText('展开会话贴边栏')
     .position({ x: '100%', y: '50%' })
     .markAnchor({ x: '100%', y: '50%' })
+    .onClick((): void => {
+      this.collapsed = false;
+      this.scheduleAutoCollapse();
+    })
+  }
+
+  @Builder
+  private topBarHandle() {
+    Stack() {
+      Row() {
+        SymbolGlyph($r('sys.symbol.chevron_down'))
+          .fontSize(15)
+          .fontColor([REMOTE_SESSION_COLLAPSED_RAIL_ICON])
+      }
+      .width(REMOTE_SESSION_COLLAPSED_TOP_WIDTH)
+      .height(REMOTE_SESSION_COLLAPSED_TOP_HEIGHT)
+      .justifyContent(FlexAlign.Center)
+      .backgroundColor(REMOTE_SESSION_COLLAPSED_RAIL_BACKGROUND)
+      .backdropBlur(16)
+      .border({ width: 0.5, color: REMOTE_SESSION_COLLAPSED_RAIL_BORDER })
+      .borderRadius({ topLeft: 0, topRight: 0, bottomLeft: 10, bottomRight: 10 })
+      .shadow({ radius: 6, color: 'rgba(0,0,0,0.14)', offsetY: 1 })
+      .position({ x: 0, y: 0 })
+    }
+    .width(REMOTE_SESSION_COLLAPSED_TOP_WIDTH)
+    .height(REMOTE_SESSION_COLLAPSED_TOP_TOUCH_HEIGHT)
+    .hitTestBehavior(HitTestMode.BLOCK_HIERARCHY)
+    .accessibilityText('展开会话顶栏')
     .onClick((): void => {
       this.collapsed = false;
       this.scheduleAutoCollapse();
@@ -821,33 +1100,25 @@ export struct RemoteSessionTopBar {
       } else {
         Stack({ alignContent: Alignment.Top }) {
           if (this.collapsed) {
-            Row() {
-              SymbolGlyph($r('sys.symbol.ellipsis_bubble'))
-                .fontSize(18)
-                .fontColor(['#444444'])
-            }
-            .width(58)
-            .height(28)
-            .justifyContent(FlexAlign.Center)
-            .backgroundColor('rgba(255,255,255,0.92)')
-            .borderRadius({ topLeft: 0, topRight: 0, bottomLeft: 8, bottomRight: 8 })
-            .shadow({ radius: 8, color: 'rgba(0,0,0,0.22)', offsetY: 2 })
-            .onClick((): void => {
-              this.collapsed = false;
-              this.scheduleAutoCollapse();
-            })
+            this.topBarHandle()
           } else {
             this.toolbarBody()
           }
         }
         .width('100%')
-        .height(this.collapsed ? 32 : 540)
-        .position({ x: 0, y: this.layout.topOffset })
+        .height(this.collapsed ? REMOTE_SESSION_COLLAPSED_TOP_TOUCH_HEIGHT : 540)
+        .position({ x: 0, y: 0 })
         .hitTestBehavior(HitTestMode.Transparent)
       }
     }
     .width('100%')
     .height('100%')
     .hitTestBehavior(HitTestMode.Transparent)
+    .onAreaChange((_old: Area, next: Area): void => {
+      const width: number = next.width as number;
+      const height: number = next.height as number;
+      if (Number.isFinite(width) && width > 0) { this.viewportWidth = width; }
+      if (Number.isFinite(height) && height > 0) { this.viewportHeight = height; }
+    })
   }
 }

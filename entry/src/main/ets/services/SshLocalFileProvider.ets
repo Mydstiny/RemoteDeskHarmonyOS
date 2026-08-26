@@ -1,6 +1,6 @@
 import { common } from '@kit.AbilityKit';
 import { preferences } from '@kit.ArkData';
-import { BusinessError, deviceInfo } from '@kit.BasicServicesKit';
+import { deviceInfo } from '@kit.BasicServicesKit';
 import { Environment, fileIo, fileShare, fileUri, picker } from '@kit.CoreFileKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import {
@@ -16,6 +16,7 @@ import {
   SshSftpBatchLimits,
   SshSftpTreeItem
 } from './SshSftpBatchPolicy';
+import { sshDiagnosticErrorCode } from './ssh/observability/SshDiagnosticPolicy';
 
 const PROVIDER_PREFS: string = 'RemoteDesktopSshLocalProviderPrefs';
 const AUTHORIZED_ROOT_URI_KEY: string = 'authorized_root_uri';
@@ -41,6 +42,22 @@ export interface SshLocalFileEntry {
   mtime: number;
 }
 
+export interface SshLocalFileKind {
+  isDirectory: boolean;
+  isSymbolicLink: boolean;
+  isSpecialFile: boolean;
+}
+
+/** Prefer FileIO's type probes because provider-backed stats may omit POSIX type bits. */
+export function resolveSshLocalFileKind(mode: number, directoryProbe: boolean,
+  symbolicLinkProbe: boolean): SshLocalFileKind {
+  const typeBits: number = mode & 0xF000;
+  const isDirectory: boolean = directoryProbe || typeBits === 0x4000;
+  const isSymbolicLink: boolean = symbolicLinkProbe || typeBits === 0xA000;
+  const isSpecialFile: boolean = !isDirectory && !isSymbolicLink && mode > 0 && typeBits !== 0x8000;
+  return { isDirectory, isSymbolicLink, isSpecialFile };
+}
+
 export interface SshLocalProviderSnapshot {
   plan: SshLocalProviderPlan;
   state: SshLocalProviderState;
@@ -62,13 +79,6 @@ function canUseSystemCapability(name: string): boolean {
   } catch (_err) {
     return false;
   }
-}
-
-function describeLocalProviderError(err: Object): string {
-  const error: BusinessError = err as BusinessError;
-  const code: string = typeof error.code === 'number' ? error.code.toString() : '-1';
-  const message: string = typeof error.message === 'string' ? error.message : JSON.stringify(err);
-  return 'code=' + code + ' message=' + message;
 }
 
 /**
@@ -94,8 +104,9 @@ export function probeSshLocalProviderCapabilities(): SshLocalProviderCapabilityP
     pickerImport: pickerAvailable,
     pickerExport: pickerAvailable,
     share: false,
-    // Drag/drop is enabled only after the UDMF token coordinator is wired.
-    externalDrag: false
+    // PC/2in1 can provide stable UDMF FILE_URI grants to the bounded staging
+    // adapter. Other device classes keep the fail-closed transfer-box path.
+    externalDrag: supportsAuthorizedFolder
   };
   const plan: SshLocalProviderPlan = resolveSshLocalProviderPlan(capabilities);
   hilog.info(LOCAL_PROVIDER_LOG_DOMAIN, LOCAL_PROVIDER_LOG_TAG,
@@ -113,6 +124,7 @@ export function probeSshLocalProviderCapabilities(): SshLocalProviderCapabilityP
  * asynchronous so callers can keep them outside ArkUI event callbacks.
  */
 export class SshLocalFileProvider {
+  private static instance: SshLocalFileProvider | null = null;
   private context: common.UIAbilityContext | null = null;
   private plan: SshLocalProviderPlan = resolveSshLocalProviderPlan({
     folderSelection: false,
@@ -130,7 +142,16 @@ export class SshLocalFileProvider {
   private rootLabel: string = '';
   private generation: number = 0;
 
+  /** Page and process-wide transfer engine must observe one authorization owner. */
+  static getInstance(): SshLocalFileProvider {
+    if (SshLocalFileProvider.instance === null) {
+      SshLocalFileProvider.instance = new SshLocalFileProvider();
+    }
+    return SshLocalFileProvider.instance;
+  }
+
   init(context: common.UIAbilityContext): void {
+    if (this.context === context) { return; }
     this.context = context;
     const probe: SshLocalProviderCapabilityProbe = probeSshLocalProviderCapabilities();
     this.plan = probe.plan;
@@ -195,7 +216,7 @@ export class SshLocalFileProvider {
       this.authorization = 'revoked';
       this.state = 'needsAuthorization';
       hilog.error(LOCAL_PROVIDER_LOG_DOMAIN, LOCAL_PROVIDER_LOG_TAG,
-        '[SFTP-LOCAL-RESTORE] failed ' + describeLocalProviderError(err));
+        '[SFTP-LOCAL-RESTORE] failed code=' + sshDiagnosticErrorCode(err));
     }
     return this.snapshot();
   }
@@ -250,7 +271,7 @@ export class SshLocalFileProvider {
       this.authorization = 'revoked';
       this.state = 'needsAuthorization';
       hilog.error(LOCAL_PROVIDER_LOG_DOMAIN, LOCAL_PROVIDER_LOG_TAG,
-        '[SFTP-LOCAL-CHOOSE] failed ' + describeLocalProviderError(err));
+        '[SFTP-LOCAL-CHOOSE] failed code=' + sshDiagnosticErrorCode(err));
     }
     return this.snapshot();
   }
@@ -504,21 +525,21 @@ export class SshLocalFileProvider {
     return base.endsWith('/') ? base + name : base + '/' + name;
   }
 
-  private entryFromStat(name: string, uri: string, info: Object): SshLocalFileEntry {
-    const raw: Record<string, Object> = info as Record<string, Object>;
-    const mode: number = typeof raw['mode'] === 'number' ? raw['mode'] as number : 0;
-    const typeBits: number = mode & 0xF000;
-    const isDirectory: boolean = (mode & 0x4000) !== 0;
-    const isSymbolicLink: boolean = typeBits === 0xA000;
-    const isSpecialFile: boolean = !isDirectory && !isSymbolicLink && mode > 0 && typeBits !== 0x8000;
-    const size: number = typeof raw['size'] === 'number' ? raw['size'] as number : -1;
-    const mtime: number = typeof raw['mtime'] === 'number' ? raw['mtime'] as number : -1;
+  private entryFromStat(name: string, uri: string, info: fileIo.Stat): SshLocalFileEntry {
+    const mode: number = typeof info.mode === 'number' ? info.mode : 0;
+    let directoryProbe: boolean = false;
+    let symbolicLinkProbe: boolean = false;
+    try { directoryProbe = info.isDirectory(); } catch (_err) { /* mode fallback */ }
+    try { symbolicLinkProbe = info.isSymbolicLink(); } catch (_err) { /* mode fallback */ }
+    const kind: SshLocalFileKind = resolveSshLocalFileKind(mode, directoryProbe, symbolicLinkProbe);
+    const size: number = typeof info.size === 'number' ? info.size : -1;
+    const mtime: number = typeof info.mtime === 'number' ? info.mtime : -1;
     return {
       name,
       uri,
-      isDirectory,
-      isSymbolicLink,
-      isSpecialFile,
+      isDirectory: kind.isDirectory,
+      isSymbolicLink: kind.isSymbolicLink,
+      isSpecialFile: kind.isSpecialFile,
       mode,
       size: Number.isFinite(size) && size >= 0 ? size : -1,
       mtime: Number.isFinite(mtime) && mtime >= 0 ? mtime : -1

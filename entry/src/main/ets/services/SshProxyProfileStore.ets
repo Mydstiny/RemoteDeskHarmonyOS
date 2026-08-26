@@ -51,15 +51,22 @@ export function setSshProxyProfilePreferenceAdapterForTest(
 }
 
 function cloneProfile(profile: SshProxyProfileV1): SshProxyProfileV1 {
-  const hops: SshJumpHop[] = profile.route.hops.map((hop: SshJumpHop): SshJumpHop => ({
-    host: hop.host,
-    port: hop.port,
-    username: hop.username,
-    authMethod: hop.authMethod,
-    expectedHostKeyRawBase64: hop.expectedHostKeyRawBase64,
-    expectedHostKeyFingerprintSha256: hop.expectedHostKeyFingerprintSha256,
-    connectTimeoutMs: hop.connectTimeoutMs
-  } as SshJumpHop));
+  const hops: SshJumpHop[] = profile.route.hops.map((hop: SshJumpHop): SshJumpHop => {
+    const result: SshJumpHop = {
+      host: hop.host,
+      port: hop.port,
+      username: hop.username,
+      authMethod: hop.authMethod,
+      connectTimeoutMs: hop.connectTimeoutMs
+    };
+    if (hop.expectedHostKeyRawBase64 !== undefined) {
+      result.expectedHostKeyRawBase64 = hop.expectedHostKeyRawBase64;
+    }
+    if (hop.expectedHostKeyFingerprintSha256 !== undefined) {
+      result.expectedHostKeyFingerprintSha256 = hop.expectedHostKeyFingerprintSha256;
+    }
+    return result;
+  });
   const result: SshProxyProfileV1 = {
     schemaVersion: 1,
     hostId: profile.hostId,

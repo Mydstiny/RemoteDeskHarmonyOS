@@ -1,10 +1,24 @@
 use crate::ControlMsg;
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Mutex;
 
 pub(crate) const CONTROL_BATCH_LIMIT: usize = 8;
+pub(crate) const PERMISSION_KEYBOARD: u32 = 1 << 0;
+pub(crate) const PERMISSION_CLIPBOARD: u32 = 1 << 2;
+pub(crate) const PERMISSION_AUDIO: u32 = 1 << 3;
+pub(crate) const PERMISSION_FILE: u32 = 1 << 4;
+pub(crate) const PERMISSION_RESTART: u32 = 1 << 5;
+pub(crate) const PERMISSION_RECORDING: u32 = 1 << 6;
+pub(crate) const PERMISSION_BLOCK_INPUT: u32 = 1 << 7;
+pub(crate) const PERMISSION_PRIVACY_MODE: u32 = 1 << 8;
 const TOUCH_SCALE_BASE: i128 = 1000;
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct PermissionSnapshot {
+    pub known_mask: u32,
+    pub enabled_mask: u32,
+}
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct ControlInboxSnapshot {
@@ -27,6 +41,8 @@ pub(crate) struct ControlInboxSnapshot {
 
 pub(crate) struct ControlInbox {
     shutdown: AtomicBool,
+    permission_known: AtomicU32,
+    permission_enabled: AtomicU32,
     state: Mutex<ControlInboxState>,
 }
 
@@ -119,6 +135,8 @@ impl Default for ControlInbox {
     fn default() -> Self {
         Self {
             shutdown: AtomicBool::new(false),
+            permission_known: AtomicU32::new(0),
+            permission_enabled: AtomicU32::new(0),
             state: Mutex::new(ControlInboxState::default()),
         }
     }
@@ -145,6 +163,13 @@ impl ControlInbox {
         let Ok(mut state) = self.state.lock() else {
             return false;
         };
+        if let Some(permission) = required_permission(&message) {
+            let known = self.permission_known.load(Ordering::Acquire);
+            let enabled = self.permission_enabled.load(Ordering::Acquire);
+            if known & permission != 0 && enabled & permission == 0 {
+                return false;
+            }
+        }
         let sequence = Self::next_sequence(&mut state);
 
         match message {
@@ -327,6 +352,37 @@ impl ControlInbox {
         self.shutdown.load(Ordering::Acquire)
     }
 
+    /// Apply a permission update sent by the remote peer. Unknown permissions
+    /// remain optimistic for compatibility with older peers that never emit
+    /// `PermissionInfo`; an explicit denial takes effect immediately and also
+    /// removes already queued controls protected by that permission.
+    pub(crate) fn update_permission(&self, permission: u32, enabled: bool) {
+        if permission == 0 {
+            return;
+        }
+        if enabled {
+            self.permission_enabled.fetch_or(permission, Ordering::Release);
+        } else {
+            self.permission_enabled.fetch_and(!permission, Ordering::Release);
+        }
+        self.permission_known.fetch_or(permission, Ordering::Release);
+
+        if enabled {
+            return;
+        }
+        let Ok(mut state) = self.state.lock() else {
+            return;
+        };
+        Self::discard_permission_controls(&mut state, permission);
+    }
+
+    pub(crate) fn permission_snapshot(&self) -> PermissionSnapshot {
+        PermissionSnapshot {
+            known_mask: self.permission_known.load(Ordering::Acquire),
+            enabled_mask: self.permission_enabled.load(Ordering::Acquire),
+        }
+    }
+
     pub(crate) fn snapshot(&self) -> ControlInboxSnapshot {
         let Ok(state) = self.state.lock() else {
             return ControlInboxSnapshot::default();
@@ -424,6 +480,28 @@ impl ControlInbox {
         });
         state.discarded_pointer_updates +=
             previous_depth.saturating_sub(state.reliable.len()) as u64;
+    }
+
+    fn discard_permission_controls(state: &mut ControlInboxState, permission: u32) {
+        state.reliable.retain(|queued| {
+            required_permission(&queued.message) != Some(permission)
+        });
+        if state
+            .mouse_move
+            .as_ref()
+            .is_some_and(|queued| required_permission(&queued.message) == Some(permission))
+        {
+            state.mouse_move = None;
+        }
+        if permission == PERMISSION_KEYBOARD {
+            state.touch_update = None;
+            state.mouse_wheel_2d = None;
+            state.touch_active = false;
+            state.touch_scale_end_pending = false;
+            state.touch_pan_end_enqueued = false;
+            state.pending_touch_scale_end_markers = 0;
+            state.pending_touch_pan_ends = 0;
+        }
     }
 
     fn merge_touch_scale(state: &mut ControlInboxState, sequence: u64, scale: i32) {
@@ -561,6 +639,24 @@ impl ControlInbox {
             || state.refresh_pending
             || state.video_pressure.is_some()
             || state.touch_update.is_some()
+    }
+}
+
+fn required_permission(message: &ControlMsg) -> Option<u32> {
+    match message {
+        ControlMsg::KeyEvent { .. }
+        | ControlMsg::MouseEvent { .. }
+        | ControlMsg::MouseMove { .. }
+        | ControlMsg::MouseWheel { .. }
+        | ControlMsg::MouseWheel2D { .. }
+        | ControlMsg::Text { .. }
+        | ControlMsg::TouchScale { .. }
+        | ControlMsg::TouchPanStart { .. }
+        | ControlMsg::TouchPanUpdate { .. }
+        | ControlMsg::TouchPanEnd { .. } => Some(PERMISSION_KEYBOARD),
+        ControlMsg::Clipboard { .. } => Some(PERMISSION_CLIPBOARD),
+        ControlMsg::SendFile { .. } => Some(PERMISSION_FILE),
+        _ => None,
     }
 }
 
@@ -781,6 +877,53 @@ fn shutdown_is_visible_without_waiting_for_a_queued_message() {
 
     assert!(inbox.shutdown_requested());
     assert_eq!(inbox.snapshot().reliable_depth, 1);
+}
+
+#[test]
+fn explicit_view_only_permission_drops_pending_input_and_rejects_new_input() {
+    let inbox = ControlInbox::default();
+    assert!(inbox.enqueue(ControlMsg::MouseMove { x: 10, y: 20 }));
+    assert!(inbox.enqueue(ControlMsg::KeyEvent {
+        scancode: 30,
+        pressed: true,
+    }));
+    assert!(inbox.enqueue(ControlMsg::RefreshVideo));
+
+    inbox.update_permission(PERMISSION_KEYBOARD, false);
+
+    assert!(!inbox.enqueue(ControlMsg::MouseMove { x: 30, y: 40 }));
+    assert!(!inbox.enqueue(ControlMsg::Text { text: "blocked".into() }));
+    assert!(matches!(
+        inbox.take_batch(CONTROL_BATCH_LIMIT).as_slice(),
+        [ControlMsg::RefreshVideo]
+    ));
+    assert_eq!(
+        inbox.permission_snapshot(),
+        PermissionSnapshot {
+            known_mask: PERMISSION_KEYBOARD,
+            enabled_mask: 0,
+        }
+    );
+}
+
+#[test]
+fn old_peers_remain_optimistic_until_a_permission_is_explicitly_denied() {
+    let inbox = ControlInbox::default();
+    assert!(inbox.enqueue(ControlMsg::Clipboard {
+        content: b"first".to_vec(),
+    }));
+    inbox.update_permission(PERMISSION_CLIPBOARD, false);
+    assert!(!inbox.enqueue(ControlMsg::Clipboard {
+        content: b"second".to_vec(),
+    }));
+    inbox.update_permission(PERMISSION_CLIPBOARD, true);
+    assert!(inbox.enqueue(ControlMsg::Clipboard {
+        content: b"third".to_vec(),
+    }));
+    assert!(matches!(
+        inbox.take_batch(CONTROL_BATCH_LIMIT).as_slice(),
+        [ControlMsg::Clipboard { content }] if content == b"third"
+    ));
 }
 
 #[test]

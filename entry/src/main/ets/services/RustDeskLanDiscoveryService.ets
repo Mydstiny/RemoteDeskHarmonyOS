@@ -192,6 +192,9 @@ export class RustDeskLanDiscoveryService {
   private scanning: boolean = false;
   private udp: socket.UDPSocket | null = null;
   private scanTimer: number = -1;
+  private scanGeneration: number = 0;
+  private scanResolve: ((peers: DiscoveredRustDeskPeer[]) => void) | null = null;
+  private scanResults: DiscoveredRustDeskPeer[] = [];
 
   /**
    * 启动局域网扫描
@@ -201,13 +204,16 @@ export class RustDeskLanDiscoveryService {
   startScan(timeoutMs: number = SCAN_TIMEOUT_MS,
     onPeer: (peer: DiscoveredRustDeskPeer) => void = (_peer: DiscoveredRustDeskPeer): void => {}):
     Promise<DiscoveredRustDeskPeer[]> {
-    return new Promise<DiscoveredRustDeskPeer[]>((resolve) => {
+    return new Promise<DiscoveredRustDeskPeer[]>((resolve: (peers: DiscoveredRustDeskPeer[]) => void): void => {
       if (this.scanning) {
         resolve([]);
         return;
       }
       this.scanning = true;
+      const generation: number = ++this.scanGeneration;
       const discovered: DiscoveredRustDeskPeer[] = [];
+      this.scanResults = discovered;
+      this.scanResolve = resolve;
       const seenPeers: Set<string> = new Set<string>();
 
       try {
@@ -221,10 +227,10 @@ export class RustDeskLanDiscoveryService {
         };
 
         this.udp.bind(bindAddr, (err: BusinessError) => {
+          if (!this.scanIsActive(generation)) { return; }
           if (err) {
             hilog.warn(0x0001, TAG, `bind failed: ${err.code} ${err.message}`);
-            this.stopScanInternal();
-            resolve([]);
+            this.finishScan(generation, []);
             return;
           }
 
@@ -232,7 +238,7 @@ export class RustDeskLanDiscoveryService {
 
           // 监听响应
           this.udp!.on('message', (data: socket.SocketMessageInfo) => {
-            if (!this.scanning) {
+            if (!this.scanIsActive(generation)) {
               return;
             }
             try {
@@ -272,19 +278,18 @@ export class RustDeskLanDiscoveryService {
             this.sendDiscoveryProbe();
             // 重发一次 (UDP 可能丢包)
             setTimeout(() => {
-              if (this.scanning) { this.sendDiscoveryProbe(); }
+              if (this.scanIsActive(generation)) { this.sendDiscoveryProbe(); }
             }, 500);
 
             // 超时停止
             this.scanTimer = setTimeout(() => {
-              this.stopScanInternal();
               hilog.info(0x0001, TAG, `scan complete: ${discovered.length} device(s) found`);
-              resolve(discovered);
+              this.finishScan(generation, discovered);
             }, timeoutMs);
           };
           // HarmonyOS 默认禁止 UDP 广播，必须在 bind 成功后显式打开。
           this.udp!.setExtraOptions({ broadcast: true }, (optionErr: BusinessError): void => {
-            if (!this.scanning) { return; }
+            if (!this.scanIsActive(generation)) { return; }
             if (optionErr) {
               hilog.warn(0x0001, TAG, `enable UDP broadcast failed: ${optionErr.code} ${optionErr.message}`);
             }
@@ -294,15 +299,18 @@ export class RustDeskLanDiscoveryService {
 
       } catch (err) {
         hilog.warn(0x0001, TAG, `startScan error: ${JSON.stringify(err)}`);
-        this.stopScanInternal();
-        resolve([]);
+        this.finishScan(generation, []);
       }
     });
   }
 
   /** 停止扫描 */
   stopScan(): void {
-    this.stopScanInternal();
+    if (!this.scanning) {
+      this.stopScanInternal();
+      return;
+    }
+    this.finishScan(this.scanGeneration, this.scanResults);
   }
 
   /** 是否正在扫描 */
@@ -313,6 +321,22 @@ export class RustDeskLanDiscoveryService {
   // ============================================================
   // 内部实现
   // ============================================================
+
+  private scanIsActive(generation: number): boolean {
+    return this.scanning && this.scanGeneration === generation;
+  }
+
+  private finishScan(generation: number, peers: DiscoveredRustDeskPeer[]): void {
+    if (generation !== this.scanGeneration) { return; }
+    const resolve: ((value: DiscoveredRustDeskPeer[]) => void) | null = this.scanResolve;
+    const result: DiscoveredRustDeskPeer[] = peers.slice();
+    this.scanResolve = null;
+    this.scanResults = [];
+    this.stopScanInternal();
+    // Invalidate late bind/message/option callbacks before resolving callers.
+    this.scanGeneration++;
+    if (resolve !== null) { resolve(result); }
+  }
 
   private stopScanInternal(): void {
     this.scanning = false;

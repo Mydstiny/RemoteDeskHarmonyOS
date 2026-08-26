@@ -7,6 +7,7 @@
 #ifndef SSH_AUTH_POLICY_H
 #define SSH_AUTH_POLICY_H
 
+#include <cstddef>
 #include <string>
 
 inline bool sshAuthMethodAdvertised(const std::string& methods, const char* wanted) {
@@ -44,6 +45,14 @@ inline bool sshPasswordFallbackAllowsKeyboardInteractive(
         sshAuthMethodAdvertised(methods, "keyboard-interactive");
 }
 
+inline int sshPasswordFallbackFinalResult(
+    int passwordResult, int keyboardInteractiveResult) {
+    (void)passwordResult;
+    // The fallback method was actually attempted, so its cancellation,
+    // timeout or authentication result is the user-visible outcome.
+    return keyboardInteractiveResult;
+}
+
 /**
  * An advertised method list is authoritative when it is non-empty.  Calling
  * a method the server did not advertise can consume a PAM challenge or make
@@ -59,6 +68,15 @@ inline bool sshKeyboardInteractivePromptCanUsePassword(bool echo) {
     // into a visible username/OTP challenge unless the caller supplied an
     // explicit response in the ordered response list.
     return !echo;
+}
+
+inline bool sshKeyboardInteractivePasswordFallbackCanAutofill(
+    size_t promptCount, bool echo, bool passwordFallbackUsed) {
+    // A saved account password may satisfy the first PAM-style password
+    // question, but it must never be replayed into a later MFA/OTP round or
+    // duplicated across a multi-prompt challenge.
+    return !passwordFallbackUsed && promptCount == 1 &&
+        sshKeyboardInteractivePromptCanUsePassword(echo);
 }
 
 #endif

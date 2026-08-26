@@ -13,6 +13,7 @@ import {
   SshForwardingMode,
   SshForwardingProfile
 } from '../main/ets/services/SshForwardingPolicy';
+import { SshForwardingRuntimeStore } from '../main/ets/services/SshForwardingRuntimeStore';
 import { SshSessionHandle, SshSessionLifecycleState } from '../main/ets/services/SshSessionStore';
 
 class FakeForwardingNative implements SshForwardingNativePort {
@@ -136,6 +137,22 @@ export default function sshForwardingControllerTest(): void {
       expect(native.calls.length).assertEqual(0);
     });
 
+    it('checks_runtime_capacity_before_configuring_native', 0, (): void => {
+      const native: FakeForwardingNative = new FakeForwardingNative();
+      const first: SshSessionHandle = handle(11);
+      const second: SshSessionHandle = handle(12);
+      native.accept(first);
+      native.accept(second);
+      const controller: SshForwardingController = new SshForwardingController(
+        native, new SshForwardingRuntimeStore(1));
+      expect(controller.configure(first, profile('first')).accepted).assertTrue();
+      native.calls.splice(0, native.calls.length);
+      const rejected = controller.configure(second, profile('second'));
+      expect(rejected.code).assertEqual(-70);
+      expect(rejected.accepted).assertFalse();
+      expect(native.calls.length).assertEqual(0);
+    });
+
     it('orders_configure_start_stop_complete_and_remove_cleanup', 0, (): void => {
       const native: FakeForwardingNative = new FakeForwardingNative();
       const current: SshSessionHandle = handle(2);
@@ -183,6 +200,30 @@ export default function sshForwardingControllerTest(): void {
       const controller: SshForwardingController = new SshForwardingController(native);
       expect(controller.start(current, profile('retired')).accepted).assertTrue();
       expect(controller.list(current).length).assertEqual(1);
+      expect(controller.releaseSession(current).length).assertEqual(1);
+      expect(controller.list(current).length).assertEqual(0);
+    });
+
+    it('clears_old_generation_runtime_records_on_session_release', 0, (): void => {
+      const native: FakeForwardingNative = new FakeForwardingNative();
+      const oldHandle: SshSessionHandle = handle(5, 1);
+      const current: SshSessionHandle = handle(5, 2);
+      native.accept(oldHandle);
+      const controller: SshForwardingController = new SshForwardingController(native);
+      expect(controller.start(oldHandle, profile('old-generation')).accepted).assertTrue();
+      native.accept(current);
+      expect(controller.releaseSession(current).length).assertEqual(0);
+      expect(controller.list(oldHandle).length).assertEqual(0);
+    });
+
+    it('clears_runtime_records_when_native_handle_is_already_stale', 0, (): void => {
+      const native: FakeForwardingNative = new FakeForwardingNative();
+      const current: SshSessionHandle = handle(6);
+      native.accept(current);
+      const controller: SshForwardingController = new SshForwardingController(native);
+      expect(controller.start(current, profile('stale-session')).accepted).assertTrue();
+      expect(controller.list(current).length).assertEqual(1);
+      native.generations.delete(current.sessionId);
       expect(controller.releaseSession(current).length).assertEqual(1);
       expect(controller.list(current).length).assertEqual(0);
     });

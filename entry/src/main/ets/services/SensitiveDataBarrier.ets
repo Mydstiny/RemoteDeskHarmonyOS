@@ -10,6 +10,8 @@ import { RustDeskProSyncService } from './RustDeskProSyncService';
 import { RustDeskHostAddHandoff } from './RustDeskHostAddHandoff';
 import { SshPreflightService } from './SshPreflightService';
 import { VncSessionCredentialHandoff } from './VncSessionCredentialHandoff';
+import { VncPlaintextDecisionHandoff } from './VncPlaintextDecisionHandoff';
+import { MoonlightDataLifecycleBarrier } from './MoonlightDataLifecycleBarrier';
 
 /**
  * One transition boundary shared by login, logout, account switch and restore.
@@ -73,9 +75,16 @@ export class SensitiveDataBarrier {
         'RustDesk Pro operations did not reach a terminal state');
       return false;
     }
+    if (!(await MoonlightDataLifecycleBarrier.getInstance()
+      .drain(reason, 10000))) {
+      hilog.error(0x0001, 'AccountSession',
+        'Moonlight operations did not reach a terminal state');
+      return false;
+    }
     ActiveRemoteSessionRegistry.getInstance().clear(reason);
     RustDeskHostAddHandoff.getInstance().clearAll();
     VncSessionCredentialHandoff.getInstance().clearAll();
+    VncPlaintextDecisionHandoff.getInstance().clearAll();
     SshPreflightService.getInstance().clearAll();
     if (!(await DataCrypto.getInstance().prepareScopeTransition(10000))) {
       hilog.error(0x0001, 'AccountSession',

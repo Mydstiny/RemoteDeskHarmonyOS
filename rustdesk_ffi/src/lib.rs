@@ -497,6 +497,7 @@ pub enum FfiConnectionState {
 /// through `rustdesk_get_stream_stats`; it never reaches into the streaming
 /// thread or consumes the counters.
 pub const RUSTDESK_STREAM_STATS_VERSION: u32 = 1;
+pub const RUSTDESK_PERMISSION_STATE_VERSION: u32 = 1;
 pub const RUSTDESK_DISPLAY_SNAPSHOT_VERSION: u32 = 1;
 pub const RUSTDESK_DISPLAY_LIST_VERSION: u32 = 1;
 pub const RUSTDESK_VIDEO_FRAME_ABI_VERSION: u32 = 2;
@@ -546,6 +547,18 @@ impl Default for RustDeskStreamStats {
             connection_path: 0,
         }
     }
+}
+
+/// Permission state advertised by the remote peer. A bit absent from
+/// `known_mask` means that the peer has not advertised that capability, so
+/// callers should preserve the legacy optimistic behavior.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RustDeskPermissionState {
+    pub version: u32,
+    pub known_mask: u32,
+    pub enabled_mask: u32,
+    pub reserved: u32,
 }
 
 /// One remote display as received from RustDesk `PeerInfo`/`SwitchDisplay`.
@@ -690,6 +703,11 @@ pub type CursorCallback = extern "C" fn(cursor: *const FfiCursorUpdate, user_dat
 /// Initial remote display snapshot delivered before the V2 stream starts.
 pub type DisplayCallback =
     extern "C" fn(snapshot: *const RustDeskDisplaySnapshot, user_data: *mut c_void);
+
+/// Authenticated peer platform callback. Returning false aborts connection
+/// publication before the streaming worker can deliver its first frame.
+pub type PeerPlatformCallback =
+    extern "C" fn(platform: *const c_char, user_data: *mut c_void) -> bool;
 
 /// 断开连接回调
 pub type DisconnectCallback =
@@ -1460,6 +1478,20 @@ fn notify_disconnect(
     on_disconnect(state, c_message.as_ptr(), user_data);
 }
 
+fn notify_peer_platform(
+    on_peer_platform: Option<PeerPlatformCallback>,
+    platform: &str,
+    user_data: *mut c_void,
+) -> bool {
+    let Some(on_peer_platform) = on_peer_platform else {
+        return true;
+    };
+    let safe_platform = platform.replace('\0', " ");
+    let c_platform =
+        CString::new(safe_platform).unwrap_or_else(|_| CString::new("").unwrap());
+    on_peer_platform(c_platform.as_ptr(), user_data)
+}
+
 fn dispatch_cursor_update(
     update: CursorStreamUpdate,
     on_cursor: Option<CursorCallback>,
@@ -1535,6 +1567,7 @@ fn rustdesk_connect_impl(
     on_display: Option<DisplayCallback>,
     on_auth: Option<AuthEventCallback>,
     on_progress: Option<connector::ConnectProgressCallback>,
+    on_peer_platform: Option<PeerPlatformCallback>,
     user_data: *mut c_void,
 ) -> *mut c_void {
     clear_last_error();
@@ -1676,6 +1709,25 @@ fn rustdesk_connect_impl(
             let controls = Arc::new(ControlInbox::default());
             let stream_controls = Arc::clone(&controls);
             let shutdown_stream = c.try_clone_stream().ok();
+            let peer_platform = c.peer_platform();
+            let peer_platform_label = if peer_platform.is_empty() {
+                "unknown"
+            } else {
+                peer_platform.as_str()
+            };
+            eprintln!(
+                "[RustDesk-FFI] authenticated peer platform={}",
+                peer_platform_label
+            );
+            if !notify_peer_platform(on_peer_platform, &peer_platform, user_data) {
+                set_last_error(structured_error(
+                    "presentation",
+                    "peer_platform_rejected",
+                    "native presentation owner rejected authenticated peer platform",
+                    connection_id,
+                ));
+                return std::ptr::null_mut();
+            }
             let callback_user_data = user_data as usize;
             let remote_clipboard = Arc::new(Mutex::new(Vec::<u8>::new()));
             let stream_remote_clipboard = Arc::clone(&remote_clipboard);
@@ -1864,6 +1916,7 @@ pub extern "C" fn rustdesk_connect(
         None,
         None,
         None,
+        None,
         user_data,
     )
 }
@@ -1886,6 +1939,7 @@ pub extern "C" fn rustdesk_connect_v2(
         on_cursor,
         on_disconnect,
         on_display,
+        None,
         None,
         None,
         user_data,
@@ -1912,6 +1966,7 @@ pub extern "C" fn rustdesk_connect_v3(
         on_disconnect,
         on_display,
         on_auth,
+        None,
         None,
         user_data,
     )
@@ -1941,6 +1996,37 @@ pub extern "C" fn rustdesk_connect_v4(
         on_display,
         on_auth,
         on_progress,
+        None,
+        user_data,
+    )
+}
+
+/// Create a RustDesk connection with authenticated peer-platform publication.
+/// The callback runs synchronously after login and before any stream worker or
+/// display/frame callback can start, extending v4 without changing older ABIs.
+#[no_mangle]
+pub extern "C" fn rustdesk_connect_v5(
+    cfg: *const RustDeskConfig,
+    on_frame: Option<FrameCallbackV2>,
+    on_audio: Option<AudioCallback>,
+    on_cursor: Option<CursorCallback>,
+    on_disconnect: Option<DisconnectCallback>,
+    on_display: Option<DisplayCallback>,
+    on_auth: Option<AuthEventCallback>,
+    on_progress: Option<connector::ConnectProgressCallback>,
+    on_peer_platform: Option<PeerPlatformCallback>,
+    user_data: *mut c_void,
+) -> *mut c_void {
+    rustdesk_connect_impl(
+        cfg,
+        on_frame.map(FrameCallbackKind::V2),
+        on_audio,
+        on_cursor,
+        on_disconnect,
+        on_display,
+        on_auth,
+        on_progress,
+        on_peer_platform,
         user_data,
     )
 }
@@ -2018,14 +2104,8 @@ pub extern "C" fn rustdesk_cancel_pending_connect_for_session(session_id: u64) {
     cancel_pending_connect_for_session(session_id);
 }
 
-/// 复制最近一次连接错误到调用方缓冲区，返回完整错误长度。
-#[no_mangle]
-pub extern "C" fn rustdesk_last_error(buffer: *mut c_char, buffer_len: usize) -> usize {
-    let message = LAST_ERROR
-        .lock()
-        .map(|err| err.clone())
-        .unwrap_or_else(|_| "last error lock poisoned".to_string());
-    let bytes = message.as_bytes();
+fn copy_string_to_c_buffer(value: &str, buffer: *mut c_char, buffer_len: usize) -> usize {
+    let bytes = value.as_bytes();
     if !buffer.is_null() && buffer_len > 0 {
         let copy_len = bytes.len().min(buffer_len - 1);
         unsafe {
@@ -2034,6 +2114,16 @@ pub extern "C" fn rustdesk_last_error(buffer: *mut c_char, buffer_len: usize) ->
         }
     }
     bytes.len()
+}
+
+/// 复制最近一次连接错误到调用方缓冲区，返回完整错误长度。
+#[no_mangle]
+pub extern "C" fn rustdesk_last_error(buffer: *mut c_char, buffer_len: usize) -> usize {
+    let message = LAST_ERROR
+        .lock()
+        .map(|err| err.clone())
+        .unwrap_or_else(|_| "last error lock poisoned".to_string());
+    copy_string_to_c_buffer(&message, buffer, buffer_len)
 }
 
 /// Probe a RustDesk peer without opening a desktop session.
@@ -2154,6 +2244,31 @@ pub extern "C" fn rustdesk_get_stream_stats(
     };
     unsafe {
         ptr::write(out_stats, *stats);
+    }
+    true
+}
+
+/// Copy the latest remote permission snapshot without consuming it.
+#[no_mangle]
+pub extern "C" fn rustdesk_get_permission_state(
+    handle: *mut c_void,
+    out_state: *mut RustDeskPermissionState,
+) -> bool {
+    if handle.is_null() || out_state.is_null() {
+        return false;
+    }
+    let ctx = unsafe { &*(handle as *const RustDeskClient) };
+    let permissions = ctx.controls.permission_snapshot();
+    unsafe {
+        ptr::write(
+            out_state,
+            RustDeskPermissionState {
+                version: RUSTDESK_PERMISSION_STATE_VERSION,
+                known_mask: permissions.known_mask,
+                enabled_mask: permissions.enabled_mask,
+                reserved: 0,
+            },
+        );
     }
     true
 }
@@ -2843,6 +2958,38 @@ mod tests {
     }
 
     #[test]
+    fn peer_platform_callback_runs_before_stream_and_propagates_rejection() {
+        struct CallbackProbe {
+            platform: String,
+            accept: bool,
+        }
+
+        extern "C" fn capture_platform(
+            platform: *const c_char,
+            user_data: *mut c_void,
+        ) -> bool {
+            let probe = unsafe { &mut *(user_data as *mut CallbackProbe) };
+            probe.platform = unsafe { CStr::from_ptr(platform) }
+                .to_string_lossy()
+                .into_owned();
+            probe.accept
+        }
+
+        let mut probe = CallbackProbe {
+            platform: String::new(),
+            accept: false,
+        };
+        let accepted = notify_peer_platform(
+            Some(capture_platform),
+            "Windows\0Desktop",
+            &mut probe as *mut CallbackProbe as *mut c_void,
+        );
+
+        assert!(!accepted);
+        assert_eq!(probe.platform, "Windows Desktop");
+    }
+
+    #[test]
     fn relay_fallback_port_uses_configured_value_and_rejects_invalid_native_input() {
         assert_eq!(relay_fallback_port_from_config(23017), 23017);
         assert_eq!(relay_fallback_port_from_config(0), DEFAULT_RELAY_PORT);
@@ -2911,6 +3058,24 @@ mod tests {
         assert_eq!(snapshot.resolution_count, 3);
         assert_eq!((resolutions[0].width, resolutions[0].height), (1080, 1920));
         assert_eq!((resolutions[1].width, resolutions[1].height), (720, 1280));
+    }
+
+    #[test]
+    fn permission_snapshot_exposes_an_explicit_remote_view_only_state() {
+        let mut client = test_client_with_display_state(RustDeskDisplayState::default());
+        client
+            .controls
+            .update_permission(control_inbox::PERMISSION_KEYBOARD, false);
+        let handle = &mut client as *mut RustDeskClient as *mut c_void;
+        let mut snapshot = RustDeskPermissionState::default();
+
+        assert!(rustdesk_get_permission_state(handle, &mut snapshot));
+        assert_eq!(snapshot.version, RUSTDESK_PERMISSION_STATE_VERSION);
+        assert_eq!(
+            snapshot.known_mask & control_inbox::PERMISSION_KEYBOARD,
+            control_inbox::PERMISSION_KEYBOARD
+        );
+        assert_eq!(snapshot.enabled_mask & control_inbox::PERMISSION_KEYBOARD, 0);
     }
 
     #[test]

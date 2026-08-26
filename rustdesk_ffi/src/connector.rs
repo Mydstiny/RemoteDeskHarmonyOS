@@ -16,7 +16,11 @@
 
 use crate::crypto::{self, KeyPair};
 use crate::crypto_channel::CryptoChannel;
-use crate::control_inbox::{CONTROL_BATCH_LIMIT, ControlInbox};
+use crate::control_inbox::{
+    CONTROL_BATCH_LIMIT, ControlInbox, PERMISSION_AUDIO, PERMISSION_BLOCK_INPUT,
+    PERMISSION_CLIPBOARD, PERMISSION_FILE, PERMISSION_KEYBOARD, PERMISSION_PRIVACY_MODE,
+    PERMISSION_RECORDING, PERMISSION_RESTART,
+};
 use crate::cursor_state::{
     CursorCacheMissReason, CursorIdResult, CursorState, CursorStreamUpdate,
 };
@@ -27,9 +31,9 @@ use crate::protocol::message_proto::{
     FileResponse, FileResponse_oneof_union, FileTransferBlock, FileTransferDone,
     FileTransferReceiveRequest, FileTransferSendConfirmRequest, FileType, IdPk, KeyEvent,
     KeyEvent_oneof_union, KeyboardMode, Message, Message_oneof_union, Misc, Misc_oneof_union,
-    MouseEvent, PeerInfo, PointerDeviceEvent, PublicKey, Resolution, SupportedResolutions,
-    SwitchDisplay, TouchEvent, TouchPanEnd, TouchPanStart, TouchPanUpdate, TouchScaleUpdate,
-    VideoFrame, VideoFrame_oneof_union,
+    MouseEvent, PeerInfo, PermissionInfo_Permission, PointerDeviceEvent, PublicKey, Resolution,
+    SupportedResolutions, SwitchDisplay, TouchEvent, TouchPanEnd, TouchPanStart, TouchPanUpdate,
+    TouchScaleUpdate, VideoFrame, VideoFrame_oneof_union,
 };
 use crate::protocol::rendezvous::RendezvousClient;
 use crate::protocol::rendezvous_proto::ConnType as RendezvousConnType;
@@ -230,11 +234,10 @@ fn should_emit_control_diagnostics(last_report: Instant, now: Instant) -> bool {
 fn should_refresh_for_video_starvation(
     total_video: u64,
     window_video: u64,
-    window_audio: u64,
     last_video_age_ms: Option<u128>,
     last_refresh_age_ms: Option<u128>,
 ) -> bool {
-    if total_video <= 20 || window_video > 0 || window_audio == 0 {
+    if total_video == 0 || window_video > 0 {
         return false;
     }
     let Some(video_age_ms) = last_video_age_ms else {
@@ -246,6 +249,19 @@ fn should_refresh_for_video_starvation(
     match last_refresh_age_ms {
         Some(refresh_age_ms) => refresh_age_ms >= VIDEO_STARVATION_REFRESH_INTERVAL_MS,
         None => true,
+    }
+}
+
+fn permission_mask(permission: PermissionInfo_Permission) -> u32 {
+    match permission {
+        PermissionInfo_Permission::Keyboard => PERMISSION_KEYBOARD,
+        PermissionInfo_Permission::Clipboard => PERMISSION_CLIPBOARD,
+        PermissionInfo_Permission::Audio => PERMISSION_AUDIO,
+        PermissionInfo_Permission::File => PERMISSION_FILE,
+        PermissionInfo_Permission::Restart => PERMISSION_RESTART,
+        PermissionInfo_Permission::Recording => PERMISSION_RECORDING,
+        PermissionInfo_Permission::BlockInput => PERMISSION_BLOCK_INPUT,
+        PermissionInfo_Permission::PrivacyMode => PERMISSION_PRIVACY_MODE,
     }
 }
 
@@ -1609,6 +1625,7 @@ impl RustDeskConnector {
                         Some(Misc_oneof_union::refresh_video_display(_)) => {
                             "misc/refresh_video_display"
                         }
+                        Some(Misc_oneof_union::permission_info(_)) => "misc/permission_info",
                         Some(Misc_oneof_union::follow_current_display(_)) => {
                             "misc/follow_current_display"
                         }
@@ -1622,6 +1639,15 @@ impl RustDeskConnector {
                     if let Some(Misc_oneof_union::switch_display(ref display)) = misc.union {
                         Self::apply_switch_display_geometry(&display_state, display, &stream_stats);
                         on_display_state();
+                    }
+                    if let Some(Misc_oneof_union::permission_info(ref permission)) = misc.union {
+                        let permission_kind = permission.get_permission();
+                        let enabled = permission.get_enabled();
+                        controls.update_permission(permission_mask(permission_kind), enabled);
+                        eprintln!(
+                            "[RustDesk-FFI] remote permission {:?} enabled={}",
+                            permission_kind, enabled
+                        );
                     }
                     if let Some(Misc_oneof_union::follow_current_display(display)) = misc.union {
                         Self::apply_follow_current_display(
@@ -1912,12 +1938,11 @@ impl RustDeskConnector {
                 if should_refresh_for_video_starvation(
                     video_count,
                     window_video,
-                    window_audio,
                     last_video_age_ms,
                     last_refresh_age_ms,
                 ) {
                     eprintln!(
-                        "[RustDesk-FFI] VIDEO STARVATION audio_alive video_window=0 audio_window={} total_video={} total_audio={} last_video_age={}ms -> refresh_video",
+                        "[RustDesk-FFI] VIDEO STARVATION video_window=0 audio_window={} total_video={} total_audio={} last_video_age={}ms -> refresh_video",
                         window_audio,
                         video_count,
                         audio_count,
@@ -2710,6 +2735,7 @@ impl RustDeskConnector {
     }
 
     const MACOS_CAPS_LOCK_RAW_SCANCODE: u32 = 0x10039;
+    const EXPLICIT_MACOS_MAP_FLAG: u32 = 0x20000;
 
     /// RustDesk's official client defaults to Map mode for supported desktop peers.
     /// macOS must receive physical virtual-key events for its active input source to
@@ -2717,6 +2743,26 @@ impl RustDeskConnector {
     /// `Enigo::key_sequence`, which inserts characters directly and bypasses the IME.
     fn build_macos_map_message(keycode: u32, pressed: bool) -> Message {
         Self::build_map_key_message(keycode, pressed)
+    }
+
+    fn explicit_macos_harmony_keycode(scancode: u32) -> Option<u32> {
+        (scancode & Self::EXPLICIT_MACOS_MAP_FLAG != 0)
+            .then_some(scancode & !Self::EXPLICIT_MACOS_MAP_FLAG)
+    }
+
+    fn build_explicit_macos_map_message(
+        scancode: u32,
+        pressed: bool,
+        physical_modifiers: &mut PhysicalModifierState,
+    ) -> Option<(Message, u32, u32)> {
+        let harmony_keycode = Self::explicit_macos_harmony_keycode(scancode)?;
+        let macos_keycode = Self::harmony_keycode_to_macos_keycode(harmony_keycode)?;
+        physical_modifiers.update(harmony_keycode, pressed);
+        Some((
+            Self::build_macos_map_message(macos_keycode, pressed),
+            harmony_keycode,
+            macos_keycode,
+        ))
     }
 
     /// Windows peers interpret Map-mode `chr` as a Windows Set-1 scan code.
@@ -2755,6 +2801,11 @@ impl RustDeskConnector {
             2090 => 0x7A, 2091 => 0x78, 2092 => 0x63, 2093 => 0x76,
             2094 => 0x60, 2095 => 0x61, 2096 => 0x62, 2097 => 0x64,
             2098 => 0x65, 2099 => 0x6D, 2100 => 0x67, 2101 => 0x6F,
+            // Carbon defines physical virtual-key codes through F20. macOS
+            // has no stable CGKeyCode constants for F21-F24, so the UI only
+            // offers those four keys for Windows targets.
+            2816 => 0x69, 2817 => 0x6B, 2818 => 0x71, 2819 => 0x6A,
+            2820 => 0x40, 2821 => 0x4F, 2822 => 0x50, 2823 => 0x5A,
             _ => return None,
         })
     }
@@ -2935,6 +2986,20 @@ impl RustDeskConnector {
         physical_modifiers: &mut PhysicalModifierState,
         remote_keyboard_transport: RemoteKeyboardTransport,
     ) -> io::Result<()> {
+        if let Some((msg, harmony_keycode, macos_keycode)) =
+            Self::build_explicit_macos_map_message(scancode, pressed, physical_modifiers)
+        {
+            let status = format!(
+                "send explicit macos physical scancode={} pressed={} mode=map keycode=0x{:X}",
+                harmony_keycode, pressed, macos_keycode,
+            );
+            crate::set_last_error(status.clone());
+            eprintln!("[RustDesk-FFI] {}", status);
+            return Self::send_message_encrypted(crypto, &msg);
+        }
+        // An explicitly marked but currently unsupported key falls back using
+        // its original Harmony code, never the private marker value.
+        let scancode = Self::explicit_macos_harmony_keycode(scancode).unwrap_or(scancode);
         if Self::should_use_macos_caps_lock_map(scancode, remote_keyboard_transport) {
             let msg = Self::build_macos_map_message(0x39, pressed);
             let status = format!(
@@ -3299,6 +3364,14 @@ impl RustDeskConnector {
         } else {
             None
         }
+    }
+
+    /** Platform reported by the authenticated RustDesk PeerInfo handshake. */
+    pub fn peer_platform(&self) -> String {
+        self.session
+            .peer_info()
+            .map(|info| info.get_platform().trim().to_string())
+            .unwrap_or_default()
     }
 
     fn collect_resolutions(supported: &SupportedResolutions) -> Vec<(i32, i32)> {
@@ -4129,11 +4202,10 @@ mod tests {
     }
 
     #[test]
-    fn video_starvation_refreshes_when_audio_is_alive() {
+    fn video_starvation_refreshes_silent_stream_after_initial_frames() {
         assert!(should_refresh_for_video_starvation(
-            120,
+            2,
             0,
-            45,
             Some(3_000),
             None,
         ));
@@ -4144,7 +4216,6 @@ mod tests {
         assert!(!should_refresh_for_video_starvation(
             120,
             0,
-            45,
             Some(3_000),
             Some(1_000),
         ));
@@ -4155,8 +4226,17 @@ mod tests {
         assert!(!should_refresh_for_video_starvation(
             120,
             1,
-            45,
             Some(3_000),
+            None,
+        ));
+    }
+
+    #[test]
+    fn video_starvation_waits_for_the_first_video_frame() {
+        assert!(!should_refresh_for_video_starvation(
+            0,
+            0,
+            None,
             None,
         ));
     }
@@ -4466,6 +4546,30 @@ mod tests {
     }
 
     #[test]
+    fn explicit_macos_shortcut_keeps_command_and_letter_in_map_mode() {
+        let mut modifiers = PhysicalModifierState::default();
+        for (harmony_keycode, expected_macos_keycode) in [(2076, 0x37), (2019, 0x08)] {
+            let marked = RustDeskConnector::EXPLICIT_MACOS_MAP_FLAG | harmony_keycode;
+            let (message, decoded, mapped) =
+                RustDeskConnector::build_explicit_macos_map_message(
+                    marked, true, &mut modifiers,
+                ).expect("marked macOS shortcut key must map");
+            assert_eq!(decoded, harmony_keycode);
+            assert_eq!(mapped, expected_macos_keycode);
+            match message.union {
+                Some(Message_oneof_union::key_event(key)) => {
+                    assert!(key.down);
+                    assert_eq!(key.mode, KeyboardMode::Map);
+                    assert!(matches!(key.union,
+                        Some(KeyEvent_oneof_union::chr(code)) if code == expected_macos_keycode));
+                }
+                _ => panic!("explicit macOS shortcut must remain a key event"),
+            }
+        }
+        assert!(modifiers.active_groups().contains(&ControlKey::Meta));
+    }
+
+    #[test]
     fn macos_physical_letters_and_controls_use_carbon_virtual_keycodes() {
         assert_eq!(RustDeskConnector::harmony_keycode_to_macos_keycode(2017), Some(0x00));
         assert_eq!(RustDeskConnector::harmony_keycode_to_macos_keycode(2035), Some(0x01));
@@ -4474,6 +4578,9 @@ mod tests {
         assert_eq!(RustDeskConnector::harmony_keycode_to_macos_keycode(2072), Some(0x3B));
         assert_eq!(RustDeskConnector::harmony_keycode_to_macos_keycode(2076), Some(0x37));
         assert_eq!(RustDeskConnector::harmony_keycode_to_macos_keycode(2014), Some(0x7B));
+        assert_eq!(RustDeskConnector::harmony_keycode_to_macos_keycode(2816), Some(0x69));
+        assert_eq!(RustDeskConnector::harmony_keycode_to_macos_keycode(2823), Some(0x5A));
+        assert_eq!(RustDeskConnector::harmony_keycode_to_macos_keycode(2824), None);
     }
 
     #[test]

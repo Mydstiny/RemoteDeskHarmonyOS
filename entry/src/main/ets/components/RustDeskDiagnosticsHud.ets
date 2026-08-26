@@ -17,6 +17,12 @@ const EMPTY_DIAGNOSTICS: RustDeskDiagnosticsSnapshot = {
   receivedRateAvailable: false,
   presentedRateAvailable: false,
   decodeRateAvailable: false,
+  remoteInputPermissionKnown: false,
+  remoteInputAllowed: true,
+  remoteClipboardPermissionKnown: false,
+  remoteClipboardAllowed: true,
+  remoteFilePermissionKnown: false,
+  remoteFileAllowed: true,
   sessionId: -1,
   latencyMs: -1,
   targetBitrateKbps: 0,
@@ -144,6 +150,11 @@ export struct RustDeskDiagnosticsHud {
     return this.diagnostics.connectionPath === '' ? '未知' : this.diagnostics.connectionPath;
   }
 
+  private remotePermissionLabel(): string {
+    if (!this.diagnostics.remoteInputPermissionKnown) { return '等待远端权限同步'; }
+    return this.diagnostics.remoteInputAllowed ? '允许控制' : '仅查看';
+  }
+
   private vncRequestedColorDepth(): string {
     const requested: string = this.diagnostics.requestedColorDepth !== '' ?
       this.diagnostics.requestedColorDepth : this.requestedColorDepth;
@@ -168,6 +179,22 @@ export struct RustDeskDiagnosticsHud {
 
   private dockBorder(): string {
     return this.expanded ? this.accentColor + '80' : 'rgba(255,255,255,0.18)';
+  }
+
+  private visiblePanelWidth(): number {
+    const viewportWidth: number = this.surfaceWidth > 0 ? this.surfaceWidth : 360;
+    return Math.min(270, Math.max(1, viewportWidth - 16));
+  }
+
+  private desiredPanelHeight(): number {
+    if (this.protocolLabel === 'VNC') { return 520; }
+    return this.proEnabled ? 380 : 205;
+  }
+
+  private visiblePanelHeight(): number {
+    if (this.surfaceHeight <= 0) { return this.desiredPanelHeight(); }
+    const available: number = this.surfaceHeight - Math.max(8, this.effectiveY()) - 8;
+    return Math.max(112, Math.min(this.desiredPanelHeight(), available));
   }
 
   private finishDrag(fromPanel: boolean): void {
@@ -253,10 +280,12 @@ export struct RustDeskDiagnosticsHud {
         )
       )
 
-      // API 23 only retains reactive Builder updates for a single object-literal
-      // argument. Do not change these metric rows back to separate label/value
-      // arguments: that captures the values from the instant the dock opens.
-      this.metricLine({
+      Scroll() {
+        Column() {
+          // API 23 only retains reactive Builder updates for a single object-literal
+          // argument. Do not change these metric rows back to separate label/value
+          // arguments: that captures the values from the instant the dock opens.
+          this.metricLine({
         label: '状态',
         value: this.protocolLabel === 'VNC' ? this.vncPresentationState() :
           rustDeskDiagnosticsStreamState(this.diagnostics.videoSeen, this.diagnostics.lastFrameAgeMs)
@@ -264,8 +293,14 @@ export struct RustDeskDiagnosticsHud {
       this.metricLine({
         label: '延迟',
         value: this.diagnostics.protocolSnapshotAvailable ?
-          formatDiagnosticLatency(this.diagnostics.latencyMs) : '协议采样不可用'
+          formatDiagnosticLatency(this.diagnostics.latencyMs) : '等待往返采样'
       })
+      if (this.protocolLabel !== 'VNC') {
+        this.metricLine({
+          label: '远端权限',
+          value: this.remotePermissionLabel()
+        })
+      }
       this.metricLine({
         label: '帧率 / 送显',
         value: formatDiagnosticFrameRate(this.diagnostics.receivedFps, this.diagnostics.receivedRateAvailable,
@@ -294,10 +329,10 @@ export struct RustDeskDiagnosticsHud {
       this.metricLine({
         label: '路径',
         value: this.diagnostics.protocolSnapshotAvailable ?
-          this.connectionPathLabel() : '协议采样不可用'
+          this.connectionPathLabel() : '连接路径未上报'
       })
 
-      if (this.protocolLabel === 'VNC') {
+          if (this.protocolLabel === 'VNC') {
         Divider().color('rgba(255,255,255,0.18)').margin({ top: 3, bottom: 3 })
         this.metricLine({
           label: '接收 / 送显总帧',
@@ -357,9 +392,9 @@ export struct RustDeskDiagnosticsHud {
             value: this.refreshMs.toString() + ' ms'
           })
         }
-      }
+          }
 
-      if (this.proEnabled) {
+          if (this.proEnabled) {
         Divider().color('rgba(255,255,255,0.18)').margin({ top: 3, bottom: 3 })
         this.metricLine({
           label: '解码提交',
@@ -396,9 +431,17 @@ export struct RustDeskDiagnosticsHud {
           label: '本机 GPU',
           value: this.localResources.gpuAvailable ? this.localResources.gpuPercent.toFixed(1) + '%' : '不可用'
         })
+          }
+        }
+        .width('100%')
       }
+      .layoutWeight(1)
+      .width('100%')
+      .scrollBar(BarState.Auto)
+      .edgeEffect(EdgeEffect.Spring)
     }
-    .width(270)
+    .width(this.visiblePanelWidth())
+    .height(this.visiblePanelHeight())
     .padding({ left: 12, right: 12, top: 9, bottom: 9 })
     .backgroundColor(this.dockBackground())
     .borderRadius(8)
@@ -411,7 +454,7 @@ export struct RustDeskDiagnosticsHud {
       Stack() {
         this.panelContent()
       }
-      .width(270)
+      .width(this.visiblePanelWidth())
         .position({ x: this.panelEffectiveX(), y: this.effectiveY() })
         .hitTestBehavior(HitTestMode.Default)
         .onAreaChange(this.overlayAreaChangeHandler(true))

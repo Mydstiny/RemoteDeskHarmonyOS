@@ -267,24 +267,52 @@ precision mediump float;
 layout(location = 0) in vec2 aPosition;
 layout(location = 1) in vec2 aTexCoord;
 out vec2 vTexCoord;
+uniform int uCanvasRotation;
+
+vec2 rotateTexCoord(vec2 coord) {
+    if (uCanvasRotation == 1) {
+        return vec2(coord.y, 1.0 - coord.x);
+    }
+    if (uCanvasRotation == 2) {
+        return vec2(1.0 - coord.x, 1.0 - coord.y);
+    }
+    if (uCanvasRotation == 3) {
+        return vec2(1.0 - coord.y, coord.x);
+    }
+    return coord;
+}
 
 void main() {
     gl_Position = vec4(aPosition, 0.0, 1.0);
-    vTexCoord = aTexCoord;
+    vTexCoord = rotateTexCoord(aTexCoord);
 }
 )";
 
-/** NativeImage OES vertex shader — applies the producer's per-frame transform. */
+/** NativeImage OES vertex shader — applies an explicit presentation transform. */
 static const char* VERTEX_SHADER_OES = R"(#version 300 es
 precision mediump float;
 layout(location = 0) in vec2 aPosition;
 layout(location = 1) in vec2 aTexCoord;
 out vec2 vTexCoord;
 uniform mat4 uTexTransform;
+uniform int uCanvasRotation;
+
+vec2 rotateTexCoord(vec2 coord) {
+    if (uCanvasRotation == 1) {
+        return vec2(coord.y, 1.0 - coord.x);
+    }
+    if (uCanvasRotation == 2) {
+        return vec2(1.0 - coord.x, 1.0 - coord.y);
+    }
+    if (uCanvasRotation == 3) {
+        return vec2(1.0 - coord.y, coord.x);
+    }
+    return coord;
+}
 
 void main() {
     gl_Position = vec4(aPosition, 0.0, 1.0);
-    vTexCoord = (uTexTransform * vec4(aTexCoord, 0.0, 1.0)).xy;
+    vTexCoord = (uTexTransform * vec4(rotateTexCoord(aTexCoord), 0.0, 1.0)).xy;
 }
 )";
 
@@ -373,7 +401,9 @@ GLRenderer::GLRenderer()
     : eglDisplay_(EGL_NO_DISPLAY), eglContext_(EGL_NO_CONTEXT),
       eglSurface_(EGL_NO_SURFACE), eglConfig_(nullptr),
       shaderProgram_(0), samplerLocation_(0), oesTransformLocation_(-1),
+      canvasRotationLocation_(-1),
       rawShaderProgram_(0), rawTexture_(0), rawSamplerLocation_(0),
+      rawCanvasRotationLocation_(-1),
       uploadPbo_{0, 0}, uploadPboCapacity_{0, 0}, uploadPboIndex_(0),
       pboUploadEnabled_(false), pboUploadFailedLogged_(false),
       rawTextureWidth_(0), rawTextureHeight_(0),
@@ -384,8 +414,10 @@ GLRenderer::GLRenderer()
       presentationPath_(PresentationPath::UNKNOWN),
       lastVpX_(0), lastVpY_(0), lastVpW_(0), lastVpH_(0),
       canvasScale_(1.0), canvasPanX_(0.0), canvasPanY_(0.0),
+      canvasRotationQuarterTurns_(0),
       canvasTransformVersion_(0), pendingCanvasScale_(1.0),
       pendingCanvasPanX_(0.0), pendingCanvasPanY_(0.0),
+      pendingCanvasRotationQuarterTurns_(0),
       appliedCanvasTransformVersion_(0),
       viewportSnapshotVersion_(0), snapshotVpX_(0), snapshotVpY_(0),
       snapshotVpW_(0), snapshotVpH_(0), snapshotSourceWidth_(0),
@@ -438,6 +470,7 @@ void GLRenderer::ApplyPendingCanvasTransformLocked() {
         const double scale = pendingCanvasScale_.load(std::memory_order_relaxed);
         const double panX = pendingCanvasPanX_.load(std::memory_order_relaxed);
         const double panY = pendingCanvasPanY_.load(std::memory_order_relaxed);
+        const int rotation = pendingCanvasRotationQuarterTurns_.load(std::memory_order_relaxed);
         const uint64_t after = canvasTransformVersion_.load(std::memory_order_acquire);
         if (before != after || (after & 1U) != 0U) {
             continue;
@@ -445,6 +478,7 @@ void GLRenderer::ApplyPendingCanvasTransformLocked() {
         canvasScale_ = scale;
         canvasPanX_ = panX;
         canvasPanY_ = panY;
+        canvasRotationQuarterTurns_ = rotation;
         appliedCanvasTransformVersion_ = after;
         return;
     }
@@ -637,10 +671,11 @@ bool GLRenderer::InitGL() {
     }
     samplerLocation_ = glGetUniformLocation(shaderProgram_, "uTexture");
     oesTransformLocation_ = glGetUniformLocation(shaderProgram_, "uTexTransform");
-    if (samplerLocation_ < 0 || oesTransformLocation_ < 0) {
+    canvasRotationLocation_ = glGetUniformLocation(shaderProgram_, "uCanvasRotation");
+    if (samplerLocation_ < 0 || oesTransformLocation_ < 0 || canvasRotationLocation_ < 0) {
         OH_LOG_ERROR(LOG_APP,
-                     "[GL] OES shader uniforms missing sampler=%{public}d transform=%{public}d",
-                     samplerLocation_, oesTransformLocation_);
+                     "[GL] OES shader uniforms missing sampler=%{public}d transform=%{public}d rotation=%{public}d",
+                     samplerLocation_, oesTransformLocation_, canvasRotationLocation_);
         return false;
     }
 
@@ -648,6 +683,8 @@ bool GLRenderer::InitGL() {
     rawShaderProgram_ = CreateRawShaderProgram();
     rawSamplerLocation_ = rawShaderProgram_ > 0
         ? glGetUniformLocation(rawShaderProgram_, "uTexture") : 0;
+    rawCanvasRotationLocation_ = rawShaderProgram_ > 0
+        ? glGetUniformLocation(rawShaderProgram_, "uCanvasRotation") : -1;
 
     // 创建全屏四边形几何体
     CreateQuadGeometry();
@@ -1076,6 +1113,9 @@ RdpPresentMetrics GLRenderer::RenderRawBGRAInternal(
 
     glUseProgram(rawShaderProgram_);
     glUniform1i(rawSamplerLocation_, 0);
+    if (rawCanvasRotationLocation_ >= 0) {
+        glUniform1i(rawCanvasRotationLocation_, canvasRotationQuarterTurns_);
+    }
 
     glBindVertexArray(vao_);
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
@@ -1135,17 +1175,26 @@ void GLRenderer::CreateQuadGeometry() {
 }
 
 void GLRenderer::RenderFrame(GLuint textureId) {
-    RenderFrame(textureId, Render::IdentityNativeImageTransform());
+    (void)PresentFrame(textureId, Render::IdentityNativeImageTransform());
 }
 
 void GLRenderer::RenderFrame(
     GLuint textureId, const Render::NativeImageTransform& textureTransform) {
+    (void)PresentFrame(textureId, textureTransform);
+}
+
+RdpPresentMetrics GLRenderer::PresentFrame(
+    GLuint textureId, const Render::NativeImageTransform& textureTransform) {
+    RdpPresentMetrics metrics;
     std::lock_guard<std::mutex> lock(lifecycleMutex_);
     using clock = std::chrono::steady_clock;
     const auto drawBeginAt = clock::now();
     if (destroying_ || g_surfaceDetached.load(std::memory_order_acquire) || !initialized_) {
         OH_LOG_WARN(LOG_APP, "[GL] 渲染器未初始化, 跳过渲染");
-        return;
+        metrics.result = g_surfaceDetached.load(std::memory_order_acquire)
+            ? RdpPresentResult::SurfaceDetached
+            : RdpPresentResult::RendererNotReady;
+        return metrics;
     }
     const int oesWidth = oesSourceWidth_ > 0 ? oesSourceWidth_ : sourceWidth_;
     const int oesHeight = oesSourceHeight_ > 0 ? oesSourceHeight_ : sourceHeight_;
@@ -1155,7 +1204,8 @@ void GLRenderer::RenderFrame(
     // 绑定上下文
     // 清屏
     if (!MakeCurrent()) {
-        return;
+        metrics.result = RdpPresentResult::MakeCurrentFailed;
+        return metrics;
     }
     // SetRendererSourceSize() stages the current OES output dimensions
     // immediately before this callback. Do not clear them on a raw->OES
@@ -1191,6 +1241,7 @@ void GLRenderer::RenderFrame(
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_EXTERNAL_OES, textureId);
     glUniform1i(samplerLocation_, 0);
+    glUniform1i(canvasRotationLocation_, canvasRotationQuarterTurns_);
     glUniformMatrix4fv(oesTransformLocation_, 1, GL_FALSE,
                        textureTransform.data());
 
@@ -1209,7 +1260,6 @@ void GLRenderer::RenderFrame(
         OH_LOG_WARN(LOG_APP, "[GL] 渲染后 GL 错误: %{public}x", err);
     }
 
-    RdpPresentMetrics metrics;
     metrics.result = swapped ? RdpPresentResult::Presented : RdpPresentResult::SwapFailed;
     metrics.drawUs = std::chrono::duration_cast<std::chrono::microseconds>(
         drawAt - drawBeginAt).count();
@@ -1226,6 +1276,7 @@ void GLRenderer::RenderFrame(
                     width_, height_, viewportX, viewportY, viewportW, viewportH,
                     canvasScale_);
     }
+    return metrics;
 }
 
 void GLRenderer::Resize(int width, int height) {
@@ -1281,12 +1332,14 @@ void GLRenderer::SetOesSourceSize(int width, int height) {
     OH_LOG_DEBUG(LOG_APP, "[GL] OES texture size staged %{public}dx%{public}d", width, height);
 }
 
-uint64_t GLRenderer::SetCanvasTransform(double scale, double panX, double panY) {
+uint64_t GLRenderer::SetCanvasTransform(double scale, double panX, double panY,
+                                        int rotationQuarterTurns) {
     if (!std::isfinite(scale) || scale <= 0.0 || !std::isfinite(panX) || !std::isfinite(panY)) {
         OH_LOG_WARN(LOG_APP, "[GL] ignored invalid canvas transform");
         return 0;
     }
     const double clampedScale = std::clamp(scale, 0.05, kMaxCanvasScale);
+    const int normalizedRotation = ((rotationQuarterTurns % 4) + 4) % 4;
     uint64_t publishedVersion = 0;
     // Publish a complete transform with a tiny seqlock. The UI thread never
     // waits for the EGL owner; the owner consumes the newest stable tuple.
@@ -1296,6 +1349,7 @@ uint64_t GLRenderer::SetCanvasTransform(double scale, double panX, double panY) 
         pendingCanvasScale_.store(clampedScale, std::memory_order_relaxed);
         pendingCanvasPanX_.store(panX, std::memory_order_relaxed);
         pendingCanvasPanY_.store(panY, std::memory_order_relaxed);
+        pendingCanvasRotationQuarterTurns_.store(normalizedRotation, std::memory_order_relaxed);
         publishedVersion = canvasTransformVersion_.fetch_add(1, std::memory_order_release) + 1;
     }
     RequestRedraw();
@@ -1357,6 +1411,9 @@ RdpPresentMetrics GLRenderer::RenderRetainedFrameLocked(uint64_t expectedGenerat
     PublishViewportSnapshot(vpX, vpY, vpW, vpH);
     glUseProgram(rawShaderProgram_);
     glUniform1i(rawSamplerLocation_, 0);
+    if (rawCanvasRotationLocation_ >= 0) {
+        glUniform1i(rawCanvasRotationLocation_, canvasRotationQuarterTurns_);
+    }
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, rawTexture_);
     glBindVertexArray(vao_);
@@ -1386,12 +1443,15 @@ void GLRenderer::CalculateViewport(int sourceWidth, int sourceHeight,
     if (width_ <= 0 || height_ <= 0 || sourceWidth <= 0 || sourceHeight <= 0) {
         return;
     }
-    const double scaleW = static_cast<double>(width_) / static_cast<double>(sourceWidth);
-    const double scaleH = static_cast<double>(height_) / static_cast<double>(sourceHeight);
+    const bool swapSourceAxes = (canvasRotationQuarterTurns_ % 2) != 0;
+    const int displaySourceWidth = swapSourceAxes ? sourceHeight : sourceWidth;
+    const int displaySourceHeight = swapSourceAxes ? sourceWidth : sourceHeight;
+    const double scaleW = static_cast<double>(width_) / static_cast<double>(displaySourceWidth);
+    const double scaleH = static_cast<double>(height_) / static_cast<double>(displaySourceHeight);
     const double contain = std::min(scaleW, scaleH);
     const double scale = contain * canvasScale_;
-    vpW = std::max(1, static_cast<int>(std::lround(static_cast<double>(sourceWidth) * scale)));
-    vpH = std::max(1, static_cast<int>(std::lround(static_cast<double>(sourceHeight) * scale)));
+    vpW = std::max(1, static_cast<int>(std::lround(static_cast<double>(displaySourceWidth) * scale)));
+    vpH = std::max(1, static_cast<int>(std::lround(static_cast<double>(displaySourceHeight) * scale)));
     vpX = static_cast<int>(std::lround(static_cast<double>(width_ - vpW) / 2.0 + canvasPanX_));
     vpY = static_cast<int>(std::lround(static_cast<double>(height_ - vpH) / 2.0 + canvasPanY_));
 }
@@ -1822,16 +1882,16 @@ napi_value NapiResizeRenderer(napi_env env, napi_callback_info info) {
 
     auto access = AcquirePublicRenderer(handleVal);
     if (access.renderer) {
-        {
-            std::lock_guard<std::mutex> lock(g_activeRendererMutex);
-            const auto ctx = FindRendererContextLocked(handleVal);
-            if (!ctx || ctx->renderer != access.renderer ||
-                !IsActiveRendererHandleLocked(handleVal)) {
-                access.renderer.reset();
-            } else {
-                ctx->generation = AdvanceRendererGeneration();
-            }
+        std::lock_guard<std::mutex> lock(g_activeRendererMutex);
+        const auto ctx = FindRendererContextLocked(handleVal);
+        if (!ctx || ctx->renderer != access.renderer ||
+            !IsActiveRendererHandleLocked(handleVal)) {
+            access.renderer.reset();
         }
+        // Viewport size is presentation geometry, not renderer ownership.
+        // Advancing the ownership generation here invalidates the exact
+        // decoder binding on every rotation/PIP resize and strands a healthy
+        // hardware pipeline after the first surface-size callback.
     }
     if (access.renderer) {
         access.renderer->Resize(width, height);
@@ -1842,23 +1902,25 @@ napi_value NapiResizeRenderer(napi_env env, napi_callback_info info) {
     return undefined;
 }
 
-/** NAPI: setRendererCanvasTransform(handle, scale, panX, panY): number */
+/** NAPI: setRendererCanvasTransform(handle, scale, panX, panY, rotationQuarterTurns): number */
 napi_value NapiSetRendererCanvasTransform(napi_env env, napi_callback_info info) {
-    size_t argc = 4;
-    napi_value args[4];
+    size_t argc = 5;
+    napi_value args[5];
     napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
     int64_t handleVal = 0;
     double scale = 1.0;
     double panX = 0.0;
     double panY = 0.0;
+    int32_t rotationQuarterTurns = 0;
     if (argc > 0) napi_get_value_int64(env, args[0], &handleVal);
     if (argc > 1) napi_get_value_double(env, args[1], &scale);
     if (argc > 2) napi_get_value_double(env, args[2], &panX);
     if (argc > 3) napi_get_value_double(env, args[3], &panY);
+    if (argc > 4) napi_get_value_int32(env, args[4], &rotationQuarterTurns);
     auto access = AcquirePublicRenderer(handleVal);
     uint64_t version = 0;
     if (access.renderer) {
-        version = access.renderer->SetCanvasTransform(scale, panX, panY);
+        version = access.renderer->SetCanvasTransform(scale, panX, panY, rotationQuarterTurns);
     }
     napi_value result;
     napi_create_double(env, static_cast<double>(version), &result);
@@ -2093,8 +2155,16 @@ void RendererNapi::SetActiveRenderer(int64_t handle) {
         if (previousHandle != handle) {
             previousRenderer = AcquireRendererLocked(previousHandle, false);
         }
-        const uint64_t generation = AdvanceRendererGeneration();
-        ctx->generation = generation;
+        const bool ownerMatches =
+            (!g_activeRendererOwner.valid() && !ctx->boundOwner.valid()) ||
+            (g_activeRendererOwner.valid() &&
+             ctx->boundOwner == g_activeRendererOwner &&
+             ctx->owner == g_activeRendererOwner);
+        if (Render::ShouldAdvanceRendererGeneration(
+                previousHandle, handle, ctx->active, ctx->detached,
+                ownerMatches, ctx->generation)) {
+            ctx->generation = AdvanceRendererGeneration();
+        }
         // An ownerless renderer is a pending token for the next activation;
         // never bind it to the previous session merely because that session's
         // component state is still being retired.
@@ -2140,9 +2210,14 @@ bool RendererNapi::SetActiveRenderer(
         if (previousHandle != handle) {
             previousRenderer = AcquireRendererLocked(previousHandle, false);
         }
+        const bool ownerMatches = g_activeRendererOwner == owner &&
+            ctx->boundOwner == owner && ctx->owner == owner;
         g_activeRendererOwner = owner;
-        const uint64_t generation = AdvanceRendererGeneration();
-        ctx->generation = generation;
+        if (Render::ShouldAdvanceRendererGeneration(
+                previousHandle, handle, ctx->active, ctx->detached,
+                ownerMatches, ctx->generation)) {
+            ctx->generation = AdvanceRendererGeneration();
+        }
         ctx->boundOwner = owner;
         ctx->owner = owner;
         ctx->active = true;
@@ -2168,6 +2243,23 @@ bool RendererNapi::IsActiveRendererForOwnerUnderLease(
     int64_t handle, const Render::DecoderSessionIdentity& owner) {
     std::lock_guard<std::mutex> lock(g_activeRendererMutex);
     return IsActiveRendererOwnerAndHandleLocked(handle, owner);
+}
+
+uint64_t RendererNapi::GetActiveRendererGenerationUnderOwnerLease(
+    int64_t handle, const Render::DecoderSessionIdentity& owner) {
+    std::lock_guard<std::mutex> lock(g_activeRendererMutex);
+    const auto context = FindRendererContextLocked(handle);
+    return context && IsActiveRendererOwnerAndHandleLocked(handle, owner)
+        ? context->generation : 0U;
+}
+
+uint64_t RendererNapi::GetActiveRendererGeneration(
+    int64_t handle, const Render::DecoderSessionIdentity& owner) {
+    auto sinkLease = Render::SharedSessionSinkOwnerLease().acquire(owner);
+    if (!sinkLease) {
+        return 0U;
+    }
+    return GetActiveRendererGenerationUnderOwnerLease(handle, owner);
 }
 
 int64_t RendererNapi::GetActiveRendererHandle(
@@ -3057,21 +3149,47 @@ void RendererNapi::RenderNative(
 void RendererNapi::RenderNative(
     int64_t handle, const Render::DecoderSessionIdentity& owner, GLuint textureId,
     const Render::NativeImageTransform& textureTransform) {
+    (void)PresentNative(handle, owner, textureId, textureTransform);
+}
+
+RdpPresentMetrics RendererNapi::PresentNative(
+    int64_t handle, const Render::DecoderSessionIdentity& owner, GLuint textureId,
+    const Render::NativeImageTransform& textureTransform) {
+    RdpPresentMetrics metrics;
     auto sinkLease = Render::SharedSessionSinkOwnerLease().acquire(owner);
     if (!sinkLease) {
-        return;
+        metrics.result = RdpPresentResult::NoActiveRenderer;
+        return metrics;
     }
     std::shared_ptr<GLRenderer> renderer;
+    uint64_t generation = 0U;
     {
         std::lock_guard<std::mutex> lock(g_activeRendererMutex);
         if (!IsActiveRendererOwnerAndHandleLocked(handle, owner)) {
-            return;
+            metrics.result = RdpPresentResult::GenerationMismatch;
+            return metrics;
         }
-        renderer = AcquireRendererLocked(handle, true);
+        renderer = AcquireRendererLocked(handle, true, &generation);
     }
-    if (renderer) {
-        renderer->RenderFrame(textureId, textureTransform);
+    if (!renderer || generation == 0U) {
+        metrics.result = RdpPresentResult::NoActiveRenderer;
+        return metrics;
     }
+    metrics = renderer->PresentFrame(textureId, textureTransform);
+    metrics.generation = generation;
+    if (metrics.presented()) {
+        std::lock_guard<std::mutex> lock(g_activeRendererMutex);
+        const auto context = FindRendererContextLocked(handle);
+        if (!context || context->generation != generation ||
+            !IsActiveRendererOwnerAndHandleLocked(handle, owner)) {
+            // The swap happened on the retained old renderer, but it is not a
+            // presentation acknowledgement for the currently bound Surface.
+            // Legacy RenderNative callers still retain the actual draw; only
+            // the exact-owner proof is fenced out.
+            metrics.result = RdpPresentResult::GenerationMismatch;
+        }
+    }
+    return metrics;
 }
 
 void RendererNapi::SetActiveSourceSize(int width, int height) {

@@ -71,6 +71,9 @@ describe('CloudTableAdapter', (): void => {
       rdpendpointmode: 'microsoft_rd_gateway',
       rdpgatewaytransport: 'no-websockets',
       rdpgatewayservername: 'gateway.example.test',
+      lanaddressmode: 'static',
+      landiscoveryidentity: 'peer-stable-id',
+      lanlastresolvedat: '1234',
       sshhostkeyfingerprintsha256: 'must-stay-local',
       rdpcertificateallowhostmismatch: '1',
       rdprestrictedadminhash: '0123456789ABCDEF0123456789ABCDEF',
@@ -87,6 +90,9 @@ describe('CloudTableAdapter', (): void => {
     expect(decoded.extension['rustdeskproaccountid']).assertUndefined();
     expect(decoded.extension['rustdesktargetdevice']).assertEqual('phone');
     expect(decoded.extension['rustdeskadaptiveorientation']).assertEqual('1');
+    expect(decoded.extension['lanaddressmode']).assertEqual('static');
+    expect(decoded.extension['landiscoveryidentity']).assertEqual('peer-stable-id');
+    expect(decoded.extension['lanlastresolvedat']).assertEqual('1234');
     expect(decoded.extension['rustdesktotpentryid']).assertUndefined();
     expect(decoded.extension['rustdesktotpautosubmit']).assertUndefined();
     expect(decoded.extension['rdpauthmode']).assertEqual('restricted_admin');

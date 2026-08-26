@@ -25,6 +25,15 @@ import {
   resolveRemoteSessionMediaKind,
   shouldRestartLiveViewForMediaChange
 } from './RemoteSessionMediaStatePolicy';
+import {
+  RemoteSessionServiceLease,
+  RemoteSessionServiceProtocol,
+  cloneRemoteSessionServiceLease,
+  remoteSessionServiceLeaseCanClaim,
+  remoteSessionServiceLeaseEquals,
+  remoteSessionServiceLeaseIsValid,
+  remoteSessionServiceLeaseMatchesSession
+} from './RemoteSessionServiceLeasePolicy';
 
 const TAG = 'LiveViewService';
 const DOMAIN = 0x0015;
@@ -42,6 +51,10 @@ export class RemoteSessionLiveViewService {
   private currentHasAudio: boolean = false;
   private currentHasVideo: boolean = false;
   private lastInfo: LiveViewConnectionInfo | null = null;
+  private currentLease: RemoteSessionServiceLease | null = null;
+  private currentContext: common.UIAbilityContext | null = null;
+  private operationGeneration: number = 0;
+  private operationTail: Promise<void> = Promise.resolve();
 
   static getInstance(): RemoteSessionLiveViewService {
     if (RemoteSessionLiveViewService.instance === null) {
@@ -56,16 +69,35 @@ export class RemoteSessionLiveViewService {
    * @returns true only after a strategy has actually started.
    */
   async start(context: common.UIAbilityContext,
-    info: LiveViewConnectionInfo): Promise<boolean> {
+    info: LiveViewConnectionInfo,
+    lease: RemoteSessionServiceLease): Promise<boolean> {
+    if (!remoteSessionServiceLeaseIsValid(lease)) { return false; }
+    const captured: RemoteSessionServiceLease = cloneRemoteSessionServiceLease(lease);
+    return this.enqueueOperation<boolean>(() => this.startInternal(context, info, captured));
+  }
+
+  private async startInternal(context: common.UIAbilityContext,
+    info: LiveViewConnectionInfo,
+    lease: RemoteSessionServiceLease): Promise<boolean> {
+    if (!this.claimLease(lease)) {
+      hilog.warn(DOMAIN, TAG, '[LIVE-VIEW-LEASE] start rejected for non-owner');
+      return false;
+    }
+    this.currentContext = context;
+    const generation: number = ++this.operationGeneration;
     const enabled: boolean = AppStorage.get<boolean>('liveViewEnabled') ?? true;
     if (!enabled) {
       hilog.info(DOMAIN, TAG, 'liveView disabled, skip start');
+      this.resetState(true);
       return false;
     }
 
     // 如果已有活跃策略, 先停掉
     if (this.activeStrategy !== null) {
-      await this.stop(context);
+      const previous: LiveViewStrategy = this.activeStrategy;
+      await this.stopStrategy(context, previous);
+      if (!this.operationIsCurrent(generation, lease)) { return false; }
+      if (this.activeStrategy === previous) { this.clearPresentationState(); }
     }
 
     const normalizedInfo: LiveViewConnectionInfo = this.normalizeInfo(info);
@@ -86,14 +118,23 @@ export class RemoteSessionLiveViewService {
         }
         try {
           await this.avSessionStrategy.start(context, normalizedInfo);
+          if (!this.operationIsCurrent(generation, lease)) {
+            await this.stopStrategy(context, this.avSessionStrategy);
+            return false;
+          }
           this.activeStrategy = this.avSessionStrategy;
         } catch (err) {
+          if (!this.operationIsCurrent(generation, lease)) { return false; }
           hilog.warn(DOMAIN, TAG, '[LIVE-VIEW-AVSESSION-FALLBACK] start failed, using notification: ' +
             JSON.stringify(err));
           if (this.notificationStrategy === null) {
             this.notificationStrategy = new NotificationLiveViewStrategy();
           }
           await this.notificationStrategy.start(context, normalizedInfo);
+          if (!this.operationIsCurrent(generation, lease)) {
+            await this.stopStrategy(context, this.notificationStrategy);
+            return false;
+          }
           this.currentMode = LiveViewMode.NOTIFICATION;
           this.activeStrategy = this.notificationStrategy;
         }
@@ -102,10 +143,14 @@ export class RemoteSessionLiveViewService {
           this.notificationStrategy = new NotificationLiveViewStrategy();
         }
         await this.notificationStrategy.start(context, normalizedInfo);
+        if (!this.operationIsCurrent(generation, lease)) {
+          await this.stopStrategy(context, this.notificationStrategy);
+          return false;
+        }
         this.activeStrategy = this.notificationStrategy;
       } else {
         hilog.info(DOMAIN, TAG, 'liveView mode is OFF, skip');
-        this.resetState();
+        this.resetState(true);
         return false;
       }
 
@@ -119,16 +164,30 @@ export class RemoteSessionLiveViewService {
     } catch (err) {
       hilog.warn(DOMAIN, TAG, '[LIVE-VIEW-START] failed mode=' + this.currentMode.toString() +
         ' code=' + JSON.stringify(err));
-      this.resetState();
+      if (this.operationIsCurrent(generation, lease)) { this.resetState(true); }
       return false;
     }
   }
 
   async reconcile(context: common.UIAbilityContext,
-    info: LiveViewConnectionInfo): Promise<boolean> {
+    info: LiveViewConnectionInfo,
+    lease: RemoteSessionServiceLease): Promise<boolean> {
+    if (!remoteSessionServiceLeaseIsValid(lease)) { return false; }
+    const captured: RemoteSessionServiceLease = cloneRemoteSessionServiceLease(lease);
+    return this.enqueueOperation<boolean>(() => this.reconcileInternal(context, info, captured));
+  }
+
+  private async reconcileInternal(context: common.UIAbilityContext,
+    info: LiveViewConnectionInfo,
+    lease: RemoteSessionServiceLease): Promise<boolean> {
+    if (!this.claimLease(lease)) {
+      hilog.warn(DOMAIN, TAG, '[LIVE-VIEW-LEASE] reconcile rejected for non-owner');
+      return false;
+    }
+    this.currentContext = context;
     const enabled: boolean = AppStorage.get<boolean>('liveViewEnabled') ?? true;
     if (!enabled) {
-      await this.stop(context);
+      await this.stopInternal(context, lease, false);
       return false;
     }
 
@@ -149,65 +208,127 @@ export class RemoteSessionLiveViewService {
       nextMode,
       nextMediaKind as RemoteSessionMediaKind
     );
-    const audioChanged: boolean = normalizedInfo.hasAudio !== this.currentHasAudio;
-    const videoChanged: boolean = (normalizedInfo.hasVideo === true) !== this.currentHasVideo;
-
     if (this.activeStrategy === null || modeChanged || mediaRestartRequired) {
-      return await this.start(context, normalizedInfo);
+      return await this.startInternal(context, normalizedInfo, lease);
     }
 
-    if (audioChanged || videoChanged || nextMediaKind !== this.currentMediaKind) {
-      this.currentMediaKind = nextMediaKind;
-      this.currentHasAudio = normalizedInfo.hasAudio;
-      this.currentHasVideo = normalizedInfo.hasVideo === true;
+    const generation: number = ++this.operationGeneration;
+    const strategy: LiveViewStrategy = this.activeStrategy;
+    try {
+      await strategy.update(normalizedInfo);
+    } catch (err) {
+      hilog.warn(DOMAIN, TAG, '[LIVE-VIEW-UPDATE] failed: ' + JSON.stringify(err));
+      return false;
     }
-    await this.update(normalizedInfo);
-    return this.activeStrategy !== null;
+    if (!this.operationIsCurrent(generation, lease) || this.activeStrategy !== strategy) {
+      return false;
+    }
+    this.lastInfo = normalizedInfo;
+    this.currentMediaKind = nextMediaKind;
+    this.currentHasAudio = normalizedInfo.hasAudio;
+    this.currentHasVideo = normalizedInfo.hasVideo === true;
+    return true;
   }
 
   /**
    * 连接状态更新时调用 (如音频状态变化)。
    */
-  async update(info: LiveViewConnectionInfo): Promise<void> {
-    const normalizedInfo: LiveViewConnectionInfo = this.normalizeInfo(info);
-    this.lastInfo = normalizedInfo;
-    if (this.activeStrategy === null) {
-      return;
-    }
-    try {
-      await this.activeStrategy.update(normalizedInfo);
-    } catch (err) {
-      hilog.warn(DOMAIN, TAG, '[LIVE-VIEW-UPDATE] failed: ' + JSON.stringify(err));
-    }
+  async update(info: LiveViewConnectionInfo,
+    lease: RemoteSessionServiceLease): Promise<boolean> {
+    if (!remoteSessionServiceLeaseIsValid(lease)) { return false; }
+    const captured: RemoteSessionServiceLease = cloneRemoteSessionServiceLease(lease);
+    return this.enqueueOperation<boolean>(async (): Promise<boolean> => {
+      if (!remoteSessionServiceLeaseEquals(this.currentLease, captured) ||
+          this.activeStrategy === null) { return false; }
+      const generation: number = ++this.operationGeneration;
+      const strategy: LiveViewStrategy = this.activeStrategy;
+      const normalizedInfo: LiveViewConnectionInfo = this.normalizeInfo(info);
+      try {
+        await strategy.update(normalizedInfo);
+      } catch (err) {
+        hilog.warn(DOMAIN, TAG, '[LIVE-VIEW-UPDATE] failed: ' + JSON.stringify(err));
+        return false;
+      }
+      if (!this.operationIsCurrent(generation, captured) ||
+          this.activeStrategy !== strategy) { return false; }
+      this.lastInfo = normalizedInfo;
+      this.currentMediaKind = normalizedInfo.mediaKind ?? RemoteSessionMediaKind.NONE;
+      this.currentHasAudio = normalizedInfo.hasAudio;
+      this.currentHasVideo = normalizedInfo.hasVideo === true;
+      return true;
+    });
   }
 
   /**
    * 前台恢复或断连时调用 — 移除实况窗。
    */
-  async stop(context: common.UIAbilityContext): Promise<void> {
-    if (this.activeStrategy === null) {
+  async stop(context: common.UIAbilityContext,
+    lease?: RemoteSessionServiceLease): Promise<void> {
+    const captured: RemoteSessionServiceLease | null = lease === undefined ? null :
+      cloneRemoteSessionServiceLease(lease);
+    if (captured !== null && !remoteSessionServiceLeaseEquals(this.currentLease, captured)) {
+      return;
+    }
+    // Invalidate an in-flight start/update before this stop reaches the
+    // serialized strategy operation queue.
+    this.operationGeneration += 1;
+    await this.enqueueOperation<void>(() => this.stopInternal(context, captured, captured === null));
+  }
+
+  /** Snapshot the exact predecessor owner for a registry restore CAS. */
+  leaseForMatchingSession(protocol: RemoteSessionServiceProtocol,
+    hostId: string, sessionId: number): RemoteSessionServiceLease | null {
+    if (!remoteSessionServiceLeaseMatchesSession(
+        this.currentLease, protocol, hostId, sessionId)) {
+      return null;
+    }
+    return cloneRemoteSessionServiceLease(
+      this.currentLease as RemoteSessionServiceLease);
+  }
+
+  /**
+   * A disappearing page may no longer expose a UIContext. The service retains
+   * only the context of its exact active lease so that owner cleanup can still
+   * remove AVSession/notification state without a global stop.
+   */
+  async stopOwned(lease: RemoteSessionServiceLease): Promise<void> {
+    const captured: RemoteSessionServiceLease = cloneRemoteSessionServiceLease(lease);
+    if (!remoteSessionServiceLeaseEquals(this.currentLease, captured) ||
+        this.currentContext === null) {
+      return;
+    }
+    await this.stop(this.currentContext, captured);
+  }
+
+  private async stopInternal(context: common.UIAbilityContext,
+    lease: RemoteSessionServiceLease | null, force: boolean): Promise<void> {
+    if (!force && !remoteSessionServiceLeaseEquals(this.currentLease, lease)) { return; }
+    const strategy: LiveViewStrategy | null = this.activeStrategy;
+    if (strategy === null) {
+      if (force || remoteSessionServiceLeaseEquals(this.currentLease, lease)) {
+        this.resetState(true);
+      }
       return;
     }
     try {
-      await this.activeStrategy.stop(context);
+      await strategy.stop(context);
       hilog.info(DOMAIN, TAG, 'liveView stopped mode=' + this.currentMode.toString());
     } catch (err) {
       hilog.warn(DOMAIN, TAG, '[LIVE-VIEW-STOP] failed: ' + JSON.stringify(err));
     } finally {
-      this.activeStrategy = null;
-      this.lastInfo = null;
-      this.currentMode = LiveViewMode.OFF;
-      this.currentMediaKind = RemoteSessionMediaKind.NONE;
-      this.currentHasAudio = false;
-      this.currentHasVideo = false;
+      if (this.activeStrategy === strategy &&
+        (force || remoteSessionServiceLeaseEquals(this.currentLease, lease))) {
+        this.resetState(true);
+      }
     }
   }
 
   /**
    * 检查实况窗当前是否活跃。
    */
-  isActive(): boolean {
-    return this.activeStrategy !== null;
+  isActive(lease: RemoteSessionServiceLease): boolean {
+    return this.activeStrategy !== null &&
+      remoteSessionServiceLeaseEquals(this.currentLease, lease);
   }
 
   /**
@@ -215,7 +336,9 @@ export class RemoteSessionLiveViewService {
    * 由 RemoteDesktop 在启动实况窗后注入原生静音实现。
    * @param callback mute=true→静音, mute=false→取消静音
    */
-  setMuteCommandCallback(callback: (mute: boolean) => void): void {
+  setMuteCommandCallback(callback: (mute: boolean) => void,
+    lease: RemoteSessionServiceLease): void {
+    if (!remoteSessionServiceLeaseEquals(this.currentLease, lease)) { return; }
     if (this.currentMode === LiveViewMode.AVSESSION &&
       this.currentHasAudio &&
       this.avSessionStrategy !== null) {
@@ -253,12 +376,49 @@ export class RemoteSessionLiveViewService {
     return LiveViewMode.OFF;
   }
 
-  private resetState(): void {
+  private claimLease(lease: RemoteSessionServiceLease): boolean {
+    if (!remoteSessionServiceLeaseCanClaim(this.currentLease, lease)) { return false; }
+    if (this.currentLease === null) {
+      this.currentLease = cloneRemoteSessionServiceLease(lease);
+    }
+    return true;
+  }
+
+  private operationIsCurrent(generation: number,
+    lease: RemoteSessionServiceLease): boolean {
+    return generation === this.operationGeneration &&
+      remoteSessionServiceLeaseEquals(this.currentLease, lease);
+  }
+
+  private async stopStrategy(context: common.UIAbilityContext,
+    strategy: LiveViewStrategy): Promise<void> {
+    try { await strategy.stop(context); } catch (_) {}
+  }
+
+  private clearPresentationState(): void {
     this.activeStrategy = null;
     this.lastInfo = null;
     this.currentMode = LiveViewMode.OFF;
     this.currentMediaKind = RemoteSessionMediaKind.NONE;
     this.currentHasAudio = false;
     this.currentHasVideo = false;
+  }
+
+  private resetState(clearLease: boolean): void {
+    this.clearPresentationState();
+    if (clearLease) {
+      this.currentLease = null;
+      this.currentContext = null;
+    }
+  }
+
+  private enqueueOperation<T>(operation: () => Promise<T>): Promise<T> {
+    const queued: Promise<T> = this.operationTail.then(
+      (): Promise<T> => operation(),
+      (): Promise<T> => operation());
+    this.operationTail = queued.then(
+      (): void => { return; },
+      (): void => { return; });
+    return queued;
   }
 }

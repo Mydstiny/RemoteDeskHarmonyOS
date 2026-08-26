@@ -3,6 +3,8 @@
  * A rebuilt XComponent can reuse the same ID for a different visible binding,
  * so an owner change must reinitialize the native renderer as well.
  */
+export const SSH_TERMINAL_PTY_RESIZE_COALESCE_MS: number = 72;
+
 export function makeSshTerminalSurfaceBindingKey(hostId: string, surfaceGeneration: number,
   bindingGeneration: number, sessionId: number): string {
   const normalizedHostId: string = hostId.trim();

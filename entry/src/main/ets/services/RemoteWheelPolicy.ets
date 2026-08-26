@@ -26,6 +26,8 @@ export const REMOTE_WHEEL_FAST_BURST_MS: number = 40;
 export const REMOTE_WHEEL_MEDIUM_BURST_MS: number = 80;
 export const VNC_TOUCHPAD_FLING_INTERVAL_MS: number = 30;
 export const VNC_TOUCHPAD_FLING_DECAY: number = 0.97;
+export const MOONLIGHT_HIGH_RES_WHEEL_DETENT: number = 120;
+export const MOONLIGHT_TOUCHPAD_WHEEL_GAIN: number = 4;
 
 export interface RemoteWheelAccumulation {
   delta: number;
@@ -99,6 +101,23 @@ export function discreteRemoteWheelDelta(rawDelta: number, protocol: string,
       VNC_PHYSICAL_WHEEL_STEPS * burstMultiplier);
   }
   return rawDelta > 0 ? steps : -steps;
+}
+
+export function moonlightAxisScrollAmount(rawDelta: number,
+  touchpadSource: boolean): number {
+  if (!Number.isFinite(rawDelta) || rawDelta === 0) { return 0; }
+  if (!touchpadSource) {
+    // Harmony mouse vendors report one detent as either +/-1 or +/-120.
+    // Moonlight already defines one high-resolution detent as 120, so only
+    // the direction is portable. Multiplying the raw vendor value can turn a
+    // single notch into 14,400 units and jump an entire remote page.
+    return rawDelta > 0 ? MOONLIGHT_HIGH_RES_WHEEL_DETENT :
+      -MOONLIGHT_HIGH_RES_WHEEL_DETENT;
+  }
+  let amount: number = Math.round(rawDelta * MOONLIGHT_TOUCHPAD_WHEEL_GAIN);
+  if (amount === 0) { amount = rawDelta > 0 ? 1 : -1; }
+  return Math.max(-MOONLIGHT_HIGH_RES_WHEEL_DETENT,
+    Math.min(MOONLIGHT_HIGH_RES_WHEEL_DETENT, amount));
 }
 
 export function shouldStartVncTouchpadFling(lastRawDelta: number,

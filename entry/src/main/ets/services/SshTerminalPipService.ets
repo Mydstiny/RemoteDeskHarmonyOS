@@ -2,36 +2,25 @@
  * SSH terminal PiP owner.
  *
  * SSH renders through ArkUI Canvas, so it cannot share the video PiP surface
- * owned by RemoteSessionPipService. This PiP deliberately exposes a compact
- * status/output summary through customUIController; the SSH socket remains
- * owned by the native detached session.
+ * owned by RemoteSessionPipService. This PiP exposes only a compact public
+ * status through customUIController; the SSH socket remains owned by the
+ * native detached session.
  */
 import { PiPWindow, BuilderNode, FrameNode, NodeController, UIContext } from '@kit.ArkUI';
 import { common } from '@kit.AbilityKit';
-import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
+import { sshDiagnosticErrorCode } from './ssh/observability/SshDiagnosticPolicy';
+import { sshPipPublicStatus } from './ssh/observability/SshPipPrivacyPolicy';
 
 const TAG = 'SshTerminalPip';
 const DOMAIN = 0x0017;
 const PIP_STATE_TIMEOUT_MS = 5000;
 
 export interface SshTerminalPipInfo {
-  hostLabel: string;
-  hostAddress: string;
   status: string;
-  outputSummary: string;
 }
 
 type SshPipStoppedHandler = (reason: string) => void;
-
-function sanitizeOutputSummary(value: string): string {
-  let result: string = value.replace(/[\u0000-\u001F\u007F]/g, ' ')
-    .replace(/\s+/g, ' ').trim();
-  if (result.length > 96) {
-    result = result.substring(result.length - 96);
-  }
-  return result;
-}
 
 @Builder
 function SshTerminalPipContent(info: SshTerminalPipInfo): void {
@@ -50,29 +39,18 @@ function SshTerminalPipContent(info: SshTerminalPipInfo): void {
     .width('100%')
     .height(24)
 
-    Text(info.hostLabel.length > 0 ? info.hostLabel : info.hostAddress)
+    Text('SSH 会话已保留')
       .width('100%')
       .fontSize(16)
       .fontColor('#FFFFFF')
       .fontWeight(FontWeight.Medium)
       .maxLines(1)
 
-    Text(info.hostAddress)
+    Text('返回应用查看终端内容')
       .width('100%')
       .fontSize(11)
       .fontColor('#AAB4C0')
       .maxLines(1)
-
-    Divider()
-      .color('#34404D')
-      .width('100%')
-      .margin({ top: 8, bottom: 8 })
-
-    Text(info.outputSummary.length > 0 ? info.outputSummary : 'SSH 会话已保留')
-      .width('100%')
-      .fontSize(12)
-      .fontColor('#D7DEE8')
-      .maxLines(2)
   }
   .width('100%')
   .height('100%')
@@ -225,9 +203,7 @@ export class SshTerminalPipService {
       hilog.info(DOMAIN, TAG, 'SSH PiP prepared for background auto-start');
       return true;
     } catch (err) {
-      const be: BusinessError = err as BusinessError;
-      hilog.warn(DOMAIN, TAG, 'SSH PiP prepare failed code=' + this.errorCode(be) +
-        ' message=' + this.errorMessage(be));
+      hilog.warn(DOMAIN, TAG, 'SSH PiP prepare failed code=' + sshDiagnosticErrorCode(err));
       if (created !== null) {
         this.disposeCreatedController(created, customUi);
       } else {
@@ -333,7 +309,7 @@ export class SshTerminalPipService {
       return true;
     }
     if (this.lastState === PiPWindow.PiPState.ABOUT_TO_START) {
-      const settled: boolean = await this.waitForStart(owner);
+      const settled: boolean = await this.reconcileStartedOwner(owner);
       if (!settled) {
         return false;
       }
@@ -352,37 +328,62 @@ export class SshTerminalPipService {
         }
         return true;
       }
-      try {
-        if (!await owner.isPiPActive()) {
-          if (this.controller === owner) {
-            this.cleanupController(owner, 'transitionReconciled', false);
-          }
-          return true;
-        }
-      } catch (err) {
-        const be: BusinessError = err as BusinessError;
-        hilog.warn(DOMAIN, TAG, 'SSH PiP transition probe failed code=' +
-          this.errorCode(be) + ' message=' + this.errorMessage(be));
-      }
+      if (await this.cleanupInactiveOwner(owner, 'transitionReconciled')) { return true; }
       hilog.warn(DOMAIN, TAG, 'SSH PiP previous transition did not finish');
       return false;
     }
     try {
       await owner.stopPiP();
     } catch (err) {
-      const be: BusinessError = err as BusinessError;
-      hilog.warn(DOMAIN, TAG, 'SSH PiP stop failed code=' + this.errorCode(be) +
-        ' message=' + this.errorMessage(be));
+      hilog.warn(DOMAIN, TAG, 'SSH PiP stop failed code=' + sshDiagnosticErrorCode(err));
       return false;
     }
     const terminal: boolean = await this.waitForTerminal(owner);
     if (!terminal) {
+      if (await this.cleanupInactiveOwner(owner, 'stopReconciled')) { return true; }
       return false;
     }
     if (this.controller === owner) {
       this.cleanupController(owner, 'requestDelete', false);
     }
     return true;
+  }
+
+  /**
+   * API 23 can expose an active custom PiP while its last callback is still
+   * ABOUT_TO_START. Probe WMS before waiting so an explicit exit can issue
+   * stopPiP() while the foreground page and controller are still alive.
+   */
+  private async reconcileStartedOwner(owner: PiPWindow.PiPController): Promise<boolean> {
+    try {
+      if (await owner.isPiPActive()) {
+        if (this.controller !== owner) { return true; }
+        this.active = true;
+        this.lastState = PiPWindow.PiPState.STARTED;
+        hilog.info(DOMAIN, TAG, 'SSH PiP start reconciled from active probe');
+        return true;
+      }
+    } catch (err) {
+      hilog.warn(DOMAIN, TAG, 'SSH PiP start probe failed code=' +
+        sshDiagnosticErrorCode(err));
+    }
+    return this.waitForStart(owner);
+  }
+
+  /** Reconcile API 23 transitions that complete without a terminal callback. */
+  private async cleanupInactiveOwner(owner: PiPWindow.PiPController,
+    reason: string): Promise<boolean> {
+    try {
+      if (await owner.isPiPActive()) { return false; }
+      if (this.controller === owner) {
+        this.cleanupController(owner, reason, false);
+      }
+      return true;
+    } catch (err) {
+      hilog.warn(DOMAIN, TAG, 'SSH PiP inactive probe failed code=' +
+        sshDiagnosticErrorCode(err));
+      return false;
+    }
   }
 
   private async waitForStart(owner: PiPWindow.PiPController): Promise<boolean> {
@@ -458,10 +459,7 @@ export class SshTerminalPipService {
 
   private normalizedInfo(info: SshTerminalPipInfo): SshTerminalPipInfo {
     return {
-      hostLabel: info.hostLabel.trim(),
-      hostAddress: info.hostAddress.trim(),
-      status: info.status.trim().length > 0 ? info.status.trim() : '已连接',
-      outputSummary: sanitizeOutputSummary(info.outputSummary)
+      status: sshPipPublicStatus(info.status)
     };
   }
 
@@ -473,13 +471,5 @@ export class SshTerminalPipService {
     const queued: Promise<T> = this.operationTail.then(operation, operation);
     this.operationTail = queued.then((): void => undefined, (): void => undefined);
     return queued;
-  }
-
-  private errorCode(error: BusinessError): string {
-    return error.code === undefined ? 'unknown' : error.code.toString();
-  }
-
-  private errorMessage(error: BusinessError): string {
-    return error.message === undefined ? JSON.stringify(error) : error.message;
   }
 }

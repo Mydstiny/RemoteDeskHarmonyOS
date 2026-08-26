@@ -2,7 +2,39 @@ import { RemoteSessionCapabilities, resolveSessionCapabilities } from './RemoteS
 
 export type RemoteTopBarDeviceClass = 'pc' | 'pad' | 'phone';
 
+/** Legacy PC-only preference retained for compatibility; new code uses protocol keys below. */
+export const PC_SESSION_TOP_BAR_HIDDEN_KEY: string = 'pcSessionTopBarHidden';
+
+export const REMOTE_SESSION_CONTROL_BAR_HIDDEN_RDP_KEY: string =
+  'remoteSessionControlBarHiddenRdp';
+export const REMOTE_SESSION_CONTROL_BAR_HIDDEN_RUSTDESK_KEY: string =
+  'remoteSessionControlBarHiddenRustDesk';
+export const REMOTE_SESSION_CONTROL_BAR_HIDDEN_VNC_KEY: string =
+  'remoteSessionControlBarHiddenVnc';
+export const REMOTE_SESSION_CONTROL_BAR_HIDDEN_MOONLIGHT_KEY: string =
+  'remoteSessionControlBarHiddenMoonlight';
+
+export interface RemoteSessionControlBarVisibility {
+  rdpHidden: boolean;
+  rustDeskHidden: boolean;
+  vncHidden: boolean;
+  moonlightHidden: boolean;
+}
+
+export interface RemoteSessionControlBarPreferencePresence {
+  rustDeskPresent: boolean;
+  vncPresent: boolean;
+}
+
 export type RemoteTopBarMenuId = 'control' | 'display' | 'keyboardMouse' | 'chat' | 'voice' | 'record';
+
+export type RemoteSessionPrimaryActionId = 'pin' | 'control' | 'display' |
+  'keyboardMouse' | 'keyboard' | 'fileTransfer' | 'diagnostics' | 'disconnect';
+
+const RUSTDESK_PRIMARY_ACTION_IDS: RemoteSessionPrimaryActionId[] = [
+  'pin', 'control', 'display', 'keyboardMouse', 'keyboard',
+  'fileTransfer', 'diagnostics', 'disconnect'
+];
 
 export interface RemoteTopBarContext {
   protocol: string;
@@ -25,6 +57,80 @@ export interface RemoteTopBarLayout {
 export interface RemoteTopBarActionAvailability {
   enabled: boolean;
   reason: string;
+}
+
+/**
+ * Shared collapsed edge-rail geometry and gesture thresholds.
+ *
+ * The visual handle stays deliberately narrow and translucent, while its
+ * parent keeps a larger touch target.  This mirrors HarmonyOS edge affordances
+ * without requesting the privileged SYSTEM_FLOAT_WINDOW capability.
+ */
+export const REMOTE_SESSION_COLLAPSED_RAIL_WIDTH: number = 22;
+export const REMOTE_SESSION_COLLAPSED_RAIL_TOUCH_WIDTH: number = 40;
+export const REMOTE_SESSION_COLLAPSED_RAIL_HEIGHT: number = 72;
+export const REMOTE_SESSION_COLLAPSED_RAIL_BACKGROUND: string =
+  'rgba(248,250,252,0.52)';
+export const REMOTE_SESSION_COLLAPSED_RAIL_ICON: string =
+  'rgba(36,40,48,0.72)';
+export const REMOTE_SESSION_COLLAPSED_RAIL_BORDER: string =
+  'rgba(255,255,255,0.48)';
+/** PC equivalent of the right-edge affordance, rotated onto the top edge. */
+export const REMOTE_SESSION_COLLAPSED_TOP_WIDTH: number = 72;
+export const REMOTE_SESSION_COLLAPSED_TOP_TOUCH_HEIGHT: number = 40;
+export const REMOTE_SESSION_COLLAPSED_TOP_HEIGHT: number = 22;
+
+export function remoteSessionControlBarHidden(protocol: string,
+  visibility: RemoteSessionControlBarVisibility): boolean {
+  if (protocol === 'rdp') { return visibility.rdpHidden; }
+  if (protocol === 'rustdesk') { return visibility.rustDeskHidden; }
+  if (protocol === 'vnc') { return visibility.vncHidden; }
+  if (protocol === 'moonlight') { return visibility.moonlightHidden; }
+  return false;
+}
+
+export function shouldDismissRemoteSessionControlSheet(
+  controlBarHidden: boolean,
+  sheetVisible: boolean,
+  sheetMode: string
+): boolean {
+  return controlBarHidden && sheetVisible && sheetMode === 'control';
+}
+
+export function remoteSessionControlBarSelectionSummary(
+  visibility: RemoteSessionControlBarVisibility): string {
+  const hiddenLabels: string[] = [];
+  if (visibility.rdpHidden) { hiddenLabels.push('RDP'); }
+  if (visibility.rustDeskHidden) { hiddenLabels.push('RustDesk'); }
+  if (visibility.vncHidden) { hiddenLabels.push('VNC'); }
+  if (visibility.moonlightHidden) { hiddenLabels.push('Moonlight'); }
+  return hiddenLabels.length === 0 ? '全部显示' : '已隐藏：' + hiddenLabels.join('、');
+}
+
+export function resolveRemoteSessionControlBarVisibility(
+  stored: RemoteSessionControlBarVisibility,
+  presence: RemoteSessionControlBarPreferencePresence,
+  legacyPcHidden: boolean): RemoteSessionControlBarVisibility {
+  return {
+    rdpHidden: stored.rdpHidden,
+    rustDeskHidden: presence.rustDeskPresent ? stored.rustDeskHidden : legacyPcHidden,
+    vncHidden: presence.vncPresent ? stored.vncHidden : legacyPcHidden,
+    moonlightHidden: stored.moonlightHidden
+  };
+}
+
+export function remoteSessionRailDragOffset(offsetX: number): number {
+  if (!Number.isFinite(offsetX) || offsetX <= 0) {
+    return 0;
+  }
+  return Math.min(72, offsetX);
+}
+
+export function remoteSessionRailShouldCollapse(offsetX: number,
+  velocityX: number): boolean {
+  const safeOffset: number = Number.isFinite(offsetX) ? offsetX : 0;
+  const safeVelocity: number = Number.isFinite(velocityX) ? velocityX : 0;
+  return safeOffset >= 24 || safeVelocity >= 720;
 }
 
 const RUSTDESK_DISABLED_REASONS: Record<string, string> = {
@@ -60,52 +166,66 @@ export function shouldShowRustDeskTopBar(
   breakpoint: string,
   rustdeskControlMode: number,
   physicalKeyboardMouseConnected: boolean,
-  isPadDevice: boolean
+  isPadDevice: boolean,
+  pcSessionTopBarHidden: boolean = false
 ): boolean {
-  if (protocol !== 'rustdesk') {
-    return false;
-  }
-  if (isDesktopDevice) {
-    return true;
-  }
-  const deviceClass: RemoteTopBarDeviceClass = remoteTopBarDeviceClass(isDesktopDevice, breakpoint, isPadDevice);
-  if (deviceClass === 'pad') {
-    return true;
-  }
-  // On a phone the rail is only useful when the session is in keyboard/mouse
-  // mode and a real external input device is present. Touch and virtual
-  // touchpad sessions must leave the remote canvas unobstructed.
-  return rustdeskControlMode === 2 && physicalKeyboardMouseConnected;
+  return protocol === 'rustdesk';
 }
 
-/**
- * Keep Pad pointing modes on the same right-side rail so switching between
- * virtual touchpad and physical keyboard/mouse does not move session controls
- * across the remote canvas. Phones retain the compact rail only for physical
- * keyboard/mouse mode, where the top system-bar edge is most constrained.
- */
+/** RustDesk retains its protocol-owned persistent toolbar shell. */
+export function shouldShowRemoteSessionTopBar(protocol: string): boolean {
+  return protocol === 'rustdesk';
+}
+
+/** Keep the compatibility entrypoint aligned with the persistent mobile rail. */
 export function shouldUseRustDeskEdgeRail(protocol: string, isDesktopDevice: boolean,
   breakpoint: string, rustdeskControlMode: number, isPadDevice: boolean): boolean {
-  if (protocol !== 'rustdesk' || isDesktopDevice) {
-    return false;
-  }
-  const deviceClass: RemoteTopBarDeviceClass = remoteTopBarDeviceClass(isDesktopDevice, breakpoint, isPadDevice);
-  if (deviceClass === 'pad') {
-    return rustdeskControlMode === 0 || rustdeskControlMode === 2;
-  }
-  return deviceClass === 'phone' && rustdeskControlMode === 2;
+  return protocol === 'rustdesk' && !isDesktopDevice;
+}
+
+/** Phone and Pad always use a right rail; PC always uses a top bar. */
+export function shouldUseRemoteSessionEdgeRail(protocol: string,
+  isDesktopDevice: boolean): boolean {
+  return shouldShowRemoteSessionTopBar(protocol) && !isDesktopDevice;
+}
+
+/** PC top bar and Phone/Pad edge rail consume this exact ordered action set. */
+export function remoteSessionPrimaryActionIds(protocol: string): RemoteSessionPrimaryActionId[] {
+  return protocol === 'rustdesk' ? RUSTDESK_PRIMARY_ACTION_IDS.slice() : [];
 }
 
 export function remoteTopBarLayout(isDesktopDevice: boolean, breakpoint: string,
   isPadDevice: boolean): RemoteTopBarLayout {
   const deviceClass: RemoteTopBarDeviceClass = remoteTopBarDeviceClass(isDesktopDevice, breakpoint, isPadDevice);
   if (deviceClass === 'pc') {
-    return { deviceClass, iconSize: 44, itemGap: 8, topOffset: 8, maxVisibleButtons: 7, menuWidth: 360 };
+    if (breakpoint !== 'xl') {
+      return { deviceClass, iconSize: 36, itemGap: 4, topOffset: 0, maxVisibleButtons: 8, menuWidth: 320 };
+    }
+    return { deviceClass, iconSize: 44, itemGap: 8, topOffset: 0, maxVisibleButtons: 8, menuWidth: 360 };
   }
   if (deviceClass === 'pad') {
-    return { deviceClass, iconSize: 44, itemGap: 8, topOffset: 8, maxVisibleButtons: 6, menuWidth: 340 };
+    return { deviceClass, iconSize: 44, itemGap: 8, topOffset: 8, maxVisibleButtons: 8, menuWidth: 340 };
   }
-  return { deviceClass, iconSize: 40, itemGap: 6, topOffset: 6, maxVisibleButtons: 5, menuWidth: 300 };
+  return { deviceClass, iconSize: 40, itemGap: 6, topOffset: 6, maxVisibleButtons: 8, menuWidth: 300 };
+}
+
+export function remoteSessionActionAvailability(actionId: string, protocol: string,
+  capabilities: RemoteSessionCapabilities): RemoteTopBarActionAvailability {
+  if (protocol === 'rustdesk') {
+    return rustDeskActionAvailability(actionId, capabilities);
+  }
+  if (protocol !== 'rdp') {
+    return { enabled: false, reason: '当前协议不支持该会话工具栏操作' };
+  }
+  if (actionId === 'fileTransfer') { return capabilities.fileUpload; }
+  if (actionId === 'toggleClipboard') { return capabilities.clipboardSend; }
+  if (actionId === 'disconnect' || actionId === 'refreshFrame' ||
+      actionId === 'ctrlAltDel' || actionId === 'toggleKeyboard' ||
+      actionId === 'toggleModifiers' || actionId === 'displaySettings' ||
+      actionId === 'keyboardMouseSettings') {
+    return capabilities.connect;
+  }
+  return { enabled: false, reason: 'RDP 当前未提供该操作' };
 }
 
 function knownRustDeskCapabilities(): RemoteSessionCapabilities {
@@ -126,9 +246,14 @@ export function rustDeskActionAvailability(actionId: string,
     return capabilities.clipboardSend;
   }
   if (actionId === 'disconnect' || actionId === 'refreshFrame' || actionId === 'ctrlAltDel' ||
-    actionId === 'toggleKeyboard' || actionId === 'displaySettings' ||
+    actionId === 'toggleKeyboard' || actionId === 'toggleModifiers' ||
+    actionId === 'displaySettings' ||
+    actionId === 'rotateDisplay' ||
     actionId === 'keyboardMouseSettings' || actionId === 'browseMode' ||
     actionId === 'togglePrivacyMode' || actionId === 'toggleAudio') {
+    return capabilities.connect;
+  }
+  if (actionId === 'diagnostics') {
     return capabilities.connect;
   }
   if (actionId === 'resolutionSettings') {
