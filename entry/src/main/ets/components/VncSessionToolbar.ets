@@ -10,6 +10,10 @@ import {
   remoteSessionRailDragOffset,
   remoteSessionRailShouldCollapse
 } from '../services/RemoteSessionTopBarPolicy';
+import {
+  VncToolbarPrimaryActionId,
+  vncToolbarPrimaryActionIds
+} from '../services/VncSessionUiPolicy';
 
 export interface VncSessionToolbarActions {
   onExpand: () => void;
@@ -19,8 +23,6 @@ export interface VncSessionToolbarActions {
   onOpenShortcuts: () => void;
   onCycleDisplayScale: () => void;
   onToggleDiagnostics: () => void;
-  onOpenConsole: () => void;
-  onHideTopBar: () => void;
   onDisconnect: () => void;
 }
 
@@ -51,8 +53,6 @@ export struct VncSessionToolbar {
     onOpenShortcuts: (): void => {},
     onCycleDisplayScale: (): void => {},
     onToggleDiagnostics: (): void => {},
-    onOpenConsole: (): void => {},
-    onHideTopBar: (): void => {},
     onDisconnect: (): void => {}
   };
 
@@ -66,12 +66,54 @@ export struct VncSessionToolbar {
           .textOverflow({ overflow: TextOverflow.Ellipsis }).margin({ top: 2 })
       }.justifyContent(FlexAlign.Center)
     }
-    .width(this.deviceClass === 'pc' ? 40 : 56)
-    .height(this.deviceClass === 'pc' ? 42 : 44)
+    .width(56)
+    .height(44)
     .padding(0).borderRadius(9)
     .backgroundColor(danger ? '#D93B3B' : (active ? '#168C78' : this.accentColor))
     .accessibilityText(label)
     .onClick(action)
+  }
+
+  @Builder
+  private primaryActionButton(actionId: VncToolbarPrimaryActionId) {
+    if (actionId === 'keyboard') {
+      this.actionButton($r('sys.symbol.keyboard'), this.keyboardOpen ? '收键盘' : '键盘',
+        this.keyboardOpen, (): void => { this.actions.onToggleKeyboard(); })
+    } else if (actionId === 'controlMode') {
+      this.actionButton($r('sys.symbol.arrow_up_left'), this.controlModeLabel, false,
+        (): void => { this.actions.onCycleControlMode(); })
+    } else if (actionId === 'shortcuts') {
+      this.actionButton($r('sys.symbol.bolt_fill'), '组合键', false,
+        (): void => { this.actions.onOpenShortcuts(); })
+    } else if (actionId === 'displayScale') {
+      this.actionButton($r('sys.symbol.desktop_fill'), this.displayScaleLabel, false,
+        (): void => { this.actions.onCycleDisplayScale(); })
+    } else if (actionId === 'diagnostics') {
+      this.actionButton($r('sys.symbol.list_bullet'), '性能', this.diagnosticsEnabled,
+        (): void => { this.actions.onToggleDiagnostics(); })
+    } else {
+      this.actionButton($r('sys.symbol.xmark'), '断开', false,
+        (): void => { this.actions.onDisconnect(); }, true)
+    }
+  }
+
+  @Builder
+  private primaryActionButtons(vertical: boolean) {
+    if (vertical) {
+      Column({ space: 5 }) {
+        ForEach(vncToolbarPrimaryActionIds(),
+          (actionId: VncToolbarPrimaryActionId): void => {
+            this.primaryActionButton(actionId)
+          }, (actionId: VncToolbarPrimaryActionId): string => actionId)
+      }
+    } else {
+      Row({ space: 5 }) {
+        ForEach(vncToolbarPrimaryActionIds(),
+          (actionId: VncToolbarPrimaryActionId): void => {
+            this.primaryActionButton(actionId)
+          }, (actionId: VncToolbarPrimaryActionId): string => actionId)
+      }
+    }
   }
 
   private mobileRailHeight(fallback: number): number {
@@ -167,18 +209,7 @@ export struct VncSessionToolbar {
             }
             .height(24).width('100%').justifyContent(FlexAlign.Center)
           }
-          this.actionButton($r('sys.symbol.keyboard'), this.keyboardOpen ? '收键盘' : '键盘',
-            this.keyboardOpen, (): void => { this.actions.onToggleKeyboard(); })
-          this.actionButton($r('sys.symbol.arrow_up_left'), this.controlModeLabel, false,
-            (): void => { this.actions.onCycleControlMode(); })
-          this.actionButton($r('sys.symbol.bolt_fill'), '组合键', false,
-            (): void => { this.actions.onOpenShortcuts(); })
-          this.actionButton($r('sys.symbol.desktop_fill'), this.displayScaleLabel, false,
-            (): void => { this.actions.onCycleDisplayScale(); })
-          this.actionButton($r('sys.symbol.list_bullet'), '性能', this.diagnosticsEnabled,
-            (): void => { this.actions.onToggleDiagnostics(); })
-          this.actionButton($r('sys.symbol.xmark'), '断开', false,
-            (): void => { this.actions.onDisconnect(); }, true)
+          this.primaryActionButtons(true)
         }
       }
       .width('100%').layoutWeight(1)
@@ -206,13 +237,14 @@ export struct VncSessionToolbar {
   @Builder
   private pcCollapsedToolbar() {
     Row() {
-      SymbolGlyph($r('sys.symbol.ellipsis_bubble')).fontSize(18).fontColor(['#444444'])
+      SymbolGlyph($r('sys.symbol.chevron_down')).fontSize(16).fontColor(['#444444'])
     }
     .width(48).height(28).justifyContent(FlexAlign.Center)
     .borderRadius({ topLeft: 0, topRight: 0, bottomLeft: 8, bottomRight: 8 })
-    .backgroundColor('rgba(248,250,252,0.58)')
+    .backgroundColor(REMOTE_SESSION_COLLAPSED_RAIL_BACKGROUND)
     .backdropBlur(16)
-    .shadow({ radius: 8, color: 'rgba(0,0,0,0.22)', offsetY: 2 })
+    .border({ width: 0.5, color: REMOTE_SESSION_COLLAPSED_RAIL_BORDER })
+    .shadow({ radius: 6, color: 'rgba(0,0,0,0.14)', offsetY: 2 })
     .position({ x: '50%', y: 8 }).markAnchor({ x: '50%', y: 0 })
     .accessibilityText(this.viewOnly ? '展开 VNC 只读会话工具栏' : '展开 VNC 会话工具栏')
     .onClick((): void => { this.actions.onExpand(); })
@@ -224,35 +256,30 @@ export struct VncSessionToolbar {
       if (this.viewOnly) {
         Row() {
           SymbolGlyph($r('sys.symbol.eye')).fontSize(13).fontColor(['#FFFFFF'])
-          Text('VNC 只读：输入已禁用').fontSize(10).fontColor('#FFFFFF').margin({ left: 5 })
+          Text('只读').fontSize(10).fontColor('#FFFFFF').margin({ left: 5 })
         }
         .height(24).padding({ left: 10, right: 10 })
         .borderRadius({ topLeft: 9, topRight: 9, bottomLeft: 0, bottomRight: 0 })
         .backgroundColor('rgba(20,24,32,0.84)')
       }
       Row({ space: 5 }) {
-        this.actionButton($r('sys.symbol.keyboard'), this.keyboardOpen ? '收键盘' : '键盘',
-          this.keyboardOpen, (): void => { this.actions.onToggleKeyboard(); })
-        this.actionButton($r('sys.symbol.arrow_up_left'), this.controlModeLabel, false,
-          (): void => { this.actions.onCycleControlMode(); })
-        this.actionButton($r('sys.symbol.bolt_fill'), '组合键', false,
-          (): void => { this.actions.onOpenShortcuts(); })
-        this.actionButton($r('sys.symbol.desktop_fill'), this.displayScaleLabel, false,
-          (): void => { this.actions.onCycleDisplayScale(); })
-        this.actionButton($r('sys.symbol.list_bullet'), '性能', this.diagnosticsEnabled,
-          (): void => { this.actions.onToggleDiagnostics(); })
-        if (this.deviceClass === 'pc') {
-          this.actionButton($r('sys.symbol.gearshape_fill'), '控制台', false,
-            (): void => { this.actions.onOpenConsole(); })
-        }
-        this.actionButton($r('sys.symbol.xmark'), '断开', false,
-          (): void => { this.actions.onDisconnect(); }, true)
+        this.primaryActionButtons(false)
       }
       .padding(6)
       .borderRadius(this.viewOnly ?
         { topLeft: 0, topRight: 0, bottomLeft: 10, bottomRight: 10 } : 10)
       .backgroundColor('rgba(255,255,255,0.94)')
       .shadow({ radius: 8, color: 'rgba(0,0,0,0.24)', offsetY: 2 })
+      Row() {
+        SymbolGlyph($r('sys.symbol.chevron_up')).fontSize(16).fontColor(['#444444'])
+      }
+      .width(56).height(28).justifyContent(FlexAlign.Center)
+      .borderRadius({ topLeft: 0, topRight: 0, bottomLeft: 8, bottomRight: 8 })
+      .backgroundColor(REMOTE_SESSION_COLLAPSED_RAIL_BACKGROUND)
+      .backdropBlur(16)
+      .border({ width: 0.5, color: REMOTE_SESSION_COLLAPSED_RAIL_BORDER })
+      .accessibilityText('收起 VNC 会话工具栏')
+      .onClick((): void => { this.actions.onCollapse(); })
     }
     .position({ x: '50%', y: 8 })
     .markAnchor({ x: '50%', y: 0 })

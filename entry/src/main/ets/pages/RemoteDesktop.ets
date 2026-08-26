@@ -313,6 +313,7 @@ import {
 import {
   nextVncControlMode,
   nextVncDisplayScaleMode,
+  shouldHideVncSystemPointer,
   shouldShowVncSessionToolbar,
   vncToolbarAutoCollapseDelayMs,
   vncToolbarDefaultSide,
@@ -1982,14 +1983,6 @@ struct RemoteDesktop {
       onToggleDiagnostics: (): void => {
         this.markVncToolbarInteraction();
         this.toggleVncDiagnostics();
-      },
-      onOpenConsole: (): void => {
-        this.markVncToolbarInteraction();
-        this.showControlPanel = true;
-      },
-      onHideTopBar: (): void => {
-        this.clearVncToolbarAutoCollapse();
-        this.requestHidePcSessionTopBar('VNC 会话');
       },
       onDisconnect: (): void => {
         this.clearVncToolbarAutoCollapse();
@@ -3709,6 +3702,7 @@ struct RemoteDesktop {
   private isRemoteCursorNativePointerEligible(): boolean {
     return this.connected && this.isKeyboardMouseControlMode() &&
       this.remoteSurfaceUsesSystemPointer === true &&
+      (!this.isVncSession() || this.vncLocalCursorMode === 'auto') &&
       this.remoteSurfaceHovered !== false && this.remoteCursorNativeVisible &&
       !this.remoteCursorFallbackShape && this.remoteCursorPixelMap !== null &&
       this.remoteCursorPixelMapShapeRevision > 0 &&
@@ -4044,7 +4038,13 @@ struct RemoteDesktop {
 
   private syncRemoteSystemPointer(reason: string, hovered: boolean = true,
     force: boolean = false): void {
-    const hideSystemPointer: boolean = this.shouldHideSystemPointerForVirtualTouchpad();
+    const vncNativeCursorReady: boolean = this.remoteCursorNativeVisible &&
+      !this.remoteCursorFallbackShape && this.remoteCursorPixelMap !== null &&
+      this.remoteCursorPixelMapShapeRevision > 0;
+    const hideSystemPointer: boolean = this.shouldHideSystemPointerForVirtualTouchpad() ||
+      shouldHideVncSystemPointer(this.currentProtocolName(), this.connected,
+        this.isKeyboardMouseControlMode(), hovered, this.vncLocalCursorMode,
+        vncNativeCursorReady);
     this.setRemoteSystemPointerVisible(!hideSystemPointer, reason, force);
     this.setRemoteSurfacePointerStyle(!hideSystemPointer && hovered &&
       shouldUseSystemMousePointer(this.isKeyboardMouseControlMode()), force);
@@ -10645,7 +10645,12 @@ struct RemoteDesktop {
       this.remoteCursorHotY = snapshot.hotY;
       this.remoteCursorFallbackShape = snapshot.fallbackShape;
       this.remoteCursorShapeRetryAtMs = Date.now();
-      this.applyRemoteNativePointer('shape-ready', true);
+      if (this.isVncSession()) {
+        this.syncRemoteSystemPointer('vnc-cursor-shape-ready',
+          this.remoteSurfaceHovered !== false, true);
+      } else {
+        this.applyRemoteNativePointer('shape-ready', true);
+      }
       this.requestRemoteCursorViewRefresh(true);
       if (previous !== null) {
         this.retireRemoteCursorPixelMap(previous, this.remoteCursorOverlayState.viewRevision);
@@ -10720,7 +10725,12 @@ struct RemoteDesktop {
       // Preserve the controller-side arrow until a real disconnect; RDP keeps
       // honoring protocol visibility.
       this.remoteCursorNativeVisible = snapshot.visible || this.isRustDeskSession();
-      this.applyRemoteNativePointer('visibility-change', true);
+      if (this.isVncSession()) {
+        this.syncRemoteSystemPointer('vnc-cursor-visibility-change',
+          this.remoteSurfaceHovered !== false, true);
+      } else {
+        this.applyRemoteNativePointer('visibility-change', true);
+      }
       this.requestRemoteCursorViewRefresh(true);
     }
     if (shapeChanged || positionChanged || visibilityChanged ||

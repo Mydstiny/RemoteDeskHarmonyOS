@@ -333,9 +333,23 @@ export function normalizeVncPhysicalKeyEventCode(keyCode: number, keyText: strin
     if (keyCode === 16 && hint.shift) { return VNC_KEYCODE_SHIFT_LEFT; }
     if (keyCode === 17 && hint.ctrl) { return VNC_KEYCODE_CTRL_LEFT; }
     if (keyCode === 18 && hint.alt) { return VNC_KEYCODE_ALT_LEFT; }
+    // Android raw 113/114 overlap DOM F2/F3. A live Ctrl modifier state is
+    // stronger evidence than the unnamed desktop compatibility range.
+    if (keyCode === 113 && hint.ctrl) { return VNC_KEYCODE_CTRL_LEFT; }
+    if (keyCode === 114 && hint.ctrl) { return VNC_KEYCODE_CTRL_RIGHT; }
     if ((keyCode === 91 || keyCode === 92) && hint.meta) {
       return keyCode === 92 ? VNC_KEYCODE_META_RIGHT : VNC_KEYCODE_META_LEFT;
     }
+  }
+  // The Windows external-keyboard/XComponent path can omit keyText for the
+  // DOM F1..F12 range. Previously those raw values fell into Android's
+  // ForwardDelete/Ctrl/CapsLock/Home table, so every function key either did
+  // nothing useful or sent the wrong RFB KeySym. Named Android controls and
+  // live Ctrl state were resolved above; an unnamed non-printable 112..123
+  // event is therefore treated as the desktop function row.
+  if (keyCode >= 112 && keyCode <= 123 &&
+    (hint === undefined || hint.unicode <= 0)) {
+    return VNC_KEYCODE_F1 + keyCode - 112;
   }
   return normalizeVncPhysicalKeyCode(keyCode);
 }

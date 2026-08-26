@@ -60,6 +60,21 @@ export default function vncPhysicalKeyboardPolicyTest(): void {
       expect(normalizeVncPhysicalKeyEventCode(46, 'ForwardDelete')).assertEqual(2071);
     });
 
+    it('recovers_unnamed_windows_function_row_before_android_fallback', 0, (): void => {
+      expect(normalizeVncPhysicalKeyEventCode(112, '', {
+        unicode: 0, ctrl: false, alt: false, shift: false, meta: false
+      })).assertEqual(2090);
+      expect(normalizeVncPhysicalKeyEventCode(123, '', {
+        unicode: 0, ctrl: false, alt: false, shift: false, meta: false
+      })).assertEqual(2101);
+      expect(normalizeVncPhysicalKeyEventCode(113, '', {
+        unicode: 0, ctrl: true, alt: false, shift: false, meta: false
+      })).assertEqual(2072);
+      expect(normalizeVncPhysicalKeyEventCode(112, 'ForwardDelete', {
+        unicode: 0, ctrl: false, alt: false, shift: false, meta: false
+      })).assertEqual(2071);
+    });
+
     it('recovers_unnamed_dom_modifiers_without_reclassifying_printable_keys', 0, (): void => {
       expect(normalizeVncPhysicalKeyEventCode(16, '', {
         unicode: 0, ctrl: false, alt: false, shift: true, meta: false

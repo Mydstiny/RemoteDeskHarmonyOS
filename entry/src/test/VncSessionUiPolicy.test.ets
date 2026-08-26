@@ -9,10 +9,12 @@ import {
 import {
   nextVncControlMode,
   nextVncDisplayScaleMode,
+  shouldHideVncSystemPointer,
   shouldShowVncSessionToolbar,
   vncToolbarAutoCollapseDelayMs,
   vncToolbarDefaultSide,
   vncToolbarPositionPreferenceKey,
+  vncToolbarPrimaryActionIds,
   vncToolbarRailHeight,
   vncToolbarRailWidth
 } from '../main/ets/services/VncSessionUiPolicy';
@@ -60,6 +62,22 @@ export default function vncSessionUiPolicyTest(): void {
       expect(shouldShowVncSessionToolbar('vnc', true, 4, true, true)).assertTrue();
       expect(shouldShowVncSessionToolbar('vnc', true, 4, false, true)).assertTrue();
       expect(shouldShowVncSessionToolbar('vnc', true, 4, true, false)).assertTrue();
+    });
+
+    it('keeps_pc_top_bar_and_mobile_rail_on_one_action_contract', 0, (): void => {
+      const actions = vncToolbarPrimaryActionIds();
+      expect(actions.length).assertEqual(6);
+      expect(actions.join(','))
+        .assertEqual('keyboard,controlMode,shortcuts,displayScale,diagnostics,disconnect');
+    });
+
+    it('avoids_a_second_local_cursor_when_vnc_cursor_is_server_embedded', 0, (): void => {
+      expect(shouldHideVncSystemPointer('vnc', true, true, true, 'auto', false)).assertTrue();
+      expect(shouldHideVncSystemPointer('vnc', true, true, true, 'auto', true)).assertFalse();
+      expect(shouldHideVncSystemPointer('vnc', true, true, true, 'hidden', true)).assertTrue();
+      expect(shouldHideVncSystemPointer('vnc', true, true, true, 'arrow', false)).assertFalse();
+      expect(shouldHideVncSystemPointer('vnc', true, true, false, 'auto', false)).assertFalse();
+      expect(shouldHideVncSystemPointer('rdp', true, true, true, 'auto', false)).assertFalse();
     });
 
     it('cycles_control_modes_without_bypassing_view_only', 0, (): void => {
