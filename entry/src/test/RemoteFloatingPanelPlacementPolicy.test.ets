@@ -4,7 +4,8 @@ import {
   clampFloatingPanel,
   floatingPanelAvailableHeight,
   floatingPanelOrientationSuffix,
-  placeFloatingCompanion
+  placeFloatingCompanion,
+  remoteModifierPanelWidth
 } from '../main/ets/services/RemoteFloatingPanelPlacementPolicy';
 
 export default function remoteFloatingPanelPlacementPolicyTest(): void {
@@ -26,6 +27,13 @@ export default function remoteFloatingPanelPlacementPolicyTest(): void {
       expect(floatingPanelAvailableHeight({
         width: 760, height: 360, topMargin: 48, bottomMargin: 180, sideMargin: 8
       })).assertEqual(132);
+    });
+
+    it('uses_moonlight_sized_panel_for_phone_rails_without_overflow', 0, (): void => {
+      expect(remoteModifierPanelWidth('sm', 780, true)).assertEqual(320);
+      expect(remoteModifierPanelWidth('sm', 300, true)).assertEqual(284);
+      expect(remoteModifierPanelWidth('sm', 780, false)).assertEqual(260);
+      expect(remoteModifierPanelWidth('lg', 780, false)).assertEqual(300);
     });
 
     it('places_shortcut_without_overlapping_primary_when_space_exists', 0, (): void => {

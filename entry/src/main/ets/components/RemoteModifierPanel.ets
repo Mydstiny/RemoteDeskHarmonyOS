@@ -30,6 +30,7 @@ import {
   REMOTE_KEYBOARD_SHORTCUT_PLATFORM_KEY
 } from '../services/RemoteKeyboardSettingsPolicy';
 import { RemoteKeyboardSettingsService } from '../services/RemoteKeyboardSettingsService';
+import { remoteModifierPanelWidth } from '../services/RemoteFloatingPanelPlacementPolicy';
 
 const TAG = 'ModifierPanel';
 const DOMAIN = 0x0014;
@@ -53,6 +54,8 @@ export struct RemoteModifierPanel {
   @Prop shortcutY: number = 200;
   /** Parent-derived safe height after toolbars, avoid areas and IME. */
   @Prop maxPanelHeight: number = 480;
+  /** Phone edge rails can use the same full-canvas size as Moonlight. */
+  @Prop roomyPhoneLayout: boolean = false;
   @Prop customizationEnabled: boolean = false;
   @Prop customShortcuts: Array<RemoteCustomShortcut> = [];
   /** Optional session-surface emphasis; empty keeps the global accent. */
@@ -104,6 +107,7 @@ export struct RemoteModifierPanel {
   @State private customActionKeyCode: number = 2017;
   @State private panelSection: string = 'shortcuts';
   @State private shortcutCategory: RemoteShortcutCategory = 'editing';
+  @State private viewportWidth: number = 360;
   @State private viewportHeight: number = 640;
   private suppressModTapName: string = '';
   private suppressModTapUntilMs: number = 0;
@@ -405,16 +409,8 @@ export struct RemoteModifierPanel {
   }
 
   private panelWidth(): number {
-    if (this.breakpoint === 'xl') {
-      return 320;
-    }
-    if (this.breakpoint === 'lg') {
-      return 300;
-    }
-    if (this.breakpoint === 'md') {
-      return 280;
-    }
-    return 260;
+    return remoteModifierPanelWidth(this.breakpoint, this.viewportWidth,
+      this.roomyPhoneLayout);
   }
 
   private panelHeight(): number {
@@ -1166,7 +1162,12 @@ export struct RemoteModifierPanel {
     .hitTestBehavior((this.visible || this.shortcutVisible) && !this.prepareOnly ?
       HitTestMode.Transparent : HitTestMode.None)
     .onAreaChange((_old: Area, next: Area): void => {
+      const width: number = next.width as number;
       const height: number = next.height as number;
+      if (Number.isFinite(width) && width > 0 &&
+        Math.abs(width - this.viewportWidth) >= 1) {
+        this.viewportWidth = width;
+      }
       if (Number.isFinite(height) && height > 0 &&
         Math.abs(height - this.viewportHeight) >= 1) {
         this.viewportHeight = height;

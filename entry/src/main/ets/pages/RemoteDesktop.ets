@@ -305,7 +305,8 @@ import {
   FloatingPanelRect,
   FloatingPanelViewport,
   floatingPanelOrientationSuffix,
-  placeFloatingCompanion
+  placeFloatingCompanion,
+  remoteModifierPanelWidth
 } from '../services/RemoteFloatingPanelPlacementPolicy';
 import {
   shouldOpenVncFloatingPanelAfterSheetDisappear
@@ -5994,16 +5995,9 @@ struct RemoteDesktop {
   }
 
   private modifierPanelWidth(): number {
-    if (this.breakpoint === 'xl') {
-      return 320;
-    }
-    if (this.breakpoint === 'lg') {
-      return 300;
-    }
-    if (this.breakpoint === 'md') {
-      return 280;
-    }
-    return 260;
+    const viewportWidth: number = this.surfaceWidth > 0 ? this.surfaceWidth : 360;
+    return remoteModifierPanelWidth(this.breakpoint, viewportWidth,
+      this.isRustDeskSession() && !this.isDesktopDevice && !this.isPadDevice);
   }
 
   private clampModifierPanelX(x: number): number {
@@ -6034,14 +6028,20 @@ struct RemoteDesktop {
   }
 
   private floatingPanelViewport(): FloatingPanelViewport {
+    const roomyRustDeskPhone: boolean = this.isRustDeskSession() &&
+      !this.isDesktopDevice && !this.isPadDevice;
     const vncToolbarMargin: number =
       this.isVncSession() && !this.vncToolbarCollapsed &&
         this.vncToolbarDeviceClass() === 'pc' ? 70 : 48;
     return {
       width: this.surfaceWidth > 0 ? this.surfaceWidth : 360,
       height: this.surfaceHeight > 0 ? this.surfaceHeight : 640,
-      topMargin: vncToolbarMargin,
-      bottomMargin: this.kbHeight > 0 ? this.kbHeight + 8 : 24,
+      // RustDesk uses a right-edge rail on phones, so the old 48vp top-bar
+      // reservation only made its shared modifier panel smaller than
+      // Moonlight's. Keep VNC/PC collision margins unchanged.
+      topMargin: roomyRustDeskPhone ? 8 : vncToolbarMargin,
+      bottomMargin: this.kbHeight > 0 ? this.kbHeight + 8 :
+        (roomyRustDeskPhone ? 8 : 24),
       sideMargin: 8
     };
   }
@@ -17317,6 +17317,8 @@ struct RemoteDesktop {
           shortcutX: this.shortcutPanelX,
           shortcutY: this.shortcutPanelY,
           maxPanelHeight: this.modifierPanelAvailableHeight(),
+          roomyPhoneLayout: this.isRustDeskSession() &&
+            !this.isDesktopDevice && !this.isPadDevice,
           customizationEnabled: true,
           customShortcuts: this.remoteCustomShortcuts,
           onClose: (): void => {
