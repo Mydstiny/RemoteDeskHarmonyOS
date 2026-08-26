@@ -80,11 +80,38 @@ export default function vncPhysicalKeyboardPolicyTest(): void {
         unicode: 0, ctrl: false, alt: false, shift: true, meta: false
       })).assertEqual(2047);
       expect(normalizeVncPhysicalKeyEventCode(16, '', {
+        unicode: 0, ctrl: false, alt: false, shift: false, meta: false
+      })).assertEqual(2047);
+      expect(normalizeVncPhysicalKeyEventCode(16, '', {
         unicode: 57, ctrl: false, alt: false, shift: true, meta: false
       })).assertEqual(2009);
       expect(normalizeVncPhysicalKeyEventCode(17, '', {
-        unicode: 0, ctrl: true, alt: false, shift: false, meta: false
+        unicode: 0, ctrl: false, alt: false, shift: false, meta: false
       })).assertEqual(2072);
+      expect(normalizeVncPhysicalKeyEventCode(18, '', {
+        unicode: 0, ctrl: false, alt: false, shift: false, meta: false
+      })).assertEqual(2045);
+      expect(normalizeVncPhysicalKeyEventCode(160, '', {
+        unicode: 0, ctrl: false, alt: false, shift: false, meta: false
+      })).assertEqual(2047);
+      expect(normalizeVncPhysicalKeyEventCode(161, '', {
+        unicode: 0, ctrl: false, alt: false, shift: false, meta: false
+      })).assertEqual(2048);
+      expect(normalizeVncPhysicalKeyEventCode(162, '', {
+        unicode: 0, ctrl: false, alt: false, shift: false, meta: false
+      })).assertEqual(2072);
+      expect(normalizeVncPhysicalKeyEventCode(163, '', {
+        unicode: 0, ctrl: false, alt: false, shift: false, meta: false
+      })).assertEqual(2073);
+      expect(normalizeVncPhysicalKeyEventCode(164, '', {
+        unicode: 0, ctrl: false, alt: false, shift: false, meta: false
+      })).assertEqual(2045);
+      expect(normalizeVncPhysicalKeyEventCode(165, '', {
+        unicode: 0, ctrl: false, alt: false, shift: false, meta: false
+      })).assertEqual(2046);
+      expect(normalizeVncPhysicalKeyEventCode(161, '', {
+        unicode: 61, ctrl: false, alt: false, shift: false, meta: false
+      })).assertEqual(2120);
     });
 
     it('keeps_down_up_mapping_stable_across_previews_and_missing_release_text', 0, (): void => {

@@ -326,13 +326,24 @@ export function normalizeVncPhysicalKeyEventCode(keyCode: number, keyText: strin
   if (namedKeyCode >= 0) {
     return namedKeyCode;
   }
-  // Desktop compatibility codes overlap Android digits and controls. When a
-  // modifier event has no keyText, ArkUI's documented modifier state plus a
-  // zero Unicode value is the only safe way to recover that modifier.
+  // Desktop compatibility codes overlap Android digits and controls. The
+  // modifier's own Down/Up event can arrive before ArkUI updates the modifier
+  // state (and Up arrives after it clears the state), so state=true cannot be
+  // required here. A missing key name plus Unicode=0 distinguishes the DOM
+  // modifier event from Android's printable 9/*/# keys on the same numbers.
   if (hint !== undefined && hint.unicode <= 0) {
-    if (keyCode === 16 && hint.shift) { return VNC_KEYCODE_SHIFT_LEFT; }
-    if (keyCode === 17 && hint.ctrl) { return VNC_KEYCODE_CTRL_LEFT; }
-    if (keyCode === 18 && hint.alt) { return VNC_KEYCODE_ALT_LEFT; }
+    if (keyCode === 16) { return VNC_KEYCODE_SHIFT_LEFT; }
+    if (keyCode === 17) { return VNC_KEYCODE_CTRL_LEFT; }
+    if (keyCode === 18) { return VNC_KEYCODE_ALT_LEFT; }
+    // Windows VK_L*/VK_R* variants are also exposed by some PC-mode
+    // XComponent paths. Their 160..163 range overlaps Android numpad keys,
+    // whose printable Unicode is non-zero, so keep the same discriminator.
+    if (keyCode === 160) { return VNC_KEYCODE_SHIFT_LEFT; }
+    if (keyCode === 161) { return VNC_KEYCODE_SHIFT_RIGHT; }
+    if (keyCode === 162) { return VNC_KEYCODE_CTRL_LEFT; }
+    if (keyCode === 163) { return VNC_KEYCODE_CTRL_RIGHT; }
+    if (keyCode === 164) { return VNC_KEYCODE_ALT_LEFT; }
+    if (keyCode === 165) { return VNC_KEYCODE_ALT_RIGHT; }
     // Android raw 113/114 overlap DOM F2/F3. A live Ctrl modifier state is
     // stronger evidence than the unnamed desktop compatibility range.
     if (keyCode === 113 && hint.ctrl) { return VNC_KEYCODE_CTRL_LEFT; }
