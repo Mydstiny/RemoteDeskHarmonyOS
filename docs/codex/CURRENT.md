@@ -35,6 +35,13 @@
 - Verification on 2026-08-25: focused Rust permission/starvation tests PASS (7/7), `cargo check --lib` PASS, exact `default@OhosTestCompileArkTS` PASS, exact signed `assembleHap` PASS, `git diff --check` PASS and Light compliance PASS. Signed HAP SHA-256 is `d0bc2670588a2ca131e8fd770da404323ce824dd905ab25bca013af0db50f69b`; that package also contains the preserved, uncommitted user-owned HostList drag change.
 - The reporter is separately investigating the custom Windows fork's CM lifecycle. Real custom-fork reproduction and independent review remain pending; this checkpoint is not merged.
 
+## Concurrent RustDesk Windows presentation and session-control alignment
+
+- `6132ec0dc` makes authenticated Windows peers consume the NativeImage producer transform only on the PC hardware-decoder path; macOS/Linux, Phone/Pad, software decoding and Moonlight retain identity presentation. The RustDesk PC top bar and Phone/Pad side rail now use one canonical action model, button builder, ordering, labels, icons and glass styling.
+- `3c10f8b4` closes every review-discovered publication race: peer platform is delivered by the new additive `rustdesk_connect_v5` callback after authentication but before display/frame/stream delivery; the unsafe post-connect raw-handle query is removed; bind and decoder recreation retain and replay the latest owner-scoped atomic presentation mode before frame admission reopens.
+- Verification on 2026-08-26: Rust `188/188` PASS, host native `806/806` PASS outside the socket-restricted sandbox, exact `default@OhosTestCompileArkTS` PASS, exact signed `assembleHap` PASS, `git diff --check` PASS and Light open-source compliance PASS. The current full-worktree signed HAP SHA-256 is `99dc160108e3bd55b2439c6209ce90b474d6990f62c03c3438359cab5e07581f`.
+- Independent final review is P0/P1/P2 all zero. P3 records only future deterministic v5 ordering and bind/transition race-test strengthening; it does not block delivery. Runtime acceptance against a Windows and macOS peer remains pending and must confirm Windows upright output plus cross-form-factor control parity.
+
 ## Concurrent VNC preflight alignment repair
 
 - The user-reported VNC regression is repaired and isolated for this commit: Phone/Pad and PC/2in1 settings/add-and-connect flows now return to HostList for the same lock → certificate/plaintext-risk → credential preflight before RemoteDesktop is opened. The legacy password Sheet and its state/callbacks are removed from the connection page.

@@ -1,6 +1,6 @@
 # Moonlight Complete Upgrade Queue
 
-Updated: 2026-08-25 Asia/Shanghai
+Updated: 2026-08-26 Asia/Shanghai
 
 ## Moonlight unclassified host-card parity
 
@@ -22,6 +22,12 @@ Updated: 2026-08-25 Asia/Shanghai
 - Implemented and committed in `1d07fed6`: consume remote `PermissionInfo`, enforce keyboard/clipboard/file denials, publish read-only diagnostics, and allow rate-limited video refresh after any initial frame even when the Windows session has no audio.
 - Focused Rust permission/starvation tests, Rust compile, exact ArkTS test compile, signed HAP assembly, diff check and Light compliance pass on 2026-08-25.
 - Remaining acceptance: reproduce against the reporter's custom Windows 1.4.9 fork after its CM lifecycle is corrected, confirm `仅查看` and continued frames beyond three seconds, and obtain independent review before merge. The reporter owns the separate CM fix.
+
+## Concurrent RustDesk Windows presentation and session-control alignment
+
+- Implemented in `6132ec0dc` and review remediation `3c10f8b4`: authenticated Windows PC hardware sessions apply the producer transform before the first frame, macOS/Linux and non-PC/software/Moonlight paths remain unchanged, and PC top-bar actions share the Phone/Pad rail's canonical content and styling.
+- Rust `188/188`, host native `806/806`, exact ArkTS test compile, signed HAP assembly, diff check and Light compliance pass on 2026-08-26. Independent final review is P0/P1/P2 all zero; P3 contains only non-blocking deterministic test-coverage improvements.
+- Remaining acceptance: install the current signed package and verify Windows output is upright through connect/reconnect/recovery while macOS remains upright; compare PC top bar with Phone/Pad rail for action order, wording, icons, disabled state, collapse behavior and glass treatment.
 
 ## Concurrent VNC preflight alignment repair
 
