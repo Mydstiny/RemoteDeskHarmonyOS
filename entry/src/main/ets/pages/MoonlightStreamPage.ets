@@ -5033,6 +5033,8 @@ struct MoonlightStreamPage {
       physicalControllerPathReady: this.physicalControllerPathReady,
       keyboardAvailable: this.inputReady,
       diagnosticsVisible: this.diagnosticsVisible,
+      viewportWidth: this.surfaceWidthVp,
+      viewportHeight: this.surfaceHeightVp,
       onClose: (): void => { this.closeSheet(); },
       onOpenKeyboard: (): void => { this.closeSheet(); this.toolbarAction('keyboard'); },
       onOpenModifiers: (): void => {
@@ -5420,7 +5422,7 @@ struct MoonlightStreamPage {
       .width('100%').height('100%').backgroundColor('#000000')
       .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
       .bindSheet($$this.showSessionSheet, this.sessionSheet(), {
-        height: this.sheetMode === 'control' ? '86%' : SheetSize.FIT_CONTENT,
+        height: SheetSize.FIT_CONTENT,
         preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
         dragBar: false, showClose: false,
         backgroundColor: this.sheetMode === 'connect' ? '#0E121C' : this.pal().sheetBg,

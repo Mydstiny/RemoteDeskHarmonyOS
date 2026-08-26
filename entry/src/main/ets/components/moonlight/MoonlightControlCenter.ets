@@ -14,6 +14,8 @@ export struct MoonlightControlCenter {
   @StorageProp('currentBreakpoint') breakpoint: string = 'sm';
   @StorageProp('isDesktopDevice') isDesktopDevice: boolean = false;
   @StorageProp('isPadDevice') isPadDevice: boolean = false;
+  @Prop viewportWidth: number = 0;
+  @Prop viewportHeight: number = 0;
   @Prop hostName: string = '';
   @Prop appName: string = '';
   @Prop durationLabel: string = '00:00';
@@ -40,7 +42,8 @@ export struct MoonlightControlCenter {
   }
 
   private layout(): MoonlightControlCenterLayout {
-    return moonlightControlCenterLayout(this.isDesktopDevice, this.breakpoint, this.isPadDevice);
+    return moonlightControlCenterLayout(this.isDesktopDevice, this.breakpoint,
+      this.isPadDevice, this.viewportWidth, this.viewportHeight);
   }
 
   @Builder private sectionTitle(title: string, subtitle: string = '') {
@@ -194,9 +197,11 @@ export struct MoonlightControlCenter {
             .border({ width: 0.5, color: this.pal().cardBorder })
             .margin({ bottom: 22 })
         }.width('100%')
-      }.layoutWeight(1).width('100%').scrollBar(BarState.Off).margin({ top: 6 })
+      }.width('100%').scrollBar(BarState.Off).margin({ top: 6 })
+        .constraintSize({ maxHeight: this.layout().bodyMaxHeight })
     }
-    .width(this.layout().width).height('100%')
+    .width(this.layout().width)
+      .constraintSize({ maxHeight: this.layout().maxHeight })
       .padding({ left: this.layout().horizontalPadding, right: this.layout().horizontalPadding, top: 20 })
     .backgroundColor(this.pal().sheetBg)
   }

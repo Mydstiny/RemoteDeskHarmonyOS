@@ -387,6 +387,23 @@ export default function moonlightUiPolicyTest(): void {
       expect(sheet.width).assertEqual('620vp');
       expect(sheet.rowHeight).assertEqual(68);
 
+      const phoneSheet = moonlightControlCenterLayout(false, 'xl', false, 780, 360);
+      expect(phoneSheet.width).assertEqual('520vp');
+      expect(phoneSheet.maxHeight).assertEqual(348);
+      expect(phoneSheet.bodyMaxHeight).assertEqual(282);
+      expect(phoneSheet.rowHeight).assertEqual(56);
+
+      const resizedPadSheet = moonlightControlCenterLayout(false, 'md', true, 520, 480);
+      expect(resizedPadSheet.width).assertEqual('100%');
+      expect(resizedPadSheet.maxHeight).assertEqual(456);
+      expect(resizedPadSheet.bodyMaxHeight).assertEqual(390);
+      expect(resizedPadSheet.rowHeight).assertEqual(56);
+
+      const regularPadSheet = moonlightControlCenterLayout(false, 'lg', true, 1280, 800);
+      expect(regularPadSheet.width).assertEqual('560vp');
+      expect(regularPadSheet.maxHeight).assertEqual(680);
+      expect(regularPadSheet.rowHeight).assertEqual(68);
+
       const desktopLg = moonlightToolbarLayout(true, 'lg', false);
       expect(desktopLg.edgeRail).assertFalse();
       expect(desktopLg.maxVisibleItems).assertEqual(8);

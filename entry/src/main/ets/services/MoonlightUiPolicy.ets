@@ -289,6 +289,8 @@ export interface MoonlightToolbarLayout {
 
 export interface MoonlightControlCenterLayout {
   width: string;
+  maxHeight: number;
+  bodyMaxHeight: number;
   horizontalPadding: number;
   sectionGap: number;
   rowHeight: number;
@@ -679,13 +681,39 @@ export function moonlightToolbarAutoHideDelayMs(layout: MoonlightToolbarLayout,
 }
 
 export function moonlightControlCenterLayout(isDesktopDevice: boolean, breakpoint: string,
-  _isPadDevice: boolean): MoonlightControlCenterLayout {
+  isPadDevice: boolean, viewportWidth: number = 0,
+  viewportHeight: number = 0): MoonlightControlCenterLayout {
   const normalized: string = breakpoint.trim().toLowerCase();
+  const deviceClass: MoonlightToolbarDeviceClass =
+    moonlightToolbarDeviceClass(isDesktopDevice, isPadDevice);
+  const hasViewportWidth: boolean = Number.isFinite(viewportWidth) && viewportWidth > 0;
+  const hasViewportHeight: boolean = Number.isFinite(viewportHeight) && viewportHeight > 0;
+  const horizontalInset: number = deviceClass === 'phone' ? 16 : 24;
+  const availableWidth: number = hasViewportWidth ?
+    Math.max(1, viewportWidth - horizontalInset * 2) : 0;
+  const preferredWidth: number = isDesktopDevice && normalized === 'xl' ? 620 :
+    (deviceClass === 'phone' ? 520 : 560);
+  const useFullWidth: boolean = normalized === 'sm' ||
+    (hasViewportWidth && availableWidth < preferredWidth);
+
+  const preferredHeight: number = deviceClass === 'phone' ? 520 :
+    (deviceClass === 'pad' ? 680 : 720);
+  const verticalInset: number = deviceClass === 'phone' ? 12 : 24;
+  const availableHeight: number = hasViewportHeight ?
+    Math.max(1, viewportHeight - verticalInset) : preferredHeight;
+  const maxHeight: number = Math.round(Math.min(preferredHeight, availableHeight));
+  const compact: boolean = maxHeight < 520;
   return {
-    width: normalized === 'sm' ? '100%' : (isDesktopDevice && normalized === 'xl' ? '620vp' : '560vp'),
-    horizontalPadding: normalized === 'sm' ? 20 : 24,
-    sectionGap: normalized === 'sm' ? 14 : 16,
-    rowHeight: normalized === 'sm' ? 64 : 68
+    width: useFullWidth ? '100%' : Math.round(Math.min(preferredWidth,
+      hasViewportWidth ? availableWidth : preferredWidth)).toString() + 'vp',
+    maxHeight: maxHeight,
+    // The fixed title area occupies about 66vp. Capping only the scrolling
+    // body lets FIT_CONTENT shrink for short content while keeping every
+    // control reachable in landscape phone and resized Pad windows.
+    bodyMaxHeight: Math.max(1, maxHeight - 66),
+    horizontalPadding: compact ? 16 : (normalized === 'sm' ? 20 : 24),
+    sectionGap: compact ? 10 : (normalized === 'sm' ? 14 : 16),
+    rowHeight: compact ? 56 : (normalized === 'sm' ? 64 : 68)
   };
 }
 
