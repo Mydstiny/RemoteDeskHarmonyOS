@@ -72,17 +72,17 @@ Updated: 2026-08-26 Asia/Shanghai
 
 - Additive owner-store v5 migration verifies all three Moonlight tables by ordered name/type/primary-key contract and writes a complete schema fingerprint receipt before advancing the version.
 - Existing eight cloud tables are an immutable registration baseline. The optional Moonlight table is registered only as a post-baseline superset and is removed from runtime selection whenever unavailable.
-- Durable physical and logical selections default empty and survive temporary registration/account interruptions without being rewritten.
+- Durable physical selection force-adds Moonlight once without changing any legacy table choice; logical selection is always the complete portable `settings` / `hosts` / `profiles` set. Runtime registration failure never rewrites either durable selection.
 - `reconcile_pending` and `pending_pull` resume deterministically after the same account is activated or the cloud registration is refreshed.
 - Automatic Moonlight pulls commit valid rows and redacted quarantines atomically; later promotion/reconcile failures remain restart-repairable and do not falsely claim the committed download was rolled back.
 - Manual partial snapshots use non-destructive merge rather than rolling back the whole cloud database. Only a fully valid snapshot can delete selected local rows missing from cloud.
-- Native-first remains strict and journal-proven, including scope reduction and deselected clean mirror handling.
-- Exact `default@OhosTestCompileArkTS` and `git diff --check` pass on 2026-08-19.
+- `30d50967` accepts only the same-owner/same-generation/same-platform-proof canonical→hashed local fallback as a successful rebind, preventing account-coordinator rollback when another account owns the canonical store.
+- Real 1.0.7/1.0.8/1.1.1 schema replay, exact ArkTS test compile, signed HAP assembly, diff check and Light compliance pass on 2026-08-26. The 1.1.1 case preserves all 17 seeded tables and exact Moonlight PK contracts across two current migration passes.
 
 ## Immediate next
 
-1. Deployment is confirmed and revision 1 is enabled. Test optional-nine registration while proving core-eight continuity and old-version startup/pull behavior.
-2. Complete compatibility-first cloud upload/download/delete/conflict/account-switch/crypto-reset and upgrade tests; bad Moonlight rows must be isolated rather than blocking pulls.
+1. Phone upload is live-PASS for all nine business tables, including `moonlightrecordv1 3/3`. Unlock Pad `192.168.3.236:40123`; the exact package is already installed with `-r`, but `aa start` still returns lock-screen error `10106102`.
+2. Complete compatibility-first cloud upload/download/delete/conflict/account-switch/crypto-reset tests; bad Moonlight rows must be isolated rather than blocking pulls.
 3. After the login gate is cleared, run fresh PC/phone/freeform-window guide and remote-keyboard screenshots plus live panel drag/touch-through acceptance from the current package.
 4. On a real DHCP LAN, verify RDP certificate-fingerprint and RustDesk Peer-ID refresh after address changes; manually entered and static-discovered hosts must remain unchanged.
 

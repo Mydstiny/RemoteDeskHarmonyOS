@@ -4,8 +4,8 @@
 
 - Task: `moonlight-complete-upgrade`
 - Base: `main@aeb0cdac5`; branch: `codex/moonlight-complete-upgrade`
-- Code checkpoint: `26235ce5`; the following state-document commit does not change code.
-- Phase: Moonlight unclassified host-card behavior is unified with the other protocols and is ready for device gesture/UI acceptance; the broader complete Moonlight implementation remains in device acceptance.
+- Code checkpoint: `30d50967`; the following state-document commit does not change code.
+- Phase: 1.1.1 → 1.1.2 cloud/local-data compatibility and Phone core-eight-plus-Moonlight upload are verified; Pad startup remains blocked by its lock screen.
 - Authoritative plan: `docs/superpowers/plans/2026-07-28-moonlight-harmonyos-complete-upgrade-plan.md`
 - Live ledger: `docs/codex/plans/2026-08-09-moonlight-implementation-ledger.md`
 
@@ -61,7 +61,7 @@
 
 - The former “Moonlight permanently local-only” decision is superseded. Local storage remains the always-available source of truth, while one optional ninth cloud table becomes available after its exact AGC schema is provisioned and the deployment revision is enabled.
 - The deployed eight-table cloud baseline is registered first and remains unchanged. `moonlightrecordv1` is attempted only as an optional nine-table superset; optional failure re-asserts the legacy eight-table registration and cannot silently rewrite durable user selection.
-- New installs and upgraded installs do not auto-enable Moonlight cloud sync. Physical-table selection and logical `settings` / `hosts` / `profiles` scopes require explicit user consent; private client identity, pairing trust and certificates remain device-local.
+- New and upgraded installs force the complete portable Moonlight category (`settings` / `hosts` / `profiles`) into the durable cloud selection. There is no subtype picker; private client identity, pairing trust and certificates remain device-local. Optional registration failure changes runtime admission only and never erases durable intent or disables the deployed eight-table baseline.
 - Moonlight download is compatibility-first: the transport may pull the table, then the Moonlight materializer validates rows individually. Valid rows commit, malformed/future/cross-owner rows receive redacted quarantine records, and one bad optional row cannot block the old eight tables.
 - A fully valid manual snapshot may replace selected local scopes. A partial snapshot automatically degrades to non-destructive merge, preserving local rows absent from the incomplete snapshot while still applying valid cloud rows.
 - Upload remains strict: exact schema, active owner, public record type, selected logical scope and durable mutation-journal proof are required before a physical-table native-first transfer.
@@ -78,10 +78,10 @@
 
 ## Latest verification
 
-- Exact `default@OhosTestCompileArkTS`: PASS on 2026-08-23 for the remote-keyboard tree through `10a0c25f` plus preserved concurrent worktree changes.
-- Exact `assembleHap`: PASS on the same tree. Signed HAP SHA-256: `39dc57ce3351c1834700fec72053d23475a4cebe45531fc961f46439f0db0ed9`.
+- Exact `default@OhosTestCompileArkTS`: PASS on 2026-08-26 for cloud upgrade checkpoint `30d50967` and the full current tree.
+- Exact `assembleHap`: PASS on the same tree. Signed HAP SHA-256: `955c07315de764dda7ce044bd2a550456b588d992f5802edc2d963853da5671e`.
 - Host native suite outside the socket-restricted sandbox: `780 passed, 0 failed`; this includes the Moonlight product input/runtime tests and the existing adjacent-protocol fixtures.
-- `git diff --check` and Light open-source compliance: PASS on 2026-08-23. Pinned Moonlight vendor reconstruction (3 Git trees / 117 exact files) and dual-ABI GameControllerKit ELF isolation also remain PASS.
+- `git diff --check` and Light open-source compliance: PASS on 2026-08-26. The executable migration replay passes real 1.0.7, 1.0.8 and 1.1.1 Git schemas; the 1.1.1 case preserves rows in all 17 tables, including all three exact Moonlight name/type/PK contracts, across two current-schema replays with SQLite integrity `ok` and schema v5.
 - Committed checkpoints include `9eadb35be`, `326f329f5`, `348b28083`, `aff7fdf03`, `2d9ce0024`, `2c9120e98`, `94fa21f8f`, `6abd75469`, guidance visibility `4739e67ac`, `ef836f38d`, `20bc9d60`, `232f18b9`, LAN policy `2c1132385`, `c2478e484`, `a8845458`, and remote keyboard `27c3b786`, `c8569d8f`, `10a0c25f`.
 - The adaptive-guidance reviewer found four P2s in the first checkpoint (device-init timing, one-shot retry, 480vp reachability and protocol localization). `94fa21f8f` closes all four; final independent review is P0/P1/P2/P3 all zero.
 - The persistent-visibility reviewer found exact-session/page-rebuild and success-before-marker edge cases, then one unknown SSH generation edge. `20bc9d60` and `232f18b9` close them; final independent review is P0/P1/P2/P3 all zero for SSH, Moonlight, RDP, RustDesk and VNC.
@@ -94,9 +94,9 @@
 
 ## Next and blockers
 
-- Immediate: the user explicitly confirmed that the inspected 19-column `moonlightrecordv1` table is deployed. `MOONLIGHT_CLOUD_SCHEMA_DEPLOYED_REVISION` is now 1, admitting the optional-nine registration path while preserving the legacy core-eight-first fallback.
-- Compatibility remains the first release gate: Moonlight record-level rejection must never turn into a whole-table/core-eight pull failure, while uploads and destructive operations remain strict.
-- Verify real optional registration, core-eight coexistence, old-version upgrade, upload/download/delete/conflict/account-switch/crypto-reset lifecycles, then run one final UI/full-function acceptance pass.
+- `30d50967` fixes the 1.1.1-compatible canonical-store ownership fallback: opening the deterministic same-owner hashed local store is now accepted as a successful local rebind only for the same owner, generation and platform proof. It can no longer be misreported as initialization failure and rolled back by the account coordinator.
+- Phone `192.168.3.235:38451` accepted the exact HAP with `install -r`, launched successfully and completed a real manual upload with `ok=true`, all nine business tables listed, empty `failed`, `kind=none` and `rollbackFailed=false`. Observed retained-row terminal counts include `remotehosts 32/32`, `rdpcredentials 3/3`, `rustdeskrelays 11/11`, `sshkeys 4/4`, `totpentries 12/12`, `vncrecordv2 3/3` and `moonlightrecordv1 3/3`.
+- Pad `192.168.3.236:40123` accepted the same HAP with `install -r` but still returns lock-screen error `10106102` on `aa start`; unlock it, capture its startup/upload receipt, then continue phone/Pad download/delete/conflict/account-switch/crypto-reset acceptance.
 - External acceptance still needs a reachable Sunshine host, physical controller, ARM64 device and long-run/network/lifecycle scenarios.
 - Fresh guide-center and keyboard-panel phone/PC/freeform-window visual evidence is still pending. A phone HDC target is online and the latest package starts, but the existing LoginPage gate prevents reaching a live connection; unrelated concurrent Moonlight and SSH worktree changes remain preserved and excluded from these checkpoints/reviews.
 - Real-network acceptance should still exercise RDP certificate identity and RustDesk Peer ID across a DHCP address change; this is runtime evidence, not an implementation blocker.
