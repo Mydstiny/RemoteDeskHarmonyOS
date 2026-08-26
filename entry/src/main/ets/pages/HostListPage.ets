@@ -10739,6 +10739,7 @@ struct HostListPage {
                   this.sidebarTab('SSH 终端', protocolIcon('ssh'), 2)
                   this.sidebarTab('VNC 主机', protocolIcon('vnc'), 3)
                 }
+                this.sidebarMoonlightTab()
                 this.sidebarTab('密钥保险库', protocolIcon('key_vault'), 4)
                 this.sidebarTab('2FA 验证器', protocolIcon('totp'), 5)
                 this.sidebarRelayTab('中继服务器', 6)
