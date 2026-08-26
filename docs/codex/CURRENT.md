@@ -85,8 +85,8 @@
 
 ## Latest verification
 
-- Exact `default@OhosTestCompileArkTS`: PASS on 2026-08-26 for cold-start checkpoint `fe78c5b1` and the full current tree.
-- Exact `assembleHap`: PASS on the same tree. Signed HAP SHA-256: `5f0755aea752614828808411b4b6157193373d33184e9f4a1d5496d8d86eda5e`.
+- Exact `default@OhosTestCompileArkTS`: PASS on 2026-08-26 for merge checkpoint `77f2a918` and the full current tree.
+- Exact `assembleHap`: PASS on the same tree. Signed HAP SHA-256: `6fd45d74406138f9d38305e302a78c5145ec597729c7631467a7b90447fb613b`.
 - Host native suite outside the socket-restricted sandbox: `780 passed, 0 failed`; this includes the Moonlight product input/runtime tests and the existing adjacent-protocol fixtures.
 - `git diff --check` and Light open-source compliance: PASS on 2026-08-26. The executable migration replay passes real 1.0.7, 1.0.8 and 1.1.1 Git schemas; the 1.1.1 case preserves rows in all 17 tables, including all three exact Moonlight name/type/PK contracts, across two current-schema replays with SQLite integrity `ok` and schema v5.
 - Committed checkpoints include `9eadb35be`, `326f329f5`, `348b28083`, `aff7fdf03`, `2d9ce0024`, `2c9120e98`, `94fa21f8f`, `6abd75469`, guidance visibility `4739e67ac`, `ef836f38d`, `20bc9d60`, `232f18b9`, LAN policy `2c1132385`, `c2478e484`, `a8845458`, and remote keyboard `27c3b786`, `c8569d8f`, `10a0c25f`.
@@ -99,6 +99,8 @@
 - Device `ohosTest` remains blocked by unregistered task `00306054`; no device Hypium pass is claimed.
 - The exact keyboard HAP was installed and `EntryAbility` started successfully on phone simulator `127.0.0.1:5555`; earlier revision-1 startup also passed on PC simulator `127.0.0.1:5557`. The phone currently remains at the existing LoginPage gate, so no keyboard-panel drag/touch-through device PASS or reused screenshot is claimed.
 - Independent merge-gate review at `c24c75003` reuses matching historical receipts and closes the remaining state-reported delta with P0/P1/P2/P3 all zero; fresh-install, Pad/cloud failure and target-device interaction receipts remain external acceptance evidence.
+- Merge follow-up review through `77f2a918` verifies the Windows CRLF compliance-hash repair and adaptive Host FAB Sheet remediation. P0/P1/P2 are zero; one non-blocking P3 remains for direct ArkUI content-tree coverage, while Phone keyboard/long-content behavior remains external runtime evidence.
+- Phone `192.168.3.235:38451` accepted the VNC adaptive FAB Sheet from checkpoint `77f2a918`; `install -r` preserved data and `EntryAbility` started successfully. The accepted signed HAP SHA-256 is `6fd45d74406138f9d38305e302a78c5145ec597729c7631467a7b90447fb613b`.
 
 ## Next and blockers
 
