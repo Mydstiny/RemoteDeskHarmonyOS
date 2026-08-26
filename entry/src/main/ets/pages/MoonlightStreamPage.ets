@@ -15,8 +15,10 @@ import {
 } from '../services/SessionContextualGuidePolicy';
 import { GUIDE_ALWAYS_VISIBLE_STORAGE_KEY } from '../services/GuideVisibilityPolicy';
 import { GuideVisibilityService } from '../services/GuideVisibilityService';
-import { REMOTE_SESSION_CONTROL_BAR_HIDDEN_MOONLIGHT_KEY } from
-  '../services/RemoteSessionTopBarPolicy';
+import {
+  REMOTE_SESSION_CONTROL_BAR_HIDDEN_MOONLIGHT_KEY,
+  shouldDismissRemoteSessionControlSheet
+} from '../services/RemoteSessionTopBarPolicy';
 import { MoonlightConnectStageOverlay } from '../components/moonlight/MoonlightConnectStageOverlay';
 import { MoonlightDiagnosticsHud } from '../components/moonlight/MoonlightDiagnosticsHud';
 import { MoonlightControlCenter, MoonlightControlMode } from '../components/moonlight/MoonlightControlCenter';
@@ -290,6 +292,7 @@ struct MoonlightStreamPage {
   @StorageProp('liveViewEnabled') liveViewEnabled: boolean = true;
   @StorageProp('liveViewMode') liveViewMode: number = 1;
   @StorageLink(REMOTE_SESSION_CONTROL_BAR_HIDDEN_MOONLIGHT_KEY)
+  @Watch('onMoonlightSessionControlBarVisibilityChanged')
   sessionControlBarHiddenMoonlight: boolean = false;
   @StorageLink('remoteDesktopBgFlag') @Watch('onRemoteDesktopBgFlagChange')
   appBackgroundSignal: boolean = false;
@@ -896,6 +899,15 @@ struct MoonlightStreamPage {
     }
     AppStorage.setOrCreate(REMOTE_SESSION_CONTROL_BAR_HIDDEN_MOONLIGHT_KEY,
       this.sessionControlBarHiddenMoonlight);
+  }
+
+  private onMoonlightSessionControlBarVisibilityChanged(): void {
+    if (shouldDismissRemoteSessionControlSheet(
+      this.sessionControlBarHiddenMoonlight,
+      this.showSessionSheet,
+      this.sheetMode)) {
+      this.closeSheet();
+    }
   }
 
   aboutToAppear(): void {

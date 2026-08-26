@@ -89,6 +89,14 @@ export function remoteSessionControlBarHidden(protocol: string,
   return false;
 }
 
+export function shouldDismissRemoteSessionControlSheet(
+  controlBarHidden: boolean,
+  sheetVisible: boolean,
+  sheetMode: string
+): boolean {
+  return controlBarHidden && sheetVisible && sheetMode === 'control';
+}
+
 export function remoteSessionControlBarSelectionSummary(
   visibility: RemoteSessionControlBarVisibility): string {
   const hiddenLabels: string[] = [];

@@ -17,6 +17,7 @@ import {
   remoteTopBarDeviceClass,
   remoteTopBarLayout,
   shouldShowRemoteSessionTopBar,
+  shouldDismissRemoteSessionControlSheet,
   shouldUseRemoteSessionEdgeRail,
   rustDeskTopBarAutoCollapseDelayMs,
   rustDeskActionAvailability,
@@ -92,6 +93,14 @@ export default function remoteSessionTopBarPolicyTest(): void {
       expect(explicit.rustDeskHidden).assertFalse();
       expect(explicit.vncHidden).assertFalse();
       expect(explicit.moonlightHidden).assertTrue();
+    });
+
+    it('hidden_control_bar_should_dismiss_only_an_open_control_sheet', 0, (): void => {
+      expect(shouldDismissRemoteSessionControlSheet(true, true, 'control')).assertTrue();
+      expect(shouldDismissRemoteSessionControlSheet(false, true, 'control')).assertFalse();
+      expect(shouldDismissRemoteSessionControlSheet(true, false, 'control')).assertFalse();
+      expect(shouldDismissRemoteSessionControlSheet(true, true, 'connect')).assertFalse();
+      expect(shouldDismissRemoteSessionControlSheet(true, true, 'stop')).assertFalse();
     });
   });
 
