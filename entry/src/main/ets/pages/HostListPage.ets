@@ -92,7 +92,12 @@ import { AppConfig, AppTheme, Palette, buildDark, buildLight } from '../common/T
 import { LockGateResult, showLockGate, lockGateErrorMessage } from '../components/LockGate';
 import { ColorPickerSheet } from '../components/ColorPickerSheet';
 import { HostAddWizardSheet } from '../components/hostadd/HostAddWizardSheet';
-import { resolveHostAddSheetHeightMode } from '../services/HostAddSheetLayoutPolicy';
+import {
+  resolveActiveHostAddProtocol,
+  resolveHostAddSheetContentMode,
+  resolveHostAddSheetHeightMode,
+  resolveHostAddSheetKeyboardAvoidMode
+} from '../services/HostAddSheetLayoutPolicy';
 import { RdpAddFlow } from '../components/hostadd/RdpAddFlow';
 import { RustDeskAddFlow } from '../components/hostadd/RustDeskAddFlow';
 import {
@@ -16855,22 +16860,20 @@ struct HostListPage {
   }
 
   // ==================== Sheet builder ====================
-  private isClassicVncAddSheet(): boolean {
-    return !this.addSheetShowsModernPicker && this.modernAddProtocol === '' && this.proto === 'vnc';
-  }
-
-  private isVncAddSheet(): boolean {
-    return this.isClassicVncAddSheet() || this.modernAddProtocol === 'vnc';
+  private activeHostAddProtocol(): string {
+    return resolveActiveHostAddProtocol(
+      this.modernAddProtocol, this.proto, this.addSheetShowsModernPicker);
   }
 
   private hostAddSheetHeight(): SheetSize {
-    const protocol: string = this.isVncAddSheet() ? 'vnc' : this.modernAddProtocol;
+    const protocol: string = this.activeHostAddProtocol();
     return resolveHostAddSheetHeightMode(protocol, this.breakpoint) === 'large'
       ? SheetSize.LARGE : SheetSize.FIT_CONTENT;
   }
 
   private hostAddSheetKeyboardAvoidMode(): SheetKeyboardAvoidMode {
-    return this.isVncAddSheet()
+    const protocol: string = this.activeHostAddProtocol();
+    return resolveHostAddSheetKeyboardAvoidMode(protocol, this.breakpoint) === 'resize'
       ? SheetKeyboardAvoidMode.RESIZE_ONLY
       : SheetKeyboardAvoidMode.TRANSLATE_AND_SCROLL;
   }
@@ -17022,6 +17025,8 @@ struct HostListPage {
     } else if (this.modernAddProtocol === 'vnc') {
       VncAddFlow({
         gateways: this.vncGateways.list(),
+        fitContent: resolveHostAddSheetContentMode(
+          this.activeHostAddProtocol(), this.breakpoint) === 'fitContent',
         onBackToProtocols: (): void => {
           this.modernAddProtocol = '';
           this.addSheetShowsModernPicker = this.vncAddFromModernPicker;
@@ -17289,7 +17294,9 @@ struct HostListPage {
     if (this.proto === 'vnc') {
       Column() {
         this.classicHostEditorForm()
-      }.width('100%').height('100%')
+      }.width('100%')
+        .height(resolveHostAddSheetContentMode(this.proto, this.breakpoint) === 'fitContent'
+          ? 'auto' : '100%')
     } else {
       this.classicHostEditorForm()
     }
