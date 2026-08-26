@@ -27,6 +27,7 @@ export interface VncSessionToolbarActions {
   onCycleDisplayScale: () => void;
   onToggleDiagnostics: () => void;
   onDisconnect: () => void;
+  onCollapsedPointerMove: (x: number, y: number) => void;
 }
 
 export interface VncSessionToolbarPlacementActions {
@@ -43,6 +44,7 @@ export struct VncSessionToolbar {
   @Prop displayScaleLabel: string = '适应';
   @Prop diagnosticsEnabled: boolean = false;
   @Prop collapsed: boolean = false;
+  @Prop viewportWidth: number = 0;
   @Prop placement: OverlayPlacement = emptyOverlayPlacement('vnc-toolbar');
   @State private railSwipeX: number = 0;
   placementActions: VncSessionToolbarPlacementActions = {
@@ -56,7 +58,8 @@ export struct VncSessionToolbar {
     onOpenShortcuts: (): void => {},
     onCycleDisplayScale: (): void => {},
     onToggleDiagnostics: (): void => {},
-    onDisconnect: (): void => {}
+    onDisconnect: (): void => {},
+    onCollapsedPointerMove: (_x: number, _y: number): void => {}
   };
 
   @Builder
@@ -257,6 +260,14 @@ export struct VncSessionToolbar {
     .width(REMOTE_SESSION_COLLAPSED_TOP_WIDTH)
     .height(REMOTE_SESSION_COLLAPSED_TOP_TOUCH_HEIGHT)
     .position({ x: '50%', y: 0 }).markAnchor({ x: '50%', y: 0 })
+    .onMouse((event: MouseEvent): void => {
+      if (event.action !== MouseAction.Move && event.action !== MouseAction.Hover) {
+        return;
+      }
+      const left: number = Math.max(0,
+        (this.viewportWidth - REMOTE_SESSION_COLLAPSED_TOP_WIDTH) / 2);
+      this.actions.onCollapsedPointerMove(left + (event.x as number), event.y as number);
+    })
     .accessibilityText(this.viewOnly ? '展开 VNC 只读会话工具栏' : '展开 VNC 会话工具栏')
     .onClick((): void => { this.actions.onExpand(); })
   }

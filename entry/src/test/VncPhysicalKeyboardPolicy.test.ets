@@ -2,6 +2,7 @@ import { describe, it, expect } from '@ohos/hypium';
 import {
   normalizeVncPhysicalKeyCode,
   normalizeVncPhysicalKeyEventCode,
+  resolveVncPhysicalModifierState,
   VncPhysicalKeyBindingTracker
 } from '../main/ets/services/VncPhysicalKeyboardPolicy';
 
@@ -112,6 +113,13 @@ export default function vncPhysicalKeyboardPolicyTest(): void {
       expect(normalizeVncPhysicalKeyEventCode(161, '', {
         unicode: 61, ctrl: false, alt: false, shift: false, meta: false
       })).assertEqual(2120);
+    });
+
+    it('keeps_an_explicit_modifier_hold_when_pc_snapshot_is_false', 0, (): void => {
+      expect(resolveVncPhysicalModifierState(false, false, true)).assertTrue();
+      expect(resolveVncPhysicalModifierState(true, false, false)).assertTrue();
+      expect(resolveVncPhysicalModifierState(false, true, false)).assertTrue();
+      expect(resolveVncPhysicalModifierState(false, false, false)).assertFalse();
     });
 
     it('keeps_down_up_mapping_stable_across_previews_and_missing_release_text', 0, (): void => {

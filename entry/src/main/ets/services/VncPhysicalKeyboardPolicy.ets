@@ -74,6 +74,20 @@ export interface VncPhysicalKeyEventHint {
   meta: boolean;
 }
 
+/**
+ * A modifier Down/Up event is the authoritative physical state. Some PC
+ * TextArea/onKeyPreIme paths return a false modifier snapshot on the following
+ * printable event even though the key is still held. Preserve the explicit
+ * hold while still accepting either ArkUI spelling as positive evidence.
+ */
+export function resolveVncPhysicalModifierState(
+  reportedPressed: boolean,
+  legacyReportedPressed: boolean,
+  explicitlyHeld: boolean
+): boolean {
+  return reportedPressed || legacyReportedPressed || explicitlyHeld;
+}
+
 interface VncPhysicalKeyBinding {
   deviceId: number;
   rawKeyCode: number;

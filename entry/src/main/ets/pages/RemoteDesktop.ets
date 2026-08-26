@@ -526,6 +526,7 @@ import {
 import {
   normalizeVncPhysicalKeyCode,
   normalizeVncPhysicalKeyEventCode,
+  resolveVncPhysicalModifierState,
   VncPhysicalKeyBindingTracker
 } from '../services/VncPhysicalKeyboardPolicy';
 import {
@@ -1380,6 +1381,7 @@ struct RemoteDesktop {
   private remoteCursorPollTimer: number = -1;
   private rustDeskGeometrySyncTimer: number = -1;
   private vncGeometrySyncTimer: number = -1;
+  private vncSurfaceResizeRefreshTimer: number = -1;
   @State rustDeskDisplaySwitchState: RustDeskDisplaySwitchState =
     idleRustDeskDisplaySwitchState();
   private rustDeskDisplayResolutionPendingSinceMs: number = 0;
@@ -2014,6 +2016,9 @@ struct RemoteDesktop {
         this.clearVncToolbarAutoCollapse();
         this.disconnectAndCleanup('vnc-toolbar-close');
         this.goBack();
+      },
+      onCollapsedPointerMove: (x: number, y: number): void => {
+        this.handleVncCollapsedToolbarPointerMove(x, y);
       }
     };
   }
@@ -7441,6 +7446,7 @@ struct RemoteDesktop {
 
   aboutToDisappear(): void {
     this.clearVncToolbarAutoCollapse();
+    this.clearVncSurfaceResizeRefresh();
     this.releaseCanvasPinchInput('page-disappear');
     this.restoreRemoteSystemPointer('page-disappear');
     // A page can disappear before the route decision or PIP stop promise
@@ -8819,6 +8825,45 @@ struct RemoteDesktop {
       clearInterval(this.vncGeometrySyncTimer);
       this.vncGeometrySyncTimer = -1;
     }
+    this.clearVncSurfaceResizeRefresh();
+  }
+
+  private clearVncSurfaceResizeRefresh(): void {
+    if (this.vncSurfaceResizeRefreshTimer >= 0) {
+      clearTimeout(this.vncSurfaceResizeRefreshTimer);
+      this.vncSurfaceResizeRefreshTimer = -1;
+    }
+  }
+
+  /**
+   * A quiet VNC desktop may not submit another raw frame after ArkUI resizes
+   * the XComponent. Without a fresh swap the window manager stretches the old
+   * full-screen buffer into the snapped half-window. Debounce one full RFB
+   * refresh so GL redraws the desktop with its contain viewport.
+   */
+  private scheduleVncSurfaceResizeRefresh(widthPx: number, heightPx: number): void {
+    this.clearVncSurfaceResizeRefresh();
+    if (!this.isVncSession() || !this.connected || this.sessionId <= 0 ||
+      this.rendererHandle <= 0 || widthPx <= 0 || heightPx <= 0) {
+      return;
+    }
+    const expectedSessionId: number = this.sessionId;
+    this.vncSurfaceResizeRefreshTimer = setTimeout((): void => {
+      this.vncSurfaceResizeRefreshTimer = -1;
+      if (!this.isVncSession() || !this.connected || this.sessionId !== expectedSessionId ||
+        this.rendererHandle <= 0 || this.renderWidthPx !== widthPx ||
+        this.renderHeightPx !== heightPx) {
+        return;
+      }
+      const refresh = this.loader.requestFrameRefresh();
+      if (!refresh.ok) {
+        hilog.warn(RD_DOMAIN, RD_TAG, 'VNC resize refresh failed surface=' +
+          widthPx.toString() + 'x' + heightPx.toString() + ' code=' + refresh.code);
+        return;
+      }
+      hilog.info(RD_DOMAIN, RD_TAG, 'VNC resize refresh requested surface=' +
+        widthPx.toString() + 'x' + heightPx.toString());
+    }, 120);
   }
 
   private startVncGeometrySync(sessionId: number): void {
@@ -12097,6 +12142,7 @@ struct RemoteDesktop {
     }
     this.clearVncSensitiveState();
     this.clearVncToolbarAutoCollapse();
+    this.clearVncSurfaceResizeRefresh();
     this.cancelVncTouchWheelFling();
     this.physicalWheelRemainder = 0;
     this.lastPhysicalWheelAtMs = 0;
@@ -15749,11 +15795,30 @@ struct RemoteDesktop {
   }
 
   private modifierStateFromEvent(event: KeyEvent, name: string, fallback: boolean): boolean {
+    let reportedPressed: boolean = false;
+    let reportedStateAvailable: boolean = false;
     try {
-      return event.getModifierKeyState ? event.getModifierKeyState([name]) : fallback;
+      if (event.getModifierKeyState) {
+        reportedPressed = event.getModifierKeyState([name]);
+        reportedStateAvailable = true;
+      }
     } catch (_err) {
-      return fallback;
+      reportedPressed = false;
     }
+    if (!this.isVncSession()) {
+      return reportedStateAvailable ? reportedPressed : fallback;
+    }
+    let legacyReportedPressed: boolean = false;
+    try {
+      const legacyName: string = name === 'ctrl' ? 'Ctrl' :
+        (name === 'alt' ? 'Alt' : (name === 'shift' ? 'Shift' : name));
+      legacyReportedPressed = event.getModifierKeyState ?
+        event.getModifierKeyState([legacyName]) : false;
+    } catch (_err) {
+      legacyReportedPressed = false;
+    }
+    return resolveVncPhysicalModifierState(
+      reportedPressed, legacyReportedPressed, fallback);
   }
 
   private reconcilePhysicalModifierGroup(event: KeyEvent, name: string, keyCodes: Array<number>,
@@ -16511,6 +16576,20 @@ struct RemoteDesktop {
     }
   }
 
+  /** Keep the remote pointer continuous beneath the clickable PC handle. */
+  private handleVncCollapsedToolbarPointerMove(localX: number, localY: number): void {
+    this.observeVncExternalInputActivity('toolbar-mouse');
+    if (!this.canForwardInput('toolbar-mouse')) {
+      return;
+    }
+    const mapped: MappedPoint = this.mapInputPoint(localX, localY);
+    this.logMappedInput('toolbar-mouse', localX, localY, mapped);
+    if (!mapped.inside) {
+      return;
+    }
+    this.queueMouseMove(mapped.x, mapped.y);
+  }
+
   private handleXComponentMouse = (event: MouseEvent): void => {
     // ArkUI may synthesize mouse-shaped events from touch input.  Only a real
     // mouse source is evidence for the automatic keyboard/mouse mode switch.
@@ -16848,6 +16927,9 @@ struct RemoteDesktop {
           } else {
             this.resetCanvasToDisplayDefault();
           }
+          if (this.isVncSession()) {
+            this.scheduleVncSurfaceResizeRefresh(wPx, hPx);
+          }
         }
         // HarmonyOS can restore the window cursor during a layout/orientation
         // transaction. Re-apply the current owner after the new surface
@@ -16984,6 +17066,7 @@ struct RemoteDesktop {
           displayScaleLabel: this.vncDisplayScaleLabel(),
           diagnosticsEnabled: this.vncShowDiagnostics,
           collapsed: this.vncToolbarCollapsed,
+          viewportWidth: this.surfaceWidth,
           placement: this.vncToolbarPlacement,
           actions: this.vncToolbarActions(),
           placementActions: {
