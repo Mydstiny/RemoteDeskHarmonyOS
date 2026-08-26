@@ -17302,18 +17302,12 @@ struct HostListPage {
     }
   }
 
-  @Builder private classicHostEditorForm() {
-    Column() {
-      // 标题
-      Text(this.editingHostId !== '' ? '编辑主机' :
-        (this.proto === 'ssh' ? '添加 SSH 终端' :
-          (this.proto === 'rustdesk' ? '添加 RustDesk 主机' :
-            (this.proto === 'vnc' ? '添加 VNC 主机' : '添加 RDP 主机'))))
-        .fontSize(16).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
-        .width('100%').margin({ bottom: 12 }).fontFamily(this.font())
+  private classicHostEditorUsesIntrinsicLayout(): boolean {
+    return resolveHostAddSheetContentMode(this.proto, this.breakpoint) === 'fitContent';
+  }
 
-      Scroll() {
-        Column() {
+  @Builder private classicHostEditorFields() {
+    Column() {
           // 协议选择
           Row() {
             this.protoBtn('RDP', 'rdp', 3389)
@@ -17597,24 +17591,49 @@ struct HostListPage {
               .borderRadius(10).margin({ top: 16 })
               .onClick((): void => { this.doAdd(); })
           }
-        }.width('100%')
+    }.width('100%')
+  }
+
+  @Builder private classicHostEditorTitle() {
+    Text(this.editingHostId !== '' ? '编辑主机' :
+      (this.proto === 'ssh' ? '添加 SSH 终端' :
+        (this.proto === 'rustdesk' ? '添加 RustDesk 主机' :
+          (this.proto === 'vnc' ? '添加 VNC 主机' : '添加 RDP 主机'))))
+      .fontSize(16).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
+      .width('100%').margin({ bottom: 12 }).fontFamily(this.font())
+  }
+
+  @Builder private classicVncEditorFooter() {
+    Row() {
+      Button(this.editingHostId === '' ? '添加' : '保存').width('100%').height(40).fontSize(14)
+        .fontWeight(FontWeight.Medium).backgroundColor(this.accentColor).fontColor('#FFFFFF')
+        .borderRadius(10).onClick((): void => { this.doAdd(); })
+    }.width('100%').margin({ top: 12 })
+  }
+
+  @Builder private classicHostEditorForm() {
+    Column() {
+      this.classicHostEditorTitle()
+      if (this.classicHostEditorUsesIntrinsicLayout()) {
+        // Phone VNC follows the FIT_CONTENT Sheet contract: no nested Scroll
+        // or remaining-space weight participates in intrinsic measurement.
+        this.classicHostEditorFields()
+      } else {
+        Scroll() {
+          this.classicHostEditorFields()
+        }
+        // Bounded VNC/SSH surfaces keep their established internal viewport.
+        .constraintSize({ maxHeight: this.proto === 'vnc' ? '100%' : 420 })
+        .layoutWeight(this.proto === 'vnc' ? 1 : 0)
+        .scrollBar(BarState.Auto)
+        .edgeEffect(EdgeEffect.Spring)
+        .width('100%')
       }
-      // The VNC editor owns a large Sheet. Its Scroll receives only the space
-      // above the fixed footer, including while the keyboard resizes the Sheet.
-      .constraintSize({ maxHeight: this.proto === 'vnc' ? '100%' : 420 })
-      .layoutWeight(this.proto === 'vnc' ? 1 : 0)
-      .scrollBar(BarState.Auto)
-      .edgeEffect(EdgeEffect.Spring)
-      .width('100%')
       if (this.proto === 'vnc') {
-        Row() {
-          Button(this.editingHostId === '' ? '添加' : '保存').width('100%').height(40).fontSize(14)
-            .fontWeight(FontWeight.Medium).backgroundColor(this.accentColor).fontColor('#FFFFFF')
-            .borderRadius(10).onClick((): void => { this.doAdd(); })
-        }.width('100%').margin({ top: 12 })
+        this.classicVncEditorFooter()
       }
     }
-    .layoutWeight(this.proto === 'vnc' ? 1 : 0)
+    .layoutWeight(this.proto === 'vnc' && !this.classicHostEditorUsesIntrinsicLayout() ? 1 : 0)
     .padding({ left: 24, right: 24, top: 24, bottom: 24 })
     .safeAreaPadding({ bottom: 20 })
     .borderRadius(this.breakpoint === 'sm' ? 0 : 20)
