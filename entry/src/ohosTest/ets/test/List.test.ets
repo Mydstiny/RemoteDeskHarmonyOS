@@ -58,6 +58,7 @@ import vncGatewayHealthPolicyTest from '../../../test/VncGatewayHealthPolicy.tes
 import vncRendererSurfacePolicyTest from '../../../test/VncRendererSurfacePolicy.test';
 import vncPhysicalKeyboardPolicyTest from '../../../test/VncPhysicalKeyboardPolicy.test';
 import vncPhysicalWheelPolicyTest from '../../../test/VncPhysicalWheelPolicy.test';
+import hostAddSheetLayoutPolicyTest from '../../../test/HostAddSheetLayoutPolicy.test';
 import localBackupPolicyTest from '../../../test/LocalBackupPolicy.test';
 // Reuse the same source-of-truth unit suites in the on-device runner.  These
 // imports intentionally avoid a second copy that could drift from entry/src/test.
@@ -358,6 +359,7 @@ export default function testsuite() {
   remotePhysicalKeyboardPolicyTest();
   vncPhysicalKeyboardPolicyTest();
   vncPhysicalWheelPolicyTest();
+  hostAddSheetLayoutPolicyTest();
   touchpadPointerCurvePolicyTest();
   remotePhysicalTouchpadPolicyTest();
   remoteSurfaceTransformPolicyTest();

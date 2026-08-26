@@ -130,7 +130,9 @@ export struct VncSheetScaffold {
       }
     }
     .width('100%')
-    .height('100%')
+    // Let a phone FIT_CONTENT sheet measure the active wizard step. The body
+    // remains scrollable under RESIZE_ONLY and the footer remains outside it.
+    .height('auto')
     .constraintSize({ maxWidth: VNC_SHEET_MAX_WIDTH })
     .backgroundColor(this.pal().card)
     .onAreaChange((_old: Area, next: Area): void => {

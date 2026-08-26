@@ -92,6 +92,7 @@ import { AppConfig, AppTheme, Palette, buildDark, buildLight } from '../common/T
 import { LockGateResult, showLockGate, lockGateErrorMessage } from '../components/LockGate';
 import { ColorPickerSheet } from '../components/ColorPickerSheet';
 import { HostAddWizardSheet } from '../components/hostadd/HostAddWizardSheet';
+import { resolveHostAddSheetHeightMode } from '../services/HostAddSheetLayoutPolicy';
 import { RdpAddFlow } from '../components/hostadd/RdpAddFlow';
 import { RustDeskAddFlow } from '../components/hostadd/RustDeskAddFlow';
 import {
@@ -1252,9 +1253,6 @@ struct HostListPage {
   private searchTimer: number = -1;
   private presetColors: string[] = ['#FFFFFF','#F0F0F0','#F0F5FA','#FFF8F0','#F5F0F8','#1A1A2E','#1E4377','#2D1B4E'];
   @State wallpaperItems: WallpaperItem[] = [];
-  // The long VNC/SSH add flows use a bounded sheet on phones. Keep the
-  // viewport height in vp so the sheet can leave room for the system bars.
-  @State windowH: number = 720;
   @State pageViewportHeight: number = 720;
   private inputDeviceListenerRegistered: boolean = false;
   private inputDevicePromptVisible: boolean = false;
@@ -5057,11 +5055,9 @@ struct HostListPage {
     try {
       const d: display.Display = display.getDefaultDisplaySync();
       this.windowW = d.width;
-      this.windowH = d.height;
       this.isFullScreen = (d.width >= d.width - 4);
     } catch (_err) {
       this.windowW = 360;
-      this.windowH = 720;
     }
   }
 
@@ -16867,21 +16863,10 @@ struct HostListPage {
     return this.isClassicVncAddSheet() || this.modernAddProtocol === 'vnc';
   }
 
-  private hostAddSheetHeight(): SheetSize | number {
-    if (this.modernAddProtocol === 'moonlight') {
-      // Moonlight follows the same intrinsic/adaptive host-add sheet as RustDesk;
-      // the host page must not force a large desktop sheet below short content.
-      return SheetSize.FIT_CONTENT;
-    }
-    const isLongFlow: boolean = this.isVncAddSheet() || this.modernAddProtocol === 'ssh';
-    if (isLongFlow && this.breakpoint === 'sm') {
-      // Long forms need a bounded viewport so keyboard avoidance can shrink
-      // the scrollable body without pushing the sheet actions off screen.
-      const availableHeight: number = Math.max(420,
-        this.windowH - this.topSafeHeightVp() - 24);
-      return Math.min(760, availableHeight);
-    }
-    return isLongFlow ? SheetSize.LARGE : SheetSize.FIT_CONTENT;
+  private hostAddSheetHeight(): SheetSize {
+    const protocol: string = this.isVncAddSheet() ? 'vnc' : this.modernAddProtocol;
+    return resolveHostAddSheetHeightMode(protocol, this.breakpoint) === 'large'
+      ? SheetSize.LARGE : SheetSize.FIT_CONTENT;
   }
 
   private hostAddSheetKeyboardAvoidMode(): SheetKeyboardAvoidMode {
