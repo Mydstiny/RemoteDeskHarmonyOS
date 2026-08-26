@@ -344,6 +344,29 @@ export struct RemoteModifierPanel {
     return remoteCustomShortcutKeyOptions(this.customKeyGroup, this.shortcutPlatform());
   }
 
+  /**
+   * Vertical scrolling is owned exclusively by the panel body. Chunking the
+   * button catalogs into ordinary Rows avoids nested Grid/Scroll recognizers
+   * swallowing the drag before the outer body can reach its final row.
+   */
+  private shortcutPresetRows(): Array<Array<RemoteShortcutPreset>> {
+    const items: Array<RemoteShortcutPreset> = this.visibleShortcutPresets();
+    const rows: Array<Array<RemoteShortcutPreset>> = [];
+    for (let index: number = 0; index < items.length; index += 2) {
+      rows.push(items.slice(index, Math.min(index + 2, items.length)));
+    }
+    return rows;
+  }
+
+  private customActionRows(): Array<Array<RemoteCustomShortcutKeyOption>> {
+    const items: Array<RemoteCustomShortcutKeyOption> = this.customKeyOptions();
+    const rows: Array<Array<RemoteCustomShortcutKeyOption>> = [];
+    for (let index: number = 0; index < items.length; index += 5) {
+      rows.push(items.slice(index, Math.min(index + 5, items.length)));
+    }
+    return rows;
+  }
+
   private customGroupLabel(group: RemoteCustomShortcutKeyGroup): string {
     if (group === 'letters') { return '字母'; }
     if (group === 'digits') { return '数字'; }
@@ -829,13 +852,19 @@ export struct RemoteModifierPanel {
         this.CustomGroupChoice('functions')
         this.CustomGroupChoice('navigation')
       }.width('100%').margin({ top: 4, bottom: 5 })
-      Grid() {
-        ForEach(this.customKeyOptions(), (option: RemoteCustomShortcutKeyOption): void => {
-          GridItem() { this.CustomActionChoice(option) }
-        }, (option: RemoteCustomShortcutKeyOption): string => option.keyCode.toString())
-      }
-      .columnsTemplate('1fr 1fr 1fr 1fr 1fr')
-      .rowsGap(4).columnsGap(4).width('100%').height(108)
+      Column({ space: 4 }) {
+        ForEach(this.customActionRows(), (row: Array<RemoteCustomShortcutKeyOption>): void => {
+          Row({ space: 4 }) {
+            ForEach(row, (option: RemoteCustomShortcutKeyOption): void => {
+              Column() { this.CustomActionChoice(option) }.layoutWeight(1)
+            }, (option: RemoteCustomShortcutKeyOption): string => option.keyCode.toString())
+            if (row.length < 5) { Blank().height(28).layoutWeight(1) }
+            if (row.length < 4) { Blank().height(28).layoutWeight(1) }
+            if (row.length < 3) { Blank().height(28).layoutWeight(1) }
+            if (row.length < 2) { Blank().height(28).layoutWeight(1) }
+          }.width('100%')
+        })
+      }.width('100%')
       Row() {
         Text(remoteCustomShortcutLabelForPlatform(
           this.customDraftKeyCodes(), this.shortcutPlatform()) || '请至少选择一个修饰键')
@@ -967,21 +996,23 @@ export struct RemoteModifierPanel {
       }
       .width('100%').height(30).scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off)
       .margin({ bottom: 7 })
-      Grid() {
-        ForEach(this.visibleShortcutPresets(), (item: RemoteShortcutPreset): void => {
-          GridItem() { this.PresetShortcutBtn(item) }
-        }, (item: RemoteShortcutPreset): string =>
-          remoteShortcutPresetRenderKey(this.shortcutPlatform(), item))
-      }
-      .columnsTemplate('1fr 1fr').rowsGap(6).columnsGap(6)
-      .width('100%').height(204).scrollBar(BarState.Auto).edgeEffect(EdgeEffect.Spring)
+      Column({ space: 6 }) {
+        ForEach(this.shortcutPresetRows(), (row: Array<RemoteShortcutPreset>): void => {
+          Row({ space: 6 }) {
+            ForEach(row, (item: RemoteShortcutPreset): void => {
+              Column() { this.PresetShortcutBtn(item) }.layoutWeight(1)
+            }, (item: RemoteShortcutPreset): string =>
+              remoteShortcutPresetRenderKey(this.shortcutPlatform(), item))
+            if (row.length < 2) { Blank().height(46).layoutWeight(1) }
+          }.width('100%')
+        })
+      }.width('100%')
     }.width('100%')
   }
 
   @Builder
   FunctionKeyLibrary() {
-    Scroll() {
-      Column({ space: 5 }) {
+    Column({ space: 5 }) {
         Row() {
           this.ActionKey('F1', RemoteModifierPanel.KEY_F1)
           this.ActionKey('F2', RemoteModifierPanel.KEY_F2)
@@ -1050,9 +1081,7 @@ export struct RemoteModifierPanel {
           this.ActionKey('', 0)
           this.ActionKey('', 0)
         }.width('100%')
-      }.width('100%')
-    }.width('100%').height(204).scrollable(ScrollDirection.Vertical)
-      .scrollBar(BarState.Auto).edgeEffect(EdgeEffect.Spring)
+    }.width('100%')
   }
 
   @Builder
@@ -1124,7 +1153,7 @@ export struct RemoteModifierPanel {
               } else {
                 this.ShortcutLibrary()
               }
-            }.width('100%')
+            }.width('100%').padding({ bottom: 14 })
           }
           .width('100%').layoutWeight(1).scrollable(ScrollDirection.Vertical)
           .scrollBar(BarState.Auto).edgeEffect(EdgeEffect.Spring)
