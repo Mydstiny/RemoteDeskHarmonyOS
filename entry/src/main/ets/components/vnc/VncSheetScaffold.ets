@@ -133,12 +133,12 @@ export struct VncSheetScaffold {
         this.header()
       }
       if (this.fitContent) {
-        // Phone host-add sheets share one intrinsic content tree with their
+        // VNC host-add sheets share one intrinsic content tree with their
         // action row so bindSheet can translate and scroll it above the IME.
         this.body(true)
       } else {
-        // Settings, trust, Gateway, Pad and PC callers retain a bounded body
-        // and reachable footer inside their LARGE/fixed-height sheet host.
+        // Settings, trust and Gateway callers retain a bounded body and
+        // reachable footer inside their LARGE/fixed-height sheet host.
         Scroll() {
           this.body(false)
         }
