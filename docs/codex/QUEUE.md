@@ -83,7 +83,7 @@ Updated: 2026-08-26 Asia/Shanghai
 
 1. Phone upload is live-PASS for all nine business tables, including `moonlightrecordv1 3/3`. Unlock Pad `192.168.3.236:40123`; the exact package is already installed with `-r`, but `aa start` still returns lock-screen error `10106102`.
 2. Complete compatibility-first cloud upload/download/delete/conflict/account-switch/crypto-reset tests; bad Moonlight rows must be isolated rather than blocking pulls.
-3. After the login gate is cleared, run fresh PC/phone/freeform-window guide and remote-keyboard screenshots plus live panel drag/touch-through acceptance from the current package.
+3. When device conditions return, run a true uninstall/reinstall cold start before fresh PC/phone/freeform-window guide and remote-keyboard screenshots plus live panel drag/touch-through acceptance; source/build cold-start hardening is complete but is not a device PASS.
 4. On a real DHCP LAN, verify RDP certificate-fingerprint and RustDesk Peer-ID refresh after address changes; manually entered and static-discovered hosts must remain unchanged.
 
 ## External gates

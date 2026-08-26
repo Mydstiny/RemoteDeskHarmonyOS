@@ -4,10 +4,17 @@
 
 - Task: `moonlight-complete-upgrade`
 - Base: `main@aeb0cdac5`; branch: `codex/moonlight-complete-upgrade`
-- Code checkpoint: `30d50967`; the following state-document commit does not change code.
-- Phase: 1.1.1 → 1.1.2 cloud/local-data compatibility and Phone core-eight-plus-Moonlight upload are verified; Pad startup remains blocked by its lock screen.
+- Code checkpoint: `fe78c5b1`; the following state-document commit does not change code.
+- Phase: 1.1.1 → 1.1.2 cloud/local-data compatibility and Phone core-eight-plus-Moonlight upload are verified; fresh-install cold-start hardening is source/build verified; Pad startup remains blocked by its lock screen.
 - Authoritative plan: `docs/superpowers/plans/2026-07-28-moonlight-harmonyos-complete-upgrade-plan.md`
 - Live ledger: `docs/codex/plans/2026-08-09-moonlight-implementation-ledger.md`
+
+## Fresh-install cold-start hardening
+
+- `fe78c5b1` removes account/RDB readiness from the first-install visible-UI gate. Login renders immediately while device-local scope preparation continues behind the same coordinator used by later login/offline actions; failure is logged without restoring the blocking surface.
+- EntryAbility now awaits the API 23 WindowStage Promise path, tries the registered first-install GuidePage first and falls back to the registered interactive LoginPage if Guide UIContent loading rejects. The fallback does not persist the guide-complete marker.
+- GuidePage already initializes a non-empty seven-page model and renders first-install guidance directly in the page instead of depending on cold-start bindSheet attachment; account, KeyVault, host-store and cloud startup remain asynchronous and are not awaited by WindowStage content loading.
+- Exact ArkTS test compile, signed HAP assembly, diff check and Light compliance pass on 2026-08-26. Signed HAP SHA-256 is `5f0755aea752614828808411b4b6157193373d33184e9f4a1d5496d8d86eda5e`; per the user's constraint this is code/build confirmation only, not a fresh-install device PASS.
 
 ## Moonlight unclassified host-card parity
 
@@ -78,8 +85,8 @@
 
 ## Latest verification
 
-- Exact `default@OhosTestCompileArkTS`: PASS on 2026-08-26 for cloud upgrade checkpoint `30d50967` and the full current tree.
-- Exact `assembleHap`: PASS on the same tree. Signed HAP SHA-256: `955c07315de764dda7ce044bd2a550456b588d992f5802edc2d963853da5671e`.
+- Exact `default@OhosTestCompileArkTS`: PASS on 2026-08-26 for cold-start checkpoint `fe78c5b1` and the full current tree.
+- Exact `assembleHap`: PASS on the same tree. Signed HAP SHA-256: `5f0755aea752614828808411b4b6157193373d33184e9f4a1d5496d8d86eda5e`.
 - Host native suite outside the socket-restricted sandbox: `780 passed, 0 failed`; this includes the Moonlight product input/runtime tests and the existing adjacent-protocol fixtures.
 - `git diff --check` and Light open-source compliance: PASS on 2026-08-26. The executable migration replay passes real 1.0.7, 1.0.8 and 1.1.1 Git schemas; the 1.1.1 case preserves rows in all 17 tables, including all three exact Moonlight name/type/PK contracts, across two current-schema replays with SQLite integrity `ok` and schema v5.
 - Committed checkpoints include `9eadb35be`, `326f329f5`, `348b28083`, `aff7fdf03`, `2d9ce0024`, `2c9120e98`, `94fa21f8f`, `6abd75469`, guidance visibility `4739e67ac`, `ef836f38d`, `20bc9d60`, `232f18b9`, LAN policy `2c1132385`, `c2478e484`, `a8845458`, and remote keyboard `27c3b786`, `c8569d8f`, `10a0c25f`.

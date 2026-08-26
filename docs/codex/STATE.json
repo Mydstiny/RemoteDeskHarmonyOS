@@ -3,8 +3,8 @@
   "task": "moonlight-complete-upgrade",
   "branch": "codex/moonlight-complete-upgrade",
   "base": "aeb0cdac589caeac8b75dec5958f4e07ee62faf5",
-  "head": "30d50967f3aaf503c3a49499ab35cf693527ca2f",
-  "phase": "cloud-upgrade-phone-nine-table-upload-pass-pad-startup-pending",
+  "head": "fe78c5b151ab29a8a903be251de039b44258e2ce",
+  "phase": "cloud-upgrade-phone-nine-table-upload-pass-cold-start-source-pass-pad-startup-pending",
   "status": "active",
   "next": "Unlock the already-upgraded Pad and capture its startup/nine-table upload receipt, then continue Phone/Pad download, conflict, account-switch and reset acceptance.",
   "blockers": [
@@ -39,11 +39,14 @@
       "entry/src/main/ets/services/MoonlightCloudSyncSelectionStore.ets",
       "entry/src/main/ets/services/MoonlightStoragePolicy.ets",
       "entry/src/main/ets/entryability/EntryAbility.ets",
+      "entry/src/main/ets/pages/LoginPage.ets",
+      "entry/src/main/ets/services/AppStartupPolicy.ets",
       "entry/src/main/ets/pages/HostListPage.ets",
       "entry/src/main/ets/services/CloudSyncCoordinator.ets",
       "entry/src/test/*Moonlight*Cloud*.test.ets",
       "entry/src/test/MoonlightStoragePolicy.test.ets",
       "entry/src/test/AccountScopePolicy.test.ets",
+      "entry/src/test/AppStartupPolicy.test.ets",
       "scripts/verify_legacy_upgrade.py",
       "rustdesk_ffi/src/control_inbox.rs",
       "rustdesk_ffi/src/connector.rs",
@@ -67,12 +70,12 @@
         "summary": "Foreground startup ordering, account switch during registration, optional-table failure fallback and rejection retry require real cloud/device integration receipts after provisioning."
       }
     ],
-    "reason": "Checkpoint 30d50967 fixes canonical-to-hashed local fallback and adds real 1.1.1 migration replay, but the user requires Phone/Pad startup and cloud lifecycle acceptance before independent review. RustDesk view-only checkpoint 1d07fed6 also still requires custom-fork runtime evidence."
+    "reason": "Checkpoint fe78c5b1 also hardens fresh-install UI publication and fallback, but the user explicitly defers independent review until real-device acceptance. Phone/Pad startup and cloud lifecycle acceptance remain pending; RustDesk view-only checkpoint 1d07fed6 also still requires custom-fork runtime evidence."
   },
   "lastVerification": {
-    "diffCheck": "pass on 2026-08-26 for cloud upgrade checkpoint 30d50967 and the state-document update; Light compliance also passed",
-    "testCompile": "pass: exact default@OhosTestCompileArkTS with --analyze=normal --parallel --incremental --no-daemon on 2026-08-26 for checkpoint 30d50967 and the full current tree",
-    "assembleHap": "pass: exact assembleHap on the same tree; the Phone/Pad installed pre-state-document build SHA-256 is 955c07315de764dda7ce044bd2a550456b588d992f5802edc2d963853da5671e",
+    "diffCheck": "pass on 2026-08-26 for cold-start checkpoint fe78c5b1; Light compliance also passed",
+    "testCompile": "pass: exact default@OhosTestCompileArkTS with --analyze=normal --parallel --incremental --no-daemon on 2026-08-26 for checkpoint fe78c5b1 and the full current tree",
+    "assembleHap": "pass: exact assembleHap on the same tree; signed HAP SHA-256 is 5f0755aea752614828808411b4b6157193373d33184e9f4a1d5496d8d86eda5e",
     "hapPath": "entry/build/default/outputs/default/entry-default-signed.hap",
     "nativeTests": "pass outside the socket-restricted sandbox: 780 passed, 0 failed; Moonlight and adjacent-protocol fixtures all passed",
     "hdcRuntime": "Phone 192.168.3.235:38451 launched after install -r and completed a real nine-business-table manual upload with ok=true, empty failed, kind=none and rollbackFailed=false; Pad 192.168.3.236:40123 still returns lock-screen error 10106102",
@@ -80,6 +83,7 @@
     "remoteKeyboard": "pass: session-rail entry for RDP/RustDesk/VNC/Moonlight; Windows/macOS catalogs, function/navigation/custom shortcuts, official regular-app-safe HarmonyOS IME settings, panel-only touch blocking, drag and safe/IME landscape reachability; independent review P0/P1/P2/P3 zero at 10a0c25f",
     "guideVisibility": "pass: automatic hints persist as once-ever by default; always-show mode is exact-session deduplicated across page rebuilds for SSH, Moonlight, RDP, RustDesk and VNC; RemoteDesktop marks only successful dialog presentation and retries failures at most twice; independent review P0/P1/P2/P3 zero through 232f18b9",
     "cloudBoundary": "Phone live receipt lists cryptoparams, usersettings, remotehosts, rdpcredentials, rustdeskrelays, sshkeys, totpentries, vncrecordv2 and moonlightrecordv1 with overall ok=true; observed Moonlight terminal count is 3/3 and rollbackFailed=false",
+    "coldStart": "source/build pass only: first-install GuidePage is non-empty inline UI, account/RDB preparation no longer blocks LoginPage visibility, and a rejected guide UIContent load falls back to LoginPage; no uninstall/reinstall device PASS is claimed",
     "legacyUpgrade": "pass: executable replay of real 1.0.7, 1.0.8 and 1.1.1 Git schemas; 1.1.1 preserves seeded rows in all 17 tables and exact three-table Moonlight name/type/PK contracts across two current-schema passes with integrity ok and schema v5",
     "lanAddressPolicy": "pass: LAN-discovered RDP/RustDesk require explicit static/dynamic choice; static uses normal cloud sync without refresh, dynamic is owner-scoped local-only with identity-based refresh, and manual entries retain legacy behavior; independent review P0/P1/P2/P3 zero at a8845458",
     "isolation": "dual-ABI ELF pass: GameControllerKit remains Moonlight-session dynamic only with no DT_NEEDED or unresolved OH_Game symbols; optional cloud table remains additive and outside the core-eight baseline",
