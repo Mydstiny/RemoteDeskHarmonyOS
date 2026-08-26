@@ -18,6 +18,52 @@ const EMPTY_MOONLIGHT_DIAGNOSTICS: MoonlightDiagnosticsSnapshot = {
   ingressAgeMs: -1, presentationAgeMs: -1, stalled: false
 };
 
+/**
+ * Keep each expanded metric on a primitive reactive boundary. ArkUI API 23
+ * can cache @Builder arguments while the surrounding interface-typed
+ * snapshot changes; component @Prop primitives update without rebuilding the
+ * entire HUD or requiring a collapse/expand cycle.
+ */
+@Component
+struct MoonlightDiagnosticsMetricRow {
+  @Prop label: string = '';
+  @Prop value: string = '—';
+  @Prop sampleEpoch: number = 0;
+
+  private reactiveValue(): string {
+    if (this.sampleEpoch < 0) { return '—'; }
+    return this.value;
+  }
+
+  build() {
+    Row() {
+      Text(this.label).fontSize(10).fontColor('rgba(255,255,255,0.60)').layoutWeight(1)
+      Text(this.reactiveValue()).fontSize(10).fontColor('#FFFFFF').fontFamily('monospace')
+    }.width('100%').height(20)
+  }
+}
+
+@Component
+struct MoonlightDiagnosticsReadiness {
+  @Prop label: string = '';
+  @Prop ready: boolean = false;
+  @Prop sampleEpoch: number = 0;
+
+  private reactiveReady(): boolean {
+    return this.sampleEpoch >= 0 && this.ready;
+  }
+
+  build() {
+    Row({ space: 4 }) {
+      Column().width(6).height(6).borderRadius(3)
+        .backgroundColor(this.reactiveReady() ? '#66DD7A' : 'rgba(255,255,255,0.24)')
+      Text(this.label).fontSize(9)
+        .fontColor(this.reactiveReady() ?
+          'rgba(255,255,255,0.86)' : 'rgba(255,255,255,0.42)')
+    }
+  }
+}
+
 @Component
 export struct MoonlightDiagnosticsHud {
   @Prop snapshot: MoonlightDiagnosticsSnapshot = EMPTY_MOONLIGHT_DIAGNOSTICS;
@@ -121,22 +167,6 @@ export struct MoonlightDiagnosticsHud {
     return this.snapshot;
   }
 
-  @Builder private metric(label: string, value: string) {
-    Row() {
-      Text(label).fontSize(10).fontColor('rgba(255,255,255,0.60)').layoutWeight(1)
-      Text(value).fontSize(10).fontColor('#FFFFFF').fontFamily('monospace')
-    }.width('100%').height(20)
-  }
-
-  @Builder private readiness(label: string, ready: boolean) {
-    Row({ space: 4 }) {
-      Column().width(6).height(6).borderRadius(3)
-        .backgroundColor(ready ? '#66DD7A' : 'rgba(255,255,255,0.24)')
-      Text(label).fontSize(9)
-        .fontColor(ready ? 'rgba(255,255,255,0.86)' : 'rgba(255,255,255,0.42)')
-    }
-  }
-
   build() {
     Stack() {
       Column() {
@@ -174,38 +204,70 @@ export struct MoonlightDiagnosticsHud {
 
         if (this.expanded) {
           Row({ space: 10 }) {
-            this.readiness('网络', this.reactiveSnapshot().transportReady)
-            this.readiness('视频', this.reactiveSnapshot().videoReady)
-            this.readiness('音频', this.reactiveSnapshot().audioReady)
-            this.readiness('输入', this.reactiveSnapshot().inputReady)
+            MoonlightDiagnosticsReadiness({ label: '网络',
+              ready: this.reactiveSnapshot().transportReady, sampleEpoch: this.sampleEpoch })
+            MoonlightDiagnosticsReadiness({ label: '视频',
+              ready: this.reactiveSnapshot().videoReady, sampleEpoch: this.sampleEpoch })
+            MoonlightDiagnosticsReadiness({ label: '音频',
+              ready: this.reactiveSnapshot().audioReady, sampleEpoch: this.sampleEpoch })
+            MoonlightDiagnosticsReadiness({ label: '输入',
+              ready: this.reactiveSnapshot().inputReady, sampleEpoch: this.sampleEpoch })
           }.width('100%').margin({ bottom: 6 })
-          this.metric('实时 VBR / 请求上限', moonlightMetric(this.reactiveSnapshot().bitrateKbps, ' Kbps') + ' / ' +
-            moonlightMetric(this.reactiveSnapshot().configuredBitrateKbps, ' Kbps'))
-          this.metric('视频丢帧率', moonlightMetric(this.reactiveSnapshot().packetLossPercent, '%', 2))
-          this.metric('编码', this.reactiveSnapshot().codec === '' ? '—' : this.reactiveSnapshot().codec)
-          this.metric('画面', this.reactiveSnapshot().width > 0 && this.reactiveSnapshot().height > 0 ?
-            this.reactiveSnapshot().width.toString() + ' × ' + this.reactiveSnapshot().height.toString() + ' @ ' +
-              moonlightMetric(this.reactiveSnapshot().targetFps, ' FPS') : '—')
-          this.metric('视频接收 / 丢弃', this.reactiveSnapshot().acceptedVideoFrames.toString() + ' / ' +
-            this.reactiveSnapshot().droppedVideoFrames.toString())
-          this.metric('解码队列', moonlightMetric(this.reactiveSnapshot().decoderQueueDepth, ''))
-          this.metric('解码延迟 / 峰值', moonlightMetric(this.reactiveSnapshot().codecLatencyMs, ' ms') + ' / ' +
-            moonlightMetric(this.reactiveSnapshot().codecLatencyMaxMs, ' ms'))
-          this.metric('解码 p50 / p95', moonlightMetricPairUs(
-            this.reactiveSnapshot().decodeP50Us, this.reactiveSnapshot().decodeP95Us))
-          this.metric('渲染 p50 / p95', moonlightMetricPairUs(
-            this.reactiveSnapshot().renderP50Us, this.reactiveSnapshot().renderP95Us))
-          this.metric('Surface 无缓冲 / 合并', this.reactiveSnapshot().surfaceUpdateFailures.toString() + ' / ' +
-            this.reactiveSnapshot().surfaceCoalescedNotifications.toString())
-          this.metric('画面推进距今', moonlightMetric(this.reactiveSnapshot().presentationAgeMs, ' ms'))
-          this.metric('码流推进距今', moonlightMetric(this.reactiveSnapshot().ingressAgeMs, ' ms'))
-          this.metric('音频接收 / 拒绝', this.reactiveSnapshot().acceptedAudioPackets.toString() + ' / ' +
-            this.reactiveSnapshot().rejectedAudioPackets.toString())
-          this.metric('音频 underrun', moonlightMetric(this.reactiveSnapshot().audioUnderruns, ''))
-          this.metric('输入接收 / 拒绝', this.reactiveSnapshot().inputAccepted.toString() + ' / ' +
-            moonlightMetric(this.reactiveSnapshot().inputDrops, ''))
-          this.metric('已呈现帧', this.reactiveSnapshot().presentedFrames.toString())
-          this.metric('接收视频字节', this.reactiveSnapshot().videoBytes.toString())
+          MoonlightDiagnosticsMetricRow({ label: '实时 VBR / 请求上限',
+            value: moonlightMetric(this.reactiveSnapshot().bitrateKbps, ' Kbps') + ' / ' +
+              moonlightMetric(this.reactiveSnapshot().configuredBitrateKbps, ' Kbps'),
+            sampleEpoch: this.sampleEpoch })
+          MoonlightDiagnosticsMetricRow({ label: '视频丢帧率',
+            value: moonlightMetric(this.reactiveSnapshot().packetLossPercent, '%', 2),
+            sampleEpoch: this.sampleEpoch })
+          MoonlightDiagnosticsMetricRow({ label: '编码',
+            value: this.reactiveSnapshot().codec === '' ? '—' : this.reactiveSnapshot().codec,
+            sampleEpoch: this.sampleEpoch })
+          MoonlightDiagnosticsMetricRow({ label: '画面',
+            value: this.reactiveSnapshot().width > 0 && this.reactiveSnapshot().height > 0 ?
+              this.reactiveSnapshot().width.toString() + ' × ' +
+                this.reactiveSnapshot().height.toString() + ' @ ' +
+                moonlightMetric(this.reactiveSnapshot().targetFps, ' FPS') : '—',
+            sampleEpoch: this.sampleEpoch })
+          MoonlightDiagnosticsMetricRow({ label: '视频接收 / 丢弃',
+            value: this.reactiveSnapshot().acceptedVideoFrames.toString() + ' / ' +
+              this.reactiveSnapshot().droppedVideoFrames.toString(), sampleEpoch: this.sampleEpoch })
+          MoonlightDiagnosticsMetricRow({ label: '解码队列',
+            value: moonlightMetric(this.reactiveSnapshot().decoderQueueDepth, ''),
+            sampleEpoch: this.sampleEpoch })
+          MoonlightDiagnosticsMetricRow({ label: '解码延迟 / 峰值',
+            value: moonlightMetric(this.reactiveSnapshot().codecLatencyMs, ' ms') + ' / ' +
+              moonlightMetric(this.reactiveSnapshot().codecLatencyMaxMs, ' ms'),
+            sampleEpoch: this.sampleEpoch })
+          MoonlightDiagnosticsMetricRow({ label: '解码 p50 / p95',
+            value: moonlightMetricPairUs(this.reactiveSnapshot().decodeP50Us,
+              this.reactiveSnapshot().decodeP95Us), sampleEpoch: this.sampleEpoch })
+          MoonlightDiagnosticsMetricRow({ label: '渲染 p50 / p95',
+            value: moonlightMetricPairUs(this.reactiveSnapshot().renderP50Us,
+              this.reactiveSnapshot().renderP95Us), sampleEpoch: this.sampleEpoch })
+          MoonlightDiagnosticsMetricRow({ label: 'Surface 无缓冲 / 合并',
+            value: this.reactiveSnapshot().surfaceUpdateFailures.toString() + ' / ' +
+              this.reactiveSnapshot().surfaceCoalescedNotifications.toString(),
+            sampleEpoch: this.sampleEpoch })
+          MoonlightDiagnosticsMetricRow({ label: '画面推进距今',
+            value: moonlightMetric(this.reactiveSnapshot().presentationAgeMs, ' ms'),
+            sampleEpoch: this.sampleEpoch })
+          MoonlightDiagnosticsMetricRow({ label: '码流推进距今',
+            value: moonlightMetric(this.reactiveSnapshot().ingressAgeMs, ' ms'),
+            sampleEpoch: this.sampleEpoch })
+          MoonlightDiagnosticsMetricRow({ label: '音频接收 / 拒绝',
+            value: this.reactiveSnapshot().acceptedAudioPackets.toString() + ' / ' +
+              this.reactiveSnapshot().rejectedAudioPackets.toString(), sampleEpoch: this.sampleEpoch })
+          MoonlightDiagnosticsMetricRow({ label: '音频 underrun',
+            value: moonlightMetric(this.reactiveSnapshot().audioUnderruns, ''),
+            sampleEpoch: this.sampleEpoch })
+          MoonlightDiagnosticsMetricRow({ label: '输入接收 / 拒绝',
+            value: this.reactiveSnapshot().inputAccepted.toString() + ' / ' +
+              moonlightMetric(this.reactiveSnapshot().inputDrops, ''), sampleEpoch: this.sampleEpoch })
+          MoonlightDiagnosticsMetricRow({ label: '已呈现帧',
+            value: this.reactiveSnapshot().presentedFrames.toString(), sampleEpoch: this.sampleEpoch })
+          MoonlightDiagnosticsMetricRow({ label: '接收视频字节',
+            value: this.reactiveSnapshot().videoBytes.toString(), sampleEpoch: this.sampleEpoch })
           Button('复制脱敏诊断').height(32).width('100%').fontSize(11).borderRadius(9)
             .backgroundColor('rgba(255,255,255,0.10)').fontColor('#FFFFFF').margin({ top: 8 })
             .onClick((): void => { this.onCopySanitized(); })

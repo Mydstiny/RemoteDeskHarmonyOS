@@ -57,6 +57,8 @@ export struct RemoteModifierPanel {
   @Prop customShortcuts: Array<RemoteCustomShortcut> = [];
   /** Optional session-surface emphasis; empty keeps the global accent. */
   @Prop emphasisColor: string = '';
+  /** Optional per-session platform; empty keeps the persisted global choice. */
+  @Prop shortcutPlatformOverride: string = '';
   @StorageProp('accentColor') accentColor: string = '#007DFF';
   @StorageProp('currentBreakpoint') breakpoint: string = 'sm';
   @StorageLink(REMOTE_KEYBOARD_SHORTCUT_PLATFORM_KEY) shortcutPlatformMode: string = 'windows';
@@ -85,6 +87,8 @@ export struct RemoteModifierPanel {
   onSaveCustomShortcut: (id: string, keyCodes: Array<number>) => boolean =
     (_id: string, _keyCodes: Array<number>): boolean => false;
   onDeleteCustomShortcut: (id: string) => void = (_id: string): void => {};
+  onShortcutPlatformChange: (platform: RemoteShortcutPlatform) => void =
+    (_platform: RemoteShortcutPlatform): void => {};
 
   @State private panelDragOffsetX: number = 0;
   @State private panelDragOffsetY: number = 0;
@@ -146,7 +150,9 @@ export struct RemoteModifierPanel {
   }
 
   private shortcutPlatform(): RemoteShortcutPlatform {
-    return normalizeRemoteShortcutPlatform(this.shortcutPlatformMode);
+    return normalizeRemoteShortcutPlatform(
+      this.shortcutPlatformOverride.trim().length > 0 ?
+        this.shortcutPlatformOverride : this.shortcutPlatformMode);
   }
 
   private shortcutPlatformLabel(): string {
@@ -154,7 +160,12 @@ export struct RemoteModifierPanel {
   }
 
   private selectShortcutPlatform(platform: RemoteShortcutPlatform): void {
-    this.shortcutPlatformMode = platform;
+    if (this.shortcutPlatformOverride.trim().length > 0) {
+      this.onShortcutPlatformChange(platform);
+    } else {
+      this.shortcutPlatformMode = platform;
+      RemoteKeyboardSettingsService.getInstance().saveShortcutPlatform(platform, getContext(this));
+    }
     if (!remoteCustomShortcutKeyAvailableOnPlatform(this.customActionKeyCode, platform)) {
       this.customKeyGroup = 'functions';
       this.customActionKeyCode = 2090;
@@ -162,7 +173,6 @@ export struct RemoteModifierPanel {
     // 首先回到通用编辑键，避免 macOS 桌面分类中合法的
     // Control 组合被误解为平台没有切换。
     this.shortcutCategory = 'editing';
-    RemoteKeyboardSettingsService.getInstance().saveShortcutPlatform(platform, getContext(this));
   }
 
   private visibleShortcutPresets(): Array<RemoteShortcutPreset> {

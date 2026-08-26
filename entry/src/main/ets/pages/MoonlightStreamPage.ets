@@ -1,7 +1,7 @@
 import { display, promptAction, router, window } from '@kit.ArkUI';
 import { common } from '@kit.AbilityKit';
 import { connection } from '@kit.NetworkKit';
-import { KeyCode } from '@kit.InputKit';
+import { KeyCode, pointer } from '@kit.InputKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { pasteboard } from '@kit.BasicServicesKit';
 import { Palette, buildDark, buildLight } from '../common/Theme';
@@ -34,9 +34,11 @@ import {
   upsertRemoteCustomShortcut
 } from '../services/RemoteCustomShortcutPolicy';
 import { RemoteKeyboardSettingsService } from '../services/RemoteKeyboardSettingsService';
+import { RemoteShortcutPlatform } from '../services/RemoteKeyboardSettingsPolicy';
 import {
   MoonlightEffectiveSettings,
   MoonlightInputControlMode,
+  MoonlightKeyboardTarget,
   MoonlightSettings,
   defaultMoonlightSettings,
   moonlightInputControlMode
@@ -176,6 +178,15 @@ import {
 } from '../services/MoonlightVideoCapabilityService';
 import { normalizeRendererViewportToSurface } from
   '../services/RemoteSurfaceTransformPolicy';
+import {
+  mapPhysicalKeyForRemoteLayout,
+  RemoteKeyboardLayout,
+  remoteKeyboardLayoutDescription,
+  shouldChoosePhysicalKeyboardLayout
+} from '../services/RemotePhysicalKeyboardPolicy';
+import {
+  shouldHideSystemPointerForEmbeddedRemoteCursor
+} from '../services/RemotePointerModePolicy';
 
 const MOONLIGHT_KEYCODE_DPAD_LEFT = 2014;
 const MOONLIGHT_KEYCODE_DPAD_RIGHT = 2015;
@@ -404,6 +415,11 @@ struct MoonlightStreamPage {
   private moonlightSystemBarRequestId: number = 0;
   private moonlightSystemBarsHidden: boolean = false;
   private moonlightSystemBarUpdate: Promise<void> = Promise.resolve();
+  private moonlightSystemPointerVisible: boolean | null = null;
+  private moonlightRemoteSurfaceHovered: boolean = false;
+  @State private physicalKeyboardLayout: RemoteKeyboardLayout = RemoteKeyboardLayout.WINDOWS;
+  @State private physicalKeyboardLayoutConfirmed: boolean = false;
+  private physicalKeyboardLayoutPromptVisible: boolean = false;
   private surfaceLayoutReady: boolean = false;
   private rendererSurfaceWidthPx: number = 0;
   private rendererSurfaceHeightPx: number = 0;
@@ -659,10 +675,69 @@ struct MoonlightStreamPage {
   }
 
   private toolbarControlModeLabel(): string {
-    if (this.controlMode === 'keyboardMouse') { return '键鼠'; }
+    if (this.controlMode === 'keyboardMouse') {
+      return '键鼠·' + this.physicalKeyboardLayoutLabel();
+    }
     if (this.controlMode === 'trackpad') { return '触控板'; }
-    return this.adaptiveControlMode === 'keyboardMouse' ? '自适应·键鼠' : '自适应·触控板';
+    return this.adaptiveControlMode === 'keyboardMouse' ?
+      '自适应·键鼠·' + this.physicalKeyboardLayoutLabel() : '自适应·触控板';
   }
+
+  private physicalKeyboardLayoutLabel(): string {
+    if (!this.physicalKeyboardLayoutConfirmed) { return '待选'; }
+    return this.physicalKeyboardLayout === RemoteKeyboardLayout.MACOS ? 'macOS' : 'Windows';
+  }
+
+  private applyConfiguredKeyboardTarget(target: MoonlightKeyboardTarget | undefined): void {
+    this.physicalKeyboardLayout = target === 'macos' ?
+      RemoteKeyboardLayout.MACOS : RemoteKeyboardLayout.WINDOWS;
+    this.physicalKeyboardLayoutConfirmed = target === 'windows' || target === 'macos';
+    this.physicalKeyboardLayoutPromptVisible = false;
+  }
+
+  private moonlightPointerInteractionBlocked(): boolean {
+    return this.appInBackground || this.routeTerminated || this.inputSuspended ||
+      this.showSessionSheet || this.keyboardOpen || this.showModifierPanel ||
+      this.showShortcutPanel || this.showController;
+  }
+
+  private shouldHideMoonlightSystemPointer(): boolean {
+    return shouldHideSystemPointerForEmbeddedRemoteCursor(
+      this.firstFrameSeen && this.inputReady,
+      this.resolvedMoonlightControlMode() === 'keyboardMouse',
+      this.moonlightRemoteSurfaceHovered,
+      this.moonlightPointerInteractionBlocked());
+  }
+
+  private setMoonlightSystemPointerVisible(visible: boolean, reason: string,
+    force: boolean = false): void {
+    if (!force && this.moonlightSystemPointerVisible === visible) { return; }
+    try {
+      pointer.setPointerVisibleSync(visible);
+      this.moonlightSystemPointerVisible = visible;
+      hilog.info(0x0014, 'MoonlightStreamUi',
+        'system pointer visible=' + (visible ? '1' : '0') + ' reason=' + reason);
+    } catch (error) {
+      hilog.warn(0x0014, 'MoonlightStreamUi',
+        'system pointer visibility failed reason=' + reason +
+        ' error=' + JSON.stringify(error));
+    }
+  }
+
+  private syncMoonlightSystemPointer(reason: string, force: boolean = false): void {
+    this.setMoonlightSystemPointerVisible(
+      !this.shouldHideMoonlightSystemPointer(), reason, force);
+  }
+
+  private restoreMoonlightSystemPointer(reason: string): void {
+    this.setMoonlightSystemPointerVisible(true, reason, true);
+  }
+
+  private handleMoonlightRemoteSurfaceHover = (hovered: boolean): void => {
+    const changed: boolean = this.moonlightRemoteSurfaceHovered !== hovered;
+    this.moonlightRemoteSurfaceHovered = hovered;
+    this.syncMoonlightSystemPointer('surface-hover', changed);
+  };
 
   private resolvedMoonlightControlMode(): MoonlightResolvedControlMode {
     return moonlightResolvedControlMode(this.controlMode, this.adaptiveControlMode);
@@ -677,14 +752,18 @@ struct MoonlightStreamPage {
     this.adaptiveControlMode = next;
     this.setNativeTouchMode(next);
     this.publishTrackpadCursor();
+    this.syncMoonlightSystemPointer('adaptive-input-' + source);
     if (next === 'keyboardMouse') {
       this.scheduleMoonlightPhysicalKeyboardFocus('adaptive-' + source);
     }
   }
 
-  private applyMoonlightControlMode(mode: MoonlightInputControlMode,
+  private commitMoonlightControlMode(mode: MoonlightInputControlMode,
     countAsSessionChange: boolean = true): void {
-    if (mode === this.controlMode) { return; }
+    if (mode === this.controlMode) {
+      this.syncMoonlightSystemPointer('control-mode-unchanged');
+      return;
+    }
     this.cancelActiveMoonlightTouches();
     this.controlMode = mode;
     if (mode === 'adaptive') {
@@ -696,6 +775,20 @@ struct MoonlightStreamPage {
     if (countAsSessionChange) { this.sessionChanges += 1; }
     this.physicalKeyboardProxyFocused = false;
     this.scheduleMoonlightPhysicalKeyboardFocus('control-mode-change');
+    this.syncMoonlightSystemPointer('control-mode-change', true);
+  }
+
+  private applyMoonlightControlMode(mode: MoonlightInputControlMode,
+    countAsSessionChange: boolean = true): void {
+    if (mode === 'keyboardMouse') {
+      this.promptPhysicalKeyboardLayout((layout: RemoteKeyboardLayout): void => {
+        this.physicalKeyboardLayout = layout;
+        this.physicalKeyboardLayoutConfirmed = true;
+        this.commitMoonlightControlMode(mode, countAsSessionChange);
+      });
+      return;
+    }
+    this.commitMoonlightControlMode(mode, countAsSessionChange);
   }
 
   private nextMoonlightControlMode(): MoonlightInputControlMode {
@@ -797,6 +890,7 @@ struct MoonlightStreamPage {
         void this.setMoonlightSystemBarsHidden(true, 'preserved-page-appear');
         this.applyMoonlightAbilityBackground(false);
         this.scheduleMoonlightPhysicalKeyboardFocus('preserved-page-appear');
+        this.syncMoonlightSystemPointer('preserved-page-appear', true);
       }
       return;
     }
@@ -841,6 +935,7 @@ struct MoonlightStreamPage {
       this.controlMode = moonlightInputControlMode(
         this.effectiveSettings.input.controlMode, this.effectiveSettings.input.touchMode);
     }
+    this.applyConfiguredKeyboardTarget(this.effectiveSettings.input.keyboardTarget);
     this.adaptiveControlMode = moonlightInitialAdaptiveControlMode(
       this.isPadDevice, this.isDesktopDevice, this.sessionWindowId);
     this.diagnosticsVisible = this.effectiveSettings.diagnostics.showPerformanceHud;
@@ -890,6 +985,8 @@ struct MoonlightStreamPage {
     this.trackpadLocalAcceptedEvents = 0;
     this.trackpadLocalRejectedEvents = 0;
     this.physicalMouseObservedEvents = 0;
+    this.moonlightRemoteSurfaceHovered = false;
+    this.restoreMoonlightSystemPointer('page-appear');
     this.trackpadCursorInitialized = false;
     this.publishTrackpadCursor();
     this.sessionGeneration = 0;
@@ -1053,6 +1150,9 @@ struct MoonlightStreamPage {
     this.clearMoonlightVirtualKeyboardFocusSchedule();
     this.clearMoonlightPhysicalKeyboardFocusSchedule();
     this.physicalKeyboardProxyFocused = false;
+    this.physicalKeyboardLayoutPromptVisible = false;
+    this.moonlightRemoteSurfaceHovered = false;
+    this.restoreMoonlightSystemPointer('page-disappear');
     void this.setMoonlightSystemBarsHidden(false, 'page-disappear');
     this.closeMoonlightRoute('stream-page-disappear');
     if (!this.isDesktopDevice && this.sessionWindowId.length === 0) {
@@ -1564,6 +1664,8 @@ struct MoonlightStreamPage {
     }
     this.sessionCoordinator.setReconnectEnabledForRoute(this.hostId, this.appId, false);
     this.routeTerminated = true;
+    this.physicalKeyboardLayoutPromptVisible = false;
+    this.restoreMoonlightSystemPointer('route-close-' + reason);
     this.reconnectGeneration += 1;
     this.reconnectWindow = null;
     this.reconnectInFlight = false;
@@ -1925,6 +2027,11 @@ struct MoonlightStreamPage {
   private applyMoonlightAbilityBackground(isBackground: boolean): void {
     const changed: boolean = this.appInBackground !== isBackground;
     this.appInBackground = isBackground;
+    if (isBackground) {
+      this.restoreMoonlightSystemPointer('ability-background');
+    } else {
+      this.syncMoonlightSystemPointer('ability-foreground', true);
+    }
     if (!isBackground && this.pageActive && !this.routeTerminated) {
       void this.setMoonlightSystemBarsHidden(true, 'foreground-restore');
       this.scheduleMoonlightPhysicalKeyboardFocus('foreground-restore');
@@ -2860,10 +2967,12 @@ struct MoonlightStreamPage {
         this.resetRemoteInputBeforeAdmission = false;
         this.scheduleMoonlightPhysicalKeyboardFocus('input-ready');
       }
+      this.syncMoonlightSystemPointer('input-readiness');
     } catch (_) {
       this.inputReady = false;
       this.controllerReady = false;
       this.physicalControllerPathReady = false;
+      this.syncMoonlightSystemPointer('input-readiness-error');
     }
   }
 
@@ -2912,6 +3021,7 @@ struct MoonlightStreamPage {
     this.flushInput('open-keyboard');
     this.clearMoonlightPhysicalKeyboardFocusSchedule();
     this.keyboardOpen = true;
+    this.restoreMoonlightSystemPointer('virtual-keyboard-open');
     this.startMoonlightImeSession();
     this.scheduleMoonlightVirtualKeyboardFocus('keyboard-open');
   }
@@ -2923,6 +3033,7 @@ struct MoonlightStreamPage {
     this.flushInput('close-keyboard');
     this.resetMoonlightImeSession('dismiss');
     this.physicalKeyboardProxyFocused = false;
+    this.syncMoonlightSystemPointer('virtual-keyboard-dismissed', true);
     this.scheduleMoonlightPhysicalKeyboardFocus('virtual-keyboard-dismissed');
   }
 
@@ -3464,6 +3575,7 @@ struct MoonlightStreamPage {
     }
     if (!this.inputReady || !this.routeLeaseValid()) {
       this.inputSuspended = suspended;
+      this.syncMoonlightSystemPointer('input-suspended-' + reason);
       return false;
     }
     try {
@@ -3482,9 +3594,11 @@ struct MoonlightStreamPage {
       } else if (suspended) {
         this.inputSuspended = true;
       }
+      this.syncMoonlightSystemPointer('input-suspended-' + reason);
       return accepted;
     } catch (_) {
       if (suspended) { this.inputSuspended = true; }
+      this.syncMoonlightSystemPointer('input-suspended-error-' + reason);
       return false;
     }
   }
@@ -3565,6 +3679,7 @@ struct MoonlightStreamPage {
     }
     this.controllerEditing = false;
     this.showController = false;
+    this.syncMoonlightSystemPointer('virtual-controller-close', true);
   }
 
   private moonlightTouchPhase(event: TouchEvent): MoonlightTouchPhase {
@@ -3910,6 +4025,61 @@ struct MoonlightStreamPage {
     }, 40);
   }
 
+  private shouldRequirePhysicalKeyboardLayout(): boolean {
+    return !this.physicalKeyboardLayoutConfirmed &&
+      this.resolvedMoonlightControlMode() === 'keyboardMouse' &&
+      shouldChoosePhysicalKeyboardLayout('moonlight', this.isDesktopDevice, this.breakpoint);
+  }
+
+  private promptPhysicalKeyboardLayout(
+    onSelected?: (layout: RemoteKeyboardLayout) => void
+  ): void {
+    if (this.physicalKeyboardLayoutPromptVisible || !this.pageActive ||
+        this.routeTerminated) { return; }
+    this.physicalKeyboardLayoutPromptVisible = true;
+    this.clearMoonlightPhysicalKeyboardFocusSchedule();
+    this.physicalKeyboardProxyFocused = false;
+    this.flushInput('keyboard-layout-prompt');
+    this.restoreMoonlightSystemPointer('keyboard-layout-prompt');
+    promptAction.showDialog({
+      title: '选择远端键盘类型',
+      message: '此选择用于当前 Moonlight 连接。\n\nWindows：' +
+        remoteKeyboardLayoutDescription(RemoteKeyboardLayout.WINDOWS) + '\n\nmacOS：' +
+        remoteKeyboardLayoutDescription(RemoteKeyboardLayout.MACOS),
+      isModal: true,
+      buttons: [
+        { text: 'Windows', color: this.accentColor },
+        { text: 'macOS', color: this.accentColor }
+      ]
+    }).then((result: Object): void => {
+      this.physicalKeyboardLayoutPromptVisible = false;
+      if (!this.pageActive || this.routeTerminated) {
+        this.restoreMoonlightSystemPointer('keyboard-layout-stale');
+        return;
+      }
+      const response: Record<string, number> = result as Record<string, number>;
+      const layout: RemoteKeyboardLayout = response['index'] === 1 ?
+        RemoteKeyboardLayout.MACOS : RemoteKeyboardLayout.WINDOWS;
+      this.physicalKeyboardLayout = layout;
+      this.physicalKeyboardLayoutConfirmed = true;
+      if (onSelected !== undefined) { onSelected(layout); }
+      hilog.info(0x0014, 'MoonlightStreamUi',
+        'physical keyboard layout selected=' + layout);
+      this.syncMoonlightSystemPointer('keyboard-layout-selected', true);
+      this.scheduleMoonlightPhysicalKeyboardFocus('keyboard-layout-selected');
+    }).catch((error: Error): void => {
+      this.physicalKeyboardLayoutPromptVisible = false;
+      this.syncMoonlightSystemPointer('keyboard-layout-dismissed', true);
+      this.scheduleMoonlightPhysicalKeyboardFocus('keyboard-layout-dismissed');
+      hilog.warn(0x0014, 'MoonlightStreamUi',
+        'physical keyboard layout dismissed error=' + JSON.stringify(error));
+    });
+  }
+
+  private mapMoonlightPhysicalKeyCode(keyCode: number): number {
+    return mapPhysicalKeyForRemoteLayout(this.physicalKeyboardLayout, keyCode);
+  }
+
   private handleMoonlightPhysicalKeyPreIme = (event: KeyEvent): boolean => {
     if (this.keyboardOpen || !this.moonlightPhysicalKeyboardCaptureEnabled()) { return false; }
     if (this.moonlightShouldReserveSystemKey(event)) {
@@ -3939,10 +4109,23 @@ struct MoonlightStreamPage {
     if (!this.nativeInputAvailable() || !this.moonlightPhysicalKeyboardCaptureEnabled()) {
       return false;
     }
+    if (this.shouldRequirePhysicalKeyboardLayout()) {
+      try { event.stopPropagation(); } catch (_error) {}
+      this.promptPhysicalKeyboardLayout();
+      return true;
+    }
     const pressed: boolean = event.type === KeyType.Down;
     if (!pressed && event.type !== KeyType.Up) { return false; }
     event.stopPropagation();
-    return this.sendMoonlightKey(event.keyCode, pressed);
+    const remoteKeyCode: number = this.mapMoonlightPhysicalKeyCode(event.keyCode);
+    const accepted: boolean = this.sendMoonlightKey(remoteKeyCode, pressed);
+    hilog.debug(0x0014, 'MoonlightStreamUi',
+      'physical key mapped local=' + event.keyCode.toString() +
+      ' remote=' + remoteKeyCode.toString() +
+      ' layout=' + this.physicalKeyboardLayout +
+      ' down=' + (pressed ? '1' : '0') +
+      ' accepted=' + (accepted ? '1' : '0'));
+    return accepted;
   }
 
   private moonlightPointerButton(raw: number): number {
@@ -3957,8 +4140,10 @@ struct MoonlightStreamPage {
     // onMouse boundary is forwardable even when a vendor HID reports an
     // unknown sourceTool. The old allow-list silently discarded both Pad mice
     // observed on the real device before coordinates reached native input.
+    this.moonlightRemoteSurfaceHovered = true;
     this.observeMoonlightAdaptiveInput(
       event.sourceTool === SourceTool.TOUCHPAD ? 'touchpad' : 'mouse');
+    this.syncMoonlightSystemPointer('physical-mouse-event');
     event.stopPropagation();
     this.physicalMouseObservedEvents = Math.min(Number.MAX_SAFE_INTEGER,
       this.physicalMouseObservedEvents + 1);
@@ -4012,8 +4197,10 @@ struct MoonlightStreamPage {
   private handleMoonlightAxis = (event?: AxisEvent): void => {
     if (!event || !this.nativeInputAvailable()) { return; }
     if (event.sourceTool === SourceTool.MOUSE || event.sourceTool === SourceTool.TOUCHPAD) {
+      this.moonlightRemoteSurfaceHovered = true;
       this.observeMoonlightAdaptiveInput(
         event.sourceTool === SourceTool.TOUCHPAD ? 'touchpad' : 'mouse');
+      this.syncMoonlightSystemPointer('physical-axis-event');
     }
     const vertical: number = event.getVerticalAxisValue();
     const horizontal: number = event.getHorizontalAxisValue();
@@ -4121,6 +4308,11 @@ struct MoonlightStreamPage {
     if (!terminal) { this.setConnectStageVisible(!snapshot.firstFrameSeen); }
     if (terminal && !this.routeTerminated) {
       this.scheduleTerminalRouteExit(snapshot.errorCode, snapshot.firstFrameSeen);
+    }
+    if (terminal) {
+      this.restoreMoonlightSystemPointer('terminal-snapshot');
+    } else {
+      this.syncMoonlightSystemPointer('session-snapshot');
     }
     this.scheduleMoonlightContextualGuide();
     if (this.sessionStartedAtMs > 0) {
@@ -4528,6 +4720,7 @@ struct MoonlightStreamPage {
     }
     this.flushInput('open_l5_' + mode);
     this.setNativeInputSuspended(true, 'overlay_opened');
+    this.restoreMoonlightSystemPointer('open-sheet-' + mode);
     if (this.showSessionSheet) {
       this.pendingSheetMode = mode;
       this.showSessionSheet = false;
@@ -4591,6 +4784,7 @@ struct MoonlightStreamPage {
     }
     this.sheetMode = 'none';
     this.setNativeInputSuspended(false, 'overlay_opened');
+    this.syncMoonlightSystemPointer('sheet-disappear', true);
     if (this.keyboardOpen && this.keyboardImeActive) {
       // A native Sheet owns focus until its onDisappear receipt. Re-request
       // the virtual keyboard here so opening it from Control Center cannot
@@ -4633,16 +4827,18 @@ struct MoonlightStreamPage {
       this.showShortcutPanel = false;
       this.placeMoonlightModifierPanel(false);
       this.showModifierPanel = !this.showModifierPanel;
+      this.syncMoonlightSystemPointer('modifier-panel-toggle', true);
       return;
     }
     if (action === 'control') {
       const next: MoonlightInputControlMode = this.nextMoonlightControlMode();
       this.applyMoonlightControlMode(next);
-      promptAction.showToast({
-        message: next === 'adaptive' ? '自适应模式已启用' :
-          (next === 'keyboardMouse' ? '键鼠模式已启用' : '虚拟触控板已启用'),
-        duration: 1200
-      });
+      if (next !== 'keyboardMouse') {
+        promptAction.showToast({
+          message: next === 'adaptive' ? '自适应模式已启用' : '虚拟触控板已启用',
+          duration: 1200
+        });
+      }
       return;
     }
     if (action === 'display') {
@@ -4746,6 +4942,7 @@ struct MoonlightStreamPage {
     if (this.setVirtualControllerMode(true, false)) {
       this.controllerEditing = false;
       this.showController = true;
+      this.restoreMoonlightSystemPointer('virtual-controller-open');
       return;
     }
     promptAction.showToast({ message: '虚拟手柄输入尚未就绪', duration: 1600 });
@@ -4876,6 +5073,7 @@ struct MoonlightStreamPage {
           .onKeyEvent(this.handleMoonlightKey)
           .onMouse(this.handleMoonlightMouse)
           .onAxisEvent(this.handleMoonlightAxis)
+          .onHover(this.handleMoonlightRemoteSurfaceHover)
           .zIndex(40)
         }.width('100%').height('100%').zIndex(0)
       } else {
@@ -4960,10 +5158,20 @@ struct MoonlightStreamPage {
           panelX: this.modifierPanelX, panelY: this.modifierPanelY,
           shortcutX: this.shortcutPanelX, shortcutY: this.shortcutPanelY,
           emphasisColor: '#5B8FF9',
+          shortcutPlatformOverride: this.physicalKeyboardLayout ===
+            RemoteKeyboardLayout.MACOS ? 'macos' : 'windows',
           customizationEnabled: true,
           customShortcuts: this.remoteCustomShortcuts,
-          onClose: (): void => { this.flushInput('close_modifier'); this.showModifierPanel = false; },
-          onCloseShortcut: (): void => { this.flushInput('close_shortcut'); this.showShortcutPanel = false; },
+          onClose: (): void => {
+            this.flushInput('close_modifier');
+            this.showModifierPanel = false;
+            this.syncMoonlightSystemPointer('modifier-panel-close', true);
+          },
+          onCloseShortcut: (): void => {
+            this.flushInput('close_shortcut');
+            this.showShortcutPanel = false;
+            this.syncMoonlightSystemPointer('shortcut-panel-close', true);
+          },
           onToggleModifier: (mod: string): void => { this.toggleModifier(mod); },
           onLockModifier: (mod: string): void => { this.toggleModifier(mod); this.toggleModifier(mod); },
           onToggleFnLayer: (): void => { this.fnLayer = !this.fnLayer; },
@@ -4984,6 +5192,13 @@ struct MoonlightStreamPage {
           onSaveCustomShortcut: (id: string, keyCodes: Array<number>): boolean =>
             this.saveRemoteCustomShortcut(id, keyCodes),
           onDeleteCustomShortcut: (id: string): void => { this.deleteRemoteCustomShortcut(id); },
+          onShortcutPlatformChange: (platform: RemoteShortcutPlatform): void => {
+            this.flushInput('shortcut-platform-change');
+            this.physicalKeyboardLayout = platform === 'macos' ?
+              RemoteKeyboardLayout.MACOS : RemoteKeyboardLayout.WINDOWS;
+            this.physicalKeyboardLayoutConfirmed = true;
+            this.syncMoonlightSystemPointer('shortcut-platform-change', true);
+          },
           onPanelPositionChange: (x: number, y: number): void => {
             this.moveMoonlightModifierPanel(x, y, false);
           },

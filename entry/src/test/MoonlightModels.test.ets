@@ -10,12 +10,14 @@ import {
   MoonlightHost,
   MoonlightIdentityMetadata,
   MoonlightInputControlMode,
+  MoonlightKeyboardTarget,
   MoonlightProfile,
   MoonlightTrustCandidate,
   moonlightAddressKey,
   moonlightHostIsValid,
   moonlightIdentityMetadataIsValid,
   moonlightInputControlMode,
+  moonlightKeyboardTarget,
   normalizeMoonlightSettingsForLocalStorage,
   moonlightProfileIsValid,
   moonlightSettingsAreValid,
@@ -48,6 +50,7 @@ export default function moonlightModelsTest(): void {
       expect(settings.input.enableRumble).assertFalse();
       expect(settings.input.captureKeyboard).assertFalse();
       expect(settings.input.controlMode).assertEqual('adaptive');
+      expect(settings.input.keyboardTarget).assertEqual('ask');
       expect(settings.network.allowLegacySha1).assertFalse();
       expect(settings.network.meteredNetwork).assertEqual('ask');
       expect(settings.security.blockCertificateChanges).assertTrue();
@@ -59,10 +62,13 @@ export default function moonlightModelsTest(): void {
       (): void => {
         const legacyTouch = defaultMoonlightSettings();
         legacyTouch.input.controlMode = undefined;
+        legacyTouch.input.keyboardTarget = undefined;
         legacyTouch.input.touchMode = 'touch';
         expect(moonlightSettingsAreValid(legacyTouch)).assertTrue();
         expect(normalizeMoonlightSettingsForLocalStorage(
           legacyTouch).input.controlMode).assertEqual('adaptive');
+        expect(normalizeMoonlightSettingsForLocalStorage(
+          legacyTouch).input.keyboardTarget).assertEqual('ask');
 
         const legacyPointer = defaultMoonlightSettings();
         legacyPointer.input.controlMode = undefined;
@@ -72,8 +78,13 @@ export default function moonlightModelsTest(): void {
           legacyPointer).input.controlMode).assertEqual('trackpad');
         expect(moonlightInputControlMode(undefined, 'absoluteMouse')).assertEqual('trackpad');
         expect(moonlightInputControlMode('keyboardMouse', 'touch')).assertEqual('keyboardMouse');
+        expect(moonlightKeyboardTarget(undefined)).assertEqual('ask');
+        expect(moonlightKeyboardTarget('macos')).assertEqual('macos');
 
         legacyPointer.input.controlMode = 'unsupported' as MoonlightInputControlMode;
+        expect(moonlightSettingsAreValid(legacyPointer)).assertFalse();
+        legacyPointer.input.controlMode = 'adaptive';
+        legacyPointer.input.keyboardTarget = 'unsupported' as MoonlightKeyboardTarget;
         expect(moonlightSettingsAreValid(legacyPointer)).assertFalse();
       });
 

@@ -1,5 +1,6 @@
 import { describe, it, expect } from '@ohos/hypium';
 import {
+  shouldHideSystemPointerForEmbeddedRemoteCursor,
   shouldHideSystemPointerForVirtualTouchpad,
   shouldRenderTouchPointerIndicator,
   shouldUseSystemMousePointer
@@ -26,6 +27,19 @@ export default function remotePointerModePolicyTest() {
       expect(shouldHideSystemPointerForVirtualTouchpad(false, true, false)).assertFalse();
       expect(shouldHideSystemPointerForVirtualTouchpad(true, false, false)).assertFalse();
       expect(shouldHideSystemPointerForVirtualTouchpad(true, true, true)).assertFalse();
+    });
+
+    it('hides_the_local_pointer_only_over_an_active_embedded_remote_cursor', 0, (): void => {
+      expect(shouldHideSystemPointerForEmbeddedRemoteCursor(
+        true, true, true, false)).assertTrue();
+      expect(shouldHideSystemPointerForEmbeddedRemoteCursor(
+        false, true, true, false)).assertFalse();
+      expect(shouldHideSystemPointerForEmbeddedRemoteCursor(
+        true, false, true, false)).assertFalse();
+      expect(shouldHideSystemPointerForEmbeddedRemoteCursor(
+        true, true, false, false)).assertFalse();
+      expect(shouldHideSystemPointerForEmbeddedRemoteCursor(
+        true, true, true, true)).assertFalse();
     });
   });
 }

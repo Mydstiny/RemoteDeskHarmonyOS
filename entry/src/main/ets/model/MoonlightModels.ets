@@ -14,6 +14,12 @@ export type MoonlightAdaptiveResolution = 'host' | 'device' | 'off';
 export type MoonlightAudioChannels = 'stereo' | 'surround51' | 'surround71';
 export type MoonlightTouchMode = 'touch' | 'absoluteMouse' | 'relativeMouse';
 export type MoonlightInputControlMode = 'adaptive' | 'keyboardMouse' | 'trackpad';
+/**
+ * Remote keyboard semantics for the Windows virtual-key protocol used by
+ * Moonlight. `ask` keeps legacy/local/cloud records compatible and requires a
+ * deliberate choice before physical keyboard events are admitted.
+ */
+export type MoonlightKeyboardTarget = 'ask' | 'windows' | 'macos';
 export type MoonlightDiscoveryMode = 'manualOrMdns' | 'manualOnly';
 export type MoonlightAddressPreference = 'auto' | 'ipv4' | 'ipv6';
 export type MoonlightStreamEncryption = 'auto' | 'required' | 'compatible';
@@ -136,6 +142,8 @@ export interface MoonlightInputSettings {
    * are mapped from touchMode so old local/cloud settings remain readable.
    */
   controlMode?: MoonlightInputControlMode;
+  /** Additive field; records created before keyboard-target selection omit it. */
+  keyboardTarget?: MoonlightKeyboardTarget;
   captureKeyboard: boolean;
   forwardSystemShortcuts: boolean;
   controllerSlot: number;
@@ -274,6 +282,7 @@ export function defaultMoonlightSettings(): MoonlightSettings {
     input: {
       touchMode: 'touch',
       controlMode: 'adaptive',
+      keyboardTarget: 'ask',
       captureKeyboard: false,
       forwardSystemShortcuts: false,
       controllerSlot: -1,
@@ -316,6 +325,8 @@ export function normalizeMoonlightSettingsForLocalStorage(
   normalized.background.allowPip = undefined;
   normalized.input.controlMode = moonlightInputControlMode(
     normalized.input.controlMode, normalized.input.touchMode);
+  normalized.input.keyboardTarget = moonlightKeyboardTarget(
+    normalized.input.keyboardTarget);
   return normalized;
 }
 
@@ -328,6 +339,14 @@ export function moonlightInputControlMode(
   }
   return legacyTouchMode === 'absoluteMouse' || legacyTouchMode === 'relativeMouse' ?
     'trackpad' : 'adaptive';
+}
+
+/** Compatibility mapping for settings written before keyboard-target choice. */
+export function moonlightKeyboardTarget(
+  value: string | undefined
+): MoonlightKeyboardTarget {
+  if (value === 'windows' || value === 'macos') { return value; }
+  return 'ask';
 }
 
 export function moonlightAddressKey(address: MoonlightAddress): string {
@@ -462,6 +481,8 @@ export function moonlightSettingsAreValid(settings: MoonlightSettings): boolean 
     typeof settings.background.allowPip === 'boolean';
   const controlModeValid: boolean = settings.input.controlMode === undefined ||
     isOneOf(settings.input.controlMode, ['adaptive', 'keyboardMouse', 'trackpad']);
+  const keyboardTargetValid: boolean = settings.input.keyboardTarget === undefined ||
+    isOneOf(settings.input.keyboardTarget, ['ask', 'windows', 'macos']);
   return settings.schemaVersion === 1 &&
     isOneOf(settings.video.codecPreference, ['auto', 'h264', 'hevc', 'av1']) &&
     isOneOf(settings.video.resolutionMode, ['host', '720p', '1080p', '1440p', '2160p', 'custom']) &&
@@ -478,6 +499,7 @@ export function moonlightSettingsAreValid(settings: MoonlightSettings): boolean 
     Number.isFinite(settings.audio.volume) && settings.audio.volume >= 0 && settings.audio.volume <= 1 &&
     isOneOf(settings.input.touchMode, ['touch', 'absoluteMouse', 'relativeMouse']) &&
     controlModeValid &&
+    keyboardTargetValid &&
     typeof settings.input.captureKeyboard === 'boolean' &&
     typeof settings.input.forwardSystemShortcuts === 'boolean' &&
     typeof settings.input.enableRumble === 'boolean' &&

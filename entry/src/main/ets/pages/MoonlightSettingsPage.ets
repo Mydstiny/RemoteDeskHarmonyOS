@@ -4,11 +4,16 @@ import { MoonlightBrandIcon } from '../components/moonlight/MoonlightBrandIcon';
 import {
   MoonlightCodecPreference,
   MoonlightInputControlMode,
+  MoonlightKeyboardTarget,
   MoonlightResolutionMode,
   MoonlightSettings,
   defaultMoonlightSettings,
   moonlightInputControlMode
 } from '../model/MoonlightModels';
+import {
+  RemoteKeyboardLayout,
+  remoteKeyboardLayoutDescription
+} from '../services/RemotePhysicalKeyboardPolicy';
 import {
   AccountSessionLease,
   accountSessionLeaseEquals,
@@ -96,6 +101,7 @@ export struct MoonlightSettingsSurface {
   private savedSettingsCanonical: string = '';
   private editingLease: AccountSessionLease | null = null;
   private surfaceActive: boolean = false;
+  private keyboardTargetPromptVisible: boolean = false;
   onClose: () => void = (): void => {};
   onDirtyChanged: (dirty: boolean) => void = (_dirty: boolean): void => {};
 
@@ -188,13 +194,47 @@ export struct MoonlightSettingsSurface {
       settings.input.controlMode, settings.input.touchMode);
   }
 
-  private selectInputControlMode(value: MoonlightInputControlMode): void {
+  private commitInputControlMode(value: MoonlightInputControlMode,
+    keyboardTarget?: MoonlightKeyboardTarget): void {
     this.inputControlModeDraft = value;
     this.update((next: MoonlightSettings): void => {
       next.input.controlMode = value;
+      if (keyboardTarget !== undefined) { next.input.keyboardTarget = keyboardTarget; }
       // New product modes use the relative-pointer lane. Keep the old
       // low-level field bounded for older clients and cloud records.
       next.input.touchMode = 'absoluteMouse';
+    });
+  }
+
+  private selectInputControlMode(value: MoonlightInputControlMode): void {
+    if (value !== 'keyboardMouse') {
+      this.commitInputControlMode(value);
+      return;
+    }
+    this.promptKeyboardTargetForKeyboardMouse();
+  }
+
+  private promptKeyboardTargetForKeyboardMouse(): void {
+    if (this.keyboardTargetPromptVisible || !this.surfaceActive) { return; }
+    this.keyboardTargetPromptVisible = true;
+    promptAction.showDialog({
+      title: '选择远端键盘类型',
+      message: 'Moonlight 会按远端系统映射实体键盘。\n\nWindows：' +
+        remoteKeyboardLayoutDescription(RemoteKeyboardLayout.WINDOWS) + '\n\nmacOS：' +
+        remoteKeyboardLayoutDescription(RemoteKeyboardLayout.MACOS),
+      isModal: true,
+      buttons: [
+        { text: 'Windows', color: this.accentColor },
+        { text: 'macOS', color: this.accentColor }
+      ]
+    }).then((result: Object): void => {
+      this.keyboardTargetPromptVisible = false;
+      if (!this.surfaceActive) { return; }
+      const response: Record<string, number> = result as Record<string, number>;
+      this.commitInputControlMode('keyboardMouse',
+        response['index'] === 1 ? 'macos' : 'windows');
+    }).catch((_error: Error): void => {
+      this.keyboardTargetPromptVisible = false;
     });
   }
 
@@ -710,8 +750,16 @@ export struct MoonlightSettingsSurface {
   private inputKeyboardPreview(): string {
     const mode: MoonlightInputControlMode = this.inputControlModeDraft;
     if (mode === 'adaptive') { return '键盘自动'; }
-    if (mode === 'keyboardMouse') { return '键盘直通'; }
+    if (mode === 'keyboardMouse') {
+      return '键盘直通 · ' + this.keyboardTargetLabel();
+    }
     return this.settings.input.captureKeyboard ? '键盘开' : '键盘关';
+  }
+
+  private keyboardTargetLabel(): string {
+    if (this.settings.input.keyboardTarget === 'macos') { return 'macOS'; }
+    if (this.settings.input.keyboardTarget === 'windows') { return 'Windows'; }
+    return '待选择';
   }
 
   private networkPreview(): string {
@@ -1076,6 +1124,10 @@ export struct MoonlightSettingsSurface {
       this.statusRow('自适应规则',
         '手机默认虚拟触控板；Pad/PC 默认键鼠。触摸画面切换为虚拟触控板，实体键盘、鼠标或触控板活动切回键鼠。',
         '实时识别')
+      Divider().color(this.pal().divider)
+      this.statusRow('远端键盘',
+        'Windows 保持 Ctrl/Win；macOS 将物理 Ctrl 映射为 Command、Win/Meta 映射为 Control。重新点击“键鼠”可修改。',
+        this.keyboardTargetLabel(), this.settings.input.keyboardTarget !== 'ask')
       Divider().color(this.pal().divider)
       this.toggleRow('捕获键盘',
         '虚拟触控板模式下手机按此开关；自适应、键鼠、Pad 与 PC 始终直通，退出时补发全部 key-up',

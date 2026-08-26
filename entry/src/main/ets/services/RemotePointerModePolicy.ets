@@ -11,3 +11,15 @@ export function shouldHideSystemPointerForVirtualTouchpad(connected: boolean,
   touchpadMode: boolean, isDesktopDevice: boolean): boolean {
   return connected && touchpadMode && !isDesktopDevice;
 }
+
+/**
+ * Moonlight/Sunshine embeds the authoritative remote cursor in the video
+ * frame. Hide HarmonyOS' local pointer only while the physical pointer owns
+ * the live stream surface; sheets, rails, background and teardown restore it.
+ */
+export function shouldHideSystemPointerForEmbeddedRemoteCursor(
+  connected: boolean, keyboardMouseMode: boolean, surfaceHovered: boolean,
+  interactionBlocked: boolean
+): boolean {
+  return connected && keyboardMouseMode && surfaceHovered && !interactionBlocked;
+}
