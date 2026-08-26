@@ -704,6 +704,11 @@ pub type CursorCallback = extern "C" fn(cursor: *const FfiCursorUpdate, user_dat
 pub type DisplayCallback =
     extern "C" fn(snapshot: *const RustDeskDisplaySnapshot, user_data: *mut c_void);
 
+/// Authenticated peer platform callback. Returning false aborts connection
+/// publication before the streaming worker can deliver its first frame.
+pub type PeerPlatformCallback =
+    extern "C" fn(platform: *const c_char, user_data: *mut c_void) -> bool;
+
 /// 断开连接回调
 pub type DisconnectCallback =
     extern "C" fn(state: FfiConnectionState, message: *const c_char, user_data: *mut c_void);
@@ -1041,7 +1046,6 @@ struct RustDeskClient {
     password: String,
     request_approval: bool,
     direct_connection: bool,
-    peer_platform: String,
     controls: Arc<ControlInbox>,
     shutdown_stream: Option<TcpStream>,
     stream_handle: Option<std::thread::JoinHandle<io::Result<()>>>,
@@ -1474,6 +1478,20 @@ fn notify_disconnect(
     on_disconnect(state, c_message.as_ptr(), user_data);
 }
 
+fn notify_peer_platform(
+    on_peer_platform: Option<PeerPlatformCallback>,
+    platform: &str,
+    user_data: *mut c_void,
+) -> bool {
+    let Some(on_peer_platform) = on_peer_platform else {
+        return true;
+    };
+    let safe_platform = platform.replace('\0', " ");
+    let c_platform =
+        CString::new(safe_platform).unwrap_or_else(|_| CString::new("").unwrap());
+    on_peer_platform(c_platform.as_ptr(), user_data)
+}
+
 fn dispatch_cursor_update(
     update: CursorStreamUpdate,
     on_cursor: Option<CursorCallback>,
@@ -1549,6 +1567,7 @@ fn rustdesk_connect_impl(
     on_display: Option<DisplayCallback>,
     on_auth: Option<AuthEventCallback>,
     on_progress: Option<connector::ConnectProgressCallback>,
+    on_peer_platform: Option<PeerPlatformCallback>,
     user_data: *mut c_void,
 ) -> *mut c_void {
     clear_last_error();
@@ -1700,6 +1719,15 @@ fn rustdesk_connect_impl(
                 "[RustDesk-FFI] authenticated peer platform={}",
                 peer_platform_label
             );
+            if !notify_peer_platform(on_peer_platform, &peer_platform, user_data) {
+                set_last_error(structured_error(
+                    "presentation",
+                    "peer_platform_rejected",
+                    "native presentation owner rejected authenticated peer platform",
+                    connection_id,
+                ));
+                return std::ptr::null_mut();
+            }
             let callback_user_data = user_data as usize;
             let remote_clipboard = Arc::new(Mutex::new(Vec::<u8>::new()));
             let stream_remote_clipboard = Arc::clone(&remote_clipboard);
@@ -1847,7 +1875,6 @@ fn rustdesk_connect_impl(
                 password,
                 request_approval,
                 direct_connection: config.direct_connection,
-                peer_platform,
                 controls,
                 shutdown_stream,
                 stream_handle: Some(stream_handle),
@@ -1889,6 +1916,7 @@ pub extern "C" fn rustdesk_connect(
         None,
         None,
         None,
+        None,
         user_data,
     )
 }
@@ -1911,6 +1939,7 @@ pub extern "C" fn rustdesk_connect_v2(
         on_cursor,
         on_disconnect,
         on_display,
+        None,
         None,
         None,
         user_data,
@@ -1937,6 +1966,7 @@ pub extern "C" fn rustdesk_connect_v3(
         on_disconnect,
         on_display,
         on_auth,
+        None,
         None,
         user_data,
     )
@@ -1966,6 +1996,37 @@ pub extern "C" fn rustdesk_connect_v4(
         on_display,
         on_auth,
         on_progress,
+        None,
+        user_data,
+    )
+}
+
+/// Create a RustDesk connection with authenticated peer-platform publication.
+/// The callback runs synchronously after login and before any stream worker or
+/// display/frame callback can start, extending v4 without changing older ABIs.
+#[no_mangle]
+pub extern "C" fn rustdesk_connect_v5(
+    cfg: *const RustDeskConfig,
+    on_frame: Option<FrameCallbackV2>,
+    on_audio: Option<AudioCallback>,
+    on_cursor: Option<CursorCallback>,
+    on_disconnect: Option<DisconnectCallback>,
+    on_display: Option<DisplayCallback>,
+    on_auth: Option<AuthEventCallback>,
+    on_progress: Option<connector::ConnectProgressCallback>,
+    on_peer_platform: Option<PeerPlatformCallback>,
+    user_data: *mut c_void,
+) -> *mut c_void {
+    rustdesk_connect_impl(
+        cfg,
+        on_frame.map(FrameCallbackKind::V2),
+        on_audio,
+        on_cursor,
+        on_disconnect,
+        on_display,
+        on_auth,
+        on_progress,
+        on_peer_platform,
         user_data,
     )
 }
@@ -2063,20 +2124,6 @@ pub extern "C" fn rustdesk_last_error(buffer: *mut c_char, buffer_len: usize) ->
         .map(|err| err.clone())
         .unwrap_or_else(|_| "last error lock poisoned".to_string());
     copy_string_to_c_buffer(&message, buffer, buffer_len)
-}
-
-/// Copy the authenticated PeerInfo platform for one live connection.
-#[no_mangle]
-pub extern "C" fn rustdesk_get_peer_platform(
-    handle: *mut c_void,
-    buffer: *mut c_char,
-    buffer_len: usize,
-) -> usize {
-    if handle.is_null() {
-        return 0;
-    }
-    let ctx = unsafe { &*(handle as *const RustDeskClient) };
-    copy_string_to_c_buffer(&ctx.peer_platform, buffer, buffer_len)
 }
 
 /// Probe a RustDesk peer without opening a desktop session.
@@ -2899,7 +2946,6 @@ mod tests {
             password: String::new(),
             request_approval: false,
             direct_connection: false,
-            peer_platform: String::new(),
             controls: Arc::new(ControlInbox::default()),
             shutdown_stream: None,
             stream_handle: None,
@@ -2912,18 +2958,35 @@ mod tests {
     }
 
     #[test]
-    fn peer_platform_ffi_copy_is_bounded_and_nul_terminated() {
-        let mut client = test_client_with_display_state(RustDeskDisplayState::default());
-        client.peer_platform = "Windows 11".to_string();
-        let handle = &mut client as *mut RustDeskClient as *mut c_void;
-        let mut buffer = [0 as c_char; 8];
+    fn peer_platform_callback_runs_before_stream_and_propagates_rejection() {
+        struct CallbackProbe {
+            platform: String,
+            accept: bool,
+        }
 
-        let full_len = rustdesk_get_peer_platform(handle, buffer.as_mut_ptr(), buffer.len());
+        extern "C" fn capture_platform(
+            platform: *const c_char,
+            user_data: *mut c_void,
+        ) -> bool {
+            let probe = unsafe { &mut *(user_data as *mut CallbackProbe) };
+            probe.platform = unsafe { CStr::from_ptr(platform) }
+                .to_string_lossy()
+                .into_owned();
+            probe.accept
+        }
 
-        assert_eq!(full_len, "Windows 11".len());
-        let bytes = buffer.map(|value| value as u8);
-        assert_eq!(&bytes[..7], b"Windows");
-        assert_eq!(bytes[7], 0);
+        let mut probe = CallbackProbe {
+            platform: String::new(),
+            accept: false,
+        };
+        let accepted = notify_peer_platform(
+            Some(capture_platform),
+            "Windows\0Desktop",
+            &mut probe as *mut CallbackProbe as *mut c_void,
+        );
+
+        assert!(!accepted);
+        assert_eq!(probe.platform, "Windows Desktop");
     }
 
     #[test]

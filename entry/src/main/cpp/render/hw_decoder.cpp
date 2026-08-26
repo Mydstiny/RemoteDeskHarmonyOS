@@ -1939,8 +1939,8 @@ struct DecoderContext {
     // Explicitly set only for RustDesk sessions running in the PC layout.
     // Phone/Pad keep their released output scheduling and texture orientation.
     bool desktopSurfaceCompatibility = false;
-    Render::NativeImagePresentationMode presentationMode =
-        Render::NativeImagePresentationMode::Identity;
+    std::atomic<Render::NativeImagePresentationMode> presentationMode {
+        Render::NativeImagePresentationMode::Identity};
     // Serializes decode/rebind/detach/destroy and keeps a context alive while
     // a caller is using it through the registry below.
     std::mutex pipelineMutex;
@@ -1999,8 +1999,9 @@ struct DecoderContext {
 static std::atomic<int64_t> g_activeDecoderHandle {0};
 static std::mutex g_activeDecoderOwnerMutex;
 static DecoderSessionIdentity g_activeDecoderOwner;
-static Render::NativeImagePresentationMode g_activeNativeImagePresentationMode =
-    Render::NativeImagePresentationMode::Identity;
+static std::atomic<Render::NativeImagePresentationMode>
+    g_activeNativeImagePresentationMode {
+        Render::NativeImagePresentationMode::Identity};
 static std::atomic<uint64_t> g_activeDisplayGeneration {0};
 static std::atomic<uint64_t> g_nextDecoderGeneration {1};
 // -1 means that the first frame establishes the legacy/current display. Once
@@ -2539,7 +2540,7 @@ bool RecreateDecoderForFrame(const std::shared_ptr<DecoderContext>& ctx, const V
     }
     int result = decoder->Init(frame.width, frame.height, frame.codec, -1,
                                ctx->desktopSurfaceCompatibility,
-                               ctx->presentationMode);
+                               ctx->presentationMode.load(std::memory_order_acquire));
     if (ctx->rendererHandle > 0) {
         if (owner.valid()) {
             RendererNapi::ReleaseCurrent(ctx->rendererHandle, owner);
@@ -2664,6 +2665,14 @@ int DecodeNativeLocked(const std::shared_ptr<DecoderContext>& ctx, const VideoFr
         pipelineLock.unlock();
         const bool recreated = RecreateDecoderForFrame(ctx, frame);
         pipelineLock.lock();
+        if (recreated && ctx->decoder) {
+            // A platform update may arrive while recreation owns the decoder
+            // outside pipelineMutex. Reapply the latest atomic value before
+            // reopening frame admission so the new NativeImage cannot retain
+            // the transform captured at the start of recovery.
+            ctx->decoder->SetNativeImagePresentationMode(
+                ctx->presentationMode.load(std::memory_order_acquire));
+        }
         ctx->pipelineTransitioning.store(false, std::memory_order_release);
         ctx->pipelineTransitionCv.notify_all();
         if (!recreated) {
@@ -2699,6 +2708,10 @@ int DecodeNativeLocked(const std::shared_ptr<DecoderContext>& ctx, const VideoFr
         pipelineLock.unlock();
         const bool recreated = RecreateDecoderForFrame(ctx, frame);
         pipelineLock.lock();
+        if (recreated && ctx->decoder) {
+            ctx->decoder->SetNativeImagePresentationMode(
+                ctx->presentationMode.load(std::memory_order_acquire));
+        }
         ctx->pipelineTransitioning.store(false, std::memory_order_release);
         ctx->pipelineTransitionCv.notify_all();
         if (!recreated) {
@@ -3134,7 +3147,9 @@ napi_value NapiInitDecoder(napi_env env, napi_callback_info info) {
         {
             std::lock_guard<std::mutex> ownerLock(g_activeDecoderOwnerMutex);
             if (Render::SessionOwnerMatches(g_activeDecoderOwner, ctx->owner)) {
-                ctx->presentationMode = g_activeNativeImagePresentationMode;
+                ctx->presentationMode.store(
+                    g_activeNativeImagePresentationMode.load(std::memory_order_acquire),
+                    std::memory_order_release);
             }
         }
         auto decoder = std::shared_ptr<HardwareDecoder>(new HardwareDecoder());
@@ -3143,7 +3158,8 @@ napi_value NapiInitDecoder(napi_env env, napi_callback_info info) {
             ctx->decoder = decoder;
             const int result = decoder->Init(
                 width, height, codec, rendererHandle,
-                desktopSurfaceCompatibility, ctx->presentationMode);
+                desktopSurfaceCompatibility,
+                ctx->presentationMode.load(std::memory_order_acquire));
             if (result == 0) {
                 napi_value handle;
                 napi_create_int64(env, handleValue, &handle);
@@ -3168,7 +3184,9 @@ napi_value NapiInitDecoder(napi_env env, napi_callback_info info) {
             softwareCtx->useSoftware = true;
             softwareCtx->desktopSurfaceCompatibility =
                 desktopSurfaceCompatibility;
-            softwareCtx->presentationMode = ctx->presentationMode;
+            softwareCtx->presentationMode.store(
+                ctx->presentationMode.load(std::memory_order_acquire),
+                std::memory_order_release);
             softwareCtx->width = width;
             softwareCtx->height = height;
             const int64_t softwareHandle = RegisterDecoderContext(softwareCtx);
@@ -3887,8 +3905,9 @@ void DecoderNapi::SetActiveSessionId(const DecoderSessionIdentity& owner) {
         return;
     }
     g_activeDecoderOwner = owner;
-    g_activeNativeImagePresentationMode =
-        Render::NativeImagePresentationMode::Identity;
+    g_activeNativeImagePresentationMode.store(
+        Render::NativeImagePresentationMode::Identity,
+        std::memory_order_release);
     g_activeDecoderHandle.store(0, std::memory_order_release);
     g_activeDisplay.store(-1, std::memory_order_release);
     g_activeDisplayGeneration.fetch_add(1, std::memory_order_acq_rel);
@@ -3900,8 +3919,9 @@ void DecoderNapi::ClearActiveSessionId(const DecoderSessionIdentity& owner) {
         return;
     }
     g_activeDecoderOwner = DecoderSessionIdentity {};
-    g_activeNativeImagePresentationMode =
-        Render::NativeImagePresentationMode::Identity;
+    g_activeNativeImagePresentationMode.store(
+        Render::NativeImagePresentationMode::Identity,
+        std::memory_order_release);
     g_activeDecoderHandle.store(0, std::memory_order_release);
     g_activeDisplay.store(-1, std::memory_order_release);
     g_activeDisplayGeneration.fetch_add(1, std::memory_order_acq_rel);
@@ -3916,7 +3936,8 @@ bool DecoderNapi::SetActiveNativeImagePresentationMode(
         if (!Render::SessionOwnerMatches(g_activeDecoderOwner, owner)) {
             return false;
         }
-        g_activeNativeImagePresentationMode = presentationMode;
+        g_activeNativeImagePresentationMode.store(
+            presentationMode, std::memory_order_release);
         const int64_t decoderHandle =
             g_activeDecoderHandle.load(std::memory_order_acquire);
         if (decoderHandle > 0) {
@@ -3932,7 +3953,15 @@ bool DecoderNapi::SetActiveNativeImagePresentationMode(
     if (!Render::SessionOwnerMatches(decoderLease.owner(), owner)) {
         return false;
     }
-    decoderLease->presentationMode = presentationMode;
+    decoderLease->presentationMode.store(
+        presentationMode, std::memory_order_release);
+    if (decoderLease->pipelineTransitioning.load(std::memory_order_acquire)) {
+        // Bind/recovery owns ctx->decoder outside the mutex while this flag is
+        // set. The transition's final publication point reapplies this atomic
+        // value to whichever decoder survived; touching the shared_ptr here
+        // would race replacement/destruction.
+        return true;
+    }
     if (decoderLease->decoder) {
         decoderLease->decoder->SetNativeImagePresentationMode(presentationMode);
     }
@@ -4003,7 +4032,8 @@ bool DecoderNapi::BindVideoPipeline(
         if (!Render::SessionOwnerMatches(g_activeDecoderOwner, owner)) {
             return false;
         }
-        presentationMode = g_activeNativeImagePresentationMode;
+        presentationMode = g_activeNativeImagePresentationMode.load(
+            std::memory_order_acquire);
         decoderLease = g_decoderRegistry.acquire(decoderHandle, owner);
     }
     const std::shared_ptr<DecoderContext> ctx = decoderLease.shared();
@@ -4053,7 +4083,7 @@ bool DecoderNapi::BindVideoPipeline(
         ctx->dropCounterGeneration = ctx->decoderGeneration;
         ctx->displayGeneration = g_activeDisplayGeneration.load(std::memory_order_acquire);
         ctx->display = g_activeDisplay.load(std::memory_order_acquire);
-        ctx->presentationMode = presentationMode;
+        ctx->presentationMode.store(presentationMode, std::memory_order_release);
         if (ctx->decoder) {
             ctx->decoder->SetNativeImagePresentationMode(presentationMode);
         }
@@ -4161,6 +4191,18 @@ bool DecoderNapi::BindVideoPipeline(
     }
     {
         std::lock_guard<std::mutex> pipelineLock(ctx->pipelineMutex);
+        // The peer-platform callback can update the owner-scoped mode before
+        // the decoder handle is published, or after publication while this
+        // transition still blocks direct decoder access. Consume the latest
+        // global value at this single finalization point. A later setter will
+        // see the published handle and serialize behind pipelineMutex.
+        const Render::NativeImagePresentationMode finalPresentationMode =
+            g_activeNativeImagePresentationMode.load(std::memory_order_acquire);
+        ctx->presentationMode.store(
+            finalPresentationMode, std::memory_order_release);
+        if (ctx->decoder) {
+            ctx->decoder->SetNativeImagePresentationMode(finalPresentationMode);
+        }
         ctx->videoPipelineAttached.store(true, std::memory_order_release);
         ctx->pipelineTransitioning.store(false, std::memory_order_release);
         ctx->pipelineTransitionCv.notify_all();

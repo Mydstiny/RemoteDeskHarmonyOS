@@ -67,6 +67,17 @@ extern "C" {
         void (*on_auth)(int, const char*, void*),
         void (*on_progress)(int, const char*, void*),
         void* user_data);
+    void* rustdesk_connect_v5(
+        const void* cfg,
+        void (*on_frame)(const void*, void*),
+        void (*on_audio)(const void*, void*),
+        void (*on_cursor)(const void*, void*),
+        void (*on_disconnect)(int, const char*, void*),
+        void (*on_display)(const void*, void*),
+        void (*on_auth)(int, const char*, void*),
+        void (*on_progress)(int, const char*, void*),
+        bool (*on_peer_platform)(const char*, void*),
+        void* user_data);
     void  rustdesk_disconnect(void* handle);
     void  rustdesk_cancel_pending_connect();
     void  rustdesk_cancel_pending_connect_for_session(uint64_t session_id);
@@ -155,7 +166,6 @@ extern "C" {
     bool  rustdesk_capture_displays(void* handle, const int* displays, size_t count);
     bool  rustdesk_refresh_video_display(void* handle, int display);
     size_t rustdesk_last_error(char* buffer, size_t buffer_len);
-    size_t rustdesk_get_peer_platform(void* handle, char* buffer, size_t buffer_len);
     const char* rustdesk_version();
 }
 
@@ -720,7 +730,7 @@ struct RustDeskBridge::Impl {
     // Workers handed to the process-wide deferred join owner keep the FFI
     // callback context alive until their underlying Rust thread has joined.
     std::atomic<uint32_t> ffiDeferredJoinCount {0};
-    // Count every rustdesk_connect_v4() call until its returned handle has
+    // Count every rustdesk_connect_v5() call until its returned handle has
     // completed rustdesk_disconnect(). A raw callback user-data pointer may
     // be read before the callback-active counter can be incremented.
     std::atomic<uint32_t> ffiHandleJoinPending {0};
@@ -1482,6 +1492,44 @@ void RustDeskBridge::onFfiProgress(int stage, const char* message, void* userDat
     OH_LOG_INFO(LOG_APP, "[RustDesk-FFI] handshake stage=%{public}d msg=%{public}s",
                 stage, progressMessage);
     impl->setState(ConnectionState::CONNECTING, progressMessage);
+}
+
+bool RustDeskBridge::onFfiPeerPlatform(const char* platform, void* userData) {
+    RustDeskFfiCallbackScope callbackScope;
+    const auto context = rdAcquireFfiCallbackContext(userData);
+    auto* impl = context ? static_cast<RustDeskBridge::Impl*>(context->impl) : nullptr;
+    if (impl) {
+        callbackScope.track(&impl->ffiCallbackActive, &impl->ffiCallbackMutex,
+                            &impl->ffiCallbackCv);
+    }
+    if (!context || !impl || context->generation == 0 ||
+        context->generation != impl->cursorGeneration.load(std::memory_order_acquire) ||
+        context->ownerToken == 0 ||
+        context->ownerToken != impl->ownerToken.load(std::memory_order_acquire) ||
+        context->admissionEpoch == 0 ||
+        context->admissionEpoch != impl->ffiAdmissionEpoch.load(std::memory_order_acquire) ||
+        impl->disconnectRequested.load(std::memory_order_acquire) ||
+        impl->ffiStreamEnded.load(std::memory_order_acquire) ||
+        !IsRustDeskCallbackOwnerActive(impl, context.get())) {
+        return false;
+    }
+
+    const char* peerPlatform = platform ? platform : "";
+    const Render::NativeImagePresentationMode presentationMode =
+        RustDeskPresentation::NativeImageModeForPeerPlatform(peerPlatform);
+    const Render::DecoderSessionIdentity presentationOwner {
+        impl->sessionId.load(std::memory_order_acquire),
+        context->generation,
+        context->ownerToken,
+    };
+    const bool published = DecoderNapi::SetActiveNativeImagePresentationMode(
+        presentationOwner, presentationMode);
+    OH_LOG_INFO(LOG_APP,
+                "[RustDesk-FFI] authenticated peer platform=%{public}s NativeImage presentation=%{public}s ownerPublished=%{public}s",
+                peerPlatform[0] == '\0' ? "unknown" : peerPlatform,
+                Render::NativeImagePresentationModeName(presentationMode),
+                published ? "yes" : "no");
+    return published;
 }
 
 void RustDeskBridge::onFfiDisconnect(int state, const char* message, void* userData) noexcept try {
@@ -2710,9 +2758,10 @@ int RustDeskBridge::connectInternal(
             // the callback context before crossing the FFI boundary and keep
             // the reservation until the returned handle is disconnected.
             RustDeskFfiConnectReservation handleReservation(impl);
-            void* ffiHandle = rustdesk_connect_v4(
+            void* ffiHandle = rustdesk_connect_v5(
                 &ffiCfg, onFfiFrame, onFfiAudio, onFfiCursor, onFfiDisconnect,
-                onFfiDisplay, onFfiAuth, onFfiProgress, callbackUserData);
+                onFfiDisplay, onFfiAuth, onFfiProgress, onFfiPeerPlatform,
+                callbackUserData);
             if (ffiHandle != nullptr) {
                 handleReservation.transferToHandleOwner();
             }
@@ -2756,25 +2805,6 @@ int RustDeskBridge::connectInternal(
                 }
                 return;
             }
-
-            char peerPlatform[64] = {0};
-            (void)rustdesk_get_peer_platform(
-                ffiHandle, peerPlatform, sizeof(peerPlatform));
-            const Render::NativeImagePresentationMode presentationMode =
-                RustDeskPresentation::NativeImageModeForPeerPlatform(peerPlatform);
-            const DecoderSessionIdentity presentationOwner {
-                sessionId,
-                callbackGeneration,
-                impl->ownerToken.load(std::memory_order_acquire)
-            };
-            const bool presentationPublished =
-                DecoderNapi::SetActiveNativeImagePresentationMode(
-                    presentationOwner, presentationMode);
-            OH_LOG_INFO(LOG_APP,
-                        "[RustDesk-FFI] peer platform=%{public}s NativeImage presentation=%{public}s ownerPublished=%{public}s",
-                        peerPlatform[0] == '\0' ? "unknown" : peerPlatform,
-                        Render::NativeImagePresentationModeName(presentationMode),
-                        presentationPublished ? "yes" : "no");
 
             const char* connectedMessage = "Connected via Rust FFI (protobuf protocol)";
             ConnectionStateCallback connectedCallback;
