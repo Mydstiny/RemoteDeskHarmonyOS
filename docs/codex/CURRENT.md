@@ -4,7 +4,7 @@
 
 - Task: `moonlight-complete-upgrade`
 - Base: `main@aeb0cdac5`; branch: `codex/moonlight-complete-upgrade`
-- Code checkpoint: `1d07fed6`; the following state-document commit does not change code.
+- Code checkpoint: `26235ce5`; the following state-document commit does not change code.
 - Phase: Moonlight unclassified host-card behavior is unified with the other protocols and is ready for device gesture/UI acceptance; the broader complete Moonlight implementation remains in device acceptance.
 - Authoritative plan: `docs/superpowers/plans/2026-07-28-moonlight-harmonyos-complete-upgrade-plan.md`
 - Live ledger: `docs/codex/plans/2026-08-09-moonlight-implementation-ledger.md`
@@ -41,6 +41,14 @@
 - `3c10f8b4` closes every review-discovered publication race: peer platform is delivered by the new additive `rustdesk_connect_v5` callback after authentication but before display/frame/stream delivery; the unsafe post-connect raw-handle query is removed; bind and decoder recreation retain and replay the latest owner-scoped atomic presentation mode before frame admission reopens.
 - Verification on 2026-08-26: Rust `188/188` PASS, host native `806/806` PASS outside the socket-restricted sandbox, exact `default@OhosTestCompileArkTS` PASS, exact signed `assembleHap` PASS, `git diff --check` PASS and Light open-source compliance PASS. The current full-worktree signed HAP SHA-256 is `99dc160108e3bd55b2439c6209ce90b474d6990f62c03c3438359cab5e07581f`.
 - Independent final review is P0/P1/P2 all zero. P3 records only future deterministic v5 ordering and bind/transition race-test strengthening; it does not block delivery. Runtime acceptance against a Windows and macOS peer remains pending and must confirm Windows upright output plus cross-form-factor control parity.
+
+## Concurrent multi-protocol session-control visibility and collapsed-state parity
+
+- `5d4716b3` unifies the PC collapsed affordance for RDP, RustDesk, VNC and Moonlight with the Phone/Pad rail geometry rotated onto the top edge: a 72×22 translucent visual handle inside a 72×40 touch target, down chevron, shared border/shadow treatment and a true `y=0` top position. RDP no longer falls back to its former black brand/status pill.
+- Settings → Display & Interaction now exposes protocol-specific RDP, RustDesk, VNC and Moonlight switches. Each durable preference hides the selected protocol's real session rail/top bar and control-center entry; legacy `pcSessionTopBarHidden` migrates to RustDesk/VNC only when their new explicit keys are absent. `7d624600` closes the initial review findings for Moonlight parity, migration and protocol-specific accessibility labels.
+- `26235ce5` closes the final runtime edge: changing Moonlight to hidden dismisses an already-open control-center Sheet while preserving connect, controller and stop Sheets. Focused policy tests cover migration precedence and the exact dismiss predicate.
+- Final verification on 2026-08-26: exact `default@OhosTestCompileArkTS` PASS, exact signed `assembleHap` PASS, `git diff --check` PASS and Light open-source compliance PASS. Signed HAP SHA-256: `cc9de3eb32222cf59da55023b11d5fcdf2d55d7b94783295e0a52702ed33d5ff`.
+- Final independent review is P0/P1/P2/P3 all zero. No HDC target was online at closeout, so real PC/freeform visual confirmation of edge contact, collapse/expand interaction and per-protocol runtime hiding remains pending and is not claimed as a device PASS.
 
 ## Concurrent VNC preflight alignment repair
 

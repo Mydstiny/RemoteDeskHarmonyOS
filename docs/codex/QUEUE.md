@@ -29,6 +29,11 @@ Updated: 2026-08-26 Asia/Shanghai
 - Rust `188/188`, host native `806/806`, exact ArkTS test compile, signed HAP assembly, diff check and Light compliance pass on 2026-08-26. Independent final review is P0/P1/P2 all zero; P3 contains only non-blocking deterministic test-coverage improvements.
 - Remaining acceptance: install the current signed package and verify Windows output is upright through connect/reconnect/recovery while macOS remains upright; compare PC top bar with Phone/Pad rail for action order, wording, icons, disabled state, collapse behavior and glass treatment.
 
+## Concurrent multi-protocol session-control visibility and collapsed-state parity
+
+- Implemented in `5d4716b3`, review remediation `7d624600` and final Moonlight runtime remediation `26235ce5`: RDP/RustDesk/VNC/Moonlight PC collapsed controls share the rotated Phone/Pad rail geometry and glass treatment at `y=0`; Settings → Display & Interaction durably hides the selected protocols' real control bars, with legacy RustDesk/VNC migration and protocol-specific accessibility labels. Moonlight also dismisses an already-open control-center Sheet when hidden without dismissing connect, controller or stop Sheets; focused policy cases cover preference precedence and this exact predicate.
+- Exact ArkTS test compile, signed HAP assembly, diff check and Light compliance pass on 2026-08-26. Signed HAP SHA-256 is `cc9de3eb32222cf59da55023b11d5fcdf2d55d7b94783295e0a52702ed33d5ff`; final independent review is P0/P1/P2/P3 all zero. Remaining acceptance on a PC/freeform HDC target must verify that all four collapsed handles touch the physical top edge with no black seam, match the rotated Phone/Pad rail and that every per-protocol switch hides/restores the correct live bar; no HDC target was online at closeout.
+
 ## Concurrent VNC preflight alignment repair
 
 - Implemented in the VNC preflight alignment commit: one HostList-owned lock/certificate-or-plaintext/credential flow for every device class, no password UI on RemoteDesktop, one-shot settings/add credentials without duplicate prompting, HostList-owned native auth retry, and endpoint/account-bound credential/plaintext handoffs.
