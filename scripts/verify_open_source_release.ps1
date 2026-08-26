@@ -57,7 +57,7 @@ $moonlightIconPath = Join-Path $root $moonlightIconRelative
 $moonlightIconExpectedSha256 = '4f5ef547e33767287e3438a6d1598a1bdef6e49df4678a5f7f214ec58c9e5886'
 if (-not (Test-Path $moonlightIconPath -PathType Leaf)) {
   Add-Failure "Missing Moonlight protocol icon: $moonlightIconRelative"
-} elseif ((Get-FileHash $moonlightIconPath -Algorithm SHA256).Hash.ToLowerInvariant() -ne
+} elseif ((Get-NormalizedTextSha256 $moonlightIconPath) -ne
     $moonlightIconExpectedSha256) {
   Add-Failure 'Moonlight protocol icon changed without provenance review.'
 }
@@ -89,7 +89,7 @@ if (Test-Path $reusePath -PathType Leaf) {
 $gpl3LicensePath = Join-Path $root 'LICENSES/GPL-3.0-only.txt'
 if (Test-Path $gpl3LicensePath -PathType Leaf) {
   $gpl3ExpectedSha256 = '589ed823e9a84c56feb95ac58e7cf384626b9cbf4fda2a907bc36e103de1bad2'
-  if ((Get-FileHash $gpl3LicensePath -Algorithm SHA256).Hash.ToLowerInvariant() -ne
+  if ((Get-NormalizedTextSha256 $gpl3LicensePath) -ne
       $gpl3ExpectedSha256) {
     Add-Failure 'GPL-3.0-only license text is missing or changed.'
   }
