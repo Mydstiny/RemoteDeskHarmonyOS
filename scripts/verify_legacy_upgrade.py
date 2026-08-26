@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""Replay current schema migration over the real 1.0.7/1.0.8 schemas.
+"""Replay current schema migration over the real 1.0.7/1.0.8/1.1.1 schemas.
 
 The historical sources are read from immutable Git commits. Each legacy table
 is populated across every historical column, the current idempotent DDL is
 applied twice, and both row preservation and full current-column writability
-are verified with SQLite's integrity checker.
+are verified with SQLite's integrity checker. Moonlight's generated v5 tables
+are reconstructed from their checked-in storage policy so the 1.1.1 baseline
+is exercised rather than silently omitted from the replay.
 """
 
 from __future__ import annotations
@@ -18,20 +20,39 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 CURRENT_STORE = ROOT / "entry/src/main/ets/services/CloudStore.ets"
+CURRENT_MOONLIGHT_POLICY = (
+    ROOT / "entry/src/main/ets/services/MoonlightStoragePolicy.ets"
+)
+CURRENT_MOONLIGHT_MODEL = ROOT / "entry/src/main/ets/model/MoonlightRecord.ets"
 HISTORICAL_RELEASES = {
     "1.0.7": "d2bc6c99826045aa544eb9f0cd9cc61a966ff106",
     "1.0.8-initial": "a3d47c464aefa3533d10a070f66de83e9b44ed20",
+    "1.1.1-initial": "62c171778c359929060016c8022e02f1b6bf4b19",
 }
 STORE_PATH = "entry/src/main/ets/services/CloudStore.ets"
-CURRENT_SCHEMA_VERSION = 4
+MOONLIGHT_POLICY_PATH = "entry/src/main/ets/services/MoonlightStoragePolicy.ets"
+MOONLIGHT_MODEL_PATH = "entry/src/main/ets/model/MoonlightRecord.ets"
+CURRENT_SCHEMA_VERSION = 5
 
 
-def git_source(commit: str) -> str:
+def git_source(commit: str, path: str = STORE_PATH) -> str:
     return subprocess.check_output(
-        ["git", "show", f"{commit}:{STORE_PATH}"],
+        ["git", "show", f"{commit}:{path}"],
         cwd=ROOT,
         text=True,
     )
+
+
+def optional_git_source(commit: str, path: str) -> str:
+    completed = subprocess.run(
+        ["git", "show", f"{commit}:{path}"],
+        cwd=ROOT,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    return completed.stdout if completed.returncode == 0 else ""
 
 
 def migration_body(source: str) -> str:
@@ -80,6 +101,106 @@ def table_columns_from_source(source: str) -> dict[str, list[tuple[str, str]]]:
     return result
 
 
+def moonlight_table_schemas(
+    policy_source: str, model_source: str
+) -> dict[str, list[tuple[str, str, bool]]]:
+    """Parse the generated Moonlight DDL without importing ArkTS at runtime."""
+    if policy_source == "" or model_source == "":
+        return {}
+
+    table_constants = {
+        "MOONLIGHT_CLOUD_TABLE": "MOONLIGHT_RECORD_SCHEMA",
+        "MOONLIGHT_LOCAL_TABLE": "MOONLIGHT_LOCAL_RECORD_SCHEMA",
+        "MOONLIGHT_APP_CACHE_TABLE": "MOONLIGHT_APP_CACHE_SCHEMA",
+    }
+    table_names: dict[str, str] = {}
+    for constant in table_constants:
+        match = re.search(
+            rf"export const {constant}:\s*string\s*=\s*'([^']+)'",
+            model_source,
+        )
+        if match is None:
+            raise AssertionError(f"missing Moonlight table constant: {constant}")
+        table_names[constant] = match.group(1).lower()
+
+    bodies: dict[str, str] = {}
+    for schema_name in table_constants.values():
+        match = re.search(
+            rf"export const {schema_name}:[^=]+?=\s*\[(.*?)\];",
+            policy_source,
+            re.DOTALL,
+        )
+        if match is None:
+            raise AssertionError(f"missing Moonlight schema array: {schema_name}")
+        bodies[schema_name] = match.group(1)
+
+    parsed: dict[str, list[tuple[str, str, bool]]] = {}
+
+    def parse_schema(name: str, stack: set[str]) -> list[tuple[str, str, bool]]:
+        if name in parsed:
+            return parsed[name]
+        if name in stack or name not in bodies:
+            raise AssertionError(f"invalid Moonlight schema spread: {name}")
+        next_stack = set(stack)
+        next_stack.add(name)
+        columns: list[tuple[str, str, bool]] = []
+        token_pattern = re.compile(
+            r"\.\.\.([A-Z0-9_]+)|"
+            r"column\(\s*'([A-Za-z0-9_]+)'\s*,\s*'"
+            r"(TEXT|INTEGER|REAL|BLOB)'\s*(?:,\s*(true|false))?\s*\)",
+            re.IGNORECASE,
+        )
+        for token in token_pattern.finditer(bodies[name]):
+            spread = token.group(1)
+            if spread is not None:
+                columns.extend(parse_schema(spread, next_stack))
+                continue
+            columns.append(
+                (
+                    token.group(2).lower(),
+                    token.group(3).upper(),
+                    token.group(4) == "true",
+                )
+            )
+        if not columns:
+            raise AssertionError(f"empty Moonlight schema array: {name}")
+        parsed[name] = columns
+        return columns
+
+    return {
+        table_names[constant]: parse_schema(schema_name, set())
+        for constant, schema_name in table_constants.items()
+    }
+
+
+def merged_table_columns(
+    store_source: str, policy_source: str, model_source: str
+) -> dict[str, list[tuple[str, str]]]:
+    result = table_columns_from_source(store_source)
+    for table, columns in moonlight_table_schemas(
+        policy_source, model_source
+    ).items():
+        if table in result:
+            raise AssertionError(f"duplicate Moonlight DDL source for {table}")
+        result[table] = [(name, affinity) for name, affinity, _primary in columns]
+    return result
+
+
+def apply_moonlight_tables(
+    connection: sqlite3.Connection, policy_source: str, model_source: str
+) -> None:
+    for table, columns in moonlight_table_schemas(
+        policy_source, model_source
+    ).items():
+        definitions = ", ".join(
+            quote(name) + " " + affinity + (" PRIMARY KEY" if primary else "")
+            for name, affinity, primary in columns
+        )
+        connection.execute(
+            f"CREATE TABLE IF NOT EXISTS {quote(table)} ({definitions})"
+        )
+
+
 def ensure_columns(source: str) -> dict[str, list[tuple[str, str]]]:
     body = normalized_body(source)
     result: dict[str, list[tuple[str, str]]] = {}
@@ -117,9 +238,17 @@ def quote(identifier: str) -> str:
     return '"' + identifier.replace('"', '""') + '"'
 
 
-def apply_current_schema(connection: sqlite3.Connection, source: str) -> None:
+def apply_current_schema(
+    connection: sqlite3.Connection,
+    source: str,
+    moonlight_policy_source: str,
+    moonlight_model_source: str,
+) -> None:
     for _table, statement in create_statements(source):
         connection.execute(statement)
+    apply_moonlight_tables(
+        connection, moonlight_policy_source, moonlight_model_source
+    )
     for table, columns in ensure_columns(source).items():
         current = {
             row[1].lower() for row in connection.execute(f"PRAGMA table_info({quote(table)})")
@@ -332,23 +461,53 @@ def verify_device_local_personalization_upgrade(
         raise AssertionError(f"{label}: VNC local override changed the legacy wire payload")
 
 
-def verify_release(label: str, commit: str, current_source: str) -> None:
+def verify_release(
+    label: str,
+    commit: str,
+    current_source: str,
+    current_moonlight_policy: str,
+    current_moonlight_model: str,
+) -> None:
     old_source = git_source(commit)
-    old_schema = table_columns_from_source(old_source)
-    current_schema = table_columns_from_source(current_source)
+    old_moonlight_policy = optional_git_source(commit, MOONLIGHT_POLICY_PATH)
+    old_moonlight_model = optional_git_source(commit, MOONLIGHT_MODEL_PATH)
+    old_schema = merged_table_columns(
+        old_source, old_moonlight_policy, old_moonlight_model
+    )
+    current_schema = merged_table_columns(
+        current_source, current_moonlight_policy, current_moonlight_model
+    )
+    old_moonlight_schema = moonlight_table_schemas(
+        old_moonlight_policy, old_moonlight_model
+    )
+    current_moonlight_schema = moonlight_table_schemas(
+        current_moonlight_policy, current_moonlight_model
+    )
+    if old_moonlight_schema and old_moonlight_schema != current_moonlight_schema:
+        raise AssertionError(
+            f"{label}: Moonlight name/type/primary-key contract changed"
+        )
     ensured = ensure_columns(current_source)
     connection = sqlite3.connect(":memory:")
     snapshots: dict[str, tuple[list[tuple[str, str]], list[object]]] = {}
     try:
         for _table, statement in create_statements(old_source):
             connection.execute(statement)
+        apply_moonlight_tables(
+            connection, old_moonlight_policy, old_moonlight_model
+        )
         for table, columns in old_schema.items():
             values = row_values(table, columns)
             insert_full_row(connection, table, columns, values)
             snapshots[table] = (columns, values)
 
         for _attempt in range(2):
-            apply_current_schema(connection, current_source)
+            apply_current_schema(
+                connection,
+                current_source,
+                current_moonlight_policy,
+                current_moonlight_model,
+            )
 
         for table, (columns, expected) in snapshots.items():
             names = ",".join(quote(name) for name, _affinity in columns)
@@ -382,6 +541,7 @@ def verify_release(label: str, commit: str, current_source: str) -> None:
         print(
             f"PASS {label} commit={commit[:10]} legacyTables={len(old_schema)} "
             f"currentTables={len(current_schema)} preservedRows={len(snapshots)} "
+            f"moonlightTables={len(old_moonlight_schema)} "
             f"personalizationUpgrade=pass schemaVersion={version}"
         )
     finally:
@@ -390,8 +550,20 @@ def verify_release(label: str, commit: str, current_source: str) -> None:
 
 def main() -> None:
     current_source = CURRENT_STORE.read_text(encoding="utf-8")
+    current_moonlight_policy = CURRENT_MOONLIGHT_POLICY.read_text(
+        encoding="utf-8"
+    )
+    current_moonlight_model = CURRENT_MOONLIGHT_MODEL.read_text(
+        encoding="utf-8"
+    )
     for label, commit in HISTORICAL_RELEASES.items():
-        verify_release(label, commit, current_source)
+        verify_release(
+            label,
+            commit,
+            current_source,
+            current_moonlight_policy,
+            current_moonlight_model,
+        )
 
 
 if __name__ == "__main__":

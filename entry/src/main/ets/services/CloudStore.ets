@@ -239,6 +239,7 @@ import {
   AccountSessionLease,
   AccountScopeToken,
   ACCOUNT_CLOUD_STORE_IDENTITY,
+  accountScopeRebindSucceeded,
   accountSessionLease,
   accountSessionLeaseEquals,
   accountStoreIdentity,
@@ -810,8 +811,7 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
     platformProof: PlatformCloudIdentityProof =
       unavailablePlatformCloudIdentityProof()): Promise<boolean> {
     if (this.initialized &&
-      this.currentScopeToken.storeIdentity === token.storeIdentity &&
-      this.currentScopeToken.generation === token.generation) {
+      accountScopeRebindSucceeded(token, this.currentScopeToken)) {
       return true;
     }
     if (this.initPromise !== null) { await this.initPromise; }
@@ -829,8 +829,7 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
       this.initPromise = null;
     }
     return this.initialized && this.store !== null &&
-      this.currentScopeToken.storeIdentity === token.storeIdentity &&
-      this.currentScopeToken.generation === token.generation;
+      accountScopeRebindSucceeded(token, this.currentScopeToken);
   }
 
   currentScope(): AccountScopeToken {

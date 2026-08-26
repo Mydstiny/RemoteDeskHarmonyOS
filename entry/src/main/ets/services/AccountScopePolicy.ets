@@ -220,6 +220,32 @@ export function verifyAccountScopeCloudBinding(
   };
 }
 
+/**
+ * Confirm that a physical rebind reached the requested account generation.
+ * A verified account may request the canonical AGC store and discover that it
+ * is already owned by another account on this OS user. CloudStore then opens
+ * the one deterministic per-owner hashed store and keeps cloud validating.
+ * That compatibility fallback is a successful local bind, not an account
+ * transition failure; every other identity/store substitution remains denied.
+ */
+export function accountScopeRebindSucceeded(
+  requested: AccountScopeToken,
+  active: AccountScopeToken
+): boolean {
+  if (requested.kind !== active.kind ||
+    requested.ownerScopeId !== active.ownerScopeId ||
+    requested.generation !== active.generation ||
+    requested.platformIdentityFingerprint !==
+      active.platformIdentityFingerprint) {
+    return false;
+  }
+  if (requested.storeIdentity === active.storeIdentity) { return true; }
+  return requested.kind === 'huawei_account' &&
+    requested.storeIdentity === ACCOUNT_CLOUD_STORE_IDENTITY &&
+    active.storeIdentity === accountStoreIdentity(requested.ownerScopeId) &&
+    active.cloudBindingState === 'validating';
+}
+
 export function scopeTokenIsCurrent(token: AccountScopeToken, generation: number): boolean {
   return token.generation > 0 && token.generation === generation &&
     token.ownerScopeId.trim().length > 0 && token.storeIdentity.trim().length > 0;
