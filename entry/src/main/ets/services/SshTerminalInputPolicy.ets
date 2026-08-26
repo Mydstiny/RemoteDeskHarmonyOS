@@ -24,12 +24,34 @@ export function resolveSshTerminalInputOwner(_isDesktopDevice: boolean): SshTerm
   return 'arkui';
 }
 
+/** Every retained container above the selected ArkUI editor must join its focus scope. */
+export function sshTerminalInputAncestorsFocusable(isDesktopDevice: boolean): boolean {
+  return resolveSshTerminalInputOwner(isDesktopDevice) === 'arkui';
+}
+
 /** Programmatic terminal focus must never summon the software keyboard. */
 export function sshTerminalSoftwareKeyboardFocusEnabled(
   virtualKeyBarRequested: boolean,
   softwareKeyboardRequested: boolean
 ): boolean {
   return virtualKeyBarRequested && softwareKeyboardRequested;
+}
+
+/**
+ * A silently focused TextInput reports editing=true even when no software IME
+ * owns it. Treat that callback as IME evidence only in the virtual-keyboard
+ * layout; otherwise PC/Pad physical keys must stay on the direct encoder.
+ */
+export function sshTerminalSoftwareKeyboardOwnsKeyEvents(
+  virtualKeyBarRequested: boolean,
+  softwareKeyboardRequested: boolean,
+  softwareKeyboardVisible: boolean,
+  refocusInFlight: boolean,
+  editingObserved: boolean
+): boolean {
+  if (softwareKeyboardRequested) { return true; }
+  return virtualKeyBarRequested &&
+    (softwareKeyboardVisible || refocusInFlight || editingObserved);
 }
 
 /**

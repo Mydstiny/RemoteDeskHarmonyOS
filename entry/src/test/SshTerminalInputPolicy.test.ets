@@ -24,7 +24,9 @@ import {
   splitSshTerminalInputText,
   admitsSshTerminalInputPendingItems,
   resolveSshTerminalInputOwner,
+  sshTerminalInputAncestorsFocusable,
   sshTerminalSoftwareKeyboardFocusEnabled,
+  sshTerminalSoftwareKeyboardOwnsKeyEvents,
   sshTerminalUsesNativeTouchInputAnchor,
   sshTerminalInputDeviceIsPhysicalKeyboard,
   resolveSshTerminalKeyInputOwner,
@@ -47,6 +49,8 @@ export default function sshTerminalInputPolicyTest(): void {
     it('should_keep_one_input_owner_per_device_family', 0, (): void => {
       expect(resolveSshTerminalInputOwner(false)).assertEqual('arkui');
       expect(resolveSshTerminalInputOwner(true)).assertEqual('arkui');
+      expect(sshTerminalInputAncestorsFocusable(false)).assertTrue();
+      expect(sshTerminalInputAncestorsFocusable(true)).assertTrue();
     });
 
     it('should_open_software_keyboard_only_after_an_explicit_request', 0, (): void => {
@@ -54,6 +58,20 @@ export default function sshTerminalInputPolicyTest(): void {
       expect(sshTerminalSoftwareKeyboardFocusEnabled(false, true)).assertFalse();
       expect(sshTerminalSoftwareKeyboardFocusEnabled(true, false)).assertFalse();
       expect(sshTerminalSoftwareKeyboardFocusEnabled(true, true)).assertTrue();
+    });
+
+    it('should_not_mistake_silent_physical_focus_for_a_software_keyboard', 0, (): void => {
+      // PC/entity mode: the hidden editor can report editing=true while no IME
+      // exists. Physical key events must still reach the direct encoder.
+      expect(sshTerminalSoftwareKeyboardOwnsKeyEvents(
+        false, false, false, false, true)).assertFalse();
+      // Phone/Pad or explicit virtual mode retains its composition path.
+      expect(sshTerminalSoftwareKeyboardOwnsKeyEvents(
+        true, false, false, false, true)).assertTrue();
+      expect(sshTerminalSoftwareKeyboardOwnsKeyEvents(
+        true, false, true, false, false)).assertTrue();
+      expect(sshTerminalSoftwareKeyboardOwnsKeyEvents(
+        false, true, false, false, false)).assertTrue();
     });
 
     it('should_use_real_touch_focus_on_phone_and_pad_without_refocus_races', 0, (): void => {

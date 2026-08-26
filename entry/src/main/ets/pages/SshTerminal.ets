@@ -170,7 +170,9 @@ import {
   splitSshTerminalInputText,
   admitsSshTerminalInputPendingItems,
   resolveSshTerminalInputOwner,
+  sshTerminalInputAncestorsFocusable,
   sshTerminalSoftwareKeyboardFocusEnabled,
+  sshTerminalSoftwareKeyboardOwnsKeyEvents,
   sshTerminalUsesNativeTouchInputAnchor,
   sshTerminalInputDeviceIsPhysicalKeyboard,
   resolveSshTerminalKeyInputOwner,
@@ -13108,10 +13110,11 @@ struct SshTerminal {
     const likelyHardware: boolean = this.isLikelyHardwareKeyEvent(event);
     const knownPhysicalKeyboard: boolean = this.isKnownPhysicalKeyboardEvent(event);
     const knownVirtualKeyboard: boolean = this.isKnownVirtualKeyboardEvent(event);
-    const softwareKeyboardActive: boolean = this.softKeyboardRequested ||
-      this.terminalSoftwareKeyboardIsVisible() ||
-      this.terminalSoftwareKeyboardRefocusInFlight ||
-      this.terminalSoftwareKeyboardEditingObserved;
+    const softwareKeyboardActive: boolean = sshTerminalSoftwareKeyboardOwnsKeyEvents(
+      this.virtualKeyBarRequested(), this.softKeyboardRequested,
+      this.terminalSoftwareKeyboardIsVisible(),
+      this.terminalSoftwareKeyboardRefocusInFlight,
+      this.terminalSoftwareKeyboardEditingObserved);
     const inputOwner: SshTerminalKeyInputOwner = resolveSshTerminalKeyInputOwner(
       this.isDesktopDevice, this.sshInputMode === 2,
       knownPhysicalKeyboard, knownVirtualKeyboard, softwareKeyboardActive,
@@ -18499,12 +18502,13 @@ struct SshTerminal {
             this.publishIndependentWindowReady('terminal-area-change');
           })
           .bindContextMenu(this.TermMenu(), ResponseType.LongPress)
-          // TextArea focus requests on API 23/24 are rejected when this
+          // TextInput focus requests on API 23/24 are rejected when this
           // retained terminal Stack is not itself focusable (the runtime
           // reports the ancestor Column as unfocusable). The old terminal
-          // had a focusable input subtree; keep that contract without making
-          // the Web surface an input owner.
-          .focusable(sshTerminalUsesNativeTouchInputAnchor(this.isDesktopDevice))
+          // had a focusable input subtree. The ArkUI editor now owns input on
+          // every device family, including PC, while focusOnTouch(false) keeps
+          // the Web surface responsible for pointer interaction.
+          .focusable(sshTerminalInputAncestorsFocusable(this.isDesktopDevice))
           .focusOnTouch(false)
           }
           .width('100%')
@@ -18554,10 +18558,10 @@ struct SshTerminal {
         .layoutWeight(1)
         .constraintSize({ minHeight: 0 })
         .clip(true)
-        // The TextArea is nested below this retained Column on API 23/24;
+        // The TextInput is nested below this retained Column on API 23/24;
         // make the actual input subtree ancestor focusable, matching the
         // pre-workbench hidden-input container contract.
-        .focusable(sshTerminalUsesNativeTouchInputAnchor(this.isDesktopDevice))
+        .focusable(sshTerminalInputAncestorsFocusable(this.isDesktopDevice))
         .focusOnTouch(false)
         .onAreaChange((_o: Area, n: Area): void => {
           const h: number = n.height as number;
@@ -18613,12 +18617,11 @@ struct SshTerminal {
       .backgroundColor('#0D0D0D')
       .id('ssh-terminal-pane')
       // API 23/24 requires the retained terminal root to participate in the
-      // same focus scope as the hidden ArkUI input anchor. The pre-workbench
-      // terminal always exposed this native subtree; keep it focusable on
-      // touch devices while leaving pointer focus disabled so WebView still
-      // owns scrolling, selection and pinch gestures.
+      // same focus scope as the hidden ArkUI input anchor. Keep the root
+      // focusable whenever that editor owns input, including PC; pointer focus
+      // remains disabled so WebView still owns scrolling and selection.
       .focusable(this.sshWorkspaceModeEnabled() ||
-        sshTerminalUsesNativeTouchInputAnchor(this.isDesktopDevice))
+        sshTerminalInputAncestorsFocusable(this.isDesktopDevice))
       .focusOnTouch(false)
       .onFocus((): void => { this.sshWorkspaceFocusRegion = 'pane_host'; })
       .onKeyEvent((event: KeyEvent): boolean => { return this.handleSshKeyEvent(event); })
