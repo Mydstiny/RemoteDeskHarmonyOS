@@ -51,6 +51,7 @@ import {
   PersonalizationDefaultsProfile,
   resolvePersonalizationDefaultsProfile
 } from '../services/PersonalizationDefaultsPolicy';
+import { startupContentPathForAttempt } from '../services/AppStartupPolicy';
 import auth from '@hw-agconnect/auth';
 
 const DOMAIN = 0x0000;
@@ -344,14 +345,26 @@ export default class EntryAbility extends UIAbility {
     } catch (err) {
       hilog.warn(DOMAIN, TAG, '预初始化 ArkUI environment 失败: %{public}s', JSON.stringify(err));
     }
+    await this.loadStartupContent(windowStage);
+  }
 
-    windowStage.loadContent('pages/GuidePage', (err) => {
-      if (err.code) {
-        hilog.error(DOMAIN, TAG, '加载页面失败: %{public}s', JSON.stringify(err));
+  private async loadStartupContent(windowStage: window.WindowStage): Promise<void> {
+    for (let attempt: number = 0; ; attempt++) {
+      const page: string = startupContentPathForAttempt(attempt);
+      if (page.length === 0) { break; }
+      try {
+        await windowStage.loadContent(page);
+        hilog.info(DOMAIN, TAG,
+          '启动页面加载成功: page=%{public}s attempt=%{public}d', page, attempt + 1);
+        await this.initImmersiveWindow();
         return;
+      } catch (err) {
+        hilog.error(DOMAIN, TAG,
+          '启动页面加载失败: page=%{public}s attempt=%{public}d err=%{public}s',
+          page, attempt + 1, JSON.stringify(err));
       }
-      this.initImmersiveWindow();
-    });
+    }
+    hilog.error(DOMAIN, TAG, '所有启动页面均加载失败，WindowStage 无可用 UIContent');
   }
 
   onWindowStageDestroy(): void {

@@ -17,6 +17,7 @@ import {
   shouldShowLoginAfterSilentAttempt,
   silentLoginFallbackMessage
 } from '../services/LoginStartupPolicy';
+import { FIRST_LAUNCH_PREPARATION_BLOCKS_UI } from '../services/AppStartupPolicy';
 import { hashForLog } from '../utils/SafeLogger';
 
 const PREFS_NAME: string = 'RemoteDesktopAppPrefs';
@@ -41,6 +42,9 @@ struct LoginPage {
 
     // 首次启动 (含卸载重装) → 清除残留登录态, 强制显示登录页
     if (this.isFirstLaunch()) {
+      // 首次安装不能把可见 UI 绑定到账号/RDB 初始化。准备工作继续在后台，
+      // 登录或离线按钮自身仍会在执行操作前等待同一个协调器就绪。
+      this.checkingLogin = FIRST_LAUNCH_PREPARATION_BLOCKS_UI;
       void this.prepareFirstLaunch();
       return;
     }
@@ -139,9 +143,20 @@ struct LoginPage {
   }
 
   private async prepareFirstLaunch(): Promise<void> {
-    await this.ensureAccountSessionReady();
-    await AccountSessionCoordinator.getInstance().transitionToOffline('first-launch');
-    this.checkingLogin = false;
+    try {
+      await this.ensureAccountSessionReady();
+      const transition: AccountTransitionResult =
+        await AccountSessionCoordinator.getInstance().transitionToOffline('first-launch');
+      if (!transition.ok) {
+        hilog.warn(0x0001, 'LoginDebug',
+          '首次启动本地作用域准备未完成，登录界面保持可用: ' + transition.message);
+      }
+    } catch (error) {
+      // 首次启动准备不是首屏门禁。任何异常都只能降低账号/云能力，不能
+      // 把刚安装的用户永久留在空白页或全屏 loading 中。
+      hilog.warn(0x0001, 'LoginDebug',
+        '首次启动本地作用域准备异常，登录界面保持可用: ' + JSON.stringify(error));
+    }
   }
 
   /**
