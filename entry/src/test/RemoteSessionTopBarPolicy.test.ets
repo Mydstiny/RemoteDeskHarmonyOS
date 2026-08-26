@@ -4,7 +4,12 @@ import {
   REMOTE_SESSION_COLLAPSED_RAIL_HEIGHT,
   REMOTE_SESSION_COLLAPSED_RAIL_TOUCH_WIDTH,
   REMOTE_SESSION_COLLAPSED_RAIL_WIDTH,
+  REMOTE_SESSION_COLLAPSED_TOP_HEIGHT,
+  REMOTE_SESSION_COLLAPSED_TOP_TOUCH_HEIGHT,
+  REMOTE_SESSION_COLLAPSED_TOP_WIDTH,
   protocolPreferenceOwner,
+  remoteSessionControlBarHidden,
+  remoteSessionControlBarSelectionSummary,
   remoteSessionPrimaryActionIds,
   remoteSessionRailDragOffset,
   remoteSessionRailShouldCollapse,
@@ -62,6 +67,18 @@ export default function remoteSessionTopBarPolicyTest(): void {
       expect(shouldShowRemoteSessionTopBar('rdp')).assertFalse();
       expect(shouldShowRemoteSessionTopBar('rustdesk')).assertTrue();
       expect(shouldShowRemoteSessionTopBar('vnc')).assertFalse();
+      const visibility = {
+        rdpHidden: true, rustDeskHidden: false, vncHidden: true, moonlightHidden: false
+      };
+      expect(remoteSessionControlBarHidden('rdp', visibility)).assertTrue();
+      expect(remoteSessionControlBarHidden('rustdesk', visibility)).assertFalse();
+      expect(remoteSessionControlBarHidden('vnc', visibility)).assertTrue();
+      expect(remoteSessionControlBarHidden('moonlight', visibility)).assertFalse();
+      expect(remoteSessionControlBarHidden('ssh', visibility)).assertFalse();
+      expect(remoteSessionControlBarSelectionSummary(visibility)).assertEqual('已隐藏：RDP、VNC');
+      expect(remoteSessionControlBarSelectionSummary({
+        rdpHidden: false, rustDeskHidden: false, vncHidden: false, moonlightHidden: false
+      })).assertEqual('全部显示');
     });
   });
 
@@ -80,7 +97,9 @@ export default function remoteSessionTopBarPolicyTest(): void {
       expect(layout.maxVisibleButtons).assertEqual(8);
       expect(layout.maxVisibleButtons * layout.iconSize +
         (layout.maxVisibleButtons + 1) * layout.itemGap <= 360).assertTrue();
+      expect(layout.topOffset).assertEqual(0);
       expect(remoteTopBarLayout(true, 'xl', false).iconSize).assertEqual(44);
+      expect(remoteTopBarLayout(true, 'xl', false).topOffset).assertEqual(0);
     });
 
     it('phone_layout_should_limit_visible_buttons', 0, (): void => {
@@ -98,6 +117,10 @@ export default function remoteSessionTopBarPolicyTest(): void {
       expect(REMOTE_SESSION_COLLAPSED_RAIL_TOUCH_WIDTH >= 40).assertTrue();
       expect(REMOTE_SESSION_COLLAPSED_RAIL_TOUCH_WIDTH >
         REMOTE_SESSION_COLLAPSED_RAIL_WIDTH).assertTrue();
+      expect(REMOTE_SESSION_COLLAPSED_TOP_WIDTH).assertEqual(REMOTE_SESSION_COLLAPSED_RAIL_HEIGHT);
+      expect(REMOTE_SESSION_COLLAPSED_TOP_HEIGHT).assertEqual(REMOTE_SESSION_COLLAPSED_RAIL_WIDTH);
+      expect(REMOTE_SESSION_COLLAPSED_TOP_TOUCH_HEIGHT)
+        .assertEqual(REMOTE_SESSION_COLLAPSED_RAIL_TOUCH_WIDTH);
     });
 
     it('collapses_only_for_an_intentional_right_swipe', 0, (): void => {

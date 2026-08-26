@@ -439,7 +439,11 @@ import {
 import { createTransferSnapshot, TransferProtocol, TransferState } from '../services/FileTransferProgressModel';
 import { isRemoteCompletionConfirmed } from '../services/TransferSessionPolicy';
 import {
-  PC_SESSION_TOP_BAR_HIDDEN_KEY,
+  REMOTE_SESSION_CONTROL_BAR_HIDDEN_RDP_KEY,
+  REMOTE_SESSION_CONTROL_BAR_HIDDEN_RUSTDESK_KEY,
+  REMOTE_SESSION_CONTROL_BAR_HIDDEN_VNC_KEY,
+  RemoteSessionControlBarVisibility,
+  remoteSessionControlBarHidden,
   remoteTopBarLayout,
   shouldShowRemoteSessionTopBar,
   shouldUseRemoteSessionEdgeRail
@@ -839,7 +843,12 @@ struct RemoteDesktop {
   @StorageLink('rustdeskViewScaleMode') rustdeskViewScaleMode: string = 'fit';
   @StorageLink('remoteDisplayScaleMode') remoteDisplayScaleMode: string = 'fit';
   @StorageLink('remoteDisplayCustomScalePercent') remoteDisplayCustomScalePercent: number = 100;
-  @StorageLink(PC_SESSION_TOP_BAR_HIDDEN_KEY) pcSessionTopBarHidden: boolean = false;
+  @StorageLink(REMOTE_SESSION_CONTROL_BAR_HIDDEN_RDP_KEY)
+  sessionControlBarHiddenRdp: boolean = false;
+  @StorageLink(REMOTE_SESSION_CONTROL_BAR_HIDDEN_RUSTDESK_KEY)
+  sessionControlBarHiddenRustDesk: boolean = false;
+  @StorageLink(REMOTE_SESSION_CONTROL_BAR_HIDDEN_VNC_KEY)
+  sessionControlBarHiddenVnc: boolean = false;
   @StorageLink('canvasGestureZoomEnabled') @Watch('onCanvasGestureZoomSettingChange')
   canvasGestureZoomEnabled: boolean = false;
   @StorageLink('rustdeskShowLocalCursor') rustdeskShowLocalCursor: boolean = true;
@@ -1553,10 +1562,24 @@ struct RemoteDesktop {
     return this.isVncSession() && this.pendingVncHost !== null && this.pendingVncHost.viewOnly;
   }
 
+  private sessionControlBarVisibility(): RemoteSessionControlBarVisibility {
+    return {
+      rdpHidden: this.sessionControlBarHiddenRdp,
+      rustDeskHidden: this.sessionControlBarHiddenRustDesk,
+      vncHidden: this.sessionControlBarHiddenVnc,
+      moonlightHidden: false
+    };
+  }
+
+  private isSessionControlBarHidden(protocol: string): boolean {
+    return remoteSessionControlBarHidden(protocol, this.sessionControlBarVisibility());
+  }
+
   private shouldShowRemoteSessionTopBar(): boolean {
     const host: RemoteHost | null = this.pendingHost;
     if (!host) { return false; }
-    return shouldShowRemoteSessionTopBar(host.protocol);
+    return shouldShowRemoteSessionTopBar(host.protocol) &&
+      !this.isSessionControlBarHidden(host.protocol);
   }
 
   private shouldUseRemoteSessionEdgeRail(): boolean {
@@ -1566,8 +1589,9 @@ struct RemoteDesktop {
   }
 
   private shouldShowVncSessionToolbar(): boolean {
+    if (this.isSessionControlBarHidden('vnc')) { return false; }
     if (!shouldShowVncSessionToolbar(this.currentProtocolName(), this.connected, this.sessionId,
-      this.isDesktopDevice, this.pcSessionTopBarHidden)) {
+      this.isDesktopDevice, false)) {
       return false;
     }
     if (this.vncToolbarDeviceClass() === 'pc') {
@@ -4126,45 +4150,29 @@ struct RemoteDesktop {
     }
   }
 
-  /** Keep direct-to-session routes in sync with the device-local restore switch. */
-  private restorePcSessionTopBarPreference(): void {
+  /** Keep direct-to-session routes in sync with the per-protocol local switches. */
+  private restoreSessionControlBarVisibilityPreferences(): void {
     try {
       const prefs = preferences.getPreferencesSync(getContext(this), { name: 'RemoteDesktopAppPrefs' });
-      this.pcSessionTopBarHidden = prefs.getSync(PC_SESSION_TOP_BAR_HIDDEN_KEY, false) as boolean;
+      this.sessionControlBarHiddenRdp =
+        prefs.getSync(REMOTE_SESSION_CONTROL_BAR_HIDDEN_RDP_KEY, false) as boolean;
+      this.sessionControlBarHiddenRustDesk =
+        prefs.getSync(REMOTE_SESSION_CONTROL_BAR_HIDDEN_RUSTDESK_KEY, false) as boolean;
+      this.sessionControlBarHiddenVnc =
+        prefs.getSync(REMOTE_SESSION_CONTROL_BAR_HIDDEN_VNC_KEY, false) as boolean;
     } catch (err) {
-      this.pcSessionTopBarHidden = false;
+      this.sessionControlBarHiddenRdp = false;
+      this.sessionControlBarHiddenRustDesk = false;
+      this.sessionControlBarHiddenVnc = false;
       hilog.warn(RD_DOMAIN, RD_TAG,
-        'restorePcSessionTopBarPreference fallback to visible: ' + JSON.stringify(err));
+        'restoreSessionControlBarVisibilityPreferences fallback to visible: ' + JSON.stringify(err));
     }
-    AppStorage.setOrCreate(PC_SESSION_TOP_BAR_HIDDEN_KEY, this.pcSessionTopBarHidden);
-  }
-
-  private requestHidePcSessionTopBar(protocolLabel: string): void {
-    if (!this.isDesktopDevice || this.pcSessionTopBarHidden) {
-      return;
-    }
-    promptAction.showDialog({
-      title: '完全隐藏 ' + protocolLabel + ' 顶栏？',
-      message: '隐藏后，本次及后续 PC 会话内不再保留展开入口。仍可使用系统返回或关闭窗口退出；退出后可在“设置 > 显示与交互”关闭隐藏开关来恢复。',
-      isModal: true,
-      buttons: [
-        { text: '取消', color: 'rgba(255,255,255,0.7)' },
-        { text: '完全隐藏', color: '#FF5353' }
-      ]
-    }).then((result: Object): void => {
-      const response: Record<string, number> = result as Record<string, number>;
-      if (response['index'] !== 1) {
-        return;
-      }
-      this.pcSessionTopBarHidden = true;
-      this.persistSessionPref(PC_SESSION_TOP_BAR_HIDDEN_KEY, true);
-      promptAction.showToast({
-        message: '顶栏已隐藏；可在“设置 > 显示与交互”恢复',
-        duration: 2200
-      });
-    }).catch((err: Error): void => {
-      hilog.warn(RD_DOMAIN, RD_TAG, 'hide PC session top bar dialog failed: ' + JSON.stringify(err));
-    });
+    AppStorage.setOrCreate(REMOTE_SESSION_CONTROL_BAR_HIDDEN_RDP_KEY,
+      this.sessionControlBarHiddenRdp);
+    AppStorage.setOrCreate(REMOTE_SESSION_CONTROL_BAR_HIDDEN_RUSTDESK_KEY,
+      this.sessionControlBarHiddenRustDesk);
+    AppStorage.setOrCreate(REMOTE_SESSION_CONTROL_BAR_HIDDEN_VNC_KEY,
+      this.sessionControlBarHiddenVnc);
   }
 
   /** Keep direct-to-session navigation on the same safe Fit migration as the settings page. */
@@ -7085,7 +7093,7 @@ struct RemoteDesktop {
     this.physicalKeyboardLayoutConfirmed = false;
     this.physicalKeyboardLayoutPromptVisible = false;
     this.xComponentController.setListener(this);
-    this.restorePcSessionTopBarPreference();
+    this.restoreSessionControlBarVisibilityPreferences();
     this.restoreRemoteDisplayScalePreference();
     this.restoreRemoteCustomShortcuts();
     this.registerInputDeviceWatcher();
@@ -16963,7 +16971,8 @@ struct RemoteDesktop {
         })
       }
 
-      if (this.connected && this.isRdpRemoteSession()) {
+      if (this.connected && this.isRdpRemoteSession() &&
+          !this.isSessionControlBarHidden('rdp')) {
         if (remoteTopBarLayout(this.isDesktopDevice, this.breakpoint, this.isPadDevice).deviceClass !== 'pc') {
           Stack({ alignContent: Alignment.End }) {
             RdpSessionToolbar({
@@ -16991,12 +17000,13 @@ struct RemoteDesktop {
               availableHeight: this.rdpToolbarAvailableHeight(),
               onAction: (action: RdpToolbarAction): void => { this.handleRdpToolbarAction(action); }
             })
-          }.width('100%').height(80).position({ x: 0, y: 12 })
+          }.width('100%').height(80).position({ x: 0, y: 0 })
             .hitTestBehavior(HitTestMode.Transparent).zIndex(220)
         }
       }
 
-      if (this.connected && this.isRdpRemoteSession() && this.rdpControlCenterVisible) {
+      if (this.connected && this.isRdpRemoteSession() && this.rdpControlCenterVisible &&
+          !this.isSessionControlBarHidden('rdp')) {
         Stack({ alignContent: Alignment.End }) {
           RdpControlCenter({
             hostName: this.pendingHost === null ? '' : this.pendingHost.label,

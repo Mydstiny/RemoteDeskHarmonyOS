@@ -7,6 +7,9 @@ import {
   REMOTE_SESSION_COLLAPSED_RAIL_ICON,
   REMOTE_SESSION_COLLAPSED_RAIL_TOUCH_WIDTH,
   REMOTE_SESSION_COLLAPSED_RAIL_WIDTH,
+  REMOTE_SESSION_COLLAPSED_TOP_HEIGHT,
+  REMOTE_SESSION_COLLAPSED_TOP_TOUCH_HEIGHT,
+  REMOTE_SESSION_COLLAPSED_TOP_WIDTH,
   remoteSessionRailDragOffset,
   remoteSessionRailShouldCollapse
 } from '../services/RemoteSessionTopBarPolicy';
@@ -236,16 +239,24 @@ export struct VncSessionToolbar {
 
   @Builder
   private pcCollapsedToolbar() {
-    Row() {
-      SymbolGlyph($r('sys.symbol.chevron_down')).fontSize(16).fontColor(['#444444'])
+    Stack() {
+      Row() {
+        SymbolGlyph($r('sys.symbol.chevron_down')).fontSize(15)
+          .fontColor([REMOTE_SESSION_COLLAPSED_RAIL_ICON])
+      }
+      .width(REMOTE_SESSION_COLLAPSED_TOP_WIDTH)
+      .height(REMOTE_SESSION_COLLAPSED_TOP_HEIGHT)
+      .justifyContent(FlexAlign.Center)
+      .borderRadius({ topLeft: 0, topRight: 0, bottomLeft: 10, bottomRight: 10 })
+      .backgroundColor(REMOTE_SESSION_COLLAPSED_RAIL_BACKGROUND)
+      .backdropBlur(16)
+      .border({ width: 0.5, color: REMOTE_SESSION_COLLAPSED_RAIL_BORDER })
+      .shadow({ radius: 6, color: 'rgba(0,0,0,0.14)', offsetY: 1 })
+      .position({ x: 0, y: 0 })
     }
-    .width(48).height(28).justifyContent(FlexAlign.Center)
-    .borderRadius({ topLeft: 0, topRight: 0, bottomLeft: 8, bottomRight: 8 })
-    .backgroundColor(REMOTE_SESSION_COLLAPSED_RAIL_BACKGROUND)
-    .backdropBlur(16)
-    .border({ width: 0.5, color: REMOTE_SESSION_COLLAPSED_RAIL_BORDER })
-    .shadow({ radius: 6, color: 'rgba(0,0,0,0.14)', offsetY: 2 })
-    .position({ x: '50%', y: 8 }).markAnchor({ x: '50%', y: 0 })
+    .width(REMOTE_SESSION_COLLAPSED_TOP_WIDTH)
+    .height(REMOTE_SESSION_COLLAPSED_TOP_TOUCH_HEIGHT)
+    .position({ x: '50%', y: 0 }).markAnchor({ x: '50%', y: 0 })
     .accessibilityText(this.viewOnly ? '展开 VNC 只读会话工具栏' : '展开 VNC 会话工具栏')
     .onClick((): void => { this.actions.onExpand(); })
   }
@@ -281,7 +292,7 @@ export struct VncSessionToolbar {
       .accessibilityText('收起 VNC 会话工具栏')
       .onClick((): void => { this.actions.onCollapse(); })
     }
-    .position({ x: '50%', y: 8 })
+    .position({ x: '50%', y: 0 })
     .markAnchor({ x: '50%', y: 0 })
   }
 

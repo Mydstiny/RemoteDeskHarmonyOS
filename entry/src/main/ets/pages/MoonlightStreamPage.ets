@@ -1,5 +1,6 @@
 import { display, promptAction, router, window } from '@kit.ArkUI';
 import { common } from '@kit.AbilityKit';
+import { preferences } from '@kit.ArkData';
 import { connection } from '@kit.NetworkKit';
 import { KeyCode, pointer } from '@kit.InputKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
@@ -14,6 +15,8 @@ import {
 } from '../services/SessionContextualGuidePolicy';
 import { GUIDE_ALWAYS_VISIBLE_STORAGE_KEY } from '../services/GuideVisibilityPolicy';
 import { GuideVisibilityService } from '../services/GuideVisibilityService';
+import { REMOTE_SESSION_CONTROL_BAR_HIDDEN_MOONLIGHT_KEY } from
+  '../services/RemoteSessionTopBarPolicy';
 import { MoonlightConnectStageOverlay } from '../components/moonlight/MoonlightConnectStageOverlay';
 import { MoonlightDiagnosticsHud } from '../components/moonlight/MoonlightDiagnosticsHud';
 import { MoonlightControlCenter, MoonlightControlMode } from '../components/moonlight/MoonlightControlCenter';
@@ -286,6 +289,8 @@ struct MoonlightStreamPage {
   @StorageProp(GUIDE_ALWAYS_VISIBLE_STORAGE_KEY) guideAlwaysVisible: boolean = false;
   @StorageProp('liveViewEnabled') liveViewEnabled: boolean = true;
   @StorageProp('liveViewMode') liveViewMode: number = 1;
+  @StorageLink(REMOTE_SESSION_CONTROL_BAR_HIDDEN_MOONLIGHT_KEY)
+  sessionControlBarHiddenMoonlight: boolean = false;
   @StorageLink('remoteDesktopBgFlag') @Watch('onRemoteDesktopBgFlagChange')
   appBackgroundSignal: boolean = false;
   @LocalStorageLink('sessionWindowBackground') @Watch('onSessionWindowBackgroundChange')
@@ -878,7 +883,23 @@ struct MoonlightStreamPage {
     });
   }
 
+  private restoreMoonlightControlBarVisibilityPreference(): void {
+    try {
+      const prefs = preferences.getPreferencesSync(
+        getContext(this), { name: 'RemoteDesktopAppPrefs' });
+      this.sessionControlBarHiddenMoonlight =
+        prefs.getSync(REMOTE_SESSION_CONTROL_BAR_HIDDEN_MOONLIGHT_KEY, false) as boolean;
+    } catch (error) {
+      this.sessionControlBarHiddenMoonlight = false;
+      hilog.warn(0x0014, 'MoonlightStreamUi',
+        'restore control bar visibility fallback to visible: ' + JSON.stringify(error));
+    }
+    AppStorage.setOrCreate(REMOTE_SESSION_CONTROL_BAR_HIDDEN_MOONLIGHT_KEY,
+      this.sessionControlBarHiddenMoonlight);
+  }
+
   aboutToAppear(): void {
+    this.restoreMoonlightControlBarVisibilityPreference();
     this.cancelPendingMoonlightDisappearDecision();
     this.refreshMoonlightPipRestorePageId('about-to-appear');
     if (this.pageActive && !this.routeTerminated && this.nativeSessionId > 0) {
@@ -5084,9 +5105,10 @@ struct MoonlightStreamPage {
         .zIndex(120)
         .hitTestBehavior(HitTestMode.None)
 
-      if (this.toolbarLayout().edgeRail) {
-        Stack({ alignContent: Alignment.End }) {
-          MoonlightSessionToolbar({
+      if (!this.sessionControlBarHiddenMoonlight) {
+        if (this.toolbarLayout().edgeRail) {
+          Stack({ alignContent: Alignment.End }) {
+            MoonlightSessionToolbar({
             audioAvailable: this.effectiveSettings.audio.enabled && this.audioReady,
             controllerAvailable: this.controllerReady,
             pipAvailable: this.pipAvailable(),
@@ -5104,17 +5126,17 @@ struct MoonlightStreamPage {
             onUnavailable: (reason: string): void => {
               promptAction.showToast({ message: reason, duration: 1800 });
             }
-          })
-        }
-        // Anchor to the actual ArkUI session viewport. Surface geometry can
-        // temporarily exclude a fold/safe-area inset during rotation, which
-        // previously left a visible gap between the rail and the right edge.
-        .width('100%').height('100%')
-        .hitTestBehavior(HitTestMode.Transparent)
-        .zIndex(220)
-      } else {
-        Stack({ alignContent: Alignment.Top }) {
-          MoonlightSessionToolbar({
+            })
+          }
+          // Anchor to the actual ArkUI session viewport. Surface geometry can
+          // temporarily exclude a fold/safe-area inset during rotation, which
+          // previously left a visible gap between the rail and the right edge.
+          .width('100%').height('100%')
+          .hitTestBehavior(HitTestMode.Transparent)
+          .zIndex(220)
+        } else {
+          Stack({ alignContent: Alignment.Top }) {
+            MoonlightSessionToolbar({
             audioAvailable: this.effectiveSettings.audio.enabled && this.audioReady,
             controllerAvailable: this.controllerReady,
             pipAvailable: this.pipAvailable(),
@@ -5132,12 +5154,13 @@ struct MoonlightStreamPage {
             onUnavailable: (reason: string): void => {
               promptAction.showToast({ message: reason, duration: 1800 });
             }
-          })
+            })
+          }
+          .width('100%').height(80)
+          .position({ x: 0, y: 0 })
+          .hitTestBehavior(HitTestMode.Transparent)
+          .zIndex(220)
         }
-        .width('100%').height(80)
-        .position({ x: 0, y: this.toolbarLayout().topOffset })
-        .hitTestBehavior(HitTestMode.Transparent)
-        .zIndex(220)
       }
 
       if (this.sessionWindowId.length > 0) {

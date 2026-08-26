@@ -6,6 +6,9 @@ import {
   REMOTE_SESSION_COLLAPSED_RAIL_ICON,
   REMOTE_SESSION_COLLAPSED_RAIL_TOUCH_WIDTH,
   REMOTE_SESSION_COLLAPSED_RAIL_WIDTH,
+  REMOTE_SESSION_COLLAPSED_TOP_HEIGHT,
+  REMOTE_SESSION_COLLAPSED_TOP_TOUCH_HEIGHT,
+  REMOTE_SESSION_COLLAPSED_TOP_WIDTH,
   RemoteSessionPrimaryActionId,
   RemoteTopBarLayout,
   remoteSessionPrimaryActionIds,
@@ -97,7 +100,7 @@ export struct RemoteSessionTopBar {
     deviceClass: 'pc',
     iconSize: 44,
     itemGap: 8,
-    topOffset: 8,
+    topOffset: 0,
     maxVisibleButtons: 8,
     menuWidth: 360
   };
@@ -908,7 +911,7 @@ export struct RemoteSessionTopBar {
       .backgroundColor('rgba(255,255,255,0.94)')
       .backdropBlur(16)
       .border({ width: 0.5, color: REMOTE_SESSION_COLLAPSED_RAIL_BORDER })
-      .borderRadius(10)
+      .borderRadius({ topLeft: 0, topRight: 0, bottomLeft: 10, bottomRight: 10 })
       .shadow({ radius: 10, color: 'rgba(0,0,0,0.24)', offsetY: 2 })
       .position({ x: 0, y: 0 })
 
@@ -1058,6 +1061,34 @@ export struct RemoteSessionTopBar {
     })
   }
 
+  @Builder
+  private topBarHandle() {
+    Stack() {
+      Row() {
+        SymbolGlyph($r('sys.symbol.chevron_down'))
+          .fontSize(15)
+          .fontColor([REMOTE_SESSION_COLLAPSED_RAIL_ICON])
+      }
+      .width(REMOTE_SESSION_COLLAPSED_TOP_WIDTH)
+      .height(REMOTE_SESSION_COLLAPSED_TOP_HEIGHT)
+      .justifyContent(FlexAlign.Center)
+      .backgroundColor(REMOTE_SESSION_COLLAPSED_RAIL_BACKGROUND)
+      .backdropBlur(16)
+      .border({ width: 0.5, color: REMOTE_SESSION_COLLAPSED_RAIL_BORDER })
+      .borderRadius({ topLeft: 0, topRight: 0, bottomLeft: 10, bottomRight: 10 })
+      .shadow({ radius: 6, color: 'rgba(0,0,0,0.14)', offsetY: 1 })
+      .position({ x: 0, y: 0 })
+    }
+    .width(REMOTE_SESSION_COLLAPSED_TOP_WIDTH)
+    .height(REMOTE_SESSION_COLLAPSED_TOP_TOUCH_HEIGHT)
+    .hitTestBehavior(HitTestMode.BLOCK_HIERARCHY)
+    .accessibilityText('展开会话顶栏')
+    .onClick((): void => {
+      this.collapsed = false;
+      this.scheduleAutoCollapse();
+    })
+  }
+
   build() {
     Stack() {
       if (this.edgeRail) {
@@ -1069,30 +1100,14 @@ export struct RemoteSessionTopBar {
       } else {
         Stack({ alignContent: Alignment.Top }) {
           if (this.collapsed) {
-            Row() {
-              SymbolGlyph($r('sys.symbol.ellipsis_bubble'))
-                .fontSize(18)
-                .fontColor([REMOTE_SESSION_COLLAPSED_RAIL_ICON])
-            }
-            .width(48)
-            .height(28)
-            .justifyContent(FlexAlign.Center)
-            .backgroundColor(REMOTE_SESSION_COLLAPSED_RAIL_BACKGROUND)
-            .backdropBlur(16)
-            .border({ width: 0.5, color: REMOTE_SESSION_COLLAPSED_RAIL_BORDER })
-            .borderRadius({ topLeft: 0, topRight: 0, bottomLeft: 8, bottomRight: 8 })
-            .shadow({ radius: 8, color: 'rgba(0,0,0,0.22)', offsetY: 2 })
-            .onClick((): void => {
-              this.collapsed = false;
-              this.scheduleAutoCollapse();
-            })
+            this.topBarHandle()
           } else {
             this.toolbarBody()
           }
         }
         .width('100%')
-        .height(this.collapsed ? 32 : 540)
-        .position({ x: 0, y: this.layout.topOffset })
+        .height(this.collapsed ? REMOTE_SESSION_COLLAPSED_TOP_TOUCH_HEIGHT : 540)
+        .position({ x: 0, y: 0 })
         .hitTestBehavior(HitTestMode.Transparent)
       }
     }

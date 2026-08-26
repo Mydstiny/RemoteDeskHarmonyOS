@@ -2,8 +2,24 @@ import { RemoteSessionCapabilities, resolveSessionCapabilities } from './RemoteS
 
 export type RemoteTopBarDeviceClass = 'pc' | 'pad' | 'phone';
 
-/** Legacy preference retained for migration; connected session bars now stay reachable. */
+/** Legacy PC-only preference retained for compatibility; new code uses protocol keys below. */
 export const PC_SESSION_TOP_BAR_HIDDEN_KEY: string = 'pcSessionTopBarHidden';
+
+export const REMOTE_SESSION_CONTROL_BAR_HIDDEN_RDP_KEY: string =
+  'remoteSessionControlBarHiddenRdp';
+export const REMOTE_SESSION_CONTROL_BAR_HIDDEN_RUSTDESK_KEY: string =
+  'remoteSessionControlBarHiddenRustDesk';
+export const REMOTE_SESSION_CONTROL_BAR_HIDDEN_VNC_KEY: string =
+  'remoteSessionControlBarHiddenVnc';
+export const REMOTE_SESSION_CONTROL_BAR_HIDDEN_MOONLIGHT_KEY: string =
+  'remoteSessionControlBarHiddenMoonlight';
+
+export interface RemoteSessionControlBarVisibility {
+  rdpHidden: boolean;
+  rustDeskHidden: boolean;
+  vncHidden: boolean;
+  moonlightHidden: boolean;
+}
 
 export type RemoteTopBarMenuId = 'control' | 'display' | 'keyboardMouse' | 'chat' | 'voice' | 'record';
 
@@ -54,6 +70,29 @@ export const REMOTE_SESSION_COLLAPSED_RAIL_ICON: string =
   'rgba(36,40,48,0.72)';
 export const REMOTE_SESSION_COLLAPSED_RAIL_BORDER: string =
   'rgba(255,255,255,0.48)';
+/** PC equivalent of the right-edge affordance, rotated onto the top edge. */
+export const REMOTE_SESSION_COLLAPSED_TOP_WIDTH: number = 72;
+export const REMOTE_SESSION_COLLAPSED_TOP_TOUCH_HEIGHT: number = 40;
+export const REMOTE_SESSION_COLLAPSED_TOP_HEIGHT: number = 22;
+
+export function remoteSessionControlBarHidden(protocol: string,
+  visibility: RemoteSessionControlBarVisibility): boolean {
+  if (protocol === 'rdp') { return visibility.rdpHidden; }
+  if (protocol === 'rustdesk') { return visibility.rustDeskHidden; }
+  if (protocol === 'vnc') { return visibility.vncHidden; }
+  if (protocol === 'moonlight') { return visibility.moonlightHidden; }
+  return false;
+}
+
+export function remoteSessionControlBarSelectionSummary(
+  visibility: RemoteSessionControlBarVisibility): string {
+  const hiddenLabels: string[] = [];
+  if (visibility.rdpHidden) { hiddenLabels.push('RDP'); }
+  if (visibility.rustDeskHidden) { hiddenLabels.push('RustDesk'); }
+  if (visibility.vncHidden) { hiddenLabels.push('VNC'); }
+  if (visibility.moonlightHidden) { hiddenLabels.push('Moonlight'); }
+  return hiddenLabels.length === 0 ? '全部显示' : '已隐藏：' + hiddenLabels.join('、');
+}
 
 export function remoteSessionRailDragOffset(offsetX: number): number {
   if (!Number.isFinite(offsetX) || offsetX <= 0) {
@@ -135,9 +174,9 @@ export function remoteTopBarLayout(isDesktopDevice: boolean, breakpoint: string,
   const deviceClass: RemoteTopBarDeviceClass = remoteTopBarDeviceClass(isDesktopDevice, breakpoint, isPadDevice);
   if (deviceClass === 'pc') {
     if (breakpoint !== 'xl') {
-      return { deviceClass, iconSize: 36, itemGap: 4, topOffset: 6, maxVisibleButtons: 8, menuWidth: 320 };
+      return { deviceClass, iconSize: 36, itemGap: 4, topOffset: 0, maxVisibleButtons: 8, menuWidth: 320 };
     }
-    return { deviceClass, iconSize: 44, itemGap: 8, topOffset: 8, maxVisibleButtons: 8, menuWidth: 360 };
+    return { deviceClass, iconSize: 44, itemGap: 8, topOffset: 0, maxVisibleButtons: 8, menuWidth: 360 };
   }
   if (deviceClass === 'pad') {
     return { deviceClass, iconSize: 44, itemGap: 8, topOffset: 8, maxVisibleButtons: 8, menuWidth: 340 };
