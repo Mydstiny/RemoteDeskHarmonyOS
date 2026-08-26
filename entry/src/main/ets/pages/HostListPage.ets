@@ -16781,20 +16781,20 @@ struct HostListPage {
       return SheetSize.FIT_CONTENT;
     }
     const isLongFlow: boolean = this.isVncAddSheet() || this.modernAddProtocol === 'ssh';
-    if (this.isVncAddSheet() || this.modernAddProtocol === 'ssh') {
-      return SheetSize.FIT_CONTENT;
-    }
     if (isLongFlow && this.breakpoint === 'sm') {
-      return SheetSize.FIT_CONTENT;
+      // Long forms need a bounded viewport so keyboard avoidance can shrink
+      // the scrollable body without pushing the sheet actions off screen.
+      const availableHeight: number = Math.max(420,
+        this.windowH - this.topSafeHeightVp() - 24);
+      return Math.min(760, availableHeight);
     }
     return isLongFlow ? SheetSize.LARGE : SheetSize.FIT_CONTENT;
   }
 
   private hostAddSheetKeyboardAvoidMode(): SheetKeyboardAvoidMode {
-    if (this.isVncAddSheet() && this.breakpoint !== 'sm') {
-      return SheetKeyboardAvoidMode.RESIZE_ONLY;
-    }
-    return SheetKeyboardAvoidMode.TRANSLATE_AND_SCROLL;
+    return this.isVncAddSheet()
+      ? SheetKeyboardAvoidMode.RESIZE_ONLY
+      : SheetKeyboardAvoidMode.TRANSLATE_AND_SCROLL;
   }
 
   @Builder hostAddSheetContent() {
