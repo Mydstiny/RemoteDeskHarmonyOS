@@ -43,12 +43,15 @@ VideoFrameAdmission VideoBackpressureController::admitFrame(size_t queuedFrames,
 
     if (queuedFrames >= maxQueuedFrames_) {
         ++droppedFrames_;
-        if (!isKeyFrame && !keyframeRequestPending_) {
-            keyframeRequestPending_ = true;
-            ++keyframeRequests_;
+        if (!isKeyFrame) {
+            waitingForKeyframe_ = true;
+            if (!keyframeRequestPending_) {
+                keyframeRequestPending_ = true;
+                ++keyframeRequests_;
+            }
+            return VideoFrameAdmission::DropAndWaitForKeyframe;
         }
-        return isKeyFrame ? VideoFrameAdmission::AcceptRecoveryKeyframe :
-            VideoFrameAdmission::AcceptAfterSoftDrop;
+        return VideoFrameAdmission::AcceptRecoveryKeyframe;
     }
 
     return VideoFrameAdmission::Accept;

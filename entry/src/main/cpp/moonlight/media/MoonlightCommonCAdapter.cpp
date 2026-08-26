@@ -67,6 +67,44 @@ constexpr std::int32_t kMaximumPacketSizeBytes = 4096;
 constexpr std::uint32_t kKnownEncryptionStreams =
     MoonlightStreamEncryptAudio | MoonlightStreamEncryptVideo;
 
+#if !defined(RDP_TESTS_ONLY)
+bool claimCommonCLogInterval(std::atomic<std::uint64_t>& lastLogMs,
+                             std::uint64_t nowMs,
+                             std::uint64_t intervalMs) noexcept {
+    auto previous = lastLogMs.load(std::memory_order_relaxed);
+    while (previous == 0U || nowMs < previous || nowMs - previous >= intervalMs) {
+        if (lastLogMs.compare_exchange_weak(previous, nowMs,
+                                            std::memory_order_relaxed,
+                                            std::memory_order_relaxed)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool shouldEmitCommonCLog(const char* format) noexcept {
+    if (format == nullptr) { return true; }
+    static std::atomic<std::uint64_t> lastWaitingForIdrMs {0U};
+    static std::atomic<std::uint64_t> lastUnrecoverableFrameMs {0U};
+    std::atomic<std::uint64_t>* limiter = nullptr;
+    if (std::strncmp(format, "Waiting for IDR frame",
+                     sizeof("Waiting for IDR frame") - 1U) == 0) {
+        limiter = &lastWaitingForIdrMs;
+    } else if (std::strncmp(format, "Unrecoverable frame",
+                            sizeof("Unrecoverable frame") - 1U) == 0) {
+        limiter = &lastUnrecoverableFrameMs;
+    }
+    if (limiter == nullptr) { return true; }
+    const auto nowMs = static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count());
+    // Loss recovery may emit one message per packet on the video receive
+    // thread. One representative notice per second keeps the useful signal
+    // without turning a weak wireless burst into a logging/UI-event storm.
+    return claimCommonCLogInterval(*limiter, nowMs, 1000U);
+}
+#endif
+
 static_assert(sizeof(int) >= sizeof(std::int32_t));
 static_assert(sizeof(STREAM_CONFIGURATION::remoteInputAesKey) == kRemoteInputBytes);
 static_assert(sizeof(STREAM_CONFIGURATION::remoteInputAesIv) == kRemoteInputBytes);
@@ -1035,6 +1073,7 @@ void commonStageFailed(int stage, int error) { (void)routeStageFailed(stage, err
 void commonConnectionStarted() { (void)routeConnectionStarted(); }
 void commonConnectionTerminated(int error) { (void)routeConnectionTerminated(error); }
 void commonLogMessage(const char* format, ...) {
+    if (!shouldEmitCommonCLog(format)) { return; }
     if (format != nullptr) {
         char message[1024] {};
         va_list arguments;
@@ -2176,16 +2215,16 @@ int Invocation::mapVideoSubmitResultLocked(
     }
     if (result.status == MoonlightVideoSubmitStatus::Accepted ||
         result.status == MoonlightVideoSubmitStatus::Backpressure) {
-        // The decoder either accepted the current frame after a latency soft
-        // drop, or was momentarily busy. Keep common-c's depacketizer open and
-        // request the IDR through its asynchronous control-stream API. Using
-        // DR_NEED_IDR here caused common-c to discard every later P-frame and
-        // freeze high-motion streams until the host eventually sent an IDR.
+        // The decoder either requested a refresh after entering its own
+        // keyframe gate, or was momentarily busy. Keep common-c's depacketizer
+        // open and request the IDR through its asynchronous control-stream
+        // API. Decoder-side admission drops unsafe dependent frames without
+        // making common-c freeze its complete video delivery path.
         if (!videoIdrRequestPending_) {
             videoIdrRequestPending_ = true;
 #if !defined(RDP_TESTS_ONLY)
             OH_LOG_WARN(LOG_APP,
-                        "soft video pressure: request IDR out of band and keep P-frame admission open");
+                        "video pressure: request IDR out of band; decoder owns dependent-frame gate");
 #endif
             driver_->requestIdr();
         }

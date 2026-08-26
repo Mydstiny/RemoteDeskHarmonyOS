@@ -3,7 +3,8 @@ import {
   shouldHideSystemPointerForEmbeddedRemoteCursor,
   shouldHideSystemPointerForVirtualTouchpad,
   shouldRenderTouchPointerIndicator,
-  shouldUseSystemMousePointer
+  shouldUseSystemMousePointer,
+  shouldWakeEmbeddedMacRemoteCursor
 } from '../main/ets/services/RemotePointerModePolicy';
 
 export default function remotePointerModePolicyTest() {
@@ -40,6 +41,27 @@ export default function remotePointerModePolicyTest() {
         true, true, false, false)).assertFalse();
       expect(shouldHideSystemPointerForEmbeddedRemoteCursor(
         true, true, true, true)).assertFalse();
+      expect(shouldHideSystemPointerForEmbeddedRemoteCursor(
+        true, true, true, false, true)).assertFalse();
+      expect(shouldHideSystemPointerForEmbeddedRemoteCursor(
+        true, true, false, false, false, true)).assertTrue();
+      expect(shouldHideSystemPointerForEmbeddedRemoteCursor(
+        true, true, false, false, true, true)).assertFalse();
+      expect(shouldHideSystemPointerForEmbeddedRemoteCursor(
+        true, true, false, true, false, true)).assertFalse();
+    });
+
+    it('wakes_a_hidden_embedded_mac_cursor_without_spamming_pointer_motion', 0, (): void => {
+      expect(shouldWakeEmbeddedMacRemoteCursor(
+        true, true, false, 2000, 0, 250)).assertTrue();
+      expect(shouldWakeEmbeddedMacRemoteCursor(
+        true, false, true, 2000, 1000, 250)).assertTrue();
+      expect(shouldWakeEmbeddedMacRemoteCursor(
+        true, true, false, 1100, 1000, 250)).assertFalse();
+      expect(shouldWakeEmbeddedMacRemoteCursor(
+        true, false, false, 2000, 0, 250)).assertFalse();
+      expect(shouldWakeEmbeddedMacRemoteCursor(
+        false, true, true, 2000, 0, 250)).assertFalse();
     });
   });
 }

@@ -118,6 +118,10 @@ MoonlightVirtualControllerElementKind virtualElementKind(
             return MoonlightVirtualControllerElementKind::RightStickClick;
         case MoonlightProductVirtualControllerElement::Menu:
             return MoonlightVirtualControllerElementKind::Menu;
+        case MoonlightProductVirtualControllerElement::Back:
+            return MoonlightVirtualControllerElementKind::Back;
+        case MoonlightProductVirtualControllerElement::Special:
+            return MoonlightVirtualControllerElementKind::Special;
         case MoonlightProductVirtualControllerElement::Invalid:
             return MoonlightVirtualControllerElementKind::Invalid;
     }

@@ -30,9 +30,12 @@ MoonlightGameControllerButtonInput : std::uint8_t {
     DpadRight,
     LeftShoulder,
     RightShoulder,
+    LeftTrigger,
+    RightTrigger,
     LeftStick,
     RightStick,
     Menu,
+    Home,
 };
 
 REMOTEDESK_MOONLIGHT_GAME_CONTROLLER_HIDDEN bool

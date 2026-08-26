@@ -157,6 +157,48 @@ RDP_TEST_CASE(moonlight_keyboard_maps_harmony_namespace_to_official_prefixed_vk)
     RDP_ASSERT(mapHarmonyKeyCodeToMoonlight(0xFFFFFFFFU).supported == false);
 }
 
+RDP_TEST_CASE(moonlight_keyboard_catalog_covers_the_complete_standard_physical_keyboard) {
+    for (std::uint32_t keyCode = 48U; keyCode <= 57U; ++keyCode) {
+        RDP_ASSERT(mapHarmonyKeyCodeToMoonlight(keyCode).supported);
+    }
+    for (std::uint32_t keyCode = 65U; keyCode <= 90U; ++keyCode) {
+        RDP_ASSERT(mapHarmonyKeyCodeToMoonlight(keyCode).supported);
+    }
+    for (std::uint32_t keyCode = 2000U; keyCode <= 2009U; ++keyCode) {
+        RDP_ASSERT(mapHarmonyKeyCodeToMoonlight(keyCode).supported);
+    }
+    for (std::uint32_t keyCode = 2017U; keyCode <= 2042U; ++keyCode) {
+        RDP_ASSERT(mapHarmonyKeyCodeToMoonlight(keyCode).supported);
+    }
+    for (std::uint32_t keyCode = 2090U; keyCode <= 2101U; ++keyCode) {
+        RDP_ASSERT(mapHarmonyKeyCodeToMoonlight(keyCode).supported);
+    }
+    for (std::uint32_t keyCode = 2816U; keyCode <= 2827U; ++keyCode) {
+        RDP_ASSERT(mapHarmonyKeyCodeToMoonlight(keyCode).supported);
+    }
+    for (std::uint32_t keyCode = 2103U; keyCode <= 2117U; ++keyCode) {
+        RDP_ASSERT(mapHarmonyKeyCodeToMoonlight(keyCode).supported);
+    }
+    constexpr std::array<std::uint32_t, 50U> fixedKeys{{
+        2012U, 2013U, 2014U, 2015U,
+        2043U, 2044U, 2045U, 2046U, 2047U, 2048U, 2049U, 2050U,
+        2054U, 2055U, 2056U, 2057U, 2058U, 2059U, 2060U, 2061U,
+        2062U, 2063U, 2064U, 2065U, 2066U, 2067U, 2068U, 2069U,
+        2070U, 2071U, 2072U, 2073U, 2074U, 2075U, 2076U, 2077U,
+        2079U, 2080U, 2081U, 2082U, 2083U, 2102U, 2119U, 2120U,
+        186U, 187U, 188U, 189U, 190U, 191U,
+    }};
+    for (const auto keyCode : fixedKeys) {
+        RDP_ASSERT(mapHarmonyKeyCodeToMoonlight(keyCode).supported);
+    }
+    RDP_ASSERT_EQ(mapHarmonyKeyCodeToMoonlight(2076U).protocolKeyCode,
+                  static_cast<std::uint16_t>(0x805BU));
+    RDP_ASSERT_EQ(mapHarmonyKeyCodeToMoonlight(2077U).protocolKeyCode,
+                  static_cast<std::uint16_t>(0x805CU));
+    RDP_ASSERT_EQ(mapHarmonyKeyCodeToMoonlight(2079U).protocolKeyCode,
+                  static_cast<std::uint16_t>(0x802CU));
+}
+
 RDP_TEST_CASE(moonlight_keyboard_rejects_invalid_limits_context_and_source) {
     auto gate = std::make_shared<KeyboardOwnerGate>();
     auto port = std::make_shared<KeyboardPort>();
@@ -266,6 +308,46 @@ RDP_TEST_CASE(moonlight_keyboard_tracks_left_right_modifiers_like_official_clien
                       keyboardContext(fixture.identity, 6U, 105U), 2048U, false, false).status,
                   MoonlightKeyboardStatus::Applied);
     RDP_ASSERT_EQ(fixture.commandAt(5U).modifiers, static_cast<std::uint8_t>(0U));
+    RDP_ASSERT_EQ(fixture.mapper->snapshot(fixture.identity).remoteModifierMask,
+                  static_cast<std::uint8_t>(0U));
+}
+
+RDP_TEST_CASE(moonlight_keyboard_forwards_windows_system_key_chords_in_order) {
+    KeyboardFixture fixture;
+    std::uint64_t sequence = 1U;
+    std::uint64_t timestampUs = 100U;
+    const auto send = [&](std::uint32_t keyCode, bool pressed) {
+        const auto result = fixture.mapper->physicalKey(
+            keyboardContext(fixture.identity, sequence++, timestampUs++),
+            keyCode, pressed, true);
+        RDP_ASSERT_EQ(result.status, MoonlightKeyboardStatus::Applied);
+    };
+
+    send(2076U, true);  // Win down
+    send(2034U, true);  // R down
+    send(2034U, false); // R up
+    send(2076U, false); // Win up
+    send(2045U, true);  // Alt down
+    send(2049U, true);  // Tab down
+    send(2049U, false); // Tab up
+    send(2045U, false); // Alt up
+    send(2072U, true);  // Ctrl down
+    send(2070U, true);  // Escape down
+    send(2070U, false); // Escape up
+    send(2072U, false); // Ctrl up
+
+    RDP_ASSERT_EQ(fixture.port->events.size(), static_cast<std::size_t>(12U));
+    RDP_ASSERT_EQ(fixture.commandAt(0U).protocolKeyCode,
+                  static_cast<std::uint16_t>(0x805BU));
+    RDP_ASSERT_EQ(fixture.commandAt(1U).protocolKeyCode,
+                  static_cast<std::uint16_t>(0x8052U));
+    RDP_ASSERT_EQ(fixture.commandAt(1U).modifiers, static_cast<std::uint8_t>(0x08U));
+    RDP_ASSERT_EQ(fixture.commandAt(5U).protocolKeyCode,
+                  static_cast<std::uint16_t>(0x8009U));
+    RDP_ASSERT_EQ(fixture.commandAt(5U).modifiers, static_cast<std::uint8_t>(0x04U));
+    RDP_ASSERT_EQ(fixture.commandAt(9U).protocolKeyCode,
+                  static_cast<std::uint16_t>(0x801BU));
+    RDP_ASSERT_EQ(fixture.commandAt(9U).modifiers, static_cast<std::uint8_t>(0x02U));
     RDP_ASSERT_EQ(fixture.mapper->snapshot(fixture.identity).remoteModifierMask,
                   static_cast<std::uint8_t>(0U));
 }
@@ -411,26 +493,30 @@ RDP_TEST_CASE(moonlight_keyboard_text_is_strict_utf8_and_never_synthesizes_keys)
                   MoonlightKeyboardStatus::InvalidRequest);
 }
 
-RDP_TEST_CASE(moonlight_keyboard_preserves_physical_escape_as_local_escape) {
+RDP_TEST_CASE(moonlight_keyboard_forwards_physical_escape_to_the_remote_host) {
     KeyboardFixture fixture;
     RDP_ASSERT_EQ(fixture.mapper->physicalKey(
                       keyboardContext(fixture.identity, 1U, 100U), 2070U, true, false).status,
-                  MoonlightKeyboardStatus::LocalEscape);
+                  MoonlightKeyboardStatus::Applied);
     RDP_ASSERT_EQ(fixture.mapper->physicalKey(
                       keyboardContext(fixture.identity, 2U, 101U), 2070U, false, false).status,
-                  MoonlightKeyboardStatus::LocalEscape);
-    RDP_ASSERT_EQ(fixture.port->events.size(), static_cast<std::size_t>(0U));
-    auto onscreen = keyboardContext(fixture.identity, 1U, 102U,
-                                    MoonlightInputSource::OnScreenKeyboard, 51U);
-    RDP_ASSERT_EQ(fixture.mapper->virtualKeyTap(onscreen, 2070U).status,
                   MoonlightKeyboardStatus::Applied);
     RDP_ASSERT_EQ(fixture.port->events.size(), static_cast<std::size_t>(2U));
     RDP_ASSERT_EQ(fixture.commandAt(0U).protocolKeyCode,
                   static_cast<std::uint16_t>(0x801BU));
     RDP_ASSERT_EQ(fixture.commandAt(0U).action, kMoonlightKeyboardActionDown);
     RDP_ASSERT_EQ(fixture.commandAt(1U).action, kMoonlightKeyboardActionUp);
+    auto onscreen = keyboardContext(fixture.identity, 1U, 102U,
+                                    MoonlightInputSource::OnScreenKeyboard, 51U);
+    RDP_ASSERT_EQ(fixture.mapper->virtualKeyTap(onscreen, 2070U).status,
+                  MoonlightKeyboardStatus::Applied);
+    RDP_ASSERT_EQ(fixture.port->events.size(), static_cast<std::size_t>(4U));
+    RDP_ASSERT_EQ(fixture.commandAt(2U).protocolKeyCode,
+                  static_cast<std::uint16_t>(0x801BU));
+    RDP_ASSERT_EQ(fixture.commandAt(2U).action, kMoonlightKeyboardActionDown);
+    RDP_ASSERT_EQ(fixture.commandAt(3U).action, kMoonlightKeyboardActionUp);
     RDP_ASSERT_EQ(fixture.mapper->snapshot(fixture.identity).localEscapeEvents,
-                  static_cast<std::uint64_t>(2U));
+                  static_cast<std::uint64_t>(0U));
 }
 
 RDP_TEST_CASE(moonlight_keyboard_release_all_is_reverse_ordered_and_retryable) {

@@ -344,6 +344,30 @@ RDP_TEST_CASE(moonlight_host_control_adapts_requested_mode_to_authenticated_host
     RDP_ASSERT_EQ(result.effectiveLaunchConfiguration->height, 1080U);
 }
 
+RDP_TEST_CASE(moonlight_host_control_preserves_non_sixteen_nine_aspect_at_host_luma_limit) {
+    Fixture fixture;
+    RDP_ASSERT(fixture.primeCatalog().ok());
+    fixture.transport->push(xmlResponse(serverInfoXml(0U)));
+    fixture.transport->push(xmlResponse(
+        "<root status_code=\"200\"><gamesession>1</gamesession>"
+        "<sessionUrl0>rtsp://adapted-aspect</sessionUrl0></root>"));
+    MoonlightLaunchConfiguration configuration;
+    configuration.width = 2560;
+    configuration.height = 1600;
+    configuration.resolutionPolicy =
+        MoonlightLaunchConfiguration::ResolutionPolicy::HostCapability;
+    configuration.videoCodec = MoonlightLaunchConfiguration::VideoCodec::H264;
+    const auto result = fixture.control->launch(
+        launchRequest(2U, 42U, 1U, configuration));
+    RDP_ASSERT(result.ok());
+    RDP_ASSERT(result.effectiveLaunchConfiguration.has_value());
+    RDP_ASSERT_EQ(result.effectiveLaunchConfiguration->width, 1820U);
+    RDP_ASSERT_EQ(result.effectiveLaunchConfiguration->height, 1138U);
+    RDP_ASSERT(static_cast<std::uint64_t>(
+        result.effectiveLaunchConfiguration->width) *
+        result.effectiveLaunchConfiguration->height <= 2073600U);
+}
+
 } // namespace
 
 RDP_TEST_CASE(moonlight_host_control_rejects_invalid_or_unavailable_access_before_network) {

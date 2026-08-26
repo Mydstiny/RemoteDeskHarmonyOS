@@ -216,7 +216,7 @@ struct AggregateFixture final {
         const auto result = aggregator->installLayout(identity, corrupt, {});
         RDP_ASSERT_EQ(result.status,
                       MoonlightVirtualControllerLayoutStatus::Fallback);
-        RDP_ASSERT_EQ(result.layout.elementCount, static_cast<std::size_t>(14));
+        RDP_ASSERT_EQ(result.layout.elementCount, static_cast<std::size_t>(16));
         RDP_ASSERT_EQ(aggregator->setEditing(identity, false, 3U).status,
                       MoonlightControllerAggregatorStatus::Applied);
         return result.layout;
@@ -350,7 +350,7 @@ RDP_TEST_CASE(moonlight_controller_layout_corruption_falls_back_as_one_unit) {
                   MoonlightVirtualControllerLayoutStatus::Fallback);
     RDP_ASSERT(result.fallbackUsed);
     RDP_ASSERT_EQ(result.layout.generation, static_cast<std::uint64_t>(9));
-    RDP_ASSERT_EQ(result.layout.elementCount, static_cast<std::size_t>(14));
+    RDP_ASSERT_EQ(result.layout.elementCount, static_cast<std::size_t>(16));
     RDP_ASSERT_EQ(result.layout.elements[0U].id, static_cast<std::uint16_t>(1));
 }
 
@@ -437,6 +437,26 @@ RDP_TEST_CASE(moonlight_controller_virtual_semantics_emit_atomic_full_state) {
         findElement(layout, MoonlightVirtualControllerElementKind::DpadCluster),
         5U, MoonlightVirtualControllerPhase::Begin, 1.0, -1.0)).status,
         MoonlightControllerAggregatorStatus::Applied);
+    RDP_ASSERT_EQ(fixture.aggregator->ingestVirtual(virtualEvent(
+        virtualContext(fixture.identity, 7U, 160U),
+        findElement(layout, MoonlightVirtualControllerElementKind::LeftStickClick),
+        6U, MoonlightVirtualControllerPhase::Begin)).status,
+        MoonlightControllerAggregatorStatus::Applied);
+    RDP_ASSERT_EQ(fixture.aggregator->ingestVirtual(virtualEvent(
+        virtualContext(fixture.identity, 8U, 170U),
+        findElement(layout, MoonlightVirtualControllerElementKind::RightStickClick),
+        7U, MoonlightVirtualControllerPhase::Begin)).status,
+        MoonlightControllerAggregatorStatus::Applied);
+    RDP_ASSERT_EQ(fixture.aggregator->ingestVirtual(virtualEvent(
+        virtualContext(fixture.identity, 9U, 180U),
+        findElement(layout, MoonlightVirtualControllerElementKind::Back),
+        8U, MoonlightVirtualControllerPhase::Begin)).status,
+        MoonlightControllerAggregatorStatus::Applied);
+    RDP_ASSERT_EQ(fixture.aggregator->ingestVirtual(virtualEvent(
+        virtualContext(fixture.identity, 10U, 190U),
+        findElement(layout, MoonlightVirtualControllerElementKind::Special),
+        9U, MoonlightVirtualControllerPhase::Begin)).status,
+        MoonlightControllerAggregatorStatus::Applied);
 
     MoonlightControllerWireCommand command;
     RDP_ASSERT(decodeMoonlightControllerCommand(
@@ -445,12 +465,16 @@ RDP_TEST_CASE(moonlight_controller_virtual_semantics_emit_atomic_full_state) {
                   kMoonlightControllerButtonA |
                       kMoonlightControllerButtonB |
                       kMoonlightControllerButtonRight |
-                      kMoonlightControllerButtonUp);
+                      kMoonlightControllerButtonUp |
+                      kMoonlightControllerButtonLeftStick |
+                      kMoonlightControllerButtonRightStick |
+                      kMoonlightControllerButtonBack |
+                      kMoonlightControllerButtonSpecial);
     RDP_ASSERT_EQ(command.state.leftStickX, static_cast<std::int16_t>(16383));
     RDP_ASSERT_EQ(command.state.leftStickY, static_cast<std::int16_t>(16383));
     RDP_ASSERT_EQ(command.state.rightTrigger, static_cast<std::uint8_t>(191));
     const auto snapshot = fixture.aggregator->snapshot(fixture.identity);
-    RDP_ASSERT_EQ(snapshot.activeContacts, static_cast<std::size_t>(5));
+    RDP_ASSERT_EQ(snapshot.activeContacts, static_cast<std::size_t>(9));
     RDP_ASSERT_EQ(snapshot.activeSource, MoonlightControllerSourceKind::Virtual);
 }
 

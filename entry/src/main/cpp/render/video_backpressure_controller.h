@@ -16,6 +16,7 @@ namespace Render {
 enum class VideoFrameAdmission {
     Accept,
     AcceptAfterSoftDrop,
+    DropAndWaitForKeyframe,
     DropWaitingKeyframe,
     AcceptRecoveryKeyframe,
 };

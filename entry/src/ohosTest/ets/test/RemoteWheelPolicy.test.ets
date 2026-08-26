@@ -4,9 +4,11 @@ import {
   VNC_CONTINUOUS_WHEEL_MAX_DELTA,
   VNC_PHYSICAL_WHEEL_MAX_DELTA,
   VNC_PHYSICAL_WHEEL_STEPS,
+  MOONLIGHT_HIGH_RES_WHEEL_DETENT,
   accumulateContinuousRemoteWheel,
   applyRemoteWheelDirection,
   discreteRemoteWheelDelta,
+  moonlightAxisScrollAmount,
   nextVncTouchpadFlingDelta,
   shouldStartVncTouchpadFling
 } from '../../../main/ets/services/RemoteWheelPolicy';
@@ -40,6 +42,19 @@ export default function remoteWheelPolicyTest(): void {
       expect(discreteRemoteWheelDelta(45, 'vnc', 100)).assertEqual(4);
       expect(discreteRemoteWheelDelta(120, 'vnc', 20)).assertEqual(VNC_PHYSICAL_WHEEL_MAX_DELTA);
       expect(discreteRemoteWheelDelta(120, 'rdp')).assertEqual(1);
+    });
+
+    it('normalizes_mouse_detents_and_bounds_moonlight_touchpad_scroll', 0, (): void => {
+      expect(moonlightAxisScrollAmount(1, false))
+        .assertEqual(MOONLIGHT_HIGH_RES_WHEEL_DETENT);
+      expect(moonlightAxisScrollAmount(120, false))
+        .assertEqual(MOONLIGHT_HIGH_RES_WHEEL_DETENT);
+      expect(moonlightAxisScrollAmount(-120, false))
+        .assertEqual(-MOONLIGHT_HIGH_RES_WHEEL_DETENT);
+      expect(moonlightAxisScrollAmount(0.1, true)).assertEqual(1);
+      expect(moonlightAxisScrollAmount(8, true)).assertEqual(32);
+      expect(moonlightAxisScrollAmount(1000, true))
+        .assertEqual(MOONLIGHT_HIGH_RES_WHEEL_DETENT);
     });
 
     it('starts_and_decays_vnc_touchpad_fling_like_rustdesk', 0, (): void => {

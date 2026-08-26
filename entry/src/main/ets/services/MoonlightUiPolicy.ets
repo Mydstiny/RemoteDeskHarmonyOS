@@ -131,6 +131,20 @@ export function moonlightUsesEntryAbilityImmersiveBars(
 }
 
 /**
+ * A laid-out XComponent can change size without changing its native Surface or
+ * renderer ownership. That geometry-only path must keep the decoder attached:
+ * suspend/rebind is reserved for an actual Surface/renderer replacement where
+ * the native renderer generation advances.
+ */
+export function moonlightCanResizeRendererInPlace(
+  streamStartAttempted: boolean, nativeSessionId: number,
+  surfaceSuspended: boolean, presentationTransferred: boolean
+): boolean {
+  if (surfaceSuspended || presentationTransferred) { return false; }
+  return !streamStartAttempted || nativeSessionId > 0;
+}
+
+/**
  * Harmony TouchType.Cancel terminates the complete gesture even when the
  * framework supplies only a subset in changedTouches. The tracked contact
  * ledger is therefore authoritative for remote cancellation.
@@ -645,6 +659,17 @@ export function moonlightToolbarLayout(isDesktopDevice: boolean, breakpoint: str
     autoHideMs: !edgeRail && normalized === 'xl' ? MOONLIGHT_TOOLBAR_AUTO_HIDE_MS : 0,
     maxHeight: edgeRail ? 560 : 0
   };
+}
+
+/**
+ * The remote input plane always owns the complete streamed viewport. The
+ * floating rail is a transparent overlay whose visible children intercept
+ * only their own hit regions. Reserving the rail's expanded width here leaves
+ * a permanent dead strip at the right edge after the rail collapses and makes
+ * HarmonyOS restore its local pointer before the remote desktop edge.
+ */
+export function moonlightRemoteInputSurfaceWidth(viewportWidth: number): number {
+  return Number.isFinite(viewportWidth) ? Math.max(1, viewportWidth) : 1;
 }
 
 export function moonlightToolbarAutoHideDelayMs(layout: MoonlightToolbarLayout,

@@ -49,6 +49,9 @@ struct MoonlightProductStreamStartRequest final {
     // before any fresh physical, virtual, keyboard, pointer, or touch input is
     // admitted. Normal launches leave this false and pay no reset cost.
     bool resetRemoteInputBeforeAdmission = false;
+    // Local presentation capability only. It is never inferred from the
+    // remote host or persisted as a host setting.
+    bool desktopSurfaceCompatibility = false;
     MoonlightStreamEncryptionPolicy encryptionPolicy =
         MoonlightStreamEncryptionPolicy::Auto;
 };

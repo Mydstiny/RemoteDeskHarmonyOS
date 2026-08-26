@@ -145,8 +145,8 @@ class REMOTEDESK_MOONLIGHT_KEYBOARD_HIDDEN MoonlightKeyboardMapper final {
         const MoonlightInputIdentity& identity,
         MoonlightKeyboardLimits limits = {}) noexcept;
 
-    // Physical Escape is always retained as the local escape path. An
-    // explicit on-screen Escape uses virtualKeyTap() and is sent remotely.
+    // Physical keys, including Escape and Meta/Win, are remote input. Local
+    // session exit remains owned by the system Back gesture and toolbar.
     MoonlightKeyboardResult physicalKey(const MoonlightKeyboardEventContext& context,
                                          std::uint32_t harmonyKeyCode,
                                          bool pressed,

@@ -71,6 +71,13 @@ RDP_TEST_CASE(native_image_policy_keeps_identity_presentation_contract) {
     RDP_ASSERT(!Render::ShouldRenderNativeImageImmediately(false));
 }
 
+RDP_TEST_CASE(native_image_policy_selects_producer_transform_only_for_desktop_surface) {
+    RDP_ASSERT(Render::NativeImageModeForDesktopSurface(false) ==
+        Render::NativeImagePresentationMode::Identity);
+    RDP_ASSERT(Render::NativeImageModeForDesktopSurface(true) ==
+        Render::NativeImagePresentationMode::ProducerTransform);
+}
+
 RDP_TEST_CASE(native_image_policy_applies_valid_producer_transform_and_keeps_desktop_output_immediate) {
     const float desktopFlip[16] = {
         1.0f, 0.0f, 0.0f, 0.0f,

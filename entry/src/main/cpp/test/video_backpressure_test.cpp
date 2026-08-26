@@ -8,35 +8,36 @@
 using Render::VideoBackpressureController;
 using Render::VideoFrameAdmission;
 
-RDP_TEST_CASE(video_backpressure_soft_overflow_admits_latest_non_key) {
+RDP_TEST_CASE(video_backpressure_overflow_enters_keyframe_gate) {
     VideoBackpressureController controller(3);
 
     VideoFrameAdmission result = controller.admitFrame(3, false);
 
-    RDP_ASSERT(result == VideoFrameAdmission::AcceptAfterSoftDrop);
-    RDP_ASSERT(!controller.isWaitingForKeyframe());
+    RDP_ASSERT(result == VideoFrameAdmission::DropAndWaitForKeyframe);
+    RDP_ASSERT(controller.isWaitingForKeyframe());
     RDP_ASSERT(controller.shouldRequestKeyframe());
     RDP_ASSERT_EQ(controller.droppedFrames(), 1ULL);
     RDP_ASSERT_EQ(controller.waitKeyframeDrops(), 0ULL);
     RDP_ASSERT_EQ(controller.keyframeRequests(), 1ULL);
 }
 
-RDP_TEST_CASE(video_backpressure_coalesces_soft_overflow_refresh_until_keyframe) {
+RDP_TEST_CASE(video_backpressure_coalesces_overflow_refresh_until_keyframe) {
     VideoBackpressureController controller(3);
 
     RDP_ASSERT(controller.admitFrame(3, false) ==
-               VideoFrameAdmission::AcceptAfterSoftDrop);
+               VideoFrameAdmission::DropAndWaitForKeyframe);
     RDP_ASSERT(controller.shouldRequestKeyframe());
     RDP_ASSERT(controller.admitFrame(3, false) ==
-               VideoFrameAdmission::AcceptAfterSoftDrop);
+               VideoFrameAdmission::DropWaitingKeyframe);
     RDP_ASSERT(controller.shouldRequestKeyframe());
     RDP_ASSERT_EQ(controller.keyframeRequests(), 1ULL);
 
-    RDP_ASSERT(controller.admitFrame(0, true) == VideoFrameAdmission::Accept);
+    RDP_ASSERT(controller.admitFrame(0, true) ==
+               VideoFrameAdmission::AcceptRecoveryKeyframe);
     RDP_ASSERT(!controller.shouldRequestKeyframe());
 
     RDP_ASSERT(controller.admitFrame(3, false) ==
-               VideoFrameAdmission::AcceptAfterSoftDrop);
+               VideoFrameAdmission::DropAndWaitForKeyframe);
     RDP_ASSERT(controller.shouldRequestKeyframe());
     RDP_ASSERT_EQ(controller.keyframeRequests(), 2ULL);
 }

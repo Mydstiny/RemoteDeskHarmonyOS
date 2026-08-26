@@ -16,9 +16,11 @@ import {
   moonlightCatalogGridColumnCount,
   moonlightConnectStagePresentation,
   moonlightConnectSheetMountReady,
+  moonlightCanResizeRendererInPlace,
   moonlightAdaptiveControlModeForSource,
   moonlightInitialAdaptiveControlMode,
   moonlightPhysicalKeyboardCaptureEnabled,
+  moonlightRemoteInputSurfaceWidth,
   moonlightResolvedControlMode,
   moonlightSystemKeyReserved,
   moonlightHostRouteParams,
@@ -126,6 +128,14 @@ export default function moonlightUiPolicyTest(): void {
       expect(moonlightCatalogGridColumnCount('xl', true, 1)).assertEqual(1);
       expect(moonlightCatalogGridColumnCount('lg', true, 8)).assertEqual(2);
       expect(moonlightCatalogGridColumnCount('lg', false, 2)).assertEqual(4);
+    });
+
+    it('resizes_live_renderer_geometry_without_surface_generation_handoff', 0, (): void => {
+      expect(moonlightCanResizeRendererInPlace(false, -1, false, false)).assertTrue();
+      expect(moonlightCanResizeRendererInPlace(true, 42, false, false)).assertTrue();
+      expect(moonlightCanResizeRendererInPlace(true, -1, false, false)).assertFalse();
+      expect(moonlightCanResizeRendererInPlace(true, 42, true, false)).assertFalse();
+      expect(moonlightCanResizeRendererInPlace(true, 42, false, true)).assertFalse();
     });
 
     it('keeps_host_online_when_catalog_reached_sunshine_but_cache_or_payload_failed', 0,
@@ -328,6 +338,14 @@ export default function moonlightUiPolicyTest(): void {
       expect(moonlightSystemKeyReserved(2024)).assertFalse();
       expect(moonlightSystemKeyReserved(
         16, false, false, false, true)).assertFalse();
+      expect(moonlightSystemKeyReserved(
+        2076, false, false, false, true)).assertFalse();
+      expect(moonlightSystemKeyReserved(
+        2034, false, false, true, true)).assertFalse();
+      expect(moonlightSystemKeyReserved(
+        2049, true, false, false, true)).assertFalse();
+      expect(moonlightSystemKeyReserved(
+        2070, false, true, false, true)).assertFalse();
       // Local session lifecycle keys remain reserved even if a future build
       // enables forwarding of ordinary system shortcuts.
       expect(moonlightSystemKeyReserved(
@@ -373,6 +391,15 @@ export default function moonlightUiPolicyTest(): void {
       expect(desktopLg.edgeRail).assertFalse();
       expect(desktopLg.maxVisibleItems).assertEqual(8);
       expect(moonlightToolbarAutoHideDelayMs(desktopLg, false)).assertEqual(0);
+    });
+
+    it('keeps_remote_pointer_input_live_to_the_right_viewport_edge', 0, (): void => {
+      // The rail overlay intercepts only its visible controls. Its expanded or
+      // collapsed width must never be subtracted from the streamed input plane.
+      expect(moonlightRemoteInputSurfaceWidth(2560)).assertEqual(2560);
+      expect(moonlightRemoteInputSurfaceWidth(800.5)).assertEqual(800.5);
+      expect(moonlightRemoteInputSurfaceWidth(0)).assertEqual(1);
+      expect(moonlightRemoteInputSurfaceWidth(Number.NaN)).assertEqual(1);
     });
 
     it('reconciles_auto_hide_when_sheet_or_breakpoint_changes', 0, (): void => {

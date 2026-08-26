@@ -326,7 +326,7 @@ MoonlightKeyboardMapping mapHarmonyKeyCodeToMoonlight(
         case 2075U: return ordinaryMapping(0x91U);
         case 2076U: return modifierMapping(0x5BU, MoonlightKeyboardModifier::Meta, false);
         case 2077U: return modifierMapping(0x5CU, MoonlightKeyboardModifier::Meta, true);
-        case 2079U: return ordinaryMapping(0x9AU);
+        case 2079U: return ordinaryMapping(0x2CU);
         case 2080U: return ordinaryMapping(0x13U);
         case 2081U: return ordinaryMapping(0x24U);
         case 2082U: return ordinaryMapping(0x23U);
@@ -616,12 +616,6 @@ MoonlightKeyboardResult MoonlightKeyboardMapper::physicalKey(
         impl_->unsupportedKeys = saturatingIncrement(impl_->unsupportedKeys);
         return impl_->result(MoonlightKeyboardStatus::UnsupportedKey);
     }
-    if (mapping.protocolKeyCode == 0x801BU) {
-        impl_->localEscapeEvents = saturatingIncrement(impl_->localEscapeEvents);
-        return impl_->result(MoonlightKeyboardStatus::LocalEscape,
-                             MoonlightInputDispatchStatus::Accepted);
-    }
-
     const std::uint8_t flags = normalizedToUsLayout ? 0U :
         kMoonlightKeyboardFlagNonNormalized;
     KeyboardState candidate = impl_->state;

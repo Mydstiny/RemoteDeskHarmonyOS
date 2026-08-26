@@ -63,6 +63,8 @@ bool knownElement(MoonlightVirtualControllerElementKind kind) noexcept {
         case MoonlightVirtualControllerElementKind::LeftStickClick:
         case MoonlightVirtualControllerElementKind::RightStickClick:
         case MoonlightVirtualControllerElementKind::Menu:
+        case MoonlightVirtualControllerElementKind::Back:
+        case MoonlightVirtualControllerElementKind::Special:
             return true;
         case MoonlightVirtualControllerElementKind::Invalid:
             return false;
@@ -177,7 +179,7 @@ bool completeLayout(const MoonlightVirtualControllerLayout& layout) noexcept {
     if (cluster == split) {
         return false;
     }
-    constexpr std::array<MoonlightVirtualControllerElementKind, 11U> required{{
+    constexpr std::array<MoonlightVirtualControllerElementKind, 15U> required{{
         MoonlightVirtualControllerElementKind::FaceA,
         MoonlightVirtualControllerElementKind::FaceB,
         MoonlightVirtualControllerElementKind::FaceX,
@@ -188,7 +190,11 @@ bool completeLayout(const MoonlightVirtualControllerLayout& layout) noexcept {
         MoonlightVirtualControllerElementKind::RightTrigger,
         MoonlightVirtualControllerElementKind::LeftShoulder,
         MoonlightVirtualControllerElementKind::RightShoulder,
+        MoonlightVirtualControllerElementKind::LeftStickClick,
+        MoonlightVirtualControllerElementKind::RightStickClick,
         MoonlightVirtualControllerElementKind::Menu,
+        MoonlightVirtualControllerElementKind::Back,
+        MoonlightVirtualControllerElementKind::Special,
     }};
     for (const auto kind : required) {
         if (!hasKind(layout, kind)) {
@@ -218,7 +224,7 @@ bool structurallyValid(const MoonlightVirtualControllerLayout& candidate) noexce
     return completeLayout(candidate);
 }
 
-constexpr std::array<MoonlightVirtualControllerElement, 14U>
+constexpr std::array<MoonlightVirtualControllerElement, 16U>
 kFallbackElements{{
     {1U, MoonlightVirtualControllerElementKind::LeftTrigger,
      {0.06, 0.05, 0.10, 0.08}},
@@ -248,6 +254,10 @@ kFallbackElements{{
      {0.85, 0.73, 0.08, 0.08}},
     {14U, MoonlightVirtualControllerElementKind::FaceB,
      {0.91, 0.64, 0.08, 0.08}},
+    {15U, MoonlightVirtualControllerElementKind::Back,
+     {0.34, 0.05, 0.08, 0.08}},
+    {16U, MoonlightVirtualControllerElementKind::Special,
+     {0.58, 0.05, 0.08, 0.08}},
 }};
 
 bool placeFallbackElement(
@@ -352,6 +362,10 @@ std::uint32_t buttonFlag(MoonlightVirtualControllerElementKind kind) noexcept {
             return kMoonlightControllerButtonRightStick;
         case MoonlightVirtualControllerElementKind::Menu:
             return kMoonlightControllerButtonPlay;
+        case MoonlightVirtualControllerElementKind::Back:
+            return kMoonlightControllerButtonBack;
+        case MoonlightVirtualControllerElementKind::Special:
+            return kMoonlightControllerButtonSpecial;
         case MoonlightVirtualControllerElementKind::Invalid:
         case MoonlightVirtualControllerElementKind::DpadCluster:
         case MoonlightVirtualControllerElementKind::LeftStick:
@@ -733,6 +747,8 @@ bool applyVirtualSemantic(const MoonlightVirtualControllerEvent& event,
             case MoonlightVirtualControllerElementKind::LeftStickClick:
             case MoonlightVirtualControllerElementKind::RightStickClick:
             case MoonlightVirtualControllerElementKind::Menu:
+            case MoonlightVirtualControllerElementKind::Back:
+            case MoonlightVirtualControllerElementKind::Special:
                 return false;
         }
     }

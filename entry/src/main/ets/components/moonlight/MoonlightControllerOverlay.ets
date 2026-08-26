@@ -1,7 +1,8 @@
 export type MoonlightControllerSemanticElement =
   'faceA' | 'faceB' | 'faceX' | 'faceY' | 'dpad' | 'leftStick' |
   'rightStick' | 'leftTrigger' | 'rightTrigger' | 'leftShoulder' |
-  'rightShoulder' | 'menu';
+  'rightShoulder' | 'leftStickClick' | 'rightStickClick' | 'menu' |
+  'back' | 'special';
 export type MoonlightControllerSemanticPhase = 'begin' | 'change' | 'end' | 'cancel';
 
 export interface MoonlightControllerSemanticEvent {
@@ -42,8 +43,36 @@ export struct MoonlightControllerOverlay {
     if (label === 'RT') { return 'rightTrigger'; }
     if (label === 'LB') { return 'leftShoulder'; }
     if (label === 'RB') { return 'rightShoulder'; }
+    if (label === 'L3') { return 'leftStickClick'; }
+    if (label === 'R3') { return 'rightStickClick'; }
+    if (label === '视图') { return 'back'; }
+    if (label === '指南') { return 'special'; }
     if (label === '菜单') { return 'menu'; }
+    if (label === '左摇杆') { return 'leftStick'; }
+    if (label === '右摇杆') { return 'rightStick'; }
     return 'dpad';
+  }
+
+  private fallbackPointerId(label: string): number {
+    if (label === 'A') { return 101; }
+    if (label === 'B') { return 102; }
+    if (label === 'X') { return 103; }
+    if (label === 'Y') { return 104; }
+    if (label === 'LT') { return 105; }
+    if (label === 'RT') { return 106; }
+    if (label === 'LB') { return 107; }
+    if (label === 'RB') { return 108; }
+    if (label === 'L3') { return 109; }
+    if (label === 'R3') { return 110; }
+    if (label === '菜单') { return 111; }
+    if (label === '视图') { return 112; }
+    if (label === '指南') { return 113; }
+    if (label === '上') { return 114; }
+    if (label === '下') { return 115; }
+    if (label === '左') { return 116; }
+    if (label === '右') { return 117; }
+    if (label === '左摇杆') { return 118; }
+    return 119;
   }
 
   private pointerId(event: TouchEvent, fallback: number): number {
@@ -61,7 +90,7 @@ export struct MoonlightControllerOverlay {
 
   private press(label: string, event: TouchEvent): void {
     if (!this.inputCapabilityReady || this.editing) { return; }
-    const id: number = this.pointerId(event, 100 + label.length);
+    const id: number = this.pointerId(event, this.fallbackPointerId(label));
     this.activePointers.set(label, id);
     if (this.activeButtons.indexOf(label) < 0) {
       this.activeButtons = this.activeButtons.concat([label]);
@@ -76,7 +105,8 @@ export struct MoonlightControllerOverlay {
   }
 
   private release(label: string, event: TouchEvent, cancelled: boolean): void {
-    const pointer: number = this.activePointers.get(label) || this.pointerId(event, 100 + label.length);
+    const pointer: number = this.activePointers.get(label) ||
+      this.pointerId(event, this.fallbackPointerId(label));
     this.activePointers.delete(label);
     this.activeButtons = this.activeButtons.filter((value: string): boolean => value !== label);
     if (this.inputCapabilityReady && !this.editing) {
@@ -109,14 +139,34 @@ export struct MoonlightControllerOverlay {
       .accessibilityText(label + ' 键')
   }
 
+  @Builder private commandButton(label: string) {
+    Button(label).height(40).constraintSize({ minWidth: 64, maxWidth: 116 })
+      .layoutWeight(1).borderRadius(12).fontSize(12)
+      .backgroundColor(this.activeButtons.indexOf(label) >= 0 ?
+        this.controllerPrimary() : 'rgba(255,255,255,0.12)')
+      .fontColor('#FFFFFF').enabled(this.inputCapabilityReady && !this.editing)
+      .onTouch((event: TouchEvent): void => {
+        if (event.type === TouchType.Down) { this.press(label, event); }
+        else if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
+          this.release(label, event, event.type === TouchType.Cancel);
+        }
+      })
+      .accessibilityText(label + ' 键')
+  }
+
   private stickTouch(label: string, event: TouchEvent): void {
     if (!this.inputCapabilityReady || this.editing) { return; }
     const points = event.changedTouches.length > 0 ? event.changedTouches : event.touches;
-    const pointer: number = this.pointerId(event, label === '左摇杆' ? 201 : 202);
+    const observedPointer: number = this.pointerId(
+      event, this.fallbackPointerId(label));
+    const pointer: number = this.activePointers.get(label) || observedPointer;
     const element: MoonlightControllerSemanticElement =
       label === '左摇杆' ? 'leftStick' : 'rightStick';
     let phase: MoonlightControllerSemanticPhase = 'change';
-    if (event.type === TouchType.Down) { phase = 'begin'; }
+    if (event.type === TouchType.Down) {
+      phase = 'begin';
+      this.activePointers.set(label, observedPointer);
+    }
     else if (event.type === TouchType.Up) { phase = 'end'; }
     else if (event.type === TouchType.Cancel) { phase = 'cancel'; }
     let x: number = 0;
@@ -130,6 +180,9 @@ export struct MoonlightControllerOverlay {
     else { this.rightStickX = x; this.rightStickY = y; }
     this.onSemanticEvent({ element: element, phase: phase, pointerId: pointer,
       primary: x, secondary: y });
+    if (phase === 'end' || phase === 'cancel') {
+      this.activePointers.delete(label);
+    }
   }
 
   @Builder private stick(label: string) {
@@ -229,15 +282,13 @@ export struct MoonlightControllerOverlay {
         this.stick('右摇杆')
       }.width('100%').alignItems(VerticalAlign.Center).margin({ top: 16 })
 
-      Button('菜单').height(40).width(116).borderRadius(12).fontSize(12)
-        .backgroundColor('rgba(255,255,255,0.12)').fontColor('#FFFFFF')
-        .enabled(this.inputCapabilityReady && !this.editing)
-        .onTouch((event: TouchEvent): void => {
-          if (event.type === TouchType.Down) { this.press('菜单', event); }
-          else if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
-            this.release('菜单', event, event.type === TouchType.Cancel);
-          }
-        }).margin({ top: 8 })
+      Row({ space: 8 }) {
+        this.commandButton('L3')
+        this.commandButton('视图')
+        this.commandButton('指南')
+        this.commandButton('菜单')
+        this.commandButton('R3')
+      }.width('100%').margin({ top: 8 })
     }
     .width('92%').constraintSize({ maxWidth: 760 })
     .padding(18).backgroundColor('rgba(14,18,28,0.88)').borderRadius(20)

@@ -202,20 +202,39 @@ valid_counter() {
     esac
 }
 
+process_target_alive_or_inaccessible() {
+    process_target="$1"
+    process_probe_message="$(kill -0 -- "$process_target" 2>&1)"
+    process_probe_status=$?
+    if [ "$process_probe_status" -eq 0 ]; then
+        return 0
+    fi
+    # Codex and other macOS sandboxes can return EPERM while the process is
+    # alive. Treat an inaccessible owner as live; stealing that lock would let
+    # a clean/build invocation delete another Hvigor process's inputs.
+    case "$process_probe_message" in
+        *'Operation not permitted'*|*'operation not permitted'*|\
+        *'Permission denied'*|*'permission denied'*) return 0 ;;
+    esac
+    return 1
+}
+
 process_group_alive() {
     group_id="${1:-}"
     valid_process_id "$group_id" || return 1
-    kill -0 -- "-$group_id" 2>/dev/null
+    process_target_alive_or_inaccessible "-$group_id"
 }
 
 lock_has_live_owner() {
     recorded_wrapper="$(sed -n '1p' "$lock_dir/wrapper.pid" 2>/dev/null || true)"
     recorded_group="$(sed -n '1p' "$lock_dir/child.pgid" 2>/dev/null || true)"
-    if valid_process_id "$recorded_wrapper" && kill -0 "$recorded_wrapper" 2>/dev/null; then
+    if valid_process_id "$recorded_wrapper" &&
+       process_target_alive_or_inaccessible "$recorded_wrapper"; then
         return 0
     fi
     if valid_process_id "$recorded_group" && {
-        kill -0 "$recorded_group" 2>/dev/null || process_group_alive "$recorded_group"
+        process_target_alive_or_inaccessible "$recorded_group" ||
+        process_group_alive "$recorded_group"
     }; then
         return 0
     fi
@@ -288,7 +307,7 @@ terminate_process_group() {
     signal_name="$2"
     if process_group_alive "$group_id"; then
         kill -s "$signal_name" -- "-$group_id" 2>/dev/null || true
-    elif kill -0 "$group_id" 2>/dev/null; then
+    elif process_target_alive_or_inaccessible "$group_id"; then
         kill -s "$signal_name" "$group_id" 2>/dev/null || true
     fi
     if ! wait_for_process_group_exit "$group_id" "$group_grace_checks"; then
@@ -321,8 +340,9 @@ run_hvigor() {
     : > "$lock_dir/spawn.pending" || return 1
     lock_release_allowed=0
     perl -MPOSIX -e \
-        'my $meta = shift @ARGV; my $session = POSIX::setsid(); defined($session) or die "setsid failed: $!\n"; my $tmp = "$meta.$$"; open(my $fh, ">", $tmp) or die "open $tmp failed: $!\n"; print {$fh} "$$\n"; close($fh) or die "close $tmp failed: $!\n"; rename($tmp, $meta) or die "rename $tmp failed: $!\n"; exec @ARGV; die "exec failed: $!\n";' \
-        -- "$lock_dir/child.pgid" "$real_hvigorw" "$@" &
+        'my $meta = shift @ARGV; my $capture = shift @ARGV; my $session = POSIX::setsid(); defined($session) or die "setsid failed: $!\n"; my $tmp = "$meta.$$"; open(my $fh, ">", $tmp) or die "open $tmp failed: $!\n"; print {$fh} "$$\n"; close($fh) or die "close $tmp failed: $!\n"; rename($tmp, $meta) or die "rename $tmp failed: $!\n"; $ENV{REMOTE_DESKTOP_HVIGOR_PROCESS_GROUP} = $$; if (length($capture)) { open(my $log, ">", $capture) or die "open capture failed: $!\n"; open(STDOUT, ">&", $log) or die "redirect stdout failed: $!\n"; open(STDERR, ">&", $log) or die "redirect stderr failed: $!\n"; } exec @ARGV; die "exec failed: $!\n";' \
+        -- "$lock_dir/child.pgid" "${build_capture_log:-}" \
+        "$real_hvigorw" "$@" &
     active_child_pid=$!
     write_lock_value "$lock_dir/child.pgid" "$active_child_pid" || {
         terminate_process_group "$active_child_pid" TERM || true
@@ -362,6 +382,43 @@ if ! prepare_build_layout || ! materialize_project_inputs || ! prepare_build_lay
     exit 1
 fi
 
+generated_cache_failure() {
+    capture_path="$1"
+    if grep -F 'Failed to read file to buffer' "$capture_path" >/dev/null 2>&1 &&
+       grep -F "$official_build_cache" "$capture_path" >/dev/null 2>&1; then
+        return 0
+    fi
+    if grep -F 'Failed to find the incremental input file:' "$capture_path" >/dev/null 2>&1 &&
+       grep -F "$official_build_cache" "$capture_path" >/dev/null 2>&1; then
+        return 0
+    fi
+    if grep -F -- '--pack-info-path is not a file' "$capture_path" >/dev/null 2>&1; then
+        return 0
+    fi
+    if grep -F 'CMakeDetermineCXXCompiler.cmake' "$capture_path" >/dev/null 2>&1 &&
+       grep -F 'No such file or directory' "$capture_path" >/dev/null 2>&1 &&
+       grep -F "$project_root/entry/.cxx" "$capture_path" >/dev/null 2>&1; then
+        return 0
+    fi
+    return 1
+}
+
+reset_generated_caches() {
+    reset_stamp="$(date '+%Y%m%d-%H%M%S')-$$"
+    if [ -d "$official_project_cache" ] && [ ! -L "$official_project_cache" ]; then
+        mv "$official_project_cache" \
+            "$local_root/quarantine/generated-build-cache-$reset_stamp" || return 1
+    fi
+    if [ -d "$local_root/entry-cxx" ] && [ ! -L "$local_root/entry-cxx" ]; then
+        mv "$local_root/entry-cxx" \
+            "$local_root/quarantine/generated-native-cache-$reset_stamp" || return 1
+    fi
+    mkdir -p "$official_project_cache" || return 1
+    prepare_build_layout || return 1
+    materialize_project_inputs || return 1
+    prepare_build_layout
+}
+
 incomplete_marker="$local_root/last-build.incomplete"
 requested_clean=0
 for argument in "$@"; do
@@ -371,20 +428,47 @@ for argument in "$@"; do
 done
 
 if [ -f "$incomplete_marker" ] && [ "$requested_clean" -eq 0 ]; then
-    printf 'RemoteDesk Hvigor guard: previous build was incomplete; running automatic clean\n'
-    if ! run_hvigor clean --no-daemon -p "build-cache-dir=$official_build_cache"; then
-        printf 'RemoteDesk Hvigor guard: automatic clean failed\n' >&2
-        exit 1
-    fi
-    if ! prepare_build_layout; then
+    printf 'RemoteDesk Hvigor guard: previous build was incomplete; isolating generated caches\n'
+    if ! reset_generated_caches; then
+        printf 'RemoteDesk Hvigor guard: generated cache isolation failed\n' >&2
         exit 1
     fi
     rm -f "$incomplete_marker"
 fi
 
 printf 'pid=%s\nstarted=%s\n' "$$" "$(date '+%Y-%m-%dT%H:%M:%S%z')" > "$incomplete_marker"
-run_hvigor "$@" -p "build-cache-dir=$official_build_cache"
-build_status=$?
+build_capture_log="$(mktemp "$local_root/hvigor-output.XXXXXX")" || exit 1
+if run_hvigor "$@" -p "build-cache-dir=$official_build_cache"; then
+    build_status=0
+else
+    build_status=$?
+fi
+if [ -s "$build_capture_log" ]; then
+    cat "$build_capture_log"
+fi
+
+# Hvigor can retain incremental declarations for generated inputs that another
+# interrupted or legacy build no longer contains. Recover only from the exact
+# generated-cache signatures above. The cache is moved aside (not deleted), a
+# fresh supported build-cache layout is installed, and the original invocation
+# is retried once. Source/type errors are never retried.
+if [ "$build_status" -ne 0 ] && [ "$requested_clean" -eq 0 ] &&
+   generated_cache_failure "$build_capture_log"; then
+    printf 'RemoteDesk Hvigor guard: generated cache is inconsistent; isolating it and retrying once\n'
+    if reset_generated_caches; then
+        : > "$build_capture_log"
+        if run_hvigor "$@" -p "build-cache-dir=$official_build_cache"; then
+            build_status=0
+        else
+            build_status=$?
+        fi
+        if [ -s "$build_capture_log" ]; then
+            cat "$build_capture_log"
+        fi
+    fi
+fi
+rm -f "$build_capture_log"
+build_capture_log=""
 if [ "$build_status" -eq 0 ]; then
     rm -f "$incomplete_marker"
     printf 'RemoteDesk Hvigor guard: build outputs at %s\n' "$official_build_cache"

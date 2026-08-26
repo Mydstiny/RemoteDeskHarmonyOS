@@ -76,6 +76,7 @@ export interface MoonlightNativeStreamStartRequest {
   audioChannels: 'stereo' | 'surround51' | 'surround71';
   playAudioOnHost: boolean;
   resetRemoteInputBeforeAdmission: boolean;
+  desktopSurfaceCompatibility: boolean;
   streamEncryption: 'auto' | 'required' | 'compatible';
 }
 
@@ -207,7 +208,8 @@ export interface MoonlightTouchModeRequest {
 export type MoonlightVirtualControllerElement =
   'faceA' | 'faceB' | 'faceX' | 'faceY' | 'dpad' | 'leftStick' |
   'rightStick' | 'leftTrigger' | 'rightTrigger' | 'leftShoulder' |
-  'rightShoulder' | 'leftStickClick' | 'rightStickClick' | 'menu';
+  'rightShoulder' | 'leftStickClick' | 'rightStickClick' | 'menu' |
+  'back' | 'special';
 
 export interface MoonlightVirtualControllerModeRequest {
   launchKey: MoonlightNativeRequestKey;

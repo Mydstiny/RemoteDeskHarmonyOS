@@ -13,6 +13,7 @@ fake_child_pid="$test_root/fake-child.pid"
 fake_signal_seen="$test_root/fake-signal.seen"
 fake_descendant_pid="$test_root/fake-descendant.pid"
 fake_find="$test_root/fake-find"
+fake_cache_corruption_seen="$test_root/fake-cache-corruption.seen"
 
 cleanup() {
     for pid_file in "$fake_child_pid" "$fake_descendant_pid"; do
@@ -35,8 +36,15 @@ printf '%s\n' old > "$project_root/entry/.cxx/old-cxx"
 cat > "$fake_hvigor" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$REMOTE_DESKTOP_FAKE_HVIGOR_LOG"
+if [ -n "${REMOTE_DESKTOP_FAKE_HVIGOR_CACHE_CORRUPTION:-}" ] &&
+   [[ " $* " != *" clean "* ]] &&
+   [ ! -e "$REMOTE_DESKTOP_FAKE_HVIGOR_CACHE_CORRUPTION_SEEN" ]; then
+    : > "$REMOTE_DESKTOP_FAKE_HVIGOR_CACHE_CORRUPTION_SEEN"
+    printf '%s\n' "${REMOTE_DESKTOP_FAKE_HVIGOR_CACHE_CORRUPTION_MESSAGE:-Failed to read file to buffer: $REMOTE_DESKTOP_BUILD_CACHE_ROOT/build-cache/project/entry/build/generated.ts}" >&2
+    exit 9
+fi
 if [ -n "${REMOTE_DESKTOP_FAKE_HVIGOR_DESCENDANT:-}" ]; then
-    printf '%s\n' "$$" > "$REMOTE_DESKTOP_FAKE_HVIGOR_CHILD_PID"
+    printf '%s\n' "${REMOTE_DESKTOP_HVIGOR_PROCESS_GROUP:-$$}" > "$REMOTE_DESKTOP_FAKE_HVIGOR_CHILD_PID"
     (
         trap '' HUP INT TERM
         while :; do sleep 1; done
@@ -45,7 +53,7 @@ if [ -n "${REMOTE_DESKTOP_FAKE_HVIGOR_DESCENDANT:-}" ]; then
     exit "${REMOTE_DESKTOP_FAKE_HVIGOR_STATUS:-0}"
 fi
 if [ -n "${REMOTE_DESKTOP_FAKE_HVIGOR_HOLD:-}" ]; then
-    printf '%s\n' "$$" > "$REMOTE_DESKTOP_FAKE_HVIGOR_CHILD_PID"
+    printf '%s\n' "${REMOTE_DESKTOP_HVIGOR_PROCESS_GROUP:-$$}" > "$REMOTE_DESKTOP_FAKE_HVIGOR_CHILD_PID"
     trap 'printf signal > "$REMOTE_DESKTOP_FAKE_HVIGOR_SIGNAL_SEEN"; sleep 1; exit 143' TERM
     while :; do sleep 1; done
 fi
@@ -70,6 +78,9 @@ run_guard() {
     REMOTE_DESKTOP_FAKE_HVIGOR_DESCENDANT_PID="$fake_descendant_pid" \
     REMOTE_DESKTOP_FAKE_HVIGOR_CHILD_PID="$fake_child_pid" \
     REMOTE_DESKTOP_FAKE_HVIGOR_SIGNAL_SEEN="$fake_signal_seen" \
+    REMOTE_DESKTOP_FAKE_HVIGOR_CACHE_CORRUPTION="${REMOTE_DESKTOP_FAKE_HVIGOR_CACHE_CORRUPTION:-}" \
+    REMOTE_DESKTOP_FAKE_HVIGOR_CACHE_CORRUPTION_MESSAGE="${REMOTE_DESKTOP_FAKE_HVIGOR_CACHE_CORRUPTION_MESSAGE:-}" \
+    REMOTE_DESKTOP_FAKE_HVIGOR_CACHE_CORRUPTION_SEEN="$fake_cache_corruption_seen" \
     REMOTE_DESKTOP_FIND_BIN="${REMOTE_DESKTOP_FIND_BIN:-/usr/bin/find}" \
     REMOTE_DESKTOP_GROUP_GRACE_CHECKS="${REMOTE_DESKTOP_GROUP_GRACE_CHECKS:-50}" \
     REMOTE_DESKTOP_GROUP_KILL_CHECKS="${REMOTE_DESKTOP_GROUP_KILL_CHECKS:-20}" \
@@ -98,8 +109,33 @@ fi
 
 run_guard 0 assembleHap --no-daemon
 [ ! -f "$cache_root/last-build.incomplete" ]
-tail -n 2 "$fake_log" | head -n 1 | grep -F 'clean --no-daemon' >/dev/null
 tail -n 1 "$fake_log" | grep -F 'assembleHap --no-daemon' >/dev/null
+
+rm -f "$fake_cache_corruption_seen"
+REMOTE_DESKTOP_FAKE_HVIGOR_CACHE_CORRUPTION=1 run_guard 0 assembleHap --no-daemon
+[ -f "$fake_cache_corruption_seen" ]
+[ ! -f "$cache_root/last-build.incomplete" ]
+tail -n 2 "$fake_log" | grep -F 'assembleHap --no-daemon' | [ "$(wc -l | tr -d ' ')" -eq 2 ]
+find "$cache_root/quarantine" -maxdepth 1 -type d \
+    -name 'generated-build-cache-*' | grep . >/dev/null
+find "$cache_root/quarantine" -maxdepth 1 -type d \
+    -name 'generated-native-cache-*' | grep . >/dev/null
+
+rm -f "$fake_cache_corruption_seen"
+REMOTE_DESKTOP_FAKE_HVIGOR_CACHE_CORRUPTION=1 \
+REMOTE_DESKTOP_FAKE_HVIGOR_CACHE_CORRUPTION_MESSAGE="Failed to find the incremental input file: $cache_root/build-cache/project/entry/build/default/intermediates/stripped_native_libs/default." \
+    run_guard 0 assembleHap --no-daemon
+[ -f "$fake_cache_corruption_seen" ]
+[ ! -f "$cache_root/last-build.incomplete" ]
+tail -n 2 "$fake_log" | grep -F 'assembleHap --no-daemon' | [ "$(wc -l | tr -d ' ')" -eq 2 ]
+
+rm -f "$fake_cache_corruption_seen"
+REMOTE_DESKTOP_FAKE_HVIGOR_CACHE_CORRUPTION=1 \
+REMOTE_DESKTOP_FAKE_HVIGOR_CACHE_CORRUPTION_MESSAGE='Error Message: --pack-info-path is not a file.' \
+    run_guard 0 assembleHap --no-daemon
+[ -f "$fake_cache_corruption_seen" ]
+[ ! -f "$cache_root/last-build.incomplete" ]
+tail -n 2 "$fake_log" | grep -F 'assembleHap --no-daemon' | [ "$(wc -l | tr -d ' ')" -eq 2 ]
 
 log_lines_before_find_failure="$(wc -l < "$fake_log" | tr -d ' ')"
 if REMOTE_DESKTOP_FIND_BIN="$fake_find" run_guard 0 assembleHap --no-daemon >/dev/null 2>&1; then

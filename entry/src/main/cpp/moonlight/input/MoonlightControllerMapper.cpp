@@ -63,7 +63,11 @@ bool knownControllerType(MoonlightControllerType type) noexcept {
 bool validProfile(const MoonlightControllerProfile& profile) noexcept {
     return knownControllerType(profile.type) &&
         profile.supportedButtonFlags != 0U &&
-        (profile.supportedButtonFlags & ~kMoonlightControllerApi23ButtonMask) == 0U;
+        // Physical API 23 listeners advertise their conservative subset, but
+        // virtual controls can also supply common-c Back/Select. The shared
+        // wire mapper therefore validates the official standard protocol
+        // mask instead of incorrectly imposing the platform input subset.
+        (profile.supportedButtonFlags & ~kMoonlightControllerStandardButtonMask) == 0U;
 }
 
 bool validLimits(const MoonlightControllerLimits& limits) noexcept {
@@ -453,7 +457,7 @@ bool decodeMoonlightControllerCommand(
     if (command.controllerNumber != 0U ||
         (command.activeGamepadMask != 0U &&
          command.activeGamepadMask != kMoonlightProductControllerBitmap) ||
-        (command.state.buttonFlags & ~kMoonlightControllerApi23ButtonMask) != 0U) {
+        (command.state.buttonFlags & ~kMoonlightControllerStandardButtonMask) != 0U) {
         command = {};
         return false;
     }

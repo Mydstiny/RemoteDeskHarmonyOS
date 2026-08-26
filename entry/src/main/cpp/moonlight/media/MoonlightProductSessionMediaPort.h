@@ -15,7 +15,8 @@ public:
     static std::shared_ptr<MoonlightProductSessionMediaPort> create(
         std::int64_t rendererHandle, std::int32_t width,
         std::int32_t height, MoonlightStreamCodec codec,
-        bool audioPlaybackEnabled = true) noexcept;
+        bool audioPlaybackEnabled = true,
+        bool desktopSurfaceCompatibility = false) noexcept;
     ~MoonlightProductSessionMediaPort() override;
 
     bool bindSession(const MoonlightSessionKey& key) noexcept override;

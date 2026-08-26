@@ -441,7 +441,7 @@ RDP_TEST_CASE(moonlight_controller_owner_rejection_does_not_commit_candidate) {
 RDP_TEST_CASE(moonlight_controller_profile_and_sample_capabilities_are_strict) {
     ControllerFixture fixture;
     auto profile = xboxProfile();
-    profile.supportedButtonFlags |= kMoonlightControllerButtonBack;
+    profile.supportedButtonFlags |= 0x0800U;
     RDP_ASSERT_EQ(fixture.mapper->connect(
         controllerContext(fixture.identity, 1U, 100U), profile).status,
         MoonlightControllerStatus::InvalidRequest);
@@ -454,17 +454,22 @@ RDP_TEST_CASE(moonlight_controller_profile_and_sample_capabilities_are_strict) {
     sample.buttonFlags = kMoonlightControllerButtonSpecial;
     RDP_ASSERT_EQ(fixture.mapper->update(
         controllerContext(fixture.identity, 2U, 110U), sample).status,
+        MoonlightControllerStatus::Applied);
+    sample = {};
+    sample.buttonFlags = kMoonlightControllerButtonBack;
+    RDP_ASSERT_EQ(fixture.mapper->update(
+        controllerContext(fixture.identity, 3U, 120U), sample).status,
         MoonlightControllerStatus::InvalidRequest);
     sample = {};
     sample.leftStickX = std::numeric_limits<double>::infinity();
     RDP_ASSERT_EQ(fixture.mapper->update(
-        controllerContext(fixture.identity, 2U, 110U), sample).status,
+        controllerContext(fixture.identity, 3U, 120U), sample).status,
         MoonlightControllerStatus::InvalidRequest);
     sample = {};
     sample.hasHatAxes = false;
     sample.hatX = std::numeric_limits<double>::quiet_NaN();
     RDP_ASSERT_EQ(fixture.mapper->update(
-        controllerContext(fixture.identity, 2U, 110U), sample).status,
+        controllerContext(fixture.identity, 3U, 120U), sample).status,
         MoonlightControllerStatus::InvalidRequest);
 }
 

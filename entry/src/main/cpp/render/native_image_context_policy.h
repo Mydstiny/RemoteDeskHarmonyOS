@@ -14,6 +14,13 @@ enum class NativeImagePresentationMode : uint8_t {
     ProducerTransform = 1,
 };
 
+inline NativeImagePresentationMode NativeImageModeForDesktopSurface(
+    bool desktopSurfaceCompatibility) noexcept {
+    return desktopSurfaceCompatibility
+        ? NativeImagePresentationMode::ProducerTransform
+        : NativeImagePresentationMode::Identity;
+}
+
 inline NativeImageTransform IdentityNativeImageTransform() {
     return NativeImageTransform {
         1.0f, 0.0f, 0.0f, 0.0f,

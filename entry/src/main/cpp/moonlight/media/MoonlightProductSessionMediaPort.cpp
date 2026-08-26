@@ -29,15 +29,17 @@ MoonlightVideoSubmitResult staleVideoResult() noexcept {
 struct MoonlightProductSessionMediaPort::Impl final {
     Impl(std::int64_t renderer, std::int32_t exactWidth,
          std::int32_t exactHeight, MoonlightStreamCodec videoCodec,
-         bool playAudio) noexcept
+         bool playAudio, bool desktopSurface) noexcept
         : rendererHandle(renderer), width(exactWidth), height(exactHeight),
-          codec(videoCodec), audioPlaybackEnabled(playAudio) {}
+          codec(videoCodec), audioPlaybackEnabled(playAudio),
+          desktopSurfaceCompatibility(desktopSurface) {}
 
     const std::int64_t rendererHandle;
     const std::int32_t width;
     const std::int32_t height;
     const MoonlightStreamCodec codec;
     const bool audioPlaybackEnabled;
+    const bool desktopSurfaceCompatibility;
     // Serializes the complete activate/create/publish transaction with release.
     // The state mutex alone cannot cover platform calls, but allowing two binds
     // to pass its initial empty-state check would publish competing sink owners.
@@ -69,7 +71,8 @@ std::shared_ptr<MoonlightProductSessionMediaPort>
 MoonlightProductSessionMediaPort::create(
     std::int64_t rendererHandle, std::int32_t width,
     std::int32_t height, MoonlightStreamCodec codec,
-    bool audioPlaybackEnabled) noexcept {
+    bool audioPlaybackEnabled,
+    bool desktopSurfaceCompatibility) noexcept {
     if (rendererHandle <= 0 || width <= 0 || height <= 0 ||
         !moonlightHardwareVideoProfileSupported(
             moonlightHardwareVideoProfile(codec))) {
@@ -79,7 +82,8 @@ MoonlightProductSessionMediaPort::create(
         return std::shared_ptr<MoonlightProductSessionMediaPort>(
             new MoonlightProductSessionMediaPort(
                 std::make_unique<Impl>(rendererHandle, width, height, codec,
-                                       audioPlaybackEnabled)));
+                                       audioPlaybackEnabled,
+                                       desktopSurfaceCompatibility)));
     } catch (...) {
         return nullptr;
     }
@@ -104,10 +108,19 @@ bool MoonlightProductSessionMediaPort::bindSession(
     if (!Render::ActivateSharedSessionSinks(owner)) {
         return false;
     }
+    const Render::NativeImagePresentationMode presentationMode =
+        Render::NativeImageModeForDesktopSurface(
+            impl_->desktopSurfaceCompatibility);
+    if (!DecoderNapi::SetActiveNativeImagePresentationMode(
+            owner, presentationMode)) {
+        (void)Render::DeactivateSharedSessionSinks(owner);
+        return false;
+    }
     const auto created = DecoderNapi::CreateOwnedHardwareDecoder(
         impl_->width, impl_->height,
         static_cast<int>(moonlightHardwareCodecType(impl_->codec)),
-        impl_->rendererHandle, owner);
+        impl_->rendererHandle, owner,
+        impl_->desktopSurfaceCompatibility);
     if (!created.ok) {
         (void)Render::DeactivateSharedSessionSinks(owner);
         return false;

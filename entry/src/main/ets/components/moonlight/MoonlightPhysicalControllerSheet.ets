@@ -74,8 +74,8 @@ export struct MoonlightPhysicalControllerSheet {
           this.controllerReady)
         Divider().color(this.pal().divider).margin({ left: 62 })
         this.statusRow($r('sys.symbol.info_circle'), '震动反馈',
-          this.rumbleEnabled ? '已按当前会话设置请求；实际能力以手柄与系统为准' :
-            '当前会话未启用震动反馈', this.rumbleEnabled)
+          this.rumbleEnabled ? '当前会话已请求；API 23 暂无震动输出接口，不会伪报已生效' :
+            '当前会话未请求手柄震动；API 23 暂无输出接口', this.rumbleEnabled)
       }.width('100%').backgroundColor(this.pal().card).borderRadius(16)
         .border({ width: 0.5, color: this.pal().cardBorder }).margin({ top: 18 })
 

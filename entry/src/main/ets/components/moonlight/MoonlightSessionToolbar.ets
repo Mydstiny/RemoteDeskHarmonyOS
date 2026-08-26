@@ -45,6 +45,8 @@ export struct MoonlightSessionToolbar {
   private hideTimer: number = -1;
   onAction: (action: MoonlightToolbarAction) => void = (_action: MoonlightToolbarAction): void => {};
   onUnavailable: (reason: string) => void = (_reason: string): void => {};
+  onPointerRegionChange: (inside: boolean, expanded: boolean) => void =
+    (_inside: boolean, _expanded: boolean): void => {};
 
   private pal(): Palette {
     // The stream canvas is intentionally dark even when the app shell is light;
@@ -118,7 +120,14 @@ export struct MoonlightSessionToolbar {
     this.clearTimer();
     animateTo({ duration: 180, curve: curves.responsiveSpringMotion() }, (): void => {
       this.expanded = false;
+      this.onPointerRegionChange(false, false);
     });
+  }
+
+  private handlePointerRegionHover(hover: boolean, expanded: boolean): void {
+    this.onPointerRegionChange(hover, expanded);
+    if (!expanded) { return; }
+    if (hover) { this.clearTimer(); } else { this.scheduleHide(); }
   }
 
   private scheduleHide(): void {
@@ -136,7 +145,10 @@ export struct MoonlightSessionToolbar {
         this.scheduleHide();
         return;
       }
-      if (!this.pinned && !this.menuOpen) { this.expanded = false; }
+      if (!this.pinned && !this.menuOpen) {
+        this.expanded = false;
+        this.onPointerRegionChange(false, false);
+      }
       this.clearTimer();
     }, delayMs);
   }
@@ -188,10 +200,14 @@ export struct MoonlightSessionToolbar {
   aboutToAppear(): void {
     this.expanded = false;
     this.pinned = false;
+    this.onPointerRegionChange(false, false);
     this.scheduleHide();
   }
 
-  aboutToDisappear(): void { this.clearTimer(); }
+  aboutToDisappear(): void {
+    this.clearTimer();
+    this.onPointerRegionChange(false, false);
+  }
 
   @Builder private toolItem(item: MoonlightToolbarItem, layout: MoonlightToolbarLayout) {
     Button() {
@@ -202,8 +218,14 @@ export struct MoonlightSessionToolbar {
         Text(this.itemLabel(item)).fontSize(layout.edgeRail ? 8 : 9)
           .fontColor(item.dangerous ? this.sessionDanger() :
             (item.enabled ? this.pal().text : this.pal().text3))
+          .width('100%')
+          .textAlign(TextAlign.Center)
           .maxLines(1)
       }
+      .width('100%')
+      .height('100%')
+      .justifyContent(FlexAlign.Center)
+      .alignItems(HorizontalAlign.Center)
     }
     .width(layout.edgeRail ? layout.iconSize + 18 : 50)
     .height(layout.edgeRail ? 40 : 50).padding(0).borderRadius(12)
@@ -233,7 +255,11 @@ export struct MoonlightSessionToolbar {
     }.width(layout.edgeRail ? layout.iconSize + 18 : 44)
       .height(layout.edgeRail ? 40 : 50).padding(0).borderRadius(12)
       .backgroundColor(this.pal().surface)
-      .onClick((): void => { this.clearTimer(); this.expanded = false; })
+      .onClick((): void => {
+        this.clearTimer();
+        this.expanded = false;
+        this.onPointerRegionChange(false, false);
+      })
       .accessibilityText('收起串流控制工具栏')
   }
 
@@ -269,6 +295,9 @@ export struct MoonlightSessionToolbar {
       .width(REMOTE_SESSION_COLLAPSED_RAIL_TOUCH_WIDTH)
       .height(REMOTE_SESSION_COLLAPSED_RAIL_HEIGHT)
       .onClick((): void => { this.expanded = true; this.scheduleHide(); })
+      .onHover((hover: boolean): void => {
+        this.handlePointerRegionHover(hover, false);
+      })
       .accessibilityText('展开 Moonlight 会话贴边栏，连接质量' + this.qualityLabel)
     } else {
       Stack() {
@@ -289,6 +318,9 @@ export struct MoonlightSessionToolbar {
       .width(REMOTE_SESSION_COLLAPSED_TOP_WIDTH)
       .height(REMOTE_SESSION_COLLAPSED_TOP_TOUCH_HEIGHT)
       .onClick((): void => { this.expanded = true; this.scheduleHide(); })
+      .onHover((hover: boolean): void => {
+        this.handlePointerRegionHover(hover, false);
+      })
       .accessibilityText('展开 Moonlight 会话顶栏，连接质量' + this.qualityLabel)
     }
   }
@@ -319,7 +351,9 @@ export struct MoonlightSessionToolbar {
         .onActionUpdate((event: GestureEvent): void => { this.updateRailSwipe(event); })
         .onActionEnd((event: GestureEvent): void => { this.finishRailSwipe(event); })
         .onActionCancel((): void => { this.resetRailSwipe(); }))
-      .onHover((hover: boolean): void => { if (hover) { this.clearTimer(); } else { this.scheduleHide(); } })
+      .onHover((hover: boolean): void => {
+        this.handlePointerRegionHover(hover, true);
+      })
     } else {
       Row({ space: layout.itemGap }) {
         ForEach(this.items(), (item: MoonlightToolbarItem): void => {
@@ -330,7 +364,9 @@ export struct MoonlightSessionToolbar {
       .padding(8).backgroundColor(this.pal().floatBg).backdropBlur(18).borderRadius(18)
       .border({ width: 1, color: this.pal().floatBorder })
       .shadow({ radius: 18, color: this.pal().fabShadow, offsetY: 5 })
-      .onHover((hover: boolean): void => { if (hover) { this.clearTimer(); } else { this.scheduleHide(); } })
+      .onHover((hover: boolean): void => {
+        this.handlePointerRegionHover(hover, true);
+      })
     }
   }
 
@@ -341,6 +377,10 @@ export struct MoonlightSessionToolbar {
       } else {
         this.expandedTools(this.layout())
       }
-    }.hitTestBehavior(HitTestMode.Transparent)
+    }
+    // Match RDP's proven fence: the concrete handle/rail remains interactive
+    // and blocks remote click-through only inside its own bounds, while the
+    // full-viewport input plane stays live everywhere else at the right edge.
+    .hitTestBehavior(HitTestMode.BLOCK_HIERARCHY)
   }
 }

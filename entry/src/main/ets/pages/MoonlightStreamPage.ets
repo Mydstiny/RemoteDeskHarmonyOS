@@ -1,6 +1,7 @@
 import { display, promptAction, router, window } from '@kit.ArkUI';
 import { common } from '@kit.AbilityKit';
 import { preferences } from '@kit.ArkData';
+import { wifiManager } from '@kit.ConnectivityKit';
 import { connection } from '@kit.NetworkKit';
 import { KeyCode, pointer } from '@kit.InputKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
@@ -28,7 +29,6 @@ import {
 } from '../components/moonlight/MoonlightControllerOverlay';
 import { MoonlightSessionToolbar } from '../components/moonlight/MoonlightSessionToolbar';
 import { MoonlightPhysicalControllerSheet } from '../components/moonlight/MoonlightPhysicalControllerSheet';
-import { RemoteSessionFullscreenButton } from '../components/RemoteSessionFullscreenButton';
 import { RemoteCursorOverlay, RemoteCursorOverlayState } from '../components/RemoteCursorOverlay';
 import { normalizeRemoteCursorStyle } from '../services/RemoteCursorStylePolicy';
 import { RemoteModifierPanel } from '../components/RemoteModifierPanel';
@@ -70,9 +70,11 @@ import {
   MOONLIGHT_DISAPPEAR_BACKGROUND_SIGNAL_WAIT_MS,
   MOONLIGHT_PRESENTATION_STALL_MS,
   moonlightConnectSheetMountReady,
+  moonlightCanResizeRendererInPlace,
   moonlightAdaptiveControlModeForSource,
   moonlightInitialAdaptiveControlMode,
   moonlightPhysicalKeyboardCaptureEnabled,
+  moonlightRemoteInputSurfaceWidth,
   moonlightResolvedControlMode,
   moonlightRouteIdentity,
   moonlightSystemKeyReserved,
@@ -80,14 +82,13 @@ import {
   moonlightUsesEntryAbilityImmersiveBars,
   shouldDeferMoonlightDisappear
 } from '../services/MoonlightUiPolicy';
-import { REMOTE_SESSION_COLLAPSED_RAIL_TOUCH_WIDTH } from
-  '../services/RemoteSessionTopBarPolicy';
 import {
   clampTouchpadEffectiveGain,
   resetTouchpadPointerCurveState,
   TouchpadPointerCurveState,
   touchpadPointerCurve
 } from '../services/TouchpadPointerCurvePolicy';
+import { moonlightAxisScrollAmount } from '../services/RemoteWheelPolicy';
 import rdpnapi from 'librdpnapi.so';
 import {
   MoonlightHostService,
@@ -149,8 +150,10 @@ import {
 import {
   MoonlightRuntimeOwnerTokenAllocator,
   moonlightLaunchConfiguration,
+  moonlightNetworkSafeBitrateKbps,
   moonlightRuntimeContext,
-  moonlightSelectedHostAddress
+  moonlightSelectedHostAddress,
+  moonlightWifiReceiveLinkSpeedMbps
 } from '../services/MoonlightRuntimeContextFactory';
 import { RemoteSessionWindowCoordinator } from '../services/RemoteSessionWindowCoordinator';
 import {
@@ -190,7 +193,8 @@ import {
   shouldChoosePhysicalKeyboardLayout
 } from '../services/RemotePhysicalKeyboardPolicy';
 import {
-  shouldHideSystemPointerForEmbeddedRemoteCursor
+  shouldHideSystemPointerForEmbeddedRemoteCursor,
+  shouldWakeEmbeddedMacRemoteCursor
 } from '../services/RemotePointerModePolicy';
 
 const MOONLIGHT_KEYCODE_DPAD_LEFT = 2014;
@@ -216,6 +220,7 @@ const MOONLIGHT_TRACKPAD_MAX_LOCAL_STEP_VP = 420;
 // synchronous NAPI calls while keeping pointer/button ordering deterministic.
 const MOONLIGHT_TRACKPAD_WIRE_INTERVAL_MS = 16;
 const MOONLIGHT_RENDERER_VIEWPORT_CACHE_MS = 250;
+const MOONLIGHT_MAC_CURSOR_WAKE_MIN_INTERVAL_MS = 250;
 
 const EMPTY_MOONLIGHT_DIAGNOSTICS: MoonlightDiagnosticsSnapshot = {
   available: false, transportReady: false, videoReady: false, audioReady: false,
@@ -298,7 +303,6 @@ struct MoonlightStreamPage {
   appBackgroundSignal: boolean = false;
   @LocalStorageLink('sessionWindowBackground') @Watch('onSessionWindowBackgroundChange')
   sessionWindowBackground: boolean = false;
-  @LocalStorageLink('sessionWindowFullscreen') sessionWindowFullscreen: boolean = false;
   @State appInBackground: boolean = false;
   @State hostId: string = '';
   @State appId: string = '';
@@ -425,6 +429,9 @@ struct MoonlightStreamPage {
   private moonlightSystemBarUpdate: Promise<void> = Promise.resolve();
   private moonlightSystemPointerVisible: boolean | null = null;
   private moonlightRemoteSurfaceHovered: boolean = false;
+  private moonlightToolbarLocalPointerHovered: boolean = false;
+  private moonlightMacCursorWakePending: boolean = false;
+  private moonlightMacCursorLastWakeAttemptAtMs: number = 0;
   @State private physicalKeyboardLayout: RemoteKeyboardLayout = RemoteKeyboardLayout.WINDOWS;
   @State private physicalKeyboardLayoutConfirmed: boolean = false;
   private physicalKeyboardLayoutPromptVisible: boolean = false;
@@ -433,7 +440,9 @@ struct MoonlightStreamPage {
   private rendererSurfaceHeightPx: number = 0;
   private streamWidth: number = 1920;
   private streamHeight: number = 1080;
+  private requestedBitrateKbps: number = 20000;
   private configuredBitrateKbps: number = 20000;
+  private wifiReceiveLinkSpeedMbps: number = 0;
   private effectiveSettingsEncoded: string = '';
   private effectiveSettings: MoonlightSettings = defaultMoonlightSettings();
   private routeOwnerScopeFingerprint: string = '';
@@ -670,36 +679,27 @@ struct MoonlightStreamPage {
   }
 
   private trackpadInputSurfaceWidth(): number {
-    const viewportWidth: number = Number.isFinite(this.surfaceWidthVp) ?
-      Math.max(1, this.surfaceWidthVp) : 1;
-    const layout: MoonlightToolbarLayout = this.toolbarLayout();
-    if (!layout.edgeRail) { return viewportWidth; }
-    // The remote input surface must never overlap the right rail. Reserve the
-    // complete expanded rail width, not only the translucent collapsed handle,
-    // so every rail button remains independently clickable in either state.
-    const railWidth: number = Math.max(
-      REMOTE_SESSION_COLLAPSED_RAIL_TOUCH_WIDTH, layout.iconSize + 32);
-    return Math.max(1, viewportWidth - railWidth);
+    // The overlay rail's transparent parent already passes unused hit regions
+    // through to this surface. Keep the full viewport live so the collapsed
+    // rail cannot leave a right-edge pointer/input dead strip.
+    return moonlightRemoteInputSurfaceWidth(this.surfaceWidthVp);
   }
 
   private toolbarControlModeLabel(): string {
-    if (this.controlMode === 'keyboardMouse') {
-      return '键鼠·' + this.physicalKeyboardLayoutLabel();
-    }
+    if (this.controlMode === 'keyboardMouse') { return '键鼠'; }
     if (this.controlMode === 'trackpad') { return '触控板'; }
-    return this.adaptiveControlMode === 'keyboardMouse' ?
-      '自适应·键鼠·' + this.physicalKeyboardLayoutLabel() : '自适应·触控板';
-  }
-
-  private physicalKeyboardLayoutLabel(): string {
-    if (!this.physicalKeyboardLayoutConfirmed) { return '待选'; }
-    return this.physicalKeyboardLayout === RemoteKeyboardLayout.MACOS ? 'macOS' : 'Windows';
+    return '自适应';
   }
 
   private applyConfiguredKeyboardTarget(target: MoonlightKeyboardTarget | undefined): void {
     this.physicalKeyboardLayout = target === 'macos' ?
       RemoteKeyboardLayout.MACOS : RemoteKeyboardLayout.WINDOWS;
-    this.physicalKeyboardLayoutConfirmed = target === 'windows' || target === 'macos';
+    this.moonlightMacCursorWakePending =
+      this.physicalKeyboardLayout === RemoteKeyboardLayout.MACOS;
+    // The durable setting is only the default highlighted/fallback mapping.
+    // A host can change operating systems while the Moonlight record remains
+    // the same, so every new key/mouse session must explicitly confirm it.
+    this.physicalKeyboardLayoutConfirmed = false;
     this.physicalKeyboardLayoutPromptVisible = false;
   }
 
@@ -714,7 +714,15 @@ struct MoonlightStreamPage {
       this.firstFrameSeen && this.inputReady,
       this.resolvedMoonlightControlMode() === 'keyboardMouse',
       this.moonlightRemoteSurfaceHovered,
-      this.moonlightPointerInteractionBlocked());
+      this.moonlightPointerInteractionBlocked(),
+      this.moonlightToolbarLocalPointerHovered,
+      // The PC input plane sits above XComponent so physical mice work on
+      // HarmonyOS desktop. That transparent plane can publish a synthetic
+      // hover=false while the pointer is still inside the stream, briefly
+      // restoring HarmonyOS' cursor over Sunshine's embedded host cursor.
+      // Keep the foreground PC session as the stable remote owner; explicit
+      // local controls/background/teardown still release the system pointer.
+      this.isDesktopDevice || this.sessionWindowId.length > 0);
   }
 
   private setMoonlightSystemPointerVisible(visible: boolean, reason: string,
@@ -744,7 +752,21 @@ struct MoonlightStreamPage {
   private handleMoonlightRemoteSurfaceHover = (hovered: boolean): void => {
     const changed: boolean = this.moonlightRemoteSurfaceHovered !== hovered;
     this.moonlightRemoteSurfaceHovered = hovered;
+    if (hovered) { this.moonlightToolbarLocalPointerHovered = false; }
     this.syncMoonlightSystemPointer('surface-hover', changed);
+  };
+
+  private handleMoonlightToolbarPointerRegion = (
+    inside: boolean, expanded: boolean
+  ): void => {
+    this.moonlightToolbarLocalPointerHovered = inside && expanded;
+    if (inside && !expanded) {
+      // The collapsed handle is part of the remote-cursor experience. Keep
+      // Sunshine's authoritative cursor active until the rail is expanded.
+      this.moonlightRemoteSurfaceHovered = true;
+    }
+    this.syncMoonlightSystemPointer(
+      expanded ? 'expanded-toolbar-hover' : 'collapsed-toolbar-hover', true);
   };
 
   private resolvedMoonlightControlMode(): MoonlightResolvedControlMode {
@@ -983,7 +1005,14 @@ struct MoonlightStreamPage {
       routeStreamWidth <= 32767 ? routeStreamWidth : 1920;
     this.streamHeight = Number.isSafeInteger(routeStreamHeight) && routeStreamHeight >= 2 &&
       routeStreamHeight <= 32767 ? routeStreamHeight : 1080;
-    this.configuredBitrateKbps = this.effectiveSettings.video.bitrateKbps;
+    this.requestedBitrateKbps = this.effectiveSettings.video.bitrateKbps;
+    this.wifiReceiveLinkSpeedMbps = this.currentWifiReceiveLinkSpeedMbps();
+    this.configuredBitrateKbps = moonlightNetworkSafeBitrateKbps(
+      this.requestedBitrateKbps, this.wifiReceiveLinkSpeedMbps);
+    hilog.info(0x0014, 'MoonlightStreamUi',
+      'network bitrate requestedKbps=' + this.requestedBitrateKbps.toString() +
+      ' wifiReceiveLinkMbps=' + this.wifiReceiveLinkSpeedMbps.toString() +
+      ' effectiveKbps=' + this.configuredBitrateKbps.toString());
     this.routeOwnerScopeFingerprint = typeof params['launchOwnerScopeFingerprint'] === 'string'
       ? params['launchOwnerScopeFingerprint'] as string : '';
     this.routeAccountGeneration = params['launchAccountGeneration'] as number;
@@ -1019,6 +1048,8 @@ struct MoonlightStreamPage {
     this.trackpadLocalRejectedEvents = 0;
     this.physicalMouseObservedEvents = 0;
     this.moonlightRemoteSurfaceHovered = false;
+    this.moonlightToolbarLocalPointerHovered = false;
+    this.moonlightMacCursorLastWakeAttemptAtMs = 0;
     this.restoreMoonlightSystemPointer('page-appear');
     this.trackpadCursorInitialized = false;
     this.publishTrackpadCursor();
@@ -1139,6 +1170,16 @@ struct MoonlightStreamPage {
     hilog.info(0x0014, 'MoonlightStreamUi', 'aboutToAppear complete');
   }
 
+  private currentWifiReceiveLinkSpeedMbps(): number {
+    try {
+      const linkedInfo: wifiManager.WifiLinkedInfo = wifiManager.getLinkedInfoSync();
+      return moonlightWifiReceiveLinkSpeedMbps(
+        linkedInfo.linkSpeed, linkedInfo.rxLinkSpeed);
+    } catch (_) {
+      return 0;
+    }
+  }
+
   aboutToDisappear(): void {
     const background: boolean = this.currentMoonlightAbilityBackgroundState();
     const sessionActive: boolean = !this.routeTerminated && this.nativeSessionId > 0;
@@ -1185,6 +1226,9 @@ struct MoonlightStreamPage {
     this.physicalKeyboardProxyFocused = false;
     this.physicalKeyboardLayoutPromptVisible = false;
     this.moonlightRemoteSurfaceHovered = false;
+    this.moonlightToolbarLocalPointerHovered = false;
+    this.moonlightMacCursorWakePending = false;
+    this.moonlightMacCursorLastWakeAttemptAtMs = 0;
     this.restoreMoonlightSystemPointer('page-disappear');
     void this.setMoonlightSystemBarsHidden(false, 'page-disappear');
     this.closeMoonlightRoute('stream-page-disappear');
@@ -1422,9 +1466,9 @@ struct MoonlightStreamPage {
       this.pageSurfaceId = surfaceId;
     }
     // The first phone surface is often published with the old portrait size.
-    // Starting common-c before the landscape onAreaChange then immediately
-    // resizing the renderer invalidates the media binding generation. Admit
-    // the stream only after the final landscape geometry is observable.
+    // Starting common-c before the final landscape geometry is observable can
+    // negotiate a stale presentation size. Geometry-only changes are resized
+    // in place below, but stream admission still waits for the stable layout.
     if (!this.surfaceLayoutReady) { return; }
     if (this.renderPreservedInPip || this.pipTransferInProgress ||
         this.foregroundRestoreInProgress) {
@@ -1502,21 +1546,14 @@ struct MoonlightStreamPage {
           this.rendererSurfaceHeightPx === height)) {
       return;
     }
-    if (this.streamStartAttempted && this.nativeSessionId <= 0) {
-      // Never mutate the renderer generation while common-c admission is in
-      // flight. The landscape readiness barrier prevents this on first mount;
-      // retaining the current binding is safer than creating a stale decoder.
+    if (!moonlightCanResizeRendererInPlace(
+        this.streamStartAttempted, this.nativeSessionId, this.surfaceSuspended,
+        this.renderPreservedInPip || this.pipTransferInProgress ||
+          this.foregroundRestoreInProgress)) {
+      // Admission-in-flight and detached/PIP surfaces are owned by another
+      // lifecycle transition. Their eventual Surface callback performs the
+      // generation-bearing renderer replacement.
       return;
-    }
-    if (this.streamStartAttempted && !this.surfaceSuspended) {
-      const suspended = this.sessionCoordinator.suspendSurfaceForRoute(
-        this.hostId, this.appId);
-      if (!suspended.accepted) {
-        this.closeMoonlightRoute('surface-resize-suspend-failed');
-        return;
-      }
-      this.surfaceSuspended = true;
-      this.setSurfaceRecovering(true);
     }
     try {
       rdpnapi.resizeRenderer(this.rendererHandle, width, height);
@@ -1524,17 +1561,6 @@ struct MoonlightStreamPage {
       this.rendererSurfaceHeightPx = height;
     } catch (_) {
       this.closeMoonlightRoute('surface-resize-failed');
-      return;
-    }
-    if (this.streamStartAttempted) {
-      const rebound = this.sessionCoordinator.rebindSurfaceForRoute(
-        this.hostId, this.appId, this.rendererHandle, this.surfaceId);
-      if (!rebound.accepted) {
-        this.closeMoonlightRoute('surface-resize-rebind-failed');
-        return;
-      }
-      this.surfaceSuspended = false;
-      this.beginSurfaceFrameRecovery(this.surfaceId);
     }
   }
 
@@ -1622,7 +1648,13 @@ struct MoonlightStreamPage {
       numericAppId: this.numericAppId,
       configuredBitrateKbps: this.configuredBitrateKbps,
       effectiveSettingsEncoded: this.effectiveSettingsEncoded,
-      resetRemoteInputBeforeAdmission: this.resetRemoteInputBeforeAdmission
+      resetRemoteInputBeforeAdmission: this.resetRemoteInputBeforeAdmission,
+      // HarmonyOS PC AVCodec surfaces publish a producer texture transform
+      // that is not present on the released Phone/Pad path. Bind this choice
+      // to the exact launch reservation so reconnect/rebind cannot silently
+      // switch presentation contracts inside one native generation.
+      desktopSurfaceCompatibility:
+        this.isDesktopDevice || this.sessionWindowId.length > 0
     };
     if (includeSurface) {
       request.rendererHandle = this.rendererHandle;
@@ -4023,10 +4055,16 @@ struct MoonlightStreamPage {
   }
 
   private moonlightShouldReserveSystemKey(event: KeyEvent): boolean {
+    // Adaptive mode is allowed to become key/mouse mode from the first
+    // hardware key. Forward its system shortcuts too, otherwise a first Win
+    // or Alt+Tab event is consumed locally before adaptive input can switch.
+    const fullPhysicalKeyboardCapture: boolean = this.controlMode === 'adaptive' ||
+      this.resolvedMoonlightControlMode() === 'keyboardMouse';
     return moonlightSystemKeyReserved(event.keyCode,
       this.moonlightModifierKeyPressed(event, 'Alt'),
       this.moonlightModifierKeyPressed(event, 'Ctrl'), event.metaKey === 1,
-      this.effectiveSettings.input.forwardSystemShortcuts);
+      fullPhysicalKeyboardCapture ||
+        this.effectiveSettings.input.forwardSystemShortcuts);
   }
 
   private clearMoonlightPhysicalKeyboardFocusSchedule(): void {
@@ -4095,6 +4133,7 @@ struct MoonlightStreamPage {
         RemoteKeyboardLayout.MACOS : RemoteKeyboardLayout.WINDOWS;
       this.physicalKeyboardLayout = layout;
       this.physicalKeyboardLayoutConfirmed = true;
+      this.moonlightMacCursorWakePending = layout === RemoteKeyboardLayout.MACOS;
       if (onSelected !== undefined) { onSelected(layout); }
       hilog.info(0x0014, 'MoonlightStreamUi',
         'physical keyboard layout selected=' + layout);
@@ -4152,6 +4191,9 @@ struct MoonlightStreamPage {
     event.stopPropagation();
     const remoteKeyCode: number = this.mapMoonlightPhysicalKeyCode(event.keyCode);
     const accepted: boolean = this.sendMoonlightKey(remoteKeyCode, pressed);
+    if (pressed && this.physicalKeyboardLayout === RemoteKeyboardLayout.MACOS) {
+      this.moonlightMacCursorWakePending = true;
+    }
     hilog.debug(0x0014, 'MoonlightStreamUi',
       'physical key mapped local=' + event.keyCode.toString() +
       ' remote=' + remoteKeyCode.toString() +
@@ -4168,12 +4210,38 @@ struct MoonlightStreamPage {
     return 0;
   }
 
+  private wakeEmbeddedMacRemoteCursorIfNeeded(pointerPress: boolean): void {
+    const nowMs: number = Date.now();
+    if (!shouldWakeEmbeddedMacRemoteCursor(
+      this.physicalKeyboardLayout === RemoteKeyboardLayout.MACOS,
+      this.moonlightMacCursorWakePending, pointerPress, nowMs,
+      this.moonlightMacCursorLastWakeAttemptAtMs,
+      MOONLIGHT_MAC_CURSOR_WAKE_MIN_INTERVAL_MS
+    )) { return; }
+    this.moonlightMacCursorLastWakeAttemptAtMs = nowMs;
+    // common-c uses the same reversible wiggle at connection startup to wake
+    // the host display/cursor. The following absolute event restores the exact
+    // client coordinate, so the remote pointer never accumulates an offset.
+    const forward: boolean = this.sendMoonlightPointer({
+      launchKey: this.launchKey, action: 'relative', x: 1, y: 1
+    });
+    const reverse: boolean = this.sendMoonlightPointer({
+      launchKey: this.launchKey, action: 'relative', x: -1, y: -1
+    });
+    if (forward && reverse) { this.moonlightMacCursorWakePending = false; }
+    hilog.info(0x0014, 'MoonlightStreamUi',
+      'mac remote cursor wake forward=' + (forward ? '1' : '0') +
+      ' reverse=' + (reverse ? '1' : '0') +
+      ' source=' + (pointerPress ? 'press' : 'post-keyboard-motion'));
+  }
+
   private handleMoonlightMouse = (event: MouseEvent): void => {
     // Match the proven RDP/VNC path: an event delivered through ArkUI's
     // onMouse boundary is forwardable even when a vendor HID reports an
     // unknown sourceTool. The old allow-list silently discarded both Pad mice
     // observed on the real device before coordinates reached native input.
     this.moonlightRemoteSurfaceHovered = true;
+    this.moonlightToolbarLocalPointerHovered = false;
     this.observeMoonlightAdaptiveInput(
       event.sourceTool === SourceTool.TOUCHPAD ? 'touchpad' : 'mouse');
     this.syncMoonlightSystemPointer('physical-mouse-event');
@@ -4196,6 +4264,7 @@ struct MoonlightStreamPage {
     }
     let accepted: boolean = false;
     if (event.action === MouseAction.Move || event.action === MouseAction.Hover) {
+      this.wakeEmbeddedMacRemoteCursorIfNeeded(false);
       accepted = this.sendAbsolutePointer(event.x as number, event.y as number);
       if (eventIndex <= 12 || eventIndex % 120 === 0) {
         hilog.info(0x0014, 'MoonlightStreamUi',
@@ -4211,6 +4280,9 @@ struct MoonlightStreamPage {
     if (event.action === MouseAction.Press || event.action === MouseAction.Release) {
       const button: number = this.moonlightPointerButton(event.button as number);
       if (button <= 0) { return; }
+      if (event.action === MouseAction.Press) {
+        this.wakeEmbeddedMacRemoteCursorIfNeeded(true);
+      }
       accepted = this.sendAbsolutePointerButton(event.x as number, event.y as number,
         button, event.action === MouseAction.Press);
       hilog.info(0x0014, 'MoonlightStreamUi',
@@ -4231,6 +4303,7 @@ struct MoonlightStreamPage {
     if (!event || !this.nativeInputAvailable()) { return; }
     if (event.sourceTool === SourceTool.MOUSE || event.sourceTool === SourceTool.TOUCHPAD) {
       this.moonlightRemoteSurfaceHovered = true;
+      this.moonlightToolbarLocalPointerHovered = false;
       this.observeMoonlightAdaptiveInput(
         event.sourceTool === SourceTool.TOUCHPAD ? 'touchpad' : 'mouse');
       this.syncMoonlightSystemPointer('physical-axis-event');
@@ -4239,7 +4312,9 @@ struct MoonlightStreamPage {
     const horizontal: number = event.getHorizontalAxisValue();
     const raw: number = Math.abs(vertical) >= Math.abs(horizontal) ? vertical : horizontal;
     if (!Number.isFinite(raw) || raw === 0) { return; }
-    const amount: number = Math.max(-32768, Math.min(32767, Math.round(raw * 120)));
+    const amount: number = moonlightAxisScrollAmount(
+      raw, event.sourceTool === SourceTool.TOUCHPAD);
+    if (amount === 0) { return; }
     const request: MoonlightPointerInputRequest = {
       launchKey: this.launchKey, action: 'scroll',
       horizontal: Math.abs(horizontal) > Math.abs(vertical), scrollAmount: amount
@@ -4339,6 +4414,13 @@ struct MoonlightStreamPage {
     // the same Sheet in its failure state caused the visible failure flash on
     // user exit, system Back and PIP restoration.
     if (!terminal) { this.setConnectStageVisible(!snapshot.firstFrameSeen); }
+    if (!terminal && snapshot.phase === 'streaming' && this.firstFrameSeen &&
+        this.inputReady && !this.showSessionSheet &&
+        this.shouldRequirePhysicalKeyboardLayout()) {
+      // Match the RDP/RustDesk/VNC session contract: the saved choice supplies
+      // a default only; the remote OS mapping is confirmed once per session.
+      this.promptPhysicalKeyboardLayout();
+    }
     if (terminal && !this.routeTerminated) {
       this.scheduleTerminalRouteExit(snapshot.errorCode, snapshot.firstFrameSeen);
     }
@@ -5137,6 +5219,9 @@ struct MoonlightStreamPage {
             },
             onUnavailable: (reason: string): void => {
               promptAction.showToast({ message: reason, duration: 1800 });
+            },
+            onPointerRegionChange: (inside: boolean, expanded: boolean): void => {
+              this.handleMoonlightToolbarPointerRegion(inside, expanded);
             }
             })
           }
@@ -5165,6 +5250,9 @@ struct MoonlightStreamPage {
             },
             onUnavailable: (reason: string): void => {
               promptAction.showToast({ message: reason, duration: 1800 });
+            },
+            onPointerRegionChange: (inside: boolean, expanded: boolean): void => {
+              this.handleMoonlightToolbarPointerRegion(inside, expanded);
             }
             })
           }
@@ -5173,16 +5261,6 @@ struct MoonlightStreamPage {
           .hitTestBehavior(HitTestMode.Transparent)
           .zIndex(220)
         }
-      }
-
-      if (this.sessionWindowId.length > 0) {
-        RemoteSessionFullscreenButton({
-          fullscreen: this.sessionWindowFullscreen,
-          onToggle: (): void => { this.toggleIndependentWindowFullscreen(); }
-        })
-          .align(Alignment.BottomEnd)
-          .margin({ right: 16, bottom: 16 })
-          .zIndex(220)
       }
 
       if (this.showModifierPanel || this.showShortcutPanel) {

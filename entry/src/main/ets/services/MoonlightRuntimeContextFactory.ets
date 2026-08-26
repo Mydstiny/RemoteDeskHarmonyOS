@@ -18,6 +18,34 @@ import {
 } from './MoonlightRuntimeSupport';
 
 const MAX_SAFE_INTEGER: number = 9007199254740991;
+const MOONLIGHT_STABLE_DEVICE_WIDTH: number = 1920;
+const MOONLIGHT_WIFI_VIDEO_BUDGET_RATIO: number = 0.6;
+const MOONLIGHT_BITRATE_STEP_KBPS: number = 500;
+
+export function moonlightWifiReceiveLinkSpeedMbps(linkSpeedMbps: number,
+  receiveLinkSpeedMbps: number): number {
+  const linkValid: boolean = Number.isFinite(linkSpeedMbps) && linkSpeedMbps > 0;
+  const receiveValid: boolean = Number.isFinite(receiveLinkSpeedMbps) &&
+    receiveLinkSpeedMbps > 0;
+  if (linkValid && receiveValid) {
+    return Math.min(linkSpeedMbps, receiveLinkSpeedMbps);
+  }
+  if (receiveValid) { return receiveLinkSpeedMbps; }
+  return linkValid ? linkSpeedMbps : 0;
+}
+
+export function moonlightNetworkSafeBitrateKbps(requestedBitrateKbps: number,
+  linkSpeedMbps: number): number {
+  const requested: number = Number.isSafeInteger(requestedBitrateKbps) &&
+    requestedBitrateKbps >= 1000 && requestedBitrateKbps <= 200000 ?
+    requestedBitrateKbps : 20000;
+  if (!Number.isFinite(linkSpeedMbps) || linkSpeedMbps <= 0) { return requested; }
+  const unroundedBudget: number = linkSpeedMbps * 1000 *
+    MOONLIGHT_WIFI_VIDEO_BUDGET_RATIO;
+  const roundedBudget: number = Math.floor(unroundedBudget /
+    MOONLIGHT_BITRATE_STEP_KBPS) * MOONLIGHT_BITRATE_STEP_KBPS;
+  return Math.min(requested, Math.max(1000, roundedBudget));
+}
 
 export function moonlightSelectedAddress(host: MoonlightHost,
   settings: MoonlightSettings): MoonlightAddress | null {
@@ -95,27 +123,43 @@ export function moonlightLaunchConfiguration(
   let height: number = 1080;
   const adaptive: string = video.adaptiveResolution === undefined ?
     (video.resolutionMode === 'host' ? 'host' : 'off') : video.adaptiveResolution;
-  if (adaptive === 'host' && video.adaptiveResolution === 'host') {
-    width = video.customWidth;
-    height = video.customHeight;
-  } else if (adaptive === 'device' && Number.isFinite(deviceWidth) && Number.isFinite(deviceHeight) &&
-      deviceWidth >= 320 && deviceHeight >= 240) {
-    // Device-adaptive resolution is a runtime property, not a durable custom
-    // resolution. Reusing customWidth/customHeight here lets a phone's stale
-    // 1920x1080 (or a cloud-synced value from another device) force a 16:9
-    // stream onto a 16:10 Pad and leaves contain bars on every edge.
+  const validDevicePixels: boolean = Number.isFinite(deviceWidth) &&
+    Number.isFinite(deviceHeight) && deviceWidth >= 320 && deviceHeight >= 240;
+  if ((adaptive === 'device' || adaptive === 'host') && validDevicePixels) {
+    // Adaptive resolution is a runtime property, not a durable 16:9 custom
+    // size. Both policies preserve the current device aspect ratio. The host
+    // policy additionally treats its stored capability size as a ceiling, so
+    // a 16:10 Pad does not request a 16:9 encoder surface and receive a second
+    // set of bars from Sunshine inside the renderer's own contain viewport.
     const landscapeWidth: number = Math.max(deviceWidth, deviceHeight);
     const landscapeHeight: number = Math.min(deviceWidth, deviceHeight);
     const boundedDecoderWidth: number = Number.isSafeInteger(decoderMaxWidth) &&
       decoderMaxWidth >= 320 ? Math.min(7680, decoderMaxWidth) : 1920;
     const boundedDecoderHeight: number = Number.isSafeInteger(decoderMaxHeight) &&
       decoderMaxHeight >= 240 ? Math.min(4320, decoderMaxHeight) : 1080;
-    const scale: number = Math.min(1, boundedDecoderWidth / landscapeWidth,
-      boundedDecoderHeight / landscapeHeight);
+    // Native Pad pixels are not a useful stability target on a constrained
+    // wireless path. Preserve the display aspect ratio but cap the long edge
+    // to 1920 for the device-adaptive policy. This keeps a 16:10 Pad at
+    // 1920x1200 instead of forcing 4.1 million pixels through the decoder and
+    // network for every frame.
+    const hostWidthCeiling: number = adaptive === 'host' ?
+      Math.max(320, video.customWidth) : MOONLIGHT_STABLE_DEVICE_WIDTH;
+    const hostHeightCeiling: number = adaptive === 'host' ?
+      Math.max(240, video.customHeight) : 4320;
+    const scale: number = Math.min(1,
+      boundedDecoderWidth / landscapeWidth,
+      boundedDecoderHeight / landscapeHeight,
+      hostWidthCeiling / landscapeWidth,
+      hostHeightCeiling / landscapeHeight);
     width = landscapeWidth * scale;
     height = landscapeHeight * scale;
     width = Math.floor(width / 2) * 2;
     height = Math.floor(height / 2) * 2;
+  } else if (adaptive === 'host') {
+    // Display probing can be unavailable during recovery or unit execution.
+    // Preserve the compatible persisted host-capability request in that case.
+    width = video.customWidth;
+    height = video.customHeight;
   } else if (video.resolutionMode === '720p') { width = 1280; height = 720; }
   else if (video.resolutionMode === '1440p') { width = 2560; height = 1440; }
   else if (video.resolutionMode === '2160p') { width = 3840; height = 2160; }

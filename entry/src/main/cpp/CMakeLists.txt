@@ -1126,6 +1126,7 @@ target_link_libraries(rdpnapi PUBLIC
     libnative_media_codecbase.so  # OH_AVCodec 基础
     libnative_media_core.so       # 多媒体核心
     libnative_media_vdec.so       # 视频解码器
+    libqos.so                     # 前台解码/呈现线程 QoS
 )
 
 

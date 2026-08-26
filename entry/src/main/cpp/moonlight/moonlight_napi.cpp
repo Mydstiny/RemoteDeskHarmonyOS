@@ -1274,7 +1274,8 @@ bool parseStreamStartRequest(napi_env env, napi_value value,
         "surfaceWidth", "surfaceHeight", "configuredBitrateKbps",
         "codecPreference", "hdr", "yuv444", "latencyMode",
         "audioEnabled", "audioChannels", "playAudioOnHost",
-        "resetRemoteInputBeforeAdmission", "streamEncryption"
+        "resetRemoteInputBeforeAdmission", "desktopSurfaceCompatibility",
+        "streamEncryption"
     };
     if (!readExactObject(env, value, allowed, error)) { return false; }
     bool present = false;
@@ -1311,6 +1312,8 @@ bool parseStreamStartRequest(napi_env env, napi_value value,
         !readRequiredBoolean(env, value, "playAudioOnHost", request.playAudioOnHost, error) ||
         !readRequiredBoolean(env, value, "resetRemoteInputBeforeAdmission",
                              request.resetRemoteInputBeforeAdmission, error) ||
+        !readRequiredBoolean(env, value, "desktopSurfaceCompatibility",
+                             request.desktopSurfaceCompatibility, error) ||
         !readRequiredString(env, value, "streamEncryption", 16U, encryption, error) ||
         appId > std::numeric_limits<std::uint32_t>::max() ||
         rendererHandle > static_cast<std::uint64_t>(kMaxSafeInteger) ||
@@ -1843,6 +1846,8 @@ bool virtualControllerElement(
     else if (value == "leftStickClick") { output = MoonlightProductVirtualControllerElement::LeftStickClick; }
     else if (value == "rightStickClick") { output = MoonlightProductVirtualControllerElement::RightStickClick; }
     else if (value == "menu") { output = MoonlightProductVirtualControllerElement::Menu; }
+    else if (value == "back") { output = MoonlightProductVirtualControllerElement::Back; }
+    else if (value == "special") { output = MoonlightProductVirtualControllerElement::Special; }
     else { return false; }
     return true;
 }

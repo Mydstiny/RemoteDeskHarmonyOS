@@ -9,8 +9,10 @@ import { MoonlightHostContext } from '../main/ets/services/MoonlightHostService'
 import {
   MoonlightRuntimeOwnerTokenAllocator,
   moonlightLaunchConfiguration,
+  moonlightNetworkSafeBitrateKbps,
   moonlightRuntimeContext,
-  moonlightSelectedHostAddress
+  moonlightSelectedHostAddress,
+  moonlightWifiReceiveLinkSpeedMbps
 } from '../main/ets/services/MoonlightRuntimeContextFactory';
 
 function host(): MoonlightHost {
@@ -76,7 +78,7 @@ export default function moonlightRuntimeContextFactoryTest(): void {
       expect(launch.persistGamepads).assertTrue();
     });
 
-    it('maps_device_adaptive_resolution_to_current_landscape_pixels_not_stale_custom_values', 0,
+    it('preserves_device_aspect_ratio_inside_the_stable_long_edge_budget', 0,
       (): void => {
         const settings = defaultMoonlightSettings();
         settings.video.resolutionMode = 'custom';
@@ -84,9 +86,17 @@ export default function moonlightRuntimeContextFactoryTest(): void {
         settings.video.customWidth = 1920;
         settings.video.customHeight = 1080;
         const launch = moonlightLaunchConfiguration(settings, 2560, 1600, 4096, 2160);
-        expect(launch.width).assertEqual(2560);
-        expect(launch.height).assertEqual(1600);
+        expect(launch.width).assertEqual(1920);
+        expect(launch.height).assertEqual(1200);
       });
+
+    it('caps_video_bitrate_to_sixty_percent_of_the_receive_link_budget', 0, (): void => {
+      expect(moonlightWifiReceiveLinkSpeedMbps(25, 0)).assertEqual(25);
+      expect(moonlightWifiReceiveLinkSpeedMbps(300, 25)).assertEqual(25);
+      expect(moonlightNetworkSafeBitrateKbps(20000, 25)).assertEqual(15000);
+      expect(moonlightNetworkSafeBitrateKbps(12000, 25)).assertEqual(12000);
+      expect(moonlightNetworkSafeBitrateKbps(20000, 0)).assertEqual(20000);
+    });
 
     it('fits_device_aspect_ratio_inside_the_selected_decoder_bounds', 0, (): void => {
       const settings = defaultMoonlightSettings();
@@ -96,6 +106,29 @@ export default function moonlightRuntimeContextFactoryTest(): void {
       settings.video.customHeight = 2160;
       const launch = moonlightLaunchConfiguration(settings, 2560, 1600, 1920, 1080);
       expect(launch.width).assertEqual(1728);
+      expect(launch.height).assertEqual(1080);
+    });
+
+    it('fits_host_capability_to_the_current_device_aspect_ratio', 0, (): void => {
+      const settings = defaultMoonlightSettings();
+      settings.video.resolutionMode = 'host';
+      settings.video.adaptiveResolution = 'host';
+      settings.video.customWidth = 1920;
+      settings.video.customHeight = 1080;
+      const launch = moonlightLaunchConfiguration(settings, 2560, 1600, 1920, 1080);
+      expect(launch.width).assertEqual(1728);
+      expect(launch.height).assertEqual(1080);
+      expect(launch.resolutionPolicy).assertEqual('hostCapability');
+    });
+
+    it('keeps_legacy_host_capability_pixels_when_display_probe_is_unavailable', 0, (): void => {
+      const settings = defaultMoonlightSettings();
+      settings.video.resolutionMode = 'host';
+      settings.video.adaptiveResolution = 'host';
+      settings.video.customWidth = 1920;
+      settings.video.customHeight = 1080;
+      const launch = moonlightLaunchConfiguration(settings, 0, 0, 1920, 1080);
+      expect(launch.width).assertEqual(1920);
       expect(launch.height).assertEqual(1080);
     });
 

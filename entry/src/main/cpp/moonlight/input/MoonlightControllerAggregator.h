@@ -18,7 +18,9 @@
 namespace remotedesk::moonlight {
 
 constexpr std::uint32_t kMoonlightVirtualControllerLayoutVersion = 1U;
-constexpr std::size_t kMoonlightMaximumVirtualControllerElements = 16U;
+// A split four-button dpad plus every standard Moonlight control needs 19
+// elements. Keep the bound fixed and small while allowing that complete form.
+constexpr std::size_t kMoonlightMaximumVirtualControllerElements = 20U;
 constexpr std::size_t kMoonlightMaximumControllerConflictZones = 8U;
 constexpr std::size_t kMoonlightMaximumVirtualControllerContacts = 10U;
 constexpr double kMoonlightMinimumControllerTouchTarget = 0.08;
@@ -50,6 +52,8 @@ enum class MoonlightVirtualControllerElementKind : std::uint8_t {
     LeftStickClick,
     RightStickClick,
     Menu,
+    Back,
+    Special,
 };
 
 enum class MoonlightVirtualControllerPhase : std::uint8_t {

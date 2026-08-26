@@ -24,6 +24,8 @@
 #include <limits>
 #include <memory>
 #include <mutex>
+#include <new>
+#include <thread>
 #include <vector>
 #include <native_image/native_image.h>
 #include <multimedia/player_framework/native_avcodec_base.h>
@@ -34,6 +36,9 @@
 #include <multimedia/player_framework/native_avbuffer_info.h>
 #include <GLES3/gl3.h>
 #include <GLES2/gl2ext.h>  // GL_TEXTURE_EXTERNAL_OES
+#if defined(__OHOS__)
+#include <qos/qos.h>
+#endif
 
 #undef LOG_DOMAIN
 #undef LOG_TAG
@@ -42,6 +47,35 @@
 
 namespace {
 constexpr size_t kMaxQueuedFrames = 12;  // was 4 — too small for 45+fps w/ safe drop policy
+
+// Codec input IPC and NativeImage presentation are continuous, user-visible
+// work. Mark only these two dedicated workers as user-initiated so HarmonyOS
+// does not demote them behind unrelated utility/background tasks during a
+// foreground stream. The setting is thread-scoped and always reset at exit.
+class DecoderThreadQosScope final {
+  public:
+    DecoderThreadQosScope() noexcept {
+#if defined(__OHOS__)
+        applied_ = OH_QoS_SetThreadQoS(QOS_USER_INITIATED) == 0;
+#endif
+    }
+
+    ~DecoderThreadQosScope() {
+#if defined(__OHOS__)
+        if (applied_) {
+            (void)OH_QoS_ResetThreadQoS();
+        }
+#endif
+    }
+
+    DecoderThreadQosScope(const DecoderThreadQosScope&) = delete;
+    DecoderThreadQosScope& operator=(const DecoderThreadQosScope&) = delete;
+
+  private:
+#if defined(__OHOS__)
+    bool applied_ = false;
+#endif
+};
 
 uint64_t SaturatingAdd(std::atomic<uint64_t>& counter, uint64_t delta) {
     if (delta == 0) {
@@ -825,7 +859,13 @@ int HardwareDecoder::DecodeOwned(
     }
 
     // 拷贝编码数据到堆, 入队等待 onNeedInputBuffer 回调取走
-    auto* copy = new uint8_t[size];
+    auto* copy = new (std::nothrow) uint8_t[size];
+    if (copy == nullptr) {
+        OH_LOG_WARN(LOG_APP,
+                    "[Decoder] encoded frame allocation failed size=%{public}zu",
+                    size);
+        return -1;
+    }
     std::memcpy(copy, data, size);
 
     size_t queued = 0;
@@ -847,7 +887,19 @@ int HardwareDecoder::DecodeOwned(
         requestKeyframe = !requestAlreadyPending &&
             admission == Render::VideoFrameAdmission::AcceptAfterSoftDrop &&
             backpressure_.shouldRequestKeyframe();
-        if (admission == Render::VideoFrameAdmission::DropWaitingKeyframe) {
+        if (admission == Render::VideoFrameAdmission::DropAndWaitForKeyframe ||
+            admission == Render::VideoFrameAdmission::DropWaitingKeyframe) {
+            if (admission == Render::VideoFrameAdmission::DropAndWaitForKeyframe) {
+                // Once an encoded reference is skipped, no later predicted
+                // frame is safe to decode until a fresh IDR. Drop the stale
+                // backlog immediately so latency cannot keep growing while
+                // the asynchronous refresh request is in flight.
+                droppedQueued = clearInputQueueLocked();
+                if (droppedQueued > 0) {
+                    std::lock_guard<std::mutex> telemetryLock(telemetryMutex_);
+                    droppedTotal = SaturatingAdd(inputDropCount_, droppedQueued);
+                }
+            }
             droppedIncomingForKeyframe = true;
             std::lock_guard<std::mutex> telemetryLock(telemetryMutex_);
             waitDroppedTotal = SaturatingAdd(waitKeyframeDropCount_, 1);
@@ -907,8 +959,9 @@ int HardwareDecoder::DecodeOwned(
     if (droppedIncomingForKeyframe) {
         if (waitDroppedTotal <= 16 || waitDroppedTotal % 60 == 0) {
             OH_LOG_WARN(LOG_APP,
-                        "[Decoder] wait-keyframe drop non-key input total=%{public}llu size=%{public}zu pts=%{public}llu",
+                        "[Decoder] wait-keyframe drop non-key input total=%{public}llu cleared=%{public}zu size=%{public}zu pts=%{public}llu",
                         static_cast<unsigned long long>(waitDroppedTotal),
+                        droppedQueued,
                         size,
                         static_cast<unsigned long long>(timestamp));
         }
@@ -1184,6 +1237,7 @@ void HardwareDecoder::drainInputBuffers() {
 }
 
 void HardwareDecoder::inputLoop() {
+    DecoderThreadQosScope qos;
     OH_LOG_INFO(LOG_APP, "[Decoder] input thread started");
     while (!inputThreadStop_.load(std::memory_order_acquire)) {
         std::unique_lock<std::mutex> lk(mutex_);
@@ -1596,6 +1650,7 @@ bool HardwareDecoder::stopRenderThread() {
 }
 
 void HardwareDecoder::renderLoop() {
+    DecoderThreadQosScope qos;
     OH_LOG_INFO(LOG_APP, "[Decoder] render thread started");
     while (!renderThreadStop_.load()) {
         if (surfaceRecoveryBlocked_.load(std::memory_order_acquire)) {
@@ -2791,10 +2846,28 @@ OwnedDecodeOutcome DecodeNativeForOwnerOutcome(
     // The RustDesk stream callback is a transport-facing path. A decoder
     // transition may take the same mutex while stopping/recreating workers;
     // waiting here would turn that transition into a network receive stall.
-    // Drop this frame and let the retained-keyframe/refresh path recover once
-    // the new pipeline is published.
+    // Keep its legacy immediate try-lock behavior.
+    //
+    // Moonlight also enters through this helper, but supplies an exact decoder
+    // generation. Codec input/output callbacks briefly take pipelineMutex to
+    // prove that generation. Dropping a HEVC access unit merely because it
+    // arrived during that tiny callback window breaks the reference chain and
+    // produces a visible hitch. Give only this exact-owned path a 1 ms bounded
+    // retry window. A real bind/recovery transition still exceeds the budget
+    // and returns backpressure without stalling the receive thread.
     std::unique_lock<std::mutex> pipelineLock(
-        decoderLease->pipelineMutex, std::try_to_lock);
+        decoderLease->pipelineMutex, std::defer_lock);
+    if (expectedDecoderGeneration != 0U) {
+        constexpr auto kOwnedFrameLockBudget = std::chrono::microseconds(1000);
+        const auto deadline = std::chrono::steady_clock::now() +
+            kOwnedFrameLockBudget;
+        while (!pipelineLock.try_lock() &&
+               std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::yield();
+        }
+    } else {
+        (void)pipelineLock.try_lock();
+    }
     if (!pipelineLock.owns_lock()) {
         OH_LOG_DEBUG(LOG_APP,
                      "[Decoder] native decode skipped: pipeline busy, retry via next frame");
@@ -3847,22 +3920,28 @@ DecoderPresentationTelemetrySnapshot DecoderNapi::GetActivePresentationTelemetry
 
 OwnedDecoderCreationResult DecoderNapi::CreateOwnedHardwareDecoder(
     int width, int height, int codec, int64_t rendererHandle,
-    const DecoderSessionIdentity& owner) {
+    const DecoderSessionIdentity& owner,
+    bool desktopSurfaceCompatibility) {
     OwnedDecoderCreationResult result;
     if (width <= 0 || height <= 0 || rendererHandle <= 0 || !owner.valid() ||
         !Render::SharedSessionSinkOwnerLease().accepts(owner)) {
         return result;
     }
+    Render::NativeImagePresentationMode presentationMode =
+        Render::NativeImagePresentationMode::Identity;
     {
         std::lock_guard<std::mutex> ownerLock(g_activeDecoderOwnerMutex);
         if (!Render::SessionOwnerMatches(g_activeDecoderOwner, owner)) {
             return result;
         }
+        presentationMode = g_activeNativeImagePresentationMode.load(
+            std::memory_order_acquire);
     }
 
     auto ctx = std::make_shared<DecoderContext>();
     ctx->useSoftware = false;
-    ctx->desktopSurfaceCompatibility = false;
+    ctx->desktopSurfaceCompatibility = desktopSurfaceCompatibility;
+    ctx->presentationMode.store(presentationMode, std::memory_order_release);
     ctx->width = width;
     ctx->height = height;
     const int64_t handle = RegisterDecoderContext(ctx);
@@ -3874,7 +3953,8 @@ OwnedDecoderCreationResult DecoderNapi::CreateOwnedHardwareDecoder(
     const CodecType exactCodec = static_cast<CodecType>(codec);
     if (!decoder->SetCallbackIdentity(handle, ctx->owner,
                                       ctx->decoderGeneration) ||
-        decoder->Init(width, height, exactCodec, rendererHandle, false) != 0 ||
+        decoder->Init(width, height, exactCodec, rendererHandle,
+                      desktopSurfaceCompatibility, presentationMode) != 0 ||
         !BindVideoPipeline(handle, rendererHandle, owner)) {
         DestroyDecoderHandle(handle, owner);
         return result;

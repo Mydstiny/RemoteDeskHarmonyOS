@@ -170,6 +170,7 @@ export interface MoonlightNativeStreamStartRequest {
   audioChannels: 'stereo' | 'surround51' | 'surround71';
   playAudioOnHost: boolean;
   resetRemoteInputBeforeAdmission: boolean;
+  desktopSurfaceCompatibility: boolean;
   streamEncryption: 'auto' | 'required' | 'compatible';
 }
 

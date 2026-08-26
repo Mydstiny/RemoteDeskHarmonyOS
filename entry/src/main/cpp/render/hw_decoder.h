@@ -485,7 +485,8 @@ namespace DecoderNapi {
     REMOTEDESK_DECODER_INTERNAL OwnedDecoderCreationResult
     CreateOwnedHardwareDecoder(int width, int height, int codec,
                                int64_t rendererHandle,
-                               const DecoderSessionIdentity& owner);
+                               const DecoderSessionIdentity& owner,
+                               bool desktopSurfaceCompatibility = false);
     void SetActiveSessionId(const DecoderSessionIdentity& owner);
     void ClearActiveSessionId(const DecoderSessionIdentity& owner);
     bool SetActiveNativeImagePresentationMode(

@@ -74,8 +74,14 @@ std::uint64_t stableDeviceId(const char* value) noexcept {
     X(OH_GamePad_LeftShoulder_UnregisterButtonInputMonitor) \
     X(OH_GamePad_RightShoulder_RegisterButtonInputMonitor) \
     X(OH_GamePad_RightShoulder_UnregisterButtonInputMonitor) \
+    X(OH_GamePad_LeftTrigger_RegisterButtonInputMonitor) \
+    X(OH_GamePad_LeftTrigger_UnregisterButtonInputMonitor) \
+    X(OH_GamePad_RightTrigger_RegisterButtonInputMonitor) \
+    X(OH_GamePad_RightTrigger_UnregisterButtonInputMonitor) \
     X(OH_GamePad_ButtonMenu_RegisterButtonInputMonitor) \
     X(OH_GamePad_ButtonMenu_UnregisterButtonInputMonitor) \
+    X(OH_GamePad_ButtonHome_RegisterButtonInputMonitor) \
+    X(OH_GamePad_ButtonHome_UnregisterButtonInputMonitor) \
     X(OH_GamePad_ButtonA_RegisterButtonInputMonitor) \
     X(OH_GamePad_ButtonA_UnregisterButtonInputMonitor) \
     X(OH_GamePad_ButtonB_RegisterButtonInputMonitor) \
@@ -264,6 +270,12 @@ bool applyMoonlightGameControllerButtonInput(
         case MoonlightGameControllerButtonInput::RightShoulder:
             bit = kMoonlightControllerButtonRightShoulder;
             break;
+        case MoonlightGameControllerButtonInput::LeftTrigger:
+            sample.leftTrigger = pressed ? 1.0 : 0.0;
+            return true;
+        case MoonlightGameControllerButtonInput::RightTrigger:
+            sample.rightTrigger = pressed ? 1.0 : 0.0;
+            return true;
         case MoonlightGameControllerButtonInput::LeftStick:
             bit = kMoonlightControllerButtonLeftStick;
             break;
@@ -272,6 +284,9 @@ bool applyMoonlightGameControllerButtonInput(
             break;
         case MoonlightGameControllerButtonInput::Menu:
             bit = kMoonlightControllerButtonPlay;
+            break;
+        case MoonlightGameControllerButtonInput::Home:
+            bit = kMoonlightControllerButtonSpecial;
             break;
     }
     if (pressed) {
@@ -310,6 +325,12 @@ struct MoonlightGameControllerListener::Impl final {
     std::unordered_map<std::uint64_t, std::uint64_t> generations;
     std::unordered_map<std::uint64_t, std::string> sdkIds;
     std::unordered_map<std::uint64_t, MoonlightControllerSample> samples;
+    // Some controllers expose triggers only as buttons, while analog pads
+    // produce both button-threshold and axis callbacks. Once an axis is
+    // observed for a device, keep its analog value authoritative and ignore
+    // the duplicate digital threshold events.
+    std::unordered_set<std::uint64_t> leftTriggerAxisDevices;
+    std::unordered_set<std::uint64_t> rightTriggerAxisDevices;
     std::unordered_map<std::uint64_t, std::uint64_t> sequences;
     std::unordered_map<std::uint64_t, std::uint64_t> timestamps;
     std::unordered_set<std::uint64_t> onlineDevices;
@@ -465,6 +486,8 @@ std::uint64_t ensureDevice(MoonlightGameControllerListener::Impl& impl,
         impl.nextGeneration = saturatingIncrement(generation);
         impl.generations[id] = generation;
         impl.samples[id] = {};
+        impl.leftTriggerAxisDevices.erase(id);
+        impl.rightTriggerAxisDevices.erase(id);
         impl.sequences[id] = 0U;
         impl.timestamps[id] = 0U;
         return id;
@@ -586,6 +609,8 @@ void emitDisconnected(MoonlightGameControllerListener::Impl& impl,
         timestamp = std::max(saturatingIncrement(impl.timestamps[id]), monotonicNowUs());
         impl.timestamps[id] = timestamp;
         impl.samples[id] = {};
+        impl.leftTriggerAxisDevices.erase(id);
+        impl.rightTriggerAxisDevices.erase(id);
         notify = true;
     }
     if (notify && impl.sink != nullptr) {
@@ -631,8 +656,15 @@ void buttonCallback(const GamePad_ButtonEvent* event,
     {
         std::lock_guard<std::mutex> lock(lease.impl->mutex);
         auto& sample = lease.impl->samples[id];
-        (void)applyMoonlightGameControllerButtonInput(
-            input, action == DOWN, sample);
+        const bool analogTriggerAuthoritative =
+            (input == MoonlightGameControllerButtonInput::LeftTrigger &&
+             lease.impl->leftTriggerAxisDevices.count(id) != 0U) ||
+            (input == MoonlightGameControllerButtonInput::RightTrigger &&
+             lease.impl->rightTriggerAxisDevices.count(id) != 0U);
+        if (!analogTriggerAuthoritative) {
+            (void)applyMoonlightGameControllerButtonInput(
+                input, action == DOWN, sample);
+        }
         copy = sample;
     }
     emitSample(*lease.impl, id, copy);
@@ -645,7 +677,10 @@ void buttonCallback(const GamePad_ButtonEvent* event,
 
 REMOTEDESK_GAMEPAD_BUTTON_CALLBACK(leftShoulderCallback, LeftShoulder)
 REMOTEDESK_GAMEPAD_BUTTON_CALLBACK(rightShoulderCallback, RightShoulder)
+REMOTEDESK_GAMEPAD_BUTTON_CALLBACK(leftTriggerCallback, LeftTrigger)
+REMOTEDESK_GAMEPAD_BUTTON_CALLBACK(rightTriggerCallback, RightTrigger)
 REMOTEDESK_GAMEPAD_BUTTON_CALLBACK(menuCallback, Menu)
+REMOTEDESK_GAMEPAD_BUTTON_CALLBACK(homeCallback, Home)
 REMOTEDESK_GAMEPAD_BUTTON_CALLBACK(faceACallback, FaceA)
 REMOTEDESK_GAMEPAD_BUTTON_CALLBACK(faceBCallback, FaceB)
 REMOTEDESK_GAMEPAD_BUTTON_CALLBACK(faceXCallback, FaceX)
@@ -712,9 +747,11 @@ void axisCallback(const GamePad_AxisEvent* event) {
                 sample.rightStickY = clampUnit(y);
                 break;
             case LEFT_TRIGGER:
+                lease.impl->leftTriggerAxisDevices.insert(id);
                 sample.leftTrigger = clampTrigger(std::max(z, brake));
                 break;
             case RIGHT_TRIGGER:
+                lease.impl->rightTriggerAxisDevices.insert(id);
                 sample.rightTrigger = clampTrigger(std::max(rz, gas));
                 break;
         }
@@ -764,7 +801,7 @@ struct AxisMonitorRegistration final {
     GameController_ErrorCode (*unregisterMonitor)();
 };
 
-std::array<ButtonMonitorRegistration, 11U> buttonMonitors(GameControllerApi& api) {
+std::array<ButtonMonitorRegistration, 14U> buttonMonitors(GameControllerApi& api) {
     return {{
         {api.OH_GamePad_LeftShoulder_RegisterButtonInputMonitor,
          api.OH_GamePad_LeftShoulder_UnregisterButtonInputMonitor,
@@ -772,9 +809,18 @@ std::array<ButtonMonitorRegistration, 11U> buttonMonitors(GameControllerApi& api
         {api.OH_GamePad_RightShoulder_RegisterButtonInputMonitor,
          api.OH_GamePad_RightShoulder_UnregisterButtonInputMonitor,
          rightShoulderCallback},
+        {api.OH_GamePad_LeftTrigger_RegisterButtonInputMonitor,
+         api.OH_GamePad_LeftTrigger_UnregisterButtonInputMonitor,
+         leftTriggerCallback},
+        {api.OH_GamePad_RightTrigger_RegisterButtonInputMonitor,
+         api.OH_GamePad_RightTrigger_UnregisterButtonInputMonitor,
+         rightTriggerCallback},
         {api.OH_GamePad_ButtonMenu_RegisterButtonInputMonitor,
          api.OH_GamePad_ButtonMenu_UnregisterButtonInputMonitor,
          menuCallback},
+        {api.OH_GamePad_ButtonHome_RegisterButtonInputMonitor,
+         api.OH_GamePad_ButtonHome_UnregisterButtonInputMonitor,
+         homeCallback},
         {api.OH_GamePad_ButtonA_RegisterButtonInputMonitor,
          api.OH_GamePad_ButtonA_UnregisterButtonInputMonitor,
          faceACallback},
@@ -892,6 +938,8 @@ void stopRegisteredListener(MoonlightGameControllerListener::Impl& impl) noexcep
     impl.generations.clear();
     impl.sdkIds.clear();
     impl.samples.clear();
+    impl.leftTriggerAxisDevices.clear();
+    impl.rightTriggerAxisDevices.clear();
     impl.sequences.clear();
     impl.timestamps.clear();
     impl.onlineDevices.clear();

@@ -1,4 +1,5 @@
 import { display, promptAction, router } from '@kit.ArkUI';
+import { wifiManager } from '@kit.ConnectivityKit';
 import { AppTheme, Palette, buildDark, buildLight } from '../common/Theme';
 import { MoonlightBrandIcon } from '../components/moonlight/MoonlightBrandIcon';
 import {
@@ -49,7 +50,11 @@ import {
   probeMoonlightHardwareDecoderCapabilities
 } from '../services/MoonlightVideoCapabilityService';
 import { MoonlightNativeLaunchConfiguration } from '../services/MoonlightHostService';
-import { moonlightLaunchConfiguration } from '../services/MoonlightRuntimeContextFactory';
+import {
+  moonlightLaunchConfiguration,
+  moonlightNetworkSafeBitrateKbps,
+  moonlightWifiReceiveLinkSpeedMbps
+} from '../services/MoonlightRuntimeContextFactory';
 import { resolveMoonlightProductSettings } from '../services/MoonlightSettingsPolicy';
 
 interface MoonlightResolutionRequestPixels {
@@ -88,6 +93,7 @@ export struct MoonlightSettingsSurface {
   @State videoResolutionDraft: string = 'host';
   @State videoFpsDraft: number = 60;
   @State videoBitrateDraft: number = 20000;
+  @State wifiReceiveLinkSpeedMbps: number = 0;
   @State videoWidthDraft: number = 1920;
   @State videoHeightDraft: number = 1080;
   @State reconnectBudgetSecondsDraft: number = 15.5;
@@ -130,11 +136,22 @@ export struct MoonlightSettingsSurface {
       }
     }
     this.loadCurrentSettings();
+    this.refreshWifiReceiveLinkSpeed();
     this.refreshDecoderCapabilities();
     this.refreshDataStatus();
   }
 
   aboutToDisappear(): void { this.surfaceActive = false; }
+
+  private refreshWifiReceiveLinkSpeed(): void {
+    try {
+      const linkedInfo: wifiManager.WifiLinkedInfo = wifiManager.getLinkedInfoSync();
+      this.wifiReceiveLinkSpeedMbps = moonlightWifiReceiveLinkSpeedMbps(
+        linkedInfo.linkSpeed, linkedInfo.rxLinkSpeed);
+    } catch (_) {
+      this.wifiReceiveLinkSpeedMbps = 0;
+    }
+  }
 
   private loadCurrentSettings(): void {
     const store: CloudStore = CloudStore.getInstance();
@@ -732,10 +749,10 @@ export struct MoonlightSettingsSurface {
 
   private resolutionRequestDetail(): string {
     if (this.adaptiveResolution() === 'device') {
-      return '按当前鸿蒙设备横屏像素与宽高比请求，受当前硬件解码器上限约束';
+      return '保持当前设备宽高比，长边按 1920 稳定像素上限收敛，并受当前硬件解码器上限约束';
     }
     if (this.adaptiveResolution() === 'host') {
-      return '按远端编码能力请求最高标准画质，连接时还会按 Sunshine 返回的上限收敛';
+      return '保持当前设备宽高比，并按远端编码能力与硬件解码器上限收敛，避免重复黑边';
     }
     return '固定请求尺寸；更改会立即反映在预览中，保存后用于下一次连接';
   }
@@ -770,6 +787,24 @@ export struct MoonlightSettingsSurface {
     return reconnect + ' · ' + encryption;
   }
 
+  private bitratePreview(): string {
+    const requested: number = this.settings.video.bitrateKbps;
+    const effective: number = moonlightNetworkSafeBitrateKbps(
+      requested, this.wifiReceiveLinkSpeedMbps);
+    if (effective < requested) {
+      return requested.toString() + ' 设置 / ' + effective.toString() + ' 当前链路';
+    }
+    return requested.toString() + ' Kbps';
+  }
+
+  private bitrateRuntimeDetail(): string {
+    if (this.wifiReceiveLinkSpeedMbps <= 0) {
+      return '当前未取得 Wi-Fi 协商速率，下一次串流保持设置值';
+    }
+    return '当前 Wi-Fi 接收链路 ' + this.wifiReceiveLinkSpeedMbps.toString() +
+      ' Mbps；串流最多使用 60%，为音频、FEC 与突发流量保留余量';
+  }
+
   @Builder private previewItem(title: string, value: string) {
     Column() {
       Text(title).fontSize(10).fontColor(this.pal().text3)
@@ -791,7 +826,7 @@ export struct MoonlightSettingsSurface {
       Row({ space: 8 }) {
         this.previewItem('画面', this.resolutionPreview() + ' · ' +
           this.settings.video.fps.toString() + ' FPS · ' +
-          this.settings.video.bitrateKbps.toString() + ' Kbps')
+          this.bitratePreview())
         this.previewItem('控制', this.inputPreview() + ' · ' + this.inputKeyboardPreview())
       }.width('100%')
       Row({ space: 8 }) {
@@ -1074,6 +1109,9 @@ export struct MoonlightSettingsSurface {
       }
       this.videoFpsSlider()
       this.videoBitrateSlider()
+      this.statusRow('本次链路有效码率', this.bitrateRuntimeDetail(),
+        moonlightNetworkSafeBitrateKbps(this.settings.video.bitrateKbps,
+          this.wifiReceiveLinkSpeedMbps).toString() + ' Kbps')
       this.statusRow('HDR', '当前媒体管线尚未开放，避免保存后静默降级', '尚未开放', false)
       Divider().color(this.pal().divider)
       this.statusRow('YUV 4:4:4', '当前媒体管线尚未开放，保持 8-bit YUV420', '尚未开放', false)
@@ -1134,7 +1172,9 @@ export struct MoonlightSettingsSurface {
         this.settings.input.captureKeyboard,
         (value: boolean): void => { this.update((next: MoonlightSettings): void => { next.input.captureKeyboard = value; }); })
       Divider().color(this.pal().divider)
-      this.statusRow('转发系统快捷键', '系统保留组合键尚未开放，普通按键仍可发送', '尚未开放', false)
+      this.statusRow('转发系统快捷键',
+        '键鼠与自适应模式完整发送 Win、Alt+Tab、Ctrl+Esc 等组合键；仅保留设备电源、Home 与会话生命周期键',
+        '键鼠模式自动')
     }.width('100%').padding(16).backgroundColor(this.pal().card).borderRadius(20)
       .border({ width: 0.5, color: this.pal().cardBorder }).margin({ bottom: 12 })
     Column() {

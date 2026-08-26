@@ -6,6 +6,7 @@
 #include <array>
 #include <atomic>
 #include <condition_variable>
+#include <cmath>
 #include <cstdio>
 #include <limits>
 #include <mutex>
@@ -56,19 +57,25 @@ bool adaptLaunchVideoMode(MoonlightLaunchConfiguration& configuration,
     if (requestedLuma <= *maximumLuma) {
         return true;
     }
-    constexpr std::array<std::array<std::uint32_t, 2U>, 5U> modes {{
-        {{3840U, 2160U}}, {{2560U, 1440U}}, {{1920U, 1080U}},
-        {{1600U, 900U}}, {{1280U, 720U}}
-    }};
-    for (const auto& mode : modes) {
-        if (mode[0] <= configuration.width && mode[1] <= configuration.height &&
-            static_cast<std::uint64_t>(mode[0]) * mode[1] <= *maximumLuma) {
-            configuration.width = mode[0];
-            configuration.height = mode[1];
-            return true;
-        }
+    // Sunshine's luma receipt is a pixel-area ceiling, not a list of 16:9
+    // modes. Scale the admitted request directly so a 16:10/3:2 device does
+    // not fall back to a hard-coded 16:9 mode and reintroduce letterboxing.
+    const long double scale = std::sqrt(
+        static_cast<long double>(*maximumLuma) /
+        static_cast<long double>(requestedLuma));
+    std::uint32_t scaledWidth = static_cast<std::uint32_t>(
+        std::floor(static_cast<long double>(configuration.width) * scale));
+    std::uint32_t scaledHeight = static_cast<std::uint32_t>(
+        std::floor(static_cast<long double>(configuration.height) * scale));
+    scaledWidth -= scaledWidth % 2U;
+    scaledHeight -= scaledHeight % 2U;
+    if (scaledWidth < 320U || scaledHeight < 240U ||
+        static_cast<std::uint64_t>(scaledWidth) * scaledHeight > *maximumLuma) {
+        return false;
     }
-    return false;
+    configuration.width = scaledWidth;
+    configuration.height = scaledHeight;
+    return true;
 }
 
 #if defined(RDP_NATIVE_CALLBACK_TESTING)

@@ -352,6 +352,25 @@ export default function moonlightSessionCoordinatorTest(): void {
       registry.resetForTest();
     });
 
+    it('binds_desktop_surface_presentation_to_the_exact_stream_reservation', 0, (): void => {
+      const runtime: FakeMoonlightRuntime = new FakeMoonlightRuntime();
+      const registry: ActiveRemoteSessionRegistry = ActiveRemoteSessionRegistry.getInstance();
+      registry.resetForTest();
+      registry.bindScope('owner-1', 1);
+      const coordinator: MoonlightSessionCoordinator =
+        new MoonlightSessionCoordinator(runtime, registry);
+      const reserved: MoonlightSessionStartRequest = productRequest(false);
+      reserved.desktopSurfaceCompatibility = true;
+      expect(coordinator.reserve(reserved).accepted).assertTrue();
+      const mismatched: MoonlightSessionStartRequest = productRequest(true);
+      mismatched.desktopSurfaceCompatibility = false;
+      const result = coordinator.start(mismatched);
+      expect(result.code).assertEqual('duplicate_start');
+      expect(runtime.startCalls).assertEqual(0);
+      coordinator.resetForTest();
+      registry.resetForTest();
+    });
+
     it('keeps_session_admission_closed_until_the_exact_account_scope_is_bound', 0,
       (): void => {
         const runtime = new FakeMoonlightRuntime();

@@ -50,6 +50,7 @@ class MoonlightSessionReservationIdentity {
   configuredBitrateKbps: number = 20000;
   effectiveSettingsEncoded: string = '';
   resetRemoteInputBeforeAdmission: boolean = false;
+  desktopSurfaceCompatibility: boolean = false;
 }
 
 export interface MoonlightSessionStartRequest {
@@ -69,6 +70,7 @@ export interface MoonlightSessionStartRequest {
   configuredBitrateKbps?: number;
   effectiveSettingsEncoded?: string;
   resetRemoteInputBeforeAdmission?: boolean;
+  desktopSurfaceCompatibility?: boolean;
   rendererHandle?: number;
   surfaceWidth?: number;
   surfaceHeight?: number;
@@ -245,6 +247,8 @@ class MoonlightNapiRuntimePort implements MoonlightRuntimePort {
         playAudioOnHost: settings.audio.playOnHost,
         resetRemoteInputBeforeAdmission:
           request.resetRemoteInputBeforeAdmission === true,
+        desktopSurfaceCompatibility:
+          request.desktopSurfaceCompatibility === true,
         streamEncryption: settings.network.streamEncryption
       });
       if (!result.accepted || result.sessionId <= 0) { return false; }
@@ -1259,6 +1263,8 @@ export class MoonlightSessionCoordinator {
       '' : request.effectiveSettingsEncoded;
     identity.resetRemoteInputBeforeAdmission =
       request.resetRemoteInputBeforeAdmission === true;
+    identity.desktopSurfaceCompatibility =
+      request.desktopSurfaceCompatibility === true;
     return identity;
   }
 
@@ -1283,7 +1289,9 @@ export class MoonlightSessionCoordinator {
       identity.effectiveSettingsEncoded === (request.effectiveSettingsEncoded === undefined ?
         '' : request.effectiveSettingsEncoded) &&
       identity.resetRemoteInputBeforeAdmission ===
-        (request.resetRemoteInputBeforeAdmission === true);
+        (request.resetRemoteInputBeforeAdmission === true) &&
+      identity.desktopSurfaceCompatibility ===
+        (request.desktopSurfaceCompatibility === true);
   }
 
   private scheduleRuntimePoll(surfaceId: string): void {

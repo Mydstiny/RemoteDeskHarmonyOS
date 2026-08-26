@@ -338,6 +338,16 @@ MoonlightProductStreamStartResult MoonlightProductStreamingRuntime::start(
         std::fill(stage.remoteInputKey.begin(), stage.remoteInputKey.end(), 0U);
         return finishBeforeCommonC("invalid_surface");
     }
+    OH_LOG_INFO(LOG_APP,
+                "stream start request mode=%{public}ux%{public}u@%{public}u surface=%{public}dx%{public}d bitrate=%{public}d codec=%{public}d desktopSurface=%{public}s",
+                stage.configuration.width,
+                stage.configuration.height,
+                stage.configuration.refreshRate,
+                request.surfaceWidth,
+                request.surfaceHeight,
+                request.configuredBitrateKbps,
+                static_cast<int>(request.codec),
+                request.desktopSurfaceCompatibility ? "yes" : "no");
     const auto now = monotonicMs();
     auto streamConfig = conservativeOffer(stage, request);
     if (!streamConfig.has_value()) {
@@ -349,7 +359,8 @@ MoonlightProductStreamStartResult MoonlightProductStreamingRuntime::start(
         static_cast<std::int32_t>(stage.configuration.width),
         static_cast<std::int32_t>(stage.configuration.height),
         request.codec,
-        request.audioEnabled);
+        request.audioEnabled,
+        request.desktopSurfaceCompatibility);
     if (media == nullptr) {
         std::fill(stage.remoteInputKey.begin(), stage.remoteInputKey.end(), 0U);
         return finishBeforeCommonC("media_unavailable");
@@ -447,6 +458,13 @@ MoonlightProductStreamStartResult MoonlightProductStreamingRuntime::start(
         value.firstFrameReadyLogged = false;
         value.sessionFirstFrameReady = false;
     }
+    OH_LOG_INFO(LOG_APP,
+                "stream start accepted mode=%{public}ux%{public}u@%{public}u bitrate=%{public}d codec=%{public}d",
+                stage.configuration.width,
+                stage.configuration.height,
+                stage.configuration.refreshRate,
+                request.configuredBitrateKbps,
+                static_cast<int>(request.codec));
     if (cancelDuringStart) {
         (void)requestStop(launchKey);
         return {false, "cancelled", started.key};

@@ -47,11 +47,12 @@ constexpr std::uint32_t kMoonlightControllerStandardButtonMask =
     kMoonlightControllerButtonB | kMoonlightControllerButtonX |
     kMoonlightControllerButtonY;
 
-// API 23 exposes Menu but no separately named Select/Back capability. Home is
-// retained by the product as a local/system escape and is not advertised to
-// the host. Profiles may therefore advertise only this conservative subset.
+// API 23 exposes Menu and Home but no separately named Select/Back capability.
+// Home is forwarded as the standard Guide/Special button; HarmonyOS system
+// navigation remains available independently of the game-controller stream.
 constexpr std::uint32_t kMoonlightControllerApi23ButtonMask =
     kMoonlightControllerDpadMask | kMoonlightControllerButtonPlay |
+    kMoonlightControllerButtonSpecial |
     kMoonlightControllerButtonLeftStick |
     kMoonlightControllerButtonRightStick |
     kMoonlightControllerButtonLeftShoulder |

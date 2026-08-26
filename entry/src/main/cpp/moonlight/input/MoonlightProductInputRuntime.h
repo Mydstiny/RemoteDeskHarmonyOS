@@ -35,6 +35,8 @@ enum class MoonlightProductVirtualControllerElement : std::uint8_t {
     LeftStickClick,
     RightStickClick,
     Menu,
+    Back,
+    Special,
 };
 
 enum class MoonlightProductVirtualControllerPhase : std::uint8_t {

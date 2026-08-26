@@ -82,6 +82,9 @@ RDP_TEST_CASE(moonlight_game_controller_listener_maps_registered_controls_withou
     RDP_ASSERT(applyMoonlightGameControllerButtonInput(
         MoonlightGameControllerButtonInput::LeftStick, true, sample));
     RDP_ASSERT((sample.buttonFlags & kMoonlightControllerButtonLeftStick) != 0U);
+    RDP_ASSERT(applyMoonlightGameControllerButtonInput(
+        MoonlightGameControllerButtonInput::Home, true, sample));
+    RDP_ASSERT((sample.buttonFlags & kMoonlightControllerButtonSpecial) != 0U);
 
     RDP_ASSERT(applyMoonlightGameControllerButtonInput(
         MoonlightGameControllerButtonInput::FaceA, false, sample));
@@ -96,6 +99,21 @@ RDP_TEST_CASE(moonlight_game_controller_listener_button_mapping_preserves_axis_t
         MoonlightGameControllerButtonInput::FaceB, true, sample));
     RDP_ASSERT_EQ(sample.leftTrigger, 0.4);
     RDP_ASSERT_EQ(sample.rightTrigger, 0.7);
+}
+
+RDP_TEST_CASE(moonlight_game_controller_listener_maps_digital_trigger_fallback) {
+    MoonlightControllerSample sample;
+    RDP_ASSERT(applyMoonlightGameControllerButtonInput(
+        MoonlightGameControllerButtonInput::LeftTrigger, true, sample));
+    RDP_ASSERT_EQ(sample.leftTrigger, 1.0);
+    RDP_ASSERT_EQ(sample.rightTrigger, 0.0);
+    RDP_ASSERT(applyMoonlightGameControllerButtonInput(
+        MoonlightGameControllerButtonInput::RightTrigger, true, sample));
+    RDP_ASSERT_EQ(sample.rightTrigger, 1.0);
+    RDP_ASSERT(applyMoonlightGameControllerButtonInput(
+        MoonlightGameControllerButtonInput::LeftTrigger, false, sample));
+    RDP_ASSERT_EQ(sample.leftTrigger, 0.0);
+    RDP_ASSERT_EQ(sample.rightTrigger, 1.0);
 }
 
 } // namespace
