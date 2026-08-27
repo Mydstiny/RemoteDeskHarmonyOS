@@ -20,6 +20,12 @@
 #include "terminal/terminal_core_napi.h"
 #include "terminal/ssh_terminal_renderer.h"
 
+#if defined(__has_include)
+#if __has_include("remotedesk_build_identity.h")
+#include "remotedesk_build_identity.h"
+#endif
+#endif
+
 #undef LOG_DOMAIN
 #undef LOG_TAG
 #define LOG_DOMAIN 0x0000
