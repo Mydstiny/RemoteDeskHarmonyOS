@@ -3,17 +3,19 @@
   "task": "vnc-cursor-wheel-regression",
   "branch": "codex/vnc-cursor-wheel-regression",
   "base": "0b8e5bf602a6f7ddf22918a5ec346f0be1b750a7",
-  "head": "0b8e5bf602a6f7ddf22918a5ec346f0be1b750a7",
-  "phase": "implementation",
+  "head": "dcf1b2fc49a9340c14fe0c68679ec1d4014fed4a",
+  "phase": "review",
   "status": "active",
-  "next": "Implement protocol-aware VNC wheel scaling and safe local cursor fallback, then run focused and mandatory gates.",
+  "next": "Obtain independent review of the committed VNC checkpoint, remediate findings, repeat gates and install the signed HAP on 40123.",
   "blockers": [],
   "planPaths": [
     "docs/codex/plans/2026-08-27-vnc-cursor-wheel-regression.md"
   ],
   "review": {
-    "status": "PENDING",
-    "taskIds": [],
+    "status": "IN_PROGRESS",
+    "taskIds": [
+      "/root/vnc_wheel_review"
+    ],
     "reviewedHead": "",
     "scope": [
       "entry/src/main/ets/services/RemoteWheelPolicy.ets",
@@ -28,15 +30,15 @@
     ],
     "lastReceiptId": "",
     "findings": [],
-    "reason": "Implementation has not yet reached an independently reviewable checkpoint."
+    "reason": "Committed checkpoint dcf1b2fc4 is awaiting independent review."
   },
   "lastVerification": {
     "baseline": "clean synchronized main@0b8e5bf60",
-    "testCompile": "PENDING",
-    "assembleHap": "PENDING",
-    "targetedTests": "PENDING",
-    "compliance": "PENDING",
-    "review": "PENDING"
+    "testCompile": "PASS final exact default@OhosTestCompileArkTS 14s401ms",
+    "assembleHap": "PASS final exact signed assembleHap 36s481ms sha256=de2bff70d6562270abe4d5cdafb17ea15b30d58833dc6979a00c31e83c222509",
+    "targetedTests": "PASS host native 812/812 including transparent VNC cursor; focused ArkTS policies compile-registered",
+    "compliance": "PASS git diff --check and Light",
+    "review": "IN_PROGRESS /root/vnc_wheel_review"
   },
   "updated": "2026-08-27 Asia/Shanghai"
 }

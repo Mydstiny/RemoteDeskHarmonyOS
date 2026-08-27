@@ -4,15 +4,14 @@ Updated: 2026-08-27 Asia/Shanghai
 
 ## Now
 
-1. Correct discrete mouse, physical touchpad and virtual touchpad VNC scaling.
-2. Preserve a visible local cursor while macOS VNC protocol cursor data is unavailable.
-3. Add focused regression coverage and run exact build/package/compliance gates.
+1. Complete independent review of checkpoint `dcf1b2fc4`.
+2. Remediate any findings and repeat exact build/package/compliance gates.
+3. Install the reviewed signed HAP on `192.168.3.236:40123`.
 
 ## Next
 
-1. Obtain independent review and remediate every finding.
-2. Install the signed HAP on `192.168.3.236:40123` and capture acceptance evidence.
-3. Push the reviewed branch and complete PR/main closure after acceptance.
+1. Capture user acceptance for VNC cursor and all three wheel input sources.
+2. Push the reviewed branch and complete PR/main closure after acceptance.
 
 ## Later / external acceptance
 
