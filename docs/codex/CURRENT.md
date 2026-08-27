@@ -2,118 +2,30 @@
 
 ## Active task
 
-- Task: `moonlight-complete-upgrade`
-- Base: `main@aeb0cdac5`; branch: `codex/moonlight-complete-upgrade`
-- Code checkpoint: `fe78c5b1`; the following state-document commit does not change code.
-- Phase: 1.1.1 → 1.1.2 cloud/local-data compatibility and Phone core-eight-plus-Moonlight upload are verified; fresh-install cold-start hardening is source/build verified; Pad startup remains blocked by its lock screen.
-- Authoritative plan: `docs/superpowers/plans/2026-07-28-moonlight-harmonyos-complete-upgrade-plan.md`
-- Live ledger: `docs/codex/plans/2026-08-09-moonlight-implementation-ledger.md`
+- Task: `rustdesk-orientation-diagnostics`
+- Branch/base: `codex/rustdesk-orientation-diagnostics` from merged `main@5bac9ffc2`
+- Phase: implementation; worktree was clean at task start.
+- Plan: `docs/codex/plans/2026-08-27-rustdesk-orientation-and-diagnostics.md`
 
-## Fresh-install cold-start hardening
+## Confirmed diagnosis
 
-- `fe78c5b1` removes account/RDB readiness from the first-install visible-UI gate. Login renders immediately while device-local scope preparation continues behind the same coordinator used by later login/offline actions; failure is logged without restoring the blocking surface.
-- EntryAbility now awaits the API 23 WindowStage Promise path, tries the registered first-install GuidePage first and falls back to the registered interactive LoginPage if Guide UIContent loading rejects. The fallback does not persist the guide-complete marker.
-- GuidePage already initializes a non-empty seven-page model and renders first-install guidance directly in the page instead of depending on cold-start bindSheet attachment; account, KeyVault, host-store and cloud startup remain asynchronous and are not awaited by WindowStage content loading.
-- Exact ArkTS test compile, signed HAP assembly, diff check and Light compliance pass on 2026-08-26. Signed HAP SHA-256 is `5f0755aea752614828808411b4b6157193373d33184e9f4a1d5496d8d86eda5e`; per the user's constraint this is code/build confirmation only, not a fresh-install device PASS.
+- RustDesk currently selects a producer-supplied native-image transform only when the peer platform string contains Windows, while macOS/Linux use identity presentation.
+- Historical project evidence shows RustDesk desktop frames are already upright in the app's canonical top-left texture space. Applying the producer matrix can rotate an upright Windows desktop by 180 degrees; the later Windows-only switch reintroduced that risk.
+- The two supplied `RemoteDesktop-log-20260827-*.jsonl` files show successful request/state/disconnect events but contain neither build identity nor peer platform, decoder backend, presentation mode, surface role or transform classification. They therefore cannot distinguish an old package from the intended fix or explain a rendering mismatch.
 
-## Moonlight unclassified host-card parity
+## Implementation target
 
-- `ce309559` removes the separate Moonlight row from the unclassified host page and renders RemoteHost/VNC/Moonlight cards through one ordered card sequence with protocol-namespaced selection, popup and drag identities. Legacy bare RemoteHost order values remain readable.
-- Moonlight now follows the common card contract for tap expansion, left-swipe edit/lock, right-swipe delete, desktop action popup, lock gating, long-press entry into multi-select, unified select-all/batch delete and drag reorder across protocols. Filtered-out cards retain their original ordering slots.
-- The Moonlight editor is a HostList bindSheet with editable display name, preferred endpoint/port, HTTPS control port, Sunshine/GameStream type and Wake-on-LAN settings. Pairing identity, lock state and order are immutable in this editor; owner-scoped repository mutations retain normal cloud-journal behavior.
-- Current verification on 2026-08-25: exact `default@OhosTestCompileArkTS` PASS, exact signed `assembleHap` PASS, `git diff --check` PASS and Light open-source compliance PASS. Signed HAP SHA-256: `fcd0dbddf0bf0ef9349ae86794b2ebb55fbae888162baabb25e7e09015c12a95`.
-- `hdc list targets -v` returned no targets, so no phone/Pad long-press, multi-select, drag or edit-Sheet runtime PASS is claimed for this checkpoint.
+- Remove peer-OS-dependent RustDesk presentation and keep every RustDesk peer on one canonical identity path. Producer transform metadata remains observable for diagnostics, not authoritative for remote desktop orientation.
+- Upgrade diagnostic exports so a support log identifies the exact diagnostic build and records bounded, privacy-safe runtime facts for RDP, RustDesk, VNC, Moonlight and SSH/SFTP.
+- Add focused native/ArkTS coverage, then run native tests, exact ArkTS test compile, signed HAP assembly, diff check and Light compliance before independent review.
 
-## Concurrent RustDesk persistence repair
+## Completed prerequisite
 
-- The user-requested RustDesk password/2FA persistence repair is implemented in the current working tree without changing the active Moonlight task or overwriting its concurrent edits.
-- RustDesk authentication input now survives ordinary background/foreground Sheet reconstruction in a process-memory-only, owner/account-generation/host-fenced draft. Explicit cancel, host deletion, account transition and crypto reset clear the draft; passwords never enter Preferences, AppStorage, cloud rows or backups unless the user selects “remember” and authentication succeeds.
-- RustDesk peer 2FA binding now uses a dedicated owner/device-local Preferences store, hydrates only when the endpoint, device and KeyVault entry still match, migrates provable legacy local data once, and is removed transactionally on endpoint change or host deletion. KeyVault separately publishes whether the current account TOTP snapshot is authoritative, so cold start, failed RDB reads and account transitions defer cleanup instead of mistaking “not loaded yet” for a deleted entry. RemoteHost/cloud/backup serialization no longer exports the device-local binding.
-- Host/RDP/SSH mutation flows now check persistence results before success UI or connection handoff; failed writes retain the editor where possible, rollback coupled local secrets/bindings, and report partial-success cases explicitly.
-- Current uncommitted tree verification on 2026-08-23: exact `default@OhosTestCompileArkTS` PASS, exact signed `assembleHap` PASS, `git diff --check` PASS, Light open-source compliance PASS and official `hap-sign-tool verify-app` PASS. Isolated installed HAP SHA-256: `f308ac7eee0adba1bdda0ae4e20639da928a30e9f1863f812e06d629e204eea7`.
-- That exact HAP was installed with data preservation and `EntryAbility` started successfully on physical device `SGT-AL10` at `192.168.3.235:38451`. The user confirmed password background/foreground retention. The earlier faulty build already deleted the old peer-2FA binding, so one new binding is required before interactive background/process-relaunch readback can be accepted.
-- Device Hypium execution remains blocked because `ohosTest@OhosTestCompileArkTS` is not registered (`00306054`). The working tree also contains pre-existing overlapping Moonlight/keyboard/SSH edits, so this repair is not committed or merged as an isolated checkpoint.
+- VNC host-FAB adaptive layout passed independent review and both exact Hvigor gates, was pushed as PR #45, passed `open-source-compliance` and merged into `main@5bac9ffc2`.
+- 474 untracked duplicate files were moved without deletion to `/Users/mydestiny/Desktop/RemoteDesktop/untracked-duplicate-backup-20260827-1730`; the repository is clean.
 
-## Concurrent RustDesk view-only compatibility repair
+## Blockers and acceptance boundary
 
-- `1d07fed6` handles official `Misc.permission_info` updates instead of discarding them as `misc/other`. Explicit remote keyboard denial now drops queued keyboard/mouse/touch controls and rejects later input; clipboard and file denials are enforced independently. Older peers that never advertise permissions retain the legacy optimistic behavior.
-- The post-first-frame recovery no longer requires more than 20 video frames or a live audio stream. Once any video frame has arrived, 2.5 seconds without another frame requests a rate-limited refresh, covering silent Windows/view-only sessions that emit only a small initial keyframe burst.
-- A versioned 16-byte permission FFI snapshot reaches C++/NAPI/ArkTS diagnostics. The HUD reports `仅查看` when known, replaces the misleading `协议采样不可用` placeholder, and labels a stale static desktop as `画面静止或停滞` rather than claiming a definite transport failure.
-- Verification on 2026-08-25: focused Rust permission/starvation tests PASS (7/7), `cargo check --lib` PASS, exact `default@OhosTestCompileArkTS` PASS, exact signed `assembleHap` PASS, `git diff --check` PASS and Light compliance PASS. Signed HAP SHA-256 is `d0bc2670588a2ca131e8fd770da404323ce824dd905ab25bca013af0db50f69b`; that package also contains the preserved, uncommitted user-owned HostList drag change.
-- The reporter is separately investigating the custom Windows fork's CM lifecycle. Real custom-fork reproduction and independent review remain pending; this checkpoint is not merged.
-
-## Concurrent RustDesk Windows presentation and session-control alignment
-
-- `6132ec0dc` makes authenticated Windows peers consume the NativeImage producer transform only on the PC hardware-decoder path; macOS/Linux, Phone/Pad, software decoding and Moonlight retain identity presentation. The RustDesk PC top bar and Phone/Pad side rail now use one canonical action model, button builder, ordering, labels, icons and glass styling.
-- `3c10f8b4` closes every review-discovered publication race: peer platform is delivered by the new additive `rustdesk_connect_v5` callback after authentication but before display/frame/stream delivery; the unsafe post-connect raw-handle query is removed; bind and decoder recreation retain and replay the latest owner-scoped atomic presentation mode before frame admission reopens.
-- Verification on 2026-08-26: Rust `188/188` PASS, host native `806/806` PASS outside the socket-restricted sandbox, exact `default@OhosTestCompileArkTS` PASS, exact signed `assembleHap` PASS, `git diff --check` PASS and Light open-source compliance PASS. The current full-worktree signed HAP SHA-256 is `99dc160108e3bd55b2439c6209ce90b474d6990f62c03c3438359cab5e07581f`.
-- Independent final review is P0/P1/P2 all zero. P3 records only future deterministic v5 ordering and bind/transition race-test strengthening; it does not block delivery. Runtime acceptance against a Windows and macOS peer remains pending and must confirm Windows upright output plus cross-form-factor control parity.
-
-## Concurrent multi-protocol session-control visibility and collapsed-state parity
-
-- `5d4716b3` unifies the PC collapsed affordance for RDP, RustDesk, VNC and Moonlight with the Phone/Pad rail geometry rotated onto the top edge: a 72×22 translucent visual handle inside a 72×40 touch target, down chevron, shared border/shadow treatment and a true `y=0` top position. RDP no longer falls back to its former black brand/status pill.
-- Settings → Display & Interaction now exposes protocol-specific RDP, RustDesk, VNC and Moonlight switches. Each durable preference hides the selected protocol's real session rail/top bar and control-center entry; legacy `pcSessionTopBarHidden` migrates to RustDesk/VNC only when their new explicit keys are absent. `7d624600` closes the initial review findings for Moonlight parity, migration and protocol-specific accessibility labels.
-- `26235ce5` closes the final runtime edge: changing Moonlight to hidden dismisses an already-open control-center Sheet while preserving connect, controller and stop Sheets. Focused policy tests cover migration precedence and the exact dismiss predicate.
-- Final verification on 2026-08-26: exact `default@OhosTestCompileArkTS` PASS, exact signed `assembleHap` PASS, `git diff --check` PASS and Light open-source compliance PASS. Signed HAP SHA-256: `cc9de3eb32222cf59da55023b11d5fcdf2d55d7b94783295e0a52702ed33d5ff`.
-- Final independent review is P0/P1/P2/P3 all zero. No HDC target was online at closeout, so real PC/freeform visual confirmation of edge contact, collapse/expand interaction and per-protocol runtime hiding remains pending and is not claimed as a device PASS.
-
-## Concurrent VNC preflight alignment repair
-
-- The user-reported VNC regression is repaired and isolated for this commit: Phone/Pad and PC/2in1 settings/add-and-connect flows now return to HostList for the same lock → certificate/plaintext-risk → credential preflight before RemoteDesktop is opened. The legacy password Sheet and its state/callbacks are removed from the connection page.
-- Explicit no-password, one-shot and saved-password decisions are distinct. Native authentication retry returns to HostList; a saved password is replaced only when a non-empty saved value was actually sent. One-shot credentials and plaintext decisions are process-memory-only, one-shot and bound to endpoint/store/account generation; stale endpoints, account transitions, cancellation and owned attempt aborts fail closed and clear their handoffs.
-- Final verification on 2026-08-24: exact `default@OhosTestCompileArkTS` PASS, exact signed `assembleHap` PASS, `git diff --check` PASS and Light open-source compliance PASS. Independent review is P0/P1/P2/P3 all zero.
-- Runtime device interaction remains pending. The repair is isolated with hunk-level staging so overlapping user-owned Moonlight/RustDesk/SSH work remains outside this commit.
-
-## Current product boundary
-
-- The former “Moonlight permanently local-only” decision is superseded. Local storage remains the always-available source of truth, while one optional ninth cloud table becomes available after its exact AGC schema is provisioned and the deployment revision is enabled.
-- The deployed eight-table cloud baseline is registered first and remains unchanged. `moonlightrecordv1` is attempted only as an optional nine-table superset; optional failure re-asserts the legacy eight-table registration and cannot silently rewrite durable user selection.
-- New and upgraded installs force the complete portable Moonlight category (`settings` / `hosts` / `profiles`) into the durable cloud selection. There is no subtype picker; private client identity, pairing trust and certificates remain device-local. Optional registration failure changes runtime admission only and never erases durable intent or disables the deployed eight-table baseline.
-- Moonlight download is compatibility-first: the transport may pull the table, then the Moonlight materializer validates rows individually. Valid rows commit, malformed/future/cross-owner rows receive redacted quarantine records, and one bad optional row cannot block the old eight tables.
-- A fully valid manual snapshot may replace selected local scopes. A partial snapshot automatically degrades to non-destructive merge, preserving local rows absent from the incomplete snapshot while still applying valid cloud rows.
-- Upload remains strict: exact schema, active owner, public record type, selected logical scope and durable mutation-journal proof are required before a physical-table native-first transfer.
-- Owner-store v5 adds only `moonlightrecordv1` (19 columns), `moonlightlocalrecords` (20 columns) and `moonlightappcache` (16 columns). Migration is additive/idempotent and advances v4→v5 only after all three exact name/type/PK checks and the full-schema receipt succeed.
-- RustDesk-style FAB/add flow, adaptive phone/PC host surfaces, six protocol settings sheets plus one data-management sheet, metered-network launch gate, catalog/launch, H.264/Opus runtime and unified keyboard/pointer/touch/virtual/physical-controller paths are implemented.
-- The PC Moonlight directory no longer has a one-off top-right text button. It uses the same shared 64×64 bottom `+` FAB and routing logic as the existing PC host pages.
-- Reconnect, Surface/PIP/background audio lifecycle, crash-recovery choices, explicit disconnect-versus-quit, host rename/forget/unpair, local-data deletion and secure-identity deletion are wired through owner/account/generation-fenced production services. Real Sunshine, physical-controller and long-run receipts remain acceptance gates rather than implementation claims.
-- GameControllerKit remains activation-time dynamic loading for Moonlight sessions only; unrelated protocols do not gain a mandatory runtime dependency.
-- Guidance is layered instead of one long manual: first install stays at seven pages, Settings provides a device/protocol-filtered operation center and five-protocol connection preparation, and SSH/Moonlight add foreground-safe contextual hints. Automatic hints are durably shown once by default; Settings → Tutorial → Operation Guide Center exposes an “always show” switch that permits at most one hint per exact live SSH/Moonlight/RDP/RustDesk/VNC session, including across ArkUI page rebuilds. Security and functional decisions remain repeatable when the live connection requires them.
-- VNC connections started from the dedicated settings page now preserve the existing Phone/Pad in-page route, while PC/2in1 returns a credential-free one-shot intent to HostList so lock, certificate, authentication and independent-window ownership remain centralized.
-- RDP now exposes LAN search beside the existing address/port entry, and both RDP and RustDesk require LAN-discovered hosts to choose static or dynamic before continuing. Static uses normal cloud sync without address refresh; dynamic remains local-only and refreshes by RDP certificate identity or RustDesk Peer ID. Manually entered hosts retain their previous behavior.
-- Remote keyboard controls are now entered from the RDP/RustDesk/VNC/Moonlight session rail rather than a standalone modifier FAB. The translucent panel has an explicit close button, title-bar drag with safe-area/IME clamping, a full-screen transparent hit-test root and a blocking panel body, so only the connection pixels physically under the panel stop receiving touch.
-- The session panel supports switchable Windows/macOS shortcut catalogs, complete modifier/function/navigation keys and persisted custom shortcuts. Settings now includes virtual-keyboard controls plus the regular-app-safe HarmonyOS API 23 surface: simple-keyboard mode, current/all/enabled IME and subtype inspection, system IME settings and per-IME detail routing; privileged current-IME switching remains intentionally excluded.
-
-## Latest verification
-
-- Exact `default@OhosTestCompileArkTS`: PASS on 2026-08-26 for merge checkpoint `77f2a918` and the full current tree.
-- Exact `assembleHap`: PASS on the same tree. Signed HAP SHA-256: `6fd45d74406138f9d38305e302a78c5145ec597729c7631467a7b90447fb613b`.
-- Host native suite outside the socket-restricted sandbox: `780 passed, 0 failed`; this includes the Moonlight product input/runtime tests and the existing adjacent-protocol fixtures.
-- `git diff --check` and Light open-source compliance: PASS on 2026-08-26. The executable migration replay passes real 1.0.7, 1.0.8 and 1.1.1 Git schemas; the 1.1.1 case preserves rows in all 17 tables, including all three exact Moonlight name/type/PK contracts, across two current-schema replays with SQLite integrity `ok` and schema v5.
-- Committed checkpoints include `9eadb35be`, `326f329f5`, `348b28083`, `aff7fdf03`, `2d9ce0024`, `2c9120e98`, `94fa21f8f`, `6abd75469`, guidance visibility `4739e67ac`, `ef836f38d`, `20bc9d60`, `232f18b9`, LAN policy `2c1132385`, `c2478e484`, `a8845458`, and remote keyboard `27c3b786`, `c8569d8f`, `10a0c25f`.
-- The adaptive-guidance reviewer found four P2s in the first checkpoint (device-init timing, one-shot retry, 480vp reachability and protocol localization). `94fa21f8f` closes all four; final independent review is P0/P1/P2/P3 all zero.
-- The persistent-visibility reviewer found exact-session/page-rebuild and success-before-marker edge cases, then one unknown SSH generation edge. `20bc9d60` and `232f18b9` close them; final independent review is P0/P1/P2/P3 all zero for SSH, Moonlight, RDP, RustDesk and VNC.
-- The independent VNC settings-handoff review for `6abd75469` is P0/P1/P2/P3 all zero; it verified Phone/Pad routing, PC intent expiry/single consumption, account-scoped host reload and the unchanged HostList security/window path.
-- The independent LAN-policy review for `a8845458` is P0/P1/P2/P3 all zero. It verified mandatory post-discovery policy choice, manual-entry compatibility, local-only dynamic persistence/refresh, normal static cloud sync, owner-fenced secrets and strict RDP preflight recognition.
-- The reused remote-keyboard reviewer first found missing sidebar checkpoint coverage, landscape reachability, imprecise custom-key grouping and Win/Cmd latch semantics, then found safe-height and VNC rail placement regressions. `c8569d8f` and `10a0c25f` close every finding; final independent review is P0/P1/P2/P3 all zero.
-- The reused reviewer closed the final native receipt, immutable facade identity, HostList preflight/2FA retry and A→B anti-misdisconnect findings with P0/P1/P2/P3 all zero. Final cloud/device integration evidence remains pending after AGC deployment.
-- Device `ohosTest` remains blocked by unregistered task `00306054`; no device Hypium pass is claimed.
-- The exact keyboard HAP was installed and `EntryAbility` started successfully on phone simulator `127.0.0.1:5555`; earlier revision-1 startup also passed on PC simulator `127.0.0.1:5557`. The phone currently remains at the existing LoginPage gate, so no keyboard-panel drag/touch-through device PASS or reused screenshot is claimed.
-- Independent merge-gate review at `c24c75003` reuses matching historical receipts and closes the remaining state-reported delta with P0/P1/P2/P3 all zero; fresh-install, Pad/cloud failure and target-device interaction receipts remain external acceptance evidence.
-- Merge follow-up review through `77f2a918` verifies the Windows CRLF compliance-hash repair and adaptive Host FAB Sheet remediation. P0/P1/P2 are zero; one non-blocking P3 remains for direct ArkUI content-tree coverage, while Phone keyboard/long-content behavior remains external runtime evidence.
-- Phone `192.168.3.235:38451` accepted the VNC adaptive FAB Sheet from checkpoint `77f2a918`; `install -r` preserved data and `EntryAbility` started successfully. The accepted signed HAP SHA-256 is `6fd45d74406138f9d38305e302a78c5145ec597729c7631467a7b90447fb613b`.
-
-## Next and blockers
-
-- `30d50967` fixes the 1.1.1-compatible canonical-store ownership fallback: opening the deterministic same-owner hashed local store is now accepted as a successful local rebind only for the same owner, generation and platform proof. It can no longer be misreported as initialization failure and rolled back by the account coordinator.
-- Phone `192.168.3.235:38451` accepted the exact HAP with `install -r`, launched successfully and completed a real manual upload with `ok=true`, all nine business tables listed, empty `failed`, `kind=none` and `rollbackFailed=false`. Observed retained-row terminal counts include `remotehosts 32/32`, `rdpcredentials 3/3`, `rustdeskrelays 11/11`, `sshkeys 4/4`, `totpentries 12/12`, `vncrecordv2 3/3` and `moonlightrecordv1 3/3`.
-- Pad `192.168.3.236:40123` accepted the same HAP with `install -r` but still returns lock-screen error `10106102` on `aa start`; unlock it, capture its startup/upload receipt, then continue phone/Pad download/delete/conflict/account-switch/crypto-reset acceptance.
-- External acceptance still needs a reachable Sunshine host, physical controller, ARM64 device and long-run/network/lifecycle scenarios.
-- Fresh guide-center and keyboard-panel phone/PC/freeform-window visual evidence is still pending. A phone HDC target is online and the latest package starts, but the existing LoginPage gate prevents reaching a live connection; unrelated concurrent Moonlight and SSH worktree changes remain preserved and excluded from these checkpoints/reviews.
-- Real-network acceptance should still exercise RDP certificate identity and RustDesk Peer ID across a DHCP address change; this is runtime evidence, not an implementation blocker.
-
-## Concurrent SSH workbench closeout
-
-- The reported SSH workbench UI/runtime defects are closed in isolated commits: unified header menu `ed86fb90b`; responsive sidebar and four-pane readability `ae0eff3ff`, `859e4a278`; responsive inspector/status/tab chrome `cb02c836c`, `9eeca40dc`, `02311fb89`; immersive maximize and one-pane restore `ee448c2dd`, `9325ea71b`; compact tabs and PC SFTP popup `147abc5f3`, `ca091d384`; adaptive new-session/forwarding Sheets `d2e0aa503`, `2314add74`; touch terminal/input and new-session handoff `dae7a8354`, `585571989`, `0b419443a`; F6/Shift+F6 focus cycling `b9b3db2af`.
-- Exact `default@OhosTestCompileArkTS`, signed `assembleHap`, `git diff --check` and Light open-source compliance pass for the final SSH tree on 2026-08-23. The installed signed HAP SHA-256 is `4ce5efbf1daf48dbcfa19657287d9aa713d863248f18fc9bf13357d50bdf1178`.
-- API 24 PC/2in1 runtime acceptance passes on `127.0.0.1:5557`: the SSH page loads without an ABC fault, key-auth connection reaches a live terminal, system maximize removes the white system title frame, restored workspaces remain one pane, the final new-session selector and SFTP transfer center render as native popups, and terminal input still works after the `title_actions → sidebar → tab_strip → pane_host` F6 cycle and reverse Shift+F6 step. Evidence SHA-256 values are `e6dbc028a2600813dbc90b953f617a763b2d62a8e35ddf6fa449c4e073ddef5e` (terminal/input), `9700b1c7fbf42f477fd39857a09c87fe1a4a410f945cd8a96cdbc4cebe473f47` (new-session popup) and `6eee1600f09aa95ef180ac840c37258abb3383cb53815230f2895cb5204fc924` (SFTP popup).
-- Phone/Pad implementation is complete for the single visible xterm owner, stable native Sheet host, focus suspension/restoration and post-disappear host handoff. Per the user's explicit test constraint, API 26 Phone/Pad runtime acceptance is deferred and no API 26 PASS is claimed.
+- Real Windows and macOS RustDesk visual acceptance requires installing the new signed HAP after implementation. No runtime PASS is claimed yet.
+- Existing 1.1.2 logs cannot prove installed source revision because their manifest only contains the marketing version.
+- Device Hypium remains unavailable because task `00306054` is unregistered; compile coverage is required but will not be reported as a device-test PASS.

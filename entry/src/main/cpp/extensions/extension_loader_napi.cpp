@@ -3233,6 +3233,14 @@ napi_value NapiGetSessionDiagnostics(napi_env env, napi_callback_info info) {
     SetObjectString(env, result, "connectionPath", vncSession && it != g_sessionRegistry.end() ?
         it->second->vncConnectionPath :
         (nativeStats.connectionPath == 1 ? "direct" : (nativeStats.supported ? "relay" : "unknown")));
+    SetObjectString(env, result, "peerPlatform",
+        session && session->protocolName == "rustdesk" ? nativeStats.peerPlatform : "unknown");
+    SetObjectBool(env, result, "desktopSurfaceCompatibility",
+        decoder.desktopSurfaceCompatibility);
+    SetObjectString(env, result, "nativeImagePresentation",
+        Render::NativeImagePresentationModeName(decoder.presentationMode));
+    SetObjectString(env, result, "producerTransform",
+        Render::NativeImageTransformClassName(decoder.producerTransformClass));
     SetObjectInt64(env, result, "lastFrameAtMs", static_cast<int64_t>(
         counters ? counters->lastFrameAtMs.load(std::memory_order_acquire) : nativeStats.lastFrameAtMs));
     SetObjectInt64(env, result, "lastFrameAgeMs", lastFrameAgeMs);

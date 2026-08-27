@@ -708,6 +708,8 @@ struct RustDeskBridge::Impl {
     std::atomic<int>        callbackCodec {-1};
     std::atomic<int>        callbackWidth {0};
     std::atomic<int>        callbackHeight {0};
+    std::atomic<RustDeskPresentation::PeerPlatformCategory> peerPlatform {
+        RustDeskPresentation::PeerPlatformCategory::Unknown};
     std::atomic<uint64_t>   lastFrameAtMs {0};
     std::atomic<uint64_t>   callbackAdmissionRejects {0};
     RemoteCursorStore       cursorStore;
@@ -1515,6 +1517,9 @@ bool RustDeskBridge::onFfiPeerPlatform(const char* platform, void* userData) {
     }
 
     const char* peerPlatform = platform ? platform : "";
+    const RustDeskPresentation::PeerPlatformCategory platformCategory =
+        RustDeskPresentation::ClassifyPeerPlatform(peerPlatform);
+    impl->peerPlatform.store(platformCategory, std::memory_order_release);
     const Render::NativeImagePresentationMode presentationMode =
         RustDeskPresentation::NativeImageModeForPeerPlatform(peerPlatform);
     const Render::DecoderSessionIdentity presentationOwner {
@@ -1525,8 +1530,8 @@ bool RustDeskBridge::onFfiPeerPlatform(const char* platform, void* userData) {
     const bool published = DecoderNapi::SetActiveNativeImagePresentationMode(
         presentationOwner, presentationMode);
     OH_LOG_INFO(LOG_APP,
-                "[RustDesk-FFI] authenticated peer platform=%{public}s NativeImage presentation=%{public}s ownerPublished=%{public}s",
-                peerPlatform[0] == '\0' ? "unknown" : peerPlatform,
+                "[RustDesk-FFI] authenticated peer platformCategory=%{public}s NativeImage presentation=%{public}s ownerPublished=%{public}s",
+                RustDeskPresentation::PeerPlatformCategoryName(platformCategory),
                 Render::NativeImagePresentationModeName(presentationMode),
                 published ? "yes" : "no");
     return published;
@@ -1818,6 +1823,9 @@ void RustDeskBridge::setSessionIdentity(uint64_t sessionId) {
         impl_->callbackCodec.store(-1, std::memory_order_release);
         impl_->callbackWidth.store(0, std::memory_order_release);
         impl_->callbackHeight.store(0, std::memory_order_release);
+        impl_->peerPlatform.store(
+            RustDeskPresentation::PeerPlatformCategory::Unknown,
+            std::memory_order_release);
         impl_->lastFrameAtMs.store(0, std::memory_order_release);
     }
     impl_->continuityExecutor->begin(sessionId, generation, rdSteadyNowMs());
@@ -1932,6 +1940,9 @@ RustDeskBridge::prepareContinuityAttempt(
         impl_->callbackCodec.store(-1, std::memory_order_release);
         impl_->callbackWidth.store(0, std::memory_order_release);
         impl_->callbackHeight.store(0, std::memory_order_release);
+        impl_->peerPlatform.store(
+            RustDeskPresentation::PeerPlatformCategory::Unknown,
+            std::memory_order_release);
         impl_->lastFrameAtMs.store(0, std::memory_order_release);
     }
     displayLease.reset();
@@ -2166,6 +2177,8 @@ RustDeskDiagnosticsStats RustDeskBridge::getDiagnostics() const {
     result.codec = impl_->callbackCodec.load(std::memory_order_acquire);
     result.width = impl_->callbackWidth.load(std::memory_order_acquire);
     result.height = impl_->callbackHeight.load(std::memory_order_acquire);
+    result.peerPlatform = RustDeskPresentation::PeerPlatformCategoryName(
+        impl_->peerPlatform.load(std::memory_order_acquire));
 #ifdef RUSTDESK_USE_REAL_CORE
     auto handleLease = impl_->displayControl.acquireHandle();
     if (mode_ == RustDeskMode::FFI && handleLease) {

@@ -237,6 +237,7 @@ import moonlightNetworkHandlePolicyTest from './MoonlightNetworkHandlePolicy.tes
 import diagnosticCapturePolicyTest from './DiagnosticCapturePolicy.test';
 import diagnosticCaptureRuntimeTest from './DiagnosticCaptureRuntime.test';
 import diagnosticCaptureExportServiceTest from './DiagnosticCaptureExportService.test';
+import diagnosticRuntimeSnapshotPolicyTest from './DiagnosticRuntimeSnapshotPolicy.test';
 
 export default function testsuite() {
   localUnitTest();
@@ -478,4 +479,5 @@ export default function testsuite() {
   diagnosticCapturePolicyTest();
   diagnosticCaptureRuntimeTest();
   diagnosticCaptureExportServiceTest();
+  diagnosticRuntimeSnapshotPolicyTest();
 }

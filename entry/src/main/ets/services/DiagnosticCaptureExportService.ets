@@ -1,8 +1,12 @@
 import { fileIo, picker } from '@kit.CoreFileKit';
 import { util } from '@kit.ArkTS';
 import { common } from '@kit.AbilityKit';
+import rdpnapi from 'librdpnapi.so';
 import { BoundedDocumentIo } from './BoundedDocumentIo';
-import { CURRENT_RELEASE_VERSION } from './ReleaseNotesRegistry';
+import {
+  CURRENT_RELEASE_VERSION,
+  CURRENT_RELEASE_VERSION_CODE
+} from './ReleaseNotesRegistry';
 import {
   DIAGNOSTIC_CAPTURE_SCHEMA_VERSION,
   DIAGNOSTIC_MAX_CAPTURE_BYTES,
@@ -12,11 +16,20 @@ import {
   DIAGNOSTIC_REDACTION_POLICY_VERSION,
   DiagnosticModuleId,
   DiagnosticOutcome,
+  DiagnosticRuntimeBackend,
+  DiagnosticRuntimeCodec,
+  DiagnosticRuntimeFacts,
+  DiagnosticRuntimePath,
+  DiagnosticRuntimeState,
+  DiagnosticPeerPlatform,
+  DiagnosticPresentation,
+  DiagnosticProducerTransform,
   diagnosticDurationIsAllowed,
   diagnosticEventIsAllowed,
   diagnosticLevelForOutcome,
   diagnosticModuleIsKnown,
   diagnosticOutcomeIsAllowed,
+  diagnosticRuntimeFactsAreValid,
   diagnosticSafeInteger,
   normalizeDiagnosticModules
 } from './DiagnosticCapturePolicy';
@@ -58,6 +71,8 @@ interface DiagnosticManifestLine {
   schemaVersion: number;
   app: string;
   appVersion: string;
+  appVersionCode: number;
+  buildId: string;
   captureId: string;
   durationMinutes: number;
   selectedModules: DiagnosticModuleId[];
@@ -83,6 +98,7 @@ interface DiagnosticEventLine {
   durationMs: number;
   count: number;
   bytes: number;
+  runtime: DiagnosticRuntimeFacts;
 }
 
 interface DiagnosticSummaryLine {
@@ -133,7 +149,8 @@ function eventLine(event: DiagnosticCaptureEvent): DiagnosticEventLine {
     code: event.code,
     durationMs: event.durationMs,
     count: event.count,
-    bytes: event.bytes
+    bytes: event.bytes,
+    runtime: event.runtime
   };
 }
 
@@ -214,7 +231,8 @@ function eventIsValid(event: DiagnosticCaptureEvent, capture: FrozenDiagnosticCa
     !diagnosticEventIsAllowed(event.moduleId, event.eventCode) ||
     !diagnosticOutcomeIsAllowed(event.outcome) ||
     event.level !== diagnosticLevelForOutcome(event.outcome) ||
-    !sessionRefIsValid(event.sessionRef)) {
+    !sessionRefIsValid(event.sessionRef) ||
+    !diagnosticRuntimeFactsAreValid(event.runtime)) {
     return false;
   }
   return true;
@@ -260,6 +278,56 @@ function jsonString(source: Record<string, Object>, key: string): string | null 
   return typeof value === 'string' ? value as string : null;
 }
 
+function jsonRuntimeFacts(value: Object): DiagnosticRuntimeFacts | null {
+  if (typeof value !== 'object' || value === null) { return null; }
+  const source: Record<string, Object> = value as Record<string, Object>;
+  if (!objectHasExactKeys(source, [
+    'state', 'backend', 'codec', 'path', 'peerPlatform', 'presentation',
+    'producerTransform', 'width', 'height', 'frames', 'dropped', 'errors',
+    'queueDepth', 'latencyMs'
+  ])) { return null; }
+  const state: string | null = jsonString(source, 'state');
+  const backend: string | null = jsonString(source, 'backend');
+  const codec: string | null = jsonString(source, 'codec');
+  const path: string | null = jsonString(source, 'path');
+  const peerPlatform: string | null = jsonString(source, 'peerPlatform');
+  const presentation: string | null = jsonString(source, 'presentation');
+  const producerTransform: string | null = jsonString(source, 'producerTransform');
+  const width: number | null = jsonNumber(source, 'width');
+  const height: number | null = jsonNumber(source, 'height');
+  const frames: number | null = jsonNumber(source, 'frames');
+  const dropped: number | null = jsonNumber(source, 'dropped');
+  const errors: number | null = jsonNumber(source, 'errors');
+  const queueDepth: number | null = jsonNumber(source, 'queueDepth');
+  const latencyMs: number | null = jsonNumber(source, 'latencyMs');
+  if (state === null || backend === null || codec === null || path === null ||
+    peerPlatform === null || presentation === null || producerTransform === null ||
+    width === null || height === null || frames === null || dropped === null ||
+    errors === null || queueDepth === null || latencyMs === null) { return null; }
+  const facts: DiagnosticRuntimeFacts = {
+    state: state as DiagnosticRuntimeState,
+    backend: backend as DiagnosticRuntimeBackend,
+    codec: codec as DiagnosticRuntimeCodec,
+    path: path as DiagnosticRuntimePath,
+    peerPlatform: peerPlatform as DiagnosticPeerPlatform,
+    presentation: presentation as DiagnosticPresentation,
+    producerTransform: producerTransform as DiagnosticProducerTransform,
+    width: width, height: height, frames: frames, dropped: dropped,
+    errors: errors, queueDepth: queueDepth, latencyMs: latencyMs
+  };
+  return diagnosticRuntimeFactsAreValid(facts) ? facts : null;
+}
+
+function currentDiagnosticBuildId(): string {
+  try {
+    const nativeRevision: string = rdpnapi.VERSION.gitShortSha;
+    if (safeMetadataToken(nativeRevision, 32)) {
+      return CURRENT_RELEASE_VERSION + '+' + nativeRevision;
+    }
+  } catch (_err) {}
+  return CURRENT_RELEASE_VERSION + '+unknown';
+}
+
 export function validateDiagnosticJsonl(text: string): boolean {
   try {
     if (text.length === 0 || !text.endsWith('\n')) { return false; }
@@ -270,6 +338,7 @@ export function validateDiagnosticJsonl(text: string): boolean {
       JSON.parse(lines[lines.length - 1]) as Record<string, Object>;
     if (!objectHasExactKeys(first, [
       'kind', 'schemaVersion', 'app', 'appVersion', 'captureId', 'durationMinutes',
+      'appVersionCode', 'buildId',
       'selectedModules', 'startedWallTimeMs', 'endedWallTimeMs', 'stopReason',
       'redactionPolicyVersion'
     ]) || !objectHasExactKeys(last, [
@@ -281,10 +350,14 @@ export function validateDiagnosticJsonl(text: string): boolean {
       jsonNumber(last, 'schemaVersion') !== DIAGNOSTIC_CAPTURE_SCHEMA_VERSION ||
       jsonString(first, 'app') !== 'RemoteDesktop') { return false; }
     const appVersion: string | null = jsonString(first, 'appVersion');
+    const appVersionCode: number | null = jsonNumber(first, 'appVersionCode');
+    const buildId: string | null = jsonString(first, 'buildId');
     const captureId: string | null = jsonString(first, 'captureId');
     const stopReason: string | null = jsonString(first, 'stopReason');
     const selectedValue: Object = first['selectedModules'];
-    if (appVersion === null || !safeMetadataToken(appVersion, 64) || captureId === null ||
+    if (appVersion === null || !safeMetadataToken(appVersion, 64) ||
+      appVersionCode === null || appVersionCode <= 0 || buildId === null ||
+      !safeMetadataToken(buildId, 96) || captureId === null ||
       !captureIdIsValid(captureId) || (stopReason !== 'manual' && stopReason !== 'deadline') ||
       !Array.isArray(selectedValue)) { return false; }
     const selectedModules: DiagnosticModuleId[] = selectedValue as DiagnosticModuleId[];
@@ -302,7 +375,7 @@ export function validateDiagnosticJsonl(text: string): boolean {
       if (!objectHasExactKeys(parsed, [
         'kind', 'schemaVersion', 'sequence', 'elapsedMs', 'wallTimeMs', 'moduleId',
         'eventCode', 'level', 'outcome', 'sessionRef', 'generation', 'code',
-        'durationMs', 'count', 'bytes'
+        'durationMs', 'count', 'bytes', 'runtime'
       ]) || jsonString(parsed, 'kind') !== 'event' ||
         jsonNumber(parsed, 'schemaVersion') !== DIAGNOSTIC_CAPTURE_SCHEMA_VERSION) { return false; }
       const moduleId: string | null = jsonString(parsed, 'moduleId');
@@ -318,16 +391,18 @@ export function validateDiagnosticJsonl(text: string): boolean {
       const durationMs: number | null = jsonNumber(parsed, 'durationMs');
       const count: number | null = jsonNumber(parsed, 'count');
       const bytes: number | null = jsonNumber(parsed, 'bytes');
+      const runtime: DiagnosticRuntimeFacts | null = jsonRuntimeFacts(parsed['runtime']);
       if (moduleId === null || eventCode === null || level === null || outcome === null ||
         sessionRef === null || sequence === null || elapsedMs === null || wallTimeMs === null ||
         generation === null || code === null || durationMs === null || count === null || bytes === null ||
+        runtime === null ||
         !diagnosticModuleIsKnown(moduleId) || !diagnosticOutcomeIsAllowed(outcome)) { return false; }
       events.push({
         sequence: sequence, elapsedMs: elapsedMs, wallTimeMs: wallTimeMs,
         moduleId: moduleId as DiagnosticModuleId, eventCode: eventCode,
         level: level as 'info' | 'warn' | 'error', outcome: outcome as DiagnosticOutcome,
         sessionRef: sessionRef, generation: generation, code: code,
-        durationMs: durationMs, count: count, bytes: bytes
+        durationMs: durationMs, count: count, bytes: bytes, runtime: runtime
       });
     }
     const dropped: number | null = jsonNumber(last, 'droppedEventCount');
@@ -368,7 +443,8 @@ export function validateDiagnosticJsonl(text: string): boolean {
 export function serializeDiagnosticCapture(
   capture: FrozenDiagnosticCapture | null): DiagnosticSerializationResult {
   if (!validateFrozenDiagnosticCapture(capture) ||
-    !safeMetadataToken(CURRENT_RELEASE_VERSION, 64)) {
+    !safeMetadataToken(CURRENT_RELEASE_VERSION, 64) ||
+    !safeMetadataToken(currentDiagnosticBuildId(), 96)) {
     return emptySerialization('invalid_capture');
   }
   const validCapture: FrozenDiagnosticCapture = capture as FrozenDiagnosticCapture;
@@ -378,6 +454,8 @@ export function serializeDiagnosticCapture(
       schemaVersion: DIAGNOSTIC_CAPTURE_SCHEMA_VERSION,
       app: 'RemoteDesktop',
       appVersion: CURRENT_RELEASE_VERSION,
+      appVersionCode: CURRENT_RELEASE_VERSION_CODE,
+      buildId: currentDiagnosticBuildId(),
       captureId: validCapture.captureId,
       durationMinutes: validCapture.durationMinutes,
       selectedModules: validCapture.selectedModules.slice(),

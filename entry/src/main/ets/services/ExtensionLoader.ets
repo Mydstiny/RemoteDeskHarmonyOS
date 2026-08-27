@@ -67,12 +67,22 @@ import {
   RemoteSessionNativeFacadeState,
   RemoteSessionNativeDisconnectOwner
 } from './RemoteSessionTerminationPolicy';
-import { DiagnosticOutcome } from './DiagnosticCapturePolicy';
+import {
+  DiagnosticOutcome,
+  DiagnosticRuntimeFacts
+} from './DiagnosticCapturePolicy';
 import {
   diagnosticCaptureIdForModule,
   isDiagnosticModuleCapturing,
   recordDiagnosticEvent
 } from './DiagnosticCaptureRuntime';
+import {
+  DiagnosticDesktopModule,
+  DiagnosticRuntimeSnapshotGate,
+  diagnosticDesktopRuntimeEventCode,
+  diagnosticDesktopRuntimeFacts,
+  diagnosticSshRuntimeFacts
+} from './DiagnosticRuntimeSnapshotPolicy';
 import { sshDiagnosticErrorCode } from './ssh/observability/SshDiagnosticPolicy';
 
 const TAG = 'ExtensionLoader';
@@ -180,6 +190,70 @@ export class ExtensionLoader {
     new Map<number, DiagnosticConnectionModule>();
   private diagnosticConnectionStates: Map<number, DiagnosticConnectionObservation> =
     new Map<number, DiagnosticConnectionObservation>();
+  private diagnosticRuntimeSnapshots: DiagnosticRuntimeSnapshotGate =
+    new DiagnosticRuntimeSnapshotGate();
+
+  private recordDiagnosticDesktopRuntime(sessionId: number,
+    source: RustDeskDiagnosticsSnapshot): void {
+    try {
+      const moduleId: DiagnosticConnectionModule | null =
+        this.diagnosticModuleForSession(sessionId);
+      if (moduleId !== 'connection.rdp' && moduleId !== 'connection.rustdesk' &&
+        moduleId !== 'connection.vnc') { return; }
+      const desktopModule: DiagnosticDesktopModule = moduleId as DiagnosticDesktopModule;
+      const captureId: string = diagnosticCaptureIdForModule(desktopModule);
+      const facts: DiagnosticRuntimeFacts =
+        diagnosticDesktopRuntimeFacts(desktopModule, source);
+      if (!this.diagnosticRuntimeSnapshots.shouldRecord(
+        desktopModule, sessionId, captureId, facts, Date.now())) { return; }
+      recordDiagnosticEvent(desktopModule,
+        diagnosticDesktopRuntimeEventCode(desktopModule), 'state', sessionId, 0,
+        source.codec, facts.latencyMs, facts.frames,
+        Number.isSafeInteger(source.receivedBytes) && source.receivedBytes > 0 ?
+          source.receivedBytes : 0, facts);
+    } catch (_err) {
+      // Runtime capture must never affect a diagnostics HUD or session poll.
+    }
+  }
+
+  private recordDiagnosticSshRuntime(sessionId: number,
+    source: SshTerminalDiagnosticsSnapshot): void {
+    try {
+      const moduleId: DiagnosticConnectionModule | null =
+        this.diagnosticModuleForSession(sessionId);
+      if (moduleId !== 'connection.ssh_sftp') { return; }
+      const captureId: string = diagnosticCaptureIdForModule(moduleId);
+      const facts: DiagnosticRuntimeFacts = diagnosticSshRuntimeFacts(source);
+      if (!this.diagnosticRuntimeSnapshots.shouldRecord(
+        moduleId, sessionId, captureId, facts, Date.now())) { return; }
+      recordDiagnosticEvent(moduleId, 'ssh_runtime_snapshot', 'state', sessionId,
+        source.sessionGeneration > 0 ? source.sessionGeneration : 0, 0,
+        facts.latencyMs, facts.frames,
+        Number.isSafeInteger(source.remoteReadBytes) && source.remoteReadBytes > 0 ?
+          source.remoteReadBytes : 0, facts);
+    } catch (_err) {
+      // Runtime capture must never affect terminal diagnostics.
+    }
+  }
+
+  private sampleDiagnosticRuntimeForSession(sessionId: number): void {
+    try {
+      const moduleId: DiagnosticConnectionModule | null =
+        this.diagnosticModuleForSession(sessionId);
+      if (moduleId === null || !isDiagnosticModuleCapturing(moduleId)) { return; }
+      if (moduleId === 'connection.ssh_sftp') {
+        const sshSnapshot: SshTerminalDiagnosticsSnapshot =
+          rdpnapi.getSshTerminalDiagnostics(sessionId) as SshTerminalDiagnosticsSnapshot;
+        this.recordDiagnosticSshRuntime(sessionId, sshSnapshot);
+        return;
+      }
+      const desktopSnapshot: RustDeskDiagnosticsSnapshot =
+        rdpnapi.getSessionDiagnostics(sessionId) as RustDeskDiagnosticsSnapshot;
+      this.recordDiagnosticDesktopRuntime(sessionId, desktopSnapshot);
+    } catch (_err) {
+      // A capture sample cannot alter connection-state polling.
+    }
+  }
 
   private recordDiagnosticConnection(moduleId: DiagnosticConnectionModule | null,
     kind: DiagnosticConnectionEventKind, outcome: DiagnosticOutcome,
@@ -209,6 +283,11 @@ export class ExtensionLoader {
   private forgetDiagnosticSession(sessionId: number): void {
     try {
       if (sessionId <= 0) { return; }
+      const moduleId: DiagnosticConnectionModule | undefined =
+        this.diagnosticSessionModules.get(sessionId);
+      if (moduleId !== undefined) {
+        this.diagnosticRuntimeSnapshots.forget(moduleId, sessionId);
+      }
       this.diagnosticSessionModules.delete(sessionId);
       this.diagnosticConnectionStates.delete(sessionId);
     } catch (_err) {
@@ -1273,7 +1352,10 @@ export class ExtensionLoader {
 
   getSessionDiagnostics(sessionId: number): RustDeskDiagnosticsSnapshot {
     try {
-      return rdpnapi.getSessionDiagnostics(sessionId) as RustDeskDiagnosticsSnapshot;
+      const snapshot: RustDeskDiagnosticsSnapshot =
+        rdpnapi.getSessionDiagnostics(sessionId) as RustDeskDiagnosticsSnapshot;
+      this.recordDiagnosticDesktopRuntime(sessionId, snapshot);
+      return snapshot;
     } catch (err) {
       const nowMs: number = Date.now();
       if (nowMs - this.diagnosticsLastErrorAtMs >= 5000) {
@@ -1988,7 +2070,10 @@ export class ExtensionLoader {
 
   getSshTerminalDiagnostics(sessionId: number): SshTerminalDiagnosticsSnapshot {
     try {
-      return rdpnapi.getSshTerminalDiagnostics(sessionId) as SshTerminalDiagnosticsSnapshot;
+      const snapshot: SshTerminalDiagnosticsSnapshot =
+        rdpnapi.getSshTerminalDiagnostics(sessionId) as SshTerminalDiagnosticsSnapshot;
+      this.recordDiagnosticSshRuntime(sessionId, snapshot);
+      return snapshot;
     } catch (err) {
       hilog.warn(DOMAIN, TAG, '[ExtensionLoader] getSshTerminalDiagnostics: ' + JSON.stringify(err));
       return {
@@ -2108,6 +2193,7 @@ export class ExtensionLoader {
     try {
       const state: number = rdpnapi.getConnectionState(sessionId) as number;
       this.recordDiagnosticConnectionState(sessionId, state);
+      this.sampleDiagnosticRuntimeForSession(sessionId);
       return state;
     } catch (err) {
       this.recordDiagnosticConnectionStateFailure(sessionId);

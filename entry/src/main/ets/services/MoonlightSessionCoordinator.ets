@@ -31,8 +31,18 @@ import {
   MoonlightSessionRecoveryRuntime,
   MoonlightSessionRecoveryRuntimePort
 } from './MoonlightSessionRecoveryRuntime';
-import { DiagnosticOutcome } from './DiagnosticCapturePolicy';
-import { recordDiagnosticEvent } from './DiagnosticCaptureRuntime';
+import {
+  DiagnosticOutcome,
+  DiagnosticRuntimeFacts
+} from './DiagnosticCapturePolicy';
+import {
+  diagnosticCaptureIdForModule,
+  recordDiagnosticEvent
+} from './DiagnosticCaptureRuntime';
+import {
+  DiagnosticRuntimeSnapshotGate,
+  diagnosticMoonlightRuntimeFacts
+} from './DiagnosticRuntimeSnapshotPolicy';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 
 class MoonlightSessionReservationIdentity {
@@ -318,6 +328,9 @@ class MoonlightNapiRuntimePort implements MoonlightRuntimePort {
         streamHeight: source.streamHeight,
         targetFps: source.targetFps,
         configuredBitrateKbps: source.configuredBitrateKbps,
+        decoderQueueDepth: source.decoderQueueDepth,
+        decoderCodecLatencyMs: source.decoderCodecLatencyMs,
+        decoderSurfaceUpdateFailures: source.decoderSurfaceUpdateFailures,
         codec: source.codec
       };
       // moonlightStopStream() only acknowledges the cancellation request. Keep
@@ -501,6 +514,8 @@ export class MoonlightSessionCoordinator {
   private runtimePollTimer: number = -1;
   private runtimePollMisses: number = 0;
   private runtimePollLocked: boolean = false;
+  private diagnosticRuntimeSnapshots: DiagnosticRuntimeSnapshotGate =
+    new DiagnosticRuntimeSnapshotGate();
   private readonly snapshotSubscriptions: MoonlightSessionSnapshotSubscription[] = [];
 
   constructor(runtime: MoonlightRuntimePort | null = null,
@@ -1330,6 +1345,7 @@ export class MoonlightSessionCoordinator {
       return;
     }
     this.resetRuntimePollBackoff();
+    this.recordDiagnosticRuntimeSnapshot(source, nowMs);
     if (this.recoveryRuntime !== null && this.state !== null) {
       this.recoveryRuntime.observeNativeSnapshot(
         this.state.ownerScopeId, this.boundAccountGeneration,
@@ -1373,6 +1389,26 @@ export class MoonlightSessionCoordinator {
     if (this.expireFirstFrameIfNeeded(nowMs)) { return; }
     if (this.state !== null && this.state.generation === generation) {
       this.scheduleRuntimePoll(surfaceId);
+    }
+  }
+
+  private recordDiagnosticRuntimeSnapshot(source: MoonlightNativeStreamSnapshot,
+    nowMs: number): void {
+    try {
+      if (source.sessionId <= 0) { return; }
+      const captureId: string =
+        diagnosticCaptureIdForModule('connection.moonlight');
+      const facts: DiagnosticRuntimeFacts = diagnosticMoonlightRuntimeFacts(source);
+      if (!this.diagnosticRuntimeSnapshots.shouldRecord(
+        'connection.moonlight', source.sessionId, captureId, facts, nowMs)) { return; }
+      recordDiagnosticEvent('connection.moonlight', 'moonlight_runtime_snapshot',
+        'state', source.sessionId, source.generation > 0 ? source.generation : 0,
+        0, facts.latencyMs, facts.frames,
+        source.acceptedVideoBytes !== undefined &&
+          Number.isSafeInteger(source.acceptedVideoBytes) && source.acceptedVideoBytes > 0 ?
+          source.acceptedVideoBytes : 0, facts);
+    } catch (_err) {
+      // Runtime capture remains isolated from stream lifecycle decisions.
     }
   }
 

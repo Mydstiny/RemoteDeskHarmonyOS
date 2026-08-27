@@ -5,6 +5,7 @@ import {
   FrozenDiagnosticCapture
 } from '../main/ets/services/DiagnosticCaptureRuntime';
 import { DIAGNOSTIC_MAX_EVENTS } from '../main/ets/services/DiagnosticCapturePolicy';
+import { DiagnosticRuntimeFacts } from '../main/ets/services/DiagnosticCapturePolicy';
 
 class FakeDiagnosticClock implements DiagnosticClock {
   uptime: number = 1000;
@@ -106,6 +107,28 @@ export default function diagnosticCaptureRuntimeTest(): void {
         0, 0, 0, Number.NaN)).assertFalse();
       expect(runtime.status().droppedEventCount).assertEqual(2);
       expect(runtime.status().eventCount).assertEqual(1);
+    });
+
+    it('copies_valid_runtime_facts_and_rejects_forged_categories', 0, (): void => {
+      const clock: FakeDiagnosticClock = new FakeDiagnosticClock();
+      const runtime: DiagnosticCaptureRuntime = new DiagnosticCaptureRuntime(clock);
+      runtime.start(3, ['connection.rustdesk']);
+      const facts: DiagnosticRuntimeFacts = {
+        state: 'connected', backend: 'hardware', codec: 'h264', path: 'relay',
+        peerPlatform: 'windows', presentation: 'identity',
+        producerTransform: 'rotate_180', width: 1920, height: 1080,
+        frames: 30, dropped: 0, errors: 0, queueDepth: 1, latencyMs: 20
+      };
+      expect(runtime.record('connection.rustdesk', 'rustdesk_runtime_snapshot',
+        'state', 8, 1, 0, 20, 30, 4096, facts)).assertTrue();
+      facts.peerPlatform = 'peer-id-canary' as 'windows';
+      expect(runtime.record('connection.rustdesk', 'rustdesk_runtime_snapshot',
+        'state', 8, 1, 0, 20, 30, 4096, facts)).assertFalse();
+      runtime.stop();
+      const frozen: FrozenDiagnosticCapture = runtime.frozenCapture() as FrozenDiagnosticCapture;
+      expect(frozen.events[1].runtime.presentation).assertEqual('identity');
+      expect(frozen.events[1].runtime.producerTransform).assertEqual('rotate_180');
+      expect(JSON.stringify(frozen).indexOf('peer-id-canary')).assertEqual(-1);
     });
 
     it('caps_high_frequency_events_without_interrupting_the_capture', 0, (): void => {

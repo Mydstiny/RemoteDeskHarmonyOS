@@ -65,6 +65,11 @@ struct DecoderTelemetrySnapshot {
     int64_t codecLatencyMs = 0;
     int64_t codecLatencyMaxMs = 0;
     bool lowLatencyEnabled = false;
+    bool desktopSurfaceCompatibility = false;
+    Render::NativeImagePresentationMode presentationMode =
+        Render::NativeImagePresentationMode::Identity;
+    Render::NativeImageTransformClass producerTransformClass =
+        Render::NativeImageTransformClass::NotSampled;
 };
 
 // Private native presentation proof kept separate from the established
@@ -123,6 +128,11 @@ struct HardwareTelemetrySnapshot {
     CodecType codec = CodecType::H264;
     bool initialized = false;
     bool lowLatencyEnabled = false;
+    bool desktopSurfaceCompatibility = false;
+    Render::NativeImagePresentationMode presentationMode =
+        Render::NativeImagePresentationMode::Identity;
+    Render::NativeImageTransformClass producerTransformClass =
+        Render::NativeImageTransformClass::NotSampled;
 };
 
 /**
@@ -331,6 +341,8 @@ private:
     bool            desktopSurfaceCompatibility_ = false;
     std::atomic<Render::NativeImagePresentationMode> presentationMode_ {
         Render::NativeImagePresentationMode::Identity};
+    std::atomic<Render::NativeImageTransformClass> producerTransformClass_ {
+        Render::NativeImageTransformClass::NotSampled};
     std::atomic<bool> textureTransformLogged_ {false};
     int             width_ = 0;
     int             height_ = 0;

@@ -853,6 +853,10 @@ export interface RustDeskDiagnosticsSnapshot {
   width: number;
   height: number;
   connectionPath: string;
+  peerPlatform?: string;
+  desktopSurfaceCompatibility?: boolean;
+  nativeImagePresentation?: string;
+  producerTransform?: string;
   lastFrameAtMs: number;
   lastFrameAgeMs: number;
   lastPresentedAtMs: number;
