@@ -3,7 +3,7 @@
   "task": "rustdesk-orientation-resize-remediation",
   "branch": "codex/rustdesk-orientation-diagnostics-closeout",
   "base": "3b9e2b59c06c344c1012efa80b61d043d4999433",
-  "head": "0c69433e2139ac88b92f6bddf853b6c0c9dfb44c",
+  "head": "1c0e93198fe46a4e1a37e54bef3e39488dc3c265",
   "phase": "review",
   "status": "active",
   "next": "Run the exact final gates on the documented checkpoint, obtain independent re-review, and complete Windows simulator acceptance when the peer can approve.",
@@ -45,8 +45,8 @@
   },
   "lastVerification": {
     "baseline": "main@3b9e2b59c was synchronized when remediation began on 2026-08-27",
-    "testCompile": "PASS exact default@OhosTestCompileArkTS on implementation tree 0c69433e2",
-    "assembleHap": "PASS exact signed assembleHap on implementation tree 0c69433e2",
+    "testCompile": "PASS exact default@OhosTestCompileArkTS on remediation tree 1c0e93198",
+    "assembleHap": "PASS exact signed assembleHap on remediation tree 1c0e93198",
     "nativeTests": "PASS 811/811 outside sandbox including resize/redraw ordering",
     "compliance": "PASS Light open-source gate and git diff --check",
     "runtime": "working-tree HAP installed; Windows peer approval pending"

@@ -4,7 +4,7 @@
 
 - Task: `rustdesk-orientation-resize-remediation`
 - Branch/base: `codex/rustdesk-orientation-diagnostics-closeout` from synchronized `main@3b9e2b59c` (PR #46 merge).
-- Phase: implementation checkpoint `0c69433e2` verified locally; simulator online acceptance and independent re-review remain.
+- Phase: remediation checkpoints `0c69433e2` and `1c0e93198` verified locally; simulator online acceptance and independent re-review remain.
 - Plan: `docs/codex/plans/2026-08-27-rustdesk-orientation-and-diagnostics.md`
 
 ## Confirmed diagnosis

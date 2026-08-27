@@ -5,7 +5,7 @@ Updated: 2026-08-27 Asia/Shanghai
 ## Now
 
 1. Obtain Windows-side approval and capture upright-image plus small/large-window resize evidence on the simulator.
-2. Rerun the exact final gates on checkpoint `0c69433e2` and obtain an independent re-review.
+2. Obtain an independent re-review of remediation checkpoint `1c0e93198`.
 3. Push, create the PR, wait for required `open-source-compliance`, merge, synchronize `main` and remove the merged task branch.
 
 ## Next
