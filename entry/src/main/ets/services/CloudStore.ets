@@ -14078,6 +14078,7 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
     let preservedLocalRows: MoonlightRecord[] = [];
     const stagedLocalTombstones: MoonlightRecord[] = [];
     let cloudRowsAffected: number = 0;
+    let transactionCommitted: boolean = false;
     try {
       this.store.beginTransaction();
       const runtimeStateCount: number = cloudDeleteCommand ? 0 :
@@ -14198,6 +14199,7 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
         throw new Error('Moonlight deletion lease changed');
       }
       this.store.commit();
+      transactionCommitted = true;
       if (!this.isLeaseCurrent(lease)) {
         return failure('stale_lease', true);
       }
@@ -14271,11 +14273,26 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
           request.persistCloudDeletionIntent && checkpoint === null
       };
     } catch (error) {
-      try { this.store.rollBack(); } catch (_ignored) {}
+      if (!transactionCommitted) {
+        try { this.store.rollBack(); } catch (_ignored) {}
+      }
       hilog.warn(0x0001, 'CloudSync',
         '[CloudStore] Moonlight local deletion failed: ' + safeError(error));
+      if (transactionCommitted && stagedLocalTombstones.length > 0 &&
+          this.isLeaseCurrent(lease)) {
+        // A readback/provider exception after commit has the same meaning as
+        // a negative verification result: the durable local delete stands,
+        // and the already scheduled fenced reconciliation owns recovery.
+        return {
+          ok: true,
+          code: 'local_verification_pending',
+          localCommitted: true,
+          cloudAttempted: false,
+          cloudTerminal: false
+        };
+      }
       return failure(this.isLeaseCurrent(lease) ?
-        'write_failed' : 'stale_lease');
+        'write_failed' : 'stale_lease', transactionCommitted);
     }
   }
 
