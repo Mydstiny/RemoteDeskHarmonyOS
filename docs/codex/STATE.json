@@ -3,10 +3,10 @@
   "task": "vnc-cursor-wheel-regression",
   "branch": "codex/vnc-cursor-wheel-regression",
   "base": "0b8e5bf602a6f7ddf22918a5ec346f0be1b750a7",
-  "head": "dcf1b2fc49a9340c14fe0c68679ec1d4014fed4a",
+  "head": "45eb2c2932869c0b55f2c087b95f23a4cc65357c",
   "phase": "review",
   "status": "active",
-  "next": "Obtain independent review of the committed VNC checkpoint, remediate findings, repeat gates and install the signed HAP on 40123.",
+  "next": "Obtain independent re-review of the remediated VNC cursor ownership and wheel wire checkpoint, then install the signed HAP on 40123.",
   "blockers": [],
   "planPaths": [
     "docs/codex/plans/2026-08-27-vnc-cursor-wheel-regression.md"
@@ -22,23 +22,36 @@
       "entry/src/main/ets/services/VncPhysicalWheelPolicy.ets",
       "entry/src/main/ets/services/VncSessionUiPolicy.ets",
       "entry/src/main/ets/pages/RemoteDesktop.ets",
+      "entry/src/main/ets/types/rdpnapi.d.ts",
+      "entry/src/main/cpp/extensions/extension_loader_napi.cpp",
+      "entry/src/main/cpp/input/remote_cursor_snapshot.h",
+      "entry/src/main/cpp/types/librdpnapi/index.d.ts",
+      "entry/src/main/cpp/vnc/vnc_adapter.cpp",
       "entry/src/main/cpp/vnc/vnc_cursor_protocol.cpp",
+      "entry/src/main/cpp/vnc/vnc_rfb_engine.cpp",
+      "entry/src/main/cpp/vnc/vnc_rfb_engine.h",
+      "entry/src/main/cpp/vnc/vnc_rfb_protocol.cpp",
+      "entry/src/main/cpp/vnc/vnc_rfb_protocol.h",
       "entry/src/main/cpp/test/vnc_cursor_protocol_test.cpp",
+      "entry/src/main/cpp/test/vnc_rfb_protocol_test.cpp",
       "entry/src/test/RemoteWheelPolicy.test.ets",
       "entry/src/test/VncPhysicalWheelPolicy.test.ets",
       "entry/src/test/VncSessionUiPolicy.test.ets"
     ],
     "lastReceiptId": "",
-    "findings": [],
-    "reason": "Committed checkpoint dcf1b2fc4 is awaiting independent review."
+    "findings": [
+      "P1 permanent auto-pointer fallback could restore UltraVNC double cursor; remediated with explicit bootstrap/protocol/framebuffer/hidden ownership evidence",
+      "P3 cursor transition and native wheel wire coverage missing; remediated with policy transition and exact RFB burst tests"
+    ],
+    "reason": "Initial review failed dcf1b2fc4; remediation checkpoint 45eb2c293 is awaiting follow-up review by the same reviewer."
   },
   "lastVerification": {
     "baseline": "clean synchronized main@0b8e5bf60",
-    "testCompile": "PASS final exact default@OhosTestCompileArkTS 14s401ms",
-    "assembleHap": "PASS final exact signed assembleHap 36s481ms sha256=de2bff70d6562270abe4d5cdafb17ea15b30d58833dc6979a00c31e83c222509",
-    "targetedTests": "PASS host native 812/812 including transparent VNC cursor; focused ArkTS policies compile-registered",
+    "testCompile": "PASS final exact default@OhosTestCompileArkTS 6s193ms",
+    "assembleHap": "PASS final exact signed assembleHap 12s399ms sha256=4fbb455cea486e7f3a0afb6a41058c997b3a016a82aff0ce494d7822d91f46e4",
+    "targetedTests": "PASS host native 813/813 including transparent VNC cursor and exact wheel burst wire; focused ArkTS policies compile-registered",
     "compliance": "PASS git diff --check and Light",
-    "review": "IN_PROGRESS /root/vnc_wheel_review"
+    "review": "IN_PROGRESS follow-up /root/vnc_wheel_review after initial FAIL remediation"
   },
   "updated": "2026-08-27 Asia/Shanghai"
 }

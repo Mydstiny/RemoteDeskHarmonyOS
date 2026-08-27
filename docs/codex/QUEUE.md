@@ -4,9 +4,8 @@ Updated: 2026-08-27 Asia/Shanghai
 
 ## Now
 
-1. Complete independent review of checkpoint `dcf1b2fc4`.
-2. Remediate any findings and repeat exact build/package/compliance gates.
-3. Install the reviewed signed HAP on `192.168.3.236:40123`.
+1. Complete independent re-review of remediation checkpoint `45eb2c293`.
+2. Install the reviewed signed HAP on `192.168.3.236:40123`.
 
 ## Next
 

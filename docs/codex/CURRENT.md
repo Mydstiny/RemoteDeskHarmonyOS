@@ -4,7 +4,7 @@
 
 - Task: `vnc-cursor-wheel-regression`
 - Branch/base: `codex/vnc-cursor-wheel-regression` from synchronized `main@0b8e5bf60`.
-- Phase: independent review of checkpoint `dcf1b2fc4`.
+- Phase: independent re-review of remediation checkpoint `45eb2c293`.
 - Plan: `docs/codex/plans/2026-08-27-vnc-cursor-wheel-regression.md`
 
 ## Objective
@@ -27,26 +27,27 @@
 - Discrete VNC mouse events preserve bounded `scrollStep` ticks, with sign-only fallback when the coefficient is unavailable.
 - Virtual VNC input uses `4vp` per tick with a maximum of 4 per sample; fractional accumulation remains bounded without recursive fling or release backlog.
 - Physical VNC touchpads use two normalized samples per tick with a maximum of 4 while preserving lifecycle, source, idle and direction resets.
-- VNC auto cursor mode keeps the system pointer during fallback/bootstrap; explicit hidden mode remains authoritative.
+- VNC auto cursor ownership is evidence-based: legacy RFB 3.3/macOS bootstrap keeps the system pointer, modern RFB 3.7/3.8 without Cursor pseudo uses its framebuffer-composited cursor, a protocol shape atomically replaces the default pointer, and protocol/explicit hidden states hide it.
 - Non-zero VNC protocol cursor rectangles with an all-transparent mask are treated as hidden and cannot replace the local pointer.
+- Native RFB wheel bursts are built by a tested byte-level helper that preserves held buttons, clamps coordinates and bounds one logical event to 32 button-4/5 down/up pairs.
 
 ## Verification
 
 - Baseline `main@0b8e5bf60` was clean and equal to `origin/main` when the task started.
 - Focused ArkTS policy tests are compile-registered by the passing test target.
-- Host native suite: PASS, `812 passed, 0 failed`, including the new transparent VNC cursor case.
-- Final exact `default@OhosTestCompileArkTS`: PASS (`BUILD SUCCESSFUL in 14 s 401 ms`).
-- Final exact signed `assembleHap`: PASS (`BUILD SUCCESSFUL in 36 s 481 ms`).
-- Signed HAP SHA-256: `de2bff70d6562270abe4d5cdafb17ea15b30d58833dc6979a00c31e83c222509`.
+- Host native suite: PASS, `813 passed, 0 failed`, including transparent VNC cursor and exact wheel-burst wire cases.
+- Final exact `default@OhosTestCompileArkTS`: PASS (`BUILD SUCCESSFUL in 6 s 193 ms`).
+- Final exact signed `assembleHap`: PASS (`BUILD SUCCESSFUL in 12 s 399 ms`).
+- Signed HAP SHA-256: `4fbb455cea486e7f3a0afb6a41058c997b3a016a82aff0ce494d7822d91f46e4`.
 - `git diff --check` and open-source compliance Light: PASS.
-- Independent review: in progress as `/root/vnc_wheel_review`.
+- Initial independent review of `dcf1b2fc4`: FAIL on permanent auto-pointer fallback and missing state/wire coverage; both findings are remediated in `45eb2c293`.
+- Independent re-review: in progress as `/root/vnc_wheel_review`.
 
 ## Next
 
-1. Obtain independent review of `0b8e5bf60..dcf1b2fc4`.
-2. Remediate findings and repeat required gates.
-3. Install the signed HAP on `192.168.3.236:40123` for user acceptance.
-4. Complete push/PR/main closure after acceptance.
+1. Obtain independent re-review of `0b8e5bf60..45eb2c293`.
+2. Install the reviewed signed HAP on `192.168.3.236:40123` for user acceptance.
+3. Complete push/PR/main closure after acceptance.
 
 ## Blockers
 
