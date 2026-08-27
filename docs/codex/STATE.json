@@ -3,20 +3,20 @@
   "task": "vnc-wheel-input-normalization",
   "branch": "codex/vnc-wheel-input-normalization",
   "base": "928372c6c",
-  "head": "c7633050bac6c72c7439d208c9174fcfc2db96ec",
-  "phase": "review",
-  "status": "active",
-  "next": "Commit the initial review remediation and ask /root/vnc_wheel_review for follow-up verification.",
+  "head": "c64d01a6527bb343d3196ef695b1aabc09bb36bd",
+  "phase": "complete",
+  "status": "completed",
+  "next": "Install the verified signed HAP and run physical mouse/touchpad acceptance when a HarmonyOS target is online.",
   "blockers": [],
   "planPaths": [
     "docs/codex/plans/2026-08-27-vnc-wheel-input-normalization.md"
   ],
   "review": {
-    "status": "ACTIVE",
+    "status": "PASS",
     "taskIds": [
       "/root/vnc_wheel_review"
     ],
-    "reviewedHead": "",
+    "reviewedHead": "c64d01a6527bb343d3196ef695b1aabc09bb36bd",
     "scope": [
       "entry/src/main/ets/services/RemoteWheelPolicy.ets",
       "entry/src/main/ets/services/VncPhysicalWheelPolicy.ets",
@@ -27,9 +27,9 @@
       "entry/src/ohosTest/ets/test/List.test.ets",
       "entry/src/ohosTest/ets/test/RemoteWheelPolicy.test.ets"
     ],
-    "lastReceiptId": "",
+    "lastReceiptId": "vnc-wheel-input-normalization-c64d01a6-2026-08-27",
     "findings": [],
-    "reason": "Initial P1/P2/P3 findings are remediated and await same-reviewer verification."
+    "reason": "The same independent reviewer verified every initial P1/P2/P3 remediation and found no remaining issue or adjacent-protocol regression."
   },
   "lastVerification": {
     "baseline": "clean synchronized main@928372c6c",
@@ -37,7 +37,7 @@
     "assembleHap": "PASS after review remediation: signed assembleHap BUILD SUCCESSFUL in 17 s 16 ms; SHA-256 65d06b269cff68c05c3e759c00410444a67fec77e6284f025a3227e85413edab",
     "targetedTests": "Policy suites compiled and registered in both runners; ohosTest task unavailable with existing 00306054 and no HDC target online",
     "compliance": "PASS: git diff --check and open-source Light",
-    "review": "PENDING"
+    "review": "PASS: /root/vnc_wheel_review found zero P1/P2/P3 findings at c64d01a6527bb343d3196ef695b1aabc09bb36bd"
   },
   "updated": "2026-08-27 Asia/Shanghai"
 }
