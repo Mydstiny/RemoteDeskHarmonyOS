@@ -3,7 +3,7 @@
   "task": "vnc-cursor-wheel-regression",
   "branch": "codex/vnc-cursor-wheel-regression",
   "base": "0b8e5bf602a6f7ddf22918a5ec346f0be1b750a7",
-  "head": "45eb2c2932869c0b55f2c087b95f23a4cc65357c",
+  "head": "abc3ce5b8b8f8274fd934b55a1e040809da79819",
   "phase": "review",
   "status": "active",
   "next": "Obtain independent re-review of the remediated VNC cursor ownership and wheel wire checkpoint, then install the signed HAP on 40123.",
@@ -26,7 +26,9 @@
       "entry/src/main/cpp/extensions/extension_loader_napi.cpp",
       "entry/src/main/cpp/input/remote_cursor_snapshot.h",
       "entry/src/main/cpp/types/librdpnapi/index.d.ts",
+      "entry/src/main/cpp/test/callback_entry_integration_test.cpp",
       "entry/src/main/cpp/vnc/vnc_adapter.cpp",
+      "entry/src/main/cpp/vnc/vnc_adapter.h",
       "entry/src/main/cpp/vnc/vnc_cursor_protocol.cpp",
       "entry/src/main/cpp/vnc/vnc_rfb_engine.cpp",
       "entry/src/main/cpp/vnc/vnc_rfb_engine.h",
@@ -41,17 +43,19 @@
     "lastReceiptId": "",
     "findings": [
       "P1 permanent auto-pointer fallback could restore UltraVNC double cursor; remediated with explicit bootstrap/protocol/framebuffer/hidden ownership evidence",
-      "P3 cursor transition and native wheel wire coverage missing; remediated with policy transition and exact RFB burst tests"
+      "P3 cursor transition and native wheel wire coverage missing; remediated with policy transition and exact RFB burst tests",
+      "P1 local move/wheel prediction could overwrite authoritative protocol-hidden visibility; remediated by position-only prediction",
+      "P3 adapter-to-snapshot-to-UI hidden persistence coverage missing; remediated with callback integration and UI ownership transition tests"
     ],
-    "reason": "Initial review failed dcf1b2fc4; remediation checkpoint 45eb2c293 is awaiting follow-up review by the same reviewer."
+    "reason": "Follow-up review failed 45eb2c293 on protocol-hidden persistence; remediation checkpoint abc3ce5b8 is awaiting another follow-up review by the same reviewer."
   },
   "lastVerification": {
     "baseline": "clean synchronized main@0b8e5bf60",
-    "testCompile": "PASS final exact default@OhosTestCompileArkTS 6s193ms",
-    "assembleHap": "PASS final exact signed assembleHap 12s399ms sha256=4fbb455cea486e7f3a0afb6a41058c997b3a016a82aff0ce494d7822d91f46e4",
-    "targetedTests": "PASS host native 813/813 including transparent VNC cursor and exact wheel burst wire; focused ArkTS policies compile-registered",
+    "testCompile": "PASS final exact default@OhosTestCompileArkTS 5s988ms",
+    "assembleHap": "PASS final exact signed assembleHap 13s125ms sha256=e70b865e02236c0f94971d2ee567e694c0aee80dad1f6d69e340c850cbf399f4",
+    "targetedTests": "PASS host native 813/813; callback integration covers protocol hidden surviving local move/wheel prediction; focused ArkTS UI ownership test compile-registered",
     "compliance": "PASS git diff --check and Light",
-    "review": "IN_PROGRESS follow-up /root/vnc_wheel_review after initial FAIL remediation"
+    "review": "IN_PROGRESS follow-up /root/vnc_wheel_review after second FAIL remediation"
   },
   "updated": "2026-08-27 Asia/Shanghai"
 }

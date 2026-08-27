@@ -4,7 +4,7 @@ Updated: 2026-08-27 Asia/Shanghai
 
 ## Now
 
-1. Complete independent re-review of remediation checkpoint `45eb2c293`.
+1. Complete independent re-review of remediation checkpoint `abc3ce5b8`.
 2. Install the reviewed signed HAP on `192.168.3.236:40123`.
 
 ## Next
