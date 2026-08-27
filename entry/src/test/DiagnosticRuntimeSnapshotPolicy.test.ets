@@ -6,11 +6,38 @@ import {
 import { MoonlightNativeStreamSnapshot } from '../main/ets/services/MoonlightHostService';
 import {
   DIAGNOSTIC_RUNTIME_SNAPSHOT_INTERVAL_MS,
+  DiagnosticRuntimeSamplingLoop,
+  DiagnosticRuntimeSamplingScheduler,
   DiagnosticRuntimeSnapshotGate,
   diagnosticDesktopRuntimeFacts,
   diagnosticMoonlightRuntimeFacts,
   diagnosticSshRuntimeFacts
 } from '../main/ets/services/DiagnosticRuntimeSnapshotPolicy';
+
+class FakeRuntimeSamplingScheduler implements DiagnosticRuntimeSamplingScheduler {
+  nextId: number = 1;
+  delays: number[] = [];
+  callbacks: Map<number, () => void> = new Map<number, () => void>();
+  cancelled: number[] = [];
+
+  schedule(callback: () => void, delayMs: number): number {
+    const timerId: number = this.nextId++;
+    this.delays.push(delayMs);
+    this.callbacks.set(timerId, callback);
+    return timerId;
+  }
+
+  cancel(timerId: number): void {
+    this.cancelled.push(timerId);
+    this.callbacks.delete(timerId);
+  }
+
+  fire(timerId: number): void {
+    const callback: (() => void) | undefined = this.callbacks.get(timerId);
+    this.callbacks.delete(timerId);
+    if (callback !== undefined) { callback(); }
+  }
+}
 
 function desktopSnapshot(): RustDeskDiagnosticsSnapshot {
   return {
@@ -120,5 +147,29 @@ export default function diagnosticRuntimeSnapshotPolicyTest(): void {
         1300 + DIAGNOSTIC_RUNTIME_SNAPSHOT_INTERVAL_MS)).assertTrue();
       expect(gate.shouldRecord('connection.rustdesk', 7, '', facts, 20000)).assertFalse();
     });
+
+    it('drives_tracked_sessions_every_five_seconds_without_hud_polling', 0,
+      (): void => {
+        const scheduler: FakeRuntimeSamplingScheduler =
+          new FakeRuntimeSamplingScheduler();
+        const sampled: number[] = [];
+        const loop: DiagnosticRuntimeSamplingLoop = new DiagnosticRuntimeSamplingLoop(
+          scheduler, (sessionId: number): void => { sampled.push(sessionId); });
+        loop.track(11);
+        loop.track(12);
+        loop.track(11);
+        expect(scheduler.callbacks.size).assertEqual(1);
+        expect(scheduler.delays[0]).assertEqual(DIAGNOSTIC_RUNTIME_SNAPSHOT_INTERVAL_MS);
+        scheduler.fire(1);
+        expect(sampled.join(',')).assertEqual('11,12');
+        expect(scheduler.callbacks.size).assertEqual(1);
+        expect(scheduler.delays.length).assertEqual(2);
+        loop.forget(11);
+        scheduler.fire(2);
+        expect(sampled.join(',')).assertEqual('11,12,12');
+        loop.clear();
+        expect(scheduler.callbacks.size).assertEqual(0);
+        expect(scheduler.cancelled.indexOf(3) >= 0).assertTrue();
+      });
   });
 }

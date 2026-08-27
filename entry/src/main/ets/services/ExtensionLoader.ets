@@ -78,6 +78,8 @@ import {
 } from './DiagnosticCaptureRuntime';
 import {
   DiagnosticDesktopModule,
+  DiagnosticRuntimeSamplingLoop,
+  DiagnosticRuntimeSamplingScheduler,
   DiagnosticRuntimeSnapshotGate,
   diagnosticDesktopRuntimeEventCode,
   diagnosticDesktopRuntimeFacts,
@@ -86,6 +88,17 @@ import {
 import { sshDiagnosticErrorCode } from './ssh/observability/SshDiagnosticPolicy';
 
 const TAG = 'ExtensionLoader';
+
+class SystemDiagnosticRuntimeSamplingScheduler implements
+  DiagnosticRuntimeSamplingScheduler {
+  schedule(callback: () => void, delayMs: number): number {
+    return setTimeout(callback, delayMs);
+  }
+
+  cancel(timerId: number): void {
+    clearTimeout(timerId);
+  }
+}
 const DOMAIN = 0x0013;
 
 interface DetachedSshSession {
@@ -192,6 +205,15 @@ export class ExtensionLoader {
     new Map<number, DiagnosticConnectionObservation>();
   private diagnosticRuntimeSnapshots: DiagnosticRuntimeSnapshotGate =
     new DiagnosticRuntimeSnapshotGate();
+  private readonly diagnosticRuntimeSamplingLoop: DiagnosticRuntimeSamplingLoop;
+
+  constructor(diagnosticRuntimeScheduler: DiagnosticRuntimeSamplingScheduler =
+    new SystemDiagnosticRuntimeSamplingScheduler()) {
+    this.diagnosticRuntimeSamplingLoop = new DiagnosticRuntimeSamplingLoop(
+      diagnosticRuntimeScheduler, (sessionId: number): void => {
+        this.sampleDiagnosticRuntimeForSession(sessionId);
+      });
+  }
 
   private recordDiagnosticDesktopRuntime(sessionId: number,
     source: RustDeskDiagnosticsSnapshot): void {
@@ -275,6 +297,7 @@ export class ExtensionLoader {
       // observe an already-live connection. No host or credential is retained.
       this.diagnosticSessionModules.set(sessionId, moduleId);
       this.diagnosticConnectionStates.delete(sessionId);
+      this.diagnosticRuntimeSamplingLoop.track(sessionId);
     } catch (_err) {
       // Losing diagnostic identity must not change connection success.
     }
@@ -290,6 +313,7 @@ export class ExtensionLoader {
       }
       this.diagnosticSessionModules.delete(sessionId);
       this.diagnosticConnectionStates.delete(sessionId);
+      this.diagnosticRuntimeSamplingLoop.forget(sessionId);
     } catch (_err) {
       // Best effort only; stale diagnostic identity cannot own native state.
     }
@@ -341,9 +365,7 @@ export class ExtensionLoader {
     try { moduleId = this.diagnosticSessionModules.get(sessionId); } catch (_err) {}
     try { observation = this.diagnosticConnectionStates.get(sessionId); } catch (_err) {}
     target.forgetDiagnosticSession(sessionId);
-    if (moduleId !== undefined) {
-      try { target.diagnosticSessionModules.set(sessionId, moduleId); } catch (_err) {}
-    }
+    if (moduleId !== undefined) { target.trackDiagnosticSession(sessionId, moduleId); }
     if (observation !== undefined) {
       try {
         target.diagnosticConnectionStates.set(sessionId, {
@@ -352,8 +374,12 @@ export class ExtensionLoader {
         });
       } catch (_err) {}
     }
+    if (moduleId !== undefined) {
+      try { this.diagnosticRuntimeSnapshots.forget(moduleId, sessionId); } catch (_err) {}
+    }
     try { this.diagnosticSessionModules.delete(sessionId); } catch (_err) {}
     try { this.diagnosticConnectionStates.delete(sessionId); } catch (_err) {}
+    this.diagnosticRuntimeSamplingLoop.forget(sessionId);
   }
 
   private recordAndForgetAllDiagnosticSessions(submitted: boolean, requestId: number): void {
@@ -365,6 +391,8 @@ export class ExtensionLoader {
             submitted ? (requestId > 0 ? 1 : 0) : -1);
         });
     } catch (_err) {}
+    this.diagnosticRuntimeSamplingLoop.clear();
+    this.diagnosticRuntimeSnapshots.clear();
     try { this.diagnosticSessionModules.clear(); } catch (_err) {}
     try { this.diagnosticConnectionStates.clear(); } catch (_err) {}
   }

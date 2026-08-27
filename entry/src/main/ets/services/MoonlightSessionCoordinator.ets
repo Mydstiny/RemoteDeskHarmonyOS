@@ -821,6 +821,8 @@ export class MoonlightSessionCoordinator {
         return this.result(false, 'registry_rejected');
       }
       this.nativeSessionId = event.nativeSessionId;
+      this.diagnosticRuntimeSnapshots.forget(
+        'connection.moonlight', event.nativeSessionId);
       this.reservationSessionId = -1;
       // Keep the exact launch key until native terminal truth. It is required
       // to prove that a reconnect request belongs to this stream rather than a
@@ -840,6 +842,8 @@ export class MoonlightSessionCoordinator {
       return this.result(false, 'registry_lost');
     }
     if (event.type === 'failed' || event.type === 'stopped') {
+      this.forgetDiagnosticRuntimeSnapshot(
+        event.nativeSessionId > 0 ? event.nativeSessionId : this.nativeSessionId);
       this.nativeRuntimeMayBeActive = false;
       this.clearRuntimePoll();
       this.resetRuntimePollBackoff();
@@ -1181,6 +1185,7 @@ export class MoonlightSessionCoordinator {
     this.clearRuntimePoll();
     this.resetRuntimePollBackoff();
     this.requestRuntimeStop('test-reset');
+    this.diagnosticRuntimeSnapshots.clear();
     this.clearOwnedRegistry();
     this.state = null;
     this.nativeSessionId = -1;
@@ -1412,6 +1417,11 @@ export class MoonlightSessionCoordinator {
     }
   }
 
+  private forgetDiagnosticRuntimeSnapshot(sessionId: number): void {
+    if (sessionId <= 0) { return; }
+    this.diagnosticRuntimeSnapshots.forget('connection.moonlight', sessionId);
+  }
+
   private emitRuntimeEvent(type: MoonlightSessionEventType, generation: number,
     nativeError: string, detailCode: string, surfaceId: string): MoonlightCoordinatorResult {
     const current: MoonlightSessionStateSnapshot | null = this.state;
@@ -1510,6 +1520,7 @@ export class MoonlightSessionCoordinator {
       return false;
     }
     this.clearRuntimePoll();
+    this.forgetDiagnosticRuntimeSnapshot(oldNativeSessionId);
     this.resetRuntimePollBackoff();
     this.clearStopTimer();
     this.operationGeneration = nextGeneration;
@@ -1575,6 +1586,7 @@ export class MoonlightSessionCoordinator {
       return;
     }
     this.clearRuntimePoll();
+    this.forgetDiagnosticRuntimeSnapshot(this.nativeSessionId);
     this.resetRuntimePollBackoff();
     this.clearOwnedRegistry();
     this.state = null;
@@ -1654,6 +1666,7 @@ export class MoonlightSessionCoordinator {
 
     this.clearRuntimePoll();
     this.resetRuntimePollBackoff();
+    this.forgetDiagnosticRuntimeSnapshot(this.nativeSessionId);
     this.clearOwnedRegistry();
     this.state = null;
     this.nativeSessionId = -1;
@@ -1705,6 +1718,7 @@ export class MoonlightSessionCoordinator {
     this.nativeRuntimeMayBeActive = false;
     this.clearRuntimePoll();
     this.resetRuntimePollBackoff();
+    this.forgetDiagnosticRuntimeSnapshot(this.nativeSessionId);
     this.clearStopTimer();
     this.clearOwnedRegistry();
     this.nativeSessionId = -1;

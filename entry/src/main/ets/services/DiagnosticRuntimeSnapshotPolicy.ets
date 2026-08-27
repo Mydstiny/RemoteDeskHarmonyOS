@@ -25,6 +25,66 @@ interface DiagnosticRuntimeObservation {
 
 export const DIAGNOSTIC_RUNTIME_SNAPSHOT_INTERVAL_MS: number = 5000;
 
+export interface DiagnosticRuntimeSamplingScheduler {
+  schedule(callback: () => void, delayMs: number): number;
+  cancel(timerId: number): void;
+}
+
+export class DiagnosticRuntimeSamplingLoop {
+  private readonly scheduler: DiagnosticRuntimeSamplingScheduler;
+  private readonly sampler: (sessionId: number) => void;
+  private sessionIds: number[] = [];
+  private timerId: number = -1;
+
+  constructor(scheduler: DiagnosticRuntimeSamplingScheduler,
+    sampler: (sessionId: number) => void) {
+    this.scheduler = scheduler;
+    this.sampler = sampler;
+  }
+
+  track(sessionId: number): void {
+    if (!Number.isSafeInteger(sessionId) || sessionId <= 0) { return; }
+    if (this.sessionIds.indexOf(sessionId) < 0) {
+      this.sessionIds.push(sessionId);
+    }
+    this.scheduleNext();
+  }
+
+  forget(sessionId: number): void {
+    const index: number = this.sessionIds.indexOf(sessionId);
+    if (index >= 0) { this.sessionIds.splice(index, 1); }
+    if (this.sessionIds.length === 0) { this.cancelTimer(); }
+  }
+
+  clear(): void {
+    this.sessionIds = [];
+    this.cancelTimer();
+  }
+
+  private scheduleNext(): void {
+    if (this.timerId >= 0 || this.sessionIds.length === 0) { return; }
+    try {
+      this.timerId = this.scheduler.schedule((): void => {
+        this.timerId = -1;
+        const sessions: number[] = this.sessionIds.slice();
+        for (let index: number = 0; index < sessions.length; index++) {
+          if (this.sessionIds.indexOf(sessions[index]) < 0) { continue; }
+          try { this.sampler(sessions[index]); } catch (_err) {}
+        }
+        this.scheduleNext();
+      }, DIAGNOSTIC_RUNTIME_SNAPSHOT_INTERVAL_MS);
+    } catch (_err) {
+      this.timerId = -1;
+    }
+  }
+
+  private cancelTimer(): void {
+    if (this.timerId < 0) { return; }
+    try { this.scheduler.cancel(this.timerId); } catch (_err) {}
+    this.timerId = -1;
+  }
+}
+
 function safeCounter(value: number | undefined): number {
   if (value === undefined || !Number.isFinite(value) || value <= 0) { return 0; }
   return Math.min(Number.MAX_SAFE_INTEGER, Math.floor(value));
@@ -211,5 +271,9 @@ export class DiagnosticRuntimeSnapshotGate {
 
   forget(moduleId: DiagnosticModuleId, sessionId: number): void {
     this.observations.delete(moduleId + ':' + sessionId.toString());
+  }
+
+  clear(): void {
+    this.observations.clear();
   }
 }
