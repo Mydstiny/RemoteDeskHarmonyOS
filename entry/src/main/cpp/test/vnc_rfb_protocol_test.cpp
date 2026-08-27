@@ -152,6 +152,9 @@ RDP_TEST_CASE(vnc_pointer_wheel_burst_preserves_buttons_direction_and_coordinate
         static_cast<size_t>(VncRfbProtocol::kMaxWheelBurstSteps * 12));
     RDP_ASSERT_EQ(capped[1], static_cast<uint8_t>(15));
     RDP_ASSERT_EQ(capped[7], static_cast<uint8_t>(7));
+    const std::vector<uint8_t> fiveTimesMouse =
+        VncRfbProtocol::buildPointerWheelBurst(0, 10, 20, 40, 100, 100);
+    RDP_ASSERT_EQ(fiveTimesMouse.size(), static_cast<size_t>(40 * 12));
     RDP_ASSERT(VncRfbProtocol::buildPointerWheelBurst(0, 0, 0, 0, 1, 1).empty());
 }
 

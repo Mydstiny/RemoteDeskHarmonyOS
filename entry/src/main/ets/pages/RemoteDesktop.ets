@@ -541,6 +541,7 @@ import {
   VncPhysicalKeyBindingTracker
 } from '../services/VncPhysicalKeyboardPolicy';
 import {
+  amplifyVncWheelOutputDelta,
   accumulateContinuousRemoteWheel,
   applyRemoteWheelDirection,
   discreteRemoteWheelDelta,
@@ -15350,7 +15351,9 @@ struct RemoteDesktop {
     }
     this.lastTouchWheelMs = now;
     const src = this.toSourceSpace(this.remoteCursorX, this.remoteCursorY);
-    const sendDelta: number = applyRemoteWheelDirection(delta, this.rustdeskReverseWheel);
+    const directedDelta: number = applyRemoteWheelDirection(delta, this.rustdeskReverseWheel);
+    const sendDelta: number = wheelProtocol === 'vnc' ?
+      amplifyVncWheelOutputDelta(directedDelta) : directedDelta;
     this.loader.sendMouseWheel(this.sessionId, src['x'], src['y'], sendDelta);
     const sendIndex: number = ++this.touchWheelSendCount;
     if (sendIndex <= 12 || sendIndex % 50 === 0) {
@@ -16731,7 +16734,9 @@ struct RemoteDesktop {
       this.queueMouseMove(mapped.x, mapped.y);
       this.flushMouseMove();
       const src: Record<string, number> = this.toSourceSpace(mapped.x, mapped.y);
-      const sendDelta: number = applyRemoteWheelDirection(delta, this.rustdeskReverseWheel);
+      const directedDelta: number = applyRemoteWheelDirection(delta, this.rustdeskReverseWheel);
+      const sendDelta: number = vncSession ?
+        amplifyVncWheelOutputDelta(directedDelta) : directedDelta;
       this.loader.sendMouseWheel(this.sessionId, src['x'], src['y'], sendDelta);
       const sendIndex: number = ++this.physicalWheelSendCount;
       if (sendIndex <= 12 || sendIndex % 50 === 0) {

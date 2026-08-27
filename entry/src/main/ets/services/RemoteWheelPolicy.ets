@@ -13,6 +13,12 @@ export const LEGACY_CONTINUOUS_WHEEL_GAIN: number = 0.08;
 // distance for one portable RFB button-4/5 detent.
 export const VNC_VIRTUAL_WHEEL_VP_PER_TICK: number = 4;
 export const VNC_VIRTUAL_WHEEL_MAX_DELTA: number = 4;
+// Device acceptance shows that one RFB button-4/5 click moves macOS and
+// UltraVNC content far less than the high-resolution RDP/RustDesk paths.
+// Apply one explicit VNC-only wire gain after source normalization so virtual
+// touchpad, physical touchpad and physical mouse retain their own curves.
+export const VNC_WHEEL_OUTPUT_GAIN: number = 5;
+export const VNC_WHEEL_OUTPUT_MAX_DELTA: number = 64;
 export const LEGACY_CONTINUOUS_WHEEL_MAX_DELTA: number = 2;
 export const MOONLIGHT_HIGH_RES_WHEEL_DETENT: number = 120;
 export const MOONLIGHT_TOUCHPAD_WHEEL_GAIN: number = 4;
@@ -80,6 +86,17 @@ export function discreteRemoteWheelDelta(rawDelta: number, _protocol: string,
     return 0;
   }
   return rawDelta > 0 ? 1 : -1;
+}
+
+/** Convert normalized VNC ticks into a bounded RFB button-4/5 burst. */
+export function amplifyVncWheelOutputDelta(delta: number): number {
+  if (!Number.isFinite(delta) || delta === 0) {
+    return 0;
+  }
+  const whole: number = delta > 0 ? Math.floor(delta) : Math.ceil(delta);
+  const amplified: number = whole * VNC_WHEEL_OUTPUT_GAIN;
+  return Math.max(-VNC_WHEEL_OUTPUT_MAX_DELTA,
+    Math.min(VNC_WHEEL_OUTPUT_MAX_DELTA, amplified));
 }
 
 export function moonlightAxisScrollAmount(rawDelta: number,

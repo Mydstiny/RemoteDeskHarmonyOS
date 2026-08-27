@@ -24,7 +24,10 @@ constexpr int kRawEncoding = 0;
 constexpr int kCopyRectEncoding = 1;
 constexpr int kZrleEncoding = 16;
 constexpr size_t kMaxTextInputCodepoints = 4096;
-constexpr int kMaxWheelBurstSteps = 32;
+// UI-normalized VNC wheel input can emit up to 40 clicks after the device-
+// accepted 5x gain. Keep a bounded margin for direct native callers without
+// truncating the supported ArkTS path.
+constexpr int kMaxWheelBurstSteps = 64;
 
 /** Accept only the RFB 3.x banner versions supported by the engine. */
 bool protocolBannerIsSupported(const uint8_t* data, size_t size);

@@ -2,6 +2,9 @@ import { describe, it, expect } from '@ohos/hypium';
 import {
   MOONLIGHT_HIGH_RES_WHEEL_DETENT,
   VNC_VIRTUAL_WHEEL_MAX_DELTA,
+  VNC_WHEEL_OUTPUT_GAIN,
+  VNC_WHEEL_OUTPUT_MAX_DELTA,
+  amplifyVncWheelOutputDelta,
   accumulateContinuousRemoteWheel,
   applyRemoteWheelDirection,
   discreteRemoteWheelDelta,
@@ -55,6 +58,15 @@ export default function remoteWheelPolicyTest(): void {
       const accelerated = accumulateContinuousRemoteWheel(8, 0, 2, 'vnc');
       expect(accelerated.delta).assertEqual(VNC_VIRTUAL_WHEEL_MAX_DELTA);
       expect(accelerated.remainder).assertEqual(0);
+    });
+
+    it('amplifies_only_the_final_vnc_wire_delta_by_five', 0, (): void => {
+      expect(VNC_WHEEL_OUTPUT_GAIN).assertEqual(5);
+      expect(amplifyVncWheelOutputDelta(1)).assertEqual(5);
+      expect(amplifyVncWheelOutputDelta(-3)).assertEqual(-15);
+      expect(amplifyVncWheelOutputDelta(8)).assertEqual(40);
+      expect(amplifyVncWheelOutputDelta(1000)).assertEqual(VNC_WHEEL_OUTPUT_MAX_DELTA);
+      expect(amplifyVncWheelOutputDelta(Number.NaN)).assertEqual(0);
     });
 
     it('keeps_non_vnc_continuous_scroll_curve_compatible', 0, (): void => {

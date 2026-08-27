@@ -21,3 +21,4 @@ Restore usable VNC scrolling across all HarmonyOS input sources and prevent the 
 4. Correct the VNC system-pointer policy and cover fallback, protocol-ready and explicit-hidden transitions.
 5. Run focused tests, exact Hvigor gates, signed HAP assembly, diff checks and Light compliance.
 6. Commit a precise checkpoint, obtain independent sub-agent review, remediate findings and repeat gates before device installation.
+7. Apply the device-acceptance result as one VNC-only 5x wire gain across virtual touchpad, physical touchpad and physical mouse, with a native burst bound that cannot truncate the supported maximum.

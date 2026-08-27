@@ -9,6 +9,7 @@ import {
   VncPhysicalWheelState,
   vncPhysicalMouseWheelDelta
 } from '../main/ets/services/VncPhysicalWheelPolicy';
+import { amplifyVncWheelOutputDelta } from '../main/ets/services/RemoteWheelPolicy';
 
 function accumulateTwoSamples(rawDelta: number): number {
   let state: VncPhysicalWheelState = resetVncPhysicalWheelState();
@@ -73,6 +74,13 @@ export default function vncPhysicalWheelPolicyTest(): void {
       expect(vncPhysicalMouseWheelDelta(-1, Number.NaN)).assertEqual(-1);
       expect(vncPhysicalMouseWheelDelta(120, 100))
         .assertEqual(VNC_PHYSICAL_MOUSE_MAX_DELTA);
+    });
+
+    it('applies_the_same_five_times_wire_gain_to_mouse_and_touchpad', 0, (): void => {
+      expect(amplifyVncWheelOutputDelta(vncPhysicalMouseWheelDelta(45, 3)))
+        .assertEqual(15);
+      expect(amplifyVncWheelOutputDelta(accumulateTwoSamples(45)))
+        .assertEqual(5);
     });
 
     it('adapts_touchpad_1_45_and_120_units_to_two_samples_per_tick', 0, (): void => {
