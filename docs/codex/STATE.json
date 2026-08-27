@@ -3,17 +3,19 @@
   "task": "vnc-wheel-input-normalization",
   "branch": "codex/vnc-wheel-input-normalization",
   "base": "928372c6c",
-  "head": "928372c6c3946c8f6377684aa3eb845c8aa5c1b3",
+  "head": "c7633050bac6c72c7439d208c9174fcfc2db96ec",
   "phase": "review",
   "status": "active",
-  "next": "Create the verified checkpoint commit and run independent review over the declared wheel-policy scope.",
+  "next": "Commit the initial review remediation and ask /root/vnc_wheel_review for follow-up verification.",
   "blockers": [],
   "planPaths": [
     "docs/codex/plans/2026-08-27-vnc-wheel-input-normalization.md"
   ],
   "review": {
-    "status": "PENDING",
-    "taskIds": [],
+    "status": "ACTIVE",
+    "taskIds": [
+      "/root/vnc_wheel_review"
+    ],
     "reviewedHead": "",
     "scope": [
       "entry/src/main/ets/services/RemoteWheelPolicy.ets",
@@ -27,12 +29,12 @@
     ],
     "lastReceiptId": "",
     "findings": [],
-    "reason": "Implementation gates passed; a committed checkpoint is required before independent review."
+    "reason": "Initial P1/P2/P3 findings are remediated and await same-reviewer verification."
   },
   "lastVerification": {
     "baseline": "clean synchronized main@928372c6c",
-    "testCompile": "PASS: default@OhosTestCompileArkTS BUILD SUCCESSFUL in 27 s 289 ms",
-    "assembleHap": "PASS: signed assembleHap BUILD SUCCESSFUL in 17 s 319 ms; SHA-256 b873c530743e17336ea3283ac4899e7e9ca074f63a6c7db23483f2b0c2680339",
+    "testCompile": "PASS after review remediation: default@OhosTestCompileArkTS BUILD SUCCESSFUL in 8 s 967 ms",
+    "assembleHap": "PASS after review remediation: signed assembleHap BUILD SUCCESSFUL in 17 s 16 ms; SHA-256 65d06b269cff68c05c3e759c00410444a67fec77e6284f025a3227e85413edab",
     "targetedTests": "Policy suites compiled and registered in both runners; ohosTest task unavailable with existing 00306054 and no HDC target online",
     "compliance": "PASS: git diff --check and open-source Light",
     "review": "PENDING"

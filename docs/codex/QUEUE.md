@@ -4,13 +4,13 @@ Updated: 2026-08-27 Asia/Shanghai
 
 ## Now
 
-1. Create a precise verified checkpoint commit.
-2. Run the required independent review over the declared wheel-policy scope.
-3. Resolve any findings and repeat affected gates.
+1. Create a precise verified remediation commit for the initial P1/P2/P3 findings.
+2. Ask the same independent reviewer to verify the remediation.
+3. Repeat affected gates if the follow-up finds another issue.
 
 ## Next
 
-1. Finalize state/receipt and commit the reviewed result.
+1. Finalize the PASS receipt/state and commit the reviewed result.
 2. Install the signed HAP when a HarmonyOS target is online.
 
 ## Later / external acceptance

@@ -5,7 +5,8 @@ import {
   accumulateContinuousRemoteWheel,
   applyRemoteWheelDirection,
   discreteRemoteWheelDelta,
-  moonlightAxisScrollAmount
+  moonlightAxisScrollAmount,
+  shouldForwardContinuousRemoteWheelSample
 } from '../main/ets/services/RemoteWheelPolicy';
 
 export default function remoteWheelPolicyTest(): void {
@@ -30,6 +31,22 @@ export default function remoteWheelPolicyTest(): void {
       const reversed = accumulateContinuousRemoteWheel(-5, forward.remainder, 1, 'vnc');
       expect(reversed.delta).assertEqual(0);
       expect(reversed.remainder).assertEqual(-0.5);
+    });
+
+    it('preserves_sub_half_vp_samples_until_they_form_a_vnc_tick', 0, (): void => {
+      expect(shouldForwardContinuousRemoteWheelSample(0.4)).assertTrue();
+      expect(shouldForwardContinuousRemoteWheelSample(-0.1)).assertTrue();
+      expect(shouldForwardContinuousRemoteWheelSample(0)).assertFalse();
+      expect(shouldForwardContinuousRemoteWheelSample(Number.NaN)).assertFalse();
+
+      let remainder: number = 0;
+      let totalDelta: number = 0;
+      for (let index: number = 0; index < 30; index++) {
+        const sample = accumulateContinuousRemoteWheel(0.4, remainder, 1, 'vnc');
+        totalDelta += sample.delta;
+        remainder = sample.remainder;
+      }
+      expect(totalDelta).assertEqual(1);
     });
 
     it('keeps_non_vnc_continuous_scroll_curve_compatible', 0, (): void => {

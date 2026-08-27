@@ -22,6 +22,11 @@ export interface RemoteWheelAccumulation {
   remainder: number;
 }
 
+/** Preserve all finite non-zero motion so sub-vp gestures can accumulate. */
+export function shouldForwardContinuousRemoteWheelSample(rawDelta: number): boolean {
+  return Number.isFinite(rawDelta) && rawDelta !== 0;
+}
+
 export function continuousRemoteWheelGain(protocol: string): number {
   return protocol === 'vnc' ? 1 / VNC_VIRTUAL_WHEEL_VP_PER_TICK :
     LEGACY_CONTINUOUS_WHEEL_GAIN;

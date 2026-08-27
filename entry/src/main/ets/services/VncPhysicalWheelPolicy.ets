@@ -11,8 +11,11 @@
 export const VNC_PHYSICAL_TOUCHPAD_SAMPLES_PER_TICK: number = 4;
 export const VNC_PHYSICAL_TOUCHPAD_MAX_DELTA: number = 2;
 export const VNC_PHYSICAL_TOUCHPAD_MAX_NORMALIZED_SAMPLE: number = 4;
-export const VNC_PHYSICAL_TOUCHPAD_AXIS_SMOOTHING: number = 0.125;
 export const VNC_PHYSICAL_TOUCHPAD_IDLE_RESET_MS: number = 160;
+export const VNC_AXIS_ACTION_NONE: number = 0;
+export const VNC_AXIS_ACTION_BEGIN: number = 1;
+export const VNC_AXIS_ACTION_END: number = 3;
+export const VNC_AXIS_ACTION_CANCEL: number = 4;
 
 export interface VncPhysicalWheelState {
   remainder: number;
@@ -25,6 +28,13 @@ export interface VncPhysicalWheelState {
 export interface VncPhysicalWheelAccumulation {
   delta: number;
   state: VncPhysicalWheelState;
+}
+
+export interface VncPhysicalWheelRoute {
+  continuous: boolean;
+  resetBefore: boolean;
+  resetAfter: boolean;
+  cancel: boolean;
 }
 
 export function resetVncPhysicalWheelState(): VncPhysicalWheelState {
@@ -45,18 +55,34 @@ export function hasPhysicalMouseScrollStep(scrollStep: number | undefined): bool
   return scrollStep !== undefined && Number.isFinite(scrollStep) && scrollStep !== 0;
 }
 
-/**
- * A valid mouse-only scrollStep always wins. AxisAction is lifecycle metadata;
- * it must never turn a real mouse BEGIN/UPDATE/END event into a touchpad.
- */
-export function shouldTreatPhysicalAxisAsContinuous(sourceIsTouchpad: boolean,
-  _axisAction: number, scrollStep: number | undefined, _elapsedMs: number = 0): boolean {
+/** Resolve source classification and lifecycle before any wheel delta math. */
+export function resolveVncPhysicalWheelRoute(sourceIsTouchpad: boolean,
+  axisAction: number, scrollStep: number | undefined): VncPhysicalWheelRoute {
   if (hasPhysicalMouseScrollStep(scrollStep)) {
-    return false;
+    return {
+      continuous: false,
+      resetBefore: false,
+      resetAfter: false,
+      cancel: false
+    };
   }
-  // A HarmonyOS PC bridge may label a touchpad as MOUSE. Without the
-  // mouse-only scrollStep, the safe portable path is continuous input.
-  return sourceIsTouchpad || scrollStep === undefined || !Number.isFinite(scrollStep) || scrollStep === 0;
+  // An optional scrollStep cannot by itself distinguish an old mouse bridge.
+  // MOUSE + NONE therefore remains one discrete detent. Explicit TOUCHPAD or
+  // BEGIN/UPDATE/END/CANCEL lifecycle is the required continuous evidence.
+  const continuous: boolean = sourceIsTouchpad || axisAction !== VNC_AXIS_ACTION_NONE;
+  const cancel: boolean = continuous && axisAction === VNC_AXIS_ACTION_CANCEL;
+  return {
+    continuous,
+    resetBefore: continuous && axisAction === VNC_AXIS_ACTION_BEGIN,
+    resetAfter: continuous &&
+      (axisAction === VNC_AXIS_ACTION_END || cancel),
+    cancel
+  };
+}
+
+export function shouldTreatPhysicalAxisAsContinuous(sourceIsTouchpad: boolean,
+  axisAction: number, scrollStep: number | undefined, _elapsedMs: number = 0): boolean {
+  return resolveVncPhysicalWheelRoute(sourceIsTouchpad, axisAction, scrollStep).continuous;
 }
 
 /** One physical mouse event represents one portable RFB wheel detent. */
@@ -69,10 +95,11 @@ export function vncPhysicalMouseWheelDelta(rawDelta: number): number {
 
 /**
  * Normalize one continuous touchpad sample without assuming whether the
- * device reports 1, 45 or 120 raw units. The first meaningful sample defines
- * the gesture unit; later samples preserve relative velocity while a slow EMA
- * follows stable device-scale changes. A direction reversal drops only the
- * stale fractional remainder, never the new motion.
+ * device reports 1, 45 or 120 raw units. The smallest meaningful sample in a
+ * gesture is the device-unit floor; larger samples preserve bounded relative
+ * velocity, while an immediate downward rebase prevents a large first sample
+ * from starving later fine motion. A direction reversal drops only the stale
+ * fractional remainder, never the new motion.
  */
 export function accumulateVncPhysicalTouchpadWheel(rawDelta: number,
   previous: VncPhysicalWheelState,
@@ -110,7 +137,8 @@ export function accumulateVncPhysicalTouchpadWheel(rawDelta: number,
 
   const direction: number = rawDelta > 0 ? 1 : -1;
   const magnitude: number = Math.abs(rawDelta);
-  const axisUnit: number = previousAxisUnit > 0 ? previousAxisUnit : magnitude;
+  const axisUnit: number = previousAxisUnit > 0 ?
+    Math.min(previousAxisUnit, magnitude) : magnitude;
   const normalizedMagnitude: number = Math.min(VNC_PHYSICAL_TOUCHPAD_MAX_NORMALIZED_SAMPLE,
     magnitude / axisUnit);
   const cleanRemainder: number = previousDirection !== 0 && previousDirection !== direction ?
@@ -124,17 +152,11 @@ export function accumulateVncPhysicalTouchpadWheel(rawDelta: number,
   // backlog would keep scrolling after the physical gesture has slowed down.
   const remainder: number = total - whole;
 
-  let nextAxisUnit: number = axisUnit;
-  const unitRatio: number = magnitude / axisUnit;
-  if (previousAxisUnit > 0 && unitRatio >= 0.25 && unitRatio <= 4) {
-    nextAxisUnit = axisUnit * (1 - VNC_PHYSICAL_TOUCHPAD_AXIS_SMOOTHING) +
-      magnitude * VNC_PHYSICAL_TOUCHPAD_AXIS_SMOOTHING;
-  }
   return {
     delta,
     state: {
       remainder,
-      axisUnit: nextAxisUnit,
+      axisUnit,
       direction,
       lastSampleAtMs: validSampleAtMs,
       sourceTool: validSourceTool

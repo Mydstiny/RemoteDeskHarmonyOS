@@ -541,13 +541,15 @@ import {
 import {
   accumulateContinuousRemoteWheel,
   applyRemoteWheelDirection,
-  discreteRemoteWheelDelta
+  discreteRemoteWheelDelta,
+  shouldForwardContinuousRemoteWheelSample
 } from '../services/RemoteWheelPolicy';
 import {
   accumulateVncPhysicalTouchpadWheel,
   resetVncPhysicalWheelState,
-  shouldTreatPhysicalAxisAsContinuous,
+  resolveVncPhysicalWheelRoute,
   VncPhysicalWheelState,
+  VncPhysicalWheelRoute,
   vncPhysicalMouseWheelDelta
 } from '../services/VncPhysicalWheelPolicy';
 import {
@@ -15486,7 +15488,7 @@ struct RemoteDesktop {
             return;
           }
           if (shouldSendCanvasTwoFingerScroll(this.canvasTwoFingerState) &&
-            Math.abs(stepDy) >= 0.5) {
+            shouldForwardContinuousRemoteWheelSample(stepDy)) {
             // 双指上下滑动只映射滚轮，不再触发拖拽。
             this.sendTouchPadWheel(stepDy);
           }
@@ -15693,7 +15695,7 @@ struct RemoteDesktop {
             const twoFingerMove: CanvasTwoFingerMoveResult | null = this.canvasTwoFingerLastMove;
             if (twoFingerMove !== null &&
               shouldSendCanvasTwoFingerScroll(this.canvasTwoFingerState) &&
-              Math.abs(twoFingerMove.deltaY) >= 0.5) {
+              shouldForwardContinuousRemoteWheelSample(twoFingerMove.deltaY)) {
               this.touchMoved = true;
               this.touchDragPending = false;
               this.sendTouchPadWheel(twoFingerMove.deltaY);
@@ -16643,16 +16645,13 @@ struct RemoteDesktop {
       const rawVertical: number = event.getVerticalAxisValue();
       const vncSession: boolean = this.isVncSession();
       const mouseSource: boolean = event.sourceTool === SourceTool.MOUSE;
-      const vncContinuousPhysicalAxis: boolean = vncSession &&
-        shouldTreatPhysicalAxisAsContinuous(
-          event.sourceTool === SourceTool.TOUCHPAD, event.action,
-          event.scrollStep);
-      const startsVncContinuous: boolean = vncContinuousPhysicalAxis &&
-        event.action === AxisAction.BEGIN;
-      const cancelsVncContinuous: boolean = vncContinuousPhysicalAxis &&
-        event.action === AxisAction.CANCEL;
-      const endsVncContinuous: boolean = vncContinuousPhysicalAxis &&
-        event.action === AxisAction.END;
+      const vncRoute: VncPhysicalWheelRoute = resolveVncPhysicalWheelRoute(
+        event.sourceTool === SourceTool.TOUCHPAD, event.action, event.scrollStep);
+      const vncContinuousPhysicalAxis: boolean = vncSession && vncRoute.continuous;
+      const startsVncContinuous: boolean = vncSession && vncRoute.resetBefore;
+      const cancelsVncContinuous: boolean = vncSession && vncRoute.cancel;
+      const endsVncContinuous: boolean = vncSession && vncRoute.resetAfter &&
+        !vncRoute.cancel;
       if (startsVncContinuous) {
         this.vncPhysicalWheelState = resetVncPhysicalWheelState();
       }
