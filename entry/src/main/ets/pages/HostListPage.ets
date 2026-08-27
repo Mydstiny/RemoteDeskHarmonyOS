@@ -2548,9 +2548,7 @@ struct HostListPage {
       lease, 'forget_host', hostId);
     if (preview.code !== 'ok') {
       promptAction.showToast({
-        message: preview.code === 'cloud_unavailable' ?
-          'Moonlight 云端状态尚未就绪，未删除任何数据' :
-          '主机数据已变化，请刷新后重试：' + preview.code,
+        message: this.moonlightDeletionFailureMessage(preview.code),
         duration: 2400
       });
       return;
@@ -2584,8 +2582,8 @@ struct HostListPage {
     this.hostViewRevision += 1;
     promptAction.showToast({
       message: result.ok ? (result.code === 'pending_cloud' ?
-        '本机主机已删除，云端删除标记正在安全上传' : 'Moonlight 主机已删除') :
-        '删除失败：' + result.code,
+        '本机主机已删除；云同步可用后会自动同步删除状态' : 'Moonlight 主机已删除') :
+        this.moonlightDeletionFailureMessage(result.code),
       duration: 2400
     });
   }
@@ -5267,6 +5265,25 @@ struct HostListPage {
     return message === '' ? fallback : message;
   }
 
+  private moonlightDeletionFailureMessage(code: string): string {
+    if (code === 'stale_lease') {
+      return '当前账号数据域已变化，请刷新后重试';
+    }
+    if (code === 'stale_preview' || code === 'not_found') {
+      return '主机数据在确认期间发生变化，请刷新后重新确认';
+    }
+    if (code === 'read_failed' || code === 'invalid_data') {
+      return '本地主机数据暂时无法读取，请刷新或重启应用后重试';
+    }
+    if (code === 'local_write_failed') {
+      return '本地主机删除未能保存，请检查设备存储后重试';
+    }
+    if (code === 'cloud_unavailable') {
+      return '云端暂不可用；本地主机未发生不确定修改，请稍后重试';
+    }
+    return '主机删除未完成，请刷新后重试';
+  }
+
   private async doHostBatchDelete(): Promise<void> {
     const selectedKeys: string[] = Array.from(this.hostSelectedIds);
     if (selectedKeys.length === 0) { return; }
@@ -5310,30 +5327,42 @@ struct HostListPage {
     const moonlightLease: AccountSessionLease | null = moonlightViews.length === 0
       ? null : this.moonlightDeletionRuntime.currentLease();
     const moonlightPreviews: MoonlightDeletionPreview[] = [];
+    const preflightFailedKeys: Set<string> = new Set<string>();
     if (moonlightViews.length > 0 && (moonlightLease === null ||
         !this.moonlightDeletionRuntime.isLeaseCurrent(moonlightLease))) {
-      promptAction.showToast({ message: 'Moonlight 数据域已变化，请刷新后重试', duration: 2200 });
+      for (let index: number = 0; index < moonlightViews.length; index++) {
+        const host: MoonlightHost = moonlightViews[index].host as MoonlightHost;
+        preflightFailedKeys.add(unifiedMoonlightHostCardKey(host.id));
+      }
+    } else if (moonlightLease !== null) {
+      for (let index: number = 0; index < moonlightViews.length; index++) {
+        const host: MoonlightHost = moonlightViews[index].host as MoonlightHost;
+        const preview: MoonlightDeletionPreview = this.moonlightDeletionRuntime.preview(
+          moonlightLease, 'forget_host', host.id);
+        if (preview.code !== 'ok') {
+          preflightFailedKeys.add(unifiedMoonlightHostCardKey(host.id));
+          continue;
+        }
+        moonlightPreviews.push(preview);
+      }
+    }
+    const actionableCount: number = remoteHosts.length +
+      moonlightPreviews.length;
+    if (actionableCount === 0) {
+      promptAction.showToast({
+        message: '所选主机当前无法删除，已保留选择，请刷新后重试',
+        duration: 2400
+      });
       return;
     }
-    for (let index: number = 0; index < moonlightViews.length; index++) {
-      const host: MoonlightHost = moonlightViews[index].host as MoonlightHost;
-      const preview: MoonlightDeletionPreview = this.moonlightDeletionRuntime.preview(
-        moonlightLease as AccountSessionLease, 'forget_host', host.id);
-      if (preview.code !== 'ok') {
-        promptAction.showToast({
-          message: preview.code === 'cloud_unavailable'
-            ? 'Moonlight 云端状态尚未就绪，未删除任何主机'
-            : 'Moonlight 主机数据已变化，请刷新后重试：' + preview.code,
-          duration: 2400
-        });
-        return;
-      }
-      moonlightPreviews.push(preview);
-    }
+    const isolatedFailureText: string = preflightFailedKeys.size > 0 ?
+      '另有 ' + preflightFailedKeys.size.toString() +
+        ' 个主机状态已变化，将保留选择。' : '';
     const dialogResult: Object = await promptAction.showDialog({
       title: '批量删除',
-      message: '确定要删除选中的 ' + selectedKeys.length +
-        ' 个主机吗？Moonlight 主机还会清理配对信任、应用配置和目录缓存。',
+      message: '确定要删除当前可处理的 ' + actionableCount.toString() +
+        ' 个主机吗？Moonlight 主机还会清理配对信任、应用配置和目录缓存。' +
+        isolatedFailureText,
       buttons: [
         { text: '取消', color: this.pal().text2 },
         { text: '删除', color: this.pal().danger }
@@ -5341,15 +5370,20 @@ struct HostListPage {
     });
     const selected: Record<string, number> = dialogResult as Record<string, number>;
     if (selected['index'] !== 1 || !this.pageActive) { return; }
-    if (moonlightLease !== null) {
+    let moonlightLeaseValid: boolean = moonlightPreviews.length === 0;
+    if (moonlightLease !== null && moonlightPreviews.length > 0) {
       const currentLease: AccountSessionLease | null = this.moonlightDeletionRuntime.currentLease();
-      if (currentLease === null || !this.moonlightDeletionRuntime.isLeaseCurrent(moonlightLease) ||
-          !accountSessionLeaseEquals(currentLease, moonlightLease)) {
-        promptAction.showToast({ message: '账号状态已变化，未执行删除', duration: 2200 });
-        return;
+      moonlightLeaseValid = currentLease !== null &&
+        this.moonlightDeletionRuntime.isLeaseCurrent(moonlightLease) &&
+        accountSessionLeaseEquals(currentLease, moonlightLease);
+      if (!moonlightLeaseValid) {
+        for (let index: number = 0; index < moonlightPreviews.length; index++) {
+          preflightFailedKeys.add(unifiedMoonlightHostCardKey(
+            moonlightPreviews[index].hostId));
+        }
       }
     }
-    const failedKeys: Set<string> = new Set<string>();
+    const failedKeys: Set<string> = new Set<string>(preflightFailedKeys);
     const regularIds: string[] = [];
     for (let index: number = 0; index < remoteHosts.length; index++) {
       const host: RemoteHost = remoteHosts[index];
@@ -5366,10 +5400,19 @@ struct HostListPage {
         failedKeys.add(remoteHostCardKey(regularIds[index]));
       }
     }
-    for (let index: number = 0; index < moonlightPreviews.length; index++) {
-      const result: MoonlightDeletionCommandResult = await this.moonlightDeletionRuntime.execute(
-        moonlightLease as AccountSessionLease, moonlightPreviews[index]);
-      if (!result.ok) {
+    for (let index: number = 0;
+      moonlightLeaseValid && index < moonlightPreviews.length; index++) {
+      let deleted: boolean = false;
+      try {
+        const result: MoonlightDeletionCommandResult =
+          await this.moonlightDeletionRuntime.execute(
+            moonlightLease as AccountSessionLease,
+            moonlightPreviews[index]);
+        deleted = result.ok;
+      } catch (_error) {
+        deleted = false;
+      }
+      if (!deleted) {
         failedKeys.add(unifiedMoonlightHostCardKey(moonlightPreviews[index].hostId));
       }
     }

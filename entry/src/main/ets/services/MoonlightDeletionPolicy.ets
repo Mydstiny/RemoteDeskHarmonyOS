@@ -131,7 +131,9 @@ export function resolveMoonlightDeletionImpact(
       context.hostRecordCount + context.profileRecordCount : 0;
     base.localDataPreserved = false;
     base.cloudDataPreserved = base.cloudTombstonesRequired === 0;
-    base.waitForCloudTerminal = base.cloudTombstonesRequired > 0;
+    // Ordinary host deletion commits locally and lets the durable tombstone
+    // converge later; it never waits for an online cloud terminal.
+    base.waitForCloudTerminal = false;
     base.confirmationLevel = 'danger';
     return base;
   }
@@ -157,6 +159,6 @@ export function resolveMoonlightDeletionImpact(
   base.localDataPreserved = base.localRowsRemoved === 0 &&
     base.localRuntimeStatesRemoved === 0;
   base.cloudDataPreserved = base.cloudTombstonesRequired === 0;
-  base.waitForCloudTerminal = base.cloudTombstonesRequired > 0;
+  base.waitForCloudTerminal = false;
   return base;
 }

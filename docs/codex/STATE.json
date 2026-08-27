@@ -1,55 +1,47 @@
 {
   "schema": 1,
-  "task": "rustdesk-orientation-resize-remediation",
-  "branch": "codex/rustdesk-orientation-diagnostics-closeout",
-  "base": "3b9e2b59c06c344c1012efa80b61d043d4999433",
-  "head": "1c0e93198fe46a4e1a37e54bef3e39488dc3c265",
-  "phase": "delivery",
+  "task": "moonlight-cloud-delete-compat",
+  "branch": "codex/moonlight-cloud-delete-compat",
+  "base": "c0e0b5fdc",
+  "head": "c0e0b5fdc",
+  "phase": "validation",
   "status": "active",
-  "next": "Run the exact final gates for the reviewed tree, push the branch, pass required CI, merge, and install the final main HAP for Windows simulator acceptance.",
+  "next": "Create the validated checkpoint commit, obtain independent compatibility review, remediate findings and deliver through PR.",
   "blockers": [
-    "The simulator Windows peer is waiting for remote approval and its saved password field contains no actual password value",
-    "Physical Windows and macOS acceptance remains pending after simulator verification",
-    "Device Hypium remains blocked by the unregistered ohosTest task 00306054; no device-test PASS is claimed"
+    "Device Hypium is unavailable because ohosTest@OhosTestCompileArkTS is absent (00306054); no runtime acceptance is claimed."
   ],
   "planPaths": [
-    "docs/codex/plans/2026-08-27-rustdesk-orientation-and-diagnostics.md"
+    "docs/codex/plans/2026-08-27-moonlight-cloud-delete-compat.md"
   ],
   "review": {
-    "status": "PASS",
-    "taskIds": [
-      "/root/review_vnc_branch"
-    ],
-    "reviewedHead": "3b9e2b59c06c344c1012efa80b61d043d4999433",
+    "status": "PENDING",
+    "taskIds": [],
+    "reviewedHead": "",
     "scope": [
-      "entry/src/main/cpp/render/gl_renderer.cpp",
-      "entry/src/main/cpp/render/native_image_context_policy.h",
-      "entry/src/main/cpp/render/renderer_resize_redraw_policy.h",
-      "entry/src/main/cpp/rustdesk/rustdesk_peer_presentation_policy.h",
-      "entry/src/main/cpp/test/native_image_context_policy_test.cpp",
-      "entry/src/main/cpp/test/renderer_resize_redraw_policy_test.cpp",
-      "entry/src/main/cpp/CMakeLists.txt",
-      "entry/src/main/ets/services/DiagnosticCapturePolicy.ets",
-      "entry/src/main/ets/services/DiagnosticRuntimeSnapshotPolicy.ets",
-      "entry/src/main/ets/services/RemoteSurfaceResizePolicy.ets",
-      "entry/src/main/ets/pages/RemoteDesktop.ets",
-      "entry/src/test/DiagnosticCapturePolicy.test.ets",
-      "entry/src/test/DiagnosticRuntimeSnapshotPolicy.test.ets",
-      "entry/src/test/RemoteSurfaceResizePolicy.test.ets",
-      "entry/src/test/List.test.ets"
+      "entry/src/main/ets/services/MoonlightDeletionCommandService.ets",
+      "entry/src/main/ets/services/MoonlightDeletionPolicy.ets",
+      "entry/src/main/ets/services/MoonlightCloudDeletionPolicy.ets",
+      "entry/src/main/ets/services/CloudStore.ets",
+      "entry/src/main/ets/pages/HostListPage.ets",
+      "entry/src/main/ets/pages/MoonlightHostDetailPage.ets",
+      "entry/src/main/ets/pages/MoonlightSettingsPage.ets",
+      "entry/src/main/ets/services/ReleaseNotesRegistry.ets",
+      "entry/src/test/MoonlightCloudDeletionPolicy.test.ets",
+      "entry/src/test/MoonlightCloudSyncService.test.ets",
+      "entry/src/test/MoonlightDeletionCommandService.test.ets",
+      "entry/src/test/MoonlightDeletionPolicy.test.ets"
     ],
-    "lastReceiptId": "rustdesk-orientation-resize-review-bd9a7c594-2026-08-27",
+    "lastReceiptId": "",
     "findings": [],
-    "reason": "The reused independent reviewer passed the complete orientation and resize remediation with P0/P1/P2/P3 all zero; documentation is intentionally outside the executable review fingerprint."
+    "reason": "Validated compatibility-sensitive local-first deletion delta requires independent review after its checkpoint commit."
   },
   "lastVerification": {
-    "baseline": "main@3b9e2b59c was synchronized when remediation began on 2026-08-27",
-    "testCompile": "PASS exact default@OhosTestCompileArkTS on remediation tree 1c0e93198",
-    "assembleHap": "PASS exact signed assembleHap on remediation tree 1c0e93198",
-    "nativeTests": "PASS 811/811 outside sandbox including resize/redraw ordering",
-    "compliance": "PASS Light open-source gate and git diff --check",
-    "runtime": "working-tree HAP installed; Windows peer approval pending",
-    "review": "PASS by /root/review_vnc_branch on bd9a7c594 with P0/P1/P2/P3 all zero"
+    "baseline": "clean synchronized main@c0e0b5fdc",
+    "testCompile": "PASS exact default@OhosTestCompileArkTS BUILD SUCCESSFUL in 24 s 411 ms",
+    "assembleHap": "PASS exact signed assembleHap BUILD SUCCESSFUL in 22 s 828 ms",
+    "targetedTests": "Regression sources compile; device Hypium blocked by existing missing task 00306054",
+    "compliance": "PASS Light and git diff --check",
+    "review": "PENDING"
   },
   "updated": "2026-08-27 Asia/Shanghai"
 }

@@ -340,6 +340,34 @@ export default function moonlightCloudSyncServiceTest(): void {
           .assertEqual(200);
       });
 
+    it('promotes_an_offline_local_tombstone_only_after_cloud_first_merge',
+      0, (): void => {
+        const port = new MemoryCloudSyncPort();
+        const live: MoonlightRecord = hostRecord('h1', 'cloud-live');
+        const deleted: MoonlightRecord = tombstone(live);
+        port.rows.set(deleted.id, deleted);
+        port.localOnly.set(deleted.id, 1);
+        const newerCloud: MoonlightRecord =
+          MoonlightRecord.fromJSON(live.toJSON());
+        newerCloud.syncVersion = 99;
+        newerCloud.updatedAt = 999;
+        newerCloud.payloadHashSha256 =
+          moonlightRecordPayloadHashSha256(newerCloud);
+        const service = new MoonlightCloudSyncService(
+          port, encryptedIdentity);
+        const pulled = service.materializeDownloadedRows(
+          lease(), [moonlightRecordToCloudRow(newerCloud)], gates());
+        expect(pulled.ok).assertTrue();
+        expect((port.rows.get('h1') as MoonlightRecord).deletedAt)
+          .assertEqual(200);
+        expect(port.localOnly.get('h1') as number).assertEqual(1);
+        const promoted = service.promoteSelectedLocalRecords(
+          lease(), gates());
+        expect(promoted.ok).assertTrue();
+        expect(promoted.promoted).assertEqual(1);
+        expect(port.promotedDeletedAt[0]).assertEqual(200);
+      });
+
     it('does_not_resurrect_a_synced_mirror_missing_from_the_cloud_snapshot',
       0, (): void => {
         const port = new MemoryCloudSyncPort();

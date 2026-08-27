@@ -335,6 +335,25 @@ struct MoonlightHostDetailPage {
     promptAction.showToast({ message: '主机名称已保存', duration: 1600 });
   }
 
+  private deletionFailureMessage(code: string): string {
+    if (code === 'stale_lease') {
+      return '当前账号数据域已变化，请重新进入页面';
+    }
+    if (code === 'stale_preview' || code === 'not_found') {
+      return '主机数据在确认期间发生变化，请刷新后重新确认';
+    }
+    if (code === 'read_failed' || code === 'invalid_data') {
+      return '本地主机数据暂时无法读取，请刷新或重启应用后重试';
+    }
+    if (code === 'local_write_failed') {
+      return '本地主机删除未能保存，请检查设备存储后重试';
+    }
+    if (code === 'cloud_unavailable') {
+      return '云端暂不可用；本地主机未发生不确定修改，请稍后重试';
+    }
+    return '主机删除未完成，请刷新后重试';
+  }
+
   private async requestDelete(): Promise<void> {
     if (!await this.ensureHostAccess() || this.host === null) { return; }
     const lease: AccountSessionLease | null = this.deletionRuntime.currentLease();
@@ -348,17 +367,15 @@ struct MoonlightHostDetailPage {
       lease, 'forget_host', capturedHostId);
     if (preview.code !== 'ok') {
       promptAction.showToast({
-        message: preview.code === 'cloud_unavailable' ?
-          'Moonlight 云端状态尚未就绪，未删除任何数据' :
-          '主机数据已变化，请刷新后重试：' + preview.code,
+        message: this.deletionFailureMessage(preview.code),
         duration: 2400
       });
       return;
     }
     const hostName: string = this.host.displayName;
     const cloudMessage: string = preview.impact.cloudTombstonesRequired > 0 ?
-      ' 已选择云同步的主机与配置会写入删除标记，并等待云端完成；配对信任始终只从本机移除。' :
-      ' 当前设备未选择 Moonlight 云同步，不会改动云端副本。';
+      ' 主机与配置会先从本机删除；云同步可用后自动同步删除状态。配对信任始终只从本机移除。' :
+      ' 主机与配置会立即从本机删除，并保留防止以后重新启用同步时复活的删除状态。';
     promptAction.showDialog({
       title: '删除 Moonlight 主机？',
       message: '将删除“' + hostName + '”在此账号下的主机、' +
@@ -392,18 +409,14 @@ struct MoonlightHostDetailPage {
       await this.deletionRuntime.execute(lease, preview);
     if (!this.pageActive) { return; }
     if (!result.ok) {
-      const message: string = result.code === 'stale_preview' ?
-        '主机数据在确认期间发生变化，请重新确认' :
-        result.code === 'cloud_unavailable' ?
-          '无法确认云端删除边界，未删除本地主机' :
-          '删除失败，未完成的数据仍会保留：' + result.code;
+      const message: string = this.deletionFailureMessage(result.code);
       promptAction.showToast({ message, duration: 2600 });
       if (result.localCommitted) { this.load(); }
       return;
     }
     promptAction.showToast({
       message: result.code === 'pending_cloud' ?
-        '本机主机已删除，云端删除标记正在安全上传' :
+        '本机主机已删除；云同步可用后会自动同步删除状态' :
         'Moonlight 主机及其本机信任已删除',
       duration: 2200
     });
@@ -421,7 +434,10 @@ struct MoonlightHostDetailPage {
     const preview: MoonlightDeletionPreview = this.deletionRuntime.preview(
       lease, 'unpair_host', capturedHostId);
     if (preview.code !== 'ok') {
-      promptAction.showToast({ message: '当前配对状态无法安全修改：' + preview.code, duration: 2400 });
+      promptAction.showToast({
+        message: this.deletionFailureMessage(preview.code),
+        duration: 2400
+      });
       return;
     }
     promptAction.showDialog({

@@ -515,7 +515,7 @@ export struct MoonlightSettingsSurface {
       promptAction.showToast({
         message: preview.code === 'cloud_unavailable' ?
           'Moonlight 云表尚未就绪，不能安全执行云端删除' :
-          '无法生成安全的数据影响预览：' + preview.code,
+          '无法生成安全的数据影响预览，请刷新后重试',
         duration: 2600
       });
       this.refreshDataStatus();
@@ -564,7 +564,7 @@ export struct MoonlightSettingsSurface {
     }
     this.refreshDataStatus();
     if (!result.ok) {
-      let message: string = '操作失败，未确认的数据保持不变：' + result.code;
+      let message: string = '操作未完成，未确认的数据保持不变，请刷新后重试';
       if (result.code === 'stale_preview') {
         message = '数据在确认期间发生变化，已停止操作，请重新确认';
       } else if (result.code === 'selection_failed') {

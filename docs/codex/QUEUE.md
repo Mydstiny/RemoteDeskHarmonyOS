@@ -1,20 +1,18 @@
-# RustDesk Orientation and Resize Remediation Queue
+# Moonlight Cloud Delete Compatibility Queue
 
 Updated: 2026-08-27 Asia/Shanghai
 
 ## Now
 
-1. Run the exact final compile and signed-HAP gates for the reviewed delivery tree.
-2. Push, create the PR, wait for required `open-source-compliance`, merge, synchronize `main` and remove the merged task branch.
-3. Obtain Windows-side approval and capture upright-image plus small/large-window resize evidence using the final merged HAP.
+1. Create the validated implementation checkpoint commit.
+2. Obtain independent compatibility/data-loss review for the exact committed delta.
+3. Fix any findings, rerun both exact Hvigor gates and deliver through PR.
 
 ## Next
 
-1. Rebuild and reinstall the final merged signed HAP so its embedded build identity matches `main`.
-2. Verify Windows connect/reconnect/recovery remains upright and macOS remains unchanged on physical hardware.
-3. Export one all-module log and verify it contains build, backend, geometry, lifecycle and presentation evidence without endpoint, credential, peer ID or free-form text leakage.
+1. Record the review receipt and final signed-HAP identity.
+2. Merge the reviewed branch to `main` after remote checks pass.
 
 ## Later / external acceptance
 
-- Exercise long-running reconnect, Moonlight-to-RustDesk handoff, process restart and network-transition cases on real devices.
-- Run device Hypium when the `ohosTest` task registration issue `00306054` is resolved.
+- Verify cross-device tombstone convergence with an actual Huawei Cloud Space account when available.

@@ -81,6 +81,22 @@ export function moonlightCloudDeletionTombstone(
 }
 
 /**
+ * Persist an ordinary user delete without requiring a cloud projection.
+ *
+ * The local row is deliberately used as both sides of the deletion boundary:
+ * a later cloud-first merge makes this payload-free tombstone win over any
+ * live row in the same reset epoch, while an explicit re-add can still revive
+ * the identity by advancing the reset epoch. The caller stores it as
+ * `localonly=1` until optional cloud registration and transfer are healthy.
+ */
+export function moonlightLocalDeletionTombstone(
+  current: MoonlightRecord,
+  nowMs: number
+): MoonlightRecord | null {
+  return moonlightCloudDeletionTombstone(current, current, nowMs);
+}
+
+/**
  * A cloud-wide delete preserves the current device's business payload while
  * giving it a higher reset epoch. Other devices consume the uploaded
  * tombstone; this device can only republish its preserved copy after the user

@@ -238,7 +238,8 @@ class MemoryDeletionPort implements MoonlightDeletionCommandPort {
         cloudAttempted: false, cloudTerminal: false
       };
     }
-    if (request.writeCloudTombstones && !this.cloudReady) {
+    if (request.command === 'delete_cloud_data' &&
+        request.persistCloudDeletionIntent && !this.cloudReady) {
       return {
         ok: false, code: 'cloud_unavailable', localCommitted: false,
         cloudAttempted: false, cloudTerminal: false
@@ -254,15 +255,14 @@ class MemoryDeletionPort implements MoonlightDeletionCommandPort {
       command: request.command,
       recordIds: request.recordIds.slice(),
       cacheIds: request.cacheIds.slice(),
-      writeCloudTombstones: request.writeCloudTombstones,
+      persistCloudDeletionIntent: request.persistCloudDeletionIntent,
       clearOwnerRuntimeState: request.clearOwnerRuntimeState,
       expectedRuntimeStateCount: request.expectedRuntimeStateCount,
       nowMs: request.nowMs
     };
-    // Model the production contract: public cloud rows become versioned
-    // tombstones; forbidden historical rows are physically removed. A
-    // cloud-wide delete rebases live local public rows above that tombstone
-    // epoch while preserving every local trust/identity row.
+    // Model the production contract: explicit cloud-wide deletion mutates the
+    // physical projection, while ordinary selected deletion stages durable
+    // local tombstones without depending on current cloud availability.
     if (request.command === 'delete_cloud_data') {
       const cloudIds: string[] = [];
       this.physicalCloudRows.forEach((value: MoonlightRecord): void => {
@@ -303,26 +303,18 @@ class MemoryDeletionPort implements MoonlightDeletionCommandPort {
         if (preserved !== null) { this.rows.set(id, preserved); }
       }
     } else {
-      if (request.writeCloudTombstones) {
-        for (let i = 0; i < request.recordIds.length; i++) {
-          const id: string = request.recordIds[i];
-          const local: MoonlightRecord | undefined = this.rows.get(id);
-          const cloud: MoonlightRecord | undefined =
-            this.physicalCloudRows.get(id);
-          if (local === undefined || cloud === undefined ||
-              !moonlightRecordTypeIsPublicCloudData(local)) {
-            continue;
-          }
+      for (let i = 0; i < request.recordIds.length; i++) {
+        const id: string = request.recordIds[i];
+        const current: MoonlightRecord | undefined = this.rows.get(id);
+        if (request.persistCloudDeletionIntent && current !== undefined &&
+            moonlightRecordTypeIsPublicCloudData(current)) {
           const deleted: MoonlightRecord | null =
             moonlightCloudDeletionTombstone(
-              local, cloud, request.nowMs);
-          if (deleted !== null) {
-            this.physicalCloudRows.set(id, deleted);
-          }
+              current, current, request.nowMs);
+          if (deleted !== null) { this.rows.set(id, deleted); }
+        } else {
+          this.rows.delete(id);
         }
-      }
-      for (let i = 0; i < request.recordIds.length; i++) {
-        this.rows.delete(request.recordIds[i]);
       }
       for (let i = 0; i < request.cacheIds.length; i++) {
         this.cache.delete(request.cacheIds[i]);
@@ -339,8 +331,10 @@ class MemoryDeletionPort implements MoonlightDeletionCommandPort {
       localCommitted: request.command === 'delete_cloud_data' ||
         request.recordIds.length > 0 || request.cacheIds.length > 0 ||
         request.clearOwnerRuntimeState,
-      cloudAttempted: request.writeCloudTombstones,
-      cloudTerminal: request.writeCloudTombstones && this.cloudTerminal
+      cloudAttempted: request.command === 'delete_cloud_data' &&
+        request.persistCloudDeletionIntent,
+      cloudTerminal: request.command === 'delete_cloud_data' &&
+        request.persistCloudDeletionIntent && this.cloudTerminal
     };
   }
 }
@@ -351,11 +345,13 @@ class MemorySelectionPort implements MoonlightDeletionSelectionPort {
     selectedScopes: ['settings', 'hosts', 'profiles']
   };
   cancelFailure: boolean = false;
+  snapshotReadable: boolean = true;
   cancelCount: number = 0;
 
   selectionSnapshot(
     _candidate: AccountSessionLease
   ): MoonlightDeletionSelectionSnapshot | null {
+    if (!this.snapshotReadable) { return null; }
     return {
       physicalSelected: this.snapshotValue.physicalSelected,
       selectedScopes: this.snapshotValue.selectedScopes.slice()
@@ -660,7 +656,11 @@ export default function moonlightDeletionCommandServiceTest(): void {
         expect(port.rows.has('identity-1')).assertTrue();
         expect(port.rows.has('settings-1')).assertTrue();
         expect(port.rows.has('host-2')).assertTrue();
-        expect(port.rows.has('host-1')).assertFalse();
+        expect((port.rows.get('host-1') as MoonlightRecord).deletedAt)
+          .assertEqual(300);
+        expect((port.rows.get('profile-1') as MoonlightRecord).deletedAt)
+          .assertEqual(300);
+        expect(port.rows.has('trust-1')).assertFalse();
         expect(port.cache.size).assertEqual(1);
       });
 
@@ -682,7 +682,11 @@ export default function moonlightDeletionCommandServiceTest(): void {
         expect(result.ok).assertTrue();
         expect(result.cloudAttempted).assertFalse();
         expect(port.prepareCount).assertEqual(0);
-        expect(port.rows.has('host-1')).assertFalse();
+        expect((port.rows.get('host-1') as MoonlightRecord).deletedAt)
+          .assertEqual(300);
+        expect((port.rows.get('profile-1') as MoonlightRecord).deletedAt)
+          .assertEqual(300);
+        expect(port.rows.has('trust-1')).assertFalse();
       });
 
     it('rejects_a_stale_preview_before_any_mutation', 0,
@@ -762,7 +766,7 @@ export default function moonlightDeletionCommandServiceTest(): void {
         expect(selection.cancelCount).assertEqual(0);
       });
 
-    it('pulls_authoritatively_before_targeted_cloud_tombstones', 0,
+    it('stages_targeted_tombstones_locally_without_touching_cloud_first', 0,
       async (): Promise<void> => {
         const port = seededPort();
         port.cloudReady = true;
@@ -778,12 +782,68 @@ export default function moonlightDeletionCommandServiceTest(): void {
         const result = await service.execute(
           lease(), preview, 300);
         expect(result.code).assertEqual('pending_cloud');
-        expect(port.prepareCount).assertEqual(1);
+        expect(result.ok).assertTrue();
+        expect(result.localCommitted).assertTrue();
+        expect(result.cloudAttempted).assertFalse();
+        expect(port.prepareCount).assertEqual(0);
         expect((port.physicalCloudRows.get('host-1') as
-          MoonlightRecord).deletedAt).assertEqual(300);
+          MoonlightRecord).deletedAt).assertEqual(0);
         expect((port.physicalCloudRows.get('profile-1') as
+          MoonlightRecord).deletedAt).assertEqual(0);
+        expect((port.rows.get('host-1') as
           MoonlightRecord).deletedAt).assertEqual(300);
-        expect(port.rows.has('host-1')).assertFalse();
+        expect((port.rows.get('profile-1') as
+          MoonlightRecord).deletedAt).assertEqual(300);
+        expect(port.rows.has('trust-1')).assertFalse();
+      });
+
+    it('never_blocks_selected_host_delete_when_cloud_space_is_unavailable',
+      0, async (): Promise<void> => {
+        const port = seededPort();
+        port.cloudReady = false;
+        const selection = new MemorySelectionPort();
+        selection.snapshotValue = {
+          physicalSelected: true,
+          selectedScopes: ['settings', 'hosts', 'profiles']
+        };
+        const service = new MoonlightDeletionCommandService(
+          port, selection);
+        const preview = service.preview(
+          lease(), 'forget_host', 'host-1');
+        expect(preview.code).assertEqual('ok');
+        expect(preview.impact.cloudTombstonesRequired).assertEqual(2);
+        const result = await service.execute(
+          lease(), preview, 300);
+        expect(result.ok).assertTrue();
+        expect(result.code).assertEqual('pending_cloud');
+        expect(result.localCommitted).assertTrue();
+        expect(result.cloudAttempted).assertFalse();
+        expect(port.prepareCount).assertEqual(0);
+        expect((port.rows.get('host-1') as
+          MoonlightRecord).deletedAt).assertEqual(300);
+        expect((port.rows.get('profile-1') as
+          MoonlightRecord).deletedAt).assertEqual(300);
+        expect(port.rows.has('trust-1')).assertFalse();
+        expect(port.cache.size).assertEqual(1);
+      });
+
+    it('keeps_ordinary_local_delete_available_when_selection_state_is_unreadable',
+      0, async (): Promise<void> => {
+        const port = seededPort();
+        const selection = new MemorySelectionPort();
+        selection.snapshotReadable = false;
+        const service = new MoonlightDeletionCommandService(
+          port, selection);
+        const preview = service.preview(
+          lease(), 'forget_host', 'host-1');
+        expect(preview.code).assertEqual('ok');
+        const result = await service.execute(
+          lease(), preview, 300);
+        expect(result.ok).assertTrue();
+        expect(result.code).assertEqual('ok');
+        expect((port.rows.get('host-1') as
+          MoonlightRecord).deletedAt).assertEqual(300);
+        expect(port.rows.has('trust-1')).assertFalse();
       });
 
     it('requires_reconfirmation_when_the_authoritative_pull_finds_more_data',
@@ -854,7 +914,7 @@ export default function moonlightDeletionCommandServiceTest(): void {
           lease(), preview, 300);
         expect(result.ok).assertTrue();
         expect(result.cloudAttempted).assertFalse();
-        expect(port.lastRequest?.writeCloudTombstones)
+        expect(port.lastRequest?.persistCloudDeletionIntent)
           .assertFalse();
         expect(port.rows.has('trust-1')).assertFalse();
         expect(port.rows.has('host-1')).assertTrue();
