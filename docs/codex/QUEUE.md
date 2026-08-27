@@ -4,13 +4,12 @@ Updated: 2026-08-27 Asia/Shanghai
 
 ## Now
 
-1. Complete independent re-review of remediation checkpoint `abc3ce5b8`.
-2. Install the reviewed signed HAP on `192.168.3.236:40123`.
+1. Install reviewed checkpoint `abc3ce5b8` on `192.168.3.236:40123`.
+2. Capture user acceptance for VNC cursor and all three wheel input sources.
 
 ## Next
 
-1. Capture user acceptance for VNC cursor and all three wheel input sources.
-2. Push the reviewed branch and complete PR/main closure after acceptance.
+1. Push the reviewed branch and complete PR/main closure after acceptance.
 
 ## Later / external acceptance
 

@@ -4,19 +4,19 @@
   "branch": "codex/vnc-cursor-wheel-regression",
   "base": "0b8e5bf602a6f7ddf22918a5ec346f0be1b750a7",
   "head": "abc3ce5b8b8f8274fd934b55a1e040809da79819",
-  "phase": "review",
+  "phase": "acceptance",
   "status": "active",
-  "next": "Obtain independent re-review of the remediated VNC cursor ownership and wheel wire checkpoint, then install the signed HAP on 40123.",
+  "next": "Install the independently reviewed signed HAP on 40123 and obtain user acceptance for macOS/UltraVNC cursor and all VNC wheel sources.",
   "blockers": [],
   "planPaths": [
     "docs/codex/plans/2026-08-27-vnc-cursor-wheel-regression.md"
   ],
   "review": {
-    "status": "IN_PROGRESS",
+    "status": "PASS",
     "taskIds": [
       "/root/vnc_wheel_review"
     ],
-    "reviewedHead": "",
+    "reviewedHead": "abc3ce5b8b8f8274fd934b55a1e040809da79819",
     "scope": [
       "entry/src/main/ets/services/RemoteWheelPolicy.ets",
       "entry/src/main/ets/services/VncPhysicalWheelPolicy.ets",
@@ -40,22 +40,17 @@
       "entry/src/test/VncPhysicalWheelPolicy.test.ets",
       "entry/src/test/VncSessionUiPolicy.test.ets"
     ],
-    "lastReceiptId": "",
-    "findings": [
-      "P1 permanent auto-pointer fallback could restore UltraVNC double cursor; remediated with explicit bootstrap/protocol/framebuffer/hidden ownership evidence",
-      "P3 cursor transition and native wheel wire coverage missing; remediated with policy transition and exact RFB burst tests",
-      "P1 local move/wheel prediction could overwrite authoritative protocol-hidden visibility; remediated by position-only prediction",
-      "P3 adapter-to-snapshot-to-UI hidden persistence coverage missing; remediated with callback integration and UI ownership transition tests"
-    ],
-    "reason": "Follow-up review failed 45eb2c293 on protocol-hidden persistence; remediation checkpoint abc3ce5b8 is awaiting another follow-up review by the same reviewer."
+    "lastReceiptId": "vnc-cursor-wheel-regression-abc3ce5b-2026-08-27",
+    "findings": [],
+    "reason": "The same independent reviewer confirmed the complete cursor ownership, local prediction and wheel wire delta at abc3ce5b8 with P0/P1/P2/P3 all zero."
   },
   "lastVerification": {
     "baseline": "clean synchronized main@0b8e5bf60",
-    "testCompile": "PASS final exact default@OhosTestCompileArkTS 5s988ms",
-    "assembleHap": "PASS final exact signed assembleHap 13s125ms sha256=e70b865e02236c0f94971d2ee567e694c0aee80dad1f6d69e340c850cbf399f4",
+    "testCompile": "PASS post-receipt exact default@OhosTestCompileArkTS 6s182ms",
+    "assembleHap": "PASS post-receipt exact signed assembleHap 12s294ms sha256=8e295423f085aecdb219a19a3e0d2fd727773eb1d311bb41cc838d0cf7e59bf2",
     "targetedTests": "PASS host native 813/813; callback integration covers protocol hidden surviving local move/wheel prediction; focused ArkTS UI ownership test compile-registered",
     "compliance": "PASS git diff --check and Light",
-    "review": "IN_PROGRESS follow-up /root/vnc_wheel_review after second FAIL remediation"
+    "review": "PASS /root/vnc_wheel_review P0/P1/P2/P3 all zero at abc3ce5b8"
   },
   "updated": "2026-08-27 Asia/Shanghai"
 }
