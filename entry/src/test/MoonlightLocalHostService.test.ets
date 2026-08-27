@@ -1,4 +1,8 @@
-import { describe, it, expect } from '@ohos/hypium';
+import { expect } from '@ohos/hypium';
+import {
+  auditedDescribe as describe,
+  auditedIt as it
+} from '../main/ets/services/FocusedTestRegistrationAudit';
 import { MoonlightRecord } from '../main/ets/model/MoonlightRecord';
 import { MoonlightAppCacheEntry } from '../main/ets/model/MoonlightAppCache';
 import { AccountSessionLease, accountSessionLeaseEquals, cloneAccountSessionLease } from

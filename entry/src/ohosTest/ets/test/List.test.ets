@@ -279,7 +279,7 @@ function focusedDescribeNames(scope: string): string[] {
 }
 
 function expectedFocusedCount(scope: string): number {
-  if (scope === 'MoonlightDomainPolicy') { return 200; }
+  if (scope === 'MoonlightDomainPolicy') { return 254; }
   if (scope === 'RustDeskProAddressBookPolicy') { return 8; }
   if (scope === 'RustDeskProAddressBookApiService') { return 4; }
   if (scope === 'RustDeskProAddressBookSyncService') { return 7; }
@@ -421,6 +421,8 @@ export default function testsuite() {
   moonlightDeletionPolicyTest();
   moonlightCloudDeletionPolicyTest();
   moonlightDeletionCommandServiceTest();
+  moonlightSettingsLocalServiceTest();
+  moonlightLocalHostServiceTest();
   moonlightCloudStatusPolicyTest();
   moonlightBackupPolicyTest();
   moonlightReconnectPolicyTest();

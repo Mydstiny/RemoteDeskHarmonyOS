@@ -350,6 +350,7 @@ import {
   MOONLIGHT_RESTORE_QUARANTINE_KEY,
   MoonlightRestoreActivationState,
   moonlightBackupRowsRequireCloudActivation,
+  moonlightRestoreAliasFenceId,
   moonlightRestoreActivationState as
     resolveMoonlightRestoreActivationState,
   moonlightRestoreRuntimeAdmissionAllowed,
@@ -4194,6 +4195,21 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
           if (current === null) {
             this.recordMoonlightQuarantine(lease, id,
               'restore_replaced_unreadable_current', '');
+          }
+        }
+        const aliasFenceId: string =
+          moonlightRestoreAliasFenceId(candidate);
+        if (aliasFenceId !== '' && aliasFenceId !== candidate.id) {
+          const aliasBoundary: MoonlightRecord | null =
+            this.findMoonlightLocalRecordRaw(lease, aliasFenceId);
+          if (aliasBoundary !== null &&
+              moonlightValidateRecord(aliasBoundary).valid &&
+              aliasBoundary.deletedAt > 0 &&
+              aliasBoundary.resetEpoch >= candidate.resetEpoch) {
+            this.recordMoonlightQuarantine(lease, candidate.id,
+              'portable_restore_legacy_alias_blocked_by_tombstone',
+              candidate.payloadHashSha256);
+            continue;
           }
         }
         if (current !== null) {

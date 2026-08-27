@@ -311,11 +311,17 @@ class MemoryDeletionPort implements MoonlightDeletionCommandPort {
       for (let i = 0; i < request.recordIds.length; i++) {
         const id: string = request.recordIds[i];
         const current: MoonlightRecord | undefined = this.rows.get(id);
-        if (request.persistCloudDeletionIntent && current !== undefined &&
-            moonlightRecordTypeIsPublicCloudData(current)) {
+        const deviceLocalDeletionBoundary: boolean = current !== undefined &&
+          (request.command === 'forget_host' ||
+           request.command === 'unpair_host') &&
+          (current.recordType === 'trust' ||
+           current.recordType === 'secret');
+        if (current !== undefined &&
+            ((request.persistCloudDeletionIntent &&
+              moonlightRecordTypeIsPublicCloudData(current)) ||
+             deviceLocalDeletionBoundary)) {
           const deleted: MoonlightRecord | null =
-            moonlightCloudDeletionTombstone(
-              current, current, request.nowMs);
+            moonlightLocalDeletionTombstone(current, request.nowMs);
           if (deleted !== null) { this.rows.set(id, deleted); }
         } else {
           this.rows.delete(id);
@@ -666,20 +672,22 @@ export default function moonlightDeletionCommandServiceTest(): void {
           .assertEqual(300);
         expect((port.rows.get('profile-1') as MoonlightRecord).deletedAt)
           .assertEqual(300);
-        expect(port.rows.has('trust-1')).assertFalse();
+        expect((port.rows.get('trust-1') as MoonlightRecord).deletedAt)
+          .assertEqual(300);
         expect(port.cache.size).assertEqual(1);
       });
 
     it('forgets_a_host_after_unpair_without_tombstoning_trust_twice', 0,
       async (): Promise<void> => {
         const port = seededPort();
-        const trust: MoonlightRecord = port.rows.get(
-          'trust-1') as MoonlightRecord;
-        const trustTombstone: MoonlightRecord | null =
-          moonlightLocalDeletionTombstone(trust, 250);
-        expect(trustTombstone !== null).assertTrue();
-        port.rows.set('trust-1', trustTombstone as MoonlightRecord);
         const service = new MoonlightDeletionCommandService(port);
+        const unpairPreview = service.preview(
+          lease(), 'unpair_host', 'host-1');
+        const unpaired = await service.execute(
+          lease(), unpairPreview, 250);
+        expect(unpaired.ok).assertTrue();
+        expect((port.rows.get('trust-1') as MoonlightRecord).deletedAt)
+          .assertEqual(250);
         const preview = service.preview(
           lease(), 'forget_host', 'host-1');
         expect(preview.code).assertEqual('ok');
@@ -713,7 +721,8 @@ export default function moonlightDeletionCommandServiceTest(): void {
           .assertEqual(300);
         expect((port.rows.get('profile-1') as MoonlightRecord).deletedAt)
           .assertEqual(300);
-        expect(port.rows.has('trust-1')).assertFalse();
+        expect((port.rows.get('trust-1') as MoonlightRecord).deletedAt)
+          .assertEqual(300);
       });
 
     it('rejects_a_stale_preview_before_any_mutation', 0,
@@ -821,7 +830,8 @@ export default function moonlightDeletionCommandServiceTest(): void {
           MoonlightRecord).deletedAt).assertEqual(300);
         expect((port.rows.get('profile-1') as
           MoonlightRecord).deletedAt).assertEqual(300);
-        expect(port.rows.has('trust-1')).assertFalse();
+        expect((port.rows.get('trust-1') as MoonlightRecord).deletedAt)
+          .assertEqual(300);
       });
 
     it('never_blocks_selected_host_delete_when_cloud_space_is_unavailable',
@@ -850,7 +860,8 @@ export default function moonlightDeletionCommandServiceTest(): void {
           MoonlightRecord).deletedAt).assertEqual(300);
         expect((port.rows.get('profile-1') as
           MoonlightRecord).deletedAt).assertEqual(300);
-        expect(port.rows.has('trust-1')).assertFalse();
+        expect((port.rows.get('trust-1') as MoonlightRecord).deletedAt)
+          .assertEqual(300);
         expect(port.cache.size).assertEqual(1);
       });
 
@@ -870,7 +881,8 @@ export default function moonlightDeletionCommandServiceTest(): void {
         expect(result.code).assertEqual('ok');
         expect((port.rows.get('host-1') as
           MoonlightRecord).deletedAt).assertEqual(300);
-        expect(port.rows.has('trust-1')).assertFalse();
+        expect((port.rows.get('trust-1') as MoonlightRecord).deletedAt)
+          .assertEqual(300);
       });
 
     it('ignores_unrelated_malformed_rows_and_rebuildable_cache_during_delete',
@@ -926,7 +938,8 @@ export default function moonlightDeletionCommandServiceTest(): void {
         expect(result.code).assertEqual('ok_with_remote_warning');
         expect(result.hostAttempted).assertTrue();
         expect(result.hostSucceeded).assertFalse();
-        expect(port.rows.has('trust-1')).assertFalse();
+        expect((port.rows.get('trust-1') as MoonlightRecord).deletedAt)
+          .assertEqual(300);
         expect(port.commitCount).assertEqual(1);
       });
 
@@ -944,7 +957,8 @@ export default function moonlightDeletionCommandServiceTest(): void {
         expect(result.code).assertEqual('ok_with_remote_warning');
         expect(result.hostAttempted).assertTrue();
         expect(result.hostSucceeded).assertFalse();
-        expect(port.rows.has('trust-1')).assertFalse();
+        expect((port.rows.get('trust-1') as MoonlightRecord).deletedAt)
+          .assertEqual(300);
         expect(port.rows.has('identity-1')).assertTrue();
       });
 
@@ -967,7 +981,8 @@ export default function moonlightDeletionCommandServiceTest(): void {
         expect(result.cloudAttempted).assertFalse();
         expect(port.lastRequest?.persistCloudDeletionIntent)
           .assertFalse();
-        expect(port.rows.has('trust-1')).assertFalse();
+        expect((port.rows.get('trust-1') as MoonlightRecord).deletedAt)
+          .assertEqual(300);
         expect(port.rows.has('host-1')).assertTrue();
       });
 
