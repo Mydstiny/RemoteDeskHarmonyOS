@@ -400,14 +400,19 @@ export class MoonlightDeletionCommandService {
         return previewValue('invalid_data', command, context);
       }
       allRecordIds.push(record.id);
-      if (record.recordType === 'host' && record.id === host) {
+      if (record.deletedAt === 0 &&
+          record.recordType === 'host' && record.id === host) {
         hostExists = true;
       }
-      if (record.recordType === 'profile' && record.id === profile &&
+      if (record.deletedAt === 0 &&
+          record.recordType === 'profile' && record.id === profile &&
           (host === '' || record.ownerId === host)) {
         profileExists = true;
       }
-      if (recordIsTarget(command, record, host, profile)) {
+      const physicalWipeIncludesTombstones: boolean =
+        command === 'delete_cloud_data' || command === 'delete_local_data';
+      if ((record.deletedAt === 0 || physicalWipeIncludesTombstones) &&
+          recordIsTarget(command, record, host, profile)) {
         recordIds.push(record.id);
         if (record.recordType === 'secret') {
           identityRecordIds.push(record.id);

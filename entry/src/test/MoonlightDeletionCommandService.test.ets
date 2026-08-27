@@ -27,6 +27,7 @@ import {
 } from '../main/ets/services/MoonlightRecordPolicy';
 import {
   moonlightCloudDeletionTombstone,
+  moonlightLocalDeletionTombstone,
   moonlightPreservedLocalAfterCloudDelete,
   moonlightRecordTypeIsPublicCloudData
 } from '../main/ets/services/MoonlightCloudDeletionPolicy';
@@ -667,6 +668,27 @@ export default function moonlightDeletionCommandServiceTest(): void {
           .assertEqual(300);
         expect(port.rows.has('trust-1')).assertFalse();
         expect(port.cache.size).assertEqual(1);
+      });
+
+    it('forgets_a_host_after_unpair_without_tombstoning_trust_twice', 0,
+      async (): Promise<void> => {
+        const port = seededPort();
+        const trust: MoonlightRecord = port.rows.get(
+          'trust-1') as MoonlightRecord;
+        const trustTombstone: MoonlightRecord | null =
+          moonlightLocalDeletionTombstone(trust, 250);
+        expect(trustTombstone !== null).assertTrue();
+        port.rows.set('trust-1', trustTombstone as MoonlightRecord);
+        const service = new MoonlightDeletionCommandService(port);
+        const preview = service.preview(
+          lease(), 'forget_host', 'host-1');
+        expect(preview.code).assertEqual('ok');
+        expect(preview.recordIds.join(','))
+          .assertEqual('host-1,profile-1');
+        const result = await service.execute(lease(), preview, 300);
+        expect(result.ok).assertTrue();
+        expect((port.rows.get('trust-1') as MoonlightRecord).deletedAt)
+          .assertEqual(250);
       });
 
     it('does_not_require_a_non_deployed_cloud_table_to_forget_a_local_host',
