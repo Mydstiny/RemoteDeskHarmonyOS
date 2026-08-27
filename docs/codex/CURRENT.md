@@ -4,7 +4,7 @@
 
 - Task: `rustdesk-orientation-diagnostics`
 - Branch/base: `codex/rustdesk-orientation-diagnostics` from merged `main@5bac9ffc2`
-- Phase: independent review; implementation checkpoints are `469327ed3` and `b68e1128a`.
+- Phase: independent re-review after remediation; implementation checkpoints are `469327ed3`, `b68e1128a` and `26a874786`.
 - Plan: `docs/codex/plans/2026-08-27-rustdesk-orientation-and-diagnostics.md`
 
 ## Confirmed diagnosis
@@ -16,16 +16,22 @@
 ## Implemented
 
 - RustDesk now keeps Windows, macOS, Linux and unknown peers on one canonical identity presentation. Producer transforms are sampled and classified only as telemetry.
-- Diagnostic JSONL schema v2 records the numeric app version, exact native build ID and fixed validated runtime facts for RDP, RustDesk, VNC, Moonlight and SSH/SFTP. High-frequency counters are sampled at most every five seconds unless semantic state changes.
+- Diagnostic JSONL schema v2 records the numeric app version, exact native build ID and fixed validated runtime facts for RDP, RustDesk, VNC, Moonlight and SSH/SFTP. Tracked live sessions now drive capture-aware sampling every five seconds even when the HUD is closed; semantic state changes still record immediately.
+- Diagnostic sampling ownership is cleared on session transfer, bulk disconnect and Moonlight terminal/reconnect paths, so stale sessions cannot retain timers or suppress later observations.
 - Build identity generation now runs at native build time, so an incremental Hvigor cache cannot stamp a newly signed HAP with the preceding commit SHA.
 
 ## Verification
 
 - Native host suite: `808/808` PASS outside the sandbox; the sandbox-only VNC loopback bind failures were rerun successfully with network permission.
-- Exact `default@OhosTestCompileArkTS`: PASS on `b68e1128a`.
-- Exact signed `assembleHap`: PASS on `b68e1128a`; arm64 native binary contains `b68e1128a059` after an incremental, no-clean HEAD change.
-- `git diff --check` and open-source Light compliance: PASS.
-- Current signed HAP SHA-256 before review-only documentation closeout: `aec61f27f9550ac4a8c4434518155d6268dd5056eb8eb4d6b91335ce937b2c91`.
+- Exact `default@OhosTestCompileArkTS`: PASS on `26a874786`.
+- Exact signed `assembleHap`: PASS on `26a874786`; arm64 native binary contains `26a874786b90` after an incremental, no-clean HEAD change.
+- Diagnostic scheduler test compiles with the test target; `scripts/tests/test_build_identity.sh`, `git diff --check` and open-source Light compliance: PASS.
+- Current signed HAP SHA-256 before review-only documentation closeout: `91dc9616474cadee7cb31f070c33e364cc94bef4ef8e81efec127d6c383aaaa5`.
+
+## Independent review
+
+- The first review reported no P0/P1, one P2 (the five-second gate lacked a HUD-independent driver) and two P3 items (incomplete observation cleanup and missing integration/build-identity regression coverage).
+- `26a874786` adds the continuous capture-aware driver, completes cleanup, adds scheduler coverage and adds a no-clean build-identity regression test. The same reviewer task is being resumed for a content-addressed re-review.
 
 ## Completed prerequisite
 

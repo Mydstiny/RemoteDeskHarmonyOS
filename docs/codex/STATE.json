@@ -3,7 +3,7 @@
   "task": "rustdesk-orientation-diagnostics",
   "branch": "codex/rustdesk-orientation-diagnostics",
   "base": "5bac9ffc24cd38bb0c42060c74530cb0844cbbc0",
-  "head": "b68e1128a059a5db5f2b4faafe5d361864ab926a",
+  "head": "26a874786b90fef3033bc5c9c828d6949e6d5263",
   "phase": "review",
   "status": "active",
   "next": "Complete the active independent review, record its receipt, then push PR and merge after the required open-source-compliance check passes.",
@@ -40,18 +40,19 @@
       "entry/src/test/*RustDesk*.test.ets",
       "entry/src/test/List.test.ets",
       "entry/src/ohosTest/ets/test/List.test.ets",
+      "scripts/tests/test_build_identity.sh",
       "docs/codex/**"
     ],
     "lastReceiptId": "",
     "findings": [],
-    "reason": "The new task starts from merged main and changes native presentation behavior plus the cross-protocol diagnostics schema, so a fresh independent review is mandatory."
+    "reason": "The first review found one P2 and two P3 issues. Commit 26a874786 adds the HUD-independent five-second driver, lifecycle cleanup and regression coverage, so the same reviewer task must confirm remediation."
   },
   "lastVerification": {
-    "baseline": "main@5bac9ffc2 was clean when this task branch started on 2026-08-27; branch head b68e1128a",
-    "testCompile": "PASS exact default@OhosTestCompileArkTS on b68e1128a",
-    "assembleHap": "PASS exact signed assembleHap on b68e1128a; embedded build identity b68e1128a059",
+    "baseline": "main@5bac9ffc2 was clean when this task branch started on 2026-08-27; remediation head 26a874786",
+    "testCompile": "PASS exact default@OhosTestCompileArkTS on 26a874786",
+    "assembleHap": "PASS exact signed assembleHap on 26a874786; embedded arm64 build identity 26a874786b90",
     "nativeTests": "PASS 808/808 outside sandbox; sandbox-only VNC loopback bind restriction was separately rerun",
-    "compliance": "PASS git diff --check and open-source Light gate",
+    "compliance": "PASS build-identity regression script, git diff --check and open-source Light gate",
     "runtime": "pending new Windows/macOS package acceptance"
   },
   "updated": "2026-08-27 Asia/Shanghai"
