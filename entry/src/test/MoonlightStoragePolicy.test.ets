@@ -28,6 +28,7 @@ import {
   moonlightLocalTableCreateSql,
   moonlightOwnerStoreVersionAfterMigration,
   moonlightStorageSchemaFingerprint,
+  moonlightStorageSchemaIsCompatible,
   moonlightStorageSchemasEqual,
   moonlightStorageSchemaContractIsExact,
   moonlightStorageTableIsLocalOnly,
@@ -78,6 +79,17 @@ export default function moonlightStoragePolicyTest(): void {
           wrongPrimaryKey, MOONLIGHT_RECORD_SCHEMA)).assertFalse();
         expect(moonlightStorageSchemasEqual(
           MOONLIGHT_LOCAL_RECORD_SCHEMA,
+          MOONLIGHT_RECORD_SCHEMA)).assertFalse();
+        const withLegacyExtra: MoonlightStorageColumn[] =
+          MOONLIGHT_RECORD_SCHEMA.concat([{
+            name: 'legacyhint', sqlType: 'TEXT', primaryKey: false
+          }]);
+        expect(moonlightStorageSchemaIsCompatible(
+          withLegacyExtra, MOONLIGHT_RECORD_SCHEMA)).assertTrue();
+        expect(moonlightStorageSchemaIsCompatible(
+          wrongType, MOONLIGHT_RECORD_SCHEMA)).assertFalse();
+        expect(moonlightStorageSchemaIsCompatible(
+          MOONLIGHT_RECORD_SCHEMA.slice(0, 18),
           MOONLIGHT_RECORD_SCHEMA)).assertFalse();
         expect(MOONLIGHT_APP_CACHE_SCHEMA.length).assertEqual(16);
       });

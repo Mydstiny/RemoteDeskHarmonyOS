@@ -26,6 +26,8 @@ import {
 } from './MoonlightRecordPolicy';
 import {
   MoonlightRepository,
+  MoonlightRepositoryBatchResult,
+  MoonlightRepositoryBatchMutation,
   MoonlightRepositoryPort,
   MoonlightRepositoryResult
 } from './MoonlightRepository';
@@ -46,7 +48,8 @@ export interface MoonlightLocalHostSaveResult {
 
 export type MoonlightLocalHostMutationCode =
   'ok' | 'invalid_request' | 'not_ready' | 'stale_lease' | 'not_found' |
-  'local_write_failed' | 'cache_cleanup_failed' | 'rollback_failed';
+  'local_write_failed' | 'cache_cleanup_failed' | 'rollback_failed' |
+  'pending_local_verification' | 'unchanged';
 
 export interface MoonlightLocalHostMutationResult {
   ok: boolean;
@@ -63,6 +66,21 @@ function mutationResult(ok: boolean, code: MoonlightLocalHostMutationCode,
     ok: ok, code: code, hostId: hostId,
     localCommitted: localCommitted, errorText: errorText
   };
+}
+
+function mutationFromRepository(written: MoonlightRepositoryResult,
+  hostId: string, errorText: string): MoonlightLocalHostMutationResult {
+  if (written.ok) {
+    return mutationResult(true, written.code === 'unchanged' ?
+      'unchanged' : 'ok', hostId, written.localCommitted);
+  }
+  if (written.localCommitted && written.code === 'readback_failed') {
+    return mutationResult(true, 'pending_local_verification', hostId, true,
+      '本地修改已保存，正在后台核验');
+  }
+  return mutationResult(false, written.code === 'stale_lease' ?
+    'stale_lease' : 'local_write_failed', hostId,
+    written.localCommitted, errorText);
 }
 
 function saveResult(
@@ -248,68 +266,10 @@ function tombstoneCandidate(
   return tombstone;
 }
 
-function restoreCandidate(
-  previous: MoonlightRecord, current: MoonlightRecord, nowMs: number
-): MoonlightRecord {
-  const restored: MoonlightRecord = MoonlightRecord.fromJSON(previous.toJSON());
-  restored.resetEpoch = previous.deletedAt > 0
-    ? current.resetEpoch + 1 : current.resetEpoch;
-  restored.syncVersion = current.syncVersion + 1;
-  restored.updatedAt = Math.max(nowMs, current.updatedAt, restored.createdAt);
-  restored.deletedAt = previous.deletedAt > 0 ? restored.updatedAt : 0;
-  if (restored.deletedAt > 0) {
-    restored.payload = '{}';
-    restored.ciphertext = '';
-    restored.envelopeVersion = 0;
-    restored.cryptoVersion = 0;
-    restored.keyVersion = 0;
-    restored.aadVersion = 0;
-  }
-  restored.payloadHashSha256 = moonlightRecordPayloadHashSha256(restored);
-  return restored;
-}
-
-/**
- * Compensates with a forward version. Restoring an older envelope directly
- * would be rejected by conflict resolution; a new-host rollback uses a
- * tombstone that can later be explicitly revived by buildRecord().
- */
-function rollbackRecord(
-  repository: MoonlightRepository,
-  lease: AccountSessionLease,
-  id: string,
-  previous: MoonlightRecord | null,
-  current: MoonlightRecord | null,
-  nowMs: number
-): boolean {
-  if (current === null) { return previous === null; }
-  const candidate: MoonlightRecord = previous === null
-    ? tombstoneCandidate(current, nowMs)
-    : restoreCandidate(previous, current, nowMs);
-  const restored: MoonlightRepositoryResult = repository.upsert(lease, candidate, 1);
-  return restored.ok || restored.code === 'not_found' || restored.code === 'unchanged';
-}
-
-function safeRollbackRecord(
-  repository: MoonlightRepository,
-  lease: AccountSessionLease,
-  id: string,
-  previous: MoonlightRecord | null,
-  current: MoonlightRecord | null,
-  nowMs: number
-): boolean {
-  try {
-    return rollbackRecord(repository, lease, id, previous, current, nowMs);
-  } catch (_error) {
-    return false;
-  }
-}
-
 /**
  * Owner-scoped local host and catalog-data adapter. It never enters Moonlight
- * cloud selection or transfer. Host/trust mutations are compensated on a
- * partial failure, and deleting a host also clears its local app cache when a
- * cache port is supplied.
+ * cloud selection or transfer. Related host/trust mutations share one local
+ * transaction, while rebuildable app-cache cleanup is best effort.
  */
 export class MoonlightLocalHostService {
   private readonly port: MoonlightRepositoryPort;
@@ -373,10 +333,7 @@ export class MoonlightLocalHostService {
       return mutationResult(false, 'local_write_failed', normalizedId, false, '无法生成主机记录');
     }
     const written: MoonlightRepositoryResult = this.repository.upsert(captured, candidate, 1);
-    return written.ok
-      ? mutationResult(true, 'ok', normalizedId, true)
-      : mutationResult(false, written.code === 'stale_lease' ? 'stale_lease' :
-        'local_write_failed', normalizedId, written.localCommitted, '主机配置保存失败');
+    return mutationFromRepository(written, normalizedId, '主机配置保存失败');
   }
 
   updateUserOrder(hostId: string, userOrder: number,
@@ -401,7 +358,7 @@ export class MoonlightLocalHostService {
       return mutationResult(false, 'not_found', normalizedId, false, '主机不存在或记录损坏');
     }
     if (currentHost.userOrder === userOrder) {
-      return mutationResult(true, 'ok', normalizedId, true);
+      return mutationResult(true, 'unchanged', normalizedId, false);
     }
     currentHost.userOrder = userOrder;
     const candidate: MoonlightRecord | null = buildRecord(
@@ -411,10 +368,7 @@ export class MoonlightLocalHostService {
       return mutationResult(false, 'local_write_failed', normalizedId, false, '无法生成主机排序记录');
     }
     const written: MoonlightRepositoryResult = this.repository.upsert(captured, candidate, 1);
-    return written.ok
-      ? mutationResult(true, 'ok', normalizedId, true)
-      : mutationResult(false, written.code === 'stale_lease' ? 'stale_lease' :
-        'local_write_failed', normalizedId, written.localCommitted, '主机排序保存失败');
+    return mutationFromRepository(written, normalizedId, '主机排序保存失败');
   }
 
   updateDisplayName(hostId: string, displayName: string,
@@ -460,10 +414,7 @@ export class MoonlightLocalHostService {
       return mutationResult(false, 'local_write_failed', normalizedId, false, '无法生成主机记录');
     }
     const written: MoonlightRepositoryResult = this.repository.upsert(captured, candidate, 1);
-    return written.ok
-      ? mutationResult(true, 'ok', normalizedId, true)
-      : mutationResult(false, written.code === 'stale_lease' ? 'stale_lease' :
-        'local_write_failed', normalizedId, written.localCommitted, '主机名称保存失败');
+    return mutationFromRepository(written, normalizedId, '主机名称保存失败');
   }
 
   updateLocked(hostId: string, locked: boolean,
@@ -507,10 +458,7 @@ export class MoonlightLocalHostService {
       return mutationResult(false, 'local_write_failed', normalizedId, false, '无法生成主机记录');
     }
     const written: MoonlightRepositoryResult = this.repository.upsert(captured, candidate, 1);
-    return written.ok
-      ? mutationResult(true, 'ok', normalizedId, true)
-      : mutationResult(false, written.code === 'stale_lease' ? 'stale_lease' :
-        'local_write_failed', normalizedId, written.localCommitted, '主机锁定状态保存失败');
+    return mutationFromRepository(written, normalizedId, '主机锁定状态保存失败');
   }
 
   deleteHost(hostId: string, nowMs: number): MoonlightLocalHostMutationResult {
@@ -540,27 +488,32 @@ export class MoonlightLocalHostService {
     if (!hostFound) {
       return mutationResult(false, 'not_found', normalizedId, false, '主机不存在');
     }
-    const tombstones: MoonlightRecord[] = [];
+    const mutations: MoonlightRepositoryBatchMutation[] = [];
     for (let index: number = 0; index < owned.length; index++) {
       const deleteAt: number = Math.max(nowMs + index, owned[index].updatedAt,
         owned[index].createdAt);
-      const removed: MoonlightRepositoryResult =
-        this.repository.tombstone(captured, owned[index].id, deleteAt, 1);
-      if (!removed.ok || removed.record === null) {
-        const recovered: boolean = this.rollbackDeletedRecords(
-          captured, owned, tombstones, nowMs + owned.length + 1);
-        return mutationResult(false, recovered ? 'local_write_failed' : 'rollback_failed',
-          normalizedId, tombstones.length > 0, recovered ? '删除本地记录失败' : '删除回滚失败');
+      mutations.push({
+        record: tombstoneCandidate(owned[index], deleteAt),
+        localOnly: 1
+      });
+    }
+    const removed: MoonlightRepositoryBatchResult =
+      this.repository.upsertBatch(captured, mutations);
+    if (!removed.ok) {
+      if (removed.localCommitted && removed.code === 'readback_failed') {
+        this.clearHostCache(captured, normalizedId);
+        return mutationResult(true, 'pending_local_verification',
+          normalizedId, true, '主机已删除，正在后台核验');
       }
-      tombstones.push(removed.record);
+      return mutationResult(false,
+        removed.code === 'stale_lease' ? 'stale_lease' : 'local_write_failed',
+        normalizedId, removed.localCommitted, '删除本地记录失败');
     }
-    if (!this.clearHostCache(captured, normalizedId)) {
-      const recovered: boolean = this.rollbackDeletedRecords(
-        captured, owned, tombstones, nowMs + owned.length + 1);
-      return mutationResult(false, recovered ? 'cache_cleanup_failed' : 'rollback_failed',
-        normalizedId, true, recovered ? '应用缓存清理失败' : '缓存失败且记录回滚失败');
-    }
-    return mutationResult(true, 'ok', normalizedId, true);
+    // Cache is non-authoritative and can be rebuilt. A cleanup failure must not
+    // resurrect the host or make the user repeat an already committed delete.
+    this.clearHostCache(captured, normalizedId);
+    return mutationResult(true, removed.code === 'unchanged' ?
+      'unchanged' : 'ok', normalizedId, removed.localCommitted);
   }
 
   private clearHostCache(lease: AccountSessionLease, hostId: string): boolean {
@@ -577,16 +530,6 @@ export class MoonlightLocalHostService {
     }
     return this.cachePort.commitMoonlightAppCacheRefresh(lease, hostId, [], ids) &&
       this.port.isLeaseCurrent(lease);
-  }
-
-  private rollbackDeletedRecords(lease: AccountSessionLease,
-    previous: MoonlightRecord[], current: MoonlightRecord[], nowMs: number): boolean {
-    let recovered: boolean = true;
-    for (let index: number = current.length - 1; index >= 0; index--) {
-      recovered = safeRollbackRecord(this.repository, lease, current[index].id,
-        previous[index], current[index], nowMs + current.length - index) && recovered;
-    }
-    return recovered;
   }
 
   save(
@@ -629,17 +572,38 @@ export class MoonlightLocalHostService {
       return saveResult(false, 'invalid_state', false, '', '', '主机信息不完整');
     }
 
-    const hostId: string = stableId(
+    const canonicalHostId: string = stableId(
       'moonlight-host|',
       'RemoteDeskHarmonyOS:moonlight-host:v1:' + captured.ownerScopeId + ':' + serverUuid
     );
+    let compatibleHost: MoonlightRecord | null = null;
+    const duplicateHostIds: string[] = [];
     for (let index = 0; index < records.length; index++) {
       const existingUuid: string = serverUuidFromHostRecord(records[index]);
-      if (records[index].recordType === 'host' && existingUuid === serverUuid &&
-          records[index].id !== hostId) {
-        return saveResult(false, 'duplicate', false, records[index].id, '', '该主机已存在');
+      if (records[index].recordType !== 'host' || existingUuid !== serverUuid ||
+          records[index].deletedAt > 0) {
+        continue;
+      }
+      duplicateHostIds.push(records[index].id);
+      if (records[index].id === canonicalHostId) {
+        compatibleHost = records[index];
+        continue;
+      }
+      if ((compatibleHost === null || compatibleHost.id !== canonicalHostId) &&
+          (compatibleHost === null ||
+          records[index].resetEpoch > compatibleHost.resetEpoch ||
+          (records[index].resetEpoch === compatibleHost.resetEpoch &&
+           records[index].syncVersion > compatibleHost.syncVersion) ||
+          (records[index].resetEpoch === compatibleHost.resetEpoch &&
+           records[index].syncVersion === compatibleHost.syncVersion &&
+           records[index].updatedAt > compatibleHost.updatedAt))) {
+        compatibleHost = records[index];
       }
     }
+    // Pre-release builds used a different host-id derivation. Reuse the valid
+    // live identity instead of permanently rejecting the same Sunshine UUID.
+    const hostId: string = compatibleHost === null ?
+      canonicalHostId : compatibleHost.id;
     const currentHost: MoonlightRecord | null = recordWithId(records, hostId);
     const currentHostBusiness: Record<string, Object> | null = currentHost === null ? null :
       moonlightRecordBusinessPayload(currentHost);
@@ -706,53 +670,54 @@ export class MoonlightLocalHostService {
         '信任记录生成失败，未开始本地主机写入');
     }
 
-    // Nothing below this boundary may escape as an exception. The first local
-    // row can already be durable when the second row or its readback fails.
-    let hostSaved: MoonlightRepositoryResult | null = null;
-    let trustSaved: MoonlightRepositoryResult | null = null;
     try {
-      hostSaved = this.repository.upsert(captured, hostRecord, 1);
-      if (!hostSaved.ok) {
-        const code: MoonlightLocalHostSaveCode = hostSaved.code === 'readback_failed'
-          ? 'readback_failed' : 'local_write_failed';
-        if (!hostSaved.localCommitted) {
-          return saveResult(false, code, false, hostId, '', '主机本地记录保存失败');
+      const graphMutations: MoonlightRepositoryBatchMutation[] = [
+        { record: hostRecord, localOnly: 1 },
+        { record: trustRecord, localOnly: 1 }
+      ];
+      let aliasOffset: number = 1;
+      for (let i = 0; i < records.length; i++) {
+        const duplicateHostOrOwned: boolean =
+          (duplicateHostIds.indexOf(records[i].id) >= 0 &&
+            records[i].id !== hostId) ||
+          (duplicateHostIds.indexOf(records[i].ownerId) >= 0 &&
+            records[i].ownerId !== hostId);
+        const trustAlias: boolean = records[i].recordType === 'trust' &&
+          records[i].ownerId === hostId && records[i].id !== trustRecordId;
+        if (records[i].deletedAt > 0 ||
+            (!duplicateHostOrOwned && !trustAlias)) {
+          continue;
         }
-        const recovered: boolean = safeRollbackRecord(this.repository, captured, hostId,
-          currentHost, hostSaved.record === null ? hostRecord : hostSaved.record, nowMs);
-        return saveResult(false, recovered ? code : 'rollback_failed', false, hostId, '',
-          recovered ? '主机本地记录保存未确认，已回滚；请重试' :
-            '主机本地记录保存状态不确定，请刷新主机列表确认',
-          recovered ? 'not_committed' : 'uncertain');
+        graphMutations.push({
+          record: tombstoneCandidate(records[i], nowMs + aliasOffset),
+          localOnly: 1
+        });
+        aliasOffset++;
       }
-      trustSaved = this.repository.upsert(captured, trustRecord, 1);
-      if (!trustSaved.ok) {
-        const hostRolledBack: boolean = safeRollbackRecord(this.repository, captured, hostId,
-          currentHost, hostSaved.record === null ? hostRecord : hostSaved.record, nowMs);
-        const trustRolledBack: boolean = !trustSaved.localCommitted || safeRollbackRecord(
-          this.repository, captured, trustRecordId, currentTrust,
-          trustSaved.record === null ? trustRecord : trustSaved.record, nowMs);
-        const recovered: boolean = hostRolledBack && trustRolledBack;
-        return saveResult(false,
-          recovered ? 'trust_write_failed' : 'rollback_failed', false, hostId, trustRecordId,
-          recovered ? '信任记录保存失败，已回滚本地变更' :
-            '信任记录保存状态不确定，请刷新主机列表确认',
-          recovered ? 'not_committed' : 'partial');
+      const graph: MoonlightRepositoryBatchResult =
+        this.repository.upsertBatch(captured, graphMutations);
+      if (graph.ok) {
+        return saveResult(true, 'ok', graph.localCommitted,
+          hostId, trustRecordId, '', graph.localCommitted ?
+            'committed' : 'not_committed');
       }
-      return saveResult(true, 'ok', true, hostId, trustRecordId, '', 'committed');
-    } catch (_error) {
-      const hostRolledBack: boolean = safeRollbackRecord(this.repository, captured, hostId,
-        currentHost, hostSaved === null || hostSaved.record === null ? hostRecord : hostSaved.record,
-        nowMs);
-      const trustRolledBack: boolean = safeRollbackRecord(this.repository, captured, trustRecordId,
-        currentTrust, trustSaved === null || trustSaved.record === null ? trustRecord : trustSaved.record,
-        nowMs);
-      const recovered: boolean = hostRolledBack && trustRolledBack;
-      return saveResult(false, recovered ? 'trust_write_failed' : 'rollback_failed', false,
+      if (graph.localCommitted && graph.code === 'readback_failed') {
+        return saveResult(true, 'readback_failed', true,
+          hostId, trustRecordId,
+          '本地主机与信任已保存，正在后台核验', 'committed');
+      }
+      return saveResult(false,
+        graph.code === 'stale_lease' ? 'stale_lease' :
+        graph.code === 'readback_failed' ? 'readback_failed' :
+          'trust_write_failed', graph.localCommitted,
         hostId, trustRecordId,
-        recovered ? '本地主机保存异常，已回滚本地变更，请重试' :
-          '本地主机保存状态不确定，请刷新主机列表确认',
-        recovered ? 'not_committed' : 'uncertain');
+        graph.localCommitted ? '本地主机保存发生在先前数据域，请刷新确认' :
+          '本地主机与信任未写入，请重试',
+        graph.localCommitted ? 'uncertain' : 'not_committed');
+    } catch (_error) {
+      return saveResult(false, 'trust_write_failed', false,
+        hostId, trustRecordId, '本地主机与信任未写入，请重试',
+        'not_committed');
     }
   }
 }

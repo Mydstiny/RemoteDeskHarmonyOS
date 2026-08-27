@@ -97,6 +97,8 @@ import moonlightDataLifecycleBarrierTest from '../../../test/MoonlightDataLifecy
 import moonlightDeletionPolicyTest from '../../../test/MoonlightDeletionPolicy.test';
 import moonlightCloudDeletionPolicyTest from '../../../test/MoonlightCloudDeletionPolicy.test';
 import moonlightDeletionCommandServiceTest from '../../../test/MoonlightDeletionCommandService.test';
+import moonlightSettingsLocalServiceTest from '../../../test/MoonlightSettingsLocalService.test';
+import moonlightLocalHostServiceTest from '../../../test/MoonlightLocalHostService.test';
 import moonlightCloudStatusPolicyTest from '../../../test/MoonlightCloudStatusPolicy.test';
 import moonlightBackupPolicyTest from '../../../test/MoonlightBackupPolicy.test';
 import moonlightReconnectPolicyTest from '../../../test/MoonlightReconnectPolicy.test';
@@ -172,6 +174,8 @@ function registerFocusedRepairSuite(scope: string): number {
     moonlightDeletionPolicyTest();
     moonlightCloudDeletionPolicyTest();
     moonlightDeletionCommandServiceTest();
+    moonlightSettingsLocalServiceTest();
+    moonlightLocalHostServiceTest();
     moonlightCloudStatusPolicyTest();
     moonlightBackupPolicyTest();
     moonlightReconnectPolicyTest();
@@ -205,6 +209,7 @@ function focusedDescribeNames(scope: string): string[] {
       'MoonlightCloudSyncService', 'MoonlightDataLifecycleBarrier',
       'MoonlightDeletionPolicy', 'MoonlightCloudDeletionPolicy',
       'MoonlightDeletionCommandService',
+      'MoonlightSettingsLocalService', 'MoonlightLocalHostService',
       'MoonlightCloudStatusPolicy',
       'MoonlightBackupPolicy', 'MoonlightReconnectPolicy',
       'MoonlightRuntimeContextFactory', 'RemoteSessionServiceLeasePolicy',
@@ -274,7 +279,7 @@ function focusedDescribeNames(scope: string): string[] {
 }
 
 function expectedFocusedCount(scope: string): number {
-  if (scope === 'MoonlightDomainPolicy') { return 200; }
+  if (scope === 'MoonlightDomainPolicy') { return 257; }
   if (scope === 'RustDeskProAddressBookPolicy') { return 8; }
   if (scope === 'RustDeskProAddressBookApiService') { return 4; }
   if (scope === 'RustDeskProAddressBookSyncService') { return 7; }
@@ -416,6 +421,8 @@ export default function testsuite() {
   moonlightDeletionPolicyTest();
   moonlightCloudDeletionPolicyTest();
   moonlightDeletionCommandServiceTest();
+  moonlightSettingsLocalServiceTest();
+  moonlightLocalHostServiceTest();
   moonlightCloudStatusPolicyTest();
   moonlightBackupPolicyTest();
   moonlightReconnectPolicyTest();

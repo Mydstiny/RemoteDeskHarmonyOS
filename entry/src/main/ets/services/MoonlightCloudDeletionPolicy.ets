@@ -93,7 +93,28 @@ export function moonlightLocalDeletionTombstone(
   current: MoonlightRecord,
   nowMs: number
 ): MoonlightRecord | null {
-  return moonlightCloudDeletionTombstone(current, current, nowMs);
+  if (moonlightRecordTypeIsPublicCloudData(current)) {
+    return moonlightCloudDeletionTombstone(current, current, nowMs);
+  }
+  if (!moonlightValidateRecord(current).valid || current.deletedAt > 0 ||
+      !Number.isSafeInteger(nowMs) || nowMs <= 0 ||
+      current.syncVersion >= Number.MAX_SAFE_INTEGER) {
+    return null;
+  }
+  const tombstone: MoonlightRecord =
+    MoonlightRecord.fromJSON(current.toJSON());
+  tombstone.payload = '{}';
+  tombstone.ciphertext = '';
+  tombstone.envelopeVersion = 0;
+  tombstone.cryptoVersion = 0;
+  tombstone.keyVersion = 0;
+  tombstone.aadVersion = 0;
+  tombstone.syncVersion = current.syncVersion + 1;
+  tombstone.updatedAt = Math.max(nowMs, current.createdAt, current.updatedAt);
+  tombstone.deletedAt = tombstone.updatedAt;
+  tombstone.payloadHashSha256 =
+    moonlightRecordPayloadHashSha256(tombstone);
+  return moonlightValidateRecord(tombstone).valid ? tombstone : null;
 }
 
 /**
@@ -225,6 +246,59 @@ export function newMoonlightCloudDeletionCheckpoint(
   return moonlightCloudDeletionCheckpointIsValid(value) ? value : null;
 }
 
+/**
+ * Turn an unreadable legacy checkpoint into a conservative, resumable fence.
+ * Known command/count/timestamp fields are retained when safe; otherwise the
+ * repair assumes a whole-cloud deletion so preserved rows can never be
+ * republished before the pending physical delete has uploaded and sync has
+ * been disabled.
+ */
+export function recoverMoonlightCloudDeletionCheckpoint(
+  raw: string, lease: AccountSessionLease, nowMs: number
+): MoonlightCloudDeletionCheckpoint | null {
+  if (!boundedIdentity(lease.ownerScopeId) ||
+      !boundedIdentity(lease.storeIdentity) ||
+      !Number.isSafeInteger(nowMs) || nowMs <= 0) {
+    return null;
+  }
+  let command: MoonlightDeletionCommandType = 'delete_cloud_data';
+  let deletedPhysicalRowCount: number = 1;
+  let createdAt: number = nowMs;
+  try {
+    const parsed: Record<string, Object> =
+      JSON.parse(raw) as Record<string, Object>;
+    const parsedCommand: MoonlightDeletionCommandType =
+      parsed['command'] as MoonlightDeletionCommandType;
+    if (commandCanDeleteCloudRows(parsedCommand)) {
+      command = parsedCommand;
+    }
+    const parsedCount: number = parsed['deletedPhysicalRowCount'] as number;
+    if (Number.isSafeInteger(parsedCount) && parsedCount > 0) {
+      deletedPhysicalRowCount = parsedCount;
+    }
+    const parsedCreatedAt: number = parsed['createdAt'] as number;
+    if (Number.isSafeInteger(parsedCreatedAt) && parsedCreatedAt > 0 &&
+        parsedCreatedAt <= nowMs) {
+      createdAt = parsedCreatedAt;
+    }
+  } catch (_error) {
+    // Truncated/non-JSON state takes the conservative whole-cloud path.
+  }
+  const recovered: MoonlightCloudDeletionCheckpoint = {
+    version: 1,
+    ownerScopeId: lease.ownerScopeId,
+    storeIdentity: lease.storeIdentity,
+    command,
+    phase: 'pending_upload',
+    deletedPhysicalRowCount,
+    disableSyncAfterUpload: command === 'delete_cloud_data',
+    createdAt,
+    updatedAt: nowMs
+  };
+  return moonlightCloudDeletionCheckpointIsValid(recovered) ?
+    recovered : null;
+}
+
 export function moonlightCloudDeletionCheckpointForLease(
   value: MoonlightCloudDeletionCheckpoint,
   lease: AccountSessionLease
@@ -311,9 +385,9 @@ export function parseMoonlightCloudDeletionCheckpoint(
       'deletedPhysicalRowCount', 'disableSyncAfterUpload', 'createdAt',
       'updatedAt'
     ];
-    const keys: string[] = Object.keys(parsed).sort();
-    if (keys.join(',') !== expected.slice().sort().join(',')) {
-      return null;
+    const keys: string[] = Object.keys(parsed);
+    for (let i = 0; i < expected.length; i++) {
+      if (keys.indexOf(expected[i]) < 0) { return null; }
     }
     const value: MoonlightCloudDeletionCheckpoint = {
       version: parsed['version'] as number,

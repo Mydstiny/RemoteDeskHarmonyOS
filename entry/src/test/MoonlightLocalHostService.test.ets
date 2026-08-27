@@ -1,4 +1,8 @@
-import { describe, it, expect } from '@ohos/hypium';
+import { expect } from '@ohos/hypium';
+import {
+  auditedDescribe as describe,
+  auditedIt as it
+} from '../main/ets/services/FocusedTestRegistrationAudit';
 import { MoonlightRecord } from '../main/ets/model/MoonlightRecord';
 import { MoonlightAppCacheEntry } from '../main/ets/model/MoonlightAppCache';
 import { AccountSessionLease, accountSessionLeaseEquals, cloneAccountSessionLease } from
@@ -8,6 +12,7 @@ import {
   MoonlightHostAddState
 } from '../main/ets/services/MoonlightHostAddFlowPolicy';
 import {
+  MoonlightRepositoryCommit,
   MoonlightRepositoryPort,
   MoonlightRepositoryReadResult
 } from '../main/ets/services/MoonlightRepository';
@@ -23,6 +28,8 @@ import { MoonlightHostContext } from '../main/ets/services/MoonlightHostService'
 import { moonlightHostFromRecord } from '../main/ets/services/MoonlightLocalViewService';
 import { moonlightRuntimeContext } from
   '../main/ets/services/MoonlightRuntimeContextFactory';
+import { moonlightRecordPayloadHashSha256 } from
+  '../main/ets/services/MoonlightRecordPolicy';
 
 function testLease(): AccountSessionLease {
   return {
@@ -105,6 +112,24 @@ class MemoryMoonlightHostPort implements MoonlightRepositoryPort, MoonlightAppCa
     const key: string = candidate.ownerScopeId + ':' + record.id;
     this.rows.set(key, MoonlightRecord.fromJSON(record.toJSON()));
     this.localOnly.set(key, only);
+    return true;
+  }
+
+  commitMoonlightLocalRecords(candidate: AccountSessionLease,
+    commits: MoonlightRepositoryCommit[]): boolean {
+    if (!this.isLeaseCurrent(candidate)) { return false; }
+    for (let i = 0; i < commits.length; i++) {
+      if (commits[i].record.recordType === 'trust' &&
+          commits[i].record.deletedAt === 0 && this.failTrustWrite) {
+        this.trustWriteAttempted = true;
+        return false;
+      }
+    }
+    for (let i = 0; i < commits.length; i++) {
+      const key: string = candidate.ownerScopeId + ':' + commits[i].record.id;
+      this.rows.set(key, MoonlightRecord.fromJSON(commits[i].record.toJSON()));
+      this.localOnly.set(key, commits[i].localOnly);
+    }
     return true;
   }
 
@@ -229,7 +254,7 @@ export default function moonlightLocalHostServiceTest(): void {
       expect((runtime as MoonlightHostContext).endpoint.httpsPort).assertEqual(48084);
     });
 
-    it('compensates_the_host_when_trust_write_fails', 0, (): void => {
+    it('does_not_commit_either_graph_row_when_trust_write_fails', 0, (): void => {
       const port = new MemoryMoonlightHostPort();
       port.failTrustWrite = true;
       const state: MoonlightHostAddState = readyAddState();
@@ -243,8 +268,7 @@ export default function moonlightLocalHostServiceTest(): void {
       expect(liveRows.length).assertEqual(0);
       const allRows: MoonlightRecord[] = port.loadMoonlightLocalRecords(
         port.active, true) as MoonlightRecord[];
-      expect(allRows.length).assertEqual(1);
-      expect(allRows[0].deletedAt > 0).assertTrue();
+      expect(allRows.length).assertEqual(0);
     });
 
     it('rejects_an_untrusted_or_stale_add_without_writing', 0, (): void => {
@@ -325,7 +349,7 @@ export default function moonlightLocalHostServiceTest(): void {
       expect((payload as Record<string, Object>)['displayName']).assertEqual('办公室主机');
     });
 
-    it('maps_host_readback_failure_to_a_confirmed_rollback', 0, (): void => {
+    it('keeps_atomic_graph_commit_truth_when_post_commit_readback_fails', 0, (): void => {
       const port = new MemoryMoonlightHostPort();
       const state: MoonlightHostAddState = readyAddState();
       state.activeOperation = 'save';
@@ -333,14 +357,16 @@ export default function moonlightLocalHostServiceTest(): void {
       port.failReadbackOnce = true;
       const result = new MoonlightLocalHostService(port).save(
         state, saveKey(state), 1000);
-      expect(result.ok).assertFalse();
-      expect(result.commitState).assertEqual('not_committed');
+      expect(result.ok).assertTrue();
+      expect(result.code).assertEqual('readback_failed');
+      expect(result.localCommitted).assertTrue();
+      expect(result.commitState).assertEqual('committed');
       const live: MoonlightRecord[] = port.loadMoonlightLocalRecords(
         port.active) as MoonlightRecord[];
-      expect(live.length).assertEqual(0);
+      expect(live.length).assertEqual(2);
     });
 
-    it('marks_compensation_failure_as_partial_and_does_not_allow_retry', 0, (): void => {
+    it('does_not_need_compensation_when_the_atomic_graph_commit_is_rejected', 0, (): void => {
       const port = new MemoryMoonlightHostPort();
       port.failTrustWrite = true;
       port.failCompensationWrite = true;
@@ -349,10 +375,10 @@ export default function moonlightLocalHostServiceTest(): void {
       const result = new MoonlightLocalHostService(port).save(
         state, saveKey(state), 1000);
       expect(result.ok).assertFalse();
-      expect(result.commitState).assertEqual('partial');
+      expect(result.commitState).assertEqual('not_committed');
       const allRows: MoonlightRecord[] = port.loadMoonlightLocalRecords(
         port.active, true) as MoonlightRecord[];
-      expect(allRows.length).assertEqual(1);
+      expect(allRows.length).assertEqual(0);
     });
 
     it('renames_an_existing_host_inside_the_current_local_lease', 0, (): void => {
@@ -437,6 +463,36 @@ export default function moonlightLocalHostServiceTest(): void {
       expect(rejected.code).assertEqual('invalid_request');
     });
 
+    it('treats_committed_host_readback_failure_as_pending_verification', 0,
+      (): void => {
+        const port = new MemoryMoonlightHostPort();
+        const state: MoonlightHostAddState = readyAddState();
+        state.activeOperation = 'save';
+        const service = new MoonlightLocalHostService(port, port);
+        const saved = service.save(state, saveKey(state), 1000);
+        expect(saved.ok).assertTrue();
+        port.failReadbackRecordType = 'host';
+        port.failReadbackOnce = true;
+        const renamed = service.updateDisplayName(
+          saved.hostId, '已提交名称', 2000);
+        expect(renamed.ok).assertTrue();
+        expect(renamed.code).assertEqual('pending_local_verification');
+        expect(renamed.localCommitted).assertTrue();
+      });
+
+    it('reports_an_unchanged_order_without_claiming_a_new_commit', 0, (): void => {
+      const port = new MemoryMoonlightHostPort();
+      const state: MoonlightHostAddState = readyAddState();
+      state.activeOperation = 'save';
+      const service = new MoonlightLocalHostService(port, port);
+      const saved = service.save(state, saveKey(state), 1000);
+      expect(saved.ok).assertTrue();
+      const unchanged = service.updateUserOrder(saved.hostId, 0, 2000);
+      expect(unchanged.ok).assertTrue();
+      expect(unchanged.code).assertEqual('unchanged');
+      expect(unchanged.localCommitted).assertFalse();
+    });
+
     it('preserves_the_unified_host_card_lock_when_an_existing_host_is_saved_again', 0, (): void => {
       const port = new MemoryMoonlightHostPort();
       const initialState: MoonlightHostAddState = readyAddState();
@@ -460,6 +516,91 @@ export default function moonlightLocalHostServiceTest(): void {
       expect(reloaded !== null).assertTrue();
       expect((reloaded as MoonlightHost).locked === true).assertTrue();
     });
+
+    it('reuses_a_valid_legacy_host_id_for_the_same_sunshine_uuid', 0,
+      (): void => {
+        const port = new MemoryMoonlightHostPort();
+        const state: MoonlightHostAddState = readyAddState();
+        state.activeOperation = 'save';
+        const service = new MoonlightLocalHostService(port, port);
+        const initial = service.save(state, saveKey(state), 1000);
+        expect(initial.ok).assertTrue();
+        const canonicalKey: string =
+          port.active.ownerScopeId + ':' + initial.hostId;
+        const legacy: MoonlightRecord = MoonlightRecord.fromJSON(
+          (port.rows.get(canonicalKey) as MoonlightRecord).toJSON());
+        legacy.id = 'moonlight-host|legacy-v0-id';
+        legacy.payloadHashSha256 = moonlightRecordPayloadHashSha256(legacy);
+        port.rows.clear();
+        port.localOnly.clear();
+        port.rows.set(port.active.ownerScopeId + ':' + legacy.id, legacy);
+        port.localOnly.set(port.active.ownerScopeId + ':' + legacy.id, 1);
+        const repairedState: MoonlightHostAddState = readyAddState();
+        repairedState.activeOperation = 'save';
+        const repaired = service.save(
+          repairedState, saveKey(repairedState), 2000);
+        expect(repaired.ok).assertTrue();
+        expect(repaired.hostId).assertEqual(legacy.id);
+        expect(port.rows.has(
+          port.active.ownerScopeId + ':' + initial.hostId)).assertFalse();
+      });
+
+    it('keeps_the_canonical_host_and_tombstones_a_live_legacy_alias', 0,
+      (): void => {
+        const port = new MemoryMoonlightHostPort();
+        const state: MoonlightHostAddState = readyAddState();
+        state.activeOperation = 'save';
+        const service = new MoonlightLocalHostService(port, port);
+        const initial = service.save(state, saveKey(state), 1000);
+        expect(initial.ok).assertTrue();
+        const canonicalKey: string =
+          port.active.ownerScopeId + ':' + initial.hostId;
+        const alias: MoonlightRecord = MoonlightRecord.fromJSON(
+          (port.rows.get(canonicalKey) as MoonlightRecord).toJSON());
+        alias.id = 'moonlight-host|legacy-live-alias';
+        alias.payloadHashSha256 = moonlightRecordPayloadHashSha256(alias);
+        port.rows.set(port.active.ownerScopeId + ':' + alias.id, alias);
+        port.localOnly.set(port.active.ownerScopeId + ':' + alias.id, 1);
+
+        const repairedState: MoonlightHostAddState = readyAddState();
+        repairedState.activeOperation = 'save';
+        const repaired = service.save(
+          repairedState, saveKey(repairedState), 2000);
+        expect(repaired.ok).assertTrue();
+        expect(repaired.hostId).assertEqual(initial.hostId);
+        const retiredAlias: MoonlightRecord = port.rows.get(
+          port.active.ownerScopeId + ':' + alias.id) as MoonlightRecord;
+        expect(retiredAlias.deletedAt > 0).assertTrue();
+      });
+
+    it('keeps_one_canonical_trust_and_tombstones_live_trust_aliases', 0,
+      (): void => {
+        const port = new MemoryMoonlightHostPort();
+        const state: MoonlightHostAddState = readyAddState();
+        state.activeOperation = 'save';
+        const service = new MoonlightLocalHostService(port, port);
+        const initial = service.save(state, saveKey(state), 1000);
+        expect(initial.ok).assertTrue();
+        const canonicalKey: string = port.active.ownerScopeId + ':' +
+          initial.trustRecordId;
+        const alias: MoonlightRecord = MoonlightRecord.fromJSON(
+          (port.rows.get(canonicalKey) as MoonlightRecord).toJSON());
+        alias.id = 'moonlight-trust|legacy-live-alias';
+        alias.payloadHashSha256 = moonlightRecordPayloadHashSha256(alias);
+        port.rows.set(port.active.ownerScopeId + ':' + alias.id, alias);
+        port.localOnly.set(port.active.ownerScopeId + ':' + alias.id, 1);
+
+        const repairedState: MoonlightHostAddState = readyAddState();
+        repairedState.activeOperation = 'save';
+        const repaired = service.save(
+          repairedState, saveKey(repairedState), 2000);
+        expect(repaired.ok).assertTrue();
+        const canonical: MoonlightRecord = port.rows.get(canonicalKey) as MoonlightRecord;
+        const retiredAlias: MoonlightRecord = port.rows.get(
+          port.active.ownerScopeId + ':' + alias.id) as MoonlightRecord;
+        expect(canonical.deletedAt).assertEqual(0);
+        expect(retiredAlias.deletedAt > 0).assertTrue();
+      });
 
     it('tombstones_host_and_owned_records_when_deleting_locally', 0, (): void => {
       const port = new MemoryMoonlightHostPort();

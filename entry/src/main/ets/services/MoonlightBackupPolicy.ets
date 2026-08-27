@@ -1,3 +1,5 @@
+import { cryptoFramework } from '@kit.CryptoArchitectureKit';
+import { util } from '@kit.ArkTS';
 import {
   MOONLIGHT_LOCAL_RECORD_COLUMNS,
   MOONLIGHT_RECORD_COLUMNS,
@@ -11,7 +13,11 @@ import {
   resolveMoonlightRecordConflict
 } from './MoonlightRecordConflictPolicy';
 import { CloudMetadataReadResult } from './CloudMetadataSafetyPolicy';
-import { moonlightValidateRecord } from './MoonlightRecordPolicy';
+import {
+  moonlightRecordBusinessPayload,
+  moonlightRecordPayloadHashSha256,
+  moonlightValidateRecord
+} from './MoonlightRecordPolicy';
 
 export type MoonlightBackupMode = 'redacted' | 'full';
 
@@ -81,6 +87,96 @@ export interface MoonlightBackupRestoreResolution {
   rows: Array<Record<string, string>>;
   quarantinedRows: number;
   sourceRows: number;
+}
+
+function moonlightRestoreSha256Hex(value: string): string {
+  const md = cryptoFramework.createMd('SHA256');
+  md.updateSync({ data: new util.TextEncoder().encode(value) });
+  const bytes: Uint8Array = md.digestSync().data;
+  let result: string = '';
+  for (let index = 0; index < bytes.length; index++) {
+    result += bytes[index].toString(16).padStart(2, '0');
+  }
+  return result;
+}
+
+export function moonlightCanonicalHostRecordId(
+  ownerScopeId: string, serverUuid: string
+): string {
+  const owner: string = ownerScopeId.trim();
+  const uuid: string = serverUuid.trim();
+  if (owner === '' || uuid === '') { return ''; }
+  return 'moonlight-host|' + moonlightRestoreSha256Hex(
+    'RemoteDeskHarmonyOS:moonlight-host:v1:' + owner + ':' + uuid);
+}
+
+export function moonlightCanonicalTrustRecordId(hostId: string): string {
+  const normalized: string = hostId.trim();
+  return normalized === '' ? '' : 'moonlight-trust|' +
+    moonlightRestoreSha256Hex('v1:' + normalized);
+}
+
+/** Logical identity used to fence prerelease aliases during restore. */
+export function moonlightRestoreAliasFenceId(
+  record: MoonlightRecord
+): string {
+  if (record.recordType === 'host') {
+    if (record.deletedAt > 0) { return record.id; }
+    const payload: Record<string, Object> | null =
+      moonlightRecordBusinessPayload(record);
+    return payload !== null && typeof payload['serverUuid'] === 'string' ?
+      moonlightCanonicalHostRecordId(
+        record.userId, payload['serverUuid'] as string) : record.id;
+  }
+  if (record.recordType === 'trust') {
+    if (record.deletedAt > 0) {
+      return moonlightCanonicalTrustRecordId(record.ownerId) || record.id;
+    }
+    const payload: Record<string, Object> | null =
+      moonlightRecordBusinessPayload(record);
+    if (payload !== null && typeof payload['serverUuid'] === 'string') {
+      const hostId: string = moonlightCanonicalHostRecordId(
+        record.userId, payload['serverUuid'] as string);
+      return moonlightCanonicalTrustRecordId(hostId) || record.id;
+    }
+  }
+  return record.id;
+}
+
+/**
+ * Project a payload-free legacy delete/unpair onto the canonical identity.
+ * The live source is required because legacy tombstones deliberately discard
+ * serverUuid together with every other business field.
+ */
+export function moonlightCanonicalAliasTombstone(
+  source: MoonlightRecord, tombstone: MoonlightRecord
+): MoonlightRecord | null {
+  if (!moonlightValidateRecord(source).valid || source.deletedAt > 0 ||
+      !moonlightValidateRecord(tombstone).valid || tombstone.deletedAt <= 0 ||
+      source.id !== tombstone.id || source.userId !== tombstone.userId ||
+      source.recordType !== tombstone.recordType ||
+      (source.recordType !== 'host' && source.recordType !== 'trust')) {
+    return null;
+  }
+  const canonicalId: string = moonlightRestoreAliasFenceId(source);
+  if (canonicalId === '' || canonicalId === source.id) { return null; }
+  const boundary: MoonlightRecord =
+    MoonlightRecord.fromJSON(tombstone.toJSON());
+  boundary.id = canonicalId;
+  if (source.recordType === 'trust') {
+    const payload: Record<string, Object> | null =
+      moonlightRecordBusinessPayload(source);
+    if (payload === null || typeof payload['serverUuid'] !== 'string') {
+      return null;
+    }
+    const canonicalHostId: string = moonlightCanonicalHostRecordId(
+      source.userId, payload['serverUuid'] as string);
+    if (canonicalHostId === '') { return null; }
+    boundary.ownerId = canonicalHostId;
+  }
+  boundary.payloadHashSha256 =
+    moonlightRecordPayloadHashSha256(boundary);
+  return moonlightValidateRecord(boundary).valid ? boundary : null;
 }
 
 function copyExactRow(
@@ -275,6 +371,40 @@ export function resolveMoonlightBackupForRestore(
       continue;
     }
     records.set(id, decision.record);
+  }
+  // Same-ID conflict resolution cannot see prerelease aliases. Keep the
+  // canonical payload-free delete/unpair boundary authoritative across IDs;
+  // only a strictly higher reset epoch is an explicit revival.
+  const logicalTombstones: Map<string, MoonlightRecord> =
+    new Map<string, MoonlightRecord>();
+  records.forEach((record: MoonlightRecord): void => {
+    if (record.deletedAt === 0 ||
+        (record.recordType !== 'host' && record.recordType !== 'trust')) {
+      return;
+    }
+    const key: string = moonlightRestoreAliasFenceId(record);
+    const current: MoonlightRecord | undefined = logicalTombstones.get(key);
+    if (current === undefined || record.resetEpoch > current.resetEpoch ||
+        (record.resetEpoch === current.resetEpoch &&
+         record.syncVersion > current.syncVersion)) {
+      logicalTombstones.set(key, record);
+    }
+  });
+  const aliasIds: string[] = Array.from(records.keys());
+  for (let i = 0; i < aliasIds.length; i++) {
+    const record: MoonlightRecord = records.get(
+      aliasIds[i]) as MoonlightRecord;
+    if (record.deletedAt > 0 ||
+        (record.recordType !== 'host' && record.recordType !== 'trust')) {
+      continue;
+    }
+    const boundary: MoonlightRecord | undefined =
+      logicalTombstones.get(moonlightRestoreAliasFenceId(record));
+    if (boundary !== undefined &&
+        boundary.resetEpoch >= record.resetEpoch) {
+      records.delete(record.id);
+      quarantinedRows++;
+    }
   }
   const ids: string[] = Array.from(records.keys()).sort();
   const activeHostIds: Set<string> = new Set<string>();

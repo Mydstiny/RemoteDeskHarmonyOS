@@ -2504,7 +2504,11 @@ struct HostListPage {
     this.hostViewRevision += 1;
     this.beginRemoteHostSheetClose(REMOTE_HOST_SHEET_MOONLIGHT_EDIT);
     this.showRemoteHostSheet = false;
-    promptAction.showToast({ message: 'Moonlight 主机配置已保存', duration: 1600 });
+    promptAction.showToast({
+      message: result.code === 'pending_local_verification' ?
+        '主机配置已保存，正在后台核验' : 'Moonlight 主机配置已保存',
+      duration: 1800
+    });
   }
 
   private async toggleMoonlightLock(view: MoonlightHostLocalView): Promise<void> {
@@ -2524,7 +2528,12 @@ struct HostListPage {
     }
     this.refreshMoonlightDirectory();
     this.hostViewRevision += 1;
-    promptAction.showToast({ message: nextLocked ? '已锁定' : '已解锁', duration: 1500 });
+    promptAction.showToast({
+      message: result.code === 'pending_local_verification' ?
+        '锁定状态已保存，正在后台核验' :
+        (nextLocked ? '已锁定' : '已解锁'),
+      duration: 1800
+    });
   }
 
   private async doDeleteMoonlightHost(view: MoonlightHostLocalView): Promise<void> {

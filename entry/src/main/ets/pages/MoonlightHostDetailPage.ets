@@ -332,7 +332,11 @@ struct MoonlightHostDetailPage {
     }
     this.showRenameEditor = false;
     this.load();
-    promptAction.showToast({ message: '主机名称已保存', duration: 1600 });
+    promptAction.showToast({
+      message: result.code === 'pending_local_verification' ?
+        '主机名称已保存，正在后台核验' : '主机名称已保存',
+      duration: 1800
+    });
   }
 
   private deletionFailureMessage(code: string): string {

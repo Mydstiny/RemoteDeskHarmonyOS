@@ -21,6 +21,9 @@ import {
   moonlightRecordPayloadHashSha256
 } from '../main/ets/services/MoonlightRecordPolicy';
 import {
+  moonlightCanonicalAliasTombstone,
+  moonlightCanonicalHostRecordId,
+  moonlightCanonicalTrustRecordId,
   moonlightBackupRowsRequireCloudActivation,
   moonlightRestoreActivationState,
   moonlightRestoreRuntimeAdmissionAllowed,
@@ -324,6 +327,140 @@ export default function moonlightBackupPolicyTest(): void {
       expect(result.rows.length).assertEqual(1);
       expect(result.rows[0]['deletedat']).assertEqual('200');
     });
+
+    it('blocks_a_legacy_host_alias_behind_the_canonical_forget_tombstone',
+      0, (): void => {
+        const canonicalId: string = moonlightCanonicalHostRecordId(
+          'owner-a', 'server-1');
+        const deleted: MoonlightRecord = hostRecord(
+          canonicalId, 'server-1', 'canonical-delete', 2);
+        deleted.payload = '{}';
+        deleted.updatedAt = 300;
+        deleted.deletedAt = 300;
+        deleted.payloadHashSha256 = moonlightRecordPayloadHashSha256(deleted);
+        const legacyLive: MoonlightRecord = hostRecord(
+          'moonlight-host|legacy-v0', 'server-1', 'legacy-live', 1);
+        const result = resolveMoonlightBackupForRestore(
+          [moonlightRecordToCloudRow(legacyLive)],
+          [localRow(deleted)], 'owner-a', 'redacted');
+        expect(result.rows.length).assertEqual(1);
+        expect(result.rows[0]['id']).assertEqual(canonicalId);
+        expect(result.rows[0]['deletedat']).assertEqual('300');
+        expect(result.quarantinedRows).assertEqual(1);
+      });
+
+    it('projects_a_legacy_host_delete_onto_the_canonical_restore_fence',
+      0, (): void => {
+        const legacyLive: MoonlightRecord = hostRecord(
+          'moonlight-host|legacy-v0', 'server-1', 'legacy-live', 2);
+        const legacyDeleted: MoonlightRecord =
+          MoonlightRecord.fromJSON(legacyLive.toJSON());
+        legacyDeleted.payload = '{}';
+        legacyDeleted.syncVersion++;
+        legacyDeleted.updatedAt = 300;
+        legacyDeleted.deletedAt = 300;
+        legacyDeleted.payloadHashSha256 =
+          moonlightRecordPayloadHashSha256(legacyDeleted);
+        const canonicalBoundary: MoonlightRecord | null =
+          moonlightCanonicalAliasTombstone(legacyLive, legacyDeleted);
+        expect(canonicalBoundary !== null).assertTrue();
+        expect((canonicalBoundary as MoonlightRecord).id).assertEqual(
+          moonlightCanonicalHostRecordId('owner-a', 'server-1'));
+        expect((canonicalBoundary as MoonlightRecord).payload)
+          .assertEqual('{}');
+
+        const anotherAlias: MoonlightRecord = hostRecord(
+          'moonlight-host|legacy-v0b', 'server-1', 'old-backup', 1);
+        const result = resolveMoonlightBackupForRestore(
+          [moonlightRecordToCloudRow(anotherAlias)],
+          [localRow(legacyDeleted),
+            localRow(canonicalBoundary as MoonlightRecord)],
+          'owner-a', 'redacted');
+        expect(result.rows.length).assertEqual(2);
+        expect(result.quarantinedRows).assertEqual(1);
+      });
+
+    it('blocks_a_legacy_trust_alias_behind_the_canonical_unpair_tombstone',
+      0, (): void => {
+        const canonicalHostId: string = moonlightCanonicalHostRecordId(
+          'owner-a', 'server-1');
+        const canonicalTrustId: string =
+          moonlightCanonicalTrustRecordId(canonicalHostId);
+        const canonicalHost: MoonlightRecord = hostRecord(
+          canonicalHostId, 'server-1', 'canonical-host', 2);
+        const legacyHost: MoonlightRecord = hostRecord(
+          'moonlight-host|legacy-v0', 'server-1', 'legacy-host', 1);
+        const deletedTrust: MoonlightRecord = recordFromBusiness(
+          'trust', canonicalTrustId, canonicalHostId, {
+            schemaVersion: 1,
+            hostId: canonicalHostId,
+            serverUuid: 'server-1',
+            serverCertificateSha256: 'a'.repeat(64),
+            pairingGeneration: 2,
+            candidateObservedAt: 200
+          }, 'canonical-unpair', 2);
+        deletedTrust.payload = '{}';
+        deletedTrust.updatedAt = 300;
+        deletedTrust.deletedAt = 300;
+        deletedTrust.payloadHashSha256 =
+          moonlightRecordPayloadHashSha256(deletedTrust);
+        const legacyTrust: MoonlightRecord = recordFromBusiness(
+          'trust', 'moonlight-trust|legacy-v0', legacyHost.id, {
+            schemaVersion: 1,
+            hostId: legacyHost.id,
+            serverUuid: 'server-1',
+            serverCertificateSha256: 'a'.repeat(64),
+            pairingGeneration: 1,
+            candidateObservedAt: 100
+          }, 'legacy-trust', 1);
+        const result = resolveMoonlightBackupForRestore([
+          moonlightRecordToCloudRow(legacyHost),
+          moonlightRecordToCloudRow(legacyTrust)
+        ], [localRow(canonicalHost), localRow(deletedTrust)],
+        'owner-a', 'full');
+        let liveTrustCount: number = 0;
+        for (let i = 0; i < result.rows.length; i++) {
+          if (result.rows[i]['recordtype'] === 'trust' &&
+              result.rows[i]['deletedat'] === '0') {
+            liveTrustCount++;
+          }
+        }
+        expect(liveTrustCount).assertEqual(0);
+        expect(result.quarantinedRows).assertEqual(1);
+      });
+
+    it('projects_a_legacy_unpair_onto_the_canonical_trust_fence',
+      0, (): void => {
+        const legacyHostId: string = 'moonlight-host|legacy-v0';
+        const legacyTrust: MoonlightRecord = recordFromBusiness(
+          'trust', 'moonlight-trust|legacy-v0', legacyHostId, {
+            schemaVersion: 1,
+            hostId: legacyHostId,
+            serverUuid: 'server-1',
+            serverCertificateSha256: 'a'.repeat(64),
+            pairingGeneration: 1,
+            candidateObservedAt: 100
+          }, 'legacy-trust', 1);
+        const legacyDeleted: MoonlightRecord =
+          MoonlightRecord.fromJSON(legacyTrust.toJSON());
+        legacyDeleted.payload = '{}';
+        legacyDeleted.syncVersion++;
+        legacyDeleted.updatedAt = 300;
+        legacyDeleted.deletedAt = 300;
+        legacyDeleted.payloadHashSha256 =
+          moonlightRecordPayloadHashSha256(legacyDeleted);
+        const canonicalBoundary: MoonlightRecord | null =
+          moonlightCanonicalAliasTombstone(legacyTrust, legacyDeleted);
+        const canonicalHostId: string = moonlightCanonicalHostRecordId(
+          'owner-a', 'server-1');
+        expect(canonicalBoundary !== null).assertTrue();
+        expect((canonicalBoundary as MoonlightRecord).id).assertEqual(
+          moonlightCanonicalTrustRecordId(canonicalHostId));
+        expect((canonicalBoundary as MoonlightRecord).ownerId)
+          .assertEqual(canonicalHostId);
+        expect((canonicalBoundary as MoonlightRecord).payload)
+          .assertEqual('{}');
+      });
 
     it('quarantines_both_rows_on_a_host_identity_conflict', 0,
       (): void => {
