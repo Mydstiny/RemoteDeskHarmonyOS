@@ -4,7 +4,7 @@
 
 - Task: `rustdesk-orientation-diagnostics`
 - Branch/base: `codex/rustdesk-orientation-diagnostics` from merged `main@5bac9ffc2`
-- Phase: independent re-review after remediation; implementation checkpoints are `469327ed3`, `b68e1128a` and `26a874786`.
+- Phase: delivery after independent PASS; implementation checkpoints are `469327ed3`, `b68e1128a` and `26a874786`.
 - Plan: `docs/codex/plans/2026-08-27-rustdesk-orientation-and-diagnostics.md`
 
 ## Confirmed diagnosis
@@ -31,7 +31,8 @@
 ## Independent review
 
 - The first review reported no P0/P1, one P2 (the five-second gate lacked a HUD-independent driver) and two P3 items (incomplete observation cleanup and missing integration/build-identity regression coverage).
-- `26a874786` adds the continuous capture-aware driver, completes cleanup, adds scheduler coverage and adds a no-clean build-identity regression test. The same reviewer task is being resumed for a content-addressed re-review.
+- `26a874786` adds the continuous capture-aware driver, completes cleanup, adds scheduler coverage and adds a no-clean build-identity regression test.
+- The same reviewer rechecked `main..b01f2d6e8` and returned PASS with P0/P1/P2/P3 all zero; receipt `rustdesk-orientation-diagnostics-b01f2d6e-2026-08-27` authorizes delivery.
 
 ## Completed prerequisite
 

@@ -4,9 +4,8 @@ Updated: 2026-08-27 Asia/Shanghai
 
 ## Now
 
-1. Resume the same independent reviewer on `main..26a874786` and confirm the first review's P2/P3 findings are resolved.
-2. Record the content-addressed review receipt and rerun final exact gates after documentation closeout.
-3. Push, create the PR, wait for required `open-source-compliance`, merge, synchronize `main` and remove the merged task branch.
+1. Rerun the final exact gates after the PASS receipt documentation closeout.
+2. Push, create the PR, wait for required `open-source-compliance`, merge, synchronize `main` and remove the merged task branch.
 
 ## Next
 
