@@ -44,7 +44,7 @@ import vncSessionGeometryPolicyTest from './VncSessionGeometryPolicy.test';
 import remoteFloatingPanelPlacementPolicyTest from './RemoteFloatingPanelPlacementPolicy.test';
 import vncSessionSettingsPolicyTest from './VncSessionSettingsPolicy.test';
 import vncSessionUiPolicyTest from '../../../test/VncSessionUiPolicy.test';
-import remoteWheelPolicyTest from './RemoteWheelPolicy.test';
+import remoteWheelPolicyTest from '../../../test/RemoteWheelPolicy.test';
 import vncCertificateDecisionHandoffTest from '../../../test/VncCertificateDecisionHandoff.test';
 import vncCertificateSheetPolicyTest from '../../../test/VncCertificateSheetPolicy.test';
 import vncCertificatePreflightPolicyTest from '../../../test/VncCertificatePreflightPolicy.test';

@@ -542,13 +542,15 @@ import {
   accumulateContinuousRemoteWheel,
   applyRemoteWheelDirection,
   discreteRemoteWheelDelta,
-  nextVncTouchpadFlingDelta,
-  shouldStartVncTouchpadFling,
-  VNC_TOUCHPAD_FLING_INTERVAL_MS
+  shouldForwardContinuousRemoteWheelSample
 } from '../services/RemoteWheelPolicy';
 import {
   accumulateVncPhysicalTouchpadWheel,
-  shouldTreatPhysicalAxisAsContinuous
+  resetVncPhysicalWheelState,
+  resolveVncPhysicalWheelRoute,
+  VncPhysicalWheelState,
+  VncPhysicalWheelRoute,
+  vncPhysicalMouseWheelDelta
 } from '../services/VncPhysicalWheelPolicy';
 import {
   accumulatePhysicalTouchpadPinch,
@@ -1201,8 +1203,6 @@ struct RemoteDesktop {
   private touchDragCursorY: number = 0;  // 双指开始时的光标 Y
   private touchWheelRemainder: number = 0;
   private lastTouchWheelMs: number = 0;
-  private touchWheelLastStepDy: number = 0;
-  private touchWheelFlingTimer: number = -1;
   private touchWheelSendCount: number = 0;
   private touchLeftDown: boolean = false; // 直接模式用: 左键是否按下
   private touchGestureDone: boolean = false; // 双指手势已完成, 抑制剩余手指的多余点击
@@ -1376,7 +1376,8 @@ struct RemoteDesktop {
   private physicalMousePressLocalX: number = 0;
   private physicalMousePressLocalY: number = 0;
   private physicalWheelRemainder: number = 0;
-  private lastPhysicalWheelAtMs: number = 0;
+  private vncPhysicalWheelState: VncPhysicalWheelState =
+    resetVncPhysicalWheelState();
   private physicalWheelSendCount: number = 0;
   private physicalTouchpadWheelState: PhysicalTouchpadWheelState =
     resetPhysicalTouchpadWheelState();
@@ -12289,9 +12290,8 @@ struct RemoteDesktop {
     this.clearVncSensitiveState();
     this.clearVncToolbarAutoCollapse();
     this.clearVncSurfaceResizeRefresh();
-    this.cancelVncTouchWheelFling();
     this.physicalWheelRemainder = 0;
-    this.lastPhysicalWheelAtMs = 0;
+    this.vncPhysicalWheelState = resetVncPhysicalWheelState();
     this.physicalWheelSendCount = 0;
     this.resetRustDeskPhysicalTouchpadState();
     this.vncToolbarCollapsed = false;
@@ -15139,7 +15139,6 @@ struct RemoteDesktop {
   private resetTouchGesture(): void {
     this.clearTouchRightClickTimer();
     this.clearTouchDirectRightClickTimer();
-    this.cancelVncTouchWheelFling();
     const wasDragging: boolean = this.touchDragActive;
     if (this.touchDragActive) {
       // 拖拽结束 — 释放左键
@@ -15153,7 +15152,6 @@ struct RemoteDesktop {
     this.touchMaxFingers = 0;
     this.touchWheelRemainder = 0;
     this.lastTouchWheelMs = 0;
-    this.touchWheelLastStepDy = 0;
     this.touchpadAnchorValid = false;
     this.activeTouchPoints.clear();
     if (this.touchpadPointerDown) {
@@ -15309,8 +15307,8 @@ struct RemoteDesktop {
       stepDy, this.touchWheelRemainder, wheelSpeed,
       wheelProtocol);
     const now: number = Date.now();
-    // RustDesk forwards every meaningful trackpad update.  VNC must do the
-    // same or a 60/120 Hz gesture is reduced to a visibly slow trickle.
+    // VNC performs its own vp-distance accumulation on every update. Other
+    // protocols retain the established time-based flush behavior.
     if (wheelProtocol !== 'vnc' && now - this.lastTouchWheelMs < TOUCHPAD_SCROLL_FLUSH_MS) {
       this.touchWheelRemainder = accumulated.remainder + accumulated.delta;
       return;
@@ -15326,9 +15324,6 @@ struct RemoteDesktop {
       return;
     }
     this.lastTouchWheelMs = now;
-    if (wheelProtocol === 'vnc') {
-      this.touchWheelLastStepDy = stepDy;
-    }
     const src = this.toSourceSpace(this.remoteCursorX, this.remoteCursorY);
     const sendDelta: number = applyRemoteWheelDirection(delta, this.rustdeskReverseWheel);
     this.loader.sendMouseWheel(this.sessionId, src['x'], src['y'], sendDelta);
@@ -15340,42 +15335,6 @@ struct RemoteDesktop {
           ' reverse=' + (this.rustdeskReverseWheel ? '1' : '0') +
           ' remote=' + this.remoteCursorX.toString() + ',' + this.remoteCursorY.toString());
     }
-  }
-
-  private cancelVncTouchWheelFling(): void {
-    if (this.touchWheelFlingTimer >= 0) {
-      clearTimeout(this.touchWheelFlingTimer);
-      this.touchWheelFlingTimer = -1;
-    }
-  }
-
-  private scheduleVncTouchWheelFling(rawDelta: number): void {
-    this.cancelVncTouchWheelFling();
-    this.touchWheelFlingTimer = setTimeout((): void => {
-      this.touchWheelFlingTimer = -1;
-      if (!this.connected || !this.isVncSession()) {
-        return;
-      }
-      const nextDelta: number = nextVncTouchpadFlingDelta(rawDelta);
-      const wheelSpeed: number = Number.isFinite(this.vncTouchpadSpeed) && this.vncTouchpadSpeed > 0 ?
-        this.vncTouchpadSpeed / 100 : 1;
-      if (Math.abs(nextDelta * wheelSpeed) < 1) {
-        return;
-      }
-      this.sendTouchPadWheel(nextDelta);
-      this.scheduleVncTouchWheelFling(nextDelta);
-    }, VNC_TOUCHPAD_FLING_INTERVAL_MS);
-  }
-
-  private startVncTouchWheelFling(lastRawDelta: number): void {
-    const wheelSpeed: number = Number.isFinite(this.vncTouchpadSpeed) && this.vncTouchpadSpeed > 0 ?
-      this.vncTouchpadSpeed / 100 : 1;
-    if (!this.isVncSession() ||
-      !shouldStartVncTouchpadFling(lastRawDelta, wheelSpeed)) {
-      return;
-    }
-    hilog.info(RD_DOMAIN, RD_TAG, 'touchpad-scroll fling start stepDy=' + lastRawDelta.toString());
-    this.scheduleVncTouchWheelFling(lastRawDelta);
   }
 
   private sendRemoteKeyTap(keyCode: number, label: string): void {
@@ -15439,10 +15398,6 @@ struct RemoteDesktop {
           if (shouldResetRemoteImeOnPointerDown(this.keyboardOpen || proxyWasActive)) {
             this.resetRemoteImeSession('touchpad-down');
           }
-        }
-        if (this.touchFingerCount <= 0) {
-          this.cancelVncTouchWheelFling();
-          this.touchWheelLastStepDy = 0;
         }
         this.resetTouchpadPointerCurve();
         this.touchpadAnchorValid = true;
@@ -15533,7 +15488,7 @@ struct RemoteDesktop {
             return;
           }
           if (shouldSendCanvasTwoFingerScroll(this.canvasTwoFingerState) &&
-            Math.abs(stepDy) >= 0.5) {
+            shouldForwardContinuousRemoteWheelSample(stepDy)) {
             // 双指上下滑动只映射滚轮，不再触发拖拽。
             this.sendTouchPadWheel(stepDy);
           }
@@ -15593,8 +15548,6 @@ struct RemoteDesktop {
             ' pending=' + (this.touchDragPending ? 'true' : 'false') +
             ' done=' + (this.touchGestureDone ? 'true' : 'false'));
         if (this.touchFingerCount <= 0) {
-          const flingStepDy: number = event.type === TouchType.Up &&
-            this.touchMaxFingers === 2 && this.touchMoved ? this.touchWheelLastStepDy : 0;
           // 所有手指抬起
           if (this.touchDragActive) {
             // 单指长按拖拽结束: 释放左键，避免随后触发普通点击。
@@ -15627,7 +15580,6 @@ struct RemoteDesktop {
           }
           this.resetTouchGesture();
           this.recoverRemotePointerFocus('touch-release-verify');
-          this.startVncTouchWheelFling(flingStepDy);
         } else {
           // 从双指变单指 (一根手指抬起, 另一根还在屏幕上)
           if (this.touchMaxFingers >= 3) {
@@ -15743,7 +15695,7 @@ struct RemoteDesktop {
             const twoFingerMove: CanvasTwoFingerMoveResult | null = this.canvasTwoFingerLastMove;
             if (twoFingerMove !== null &&
               shouldSendCanvasTwoFingerScroll(this.canvasTwoFingerState) &&
-              Math.abs(twoFingerMove.deltaY) >= 0.5) {
+              shouldForwardContinuousRemoteWheelSample(twoFingerMove.deltaY)) {
               this.touchMoved = true;
               this.touchDragPending = false;
               this.sendTouchPadWheel(twoFingerMove.deltaY);
@@ -16690,43 +16642,65 @@ struct RemoteDesktop {
       const localX: number = event.x;
       const localY: number = event.y;
       const mapped: MappedPoint = this.mapInputPoint(localX, localY);
-      if (!mapped.inside) { return; }
       const rawVertical: number = event.getVerticalAxisValue();
-      if (!Number.isFinite(rawVertical) || rawVertical === 0) { return; }
-
-      // Mouse wheels report discrete steps. Touchpads emit a continuous axis,
-      // so accumulate its small vp deltas before creating protocol wheel ticks.
-      let delta: number = 0;
+      const vncSession: boolean = this.isVncSession();
       const mouseSource: boolean = event.sourceTool === SourceTool.MOUSE;
-      const nowMs: number = Date.now();
-      const elapsedMs: number = mouseSource && this.lastPhysicalWheelAtMs > 0 ?
-        nowMs - this.lastPhysicalWheelAtMs : 0;
-      if (mouseSource) {
-        this.lastPhysicalWheelAtMs = nowMs;
+      const vncRoute: VncPhysicalWheelRoute = resolveVncPhysicalWheelRoute(
+        event.sourceTool === SourceTool.TOUCHPAD, event.action, event.scrollStep);
+      const vncContinuousPhysicalAxis: boolean = vncSession && vncRoute.continuous;
+      const startsVncContinuous: boolean = vncSession && vncRoute.resetBefore;
+      const cancelsVncContinuous: boolean = vncSession && vncRoute.cancel;
+      const endsVncContinuous: boolean = vncSession && vncRoute.resetAfter &&
+        !vncRoute.cancel;
+      if (startsVncContinuous) {
+        this.vncPhysicalWheelState = resetVncPhysicalWheelState();
       }
-      const vncContinuousPhysicalAxis: boolean = this.isVncSession() &&
-        shouldTreatPhysicalAxisAsContinuous(
-          event.sourceTool === SourceTool.TOUCHPAD, event.action,
-          event.scrollStep, elapsedMs);
-      if (mouseSource && !vncContinuousPhysicalAxis) {
-        delta = discreteRemoteWheelDelta(rawVertical,
-          this.isVncSession() ? 'vnc' : this.currentProtocolName(), elapsedMs);
+      if (cancelsVncContinuous) {
+        this.vncPhysicalWheelState = resetVncPhysicalWheelState();
+        return;
+      }
+      if (!mapped.inside || !Number.isFinite(rawVertical) || rawVertical === 0) {
+        if (endsVncContinuous) {
+          this.vncPhysicalWheelState = resetVncPhysicalWheelState();
+        }
+        return;
+      }
+
+      // A mouse-only scrollStep is one portable detent regardless of whether
+      // the vendor reports 1, 45 or 120. Continuous touchpad samples instead
+      // use a per-gesture unit baseline and fractional accumulation.
+      let delta: number = 0;
+      if (vncSession && !vncContinuousPhysicalAxis) {
+        this.vncPhysicalWheelState = resetVncPhysicalWheelState();
+        delta = vncPhysicalMouseWheelDelta(rawVertical);
+      } else if (mouseSource && !vncSession) {
+        delta = discreteRemoteWheelDelta(rawVertical, this.currentProtocolName());
       } else {
         // 实体触控板/鼠标轴同样应用会话触控板速度，与双指滚轮保持一致。
-        const wheelSpeed: number = this.isVncSession() ?
+        const wheelSpeed: number = vncSession ?
           (Number.isFinite(this.vncTouchpadSpeed) && this.vncTouchpadSpeed > 0 ?
             this.vncTouchpadSpeed / 100 : 1) :
           (Number.isFinite(this.rustdeskTouchpadSpeed) && this.rustdeskTouchpadSpeed > 0 ?
             this.rustdeskTouchpadSpeed : 1);
-        const accumulated = vncContinuousPhysicalAxis ?
-          accumulateVncPhysicalTouchpadWheel(
-            rawVertical, this.physicalWheelRemainder, wheelSpeed) :
-          accumulateContinuousRemoteWheel(
+        if (vncContinuousPhysicalAxis) {
+          const accumulated = accumulateVncPhysicalTouchpadWheel(
+            rawVertical, this.vncPhysicalWheelState, wheelSpeed,
+            Date.now(), event.sourceTool);
+          delta = accumulated.delta;
+          this.vncPhysicalWheelState = accumulated.state;
+        } else {
+          const accumulated = accumulateContinuousRemoteWheel(
             rawVertical, this.physicalWheelRemainder, wheelSpeed,
-            this.isVncSession() ? 'vnc' : this.currentProtocolName());
-        delta = accumulated.delta;
-        this.physicalWheelRemainder = accumulated.remainder;
-        if (delta === 0) { return; }
+            this.currentProtocolName());
+          delta = accumulated.delta;
+          this.physicalWheelRemainder = accumulated.remainder;
+        }
+        if (delta === 0) {
+          if (endsVncContinuous) {
+            this.vncPhysicalWheelState = resetVncPhysicalWheelState();
+          }
+          return;
+        }
       }
 
       this.queueMouseMove(mapped.x, mapped.y);
@@ -16742,7 +16716,14 @@ struct RemoteDesktop {
           ' sourceTool=' + event.sourceTool.toString() +
           ' action=' + event.action.toString() +
           ' continuous=' + (vncContinuousPhysicalAxis ? '1' : '0') +
+          ' scrollStep=' + (event.scrollStep === undefined ? 'none' :
+            event.scrollStep.toString()) +
+          ' axisUnit=' + this.vncPhysicalWheelState.axisUnit.toString() +
+          ' remainder=' + this.vncPhysicalWheelState.remainder.toString() +
           ' remote=' + mapped.x.toString() + ',' + mapped.y.toString());
+      }
+      if (endsVncContinuous) {
+        this.vncPhysicalWheelState = resetVncPhysicalWheelState();
       }
     } catch (err) {
       hilog.error(RD_DOMAIN, RD_TAG, 'physical-wheel forward failed: ' + JSON.stringify(err));
