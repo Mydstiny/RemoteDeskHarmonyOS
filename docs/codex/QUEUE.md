@@ -4,10 +4,9 @@ Updated: 2026-08-27 Asia/Shanghai
 
 ## Now
 
-1. Make RustDesk presentation platform-independent and canonically upright.
-2. Add build-identifiable, privacy-safe runtime facts to all supported connection-component diagnostics.
-3. Add focused tests and run native, ArkTS, HAP, diff and compliance gates.
-4. Obtain independent review, remediate findings, then push, PR and merge when all gates pass.
+1. Complete the active independent review of `main..b68e1128a` and remediate any finding.
+2. Record the content-addressed review receipt and rerun final exact gates after documentation closeout.
+3. Push, create the PR, wait for required `open-source-compliance`, merge, synchronize `main` and remove the merged task branch.
 
 ## Next
 

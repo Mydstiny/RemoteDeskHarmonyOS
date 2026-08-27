@@ -3,10 +3,10 @@
   "task": "rustdesk-orientation-diagnostics",
   "branch": "codex/rustdesk-orientation-diagnostics",
   "base": "5bac9ffc24cd38bb0c42060c74530cb0844cbbc0",
-  "head": "5bac9ffc24cd38bb0c42060c74530cb0844cbbc0",
-  "phase": "implementation",
+  "head": "b68e1128a059a5db5f2b4faafe5d361864ab926a",
+  "phase": "review",
   "status": "active",
-  "next": "Make RustDesk use one canonical upright presentation path and add privacy-safe, build-identifiable runtime diagnostics for every connection component.",
+  "next": "Complete the active independent review, record its receipt, then push PR and merge after the required open-source-compliance check passes.",
   "blockers": [
     "Real Windows and macOS RustDesk runtime acceptance remains pending until a new signed package is installed",
     "The supplied 1.1.2 JSONL logs predate build-identifiable runtime facts and cannot prove which orientation patch was installed",
@@ -17,17 +17,24 @@
   ],
   "review": {
     "status": "REVIEW_REQUIRED",
-    "taskIds": [],
+    "taskIds": [
+      "/root/review_vnc_branch"
+    ],
     "reviewedHead": "5bac9ffc24cd38bb0c42060c74530cb0844cbbc0",
     "scope": [
       "entry/src/main/cpp/render/**",
       "entry/src/main/cpp/rustdesk/**",
       "entry/src/main/cpp/extensions/extension_loader_napi.cpp",
+      "entry/src/main/cpp/CMakeLists.txt",
+      "entry/src/main/cpp/napi_init.cpp",
+      "entry/src/main/cpp/cmake/GenerateBuildIdentity.cmake",
       "entry/src/main/cpp/types/librdpnapi/index.d.ts",
       "entry/src/main/ets/types/rdpnapi.d.ts",
       "entry/src/main/ets/services/DiagnosticCapture*.ets",
       "entry/src/main/ets/services/ExtensionLoader.ets",
+      "entry/src/main/ets/services/MoonlightHostService.ets",
       "entry/src/main/ets/services/MoonlightSessionCoordinator.ets",
+      "entry/src/main/ets/services/ReleaseNotesRegistry.ets",
       "entry/src/main/ets/pages/MoonlightStreamPage.ets",
       "entry/src/test/*Diagnostic*.test.ets",
       "entry/src/test/*RustDesk*.test.ets",
@@ -40,11 +47,11 @@
     "reason": "The new task starts from merged main and changes native presentation behavior plus the cross-protocol diagnostics schema, so a fresh independent review is mandatory."
   },
   "lastVerification": {
-    "baseline": "main@5bac9ffc2 was clean when this task branch started on 2026-08-27",
-    "testCompile": "pending for this task",
-    "assembleHap": "pending for this task",
-    "nativeTests": "pending for this task",
-    "compliance": "pending for this task",
+    "baseline": "main@5bac9ffc2 was clean when this task branch started on 2026-08-27; branch head b68e1128a",
+    "testCompile": "PASS exact default@OhosTestCompileArkTS on b68e1128a",
+    "assembleHap": "PASS exact signed assembleHap on b68e1128a; embedded build identity b68e1128a059",
+    "nativeTests": "PASS 808/808 outside sandbox; sandbox-only VNC loopback bind restriction was separately rerun",
+    "compliance": "PASS git diff --check and open-source Light gate",
     "runtime": "pending new Windows/macOS package acceptance"
   },
   "updated": "2026-08-27 Asia/Shanghai"
