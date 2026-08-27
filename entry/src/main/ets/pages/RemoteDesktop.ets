@@ -357,6 +357,13 @@ import {
   surfaceDeltaToRemote,
   surfacePointToRemote
 } from '../services/RemoteSurfaceTransformPolicy';
+import {
+  RemoteSurfaceResizeCoordinator,
+  RemoteSurfaceResizeGeometry,
+  RemoteSurfaceResizeObservation,
+  REMOTE_SURFACE_RESIZE_FRAME_MS,
+  REMOTE_SURFACE_RESIZE_SETTLE_MS
+} from '../services/RemoteSurfaceResizePolicy';
 import { shouldAcceptRendererViewportSnapshot } from '../services/RemoteRendererViewportPolicy';
 import {
   advanceCanvasTwoFingerMove,
@@ -1091,6 +1098,12 @@ struct RemoteDesktop {
   private surfaceHeight: number = 0;
   private renderWidthPx: number = 0;
   private renderHeightPx: number = 0;
+  private surfaceResizeCoordinator: RemoteSurfaceResizeCoordinator =
+    new RemoteSurfaceResizeCoordinator();
+  private surfaceResizeFrameTimer: number = -1;
+  private surfaceResizeSettleTimer: number = -1;
+  private surfaceResizeBatchStartWidth: number = 0;
+  private surfaceResizeBatchStartHeight: number = 0;
   private rendererSourceWidth: number = 0;
   private rendererSourceHeight: number = 0;
   private rendererViewportCache: RendererViewportSnapshot | null = null;
@@ -7453,6 +7466,7 @@ struct RemoteDesktop {
   }
 
   aboutToDisappear(): void {
+    this.clearRemoteSurfaceResizeWork();
     this.clearVncToolbarAutoCollapse();
     this.clearVncSurfaceResizeRefresh();
     this.releaseCanvasPinchInput('page-disappear');
@@ -8834,6 +8848,130 @@ struct RemoteDesktop {
       this.vncGeometrySyncTimer = -1;
     }
     this.clearVncSurfaceResizeRefresh();
+  }
+
+  private clearRemoteSurfaceResizeWork(): void {
+    if (this.surfaceResizeFrameTimer >= 0) {
+      clearTimeout(this.surfaceResizeFrameTimer);
+      this.surfaceResizeFrameTimer = -1;
+    }
+    if (this.surfaceResizeSettleTimer >= 0) {
+      clearTimeout(this.surfaceResizeSettleTimer);
+      this.surfaceResizeSettleTimer = -1;
+    }
+    this.surfaceResizeBatchStartWidth = 0;
+    this.surfaceResizeBatchStartHeight = 0;
+    this.surfaceResizeCoordinator.reset();
+  }
+
+  private scheduleRemoteSurfaceResizeFrame(): void {
+    if (this.surfaceResizeFrameTimer >= 0) {
+      return;
+    }
+    this.surfaceResizeFrameTimer = setTimeout((): void => {
+      this.surfaceResizeFrameTimer = -1;
+      this.flushRemoteSurfaceResizeFrame();
+    }, REMOTE_SURFACE_RESIZE_FRAME_MS);
+  }
+
+  private flushRemoteSurfaceResizeFrame(): void {
+    const geometry: RemoteSurfaceResizeGeometry | null =
+      this.surfaceResizeCoordinator.takeLatestForFrame();
+    if (geometry === null || this.renderWidthPx !== geometry.widthPx ||
+      this.renderHeightPx !== geometry.heightPx) {
+      return;
+    }
+    hilog.info(RD_DOMAIN, RD_TAG, 'surface frame resize=' +
+      Math.round(geometry.widthVp).toString() + 'x' +
+      Math.round(geometry.heightVp).toString() + 'vp render=' +
+      geometry.widthPx.toString() + 'x' + geometry.heightPx.toString() + 'px' +
+      ' revision=' + geometry.revision.toString());
+    if (this.rendererHandle <= 0 || this.renderPreservedInPip ||
+      this.pipSurfaceTransferInProgress) {
+      return;
+    }
+    this.loader.resizeRenderer(this.rendererHandle, geometry.widthPx, geometry.heightPx);
+    if (this.canvasTransformGestureModified) {
+      this.applyCanvasTransform();
+    } else {
+      this.resetCanvasToDisplayDefault();
+    }
+  }
+
+  private settleRemoteSurfaceResize(revision: number): void {
+    this.surfaceResizeSettleTimer = -1;
+    if (!this.surfaceResizeCoordinator.isLatest(revision)) {
+      return;
+    }
+    if (this.surfaceResizeFrameTimer >= 0) {
+      clearTimeout(this.surfaceResizeFrameTimer);
+      this.surfaceResizeFrameTimer = -1;
+      this.flushRemoteSurfaceResizeFrame();
+    }
+    const previousSurfaceWidth: number = this.surfaceResizeBatchStartWidth;
+    const previousSurfaceHeight: number = this.surfaceResizeBatchStartHeight;
+    this.surfaceResizeBatchStartWidth = 0;
+    this.surfaceResizeBatchStartHeight = 0;
+    this.restoreModifierPanelPositions(previousSurfaceWidth, previousSurfaceHeight);
+    if (this.isVncSession()) {
+      this.recomputeVncToolbarPlacement('surface-resize');
+    }
+    if (this.handleVisible) {
+      this.handleX = this.handleSide === 'left' ?
+        this.modifierHiddenLeftX() : this.modifierHiddenRightX(this.surfaceWidth);
+    }
+    if (this.shouldShowActiveDiagnostics()) {
+      if (this.isVncSession()) {
+        this.vncDiagnosticsDockY = this.avoidVncDiagnosticsDockCollision(
+          this.vncDiagnosticsDockSide, this.vncDiagnosticsDockY);
+      } else {
+        this.rustDeskDiagnosticsDockY = this.avoidRustDeskDiagnosticsDockCollision(
+          this.rustDeskDiagnosticsDockSide, this.rustDeskDiagnosticsDockY);
+      }
+    }
+    if (this.isVncSession()) {
+      this.scheduleVncSurfaceResizeRefresh(this.renderWidthPx, this.renderHeightPx);
+    }
+    this.syncRemoteSystemPointer('surface-resize-settled',
+      this.remoteSurfaceHovered !== false, true);
+    this.publishIndependentWindowReady('surface-resize-settled');
+  }
+
+  private handleRemoteSurfaceAreaChange(area: Area): void {
+    const widthVp: number = area.width as number;
+    const heightVp: number = area.height as number;
+    const widthPx: number = Math.round(this.vpToPx(widthVp));
+    const heightPx: number = Math.round(this.vpToPx(heightVp));
+    const observation: RemoteSurfaceResizeObservation =
+      this.surfaceResizeCoordinator.observe(widthVp, heightVp, widthPx, heightPx);
+    if (!observation.accepted || observation.geometry === null) {
+      return;
+    }
+    if (this.surfaceResizeSettleTimer < 0) {
+      this.surfaceResizeBatchStartWidth = this.surfaceWidth;
+      this.surfaceResizeBatchStartHeight = this.surfaceHeight;
+      this.releaseCanvasPinchInput('surface-resize');
+    } else {
+      clearTimeout(this.surfaceResizeSettleTimer);
+    }
+    this.surfaceWidth = widthVp;
+    this.surfaceHeight = heightVp;
+    this.renderWidthPx = widthPx;
+    this.renderHeightPx = heightPx;
+    this.invalidateRendererViewportCache();
+    // Input geometry changes immediately. Expensive overlay restoration and
+    // system-pointer ownership wait for the window transaction to settle.
+    this.touchpadAnchorValid = false;
+    this.resetTouchpadPointerCurve();
+    if (this.handleVisible) {
+      this.handleX = this.handleSide === 'left' ?
+        this.modifierHiddenLeftX() : this.modifierHiddenRightX(this.surfaceWidth);
+    }
+    this.scheduleRemoteSurfaceResizeFrame();
+    const revision: number = observation.geometry.revision;
+    this.surfaceResizeSettleTimer = setTimeout((): void => {
+      this.settleRemoteSurfaceResize(revision);
+    }, REMOTE_SURFACE_RESIZE_SETTLE_MS);
   }
 
   private clearVncSurfaceResizeRefresh(): void {
@@ -13676,6 +13814,7 @@ struct RemoteDesktop {
   }
 
   onSurfaceDestroyed(_surfaceId: string): void {
+    this.clearRemoteSurfaceResizeWork();
     this.releaseCanvasPinchInput('surface-destroyed');
     hilog.info(RD_DOMAIN, RD_TAG, 'XComponentController.onSurfaceDestroyed');
     this.restoreRemoteSystemPointer('surface-destroyed');
@@ -13732,6 +13871,7 @@ struct RemoteDesktop {
   }
 
   private onXComponentDestroy = (): void => {
+    this.clearRemoteSurfaceResizeWork();
     this.releaseCanvasPinchInput('xcomponent-destroy');
     this.restoreRemoteSystemPointer('xcomponent-destroy');
     if (this.pcWindowHandoffComplete) {
@@ -16910,67 +17050,7 @@ struct RemoteDesktop {
       .onKeyEvent(this.handleXComponentKey)
       .onMouse(this.handleXComponentMouse)
       .onAreaChange((_o: Area, n: Area): void => {
-        const wVp: number = n.width as number;
-        const hVp: number = n.height as number;
-        const wPx: number = Math.round(this.vpToPx(wVp));
-        const hPx: number = Math.round(this.vpToPx(hVp));
-        const previousSurfaceWidth: number = this.surfaceWidth;
-        const previousSurfaceHeight: number = this.surfaceHeight;
-        if (Math.abs(wVp - this.surfaceWidth) < 1 && Math.abs(hVp - this.surfaceHeight) < 1 &&
-          Math.abs(wPx - this.renderWidthPx) < 1 && Math.abs(hPx - this.renderHeightPx) < 1) {
-          return;
-        }
-        this.surfaceWidth = wVp;
-        this.surfaceHeight = hVp;
-        this.renderWidthPx = wPx;
-        this.renderHeightPx = hPx;
-        this.releaseCanvasPinchInput('surface-resize');
-        this.invalidateRendererViewportCache();
-        // A resize/orientation change can move the local TouchEvent origin
-        // while a finger is still down.  Consume the first post-resize move
-        // as a new anchor so the old coordinate space cannot create a jump.
-        this.touchpadAnchorValid = false;
-        this.resetTouchpadPointerCurve();
-        this.restoreModifierPanelPositions(previousSurfaceWidth, previousSurfaceHeight);
-        if (this.isVncSession()) {
-          this.recomputeVncToolbarPlacement('surface-resize');
-        }
-        if (this.handleVisible) {
-          this.handleX = this.handleSide === 'left' ?
-            this.modifierHiddenLeftX() : this.modifierHiddenRightX(this.surfaceWidth);
-        }
-        if (this.shouldShowActiveDiagnostics()) {
-          if (this.isVncSession()) {
-            this.vncDiagnosticsDockY = this.avoidVncDiagnosticsDockCollision(
-              this.vncDiagnosticsDockSide, this.vncDiagnosticsDockY);
-          } else {
-            this.rustDeskDiagnosticsDockY = this.avoidRustDeskDiagnosticsDockCollision(
-              this.rustDeskDiagnosticsDockSide, this.rustDeskDiagnosticsDockY);
-          }
-        }
-        hilog.info(RD_DOMAIN, RD_TAG, 'surface area=' + Math.round(wVp).toString() + 'x' +
-          Math.round(hVp).toString() + 'vp render=' + wPx.toString() + 'x' + hPx.toString() + 'px');
-        // resizeRenderer 告诉 GL 渲染器实际的 EGL surface 像素尺寸,
-        // 使 contain/letterbox viewport 计算与表面一致。必须调用。
-        if (this.rendererHandle > 0 && wPx > 0 && hPx > 0 &&
-          !this.renderPreservedInPip && !this.pipSurfaceTransferInProgress) {
-          this.loader.resizeRenderer(this.rendererHandle, wPx, hPx);
-          if (this.canvasTransformGestureModified) {
-            this.applyCanvasTransform();
-          } else {
-            this.resetCanvasToDisplayDefault();
-          }
-          if (this.isVncSession()) {
-            this.scheduleVncSurfaceResizeRefresh(wPx, hPx);
-          }
-        }
-        // HarmonyOS can restore the window cursor during a layout/orientation
-        // transaction. Re-apply the current owner after the new surface
-        // geometry is published so the system cursor and virtual overlay do
-        // not diverge after a long-running session.
-        this.syncRemoteSystemPointer('surface-area-change',
-          this.remoteSurfaceHovered !== false, true);
-        this.publishIndependentWindowReady('surface-area-change');
+        this.handleRemoteSurfaceAreaChange(n);
       })
 
       // Loading / 错误覆盖层

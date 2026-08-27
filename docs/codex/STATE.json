@@ -1,59 +1,48 @@
 {
   "schema": 1,
-  "task": "rustdesk-orientation-diagnostics",
-  "branch": "codex/rustdesk-orientation-diagnostics",
-  "base": "5bac9ffc24cd38bb0c42060c74530cb0844cbbc0",
-  "head": "26a874786b90fef3033bc5c9c828d6949e6d5263",
-  "phase": "delivery",
+  "task": "rustdesk-orientation-resize-remediation",
+  "branch": "codex/rustdesk-orientation-diagnostics-closeout",
+  "base": "3b9e2b59c06c344c1012efa80b61d043d4999433",
+  "head": "3b9e2b59c06c344c1012efa80b61d043d4999433",
+  "phase": "implementation",
   "status": "active",
-  "next": "Rerun the exact final gates, push the task branch, merge only after required open-source-compliance passes, then rebuild the signed HAP on synchronized main.",
+  "next": "Obtain Windows-side approval for simulator visual acceptance, commit the remediation, rerun final gates, obtain independent re-review, then push and merge.",
   "blockers": [
-    "Real Windows and macOS RustDesk runtime acceptance remains pending until a new signed package is installed",
-    "The supplied 1.1.2 JSONL logs predate build-identifiable runtime facts and cannot prove which orientation patch was installed",
+    "The simulator Windows peer is waiting for remote approval and its saved password field contains no actual password value",
+    "Physical Windows and macOS acceptance remains pending after simulator verification",
     "Device Hypium remains blocked by the unregistered ohosTest task 00306054; no device-test PASS is claimed"
   ],
   "planPaths": [
     "docs/codex/plans/2026-08-27-rustdesk-orientation-and-diagnostics.md"
   ],
   "review": {
-    "status": "PASS",
+    "status": "REVIEW_REQUIRED",
     "taskIds": [
       "/root/review_vnc_branch"
     ],
-    "reviewedHead": "b01f2d6e8b2c48c003bce00771a2303bf3926a4e",
+    "reviewedHead": "3b9e2b59c06c344c1012efa80b61d043d4999433",
     "scope": [
-      "entry/src/main/cpp/render/**",
-      "entry/src/main/cpp/rustdesk/**",
-      "entry/src/main/cpp/extensions/extension_loader_napi.cpp",
-      "entry/src/main/cpp/CMakeLists.txt",
-      "entry/src/main/cpp/napi_init.cpp",
-      "entry/src/main/cpp/cmake/GenerateBuildIdentity.cmake",
-      "entry/src/main/cpp/types/librdpnapi/index.d.ts",
-      "entry/src/main/ets/types/rdpnapi.d.ts",
-      "entry/src/main/ets/services/DiagnosticCapture*.ets",
-      "entry/src/main/ets/services/ExtensionLoader.ets",
-      "entry/src/main/ets/services/MoonlightHostService.ets",
-      "entry/src/main/ets/services/MoonlightSessionCoordinator.ets",
-      "entry/src/main/ets/services/ReleaseNotesRegistry.ets",
-      "entry/src/main/ets/pages/MoonlightStreamPage.ets",
-      "entry/src/test/*Diagnostic*.test.ets",
-      "entry/src/test/*RustDesk*.test.ets",
+      "entry/src/main/cpp/render/gl_renderer.cpp",
+      "entry/src/main/cpp/render/native_image_context_policy.h",
+      "entry/src/main/cpp/rustdesk/rustdesk_peer_presentation_policy.h",
+      "entry/src/main/cpp/test/native_image_context_policy_test.cpp",
+      "entry/src/main/ets/services/RemoteSurfaceResizePolicy.ets",
+      "entry/src/main/ets/pages/RemoteDesktop.ets",
+      "entry/src/test/RemoteSurfaceResizePolicy.test.ets",
       "entry/src/test/List.test.ets",
-      "entry/src/ohosTest/ets/test/List.test.ets",
-      "scripts/tests/test_build_identity.sh",
       "docs/codex/**"
     ],
-    "lastReceiptId": "rustdesk-orientation-diagnostics-b01f2d6e-2026-08-27",
+    "lastReceiptId": "",
     "findings": [],
-    "reason": "The same independent reviewer rechecked main..b01f2d6e8 after remediation and returned PASS with P0/P1/P2/P3 all zero."
+    "reason": "The prior PASS receipt is invalidated by the live Windows vertical-flip regression and the new orientation/resize remediation requires independent review."
   },
   "lastVerification": {
-    "baseline": "main@5bac9ffc2 was clean when this task branch started on 2026-08-27; remediation head 26a874786",
-    "testCompile": "PASS exact default@OhosTestCompileArkTS on 26a874786",
-    "assembleHap": "PASS exact signed assembleHap on 26a874786; embedded arm64 build identity 26a874786b90",
-    "nativeTests": "PASS 808/808 outside sandbox; sandbox-only VNC loopback bind restriction was separately rerun",
-    "compliance": "PASS build-identity regression script, git diff --check and open-source Light gate",
-    "runtime": "pending new Windows/macOS package acceptance"
+    "baseline": "main@3b9e2b59c was synchronized when remediation began on 2026-08-27",
+    "testCompile": "PASS exact default@OhosTestCompileArkTS on current working tree",
+    "assembleHap": "PASS exact signed assembleHap on current working tree",
+    "nativeTests": "PASS 810/810 outside sandbox",
+    "compliance": "PASS Light open-source gate and git diff --check",
+    "runtime": "working-tree HAP installed; Windows peer approval pending"
   },
   "updated": "2026-08-27 Asia/Shanghai"
 }

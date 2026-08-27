@@ -111,6 +111,7 @@ import hostAddConnectionHandoffPolicyTest from './HostAddConnectionHandoffPolicy
 import rustDeskHostAddHandoffTest from './RustDeskHostAddHandoff.test';
 import remoteCanvasTransformPolicyTest from './RemoteCanvasTransformPolicy.test';
 import remoteSurfaceTransformPolicyTest from './RemoteSurfaceTransformPolicy.test';
+import remoteSurfaceResizePolicyTest from './RemoteSurfaceResizePolicy.test';
 import remoteRendererViewportPolicyTest from './RemoteRendererViewportPolicy.test';
 import remoteCanvasGesturePolicyTest from './RemoteCanvasGesturePolicy.test';
 import remoteCanvasPinchInputPolicyTest from './RemoteCanvasPinchInputPolicy.test';
@@ -353,6 +354,7 @@ export default function testsuite() {
   rustDeskHostAddHandoffTest();
   remoteCanvasTransformPolicyTest();
   remoteSurfaceTransformPolicyTest();
+  remoteSurfaceResizePolicyTest();
   remoteRendererViewportPolicyTest();
   remoteCanvasGesturePolicyTest();
   remoteCanvasPinchInputPolicyTest();
