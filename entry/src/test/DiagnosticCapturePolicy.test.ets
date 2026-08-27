@@ -66,6 +66,8 @@ export default function diagnosticCapturePolicyTest(): void {
         frames: 10, dropped: 1, errors: 0, queueDepth: 2, latencyMs: 31
       };
       expect(diagnosticRuntimeFactsAreValid(facts)).assertTrue();
+      facts.presentation = 'validated_producer';
+      expect(diagnosticRuntimeFactsAreValid(facts)).assertTrue();
       facts.width = -1;
       expect(diagnosticRuntimeFactsAreValid(facts)).assertFalse();
       facts.width = 1920;

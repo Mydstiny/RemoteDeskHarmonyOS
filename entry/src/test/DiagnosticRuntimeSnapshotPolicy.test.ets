@@ -53,7 +53,7 @@ function desktopSnapshot(): RustDeskDiagnosticsSnapshot {
     receivedFps: 30, displayFps: 30, decodeFps: 30, bitrateKbps: 7000,
     codec: 0, width: 1920, height: 1080, connectionPath: 'relay',
     peerPlatform: 'windows', desktopSurfaceCompatibility: true,
-    nativeImagePresentation: 'identity', producerTransform: 'rotate_180',
+    nativeImagePresentation: 'validated_producer', producerTransform: 'rotate_180',
     lastFrameAtMs: 1000, lastFrameAgeMs: 10,
     lastPresentedAtMs: 1000, lastPresentedFrameAgeMs: 10,
     decodeOk: 118, decodeErrors: 2, decodeP50Us: 1000, decodeP95Us: 2000,
@@ -106,7 +106,7 @@ export default function diagnosticRuntimeSnapshotPolicyTest(): void {
         expect(facts.backend).assertEqual('hardware');
         expect(facts.codec).assertEqual('h264');
         expect(facts.peerPlatform).assertEqual('windows');
-        expect(facts.presentation).assertEqual('identity');
+        expect(facts.presentation).assertEqual('validated_producer');
         expect(facts.producerTransform).assertEqual('rotate_180');
         expect(facts.dropped).assertEqual(5);
       });

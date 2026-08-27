@@ -23,14 +23,15 @@
 
 ## Verification so far
 
-- Native host suite: `810/810` PASS outside the sandbox.
+- Native host suite: `811/811` PASS outside the sandbox, including resize/redraw ordering.
 - Exact `default@OhosTestCompileArkTS`: PASS on the current working tree.
 - Exact signed `assembleHap`: PASS on the current working tree.
 - Light open-source compliance and `git diff --check`: PASS.
+- Diagnostic runtime policy now preserves `validated_producer` as a closed canonical category instead of degrading it to `unknown`.
 - The signed working-tree HAP installed successfully on the local PC simulator while preserving app data.
 
 ## Acceptance boundary and blockers
 
 - The simulator's saved Windows peer currently has no actual device password value and the remote approval request is waiting for the Windows side. Final upright-image and resize visual evidence is pending that approval.
-- Independent review must be repeated because the prior PASS receipt covered the now-regressed identity policy, not this remediation.
+- Independent review found no P0/P1, one P2 diagnostic-enum gap and one P3 missing resize-redraw regression test. Both are remediated locally and require the same reviewer to recheck.
 - Device Hypium remains unavailable because task `00306054` is unregistered; compile coverage is required but is not reported as a device-test PASS.

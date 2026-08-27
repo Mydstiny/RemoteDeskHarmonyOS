@@ -24,10 +24,17 @@
     "scope": [
       "entry/src/main/cpp/render/gl_renderer.cpp",
       "entry/src/main/cpp/render/native_image_context_policy.h",
+      "entry/src/main/cpp/render/renderer_resize_redraw_policy.h",
       "entry/src/main/cpp/rustdesk/rustdesk_peer_presentation_policy.h",
       "entry/src/main/cpp/test/native_image_context_policy_test.cpp",
+      "entry/src/main/cpp/test/renderer_resize_redraw_policy_test.cpp",
+      "entry/src/main/cpp/CMakeLists.txt",
+      "entry/src/main/ets/services/DiagnosticCapturePolicy.ets",
+      "entry/src/main/ets/services/DiagnosticRuntimeSnapshotPolicy.ets",
       "entry/src/main/ets/services/RemoteSurfaceResizePolicy.ets",
       "entry/src/main/ets/pages/RemoteDesktop.ets",
+      "entry/src/test/DiagnosticCapturePolicy.test.ets",
+      "entry/src/test/DiagnosticRuntimeSnapshotPolicy.test.ets",
       "entry/src/test/RemoteSurfaceResizePolicy.test.ets",
       "entry/src/test/List.test.ets",
       "docs/codex/**"
@@ -40,7 +47,7 @@
     "baseline": "main@3b9e2b59c was synchronized when remediation began on 2026-08-27",
     "testCompile": "PASS exact default@OhosTestCompileArkTS on implementation tree 0c69433e2",
     "assembleHap": "PASS exact signed assembleHap on implementation tree 0c69433e2",
-    "nativeTests": "PASS 810/810 outside sandbox",
+    "nativeTests": "PASS 811/811 outside sandbox including resize/redraw ordering",
     "compliance": "PASS Light open-source gate and git diff --check",
     "runtime": "working-tree HAP installed; Windows peer approval pending"
   },
