@@ -95,6 +95,20 @@ export default function vncSessionUiPolicyTest(): void {
       expect(shouldHideVncSystemPointer('vnc', true, true, true, 'arrow', protocolHidden)).assertFalse();
     });
 
+    it('keeps_protocol_hidden_ownership_until_a_new_visible_shape_arrives', 0, (): void => {
+      const visibleShape = resolveVncCursorOwnershipEvidence(true, true, true, true);
+      const hiddenShape = resolveVncCursorOwnershipEvidence(true, true, false, false);
+      // Local move/wheel updates only the snapshot position, so the UI sees
+      // the same protocol flags until a new server shape is received.
+      const afterLocalInput = resolveVncCursorOwnershipEvidence(true, true, false, false);
+      const nextVisibleShape = resolveVncCursorOwnershipEvidence(true, true, true, true);
+      expect(visibleShape).assertEqual('protocol_cursor');
+      expect(hiddenShape).assertEqual('protocol_hidden');
+      expect(afterLocalInput).assertEqual('protocol_hidden');
+      expect(nextVisibleShape).assertEqual('protocol_cursor');
+      expect(shouldHideVncSystemPointer('vnc', true, true, true, 'auto', afterLocalInput)).assertTrue();
+    });
+
     it('resets_pointer_hiding_outside_the_active_vnc_surface', 0, (): void => {
       expect(shouldHideVncSystemPointer('vnc', false, true, true, 'auto',
         'framebuffer_composited')).assertFalse();

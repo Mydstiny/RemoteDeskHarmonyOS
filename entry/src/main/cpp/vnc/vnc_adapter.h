@@ -55,6 +55,9 @@ public:
         const VideoFrame& frame, const Render::DecoderSessionIdentity& capturedOwner);
     bool        StartSelfStoppingEngineForTesting();
     void        SetEngineStartHookForTesting(std::function<int(VncRfbEngine&)> hook);
+    void        InvokeProtocolCursorCallbackForTesting(
+        const VncCursorProtocol::DecodedCursor& cursor);
+    void        UpdatePredictedCursorPositionForTesting(int x, int y);
 #endif
     void        sendClipboardData(const uint8_t* data, uint32_t len) override;
     void        requestFrameRefresh() override;

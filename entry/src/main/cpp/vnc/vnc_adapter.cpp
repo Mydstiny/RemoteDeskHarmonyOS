@@ -101,6 +101,26 @@ struct VncCallbackState {
         endCallback();
         return static_cast<bool>(callback);
     }
+
+    void applyProtocolCursor(
+        uint64_t generation, const VncCursorProtocol::DecodedCursor& cursor) {
+        if (!cursor.visible) {
+            cursorStore.setVisibleIfGeneration(generation, false);
+            return;
+        }
+        if (cursorStore.setShapeIfGeneration(
+                generation, cursor.shapeId, cursor.width, cursor.height,
+                cursor.hotX, cursor.hotY, cursor.rgba)) {
+            cursorStore.setVisibleIfGeneration(generation, true);
+        }
+    }
+
+    void updatePredictedCursorPosition(uint64_t generation, int x, int y) {
+        // Local input predicts position only. Protocol visibility is
+        // authoritative: a hidden Cursor update must remain hidden until the
+        // server sends a new visible shape.
+        cursorStore.setPositionIfGeneration(generation, x, y);
+    }
 };
 
 struct VncAdapter::Impl {
@@ -272,16 +292,7 @@ int VncAdapter::connect(const ConnectionConfig& cfg) {
             callbackState->endCallback();
             return;
         }
-        if (!cursor.visible) {
-            callbackState->cursorStore.setVisibleIfGeneration(cursorGeneration, false);
-            callbackState->endCallback();
-            return;
-        }
-        if (callbackState->cursorStore.setShapeIfGeneration(
-                cursorGeneration, cursor.shapeId, cursor.width, cursor.height,
-                cursor.hotX, cursor.hotY, cursor.rgba)) {
-            callbackState->cursorStore.setVisibleIfGeneration(cursorGeneration, true);
-        }
+        callbackState->applyProtocolCursor(cursorGeneration, cursor);
         callbackState->endCallback();
     };
     slot->engine = std::make_shared<VncRfbEngine>(
@@ -456,10 +467,8 @@ void VncAdapter::sendMouse(int x, int y, MouseButton button, bool pressed) {
         if (!impl_->config.vncViewOnly &&
             impl_->engine->state() == ConnectionState::CONNECTED &&
             impl_->cursorGeneration != 0) {
-            impl_->callbackState->cursorStore.setPositionIfGeneration(
+            impl_->callbackState->updatePredictedCursorPosition(
                 impl_->cursorGeneration, x, y);
-            impl_->callbackState->cursorStore.setVisibleIfGeneration(
-                impl_->cursorGeneration, true);
         }
     }
 }
@@ -470,10 +479,8 @@ void VncAdapter::sendMouseWheel(int x, int y, int delta) {
         if (!impl_->config.vncViewOnly &&
             impl_->engine->state() == ConnectionState::CONNECTED &&
             impl_->cursorGeneration != 0) {
-            impl_->callbackState->cursorStore.setPositionIfGeneration(
+            impl_->callbackState->updatePredictedCursorPosition(
                 impl_->cursorGeneration, x, y);
-            impl_->callbackState->cursorStore.setVisibleIfGeneration(
-                impl_->cursorGeneration, true);
         }
     }
 }
@@ -638,6 +645,25 @@ void VncAdapter::SetEngineStartHookForTesting(
     std::function<int(VncRfbEngine&)> hook) {
     std::lock_guard<std::mutex> lock(impl_->mutex);
     impl_->engineStartHook = std::move(hook);
+}
+
+void VncAdapter::InvokeProtocolCursorCallbackForTesting(
+    const VncCursorProtocol::DecodedCursor& cursor) {
+    uint64_t generation = 0;
+    {
+        std::lock_guard<std::mutex> lock(impl_->mutex);
+        generation = impl_->cursorGeneration;
+    }
+    impl_->callbackState->applyProtocolCursor(generation, cursor);
+}
+
+void VncAdapter::UpdatePredictedCursorPositionForTesting(int x, int y) {
+    uint64_t generation = 0;
+    {
+        std::lock_guard<std::mutex> lock(impl_->mutex);
+        generation = impl_->cursorGeneration;
+    }
+    impl_->callbackState->updatePredictedCursorPosition(generation, x, y);
 }
 #endif
 
