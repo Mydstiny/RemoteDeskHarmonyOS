@@ -33,6 +33,7 @@
 - Local VNC move/wheel prediction updates cursor coordinates only; an authoritative protocol-hidden cursor cannot be resurrected until the server sends a new visible cursor shape.
 - Device acceptance required another 2x increase after the 5x checkpoint. Virtual touchpad, physical touchpad and physical mouse now share one VNC-only final wire gain of 10, while the native bounded burst accepts the maximum supported 80-step mouse event without truncation.
 - The repair release remains `1.1.3`; its cumulative update content is intentionally unchanged per product decision. SBOM provenance now points to source commit `5c20204b2` without dropping TOTP or Moonlight vendor inventory.
+- The macOS Hvigor guard now recognizes ArkTS `10310009` module-context failures for generated `ResourceTable.ts`, isolates the inconsistent generated cache and retries the original build once. The local DevEco `RemoteDesk SAFE [assembleApp]` configuration pins API 23 and restores the conventional `build/outputs` APP path after successful packaging.
 
 ## Verification
 
@@ -41,6 +42,9 @@
 - Current-source target native wheel case: PASS, directly validating all 80 wheel down/up pairs. Full host suite: `797 passed, 16 failed`; all 16 failures are the known TLS `fixture.start()` environment baseline and are unrelated to this change.
 - Exact `default@OhosTestCompileArkTS`: PASS (`BUILD SUCCESSFUL in 1 min 6 s 939 ms`).
 - Exact signed `assembleHap`: PASS (`BUILD SUCCESSFUL in 1 min 20 s 803 ms`).
+- Build-guard regression including the exact `10310009` / `Failed to find module info` / `ResourceTable.ts` signature: PASS.
+- DevEco `RemoteDesk SAFE [assembleApp]`: PASS (`BUILD SUCCESSFUL in 9 s 860 ms`, exit 0); signed APP restored at project `build/outputs`.
+- Post-guard exact `default@OhosTestCompileArkTS`: PASS (`BUILD SUCCESSFUL in 38 s 711 ms`); exact signed `assembleHap`: PASS (`BUILD SUCCESSFUL in 3 min 294 ms`).
 - `git diff --check` and open-source compliance Light: PASS.
 - Initial independent review of `dcf1b2fc4`: FAIL on permanent auto-pointer fallback and missing state/wire coverage; both findings were remediated in `45eb2c293`.
 - Follow-up review of `45eb2c293`: FAIL because local prediction could overwrite protocol-hidden visibility and the end-to-end ownership transition lacked coverage; both findings are remediated in `abc3ce5b8`.
@@ -52,7 +56,7 @@
 ## Next
 
 1. Install the reviewed 1.1.3 10x signed HAP on `192.168.3.236:40123` for user acceptance.
-2. Complete push/PR/main closure after acceptance.
+2. Independently review the build-guard delta at `bf397173e`, then complete push/PR/main closure after acceptance.
 
 ## Blockers
 

@@ -3,7 +3,7 @@
   "task": "vnc-cursor-wheel-regression",
   "branch": "codex/vnc-cursor-wheel-regression",
   "base": "0b8e5bf602a6f7ddf22918a5ec346f0be1b750a7",
-  "head": "8e9ed4ea856b9a3d01953e885562be059e12edf0",
+  "head": "bf397173e",
   "phase": "acceptance",
   "status": "active",
   "next": "Install the independently reviewed 1.1.3 VNC 10x wheel HAP on 40123 and obtain user acceptance.",
@@ -46,9 +46,9 @@
   },
   "lastVerification": {
     "baseline": "clean synchronized main@0b8e5bf60",
-    "testCompile": "PASS exact default@OhosTestCompileArkTS 1m6s939ms",
-    "assembleHap": "PASS exact signed assembleHap 1m20s803ms",
-    "targetedTests": "PASS direct 80-step VNC native wire case; full host native 797/813 with 16 known TLS fixture.start environment failures matching baseline",
+    "testCompile": "PASS exact default@OhosTestCompileArkTS 38s711ms after ResourceTable guard update",
+    "assembleHap": "PASS exact signed assembleHap 3m294ms after ResourceTable guard update",
+    "targetedTests": "PASS exact 10310009 ResourceTable module-context recovery regression; PASS DevEco SAFE assembleApp 9s860ms exit 0; PASS direct 80-step VNC native wire case; full host native 797/813 with 16 known TLS fixture.start environment failures matching baseline",
     "compliance": "PASS git diff --check, SBOM integrity checks and Light",
     "review": "PASS /root/vnc_wheel_review P0/P1/P2/P3 all zero at 8e9ed4ea8"
   },
