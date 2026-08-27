@@ -3,10 +3,10 @@
   "task": "rustdesk-orientation-resize-remediation",
   "branch": "codex/rustdesk-orientation-diagnostics-closeout",
   "base": "3b9e2b59c06c344c1012efa80b61d043d4999433",
-  "head": "3b9e2b59c06c344c1012efa80b61d043d4999433",
-  "phase": "implementation",
+  "head": "0c69433e2139ac88b92f6bddf853b6c0c9dfb44c",
+  "phase": "review",
   "status": "active",
-  "next": "Obtain Windows-side approval for simulator visual acceptance, commit the remediation, rerun final gates, obtain independent re-review, then push and merge.",
+  "next": "Run the exact final gates on the documented checkpoint, obtain independent re-review, and complete Windows simulator acceptance when the peer can approve.",
   "blockers": [
     "The simulator Windows peer is waiting for remote approval and its saved password field contains no actual password value",
     "Physical Windows and macOS acceptance remains pending after simulator verification",
@@ -38,8 +38,8 @@
   },
   "lastVerification": {
     "baseline": "main@3b9e2b59c was synchronized when remediation began on 2026-08-27",
-    "testCompile": "PASS exact default@OhosTestCompileArkTS on current working tree",
-    "assembleHap": "PASS exact signed assembleHap on current working tree",
+    "testCompile": "PASS exact default@OhosTestCompileArkTS on implementation tree 0c69433e2",
+    "assembleHap": "PASS exact signed assembleHap on implementation tree 0c69433e2",
     "nativeTests": "PASS 810/810 outside sandbox",
     "compliance": "PASS Light open-source gate and git diff --check",
     "runtime": "working-tree HAP installed; Windows peer approval pending"
