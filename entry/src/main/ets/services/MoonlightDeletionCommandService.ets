@@ -22,7 +22,11 @@ import {
   moonlightDeletionCommandTypeIsKnown,
   resolveMoonlightDeletionImpact
 } from './MoonlightDeletionPolicy';
-import { moonlightValidateRecord } from './MoonlightRecordPolicy';
+import {
+  moonlightRecordBusinessPayload,
+  moonlightValidateRecord
+} from './MoonlightRecordPolicy';
+import { moonlightCanonicalHostRecordId } from './MoonlightBackupPolicy';
 
 export type MoonlightDeletionPreviewCode =
   'ok' | 'unchanged' | 'invalid_request' | 'stale_lease' |
@@ -253,22 +257,25 @@ function previewsEqual(
 function recordIsTarget(
   command: MoonlightDeletionCommandType,
   record: MoonlightRecord,
-  hostId: string,
+  hostIds: string[],
   profileId: string
 ): boolean {
   if (command === 'delete_cloud_data' ||
       command === 'delete_local_data') { return true; }
   if (command === 'forget_host') {
-    return (record.recordType === 'host' && record.id === hostId) ||
+    return (record.recordType === 'host' &&
+      hostIds.indexOf(record.id) >= 0) ||
       ((record.recordType === 'profile' ||
-        record.recordType === 'trust') && record.ownerId === hostId);
+        record.recordType === 'trust') &&
+        hostIds.indexOf(record.ownerId) >= 0);
   }
   if (command === 'unpair_host') {
-    return record.recordType === 'trust' && record.ownerId === hostId;
+    return record.recordType === 'trust' &&
+      hostIds.indexOf(record.ownerId) >= 0;
   }
   if (command === 'delete_profile') {
     return record.recordType === 'profile' && record.id === profileId &&
-      (hostId === '' || record.ownerId === hostId);
+      (hostIds.length === 0 || hostIds.indexOf(record.ownerId) >= 0);
   }
   return false;
 }
@@ -378,6 +385,54 @@ export class MoonlightDeletionCommandService {
     // fenced transaction and owner-wide cleanup where applicable.
     const cache: MoonlightAppCacheEntry[] =
       loadedCache === null ? [] : loadedCache;
+    // Pre-release builds used more than one host-id derivation. Resolve every
+    // live alias of the selected Sunshine UUID before calculating the graph,
+    // so forget/unpair cannot remove a canonical root while leaving its
+    // profiles, trust, cache or runtime state behind.
+    const logicalHostIds: string[] = host === '' ? [] : [host];
+    let targetServerUuid: string = '';
+    if (command === 'forget_host' || command === 'unpair_host') {
+      for (let i = 0; i < records.length; i++) {
+        if (records[i].id !== host || records[i].recordType !== 'host' ||
+            records[i].deletedAt > 0 ||
+            !moonlightValidateRecord(records[i]).valid) {
+          continue;
+        }
+        const payload: Record<string, Object> | null =
+          moonlightRecordBusinessPayload(records[i]);
+        if (payload !== null && typeof payload['serverUuid'] === 'string') {
+          targetServerUuid = payload['serverUuid'] as string;
+        }
+        break;
+      }
+      if (targetServerUuid !== '') {
+        const canonicalHostId: string = moonlightCanonicalHostRecordId(
+          captured.ownerScopeId, targetServerUuid);
+        if (canonicalHostId !== '' &&
+            logicalHostIds.indexOf(canonicalHostId) < 0) {
+          logicalHostIds.push(canonicalHostId);
+        }
+        for (let i = 0; i < records.length; i++) {
+          if (records[i].deletedAt > 0 ||
+              !moonlightValidateRecord(records[i]).valid ||
+              (records[i].recordType !== 'host' &&
+               records[i].recordType !== 'trust')) {
+            continue;
+          }
+          const payload: Record<string, Object> | null =
+            moonlightRecordBusinessPayload(records[i]);
+          if (payload === null ||
+              payload['serverUuid'] !== targetServerUuid) {
+            continue;
+          }
+          const aliasHostId: string = records[i].recordType === 'host' ?
+            records[i].id : records[i].ownerId;
+          if (logicalHostIds.indexOf(aliasHostId) < 0) {
+            logicalHostIds.push(aliasHostId);
+          }
+        }
+      }
+    }
     const recordIds: string[] = [];
     const identityRecordIds: string[] = [];
     const cacheIds: string[] = [];
@@ -412,7 +467,7 @@ export class MoonlightDeletionCommandService {
       const physicalWipeIncludesTombstones: boolean =
         command === 'delete_cloud_data' || command === 'delete_local_data';
       if ((record.deletedAt === 0 || physicalWipeIncludesTombstones) &&
-          recordIsTarget(command, record, host, profile)) {
+          recordIsTarget(command, record, logicalHostIds, profile)) {
         recordIds.push(record.id);
         if (record.recordType === 'secret') {
           identityRecordIds.push(record.id);
@@ -432,7 +487,8 @@ export class MoonlightDeletionCommandService {
       }
       allCacheIds.push(entry.id);
       const targeted: boolean = command === 'delete_local_data' ||
-        (command === 'forget_host' && entry.hostId === host);
+        (command === 'forget_host' &&
+          logicalHostIds.indexOf(entry.hostId) >= 0);
       if (targeted) {
         cacheIds.push(entry.id);
         if (entry.artworkLocalPath !== '' &&

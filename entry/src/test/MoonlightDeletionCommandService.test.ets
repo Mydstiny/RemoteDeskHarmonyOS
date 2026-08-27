@@ -41,6 +41,9 @@ import {
   MoonlightHostUnpairPort,
   MoonlightIdentityDeletionPort
 } from '../main/ets/services/MoonlightDeletionCommandService';
+import {
+  moonlightCanonicalHostRecordId
+} from '../main/ets/services/MoonlightBackupPolicy';
 
 function lease(owner: string = 'owner-a', generation: number = 1,
   storeInstanceId: number = 1): AccountSessionLease {
@@ -129,6 +132,18 @@ function record(type: MoonlightRecordType, id: string,
     value.keyVersion = 1;
     value.aadVersion = 1;
   }
+  value.payloadHashSha256 = moonlightRecordPayloadHashSha256(value);
+  return value;
+}
+
+function recordWithServerUuid(type: 'host' | 'trust', id: string,
+  hostId: string, serverUuid: string): MoonlightRecord {
+  const value: MoonlightRecord = record(
+    type, id, 'owner-a', hostId);
+  const payload: Record<string, Object> =
+    JSON.parse(value.payload) as Record<string, Object>;
+  payload['serverUuid'] = serverUuid;
+  value.payload = JSON.stringify(payload);
   value.payloadHashSha256 = moonlightRecordPayloadHashSha256(value);
   return value;
 }
@@ -675,6 +690,47 @@ export default function moonlightDeletionCommandServiceTest(): void {
         expect((port.rows.get('trust-1') as MoonlightRecord).deletedAt)
           .assertEqual(300);
         expect(port.cache.size).assertEqual(1);
+      });
+
+    it('forgets_the_complete_canonical_graph_when_a_legacy_alias_is_selected',
+      0, async (): Promise<void> => {
+        const port = new MemoryDeletionPort();
+        const serverUuid: string = 'shared-sunshine-server';
+        const legacyHostId: string = 'moonlight-host|legacy-v0';
+        const canonicalHostId: string = moonlightCanonicalHostRecordId(
+          'owner-a', serverUuid);
+        const rows: MoonlightRecord[] = [
+          recordWithServerUuid('host', legacyHostId, '', serverUuid),
+          recordWithServerUuid('host', canonicalHostId, '', serverUuid),
+          record('profile', 'canonical-profile', 'owner-a', canonicalHostId),
+          recordWithServerUuid('trust', 'canonical-trust',
+            canonicalHostId, serverUuid)
+        ];
+        for (let i = 0; i < rows.length; i++) {
+          port.rows.set(rows[i].id, rows[i]);
+        }
+        const cached: MoonlightAppCacheEntry =
+          cacheEntry(canonicalHostId, 'desktop');
+        port.cache.set(cached.id, cached);
+        const service = new MoonlightDeletionCommandService(port);
+        const preview = service.preview(
+          lease(), 'forget_host', legacyHostId);
+        expect(preview.code).assertEqual('ok');
+        expect(preview.context.hostRecordCount).assertEqual(2);
+        expect(preview.context.profileRecordCount).assertEqual(1);
+        expect(preview.context.trustRecordCount).assertEqual(1);
+        expect(preview.context.appCacheCount).assertEqual(1);
+        const result = await service.execute(lease(), preview, 300);
+        expect(result.ok).assertTrue();
+        expect((port.rows.get(legacyHostId) as MoonlightRecord).deletedAt)
+          .assertEqual(300);
+        expect((port.rows.get(canonicalHostId) as MoonlightRecord).deletedAt)
+          .assertEqual(300);
+        expect((port.rows.get('canonical-profile') as MoonlightRecord)
+          .deletedAt).assertEqual(300);
+        expect((port.rows.get('canonical-trust') as MoonlightRecord)
+          .deletedAt).assertEqual(300);
+        expect(port.cache.size).assertEqual(0);
       });
 
     it('forgets_a_host_after_unpair_without_tombstoning_trust_twice', 0,
