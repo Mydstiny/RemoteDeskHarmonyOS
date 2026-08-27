@@ -384,6 +384,14 @@ fi
 
 generated_cache_failure() {
     capture_path="$1"
+    if grep -F 'ArkTS: INTERNAL ERROR' "$capture_path" >/dev/null 2>&1 &&
+       grep -F 'Failed to find module info' "$capture_path" >/dev/null 2>&1 &&
+       grep -F 'ResourceTable.ts' "$capture_path" >/dev/null 2>&1 && {
+           grep -F "$project_root/entry/build" "$capture_path" >/dev/null 2>&1 ||
+           grep -F "$official_project_cache/entry/build" "$capture_path" >/dev/null 2>&1
+       }; then
+        return 0
+    fi
     if grep -F 'Failed to read file to buffer' "$capture_path" >/dev/null 2>&1 &&
        grep -F "$official_build_cache" "$capture_path" >/dev/null 2>&1; then
         return 0

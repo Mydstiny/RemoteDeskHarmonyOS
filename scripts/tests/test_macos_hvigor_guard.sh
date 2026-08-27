@@ -123,6 +123,15 @@ find "$cache_root/quarantine" -maxdepth 1 -type d \
 
 rm -f "$fake_cache_corruption_seen"
 REMOTE_DESKTOP_FAKE_HVIGOR_CACHE_CORRUPTION=1 \
+REMOTE_DESKTOP_FAKE_HVIGOR_CACHE_CORRUPTION_MESSAGE="hvigor ERROR: 10310009 ArkTS: INTERNAL ERROR
+Error Message: Failed to find module info. Failed to find module info with '$project_root/entry/build/default/generated/r/default/ResourceTable.ts' from the context information." \
+    run_guard 0 assembleHap --no-daemon
+[ -f "$fake_cache_corruption_seen" ]
+[ ! -f "$cache_root/last-build.incomplete" ]
+tail -n 2 "$fake_log" | grep -F 'assembleHap --no-daemon' | [ "$(wc -l | tr -d ' ')" -eq 2 ]
+
+rm -f "$fake_cache_corruption_seen"
+REMOTE_DESKTOP_FAKE_HVIGOR_CACHE_CORRUPTION=1 \
 REMOTE_DESKTOP_FAKE_HVIGOR_CACHE_CORRUPTION_MESSAGE="Failed to find the incremental input file: $cache_root/build-cache/project/entry/build/default/intermediates/stripped_native_libs/default." \
     run_guard 0 assembleHap --no-daemon
 [ -f "$fake_cache_corruption_seen" ]
