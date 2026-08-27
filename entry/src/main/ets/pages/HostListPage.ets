@@ -17615,14 +17615,14 @@ struct HostListPage {
     Column() {
       this.classicHostEditorTitle()
       if (this.classicHostEditorUsesIntrinsicLayout()) {
-        // Phone VNC follows the FIT_CONTENT Sheet contract: no nested Scroll
-        // or remaining-space weight participates in intrinsic measurement.
+        // VNC Host FABs use the same intrinsic tree on Phone/Pad/PC: no nested
+        // Scroll or remaining-space weight can turn the action row into a bar.
         this.classicHostEditorFields()
       } else {
         Scroll() {
           this.classicHostEditorFields()
         }
-        // Bounded VNC/SSH surfaces keep their established internal viewport.
+        // Other bounded classic surfaces keep their established viewport.
         .constraintSize({ maxHeight: this.proto === 'vnc' ? '100%' : 420 })
         .layoutWeight(this.proto === 'vnc' ? 1 : 0)
         .scrollBar(BarState.Auto)

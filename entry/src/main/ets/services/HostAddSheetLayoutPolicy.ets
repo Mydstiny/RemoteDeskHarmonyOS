@@ -12,33 +12,25 @@ export function resolveActiveHostAddProtocol(modernProtocol: string,
 }
 
 /**
- * Phone bottom sheets follow the active wizard step's intrinsic height.
- * Pad/PC retain the established large centered surface for long VNC/SSH
- * forms, where the extra space is intentional.
+ * VNC host-add sheets follow the active wizard step's intrinsic height on
+ * every device class. Pad/PC retain the established large SSH workspace.
  */
 export function resolveHostAddSheetHeightMode(protocol: string,
   breakpoint: string): HostAddSheetHeightMode {
-  const longFlow: boolean = protocol === 'vnc' || protocol === 'ssh';
-  if (longFlow && breakpoint !== 'sm') {
+  if (protocol === 'ssh' && breakpoint !== 'sm') {
     return 'large';
   }
   return 'fit';
 }
 
-/**
- * Phone VNC uses the same system-owned IME translation as the other FAB
- * forms. Bounded Pad/PC VNC sheets keep their internal scroll viewport.
- */
-export function resolveHostAddSheetKeyboardAvoidMode(protocol: string,
-  breakpoint: string): HostAddSheetKeyboardAvoidMode {
-  if (protocol === 'vnc' && breakpoint !== 'sm') {
-    return 'resize';
-  }
+/** Every host-add FAB delegates IME movement and overflow to bindSheet. */
+export function resolveHostAddSheetKeyboardAvoidMode(_protocol: string,
+  _breakpoint: string): HostAddSheetKeyboardAvoidMode {
   return 'translateAndScroll';
 }
 
-/** Only the phone VNC host-add flow opts into the intrinsic scaffold. */
+/** Every VNC host-add FAB uses one intrinsic content tree on Phone/Pad/PC. */
 export function resolveHostAddSheetContentMode(protocol: string,
-  breakpoint: string): HostAddSheetContentMode {
-  return protocol === 'vnc' && breakpoint === 'sm' ? 'fitContent' : 'bounded';
+  _breakpoint: string): HostAddSheetContentMode {
+  return protocol === 'vnc' ? 'fitContent' : 'bounded';
 }

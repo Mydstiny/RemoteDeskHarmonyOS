@@ -20,23 +20,23 @@ export default function hostAddSheetLayoutPolicyTest(): void {
     });
 
     it('keeps_pad_long_flows_usable', 0, (): void => {
-      expect(resolveHostAddSheetHeightMode('vnc', 'md')).assertEqual('large');
+      expect(resolveHostAddSheetHeightMode('vnc', 'md')).assertEqual('fit');
       expect(resolveHostAddSheetHeightMode('ssh', 'md')).assertEqual('large');
       expect(resolveHostAddSheetKeyboardAvoidMode('vnc', 'md'))
-        .assertEqual('resize');
+        .assertEqual('translateAndScroll');
       expect(resolveHostAddSheetKeyboardAvoidMode('ssh', 'md'))
         .assertEqual('translateAndScroll');
-      expect(resolveHostAddSheetContentMode('vnc', 'md')).assertEqual('bounded');
+      expect(resolveHostAddSheetContentMode('vnc', 'md')).assertEqual('fitContent');
     });
 
     it('keeps_pc_long_flows_usable', 0, (): void => {
-      expect(resolveHostAddSheetHeightMode('vnc', 'xl')).assertEqual('large');
+      expect(resolveHostAddSheetHeightMode('vnc', 'xl')).assertEqual('fit');
       expect(resolveHostAddSheetHeightMode('ssh', 'xl')).assertEqual('large');
       expect(resolveHostAddSheetKeyboardAvoidMode('vnc', 'xl'))
-        .assertEqual('resize');
+        .assertEqual('translateAndScroll');
       expect(resolveHostAddSheetKeyboardAvoidMode('ssh', 'xl'))
         .assertEqual('translateAndScroll');
-      expect(resolveHostAddSheetContentMode('vnc', 'xl')).assertEqual('bounded');
+      expect(resolveHostAddSheetContentMode('vnc', 'xl')).assertEqual('fitContent');
     });
 
     it('routes_classic_protocols_before_resolving_sheet_layout', 0, (): void => {
@@ -48,6 +48,8 @@ export default function hostAddSheetLayoutPolicyTest(): void {
       const classicPhoneVnc: string = resolveActiveHostAddProtocol('', 'vnc', false);
       const classicPadSsh: string = resolveActiveHostAddProtocol('', 'ssh', false);
       expect(resolveHostAddSheetContentMode(classicPhoneVnc, 'sm')).assertEqual('fitContent');
+      expect(resolveHostAddSheetContentMode(classicPhoneVnc, 'md')).assertEqual('fitContent');
+      expect(resolveHostAddSheetContentMode(classicPhoneVnc, 'xl')).assertEqual('fitContent');
       expect(resolveHostAddSheetHeightMode(classicPadSsh, 'md')).assertEqual('large');
     });
 
