@@ -4,7 +4,7 @@
 
 - Task: `moonlight-cloud-delete-compat`
 - Branch/base: `codex/moonlight-cloud-delete-compat` from synchronized `main@c0e0b5fdc`.
-- Phase: validated implementation; checkpoint commit and independent review next.
+- Phase: independently reviewed and release-gated; remote PR delivery next.
 - Plan: `docs/codex/plans/2026-08-27-moonlight-cloud-delete-compat.md`
 
 ## Confirmed diagnosis
@@ -25,11 +25,12 @@
 ## Verification
 
 - Baseline: clean synchronized `main@c0e0b5fdc`.
-- Exact `default@OhosTestCompileArkTS`: PASS (`BUILD SUCCESSFUL in 24 s 411 ms`).
-- Exact signed `assembleHap`: PASS (`BUILD SUCCESSFUL in 22 s 828 ms`).
+- Reviewed code head: `b295ec7575a212aab322e45515c9c9a6af3c912b` (three focused commits over `main`).
+- Exact `default@OhosTestCompileArkTS`: PASS on the clean reviewed head (`BUILD SUCCESSFUL in 6 s 152 ms`).
+- Exact signed `assembleHap`: PASS on the clean reviewed head (`BUILD SUCCESSFUL in 13 s 195 ms`); signed HAP SHA-256 `7e9446ce1b6577202561b525580aaba4b3d0c73ae2ab978a9d8596fdb1324c01`.
 - Light open-source compliance: PASS; `git diff --check`: PASS.
 - Regression sources cover cloud-unavailable ordinary deletion, unreadable selection, non-deployed cloud table, cloud-first tombstone convergence, reset-epoch revival and old checkpoint completion.
-- Independent review is required after the implementation checkpoint commit.
+- Independent review `/root/review_moonlight_delete`: initial P2/P3 findings remediated; final P0/P1/P2/P3 all zero.
 
 ## Blockers
 

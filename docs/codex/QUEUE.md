@@ -4,14 +4,13 @@ Updated: 2026-08-27 Asia/Shanghai
 
 ## Now
 
-1. Create the validated implementation checkpoint commit.
-2. Obtain independent compatibility/data-loss review for the exact committed delta.
-3. Fix any findings, rerun both exact Hvigor gates and deliver through PR.
+1. Push `codex/moonlight-cloud-delete-compat` and open the PR.
+2. Wait for required remote checks and merge to `main`.
+3. Synchronize local `main` and clean the merged task branch.
 
 ## Next
 
-1. Record the review receipt and final signed-HAP identity.
-2. Merge the reviewed branch to `main` after remote checks pass.
+1. Preserve the reviewed receipt and signed-HAP identity in task history.
 
 ## Later / external acceptance
 
