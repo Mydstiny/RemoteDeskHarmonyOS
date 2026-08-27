@@ -1281,7 +1281,7 @@ void VncRfbEngine::sendMouseWheel(int x, int y, int delta) {
     if (config_.vncViewOnly || state() != ConnectionState::CONNECTED || delta == 0) return;
     std::lock_guard<std::mutex> lock(inputMutex_);
     // Keep a logical wheel burst contiguous on the RFB stream and pay for one
-    // socket/TLS write instead of up to 64 tiny writes.  This also prevents a
+    // socket/TLS write instead of up to 128 tiny writes.  This also prevents a
     // pipelined framebuffer request from landing between wheel down/up pairs.
     const std::vector<uint8_t> packets = VncRfbProtocol::buildPointerWheelBurst(
         buttonMask_, x, y, delta, framebufferWidth_, framebufferHeight_);
