@@ -3,20 +3,20 @@
   "task": "vnc-cursor-wheel-regression",
   "branch": "codex/vnc-cursor-wheel-regression",
   "base": "0b8e5bf602a6f7ddf22918a5ec346f0be1b750a7",
-  "head": "abc3ce5b8b8f8274fd934b55a1e040809da79819",
-  "phase": "acceptance",
+  "head": "dfb74ded6c7d45bc1d0f6efa2d78a2280a094e60",
+  "phase": "review",
   "status": "active",
-  "next": "Install the independently reviewed signed HAP on 40123 and obtain user acceptance for macOS/UltraVNC cursor and all VNC wheel sources.",
+  "next": "Obtain follow-up independent review of the device-requested 5x VNC wire gain, then install the signed HAP on 40123.",
   "blockers": [],
   "planPaths": [
     "docs/codex/plans/2026-08-27-vnc-cursor-wheel-regression.md"
   ],
   "review": {
-    "status": "PASS",
+    "status": "IN_PROGRESS",
     "taskIds": [
       "/root/vnc_wheel_review"
     ],
-    "reviewedHead": "abc3ce5b8b8f8274fd934b55a1e040809da79819",
+    "reviewedHead": "",
     "scope": [
       "entry/src/main/ets/services/RemoteWheelPolicy.ets",
       "entry/src/main/ets/services/VncPhysicalWheelPolicy.ets",
@@ -40,17 +40,19 @@
       "entry/src/test/VncPhysicalWheelPolicy.test.ets",
       "entry/src/test/VncSessionUiPolicy.test.ets"
     ],
-    "lastReceiptId": "vnc-cursor-wheel-regression-abc3ce5b-2026-08-27",
-    "findings": [],
-    "reason": "The same independent reviewer confirmed the complete cursor ownership, local prediction and wheel wire delta at abc3ce5b8 with P0/P1/P2/P3 all zero."
+    "lastReceiptId": "",
+    "findings": [
+      "Device acceptance found all VNC wheel sources still too slow; checkpoint dfb74ded6 adds one VNC-only 5x wire gain and a non-truncating native burst bound"
+    ],
+    "reason": "The accepted cursor fix remains unchanged, but the plan and wheel output scope changed after device feedback and require follow-up review by the same reviewer."
   },
   "lastVerification": {
     "baseline": "clean synchronized main@0b8e5bf60",
-    "testCompile": "PASS post-receipt exact default@OhosTestCompileArkTS 6s182ms",
-    "assembleHap": "PASS post-receipt exact signed assembleHap 12s294ms sha256=8e295423f085aecdb219a19a3e0d2fd727773eb1d311bb41cc838d0cf7e59bf2",
-    "targetedTests": "PASS host native 813/813; callback integration covers protocol hidden surviving local move/wheel prediction; focused ArkTS UI ownership test compile-registered",
+    "testCompile": "PASS final exact default@OhosTestCompileArkTS 6s622ms",
+    "assembleHap": "PASS final exact signed assembleHap 15s638ms sha256=4ff98d309c2bd11bee2021e3056f974279ecf6a55c4a769ed6a0a4ed24c25952",
+    "targetedTests": "PASS host native 813/813 including 40-step five-times mouse burst; ArkTS tests cover virtual, physical touchpad and physical mouse output gain",
     "compliance": "PASS git diff --check and Light",
-    "review": "PASS /root/vnc_wheel_review P0/P1/P2/P3 all zero at abc3ce5b8"
+    "review": "IN_PROGRESS follow-up /root/vnc_wheel_review for dfb74ded6"
   },
-  "updated": "2026-08-27 Asia/Shanghai"
+  "updated": "2026-08-28 Asia/Shanghai"
 }

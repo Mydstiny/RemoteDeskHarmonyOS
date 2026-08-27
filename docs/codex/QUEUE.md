@@ -1,11 +1,11 @@
 # VNC Cursor and Wheel Regression Queue
 
-Updated: 2026-08-27 Asia/Shanghai
+Updated: 2026-08-28 Asia/Shanghai
 
 ## Now
 
-1. Install reviewed checkpoint `abc3ce5b8` on `192.168.3.236:40123`.
-2. Capture user acceptance for VNC cursor and all three wheel input sources.
+1. Complete follow-up review of the 5x VNC wheel checkpoint `dfb74ded6`.
+2. Install it on `192.168.3.236:40123` and capture user acceptance.
 
 ## Next
 

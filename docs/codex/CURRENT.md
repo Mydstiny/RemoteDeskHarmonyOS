@@ -4,7 +4,7 @@
 
 - Task: `vnc-cursor-wheel-regression`
 - Branch/base: `codex/vnc-cursor-wheel-regression` from synchronized `main@0b8e5bf60`.
-- Phase: reviewed device acceptance for checkpoint `abc3ce5b8`.
+- Phase: independent follow-up review of device-feedback checkpoint `dfb74ded6`.
 - Plan: `docs/codex/plans/2026-08-27-vnc-cursor-wheel-regression.md`
 
 ## Objective
@@ -31,24 +31,27 @@
 - Non-zero VNC protocol cursor rectangles with an all-transparent mask are treated as hidden and cannot replace the local pointer.
 - Native RFB wheel bursts are built by a tested byte-level helper that preserves held buttons, clamps coordinates and bounds one logical event to 32 button-4/5 down/up pairs.
 - Local VNC move/wheel prediction updates cursor coordinates only; an authoritative protocol-hidden cursor cannot be resurrected until the server sends a new visible cursor shape.
+- Device acceptance required at least 5x more scroll distance. Virtual touchpad, physical touchpad and physical mouse now share one VNC-only final wire gain of 5, while the native bounded burst accepts the maximum supported 40-step mouse event without truncation.
 
 ## Verification
 
 - Baseline `main@0b8e5bf60` was clean and equal to `origin/main` when the task started.
 - Focused ArkTS policy tests are compile-registered by the passing test target.
 - Host native suite: PASS, `813 passed, 0 failed`, including transparent VNC cursor and exact wheel-burst wire cases.
-- Post-receipt exact `default@OhosTestCompileArkTS`: PASS (`BUILD SUCCESSFUL in 6 s 182 ms`).
-- Post-receipt exact signed `assembleHap`: PASS (`BUILD SUCCESSFUL in 12 s 294 ms`).
-- Installable signed HAP SHA-256: `8e295423f085aecdb219a19a3e0d2fd727773eb1d311bb41cc838d0cf7e59bf2`.
+- Final exact `default@OhosTestCompileArkTS`: PASS (`BUILD SUCCESSFUL in 6 s 622 ms`).
+- Final exact signed `assembleHap`: PASS (`BUILD SUCCESSFUL in 15 s 638 ms`).
+- Signed HAP SHA-256: `4ff98d309c2bd11bee2021e3056f974279ecf6a55c4a769ed6a0a4ed24c25952`.
 - `git diff --check` and open-source compliance Light: PASS.
 - Initial independent review of `dcf1b2fc4`: FAIL on permanent auto-pointer fallback and missing state/wire coverage; both findings were remediated in `45eb2c293`.
 - Follow-up review of `45eb2c293`: FAIL because local prediction could overwrite protocol-hidden visibility and the end-to-end ownership transition lacked coverage; both findings are remediated in `abc3ce5b8`.
-- Independent re-review by `/root/vnc_wheel_review`: PASS, P0/P1/P2/P3 all zero.
+- Previous cursor/wheel re-review by `/root/vnc_wheel_review`: PASS at `abc3ce5b8`; device feedback then superseded the wheel-output checkpoint.
+- Follow-up review of `dfb74ded6`: in progress as `/root/vnc_wheel_review`.
 
 ## Next
 
-1. Install the reviewed signed HAP on `192.168.3.236:40123` for user acceptance.
-2. Complete push/PR/main closure after acceptance.
+1. Complete follow-up review of `dfb74ded6`.
+2. Install the reviewed signed HAP on `192.168.3.236:40123` for user acceptance.
+3. Complete push/PR/main closure after acceptance.
 
 ## Blockers
 
