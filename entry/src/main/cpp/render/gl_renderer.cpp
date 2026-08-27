@@ -5,6 +5,7 @@
  */
 
 #include "gl_renderer.h"
+#include "renderer_resize_redraw_policy.h"
 #include "presentation_geometry_policy.h"
 #include "gl_surface_lifecycle_policy.h"
 #include <napi/native_api.h>
@@ -1280,15 +1281,29 @@ RdpPresentMetrics GLRenderer::PresentFrame(
 }
 
 void GLRenderer::Resize(int width, int height) {
-    std::lock_guard<std::mutex> lock(lifecycleMutex_);
-    ApplyPendingCanvasTransformLocked();
-    width_ = width;
-    height_ = height;
-    // Resize recalculates the logical remote viewport. Decoder dimensions are
-    // only fallbacks while the first logical frame is still unavailable.
-    CalculateActiveViewport(lastVpX_, lastVpY_, lastVpW_, lastVpH_);
-    PublishViewportSnapshot(lastVpX_, lastVpY_, lastVpW_, lastVpH_);
-    OH_LOG_INFO(LOG_APP, "[GL] 渲染区域大小改为 %{public}dx%{public}d", width, height);
+    Render::CommitRendererResizeAndRedraw(
+        [this, width, height]() {
+            std::lock_guard<std::mutex> lock(lifecycleMutex_);
+            if (!Render::CommitRendererResizeGeometry(
+                    width_, height_, width, height)) {
+                return false;
+            }
+            ApplyPendingCanvasTransformLocked();
+            // Resize recalculates the logical remote viewport. Decoder dimensions are
+            // only fallbacks while the first logical frame is still unavailable.
+            CalculateActiveViewport(lastVpX_, lastVpY_, lastVpW_, lastVpH_);
+            PublishViewportSnapshot(lastVpX_, lastVpY_, lastVpW_, lastVpH_);
+            return true;
+        },
+        [this, width, height]() {
+            OH_LOG_INFO(LOG_APP, "[GL] 渲染区域大小改为 %{public}dx%{public}d", width, height);
+            // A quiet desktop may not deliver another encoded frame for several
+            // seconds. Wake the current OES/raw owner after publishing the new
+            // viewport so the retained texture is fitted to the resized window in
+            // the same display interval instead of leaving WindowManager to stretch
+            // the previous swap until the next network frame arrives.
+            RequestRedraw();
+        });
 }
 
 void GLRenderer::SetSourceSize(int width, int height) {

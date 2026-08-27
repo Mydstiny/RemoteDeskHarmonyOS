@@ -12,6 +12,7 @@ using NativeImageTransform = std::array<float, 16>;
 enum class NativeImagePresentationMode : uint8_t {
     Identity = 0,
     ProducerTransform = 1,
+    ValidatedProducerTransform = 2,
 };
 
 enum class NativeImageTransformClass : uint8_t {
@@ -40,24 +41,36 @@ inline NativeImageTransform IdentityNativeImageTransform() {
     };
 }
 
+inline NativeImageTransformClass ClassifyNativeImageProducerTransform(
+    int32_t readResult, const float matrix[16]);
+
 /**
  * Return the texture transform for an encoded remote-desktop frame.
  *
- * The transform source is an explicit protocol decision. RustDesk and the
- * released mobile paths retain the renderer's top-left identity contract.
- * A protocol that explicitly owns producer-space presentation may still opt
- * into the valid NativeImage matrix; peer platform labels never select it.
+ * The transform source is an explicit protocol decision. A protocol may use
+ * identity, trust every finite producer matrix, or accept only the four
+ * axis-aligned transforms understood by this renderer. Peer platform labels
+ * never select or reinterpret a matrix.
  */
 inline NativeImageTransform ResolveNativeImagePresentationTransform(
     NativeImagePresentationMode mode,
     int32_t readResult,
     const float matrix[16],
     const NativeImageTransform& previous) {
-    if (mode != NativeImagePresentationMode::ProducerTransform) {
+    if (mode == NativeImagePresentationMode::Identity) {
         return IdentityNativeImageTransform();
     }
     if (readResult != 0 || matrix == nullptr) {
         return previous;
+    }
+    if (mode == NativeImagePresentationMode::ValidatedProducerTransform) {
+        const NativeImageTransformClass transformClass =
+            ClassifyNativeImageProducerTransform(readResult, matrix);
+        if (transformClass == NativeImageTransformClass::Other ||
+            transformClass == NativeImageTransformClass::ReadFailed ||
+            transformClass == NativeImageTransformClass::NotSampled) {
+            return previous;
+        }
     }
     NativeImageTransform resolved {};
     for (size_t index = 0; index < resolved.size(); ++index) {
@@ -138,8 +151,15 @@ inline const char* NativeImageTransformClassName(
 
 inline const char* NativeImagePresentationModeName(
     NativeImagePresentationMode mode) {
-    return mode == NativeImagePresentationMode::ProducerTransform
-        ? "producer" : "identity";
+    switch (mode) {
+        case NativeImagePresentationMode::ProducerTransform:
+            return "producer";
+        case NativeImagePresentationMode::ValidatedProducerTransform:
+            return "validated_producer";
+        case NativeImagePresentationMode::Identity:
+        default:
+            return "identity";
+    }
 }
 
 inline bool ShouldRenderNativeImageImmediately(bool desktopSurfaceCompatibility) {

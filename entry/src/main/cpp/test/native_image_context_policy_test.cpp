@@ -101,6 +101,38 @@ RDP_TEST_CASE(native_image_policy_applies_valid_producer_transform_and_keeps_des
     RDP_ASSERT(Render::ShouldRenderNativeImageImmediately(true));
 }
 
+RDP_TEST_CASE(native_image_policy_validated_producer_accepts_axis_aligned_flip) {
+    const float flipY[16] = {
+        1.0f, 0.0f, 0.0f, 0.0f,
+        0.0f, -1.0f, 0.0f, 0.0f,
+        0.0f, 0.0f, 1.0f, 0.0f,
+        0.0f, 1.0f, 0.0f, 1.0f
+    };
+    const Render::NativeImageTransform identity =
+        Render::IdentityNativeImageTransform();
+    const Render::NativeImageTransform resolved =
+        Render::ResolveNativeImagePresentationTransform(
+            Render::NativeImagePresentationMode::ValidatedProducerTransform,
+            0, flipY, identity);
+    RDP_ASSERT(resolved[5] == -1.0f);
+    RDP_ASSERT(resolved[13] == 1.0f);
+}
+
+RDP_TEST_CASE(native_image_policy_validated_producer_rejects_unclassified_matrix) {
+    const float other[16] = {
+        1.0f, 0.0f, 0.0f, 0.0f,
+        0.0f, 1.0f, 0.0f, 0.0f,
+        0.0f, 0.0f, 1.0f, 0.0f,
+        0.25f, 0.0f, 0.0f, 1.0f
+    };
+    Render::NativeImageTransform previous =
+        Render::IdentityNativeImageTransform();
+    previous[13] = 0.5f;
+    RDP_ASSERT(Render::ResolveNativeImagePresentationTransform(
+        Render::NativeImagePresentationMode::ValidatedProducerTransform,
+        0, other, previous) == previous);
+}
+
 RDP_TEST_CASE(native_image_policy_retains_last_valid_transform_after_failed_read) {
     float invalid[16] = {
         1.0f, 0.0f, 0.0f, 0.0f,
@@ -172,15 +204,15 @@ RDP_TEST_CASE(native_image_policy_classifies_producer_transform_without_applying
 RDP_TEST_CASE(rustdesk_peer_presentation_policy_is_platform_invariant) {
     using Render::NativeImagePresentationMode;
     RDP_ASSERT(RustDeskPresentation::NativeImageModeForPeerPlatform(
-        "Windows") == NativeImagePresentationMode::Identity);
+        "Windows") == NativeImagePresentationMode::ValidatedProducerTransform);
     RDP_ASSERT(RustDeskPresentation::NativeImageModeForPeerPlatform(
-        "Windows 11") == NativeImagePresentationMode::Identity);
+        "Windows 11") == NativeImagePresentationMode::ValidatedProducerTransform);
     RDP_ASSERT(RustDeskPresentation::NativeImageModeForPeerPlatform(
-        "macOS") == NativeImagePresentationMode::Identity);
+        "macOS") == NativeImagePresentationMode::ValidatedProducerTransform);
     RDP_ASSERT(RustDeskPresentation::NativeImageModeForPeerPlatform(
-        "Linux") == NativeImagePresentationMode::Identity);
+        "Linux") == NativeImagePresentationMode::ValidatedProducerTransform);
     RDP_ASSERT(RustDeskPresentation::NativeImageModeForPeerPlatform(
-        "") == NativeImagePresentationMode::Identity);
+        "") == NativeImagePresentationMode::ValidatedProducerTransform);
     RDP_ASSERT(RustDeskPresentation::ClassifyPeerPlatform("Windows 11") ==
         RustDeskPresentation::PeerPlatformCategory::Windows);
     RDP_ASSERT(RustDeskPresentation::ClassifyPeerPlatform("Darwin") ==

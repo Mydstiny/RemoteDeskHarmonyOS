@@ -41,7 +41,8 @@ export type DiagnosticRuntimePath =
 export type DiagnosticPeerPlatform =
   'unknown' | 'windows' | 'macos' | 'linux' | 'android' | 'ios' | 'other';
 
-export type DiagnosticPresentation = 'unknown' | 'identity' | 'producer';
+export type DiagnosticPresentation =
+  'unknown' | 'identity' | 'producer' | 'validated_producer';
 
 export type DiagnosticProducerTransform =
   'unknown' | 'not_sampled' | 'identity' | 'flip_x' | 'flip_y' |
@@ -250,7 +251,7 @@ const DIAGNOSTIC_PEER_PLATFORMS: DiagnosticPeerPlatform[] = [
   'unknown', 'windows', 'macos', 'linux', 'android', 'ios', 'other'
 ];
 const DIAGNOSTIC_PRESENTATIONS: DiagnosticPresentation[] = [
-  'unknown', 'identity', 'producer'
+  'unknown', 'identity', 'producer', 'validated_producer'
 ];
 const DIAGNOSTIC_PRODUCER_TRANSFORMS: DiagnosticProducerTransform[] = [
   'unknown', 'not_sampled', 'identity', 'flip_x', 'flip_y',

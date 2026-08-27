@@ -81,14 +81,16 @@ inline const char* PeerPlatformCategoryName(PeerPlatformCategory category) {
 }
 
 /**
- * RustDesk frames use one canonical top-left texture contract on every peer
- * platform. NativeImage producer matrices describe the local Surface path;
- * they are sampled for telemetry but must not reinterpret an already-upright
- * remote desktop according to an untrusted peer OS label.
+ * RustDesk's hardware-decoded NativeImage is presented with the local
+ * producer transform on every peer platform. The decision remains platform
+ * invariant: the peer OS label is telemetry, never an orientation switch.
+ * Only the four axis-aligned transforms validated by the renderer policy are
+ * accepted, so a malformed or unexpected producer matrix retains the last
+ * known-good presentation.
  */
 inline Render::NativeImagePresentationMode NativeImageModeForPeerPlatform(
     std::string_view /* platform */) {
-    return Render::NativeImagePresentationMode::Identity;
+    return Render::NativeImagePresentationMode::ValidatedProducerTransform;
 }
 
 } // namespace RustDeskPresentation

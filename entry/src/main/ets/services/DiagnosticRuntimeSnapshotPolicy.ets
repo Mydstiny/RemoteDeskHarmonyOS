@@ -147,6 +147,7 @@ function peerPlatform(value: string | undefined): DiagnosticPeerPlatform {
 function presentation(value: string | undefined): DiagnosticPresentation {
   if (value === 'identity') { return 'identity'; }
   if (value === 'producer') { return 'producer'; }
+  if (value === 'validated_producer') { return 'validated_producer'; }
   return 'unknown';
 }
 
