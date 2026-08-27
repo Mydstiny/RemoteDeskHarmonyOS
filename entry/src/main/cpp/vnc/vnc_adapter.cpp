@@ -170,7 +170,18 @@ void VncAdapter::setSessionOwner(const Render::DecoderSessionIdentity& owner) {
 }
 
 RemoteCursorSnapshot VncAdapter::getRemoteCursorSnapshot(bool includePixels) {
-    return impl_->callbackState->cursorStore.snapshot(includePixels);
+    RemoteCursorSnapshot snapshot = impl_->callbackState->cursorStore.snapshot(includePixels);
+    std::shared_ptr<VncRfbEngine> engine;
+    {
+        std::lock_guard<std::mutex> lock(impl_->mutex);
+        engine = impl_->engine;
+    }
+    // Fail visible before the asynchronous RFB banner is available. Once the
+    // handshake classifies the peer, modern no-Cursor servers transition to
+    // framebuffer ownership while legacy macOS-style peers keep bootstrap.
+    snapshot.legacyVncCursorBootstrap = engine == nullptr ||
+        engine->keepsLocalCursorDuringBootstrap();
+    return snapshot;
 }
 
 int VncAdapter::connect(const ConnectionConfig& cfg) {

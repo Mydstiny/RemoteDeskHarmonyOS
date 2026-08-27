@@ -9,6 +9,7 @@ import {
 import {
   nextVncControlMode,
   nextVncDisplayScaleMode,
+  resolveVncCursorOwnershipEvidence,
   shouldHideVncSystemPointer,
   shouldShowVncSessionToolbar,
   vncToolbarAutoCollapseDelayMs,
@@ -71,14 +72,36 @@ export default function vncSessionUiPolicyTest(): void {
         .assertEqual('keyboard,controlMode,shortcuts,displayScale,diagnostics,disconnect');
     });
 
-    it('keeps_a_bootstrap_pointer_until_a_valid_vnc_cursor_can_replace_it', 0, (): void => {
-      expect(shouldHideVncSystemPointer('vnc', true, true, true, 'auto', false)).assertFalse();
-      expect(shouldHideVncSystemPointer('vnc', true, true, true, 'auto', true)).assertFalse();
-      expect(shouldHideVncSystemPointer('vnc', true, true, true, 'hidden', true)).assertTrue();
-      expect(shouldHideVncSystemPointer('vnc', true, true, true, 'hidden', false)).assertTrue();
-      expect(shouldHideVncSystemPointer('vnc', true, true, true, 'arrow', false)).assertFalse();
-      expect(shouldHideVncSystemPointer('vnc', true, true, false, 'auto', false)).assertFalse();
-      expect(shouldHideVncSystemPointer('rdp', true, true, true, 'auto', false)).assertFalse();
+    it('transitions_cursor_ownership_from_bootstrap_to_protocol_shape', 0, (): void => {
+      const initial = resolveVncCursorOwnershipEvidence(false, true, false, false);
+      const macBootstrap = resolveVncCursorOwnershipEvidence(true, true, false, true);
+      const protocolCursor = resolveVncCursorOwnershipEvidence(true, true, true, true);
+      expect(initial).assertEqual('bootstrap');
+      expect(macBootstrap).assertEqual('bootstrap');
+      expect(protocolCursor).assertEqual('protocol_cursor');
+      expect(shouldHideVncSystemPointer('vnc', true, true, true, 'auto', initial)).assertFalse();
+      expect(shouldHideVncSystemPointer('vnc', true, true, true, 'auto', macBootstrap)).assertFalse();
+      expect(shouldHideVncSystemPointer('vnc', true, true, true, 'auto', protocolCursor)).assertFalse();
+    });
+
+    it('uses_framebuffer_cursor_for_modern_no_cursor_peers_and_honors_hide', 0, (): void => {
+      const ultraVnc = resolveVncCursorOwnershipEvidence(true, false, false, true);
+      const protocolHidden = resolveVncCursorOwnershipEvidence(true, true, false, false);
+      expect(ultraVnc).assertEqual('framebuffer_composited');
+      expect(protocolHidden).assertEqual('protocol_hidden');
+      expect(shouldHideVncSystemPointer('vnc', true, true, true, 'auto', ultraVnc)).assertTrue();
+      expect(shouldHideVncSystemPointer('vnc', true, true, true, 'auto', protocolHidden)).assertTrue();
+      expect(shouldHideVncSystemPointer('vnc', true, true, true, 'hidden', 'bootstrap')).assertTrue();
+      expect(shouldHideVncSystemPointer('vnc', true, true, true, 'arrow', protocolHidden)).assertFalse();
+    });
+
+    it('resets_pointer_hiding_outside_the_active_vnc_surface', 0, (): void => {
+      expect(shouldHideVncSystemPointer('vnc', false, true, true, 'auto',
+        'framebuffer_composited')).assertFalse();
+      expect(shouldHideVncSystemPointer('vnc', true, true, false, 'auto',
+        'framebuffer_composited')).assertFalse();
+      expect(shouldHideVncSystemPointer('rdp', true, true, true, 'auto',
+        'framebuffer_composited')).assertFalse();
     });
 
     it('cycles_control_modes_without_bypassing_view_only', 0, (): void => {

@@ -648,6 +648,7 @@ export interface RemoteCursorSnapshot {
   hotY: number;
   fallbackShape: boolean;
   protocolShapeAvailable: boolean;
+  legacyVncCursorBootstrap: boolean;
   positionAvailable: boolean;
   visible: boolean;
   shapeRevision: number;

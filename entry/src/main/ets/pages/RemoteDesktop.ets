@@ -314,6 +314,7 @@ import {
 import {
   nextVncControlMode,
   nextVncDisplayScaleMode,
+  resolveVncCursorOwnershipEvidence,
   shouldHideVncSystemPointer,
   shouldShowVncSessionToolbar,
   vncToolbarAutoCollapseDelayMs,
@@ -321,6 +322,7 @@ import {
   vncToolbarPositionPreferenceKey,
   vncToolbarRailHeight,
   vncToolbarRailWidth,
+  VncCursorOwnershipEvidence,
   VncToolbarDeviceClass,
   VncToolbarOrientation,
   VncToolbarSide
@@ -1140,6 +1142,9 @@ struct RemoteDesktop {
   private remoteCursorVisibilityRevision: number = -1;
   private remoteCursorNativeVisible: boolean = false;
   private remoteCursorFallbackShape: boolean = false;
+  private vncCursorSnapshotObserved: boolean = false;
+  private vncLegacyCursorBootstrap: boolean = true;
+  private vncProtocolCursorShapeAvailable: boolean = false;
   private remoteCursorShapeWidth: number = 0;
   private remoteCursorShapeHeight: number = 0;
   private remoteCursorHotX: number = 0;
@@ -4087,15 +4092,18 @@ struct RemoteDesktop {
       this.isTouchpadControlMode(), this.isDesktopDevice);
   }
 
+  private vncCursorOwnershipEvidence(): VncCursorOwnershipEvidence {
+    return resolveVncCursorOwnershipEvidence(this.vncCursorSnapshotObserved,
+      this.vncLegacyCursorBootstrap, this.vncProtocolCursorShapeAvailable,
+      this.remoteCursorNativeVisible);
+  }
+
   private syncRemoteSystemPointer(reason: string, hovered: boolean = true,
     force: boolean = false): void {
-    const vncNativeCursorReady: boolean = this.remoteCursorNativeVisible &&
-      !this.remoteCursorFallbackShape && this.remoteCursorPixelMap !== null &&
-      this.remoteCursorPixelMapShapeRevision > 0;
     const hideSystemPointer: boolean = this.shouldHideSystemPointerForVirtualTouchpad() ||
       shouldHideVncSystemPointer(this.currentProtocolName(), this.connected,
         this.isKeyboardMouseControlMode(), hovered, this.vncLocalCursorMode,
-        vncNativeCursorReady);
+        this.vncCursorOwnershipEvidence());
     // Pointer-style reset may make HarmonyOS' default cursor visible again.
     // Resolve ownership first, then make visibility the final native mutation.
     this.setRemoteSurfacePointerStyle(!hideSystemPointer && hovered &&
@@ -10619,6 +10627,9 @@ struct RemoteDesktop {
     this.remoteCursorVisibilityRevision = -1;
     this.remoteCursorNativeVisible = false;
     this.remoteCursorFallbackShape = false;
+    this.vncCursorSnapshotObserved = false;
+    this.vncLegacyCursorBootstrap = true;
+    this.vncProtocolCursorShapeAvailable = false;
     this.remoteCursorShapeWidth = 0;
     this.remoteCursorShapeHeight = 0;
     this.remoteCursorHotX = 0;
@@ -10669,6 +10680,9 @@ struct RemoteDesktop {
     this.remoteCursorPositionRevision = -1;
     this.remoteCursorVisibilityRevision = -1;
     this.remoteCursorFallbackShape = false;
+    this.vncCursorSnapshotObserved = false;
+    this.vncLegacyCursorBootstrap = true;
+    this.vncProtocolCursorShapeAvailable = false;
     this.remoteCursorShapeWidth = 0;
     this.remoteCursorShapeHeight = 0;
     this.remoteCursorHotX = 0;
@@ -10903,7 +10917,12 @@ struct RemoteDesktop {
     if (snapshot === null || snapshot.sessionId !== sessionId || snapshot.generation <= 0) {
       return;
     }
+    const previousVncCursorOwnership: VncCursorOwnershipEvidence =
+      this.vncCursorOwnershipEvidence();
     this.adoptRemoteCursorGeneration(snapshot.generation);
+    this.vncCursorSnapshotObserved = true;
+    this.vncLegacyCursorBootstrap = snapshot.legacyVncCursorBootstrap;
+    this.vncProtocolCursorShapeAvailable = snapshot.protocolShapeAvailable;
     const shapeChanged: boolean = snapshot.shapeRevision !== this.remoteCursorShapeRevision;
     const hasCurrentPixelMap: boolean = this.remoteCursorPixelMap !== null &&
       this.remoteCursorPixelMapShapeRevision === snapshot.shapeRevision;
@@ -10955,6 +10974,12 @@ struct RemoteDesktop {
         this.applyRemoteNativePointer('visibility-change', true);
       }
       this.requestRemoteCursorViewRefresh(true);
+    }
+    const nextVncCursorOwnership: VncCursorOwnershipEvidence =
+      this.vncCursorOwnershipEvidence();
+    if (this.isVncSession() && previousVncCursorOwnership !== nextVncCursorOwnership) {
+      this.syncRemoteSystemPointer('vnc-cursor-ownership-' + nextVncCursorOwnership,
+        this.remoteSurfaceHovered !== false, true);
     }
     if (shapeChanged || positionChanged || visibilityChanged ||
       this.remoteCursorLastLogMs === 0 || now - this.remoteCursorLastLogMs >= REMOTE_CURSOR_LOG_SAMPLE_MS) {

@@ -34,6 +34,10 @@ struct RemoteCursorSnapshot {
     bool fallbackShape = false;
     /** True only after the protocol has supplied an authoritative bitmap. */
     bool protocolShapeAvailable = false;
+    /** VNC-only handshake evidence. Legacy RFB 3.3 peers (including macOS
+     * Screen Sharing) retain the local pointer while awaiting a delayed
+     * Cursor pseudo-rectangle. Modern peers default to framebuffer cursor. */
+    bool legacyVncCursorBootstrap = false;
     bool visible = false;
     /** False until a protocol callback has supplied a coordinate. The default
      * 0,0 storage value is not itself a remote cursor position. */

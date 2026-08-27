@@ -5,6 +5,8 @@ export type VncToolbarOrientation = 'portrait' | 'landscape';
 export type VncToolbarSide = 'left' | 'right';
 export type VncToolbarPrimaryActionId = 'keyboard' | 'controlMode' | 'shortcuts' |
   'displayScale' | 'diagnostics' | 'disconnect';
+export type VncCursorOwnershipEvidence = 'bootstrap' | 'protocol_cursor' |
+  'framebuffer_composited' | 'protocol_hidden';
 
 const VNC_TOOLBAR_PRIMARY_ACTION_IDS: VncToolbarPrimaryActionId[] = [
   'keyboard', 'controlMode', 'shortcuts', 'displayScale', 'diagnostics', 'disconnect'
@@ -15,20 +17,40 @@ export function vncToolbarPrimaryActionIds(): VncToolbarPrimaryActionId[] {
   return VNC_TOOLBAR_PRIMARY_ACTION_IDS.slice();
 }
 
+/** Resolve the native handshake/cursor evidence into one pointer owner. */
+export function resolveVncCursorOwnershipEvidence(snapshotObserved: boolean,
+  legacyBootstrap: boolean, protocolShapeAvailable: boolean,
+  protocolVisible: boolean): VncCursorOwnershipEvidence {
+  if (!snapshotObserved) {
+    return 'bootstrap';
+  }
+  if (!protocolVisible) {
+    return 'protocol_hidden';
+  }
+  if (protocolShapeAvailable) {
+    return 'protocol_cursor';
+  }
+  return legacyBootstrap ? 'bootstrap' : 'framebuffer_composited';
+}
+
 /**
- * The absence of Cursor pseudo-encoding cannot distinguish a server-composited
- * cursor from a delayed protocol cursor. macOS Screen Sharing can delay its
- * first real shape for tens of seconds, so auto mode must keep the default
- * system pointer during bootstrap and replace it atomically when a valid
- * protocol shape is installed. Only the explicit hidden mode may remove it.
+ * Auto mode uses explicit protocol evidence: legacy RFB 3.3/macOS bootstrap
+ * keeps a safe local pointer, modern no-Cursor peers use their framebuffer
+ * cursor, a real protocol shape atomically replaces the default system style,
+ * and an explicit protocol hide is honored.
  */
 export function shouldHideVncSystemPointer(protocol: string, connected: boolean,
   keyboardMouseMode: boolean, surfaceHovered: boolean,
-  localCursorMode: VncLocalCursorMode, _nativeCursorReady: boolean): boolean {
+  localCursorMode: VncLocalCursorMode,
+  ownership: VncCursorOwnershipEvidence): boolean {
   if (protocol !== 'vnc' || !connected || !keyboardMouseMode || !surfaceHovered) {
     return false;
   }
-  return localCursorMode === 'hidden';
+  if (localCursorMode === 'hidden') {
+    return true;
+  }
+  return localCursorMode === 'auto' &&
+    (ownership === 'framebuffer_composited' || ownership === 'protocol_hidden');
 }
 
 export function shouldShowVncSessionToolbar(protocol: string, connected: boolean,

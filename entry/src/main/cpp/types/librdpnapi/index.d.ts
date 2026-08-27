@@ -955,6 +955,7 @@ export interface RemoteCursorSnapshot {
   /** True only for the RustDesk controller-side bootstrap arrow. */
   fallbackShape: boolean;
   protocolShapeAvailable: boolean;
+  legacyVncCursorBootstrap: boolean;
   positionAvailable: boolean;
   visible: boolean;
   shapeRevision: number;
