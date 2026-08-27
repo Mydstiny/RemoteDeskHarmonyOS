@@ -157,6 +157,7 @@ class MemoryDeletionPort implements MoonlightDeletionCommandPort {
     new Map<string, MoonlightAppCacheEntry>();
   cloudReady: boolean = false;
   writeFailure: boolean = false;
+  postCommitVerificationPending: boolean = false;
   switchAfterCommit: boolean = false;
   runtimeStateCount: number = 0;
   commitCount: number = 0;
@@ -327,7 +328,8 @@ class MemoryDeletionPort implements MoonlightDeletionCommandPort {
     }
     return {
       ok: true,
-      code: 'ok',
+      code: this.postCommitVerificationPending ?
+        'local_verification_pending' : 'ok',
       localCommitted: request.command === 'delete_cloud_data' ||
         request.recordIds.length > 0 || request.cacheIds.length > 0 ||
         request.clearOwnerRuntimeState,
@@ -931,6 +933,22 @@ export default function moonlightDeletionCommandServiceTest(): void {
         expect(result.code).assertEqual('local_write_failed');
         expect(result.localCommitted).assertFalse();
         expect(port.rows.has('profile-1')).assertTrue();
+      });
+
+    it('does_not_make_the_user_repeat_an_already_committed_local_delete', 0,
+      async (): Promise<void> => {
+        const port = seededPort();
+        port.postCommitVerificationPending = true;
+        const service = new MoonlightDeletionCommandService(port);
+        const preview = service.preview(
+          lease(), 'forget_host', 'host-1');
+        const result = await service.execute(lease(), preview, 300);
+        expect(result.ok).assertTrue();
+        expect(result.code).assertEqual('pending_local_verification');
+        expect(result.localCommitted).assertTrue();
+        expect((port.rows.get('host-1') as MoonlightRecord).deletedAt)
+          .assertEqual(300);
+        expect(port.commitCount).assertEqual(1);
       });
 
     it('returns_unchanged_when_the_physical_moonlight_table_is_stopped', 0,

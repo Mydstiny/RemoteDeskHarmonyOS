@@ -417,6 +417,8 @@ struct MoonlightHostDetailPage {
     promptAction.showToast({
       message: result.code === 'pending_cloud' ?
         '本机主机已删除；云同步可用后会自动同步删除状态' :
+        result.code === 'pending_local_verification' ?
+          '本机删除已保存，正在后台核验并同步状态' :
         'Moonlight 主机及其本机信任已删除',
       duration: 2200
     });

@@ -14201,6 +14201,20 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
       if (!this.isLeaseCurrent(lease)) {
         return failure('stale_lease', true);
       }
+      // From this point the ordinary local-first transaction is durable.
+      // Notify and request best-effort convergence before readback so a
+      // transient verification failure cannot strand the tombstone or make
+      // the user repeat an already committed delete.
+      if (stagedLocalTombstones.length > 0) {
+        const notificationLease: AccountSessionLease =
+          cloneAccountSessionLease(lease);
+        setTimeout((): void => {
+          if (this.isLeaseCurrent(notificationLease)) {
+            this.notifyDataSnapshotChanged();
+          }
+        }, 0);
+        this.scheduleMoonlightDeletionCloudReconciliation(lease);
+      }
       if (cloudProjection !== null &&
           !this.verifyMoonlightCloudDeletionProjection(
             lease, cloudProjection)) {
@@ -14212,7 +14226,13 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
       }
       if (!this.verifyMoonlightPreservedLocalRows(
         lease, stagedLocalTombstones)) {
-        return failure('write_failed', true);
+        return this.isLeaseCurrent(lease) ? {
+          ok: true,
+          code: 'local_verification_pending',
+          localCommitted: true,
+          cloudAttempted: false,
+          cloudTerminal: false
+        } : failure('stale_lease', true);
       }
       if (checkpoint !== null &&
           !this.verifyMoonlightCloudDeletionCheckpoint(
@@ -14233,15 +14253,14 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
       if (checkpoint !== null) {
         this.resumeMoonlightCloudDeletion(lease);
       }
-      const notificationLease: AccountSessionLease =
-        cloneAccountSessionLease(lease);
-      setTimeout((): void => {
-        if (this.isLeaseCurrent(notificationLease)) {
-          this.notifyDataSnapshotChanged();
-        }
-      }, 0);
-      if (stagedLocalTombstones.length > 0) {
-        this.scheduleMoonlightDeletionCloudReconciliation(lease);
+      if (stagedLocalTombstones.length === 0) {
+        const notificationLease: AccountSessionLease =
+          cloneAccountSessionLease(lease);
+        setTimeout((): void => {
+          if (this.isLeaseCurrent(notificationLease)) {
+            this.notifyDataSnapshotChanged();
+          }
+        }, 0);
       }
       return {
         ok: true,
@@ -14272,16 +14291,33 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
     const capturedLease: AccountSessionLease =
       cloneAccountSessionLease(lease);
     setTimeout((): void => {
-      if (!this.isLeaseCurrent(capturedLease) ||
-          !this.isMoonlightCloudAvailable() ||
-          this.syncSelection.selectedBusinessTables()
-            .indexOf(MOONLIGHT_CLOUD_TABLE) < 0 ||
-          this.selectionReenableBlocked(MOONLIGHT_CLOUD_TABLE) ||
-          this.moonlightRestoreTransferIsBlocked() ||
-          this.moonlightCloudDeletionBlocksPromotion(capturedLease)) {
-        return;
+      try {
+        if (!this.isLeaseCurrent(capturedLease) ||
+            !this.isMoonlightCloudAvailable() ||
+            this.syncSelection.selectedBusinessTables()
+              .indexOf(MOONLIGHT_CLOUD_TABLE) < 0 ||
+            this.selectionReenableBlocked(MOONLIGHT_CLOUD_TABLE) ||
+            this.moonlightRestoreTransferIsBlocked() ||
+            this.moonlightCloudDeletionBlocksPromotion(capturedLease)) {
+          return;
+        }
+        CloudSyncCoordinator.getInstance().requestCloudEventPull()
+          .then((result: CloudSyncOperationResult): void => {
+            if (this.isLeaseCurrent(capturedLease) && !result.ok) {
+              hilog.warn(0x0001, 'CloudSync',
+                '[CloudStore] deferred Moonlight deletion reconciliation' +
+                ' did not complete failure=' + result.failureKind);
+            }
+          }, (error: Object): void => {
+            hilog.warn(0x0001, 'CloudSync',
+              '[CloudStore] deferred Moonlight deletion reconciliation' +
+              ' rejected: ' + safeError(error));
+          });
+      } catch (error) {
+        hilog.warn(0x0001, 'CloudSync',
+          '[CloudStore] deferred Moonlight deletion reconciliation' +
+          ' setup failed: ' + safeError(error));
       }
-      void CloudSyncCoordinator.getInstance().requestCloudEventPull();
     }, 0);
   }
 

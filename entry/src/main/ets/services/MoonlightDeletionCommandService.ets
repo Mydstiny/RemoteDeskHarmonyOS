@@ -34,11 +34,11 @@ export type MoonlightDeletionCommandCode =
   'selection_unavailable' | 'selection_failed' | 'cloud_unavailable' |
   'host_unavailable' | 'identity_unavailable' |
   'identity_delete_failed' | 'local_write_failed' | 'pending_cloud' |
-  'ok_with_remote_warning';
+  'pending_local_verification' | 'ok_with_remote_warning';
 
 export type MoonlightDeletionMutationCode =
   'ok' | 'stale_lease' | 'invalid_request' |
-  'cloud_unavailable' | 'write_failed';
+  'cloud_unavailable' | 'write_failed' | 'local_verification_pending';
 
 export interface MoonlightDeletionSelectionSnapshot {
   physicalSelected: boolean;
@@ -670,6 +670,17 @@ export class MoonlightDeletionCommandService {
       } catch (_error) {
         hostSucceeded = false;
       }
+    }
+    if (mutation.code === 'local_verification_pending') {
+      // The atomic local transaction is already durable. A transient
+      // post-commit readback failure must not turn a successful user delete
+      // into a retry loop or duplicate mutation; the store has scheduled a
+      // fenced background notification and cloud-first reconciliation.
+      return commandResult(true, 'pending_local_verification', current.impact,
+        true, mutation.cloudAttempted, false, false,
+        hostAttempted, hostSucceeded,
+        identityAttempted, identitySucceeded,
+        current.artworkPaths);
     }
     if (cloudSynchronizationPending && !mutation.cloudTerminal) {
       return commandResult(true, 'pending_cloud', current.impact,

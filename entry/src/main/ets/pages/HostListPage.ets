@@ -2582,7 +2582,9 @@ struct HostListPage {
     this.hostViewRevision += 1;
     promptAction.showToast({
       message: result.ok ? (result.code === 'pending_cloud' ?
-        '本机主机已删除；云同步可用后会自动同步删除状态' : 'Moonlight 主机已删除') :
+        '本机主机已删除；云同步可用后会自动同步删除状态' :
+        result.code === 'pending_local_verification' ?
+          '本机删除已保存，正在后台核验并同步状态' : 'Moonlight 主机已删除') :
         this.moonlightDeletionFailureMessage(result.code),
       duration: 2400
     });
