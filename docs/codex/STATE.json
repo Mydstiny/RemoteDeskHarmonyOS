@@ -4,9 +4,9 @@
   "branch": "codex/rustdesk-orientation-diagnostics-closeout",
   "base": "3b9e2b59c06c344c1012efa80b61d043d4999433",
   "head": "1c0e93198fe46a4e1a37e54bef3e39488dc3c265",
-  "phase": "review",
+  "phase": "delivery",
   "status": "active",
-  "next": "Run the exact final gates on the documented checkpoint, obtain independent re-review, and complete Windows simulator acceptance when the peer can approve.",
+  "next": "Run the exact final gates for the reviewed tree, push the branch, pass required CI, merge, and install the final main HAP for Windows simulator acceptance.",
   "blockers": [
     "The simulator Windows peer is waiting for remote approval and its saved password field contains no actual password value",
     "Physical Windows and macOS acceptance remains pending after simulator verification",
@@ -16,7 +16,7 @@
     "docs/codex/plans/2026-08-27-rustdesk-orientation-and-diagnostics.md"
   ],
   "review": {
-    "status": "REVIEW_REQUIRED",
+    "status": "PASS",
     "taskIds": [
       "/root/review_vnc_branch"
     ],
@@ -36,12 +36,11 @@
       "entry/src/test/DiagnosticCapturePolicy.test.ets",
       "entry/src/test/DiagnosticRuntimeSnapshotPolicy.test.ets",
       "entry/src/test/RemoteSurfaceResizePolicy.test.ets",
-      "entry/src/test/List.test.ets",
-      "docs/codex/**"
+      "entry/src/test/List.test.ets"
     ],
-    "lastReceiptId": "",
+    "lastReceiptId": "rustdesk-orientation-resize-review-bd9a7c594-2026-08-27",
     "findings": [],
-    "reason": "The prior PASS receipt is invalidated by the live Windows vertical-flip regression and the new orientation/resize remediation requires independent review."
+    "reason": "The reused independent reviewer passed the complete orientation and resize remediation with P0/P1/P2/P3 all zero; documentation is intentionally outside the executable review fingerprint."
   },
   "lastVerification": {
     "baseline": "main@3b9e2b59c was synchronized when remediation began on 2026-08-27",
@@ -49,7 +48,8 @@
     "assembleHap": "PASS exact signed assembleHap on remediation tree 1c0e93198",
     "nativeTests": "PASS 811/811 outside sandbox including resize/redraw ordering",
     "compliance": "PASS Light open-source gate and git diff --check",
-    "runtime": "working-tree HAP installed; Windows peer approval pending"
+    "runtime": "working-tree HAP installed; Windows peer approval pending",
+    "review": "PASS by /root/review_vnc_branch on bd9a7c594 with P0/P1/P2/P3 all zero"
   },
   "updated": "2026-08-27 Asia/Shanghai"
 }

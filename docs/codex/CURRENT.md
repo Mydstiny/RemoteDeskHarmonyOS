@@ -4,7 +4,7 @@
 
 - Task: `rustdesk-orientation-resize-remediation`
 - Branch/base: `codex/rustdesk-orientation-diagnostics-closeout` from synchronized `main@3b9e2b59c` (PR #46 merge).
-- Phase: remediation checkpoints `0c69433e2` and `1c0e93198` verified locally; simulator online acceptance and independent re-review remain.
+- Phase: remediation checkpoints `0c69433e2` and `1c0e93198` verified locally; independent re-review passed and delivery/online acceptance remain.
 - Plan: `docs/codex/plans/2026-08-27-rustdesk-orientation-and-diagnostics.md`
 
 ## Confirmed diagnosis
@@ -29,9 +29,10 @@
 - Light open-source compliance and `git diff --check`: PASS.
 - Diagnostic runtime policy now preserves `validated_producer` as a closed canonical category instead of degrading it to `unknown`.
 - The signed working-tree HAP installed successfully on the local PC simulator while preserving app data.
+- Independent review of `main..bd9a7c594` passed with `P0/P1/P2/P3 = 0/0/0/0` after both prior findings were closed.
 
 ## Acceptance boundary and blockers
 
 - The simulator's saved Windows peer currently has no actual device password value and the remote approval request is waiting for the Windows side. Final upright-image and resize visual evidence is pending that approval.
-- Independent review found no P0/P1, one P2 diagnostic-enum gap and one P3 missing resize-redraw regression test. Both are remediated locally and require the same reviewer to recheck.
+- The source review is closed. Remaining visual validation depends on a Windows peer accepting the simulator connection and does not alter the reviewed rendering/input separation.
 - Device Hypium remains unavailable because task `00306054` is unregistered; compile coverage is required but is not reported as a device-test PASS.
