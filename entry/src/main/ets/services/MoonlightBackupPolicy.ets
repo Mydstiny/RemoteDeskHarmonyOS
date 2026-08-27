@@ -15,6 +15,7 @@ import {
 import { CloudMetadataReadResult } from './CloudMetadataSafetyPolicy';
 import {
   moonlightRecordBusinessPayload,
+  moonlightRecordPayloadHashSha256,
   moonlightValidateRecord
 } from './MoonlightRecordPolicy';
 
@@ -140,6 +141,42 @@ export function moonlightRestoreAliasFenceId(
     }
   }
   return record.id;
+}
+
+/**
+ * Project a payload-free legacy delete/unpair onto the canonical identity.
+ * The live source is required because legacy tombstones deliberately discard
+ * serverUuid together with every other business field.
+ */
+export function moonlightCanonicalAliasTombstone(
+  source: MoonlightRecord, tombstone: MoonlightRecord
+): MoonlightRecord | null {
+  if (!moonlightValidateRecord(source).valid || source.deletedAt > 0 ||
+      !moonlightValidateRecord(tombstone).valid || tombstone.deletedAt <= 0 ||
+      source.id !== tombstone.id || source.userId !== tombstone.userId ||
+      source.recordType !== tombstone.recordType ||
+      (source.recordType !== 'host' && source.recordType !== 'trust')) {
+    return null;
+  }
+  const canonicalId: string = moonlightRestoreAliasFenceId(source);
+  if (canonicalId === '' || canonicalId === source.id) { return null; }
+  const boundary: MoonlightRecord =
+    MoonlightRecord.fromJSON(tombstone.toJSON());
+  boundary.id = canonicalId;
+  if (source.recordType === 'trust') {
+    const payload: Record<string, Object> | null =
+      moonlightRecordBusinessPayload(source);
+    if (payload === null || typeof payload['serverUuid'] !== 'string') {
+      return null;
+    }
+    const canonicalHostId: string = moonlightCanonicalHostRecordId(
+      source.userId, payload['serverUuid'] as string);
+    if (canonicalHostId === '') { return null; }
+    boundary.ownerId = canonicalHostId;
+  }
+  boundary.payloadHashSha256 =
+    moonlightRecordPayloadHashSha256(boundary);
+  return moonlightValidateRecord(boundary).valid ? boundary : null;
 }
 
 function copyExactRow(

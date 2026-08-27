@@ -350,6 +350,7 @@ import {
   MOONLIGHT_RESTORE_QUARANTINE_KEY,
   MoonlightRestoreActivationState,
   moonlightBackupRowsRequireCloudActivation,
+  moonlightCanonicalAliasTombstone,
   moonlightRestoreAliasFenceId,
   moonlightRestoreActivationState as
     resolveMoonlightRestoreActivationState,
@@ -14429,6 +14430,37 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
             throw new Error('Moonlight local tombstone write failed');
           }
           stagedLocalTombstones.push(tombstone);
+          let canonicalBoundary: MoonlightRecord | null =
+            moonlightCanonicalAliasTombstone(current, tombstone);
+          if (canonicalBoundary !== null) {
+            const existingCanonical: MoonlightRecord | null =
+              this.findMoonlightLocalRecordRaw(
+                lease, canonicalBoundary.id);
+            if (existingCanonical !== null &&
+                moonlightValidateRecord(existingCanonical).valid) {
+              if (existingCanonical.deletedAt === 0) {
+                canonicalBoundary = moonlightLocalDeletionTombstone(
+                  existingCanonical, request.nowMs);
+              } else {
+                const decision = resolveMoonlightRecordConflict(
+                  existingCanonical, canonicalBoundary);
+                canonicalBoundary = decision.record !== null &&
+                  decision.record.deletedAt > 0 ? decision.record : null;
+              }
+            }
+            if (canonicalBoundary === null || !rdbInsertSucceeded(
+              this.store.insertSync(
+                MOONLIGHT_LOCAL_TABLE,
+                this.moonlightRecordToBucket(canonicalBoundary, 1),
+                relationalStore.ConflictResolution.ON_CONFLICT_REPLACE)) ||
+                !this.recordLocalMutation(
+                  MOONLIGHT_LOCAL_TABLE, canonicalBoundary.id,
+                  'tombstone')) {
+              throw new Error(
+                'Moonlight canonical alias tombstone write failed');
+            }
+            stagedLocalTombstones.push(canonicalBoundary);
+          }
           continue;
         }
         const row = new relationalStore.RdbPredicates(
