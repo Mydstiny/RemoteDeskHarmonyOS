@@ -76,11 +76,11 @@ export default function vncPhysicalWheelPolicyTest(): void {
         .assertEqual(VNC_PHYSICAL_MOUSE_MAX_DELTA);
     });
 
-    it('applies_the_same_five_times_wire_gain_to_mouse_and_touchpad', 0, (): void => {
+    it('applies_the_same_ten_times_wire_gain_to_mouse_and_touchpad', 0, (): void => {
       expect(amplifyVncWheelOutputDelta(vncPhysicalMouseWheelDelta(45, 3)))
-        .assertEqual(15);
+        .assertEqual(30);
       expect(amplifyVncWheelOutputDelta(accumulateTwoSamples(45)))
-        .assertEqual(5);
+        .assertEqual(10);
     });
 
     it('adapts_touchpad_1_45_and_120_units_to_two_samples_per_tick', 0, (): void => {

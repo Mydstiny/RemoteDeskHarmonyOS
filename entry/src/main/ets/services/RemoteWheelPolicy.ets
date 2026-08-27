@@ -17,8 +17,8 @@ export const VNC_VIRTUAL_WHEEL_MAX_DELTA: number = 4;
 // UltraVNC content far less than the high-resolution RDP/RustDesk paths.
 // Apply one explicit VNC-only wire gain after source normalization so virtual
 // touchpad, physical touchpad and physical mouse retain their own curves.
-export const VNC_WHEEL_OUTPUT_GAIN: number = 5;
-export const VNC_WHEEL_OUTPUT_MAX_DELTA: number = 64;
+export const VNC_WHEEL_OUTPUT_GAIN: number = 10;
+export const VNC_WHEEL_OUTPUT_MAX_DELTA: number = 128;
 export const LEGACY_CONTINUOUS_WHEEL_MAX_DELTA: number = 2;
 export const MOONLIGHT_HIGH_RES_WHEEL_DETENT: number = 120;
 export const MOONLIGHT_TOUCHPAD_WHEEL_GAIN: number = 4;

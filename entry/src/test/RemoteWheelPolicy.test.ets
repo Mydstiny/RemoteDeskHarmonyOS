@@ -60,11 +60,11 @@ export default function remoteWheelPolicyTest(): void {
       expect(accelerated.remainder).assertEqual(0);
     });
 
-    it('amplifies_only_the_final_vnc_wire_delta_by_five', 0, (): void => {
-      expect(VNC_WHEEL_OUTPUT_GAIN).assertEqual(5);
-      expect(amplifyVncWheelOutputDelta(1)).assertEqual(5);
-      expect(amplifyVncWheelOutputDelta(-3)).assertEqual(-15);
-      expect(amplifyVncWheelOutputDelta(8)).assertEqual(40);
+    it('amplifies_only_the_final_vnc_wire_delta_by_ten', 0, (): void => {
+      expect(VNC_WHEEL_OUTPUT_GAIN).assertEqual(10);
+      expect(amplifyVncWheelOutputDelta(1)).assertEqual(10);
+      expect(amplifyVncWheelOutputDelta(-3)).assertEqual(-30);
+      expect(amplifyVncWheelOutputDelta(8)).assertEqual(80);
       expect(amplifyVncWheelOutputDelta(1000)).assertEqual(VNC_WHEEL_OUTPUT_MAX_DELTA);
       expect(amplifyVncWheelOutputDelta(Number.NaN)).assertEqual(0);
     });

@@ -41,11 +41,11 @@ export default function guideContentRegistryTest(): void {
       expect(containsGuidePage(guide, 'session-toolkit')).assertTrue();
       expect(containsGuidePage(guide, 'data-recovery-and-help')).assertTrue();
       expect(release.length).assertEqual(12);
-      expect(containsReleasePage(release, 'release-1-1-2')).assertTrue();
+      expect(containsReleasePage(release, 'release-1-1-3')).assertTrue();
       expect(containsReleasePage(release, 'release-moonlight-workflow')).assertTrue();
       expect(containsReleasePage(release, 'release-ssh-workspace')).assertTrue();
       expect(containsReleasePage(release, 'release-guidance')).assertTrue();
-      expect(release[release.length - 1].id).assertEqual('welcome-1-1-2');
+      expect(release[release.length - 1].id).assertEqual('welcome-1-1-3');
     });
   });
 }
