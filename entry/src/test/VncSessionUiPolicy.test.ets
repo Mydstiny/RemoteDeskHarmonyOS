@@ -71,10 +71,11 @@ export default function vncSessionUiPolicyTest(): void {
         .assertEqual('keyboard,controlMode,shortcuts,displayScale,diagnostics,disconnect');
     });
 
-    it('avoids_a_second_local_cursor_when_vnc_cursor_is_server_embedded', 0, (): void => {
-      expect(shouldHideVncSystemPointer('vnc', true, true, true, 'auto', false)).assertTrue();
+    it('keeps_a_bootstrap_pointer_until_a_valid_vnc_cursor_can_replace_it', 0, (): void => {
+      expect(shouldHideVncSystemPointer('vnc', true, true, true, 'auto', false)).assertFalse();
       expect(shouldHideVncSystemPointer('vnc', true, true, true, 'auto', true)).assertFalse();
       expect(shouldHideVncSystemPointer('vnc', true, true, true, 'hidden', true)).assertTrue();
+      expect(shouldHideVncSystemPointer('vnc', true, true, true, 'hidden', false)).assertTrue();
       expect(shouldHideVncSystemPointer('vnc', true, true, true, 'arrow', false)).assertFalse();
       expect(shouldHideVncSystemPointer('vnc', true, true, false, 'auto', false)).assertFalse();
       expect(shouldHideVncSystemPointer('rdp', true, true, true, 'auto', false)).assertFalse();

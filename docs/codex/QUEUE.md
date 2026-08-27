@@ -1,18 +1,19 @@
-# Moonlight CRUD Compatibility Queue
+# VNC Cursor and Wheel Regression Queue
 
 Updated: 2026-08-27 Asia/Shanghai
 
 ## Now
 
-1. Push the independently reviewed checkpoint `79da70a4`.
-2. Create and merge the PR into `main`.
-3. Fast-forward local `main` and clean the merged task branch.
+1. Correct discrete mouse, physical touchpad and virtual touchpad VNC scaling.
+2. Preserve a visible local cursor while macOS VNC protocol cursor data is unavailable.
+3. Add focused regression coverage and run exact build/package/compliance gates.
 
 ## Next
 
-1. Retain the signed HAP hash, review receipt and legacy replay result on `main`.
-2. Use a real Huawei account without Cloud Space for optional external acceptance when a target is available.
+1. Obtain independent review and remediate every finding.
+2. Install the signed HAP on `192.168.3.236:40123` and capture acceptance evidence.
+3. Push the reviewed branch and complete PR/main closure after acceptance.
 
 ## Later / external acceptance
 
-- Install the verified HAP and exercise legacy upgrade/import/cloud-unavailable scenarios when a HarmonyOS target is available; no physical-device claim is part of this checkpoint.
+- Confirm UltraVNC and macOS Screen Sharing cursor transitions and scroll feel with physical mouse, physical touchpad and the in-app virtual touchpad.

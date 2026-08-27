@@ -8,8 +8,9 @@
  * make an actual mouse or touchpad unusably slow.
  */
 
-export const VNC_PHYSICAL_TOUCHPAD_SAMPLES_PER_TICK: number = 4;
-export const VNC_PHYSICAL_TOUCHPAD_MAX_DELTA: number = 2;
+export const VNC_PHYSICAL_MOUSE_MAX_DELTA: number = 8;
+export const VNC_PHYSICAL_TOUCHPAD_SAMPLES_PER_TICK: number = 2;
+export const VNC_PHYSICAL_TOUCHPAD_MAX_DELTA: number = 4;
 export const VNC_PHYSICAL_TOUCHPAD_MAX_NORMALIZED_SAMPLE: number = 4;
 export const VNC_PHYSICAL_TOUCHPAD_IDLE_RESET_MS: number = 160;
 export const VNC_AXIS_ACTION_NONE: number = 0;
@@ -85,12 +86,22 @@ export function shouldTreatPhysicalAxisAsContinuous(sourceIsTouchpad: boolean,
   return resolveVncPhysicalWheelRoute(sourceIsTouchpad, axisAction, scrollStep).continuous;
 }
 
-/** One physical mouse event represents one portable RFB wheel detent. */
-export function vncPhysicalMouseWheelDelta(rawDelta: number): number {
+/**
+ * Preserve the HarmonyOS user-configured mouse scroll coefficient. The raw
+ * degree value already includes `scrollStep`, so multiplying both would apply
+ * the preference twice. RFB has no magnitude field: express the coefficient
+ * as a bounded number of button-4/5 ticks instead.
+ */
+export function vncPhysicalMouseWheelDelta(rawDelta: number,
+  scrollStep: number | undefined = undefined): number {
   if (!Number.isFinite(rawDelta) || rawDelta === 0) {
     return 0;
   }
-  return rawDelta > 0 ? 1 : -1;
+  const scrollStepValue: number = scrollStep === undefined ? 0 : scrollStep;
+  const configuredSteps: number = hasPhysicalMouseScrollStep(scrollStep) ?
+    Math.max(1, Math.round(Math.abs(scrollStepValue))) : 1;
+  const steps: number = Math.min(VNC_PHYSICAL_MOUSE_MAX_DELTA, configuredSteps);
+  return rawDelta > 0 ? steps : -steps;
 }
 
 /**

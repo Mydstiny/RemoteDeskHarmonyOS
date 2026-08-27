@@ -11,8 +11,8 @@ export const LEGACY_CONTINUOUS_WHEEL_GAIN: number = 0.08;
 // Virtual touch coordinates are expressed in vp on every device class. Keep
 // their VNC curve independent from physical-axis units and accumulate enough
 // distance for one portable RFB button-4/5 detent.
-export const VNC_VIRTUAL_WHEEL_VP_PER_TICK: number = 10;
-export const VNC_VIRTUAL_WHEEL_MAX_DELTA: number = 2;
+export const VNC_VIRTUAL_WHEEL_VP_PER_TICK: number = 4;
+export const VNC_VIRTUAL_WHEEL_MAX_DELTA: number = 4;
 export const LEGACY_CONTINUOUS_WHEEL_MAX_DELTA: number = 2;
 export const MOONLIGHT_HIGH_RES_WHEEL_DETENT: number = 120;
 export const MOONLIGHT_TOUCHPAD_WHEEL_GAIN: number = 4;

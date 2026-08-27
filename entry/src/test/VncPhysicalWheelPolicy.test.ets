@@ -4,14 +4,16 @@ import {
   resetVncPhysicalWheelState,
   resolveVncPhysicalWheelRoute,
   shouldTreatPhysicalAxisAsContinuous,
+  VNC_PHYSICAL_MOUSE_MAX_DELTA,
+  VNC_PHYSICAL_TOUCHPAD_MAX_DELTA,
   VncPhysicalWheelState,
   vncPhysicalMouseWheelDelta
 } from '../main/ets/services/VncPhysicalWheelPolicy';
 
-function accumulateFourSamples(rawDelta: number): number {
+function accumulateTwoSamples(rawDelta: number): number {
   let state: VncPhysicalWheelState = resetVncPhysicalWheelState();
   let totalDelta: number = 0;
-  for (let index: number = 0; index < 4; index++) {
+  for (let index: number = 0; index < 2; index++) {
     const sample = accumulateVncPhysicalTouchpadWheel(rawDelta, state, 1);
     totalDelta += sample.delta;
     state = sample.state;
@@ -32,7 +34,7 @@ export default function vncPhysicalWheelPolicyTest(): void {
       expect(shouldTreatPhysicalAxisAsContinuous(false, 0, undefined, 0)).assertFalse();
       expect(shouldTreatPhysicalAxisAsContinuous(false, 0, undefined, 20)).assertFalse();
       expect(vncPhysicalMouseWheelDelta(1)).assertEqual(1);
-      expect(vncPhysicalMouseWheelDelta(1)).assertEqual(1);
+      expect(vncPhysicalMouseWheelDelta(-1)).assertEqual(-1);
     });
 
     it('recognizes_touchpad_and_explicit_axis_lifecycle_as_continuous', 0, (): void => {
@@ -63,19 +65,21 @@ export default function vncPhysicalWheelPolicyTest(): void {
       expect(mouse.resetAfter).assertFalse();
     });
 
-    it('normalizes_every_physical_mouse_vendor_unit_to_one_detent', 0, (): void => {
-      expect(vncPhysicalMouseWheelDelta(1)).assertEqual(1);
-      expect(vncPhysicalMouseWheelDelta(45)).assertEqual(1);
-      expect(vncPhysicalMouseWheelDelta(120)).assertEqual(1);
-      expect(vncPhysicalMouseWheelDelta(-1)).assertEqual(-1);
-      expect(vncPhysicalMouseWheelDelta(-120)).assertEqual(-1);
+    it('preserves_captured_mouse_scroll_step_without_multiplying_raw_degrees', 0, (): void => {
+      expect(vncPhysicalMouseWheelDelta(45, 3)).assertEqual(3);
+      expect(vncPhysicalMouseWheelDelta(-45, 3)).assertEqual(-3);
+      expect(vncPhysicalMouseWheelDelta(120, 1)).assertEqual(1);
+      expect(vncPhysicalMouseWheelDelta(1, undefined)).assertEqual(1);
+      expect(vncPhysicalMouseWheelDelta(-1, Number.NaN)).assertEqual(-1);
+      expect(vncPhysicalMouseWheelDelta(120, 100))
+        .assertEqual(VNC_PHYSICAL_MOUSE_MAX_DELTA);
     });
 
-    it('adapts_touchpad_1_45_and_120_units_to_the_same_scroll_rate', 0, (): void => {
-      expect(accumulateFourSamples(1)).assertEqual(1);
-      expect(accumulateFourSamples(45)).assertEqual(1);
-      expect(accumulateFourSamples(120)).assertEqual(1);
-      expect(accumulateFourSamples(-45)).assertEqual(-1);
+    it('adapts_touchpad_1_45_and_120_units_to_two_samples_per_tick', 0, (): void => {
+      expect(accumulateTwoSamples(1)).assertEqual(1);
+      expect(accumulateTwoSamples(45)).assertEqual(1);
+      expect(accumulateTwoSamples(120)).assertEqual(1);
+      expect(accumulateTwoSamples(-45)).assertEqual(-1);
     });
 
     it('rebases_large_first_samples_before_fine_motion_can_starve', 0, (): void => {
@@ -83,23 +87,20 @@ export default function vncPhysicalWheelPolicyTest(): void {
       const large = accumulateVncPhysicalTouchpadWheel(120, state, 1);
       state = large.state;
       const fineOne = accumulateVncPhysicalTouchpadWheel(1, state, 1);
-      state = fineOne.state;
-      const fineTwo = accumulateVncPhysicalTouchpadWheel(1, state, 1);
-      state = fineTwo.state;
-      const fineThree = accumulateVncPhysicalTouchpadWheel(1, state, 1);
-      expect(fineThree.delta).assertEqual(1);
-      expect(fineThree.state.axisUnit).assertEqual(1);
+      expect(fineOne.delta).assertEqual(1);
+      expect(fineOne.state.axisUnit).assertEqual(1);
 
       const medium = accumulateVncPhysicalTouchpadWheel(45,
         resetVncPhysicalWheelState(), 1);
       const mediumFine = accumulateVncPhysicalTouchpadWheel(1, medium.state, 1);
-      expect(mediumFine.state.remainder).assertEqual(0.5);
+      expect(mediumFine.delta).assertEqual(1);
+      expect(mediumFine.state.remainder).assertEqual(0);
 
       const small = accumulateVncPhysicalTouchpadWheel(1,
         resetVncPhysicalWheelState(), 1);
       const accelerated = accumulateVncPhysicalTouchpadWheel(45, small.state, 1);
-      expect(accelerated.delta).assertEqual(1);
-      expect(accelerated.state.remainder).assertEqual(0.25);
+      expect(accelerated.delta).assertEqual(2);
+      expect(accelerated.state.remainder).assertEqual(0.5);
     });
 
     it('clears_stale_fraction_on_direction_change_and_caps_fast_samples', 0, (): void => {
@@ -108,34 +109,31 @@ export default function vncPhysicalWheelPolicyTest(): void {
       state = first.state;
       const second = accumulateVncPhysicalTouchpadWheel(45, state, 1);
       state = second.state;
-      expect(second.delta).assertEqual(0);
-      expect(second.state.remainder).assertEqual(0.5);
+      expect(second.delta).assertEqual(1);
+      expect(second.state.remainder).assertEqual(0);
 
       const reversed = accumulateVncPhysicalTouchpadWheel(-45, state, 1);
       expect(reversed.delta).assertEqual(0);
-      expect(reversed.state.remainder).assertEqual(-0.25);
+      expect(reversed.state.remainder).assertEqual(-0.5);
 
       const fast = accumulateVncPhysicalTouchpadWheel(1000,
         resetVncPhysicalWheelState(), 10);
-      expect(fast.delta).assertEqual(2);
-      expect(fast.state.remainder).assertEqual(0.5);
+      expect(fast.delta).assertEqual(VNC_PHYSICAL_TOUCHPAD_MAX_DELTA);
+      expect(fast.state.remainder).assertEqual(0);
     });
 
     it('does_not_leak_fraction_across_idle_gaps_or_input_sources', 0, (): void => {
       let state: VncPhysicalWheelState = resetVncPhysicalWheelState();
       const first = accumulateVncPhysicalTouchpadWheel(45, state, 1, 100, 1);
-      state = first.state;
-      const second = accumulateVncPhysicalTouchpadWheel(45, state, 1, 110, 1);
-      expect(second.state.remainder).assertEqual(0.5);
-
-      const afterIdle = accumulateVncPhysicalTouchpadWheel(45, second.state, 1, 400, 1);
+      expect(first.state.remainder).assertEqual(0.5);
+      const afterIdle = accumulateVncPhysicalTouchpadWheel(45, first.state, 1, 400, 1);
       expect(afterIdle.delta).assertEqual(0);
-      expect(afterIdle.state.remainder).assertEqual(0.25);
+      expect(afterIdle.state.remainder).assertEqual(0.5);
 
       const afterSourceChange = accumulateVncPhysicalTouchpadWheel(
-        45, second.state, 1, 120, 2);
+        45, first.state, 1, 120, 2);
       expect(afterSourceChange.delta).assertEqual(0);
-      expect(afterSourceChange.state.remainder).assertEqual(0.25);
+      expect(afterSourceChange.state.remainder).assertEqual(0.5);
     });
   });
 }

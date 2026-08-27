@@ -16,20 +16,19 @@ export function vncToolbarPrimaryActionIds(): VncToolbarPrimaryActionId[] {
 }
 
 /**
- * VNC 服务器若不下发 Cursor pseudo-encoding，光标通常已合成在帧缓冲中。
- * auto 模式此时隐藏本地系统光标，避免 UltraVNC 出现两层鼠标；一旦独立
- * 光标形状就绪，立即恢复并采用协议光标。显式 arrow/circle 始终保留本地光标。
+ * The absence of Cursor pseudo-encoding cannot distinguish a server-composited
+ * cursor from a delayed protocol cursor. macOS Screen Sharing can delay its
+ * first real shape for tens of seconds, so auto mode must keep the default
+ * system pointer during bootstrap and replace it atomically when a valid
+ * protocol shape is installed. Only the explicit hidden mode may remove it.
  */
 export function shouldHideVncSystemPointer(protocol: string, connected: boolean,
   keyboardMouseMode: boolean, surfaceHovered: boolean,
-  localCursorMode: VncLocalCursorMode, nativeCursorReady: boolean): boolean {
+  localCursorMode: VncLocalCursorMode, _nativeCursorReady: boolean): boolean {
   if (protocol !== 'vnc' || !connected || !keyboardMouseMode || !surfaceHovered) {
     return false;
   }
-  if (localCursorMode === 'hidden') {
-    return true;
-  }
-  return localCursorMode === 'auto' && !nativeCursorReady;
+  return localCursorMode === 'hidden';
 }
 
 export function shouldShowVncSessionToolbar(protocol: string, connected: boolean,

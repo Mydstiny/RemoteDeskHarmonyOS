@@ -16666,13 +16666,13 @@ struct RemoteDesktop {
         return;
       }
 
-      // A mouse-only scrollStep is one portable detent regardless of whether
-      // the vendor reports 1, 45 or 120. Continuous touchpad samples instead
-      // use a per-gesture unit baseline and fractional accumulation.
+      // Mouse degrees already include the user's scrollStep. Preserve that
+      // coefficient as bounded RFB ticks without multiplying the raw degrees;
+      // continuous touchpads use their independent per-gesture normalization.
       let delta: number = 0;
       if (vncSession && !vncContinuousPhysicalAxis) {
         this.vncPhysicalWheelState = resetVncPhysicalWheelState();
-        delta = vncPhysicalMouseWheelDelta(rawVertical);
+        delta = vncPhysicalMouseWheelDelta(rawVertical, event.scrollStep);
       } else if (mouseSource && !vncSession) {
         delta = discreteRemoteWheelDelta(rawVertical, this.currentProtocolName());
       } else {

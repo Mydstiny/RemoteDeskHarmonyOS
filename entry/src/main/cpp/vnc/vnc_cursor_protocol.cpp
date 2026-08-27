@@ -134,6 +134,7 @@ bool decodePayload(const VncRfbProtocol::PixelFormat& format,
 
     const uint8_t* mask = payload + pixelBytes;
     uint64_t shapeId = 1469598103934665603ULL;
+    bool hasVisiblePixel = false;
     const auto mix = [&shapeId](uint8_t value) {
         shapeId ^= value;
         shapeId *= 1099511628211ULL;
@@ -156,6 +157,7 @@ bool decodePayload(const VncRfbProtocol::PixelFormat& format,
             pixel[3] =
                 ((maskByte >> (7U - static_cast<unsigned>(column % 8))) & 1U) != 0 ?
                 255 : 0;
+            hasVisiblePixel = hasVisiblePixel || pixel[3] != 0;
             writePixel(cursor.rgba, index, pixel);
             for (uint8_t channel : pixel) {
                 mix(channel);
@@ -171,7 +173,10 @@ bool decodePayload(const VncRfbProtocol::PixelFormat& format,
             mix(static_cast<uint8_t>((value >> shift) & 0xFFU));
         }
     }
-    cursor.visible = true;
+    // Some servers use a non-zero cursor rectangle with an all-zero mask to
+    // hide the remote cursor. Never install that transparent bitmap as the
+    // native system pointer; the UI policy can retain its safe local fallback.
+    cursor.visible = hasVisiblePixel;
     cursor.shapeId = shapeId;
     cursor.width = width;
     cursor.height = height;
