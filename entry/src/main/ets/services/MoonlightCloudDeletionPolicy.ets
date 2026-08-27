@@ -311,9 +311,9 @@ export function parseMoonlightCloudDeletionCheckpoint(
       'deletedPhysicalRowCount', 'disableSyncAfterUpload', 'createdAt',
       'updatedAt'
     ];
-    const keys: string[] = Object.keys(parsed).sort();
-    if (keys.join(',') !== expected.slice().sort().join(',')) {
-      return null;
+    const keys: string[] = Object.keys(parsed);
+    for (let i = 0; i < expected.length; i++) {
+      if (keys.indexOf(expected[i]) < 0) { return null; }
     }
     const value: MoonlightCloudDeletionCheckpoint = {
       version: parsed['version'] as number,

@@ -30,7 +30,10 @@ import {
   moonlightPayloadWithMeta,
   moonlightRecordPayloadHashSha256
 } from '../main/ets/services/MoonlightRecordPolicy';
-import { MoonlightRepositoryReadResult } from '../main/ets/services/MoonlightRepository';
+import {
+  MoonlightRepositoryCommit,
+  MoonlightRepositoryReadResult
+} from '../main/ets/services/MoonlightRepository';
 
 function lease(owner: string = 'owner-a', generation: number = 1,
   instance: number = 1): AccountSessionLease {
@@ -210,6 +213,22 @@ class MemoryCloudSyncPort implements MoonlightCloudSyncServicePort {
         this.failedWriteIds.indexOf(record.id) >= 0) { return false; }
     this.rows.set(record.id, MoonlightRecord.fromJSON(record.toJSON()));
     this.localOnly.set(record.id, localOnly);
+    return true;
+  }
+
+  commitMoonlightLocalRecords(candidate: AccountSessionLease,
+    commits: MoonlightRepositoryCommit[]): boolean {
+    if (!this.isLeaseCurrent(candidate)) { return false; }
+    for (let i = 0; i < commits.length; i++) {
+      if (this.failedWriteIds.indexOf(commits[i].record.id) >= 0) {
+        return false;
+      }
+    }
+    for (let i = 0; i < commits.length; i++) {
+      this.rows.set(commits[i].record.id,
+        MoonlightRecord.fromJSON(commits[i].record.toJSON()));
+      this.localOnly.set(commits[i].record.id, commits[i].localOnly);
+    }
     return true;
   }
 

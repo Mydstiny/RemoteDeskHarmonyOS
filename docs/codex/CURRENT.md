@@ -2,33 +2,51 @@
 
 ## Active task
 
-- Task: `vnc-wheel-input-normalization`
-- Branch/base: `codex/vnc-wheel-input-normalization` from synchronized `main@928372c6c`.
-- Phase: implementation, mandatory gates and independent follow-up review complete.
-- Plan: `docs/codex/plans/2026-08-27-vnc-wheel-input-normalization.md`
+- Task: `moonlight-crud-compatibility`
+- Branch/base: `codex/moonlight-crud-compatibility` from synchronized `main@a773346f6`.
+- Phase: implementation checkpoint ready; independent review pending.
+- Plan: `docs/codex/plans/2026-08-27-moonlight-crud-compatibility.md`
 
-## Completed implementation
+## Objective
 
-- A valid mouse-only `scrollStep` now overrides Axis lifecycle metadata, so a physical mouse is no longer routed through the continuous `/45` touchpad path.
-- Physical mouse input maps each vendor event (`1`, `45` or `120`) to one portable RFB wheel detent; the VNC-only four-click baseline and 2x/3x timestamp burst were removed.
-- Continuous HarmonyOS PC touchpad/bridge input now calibrates its raw unit per gesture, accumulates fractional motion, caps each sample and resets on BEGIN/END/CANCEL, idle gaps, source changes and direction changes.
-- Phone/Pad virtual two-finger VNC input now uses vp-distance accumulation with a two-tick frame cap; forced minimum ticks, 32-tick bursts and the recursive post-release fling were removed.
-- RDP, RustDesk and Moonlight wheel policies retain their existing source-specific paths. Native VNC still expands the requested delta exactly into RFB button-4/5 pairs.
-- The shared policy suites are registered in both the default test compile and on-device runner; regression cases cover classification, vendor units, lifecycle isolation, virtual fractional movement and output budgets.
-- Initial independent review of `c7633050` found two P1s, one P2 and one P3 test gap. The remediation keeps ambiguous `MOUSE + NONE` events discrete, immediately rebases `120/45 → 1` fine motion, forwards sub-`0.5vp` Phone/Pad samples and routes BEGIN/END/CANCEL through a shared tested policy.
-- The same reviewer passed remediation checkpoint `c64d01a6` with zero P1/P2/P3 findings and confirmed that RFB expansion plus RDP/RustDesk/Moonlight input paths remain intact.
+- Make Moonlight local CRUD authoritative and usable without Huawei Cloud Space.
+- Keep legacy/pre-Moonlight data, malformed optional Moonlight data and cloud failures from blocking unrelated protocols or valid Moonlight hosts.
+- Preserve tombstone/reset-epoch conflict semantics across settings revival, host re-add, backup restore and cloud projection.
+- Report durable local commits truthfully and make compound host/trust creation crash-safe.
+
+## Confirmed review scope
+
+- Optional Moonlight schema/projection activation and malformed-row isolation.
+- Host, trust, settings, profile and application-cache create/read/update/delete paths.
+- Single/batch deletion, local unpair, no-account storage, export/import and portable restore.
+- Legacy IDs, duplicate settings, deletion checkpoints and post-commit readback behavior.
+
+## Implemented
+
+- Ordinary host/profile deletion and local unpair are local-first; Huawei account login without Cloud Space cannot return `cloud_unavailable` for those actions.
+- Host + trust creation/deletion and duplicate alias convergence use one local transaction; durable commits remain successful when only post-commit readback is transiently unavailable.
+- Invalid optional Moonlight rows/cache entries are isolated instead of poisoning unrelated CRUD; malformed deletion checkpoints are quarantined and released.
+- Settings tombstones and legacy aliases resolve deterministically, revive with a higher reset epoch and converge in one save.
+- Pre-release host IDs are reused/converged, portable restore uses the Moonlight conflict policy, and missing additive columns are repaired without rejecting harmless legacy extras.
+- Explicit owner-local deletion clears hidden malformed Moonlight rows and caches, while remote Sunshine unpair and rebuildable cache cleanup remain best effort.
 
 ## Verification
 
-- `default@OhosTestCompileArkTS`: PASS after remediation, `BUILD SUCCESSFUL in 8 s 967 ms`.
-- `assembleHap`: PASS with signing after remediation, `BUILD SUCCESSFUL in 17 s 16 ms`.
-- Signed HAP SHA-256: `65d06b269cff68c05c3e759c00410444a67fec77e6284f025a3227e85413edab`.
-- `git diff --check`: PASS.
-- Open-source compliance `Light`: PASS.
-- Additional `ohosTest@OhosTestCompileArkTS`: unavailable because the project task remains unregistered (`00306054`); no on-device test execution is claimed.
-- `hdc list targets`: no online target, so install and live physical mouse/touchpad diagnostics remain external acceptance.
+- Baseline `main@a773346f6` was clean and equal to `origin/main` when the task started.
+- Exact `default@OhosTestCompileArkTS`: PASS (`BUILD SUCCESSFUL in 8 s 573 ms`).
+- Exact signed `assembleHap`: PASS (`BUILD SUCCESSFUL in 27 s 656 ms`).
+- Signed HAP SHA-256: `ef646302f966b53bbc4539a7c7d57801e556ebbf941431c1c4f595b7da9361a4`.
+- Legacy replay: PASS for `1.0.7`, `1.0.8-initial` and `1.1.1-initial`; all legacy rows preserved and schema converged to v5.
+- `git diff --check`: PASS. Open-source compliance Light: PASS.
+- `ohosTest@OhosTestCompileArkTS`: unavailable because the task is not registered (`00306054`); no device-test execution is claimed.
 
-## Result / external acceptance
+## Next
 
-- Source, build and independent-review work is complete on `codex/vnc-wheel-input-normalization`.
-- Environment limitation: no online HarmonyOS target. Install the signed HAP and compare physical mouse/touchpad curves against Windows UltraVNC when a target is available; no live device acceptance is claimed in this task.
+1. Commit the implementation checkpoint.
+2. Request one independent sub-agent review of the committed delta.
+3. Remediate any findings and rerun all required gates.
+4. Complete branch/PR/main closure after review PASS.
+
+## Blockers
+
+- Device Hypium task remains unregistered (`00306054`); no on-device test claim will be made unless the task becomes available.

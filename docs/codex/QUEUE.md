@@ -1,16 +1,18 @@
-# VNC Wheel Input Normalization Queue
+# Moonlight CRUD Compatibility Queue
 
 Updated: 2026-08-27 Asia/Shanghai
 
 ## Now
 
-1. No source follow-up remains; remediation checkpoint `c64d01a6` passed the same independent reviewer with zero P1/P2/P3 findings.
+1. Commit the complete CRUD compatibility checkpoint.
+2. Run the required independent review against the committed scope.
+3. Remediate findings and repeat exact build/package/compliance gates.
 
 ## Next
 
-1. Install the signed HAP when a HarmonyOS target is online.
-2. Compare physical mouse wheel and physical touchpad scroll curves against Windows UltraVNC.
+1. Push the reviewed branch and complete PR/main closure.
+2. Retain the signed HAP hash and legacy replay result in the final receipt.
 
 ## Later / external acceptance
 
-- Compare HarmonyOS PC physical mouse and touchpad curves against Windows UltraVNC using the bounded `physical-wheel` diagnostics.
+- Install the verified HAP and exercise legacy upgrade/import/cloud-unavailable scenarios when a HarmonyOS target is available; no physical-device claim is part of this checkpoint.

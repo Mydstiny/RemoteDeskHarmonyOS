@@ -7,6 +7,7 @@ import {
   cloneAccountSessionLease
 } from '../main/ets/services/AccountScopePolicy';
 import {
+  MoonlightRepositoryCommit,
   MoonlightRepositoryPort,
   MoonlightRepositoryReadResult
 } from '../main/ets/services/MoonlightRepository';
@@ -83,6 +84,18 @@ class MemorySettingsPort implements MoonlightRepositoryPort {
     this.rows.push(MoonlightRecord.fromJSON(record.toJSON()));
     this.commitCount++;
     this.lastLocalOnly = localOnly;
+    return true;
+  }
+
+  commitMoonlightLocalRecords(candidate: AccountSessionLease,
+    commits: MoonlightRepositoryCommit[]): boolean {
+    if (!this.isLeaseCurrent(candidate)) { return false; }
+    for (let i = 0; i < commits.length; i++) {
+      if (!this.commitMoonlightLocalRecord(candidate, commits[i].record,
+        commits[i].localOnly, commits[i].operation)) {
+        return false;
+      }
+    }
     return true;
   }
 
@@ -203,10 +216,106 @@ export default function moonlightSettingsLocalServiceTest(): void {
       const port = new MemorySettingsPort();
       port.readbackFailure = true;
       const saved = new MoonlightSettingsLocalService(port).save(defaultMoonlightSettings(), 1000);
-      expect(saved.ok).assertFalse();
-      expect(saved.code).assertEqual('readback_failed');
+      expect(saved.ok).assertTrue();
+      expect(saved.code).assertEqual('pending_local_verification');
       expect(saved.localCommitted).assertTrue();
       expect(port.commitCount).assertEqual(1);
     });
+
+    it('revives_a_settings_tombstone_with_a_higher_reset_epoch', 0, (): void => {
+      const port = new MemorySettingsPort();
+      const tombstone: MoonlightRecord = legacySettingsRecord('owner-a');
+      tombstone.payload = '{}';
+      tombstone.syncVersion = 2;
+      tombstone.resetEpoch = 3;
+      tombstone.updatedAt = 500;
+      tombstone.deletedAt = 500;
+      tombstone.payloadHashSha256 = moonlightRecordPayloadHashSha256(tombstone);
+      port.rows.push(tombstone);
+      const saved = new MoonlightSettingsLocalService(port).save(
+        defaultMoonlightSettings(), 1000);
+      expect(saved.ok).assertTrue();
+      expect(saved.localCommitted).assertTrue();
+      expect(port.rows[0].deletedAt).assertEqual(0);
+      expect(port.rows[0].resetEpoch).assertEqual(4);
+      expect(port.rows[0].syncVersion).assertEqual(3);
+    });
+
+    it('selects_the_newest_legacy_settings_record_instead_of_blocking_crud', 0,
+      (): void => {
+        const port = new MemorySettingsPort();
+        const older: MoonlightRecord = legacySettingsRecord('owner-a');
+        older.id = 'legacy-settings-a';
+        older.payloadHashSha256 = moonlightRecordPayloadHashSha256(older);
+        const newer: MoonlightRecord = legacySettingsRecord('owner-a');
+        newer.id = 'legacy-settings-b';
+        newer.syncVersion = 4;
+        newer.updatedAt = 400;
+        newer.payloadHashSha256 = moonlightRecordPayloadHashSha256(newer);
+        port.rows.push(older);
+        port.rows.push(newer);
+        const service = new MoonlightSettingsLocalService(port);
+        expect(service.load().code).assertEqual('ok');
+        const saved = service.save(defaultMoonlightSettings(), 1000);
+        expect(saved.ok).assertTrue();
+        expect(port.rows[1].syncVersion).assertEqual(5);
+      });
+
+    it('keeps_a_same_epoch_tombstone_authoritative_over_a_canonical_live_alias',
+      0, (): void => {
+        const port = new MemorySettingsPort();
+        const tombstone: MoonlightRecord = legacySettingsRecord('owner-a');
+        tombstone.id = 'legacy-settings-deleted';
+        tombstone.payload = '{}';
+        tombstone.resetEpoch = 2;
+        tombstone.syncVersion = 5;
+        tombstone.updatedAt = 500;
+        tombstone.deletedAt = 500;
+        tombstone.payloadHashSha256 = moonlightRecordPayloadHashSha256(tombstone);
+        const canonicalLive: MoonlightRecord = legacySettingsRecord('owner-a');
+        canonicalLive.resetEpoch = 2;
+        canonicalLive.syncVersion = 5;
+        canonicalLive.updatedAt = 500;
+        canonicalLive.payloadHashSha256 =
+          moonlightRecordPayloadHashSha256(canonicalLive);
+        port.rows.push(tombstone);
+        port.rows.push(canonicalLive);
+
+        const service = new MoonlightSettingsLocalService(port);
+        const loaded = service.load();
+        expect(loaded.ok).assertTrue();
+        expect(loaded.code).assertEqual('default');
+        const saved = service.save(
+          defaultMoonlightSettings(), 1000);
+        expect(saved.ok).assertTrue();
+        expect(port.rows[0].deletedAt).assertEqual(0);
+        expect(port.rows[0].resetEpoch).assertEqual(3);
+        expect(port.rows[0].syncVersion).assertEqual(6);
+        expect(port.rows[1].deletedAt > 0).assertTrue();
+        expect(port.rows[1].syncVersion).assertEqual(6);
+      });
+
+    it('converges_live_legacy_settings_aliases_in_the_same_atomic_save', 0,
+      (): void => {
+        const port = new MemorySettingsPort();
+        const older: MoonlightRecord = legacySettingsRecord('owner-a');
+        older.id = 'legacy-settings-a';
+        older.payloadHashSha256 = moonlightRecordPayloadHashSha256(older);
+        const newer: MoonlightRecord = legacySettingsRecord('owner-a');
+        newer.id = 'legacy-settings-b';
+        newer.syncVersion = 4;
+        newer.updatedAt = 400;
+        newer.payloadHashSha256 = moonlightRecordPayloadHashSha256(newer);
+        port.rows.push(older);
+        port.rows.push(newer);
+
+        const saved = new MoonlightSettingsLocalService(port).save(
+          defaultMoonlightSettings(), 1000);
+        expect(saved.ok).assertTrue();
+        expect(port.rows[0].deletedAt > 0).assertTrue();
+        expect(port.rows[0].syncVersion).assertEqual(2);
+        expect(port.rows[1].deletedAt).assertEqual(0);
+        expect(port.rows[1].syncVersion).assertEqual(5);
+      });
   });
 }

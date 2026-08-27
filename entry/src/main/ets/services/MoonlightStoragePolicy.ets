@@ -108,6 +108,33 @@ export function moonlightStorageSchemasEqual(
   return true;
 }
 
+/**
+ * Runtime access is name based. A legacy/prerelease table may therefore keep
+ * harmless additional columns, provided every required column still has the
+ * expected affinity and primary-key contract.
+ */
+export function moonlightStorageSchemaIsCompatible(
+  actual: MoonlightStorageColumn[],
+  expected: MoonlightStorageColumn[]
+): boolean {
+  for (let i = 0; i < expected.length; i++) {
+    let found: MoonlightStorageColumn | null = null;
+    for (let k = 0; k < actual.length; k++) {
+      if (actual[k].name === expected[i].name) {
+        found = actual[k];
+        break;
+      }
+    }
+    if (found === null ||
+        found.sqlType.trim().toUpperCase() !==
+          expected[i].sqlType.trim().toUpperCase() ||
+        found.primaryKey !== expected[i].primaryKey) {
+      return false;
+    }
+  }
+  return true;
+}
+
 function schemaFingerprint(
   table: string, schema: MoonlightStorageColumn[]
 ): string {

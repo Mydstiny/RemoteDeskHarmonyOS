@@ -1,43 +1,46 @@
 {
   "schema": 1,
-  "task": "vnc-wheel-input-normalization",
-  "branch": "codex/vnc-wheel-input-normalization",
-  "base": "928372c6c",
-  "head": "c64d01a6527bb343d3196ef695b1aabc09bb36bd",
-  "phase": "complete",
-  "status": "completed",
-  "next": "Install the verified signed HAP and run physical mouse/touchpad acceptance when a HarmonyOS target is online.",
-  "blockers": [],
+  "task": "moonlight-crud-compatibility",
+  "branch": "codex/moonlight-crud-compatibility",
+  "base": "a773346f6dd373c16d3e64cf241fed036b52061e",
+  "head": "a773346f6dd373c16d3e64cf241fed036b52061e",
+  "phase": "checkpoint",
+  "status": "active",
+  "next": "Commit the implementation checkpoint, then run the required independent review and remediate any findings.",
+  "blockers": [
+    "Device Hypium task is unavailable with 00306054; no on-device test execution is currently claimed."
+  ],
   "planPaths": [
-    "docs/codex/plans/2026-08-27-vnc-wheel-input-normalization.md"
+    "docs/codex/plans/2026-08-27-moonlight-crud-compatibility.md"
   ],
   "review": {
-    "status": "PASS",
-    "taskIds": [
-      "/root/vnc_wheel_review"
-    ],
-    "reviewedHead": "c64d01a6527bb343d3196ef695b1aabc09bb36bd",
+    "status": "PENDING",
+    "taskIds": [],
+    "reviewedHead": "",
     "scope": [
-      "entry/src/main/ets/services/RemoteWheelPolicy.ets",
-      "entry/src/main/ets/services/VncPhysicalWheelPolicy.ets",
-      "entry/src/main/ets/pages/RemoteDesktop.ets",
-      "entry/src/test/VncPhysicalWheelPolicy.test.ets",
-      "entry/src/test/RemoteWheelPolicy.test.ets",
-      "entry/src/test/List.test.ets",
-      "entry/src/ohosTest/ets/test/List.test.ets",
-      "entry/src/ohosTest/ets/test/RemoteWheelPolicy.test.ets"
+      "entry/src/main/ets/services/CloudStore.ets",
+      "entry/src/main/ets/services/MoonlightSettingsLocalService.ets",
+      "entry/src/main/ets/services/MoonlightLocalHostService.ets",
+      "entry/src/main/ets/services/MoonlightDeletionCommandService.ets",
+      "entry/src/main/ets/services/MoonlightHostUnpairRuntime.ets",
+      "entry/src/main/ets/services/MoonlightRepository.ets",
+      "entry/src/main/ets/services/MoonlightCloudDeletionPolicy.ets",
+      "entry/src/main/ets/services/MoonlightStoragePolicy.ets",
+      "entry/src/main/ets/pages/HostListPage.ets",
+      "entry/src/main/ets/pages/MoonlightHostDetailPage.ets",
+      "entry/src/test"
     ],
-    "lastReceiptId": "vnc-wheel-input-normalization-c64d01a6-2026-08-27",
+    "lastReceiptId": "",
     "findings": [],
-    "reason": "The same independent reviewer verified every initial P1/P2/P3 remediation and found no remaining issue or adjacent-protocol regression."
+    "reason": "Implementation and local gates are complete; independent review is required after the checkpoint commit."
   },
   "lastVerification": {
-    "baseline": "clean synchronized main@928372c6c",
-    "testCompile": "PASS after review remediation: default@OhosTestCompileArkTS BUILD SUCCESSFUL in 8 s 967 ms",
-    "assembleHap": "PASS after review remediation: signed assembleHap BUILD SUCCESSFUL in 17 s 16 ms; SHA-256 65d06b269cff68c05c3e759c00410444a67fec77e6284f025a3227e85413edab",
-    "targetedTests": "Policy suites compiled and registered in both runners; ohosTest task unavailable with existing 00306054 and no HDC target online",
-    "compliance": "PASS: git diff --check and open-source Light",
-    "review": "PASS: /root/vnc_wheel_review found zero P1/P2/P3 findings at c64d01a6527bb343d3196ef695b1aabc09bb36bd"
+    "baseline": "clean synchronized main@a773346f6",
+    "testCompile": "PASS exact default@OhosTestCompileArkTS 8s573ms",
+    "assembleHap": "PASS exact signed assembleHap 27s656ms sha256=ef646302f966b53bbc4539a7c7d57801e556ebbf941431c1c4f595b7da9361a4",
+    "targetedTests": "compile-registered; legacy replay PASS 1.0.7/1.0.8-initial/1.1.1-initial; ohosTest blocked 00306054",
+    "compliance": "PASS git diff --check and Light",
+    "review": "PENDING"
   },
   "updated": "2026-08-27 Asia/Shanghai"
 }

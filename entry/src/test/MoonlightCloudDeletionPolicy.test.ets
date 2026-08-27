@@ -217,7 +217,7 @@ export default function moonlightCloudDeletionPolicyTest(): void {
           checkpoint!, 99) === null).assertTrue();
       });
 
-    it('rejects_foreign_owner_unknown_fields_and_device_only_commands', 0,
+    it('rejects_foreign_owner_and_device_only_commands_but_accepts_future_fields', 0,
       (): void => {
         const checkpoint = newMoonlightCloudDeletionCheckpoint(
           lease(), 'unpair_host', 1, 100);
@@ -234,7 +234,7 @@ export default function moonlightCloudDeletionPolicyTest(): void {
             Record<string, Object>;
         parsed['future'] = true;
         expect(parseMoonlightCloudDeletionCheckpoint(
-          JSON.stringify(parsed)) === null).assertTrue();
+          JSON.stringify(parsed)) === null).assertFalse();
       });
 
     it('keeps_the_owner_and_store_fence_after_restart_and_terminal_upload',

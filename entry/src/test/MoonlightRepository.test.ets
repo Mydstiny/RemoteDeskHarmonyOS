@@ -16,6 +16,7 @@ import {
 } from '../main/ets/services/MoonlightRecordPolicy';
 import {
   MoonlightRepository,
+  MoonlightRepositoryCommit,
   MoonlightRepositoryPort,
   MoonlightRepositoryReadResult
 } from '../main/ets/services/MoonlightRepository';
@@ -123,6 +124,22 @@ class MemoryMoonlightRepositoryPort implements MoonlightRepositoryPort {
       MoonlightRecord.fromJSON(record.toJSON()));
     this.localOnlyByKey.set(key, localOnly);
     this.commitCount++;
+    if (this.switchAfterCommit) {
+      this.activeLease = lease('owner-b', candidate.generation + 1,
+        candidate.storeInstanceId + 1);
+    }
+    return true;
+  }
+
+  commitMoonlightLocalRecords(candidate: AccountSessionLease,
+    commits: MoonlightRepositoryCommit[]): boolean {
+    if (this.writeFailure || !this.isLeaseCurrent(candidate)) { return false; }
+    for (let i = 0; i < commits.length; i++) {
+      const key: string = candidate.ownerScopeId + ':' + commits[i].record.id;
+      this.rows.set(key, MoonlightRecord.fromJSON(commits[i].record.toJSON()));
+      this.localOnlyByKey.set(key, commits[i].localOnly);
+      this.commitCount++;
+    }
     if (this.switchAfterCommit) {
       this.activeLease = lease('owner-b', candidate.generation + 1,
         candidate.storeInstanceId + 1);

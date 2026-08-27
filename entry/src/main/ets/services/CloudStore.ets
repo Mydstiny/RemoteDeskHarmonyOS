@@ -59,7 +59,10 @@ import {
   moonlightAppCacheEntryIsValid
 } from '../model/MoonlightAppCache';
 import { MoonlightAppCachePort } from './MoonlightAppCacheService';
-import { MoonlightRepositoryPort } from './MoonlightRepository';
+import {
+  MoonlightRepositoryCommit,
+  MoonlightRepositoryPort
+} from './MoonlightRepository';
 import { DataCrypto, CryptoCloudStore } from './DataCrypto';
 import { hashForLog, safeError } from '../utils/SafeLogger';
 import {
@@ -338,10 +341,11 @@ import {
   moonlightLocalTableCreateSql,
   moonlightOwnerStoreVersionAfterMigration,
   moonlightStorageSchemaFingerprint,
-  moonlightStorageSchemasEqual,
+  moonlightStorageSchemaIsCompatible,
   moonlightStorageSchemaContractIsExact
 } from './MoonlightStoragePolicy';
 import { moonlightValidateRecord } from './MoonlightRecordPolicy';
+import { resolveMoonlightRecordConflict } from './MoonlightRecordConflictPolicy';
 import {
   MOONLIGHT_RESTORE_QUARANTINE_KEY,
   MoonlightRestoreActivationState,
@@ -912,15 +916,20 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
       !CloudSyncCoordinator.getInstance().reopenMutationGate(lease)) {
       return false;
     }
+    this.recoverMalformedMoonlightCloudDeletionCheckpoint(lease);
     this.mutationGateOpen = true;
     // Preferences are the durable Moonlight scope truth. Reconcile the local
     // projection before exposing a newly activated account, covering process
     // death or account replacement between the projection and preference
     // commits of an earlier scope change.
-    if (!this.moonlightSyncSelection.reconcileProjection(lease)) {
-      this.mutationGateOpen = false;
-      CloudSyncCoordinator.getInstance().closeMutationGate(lease);
-      return false;
+    if (this.moonlightStorageReady &&
+        !this.moonlightSyncSelection.reconcileProjection(lease)) {
+      // Moonlight is additive. Projection repair failure may pause its cloud
+      // mirror, but must never close the shared local CRUD gate used by every
+      // protocol or block an offline/device-local owner scope.
+      hilog.warn(0x0001, 'CloudSync',
+        '[CloudStore] optional Moonlight projection reconcile deferred; ' +
+        'shared local mutation gate remains open');
     }
     this.queueMoonlightPendingSelectionReconcile(lease);
     return true;
@@ -4143,7 +4152,7 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
       : localBackupColumnsForTable(table);
     let changed: number = 0;
     for (let i = 0; i < rows.length; i++) {
-      const source: Record<string, string> = rows[i];
+      let source: Record<string, string> = rows[i];
       const id: string = source['id'] || '';
       if (id === '') {
         throw new Error('portable restore row identity missing: ' + table);
@@ -4151,6 +4160,69 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
       if (this.portableOwnerTable(table) &&
         source['userid'] !== this.currentOwnerScopeId()) {
         throw new Error('portable restore owner mismatch: ' + table);
+      }
+      if (table === MOONLIGHT_LOCAL_TABLE) {
+        if (source['localonly'] !== '1' ||
+            Object.keys(source).length !==
+              MOONLIGHT_LOCAL_RECORD_COLUMNS.length) {
+          throw new Error(
+            'portable restore invalid Moonlight row: ' + id);
+        }
+        let candidate: MoonlightRecord =
+          moonlightRecordFromCloudRow(source);
+        if (!moonlightValidateRecord(candidate).valid) {
+          throw new Error(
+            'portable restore invalid Moonlight row: ' + id);
+        }
+        const lease: AccountSessionLease | null = this.currentAccountLease();
+        if (lease === null || !this.isLeaseCurrent(lease)) {
+          throw new Error('portable restore Moonlight lease unavailable');
+        }
+        let current: MoonlightRecord | null = null;
+        let currentLocalOnly: number = -1;
+        try {
+          current = this.findMoonlightLocalRecordRaw(lease, id);
+          if (current !== null) {
+            currentLocalOnly = this.findMoonlightLocalOnlyFlag(lease, id);
+          }
+        } catch (_error) {
+          // A valid portable row is a safe owner-scoped recovery source for an
+          // unreadable prerelease row with the same identity. Preserve only a
+          // redacted diagnostic marker, then let the normal transaction replace
+          // that single damaged row without disturbing newer healthy records.
+          if (current === null) {
+            this.recordMoonlightQuarantine(lease, id,
+              'restore_replaced_unreadable_current', '');
+          }
+        }
+        if (current !== null) {
+          if (!moonlightValidateRecord(current).valid ||
+              !moonlightLocalOnlyFlagIsValid(currentLocalOnly)) {
+            this.recordMoonlightQuarantine(lease, current.id,
+              !moonlightValidateRecord(current).valid ?
+                'restore_replaced_invalid_current' :
+                'restore_replaced_invalid_localonly',
+              /^[0-9a-f]{64}$/.test(current.payloadHashSha256) ?
+                current.payloadHashSha256 : '');
+          } else {
+            const decision = resolveMoonlightRecordConflict(
+              current, candidate, null);
+            if (decision.action === 'keep_current') {
+              continue;
+            }
+            if (decision.action === 'quarantine_candidate' ||
+                decision.action === 'quarantine_both' ||
+                decision.record === null) {
+              this.recordMoonlightQuarantine(lease, candidate.id,
+                'portable_restore_' + decision.reason,
+                candidate.payloadHashSha256);
+              continue;
+            }
+            candidate = MoonlightRecord.fromJSON(decision.record.toJSON());
+          }
+        }
+        source = moonlightRecordToCloudRow(candidate);
+        source['localonly'] = '1';
       }
       const bucket: relationalStore.ValuesBucket = {};
       const keys: string[] = Object.keys(source);
@@ -4175,13 +4247,6 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
         }
       }
       if (table === MOONLIGHT_LOCAL_TABLE) {
-        if (source['localonly'] !== '1' ||
-          keys.length !== MOONLIGHT_LOCAL_RECORD_COLUMNS.length ||
-          !moonlightValidateRecord(
-            moonlightRecordFromCloudRow(source)).valid) {
-          throw new Error(
-            'portable restore invalid Moonlight row: ' + id);
-        }
         // Reassert the local-first boundary even if a caller constructed the
         // plan manually rather than through LocalBackupPolicy.
         bucket['localonly'] = 1;
@@ -5627,11 +5692,18 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
       'ALTER TABLE ' + table + ' ADD COLUMN ' + columnDefinition);
   }
 
-  private tableHasExactSchema(
-    table: string, expected: MoonlightStorageColumn[]
-  ): boolean {
-    return moonlightStorageSchemasEqual(
-      this.tableSchema(table), expected);
+  private async ensureMoonlightColumns(table: string,
+    expected: MoonlightStorageColumn[]): Promise<void> {
+    const actualNames: string[] = this.tableColumns(table);
+    for (let i = 0; i < expected.length; i++) {
+      if (actualNames.indexOf(expected[i].name) >= 0) { continue; }
+      if (expected[i].primaryKey) {
+        throw new Error('Moonlight legacy table is missing primary key ' +
+          table + '.' + expected[i].name);
+      }
+      await this.ensureColumn(table,
+        expected[i].name + ' ' + expected[i].sqlType);
+    }
   }
 
   private writeMoonlightSchemaReceipt(): boolean {
@@ -6073,17 +6145,26 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
       await this.store.executeSql(moonlightLocalTableCreateSql());
       this.schemaStep = 'create:' + MOONLIGHT_APP_CACHE_TABLE;
       await this.store.executeSql(moonlightAppCacheTableCreateSql());
-      this.schemaStep = 'verify:moonlight-schema';
-      moonlightCloudTableReady = this.tableHasExactSchema(
+      this.schemaStep = 'repair:' + MOONLIGHT_CLOUD_TABLE;
+      await this.ensureMoonlightColumns(
         MOONLIGHT_CLOUD_TABLE, MOONLIGHT_RECORD_SCHEMA);
-      moonlightLocalTableReady = this.tableHasExactSchema(
+      this.schemaStep = 'repair:' + MOONLIGHT_LOCAL_TABLE;
+      await this.ensureMoonlightColumns(
         MOONLIGHT_LOCAL_TABLE, MOONLIGHT_LOCAL_RECORD_SCHEMA);
-      moonlightAppCacheTableReady = this.tableHasExactSchema(
+      this.schemaStep = 'repair:' + MOONLIGHT_APP_CACHE_TABLE;
+      await this.ensureMoonlightColumns(
         MOONLIGHT_APP_CACHE_TABLE, MOONLIGHT_APP_CACHE_SCHEMA);
+      this.schemaStep = 'verify:moonlight-schema';
+      moonlightCloudTableReady = moonlightStorageSchemaIsCompatible(
+        this.tableSchema(MOONLIGHT_CLOUD_TABLE), MOONLIGHT_RECORD_SCHEMA);
+      moonlightLocalTableReady = moonlightStorageSchemaIsCompatible(
+        this.tableSchema(MOONLIGHT_LOCAL_TABLE), MOONLIGHT_LOCAL_RECORD_SCHEMA);
+      moonlightAppCacheTableReady = moonlightStorageSchemaIsCompatible(
+        this.tableSchema(MOONLIGHT_APP_CACHE_TABLE), MOONLIGHT_APP_CACHE_SCHEMA);
       if (!moonlightCloudTableReady || !moonlightLocalTableReady ||
           !moonlightAppCacheTableReady) {
         throw new Error(
-          'Moonlight table shape differs from the v1 19/20/16 name/type/pk contract');
+          'Moonlight table is missing a required v1 column/type/primary-key contract');
       }
       this.moonlightStorageReady = true;
       this.moonlightCloudRegistrationError = '';
@@ -13159,6 +13240,9 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
   ): MoonlightRecord[] | null {
     if (!this.store || !this.isLeaseCurrent(lease)) { return null; }
     const result: MoonlightRecord[] = [];
+    const quarantinedIds: string[] = [];
+    const quarantineReasons: string[] = [];
+    const quarantineHashes: string[] = [];
     let rows: relationalStore.ResultSet | null = null;
     try {
       const predicates = new relationalStore.RdbPredicates(
@@ -13167,19 +13251,35 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
       predicates.orderByDesc('updatedat');
       rows = this.store.querySync(predicates);
       while (rows.goToNextRow()) {
-        const record: MoonlightRecord =
-          this.moonlightRecordFromResult(rows);
-        const localOnlyIndex: number = rows.getColumnIndex('localonly');
-        const localOnly: number = localOnlyIndex < 0 ||
-          rows.isColumnNull(localOnlyIndex) ? -1 : rows.getLong(localOnlyIndex);
-        if (!moonlightValidateRecord(record).valid ||
-            record.userId !== lease.ownerScopeId ||
-            !moonlightLocalOnlyFlagIsValid(localOnly)) {
-          return null;
+        try {
+          const record: MoonlightRecord =
+            this.moonlightRecordFromResult(rows);
+          const localOnlyIndex: number = rows.getColumnIndex('localonly');
+          const localOnly: number = localOnlyIndex < 0 ||
+            rows.isColumnNull(localOnlyIndex) ? -1 : rows.getLong(localOnlyIndex);
+          const validation = moonlightValidateRecord(record);
+          if (!validation.valid || record.userId !== lease.ownerScopeId ||
+              !moonlightLocalOnlyFlagIsValid(localOnly)) {
+            quarantinedIds.push(record.id.trim() === '' ?
+              'invalid-local-row-' + quarantinedIds.length.toString() : record.id);
+            quarantineReasons.push(!validation.valid ? validation.reason :
+              record.userId !== lease.ownerScopeId ?
+                'owner_mismatch' : 'invalid_localonly');
+            quarantineHashes.push(/^[0-9a-f]{64}$/.test(
+              record.payloadHashSha256) ? record.payloadHashSha256 : '');
+            continue;
+          }
+          if (includeDeleted || record.deletedAt === 0) { result.push(record); }
+        } catch (error) {
+          quarantinedIds.push(
+            'unreadable-local-row-' + quarantinedIds.length.toString());
+          quarantineReasons.push('row_decode_failed');
+          quarantineHashes.push('');
+          hilog.warn(0x0001, 'CloudSync',
+            '[CloudStore] isolated unreadable Moonlight local row: ' +
+            safeError(error));
         }
-        if (includeDeleted || record.deletedAt === 0) { result.push(record); }
       }
-      return this.isLeaseCurrent(lease) ? result : null;
     } catch (error) {
       hilog.warn(0x0001, 'CloudSync',
         '[CloudStore] load Moonlight local records failed: ' + safeError(error));
@@ -13189,6 +13289,12 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
         try { rows.close(); } catch (_ignored) {}
       }
     }
+    if (!this.isLeaseCurrent(lease)) { return null; }
+    for (let i = 0; i < quarantinedIds.length; i++) {
+      this.recordMoonlightQuarantine(lease, quarantinedIds[i],
+        quarantineReasons[i], quarantineHashes[i]);
+    }
+    return result;
   }
 
   commitMoonlightCloudMaterialization(
@@ -13360,15 +13466,40 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
     lease: AccountSessionLease, record: MoonlightRecord,
     localOnly: number, operation: string
   ): boolean {
+    return this.commitMoonlightLocalRecords(lease, [{
+      record: record,
+      localOnly: localOnly,
+      operation: operation
+    }]);
+  }
+
+  commitMoonlightLocalRecords(
+    lease: AccountSessionLease,
+    commits: MoonlightRepositoryCommit[]
+  ): boolean {
     const activeStore: relationalStore.RdbStore | null = this.store;
     const storeReady: boolean = activeStore !== null;
     const leaseCurrent: boolean = this.isLeaseCurrent(lease);
     const projectionAllowed: boolean = leaseCurrent &&
       this.moonlightProjectionMutationAllowed(lease);
-    const localOnlyValid: boolean = moonlightLocalOnlyFlagIsValid(localOnly);
-    const ownerMatches: boolean = record.userId === lease.ownerScopeId;
-    const recordValid: boolean = moonlightValidateRecord(record).valid;
-    const operationValid: boolean = operation === 'upsert' || operation === 'tombstone';
+    let localOnlyValid: boolean = commits.length > 0;
+    let ownerMatches: boolean = commits.length > 0;
+    let recordValid: boolean = commits.length > 0;
+    let operationValid: boolean = commits.length > 0;
+    const ids: string[] = [];
+    for (let i = 0; i < commits.length; i++) {
+      localOnlyValid = localOnlyValid &&
+        moonlightLocalOnlyFlagIsValid(commits[i].localOnly);
+      ownerMatches = ownerMatches &&
+        commits[i].record.userId === lease.ownerScopeId;
+      recordValid = recordValid &&
+        moonlightValidateRecord(commits[i].record).valid &&
+        ids.indexOf(commits[i].record.id) < 0;
+      operationValid = operationValid &&
+        commits[i].operation ===
+          (commits[i].record.deletedAt > 0 ? 'tombstone' : 'upsert');
+      ids.push(commits[i].record.id);
+    }
     if (activeStore === null || !leaseCurrent || !projectionAllowed ||
         !localOnlyValid || !ownerMatches || !recordValid ||
         !operationValid) {
@@ -13389,67 +13520,100 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
         ' operationValid=' + operationValid.toString());
       return false;
     }
+    let transactionCommitted: boolean = false;
     try {
       activeStore.beginTransaction();
-      const inserted: boolean = rdbInsertSucceeded(activeStore.insertSync(
-        MOONLIGHT_LOCAL_TABLE,
-        this.moonlightRecordToBucket(record, localOnly),
-        relationalStore.ConflictResolution.ON_CONFLICT_REPLACE));
-      if (!inserted || !this.recordLocalMutation(
-        MOONLIGHT_LOCAL_TABLE, record.id, operation)) {
-        throw new Error('Moonlight local row or journal write failed');
+      for (let i = 0; i < commits.length; i++) {
+        const commit: MoonlightRepositoryCommit = commits[i];
+        const inserted: boolean = rdbInsertSucceeded(activeStore.insertSync(
+          MOONLIGHT_LOCAL_TABLE,
+          this.moonlightRecordToBucket(commit.record, commit.localOnly),
+          relationalStore.ConflictResolution.ON_CONFLICT_REPLACE));
+        if (!inserted || !this.recordLocalMutation(
+          MOONLIGHT_LOCAL_TABLE, commit.record.id, commit.operation)) {
+          throw new Error('Moonlight local row or journal write failed');
+        }
       }
       activeStore.commit();
-      const notificationLease: AccountSessionLease =
-        cloneAccountSessionLease(lease);
-      setTimeout((): void => {
-        if (this.isLeaseCurrent(notificationLease)) {
-          this.notifyDataSnapshotChanged();
-        }
-      }, 0);
-      // This boolean reports transaction commit truth only. Repository owns
-      // the post-commit lease/readback check so it can preserve
-      // localCommitted=true when verification fails after a durable write.
-      if (localOnly === 1 && this.moonlightCloudAvailable &&
-          this.syncSelection.selectedBusinessTables()
-            .indexOf(MOONLIGHT_CLOUD_TABLE) >= 0 &&
-          isMoonlightRecordTypeSelected(
-            record.recordType,
-            this.moonlightSyncSelection.selectedScopes(), false) &&
-          !this.selectionReenableBlocked(MOONLIGHT_CLOUD_TABLE) &&
-          !this.moonlightRestoreTransferIsBlocked() &&
-          !this.moonlightCloudDeletionBlocksPromotion(lease)) {
-        const capturedLease: AccountSessionLease =
-          cloneAccountSessionLease(lease);
-        const capturedRecord: MoonlightRecord =
-          MoonlightRecord.fromJSON(record.toJSON());
-        // Repository performs its synchronous readback immediately after this
-        // method returns. Defer projection so that readback still observes the
-        // just-committed local-first bit before the cloud mirror is promoted.
-        setTimeout((): void => {
-          if (!this.isLeaseCurrent(capturedLease) ||
-              !this.isMoonlightCloudAvailable() ||
-              this.selectionReenableBlocked(MOONLIGHT_CLOUD_TABLE) ||
-              this.moonlightRestoreTransferIsBlocked() ||
-              this.moonlightCloudDeletionBlocksPromotion(
-                capturedLease)) {
-            return;
-          }
-          const promoted: number = this.promoteMoonlightLocalRecords(
-            capturedLease, [capturedRecord]);
-          if (promoted > 0) {
-            void CloudSyncCoordinator.getInstance()
-              .requestAutomaticPush(MOONLIGHT_CLOUD_TABLE);
-          }
-        }, 0);
-      }
-      return true;
+      transactionCommitted = true;
     } catch (error) {
-      try { activeStore.rollBack(); } catch (_ignored) {}
+      if (!transactionCommitted) {
+        try { activeStore.rollBack(); } catch (_ignored) {}
+      }
       hilog.warn(0x0001, 'CloudSync',
         '[CloudStore] Moonlight local commit failed: ' + safeError(error));
       return false;
     }
+    // From this point transaction truth is immutable. Optional notification,
+    // selection reads and cloud scheduling must never turn a durable local
+    // commit into a false failure result.
+    try {
+      const notificationLease: AccountSessionLease =
+        cloneAccountSessionLease(lease);
+      setTimeout((): void => {
+        try {
+          if (this.isLeaseCurrent(notificationLease)) {
+            this.notifyDataSnapshotChanged();
+          }
+        } catch (error) {
+          hilog.warn(0x0001, 'CloudSync',
+            '[CloudStore] Moonlight commit notification failed: ' +
+            safeError(error));
+        }
+      }, 0);
+      const promotable: MoonlightRecord[] = [];
+      for (let i = 0; i < commits.length; i++) {
+        if (commits[i].localOnly === 1) {
+          promotable.push(MoonlightRecord.fromJSON(
+            commits[i].record.toJSON()));
+        }
+      }
+      if (promotable.length > 0) {
+        const capturedLease: AccountSessionLease =
+          cloneAccountSessionLease(lease);
+        setTimeout((): void => {
+          try {
+            if (!this.isLeaseCurrent(capturedLease) ||
+                !this.isMoonlightCloudAvailable() ||
+                this.selectionReenableBlocked(MOONLIGHT_CLOUD_TABLE) ||
+                this.moonlightRestoreTransferIsBlocked() ||
+                this.moonlightCloudDeletionBlocksPromotion(
+                  capturedLease)) {
+              return;
+            }
+            const selected: MoonlightCloudSyncScope[] =
+              this.moonlightSyncSelection.selectedScopes();
+            const eligible: MoonlightRecord[] = [];
+            for (let i = 0; i < promotable.length; i++) {
+              if (isMoonlightRecordTypeSelected(
+                promotable[i].recordType, selected, false)) {
+                eligible.push(promotable[i]);
+              }
+            }
+            const promoted: number = eligible.length === 0 ? 0 :
+              this.promoteMoonlightLocalRecords(capturedLease, eligible);
+            if (promoted > 0) {
+              void CloudSyncCoordinator.getInstance()
+                .requestAutomaticPush(MOONLIGHT_CLOUD_TABLE)
+                .catch((error: Error): void => {
+                  hilog.warn(0x0001, 'CloudSync',
+                    '[CloudStore] Moonlight automatic push request failed: ' +
+                    safeError(error));
+                });
+            }
+          } catch (error) {
+            hilog.warn(0x0001, 'CloudSync',
+              '[CloudStore] Moonlight deferred promotion failed: ' +
+              safeError(error));
+          }
+        }, 0);
+      }
+    } catch (error) {
+      hilog.warn(0x0001, 'CloudSync',
+        '[CloudStore] Moonlight post-commit scheduling failed: ' +
+        safeError(error));
+    }
+    return true;
   }
 
   recordMoonlightQuarantine(
@@ -13501,14 +13665,23 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
       predicates.orderByAsc('sortorder');
       rows = this.store.querySync(predicates);
       while (rows.goToNextRow()) {
-        const entry: MoonlightAppCacheEntry =
-          this.moonlightAppCacheEntryFromResult(rows);
-        if (!moonlightAppCacheEntryIsValid(entry) ||
-            entry.userId !== lease.ownerScopeId ||
-            (hostId.trim() !== '' && entry.hostId !== hostId)) {
-          return null;
+        try {
+          const entry: MoonlightAppCacheEntry =
+            this.moonlightAppCacheEntryFromResult(rows);
+          if (!moonlightAppCacheEntryIsValid(entry) ||
+              entry.userId !== lease.ownerScopeId ||
+              (hostId.trim() !== '' && entry.hostId !== hostId)) {
+            hilog.warn(0x0001, 'CloudSync',
+              '[CloudStore] ignored invalid rebuildable Moonlight cache row id=' +
+              hashForLog(entry.id));
+            continue;
+          }
+          result.push(entry);
+        } catch (error) {
+          hilog.warn(0x0001, 'CloudSync',
+            '[CloudStore] ignored unreadable rebuildable Moonlight cache row: ' +
+            safeError(error));
         }
-        result.push(entry);
       }
       return this.isLeaseCurrent(lease) ? result : null;
     } catch (error) {
@@ -13548,6 +13721,7 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
       }
       uniqueEvictions.push(evictedIds[i]);
     }
+    let transactionCommitted: boolean = false;
     try {
       this.store.beginTransaction();
       const oldHostRows = new relationalStore.RdbPredicates(
@@ -13574,21 +13748,37 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
         throw new Error('Moonlight app cache lease changed');
       }
       this.store.commit();
-      if (!this.isLeaseCurrent(lease)) { return false; }
-      const notificationLease: AccountSessionLease =
-        cloneAccountSessionLease(lease);
-      setTimeout((): void => {
-        if (this.isLeaseCurrent(notificationLease)) {
-          this.notifyDataSnapshotChanged();
-        }
-      }, 0);
-      return true;
+      transactionCommitted = true;
     } catch (error) {
-      try { this.store.rollBack(); } catch (_ignored) {}
+      if (!transactionCommitted) {
+        try { this.store.rollBack(); } catch (_ignored) {}
+      }
       hilog.warn(0x0001, 'CloudSync',
         '[CloudStore] Moonlight app cache commit failed: ' + safeError(error));
       return false;
     }
+    // Cache rows are rebuildable, but the return value still reports durable
+    // transaction truth. Lease/UI checks happen in the service after commit.
+    try {
+      const notificationLease: AccountSessionLease =
+        cloneAccountSessionLease(lease);
+      setTimeout((): void => {
+        try {
+          if (this.isLeaseCurrent(notificationLease)) {
+            this.notifyDataSnapshotChanged();
+          }
+        } catch (error) {
+          hilog.warn(0x0001, 'CloudSync',
+            '[CloudStore] Moonlight cache notification failed: ' +
+            safeError(error));
+        }
+      }, 0);
+    } catch (error) {
+      hilog.warn(0x0001, 'CloudSync',
+        '[CloudStore] Moonlight cache post-commit scheduling failed: ' +
+        safeError(error));
+    }
+    return true;
   }
 
   private readMoonlightCloudDeletionCheckpoint():
@@ -13607,6 +13797,32 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
     return checkpoint === null ?
       { readable: false, checkpoint: null } :
       { readable: true, checkpoint };
+  }
+
+  private recoverMalformedMoonlightCloudDeletionCheckpoint(
+    lease: AccountSessionLease
+  ): void {
+    if (!this.isLeaseCurrent(lease)) { return; }
+    const metadata: CloudMetadataReadResult =
+      this.readLocalMetadataState(
+        MOONLIGHT_CLOUD_DELETION_CHECKPOINT_KEY);
+    if (metadata.state !== 'present' ||
+        parseMoonlightCloudDeletionCheckpoint(metadata.value) !== null) {
+      return;
+    }
+    // An unreadable checkpoint cannot be resumed. Preserve a bounded local
+    // diagnostic copy, then remove only the broken boundary so legacy data
+    // cannot disable Moonlight cloud convergence forever.
+    const quarantineKey: string =
+      MOONLIGHT_CLOUD_DELETION_CHECKPOINT_KEY + ':invalid:' +
+      Date.now().toString();
+    this.writeLocalMetadata(quarantineKey,
+      metadata.value.substring(0, 4096));
+    if (this.deleteLocalMetadata(
+      MOONLIGHT_CLOUD_DELETION_CHECKPOINT_KEY)) {
+      hilog.warn(0x0001, 'CloudSync',
+        '[CloudStore] quarantined an unreadable legacy Moonlight deletion checkpoint');
+    }
   }
 
   private moonlightCloudDeletionBlocksPromotion(
@@ -14154,38 +14370,58 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
           throw new Error('Moonlight cache deletion preview changed');
         }
       }
-      const runtimeQuarantineIds: string[] = [];
-      const runtimeQuarantine = new relationalStore.RdbPredicates(
-        MIGRATION_QUARANTINE_TABLE);
-      runtimeQuarantine.equalTo('migrationid', 'moonlight-runtime-v1');
-      const quarantined: relationalStore.ResultSet =
-        this.store.querySync(runtimeQuarantine);
       try {
-        const idColumn: number = quarantined.getColumnIndex('id');
-        const recordIdColumn: number =
-          quarantined.getColumnIndex('recordid');
-        const ownerPrefix: string = 'moonlight-runtime-v1:' +
-          lease.ownerScopeId + ':';
-        while (quarantined.goToNextRow()) {
-          const quarantineId: string = quarantined.getString(idColumn);
-          const recordId: string = quarantined.getString(recordIdColumn);
-          if (!cloudDeleteCommand &&
-              quarantineId.indexOf(ownerPrefix) === 0 &&
-              (request.clearOwnerRuntimeState ||
-               recordIds.indexOf(recordId) >= 0)) {
-            runtimeQuarantineIds.push(quarantineId);
-          }
-        }
-      } finally {
-        quarantined.close();
-      }
-      for (let i = 0; i < runtimeQuarantineIds.length; i++) {
-        const quarantine = new relationalStore.RdbPredicates(
+        const runtimeQuarantineIds: string[] = [];
+        const runtimeQuarantine = new relationalStore.RdbPredicates(
           MIGRATION_QUARANTINE_TABLE);
-        quarantine.equalTo('id', runtimeQuarantineIds[i]);
-        this.store.deleteSync(quarantine);
+        runtimeQuarantine.equalTo('migrationid', 'moonlight-runtime-v1');
+        const quarantined: relationalStore.ResultSet =
+          this.store.querySync(runtimeQuarantine);
+        try {
+          const idColumn: number = quarantined.getColumnIndex('id');
+          const recordIdColumn: number =
+            quarantined.getColumnIndex('recordid');
+          const ownerPrefix: string = 'moonlight-runtime-v1:' +
+            lease.ownerScopeId + ':';
+          while (quarantined.goToNextRow()) {
+            const quarantineId: string = quarantined.getString(idColumn);
+            const recordId: string = quarantined.getString(recordIdColumn);
+            if (!cloudDeleteCommand &&
+                quarantineId.indexOf(ownerPrefix) === 0 &&
+                (request.clearOwnerRuntimeState ||
+                 recordIds.indexOf(recordId) >= 0)) {
+              runtimeQuarantineIds.push(quarantineId);
+            }
+          }
+        } finally {
+          quarantined.close();
+        }
+        for (let i = 0; i < runtimeQuarantineIds.length; i++) {
+          const quarantine = new relationalStore.RdbPredicates(
+            MIGRATION_QUARANTINE_TABLE);
+          quarantine.equalTo('id', runtimeQuarantineIds[i]);
+          this.store.deleteSync(quarantine);
+        }
+      } catch (error) {
+        // Quarantine is diagnostic-only. A damaged or unavailable diagnostic
+        // table must never veto the authoritative user deletion transaction.
+        hilog.warn(0x0001, 'CloudSync',
+          '[CloudStore] Moonlight quarantine cleanup deferred: ' +
+          safeError(error));
       }
       if (!cloudDeleteCommand && request.clearOwnerRuntimeState) {
+        // Owner-wide local deletion is also the recovery path for malformed
+        // legacy rows that normal typed loaders deliberately isolate. Delete
+        // by owner after the validated targets so hidden/corrupt leftovers
+        // cannot silently survive an explicit "clear local data" request.
+        const allMoonlightRows = new relationalStore.RdbPredicates(
+          MOONLIGHT_LOCAL_TABLE);
+        allMoonlightRows.equalTo('userid', lease.ownerScopeId);
+        this.store.deleteSync(allMoonlightRows);
+        const allMoonlightCache = new relationalStore.RdbPredicates(
+          MOONLIGHT_APP_CACHE_TABLE);
+        allMoonlightCache.equalTo('userid', lease.ownerScopeId);
+        this.store.deleteSync(allMoonlightCache);
         const moonlightJournal = new relationalStore.RdbPredicates(
           LOCAL_MUTATION_JOURNAL_TABLE);
         moonlightJournal.equalTo('tablename', MOONLIGHT_LOCAL_TABLE);
@@ -14194,6 +14430,11 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
           LOCAL_METADATA_TABLE);
         restoreMarker.equalTo('key', MOONLIGHT_RESTORE_QUARANTINE_KEY);
         this.store.deleteSync(restoreMarker);
+        const deletionCheckpoint = new relationalStore.RdbPredicates(
+          LOCAL_METADATA_TABLE);
+        deletionCheckpoint.equalTo(
+          'key', MOONLIGHT_CLOUD_DELETION_CHECKPOINT_KEY);
+        this.store.deleteSync(deletionCheckpoint);
       }
       if (!this.isLeaseCurrent(lease)) {
         throw new Error('Moonlight deletion lease changed');
