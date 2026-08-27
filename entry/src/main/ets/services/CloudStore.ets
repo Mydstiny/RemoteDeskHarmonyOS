@@ -381,6 +381,7 @@ import {
   MoonlightCloudDeletionCheckpoint,
   encodeMoonlightCloudDeletionCheckpoint,
   moonlightCloudDeletionTombstone,
+  moonlightLocalDeletionTombstone,
   moonlightCloudDeletionCheckpointForLease,
   moonlightCloudDeletionCheckpointUploaded,
   moonlightCloudPromotionBlocked,
@@ -13658,7 +13659,16 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
     const deleted: boolean = cloudMetadataAbsentProven(
       this.readLocalMetadataState(
         MOONLIGHT_CLOUD_DELETION_CHECKPOINT_KEY));
-    if (deleted) { this.notifyDataSnapshotChanged(); }
+    if (deleted) {
+      this.notifyDataSnapshotChanged();
+      // Compatibility with targeted checkpoints written by older builds:
+      // ordinary local-first tombstones may have accumulated while that
+      // checkpoint owned the cloud projection. Once it is terminal, promote
+      // every eligible pending row without waiting for another app restart.
+      if (!snapshot.checkpoint.disableSyncAfterUpload) {
+        this.scheduleMoonlightDeletionCloudReconciliation(lease);
+      }
+    }
     return deleted && this.isLeaseCurrent(lease);
   }
 
@@ -13798,14 +13808,7 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
     }
   }
 
-  /**
-   * Physically remove an exact, previewed owner-local set in one transaction.
-   * When public Moonlight cloud records are involved, the same transaction
-   * deletes their exact physical rows and establishes a restart-safe upload
-   * checkpoint. Targeted commands never make trust/client identity cloud
-   * targets. An explicit cloud-wide delete also removes legacy forbidden rows
-   * from the physical cloud projection while preserving all local material.
-   */
+  /** Resolve the exact, previewed owner-local set before atomic deletion. */
   private moonlightDeletionRequestRecords(
     lease: AccountSessionLease, recordIds: string[]
   ): MoonlightRecord[] | null {
@@ -13903,39 +13906,6 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
       if (!Number.isSafeInteger(affected) || affected !== 1) { return null; }
       projection.physicallyDeletedIds.push(cloud.id);
       projection.affectedRows++;
-    }
-    if (projection.affectedRows > 0 &&
-        !this.recordTableMutation(
-          MOONLIGHT_CLOUD_TABLE, 'moonlight_cloud_tombstones')) {
-      return null;
-    }
-    return projection;
-  }
-
-  private tombstoneTargetMoonlightPublicCloudRows(
-    lease: AccountSessionLease, records: MoonlightRecord[], nowMs: number
-  ): MoonlightCloudDeletionProjection | null {
-    if (!this.store || !this.isLeaseCurrent(lease)) { return null; }
-    const projection: MoonlightCloudDeletionProjection = {
-      affectedRows: 0,
-      tombstones: new Map<string, MoonlightRecord>(),
-      physicallyDeletedIds: []
-    };
-    for (let i = 0; i < records.length; i++) {
-      const local: MoonlightRecord = records[i];
-      if (!moonlightRecordTypeIsPublicCloudData(local)) { continue; }
-      const cloud: MoonlightRecord | null =
-        this.findMoonlightCloudRecordRaw(lease, local.id);
-      if (cloud === null) { continue; }
-      const tombstone: MoonlightRecord | null =
-        moonlightCloudDeletionTombstone(local, cloud, nowMs);
-      if (tombstone === null) { return null; }
-      projection.tombstones.set(
-        tombstone.id, MoonlightRecord.fromJSON(tombstone.toJSON()));
-      if (!this.moonlightRecordsEqual(cloud, tombstone)) {
-        if (!this.writeMoonlightCloudTombstone(tombstone)) { return null; }
-        projection.affectedRows++;
-      }
     }
     if (projection.affectedRows > 0 &&
         !this.recordTableMutation(
@@ -14043,22 +14013,22 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
       return failure('stale_lease');
     }
     if (!this.localMutationAllowed()) { return failure('write_failed'); }
-    if (request.writeCloudTombstones &&
+    const cloudDeleteCommand: boolean =
+      request.command === 'delete_cloud_data';
+    if (cloudDeleteCommand && request.persistCloudDeletionIntent &&
         !this.moonlightCloudDeletionReady(lease)) {
       return failure('cloud_unavailable');
     }
     const localCommands: MoonlightDeletionCommandType[] = [
       'delete_local_data', 'forget_host', 'unpair_host', 'delete_profile'
     ];
-    const cloudDeleteCommand: boolean =
-      request.command === 'delete_cloud_data';
     const cloudCapableCommand: boolean = cloudDeleteCommand ||
       request.command === 'forget_host' ||
       request.command === 'delete_profile';
     if ((localCommands.indexOf(request.command) < 0 &&
          !cloudDeleteCommand) ||
-        (request.writeCloudTombstones && !cloudCapableCommand) ||
-        (cloudDeleteCommand && !request.writeCloudTombstones) ||
+        (request.persistCloudDeletionIntent && !cloudCapableCommand) ||
+        (cloudDeleteCommand && !request.persistCloudDeletionIntent) ||
         request.clearOwnerRuntimeState !==
           (request.command === 'delete_local_data') ||
         !Number.isSafeInteger(request.expectedRuntimeStateCount) ||
@@ -14106,7 +14076,9 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
     let checkpoint: MoonlightCloudDeletionCheckpoint | null = null;
     let cloudProjection: MoonlightCloudDeletionProjection | null = null;
     let preservedLocalRows: MoonlightRecord[] = [];
+    const stagedLocalTombstones: MoonlightRecord[] = [];
     let cloudRowsAffected: number = 0;
+    let transactionCommitted: boolean = false;
     try {
       this.store.beginTransaction();
       const runtimeStateCount: number = cloudDeleteCommand ? 0 :
@@ -14115,12 +14087,9 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
       if (runtimeStateCount !== request.expectedRuntimeStateCount) {
         throw new Error('Moonlight runtime deletion preview changed');
       }
-      if (request.writeCloudTombstones) {
-        cloudProjection = cloudDeleteCommand ?
-          this.tombstoneAllMoonlightCloudRowsForOwner(
-            lease, request.nowMs) :
-          this.tombstoneTargetMoonlightPublicCloudRows(
-            lease, requestRecords, request.nowMs);
+      if (cloudDeleteCommand && request.persistCloudDeletionIntent) {
+        cloudProjection = this.tombstoneAllMoonlightCloudRowsForOwner(
+          lease, request.nowMs);
         if (cloudProjection === null) {
           throw new Error('Moonlight cloud tombstone projection failed');
         }
@@ -14146,6 +14115,23 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
         }
       }
       for (let i = 0; !cloudDeleteCommand && i < recordIds.length; i++) {
+        const current: MoonlightRecord = requestRecords[i];
+        if (request.persistCloudDeletionIntent &&
+            moonlightRecordTypeIsPublicCloudData(current)) {
+          const tombstone: MoonlightRecord | null =
+            moonlightLocalDeletionTombstone(current, request.nowMs);
+          if (tombstone === null || !rdbInsertSucceeded(
+            this.store.insertSync(
+              MOONLIGHT_LOCAL_TABLE,
+              this.moonlightRecordToBucket(tombstone, 1),
+              relationalStore.ConflictResolution.ON_CONFLICT_REPLACE)) ||
+              !this.recordLocalMutation(
+                MOONLIGHT_LOCAL_TABLE, tombstone.id, 'tombstone')) {
+            throw new Error('Moonlight local tombstone write failed');
+          }
+          stagedLocalTombstones.push(tombstone);
+          continue;
+        }
         const row = new relationalStore.RdbPredicates(
           MOONLIGHT_LOCAL_TABLE);
         row.equalTo('id', recordIds[i]);
@@ -14213,8 +14199,23 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
         throw new Error('Moonlight deletion lease changed');
       }
       this.store.commit();
+      transactionCommitted = true;
       if (!this.isLeaseCurrent(lease)) {
         return failure('stale_lease', true);
+      }
+      // From this point the ordinary local-first transaction is durable.
+      // Notify and request best-effort convergence before readback so a
+      // transient verification failure cannot strand the tombstone or make
+      // the user repeat an already committed delete.
+      if (stagedLocalTombstones.length > 0) {
+        const notificationLease: AccountSessionLease =
+          cloneAccountSessionLease(lease);
+        setTimeout((): void => {
+          if (this.isLeaseCurrent(notificationLease)) {
+            this.notifyDataSnapshotChanged();
+          }
+        }, 0);
+        this.scheduleMoonlightDeletionCloudReconciliation(lease);
       }
       if (cloudProjection !== null &&
           !this.verifyMoonlightCloudDeletionProjection(
@@ -14224,6 +14225,16 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
       if (!this.verifyMoonlightPreservedLocalRows(
         lease, preservedLocalRows)) {
         return failure('write_failed', true);
+      }
+      if (!this.verifyMoonlightPreservedLocalRows(
+        lease, stagedLocalTombstones)) {
+        return this.isLeaseCurrent(lease) ? {
+          ok: true,
+          code: 'local_verification_pending',
+          localCommitted: true,
+          cloudAttempted: false,
+          cloudTerminal: false
+        } : failure('stale_lease', true);
       }
       if (checkpoint !== null &&
           !this.verifyMoonlightCloudDeletionCheckpoint(
@@ -14244,21 +14255,87 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
       if (checkpoint !== null) {
         this.resumeMoonlightCloudDeletion(lease);
       }
+      if (stagedLocalTombstones.length === 0) {
+        const notificationLease: AccountSessionLease =
+          cloneAccountSessionLease(lease);
+        setTimeout((): void => {
+          if (this.isLeaseCurrent(notificationLease)) {
+            this.notifyDataSnapshotChanged();
+          }
+        }, 0);
+      }
       return {
         ok: true,
         code: 'ok',
         localCommitted: true,
         cloudAttempted: checkpoint !== null,
-        cloudTerminal: request.writeCloudTombstones &&
-          checkpoint === null
+        cloudTerminal: cloudDeleteCommand &&
+          request.persistCloudDeletionIntent && checkpoint === null
       };
     } catch (error) {
-      try { this.store.rollBack(); } catch (_ignored) {}
+      if (!transactionCommitted) {
+        try { this.store.rollBack(); } catch (_ignored) {}
+      }
       hilog.warn(0x0001, 'CloudSync',
         '[CloudStore] Moonlight local deletion failed: ' + safeError(error));
+      if (transactionCommitted && stagedLocalTombstones.length > 0 &&
+          this.isLeaseCurrent(lease)) {
+        // A readback/provider exception after commit has the same meaning as
+        // a negative verification result: the durable local delete stands,
+        // and the already scheduled fenced reconciliation owns recovery.
+        return {
+          ok: true,
+          code: 'local_verification_pending',
+          localCommitted: true,
+          cloudAttempted: false,
+          cloudTerminal: false
+        };
+      }
       return failure(this.isLeaseCurrent(lease) ?
-        'write_failed' : 'stale_lease');
+        'write_failed' : 'stale_lease', transactionCommitted);
     }
+  }
+
+  /**
+   * Best-effort fast path only. Reconcile cloud-first so a remote explicit
+   * revival in a higher reset epoch is observed before the local tombstone is
+   * promoted. If any runtime gate is closed, the durable localonly tombstones
+   * remain available to the normal bootstrap/recovery path.
+   */
+  private scheduleMoonlightDeletionCloudReconciliation(
+    lease: AccountSessionLease
+  ): void {
+    const capturedLease: AccountSessionLease =
+      cloneAccountSessionLease(lease);
+    setTimeout((): void => {
+      try {
+        if (!this.isLeaseCurrent(capturedLease) ||
+            !this.isMoonlightCloudAvailable() ||
+            this.syncSelection.selectedBusinessTables()
+              .indexOf(MOONLIGHT_CLOUD_TABLE) < 0 ||
+            this.selectionReenableBlocked(MOONLIGHT_CLOUD_TABLE) ||
+            this.moonlightRestoreTransferIsBlocked() ||
+            this.moonlightCloudDeletionBlocksPromotion(capturedLease)) {
+          return;
+        }
+        CloudSyncCoordinator.getInstance().requestCloudEventPull()
+          .then((result: CloudSyncOperationResult): void => {
+            if (this.isLeaseCurrent(capturedLease) && !result.ok) {
+              hilog.warn(0x0001, 'CloudSync',
+                '[CloudStore] deferred Moonlight deletion reconciliation' +
+                ' did not complete failure=' + result.failureKind);
+            }
+          }, (error: Object): void => {
+            hilog.warn(0x0001, 'CloudSync',
+              '[CloudStore] deferred Moonlight deletion reconciliation' +
+              ' rejected: ' + safeError(error));
+          });
+      } catch (error) {
+        hilog.warn(0x0001, 'CloudSync',
+          '[CloudStore] deferred Moonlight deletion reconciliation' +
+          ' setup failed: ' + safeError(error));
+      }
+    }, 0);
   }
 
   private findMoonlightLocalRecordRaw(

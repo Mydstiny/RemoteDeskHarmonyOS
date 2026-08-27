@@ -2,37 +2,36 @@
 
 ## Active task
 
-- Task: `rustdesk-orientation-resize-remediation`
-- Branch/base: `codex/rustdesk-orientation-diagnostics-closeout` from synchronized `main@3b9e2b59c` (PR #46 merge).
-- Phase: remediation checkpoints `0c69433e2` and `1c0e93198` verified locally; independent re-review passed and delivery/online acceptance remain.
-- Plan: `docs/codex/plans/2026-08-27-rustdesk-orientation-and-diagnostics.md`
+- Task: `moonlight-cloud-delete-compat`
+- Branch/base: `codex/moonlight-cloud-delete-compat` from synchronized `main@c0e0b5fdc`.
+- Phase: independently reviewed and release-gated; remote PR delivery next.
+- Plan: `docs/codex/plans/2026-08-27-moonlight-cloud-delete-compat.md`
 
 ## Confirmed diagnosis
 
-- A fresh Windows RustDesk session on the PC simulator used H.264 hardware decoding and reported `NativeImage producer transform class=flip_y`, but the merged build forced identity presentation.
-- The observed image was vertically inverted, not a true 180-degree rotation: the taskbar moved to the top and text was upside down while left/right placement and mouse mapping stayed correct.
-- The macOS control session used VP9 software/raw rendering and was unaffected by the NativeImage-only mismatch.
-- Window resizing emitted several intermediate surface sizes. On a quiet desktop, the old renderer could display the window-manager-stretched prior swap for four to five seconds because viewport changes did not request a retained-frame redraw.
+- Moonlight is durably selected for cloud sync by default, including legacy upgrades and device-local scope.
+- Ordinary host/profile deletion treats durable selection as a requirement for an authoritative cloud pull before any local mutation.
+- Huawei-account users without Cloud Space, offline users, device-local users, bootstrap-pending sessions and stale deletion checkpoints can therefore receive `cloud_unavailable` and cannot delete local Moonlight data.
+- RDP/RustDesk/SSH already use local-first mutation journals; Moonlight has local tombstone primitives but the production delete route does not use their offline-compatible semantics.
 
-## Implemented remediation
+## Implementation boundary
 
-- RustDesk now uses the local producer matrix on every peer OS only when it classifies as identity, flip-X, flip-Y or rotate-180; malformed/read-failed matrices retain the last valid transform. Peer OS remains telemetry only.
-- Surface geometry is published to input mapping immediately, while native renderer and canvas updates are coalesced to one per 16 ms display interval.
-- Overlay restoration, VNC refresh, pointer ownership and independent-window readiness are deferred to a 120 ms settle phase.
-- `GLRenderer::Resize` deduplicates unchanged sizes and requests a retained-frame redraw after publishing the new viewport.
+- Make ordinary Moonlight host/profile deletion local-first and durable, with deferred cloud promotion instead of an online-cloud admission gate.
+- Preserve strict cloud readiness only for explicit cloud-wide deletion.
+- Keep tombstones across restart/export/import and ensure later cloud recovery cannot resurrect deleted records.
+- Isolate mixed batch results and replace raw internal error codes with actionable UI state.
+- Cover device-local, Huawei account without Cloud Space, offline, bootstrap/checkpoint, legacy-upgrade and recovery cases.
 
-## Verification so far
+## Verification
 
-- Native host suite: `811/811` PASS outside the sandbox, including resize/redraw ordering.
-- Exact `default@OhosTestCompileArkTS`: PASS on the current working tree.
-- Exact signed `assembleHap`: PASS on the current working tree.
-- Light open-source compliance and `git diff --check`: PASS.
-- Diagnostic runtime policy now preserves `validated_producer` as a closed canonical category instead of degrading it to `unknown`.
-- The signed working-tree HAP installed successfully on the local PC simulator while preserving app data.
-- Independent review of `main..bd9a7c594` passed with `P0/P1/P2/P3 = 0/0/0/0` after both prior findings were closed.
+- Baseline: clean synchronized `main@c0e0b5fdc`.
+- Reviewed code head: `b295ec7575a212aab322e45515c9c9a6af3c912b` (three focused commits over `main`).
+- Exact `default@OhosTestCompileArkTS`: PASS on the clean reviewed head (`BUILD SUCCESSFUL in 6 s 152 ms`).
+- Exact signed `assembleHap`: PASS on the clean reviewed head (`BUILD SUCCESSFUL in 13 s 195 ms`); signed HAP SHA-256 `7e9446ce1b6577202561b525580aaba4b3d0c73ae2ab978a9d8596fdb1324c01`.
+- Light open-source compliance: PASS; `git diff --check`: PASS.
+- Regression sources cover cloud-unavailable ordinary deletion, unreadable selection, non-deployed cloud table, cloud-first tombstone convergence, reset-epoch revival and old checkpoint completion.
+- Independent review `/root/review_moonlight_delete`: initial P2/P3 findings remediated; final P0/P1/P2/P3 all zero.
 
-## Acceptance boundary and blockers
+## Blockers
 
-- The simulator's saved Windows peer currently has no actual device password value and the remote approval request is waiting for the Windows side. Final upright-image and resize visual evidence is pending that approval.
-- The source review is closed. Remaining visual validation depends on a Windows peer accepting the simulator connection and does not alter the reviewed rendering/input separation.
-- Device Hypium remains unavailable because task `00306054` is unregistered; compile coverage is required but is not reported as a device-test PASS.
+- Device Hypium execution is unavailable because the repository's `ohosTest@OhosTestCompileArkTS` task is absent (`00306054`); this is an existing test-infrastructure limitation, not a product-path failure. No device runtime acceptance is claimed in this task.

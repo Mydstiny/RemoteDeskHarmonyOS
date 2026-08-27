@@ -11,6 +11,7 @@ import {
   moonlightCloudDeletionCheckpointForLease,
   moonlightCloudDeletionCheckpointUploaded,
   moonlightCloudPromotionBlocked,
+  moonlightLocalDeletionTombstone,
   moonlightPreservedLocalAfterCloudDelete,
   moonlightCloudSelectionMutationAllowed,
   newMoonlightCloudDeletionCheckpoint,
@@ -135,6 +136,24 @@ export default function moonlightCloudDeletionPolicyTest(): void {
         expect(moonlightValidateRecord(trustRecord()).valid).assertTrue();
         expect(moonlightCloudDeletionTombstone(
           null, trustRecord(), 300) === null).assertTrue();
+      });
+
+    it('builds_an_offline_local_tombstone_that_beats_a_stale_cloud_row', 0,
+      (): void => {
+        const local: MoonlightRecord = hostRecord('host-a', 4, 2, 240);
+        const deleted: MoonlightRecord | null =
+          moonlightLocalDeletionTombstone(local, 300);
+        expect(deleted === null).assertFalse();
+        expect(moonlightValidateRecord(deleted!).valid).assertTrue();
+        expect(deleted?.payload).assertEqual('{}');
+        expect(deleted?.syncVersion).assertEqual(5);
+        expect(deleted?.resetEpoch).assertEqual(2);
+        const newerCloudEnvelope: MoonlightRecord =
+          hostRecord('host-a', 99, 2, 999);
+        const decision = resolveMoonlightRecordConflict(
+          newerCloudEnvelope, deleted!);
+        expect(decision.action).assertEqual('accept_candidate');
+        expect(decision.reason).assertEqual('tombstone_wins');
       });
 
     it('preserves_local_business_data_above_the_uploaded_delete_epoch', 0,

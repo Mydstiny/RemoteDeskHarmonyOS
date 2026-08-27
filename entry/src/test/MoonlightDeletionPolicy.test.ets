@@ -67,6 +67,7 @@ export default function moonlightDeletionPolicyTest(): void {
         const impact = resolveMoonlightDeletionImpact('forget_host', context());
         expect(impact.localRowsRemoved).assertEqual(4);
         expect(impact.cloudTombstonesRequired).assertEqual(3);
+        expect(impact.waitForCloudTerminal).assertFalse();
         expect(impact.identityPreserved).assertTrue();
         expect(impact.cacheRowsRemoved).assertEqual(10);
       });
@@ -100,6 +101,7 @@ export default function moonlightDeletionPolicyTest(): void {
       (): void => {
         const valid = resolveMoonlightDeletionImpact('delete_profile', context());
         expect(valid.localRowsRemoved).assertEqual(2);
+        expect(valid.waitForCloudTerminal).assertFalse();
         const invalidContext: MoonlightDeletionContext = context();
         invalidContext.profileId = '';
         expect(resolveMoonlightDeletionImpact(

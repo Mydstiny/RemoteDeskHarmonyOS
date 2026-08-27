@@ -75,7 +75,7 @@ export function pagesForReleasedVersion(version: string): ReleaseNotePage[] {
       id: 'release-data-diagnostics',
       symbol: $rawfile('icons/cloud.svg'),
       title: '数据边界与排障更可靠',
-      desc: 'Moonlight 主机和设置纳入明确的本地、备份与可选同步边界，配对信任仍只留在本机；诊断采集支持脱敏导出，失败阶段和恢复结果更容易定位。'
+      desc: 'Moonlight 主机删除不再依赖华为云空间在线：无账号、未开通云空间或断网时都会先安全保存到本机，云恢复后自动同步删除状态；配对信任仍只留在本机。'
     },
     {
       id: 'welcome-1-1-2',

@@ -34,11 +34,11 @@ export type MoonlightDeletionCommandCode =
   'selection_unavailable' | 'selection_failed' | 'cloud_unavailable' |
   'host_unavailable' | 'identity_unavailable' |
   'identity_delete_failed' | 'local_write_failed' | 'pending_cloud' |
-  'ok_with_remote_warning';
+  'pending_local_verification' | 'ok_with_remote_warning';
 
 export type MoonlightDeletionMutationCode =
   'ok' | 'stale_lease' | 'invalid_request' |
-  'cloud_unavailable' | 'write_failed';
+  'cloud_unavailable' | 'write_failed' | 'local_verification_pending';
 
 export interface MoonlightDeletionSelectionSnapshot {
   physicalSelected: boolean;
@@ -49,7 +49,9 @@ export interface MoonlightDeletionMutationRequest {
   command: MoonlightDeletionCommandType;
   recordIds: string[];
   cacheIds: string[];
-  writeCloudTombstones: boolean;
+  /** Preserve a durable cloud deletion intent; ordinary deletes stage it in
+   * the local overlay, while delete_cloud_data owns the strict cloud commit. */
+  persistCloudDeletionIntent: boolean;
   clearOwnerRuntimeState: boolean;
   expectedRuntimeStateCount: number;
   nowMs: number;
@@ -330,16 +332,27 @@ export class MoonlightDeletionCommandService {
         this.selectionPort.selectionSnapshot(captured);
       if (selection === null ||
           typeof selection.physicalSelected !== 'boolean') {
-        return previewValue('read_failed', command, context);
+        // A corrupt/unreadable cloud preference must never make an ordinary
+        // local host/profile delete impossible. The command will persist a
+        // local tombstone independently of this best-effort status snapshot.
+        if (command !== 'forget_host' && command !== 'delete_profile' &&
+            command !== 'unpair_host') {
+          return previewValue('read_failed', command, context);
+        }
+      } else {
+        const normalized: MoonlightCloudSyncScope[] =
+          normalizeMoonlightCloudSyncSelection(
+            selection.selectedScopes, true);
+        if (!idsEqual(normalized, selection.selectedScopes)) {
+          if (command !== 'forget_host' && command !== 'delete_profile' &&
+              command !== 'unpair_host') {
+            return previewValue('invalid_data', command, context);
+          }
+        } else {
+          context.physicalCloudSelected = selection.physicalSelected;
+          context.selectedLogicalScopeCount = normalized.length;
+        }
       }
-      const normalized: MoonlightCloudSyncScope[] =
-        normalizeMoonlightCloudSyncSelection(
-          selection.selectedScopes, true);
-      if (!idsEqual(normalized, selection.selectedScopes)) {
-        return previewValue('invalid_data', command, context);
-      }
-      context.physicalCloudSelected = selection.physicalSelected;
-      context.selectedLogicalScopeCount = normalized.length;
     }
     if (command === 'cancel_sync') {
       const impact: MoonlightDeletionImpact =
@@ -519,13 +532,20 @@ export class MoonlightDeletionCommandService {
       return commandResult(true, 'ok', current.impact,
         false, false, false, true);
     }
-    const cloudRequired: boolean =
+    const persistCloudDeletionIntent: boolean =
+      current.command === 'delete_cloud_data' ||
+      current.command === 'forget_host' ||
+      current.command === 'delete_profile';
+    const cloudSynchronizationPending: boolean =
       current.command === 'delete_cloud_data' ||
       current.impact.cloudTombstonesRequired > 0;
-    if (cloudRequired) {
-      // Every distributed delete starts from an authoritative pull. Otherwise
-      // a targeted host/profile absent from this device's stale physical
-      // projection could be deleted locally and later reappear from cloud.
+    const cloudWideDeletion: boolean =
+      current.command === 'delete_cloud_data';
+    if (cloudWideDeletion) {
+      // Explicit whole-cloud deletion is the only command that needs an
+      // online authoritative boundary before it mutates the physical table.
+      // Ordinary host/profile deletion is local-first and persists a
+      // tombstone for later conflict-safe promotion.
       let prepared: boolean = false;
       try {
         prepared = await this.port.prepareMoonlightCloudDeletion(captured);
@@ -551,7 +571,7 @@ export class MoonlightDeletionCommandService {
         return commandResult(false, 'stale_preview', current.impact);
       }
     }
-    if (cloudRequired &&
+    if (cloudWideDeletion &&
         !this.port.moonlightCloudDeletionReady(captured)) {
       return commandResult(false, 'cloud_unavailable', current.impact);
     }
@@ -601,7 +621,7 @@ export class MoonlightDeletionCommandService {
         command: current.command,
         recordIds: current.recordIds.slice(),
         cacheIds: current.cacheIds.slice(),
-        writeCloudTombstones: cloudRequired,
+        persistCloudDeletionIntent,
         clearOwnerRuntimeState:
           current.command === 'delete_local_data',
         expectedRuntimeStateCount:
@@ -651,7 +671,18 @@ export class MoonlightDeletionCommandService {
         hostSucceeded = false;
       }
     }
-    if (cloudRequired && !mutation.cloudTerminal) {
+    if (mutation.code === 'local_verification_pending') {
+      // The atomic local transaction is already durable. A transient
+      // post-commit readback failure must not turn a successful user delete
+      // into a retry loop or duplicate mutation; the store has scheduled a
+      // fenced background notification and cloud-first reconciliation.
+      return commandResult(true, 'pending_local_verification', current.impact,
+        true, mutation.cloudAttempted, false, false,
+        hostAttempted, hostSucceeded,
+        identityAttempted, identitySucceeded,
+        current.artworkPaths);
+    }
+    if (cloudSynchronizationPending && !mutation.cloudTerminal) {
       return commandResult(true, 'pending_cloud', current.impact,
         mutation.localCommitted, mutation.cloudAttempted, false,
         false, hostAttempted, hostSucceeded,
