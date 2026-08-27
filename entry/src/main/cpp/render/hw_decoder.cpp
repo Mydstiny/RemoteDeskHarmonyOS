@@ -591,6 +591,9 @@ int HardwareDecoder::Init(int width, int height, CodecType codec, int64_t render
     codecType_ = codec;
     desktopSurfaceCompatibility_ = desktopSurfaceCompatibility;
     presentationMode_.store(presentationMode, std::memory_order_release);
+    producerTransformClass_.store(
+        Render::NativeImageTransformClass::NotSampled,
+        std::memory_order_release);
     textureTransform_ = Render::IdentityNativeImageTransform();
     textureTransformLogged_.store(false, std::memory_order_release);
     {
@@ -1501,14 +1504,20 @@ void HardwareDecoder::handleOutputBuffer(uint32_t /*index*/) {
             float producerTransform[16] = {};
             const int32_t transformRet = OH_NativeImage_GetTransformMatrixV2(
                 nativeImage_, producerTransform);
+            const Render::NativeImageTransformClass producerTransformClass =
+                Render::ClassifyNativeImageProducerTransform(
+                    transformRet, producerTransform);
+            producerTransformClass_.store(
+                producerTransformClass, std::memory_order_release);
             textureTransform_ =
                 Render::ResolveNativeImagePresentationTransform(
                     presentationMode, transformRet, producerTransform,
                     textureTransform_);
             if (!textureTransformLogged_.exchange(true, std::memory_order_acq_rel)) {
                 OH_LOG_INFO(LOG_APP,
-                            "[Decoder] desktop NativeImage producer transform ret=%{public}d row0=[%{public}f,%{public}f,%{public}f,%{public}f] row1=[%{public}f,%{public}f,%{public}f,%{public}f] row3=[%{public}f,%{public}f,%{public}f,%{public}f] presentation=%{public}s",
+                            "[Decoder] desktop NativeImage producer transform ret=%{public}d class=%{public}s row0=[%{public}f,%{public}f,%{public}f,%{public}f] row1=[%{public}f,%{public}f,%{public}f,%{public}f] row3=[%{public}f,%{public}f,%{public}f,%{public}f] presentation=%{public}s",
                             transformRet,
+                            Render::NativeImageTransformClassName(producerTransformClass),
                             producerTransform[0], producerTransform[4],
                             producerTransform[8], producerTransform[12],
                             producerTransform[1], producerTransform[5],
@@ -1820,6 +1829,10 @@ HardwareTelemetrySnapshot HardwareDecoder::GetTelemetrySnapshot() const {
     snapshot.codec = codecType_;
     snapshot.initialized = initialized_;
     snapshot.lowLatencyEnabled = lowLatencyEnabled_;
+    snapshot.desktopSurfaceCompatibility = desktopSurfaceCompatibility_;
+    snapshot.presentationMode = presentationMode_.load(std::memory_order_acquire);
+    snapshot.producerTransformClass =
+        producerTransformClass_.load(std::memory_order_acquire);
     return snapshot;
 }
 
@@ -3825,6 +3838,10 @@ DecoderTelemetrySnapshot DecoderNapi::GetActiveTelemetry(
         snapshot.codecLatencyMs = hardware.codecLatencyMs;
         snapshot.codecLatencyMaxMs = hardware.codecLatencyMaxMs;
         snapshot.lowLatencyEnabled = hardware.lowLatencyEnabled;
+        snapshot.desktopSurfaceCompatibility =
+            hardware.desktopSurfaceCompatibility;
+        snapshot.presentationMode = hardware.presentationMode;
+        snapshot.producerTransformClass = hardware.producerTransformClass;
         snapshot.codec = static_cast<int>(hardware.codec);
         snapshot.ready = hardware.initialized;
     }

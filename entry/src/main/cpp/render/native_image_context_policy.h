@@ -14,6 +14,16 @@ enum class NativeImagePresentationMode : uint8_t {
     ProducerTransform = 1,
 };
 
+enum class NativeImageTransformClass : uint8_t {
+    NotSampled = 0,
+    Identity = 1,
+    FlipX = 2,
+    FlipY = 3,
+    Rotate180 = 4,
+    Other = 5,
+    ReadFailed = 6,
+};
+
 inline NativeImagePresentationMode NativeImageModeForDesktopSurface(
     bool desktopSurfaceCompatibility) noexcept {
     return desktopSurfaceCompatibility
@@ -33,10 +43,10 @@ inline NativeImageTransform IdentityNativeImageTransform() {
 /**
  * Return the texture transform for an encoded remote-desktop frame.
  *
- * The transform source is an explicit protocol decision. Moonlight and the
- * released mobile paths retain the renderer's top-left identity contract,
- * while a RustDesk PC session connected to a Windows peer consumes the valid
- * NativeImage producer matrix to bridge the AVCodec texture-origin mismatch.
+ * The transform source is an explicit protocol decision. RustDesk and the
+ * released mobile paths retain the renderer's top-left identity contract.
+ * A protocol that explicitly owns producer-space presentation may still opt
+ * into the valid NativeImage matrix; peer platform labels never select it.
  */
 inline NativeImageTransform ResolveNativeImagePresentationTransform(
     NativeImagePresentationMode mode,
@@ -57,6 +67,73 @@ inline NativeImageTransform ResolveNativeImagePresentationTransform(
         resolved[index] = matrix[index];
     }
     return resolved;
+}
+
+inline bool NativeImageTransformNearlyEqual(float left, float right) {
+    return std::isfinite(left) && std::fabs(left - right) <= 0.01f;
+}
+
+inline NativeImageTransformClass ClassifyNativeImageProducerTransform(
+    int32_t readResult, const float matrix[16]) {
+    if (readResult != 0 || matrix == nullptr) {
+        return NativeImageTransformClass::ReadFailed;
+    }
+    for (size_t index = 0; index < 16; ++index) {
+        if (!std::isfinite(matrix[index])) {
+            return NativeImageTransformClass::ReadFailed;
+        }
+    }
+    const bool common =
+        NativeImageTransformNearlyEqual(matrix[1], 0.0f) &&
+        NativeImageTransformNearlyEqual(matrix[4], 0.0f) &&
+        NativeImageTransformNearlyEqual(matrix[2], 0.0f) &&
+        NativeImageTransformNearlyEqual(matrix[6], 0.0f) &&
+        NativeImageTransformNearlyEqual(matrix[8], 0.0f) &&
+        NativeImageTransformNearlyEqual(matrix[9], 0.0f) &&
+        NativeImageTransformNearlyEqual(matrix[10], 1.0f) &&
+        NativeImageTransformNearlyEqual(matrix[11], 0.0f) &&
+        NativeImageTransformNearlyEqual(matrix[3], 0.0f) &&
+        NativeImageTransformNearlyEqual(matrix[7], 0.0f) &&
+        NativeImageTransformNearlyEqual(matrix[14], 0.0f) &&
+        NativeImageTransformNearlyEqual(matrix[15], 1.0f);
+    if (!common) {
+        return NativeImageTransformClass::Other;
+    }
+    const bool xPositive = NativeImageTransformNearlyEqual(matrix[0], 1.0f);
+    const bool xNegative = NativeImageTransformNearlyEqual(matrix[0], -1.0f);
+    const bool yPositive = NativeImageTransformNearlyEqual(matrix[5], 1.0f);
+    const bool yNegative = NativeImageTransformNearlyEqual(matrix[5], -1.0f);
+    const bool xOrigin = NativeImageTransformNearlyEqual(matrix[12], 0.0f);
+    const bool xShift = NativeImageTransformNearlyEqual(matrix[12], 1.0f);
+    const bool yOrigin = NativeImageTransformNearlyEqual(matrix[13], 0.0f);
+    const bool yShift = NativeImageTransformNearlyEqual(matrix[13], 1.0f);
+    if (xPositive && yPositive && xOrigin && yOrigin) {
+        return NativeImageTransformClass::Identity;
+    }
+    if (xNegative && yPositive && xShift && yOrigin) {
+        return NativeImageTransformClass::FlipX;
+    }
+    if (xPositive && yNegative && xOrigin && yShift) {
+        return NativeImageTransformClass::FlipY;
+    }
+    if (xNegative && yNegative && xShift && yShift) {
+        return NativeImageTransformClass::Rotate180;
+    }
+    return NativeImageTransformClass::Other;
+}
+
+inline const char* NativeImageTransformClassName(
+    NativeImageTransformClass transformClass) {
+    switch (transformClass) {
+        case NativeImageTransformClass::Identity: return "identity";
+        case NativeImageTransformClass::FlipX: return "flip_x";
+        case NativeImageTransformClass::FlipY: return "flip_y";
+        case NativeImageTransformClass::Rotate180: return "rotate_180";
+        case NativeImageTransformClass::Other: return "other";
+        case NativeImageTransformClass::ReadFailed: return "read_failed";
+        case NativeImageTransformClass::NotSampled:
+        default: return "not_sampled";
+    }
 }
 
 inline const char* NativeImagePresentationModeName(

@@ -9,12 +9,16 @@ import {
   DiagnosticEventLevel,
   DiagnosticModuleId,
   DiagnosticOutcome,
+  DiagnosticRuntimeFacts,
   DiagnosticStopReason,
+  copyDiagnosticRuntimeFacts,
   diagnosticDurationIsAllowed,
   diagnosticEventIsAllowed,
   diagnosticLevelForOutcome,
   diagnosticOutcomeIsAllowed,
+  diagnosticRuntimeFactsAreValid,
   diagnosticSafeInteger,
+  emptyDiagnosticRuntimeFacts,
   normalizeDiagnosticModules
 } from './DiagnosticCapturePolicy';
 
@@ -49,6 +53,7 @@ export interface DiagnosticCaptureEvent {
   durationMs: number;
   count: number;
   bytes: number;
+  runtime: DiagnosticRuntimeFacts;
 }
 
 export interface DiagnosticCaptureStatus {
@@ -143,7 +148,8 @@ export class DiagnosticCaptureRuntime {
       this.sessionIds = [];
       this.phase = 'capturing';
       this.appendEventAt(uptime, 'core.app', 'capture_started',
-        'started', 0, 0, 0, 0, this.selectedModules.length, 0);
+        'started', 0, 0, 0, 0, this.selectedModules.length, 0,
+        emptyDiagnosticRuntimeFacts());
       return 'ok';
     } catch (_err) {
       this.resetCapture();
@@ -161,7 +167,8 @@ export class DiagnosticCaptureRuntime {
 
   record(moduleId: DiagnosticModuleId, eventCode: string, outcome: DiagnosticOutcome,
     correlationId: number = 0, generation: number = 0, code: number = 0,
-    durationMs: number = 0, count: number = 0, bytes: number = 0): boolean {
+    durationMs: number = 0, count: number = 0, bytes: number = 0,
+    runtime?: DiagnosticRuntimeFacts): boolean {
     if (!this.isModuleCapturing(moduleId)) { return false; }
     try {
       if (!diagnosticEventIsAllowed(moduleId, eventCode) ||
@@ -175,10 +182,13 @@ export class DiagnosticCaptureRuntime {
       const safeDuration: number | null = diagnosticSafeInteger(durationMs);
       const safeCount: number | null = diagnosticSafeInteger(count);
       const safeBytes: number | null = diagnosticSafeInteger(bytes);
+      const safeRuntime: DiagnosticRuntimeFacts = runtime === undefined ?
+        emptyDiagnosticRuntimeFacts() : copyDiagnosticRuntimeFacts(runtime);
       if (safeCorrelation === null || safeCorrelation < 0 ||
         safeGeneration === null || safeGeneration < 0 || safeCode === null ||
         safeDuration === null || safeDuration < 0 ||
-        safeCount === null || safeCount < 0 || safeBytes === null || safeBytes < 0) {
+        safeCount === null || safeCount < 0 || safeBytes === null || safeBytes < 0 ||
+        !diagnosticRuntimeFactsAreValid(safeRuntime)) {
         this.droppedEventCount += 1;
         return false;
       }
@@ -188,7 +198,8 @@ export class DiagnosticCaptureRuntime {
         return false;
       }
       return this.appendEventAt(uptime, moduleId, eventCode, outcome,
-        safeCorrelation, safeGeneration, safeCode, safeDuration, safeCount, safeBytes);
+        safeCorrelation, safeGeneration, safeCode, safeDuration, safeCount, safeBytes,
+        safeRuntime);
     } catch (_err) {
       this.droppedEventCount += 1;
       return false;
@@ -207,7 +218,8 @@ export class DiagnosticCaptureRuntime {
       }
       const elapsed: number = Math.max(0, uptime - this.startedUptimeMs);
       this.appendEventAt(uptime, 'core.app', 'capture_stopped',
-        'succeeded', 0, 0, 0, elapsed, this.events.length, this.approximateBytes);
+        'succeeded', 0, 0, 0, elapsed, this.events.length, this.approximateBytes,
+        emptyDiagnosticRuntimeFacts());
       this.freeze('manual', uptime);
       return 'ok';
     } catch (_err) {
@@ -292,7 +304,8 @@ export class DiagnosticCaptureRuntime {
   private appendEventAt(uptime: number, moduleId: DiagnosticModuleId,
     eventCode: string, outcome: DiagnosticOutcome,
     correlationId: number, generation: number, code: number,
-    durationMs: number, count: number, bytes: number): boolean {
+    durationMs: number, count: number, bytes: number,
+    runtime: DiagnosticRuntimeFacts): boolean {
     const terminalEvent: boolean = moduleId === 'core.app' &&
       (eventCode === 'capture_stopped' || eventCode === 'capture_expired');
     const eventLimit: number = terminalEvent ? DIAGNOSTIC_MAX_EVENTS : DIAGNOSTIC_MAX_EVENTS - 1;
@@ -319,7 +332,8 @@ export class DiagnosticCaptureRuntime {
       code: code,
       durationMs: durationMs,
       count: count,
-      bytes: bytes
+      bytes: bytes,
+      runtime: copyDiagnosticRuntimeFacts(runtime)
     };
     const eventBytes: number = new util.TextEncoder().encode(JSON.stringify(event)).length + 1;
     const reservedTerminalBytes: number = terminalEvent ? 0 : DIAGNOSTIC_MAX_EVENT_BYTES;
@@ -349,7 +363,7 @@ export class DiagnosticCaptureRuntime {
       Math.min(uptime, this.deadlineUptimeMs));
     this.appendEventAt(eventUptime, 'core.app', 'capture_expired',
       'timeout', 0, 0, 0, this.durationMinutes * 60 * 1000,
-      this.events.length, this.approximateBytes);
+      this.events.length, this.approximateBytes, emptyDiagnosticRuntimeFacts());
     this.freeze('deadline', eventUptime);
   }
 
@@ -391,7 +405,8 @@ export class DiagnosticCaptureRuntime {
       code: source.code,
       durationMs: source.durationMs,
       count: source.count,
-      bytes: source.bytes
+      bytes: source.bytes,
+      runtime: copyDiagnosticRuntimeFacts(source.runtime)
     };
   }
 
@@ -432,10 +447,11 @@ export function diagnosticCaptureIdForModule(moduleId: DiagnosticModuleId): stri
 export function recordDiagnosticEvent(moduleId: DiagnosticModuleId,
   eventCode: string, outcome: DiagnosticOutcome, correlationId: number = 0,
   generation: number = 0, code: number = 0, durationMs: number = 0,
-  count: number = 0, bytes: number = 0): void {
+  count: number = 0, bytes: number = 0,
+  runtime?: DiagnosticRuntimeFacts): void {
   try {
     DiagnosticCaptureRuntime.getInstance().record(moduleId, eventCode, outcome,
-      correlationId, generation, code, durationMs, count, bytes);
+      correlationId, generation, code, durationMs, count, bytes, runtime);
   } catch (_err) {
     // Diagnostics are a best-effort side channel and can never fail a producer.
   }

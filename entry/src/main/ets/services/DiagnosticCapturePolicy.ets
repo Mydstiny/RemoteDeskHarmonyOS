@@ -24,6 +24,46 @@ export type DiagnosticOutcome =
 
 export type DiagnosticStopReason = 'manual' | 'deadline';
 
+export type DiagnosticRuntimeState =
+  'unknown' | 'connecting' | 'connected' | 'recovering' |
+  'stopping' | 'disconnected' | 'failed';
+
+export type DiagnosticRuntimeBackend =
+  'unknown' | 'hardware' | 'software' | 'gdi' | 'raw' | 'zrle' |
+  'copyrect' | 'native' | 'terminal';
+
+export type DiagnosticRuntimeCodec =
+  'unknown' | 'h264' | 'h265' | 'vp8' | 'vp9' | 'av1' | 'raw';
+
+export type DiagnosticRuntimePath =
+  'unknown' | 'direct' | 'relay' | 'gateway' | 'proxy';
+
+export type DiagnosticPeerPlatform =
+  'unknown' | 'windows' | 'macos' | 'linux' | 'android' | 'ios' | 'other';
+
+export type DiagnosticPresentation = 'unknown' | 'identity' | 'producer';
+
+export type DiagnosticProducerTransform =
+  'unknown' | 'not_sampled' | 'identity' | 'flip_x' | 'flip_y' |
+  'rotate_180' | 'other' | 'read_failed';
+
+export interface DiagnosticRuntimeFacts {
+  state: DiagnosticRuntimeState;
+  backend: DiagnosticRuntimeBackend;
+  codec: DiagnosticRuntimeCodec;
+  path: DiagnosticRuntimePath;
+  peerPlatform: DiagnosticPeerPlatform;
+  presentation: DiagnosticPresentation;
+  producerTransform: DiagnosticProducerTransform;
+  width: number;
+  height: number;
+  frames: number;
+  dropped: number;
+  errors: number;
+  queueDepth: number;
+  latencyMs: number;
+}
+
 export interface DiagnosticModuleSpec {
   id: DiagnosticModuleId;
   label: string;
@@ -35,8 +75,8 @@ export interface DiagnosticEventSpec {
   eventCode: string;
 }
 
-export const DIAGNOSTIC_CAPTURE_SCHEMA_VERSION: number = 1;
-export const DIAGNOSTIC_REDACTION_POLICY_VERSION: number = 1;
+export const DIAGNOSTIC_CAPTURE_SCHEMA_VERSION: number = 2;
+export const DIAGNOSTIC_REDACTION_POLICY_VERSION: number = 2;
 export const DIAGNOSTIC_DEFAULT_DURATION_MINUTES: number = 10;
 export const DIAGNOSTIC_MAX_EVENTS: number = 10000;
 export const DIAGNOSTIC_MAX_EVENT_BYTES: number = 1024;
@@ -72,29 +112,34 @@ const DIAGNOSTIC_EVENTS: DiagnosticEventSpec[] = [
   { moduleId: 'connection.rdp', eventCode: 'rdp_connection_request' },
   { moduleId: 'connection.rdp', eventCode: 'rdp_preflight' },
   { moduleId: 'connection.rdp', eventCode: 'rdp_state_changed' },
+  { moduleId: 'connection.rdp', eventCode: 'rdp_runtime_snapshot' },
   { moduleId: 'connection.rdp', eventCode: 'rdp_disconnect' },
 
   { moduleId: 'connection.rustdesk', eventCode: 'rustdesk_presence' },
   { moduleId: 'connection.rustdesk', eventCode: 'rustdesk_connection_request' },
   { moduleId: 'connection.rustdesk', eventCode: 'rustdesk_state_changed' },
   { moduleId: 'connection.rustdesk', eventCode: 'rustdesk_two_factor' },
+  { moduleId: 'connection.rustdesk', eventCode: 'rustdesk_runtime_snapshot' },
   { moduleId: 'connection.rustdesk', eventCode: 'rustdesk_disconnect' },
 
   { moduleId: 'connection.ssh_sftp', eventCode: 'ssh_session_event' },
   { moduleId: 'connection.ssh_sftp', eventCode: 'ssh_preflight' },
   { moduleId: 'connection.ssh_sftp', eventCode: 'ssh_disconnect' },
+  { moduleId: 'connection.ssh_sftp', eventCode: 'ssh_runtime_snapshot' },
   { moduleId: 'connection.ssh_sftp', eventCode: 'sftp_task_started' },
   { moduleId: 'connection.ssh_sftp', eventCode: 'sftp_task_completed' },
 
   { moduleId: 'connection.vnc', eventCode: 'vnc_connection_request' },
   { moduleId: 'connection.vnc', eventCode: 'vnc_preflight' },
   { moduleId: 'connection.vnc', eventCode: 'vnc_state_changed' },
+  { moduleId: 'connection.vnc', eventCode: 'vnc_runtime_snapshot' },
   { moduleId: 'connection.vnc', eventCode: 'vnc_disconnect' },
 
   { moduleId: 'connection.moonlight', eventCode: 'moonlight_pair' },
   { moduleId: 'connection.moonlight', eventCode: 'moonlight_catalog' },
   { moduleId: 'connection.moonlight', eventCode: 'moonlight_launch' },
   { moduleId: 'connection.moonlight', eventCode: 'moonlight_state_changed' },
+  { moduleId: 'connection.moonlight', eventCode: 'moonlight_runtime_snapshot' },
 
   { moduleId: 'data.cloud_sync', eventCode: 'cloud_sync_requested' },
   { moduleId: 'data.cloud_sync', eventCode: 'cloud_sync_started' },
@@ -185,4 +230,71 @@ export function diagnosticSafeInteger(value: number): number | null {
   if (!Number.isFinite(value) || !Number.isSafeInteger(value)) { return null; }
   const limit: number = Number.MAX_SAFE_INTEGER;
   return Math.max(-limit, Math.min(limit, value));
+}
+
+const DIAGNOSTIC_RUNTIME_STATES: DiagnosticRuntimeState[] = [
+  'unknown', 'connecting', 'connected', 'recovering',
+  'stopping', 'disconnected', 'failed'
+];
+const DIAGNOSTIC_RUNTIME_BACKENDS: DiagnosticRuntimeBackend[] = [
+  'unknown', 'hardware', 'software', 'gdi', 'raw', 'zrle',
+  'copyrect', 'native', 'terminal'
+];
+const DIAGNOSTIC_RUNTIME_CODECS: DiagnosticRuntimeCodec[] = [
+  'unknown', 'h264', 'h265', 'vp8', 'vp9', 'av1', 'raw'
+];
+const DIAGNOSTIC_RUNTIME_PATHS: DiagnosticRuntimePath[] = [
+  'unknown', 'direct', 'relay', 'gateway', 'proxy'
+];
+const DIAGNOSTIC_PEER_PLATFORMS: DiagnosticPeerPlatform[] = [
+  'unknown', 'windows', 'macos', 'linux', 'android', 'ios', 'other'
+];
+const DIAGNOSTIC_PRESENTATIONS: DiagnosticPresentation[] = [
+  'unknown', 'identity', 'producer'
+];
+const DIAGNOSTIC_PRODUCER_TRANSFORMS: DiagnosticProducerTransform[] = [
+  'unknown', 'not_sampled', 'identity', 'flip_x', 'flip_y',
+  'rotate_180', 'other', 'read_failed'
+];
+
+export function emptyDiagnosticRuntimeFacts(): DiagnosticRuntimeFacts {
+  return {
+    state: 'unknown', backend: 'unknown', codec: 'unknown', path: 'unknown',
+    peerPlatform: 'unknown', presentation: 'unknown', producerTransform: 'unknown',
+    width: 0, height: 0, frames: 0, dropped: 0, errors: 0,
+    queueDepth: 0, latencyMs: 0
+  };
+}
+
+export function diagnosticRuntimeFactsAreValid(facts: DiagnosticRuntimeFacts): boolean {
+  if (DIAGNOSTIC_RUNTIME_STATES.indexOf(facts.state) < 0 ||
+    DIAGNOSTIC_RUNTIME_BACKENDS.indexOf(facts.backend) < 0 ||
+    DIAGNOSTIC_RUNTIME_CODECS.indexOf(facts.codec) < 0 ||
+    DIAGNOSTIC_RUNTIME_PATHS.indexOf(facts.path) < 0 ||
+    DIAGNOSTIC_PEER_PLATFORMS.indexOf(facts.peerPlatform) < 0 ||
+    DIAGNOSTIC_PRESENTATIONS.indexOf(facts.presentation) < 0 ||
+    DIAGNOSTIC_PRODUCER_TRANSFORMS.indexOf(facts.producerTransform) < 0) {
+    return false;
+  }
+  const numbers: number[] = [
+    facts.width, facts.height, facts.frames, facts.dropped, facts.errors,
+    facts.queueDepth, facts.latencyMs
+  ];
+  for (let index: number = 0; index < numbers.length; index++) {
+    if (diagnosticSafeInteger(numbers[index]) === null || numbers[index] < 0) {
+      return false;
+    }
+  }
+  return true;
+}
+
+export function copyDiagnosticRuntimeFacts(
+  facts: DiagnosticRuntimeFacts): DiagnosticRuntimeFacts {
+  return {
+    state: facts.state, backend: facts.backend, codec: facts.codec, path: facts.path,
+    peerPlatform: facts.peerPlatform, presentation: facts.presentation,
+    producerTransform: facts.producerTransform, width: facts.width,
+    height: facts.height, frames: facts.frames, dropped: facts.dropped,
+    errors: facts.errors, queueDepth: facts.queueDepth, latencyMs: facts.latencyMs
+  };
 }

@@ -31,8 +31,18 @@ import {
   MoonlightSessionRecoveryRuntime,
   MoonlightSessionRecoveryRuntimePort
 } from './MoonlightSessionRecoveryRuntime';
-import { DiagnosticOutcome } from './DiagnosticCapturePolicy';
-import { recordDiagnosticEvent } from './DiagnosticCaptureRuntime';
+import {
+  DiagnosticOutcome,
+  DiagnosticRuntimeFacts
+} from './DiagnosticCapturePolicy';
+import {
+  diagnosticCaptureIdForModule,
+  recordDiagnosticEvent
+} from './DiagnosticCaptureRuntime';
+import {
+  DiagnosticRuntimeSnapshotGate,
+  diagnosticMoonlightRuntimeFacts
+} from './DiagnosticRuntimeSnapshotPolicy';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 
 class MoonlightSessionReservationIdentity {
@@ -318,6 +328,9 @@ class MoonlightNapiRuntimePort implements MoonlightRuntimePort {
         streamHeight: source.streamHeight,
         targetFps: source.targetFps,
         configuredBitrateKbps: source.configuredBitrateKbps,
+        decoderQueueDepth: source.decoderQueueDepth,
+        decoderCodecLatencyMs: source.decoderCodecLatencyMs,
+        decoderSurfaceUpdateFailures: source.decoderSurfaceUpdateFailures,
         codec: source.codec
       };
       // moonlightStopStream() only acknowledges the cancellation request. Keep
@@ -501,6 +514,8 @@ export class MoonlightSessionCoordinator {
   private runtimePollTimer: number = -1;
   private runtimePollMisses: number = 0;
   private runtimePollLocked: boolean = false;
+  private diagnosticRuntimeSnapshots: DiagnosticRuntimeSnapshotGate =
+    new DiagnosticRuntimeSnapshotGate();
   private readonly snapshotSubscriptions: MoonlightSessionSnapshotSubscription[] = [];
 
   constructor(runtime: MoonlightRuntimePort | null = null,
@@ -806,6 +821,8 @@ export class MoonlightSessionCoordinator {
         return this.result(false, 'registry_rejected');
       }
       this.nativeSessionId = event.nativeSessionId;
+      this.diagnosticRuntimeSnapshots.forget(
+        'connection.moonlight', event.nativeSessionId);
       this.reservationSessionId = -1;
       // Keep the exact launch key until native terminal truth. It is required
       // to prove that a reconnect request belongs to this stream rather than a
@@ -825,6 +842,8 @@ export class MoonlightSessionCoordinator {
       return this.result(false, 'registry_lost');
     }
     if (event.type === 'failed' || event.type === 'stopped') {
+      this.forgetDiagnosticRuntimeSnapshot(
+        event.nativeSessionId > 0 ? event.nativeSessionId : this.nativeSessionId);
       this.nativeRuntimeMayBeActive = false;
       this.clearRuntimePoll();
       this.resetRuntimePollBackoff();
@@ -1166,6 +1185,7 @@ export class MoonlightSessionCoordinator {
     this.clearRuntimePoll();
     this.resetRuntimePollBackoff();
     this.requestRuntimeStop('test-reset');
+    this.diagnosticRuntimeSnapshots.clear();
     this.clearOwnedRegistry();
     this.state = null;
     this.nativeSessionId = -1;
@@ -1330,6 +1350,7 @@ export class MoonlightSessionCoordinator {
       return;
     }
     this.resetRuntimePollBackoff();
+    this.recordDiagnosticRuntimeSnapshot(source, nowMs);
     if (this.recoveryRuntime !== null && this.state !== null) {
       this.recoveryRuntime.observeNativeSnapshot(
         this.state.ownerScopeId, this.boundAccountGeneration,
@@ -1374,6 +1395,31 @@ export class MoonlightSessionCoordinator {
     if (this.state !== null && this.state.generation === generation) {
       this.scheduleRuntimePoll(surfaceId);
     }
+  }
+
+  private recordDiagnosticRuntimeSnapshot(source: MoonlightNativeStreamSnapshot,
+    nowMs: number): void {
+    try {
+      if (source.sessionId <= 0) { return; }
+      const captureId: string =
+        diagnosticCaptureIdForModule('connection.moonlight');
+      const facts: DiagnosticRuntimeFacts = diagnosticMoonlightRuntimeFacts(source);
+      if (!this.diagnosticRuntimeSnapshots.shouldRecord(
+        'connection.moonlight', source.sessionId, captureId, facts, nowMs)) { return; }
+      recordDiagnosticEvent('connection.moonlight', 'moonlight_runtime_snapshot',
+        'state', source.sessionId, source.generation > 0 ? source.generation : 0,
+        0, facts.latencyMs, facts.frames,
+        source.acceptedVideoBytes !== undefined &&
+          Number.isSafeInteger(source.acceptedVideoBytes) && source.acceptedVideoBytes > 0 ?
+          source.acceptedVideoBytes : 0, facts);
+    } catch (_err) {
+      // Runtime capture remains isolated from stream lifecycle decisions.
+    }
+  }
+
+  private forgetDiagnosticRuntimeSnapshot(sessionId: number): void {
+    if (sessionId <= 0) { return; }
+    this.diagnosticRuntimeSnapshots.forget('connection.moonlight', sessionId);
   }
 
   private emitRuntimeEvent(type: MoonlightSessionEventType, generation: number,
@@ -1474,6 +1520,7 @@ export class MoonlightSessionCoordinator {
       return false;
     }
     this.clearRuntimePoll();
+    this.forgetDiagnosticRuntimeSnapshot(oldNativeSessionId);
     this.resetRuntimePollBackoff();
     this.clearStopTimer();
     this.operationGeneration = nextGeneration;
@@ -1539,6 +1586,7 @@ export class MoonlightSessionCoordinator {
       return;
     }
     this.clearRuntimePoll();
+    this.forgetDiagnosticRuntimeSnapshot(this.nativeSessionId);
     this.resetRuntimePollBackoff();
     this.clearOwnedRegistry();
     this.state = null;
@@ -1618,6 +1666,7 @@ export class MoonlightSessionCoordinator {
 
     this.clearRuntimePoll();
     this.resetRuntimePollBackoff();
+    this.forgetDiagnosticRuntimeSnapshot(this.nativeSessionId);
     this.clearOwnedRegistry();
     this.state = null;
     this.nativeSessionId = -1;
@@ -1669,6 +1718,7 @@ export class MoonlightSessionCoordinator {
     this.nativeRuntimeMayBeActive = false;
     this.clearRuntimePoll();
     this.resetRuntimePollBackoff();
+    this.forgetDiagnosticRuntimeSnapshot(this.nativeSessionId);
     this.clearStopTimer();
     this.clearOwnedRegistry();
     this.nativeSessionId = -1;

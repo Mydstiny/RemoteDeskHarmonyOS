@@ -205,6 +205,9 @@ export interface MoonlightNativeStreamSnapshot {
   targetFps?: number;
   configuredBitrateKbps?: number;
   codec?: 'h264' | 'hevc' | 'av1';
+  decoderQueueDepth?: number;
+  decoderCodecLatencyMs?: number;
+  decoderSurfaceUpdateFailures?: number;
 }
 
 export interface MoonlightNativePort {

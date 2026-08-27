@@ -1,4 +1,5 @@
 export const CURRENT_RELEASE_VERSION: string = '1.1.2';
+export const CURRENT_RELEASE_VERSION_CODE: number = 1001002;
 
 export interface ReleaseNotePage {
   id: string;

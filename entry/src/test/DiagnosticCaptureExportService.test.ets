@@ -75,6 +75,9 @@ export default function diagnosticCaptureExportServiceTest(): void {
       const summary: Record<string, Object> =
         JSON.parse(lines[lines.length - 1]) as Record<string, Object>;
       expect(manifest['kind'] as string).assertEqual('manifest');
+      expect(manifest['schemaVersion'] as number).assertEqual(2);
+      expect(manifest['appVersionCode'] as number).assertEqual(1001002);
+      expect((manifest['buildId'] as string).startsWith('1.1.2+')).assertTrue();
       expect(summary['kind'] as string).assertEqual('summary');
       expect(summary['eventCount'] as number).assertEqual(capture.events.length);
       expect(summary['serializedBytes'] as number).assertEqual(result.bytes.length);
@@ -104,6 +107,7 @@ export default function diagnosticCaptureExportServiceTest(): void {
       }
       expect(result.text.indexOf('987654321')).assertEqual(-1);
       expect(result.text.indexOf('session-1') >= 0).assertTrue();
+      expect(result.text.indexOf('"runtime"') >= 0).assertTrue();
     });
 
     it('rejects_forged_capture_strings_before_any_bytes_are_created', 0, (): void => {

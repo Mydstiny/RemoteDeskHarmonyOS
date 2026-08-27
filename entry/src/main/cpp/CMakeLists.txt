@@ -12,21 +12,23 @@
 cmake_minimum_required(VERSION 3.5.0)
 project(rdpnapi)
 
-# Non-sensitive build identity. The values are exported through the existing
-# NAPI VERSION object for field diagnostics; they never enter protocol frames.
-set(REMOTEDESK_GIT_SHORT_SHA "unknown")
-execute_process(
-    COMMAND git rev-parse --short=12 HEAD
-    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/../../../..
-    RESULT_VARIABLE REMOTEDESK_GIT_RESULT
-    OUTPUT_VARIABLE REMOTEDESK_GIT_OUTPUT
-    OUTPUT_STRIP_TRAILING_WHITESPACE
-    ERROR_QUIET
+# Non-sensitive build identity. Generate it at build time rather than CMake
+# configure time: Hvigor keeps the native CMake cache between commits, so a
+# configure-time git query can otherwise stamp a newly signed HAP with the
+# previous commit. The generated header never enters protocol frames.
+set(REMOTEDESK_BUILD_IDENTITY_DIR
+    "${CMAKE_CURRENT_BINARY_DIR}/remotedesk-generated")
+set(REMOTEDESK_BUILD_IDENTITY_HEADER
+    "${REMOTEDESK_BUILD_IDENTITY_DIR}/remotedesk_build_identity.h")
+add_custom_target(remotedesk_build_identity ALL
+    COMMAND "${CMAKE_COMMAND}"
+        "-DREMOTEDESK_SOURCE_ROOT=${CMAKE_CURRENT_SOURCE_DIR}/../../../.."
+        "-DREMOTEDESK_OUTPUT_FILE=${REMOTEDESK_BUILD_IDENTITY_HEADER}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/GenerateBuildIdentity.cmake"
+    BYPRODUCTS "${REMOTEDESK_BUILD_IDENTITY_HEADER}"
+    COMMENT "Refreshing RemoteDesktop build identity"
+    VERBATIM
 )
-if(REMOTEDESK_GIT_RESULT EQUAL 0 AND REMOTEDESK_GIT_OUTPUT MATCHES "^[0-9a-fA-F]+$")
-    set(REMOTEDESK_GIT_SHORT_SHA "${REMOTEDESK_GIT_OUTPUT}")
-endif()
-string(TIMESTAMP REMOTEDESK_BUILD_TIME_UTC "%Y-%m-%dT%H:%M:%SZ" UTC)
 
 # ============================================================
 # 源文件清单
@@ -1032,9 +1034,9 @@ target_link_libraries(remotedesk_moonlight_bridge PRIVATE
 
 # 定义共享库目标
 add_library(rdpnapi SHARED ${ALL_SOURCES})
-target_compile_definitions(rdpnapi PRIVATE
-    REMOTEDESK_GIT_SHORT_SHA="${REMOTEDESK_GIT_SHORT_SHA}"
-    REMOTEDESK_BUILD_TIME_UTC="${REMOTEDESK_BUILD_TIME_UTC}"
+add_dependencies(rdpnapi remotedesk_build_identity)
+target_include_directories(rdpnapi PRIVATE
+    "${REMOTEDESK_BUILD_IDENTITY_DIR}"
 )
 target_link_libraries(rdpnapi PRIVATE
     remotedesk_moonlight_product_media

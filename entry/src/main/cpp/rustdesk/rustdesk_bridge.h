@@ -41,6 +41,7 @@ struct RustDeskDiagnosticsStats {
     int width = 0;
     int height = 0;
     int connectionPath = 0; // 0=rendezvous/relay, 1=direct
+    std::string peerPlatform = "unknown";
     bool remoteInputPermissionKnown = false;
     bool remoteInputAllowed = true;
     bool remoteClipboardPermissionKnown = false;
