@@ -4,7 +4,7 @@
 
 - Task: `moonlight-crud-compatibility`
 - Branch/base: `codex/moonlight-crud-compatibility` from synchronized `main@a773346f6`.
-- Phase: independent review in progress for checkpoint `9e800bc5`.
+- Phase: independent review PASS for checkpoint `79da70a4`; PR/main closure in progress.
 - Plan: `docs/codex/plans/2026-08-27-moonlight-crud-compatibility.md`
 
 ## Objective
@@ -29,22 +29,25 @@
 - Settings tombstones and legacy aliases resolve deterministically, revive with a higher reset epoch and converge in one save.
 - Pre-release host IDs are reused/converged, portable restore uses the Moonlight conflict policy, and missing additive columns are repaired without rejecting harmless legacy extras.
 - Explicit owner-local deletion clears hidden malformed Moonlight rows and caches, while remote Sunshine unpair and rebuildable cache cleanup remain best effort.
+- Legacy and canonical host aliases now share one logical `serverUuid` deletion graph: forget/unpair writes canonical payload-free boundaries and atomically includes every matching host/profile/trust/cache/runtime-state alias.
+- Portable restore and old full backups cannot revive a same/lower-epoch host or trust alias behind a canonical or legacy-derived deletion boundary; higher reset epochs remain the explicit revival path.
 
 ## Verification
 
 - Baseline `main@a773346f6` was clean and equal to `origin/main` when the task started.
-- Exact `default@OhosTestCompileArkTS`: PASS (`BUILD SUCCESSFUL in 8 s 573 ms`).
-- Exact signed `assembleHap`: PASS (`BUILD SUCCESSFUL in 27 s 656 ms`).
-- Signed HAP SHA-256: `ef646302f966b53bbc4539a7c7d57801e556ebbf941431c1c4f595b7da9361a4`.
+- Exact `default@OhosTestCompileArkTS`: PASS (final exact invocation `BUILD SUCCESSFUL in 1 s 427 ms`; focused static registration count `257`).
+- Exact signed `assembleHap`: PASS (`BUILD SUCCESSFUL in 2 min 19 s 836 ms`).
+- Signed HAP SHA-256: `3249768c5030ff113ba3c73c0bee6e4146ad4d45281de42934ae63c897228cbb`.
 - Legacy replay: PASS for `1.0.7`, `1.0.8-initial` and `1.1.1-initial`; all legacy rows preserved and schema converged to v5.
 - `git diff --check`: PASS. Open-source compliance Light: PASS.
+- Independent read-only review: PASS for `a773346f6..79da70a4`; P0/P1/P2/P3 are all zero.
 - `ohosTest@OhosTestCompileArkTS`: unavailable because the task is not registered (`00306054`); no device-test execution is claimed.
 
 ## Next
 
-1. Await `/root/review_moonlight_crud_compat` review of `a773346f6..9e800bc5`.
-2. Remediate any findings and rerun all required gates.
-3. Complete branch/PR/main closure after review PASS.
+1. Push `codex/moonlight-crud-compatibility` and open the reviewed PR.
+2. Merge the PR, fast-forward local `main`, and remove the merged local task branch.
+3. Retain real-device Huawei Cloud Space/no-account UI combinations as external acceptance evidence, not as a source blocker.
 
 ## Blockers
 

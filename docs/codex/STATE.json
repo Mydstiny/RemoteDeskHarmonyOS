@@ -3,10 +3,10 @@
   "task": "moonlight-crud-compatibility",
   "branch": "codex/moonlight-crud-compatibility",
   "base": "a773346f6dd373c16d3e64cf241fed036b52061e",
-  "head": "9e800bc533b3dc5e66b90ba3578d90efad30a0df",
-  "phase": "review",
+  "head": "79da70a46e5672cf4548856ef00def4c2c1cea34",
+  "phase": "merge",
   "status": "active",
-  "next": "Resume /root/review_moonlight_crud_compat for checkpoint 9e800bc5, then remediate any findings.",
+  "next": "Push the reviewed branch, merge its PR, then fast-forward local main.",
   "blockers": [
     "Device Hypium task is unavailable with 00306054; no on-device test execution is currently claimed."
   ],
@@ -14,11 +14,11 @@
     "docs/codex/plans/2026-08-27-moonlight-crud-compatibility.md"
   ],
   "review": {
-    "status": "IN_PROGRESS",
+    "status": "PASS",
     "taskIds": [
       "/root/review_moonlight_crud_compat"
     ],
-    "reviewedHead": "9e800bc533b3dc5e66b90ba3578d90efad30a0df",
+    "reviewedHead": "79da70a46e5672cf4548856ef00def4c2c1cea34",
     "scope": [
       "entry/src/main/ets/services/CloudStore.ets",
       "entry/src/main/ets/services/MoonlightSettingsLocalService.ets",
@@ -32,17 +32,17 @@
       "entry/src/main/ets/pages/MoonlightHostDetailPage.ets",
       "entry/src/test"
     ],
-    "lastReceiptId": "",
+    "lastReceiptId": "moonlight-crud-compatibility-79da70a4-2026-08-27",
     "findings": [],
-    "reason": "Independent read-only review is running for a773346f6..9e800bc5."
+    "reason": "Independent read-only review passed for a773346f6..79da70a4 with P0/P1/P2/P3 all zero."
   },
   "lastVerification": {
     "baseline": "clean synchronized main@a773346f6",
-    "testCompile": "PASS exact default@OhosTestCompileArkTS 8s573ms",
-    "assembleHap": "PASS exact signed assembleHap 27s656ms sha256=ef646302f966b53bbc4539a7c7d57801e556ebbf941431c1c4f595b7da9361a4",
-    "targetedTests": "compile-registered; legacy replay PASS 1.0.7/1.0.8-initial/1.1.1-initial; ohosTest blocked 00306054",
+    "testCompile": "PASS exact default@OhosTestCompileArkTS 1s427ms; focused static registration exact 257",
+    "assembleHap": "PASS exact signed assembleHap 2m19s836ms sha256=3249768c5030ff113ba3c73c0bee6e4146ad4d45281de42934ae63c897228cbb",
+    "targetedTests": "compile-registered exact 257; legacy replay PASS 1.0.7/1.0.8-initial/1.1.1-initial; ohosTest blocked 00306054",
     "compliance": "PASS git diff --check and Light",
-    "review": "PENDING"
+    "review": "PASS P0=0 P1=0 P2=0 P3=0 by /root/review_moonlight_crud_compat"
   },
   "updated": "2026-08-27 Asia/Shanghai"
 }
