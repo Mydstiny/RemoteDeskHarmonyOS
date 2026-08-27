@@ -3,10 +3,10 @@
   "task": "vnc-cursor-wheel-regression",
   "branch": "codex/vnc-cursor-wheel-regression",
   "base": "0b8e5bf602a6f7ddf22918a5ec346f0be1b750a7",
-  "head": "dfb74ded6c7d45bc1d0f6efa2d78a2280a094e60",
+  "head": "8e9ed4ea856b9a3d01953e885562be059e12edf0",
   "phase": "acceptance",
   "status": "active",
-  "next": "Install the independently reviewed 5x VNC wheel HAP on 40123 and obtain user acceptance.",
+  "next": "Install the independently reviewed 1.1.3 VNC 10x wheel HAP on 40123 and obtain user acceptance.",
   "blockers": [],
   "planPaths": [
     "docs/codex/plans/2026-08-27-vnc-cursor-wheel-regression.md"
@@ -16,7 +16,7 @@
     "taskIds": [
       "/root/vnc_wheel_review"
     ],
-    "reviewedHead": "dfb74ded6c7d45bc1d0f6efa2d78a2280a094e60",
+    "reviewedHead": "8e9ed4ea856b9a3d01953e885562be059e12edf0",
     "scope": [
       "entry/src/main/ets/services/RemoteWheelPolicy.ets",
       "entry/src/main/ets/services/VncPhysicalWheelPolicy.ets",
@@ -40,17 +40,17 @@
       "entry/src/test/VncPhysicalWheelPolicy.test.ets",
       "entry/src/test/VncSessionUiPolicy.test.ets"
     ],
-    "lastReceiptId": "vnc-cursor-wheel-regression-dfb74ded-2026-08-28",
+    "lastReceiptId": "vnc-cursor-wheel-regression-8e9ed4ea-2026-08-28",
     "findings": [],
-    "reason": "The same independent reviewer verified the VNC-only 5x final-boundary gain across virtual touchpad, physical touchpad and physical mouse with P0/P1/P2/P3 all zero."
+    "reason": "The same independent reviewer verified the 1.1.3 VNC-only 10x final-boundary gain, corrected SBOM provenance and direct 80-step native wire coverage with P0/P1/P2/P3 all zero."
   },
   "lastVerification": {
     "baseline": "clean synchronized main@0b8e5bf60",
-    "testCompile": "PASS post-receipt exact default@OhosTestCompileArkTS 9s927ms",
-    "assembleHap": "PASS post-receipt exact signed assembleHap 32s460ms sha256=d3ebd1f5b57e8cb447e4f4c697f091bab07fd17ffcef689bdf30bd0a866e5ca5",
-    "targetedTests": "PASS host native 813/813 including 40-step five-times mouse burst; ArkTS tests cover virtual, physical touchpad and physical mouse output gain",
-    "compliance": "PASS git diff --check and Light",
-    "review": "PASS /root/vnc_wheel_review P0/P1/P2/P3 all zero at dfb74ded6"
+    "testCompile": "PASS exact default@OhosTestCompileArkTS 1m6s939ms",
+    "assembleHap": "PASS exact signed assembleHap 1m20s803ms",
+    "targetedTests": "PASS direct 80-step VNC native wire case; full host native 797/813 with 16 known TLS fixture.start environment failures matching baseline",
+    "compliance": "PASS git diff --check, SBOM integrity checks and Light",
+    "review": "PASS /root/vnc_wheel_review P0/P1/P2/P3 all zero at 8e9ed4ea8"
   },
   "updated": "2026-08-28 Asia/Shanghai"
 }

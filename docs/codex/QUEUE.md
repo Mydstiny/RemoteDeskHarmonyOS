@@ -4,7 +4,7 @@ Updated: 2026-08-28 Asia/Shanghai
 
 ## Now
 
-1. Install reviewed 5x VNC wheel checkpoint `dfb74ded6` on `192.168.3.236:40123`.
+1. Install reviewed 1.1.3 10x VNC wheel checkpoint `8e9ed4ea8` on `192.168.3.236:40123`.
 2. Capture user acceptance for all three VNC wheel input sources.
 
 ## Next
