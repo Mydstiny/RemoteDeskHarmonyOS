@@ -293,6 +293,7 @@ export default function moonlightSettingsLocalServiceTest(): void {
         expect(port.rows[0].syncVersion).assertEqual(6);
         expect(port.rows[1].deletedAt > 0).assertTrue();
         expect(port.rows[1].syncVersion).assertEqual(6);
+        expect(service.load().code).assertEqual('ok');
       });
 
     it('converges_live_legacy_settings_aliases_in_the_same_atomic_save', 0,
@@ -309,13 +310,16 @@ export default function moonlightSettingsLocalServiceTest(): void {
         port.rows.push(older);
         port.rows.push(newer);
 
-        const saved = new MoonlightSettingsLocalService(port).save(
+        const service = new MoonlightSettingsLocalService(port);
+        const saved = service.save(
           defaultMoonlightSettings(), 1000);
         expect(saved.ok).assertTrue();
         expect(port.rows[0].deletedAt > 0).assertTrue();
         expect(port.rows[0].syncVersion).assertEqual(2);
         expect(port.rows[1].deletedAt).assertEqual(0);
+        expect(port.rows[1].resetEpoch).assertEqual(1);
         expect(port.rows[1].syncVersion).assertEqual(5);
+        expect(service.load().code).assertEqual('ok');
       });
   });
 }

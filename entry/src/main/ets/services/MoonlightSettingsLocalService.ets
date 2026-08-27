@@ -153,6 +153,17 @@ export class MoonlightSettingsLocalService {
       this.repository.loadAll(captured, true);
     if (records === null) { return result(false, 'read_failed', normalized); }
     const current: MoonlightRecord | null = currentSettingsRecord(records, captured.ownerScopeId);
+    let hasLiveAlias: boolean = false;
+    const canonicalId: string = settingsRecordId(captured.ownerScopeId);
+    for (let i = 0; i < records.length; i++) {
+      if (records[i].recordType === 'settings' &&
+          records[i].ownerId === captured.ownerScopeId &&
+          records[i].id !== (current === null ? canonicalId : current.id) &&
+          records[i].deletedAt === 0) {
+        hasLiveAlias = true;
+        break;
+      }
+    }
     const nextVersion: number = current === null ? 1 : current.syncVersion + 1;
     if (!Number.isSafeInteger(nextVersion) || nextVersion < 1) {
       return result(false, 'version_exhausted', normalized);
@@ -179,7 +190,8 @@ export class MoonlightSettingsLocalService {
     record.ownerId = captured.ownerScopeId;
     record.ownerType = 'account';
     record.payload = payload.canonical;
-    record.resetEpoch = current !== null && current.deletedAt > 0 ?
+    record.resetEpoch = current !== null &&
+      (current.deletedAt > 0 || hasLiveAlias) ?
       current.resetEpoch + 1 : current === null ? 0 : current.resetEpoch;
     if (!Number.isSafeInteger(record.resetEpoch) || record.resetEpoch < 0) {
       return result(false, 'version_exhausted', normalized);

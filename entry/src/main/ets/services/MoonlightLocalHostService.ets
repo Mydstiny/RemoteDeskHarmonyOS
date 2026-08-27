@@ -677,10 +677,15 @@ export class MoonlightLocalHostService {
       ];
       let aliasOffset: number = 1;
       for (let i = 0; i < records.length; i++) {
+        const duplicateHostOrOwned: boolean =
+          (duplicateHostIds.indexOf(records[i].id) >= 0 &&
+            records[i].id !== hostId) ||
+          (duplicateHostIds.indexOf(records[i].ownerId) >= 0 &&
+            records[i].ownerId !== hostId);
+        const trustAlias: boolean = records[i].recordType === 'trust' &&
+          records[i].ownerId === hostId && records[i].id !== trustRecordId;
         if (records[i].deletedAt > 0 ||
-            (duplicateHostIds.indexOf(records[i].id) < 0 &&
-             duplicateHostIds.indexOf(records[i].ownerId) < 0) ||
-            (records[i].id === hostId || records[i].ownerId === hostId)) {
+            (!duplicateHostOrOwned && !trustAlias)) {
           continue;
         }
         graphMutations.push({

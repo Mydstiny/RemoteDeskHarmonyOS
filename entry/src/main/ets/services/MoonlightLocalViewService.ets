@@ -107,6 +107,20 @@ function trustFingerprintFromRecord(record: MoonlightRecord,
   return /^[0-9a-f]{64}$/.test(fingerprint) ? fingerprint : '';
 }
 
+function trustRecordIsPreferred(candidate: MoonlightRecord,
+  current: MoonlightRecord): boolean {
+  if (candidate.resetEpoch !== current.resetEpoch) {
+    return candidate.resetEpoch > current.resetEpoch;
+  }
+  if (candidate.syncVersion !== current.syncVersion) {
+    return candidate.syncVersion > current.syncVersion;
+  }
+  if (candidate.updatedAt !== current.updatedAt) {
+    return candidate.updatedAt > current.updatedAt;
+  }
+  return candidate.id < current.id;
+}
+
 export class MoonlightLocalViewService {
   private readonly port: CloudStore;
   private readonly repository: MoonlightRepository;
@@ -128,6 +142,7 @@ export class MoonlightLocalViewService {
     let updatedAt: number = 0;
     let paired: boolean = false;
     let serverCertificateSha256: string = '';
+    let selectedTrust: MoonlightRecord | null = null;
     const profiles: MoonlightProfile[] = [];
     for (let i = 0; i < records.length; i++) {
       const record: MoonlightRecord = records[i];
@@ -143,12 +158,13 @@ export class MoonlightLocalViewService {
     for (let i = 0; i < records.length; i++) {
       const fingerprint: string = trustFingerprintFromRecord(
         records[i], hostId, host.serverUuid);
-      if (fingerprint !== '') {
-        paired = true;
+      if (fingerprint !== '' && (selectedTrust === null ||
+          trustRecordIsPreferred(records[i], selectedTrust))) {
+        selectedTrust = records[i];
         serverCertificateSha256 = fingerprint;
-        break;
       }
     }
+    paired = selectedTrust !== null;
     const cacheResult: MoonlightAppCacheResult = this.cache.loadSnapshot(captured, hostId);
     if (!cacheResult.ok) {
       return {
@@ -195,6 +211,7 @@ export class MoonlightLocalViewService {
       const hostCache: MoonlightAppCacheEntry[] = [];
       let paired: boolean = false;
       let serverCertificateSha256: string = '';
+      let selectedTrust: MoonlightRecord | null = null;
       for (let j = 0; j < records.length; j++) {
         if (records[j].recordType === 'profile' && records[j].ownerId === host.id) {
           const profile: MoonlightProfile | null = profileFromRecord(records[j]);
@@ -202,12 +219,14 @@ export class MoonlightLocalViewService {
         } else if (records[j].recordType === 'trust' && records[j].ownerId === host.id) {
           const fingerprint: string = trustFingerprintFromRecord(
             records[j], host.id, host.serverUuid);
-          if (fingerprint !== '') {
-            paired = true;
+          if (fingerprint !== '' && (selectedTrust === null ||
+              trustRecordIsPreferred(records[j], selectedTrust))) {
+            selectedTrust = records[j];
             serverCertificateSha256 = fingerprint;
           }
         }
       }
+      paired = selectedTrust !== null;
       for (let j = 0; j < cacheEntries.length; j++) {
         if (cacheEntries[j].hostId === host.id) { hostCache.push(cacheEntries[j]); }
       }

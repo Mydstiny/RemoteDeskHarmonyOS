@@ -24,6 +24,8 @@ import { MoonlightHostContext } from '../main/ets/services/MoonlightHostService'
 import { moonlightHostFromRecord } from '../main/ets/services/MoonlightLocalViewService';
 import { moonlightRuntimeContext } from
   '../main/ets/services/MoonlightRuntimeContextFactory';
+import { moonlightRecordPayloadHashSha256 } from
+  '../main/ets/services/MoonlightRecordPolicy';
 
 function testLease(): AccountSessionLease {
   return {
@@ -564,6 +566,35 @@ export default function moonlightLocalHostServiceTest(): void {
         expect(repaired.hostId).assertEqual(initial.hostId);
         const retiredAlias: MoonlightRecord = port.rows.get(
           port.active.ownerScopeId + ':' + alias.id) as MoonlightRecord;
+        expect(retiredAlias.deletedAt > 0).assertTrue();
+      });
+
+    it('keeps_one_canonical_trust_and_tombstones_live_trust_aliases', 0,
+      (): void => {
+        const port = new MemoryMoonlightHostPort();
+        const state: MoonlightHostAddState = readyAddState();
+        state.activeOperation = 'save';
+        const service = new MoonlightLocalHostService(port, port);
+        const initial = service.save(state, saveKey(state), 1000);
+        expect(initial.ok).assertTrue();
+        const canonicalKey: string = port.active.ownerScopeId + ':' +
+          initial.trustRecordId;
+        const alias: MoonlightRecord = MoonlightRecord.fromJSON(
+          (port.rows.get(canonicalKey) as MoonlightRecord).toJSON());
+        alias.id = 'moonlight-trust|legacy-live-alias';
+        alias.payloadHashSha256 = moonlightRecordPayloadHashSha256(alias);
+        port.rows.set(port.active.ownerScopeId + ':' + alias.id, alias);
+        port.localOnly.set(port.active.ownerScopeId + ':' + alias.id, 1);
+
+        const repairedState: MoonlightHostAddState = readyAddState();
+        repairedState.activeOperation = 'save';
+        const repaired = service.save(
+          repairedState, saveKey(repairedState), 2000);
+        expect(repaired.ok).assertTrue();
+        const canonical: MoonlightRecord = port.rows.get(canonicalKey) as MoonlightRecord;
+        const retiredAlias: MoonlightRecord = port.rows.get(
+          port.active.ownerScopeId + ':' + alias.id) as MoonlightRecord;
+        expect(canonical.deletedAt).assertEqual(0);
         expect(retiredAlias.deletedAt > 0).assertTrue();
       });
 

@@ -393,7 +393,8 @@ import {
   moonlightRecordTypeIsPublicCloudData,
   moonlightCloudSelectionMutationAllowed,
   newMoonlightCloudDeletionCheckpoint,
-  parseMoonlightCloudDeletionCheckpoint
+  parseMoonlightCloudDeletionCheckpoint,
+  recoverMoonlightCloudDeletionCheckpoint
 } from './MoonlightCloudDeletionPolicy';
 import {
   MoonlightDeletionCommandPort,
@@ -4395,11 +4396,12 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
     }
     this.setAutomaticPushSuppressed(true);
     this.localRestoreActive = true;
+    let transactionCommitted: boolean = false;
+    let changed: number = 0;
+    let moonlightRestoreChanged: boolean = false;
     try {
       this.store.beginTransaction();
-      let changed: number = 0;
       let cloudQuarantineChanged: number = 0;
-      let moonlightRestoreChanged: boolean = false;
       for (let i = 0; i < plan.presentTables.length; i++) {
         const table: string = plan.presentTables[i];
         if (TABLES.indexOf(table) < 0 ||
@@ -4496,16 +4498,32 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
           'portable restore quarantine marker failed');
       }
       this.store.commit();
-      if (moonlightRestoreChanged) {
-        this.syncSelection.setRuntimeTableAvailable(
-          MOONLIGHT_CLOUD_TABLE, false);
+      transactionCommitted = true;
+      // The durable RDB commit is the operation truth. Runtime selection,
+      // notification, and logging are post-commit conveniences and must never
+      // turn a successful restore into a reported rollback/failure.
+      try {
+        if (moonlightRestoreChanged) {
+          this.syncSelection.setRuntimeTableAvailable(
+            MOONLIGHT_CLOUD_TABLE, false);
+        }
+        this.notifyDataSnapshotChanged();
+        hilog.info(0x0001, 'CloudSync',
+          'portable backup merged rows=' + changed.toString() +
+          ' quarantined=' + plan.quarantinedRows.toString());
+      } catch (postCommitError) {
+        hilog.warn(0x0001, 'CloudSync',
+          'portable backup committed; post-commit refresh deferred err=' +
+          safeError(postCommitError));
       }
-      this.notifyDataSnapshotChanged();
-      hilog.info(0x0001, 'CloudSync',
-        'portable backup merged rows=' + changed.toString() +
-        ' quarantined=' + plan.quarantinedRows.toString());
       return true;
     } catch (err) {
+      if (transactionCommitted) {
+        hilog.warn(0x0001, 'CloudSync',
+          'portable backup already committed; deferred refresh err=' +
+          safeError(err));
+        return true;
+      }
       let rollbackFailed: boolean = false;
       try {
         this.store.rollBack();
@@ -13630,7 +13648,7 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
     const now: number = Date.now();
     const bucket: relationalStore.ValuesBucket = {
       id: 'moonlight-runtime-v1:' + lease.ownerScopeId + ':' +
-        recordId + ':' + now.toString(),
+        recordId + ':' + reason,
       migrationid: 'moonlight-runtime-v1',
       tablename: MOONLIGHT_LOCAL_TABLE,
       recordid: recordId,
@@ -13639,6 +13657,9 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
       // Runtime quarantine is deliberately redacted. Untrusted payload and
       // ciphertext are never copied into a second persistence surface.
       payloadciphertext: '',
+      // ON_CONFLICT_REPLACE plus the stable owner/record/reason identity keeps
+      // repeated reads of one permanently damaged row bounded to one redacted
+      // diagnostic entry instead of growing the table on every UI refresh.
       redactedsummary: 'Moonlight record rejected; current local row preserved',
       createdat: now
     };
@@ -13802,7 +13823,7 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
   private recoverMalformedMoonlightCloudDeletionCheckpoint(
     lease: AccountSessionLease
   ): void {
-    if (!this.isLeaseCurrent(lease)) { return; }
+    if (!this.store || !this.isLeaseCurrent(lease)) { return; }
     const metadata: CloudMetadataReadResult =
       this.readLocalMetadataState(
         MOONLIGHT_CLOUD_DELETION_CHECKPOINT_KEY);
@@ -13810,18 +13831,47 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
         parseMoonlightCloudDeletionCheckpoint(metadata.value) !== null) {
       return;
     }
-    // An unreadable checkpoint cannot be resumed. Preserve a bounded local
-    // diagnostic copy, then remove only the broken boundary so legacy data
-    // cannot disable Moonlight cloud convergence forever.
+    const nowMs: number = Date.now();
+    const recovered: MoonlightCloudDeletionCheckpoint | null =
+      recoverMoonlightCloudDeletionCheckpoint(
+        metadata.value, lease, nowMs);
+    if (recovered === null) { return; }
+    // Repair the active checkpoint rather than deleting it. The valid pending
+    // fence keeps local-to-cloud promotion closed, while ordinary local CRUD
+    // remains independent and the normal restart path can resume the upload.
     const quarantineKey: string =
-      MOONLIGHT_CLOUD_DELETION_CHECKPOINT_KEY + ':invalid:' +
-      Date.now().toString();
-    this.writeLocalMetadata(quarantineKey,
-      metadata.value.substring(0, 4096));
-    if (this.deleteLocalMetadata(
-      MOONLIGHT_CLOUD_DELETION_CHECKPOINT_KEY)) {
+      MOONLIGHT_CLOUD_DELETION_CHECKPOINT_KEY + ':invalid';
+    const recoveredEncoded: string =
+      encodeMoonlightCloudDeletionCheckpoint(recovered);
+    let transactionCommitted: boolean = false;
+    try {
+      this.store.beginTransaction();
+      if (!this.writeLocalMetadata(
+        quarantineKey, metadata.value.substring(0, 4096)) ||
+          recoveredEncoded === '' ||
+          !this.writeLocalMetadata(
+            MOONLIGHT_CLOUD_DELETION_CHECKPOINT_KEY,
+            recoveredEncoded)) {
+        throw new Error('Moonlight deletion checkpoint repair write failed');
+      }
+      this.store.commit();
+      transactionCommitted = true;
+      if (!this.localMetadataValueMatches(
+        MOONLIGHT_CLOUD_DELETION_CHECKPOINT_KEY, recoveredEncoded)) {
+        hilog.warn(0x0001, 'CloudSync',
+          '[CloudStore] repaired Moonlight deletion checkpoint awaits readback');
+        return;
+      }
       hilog.warn(0x0001, 'CloudSync',
-        '[CloudStore] quarantined an unreadable legacy Moonlight deletion checkpoint');
+        '[CloudStore] repaired an unreadable legacy Moonlight deletion checkpoint');
+      this.resumeMoonlightCloudDeletion(lease);
+    } catch (error) {
+      if (!transactionCommitted) {
+        try { this.store.rollBack(); } catch (_ignored) {}
+      }
+      hilog.warn(0x0001, 'CloudSync',
+        '[CloudStore] Moonlight deletion checkpoint repair deferred: ' +
+        safeError(error));
     }
   }
 
@@ -14225,6 +14275,17 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
         cloudTerminal: false
       };
     };
+    const pendingVerification = (
+      cloudAttempted: boolean
+    ): MoonlightDeletionMutationResult => {
+      return {
+        ok: true,
+        code: 'local_verification_pending',
+        localCommitted: true,
+        cloudAttempted,
+        cloudTerminal: false
+      };
+    };
     if (!this.store || !this.isLeaseCurrent(lease)) {
       return failure('stale_lease');
     }
@@ -14332,8 +14393,14 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
       }
       for (let i = 0; !cloudDeleteCommand && i < recordIds.length; i++) {
         const current: MoonlightRecord = requestRecords[i];
-        if (request.persistCloudDeletionIntent &&
-            moonlightRecordTypeIsPublicCloudData(current)) {
+        const deviceLocalDeletionBoundary: boolean =
+          (request.command === 'forget_host' ||
+           request.command === 'unpair_host') &&
+          (current.recordType === 'trust' ||
+           current.recordType === 'secret');
+        if ((request.persistCloudDeletionIntent &&
+             moonlightRecordTypeIsPublicCloudData(current)) ||
+            deviceLocalDeletionBoundary) {
           const tombstone: MoonlightRecord | null =
             moonlightLocalDeletionTombstone(current, request.nowMs);
           if (tombstone === null || !rdbInsertSucceeded(
@@ -14435,6 +14502,11 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
         deletionCheckpoint.equalTo(
           'key', MOONLIGHT_CLOUD_DELETION_CHECKPOINT_KEY);
         this.store.deleteSync(deletionCheckpoint);
+        const invalidDeletionCheckpoint = new relationalStore.RdbPredicates(
+          LOCAL_METADATA_TABLE);
+        invalidDeletionCheckpoint.equalTo(
+          'key', MOONLIGHT_CLOUD_DELETION_CHECKPOINT_KEY + ':invalid');
+        this.store.deleteSync(invalidDeletionCheckpoint);
       }
       if (!this.isLeaseCurrent(lease)) {
         throw new Error('Moonlight deletion lease changed');
@@ -14458,29 +14530,31 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
         }, 0);
         this.scheduleMoonlightDeletionCloudReconciliation(lease);
       }
+      if (checkpoint !== null) {
+        // A durable checkpoint owns recovery immediately after commit. Schedule
+        // it before optional readback so a provider exception cannot strand the
+        // deletion until the next app restart.
+        this.resumeMoonlightCloudDeletion(lease);
+      }
       if (cloudProjection !== null &&
           !this.verifyMoonlightCloudDeletionProjection(
             lease, cloudProjection)) {
-        return failure('write_failed', true);
+        return pendingVerification(checkpoint !== null);
       }
       if (!this.verifyMoonlightPreservedLocalRows(
         lease, preservedLocalRows)) {
-        return failure('write_failed', true);
+        return pendingVerification(checkpoint !== null);
       }
       if (!this.verifyMoonlightPreservedLocalRows(
         lease, stagedLocalTombstones)) {
-        return this.isLeaseCurrent(lease) ? {
-          ok: true,
-          code: 'local_verification_pending',
-          localCommitted: true,
-          cloudAttempted: false,
-          cloudTerminal: false
-        } : failure('stale_lease', true);
+        return this.isLeaseCurrent(lease) ?
+          pendingVerification(checkpoint !== null) :
+          failure('stale_lease', true);
       }
       if (checkpoint !== null &&
           !this.verifyMoonlightCloudDeletionCheckpoint(
             checkpoint)) {
-        return failure('write_failed', true);
+        return pendingVerification(true);
       }
       if (checkpoint !== null && checkpoint.phase === 'uploaded') {
         const completed: boolean =
@@ -14491,10 +14565,7 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
           localCommitted: true,
           cloudAttempted: false,
           cloudTerminal: true
-        } : failure('write_failed', true);
-      }
-      if (checkpoint !== null) {
-        this.resumeMoonlightCloudDeletion(lease);
+        } : pendingVerification(true);
       }
       if (stagedLocalTombstones.length === 0) {
         const notificationLease: AccountSessionLease =
@@ -14519,18 +14590,14 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
       }
       hilog.warn(0x0001, 'CloudSync',
         '[CloudStore] Moonlight local deletion failed: ' + safeError(error));
-      if (transactionCommitted && stagedLocalTombstones.length > 0 &&
-          this.isLeaseCurrent(lease)) {
+      if (transactionCommitted && this.isLeaseCurrent(lease)) {
         // A readback/provider exception after commit has the same meaning as
         // a negative verification result: the durable local delete stands,
         // and the already scheduled fenced reconciliation owns recovery.
-        return {
-          ok: true,
-          code: 'local_verification_pending',
-          localCommitted: true,
-          cloudAttempted: false,
-          cloudTerminal: false
-        };
+        if (checkpoint !== null) {
+          try { this.resumeMoonlightCloudDeletion(lease); } catch (_ignored) {}
+        }
+        return pendingVerification(checkpoint !== null);
       }
       return failure(this.isLeaseCurrent(lease) ?
         'write_failed' : 'stale_lease', transactionCommitted);

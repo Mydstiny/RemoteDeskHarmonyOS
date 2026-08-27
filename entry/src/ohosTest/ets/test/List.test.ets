@@ -97,6 +97,8 @@ import moonlightDataLifecycleBarrierTest from '../../../test/MoonlightDataLifecy
 import moonlightDeletionPolicyTest from '../../../test/MoonlightDeletionPolicy.test';
 import moonlightCloudDeletionPolicyTest from '../../../test/MoonlightCloudDeletionPolicy.test';
 import moonlightDeletionCommandServiceTest from '../../../test/MoonlightDeletionCommandService.test';
+import moonlightSettingsLocalServiceTest from '../../../test/MoonlightSettingsLocalService.test';
+import moonlightLocalHostServiceTest from '../../../test/MoonlightLocalHostService.test';
 import moonlightCloudStatusPolicyTest from '../../../test/MoonlightCloudStatusPolicy.test';
 import moonlightBackupPolicyTest from '../../../test/MoonlightBackupPolicy.test';
 import moonlightReconnectPolicyTest from '../../../test/MoonlightReconnectPolicy.test';
@@ -172,6 +174,8 @@ function registerFocusedRepairSuite(scope: string): number {
     moonlightDeletionPolicyTest();
     moonlightCloudDeletionPolicyTest();
     moonlightDeletionCommandServiceTest();
+    moonlightSettingsLocalServiceTest();
+    moonlightLocalHostServiceTest();
     moonlightCloudStatusPolicyTest();
     moonlightBackupPolicyTest();
     moonlightReconnectPolicyTest();
@@ -205,6 +209,7 @@ function focusedDescribeNames(scope: string): string[] {
       'MoonlightCloudSyncService', 'MoonlightDataLifecycleBarrier',
       'MoonlightDeletionPolicy', 'MoonlightCloudDeletionPolicy',
       'MoonlightDeletionCommandService',
+      'MoonlightSettingsLocalService', 'MoonlightLocalHostService',
       'MoonlightCloudStatusPolicy',
       'MoonlightBackupPolicy', 'MoonlightReconnectPolicy',
       'MoonlightRuntimeContextFactory', 'RemoteSessionServiceLeasePolicy',

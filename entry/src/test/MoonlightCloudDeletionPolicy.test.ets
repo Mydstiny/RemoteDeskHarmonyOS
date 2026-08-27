@@ -15,7 +15,8 @@ import {
   moonlightPreservedLocalAfterCloudDelete,
   moonlightCloudSelectionMutationAllowed,
   newMoonlightCloudDeletionCheckpoint,
-  parseMoonlightCloudDeletionCheckpoint
+  parseMoonlightCloudDeletionCheckpoint,
+  recoverMoonlightCloudDeletionCheckpoint
 } from '../main/ets/services/MoonlightCloudDeletionPolicy';
 import {
   resolveMoonlightRecordConflict
@@ -156,6 +157,18 @@ export default function moonlightCloudDeletionPolicyTest(): void {
         expect(decision.reason).assertEqual('tombstone_wins');
       });
 
+    it('builds_a_device_local_trust_tombstone_for_unpair_restore_fencing', 0,
+      (): void => {
+        const deleted: MoonlightRecord | null =
+          moonlightLocalDeletionTombstone(trustRecord(), 300);
+        expect(deleted === null).assertFalse();
+        expect(deleted?.recordType).assertEqual('trust');
+        expect(deleted?.payload).assertEqual('{}');
+        expect(deleted?.syncVersion).assertEqual(2);
+        expect(deleted?.deletedAt).assertEqual(300);
+        expect(moonlightValidateRecord(deleted!).valid).assertTrue();
+      });
+
     it('preserves_local_business_data_above_the_uploaded_delete_epoch', 0,
       (): void => {
         const local: MoonlightRecord = hostRecord('host-a', 4, 2, 240);
@@ -291,6 +304,27 @@ export default function moonlightCloudDeletionPolicyTest(): void {
         expect(moonlightCloudPromotionBlocked(
           true, pending,
           leaseForStore('owner-a', 'other-store.db'))).assertTrue();
+      });
+
+    it('repairs_a_malformed_checkpoint_into_a_resumable_promotion_fence', 0,
+      (): void => {
+        const targeted = recoverMoonlightCloudDeletionCheckpoint(
+          '{"command":"forget_host","deletedPhysicalRowCount":3,' +
+          '"createdAt":50}', lease(), 100)!;
+        expect(targeted.command).assertEqual('forget_host');
+        expect(targeted.phase).assertEqual('pending_upload');
+        expect(targeted.deletedPhysicalRowCount).assertEqual(3);
+        expect(targeted.disableSyncAfterUpload).assertFalse();
+        expect(moonlightCloudPromotionBlocked(
+          true, targeted, lease())).assertTrue();
+
+        const conservative = recoverMoonlightCloudDeletionCheckpoint(
+          '{truncated', lease(), 100)!;
+        expect(conservative.command).assertEqual('delete_cloud_data');
+        expect(conservative.disableSyncAfterUpload).assertTrue();
+        expect(conservative.deletedPhysicalRowCount).assertEqual(1);
+        expect(moonlightCloudPromotionBlocked(
+          true, conservative, lease())).assertTrue();
       });
   });
 }
