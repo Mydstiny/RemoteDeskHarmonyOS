@@ -1,17 +1,18 @@
-# Moonlight Cloud Delete Compatibility Queue
+# VNC Wheel Input Normalization Queue
 
 Updated: 2026-08-27 Asia/Shanghai
 
 ## Now
 
-1. Push `codex/moonlight-cloud-delete-compat` and open the PR.
-2. Wait for required remote checks and merge to `main`.
-3. Synchronize local `main` and clean the merged task branch.
+1. Create a precise verified checkpoint commit.
+2. Run the required independent review over the declared wheel-policy scope.
+3. Resolve any findings and repeat affected gates.
 
 ## Next
 
-1. Preserve the reviewed receipt and signed-HAP identity in task history.
+1. Finalize state/receipt and commit the reviewed result.
+2. Install the signed HAP when a HarmonyOS target is online.
 
 ## Later / external acceptance
 
-- Verify cross-device tombstone convergence with an actual Huawei Cloud Space account when available.
+- Compare HarmonyOS PC physical mouse and touchpad curves against Windows UltraVNC using the bounded `physical-wheel` diagnostics.

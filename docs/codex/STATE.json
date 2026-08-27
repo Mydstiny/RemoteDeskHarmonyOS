@@ -1,49 +1,41 @@
 {
   "schema": 1,
-  "task": "moonlight-cloud-delete-compat",
-  "branch": "codex/moonlight-cloud-delete-compat",
-  "base": "c0e0b5fdc",
-  "head": "b295ec7575a212aab322e45515c9c9a6af3c912b",
-  "phase": "reviewed",
+  "task": "vnc-wheel-input-normalization",
+  "branch": "codex/vnc-wheel-input-normalization",
+  "base": "928372c6c",
+  "head": "928372c6c3946c8f6377684aa3eb845c8aa5c1b3",
+  "phase": "review",
   "status": "active",
-  "next": "Push the reviewed branch, open and merge the PR after required remote checks, then synchronize local main.",
-  "blockers": [
-    "Device Hypium is unavailable because ohosTest@OhosTestCompileArkTS is absent (00306054); no runtime acceptance is claimed."
-  ],
+  "next": "Create the verified checkpoint commit and run independent review over the declared wheel-policy scope.",
+  "blockers": [],
   "planPaths": [
-    "docs/codex/plans/2026-08-27-moonlight-cloud-delete-compat.md"
+    "docs/codex/plans/2026-08-27-vnc-wheel-input-normalization.md"
   ],
   "review": {
-    "status": "PASS",
-    "taskIds": [
-      "/root/review_moonlight_delete"
-    ],
-    "reviewedHead": "b295ec7575a212aab322e45515c9c9a6af3c912b",
+    "status": "PENDING",
+    "taskIds": [],
+    "reviewedHead": "",
     "scope": [
-      "entry/src/main/ets/services/MoonlightDeletionCommandService.ets",
-      "entry/src/main/ets/services/MoonlightDeletionPolicy.ets",
-      "entry/src/main/ets/services/MoonlightCloudDeletionPolicy.ets",
-      "entry/src/main/ets/services/CloudStore.ets",
-      "entry/src/main/ets/pages/HostListPage.ets",
-      "entry/src/main/ets/pages/MoonlightHostDetailPage.ets",
-      "entry/src/main/ets/pages/MoonlightSettingsPage.ets",
-      "entry/src/main/ets/services/ReleaseNotesRegistry.ets",
-      "entry/src/test/MoonlightCloudDeletionPolicy.test.ets",
-      "entry/src/test/MoonlightCloudSyncService.test.ets",
-      "entry/src/test/MoonlightDeletionCommandService.test.ets",
-      "entry/src/test/MoonlightDeletionPolicy.test.ets"
+      "entry/src/main/ets/services/RemoteWheelPolicy.ets",
+      "entry/src/main/ets/services/VncPhysicalWheelPolicy.ets",
+      "entry/src/main/ets/pages/RemoteDesktop.ets",
+      "entry/src/test/VncPhysicalWheelPolicy.test.ets",
+      "entry/src/test/RemoteWheelPolicy.test.ets",
+      "entry/src/test/List.test.ets",
+      "entry/src/ohosTest/ets/test/List.test.ets",
+      "entry/src/ohosTest/ets/test/RemoteWheelPolicy.test.ets"
     ],
-    "lastReceiptId": "moonlight-cloud-delete-compat-b295ec75-2026-08-27",
+    "lastReceiptId": "",
     "findings": [],
-    "reason": "Independent read-only review found one P2 and one P3, both remediated and re-reviewed; final P0/P1/P2/P3 are zero."
+    "reason": "Implementation gates passed; a committed checkpoint is required before independent review."
   },
   "lastVerification": {
-    "baseline": "clean synchronized main@c0e0b5fdc",
-    "testCompile": "PASS exact clean-head default@OhosTestCompileArkTS BUILD SUCCESSFUL in 6 s 152 ms",
-    "assembleHap": "PASS exact clean-head signed assembleHap BUILD SUCCESSFUL in 13 s 195 ms; SHA-256 7e9446ce1b6577202561b525580aaba4b3d0c73ae2ab978a9d8596fdb1324c01",
-    "targetedTests": "Regression sources compile; device Hypium blocked by existing missing task 00306054",
-    "compliance": "PASS Light and git diff --check",
-    "review": "PASS /root/review_moonlight_delete P0/P1/P2/P3 zero after remediation"
+    "baseline": "clean synchronized main@928372c6c",
+    "testCompile": "PASS: default@OhosTestCompileArkTS BUILD SUCCESSFUL in 27 s 289 ms",
+    "assembleHap": "PASS: signed assembleHap BUILD SUCCESSFUL in 17 s 319 ms; SHA-256 b873c530743e17336ea3283ac4899e7e9ca074f63a6c7db23483f2b0c2680339",
+    "targetedTests": "Policy suites compiled and registered in both runners; ohosTest task unavailable with existing 00306054 and no HDC target online",
+    "compliance": "PASS: git diff --check and open-source Light",
+    "review": "PENDING"
   },
   "updated": "2026-08-27 Asia/Shanghai"
 }
