@@ -4,7 +4,7 @@
 
 - Task: `moonlight-crud-compatibility`
 - Branch/base: `codex/moonlight-crud-compatibility` from synchronized `main@a773346f6`.
-- Phase: implementation checkpoint ready; independent review pending.
+- Phase: independent review in progress for checkpoint `9e800bc5`.
 - Plan: `docs/codex/plans/2026-08-27-moonlight-crud-compatibility.md`
 
 ## Objective
@@ -42,10 +42,9 @@
 
 ## Next
 
-1. Commit the implementation checkpoint.
-2. Request one independent sub-agent review of the committed delta.
-3. Remediate any findings and rerun all required gates.
-4. Complete branch/PR/main closure after review PASS.
+1. Await `/root/review_moonlight_crud_compat` review of `a773346f6..9e800bc5`.
+2. Remediate any findings and rerun all required gates.
+3. Complete branch/PR/main closure after review PASS.
 
 ## Blockers
 
