@@ -3,10 +3,10 @@
   "task": "secret-visibility-policy",
   "branch": "codex/secret-visibility-policy",
   "base": "f3b41e5a6c6ffd7f4e3bc45941877d0ff81d1055",
-  "head": "0c0f0d9934e47897184c171f66805eb7241d2e35",
+  "head": "b3a6e5e749173a3b75d7ef056f1052ca52cafe47",
   "phase": "remediation",
   "status": "active",
-  "next": "Commit the verified second remediation, obtain a clean follow-up from the same reviewer and rerun the final exact gates.",
+  "next": "Commit the verified third remediation, obtain a clean follow-up from the same reviewer and rerun the final exact gates.",
   "blockers": [
     "The optional ohosTest@OhosTestCompileArkTS task is not registered (00306054), so no device-side Hypium execution is claimed."
   ],
@@ -25,10 +25,12 @@
       "entry/src/main/ets/model/RdpCredential.ets",
       "entry/src/main/ets/model/RemoteHost.ets",
       "entry/src/main/ets/pages/HostListPage.ets",
+      "entry/src/main/ets/pages/RemoteDesktop.ets",
       "entry/src/main/ets/pages/VncSettingsPage.ets",
       "entry/src/main/ets/services/CloudStore.ets",
       "entry/src/main/ets/services/CloudSyncSettingsPolicy.ets",
       "entry/src/main/ets/services/HostSyncService.ets",
+      "entry/src/main/ets/services/RustDeskAuthDraftStore.ets",
       "entry/src/main/ets/services/SecretEditMutationPolicy.ets",
       "entry/src/main/ets/services/SecretPresentationPolicy.ets",
       "entry/src/main/ets/services/SettingsSheetRoutePolicy.ets",
@@ -36,7 +38,9 @@
       "entry/src/main/ets/services/VncSecretEditPolicy.ets",
       "entry/src/test/CloudSyncSettingsPolicy.test.ets",
       "entry/src/test/List.test.ets",
+      "entry/src/test/HostSyncService.test.ets",
       "entry/src/test/LocalUnit.test.ets",
+      "entry/src/test/RustDeskPeerTwoFactorPolicy.test.ets",
       "entry/src/test/SecretEditMutationPolicy.test.ets",
       "entry/src/test/SecretPresentationPolicy.test.ets",
       "entry/src/test/SettingsSheetRoutePolicy.test.ets",
@@ -52,17 +56,19 @@
       "P1 follow-up: VNC password preservation and handoff were not bound to the original endpoint",
       "P1 follow-up: RustDesk one-time/permanent password mode was absent from the binding",
       "P2 follow-up: visible VNC manual clear could retain the old saved secret",
-      "P2 follow-up: runtime configured markers were lost by HostSync/UI snapshot clones"
+      "P2 follow-up: runtime configured markers were lost by HostSync/UI snapshot clones",
+      "P2 third review: configured markers were not reset after secret removal or authentication changes",
+      "P2 third review: RustDesk Pro draft mode invalidation was lost across background restore"
     ],
-    "reason": "Two independent-review rounds found four P1 and five P2 issues in total. All nine are remediated and compile/package/compliance checks pass; a clean confirmation by the same reviewer is pending."
+    "reason": "Three independent-review rounds found four P1 and seven P2 issues in total. All eleven are remediated and compile/package/compliance checks pass; a clean confirmation by the same reviewer is pending."
   },
   "lastVerification": {
     "baseline": "clean synchronized main@f3b41e5a6",
-    "testCompile": "PASS: default@OhosTestCompileArkTS, BUILD SUCCESSFUL in 22 s 290 ms",
-    "assembleHap": "PASS: signed HAP, BUILD SUCCESSFUL in 29 s 973 ms",
+    "testCompile": "PASS: default@OhosTestCompileArkTS, BUILD SUCCESSFUL in 20 s 406 ms",
+    "assembleHap": "PASS: signed HAP, BUILD SUCCESSFUL in 28 s 281 ms",
     "targetedTests": "REGISTERED_AND_COMPILED; optional ohosTest@OhosTestCompileArkTS unavailable with 00306054; no device execution claimed",
     "compliance": "PASS: Light open-source compliance",
-    "review": "FOLLOW_UP_NOT_PASS: cumulative 4 P1 and 5 P2 findings remediated; same-reviewer clean follow-up pending",
+    "review": "FOLLOW_UP_NOT_PASS: cumulative 4 P1 and 7 P2 findings remediated; same-reviewer clean follow-up pending",
     "deviceAcceptance": "PENDING"
   },
   "updated": "2026-08-28 Asia/Shanghai"

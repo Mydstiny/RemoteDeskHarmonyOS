@@ -59,6 +59,11 @@ export class RdpCredential {
     return credential;
   }
 
+  /** Process-only state used to detect encrypted-secret presence changes. */
+  runtimeSecretStateSignature(): string {
+    return this.passwordConfigured || this.password.length > 0 ? '1' : '0';
+  }
+
   static generateId(): string {
     const rand = cryptoFramework.createRandom();
     const blob = rand.generateRandomSync(6);

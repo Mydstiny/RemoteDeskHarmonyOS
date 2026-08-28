@@ -356,9 +356,13 @@ export class HostSyncService {
     const hosts: string[] = [];
     const credentials: string[] = [];
     const relays: string[] = [];
-    this.hosts.forEach((host: RemoteHost): void => { hosts.push(JSON.stringify(host.toJSON())); });
+    this.hosts.forEach((host: RemoteHost): void => {
+      hosts.push(JSON.stringify(host.toJSON()) + '\n--runtime-secrets--\n' +
+        host.runtimeSecretStateSignature());
+    });
     this.rdpCredentials.forEach((credential: RdpCredential): void => {
-      credentials.push(JSON.stringify(credential.toJSON()));
+      credentials.push(JSON.stringify(credential.toJSON()) + '\n--runtime-secrets--\n' +
+        credential.runtimeSecretStateSignature());
     });
     this.relays.forEach((relay: RustDeskRelayConfig): void => { relays.push(JSON.stringify(relay.toJSON())); });
     hosts.sort();
@@ -655,7 +659,11 @@ export class HostSyncService {
         rustDeskRelayIdFingerprint(host.id));
       return false;
     }
-    if (!serializedSnapshotChanged(JSON.stringify(current.toJSON()), JSON.stringify(host.toJSON()))) {
+    const currentSnapshot: string = JSON.stringify(current.toJSON()) + '\n--runtime-secrets--\n' +
+      current.runtimeSecretStateSignature();
+    const nextSnapshot: string = JSON.stringify(host.toJSON()) + '\n--runtime-secrets--\n' +
+      host.runtimeSecretStateSignature();
+    if (!serializedSnapshotChanged(currentSnapshot, nextSnapshot)) {
       hilog.info(0x0001, 'CloudSync',
         'HostSyncService.updateHost: unchanged host skipped hostId=' +
         rustDeskRelayIdFingerprint(host.id));
@@ -682,7 +690,12 @@ export class HostSyncService {
     }
     this.localHostConfigObservationAt.set(host.id, observedAt);
     this.deletedHostAt.delete(host.id);
-    const cloudBaseChanged: boolean = remoteHostCloudBaseChanged(current, host);
+    // Presence-only changes occur when an encrypted value is intentionally
+    // cleared while its plaintext is unavailable. They must use the full
+    // sensitive write path (and its unlock gate), not a personalization-only
+    // update that would leave the encrypted column untouched.
+    const cloudBaseChanged: boolean = remoteHostCloudBaseChanged(current, host) ||
+      current.runtimeSecretStateSignature() !== host.runtimeSecretStateSignature();
     if (this.ready) {
       const ok: boolean = nextLocalOnly ? this.cloud.updateDynamicLanHost(host) :
         (cloudBaseChanged ? this.cloud.updateHost(host) :

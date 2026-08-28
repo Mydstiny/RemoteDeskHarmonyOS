@@ -85,6 +85,16 @@ export default function localUnitTest() {
       expect(clone.passwordConfigured).assertTrue();
       expect(clone.sshKeyDataConfigured).assertTrue();
       expect(clone.sshKeyPassphraseConfigured).assertTrue();
+      expect(clone.runtimeSecretStateSignature()).assertEqual('1|1|1');
+
+      host.passwordConfigured = false;
+      host.sshKeyDataConfigured = false;
+      host.sshKeyPassphraseConfigured = false;
+      const clearedClone: RemoteHost = host.runtimeClone();
+      expect(clearedClone.passwordConfigured).assertFalse();
+      expect(clearedClone.sshKeyDataConfigured).assertFalse();
+      expect(clearedClone.sshKeyPassphraseConfigured).assertFalse();
+      expect(clearedClone.runtimeSecretStateSignature()).assertEqual('0|0|0');
 
       const credential = new RdpCredential();
       credential.passwordConfigured = true;
@@ -92,6 +102,9 @@ export default function localUnitTest() {
         credential.toJSON() as Record<string, Object>;
       expect(credentialJson['passwordConfigured']).assertUndefined();
       expect(credential.runtimeClone().passwordConfigured).assertTrue();
+      credential.passwordConfigured = false;
+      expect(credential.runtimeClone().passwordConfigured).assertFalse();
+      expect(credential.runtimeSecretStateSignature()).assertEqual('0');
     });
 
     it('RDP_default_port_should_be_3389', 0, () => {
@@ -105,9 +118,13 @@ export default function localUnitTest() {
       host.host = '192.0.2.10';
       host.username = '.\\localuser';
       host.rdpAuthMode = 'blank_password';
+      host.passwordConfigured = true;
+      host.password = 'must-clear';
+      host.normalizeRdpAuthentication();
 
       expect(host.getValidationErrors().length).assertEqual(0);
       expect(host.isValid()).assertTrue();
+      expect(host.passwordConfigured).assertFalse();
     });
 
     it('RDP_restricted_admin_should_clear_ordinary_credentials', 0, () => {

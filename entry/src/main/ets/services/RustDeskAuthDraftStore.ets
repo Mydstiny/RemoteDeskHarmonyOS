@@ -7,6 +7,8 @@ export interface RustDeskAuthDraft {
   authChoice: RustDeskAuthDraftChoice
   password: string
   passwordMode: number
+  /** Explicitly preserves the stored secret; false survives mode changes/background restore. */
+  keepsStoredPassword: boolean
   rememberPassword: boolean
   updatedAt: number
 }
@@ -29,6 +31,7 @@ function cloneDraft(draft: RustDeskAuthDraft): RustDeskAuthDraft {
     authChoice: draft.authChoice,
     password: draft.password,
     passwordMode: draft.passwordMode,
+    keepsStoredPassword: draft.keepsStoredPassword,
     rememberPassword: draft.rememberPassword,
     updatedAt: draft.updatedAt
   };
@@ -66,6 +69,7 @@ export class RustDeskAuthDraftStore {
     next.authChoice = draft.authChoice === 'request_approval' ?
       'request_approval' : 'password';
     next.passwordMode = draft.passwordMode === 1 ? 1 : 0;
+    next.keepsStoredPassword = draft.keepsStoredPassword === true;
     next.updatedAt = Date.now();
     this.drafts.set(draftKey(ownerScopeId, next.accountGeneration, hostId), next);
     return true;

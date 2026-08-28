@@ -686,21 +686,33 @@ export default function rustDeskPeerTwoFactorPolicyTest(): void {
       expect(drafts.save({
         ownerScopeId: 'owner-a', accountGeneration: 3, hostId: 'draft-host',
         authChoice: 'password', password: 'temporary-secret', passwordMode: 1,
+        keepsStoredPassword: false,
         rememberPassword: false, updatedAt: 0
       })).assertTrue();
       const sameScope = drafts.load('owner-a', 3, 'draft-host');
       expect(sameScope === null).assertFalse();
       if (sameScope !== null) {
         expect(sameScope.password).assertEqual('temporary-secret');
+        expect(sameScope.keepsStoredPassword).assertFalse();
         expect(sameScope.rememberPassword).assertFalse();
       }
       expect(drafts.load('owner-b', 3, 'draft-host') === null).assertTrue();
       expect(drafts.load('owner-a', 4, 'draft-host') === null).assertTrue();
+      expect(drafts.save({
+        ownerScopeId: 'owner-a', accountGeneration: 3, hostId: 'invalidated-host',
+        authChoice: 'password', password: '', passwordMode: 0,
+        keepsStoredPassword: false,
+        rememberPassword: true, updatedAt: 0
+      })).assertTrue();
+      const invalidated = drafts.load('owner-a', 3, 'invalidated-host');
+      expect(invalidated !== null && invalidated.passwordMode === 0).assertTrue();
+      expect(invalidated !== null && invalidated.keepsStoredPassword).assertFalse();
       drafts.clearHost('draft-host');
       expect(drafts.load('owner-a', 3, 'draft-host') === null).assertTrue();
       expect(drafts.save({
         ownerScopeId: 'owner-a', accountGeneration: 3, hostId: 'scope-transition-host',
         authChoice: 'password', password: 'must-be-cleared', passwordMode: 0,
+        keepsStoredPassword: false,
         rememberPassword: true, updatedAt: 0
       })).assertTrue();
       drafts.clearAll();

@@ -985,6 +985,8 @@ struct HostListPage {
   private rustDeskProTwoFactorAutoAttemptSessionId: number = -1;
   private rustDeskProDisconnectIdentity: NativeDisconnectIdentity | null = null;
   private rustDeskProPreflightGeneration: number = 0;
+  /** False is sticky across background restore after password-mode invalidation. */
+  private rustDeskProKeepsStoredPassword: boolean = false;
   // RustDesk preflight Sheet 退出动画完成前，不允许复用同一 bindSheet 宿主。
   private rustDeskProPreflightClosing: boolean = false;
   private rustDeskProPreflightClosingHostId: string = '';
@@ -8535,15 +8537,19 @@ struct HostListPage {
     this.rustDeskProAuthMode = host.rustdeskDirectEnabled ? 'password' :
       (draft !== null ? draft.authChoice :
         (host.rustdeskAuthMode === 'request_approval' ? 'request_approval' : 'password'));
-    const existingPassword: string = draft === null ? host.password : draft.password;
-    const draftKeepsStoredPasswordBinding: boolean = draft === null ||
-      draft.passwordMode === (host.rustdeskPasswordMode === 1 ? 1 : 0);
-    this.rustDeskProPasswordConfigured = existingPassword.length > 0 ||
-      (draftKeepsStoredPasswordBinding && host.passwordConfigured);
-    this.rustDeskProPassword = secretEditDraftValue(existingPassword,
-      this.secretEditorHidden('rustdesk_device_password'));
     this.rustDeskProPasswordMode = draft === null ?
       (host.rustdeskPasswordMode === 1 ? 1 : 0) : draft.passwordMode;
+    const hidden: boolean = this.secretEditorHidden('rustdesk_device_password');
+    const storedPasswordConfigured: boolean = host.password.length > 0 || host.passwordConfigured;
+    const draftMatchesStoredMode: boolean = this.rustDeskProPasswordMode ===
+      (host.rustdeskPasswordMode === 1 ? 1 : 0);
+    this.rustDeskProKeepsStoredPassword = draft === null ?
+      (hidden && storedPasswordConfigured) :
+      (draft.keepsStoredPassword && draftMatchesStoredMode);
+    this.rustDeskProPassword = draft === null ?
+      secretEditDraftValue(host.password, hidden) : draft.password;
+    this.rustDeskProPasswordConfigured = this.rustDeskProPassword.length > 0 ||
+      (this.rustDeskProKeepsStoredPassword && storedPasswordConfigured);
     this.rustDeskProPasswordVisible = false;
     this.rustDeskProRememberPassword = draft === null ? true : draft.rememberPassword;
     this.rustDeskProPreflightError = '';
@@ -8564,25 +8570,18 @@ struct HostListPage {
     const hostId: string = this.rustDeskProPreflightHostId.trim();
     if (hostId === '') { return; }
     const scope = AccountSessionCoordinator.getInstance().currentScope();
-    const previousDraft: RustDeskAuthDraft | null = this.rustDeskAuthDrafts.load(
-      scope.ownerScopeId, scope.generation, hostId);
-    const storedHost: RemoteHost | undefined = this.srv.getHost(hostId);
-    const previousPassword: string = previousDraft !== null ? previousDraft.password :
-      (storedHost === undefined ? '' : storedHost.password);
-    const previousPasswordMode: number = previousDraft !== null ? previousDraft.passwordMode :
-      (storedHost !== undefined && storedHost.rustdeskPasswordMode === 1 ? 1 : 0);
-    const keepsSamePasswordMode: boolean = previousPasswordMode ===
-      (this.rustDeskProPasswordMode === 1 ? 1 : 0);
-    const password: string = resolveSecretEditValue(previousPassword, this.rustDeskProPassword,
-      this.secretEditorHidden('rustdesk_device_password'), keepsSamePasswordMode);
+    if (this.rustDeskProPassword.length > 0) {
+      this.rustDeskProKeepsStoredPassword = false;
+    }
     this.rustDeskAuthDrafts.save({
       ownerScopeId: scope.ownerScopeId,
       accountGeneration: scope.generation,
       hostId,
       authChoice: this.rustDeskProAuthMode === 'request_approval' ?
         'request_approval' : 'password',
-      password,
+      password: this.rustDeskProPassword,
       passwordMode: this.rustDeskProPasswordMode === 1 ? 1 : 0,
+      keepsStoredPassword: this.rustDeskProKeepsStoredPassword,
       rememberPassword: this.rustDeskProRememberPassword,
       updatedAt: Date.now()
     });
@@ -9104,18 +9103,16 @@ struct HostListPage {
     const scopeBeforeConnect = AccountSessionCoordinator.getInstance().currentScope();
     const draftBeforeConnect: RustDeskAuthDraft | null = this.rustDeskAuthDrafts.load(
       scopeBeforeConnect.ownerScopeId, scopeBeforeConnect.generation, stored.id);
-    const previousPassword: string = draftBeforeConnect !== null ?
-      draftBeforeConnect.password : stored.password;
-    const previousPasswordMode: number = draftBeforeConnect !== null ?
-      draftBeforeConnect.passwordMode : (stored.rustdeskPasswordMode === 1 ? 1 : 0);
-    const keepsSamePasswordMode: boolean = previousPasswordMode ===
+    const keepsSamePasswordMode: boolean = (stored.rustdeskPasswordMode === 1 ? 1 : 0) ===
       (this.rustDeskProPasswordMode === 1 ? 1 : 0);
-    const passwordForConnection: string = resolveSecretEditValue(previousPassword,
-      this.rustDeskProPassword, this.secretEditorHidden('rustdesk_device_password'),
-      keepsSamePasswordMode);
-    if (this.rustDeskProAuthMode === 'password' && keepsSamePasswordMode &&
-      this.rustDeskProPasswordConfigured &&
-      previousPassword === '' && this.rustDeskProPassword === '') {
+    const keepsStoredPassword: boolean = draftBeforeConnect === null ?
+      this.rustDeskProKeepsStoredPassword : draftBeforeConnect.keepsStoredPassword;
+    const passwordForConnection: string = this.rustDeskProPassword.length > 0 ?
+      this.rustDeskProPassword :
+      (keepsStoredPassword && keepsSamePasswordMode ? stored.password : '');
+    if (this.rustDeskProAuthMode === 'password' && keepsStoredPassword &&
+      keepsSamePasswordMode && this.rustDeskProPasswordConfigured &&
+      stored.password === '' && this.rustDeskProPassword === '') {
       this.rustDeskProPreflightError = '设备密码仍在加密仓库中；请先解锁并重新打开连接面板。';
       return;
     }
@@ -9236,6 +9233,7 @@ struct HostListPage {
           } else {
             saved.password = '';
           }
+          saved.passwordConfigured = saved.password.length > 0;
           if (!this.srv.updateHost(saved)) {
             throw new Error('远端鉴权已通过，但设备密码保存失败；会话已安全停止，请重试。');
           }
@@ -18451,6 +18449,9 @@ struct HostListPage {
           .height(48).width('100%').backgroundColor(this.pal().surface).borderRadius(10)
           .onChange((value: string): void => {
             this.rustDeskProPassword = value;
+            if (value.length > 0) { this.rustDeskProKeepsStoredPassword = false; }
+            this.rustDeskProPasswordConfigured = value.length > 0 ||
+              this.rustDeskProKeepsStoredPassword;
             this.rustDeskProPreflightError = '';
             this.saveRustDeskProAuthDraft();
           })
@@ -18470,6 +18471,7 @@ struct HostListPage {
               if (this.rustDeskProPasswordMode !== 0) {
                 this.rustDeskProPassword = '';
                 this.rustDeskProPasswordConfigured = false;
+                this.rustDeskProKeepsStoredPassword = false;
               }
               this.rustDeskProPasswordMode = 0;
               this.saveRustDeskProAuthDraft();
@@ -18482,6 +18484,7 @@ struct HostListPage {
               if (this.rustDeskProPasswordMode !== 1) {
                 this.rustDeskProPassword = '';
                 this.rustDeskProPasswordConfigured = false;
+                this.rustDeskProKeepsStoredPassword = false;
               }
               this.rustDeskProPasswordMode = 1;
               this.saveRustDeskProAuthDraft();
@@ -19114,6 +19117,7 @@ struct HostListPage {
         this.sheetRdpAuthMode === 'password' && this.selectedRdpCredentialId === '' ? this.sheetPwd : '',
         this.secretEditorHidden('rdp_host_password'), keepsSamePasswordBinding);
       h.normalizeRdpAuthentication();
+      h.passwordConfigured = h.password.length > 0;
     } else if (this.proto === 'rustdesk') {
       const nextUsesPassword: boolean = this.sheetRustdeskDirectEnabled || this.sheetRustdeskAuthMode === 'password';
       const previousUsesPassword: boolean = existingHost !== undefined && existingHost.protocol === 'rustdesk' &&
@@ -19137,6 +19141,7 @@ struct HostListPage {
       }
       h.password = resolveSecretEditValue(existingPassword, nextUsesPassword ? this.sheetPwd : '',
         this.secretEditorHidden('rustdesk_device_password'), keepsSamePasswordBinding);
+      h.passwordConfigured = h.password.length > 0;
     } else {
       const keepsSshPasswordBinding: boolean = existingHost !== undefined &&
         existingHost.protocol === 'ssh' && !existingHost.sshUseKey && !this.sheetUseKey &&
@@ -19150,6 +19155,7 @@ struct HostListPage {
       }
       h.password = resolveSecretEditValue(existingPassword, this.sheetUseKey ? '' : this.sheetPwd,
         this.secretEditorHidden('ssh_host_password'), keepsSshPasswordBinding);
+      h.passwordConfigured = h.password.length > 0;
     }
     if (this.proto === 'ssh') {
       h.sshUseKey = this.sheetUseKey; h.sshKeyPath = this.sheetKeyPath;
@@ -19166,6 +19172,7 @@ struct HostListPage {
       }
       h.sshKeyData = keepsSameSshKey && existingHost !== undefined ?
         existingHost.sshKeyData : this.sheetKeyText;
+      h.sshKeyDataConfigured = h.sshKeyData.length > 0;
       const existingPassphraseConfigured: boolean = existingHost !== undefined &&
         (existingHost.sshKeyPassphrase.length > 0 || existingHost.sshKeyPassphraseConfigured);
       if (keepsSameSshKey && existingPassphraseConfigured && existingHost !== undefined &&
@@ -19177,6 +19184,7 @@ struct HostListPage {
         existingHost === undefined ? '' : existingHost.sshKeyPassphrase,
         this.sheetUseKey ? this.sheetKeyPassphrase : '',
         this.secretEditorHidden('ssh_key_passphrase'), keepsSameSshKey);
+      h.sshKeyPassphraseConfigured = h.sshKeyPassphrase.length > 0;
       const proxyBuild: SshProxyEditorBuildResult = buildSshProxyProfile(
         h.id, h.host, h.port, this.sheetSshProxyEditorValue);
       if (!proxyBuild.valid || proxyBuild.profile === null) {
@@ -19410,6 +19418,7 @@ struct HostListPage {
     credential.password = resolveSecretEditValue(existing === undefined ? '' : existing.password,
       this.rdpCredPassword, this.secretEditorHidden('rdp_saved_credential'),
       keepsSameCredentialBinding);
+    credential.passwordConfigured = credential.password.length > 0;
     let saved: boolean = false;
     if (this.rdpCredEditId === '') {
       saved = this.srv.addRdpCredential(credential);
@@ -19498,6 +19507,7 @@ struct HostListPage {
   private clearRustDeskSavedPassword(host: RemoteHost): void {
     const updated: RemoteHost = host.runtimeClone();
     updated.password = '';
+    updated.passwordConfigured = false;
     if (this.srv.updateHost(updated)) {
       promptAction.showToast({ message: '已清除保存的 RustDesk 密码', duration: 1500 });
     } else {
@@ -19511,6 +19521,7 @@ struct HostListPage {
     const updated: RemoteHost = host.runtimeClone();
     updated.rustdeskAuthMode = 'password';
     updated.password = '';
+    updated.passwordConfigured = false;
     if (this.srv.updateHost(updated)) {
       promptAction.showToast({ message: '下次连接将重新询问认证方式', duration: 1500 });
     } else {

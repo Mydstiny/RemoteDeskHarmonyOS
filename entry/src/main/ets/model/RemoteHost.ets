@@ -818,6 +818,13 @@ export class RemoteHost implements LanHostAddressView {
     return host;
   }
 
+  /** Process-only state used to detect encrypted-secret presence changes. */
+  runtimeSecretStateSignature(): string {
+    return (this.passwordConfigured || this.password.length > 0 ? '1' : '0') + '|' +
+      (this.sshKeyDataConfigured || this.sshKeyData.length > 0 ? '1' : '0') + '|' +
+      (this.sshKeyPassphraseConfigured || this.sshKeyPassphrase.length > 0 ? '1' : '0');
+  }
+
   /** Enforces the mutually exclusive credential fields for the selected RDP mode. */
   normalizeRdpAuthentication(): void {
     this.rdpAuthMode = normalizeRdpAuthMode(this.rdpAuthMode);
@@ -830,6 +837,7 @@ export class RemoteHost implements LanHostAddressView {
     }
     if (this.rdpAuthMode === 'password') { return; }
     this.password = '';
+    this.passwordConfigured = false;
     this.rdpCredentialId = '';
   }
 

@@ -114,6 +114,17 @@ export default function hostSyncServiceTest() {
       srv.updateHost(host);
       expect(srv.getHostCount()).assertEqual(1);
     });
+
+    it('runtime_secret_presence_clear_should_not_be_skipped_as_unchanged', 0, () => {
+      const host = makeHost('LockedSecret', 'rustdesk', '10.0.0.8', 21116);
+      host.passwordConfigured = true;
+      srv.addHost(host);
+      const cleared: RemoteHost = host.runtimeClone();
+      cleared.passwordConfigured = false;
+      expect(srv.updateHost(cleared)).assertTrue();
+      const updated: RemoteHost | undefined = srv.getHost(host.id);
+      expect(updated !== undefined && updated.passwordConfigured).assertFalse();
+    });
   });
 
   describe('HostSyncService_workspace', () => {

@@ -2240,6 +2240,7 @@ struct RemoteDesktop {
       authChoice: this.rustDeskAuthChoice,
       password: this.rustDeskAuthPasswordInput,
       passwordMode: this.rustDeskAuthPasswordMode === 1 ? 1 : 0,
+      keepsStoredPassword: false,
       rememberPassword: this.rustDeskAuthRememberPassword,
       updatedAt: Date.now()
     });
@@ -3464,6 +3465,7 @@ struct RemoteDesktop {
       next.password = this.rustDeskSessionRememberPassword ?
         this.rustDeskSessionPassword : '';
     }
+    next.passwordConfigured = next.password.length > 0;
     if (this.srv.updateHost(next)) {
       this.clearRustDeskAuthDraft();
       hilog.info(RD_DOMAIN, RD_TAG, 'RustDesk auth choice persisted hostId=' +
@@ -11101,6 +11103,9 @@ struct RemoteDesktop {
             .backgroundColor(this.rustDeskAuthPasswordMode === 0 ? this.accentColor : this.pal().surface)
             .fontColor(this.rustDeskAuthPasswordMode === 0 ? Color.White : this.pal().text2)
             .onClick((): void => {
+              if (this.rustDeskAuthPasswordMode !== 0) {
+                this.rustDeskAuthPasswordInput = '';
+              }
               this.rustDeskAuthPasswordMode = 0;
               this.saveRustDeskAuthDraft();
             })
@@ -11108,6 +11113,9 @@ struct RemoteDesktop {
             .backgroundColor(this.rustDeskAuthPasswordMode === 1 ? this.accentColor : this.pal().surface)
             .fontColor(this.rustDeskAuthPasswordMode === 1 ? Color.White : this.pal().text2)
             .onClick((): void => {
+              if (this.rustDeskAuthPasswordMode !== 1) {
+                this.rustDeskAuthPasswordInput = '';
+              }
               this.rustDeskAuthPasswordMode = 1;
               this.saveRustDeskAuthDraft();
             })

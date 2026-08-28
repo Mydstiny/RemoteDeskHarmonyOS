@@ -4,7 +4,7 @@
 
 - Task: `secret-visibility-policy`
 - Branch/base: `codex/secret-visibility-policy` from synchronized `main@f3b41e5a6`.
-- Phase: review remediation verified; follow-up review pending.
+- Phase: third review remediation verified; follow-up review pending.
 - Plan: `docs/codex/plans/2026-08-28-secret-visibility-policy.md`
 
 ## Objective
@@ -52,6 +52,12 @@
   mode in both the classic editor and Pro preflight draft lifecycle.
 - Runtime-only configured markers now survive HostSync/UI snapshot cloning
   while remaining absent from model JSON, cloud rows and portable backup.
+- Clearing or rebinding a secret now resets its runtime configured marker;
+  marker-only changes participate in HostSync comparison and use the full
+  sensitive-write/unlock path instead of being mistaken for personalization.
+- RustDesk Pro drafts now carry an explicit stored-password-preservation bit.
+  A password invalidated by changing one-time/permanent mode stays invalid
+  after background restore, even if the user switches back to the old mode.
 - RustDesk Pro approval no longer retains the previously stored unattended
   password after an approved session.
 - Classified `secretPresentationPolicyV1` as device-local and added focused
@@ -59,8 +65,8 @@
 
 ## Verification (current worktree)
 
-- `default@OhosTestCompileArkTS`: PASS (`BUILD SUCCESSFUL in 22 s 290 ms`).
-- `assembleHap`: PASS, signed (`BUILD SUCCESSFUL in 29 s 973 ms`).
+- `default@OhosTestCompileArkTS`: PASS (`BUILD SUCCESSFUL in 20 s 406 ms`).
+- `assembleHap`: PASS, signed (`BUILD SUCCESSFUL in 28 s 281 ms`).
 - Light open-source compliance: PASS.
 - `git diff --check`: PASS.
 - The focused Hypium tests are registered in `List.test.ets` and compile in the
@@ -70,8 +76,8 @@
 
 ## Next
 
-1. Commit the verified second remediation with only this task's files.
-2. Ask the same independent reviewer to confirm all nine findings are closed.
+1. Commit the verified third remediation with only this task's files.
+2. Ask the same independent reviewer to confirm all eleven findings are closed.
 3. Rerun final gates and close the branch through PR/main where possible.
 
 ## Blockers
