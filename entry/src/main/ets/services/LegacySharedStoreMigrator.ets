@@ -170,7 +170,10 @@ export class LegacySharedStoreMigrator {
       return this.localMetadataValue(
         source,
         ACCOUNT_SCOPED_RECOVERY_BASELINE_KEY) === fingerprint;
-    } catch (_error) {
+    } catch (error) {
+      hilog.warn(0x0001, 'CloudSync',
+        'account-scoped recovery baseline write failed: ' +
+        this.errorDetail(error));
       return false;
     }
   }
@@ -1555,6 +1558,13 @@ export class LegacySharedStoreMigrator {
   }
 
   private sha256Hex(value: string): string {
+    // OpenHarmony 7.0.0.102 Beta2 rejects a zero-length DataBlob in
+    // Md.updateSync with 401. Preserve the standard SHA-256 identity for an
+    // empty mutation journal without asking the provider to update 0 bytes.
+    if (value.length === 0) {
+      return 'e3b0c44298fc1c149afbf4c8996fb924' +
+        '27ae41e4649b934ca495991b7852b855';
+    }
     const md = cryptoFramework.createMd('SHA256');
     md.updateSync({ data: new util.TextEncoder().encode(value) });
     const bytes: Uint8Array = md.digestSync().data;
