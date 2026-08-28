@@ -4,8 +4,8 @@ Updated: 2026-08-28 Asia/Shanghai
 
 ## Now
 
-1. Finish exact gates and commit the remediation for all thirty-one findings across seven review rounds.
-2. Reuse the same independent reviewer and require a clean cumulative verdict.
+1. Commit the eighth-review remediation and reuse the same reviewer for all thirty-three findings.
+2. Rerun final mandatory gates after PASS.
 3. Complete PR/main closure only after review and required checks pass.
 
 ## Next

@@ -3,10 +3,10 @@
   "task": "secret-visibility-policy",
   "branch": "codex/secret-visibility-policy",
   "base": "f3b41e5a6c6ffd7f4e3bc45941877d0ff81d1055",
-  "head": "b05a33bb0bef113ce576825f91fed7388f442340",
-  "phase": "remediation",
+  "head": "e041db8b",
+  "phase": "review",
   "status": "active",
-  "next": "Finish exact gates for the binding-safe restore and SSH operation-fence remediation, commit it, then obtain a clean cumulative follow-up from the same reviewer.",
+  "next": "Commit the eighth-review remediation, obtain a clean cumulative follow-up from the same reviewer, then rerun final gates and close the branch through PR/main.",
   "blockers": [
     "The optional ohosTest@OhosTestCompileArkTS task is not registered (00306054), so no device-side Hypium execution is claimed."
   ],
@@ -85,17 +85,19 @@
       "P1 seventh review: presentation-policy changes were not broadcast to other active windows",
       "P1 seventh review: unlock restoration could project a new secret into a stale endpoint, user, mode or key editor",
       "P1 seventh review: SSH key-install verification could commit a deleted or concurrently changed key and host binding",
-      "P2 seventh review: KeyVaultPage was absent from the declared review scope"
+      "P2 seventh review: KeyVaultPage was absent from the declared review scope",
+      "P1 eighth review: background windows could retain or reload scrubbed stored-secret projections",
+      "P2 eighth review: concurrent visibility Sheets could overwrite a newer policy from a stale snapshot"
     ],
-    "reason": "Seven independent-review rounds found thirteen P1, seventeen P2 and one P3 issue in total. All thirty-one are remediated in the current worktree; exact packaging/compliance gates and a clean cumulative confirmation by the same reviewer are pending."
+    "reason": "Eight independent-review rounds found fourteen P1, eighteen P2 and one P3 issue in total. All thirty-three are remediated in the current worktree; a clean cumulative confirmation by the same reviewer is pending."
   },
   "lastVerification": {
     "baseline": "clean synchronized main@f3b41e5a6",
-    "testCompile": "PASS: default@OhosTestCompileArkTS, BUILD SUCCESSFUL in 14 s 550 ms",
-    "assembleHap": "PASS: signed HAP, BUILD SUCCESSFUL in 20 s 991 ms",
+    "testCompile": "PASS: default@OhosTestCompileArkTS, BUILD SUCCESSFUL in 32 s 452 ms",
+    "assembleHap": "PASS: signed HAP, BUILD SUCCESSFUL in 47 s 573 ms",
     "targetedTests": "REGISTERED_AND_COMPILED; optional ohosTest@OhosTestCompileArkTS unavailable with 00306054; no device execution claimed",
     "compliance": "PASS: Light open-source compliance",
-    "review": "FOLLOW_UP_NOT_PASS: cumulative 13 P1, 17 P2 and 1 P3 findings remediated; same-reviewer clean cumulative follow-up pending",
+    "review": "FOLLOW_UP_NOT_PASS: cumulative 14 P1, 18 P2 and 1 P3 findings remediated; same-reviewer clean cumulative follow-up pending",
     "deviceAcceptance": "PENDING"
   },
   "updated": "2026-08-28 Asia/Shanghai"

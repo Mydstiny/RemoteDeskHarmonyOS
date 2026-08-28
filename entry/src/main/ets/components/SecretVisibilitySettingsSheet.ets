@@ -3,6 +3,7 @@ import { AppTheme, Palette, buildDark, buildLight } from '../common/Theme';
 import {
   EditableSecretKind,
   SecretPresentationPolicy,
+  SecretPresentationStore,
   allHiddenSecretPresentationPolicy,
   defaultSecretPresentationPolicy,
   parseSecretPresentationPolicy,
@@ -21,10 +22,23 @@ export struct SecretVisibilitySettingsSheet {
     (_policy: SecretPresentationPolicy): boolean => false;
 
   @State policyJson: string = '';
+  private readonly store: SecretPresentationStore = SecretPresentationStore.getInstance();
+  private storeUnsubscribe: (() => void) | null = null;
 
   aboutToAppear(): void {
-    this.policyJson = serializeSecretPresentationPolicy(
-      parseSecretPresentationPolicy(this.initialPolicyJson));
+    this.policyJson = this.store.getJson();
+    if (this.storeUnsubscribe === null) {
+      this.storeUnsubscribe = this.store.onChange((): void => {
+        this.policyJson = this.store.getJson();
+      });
+    }
+  }
+
+  aboutToDisappear(): void {
+    if (this.storeUnsubscribe !== null) {
+      this.storeUnsubscribe();
+      this.storeUnsubscribe = null;
+    }
   }
 
   private pal(): Palette {
@@ -38,13 +52,14 @@ export struct SecretVisibilitySettingsSheet {
   private persist(policy: SecretPresentationPolicy): void {
     if (!this.onSave(policy)) {
       promptAction.showToast({ message: '本机密码回显设置保存失败，已保留原设置', duration: 2400 });
+      this.policyJson = this.store.getJson();
       return;
     }
     this.policyJson = serializeSecretPresentationPolicy(policy);
   }
 
   private toggle(kind: EditableSecretKind, hidden: boolean): void {
-    this.persist(withSecretPresentationHidden(this.policy(), kind, hidden));
+    this.persist(withSecretPresentationHidden(this.store.get(), kind, hidden));
   }
 
   @Builder private header() {

@@ -2221,7 +2221,8 @@ struct RemoteDesktop {
   private rustDeskAuthPasswordHidden(): boolean {
     const crypto: DataCrypto = DataCrypto.getInstance();
     const securityOverride: boolean = crypto.isSetupComplete() && !crypto.isReady();
-    return this.secretPresentation.isHidden('rustdesk_device_password', securityOverride);
+    return this.currentAbilityBackgroundState() ||
+      this.secretPresentation.isHidden('rustdesk_device_password', securityOverride);
   }
 
   private rustDeskAuthPasswordBindingParts(host: RemoteHost,
@@ -6828,7 +6829,7 @@ struct RemoteDesktop {
   }
 
   private onDataCryptoStateChange(ready: boolean, _configured: boolean): void {
-    if (!ready) {
+    if (!ready || this.currentAbilityBackgroundState()) {
       if (this.showRustDeskAuthSheet) { this.saveRustDeskAuthDraft(); }
       if (this.rustDeskAuthPasswordFromStoredProjection) {
         this.rustDeskAuthPasswordInput = '';
@@ -6865,7 +6866,19 @@ struct RemoteDesktop {
 
   private onSessionWindowBackgroundChange(): void {
     if (this.sessionWindowId.length === 0) { return; }
+    if (this.sessionWindowBackground && this.showRustDeskAuthSheet) {
+      this.saveRustDeskAuthDraft();
+      if (this.rustDeskAuthPasswordFromStoredProjection) {
+        this.rustDeskAuthPasswordInput = '';
+      }
+      this.rustDeskAuthBackgroundResumePending = true;
+    }
     this.applyAbilityBackgroundState(this.sessionWindowBackground);
+    if (!this.sessionWindowBackground) {
+      const crypto: DataCrypto = DataCrypto.getInstance();
+      this.onDataCryptoStateChange(crypto.isReady(), crypto.isSetupComplete());
+      this.resumeRustDeskAuthAfterBackground();
+    }
   }
 
   private currentAbilityBackgroundState(): boolean {

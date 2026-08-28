@@ -1472,6 +1472,10 @@ struct HostListPage {
   }
 
   private restoreStoredSecretEditorProjections(): void {
+    if (this.appInBackground) {
+      this.scrubStoredSecretEditorProjections();
+      return;
+    }
     if (this.sheetPasswordFromStoredProjection && this.editingHostId !== '') {
       const vncRecordId: string = vncHostRecordIdFromUiId(this.editingHostId);
       if (vncRecordId !== '') {

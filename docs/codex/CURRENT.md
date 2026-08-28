@@ -4,7 +4,7 @@
 
 - Task: `secret-visibility-policy`
 - Branch/base: `codex/secret-visibility-policy` from synchronized `main@f3b41e5a6`.
-- Phase: seventh-review binding/operation-fence remediation; final gates pending.
+- Phase: eighth-review remediation verified on `e041db8b`; checkpoint commit pending.
 - Plan: `docs/codex/plans/2026-08-28-secret-visibility-policy.md`
 
 ## Objective
@@ -68,17 +68,17 @@
   Background and foreground `DataCrypto` lock transitions scrub projected
   plaintext from standard/Pro RustDesk, classic RDP/RustDesk/SSH editors, RDP
   credentials and both VNC edit flows; unlock restoration always re-applies
-  the current local policy.
+  the current local policy, and background windows cannot restore plaintext.
 - Both SSH public-key deployment entry points now keep only sanitized host
   projections or minimal display views in responsive state, including clearing
   proxy passwords/passphrases. The independent KeyVault Sheet passes only key
   and host IDs, refetches live secrets after the lock gate, rejects crypto-locked
   access, and supports both KeyVault and legacy inline authentication keys.
 - The device-local presentation store now publishes process-local changes.
-  HostList, the RustDesk authentication page and VNC add/edit flows subscribe
-  for their visible lifecycle, so another window changing a stored-secret kind
-  to hidden immediately clears any existing stored projection without syncing
-  the policy to cloud or backup.
+  Editors and settings Sheets subscribe for their visible lifecycle, so another
+  window immediately clears hidden projections; per-kind writes read the latest
+  policy first, preventing stale Sheets from reopening another kind. Nothing is
+  synchronized to cloud or backup.
 - Unlock/policy restoration now requires the opening snapshot, live record and
   editor endpoint/user/auth/mode/key binding to agree. Deleted or rebound
   records clear their projection and block the stale panel until reopened.
@@ -100,8 +100,8 @@
 
 ## Verification (current worktree)
 
-- `default@OhosTestCompileArkTS`: PASS (`BUILD SUCCESSFUL in 14 s 550 ms`).
-- `assembleHap`: PASS, signed (`BUILD SUCCESSFUL in 20 s 991 ms`).
+- `default@OhosTestCompileArkTS`: PASS (`BUILD SUCCESSFUL in 32 s 452 ms`).
+- `assembleHap`: PASS, signed (`BUILD SUCCESSFUL in 47 s 573 ms`).
 - Light open-source compliance: PASS.
 - `git diff --check`: PASS.
 - The focused Hypium tests are registered in `List.test.ets` and compile in the
@@ -111,9 +111,8 @@
 
 ## Next
 
-1. Finish exact packaging/compliance gates and commit only this task's files.
-2. Ask the same independent reviewer to confirm all thirty-one findings are closed.
-3. Close the branch through PR/main after a clean verdict.
+1. Commit this checkpoint and ask the same reviewer to confirm all thirty-three findings are closed.
+2. Rerun final gates and close the branch through PR/main after a clean verdict.
 
 ## Blockers
 

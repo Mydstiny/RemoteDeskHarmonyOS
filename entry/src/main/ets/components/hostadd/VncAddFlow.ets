@@ -142,7 +142,7 @@ export struct VncAddFlow {
       this.portText = host.port.toString();
       this.rememberPassword = host.rememberPassword;
       this.passwordConfigured = host.passwordConfigured;
-      if (!this.passwordHidden()) {
+      if (!this.appInBackground && !this.passwordHidden()) {
         this.password = this.hosts.passwordFor(host.id);
         this.passwordFromStoredProjection = this.password.length > 0;
       }
@@ -235,6 +235,10 @@ export struct VncAddFlow {
   }
 
   private restoreStoredPasswordProjection(): void {
+    if (this.appInBackground) {
+      this.password = '';
+      return;
+    }
     const initial: VncHostView | null = this.initialHost;
     const host: VncHostView | null = initial === null ? null : this.hosts.find(initial.id);
     if (host === null ||
