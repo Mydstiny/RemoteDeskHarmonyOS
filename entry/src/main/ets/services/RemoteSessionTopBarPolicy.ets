@@ -31,6 +31,8 @@ export type RemoteTopBarMenuId = 'control' | 'display' | 'keyboardMouse' | 'chat
 export type RemoteSessionPrimaryActionId = 'pin' | 'control' | 'display' |
   'keyboardMouse' | 'keyboard' | 'fileTransfer' | 'diagnostics' | 'disconnect';
 
+export type RemoteKeyboardSidebarAction = 'choose' | 'close';
+
 const RUSTDESK_PRIMARY_ACTION_IDS: RemoteSessionPrimaryActionId[] = [
   'pin', 'control', 'display', 'keyboardMouse', 'keyboard',
   'fileTransfer', 'diagnostics', 'disconnect'
@@ -123,7 +125,10 @@ export function remoteSessionRailDragOffset(offsetX: number): number {
   if (!Number.isFinite(offsetX) || offsetX <= 0) {
     return 0;
   }
-  return Math.min(72, offsetX);
+  // Keep enough of every edge rail visible while previewing the collapse
+  // gesture.  The previous 72vp cap could translate a phone rail completely
+  // outside its parent before the gesture ended.
+  return Math.min(28, offsetX);
 }
 
 export function remoteSessionRailShouldCollapse(offsetX: number,
@@ -131,6 +136,29 @@ export function remoteSessionRailShouldCollapse(offsetX: number,
   const safeOffset: number = Number.isFinite(offsetX) ? offsetX : 0;
   const safeVelocity: number = Number.isFinite(velocityX) ? velocityX : 0;
   return safeOffset >= 24 || safeVelocity >= 720;
+}
+
+/**
+ * The system IME and the unified shortcut panel are one user-facing keyboard
+ * surface.  Protocol pages still keep separate ArkUI state for those owners,
+ * so the toolbar must fold every legacy flag before deciding whether its
+ * keyboard affordance opens the chooser or closes the active surface.
+ */
+export function remoteKeyboardSurfaceOpen(
+  virtualKeyboardOpen: boolean,
+  modifierPanelOpen: boolean,
+  shortcutPanelOpen: boolean = false
+): boolean {
+  return virtualKeyboardOpen || modifierPanelOpen || shortcutPanelOpen;
+}
+
+export function remoteKeyboardSidebarAction(
+  virtualKeyboardOpen: boolean,
+  modifierPanelOpen: boolean,
+  shortcutPanelOpen: boolean = false
+): RemoteKeyboardSidebarAction {
+  return remoteKeyboardSurfaceOpen(
+    virtualKeyboardOpen, modifierPanelOpen, shortcutPanelOpen) ? 'close' : 'choose';
 }
 
 const RUSTDESK_DISABLED_REASONS: Record<string, string> = {

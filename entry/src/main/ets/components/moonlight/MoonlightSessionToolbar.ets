@@ -33,12 +33,14 @@ export struct MoonlightSessionToolbar {
   @Prop pipAvailable: boolean = false;
   @Prop keyboardAvailable: boolean = false;
   @Prop diagnosticsVisible: boolean = false;
+  @Prop keyboardOpen: boolean = false;
+  @Prop modifiersOpen: boolean = false;
   @Prop controlModeLabel: string = '触控板';
   @Prop terminationBusy: boolean = false;
   @Prop @Watch('onMenuOpenChange') menuOpen: boolean = false;
   @Prop qualityColor: string = '#66DD7A';
   @Prop qualityLabel: string = '良好';
-  @Prop availableHeight: number = 640;
+  @Prop @Watch('onAvailableHeightChange') availableHeight: number = 640;
   @State private expanded: boolean = false;
   @State private pinned: boolean = false;
   @State private railSwipeX: number = 0;
@@ -176,6 +178,8 @@ export struct MoonlightSessionToolbar {
   }
 
   private itemActive(item: MoonlightToolbarItem): boolean {
+    if (item.action === 'keyboard') { return this.keyboardOpen; }
+    if (item.action === 'modifiers') { return this.modifiersOpen; }
     return item.action === 'diagnostics' && this.diagnosticsVisible;
   }
 
@@ -184,12 +188,21 @@ export struct MoonlightSessionToolbar {
   private sessionDanger(): string { return '#FF8A80'; }
 
   private itemLabel(item: MoonlightToolbarItem): string {
-    return item.action === 'disconnect' && this.terminationBusy ? '退出中' : item.label;
+    if (item.action === 'disconnect' && this.terminationBusy) { return '退出中'; }
+    if (item.action === 'keyboard' && this.keyboardOpen) { return '收键盘'; }
+    if (item.action === 'modifiers' && this.modifiersOpen) { return '收组合键'; }
+    return item.label;
   }
 
   private itemAccessibilityText(item: MoonlightToolbarItem): string {
     if (item.action === 'diagnostics') {
       return '性能监控，' + (this.diagnosticsVisible ? '已开启' : '已关闭');
+    }
+    if (item.action === 'keyboard') {
+      return this.keyboardOpen ? '关闭虚拟键盘' : '打开虚拟键盘';
+    }
+    if (item.action === 'modifiers') {
+      return this.modifiersOpen ? '关闭组合键与功能键' : '打开组合键与功能键';
     }
     if (item.action === 'disconnect' && this.terminationBusy) {
       return '正在安全退出 Moonlight 并释放连接';
@@ -209,15 +222,42 @@ export struct MoonlightSessionToolbar {
     this.onPointerRegionChange(false, false);
   }
 
+  private onAvailableHeightChange(): void {
+    if (this.layout().edgeRail && this.availableHeight < 176) {
+      this.clearTimer();
+      this.expanded = false;
+      this.railSwipeX = 0;
+    }
+  }
+
+  private canExpand(): boolean {
+    return !this.layout().edgeRail || this.availableHeight >= 176;
+  }
+
+  private collapsedRailHeight(): number {
+    const safeAvailable: number = Number.isFinite(this.availableHeight) ? this.availableHeight :
+      REMOTE_SESSION_COLLAPSED_RAIL_HEIGHT;
+    return Math.max(1, Math.min(REMOTE_SESSION_COLLAPSED_RAIL_HEIGHT, safeAvailable));
+  }
+
+  private railScrollMaxHeight(layout: MoonlightToolbarLayout): number {
+    const contentHeight: number = this.railItems().length * 40 +
+      Math.max(0, this.railItems().length - 1) * layout.itemGap;
+    return Math.max(1, Math.min(contentHeight, Math.max(1, layout.maxHeight - 92),
+      Math.max(1, this.availableHeight - 102)));
+  }
+
   @Builder private toolItem(item: MoonlightToolbarItem, layout: MoonlightToolbarLayout) {
     Button() {
       Column({ space: 2 }) {
         SymbolGlyph(this.icon(item.action)).fontSize(layout.edgeRail ? 18 : 20)
           .fontColor([item.dangerous ? this.sessionDanger() :
-            (item.enabled ? this.pal().text : this.pal().text3)])
+            (this.itemActive(item) ? this.sessionPrimary() :
+              (item.enabled ? this.pal().text : this.pal().text3))])
         Text(this.itemLabel(item)).fontSize(layout.edgeRail ? 8 : 9)
           .fontColor(item.dangerous ? this.sessionDanger() :
-            (item.enabled ? this.pal().text : this.pal().text3))
+            (this.itemActive(item) ? this.sessionPrimary() :
+              (item.enabled ? this.pal().text : this.pal().text3)))
           .width('100%')
           .textAlign(TextAlign.Center)
           .maxLines(1)
@@ -232,6 +272,7 @@ export struct MoonlightSessionToolbar {
     .backgroundColor(item.dangerous ? 'rgba(255,92,92,0.16)' :
       (this.itemActive(item) ? 'rgba(91,143,249,0.24)' : this.pal().surface))
     .enabled(true)
+    .focusable(false).focusOnTouch(false)
     .opacity(this.itemEnabled(item) ? 1 : 0.72)
     .accessibilityText(this.itemAccessibilityText(item))
     .onClick((): void => { this.invoke(item); })
@@ -244,6 +285,7 @@ export struct MoonlightSessionToolbar {
     }.width(layout.edgeRail ? layout.iconSize + 18 : 44)
       .height(layout.edgeRail ? 40 : 50).padding(0).borderRadius(12)
       .backgroundColor(this.pal().surface)
+      .focusable(false).focusOnTouch(false)
       .onClick((): void => { this.pinned = !this.pinned; this.scheduleHide(); })
       .accessibilityText(this.pinned ? '取消固定工具条' : '固定工具条')
   }
@@ -255,6 +297,7 @@ export struct MoonlightSessionToolbar {
     }.width(layout.edgeRail ? layout.iconSize + 18 : 44)
       .height(layout.edgeRail ? 40 : 50).padding(0).borderRadius(12)
       .backgroundColor(this.pal().surface)
+      .focusable(false).focusOnTouch(false)
       .onClick((): void => {
         this.clearTimer();
         this.expanded = false;
@@ -279,7 +322,7 @@ export struct MoonlightSessionToolbar {
             .fontColor([REMOTE_SESSION_COLLAPSED_RAIL_ICON])
         }
         .width(REMOTE_SESSION_COLLAPSED_RAIL_WIDTH)
-        .height(REMOTE_SESSION_COLLAPSED_RAIL_HEIGHT)
+        .height(this.collapsedRailHeight())
         .justifyContent(FlexAlign.Center)
         .backgroundColor(REMOTE_SESSION_COLLAPSED_RAIL_BACKGROUND)
         .backdropBlur(16)
@@ -293,8 +336,11 @@ export struct MoonlightSessionToolbar {
         })
       }
       .width(REMOTE_SESSION_COLLAPSED_RAIL_TOUCH_WIDTH)
-      .height(REMOTE_SESSION_COLLAPSED_RAIL_HEIGHT)
-      .onClick((): void => { this.expanded = true; this.scheduleHide(); })
+      .height(this.collapsedRailHeight())
+      .focusable(false).focusOnTouch(false)
+      .onClick((): void => {
+        if (this.canExpand()) { this.expanded = true; this.scheduleHide(); }
+      })
       .onHover((hover: boolean): void => {
         this.handlePointerRegionHover(hover, false);
       })
@@ -317,6 +363,7 @@ export struct MoonlightSessionToolbar {
       }
       .width(REMOTE_SESSION_COLLAPSED_TOP_WIDTH)
       .height(REMOTE_SESSION_COLLAPSED_TOP_TOUCH_HEIGHT)
+      .focusable(false).focusOnTouch(false)
       .onClick((): void => { this.expanded = true; this.scheduleHide(); })
       .onHover((hover: boolean): void => {
         this.handlePointerRegionHover(hover, false);
@@ -335,10 +382,7 @@ export struct MoonlightSessionToolbar {
             }, (item: MoonlightToolbarItem): string => item.action)
           }
         }.width(layout.iconSize + 18)
-          .constraintSize({ maxHeight: Math.max(80,
-            Math.min(this.railItems().length * 40 +
-              Math.max(0, this.railItems().length - 1) * layout.itemGap,
-              Math.min(layout.maxHeight - 92, this.availableHeight - 102))) })
+          .constraintSize({ maxHeight: this.railScrollMaxHeight(layout) })
           .scrollBar(BarState.Auto).edgeEffect(EdgeEffect.Spring)
         this.toolItem(this.disconnectItem(), layout)
         this.collapseItem(layout)

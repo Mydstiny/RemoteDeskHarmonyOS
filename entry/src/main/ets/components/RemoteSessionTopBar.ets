@@ -11,6 +11,8 @@ import {
   REMOTE_SESSION_COLLAPSED_TOP_WIDTH,
   RemoteSessionPrimaryActionId,
   RemoteTopBarLayout,
+  remoteKeyboardSidebarAction,
+  remoteKeyboardSurfaceOpen,
   remoteSessionPrimaryActionIds,
   remoteSessionRailDragOffset,
   remoteSessionRailShouldCollapse,
@@ -68,6 +70,7 @@ export interface RemoteSessionTopBarActions {
   onRefreshFrame: () => void;
   onOpenKeyboard: () => void;
   onOpenModifiers: () => void;
+  onCloseKeyboardSurface: () => void;
   onOpenFileTransfer: () => void;
   onCtrlAltDel: () => void;
   onLockRemote: () => void;
@@ -119,7 +122,8 @@ export struct RemoteSessionTopBar {
   @Prop swapMouseButtons: boolean = false;
   @Prop touchpadSpeed: number = 1.0;
   @Prop rustDeskPhoneTarget: boolean = false;
-  @Prop keyboardOpen: boolean = false;
+  @Prop @Watch('onKeyboardSurfaceChange') keyboardOpen: boolean = false;
+  @Prop @Watch('onKeyboardSurfaceChange') shortcutsOpen: boolean = false;
   @Prop diagnosticsEnabled: boolean = false;
   @Prop rustDeskDisplayCapabilities: RustDeskDisplayCapabilities = EMPTY_RUSTDESK_DISPLAY_CAPABILITIES;
   @Prop rustDeskDisplaySwitchState: RustDeskDisplaySwitchState = EMPTY_RUSTDESK_DISPLAY_SWITCH_STATE;
@@ -147,6 +151,7 @@ export struct RemoteSessionTopBar {
     onRefreshFrame: (): void => {},
     onOpenKeyboard: (): void => {},
     onOpenModifiers: (): void => {},
+    onCloseKeyboardSurface: (): void => {},
     onOpenFileTransfer: (): void => {},
     onCtrlAltDel: (): void => {},
     onLockRemote: (): void => {},
@@ -193,6 +198,19 @@ export struct RemoteSessionTopBar {
     this.scheduleAutoCollapse();
   }
 
+  private keyboardSurfaceOpen(): boolean {
+    return remoteKeyboardSurfaceOpen(this.keyboardOpen, this.shortcutsOpen);
+  }
+
+  private activateKeyboardAffordance(): void {
+    if (remoteKeyboardSidebarAction(this.keyboardOpen, this.shortcutsOpen) === 'close') {
+      this.closeMenus();
+      this.actions.onCloseKeyboardSurface();
+      return;
+    }
+    this.toggleMenu('keyboard');
+  }
+
   private clearAutoCollapseTimer(): void {
     if (this.autoCollapseTimer >= 0) {
       clearTimeout(this.autoCollapseTimer);
@@ -227,12 +245,13 @@ export struct RemoteSessionTopBar {
     if (this.collapsed) {
       return;
     }
-    const delayMs: number = rustDeskTopBarAutoCollapseDelayMs(this.pinned, this.activeMenu.length > 0);
+    const delayMs: number = rustDeskTopBarAutoCollapseDelayMs(this.pinned,
+      this.activeMenu.length > 0 || this.keyboardSurfaceOpen());
     if (delayMs <= 0) {
       return;
     }
     this.autoCollapseTimer = setTimeout((): void => {
-      if (!this.pinned && this.activeMenu.length === 0) {
+      if (!this.pinned && this.activeMenu.length === 0 && !this.keyboardSurfaceOpen()) {
         this.collapsed = true;
       }
       this.clearAutoCollapseTimer();
@@ -243,6 +262,10 @@ export struct RemoteSessionTopBar {
     if (!this.collapsed) {
       this.scheduleAutoCollapse();
     }
+  }
+
+  private onKeyboardSurfaceChange(): void {
+    this.scheduleAutoCollapse();
   }
 
   private onEdgeRailChanged(): void {
@@ -348,6 +371,11 @@ export struct RemoteSessionTopBar {
 
   private edgeRailOffsetY(): number {
     return Math.max(0, (this.edgeRailCanvasHeight() - this.edgeRailVisibleHeight()) / 2);
+  }
+
+  private collapsedEdgeRailHeight(): number {
+    return Math.max(1, Math.min(REMOTE_SESSION_COLLAPSED_RAIL_HEIGHT,
+      this.edgeRailCanvasHeight()));
   }
 
   private compactMenu(): boolean {
@@ -501,6 +529,8 @@ export struct RemoteSessionTopBar {
       .backgroundColor(bgColor)
       .borderRadius(10)
       .padding(0)
+      .focusable(false)
+      .focusOnTouch(false)
       .accessibilityText(accessibilityLabel)
       .onClick((): void => {
         this.noteUserActivity();
@@ -533,6 +563,8 @@ export struct RemoteSessionTopBar {
     .height(this.menuItemHeight())
     .padding({ left: 8, right: 8 })
     .borderRadius(6)
+    .focusable(false)
+    .focusOnTouch(false)
     .onClick((): void => {
       this.runAction(actionId, action);
     })
@@ -549,6 +581,7 @@ export struct RemoteSessionTopBar {
       }
       .width(34).height(34).padding(0).borderRadius(17)
       .backgroundColor('rgba(17,24,39,0.06)')
+      .focusable(false).focusOnTouch(false)
       .accessibilityText('关闭' + title)
       .onClick((): void => { this.closeMenus(); })
     }
@@ -770,10 +803,11 @@ export struct RemoteSessionTopBar {
             this.closeMenus();
             this.actions.onOpenKeyboard();
           }, this.keyboardOpen)
-        this.menuItem('组合键与功能键', 'toggleModifiers', (): void => {
-          this.closeMenus();
-          this.actions.onOpenModifiers();
-        })
+        this.menuItem(this.shortcutsOpen ? '关闭组合键与功能键' : '组合键与功能键',
+          'toggleModifiers', (): void => {
+            this.closeMenus();
+            this.actions.onOpenModifiers();
+          }, this.shortcutsOpen)
       }
       .width('100%').padding(this.menuPadding())
     }
@@ -862,8 +896,10 @@ export struct RemoteSessionTopBar {
       this.iconButton($r('sys.symbol.mouse'), this.accentColor,
         (): void => { this.toggleMenu('keyboardMouse'); }, 18, '打开鼠标与触控设置')
     } else if (actionId === 'keyboard') {
-      this.iconButton($r('sys.symbol.keyboard'), this.keyboardOpen ? '#2A9D8F' : this.accentColor,
-        (): void => { this.toggleMenu('keyboard'); }, 18, '选择虚拟键盘或组合键')
+      this.iconButton($r('sys.symbol.keyboard'),
+        this.keyboardSurfaceOpen() ? '#2A9D8F' : this.accentColor,
+        (): void => { this.activateKeyboardAffordance(); }, 18,
+        this.keyboardSurfaceOpen() ? '关闭键盘界面' : '选择虚拟键盘或组合键')
     } else if (actionId === 'fileTransfer') {
       this.iconButton($r('sys.symbol.doc'), this.accentColor, (): void => {
         this.runAction('fileTransfer', (): void => { this.actions.onOpenFileTransfer(); });
@@ -997,7 +1033,7 @@ export struct RemoteSessionTopBar {
       .borderRadius({ topLeft: 10, bottomLeft: 10, topRight: 0, bottomRight: 0 })
       .shadow({ radius: 10, color: 'rgba(0,0,0,0.24)', offsetX: -2 })
       .position({ x: this.effectiveMenuWidth() + this.layout.itemGap, y: this.edgeRailOffsetY() })
-      .gesture(PanGesture({ fingers: 1, direction: PanDirection.Horizontal, distance: 5 })
+      .parallelGesture(PanGesture({ fingers: 1, direction: PanDirection.Horizontal, distance: 5 })
         .onActionUpdate((event: GestureEvent): void => { this.updateRailSwipe(event); })
         .onActionEnd((event: GestureEvent): void => { this.finishRailSwipe(event); })
         .onActionCancel((): void => { this.resetRailSwipe(); }))
@@ -1036,7 +1072,7 @@ export struct RemoteSessionTopBar {
           .fontColor([REMOTE_SESSION_COLLAPSED_RAIL_ICON])
       }
       .width(REMOTE_SESSION_COLLAPSED_RAIL_WIDTH)
-      .height(REMOTE_SESSION_COLLAPSED_RAIL_HEIGHT)
+      .height(this.collapsedEdgeRailHeight())
       .justifyContent(FlexAlign.Center)
       .backgroundColor(REMOTE_SESSION_COLLAPSED_RAIL_BACKGROUND)
       .backdropBlur(16)
@@ -1050,7 +1086,8 @@ export struct RemoteSessionTopBar {
       })
     }
     .width(REMOTE_SESSION_COLLAPSED_RAIL_TOUCH_WIDTH)
-    .height(REMOTE_SESSION_COLLAPSED_RAIL_HEIGHT)
+    .height(this.collapsedEdgeRailHeight())
+    .focusable(false).focusOnTouch(false)
     .hitTestBehavior(HitTestMode.BLOCK_HIERARCHY)
     .accessibilityText('展开会话贴边栏')
     .position({ x: '100%', y: '50%' })
@@ -1081,6 +1118,7 @@ export struct RemoteSessionTopBar {
     }
     .width(REMOTE_SESSION_COLLAPSED_TOP_WIDTH)
     .height(REMOTE_SESSION_COLLAPSED_TOP_TOUCH_HEIGHT)
+    .focusable(false).focusOnTouch(false)
     .hitTestBehavior(HitTestMode.BLOCK_HIERARCHY)
     .accessibilityText('展开会话顶栏')
     .onClick((): void => {

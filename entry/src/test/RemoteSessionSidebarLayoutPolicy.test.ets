@@ -17,6 +17,8 @@ export default function remoteSessionSidebarLayoutPolicyTest(): void {
       expect(remoteSessionSidebarMenuWidth(320, 300, 52, 6)).assertEqual(250);
       expect(remoteSessionSidebarCanvasHeight(320)).assertEqual(304);
       expect(remoteSessionSidebarVisibleRailHeight(320, 364)).assertEqual(304);
+      expect(remoteSessionSidebarCanvasHeight(80)).assertEqual(64);
+      expect(remoteSessionSidebarMenuMaxHeight(80, 48)).assertEqual(16);
     });
 
     it('keeps_requested_pad_width_when_space_is_available', 0, (): void => {

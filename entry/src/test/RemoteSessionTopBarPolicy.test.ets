@@ -8,6 +8,8 @@ import {
   REMOTE_SESSION_COLLAPSED_TOP_TOUCH_HEIGHT,
   REMOTE_SESSION_COLLAPSED_TOP_WIDTH,
   protocolPreferenceOwner,
+  remoteKeyboardSidebarAction,
+  remoteKeyboardSurfaceOpen,
   remoteSessionControlBarHidden,
   remoteSessionControlBarSelectionSummary,
   remoteSessionPrimaryActionIds,
@@ -148,7 +150,7 @@ export default function remoteSessionTopBarPolicyTest(): void {
     it('collapses_only_for_an_intentional_right_swipe', 0, (): void => {
       expect(remoteSessionRailDragOffset(-12)).assertEqual(0);
       expect(remoteSessionRailDragOffset(18)).assertEqual(18);
-      expect(remoteSessionRailDragOffset(90)).assertEqual(72);
+      expect(remoteSessionRailDragOffset(90)).assertEqual(28);
       expect(remoteSessionRailShouldCollapse(24, 0)).assertTrue();
       expect(remoteSessionRailShouldCollapse(4, 800)).assertTrue();
       expect(remoteSessionRailShouldCollapse(12, 200)).assertFalse();
@@ -177,6 +179,18 @@ export default function remoteSessionTopBarPolicyTest(): void {
   });
 
   describe('RemoteSessionTopBarPolicy_actions', (): void => {
+    it('keyboard_affordance_should_close_every_active_keyboard_surface', 0, (): void => {
+      expect(remoteKeyboardSurfaceOpen(false, false, false)).assertFalse();
+      expect(remoteKeyboardSurfaceOpen(true, false, false)).assertTrue();
+      expect(remoteKeyboardSurfaceOpen(false, true, false)).assertTrue();
+      expect(remoteKeyboardSurfaceOpen(false, false, true)).assertTrue();
+      expect(remoteKeyboardSidebarAction(false, false, false)).assertEqual('choose');
+      expect(remoteKeyboardSidebarAction(true, false, false)).assertEqual('close');
+      expect(remoteKeyboardSidebarAction(false, true, false)).assertEqual('close');
+      expect(remoteKeyboardSidebarAction(false, false, true)).assertEqual('close');
+      expect(remoteKeyboardSidebarAction(true, true, true)).assertEqual('close');
+    });
+
     it('pc_top_bar_and_mobile_rail_share_one_ordered_action_contract', 0, (): void => {
       const actions = remoteSessionPrimaryActionIds('rustdesk');
       expect(actions.length).assertEqual(8);

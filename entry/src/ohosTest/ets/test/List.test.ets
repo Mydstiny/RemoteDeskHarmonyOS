@@ -294,7 +294,7 @@ function expectedFocusedCount(scope: string): number {
   if (scope === 'RemoteCanvasInteractionPolicy_real_surface_contract') { return 3; }
   if (scope === 'RemoteKeyboardLayoutSelection_owner_session_generation') { return 3; }
   if (scope === 'RemoteModifierStateController_lifecycle_mirror') { return 1; }
-  if (scope === 'RemoteSessionTopBarPolicy') { return 23; }
+  if (scope === 'RemoteSessionTopBarPolicy') { return 24; }
   if (scope === 'TotpBrandService') { return 23; }
   return 0;
 }

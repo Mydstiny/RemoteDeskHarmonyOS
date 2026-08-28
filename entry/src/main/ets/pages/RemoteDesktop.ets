@@ -473,6 +473,7 @@ import {
   REMOTE_SESSION_CONTROL_BAR_HIDDEN_RUSTDESK_KEY,
   REMOTE_SESSION_CONTROL_BAR_HIDDEN_VNC_KEY,
   RemoteSessionControlBarVisibility,
+  remoteKeyboardSurfaceOpen,
   remoteSessionControlBarHidden,
   resolveRemoteSessionControlBarVisibility,
   remoteTopBarLayout,
@@ -1791,9 +1792,12 @@ struct RemoteDesktop {
       return;
     }
     this.syncVncToolbarPreferenceScope();
-    const collapsed: boolean = this.vncToolbarCollapsed;
     const viewport: OverlayViewport = this.currentVncToolbarViewport();
     const availableHeight: number = this.vncToolbarAvailableHeight(viewport);
+    const collapsed: boolean = this.vncToolbarCollapsed || availableHeight < 68;
+    if (collapsed && !this.vncToolbarCollapsed) {
+      this.vncToolbarCollapsed = true;
+    }
     const request: OverlayPlacementRequest = {
       ownerId: 'vnc-toolbar',
       preferredSide: this.vncToolbarPreferredSide,
@@ -1922,13 +1926,17 @@ struct RemoteDesktop {
   private scheduleVncToolbarAutoCollapse(sessionId: number = this.sessionId): void {
     this.clearVncToolbarAutoCollapse();
     const delayMs: number =
-      vncToolbarAutoCollapseDelayMs(this.connected && this.isVncSession(), this.vncToolbarCollapsed);
+      vncToolbarAutoCollapseDelayMs(this.connected && this.isVncSession(), this.vncToolbarCollapsed,
+        remoteKeyboardSurfaceOpen(this.keyboardOpen || this.keyboardImeActive,
+          this.modifierPanelVisible || this.modifierPanelPrepareOnly, this.shortcutPanelVisible));
     if (delayMs <= 0 || sessionId <= 0) {
       return;
     }
     this.vncToolbarCollapseTimer = setTimeout((): void => {
       this.vncToolbarCollapseTimer = -1;
-      if (this.connected && this.isVncSession() && this.sessionId === sessionId) {
+      if (this.connected && this.isVncSession() && this.sessionId === sessionId &&
+          !remoteKeyboardSurfaceOpen(this.keyboardOpen || this.keyboardImeActive,
+            this.modifierPanelVisible || this.modifierPanelPrepareOnly, this.shortcutPanelVisible)) {
         this.vncToolbarCollapsed = true;
         this.recomputeVncToolbarPlacement('auto-collapse');
         this.clampModifierPanelsIntoView();
@@ -2016,6 +2024,10 @@ struct RemoteDesktop {
       promptAction.showToast({ message: '当前 VNC 主机为只读连接，组合键发送已禁用', duration: 1600 });
       return;
     }
+    if (this.keyboardOpen || this.keyboardImeActive) {
+      this.keepKeyboardAfterSheetClose = false;
+      this.dismissKeyboard();
+    }
     if (!this.handleVisible) {
       this.initHandlePosition();
       this.handleVisible = true;
@@ -2047,12 +2059,13 @@ struct RemoteDesktop {
           promptAction.showToast({ message: '当前 VNC 主机为只读连接，键盘输入已禁用', duration: 1600 });
           return;
         }
-        if (this.keyboardOpen) {
+        if (this.keyboardOpen || this.keyboardImeActive) {
           this.keepKeyboardAfterSheetClose = false;
           this.dismissKeyboard();
         } else {
           this.openKeyboard();
         }
+        this.scheduleVncToolbarAutoCollapse();
       },
       onCycleControlMode: (): void => {
         this.markVncToolbarInteraction();
@@ -2060,7 +2073,8 @@ struct RemoteDesktop {
       },
       onOpenShortcuts: (): void => {
         this.markVncToolbarInteraction();
-        this.openVncModifierPanel();
+        this.toggleModifierPanel();
+        this.scheduleVncToolbarAutoCollapse();
       },
       onCycleDisplayScale: (): void => {
         this.markVncToolbarInteraction();
@@ -4601,7 +4615,7 @@ struct RemoteDesktop {
 
   private openRdpKeyboard(): void {
     this.rdpControlCenterVisible = false;
-    if (this.keyboardOpen) {
+    if (this.keyboardOpen || this.keyboardImeActive) {
       this.keepKeyboardAfterSheetClose = false;
       this.dismissKeyboard();
     } else {
@@ -4617,7 +4631,7 @@ struct RemoteDesktop {
       this.handleVisible = true;
     }
     this.ensureModifierPanelPositions();
-    this.openModifierPanel();
+    this.toggleModifierPanel();
     this.stopRdpDiagnosticsPolling(!this.rdpShowDiagnostics);
   }
 
@@ -5799,7 +5813,7 @@ struct RemoteDesktop {
         promptAction.showToast({ message: '已请求刷新远端画面', duration: 1200 });
       },
       onOpenKeyboard: (): void => {
-        if (this.keyboardOpen) {
+        if (this.keyboardOpen || this.keyboardImeActive) {
           this.keepKeyboardAfterSheetClose = false;
           this.dismissKeyboard();
         } else {
@@ -5815,7 +5829,10 @@ struct RemoteDesktop {
           this.handleSide = 'right';
         }
         this.ensureModifierPanelPositions();
-        this.openModifierPanel();
+        this.toggleModifierPanel();
+      },
+      onCloseKeyboardSurface: (): void => {
+        this.closeRemoteKeyboardSurface();
       },
       onOpenFileTransfer: (): void => {
         this.pickAndSendFile();
@@ -6378,6 +6395,10 @@ struct RemoteDesktop {
   }
 
   private openModifierPanel(): void {
+    if (this.keyboardOpen || this.keyboardImeActive) {
+      this.keepKeyboardAfterSheetClose = false;
+      this.dismissKeyboard();
+    }
     this.ensureModifierPanelPositions();
     if (!this.modifierPanelUserPositioned) {
       const anchored: FloatingPanelRect = this.defaultModifierPanelPosition();
@@ -6396,6 +6417,7 @@ struct RemoteDesktop {
     this.modifierPanelVisible = false;
     if (this.isVncSession()) {
       this.recomputeVncToolbarPlacement('modifier-panel-close');
+      this.scheduleVncToolbarAutoCollapse();
     }
     this.scheduleModifierPanelUnmount();
   }
@@ -6409,8 +6431,10 @@ struct RemoteDesktop {
   }
 
   private toggleModifierPanel(): void {
-    if (this.modifierPanelVisible) {
-      this.closeModifierPanel();
+    const modifierSurfaceOpen: boolean = remoteKeyboardSurfaceOpen(false,
+      this.modifierPanelVisible || this.modifierPanelPrepareOnly, this.shortcutPanelVisible);
+    if (modifierSurfaceOpen) {
+      this.closeRemoteModifierSurfaces();
     } else if (this.isVncSession()) {
       this.openVncModifierPanel();
     } else {
@@ -6418,10 +6442,28 @@ struct RemoteDesktop {
     }
   }
 
+  private closeRemoteModifierSurfaces(): void {
+    if (this.modifierPanelVisible || this.modifierPanelPrepareOnly) {
+      this.closeModifierPanel();
+    }
+    if (this.shortcutPanelVisible) {
+      this.closeShortcutPanel();
+    }
+  }
+
+  private closeRemoteKeyboardSurface(): void {
+    if (this.keyboardOpen || this.keyboardImeActive) {
+      this.keepKeyboardAfterSheetClose = false;
+      this.dismissKeyboard();
+    }
+    this.closeRemoteModifierSurfaces();
+  }
+
   private closeShortcutPanel(): void {
     this.shortcutPanelVisible = false;
     if (this.isVncSession()) {
       this.recomputeVncToolbarPlacement('shortcut-panel-close');
+      this.scheduleVncToolbarAutoCollapse();
     }
     this.scheduleModifierPanelUnmount();
   }
@@ -7353,6 +7395,9 @@ struct RemoteDesktop {
     this.bindIndependentSessionWindow(routeParams);
     this.stageIndependentWindowAfterAuthentication(routeParams);
     this.cancelPendingDisappearDecision();
+    if (this.connected) {
+      void this.setRemoteNavigationHidden(true, 'page-appear');
+    }
     if (this.connected && (this.isVncSession() || this.isRdpRemoteSession())) {
       if (this.kbWin !== null) {
         this.syncVncToolbarAvoidAreas(this.kbWin);
@@ -12563,6 +12608,9 @@ struct RemoteDesktop {
         orientation === window.Orientation.AUTO_ROTATION_LANDSCAPE ||
         orientation === window.Orientation.USER_ROTATION_LANDSCAPE;
       hilog.info(RD_DOMAIN, RD_TAG, 'setPreferredOrientation(' + label + ') OK');
+      if (orientation !== window.Orientation.UNSPECIFIED && this.connected) {
+        void this.setRemoteNavigationHidden(true, 'orientation-' + label);
+      }
     } catch (err) {
       const errObj: Error = err as Error;
       hilog.warn(RD_DOMAIN, RD_TAG, 'setPreferredOrientation(' + label + ') failed: ' +
@@ -12588,7 +12636,8 @@ struct RemoteDesktop {
           shouldHideRemoteNavigation(protocol, this.connected);
         const targetStatusBarHidden: boolean = hidden && shouldHideRemoteStatusBar(protocol, this.connected,
           this.isDesktopDevice, this.breakpoint, this.rustdeskControlMode);
-        const forceApply: boolean = reason === 'foreground-restore';
+        const forceApply: boolean = reason === 'foreground-restore' || reason === 'page-appear' ||
+          reason.indexOf('orientation-') === 0;
         if (!forceApply && this.remoteNavigationHidden === targetNavigationHidden &&
           this.remoteStatusBarHidden === targetStatusBarHidden) {
           return;
@@ -12602,6 +12651,9 @@ struct RemoteDesktop {
             return;
           }
           const win: window.Window = await window.getLastWindow(ctx);
+          if (targetNavigationHidden || targetStatusBarHidden) {
+            try { await win.setWindowLayoutFullScreen(true); } catch (_layoutError) {}
+          }
           let statusBarApplied: boolean = true;
           if (forceApply || this.remoteStatusBarHidden !== targetStatusBarHidden) {
             try {
@@ -15152,9 +15204,10 @@ struct RemoteDesktop {
   }
 
   private openKeyboard(): void {
-    if (this.keyboardOpen) {
+    if (this.keyboardOpen || this.keyboardImeActive) {
       return;
     }
+    this.closeRemoteModifierSurfaces();
     this.hardwareKeyboardProxyActive = false;
     this.keyboardOpen = true;
     this.startRemoteImeSession();
@@ -15180,10 +15233,15 @@ struct RemoteDesktop {
   }
 
   private dismissKeyboard(): void {
-    if (!this.keyboardOpen) {
+    if (!this.keyboardOpen && !this.keyboardImeActive) {
       return;
     }
     this.markKeyboardClosed('control-panel');
+    try {
+      this.keyboardController.stopEditing();
+    } catch (err) {
+      hilog.warn(RD_DOMAIN, RD_TAG, 'keyboard stopEditing failed: ' + JSON.stringify(err));
+    }
     // 将焦点移到 XComponent 以收起键盘
     this.scheduleRemoteInputFocus('keyboard-dismiss');
   }
@@ -17584,7 +17642,9 @@ struct RemoteDesktop {
         VncSessionToolbar({
           deviceClass: remoteTopBarLayout(this.isDesktopDevice, this.breakpoint, this.isPadDevice).deviceClass,
           viewOnly: this.isVncViewOnlySession(),
-          keyboardOpen: this.keyboardOpen,
+          keyboardOpen: this.keyboardOpen || this.keyboardImeActive,
+          shortcutsOpen: this.modifierPanelVisible || this.shortcutPanelVisible ||
+            this.modifierPanelPrepareOnly,
           controlModeLabel: this.vncControlModeLabel(),
           displayScaleLabel: this.vncDisplayScaleLabel(),
           diagnosticsEnabled: this.vncShowDiagnostics,
@@ -17605,8 +17665,9 @@ struct RemoteDesktop {
         if (remoteTopBarLayout(this.isDesktopDevice, this.breakpoint, this.isPadDevice).deviceClass !== 'pc') {
           Stack({ alignContent: Alignment.End }) {
             RdpSessionToolbar({
-              keyboardOpen: this.keyboardOpen,
-              shortcutsOpen: this.modifierPanelVisible || this.shortcutPanelVisible,
+              keyboardOpen: this.keyboardOpen || this.keyboardImeActive,
+              shortcutsOpen: this.modifierPanelVisible || this.shortcutPanelVisible ||
+                this.modifierPanelPrepareOnly,
               controlCenterOpen: this.rdpControlCenterVisible,
               diagnosticsVisible: this.rdpShowDiagnostics,
               qualityLabel: this.rdpPerformanceSummary().status,
@@ -17620,8 +17681,9 @@ struct RemoteDesktop {
         } else {
           Stack({ alignContent: Alignment.Top }) {
             RdpSessionToolbar({
-              keyboardOpen: this.keyboardOpen,
-              shortcutsOpen: this.modifierPanelVisible || this.shortcutPanelVisible,
+              keyboardOpen: this.keyboardOpen || this.keyboardImeActive,
+              shortcutsOpen: this.modifierPanelVisible || this.shortcutPanelVisible ||
+                this.modifierPanelPrepareOnly,
               controlCenterOpen: this.rdpControlCenterVisible,
               diagnosticsVisible: this.rdpShowDiagnostics,
               qualityLabel: this.rdpPerformanceSummary().status,
@@ -17713,7 +17775,9 @@ struct RemoteDesktop {
           swapMouseButtons: this.rustdeskSwapMouseButtons,
           touchpadSpeed: this.rustdeskTouchpadSpeed,
           rustDeskPhoneTarget: this.isRustDeskPhoneSession(),
-          keyboardOpen: this.keyboardOpen,
+          keyboardOpen: this.keyboardOpen || this.keyboardImeActive,
+          shortcutsOpen: this.modifierPanelVisible || this.shortcutPanelVisible ||
+            this.modifierPanelPrepareOnly,
           diagnosticsEnabled: this.isRdpRemoteSession() ?
             this.rdpShowDiagnostics : this.rustdeskShowDiagnostics,
           rustDeskDisplayCapabilities: this.rustDeskDisplayCapabilities,
@@ -18277,7 +18341,7 @@ struct RemoteDesktop {
         SymbolGlyph($r('sys.symbol.keyboard'))
           .fontSize(22).fontColor([Color.White])
           .margin({ right: 10 })
-        Text(this.keyboardOpen ? '关闭键盘' : '虚拟键盘')
+        Text((this.keyboardOpen || this.keyboardImeActive) ? '关闭键盘' : '虚拟键盘')
           .fontSize(16).fontColor('#FFFFFF')
       }
       .width('100%').height(52)
@@ -18286,7 +18350,7 @@ struct RemoteDesktop {
       .borderRadius(14)
       .margin({ bottom: 12, left: 24, right: 24 })
       .onClick(() => {
-        if (this.keyboardOpen) {
+        if (this.keyboardOpen || this.keyboardImeActive) {
           this.keepKeyboardAfterSheetClose = false;
           this.showControlPanel = false;
           this.dismissKeyboard();

@@ -40,6 +40,7 @@ export struct VncSessionToolbar {
   @Prop deviceClass: 'pc' | 'pad' | 'phone' = 'pc';
   @Prop viewOnly: boolean = false;
   @Prop keyboardOpen: boolean = false;
+  @Prop shortcutsOpen: boolean = false;
   @Prop controlModeLabel: string = '触控板';
   @Prop displayScaleLabel: string = '适应';
   @Prop diagnosticsEnabled: boolean = false;
@@ -76,6 +77,7 @@ export struct VncSessionToolbar {
     .height(44)
     .padding(0).borderRadius(9)
     .backgroundColor(danger ? '#D93B3B' : (active ? '#168C78' : this.accentColor))
+    .focusable(false).focusOnTouch(false)
     .accessibilityText(label)
     .onClick(action)
   }
@@ -89,7 +91,8 @@ export struct VncSessionToolbar {
       this.actionButton($r('sys.symbol.arrow_up_left'), this.controlModeLabel, false,
         (): void => { this.actions.onCycleControlMode(); })
     } else if (actionId === 'shortcuts') {
-      this.actionButton($r('sys.symbol.bolt_fill'), '组合键', false,
+      this.actionButton($r('sys.symbol.bolt_fill'), this.shortcutsOpen ? '收组合键' : '组合键',
+        this.shortcutsOpen,
         (): void => { this.actions.onOpenShortcuts(); })
     } else if (actionId === 'displayScale') {
       this.actionButton($r('sys.symbol.desktop_fill'), this.displayScaleLabel, false,
@@ -179,6 +182,7 @@ export struct VncSessionToolbar {
     }
     .width(REMOTE_SESSION_COLLAPSED_RAIL_TOUCH_WIDTH)
     .height(this.mobileRailHeight(REMOTE_SESSION_COLLAPSED_RAIL_HEIGHT))
+    .focusable(false).focusOnTouch(false)
     .position({ x: this.placement.railRect.x, y: this.placement.railRect.y })
     .gesture(PanGesture({ fingers: 1, distance: 5 })
       .onActionEnd((event: GestureEvent): void => {
@@ -204,6 +208,7 @@ export struct VncSessionToolbar {
         .position({ x: 0, y: 7 })
       }
       .width('100%').height(44)
+      .focusable(false).focusOnTouch(false)
       .accessibilityText('收起 VNC 会话工具栏')
       .onClick((): void => { this.actions.onCollapse(); })
       Scroll() {
@@ -232,7 +237,7 @@ export struct VncSessionToolbar {
       offsetX: this.placement.side === 'left' ? 2 : -2 })
     .position({ x: this.placement.railRect.x, y: this.placement.railRect.y })
     .translate({ x: this.railSwipeX })
-    .gesture(PanGesture({ fingers: 1, distance: 5 })
+    .parallelGesture(PanGesture({ fingers: 1, direction: PanDirection.Horizontal, distance: 5 })
       .onActionUpdate((event: GestureEvent): void => { this.updateRailSwipe(event); })
       .onActionEnd((event: GestureEvent): void => {
         this.finishRailSwipe(event);
@@ -259,6 +264,7 @@ export struct VncSessionToolbar {
     }
     .width(REMOTE_SESSION_COLLAPSED_TOP_WIDTH)
     .height(REMOTE_SESSION_COLLAPSED_TOP_TOUCH_HEIGHT)
+    .focusable(false).focusOnTouch(false)
     .position({ x: '50%', y: 0 }).markAnchor({ x: '50%', y: 0 })
     .onMouse((event: MouseEvent): void => {
       if (event.action !== MouseAction.Move && event.action !== MouseAction.Hover) {
@@ -301,6 +307,7 @@ export struct VncSessionToolbar {
       .backdropBlur(16)
       .border({ width: 0.5, color: REMOTE_SESSION_COLLAPSED_RAIL_BORDER })
       .accessibilityText('收起 VNC 会话工具栏')
+      .focusable(false).focusOnTouch(false)
       .onClick((): void => { this.actions.onCollapse(); })
     }
     .position({ x: '50%', y: 0 })

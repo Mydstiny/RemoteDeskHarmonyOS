@@ -31,7 +31,7 @@ export function remoteSessionFloatingCardHeight(viewportHeight: number,
 }
 
 export function remoteSessionSidebarCanvasHeight(viewportHeight: number): number {
-  return Math.max(120, finitePositive(viewportHeight, 640) - 16);
+  return Math.max(1, finitePositive(viewportHeight, 640) - 16);
 }
 
 export function remoteSessionSidebarVisibleRailHeight(viewportHeight: number,
@@ -44,7 +44,7 @@ export function remoteSessionSidebarMenuMaxHeight(viewportHeight: number,
   topOffset: number): number {
   const available: number = remoteSessionSidebarCanvasHeight(viewportHeight) -
     Math.max(0, Number.isFinite(topOffset) ? topOffset : 0);
-  return Math.max(120, available);
+  return Math.max(1, available);
 }
 
 export function remoteSessionSidebarAnchoredMenuTop(viewportHeight: number,
