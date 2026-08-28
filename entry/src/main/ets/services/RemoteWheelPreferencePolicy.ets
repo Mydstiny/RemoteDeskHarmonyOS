@@ -124,4 +124,3 @@ export function remoteWheelSelectionSummary(values: RemoteWheelPreferences): str
   if (reversedLabels.length === protocols.length) { return '全部协议反转'; }
   return '已反转：' + reversedLabels.join('、');
 }
-

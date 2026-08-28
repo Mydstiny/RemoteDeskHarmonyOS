@@ -55,4 +55,3 @@ traffic while local SFTP lists retain the platform direction.
   remain unchanged. Exercise RDP/RustDesk/VNC mouse, physical touchpad and
   virtual touchpad; Moonlight physical/virtual paths; SSH scrollback,
   alternate-buffer and mouse tracking; confirm SFTP lists remain local.
-
