@@ -418,6 +418,7 @@ import {
   normalizeLocalViewScaleMode,
   panCanvasTransform,
   pinchCanvasTransform,
+  rebaseCanvasTransform,
   RDP_CANVAS_FREE_PAN_INSET_RATIO,
   REMOTE_DISPLAY_SCALE_PREFERENCE_VERSION,
   REMOTE_DISPLAY_SCALE_PREFERENCE_VERSION_KEY,
@@ -453,7 +454,7 @@ import {
 import { RemoteProtocol } from '../services/RemoteSessionState';
 import {
   canUseRustDeskAdaptiveOrientation,
-  normalizeRustDeskTargetDevice,
+  isRustDeskPhoneSessionForPeer,
   rustDeskOrientationPolicy
 } from '../services/RemoteOrientationPolicy';
 import {
@@ -1086,6 +1087,10 @@ struct RemoteDesktop {
   private pendingDisappearDecisionTimer: number = -1;
   private disappearDecisionGeneration: number = 0;
   private rustDeskDiagnosticsTimer: number = -1;
+  private rustDeskPeerPlatformCategory: string = 'unknown';
+  private rustDeskRemoteInputPermissionKnown: boolean = false;
+  private rustDeskRemoteInputAllowed: boolean = true;
+  private lastRustDeskInputPermissionToastMs: number = 0;
   private rdpDiagnosticsTimer: number = -1;
   private rustDeskDiagnosticsDockInitialized: boolean = false;
   private vncDiagnosticsDockInitialized: boolean = false;
@@ -2084,7 +2089,8 @@ struct RemoteDesktop {
   private isRustDeskPhoneSession(): boolean {
     const host: RemoteHost | null = this.pendingHost;
     return host !== null && host.protocol === 'rustdesk' &&
-      normalizeRustDeskTargetDevice(host.rustdeskTargetDevice) === 'phone';
+      isRustDeskPhoneSessionForPeer(
+        host.rustdeskTargetDevice, this.rustDeskPeerPlatformCategory);
   }
 
   private async refreshPhysicalKeyboardPresence(reason: string): Promise<void> {
@@ -4277,6 +4283,10 @@ struct RemoteDesktop {
       }
       this.vncExternalInputAutoSwitchSessionId = -1;
       this.resetRustDeskPhysicalTouchpadState();
+      this.rustDeskPeerPlatformCategory = 'unknown';
+      this.rustDeskRemoteInputPermissionKnown = false;
+      this.rustDeskRemoteInputAllowed = true;
+      this.lastRustDeskInputPermissionToastMs = 0;
       this.restoreRemoteSystemPointer('connection-state');
       this.stopRustDeskDiagnosticsPolling(true);
       this.stopRdpDiagnosticsPolling(true);
@@ -4287,6 +4297,7 @@ struct RemoteDesktop {
 
   private onRemoteControlModeChange(): void {
     this.releaseCanvasPinchInput('control-mode-change');
+    this.resetTouchGesture();
     this.resetRustDeskPhysicalTouchpadState();
     this.syncRemoteSystemPointer('control-mode');
     void this.setRemoteNavigationHidden(this.connected, 'control-mode-change');
@@ -4295,6 +4306,7 @@ struct RemoteDesktop {
 
   private onRemoteAppTouchScaleSettingChange(): void {
     this.releaseCanvasPinchInput('remote-app-touch-scale-setting-change');
+    this.resetTouchGesture();
   }
 
   private handleRemoteSurfaceHover = (hovered: boolean): void => {
@@ -4751,6 +4763,16 @@ struct RemoteDesktop {
     });
   }
 
+  private releaseRustDeskInputBeforeBlock(reason: string): void {
+    this.discardPendingMouseMove();
+    this.releaseCanvasPinchInput(reason);
+    this.resetTouchGesture();
+    this.releaseAllHeldKeys();
+    this.resetAllLatches();
+    this.touchpadAnchorValid = false;
+    this.resetTouchpadPointerCurve();
+  }
+
   /**
    * End every VNC input sequence in the old framebuffer coordinate space
    * before adopting a DesktopSize/framebuffer update. This prevents a held
@@ -4781,6 +4803,8 @@ struct RemoteDesktop {
     if (width <= 0 || height <= 0) {
       return;
     }
+    this.rebaseManualCanvasForSourceGeometry(
+      this.remoteWidth, this.remoteHeight, width, height);
     this.updateRemoteSize({
       width,
       height,
@@ -4791,6 +4815,8 @@ struct RemoteDesktop {
     this.updateOwnedRemoteSessionPipContentSize(width, height);
     if (!this.canvasTransformGestureModified) {
       this.resetCanvasToDisplayDefault(true);
+    } else {
+      this.applyCanvasTransform();
     }
     this.requestRemoteCursorViewRefresh(true);
   }
@@ -5719,6 +5745,9 @@ struct RemoteDesktop {
   }
 
   private setRustDeskBrowseMode(on: boolean): void {
+    if (on && !this.rustdeskBrowseMode) {
+      this.releaseRustDeskInputBeforeBlock('rustdesk-browse-mode');
+    }
     this.rustdeskBrowseMode = on;
     this.persistSessionPref('rustdeskBrowseMode', on);
     promptAction.showToast({
@@ -8630,6 +8659,31 @@ struct RemoteDesktop {
     }
   }
 
+  private rebaseManualCanvasForSourceGeometry(previousWidth: number,
+    previousHeight: number, nextWidth: number, nextHeight: number): void {
+    if (!this.canvasTransformGestureModified || previousWidth <= 0 || previousHeight <= 0 ||
+      nextWidth <= 0 || nextHeight <= 0 ||
+      (previousWidth === nextWidth && previousHeight === nextHeight)) {
+      return;
+    }
+    const current: CanvasViewport = this.currentCanvasViewport();
+    const previous: CanvasViewport = {
+      surfaceWidth: current.surfaceWidth,
+      surfaceHeight: current.surfaceHeight,
+      sourceWidth: previousWidth,
+      sourceHeight: previousHeight,
+      freePanInsetRatio: current.freePanInsetRatio
+    };
+    const next: CanvasViewport = {
+      surfaceWidth: current.surfaceWidth,
+      surfaceHeight: current.surfaceHeight,
+      sourceWidth: nextWidth,
+      sourceHeight: nextHeight,
+      freePanInsetRatio: current.freePanInsetRatio
+    };
+    this.canvasTransform = rebaseCanvasTransform(this.canvasTransform, previous, next);
+  }
+
   /** Disabling local canvas zoom must not leave its last enlarged transform on screen. */
   private onCanvasGestureZoomSettingChange(): void {
     this.releaseCanvasPinchInput('zoom-setting-change');
@@ -8956,6 +9010,8 @@ struct RemoteDesktop {
     const previousWidth: number = this.remoteWidth;
     const previousHeight: number = this.remoteHeight;
     this.resetRustDeskInputAfterGeometryChange('rustdesk-renderer-geometry');
+    this.rebaseManualCanvasForSourceGeometry(
+      previousWidth, previousHeight, viewport.sourceWidth, viewport.sourceHeight);
     this.updateOwnedRemoteSessionPipContentSize(
       viewport.sourceWidth, viewport.sourceHeight);
     this.updateRemoteSize({
@@ -8967,6 +9023,8 @@ struct RemoteDesktop {
     });
     if (!this.canvasTransformGestureModified) {
       this.resetCanvasToDisplayDefault();
+    } else {
+      this.applyCanvasTransform();
     }
     // The cursor overlay owns its own render scope. Geometry changes do not
     // necessarily move the logical pointer, so explicitly publish the new
@@ -8999,11 +9057,41 @@ struct RemoteDesktop {
         this.stopRustDeskGeometrySync();
         return;
       }
+      this.syncRustDeskPeerInputState(sessionId);
       this.syncRustDeskDisplayCatalog();
       this.syncRustDeskLogicalSizeFromRenderer();
     };
     sync();
     this.rustDeskGeometrySyncTimer = setInterval(sync, REMOTE_GEOMETRY_SYNC_MS);
+  }
+
+  private syncRustDeskPeerInputState(sessionId: number): void {
+    let snapshot: RustDeskDiagnosticsSnapshot;
+    try {
+      snapshot = this.loader.getSessionDiagnostics(sessionId);
+    } catch (_e) {
+      return;
+    }
+    if (this.sessionId !== sessionId || snapshot.sessionId !== sessionId) {
+      return;
+    }
+    const peerPlatform: string = snapshot.peerPlatform !== undefined ?
+      snapshot.peerPlatform : 'unknown';
+    this.rustDeskPeerPlatformCategory = peerPlatform;
+    const nextKnown: boolean = snapshot.remoteInputPermissionKnown;
+    const nextAllowed: boolean = !nextKnown || snapshot.remoteInputAllowed;
+    if (!nextAllowed && this.rustDeskRemoteInputAllowed) {
+      // Release while the previous permission snapshot still allows the Up
+      // messages to cross the local gate, then block all new sequences.
+      this.releaseRustDeskInputBeforeBlock('rustdesk-input-permission-disabled');
+      promptAction.showToast({
+        message: '远端未开放输入控制，请在被控手机开启 RustDesk 输入控制/无障碍权限',
+        duration: 2200
+      });
+      this.lastRustDeskInputPermissionToastMs = Date.now();
+    }
+    this.rustDeskRemoteInputPermissionKnown = nextKnown;
+    this.rustDeskRemoteInputAllowed = nextAllowed;
   }
 
   /**
@@ -9033,6 +9121,8 @@ struct RemoteDesktop {
     const previousWidth: number = this.remoteWidth;
     const previousHeight: number = this.remoteHeight;
     this.resetVncInputAfterGeometryChange('vnc-framebuffer-geometry');
+    this.rebaseManualCanvasForSourceGeometry(
+      previousWidth, previousHeight, geometry.width, geometry.height);
     this.vncGeometryEpoch += 1;
     this.updateOwnedRemoteSessionPipContentSize(geometry.width, geometry.height);
     this.updateRemoteSize({
@@ -9045,6 +9135,8 @@ struct RemoteDesktop {
     this.vncGeometryReady = true;
     if (!this.canvasTransformGestureModified) {
       this.resetCanvasToDisplayDefault(true);
+    } else {
+      this.applyCanvasTransform();
     }
     this.requestRemoteCursorViewRefresh(true);
     hilog.info(RD_DOMAIN, RD_TAG, 'VNC framebuffer geometry synchronized: ' +
@@ -9165,6 +9257,18 @@ struct RemoteDesktop {
       this.releaseCanvasPinchInput('surface-resize');
     } else {
       clearTimeout(this.surfaceResizeSettleTimer);
+    }
+    if (this.canvasTransformGestureModified) {
+      const previousViewport: CanvasViewport = this.currentCanvasViewport();
+      const nextViewport: CanvasViewport = {
+        surfaceWidth: widthPx,
+        surfaceHeight: heightPx,
+        sourceWidth: previousViewport.sourceWidth,
+        sourceHeight: previousViewport.sourceHeight,
+        freePanInsetRatio: previousViewport.freePanInsetRatio
+      };
+      this.canvasTransform = rebaseCanvasTransform(
+        this.canvasTransform, previousViewport, nextViewport);
     }
     this.surfaceWidth = widthVp;
     this.surfaceHeight = heightVp;
@@ -9389,6 +9493,21 @@ struct RemoteDesktop {
         });
       }
       hilog.info(RD_DOMAIN, RD_TAG, 'dropInput ' + source + ' browseMode=1 protocol=' + protocol);
+      return false;
+    }
+    if (this.isRustDeskSession() && this.rustDeskRemoteInputPermissionKnown &&
+      !this.rustDeskRemoteInputAllowed) {
+      const now: number = Date.now();
+      if (source !== 'mouseMove' &&
+        now - this.lastRustDeskInputPermissionToastMs > 2200) {
+        this.lastRustDeskInputPermissionToastMs = now;
+        promptAction.showToast({
+          message: '远端未开放输入控制，请在被控手机开启 RustDesk 输入控制/无障碍权限',
+          duration: 1800
+        });
+      }
+      hilog.info(RD_DOMAIN, RD_TAG, 'dropInput ' + source +
+        ' rustDeskRemoteInputAllowed=0');
       return false;
     }
     if (this.isRustDeskSession() && this.rustDeskDisplaySwitchState.inputBlocked) {
@@ -15419,10 +15538,11 @@ struct RemoteDesktop {
     this.clearTouchRightClickTimer();
     this.clearTouchDirectRightClickTimer();
     const wasDragging: boolean = this.touchDragActive;
-    if (this.touchDragActive) {
-      // 拖拽结束 — 释放左键
+    if (this.touchDragActive || this.touchLeftDown) {
+      // Every terminal path releases the direct/touchpad left button once.
       this.sendMouseNow(this.remoteCursorX, this.remoteCursorY, 0, false);
     }
+    this.touchLeftDown = false;
     this.touchFingerCount = 0;
     this.touchDragActive = false;
     this.touchDragPending = false;
@@ -15938,10 +16058,12 @@ struct RemoteDesktop {
             }
           }
           if (this.touchLeftDown) {
+            this.flushMouseMove();
             this.sendMouseNow(this.remoteCursorX, this.remoteCursorY, 0, false);
             this.touchLeftDown = false;
           }
-          this.touchDragPending = this.touchMaxFingers === 2 && !this.touchMoved;
+          this.touchDragPending = !this.isRustDeskPhoneSession() &&
+            this.touchMaxFingers === 2 && !this.touchMoved;
           return;
         }
         const mapped: MappedPoint = this.mapInputPoint(point.x, point.y);
@@ -15958,7 +16080,9 @@ struct RemoteDesktop {
         this.queueMouseMove(mapped.x, mapped.y, false);
         this.flushMouseMove();
         this.sendMouseNow(mapped.x, mapped.y, 0, true);
-        this.startDirectTouchRightClickTimer();
+        if (!this.isRustDeskPhoneSession()) {
+          this.startDirectTouchRightClickTimer();
+        }
       } else if (event.type === TouchType.Move) {
         this.touchFingerCount = this.trackedCanvasTouchCount(event);
         if (this.touchMaxFingers >= 2) {
@@ -16008,7 +16132,8 @@ struct RemoteDesktop {
         this.touchFingerCount = this.remainingTouchCountAfterLift(event);
         if (this.touchMaxFingers === 2 && event.type === TouchType.Up) {
           this.finishCanvasTwoFingerCandidateForRelease(this.touchMoved);
-          if (!this.touchMoved && shouldPreserveCanvasTwoFingerRightClick(this.canvasTwoFingerState)) {
+          if (!this.isRustDeskPhoneSession() && !this.touchMoved &&
+            shouldPreserveCanvasTwoFingerRightClick(this.canvasTwoFingerState)) {
             this.touchDragPending = true;
           }
         }
@@ -16042,6 +16167,14 @@ struct RemoteDesktop {
         const mapped: MappedPoint = this.mapInputPoint(point.x, point.y);
         this.logMappedInput('touch', point.x, point.y, mapped);
         if (this.touchLeftDown) {
+          if (event.type === TouchType.Cancel) {
+            this.discardPendingMouseMove();
+          } else if (this.touchMoved || this.pendingMouseMoveValid) {
+            // Android direct touch must finish MOVE* before LEFT_UP. A queued
+            // post-Up move can otherwise start the next gesture at a stale point.
+            this.queueMouseMove(mapped.x, mapped.y, false);
+            this.flushMouseMove();
+          }
           this.sendMouseNow(mapped.x, mapped.y, 0, false);
         }
         this.touchLeftDown = false;

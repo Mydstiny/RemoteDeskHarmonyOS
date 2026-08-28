@@ -46,7 +46,8 @@ export type DiagnosticPresentation =
 
 export type DiagnosticProducerTransform =
   'unknown' | 'not_sampled' | 'identity' | 'flip_x' | 'flip_y' |
-  'rotate_180' | 'other' | 'read_failed';
+  'rotate_90' | 'rotate_180' | 'rotate_270' | 'transpose' | 'transverse' |
+  'other' | 'read_failed';
 
 export interface DiagnosticRuntimeFacts {
   state: DiagnosticRuntimeState;
@@ -255,7 +256,8 @@ const DIAGNOSTIC_PRESENTATIONS: DiagnosticPresentation[] = [
 ];
 const DIAGNOSTIC_PRODUCER_TRANSFORMS: DiagnosticProducerTransform[] = [
   'unknown', 'not_sampled', 'identity', 'flip_x', 'flip_y',
-  'rotate_180', 'other', 'read_failed'
+  'rotate_90', 'rotate_180', 'rotate_270', 'transpose', 'transverse',
+  'other', 'read_failed'
 ];
 
 export function emptyDiagnosticRuntimeFacts(): DiagnosticRuntimeFacts {

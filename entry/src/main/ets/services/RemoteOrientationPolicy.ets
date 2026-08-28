@@ -15,6 +15,19 @@ export function isRustDeskMobilePlatform(platform: string): boolean {
     normalized.indexOf('phone') >= 0 || normalized.indexOf('tablet') >= 0;
 }
 
+/** Authenticated peer category wins; local target type is a handshake fallback. */
+export function isRustDeskPhoneSessionForPeer(targetDevice: string,
+  peerPlatform: string): boolean {
+  const normalized: string = peerPlatform.trim().toLowerCase();
+  if (normalized === 'android' || normalized === 'ios') {
+    return true;
+  }
+  if (normalized === 'windows' || normalized === 'macos' || normalized === 'linux') {
+    return false;
+  }
+  return normalizeRustDeskTargetDevice(targetDevice) === 'phone';
+}
+
 /**
  * Adaptive orientation is an explicit per-host opt-in. Pro records with a
  * known desktop platform are rejected here even if an old local value says

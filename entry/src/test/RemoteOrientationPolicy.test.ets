@@ -1,6 +1,7 @@
 import { describe, it, expect } from '@ohos/hypium';
 import {
   canUseRustDeskAdaptiveOrientation,
+  isRustDeskPhoneSessionForPeer,
   rustDeskOrientationPolicy
 } from '../main/ets/services/RemoteOrientationPolicy';
 
@@ -31,6 +32,13 @@ export default function remoteOrientationPolicyTest(): void {
       expect(canUseRustDeskAdaptiveOrientation('rustdesk', 'phone', true,
         'rustdesk_pro', true, 'Android')).assertTrue();
       expect(canUseRustDeskAdaptiveOrientation('vnc', 'phone', true)).assertFalse();
+    });
+
+    it('uses authenticated peer platform before the local phone fallback', 0, (): void => {
+      expect(isRustDeskPhoneSessionForPeer('computer', 'android')).assertTrue();
+      expect(isRustDeskPhoneSessionForPeer('phone', 'windows')).assertFalse();
+      expect(isRustDeskPhoneSessionForPeer('phone', 'unknown')).assertTrue();
+      expect(isRustDeskPhoneSessionForPeer('computer', 'other')).assertFalse();
     });
   });
 }

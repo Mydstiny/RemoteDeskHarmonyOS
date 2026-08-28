@@ -21,8 +21,12 @@ enum class NativeImageTransformClass : uint8_t {
     FlipX = 2,
     FlipY = 3,
     Rotate180 = 4,
-    Other = 5,
-    ReadFailed = 6,
+    Rotate90 = 5,
+    Rotate270 = 6,
+    Transpose = 7,
+    Transverse = 8,
+    Other = 9,
+    ReadFailed = 10,
 };
 
 inline NativeImagePresentationMode NativeImageModeForDesktopSurface(
@@ -48,7 +52,7 @@ inline NativeImageTransformClass ClassifyNativeImageProducerTransform(
  * Return the texture transform for an encoded remote-desktop frame.
  *
  * The transform source is an explicit protocol decision. A protocol may use
- * identity, trust every finite producer matrix, or accept only the four
+ * identity, trust every finite producer matrix, or accept only the eight
  * axis-aligned transforms understood by this renderer. Peer platform labels
  * never select or reinterpret a matrix.
  */
@@ -97,8 +101,6 @@ inline NativeImageTransformClass ClassifyNativeImageProducerTransform(
         }
     }
     const bool common =
-        NativeImageTransformNearlyEqual(matrix[1], 0.0f) &&
-        NativeImageTransformNearlyEqual(matrix[4], 0.0f) &&
         NativeImageTransformNearlyEqual(matrix[2], 0.0f) &&
         NativeImageTransformNearlyEqual(matrix[6], 0.0f) &&
         NativeImageTransformNearlyEqual(matrix[8], 0.0f) &&
@@ -114,23 +116,55 @@ inline NativeImageTransformClass ClassifyNativeImageProducerTransform(
     }
     const bool xPositive = NativeImageTransformNearlyEqual(matrix[0], 1.0f);
     const bool xNegative = NativeImageTransformNearlyEqual(matrix[0], -1.0f);
+    const bool xZero = NativeImageTransformNearlyEqual(matrix[0], 0.0f);
+    const bool xFromYPositive = NativeImageTransformNearlyEqual(matrix[4], 1.0f);
+    const bool xFromYNegative = NativeImageTransformNearlyEqual(matrix[4], -1.0f);
+    const bool xFromYZero = NativeImageTransformNearlyEqual(matrix[4], 0.0f);
+    const bool yFromXPositive = NativeImageTransformNearlyEqual(matrix[1], 1.0f);
+    const bool yFromXNegative = NativeImageTransformNearlyEqual(matrix[1], -1.0f);
+    const bool yFromXZero = NativeImageTransformNearlyEqual(matrix[1], 0.0f);
     const bool yPositive = NativeImageTransformNearlyEqual(matrix[5], 1.0f);
     const bool yNegative = NativeImageTransformNearlyEqual(matrix[5], -1.0f);
+    const bool yZero = NativeImageTransformNearlyEqual(matrix[5], 0.0f);
     const bool xOrigin = NativeImageTransformNearlyEqual(matrix[12], 0.0f);
     const bool xShift = NativeImageTransformNearlyEqual(matrix[12], 1.0f);
     const bool yOrigin = NativeImageTransformNearlyEqual(matrix[13], 0.0f);
     const bool yShift = NativeImageTransformNearlyEqual(matrix[13], 1.0f);
-    if (xPositive && yPositive && xOrigin && yOrigin) {
+    if (xPositive && xFromYZero && yFromXZero && yPositive &&
+        xOrigin && yOrigin) {
         return NativeImageTransformClass::Identity;
     }
-    if (xNegative && yPositive && xShift && yOrigin) {
+    if (xNegative && xFromYZero && yFromXZero && yPositive &&
+        xShift && yOrigin) {
         return NativeImageTransformClass::FlipX;
     }
-    if (xPositive && yNegative && xOrigin && yShift) {
+    if (xPositive && xFromYZero && yFromXZero && yNegative &&
+        xOrigin && yShift) {
         return NativeImageTransformClass::FlipY;
     }
-    if (xNegative && yNegative && xShift && yShift) {
+    if (xNegative && xFromYZero && yFromXZero && yNegative &&
+        xShift && yShift) {
         return NativeImageTransformClass::Rotate180;
+    }
+    // x'=y, y'=1-x
+    if (xZero && xFromYPositive && yFromXNegative && yZero &&
+        xOrigin && yShift) {
+        return NativeImageTransformClass::Rotate90;
+    }
+    // x'=1-y, y'=x
+    if (xZero && xFromYNegative && yFromXPositive && yZero &&
+        xShift && yOrigin) {
+        return NativeImageTransformClass::Rotate270;
+    }
+    // x'=y, y'=x
+    if (xZero && xFromYPositive && yFromXPositive && yZero &&
+        xOrigin && yOrigin) {
+        return NativeImageTransformClass::Transpose;
+    }
+    // x'=1-y, y'=1-x
+    if (xZero && xFromYNegative && yFromXNegative && yZero &&
+        xShift && yShift) {
+        return NativeImageTransformClass::Transverse;
     }
     return NativeImageTransformClass::Other;
 }
@@ -142,6 +176,10 @@ inline const char* NativeImageTransformClassName(
         case NativeImageTransformClass::FlipX: return "flip_x";
         case NativeImageTransformClass::FlipY: return "flip_y";
         case NativeImageTransformClass::Rotate180: return "rotate_180";
+        case NativeImageTransformClass::Rotate90: return "rotate_90";
+        case NativeImageTransformClass::Rotate270: return "rotate_270";
+        case NativeImageTransformClass::Transpose: return "transpose";
+        case NativeImageTransformClass::Transverse: return "transverse";
         case NativeImageTransformClass::Other: return "other";
         case NativeImageTransformClass::ReadFailed: return "read_failed";
         case NativeImageTransformClass::NotSampled:

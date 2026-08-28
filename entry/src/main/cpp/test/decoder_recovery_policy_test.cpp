@@ -29,3 +29,12 @@ RDP_TEST_CASE(decoder_recovery_coalesces_and_bounds_surface_failures) {
     RDP_ASSERT(Render::ShouldEnterTerminalDecoderRecovery(true, 2));
     RDP_ASSERT(Render::ShouldEnterTerminalDecoderRecovery(false, 1));
 }
+
+RDP_TEST_CASE(decoder_recovery_recreates_fixed_surface_after_frame_size_change) {
+    RDP_ASSERT(Render::ShouldRecreateDecoderForFrameGeometry(
+        1080, 2400, 2400, 1080));
+    RDP_ASSERT(!Render::ShouldRecreateDecoderForFrameGeometry(
+        1080, 2400, 1080, 2400));
+    RDP_ASSERT(!Render::ShouldRecreateDecoderForFrameGeometry(
+        1080, 2400, 0, 0));
+}

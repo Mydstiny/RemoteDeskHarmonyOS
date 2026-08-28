@@ -108,6 +108,10 @@ export default function diagnosticRuntimeSnapshotPolicyTest(): void {
         expect(facts.peerPlatform).assertEqual('windows');
         expect(facts.presentation).assertEqual('validated_producer');
         expect(facts.producerTransform).assertEqual('rotate_180');
+        const rotated = desktopSnapshot();
+        rotated.producerTransform = 'rotate_270';
+        expect(diagnosticDesktopRuntimeFacts(
+          'connection.rustdesk', rotated).producerTransform).assertEqual('rotate_270');
         expect(facts.dropped).assertEqual(5);
       });
 

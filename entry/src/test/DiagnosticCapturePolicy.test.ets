@@ -68,6 +68,8 @@ export default function diagnosticCapturePolicyTest(): void {
       expect(diagnosticRuntimeFactsAreValid(facts)).assertTrue();
       facts.presentation = 'validated_producer';
       expect(diagnosticRuntimeFactsAreValid(facts)).assertTrue();
+      facts.producerTransform = 'rotate_90';
+      expect(diagnosticRuntimeFactsAreValid(facts)).assertTrue();
       facts.width = -1;
       expect(diagnosticRuntimeFactsAreValid(facts)).assertFalse();
       facts.width = 1920;

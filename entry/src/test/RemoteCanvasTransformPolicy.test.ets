@@ -7,6 +7,7 @@ import {
   normalizeLocalViewScaleMode,
   panCanvasTransform,
   pinchCanvasTransform,
+  rebaseCanvasTransform,
   RDP_CANVAS_FREE_PAN_INSET_RATIO,
   REMOTE_DISPLAY_SCALE_PREFERENCE_VERSION,
   resolveInitialRemoteDisplayScaleMode
@@ -153,6 +154,51 @@ export default function remoteCanvasTransformPolicyTest() {
       const maxed = baseCanvasTransform('custom', 300, smallViewport);
       expect(Math.round(maxed.scale * 100) / 100).assertEqual(CANVAS_TRANSFORM_MAX_SCALE);
       expect(maxed.scale <= CANVAS_TRANSFORM_MAX_SCALE).assertTrue();
+    });
+
+    it('preserves manual zoom and the centred content point across window rotation', 0, (): void => {
+      const landscape: CanvasViewport = {
+        surfaceWidth: 1000, surfaceHeight: 600,
+        sourceWidth: 2000, sourceHeight: 1000
+      };
+      const portrait: CanvasViewport = {
+        surfaceWidth: 600, surfaceHeight: 1000,
+        sourceWidth: 2000, sourceHeight: 1000
+      };
+      const before: CanvasTransform = clampCanvasTransform({
+        scale: 4, panX: 180, panY: -80, rotation: 0
+      }, landscape);
+      const after: CanvasTransform = rebaseCanvasTransform(before, landscape, portrait);
+      expect(Math.abs(after.scale - before.scale) < 0.001).assertTrue();
+      expect(after.panX > 0).assertTrue();
+      expect(after.panY < 0).assertTrue();
+    });
+
+    it('keeps fit centred when rebasing a quarter-turned canvas', 0, (): void => {
+      const next: CanvasViewport = {
+        surfaceWidth: 600, surfaceHeight: 1000,
+        sourceWidth: 2000, sourceHeight: 1000
+      };
+      const before: CanvasTransform = baseCanvasTransform('fit', 100, viewport, 1);
+      const after: CanvasTransform = rebaseCanvasTransform(before, viewport, next);
+      expect(after.rotation).assertEqual(1);
+      expect(Math.abs(after.scale - 1) < 0.001).assertTrue();
+      expect(Math.abs(after.panX) < 0.001).assertTrue();
+      expect(Math.abs(after.panY) < 0.001).assertTrue();
+    });
+
+    it('preserves the focused region when the remote source rotates', 0, (): void => {
+      const portraitSource: CanvasViewport = {
+        surfaceWidth: 1000, surfaceHeight: 600,
+        sourceWidth: 1000, sourceHeight: 2000
+      };
+      const before: CanvasTransform = clampCanvasTransform({
+        scale: 3, panX: 120, panY: -210, rotation: 0
+      }, viewport);
+      const after: CanvasTransform = rebaseCanvasTransform(before, viewport, portraitSource);
+      expect(Math.abs(after.scale - before.scale) < 0.001).assertTrue();
+      expect(after.panX > 0).assertTrue();
+      expect(after.panY < 0).assertTrue();
     });
   });
 }
