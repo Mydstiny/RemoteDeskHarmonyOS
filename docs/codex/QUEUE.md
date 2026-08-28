@@ -4,7 +4,7 @@ Updated: 2026-08-28 Asia/Shanghai
 
 ## Now
 
-1. Commit the eighth-review remediation and reuse the same reviewer for all thirty-three findings.
+1. Commit the ninth-review remediation and reuse the same reviewer for all thirty-four findings.
 2. Rerun final mandatory gates after PASS.
 3. Complete PR/main closure only after review and required checks pass.
 

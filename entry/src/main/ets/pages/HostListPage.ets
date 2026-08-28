@@ -6123,6 +6123,7 @@ struct HostListPage {
   }
 
   private async connectToHost(host: RemoteHost): Promise<void> {
+    if (!this.pageActive || this.appInBackground) { return; }
     hilog.info(0x0001, 'HostList', 'connectToHost: proto=' + host.protocol +
       ' host=' + maskHost(host.host) + ':' + host.port);
     const moonlightReleased: boolean = MoonlightSessionCoordinator.getInstance()
@@ -6160,6 +6161,13 @@ struct HostListPage {
         return;
       }
     }
+    if (!this.pageActive || this.appInBackground) {
+      if (protocolNeedsArbitration) {
+        this.clearPendingVncCredentialForRemoteHost(host);
+        this.releaseConnectionAttempt(host.id);
+      }
+      return;
+    }
     if (host.locked) {
       const r = await showLockGate(host.label, 'biometric');
       if (protocolNeedsArbitration &&
@@ -6175,6 +6183,13 @@ struct HostListPage {
       }
     }
     if (protocolNeedsArbitration && !this.isCurrentConnectionAttempt(host.id, connectionGeneration)) {
+      return;
+    }
+    if (!this.pageActive || this.appInBackground) {
+      if (protocolNeedsArbitration) {
+        this.clearPendingVncCredentialForRemoteHost(host);
+        this.releaseConnectionAttempt(host.id);
+      }
       return;
     }
     if (host.protocol === 'ssh') {
@@ -8905,6 +8920,10 @@ struct HostListPage {
   }
 
   private openRustDeskProPreflight(host: RemoteHost): void {
+    if (!this.pageActive || this.appInBackground) {
+      this.releaseConnectionAttempt(host.id);
+      return;
+    }
     if (this.rustDeskProPreflightClosing || this.showRustDeskProPreflight ||
       this.remoteHostSheetClosing || this.showRemoteHostSheet) {
       // connectToHost 已经为该主机占住了连接尝试；等旧 Sheet 的 onDisappear
@@ -8916,7 +8935,9 @@ struct HostListPage {
     }
     const generation: number = this.prepareRustDeskProPreflight(host);
     this.openSheetSafely((): void => {
-      if (generation !== this.rustDeskProPreflightGeneration || this.rustDeskProPreflightClosing) {
+      if (!this.pageActive || this.appInBackground ||
+        generation !== this.rustDeskProPreflightGeneration || this.rustDeskProPreflightClosing) {
+        this.releaseConnectionAttempt(host.id);
         return;
       }
       this.openRemoteHostSheet(REMOTE_HOST_SHEET_RUSTDESK_PREFLIGHT, (): void => {
@@ -9676,6 +9697,7 @@ struct HostListPage {
 
   // 编辑主机 (锁定状态需先鉴权)
   private async editHost(host: RemoteHost): Promise<void> {
+    if (!this.pageActive || this.appInBackground) { return; }
     const vncHostId: string = this.vncRecordIdForHost(host);
     if (vncHostId !== '') {
       const latestVnc: VncHostView | null = this.vncHosts.find(vncHostId);
@@ -9691,11 +9713,14 @@ struct HostListPage {
           return;
         }
       }
+      if (!this.pageActive || this.appInBackground) { return; }
       this.prepareClassicVncEditor(latestVnc);
       this.addSheetShowsModernPicker = false;
       this.modernAddProtocol = '';
       this.vncAddFromModernPicker = false;
-      this.openSheetSafely((): void => { this.showAddSheet = true; });
+      this.openSheetSafely((): void => {
+        if (this.pageActive && !this.appInBackground) { this.showAddSheet = true; }
+      });
       return;
     }
     const latestHost: RemoteHost = this.srv.getHost(host.id) ?? host;
@@ -9707,6 +9732,7 @@ struct HostListPage {
         return;
       }
     }
+    if (!this.pageActive || this.appInBackground) { return; }
     hilog.info(0x0001, 'HostList', 'edit host protocol=' + latestHost.protocol +
       ' rdpCredentialHash=' + hashForLog(latestHost.rdpCredentialId));
     this.editingHostId = latestHost.id;
@@ -9777,7 +9803,9 @@ struct HostListPage {
       latestHost.sshProxyType !== 'ssh_jump' && latestHost.sshProxyType !== 'frp_tcp') {
       this.sheetErr = '旧 FRP 控制面模式不能直接迁移，请重新选择外部 FRP TCP 入口';
     }
-    this.openSheetSafely((): void => { this.showAddSheet = true; });
+    this.openSheetSafely((): void => {
+      if (this.pageActive && !this.appInBackground) { this.showAddSheet = true; }
+    });
   }
 
   private prepareClassicVncEditor(host: VncHostView | null): void {
@@ -10048,7 +10076,8 @@ struct HostListPage {
   private secretEditorHidden(kind: EditableSecretKind): boolean {
     const crypto: DataCrypto = DataCrypto.getInstance();
     const securityOverride: boolean = crypto.isSetupComplete() && !crypto.isReady();
-    return this.secretPresentation.isHidden(kind, securityOverride);
+    return !this.pageActive || this.appInBackground ||
+      this.secretPresentation.isHidden(kind, securityOverride);
   }
 
   private persistPreferenceValue(key: string,
@@ -13296,11 +13325,13 @@ struct HostListPage {
   }
 
   private async openSshPublicKeyInstall(host: RemoteHost): Promise<void> {
+    if (!this.pageActive || this.appInBackground) { return; }
     const latest = this.srv.getHost(host.id) ?? host;
     if (latest.locked) {
       const gate = await showLockGate(latest.label, 'biometric');
       if (!gate.ok) { return; }
     }
+    if (!this.pageActive || this.appInBackground) { return; }
     const projectedHost: RemoteHost = latest.runtimeClone();
     projectedHost.password = '';
     projectedHost.sshKeyData = '';
@@ -13326,6 +13357,7 @@ struct HostListPage {
     this.sshPublicKeyInstallError = '';
     this.sshPublicKeyInstallBusy = false;
     this.openSheetSafely((): void => {
+      if (!this.pageActive || this.appInBackground) { return; }
       this.openRemoteHostSheet(REMOTE_HOST_SHEET_PUBLIC_KEY, (): void => {
         this.showSshPublicKeyInstallSheet = true;
       });
