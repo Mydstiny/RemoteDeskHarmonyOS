@@ -9,6 +9,31 @@ export interface RemoteSessionSidebarSystemInsets {
   bottom: number;
 }
 
+export interface RemoteSessionSidebarViewport {
+  width: number;
+  height: number;
+}
+
+/**
+ * Prefer the window-manager viewport for overlays. XComponent area callbacks
+ * can retain portrait width/height after a phone enters forced landscape even
+ * though ArkUI has already laid out the window in landscape.
+ */
+export function remoteSessionSidebarViewport(surfaceWidth: number,
+  surfaceHeight: number, windowWidth: number, windowHeight: number,
+  forceLandscape: boolean): RemoteSessionSidebarViewport {
+  const hasWindowViewport: boolean = Number.isFinite(windowWidth) && windowWidth > 0 &&
+    Number.isFinite(windowHeight) && windowHeight > 0;
+  let width: number = hasWindowViewport ? windowWidth : finitePositive(surfaceWidth, 360);
+  let height: number = hasWindowViewport ? windowHeight : finitePositive(surfaceHeight, 640);
+  if (forceLandscape && width < height) {
+    const portraitWidth: number = width;
+    width = height;
+    height = portraitWidth;
+  }
+  return { width, height };
+}
+
 /**
  * Reject orientation-transition avoid-area snapshots that would leave less
  * than one reachable collapsed handle.  HarmonyOS can briefly report the old

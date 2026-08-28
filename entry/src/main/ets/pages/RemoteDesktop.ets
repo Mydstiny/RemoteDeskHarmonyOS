@@ -482,9 +482,11 @@ import {
 } from '../services/RemoteSessionTopBarPolicy';
 import {
   RemoteSessionSidebarSystemInsets,
+  RemoteSessionSidebarViewport,
   remoteSessionFloatingCardHeight,
   remoteSessionFloatingCardWidth,
-  remoteSessionSidebarSystemInsets
+  remoteSessionSidebarSystemInsets,
+  remoteSessionSidebarViewport
 } from '../services/RemoteSessionSidebarLayoutPolicy';
 import { RemoteSessionCapabilities, resolveSessionCapabilities } from '../services/RemoteSessionCapabilityPolicy';
 import {
@@ -1318,6 +1320,8 @@ struct RemoteDesktop {
   @State private vncToolbarSystemRight: number = 0;
   @State private vncToolbarCutoutRects: Array<OverlayRect> = [];
   @State private vncToolbarKeyboardRect: OverlayRect | null = null;
+  @State private remoteSidebarWindowWidth: number = 0;
+  @State private remoteSidebarWindowHeight: number = 0;
   @State modifierPanelMounted: boolean = false;
   @State modifierPanelVisible: boolean = false;
   @State shortcutPanelVisible: boolean = false;
@@ -1367,6 +1371,7 @@ struct RemoteDesktop {
   private touchIndicatorTimer: number = -1;
   private kbWin: window.Window | null = null;
   private kbAvoidCb: ((data: window.AvoidAreaOptions) => void) | null = null;
+  private kbWindowSizeCb: ((size: window.Size) => void) | null = null;
   private touchHoldDragTimer: number = -1;
   private touchDirectRightClickTimer: number = -1;
   private lastTouchMs: number = 0;
@@ -1753,9 +1758,41 @@ struct RemoteDesktop {
     return occupied;
   }
 
+  private currentRemoteSessionSidebarViewport(): RemoteSessionSidebarViewport {
+    const deviceClass: string =
+      remoteTopBarLayout(this.isDesktopDevice, this.breakpoint, this.isPadDevice).deviceClass;
+    return remoteSessionSidebarViewport(this.surfaceWidth, this.surfaceHeight,
+      this.remoteSidebarWindowWidth, this.remoteSidebarWindowHeight,
+      this.isRdpRemoteSession() && deviceClass !== 'pc');
+  }
+
+  private syncRemoteSidebarWindowViewport(w: window.Window, reason: string): void {
+    try {
+      const rect: window.Rect = w.getWindowProperties().windowRect;
+      const width: number = this.vncToolbarPxToVp(rect.width);
+      const height: number = this.vncToolbarPxToVp(rect.height);
+      if (width <= 0 || height <= 0) {
+        return;
+      }
+      if (Math.abs(width - this.remoteSidebarWindowWidth) >= 0.5 ||
+        Math.abs(height - this.remoteSidebarWindowHeight) >= 0.5) {
+        this.remoteSidebarWindowWidth = width;
+        this.remoteSidebarWindowHeight = height;
+        hilog.info(RD_DOMAIN, RD_TAG, 'sidebar viewport reason=' + reason +
+          ' window=' + Math.round(width).toString() + 'x' + Math.round(height).toString() +
+          'vp surface=' + Math.round(this.surfaceWidth).toString() + 'x' +
+          Math.round(this.surfaceHeight).toString() + 'vp');
+      }
+    } catch (_e) {
+      // A closing or transferred window can temporarily reject properties.
+    }
+  }
+
   private currentVncToolbarViewport(): OverlayViewport {
-    const width: number = this.surfaceWidth > 0 ? this.surfaceWidth : 360;
-    const height: number = this.surfaceHeight > 0 ? this.surfaceHeight : 640;
+    const sidebarViewport: RemoteSessionSidebarViewport =
+      this.currentRemoteSessionSidebarViewport();
+    const width: number = sidebarViewport.width;
+    const height: number = sidebarViewport.height;
     this.vncToolbarPlacementGeneration += 1;
     return {
       width,
@@ -1859,6 +1896,7 @@ struct RemoteDesktop {
     if (!this.isVncSession() && !this.isRdpRemoteSession()) {
       return;
     }
+    this.syncRemoteSidebarWindowViewport(w, 'avoid-area');
     this.vncToolbarSystemTop = 0;
     this.vncToolbarSystemBottom = 0;
     this.vncToolbarSystemLeft = 0;
@@ -1913,7 +1951,7 @@ struct RemoteDesktop {
     } catch (_e) {
       // Keyboard state is also updated by the existing avoid-area callback.
     }
-    const viewportHeight: number = this.surfaceHeight > 0 ? this.surfaceHeight : 640;
+    const viewportHeight: number = this.currentRemoteSessionSidebarViewport().height;
     const rawSystemTop: number = this.vncToolbarSystemTop;
     const rawSystemBottom: number = this.vncToolbarSystemBottom;
     const verticalInsets: RemoteSessionSidebarSystemInsets =
@@ -4684,7 +4722,7 @@ struct RemoteDesktop {
   }
 
   private rdpToolbarAvailableHeight(): number {
-    const height: number = this.surfaceHeight > 0 ? this.surfaceHeight : 640;
+    const height: number = this.currentRemoteSessionSidebarViewport().height;
     const insets: RemoteSessionSidebarSystemInsets = this.rdpToolbarSystemInsets(height);
     const top: number = insets.top;
     let bottom: number = Math.max(top, height - insets.bottom);
@@ -4697,7 +4735,7 @@ struct RemoteDesktop {
   }
 
   private rdpToolbarTopInset(): number {
-    const height: number = this.surfaceHeight > 0 ? this.surfaceHeight : 640;
+    const height: number = this.currentRemoteSessionSidebarViewport().height;
     return this.rdpToolbarSystemInsets(height).top;
   }
 
@@ -6861,6 +6899,14 @@ struct RemoteDesktop {
           }
         };
         w.on('avoidAreaChange', this.kbAvoidCb);
+        this.kbWindowSizeCb = (_size: window.Size): void => {
+          if (this.isVncSession() || this.isRdpRemoteSession()) {
+            // The XComponent can retain the pre-rotation portrait area while
+            // the window manager has already committed landscape geometry.
+            this.syncVncToolbarAvoidAreas(w);
+          }
+        };
+        w.on('windowSizeChange', this.kbWindowSizeCb);
       }).catch((err: Error): void => {
         hilog.warn(RD_DOMAIN, RD_TAG,
           'registerKeyboardAvoid: getLastWindow failed: ' + err.message);
@@ -6876,11 +6922,15 @@ struct RemoteDesktop {
       if (this.kbWin && this.kbAvoidCb) {
         this.kbWin.off('avoidAreaChange', this.kbAvoidCb);
       }
+      if (this.kbWin && this.kbWindowSizeCb) {
+        this.kbWin.off('windowSizeChange', this.kbWindowSizeCb);
+      }
     } catch (_e) {
       // 忽略卸载异常
     }
     this.kbWin = null;
     this.kbAvoidCb = null;
+    this.kbWindowSizeCb = null;
     this.kbHeight = 0;
     this.vncToolbarSystemTop = 0;
     this.vncToolbarSystemBottom = 0;
@@ -6888,6 +6938,8 @@ struct RemoteDesktop {
     this.vncToolbarSystemRight = 0;
     this.vncToolbarCutoutRects = [];
     this.vncToolbarKeyboardRect = null;
+    this.remoteSidebarWindowWidth = 0;
+    this.remoteSidebarWindowHeight = 0;
   }
 
   private cancelPendingDisappearDecision(): void {
@@ -12634,6 +12686,9 @@ struct RemoteDesktop {
         orientation === window.Orientation.AUTO_ROTATION_LANDSCAPE ||
         orientation === window.Orientation.USER_ROTATION_LANDSCAPE;
       hilog.info(RD_DOMAIN, RD_TAG, 'setPreferredOrientation(' + label + ') OK');
+      if ((this.isVncSession() || this.isRdpRemoteSession()) && this.kbWin !== null) {
+        this.syncVncToolbarAvoidAreas(this.kbWin);
+      }
       if (orientation !== window.Orientation.UNSPECIFIED && this.connected) {
         void this.setRemoteNavigationHidden(true, 'orientation-' + label);
       }
@@ -17675,7 +17730,7 @@ struct RemoteDesktop {
           displayScaleLabel: this.vncDisplayScaleLabel(),
           diagnosticsEnabled: this.vncShowDiagnostics,
           collapsed: this.vncToolbarCollapsed,
-          viewportWidth: this.surfaceWidth,
+          viewportWidth: this.currentRemoteSessionSidebarViewport().width,
           placement: this.vncToolbarPlacement,
           actions: this.vncToolbarActions(),
           placementActions: {
@@ -17823,7 +17878,7 @@ struct RemoteDesktop {
           if (!this.rdpControlCenterVisible) {
             RdpDiagnosticsHud({
               stats: this.rdpRenderStats,
-              availableWidth: this.surfaceWidth > 0 ? this.surfaceWidth : 360,
+              availableWidth: this.currentRemoteSessionSidebarViewport().width,
               availableHeight: this.rdpToolbarAvailableHeight(),
               topInset: this.rdpToolbarTopInset()
             })

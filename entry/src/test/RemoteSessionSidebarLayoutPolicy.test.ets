@@ -9,6 +9,7 @@ import {
   remoteSessionSidebarMenuMaxHeight,
   remoteSessionSidebarMenuWidth,
   remoteSessionSidebarSystemInsets,
+  remoteSessionSidebarViewport,
   remoteSessionSidebarVisibleRailHeight
 } from '../main/ets/services/RemoteSessionSidebarLayoutPolicy';
 
@@ -57,6 +58,18 @@ export default function remoteSessionSidebarLayoutPolicyTest(): void {
       const tiny = remoteSessionSidebarSystemInsets(40, 30, 0, 44);
       expect(tiny.top).assertEqual(0);
       expect(tiny.bottom).assertEqual(0);
+    });
+
+    it('uses_window_viewport_and_normalizes_forced_phone_landscape', 0, (): void => {
+      const windowViewport = remoteSessionSidebarViewport(391, 844, 844, 391, true);
+      expect(windowViewport.width).assertEqual(844);
+      expect(windowViewport.height).assertEqual(391);
+      const staleWindowViewport = remoteSessionSidebarViewport(391, 844, 391, 844, true);
+      expect(staleWindowViewport.width).assertEqual(844);
+      expect(staleWindowViewport.height).assertEqual(391);
+      const portraitViewport = remoteSessionSidebarViewport(391, 844, 0, 0, false);
+      expect(portraitViewport.width).assertEqual(391);
+      expect(portraitViewport.height).assertEqual(844);
     });
   });
 }
