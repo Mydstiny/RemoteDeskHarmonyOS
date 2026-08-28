@@ -20,7 +20,8 @@ export function accountScopedMigrationReceiptDecision(
   recoveryBaselineFingerprint: string | null = null
 ): AccountScopedMigrationReceiptDecision {
   if (committedFingerprint === null) { return 'migrate'; }
-  if (committedFingerprint.indexOf('journal-v1:') === 0) {
+  if (committedFingerprint.indexOf('journal-v1:') === 0 ||
+      committedFingerprint.indexOf('journal-v2:') === 0) {
     return committedFingerprint === currentFingerprint
       ? 'skip_unchanged' : 'source_changed';
   }
@@ -43,6 +44,7 @@ export function accountScopedMigrationReceiptNeedsUpgrade(
 ): boolean {
   return decision === 'skip_unchanged' &&
     committedFingerprint.indexOf('journal-v1:') !== 0 &&
+    committedFingerprint.indexOf('journal-v2:') !== 0 &&
     recoveryBaselineFingerprint !== null;
 }
 

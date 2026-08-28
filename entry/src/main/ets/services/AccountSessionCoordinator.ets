@@ -407,8 +407,9 @@ export class AccountSessionCoordinator {
     let rebound: boolean = await store.rebindScope(
       this.context, switching, identity.unionID, platformProof);
     let compatibilityFallbackUsed: boolean = false;
+    let primaryRebindFailure: string = 'none';
     if (!rebound) {
-      const primaryFailure: string =
+      primaryRebindFailure =
         store.lastScopeRebindFailureKind();
       const localFallback: AccountScopeToken | null =
         accountLocalCompatibilityScopeToken(switching);
@@ -416,10 +417,10 @@ export class AccountSessionCoordinator {
         this.intentIsCurrent(intentGeneration)) {
         hilog.warn(0x0001, 'AccountSession',
           '规范账号库初始化未完成，兼容降级到同账号本地库；登录继续，云绑定稍后重试 failureKind=' +
-          primaryFailure);
+          primaryRebindFailure);
         rebound = await store.rebindScope(
           this.context, localFallback,
-          identity.unionID, platformProof);
+          identity.unionID, platformProof, true);
         compatibilityFallbackUsed = rebound;
       }
     }
@@ -540,7 +541,9 @@ export class AccountSessionCoordinator {
       platformProof.state;
     this.cloudBindingRecoveryState =
       compatibilityFallbackUsed && cloudRecoveryBaselineReady
-        ? 'binding_pending'
+        ? (primaryRebindFailure === 'source_changed' ||
+            primaryRebindFailure === 'identity_conflict'
+          ? 'blocked' : 'binding_pending')
         : cloudBindingRecoveryRequested(
           platformProof.state, cloudBound);
     if (!cloudRecoveryBaselineReady) {
@@ -771,9 +774,12 @@ export class AccountSessionCoordinator {
         : unavailablePlatformCloudIdentityProof(
           'permission_unavailable');
     const store: CloudStore = CloudStore.getInstance();
+    const preserveCompatibilityStore: boolean =
+      rollback.kind === 'huawei_account' &&
+      rollback.storeIdentity !== ACCOUNT_CLOUD_STORE_IDENTITY;
     const restored: boolean = await store.rebindScope(
       this.context, rollback, unionId,
-      rollbackProof);
+      rollbackProof, preserveCompatibilityStore);
     if (!restored) {
       this.cloudBindingRecoveryState =
         cloudBindingRecoveryAfterRollback(false, retryable);
@@ -968,7 +974,9 @@ export class AccountSessionCoordinator {
     }
     const rebound: boolean = await store.rebindScope(
       this.context, rollback, previousUnionId,
-      previousPlatformProof);
+      previousPlatformProof,
+      rollback.kind === 'huawei_account' &&
+        rollback.storeIdentity !== ACCOUNT_CLOUD_STORE_IDENTITY);
     const credentialRestored: boolean =
       await AccountKitService.getInstance()
         .restoreCredentialSnapshot(previousCredential);

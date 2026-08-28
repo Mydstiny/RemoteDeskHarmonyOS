@@ -41,6 +41,15 @@ export default function legacySharedStoreMigrationPolicyTest(): void {
         expect(accountScopedMigrationReceiptDecision(
           'journal-v1:empty', 'journal-v1:changed', null))
           .assertEqual('source_changed');
+        expect(accountScopedMigrationReceiptDecision(
+          'journal-v1:same', 'journal-v2:compatibility-dirty',
+          'journal-v1:same')).assertEqual('source_changed');
+        expect(accountScopedMigrationReceiptDecision(
+          'journal-v2:same', 'journal-v2:same'))
+          .assertEqual('skip_unchanged');
+        expect(accountScopedMigrationReceiptNeedsUpgrade(
+          'journal-v2:same', 'skip_unchanged',
+          'journal-v1:baseline')).assertFalse();
       });
 
     it('claims_blank_legacy_owner_only_for_a_verified_account', 0, (): void => {
