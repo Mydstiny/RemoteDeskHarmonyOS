@@ -26,15 +26,22 @@ export interface RemoteSessionControlBarPreferencePresence {
   vncPresent: boolean;
 }
 
-export type RemoteTopBarMenuId = 'control' | 'display' | 'keyboardMouse' | 'chat' | 'voice' | 'record';
+export type RemoteTopBarMenuId = 'control' | 'display' | 'desktopFlip' |
+  'keyboardMouse' | 'chat' | 'voice' | 'record';
 
 export type RemoteSessionPrimaryActionId = 'pin' | 'control' | 'display' |
-  'keyboardMouse' | 'keyboard' | 'fileTransfer' | 'diagnostics' | 'disconnect';
+  'desktopFlip' | 'keyboardMouse' | 'keyboard' | 'fileTransfer' |
+  'diagnostics' | 'disconnect';
 
 export type RemoteKeyboardSidebarAction = 'choose' | 'close';
 
 const RUSTDESK_PRIMARY_ACTION_IDS: RemoteSessionPrimaryActionId[] = [
   'pin', 'control', 'display', 'keyboardMouse', 'keyboard',
+  'fileTransfer', 'diagnostics', 'disconnect'
+];
+
+const RUSTDESK_PC_PRIMARY_ACTION_IDS: RemoteSessionPrimaryActionId[] = [
+  'pin', 'control', 'display', 'desktopFlip', 'keyboardMouse', 'keyboard',
   'fileTransfer', 'diagnostics', 'disconnect'
 ];
 
@@ -221,9 +228,15 @@ export function shouldUseRemoteSessionEdgeRail(protocol: string,
   return shouldShowRemoteSessionTopBar(protocol) && !isDesktopDevice;
 }
 
-/** PC top bar and Phone/Pad edge rail consume this exact ordered action set. */
-export function remoteSessionPrimaryActionIds(protocol: string): RemoteSessionPrimaryActionId[] {
-  return protocol === 'rustdesk' ? RUSTDESK_PRIMARY_ACTION_IDS.slice() : [];
+/** Keep the desktop workaround out of the shared Phone/Pad edge rail. */
+export function remoteSessionPrimaryActionIds(protocol: string,
+  deviceClass: RemoteTopBarDeviceClass = 'phone',
+  rustDeskPhoneTarget: boolean = false): RemoteSessionPrimaryActionId[] {
+  if (protocol !== 'rustdesk') { return []; }
+  if (deviceClass === 'pc' && !rustDeskPhoneTarget) {
+    return RUSTDESK_PC_PRIMARY_ACTION_IDS.slice();
+  }
+  return RUSTDESK_PRIMARY_ACTION_IDS.slice();
 }
 
 export function remoteTopBarLayout(isDesktopDevice: boolean, breakpoint: string,
@@ -231,9 +244,9 @@ export function remoteTopBarLayout(isDesktopDevice: boolean, breakpoint: string,
   const deviceClass: RemoteTopBarDeviceClass = remoteTopBarDeviceClass(isDesktopDevice, breakpoint, isPadDevice);
   if (deviceClass === 'pc') {
     if (breakpoint !== 'xl') {
-      return { deviceClass, iconSize: 36, itemGap: 4, topOffset: 0, maxVisibleButtons: 8, menuWidth: 320 };
+      return { deviceClass, iconSize: 36, itemGap: 3, topOffset: 0, maxVisibleButtons: 9, menuWidth: 320 };
     }
-    return { deviceClass, iconSize: 44, itemGap: 8, topOffset: 0, maxVisibleButtons: 8, menuWidth: 360 };
+    return { deviceClass, iconSize: 44, itemGap: 8, topOffset: 0, maxVisibleButtons: 9, menuWidth: 360 };
   }
   if (deviceClass === 'pad') {
     return { deviceClass, iconSize: 44, itemGap: 8, topOffset: 8, maxVisibleButtons: 8, menuWidth: 340 };
@@ -281,6 +294,7 @@ export function rustDeskActionAvailability(actionId: string,
     actionId === 'toggleKeyboard' || actionId === 'toggleModifiers' ||
     actionId === 'displaySettings' ||
     actionId === 'rotateDisplay' ||
+    actionId === 'desktopFlip' ||
     actionId === 'keyboardMouseSettings' || actionId === 'browseMode' ||
     actionId === 'togglePrivacyMode' || actionId === 'toggleAudio') {
     return capabilities.connect;

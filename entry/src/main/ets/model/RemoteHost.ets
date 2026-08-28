@@ -10,6 +10,10 @@ import {
   LanHostAddressView,
   normalizeLanHostAddressMode
 } from '../services/LanHostAddressPolicy';
+import {
+  normalizeRustDeskDesktopFlipMode,
+  RustDeskDesktopFlipMode
+} from '../services/RustDeskDesktopFlipPolicy';
 
 export enum LockType {
   NONE = 0,
@@ -250,6 +254,7 @@ export interface RemoteHostJSON {
   rustdeskDirectPort: number
   rustdeskTargetDevice?: string
   rustdeskAdaptiveOrientation?: boolean
+  rustdeskDesktopFlipMode?: string
   /** Legacy read-only migration input. New serializations omit these fields. */
   rustdeskTotpEntryId?: string
   rustdeskTotpAutoSubmit?: boolean | string
@@ -402,6 +407,7 @@ export class RemoteHost implements LanHostAddressView {
   rustdeskDirectPort: number = 21118; // 直连端口 (默认 21118; RustDesk peer TCP)
   rustdeskTargetDevice: string = 'computer'; // 控制目标: computer | phone
   rustdeskAdaptiveOrientation: boolean = false; // 手机目标的自适应翻转，默认关闭
+  rustdeskDesktopFlipMode: RustDeskDesktopFlipMode = 'reset'; // PC 查看器的本机按主机翻转覆盖
   // Peer 2FA 绑定的运行时投影。权威值位于 owner/device 本地 Preferences，
   // 这些字段不得进入 RemoteHost JSON、云扩展或备份。
   rustdeskTotpEntryId: string = '';
@@ -615,6 +621,7 @@ export class RemoteHost implements LanHostAddressView {
       rustdeskDirectPort: this.rustdeskDirectPort,
       rustdeskTargetDevice: this.rustdeskTargetDevice,
       rustdeskAdaptiveOrientation: this.rustdeskAdaptiveOrientation,
+      rustdeskDesktopFlipMode: this.rustdeskDesktopFlipMode,
       rdpCredentialId: this.rdpCredentialId,
       rdpAuthMode: this.rdpAuthMode,
       rdpRestrictedAdminSecretSource: this.rdpRestrictedAdminSecretSource,
@@ -776,6 +783,8 @@ export class RemoteHost implements LanHostAddressView {
     if (json.rustdeskAdaptiveOrientation !== undefined) {
       host.rustdeskAdaptiveOrientation = json.rustdeskAdaptiveOrientation;
     }
+    host.rustdeskDesktopFlipMode = normalizeRustDeskDesktopFlipMode(
+      json.rustdeskDesktopFlipMode);
     if (json.rustdeskTotpEntryId) {
       host.rustdeskTotpEntryId = json.rustdeskTotpEntryId;
       host.rustdeskTotpLegacySource = 'remote_json';

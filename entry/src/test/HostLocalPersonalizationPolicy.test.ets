@@ -30,6 +30,7 @@ export default function hostLocalPersonalizationPolicyTest(): void {
       legacy.lastHealth = 3;
       legacy.lastLatency = 72;
       legacy.rustdeskAdaptiveOrientation = true;
+      legacy.rustdeskDesktopFlipMode = 'image_only';
       legacy.rustdeskProLastSeenAt = 202;
       legacy.rustdeskProSyncError = 'not_seen';
       const values = remoteHostLocalPersonalizationValues(legacy);
@@ -47,6 +48,7 @@ export default function hostLocalPersonalizationPolicyTest(): void {
       expect(cloud.lastHealth).assertEqual(3);
       expect(cloud.lastLatency).assertEqual(72);
       expect(cloud.rustdeskAdaptiveOrientation).assertTrue();
+      expect(cloud.rustdeskDesktopFlipMode).assertEqual('image_only');
       expect(cloud.rustdeskProLastSeenAt).assertEqual(202);
       expect(cloud.rustdeskProSyncError).assertEqual('not_seen');
     });
@@ -81,6 +83,7 @@ export default function hostLocalPersonalizationPolicyTest(): void {
       local.lastConnected = 123;
       local.lastLatency = 12;
       local.rustdeskAdaptiveOrientation = true;
+      local.rustdeskDesktopFlipMode = 'image_and_controls';
       local.rustdeskProLastSeenAt = 456;
       local.rustdeskProSyncError = 'offline';
       local.sshHostKeyFingerprintSha256 = 'SHA256:local';

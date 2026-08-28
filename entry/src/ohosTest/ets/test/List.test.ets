@@ -38,6 +38,7 @@ import remotePhysicalKeyboardPolicyTest from './RemotePhysicalKeyboardPolicy.tes
 import touchpadPointerCurvePolicyTest from './TouchpadPointerCurvePolicy.test';
 import remotePhysicalTouchpadPolicyTest from '../../../test/RemotePhysicalTouchpadPolicy.test';
 import remoteSurfaceTransformPolicyTest from './RemoteSurfaceTransformPolicy.test';
+import rustDeskDesktopFlipPolicyTest from '../../../test/RustDeskDesktopFlipPolicy.test';
 import remoteCursorStylePolicyTest from './RemoteCursorStylePolicy.test';
 import remoteHostSheetLifecyclePolicyTest from './RemoteHostSheetLifecyclePolicy.test';
 import vncSessionGeometryPolicyTest from './VncSessionGeometryPolicy.test';
@@ -368,6 +369,7 @@ export default function testsuite() {
   touchpadPointerCurvePolicyTest();
   remotePhysicalTouchpadPolicyTest();
   remoteSurfaceTransformPolicyTest();
+  rustDeskDesktopFlipPolicyTest();
   remoteCursorStylePolicyTest();
   remoteHostSheetLifecyclePolicyTest();
   vncSessionGeometryPolicyTest();

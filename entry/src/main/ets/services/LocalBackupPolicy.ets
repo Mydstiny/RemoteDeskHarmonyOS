@@ -107,6 +107,7 @@ const REMOTE_HOST_EXTENSION_PAYLOAD_COLUMNS: string[] = [
   'rustdesktotpautosubmit', 'rustdesktotpdeviceid', 'localpersonalizationversion',
   'localdisplayconfig', 'locallastconnected', 'locallasthealth',
   'locallastlatency', 'localrustdeskadaptiveorientation',
+  'localrustdeskdesktopflipmode',
   'localrustdeskprolastseenat', 'localrustdeskprosyncerror'
 ];
 

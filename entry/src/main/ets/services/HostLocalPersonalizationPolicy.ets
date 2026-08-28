@@ -1,5 +1,6 @@
 import { DisplayConfig, DisplayConfigJSON, RemoteHost } from '../model/RemoteHost';
 import { VncHostValues, VncScalingMode } from './VncModelPolicy';
+import { normalizeRustDeskDesktopFlipMode } from './RustDeskDesktopFlipPolicy';
 
 /**
  * Device-local host personalization envelope.
@@ -29,6 +30,7 @@ export function remoteHostLocalPersonalizationValues(host: RemoteHost): Record<s
   values['locallasthealth'] = host.lastHealth.toString();
   values['locallastlatency'] = host.lastLatency.toString();
   values['localrustdeskadaptiveorientation'] = host.rustdeskAdaptiveOrientation ? '1' : '0';
+  values['localrustdeskdesktopflipmode'] = host.rustdeskDesktopFlipMode;
   values['localrustdeskprolastseenat'] = host.rustdeskProLastSeenAt.toString();
   values['localrustdeskprosyncerror'] = host.rustdeskProSyncError;
   return values;
@@ -70,6 +72,10 @@ export function applyRemoteHostLocalPersonalization(
     values['localrustdeskadaptiveorientation'] === '0') {
     host.rustdeskAdaptiveOrientation = values['localrustdeskadaptiveorientation'] === '1';
   }
+  if (values['localrustdeskdesktopflipmode'] !== undefined) {
+    host.rustdeskDesktopFlipMode = normalizeRustDeskDesktopFlipMode(
+      values['localrustdeskdesktopflipmode']);
+  }
   if (values['localrustdeskprolastseenat'] !== undefined) {
     host.rustdeskProLastSeenAt = finiteNonNegative(
       values['localrustdeskprolastseenat'], host.rustdeskProLastSeenAt);
@@ -93,6 +99,7 @@ export function remoteHostCloudBaseSnapshot(host: RemoteHost): string {
   projected.lastHealth = 0;
   projected.lastLatency = 0;
   projected.rustdeskAdaptiveOrientation = false;
+  projected.rustdeskDesktopFlipMode = 'reset';
   projected.rustdeskProLastSeenAt = 0;
   projected.rustdeskProSyncError = '';
   projected.sshKeyPassphrase = '';

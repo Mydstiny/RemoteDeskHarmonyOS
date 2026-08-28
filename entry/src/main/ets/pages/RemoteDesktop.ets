@@ -425,6 +425,15 @@ import {
   resolveInitialRemoteDisplayScaleMode
 } from '../services/RemoteCanvasTransformPolicy';
 import {
+  effectiveRustDeskDesktopFlipMode,
+  normalizeRustDeskDesktopFlipMode,
+  reprojectRustDeskDesktopFlipPan,
+  rustDeskDesktopFlipRotations,
+  RustDeskDesktopFlipMode,
+  RustDeskDesktopFlipPan,
+  RustDeskDesktopFlipRotations
+} from '../services/RustDeskDesktopFlipPolicy';
+import {
   legacyRdpPresetForResolutionId,
   normalizeRdpResolutionId,
   rdpResolutionPresetForId
@@ -1253,6 +1262,8 @@ struct RemoteDesktop {
   private activeTouchPoints: Map<number, LocalPoint> = new Map<number, LocalPoint>();
   private canvasTransform: CanvasTransform = { scale: 1, panX: 0, panY: 0, rotation: 0 };
   private canvasRotationQuarterTurns: number = 0;
+  private canvasControlRotationQuarterTurns: number = 0;
+  @State private rustDeskDesktopFlipMode: RustDeskDesktopFlipMode = 'reset';
   private canvasTransformInitialized: boolean = false;
   // A default display scale must be recalculated when the surface or stream
   // geometry changes.  Only a real local canvas pinch owns a persistent
@@ -5108,6 +5119,91 @@ struct RemoteDesktop {
     this.updateRendererViewportCacheForCanvasTransform(viewport);
   }
 
+  private adoptRustDeskDesktopFlipMode(mode: RustDeskDesktopFlipMode,
+    reason: string, preserveCanvasFocus: boolean): void {
+    const rotations: RustDeskDesktopFlipRotations = rustDeskDesktopFlipRotations(mode);
+    const previousVisual: number = this.canvasRotationQuarterTurns;
+    const pan: RustDeskDesktopFlipPan = preserveCanvasFocus ?
+      reprojectRustDeskDesktopFlipPan(previousVisual, rotations.visualQuarterTurns,
+        this.canvasTransform.panX, this.canvasTransform.panY) :
+      { panX: 0, panY: 0 };
+    this.rustDeskDesktopFlipMode = mode;
+    this.canvasRotationQuarterTurns = rotations.visualQuarterTurns;
+    this.canvasControlRotationQuarterTurns = rotations.inputQuarterTurns;
+    this.canvasTransform = {
+      scale: this.canvasTransform.scale,
+      panX: pan.panX,
+      panY: pan.panY,
+      rotation: rotations.visualQuarterTurns
+    };
+    if (this.rendererHandle > 0) {
+      this.applyCanvasTransform();
+      this.requestRemoteCursorViewRefresh(true);
+      this.syncRemoteSystemPointer('rustdesk-desktop-flip-' + reason,
+        this.remoteSurfaceHovered !== false, true);
+    }
+    hilog.info(RD_DOMAIN, RD_TAG, 'rustdeskFlipApplied reason=' + reason +
+      ' mode=' + mode +
+      ' visualQ=' + rotations.visualQuarterTurns.toString() +
+      ' controlQ=' + rotations.inputQuarterTurns.toString() +
+      ' renderer=' + this.rendererHandle.toString() +
+      ' transformVersion=' + this.rendererCanvasTransformPendingVersion.toString());
+  }
+
+  private restoreRustDeskDesktopFlipMode(host: RemoteHost, reason: string): void {
+    const mode: RustDeskDesktopFlipMode = effectiveRustDeskDesktopFlipMode(
+      host.rustdeskDesktopFlipMode, host.protocol, this.isDesktopDevice,
+      host.rustdeskTargetDevice);
+    this.adoptRustDeskDesktopFlipMode(mode, reason, false);
+  }
+
+  private setRustDeskDesktopFlipMode(mode: RustDeskDesktopFlipMode): void {
+    const host: RemoteHost | null = this.pendingHost;
+    const normalized: RustDeskDesktopFlipMode = normalizeRustDeskDesktopFlipMode(mode);
+    if (host === null || host.protocol !== 'rustdesk' || !this.isDesktopDevice ||
+      host.rustdeskTargetDevice === 'phone') {
+      promptAction.showToast({ message: '仅 PC 端 RustDesk 电脑会话支持画面翻转', duration: 1800 });
+      return;
+    }
+    const existing: RemoteHost | undefined = this.srv.getHost(host.id);
+    if (existing === undefined) {
+      promptAction.showToast({ message: '主机记录不可用，画面翻转设置未保存', duration: 2000 });
+      return;
+    }
+    const next: RemoteHost = existing.runtimeClone();
+    next.rustdeskDesktopFlipMode = normalized;
+    if (!this.srv.updateHost(next)) {
+      hilog.warn(RD_DOMAIN, RD_TAG, 'rustdeskFlip persistence failed hostId=' +
+        hashForLog(host.id) + ' mode=' + normalized);
+      promptAction.showToast({ message: '本机主机设置保存失败，画面翻转未更改', duration: 2200 });
+      return;
+    }
+    host.rustdeskDesktopFlipMode = normalized;
+    this.resetRustDeskInputAfterGeometryChange('rustdesk-desktop-flip');
+    this.adoptRustDeskDesktopFlipMode(normalized, 'user', true);
+    hilog.info(RD_DOMAIN, RD_TAG, 'rustdeskFlip mode changed hostId=' +
+      hashForLog(host.id) + ' mode=' + normalized + ' persisted=1');
+    const message: string = normalized === 'image_only' ? '已仅翻转画面' :
+      (normalized === 'image_and_controls' ? '已翻转控制层和画面' : '画面翻转已复位');
+    promptAction.showToast({ message, duration: 1500 });
+  }
+
+  /** PIP owns a fit-only renderer, but must retain the host's final visual correction. */
+  private applyRustDeskDesktopFlipToPipRenderer(reason: string): void {
+    if (!this.isRustDeskSession() || this.rendererHandle <= 0) { return; }
+    const version: number = this.loader.setRendererCanvasTransform(
+      this.rendererHandle, 1, 0, 0, this.canvasRotationQuarterTurns);
+    if (Number.isFinite(version) && version > 0) {
+      this.rendererCanvasTransformPendingVersion = version;
+    }
+    hilog.info(RD_DOMAIN, RD_TAG, 'rustdeskFlipApplied reason=' + reason +
+      ' mode=' + this.rustDeskDesktopFlipMode +
+      ' visualQ=' + this.canvasRotationQuarterTurns.toString() +
+      ' controlQ=' + this.canvasControlRotationQuarterTurns.toString() +
+      ' renderer=' + this.rendererHandle.toString() +
+      ' transformVersion=' + this.rendererCanvasTransformPendingVersion.toString());
+  }
+
   /** Rotate only the displayed RustDesk phone canvas; the peer keeps its native orientation. */
   private rotateRustDeskRemoteCanvas(): void {
     if (!this.isRustDeskPhoneSession()) {
@@ -5116,6 +5212,7 @@ struct RemoteDesktop {
     }
     this.resetRustDeskInputAfterGeometryChange('rustdesk-canvas-rotation');
     this.canvasRotationQuarterTurns = (this.canvasRotationQuarterTurns + 1) % 4;
+    this.canvasControlRotationQuarterTurns = this.canvasRotationQuarterTurns;
     this.resetCanvasToDisplayDefault(true);
     this.requestRemoteCursorViewRefresh(true);
     this.syncRemoteSystemPointer('rustdesk-canvas-rotation', this.remoteSurfaceHovered !== false, true);
@@ -5928,6 +6025,9 @@ struct RemoteDesktop {
       },
       onRotateRemoteDisplay: (): void => {
         this.rotateRustDeskRemoteCanvas();
+      },
+      onSetRustDeskDesktopFlipMode: (mode: RustDeskDesktopFlipMode): void => {
+        this.setRustDeskDesktopFlipMode(mode);
       },
       onOpenRustDeskResolution: (): void => {
         this.openRustDeskDisplayResolutionMenu();
@@ -7642,6 +7742,7 @@ struct RemoteDesktop {
           const resolvedHost: RemoteHost = this.hostWithResolvedCredential(host);
           this.pendingHost = this.hostWithRdpOneTimeCertificate(resolvedHost, p);
           if (this.pendingHost.protocol === 'rustdesk') {
+            this.restoreRustDeskDesktopFlipMode(this.pendingHost, 'host-restore');
             // Apply the mobile default before the auth sheet and Surface
             // startup. Otherwise a portrait window can remain visible until
             // the native connection reaches its success callback.
@@ -8671,6 +8772,11 @@ struct RemoteDesktop {
             this.sessionId, this.remoteProtocolOf(this.pendingHost));
         }
         this.nativeHandles.markSurfaceAttached(this.rendererHandle);
+        if (!this.canvasTransformInitialized) {
+          this.resetCanvasToDisplayDefault(true);
+        } else {
+          this.applyCanvasTransform();
+        }
         if (this.decoderHandle > 0) {
           this.loader.rebindActiveVideoPipeline();
           const recoveryArmed: boolean = this.loader.requestDecoderRecovery();
@@ -9498,7 +9604,10 @@ struct RemoteDesktop {
     this.vncGeometrySyncTimer = setInterval(sync, REMOTE_GEOMETRY_SYNC_MS);
   }
 
-  private currentRemoteSurfaceTransform(): RemoteSurfaceTransform {
+  /** Defaults to the outbound input layer; visual overlays pass the display rotation explicitly. */
+  private currentRemoteSurfaceTransform(
+    rotationQuarterTurns: number = this.canvasControlRotationQuarterTurns
+  ): RemoteSurfaceTransform {
     const remoteW: number = this.remoteWidth > 0 ? this.remoteWidth : 1280;
     const remoteH: number = this.remoteHeight > 0 ? this.remoteHeight : 720;
     const surfaceWidthVp: number = this.surfaceWidth > 0 ? this.surfaceWidth : remoteW;
@@ -9520,14 +9629,14 @@ struct RemoteDesktop {
         surfaceHeightPx,
         surfaceWidthVp,
         surfaceHeightVp,
-        rotation: this.canvasRotationQuarterTurns
+        rotation: rotationQuarterTurns
       };
     }
 
     const sourceW: number = this.rendererSourceWidth > 0 ? this.rendererSourceWidth : remoteW;
     const sourceH: number = this.rendererSourceHeight > 0 ? this.rendererSourceHeight : remoteH;
-    const displayedSourceW: number = this.canvasRotationQuarterTurns % 2 === 1 ? sourceH : sourceW;
-    const displayedSourceH: number = this.canvasRotationQuarterTurns % 2 === 1 ? sourceW : sourceH;
+    const displayedSourceW: number = rotationQuarterTurns % 2 === 1 ? sourceH : sourceW;
+    const displayedSourceH: number = rotationQuarterTurns % 2 === 1 ? sourceW : sourceH;
     const scaleW: number = surfaceWidthPx / displayedSourceW;
     const scaleH: number = surfaceHeightPx / displayedSourceH;
     const scale: number = Math.min(scaleW, scaleH);
@@ -9544,7 +9653,7 @@ struct RemoteDesktop {
       surfaceHeightPx,
       surfaceWidthVp,
       surfaceHeightVp,
-      rotation: this.canvasRotationQuarterTurns
+      rotation: rotationQuarterTurns
     };
   }
 
@@ -11819,9 +11928,15 @@ struct RemoteDesktop {
       this.rendererSourceWidth = 0;
       this.rendererSourceHeight = 0;
       this.canvasRotationQuarterTurns = 0;
+      this.canvasControlRotationQuarterTurns = 0;
       this.canvasTransform = { scale: 1, panX: 0, panY: 0, rotation: 0 };
       this.canvasTransformInitialized = false;
       this.canvasTransformGestureModified = false;
+      if (host.protocol === 'rustdesk') {
+        this.restoreRustDeskDesktopFlipMode(host, 'connect-prepare');
+      } else {
+        this.rustDeskDesktopFlipMode = 'reset';
+      }
       this.vncGeometryReady = !isVnc;
       this.rustDeskDisplaySwitchState = idleRustDeskDisplaySwitchState();
       this.rustDeskDisplayCapabilities = EMPTY_RUSTDESK_DISPLAY_CAPABILITIES;
@@ -13390,6 +13505,7 @@ struct RemoteDesktop {
       this.rendererHandle = result.value;
       this.pipRendererHandle = result.value;
       this.nativeHandles.markSurfaceAttached(this.rendererHandle);
+      this.applyRustDeskDesktopFlipToPipRenderer('pip-attach');
 
       if (requiresDecoder) {
         if (!this.loader.rebindActiveVideoPipeline()) {
@@ -17881,6 +17997,7 @@ struct RemoteDesktop {
           swapMouseButtons: this.rustdeskSwapMouseButtons,
           touchpadSpeed: this.rustdeskTouchpadSpeed,
           rustDeskPhoneTarget: this.isRustDeskPhoneSession(),
+          rustDeskDesktopFlipMode: this.rustDeskDesktopFlipMode,
           keyboardOpen: this.keyboardOpen || this.keyboardImeActive,
           shortcutsOpen: this.modifierPanelVisible || this.shortcutPanelVisible ||
             this.modifierPanelPrepareOnly,

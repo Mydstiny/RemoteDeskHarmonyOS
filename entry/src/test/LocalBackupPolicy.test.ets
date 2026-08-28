@@ -312,6 +312,7 @@ export default function localBackupPolicyTest(): void {
           '"locallastconnected":"101","locallasthealth":"3",' +
           '"locallastlatency":"72",' +
           '"localrustdeskadaptiveorientation":"1",' +
+          '"localrustdeskdesktopflipmode":"image_only",' +
           '"localrustdeskprolastseenat":"202",' +
           '"localrustdeskprosyncerror":"not_seen"}', updatedat: '100'
       }], {}, 'owner-test');
@@ -322,6 +323,8 @@ export default function localBackupPolicyTest(): void {
       expect(parsed?.extensions?.[0]['payload'].indexOf('sshproxytype') >= 0).assertTrue();
       expect(parsed?.extensions?.[0]['payload'].indexOf('sshjumphostkeyalgorithm') >= 0).assertTrue();
       expect(parsed?.extensions?.[0]['payload'].indexOf('localdisplayconfig') >= 0).assertTrue();
+      expect(parsed?.extensions?.[0]['payload'].indexOf(
+        'localrustdeskdesktopflipmode') >= 0).assertTrue();
     });
 
     it('rejects_duplicate_primary_keys', 0, (): void => {

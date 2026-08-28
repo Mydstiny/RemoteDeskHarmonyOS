@@ -118,7 +118,7 @@ export default function remoteSessionTopBarPolicyTest(): void {
       const layout = remoteTopBarLayout(true, 'md', false);
       expect(layout.deviceClass).assertEqual('pc');
       expect(layout.iconSize).assertEqual(36);
-      expect(layout.maxVisibleButtons).assertEqual(8);
+      expect(layout.maxVisibleButtons).assertEqual(9);
       expect(layout.maxVisibleButtons * layout.iconSize +
         (layout.maxVisibleButtons + 1) * layout.itemGap <= 360).assertTrue();
       expect(layout.topOffset).assertEqual(0);
@@ -192,11 +192,17 @@ export default function remoteSessionTopBarPolicyTest(): void {
       expect(remoteKeyboardSidebarAction(true, true, true)).assertEqual('close');
     });
 
-    it('pc_top_bar_and_mobile_rail_share_one_ordered_action_contract', 0, (): void => {
-      const actions = remoteSessionPrimaryActionIds('rustdesk');
-      expect(actions.length).assertEqual(8);
-      expect(actions.join(',')).assertEqual(
+    it('pc_top_bar_adds_flip_without_changing_mobile_or_phone_target_rails', 0, (): void => {
+      const pcActions = remoteSessionPrimaryActionIds('rustdesk', 'pc', false);
+      expect(pcActions.length).assertEqual(9);
+      expect(pcActions.join(',')).assertEqual(
+        'pin,control,display,desktopFlip,keyboardMouse,keyboard,fileTransfer,diagnostics,disconnect');
+      const mobileActions = remoteSessionPrimaryActionIds('rustdesk', 'phone', false);
+      expect(mobileActions.length).assertEqual(8);
+      expect(mobileActions.join(',')).assertEqual(
         'pin,control,display,keyboardMouse,keyboard,fileTransfer,diagnostics,disconnect');
+      expect(remoteSessionPrimaryActionIds('rustdesk', 'pad', false).length).assertEqual(8);
+      expect(remoteSessionPrimaryActionIds('rustdesk', 'pc', true).length).assertEqual(8);
       expect(remoteSessionPrimaryActionIds('rdp').length).assertEqual(0);
     });
 
@@ -206,6 +212,7 @@ export default function remoteSessionTopBarPolicyTest(): void {
       expect(rustDeskActionAvailability('fileTransfer').enabled).assertTrue();
       expect(rustDeskActionAvailability('ctrlAltDel').enabled).assertTrue();
       expect(rustDeskActionAvailability('rotateDisplay').enabled).assertTrue();
+      expect(rustDeskActionAvailability('desktopFlip').enabled).assertTrue();
       expect(rustDeskActionAvailability('diagnostics').enabled).assertTrue();
     });
 
