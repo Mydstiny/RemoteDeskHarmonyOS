@@ -30,6 +30,7 @@ export default function cloudSyncSettingsPolicyTest() {
       expect(localNames.indexOf('sshTerminalFontSize') >= 0).assertTrue();
       expect(localNames.indexOf('liveViewMode') >= 0).assertTrue();
       expect(localNames.indexOf('virtualMouseStyle') >= 0).assertTrue();
+      expect(localNames.indexOf('secretPresentationPolicyV1') >= 0).assertTrue();
       expect(cloudUserSettingIsDeviceLocal('rustdeskControlMode')).assertTrue();
       expect(cloudUserSettingIsDeviceLocal('rdpControlMode')).assertTrue();
       expect(cloudUserSettingIsDeviceLocal('accentColor')).assertFalse();
@@ -38,6 +39,8 @@ export default function cloudSyncSettingsPolicyTest() {
       expect(cloudUserSettingIsSyncable('sshTerminalFontSize')).assertFalse();
       expect(cloudUserSettingIsSyncable('liveViewMode')).assertFalse();
       expect(cloudUserSettingIsSyncable('virtualMouseStyle')).assertFalse();
+      expect(cloudUserSettingIsDeviceLocal('secretPresentationPolicyV1')).assertTrue();
+      expect(cloudUserSettingIsSyncable('secretPresentationPolicyV1')).assertFalse();
     });
 
     it('does_not_treat_account_or_transient_runtime_state_as_settings', 0, (): void => {

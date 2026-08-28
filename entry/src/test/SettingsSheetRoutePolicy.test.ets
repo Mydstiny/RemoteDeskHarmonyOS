@@ -2,6 +2,7 @@ import { describe, it, expect } from '@ohos/hypium';
 import {
   SETTINGS_SHEET_ACCOUNT,
   SETTINGS_SHEET_DIAGNOSTIC_LOG,
+  SETTINGS_SHEET_SECRET_VISIBILITY,
   SETTINGS_SHEET_VIRTUAL_KEYBOARD,
   SETTINGS_SHEET_VIRTUAL_KEYBOARD_BEHAVIOR,
   SETTINGS_SHEET_VIRTUAL_KEYBOARD_CUSTOM,
@@ -29,6 +30,7 @@ import {
   shouldDelaySettingsLeafOpenForPanel,
   settingsLeafOpenDelayMs,
   diagnosticLogSettingsLeafSheetHeight,
+  secretVisibilitySettingsLeafSheetHeight,
   isVirtualKeyboardSettingsMode,
   moonlightSettingsLeafSheetHeight,
   moonlightSettingsRouteSpec,
@@ -61,6 +63,14 @@ export default function settingsSheetRoutePolicyTest() {
         .assertEqual(740);
       expect(diagnosticLogSettingsLeafSheetHeight(SETTINGS_SHEET_ACCOUNT)).assertEqual(0);
       expect(moonlightSettingsRouteSpec(SETTINGS_SHEET_DIAGNOSTIC_LOG)).assertNull();
+    });
+
+    it('allocates_one_device_local_secret_visibility_leaf', 0, (): void => {
+      expect(SETTINGS_SHEET_SECRET_VISIBILITY).assertEqual(37);
+      expect(secretVisibilitySettingsLeafSheetHeight(SETTINGS_SHEET_SECRET_VISIBILITY))
+        .assertEqual(760);
+      expect(secretVisibilitySettingsLeafSheetHeight(SETTINGS_SHEET_ACCOUNT)).assertEqual(0);
+      expect(moonlightSettingsRouteSpec(SETTINGS_SHEET_SECRET_VISIBILITY)).assertNull();
     });
 
     it('allocates_five_independent_virtual_keyboard_leaves', 0, (): void => {

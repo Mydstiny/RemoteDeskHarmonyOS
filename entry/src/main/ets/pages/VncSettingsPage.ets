@@ -33,6 +33,8 @@ import { SETTINGS_PANEL_DISMISS_TO_LEAF_OPEN_MS } from '../services/SettingsShee
 import { isSelectableVncDefaultGateway, VncSelectableGateway } from '../services/VncHostDefaultsPolicy';
 import { RemoteSessionConnectionIntent } from '../services/RemoteSessionConnectionIntent';
 import { VncSessionCredentialHandoff } from '../services/VncSessionCredentialHandoff';
+import { SecretPresentationStore } from '../services/SecretPresentationPolicy';
+import { SecretEditMutationKind } from '../services/SecretEditMutationPolicy';
 
 @Entry
 @Component
@@ -120,6 +122,7 @@ export struct VncSettingsPage {
   private readonly settings: VncSettingsService = VncSettingsService.getInstance();
   private readonly hostService: VncHostService = VncHostService.getInstance();
   private readonly gatewayService: VncGatewayService = VncGatewayService.getInstance();
+  private readonly secretPresentation: SecretPresentationStore = SecretPresentationStore.getInstance();
   private settingsUnsubscribe: (() => void) | null = null;
   private hostUnsubscribe: (() => void) | null = null;
   private gatewayUnsubscribe: (() => void) | null = null;
@@ -139,6 +142,7 @@ export struct VncSettingsPage {
   aboutToAppear(): void {
     this.pageActive = true;
     const context: common.Context = getContext(this) as common.Context;
+    this.secretPresentation.init(context);
     this.settings.init(context);
     this.hostService.init(context);
     this.gatewayService.init(context);
@@ -383,8 +387,10 @@ export struct VncSettingsPage {
 
   private saveHost(): void {
     const saveWithPlaintextConsent = (allowPlaintext: boolean): void => {
+      const passwordMutation: SecretEditMutationKind = this.hostPassword.length > 0 ?
+        'replace' : (this.hostRememberPassword ? 'keep' : 'clear');
       const result = this.hostService.save(this.hostValues(), this.editingHostId, this.hostPassword,
-        allowPlaintext);
+        allowPlaintext, passwordMutation);
       if (!result.ok) { this.errorMessage = result.message; return; }
       this.errorMessage = '';
       this.resetHostForm();
@@ -559,12 +565,14 @@ export struct VncSettingsPage {
   }
 
   private saveHostFromFlow(values: VncHostValues, password: string, connectNow: boolean,
-    plainStorageConfirmed: boolean = false): void {
+    plainStorageConfirmed: boolean = false,
+    passwordMutation: SecretEditMutationKind = 'keep'): void {
     if (!this.hostService.isReady()) {
       promptAction.showToast({ message: 'VNC 服务尚未完成云同步初始化，请稍后重试', duration: 2200 });
       return;
     }
-    const result = this.hostService.save(values, this.hostFlowEditingId, password, plainStorageConfirmed);
+    const result = this.hostService.save(values, this.hostFlowEditingId, password,
+      plainStorageConfirmed, passwordMutation);
     if (!result.ok) {
       promptAction.showToast({ message: result.message || 'VNC 主机保存失败', duration: 2200 });
       return;
@@ -622,8 +630,9 @@ export struct VncSettingsPage {
         this.pendingHostFlowGatewayDirectory = true;
       },
       onSave: (values: VncHostValues, password: string, connectNow: boolean,
-        plainStorageConfirmed: boolean): void => {
-        this.saveHostFromFlow(values, password, connectNow, plainStorageConfirmed);
+        plainStorageConfirmed: boolean, passwordMutation: SecretEditMutationKind): void => {
+        this.saveHostFromFlow(values, password, connectNow, plainStorageConfirmed,
+          passwordMutation);
       }
     })
   }

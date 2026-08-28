@@ -30,7 +30,7 @@ function isManagedByAccount(host: RemoteHost, relayId: string, accountId: string
 
 export function reconcileRustDeskProHosts(existing: RemoteHost[], relayId: string, accountId: string,
   peers: RustDeskProPeer[], syncedAt: number, relayHost: string = '', relayPort: number = 21116): RustDeskProReconcileResult {
-  const hosts: RemoteHost[] = existing.map((host: RemoteHost): RemoteHost => RemoteHost.fromJSON(host.toJSON()));
+  const hosts: RemoteHost[] = existing.map((host: RemoteHost): RemoteHost => host.runtimeClone());
   const byPeer: Map<string, RemoteHost> = new Map();
   for (let i = 0; i < hosts.length; i++) {
     if (isManagedByAccount(hosts[i], relayId, accountId)) {
@@ -92,10 +92,12 @@ export function reconcileRustDeskProHosts(existing: RemoteHost[], relayId: strin
     host.rustdeskProSyncError = 'probe_pending';
     // A sync may provide a password for a newly imported peer, but it must not
     // replace a password that the user has already entered locally.
-    if (host.password.length === 0 && peer.password.length > 0) {
+    const passwordConfigured: boolean = host.password.length > 0 || host.passwordConfigured;
+    if (!passwordConfigured && peer.password.length > 0) {
       host.password = peer.password;
+      host.passwordConfigured = true;
     }
-    if (peer.password.length === 0 && host.password.length === 0) {
+    if (peer.password.length === 0 && !passwordConfigured) {
       // 空密码没有可用的设备凭据；只要用户没有保存密码，就使用官方点击批准闭环。
       host.rustdeskAuthMode = 'request_approval';
     } else if (peer.password.length > 0 && host.rustdeskAuthMode !== 'request_approval') {

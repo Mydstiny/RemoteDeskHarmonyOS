@@ -333,14 +333,18 @@ export class RemoteHost implements LanHostAddressView {
   port: number = 3389;         // 端口号
   username: string = '';       // 登录用户名
   password: string = '';       // 登录密码
+  // Runtime-only presence markers survive crypto-lock redaction and are never serialized.
+  passwordConfigured: boolean = false;
   locked: boolean = false;     // 是否已加安全锁
   lockType: LockType = LockType.NONE;
   // SSH 专用字段
   sshUseKey: boolean = false;   // SSH 使用私钥认证
   sshKeyPath: string = '';      // SSH 私钥文件路径
   sshKeyData: string = '';      // SSH 私钥内容 (PEM格式) — 旧式副本, 兼容
+  sshKeyDataConfigured: boolean = false;
   sshKeyId: string = '';        // KeyVault 密钥引用 — 优先, 修改后自动同步
   sshKeyPassphrase: string = ''; // SSH 私钥密码 (E2E加密存储)
+  sshKeyPassphraseConfigured: boolean = false;
   // SSH 主机指纹信任 (T-210)
   sshHostKeyAlgorithm: string = '';          // 算法: "ssh-ed25519" 等
   sshHostKeyFingerprintSha256: string = '';  // 指纹: "SHA256:..."
@@ -385,7 +389,9 @@ export class RemoteHost implements LanHostAddressView {
   sshProxyAuthMethod: SshProxyAuthMethod = 'password';
   sshProxyKeyId: string = '';
   sshProxyPassword: string = '';
+  sshProxyPasswordConfigured: boolean = false;
   sshProxyKeyPassphrase: string = '';
+  sshProxyKeyPassphraseConfigured: boolean = false;
   rustdeskRelayId: string = ''; // RustDesk 中继服务器配置 ID
   rustdeskAccountId: string = ''; // RustDesk Server Pro account ID
   rustdeskPasswordMode: number = 0; // RustDesk 密码模式: 0=一次性, 1=永久
@@ -804,6 +810,29 @@ export class RemoteHost implements LanHostAddressView {
     return host;
   }
 
+  /** Clone serialized fields while retaining process-only secret presence. */
+  runtimeClone(): RemoteHost {
+    const host: RemoteHost = RemoteHost.fromJSON(this.toJSON());
+    host.passwordConfigured = this.passwordConfigured || this.password.length > 0;
+    host.sshKeyDataConfigured = this.sshKeyDataConfigured || this.sshKeyData.length > 0;
+    host.sshKeyPassphraseConfigured = this.sshKeyPassphraseConfigured ||
+      this.sshKeyPassphrase.length > 0;
+    host.sshProxyPasswordConfigured = this.sshProxyPasswordConfigured ||
+      this.sshProxyPassword.length > 0;
+    host.sshProxyKeyPassphraseConfigured = this.sshProxyKeyPassphraseConfigured ||
+      this.sshProxyKeyPassphrase.length > 0;
+    return host;
+  }
+
+  /** Process-only state used to detect encrypted-secret presence changes. */
+  runtimeSecretStateSignature(): string {
+    return (this.passwordConfigured || this.password.length > 0 ? '1' : '0') + '|' +
+      (this.sshKeyDataConfigured || this.sshKeyData.length > 0 ? '1' : '0') + '|' +
+      (this.sshKeyPassphraseConfigured || this.sshKeyPassphrase.length > 0 ? '1' : '0') + '|' +
+      (this.sshProxyPasswordConfigured || this.sshProxyPassword.length > 0 ? '1' : '0') + '|' +
+      (this.sshProxyKeyPassphraseConfigured || this.sshProxyKeyPassphrase.length > 0 ? '1' : '0');
+  }
+
   /** Enforces the mutually exclusive credential fields for the selected RDP mode. */
   normalizeRdpAuthentication(): void {
     this.rdpAuthMode = normalizeRdpAuthMode(this.rdpAuthMode);
@@ -816,6 +845,7 @@ export class RemoteHost implements LanHostAddressView {
     }
     if (this.rdpAuthMode === 'password') { return; }
     this.password = '';
+    this.passwordConfigured = false;
     this.rdpCredentialId = '';
   }
 

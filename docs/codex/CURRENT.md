@@ -2,63 +2,116 @@
 
 ## Active task
 
-- Task: `vnc-cursor-wheel-regression`
-- Branch/base: `codex/vnc-cursor-wheel-regression` from synchronized `main@0b8e5bf60`.
-- Phase: device acceptance complete; ready for PR/main closure.
-- Plan: `docs/codex/plans/2026-08-27-vnc-cursor-wheel-regression.md`
+- Task: `secret-visibility-policy`
+- Branch/base: `codex/secret-visibility-policy` from synchronized `main@f3b41e5a6`.
+- Phase: implementation, gates and independent review complete; ready for PR/main closure.
+- Plan: `docs/codex/plans/2026-08-28-secret-visibility-policy.md`
 
 ## Objective
 
-- Restore normal VNC scroll distance for virtual two-finger input, HarmonyOS PC physical touchpads and physical mouse wheels.
-- Preserve the HarmonyOS user-configured mouse `scrollStep` instead of collapsing every wheel event to one RFB click.
-- Keep the local system pointer visible during macOS Screen Sharing cursor bootstrap, then switch only when a valid protocol cursor is ready.
-- Leave RDP, RustDesk and Moonlight input behavior unchanged.
+- Add a device-local Data Security Sheet for choosing which editable password classes do not reveal saved values.
+- Preserve an existing hidden secret on an empty edit, replace it only with a
+  newly entered value, and keep deletion explicit.
+- Bring VNC host passwords under the shared policy without changing protocol,
+  encryption, cloud-sync, backup or connection behavior.
 
-## Evidence
+## Baseline
 
-- Device `192.168.3.236:40123` reported physical mouse `raw=45`, `scrollStep=3`, but VNC forwarded `delta=1`.
-- Virtual two-finger samples were commonly `2-8vp`; the current `10vp` threshold and maximum delta 2 visibly under-scroll.
-- API 23 documents mouse vertical-axis values as degrees that already include the user's `scrollStep`; touchpad values are continuous px without that multiplier.
-- RDP emits a standard `0x78` wheel magnitude and RustDesk has a dedicated two-dimensional high-resolution touchpad path; RFB only has button-4/5 clicks and therefore needs explicit bounded protocol compensation.
-- macOS Screen Sharing delayed its first real cursor shape for about 56 seconds while auto mode hid the local pointer based only on the absence of a native cursor.
+- Clean synchronized `main@f3b41e5a6`, equal to `origin/main` when started.
 
 ## Implemented
 
-- Discrete VNC mouse events preserve bounded `scrollStep` ticks, with sign-only fallback when the coefficient is unavailable.
-- Virtual VNC input uses `4vp` per tick with a maximum of 4 per sample; fractional accumulation remains bounded without recursive fling or release backlog.
-- Physical VNC touchpads use two normalized samples per tick with a maximum of 4 while preserving lifecycle, source, idle and direction resets.
-- VNC auto cursor ownership is evidence-based: legacy RFB 3.3/macOS bootstrap keeps the system pointer, modern RFB 3.7/3.8 without Cursor pseudo uses its framebuffer-composited cursor, a protocol shape atomically replaces the default pointer, and protocol/explicit hidden states hide it.
-- Non-zero VNC protocol cursor rectangles with an all-transparent mask are treated as hidden and cannot replace the local pointer.
-- Native RFB wheel bursts are built by a tested byte-level helper that preserves held buttons, clamps coordinates and bounds one logical event to 128 button-4/5 down/up pairs.
-- Local VNC move/wheel prediction updates cursor coordinates only; an authoritative protocol-hidden cursor cannot be resurrected until the server sends a new visible cursor shape.
-- Device acceptance required another 2x increase after the 5x checkpoint. Virtual touchpad, physical touchpad and physical mouse now share one VNC-only final wire gain of 10, while the native bounded burst accepts the maximum supported 80-step mouse event without truncation.
-- The repair release remains `1.1.3`; its cumulative update content is intentionally unchanged per product decision. SBOM provenance now points to source commit `5c20204b2` without dropping TOTP or Moonlight vendor inventory.
-- The macOS Hvigor guard now recognizes ArkTS `10310009` module-context failures for generated `ResourceTable.ts`, isolates the inconsistent generated cache and retries the original build once. The local DevEco `RemoteDesk SAFE [assembleApp]` configuration pins API 23 and restores the conventional `build/outputs` APP path after successful packaging.
+- Added a versioned, device-local presentation policy for RDP host passwords,
+  Windows credentials, RustDesk device passwords, SSH passwords/key
+  passphrases and VNC host passwords.
+- Added the Data Security `密码与秘密回显` Sheet with per-class switches,
+  `全部隐藏` and compatibility-default actions. VNC remains hidden by default.
+- Hidden editors now keep the old value on an empty draft and overwrite it only
+  when a new non-empty value is entered; authentication/key binding changes do
+  not accidentally carry an unrelated old secret forward.
+- Secret preservation is bound to the original account/endpoint identity, so a
+  blank hidden field cannot reuse a credential after its host, user, mode or
+  key binding changes.
+- Added runtime-only secret-presence markers so crypto-locked records remain
+  identifiable as configured without exposing or serializing plaintext.
+- Existing SSH private-key bodies are no longer loaded into ordinary page
+  state; replacement uses a password input and explicitly preserves the old key
+  only while its vault/path binding is unchanged.
+- VNC now uses the shared policy while retaining its dedicated secret service,
+  plaintext-consent checks, local personalization and rollback behavior. A
+  forgotten VNC password can be handed to the current connection only;
+  aborted, backgrounded or destroyed add flows clear every transient handoff.
+- VNC secret mutations are now explicit (`keep` / `replace` / `clear`) and are
+  bound to transport, target, port, Gateway, repeater mode, TLS and security
+  policy. Editing an endpoint cannot reuse or hand off its old password, and a
+  visible password that is deliberately cleared removes the saved secret.
+- RustDesk password preservation also binds the one-time/permanent password
+  mode in both the classic editor and Pro preflight draft lifecycle.
+- Runtime-only configured markers now survive HostSync/UI snapshot cloning
+  while remaining absent from model JSON, cloud rows and portable backup.
+- Clearing or rebinding a secret now resets its runtime configured marker;
+  marker-only changes participate in HostSync comparison and use the full
+  sensitive-write/unlock path instead of being mistaken for personalization.
+- RustDesk Pro drafts now carry an explicit stored-password-preservation bit.
+  A password invalidated by changing one-time/permanent mode stays invalid
+  after background restore, even if the user switches back to the old mode.
+- The standard RustDesk connection Sheet now follows the same local visibility
+  policy as Pro: hidden saved passwords never enter its editable `@State`, and
+  approval success clears the old unattended password and marker.
+- Pro address-book reconciliation preserves crypto-locked secret markers,
+  never mistakes redacted plaintext for an absent password, and never replaces
+  a configured local password with a server response.
+- SSH trust, passphrase and key-install mutations retain runtime markers.
+  Switching to an installed key clears the obsolete password, while locked
+  trust-only updates preserve the encrypted private-key passphrase extension.
+- Stored-password projections are now distinguished from user-entered drafts.
+  Background and foreground `DataCrypto` lock transitions scrub projected
+  plaintext from standard/Pro RustDesk, classic RDP/RustDesk/SSH editors, RDP
+  credentials and both VNC edit flows; unlock restoration always re-applies
+  the current local policy; background/non-active windows cannot initially
+  project or restore plaintext, including after an async authentication gate.
+- Both SSH public-key deployment entry points now keep only sanitized host
+  projections or minimal display views in responsive state, including clearing
+  proxy passwords/passphrases. The independent KeyVault Sheet passes only key
+  and host IDs, refetches live secrets after the lock gate, rejects crypto-locked
+  access, and supports both KeyVault and legacy inline authentication keys.
+- The device-local presentation store now publishes process-local changes.
+  Editors and settings Sheets subscribe for their visible lifecycle, so another
+  window immediately clears hidden projections; per-kind writes read the latest
+  policy first, preventing stale Sheets from reopening another kind. Nothing is
+  synchronized to cloud or backup.
+- Unlock/policy restoration now requires the opening snapshot, live record and
+  editor endpoint/user/auth/mode/key binding to agree. Deleted or rebound
+  records clear their projection and block the stale panel until reopened.
+- SSH key installation records full host/target-key operation identities across
+  async verification, then refetches both before committing; concurrent change,
+  deletion or crypto relock leaves local authentication untouched.
+- Legacy SSH proxy password/passphrase ciphertext now has runtime presence
+  markers and survives permitted trust-only writes while the crypto vault is
+  locked. Canonical proxy rebinding clears both the legacy values and markers.
+- Switching an SSH host to a newly installed KeyVault key replaces `sshKeyId`
+  and clears obsolete inline key data, passphrase and configured markers.
+- RustDesk approval is blocked while a saved password is crypto-redacted; a
+  persistence race after connection triggers immediate session cleanup rather
+  than leaving the old unattended password behind.
+- HostList change detection now includes runtime secret markers, and the
+  RustDesk trust manager consumes those markers when plaintext is redacted.
+- Classified `secretPresentationPolicyV1` as device-local and added focused
+  policy, mutation, route and cloud-sync classification tests.
 
-## Verification
+## Verification (current worktree)
 
-- Baseline `main@0b8e5bf60` was clean and equal to `origin/main` when the task started.
-- Focused ArkTS policy tests are compile-registered by the passing test target.
-- Current-source target native wheel case: PASS, directly validating all 80 wheel down/up pairs. Full host suite: `797 passed, 16 failed`; all 16 failures are the known TLS `fixture.start()` environment baseline and are unrelated to this change.
-- Exact `default@OhosTestCompileArkTS`: PASS (`BUILD SUCCESSFUL in 1 min 6 s 939 ms`).
-- Exact signed `assembleHap`: PASS (`BUILD SUCCESSFUL in 1 min 20 s 803 ms`).
-- Build-guard regression including the exact `10310009` / `Failed to find module info` / `ResourceTable.ts` signature: PASS.
-- DevEco `RemoteDesk SAFE [assembleApp]`: PASS (`BUILD SUCCESSFUL in 9 s 860 ms`, exit 0); signed APP restored at project `build/outputs`.
-- Post-guard exact `default@OhosTestCompileArkTS`: PASS (`BUILD SUCCESSFUL in 38 s 711 ms`); exact signed `assembleHap`: PASS (`BUILD SUCCESSFUL in 3 min 294 ms`).
-- `git diff --check` and open-source compliance Light: PASS.
-- Initial independent review of `dcf1b2fc4`: FAIL on permanent auto-pointer fallback and missing state/wire coverage; both findings were remediated in `45eb2c293`.
-- Follow-up review of `45eb2c293`: FAIL because local prediction could overwrite protocol-hidden visibility and the end-to-end ownership transition lacked coverage; both findings are remediated in `abc3ce5b8`.
-- Previous cursor/wheel re-review by `/root/vnc_wheel_review`: PASS at `abc3ce5b8`; device feedback then superseded the wheel-output checkpoint.
-- Follow-up review of `dfb74ded6` by `/root/vnc_wheel_review`: PASS, P0/P1/P2/P3 all zero.
-- Release follow-up review found stale SBOM provenance and incomplete 80-step regression coverage; both were remediated in `8e9ed4ea8`.
-- Final independent review of `5c20204b2..8e9ed4ea8` by `/root/vnc_wheel_review`: PASS, P0/P1/P2/P3 all zero.
-- Independent incremental review of the `bf397173e` ResourceTable recovery by `/root/resource_table_guard_review`: PASS, P0/P1/P2/P3 all zero.
-- Device acceptance: PASS; the user confirmed the reviewed 1.1.3 VNC wheel build is accepted on 2026-08-28.
+- `default@OhosTestCompileArkTS`: PASS (`BUILD SUCCESSFUL in 5 s 521 ms`).
+- `assembleHap`: PASS, signed (`BUILD SUCCESSFUL in 11 s 873 ms`).
+- Light open-source compliance: PASS.
+- `git diff --check`: PASS.
+- Same independent reviewer: PASS at `2b31d4cb`; all 35 findings closed, P0/P1/P2/P3 zero.
+- Focused Hypium tests compile in the required gate; optional device task is unavailable (`00306054`).
 
 ## Next
 
-1. Open the PR, wait for the required check, merge and synchronize `main`.
+1. Open the reviewed branch PR, wait for required checks, merge and synchronize `main`.
 
 ## Blockers
 
-- None.
+- Device/Hypium acceptance was not run; `ohosTest@OhosTestCompileArkTS` is not registered (`00306054`).

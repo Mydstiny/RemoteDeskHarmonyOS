@@ -244,8 +244,17 @@ import { remoteSessionWindowReadySnapshotIsUsable } from
 import { AccountSessionCoordinator } from '../services/AccountSessionCoordinator';
 import {
   RustDeskAuthDraft,
-  RustDeskAuthDraftStore
+  RustDeskAuthDraftStore,
+  rustDeskDraftKeepsStoredPassword,
+  rustDeskDraftPasswordForConnection,
+  rustDeskDraftPasswordForPresentation
 } from '../services/RustDeskAuthDraftStore';
+import { SecretPresentationStore } from '../services/SecretPresentationPolicy';
+import {
+  secretBindingUnchanged,
+  secretEditDraftValue,
+  secretEditPlaceholder
+} from '../services/SecretEditMutationPolicy';
 import { copyRustDeskPeerTwoFactorRuntime } from '../services/RustDeskPeerTwoFactorBindingStore';
 import { NativeSessionHandles, ProductionNativeHandleAdapter } from '../services/NativeSessionHandles';
 import {
@@ -938,6 +947,7 @@ struct RemoteDesktop {
   @State localResourceStats: LocalResourceStats = EMPTY_LOCAL_RESOURCE_STATS;
   @State rustDeskAuthChoice: RustDeskAuthChoice = 'password';
   @State rustDeskAuthPasswordInput: string = '';
+  @State rustDeskAuthPasswordConfigured: boolean = false;
   @State rustDeskAuthPasswordMode: number = 0;
   @State rustDeskAuthPasswordShow: boolean = false;
   @State rustDeskAuthRememberPassword: boolean = true;
@@ -1043,6 +1053,8 @@ struct RemoteDesktop {
   private vncCertificateAccountStoreIdentityFingerprint: string = '';
   private vncCertificateAccountGeneration: number = 0;
   private vncAccountScopeUnsubscribe: (() => void) | null = null;
+  private cryptoStateUnsubscribe: (() => void) | null = null;
+  private secretPresentationUnsubscribe: (() => void) | null = null;
   private vncTransientPassword: string = '';
   /** Distinguishes an explicit empty-password decision from no one-shot credential. */
   private vncTransientCredentialProvided: boolean = false;
@@ -1051,6 +1063,12 @@ struct RemoteDesktop {
   private rustDeskSessionPassword: string = '';
   private rustDeskSessionRememberPassword: boolean = false;
   private rustDeskSessionPasswordMode: number = 0;
+  private rustDeskAuthKeepsStoredPassword: boolean = false;
+  private rustDeskAuthPasswordFromStoredProjection: boolean = false;
+  private rustDeskAuthPasswordProjectionBinding: string[] = [];
+  private rustDeskAuthSecretProjectionInvalidated: boolean = false;
+  private readonly secretPresentation: SecretPresentationStore =
+    SecretPresentationStore.getInstance();
   private remoteNavigationHidden: boolean = false;
   private remoteStatusBarHidden: boolean = false;
   private remoteSystemBarRequestId: number = 0;
@@ -2200,6 +2218,35 @@ struct RemoteDesktop {
    * Pro 地址簿主机每次新建会话都显式选择认证方式；后台恢复不经过这里，
    * 因为恢复的是已有 RustDesk 会话而不是重新认证。
    */
+  private rustDeskAuthPasswordHidden(): boolean {
+    const crypto: DataCrypto = DataCrypto.getInstance();
+    const securityOverride: boolean = crypto.isSetupComplete() && !crypto.isReady();
+    return this.currentAbilityBackgroundState() ||
+      this.secretPresentation.isHidden('rustdesk_device_password', securityOverride);
+  }
+
+  private rustDeskAuthPasswordBindingParts(host: RemoteHost,
+    authChoice: RustDeskAuthChoice, passwordMode: number): string[] {
+    return [host.id, host.userId, host.protocol,
+      host.rustdeskDirectEnabled || authChoice === 'password' ? 'password' : 'request_approval',
+      host.customHostname.trim(), host.host.trim(), host.port.toString(),
+      host.rustdeskDirectEnabled ? 'direct' : 'relay', host.rustdeskDirectHost.trim(),
+      host.rustdeskDirectPort.toString(), (passwordMode === 1 ? 1 : 0).toString(),
+      host.rustdeskRelayId, host.rustdeskAccountId, host.rustdeskProAccountId,
+      host.rustdeskProPeerId, host.sourceType, host.rustdeskProManaged ? 'managed' : 'local'];
+  }
+
+  private invalidateRustDeskAuthSecretProjection(): void {
+    this.rustDeskAuthPasswordInput = '';
+    this.rustDeskAuthPasswordConfigured = false;
+    this.rustDeskAuthKeepsStoredPassword = false;
+    this.rustDeskAuthPasswordFromStoredProjection = false;
+    this.rustDeskAuthSecretProjectionInvalidated = true;
+    this.rustDeskAuthError =
+      'RustDesk 认证绑定已变化；为避免误用密码，请关闭后重新打开连接面板';
+    this.saveRustDeskAuthDraft();
+  }
+
   private openRustDeskAuthSheet(message: string = ''): void {
     if (this.rustDeskAuthSheetClosing) {
       this.rustDeskAuthQueuedMessage = message;
@@ -2216,9 +2263,26 @@ struct RemoteDesktop {
     this.rustDeskAuthChoice = host.rustdeskDirectEnabled ? 'password' :
       (draft !== null ? draft.authChoice :
         (host.rustdeskAuthMode === 'request_approval' ? 'request_approval' : 'password'));
-    this.rustDeskAuthPasswordInput = draft === null ? host.password : draft.password;
     this.rustDeskAuthPasswordMode = draft === null ?
       (host.rustdeskPasswordMode === 1 ? 1 : 0) : draft.passwordMode;
+    const hidden: boolean = this.rustDeskAuthPasswordHidden();
+    const storedPasswordConfigured: boolean = host.password.length > 0 || host.passwordConfigured;
+    const draftMatchesStoredMode: boolean = this.rustDeskAuthPasswordMode ===
+      (host.rustdeskPasswordMode === 1 ? 1 : 0);
+    this.rustDeskAuthPasswordFromStoredProjection = draft === null ?
+      (!hidden && host.password.length > 0) : draft.passwordFromStoredProjection;
+    this.rustDeskAuthPasswordProjectionBinding = this.rustDeskAuthPasswordBindingParts(
+      host, this.rustDeskAuthChoice, this.rustDeskAuthPasswordMode);
+    this.rustDeskAuthSecretProjectionInvalidated = false;
+    this.rustDeskAuthKeepsStoredPassword = draft === null ?
+      (hidden && storedPasswordConfigured) :
+      (draft.passwordFromStoredProjection ?
+        (hidden && storedPasswordConfigured && draftMatchesStoredMode) :
+        (draft.keepsStoredPassword && draftMatchesStoredMode));
+    this.rustDeskAuthPasswordInput = rustDeskDraftPasswordForPresentation(
+      draft, host.password, hidden);
+    this.rustDeskAuthPasswordConfigured = this.rustDeskAuthPasswordInput.length > 0 ||
+      (this.rustDeskAuthKeepsStoredPassword && storedPasswordConfigured);
     this.rustDeskAuthPasswordShow = false;
     this.rustDeskAuthRememberPassword = draft === null ? true : draft.rememberPassword;
     this.rustDeskAuthError = message;
@@ -2233,13 +2297,20 @@ struct RemoteDesktop {
     const host: RemoteHost | null = this.pendingHost;
     if (host === null || host.protocol !== 'rustdesk') { return; }
     const scope = AccountSessionCoordinator.getInstance().currentScope();
+    if (this.rustDeskAuthPasswordInput.length > 0 &&
+      !this.rustDeskAuthPasswordFromStoredProjection) {
+      this.rustDeskAuthKeepsStoredPassword = false;
+    }
     this.rustDeskAuthDrafts.save({
       ownerScopeId: scope.ownerScopeId,
       accountGeneration: scope.generation,
       hostId: host.id,
       authChoice: this.rustDeskAuthChoice,
-      password: this.rustDeskAuthPasswordInput,
+      password: this.rustDeskAuthPasswordFromStoredProjection ? '' :
+        this.rustDeskAuthPasswordInput,
       passwordMode: this.rustDeskAuthPasswordMode === 1 ? 1 : 0,
+      keepsStoredPassword: this.rustDeskAuthKeepsStoredPassword,
+      passwordFromStoredProjection: this.rustDeskAuthPasswordFromStoredProjection,
       rememberPassword: this.rustDeskAuthRememberPassword,
       updatedAt: Date.now()
     });
@@ -2299,22 +2370,44 @@ struct RemoteDesktop {
       this.showRustDeskAuthSheet = false;
       return;
     }
+    if (this.rustDeskAuthSecretProjectionInvalidated) {
+      this.rustDeskAuthError =
+        'RustDesk 认证绑定已变化；请关闭后重新打开连接面板再继续';
+      return;
+    }
     if (this.rustDeskAuthChoice === 'request_approval' && host.rustdeskDirectEnabled) {
       this.rustDeskAuthError = '当前主机使用直连模式，不能请求远端批准，请改用设备密码。';
       return;
     }
+    if (this.rustDeskAuthChoice === 'request_approval' && host.passwordConfigured &&
+      host.password === '') {
+      this.rustDeskAuthError = '已保存设备密码处于加密仓库中；请先解锁再切换为请求批准。';
+      return;
+    }
 
-    const selected = RemoteHost.fromJSON(host.toJSON());
+    const keepsSamePasswordMode: boolean = rustDeskDraftKeepsStoredPassword(
+      this.rustDeskAuthKeepsStoredPassword,
+      host.rustdeskPasswordMode, this.rustDeskAuthPasswordMode);
+    const passwordForConnection: string = rustDeskDraftPasswordForConnection(
+      this.rustDeskAuthPasswordInput, this.rustDeskAuthKeepsStoredPassword,
+      host.password, host.rustdeskPasswordMode, this.rustDeskAuthPasswordMode);
+    const selected = host.runtimeClone();
     copyRustDeskPeerTwoFactorRuntime(host, selected);
     selected.rustdeskPasswordMode = this.rustDeskAuthPasswordMode === 1 ? 1 : 0;
     if (this.rustDeskAuthChoice === 'password') {
-      if (this.rustDeskAuthPasswordInput.trim().length === 0) {
+      if (this.rustDeskAuthKeepsStoredPassword && keepsSamePasswordMode &&
+        this.rustDeskAuthPasswordConfigured && host.password === '' &&
+        this.rustDeskAuthPasswordInput === '') {
+        this.rustDeskAuthError = '设备密码仍在加密仓库中；请先解锁并重新打开连接面板。';
+        return;
+      }
+      if (passwordForConnection.trim().length === 0) {
         this.rustDeskAuthError = '请输入远程 RustDesk 设备密码。';
         return;
       }
-      selected.password = this.rustDeskAuthPasswordInput;
+      selected.password = passwordForConnection;
       selected.rustdeskAuthMode = 'password';
-      this.rustDeskSessionPassword = this.rustDeskAuthPasswordInput;
+      this.rustDeskSessionPassword = passwordForConnection;
       this.rustDeskSessionRememberPassword = this.rustDeskAuthRememberPassword;
     } else {
       // Approval is a passwordless request.  Keep the persisted host record
@@ -3449,35 +3542,56 @@ struct RemoteDesktop {
     if (goBack) { setTimeout((): void => { this.goBack(); }, 0); }
   }
 
-  private persistRustDeskSessionAuth(host: RemoteHost): void {
+  private persistRustDeskSessionAuth(host: RemoteHost): boolean {
     if (host.protocol !== 'rustdesk') {
-      return;
+      return true;
     }
     const existing = this.srv.getHost(host.id);
     if (!existing) {
-      return;
+      if (this.rustDeskSessionAuthChoice === 'request_approval') {
+        promptAction.showToast({
+          message: '主机记录不可用，旧设备密码无法安全删除；会话已停止。',
+          duration: 3000
+        });
+        this.disconnectAndCleanup('rustdesk-approval-host-missing');
+        return false;
+      }
+      return true;
     }
-    const next = RemoteHost.fromJSON(existing.toJSON());
+    const next = existing.runtimeClone();
     next.rustdeskAuthMode = this.rustDeskSessionAuthChoice;
     next.rustdeskPasswordMode = this.rustDeskSessionPasswordMode;
     if (this.rustDeskSessionAuthChoice === 'password') {
       next.password = this.rustDeskSessionRememberPassword ?
         this.rustDeskSessionPassword : '';
+    } else {
+      next.password = '';
     }
+    next.passwordConfigured = next.password.length > 0;
     if (this.srv.updateHost(next)) {
       this.clearRustDeskAuthDraft();
       hilog.info(RD_DOMAIN, RD_TAG, 'RustDesk auth choice persisted hostId=' +
         hashForLog(host.id) + ' mode=' + this.rustDeskSessionAuthChoice +
         ' passwordSaved=' + (this.rustDeskSessionAuthChoice === 'password' &&
           this.rustDeskSessionRememberPassword ? 'true' : 'false'));
+      return true;
     } else {
       hilog.warn(RD_DOMAIN, RD_TAG,
           'RustDesk auth choice persistence failed hostId=' +
         hashForLog(host.id));
+      if (this.rustDeskSessionAuthChoice === 'request_approval') {
+        promptAction.showToast({
+          message: '旧设备密码未能安全删除；会话已停止，请解锁后重试。',
+          duration: 3000
+        });
+        this.disconnectAndCleanup('rustdesk-approval-password-clear-failed');
+        return false;
+      }
       promptAction.showToast({
         message: '连接已建立，但设备密码未能保存；本次输入仅在当前进程内保留。',
         duration: 3000
       });
+      return true;
     }
   }
 
@@ -6701,17 +6815,70 @@ struct RemoteDesktop {
       this.remoteDesktopBgFlag;
     if (isBackground && this.showRustDeskAuthSheet) {
       this.saveRustDeskAuthDraft();
+      if (this.rustDeskAuthPasswordFromStoredProjection) {
+        this.rustDeskAuthPasswordInput = '';
+      }
       this.rustDeskAuthBackgroundResumePending = true;
     }
     this.applyAbilityBackgroundState(isBackground);
     if (!isBackground) {
+      const crypto: DataCrypto = DataCrypto.getInstance();
+      this.onDataCryptoStateChange(crypto.isReady(), crypto.isSetupComplete());
       this.resumeRustDeskAuthAfterBackground();
     }
   }
 
+  private onDataCryptoStateChange(ready: boolean, _configured: boolean): void {
+    if (!ready || this.currentAbilityBackgroundState()) {
+      if (this.showRustDeskAuthSheet) { this.saveRustDeskAuthDraft(); }
+      if (this.rustDeskAuthPasswordFromStoredProjection) {
+        this.rustDeskAuthPasswordInput = '';
+      }
+      return;
+    }
+    if (!this.showRustDeskAuthSheet || !this.rustDeskAuthPasswordFromStoredProjection ||
+      this.pendingHost === null) {
+      return;
+    }
+    const host: RemoteHost | undefined = this.srv.getHost(this.pendingHost.id);
+    const currentBinding: string[] = this.rustDeskAuthPasswordBindingParts(
+      this.pendingHost, this.rustDeskAuthChoice, this.rustDeskAuthPasswordMode);
+    if (host === undefined ||
+      !secretBindingUnchanged(this.rustDeskAuthPasswordProjectionBinding,
+        this.rustDeskAuthPasswordBindingParts(host,
+          host.rustdeskDirectEnabled || host.rustdeskAuthMode === 'password' ?
+            'password' : 'request_approval', host.rustdeskPasswordMode)) ||
+      !secretBindingUnchanged(this.rustDeskAuthPasswordProjectionBinding, currentBinding)) {
+      this.invalidateRustDeskAuthSecretProjection();
+      return;
+    }
+    this.rustDeskAuthPasswordInput = secretEditDraftValue(
+      host.password, this.rustDeskAuthPasswordHidden());
+  }
+
+  private onSecretPresentationChange(): void {
+    if (!this.showRustDeskAuthSheet || !this.rustDeskAuthPasswordFromStoredProjection) {
+      return;
+    }
+    const crypto: DataCrypto = DataCrypto.getInstance();
+    this.onDataCryptoStateChange(crypto.isReady(), crypto.isSetupComplete());
+  }
+
   private onSessionWindowBackgroundChange(): void {
     if (this.sessionWindowId.length === 0) { return; }
+    if (this.sessionWindowBackground && this.showRustDeskAuthSheet) {
+      this.saveRustDeskAuthDraft();
+      if (this.rustDeskAuthPasswordFromStoredProjection) {
+        this.rustDeskAuthPasswordInput = '';
+      }
+      this.rustDeskAuthBackgroundResumePending = true;
+    }
     this.applyAbilityBackgroundState(this.sessionWindowBackground);
+    if (!this.sessionWindowBackground) {
+      const crypto: DataCrypto = DataCrypto.getInstance();
+      this.onDataCryptoStateChange(crypto.isReady(), crypto.isSetupComplete());
+      this.resumeRustDeskAuthAfterBackground();
+    }
   }
 
   private currentAbilityBackgroundState(): boolean {
@@ -7148,6 +7315,18 @@ struct RemoteDesktop {
     }
     this.restoreRemoteSystemPointer('page-appear');
     this.proSync.init(getContext(this) as common.Context);
+    this.secretPresentation.init(getContext(this) as common.Context);
+    if (this.cryptoStateUnsubscribe === null) {
+      this.cryptoStateUnsubscribe = DataCrypto.getInstance().onStateChange(
+        (ready: boolean, configured: boolean): void => {
+          this.onDataCryptoStateChange(ready, configured);
+        });
+    }
+    if (this.secretPresentationUnsubscribe === null) {
+      this.secretPresentationUnsubscribe = this.secretPresentation.onChange((): void => {
+        this.onSecretPresentationChange();
+      });
+    }
     this.physicalKeyboardLayout = RemoteKeyboardLayout.WINDOWS;
     this.physicalKeyboardLayoutConfirmed = false;
     this.physicalKeyboardLayoutPromptVisible = false;
@@ -7476,6 +7655,14 @@ struct RemoteDesktop {
   }
 
   aboutToDisappear(): void {
+    if (this.cryptoStateUnsubscribe !== null) {
+      this.cryptoStateUnsubscribe();
+      this.cryptoStateUnsubscribe = null;
+    }
+    if (this.secretPresentationUnsubscribe !== null) {
+      this.secretPresentationUnsubscribe();
+      this.secretPresentationUnsubscribe = null;
+    }
     this.clearRemoteSurfaceResizeWork();
     this.clearVncToolbarAutoCollapse();
     this.clearVncSurfaceResizeRefresh();
@@ -9873,7 +10060,7 @@ struct RemoteDesktop {
       hilog.warn(RD_DOMAIN, RD_TAG, 'RDP credential not found: ' + host.rdpCredentialId);
       return host;
     }
-    const resolved: RemoteHost = RemoteHost.fromJSON(host.toJSON());
+    const resolved: RemoteHost = host.runtimeClone();
     resolved.username = credential.username;
     resolved.password = credential.password;
     hilog.info(RD_DOMAIN, RD_TAG, 'RDP credential resolved: idHash=' + hashForLog(credential.id) +
@@ -9922,7 +10109,7 @@ struct RemoteDesktop {
     this.rdpCertificateAllowTimeAnomalyOnce = targetTimeAnomalyOnce;
     this.rdpGatewayCertificateAllowUnpinnedOnce = gatewayUnpinnedOnce;
     this.rdpGatewayCertificateAllowTimeAnomalyOnce = gatewayTimeAnomalyOnce;
-    const resolved: RemoteHost = RemoteHost.fromJSON(host.toJSON());
+    const resolved: RemoteHost = host.runtimeClone();
     if (fingerprint.length > 0) {
       resolved.rdpCertificateFingerprintSha256 = fingerprint;
       resolved.rdpCertificateTrustMode = 0;
@@ -11065,7 +11252,11 @@ struct RemoteDesktop {
         Text('远程 RustDesk 设备密码').fontSize(12).fontColor(this.pal().text2)
           .margin({ bottom: 5 })
         Row() {
-          TextInput({ placeholder: '输入设备密码', text: this.rustDeskAuthPasswordInput })
+          TextInput({
+            placeholder: secretEditPlaceholder(this.rustDeskAuthPasswordConfigured,
+              this.rustDeskAuthPasswordHidden(), '输入设备密码'),
+            text: this.rustDeskAuthPasswordInput
+          })
             .id('RustDeskAuthPassword')
             .type(this.rustDeskAuthPasswordShow ? InputType.Normal : InputType.Password)
             .height(42).backgroundColor(this.pal().surface).borderRadius(9)
@@ -11076,6 +11267,10 @@ struct RemoteDesktop {
             .defaultFocus(this.rustDeskAuthChoice === 'password')
             .onChange((v: string) => {
               this.rustDeskAuthPasswordInput = v;
+              this.rustDeskAuthPasswordFromStoredProjection = false;
+              if (v.length > 0) { this.rustDeskAuthKeepsStoredPassword = false; }
+              this.rustDeskAuthPasswordConfigured = v.length > 0 ||
+                this.rustDeskAuthKeepsStoredPassword;
               this.saveRustDeskAuthDraft();
             })
             .onSubmit((_enterKey: EnterKeyType, event: SubmitEvent): void => {
@@ -11086,6 +11281,11 @@ struct RemoteDesktop {
             .fontSize(18).fontColor([this.pal().text3]).margin({ left: 8 })
             .onClick(() => { this.rustDeskAuthPasswordShow = !this.rustDeskAuthPasswordShow; })
         }.width('100%').margin({ bottom: 8 })
+        if (this.rustDeskAuthPasswordConfigured && this.rustDeskAuthPasswordInput === '' &&
+          this.rustDeskAuthPasswordHidden()) {
+          Text('已保存设备密码处于隐藏状态；留空连接会继续使用它，输入新密码才会替换。')
+            .fontSize(11).fontColor(this.pal().text3).lineHeight(16).margin({ bottom: 8 })
+        }
         Row() {
           Text('记住此设备密码').fontSize(12).fontColor(this.pal().text2).layoutWeight(1)
           Toggle({ type: ToggleType.Switch, isOn: this.rustDeskAuthRememberPassword })
@@ -11101,6 +11301,12 @@ struct RemoteDesktop {
             .backgroundColor(this.rustDeskAuthPasswordMode === 0 ? this.accentColor : this.pal().surface)
             .fontColor(this.rustDeskAuthPasswordMode === 0 ? Color.White : this.pal().text2)
             .onClick((): void => {
+              if (this.rustDeskAuthPasswordMode !== 0) {
+                this.rustDeskAuthPasswordInput = '';
+                this.rustDeskAuthPasswordConfigured = false;
+                this.rustDeskAuthKeepsStoredPassword = false;
+                this.rustDeskAuthPasswordFromStoredProjection = false;
+              }
               this.rustDeskAuthPasswordMode = 0;
               this.saveRustDeskAuthDraft();
             })
@@ -11108,6 +11314,12 @@ struct RemoteDesktop {
             .backgroundColor(this.rustDeskAuthPasswordMode === 1 ? this.accentColor : this.pal().surface)
             .fontColor(this.rustDeskAuthPasswordMode === 1 ? Color.White : this.pal().text2)
             .onClick((): void => {
+              if (this.rustDeskAuthPasswordMode !== 1) {
+                this.rustDeskAuthPasswordInput = '';
+                this.rustDeskAuthPasswordConfigured = false;
+                this.rustDeskAuthKeepsStoredPassword = false;
+                this.rustDeskAuthPasswordFromStoredProjection = false;
+              }
               this.rustDeskAuthPasswordMode = 1;
               this.saveRustDeskAuthDraft();
             })
@@ -11975,7 +12187,7 @@ struct RemoteDesktop {
         return;
       }
       await this.prepareRemoteSessionPipForForeground(host, sid);
-      this.persistRustDeskSessionAuth(host);
+      if (!this.persistRustDeskSessionAuth(host)) { return; }
       // T-171: 连接成功后显示悬浮胶囊
       this.initHandlePosition();
       this.handleVisible = true;
@@ -12140,7 +12352,7 @@ struct RemoteDesktop {
       if (this.isProRustDeskHost(host) && this.shouldOfferRustDeskAuthRetry(this.connectionErrorDetail)) {
         const fresh: RemoteHost | undefined = this.srv.getHost(host.id);
         if (fresh) {
-          const refreshed: RemoteHost = RemoteHost.fromJSON(fresh.toJSON());
+          const refreshed: RemoteHost = fresh.runtimeClone();
           copyRustDeskPeerTwoFactorRuntime(fresh, refreshed);
           this.pendingHost = refreshed;
         }

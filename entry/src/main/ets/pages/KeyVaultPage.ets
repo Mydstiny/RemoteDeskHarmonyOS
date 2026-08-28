@@ -1497,7 +1497,7 @@ export struct KeyVaultPage {
         .fontColor(this.pal().text).fontFamily(this.font())
         .margin({ bottom: 14 }).width('100%')
       SshKeyInstallSheet({
-        targetKey: this.sheetKey,
+        targetKeyId: this.sheetKey.id,
         onComplete: () => { this.showSheet = false; this.load(); }
       })
     }

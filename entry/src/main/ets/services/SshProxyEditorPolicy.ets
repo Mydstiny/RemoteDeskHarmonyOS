@@ -151,7 +151,9 @@ export function applySshProxyProfileToLegacyHost(host: RemoteHost, profile: SshP
   host.proxyPort = profile.proxyPort || 0;
   host.proxyUsername = profile.proxyUsername || '';
   host.sshProxyPassword = '';
+  host.sshProxyPasswordConfigured = false;
   host.sshProxyKeyPassphrase = '';
+  host.sshProxyKeyPassphraseConfigured = false;
   host.sshProxyKeyId = '';
   host.sshProxyAuthMethod = 'password';
   if (profile.route.type === 'ssh_jump' && profile.route.hops.length > 0) {

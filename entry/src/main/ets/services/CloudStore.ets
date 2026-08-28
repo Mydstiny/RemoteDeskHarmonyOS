@@ -7910,15 +7910,27 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
         legacyRows, legacyExtensions, host.userId);
     const get = (key: string, fallback: string): string => values[key] !== undefined ? values[key] : fallback;
     const crypto: DataCrypto = DataCrypto.getInstance();
+    const storedSshKeyPassphrase: string = get(
+      'sshkeypassphrase', host.sshKeyPassphrase);
+    host.sshKeyPassphraseConfigured = host.sshKeyPassphraseConfigured ||
+      storedSshKeyPassphrase.length > 0;
     host.sshKeyPassphrase = this.decryptIfReady(
       crypto, 'localextensions/remotehosts', host.id,
-      'sshkeypassphrase', get('sshkeypassphrase', host.sshKeyPassphrase));
+      'sshkeypassphrase', storedSshKeyPassphrase);
+    const storedSshProxyPassword: string = get(
+      'sshproxypassword', host.sshProxyPassword);
+    host.sshProxyPasswordConfigured = host.sshProxyPasswordConfigured ||
+      storedSshProxyPassword.length > 0;
     host.sshProxyPassword = this.decryptIfReady(
       crypto, 'localextensions/remotehosts', host.id,
-      'sshproxypassword', get('sshproxypassword', host.sshProxyPassword));
+      'sshproxypassword', storedSshProxyPassword);
+    const storedSshProxyKeyPassphrase: string = get(
+      'sshproxykeypassphrase', host.sshProxyKeyPassphrase);
+    host.sshProxyKeyPassphraseConfigured = host.sshProxyKeyPassphraseConfigured ||
+      storedSshProxyKeyPassphrase.length > 0;
     host.sshProxyKeyPassphrase = this.decryptIfReady(
       crypto, 'localextensions/remotehosts', host.id,
-      'sshproxykeypassphrase', get('sshproxykeypassphrase', host.sshProxyKeyPassphrase));
+      'sshproxykeypassphrase', storedSshProxyKeyPassphrase);
     host.sshHostKeyAlgorithm =
       get('sshhostkeyalgorithm', host.sshHostKeyAlgorithm);
     host.sshHostKeyFingerprintSha256 =
@@ -8195,7 +8207,28 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
       normalizeRdpRestrictedAdminSecretSource(host.rdpRestrictedAdminSecretSource) !== 'ntlm_hash') {
       if (!this.clearRdpRestrictedAdminHash(host.id)) { return false; }
     }
-    return this.saveLocalExtension('remotehosts', host.id, this.hostExtensionValues(host));
+    const values: Record<string, string> = this.hostExtensionValues(host);
+    const preserveSshKeyPassphrase: boolean =
+      host.sshKeyPassphraseConfigured && host.sshKeyPassphrase === '';
+    const preserveSshProxyPassword: boolean =
+      host.sshProxyPasswordConfigured && host.sshProxyPassword === '';
+    const preserveSshProxyKeyPassphrase: boolean =
+      host.sshProxyKeyPassphraseConfigured && host.sshProxyKeyPassphrase === '';
+    if (preserveSshKeyPassphrase || preserveSshProxyPassword ||
+      preserveSshProxyKeyPassphrase) {
+      const existing: Record<string, string> = this.loadLocalExtension('remotehosts', host.id);
+      if (preserveSshKeyPassphrase && (existing['sshkeypassphrase'] || '').length > 0) {
+        values['sshkeypassphrase'] = existing['sshkeypassphrase'];
+      }
+      if (preserveSshProxyPassword && (existing['sshproxypassword'] || '').length > 0) {
+        values['sshproxypassword'] = existing['sshproxypassword'];
+      }
+      if (preserveSshProxyKeyPassphrase &&
+        (existing['sshproxykeypassphrase'] || '').length > 0) {
+        values['sshproxykeypassphrase'] = existing['sshproxykeypassphrase'];
+      }
+    }
+    return this.saveLocalExtension('remotehosts', host.id, values);
   }
 
   private saveSshKeyExtension(key: SshKey): boolean {
@@ -10391,9 +10424,11 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
             normalizeLanDiscoveryIdentity(host.lanDiscoveryIdentity) === '') {
             continue;
           }
+          const storedPassword: string = values['password'] ?? '';
+          host.passwordConfigured = storedPassword.length > 0;
           host.password = this.decryptIfReady(
             DataCrypto.getInstance(), DYNAMIC_LAN_HOST_AAD_TABLE, host.id,
-            'password', values['password'] ?? '');
+            'password', storedPassword);
           result.push(host);
         } catch (rowError) {
           hilog.warn(0x0001, 'CloudSync',
@@ -11569,17 +11604,21 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
     h.host = getStr('host');
     h.port = rs.getLong(rs.getColumnIndex('port'));
     h.username = getStr('username');
+    const storedPassword: string = getStr('passward') || getStr('password');
+    h.passwordConfigured = storedPassword.length > 0;
     h.password = this.decryptIfReady(
-      crypto, 'remotehosts', h.id, 'passward',
-      getStr('passward') || getStr('password'));
+      crypto, 'remotehosts', h.id, 'passward', storedPassword);
     h.customHostname = getStr('customhostname');
     h.sshUseKey = rs.getLong(rs.getColumnIndex('sshusekey')) !== 0;
     h.sshKeyPath = getStr('sshkeypath');
+    const storedSshKeyData: string = getStr('sshkeydata');
+    h.sshKeyDataConfigured = storedSshKeyData.length > 0;
     h.sshKeyData = this.decryptIfReady(
-      crypto, 'remotehosts', h.id, 'sshkeydata', getStr('sshkeydata'));
+      crypto, 'remotehosts', h.id, 'sshkeydata', storedSshKeyData);
+    const storedSshKeyPassphrase: string = getStr('sshkeypassphrase');
+    h.sshKeyPassphraseConfigured = storedSshKeyPassphrase.length > 0;
     h.sshKeyPassphrase = this.decryptIfReady(
-      crypto, 'remotehosts', h.id, 'sshkeypassphrase',
-      getStr('sshkeypassphrase'));
+      crypto, 'remotehosts', h.id, 'sshkeypassphrase', storedSshKeyPassphrase);
     h.sshKeyId = getStr('sshkeyid');
     h.sshHostKeyAlgorithm = getStr('sshhostkeyalgorithm');
     h.sshHostKeyFingerprintSha256 = getStr('sshhostkeyfingerprintsha256');
@@ -11817,9 +11856,10 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
     credential.userId = getStr('userid');
     credential.label = getStr('label');
     credential.username = getStr('username');
+    const storedPassword: string = getStr('password');
+    credential.passwordConfigured = storedPassword.length > 0;
     credential.password = this.decryptIfReady(
-      crypto, 'rdpcredentials', credential.id, 'password',
-      getStr('password'));
+      crypto, 'rdpcredentials', credential.id, 'password', storedPassword);
     credential.createdAt = getLong('createdat');
     return credential;
   }

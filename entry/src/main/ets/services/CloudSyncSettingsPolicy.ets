@@ -17,6 +17,7 @@ const CLOUD_USER_SETTING_NAMES: string[] = [
  * screen, input devices, network, performance or protocol runtime.
  */
 const DEVICE_LOCAL_USER_SETTING_NAMES: string[] = [
+  'secretPresentationPolicyV1',
   'ambientLightEffectEnabled',
   'liveViewEnabled',
   'liveViewMode',

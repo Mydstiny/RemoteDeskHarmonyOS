@@ -34,6 +34,7 @@ export const SETTINGS_SHEET_VIRTUAL_KEYBOARD_BEHAVIOR: number = 33;
 export const SETTINGS_SHEET_VIRTUAL_KEYBOARD_SHORTCUTS: number = 34;
 export const SETTINGS_SHEET_VIRTUAL_KEYBOARD_FUNCTIONS: number = 35;
 export const SETTINGS_SHEET_VIRTUAL_KEYBOARD_CUSTOM: number = 36;
+export const SETTINGS_SHEET_SECRET_VISIBILITY: number = 37;
 
 export const SETTINGS_PANEL_DISMISS_TO_LEAF_OPEN_MS: number = 360;
 
@@ -103,6 +104,10 @@ export function vncSettingsLeafSheetHeight(mode: number): number {
 
 export function diagnosticLogSettingsLeafSheetHeight(mode: number): number {
   return mode === SETTINGS_SHEET_DIAGNOSTIC_LOG ? 740 : 0;
+}
+
+export function secretVisibilitySettingsLeafSheetHeight(mode: number): number {
+  return mode === SETTINGS_SHEET_SECRET_VISIBILITY ? 760 : 0;
 }
 
 export function virtualKeyboardSettingsRouteSpecs(): VirtualKeyboardSettingsRouteSpec[] {

@@ -8,25 +8,44 @@
  *   4. 安装公钥 → 验证新密钥 → 可选切换 Host
  */
 import { promptAction } from '@kit.ArkUI';
+import { cryptoFramework } from '@kit.CryptoArchitectureKit';
+import { util } from '@kit.ArkTS';
 import { RemoteHost } from '../model/RemoteHost';
 import { SshKey } from '../model/SshKey';
 import { Palette, buildDark, buildLight, AppTheme } from '../common/Theme';
 import { showLockGate, lockGateErrorMessage } from './LockGate';
 import { ExtensionLoader } from '../services/ExtensionLoader';
+import { DataCrypto } from '../services/DataCrypto';
 import { HostSyncService } from '../services/HostSyncService';
 import { KeyVaultService } from '../services/KeyVaultService';
 import { SshPublicKeyInstallResult, SshAuthTestResult, GeneratedSshKeyPair } from '../types/rdpnapi';
 
+interface SshKeyInstallHostView {
+  id: string;
+  label: string;
+  host: string;
+  port: number;
+  username: string;
+  locked: boolean;
+  passwordConfigured: boolean;
+  keyConfigured: boolean;
+}
+
+interface SshKeyInstallTargetView {
+  label: string;
+  locked: boolean;
+}
+
 @Component
 export struct SshKeyInstallSheet {
-  @Prop targetKey: SshKey;
+  @Prop targetKeyId: string;
   @StorageLink('currentTheme') theme: string = 'light';
   @StorageProp('accentColor') accentColor: string = '#007DFF';
   @StorageProp('currentBreakpoint') breakpoint: string = 'sm';
   onComplete?: () => void;
 
-  @State hosts: RemoteHost[] = [];
-  @State selectedHost: RemoteHost | null = null;
+  @State hosts: SshKeyInstallHostView[] = [];
+  @State selectedHostId: string = '';
   @State installing: boolean = false;
   @State verifying: boolean = false;
   @State installResult: SshPublicKeyInstallResult | null = null;
@@ -64,41 +83,142 @@ export struct SshKeyInstallSheet {
   }
 
   private loadHosts(): void {
-    const selectedId: string = this.selectedHost === null ? '' : this.selectedHost.id;
+    const selectedId: string = this.selectedHostId;
     const allHosts: RemoteHost[] = this.hostSync.getAllHosts();
-    this.hosts = allHosts.filter((h: RemoteHost) => h.protocol === 'ssh');
+    this.hosts = allHosts.filter((host: RemoteHost): boolean => host.protocol === 'ssh')
+      .map((host: RemoteHost): SshKeyInstallHostView => ({
+        id: host.id,
+        label: host.label,
+        host: host.host,
+        port: host.port,
+        username: host.username,
+        locked: host.locked,
+        passwordConfigured: host.passwordConfigured || host.password.length > 0,
+        keyConfigured: host.sshKeyId !== '' || host.sshKeyDataConfigured ||
+          host.sshKeyData.length > 0
+      }));
     this.hostViewRevision += 1;
     if (selectedId !== '') {
-      const refreshed: RemoteHost | undefined = this.hosts.find((h: RemoteHost): boolean => h.id === selectedId);
-      this.selectedHost = refreshed === undefined ? null : refreshed;
+      const refreshed: SshKeyInstallHostView | undefined = this.hosts.find(
+        (host: SshKeyInstallHostView): boolean => host.id === selectedId);
+      this.selectedHostId = refreshed === undefined ? '' : refreshed.id;
       if (refreshed === undefined && this.step === 0 && !this.installing) {
         promptAction.showToast({ message: '所选 SSH 主机已被删除，请重新选择', duration: 2000 });
       }
     }
   }
 
+  private targetView(): SshKeyInstallTargetView | null {
+    const key: SshKey | undefined = this.kvs.getSshKey(this.targetKeyId);
+    return key === undefined ? null : { label: key.label, locked: key.locked };
+  }
+
+  private sha256Hex(value: string): string {
+    const md = cryptoFramework.createMd('SHA256');
+    md.updateSync({ data: new util.TextEncoder().encode(value) });
+    const bytes: Uint8Array = md.digestSync().data;
+    let result: string = '';
+    for (let index = 0; index < bytes.length; index++) {
+      result += bytes[index].toString(16).padStart(2, '0');
+    }
+    return result;
+  }
+
+  private hostOperationIdentity(host: RemoteHost): string {
+    return this.sha256Hex('ssh-key-install-host:v1\u0000' +
+      JSON.stringify(host.toJSON()) + '\u0000' + host.runtimeSecretStateSignature());
+  }
+
+  private targetKeyOperationIdentity(key: SshKey): string {
+    return this.sha256Hex('ssh-key-install-target:v1\u0000' +
+      JSON.stringify(key.toJSON()));
+  }
+
   // ====== 安装流程 ======
   private async doInstall(): Promise<void> {
-    if (!this.selectedHost) {
+    const selectedView: SshKeyInstallHostView | undefined = this.hosts.find(
+      (host: SshKeyInstallHostView): boolean => host.id === this.selectedHostId);
+    if (selectedView === undefined) {
       promptAction.showToast({ message: '请选择目标主机', duration: 1500 });
       return;
     }
 
     // 鉴权
-    if (this.selectedHost.locked) {
-      const r = await showLockGate(this.selectedHost.label, 'biometric');
+    if (selectedView.locked) {
+      const r = await showLockGate(selectedView.label, 'biometric');
       if (!r.ok) { const m = lockGateErrorMessage(r); if (m !== '') { promptAction.showToast({ message: m, duration: 2000 }); } return; }
     }
-    if (this.targetKey.locked) {
-      const r = await showLockGate(this.targetKey.label, 'biometric');
+    const targetView: SshKeyInstallTargetView | null = this.targetView();
+    if (targetView === null) {
+      promptAction.showToast({ message: '所选 SSH 密钥已不存在，请重新选择', duration: 2000 });
+      return;
+    }
+    if (targetView.locked) {
+      const r = await showLockGate(targetView.label, 'biometric');
       if (!r.ok) { const m = lockGateErrorMessage(r); if (m !== '') { promptAction.showToast({ message: m, duration: 2000 }); } return; }
     }
 
+    const crypto: DataCrypto = DataCrypto.getInstance();
+    if (crypto.isSetupComplete() && !crypto.isReady()) {
+      promptAction.showToast({ message: '本地加密仓库已锁定，请先解锁后重试', duration: 2000 });
+      return;
+    }
+    const host: RemoteHost | undefined = this.hostSync.getHost(this.selectedHostId);
+    const targetKey: SshKey | undefined = this.kvs.getSshKey(this.targetKeyId);
+    if (host === undefined || host.protocol !== 'ssh') {
+      promptAction.showToast({ message: '所选 SSH 主机已变化，请重新选择', duration: 2000 });
+      this.loadHosts();
+      return;
+    }
+    if (targetKey === undefined) {
+      promptAction.showToast({ message: '所选 SSH 密钥已不存在，请重新选择', duration: 2000 });
+      return;
+    }
+    if ((host.locked && !selectedView.locked) || (targetKey.locked && !targetView.locked)) {
+      promptAction.showToast({ message: '安全锁状态已变化，请重新验证后重试', duration: 2000 });
+      this.loadHosts();
+      return;
+    }
+
     // 校验公钥
-    if (!this.loader.validatePublicKeyForAuthorizedKeys(this.targetKey.publicKey)) {
+    if (!this.loader.validatePublicKeyForAuthorizedKeys(targetKey.publicKey)) {
       promptAction.showToast({ message: '[CC-SSHKEY-09] 公钥格式无效, 无法安装', duration: 2000 });
       return;
     }
+
+    let authPrivateKey: string = '';
+    let authPassphrase: string = '';
+    if (host.sshUseKey) {
+      authPassphrase = host.sshKeyPassphrase;
+      if (host.sshKeyId !== '') {
+        const authKey: SshKey | undefined = this.kvs.getSshKey(host.sshKeyId);
+        if (authKey === undefined || authKey.privateKey === '') {
+          promptAction.showToast({ message: '当前主机的认证私钥不可用，请检查密钥保险库', duration: 2000 });
+          return;
+        }
+        authPrivateKey = authKey.privateKey;
+      } else {
+        authPrivateKey = host.sshKeyData;
+      }
+      if (authPrivateKey === '') {
+        promptAction.showToast({ message: '当前主机的认证私钥不可用，请先解锁或重新配置', duration: 2000 });
+        return;
+      }
+      if (host.sshKeyPassphraseConfigured && authPassphrase === '') {
+        promptAction.showToast({ message: '当前私钥密码不可用，请先解锁后重试', duration: 2000 });
+        return;
+      }
+    } else if (host.password === '') {
+      promptAction.showToast({ message: host.passwordConfigured ?
+        '服务器密码不可用，请先解锁后重试' : '当前主机未配置服务器密码', duration: 2000 });
+      return;
+    }
+    if (targetKey.privateKey === '') {
+      promptAction.showToast({ message: '所选 SSH 私钥不可用，请先解锁后重试', duration: 2000 });
+      return;
+    }
+    const hostOperationIdentity: string = this.hostOperationIdentity(host);
+    const targetKeyOperationIdentity: string = this.targetKeyOperationIdentity(targetKey);
 
     this.installing = true;
     this.step = 1;
@@ -107,11 +227,10 @@ export struct SshKeyInstallSheet {
     this.hostSwitchSaveError = '';
 
     try {
-      const host: RemoteHost = this.selectedHost;
       const result: SshPublicKeyInstallResult = this.loader.installSshPublicKey(
         host.host, host.port, host.username,
-        host.password, host.sshKeyData, '',
-        this.targetKey.publicKey
+        host.sshUseKey ? '' : host.password, authPrivateKey, authPassphrase,
+        targetKey.publicKey
       );
       this.installResult = result;
 
@@ -122,17 +241,44 @@ export struct SshKeyInstallSheet {
 
         const testResult: SshAuthTestResult = await this.loader.testSshKeyAuthAsync(
           host.host, host.port, host.username,
-          this.targetKey.privateKey, ''
+          targetKey.privateKey, ''
         );
         this.verifyResult = testResult;
         this.verifying = false;
 
         if (testResult['ok'] && this.switchToNewKey) {
-          // 切换 Host 使用新密钥
-          const updated: RemoteHost = RemoteHost.fromJSON(host.toJSON());
+          // 验证跨越异步边界。提交前必须重新读取主机和目标密钥，并确认
+          // 整个操作身份未变化，避免把已删除或已替换的 key ID 写回主机。
+          const currentCrypto: DataCrypto = DataCrypto.getInstance();
+          if (currentCrypto.isSetupComplete() && !currentCrypto.isReady()) {
+            this.hostSwitchSaveError =
+              '新密钥已安装并验证成功，但本地加密仓库已锁定；未保存认证方式。';
+            this.step = 3;
+            this.installing = false;
+            return;
+          }
+          const latestHost: RemoteHost | undefined = this.hostSync.getHost(host.id);
+          const latestTargetKey: SshKey | undefined = this.kvs.getSshKey(targetKey.id);
+          if (latestHost === undefined || latestTargetKey === undefined ||
+            this.selectedHostId !== host.id || this.targetKeyId !== targetKey.id ||
+            this.hostOperationIdentity(latestHost) !== hostOperationIdentity ||
+            this.targetKeyOperationIdentity(latestTargetKey) !== targetKeyOperationIdentity) {
+            this.hostSwitchSaveError =
+              '新密钥已安装并验证成功，但主机或密钥配置已变化；未保存认证方式，请重新打开后确认。';
+            this.step = 3;
+            this.installing = false;
+            return;
+          }
+          const updated: RemoteHost = latestHost.runtimeClone();
           updated.sshUseKey = true;
-          updated.sshKeyData = this.targetKey.privateKey;
-          updated.sshKeyPath = 'KeyVault: ' + this.targetKey.label;
+          updated.password = '';
+          updated.passwordConfigured = false;
+          updated.sshKeyId = latestTargetKey.id;
+          updated.sshKeyData = '';
+          updated.sshKeyDataConfigured = false;
+          updated.sshKeyPassphrase = '';
+          updated.sshKeyPassphraseConfigured = false;
+          updated.sshKeyPath = 'KeyVault: ' + latestTargetKey.label;
           if (!this.hostSync.updateHost(updated)) {
             this.hostSwitchSaveError = '新密钥已安装并验证成功，但主机认证方式未能保存；请返回主机编辑页重试。';
             promptAction.showToast({ message: this.hostSwitchSaveError, duration: 3000 });
@@ -151,7 +297,7 @@ export struct SshKeyInstallSheet {
   }
 
   // ====== Host 列表项 ======
-  @Builder hostItem(host: RemoteHost) {
+  @Builder hostItem(host: SshKeyInstallHostView) {
     Row() {
       Column() {
         Text(host.label).fontSize(14).fontWeight(FontWeight.Medium)
@@ -160,12 +306,12 @@ export struct SshKeyInstallSheet {
           .fontSize(11).fontColor(this.pal().text3).maxLines(1)
         // 认证方式
         Row() {
-          if (host.password !== '') {
+          if (host.passwordConfigured) {
             Text('密码').fontSize(10).fontColor(this.pal().success)
               .padding({ left: 4, right: 4, top: 1, bottom: 1 })
               .borderRadius(3).backgroundColor(this.pal().success + '18')
           }
-          if (host.sshKeyData !== '') {
+          if (host.keyConfigured) {
             Text('密钥').fontSize(10).fontColor(this.accentColor)
               .padding({ left: 4, right: 4, top: 1, bottom: 1 })
               .borderRadius(3).backgroundColor(this.accentColor + '18')
@@ -177,7 +323,7 @@ export struct SshKeyInstallSheet {
         }.margin({ top: 2 })
       }.alignItems(HorizontalAlign.Start).layoutWeight(1)
 
-      if (this.selectedHost && this.selectedHost.id === host.id) {
+      if (this.selectedHostId === host.id) {
         SymbolGlyph($r('sys.symbol.checkmark_circle_fill'))
           .fontSize(20).fontColor([this.accentColor])
       } else {
@@ -186,10 +332,10 @@ export struct SshKeyInstallSheet {
       }
     }
     .width('100%').padding(12).borderRadius(10)
-    .backgroundColor(this.selectedHost && this.selectedHost.id === host.id
+    .backgroundColor(this.selectedHostId === host.id
       ? this.accentColor + '12' : this.pal().card)
     .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
-    .onClick(() => { this.selectedHost = host; })
+    .onClick(() => { this.selectedHostId = host.id; })
   }
 
   build() {
@@ -213,7 +359,7 @@ export struct SshKeyInstallSheet {
         } else {
           Scroll() {
             Column() {
-              ForEach(this.hosts, (host: RemoteHost) => {
+              ForEach(this.hosts, (host: SshKeyInstallHostView) => {
                 this.hostItem(host)
                 Blank().height(6)
               }, (host: RemoteHost) => host.id + ':' + this.hostViewRevision.toString())
@@ -222,10 +368,10 @@ export struct SshKeyInstallSheet {
         }
 
         Button('安装公钥').width('100%').height(40).fontSize(14).fontWeight(FontWeight.Medium)
-          .backgroundColor(this.selectedHost ? this.accentColor : this.pal().surface)
-          .fontColor(this.selectedHost ? '#FFFFFF' : this.pal().text3)
+          .backgroundColor(this.selectedHostId !== '' ? this.accentColor : this.pal().surface)
+          .fontColor(this.selectedHostId !== '' ? '#FFFFFF' : this.pal().text3)
           .borderRadius(10).margin({ top: 14 })
-          .enabled(this.selectedHost !== null && !this.installing)
+          .enabled(this.selectedHostId !== '' && !this.installing)
           .onClick(() => { this.doInstall(); })
 
         Row() {

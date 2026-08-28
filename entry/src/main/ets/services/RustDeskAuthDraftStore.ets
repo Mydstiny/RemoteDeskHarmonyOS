@@ -7,12 +7,42 @@ export interface RustDeskAuthDraft {
   authChoice: RustDeskAuthDraftChoice
   password: string
   passwordMode: number
+  /** Explicitly preserves the stored secret; false survives mode changes/background restore. */
+  keepsStoredPassword: boolean
+  /** True only while the field mirrors storage; mirrored secrets are never retained in drafts. */
+  passwordFromStoredProjection: boolean
   rememberPassword: boolean
   updatedAt: number
 }
 
 function normalized(value: string): string {
   return value.trim();
+}
+
+function normalizedPasswordMode(value: number): number {
+  return value === 1 ? 1 : 0;
+}
+
+export function rustDeskDraftKeepsStoredPassword(keepsStoredPassword: boolean,
+  storedMode: number, selectedMode: number): boolean {
+  return keepsStoredPassword &&
+    normalizedPasswordMode(storedMode) === normalizedPasswordMode(selectedMode);
+}
+
+export function rustDeskDraftPasswordForConnection(draftPassword: string,
+  keepsStoredPassword: boolean, storedPassword: string,
+  storedMode: number, selectedMode: number): string {
+  if (draftPassword.length > 0) { return draftPassword; }
+  return rustDeskDraftKeepsStoredPassword(
+    keepsStoredPassword, storedMode, selectedMode) ? storedPassword : '';
+}
+
+/** Re-project stored secrets against the current policy instead of reviving an old UI snapshot. */
+export function rustDeskDraftPasswordForPresentation(draft: RustDeskAuthDraft | null,
+  storedPassword: string, hidden: boolean): string {
+  if (draft === null) { return hidden ? '' : storedPassword; }
+  if (draft.passwordFromStoredProjection) { return hidden ? '' : storedPassword; }
+  return draft.password;
 }
 
 function draftKey(ownerScopeId: string, accountGeneration: number,
@@ -29,6 +59,8 @@ function cloneDraft(draft: RustDeskAuthDraft): RustDeskAuthDraft {
     authChoice: draft.authChoice,
     password: draft.password,
     passwordMode: draft.passwordMode,
+    keepsStoredPassword: draft.keepsStoredPassword,
+    passwordFromStoredProjection: draft.passwordFromStoredProjection,
     rememberPassword: draft.rememberPassword,
     updatedAt: draft.updatedAt
   };
@@ -66,6 +98,9 @@ export class RustDeskAuthDraftStore {
     next.authChoice = draft.authChoice === 'request_approval' ?
       'request_approval' : 'password';
     next.passwordMode = draft.passwordMode === 1 ? 1 : 0;
+    next.keepsStoredPassword = draft.keepsStoredPassword === true;
+    next.passwordFromStoredProjection = draft.passwordFromStoredProjection === true;
+    if (next.passwordFromStoredProjection) { next.password = ''; }
     next.updatedAt = Date.now();
     this.drafts.set(draftKey(ownerScopeId, next.accountGeneration, hostId), next);
     return true;

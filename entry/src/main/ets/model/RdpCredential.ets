@@ -21,6 +21,8 @@ export class RdpCredential {
   label: string = '';
   username: string = '';
   password: string = '';
+  /** Runtime-only marker; never serialized or synced. */
+  passwordConfigured: boolean = false;
   createdAt: number = Date.now();
 
   displayName(): string {
@@ -48,6 +50,18 @@ export class RdpCredential {
     c.password = json.password || '';
     c.createdAt = json.createdAt || Date.now();
     return c;
+  }
+
+  /** Clone serialized fields while retaining process-only secret presence. */
+  runtimeClone(): RdpCredential {
+    const credential: RdpCredential = RdpCredential.fromJSON(this.toJSON());
+    credential.passwordConfigured = this.passwordConfigured || this.password.length > 0;
+    return credential;
+  }
+
+  /** Process-only state used to detect encrypted-secret presence changes. */
+  runtimeSecretStateSignature(): string {
+    return this.passwordConfigured || this.password.length > 0 ? '1' : '0';
   }
 
   static generateId(): string {

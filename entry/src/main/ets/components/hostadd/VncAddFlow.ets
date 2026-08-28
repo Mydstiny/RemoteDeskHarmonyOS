@@ -20,7 +20,16 @@ import {
 import { VncSettingsService } from '../../services/VncSettingsService';
 import { VncGatewayView } from '../../services/VncGatewayService';
 import { resolveVncHostDefaults, VncSelectableGateway } from '../../services/VncHostDefaultsPolicy';
-import { VncHostView } from '../../services/VncHostService';
+import { VncHostService, VncHostView } from '../../services/VncHostService';
+import { SecretPresentationStore } from '../../services/SecretPresentationPolicy';
+import {
+  SecretEditMutationKind,
+  secretBindingUnchanged
+} from '../../services/SecretEditMutationPolicy';
+import {
+  VncSecretEditDecision,
+  vncSecretEditDecision
+} from '../../services/VncSecretEditPolicy';
 import { vncGatewayAvailability } from '../../services/VncGatewayProtocolPolicy';
 import { protocolIcon } from '../../services/ProtocolIconPolicy';
 import {
@@ -34,6 +43,8 @@ import { VncSheetScaffold } from '../vnc/VncSheetScaffold';
 export struct VncAddFlow {
   @StorageProp('currentTheme') theme: string = 'light';
   @StorageProp('accentColor') accentColor: string = '#007DFF';
+  @StorageLink('remoteDesktopBgFlag') @Watch('onBackgroundStateChange')
+  appInBackground: boolean = false;
   @Prop gateways: VncGatewayView[] = [];
   @Prop initialHost: VncHostView | null = null;
   @Prop editingId: string = '';
@@ -41,9 +52,9 @@ export struct VncAddFlow {
   onBackToProtocols: () => void = (): void => {};
   onOpenSettings: () => void = (): void => {};
   onSave: (values: VncHostValues, password: string, connectNow: boolean,
-    plainStorageConfirmed: boolean) => void =
+    plainStorageConfirmed: boolean, passwordMutation: SecretEditMutationKind) => void =
     (_values: VncHostValues, _password: string, _connectNow: boolean,
-      _plainStorageConfirmed: boolean): void => {};
+      _plainStorageConfirmed: boolean, _passwordMutation: SecretEditMutationKind): void => {};
 
   @State step: number = 0;
   @State transport: VncTransport = 'direct_tcp';
@@ -54,6 +65,10 @@ export struct VncAddFlow {
   @State portText: string = '5900';
   @State password: string = '';
   @State passwordConfigured: boolean = false;
+  @State passwordChanged: boolean = false;
+  private passwordFromStoredProjection: boolean = false;
+  private passwordProjectionBinding: string[] = [];
+  private passwordProjectionInvalidated: boolean = false;
   @State rememberPassword: boolean = false;
   @State gatewayId: string = '';
   @State tls: boolean = true;
@@ -64,12 +79,27 @@ export struct VncAddFlow {
   @State securityPolicy: VncSecurityPolicy = 'secure_only';
   @State errorText: string = '';
   private readonly settings: VncSettingsService = VncSettingsService.getInstance();
+  private readonly hosts: VncHostService = VncHostService.getInstance();
+  private readonly secretPresentation: SecretPresentationStore = SecretPresentationStore.getInstance();
+  private cryptoStateUnsubscribe: (() => void) | null = null;
+  private secretPresentationUnsubscribe: (() => void) | null = null;
 
   private pal(): Palette {
     return this.theme === 'light' ? buildLight(this.accentColor) : buildDark(this.accentColor);
   }
 
   aboutToAppear(): void {
+    if (this.cryptoStateUnsubscribe === null) {
+      this.cryptoStateUnsubscribe = DataCrypto.getInstance().onStateChange(
+        (ready: boolean, _configured: boolean): void => {
+          this.onCryptoStateChange(ready);
+        });
+    }
+    if (this.secretPresentationUnsubscribe === null) {
+      this.secretPresentationUnsubscribe = this.secretPresentation.onChange((): void => {
+        if (this.passwordFromStoredProjection) { this.restoreStoredPasswordProjection(); }
+      });
+    }
     const defaults = this.settings.get();
     const selectableGateways: VncSelectableGateway[] = this.gateways.map(
       (gateway: VncGatewayView): VncSelectableGateway => ({
@@ -89,6 +119,11 @@ export struct VncAddFlow {
     this.securityPolicy = defaults.securityPolicy;
     this.tls = defaults.securityPolicy === 'secure_only';
     this.passwordConfigured = false;
+    this.passwordChanged = false;
+    this.passwordFromStoredProjection = false;
+    this.passwordProjectionBinding = [];
+    this.passwordProjectionInvalidated = false;
+    this.password = '';
     if (this.transport === 'ultravnc_repeater') {
       const gateway: VncGatewayView | undefined = this.selectedGateway();
       if (gateway !== undefined) {
@@ -107,6 +142,11 @@ export struct VncAddFlow {
       this.portText = host.port.toString();
       this.rememberPassword = host.rememberPassword;
       this.passwordConfigured = host.passwordConfigured;
+      if (!this.appInBackground && !this.passwordHidden()) {
+        this.password = this.hosts.passwordFor(host.id);
+        this.passwordFromStoredProjection = this.password.length > 0;
+      }
+      this.passwordProjectionBinding = this.vncBindingParts(host);
       this.gatewayId = host.gatewayId;
       this.repeaterMode = host.repeaterMode;
       this.viewOnly = host.viewOnly;
@@ -122,6 +162,17 @@ export struct VncAddFlow {
     }
   }
 
+  aboutToDisappear(): void {
+    if (this.cryptoStateUnsubscribe !== null) {
+      this.cryptoStateUnsubscribe();
+      this.cryptoStateUnsubscribe = null;
+    }
+    if (this.secretPresentationUnsubscribe !== null) {
+      this.secretPresentationUnsubscribe();
+      this.secretPresentationUnsubscribe = null;
+    }
+  }
+
   private selectedGateway(): VncGatewayView | undefined {
     return this.gateways.find((gateway: VncGatewayView): boolean => gateway.id === this.gatewayId);
   }
@@ -134,6 +185,77 @@ export struct VncAddFlow {
     const normalized: string = value.trim();
     if (normalized.length <= 4) { return normalized === '' ? '未填写' : '•••'; }
     return normalized.substring(0, 2) + '…' + normalized.substring(normalized.length - 2);
+  }
+
+  private passwordHidden(): boolean {
+    const crypto: DataCrypto = DataCrypto.getInstance();
+    return this.secretPresentation.isHidden('vnc_host_password',
+      crypto.isSetupComplete() && !crypto.isReady());
+  }
+
+  private onBackgroundStateChange(): void {
+    if (!this.passwordFromStoredProjection) { return; }
+    if (this.appInBackground) {
+      this.password = '';
+      return;
+    }
+    this.restoreStoredPasswordProjection();
+  }
+
+  private onCryptoStateChange(ready: boolean): void {
+    if (!this.passwordFromStoredProjection) { return; }
+    if (!ready) {
+      this.password = '';
+      return;
+    }
+    this.restoreStoredPasswordProjection();
+  }
+
+  private vncBindingParts(host: VncHostView): string[] {
+    return [host.id, host.userId, host.transport, host.host.trim(), host.port.toString(),
+      host.gatewayId.trim(), host.repeaterMode, host.tls ? 'tls' : 'plain', host.securityPolicy];
+  }
+
+  private editorVncBindingParts(): string[] {
+    const ownerId: string = this.passwordProjectionBinding.length > 1 ?
+      this.passwordProjectionBinding[1] : '';
+    const hostId: string = this.initialHost === null ? '' : this.initialHost.id;
+    return [hostId, ownerId, this.transport, this.endpointAddress().trim(),
+      Number(this.portText).toString(), this.transport === 'direct_tcp' ? '' : this.gatewayId.trim(),
+      this.repeaterMode, this.tls ? 'tls' : 'plain', this.securityPolicy];
+  }
+
+  private invalidatePasswordProjection(): void {
+    this.password = '';
+    this.passwordConfigured = false;
+    this.passwordFromStoredProjection = false;
+    this.passwordProjectionInvalidated = true;
+    this.errorText =
+      'VNC 主机认证绑定已变化；为避免误用密码，请关闭后重新打开编辑面板';
+  }
+
+  private restoreStoredPasswordProjection(): void {
+    if (this.appInBackground) {
+      this.password = '';
+      return;
+    }
+    const initial: VncHostView | null = this.initialHost;
+    const host: VncHostView | null = initial === null ? null : this.hosts.find(initial.id);
+    if (host === null ||
+      !secretBindingUnchanged(this.passwordProjectionBinding, this.vncBindingParts(host)) ||
+      !secretBindingUnchanged(this.passwordProjectionBinding, this.editorVncBindingParts())) {
+      this.invalidatePasswordProjection();
+      return;
+    }
+    this.password = this.passwordHidden() ? '' : this.hosts.passwordFor(host.id);
+  }
+
+  private passwordDecision(values: VncHostValues,
+    connectNow: boolean): VncSecretEditDecision {
+    const existing: string = this.initialHost === null ? '' :
+      this.hosts.passwordFor(this.initialHost.id);
+    return vncSecretEditDecision(existing, this.password, this.passwordChanged,
+      this.rememberPassword, connectNow, this.initialHost, values);
   }
 
   private gatewaySelectable(gateway: VncGatewayView): boolean {
@@ -257,7 +379,9 @@ export struct VncAddFlow {
     }
   }
 
-  private dispatchSave(values: VncHostValues, connectNow: boolean, plainStorageConfirmed: boolean): void {
+  private dispatchSave(values: VncHostValues, password: string,
+    connectNow: boolean, plainStorageConfirmed: boolean,
+    passwordMutation: SecretEditMutationKind): void {
     if (this.securityPolicy === 'allow_plaintext') {
       promptAction.showDialog({
         title: '确认允许 VNC 明文连接',
@@ -266,18 +390,25 @@ export struct VncAddFlow {
       }).then((result: Object): void => {
         const dialogResult: Record<string, number> = result as Record<string, number>;
         if (dialogResult['index'] === 1) {
-          this.onSave(values, this.password, connectNow, plainStorageConfirmed);
+          this.onSave(values, password, connectNow, plainStorageConfirmed, passwordMutation);
         }
       });
       return;
     }
-    this.onSave(values, this.password, connectNow, plainStorageConfirmed);
+    this.onSave(values, password, connectNow, plainStorageConfirmed, passwordMutation);
   }
 
   private save(connectNow: boolean): void {
+    if (this.passwordProjectionInvalidated) {
+      this.errorText =
+        'VNC 主机认证绑定已变化；请关闭后重新打开编辑面板再保存或连接';
+      return;
+    }
     const values: VncHostValues | null = this.buildValues();
     if (values === null) { return; }
-    if (this.password.length > 0 && this.rememberPassword) {
+    const decision: VncSecretEditDecision = this.passwordDecision(values, connectNow);
+    const password: string = decision.submissionValue;
+    if (password.length > 0 && this.rememberPassword) {
       const crypto: DataCrypto = DataCrypto.getInstance();
       if (crypto.isSetupComplete() && !crypto.isReady()) {
         this.errorText = '应用加密已锁定；请先解锁，或关闭“记住密码”后保存';
@@ -292,13 +423,15 @@ export struct VncAddFlow {
         }).then((result: Object): void => {
           const dialogResult: Record<string, number> = result as Record<string, number>;
           if (dialogResult['index'] === 1) {
-            this.dispatchSave(values, connectNow, true);
+            this.dispatchSave(values, password, connectNow, true,
+              decision.storageMutation);
           }
         });
         return;
       }
     }
-    this.dispatchSave(values, connectNow, false);
+    this.dispatchSave(values, password, connectNow, false,
+      decision.storageMutation);
   }
 
   private rememberPasswordDetail(): string {
@@ -312,7 +445,9 @@ export struct VncAddFlow {
   private securityStorageHint(): string {
     if (this.password.length === 0 && this.passwordConfigured) {
       return this.rememberPassword
-        ? '当前已有已保存密码（不回显）；留空会继续保留，输入新密码才会替换'
+        ? (this.passwordHidden()
+          ? '当前已有已保存密码（不回显）；留空会继续保留，输入新密码才会替换'
+          : '当前已有已保存密码；未修改会保留，输入新密码会替换')
         : '当前已有已保存密码；关闭“记住密码”并保存会删除它';
     }
     if (this.password.length === 0) { return '未填写密码；连接时可按需输入'; }
@@ -427,10 +562,15 @@ export struct VncAddFlow {
   @Builder private securityStep() {
     Column() {
       this.field('VNC 密码（可选）', this.password,
-        this.passwordConfigured ? '已保存密码（不回显；留空保留）' : '留空表示连接时输入',
-        (value: string): void => { this.password = value; }, true)
-      if (this.passwordConfigured && this.password.length === 0) {
-        Text('已保存密码不会在编辑页回显。留空保存可保留现有密码；输入新密码会替换现有密码。')
+        this.passwordConfigured && this.passwordHidden() ? '已保存密码（不回显；留空保留）' :
+          '留空表示连接时输入',
+        (value: string): void => {
+          this.password = value;
+          this.passwordChanged = true;
+          this.passwordFromStoredProjection = false;
+        }, true)
+      if (this.passwordConfigured && this.password.length === 0 && this.passwordHidden()) {
+        Text('已保存密码由本地隐藏策略保护。留空保存可保留现有密码；输入新密码会替换现有密码。')
           .fontSize(11).fontColor(this.pal().text3).lineHeight(17).width('100%').margin({ top: -5, bottom: 8 })
       }
       Row() {
