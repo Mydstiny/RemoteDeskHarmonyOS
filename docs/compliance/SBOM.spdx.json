@@ -5,7 +5,7 @@
   "name": "RemoteDeskHarmonyOS-fc514ce3648779352627e81ec737bbe63ec4f81b",
   "documentNamespace": "https://github.com/Mydstiny/RemoteDeskHarmonyOS/spdx/fc514ce3648779352627e81ec737bbe63ec4f81b",
   "creationInfo": {
-    "created": "2026-08-27T16:25:26Z",
+    "created": "2026-08-28T15:50:20Z",
     "creators": [
       "Tool: scripts/generate_sbom.ps1",
       "Organization: RemoteDeskHarmonyOS"
