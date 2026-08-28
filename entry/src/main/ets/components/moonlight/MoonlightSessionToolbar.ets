@@ -116,7 +116,7 @@ export struct MoonlightSessionToolbar {
 
   private finishRailSwipe(event: GestureEvent): void {
     const collapse: boolean = remoteSessionRailShouldCollapse(
-      event.offsetX, event.velocityX);
+      event.offsetX, event.velocityX, event.offsetY);
     this.resetRailSwipe();
     if (!collapse) { return; }
     this.clearTimer();
@@ -234,6 +234,20 @@ export struct MoonlightSessionToolbar {
     return !this.layout().edgeRail || this.availableHeight >= 176;
   }
 
+  private closeActiveKeyboardSurface(): boolean {
+    if (this.keyboardOpen) {
+      this.onAction('keyboard');
+      this.scheduleHide();
+      return true;
+    }
+    if (this.modifiersOpen) {
+      this.onAction('modifiers');
+      this.scheduleHide();
+      return true;
+    }
+    return false;
+  }
+
   private collapsedRailHeight(): number {
     const safeAvailable: number = Number.isFinite(this.availableHeight) ? this.availableHeight :
       REMOTE_SESSION_COLLAPSED_RAIL_HEIGHT;
@@ -339,12 +353,14 @@ export struct MoonlightSessionToolbar {
       .height(this.collapsedRailHeight())
       .focusable(false).focusOnTouch(false)
       .onClick((): void => {
+        if (this.closeActiveKeyboardSurface()) { return; }
         if (this.canExpand()) { this.expanded = true; this.scheduleHide(); }
       })
       .onHover((hover: boolean): void => {
         this.handlePointerRegionHover(hover, false);
       })
-      .accessibilityText('展开 Moonlight 会话贴边栏，连接质量' + this.qualityLabel)
+      .accessibilityText((this.keyboardOpen || this.modifiersOpen) ? '关闭键盘界面' :
+        '展开 Moonlight 会话贴边栏，连接质量' + this.qualityLabel)
     } else {
       Stack() {
         Row() {
@@ -364,11 +380,16 @@ export struct MoonlightSessionToolbar {
       .width(REMOTE_SESSION_COLLAPSED_TOP_WIDTH)
       .height(REMOTE_SESSION_COLLAPSED_TOP_TOUCH_HEIGHT)
       .focusable(false).focusOnTouch(false)
-      .onClick((): void => { this.expanded = true; this.scheduleHide(); })
+      .onClick((): void => {
+        if (this.closeActiveKeyboardSurface()) { return; }
+        this.expanded = true;
+        this.scheduleHide();
+      })
       .onHover((hover: boolean): void => {
         this.handlePointerRegionHover(hover, false);
       })
-      .accessibilityText('展开 Moonlight 会话顶栏，连接质量' + this.qualityLabel)
+      .accessibilityText((this.keyboardOpen || this.modifiersOpen) ? '关闭键盘界面' :
+        '展开 Moonlight 会话顶栏，连接质量' + this.qualityLabel)
     }
   }
 

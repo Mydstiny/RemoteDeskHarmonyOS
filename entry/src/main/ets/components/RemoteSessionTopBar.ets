@@ -231,7 +231,7 @@ export struct RemoteSessionTopBar {
 
   private finishRailSwipe(event: GestureEvent): void {
     const collapse: boolean = remoteSessionRailShouldCollapse(
-      event.offsetX, event.velocityX);
+      event.offsetX, event.velocityX, event.offsetY);
     this.resetRailSwipe();
     if (!collapse) { return; }
     this.closeMenus();
@@ -400,7 +400,7 @@ export struct RemoteSessionTopBar {
   }
 
   private menuScrollMaxHeight(): number {
-    return Math.max(88, this.sidebarMenuMaxHeight() - this.menuHeaderHeight());
+    return Math.max(1, this.sidebarMenuMaxHeight() - this.menuHeaderHeight());
   }
 
   private qualityLabel(value: number): string {
@@ -1089,10 +1089,14 @@ export struct RemoteSessionTopBar {
     .height(this.collapsedEdgeRailHeight())
     .focusable(false).focusOnTouch(false)
     .hitTestBehavior(HitTestMode.BLOCK_HIERARCHY)
-    .accessibilityText('展开会话贴边栏')
+    .accessibilityText(this.keyboardSurfaceOpen() ? '关闭键盘界面' : '展开会话贴边栏')
     .position({ x: '100%', y: '50%' })
     .markAnchor({ x: '100%', y: '50%' })
     .onClick((): void => {
+      if (this.keyboardSurfaceOpen()) {
+        this.actions.onCloseKeyboardSurface();
+        return;
+      }
       this.collapsed = false;
       this.scheduleAutoCollapse();
     })
@@ -1120,8 +1124,12 @@ export struct RemoteSessionTopBar {
     .height(REMOTE_SESSION_COLLAPSED_TOP_TOUCH_HEIGHT)
     .focusable(false).focusOnTouch(false)
     .hitTestBehavior(HitTestMode.BLOCK_HIERARCHY)
-    .accessibilityText('展开会话顶栏')
+    .accessibilityText(this.keyboardSurfaceOpen() ? '关闭键盘界面' : '展开会话顶栏')
     .onClick((): void => {
+      if (this.keyboardSurfaceOpen()) {
+        this.actions.onCloseKeyboardSurface();
+        return;
+      }
       this.collapsed = false;
       this.scheduleAutoCollapse();
     })

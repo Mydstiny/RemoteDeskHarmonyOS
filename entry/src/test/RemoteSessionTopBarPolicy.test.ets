@@ -154,6 +154,7 @@ export default function remoteSessionTopBarPolicyTest(): void {
       expect(remoteSessionRailShouldCollapse(24, 0)).assertTrue();
       expect(remoteSessionRailShouldCollapse(4, 800)).assertTrue();
       expect(remoteSessionRailShouldCollapse(12, 200)).assertFalse();
+      expect(remoteSessionRailShouldCollapse(24, 0, 48)).assertFalse();
     });
 
     it('phone_and_pad_keyboard_mouse_sessions_should_use_edge_rail', 0, (): void => {

@@ -10999,13 +10999,29 @@ struct SshTerminal {
           const isDark: boolean = (AppStorage.get<string>('currentTheme') ?? 'light') === 'dark';
           this.savedStatusBarColor = isDark ? '#E6E6E6' : '#1C1C1C';
           if (!this.isDesktopDevice) {
-            try { await win.setWindowLayoutFullScreen(true); } catch (_layoutError) {}
-            await win.setSpecificSystemBarEnabled('status', false, false);
-            await win.setSpecificSystemBarEnabled('navigation', false, false);
+            try {
+              await win.setWindowLayoutFullScreen(true);
+            } catch (layoutError) {
+              hilog.warn(0x0001, 'SshTerminal', '[statusBar] layout fullscreen failed code=' +
+                sshDiagnosticErrorCode(layoutError));
+            }
+            try {
+              await win.setSpecificSystemBarEnabled('status', false, false);
+            } catch (statusError) {
+              hilog.warn(0x0001, 'SshTerminal', '[statusBar] hide status failed code=' +
+                sshDiagnosticErrorCode(statusError));
+            }
+            try {
+              await win.setSpecificSystemBarEnabled('navigation', false, false);
+            } catch (navigationError) {
+              hilog.warn(0x0001, 'SshTerminal', '[statusBar] hide navigation failed code=' +
+                sshDiagnosticErrorCode(navigationError));
+            }
             try {
               await win.setSpecificSystemBarEnabled('navigationIndicator', false, false);
-            } catch (_indicatorError) {
-              // Some API-23 device families expose only the navigation bar name.
+            } catch (indicatorError) {
+              hilog.warn(0x0001, 'SshTerminal', '[statusBar] hide indicator failed code=' +
+                sshDiagnosticErrorCode(indicatorError));
             }
           }
           // 强制深色模式: 亮色图标 + 透明背景
@@ -11041,11 +11057,24 @@ struct SshTerminal {
           const isDark: boolean = (AppStorage.get<string>('currentTheme') ?? 'light') === 'dark';
           const contentColor: string = isDark ? '#E6E6E6' : '#1C1C1C';
           if (!this.isDesktopDevice) {
-            await win.setSpecificSystemBarEnabled('status', true, false);
-            await win.setSpecificSystemBarEnabled('navigation', true, false);
+            try {
+              await win.setSpecificSystemBarEnabled('status', true, false);
+            } catch (statusError) {
+              hilog.warn(0x0001, 'SshTerminal', '[statusBar] restore status failed code=' +
+                sshDiagnosticErrorCode(statusError));
+            }
+            try {
+              await win.setSpecificSystemBarEnabled('navigation', true, false);
+            } catch (navigationError) {
+              hilog.warn(0x0001, 'SshTerminal', '[statusBar] restore navigation failed code=' +
+                sshDiagnosticErrorCode(navigationError));
+            }
             try {
               await win.setSpecificSystemBarEnabled('navigationIndicator', true, false);
-            } catch (_indicatorError) {}
+            } catch (indicatorError) {
+              hilog.warn(0x0001, 'SshTerminal', '[statusBar] restore indicator failed code=' +
+                sshDiagnosticErrorCode(indicatorError));
+            }
           }
           await win.setWindowSystemBarProperties({
             statusBarColor: '#00000000',

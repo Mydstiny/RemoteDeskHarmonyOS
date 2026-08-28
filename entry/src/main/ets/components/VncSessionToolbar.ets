@@ -142,9 +142,11 @@ export struct VncSessionToolbar {
   }
 
   private finishRailSwipe(event: GestureEvent): void {
+    const verticalDominant: boolean = Math.abs(event.offsetY) > Math.abs(event.offsetX);
     const collapse: boolean = this.placement.side === 'right' &&
-      remoteSessionRailShouldCollapse(event.offsetX, event.velocityX);
+      remoteSessionRailShouldCollapse(event.offsetX, event.velocityX, event.offsetY);
     this.resetRailSwipe();
+    if (verticalDominant) { return; }
     if (collapse) {
       animateTo({ duration: 180, curve: curves.responsiveSpringMotion() }, (): void => {
         this.actions.onCollapse();
@@ -152,6 +154,18 @@ export struct VncSessionToolbar {
       return;
     }
     this.placementActions.onDrag(event.offsetX, event.offsetY);
+  }
+
+  private closeActiveKeyboardSurface(): boolean {
+    if (this.keyboardOpen) {
+      this.actions.onToggleKeyboard();
+      return true;
+    }
+    if (this.shortcutsOpen) {
+      this.actions.onOpenShortcuts();
+      return true;
+    }
+    return false;
   }
 
   @Builder
@@ -188,8 +202,12 @@ export struct VncSessionToolbar {
       .onActionEnd((event: GestureEvent): void => {
         this.placementActions.onDrag(event.offsetX, event.offsetY);
       }))
-    .accessibilityText(this.viewOnly ? '展开 VNC 只读会话工具栏' : '展开 VNC 会话工具栏')
-    .onClick((): void => { this.actions.onExpand(); })
+    .accessibilityText((this.keyboardOpen || this.shortcutsOpen) ? '关闭键盘界面' :
+      (this.viewOnly ? '展开 VNC 只读会话工具栏' : '展开 VNC 会话工具栏'))
+    .onClick((): void => {
+      if (this.closeActiveKeyboardSurface()) { return; }
+      this.actions.onExpand();
+    })
   }
 
   @Builder
@@ -274,8 +292,12 @@ export struct VncSessionToolbar {
         (this.viewportWidth - REMOTE_SESSION_COLLAPSED_TOP_WIDTH) / 2);
       this.actions.onCollapsedPointerMove(left + (event.x as number), event.y as number);
     })
-    .accessibilityText(this.viewOnly ? '展开 VNC 只读会话工具栏' : '展开 VNC 会话工具栏')
-    .onClick((): void => { this.actions.onExpand(); })
+    .accessibilityText((this.keyboardOpen || this.shortcutsOpen) ? '关闭键盘界面' :
+      (this.viewOnly ? '展开 VNC 只读会话工具栏' : '展开 VNC 会话工具栏'))
+    .onClick((): void => {
+      if (this.closeActiveKeyboardSurface()) { return; }
+      this.actions.onExpand();
+    })
   }
 
   @Builder

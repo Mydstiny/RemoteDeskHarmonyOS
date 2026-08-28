@@ -132,9 +132,13 @@ export function remoteSessionRailDragOffset(offsetX: number): number {
 }
 
 export function remoteSessionRailShouldCollapse(offsetX: number,
-  velocityX: number): boolean {
+  velocityX: number, offsetY: number = 0): boolean {
   const safeOffset: number = Number.isFinite(offsetX) ? offsetX : 0;
   const safeVelocity: number = Number.isFinite(velocityX) ? velocityX : 0;
+  const safeOffsetY: number = Number.isFinite(offsetY) ? offsetY : 0;
+  if (Math.abs(safeOffsetY) > Math.abs(safeOffset)) {
+    return false;
+  }
   return safeOffset >= 24 || safeVelocity >= 720;
 }
 

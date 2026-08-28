@@ -142,6 +142,18 @@ export struct RdpSessionToolbar {
     this.scheduleHide();
   }
 
+  private closeActiveKeyboardSurface(): boolean {
+    if (this.keyboardOpen) {
+      this.invoke('keyboard');
+      return true;
+    }
+    if (this.shortcutsOpen) {
+      this.invoke('shortcuts');
+      return true;
+    }
+    return false;
+  }
+
   private updateRailSwipe(event: GestureEvent): void {
     if (Math.abs(event.offsetX) < Math.abs(event.offsetY)) { return; }
     this.railSwipeX = remoteSessionRailDragOffset(event.offsetX);
@@ -154,7 +166,8 @@ export struct RdpSessionToolbar {
   }
 
   private finishRailSwipe(event: GestureEvent): void {
-    const collapse: boolean = remoteSessionRailShouldCollapse(event.offsetX, event.velocityX);
+    const collapse: boolean = remoteSessionRailShouldCollapse(
+      event.offsetX, event.velocityX, event.offsetY);
     this.resetRailSwipe();
     if (!collapse) { return; }
     this.clearTimer();
@@ -233,9 +246,11 @@ export struct RdpSessionToolbar {
       .height(this.collapsedRailHeight())
       .focusable(false).focusOnTouch(false)
       .onClick((): void => {
+        if (this.closeActiveKeyboardSurface()) { return; }
         if (this.canExpand()) { this.expanded = true; this.scheduleHide(); }
       })
-      .accessibilityText('展开 RDP 会话工具栏，性能状态' + this.qualityLabel)
+      .accessibilityText((this.keyboardOpen || this.shortcutsOpen) ? '关闭键盘界面' :
+        '展开 RDP 会话工具栏，性能状态' + this.qualityLabel)
     } else {
       Stack() {
         Row() {
@@ -255,8 +270,13 @@ export struct RdpSessionToolbar {
       .width(REMOTE_SESSION_COLLAPSED_TOP_WIDTH)
       .height(REMOTE_SESSION_COLLAPSED_TOP_TOUCH_HEIGHT)
       .focusable(false).focusOnTouch(false)
-      .onClick((): void => { this.expanded = true; this.scheduleHide(); })
-      .accessibilityText('展开 RDP 会话顶栏，性能状态' + this.qualityLabel)
+      .onClick((): void => {
+        if (this.closeActiveKeyboardSurface()) { return; }
+        this.expanded = true;
+        this.scheduleHide();
+      })
+      .accessibilityText((this.keyboardOpen || this.shortcutsOpen) ? '关闭键盘界面' :
+        '展开 RDP 会话顶栏，性能状态' + this.qualityLabel)
     }
   }
 
