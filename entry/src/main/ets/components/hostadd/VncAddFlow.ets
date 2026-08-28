@@ -77,6 +77,7 @@ export struct VncAddFlow {
   private readonly hosts: VncHostService = VncHostService.getInstance();
   private readonly secretPresentation: SecretPresentationStore = SecretPresentationStore.getInstance();
   private cryptoStateUnsubscribe: (() => void) | null = null;
+  private secretPresentationUnsubscribe: (() => void) | null = null;
 
   private pal(): Palette {
     return this.theme === 'light' ? buildLight(this.accentColor) : buildDark(this.accentColor);
@@ -88,6 +89,11 @@ export struct VncAddFlow {
         (ready: boolean, _configured: boolean): void => {
           this.onCryptoStateChange(ready);
         });
+    }
+    if (this.secretPresentationUnsubscribe === null) {
+      this.secretPresentationUnsubscribe = this.secretPresentation.onChange((): void => {
+        if (this.passwordFromStoredProjection) { this.restoreStoredPasswordProjection(); }
+      });
     }
     const defaults = this.settings.get();
     const selectableGateways: VncSelectableGateway[] = this.gateways.map(
@@ -152,6 +158,10 @@ export struct VncAddFlow {
     if (this.cryptoStateUnsubscribe !== null) {
       this.cryptoStateUnsubscribe();
       this.cryptoStateUnsubscribe = null;
+    }
+    if (this.secretPresentationUnsubscribe !== null) {
+      this.secretPresentationUnsubscribe();
+      this.secretPresentationUnsubscribe = null;
     }
   }
 

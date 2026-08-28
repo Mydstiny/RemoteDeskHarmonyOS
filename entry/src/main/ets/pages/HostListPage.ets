@@ -704,6 +704,7 @@ struct HostListPage {
   private vncHostDataUnsubscribe: (() => void) | null = null;
   private vncTrustDataUnsubscribe: (() => void) | null = null;
   private cryptoStateUnsubscribe: (() => void) | null = null;
+  private secretPresentationUnsubscribe: (() => void) | null = null;
   private skipInitialPageShowLoad: boolean = true;
   private hostLoadRefreshTimer: number = -1;
   private hostLoadRefreshPresence: boolean = false;
@@ -1341,6 +1342,11 @@ struct HostListPage {
       this.scrubStoredSecretEditorProjections();
       return;
     }
+    this.restoreStoredSecretEditorProjections();
+  }
+
+  private onSecretPresentationChange(): void {
+    this.secretPresentationPolicyJson = this.secretPresentation.getJson();
     this.restoreStoredSecretEditorProjections();
   }
 
@@ -5036,6 +5042,11 @@ struct HostListPage {
           this.onDataCryptoStateChange(ready, configured);
         });
     }
+    if (!this.secretPresentationUnsubscribe) {
+      this.secretPresentationUnsubscribe = this.secretPresentation.onChange((): void => {
+        this.onSecretPresentationChange();
+      });
+    }
   }
 
   private unregisterDataRefreshListeners(): void {
@@ -5058,6 +5069,10 @@ struct HostListPage {
     if (this.cryptoStateUnsubscribe) {
       this.cryptoStateUnsubscribe();
       this.cryptoStateUnsubscribe = null;
+    }
+    if (this.secretPresentationUnsubscribe) {
+      this.secretPresentationUnsubscribe();
+      this.secretPresentationUnsubscribe = null;
     }
   }
 

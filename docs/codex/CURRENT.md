@@ -4,7 +4,7 @@
 
 - Task: `secret-visibility-policy`
 - Branch/base: `codex/secret-visibility-policy` from synchronized `main@f3b41e5a6`.
-- Phase: sixth review remediation verified; cumulative follow-up review pending.
+- Phase: post-sixth cross-window hardening verified; cumulative follow-up review pending.
 - Plan: `docs/codex/plans/2026-08-28-secret-visibility-policy.md`
 
 ## Objective
@@ -79,6 +79,11 @@
   proxy passwords/passphrases. The independent KeyVault Sheet passes only key
   and host IDs, refetches live secrets after the lock gate, rejects crypto-locked
   access, and supports both KeyVault and legacy inline authentication keys.
+- The device-local presentation store now publishes process-local changes.
+  HostList, the RustDesk authentication page and VNC add/edit flows subscribe
+  for their visible lifecycle, so another window changing a stored-secret kind
+  to hidden immediately clears any existing stored projection without syncing
+  the policy to cloud or backup.
 - Legacy SSH proxy password/passphrase ciphertext now has runtime presence
   markers and survives permitted trust-only writes while the crypto vault is
   locked. Canonical proxy rebinding clears both the legacy values and markers.
@@ -94,8 +99,8 @@
 
 ## Verification (current worktree)
 
-- `default@OhosTestCompileArkTS`: PASS (`BUILD SUCCESSFUL in 9 s 430 ms`).
-- `assembleHap`: PASS, signed (`BUILD SUCCESSFUL in 16 s 93 ms`).
+- `default@OhosTestCompileArkTS`: PASS (`BUILD SUCCESSFUL in 13 s 16 ms`).
+- `assembleHap`: PASS, signed (`BUILD SUCCESSFUL in 20 s 922 ms`).
 - Light open-source compliance: PASS.
 - `git diff --check`: PASS.
 - The focused Hypium tests are registered in `List.test.ets` and compile in the
@@ -105,7 +110,7 @@
 
 ## Next
 
-1. Commit the verified sixth remediation with only this task's files.
+1. Commit the verified cross-window policy notification hardening with only this task's files.
 2. Ask the same independent reviewer to confirm all twenty-seven findings are closed.
 3. Rerun final gates and close the branch through PR/main where possible.
 

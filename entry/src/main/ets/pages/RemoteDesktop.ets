@@ -1053,6 +1053,7 @@ struct RemoteDesktop {
   private vncCertificateAccountGeneration: number = 0;
   private vncAccountScopeUnsubscribe: (() => void) | null = null;
   private cryptoStateUnsubscribe: (() => void) | null = null;
+  private secretPresentationUnsubscribe: (() => void) | null = null;
   private vncTransientPassword: string = '';
   /** Distinguishes an explicit empty-password decision from no one-shot credential. */
   private vncTransientCredentialProvided: boolean = false;
@@ -6813,6 +6814,14 @@ struct RemoteDesktop {
       host.password, this.rustDeskAuthPasswordHidden());
   }
 
+  private onSecretPresentationChange(): void {
+    if (!this.showRustDeskAuthSheet || !this.rustDeskAuthPasswordFromStoredProjection) {
+      return;
+    }
+    const crypto: DataCrypto = DataCrypto.getInstance();
+    this.onDataCryptoStateChange(crypto.isReady(), crypto.isSetupComplete());
+  }
+
   private onSessionWindowBackgroundChange(): void {
     if (this.sessionWindowId.length === 0) { return; }
     this.applyAbilityBackgroundState(this.sessionWindowBackground);
@@ -7259,6 +7268,11 @@ struct RemoteDesktop {
           this.onDataCryptoStateChange(ready, configured);
         });
     }
+    if (this.secretPresentationUnsubscribe === null) {
+      this.secretPresentationUnsubscribe = this.secretPresentation.onChange((): void => {
+        this.onSecretPresentationChange();
+      });
+    }
     this.physicalKeyboardLayout = RemoteKeyboardLayout.WINDOWS;
     this.physicalKeyboardLayoutConfirmed = false;
     this.physicalKeyboardLayoutPromptVisible = false;
@@ -7590,6 +7604,10 @@ struct RemoteDesktop {
     if (this.cryptoStateUnsubscribe !== null) {
       this.cryptoStateUnsubscribe();
       this.cryptoStateUnsubscribe = null;
+    }
+    if (this.secretPresentationUnsubscribe !== null) {
+      this.secretPresentationUnsubscribe();
+      this.secretPresentationUnsubscribe = null;
     }
     this.clearRemoteSurfaceResizeWork();
     this.clearVncToolbarAutoCollapse();

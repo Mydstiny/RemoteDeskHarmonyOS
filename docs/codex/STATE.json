@@ -3,10 +3,10 @@
   "task": "secret-visibility-policy",
   "branch": "codex/secret-visibility-policy",
   "base": "f3b41e5a6c6ffd7f4e3bc45941877d0ff81d1055",
-  "head": "09d6e978c6a4223da89bba6af8c6faa4e9a6da07",
+  "head": "be10653893c5ab737466bcd8ec9129817449f350",
   "phase": "remediation",
   "status": "active",
-  "next": "Commit the verified sixth remediation, obtain a clean cumulative follow-up from the same reviewer and rerun the final exact gates.",
+  "next": "Commit the verified cross-window policy notification hardening, obtain a clean cumulative follow-up from the same reviewer and rerun the final exact gates.",
   "blockers": [
     "The optional ohosTest@OhosTestCompileArkTS task is not registered (00306054), so no device-side Hypium execution is claimed."
   ],
@@ -86,8 +86,8 @@
   },
   "lastVerification": {
     "baseline": "clean synchronized main@f3b41e5a6",
-    "testCompile": "PASS: default@OhosTestCompileArkTS, BUILD SUCCESSFUL in 9 s 430 ms",
-    "assembleHap": "PASS: signed HAP, BUILD SUCCESSFUL in 16 s 93 ms",
+    "testCompile": "PASS: default@OhosTestCompileArkTS, BUILD SUCCESSFUL in 13 s 16 ms",
+    "assembleHap": "PASS: signed HAP, BUILD SUCCESSFUL in 20 s 922 ms",
     "targetedTests": "REGISTERED_AND_COMPILED; optional ohosTest@OhosTestCompileArkTS unavailable with 00306054; no device execution claimed",
     "compliance": "PASS: Light open-source compliance",
     "review": "FOLLOW_UP_NOT_PASS: cumulative 10 P1, 16 P2 and 1 P3 findings remediated; same-reviewer clean cumulative follow-up pending",

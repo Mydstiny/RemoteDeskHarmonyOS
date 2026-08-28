@@ -118,6 +118,7 @@ export class SecretPresentationStore {
   private static instance: SecretPresentationStore;
   private context: common.Context | null = null;
   private policy: SecretPresentationPolicy = defaultSecretPresentationPolicy();
+  private changeListeners: Array<() => void> = [];
 
   static getInstance(): SecretPresentationStore {
     if (!SecretPresentationStore.instance) {
@@ -152,6 +153,21 @@ export class SecretPresentationStore {
     return secretPresentationHidden(this.policy, kind, securityOverride);
   }
 
+  onChange(listener: () => void): () => void {
+    this.changeListeners.push(listener);
+    return (): void => {
+      const index: number = this.changeListeners.indexOf(listener);
+      if (index >= 0) { this.changeListeners.splice(index, 1); }
+    };
+  }
+
+  private notifyChange(): void {
+    const listeners: Array<() => void> = this.changeListeners.slice();
+    for (let i = 0; i < listeners.length; i++) {
+      try { listeners[i](); } catch (_e) { /* presentation listeners are isolated */ }
+    }
+  }
+
   save(policy: SecretPresentationPolicy): boolean {
     if (this.context === null) { return false; }
     const normalized: SecretPresentationPolicy =
@@ -163,6 +179,7 @@ export class SecretPresentationStore {
         serializeSecretPresentationPolicy(normalized));
       prefs.flushSync();
       this.policy = normalized;
+      this.notifyChange();
       return true;
     } catch (_e) {
       return false;
