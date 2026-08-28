@@ -8,6 +8,8 @@ import {
 } from './AccountKitService';
 import {
   AccountScopeToken,
+  ACCOUNT_CLOUD_STORE_IDENTITY,
+  accountLocalCompatibilityScopeToken,
   cloudAccountBindingForScope,
   accountScopeToken,
   deviceLocalScopeToken,
@@ -402,8 +404,25 @@ export class AccountSessionCoordinator {
         '旧账号 RustDesk Pro 凭据未能从 Asset Store 安全清除');
     }
 
-    const rebound: boolean = await store.rebindScope(
+    let rebound: boolean = await store.rebindScope(
       this.context, switching, identity.unionID, platformProof);
+    let compatibilityFallbackUsed: boolean = false;
+    if (!rebound) {
+      const primaryFailure: string =
+        store.lastScopeRebindFailureKind();
+      const localFallback: AccountScopeToken | null =
+        accountLocalCompatibilityScopeToken(switching);
+      if (localFallback !== null &&
+        this.intentIsCurrent(intentGeneration)) {
+        hilog.warn(0x0001, 'AccountSession',
+          '规范账号库初始化未完成，兼容降级到同账号本地库；登录继续，云绑定稍后重试 failureKind=' +
+          primaryFailure);
+        rebound = await store.rebindScope(
+          this.context, localFallback,
+          identity.unionID, platformProof);
+        compatibilityFallbackUsed = rebound;
+      }
+    }
     if (!rebound) {
       return await this.restorePreviousScope(
         previousScope, previousCredential, previousAuth,
@@ -412,8 +431,8 @@ export class AccountSessionCoordinator {
 
     const currentScope: AccountScopeToken = store.currentScope();
     let cloudRecoveryBaselineReady: boolean = true;
-    if (platformProof.state === 'permission_dialog_blocked' ||
-        platformProof.state === 'permission_unavailable') {
+    if (currentScope.storeIdentity !==
+        ACCOUNT_CLOUD_STORE_IDENTITY) {
       cloudRecoveryBaselineReady =
         store.capturePendingCloudBindingSourceBaseline();
       if (!cloudRecoveryBaselineReady) {
@@ -520,8 +539,10 @@ export class AccountSessionCoordinator {
     this.platformCloudIdentityState =
       platformProof.state;
     this.cloudBindingRecoveryState =
-      cloudBindingRecoveryRequested(
-        platformProof.state, cloudBound);
+      compatibilityFallbackUsed && cloudRecoveryBaselineReady
+        ? 'binding_pending'
+        : cloudBindingRecoveryRequested(
+          platformProof.state, cloudBound);
     if (!cloudRecoveryBaselineReady) {
       this.cloudBindingRecoveryState = 'blocked';
     }

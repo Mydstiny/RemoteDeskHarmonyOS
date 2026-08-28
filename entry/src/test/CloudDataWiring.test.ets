@@ -181,6 +181,7 @@ class CoordinatorHooks
     null;
   durableState:
     CloudSyncDurableState | null = null;
+  persistAllowed: boolean = true;
   restoreResolutionAllowed: boolean = true;
   restoreResolutionCount: number = 0;
   restoreResolutionTables: string[] = [];
@@ -295,6 +296,7 @@ class CoordinatorHooks
   persistDurableState(
     state: CloudSyncDurableState
   ): boolean {
+    if (!this.persistAllowed) { return false; }
     this.durableState = state;
     return true;
   }
@@ -1135,6 +1137,34 @@ export default function cloudDataWiringTest():
         expect(executions).assertEqual(0);
         expect(await coordinator.dispose(
           accountLease(), 1000)).assertTrue();
+      });
+
+    it('keeps_a_local_only_lease_when_cloud_lifecycle_metadata_is_unwritable',
+      0, async (): Promise<void> => {
+        const coordinator = new CloudSyncCoordinator(
+          new FixedSelectionSource(['remotehosts']),
+          new ControlledRetryClock());
+        const hooks = new CoordinatorHooks();
+        hooks.persistAllowed = false;
+        let executions: number = 0;
+        const lease: AccountSessionLease = accountLease();
+        expect(coordinator.bind(
+          lease, accountBinding(),
+          async (): Promise<boolean> => {
+            executions++;
+            return true;
+          }, (_tables: string[]): void => {}, hooks)).assertTrue();
+        expect(coordinator.isDurabilityDegradedLocalOnly())
+          .assertTrue();
+
+        const startup: CloudSyncOperationResult =
+          await coordinator.requestStartupPull();
+        expect(startup.ok).assertFalse();
+        expect(startup.failureKind).assertEqual('cloud_service');
+        expect(executions).assertEqual(0);
+        expect(coordinator.closeMutationGate(lease)).assertTrue();
+        expect(coordinator.reopenMutationGate(lease)).assertTrue();
+        expect(await coordinator.dispose(lease, 1000)).assertTrue();
       });
 
     it('commits_core_startup_and_vnc_when_optional_moonlight_transfer_fails',

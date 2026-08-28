@@ -95,6 +95,8 @@ import {
   cloudSyncWatchdogTimeoutKind,
   cloudSyncBlockedByLocalRestore,
   classifyCloudSyncProgressCode,
+  mergeMutationRevisionMaps,
+  mutationRevisionsAfterAcknowledgement,
   shouldRejectAutomaticEmptyCloudSnapshot,
   shouldProtectMoonlightBeforeEmptyCloudMaterialization
 } from './CloudSyncCoordinatorPolicy';
@@ -446,6 +448,10 @@ const LOCAL_METADATA_TABLE: string = 'localmetadata';
 const VNC_HOST_LOCAL_PERSONALIZATION_PREFIX: string =
   'vnc_host_local_personalization_v1:';
 const LOCAL_MUTATION_JOURNAL_TABLE: string = 'localmutationjournal';
+const COMPATIBILITY_MUTATION_PREFERENCES_NAME: string =
+  'RemoteDesktopCloudCompatibilityPrefs';
+const COMPATIBILITY_MUTATION_PREFERENCE_PREFIX: string =
+  'pending_local_mutations_v1';
 const MIGRATION_RECEIPT_TABLE: string = 'migrationreceipts';
 const MIGRATION_QUARANTINE_TABLE: string = 'migrationquarantine';
 const ACCOUNT_STORE_SCHEMA_VERSION: number =
@@ -650,6 +656,7 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
   private moonlightStorageReady: boolean = false;
   private moonlightSchemaReceiptReady: boolean = false;
   private moonlightCloudRegistrationError: string = '';
+  private forwardCompatibleSchemaLocalOnly: boolean = false;
   private cloudRegistrationRetryPromise: Promise<boolean> | null = null;
   private moonlightCloudRegistrationRetryPromise: Promise<boolean> | null = null;
   private lastCloudRegistrationRetryAtMs: number = 0;
@@ -672,6 +679,8 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
   private manualDownloadExtensions: Array<Record<string, string>> | null = null;
   private manualDownloadMetadata: Array<Record<string, string>> | null = null;
   private manualDownloadMutationJournal: Array<Record<string, string>> | null = null;
+  private manualDownloadMutationRevisions:
+    Record<string, number> | null = null;
   private manualDownloadLocalTables: Record<string, Array<Record<string, string>>> | null = null;
   private cloudDownloadCheckpointOperation:
     CloudDownloadTransactionOperation | null = null;
@@ -717,6 +726,11 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
   private cloudBootstrapCompleted: boolean = false;
   private lastMutationResult: DataMutationResult = DataMutationResult.success('');
   private lastMutationRevision: number = 0;
+  // Independent of the RDB journal: a broken/missing sync metadata table must
+  // not roll back a valid business-row write. The marker is owner/store scoped
+  // and is consumed only after a confirmed upload covers its revision.
+  private compatibilityMutationRevisions: Record<string, number> = {};
+  private compatibilityMutationRevisionsLoaded: boolean = false;
   private readonly syncSelection: CloudSyncSelectionStore = CloudSyncSelectionStore.getInstance();
   private readonly vncSyncSelection: VncCloudSyncSelectionStore =
     VncCloudSyncSelectionStore.getInstance();
@@ -1061,6 +1075,7 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
     this.moonlightStorageReady = false;
     this.moonlightSchemaReceiptReady = false;
     this.moonlightCloudRegistrationError = '';
+    this.forwardCompatibleSchemaLocalOnly = false;
     this.syncSelection.setRuntimeTableAvailable(
       MOONLIGHT_CLOUD_TABLE, false);
     this.cloudServiceGuidanceNeeded = false;
@@ -1077,6 +1092,8 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
     }
     this.store = null;
     this.currentLease = null;
+    this.compatibilityMutationRevisions = {};
+    this.compatibilityMutationRevisionsLoaded = false;
     this.currentVerifiedUnionId = '';
     this.cryptoLifecycleState = null;
     this.cloudDownloadActive = false;
@@ -1110,6 +1127,8 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
       platformIdentityFingerprint:
         token.platformIdentityFingerprint
     };
+    this.compatibilityMutationRevisions = {};
+    this.compatibilityMutationRevisionsLoaded = false;
     this.currentVerifiedUnionId = verifiedUnionId.trim();
     this.cloudAccountBinding = cloudAccountBindingForScope(this.currentScopeToken);
     this.startupSyncPending = true;
@@ -1117,6 +1136,7 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
     this.moonlightStorageReady = false;
     this.moonlightSchemaReceiptReady = false;
     this.moonlightCloudRegistrationError = '';
+    this.forwardCompatibleSchemaLocalOnly = false;
     this.cloudDownloadActive = false;
     this.lastCloudFirstCompletedAtMs = 0;
     this.moonlightCloudApplyLease = null;
@@ -1132,6 +1152,7 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
       boolean =
       this.startupRecoveryVerificationIo !==
         null;
+    let cloudRuntimeAdmissionReady: boolean = true;
     try {
       if (!startupRecoveryVerification) {
         if (context === null) {
@@ -1152,6 +1173,9 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
         "[DEBUG] 系统版本: " + deviceInfo.osFullName + ", RDB已创建");
 
       await this.createTables();
+      if (this.forwardCompatibleSchemaLocalOnly) {
+        cloudRuntimeAdmissionReady = false;
+      }
       this.currentScopeToken.schemaRevision = this.store.version;
       // Canonical cloud store admission control. The AGC cloud schema binds
       // only to the store id `remotedesktop`; a per-account hashed store can
@@ -1189,6 +1213,9 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
           this.currentLease = accountSessionLease(
             this.currentScopeToken, this.storeInstanceSequence);
           await this.createTables();
+          if (this.forwardCompatibleSchemaLocalOnly) {
+            cloudRuntimeAdmissionReady = false;
+          }
           this.currentScopeToken.schemaRevision = this.store.version;
           hilog.warn(0x0001, 'CloudSync',
             '规范云库属于其他账号，已回退到本地哈希作用域（云同步 fail-closed）');
@@ -1203,9 +1230,12 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
         throw new Error(
           'Account Kit scope or independent platform cloud identity does not match target binding');
       }
-      this.verifyStoreIdentity();
-      this.moonlightSchemaReceiptReady =
-        this.writeMoonlightSchemaReceipt();
+      if (!this.verifyStoreIdentity()) {
+        cloudRuntimeAdmissionReady = false;
+      }
+      if (!this.forwardCompatibleSchemaLocalOnly) {
+        this.moonlightSchemaReceiptReady =
+          this.writeMoonlightSchemaReceipt();
       if (!this.moonlightSchemaReceiptReady) {
         // The receipt belongs only to the optional Moonlight table. Keep the
         // existing account store and its eight deployed cloud tables usable;
@@ -1225,43 +1255,114 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
         // self-migration is skipped; instead migrate the 1.0.9/1.0.10
         // account-scoped store into the canonical cloud store first, then
         // recover any pending download transaction carried over with it.
-        await migrator.migrateAccountScopedStoreIfNeeded(
-          context, this.store, this.currentScopeToken, verifiedUnionId);
-        const claimed:
-          LegacySharedStoreMigrationResult =
-          await migrator.claimLegacyRowsInPlace(
-            this.store, this.currentScopeToken, verifiedUnionId);
-        if (claimed.copiedRows > 0) {
-          hilog.info(0x0001, 'CloudSync',
-            '已认领 1.0.7/1.0.8 旧 owner 行数=' +
-            claimed.copiedRows.toString());
+        try {
+          await migrator.migrateAccountScopedStoreIfNeeded(
+            context, this.store, this.currentScopeToken,
+            verifiedUnionId);
+        } catch (migrationError) {
+          // Migration is copy-only and the source store remains untouched.
+          // A platform/API incompatibility must defer this optional carryover,
+          // never invalidate an already-open account store or roll back login.
+          hilog.warn(0x0001, 'CloudSync',
+            '旧账号作用域库迁移已延后，保留源库并继续登录: ' +
+            DataCrypto.errDetail(migrationError));
+        }
+        try {
+          const claimed:
+            LegacySharedStoreMigrationResult =
+            await migrator.claimLegacyRowsInPlace(
+              this.store, this.currentScopeToken,
+              verifiedUnionId);
+          if (claimed.copiedRows > 0) {
+            hilog.info(0x0001, 'CloudSync',
+              '已认领 1.0.7/1.0.8 旧 owner 行数=' +
+              claimed.copiedRows.toString());
+          }
+        } catch (claimError) {
+          // In-place owner normalization is idempotent. Keep legacy rows
+          // intact and retry later instead of making authentication depend on
+          // the exact historical schema shape.
+          hilog.warn(0x0001, 'CloudSync',
+            '旧 owner 行认领已延后，原数据保持不变: ' +
+            DataCrypto.errDetail(claimError));
         }
       } else {
-        await migrator.migrateIfNeeded(
-          context, this.store, this.currentScopeToken, verifiedUnionId,
-          { targetStoreName: this.currentScopeToken.storeIdentity });
+        try {
+          await migrator.migrateIfNeeded(
+            context, this.store, this.currentScopeToken,
+            verifiedUnionId,
+            { targetStoreName: this.currentScopeToken.storeIdentity });
+        } catch (migrationError) {
+          // The isolated target store is already usable. Preserve the legacy
+          // source for a later compatible retry and keep local account access.
+          hilog.warn(0x0001, 'CloudSync',
+            '兼容数据迁移已延后，本地数据域继续可用: ' +
+            DataCrypto.errDetail(migrationError));
+        }
       }
       if (!(await this.recoverPendingCloudDownloadTransaction())) {
-        throw new Error(
-          'pending cloud download transaction recovery failed');
+        // A damaged/interrupted cloud checkpoint must stop cloud transfer,
+        // not local account access. Preserve every row and checkpoint for a
+        // later repair while the already-open RDB remains writable.
+        cloudRuntimeAdmissionReady = false;
+        hilog.warn(0x0001, 'CloudSync',
+          '云下载事务恢复未完成；保留本地数据并仅暂停云传输');
       }
-      this.migrateCryptoParamIdentity();
-      this.migrateLegacyRelayJson();
-      await this.migrateLocalExtensions();
-      await this.migrateDeviceLocalHostTrust();
-      await this.migrateLegacyVncRecords();
+      try {
+        this.migrateCryptoParamIdentity();
+      } catch (cryptoMigrationError) {
+        // Do not guess ownership of encryption material. Keep the rows and
+        // local database available, but defer cloud registration until a
+        // later compatible migration can prove the mapping.
+        cloudRuntimeAdmissionReady = false;
+        hilog.warn(0x0001, 'CloudSync',
+          '密码参数兼容迁移已延后；本地数据保留，云传输暂停: ' +
+          DataCrypto.errDetail(cryptoMigrationError));
+      }
+      try {
+        this.migrateLegacyRelayJson();
+      } catch (relayMigrationError) {
+        hilog.warn(0x0001, 'CloudSync',
+          '旧中继数据迁移已延后，原记录保持可读: ' +
+          DataCrypto.errDetail(relayMigrationError));
+      }
+      try {
+        await this.migrateLocalExtensions();
+      } catch (extensionMigrationError) {
+        hilog.warn(0x0001, 'CloudSync',
+          '本地扩展迁移已延后，主数据继续可用: ' +
+          DataCrypto.errDetail(extensionMigrationError));
+      }
+      try {
+        await this.migrateDeviceLocalHostTrust();
+      } catch (trustMigrationError) {
+        hilog.warn(0x0001, 'CloudSync',
+          '设备信任数据迁移已延后，主机数据继续可用: ' +
+          DataCrypto.errDetail(trustMigrationError));
+      }
+      try {
+        await this.migrateLegacyVncRecords();
+      } catch (vncMigrationError) {
+        hilog.warn(0x0001, 'CloudSync',
+          '旧 VNC 数据迁移已延后，原记录保持不变: ' +
+          DataCrypto.errDetail(vncMigrationError));
+      }
+      }
       const bootstrapMetadata:
         CloudMetadataReadResult =
         this.readLocalMetadataState(
           CLOUD_BOOTSTRAP_COMPLETED_KEY);
       if (!cloudMetadataBoundaryReadable(
         bootstrapMetadata)) {
-        throw new Error(
-          'cloud bootstrap metadata query failed');
+        cloudRuntimeAdmissionReady = false;
+        this.cloudBootstrapCompleted = false;
+        hilog.warn(0x0001, 'CloudSync',
+          '云启动元数据不可读；本地保存继续，云端稍后重新核对');
+      } else {
+        this.cloudBootstrapCompleted =
+          bootstrapMetadata.state === 'present' &&
+          bootstrapMetadata.value === '1';
       }
-      this.cloudBootstrapCompleted =
-        bootstrapMetadata.state === 'present' &&
-        bootstrapMetadata.value === '1';
       // 本地库必须独立可用；云服务未开通或网络策略设置失败时仍要恢复缓存数据。
       this.initialized = true;
       this.syncSelection.init(context, this.currentScopeToken.ownerScopeId);
@@ -1297,12 +1398,31 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
       const lease: AccountSessionLease =
         cloneAccountSessionLease(this.currentLease);
       if (!this.moonlightSyncSelection.init(lease, false)) {
-        throw new Error('Moonlight cloud selection owner binding failed');
+        this.moonlightCloudAvailable = false;
+        this.moonlightStorageReady = false;
+        hilog.warn(0x0001, 'CloudSync',
+          'Moonlight 选择状态暂不可用；仅停用 Moonlight 云镜像');
       }
-      this.cryptoLifecycleState =
-        this.recoverCryptoLifecycleState(lease);
-      if (!this.persistCryptoLifecycleState(this.cryptoLifecycleState)) {
-        throw new Error('crypto lifecycle recovery state persistence failed');
+      try {
+        this.cryptoLifecycleState =
+          this.recoverCryptoLifecycleState(lease);
+      } catch (cryptoRecoveryError) {
+        this.cryptoLifecycleState =
+          newCryptoLifecycleDurableState(
+            lease, this.committedCryptoState());
+        this.cryptoLifecycleState.lastFailure =
+          'crypto_lifecycle_metadata_rebuilt:' +
+          DataCrypto.errDetail(cryptoRecoveryError);
+        hilog.warn(0x0001, 'CloudSync',
+          '加密生命周期元数据已按已提交密码参数重建');
+      }
+      if (!this.forwardCompatibleSchemaLocalOnly &&
+        !this.persistCryptoLifecycleState(this.cryptoLifecycleState)) {
+        // Keep the reconstructed in-memory state. Sensitive writes still obey
+        // the committed lock/configuration state, while unrelated local data
+        // is no longer sealed by advisory metadata persistence.
+        hilog.warn(0x0001, 'CloudSync',
+          '加密生命周期状态暂未落盘；使用已提交密码参数继续本地访问');
       }
       const crypto: DataCrypto = DataCrypto.getInstance();
       crypto.init(this, lease);
@@ -1332,7 +1452,10 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
       // A physical distributed table is the platform sync boundary. Never
       // register a shared/unbound store: SQL row filters cannot constrain what
       // setDistributedTables/cloudSync publishes for another account.
-      if (AppCloneContext.getInstance().cloudSyncAllowed() &&
+      if (cloudRuntimeAdmissionReady &&
+        !CloudSyncCoordinator.getInstance()
+          .isDurabilityDegradedLocalOnly() &&
+        AppCloneContext.getInstance().cloudSyncAllowed() &&
         cloudDistributedRegistrationAllowed(this.cloudAccountBinding)) {
         try {
           await this.store.setDistributedTables(
@@ -1379,6 +1502,8 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
         this.cloudServiceGuidanceNeeded = false;
         this.lastError = AppCloneContext.getInstance().isLocalOnly()
           ? AppCloneContext.getInstance().snapshot().statusText + '，云同步已关闭'
+          : !cloudRuntimeAdmissionReady
+            ? '兼容恢复尚未完成，本地数据可正常保存，云同步稍后重试'
           : CLOUD_LIFECYCLE_BLOCKED_REASON;
         hilog.warn(0x0001, 'CloudSync',
           AppCloneContext.getInstance().isLocalOnly()
@@ -2294,7 +2419,8 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
         // adapters may create a newer journal entry while the download is
         // being applied, and that repair must survive this completion hook.
         if (!this.acknowledgeMutationJournalSnapshot(
-          tables, this.manualDownloadMutationJournal || [])) {
+          tables, this.manualDownloadMutationJournal || [],
+          this.manualDownloadMutationRevisions || {})) {
           return false;
         }
         return this.completeCloudDownloadTransaction();
@@ -2311,7 +2437,8 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
           return false;
         }
         if (!this.acknowledgeMutationJournalSnapshot(
-          tables, this.manualDownloadMutationJournal || [])) {
+          tables, this.manualDownloadMutationJournal || [],
+          this.manualDownloadMutationRevisions || {})) {
           return false;
         }
         return this.completeCloudDownloadTransaction();
@@ -2406,7 +2533,8 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
       loadDurableState: (): CloudSyncDurableState | null =>
         this.loadCloudSyncDurableState(),
       persistDurableState: (state: CloudSyncDurableState): boolean =>
-        this.persistCloudSyncDurableState(state),
+        !this.forwardCompatibleSchemaLocalOnly &&
+          this.persistCloudSyncDurableState(state),
       selectionReenableBlocked: (table: string): boolean =>
         this.selectionReenableBlocked(table)
     };
@@ -2417,6 +2545,7 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
     this.manualDownloadExtensions = null;
     this.manualDownloadMetadata = null;
     this.manualDownloadMutationJournal = null;
+    this.manualDownloadMutationRevisions = null;
     this.manualDownloadLocalTables = null;
     this.cloudDownloadCheckpointOperation = null;
   }
@@ -2941,6 +3070,8 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
         this.exportLocalMetadataRows();
       this.manualDownloadMutationJournal =
         this.exportMutationJournalRows();
+      this.manualDownloadMutationRevisions =
+        this.pendingMutationTableRevisions();
       this.manualDownloadLocalTables =
         this.exportAllLocalTableRows();
       const payload: CloudDownloadTransactionPayload | null =
@@ -5890,8 +6021,21 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
     let moonlightLocalTableReady: boolean = false;
     let moonlightAppCacheTableReady: boolean = false;
     if (currentVersion > ACCOUNT_STORE_SCHEMA_VERSION) {
-      throw new Error('database schema is newer than this app: ' +
-        currentVersion.toString());
+      // A newer app may have added columns or tables that this build does not
+      // understand. Opening the RDB read/write against the known column subset
+      // is forward-compatible; mutating its schema or registering it to cloud
+      // is not. Preserve every row and run this physical store local-only.
+      this.forwardCompatibleSchemaLocalOnly = true;
+      this.moonlightStorageReady = false;
+      this.moonlightCloudAvailable = false;
+      this.moonlightSchemaReceiptReady = false;
+      this.moonlightCloudRegistrationError =
+        'newer local schema preserved without cloud registration';
+      hilog.warn(0x0001, 'CloudSync',
+        '检测到更高版本数据结构 version=' +
+        currentVersion.toString() +
+        '；保留数据并以本地兼容模式打开');
+      return;
     }
     // 平台约束（已真机验证）: OpenHarmony RDB 服务在 beginTransaction() 内执行
     // DDL (CREATE/ALTER) 不会物化表, 后续 ALTER 报 14800021 "no such table"。
@@ -6148,19 +6292,27 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
     // AGC cloud table was recreated with a primary key) move into the new
     // table name. Both schemas are identical, so INSERT OR IGNORE keeps the
     // new table authoritative and is safe to re-run.
-    if (this.tableExists(LEGACY_VNC_CLOUD_RECORD_TABLE)) {
-      if (this.readLocalMetadataStrict(
-        VNC_CLOUD_TABLE_RENAME_KEY) !== '1') {
-        this.schemaStep = 'migrate:' + VNC_CLOUD_TABLE;
-        await this.store.executeSql(
-          'INSERT OR IGNORE INTO ' + VNC_CLOUD_TABLE +
-          ' SELECT * FROM ' + LEGACY_VNC_CLOUD_RECORD_TABLE);
-        if (!this.writeLocalMetadata(
-          VNC_CLOUD_TABLE_RENAME_KEY, '1')) {
-          throw new Error(
-            'VNC cloud table rename marker write failed');
+    try {
+      if (this.tableExists(LEGACY_VNC_CLOUD_RECORD_TABLE)) {
+        if (this.readLocalMetadataStrict(
+          VNC_CLOUD_TABLE_RENAME_KEY) !== '1') {
+          this.schemaStep = 'migrate:' + VNC_CLOUD_TABLE;
+          await this.store.executeSql(
+            'INSERT OR IGNORE INTO ' + VNC_CLOUD_TABLE +
+            ' SELECT * FROM ' + LEGACY_VNC_CLOUD_RECORD_TABLE);
+          if (!this.writeLocalMetadata(
+            VNC_CLOUD_TABLE_RENAME_KEY, '1')) {
+            throw new Error(
+              'VNC cloud table rename marker write failed');
+          }
         }
       }
+    } catch (vncRenameError) {
+      // The old table is copy-only input and is never deleted here. Keep all
+      // non-VNC data available and retry the idempotent VNC copy later.
+      hilog.warn(0x0001, 'CloudSync',
+        'VNC旧表重命名迁移已延后，源表保持不变: ' +
+        safeError(vncRenameError));
     }
     await this.ensureColumn('rustdeskrelays', 'accountsjson TEXT');
     await this.ensureColumn('rustdeskrelays', 'updatedat INTEGER');
@@ -7324,7 +7476,7 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
       result.value === expected;
   }
 
-  private verifyStoreIdentity(): void {
+  private verifyStoreIdentity(): boolean {
     if (!this.store || this.currentLease === null) {
       throw new Error('store identity verification unavailable');
     }
@@ -7332,10 +7484,35 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
     const expectedStore: string = this.currentLease.storeIdentity;
     const expectedPlatformIdentity: string =
       this.currentScopeToken.platformIdentityFingerprint;
-    const storedOwner: string = this.readLocalMetadataStrict(STORE_OWNER_SCOPE_KEY);
-    const storedStore: string = this.readLocalMetadataStrict(STORE_IDENTITY_KEY);
+    const canonicalAccountStore: boolean =
+      this.currentScopeToken.kind === 'huawei_account' &&
+      expectedStore === ACCOUNT_CLOUD_STORE_IDENTITY;
+    const ownerMetadata: CloudMetadataReadResult =
+      this.readLocalMetadataState(STORE_OWNER_SCOPE_KEY);
+    const storeMetadata: CloudMetadataReadResult =
+      this.readLocalMetadataState(STORE_IDENTITY_KEY);
+    const platformMetadata: CloudMetadataReadResult =
+      this.readLocalMetadataState(STORE_PLATFORM_IDENTITY_KEY);
+    if (!cloudMetadataBoundaryReadable(ownerMetadata) ||
+      !cloudMetadataBoundaryReadable(storeMetadata) ||
+      !cloudMetadataBoundaryReadable(platformMetadata)) {
+      if (canonicalAccountStore) {
+        // The canonical filename can be reused by another Huawei account on
+        // the same OS user. Unknown ownership must fall back to that account's
+        // deterministic hashed store instead of exposing foreign rows.
+        throw new Error('canonical store owner metadata unreadable');
+      }
+      hilog.warn(0x0001, 'CloudSync',
+        '本地作用域身份元数据暂不可读；按物理库名继续本地模式');
+      return false;
+    }
+    const storedOwner: string = ownerMetadata.state === 'present'
+      ? ownerMetadata.value : '';
+    const storedStore: string = storeMetadata.state === 'present'
+      ? storeMetadata.value : '';
     const storedPlatformIdentity: string =
-      this.readLocalMetadataStrict(STORE_PLATFORM_IDENTITY_KEY);
+      platformMetadata.state === 'present'
+        ? platformMetadata.value : '';
     // 平台分布式身份仅在“可独立证明”时参与校验 (指纹为 64 位十六进制)。
     // 若当前设备/系统无法提供可信证明 (validating), 账号本地作用域仍可打开,
     // 云端传输保持 fail-closed (cloudDistributedRegistrationAllowed=false),
@@ -7343,12 +7520,18 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
     const platformIdentityCheckable: boolean =
       expectedPlatformIdentity.length === 64;
     if ((storedOwner !== '' && storedOwner !== expectedOwner) ||
-      (storedStore !== '' && storedStore !== expectedStore) ||
-      (this.currentScopeToken.kind === 'huawei_account' &&
-        platformIdentityCheckable &&
-        storedPlatformIdentity !== '' &&
-        storedPlatformIdentity !== expectedPlatformIdentity)) {
+      (storedStore !== '' && storedStore !== expectedStore)) {
       throw new Error('physical database owner identity mismatch');
+    }
+    if (this.currentScopeToken.kind === 'huawei_account' &&
+      platformIdentityCheckable && storedPlatformIdentity !== '' &&
+      storedPlatformIdentity !== expectedPlatformIdentity) {
+      if (canonicalAccountStore) {
+        throw new Error('canonical store platform identity mismatch');
+      }
+      hilog.warn(0x0001, 'CloudSync',
+        '本地作用域平台云身份已变化；保留本地数据并暂停云绑定');
+      return false;
     }
     this.store.beginTransaction();
     try {
@@ -7363,9 +7546,17 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
         throw new Error('store identity metadata write failed');
       }
       this.store.commit();
+      return true;
     } catch (err) {
       try { this.store.rollBack(); } catch (_rollbackError) {}
-      throw new Error('store identity verification failed: ' + safeError(err));
+      if (canonicalAccountStore) {
+        throw new Error(
+          'store identity verification failed: ' + safeError(err));
+      }
+      hilog.warn(0x0001, 'CloudSync',
+        '本地作用域身份元数据暂未写入；本地数据域继续可用 err=' +
+        safeError(err));
+      return false;
     }
   }
 
@@ -7528,8 +7719,98 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
     } catch (_e) { return false; }
   }
 
+  private compatibilityMutationPreferenceKey(): string {
+    if (this.currentLease === null) { return ''; }
+    return COMPATIBILITY_MUTATION_PREFERENCE_PREFIX + ':' +
+      this.currentLease.ownerScopeId + ':' +
+      this.currentLease.storeIdentity;
+  }
+
+  private loadCompatibilityMutationRevisions(): void {
+    if (this.compatibilityMutationRevisionsLoaded) { return; }
+    this.compatibilityMutationRevisionsLoaded = true;
+    this.compatibilityMutationRevisions = {};
+    const key: string = this.compatibilityMutationPreferenceKey();
+    if (this.appContext === null || key === '') { return; }
+    try {
+      const prefs = preferences.getPreferencesSync(
+        this.appContext,
+        { name: COMPATIBILITY_MUTATION_PREFERENCES_NAME });
+      const stored: Object = prefs.getSync(key, '') as Object;
+      if (typeof stored !== 'string' || (stored as string) === '') { return; }
+      const parsed: Record<string, Object> =
+        JSON.parse(stored as string) as Record<string, Object>;
+      const tables: string[] = Object.keys(parsed);
+      const result: Record<string, number> = {};
+      for (let i = 0; i < tables.length; i++) {
+        const table: string = tables[i];
+        const value: Object = parsed[table];
+        if (table !== '' && typeof value === 'number' &&
+          Number.isFinite(value as number) && (value as number) > 0) {
+          result[table] = Math.floor(value as number);
+        }
+      }
+      this.compatibilityMutationRevisions = result;
+    } catch (err) {
+      hilog.warn(0x0001, 'CloudSync',
+        '兼容同步标记读取失败；本地数据仍可保存 err=' + safeError(err));
+    }
+  }
+
+  private persistCompatibilityMutationRevisions(): boolean {
+    const key: string = this.compatibilityMutationPreferenceKey();
+    if (this.appContext === null || key === '') { return false; }
+    try {
+      const prefs = preferences.getPreferencesSync(
+        this.appContext,
+        { name: COMPATIBILITY_MUTATION_PREFERENCES_NAME });
+      if (Object.keys(this.compatibilityMutationRevisions).length === 0) {
+        prefs.deleteSync(key);
+      } else {
+        prefs.putSync(key,
+          JSON.stringify(this.compatibilityMutationRevisions));
+      }
+      prefs.flushSync();
+      return true;
+    } catch (err) {
+      hilog.warn(0x0001, 'CloudSync',
+        '兼容同步标记持久化失败；保留内存待上传状态 err=' + safeError(err));
+      return false;
+    }
+  }
+
+  private rememberCompatibilityMutation(
+    table: string, revision: number
+  ): void {
+    this.loadCompatibilityMutationRevisions();
+    if (table === '' || revision <= 0) { return; }
+    if (revision > (this.compatibilityMutationRevisions[table] || 0)) {
+      this.compatibilityMutationRevisions[table] = revision;
+    }
+    // Best effort by design. Losing sync metadata must never lose the user's
+    // already valid business-row write; the in-memory marker still retries in
+    // this process and a manual upload remains available after restart.
+    this.persistCompatibilityMutationRevisions();
+  }
+
+  private acknowledgeCompatibilityMutation(
+    table: string, coveredRevision: number
+  ): void {
+    this.loadCompatibilityMutationRevisions();
+    const next: Record<string, number> =
+      mutationRevisionsAfterAcknowledgement(
+        this.compatibilityMutationRevisions,
+        table, coveredRevision);
+    const changed: boolean =
+      Object.keys(next).length !==
+        Object.keys(this.compatibilityMutationRevisions).length;
+    this.compatibilityMutationRevisions = next;
+    if (changed) { this.persistCompatibilityMutationRevisions(); }
+  }
+
   private recordLocalMutation(table: string, recordId: string, operation: string): boolean {
     if (!this.store || table === '' || recordId === '') { return false; }
+    const revision: number = this.nextMutationRevision();
     try {
       const now: number = Date.now();
       const bucket: relationalStore.ValuesBucket = {
@@ -7537,13 +7818,22 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
         tablename: table,
         recordid: recordId,
         operation,
-        revision: this.nextMutationRevision(),
+        revision,
         createdat: now,
         updatedat: now
       };
-      return rdbInsertSucceeded(this.store.insertSync(LOCAL_MUTATION_JOURNAL_TABLE, bucket,
-        relationalStore.ConflictResolution.ON_CONFLICT_REPLACE));
-    } catch (_e) { return false; }
+      if (rdbInsertSucceeded(this.store.insertSync(
+        LOCAL_MUTATION_JOURNAL_TABLE, bucket,
+        relationalStore.ConflictResolution.ON_CONFLICT_REPLACE))) {
+        return true;
+      }
+    } catch (err) {
+      hilog.warn(0x0001, 'CloudSync',
+        'RDB同步日志不可用，降级为兼容标记 table=' + table +
+        ' err=' + safeError(err));
+    }
+    this.rememberCompatibilityMutation(table, revision);
+    return true;
   }
 
   /** A bulk transition still needs a durable table-level upload intention. */
@@ -7553,7 +7843,10 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
 
   /** Durable restart recovery input for CloudSyncCoordinator. */
   pendingMutationTableRevisions(): Record<string, number> {
-    const result: Record<string, number> = {};
+    this.loadCompatibilityMutationRevisions();
+    let result: Record<string, number> =
+      mergeMutationRevisionMaps(
+        {}, this.compatibilityMutationRevisions);
     if (!this.store) { return result; }
     try {
       const rows = this.store.querySync(new relationalStore.RdbPredicates(LOCAL_MUTATION_JOURNAL_TABLE));
@@ -7563,7 +7856,11 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
         if (table !== '' && revision > (result[table] || 0)) { result[table] = revision; }
       }
       rows.close();
-    } catch (_e) { /* leave empty; legacy Preferences dirty state still recovers uploads */ }
+    } catch (err) {
+      hilog.warn(0x0001, 'CloudSync',
+        'RDB同步日志读取失败；使用兼容标记恢复上传 tableCount=' +
+        Object.keys(result).length.toString() + ' err=' + safeError(err));
+    }
     return result;
   }
 
@@ -7655,10 +7952,12 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
 
   private acknowledgeMutationJournalSnapshot(
     tables: string[],
-    beforeRows: Array<Record<string, string>>
+    beforeRows: Array<Record<string, string>>,
+    beforeRevisions: Record<string, number> = {}
   ): boolean {
-    const covered: Record<string, number> =
-      this.mutationJournalRevisionsFromRows(beforeRows);
+    const covered: Record<string, number> = mergeMutationRevisionMaps(
+      this.mutationJournalRevisionsFromRows(beforeRows),
+      beforeRevisions);
     for (let i = 0; i < tables.length; i++) {
       const revision: number = covered[tables[i]] || 0;
       if (revision > 0 &&
@@ -7683,7 +7982,11 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
         if (revision <= coveredRevision) { candidates.push(rows.getString(rows.getColumnIndex('id'))); }
       }
       rows.close();
-      if (candidates.length === 0) { return true; }
+      if (candidates.length === 0) {
+        this.acknowledgeCompatibilityMutation(
+          table, coveredRevision);
+        return true;
+      }
       this.store.beginTransaction();
       for (let i = 0; i < candidates.length; i++) {
         const one = new relationalStore.RdbPredicates(LOCAL_MUTATION_JOURNAL_TABLE);
@@ -7691,10 +7994,20 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
         this.store.deleteSync(one);
       }
       this.store.commit();
+      this.acknowledgeCompatibilityMutation(
+        table, coveredRevision);
       return true;
-    } catch (_e) {
+    } catch (err) {
       try { this.store.rollBack(); } catch (_ignored) {}
-      return false;
+      // The transfer already reached a successful terminal state. A broken
+      // table-level journal may cause a harmless future replay, but must not
+      // convert that success into a permanent local/cloud lockout.
+      hilog.warn(0x0001, 'CloudSync',
+        '同步日志确认失败；保留RDB条目并清理已覆盖兼容标记 table=' +
+        table + ' err=' + safeError(err));
+      this.acknowledgeCompatibilityMutation(
+        table, coveredRevision);
+      return true;
     }
   }
 
@@ -7714,10 +8027,21 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
         this.store.deleteSync(predicates);
       }
       this.store.commit();
+      for (let i = 0; i < distinctTables.length; i++) {
+        this.acknowledgeCompatibilityMutation(
+          distinctTables[i], 9007199254740991);
+      }
       return true;
-    } catch (_e) {
+    } catch (err) {
       try { this.store.rollBack(); } catch (_ignored) {}
-      return false;
+      hilog.warn(0x0001, 'CloudSync',
+        '权威云下载清理同步日志失败；不阻断已落地云数据 err=' +
+        safeError(err));
+      for (let i = 0; i < distinctTables.length; i++) {
+        this.acknowledgeCompatibilityMutation(
+          distinctTables[i], 9007199254740991);
+      }
+      return true;
     }
   }
 
@@ -7725,8 +8049,19 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
     if (!this.store) { return false; }
     try {
       this.store.deleteSync(new relationalStore.RdbPredicates(LOCAL_MUTATION_JOURNAL_TABLE));
+      this.loadCompatibilityMutationRevisions();
+      this.compatibilityMutationRevisions = {};
+      this.persistCompatibilityMutationRevisions();
       return true;
-    } catch (_e) { return false; }
+    } catch (err) {
+      hilog.warn(0x0001, 'CloudSync',
+        '同步日志整体清理失败；恢复流程继续保留业务数据 err=' +
+        safeError(err));
+      this.loadCompatibilityMutationRevisions();
+      this.compatibilityMutationRevisions = {};
+      this.persistCompatibilityMutationRevisions();
+      return true;
+    }
   }
 
   hasRestoredNotUploaded(): boolean {
@@ -8899,11 +9234,16 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
       try {
         candidate = JSON.parse(raw) as CryptoLifecycleDurableState;
       } catch (err) {
-        candidate = newCryptoLifecycleDurableState(
+        // The committed cryptoparams rows are the authoritative crypto state.
+        // Lifecycle JSON is only a restart hint; reconstruct it instead of
+        // permanently blocking every later local save because an older build
+        // wrote metadata this build cannot parse.
+        const reconstructed: CryptoLifecycleDurableState =
+          newCryptoLifecycleDurableState(
           lease, committed);
-        candidate.phase = 'blocked';
-        candidate.lastFailure =
+        reconstructed.lastFailure =
           'crypto_lifecycle_json_corrupted:' + safeError(err);
+        return reconstructed;
       }
     }
     return recoverCryptoLifecycleDurableState(

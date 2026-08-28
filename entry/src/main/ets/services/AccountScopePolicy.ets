@@ -166,6 +166,40 @@ export function accountScopeToken(
 }
 
 /**
+ * Compatibility fallback for a verified account whose canonical cloud store
+ * cannot finish opening on the current platform/database revision. The
+ * fallback remains isolated to the exact same owner and generation, but is
+ * deliberately local-only until a later foreground retry can reopen the
+ * canonical store. Authentication must not be rolled back merely because an
+ * optional schema or legacy-data step is temporarily incompatible.
+ */
+export function accountLocalCompatibilityScopeToken(
+  requested: AccountScopeToken
+): AccountScopeToken | null {
+  if (requested.kind !== 'huawei_account' ||
+    requested.ownerScopeId.trim().length === 0 ||
+    requested.storeIdentity !== ACCOUNT_CLOUD_STORE_IDENTITY ||
+    requested.generation <= 0) {
+    return null;
+  }
+  const fallbackIdentity: string =
+    accountStoreIdentity(requested.ownerScopeId);
+  if (fallbackIdentity.length === 0) { return null; }
+  return {
+    kind: requested.kind,
+    ownerScopeId: requested.ownerScopeId,
+    generation: requested.generation,
+    sessionState: requested.sessionState,
+    cloudBindingState: 'validating',
+    storeIdentity: fallbackIdentity,
+    schemaRevision: 0,
+    selectionRevision: requested.selectionRevision,
+    platformIdentityFingerprint:
+      requested.platformIdentityFingerprint
+  };
+}
+
+/**
  * Promotes an account scope to a cloud-capable binding only when the stable
  * UnionID returned by the current Account Kit authorization derives the exact
  * owner and physical store already carried by the scope token, and a fresh

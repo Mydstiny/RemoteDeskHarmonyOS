@@ -489,6 +489,10 @@ export class CloudSyncCoordinator {
   private bindingEpoch: number = 0;
   private currentBinding: CloudAccountBinding = unboundCloudAccountBinding();
   private transfersEnabled: boolean = false;
+  // If lifecycle metadata cannot be persisted, the coordinator still owns a
+  // local-only lease so CRUD and account navigation remain available. Cloud
+  // transfer stays disabled until a later bind can persist a fresh state.
+  private durabilityDegradedLocalOnly: boolean = false;
   private durableState: CloudSyncDurableState | null = null;
   private vncSelectionMutationPending: boolean = false;
   private exclusiveVncSelectionLease:
@@ -531,6 +535,7 @@ export class CloudSyncCoordinator {
       this.retryClock.cancel(this.retryTimer);
       this.retryTimer = -1;
     }
+    this.durabilityDegradedLocalOnly = false;
     this.executor = executor;
     this.onCloudFirstApplied = onCloudFirstApplied;
     this.hooks = hooks;
@@ -578,14 +583,21 @@ export class CloudSyncCoordinator {
         this.bootstrapCompleted
       );
     if (!this.persistDurableCandidate(recoveredState)) {
-      this.resetFailedBinding();
-      return false;
+      this.durabilityDegradedLocalOnly = true;
+      this.durableState = recoveredState;
+      this.transfersEnabled = false;
+      hilog.warn(DOMAIN, TAG,
+        'cloud lifecycle metadata unavailable; retained local-only coordinator lease');
     }
     this.restoreRetryRecord();
     this.restoreDirtyTables();
     this.restoreConflictTables();
     this.restoreMutationJournal();
     return true;
+  }
+
+  isDurabilityDegradedLocalOnly(): boolean {
+    return this.durabilityDegradedLocalOnly;
   }
 
   currentAccountLease(): AccountSessionLease | null {
@@ -679,6 +691,7 @@ export class CloudSyncCoordinator {
     this.currentLease = null;
     this.currentBinding = unboundCloudAccountBinding();
     this.transfersEnabled = false;
+    this.durabilityDegradedLocalOnly = false;
     this.durableState = null;
     this.pendingPull = null;
     this.startupPull = null;
@@ -2602,6 +2615,10 @@ export class CloudSyncCoordinator {
         hilog.error(DOMAIN, TAG,
           'persist cloud lifecycle state rejected phase=' + state.phase +
           ' generation=' + state.generation.toString());
+        if (this.durabilityDegradedLocalOnly) {
+          this.durableState = state;
+          return true;
+        }
         return false;
       }
       this.durableState = state;
@@ -2609,6 +2626,10 @@ export class CloudSyncCoordinator {
     } catch (err) {
       hilog.error(DOMAIN, TAG,
         'persist cloud lifecycle state failed: ' + JSON.stringify(err));
+      if (this.durabilityDegradedLocalOnly) {
+        this.durableState = state;
+        return true;
+      }
       return false;
     }
   }
@@ -2622,6 +2643,7 @@ export class CloudSyncCoordinator {
     this.currentLease = null;
     this.currentBinding = unboundCloudAccountBinding();
     this.transfersEnabled = false;
+    this.durabilityDegradedLocalOnly = false;
     this.durableState = null;
     this.pendingPull = null;
     this.startupPull = null;

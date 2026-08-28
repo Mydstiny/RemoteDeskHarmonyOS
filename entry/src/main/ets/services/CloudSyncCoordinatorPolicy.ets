@@ -428,6 +428,57 @@ export function shouldReplayAutomaticPush(completedVersion: number, currentVersi
   return currentVersion > completedVersion;
 }
 
+/**
+ * A business-row commit may outlive either mutation-intent backend. Keep the
+ * newest revision from the RDB journal and the independent compatibility
+ * marker so a repaired cloud runtime can replay the table later.
+ */
+export function mergeMutationRevisionMaps(
+  primary: Record<string, number>,
+  compatibility: Record<string, number>
+): Record<string, number> {
+  const result: Record<string, number> = {};
+  const primaryTables: string[] = Object.keys(primary);
+  for (let i = 0; i < primaryTables.length; i++) {
+    const table: string = primaryTables[i];
+    const revision: number = primary[table];
+    if (table !== '' && Number.isFinite(revision) && revision > 0) {
+      result[table] = Math.floor(revision);
+    }
+  }
+  const compatibilityTables: string[] = Object.keys(compatibility);
+  for (let i = 0; i < compatibilityTables.length; i++) {
+    const table: string = compatibilityTables[i];
+    const revision: number = compatibility[table];
+    if (table !== '' && Number.isFinite(revision) &&
+      revision > (result[table] || 0)) {
+      result[table] = Math.floor(revision);
+    }
+  }
+  return result;
+}
+
+/** Clear only the compatibility intent covered by one confirmed upload. */
+export function mutationRevisionsAfterAcknowledgement(
+  current: Record<string, number>,
+  table: string,
+  coveredRevision: number
+): Record<string, number> {
+  const normalized: Record<string, number> =
+    mergeMutationRevisionMaps(current, {});
+  const result: Record<string, number> = {};
+  const tables: string[] = Object.keys(normalized);
+  for (let i = 0; i < tables.length; i++) {
+    const candidate: string = tables[i];
+    if (candidate === table && coveredRevision > 0 &&
+      normalized[candidate] <= coveredRevision) {
+      continue;
+    }
+    result[candidate] = normalized[candidate];
+  }
+  return result;
+}
+
 /** Progress.SYNC_FINISH is the only event that confirms the transfer settled. */
 export function cloudSyncProgressFinished(schedule: number): boolean {
   return schedule === 2;
