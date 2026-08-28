@@ -7887,6 +7887,7 @@ struct RemoteDesktop {
       // the process-global XComponent surface as destroyed from this page.
       this.cancelPendingDisappearDecision();
       this.unbindVncAccountScopeListener();
+      this.unregisterKeyboardAvoidListener();
       hilog.info(RD_DOMAIN, RD_TAG,
         'aboutToDisappear: source teardown skipped after independent-window handoff');
       return;
