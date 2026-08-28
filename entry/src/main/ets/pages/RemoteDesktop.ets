@@ -481,8 +481,10 @@ import {
   shouldUseRemoteSessionEdgeRail
 } from '../services/RemoteSessionTopBarPolicy';
 import {
+  RemoteSessionSidebarSystemInsets,
   remoteSessionFloatingCardHeight,
-  remoteSessionFloatingCardWidth
+  remoteSessionFloatingCardWidth,
+  remoteSessionSidebarSystemInsets
 } from '../services/RemoteSessionSidebarLayoutPolicy';
 import { RemoteSessionCapabilities, resolveSessionCapabilities } from '../services/RemoteSessionCapabilityPolicy';
 import {
@@ -1910,6 +1912,19 @@ struct RemoteDesktop {
       }
     } catch (_e) {
       // Keyboard state is also updated by the existing avoid-area callback.
+    }
+    const viewportHeight: number = this.surfaceHeight > 0 ? this.surfaceHeight : 640;
+    const rawSystemTop: number = this.vncToolbarSystemTop;
+    const rawSystemBottom: number = this.vncToolbarSystemBottom;
+    const verticalInsets: RemoteSessionSidebarSystemInsets =
+      remoteSessionSidebarSystemInsets(viewportHeight, rawSystemTop, rawSystemBottom);
+    this.vncToolbarSystemTop = verticalInsets.top;
+    this.vncToolbarSystemBottom = verticalInsets.bottom;
+    if (rawSystemTop !== verticalInsets.top || rawSystemBottom !== verticalInsets.bottom) {
+      hilog.warn(RD_DOMAIN, RD_TAG, 'toolbar avoid-area rejected viewportHeight=' +
+        Math.round(viewportHeight).toString() + ' rawTop=' +
+        Math.round(rawSystemTop).toString() + ' rawBottom=' +
+        Math.round(rawSystemBottom).toString());
     }
     if (this.isVncSession()) {
       this.recomputeVncToolbarPlacement('avoid-area');
@@ -4670,8 +4685,9 @@ struct RemoteDesktop {
 
   private rdpToolbarAvailableHeight(): number {
     const height: number = this.surfaceHeight > 0 ? this.surfaceHeight : 640;
-    const top: number = Math.max(0, this.vncToolbarSystemTop);
-    let bottom: number = Math.max(top, height - Math.max(0, this.vncToolbarSystemBottom));
+    const insets: RemoteSessionSidebarSystemInsets = this.rdpToolbarSystemInsets(height);
+    const top: number = insets.top;
+    let bottom: number = Math.max(top, height - insets.bottom);
     if (this.vncToolbarKeyboardRect !== null && this.vncToolbarKeyboardRect.height > 0) {
       bottom = Math.min(bottom, Math.max(top, this.vncToolbarKeyboardRect.y));
     } else if (this.kbHeight > 0) {
@@ -4681,7 +4697,13 @@ struct RemoteDesktop {
   }
 
   private rdpToolbarTopInset(): number {
-    return Math.max(0, this.vncToolbarSystemTop);
+    const height: number = this.surfaceHeight > 0 ? this.surfaceHeight : 640;
+    return this.rdpToolbarSystemInsets(height).top;
+  }
+
+  private rdpToolbarSystemInsets(height: number): RemoteSessionSidebarSystemInsets {
+    return remoteSessionSidebarSystemInsets(height,
+      this.vncToolbarSystemTop, this.vncToolbarSystemBottom);
   }
 
   private resetCanvasTransformFromMenu(): void {
@@ -9268,7 +9290,11 @@ struct RemoteDesktop {
     this.surfaceResizeBatchStartWidth = 0;
     this.surfaceResizeBatchStartHeight = 0;
     this.restoreModifierPanelPositions(previousSurfaceWidth, previousSurfaceHeight);
-    if (this.isVncSession()) {
+    if ((this.isVncSession() || this.isRdpRemoteSession()) && this.kbWin !== null) {
+      // Orientation changes can deliver the new surface geometry before the
+      // corresponding avoid-area snapshot. Re-read against the settled size.
+      this.syncVncToolbarAvoidAreas(this.kbWin);
+    } else if (this.isVncSession()) {
       this.recomputeVncToolbarPlacement('surface-resize');
     }
     if (this.handleVisible) {

@@ -8,6 +8,7 @@ import {
   remoteSessionFloatingCardWidth,
   remoteSessionSidebarMenuMaxHeight,
   remoteSessionSidebarMenuWidth,
+  remoteSessionSidebarSystemInsets,
   remoteSessionSidebarVisibleRailHeight
 } from '../main/ets/services/RemoteSessionSidebarLayoutPolicy';
 
@@ -44,6 +45,18 @@ export default function remoteSessionSidebarLayoutPolicyTest(): void {
       expect(remoteSessionSidebarMenuWidth(Number.NaN, 300, 52, 6)).assertEqual(290);
       expect(remoteSessionSidebarCanvasHeight(Number.NaN)).assertEqual(624);
       expect(remoteSessionSidebarMenuMaxHeight(320, Number.NaN)).assertEqual(304);
+    });
+
+    it('rejects_stale_portrait_insets_after_phone_landscape_rotation', 0, (): void => {
+      const stale = remoteSessionSidebarSystemInsets(391, 386, 0, 44);
+      expect(stale.top).assertEqual(0);
+      expect(stale.bottom).assertEqual(0);
+      const valid = remoteSessionSidebarSystemInsets(391, 24, 18, 44);
+      expect(valid.top).assertEqual(24);
+      expect(valid.bottom).assertEqual(18);
+      const tiny = remoteSessionSidebarSystemInsets(40, 30, 0, 44);
+      expect(tiny.top).assertEqual(0);
+      expect(tiny.bottom).assertEqual(0);
     });
   });
 }

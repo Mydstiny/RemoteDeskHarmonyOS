@@ -4,6 +4,31 @@ function finitePositive(value: number, fallback: number): number {
   return Number.isFinite(value) && value > 0 ? value : fallback;
 }
 
+export interface RemoteSessionSidebarSystemInsets {
+  top: number;
+  bottom: number;
+}
+
+/**
+ * Reject orientation-transition avoid-area snapshots that would leave less
+ * than one reachable collapsed handle.  HarmonyOS can briefly report the old
+ * portrait edge as a near-full-height top inset after entering landscape.
+ */
+export function remoteSessionSidebarSystemInsets(viewportHeight: number,
+  systemTop: number, systemBottom: number,
+  minimumReachableHeight: number = 44): RemoteSessionSidebarSystemInsets {
+  const height: number = finitePositive(viewportHeight, 640);
+  const minimum: number = Math.min(height,
+    finitePositive(minimumReachableHeight, 44));
+  const top: number = Math.max(0, Number.isFinite(systemTop) ? systemTop : 0);
+  const bottom: number = Math.max(0, Number.isFinite(systemBottom) ? systemBottom : 0);
+  if (top > height - minimum || bottom > height - minimum ||
+    height - top - bottom < minimum) {
+    return { top: 0, bottom: 0 };
+  }
+  return { top, bottom };
+}
+
 export function remoteSessionSidebarMenuWidth(viewportWidth: number,
   requestedWidth: number, railWidth: number, itemGap: number): number {
   const viewport: number = finitePositive(viewportWidth, 360);
