@@ -2,32 +2,29 @@
 
 ## Active task
 
-- Task: `remote-keyboard-sidebar-immersive-fix`
+- Task: `cloud-sync-compatibility-first-recovery`
 - Branch: `codex/system-clipboard-activation-fix`; user authorized work on the current branch.
-- Increment: `01a87820e..92a6cc0d1`.
-- Phase: implemented, locally verified, independently reviewed, and installed on one acceptance device; multi-protocol device acceptance remains active.
-- Plan: `docs/codex/plans/2026-08-28-remote-keyboard-sidebar-immersive-fix.md`
+- Increment: `54f9d25df..a4d0aebb1`.
+- Phase: implemented, locally verified and independently reviewed; fixed HAP device acceptance is pending.
+- Plan: `docs/codex/plans/2026-08-28-cloud-sync-compatibility-first-recovery.md`
 
-## Result
+## Root cause and result
 
-- RustDesk, RDP, VNC and Moonlight use the same keyboard-surface close contract. The expanded keyboard action and collapsed side/top handle close an active virtual keyboard, modifier panel or shortcut panel.
-- IME-compressed and very small windows keep a reachable collapsed handle. Sidebar/menu heights, anchor positions and scroll viewports clamp to the actual viewport rather than moving or clipping outside it.
-- Four sidebar implementations reject vertical-dominant diagonal gestures at update/end; VNC also avoids committing those gestures as toolbar position drags.
-- Sidebar/card hit regions block remote input while uncovered connection content remains interactive.
-- RDP, RustDesk, VNC, Moonlight and SSH hide mobile status/navigation/indicator bars while connected, reassert on page/foreground/orientation transitions, and restore on exit. SSH updates each system bar independently so one unsupported call does not short-circuit the rest.
+- Device logs at `192.168.3.235:38451` showed Account Kit login and RDB creation succeeded, then optional historical account-store migration failed with `401 invalid parameters`; that optional failure was incorrectly surfaced as `账号物理数据域打开失败`.
+- Canonical failure now falls back to the exact same account's hashed local store. Login and local CRUD remain available while cloud recovery is deferred; stale canonical data is never reverse-imported into that authoritative fallback.
+- Local rows commit only when dirty intent is durable in the same RDB transaction. Broken checkpoints are quarantined before writes reopen, and startup/retry share the same durable cloud-admission state.
+- Account migration preserves clear/delete and empty-table semantics. VNC/Moonlight exact schema and public-data rules, higher source schemas, account ownership and crypto ownership remain integrity boundaries rather than arbitrary availability policies.
 
 ## Verification
 
-- `default@OhosTestCompileArkTS`: PASS (`BUILD SUCCESSFUL in 21 s 310 ms`).
-- `assembleHap`: PASS, signed (`BUILD SUCCESSFUL in 30 s 968 ms`).
-- Signed HAP SHA-256: `099d15f50b4d5f7dd47405389a33f86199f3a99138e6154ee7bf6243e0a1f996`.
-- `git diff --check`: PASS.
-- Light open-source compliance: PASS.
-- `ohosTest@OhosTestCompileArkTS`: unavailable (`00306054`, task is not registered); mandatory `default@OhosTestCompileArkTS` passed and focused policies are registered in `entry/src/test`.
-- Independent review `/root/remote_ui_review`: PASS after two P1 and two P2 remediations; no remaining P0/P1/P2.
+- `default@OhosTestCompileArkTS`: PASS (`BUILD SUCCESSFUL in 6 s 201 ms`).
+- `assembleHap`: PASS, signed (`BUILD SUCCESSFUL in 50 s 090 ms`).
+- Signed HAP SHA-256: `b6bad805365e0af421336fbe796a25cb5baaa28d651a8e1e14e356df733a8ca3`.
+- `git diff --check` and Light open-source compliance: PASS.
+- `ohosTest@OhosTestCompileArkTS`: unavailable (`00306054`, task is not registered); focused policies compile through the mandatory test target.
+- Independent review `/root/cloud_sync_fix_review`: PASS; no remaining P0/P1/P2. Non-blocking P3 is deeper real-RDB fault-injection coverage.
 
-## Device delivery / blockers
+## Device acceptance / blockers
 
-- `192.168.3.235:38451`: latest signed HAP installed successfully with data-preserving `install -r`; ready for user acceptance.
-- `192.168.3.236:40123`: install blocked by `9568286 install provision type not same` because the installed app is release-provisioned and the local HAP is debug-provisioned. Existing app/data were preserved; no destructive uninstall was performed.
-- Next: exercise RustDesk/RDP/VNC/Moonlight keyboard-close, scrolling, sidebar drag/bounds and mobile immersive bars on `.235`; decide separately whether `.236` may be destructively uninstalled or must receive a matching release-provisioned HAP.
+- The fixed HAP has not been installed. Acceptance on `192.168.3.235:38451` must verify login remains usable after the historical migration `401`, exact-owner local data visibility, local save/restart/offline behavior, canonical recovery and no stale-row resurrection.
+- Prior remote keyboard/sidebar acceptance on `.235` remains queued. `.236:40123` still requires a release-provisioned HAP or explicit destructive-uninstall authorization; its existing data remains preserved.

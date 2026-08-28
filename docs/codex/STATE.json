@@ -1,56 +1,57 @@
 {
   "schema": 1,
-  "task": "remote-keyboard-sidebar-immersive-fix",
+  "task": "cloud-sync-compatibility-first-recovery",
   "branch": "codex/system-clipboard-activation-fix",
-  "base": "01a87820e13a8e007440983dcd3b4836b20cd40a",
-  "head": "92a6cc0d168ea08e3cb5f4a7839766632990ddcc",
+  "base": "54f9d25df39819f101bf5bf63ed7fca52a16e73d",
+  "head": "a4d0aebb1daf292aa10f6265fcc4c4010c4ef7e4",
   "phase": "ready-for-device-validation",
   "status": "active",
-  "next": "Accept all protocol sidebar keyboard-close, scrolling, drag/bounds, touch isolation and mobile immersive bars on 192.168.3.235:38451; resolve the release/debug provisioning decision for 192.168.3.236:40123 without clearing data implicitly.",
+  "next": "With explicit deployment authorization, install the fixed signed HAP on 192.168.3.235:38451 without clearing data and verify login, exact-owner fallback data, local CRUD/restart/offline durability, canonical recovery and cloud directions.",
   "blockers": [
-    "192.168.3.236:40123 rejects the debug-provisioned HAP with 9568286 because its installed application is release-provisioned; destructive uninstall is not authorized and existing data is preserved.",
+    "Real-device acceptance of the newly built HAP is pending; it has not been installed and no existing app data was changed.",
     "The project does not register ohosTest@OhosTestCompileArkTS (00306054); mandatory default@OhosTestCompileArkTS and assembleHap pass."
   ],
   "planPaths": [
-    "docs/codex/plans/2026-08-28-remote-keyboard-sidebar-immersive-fix.md"
+    "docs/codex/plans/2026-08-28-cloud-sync-compatibility-first-recovery.md"
   ],
   "review": {
     "status": "PASS",
     "taskIds": [
-      "/root/remote_ui_review"
+      "/root/cloud_sync_fix_review"
     ],
-    "reviewedHead": "92a6cc0d168ea08e3cb5f4a7839766632990ddcc",
+    "reviewedHead": "a4d0aebb1daf292aa10f6265fcc4c4010c4ef7e4",
     "scope": [
-      "entry/src/main/ets/components/RemoteSessionTopBar.ets",
-      "entry/src/main/ets/components/VncSessionToolbar.ets",
-      "entry/src/main/ets/components/moonlight/MoonlightSessionToolbar.ets",
-      "entry/src/main/ets/components/rdp/RdpSessionToolbar.ets",
-      "entry/src/main/ets/pages/MoonlightStreamPage.ets",
-      "entry/src/main/ets/pages/RemoteDesktop.ets",
-      "entry/src/main/ets/pages/SshTerminal.ets",
-      "entry/src/main/ets/services/RemoteImmersivePolicy.ets",
-      "entry/src/main/ets/services/RemoteSessionSidebarLayoutPolicy.ets",
-      "entry/src/main/ets/services/RemoteSessionTopBarPolicy.ets",
-      "entry/src/main/ets/services/VncSessionUiPolicy.ets",
-      "entry/src/ohosTest/ets/test/List.test.ets",
-      "entry/src/ohosTest/ets/test/RemoteImmersivePolicy.test.ets",
-      "entry/src/test/RemoteImmersivePolicy.test.ets",
-      "entry/src/test/RemoteSessionSidebarLayoutPolicy.test.ets",
-      "entry/src/test/RemoteSessionTopBarPolicy.test.ets",
-      "entry/src/test/VncSessionUiPolicy.test.ets"
+      "entry/src/main/ets/services/AccountScopePolicy.ets",
+      "entry/src/main/ets/services/AccountSessionCoordinator.ets",
+      "entry/src/main/ets/services/CloudBootstrapReconcilePolicy.ets",
+      "entry/src/main/ets/services/CloudLifecycleSafetyPolicy.ets",
+      "entry/src/main/ets/services/CloudStore.ets",
+      "entry/src/main/ets/services/CloudStoreVncLifecycleWiring.ets",
+      "entry/src/main/ets/services/CloudSyncCoordinator.ets",
+      "entry/src/main/ets/services/CloudSyncCoordinatorPolicy.ets",
+      "entry/src/main/ets/services/CloudSyncLifecyclePolicy.ets",
+      "entry/src/main/ets/services/LegacySharedStoreMigrationPolicy.ets",
+      "entry/src/main/ets/services/LegacySharedStoreMigrator.ets",
+      "entry/src/test/AccountScopePolicy.test.ets",
+      "entry/src/test/CloudDataWiring.test.ets",
+      "entry/src/test/CloudLifecycleBarrierPolicy.test.ets",
+      "entry/src/test/CloudLifecycleSafetyPolicy.test.ets",
+      "entry/src/test/CloudSyncCoordinatorPolicy.test.ets",
+      "entry/src/test/CloudSyncLifecyclePolicy.test.ets",
+      "entry/src/test/LegacySharedStoreMigrationPolicy.test.ets"
     ],
     "findings": [],
-    "reason": "The same independent reviewer verified the initial implementation and the c156af18..92a6cc0d remediation. Two P1 and two P2 findings are closed; no remaining P0/P1/P2 were found."
+    "reason": "The same independent reviewer iteratively verified exact-owner fallback, transaction-coupled dirty evidence, checkpoint quarantine, retry admission, snapshot replacement, VNC/Moonlight safety and higher-schema refusal. All P0/P1/P2 findings are closed; deeper real-RDB fault injection remains a non-blocking P3."
   },
   "lastVerification": {
-    "baseline": "Remote keyboard/sidebar/immersive increment starts at 01a87820e on the user-authorized existing task branch.",
-    "testCompile": "PASS: default@OhosTestCompileArkTS, BUILD SUCCESSFUL in 21 s 310 ms",
-    "assembleHap": "PASS: signed HAP, BUILD SUCCESSFUL in 30 s 968 ms, SHA-256 099d15f50b4d5f7dd47405389a33f86199f3a99138e6154ee7bf6243e0a1f996",
-    "targetedTests": "PASS compile: keyboard surface action, sidebar placement/visible height, vertical-dominant swipe refusal, VNC low-height auto-collapse and all-protocol immersive policy cases.",
+    "baseline": "Cloud compatibility-first recovery increment starts at 54f9d25df on the user-authorized existing task branch.",
+    "testCompile": "PASS: default@OhosTestCompileArkTS, BUILD SUCCESSFUL in 6 s 201 ms",
+    "assembleHap": "PASS: signed HAP, BUILD SUCCESSFUL in 50 s 090 ms, SHA-256 b6bad805365e0af421336fbe796a25cb5baaa28d651a8e1e14e356df733a8ca3",
+    "targetedTests": "PASS compile: fallback/recovery, bootstrap whole-table restore, runtime admission, journal-v2 migration and durable local mutation policies.",
     "arktsTests": "PASS through mandatory default@OhosTestCompileArkTS; separate ohosTest module task is unregistered (00306054).",
     "compliance": "PASS: Light open-source compliance and git diff --check",
-    "review": "PASS: /root/remote_ui_review found no remaining P0/P1/P2 after closing two P1 and two P2 findings.",
-    "deviceAcceptance": "PARTIAL: latest HAP installed on 192.168.3.235:38451; 192.168.3.236:40123 blocked by release/debug provision mismatch 9568286 with data preserved."
+    "review": "PASS: /root/cloud_sync_fix_review found no remaining P0/P1/P2 after iterative remediation.",
+    "deviceAcceptance": "PENDING: fixed HAP not installed; existing application data remains untouched."
   },
   "updated": "2026-08-28 Asia/Shanghai"
 }
