@@ -48,6 +48,11 @@ export default function secretEditMutationPolicyTest() {
       expect(secretBindingUnchanged(['host', '3389', 'user'], ['host', '3389', 'other']))
         .assertFalse();
       expect(secretBindingUnchanged(['peer', 'relay'], ['peer'])).assertFalse();
+      const sameRustDeskPasswordMode: boolean = secretBindingUnchanged(
+        ['peer', 'relay', 'password-mode-0'], ['peer', 'relay', 'password-mode-1']);
+      expect(sameRustDeskPasswordMode).assertFalse();
+      expect(resolveSecretEditValue('old-password', '', true, sameRustDeskPasswordMode))
+        .assertEqual('');
     });
 
     it('hands_a_forgotten_unchanged_secret_to_only_the_current_action', 0, (): void => {

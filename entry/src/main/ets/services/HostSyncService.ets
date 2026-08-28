@@ -167,7 +167,7 @@ export class HostSyncService {
         const observedAt: number = this.localHostObservationAt.get(next.id) ?? 0;
         if (local !== undefined && shouldKeepLocalHostConfig(configObservedAt, previousSnapshotAt)) {
           // 主机新增/编辑是本地配置写入，云回调可能紧跟着带回旧快照。
-          this.hosts.set(next.id, RemoteHost.fromJSON(local.toJSON()));
+          this.hosts.set(next.id, local.runtimeClone());
           continue;
         }
         if (local !== undefined && observedAt > previousSnapshotAt) {
@@ -203,7 +203,7 @@ export class HostSyncService {
         const deletedAt: number = this.deletedHostAt.get(hostId) ?? 0;
         if (!this.hosts.has(hostId) && shouldKeepLocalHostConfig(configObservedAt, previousSnapshotAt) &&
           !shouldKeepDeletedHost(deletedAt, previousSnapshotAt)) {
-          this.hosts.set(hostId, RemoteHost.fromJSON(local.toJSON()));
+          this.hosts.set(hostId, local.runtimeClone());
         }
       });
       // 旧版本把 RustDesk 直连 peer 端口默认写成 ID server 的 21116。
@@ -214,7 +214,7 @@ export class HostSyncService {
           host.rustdeskDirectPort !== 21116 || host.port !== 21116) {
           return;
         }
-        const next: RemoteHost = RemoteHost.fromJSON(host.toJSON());
+        const next: RemoteHost = host.runtimeClone();
         next.port = RUSTDESK_PEER_TCP_PORT;
         next.rustdeskDirectPort = RUSTDESK_PEER_TCP_PORT;
         const localOnly: boolean = lanHostUsesLocalOnlyStorage(next);
@@ -251,7 +251,7 @@ export class HostSyncService {
         const localCredential: RdpCredential | undefined = previousCredentials.get(cloudCredential.id);
         const observedAt: number = this.localRdpCredentialObservationAt.get(cloudCredential.id) ?? 0;
         const next: RdpCredential = localCredential !== undefined && observedAt > previousSnapshotAt
-          ? RdpCredential.fromJSON(localCredential.toJSON()) : cloudCredential;
+          ? localCredential.runtimeClone() : cloudCredential;
         this.rdpCredentials.set(next.id, next);
         loadedCredentialIds.add(next.id);
       }
@@ -261,7 +261,7 @@ export class HostSyncService {
         const deletedAt: number = this.deletedRdpCredentialAt.get(credentialId) ?? 0;
         if (!loadedCredentialIds.has(credentialId) && observedAt > previousSnapshotAt &&
           deletedAt <= previousSnapshotAt) {
-          this.rdpCredentials.set(credentialId, RdpCredential.fromJSON(credential.toJSON()));
+          this.rdpCredentials.set(credentialId, credential.runtimeClone());
         }
       });
     } catch (err) {
@@ -321,7 +321,7 @@ export class HostSyncService {
         const relay = this.relays.get(host.rustdeskRelayId);
         if (!relay || relay.idServer.length === 0 ||
           (host.host === relay.idServer && host.port === relay.idServerPort)) { return; }
-        const next = RemoteHost.fromJSON(host.toJSON());
+        const next = host.runtimeClone();
         next.host = relay.idServer;
         next.port = relay.idServerPort;
         if (this.ready && !this.cloud.updateHost(next)) {
@@ -727,7 +727,7 @@ export class HostSyncService {
       current.lanDiscoveryIdentity !== host.lanDiscoveryIdentity) {
       return false;
     }
-    const expected: RemoteHost = RemoteHost.fromJSON(current.toJSON());
+    const expected: RemoteHost = current.runtimeClone();
     expected.host = host.host;
     expected.port = host.port;
     expected.lanLastResolvedAt = host.lanLastResolvedAt;
@@ -754,7 +754,7 @@ export class HostSyncService {
   setGroup(hostId: string, groupId: string): boolean {
     const host = this.hosts.get(hostId);
     if (!host) { return false; }
-    const next = RemoteHost.fromJSON(host.toJSON());
+    const next = host.runtimeClone();
     next.groupId = normalizeGroupId(groupId);
     return this.updateHost(next);
   }
@@ -762,7 +762,7 @@ export class HostSyncService {
   setSortOrder(hostId: string, sortOrder: number): boolean {
     const host = this.hosts.get(hostId);
     if (!host || sortOrder < 0) { return false; }
-    const next = RemoteHost.fromJSON(host.toJSON());
+    const next = host.runtimeClone();
     next.sortOrder = Math.floor(sortOrder);
     return this.updateHost(next);
   }
@@ -831,7 +831,7 @@ export class HostSyncService {
   async updateLastConnected(hostId: string): Promise<void> {
     const host = this.hosts.get(hostId);
     if (!host) { return; }
-    const next: RemoteHost = RemoteHost.fromJSON(host.toJSON());
+    const next: RemoteHost = host.runtimeClone();
     next.lastConnected = Date.now();
     this.persistLocalHostObservation(hostId, next, true);
   }
@@ -839,7 +839,7 @@ export class HostSyncService {
   async updateConnectionHealth(hostId: string, latencyMs: number, markConnected: boolean = false): Promise<void> {
     const host = this.hosts.get(hostId);
     if (!host) { return; }
-    const next: RemoteHost = RemoteHost.fromJSON(host.toJSON());
+    const next: RemoteHost = host.runtimeClone();
     const validLatency: boolean = latencyMs >= 0;
     next.lastLatency = validLatency ? Math.max(1, Math.floor(latencyMs)) : 0;
     if (!validLatency) {
@@ -869,7 +869,7 @@ export class HostSyncService {
    */
   updateLocalHostObservation(host: RemoteHost): void {
     if (!this.hosts.has(host.id)) { return; }
-    const next: RemoteHost = RemoteHost.fromJSON(host.toJSON());
+    const next: RemoteHost = host.runtimeClone();
     this.persistLocalHostObservation(host.id, next, false);
   }
 
@@ -947,8 +947,8 @@ export class HostSyncService {
     let detached: boolean = true;
     this.hosts.forEach((host: RemoteHost): void => {
       if (host.rdpCredentialId === id) {
-        const original: RemoteHost = RemoteHost.fromJSON(host.toJSON());
-        const next: RemoteHost = RemoteHost.fromJSON(host.toJSON());
+        const original: RemoteHost = host.runtimeClone();
+        const next: RemoteHost = host.runtimeClone();
         next.rdpCredentialId = '';
         if (this.updateHost(next)) { detachedOriginals.push(original); }
         else { detached = false; }
@@ -1031,7 +1031,7 @@ export class HostSyncService {
     });
     if (candidates.length !== 1) { return false; }
     const current: RemoteHost = candidates[0];
-    const next: RemoteHost = RemoteHost.fromJSON(current.toJSON());
+    const next: RemoteHost = current.runtimeClone();
     next.rustdeskRelayId = relay.id;
     const observedAt: number = Date.now();
     this.localHostConfigObservationAt.set(next.id, observedAt);
@@ -1384,7 +1384,7 @@ export class HostSyncService {
     let allReferencesDetached: boolean = true;
     this.hosts.forEach((h: RemoteHost): void => {
       if (h.rustdeskRelayId === id) {
-        const next: RemoteHost = RemoteHost.fromJSON(h.toJSON());
+        const next: RemoteHost = h.runtimeClone();
         next.rustdeskRelayId = '';
         if (this.updateHost(next)) { affected.push(h); }
         else { allReferencesDetached = false; }

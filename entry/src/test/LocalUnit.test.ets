@@ -12,6 +12,7 @@ import {
   normalizeRdpNtlmHash
 } from '../main/ets/model/RemoteHost';
 import { UserAccount } from '../main/ets/model/UserAccount';
+import { RdpCredential } from '../main/ets/model/RdpCredential';
 
 export default function localUnitTest() {
   describe('RemoteHost_Data_Model', () => {
@@ -69,6 +70,28 @@ export default function localUnitTest() {
       expect(restored.username).assertEqual(host.username);
       expect(restored.locked).assertEqual(host.locked);
       expect(restored.lockType).assertEqual(host.lockType);
+    });
+
+    it('runtime_clone_should_keep_secret_presence_out_of_serialized_json', 0, () => {
+      const host = new RemoteHost();
+      host.passwordConfigured = true;
+      host.sshKeyDataConfigured = true;
+      host.sshKeyPassphraseConfigured = true;
+      const serialized: Record<string, Object> = host.toJSON() as Record<string, Object>;
+      expect(serialized['passwordConfigured']).assertUndefined();
+      expect(serialized['sshKeyDataConfigured']).assertUndefined();
+      expect(serialized['sshKeyPassphraseConfigured']).assertUndefined();
+      const clone: RemoteHost = host.runtimeClone();
+      expect(clone.passwordConfigured).assertTrue();
+      expect(clone.sshKeyDataConfigured).assertTrue();
+      expect(clone.sshKeyPassphraseConfigured).assertTrue();
+
+      const credential = new RdpCredential();
+      credential.passwordConfigured = true;
+      const credentialJson: Record<string, Object> =
+        credential.toJSON() as Record<string, Object>;
+      expect(credentialJson['passwordConfigured']).assertUndefined();
+      expect(credential.runtimeClone().passwordConfigured).assertTrue();
     });
 
     it('RDP_default_port_should_be_3389', 0, () => {

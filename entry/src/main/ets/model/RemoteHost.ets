@@ -808,6 +808,16 @@ export class RemoteHost implements LanHostAddressView {
     return host;
   }
 
+  /** Clone serialized fields while retaining process-only secret presence. */
+  runtimeClone(): RemoteHost {
+    const host: RemoteHost = RemoteHost.fromJSON(this.toJSON());
+    host.passwordConfigured = this.passwordConfigured || this.password.length > 0;
+    host.sshKeyDataConfigured = this.sshKeyDataConfigured || this.sshKeyData.length > 0;
+    host.sshKeyPassphraseConfigured = this.sshKeyPassphraseConfigured ||
+      this.sshKeyPassphrase.length > 0;
+    return host;
+  }
+
   /** Enforces the mutually exclusive credential fields for the selected RDP mode. */
   normalizeRdpAuthentication(): void {
     this.rdpAuthMode = normalizeRdpAuthMode(this.rdpAuthMode);

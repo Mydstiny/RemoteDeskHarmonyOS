@@ -44,6 +44,14 @@
   plaintext-consent checks, local personalization and rollback behavior. A
   forgotten VNC password can still be handed to the current connection only,
   without being persisted.
+- VNC secret mutations are now explicit (`keep` / `replace` / `clear`) and are
+  bound to transport, target, port, Gateway, repeater mode, TLS and security
+  policy. Editing an endpoint cannot reuse or hand off its old password, and a
+  visible password that is deliberately cleared removes the saved secret.
+- RustDesk password preservation also binds the one-time/permanent password
+  mode in both the classic editor and Pro preflight draft lifecycle.
+- Runtime-only configured markers now survive HostSync/UI snapshot cloning
+  while remaining absent from model JSON, cloud rows and portable backup.
 - RustDesk Pro approval no longer retains the previously stored unattended
   password after an approved session.
 - Classified `secretPresentationPolicyV1` as device-local and added focused
@@ -51,8 +59,8 @@
 
 ## Verification (current worktree)
 
-- `default@OhosTestCompileArkTS`: PASS (`BUILD SUCCESSFUL in 17 s 883 ms`).
-- `assembleHap`: PASS, signed (`BUILD SUCCESSFUL in 26 s 371 ms`).
+- `default@OhosTestCompileArkTS`: PASS (`BUILD SUCCESSFUL in 22 s 290 ms`).
+- `assembleHap`: PASS, signed (`BUILD SUCCESSFUL in 29 s 973 ms`).
 - Light open-source compliance: PASS.
 - `git diff --check`: PASS.
 - The focused Hypium tests are registered in `List.test.ets` and compile in the
@@ -62,8 +70,8 @@
 
 ## Next
 
-1. Commit the verified remediation with only this task's files.
-2. Ask the same independent reviewer to confirm all five findings are closed.
+1. Commit the verified second remediation with only this task's files.
+2. Ask the same independent reviewer to confirm all nine findings are closed.
 3. Rerun final gates and close the branch through PR/main where possible.
 
 ## Blockers

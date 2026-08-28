@@ -38,6 +38,7 @@ import cloudSyncSheetPolicyTest from './CloudSyncSheetPolicy.test';
 import cloudSyncSettingsPolicyTest from './CloudSyncSettingsPolicy.test';
 import secretPresentationPolicyTest from './SecretPresentationPolicy.test';
 import secretEditMutationPolicyTest from './SecretEditMutationPolicy.test';
+import vncSecretEditPolicyTest from './VncSecretEditPolicy.test';
 import cloudSyncSelectionPolicyTest from './CloudSyncSelectionPolicy.test';
 import cloudLifecycleSafetyPolicyTest from './CloudLifecycleSafetyPolicy.test';
 import cloudSyncLifecyclePolicyTest from './CloudSyncLifecyclePolicy.test';
@@ -284,6 +285,7 @@ export default function testsuite() {
   cloudSyncSettingsPolicyTest();
   secretPresentationPolicyTest();
   secretEditMutationPolicyTest();
+  vncSecretEditPolicyTest();
   cloudSyncSelectionPolicyTest();
   cloudLifecycleSafetyPolicyTest();
   cloudSyncLifecyclePolicyTest();

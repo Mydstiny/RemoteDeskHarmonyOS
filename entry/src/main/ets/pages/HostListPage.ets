@@ -192,12 +192,14 @@ import {
   secretPresentationSummary
 } from '../services/SecretPresentationPolicy';
 import {
+  SecretEditMutationKind,
   resolveSecretEditValue,
   secretBindingUnchanged,
   secretEditDraftValue,
   secretEditPlaceholder
 } from '../services/SecretEditMutationPolicy';
 import { buildVncTrustDirectory, VncTrustDirectoryItem } from '../services/VncTrustEndpointDirectory';
+import { VncSecretEditDecision, vncSecretEditDecision } from '../services/VncSecretEditPolicy';
 // Passphrase uses bindSheet (HostListPage is @Entry, no bindSheet limit)
 import { KeyVaultPage } from './KeyVaultPage';
 import { SshPreflightState } from '../components/SshPreflightSheet';
@@ -825,6 +827,7 @@ struct HostListPage {
   @State appearanceContentHeight: number = 0;
   private pendingLocalRestore: LocalBackupDocument | null = null;
   @State sheetPwd: string = '';
+  @State sheetPasswordChanged: boolean = false;
   @State vncHostTransport: VncTransport = 'direct_tcp';
   @State vncHostRepeaterMode: VncRepeaterMode = 'mode12';
   @State vncHostGatewayId: string = '';
@@ -2152,7 +2155,8 @@ struct HostListPage {
   }
 
   private saveVncHostFromAddFlow(values: VncHostValues, password: string, connectNow: boolean,
-    plainStorageConfirmed: boolean = false): void {
+    plainStorageConfirmed: boolean = false,
+    passwordMutation: SecretEditMutationKind = 'keep'): void {
     if (this.addSheetClosing || this.pendingAddSheetConnectHostId !== '' ||
       this.pendingVncConnectHostId !== '') {
       hilog.info(0x0001, 'HostList', 'ignored repeated VNC add-host save while Sheet is closing');
@@ -2162,7 +2166,8 @@ struct HostListPage {
       promptAction.showToast({ message: 'VNC 服务尚未完成云同步初始化，请稍后重试', duration: 2200 });
       return;
     }
-    const result = this.vncHosts.save(values, '', password, plainStorageConfirmed);
+    const result = this.vncHosts.save(values, '', password, plainStorageConfirmed,
+      passwordMutation);
     if (!result.ok) {
       promptAction.showToast({ message: result.message || '保存 VNC 主机失败', duration: 2200 });
       return;
@@ -4969,8 +4974,8 @@ struct HostListPage {
     const nextActiveRemoteHostId: string = activeSession === null ? '' : activeSession.hostId;
     const activeSessionChanged: boolean = this.activeRemoteHostId !== nextActiveRemoteHostId;
     this.activeRemoteHostId = nextActiveRemoteHostId;
-    const nextHosts: RemoteHost[] = this.srv.getAllHosts().map((host: RemoteHost): RemoteHost =>
-      RemoteHost.fromJSON(host.toJSON()));
+    const nextHosts: RemoteHost[] = this.srv.getAllHosts().map(
+      (host: RemoteHost): RemoteHost => host.runtimeClone());
     const vncViews: VncHostView[] = this.vncHosts.list();
     for (let i = 0; i < vncViews.length; i++) {
       nextHosts.push(projectVncHost(vncViews[i]));
@@ -5850,7 +5855,7 @@ struct HostListPage {
       await this.refreshDynamicLanHosts(true, host.id);
       const refreshed: RemoteHost | undefined = this.srv.getHost(host.id);
       if (refreshed !== undefined && lanHostUsesLocalOnlyStorage(refreshed)) {
-        host = RemoteHost.fromJSON(refreshed.toJSON());
+        host = refreshed.runtimeClone();
       }
       if (protocolNeedsArbitration &&
         !this.isCurrentConnectionAttempt(host.id, connectionGeneration)) {
@@ -6719,7 +6724,7 @@ struct HostListPage {
     result: RdpPreflightResult,
     decision: RdpCertificatePreflightDecision
   ): RemoteHost {
-    const updated: RemoteHost = RemoteHost.fromJSON(host.toJSON());
+    const updated: RemoteHost = host.runtimeClone();
     // Continue Once is scoped to this connection. Keep every persisted
     // target/Gateway trust record unchanged; the one-time pins travel through
     // doRdpCertificateRoute's transient result instead.
@@ -6783,7 +6788,7 @@ struct HostListPage {
 
     let probeHost: RemoteHost = host;
     if (shouldPersistRdpCertificateTrust(decision)) {
-      const updated: RemoteHost = RemoteHost.fromJSON(host.toJSON());
+      const updated: RemoteHost = host.runtimeClone();
       updated.rdpGatewayCertificateFingerprintSha256 = gateway.fingerprintSha256;
       updated.rdpGatewayCertificateSubject = gateway.subject;
       updated.rdpGatewayCertificateIssuer = gateway.issuer;
@@ -7920,7 +7925,7 @@ struct HostListPage {
     if (!this.isCurrentSshPreflight(host, generation) || !this.sshPreflightHostKeyInfo) { return; }
     const info = this.sshPreflightHostKeyInfo;
     if (this.sshPreflightUsesJump(host) && !this.sshPreflightJumpHostKeyInfo) { return; }
-    const updated: RemoteHost = RemoteHost.fromJSON(host.toJSON());
+    const updated: RemoteHost = host.runtimeClone();
     this.applySshPreflightTrust(updated, info, this.sshPreflightJumpHostKeyInfo);
     if (!this.srv.updateHost(updated)) {
       this.sshPreflightState = SshPreflightState.ERROR;
@@ -7935,7 +7940,7 @@ struct HostListPage {
     if (!this.isCurrentSshPreflight(host, generation) || !this.sshPreflightHostKeyInfo) { return; }
     const info = this.sshPreflightHostKeyInfo;
     if (this.sshPreflightUsesJump(host) && !this.sshPreflightJumpHostKeyInfo) { return; }
-    const updated: RemoteHost = RemoteHost.fromJSON(host.toJSON());
+    const updated: RemoteHost = host.runtimeClone();
     this.applySshPreflightTrust(updated, info, this.sshPreflightJumpHostKeyInfo);
     if (!this.srv.updateHost(updated)) {
       this.sshPreflightState = SshPreflightState.ERROR;
@@ -8081,7 +8086,7 @@ struct HostListPage {
         return;
       }
       if (this.sshPreflightProxyPassphraseSaveToHost) {
-        const updated: RemoteHost = RemoteHost.fromJSON(host.toJSON());
+        const updated: RemoteHost = host.runtimeClone();
         updated.sshProxyKeyPassphrase = this.sshPreflightProxyPassphraseInput;
         if (!this.srv.updateHost(updated)) {
           this.sshPreflightState = SshPreflightState.PASSPHRASE_REQUIRED;
@@ -8124,7 +8129,7 @@ struct HostListPage {
       if (!this.isCurrentSshPreflight(host, generation)) { return; }
       if (result.ok) {
         if (this.sshPreflightPassphraseSaveToHost) {
-          const updated: RemoteHost = RemoteHost.fromJSON(host.toJSON());
+          const updated: RemoteHost = host.runtimeClone();
           updated.sshKeyPassphrase = this.sshPreflightPassphraseInput;
           if (!this.srv.updateHost(updated)) {
             this.sshPreflightState = SshPreflightState.PASSPHRASE_REQUIRED;
@@ -8327,7 +8332,7 @@ struct HostListPage {
       // Resolve the latest service object so a delayed probe result cannot
       // restore fields from the card snapshot that existed when it started.
       const latest: RemoteHost = this.srv.getHost(host.id) ?? host;
-      const updated: RemoteHost = RemoteHost.fromJSON(latest.toJSON());
+      const updated: RemoteHost = latest.runtimeClone();
       if (state === 1) {
         updated.rustdeskProLastSeenAt = Date.now();
         updated.rustdeskProSyncError = '';
@@ -8509,7 +8514,7 @@ struct HostListPage {
       promptAction.showToast({ message: nextLocked ? '已锁定' : '已解锁', duration: 1500 });
       return;
     }
-    const updated: RemoteHost = RemoteHost.fromJSON(host.toJSON());
+    const updated: RemoteHost = host.runtimeClone();
     updated.locked = !host.locked;
     updated.lockType = updated.locked ? LockType.BIOMETRIC : LockType.NONE;
     if (!this.srv.updateHost(updated)) {
@@ -8531,7 +8536,10 @@ struct HostListPage {
       (draft !== null ? draft.authChoice :
         (host.rustdeskAuthMode === 'request_approval' ? 'request_approval' : 'password'));
     const existingPassword: string = draft === null ? host.password : draft.password;
-    this.rustDeskProPasswordConfigured = existingPassword.length > 0 || host.passwordConfigured;
+    const draftKeepsStoredPasswordBinding: boolean = draft === null ||
+      draft.passwordMode === (host.rustdeskPasswordMode === 1 ? 1 : 0);
+    this.rustDeskProPasswordConfigured = existingPassword.length > 0 ||
+      (draftKeepsStoredPasswordBinding && host.passwordConfigured);
     this.rustDeskProPassword = secretEditDraftValue(existingPassword,
       this.secretEditorHidden('rustdesk_device_password'));
     this.rustDeskProPasswordMode = draft === null ?
@@ -8559,10 +8567,14 @@ struct HostListPage {
     const previousDraft: RustDeskAuthDraft | null = this.rustDeskAuthDrafts.load(
       scope.ownerScopeId, scope.generation, hostId);
     const storedHost: RemoteHost | undefined = this.srv.getHost(hostId);
-    const previousPassword: string = previousDraft !== null && previousDraft.password.length > 0 ?
-      previousDraft.password : (storedHost === undefined ? '' : storedHost.password);
+    const previousPassword: string = previousDraft !== null ? previousDraft.password :
+      (storedHost === undefined ? '' : storedHost.password);
+    const previousPasswordMode: number = previousDraft !== null ? previousDraft.passwordMode :
+      (storedHost !== undefined && storedHost.rustdeskPasswordMode === 1 ? 1 : 0);
+    const keepsSamePasswordMode: boolean = previousPasswordMode ===
+      (this.rustDeskProPasswordMode === 1 ? 1 : 0);
     const password: string = resolveSecretEditValue(previousPassword, this.rustDeskProPassword,
-      this.secretEditorHidden('rustdesk_device_password'), true);
+      this.secretEditorHidden('rustdesk_device_password'), keepsSamePasswordMode);
     this.rustDeskAuthDrafts.save({
       ownerScopeId: scope.ownerScopeId,
       accountGeneration: scope.generation,
@@ -9092,11 +9104,17 @@ struct HostListPage {
     const scopeBeforeConnect = AccountSessionCoordinator.getInstance().currentScope();
     const draftBeforeConnect: RustDeskAuthDraft | null = this.rustDeskAuthDrafts.load(
       scopeBeforeConnect.ownerScopeId, scopeBeforeConnect.generation, stored.id);
-    const previousPassword: string = draftBeforeConnect !== null && draftBeforeConnect.password.length > 0 ?
+    const previousPassword: string = draftBeforeConnect !== null ?
       draftBeforeConnect.password : stored.password;
+    const previousPasswordMode: number = draftBeforeConnect !== null ?
+      draftBeforeConnect.passwordMode : (stored.rustdeskPasswordMode === 1 ? 1 : 0);
+    const keepsSamePasswordMode: boolean = previousPasswordMode ===
+      (this.rustDeskProPasswordMode === 1 ? 1 : 0);
     const passwordForConnection: string = resolveSecretEditValue(previousPassword,
-      this.rustDeskProPassword, this.secretEditorHidden('rustdesk_device_password'), true);
-    if (this.rustDeskProAuthMode === 'password' && this.rustDeskProPasswordConfigured &&
+      this.rustDeskProPassword, this.secretEditorHidden('rustdesk_device_password'),
+      keepsSamePasswordMode);
+    if (this.rustDeskProAuthMode === 'password' && keepsSamePasswordMode &&
+      this.rustDeskProPasswordConfigured &&
       previousPassword === '' && this.rustDeskProPassword === '') {
       this.rustDeskProPreflightError = '设备密码仍在加密仓库中；请先解锁并重新打开连接面板。';
       return;
@@ -9118,7 +9136,7 @@ struct HostListPage {
       return;
     }
     const connectionScope = AccountSessionCoordinator.getInstance().currentScope();
-    const host: RemoteHost = RemoteHost.fromJSON(stored.toJSON());
+    const host: RemoteHost = stored.runtimeClone();
     copyRustDeskPeerTwoFactorRuntime(stored, host);
     const relay: RustDeskRelayConfig | undefined = this.srv.getAllRelays()
       .find((item: RustDeskRelayConfig): boolean => item.id === host.rustdeskRelayId);
@@ -9210,7 +9228,7 @@ struct HostListPage {
           this.rustDeskProTwoFactorEntryOptions = [];
           this.rustDeskProTwoFactorSelectedEntryId = '';
           this.rustDeskProPreflightState = RustDeskProPreflightState.AUTHENTICATED;
-          const saved: RemoteHost = RemoteHost.fromJSON(stored.toJSON());
+          const saved: RemoteHost = stored.runtimeClone();
           saved.rustdeskAuthMode = host.rustdeskAuthMode;
           saved.rustdeskPasswordMode = host.rustdeskPasswordMode;
           if (host.rustdeskAuthMode === 'password') {
@@ -9383,6 +9401,7 @@ struct HostListPage {
     const hostSecretKind: EditableSecretKind = this.secretKindForHost(latestHost.protocol);
     const hostSecretHidden: boolean = this.secretEditorHidden(hostSecretKind);
     this.sheetPasswordConfigured = latestHost.password.length > 0 || latestHost.passwordConfigured;
+    this.sheetPasswordChanged = false;
     this.sheetPwd = secretEditDraftValue(latestHost.password, hostSecretHidden);
     this.chn = latestHost.customHostname;
     this.selectedRelayId = latestHost.rustdeskRelayId;
@@ -9443,6 +9462,7 @@ struct HostListPage {
     this.username = '';
     const passwordHidden: boolean = this.secretEditorHidden('vnc_host_password');
     this.sheetPasswordConfigured = host !== null && host.passwordConfigured;
+    this.sheetPasswordChanged = false;
     this.sheetPwd = host !== null && !passwordHidden ? this.vncHosts.passwordFor(host.id) : '';
     this.chn = '';
     this.sheetErr = '';
@@ -9815,7 +9835,7 @@ struct HostListPage {
       const host: RemoteHost = hosts[i];
       if (!shouldAdoptRustDeskDirectPort(host.rustdeskDirectEnabled,
         host.rustdeskDirectPort, previousPort)) { continue; }
-      const next: RemoteHost = RemoteHost.fromJSON(host.toJSON());
+      const next: RemoteHost = host.runtimeClone();
       next.rustdeskDirectPort = this.rustdeskDirectPort;
       next.port = this.rustdeskDirectPort;
       if (!this.srv.updateHost(next)) { failed++; }
@@ -10078,7 +10098,7 @@ struct HostListPage {
       if (!lanHostRefreshCandidateMatches(targets[i], candidate)) { continue; }
       const latest: RemoteHost | undefined = this.srv.getHost(targets[i].id);
       if (latest === undefined || !lanHostRefreshCandidateMatches(latest, candidate)) { continue; }
-      const next: RemoteHost = RemoteHost.fromJSON(latest.toJSON());
+      const next: RemoteHost = latest.runtimeClone();
       next.host = candidate.host;
       next.port = candidate.port;
       next.lanLastResolvedAt = candidate.observedAt;
@@ -11244,7 +11264,7 @@ struct HostListPage {
   private hostWithPresenceOverride(host: RemoteHost): RemoteHost {
     if (host.protocol === 'rustdesk' && !host.rustdeskDirectEnabled &&
       !this.rustdeskPresenceDetectionEnabled) {
-      const disabled: RemoteHost = RemoteHost.fromJSON(host.toJSON());
+      const disabled: RemoteHost = host.runtimeClone();
       disabled.rustdeskProLastSeenAt = 0;
       disabled.rustdeskProSyncError = HOST_PRESENCE_PROBE_UNKNOWN;
       disabled.lastLatency = 0;
@@ -11253,7 +11273,7 @@ struct HostListPage {
     }
     const override: HostPresenceOverride | undefined = this.hostPresenceOverrides.get(host.id);
     if (override === undefined) { return host; }
-    const next: RemoteHost = RemoteHost.fromJSON(host.toJSON());
+    const next: RemoteHost = host.runtimeClone();
     if (override.state === 'checking') {
       next.rustdeskProLastSeenAt = 0;
       next.rustdeskProSyncError = HOST_PRESENCE_PROBE_PENDING;
@@ -17193,8 +17213,9 @@ struct HostListPage {
           this.requestAddSheetClose();
         },
         onSave: (values: VncHostValues, password: string, connectNow: boolean,
-          plainStorageConfirmed: boolean): void => {
-          this.saveVncHostFromAddFlow(values, password, connectNow, plainStorageConfirmed);
+          plainStorageConfirmed: boolean, passwordMutation: SecretEditMutationKind): void => {
+          this.saveVncHostFromAddFlow(values, password, connectNow, plainStorageConfirmed,
+            passwordMutation);
         }
       })
     } else {
@@ -17544,7 +17565,14 @@ struct HostListPage {
               Toggle({ type: ToggleType.Switch, isOn: this.sheetPwdMode === 1 })
                 .selectedColor(this.accentColor).scale({ x: 0.82, y: 0.82 }).margin({ left: 8, right: 8 })
                 .enabled(!this.isEditingProHost())
-                .onChange((on: boolean) => { this.sheetPwdMode = on ? 1 : 0; })
+                .onChange((on: boolean) => {
+                  const nextMode: number = on ? 1 : 0;
+                  if (this.sheetPwdMode !== nextMode) {
+                    this.sheetPwd = '';
+                    this.sheetPasswordConfigured = false;
+                  }
+                  this.sheetPwdMode = nextMode;
+                })
               Text('永久密码').fontSize(13)
                 .fontColor(this.sheetPwdMode === 1 ? this.accentColor : this.pal().text2)
                 .fontWeight(this.sheetPwdMode === 1 ? FontWeight.Medium : FontWeight.Normal)
@@ -17841,7 +17869,7 @@ struct HostListPage {
         .fontColor(this.pal().text).placeholderColor(this.pal().text3).fontFamily(this.font())
         .fontSize(13).padding({ left: 10, right: 10 }).enabled(enabled)
         .opacity(enabled ? 1.0 : 0.55)
-        .onChange((v: string): void => { this.sheetPwd = v; })
+        .onChange((v: string): void => { this.sheetPwd = v; this.sheetPasswordChanged = true; })
       if (enabled && this.editingHostId !== '' && this.sheetPasswordConfigured && this.sheetPwd === '' &&
         this.secretEditorHidden(this.secretKindForHost(this.proto))) {
         Text('已保存密码处于隐藏状态；留空保存会保留现有密码，输入新密码才会替换。')
@@ -18439,6 +18467,10 @@ struct HostListPage {
             .fontColor(this.rustDeskProPasswordMode === 0 ? Color.White : this.pal().text2)
             .enabled(this.rustDeskProPreflightState !== RustDeskProPreflightState.CONNECTING)
             .onClick((): void => {
+              if (this.rustDeskProPasswordMode !== 0) {
+                this.rustDeskProPassword = '';
+                this.rustDeskProPasswordConfigured = false;
+              }
               this.rustDeskProPasswordMode = 0;
               this.saveRustDeskProAuthDraft();
             })
@@ -18447,6 +18479,10 @@ struct HostListPage {
             .fontColor(this.rustDeskProPasswordMode === 1 ? Color.White : this.pal().text2)
             .enabled(this.rustDeskProPreflightState !== RustDeskProPreflightState.CONNECTING)
             .onClick((): void => {
+              if (this.rustDeskProPasswordMode !== 1) {
+                this.rustDeskProPassword = '';
+                this.rustDeskProPasswordConfigured = false;
+              }
               this.rustDeskProPasswordMode = 1;
               this.saveRustDeskProAuthDraft();
             })
@@ -18862,6 +18898,7 @@ struct HostListPage {
     this.sheetUseKey = false; this.sheetKeyPath = ''; this.sheetKeyText = '';
     this.sheetKeyId = ''; this.sheetKeyPassphrase = '';
     this.sheetPasswordConfigured = false;
+    this.sheetPasswordChanged = false;
     this.sheetKeyDataConfigured = false;
     this.sheetKeyDataChanged = false;
     this.sheetKeyPassphraseConfigured = false;
@@ -18877,7 +18914,8 @@ struct HostListPage {
   }
 
   private commitClassicVncSave(values: VncHostValues, recordId: string, password: string,
-    allowPlaintext: boolean, securityConfirmed: boolean = false): void {
+    allowPlaintext: boolean, passwordMutation: SecretEditMutationKind,
+    securityConfirmed: boolean = false): void {
     if (values.securityPolicy === 'allow_plaintext' && !securityConfirmed) {
       promptAction.showDialog({
         title: '确认允许 VNC 明文连接',
@@ -18886,7 +18924,8 @@ struct HostListPage {
       }).then((result: Object): void => {
         const dialogResult: Record<string, number> = result as Record<string, number>;
         if (dialogResult['index'] === 1) {
-          this.commitClassicVncSave(values, recordId, password, allowPlaintext, true);
+          this.commitClassicVncSave(values, recordId, password, allowPlaintext,
+            passwordMutation, true);
         }
       });
       return;
@@ -18895,7 +18934,8 @@ struct HostListPage {
       this.sheetErr = 'VNC 服务尚未完成云同步初始化，请稍后重试';
       return;
     }
-    const result = this.vncHosts.save(values, recordId, password, allowPlaintext);
+    const result = this.vncHosts.save(values, recordId, password, allowPlaintext,
+      passwordMutation);
     if (!result.ok) {
       this.sheetErr = result.message || '保存 VNC 主机失败';
       return;
@@ -18937,7 +18977,10 @@ struct HostListPage {
       this.sheetErr = '请选择已启用且支持 mode12 的 VNC Gateway';
       return;
     }
-    const password: string = this.sheetPwd;
+    const decision: VncSecretEditDecision = vncSecretEditDecision(
+      existing === null ? '' : this.vncHosts.passwordFor(existing.id), this.sheetPwd,
+      this.sheetPasswordChanged, values.rememberPassword, false, existing, values);
+    const password: string = decision.submissionValue;
     if (password.length > 0 && values.rememberPassword) {
       const crypto: DataCrypto = DataCrypto.getInstance();
       if (crypto.isSetupComplete() && !crypto.isReady()) {
@@ -18953,13 +18996,15 @@ struct HostListPage {
         }).then((result: Object): void => {
           const dialogResult: Record<string, number> = result as Record<string, number>;
           if (dialogResult['index'] === 1) {
-            this.commitClassicVncSave(values, recordId, password, true);
+            this.commitClassicVncSave(values, recordId, password, true,
+              decision.storageMutation);
           }
         });
         return;
       }
     }
-    this.commitClassicVncSave(values, recordId, password, false);
+    this.commitClassicVncSave(values, recordId, password, false,
+      decision.storageMutation);
   }
 
   private doAdd(): void {
@@ -18972,7 +19017,7 @@ struct HostListPage {
     }
     const editingId: string = this.editingHostId;
     const existingHost: RemoteHost | undefined = editingId !== '' ? this.srv.getHost(editingId) : undefined;
-    const h: RemoteHost = existingHost ? RemoteHost.fromJSON(existingHost.toJSON()) : new RemoteHost();
+    const h: RemoteHost = existingHost ? existingHost.runtimeClone() : new RemoteHost();
     let sshProxyProfileToSave: SshProxyProfileV1 | null = null;
     if (editingId !== '') { h.id = editingId; }
     else { h.id = RemoteHost.generateId(); }
@@ -19077,11 +19122,13 @@ struct HostListPage {
         previousUsesPassword && secretBindingUnchanged([
           existingHost.customHostname.trim(), existingHost.host.trim(), existingHost.port.toString(),
           existingHost.rustdeskDirectEnabled ? 'direct' : 'relay',
-          existingHost.rustdeskDirectHost.trim(), existingHost.rustdeskDirectPort.toString()
+          existingHost.rustdeskDirectHost.trim(), existingHost.rustdeskDirectPort.toString(),
+          (existingHost.rustdeskPasswordMode === 1 ? 1 : 0).toString()
         ], [
           h.customHostname.trim(), h.host.trim(), h.port.toString(),
           h.rustdeskDirectEnabled ? 'direct' : 'relay',
-          h.rustdeskDirectHost.trim(), h.rustdeskDirectPort.toString()
+          h.rustdeskDirectHost.trim(), h.rustdeskDirectPort.toString(),
+          (h.rustdeskPasswordMode === 1 ? 1 : 0).toString()
         ]);
       if (keepsSamePasswordBinding && existingPasswordConfigured && existingPassword === '' &&
         this.sheetPwd === '') {
@@ -19356,7 +19403,7 @@ struct HostListPage {
       return;
     }
     const credential: RdpCredential = existing === undefined ? new RdpCredential() :
-      RdpCredential.fromJSON(existing.toJSON());
+      existing.runtimeClone();
     credential.id = this.rdpCredEditId !== '' ? this.rdpCredEditId : RdpCredential.generateId();
     credential.label = this.rdpCredLabel.trim();
     credential.username = username;
@@ -19439,7 +19486,7 @@ struct HostListPage {
   }
 
   private toggleRustDeskAuthTrust(host: RemoteHost): void {
-    const updated: RemoteHost = RemoteHost.fromJSON(host.toJSON());
+    const updated: RemoteHost = host.runtimeClone();
     updated.rustdeskAuthMode = host.rustdeskAuthMode === 'request_approval' ? 'password' : 'request_approval';
     if (!this.srv.updateHost(updated)) {
       promptAction.showToast({
@@ -19449,7 +19496,7 @@ struct HostListPage {
   }
 
   private clearRustDeskSavedPassword(host: RemoteHost): void {
-    const updated: RemoteHost = RemoteHost.fromJSON(host.toJSON());
+    const updated: RemoteHost = host.runtimeClone();
     updated.password = '';
     if (this.srv.updateHost(updated)) {
       promptAction.showToast({ message: '已清除保存的 RustDesk 密码', duration: 1500 });
@@ -19461,7 +19508,7 @@ struct HostListPage {
   }
 
   private clearRustDeskAuthTrust(host: RemoteHost): void {
-    const updated: RemoteHost = RemoteHost.fromJSON(host.toJSON());
+    const updated: RemoteHost = host.runtimeClone();
     updated.rustdeskAuthMode = 'password';
     updated.password = '';
     if (this.srv.updateHost(updated)) {
@@ -19518,7 +19565,7 @@ struct HostListPage {
     }).then((result: Object): void => {
       const r: Record<string, number> = result as Record<string, number>;
       if (r['index'] !== 1) { return; }
-      const updated: RemoteHost = RemoteHost.fromJSON(host.toJSON());
+      const updated: RemoteHost = host.runtimeClone();
       updated.sshHostKeyAlgorithm = '';
       updated.sshHostKeyFingerprintSha256 = '';
       updated.sshHostKeyRawBase64 = '';
@@ -19571,7 +19618,7 @@ struct HostListPage {
           return;
         }
       }
-      const updated: RemoteHost = RemoteHost.fromJSON(host.toJSON());
+      const updated: RemoteHost = host.runtimeClone();
       this.applySshPreflightTrust(updated, info, jumpInfo);
       if (this.srv.updateHost(updated)) {
         promptAction.showToast({ message: 'SSH 指纹已更新', duration: 1500 });
@@ -19598,7 +19645,7 @@ struct HostListPage {
     }).then((result: Object): void => {
       const r: Record<string, number> = result as Record<string, number>;
       if (r['index'] !== 1) { return; }
-      const updated: RemoteHost = RemoteHost.fromJSON(host.toJSON());
+      const updated: RemoteHost = host.runtimeClone();
       updated.rdpCertificateFingerprintSha256 = '';
       updated.rdpCertificateSubject = '';
       updated.rdpCertificateIssuer = '';
@@ -19672,7 +19719,7 @@ struct HostListPage {
         });
         return;
       }
-      const updated: RemoteHost = RemoteHost.fromJSON(host.toJSON());
+      const updated: RemoteHost = host.runtimeClone();
       const info: RdpCertificateInfo = this.rdpCertificateInfoFromRecord(result.targetCertificate);
       updated.rdpCertificateFingerprintSha256 = info.fingerprintSha256;
       updated.rdpCertificateSubject = info.subject;

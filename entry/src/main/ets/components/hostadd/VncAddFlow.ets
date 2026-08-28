@@ -22,7 +22,11 @@ import { VncGatewayView } from '../../services/VncGatewayService';
 import { resolveVncHostDefaults, VncSelectableGateway } from '../../services/VncHostDefaultsPolicy';
 import { VncHostService, VncHostView } from '../../services/VncHostService';
 import { SecretPresentationStore } from '../../services/SecretPresentationPolicy';
-import { secretSubmissionValue } from '../../services/SecretEditMutationPolicy';
+import { SecretEditMutationKind } from '../../services/SecretEditMutationPolicy';
+import {
+  VncSecretEditDecision,
+  vncSecretEditDecision
+} from '../../services/VncSecretEditPolicy';
 import { vncGatewayAvailability } from '../../services/VncGatewayProtocolPolicy';
 import { protocolIcon } from '../../services/ProtocolIconPolicy';
 import {
@@ -43,9 +47,9 @@ export struct VncAddFlow {
   onBackToProtocols: () => void = (): void => {};
   onOpenSettings: () => void = (): void => {};
   onSave: (values: VncHostValues, password: string, connectNow: boolean,
-    plainStorageConfirmed: boolean) => void =
+    plainStorageConfirmed: boolean, passwordMutation: SecretEditMutationKind) => void =
     (_values: VncHostValues, _password: string, _connectNow: boolean,
-      _plainStorageConfirmed: boolean): void => {};
+      _plainStorageConfirmed: boolean, _passwordMutation: SecretEditMutationKind): void => {};
 
   @State step: number = 0;
   @State transport: VncTransport = 'direct_tcp';
@@ -150,11 +154,12 @@ export struct VncAddFlow {
       crypto.isSetupComplete() && !crypto.isReady());
   }
 
-  private passwordForSave(connectNow: boolean): string {
+  private passwordDecision(values: VncHostValues,
+    connectNow: boolean): VncSecretEditDecision {
     const existing: string = this.initialHost === null ? '' :
       this.hosts.passwordFor(this.initialHost.id);
-    return secretSubmissionValue(existing, this.password, this.passwordChanged,
-      this.rememberPassword, connectNow);
+    return vncSecretEditDecision(existing, this.password, this.passwordChanged,
+      this.rememberPassword, connectNow, this.initialHost, values);
   }
 
   private gatewaySelectable(gateway: VncGatewayView): boolean {
@@ -279,7 +284,8 @@ export struct VncAddFlow {
   }
 
   private dispatchSave(values: VncHostValues, password: string,
-    connectNow: boolean, plainStorageConfirmed: boolean): void {
+    connectNow: boolean, plainStorageConfirmed: boolean,
+    passwordMutation: SecretEditMutationKind): void {
     if (this.securityPolicy === 'allow_plaintext') {
       promptAction.showDialog({
         title: '确认允许 VNC 明文连接',
@@ -288,18 +294,19 @@ export struct VncAddFlow {
       }).then((result: Object): void => {
         const dialogResult: Record<string, number> = result as Record<string, number>;
         if (dialogResult['index'] === 1) {
-          this.onSave(values, password, connectNow, plainStorageConfirmed);
+          this.onSave(values, password, connectNow, plainStorageConfirmed, passwordMutation);
         }
       });
       return;
     }
-    this.onSave(values, password, connectNow, plainStorageConfirmed);
+    this.onSave(values, password, connectNow, plainStorageConfirmed, passwordMutation);
   }
 
   private save(connectNow: boolean): void {
     const values: VncHostValues | null = this.buildValues();
     if (values === null) { return; }
-    const password: string = this.passwordForSave(connectNow);
+    const decision: VncSecretEditDecision = this.passwordDecision(values, connectNow);
+    const password: string = decision.submissionValue;
     if (password.length > 0 && this.rememberPassword) {
       const crypto: DataCrypto = DataCrypto.getInstance();
       if (crypto.isSetupComplete() && !crypto.isReady()) {
@@ -315,13 +322,15 @@ export struct VncAddFlow {
         }).then((result: Object): void => {
           const dialogResult: Record<string, number> = result as Record<string, number>;
           if (dialogResult['index'] === 1) {
-            this.dispatchSave(values, password, connectNow, true);
+            this.dispatchSave(values, password, connectNow, true,
+              decision.storageMutation);
           }
         });
         return;
       }
     }
-    this.dispatchSave(values, password, connectNow, false);
+    this.dispatchSave(values, password, connectNow, false,
+      decision.storageMutation);
   }
 
   private rememberPasswordDetail(): string {

@@ -10,6 +10,8 @@ import { VncCloudSyncService } from './VncCloudSyncService';
 import { VncSecretLoadResult, VncSecretSaveResult, VncSecretService } from './VncSecretService';
 import { VncTrustService } from './VncTrustService';
 import { vncHostTrustEndpointChanged } from './VncTrustInvalidationPolicy';
+import { SecretEditMutationKind } from './SecretEditMutationPolicy';
+import { vncSecretBindingUnchanged } from './VncSecretEditPolicy';
 import {
   applyVncHostLocalPersonalization,
   vncHostCloudValuesForSave,
@@ -96,7 +98,8 @@ export class VncHostService {
   }
 
   save(values: VncHostValues, id: string = '', password: string = '',
-    allowPlaintext: boolean = false): VncHostSaveResult {
+    allowPlaintext: boolean = false,
+    passwordMutation: SecretEditMutationKind = 'keep'): VncHostSaveResult {
     const result: VncHostSaveResult = { ok: false, message: '', id };
     const errors: string[] = validateVncHost(values);
     if (errors.length > 0) { result.message = errors[0]; return result; }
@@ -149,7 +152,13 @@ export class VncHostService {
     }
     const existingSecret: boolean = currentRecord !== null &&
       this.secrets.has(record.userId, record.id, 'vnc_password');
-    if (password.length > 0 && values.rememberPassword) {
+    let effectivePasswordMutation: SecretEditMutationKind = values.rememberPassword ?
+      passwordMutation : 'clear';
+    if (current !== null && effectivePasswordMutation === 'keep' &&
+      !vncSecretBindingUnchanged(current, values)) {
+      effectivePasswordMutation = 'clear';
+    }
+    if (effectivePasswordMutation === 'replace' && password.length > 0) {
       const secretResult = this.secrets.save(record.userId, record.id, 'host', 'vnc_password', password,
         values.label, allowPlaintext);
       if (!secretResult.ok) {
@@ -162,7 +171,8 @@ export class VncHostService {
           : secretResult.message + '；主机配置回滚失败，请检查 VNC 数据状态';
         return result;
       }
-    } else if (!values.rememberPassword && existingSecret) {
+    } else if ((effectivePasswordMutation === 'clear' ||
+      effectivePasswordMutation === 'replace') && existingSecret) {
       if (!this.secrets.remove(record.userId, record.id, 'vnc_password')) {
         const rolledBack: boolean = !cloudBaseChanged ? true : currentRecord === null
           ? this.cloud.deleteVncRecord(record.userId, record.id)

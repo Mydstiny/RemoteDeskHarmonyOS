@@ -52,6 +52,13 @@ export class RdpCredential {
     return c;
   }
 
+  /** Clone serialized fields while retaining process-only secret presence. */
+  runtimeClone(): RdpCredential {
+    const credential: RdpCredential = RdpCredential.fromJSON(this.toJSON());
+    credential.passwordConfigured = this.passwordConfigured || this.password.length > 0;
+    return credential;
+  }
+
   static generateId(): string {
     const rand = cryptoFramework.createRandom();
     const blob = rand.generateRandomSync(6);
