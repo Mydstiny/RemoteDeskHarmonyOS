@@ -2,8 +2,8 @@
   "schema": 1,
   "task": "release-1-1-4-notes-and-version",
   "branch": "codex/system-clipboard-activation-fix",
-  "base": "704ce35a9df63fcd3a2509d44c0be647f479bfb8",
-  "head": "8c939b53805878478474dcc99675f91f0610aadc",
+  "base": "c49f165f489fc42848fe7a7f480a425a5a6dc7fc",
+  "head": "20811b14ac1face72dd42dad4d31823a84874097",
   "phase": "ready-for-device-validation",
   "status": "active",
   "next": "Upgrade a preserved 1.1.3 install to 1.1.4 and verify the current-only 10-page update popup, absence of 1.1.3 pages, once-only marker, page ordering and Settings reopen path.",
@@ -19,25 +19,22 @@
     "taskIds": [
       "/root/release_1_1_4_review"
     ],
-    "reviewedHead": "8c939b53805878478474dcc99675f91f0610aadc",
+    "reviewedHead": "20811b14ac1face72dd42dad4d31823a84874097",
     "scope": [
-      "entry/src/main/ets/pages/HostListPage.ets",
-      "entry/src/main/ets/services/ReleaseNotesRegistry.ets",
-      "entry/src/ohosTest/ets/test/GuideContentRegistry.test.ets",
-      "entry/src/test/ReleaseNotesRegistry.test.ets"
+      "entry/src/main/ets/components/AboutSettingsSheet.ets"
     ],
     "findings": [],
-    "reason": "The same independent reviewer verified that the current 1.1.4 popup contains only its 10 pages, while the unchanged 12-page 1.1.3 registry is available only through an explicit historical-version query. The settings count and unit/device assertions agree; final P0/P1/P2/P3 are zero."
+    "reason": "The same independent reviewer verified that the tutorial release-log component reloads the current 1.1.4 registry on appearance and when mode 4 is selected, clamps a reused legacy index to the current range, and does not accumulate or recurse. Final P0/P1/P2/P3 are zero."
   },
   "lastVerification": {
-    "baseline": "The current-only popup correction starts after 704ce35a9 on the user-authorized existing task branch.",
-    "testCompile": "PASS: default@OhosTestCompileArkTS, BUILD SUCCESSFUL in 15 s 92 ms",
-    "assembleHap": "PASS: signed HAP, BUILD SUCCESSFUL in 35 s 422 ms, SHA-256 ffe3f5917616b2fb54ac745c167e44d877c8c4f7ad286a67ecae08c4938e0e89",
+    "baseline": "The tutorial release-log refresh starts after c49f165f4 on the user-authorized existing task branch.",
+    "testCompile": "PASS: default@OhosTestCompileArkTS, BUILD SUCCESSFUL in 14 s 918 ms",
+    "assembleHap": "PASS: signed HAP, BUILD SUCCESSFUL in 38 s 510 ms, SHA-256 45cd9c64b7c3a28c6a606594943d3ae79ba27c3e2216d87042edcc891267eada",
     "targetedTests": "PASS compile: current 1.1.4 registry has 10 pages and excludes 1.1.3 IDs; explicit historical 1.1.3 registry retains 12 unchanged pages; final current page is welcome-1-1-4.",
     "arktsTests": "PASS through mandatory default@OhosTestCompileArkTS; separate ohosTest module task is unregistered (00306054).",
     "compliance": "PASS: Light open-source compliance and git diff --check",
-    "review": "PASS: /root/release_1_1_4_review found zero P0/P1/P2/P3 in the current-only popup correction.",
-    "deviceAcceptance": "PENDING: no HAP was installed or uninstalled; the 1.1.3-to-1.1.4 current-only popup, once-only marker and phone/Pad/PC layout require preserved-data device acceptance."
+    "review": "PASS: /root/release_1_1_4_review found zero P0/P1/P2/P3 in the tutorial release-log refresh.",
+    "deviceAcceptance": "PENDING: no HDC target is connected and no HAP was installed or uninstalled; the 1.1.3-to-1.1.4 current-only popup, reused high-index transition, once-only marker and phone/Pad/PC layout require preserved-data device acceptance."
   },
   "updated": "2026-08-29 Asia/Shanghai"
 }

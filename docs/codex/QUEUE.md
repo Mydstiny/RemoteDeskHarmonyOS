@@ -4,7 +4,7 @@ Updated: 2026-08-29 Asia/Shanghai
 
 ## Now
 
-1. Upgrade a preserved 1.1.3 install to 1.1.4 and verify the update popup appears once, contains only the 10 current 1.1.4 pages, starts with the 1.1.4 summary, contains no 1.1.3 page and ends with `welcome-1-1-4`; reopen it from Settings.
+1. Upgrade a preserved 1.1.3 install to 1.1.4 and verify the update popup appears once, contains only the 10 current 1.1.4 pages, starts with the 1.1.4 summary, contains no 1.1.3 page and ends with `welcome-1-1-4`; reopen it from Settings and verify a reused high legacy page index cannot restore pages 10–21 or flash a stale count.
 2. Validate the per-protocol wheel editor and direction matrix on device: change one protocol without affecting the other four; exercise all-normal/all-reverse; cover RDP/RustDesk/VNC physical mouse, physical touchpad and virtual touchpad; Moonlight physical and virtual input; SSH scrollback, alternate buffer and mouse tracking; confirm SFTP is unaffected.
 3. On a HarmonyOS PC viewer, validate the new RustDesk per-host flip popup against affected Windows peers: all three modes, absolute/relative mouse mapping, remote cursor, PIP/foreground restore, reconnect persistence and stale computer metadata resolving to a mobile peer.
 4. On the fixed HAP now installed at `192.168.3.235:38451`, verify login survives the historical migration `401`, exact-owner hashed data remains visible, local CRUD survives restart/offline use, and canonical/cloud recovery does not resurrect stale rows.
