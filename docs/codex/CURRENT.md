@@ -4,7 +4,7 @@
 
 - Task: `vnc-cursor-wheel-regression`
 - Branch/base: `codex/vnc-cursor-wheel-regression` from synchronized `main@0b8e5bf60`.
-- Phase: reviewed device acceptance for 1.1.3 10x wheel checkpoint `8e9ed4ea8`.
+- Phase: device acceptance complete; ready for PR/main closure.
 - Plan: `docs/codex/plans/2026-08-27-vnc-cursor-wheel-regression.md`
 
 ## Objective
@@ -53,11 +53,11 @@
 - Release follow-up review found stale SBOM provenance and incomplete 80-step regression coverage; both were remediated in `8e9ed4ea8`.
 - Final independent review of `5c20204b2..8e9ed4ea8` by `/root/vnc_wheel_review`: PASS, P0/P1/P2/P3 all zero.
 - Independent incremental review of the `bf397173e` ResourceTable recovery by `/root/resource_table_guard_review`: PASS, P0/P1/P2/P3 all zero.
+- Device acceptance: PASS; the user confirmed the reviewed 1.1.3 VNC wheel build is accepted on 2026-08-28.
 
 ## Next
 
-1. Install the reviewed 1.1.3 10x signed HAP on `192.168.3.236:40123` for user acceptance.
-2. After acceptance, open the PR, wait for the required check, merge and synchronize `main`.
+1. Open the PR, wait for the required check, merge and synchronize `main`.
 
 ## Blockers
 
