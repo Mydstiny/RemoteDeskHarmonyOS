@@ -80,29 +80,30 @@ export default function remoteCustomShortcutPolicyTest(): void {
       expect(remoteCustomShortcutKeyGroupForKeyCode(2055)).assertEqual('navigation');
     });
 
-    it('adapts_the_editor_grid_to_live_phone_pad_and_pc_viewports', 0, (): void => {
+    it('adapts_the_editor_layout_to_live_phone_pad_and_pc_viewports', 0, (): void => {
       const narrowPhone = remoteCustomShortcutEditorLayout(320, 720);
-      expect(narrowPhone.columnsTemplate).assertEqual('1fr 1fr 1fr');
-      expect(narrowPhone.gridHeight).assertEqual(176);
+      expect(narrowPhone.columns).assertEqual(3);
       expect(narrowPhone.cardPadding).assertEqual(10);
       expect(narrowPhone.itemGap).assertEqual(3);
+      expect(narrowPhone.itemHeight).assertEqual(30);
 
       const landscapePhone = remoteCustomShortcutEditorLayout(720, 390);
-      expect(landscapePhone.columnsTemplate).assertEqual('1fr 1fr 1fr 1fr 1fr 1fr');
-      expect(landscapePhone.gridHeight).assertEqual(104);
-      expect(landscapePhone.cardPadding).assertEqual(14);
+      expect(landscapePhone.columns).assertEqual(6);
+      expect(landscapePhone.cardPadding).assertEqual(10);
+      expect(landscapePhone.itemGap).assertEqual(3);
+      expect(landscapePhone.itemHeight).assertEqual(28);
 
       const splitPad = remoteCustomShortcutEditorLayout(520, 640);
-      expect(splitPad.columnsTemplate).assertEqual('1fr 1fr 1fr 1fr 1fr');
-      expect(splitPad.gridHeight).assertEqual(144);
+      expect(splitPad.columns).assertEqual(5);
+      expect(splitPad.itemHeight).assertEqual(30);
 
       const desktop = remoteCustomShortcutEditorLayout(820, 900);
-      expect(desktop.columnsTemplate).assertEqual('1fr 1fr 1fr 1fr 1fr 1fr');
-      expect(desktop.gridHeight).assertEqual(204);
+      expect(desktop.columns).assertEqual(6);
+      expect(desktop.cardPadding).assertEqual(14);
 
       const fallback = remoteCustomShortcutEditorLayout(Number.NaN, 0);
-      expect(fallback.columnsTemplate).assertEqual('1fr 1fr 1fr 1fr');
-      expect(fallback.gridHeight).assertEqual(144);
+      expect(fallback.columns).assertEqual(4);
+      expect(fallback.itemHeight).assertEqual(30);
     });
   });
 }

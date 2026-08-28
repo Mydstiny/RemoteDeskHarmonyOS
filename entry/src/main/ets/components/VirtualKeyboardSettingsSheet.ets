@@ -199,6 +199,25 @@ export struct VirtualKeyboardSettingsSheet {
     return remoteCustomShortcutEditorLayout(this.viewportWidth, this.viewportHeight);
   }
 
+  /** Keep vertical gesture ownership on the outer sheet Scroll. */
+  private customActionRows(): Array<Array<RemoteCustomShortcutKeyOption>> {
+    const items: Array<RemoteCustomShortcutKeyOption> =
+      remoteCustomShortcutKeyOptions(this.actionGroup, this.platform());
+    const columns: number = this.customEditorLayout().columns;
+    const rows: Array<Array<RemoteCustomShortcutKeyOption>> = [];
+    for (let index: number = 0; index < items.length; index += columns) {
+      rows.push(items.slice(index, Math.min(index + columns, items.length)));
+    }
+    return rows;
+  }
+
+  private customActionEmptyCells(itemCount: number): Array<number> {
+    const result: Array<number> = [];
+    const emptyCount: number = this.customEditorLayout().columns - itemCount;
+    for (let index: number = 0; index < emptyCount; index++) { result.push(index); }
+    return result;
+  }
+
   private beginEditor(shortcut: RemoteCustomShortcut | null = null): void {
     this.editorVisible = true;
     this.editingId = shortcut === null ? '' : shortcut.id;
@@ -357,11 +376,24 @@ export struct VirtualKeyboardSettingsSheet {
 
   @Builder
   private actionChoice(option: RemoteCustomShortcutKeyOption) {
-    Text(option.label).height(30).width('100%').fontSize(9).textAlign(TextAlign.Center)
+    Text(option.label).height(this.customEditorLayout().itemHeight).width('100%')
+      .fontSize(9).textAlign(TextAlign.Center)
       .borderRadius(7)
       .fontColor(this.actionKeyCode === option.keyCode ? '#FFFFFF' : this.text2())
       .backgroundColor(this.actionKeyCode === option.keyCode ? this.accentColor : this.card())
       .onClick((): void => { this.actionKeyCode = option.keyCode; })
+  }
+
+  @Builder
+  private customActionRow(options: Array<RemoteCustomShortcutKeyOption>) {
+    Row({ space: this.customEditorLayout().itemGap }) {
+      ForEach(options, (option: RemoteCustomShortcutKeyOption): void => {
+        Column() { this.actionChoice(option) }.layoutWeight(1)
+      }, (option: RemoteCustomShortcutKeyOption): string => option.keyCode.toString())
+      ForEach(this.customActionEmptyCells(options.length), (index: number): void => {
+        Blank().height(this.customEditorLayout().itemHeight).layoutWeight(1)
+      }, (index: number): string => index.toString())
+    }.width('100%')
   }
 
   @Builder
@@ -397,16 +429,11 @@ export struct VirtualKeyboardSettingsSheet {
         this.groupChoice('functions')
         this.groupChoice('navigation')
       }.width('100%')
-      Grid() {
-        ForEach(remoteCustomShortcutKeyOptions(this.actionGroup, this.platform()),
-          (option: RemoteCustomShortcutKeyOption): void => {
-            GridItem() { this.actionChoice(option) }
-          }, (option: RemoteCustomShortcutKeyOption): string => option.keyCode.toString())
-      }.columnsTemplate(this.customEditorLayout().columnsTemplate)
-        .rowsGap(this.customEditorLayout().itemGap)
-        .columnsGap(this.customEditorLayout().itemGap)
-        .width('100%').height(this.customEditorLayout().gridHeight)
-        .scrollBar(BarState.Auto)
+      Column({ space: this.customEditorLayout().itemGap }) {
+        ForEach(this.customActionRows(),
+          (row: Array<RemoteCustomShortcutKeyOption>): void => { this.customActionRow(row) },
+          (row: Array<RemoteCustomShortcutKeyOption>): string => row[0].keyCode.toString())
+      }.width('100%')
       Row() {
         Text(this.draftLabel().length > 0 ? this.draftLabel() : '请选择修饰键和主键')
           .fontSize(11).fontColor(this.draftLabel().length > 0 ? this.text() : this.danger())
