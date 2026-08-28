@@ -582,6 +582,11 @@ import {
   shouldForwardContinuousRemoteWheelSample
 } from '../services/RemoteWheelPolicy';
 import {
+  RDP_REVERSE_WHEEL_KEY,
+  RUSTDESK_REVERSE_WHEEL_KEY,
+  VNC_REVERSE_WHEEL_KEY
+} from '../services/RemoteWheelPreferencePolicy';
+import {
   accumulateVncPhysicalTouchpadWheel,
   resetVncPhysicalWheelState,
   resolveVncPhysicalWheelRoute,
@@ -909,8 +914,12 @@ struct RemoteDesktop {
   @StorageLink('rustdeskShowLocalCursor') rustdeskShowLocalCursor: boolean = true;
   @StorageLink('rustdeskBrowseMode') rustdeskBrowseMode: boolean = false;
   @StorageLink('rustdeskRelativeMouseMode') rustdeskRelativeMouseMode: boolean = false;
-  // Legacy storage key; now the shared RDP/RustDesk/VNC wheel direction.
-  @StorageLink('rustdeskReverseWheel') rustdeskReverseWheel: boolean = false;
+  @StorageLink(RDP_REVERSE_WHEEL_KEY) @Watch('onRemoteWheelPreferenceChange')
+  rdpReverseWheel: boolean = false;
+  @StorageLink(RUSTDESK_REVERSE_WHEEL_KEY) @Watch('onRemoteWheelPreferenceChange')
+  rustdeskReverseWheel: boolean = false;
+  @StorageLink(VNC_REVERSE_WHEEL_KEY) @Watch('onRemoteWheelPreferenceChange')
+  vncReverseWheel: boolean = false;
   @StorageLink('rustdeskSwapMouseButtons') rustdeskSwapMouseButtons: boolean = false;
   @StorageLink('rustdeskTouchpadSpeed') rustdeskTouchpadSpeed: number = 1.0;
   @StorageLink('virtualMouseStyle') virtualMouseStyle: string = 'arrow';
@@ -3739,6 +3748,22 @@ struct RemoteDesktop {
     return host === null ? '' : host.protocol;
   }
 
+  private reverseWheelForCurrentProtocol(): boolean {
+    const protocol: string = this.currentProtocolName();
+    if (protocol === 'rdp') { return this.rdpReverseWheel; }
+    if (protocol === 'rustdesk') { return this.rustdeskReverseWheel; }
+    if (protocol === 'vnc') { return this.vncReverseWheel; }
+    return false;
+  }
+
+  private onRemoteWheelPreferenceChange(): void {
+    this.touchWheelRemainder = 0;
+    this.lastTouchWheelMs = 0;
+    this.physicalWheelRemainder = 0;
+    this.vncPhysicalWheelState = resetVncPhysicalWheelState();
+    this.physicalTouchpadWheelState = resetPhysicalTouchpadWheelState();
+  }
+
   private isVncSession(): boolean {
     return this.pendingHost !== null && this.pendingHost.protocol === 'vnc' &&
       this.pendingVncHost !== null;
@@ -4607,8 +4632,8 @@ struct RemoteDesktop {
   }
 
   private setRdpReverseWheelPreference(enabled: boolean): void {
-    this.rustdeskReverseWheel = enabled;
-    this.persistSessionPref('rustdeskReverseWheel', enabled);
+    this.rdpReverseWheel = enabled;
+    this.persistSessionPref(RDP_REVERSE_WHEEL_KEY, enabled);
   }
 
   private showRdpReconnectPreferenceToast(label: string): void {
@@ -5941,10 +5966,23 @@ struct RemoteDesktop {
     this.persistSessionPref('rustdeskRelativeMouseMode', on);
   }
 
-  /** Retains the legacy key while applying wheel direction to every remote protocol. */
-  private setRemoteReverseWheel(on: boolean): void {
+  private setRustDeskReverseWheel(on: boolean): void {
     this.rustdeskReverseWheel = on;
-    this.persistSessionPref('rustdeskReverseWheel', on);
+    this.persistSessionPref(RUSTDESK_REVERSE_WHEEL_KEY, on);
+  }
+
+  private setCurrentProtocolReverseWheel(on: boolean): void {
+    const protocol: string = this.currentProtocolName();
+    if (protocol === 'rdp') {
+      this.setRdpReverseWheelPreference(on);
+      return;
+    }
+    if (protocol === 'vnc') {
+      this.vncReverseWheel = on;
+      this.persistSessionPref(VNC_REVERSE_WHEEL_KEY, on);
+      return;
+    }
+    this.setRustDeskReverseWheel(on);
   }
 
   private setRustDeskSwapMouseButtons(on: boolean): void {
@@ -6055,7 +6093,7 @@ struct RemoteDesktop {
         this.setRustDeskRelativeMouseMode(on);
       },
       onToggleReverseWheel: (on: boolean): void => {
-        this.setRemoteReverseWheel(on);
+        this.setCurrentProtocolReverseWheel(on);
       },
       onToggleSwapMouseButtons: (on: boolean): void => {
         this.setRustDeskSwapMouseButtons(on);
@@ -16030,7 +16068,8 @@ struct RemoteDesktop {
     }
     this.lastTouchWheelMs = now;
     const src = this.toSourceSpace(this.remoteCursorX, this.remoteCursorY);
-    const directedDelta: number = applyRemoteWheelDirection(delta, this.rustdeskReverseWheel);
+    const reverseWheel: boolean = this.reverseWheelForCurrentProtocol();
+    const directedDelta: number = applyRemoteWheelDirection(delta, reverseWheel);
     const sendDelta: number = wheelProtocol === 'vnc' ?
       amplifyVncWheelOutputDelta(directedDelta) : directedDelta;
     this.loader.sendMouseWheel(this.sessionId, src['x'], src['y'], sendDelta);
@@ -16039,7 +16078,7 @@ struct RemoteDesktop {
       hilog.info(RD_DOMAIN, RD_TAG,
         'touchpad-scroll count=' + sendIndex.toString() +
           ' delta=' + sendDelta.toString() + ' stepDy=' + stepDy.toString() +
-          ' reverse=' + (this.rustdeskReverseWheel ? '1' : '0') +
+          ' reverse=' + (reverseWheel ? '1' : '0') +
           ' remote=' + this.remoteCursorX.toString() + ',' + this.remoteCursorY.toString());
     }
   }
@@ -17429,7 +17468,8 @@ struct RemoteDesktop {
       this.queueMouseMove(mapped.x, mapped.y);
       this.flushMouseMove();
       const src: Record<string, number> = this.toSourceSpace(mapped.x, mapped.y);
-      const directedDelta: number = applyRemoteWheelDirection(delta, this.rustdeskReverseWheel);
+      const reverseWheel: boolean = this.reverseWheelForCurrentProtocol();
+      const directedDelta: number = applyRemoteWheelDirection(delta, reverseWheel);
       const sendDelta: number = vncSession ?
         amplifyVncWheelOutputDelta(directedDelta) : directedDelta;
       this.loader.sendMouseWheel(this.sessionId, src['x'], src['y'], sendDelta);
@@ -17437,7 +17477,7 @@ struct RemoteDesktop {
       if (sendIndex <= 12 || sendIndex % 50 === 0) {
         hilog.info(RD_DOMAIN, RD_TAG, 'physical-wheel count=' + sendIndex.toString() +
           ' raw=' + rawVertical.toString() + ' delta=' + sendDelta.toString() +
-          ' reverse=' + (this.rustdeskReverseWheel ? '1' : '0') +
+          ' reverse=' + (reverseWheel ? '1' : '0') +
           ' sourceTool=' + event.sourceTool.toString() +
           ' action=' + event.action.toString() +
           ' continuous=' + (vncContinuousPhysicalAxis ? '1' : '0') +
@@ -17949,7 +17989,7 @@ struct RemoteDesktop {
             diagnosticsEnabled: this.rdpShowDiagnostics,
             displayScaleMode: this.remoteDisplayScaleMode,
             canvasZoomEnabled: this.canvasGestureZoomEnabled,
-            reverseWheel: this.rustdeskReverseWheel,
+            reverseWheel: this.rdpReverseWheel,
             resolutionId: normalizeRdpResolutionId(this.rdpDesktopResolutionId, this.rdpDesktopPreset),
             colorDepth: normalizeRdpSessionColorDepth(this.rdpColorDepth),
             audioEnabled: this.rdpAudioEnabled,
@@ -18009,7 +18049,7 @@ struct RemoteDesktop {
           showLocalCursor: this.rustdeskShowLocalCursor,
           browseMode: this.rustdeskBrowseMode,
           relativeMouseMode: this.rustdeskRelativeMouseMode,
-          reverseWheel: this.rustdeskReverseWheel,
+          reverseWheel: this.reverseWheelForCurrentProtocol(),
           swapMouseButtons: this.rustdeskSwapMouseButtons,
           touchpadSpeed: this.rustdeskTouchpadSpeed,
           rustDeskPhoneTarget: this.isRustDeskPhoneSession(),

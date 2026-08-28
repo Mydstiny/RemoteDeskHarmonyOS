@@ -86,6 +86,8 @@ import {
 } from '../services/SessionContextualGuidePolicy';
 import { GUIDE_ALWAYS_VISIBLE_STORAGE_KEY } from '../services/GuideVisibilityPolicy';
 import { GuideVisibilityService } from '../services/GuideVisibilityService';
+import { applyRemoteWheelDirection } from '../services/RemoteWheelPolicy';
+import { SSH_REVERSE_WHEEL_KEY } from '../services/RemoteWheelPreferencePolicy';
 import { showLockGate, lockGateErrorMessage } from '../components/LockGate';
 import { SshXtermSurface, XtermOutputBuffer } from '../components/SshXtermSurface';
 import { SshTerminalSearchBar } from '../components/ssh/search/SshTerminalSearchBar';
@@ -720,6 +722,7 @@ struct SshTerminal {
   @StorageProp(GUIDE_ALWAYS_VISIBLE_STORAGE_KEY) guideAlwaysVisible: boolean = false;
   @StorageProp('remoteDesktopBgFlag') @Watch('onSshAbilityBackgroundChange')
   appBackgroundSignal: boolean = false;
+  @StorageLink(SSH_REVERSE_WHEEL_KEY) sshReverseWheel: boolean = false;
   @LocalStorageLink('sessionWindowBackground') @Watch('onSshAbilityBackgroundChange')
   sessionWindowBackground: boolean = false;
   @LocalStorageLink('sessionWindowFullscreen') sessionWindowFullscreen: boolean = false;
@@ -5492,6 +5495,7 @@ struct SshTerminal {
       profileScrollback: profile.scrollback,
       profileBellStyle: profile.bellStyle,
       profileCopyOnSelect: profile.copyOnSelect,
+      reverseWheel: this.sshReverseWheel,
       viewportHeight: this.sshWorkspaceViewportHeightForTab(tab.tabId, viewportHeight),
       outputBuffer: this.xtermOutputBufferForHost(tab.hostId),
       outputSequence: this.termOutputSequence,
@@ -6936,6 +6940,7 @@ struct SshTerminal {
       const isTouchPad: boolean = event.sourceTool === SourceTool.TOUCHPAD;
       let lines: number = isTouchPad ? Math.round(axisY / Math.max(1, this.cellHvp)) : (axisY > 0 ? 3 : -3);
       if (lines === 0) { lines = axisY > 0 ? 1 : -1; }
+      lines = applyRemoteWheelDirection(lines, this.sshReverseWheel);
       this.requestTerminalExternalScroll(lines);
       return;
     }
@@ -7022,7 +7027,8 @@ struct SshTerminal {
 
   private handleTerminalAxis = (event: AxisEvent): void => {
     if (this.selectMode || this.terminalMouseTracking === 0) { return; }
-    const raw: number = event.getVerticalAxisValue();
+    const raw: number = applyRemoteWheelDirection(
+      event.getVerticalAxisValue(), this.sshReverseWheel);
     if (!Number.isFinite(raw) || raw === 0) { return; }
     const position: number[] = this.terminalMousePosition(event.x as number, event.y as number);
     const wheelButton: number = raw < 0 ? 64 : 65;

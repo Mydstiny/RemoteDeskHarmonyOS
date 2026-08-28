@@ -30,6 +30,7 @@ import {
 } from '../services/SettingsSheetRoutePolicy';
 import { Palette, buildDark, buildLight } from '../common/Theme';
 import { VncSheetScaffold } from './vnc/VncSheetScaffold';
+import { VNC_REVERSE_WHEEL_KEY } from '../services/RemoteWheelPreferencePolicy';
 
 /**
  * A leaf VNC settings surface hosted by HostListPage's single bindSheet.
@@ -43,14 +44,14 @@ import { VncSheetScaffold } from './vnc/VncSheetScaffold';
 export struct VncSettingsSheet {
   @StorageProp('currentTheme') theme: string = 'light';
   @StorageProp('accentColor') accentColor: string = '#007DFF';
-  @StorageLink('rustdeskReverseWheel') sharedReverseWheel: boolean = false;
+  @StorageLink(VNC_REVERSE_WHEEL_KEY) vncReverseWheelPreference: boolean = false;
   @Prop mode: number = SETTINGS_SHEET_VNC_CONNECTION;
   onClose: () => void = (): void => {};
   onOpenHostManager: () => void = (): void => {};
   onOpenGatewayManager: () => void = (): void => {};
   onOpenTrustManager: () => void = (): void => {};
   onSaved: () => void = (): void => {};
-  onReverseWheelSaved: (reverse: boolean) => void = (_reverse: boolean): void => {};
+  onReverseWheelSaved: (reverse: boolean) => boolean = (_reverse: boolean): boolean => true;
   onDirtyChanged: (dirty: boolean) => void = (_dirty: boolean): void => {};
 
   @State defaultTransport: VncTransport = 'direct_tcp';
@@ -139,7 +140,7 @@ export struct VncSettingsSheet {
     this.jpegQuality = values.jpegQuality;
     this.localCursorMode = values.localCursorMode;
     this.touchpadSpeed = values.touchpadSpeed;
-    this.reverseWheel = this.sharedReverseWheel;
+    this.reverseWheel = this.vncReverseWheelPreference;
     this.swapMouseButtons = values.swapMouseButtons;
     this.diagnosticsExpanded = values.diagnosticsExpanded;
     this.diagnosticsRefreshMs = values.diagnosticsRefreshMs;
@@ -268,15 +269,29 @@ export struct VncSettingsSheet {
   private async persistSettings(): Promise<void> {
     this.saving = true;
     try {
-      const result = await this.settings.save(this.settingsValues());
+      // VncSettingsService emits synchronously and load() replaces this draft,
+      // so capture the requested device-local value before saving. Keep the
+      // legacy payload field unchanged: it is migration input for old builds,
+      // not the authoritative per-device preference.
+      const requestedReverseWheel: boolean = this.reverseWheel;
+      const values: VncSettingsValues = this.settingsValues();
+      values.reverseWheel = this.settings.get().reverseWheel;
+      const result = await this.settings.save(values);
       if (!result.ok) {
         this.errorText = result.message;
         return;
       }
+      if (!this.onReverseWheelSaved(requestedReverseWheel)) {
+        this.errorText = 'VNC 设置已保存，但滚轮方向偏好写入失败，请重试';
+        this.reverseWheel = requestedReverseWheel;
+        this.dirty = true;
+        this.onDirtyChanged(true);
+        return;
+      }
+      this.vncReverseWheelPreference = requestedReverseWheel;
+      this.reverseWheel = requestedReverseWheel;
       this.dirty = false;
       this.onDirtyChanged(false);
-      this.sharedReverseWheel = this.reverseWheel;
-      this.onReverseWheelSaved(this.reverseWheel);
       promptAction.showToast({ message: 'VNC 设置已保存', duration: 1500 });
       this.onSaved();
     } finally {
@@ -590,7 +605,7 @@ export struct VncSettingsSheet {
           this.touchpadSpeed = Math.round(value); this.markDirty();
         })
         .width('100%').margin({ bottom: 8 })
-      this.toggle('反转滚轮方向', '与“个性化 > 远程滚轮方向”共用', this.reverseWheel,
+      this.toggle('反转滚轮方向', '与“显示与交互 > 远程滚轮方向”中的 VNC 共用', this.reverseWheel,
         (value: boolean): void => { this.reverseWheel = value; this.markDirty(); })
       this.toggle('交换左右键', '左键与右键互换，只作用于 VNC', this.swapMouseButtons,
         (value: boolean): void => { this.swapMouseButtons = value; this.markDirty(); })

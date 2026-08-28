@@ -35,6 +35,7 @@ export const SETTINGS_SHEET_VIRTUAL_KEYBOARD_SHORTCUTS: number = 34;
 export const SETTINGS_SHEET_VIRTUAL_KEYBOARD_FUNCTIONS: number = 35;
 export const SETTINGS_SHEET_VIRTUAL_KEYBOARD_CUSTOM: number = 36;
 export const SETTINGS_SHEET_SECRET_VISIBILITY: number = 37;
+export const SETTINGS_SHEET_REMOTE_WHEEL_DIRECTION: number = 38;
 
 export const SETTINGS_PANEL_DISMISS_TO_LEAF_OPEN_MS: number = 360;
 
@@ -108,6 +109,10 @@ export function diagnosticLogSettingsLeafSheetHeight(mode: number): number {
 
 export function secretVisibilitySettingsLeafSheetHeight(mode: number): number {
   return mode === SETTINGS_SHEET_SECRET_VISIBILITY ? 760 : 0;
+}
+
+export function remoteWheelDirectionSettingsLeafSheetHeight(mode: number): number {
+  return mode === SETTINGS_SHEET_REMOTE_WHEEL_DIRECTION ? 680 : 0;
 }
 
 export function virtualKeyboardSettingsRouteSpecs(): VirtualKeyboardSettingsRouteSpec[] {

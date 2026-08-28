@@ -3,6 +3,7 @@ import {
   SETTINGS_SHEET_ACCOUNT,
   SETTINGS_SHEET_DIAGNOSTIC_LOG,
   SETTINGS_SHEET_SECRET_VISIBILITY,
+  SETTINGS_SHEET_REMOTE_WHEEL_DIRECTION,
   SETTINGS_SHEET_VIRTUAL_KEYBOARD,
   SETTINGS_SHEET_VIRTUAL_KEYBOARD_BEHAVIOR,
   SETTINGS_SHEET_VIRTUAL_KEYBOARD_CUSTOM,
@@ -31,6 +32,7 @@ import {
   settingsLeafOpenDelayMs,
   diagnosticLogSettingsLeafSheetHeight,
   secretVisibilitySettingsLeafSheetHeight,
+  remoteWheelDirectionSettingsLeafSheetHeight,
   isVirtualKeyboardSettingsMode,
   moonlightSettingsLeafSheetHeight,
   moonlightSettingsRouteSpec,
@@ -71,6 +73,14 @@ export default function settingsSheetRoutePolicyTest() {
         .assertEqual(760);
       expect(secretVisibilitySettingsLeafSheetHeight(SETTINGS_SHEET_ACCOUNT)).assertEqual(0);
       expect(moonlightSettingsRouteSpec(SETTINGS_SHEET_SECRET_VISIBILITY)).assertNull();
+    });
+
+    it('allocates_one_per_protocol_remote_wheel_editor_leaf', 0, (): void => {
+      expect(SETTINGS_SHEET_REMOTE_WHEEL_DIRECTION).assertEqual(38);
+      expect(remoteWheelDirectionSettingsLeafSheetHeight(
+        SETTINGS_SHEET_REMOTE_WHEEL_DIRECTION)).assertEqual(680);
+      expect(remoteWheelDirectionSettingsLeafSheetHeight(SETTINGS_SHEET_ACCOUNT)).assertEqual(0);
+      expect(moonlightSettingsRouteSpec(SETTINGS_SHEET_REMOTE_WHEEL_DIRECTION)).assertNull();
     });
 
     it('allocates_five_independent_virtual_keyboard_leaves', 0, (): void => {

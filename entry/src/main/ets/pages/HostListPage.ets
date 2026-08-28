@@ -193,6 +193,7 @@ import {
 import { VncSettingsService } from '../services/VncSettingsService';
 import { VncSettingsSheet } from '../components/VncSettingsSheet';
 import { SecretVisibilitySettingsSheet } from '../components/SecretVisibilitySettingsSheet';
+import { RemoteWheelDirectionSettingsSheet } from '../components/RemoteWheelDirectionSettingsSheet';
 import { VncCertificateTrustManagerSheet } from '../components/VncCertificateTrustManagerSheet';
 import {
   EditableSecretKind,
@@ -412,6 +413,7 @@ import {
   SETTINGS_SHEET_ACCOUNT,
   SETTINGS_SHEET_ACCENT_COLOR,
   SETTINGS_SHEET_DIAGNOSTIC_LOG,
+  SETTINGS_SHEET_REMOTE_WHEEL_DIRECTION,
   SETTINGS_SHEET_SECRET_VISIBILITY,
   SETTINGS_SHEET_FEEDBACK,
   SETTINGS_SHEET_HALO_COLOR,
@@ -451,6 +453,7 @@ import {
   VirtualKeyboardSettingsSection,
   VirtualKeyboardSettingsRouteSpec,
   diagnosticLogSettingsLeafSheetHeight,
+  remoteWheelDirectionSettingsLeafSheetHeight,
   secretVisibilitySettingsLeafSheetHeight,
   isVirtualKeyboardSettingsMode,
   moonlightSettingsLeafSheetHeight,
@@ -461,6 +464,21 @@ import {
   vncSettingsLeafSheetHeight
 } from '../services/SettingsSheetRoutePolicy';
 import { protocolIcon } from '../services/ProtocolIconPolicy';
+import {
+  MOONLIGHT_REVERSE_WHEEL_KEY,
+  RDP_REVERSE_WHEEL_KEY,
+  REMOTE_WHEEL_PREFERENCE_VERSION,
+  REMOTE_WHEEL_PREFERENCE_VERSION_KEY,
+  RUSTDESK_REVERSE_WHEEL_KEY,
+  SSH_REVERSE_WHEEL_KEY,
+  VNC_REVERSE_WHEEL_KEY,
+  RemoteWheelPreferenceMigration,
+  RemoteWheelPreferencePresence,
+  RemoteWheelPreferences,
+  migrateRemoteWheelPreferences,
+  remoteWheelSelectionSummary,
+  withRemoteWheelPreference
+} from '../services/RemoteWheelPreferencePolicy';
 import {
   SETTINGS_APP_BUNDLE_NAME,
   SETTINGS_BROWSER_VIEW_ACTION,
@@ -1063,7 +1081,11 @@ struct HostListPage {
   @StorageLink('rustdeskViewScaleMode') rustdeskViewScaleMode: string = 'fit';
   @StorageLink('rustdeskShowLocalCursor') rustdeskShowLocalCursor: boolean = true;
   @StorageLink('rustdeskRelativeMouseMode') rustdeskRelativeMouseMode: boolean = false;
-  @StorageLink('rustdeskReverseWheel') rustdeskReverseWheel: boolean = false;
+  @StorageLink(RDP_REVERSE_WHEEL_KEY) rdpReverseWheel: boolean = false;
+  @StorageLink(RUSTDESK_REVERSE_WHEEL_KEY) rustdeskReverseWheel: boolean = false;
+  @StorageLink(SSH_REVERSE_WHEEL_KEY) sshReverseWheel: boolean = false;
+  @StorageLink(VNC_REVERSE_WHEEL_KEY) vncReverseWheel: boolean = false;
+  @StorageLink(MOONLIGHT_REVERSE_WHEEL_KEY) moonlightReverseWheel: boolean = false;
   @StorageLink('rustdeskSwapMouseButtons') rustdeskSwapMouseButtons: boolean = false;
   @StorageLink('rustdeskTouchpadSpeed') rustdeskTouchpadSpeed: number = 1.0;
   @StorageLink('rustdeskControlMode') rustdeskControlMode: number = 0; // 0=触控板, 1=直接触控, 2=键鼠
@@ -1768,6 +1790,8 @@ struct HostListPage {
         prefs.getSync(PERSONALIZATION_DEFAULTS_FRESH_INSTALL_KEY,
           AppStorage.get<boolean>(PERSONALIZATION_DEFAULTS_FRESH_INSTALL_KEY) ?? false) as boolean,
         this.isDesktopDevice);
+      const savedRemoteWheelPreferences: RemoteWheelPreferences =
+        this.restoreRemoteWheelPreferences(prefs);
       // 核心外观设置
       const savedTheme: string = prefs.getSync('currentTheme', '') as string;
       const savedAccent: string = prefs.getSync('accentColor', '') as string;
@@ -1886,7 +1910,6 @@ struct HostListPage {
       const savedRustDeskViewScaleMode: string = prefs.getSync('rustdeskViewScaleMode', 'fit') as string;
       const savedRustDeskShowLocalCursor: boolean = prefs.getSync('rustdeskShowLocalCursor', true) as boolean;
       const savedRustDeskRelativeMouseMode: boolean = prefs.getSync('rustdeskRelativeMouseMode', false) as boolean;
-      const savedRustDeskReverseWheel: boolean = prefs.getSync('rustdeskReverseWheel', false) as boolean;
       const savedRustDeskSwapMouseButtons: boolean = prefs.getSync('rustdeskSwapMouseButtons', false) as boolean;
       const savedRustDeskTouchpadSpeed: number = prefs.getSync('rustdeskTouchpadSpeed', 1.0) as number;
       const savedControlMode: number =
@@ -1976,7 +1999,11 @@ struct HostListPage {
           savedRustDeskViewScaleMode : 'fit';
       this.rustdeskShowLocalCursor = savedRustDeskShowLocalCursor;
       this.rustdeskRelativeMouseMode = savedRustDeskRelativeMouseMode;
-      this.rustdeskReverseWheel = savedRustDeskReverseWheel;
+      this.rdpReverseWheel = savedRemoteWheelPreferences.rdp;
+      this.rustdeskReverseWheel = savedRemoteWheelPreferences.rustdesk;
+      this.sshReverseWheel = savedRemoteWheelPreferences.ssh;
+      this.vncReverseWheel = savedRemoteWheelPreferences.vnc;
+      this.moonlightReverseWheel = savedRemoteWheelPreferences.moonlight;
       this.rustdeskSwapMouseButtons = savedRustDeskSwapMouseButtons;
       this.rustdeskTouchpadSpeed =
         Math.max(0.4, Math.min(2.2, savedRustDeskTouchpadSpeed > 0 ? savedRustDeskTouchpadSpeed : 1.0));
@@ -2022,7 +2049,11 @@ struct HostListPage {
       AppStorage.setOrCreate('rustdeskViewScaleMode', this.rustdeskViewScaleMode);
       AppStorage.setOrCreate('rustdeskShowLocalCursor', this.rustdeskShowLocalCursor);
       AppStorage.setOrCreate('rustdeskRelativeMouseMode', this.rustdeskRelativeMouseMode);
-      AppStorage.setOrCreate('rustdeskReverseWheel', this.rustdeskReverseWheel);
+      AppStorage.setOrCreate(RDP_REVERSE_WHEEL_KEY, this.rdpReverseWheel);
+      AppStorage.setOrCreate(RUSTDESK_REVERSE_WHEEL_KEY, this.rustdeskReverseWheel);
+      AppStorage.setOrCreate(SSH_REVERSE_WHEEL_KEY, this.sshReverseWheel);
+      AppStorage.setOrCreate(VNC_REVERSE_WHEEL_KEY, this.vncReverseWheel);
+      AppStorage.setOrCreate(MOONLIGHT_REVERSE_WHEEL_KEY, this.moonlightReverseWheel);
       AppStorage.setOrCreate('rustdeskSwapMouseButtons', this.rustdeskSwapMouseButtons);
       AppStorage.setOrCreate('rustdeskTouchpadSpeed', this.rustdeskTouchpadSpeed);
       AppStorage.setOrCreate('rustdeskControlMode', this.rustdeskControlMode);
@@ -10209,6 +10240,79 @@ struct HostListPage {
     }
   }
 
+  private restoreRemoteWheelPreferences(
+    prefs: preferences.Preferences
+  ): RemoteWheelPreferences {
+    const current: RemoteWheelPreferences = {
+      rdp: prefs.getSync(RDP_REVERSE_WHEEL_KEY, false) as boolean,
+      rustdesk: prefs.getSync(RUSTDESK_REVERSE_WHEEL_KEY, false) as boolean,
+      ssh: prefs.getSync(SSH_REVERSE_WHEEL_KEY, false) as boolean,
+      vnc: prefs.getSync(VNC_REVERSE_WHEEL_KEY, false) as boolean,
+      moonlight: prefs.getSync(MOONLIGHT_REVERSE_WHEEL_KEY, false) as boolean
+    };
+    const present: RemoteWheelPreferencePresence = {
+      rdp: prefs.hasSync(RDP_REVERSE_WHEEL_KEY),
+      rustdesk: prefs.hasSync(RUSTDESK_REVERSE_WHEEL_KEY),
+      ssh: prefs.hasSync(SSH_REVERSE_WHEEL_KEY),
+      vnc: prefs.hasSync(VNC_REVERSE_WHEEL_KEY),
+      moonlight: prefs.hasSync(MOONLIGHT_REVERSE_WHEEL_KEY)
+    };
+    const migration: RemoteWheelPreferenceMigration = migrateRemoteWheelPreferences(
+      current, present,
+      prefs.getSync(REMOTE_WHEEL_PREFERENCE_VERSION_KEY, 0) as number,
+      this.vncSettings.get().reverseWheel);
+    if (migration.shouldPersist) {
+      try {
+        prefs.putSync(RDP_REVERSE_WHEEL_KEY, migration.values.rdp);
+        prefs.putSync(RUSTDESK_REVERSE_WHEEL_KEY, migration.values.rustdesk);
+        prefs.putSync(SSH_REVERSE_WHEEL_KEY, migration.values.ssh);
+        prefs.putSync(VNC_REVERSE_WHEEL_KEY, migration.values.vnc);
+        prefs.putSync(MOONLIGHT_REVERSE_WHEEL_KEY, migration.values.moonlight);
+        prefs.putSync(REMOTE_WHEEL_PREFERENCE_VERSION_KEY, migration.version);
+        prefs.flushSync();
+      } catch (_error) { /* Runtime values still preserve the legacy behavior. */ }
+    }
+    return migration.values;
+  }
+
+  private remoteWheelPreferences(): RemoteWheelPreferences {
+    return {
+      rdp: this.rdpReverseWheel,
+      rustdesk: this.rustdeskReverseWheel,
+      ssh: this.sshReverseWheel,
+      vnc: this.vncReverseWheel,
+      moonlight: this.moonlightReverseWheel
+    };
+  }
+
+  private saveRemoteWheelPreferences(values: RemoteWheelPreferences): boolean {
+    try {
+      const prefs: preferences.Preferences = preferences.getPreferencesSync(
+        getContext(this), { name: 'RemoteDesktopAppPrefs' });
+      prefs.putSync(RDP_REVERSE_WHEEL_KEY, values.rdp);
+      prefs.putSync(RUSTDESK_REVERSE_WHEEL_KEY, values.rustdesk);
+      prefs.putSync(SSH_REVERSE_WHEEL_KEY, values.ssh);
+      prefs.putSync(VNC_REVERSE_WHEEL_KEY, values.vnc);
+      prefs.putSync(MOONLIGHT_REVERSE_WHEEL_KEY, values.moonlight);
+      prefs.putSync(REMOTE_WHEEL_PREFERENCE_VERSION_KEY, REMOTE_WHEEL_PREFERENCE_VERSION);
+      prefs.flushSync();
+    } catch (_error) {
+      return false;
+    }
+    this.rdpReverseWheel = values.rdp;
+    this.rustdeskReverseWheel = values.rustdesk;
+    this.sshReverseWheel = values.ssh;
+    this.vncReverseWheel = values.vnc;
+    this.moonlightReverseWheel = values.moonlight;
+    return true;
+  }
+
+  private saveProtocolReverseWheel(protocol: 'rdp' | 'rustdesk' | 'ssh' | 'vnc' | 'moonlight',
+    reversed: boolean): boolean {
+    return this.saveRemoteWheelPreferences(withRemoteWheelPreference(
+      this.remoteWheelPreferences(), protocol, reversed));
+  }
+
   private reportPreferencePersistence(localSaved: boolean,
     cloudSaved: boolean = true): void {
     if (localSaved && cloudSaved) { return; }
@@ -10650,12 +10754,6 @@ struct HostListPage {
   private saveRustDeskFilePasteEnabled(on: boolean): void {
     this.rustdeskFilePasteEnabled = on;
     this.persistPref('rustdeskFilePasteEnabled', this.rustdeskFilePasteEnabled);
-  }
-
-  /** Retain the legacy RustDesk key so existing wheel preferences migrate without data loss. */
-  private saveRemoteReverseWheel(on: boolean): void {
-    this.rustdeskReverseWheel = on;
-    this.persistPref('rustdeskReverseWheel', on);
   }
 
   private saveSshInputMode(mode: number): void {
@@ -13884,6 +13982,9 @@ struct HostListPage {
     const secretVisibilityHeight: number =
       secretVisibilitySettingsLeafSheetHeight(this.settingsLeafSheetMode);
     if (secretVisibilityHeight > 0) { return secretVisibilityHeight; }
+    const wheelDirectionHeight: number =
+      remoteWheelDirectionSettingsLeafSheetHeight(this.settingsLeafSheetMode);
+    if (wheelDirectionHeight > 0) { return wheelDirectionHeight; }
     const moonlightHeight: number = moonlightSettingsLeafSheetHeight(this.settingsLeafSheetMode);
     if (moonlightHeight > 0) { return moonlightHeight; }
     const vncHeight: number = vncSettingsLeafSheetHeight(this.settingsLeafSheetMode);
@@ -13926,6 +14027,17 @@ struct HostListPage {
         onSave: (policy: SecretPresentationPolicy): boolean =>
           this.saveSecretPresentationPolicy(policy)
       })
+    } else if (this.settingsLeafSheetMode === SETTINGS_SHEET_REMOTE_WHEEL_DIRECTION) {
+      RemoteWheelDirectionSettingsSheet({
+        initialRdp: this.rdpReverseWheel,
+        initialRustDesk: this.rustdeskReverseWheel,
+        initialSsh: this.sshReverseWheel,
+        initialVnc: this.vncReverseWheel,
+        initialMoonlight: this.moonlightReverseWheel,
+        onClose: (): void => { this.closeSettingsLeafSheet(); },
+        onSave: (values: RemoteWheelPreferences): boolean =>
+          this.saveRemoteWheelPreferences(values)
+      })
     } else if (this.settingsLeafSheetMode === SETTINGS_SHEET_DIAGNOSTIC_LOG) {
       DiagnosticCaptureSettingsSheet({
         onClose: (): void => { this.closeSettingsLeafSheet(); }
@@ -13961,9 +14073,8 @@ struct HostListPage {
         onOpenGatewayManager: (): void => { this.openVncGatewayManagerFromSettings(); },
         onOpenTrustManager: (): void => { this.openVncTrustManagerFromSettings(); },
         onSaved: (): void => { this.refreshCryptoStatus(); },
-        onReverseWheelSaved: (reverse: boolean): void => {
-          this.saveRemoteReverseWheel(reverse);
-        },
+        onReverseWheelSaved: (reverse: boolean): boolean =>
+          this.saveProtocolReverseWheel('vnc', reverse),
         onDirtyChanged: (dirty: boolean): void => { this.vncSettingsLeafDirty = dirty; }
       })
     } else {
@@ -17054,33 +17165,22 @@ struct HostListPage {
   }
 
   @Builder remoteWheelDirectionRow() {
-    Column() {
-      Row() {
-        Row() { Image($r('app.media.icon_desktop')).width(22).height(22).fillColor(this.pal().text3) }
-          .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
-        Column() {
-          Text('远程滚轮方向').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
-            .fontColor(this.pal().text).fontFamily(this.font())
-          Text('适用于 RDP、RustDesk、VNC、实体鼠标和触控板')
-            .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
-            .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-        }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
-      }.width('100%').height(54).padding({ left: 16, right: 16 })
-      Row({ space: 8 }) {
-        this.remoteWheelDirectionChip('正常', false)
-        this.remoteWheelDirectionChip('反向', true)
-      }.width('100%').height(42).justifyContent(FlexAlign.Center)
-    }.width('100%')
-  }
-
-  @Builder remoteWheelDirectionChip(label: string, reverse: boolean) {
-    Text(label).fontSize(11).fontWeight(this.rustdeskReverseWheel === reverse ? FontWeight.Medium : FontWeight.Normal)
-      .fontColor(this.rustdeskReverseWheel === reverse ? '#FFFFFF' : this.pal().text2)
-      .textAlign(TextAlign.Center).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-      .width(88).padding({ top: 7, bottom: 7 })
-      .backgroundColor(this.rustdeskReverseWheel === reverse ? this.accentColor : this.pal().surface)
-      .borderRadius(6)
-      .onClick((): void => { this.saveRemoteReverseWheel(reverse); })
+    Row() {
+      Row() { Image($r('app.media.icon_desktop')).width(22).height(22).fillColor(this.pal().text3) }
+        .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
+      Column() {
+        Text('远程滚轮方向').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
+          .fontColor(this.pal().text).fontFamily(this.font())
+        Text(remoteWheelSelectionSummary(this.remoteWheelPreferences()))
+          .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
+          .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).margin({ top: 2 })
+      }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
+      Button('编辑').height(34).padding({ left: 12, right: 12 }).fontSize(12)
+        .fontColor(this.accentColor).backgroundColor(this.pal().surface).borderRadius(8)
+        .onClick((): void => {
+          this.openSettingsLeafSheet(SETTINGS_SHEET_REMOTE_WHEEL_DIRECTION);
+        })
+    }.width('100%').height(62).padding({ left: 16, right: 16 })
   }
 
   @Builder sessionControlBarVisibilityRow() {

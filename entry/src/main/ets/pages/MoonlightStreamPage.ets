@@ -88,7 +88,8 @@ import {
   TouchpadPointerCurveState,
   touchpadPointerCurve
 } from '../services/TouchpadPointerCurvePolicy';
-import { moonlightAxisScrollAmount } from '../services/RemoteWheelPolicy';
+import { applyRemoteWheelDirection, moonlightAxisScrollAmount } from '../services/RemoteWheelPolicy';
+import { MOONLIGHT_REVERSE_WHEEL_KEY } from '../services/RemoteWheelPreferencePolicy';
 import rdpnapi from 'librdpnapi.so';
 import {
   MoonlightHostService,
@@ -296,6 +297,7 @@ struct MoonlightStreamPage {
   @StorageProp(GUIDE_ALWAYS_VISIBLE_STORAGE_KEY) guideAlwaysVisible: boolean = false;
   @StorageProp('liveViewEnabled') liveViewEnabled: boolean = true;
   @StorageProp('liveViewMode') liveViewMode: number = 1;
+  @StorageLink(MOONLIGHT_REVERSE_WHEEL_KEY) moonlightReverseWheel: boolean = false;
   @StorageLink(REMOTE_SESSION_CONTROL_BAR_HIDDEN_MOONLIGHT_KEY)
   @Watch('onMoonlightSessionControlBarVisibilityChanged')
   sessionControlBarHiddenMoonlight: boolean = false;
@@ -3611,8 +3613,9 @@ struct MoonlightStreamPage {
     const horizontal: boolean = Math.abs(deltaX) > Math.abs(deltaY);
     const raw: number = horizontal ? deltaX : deltaY;
     if (!Number.isFinite(raw) || Math.abs(raw) < 0.35) { return true; }
-    const amount: number = Math.max(-32768, Math.min(32767,
+    const baseAmount: number = Math.max(-32768, Math.min(32767,
       Math.round(-raw * 4)));
+    const amount: number = applyRemoteWheelDirection(baseAmount, this.moonlightReverseWheel);
     return this.recordTrackpadDispatch(this.sendMoonlightPointer({
       launchKey: this.launchKey,
       action: 'scroll',
@@ -4319,8 +4322,9 @@ struct MoonlightStreamPage {
     const horizontal: number = event.getHorizontalAxisValue();
     const raw: number = Math.abs(vertical) >= Math.abs(horizontal) ? vertical : horizontal;
     if (!Number.isFinite(raw) || raw === 0) { return; }
-    const amount: number = moonlightAxisScrollAmount(
+    const baseAmount: number = moonlightAxisScrollAmount(
       raw, event.sourceTool === SourceTool.TOUCHPAD);
+    const amount: number = applyRemoteWheelDirection(baseAmount, this.moonlightReverseWheel);
     if (amount === 0) { return; }
     const request: MoonlightPointerInputRequest = {
       launchKey: this.launchKey, action: 'scroll',
