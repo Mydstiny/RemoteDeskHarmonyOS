@@ -3,13 +3,12 @@
   "task": "rustdesk-mobile-display-input-and-settings-accordion-fix",
   "branch": "codex/system-clipboard-activation-fix",
   "base": "6e2fece58",
-  "head": "78d4ce868",
-  "phase": "ready-for-device-validation-and-review",
+  "head": "0bc68d030",
+  "phase": "ready-for-device-validation",
   "status": "active",
-  "next": "Run independent review of 6e2fece58..78d4ce868, including the settings accordion layout increment, then Android phone portrait/landscape display and touch acceptance.",
+  "next": "Run Android phone portrait/landscape display, touch, control-mode transition and Data Security/RDP accordion visual acceptance.",
   "blockers": [
     "HDC reports Connect server failed, so Android portrait/landscape, Fit/zoom, tap/swipe/long-press and interrupted-input acceptance could not run.",
-    "Independent review has not yet been run for the combined increment through 78d4ce868.",
     "The full native suite remains 799/815 because 16 pre-existing VNC local TLS fixture tests fail at fixture.start(); the new RustDesk display/decoder policy tests pass."
   ],
   "planPaths": [
@@ -17,9 +16,11 @@
     "docs/codex/plans/2026-08-28-settings-accordion-layout-fix.md"
   ],
   "review": {
-    "status": "PENDING",
-    "taskIds": [],
-    "reviewedHead": "",
+    "status": "PASS",
+    "taskIds": [
+      "/root/independent_review"
+    ],
+    "reviewedHead": "0bc68d030e6739b9ac43e2098da2392bc834c7ee",
     "scope": [
       "entry/src/main/cpp/render/decoder_recovery_policy.h",
       "entry/src/main/cpp/render/hw_decoder.cpp",
@@ -41,16 +42,16 @@
       "entry/src/test/SettingsAccordionPolicy.test.ets"
     ],
     "findings": [],
-    "reason": "RustDesk and user-authorized settings accordion implementations are committed and locally verified; independent review is still required before merge."
+    "reason": "The independent reviewer confirmed the settings layout calculations and all RustDesk/input-transition scope after two P2 remediations; final P0-P3 are zero."
   },
   "lastVerification": {
     "baseline": "RustDesk mobile display/input increment starts at 6e2fece58 on the user-authorized existing task branch.",
-    "testCompile": "PASS after the settings layout fix: default@OhosTestCompileArkTS, BUILD SUCCESSFUL in 6 s 938 ms",
-    "assembleHap": "PASS after the settings layout fix: signed HAP, BUILD SUCCESSFUL in 14 s 541 ms, SHA-256 9908b30007d4e63d763cbc4676b83a4a74a1af3fd869c04e9ff6d850b84743e6",
+    "testCompile": "PASS after the review fixes: default@OhosTestCompileArkTS, BUILD SUCCESSFUL in 8 s 753 ms",
+    "assembleHap": "PASS after the review fixes: signed HAP, BUILD SUCCESSFUL in 16 s 771 ms, SHA-256 4dbd6cdcf5f2561f00d3b35bfb67a2c5782deadad5499a4dd1947d2e0ccfe68a",
     "targetedTests": "PASS compile: SettingsAccordionPolicy covers Data Security row growth plus sm/md/lg/xl RDP caps; prior NativeImage and decoder policy tests remain unchanged. Full native result remains 799 passed with 16 known unrelated VNC TLS fixture failures.",
     "arktsTests": "PASS compile: settings accordion, canvas source/window rebase, peer-platform and diagnostics policy cases compile through the mandatory test gate; no separate ohosTest module is registered.",
     "compliance": "PASS: Light open-source compliance and git diff --check",
-    "review": "PENDING: no independent reviewer has run against 6e2fece58..78d4ce868.",
+    "review": "PASS: /root/independent_review reviewed 6e2fece58..0bc68d030; two P2 findings were fixed and the follow-up found no P0-P3.",
     "deviceAcceptance": "BLOCKED: HDC Connect server failed; no usable Android target."
   },
   "updated": "2026-08-28 Asia/Shanghai"
