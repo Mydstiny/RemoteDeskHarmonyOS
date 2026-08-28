@@ -48,6 +48,10 @@ export default function rustDeskDesktopFlipPolicyTest(): void {
       expect(effectiveRustDeskDesktopFlipMode(
         'image_only', 'rustdesk', true, 'phone')).assertEqual('reset');
       expect(effectiveRustDeskDesktopFlipMode(
+        'image_only', 'rustdesk', true, 'computer', 'android')).assertEqual('reset');
+      expect(effectiveRustDeskDesktopFlipMode(
+        'image_only', 'rustdesk', true, 'phone', 'windows')).assertEqual('image_only');
+      expect(effectiveRustDeskDesktopFlipMode(
         'image_only', 'rdp', true, 'computer')).assertEqual('reset');
     });
 

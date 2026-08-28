@@ -123,7 +123,7 @@ export struct RemoteSessionTopBar {
   @Prop reverseWheel: boolean = false;
   @Prop swapMouseButtons: boolean = false;
   @Prop touchpadSpeed: number = 1.0;
-  @Prop rustDeskPhoneTarget: boolean = false;
+  @Prop @Watch('onRustDeskPhoneTargetChange') rustDeskPhoneTarget: boolean = false;
   @Prop rustDeskDesktopFlipMode: RustDeskDesktopFlipMode = 'reset';
   @Prop @Watch('onKeyboardSurfaceChange') keyboardOpen: boolean = false;
   @Prop @Watch('onKeyboardSurfaceChange') shortcutsOpen: boolean = false;
@@ -270,6 +270,12 @@ export struct RemoteSessionTopBar {
 
   private onKeyboardSurfaceChange(): void {
     this.scheduleAutoCollapse();
+  }
+
+  private onRustDeskPhoneTargetChange(): void {
+    if (this.rustDeskPhoneTarget && this.activeMenu === 'desktopFlip') {
+      this.closeMenus();
+    }
   }
 
   private onEdgeRailChanged(): void {
@@ -1017,7 +1023,8 @@ export struct RemoteSessionTopBar {
       if (this.activeMenu === 'display') {
         this.displayMenu()
       }
-      if (this.activeMenu === 'desktopFlip') {
+      if (this.activeMenu === 'desktopFlip' && this.layout.deviceClass === 'pc' &&
+        !this.rustDeskPhoneTarget) {
         this.desktopFlipMenu()
       }
       if (this.activeMenu === 'keyboardMouse') {
@@ -1089,7 +1096,8 @@ export struct RemoteSessionTopBar {
       if (this.activeMenu === 'display') {
         this.displayMenu()
       }
-      if (this.activeMenu === 'desktopFlip') {
+      if (this.activeMenu === 'desktopFlip' && this.layout.deviceClass === 'pc' &&
+        !this.rustDeskPhoneTarget) {
         this.desktopFlipMenu()
       }
       if (this.activeMenu === 'keyboardMouse') {

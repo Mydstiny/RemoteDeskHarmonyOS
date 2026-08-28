@@ -5153,7 +5153,7 @@ struct RemoteDesktop {
   private restoreRustDeskDesktopFlipMode(host: RemoteHost, reason: string): void {
     const mode: RustDeskDesktopFlipMode = effectiveRustDeskDesktopFlipMode(
       host.rustdeskDesktopFlipMode, host.protocol, this.isDesktopDevice,
-      host.rustdeskTargetDevice);
+      host.rustdeskTargetDevice, this.rustDeskPeerPlatformCategory);
     this.adoptRustDeskDesktopFlipMode(mode, reason, false);
   }
 
@@ -5161,7 +5161,7 @@ struct RemoteDesktop {
     const host: RemoteHost | null = this.pendingHost;
     const normalized: RustDeskDesktopFlipMode = normalizeRustDeskDesktopFlipMode(mode);
     if (host === null || host.protocol !== 'rustdesk' || !this.isDesktopDevice ||
-      host.rustdeskTargetDevice === 'phone') {
+      this.isRustDeskPhoneSession()) {
       promptAction.showToast({ message: '仅 PC 端 RustDesk 电脑会话支持画面翻转', duration: 1800 });
       return;
     }
@@ -9333,7 +9333,21 @@ struct RemoteDesktop {
     }
     const peerPlatform: string = snapshot.peerPlatform !== undefined ?
       snapshot.peerPlatform : 'unknown';
+    const previousPhoneTarget: boolean = this.isRustDeskPhoneSession();
     this.rustDeskPeerPlatformCategory = peerPlatform;
+    const nextPhoneTarget: boolean = this.isRustDeskPhoneSession();
+    if (previousPhoneTarget !== nextPhoneTarget && this.pendingHost !== null &&
+      this.isDesktopDevice) {
+      const nextMode: RustDeskDesktopFlipMode = effectiveRustDeskDesktopFlipMode(
+        this.pendingHost.rustdeskDesktopFlipMode, this.pendingHost.protocol,
+        this.isDesktopDevice, this.pendingHost.rustdeskTargetDevice,
+        this.rustDeskPeerPlatformCategory);
+      if (nextMode !== this.rustDeskDesktopFlipMode) {
+        this.resetRustDeskInputAfterGeometryChange('rustdesk-peer-platform-flip-scope');
+        this.adoptRustDeskDesktopFlipMode(nextMode,
+          nextPhoneTarget ? 'peer-mobile-scope' : 'peer-desktop-scope', true);
+      }
+    }
     const nextKnown: boolean = snapshot.remoteInputPermissionKnown;
     const nextAllowed: boolean = !nextKnown || snapshot.remoteInputAllowed;
     if (!nextAllowed && this.rustDeskRemoteInputAllowed) {

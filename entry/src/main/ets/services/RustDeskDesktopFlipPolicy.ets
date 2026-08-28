@@ -1,3 +1,5 @@
+import { isRustDeskPhoneSessionForPeer } from './RemoteOrientationPolicy';
+
 export type RustDeskDesktopFlipMode = 'reset' | 'image_only' | 'image_and_controls';
 
 export interface RustDeskDesktopFlipRotations {
@@ -29,9 +31,11 @@ export function effectiveRustDeskDesktopFlipMode(
   value: string | undefined,
   protocol: string,
   isDesktopDevice: boolean,
-  targetDevice: string
+  targetDevice: string,
+  peerPlatform: string = 'unknown'
 ): RustDeskDesktopFlipMode {
-  if (protocol !== 'rustdesk' || !isDesktopDevice || targetDevice === 'phone') {
+  if (protocol !== 'rustdesk' || !isDesktopDevice ||
+    isRustDeskPhoneSessionForPeer(targetDevice, peerPlatform)) {
     return 'reset';
   }
   return normalizeRustDeskDesktopFlipMode(value);
