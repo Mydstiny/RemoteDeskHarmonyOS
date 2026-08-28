@@ -21,6 +21,8 @@ export class RdpCredential {
   label: string = '';
   username: string = '';
   password: string = '';
+  /** Runtime-only marker; never serialized or synced. */
+  passwordConfigured: boolean = false;
   createdAt: number = Date.now();
 
   displayName(): string {

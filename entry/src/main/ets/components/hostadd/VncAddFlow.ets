@@ -22,6 +22,7 @@ import { VncGatewayView } from '../../services/VncGatewayService';
 import { resolveVncHostDefaults, VncSelectableGateway } from '../../services/VncHostDefaultsPolicy';
 import { VncHostService, VncHostView } from '../../services/VncHostService';
 import { SecretPresentationStore } from '../../services/SecretPresentationPolicy';
+import { secretSubmissionValue } from '../../services/SecretEditMutationPolicy';
 import { vncGatewayAvailability } from '../../services/VncGatewayProtocolPolicy';
 import { protocolIcon } from '../../services/ProtocolIconPolicy';
 import {
@@ -149,8 +150,11 @@ export struct VncAddFlow {
       crypto.isSetupComplete() && !crypto.isReady());
   }
 
-  private passwordForSave(): string {
-    return this.initialHost !== null && !this.passwordChanged ? '' : this.password;
+  private passwordForSave(connectNow: boolean): string {
+    const existing: string = this.initialHost === null ? '' :
+      this.hosts.passwordFor(this.initialHost.id);
+    return secretSubmissionValue(existing, this.password, this.passwordChanged,
+      this.rememberPassword, connectNow);
   }
 
   private gatewaySelectable(gateway: VncGatewayView): boolean {
@@ -295,7 +299,7 @@ export struct VncAddFlow {
   private save(connectNow: boolean): void {
     const values: VncHostValues | null = this.buildValues();
     if (values === null) { return; }
-    const password: string = this.passwordForSave();
+    const password: string = this.passwordForSave(connectNow);
     if (password.length > 0 && this.rememberPassword) {
       const crypto: DataCrypto = DataCrypto.getInstance();
       if (crypto.isSetupComplete() && !crypto.isReady()) {

@@ -10391,9 +10391,11 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
             normalizeLanDiscoveryIdentity(host.lanDiscoveryIdentity) === '') {
             continue;
           }
+          const storedPassword: string = values['password'] ?? '';
+          host.passwordConfigured = storedPassword.length > 0;
           host.password = this.decryptIfReady(
             DataCrypto.getInstance(), DYNAMIC_LAN_HOST_AAD_TABLE, host.id,
-            'password', values['password'] ?? '');
+            'password', storedPassword);
           result.push(host);
         } catch (rowError) {
           hilog.warn(0x0001, 'CloudSync',
@@ -11569,17 +11571,21 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
     h.host = getStr('host');
     h.port = rs.getLong(rs.getColumnIndex('port'));
     h.username = getStr('username');
+    const storedPassword: string = getStr('passward') || getStr('password');
+    h.passwordConfigured = storedPassword.length > 0;
     h.password = this.decryptIfReady(
-      crypto, 'remotehosts', h.id, 'passward',
-      getStr('passward') || getStr('password'));
+      crypto, 'remotehosts', h.id, 'passward', storedPassword);
     h.customHostname = getStr('customhostname');
     h.sshUseKey = rs.getLong(rs.getColumnIndex('sshusekey')) !== 0;
     h.sshKeyPath = getStr('sshkeypath');
+    const storedSshKeyData: string = getStr('sshkeydata');
+    h.sshKeyDataConfigured = storedSshKeyData.length > 0;
     h.sshKeyData = this.decryptIfReady(
-      crypto, 'remotehosts', h.id, 'sshkeydata', getStr('sshkeydata'));
+      crypto, 'remotehosts', h.id, 'sshkeydata', storedSshKeyData);
+    const storedSshKeyPassphrase: string = getStr('sshkeypassphrase');
+    h.sshKeyPassphraseConfigured = storedSshKeyPassphrase.length > 0;
     h.sshKeyPassphrase = this.decryptIfReady(
-      crypto, 'remotehosts', h.id, 'sshkeypassphrase',
-      getStr('sshkeypassphrase'));
+      crypto, 'remotehosts', h.id, 'sshkeypassphrase', storedSshKeyPassphrase);
     h.sshKeyId = getStr('sshkeyid');
     h.sshHostKeyAlgorithm = getStr('sshhostkeyalgorithm');
     h.sshHostKeyFingerprintSha256 = getStr('sshhostkeyfingerprintsha256');
@@ -11817,9 +11823,10 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
     credential.userId = getStr('userid');
     credential.label = getStr('label');
     credential.username = getStr('username');
+    const storedPassword: string = getStr('password');
+    credential.passwordConfigured = storedPassword.length > 0;
     credential.password = this.decryptIfReady(
-      crypto, 'rdpcredentials', credential.id, 'password',
-      getStr('password'));
+      crypto, 'rdpcredentials', credential.id, 'password', storedPassword);
     credential.createdAt = getLong('createdat');
     return credential;
   }

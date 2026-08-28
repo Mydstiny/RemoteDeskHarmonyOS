@@ -4,9 +4,9 @@ Updated: 2026-08-28 Asia/Shanghai
 
 ## Now
 
-1. Commit the verified local secret-presentation implementation.
-2. Obtain independent review and remediate every finding.
-3. Rerun mandatory gates, then complete PR/main closure where possible.
+1. Commit the verified hardening for the initial review's five findings.
+2. Reuse the same independent reviewer and require a clean follow-up verdict.
+3. Rerun final mandatory gates, then complete PR/main closure where possible.
 
 ## Next
 

@@ -3,9 +3,11 @@ import {
   applySecretEditMutation,
   clearSecretEditMutation,
   resolveSecretEditValue,
+  secretBindingUnchanged,
   secretEditDraftValue,
   secretEditMutationForDraft,
-  secretEditPlaceholder
+  secretEditPlaceholder,
+  secretSubmissionValue
 } from '../main/ets/services/SecretEditMutationPolicy';
 
 export default function secretEditMutationPolicyTest() {
@@ -38,6 +40,25 @@ export default function secretEditMutationPolicyTest() {
       expect(resolveSecretEditValue('old-password', '', false, true)).assertEqual('');
       expect(resolveSecretEditValue('', '', true, true)).assertEqual('');
       expect(resolveSecretEditValue('', 'new-password', true, true)).assertEqual('new-password');
+    });
+
+    it('preserves_only_an_identical_authentication_binding', 0, (): void => {
+      expect(secretBindingUnchanged(['host', '3389', 'user'], ['host', '3389', 'user']))
+        .assertTrue();
+      expect(secretBindingUnchanged(['host', '3389', 'user'], ['host', '3389', 'other']))
+        .assertFalse();
+      expect(secretBindingUnchanged(['peer', 'relay'], ['peer'])).assertFalse();
+    });
+
+    it('hands_a_forgotten_unchanged_secret_to_only_the_current_action', 0, (): void => {
+      expect(secretSubmissionValue('old-password', 'old-password', false, false, true))
+        .assertEqual('old-password');
+      expect(secretSubmissionValue('old-password', 'old-password', false, false, false))
+        .assertEqual('');
+      expect(secretSubmissionValue('old-password', 'replacement', true, false, true))
+        .assertEqual('replacement');
+      expect(secretSubmissionValue('old-password', 'old-password', false, true, true))
+        .assertEqual('');
     });
   });
 }

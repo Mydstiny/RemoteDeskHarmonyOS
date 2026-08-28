@@ -4,7 +4,7 @@
 
 - Task: `secret-visibility-policy`
 - Branch/base: `codex/secret-visibility-policy` from synchronized `main@f3b41e5a6`.
-- Phase: implementation verified; checkpoint and independent review pending.
+- Phase: review remediation verified; follow-up review pending.
 - Plan: `docs/codex/plans/2026-08-28-secret-visibility-policy.md`
 
 ## Objective
@@ -32,15 +32,27 @@
 - Hidden editors now keep the old value on an empty draft and overwrite it only
   when a new non-empty value is entered; authentication/key binding changes do
   not accidentally carry an unrelated old secret forward.
+- Secret preservation is bound to the original account/endpoint identity, so a
+  blank hidden field cannot reuse a credential after its host, user, mode or
+  key binding changes.
+- Added runtime-only secret-presence markers so crypto-locked records remain
+  identifiable as configured without exposing or serializing plaintext.
+- Existing SSH private-key bodies are no longer loaded into ordinary page
+  state; replacement uses a password input and explicitly preserves the old key
+  only while its vault/path binding is unchanged.
 - VNC now uses the shared policy while retaining its dedicated secret service,
-  plaintext-consent checks, local personalization and rollback behavior.
+  plaintext-consent checks, local personalization and rollback behavior. A
+  forgotten VNC password can still be handed to the current connection only,
+  without being persisted.
+- RustDesk Pro approval no longer retains the previously stored unattended
+  password after an approved session.
 - Classified `secretPresentationPolicyV1` as device-local and added focused
   policy, mutation, route and cloud-sync classification tests.
 
 ## Verification (current worktree)
 
-- `default@OhosTestCompileArkTS`: PASS (`BUILD SUCCESSFUL in 34 s 902 ms`).
-- `assembleHap`: PASS, signed (`BUILD SUCCESSFUL in 57 s 705 ms`).
+- `default@OhosTestCompileArkTS`: PASS (`BUILD SUCCESSFUL in 17 s 883 ms`).
+- `assembleHap`: PASS, signed (`BUILD SUCCESSFUL in 26 s 371 ms`).
 - Light open-source compliance: PASS.
 - `git diff --check`: PASS.
 - The focused Hypium tests are registered in `List.test.ets` and compile in the
@@ -50,9 +62,9 @@
 
 ## Next
 
-1. Create a checkpoint commit with only this task's files.
-2. Obtain independent review, remediate findings and rerun the exact gates.
-3. Close the branch through PR/main when repository and remote gates allow it.
+1. Commit the verified remediation with only this task's files.
+2. Ask the same independent reviewer to confirm all five findings are closed.
+3. Rerun final gates and close the branch through PR/main where possible.
 
 ## Blockers
 

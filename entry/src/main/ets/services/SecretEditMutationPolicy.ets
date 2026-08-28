@@ -39,6 +39,27 @@ export function resolveSecretEditValue(existing: string, draft: string,
     secretEditMutationForDraft(draft, hidden, existing.length > 0, preserveAllowed));
 }
 
+/** A hidden secret may only survive when every authentication-binding part is unchanged. */
+export function secretBindingUnchanged(existingParts: string[], nextParts: string[]): boolean {
+  if (existingParts.length !== nextParts.length) { return false; }
+  for (let i = 0; i < existingParts.length; i++) {
+    if (existingParts[i] !== nextParts[i]) { return false; }
+  }
+  return true;
+}
+
+/**
+ * A remembered secret that is being forgotten can still be handed to the
+ * current connection before storage removes it. Unchanged remembered values
+ * otherwise stay out of the save payload.
+ */
+export function secretSubmissionValue(existing: string, draft: string,
+  draftChanged: boolean, rememberAfterSave: boolean, useForCurrentAction: boolean): string {
+  if (draftChanged) { return draft; }
+  if (!rememberAfterSave && useForCurrentAction) { return existing; }
+  return '';
+}
+
 export function secretEditPlaceholder(existingConfigured: boolean,
   hidden: boolean, emptyPlaceholder: string): string {
   if (existingConfigured && hidden) { return '已保存（不回显；输入新值以替换）'; }

@@ -333,14 +333,18 @@ export class RemoteHost implements LanHostAddressView {
   port: number = 3389;         // 端口号
   username: string = '';       // 登录用户名
   password: string = '';       // 登录密码
+  // Runtime-only presence markers survive crypto-lock redaction and are never serialized.
+  passwordConfigured: boolean = false;
   locked: boolean = false;     // 是否已加安全锁
   lockType: LockType = LockType.NONE;
   // SSH 专用字段
   sshUseKey: boolean = false;   // SSH 使用私钥认证
   sshKeyPath: string = '';      // SSH 私钥文件路径
   sshKeyData: string = '';      // SSH 私钥内容 (PEM格式) — 旧式副本, 兼容
+  sshKeyDataConfigured: boolean = false;
   sshKeyId: string = '';        // KeyVault 密钥引用 — 优先, 修改后自动同步
   sshKeyPassphrase: string = ''; // SSH 私钥密码 (E2E加密存储)
+  sshKeyPassphraseConfigured: boolean = false;
   // SSH 主机指纹信任 (T-210)
   sshHostKeyAlgorithm: string = '';          // 算法: "ssh-ed25519" 等
   sshHostKeyFingerprintSha256: string = '';  // 指纹: "SHA256:..."
