@@ -4296,8 +4296,14 @@ struct RemoteDesktop {
   }
 
   private onRemoteControlModeChange(): void {
+    // A mode change changes the input interpreter while the session remains
+    // connected. Drain the old interpreter before resetting local gesture
+    // state so no queued move, held button, key, or virtual latch crosses it.
+    this.discardPendingMouseMove();
     this.releaseCanvasPinchInput('control-mode-change');
     this.resetTouchGesture();
+    this.releaseAllHeldKeys();
+    this.resetAllLatches();
     this.resetRustDeskPhysicalTouchpadState();
     this.syncRemoteSystemPointer('control-mode');
     void this.setRemoteNavigationHidden(this.connected, 'control-mode-change');
@@ -14395,7 +14401,11 @@ struct RemoteDesktop {
     this.clearTouchDirectRightClickTimer();
     this.touchDirectRightClickTimer = setTimeout((): void => {
       this.touchDirectRightClickTimer = -1;
-      if (this.touchFingerCount !== 1 || this.touchMoved || !this.touchLeftDown || !this.connected) {
+      // PeerInfo can identify Android/iOS after the gesture starts. Recheck
+      // here so a timer armed during the fallback phase cannot emit a local
+      // right-click into a phone session.
+      if (this.touchFingerCount !== 1 || this.touchMoved || !this.touchLeftDown || !this.connected ||
+        this.isRustDeskPhoneSession()) {
         return;
       }
       this.sendMouseNow(this.remoteCursorX, this.remoteCursorY, 0, false);
@@ -16157,7 +16167,10 @@ struct RemoteDesktop {
         }
         if (this.touchMaxFingers === 2) {
           if (this.touchFingerCount <= 0) {
-            if (event.type === TouchType.Up && !this.touchMoved && this.touchDragPending) {
+            // Recheck the authenticated peer category on the terminal Up: it
+            // may have changed after the first finger armed the candidate.
+            if (event.type === TouchType.Up && !this.touchMoved && this.touchDragPending &&
+              !this.isRustDeskPhoneSession()) {
               this.finishTwoFingerRightClick();
             }
             this.resetTouchGesture();
