@@ -429,6 +429,7 @@ import {
   normalizeRustDeskDesktopFlipMode,
   reprojectRustDeskDesktopFlipPan,
   rustDeskDesktopFlipRotations,
+  stableRustDeskDesktopFlipPeerPlatform,
   RustDeskDesktopFlipMode,
   RustDeskDesktopFlipPan,
   RustDeskDesktopFlipRotations
@@ -9331,10 +9332,11 @@ struct RemoteDesktop {
     if (this.sessionId !== sessionId || snapshot.sessionId !== sessionId) {
       return;
     }
-    const peerPlatform: string = snapshot.peerPlatform !== undefined ?
+    const observedPeerPlatform: string = snapshot.peerPlatform !== undefined ?
       snapshot.peerPlatform : 'unknown';
     const previousPhoneTarget: boolean = this.isRustDeskPhoneSession();
-    this.rustDeskPeerPlatformCategory = peerPlatform;
+    this.rustDeskPeerPlatformCategory = stableRustDeskDesktopFlipPeerPlatform(
+      this.rustDeskPeerPlatformCategory, observedPeerPlatform);
     const nextPhoneTarget: boolean = this.isRustDeskPhoneSession();
     if (previousPhoneTarget !== nextPhoneTarget && this.pendingHost !== null &&
       this.isDesktopDevice) {

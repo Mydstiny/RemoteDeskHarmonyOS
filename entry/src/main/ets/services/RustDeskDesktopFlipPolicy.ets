@@ -41,6 +41,21 @@ export function effectiveRustDeskDesktopFlipMode(
   return normalizeRustDeskDesktopFlipMode(value);
 }
 
+/** Continuity reconnects transiently publish Unknown before re-authentication. */
+export function stableRustDeskDesktopFlipPeerPlatform(
+  previousPlatform: string,
+  observedPlatform: string
+): string {
+  const previous: string = previousPlatform.trim().toLowerCase();
+  const observed: string = observedPlatform.trim().toLowerCase();
+  const previousAuthenticated: boolean = previous === 'android' || previous === 'ios' ||
+    previous === 'windows' || previous === 'macos' || previous === 'linux';
+  if ((observed === '' || observed === 'unknown') && previousAuthenticated) {
+    return previous;
+  }
+  return observed === '' ? 'unknown' : observed;
+}
+
 export function rustDeskDesktopFlipRotations(
   mode: RustDeskDesktopFlipMode
 ): RustDeskDesktopFlipRotations {

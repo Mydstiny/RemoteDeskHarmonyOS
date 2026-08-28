@@ -5,7 +5,8 @@ import {
   effectiveRustDeskDesktopFlipMode,
   normalizeRustDeskDesktopFlipMode,
   reprojectRustDeskDesktopFlipPan,
-  rustDeskDesktopFlipRotations
+  rustDeskDesktopFlipRotations,
+  stableRustDeskDesktopFlipPeerPlatform
 } from '../main/ets/services/RustDeskDesktopFlipPolicy';
 import {
   remotePointToSurface,
@@ -53,6 +54,16 @@ export default function rustDeskDesktopFlipPolicyTest(): void {
         'image_only', 'rustdesk', true, 'phone', 'windows')).assertEqual('image_only');
       expect(effectiveRustDeskDesktopFlipMode(
         'image_only', 'rdp', true, 'computer')).assertEqual('reset');
+    });
+
+    it('keeps_authenticated_mobile_scope_across_transient_unknown_reconnects', 0, (): void => {
+      const authenticated: string = stableRustDeskDesktopFlipPeerPlatform('unknown', 'android');
+      const reconnecting: string = stableRustDeskDesktopFlipPeerPlatform(authenticated, 'unknown');
+      const reauthenticated: string = stableRustDeskDesktopFlipPeerPlatform(reconnecting, 'android');
+      expect(authenticated).assertEqual('android');
+      expect(reconnecting).assertEqual('android');
+      expect(reauthenticated).assertEqual('android');
+      expect(stableRustDeskDesktopFlipPeerPlatform('unknown', 'windows')).assertEqual('windows');
     });
 
     it('separates_visual_and_input_rotation_for_each_mode', 0, (): void => {
