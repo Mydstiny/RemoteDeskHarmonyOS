@@ -76,12 +76,19 @@ export struct VncAddFlow {
   private readonly settings: VncSettingsService = VncSettingsService.getInstance();
   private readonly hosts: VncHostService = VncHostService.getInstance();
   private readonly secretPresentation: SecretPresentationStore = SecretPresentationStore.getInstance();
+  private cryptoStateUnsubscribe: (() => void) | null = null;
 
   private pal(): Palette {
     return this.theme === 'light' ? buildLight(this.accentColor) : buildDark(this.accentColor);
   }
 
   aboutToAppear(): void {
+    if (this.cryptoStateUnsubscribe === null) {
+      this.cryptoStateUnsubscribe = DataCrypto.getInstance().onStateChange(
+        (ready: boolean, _configured: boolean): void => {
+          this.onCryptoStateChange(ready);
+        });
+    }
     const defaults = this.settings.get();
     const selectableGateways: VncSelectableGateway[] = this.gateways.map(
       (gateway: VncGatewayView): VncSelectableGateway => ({
@@ -141,6 +148,13 @@ export struct VncAddFlow {
     }
   }
 
+  aboutToDisappear(): void {
+    if (this.cryptoStateUnsubscribe !== null) {
+      this.cryptoStateUnsubscribe();
+      this.cryptoStateUnsubscribe = null;
+    }
+  }
+
   private selectedGateway(): VncGatewayView | undefined {
     return this.gateways.find((gateway: VncGatewayView): boolean => gateway.id === this.gatewayId);
   }
@@ -167,6 +181,19 @@ export struct VncAddFlow {
       this.password = '';
       return;
     }
+    this.restoreStoredPasswordProjection();
+  }
+
+  private onCryptoStateChange(ready: boolean): void {
+    if (!this.passwordFromStoredProjection) { return; }
+    if (!ready) {
+      this.password = '';
+      return;
+    }
+    this.restoreStoredPasswordProjection();
+  }
+
+  private restoreStoredPasswordProjection(): void {
     const host: VncHostView | null = this.initialHost;
     this.password = host === null || this.passwordHidden() ? '' :
       this.hosts.passwordFor(host.id);

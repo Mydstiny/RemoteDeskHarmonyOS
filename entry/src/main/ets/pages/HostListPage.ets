@@ -703,6 +703,7 @@ struct HostListPage {
   private hostDataUnsubscribe: (() => void) | null = null;
   private vncHostDataUnsubscribe: (() => void) | null = null;
   private vncTrustDataUnsubscribe: (() => void) | null = null;
+  private cryptoStateUnsubscribe: (() => void) | null = null;
   private skipInitialPageShowLoad: boolean = true;
   private hostLoadRefreshTimer: number = -1;
   private hostLoadRefreshPresence: boolean = false;
@@ -1330,6 +1331,17 @@ struct HostListPage {
       this.resumeForegroundSensors('ability-foreground');
       this.resumeRustDeskProPreflightAfterBackground();
     }
+  }
+
+  private onDataCryptoStateChange(ready: boolean, _configured: boolean): void {
+    if (!ready) {
+      if (this.showRustDeskProPreflight && this.rustDeskProPreflightHostId !== '') {
+        this.saveRustDeskProAuthDraft();
+      }
+      this.scrubStoredSecretEditorProjections();
+      return;
+    }
+    this.restoreStoredSecretEditorProjections();
   }
 
   private scrubStoredSecretEditorProjections(): void {
@@ -5018,6 +5030,12 @@ struct HostListPage {
         this.refreshVncTrustView();
       });
     }
+    if (!this.cryptoStateUnsubscribe) {
+      this.cryptoStateUnsubscribe = DataCrypto.getInstance().onStateChange(
+        (ready: boolean, configured: boolean): void => {
+          this.onDataCryptoStateChange(ready, configured);
+        });
+    }
   }
 
   private unregisterDataRefreshListeners(): void {
@@ -5036,6 +5054,10 @@ struct HostListPage {
     if (this.vncTrustDataUnsubscribe) {
       this.vncTrustDataUnsubscribe();
       this.vncTrustDataUnsubscribe = null;
+    }
+    if (this.cryptoStateUnsubscribe) {
+      this.cryptoStateUnsubscribe();
+      this.cryptoStateUnsubscribe = null;
     }
   }
 
@@ -13064,6 +13086,8 @@ struct HostListPage {
     projectedHost.password = '';
     projectedHost.sshKeyData = '';
     projectedHost.sshKeyPassphrase = '';
+    projectedHost.sshProxyPassword = '';
+    projectedHost.sshProxyKeyPassphrase = '';
     this.sshPublicKeyInstallHost = projectedHost;
     const keys = this.keyVault.getAllSshKeys();
     this.sshPublicKeyInstallKeyId = keys.length > 0 ? keys[0].id : '';

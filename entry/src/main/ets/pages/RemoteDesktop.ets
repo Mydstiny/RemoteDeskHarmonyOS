@@ -1052,6 +1052,7 @@ struct RemoteDesktop {
   private vncCertificateAccountStoreIdentityFingerprint: string = '';
   private vncCertificateAccountGeneration: number = 0;
   private vncAccountScopeUnsubscribe: (() => void) | null = null;
+  private cryptoStateUnsubscribe: (() => void) | null = null;
   private vncTransientPassword: string = '';
   /** Distinguishes an explicit empty-password decision from no one-shot credential. */
   private vncTransientCredentialProvided: boolean = false;
@@ -6795,6 +6796,23 @@ struct RemoteDesktop {
     }
   }
 
+  private onDataCryptoStateChange(ready: boolean, _configured: boolean): void {
+    if (!ready) {
+      if (this.showRustDeskAuthSheet) { this.saveRustDeskAuthDraft(); }
+      if (this.rustDeskAuthPasswordFromStoredProjection) {
+        this.rustDeskAuthPasswordInput = '';
+      }
+      return;
+    }
+    if (!this.showRustDeskAuthSheet || !this.rustDeskAuthPasswordFromStoredProjection ||
+      this.pendingHost === null) {
+      return;
+    }
+    const host: RemoteHost = this.srv.getHost(this.pendingHost.id) ?? this.pendingHost;
+    this.rustDeskAuthPasswordInput = secretEditDraftValue(
+      host.password, this.rustDeskAuthPasswordHidden());
+  }
+
   private onSessionWindowBackgroundChange(): void {
     if (this.sessionWindowId.length === 0) { return; }
     this.applyAbilityBackgroundState(this.sessionWindowBackground);
@@ -7235,6 +7253,12 @@ struct RemoteDesktop {
     this.restoreRemoteSystemPointer('page-appear');
     this.proSync.init(getContext(this) as common.Context);
     this.secretPresentation.init(getContext(this) as common.Context);
+    if (this.cryptoStateUnsubscribe === null) {
+      this.cryptoStateUnsubscribe = DataCrypto.getInstance().onStateChange(
+        (ready: boolean, configured: boolean): void => {
+          this.onDataCryptoStateChange(ready, configured);
+        });
+    }
     this.physicalKeyboardLayout = RemoteKeyboardLayout.WINDOWS;
     this.physicalKeyboardLayoutConfirmed = false;
     this.physicalKeyboardLayoutPromptVisible = false;
@@ -7563,6 +7587,10 @@ struct RemoteDesktop {
   }
 
   aboutToDisappear(): void {
+    if (this.cryptoStateUnsubscribe !== null) {
+      this.cryptoStateUnsubscribe();
+      this.cryptoStateUnsubscribe = null;
+    }
     this.clearRemoteSurfaceResizeWork();
     this.clearVncToolbarAutoCollapse();
     this.clearVncSurfaceResizeRefresh();

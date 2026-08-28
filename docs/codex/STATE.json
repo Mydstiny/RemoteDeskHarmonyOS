@@ -3,10 +3,10 @@
   "task": "secret-visibility-policy",
   "branch": "codex/secret-visibility-policy",
   "base": "f3b41e5a6c6ffd7f4e3bc45941877d0ff81d1055",
-  "head": "93b0be432a2ebede981acf47d6d3277d5a83949e",
+  "head": "09d6e978c6a4223da89bba6af8c6faa4e9a6da07",
   "phase": "remediation",
   "status": "active",
-  "next": "Commit the verified fifth remediation, obtain a clean cumulative follow-up from the same reviewer and rerun the final exact gates.",
+  "next": "Commit the verified sixth remediation, obtain a clean cumulative follow-up from the same reviewer and rerun the final exact gates.",
   "blockers": [
     "The optional ohosTest@OhosTestCompileArkTS task is not registered (00306054), so no device-side Hypium execution is claimed."
   ],
@@ -77,17 +77,20 @@
       "P2 fifth review: trust-only locked updates could overwrite legacy SSH proxy secret ciphertext",
       "P2 fifth review: SSH key switching retained the old key reference, passphrase and runtime marker",
       "P2 fifth review: HostList ignored marker-only host updates in its page signature",
-      "P3 fifth review: RustDesk authentication trust UI ignored configured markers while crypto was locked"
+      "P3 fifth review: RustDesk authentication trust UI ignored configured markers while crypto was locked",
+      "P1 sixth review: foreground DataCrypto lock transitions did not scrub stored-secret projections",
+      "P1 sixth review: the independent SSH key-install Sheet retained complete secret-bearing hosts in responsive state",
+      "P2 sixth review: HostList SSH public-key deployment projection retained proxy password and proxy key passphrase"
     ],
-    "reason": "Five independent-review rounds found eight P1, fifteen P2 and one P3 issue in total. All twenty-four are remediated and compile/package/compliance checks pass; a clean cumulative confirmation by the same reviewer is pending."
+    "reason": "Six independent-review rounds found ten P1, sixteen P2 and one P3 issue in total. All twenty-seven are remediated and compile/package/compliance checks pass; a clean cumulative confirmation by the same reviewer is pending."
   },
   "lastVerification": {
     "baseline": "clean synchronized main@f3b41e5a6",
-    "testCompile": "PASS: default@OhosTestCompileArkTS, BUILD SUCCESSFUL in 12 s 684 ms",
-    "assembleHap": "PASS: signed HAP, BUILD SUCCESSFUL in 18 s 158 ms",
+    "testCompile": "PASS: default@OhosTestCompileArkTS, BUILD SUCCESSFUL in 9 s 430 ms",
+    "assembleHap": "PASS: signed HAP, BUILD SUCCESSFUL in 16 s 93 ms",
     "targetedTests": "REGISTERED_AND_COMPILED; optional ohosTest@OhosTestCompileArkTS unavailable with 00306054; no device execution claimed",
     "compliance": "PASS: Light open-source compliance",
-    "review": "FOLLOW_UP_NOT_PASS: cumulative 8 P1, 15 P2 and 1 P3 findings remediated; same-reviewer clean cumulative follow-up pending",
+    "review": "FOLLOW_UP_NOT_PASS: cumulative 10 P1, 16 P2 and 1 P3 findings remediated; same-reviewer clean cumulative follow-up pending",
     "deviceAcceptance": "PENDING"
   },
   "updated": "2026-08-28 Asia/Shanghai"
