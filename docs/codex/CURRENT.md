@@ -2,37 +2,32 @@
 
 ## Active task
 
-- Task: `rustdesk-mobile-display-input-and-settings-accordion-fix`
-- Branch: `codex/system-clipboard-activation-fix`; user authorized the current worktree.
-- Increment: `6e2fece58..0bc68d030`.
-- Phase: implemented, locally verified and independently reviewed; Android device acceptance pending.
-- Plan: `docs/codex/plans/2026-08-28-rustdesk-mobile-display-input-quick-optimization.md`
-- Follow-up plan: `docs/codex/plans/2026-08-28-settings-accordion-layout-fix.md`
+- Task: `cloud-sync-permission-race-recovery`
+- Branch: `codex/system-clipboard-activation-fix`; user authorized work on the current branch.
+- Increment: `7ad612f55..7be69ad42`.
+- Phase: implemented, locally verified and independently reviewed; reinstall/login device acceptance pending.
+- Plan: `docs/codex/plans/2026-08-28-cloud-sync-permission-race-recovery.md`
 
-## Implemented
+## Root cause and fix
 
-- Accept all eight safe axis-aligned NativeImage orientation transforms.
-- Recreate the fixed decoder/NativeImage pipeline when the first or a later keyframe changes geometry.
-- Preserve manual zoom multiplier and focus across window and remote-source rotation; Fit remains centred.
-- Use authenticated Android/iOS peer platform for phone touch semantics, remove local long-press-to-right-click, and suppress phone two-finger right-click.
-- Release held input before browse/permission/mode/geometry gates and block new input when the remote control permission is disabled.
-- Size the Data Security accordion for its new secret-visibility row and retained bottom spacing.
-- Size Windows RDP by breakpoint so its stacked phone selectors, final credential row and bottom spacing are not clipped.
-- Recheck authenticated phone identity at delayed right-click boundaries and drain all queued/held input when the control mode changes.
+- API 23 returned permission state 3 / reason 4 without showing a dialog immediately after login. The app treated it as final denial, opened a hashed local-only store, then retried distributed-table registration on the wrong physical store.
+- Foreground recovery now re-proves the same Huawei identity and performs a coordinator-owned hashed-to-canonical rebind; explicit denial remains denied and repeated no-dialog responses hard-stop.
+- Journal-v1 baseline/receipts reject changed migration sources. Exact-owner VNC and Moonlight local overlays, tombstones and `localonly` are copied through strict schema/payload validation.
+- A remote-session transition lease blocks new native/window sessions across the destructive rebind and preserves activity evidence when disconnect submission fails.
+- Authoritative cloud-first data no longer rolls back for auxiliary selection-metadata failure. Barriers remain fail-closed and retry idempotently; optional Moonlight failure still finalizes committed core tables.
+- Page/Ability recovery is single-flight, and a throwing startup finalizer clears its exact promise, rolls back safely when possible, and can retry.
 
 ## Verification
 
-- `default@OhosTestCompileArkTS`: PASS after review fixes (`BUILD SUCCESSFUL in 8 s 753 ms`).
-- `assembleHap`: PASS, signed after review fixes (`BUILD SUCCESSFUL in 16 s 771 ms`).
-- Signed HAP SHA-256: `4dbd6cdcf5f2561f00d3b35bfb67a2c5782deadad5499a4dd1947d2e0ccfe68a`.
-- Settings accordion policy tests cover Data Security growth and `sm`/`md`/`lg`/`xl` RDP heights; ArkTS test compile passed.
-- New native policy tests: PASS. Full native suite: 799 passed; 16 known VNC TLS fixture startup failures.
-- Light open-source compliance and `git diff --check`: PASS.
-- Independent review: PASS after fixing two P2 input-transition findings; final P0-P3 are zero.
+- `default@OhosTestCompileArkTS`: PASS (`BUILD SUCCESSFUL in 20 s 47 ms`).
+- `assembleHap`: PASS, signed (`BUILD SUCCESSFUL in 27 s 641 ms`).
+- Policy/wiring coverage compiles for permission classification, recovery state, receipt/source-change checks, VNC/Moonlight local overlay admission, remote transition leases, partial optional-table success, metadata finalization and finalizer retry.
+- `git diff --check`: PASS.
+- Light open-source compliance: PASS.
+- Independent review `/root/cloud_sync_fix_review`: PASS; no remaining P0/P1/P2. P3 is limited to deeper real-RDB/window/NAPI integration coverage and does not block delivery.
 
 ## Next / blockers
 
-1. Validate an Android phone in portrait and landscape: orientation, Fit, manual zoom/pan, tap, swipe, long-press, two-finger canvas gesture and interrupted release.
-2. Visually verify the Data Security and Windows RDP expanded-card bottom spacing on the target device.
-3. HDC currently reports `Connect server failed`; no device acceptance was claimed.
-4. The prior app-clone increment remains queued for release-provisioned phone/tablet acceptance.
+1. On an explicitly authorized test device, reproduce uninstall/reinstall → login → permission no-dialog/grant flows and verify all selected cloud tables recover without data disappearing.
+2. Exercise a VNC/Moonlight local edit before permission recovery and confirm it remains visible after canonical rebind.
+3. No HAP installation or destructive reinstall was performed in this session; real-device acceptance is not claimed.

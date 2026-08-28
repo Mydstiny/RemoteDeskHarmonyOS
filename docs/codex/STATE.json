@@ -1,58 +1,64 @@
 {
   "schema": 1,
-  "task": "rustdesk-mobile-display-input-and-settings-accordion-fix",
+  "task": "cloud-sync-permission-race-recovery",
   "branch": "codex/system-clipboard-activation-fix",
-  "base": "6e2fece58",
-  "head": "0bc68d030",
+  "base": "7ad612f5510586d1bbaff9c24bde4858c4f4f594",
+  "head": "7be69ad423a13cbeb64dfddc2816a806f46ad75a",
   "phase": "ready-for-device-validation",
   "status": "active",
-  "next": "Run Android phone portrait/landscape display, touch, control-mode transition and Data Security/RDP accordion visual acceptance.",
+  "next": "Run explicitly authorized reinstall/login permission-race acceptance and verify selected cloud tables plus local VNC/Moonlight overlays survive canonical rebind.",
   "blockers": [
-    "HDC reports Connect server failed, so Android portrait/landscape, Fit/zoom, tap/swipe/long-press and interrupted-input acceptance could not run.",
-    "The full native suite remains 799/815 because 16 pre-existing VNC local TLS fixture tests fail at fixture.start(); the new RustDesk display/decoder policy tests pass."
+    "No HAP installation or destructive reinstall was authorized in this session, so real-device uninstall/reinstall and login acceptance is not claimed.",
+    "Deep real-RDB receipt upgrade/rollback and real window/NAPI admission integration remain P3 coverage follow-ups; policy and compile gates pass."
   ],
   "planPaths": [
-    "docs/codex/plans/2026-08-28-rustdesk-mobile-display-input-quick-optimization.md",
-    "docs/codex/plans/2026-08-28-settings-accordion-layout-fix.md"
+    "docs/codex/plans/2026-08-28-cloud-sync-permission-race-recovery.md"
   ],
   "review": {
     "status": "PASS",
     "taskIds": [
-      "/root/independent_review"
+      "/root/cloud_sync_fix_review"
     ],
-    "reviewedHead": "0bc68d030e6739b9ac43e2098da2392bc834c7ee",
+    "reviewedHead": "7be69ad423a13cbeb64dfddc2816a806f46ad75a",
     "scope": [
-      "entry/src/main/cpp/render/decoder_recovery_policy.h",
-      "entry/src/main/cpp/render/hw_decoder.cpp",
-      "entry/src/main/cpp/render/native_image_context_policy.h",
-      "entry/src/main/cpp/rustdesk/rustdesk_peer_presentation_policy.h",
-      "entry/src/main/cpp/test/decoder_recovery_policy_test.cpp",
-      "entry/src/main/cpp/test/native_image_context_policy_test.cpp",
-      "entry/src/main/ets/pages/RemoteDesktop.ets",
+      "entry/src/main/ets/entryability/EntryAbility.ets",
       "entry/src/main/ets/pages/HostListPage.ets",
-      "entry/src/main/ets/services/DiagnosticCapturePolicy.ets",
-      "entry/src/main/ets/services/DiagnosticRuntimeSnapshotPolicy.ets",
-      "entry/src/main/ets/services/RemoteCanvasTransformPolicy.ets",
-      "entry/src/main/ets/services/RemoteOrientationPolicy.ets",
-      "entry/src/main/ets/services/SettingsAccordionPolicy.ets",
-      "entry/src/test/DiagnosticCapturePolicy.test.ets",
-      "entry/src/test/DiagnosticRuntimeSnapshotPolicy.test.ets",
-      "entry/src/test/RemoteCanvasTransformPolicy.test.ets",
-      "entry/src/test/RemoteOrientationPolicy.test.ets",
-      "entry/src/test/SettingsAccordionPolicy.test.ets"
+      "entry/src/main/ets/services/AccountSessionCoordinator.ets",
+      "entry/src/main/ets/services/ActiveRemoteSessionRegistry.ets",
+      "entry/src/main/ets/services/CloudBindingRecoveryPolicy.ets",
+      "entry/src/main/ets/services/CloudStartupFinalizationPolicy.ets",
+      "entry/src/main/ets/services/CloudStore.ets",
+      "entry/src/main/ets/services/CloudSyncCoordinator.ets",
+      "entry/src/main/ets/services/CloudSyncCoordinatorPolicy.ets",
+      "entry/src/main/ets/services/CloudSyncLifecyclePolicy.ets",
+      "entry/src/main/ets/services/ExtensionLoader.ets",
+      "entry/src/main/ets/services/LegacySharedStoreMigrationPolicy.ets",
+      "entry/src/main/ets/services/LegacySharedStoreMigrator.ets",
+      "entry/src/main/ets/services/PlatformCloudIdentityPolicy.ets",
+      "entry/src/main/ets/services/PlatformCloudIdentityService.ets",
+      "entry/src/main/ets/services/RemoteSessionTransitionGate.ets",
+      "entry/src/main/ets/services/RemoteSessionWindowCoordinator.ets",
+      "entry/src/test/CloudBindingRecoveryPolicy.test.ets",
+      "entry/src/test/CloudDataWiring.test.ets",
+      "entry/src/test/CloudStartupFinalizationPolicy.test.ets",
+      "entry/src/test/CloudSyncCoordinatorPolicy.test.ets",
+      "entry/src/test/LegacySharedStoreMigrationPolicy.test.ets",
+      "entry/src/test/List.test.ets",
+      "entry/src/test/PlatformCloudIdentityPolicy.test.ets",
+      "entry/src/test/RemoteSessionTransitionGate.test.ets"
     ],
     "findings": [],
-    "reason": "The independent reviewer confirmed the settings layout calculations and all RustDesk/input-transition scope after two P2 remediations; final P0-P3 are zero."
+    "reason": "The independent reviewer verified the complete permission-race recovery and all remediations. Final P0/P1/P2 are zero; only non-blocking P3 real-RDB/window/NAPI integration depth remains."
   },
   "lastVerification": {
-    "baseline": "RustDesk mobile display/input increment starts at 6e2fece58 on the user-authorized existing task branch.",
-    "testCompile": "PASS after the review fixes: default@OhosTestCompileArkTS, BUILD SUCCESSFUL in 8 s 753 ms",
-    "assembleHap": "PASS after the review fixes: signed HAP, BUILD SUCCESSFUL in 16 s 771 ms, SHA-256 4dbd6cdcf5f2561f00d3b35bfb67a2c5782deadad5499a4dd1947d2e0ccfe68a",
-    "targetedTests": "PASS compile: SettingsAccordionPolicy covers Data Security row growth plus sm/md/lg/xl RDP caps; prior NativeImage and decoder policy tests remain unchanged. Full native result remains 799 passed with 16 known unrelated VNC TLS fixture failures.",
-    "arktsTests": "PASS compile: settings accordion, canvas source/window rebase, peer-platform and diagnostics policy cases compile through the mandatory test gate; no separate ohosTest module is registered.",
+    "baseline": "Cloud sync recovery increment starts at 7ad612f55 on the user-authorized existing task branch.",
+    "testCompile": "PASS: default@OhosTestCompileArkTS, BUILD SUCCESSFUL in 20 s 47 ms",
+    "assembleHap": "PASS: signed HAP, BUILD SUCCESSFUL in 27 s 641 ms",
+    "targetedTests": "PASS compile: permission, recovery, migration receipt/local overlay, remote transition, startup finalization, optional partial-success and retry cases are registered in entry/src/test/List.test.ets.",
+    "arktsTests": "PASS compile through mandatory default@OhosTestCompileArkTS; no separate ohosTest module task is registered.",
     "compliance": "PASS: Light open-source compliance and git diff --check",
-    "review": "PASS: /root/independent_review reviewed 6e2fece58..0bc68d030; two P2 findings were fixed and the follow-up found no P0-P3.",
-    "deviceAcceptance": "BLOCKED: HDC Connect server failed; no usable Android target."
+    "review": "PASS: /root/cloud_sync_fix_review found no remaining P0/P1/P2 after iterative review; P3 integration depth is non-blocking.",
+    "deviceAcceptance": "PENDING: no HAP install or uninstall/reinstall was performed."
   },
   "updated": "2026-08-28 Asia/Shanghai"
 }
