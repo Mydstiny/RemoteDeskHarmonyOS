@@ -7,9 +7,12 @@ import {
 import { distributedAccount } from '@kit.BasicServicesKit';
 import {
   PlatformCloudIdentityProof,
+  PlatformCloudPermissionRequestDecision,
   platformCloudIdentityProofFromApi23,
+  platformCloudPermissionRequestDecision,
   unavailablePlatformCloudIdentityProof
 } from './PlatformCloudIdentityPolicy';
+import { hilog } from '@kit.PerformanceAnalysisKit';
 
 const DISTRIBUTED_DATA_PERMISSION: Permissions =
   'ohos.permission.DISTRIBUTED_DATASYNC' as Permissions;
@@ -53,9 +56,36 @@ export class PlatformCloudIdentityService {
         const requested: PermissionRequestResult =
           await manager.requestPermissionsFromUser(
             uiContext, [DISTRIBUTED_DATA_PERMISSION]);
-        if (!requested.authResults ||
-          requested.authResults.length !== 1 ||
-          requested.authResults[0] !== 0) {
+        const authResult: number =
+          requested.authResults &&
+          requested.authResults.length === 1
+            ? requested.authResults[0] : -1;
+        const dialogShown: boolean | null =
+          requested.dialogShownResults &&
+          requested.dialogShownResults.length === 1
+            ? requested.dialogShownResults[0] : null;
+        const errorReason: number | null =
+          requested.errorReasons &&
+          requested.errorReasons.length === 1
+            ? requested.errorReasons[0] : null;
+        const decision: PlatformCloudPermissionRequestDecision =
+          platformCloudPermissionRequestDecision(
+          authResult, dialogShown, errorReason);
+        if (decision === 'retryable' ||
+            decision === 'retryable_dialog') {
+          hilog.warn(0x0001, 'PlatformCloudIdentity',
+            '分布式数据权限暂不可请求，将在前台稳定后重试' +
+            ' auth=' + authResult.toString() +
+            ' dialog=' + (dialogShown === null
+              ? 'unknown' : dialogShown.toString()) +
+            ' reason=' + (errorReason === null
+              ? 'unknown' : errorReason.toString()));
+          return unavailablePlatformCloudIdentityProof(
+            decision === 'retryable_dialog'
+              ? 'permission_dialog_blocked'
+              : 'permission_unavailable');
+        }
+        if (decision !== 'granted') {
           return unavailablePlatformCloudIdentityProof(
             'permission_denied');
         }

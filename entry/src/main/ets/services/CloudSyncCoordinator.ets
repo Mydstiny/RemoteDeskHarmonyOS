@@ -95,6 +95,7 @@ function diagnosticCloudFailureCode(failure: CloudSyncFailureKind): number {
     case 'restore_pending': return 8;
     case 'no_selection': return 9;
     case 'unknown': return 10;
+    case 'local_finalize': return 11;
   }
 }
 
@@ -760,7 +761,7 @@ export class CloudSyncCoordinator {
     const checkpointFailure: CloudSyncOperationResult = {
       ok: false, source: 'startup', tables: [],
       failedTables: this.selectedTables(),
-      rollbackFailed: false, failureKind: 'unknown'
+      rollbackFailed: false, failureKind: 'local_finalize'
     };
     const operation: Promise<CloudSyncOperationResult> = checkpointFailed
       ? Promise.resolve(checkpointFailure)
@@ -789,11 +790,57 @@ export class CloudSyncCoordinator {
         initialJournalRevisions, initialMutationVersions,
         restoreBlocked, startupCheckpointStarted);
     });
-    this.startupPull = completed.then((result: CloudSyncOperationResult): CloudSyncOperationResult => {
-      this.startupPull = null;
-      return result;
-    });
-    return this.startupPull;
+    const recovered: Promise<CloudSyncOperationResult> = completed.then(
+      (result: CloudSyncOperationResult): CloudSyncOperationResult =>
+        result,
+      async (_error: Error): Promise<CloudSyncOperationResult> =>
+        await this.recoverStartupFinalizationException(
+          initialBootstrap, restoreBlocked,
+          startupCheckpointStarted));
+    this.startupPull = recovered;
+    void recovered.then(
+      (_result: CloudSyncOperationResult): void => {
+        if (this.startupPull === recovered) {
+          this.startupPull = null;
+        }
+      }, (_error: Error): void => {
+        if (this.startupPull === recovered) {
+          this.startupPull = null;
+        }
+      });
+    return recovered;
+  }
+
+  private async recoverStartupFinalizationException(
+    initialBootstrap: boolean,
+    restoreBlocked: boolean,
+    startupCheckpointStarted: boolean
+  ): Promise<CloudSyncOperationResult> {
+    let rollbackFailed: boolean = false;
+    if (initialBootstrap && !restoreBlocked &&
+        startupCheckpointStarted) {
+      try {
+        rollbackFailed = this.hooks === null ||
+          this.hooks.rollbackStartupDownload === undefined ||
+          !(await this.hooks.rollbackStartupDownload());
+      } catch (_rollbackError) {
+        rollbackFailed = true;
+      }
+    }
+    this.startupState = 'pending';
+    if (this.hooks && this.hooks.setStartupSyncPending) {
+      try {
+        this.hooks.setStartupSyncPending(false);
+      } catch (_pendingError) { /* fail closed in memory */ }
+    }
+    return {
+      ok: false,
+      source: 'startup',
+      tables: this.selectedTables(),
+      failedTables: this.selectedTables(),
+      rollbackFailed,
+      failureKind: 'local_finalize'
+    };
   }
 
   private requestStartupCloudFirst(): Promise<CloudSyncOperationResult> {
@@ -907,6 +954,8 @@ export class CloudSyncCoordinator {
         this.hooks.completeStartupDownload === undefined ||
         !this.hooks.completeStartupDownload(
           initialDirty.slice(), result.tables.slice())) {
+        hilog.error(DOMAIN, TAG,
+          'startup transfer succeeded but local download finalization failed stage=download_transaction');
         const restored: boolean =
           this.hooks !== null &&
           this.hooks.rollbackStartupDownload !==
@@ -917,7 +966,7 @@ export class CloudSyncCoordinator {
           tables: result.tables.slice(),
           failedTables: initialDirty.slice(),
           rollbackFailed: !restored,
-          failureKind: 'unknown'
+          failureKind: 'local_finalize'
         };
       }
     }
@@ -941,21 +990,25 @@ export class CloudSyncCoordinator {
       }
       if (this.hooks && this.hooks.markCloudBootstrapCompleted &&
         !this.hooks.markCloudBootstrapCompleted()) {
+        hilog.error(DOMAIN, TAG,
+          'startup local finalization failed stage=bootstrap_marker');
         finalResult = {
           ok: false, source: result.source,
           tables: result.tables.slice(),
           failedTables: result.tables.slice(),
-          rollbackFailed: false, failureKind: 'unknown'
+          rollbackFailed: false, failureKind: 'local_finalize'
         };
         compatibilityCommitted = false;
       } else {
         this.bootstrapCompleted = true;
         if (!this.persistBootstrapCompletion()) {
+          hilog.error(DOMAIN, TAG,
+            'startup local finalization failed stage=lifecycle_persist');
           finalResult = {
             ok: false, source: result.source,
             tables: result.tables.slice(),
             failedTables: result.tables.slice(),
-            rollbackFailed: false, failureKind: 'unknown'
+            rollbackFailed: false, failureKind: 'local_finalize'
           };
           compatibilityCommitted = false;
         }
@@ -1017,7 +1070,8 @@ export class CloudSyncCoordinator {
       this.startupState = 'pending';
       return {
         ok: false, source: result.source, tables: result.tables.slice(),
-        failedTables: result.tables.slice(), rollbackFailed: false, failureKind: 'unknown'
+        failedTables: result.tables.slice(), rollbackFailed: false,
+        failureKind: 'local_finalize'
       };
     }
     this.bootstrapCompleted = true;
@@ -1028,7 +1082,8 @@ export class CloudSyncCoordinator {
       this.startupState = 'pending';
       return {
         ok: false, source: result.source, tables: result.tables.slice(),
-        failedTables: result.tables.slice(), rollbackFailed: false, failureKind: 'unknown'
+        failedTables: result.tables.slice(), rollbackFailed: false,
+        failureKind: 'local_finalize'
       };
     }
     this.startupState = 'ready';

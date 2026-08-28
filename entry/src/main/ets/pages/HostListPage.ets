@@ -39,8 +39,14 @@ import {
 import {
   isVncHostProjection, projectVncHost, vncHostRecordIdFromUiId, vncHostUiId
 } from '../services/VncHostListProjectionPolicy';
-import { CloudSyncCoordinator } from '../services/CloudSyncCoordinator';
-import { cloudFirstCompatibleTablesAfterOptionalFailure } from '../services/CloudSyncCoordinatorPolicy';
+import {
+  CloudSyncCoordinator,
+  CloudSyncOperationResult
+} from '../services/CloudSyncCoordinator';
+import {
+  cloudFirstCompatibleTablesAfterOptionalFailure,
+  cloudFirstTablesForSelectionFinalization
+} from '../services/CloudSyncCoordinatorPolicy';
 import { CloudSyncSelectionStore } from '../services/CloudSyncSelectionStore';
 import { cloudSyncSelectableTables, effectiveCloudSyncTables } from '../services/CloudSyncSelectionPolicy';
 import {
@@ -831,6 +837,7 @@ struct HostListPage {
   @State popupSheetMode: number = 0; // 0=crypto, 1=about(用 aboutSheetMode 子路由), 2=SSH host key, 4=RDP certificate
   @State cloudSyncStep: string = CLOUD_SYNC_SHEET_ACTIONS;
   @State cloudConnectionAvailable: boolean = false;
+  private cloudRegistrationRefreshPromise: Promise<void> | null = null;
   /** User's explicit portable-backup sensitivity choice at export time. */
   @State backupFullMode: boolean = false;
   @State cloudSyncError: string = '';
@@ -4095,27 +4102,60 @@ struct HostListPage {
       this.cloudConnectionAvailable = false;
       return;
     }
+    if (this.cloudRegistrationRefreshPromise !== null) { return; }
     const cloud: CloudStore = CloudStore.getInstance();
     this.cloudConnectionAvailable = cloud.isCloudAvailable();
-    if (this.cloudConnectionAvailable) {
+    const operation: Promise<void> = (async (): Promise<void> => {
+      await AccountSessionCoordinator.getInstance()
+        .resumePendingCloudBindingAfterForeground();
+      const lease: AccountSessionLease | null =
+        cloud.currentAccountLease();
+      if (lease === null || !cloud.isLeaseCurrent(lease)) { return; }
+      let restored: boolean = cloud.isCloudAvailable();
+      if (!restored) {
+        restored = await cloud.retryCloudRegistration();
+      }
+      this.cloudConnectionAvailable = cloud.isCloudAvailable();
+      if (!restored || !this.cloudConnectionAvailable ||
+          !cloud.isLeaseCurrent(lease)) { return; }
       if (CloudSyncSelectionStore.getInstance()
         .persistedSelectedBusinessTables()
         .indexOf(MOONLIGHT_CLOUD_TABLE) >= 0) {
-        void cloud.retryMoonlightCloudRegistration();
+        await cloud.retryMoonlightCloudRegistration();
+        if (!cloud.isLeaseCurrent(lease)) { return; }
       }
-      return;
-    }
-    void cloud.retryCloudRegistration().then((restored: boolean): void => {
+      const startupRequired: boolean =
+        !cloud.hasCloudBootstrapCompleted();
+      if (startupRequired ||
+          cloud.hasPendingSelectionReenableBarriers()) {
+        const result: CloudSyncOperationResult =
+          startupRequired
+            ? await CloudSyncCoordinator.getInstance()
+              .requestStartupPull()
+            : await CloudSyncCoordinator.getInstance()
+              .requestForegroundPull();
+        if (!cloud.isLeaseCurrent(lease)) { return; }
+        const finalizedTables: string[] =
+          cloudFirstTablesForSelectionFinalization(
+            result.ok, result.tables, result.failedTables);
+        if (finalizedTables.length > 0 &&
+            !cloud.resumeSelectionReenableAfterCloudFirst(
+              finalizedTables)) {
+          hilog.warn(0x0001, 'HostListPage',
+            'cloud bootstrap completed; selection barriers remain fail-closed');
+        }
+      }
       this.cloudConnectionAvailable = cloud.isCloudAvailable();
-      if (!restored) { return; }
-      void CloudSyncCoordinator.getInstance().requestStartupPull().then(
-        (_result): void => {
-          this.cloudConnectionAvailable = cloud.isCloudAvailable();
-        },
-        (_error: Error): void => {
-          this.cloudConnectionAvailable = cloud.isCloudAvailable();
-        });
+    })();
+    this.cloudRegistrationRefreshPromise = operation;
+    void operation.then((): void => {
+      if (this.cloudRegistrationRefreshPromise === operation) {
+        this.cloudRegistrationRefreshPromise = null;
+      }
     }, (_error: Error): void => {
+      if (this.cloudRegistrationRefreshPromise === operation) {
+        this.cloudRegistrationRefreshPromise = null;
+      }
       this.cloudConnectionAvailable = cloud.isCloudAvailable();
     });
   }

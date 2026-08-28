@@ -98,6 +98,10 @@ import {
   shouldRejectAutomaticEmptyCloudSnapshot,
   shouldProtectMoonlightBeforeEmptyCloudMaterialization
 } from './CloudSyncCoordinatorPolicy';
+import {
+  CloudStartupFinalizationResult,
+  finalizeCloudStartupDownload
+} from './CloudStartupFinalizationPolicy';
 import { CloudSyncSelectionStore } from './CloudSyncSelectionStore';
 import {
   cloudSelectionAfterLocalCryptoTransition,
@@ -421,6 +425,7 @@ import {
   recoverCryptoLifecycleDurableState
 } from './CryptoLifecyclePolicy';
 import {
+  ACCOUNT_SCOPED_SOURCE_CHANGED_ERROR,
   LegacySharedStoreMigrationResult,
   LegacySharedStoreMigrator
 } from './LegacySharedStoreMigrator';
@@ -540,6 +545,9 @@ export interface SyncStatus {
   tableStatus: Record<string, TableSyncStatus>;
 }
 
+export type CloudScopeRebindFailureKind =
+  'none' | 'transient' | 'identity_conflict' | 'source_changed';
+
 interface IndeterminateCloudSyncOperation {
   operationId: number;
   storeInstanceId: number;
@@ -629,6 +637,8 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
   private appContext: common.Context | null = null;
   private initialized: boolean = false;
   private initPromise: Promise<void> | null = null;
+  private lastScopeRebindFailure:
+    CloudScopeRebindFailureKind = 'none';
   private cloudAvailable: boolean = false;
   // Optional registration is isolated from the legacy eight-table contract.
   // A missing AGC Moonlight schema must never make existing protocol cloud
@@ -819,17 +829,22 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
     verifiedUnionId: string = '',
     platformProof: PlatformCloudIdentityProof =
       unavailablePlatformCloudIdentityProof()): Promise<boolean> {
+    this.lastScopeRebindFailure = 'none';
     if (this.initialized &&
       accountScopeRebindSucceeded(token, this.currentScopeToken)) {
       return true;
     }
     if (this.initPromise !== null) { await this.initPromise; }
     if (this.initialized && this.mutationGateOpen) {
+      this.lastScopeRebindFailure = 'transient';
       hilog.error(0x0001, 'CloudSync',
         '拒绝切换物理数据域：mutation gate 尚未关闭');
       return false;
     }
-    if (!(await this.closeCurrentStore())) { return false; }
+    if (!(await this.closeCurrentStore())) {
+      this.lastScopeRebindFailure = 'transient';
+      return false;
+    }
     this.initPromise = this.openScopeStore(
       context, token, verifiedUnionId, platformProof);
     try {
@@ -854,6 +869,22 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
       platformIdentityFingerprint:
         this.currentScopeToken.platformIdentityFingerprint
     };
+  }
+
+  lastScopeRebindFailureKind(): CloudScopeRebindFailureKind {
+    return this.lastScopeRebindFailure;
+  }
+
+  capturePendingCloudBindingSourceBaseline(): boolean {
+    if (!this.initialized || this.store === null ||
+        this.currentScopeToken.kind !== 'huawei_account' ||
+        this.currentScopeToken.storeIdentity ===
+          ACCOUNT_CLOUD_STORE_IDENTITY) {
+      return false;
+    }
+    return LegacySharedStoreMigrator.getInstance()
+      .captureAccountScopedRecoveryBaseline(
+        this.store);
   }
 
   currentAccountLease(): AccountSessionLease | null {
@@ -1145,6 +1176,7 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
           try { await foreignStore.close(); } catch (_closeError) {}
           this.currentScopeToken.storeIdentity = fallbackIdentity;
           this.currentScopeToken.cloudBindingState = 'blocked';
+          this.lastScopeRebindFailure = 'identity_conflict';
           this.cloudAccountBinding =
             cloudAccountBindingForScope(this.currentScopeToken);
           const fallbackConfig: relationalStore.StoreConfig = {
@@ -1379,6 +1411,15 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
           '云空间同步已就绪 — 请确认两台设备"设置→华为账号"为同一账号');
       }
     } catch (err) {
+      const detail: string = DataCrypto.errDetail(err);
+      if (detail.indexOf(
+        ACCOUNT_SCOPED_SOURCE_CHANGED_ERROR) >= 0) {
+        this.lastScopeRebindFailure = 'source_changed';
+      } else if (this.lastScopeRebindFailure === 'none') {
+        this.lastScopeRebindFailure =
+          this.currentScopeToken.cloudBindingState === 'blocked'
+            ? 'identity_conflict' : 'transient';
+      }
       this.initialized = false;
       this.cloudAvailable = false;
       this.mutationGateOpen = false;
@@ -1396,7 +1437,7 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
       if (failedStore !== null) {
         try { await failedStore.close(); } catch (_closeError) {}
       }
-      hilog.error(0x0001, 'CloudSync', "初始化失败: " + DataCrypto.errDetail(err));
+      hilog.error(0x0001, 'CloudSync', "初始化失败: " + detail);
     }
   }
 
@@ -1939,6 +1980,28 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
     return true;
   }
 
+  hasPendingSelectionReenableBarriers(): boolean {
+    const snapshot: SelectionReenableBarrierSnapshot =
+      this.selectionReenableBarrierSnapshot();
+    return !snapshot.readable ||
+      Object.keys(snapshot.barriers).length > 0;
+  }
+
+  /**
+   * Idempotently finish selection promotion after any successful cloud-first.
+   * Startup commits data before this metadata; a transient metadata failure
+   * therefore remains fail-closed and is retried on every later foreground.
+   */
+  resumeSelectionReenableAfterCloudFirst(
+    pulledTables: string[]
+  ): boolean {
+    return this.markStartupSelectionReenablePulled(
+      pulledTables) &&
+      this.prepareSelectionReenablePromotions() &&
+      this.releaseSelectionReenableBarriers() &&
+      !this.hasPendingSelectionReenableBarriers();
+  }
+
   setAutomaticPushSuppressed(suppressed: boolean): void {
     this.automaticPushSuppressed = suppressed;
   }
@@ -2177,6 +2240,44 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
       this.localMutationEnvironmentAllowed();
   }
 
+  private finalizeStartupDownloadTransaction(
+    dirtyTables: string[],
+    completedTables: string[],
+    mode: string
+  ): boolean {
+    const finalization: CloudStartupFinalizationResult =
+      finalizeCloudStartupDownload({
+        reconcileMutationJournal: (): boolean =>
+          this.reconcileStartupMutationSnapshot(
+            dirtyTables),
+        markSelectionPulled: (): boolean =>
+          this.markStartupSelectionReenablePulled(
+            completedTables),
+        prepareSelectionPromotions: (): boolean =>
+          this.prepareSelectionReenablePromotions(),
+        clearDownloadCheckpoint: (): boolean =>
+          this.completeCloudDownloadTransaction(),
+        releaseSelectionBarriers: (): boolean =>
+          this.releaseSelectionReenableBarriers()
+      });
+    if (!finalization.ok) {
+      hilog.error(0x0001, 'CloudSync',
+        'startup local finalization failed mode=' + mode +
+        ' step=' + finalization.failureStep +
+        ' rollback=' +
+        finalization.rollbackRequired.toString());
+      return false;
+    }
+    if (finalization.deferredSelectionStep !== 'none') {
+      hilog.warn(0x0001, 'CloudSync',
+        'startup download committed; selection finalization deferred mode=' +
+        mode + ' step=' +
+        finalization.deferredSelectionStep +
+        ' barriers=closed');
+    }
+    return true;
+  }
+
   private coordinatorHooks(): CloudSyncCoordinatorHooks {
     return {
       beginManualDownload: (): boolean => {
@@ -2252,39 +2353,21 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
       rollbackStartupDownload: (): Promise<boolean> =>
         this.rollbackCloudDownloadTransaction(),
       completeStartupDownload: (
-        dirtyTables: string[], completedTables: string[]): boolean => {
-        if (!this.reconcileStartupMutationSnapshot(dirtyTables)) {
-          return false;
-        }
-        // Keep selection-reenable promotion inside the coordinator's startup
-        // transaction.  The coordinator does not publish bootstrap=ready (or
-        // flush deferred uploads) until this finalizer succeeds.  Finalize the
-        // selection metadata before clearing the before-image, so a failed
-        // promotion still goes through the normal startup rollback path.
-        if (!this.markStartupSelectionReenablePulled(
-          completedTables)) {
-          return false;
-        }
-        if (!this.prepareSelectionReenablePromotions() ||
-          !this.releaseSelectionReenableBarriers()) {
-          return false;
-        }
-        return this.completeCloudDownloadTransaction();
-      },
+        dirtyTables: string[], completedTables: string[]): boolean =>
+        this.finalizeStartupDownloadTransaction(
+          dirtyTables, completedTables, 'full'),
       completeStartupDownloadPartial: async (
         dirtyTables: string[], completedTables: string[],
         failedTables: string[]
       ): Promise<boolean> => {
         if (!(await this.restoreFailedOptionalCloudDownloadState(
-          failedTables)) ||
-          !this.reconcileStartupMutationSnapshot(dirtyTables) ||
-          !this.markStartupSelectionReenablePulled(
-            completedTables) ||
-          !this.prepareSelectionReenablePromotions() ||
-          !this.releaseSelectionReenableBarriers()) {
+          failedTables))) {
+          hilog.error(0x0001, 'CloudSync',
+            'startup local finalization failed mode=partial step=optional_restore rollback=true');
           return false;
         }
-        return this.completeCloudDownloadTransaction();
+        return this.finalizeStartupDownloadTransaction(
+          dirtyTables, completedTables, 'partial');
       },
       setRestorePending: (pending: boolean): void => { this.localRestorePending = pending; },
       setCloudDownloadPending: (pending: boolean): void => {

@@ -5,6 +5,7 @@
  * 页面实例重建后可用它判断应恢复渲染，而不是新建协议连接。
  */
 import { RemoteProtocol } from './RemoteSessionState';
+import { RemoteSessionTransitionGate } from './RemoteSessionTransitionGate';
 
 const ACTIVE_REMOTE_SESSION_KEY = 'activeRemoteSessionRecord';
 
@@ -80,6 +81,8 @@ export class ActiveRemoteSessionRegistry {
 
   setActive(record: ActiveRemoteSessionRecord,
     adoption: ActiveRemoteSessionRestoreAdoption | null = null): boolean {
+    if (!RemoteSessionTransitionGate.getInstance()
+      .newSessionAllowed()) { return false; }
     if (this.termination !== null || !this.restoreOwnerAllows(adoption)) { return false; }
     if (record.ownerScopeId !== this.ownerScopeId ||
       record.accountGeneration !== this.accountGeneration ||

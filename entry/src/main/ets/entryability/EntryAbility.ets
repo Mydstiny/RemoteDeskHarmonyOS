@@ -24,6 +24,7 @@ import {
   CloudSyncCoordinator,
   CloudSyncOperationResult
 } from '../services/CloudSyncCoordinator';
+import { cloudFirstTablesForSelectionFinalization } from '../services/CloudSyncCoordinatorPolicy';
 import { CloudStore } from '../services/CloudStore';
 import { AccountSessionLease } from '../services/AccountScopePolicy';
 import { AccountSessionCoordinator } from '../services/AccountSessionCoordinator';
@@ -81,19 +82,40 @@ export default class EntryAbility extends UIAbility {
   private resumeCloudAfterForeground(): void {
     if (this.foregroundCloudResumePromise !== null) { return; }
     const cloud: CloudStore = CloudStore.getInstance();
-    const lease: AccountSessionLease | null = cloud.currentAccountLease();
-    if (lease === null || !cloud.isLeaseCurrent(lease)) { return; }
     const operation: Promise<void> = (async (): Promise<void> => {
-      const coreReady: boolean = await cloud.retryCloudRegistration();
+      // A permission dialog blocked immediately after Account Kit login leaves
+      // the account in a local-only validating store. Recover that identity and
+      // rebind first; setDistributedTables alone cannot repair the old store.
+      await AccountSessionCoordinator.getInstance()
+        .resumePendingCloudBindingAfterForeground();
+      const lease: AccountSessionLease | null =
+        cloud.currentAccountLease();
+      if (lease === null || !cloud.isLeaseCurrent(lease)) { return; }
+      const coreReady: boolean = cloud.isCloudAvailable()
+        ? true : await cloud.retryCloudRegistration();
       if (!coreReady || !cloud.isCloudAvailable() ||
           !cloud.isLeaseCurrent(lease)) {
         return;
       }
+      const startupRequired: boolean =
+        !cloud.hasCloudBootstrapCompleted();
       const result: CloudSyncOperationResult =
-        await CloudSyncCoordinator.getInstance().requestForegroundPull();
+        startupRequired
+          ? await CloudSyncCoordinator.getInstance().requestStartupPull()
+          : await CloudSyncCoordinator.getInstance().requestForegroundPull();
       if (!cloud.isLeaseCurrent(lease)) { return; }
+      const finalizedTables: string[] =
+        cloudFirstTablesForSelectionFinalization(
+          result.ok, result.tables, result.failedTables);
+      if (finalizedTables.length > 0 &&
+          !cloud.resumeSelectionReenableAfterCloudFirst(
+            finalizedTables)) {
+        hilog.warn(DOMAIN, TAG,
+          'foreground cloud-first completed; selection barriers remain fail-closed');
+      }
       hilog.info(DOMAIN, TAG,
-        'foreground cloud recovery ok=%{public}s tables=%{public}s failed=%{public}s',
+        'foreground cloud recovery startup=%{public}s ok=%{public}s tables=%{public}s failed=%{public}s',
+        startupRequired.toString(),
         result.ok.toString(), result.tables.join(','),
         result.failedTables.join(','));
     })();

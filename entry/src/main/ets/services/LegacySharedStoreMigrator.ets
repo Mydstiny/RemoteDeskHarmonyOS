@@ -6,6 +6,10 @@ import { util } from '@kit.ArkTS';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { AccountScopeToken, accountStoreIdentity } from './AccountScopePolicy';
 import {
+  accountScopedLocalOverlayRowDecision,
+  AccountScopedLocalOverlayRowDecision,
+  accountScopedMigrationReceiptDecision,
+  accountScopedMigrationReceiptNeedsUpgrade,
   accountScopedCryptoParamsMayMigrate,
   accountScopedRowOwnershipDecision,
   legacyCryptoParamsMayMigrate,
@@ -15,16 +19,30 @@ import {
   LegacyVncRowMigrationDecision
 } from './LegacySharedStoreMigrationPolicy';
 import {
+  VNC_LOCAL_TABLE,
   VNC_RECORD_COLUMNS,
   vncRecordFromCloudRow,
   vncRecordIsValid
 } from './VncRecordPolicy';
+import {
+  MOONLIGHT_LOCAL_RECORD_COLUMNS,
+  MOONLIGHT_LOCAL_TABLE,
+  MOONLIGHT_RECORD_COLUMNS,
+  moonlightRecordFromCloudRow
+} from '../model/MoonlightRecord';
+import { moonlightValidateRecord } from './MoonlightRecordPolicy';
+
+export const ACCOUNT_SCOPED_SOURCE_CHANGED_ERROR: string =
+  'account_scoped_source_changed_after_committed_migration';
 
 const LEGACY_STORE_NAME: string = 'remotedesktop.db';
 const ACCOUNT_SCOPED_MIGRATION_ID: string = 'account-scoped-store-v1';
 const RECEIPT_TABLE: string = 'migrationreceipts';
 const QUARANTINE_TABLE: string = 'migrationquarantine';
 const JOURNAL_TABLE: string = 'localmutationjournal';
+const LOCAL_METADATA_TABLE: string = 'localmetadata';
+const ACCOUNT_SCOPED_RECOVERY_BASELINE_KEY: string =
+  'account_scoped_cloud_recovery_journal_baseline_v1';
 const MIGRATION_ID: string = 'legacy-shared-store-v1';
 const OWNER_CLAIM_MIGRATION_ID: string = 'legacy-owner-claim-v2';
 /** Store-scoped metadata that must survive an account-scope migration. */
@@ -32,7 +50,8 @@ const CARRYOVER_METADATA_EXCLUDE_KEYS: string[] = [
   'store_owner_scope_id',
   'store_identity',
   'store_schema_revision',
-  'store_platform_cloud_identity_fingerprint'
+  'store_platform_cloud_identity_fingerprint',
+  ACCOUNT_SCOPED_RECOVERY_BASELINE_KEY
 ];
 const OWNER_TABLES: string[] = [
   'remotehosts',
@@ -43,7 +62,9 @@ const OWNER_TABLES: string[] = [
   'usersettings',
   'vncrecords',
   'vncrecord',
-  'vncrecordv2'
+  'vncrecordv2',
+  VNC_LOCAL_TABLE,
+  MOONLIGHT_LOCAL_TABLE
 ];
 const EXPLICIT_OWNER_TABLES: string[] = [
   'remotehosts',
@@ -54,6 +75,14 @@ const EXPLICIT_OWNER_TABLES: string[] = [
   'vncrecords',
   'vncrecord',
   'vncrecordv2'
+];
+const VNC_LOCAL_RECORD_COLUMNS: string[] = [
+  ...VNC_RECORD_COLUMNS,
+  'localonly'
+];
+const ACCOUNT_SCOPED_LOCAL_TABLES: string[] = [
+  VNC_LOCAL_TABLE,
+  MOONLIGHT_LOCAL_TABLE
 ];
 /** Tables that carried userid in the pre-ownerScopeId cloud store. */
 const LEGACY_OWNER_CLAIM_TABLES: string[] = [
@@ -85,6 +114,10 @@ export interface LegacySharedStoreMigrationOptions {
   targetStoreName?: string;
 }
 
+interface CommittedMigrationReceipt {
+  sourceFingerprint: string;
+}
+
 export class LegacySharedStoreMigrator {
   private static instance: LegacySharedStoreMigrator;
 
@@ -93,6 +126,32 @@ export class LegacySharedStoreMigrator {
       LegacySharedStoreMigrator.instance = new LegacySharedStoreMigrator();
     }
     return LegacySharedStoreMigrator.instance;
+  }
+
+  captureAccountScopedRecoveryBaseline(
+    source: relationalStore.RdbStore
+  ): boolean {
+    try {
+      const existing: string | null =
+        this.localMetadataValue(
+          source,
+          ACCOUNT_SCOPED_RECOVERY_BASELINE_KEY);
+      if (existing !== null) {
+        return existing.indexOf('journal-v1:') === 0;
+      }
+      const fingerprint: string =
+        this.sourceMutationFingerprint(source);
+      this.insertRow(source, LOCAL_METADATA_TABLE, {
+        key: ACCOUNT_SCOPED_RECOVERY_BASELINE_KEY,
+        value: fingerprint,
+        updatedat: Date.now()
+      });
+      return this.localMetadataValue(
+        source,
+        ACCOUNT_SCOPED_RECOVERY_BASELINE_KEY) === fingerprint;
+    } catch (_error) {
+      return false;
+    }
   }
 
   async migrateIfNeeded(context: common.Context, target: relationalStore.RdbStore,
@@ -124,7 +183,10 @@ export class LegacySharedStoreMigrator {
     const path: string = context.databaseDir + '/rdb/' + sourceName;
     if (!fileIo.accessSync(path)) { return empty; }
     const receiptId: string = migrationId + ':' + scope.ownerScopeId;
-    if (this.receiptCommitted(target, receiptId)) {
+    const committedReceipt: CommittedMigrationReceipt | null =
+      this.committedReceipt(target, receiptId);
+    if (committedReceipt !== null &&
+        sourceKind !== 'account_scope') {
       return {
         found: true, migrated: true, copiedRows: 0,
         quarantinedRows: 0, skippedRows: 0
@@ -138,6 +200,35 @@ export class LegacySharedStoreMigrator {
       });
     let result: LegacySharedStoreMigrationResult = empty;
     try {
+      if (sourceKind === 'account_scope' &&
+          committedReceipt !== null) {
+        const currentFingerprint: string =
+          this.sourceMutationFingerprint(source);
+        const recoveryBaseline: string | null =
+          this.localMetadataValue(
+            source,
+            ACCOUNT_SCOPED_RECOVERY_BASELINE_KEY);
+        const decision =
+          accountScopedMigrationReceiptDecision(
+            committedReceipt.sourceFingerprint,
+            currentFingerprint,
+            recoveryBaseline);
+        if (decision === 'source_changed') {
+          throw new Error(
+            ACCOUNT_SCOPED_SOURCE_CHANGED_ERROR);
+        }
+        if (accountScopedMigrationReceiptNeedsUpgrade(
+          committedReceipt.sourceFingerprint,
+          decision,
+          recoveryBaseline)) {
+          this.upgradeCommittedReceiptFingerprint(
+            target, receiptId, currentFingerprint);
+        }
+        return {
+          found: true, migrated: true, copiedRows: 0,
+          quarantinedRows: 0, skippedRows: 0
+        };
+      }
       result = this.copySource(
         source, target, scope, verifiedUnionId, receiptId, path,
         migrationId, sourceName, sourceKind);
@@ -318,8 +409,10 @@ export class LegacySharedStoreMigrator {
             scope.ownerScopeId);
     const legacyVncResetEpoch: number = cryptoOwnershipProven
       ? this.readLegacyVncResetEpoch(source) : 0;
-    const sourceFingerprint: string = this.sourceFingerprint(
-      sourcePath, source.version, distinctOwners);
+    const sourceFingerprint: string = sourceKind === 'account_scope'
+      ? this.sourceMutationFingerprint(source)
+      : this.sourceFingerprint(
+          sourcePath, source.version, distinctOwners);
     const startedAt: number = Date.now();
     target.beginTransaction();
     try {
@@ -339,6 +432,19 @@ export class LegacySharedStoreMigrator {
         copiedRows += counts[0];
         quarantinedRows += counts[1];
         skippedRows += counts[2];
+      }
+      if (sourceKind === 'account_scope') {
+        for (let i = 0; i < ACCOUNT_SCOPED_LOCAL_TABLES.length; i++) {
+          const table: string = ACCOUNT_SCOPED_LOCAL_TABLES[i];
+          if (!this.tableExists(source, table)) { continue; }
+          const counts: number[] =
+            this.copyAccountScopedLocalOverlayRows(
+              source, target, table, scope, receiptId,
+              migrationId, legacyVncResetEpoch);
+          copiedRows += counts[0];
+          quarantinedRows += counts[1];
+          skippedRows += counts[2];
+        }
       }
       if (this.tableExists(source, 'rdpcredentials')) {
         const rdpCounts: number[] = this.copyReferencedRows(
@@ -492,6 +598,99 @@ export class LegacySharedStoreMigrator {
     return [copied, quarantined, skipped];
   }
 
+  /**
+   * Copy the local canonical overlays that are intentionally absent from
+   * setDistributedTables. These rows remain local overlays in the target;
+   * localonly and record tombstones are preserved byte-for-byte after strict
+   * schema, owner and protocol validation.
+   */
+  private copyAccountScopedLocalOverlayRows(
+    source: relationalStore.RdbStore,
+    target: relationalStore.RdbStore,
+    table: string,
+    scope: AccountScopeToken,
+    receiptId: string,
+    migrationId: string,
+    vncResetEpoch: number
+  ): number[] {
+    const expectedColumns: string[] = table === VNC_LOCAL_TABLE
+      ? VNC_LOCAL_RECORD_COLUMNS : MOONLIGHT_LOCAL_RECORD_COLUMNS;
+    if (!this.tableColumnsAreExact(
+      source, table, expectedColumns)) {
+      throw new Error(
+        'account-scoped local overlay source schema mismatch table=' +
+        table);
+    }
+    const rows: relationalStore.ResultSet =
+      source.querySync(
+        new relationalStore.RdbPredicates(table));
+    let copied: number = 0;
+    let quarantined: number = 0;
+    let skipped: number = 0;
+    let targetSchemaVerified: boolean = false;
+    while (rows.goToNextRow()) {
+      const sourceRow: relationalStore.ValuesBucket =
+        rows.getRow();
+      const bucket: relationalStore.ValuesBucket =
+        this.projectBucket(sourceRow, expectedColumns);
+      const recordId: string =
+        this.stringValue(bucket['id']);
+      const owner: string =
+        this.stringValue(bucket['userid']);
+      const localOnly: number = Number(
+        this.stringValue(bucket['localonly']));
+      let payloadValid: boolean = false;
+      if (table === VNC_LOCAL_TABLE) {
+        const record = vncRecordFromCloudRow(
+          this.stringRow(bucket, VNC_RECORD_COLUMNS));
+        payloadValid = legacyVncRowMigrationDecision(
+          record.userId, scope.ownerScopeId,
+          record.resetEpoch, vncResetEpoch,
+          vncRecordIsValid(record)) === 'migrate';
+      } else {
+        payloadValid = moonlightValidateRecord(
+          moonlightRecordFromCloudRow(
+            this.stringRow(
+              bucket,
+              MOONLIGHT_RECORD_COLUMNS))).valid;
+      }
+      const decision: AccountScopedLocalOverlayRowDecision =
+        accountScopedLocalOverlayRowDecision(
+          owner, scope.ownerScopeId,
+          localOnly, payloadValid);
+      if (decision === 'other_owner') {
+        skipped++;
+        continue;
+      }
+      if (decision !== 'migrate' || recordId.length === 0) {
+        quarantined++;
+        this.writeQuarantine(
+          target, receiptId, table, recordId,
+          recordId.length === 0
+            ? 'invalid_local_overlay_id' : decision,
+          this.stringValue(bucket['payload']) + ':' +
+            this.stringValue(bucket['ciphertext']),
+          migrationId);
+        continue;
+      }
+      if (!targetSchemaVerified) {
+        if (!this.tableExists(target, table) ||
+            !this.tableColumnsAreExact(
+              target, table, expectedColumns)) {
+          rows.close();
+          throw new Error(
+            'account-scoped local overlay target schema mismatch table=' +
+            table);
+        }
+        targetSchemaVerified = true;
+      }
+      this.insertRow(target, table, bucket);
+      copied++;
+    }
+    rows.close();
+    return [copied, quarantined, skipped];
+  }
+
   private copyReferencedRows(source: relationalStore.RdbStore,
     target: relationalStore.RdbStore, table: string,
     selectedIds: Set<string>, targetOwner: string,
@@ -561,18 +760,20 @@ export class LegacySharedStoreMigrator {
    */
   private copyLocalMetadataCarryover(source: relationalStore.RdbStore,
     target: relationalStore.RdbStore): number {
-    if (!this.tableExists(source, 'localmetadata') ||
-      !this.tableExists(target, 'localmetadata')) {
+    if (!this.tableExists(source, LOCAL_METADATA_TABLE) ||
+      !this.tableExists(target, LOCAL_METADATA_TABLE)) {
       return 0;
     }
     const targetColumns: string[] =
-      this.tableColumns(target, 'localmetadata');
+      this.tableColumns(target, LOCAL_METADATA_TABLE);
     if (targetColumns.indexOf('key') < 0 ||
       targetColumns.indexOf('value') < 0) {
       return 0;
     }
     const rows: relationalStore.ResultSet =
-      source.querySync(new relationalStore.RdbPredicates('localmetadata'));
+      source.querySync(
+        new relationalStore.RdbPredicates(
+          LOCAL_METADATA_TABLE));
     let copied: number = 0;
     while (rows.goToNextRow()) {
       const sourceRow: relationalStore.ValuesBucket = rows.getRow();
@@ -581,7 +782,7 @@ export class LegacySharedStoreMigrator {
         CARRYOVER_METADATA_EXCLUDE_KEYS.indexOf(key) >= 0) {
         continue;
       }
-      this.insertRow(target, 'localmetadata',
+      this.insertRow(target, LOCAL_METADATA_TABLE,
         this.projectBucket(sourceRow, targetColumns));
       copied++;
     }
@@ -809,14 +1010,71 @@ export class LegacySharedStoreMigrator {
 
   private receiptCommitted(target: relationalStore.RdbStore,
     receiptId: string): boolean {
+    return this.committedReceipt(
+      target, receiptId) !== null;
+  }
+
+  private committedReceipt(
+    target: relationalStore.RdbStore,
+    receiptId: string
+  ): CommittedMigrationReceipt | null {
     const predicates =
       new relationalStore.RdbPredicates(RECEIPT_TABLE);
     predicates.equalTo('id', receiptId);
     const rows: relationalStore.ResultSet = target.querySync(predicates);
-    const committed: boolean = rows.goToFirstRow() &&
-      rows.getString(rows.getColumnIndex('status')) === 'committed';
+    let receipt: CommittedMigrationReceipt | null = null;
+    if (rows.goToFirstRow() &&
+        rows.getString(rows.getColumnIndex('status')) === 'committed') {
+      receipt = {
+        sourceFingerprint: rows.getString(
+          rows.getColumnIndex('sourcefingerprint'))
+      };
+    }
     rows.close();
-    return committed;
+    return receipt;
+  }
+
+  private upgradeCommittedReceiptFingerprint(
+    target: relationalStore.RdbStore,
+    receiptId: string,
+    sourceFingerprint: string
+  ): void {
+    const predicates =
+      new relationalStore.RdbPredicates(RECEIPT_TABLE);
+    predicates.equalTo('id', receiptId);
+    target.beginTransaction();
+    try {
+      const changed: number = target.updateSync({
+        sourcefingerprint: sourceFingerprint,
+        updatedat: Date.now()
+      }, predicates);
+      if (changed !== 1) {
+        throw new Error(
+          'account-scoped receipt fingerprint upgrade failed');
+      }
+      target.commit();
+    } catch (error) {
+      try { target.rollBack(); } catch (_rollbackError) {}
+      throw new Error(
+        'account-scoped receipt fingerprint upgrade transaction failed: ' +
+        this.errorDetail(error));
+    }
+    // API 23 querySync on this device does not expose the same handle's
+    // uncommitted transaction writes. Verify only after the durable commit;
+    // a failed read-back must never attempt to roll that commit back.
+    const rows: relationalStore.ResultSet =
+      target.querySync(predicates);
+    const valid: boolean = rows.goToFirstRow() &&
+      rows.getString(rows.getColumnIndex('status')) ===
+        'committed' &&
+      rows.getString(
+        rows.getColumnIndex('sourcefingerprint')) ===
+        sourceFingerprint;
+    rows.close();
+    if (!valid) {
+      throw new Error(
+        'account-scoped receipt fingerprint upgrade verification failed');
+    }
   }
 
   private recordSelection(selected: Map<string, Set<string>>,
@@ -869,6 +1127,67 @@ export class LegacySharedStoreMigrator {
     return columns;
   }
 
+  private tableColumnsAreExact(
+    store: relationalStore.RdbStore,
+    table: string,
+    expected: string[]
+  ): boolean {
+    const actual: string[] =
+      this.tableColumns(store, table);
+    if (actual.length !== expected.length) { return false; }
+    for (let i = 0; i < expected.length; i++) {
+      if (actual.indexOf(expected[i]) < 0) { return false; }
+    }
+    return true;
+  }
+
+  private sourceMutationFingerprint(
+    source: relationalStore.RdbStore
+  ): string {
+    const values: string[] = [];
+    if (this.tableExists(source, JOURNAL_TABLE)) {
+      const rows: relationalStore.ResultSet =
+        source.querySync(
+          new relationalStore.RdbPredicates(
+            JOURNAL_TABLE));
+      while (rows.goToNextRow()) {
+        values.push([
+          rows.getString(rows.getColumnIndex('id')),
+          rows.getString(rows.getColumnIndex('tablename')),
+          rows.getString(rows.getColumnIndex('recordid')),
+          rows.getString(rows.getColumnIndex('operation')),
+          rows.getLong(rows.getColumnIndex('revision')).toString(),
+          rows.getLong(rows.getColumnIndex('createdat')).toString(),
+          rows.getLong(rows.getColumnIndex('updatedat')).toString()
+        ].join(':'));
+      }
+      rows.close();
+    }
+    values.sort();
+    return 'journal-v1:' +
+      this.sha256Hex(values.join('\n'));
+  }
+
+  private localMetadataValue(
+    store: relationalStore.RdbStore,
+    key: string
+  ): string | null {
+    if (!this.tableExists(store, LOCAL_METADATA_TABLE)) {
+      return null;
+    }
+    const predicates =
+      new relationalStore.RdbPredicates(
+        LOCAL_METADATA_TABLE);
+    predicates.equalTo('key', key);
+    const rows: relationalStore.ResultSet =
+      store.querySync(predicates);
+    const value: string | null = rows.goToFirstRow()
+      ? rows.getString(rows.getColumnIndex('value'))
+      : null;
+    rows.close();
+    return value;
+  }
+
   private sourceFingerprint(path: string, version: number,
     owners: string[]): string {
     const stat = fileIo.statSync(path);
@@ -891,6 +1210,18 @@ export class LegacySharedStoreMigrator {
   private stringValue(value: relationalStore.ValueType | undefined): string {
     if (typeof value === 'string') { return value; }
     return typeof value === 'number' ? value.toString() : '';
+  }
+
+  private stringRow(
+    bucket: relationalStore.ValuesBucket,
+    columns: string[]
+  ): Record<string, string> {
+    const row: Record<string, string> = {};
+    for (let i = 0; i < columns.length; i++) {
+      row[columns[i]] =
+        this.stringValue(bucket[columns[i]]);
+    }
+    return row;
   }
 
   private errorDetail(err: Object): string {

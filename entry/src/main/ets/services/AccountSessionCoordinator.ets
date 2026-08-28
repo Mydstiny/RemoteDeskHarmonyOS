@@ -10,7 +10,8 @@ import {
   AccountScopeToken,
   cloudAccountBindingForScope,
   accountScopeToken,
-  deviceLocalScopeToken
+  deviceLocalScopeToken,
+  ownerScopeIdForUnionId
 } from './AccountScopePolicy';
 import { AuthService } from './AuthService';
 import { CloudStore } from './CloudStore';
@@ -22,6 +23,7 @@ import { ActiveRemoteSessionRegistry } from './ActiveRemoteSessionRegistry';
 import { UserAccountJSON } from '../model/UserAccount';
 import {
   PlatformCloudIdentityProof,
+  PlatformCloudIdentityProofState,
   platformCloudIdentityProofIsValid,
   unavailablePlatformCloudIdentityProof
 } from './PlatformCloudIdentityPolicy';
@@ -30,11 +32,26 @@ import {
   CloudSyncCoordinator,
   CloudSyncOperationResult
 } from './CloudSyncCoordinator';
+import { cloudFirstTablesForSelectionFinalization } from './CloudSyncCoordinatorPolicy';
 import { cloudTransferAllowed } from './CloudLifecycleSafetyPolicy';
 import { safeError } from '../utils/SafeLogger';
 import { MoonlightDataLifecycleBarrier } from './MoonlightDataLifecycleBarrier';
 import { MoonlightDataLifecycleRuntime } from './MoonlightDataLifecycleRuntime';
 import { AppCloneContext } from './AppCloneContext';
+import { RemoteSessionWindowCoordinator } from './RemoteSessionWindowCoordinator';
+import { ExtensionLoader } from './ExtensionLoader';
+import {
+  RemoteSessionTransitionGate,
+  RemoteSessionTransitionLease
+} from './RemoteSessionTransitionGate';
+import {
+  CloudBindingRecoveryState,
+  cloudBindingRecoveryAfterProof,
+  cloudBindingRecoveryAfterRollback,
+  cloudBindingRecoveryIsPending,
+  cloudBindingRecoveryRepeatedDialogBlocked,
+  cloudBindingRecoveryRequested
+} from './CloudBindingRecoveryPolicy';
 
 export interface AccountLoginIdentity extends CredentialParams {
   avatarUrl: string;
@@ -77,6 +94,13 @@ export class AccountSessionCoordinator {
   private startupFallbackApplied: boolean = false;
   private transitionLoginModeSnapshot: string = '';
   private transitionIntentGeneration: number = 0;
+  private platformCloudIdentityState:
+    PlatformCloudIdentityProofState =
+      'identity_unavailable';
+  private cloudBindingRecoveryState:
+    CloudBindingRecoveryState = 'idle';
+  private cloudIdentityRecoveryPromise:
+    Promise<boolean> | null = null;
 
   static getInstance(): AccountSessionCoordinator {
     if (!AccountSessionCoordinator.instance) {
@@ -146,6 +170,56 @@ export class AccountSessionCoordinator {
 
   currentScope(): AccountScopeToken {
     return this.cloneScope(this.current);
+  }
+
+  /**
+   * Retry only the permission-dialog race recorded by the preceding account
+   * transition. An explicit user denial never enters this path. Rebinding is
+   * coordinator-owned because a newly verified identity must move the same
+   * account from its local-only hashed store to the canonical cloud store;
+   * retrying setDistributedTables on the old store can never succeed.
+   */
+  async resumePendingCloudBindingAfterForeground():
+    Promise<boolean> {
+    const store: CloudStore = CloudStore.getInstance();
+    if (store.isCloudAvailable()) {
+      this.cloudBindingRecoveryState = 'idle';
+      return true;
+    }
+    if (!this.initialized || this.context === null ||
+        this.current.kind !== 'huawei_account' ||
+        this.current.sessionState !== 'ready' ||
+        !cloudBindingRecoveryIsPending(
+          this.cloudBindingRecoveryState)) {
+      return false;
+    }
+    if (this.remoteSessionBlocksCloudIdentityRecovery()) {
+      hilog.info(0x0001, 'AccountSession',
+        '平台云身份恢复已延后：当前仍有远程会话');
+      return false;
+    }
+    if (this.cloudIdentityRecoveryPromise !== null) {
+      return await this.cloudIdentityRecoveryPromise;
+    }
+    // Recovery is subordinate to explicit login/logout intent. Capture the
+    // current generation without advancing it, so a user action always
+    // supersedes an in-flight foreground retry.
+    const intentGeneration: number =
+      this.transitionIntentGeneration;
+    const operation: Promise<boolean> = this.serialize(
+      (): Promise<AccountTransitionResult> =>
+        this.doResumePendingCloudBinding(
+          intentGeneration)).then(
+      (result: AccountTransitionResult): boolean =>
+        result.ok);
+    this.cloudIdentityRecoveryPromise = operation;
+    try {
+      return await operation;
+    } finally {
+      if (this.cloudIdentityRecoveryPromise === operation) {
+        this.cloudIdentityRecoveryPromise = null;
+      }
+    }
   }
 
   onChange(listener: (scope: AccountScopeToken) => void): () => void {
@@ -337,6 +411,16 @@ export class AccountSessionCoordinator {
     }
 
     const currentScope: AccountScopeToken = store.currentScope();
+    let cloudRecoveryBaselineReady: boolean = true;
+    if (platformProof.state === 'permission_dialog_blocked' ||
+        platformProof.state === 'permission_unavailable') {
+      cloudRecoveryBaselineReady =
+        store.capturePendingCloudBindingSourceBaseline();
+      if (!cloudRecoveryBaselineReady) {
+        hilog.error(0x0001, 'AccountSession',
+          '本地兼容数据域恢复基线无法落盘；自动云绑定保持关闭');
+      }
+    }
     // 云同步是否真正可用的判定必须同时满足: 账号绑定有效 且 物理库已完成
     // setDistributedTables 注册 (cloudAvailable)。若云端注册失败/云空间未开通,
     // 本地账号登录仍应成功, 只是云功能暂停; 不能把必然失败的 startup pull
@@ -371,14 +455,19 @@ export class AccountSessionCoordinator {
           '首次云端核对未完成 failureKind=' + bootstrap.failureKind +
           '，保持账号作用域，云同步暂停，本地数据可用');
       }
-      if (bootstrap.ok) {
+      const finalizedTables: string[] =
+        cloudFirstTablesForSelectionFinalization(
+          bootstrap.ok, bootstrap.tables,
+          bootstrap.failedTables);
+      if (finalizedTables.length > 0) {
         if (!store.markStartupSelectionReenablePulled(
-          bootstrap.tables) ||
+          finalizedTables) ||
           !store.prepareSelectionReenablePromotions()) {
-          return await this.restorePreviousScope(
-            previousScope, previousCredential, previousAuth,
-            generation + 1,
-            '同步范围重新启用的 cloud-first 状态未能安全落盘');
+          // The authoritative data transaction is already committed. Keep
+          // the selection barrier closed and retry its metadata on a later
+          // foreground; never roll the downloaded account data back here.
+          hilog.warn(0x0001, 'AccountSession',
+            '首次云端核对已提交，但同步范围 promotion 延后；上传保持暂停');
         }
       }
     } else if (cloudAccountBindingForScope(currentScope).state === 'bound' &&
@@ -386,6 +475,8 @@ export class AccountSessionCoordinator {
       hilog.warn(0x0001, 'AccountSession',
         '华为账号本地登录成功，但云端存储不可用（setDistributedTables 失败或云空间未开通），跳过 cloud-first，保持本地可用');
     } else if (platformProof.state === 'permission_denied' ||
+      platformProof.state === 'permission_dialog_blocked' ||
+      platformProof.state === 'permission_unavailable' ||
       platformProof.state === 'identity_unavailable' ||
       platformProof.state === 'not_logged_in' ||
       platformProof.state === 'platform_error') {
@@ -426,6 +517,14 @@ export class AccountSessionCoordinator {
 
     this.current = currentScope;
     this.current.sessionState = 'ready';
+    this.platformCloudIdentityState =
+      platformProof.state;
+    this.cloudBindingRecoveryState =
+      cloudBindingRecoveryRequested(
+        platformProof.state, cloudBound);
+    if (!cloudRecoveryBaselineReady) {
+      this.cloudBindingRecoveryState = 'blocked';
+    }
     if (!store.activateScope(this.current)) {
       return await this.restorePreviousScope(
         previousScope, previousCredential, previousAuth,
@@ -443,6 +542,243 @@ export class AccountSessionCoordinator {
     return this.result(true, 'ready', '');
   }
 
+  private async doResumePendingCloudBinding(
+    intentGeneration: number
+  ): Promise<AccountTransitionResult> {
+    if (this.context === null || !this.initialized ||
+        !this.intentIsCurrent(intentGeneration) ||
+        !cloudBindingRecoveryIsPending(
+          this.cloudBindingRecoveryState)) {
+      return this.result(false, this.current.sessionState,
+        '平台云身份恢复条件已变化');
+    }
+    const accountKit: AccountKitService =
+      AccountKitService.getInstance();
+    const credential: StoredCredential | null =
+      accountKit.credentialSnapshot();
+    const auth: UserAccountJSON =
+      AuthService.getInstance().sessionSnapshot();
+    if (credential === null ||
+        credential.unionID.trim() === '' ||
+        !auth.isLoggedIn ||
+        auth.unionId !== credential.unionID ||
+        ownerScopeIdForUnionId(credential.unionID) !==
+          this.current.ownerScopeId) {
+      this.platformCloudIdentityState =
+        'identity_mismatch';
+      this.cloudBindingRecoveryState = 'blocked';
+      return this.result(false, this.current.sessionState,
+        '当前账号凭据与本地数据域不一致');
+    }
+    if (this.remoteSessionBlocksCloudIdentityRecovery()) {
+      return this.result(false, this.current.sessionState,
+        '远程会话结束后再恢复云同步');
+    }
+    const proof: PlatformCloudIdentityProof =
+      await PlatformCloudIdentityService.getInstance()
+        .proveCurrentCloudAccount(
+          this.context, credential.unionID);
+    if (!this.intentIsCurrent(intentGeneration)) {
+      return this.result(false, 'superseded',
+        '云身份恢复已被新的账号操作替代');
+    }
+    if (!platformCloudIdentityProofIsValid(proof)) {
+      const repeatedBlockedDialog: boolean =
+        cloudBindingRecoveryRepeatedDialogBlocked(
+          this.platformCloudIdentityState,
+          proof.state);
+      this.platformCloudIdentityState = proof.state;
+      this.cloudBindingRecoveryState =
+        repeatedBlockedDialog
+          ? 'blocked'
+          : cloudBindingRecoveryAfterProof(proof.state);
+      if (repeatedBlockedDialog) {
+        this.platformCloudIdentityState =
+          'permission_denied';
+      }
+      hilog.warn(0x0001, 'AccountSession',
+        '前台平台云身份恢复未完成 state=' +
+        proof.state);
+      return this.result(false, this.current.sessionState,
+        repeatedBlockedDialog
+          ? '系统仍未展示权限窗口，已停止自动重试；请重新登录后授权'
+          : this.platformIdentityFailureMessage(proof));
+    }
+    // Permission proof may have displayed a system surface. Re-check the
+    // session boundary immediately before closing the mutation gate; a remote
+    // connection started while awaiting that UI must never be drained by a
+    // background cloud repair.
+    if (this.remoteSessionBlocksCloudIdentityRecovery()) {
+      return this.result(false, this.current.sessionState,
+        '远程会话结束后再恢复云同步');
+    }
+    const remoteTransitionGate: RemoteSessionTransitionGate =
+      RemoteSessionTransitionGate.getInstance();
+    const remoteTransitionLease:
+      RemoteSessionTransitionLease | null =
+      remoteTransitionGate.tryAcquire();
+    if (remoteTransitionLease === null) {
+      return this.result(false, this.current.sessionState,
+        '远程会话正在启动，稍后再恢复云同步');
+    }
+    try {
+      // Acquisition synchronously closes native/window admission. This second
+      // idle proof is therefore stable for the entire destructive barrier.
+      if (this.remoteSessionBlocksCloudIdentityRecovery()) {
+        return this.result(false, this.current.sessionState,
+          '远程会话正在启动，稍后再恢复云同步');
+      }
+    this.platformCloudIdentityState = proof.state;
+    this.cloudBindingRecoveryState =
+      cloudBindingRecoveryAfterProof(proof.state);
+    const previousScope: AccountScopeToken =
+      this.cloneScope(this.current);
+    const target: AccountScopeToken | null =
+      accountScopeToken(
+        credential.unionID,
+        previousScope.generation + 1,
+        'switching', 'validating', proof);
+    if (target === null) {
+      this.platformCloudIdentityState =
+        'identity_mismatch';
+      this.cloudBindingRecoveryState = 'blocked';
+      return this.result(false, this.current.sessionState,
+        '当前账号无法建立云数据域');
+    }
+    const store: CloudStore = CloudStore.getInstance();
+    if (!store.closeMutationGate()) {
+      return this.result(false, this.current.sessionState,
+        '云身份恢复时数据写入闸门关闭失败');
+    }
+    if (!(await SensitiveDataBarrier.getInstance()
+        .drain('cloud-identity-recovery'))) {
+      store.activateScope(this.current);
+      return this.result(false, this.current.sessionState,
+        '云身份恢复等待当前任务结束');
+    }
+    if (!(await store.quiesceCurrentScope()) ||
+        !this.intentIsCurrent(intentGeneration)) {
+      store.activateScope(this.current);
+      return this.result(false, this.current.sessionState,
+        this.intentIsCurrent(intentGeneration)
+          ? '旧数据域云任务尚未结束'
+          : '云身份恢复已被新的账号操作替代');
+    }
+    HostSyncService.getInstance().clearForScopeTransition();
+    KeyVaultService.getInstance().clearForScopeTransition();
+    // This is a physical-store upgrade for the same owner, not an account
+    // change. Drop decrypted memory only; revoking Asset Store tokens here
+    // would damage an unrelated RustDesk Pro login.
+    RustDeskProCredentialStore.getInstance()
+      .clearMemoryForScopeTransition();
+    const rebound: boolean = await store.rebindScope(
+      this.context, target, credential.unionID, proof);
+    if (!rebound || !this.intentIsCurrent(intentGeneration)) {
+      const rebindFailure: string =
+        store.lastScopeRebindFailureKind();
+      const retryable: boolean =
+        this.intentIsCurrent(intentGeneration) &&
+        (rebindFailure === 'none' ||
+          rebindFailure === 'transient');
+      if (!retryable && this.intentIsCurrent(intentGeneration)) {
+        this.platformCloudIdentityState =
+          rebindFailure === 'identity_conflict'
+            ? 'identity_mismatch' : 'verified';
+      }
+      return await this.restorePendingCloudBindingScope(
+        previousScope, credential.unionID, proof,
+        target.generation + 1,
+        !this.intentIsCurrent(intentGeneration)
+          ? '云身份恢复已被新的账号操作替代'
+          : rebindFailure === 'source_changed'
+            ? '本地兼容数据域在迁移后仍有新修改，已拒绝自动切库以保护数据'
+            : '规范云数据域打开失败',
+        retryable);
+    }
+    const recovered: AccountScopeToken =
+      store.currentScope();
+    recovered.sessionState = 'ready';
+    if (recovered.cloudBindingState !== 'bound' ||
+        !store.activateScope(recovered)) {
+      const retryable: boolean =
+        store.lastScopeRebindFailureKind() === 'none' ||
+        store.lastScopeRebindFailureKind() === 'transient';
+      this.platformCloudIdentityState = retryable ||
+        store.lastScopeRebindFailureKind() === 'source_changed'
+        ? 'verified' : 'identity_mismatch';
+      return await this.restorePendingCloudBindingScope(
+        previousScope, credential.unionID, proof,
+        recovered.generation + 1,
+        '平台账号已验证，但规范云数据域未能安全绑定',
+        retryable);
+    }
+    this.current = recovered;
+    this.platformCloudIdentityState = 'verified';
+    this.cloudBindingRecoveryState = 'idle';
+    this.reloadScopeServices();
+    this.publish();
+    hilog.info(0x0001, 'AccountSession',
+      '前台平台云身份恢复成功，已重绑规范云数据域');
+    return this.result(true, 'ready', '');
+    } finally {
+      remoteTransitionGate.release(
+        remoteTransitionLease);
+    }
+  }
+
+  private async restorePendingCloudBindingScope(
+    previous: AccountScopeToken,
+    unionId: string,
+    verifiedProof: PlatformCloudIdentityProof,
+    generation: number,
+    message: string,
+    retryable: boolean
+  ): Promise<AccountTransitionResult> {
+    if (this.context === null) {
+      this.cloudBindingRecoveryState = 'blocked';
+      return this.result(false, 'blocked', message);
+    }
+    const rollback: AccountScopeToken =
+      this.cloneScope(previous);
+    rollback.generation = Math.max(
+      1, Math.floor(generation));
+    rollback.sessionState = 'ready';
+    const rollbackProof: PlatformCloudIdentityProof =
+      rollback.platformIdentityFingerprint ===
+        verifiedProof.fingerprint
+        ? verifiedProof
+        : unavailablePlatformCloudIdentityProof(
+          'permission_unavailable');
+    const store: CloudStore = CloudStore.getInstance();
+    const restored: boolean = await store.rebindScope(
+      this.context, rollback, unionId,
+      rollbackProof);
+    if (!restored) {
+      this.cloudBindingRecoveryState =
+        cloudBindingRecoveryAfterRollback(false, retryable);
+      this.current = rollback;
+      this.current.sessionState = 'blocked';
+      this.publish();
+      return this.result(false, 'blocked',
+        message + '；原本地数据域恢复失败');
+    }
+    this.current = store.currentScope();
+    this.current.sessionState = 'ready';
+    if (!store.activateScope(this.current)) {
+      this.cloudBindingRecoveryState =
+        cloudBindingRecoveryAfterRollback(false, retryable);
+      this.current.sessionState = 'blocked';
+      this.publish();
+      return this.result(false, 'blocked',
+        message + '；原本地数据域激活失败');
+    }
+    this.cloudBindingRecoveryState =
+      cloudBindingRecoveryAfterRollback(true, retryable);
+    this.reloadScopeServices();
+    this.publish();
+    return this.result(false, 'ready', message);
+  }
+
   /**
    * The account/store transition is the security boundary; the initial
    * cloud-first pull is deliberately allowed to continue after navigation.
@@ -457,16 +793,18 @@ export class AccountSessionCoordinator {
     void CloudSyncCoordinator.getInstance().requestStartupPull().then(
       (bootstrap: CloudSyncOperationResult): void => {
         if (!this.intentIsCurrent(intentGeneration)) { return; }
-        if (!bootstrap.ok) {
+        const finalizedTables: string[] =
+          cloudFirstTablesForSelectionFinalization(
+            bootstrap.ok, bootstrap.tables,
+            bootstrap.failedTables);
+        if (!bootstrap.ok && finalizedTables.length === 0) {
           hilog.warn(0x0001, 'AccountSession',
             '主页已显示；首次云端核对未完成 failureKind=' +
             bootstrap.failureKind + '，云同步继续保持安全暂停');
           return;
         }
-        if (!store.markStartupSelectionReenablePulled(
-          bootstrap.tables) ||
-          !store.prepareSelectionReenablePromotions() ||
-          !store.releaseSelectionReenableBarriers()) {
+        if (!store.resumeSelectionReenableAfterCloudFirst(
+          finalizedTables)) {
           hilog.error(0x0001, 'AccountSession',
             '首次云端核对完成，但同步范围 promotion 未能安全落盘；上传保持受限');
           return;
@@ -556,6 +894,9 @@ export class AccountSessionCoordinator {
     }
     this.current = store.currentScope();
     this.current.sessionState = 'offline';
+    this.platformCloudIdentityState =
+      'not_logged_in';
+    this.cloudBindingRecoveryState = 'idle';
     if (!store.activateScope(this.current)) {
       return await this.restorePreviousScope(
         previousScope, previousCredential, previousAuth,
@@ -621,6 +962,8 @@ export class AccountSessionCoordinator {
     }
     this.current = store.currentScope();
     this.current.sessionState = rollback.sessionState;
+    this.platformCloudIdentityState =
+      previousPlatformProof.state;
     if (!store.activateScope(this.current)) {
       return await this.recoverDeviceLocal(
         rollback.generation + 1, message + '；旧账号数据域恢复失败');
@@ -659,6 +1002,9 @@ export class AccountSessionCoordinator {
     const store: CloudStore = CloudStore.getInstance();
     const recovered: boolean = await store.rebindScope(this.context, fallback);
     this.current = this.cloneScope(fallback);
+    this.platformCloudIdentityState =
+      'not_logged_in';
+    this.cloudBindingRecoveryState = 'idle';
     if (!recovered || !store.activateScope(this.current)) {
       this.current.sessionState = 'blocked';
     }
@@ -695,6 +1041,15 @@ export class AccountSessionCoordinator {
     return generation > 0 && generation === this.transitionIntentGeneration;
   }
 
+  private remoteSessionBlocksCloudIdentityRecovery(): boolean {
+    return ActiveRemoteSessionRegistry.getInstance()
+      .getActive() !== null ||
+      RemoteSessionWindowCoordinator.getInstance()
+        .hasOpenOrPendingWindows() ||
+      ExtensionLoader.getInstance()
+        .hasSessionActivity();
+  }
+
   private result(ok: boolean, state: string, message: string): AccountTransitionResult {
     return { ok, state, message, scope: this.cloneScope(this.current) };
   }
@@ -719,6 +1074,12 @@ export class AccountSessionCoordinator {
   ): string {
     if (proof.state === 'permission_denied') {
       return '未授权分布式数据访问，无法验证当前华为云账号';
+    }
+    if (proof.state === 'permission_unavailable') {
+      return '系统权限窗口暂不可用，回到应用前台后将自动恢复云同步';
+    }
+    if (proof.state === 'permission_dialog_blocked') {
+      return '系统权限窗口暂未展示，回到应用前台后将重试一次';
     }
     if (proof.state === 'not_logged_in') {
       return '系统当前没有已登录的分布式华为账号';

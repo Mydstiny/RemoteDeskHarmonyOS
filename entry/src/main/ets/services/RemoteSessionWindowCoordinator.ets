@@ -7,6 +7,7 @@
  */
 import { util } from '@kit.ArkTS';
 import { ExtensionLoader } from './ExtensionLoader';
+import { RemoteSessionTransitionGate } from './RemoteSessionTransitionGate';
 import {
   ActiveRemoteSessionRecord,
   ActiveRemoteSessionRegistry,
@@ -522,6 +523,8 @@ export class RemoteSessionWindowCoordinator {
 
   reserve(request: RemoteSessionWindowRequest,
     nativeHandoff: RemoteSessionWindowNativeHandoff | null = null): RemoteSessionWindowRecord | null {
+    if (!RemoteSessionTransitionGate.getInstance()
+      .newSessionAllowed()) { return null; }
     if (!remoteSessionWindowRequestIsValid(request)) { return null; }
     let id: string = util.generateRandomUUID(true);
     while (this.records.has(id)) { id = util.generateRandomUUID(true); }

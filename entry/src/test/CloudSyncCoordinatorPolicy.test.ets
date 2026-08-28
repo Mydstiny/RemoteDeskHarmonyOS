@@ -13,6 +13,7 @@ import {
   cloudSyncBlockedByLocalRestore,
   cloudSyncCallbackIdentityMatches,
   cloudFirstCompatibleTablesAfterOptionalFailure,
+  cloudFirstTablesForSelectionFinalization,
   cloudDistributedTableAutoSync,
   cloudSyncProgressFinished,
   cloudSyncProgressSucceeded,
@@ -234,6 +235,21 @@ export default function cloudSyncCoordinatorPolicyTest(): void {
           'cloudFirst',
           ['remotehosts', 'moonlightrecordv1'],
           ['unknown']).length).assertEqual(0);
+      });
+
+    it('finalizes_established_barriers_for_core_tables_after_optional_failure',
+      0, (): void => {
+        expect(cloudFirstTablesForSelectionFinalization(
+          false,
+          ['usersettings', 'remotehosts', 'moonlightrecordv1'],
+          ['moonlightrecordv1']).join(','))
+          .assertEqual('usersettings,remotehosts');
+        expect(cloudFirstTablesForSelectionFinalization(
+          true, ['usersettings'], []).join(','))
+          .assertEqual('usersettings');
+        expect(cloudFirstTablesForSelectionFinalization(
+          false, ['remotehosts'], ['remotehosts']).length)
+          .assertEqual(0);
       });
 
     it('classifies_version_conflict_and_pauses_automatic_retries', 0, (): void => {

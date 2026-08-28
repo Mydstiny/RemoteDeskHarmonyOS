@@ -35,7 +35,7 @@ export interface CloudSyncRetryRecord {
 export type CloudSyncFailureKind =
   'none' | 'version_conflict' | 'empty_snapshot' | 'tombstone_cleanup' |
   'unsafe_payload' | 'cloud_service' | 'network' | 'indeterminate' |
-  'restore_pending' | 'no_selection' | 'unknown';
+  'restore_pending' | 'no_selection' | 'local_finalize' | 'unknown';
 
 export type CloudSyncWatchdogTimeoutKind =
   'none' | 'accept_timeout' | 'idle_timeout' | 'overall_timeout';
@@ -229,6 +229,21 @@ export function cloudFirstCompatibleTablesAfterOptionalFailure(
   return completedCore ? completed : [];
 }
 
+/**
+ * Tables whose cloud-first data is durably committed and may therefore
+ * advance a pending selection barrier. Optional rollout failures keep the
+ * overall result failed, but must not strand successfully applied core tables.
+ */
+export function cloudFirstTablesForSelectionFinalization(
+  ok: boolean,
+  tables: string[],
+  failedTables: string[]
+): string[] {
+  return ok ? tables.slice() :
+    cloudFirstCompatibleTablesAfterOptionalFailure(
+      'cloudFirst', tables, failedTables);
+}
+
 /** These failures must stop native-first retries until the user resolves them. */
 export function shouldBlockAutomaticRetry(kind: CloudSyncFailureKind): boolean {
   return kind === 'version_conflict' || kind === 'empty_snapshot' ||
@@ -263,6 +278,9 @@ export function cloudSyncFailureMessage(kind: CloudSyncFailureKind): string {
   }
   if (kind === 'no_selection') {
     return '尚未选择可同步的数据类型；未启动云端传输，也未改变现有同步状态。';
+  }
+  if (kind === 'local_finalize') {
+    return '云端下载已结束，但本地事务收尾未完成；数据仍受保护，应用会在前台自动重新核对。';
   }
   return '云同步未完成，数据未确认全部同步，请稍后重试。';
 }
