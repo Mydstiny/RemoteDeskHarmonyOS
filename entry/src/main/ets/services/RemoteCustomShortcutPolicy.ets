@@ -18,6 +18,13 @@ export interface RemoteCustomShortcutUpdate {
   shortcuts: Array<RemoteCustomShortcut>;
 }
 
+export interface RemoteCustomShortcutEditorLayout {
+  columnsTemplate: string;
+  gridHeight: number;
+  cardPadding: number;
+  itemGap: number;
+}
+
 interface RemoteCustomShortcutEnvelope {
   version: number;
   items: Array<RemoteCustomShortcut>;
@@ -31,6 +38,46 @@ const ALT: number = 2045;
 const SHIFT: number = 2047;
 const WIN: number = 2076;
 const MODIFIERS: Array<number> = [CTRL, ALT, SHIFT, WIN];
+
+function equalGridColumns(count: number): string {
+  let result: string = '1fr';
+  for (let index: number = 1; index < count; index++) {
+    result += ' 1fr';
+  }
+  return result;
+}
+
+/**
+ * Resolve from the live sheet viewport so phones in landscape, split-screen
+ * Pads, and resizable PC windows do not inherit a device-name-sized editor.
+ */
+export function remoteCustomShortcutEditorLayout(viewportWidth: number,
+  viewportHeight: number): RemoteCustomShortcutEditorLayout {
+  const width: number = Number.isFinite(viewportWidth) && viewportWidth > 0 ? viewportWidth : 360;
+  const height: number = Number.isFinite(viewportHeight) && viewportHeight > 0 ? viewportHeight : 640;
+  let columns: number = 6;
+  if (width < 330) {
+    columns = 3;
+  } else if (width < 460) {
+    columns = 4;
+  } else if (width < 680) {
+    columns = 5;
+  }
+  let gridHeight: number = 204;
+  if (height < 460) {
+    gridHeight = 104;
+  } else if (height < 680) {
+    gridHeight = 144;
+  } else if (height < 820) {
+    gridHeight = 176;
+  }
+  return {
+    columnsTemplate: equalGridColumns(columns),
+    gridHeight: gridHeight,
+    cardPadding: width < 460 ? 10 : 14,
+    itemGap: width < 330 ? 3 : 4
+  };
+}
 
 function modifierLabel(keyCode: number): string {
   if (keyCode === CTRL) { return 'Ctrl'; }

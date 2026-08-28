@@ -4,7 +4,9 @@ import {
   RemoteCustomShortcut,
   RemoteCustomShortcutKeyGroup,
   RemoteCustomShortcutKeyOption,
+  RemoteCustomShortcutEditorLayout,
   RemoteCustomShortcutUpdate,
+  remoteCustomShortcutEditorLayout,
   remoteCustomShortcutKeyGroupForKeyCode,
   remoteCustomShortcutKeyOptions,
   remoteCustomShortcutAvailableOnPlatform,
@@ -43,6 +45,8 @@ export struct VirtualKeyboardSettingsSheet {
   @State private modifierCodes: Array<number> = [];
   @State private actionGroup: RemoteCustomShortcutKeyGroup = 'letters';
   @State private actionKeyCode: number = 2017;
+  @State private viewportWidth: number = 360;
+  @State private viewportHeight: number = 640;
   @Prop requestedSection: VirtualKeyboardSettingsSection = 'system';
   private customSequence: number = 0;
   private readonly service: RemoteKeyboardSettingsService =
@@ -189,6 +193,10 @@ export struct VirtualKeyboardSettingsSheet {
     if (group === 'symbols') { return '符号'; }
     if (group === 'functions') { return 'F 键'; }
     return '导航';
+  }
+
+  private customEditorLayout(): RemoteCustomShortcutEditorLayout {
+    return remoteCustomShortcutEditorLayout(this.viewportWidth, this.viewportHeight);
   }
 
   private beginEditor(shortcut: RemoteCustomShortcut | null = null): void {
@@ -394,8 +402,11 @@ export struct VirtualKeyboardSettingsSheet {
           (option: RemoteCustomShortcutKeyOption): void => {
             GridItem() { this.actionChoice(option) }
           }, (option: RemoteCustomShortcutKeyOption): string => option.keyCode.toString())
-      }.columnsTemplate('1fr 1fr 1fr 1fr 1fr').rowsGap(4).columnsGap(4)
-        .width('100%').height(132).scrollBar(BarState.Auto)
+      }.columnsTemplate(this.customEditorLayout().columnsTemplate)
+        .rowsGap(this.customEditorLayout().itemGap)
+        .columnsGap(this.customEditorLayout().itemGap)
+        .width('100%').height(this.customEditorLayout().gridHeight)
+        .scrollBar(BarState.Auto)
       Row() {
         Text(this.draftLabel().length > 0 ? this.draftLabel() : '请选择修饰键和主键')
           .fontSize(11).fontColor(this.draftLabel().length > 0 ? this.text() : this.danger())
@@ -406,7 +417,8 @@ export struct VirtualKeyboardSettingsSheet {
           .enabled(this.draftLabel().length > 0)
           .onClick((): void => { this.saveCustomShortcut(); })
       }.width('100%')
-    }.width('100%').padding(14).borderRadius(14).backgroundColor(this.card())
+    }.width('100%').padding(this.customEditorLayout().cardPadding)
+      .borderRadius(14).backgroundColor(this.card())
       .border({ width: 0.5, color: this.cardStroke() })
   }
 
@@ -607,5 +619,11 @@ export struct VirtualKeyboardSettingsSheet {
       }.width('100%').layoutWeight(1).scrollBar(BarState.Auto).edgeEffect(EdgeEffect.Spring)
     }.width('100%').height('100%').backgroundColor(this.bg())
       .borderRadius({ topLeft: 28, topRight: 28 })
+      .onAreaChange((_old: Area, next: Area): void => {
+        const nextWidth: number = next.width as number;
+        const nextHeight: number = next.height as number;
+        if (Number.isFinite(nextWidth) && nextWidth > 0) { this.viewportWidth = nextWidth; }
+        if (Number.isFinite(nextHeight) && nextHeight > 0) { this.viewportHeight = nextHeight; }
+      })
   }
 }

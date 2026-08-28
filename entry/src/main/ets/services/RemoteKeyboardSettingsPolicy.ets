@@ -81,6 +81,7 @@ function commonEditing(modifier: number, modifierLabel: string,
     shortcut('copy', '复制', modifierLabel + '+C', 'editing', [modifier, letter('C')]),
     shortcut('cut', '剪切', modifierLabel + '+X', 'editing', [modifier, letter('X')]),
     shortcut('paste', '粘贴', modifierLabel + '+V', 'editing', [modifier, letter('V')]),
+    shortcut('delete', '向前删除', 'Delete', 'editing', [FORWARD_DELETE]),
     shortcut('undo', '撤销', modifierLabel + '+Z', 'editing', [modifier, letter('Z')]),
     shortcut('redo', '重做', redoChord, 'editing', redoKey === letter('Z') ?
       [modifier, SHIFT, redoKey] : [modifier, redoKey]),

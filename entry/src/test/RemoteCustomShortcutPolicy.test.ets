@@ -3,6 +3,7 @@ import {
   createRemoteCustomShortcut,
   decodeRemoteCustomShortcuts,
   encodeRemoteCustomShortcuts,
+  remoteCustomShortcutEditorLayout,
   remoteCustomShortcutKeyOptions,
   remoteCustomShortcutAvailableOnPlatform,
   remoteCustomShortcutKeyAvailableOnPlatform,
@@ -77,6 +78,31 @@ export default function remoteCustomShortcutPolicyTest(): void {
       expect(remoteCustomShortcutKeyGroupForKeyCode(2050)).assertEqual('navigation');
       expect(remoteCustomShortcutKeyGroupForKeyCode(2054)).assertEqual('navigation');
       expect(remoteCustomShortcutKeyGroupForKeyCode(2055)).assertEqual('navigation');
+    });
+
+    it('adapts_the_editor_grid_to_live_phone_pad_and_pc_viewports', 0, (): void => {
+      const narrowPhone = remoteCustomShortcutEditorLayout(320, 720);
+      expect(narrowPhone.columnsTemplate).assertEqual('1fr 1fr 1fr');
+      expect(narrowPhone.gridHeight).assertEqual(176);
+      expect(narrowPhone.cardPadding).assertEqual(10);
+      expect(narrowPhone.itemGap).assertEqual(3);
+
+      const landscapePhone = remoteCustomShortcutEditorLayout(720, 390);
+      expect(landscapePhone.columnsTemplate).assertEqual('1fr 1fr 1fr 1fr 1fr 1fr');
+      expect(landscapePhone.gridHeight).assertEqual(104);
+      expect(landscapePhone.cardPadding).assertEqual(14);
+
+      const splitPad = remoteCustomShortcutEditorLayout(520, 640);
+      expect(splitPad.columnsTemplate).assertEqual('1fr 1fr 1fr 1fr 1fr');
+      expect(splitPad.gridHeight).assertEqual(144);
+
+      const desktop = remoteCustomShortcutEditorLayout(820, 900);
+      expect(desktop.columnsTemplate).assertEqual('1fr 1fr 1fr 1fr 1fr 1fr');
+      expect(desktop.gridHeight).assertEqual(204);
+
+      const fallback = remoteCustomShortcutEditorLayout(Number.NaN, 0);
+      expect(fallback.columnsTemplate).assertEqual('1fr 1fr 1fr 1fr');
+      expect(fallback.gridHeight).assertEqual(144);
     });
   });
 }
