@@ -3,10 +3,10 @@
   "task": "system-clipboard-activation-fix",
   "branch": "codex/system-clipboard-activation-fix",
   "base": "181e79783",
-  "head": "a936f803",
+  "head": "94be1858",
   "phase": "ready-for-review",
   "status": "active",
-  "next": "Checkpoint the implementation, obtain independent review, then validate a release-provisioned build on device.",
+  "next": "Obtain independent re-review of 94be1858, then validate a release-provisioned build on device.",
   "blockers": [
     "Device update is blocked by release/debug provisioning mismatch (9568286); the installed app and its data were preserved."
   ],
@@ -15,7 +15,9 @@
   ],
   "review": {
     "status": "PENDING",
-    "taskIds": [],
+    "taskIds": [
+      "/root/clipboard_activation_review"
+    ],
     "reviewedHead": "",
     "scope": [
       "entry/src/main/module.json5",
@@ -25,14 +27,19 @@
       "entry/src/test/ClipboardSyncPolicy.test.ets"
     ],
     "lastReceiptId": "",
-    "findings": [],
-    "reason": "Independent review is pending after the checkpoint commit."
+    "findings": [
+      "P1: unknown permission errors could throw again and remove the remote-only bridge (fixed in 94be1858)",
+      "P1: clipboardSend incorrectly gated VNC view-only remote-to-local sync (fixed in 94be1858)",
+      "P2: invalid permission request result 2 was reported as user denial (fixed in 94be1858)",
+      "P2: later system-settings authorization did not activate local monitoring (fixed in 94be1858)"
+    ],
+    "reason": "The first independent review findings are fixed; the same reviewer must verify 94be1858."
   },
   "lastVerification": {
     "baseline": "clean synchronized main@181e79783",
-    "testCompile": "PASS: default@OhosTestCompileArkTS, BUILD SUCCESSFUL in 9 s 662 ms",
-    "assembleHap": "PASS: signed HAP, BUILD SUCCESSFUL in 17 s 382 ms",
-    "targetedTests": "PASS: ClipboardSyncPolicy permission decisions registered and compiled in the required test gate",
+    "testCompile": "PASS: default@OhosTestCompileArkTS, BUILD SUCCESSFUL in 8 s 624 ms",
+    "assembleHap": "PASS: signed HAP, BUILD SUCCESSFUL in 15 s 905 ms",
+    "targetedTests": "PASS: ClipboardSyncPolicy permission and receive-only activation decisions registered and compiled in the required test gate",
     "compliance": "PASS: Light open-source compliance and git diff --check",
     "review": "PENDING",
     "deviceAcceptance": "BLOCKED: release/debug provisioning mismatch 9568286; existing app data preserved"

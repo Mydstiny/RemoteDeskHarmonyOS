@@ -5,8 +5,8 @@
 - Task: `system-clipboard-activation-fix`
 - Branch/base: `codex/system-clipboard-activation-fix` from synchronized
   `main@181e79783`.
-- Phase: implementation and local validation complete; ready for checkpoint
-  commit and independent review.
+- Phase: review fixes are committed at `94be1858`; independent re-review is
+  pending.
 - Plan: `docs/codex/plans/2026-08-28-system-clipboard-activation-fix.md`
 
 ## Objective
@@ -43,21 +43,33 @@
   baseline immediately after grant, and reports denial/unavailability instead
   of silently reading empty text.
 - Permission denial keeps the remote-to-local poll active. A later successful
-  RDP file-paste authorization enables local monitoring immediately without
-  rebuilding the bridge.
-- Added focused policy coverage for pre-granted, newly granted, denied and
-  unavailable permission states.
+  authorization from either the initial prompt, RDP file paste or system
+  settings enables local monitoring immediately without rebuilding the bridge.
+- VNC view-only sessions now start the remote-to-local bridge before the first
+  `ServerCutText` and never request local-read access.
+- Invalid permission requests and ordinary exceptions are reported as
+  unavailable without tearing down the remote-only bridge.
+- Added focused policy coverage for pre-granted, newly granted, denied,
+  invalid/unavailable and receive-only activation states.
+
+## Review
+
+- The first independent review found two P1 and two P2 issues: unsafe unknown
+  error formatting, a send-only startup gate, invalid-result
+  misclassification and no late-grant activation outside RDP file paste.
+- All four findings are fixed in `94be1858`; the same reviewer must verify the
+  updated checkpoint.
 
 ## Next
 
-1. Create the checkpoint commit and obtain independent review.
+1. Obtain independent re-review of `94be1858`.
 2. Validate a release-provisioned build on device without removing the existing
    application or clearing its data.
 
 ## Verification
 
-- `default@OhosTestCompileArkTS`: PASS (`BUILD SUCCESSFUL in 9 s 662 ms`).
-- `assembleHap`: PASS, signed (`BUILD SUCCESSFUL in 17 s 382 ms`).
+- `default@OhosTestCompileArkTS`: PASS (`BUILD SUCCESSFUL in 8 s 624 ms`).
+- `assembleHap`: PASS, signed (`BUILD SUCCESSFUL in 15 s 905 ms`).
 - Signed HAP manifest inspection: PASS; permission and both abilities present.
 - Light open-source compliance: PASS.
 - `git diff --check`: PASS.
