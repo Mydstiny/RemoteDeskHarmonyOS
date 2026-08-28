@@ -26,7 +26,10 @@ export function remoteSessionSidebarViewport(surfaceWidth: number,
     Number.isFinite(windowHeight) && windowHeight > 0;
   let width: number = hasWindowViewport ? windowWidth : finitePositive(surfaceWidth, 360);
   let height: number = hasWindowViewport ? windowHeight : finitePositive(surfaceHeight, 640);
-  if (forceLandscape && width < height) {
+  // A real WindowManager viewport is authoritative, including legal portrait
+  // and split-screen windows. Only normalize the XComponent fallback whose
+  // axes are known to remain stale after the phone rotation transaction.
+  if (!hasWindowViewport && forceLandscape && width < height) {
     const portraitWidth: number = width;
     width = height;
     height = portraitWidth;

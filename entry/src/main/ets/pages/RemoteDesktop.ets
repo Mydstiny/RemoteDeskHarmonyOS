@@ -1372,6 +1372,7 @@ struct RemoteDesktop {
   private kbWin: window.Window | null = null;
   private kbAvoidCb: ((data: window.AvoidAreaOptions) => void) | null = null;
   private kbWindowSizeCb: ((size: window.Size) => void) | null = null;
+  private kbListenerGeneration: number = 0;
   private touchHoldDragTimer: number = -1;
   private touchDirectRightClickTimer: number = -1;
   private lastTouchMs: number = 0;
@@ -1763,7 +1764,8 @@ struct RemoteDesktop {
       remoteTopBarLayout(this.isDesktopDevice, this.breakpoint, this.isPadDevice).deviceClass;
     return remoteSessionSidebarViewport(this.surfaceWidth, this.surfaceHeight,
       this.remoteSidebarWindowWidth, this.remoteSidebarWindowHeight,
-      this.isRdpRemoteSession() && deviceClass !== 'pc');
+      this.isRdpRemoteSession() && deviceClass === 'phone' &&
+        this.orientationApplied && this.isLandscape);
   }
 
   private syncRemoteSidebarWindowViewport(w: window.Window, reason: string): void {
@@ -6856,12 +6858,25 @@ struct RemoteDesktop {
   }
 
   private registerKeyboardAvoidListener(): void {
+    if (this.kbWin !== null && this.kbAvoidCb !== null && this.kbWindowSizeCb !== null) {
+      if (this.isVncSession() || this.isRdpRemoteSession()) {
+        this.syncVncToolbarAvoidAreas(this.kbWin);
+      }
+      return;
+    }
+    if (this.kbWin !== null || this.kbAvoidCb !== null || this.kbWindowSizeCb !== null) {
+      this.unregisterKeyboardAvoidListener();
+    }
+    const generation: number = ++this.kbListenerGeneration;
     try {
       const ctx: common.Context | undefined = this.getUIContext().getHostContext();
       if (!ctx) {
         return;
       }
       window.getLastWindow(ctx).then((w: window.Window): void => {
+        if (generation !== this.kbListenerGeneration) {
+          return;
+        }
         this.kbWin = w;
         if (this.isVncSession() || this.isRdpRemoteSession()) {
           this.syncVncToolbarAvoidAreas(w);
@@ -6908,6 +6923,10 @@ struct RemoteDesktop {
         };
         w.on('windowSizeChange', this.kbWindowSizeCb);
       }).catch((err: Error): void => {
+        if (generation !== this.kbListenerGeneration) {
+          return;
+        }
+        this.unregisterKeyboardAvoidListener();
         hilog.warn(RD_DOMAIN, RD_TAG,
           'registerKeyboardAvoid: getLastWindow failed: ' + err.message);
       });
@@ -6918,15 +6937,20 @@ struct RemoteDesktop {
   }
 
   private unregisterKeyboardAvoidListener(): void {
+    this.kbListenerGeneration += 1;
     try {
       if (this.kbWin && this.kbAvoidCb) {
         this.kbWin.off('avoidAreaChange', this.kbAvoidCb);
       }
+    } catch (_e) {
+      // Avoid-area listener teardown is best effort during window transfer.
+    }
+    try {
       if (this.kbWin && this.kbWindowSizeCb) {
         this.kbWin.off('windowSizeChange', this.kbWindowSizeCb);
       }
     } catch (_e) {
-      // 忽略卸载异常
+      // Window-size listener teardown must still run if avoid-area off failed.
     }
     this.kbWin = null;
     this.kbAvoidCb = null;

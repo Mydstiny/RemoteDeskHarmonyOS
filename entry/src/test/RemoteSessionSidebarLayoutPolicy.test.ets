@@ -60,16 +60,19 @@ export default function remoteSessionSidebarLayoutPolicyTest(): void {
       expect(tiny.bottom).assertEqual(0);
     });
 
-    it('uses_window_viewport_and_normalizes_forced_phone_landscape', 0, (): void => {
+    it('uses_window_viewport_and_only_normalizes_surface_fallback', 0, (): void => {
       const windowViewport = remoteSessionSidebarViewport(391, 844, 844, 391, true);
       expect(windowViewport.width).assertEqual(844);
       expect(windowViewport.height).assertEqual(391);
-      const staleWindowViewport = remoteSessionSidebarViewport(391, 844, 391, 844, true);
-      expect(staleWindowViewport.width).assertEqual(844);
-      expect(staleWindowViewport.height).assertEqual(391);
-      const portraitViewport = remoteSessionSidebarViewport(391, 844, 0, 0, false);
-      expect(portraitViewport.width).assertEqual(391);
-      expect(portraitViewport.height).assertEqual(844);
+      const portraitPad = remoteSessionSidebarViewport(391, 844, 391, 844, true);
+      expect(portraitPad.width).assertEqual(391);
+      expect(portraitPad.height).assertEqual(844);
+      const phoneLandscapeFallback = remoteSessionSidebarViewport(391, 844, 0, 0, true);
+      expect(phoneLandscapeFallback.width).assertEqual(844);
+      expect(phoneLandscapeFallback.height).assertEqual(391);
+      const orientationNotApplied = remoteSessionSidebarViewport(391, 844, 0, 0, false);
+      expect(orientationNotApplied.width).assertEqual(391);
+      expect(orientationNotApplied.height).assertEqual(844);
     });
   });
 }
