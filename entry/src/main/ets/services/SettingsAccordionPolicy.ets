@@ -18,9 +18,19 @@ export const SETTINGS_SECTION_RATING: string = 'rating';
 
 export const SETTINGS_VNC_ACTION_ROW_COUNT: number = 11;
 export const SETTINGS_MOONLIGHT_ACTION_ROW_COUNT: number = 7;
+export const SETTINGS_RDP_SWITCH_ROW_COUNT: number = 5;
+export const SETTINGS_SECURITY_ACTION_ROW_COUNT: number = 5;
 const SETTINGS_VNC_ACTION_ROW_HEIGHT_VP: number = 62;
 const SETTINGS_VNC_ACTION_DIVIDER_HEIGHT_VP: number = 0.5;
 const SETTINGS_VNC_SECTION_CHROME_HEIGHT_VP: number = 73;
+const SETTINGS_RDP_DESKTOP_PRESET_HEIGHT_VP: number = 110;
+const SETTINGS_RDP_INLINE_SELECTOR_HEIGHT_VP: number = 64;
+const SETTINGS_RDP_STACKED_SELECTOR_HEIGHT_VP: number = 92;
+const SETTINGS_RDP_SELECTOR_ROW_COUNT: number = 3;
+const SETTINGS_RDP_FIXED_ROW_COUNT: number = 2;
+const SETTINGS_RDP_FIXED_ROW_HEIGHT_VP: number = 64;
+const SETTINGS_SECURITY_FIXED_CONTENT_HEIGHT_VP: number = 228;
+const SETTINGS_SECURITY_FIXED_ROW_COUNT: number = 3;
 
 export const SETTINGS_SUPPORT_EMAIL: string = 'lijiong1219@petalmail.com';
 export const SETTINGS_SUPPORT_SUBJECT: string = 'RemoteDesktop 用户反馈';
@@ -85,6 +95,44 @@ export function settingsMoonlightExpandedMaxHeight(
   const dividerCount: number = Math.max(0, boundedCount - 1);
   return Math.ceil(SETTINGS_VNC_SECTION_CHROME_HEIGHT_VP +
     boundedCount * SETTINGS_VNC_ACTION_ROW_HEIGHT_VP +
+    dividerCount * SETTINGS_VNC_ACTION_DIVIDER_HEIGHT_VP);
+}
+
+/**
+ * RDP uses taller, stacked selector rows outside the medium/large layouts.
+ * Keep the animation cap aligned with every rendered row so clip(true) only
+ * hides the collapsed state and never removes the card's bottom spacing.
+ */
+export function settingsRdpExpandedMaxHeight(
+  breakpoint: string,
+  switchRowCount: number = SETTINGS_RDP_SWITCH_ROW_COUNT
+): number {
+  const boundedSwitchCount: number = Number.isFinite(switchRowCount) ?
+    Math.max(0, Math.floor(switchRowCount)) : 0;
+  const selectorHeight: number = breakpoint === 'md' || breakpoint === 'lg' ?
+    SETTINGS_RDP_INLINE_SELECTOR_HEIGHT_VP : SETTINGS_RDP_STACKED_SELECTOR_HEIGHT_VP;
+  const itemCount: number = 1 + SETTINGS_RDP_SELECTOR_ROW_COUNT +
+    boundedSwitchCount + SETTINGS_RDP_FIXED_ROW_COUNT;
+  const dividerCount: number = Math.max(0, itemCount - 1);
+  return Math.ceil(SETTINGS_VNC_SECTION_CHROME_HEIGHT_VP +
+    SETTINGS_RDP_DESKTOP_PRESET_HEIGHT_VP +
+    SETTINGS_RDP_SELECTOR_ROW_COUNT * selectorHeight +
+    boundedSwitchCount * SETTINGS_RDP_FIXED_ROW_HEIGHT_VP +
+    SETTINGS_RDP_FIXED_ROW_COUNT * SETTINGS_RDP_FIXED_ROW_HEIGHT_VP +
+    dividerCount * SETTINGS_VNC_ACTION_DIVIDER_HEIGHT_VP);
+}
+
+/** Data Security combines three custom blocks with its action rows. */
+export function settingsSecurityExpandedMaxHeight(
+  actionRowCount: number = SETTINGS_SECURITY_ACTION_ROW_COUNT
+): number {
+  const boundedActionCount: number = Number.isFinite(actionRowCount) ?
+    Math.max(0, Math.floor(actionRowCount)) : 0;
+  const itemCount: number = SETTINGS_SECURITY_FIXED_ROW_COUNT + boundedActionCount;
+  const dividerCount: number = Math.max(0, itemCount - 1);
+  return Math.ceil(SETTINGS_VNC_SECTION_CHROME_HEIGHT_VP +
+    SETTINGS_SECURITY_FIXED_CONTENT_HEIGHT_VP +
+    boundedActionCount * SETTINGS_VNC_ACTION_ROW_HEIGHT_VP +
     dividerCount * SETTINGS_VNC_ACTION_DIVIDER_HEIGHT_VP);
 }
 

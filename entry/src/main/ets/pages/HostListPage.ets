@@ -475,6 +475,8 @@ import {
   SETTINGS_SECTION_VNC,
   SETTINGS_SECTION_SECURITY,
   SETTINGS_SECTION_TUTORIAL,
+  SETTINGS_RDP_SWITCH_ROW_COUNT,
+  SETTINGS_SECURITY_ACTION_ROW_COUNT,
   SETTINGS_VNC_ACTION_ROW_COUNT,
   SETTINGS_MOONLIGHT_ACTION_ROW_COUNT,
   SettingsFeedbackLaunchAttempt,
@@ -484,6 +486,8 @@ import {
   settingsRatingUriCandidates,
   settingsRatingWantAction,
   settingsMoonlightExpandedMaxHeight,
+  settingsRdpExpandedMaxHeight,
+  settingsSecurityExpandedMaxHeight,
   settingsVncExpandedMaxHeight
 } from '../services/SettingsAccordionPolicy';
 import {
@@ -4657,7 +4661,7 @@ struct HostListPage {
       return 390;
     }
     if (section === SETTINGS_SECTION_RDP) {
-      return 820;
+      return settingsRdpExpandedMaxHeight(this.breakpoint, SETTINGS_RDP_SWITCH_ROW_COUNT);
     }
     if (section === SETTINGS_SECTION_RUSTDESK) {
       return 980;
@@ -4672,7 +4676,7 @@ struct HostListPage {
       return settingsMoonlightExpandedMaxHeight(SETTINGS_MOONLIGHT_ACTION_ROW_COUNT);
     }
     if (section === SETTINGS_SECTION_SECURITY) {
-      return 560;
+      return settingsSecurityExpandedMaxHeight(SETTINGS_SECURITY_ACTION_ROW_COUNT);
     }
     if (section === SETTINGS_SECTION_TUTORIAL) {
       return 300;
