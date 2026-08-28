@@ -52,11 +52,12 @@
 - Follow-up review of `dfb74ded6` by `/root/vnc_wheel_review`: PASS, P0/P1/P2/P3 all zero.
 - Release follow-up review found stale SBOM provenance and incomplete 80-step regression coverage; both were remediated in `8e9ed4ea8`.
 - Final independent review of `5c20204b2..8e9ed4ea8` by `/root/vnc_wheel_review`: PASS, P0/P1/P2/P3 all zero.
+- Independent incremental review of the `bf397173e` ResourceTable recovery by `/root/resource_table_guard_review`: PASS, P0/P1/P2/P3 all zero.
 
 ## Next
 
 1. Install the reviewed 1.1.3 10x signed HAP on `192.168.3.236:40123` for user acceptance.
-2. Independently review the build-guard delta at `bf397173e`, then complete push/PR/main closure after acceptance.
+2. After acceptance, open the PR, wait for the required check, merge and synchronize `main`.
 
 ## Blockers
 
