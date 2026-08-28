@@ -372,6 +372,7 @@ export struct RemoteModifierPanel {
     if (group === 'digits') { return '数字'; }
     if (group === 'symbols') { return '符号'; }
     if (group === 'functions') { return 'F 键'; }
+    if (group === 'directions') { return '方向'; }
     return '导航';
   }
 
@@ -850,6 +851,7 @@ export struct RemoteModifierPanel {
         this.CustomGroupChoice('digits')
         this.CustomGroupChoice('symbols')
         this.CustomGroupChoice('functions')
+        this.CustomGroupChoice('directions')
         this.CustomGroupChoice('navigation')
       }.width('100%').margin({ top: 4, bottom: 5 })
       Column({ space: 4 }) {
@@ -1064,12 +1066,6 @@ export struct RemoteModifierPanel {
           this.ActionKey('Pause', RemoteModifierPanel.KEY_BREAK)
         }.width('100%')
         Row() {
-          this.ActionKey('←', RemoteModifierPanel.KEY_LEFT)
-          this.ActionKey('↑', RemoteModifierPanel.KEY_UP)
-          this.ActionKey('↓', RemoteModifierPanel.KEY_DOWN)
-          this.ActionKey('→', RemoteModifierPanel.KEY_RIGHT)
-        }.width('100%')
-        Row() {
           this.ActionKey('⌫ 退格', RemoteModifierPanel.KEY_BACKSPACE)
           this.ActionKey('Space', RemoteModifierPanel.KEY_SPACE)
           this.ActionKey('Caps', RemoteModifierPanel.KEY_CAPS_LOCK)
@@ -1082,6 +1078,22 @@ export struct RemoteModifierPanel {
           this.ActionKey('', 0)
         }.width('100%')
     }.width('100%')
+  }
+
+  @Builder
+  DirectionKeyLibrary() {
+    Column({ space: 6 }) {
+      Row() {
+        this.ActionKey('', 0)
+        this.ActionKey('↑', RemoteModifierPanel.KEY_UP)
+        this.ActionKey('', 0)
+      }.width('100%')
+      Row() {
+        this.ActionKey('←', RemoteModifierPanel.KEY_LEFT)
+        this.ActionKey('↓', RemoteModifierPanel.KEY_DOWN)
+        this.ActionKey('→', RemoteModifierPanel.KEY_RIGHT)
+      }.width('100%')
+    }.width('100%').padding({ top: 8, bottom: 8 })
   }
 
   @Builder
@@ -1141,13 +1153,15 @@ export struct RemoteModifierPanel {
 
               Row({ space: 5 }) {
                 this.SectionChoice('shortcuts', '快捷键')
-                this.SectionChoice('functions', this.shortcutPlatform() === 'macos' ?
-                  'F1–F20 / 导航' : 'F1–F24 / 导航')
+                this.SectionChoice('functions', '功能键')
+                this.SectionChoice('directions', '方向键')
                 this.SectionChoice('custom', '自定义')
               }.width('100%').margin({ top: 9, bottom: 8 })
 
               if (this.panelSection === 'functions' && this.functionKeysVisible) {
                 this.FunctionKeyLibrary()
+              } else if (this.panelSection === 'directions') {
+                this.DirectionKeyLibrary()
               } else if (this.panelSection === 'custom') {
                 this.CustomShortcutLibrary()
               } else {

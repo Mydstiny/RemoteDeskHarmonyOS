@@ -192,6 +192,7 @@ export struct VirtualKeyboardSettingsSheet {
     if (group === 'digits') { return '数字'; }
     if (group === 'symbols') { return '符号'; }
     if (group === 'functions') { return 'F 键'; }
+    if (group === 'directions') { return '方向'; }
     return '导航';
   }
 
@@ -427,6 +428,7 @@ export struct VirtualKeyboardSettingsSheet {
         this.groupChoice('digits')
         this.groupChoice('symbols')
         this.groupChoice('functions')
+        this.groupChoice('directions')
         this.groupChoice('navigation')
       }.width('100%')
       Column({ space: this.customEditorLayout().itemGap }) {

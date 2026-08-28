@@ -1,5 +1,5 @@
 export type RemoteCustomShortcutKeyGroup =
-  'letters' | 'digits' | 'symbols' | 'functions' | 'navigation';
+  'letters' | 'digits' | 'symbols' | 'functions' | 'directions' | 'navigation';
 
 export interface RemoteCustomShortcut {
   id: string;
@@ -125,16 +125,19 @@ export function remoteCustomShortcutKeyOptions(
     }
     return result;
   }
+  if (group === 'directions') {
+    pushOption(result, '↑', 2012);
+    pushOption(result, '↓', 2013);
+    pushOption(result, '←', 2014);
+    pushOption(result, '→', 2015);
+    return result;
+  }
   pushOption(result, 'Esc', 2070);
   pushOption(result, 'Tab', 2049);
   pushOption(result, 'Enter', 2054);
   pushOption(result, 'Space', 2050);
   pushOption(result, 'Del', 2071);
   pushOption(result, 'Backspace', 2055);
-  pushOption(result, '↑', 2012);
-  pushOption(result, '↓', 2013);
-  pushOption(result, '←', 2014);
-  pushOption(result, '→', 2015);
   pushOption(result, 'Home', 2081);
   pushOption(result, 'End', 2082);
   pushOption(result, 'PgUp', 2068);
@@ -167,7 +170,7 @@ export function remoteCustomShortcutKeyGroupForKeyCode(
   keyCode: number
 ): RemoteCustomShortcutKeyGroup {
   const groups: Array<RemoteCustomShortcutKeyGroup> =
-    ['letters', 'digits', 'symbols', 'functions', 'navigation'];
+    ['letters', 'digits', 'symbols', 'functions', 'directions', 'navigation'];
   for (let groupIndex: number = 0; groupIndex < groups.length; groupIndex++) {
     const options: Array<RemoteCustomShortcutKeyOption> =
       remoteCustomShortcutKeyOptions(groups[groupIndex]);
@@ -180,7 +183,7 @@ export function remoteCustomShortcutKeyGroupForKeyCode(
 
 function actionLabel(keyCode: number): string {
   const groups: Array<RemoteCustomShortcutKeyGroup> =
-    ['letters', 'digits', 'symbols', 'functions', 'navigation'];
+    ['letters', 'digits', 'symbols', 'functions', 'directions', 'navigation'];
   for (let groupIndex = 0; groupIndex < groups.length; groupIndex++) {
     const options: Array<RemoteCustomShortcutKeyOption> =
       remoteCustomShortcutKeyOptions(groups[groupIndex]);
