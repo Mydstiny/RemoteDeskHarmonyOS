@@ -5,8 +5,8 @@
 - Task: `system-clipboard-activation-fix`
 - Branch/base: `codex/system-clipboard-activation-fix` from synchronized
   `main@181e79783`.
-- Phase: review fixes are committed at `94be1858`; independent re-review is
-  pending.
+- Phase: implementation and independent review are complete at `94be1858`;
+  device validation awaits a release-provisioned build.
 - Plan: `docs/codex/plans/2026-08-28-system-clipboard-activation-fix.md`
 
 ## Objective
@@ -57,13 +57,12 @@
 - The first independent review found two P1 and two P2 issues: unsafe unknown
   error formatting, a send-only startup gate, invalid-result
   misclassification and no late-grant activation outside RDP file paste.
-- All four findings are fixed in `94be1858`; the same reviewer must verify the
-  updated checkpoint.
+- All four findings are fixed in `94be1858`. The same reviewer verified the
+  complete scope: PASS, P0/P1/P2/P3 all zero.
 
 ## Next
 
-1. Obtain independent re-review of `94be1858`.
-2. Validate a release-provisioned build on device without removing the existing
+1. Validate a release-provisioned build on device without removing the existing
    application or clearing its data.
 
 ## Verification
@@ -73,6 +72,7 @@
 - Signed HAP manifest inspection: PASS; permission and both abilities present.
 - Light open-source compliance: PASS.
 - `git diff --check`: PASS.
+- Independent review: PASS at `94be1858`; P0/P1/P2/P3 all zero.
 
 ## Blockers
 

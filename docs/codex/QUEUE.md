@@ -4,9 +4,7 @@ Updated: 2026-08-28 Asia/Shanghai
 
 ## Now
 
-1. Independently re-review the focused permission-activation fix at
-   `94be1858`.
-2. Run device acceptance with a release-provisioned build.
+1. Run device acceptance with a release-provisioned build.
 
 ## Next
 

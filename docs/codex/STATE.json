@@ -4,9 +4,9 @@
   "branch": "codex/system-clipboard-activation-fix",
   "base": "181e79783",
   "head": "94be1858",
-  "phase": "ready-for-review",
+  "phase": "ready-for-device-validation",
   "status": "active",
-  "next": "Obtain independent re-review of 94be1858, then validate a release-provisioned build on device.",
+  "next": "Validate a release-provisioned build on device without uninstalling the existing package or clearing its data.",
   "blockers": [
     "Device update is blocked by release/debug provisioning mismatch (9568286); the installed app and its data were preserved."
   ],
@@ -14,11 +14,11 @@
     "docs/codex/plans/2026-08-28-system-clipboard-activation-fix.md"
   ],
   "review": {
-    "status": "PENDING",
+    "status": "PASS",
     "taskIds": [
       "/root/clipboard_activation_review"
     ],
-    "reviewedHead": "",
+    "reviewedHead": "94be18584960994283bb0859aab4f230ad6a1f27",
     "scope": [
       "entry/src/main/module.json5",
       "entry/src/main/ets/pages/RemoteDesktop.ets",
@@ -26,14 +26,14 @@
       "entry/src/main/ets/services/ClipboardSyncPolicy.ets",
       "entry/src/test/ClipboardSyncPolicy.test.ets"
     ],
-    "lastReceiptId": "",
+    "lastReceiptId": "system-clipboard-activation-fix-94be1858-2026-08-28",
     "findings": [
       "P1: unknown permission errors could throw again and remove the remote-only bridge (fixed in 94be1858)",
       "P1: clipboardSend incorrectly gated VNC view-only remote-to-local sync (fixed in 94be1858)",
       "P2: invalid permission request result 2 was reported as user denial (fixed in 94be1858)",
       "P2: later system-settings authorization did not activate local monitoring (fixed in 94be1858)"
     ],
-    "reason": "The first independent review findings are fixed; the same reviewer must verify 94be1858."
+    "reason": "The same independent reviewer verified all four remediated findings and the complete clipboard scope at 94be1858; final P0/P1/P2/P3 are zero."
   },
   "lastVerification": {
     "baseline": "clean synchronized main@181e79783",
@@ -41,7 +41,7 @@
     "assembleHap": "PASS: signed HAP, BUILD SUCCESSFUL in 15 s 905 ms",
     "targetedTests": "PASS: ClipboardSyncPolicy permission and receive-only activation decisions registered and compiled in the required test gate",
     "compliance": "PASS: Light open-source compliance and git diff --check",
-    "review": "PENDING",
+    "review": "PASS: /root/clipboard_activation_review at 94be1858; all four findings closed; P0/P1/P2/P3 zero",
     "deviceAcceptance": "BLOCKED: release/debug provisioning mismatch 9568286; existing app data preserved"
   },
   "updated": "2026-08-28 Asia/Shanghai"
