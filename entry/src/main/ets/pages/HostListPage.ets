@@ -460,6 +460,8 @@ import {
   moonlightSettingsRouteSpec,
   settingsLeafSheetUsesSystemCloseButton,
   settingsLeafOpenDelayMs,
+  virtualKeyboardSettingsLeafSheetHeight,
+  virtualKeyboardSettingsLeafUsesBottomSheet,
   virtualKeyboardSettingsRouteSpec,
   vncSettingsLeafSheetHeight
 } from '../services/SettingsSheetRoutePolicy';
@@ -11478,8 +11480,8 @@ struct HostListPage {
         .hitTestBehavior(this.showSettingsLeafSheet ? HitTestMode.Default : HitTestMode.None)
       .bindSheet($$this.showSettingsLeafSheet, this.settingsLeafSheet(), {
         height: this.settingsLeafSheetHeight(),
-        preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
-        dragBar: this.breakpoint === 'sm',
+        preferType: this.settingsLeafUsesBottomSheet() ? SheetType.BOTTOM : SheetType.CENTER,
+        dragBar: this.settingsLeafUsesBottomSheet(),
         keyboardAvoidMode: this.settingsLeafKeyboardAvoidMode(),
         backgroundColor: this.pal().sheetBg,
         blurStyle: BlurStyle.NONE,
@@ -14028,10 +14030,9 @@ struct HostListPage {
       // shrink for short lessons and grow only up to the live window.
       return SheetSize.FIT_CONTENT;
     }
-    // Virtual-keyboard leaves own their scrolling body. Let the native large
-    // sheet follow the current phone, tablet, or freeform-window height.
     if (this.isVirtualKeyboardSettingsLeafSheet()) {
-      return SheetSize.LARGE;
+      return virtualKeyboardSettingsLeafSheetHeight(
+        this.settingsLeafSheetMode, this.pageViewportHeight);
     }
     const diagnosticHeight: number = diagnosticLogSettingsLeafSheetHeight(this.settingsLeafSheetMode);
     if (diagnosticHeight > 0) { return diagnosticHeight; }
@@ -14045,6 +14046,14 @@ struct HostListPage {
     if (moonlightHeight > 0) { return moonlightHeight; }
     const vncHeight: number = vncSettingsLeafSheetHeight(this.settingsLeafSheetMode);
     return vncHeight > 0 ? vncHeight : SheetSize.FIT_CONTENT;
+  }
+
+  private settingsLeafUsesBottomSheet(): boolean {
+    if (this.isVirtualKeyboardSettingsLeafSheet()) {
+      return virtualKeyboardSettingsLeafUsesBottomSheet(
+        this.settingsLeafSheetMode, this.pageViewportHeight, this.breakpoint);
+    }
+    return this.breakpoint === 'sm';
   }
 
   private settingsLeafKeyboardAvoidMode(): SheetKeyboardAvoidMode {
