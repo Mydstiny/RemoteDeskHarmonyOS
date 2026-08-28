@@ -56,6 +56,19 @@ export default function rustDeskProSyncPolicyTest() {
       expect(second.hosts[0].rustdeskAuthMode).assertEqual('password');
     });
 
+    it('preserves_crypto_locked_password_presence_on_resync', 0, () => {
+      const first = reconcileRustDeskProHosts([], 'relay-1', 'acct-1',
+        [peer('123', 'Office')], 100);
+      first.hosts[0].password = '';
+      first.hosts[0].passwordConfigured = true;
+      first.hosts[0].rustdeskAuthMode = 'password';
+      const second = reconcileRustDeskProHosts(first.hosts, 'relay-1', 'acct-1',
+        [peer('123', 'Office', '', 'server-must-not-overwrite')], 200);
+      expect(second.hosts[0].password).assertEqual('');
+      expect(second.hosts[0].passwordConfigured).assertTrue();
+      expect(second.hosts[0].rustdeskAuthMode).assertEqual('password');
+    });
+
     it('creates_stable_managed_hosts', 0, () => {
       const result = reconcileRustDeskProHosts([], 'relay-1', 'acct-1', [peer('123', 'Office', 'Windows')], 100);
       expect(result.addedIds.length).assertEqual(1);

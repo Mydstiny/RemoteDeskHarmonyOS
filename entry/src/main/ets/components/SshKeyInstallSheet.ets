@@ -129,9 +129,12 @@ export struct SshKeyInstallSheet {
 
         if (testResult['ok'] && this.switchToNewKey) {
           // 切换 Host 使用新密钥
-          const updated: RemoteHost = RemoteHost.fromJSON(host.toJSON());
+          const updated: RemoteHost = host.runtimeClone();
           updated.sshUseKey = true;
+          updated.password = '';
+          updated.passwordConfigured = false;
           updated.sshKeyData = this.targetKey.privateKey;
+          updated.sshKeyDataConfigured = this.targetKey.privateKey.length > 0;
           updated.sshKeyPath = 'KeyVault: ' + this.targetKey.label;
           if (!this.hostSync.updateHost(updated)) {
             this.hostSwitchSaveError = '新密钥已安装并验证成功，但主机认证方式未能保存；请返回主机编辑页重试。';

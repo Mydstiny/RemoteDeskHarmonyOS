@@ -7910,9 +7910,13 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
         legacyRows, legacyExtensions, host.userId);
     const get = (key: string, fallback: string): string => values[key] !== undefined ? values[key] : fallback;
     const crypto: DataCrypto = DataCrypto.getInstance();
+    const storedSshKeyPassphrase: string = get(
+      'sshkeypassphrase', host.sshKeyPassphrase);
+    host.sshKeyPassphraseConfigured = host.sshKeyPassphraseConfigured ||
+      storedSshKeyPassphrase.length > 0;
     host.sshKeyPassphrase = this.decryptIfReady(
       crypto, 'localextensions/remotehosts', host.id,
-      'sshkeypassphrase', get('sshkeypassphrase', host.sshKeyPassphrase));
+      'sshkeypassphrase', storedSshKeyPassphrase);
     host.sshProxyPassword = this.decryptIfReady(
       crypto, 'localextensions/remotehosts', host.id,
       'sshproxypassword', get('sshproxypassword', host.sshProxyPassword));
@@ -8195,7 +8199,14 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
       normalizeRdpRestrictedAdminSecretSource(host.rdpRestrictedAdminSecretSource) !== 'ntlm_hash') {
       if (!this.clearRdpRestrictedAdminHash(host.id)) { return false; }
     }
-    return this.saveLocalExtension('remotehosts', host.id, this.hostExtensionValues(host));
+    const values: Record<string, string> = this.hostExtensionValues(host);
+    if (host.sshKeyPassphraseConfigured && host.sshKeyPassphrase === '') {
+      const existing: Record<string, string> = this.loadLocalExtension('remotehosts', host.id);
+      if ((existing['sshkeypassphrase'] || '').length > 0) {
+        values['sshkeypassphrase'] = existing['sshkeypassphrase'];
+      }
+    }
+    return this.saveLocalExtension('remotehosts', host.id, values);
   }
 
   private saveSshKeyExtension(key: SshKey): boolean {

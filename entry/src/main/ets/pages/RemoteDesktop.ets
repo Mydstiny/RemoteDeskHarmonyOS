@@ -244,8 +244,15 @@ import { remoteSessionWindowReadySnapshotIsUsable } from
 import { AccountSessionCoordinator } from '../services/AccountSessionCoordinator';
 import {
   RustDeskAuthDraft,
-  RustDeskAuthDraftStore
+  RustDeskAuthDraftStore,
+  rustDeskDraftKeepsStoredPassword,
+  rustDeskDraftPasswordForConnection
 } from '../services/RustDeskAuthDraftStore';
+import { SecretPresentationStore } from '../services/SecretPresentationPolicy';
+import {
+  secretEditDraftValue,
+  secretEditPlaceholder
+} from '../services/SecretEditMutationPolicy';
 import { copyRustDeskPeerTwoFactorRuntime } from '../services/RustDeskPeerTwoFactorBindingStore';
 import { NativeSessionHandles, ProductionNativeHandleAdapter } from '../services/NativeSessionHandles';
 import {
@@ -938,6 +945,7 @@ struct RemoteDesktop {
   @State localResourceStats: LocalResourceStats = EMPTY_LOCAL_RESOURCE_STATS;
   @State rustDeskAuthChoice: RustDeskAuthChoice = 'password';
   @State rustDeskAuthPasswordInput: string = '';
+  @State rustDeskAuthPasswordConfigured: boolean = false;
   @State rustDeskAuthPasswordMode: number = 0;
   @State rustDeskAuthPasswordShow: boolean = false;
   @State rustDeskAuthRememberPassword: boolean = true;
@@ -1051,6 +1059,9 @@ struct RemoteDesktop {
   private rustDeskSessionPassword: string = '';
   private rustDeskSessionRememberPassword: boolean = false;
   private rustDeskSessionPasswordMode: number = 0;
+  private rustDeskAuthKeepsStoredPassword: boolean = false;
+  private readonly secretPresentation: SecretPresentationStore =
+    SecretPresentationStore.getInstance();
   private remoteNavigationHidden: boolean = false;
   private remoteStatusBarHidden: boolean = false;
   private remoteSystemBarRequestId: number = 0;
@@ -2200,6 +2211,12 @@ struct RemoteDesktop {
    * Pro 地址簿主机每次新建会话都显式选择认证方式；后台恢复不经过这里，
    * 因为恢复的是已有 RustDesk 会话而不是重新认证。
    */
+  private rustDeskAuthPasswordHidden(): boolean {
+    const crypto: DataCrypto = DataCrypto.getInstance();
+    const securityOverride: boolean = crypto.isSetupComplete() && !crypto.isReady();
+    return this.secretPresentation.isHidden('rustdesk_device_password', securityOverride);
+  }
+
   private openRustDeskAuthSheet(message: string = ''): void {
     if (this.rustDeskAuthSheetClosing) {
       this.rustDeskAuthQueuedMessage = message;
@@ -2216,9 +2233,19 @@ struct RemoteDesktop {
     this.rustDeskAuthChoice = host.rustdeskDirectEnabled ? 'password' :
       (draft !== null ? draft.authChoice :
         (host.rustdeskAuthMode === 'request_approval' ? 'request_approval' : 'password'));
-    this.rustDeskAuthPasswordInput = draft === null ? host.password : draft.password;
     this.rustDeskAuthPasswordMode = draft === null ?
       (host.rustdeskPasswordMode === 1 ? 1 : 0) : draft.passwordMode;
+    const hidden: boolean = this.rustDeskAuthPasswordHidden();
+    const storedPasswordConfigured: boolean = host.password.length > 0 || host.passwordConfigured;
+    const draftMatchesStoredMode: boolean = this.rustDeskAuthPasswordMode ===
+      (host.rustdeskPasswordMode === 1 ? 1 : 0);
+    this.rustDeskAuthKeepsStoredPassword = draft === null ?
+      (hidden && storedPasswordConfigured) :
+      (draft.keepsStoredPassword && draftMatchesStoredMode);
+    this.rustDeskAuthPasswordInput = draft === null ?
+      secretEditDraftValue(host.password, hidden) : draft.password;
+    this.rustDeskAuthPasswordConfigured = this.rustDeskAuthPasswordInput.length > 0 ||
+      (this.rustDeskAuthKeepsStoredPassword && storedPasswordConfigured);
     this.rustDeskAuthPasswordShow = false;
     this.rustDeskAuthRememberPassword = draft === null ? true : draft.rememberPassword;
     this.rustDeskAuthError = message;
@@ -2233,6 +2260,9 @@ struct RemoteDesktop {
     const host: RemoteHost | null = this.pendingHost;
     if (host === null || host.protocol !== 'rustdesk') { return; }
     const scope = AccountSessionCoordinator.getInstance().currentScope();
+    if (this.rustDeskAuthPasswordInput.length > 0) {
+      this.rustDeskAuthKeepsStoredPassword = false;
+    }
     this.rustDeskAuthDrafts.save({
       ownerScopeId: scope.ownerScopeId,
       accountGeneration: scope.generation,
@@ -2240,7 +2270,7 @@ struct RemoteDesktop {
       authChoice: this.rustDeskAuthChoice,
       password: this.rustDeskAuthPasswordInput,
       passwordMode: this.rustDeskAuthPasswordMode === 1 ? 1 : 0,
-      keepsStoredPassword: false,
+      keepsStoredPassword: this.rustDeskAuthKeepsStoredPassword,
       rememberPassword: this.rustDeskAuthRememberPassword,
       updatedAt: Date.now()
     });
@@ -2305,17 +2335,29 @@ struct RemoteDesktop {
       return;
     }
 
-    const selected = RemoteHost.fromJSON(host.toJSON());
+    const keepsSamePasswordMode: boolean = rustDeskDraftKeepsStoredPassword(
+      this.rustDeskAuthKeepsStoredPassword,
+      host.rustdeskPasswordMode, this.rustDeskAuthPasswordMode);
+    const passwordForConnection: string = rustDeskDraftPasswordForConnection(
+      this.rustDeskAuthPasswordInput, this.rustDeskAuthKeepsStoredPassword,
+      host.password, host.rustdeskPasswordMode, this.rustDeskAuthPasswordMode);
+    const selected = host.runtimeClone();
     copyRustDeskPeerTwoFactorRuntime(host, selected);
     selected.rustdeskPasswordMode = this.rustDeskAuthPasswordMode === 1 ? 1 : 0;
     if (this.rustDeskAuthChoice === 'password') {
-      if (this.rustDeskAuthPasswordInput.trim().length === 0) {
+      if (this.rustDeskAuthKeepsStoredPassword && keepsSamePasswordMode &&
+        this.rustDeskAuthPasswordConfigured && host.password === '' &&
+        this.rustDeskAuthPasswordInput === '') {
+        this.rustDeskAuthError = '设备密码仍在加密仓库中；请先解锁并重新打开连接面板。';
+        return;
+      }
+      if (passwordForConnection.trim().length === 0) {
         this.rustDeskAuthError = '请输入远程 RustDesk 设备密码。';
         return;
       }
-      selected.password = this.rustDeskAuthPasswordInput;
+      selected.password = passwordForConnection;
       selected.rustdeskAuthMode = 'password';
-      this.rustDeskSessionPassword = this.rustDeskAuthPasswordInput;
+      this.rustDeskSessionPassword = passwordForConnection;
       this.rustDeskSessionRememberPassword = this.rustDeskAuthRememberPassword;
     } else {
       // Approval is a passwordless request.  Keep the persisted host record
@@ -3458,12 +3500,14 @@ struct RemoteDesktop {
     if (!existing) {
       return;
     }
-    const next = RemoteHost.fromJSON(existing.toJSON());
+    const next = existing.runtimeClone();
     next.rustdeskAuthMode = this.rustDeskSessionAuthChoice;
     next.rustdeskPasswordMode = this.rustDeskSessionPasswordMode;
     if (this.rustDeskSessionAuthChoice === 'password') {
       next.password = this.rustDeskSessionRememberPassword ?
         this.rustDeskSessionPassword : '';
+    } else {
+      next.password = '';
     }
     next.passwordConfigured = next.password.length > 0;
     if (this.srv.updateHost(next)) {
@@ -7150,6 +7194,7 @@ struct RemoteDesktop {
     }
     this.restoreRemoteSystemPointer('page-appear');
     this.proSync.init(getContext(this) as common.Context);
+    this.secretPresentation.init(getContext(this) as common.Context);
     this.physicalKeyboardLayout = RemoteKeyboardLayout.WINDOWS;
     this.physicalKeyboardLayoutConfirmed = false;
     this.physicalKeyboardLayoutPromptVisible = false;
@@ -9875,7 +9920,7 @@ struct RemoteDesktop {
       hilog.warn(RD_DOMAIN, RD_TAG, 'RDP credential not found: ' + host.rdpCredentialId);
       return host;
     }
-    const resolved: RemoteHost = RemoteHost.fromJSON(host.toJSON());
+    const resolved: RemoteHost = host.runtimeClone();
     resolved.username = credential.username;
     resolved.password = credential.password;
     hilog.info(RD_DOMAIN, RD_TAG, 'RDP credential resolved: idHash=' + hashForLog(credential.id) +
@@ -9924,7 +9969,7 @@ struct RemoteDesktop {
     this.rdpCertificateAllowTimeAnomalyOnce = targetTimeAnomalyOnce;
     this.rdpGatewayCertificateAllowUnpinnedOnce = gatewayUnpinnedOnce;
     this.rdpGatewayCertificateAllowTimeAnomalyOnce = gatewayTimeAnomalyOnce;
-    const resolved: RemoteHost = RemoteHost.fromJSON(host.toJSON());
+    const resolved: RemoteHost = host.runtimeClone();
     if (fingerprint.length > 0) {
       resolved.rdpCertificateFingerprintSha256 = fingerprint;
       resolved.rdpCertificateTrustMode = 0;
@@ -11067,7 +11112,11 @@ struct RemoteDesktop {
         Text('远程 RustDesk 设备密码').fontSize(12).fontColor(this.pal().text2)
           .margin({ bottom: 5 })
         Row() {
-          TextInput({ placeholder: '输入设备密码', text: this.rustDeskAuthPasswordInput })
+          TextInput({
+            placeholder: secretEditPlaceholder(this.rustDeskAuthPasswordConfigured,
+              this.rustDeskAuthPasswordHidden(), '输入设备密码'),
+            text: this.rustDeskAuthPasswordInput
+          })
             .id('RustDeskAuthPassword')
             .type(this.rustDeskAuthPasswordShow ? InputType.Normal : InputType.Password)
             .height(42).backgroundColor(this.pal().surface).borderRadius(9)
@@ -11078,6 +11127,9 @@ struct RemoteDesktop {
             .defaultFocus(this.rustDeskAuthChoice === 'password')
             .onChange((v: string) => {
               this.rustDeskAuthPasswordInput = v;
+              if (v.length > 0) { this.rustDeskAuthKeepsStoredPassword = false; }
+              this.rustDeskAuthPasswordConfigured = v.length > 0 ||
+                this.rustDeskAuthKeepsStoredPassword;
               this.saveRustDeskAuthDraft();
             })
             .onSubmit((_enterKey: EnterKeyType, event: SubmitEvent): void => {
@@ -11088,6 +11140,11 @@ struct RemoteDesktop {
             .fontSize(18).fontColor([this.pal().text3]).margin({ left: 8 })
             .onClick(() => { this.rustDeskAuthPasswordShow = !this.rustDeskAuthPasswordShow; })
         }.width('100%').margin({ bottom: 8 })
+        if (this.rustDeskAuthPasswordConfigured && this.rustDeskAuthPasswordInput === '' &&
+          this.rustDeskAuthPasswordHidden()) {
+          Text('已保存设备密码处于隐藏状态；留空连接会继续使用它，输入新密码才会替换。')
+            .fontSize(11).fontColor(this.pal().text3).lineHeight(16).margin({ bottom: 8 })
+        }
         Row() {
           Text('记住此设备密码').fontSize(12).fontColor(this.pal().text2).layoutWeight(1)
           Toggle({ type: ToggleType.Switch, isOn: this.rustDeskAuthRememberPassword })
@@ -11105,6 +11162,8 @@ struct RemoteDesktop {
             .onClick((): void => {
               if (this.rustDeskAuthPasswordMode !== 0) {
                 this.rustDeskAuthPasswordInput = '';
+                this.rustDeskAuthPasswordConfigured = false;
+                this.rustDeskAuthKeepsStoredPassword = false;
               }
               this.rustDeskAuthPasswordMode = 0;
               this.saveRustDeskAuthDraft();
@@ -11115,6 +11174,8 @@ struct RemoteDesktop {
             .onClick((): void => {
               if (this.rustDeskAuthPasswordMode !== 1) {
                 this.rustDeskAuthPasswordInput = '';
+                this.rustDeskAuthPasswordConfigured = false;
+                this.rustDeskAuthKeepsStoredPassword = false;
               }
               this.rustDeskAuthPasswordMode = 1;
               this.saveRustDeskAuthDraft();
@@ -12148,7 +12209,7 @@ struct RemoteDesktop {
       if (this.isProRustDeskHost(host) && this.shouldOfferRustDeskAuthRetry(this.connectionErrorDetail)) {
         const fresh: RemoteHost | undefined = this.srv.getHost(host.id);
         if (fresh) {
-          const refreshed: RemoteHost = RemoteHost.fromJSON(fresh.toJSON());
+          const refreshed: RemoteHost = fresh.runtimeClone();
           copyRustDeskPeerTwoFactorRuntime(fresh, refreshed);
           this.pendingHost = refreshed;
         }

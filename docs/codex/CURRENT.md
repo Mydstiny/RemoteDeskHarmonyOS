@@ -4,7 +4,7 @@
 
 - Task: `secret-visibility-policy`
 - Branch/base: `codex/secret-visibility-policy` from synchronized `main@f3b41e5a6`.
-- Phase: third review remediation verified; follow-up review pending.
+- Phase: fourth review remediation verified; follow-up review pending.
 - Plan: `docs/codex/plans/2026-08-28-secret-visibility-policy.md`
 
 ## Objective
@@ -58,6 +58,15 @@
 - RustDesk Pro drafts now carry an explicit stored-password-preservation bit.
   A password invalidated by changing one-time/permanent mode stays invalid
   after background restore, even if the user switches back to the old mode.
+- The standard RustDesk connection Sheet now follows the same local visibility
+  policy as Pro: hidden saved passwords never enter its editable `@State`, and
+  approval success clears the old unattended password and marker.
+- Pro address-book reconciliation preserves crypto-locked secret markers,
+  never mistakes redacted plaintext for an absent password, and never replaces
+  a configured local password with a server response.
+- SSH trust, passphrase and key-install mutations retain runtime markers.
+  Switching to an installed key clears the obsolete password, while locked
+  trust-only updates preserve the encrypted private-key passphrase extension.
 - RustDesk Pro approval no longer retains the previously stored unattended
   password after an approved session.
 - Classified `secretPresentationPolicyV1` as device-local and added focused
@@ -65,8 +74,8 @@
 
 ## Verification (current worktree)
 
-- `default@OhosTestCompileArkTS`: PASS (`BUILD SUCCESSFUL in 20 s 406 ms`).
-- `assembleHap`: PASS, signed (`BUILD SUCCESSFUL in 28 s 281 ms`).
+- `default@OhosTestCompileArkTS`: PASS (`BUILD SUCCESSFUL in 18 s 733 ms`).
+- `assembleHap`: PASS, signed (`BUILD SUCCESSFUL in 25 s 556 ms`).
 - Light open-source compliance: PASS.
 - `git diff --check`: PASS.
 - The focused Hypium tests are registered in `List.test.ets` and compile in the
@@ -76,8 +85,8 @@
 
 ## Next
 
-1. Commit the verified third remediation with only this task's files.
-2. Ask the same independent reviewer to confirm all eleven findings are closed.
+1. Commit the verified fourth remediation with only this task's files.
+2. Ask the same independent reviewer to confirm all sixteen findings are closed.
 3. Rerun final gates and close the branch through PR/main where possible.
 
 ## Blockers

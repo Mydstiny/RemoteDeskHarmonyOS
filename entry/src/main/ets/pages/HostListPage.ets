@@ -85,7 +85,9 @@ import {
 } from '../services/RustDeskPeerTwoFactorPolicy';
 import {
   RustDeskAuthDraft,
-  RustDeskAuthDraftStore
+  RustDeskAuthDraftStore,
+  rustDeskDraftKeepsStoredPassword,
+  rustDeskDraftPasswordForConnection
 } from '../services/RustDeskAuthDraftStore';
 import { copyRustDeskPeerTwoFactorRuntime } from '../services/RustDeskPeerTwoFactorBindingStore';
 import { AppConfig, AppTheme, Palette, buildDark, buildLight } from '../common/Theme';
@@ -9103,13 +9105,13 @@ struct HostListPage {
     const scopeBeforeConnect = AccountSessionCoordinator.getInstance().currentScope();
     const draftBeforeConnect: RustDeskAuthDraft | null = this.rustDeskAuthDrafts.load(
       scopeBeforeConnect.ownerScopeId, scopeBeforeConnect.generation, stored.id);
-    const keepsSamePasswordMode: boolean = (stored.rustdeskPasswordMode === 1 ? 1 : 0) ===
-      (this.rustDeskProPasswordMode === 1 ? 1 : 0);
     const keepsStoredPassword: boolean = draftBeforeConnect === null ?
       this.rustDeskProKeepsStoredPassword : draftBeforeConnect.keepsStoredPassword;
-    const passwordForConnection: string = this.rustDeskProPassword.length > 0 ?
-      this.rustDeskProPassword :
-      (keepsStoredPassword && keepsSamePasswordMode ? stored.password : '');
+    const keepsSamePasswordMode: boolean = rustDeskDraftKeepsStoredPassword(
+      keepsStoredPassword, stored.rustdeskPasswordMode, this.rustDeskProPasswordMode);
+    const passwordForConnection: string = rustDeskDraftPasswordForConnection(
+      this.rustDeskProPassword, keepsStoredPassword, stored.password,
+      stored.rustdeskPasswordMode, this.rustDeskProPasswordMode);
     if (this.rustDeskProAuthMode === 'password' && keepsStoredPassword &&
       keepsSamePasswordMode && this.rustDeskProPasswordConfigured &&
       stored.password === '' && this.rustDeskProPassword === '') {

@@ -4,7 +4,7 @@ Updated: 2026-08-28 Asia/Shanghai
 
 ## Now
 
-1. Commit the verified hardening for all eleven findings across three review rounds.
+1. Commit the verified hardening for all sixteen findings across four review rounds.
 2. Reuse the same independent reviewer and require a clean follow-up verdict.
 3. Rerun final mandatory gates, then complete PR/main closure where possible.
 

@@ -17,7 +17,11 @@ import {
   setRustDeskPeerTwoFactorPreferenceAdapterForTest,
   shouldRemoveDanglingRustDeskPeerTwoFactorBinding
 } from '../main/ets/services/RustDeskPeerTwoFactorBindingStore';
-import { RustDeskAuthDraftStore } from '../main/ets/services/RustDeskAuthDraftStore';
+import {
+  RustDeskAuthDraftStore,
+  rustDeskDraftKeepsStoredPassword,
+  rustDeskDraftPasswordForConnection
+} from '../main/ets/services/RustDeskAuthDraftStore';
 import {
   decodeRustDeskPeerTwoFactorLegacyBackupRows,
   decodeRustDeskPeerTwoFactorLegacyDisplayConfig,
@@ -707,6 +711,16 @@ export default function rustDeskPeerTwoFactorPolicyTest(): void {
       const invalidated = drafts.load('owner-a', 3, 'invalidated-host');
       expect(invalidated !== null && invalidated.passwordMode === 0).assertTrue();
       expect(invalidated !== null && invalidated.keepsStoredPassword).assertFalse();
+      expect(rustDeskDraftKeepsStoredPassword(false, 0, 0)).assertFalse();
+      expect(rustDeskDraftKeepsStoredPassword(true, 0, 1)).assertFalse();
+      expect(rustDeskDraftPasswordForConnection(
+        '', false, 'old-secret', 0, 0)).assertEqual('');
+      expect(rustDeskDraftPasswordForConnection(
+        '', true, 'old-secret', 0, 1)).assertEqual('');
+      expect(rustDeskDraftPasswordForConnection(
+        '', true, 'old-secret', 0, 0)).assertEqual('old-secret');
+      expect(rustDeskDraftPasswordForConnection(
+        'replacement', false, 'old-secret', 0, 1)).assertEqual('replacement');
       drafts.clearHost('draft-host');
       expect(drafts.load('owner-a', 3, 'draft-host') === null).assertTrue();
       expect(drafts.save({

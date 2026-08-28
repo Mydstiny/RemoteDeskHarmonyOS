@@ -1101,8 +1101,8 @@ export class HostSyncService {
         cloudChanged = true;
         return;
       }
-      const cloudBaseChanged: boolean =
-        remoteHostCloudBaseChanged(current, next);
+      const cloudBaseChanged: boolean = remoteHostCloudBaseChanged(current, next) ||
+        current.runtimeSecretStateSignature() !== next.runtimeSecretStateSignature();
       const persisted: boolean = !this.ready ||
         (cloudBaseChanged ? this.cloud.updateHost(next) :
           this.cloud.updateHostLocalPersonalization(next));

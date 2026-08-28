@@ -1687,7 +1687,7 @@ struct SshTerminal {
     const trustedAt: number = Date.now();
     if (prompt.hostKeyHopIndex < 0) {
       if (current.host.trim() !== endpointHost || current.port !== prompt.endpointPort) { return false; }
-      const updated: RemoteHost = RemoteHost.fromJSON(current.toJSON());
+      const updated: RemoteHost = current.runtimeClone();
       updated.sshHostKeyAlgorithm = prompt.hostKeyAlgorithm.trim();
       updated.sshHostKeyFingerprintSha256 = fingerprint;
       updated.sshHostKeyRawBase64 = rawBase64;
@@ -1722,7 +1722,7 @@ struct SshTerminal {
     // older entry points keep the same strict binding without cross-endpoint trust.
     if (hopIndex === 0 && current.proxyHost.trim() === endpointHost &&
       current.proxyPort === prompt.endpointPort) {
-      const updated: RemoteHost = RemoteHost.fromJSON(current.toJSON());
+      const updated: RemoteHost = current.runtimeClone();
       updated.sshJumpHostKeyAlgorithm = prompt.hostKeyAlgorithm.trim();
       updated.sshJumpHostKeyFingerprintSha256 = fingerprint;
       updated.sshJumpHostKeyRawBase64 = rawBase64;

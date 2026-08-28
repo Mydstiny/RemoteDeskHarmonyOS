@@ -17,6 +17,24 @@ function normalized(value: string): string {
   return value.trim();
 }
 
+function normalizedPasswordMode(value: number): number {
+  return value === 1 ? 1 : 0;
+}
+
+export function rustDeskDraftKeepsStoredPassword(keepsStoredPassword: boolean,
+  storedMode: number, selectedMode: number): boolean {
+  return keepsStoredPassword &&
+    normalizedPasswordMode(storedMode) === normalizedPasswordMode(selectedMode);
+}
+
+export function rustDeskDraftPasswordForConnection(draftPassword: string,
+  keepsStoredPassword: boolean, storedPassword: string,
+  storedMode: number, selectedMode: number): string {
+  if (draftPassword.length > 0) { return draftPassword; }
+  return rustDeskDraftKeepsStoredPassword(
+    keepsStoredPassword, storedMode, selectedMode) ? storedPassword : '';
+}
+
 function draftKey(ownerScopeId: string, accountGeneration: number,
   hostId: string): string {
   return normalized(ownerScopeId) + '\u001f' + accountGeneration.toString() +

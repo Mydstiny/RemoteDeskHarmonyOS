@@ -103,7 +103,7 @@ export class SshPreflightController {
 
   trustAndContinue(): void {
     if (!this.hostKeyInfo || (this.usesJump() && !this.jumpHostKeyInfo)) { return; }
-    const updated: RemoteHost = RemoteHost.fromJSON(this.host.toJSON());
+    const updated: RemoteHost = this.host.runtimeClone();
     this.applyTrust(updated);
     if (!this.srv.updateHost(updated)) {
       this.state = SshPreflightState.ERROR;
@@ -118,7 +118,7 @@ export class SshPreflightController {
 
   async updateTrustAndContinue(): Promise<void> {
     if (!this.hostKeyInfo || (this.usesJump() && !this.jumpHostKeyInfo)) { return; }
-    const updated: RemoteHost = RemoteHost.fromJSON(this.host.toJSON());
+    const updated: RemoteHost = this.host.runtimeClone();
     this.applyTrust(updated);
     if (!this.srv.updateHost(updated)) {
       this.state = SshPreflightState.ERROR;
@@ -206,8 +206,9 @@ export class SshPreflightController {
       );
       if (result.ok) {
         if (this.passphraseSaveToHost) {
-          const updated: RemoteHost = RemoteHost.fromJSON(this.host.toJSON());
+          const updated: RemoteHost = this.host.runtimeClone();
           updated.sshKeyPassphrase = this.passphraseInput;
+          updated.sshKeyPassphraseConfigured = this.passphraseInput.length > 0;
           if (!this.srv.updateHost(updated)) {
             this.state = SshPreflightState.PASSPHRASE_REQUIRED;
             this.error = '私钥密码验证成功，但保存失败；连接已停止。';
