@@ -1,7 +1,9 @@
 import { describe, it, expect } from '@ohos/hypium';
 import {
+  clipboardReadPermissionErrorCode,
   clipboardSyncEnabledForProtocol,
   MAX_CLIPBOARD_TEXT_CHARS,
+  resolveClipboardBridgeActivation,
   resolveClipboardReadAccess,
   shouldForwardClipboard,
   validateClipboardText
@@ -32,7 +34,21 @@ export default function clipboardSyncPolicyTest(): void {
       expect(resolveClipboardReadAccess(true, null).granted).assertTrue();
       expect(resolveClipboardReadAccess(false, 0).granted).assertTrue();
       expect(resolveClipboardReadAccess(false, -1).state).assertEqual('denied');
+      expect(resolveClipboardReadAccess(false, 2).state).assertEqual('unavailable');
       expect(resolveClipboardReadAccess(false, null, true).state).assertEqual('unavailable');
+      expect(clipboardReadPermissionErrorCode(201)).assertEqual('201');
+      expect(clipboardReadPermissionErrorCode(undefined)).assertEqual('unknown');
+    });
+    it('starts_vnc_view_only_bridge_without_local_read', 0, (): void => {
+      const decision = resolveClipboardBridgeActivation('vnc', true, false, false);
+      expect(decision.start).assertTrue();
+      expect(decision.requestLocalRead).assertFalse();
+      expect(decision.mode).assertEqual('receive_only');
+    });
+    it('waits_for_non_vnc_carrier_and_disables_unconfigured_bridge', 0, (): void => {
+      expect(resolveClipboardBridgeActivation('rdp', true, false, false).start).assertFalse();
+      expect(resolveClipboardBridgeActivation('rustdesk', false, true, true).start).assertFalse();
+      expect(resolveClipboardBridgeActivation('rustdesk', true, true, false).requestLocalRead).assertTrue();
     });
   });
 }

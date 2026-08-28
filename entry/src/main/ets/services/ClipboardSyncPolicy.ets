@@ -14,6 +14,12 @@ export interface ClipboardReadAccessDecision {
   diagnosticCode: string;
   userMessage: string;
 }
+export type ClipboardBridgeMode = 'disabled' | 'bidirectional' | 'receive_only';
+export interface ClipboardBridgeActivationDecision {
+  start: boolean;
+  requestLocalRead: boolean;
+  mode: ClipboardBridgeMode;
+}
 
 export function resolveClipboardReadAccess(alreadyGranted: boolean,
   requestResult: number | null, requestFailed: boolean = false): ClipboardReadAccessDecision {
@@ -25,7 +31,7 @@ export function resolveClipboardReadAccess(alreadyGranted: boolean,
       userMessage: ''
     };
   }
-  if (requestFailed || requestResult === null) {
+  if (requestFailed || requestResult === null || requestResult !== -1) {
     return {
       state: 'unavailable',
       granted: false,
@@ -39,6 +45,28 @@ export function resolveClipboardReadAccess(alreadyGranted: boolean,
     diagnosticCode: 'clipboard_read_permission_denied',
     userMessage: '允许读取剪贴板后才能同步本机复制内容'
   };
+}
+
+export function clipboardReadPermissionErrorCode(errorCode: number | undefined): string {
+  return typeof errorCode === 'number' ? errorCode.toString() : 'unknown';
+}
+
+export function resolveClipboardBridgeActivation(protocol: ClipboardProtocol,
+  configured: boolean, sendReady: boolean,
+  receiveReady: boolean): ClipboardBridgeActivationDecision {
+  if (!configured) {
+    return { start: false, requestLocalRead: false, mode: 'disabled' };
+  }
+  if (sendReady) {
+    return { start: true, requestLocalRead: true, mode: 'bidirectional' };
+  }
+  // VNC does not report clipboard receive readiness until the first
+  // ServerCutText arrives. Start its receive-only poll before that event so
+  // view-only sessions cannot deadlock behind the capability snapshot.
+  if (receiveReady || protocol === 'vnc') {
+    return { start: true, requestLocalRead: false, mode: 'receive_only' };
+  }
+  return { start: false, requestLocalRead: false, mode: 'disabled' };
 }
 
 export function clipboardSyncEnabledForProtocol(protocol: ClipboardProtocol, rdpEnabled: boolean,

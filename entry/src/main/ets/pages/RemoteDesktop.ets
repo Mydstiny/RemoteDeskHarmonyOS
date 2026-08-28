@@ -190,8 +190,10 @@ import {
   ensureSystemPasteboardReadAccess
 } from '../services/ClipboardBridgeService';
 import {
+  ClipboardBridgeActivationDecision,
   ClipboardReadAccessDecision,
-  clipboardSyncEnabledForProtocol
+  clipboardSyncEnabledForProtocol,
+  resolveClipboardBridgeActivation
 } from '../services/ClipboardSyncPolicy';
 import { FileTransferLiveTaskService } from '../services/FileTransferLiveTaskService';
 import { RemoteSessionBackgroundTaskService, RemoteSessionBgInfo } from '../services/RemoteSessionBackgroundTaskService';
@@ -13958,21 +13960,27 @@ struct RemoteDesktop {
         !this.clipboardBridgeEnabledForSession()) {
         return;
       }
-      const capability = this.currentSessionCapabilities().clipboardSend;
-      if (!capability.enabled) {
+      const capabilities: RemoteSessionCapabilities = this.currentSessionCapabilities();
+      const activation: ClipboardBridgeActivationDecision = resolveClipboardBridgeActivation(
+        this.currentProtocolName(), this.clipboardBridgeEnabledForSession(),
+        capabilities.clipboardSend.enabled, capabilities.clipboardReceive.enabled);
+      if (!activation.start) {
         if (Date.now() < deadlineMs) {
           setTimeout((): void => { void tryStart(); }, 500);
         } else {
           hilog.info(RD_DOMAIN, RD_TAG,
-            'clipboard bridge not started after bounded cliprdr wait: ' + capability.reason);
+            'clipboard bridge not started after bounded capability wait: ' +
+              capabilities.clipboardSend.reason);
         }
         return;
       }
       try {
-        const context: common.UIAbilityContext =
-          this.getUIContext().getHostContext() as common.UIAbilityContext;
-        const readAccess: ClipboardReadAccessDecision =
-          await ensureSystemPasteboardReadAccess(context);
+        let readAccess: ClipboardReadAccessDecision | null = null;
+        if (activation.requestLocalRead) {
+          const context: common.UIAbilityContext =
+            this.getUIContext().getHostContext() as common.UIAbilityContext;
+          readAccess = await ensureSystemPasteboardReadAccess(context);
+        }
         if (this.sessionId !== sessionId || this.connectAttemptId !== attemptId || !this.connected ||
           !this.clipboardBridgeEnabledForSession()) {
           return;
@@ -13994,10 +14002,14 @@ struct RemoteDesktop {
           } catch (err) {
             hilog.warn(RD_DOMAIN, RD_TAG, 'clipboard bridge push skipped: ' + JSON.stringify(err));
           }
-        }, (): string => this.loader.getSessionClipboardText(sessionId), readAccess.granted);
-        if (readAccess.granted && localMonitoringStarted) {
+        }, (): string => this.loader.getSessionClipboardText(sessionId),
+        readAccess?.granted === true, activation.requestLocalRead);
+        if (!activation.requestLocalRead) {
+          hilog.info(RD_DOMAIN, RD_TAG,
+            'clipboard bridge started in receive-only mode: ' + capabilities.clipboardSend.reason);
+        } else if (readAccess?.granted === true && localMonitoringStarted) {
           hilog.info(RD_DOMAIN, RD_TAG, 'clipboard bridge started with local read access');
-        } else if (!readAccess.granted) {
+        } else if (readAccess !== null && !readAccess.granted) {
           hilog.warn(RD_DOMAIN, RD_TAG, 'clipboard bridge local send unavailable reason=' +
             readAccess.diagnosticCode);
           promptAction.showToast({ message: readAccess.userMessage, duration: 2600 });

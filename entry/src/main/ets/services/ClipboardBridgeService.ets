@@ -15,6 +15,7 @@ import { pasteboard, BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import {
   ClipboardReadAccessDecision,
+  clipboardReadPermissionErrorCode,
   resolveClipboardReadAccess,
   validateClipboardText
 } from './ClipboardSyncPolicy';
@@ -40,7 +41,7 @@ export async function ensureSystemPasteboardReadAccess(
   } catch (error) {
     const businessError: BusinessError = error as BusinessError;
     hilog.warn(0x0001, TAG, 'pasteboard read permission unavailable code=' +
-      businessError.code.toString());
+      clipboardReadPermissionErrorCode(businessError.code));
     return resolveClipboardReadAccess(false, null, true);
   }
 }
@@ -57,6 +58,8 @@ export class ClipboardBridgeService {
   private onLocalTextChanged?: (text: string) => void;
   private enabled: boolean = false;
   private localMonitoringEnabled: boolean = false;
+  private permissionManager: abilityAccessCtrl.AtManager | null = null;
+  private permissionStateCallback?: (info: abilityAccessCtrl.PermissionStateChangeInfo) => void;
   private readRemoteText?: () => string;
   private lastRemoteHash: number = 0;
 
@@ -104,7 +107,7 @@ export class ClipboardBridgeService {
 
   /** 启动监听 (定时轮询) */
   startMonitoring(callback: (text: string) => void, readRemoteText?: () => string,
-    localReadEnabled: boolean = true): boolean {
+    localReadEnabled: boolean = true, localReadAllowed: boolean = true): boolean {
     if (this.enabled) {
       return this.localMonitoringEnabled;
     }
@@ -118,6 +121,9 @@ export class ClipboardBridgeService {
 
       const localMonitoringStarted: boolean = localReadEnabled &&
         this.enableLocalMonitoring();
+      if (localReadAllowed && !localMonitoringStarted) {
+        this.startPermissionStateMonitoring();
+      }
 
       // RustDesk/RDP/VNC expose remote clipboard snapshots through the native
       // session facade, so retain a lightweight remote-only poll. Local system
@@ -134,6 +140,7 @@ export class ClipboardBridgeService {
       this.enabled = false;
       this.onLocalTextChanged = undefined;
       this.detachSystemUpdateListener();
+      this.detachPermissionStateListener();
       hilog.warn(0x0001, TAG, `monitoring start failed: ${JSON.stringify(err)}`);
       return false;
     }
@@ -156,6 +163,7 @@ export class ClipboardBridgeService {
       sysPb.on('update', this.systemUpdateCallback);
       this.localMonitoringEnabled = true;
       this.readLocalClipboard(true);
+      this.detachPermissionStateListener();
       hilog.info(0x0001, TAG, 'local pasteboard monitoring enabled');
       return true;
     } catch (error) {
@@ -179,6 +187,7 @@ export class ClipboardBridgeService {
       this.pollingTimer = -1;
     }
     this.detachSystemUpdateListener();
+    this.detachPermissionStateListener();
     this.localMonitoringEnabled = false;
     this.systemReadInFlight = false;
     this.systemReadPending = false;
@@ -266,6 +275,47 @@ export class ClipboardBridgeService {
     this.systemPasteboard = null;
     this.systemUpdateCallback = undefined;
     this.localMonitoringEnabled = false;
+  }
+
+  private startPermissionStateMonitoring(): void {
+    if (this.permissionManager !== null || this.permissionStateCallback !== undefined) {
+      return;
+    }
+    try {
+      const manager: abilityAccessCtrl.AtManager = abilityAccessCtrl.createAtManager();
+      const callback = (info: abilityAccessCtrl.PermissionStateChangeInfo): void => {
+        if (!this.enabled || info.permissionName !== READ_PASTEBOARD_PERMISSION ||
+          info.change !== abilityAccessCtrl.PermissionStateChangeType.PERMISSION_GRANTED_OPER) {
+          return;
+        }
+        this.enableLocalMonitoring();
+      };
+      manager.on('selfPermissionStateChange', [READ_PASTEBOARD_PERMISSION], callback);
+      this.permissionManager = manager;
+      this.permissionStateCallback = callback;
+      hilog.info(0x0001, TAG, 'waiting for pasteboard read permission change');
+    } catch (error) {
+      const businessError: BusinessError = error as BusinessError;
+      hilog.warn(0x0001, TAG, 'permission change monitoring unavailable code=' +
+        clipboardReadPermissionErrorCode(businessError.code));
+      this.permissionManager = null;
+      this.permissionStateCallback = undefined;
+    }
+  }
+
+  private detachPermissionStateListener(): void {
+    if (this.permissionManager !== null && this.permissionStateCallback !== undefined) {
+      try {
+        this.permissionManager.off('selfPermissionStateChange',
+          [READ_PASTEBOARD_PERMISSION], this.permissionStateCallback);
+      } catch (error) {
+        const businessError: BusinessError = error as BusinessError;
+        hilog.warn(0x0001, TAG, 'permission change listener removal failed code=' +
+          clipboardReadPermissionErrorCode(businessError.code));
+      }
+    }
+    this.permissionManager = null;
+    this.permissionStateCallback = undefined;
   }
 
   /** 纯文本内容哈希 (djb2 — 轻量去重，不要求密码学强度) */
