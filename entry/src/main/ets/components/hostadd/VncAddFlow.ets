@@ -20,7 +20,8 @@ import {
 import { VncSettingsService } from '../../services/VncSettingsService';
 import { VncGatewayView } from '../../services/VncGatewayService';
 import { resolveVncHostDefaults, VncSelectableGateway } from '../../services/VncHostDefaultsPolicy';
-import { VncHostView } from '../../services/VncHostService';
+import { VncHostService, VncHostView } from '../../services/VncHostService';
+import { SecretPresentationStore } from '../../services/SecretPresentationPolicy';
 import { vncGatewayAvailability } from '../../services/VncGatewayProtocolPolicy';
 import { protocolIcon } from '../../services/ProtocolIconPolicy';
 import {
@@ -54,6 +55,7 @@ export struct VncAddFlow {
   @State portText: string = '5900';
   @State password: string = '';
   @State passwordConfigured: boolean = false;
+  @State passwordChanged: boolean = false;
   @State rememberPassword: boolean = false;
   @State gatewayId: string = '';
   @State tls: boolean = true;
@@ -64,6 +66,8 @@ export struct VncAddFlow {
   @State securityPolicy: VncSecurityPolicy = 'secure_only';
   @State errorText: string = '';
   private readonly settings: VncSettingsService = VncSettingsService.getInstance();
+  private readonly hosts: VncHostService = VncHostService.getInstance();
+  private readonly secretPresentation: SecretPresentationStore = SecretPresentationStore.getInstance();
 
   private pal(): Palette {
     return this.theme === 'light' ? buildLight(this.accentColor) : buildDark(this.accentColor);
@@ -89,6 +93,8 @@ export struct VncAddFlow {
     this.securityPolicy = defaults.securityPolicy;
     this.tls = defaults.securityPolicy === 'secure_only';
     this.passwordConfigured = false;
+    this.passwordChanged = false;
+    this.password = '';
     if (this.transport === 'ultravnc_repeater') {
       const gateway: VncGatewayView | undefined = this.selectedGateway();
       if (gateway !== undefined) {
@@ -107,6 +113,7 @@ export struct VncAddFlow {
       this.portText = host.port.toString();
       this.rememberPassword = host.rememberPassword;
       this.passwordConfigured = host.passwordConfigured;
+      if (!this.passwordHidden()) { this.password = this.hosts.passwordFor(host.id); }
       this.gatewayId = host.gatewayId;
       this.repeaterMode = host.repeaterMode;
       this.viewOnly = host.viewOnly;
@@ -134,6 +141,16 @@ export struct VncAddFlow {
     const normalized: string = value.trim();
     if (normalized.length <= 4) { return normalized === '' ? '未填写' : '•••'; }
     return normalized.substring(0, 2) + '…' + normalized.substring(normalized.length - 2);
+  }
+
+  private passwordHidden(): boolean {
+    const crypto: DataCrypto = DataCrypto.getInstance();
+    return this.secretPresentation.isHidden('vnc_host_password',
+      crypto.isSetupComplete() && !crypto.isReady());
+  }
+
+  private passwordForSave(): string {
+    return this.initialHost !== null && !this.passwordChanged ? '' : this.password;
   }
 
   private gatewaySelectable(gateway: VncGatewayView): boolean {
@@ -257,7 +274,8 @@ export struct VncAddFlow {
     }
   }
 
-  private dispatchSave(values: VncHostValues, connectNow: boolean, plainStorageConfirmed: boolean): void {
+  private dispatchSave(values: VncHostValues, password: string,
+    connectNow: boolean, plainStorageConfirmed: boolean): void {
     if (this.securityPolicy === 'allow_plaintext') {
       promptAction.showDialog({
         title: '确认允许 VNC 明文连接',
@@ -266,18 +284,19 @@ export struct VncAddFlow {
       }).then((result: Object): void => {
         const dialogResult: Record<string, number> = result as Record<string, number>;
         if (dialogResult['index'] === 1) {
-          this.onSave(values, this.password, connectNow, plainStorageConfirmed);
+          this.onSave(values, password, connectNow, plainStorageConfirmed);
         }
       });
       return;
     }
-    this.onSave(values, this.password, connectNow, plainStorageConfirmed);
+    this.onSave(values, password, connectNow, plainStorageConfirmed);
   }
 
   private save(connectNow: boolean): void {
     const values: VncHostValues | null = this.buildValues();
     if (values === null) { return; }
-    if (this.password.length > 0 && this.rememberPassword) {
+    const password: string = this.passwordForSave();
+    if (password.length > 0 && this.rememberPassword) {
       const crypto: DataCrypto = DataCrypto.getInstance();
       if (crypto.isSetupComplete() && !crypto.isReady()) {
         this.errorText = '应用加密已锁定；请先解锁，或关闭“记住密码”后保存';
@@ -292,13 +311,13 @@ export struct VncAddFlow {
         }).then((result: Object): void => {
           const dialogResult: Record<string, number> = result as Record<string, number>;
           if (dialogResult['index'] === 1) {
-            this.dispatchSave(values, connectNow, true);
+            this.dispatchSave(values, password, connectNow, true);
           }
         });
         return;
       }
     }
-    this.dispatchSave(values, connectNow, false);
+    this.dispatchSave(values, password, connectNow, false);
   }
 
   private rememberPasswordDetail(): string {
@@ -312,7 +331,9 @@ export struct VncAddFlow {
   private securityStorageHint(): string {
     if (this.password.length === 0 && this.passwordConfigured) {
       return this.rememberPassword
-        ? '当前已有已保存密码（不回显）；留空会继续保留，输入新密码才会替换'
+        ? (this.passwordHidden()
+          ? '当前已有已保存密码（不回显）；留空会继续保留，输入新密码才会替换'
+          : '当前已有已保存密码；未修改会保留，输入新密码会替换')
         : '当前已有已保存密码；关闭“记住密码”并保存会删除它';
     }
     if (this.password.length === 0) { return '未填写密码；连接时可按需输入'; }
@@ -427,10 +448,11 @@ export struct VncAddFlow {
   @Builder private securityStep() {
     Column() {
       this.field('VNC 密码（可选）', this.password,
-        this.passwordConfigured ? '已保存密码（不回显；留空保留）' : '留空表示连接时输入',
-        (value: string): void => { this.password = value; }, true)
-      if (this.passwordConfigured && this.password.length === 0) {
-        Text('已保存密码不会在编辑页回显。留空保存可保留现有密码；输入新密码会替换现有密码。')
+        this.passwordConfigured && this.passwordHidden() ? '已保存密码（不回显；留空保留）' :
+          '留空表示连接时输入',
+        (value: string): void => { this.password = value; this.passwordChanged = true; }, true)
+      if (this.passwordConfigured && this.password.length === 0 && this.passwordHidden()) {
+        Text('已保存密码由本地隐藏策略保护。留空保存可保留现有密码；输入新密码会替换现有密码。')
           .fontSize(11).fontColor(this.pal().text3).lineHeight(17).width('100%').margin({ top: -5, bottom: 8 })
       }
       Row() {

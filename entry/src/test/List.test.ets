@@ -36,6 +36,8 @@ import releaseNotesPolicyTest from './ReleaseNotesPolicy.test';
 import cloudSyncPolicyTest from './CloudSyncPolicy.test';
 import cloudSyncSheetPolicyTest from './CloudSyncSheetPolicy.test';
 import cloudSyncSettingsPolicyTest from './CloudSyncSettingsPolicy.test';
+import secretPresentationPolicyTest from './SecretPresentationPolicy.test';
+import secretEditMutationPolicyTest from './SecretEditMutationPolicy.test';
 import cloudSyncSelectionPolicyTest from './CloudSyncSelectionPolicy.test';
 import cloudLifecycleSafetyPolicyTest from './CloudLifecycleSafetyPolicy.test';
 import cloudSyncLifecyclePolicyTest from './CloudSyncLifecyclePolicy.test';
@@ -280,6 +282,8 @@ export default function testsuite() {
   cloudSyncPolicyTest();
   cloudSyncSheetPolicyTest();
   cloudSyncSettingsPolicyTest();
+  secretPresentationPolicyTest();
+  secretEditMutationPolicyTest();
   cloudSyncSelectionPolicyTest();
   cloudLifecycleSafetyPolicyTest();
   cloudSyncLifecyclePolicyTest();

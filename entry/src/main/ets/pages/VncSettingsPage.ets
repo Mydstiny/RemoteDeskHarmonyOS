@@ -33,6 +33,7 @@ import { SETTINGS_PANEL_DISMISS_TO_LEAF_OPEN_MS } from '../services/SettingsShee
 import { isSelectableVncDefaultGateway, VncSelectableGateway } from '../services/VncHostDefaultsPolicy';
 import { RemoteSessionConnectionIntent } from '../services/RemoteSessionConnectionIntent';
 import { VncSessionCredentialHandoff } from '../services/VncSessionCredentialHandoff';
+import { SecretPresentationStore } from '../services/SecretPresentationPolicy';
 
 @Entry
 @Component
@@ -120,6 +121,7 @@ export struct VncSettingsPage {
   private readonly settings: VncSettingsService = VncSettingsService.getInstance();
   private readonly hostService: VncHostService = VncHostService.getInstance();
   private readonly gatewayService: VncGatewayService = VncGatewayService.getInstance();
+  private readonly secretPresentation: SecretPresentationStore = SecretPresentationStore.getInstance();
   private settingsUnsubscribe: (() => void) | null = null;
   private hostUnsubscribe: (() => void) | null = null;
   private gatewayUnsubscribe: (() => void) | null = null;
@@ -139,6 +141,7 @@ export struct VncSettingsPage {
   aboutToAppear(): void {
     this.pageActive = true;
     const context: common.Context = getContext(this) as common.Context;
+    this.secretPresentation.init(context);
     this.settings.init(context);
     this.hostService.init(context);
     this.gatewayService.init(context);

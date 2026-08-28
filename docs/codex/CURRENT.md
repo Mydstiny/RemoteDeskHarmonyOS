@@ -2,63 +2,61 @@
 
 ## Active task
 
-- Task: `vnc-cursor-wheel-regression`
-- Branch/base: `codex/vnc-cursor-wheel-regression` from synchronized `main@0b8e5bf60`.
-- Phase: device acceptance complete; ready for PR/main closure.
-- Plan: `docs/codex/plans/2026-08-27-vnc-cursor-wheel-regression.md`
+- Task: `secret-visibility-policy`
+- Branch/base: `codex/secret-visibility-policy` from synchronized `main@f3b41e5a6`.
+- Phase: implementation verified; checkpoint and independent review pending.
+- Plan: `docs/codex/plans/2026-08-28-secret-visibility-policy.md`
 
 ## Objective
 
-- Restore normal VNC scroll distance for virtual two-finger input, HarmonyOS PC physical touchpads and physical mouse wheels.
-- Preserve the HarmonyOS user-configured mouse `scrollStep` instead of collapsing every wheel event to one RFB click.
-- Keep the local system pointer visible during macOS Screen Sharing cursor bootstrap, then switch only when a valid protocol cursor is ready.
-- Leave RDP, RustDesk and Moonlight input behavior unchanged.
+- Add a device-local Data Security Sheet for choosing which editable password
+  classes do not reveal saved values in editors.
+- Preserve an existing hidden secret on an empty edit, replace it only with a
+  newly entered value, and keep deletion explicit.
+- Bring VNC host passwords under the shared policy without changing protocol,
+  encryption, cloud-sync, backup or connection behavior.
 
-## Evidence
+## Baseline
 
-- Device `192.168.3.236:40123` reported physical mouse `raw=45`, `scrollStep=3`, but VNC forwarded `delta=1`.
-- Virtual two-finger samples were commonly `2-8vp`; the current `10vp` threshold and maximum delta 2 visibly under-scroll.
-- API 23 documents mouse vertical-axis values as degrees that already include the user's `scrollStep`; touchpad values are continuous px without that multiplier.
-- RDP emits a standard `0x78` wheel magnitude and RustDesk has a dedicated two-dimensional high-resolution touchpad path; RFB only has button-4/5 clicks and therefore needs explicit bounded protocol compensation.
-- macOS Screen Sharing delayed its first real cursor shape for about 56 seconds while auto mode hid the local pointer based only on the absence of a native cursor.
+- Clean synchronized `main@f3b41e5a6`, equal to `origin/main` when started.
+- Previous VNC cursor/wheel task is merged; its device acceptance, exact Hvigor
+  gates and independent review passed.
 
 ## Implemented
 
-- Discrete VNC mouse events preserve bounded `scrollStep` ticks, with sign-only fallback when the coefficient is unavailable.
-- Virtual VNC input uses `4vp` per tick with a maximum of 4 per sample; fractional accumulation remains bounded without recursive fling or release backlog.
-- Physical VNC touchpads use two normalized samples per tick with a maximum of 4 while preserving lifecycle, source, idle and direction resets.
-- VNC auto cursor ownership is evidence-based: legacy RFB 3.3/macOS bootstrap keeps the system pointer, modern RFB 3.7/3.8 without Cursor pseudo uses its framebuffer-composited cursor, a protocol shape atomically replaces the default pointer, and protocol/explicit hidden states hide it.
-- Non-zero VNC protocol cursor rectangles with an all-transparent mask are treated as hidden and cannot replace the local pointer.
-- Native RFB wheel bursts are built by a tested byte-level helper that preserves held buttons, clamps coordinates and bounds one logical event to 128 button-4/5 down/up pairs.
-- Local VNC move/wheel prediction updates cursor coordinates only; an authoritative protocol-hidden cursor cannot be resurrected until the server sends a new visible cursor shape.
-- Device acceptance required another 2x increase after the 5x checkpoint. Virtual touchpad, physical touchpad and physical mouse now share one VNC-only final wire gain of 10, while the native bounded burst accepts the maximum supported 80-step mouse event without truncation.
-- The repair release remains `1.1.3`; its cumulative update content is intentionally unchanged per product decision. SBOM provenance now points to source commit `5c20204b2` without dropping TOTP or Moonlight vendor inventory.
-- The macOS Hvigor guard now recognizes ArkTS `10310009` module-context failures for generated `ResourceTable.ts`, isolates the inconsistent generated cache and retries the original build once. The local DevEco `RemoteDesk SAFE [assembleApp]` configuration pins API 23 and restores the conventional `build/outputs` APP path after successful packaging.
+- Added a versioned, device-local presentation policy for RDP host passwords,
+  Windows credentials, RustDesk device passwords, SSH passwords/key
+  passphrases and VNC host passwords.
+- Added the Data Security `密码与秘密回显` Sheet with per-class switches,
+  `全部隐藏` and compatibility-default actions. VNC remains hidden by default.
+- Hidden editors now keep the old value on an empty draft and overwrite it only
+  when a new non-empty value is entered; authentication/key binding changes do
+  not accidentally carry an unrelated old secret forward.
+- VNC now uses the shared policy while retaining its dedicated secret service,
+  plaintext-consent checks, local personalization and rollback behavior.
+- Classified `secretPresentationPolicyV1` as device-local and added focused
+  policy, mutation, route and cloud-sync classification tests.
 
-## Verification
+## Verification (current worktree)
 
-- Baseline `main@0b8e5bf60` was clean and equal to `origin/main` when the task started.
-- Focused ArkTS policy tests are compile-registered by the passing test target.
-- Current-source target native wheel case: PASS, directly validating all 80 wheel down/up pairs. Full host suite: `797 passed, 16 failed`; all 16 failures are the known TLS `fixture.start()` environment baseline and are unrelated to this change.
-- Exact `default@OhosTestCompileArkTS`: PASS (`BUILD SUCCESSFUL in 1 min 6 s 939 ms`).
-- Exact signed `assembleHap`: PASS (`BUILD SUCCESSFUL in 1 min 20 s 803 ms`).
-- Build-guard regression including the exact `10310009` / `Failed to find module info` / `ResourceTable.ts` signature: PASS.
-- DevEco `RemoteDesk SAFE [assembleApp]`: PASS (`BUILD SUCCESSFUL in 9 s 860 ms`, exit 0); signed APP restored at project `build/outputs`.
-- Post-guard exact `default@OhosTestCompileArkTS`: PASS (`BUILD SUCCESSFUL in 38 s 711 ms`); exact signed `assembleHap`: PASS (`BUILD SUCCESSFUL in 3 min 294 ms`).
-- `git diff --check` and open-source compliance Light: PASS.
-- Initial independent review of `dcf1b2fc4`: FAIL on permanent auto-pointer fallback and missing state/wire coverage; both findings were remediated in `45eb2c293`.
-- Follow-up review of `45eb2c293`: FAIL because local prediction could overwrite protocol-hidden visibility and the end-to-end ownership transition lacked coverage; both findings are remediated in `abc3ce5b8`.
-- Previous cursor/wheel re-review by `/root/vnc_wheel_review`: PASS at `abc3ce5b8`; device feedback then superseded the wheel-output checkpoint.
-- Follow-up review of `dfb74ded6` by `/root/vnc_wheel_review`: PASS, P0/P1/P2/P3 all zero.
-- Release follow-up review found stale SBOM provenance and incomplete 80-step regression coverage; both were remediated in `8e9ed4ea8`.
-- Final independent review of `5c20204b2..8e9ed4ea8` by `/root/vnc_wheel_review`: PASS, P0/P1/P2/P3 all zero.
-- Independent incremental review of the `bf397173e` ResourceTable recovery by `/root/resource_table_guard_review`: PASS, P0/P1/P2/P3 all zero.
-- Device acceptance: PASS; the user confirmed the reviewed 1.1.3 VNC wheel build is accepted on 2026-08-28.
+- `default@OhosTestCompileArkTS`: PASS (`BUILD SUCCESSFUL in 34 s 902 ms`).
+- `assembleHap`: PASS, signed (`BUILD SUCCESSFUL in 57 s 705 ms`).
+- Light open-source compliance: PASS.
+- `git diff --check`: PASS.
+- The focused Hypium tests are registered in `List.test.ets` and compile in the
+  required ArkTS gate. The optional `ohosTest@OhosTestCompileArkTS` task is not
+  registered in this project (`00306054`), so no device test execution is
+  claimed.
 
 ## Next
 
-1. Open the PR, wait for the required check, merge and synchronize `main`.
+1. Create a checkpoint commit with only this task's files.
+2. Obtain independent review, remediate findings and rerun the exact gates.
+3. Close the branch through PR/main when repository and remote gates allow it.
 
 ## Blockers
 
-- None.
+- Device/Hypium runtime acceptance has not been executed in this session.
+- `ohosTest@OhosTestCompileArkTS` is unavailable because the task is not
+  registered (`00306054`); the required `default@OhosTestCompileArkTS` gate did
+  pass.

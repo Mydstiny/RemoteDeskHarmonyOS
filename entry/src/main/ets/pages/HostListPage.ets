@@ -182,7 +182,20 @@ import {
 } from '../services/VncCredentialPreflightPolicy';
 import { VncSettingsService } from '../services/VncSettingsService';
 import { VncSettingsSheet } from '../components/VncSettingsSheet';
+import { SecretVisibilitySettingsSheet } from '../components/SecretVisibilitySettingsSheet';
 import { VncCertificateTrustManagerSheet } from '../components/VncCertificateTrustManagerSheet';
+import {
+  EditableSecretKind,
+  SecretPresentationPolicy,
+  SecretPresentationStore,
+  parseSecretPresentationPolicy,
+  secretPresentationSummary
+} from '../services/SecretPresentationPolicy';
+import {
+  resolveSecretEditValue,
+  secretEditDraftValue,
+  secretEditPlaceholder
+} from '../services/SecretEditMutationPolicy';
 import { buildVncTrustDirectory, VncTrustDirectoryItem } from '../services/VncTrustEndpointDirectory';
 // Passphrase uses bindSheet (HostListPage is @Entry, no bindSheet limit)
 import { KeyVaultPage } from './KeyVaultPage';
@@ -386,6 +399,7 @@ import {
   SETTINGS_SHEET_ACCOUNT,
   SETTINGS_SHEET_ACCENT_COLOR,
   SETTINGS_SHEET_DIAGNOSTIC_LOG,
+  SETTINGS_SHEET_SECRET_VISIBILITY,
   SETTINGS_SHEET_FEEDBACK,
   SETTINGS_SHEET_HALO_COLOR,
   SETTINGS_SHEET_KEY_VAULT,
@@ -424,6 +438,7 @@ import {
   VirtualKeyboardSettingsSection,
   VirtualKeyboardSettingsRouteSpec,
   diagnosticLogSettingsLeafSheetHeight,
+  secretVisibilitySettingsLeafSheetHeight,
   isVirtualKeyboardSettingsMode,
   moonlightSettingsLeafSheetHeight,
   moonlightSettingsRouteSpec,
@@ -825,6 +840,8 @@ struct HostListPage {
   @State sheetKeyText: string = '';
   @State sheetKeyId: string = '';
   @State sheetKeyPassphrase: string = '';
+  @State sheetPasswordConfigured: boolean = false;
+  @State sheetKeyPassphraseConfigured: boolean = false;
   @State sheetKeyMode: number = 0; // 0=文件 1=粘贴
   // SSH 前置校验 (T-210) — @State 驱动 UI, 避免普通 class 不触发响应式更新
   @State showSshPreflight: boolean = false;
@@ -947,6 +964,7 @@ struct HostListPage {
   @State rustDeskProPreflightHostId: string = '';
   @State rustDeskProAuthMode: string = 'password';
   @State rustDeskProPassword: string = '';
+  @State rustDeskProPasswordConfigured: boolean = false;
   @State rustDeskProPasswordMode: number = 0;
   @State rustDeskProPasswordVisible: boolean = false;
   @State rustDeskProRememberPassword: boolean = true;
@@ -1089,6 +1107,7 @@ struct HostListPage {
   @State rdpCredLabel: string = '';
   @State rdpCredUsername: string = '';
   @State rdpCredPassword: string = '';
+  @State rdpCredPasswordConfigured: boolean = false;
   private rdpCredentialEditorReturnToManager: boolean = false;
   @State relayAddTrigger: number = 0;
   @State relayRustDeskAddTrigger: number = 0;
@@ -1121,6 +1140,7 @@ struct HostListPage {
   @State cryptoLoading: boolean = false;   // 加密操作进行中
   @State cryptoMode: number = 0;
   @State cryptoResetCountdown: number = 0;
+  @State secretPresentationPolicyJson: string = '';
   @State sshHostKeyBusyId: string = '';
   @State sshTrustedHostsView: RemoteHost[] = [];
   @State rdpCertificateBusyId: string = '';
@@ -1155,6 +1175,8 @@ struct HostListPage {
   private settingsLeafSheetClosingPopupMode: number = 0;
   // ============================
   private srv: HostSyncService = HostSyncService.getInstance();
+  private readonly secretPresentation: SecretPresentationStore =
+    SecretPresentationStore.getInstance();
   private readonly proSync: RustDeskProSyncService = RustDeskProSyncService.getInstance();
   private auth: AuthService = AuthService.getInstance();
   private keyVault: KeyVaultService = KeyVaultService.getInstance();
@@ -2118,6 +2140,8 @@ struct HostListPage {
 
   private prepareVncAddFlow(): void {
     const context: common.Context = getContext(this) as common.Context;
+    this.secretPresentation.init(context);
+    this.secretPresentationPolicyJson = this.secretPresentation.getJson();
     this.vncSettings.init(context);
     this.vncHosts.init(context);
     this.vncGateways.init(context);
@@ -8503,7 +8527,10 @@ struct HostListPage {
     this.rustDeskProAuthMode = host.rustdeskDirectEnabled ? 'password' :
       (draft !== null ? draft.authChoice :
         (host.rustdeskAuthMode === 'request_approval' ? 'request_approval' : 'password'));
-    this.rustDeskProPassword = draft === null ? host.password : draft.password;
+    const existingPassword: string = draft === null ? host.password : draft.password;
+    this.rustDeskProPasswordConfigured = existingPassword.length > 0;
+    this.rustDeskProPassword = secretEditDraftValue(existingPassword,
+      this.secretEditorHidden('rustdesk_device_password'));
     this.rustDeskProPasswordMode = draft === null ?
       (host.rustdeskPasswordMode === 1 ? 1 : 0) : draft.passwordMode;
     this.rustDeskProPasswordVisible = false;
@@ -8526,13 +8553,20 @@ struct HostListPage {
     const hostId: string = this.rustDeskProPreflightHostId.trim();
     if (hostId === '') { return; }
     const scope = AccountSessionCoordinator.getInstance().currentScope();
+    const previousDraft: RustDeskAuthDraft | null = this.rustDeskAuthDrafts.load(
+      scope.ownerScopeId, scope.generation, hostId);
+    const storedHost: RemoteHost | undefined = this.srv.getHost(hostId);
+    const previousPassword: string = previousDraft !== null && previousDraft.password.length > 0 ?
+      previousDraft.password : (storedHost === undefined ? '' : storedHost.password);
+    const password: string = resolveSecretEditValue(previousPassword, this.rustDeskProPassword,
+      this.secretEditorHidden('rustdesk_device_password'), true);
     this.rustDeskAuthDrafts.save({
       ownerScopeId: scope.ownerScopeId,
       accountGeneration: scope.generation,
       hostId,
       authChoice: this.rustDeskProAuthMode === 'request_approval' ?
         'request_approval' : 'password',
-      password: this.rustDeskProPassword,
+      password,
       passwordMode: this.rustDeskProPasswordMode === 1 ? 1 : 0,
       rememberPassword: this.rustDeskProRememberPassword,
       updatedAt: Date.now()
@@ -8677,6 +8711,7 @@ struct HostListPage {
     this.rustDeskProPreflightState = RustDeskProPreflightState.IDLE;
     this.rustDeskProPreflightError = '';
     this.rustDeskProPassword = '';
+    this.rustDeskProPasswordConfigured = false;
     this.rustDeskProTwoFactorActive = false;
     this.rustDeskProTwoFactorSessionId = -1;
     this.rustDeskProTwoFactorAutoAttemptSessionId = -1;
@@ -9051,7 +9086,14 @@ struct HostListPage {
       this.rustDeskProPreflightState = RustDeskProPreflightState.ERROR;
       return;
     }
-    if (this.rustDeskProAuthMode === 'password' && this.rustDeskProPassword.trim().length === 0) {
+    const scopeBeforeConnect = AccountSessionCoordinator.getInstance().currentScope();
+    const draftBeforeConnect: RustDeskAuthDraft | null = this.rustDeskAuthDrafts.load(
+      scopeBeforeConnect.ownerScopeId, scopeBeforeConnect.generation, stored.id);
+    const previousPassword: string = draftBeforeConnect !== null && draftBeforeConnect.password.length > 0 ?
+      draftBeforeConnect.password : stored.password;
+    const passwordForConnection: string = resolveSecretEditValue(previousPassword,
+      this.rustDeskProPassword, this.secretEditorHidden('rustdesk_device_password'), true);
+    if (this.rustDeskProAuthMode === 'password' && passwordForConnection.trim().length === 0) {
       this.rustDeskProPreflightError = '请输入远程 RustDesk 设备密码。';
       return;
     }
@@ -9082,7 +9124,7 @@ struct HostListPage {
     host.rustdeskAuthMode = this.rustDeskProAuthMode === 'request_approval' ? 'request_approval' : 'password';
     host.rustdeskPasswordMode = this.rustDeskProPasswordMode === 1 ? 1 : 0;
     if (host.rustdeskAuthMode === 'password') {
-      host.password = this.rustDeskProPassword;
+      host.password = passwordForConnection;
     } else {
       // The approval request is intentionally passwordless.  Do not let the
       // saved password on `stored` leak into this transient SessionConfig.
@@ -9328,7 +9370,10 @@ struct HostListPage {
       this.sshPortVal = latestHost.port;
     }
     this.username = latestHost.username;
-    this.sheetPwd = latestHost.password;
+    const hostSecretKind: EditableSecretKind = this.secretKindForHost(latestHost.protocol);
+    const hostSecretHidden: boolean = this.secretEditorHidden(hostSecretKind);
+    this.sheetPasswordConfigured = latestHost.password.length > 0;
+    this.sheetPwd = secretEditDraftValue(latestHost.password, hostSecretHidden);
     this.chn = latestHost.customHostname;
     this.selectedRelayId = latestHost.rustdeskRelayId;
     this.selectedAccountId = latestHost.rustdeskAccountId;
@@ -9359,7 +9404,9 @@ struct HostListPage {
     this.sheetKeyPath = latestHost.sshKeyPath;
     this.sheetKeyText = latestHost.sshKeyData;
     this.sheetKeyId = latestHost.sshKeyId;
-    this.sheetKeyPassphrase = latestHost.sshKeyPassphrase;
+    this.sheetKeyPassphraseConfigured = latestHost.sshKeyPassphrase.length > 0;
+    this.sheetKeyPassphrase = secretEditDraftValue(latestHost.sshKeyPassphrase,
+      this.secretEditorHidden('ssh_key_passphrase'));
     this.sheetKeyMode = latestHost.sshKeyId !== '' ? 1 : 0;
     this.sheetSshProxyEditorValue = latestHost.protocol === 'ssh'
       ? this.sshProxyEditorValueForHost(latestHost) : defaultSshProxyEditorValue();
@@ -9379,8 +9426,9 @@ struct HostListPage {
     this.hostAddr = host === null ? '' : host.host;
     this.portVal = host === null ? defaults.defaultPort : host.port;
     this.username = '';
-    // Never materialize a VNC password into the classic editor.
-    this.sheetPwd = '';
+    const passwordHidden: boolean = this.secretEditorHidden('vnc_host_password');
+    this.sheetPasswordConfigured = host !== null && host.passwordConfigured;
+    this.sheetPwd = host !== null && !passwordHidden ? this.vncHosts.passwordFor(host.id) : '';
     this.chn = '';
     this.sheetErr = '';
     this.vncHostTransport = host === null ? defaults.defaultTransport : host.transport;
@@ -9610,6 +9658,29 @@ struct HostListPage {
     if (this.persistPreferenceValue('totpLocked', locked)) { return; }
     this.totpPageLocked = !locked;
     promptAction.showToast({ message: '2FA 隐私保护设置保存失败，已恢复原状态', duration: 2600 });
+  }
+
+  private saveSecretPresentationPolicy(policy: SecretPresentationPolicy): boolean {
+    if (!this.secretPresentation.save(policy)) { return false; }
+    this.secretPresentationPolicyJson = this.secretPresentation.getJson();
+    return true;
+  }
+
+  private secretPresentationSummaryText(): string {
+    return secretPresentationSummary(parseSecretPresentationPolicy(
+      this.secretPresentationPolicyJson));
+  }
+
+  private secretKindForHost(protocol: string): EditableSecretKind {
+    if (protocol === 'rdp') { return 'rdp_host_password'; }
+    if (protocol === 'rustdesk') { return 'rustdesk_device_password'; }
+    return protocol === 'vnc' ? 'vnc_host_password' : 'ssh_host_password';
+  }
+
+  private secretEditorHidden(kind: EditableSecretKind): boolean {
+    const crypto: DataCrypto = DataCrypto.getInstance();
+    const securityOverride: boolean = crypto.isSetupComplete() && !crypto.isReady();
+    return this.secretPresentation.isHidden(kind, securityOverride);
   }
 
   private persistPreferenceValue(key: string,
@@ -13228,6 +13299,9 @@ struct HostListPage {
     }
     const diagnosticHeight: number = diagnosticLogSettingsLeafSheetHeight(this.settingsLeafSheetMode);
     if (diagnosticHeight > 0) { return diagnosticHeight; }
+    const secretVisibilityHeight: number =
+      secretVisibilitySettingsLeafSheetHeight(this.settingsLeafSheetMode);
+    if (secretVisibilityHeight > 0) { return secretVisibilityHeight; }
     const moonlightHeight: number = moonlightSettingsLeafSheetHeight(this.settingsLeafSheetMode);
     if (moonlightHeight > 0) { return moonlightHeight; }
     const vncHeight: number = vncSettingsLeafSheetHeight(this.settingsLeafSheetMode);
@@ -13263,6 +13337,13 @@ struct HostListPage {
       this.rdpCredentialEditorSheet()
     } else if (this.settingsLeafSheetMode === SETTINGS_SHEET_KEY_VAULT) {
       this.keyVaultSheet()
+    } else if (this.settingsLeafSheetMode === SETTINGS_SHEET_SECRET_VISIBILITY) {
+      SecretVisibilitySettingsSheet({
+        initialPolicyJson: this.secretPresentationPolicyJson,
+        onClose: (): void => { this.closeSettingsLeafSheet(); },
+        onSave: (policy: SecretPresentationPolicy): boolean =>
+          this.saveSecretPresentationPolicy(policy)
+      })
     } else if (this.settingsLeafSheetMode === SETTINGS_SHEET_DIAGNOSTIC_LOG) {
       DiagnosticCaptureSettingsSheet({
         onClose: (): void => { this.closeSettingsLeafSheet(); }
@@ -14387,6 +14468,12 @@ struct HostListPage {
                     })
                 }
               }.width('100%').height(64).padding({ left: 16, right: 16 })
+
+              this.cardDivider()
+
+              this.cardActionRow($r('app.media.icon_lock'), '密码与秘密回显',
+                this.secretPresentationSummaryText(),
+                (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_SECRET_VISIBILITY); })
 
               this.cardDivider()
 
@@ -17257,11 +17344,6 @@ struct HostListPage {
       }
 
       this.pwdRow()
-      if (this.vncHostPasswordConfigured && this.sheetPwd === '') {
-        Text('已保存密码不会在编辑页回显；留空保存会保留现有密码，输入新密码才会替换。')
-          .fontSize(10).fontColor(this.pal().text3).fontFamily(this.font()).lineHeight(16)
-          .margin({ top: -4, bottom: 8 })
-      }
       Row() {
         Text('记住密码').fontSize(13).fontColor(this.pal().text).fontFamily(this.font()).layoutWeight(1)
         Toggle({ type: ToggleType.Switch, isOn: this.vncHostRememberPassword })
@@ -17269,7 +17351,9 @@ struct HostListPage {
           .onChange((on: boolean): void => { this.vncHostRememberPassword = on; })
       }.width('100%').margin({ bottom: 8 })
       Text(this.vncHostRememberPassword
-        ? '密码只会写入 VNC secret；编辑时不会回显已保存密码。'
+        ? (this.secretEditorHidden('vnc_host_password')
+          ? '密码只会写入 VNC secret；编辑时留空会保留已有密码。'
+          : '密码只会写入 VNC secret；编辑时允许本地回显。')
         : '关闭后不保存密码，连接时可临时输入。')
         .fontSize(10).fontColor(this.pal().text3).fontFamily(this.font()).margin({ bottom: 8 })
 
@@ -17735,13 +17819,20 @@ struct HostListPage {
     Column() {
       Text('密码').fontSize(11).fontColor(this.pal().text2).fontFamily(this.font()).margin({ bottom: 4 })
       TextInput({ placeholder: enabled ?
-        (this.proto === 'vnc' && this.vncHostPasswordConfigured
-          ? '已保存密码（不回显；留空保留）' : '输入密码') : '已使用 Windows 凭据', text: this.sheetPwd })
+        secretEditPlaceholder(this.sheetPasswordConfigured,
+          this.secretEditorHidden(this.secretKindForHost(this.proto)), '输入密码') :
+        '已使用 Windows 凭据', text: this.sheetPwd })
         .type(InputType.Password).height(38).backgroundColor(this.pal().surface).borderRadius(8)
         .fontColor(this.pal().text).placeholderColor(this.pal().text3).fontFamily(this.font())
         .fontSize(13).padding({ left: 10, right: 10 }).enabled(enabled)
         .opacity(enabled ? 1.0 : 0.55)
         .onChange((v: string): void => { this.sheetPwd = v; })
+      if (enabled && this.editingHostId !== '' && this.sheetPasswordConfigured && this.sheetPwd === '' &&
+        this.secretEditorHidden(this.secretKindForHost(this.proto))) {
+        Text('已保存密码处于隐藏状态；留空保存会保留现有密码，输入新密码才会替换。')
+          .fontSize(10).fontColor(this.pal().text3).fontFamily(this.font()).lineHeight(16)
+          .margin({ top: 5 })
+      }
     }.margin({ bottom: 8 })
   }
 
@@ -17951,11 +18042,18 @@ struct HostListPage {
           (v: string): void => { this.rdpCredUsername = v; })
         Column() {
           Text('密码').fontSize(11).fontColor(this.pal().text2).fontFamily(this.font()).margin({ bottom: 4 })
-          TextInput({ placeholder: 'Windows 登录密码', text: this.rdpCredPassword })
+          TextInput({ placeholder: secretEditPlaceholder(this.rdpCredPasswordConfigured,
+            this.secretEditorHidden('rdp_saved_credential'), 'Windows 登录密码'), text: this.rdpCredPassword })
             .type(InputType.Password).height(38).backgroundColor(this.pal().surface).borderRadius(8)
             .fontColor(this.pal().text).placeholderColor(this.pal().text3).fontFamily(this.font())
             .fontSize(13).padding({ left: 10, right: 10 })
             .onChange((v: string): void => { this.rdpCredPassword = v; })
+          if (this.rdpCredEditId !== '' && this.rdpCredPasswordConfigured && this.rdpCredPassword === '' &&
+            this.secretEditorHidden('rdp_saved_credential')) {
+            Text('已保存密码处于隐藏状态；留空更新会保留现有密码，输入新密码才会替换。')
+              .fontSize(10).fontColor(this.pal().text3).fontFamily(this.font()).lineHeight(16)
+              .margin({ top: 5 })
+          }
         }.margin({ bottom: 12 })
         Row() {
           Button(this.rdpCredEditId === '' ? '保存凭据' : '更新凭据')
@@ -18048,9 +18146,29 @@ struct HostListPage {
               this.sheetKeyId = '';
               this.sheetKeyPath = '';
               this.sheetKeyPassphrase = '';
+              this.sheetKeyPassphraseConfigured = false;
             })
             .margin({ bottom: 8 })
         }
+        Column() {
+          Text('私钥口令（如有）').fontSize(11).fontColor(this.pal().text2)
+            .fontFamily(this.font()).margin({ bottom: 4 })
+          TextInput({
+            placeholder: secretEditPlaceholder(this.sheetKeyPassphraseConfigured,
+              this.secretEditorHidden('ssh_key_passphrase'), '加密私钥的解锁口令'),
+            text: this.sheetKeyPassphrase
+          })
+            .type(InputType.Password).height(38).backgroundColor(this.pal().surface).borderRadius(8)
+            .fontColor(this.pal().text).placeholderColor(this.pal().text3).fontFamily(this.font())
+            .fontSize(13).padding({ left: 10, right: 10 })
+            .onChange((value: string): void => { this.sheetKeyPassphrase = value; })
+          if (this.editingHostId !== '' && this.sheetKeyPassphraseConfigured &&
+            this.sheetKeyPassphrase === '' && this.secretEditorHidden('ssh_key_passphrase')) {
+            Text('已保存口令处于隐藏状态；留空保存会保留现有口令，输入新口令才会替换。')
+              .fontSize(10).fontColor(this.pal().text3).fontFamily(this.font()).lineHeight(16)
+              .margin({ top: 5 })
+          }
+        }.width('100%').margin({ bottom: 8 })
       }
 
       SshProxyEditor({
@@ -18068,6 +18186,7 @@ struct HostListPage {
     this.sheetKeyMode = mode;
     this.sheetKeyId = '';
     this.sheetKeyPassphrase = '';
+    this.sheetKeyPassphraseConfigured = false;
     this.sheetKeyPath = '';
     this.sheetKeyText = '';
   }
@@ -18266,7 +18385,9 @@ struct HostListPage {
       }.width('100%')
 
       if (this.rustDeskProAuthMode === 'password') {
-        TextInput({ text: this.rustDeskProPassword, placeholder: '远程 RustDesk 设备密码' })
+        TextInput({ text: this.rustDeskProPassword,
+          placeholder: secretEditPlaceholder(this.rustDeskProPasswordConfigured,
+            this.secretEditorHidden('rustdesk_device_password'), '远程 RustDesk 设备密码') })
           .type(this.rustDeskProPasswordVisible ? InputType.Normal : InputType.Password)
           .showPasswordIcon(true)
           .enabled(this.rustDeskProPreflightState !== RustDeskProPreflightState.CONNECTING)
@@ -18276,6 +18397,11 @@ struct HostListPage {
             this.rustDeskProPreflightError = '';
             this.saveRustDeskProAuthDraft();
           })
+        if (this.rustDeskProPasswordConfigured && this.rustDeskProPassword === '' &&
+          this.secretEditorHidden('rustdesk_device_password')) {
+          Text('已保存设备密码处于隐藏状态；留空连接会继续使用它，输入新密码才会替换。')
+            .fontSize(11).fontColor(this.pal().text3).width('100%').lineHeight(17)
+        }
         Text('密码类型').fontSize(12).fontColor(this.pal().text2)
           .margin({ top: 2, bottom: 5 })
         Row({ space: 8 }) {
@@ -18367,6 +18493,7 @@ struct HostListPage {
     this.sheetKeyText = key.privateKey;
     this.sheetKeyId = key.id;
     this.sheetKeyPassphrase = '';
+    this.sheetKeyPassphraseConfigured = false;
     this.sheetKeyMode = 0;
     this.sheetErr = '';
   }
@@ -18435,8 +18562,10 @@ struct HostListPage {
                 if (key.privateKeyEncrypted) {
                   const pass: string = await this.promptKeyPassphrase();
                   this.sheetKeyPassphrase = pass;
+                  this.sheetKeyPassphraseConfigured = pass.length > 0;
                 } else {
                   this.sheetKeyPassphrase = '';
+                  this.sheetKeyPassphraseConfigured = false;
                 }
                 this.sheetKeyText = key.privateKey;
                 this.sheetKeyId = key.id;
@@ -18699,6 +18828,8 @@ struct HostListPage {
     this.sheetRdpBlankPasswordConfirmed = false;
     this.sheetUseKey = false; this.sheetKeyPath = ''; this.sheetKeyText = '';
     this.sheetKeyId = ''; this.sheetKeyPassphrase = '';
+    this.sheetPasswordConfigured = false;
+    this.sheetKeyPassphraseConfigured = false;
     this.sheetKeyMode = 0;
     this.sheetSshProxyEditorValue = defaultSshProxyEditorValue();
     this.vncHostTransport = 'direct_tcp'; this.vncHostRepeaterMode = 'mode12';
@@ -18884,18 +19015,39 @@ struct HostListPage {
         h.username = this.username;
       }
     }
+    const existingPassword: string = existingHost === undefined ? '' : existingHost.password;
     if (this.proto === 'rdp') {
-      h.password = this.sheetRdpAuthMode === 'password' && this.selectedRdpCredentialId === '' ?
-        this.sheetPwd : '';
+      const keepsSamePasswordBinding: boolean = existingHost !== undefined &&
+        existingHost.protocol === 'rdp' && existingHost.rdpAuthMode === 'password' &&
+        existingHost.rdpCredentialId === '' && this.sheetRdpAuthMode === 'password' &&
+        this.selectedRdpCredentialId === '';
+      h.password = resolveSecretEditValue(existingPassword,
+        this.sheetRdpAuthMode === 'password' && this.selectedRdpCredentialId === '' ? this.sheetPwd : '',
+        this.secretEditorHidden('rdp_host_password'), keepsSamePasswordBinding);
       h.normalizeRdpAuthentication();
+    } else if (this.proto === 'rustdesk') {
+      const nextUsesPassword: boolean = this.sheetRustdeskDirectEnabled || this.sheetRustdeskAuthMode === 'password';
+      const previousUsesPassword: boolean = existingHost !== undefined && existingHost.protocol === 'rustdesk' &&
+        (existingHost.rustdeskDirectEnabled || existingHost.rustdeskAuthMode === 'password');
+      h.password = resolveSecretEditValue(existingPassword, nextUsesPassword ? this.sheetPwd : '',
+        this.secretEditorHidden('rustdesk_device_password'), nextUsesPassword && previousUsesPassword);
     } else {
-      h.password = this.sheetPwd;
+      const keepsSshPasswordBinding: boolean = existingHost !== undefined &&
+        existingHost.protocol === 'ssh' && !existingHost.sshUseKey && !this.sheetUseKey;
+      h.password = resolveSecretEditValue(existingPassword, this.sheetUseKey ? '' : this.sheetPwd,
+        this.secretEditorHidden('ssh_host_password'), keepsSshPasswordBinding);
     }
     if (this.proto === 'ssh') {
       h.sshUseKey = this.sheetUseKey; h.sshKeyPath = this.sheetKeyPath;
       h.sshKeyData = this.sheetKeyText;
       h.sshKeyId = this.sheetKeyId;
-      h.sshKeyPassphrase = this.sheetKeyPassphrase;
+      const keepsSameSshKey: boolean = existingHost !== undefined && existingHost.protocol === 'ssh' &&
+        existingHost.sshUseKey && this.sheetUseKey && existingHost.sshKeyId === this.sheetKeyId &&
+        existingHost.sshKeyPath === this.sheetKeyPath && existingHost.sshKeyData === this.sheetKeyText;
+      h.sshKeyPassphrase = resolveSecretEditValue(
+        existingHost === undefined ? '' : existingHost.sshKeyPassphrase,
+        this.sheetUseKey ? this.sheetKeyPassphrase : '',
+        this.secretEditorHidden('ssh_key_passphrase'), keepsSameSshKey);
       const proxyBuild: SshProxyEditorBuildResult = buildSshProxyProfile(
         h.id, h.host, h.port, this.sheetSshProxyEditorValue);
       if (!proxyBuild.valid || proxyBuild.profile === null) {
@@ -19074,6 +19226,7 @@ struct HostListPage {
     this.rdpCredLabel = '';
     this.rdpCredUsername = '';
     this.rdpCredPassword = '';
+    this.rdpCredPasswordConfigured = false;
     this.rdpCredEditorKey++;
   }
 
@@ -19093,22 +19246,30 @@ struct HostListPage {
     this.rdpCredEditId = credential.id;
     this.rdpCredLabel = credential.label;
     this.rdpCredUsername = credential.username;
-    this.rdpCredPassword = credential.password;
+    this.rdpCredPasswordConfigured = credential.password.length > 0;
+    this.rdpCredPassword = secretEditDraftValue(credential.password,
+      this.secretEditorHidden('rdp_saved_credential'));
     this.rdpCredEditorKey++;
     this.openRdpCredentialEditorFromManager();
   }
 
   private saveRdpCredentialFromSettings(): void {
     const username: string = this.rdpCredUsername.trim();
-    if (username === '' || this.rdpCredPassword === '') {
+    const existing: RdpCredential | undefined = this.rdpCredEditId === '' ? undefined :
+      this.srv.getRdpCredential(this.rdpCredEditId);
+    const canKeepHiddenPassword: boolean = existing !== undefined && existing.password.length > 0 &&
+      this.secretEditorHidden('rdp_saved_credential');
+    if (username === '' || (this.rdpCredPassword === '' && !canKeepHiddenPassword)) {
       promptAction.showToast({ message: '用户名和密码不能为空', duration: 1500 });
       return;
     }
-    const credential = new RdpCredential();
+    const credential: RdpCredential = existing === undefined ? new RdpCredential() :
+      RdpCredential.fromJSON(existing.toJSON());
     credential.id = this.rdpCredEditId !== '' ? this.rdpCredEditId : RdpCredential.generateId();
     credential.label = this.rdpCredLabel.trim();
     credential.username = username;
-    credential.password = this.rdpCredPassword;
+    credential.password = resolveSecretEditValue(existing === undefined ? '' : existing.password,
+      this.rdpCredPassword, this.secretEditorHidden('rdp_saved_credential'), existing !== undefined);
     let saved: boolean = false;
     if (this.rdpCredEditId === '') {
       saved = this.srv.addRdpCredential(credential);

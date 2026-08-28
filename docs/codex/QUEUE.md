@@ -1,11 +1,15 @@
-# VNC Cursor and Wheel Regression Queue
+# Secret Visibility Policy Queue
 
 Updated: 2026-08-28 Asia/Shanghai
 
 ## Now
 
-1. Open the reviewed branch PR, wait for the required check, merge and synchronize `main`.
+1. Commit the verified local secret-presentation implementation.
+2. Obtain independent review and remediate every finding.
+3. Rerun mandatory gates, then complete PR/main closure where possible.
 
 ## Next
 
-- None after task closure.
+1. Device acceptance for add/edit/connect flows across RDP, RustDesk, SSH and VNC.
+2. Enable an executable Hypium `ohosTest` task if device-side automated policy
+   coverage is required in this project.
