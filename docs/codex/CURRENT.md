@@ -4,13 +4,12 @@
 
 - Task: `secret-visibility-policy`
 - Branch/base: `codex/secret-visibility-policy` from synchronized `main@f3b41e5a6`.
-- Phase: post-sixth cross-window hardening verified; cumulative follow-up review pending.
+- Phase: seventh-review binding/operation-fence remediation; final gates pending.
 - Plan: `docs/codex/plans/2026-08-28-secret-visibility-policy.md`
 
 ## Objective
 
-- Add a device-local Data Security Sheet for choosing which editable password
-  classes do not reveal saved values in editors.
+- Add a device-local Data Security Sheet for choosing which editable password classes do not reveal saved values.
 - Preserve an existing hidden secret on an empty edit, replace it only with a
   newly entered value, and keep deletion explicit.
 - Bring VNC host passwords under the shared policy without changing protocol,
@@ -19,8 +18,6 @@
 ## Baseline
 
 - Clean synchronized `main@f3b41e5a6`, equal to `origin/main` when started.
-- Previous VNC cursor/wheel task is merged; its device acceptance, exact Hvigor
-  gates and independent review passed.
 
 ## Implemented
 
@@ -67,8 +64,6 @@
 - SSH trust, passphrase and key-install mutations retain runtime markers.
   Switching to an installed key clears the obsolete password, while locked
   trust-only updates preserve the encrypted private-key passphrase extension.
-- RustDesk Pro approval no longer retains the previously stored unattended
-  password after an approved session.
 - Stored-password projections are now distinguished from user-entered drafts.
   Background and foreground `DataCrypto` lock transitions scrub projected
   plaintext from standard/Pro RustDesk, classic RDP/RustDesk/SSH editors, RDP
@@ -84,6 +79,12 @@
   for their visible lifecycle, so another window changing a stored-secret kind
   to hidden immediately clears any existing stored projection without syncing
   the policy to cloud or backup.
+- Unlock/policy restoration now requires the opening snapshot, live record and
+  editor endpoint/user/auth/mode/key binding to agree. Deleted or rebound
+  records clear their projection and block the stale panel until reopened.
+- SSH key installation records full host/target-key operation identities across
+  async verification, then refetches both before committing; concurrent change,
+  deletion or crypto relock leaves local authentication untouched.
 - Legacy SSH proxy password/passphrase ciphertext now has runtime presence
   markers and survives permitted trust-only writes while the crypto vault is
   locked. Canonical proxy rebinding clears both the legacy values and markers.
@@ -99,8 +100,8 @@
 
 ## Verification (current worktree)
 
-- `default@OhosTestCompileArkTS`: PASS (`BUILD SUCCESSFUL in 13 s 16 ms`).
-- `assembleHap`: PASS, signed (`BUILD SUCCESSFUL in 20 s 922 ms`).
+- `default@OhosTestCompileArkTS`: PASS (`BUILD SUCCESSFUL in 14 s 550 ms`).
+- `assembleHap`: PASS, signed (`BUILD SUCCESSFUL in 20 s 991 ms`).
 - Light open-source compliance: PASS.
 - `git diff --check`: PASS.
 - The focused Hypium tests are registered in `List.test.ets` and compile in the
@@ -110,13 +111,10 @@
 
 ## Next
 
-1. Commit the verified cross-window policy notification hardening with only this task's files.
-2. Ask the same independent reviewer to confirm all twenty-seven findings are closed.
-3. Rerun final gates and close the branch through PR/main where possible.
+1. Finish exact packaging/compliance gates and commit only this task's files.
+2. Ask the same independent reviewer to confirm all thirty-one findings are closed.
+3. Close the branch through PR/main after a clean verdict.
 
 ## Blockers
 
-- Device/Hypium runtime acceptance has not been executed in this session.
-- `ohosTest@OhosTestCompileArkTS` is unavailable because the task is not
-  registered (`00306054`); the required `default@OhosTestCompileArkTS` gate did
-  pass.
+- Device/Hypium acceptance was not run; `ohosTest@OhosTestCompileArkTS` is not registered (`00306054`).

@@ -4,9 +4,9 @@ Updated: 2026-08-28 Asia/Shanghai
 
 ## Now
 
-1. Commit the verified cross-window hardening after all twenty-seven findings across six review rounds.
-2. Reuse the same independent reviewer and require a clean follow-up verdict.
-3. Rerun final mandatory gates, then complete PR/main closure where possible.
+1. Finish exact gates and commit the remediation for all thirty-one findings across seven review rounds.
+2. Reuse the same independent reviewer and require a clean cumulative verdict.
+3. Complete PR/main closure only after review and required checks pass.
 
 ## Next
 

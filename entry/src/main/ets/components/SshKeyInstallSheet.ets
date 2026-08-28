@@ -8,6 +8,8 @@
  *   4. 安装公钥 → 验证新密钥 → 可选切换 Host
  */
 import { promptAction } from '@kit.ArkUI';
+import { cryptoFramework } from '@kit.CryptoArchitectureKit';
+import { util } from '@kit.ArkTS';
 import { RemoteHost } from '../model/RemoteHost';
 import { SshKey } from '../model/SshKey';
 import { Palette, buildDark, buildLight, AppTheme } from '../common/Theme';
@@ -111,6 +113,27 @@ export struct SshKeyInstallSheet {
     return key === undefined ? null : { label: key.label, locked: key.locked };
   }
 
+  private sha256Hex(value: string): string {
+    const md = cryptoFramework.createMd('SHA256');
+    md.updateSync({ data: new util.TextEncoder().encode(value) });
+    const bytes: Uint8Array = md.digestSync().data;
+    let result: string = '';
+    for (let index = 0; index < bytes.length; index++) {
+      result += bytes[index].toString(16).padStart(2, '0');
+    }
+    return result;
+  }
+
+  private hostOperationIdentity(host: RemoteHost): string {
+    return this.sha256Hex('ssh-key-install-host:v1\u0000' +
+      JSON.stringify(host.toJSON()) + '\u0000' + host.runtimeSecretStateSignature());
+  }
+
+  private targetKeyOperationIdentity(key: SshKey): string {
+    return this.sha256Hex('ssh-key-install-target:v1\u0000' +
+      JSON.stringify(key.toJSON()));
+  }
+
   // ====== 安装流程 ======
   private async doInstall(): Promise<void> {
     const selectedView: SshKeyInstallHostView | undefined = this.hosts.find(
@@ -194,6 +217,8 @@ export struct SshKeyInstallSheet {
       promptAction.showToast({ message: '所选 SSH 私钥不可用，请先解锁后重试', duration: 2000 });
       return;
     }
+    const hostOperationIdentity: string = this.hostOperationIdentity(host);
+    const targetKeyOperationIdentity: string = this.targetKeyOperationIdentity(targetKey);
 
     this.installing = true;
     this.step = 1;
@@ -222,10 +247,24 @@ export struct SshKeyInstallSheet {
         this.verifying = false;
 
         if (testResult['ok'] && this.switchToNewKey) {
-          // 切换 Host 使用新密钥
+          // 验证跨越异步边界。提交前必须重新读取主机和目标密钥，并确认
+          // 整个操作身份未变化，避免把已删除或已替换的 key ID 写回主机。
+          const currentCrypto: DataCrypto = DataCrypto.getInstance();
+          if (currentCrypto.isSetupComplete() && !currentCrypto.isReady()) {
+            this.hostSwitchSaveError =
+              '新密钥已安装并验证成功，但本地加密仓库已锁定；未保存认证方式。';
+            this.step = 3;
+            this.installing = false;
+            return;
+          }
           const latestHost: RemoteHost | undefined = this.hostSync.getHost(host.id);
-          if (latestHost === undefined) {
-            this.hostSwitchSaveError = '新密钥已安装并验证成功，但主机记录已被删除；未保存认证方式。';
+          const latestTargetKey: SshKey | undefined = this.kvs.getSshKey(targetKey.id);
+          if (latestHost === undefined || latestTargetKey === undefined ||
+            this.selectedHostId !== host.id || this.targetKeyId !== targetKey.id ||
+            this.hostOperationIdentity(latestHost) !== hostOperationIdentity ||
+            this.targetKeyOperationIdentity(latestTargetKey) !== targetKeyOperationIdentity) {
+            this.hostSwitchSaveError =
+              '新密钥已安装并验证成功，但主机或密钥配置已变化；未保存认证方式，请重新打开后确认。';
             this.step = 3;
             this.installing = false;
             return;
@@ -234,12 +273,12 @@ export struct SshKeyInstallSheet {
           updated.sshUseKey = true;
           updated.password = '';
           updated.passwordConfigured = false;
-          updated.sshKeyId = targetKey.id;
+          updated.sshKeyId = latestTargetKey.id;
           updated.sshKeyData = '';
           updated.sshKeyDataConfigured = false;
           updated.sshKeyPassphrase = '';
           updated.sshKeyPassphraseConfigured = false;
-          updated.sshKeyPath = 'KeyVault: ' + targetKey.label;
+          updated.sshKeyPath = 'KeyVault: ' + latestTargetKey.label;
           if (!this.hostSync.updateHost(updated)) {
             this.hostSwitchSaveError = '新密钥已安装并验证成功，但主机认证方式未能保存；请返回主机编辑页重试。';
             promptAction.showToast({ message: this.hostSwitchSaveError, duration: 3000 });

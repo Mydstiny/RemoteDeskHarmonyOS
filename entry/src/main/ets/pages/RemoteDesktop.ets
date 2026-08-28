@@ -251,6 +251,7 @@ import {
 } from '../services/RustDeskAuthDraftStore';
 import { SecretPresentationStore } from '../services/SecretPresentationPolicy';
 import {
+  secretBindingUnchanged,
   secretEditDraftValue,
   secretEditPlaceholder
 } from '../services/SecretEditMutationPolicy';
@@ -1064,6 +1065,8 @@ struct RemoteDesktop {
   private rustDeskSessionPasswordMode: number = 0;
   private rustDeskAuthKeepsStoredPassword: boolean = false;
   private rustDeskAuthPasswordFromStoredProjection: boolean = false;
+  private rustDeskAuthPasswordProjectionBinding: string[] = [];
+  private rustDeskAuthSecretProjectionInvalidated: boolean = false;
   private readonly secretPresentation: SecretPresentationStore =
     SecretPresentationStore.getInstance();
   private remoteNavigationHidden: boolean = false;
@@ -2221,6 +2224,28 @@ struct RemoteDesktop {
     return this.secretPresentation.isHidden('rustdesk_device_password', securityOverride);
   }
 
+  private rustDeskAuthPasswordBindingParts(host: RemoteHost,
+    authChoice: RustDeskAuthChoice, passwordMode: number): string[] {
+    return [host.id, host.userId, host.protocol,
+      host.rustdeskDirectEnabled || authChoice === 'password' ? 'password' : 'request_approval',
+      host.customHostname.trim(), host.host.trim(), host.port.toString(),
+      host.rustdeskDirectEnabled ? 'direct' : 'relay', host.rustdeskDirectHost.trim(),
+      host.rustdeskDirectPort.toString(), (passwordMode === 1 ? 1 : 0).toString(),
+      host.rustdeskRelayId, host.rustdeskAccountId, host.rustdeskProAccountId,
+      host.rustdeskProPeerId, host.sourceType, host.rustdeskProManaged ? 'managed' : 'local'];
+  }
+
+  private invalidateRustDeskAuthSecretProjection(): void {
+    this.rustDeskAuthPasswordInput = '';
+    this.rustDeskAuthPasswordConfigured = false;
+    this.rustDeskAuthKeepsStoredPassword = false;
+    this.rustDeskAuthPasswordFromStoredProjection = false;
+    this.rustDeskAuthSecretProjectionInvalidated = true;
+    this.rustDeskAuthError =
+      'RustDesk 认证绑定已变化；为避免误用密码，请关闭后重新打开连接面板';
+    this.saveRustDeskAuthDraft();
+  }
+
   private openRustDeskAuthSheet(message: string = ''): void {
     if (this.rustDeskAuthSheetClosing) {
       this.rustDeskAuthQueuedMessage = message;
@@ -2245,6 +2270,9 @@ struct RemoteDesktop {
       (host.rustdeskPasswordMode === 1 ? 1 : 0);
     this.rustDeskAuthPasswordFromStoredProjection = draft === null ?
       (!hidden && host.password.length > 0) : draft.passwordFromStoredProjection;
+    this.rustDeskAuthPasswordProjectionBinding = this.rustDeskAuthPasswordBindingParts(
+      host, this.rustDeskAuthChoice, this.rustDeskAuthPasswordMode);
+    this.rustDeskAuthSecretProjectionInvalidated = false;
     this.rustDeskAuthKeepsStoredPassword = draft === null ?
       (hidden && storedPasswordConfigured) :
       (draft.passwordFromStoredProjection ?
@@ -2339,6 +2367,11 @@ struct RemoteDesktop {
       this.rustDeskAuthPendingStart = true;
       this.rustDeskAuthSheetClosing = true;
       this.showRustDeskAuthSheet = false;
+      return;
+    }
+    if (this.rustDeskAuthSecretProjectionInvalidated) {
+      this.rustDeskAuthError =
+        'RustDesk 认证绑定已变化；请关闭后重新打开连接面板再继续';
       return;
     }
     if (this.rustDeskAuthChoice === 'request_approval' && host.rustdeskDirectEnabled) {
@@ -6788,11 +6821,8 @@ struct RemoteDesktop {
     }
     this.applyAbilityBackgroundState(isBackground);
     if (!isBackground) {
-      if (this.showRustDeskAuthSheet && this.rustDeskAuthPasswordFromStoredProjection &&
-        this.pendingHost !== null) {
-        this.rustDeskAuthPasswordInput = secretEditDraftValue(
-          this.pendingHost.password, this.rustDeskAuthPasswordHidden());
-      }
+      const crypto: DataCrypto = DataCrypto.getInstance();
+      this.onDataCryptoStateChange(crypto.isReady(), crypto.isSetupComplete());
       this.resumeRustDeskAuthAfterBackground();
     }
   }
@@ -6809,7 +6839,18 @@ struct RemoteDesktop {
       this.pendingHost === null) {
       return;
     }
-    const host: RemoteHost = this.srv.getHost(this.pendingHost.id) ?? this.pendingHost;
+    const host: RemoteHost | undefined = this.srv.getHost(this.pendingHost.id);
+    const currentBinding: string[] = this.rustDeskAuthPasswordBindingParts(
+      this.pendingHost, this.rustDeskAuthChoice, this.rustDeskAuthPasswordMode);
+    if (host === undefined ||
+      !secretBindingUnchanged(this.rustDeskAuthPasswordProjectionBinding,
+        this.rustDeskAuthPasswordBindingParts(host,
+          host.rustdeskDirectEnabled || host.rustdeskAuthMode === 'password' ?
+            'password' : 'request_approval', host.rustdeskPasswordMode)) ||
+      !secretBindingUnchanged(this.rustDeskAuthPasswordProjectionBinding, currentBinding)) {
+      this.invalidateRustDeskAuthSecretProjection();
+      return;
+    }
     this.rustDeskAuthPasswordInput = secretEditDraftValue(
       host.password, this.rustDeskAuthPasswordHidden());
   }

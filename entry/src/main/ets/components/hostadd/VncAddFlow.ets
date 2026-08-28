@@ -22,7 +22,10 @@ import { VncGatewayView } from '../../services/VncGatewayService';
 import { resolveVncHostDefaults, VncSelectableGateway } from '../../services/VncHostDefaultsPolicy';
 import { VncHostService, VncHostView } from '../../services/VncHostService';
 import { SecretPresentationStore } from '../../services/SecretPresentationPolicy';
-import { SecretEditMutationKind } from '../../services/SecretEditMutationPolicy';
+import {
+  SecretEditMutationKind,
+  secretBindingUnchanged
+} from '../../services/SecretEditMutationPolicy';
 import {
   VncSecretEditDecision,
   vncSecretEditDecision
@@ -64,6 +67,8 @@ export struct VncAddFlow {
   @State passwordConfigured: boolean = false;
   @State passwordChanged: boolean = false;
   private passwordFromStoredProjection: boolean = false;
+  private passwordProjectionBinding: string[] = [];
+  private passwordProjectionInvalidated: boolean = false;
   @State rememberPassword: boolean = false;
   @State gatewayId: string = '';
   @State tls: boolean = true;
@@ -116,6 +121,8 @@ export struct VncAddFlow {
     this.passwordConfigured = false;
     this.passwordChanged = false;
     this.passwordFromStoredProjection = false;
+    this.passwordProjectionBinding = [];
+    this.passwordProjectionInvalidated = false;
     this.password = '';
     if (this.transport === 'ultravnc_repeater') {
       const gateway: VncGatewayView | undefined = this.selectedGateway();
@@ -139,6 +146,7 @@ export struct VncAddFlow {
         this.password = this.hosts.passwordFor(host.id);
         this.passwordFromStoredProjection = this.password.length > 0;
       }
+      this.passwordProjectionBinding = this.vncBindingParts(host);
       this.gatewayId = host.gatewayId;
       this.repeaterMode = host.repeaterMode;
       this.viewOnly = host.viewOnly;
@@ -203,10 +211,39 @@ export struct VncAddFlow {
     this.restoreStoredPasswordProjection();
   }
 
+  private vncBindingParts(host: VncHostView): string[] {
+    return [host.id, host.userId, host.transport, host.host.trim(), host.port.toString(),
+      host.gatewayId.trim(), host.repeaterMode, host.tls ? 'tls' : 'plain', host.securityPolicy];
+  }
+
+  private editorVncBindingParts(): string[] {
+    const ownerId: string = this.passwordProjectionBinding.length > 1 ?
+      this.passwordProjectionBinding[1] : '';
+    const hostId: string = this.initialHost === null ? '' : this.initialHost.id;
+    return [hostId, ownerId, this.transport, this.endpointAddress().trim(),
+      Number(this.portText).toString(), this.transport === 'direct_tcp' ? '' : this.gatewayId.trim(),
+      this.repeaterMode, this.tls ? 'tls' : 'plain', this.securityPolicy];
+  }
+
+  private invalidatePasswordProjection(): void {
+    this.password = '';
+    this.passwordConfigured = false;
+    this.passwordFromStoredProjection = false;
+    this.passwordProjectionInvalidated = true;
+    this.errorText =
+      'VNC 主机认证绑定已变化；为避免误用密码，请关闭后重新打开编辑面板';
+  }
+
   private restoreStoredPasswordProjection(): void {
-    const host: VncHostView | null = this.initialHost;
-    this.password = host === null || this.passwordHidden() ? '' :
-      this.hosts.passwordFor(host.id);
+    const initial: VncHostView | null = this.initialHost;
+    const host: VncHostView | null = initial === null ? null : this.hosts.find(initial.id);
+    if (host === null ||
+      !secretBindingUnchanged(this.passwordProjectionBinding, this.vncBindingParts(host)) ||
+      !secretBindingUnchanged(this.passwordProjectionBinding, this.editorVncBindingParts())) {
+      this.invalidatePasswordProjection();
+      return;
+    }
+    this.password = this.passwordHidden() ? '' : this.hosts.passwordFor(host.id);
   }
 
   private passwordDecision(values: VncHostValues,
@@ -358,6 +395,11 @@ export struct VncAddFlow {
   }
 
   private save(connectNow: boolean): void {
+    if (this.passwordProjectionInvalidated) {
+      this.errorText =
+        'VNC 主机认证绑定已变化；请关闭后重新打开编辑面板再保存或连接';
+      return;
+    }
     const values: VncHostValues | null = this.buildValues();
     if (values === null) { return; }
     const decision: VncSecretEditDecision = this.passwordDecision(values, connectNow);
