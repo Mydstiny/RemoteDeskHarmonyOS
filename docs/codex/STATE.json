@@ -3,10 +3,10 @@
   "task": "secret-visibility-policy",
   "branch": "codex/secret-visibility-policy",
   "base": "f3b41e5a6c6ffd7f4e3bc45941877d0ff81d1055",
-  "head": "57a12155c943162c230a316d7390909ce10c4819",
+  "head": "93b0be432a2ebede981acf47d6d3277d5a83949e",
   "phase": "remediation",
   "status": "active",
-  "next": "Commit the verified fourth remediation, obtain a clean follow-up from the same reviewer and rerun the final exact gates.",
+  "next": "Commit the verified fifth remediation, obtain a clean cumulative follow-up from the same reviewer and rerun the final exact gates.",
   "blockers": [
     "The optional ohosTest@OhosTestCompileArkTS task is not registered (00306054), so no device-side Hypium execution is claimed."
   ],
@@ -38,6 +38,7 @@
       "entry/src/main/ets/services/SecretEditMutationPolicy.ets",
       "entry/src/main/ets/services/SecretPresentationPolicy.ets",
       "entry/src/main/ets/services/SettingsSheetRoutePolicy.ets",
+      "entry/src/main/ets/services/SshProxyEditorPolicy.ets",
       "entry/src/main/ets/services/VncHostService.ets",
       "entry/src/main/ets/services/VncSecretEditPolicy.ets",
       "entry/src/test/CloudSyncSettingsPolicy.test.ets",
@@ -68,17 +69,25 @@
       "P2 fourth review: standard RustDesk approval retained the old unattended password",
       "P2 fourth review: Pro address-book reconcile lost crypto-locked markers and misclassified redacted passwords",
       "P2 fourth review: SSH trust and passphrase persistence clones lost runtime secret markers",
-      "P2 fourth review: SSH key installation retained the obsolete password after switching authentication"
+      "P2 fourth review: SSH key installation retained the obsolete password after switching authentication",
+      "P1 fifth review: RustDesk stored-password projections survived background crypto lock through drafts",
+      "P1 fifth review: classic host, RDP credential and VNC editor states retained stored plaintext across background lock",
+      "P1 fifth review: SSH public-key deployment exposed stored authentication secrets in ordinary input state",
+      "P2 fifth review: standard RustDesk approval could establish a session before failing to clear a locked stored password",
+      "P2 fifth review: trust-only locked updates could overwrite legacy SSH proxy secret ciphertext",
+      "P2 fifth review: SSH key switching retained the old key reference, passphrase and runtime marker",
+      "P2 fifth review: HostList ignored marker-only host updates in its page signature",
+      "P3 fifth review: RustDesk authentication trust UI ignored configured markers while crypto was locked"
     ],
-    "reason": "Four independent-review rounds found five P1 and eleven P2 issues in total. All sixteen are remediated and compile/package/compliance checks pass; a clean confirmation by the same reviewer is pending."
+    "reason": "Five independent-review rounds found eight P1, fifteen P2 and one P3 issue in total. All twenty-four are remediated and compile/package/compliance checks pass; a clean cumulative confirmation by the same reviewer is pending."
   },
   "lastVerification": {
     "baseline": "clean synchronized main@f3b41e5a6",
-    "testCompile": "PASS: default@OhosTestCompileArkTS, BUILD SUCCESSFUL in 18 s 733 ms",
-    "assembleHap": "PASS: signed HAP, BUILD SUCCESSFUL in 25 s 556 ms",
+    "testCompile": "PASS: default@OhosTestCompileArkTS, BUILD SUCCESSFUL in 12 s 684 ms",
+    "assembleHap": "PASS: signed HAP, BUILD SUCCESSFUL in 18 s 158 ms",
     "targetedTests": "REGISTERED_AND_COMPILED; optional ohosTest@OhosTestCompileArkTS unavailable with 00306054; no device execution claimed",
     "compliance": "PASS: Light open-source compliance",
-    "review": "FOLLOW_UP_NOT_PASS: cumulative 5 P1 and 11 P2 findings remediated; same-reviewer clean follow-up pending",
+    "review": "FOLLOW_UP_NOT_PASS: cumulative 8 P1, 15 P2 and 1 P3 findings remediated; same-reviewer clean cumulative follow-up pending",
     "deviceAcceptance": "PENDING"
   },
   "updated": "2026-08-28 Asia/Shanghai"

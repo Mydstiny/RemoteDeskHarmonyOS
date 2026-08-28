@@ -389,7 +389,9 @@ export class RemoteHost implements LanHostAddressView {
   sshProxyAuthMethod: SshProxyAuthMethod = 'password';
   sshProxyKeyId: string = '';
   sshProxyPassword: string = '';
+  sshProxyPasswordConfigured: boolean = false;
   sshProxyKeyPassphrase: string = '';
+  sshProxyKeyPassphraseConfigured: boolean = false;
   rustdeskRelayId: string = ''; // RustDesk 中继服务器配置 ID
   rustdeskAccountId: string = ''; // RustDesk Server Pro account ID
   rustdeskPasswordMode: number = 0; // RustDesk 密码模式: 0=一次性, 1=永久
@@ -815,6 +817,10 @@ export class RemoteHost implements LanHostAddressView {
     host.sshKeyDataConfigured = this.sshKeyDataConfigured || this.sshKeyData.length > 0;
     host.sshKeyPassphraseConfigured = this.sshKeyPassphraseConfigured ||
       this.sshKeyPassphrase.length > 0;
+    host.sshProxyPasswordConfigured = this.sshProxyPasswordConfigured ||
+      this.sshProxyPassword.length > 0;
+    host.sshProxyKeyPassphraseConfigured = this.sshProxyKeyPassphraseConfigured ||
+      this.sshProxyKeyPassphrase.length > 0;
     return host;
   }
 
@@ -822,7 +828,9 @@ export class RemoteHost implements LanHostAddressView {
   runtimeSecretStateSignature(): string {
     return (this.passwordConfigured || this.password.length > 0 ? '1' : '0') + '|' +
       (this.sshKeyDataConfigured || this.sshKeyData.length > 0 ? '1' : '0') + '|' +
-      (this.sshKeyPassphraseConfigured || this.sshKeyPassphrase.length > 0 ? '1' : '0');
+      (this.sshKeyPassphraseConfigured || this.sshKeyPassphrase.length > 0 ? '1' : '0') + '|' +
+      (this.sshProxyPasswordConfigured || this.sshProxyPassword.length > 0 ? '1' : '0') + '|' +
+      (this.sshProxyKeyPassphraseConfigured || this.sshProxyKeyPassphrase.length > 0 ? '1' : '0');
   }
 
   /** Enforces the mutually exclusive credential fields for the selected RDP mode. */

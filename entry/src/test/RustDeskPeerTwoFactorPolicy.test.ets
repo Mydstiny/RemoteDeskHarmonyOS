@@ -20,7 +20,8 @@ import {
 import {
   RustDeskAuthDraftStore,
   rustDeskDraftKeepsStoredPassword,
-  rustDeskDraftPasswordForConnection
+  rustDeskDraftPasswordForConnection,
+  rustDeskDraftPasswordForPresentation
 } from '../main/ets/services/RustDeskAuthDraftStore';
 import {
   decodeRustDeskPeerTwoFactorLegacyBackupRows,
@@ -691,6 +692,7 @@ export default function rustDeskPeerTwoFactorPolicyTest(): void {
         ownerScopeId: 'owner-a', accountGeneration: 3, hostId: 'draft-host',
         authChoice: 'password', password: 'temporary-secret', passwordMode: 1,
         keepsStoredPassword: false,
+        passwordFromStoredProjection: false,
         rememberPassword: false, updatedAt: 0
       })).assertTrue();
       const sameScope = drafts.load('owner-a', 3, 'draft-host');
@@ -706,6 +708,7 @@ export default function rustDeskPeerTwoFactorPolicyTest(): void {
         ownerScopeId: 'owner-a', accountGeneration: 3, hostId: 'invalidated-host',
         authChoice: 'password', password: '', passwordMode: 0,
         keepsStoredPassword: false,
+        passwordFromStoredProjection: false,
         rememberPassword: true, updatedAt: 0
       })).assertTrue();
       const invalidated = drafts.load('owner-a', 3, 'invalidated-host');
@@ -721,12 +724,25 @@ export default function rustDeskPeerTwoFactorPolicyTest(): void {
         '', true, 'old-secret', 0, 0)).assertEqual('old-secret');
       expect(rustDeskDraftPasswordForConnection(
         'replacement', false, 'old-secret', 0, 1)).assertEqual('replacement');
+      expect(drafts.save({
+        ownerScopeId: 'owner-a', accountGeneration: 3, hostId: 'projection-host',
+        authChoice: 'password', password: 'must-not-survive', passwordMode: 0,
+        keepsStoredPassword: false, passwordFromStoredProjection: true,
+        rememberPassword: true, updatedAt: 0
+      })).assertTrue();
+      const storedProjection = drafts.load('owner-a', 3, 'projection-host');
+      expect(storedProjection !== null && storedProjection.password === '').assertTrue();
+      expect(rustDeskDraftPasswordForPresentation(
+        storedProjection, 'current-secret', true)).assertEqual('');
+      expect(rustDeskDraftPasswordForPresentation(
+        storedProjection, 'current-secret', false)).assertEqual('current-secret');
       drafts.clearHost('draft-host');
       expect(drafts.load('owner-a', 3, 'draft-host') === null).assertTrue();
       expect(drafts.save({
         ownerScopeId: 'owner-a', accountGeneration: 3, hostId: 'scope-transition-host',
         authChoice: 'password', password: 'must-be-cleared', passwordMode: 0,
         keepsStoredPassword: false,
+        passwordFromStoredProjection: false,
         rememberPassword: true, updatedAt: 0
       })).assertTrue();
       drafts.clearAll();

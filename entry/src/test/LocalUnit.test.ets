@@ -77,24 +77,34 @@ export default function localUnitTest() {
       host.passwordConfigured = true;
       host.sshKeyDataConfigured = true;
       host.sshKeyPassphraseConfigured = true;
+      host.sshProxyPasswordConfigured = true;
+      host.sshProxyKeyPassphraseConfigured = true;
       const serialized: Record<string, Object> = host.toJSON() as Record<string, Object>;
       expect(serialized['passwordConfigured']).assertUndefined();
       expect(serialized['sshKeyDataConfigured']).assertUndefined();
       expect(serialized['sshKeyPassphraseConfigured']).assertUndefined();
+      expect(serialized['sshProxyPasswordConfigured']).assertUndefined();
+      expect(serialized['sshProxyKeyPassphraseConfigured']).assertUndefined();
       const clone: RemoteHost = host.runtimeClone();
       expect(clone.passwordConfigured).assertTrue();
       expect(clone.sshKeyDataConfigured).assertTrue();
       expect(clone.sshKeyPassphraseConfigured).assertTrue();
-      expect(clone.runtimeSecretStateSignature()).assertEqual('1|1|1');
+      expect(clone.sshProxyPasswordConfigured).assertTrue();
+      expect(clone.sshProxyKeyPassphraseConfigured).assertTrue();
+      expect(clone.runtimeSecretStateSignature()).assertEqual('1|1|1|1|1');
 
       host.passwordConfigured = false;
       host.sshKeyDataConfigured = false;
       host.sshKeyPassphraseConfigured = false;
+      host.sshProxyPasswordConfigured = false;
+      host.sshProxyKeyPassphraseConfigured = false;
       const clearedClone: RemoteHost = host.runtimeClone();
       expect(clearedClone.passwordConfigured).assertFalse();
       expect(clearedClone.sshKeyDataConfigured).assertFalse();
       expect(clearedClone.sshKeyPassphraseConfigured).assertFalse();
-      expect(clearedClone.runtimeSecretStateSignature()).assertEqual('0|0|0');
+      expect(clearedClone.sshProxyPasswordConfigured).assertFalse();
+      expect(clearedClone.sshProxyKeyPassphraseConfigured).assertFalse();
+      expect(clearedClone.runtimeSecretStateSignature()).assertEqual('0|0|0|0|0');
 
       const credential = new RdpCredential();
       credential.passwordConfigured = true;

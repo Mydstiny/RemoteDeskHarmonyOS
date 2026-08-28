@@ -7917,12 +7917,20 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
     host.sshKeyPassphrase = this.decryptIfReady(
       crypto, 'localextensions/remotehosts', host.id,
       'sshkeypassphrase', storedSshKeyPassphrase);
+    const storedSshProxyPassword: string = get(
+      'sshproxypassword', host.sshProxyPassword);
+    host.sshProxyPasswordConfigured = host.sshProxyPasswordConfigured ||
+      storedSshProxyPassword.length > 0;
     host.sshProxyPassword = this.decryptIfReady(
       crypto, 'localextensions/remotehosts', host.id,
-      'sshproxypassword', get('sshproxypassword', host.sshProxyPassword));
+      'sshproxypassword', storedSshProxyPassword);
+    const storedSshProxyKeyPassphrase: string = get(
+      'sshproxykeypassphrase', host.sshProxyKeyPassphrase);
+    host.sshProxyKeyPassphraseConfigured = host.sshProxyKeyPassphraseConfigured ||
+      storedSshProxyKeyPassphrase.length > 0;
     host.sshProxyKeyPassphrase = this.decryptIfReady(
       crypto, 'localextensions/remotehosts', host.id,
-      'sshproxykeypassphrase', get('sshproxykeypassphrase', host.sshProxyKeyPassphrase));
+      'sshproxykeypassphrase', storedSshProxyKeyPassphrase);
     host.sshHostKeyAlgorithm =
       get('sshhostkeyalgorithm', host.sshHostKeyAlgorithm);
     host.sshHostKeyFingerprintSha256 =
@@ -8200,10 +8208,24 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
       if (!this.clearRdpRestrictedAdminHash(host.id)) { return false; }
     }
     const values: Record<string, string> = this.hostExtensionValues(host);
-    if (host.sshKeyPassphraseConfigured && host.sshKeyPassphrase === '') {
+    const preserveSshKeyPassphrase: boolean =
+      host.sshKeyPassphraseConfigured && host.sshKeyPassphrase === '';
+    const preserveSshProxyPassword: boolean =
+      host.sshProxyPasswordConfigured && host.sshProxyPassword === '';
+    const preserveSshProxyKeyPassphrase: boolean =
+      host.sshProxyKeyPassphraseConfigured && host.sshProxyKeyPassphrase === '';
+    if (preserveSshKeyPassphrase || preserveSshProxyPassword ||
+      preserveSshProxyKeyPassphrase) {
       const existing: Record<string, string> = this.loadLocalExtension('remotehosts', host.id);
-      if ((existing['sshkeypassphrase'] || '').length > 0) {
+      if (preserveSshKeyPassphrase && (existing['sshkeypassphrase'] || '').length > 0) {
         values['sshkeypassphrase'] = existing['sshkeypassphrase'];
+      }
+      if (preserveSshProxyPassword && (existing['sshproxypassword'] || '').length > 0) {
+        values['sshproxypassword'] = existing['sshproxypassword'];
+      }
+      if (preserveSshProxyKeyPassphrase &&
+        (existing['sshproxykeypassphrase'] || '').length > 0) {
+        values['sshproxykeypassphrase'] = existing['sshproxykeypassphrase'];
       }
     }
     return this.saveLocalExtension('remotehosts', host.id, values);

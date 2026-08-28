@@ -4,7 +4,7 @@
 
 - Task: `secret-visibility-policy`
 - Branch/base: `codex/secret-visibility-policy` from synchronized `main@f3b41e5a6`.
-- Phase: fourth review remediation verified; follow-up review pending.
+- Phase: fifth review remediation verified; cumulative follow-up review pending.
 - Plan: `docs/codex/plans/2026-08-28-secret-visibility-policy.md`
 
 ## Objective
@@ -69,13 +69,30 @@
   trust-only updates preserve the encrypted private-key passphrase extension.
 - RustDesk Pro approval no longer retains the previously stored unattended
   password after an approved session.
+- Stored-password projections are now distinguished from user-entered drafts.
+  Background crypto lock scrubs projected plaintext from standard/Pro RustDesk,
+  classic RDP/RustDesk/SSH editors, RDP credentials and both VNC edit flows;
+  foreground restoration always re-applies the current local policy.
+- SSH public-key deployment no longer stores a plaintext-bearing `RemoteHost`
+  or saved authentication secret in editable state. Hidden values are resolved
+  only for the operation, and crypto-locked records stop with an unlock error.
+- Legacy SSH proxy password/passphrase ciphertext now has runtime presence
+  markers and survives permitted trust-only writes while the crypto vault is
+  locked. Canonical proxy rebinding clears both the legacy values and markers.
+- Switching an SSH host to a newly installed KeyVault key replaces `sshKeyId`
+  and clears obsolete inline key data, passphrase and configured markers.
+- RustDesk approval is blocked while a saved password is crypto-redacted; a
+  persistence race after connection triggers immediate session cleanup rather
+  than leaving the old unattended password behind.
+- HostList change detection now includes runtime secret markers, and the
+  RustDesk trust manager consumes those markers when plaintext is redacted.
 - Classified `secretPresentationPolicyV1` as device-local and added focused
   policy, mutation, route and cloud-sync classification tests.
 
 ## Verification (current worktree)
 
-- `default@OhosTestCompileArkTS`: PASS (`BUILD SUCCESSFUL in 18 s 733 ms`).
-- `assembleHap`: PASS, signed (`BUILD SUCCESSFUL in 25 s 556 ms`).
+- `default@OhosTestCompileArkTS`: PASS (`BUILD SUCCESSFUL in 12 s 684 ms`).
+- `assembleHap`: PASS, signed (`BUILD SUCCESSFUL in 18 s 158 ms`).
 - Light open-source compliance: PASS.
 - `git diff --check`: PASS.
 - The focused Hypium tests are registered in `List.test.ets` and compile in the
@@ -85,8 +102,8 @@
 
 ## Next
 
-1. Commit the verified fourth remediation with only this task's files.
-2. Ask the same independent reviewer to confirm all sixteen findings are closed.
+1. Commit the verified fifth remediation with only this task's files.
+2. Ask the same independent reviewer to confirm all twenty-four findings are closed.
 3. Rerun final gates and close the branch through PR/main where possible.
 
 ## Blockers

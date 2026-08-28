@@ -133,8 +133,11 @@ export struct SshKeyInstallSheet {
           updated.sshUseKey = true;
           updated.password = '';
           updated.passwordConfigured = false;
-          updated.sshKeyData = this.targetKey.privateKey;
-          updated.sshKeyDataConfigured = this.targetKey.privateKey.length > 0;
+          updated.sshKeyId = this.targetKey.id;
+          updated.sshKeyData = '';
+          updated.sshKeyDataConfigured = false;
+          updated.sshKeyPassphrase = '';
+          updated.sshKeyPassphraseConfigured = false;
           updated.sshKeyPath = 'KeyVault: ' + this.targetKey.label;
           if (!this.hostSync.updateHost(updated)) {
             this.hostSwitchSaveError = '新密钥已安装并验证成功，但主机认证方式未能保存；请返回主机编辑页重试。';
@@ -163,12 +166,13 @@ export struct SshKeyInstallSheet {
           .fontSize(11).fontColor(this.pal().text3).maxLines(1)
         // 认证方式
         Row() {
-          if (host.password !== '') {
+          if (host.password.length > 0 || host.passwordConfigured) {
             Text('密码').fontSize(10).fontColor(this.pal().success)
               .padding({ left: 4, right: 4, top: 1, bottom: 1 })
               .borderRadius(3).backgroundColor(this.pal().success + '18')
           }
-          if (host.sshKeyData !== '') {
+          if (host.sshKeyId !== '' || host.sshKeyData.length > 0 ||
+            host.sshKeyDataConfigured) {
             Text('密钥').fontSize(10).fontColor(this.accentColor)
               .padding({ left: 4, right: 4, top: 1, bottom: 1 })
               .borderRadius(3).backgroundColor(this.accentColor + '18')

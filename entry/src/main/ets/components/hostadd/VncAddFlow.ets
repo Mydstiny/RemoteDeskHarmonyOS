@@ -40,6 +40,8 @@ import { VncSheetScaffold } from '../vnc/VncSheetScaffold';
 export struct VncAddFlow {
   @StorageProp('currentTheme') theme: string = 'light';
   @StorageProp('accentColor') accentColor: string = '#007DFF';
+  @StorageLink('remoteDesktopBgFlag') @Watch('onBackgroundStateChange')
+  appInBackground: boolean = false;
   @Prop gateways: VncGatewayView[] = [];
   @Prop initialHost: VncHostView | null = null;
   @Prop editingId: string = '';
@@ -61,6 +63,7 @@ export struct VncAddFlow {
   @State password: string = '';
   @State passwordConfigured: boolean = false;
   @State passwordChanged: boolean = false;
+  private passwordFromStoredProjection: boolean = false;
   @State rememberPassword: boolean = false;
   @State gatewayId: string = '';
   @State tls: boolean = true;
@@ -99,6 +102,7 @@ export struct VncAddFlow {
     this.tls = defaults.securityPolicy === 'secure_only';
     this.passwordConfigured = false;
     this.passwordChanged = false;
+    this.passwordFromStoredProjection = false;
     this.password = '';
     if (this.transport === 'ultravnc_repeater') {
       const gateway: VncGatewayView | undefined = this.selectedGateway();
@@ -118,7 +122,10 @@ export struct VncAddFlow {
       this.portText = host.port.toString();
       this.rememberPassword = host.rememberPassword;
       this.passwordConfigured = host.passwordConfigured;
-      if (!this.passwordHidden()) { this.password = this.hosts.passwordFor(host.id); }
+      if (!this.passwordHidden()) {
+        this.password = this.hosts.passwordFor(host.id);
+        this.passwordFromStoredProjection = this.password.length > 0;
+      }
       this.gatewayId = host.gatewayId;
       this.repeaterMode = host.repeaterMode;
       this.viewOnly = host.viewOnly;
@@ -152,6 +159,17 @@ export struct VncAddFlow {
     const crypto: DataCrypto = DataCrypto.getInstance();
     return this.secretPresentation.isHidden('vnc_host_password',
       crypto.isSetupComplete() && !crypto.isReady());
+  }
+
+  private onBackgroundStateChange(): void {
+    if (!this.passwordFromStoredProjection) { return; }
+    if (this.appInBackground) {
+      this.password = '';
+      return;
+    }
+    const host: VncHostView | null = this.initialHost;
+    this.password = host === null || this.passwordHidden() ? '' :
+      this.hosts.passwordFor(host.id);
   }
 
   private passwordDecision(values: VncHostValues,
@@ -463,7 +481,11 @@ export struct VncAddFlow {
       this.field('VNC 密码（可选）', this.password,
         this.passwordConfigured && this.passwordHidden() ? '已保存密码（不回显；留空保留）' :
           '留空表示连接时输入',
-        (value: string): void => { this.password = value; this.passwordChanged = true; }, true)
+        (value: string): void => {
+          this.password = value;
+          this.passwordChanged = true;
+          this.passwordFromStoredProjection = false;
+        }, true)
       if (this.passwordConfigured && this.password.length === 0 && this.passwordHidden()) {
         Text('已保存密码由本地隐藏策略保护。留空保存可保留现有密码；输入新密码会替换现有密码。')
           .fontSize(11).fontColor(this.pal().text3).lineHeight(17).width('100%').margin({ top: -5, bottom: 8 })
