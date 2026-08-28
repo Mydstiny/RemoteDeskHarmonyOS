@@ -2,32 +2,32 @@
 
 ## Active task
 
-- Task: `cloud-sync-permission-race-recovery`
+- Task: `remote-keyboard-sidebar-immersive-fix`
 - Branch: `codex/system-clipboard-activation-fix`; user authorized work on the current branch.
-- Increment: `7ad612f55..7be69ad42`.
-- Phase: implemented, locally verified and independently reviewed; reinstall/login device acceptance pending.
-- Plan: `docs/codex/plans/2026-08-28-cloud-sync-permission-race-recovery.md`
+- Increment: `01a87820e..92a6cc0d1`.
+- Phase: implemented, locally verified, independently reviewed, and installed on one acceptance device; multi-protocol device acceptance remains active.
+- Plan: `docs/codex/plans/2026-08-28-remote-keyboard-sidebar-immersive-fix.md`
 
-## Root cause and fix
+## Result
 
-- API 23 returned permission state 3 / reason 4 without showing a dialog immediately after login. The app treated it as final denial, opened a hashed local-only store, then retried distributed-table registration on the wrong physical store.
-- Foreground recovery now re-proves the same Huawei identity and performs a coordinator-owned hashed-to-canonical rebind; explicit denial remains denied and repeated no-dialog responses hard-stop.
-- Journal-v1 baseline/receipts reject changed migration sources. Exact-owner VNC and Moonlight local overlays, tombstones and `localonly` are copied through strict schema/payload validation.
-- A remote-session transition lease blocks new native/window sessions across the destructive rebind and preserves activity evidence when disconnect submission fails.
-- Authoritative cloud-first data no longer rolls back for auxiliary selection-metadata failure. Barriers remain fail-closed and retry idempotently; optional Moonlight failure still finalizes committed core tables.
-- Page/Ability recovery is single-flight, and a throwing startup finalizer clears its exact promise, rolls back safely when possible, and can retry.
+- RustDesk, RDP, VNC and Moonlight use the same keyboard-surface close contract. The expanded keyboard action and collapsed side/top handle close an active virtual keyboard, modifier panel or shortcut panel.
+- IME-compressed and very small windows keep a reachable collapsed handle. Sidebar/menu heights, anchor positions and scroll viewports clamp to the actual viewport rather than moving or clipping outside it.
+- Four sidebar implementations reject vertical-dominant diagonal gestures at update/end; VNC also avoids committing those gestures as toolbar position drags.
+- Sidebar/card hit regions block remote input while uncovered connection content remains interactive.
+- RDP, RustDesk, VNC, Moonlight and SSH hide mobile status/navigation/indicator bars while connected, reassert on page/foreground/orientation transitions, and restore on exit. SSH updates each system bar independently so one unsupported call does not short-circuit the rest.
 
 ## Verification
 
-- `default@OhosTestCompileArkTS`: PASS (`BUILD SUCCESSFUL in 20 s 47 ms`).
-- `assembleHap`: PASS, signed (`BUILD SUCCESSFUL in 27 s 641 ms`).
-- Policy/wiring coverage compiles for permission classification, recovery state, receipt/source-change checks, VNC/Moonlight local overlay admission, remote transition leases, partial optional-table success, metadata finalization and finalizer retry.
+- `default@OhosTestCompileArkTS`: PASS (`BUILD SUCCESSFUL in 21 s 310 ms`).
+- `assembleHap`: PASS, signed (`BUILD SUCCESSFUL in 30 s 968 ms`).
+- Signed HAP SHA-256: `099d15f50b4d5f7dd47405389a33f86199f3a99138e6154ee7bf6243e0a1f996`.
 - `git diff --check`: PASS.
 - Light open-source compliance: PASS.
-- Independent review `/root/cloud_sync_fix_review`: PASS; no remaining P0/P1/P2. P3 is limited to deeper real-RDB/window/NAPI integration coverage and does not block delivery.
+- `ohosTest@OhosTestCompileArkTS`: unavailable (`00306054`, task is not registered); mandatory `default@OhosTestCompileArkTS` passed and focused policies are registered in `entry/src/test`.
+- Independent review `/root/remote_ui_review`: PASS after two P1 and two P2 remediations; no remaining P0/P1/P2.
 
-## Next / blockers
+## Device delivery / blockers
 
-1. On an explicitly authorized test device, reproduce uninstall/reinstall → login → permission no-dialog/grant flows and verify all selected cloud tables recover without data disappearing.
-2. Exercise a VNC/Moonlight local edit before permission recovery and confirm it remains visible after canonical rebind.
-3. No HAP installation or destructive reinstall was performed in this session; real-device acceptance is not claimed.
+- `192.168.3.235:38451`: latest signed HAP installed successfully with data-preserving `install -r`; ready for user acceptance.
+- `192.168.3.236:40123`: install blocked by `9568286 install provision type not same` because the installed app is release-provisioned and the local HAP is debug-provisioned. Existing app/data were preserved; no destructive uninstall was performed.
+- Next: exercise RustDesk/RDP/VNC/Moonlight keyboard-close, scrolling, sidebar drag/bounds and mobile immersive bars on `.235`; decide separately whether `.236` may be destructively uninstalled or must receive a matching release-provisioned HAP.
