@@ -1,5 +1,11 @@
 import { describe, it, expect } from '@ohos/hypium';
-import { clipboardSyncEnabledForProtocol, MAX_CLIPBOARD_TEXT_CHARS, shouldForwardClipboard, validateClipboardText } from
+import {
+  clipboardSyncEnabledForProtocol,
+  MAX_CLIPBOARD_TEXT_CHARS,
+  resolveClipboardReadAccess,
+  shouldForwardClipboard,
+  validateClipboardText
+} from
   '../main/ets/services/ClipboardSyncPolicy';
 
 export default function clipboardSyncPolicyTest(): void {
@@ -21,6 +27,12 @@ export default function clipboardSyncPolicyTest(): void {
       expect(clipboardSyncEnabledForProtocol('rustdesk', true, false)).assertFalse();
       expect(clipboardSyncEnabledForProtocol('vnc', true, true, true)).assertTrue();
       expect(clipboardSyncEnabledForProtocol('vnc', true, true, false)).assertFalse();
+    });
+    it('activates_local_reads_only_after_permission_is_granted', 0, (): void => {
+      expect(resolveClipboardReadAccess(true, null).granted).assertTrue();
+      expect(resolveClipboardReadAccess(false, 0).granted).assertTrue();
+      expect(resolveClipboardReadAccess(false, -1).state).assertEqual('denied');
+      expect(resolveClipboardReadAccess(false, null, true).state).assertEqual('unavailable');
     });
   });
 }

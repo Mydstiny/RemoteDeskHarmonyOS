@@ -1,13 +1,14 @@
-# Secret Visibility Policy Queue
+# System Clipboard Activation Fix Queue
 
 Updated: 2026-08-28 Asia/Shanghai
 
 ## Now
 
-1. Open the reviewed branch PR, wait for required checks, merge and synchronize `main`.
+1. Checkpoint and independently review the focused permission-activation fix.
+2. Run device acceptance with a release-provisioned build.
 
 ## Next
 
-1. Device acceptance for add/edit/connect flows across RDP, RustDesk, SSH and VNC.
-2. Enable an executable Hypium `ohosTest` task if device-side automated policy
-   coverage is required in this project.
+1. Fresh-install acceptance for local-to-remote text in RDP, RustDesk and VNC
+   before any file transfer.
+2. Regression acceptance for RDP file picker, drag/drop and system-file paste.

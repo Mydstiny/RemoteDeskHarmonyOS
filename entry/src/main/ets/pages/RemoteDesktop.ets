@@ -3,7 +3,7 @@
  */
 import { display, promptAction, router, window } from '@kit.ArkUI';
 import { inputDevice, pointer, KeyCode } from '@kit.InputKit';
-import { abilityAccessCtrl, common } from '@kit.AbilityKit';
+import { common } from '@kit.AbilityKit';
 import { pasteboard } from '@kit.BasicServicesKit';
 import { image } from '@kit.ImageKit';
 import { HostSyncService } from '../services/HostSyncService';
@@ -185,8 +185,14 @@ import {
 } from '../services/RustDeskDiagnosticsPolicy';
 // PassphraseDialog replaced with inline bindSheet (RemoteDesktop is @Entry, no bindSheet limit)
 import { RemoteKeyDispatcher } from '../services/RemoteKeyDispatcher';
-import { ClipboardBridgeService } from '../services/ClipboardBridgeService';
-import { clipboardSyncEnabledForProtocol } from '../services/ClipboardSyncPolicy';
+import {
+  ClipboardBridgeService,
+  ensureSystemPasteboardReadAccess
+} from '../services/ClipboardBridgeService';
+import {
+  ClipboardReadAccessDecision,
+  clipboardSyncEnabledForProtocol
+} from '../services/ClipboardSyncPolicy';
 import { FileTransferLiveTaskService } from '../services/FileTransferLiveTaskService';
 import { RemoteSessionBackgroundTaskService, RemoteSessionBgInfo } from '../services/RemoteSessionBackgroundTaskService';
 import { RemoteSessionLiveViewService, LiveViewConnectionInfo } from '../services/RemoteSessionLiveViewService';
@@ -13947,7 +13953,7 @@ struct RemoteDesktop {
       return;
     }
     const deadlineMs: number = Date.now() + 10000;
-    const tryStart = (): void => {
+    const tryStart = async (): Promise<void> => {
       if (this.sessionId !== sessionId || this.connectAttemptId !== attemptId || !this.connected ||
         !this.clipboardBridgeEnabledForSession()) {
         return;
@@ -13955,7 +13961,7 @@ struct RemoteDesktop {
       const capability = this.currentSessionCapabilities().clipboardSend;
       if (!capability.enabled) {
         if (Date.now() < deadlineMs) {
-          setTimeout(tryStart, 500);
+          setTimeout((): void => { void tryStart(); }, 500);
         } else {
           hilog.info(RD_DOMAIN, RD_TAG,
             'clipboard bridge not started after bounded cliprdr wait: ' + capability.reason);
@@ -13963,12 +13969,20 @@ struct RemoteDesktop {
         return;
       }
       try {
+        const context: common.UIAbilityContext =
+          this.getUIContext().getHostContext() as common.UIAbilityContext;
+        const readAccess: ClipboardReadAccessDecision =
+          await ensureSystemPasteboardReadAccess(context);
+        if (this.sessionId !== sessionId || this.connectAttemptId !== attemptId || !this.connected ||
+          !this.clipboardBridgeEnabledForSession()) {
+          return;
+        }
         if (this.clipboardBridge !== null) {
           this.clipboardBridge.stopMonitoring();
         }
         const bridge: ClipboardBridgeService = new ClipboardBridgeService();
         this.clipboardBridge = bridge;
-        bridge.startMonitoring((text: string): void => {
+        const localMonitoringStarted: boolean = bridge.startMonitoring((text: string): void => {
           try {
             if (this.sessionId !== sessionId || this.connectAttemptId !== attemptId || !this.connected ||
               !this.clipboardBridgeEnabledForSession()) {
@@ -13980,14 +13994,24 @@ struct RemoteDesktop {
           } catch (err) {
             hilog.warn(RD_DOMAIN, RD_TAG, 'clipboard bridge push skipped: ' + JSON.stringify(err));
           }
-        }, (): string => this.loader.getSessionClipboardText(sessionId));
-        hilog.info(RD_DOMAIN, RD_TAG, 'clipboard bridge started');
+        }, (): string => this.loader.getSessionClipboardText(sessionId), readAccess.granted);
+        if (readAccess.granted && localMonitoringStarted) {
+          hilog.info(RD_DOMAIN, RD_TAG, 'clipboard bridge started with local read access');
+        } else if (!readAccess.granted) {
+          hilog.warn(RD_DOMAIN, RD_TAG, 'clipboard bridge local send unavailable reason=' +
+            readAccess.diagnosticCode);
+          promptAction.showToast({ message: readAccess.userMessage, duration: 2600 });
+        } else {
+          hilog.warn(RD_DOMAIN, RD_TAG,
+            'clipboard bridge local send unavailable reason=listener_start_failed');
+          promptAction.showToast({ message: '无法监听本机剪贴板，请稍后重试', duration: 2600 });
+        }
       } catch (err) {
         this.clipboardBridge = null;
         hilog.warn(RD_DOMAIN, RD_TAG, 'clipboard bridge start skipped: ' + JSON.stringify(err));
       }
     };
-    setTimeout(tryStart, 1500);
+    setTimeout((): void => { void tryStart(); }, 1500);
   }
 
   private goBack(): void {
@@ -14660,17 +14684,15 @@ struct RemoteDesktop {
   private async ensurePasteboardReadPermission(): Promise<boolean> {
     try {
       const ctx: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
-      const manager: abilityAccessCtrl.AtManager = abilityAccessCtrl.createAtManager();
-      const status: abilityAccessCtrl.GrantStatus = manager.checkAccessTokenSync(
-        ctx.applicationInfo.accessTokenId, 'ohos.permission.READ_PASTEBOARD');
-      if (status === abilityAccessCtrl.GrantStatus.PERMISSION_GRANTED) {
-        return true;
+      const readAccess: ClipboardReadAccessDecision =
+        await ensureSystemPasteboardReadAccess(ctx);
+      if (readAccess.granted && this.clipboardBridge !== null) {
+        this.clipboardBridge.enableLocalMonitoring();
       }
-      const result = await manager.requestPermissionsFromUser(ctx,
-        ['ohos.permission.READ_PASTEBOARD']);
-      return result.authResults.length > 0 && result.authResults[0] === 0;
-    } catch (_err) {
-      hilog.warn(RD_DOMAIN, RD_TAG, 'RDP file clipboard read permission unavailable');
+      return readAccess.granted;
+    } catch (error) {
+      hilog.warn(RD_DOMAIN, RD_TAG, 'RDP file clipboard read permission unavailable: ' +
+        JSON.stringify(error));
       return false;
     }
   }

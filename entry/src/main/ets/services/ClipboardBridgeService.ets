@@ -5,11 +5,45 @@
  * 轮询检测本地系统剪贴板变化并推送远端；接收远端剪贴板并写入本地系统剪贴板。
  * 防回环: setSystemText 后 1.2s 窗口期内忽略轮询到的相同/相似内容。
  */
+import {
+  abilityAccessCtrl,
+  common,
+  PermissionRequestResult,
+  Permissions
+} from '@kit.AbilityKit';
 import { pasteboard, BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import { validateClipboardText } from './ClipboardSyncPolicy';
+import {
+  ClipboardReadAccessDecision,
+  resolveClipboardReadAccess,
+  validateClipboardText
+} from './ClipboardSyncPolicy';
 
 const TAG = 'ClipboardBridge';
+const READ_PASTEBOARD_PERMISSION: Permissions =
+  'ohos.permission.READ_PASTEBOARD' as Permissions;
+
+export async function ensureSystemPasteboardReadAccess(
+  context: common.UIAbilityContext): Promise<ClipboardReadAccessDecision> {
+  try {
+    const manager: abilityAccessCtrl.AtManager = abilityAccessCtrl.createAtManager();
+    const status: abilityAccessCtrl.GrantStatus = manager.checkAccessTokenSync(
+      context.applicationInfo.accessTokenId, READ_PASTEBOARD_PERMISSION);
+    if (status === abilityAccessCtrl.GrantStatus.PERMISSION_GRANTED) {
+      return resolveClipboardReadAccess(true, null);
+    }
+    const result: PermissionRequestResult = await manager.requestPermissionsFromUser(
+      context, [READ_PASTEBOARD_PERMISSION]);
+    const authResult: number | null = result.authResults && result.authResults.length === 1
+      ? result.authResults[0] : null;
+    return resolveClipboardReadAccess(false, authResult);
+  } catch (error) {
+    const businessError: BusinessError = error as BusinessError;
+    hilog.warn(0x0001, TAG, 'pasteboard read permission unavailable code=' +
+      businessError.code.toString());
+    return resolveClipboardReadAccess(false, null, true);
+  }
+}
 
 export class ClipboardBridgeService {
   private pollingTimer: number = -1;
@@ -22,6 +56,7 @@ export class ClipboardBridgeService {
   private remoteSetHash: number = 0;
   private onLocalTextChanged?: (text: string) => void;
   private enabled: boolean = false;
+  private localMonitoringEnabled: boolean = false;
   private readRemoteText?: () => string;
   private lastRemoteHash: number = 0;
 
@@ -68,9 +103,10 @@ export class ClipboardBridgeService {
   }
 
   /** 启动监听 (定时轮询) */
-  startMonitoring(callback: (text: string) => void, readRemoteText?: () => string): void {
+  startMonitoring(callback: (text: string) => void, readRemoteText?: () => string,
+    localReadEnabled: boolean = true): boolean {
     if (this.enabled) {
-      return;
+      return this.localMonitoringEnabled;
     }
     try {
       this.enabled = true;
@@ -80,15 +116,8 @@ export class ClipboardBridgeService {
       this.systemReadInFlight = false;
       this.systemReadPending = false;
 
-      const sysPb: pasteboard.SystemPasteboard = pasteboard.getSystemPasteboard();
-      this.systemPasteboard = sysPb;
-      this.systemUpdateCallback = (): void => {
-        this.readLocalClipboard(false);
-      };
-      sysPb.on('update', this.systemUpdateCallback);
-
-      // 先读一次建立基线
-      this.readLocalClipboard(true);
+      const localMonitoringStarted: boolean = localReadEnabled &&
+        this.enableLocalMonitoring();
 
       // RustDesk/RDP/VNC expose remote clipboard snapshots through the native
       // session facade, so retain a lightweight remote-only poll. Local system
@@ -97,12 +126,43 @@ export class ClipboardBridgeService {
       this.pollingTimer = setInterval(() => {
         this.pollRemoteOnce();
       }, 500);
-      hilog.info(0x0001, TAG, 'monitoring started (system update event + 500ms remote poll)');
+      hilog.info(0x0001, TAG, localMonitoringStarted
+        ? 'monitoring started (local update event + 500ms remote poll)'
+        : 'monitoring started (remote poll only; local read unavailable)');
+      return localMonitoringStarted;
     } catch (err) {
       this.enabled = false;
       this.onLocalTextChanged = undefined;
       this.detachSystemUpdateListener();
       hilog.warn(0x0001, TAG, `monitoring start failed: ${JSON.stringify(err)}`);
+      return false;
+    }
+  }
+
+  /** 权限在会话建立后获批时，立即补上本地监听并建立基线。 */
+  enableLocalMonitoring(): boolean {
+    if (!this.enabled || !this.onLocalTextChanged) {
+      return false;
+    }
+    if (this.localMonitoringEnabled) {
+      return true;
+    }
+    try {
+      const sysPb: pasteboard.SystemPasteboard = pasteboard.getSystemPasteboard();
+      this.systemPasteboard = sysPb;
+      this.systemUpdateCallback = (): void => {
+        this.readLocalClipboard(false);
+      };
+      sysPb.on('update', this.systemUpdateCallback);
+      this.localMonitoringEnabled = true;
+      this.readLocalClipboard(true);
+      hilog.info(0x0001, TAG, 'local pasteboard monitoring enabled');
+      return true;
+    } catch (error) {
+      this.detachSystemUpdateListener();
+      hilog.warn(0x0001, TAG, 'local pasteboard monitoring unavailable: ' +
+        JSON.stringify(error));
+      return false;
     }
   }
 
@@ -119,6 +179,7 @@ export class ClipboardBridgeService {
       this.pollingTimer = -1;
     }
     this.detachSystemUpdateListener();
+    this.localMonitoringEnabled = false;
     this.systemReadInFlight = false;
     this.systemReadPending = false;
     this.remoteSetAt = 0;
@@ -143,7 +204,7 @@ export class ClipboardBridgeService {
 
   /** 合并系统 update 事件，任何时刻最多一个 getData 在途。 */
   private readLocalClipboard(baselineOnly: boolean): void {
-    if (!this.enabled || !this.onLocalTextChanged) {
+    if (!this.enabled || !this.localMonitoringEnabled || !this.onLocalTextChanged) {
       return;
     }
     if (this.systemReadInFlight) {
@@ -204,6 +265,7 @@ export class ClipboardBridgeService {
     }
     this.systemPasteboard = null;
     this.systemUpdateCallback = undefined;
+    this.localMonitoringEnabled = false;
   }
 
   /** 纯文本内容哈希 (djb2 — 轻量去重，不要求密码学强度) */

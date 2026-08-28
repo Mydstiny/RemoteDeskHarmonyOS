@@ -96,17 +96,14 @@
           "when": "inuse"
         }
       },
-      // Temporarily disabled until the READ_PASTEBOARD ACL request is approved.
-      // Restore this declaration together with an ACL-enabled signing profile
-      // before validating the RDP system file paste flow.
-      // {
-      //   "name": "ohos.permission.READ_PASTEBOARD",
-      //   "reason": "$string:pasteboard_permission_reason",
-      //   "usedScene": {
-      //     "abilities": ["EntryAbility"],
-      //     "when": "inuse"
-      //   }
-      // },
+      {
+        "name": "ohos.permission.READ_PASTEBOARD",
+        "reason": "$string:pasteboard_permission_reason",
+        "usedScene": {
+          "abilities": ["EntryAbility", "RemoteSessionAbility"],
+          "when": "inuse"
+        }
+      },
       {
         "name": "ohos.permission.CAMERA",
         "reason": "$string:camera_permission_reason",
