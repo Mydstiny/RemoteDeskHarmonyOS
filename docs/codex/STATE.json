@@ -1,19 +1,20 @@
 {
   "schema": 1,
-  "task": "rustdesk-mobile-display-input-optimization",
+  "task": "rustdesk-mobile-display-input-and-settings-accordion-fix",
   "branch": "codex/system-clipboard-activation-fix",
   "base": "6e2fece58",
-  "head": "0b2435496",
+  "head": "78d4ce868",
   "phase": "ready-for-device-validation-and-review",
   "status": "active",
-  "next": "Run Android phone portrait/landscape display and touch acceptance, then independent review of 6e2fece58..0b2435496.",
+  "next": "Run independent review of 6e2fece58..78d4ce868, including the settings accordion layout increment, then Android phone portrait/landscape display and touch acceptance.",
   "blockers": [
     "HDC reports Connect server failed, so Android portrait/landscape, Fit/zoom, tap/swipe/long-press and interrupted-input acceptance could not run.",
-    "Independent review has not yet been run for this increment.",
+    "Independent review has not yet been run for the combined increment through 78d4ce868.",
     "The full native suite remains 799/815 because 16 pre-existing VNC local TLS fixture tests fail at fixture.start(); the new RustDesk display/decoder policy tests pass."
   ],
   "planPaths": [
-    "docs/codex/plans/2026-08-28-rustdesk-mobile-display-input-quick-optimization.md"
+    "docs/codex/plans/2026-08-28-rustdesk-mobile-display-input-quick-optimization.md",
+    "docs/codex/plans/2026-08-28-settings-accordion-layout-fix.md"
   ],
   "review": {
     "status": "PENDING",
@@ -27,26 +28,29 @@
       "entry/src/main/cpp/test/decoder_recovery_policy_test.cpp",
       "entry/src/main/cpp/test/native_image_context_policy_test.cpp",
       "entry/src/main/ets/pages/RemoteDesktop.ets",
+      "entry/src/main/ets/pages/HostListPage.ets",
       "entry/src/main/ets/services/DiagnosticCapturePolicy.ets",
       "entry/src/main/ets/services/DiagnosticRuntimeSnapshotPolicy.ets",
       "entry/src/main/ets/services/RemoteCanvasTransformPolicy.ets",
       "entry/src/main/ets/services/RemoteOrientationPolicy.ets",
+      "entry/src/main/ets/services/SettingsAccordionPolicy.ets",
       "entry/src/test/DiagnosticCapturePolicy.test.ets",
       "entry/src/test/DiagnosticRuntimeSnapshotPolicy.test.ets",
       "entry/src/test/RemoteCanvasTransformPolicy.test.ets",
-      "entry/src/test/RemoteOrientationPolicy.test.ets"
+      "entry/src/test/RemoteOrientationPolicy.test.ets",
+      "entry/src/test/SettingsAccordionPolicy.test.ets"
     ],
     "findings": [],
-    "reason": "Implementation is committed and locally verified; independent review is still required before merge."
+    "reason": "RustDesk and user-authorized settings accordion implementations are committed and locally verified; independent review is still required before merge."
   },
   "lastVerification": {
     "baseline": "RustDesk mobile display/input increment starts at 6e2fece58 on the user-authorized existing task branch.",
-    "testCompile": "PASS: default@OhosTestCompileArkTS, BUILD SUCCESSFUL in 9 s 150 ms",
-    "assembleHap": "PASS: signed HAP, BUILD SUCCESSFUL in 16 s 211 ms, SHA-256 0b7ff612b47a5577eb28972283988acd69280a8cebaf9bda12f2cbea972448ab",
-    "targetedTests": "PASS: new NativeImage 90/270/transpose/transverse and decoder geometry-recreation tests; full native result 799 passed, 16 known unrelated VNC TLS fixture failures.",
-    "arktsTests": "PASS compile: canvas source/window rebase, peer-platform and diagnostics policy cases compile through the mandatory test gate; no separate ohosTest module is registered.",
+    "testCompile": "PASS after the settings layout fix: default@OhosTestCompileArkTS, BUILD SUCCESSFUL in 6 s 938 ms",
+    "assembleHap": "PASS after the settings layout fix: signed HAP, BUILD SUCCESSFUL in 14 s 541 ms, SHA-256 9908b30007d4e63d763cbc4676b83a4a74a1af3fd869c04e9ff6d850b84743e6",
+    "targetedTests": "PASS compile: SettingsAccordionPolicy covers Data Security row growth plus sm/md/lg/xl RDP caps; prior NativeImage and decoder policy tests remain unchanged. Full native result remains 799 passed with 16 known unrelated VNC TLS fixture failures.",
+    "arktsTests": "PASS compile: settings accordion, canvas source/window rebase, peer-platform and diagnostics policy cases compile through the mandatory test gate; no separate ohosTest module is registered.",
     "compliance": "PASS: Light open-source compliance and git diff --check",
-    "review": "PENDING: no independent reviewer has run against 6e2fece58..0b2435496.",
+    "review": "PENDING: no independent reviewer has run against 6e2fece58..78d4ce868.",
     "deviceAcceptance": "BLOCKED: HDC Connect server failed; no usable Android target."
   },
   "updated": "2026-08-28 Asia/Shanghai"
