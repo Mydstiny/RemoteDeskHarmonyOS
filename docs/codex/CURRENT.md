@@ -2,13 +2,21 @@
 
 ## Active task
 
-- Task: `cloud-sync-compatibility-first-recovery`
+- Task: `release-1-1-4-notes-and-version`
 - Branch: `codex/system-clipboard-activation-fix`; user authorized work on the current branch.
-- Increment: `54f9d25df..a4d0aebb1`.
-- Phase: implemented, locally verified, independently reviewed and data-preserving installed on the primary acceptance device; user acceptance is pending.
-- Plan: `docs/codex/plans/2026-08-28-cloud-sync-compatibility-first-recovery.md`
+- Increment: `851ba369f..d3e11f434`.
+- Phase: implemented, locally verified and independently reviewed; update-popup device acceptance is pending.
+- Plan: `docs/codex/plans/2026-08-28-release-1-1-4-notes-and-version.md`
 
-## Root cause and result
+## 1.1.4 release result
+
+- The current app version is `1.1.4 / 1001004` across the app manifest, release registry, NAPI metadata, resources, diagnostics, documentation and SBOM.
+- The release popup adds 10 new 1.1.4 cards for the committed changes since 1.1.3 and keeps all 12 existing 1.1.3 cards unchanged, for 22 cards total. The settings entry and unit/device assertions use the same count and final `welcome-1-1-4` page.
+- SBOM provenance identifies source snapshot `fc514ce36` and creation time `2026-08-28T15:50:20Z`; the snapshot includes the version update and final shortcut-editor refinement.
+- Final verification: `default@OhosTestCompileArkTS` PASS (`BUILD SUCCESSFUL in 10 s 869 ms`); signed `assembleHap` PASS (`BUILD SUCCESSFUL in 39 s 893 ms`); signed HAP SHA-256 `acdc3d6ff9c3e4ee5aae35efe1a54e6ec0e39aba47eab1d1958b195d95c40a35`; `git diff --check` and Light compliance PASS.
+- Independent review `/root/release_1_1_4_review`: PASS after closing two P1 consistency/provenance findings and one P2 provenance-time finding; no remaining P0/P1/P2/P3.
+
+## Existing cloud recovery result
 
 - Device logs at `192.168.3.235:38451` showed Account Kit login and RDB creation succeeded, then optional historical account-store migration failed with `401 invalid parameters`; that optional failure was incorrectly surfaced as `账号物理数据域打开失败`.
 - Canonical failure now falls back to the exact same account's hashed local store. Login and local CRUD remain available while cloud recovery is deferred; stale canonical data is never reverse-imported into that authoritative fallback.
