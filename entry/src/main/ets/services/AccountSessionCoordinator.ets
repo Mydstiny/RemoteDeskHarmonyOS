@@ -1168,18 +1168,24 @@ export class AccountSessionCoordinator {
       prefs.putSync(LOGIN_MODE_KEY, 'account');
       if (recoverySourceAuthorityValue !== '') {
         prefs.putSync(key, recoverySourceAuthorityValue);
-      } else {
-        try {
-          if (prefs.hasSync(key)) { prefs.deleteSync(key); }
-        } catch (error) {
-          // A stale marker only causes another safe source comparison later;
-          // marker cleanup is not allowed to roll back an otherwise valid
-          // local login.
-          hilog.warn(0x0001, 'AccountSession',
-            '云恢复旧标记暂未清理；登录继续 err=' + safeError(error));
-        }
+        // A fallback session may admit local writes immediately after this
+        // method returns, so its login mode and source authority must become
+        // durable together.
+        prefs.flushSync();
+        return true;
       }
+      // Preserve the pre-existing login durability contract first. Removing a
+      // stale recovery marker is only cleanup: if its second flush fails, the
+      // next process performs one extra safe source comparison.
       prefs.flushSync();
+      try {
+        if (!prefs.hasSync(key)) { return true; }
+        prefs.deleteSync(key);
+        prefs.flushSync();
+      } catch (error) {
+        hilog.warn(0x0001, 'AccountSession',
+          '云恢复旧标记暂未清理；登录继续 err=' + safeError(error));
+      }
       return true;
     } catch (_error) {
       return false;
