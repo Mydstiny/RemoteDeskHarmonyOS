@@ -1,7 +1,10 @@
 import { promptAction } from '@kit.ArkUI';
 import { AppTheme, Palette, buildDark, buildLight } from '../common/Theme';
 import { protocolIcon } from '../services/ProtocolIconPolicy';
-import { RemoteWheelPreferences } from '../services/RemoteWheelPreferencePolicy';
+import {
+  RemoteWheelPreferenceUpdate,
+  RemoteWheelPreferences
+} from '../services/RemoteWheelPreferencePolicy';
 
 @Component
 export struct RemoteWheelDirectionSettingsSheet {
@@ -13,14 +16,19 @@ export struct RemoteWheelDirectionSettingsSheet {
   @Prop initialVnc: boolean = false;
   @Prop initialMoonlight: boolean = false;
   onClose: () => void = (): void => {};
-  onSave: (values: RemoteWheelPreferences) => boolean =
-    (_values: RemoteWheelPreferences): boolean => false;
+  onSave: (update: RemoteWheelPreferenceUpdate) => boolean =
+    (_update: RemoteWheelPreferenceUpdate): boolean => false;
 
   @State draftRdp: boolean = false;
   @State draftRustDesk: boolean = false;
   @State draftSsh: boolean = false;
   @State draftVnc: boolean = false;
   @State draftMoonlight: boolean = false;
+  private touchedRdp: boolean = false;
+  private touchedRustDesk: boolean = false;
+  private touchedSsh: boolean = false;
+  private touchedVnc: boolean = false;
+  private touchedMoonlight: boolean = false;
 
   aboutToAppear(): void {
     this.draftRdp = this.initialRdp;
@@ -28,6 +36,11 @@ export struct RemoteWheelDirectionSettingsSheet {
     this.draftSsh = this.initialSsh;
     this.draftVnc = this.initialVnc;
     this.draftMoonlight = this.initialMoonlight;
+    this.touchedRdp = false;
+    this.touchedRustDesk = false;
+    this.touchedSsh = false;
+    this.touchedVnc = false;
+    this.touchedMoonlight = false;
   }
 
   private pal(): Palette {
@@ -50,11 +63,26 @@ export struct RemoteWheelDirectionSettingsSheet {
     this.draftSsh = reversed;
     this.draftVnc = reversed;
     this.draftMoonlight = reversed;
+    this.touchedRdp = true;
+    this.touchedRustDesk = true;
+    this.touchedSsh = true;
+    this.touchedVnc = true;
+    this.touchedMoonlight = true;
   }
 
   private save(): void {
-    if (!this.onSave(this.draft())) {
-      promptAction.showToast({ message: '滚轮方向设置保存失败，原设置未改变', duration: 2200 });
+    const update: RemoteWheelPreferenceUpdate = {
+      values: this.draft(),
+      touched: {
+        rdp: this.touchedRdp,
+        rustdesk: this.touchedRustDesk,
+        ssh: this.touchedSsh,
+        vnc: this.touchedVnc,
+        moonlight: this.touchedMoonlight
+      }
+    };
+    if (!this.onSave(update)) {
+      promptAction.showToast({ message: '滚轮方向设置保存失败，请重试', duration: 2200 });
       return;
     }
     this.onClose();
@@ -120,23 +148,27 @@ export struct RemoteWheelDirectionSettingsSheet {
           Column() {
             this.protocolRow(protocolIcon('rdp'), 'RDP',
               '实体鼠标、实体触控板和虚拟触控板', this.draftRdp,
-              (value: boolean): void => { this.draftRdp = value; })
+              (value: boolean): void => { this.draftRdp = value; this.touchedRdp = true; })
             this.divider()
             this.protocolRow(protocolIcon('rustdesk'), 'RustDesk',
               '实体鼠标、二维触控板和虚拟触控板', this.draftRustDesk,
-              (value: boolean): void => { this.draftRustDesk = value; })
+              (value: boolean): void => {
+                this.draftRustDesk = value; this.touchedRustDesk = true;
+              })
             this.divider()
             this.protocolRow(protocolIcon('ssh'), 'SSH 终端',
               '滚动缓冲、全屏终端应用和鼠标跟踪', this.draftSsh,
-              (value: boolean): void => { this.draftSsh = value; })
+              (value: boolean): void => { this.draftSsh = value; this.touchedSsh = true; })
             this.divider()
             this.protocolRow(protocolIcon('vnc'), 'VNC',
               '实体鼠标、实体触控板和虚拟触控板', this.draftVnc,
-              (value: boolean): void => { this.draftVnc = value; })
+              (value: boolean): void => { this.draftVnc = value; this.touchedVnc = true; })
             this.divider()
             this.protocolRow(protocolIcon('moonlight'), 'Moonlight',
               '串流中的实体滚轮和虚拟触控板', this.draftMoonlight,
-              (value: boolean): void => { this.draftMoonlight = value; })
+              (value: boolean): void => {
+                this.draftMoonlight = value; this.touchedMoonlight = true;
+              })
           }.width('100%').borderRadius(14).backgroundColor(this.pal().card)
             .border({ width: 0.5, color: this.pal().cardBorder })
 

@@ -474,7 +474,9 @@ import {
   VNC_REVERSE_WHEEL_KEY,
   RemoteWheelPreferenceMigration,
   RemoteWheelPreferencePresence,
+  RemoteWheelPreferenceUpdate,
   RemoteWheelPreferences,
+  applyRemoteWheelPreferenceUpdate,
   migrateRemoteWheelPreferences,
   remoteWheelSelectionSummary,
   withRemoteWheelPreference
@@ -10289,13 +10291,49 @@ struct HostListPage {
     try {
       const prefs: preferences.Preferences = preferences.getPreferencesSync(
         getContext(this), { name: 'RemoteDesktopAppPrefs' });
-      prefs.putSync(RDP_REVERSE_WHEEL_KEY, values.rdp);
-      prefs.putSync(RUSTDESK_REVERSE_WHEEL_KEY, values.rustdesk);
-      prefs.putSync(SSH_REVERSE_WHEEL_KEY, values.ssh);
-      prefs.putSync(VNC_REVERSE_WHEEL_KEY, values.vnc);
-      prefs.putSync(MOONLIGHT_REVERSE_WHEEL_KEY, values.moonlight);
-      prefs.putSync(REMOTE_WHEEL_PREFERENCE_VERSION_KEY, REMOTE_WHEEL_PREFERENCE_VERSION);
-      prefs.flushSync();
+      const previous: RemoteWheelPreferences = {
+        rdp: prefs.getSync(RDP_REVERSE_WHEEL_KEY, false) as boolean,
+        rustdesk: prefs.getSync(RUSTDESK_REVERSE_WHEEL_KEY, false) as boolean,
+        ssh: prefs.getSync(SSH_REVERSE_WHEEL_KEY, false) as boolean,
+        vnc: prefs.getSync(VNC_REVERSE_WHEEL_KEY, false) as boolean,
+        moonlight: prefs.getSync(MOONLIGHT_REVERSE_WHEEL_KEY, false) as boolean
+      };
+      const present: RemoteWheelPreferencePresence = {
+        rdp: prefs.hasSync(RDP_REVERSE_WHEEL_KEY),
+        rustdesk: prefs.hasSync(RUSTDESK_REVERSE_WHEEL_KEY),
+        ssh: prefs.hasSync(SSH_REVERSE_WHEEL_KEY),
+        vnc: prefs.hasSync(VNC_REVERSE_WHEEL_KEY),
+        moonlight: prefs.hasSync(MOONLIGHT_REVERSE_WHEEL_KEY)
+      };
+      const versionPresent: boolean = prefs.hasSync(REMOTE_WHEEL_PREFERENCE_VERSION_KEY);
+      const previousVersion: number = prefs.getSync(
+        REMOTE_WHEEL_PREFERENCE_VERSION_KEY, 0) as number;
+      try {
+        prefs.putSync(RDP_REVERSE_WHEEL_KEY, values.rdp);
+        prefs.putSync(RUSTDESK_REVERSE_WHEEL_KEY, values.rustdesk);
+        prefs.putSync(SSH_REVERSE_WHEEL_KEY, values.ssh);
+        prefs.putSync(VNC_REVERSE_WHEEL_KEY, values.vnc);
+        prefs.putSync(MOONLIGHT_REVERSE_WHEEL_KEY, values.moonlight);
+        prefs.putSync(REMOTE_WHEEL_PREFERENCE_VERSION_KEY, REMOTE_WHEEL_PREFERENCE_VERSION);
+        prefs.flushSync();
+      } catch (_writeError) {
+        try {
+          this.restoreRemoteWheelPreferenceValue(
+            prefs, RDP_REVERSE_WHEEL_KEY, present.rdp, previous.rdp);
+          this.restoreRemoteWheelPreferenceValue(
+            prefs, RUSTDESK_REVERSE_WHEEL_KEY, present.rustdesk, previous.rustdesk);
+          this.restoreRemoteWheelPreferenceValue(
+            prefs, SSH_REVERSE_WHEEL_KEY, present.ssh, previous.ssh);
+          this.restoreRemoteWheelPreferenceValue(
+            prefs, VNC_REVERSE_WHEEL_KEY, present.vnc, previous.vnc);
+          this.restoreRemoteWheelPreferenceValue(
+            prefs, MOONLIGHT_REVERSE_WHEEL_KEY, present.moonlight, previous.moonlight);
+          this.restoreRemoteWheelPreferenceValue(
+            prefs, REMOTE_WHEEL_PREFERENCE_VERSION_KEY, versionPresent, previousVersion);
+          prefs.flushSync();
+        } catch (_rollbackError) { /* The UI state still retains the last confirmed values. */ }
+        return false;
+      }
     } catch (_error) {
       return false;
     }
@@ -10307,10 +10345,28 @@ struct HostListPage {
     return true;
   }
 
+  private restoreRemoteWheelPreferenceValue(
+    prefs: preferences.Preferences,
+    key: string,
+    present: boolean,
+    value: string | number | boolean
+  ): void {
+    if (present) {
+      prefs.putSync(key, value);
+    } else {
+      prefs.deleteSync(key);
+    }
+  }
+
   private saveProtocolReverseWheel(protocol: 'rdp' | 'rustdesk' | 'ssh' | 'vnc' | 'moonlight',
     reversed: boolean): boolean {
     return this.saveRemoteWheelPreferences(withRemoteWheelPreference(
       this.remoteWheelPreferences(), protocol, reversed));
+  }
+
+  private saveRemoteWheelPreferenceUpdate(update: RemoteWheelPreferenceUpdate): boolean {
+    return this.saveRemoteWheelPreferences(applyRemoteWheelPreferenceUpdate(
+      this.remoteWheelPreferences(), update));
   }
 
   private reportPreferencePersistence(localSaved: boolean,
@@ -14035,8 +14091,8 @@ struct HostListPage {
         initialVnc: this.vncReverseWheel,
         initialMoonlight: this.moonlightReverseWheel,
         onClose: (): void => { this.closeSettingsLeafSheet(); },
-        onSave: (values: RemoteWheelPreferences): boolean =>
-          this.saveRemoteWheelPreferences(values)
+        onSave: (update: RemoteWheelPreferenceUpdate): boolean =>
+          this.saveRemoteWheelPreferenceUpdate(update)
       })
     } else if (this.settingsLeafSheetMode === SETTINGS_SHEET_DIAGNOSTIC_LOG) {
       DiagnosticCaptureSettingsSheet({

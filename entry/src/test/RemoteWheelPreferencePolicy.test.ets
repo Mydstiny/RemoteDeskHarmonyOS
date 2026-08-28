@@ -7,7 +7,9 @@ import {
   SSH_REVERSE_WHEEL_KEY,
   VNC_REVERSE_WHEEL_KEY,
   RemoteWheelPreferencePresence,
+  RemoteWheelPreferenceUpdate,
   RemoteWheelPreferences,
+  applyRemoteWheelPreferenceUpdate,
   defaultRemoteWheelPreferences,
   migrateRemoteWheelPreferences,
   remoteWheelPreference,
@@ -83,5 +85,27 @@ export default function remoteWheelPreferencePolicyTest(): void {
       expect(remoteWheelSelectionSummary(values)).assertEqual('全部协议反转');
       expect(remoteWheelPreference(values, 'unknown')).assertFalse();
     });
+
+    it('merges_a_stale_editor_draft_without_reverting_untouched_protocols', 0,
+      (): void => {
+        const latest: RemoteWheelPreferences = {
+          rdp: true, rustdesk: false, ssh: true, vnc: false, moonlight: false
+        };
+        const staleUpdate: RemoteWheelPreferenceUpdate = {
+          values: {
+            rdp: false, rustdesk: false, ssh: false, vnc: true, moonlight: false
+          },
+          touched: {
+            rdp: false, rustdesk: false, ssh: false, vnc: true, moonlight: false
+          }
+        };
+        const merged: RemoteWheelPreferences =
+          applyRemoteWheelPreferenceUpdate(latest, staleUpdate);
+        expect(merged.rdp).assertTrue();
+        expect(merged.ssh).assertTrue();
+        expect(merged.vnc).assertTrue();
+        expect(merged.rustdesk).assertFalse();
+        expect(merged.moonlight).assertFalse();
+      });
   });
 }

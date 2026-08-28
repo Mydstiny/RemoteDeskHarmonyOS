@@ -31,6 +31,11 @@ export interface RemoteWheelPreferenceMigration {
   version: number;
 }
 
+export interface RemoteWheelPreferenceUpdate {
+  values: RemoteWheelPreferences;
+  touched: RemoteWheelPreferencePresence;
+}
+
 export function defaultRemoteWheelPreferences(): RemoteWheelPreferences {
   return { rdp: false, rustdesk: false, ssh: false, vnc: false, moonlight: false };
 }
@@ -70,6 +75,20 @@ export function withRemoteWheelPreference(
     ssh: protocol === 'ssh' ? reversed : values.ssh,
     vnc: protocol === 'vnc' ? reversed : values.vnc,
     moonlight: protocol === 'moonlight' ? reversed : values.moonlight
+  };
+}
+
+/** Merge a possibly stale editor draft without reverting untouched protocols. */
+export function applyRemoteWheelPreferenceUpdate(
+  current: RemoteWheelPreferences,
+  update: RemoteWheelPreferenceUpdate
+): RemoteWheelPreferences {
+  return {
+    rdp: update.touched.rdp ? update.values.rdp : current.rdp,
+    rustdesk: update.touched.rustdesk ? update.values.rustdesk : current.rustdesk,
+    ssh: update.touched.ssh ? update.values.ssh : current.ssh,
+    vnc: update.touched.vnc ? update.values.vnc : current.vnc,
+    moonlight: update.touched.moonlight ? update.values.moonlight : current.moonlight
   };
 }
 
