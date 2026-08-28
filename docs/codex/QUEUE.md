@@ -4,9 +4,7 @@ Updated: 2026-08-28 Asia/Shanghai
 
 ## Now
 
-1. Commit the tenth-review remediation and reuse the same reviewer for all thirty-five findings.
-2. Rerun final mandatory gates after PASS.
-3. Complete PR/main closure only after review and required checks pass.
+1. Open the reviewed branch PR, wait for required checks, merge and synchronize `main`.
 
 ## Next
 

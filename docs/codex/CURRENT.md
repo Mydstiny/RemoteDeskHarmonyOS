@@ -4,7 +4,7 @@
 
 - Task: `secret-visibility-policy`
 - Branch/base: `codex/secret-visibility-policy` from synchronized `main@f3b41e5a6`.
-- Phase: tenth-review remediation verified on `91a8b0e8`; checkpoint commit pending.
+- Phase: implementation, gates and independent review complete; ready for PR/main closure.
 - Plan: `docs/codex/plans/2026-08-28-secret-visibility-policy.md`
 
 ## Objective
@@ -101,19 +101,16 @@
 
 ## Verification (current worktree)
 
-- `default@OhosTestCompileArkTS`: PASS (`BUILD SUCCESSFUL in 11 s 126 ms`).
-- `assembleHap`: PASS, signed (`BUILD SUCCESSFUL in 17 s 853 ms`).
+- `default@OhosTestCompileArkTS`: PASS (`BUILD SUCCESSFUL in 5 s 521 ms`).
+- `assembleHap`: PASS, signed (`BUILD SUCCESSFUL in 11 s 873 ms`).
 - Light open-source compliance: PASS.
 - `git diff --check`: PASS.
-- The focused Hypium tests are registered in `List.test.ets` and compile in the
-  required ArkTS gate. The optional `ohosTest@OhosTestCompileArkTS` task is not
-  registered in this project (`00306054`), so no device test execution is
-  claimed.
+- Same independent reviewer: PASS at `2b31d4cb`; all 35 findings closed, P0/P1/P2/P3 zero.
+- Focused Hypium tests compile in the required gate; optional device task is unavailable (`00306054`).
 
 ## Next
 
-1. Commit this checkpoint and ask the same reviewer to confirm all thirty-five findings are closed.
-2. Rerun final gates and close the branch through PR/main after a clean verdict.
+1. Open the reviewed branch PR, wait for required checks, merge and synchronize `main`.
 
 ## Blockers
 
