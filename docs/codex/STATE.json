@@ -1,55 +1,53 @@
 {
   "schema": 1,
-  "task": "harmonyos-app-clone",
+  "task": "rustdesk-mobile-display-input-optimization",
   "branch": "codex/system-clipboard-activation-fix",
-  "base": "8984f588e",
-  "head": "0ca361a7",
-  "phase": "ready-for-device-validation",
+  "base": "6e2fece58",
+  "head": "0b2435496",
+  "phase": "ready-for-device-validation-and-review",
   "status": "active",
-  "next": "Run release-provisioned phone and tablet app-clone acceptance without uninstalling the existing package or clearing user data.",
+  "next": "Run Android phone portrait/landscape display and touch acceptance, then independent review of 6e2fece58..0b2435496.",
   "blockers": [
-    "The project does not register an ohosTest module; the focused test command fails with 00302018 Unknown module 'ohosTest'.",
-    "No usable HDC target is connected, and release-provisioned phone/tablet app-clone lifecycle and data-isolation acceptance remain pending.",
-    "The existing device package cannot be updated by the local debug-provisioned HAP (9568286); the installed app and its data must remain intact."
+    "HDC reports Connect server failed, so Android portrait/landscape, Fit/zoom, tap/swipe/long-press and interrupted-input acceptance could not run.",
+    "Independent review has not yet been run for this increment.",
+    "The full native suite remains 799/815 because 16 pre-existing VNC local TLS fixture tests fail at fixture.start(); the new RustDesk display/decoder policy tests pass."
   ],
   "planPaths": [
-    "docs/codex/plans/2026-08-28-harmonyos-app-clone.md"
+    "docs/codex/plans/2026-08-28-rustdesk-mobile-display-input-quick-optimization.md"
   ],
   "review": {
-    "status": "PASS",
-    "taskIds": [
-      "/root/review_app_clone"
-    ],
-    "reviewedHead": "0ca361a73c1b5de8b0c2f29d0b355e0869fc250e",
+    "status": "PENDING",
+    "taskIds": [],
+    "reviewedHead": "",
     "scope": [
-      "AppScope/app.json5",
-      "entry/src/main/ets/entryability/EntryAbility.ets",
-      "entry/src/main/ets/pages/HostListPage.ets",
-      "entry/src/main/ets/pages/LoginPage.ets",
+      "entry/src/main/cpp/render/decoder_recovery_policy.h",
+      "entry/src/main/cpp/render/hw_decoder.cpp",
+      "entry/src/main/cpp/render/native_image_context_policy.h",
+      "entry/src/main/cpp/rustdesk/rustdesk_peer_presentation_policy.h",
+      "entry/src/main/cpp/test/decoder_recovery_policy_test.cpp",
+      "entry/src/main/cpp/test/native_image_context_policy_test.cpp",
       "entry/src/main/ets/pages/RemoteDesktop.ets",
-      "entry/src/main/ets/services/AccountSessionCoordinator.ets",
-      "entry/src/main/ets/services/AppCloneContext.ets",
-      "entry/src/main/ets/services/CloudStore.ets",
-      "entry/src/test/AppCloneContext.test.ets",
-      "entry/src/test/List.test.ets"
+      "entry/src/main/ets/services/DiagnosticCapturePolicy.ets",
+      "entry/src/main/ets/services/DiagnosticRuntimeSnapshotPolicy.ets",
+      "entry/src/main/ets/services/RemoteCanvasTransformPolicy.ets",
+      "entry/src/main/ets/services/RemoteOrientationPolicy.ets",
+      "entry/src/test/DiagnosticCapturePolicy.test.ets",
+      "entry/src/test/DiagnosticRuntimeSnapshotPolicy.test.ets",
+      "entry/src/test/RemoteCanvasTransformPolicy.test.ets",
+      "entry/src/test/RemoteOrientationPolicy.test.ets"
     ],
-    "findings": [
-      "P1: device-wide SystemPasteboard could relay remote clipboard text across the main app and clone (remediated in 0ca361a7)",
-      "P2: local backup/restore cancellation could expose the clone cloud-actions UI (remediated in 0ca361a7)",
-      "P2: runtime probe and security-wiring seams lacked focused tests (remediated in 0ca361a7)"
-    ],
-    "lastReceiptId": "harmonyos-app-clone-0ca361a7-2026-08-28",
-    "reason": "The same independent reviewer verified the three remediations and complete cumulative scope at 0ca361a7; final P0/P1/P2/P3 are zero."
+    "findings": [],
+    "reason": "Implementation is committed and locally verified; independent review is still required before merge."
   },
   "lastVerification": {
-    "baseline": "Application-clone increment starts at 8984f588e on the user-authorized existing task branch.",
-    "testCompile": "PASS: default@OhosTestCompileArkTS, BUILD SUCCESSFUL in 19 s 215 ms",
-    "assembleHap": "PASS: signed HAP, BUILD SUCCESSFUL in 26 s 610 ms",
-    "targetedTests": "BLOCKED: ohosTest@OhosTestCompileArkTS reports 00302018 Unknown module 'ohosTest'; policy tests are registered in entry/src/test/List.test.ets.",
-    "manifest": "PASS: packaged module metadata contains appClone with maxCount 1 for phone, tablet and 2in1.",
+    "baseline": "RustDesk mobile display/input increment starts at 6e2fece58 on the user-authorized existing task branch.",
+    "testCompile": "PASS: default@OhosTestCompileArkTS, BUILD SUCCESSFUL in 9 s 150 ms",
+    "assembleHap": "PASS: signed HAP, BUILD SUCCESSFUL in 16 s 211 ms, SHA-256 0b7ff612b47a5577eb28972283988acd69280a8cebaf9bda12f2cbea972448ab",
+    "targetedTests": "PASS: new NativeImage 90/270/transpose/transverse and decoder geometry-recreation tests; full native result 799 passed, 16 known unrelated VNC TLS fixture failures.",
+    "arktsTests": "PASS compile: canvas source/window rebase, peer-platform and diagnostics policy cases compile through the mandatory test gate; no separate ohosTest module is registered.",
     "compliance": "PASS: Light open-source compliance and git diff --check",
-    "review": "PASS: /root/review_app_clone at 0ca361a7 after one P1 and two P2 remediations; P0/P1/P2/P3 zero",
-    "deviceAcceptance": "BLOCKED: no usable HDC target and release/debug provisioning mismatch 9568286; existing app data preserved."
+    "review": "PENDING: no independent reviewer has run against 6e2fece58..0b2435496.",
+    "deviceAcceptance": "BLOCKED: HDC Connect server failed; no usable Android target."
   },
   "updated": "2026-08-28 Asia/Shanghai"
 }
