@@ -5,7 +5,7 @@
 - Task: `cloud-sync-compatibility-first-recovery`
 - Branch: `codex/system-clipboard-activation-fix`; user authorized work on the current branch.
 - Increment: `54f9d25df..a4d0aebb1`.
-- Phase: implemented, locally verified and independently reviewed; fixed HAP device acceptance is pending.
+- Phase: implemented, locally verified, independently reviewed and data-preserving installed on the primary acceptance device; user acceptance is pending.
 - Plan: `docs/codex/plans/2026-08-28-cloud-sync-compatibility-first-recovery.md`
 
 ## Root cause and result
@@ -26,5 +26,5 @@
 
 ## Device acceptance / blockers
 
-- The fixed HAP has not been installed. Acceptance on `192.168.3.235:38451` must verify login remains usable after the historical migration `401`, exact-owner local data visibility, local save/restart/offline behavior, canonical recovery and no stale-row resurrection.
+- The fixed HAP was installed successfully on `192.168.3.235:38451` with `install -r`, preserving app data, and `EntryAbility` started successfully. Acceptance must verify login remains usable after the historical migration `401`, exact-owner local data visibility, local save/restart/offline behavior, canonical recovery and no stale-row resurrection.
 - Prior remote keyboard/sidebar acceptance on `.235` remains queued. `.236:40123` still requires a release-provisioned HAP or explicit destructive-uninstall authorization; its existing data remains preserved.

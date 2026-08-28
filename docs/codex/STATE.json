@@ -6,9 +6,9 @@
   "head": "a4d0aebb1daf292aa10f6265fcc4c4010c4ef7e4",
   "phase": "ready-for-device-validation",
   "status": "active",
-  "next": "With explicit deployment authorization, install the fixed signed HAP on 192.168.3.235:38451 without clearing data and verify login, exact-owner fallback data, local CRUD/restart/offline durability, canonical recovery and cloud directions.",
+  "next": "On the fixed HAP installed at 192.168.3.235:38451, verify login, exact-owner fallback data, local CRUD/restart/offline durability, canonical recovery and cloud directions.",
   "blockers": [
-    "Real-device acceptance of the newly built HAP is pending; it has not been installed and no existing app data was changed.",
+    "Real-device user acceptance is pending; the fixed HAP was installed with install -r and existing app data was preserved.",
     "The project does not register ohosTest@OhosTestCompileArkTS (00306054); mandatory default@OhosTestCompileArkTS and assembleHap pass."
   ],
   "planPaths": [
@@ -51,7 +51,7 @@
     "arktsTests": "PASS through mandatory default@OhosTestCompileArkTS; separate ohosTest module task is unregistered (00306054).",
     "compliance": "PASS: Light open-source compliance and git diff --check",
     "review": "PASS: /root/cloud_sync_fix_review found no remaining P0/P1/P2 after iterative remediation.",
-    "deviceAcceptance": "PENDING: fixed HAP not installed; existing application data remains untouched."
+    "deviceAcceptance": "PARTIAL: install -r succeeded on 192.168.3.235:38451 with app data preserved; bundle 1.1.3 was verified and EntryAbility started successfully; user login/data acceptance is pending."
   },
   "updated": "2026-08-28 Asia/Shanghai"
 }
