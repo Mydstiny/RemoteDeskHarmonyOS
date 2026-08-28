@@ -69,3 +69,22 @@ RDP_TEST_CASE(vnc_cursor_payload_rejects_unsafe_geometry_hotspot_and_length) {
     RDP_ASSERT(!VncCursorProtocol::decodePayload(
         format, 0, 0, 0, 0, payload.data(), 1, cursor, error));
 }
+
+RDP_TEST_CASE(vnc_cursor_payload_treats_an_all_transparent_mask_as_hidden) {
+    const VncRfbProtocol::PixelFormat format = cursorRgba8888Format();
+    const std::vector<uint8_t> payload = {
+        0, 0, 255, 0,
+        0, 255, 0, 0,
+        0x00,
+    };
+    VncCursorProtocol::DecodedCursor cursor;
+    std::string error;
+    RDP_ASSERT(VncCursorProtocol::decodePayload(
+        format, 0, 0, 2, 1, payload.data(), payload.size(), cursor, error));
+    RDP_ASSERT(!cursor.visible);
+    RDP_ASSERT_EQ(cursor.width, 2);
+    RDP_ASSERT_EQ(cursor.height, 1);
+    RDP_ASSERT_EQ(cursor.rgba.size(), 8U);
+    RDP_ASSERT_EQ(cursor.rgba[3], 0U);
+    RDP_ASSERT_EQ(cursor.rgba[7], 0U);
+}

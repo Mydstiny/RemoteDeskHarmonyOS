@@ -2,53 +2,63 @@
 
 ## Active task
 
-- Task: `moonlight-crud-compatibility`
-- Branch/base: `codex/moonlight-crud-compatibility` from synchronized `main@a773346f6`.
-- Phase: independent review PASS for checkpoint `79da70a4`; PR/main closure in progress.
-- Plan: `docs/codex/plans/2026-08-27-moonlight-crud-compatibility.md`
+- Task: `vnc-cursor-wheel-regression`
+- Branch/base: `codex/vnc-cursor-wheel-regression` from synchronized `main@0b8e5bf60`.
+- Phase: device acceptance complete; ready for PR/main closure.
+- Plan: `docs/codex/plans/2026-08-27-vnc-cursor-wheel-regression.md`
 
 ## Objective
 
-- Make Moonlight local CRUD authoritative and usable without Huawei Cloud Space.
-- Keep legacy/pre-Moonlight data, malformed optional Moonlight data and cloud failures from blocking unrelated protocols or valid Moonlight hosts.
-- Preserve tombstone/reset-epoch conflict semantics across settings revival, host re-add, backup restore and cloud projection.
-- Report durable local commits truthfully and make compound host/trust creation crash-safe.
+- Restore normal VNC scroll distance for virtual two-finger input, HarmonyOS PC physical touchpads and physical mouse wheels.
+- Preserve the HarmonyOS user-configured mouse `scrollStep` instead of collapsing every wheel event to one RFB click.
+- Keep the local system pointer visible during macOS Screen Sharing cursor bootstrap, then switch only when a valid protocol cursor is ready.
+- Leave RDP, RustDesk and Moonlight input behavior unchanged.
 
-## Confirmed review scope
+## Evidence
 
-- Optional Moonlight schema/projection activation and malformed-row isolation.
-- Host, trust, settings, profile and application-cache create/read/update/delete paths.
-- Single/batch deletion, local unpair, no-account storage, export/import and portable restore.
-- Legacy IDs, duplicate settings, deletion checkpoints and post-commit readback behavior.
+- Device `192.168.3.236:40123` reported physical mouse `raw=45`, `scrollStep=3`, but VNC forwarded `delta=1`.
+- Virtual two-finger samples were commonly `2-8vp`; the current `10vp` threshold and maximum delta 2 visibly under-scroll.
+- API 23 documents mouse vertical-axis values as degrees that already include the user's `scrollStep`; touchpad values are continuous px without that multiplier.
+- RDP emits a standard `0x78` wheel magnitude and RustDesk has a dedicated two-dimensional high-resolution touchpad path; RFB only has button-4/5 clicks and therefore needs explicit bounded protocol compensation.
+- macOS Screen Sharing delayed its first real cursor shape for about 56 seconds while auto mode hid the local pointer based only on the absence of a native cursor.
 
 ## Implemented
 
-- Ordinary host/profile deletion and local unpair are local-first; Huawei account login without Cloud Space cannot return `cloud_unavailable` for those actions.
-- Host + trust creation/deletion and duplicate alias convergence use one local transaction; durable commits remain successful when only post-commit readback is transiently unavailable.
-- Invalid optional Moonlight rows/cache entries are isolated instead of poisoning unrelated CRUD; malformed deletion checkpoints are quarantined and released.
-- Settings tombstones and legacy aliases resolve deterministically, revive with a higher reset epoch and converge in one save.
-- Pre-release host IDs are reused/converged, portable restore uses the Moonlight conflict policy, and missing additive columns are repaired without rejecting harmless legacy extras.
-- Explicit owner-local deletion clears hidden malformed Moonlight rows and caches, while remote Sunshine unpair and rebuildable cache cleanup remain best effort.
-- Legacy and canonical host aliases now share one logical `serverUuid` deletion graph: forget/unpair writes canonical payload-free boundaries and atomically includes every matching host/profile/trust/cache/runtime-state alias.
-- Portable restore and old full backups cannot revive a same/lower-epoch host or trust alias behind a canonical or legacy-derived deletion boundary; higher reset epochs remain the explicit revival path.
+- Discrete VNC mouse events preserve bounded `scrollStep` ticks, with sign-only fallback when the coefficient is unavailable.
+- Virtual VNC input uses `4vp` per tick with a maximum of 4 per sample; fractional accumulation remains bounded without recursive fling or release backlog.
+- Physical VNC touchpads use two normalized samples per tick with a maximum of 4 while preserving lifecycle, source, idle and direction resets.
+- VNC auto cursor ownership is evidence-based: legacy RFB 3.3/macOS bootstrap keeps the system pointer, modern RFB 3.7/3.8 without Cursor pseudo uses its framebuffer-composited cursor, a protocol shape atomically replaces the default pointer, and protocol/explicit hidden states hide it.
+- Non-zero VNC protocol cursor rectangles with an all-transparent mask are treated as hidden and cannot replace the local pointer.
+- Native RFB wheel bursts are built by a tested byte-level helper that preserves held buttons, clamps coordinates and bounds one logical event to 128 button-4/5 down/up pairs.
+- Local VNC move/wheel prediction updates cursor coordinates only; an authoritative protocol-hidden cursor cannot be resurrected until the server sends a new visible cursor shape.
+- Device acceptance required another 2x increase after the 5x checkpoint. Virtual touchpad, physical touchpad and physical mouse now share one VNC-only final wire gain of 10, while the native bounded burst accepts the maximum supported 80-step mouse event without truncation.
+- The repair release remains `1.1.3`; its cumulative update content is intentionally unchanged per product decision. SBOM provenance now points to source commit `5c20204b2` without dropping TOTP or Moonlight vendor inventory.
+- The macOS Hvigor guard now recognizes ArkTS `10310009` module-context failures for generated `ResourceTable.ts`, isolates the inconsistent generated cache and retries the original build once. The local DevEco `RemoteDesk SAFE [assembleApp]` configuration pins API 23 and restores the conventional `build/outputs` APP path after successful packaging.
 
 ## Verification
 
-- Baseline `main@a773346f6` was clean and equal to `origin/main` when the task started.
-- Exact `default@OhosTestCompileArkTS`: PASS (final exact invocation `BUILD SUCCESSFUL in 1 s 427 ms`; focused static registration count `257`).
-- Exact signed `assembleHap`: PASS (`BUILD SUCCESSFUL in 2 min 19 s 836 ms`).
-- Signed HAP SHA-256: `3249768c5030ff113ba3c73c0bee6e4146ad4d45281de42934ae63c897228cbb`.
-- Legacy replay: PASS for `1.0.7`, `1.0.8-initial` and `1.1.1-initial`; all legacy rows preserved and schema converged to v5.
-- `git diff --check`: PASS. Open-source compliance Light: PASS.
-- Independent read-only review: PASS for `a773346f6..79da70a4`; P0/P1/P2/P3 are all zero.
-- `ohosTest@OhosTestCompileArkTS`: unavailable because the task is not registered (`00306054`); no device-test execution is claimed.
+- Baseline `main@0b8e5bf60` was clean and equal to `origin/main` when the task started.
+- Focused ArkTS policy tests are compile-registered by the passing test target.
+- Current-source target native wheel case: PASS, directly validating all 80 wheel down/up pairs. Full host suite: `797 passed, 16 failed`; all 16 failures are the known TLS `fixture.start()` environment baseline and are unrelated to this change.
+- Exact `default@OhosTestCompileArkTS`: PASS (`BUILD SUCCESSFUL in 1 min 6 s 939 ms`).
+- Exact signed `assembleHap`: PASS (`BUILD SUCCESSFUL in 1 min 20 s 803 ms`).
+- Build-guard regression including the exact `10310009` / `Failed to find module info` / `ResourceTable.ts` signature: PASS.
+- DevEco `RemoteDesk SAFE [assembleApp]`: PASS (`BUILD SUCCESSFUL in 9 s 860 ms`, exit 0); signed APP restored at project `build/outputs`.
+- Post-guard exact `default@OhosTestCompileArkTS`: PASS (`BUILD SUCCESSFUL in 38 s 711 ms`); exact signed `assembleHap`: PASS (`BUILD SUCCESSFUL in 3 min 294 ms`).
+- `git diff --check` and open-source compliance Light: PASS.
+- Initial independent review of `dcf1b2fc4`: FAIL on permanent auto-pointer fallback and missing state/wire coverage; both findings were remediated in `45eb2c293`.
+- Follow-up review of `45eb2c293`: FAIL because local prediction could overwrite protocol-hidden visibility and the end-to-end ownership transition lacked coverage; both findings are remediated in `abc3ce5b8`.
+- Previous cursor/wheel re-review by `/root/vnc_wheel_review`: PASS at `abc3ce5b8`; device feedback then superseded the wheel-output checkpoint.
+- Follow-up review of `dfb74ded6` by `/root/vnc_wheel_review`: PASS, P0/P1/P2/P3 all zero.
+- Release follow-up review found stale SBOM provenance and incomplete 80-step regression coverage; both were remediated in `8e9ed4ea8`.
+- Final independent review of `5c20204b2..8e9ed4ea8` by `/root/vnc_wheel_review`: PASS, P0/P1/P2/P3 all zero.
+- Independent incremental review of the `bf397173e` ResourceTable recovery by `/root/resource_table_guard_review`: PASS, P0/P1/P2/P3 all zero.
+- Device acceptance: PASS; the user confirmed the reviewed 1.1.3 VNC wheel build is accepted on 2026-08-28.
 
 ## Next
 
-1. Push `codex/moonlight-crud-compatibility` and open the reviewed PR.
-2. Merge the PR, fast-forward local `main`, and remove the merged local task branch.
-3. Retain real-device Huawei Cloud Space/no-account UI combinations as external acceptance evidence, not as a source blocker.
+1. Open the PR, wait for the required check, merge and synchronize `main`.
 
 ## Blockers
 
-- Device Hypium task remains unregistered (`00306054`); no on-device test claim will be made unless the task becomes available.
+- None.

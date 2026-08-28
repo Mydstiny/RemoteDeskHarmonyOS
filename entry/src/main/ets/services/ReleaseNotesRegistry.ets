@@ -1,5 +1,5 @@
-export const CURRENT_RELEASE_VERSION: string = '1.1.2';
-export const CURRENT_RELEASE_VERSION_CODE: number = 1001002;
+export const CURRENT_RELEASE_VERSION: string = '1.1.3';
+export const CURRENT_RELEASE_VERSION_CODE: number = 1001003;
 
 export interface ReleaseNotePage {
   id: string;
@@ -12,10 +12,10 @@ export function pagesForReleasedVersion(version: string): ReleaseNotePage[] {
   if (version !== CURRENT_RELEASE_VERSION) { return []; }
   return [
     {
-      id: 'release-1-1-2',
+      id: 'release-1-1-3',
       symbol: $rawfile('icons/computer-desktop.svg'),
-      title: '1.1.2：五协议工作台全面升级',
-      desc: '从 1.1.1 升级后，Moonlight 正式加入 RDP、RustDesk、SSH/SFTP 与 VNC 工作台；会话操控、设备适配、安全校验和操作引导也同步增强。'
+      title: '1.1.3：五协议工作台持续优化',
+      desc: '在 1.1.2 的五协议工作台基础上，继续优化会话操控、设备适配、安全校验和操作引导。'
     },
     {
       id: 'release-moonlight-workflow',
@@ -78,9 +78,9 @@ export function pagesForReleasedVersion(version: string): ReleaseNotePage[] {
       desc: 'Moonlight 主机删除不再依赖华为云空间在线：无账号、未开通云空间或断网时都会先安全保存到本机，云恢复后自动同步删除状态；配对信任仍只留在本机。'
     },
     {
-      id: 'welcome-1-1-2',
+      id: 'welcome-1-1-3',
       symbol: $rawfile('icons/globe-alt.svg'),
-      title: '欢迎使用 1.1.2',
+      title: '欢迎使用 1.1.3',
       desc: '现在可以从主机工作台体验五种协议。第一次尝试新能力时先按界面核对服务端、身份与网络条件；完整步骤可从“设置 → 教程 → 操作引导中心”随时查看。'
     }
   ];

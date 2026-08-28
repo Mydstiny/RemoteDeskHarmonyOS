@@ -1,7 +1,7 @@
 # RemoteDeskHarmonyOS
 
 面向 HarmonyOS NEXT 的原生多协议远程桌面客户端。当前版本为
-**1.1.2**（`versionCode 1001002`），在一个 ArkUI 工作台中提供 RDP、
+**1.1.3**（`versionCode 1001003`），在一个 ArkUI 工作台中提供 RDP、
 RustDesk、SSH/SFTP、VNC 和 Moonlight 连接；同时集成华为云数据同步、
 本地加密与备份、后台视频、画中画以及手机、Pad、PC 响应式体验。
 

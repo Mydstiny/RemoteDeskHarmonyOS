@@ -2,6 +2,9 @@ import { describe, it, expect } from '@ohos/hypium';
 import {
   MOONLIGHT_HIGH_RES_WHEEL_DETENT,
   VNC_VIRTUAL_WHEEL_MAX_DELTA,
+  VNC_WHEEL_OUTPUT_GAIN,
+  VNC_WHEEL_OUTPUT_MAX_DELTA,
+  amplifyVncWheelOutputDelta,
   accumulateContinuousRemoteWheel,
   applyRemoteWheelDirection,
   discreteRemoteWheelDelta,
@@ -11,11 +14,11 @@ import {
 
 export default function remoteWheelPolicyTest(): void {
   describe('RemoteWheelPolicy', (): void => {
-    it('accumulates_virtual_vnc_motion_without_forcing_each_frame', 0, (): void => {
-      const first = accumulateContinuousRemoteWheel(5, 0, 1, 'vnc');
+    it('accumulates_captured_virtual_vnc_motion_without_forcing_each_frame', 0, (): void => {
+      const first = accumulateContinuousRemoteWheel(2, 0, 1, 'vnc');
       expect(first.delta).assertEqual(0);
       expect(first.remainder).assertEqual(0.5);
-      const second = accumulateContinuousRemoteWheel(5, first.remainder, 1, 'vnc');
+      const second = accumulateContinuousRemoteWheel(2, first.remainder, 1, 'vnc');
       expect(second.delta).assertEqual(1);
       expect(second.remainder).assertEqual(0);
     });
@@ -27,8 +30,8 @@ export default function remoteWheelPolicyTest(): void {
     });
 
     it('clears_virtual_vnc_fraction_when_direction_changes', 0, (): void => {
-      const forward = accumulateContinuousRemoteWheel(5, 0, 1, 'vnc');
-      const reversed = accumulateContinuousRemoteWheel(-5, forward.remainder, 1, 'vnc');
+      const forward = accumulateContinuousRemoteWheel(2, 0, 1, 'vnc');
+      const reversed = accumulateContinuousRemoteWheel(-2, forward.remainder, 1, 'vnc');
       expect(reversed.delta).assertEqual(0);
       expect(reversed.remainder).assertEqual(-0.5);
     });
@@ -41,12 +44,29 @@ export default function remoteWheelPolicyTest(): void {
 
       let remainder: number = 0;
       let totalDelta: number = 0;
-      for (let index: number = 0; index < 30; index++) {
-        const sample = accumulateContinuousRemoteWheel(0.4, remainder, 1, 'vnc');
+      for (let index: number = 0; index < 16; index++) {
+        const sample = accumulateContinuousRemoteWheel(0.25, remainder, 1, 'vnc');
         totalDelta += sample.delta;
         remainder = sample.remainder;
       }
       expect(totalDelta).assertEqual(1);
+    });
+
+    it('preserves_virtual_vnc_speed_multiplier_with_a_bounded_output', 0, (): void => {
+      const normal = accumulateContinuousRemoteWheel(8, 0, 1, 'vnc');
+      expect(normal.delta).assertEqual(2);
+      const accelerated = accumulateContinuousRemoteWheel(8, 0, 2, 'vnc');
+      expect(accelerated.delta).assertEqual(VNC_VIRTUAL_WHEEL_MAX_DELTA);
+      expect(accelerated.remainder).assertEqual(0);
+    });
+
+    it('amplifies_only_the_final_vnc_wire_delta_by_ten', 0, (): void => {
+      expect(VNC_WHEEL_OUTPUT_GAIN).assertEqual(10);
+      expect(amplifyVncWheelOutputDelta(1)).assertEqual(10);
+      expect(amplifyVncWheelOutputDelta(-3)).assertEqual(-30);
+      expect(amplifyVncWheelOutputDelta(8)).assertEqual(80);
+      expect(amplifyVncWheelOutputDelta(1000)).assertEqual(VNC_WHEEL_OUTPUT_MAX_DELTA);
+      expect(amplifyVncWheelOutputDelta(Number.NaN)).assertEqual(0);
     });
 
     it('keeps_non_vnc_continuous_scroll_curve_compatible', 0, (): void => {

@@ -771,6 +771,10 @@ int normalizeRfbMinor(int advertisedMinor) {
     return 3;
 }
 
+bool keepsLocalCursorDuringBootstrap(int negotiatedMinor) {
+    return negotiatedMinor <= 3;
+}
+
 bool securityResultExpected(int negotiatedMinor, uint8_t selectedSecurityType) {
     if (selectedSecurityType != 1) return true;
     return negotiatedMinor == 8;
@@ -791,6 +795,40 @@ std::vector<uint8_t> buildFramebufferUpdateRequest(bool incremental,
         static_cast<uint8_t>(height >> 8),
         static_cast<uint8_t>(height),
     };
+}
+
+std::vector<uint8_t> buildPointerWheelBurst(int buttonMask, int x, int y,
+                                            int delta, int framebufferWidth,
+                                            int framebufferHeight) {
+    if (delta == 0) {
+        return {};
+    }
+    const int64_t magnitude = delta > 0 ? static_cast<int64_t>(delta) :
+        -static_cast<int64_t>(delta);
+    const int steps = static_cast<int>(std::min<int64_t>(kMaxWheelBurstSteps, magnitude));
+    const int preservedButtons = buttonMask & 0x07;
+    const int wheelBit = delta > 0 ? 8 : 16;
+    const int maxX = std::max(0, framebufferWidth - 1);
+    const int maxY = std::max(0, framebufferHeight - 1);
+    const int clampedX = std::max(0, std::min(x, maxX));
+    const int clampedY = std::max(0, std::min(y, maxY));
+    std::vector<uint8_t> packets(static_cast<size_t>(steps) * 12U, 0);
+    for (int index = 0; index < steps; ++index) {
+        const size_t offset = static_cast<size_t>(index) * 12U;
+        packets[offset] = 5;
+        packets[offset + 1] = static_cast<uint8_t>(preservedButtons | wheelBit);
+        packets[offset + 2] = static_cast<uint8_t>(clampedX >> 8);
+        packets[offset + 3] = static_cast<uint8_t>(clampedX);
+        packets[offset + 4] = static_cast<uint8_t>(clampedY >> 8);
+        packets[offset + 5] = static_cast<uint8_t>(clampedY);
+        packets[offset + 6] = 5;
+        packets[offset + 7] = static_cast<uint8_t>(preservedButtons);
+        packets[offset + 8] = static_cast<uint8_t>(clampedX >> 8);
+        packets[offset + 9] = static_cast<uint8_t>(clampedX);
+        packets[offset + 10] = static_cast<uint8_t>(clampedY >> 8);
+        packets[offset + 11] = static_cast<uint8_t>(clampedY);
+    }
+    return packets;
 }
 
 int effectiveTrueColorDepth(const std::string& requestedDepth,

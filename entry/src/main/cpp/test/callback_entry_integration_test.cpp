@@ -1281,6 +1281,49 @@ RDP_TEST_CASE(vnc_production_callback_dispatch_respects_callback_lifecycle) {
     firstOwnerGuard.dismiss();
 }
 
+RDP_TEST_CASE(vnc_protocol_hidden_cursor_survives_local_input_prediction) {
+    VncAdapter adapter;
+    adapter.setSessionIdentity(8111);
+
+    VncCursorProtocol::DecodedCursor visible;
+    visible.visible = true;
+    visible.shapeId = 101;
+    visible.width = 2;
+    visible.height = 2;
+    visible.hotX = 1;
+    visible.hotY = 1;
+    visible.rgba.assign(2 * 2 * 4, 0xFF);
+    adapter.InvokeProtocolCursorCallbackForTesting(visible);
+    const RemoteCursorSnapshot shown = adapter.getRemoteCursorSnapshot(true);
+    RDP_ASSERT(shown.visible);
+    RDP_ASSERT(shown.protocolShapeAvailable);
+    RDP_ASSERT_EQ(shown.shapeId, 101);
+
+    VncCursorProtocol::DecodedCursor hidden;
+    hidden.visible = false;
+    adapter.InvokeProtocolCursorCallbackForTesting(hidden);
+    adapter.UpdatePredictedCursorPositionForTesting(320, 240);
+    adapter.UpdatePredictedCursorPositionForTesting(320, 216);
+    const RemoteCursorSnapshot afterMoveAndWheel =
+        adapter.getRemoteCursorSnapshot(false);
+    RDP_ASSERT(!afterMoveAndWheel.visible);
+    RDP_ASSERT(afterMoveAndWheel.protocolShapeAvailable);
+    RDP_ASSERT(afterMoveAndWheel.positionAvailable);
+    RDP_ASSERT_EQ(afterMoveAndWheel.x, 320);
+    RDP_ASSERT_EQ(afterMoveAndWheel.y, 216);
+    RDP_ASSERT_EQ(afterMoveAndWheel.shapeRevision, shown.shapeRevision);
+
+    visible.shapeId = 102;
+    visible.hotX = 0;
+    visible.hotY = 0;
+    adapter.InvokeProtocolCursorCallbackForTesting(visible);
+    const RemoteCursorSnapshot restored = adapter.getRemoteCursorSnapshot(false);
+    RDP_ASSERT(restored.visible);
+    RDP_ASSERT(restored.protocolShapeAvailable);
+    RDP_ASSERT_EQ(restored.shapeId, 102);
+    RDP_ASSERT_EQ(restored.shapeRevision, shown.shapeRevision + 1);
+}
+
 #if defined(USE_REAL_FREERDP)
 extern "C" UINT freerdp_ohos_rdpsnd_play(const BYTE* data, size_t size,
                                           UINT32 sampleRate, UINT16 channels,

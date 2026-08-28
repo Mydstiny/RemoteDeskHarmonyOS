@@ -54,6 +54,7 @@ public:
     static bool shutdownDeferredJoinsWithin(std::chrono::milliseconds timeout);
     static std::size_t deferredJoinRemaining();
     ConnectionState state() const;
+    bool keepsLocalCursorDuringBootstrap() const;
     void sendKey(uint32_t keyCode, bool pressed);
     void sendMouse(int x, int y, MouseButton button, bool pressed);
     void sendMouseWheel(int x, int y, int delta);
@@ -144,6 +145,7 @@ private:
     mutable std::mutex framebufferRequestMutex_;
     bool negotiated33_ = false;
     int negotiatedMinor_ = 3;
+    std::atomic<bool> keepLocalCursorDuringBootstrap_ {true};
     int ioTimeoutMs_ = 30000;
     int idleTimeoutMs_ = 5000;
     uint64_t diagServerMessages_ = 0;

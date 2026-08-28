@@ -392,6 +392,10 @@ ConnectionState VncRfbEngine::state() const {
     return state_.load(std::memory_order_acquire);
 }
 
+bool VncRfbEngine::keepsLocalCursorDuringBootstrap() const {
+    return keepLocalCursorDuringBootstrap_.load(std::memory_order_acquire);
+}
+
 void VncRfbEngine::run() {
     struct WorkerDone {
         VncRfbEngine* engine;
@@ -528,6 +532,9 @@ bool VncRfbEngine::negotiateVersion(std::string& error) {
     }
     negotiatedMinor_ = VncRfbProtocol::normalizeRfbMinor(minor);
     negotiated33_ = negotiatedMinor_ == 3;
+    keepLocalCursorDuringBootstrap_.store(
+        VncRfbProtocol::keepsLocalCursorDuringBootstrap(negotiatedMinor_),
+        std::memory_order_release);
     char response[13] = {0};
     std::snprintf(response, sizeof(response), "RFB 003.%03d\n", negotiatedMinor_);
     return writeBytes(reinterpret_cast<const uint8_t*>(response), 12, error);
@@ -1272,32 +1279,14 @@ void VncRfbEngine::sendMouse(int x, int y, MouseButton button, bool pressed) {
 
 void VncRfbEngine::sendMouseWheel(int x, int y, int delta) {
     if (config_.vncViewOnly || state() != ConnectionState::CONNECTED || delta == 0) return;
-    const int steps = std::min(32, std::max(1, std::abs(delta)));
-    const int bit = delta > 0 ? 8 : 16;
     std::lock_guard<std::mutex> lock(inputMutex_);
-    x = std::max(0, std::min(x, std::max(0, framebufferWidth_ - 1)));
-    y = std::max(0, std::min(y, std::max(0, framebufferHeight_ - 1)));
     // Keep a logical wheel burst contiguous on the RFB stream and pay for one
-    // socket/TLS write instead of up to 64 tiny writes.  This also prevents a
+    // socket/TLS write instead of up to 128 tiny writes.  This also prevents a
     // pipelined framebuffer request from landing between wheel down/up pairs.
-    std::array<uint8_t, 32U * 12U> packets {};
-    for (int index = 0; index < steps; ++index) {
-        const size_t offset = static_cast<size_t>(index) * 12U;
-        packets[offset] = 5;
-        packets[offset + 1] = static_cast<uint8_t>(buttonMask_ | bit);
-        packets[offset + 2] = static_cast<uint8_t>(x >> 8);
-        packets[offset + 3] = static_cast<uint8_t>(x);
-        packets[offset + 4] = static_cast<uint8_t>(y >> 8);
-        packets[offset + 5] = static_cast<uint8_t>(y);
-        packets[offset + 6] = 5;
-        packets[offset + 7] = static_cast<uint8_t>(buttonMask_);
-        packets[offset + 8] = static_cast<uint8_t>(x >> 8);
-        packets[offset + 9] = static_cast<uint8_t>(x);
-        packets[offset + 10] = static_cast<uint8_t>(y >> 8);
-        packets[offset + 11] = static_cast<uint8_t>(y);
-    }
+    const std::vector<uint8_t> packets = VncRfbProtocol::buildPointerWheelBurst(
+        buttonMask_, x, y, delta, framebufferWidth_, framebufferHeight_);
     std::string error;
-    if (!writeBytes(packets.data(), static_cast<size_t>(steps) * 12U, error)) {
+    if (!packets.empty() && !writeBytes(packets.data(), packets.size(), error)) {
         VNC_DIAG_WARN("[VNC-DIAG] RFB wheel burst write failed: %{public}s", error.c_str());
     }
 }

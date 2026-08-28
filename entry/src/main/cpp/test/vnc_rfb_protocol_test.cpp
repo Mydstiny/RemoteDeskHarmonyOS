@@ -3,6 +3,7 @@
 #include "vnc/vnc_rfb_protocol.h"
 #include "vnc/vnc_transport_policy.h"
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <string>
@@ -90,6 +91,10 @@ RDP_TEST_CASE(vnc_rfb_minor_normalization_is_fail_closed) {
     RDP_ASSERT_EQ(VncRfbProtocol::normalizeRfbMinor(4), 3);
     RDP_ASSERT_EQ(VncRfbProtocol::normalizeRfbMinor(6), 3);
     RDP_ASSERT_EQ(VncRfbProtocol::normalizeRfbMinor(9), 3);
+    RDP_ASSERT_EQ(VncRfbProtocol::normalizeRfbMinor(889), 3);
+    RDP_ASSERT(VncRfbProtocol::keepsLocalCursorDuringBootstrap(3));
+    RDP_ASSERT(!VncRfbProtocol::keepsLocalCursorDuringBootstrap(7));
+    RDP_ASSERT(!VncRfbProtocol::keepsLocalCursorDuringBootstrap(8));
 }
 
 RDP_TEST_CASE(vnc_rfb_security_result_contract_matches_version) {
@@ -117,6 +122,44 @@ RDP_TEST_CASE(vnc_framebuffer_update_request_has_exact_rfb_wire_layout) {
         3, 1, 0, 0, 0, 0, 10, 0, 6, 64,
     };
     RDP_ASSERT(incremental == expectedIncremental);
+}
+
+RDP_TEST_CASE(vnc_pointer_wheel_burst_preserves_buttons_direction_and_coordinates) {
+    const std::vector<uint8_t> positive =
+        VncRfbProtocol::buildPointerWheelBurst(1, -4, 999, 3, 640, 480);
+    RDP_ASSERT_EQ(positive.size(), static_cast<size_t>(36));
+    const std::vector<uint8_t> expectedStep = {
+        5, 9, 0, 0, 1, 223,
+        5, 1, 0, 0, 1, 223,
+    };
+    for (size_t offset = 0; offset < positive.size(); offset += expectedStep.size()) {
+        RDP_ASSERT(std::equal(expectedStep.begin(), expectedStep.end(), positive.begin() + offset));
+    }
+
+    const std::vector<uint8_t> negative =
+        VncRfbProtocol::buildPointerWheelBurst(2, 300, 200, -2, 640, 480);
+    RDP_ASSERT_EQ(negative.size(), static_cast<size_t>(24));
+    RDP_ASSERT_EQ(negative[1], static_cast<uint8_t>(18));
+    RDP_ASSERT_EQ(negative[7], static_cast<uint8_t>(2));
+    RDP_ASSERT_EQ(negative[2], static_cast<uint8_t>(1));
+    RDP_ASSERT_EQ(negative[3], static_cast<uint8_t>(44));
+    RDP_ASSERT_EQ(negative[4], static_cast<uint8_t>(0));
+    RDP_ASSERT_EQ(negative[5], static_cast<uint8_t>(200));
+
+    const std::vector<uint8_t> capped =
+        VncRfbProtocol::buildPointerWheelBurst(7, 1, 1, 1000, 2, 2);
+    RDP_ASSERT_EQ(capped.size(),
+        static_cast<size_t>(VncRfbProtocol::kMaxWheelBurstSteps * 12));
+    RDP_ASSERT_EQ(capped[1], static_cast<uint8_t>(15));
+    RDP_ASSERT_EQ(capped[7], static_cast<uint8_t>(7));
+    const std::vector<uint8_t> tenTimesMouse =
+        VncRfbProtocol::buildPointerWheelBurst(0, 10, 20, 80, 100, 100);
+    RDP_ASSERT_EQ(tenTimesMouse.size(), static_cast<size_t>(80 * 12));
+    for (size_t offset = 0; offset < tenTimesMouse.size(); offset += 12U) {
+        RDP_ASSERT_EQ(tenTimesMouse[offset + 1], static_cast<uint8_t>(8));
+        RDP_ASSERT_EQ(tenTimesMouse[offset + 7], static_cast<uint8_t>(0));
+    }
+    RDP_ASSERT(VncRfbProtocol::buildPointerWheelBurst(0, 0, 0, 0, 1, 1).empty());
 }
 
 RDP_TEST_CASE(vnc_pixel_format_policy_is_bounded_and_wire_exact) {

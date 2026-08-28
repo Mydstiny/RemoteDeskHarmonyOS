@@ -314,6 +314,7 @@ import {
 import {
   nextVncControlMode,
   nextVncDisplayScaleMode,
+  resolveVncCursorOwnershipEvidence,
   shouldHideVncSystemPointer,
   shouldShowVncSessionToolbar,
   vncToolbarAutoCollapseDelayMs,
@@ -321,6 +322,7 @@ import {
   vncToolbarPositionPreferenceKey,
   vncToolbarRailHeight,
   vncToolbarRailWidth,
+  VncCursorOwnershipEvidence,
   VncToolbarDeviceClass,
   VncToolbarOrientation,
   VncToolbarSide
@@ -539,6 +541,7 @@ import {
   VncPhysicalKeyBindingTracker
 } from '../services/VncPhysicalKeyboardPolicy';
 import {
+  amplifyVncWheelOutputDelta,
   accumulateContinuousRemoteWheel,
   applyRemoteWheelDirection,
   discreteRemoteWheelDelta,
@@ -1140,6 +1143,9 @@ struct RemoteDesktop {
   private remoteCursorVisibilityRevision: number = -1;
   private remoteCursorNativeVisible: boolean = false;
   private remoteCursorFallbackShape: boolean = false;
+  private vncCursorSnapshotObserved: boolean = false;
+  private vncLegacyCursorBootstrap: boolean = true;
+  private vncProtocolCursorShapeAvailable: boolean = false;
   private remoteCursorShapeWidth: number = 0;
   private remoteCursorShapeHeight: number = 0;
   private remoteCursorHotX: number = 0;
@@ -4087,15 +4093,18 @@ struct RemoteDesktop {
       this.isTouchpadControlMode(), this.isDesktopDevice);
   }
 
+  private vncCursorOwnershipEvidence(): VncCursorOwnershipEvidence {
+    return resolveVncCursorOwnershipEvidence(this.vncCursorSnapshotObserved,
+      this.vncLegacyCursorBootstrap, this.vncProtocolCursorShapeAvailable,
+      this.remoteCursorNativeVisible);
+  }
+
   private syncRemoteSystemPointer(reason: string, hovered: boolean = true,
     force: boolean = false): void {
-    const vncNativeCursorReady: boolean = this.remoteCursorNativeVisible &&
-      !this.remoteCursorFallbackShape && this.remoteCursorPixelMap !== null &&
-      this.remoteCursorPixelMapShapeRevision > 0;
     const hideSystemPointer: boolean = this.shouldHideSystemPointerForVirtualTouchpad() ||
       shouldHideVncSystemPointer(this.currentProtocolName(), this.connected,
         this.isKeyboardMouseControlMode(), hovered, this.vncLocalCursorMode,
-        vncNativeCursorReady);
+        this.vncCursorOwnershipEvidence());
     // Pointer-style reset may make HarmonyOS' default cursor visible again.
     // Resolve ownership first, then make visibility the final native mutation.
     this.setRemoteSurfacePointerStyle(!hideSystemPointer && hovered &&
@@ -10619,6 +10628,9 @@ struct RemoteDesktop {
     this.remoteCursorVisibilityRevision = -1;
     this.remoteCursorNativeVisible = false;
     this.remoteCursorFallbackShape = false;
+    this.vncCursorSnapshotObserved = false;
+    this.vncLegacyCursorBootstrap = true;
+    this.vncProtocolCursorShapeAvailable = false;
     this.remoteCursorShapeWidth = 0;
     this.remoteCursorShapeHeight = 0;
     this.remoteCursorHotX = 0;
@@ -10669,6 +10681,9 @@ struct RemoteDesktop {
     this.remoteCursorPositionRevision = -1;
     this.remoteCursorVisibilityRevision = -1;
     this.remoteCursorFallbackShape = false;
+    this.vncCursorSnapshotObserved = false;
+    this.vncLegacyCursorBootstrap = true;
+    this.vncProtocolCursorShapeAvailable = false;
     this.remoteCursorShapeWidth = 0;
     this.remoteCursorShapeHeight = 0;
     this.remoteCursorHotX = 0;
@@ -10903,7 +10918,12 @@ struct RemoteDesktop {
     if (snapshot === null || snapshot.sessionId !== sessionId || snapshot.generation <= 0) {
       return;
     }
+    const previousVncCursorOwnership: VncCursorOwnershipEvidence =
+      this.vncCursorOwnershipEvidence();
     this.adoptRemoteCursorGeneration(snapshot.generation);
+    this.vncCursorSnapshotObserved = true;
+    this.vncLegacyCursorBootstrap = snapshot.legacyVncCursorBootstrap;
+    this.vncProtocolCursorShapeAvailable = snapshot.protocolShapeAvailable;
     const shapeChanged: boolean = snapshot.shapeRevision !== this.remoteCursorShapeRevision;
     const hasCurrentPixelMap: boolean = this.remoteCursorPixelMap !== null &&
       this.remoteCursorPixelMapShapeRevision === snapshot.shapeRevision;
@@ -10955,6 +10975,12 @@ struct RemoteDesktop {
         this.applyRemoteNativePointer('visibility-change', true);
       }
       this.requestRemoteCursorViewRefresh(true);
+    }
+    const nextVncCursorOwnership: VncCursorOwnershipEvidence =
+      this.vncCursorOwnershipEvidence();
+    if (this.isVncSession() && previousVncCursorOwnership !== nextVncCursorOwnership) {
+      this.syncRemoteSystemPointer('vnc-cursor-ownership-' + nextVncCursorOwnership,
+        this.remoteSurfaceHovered !== false, true);
     }
     if (shapeChanged || positionChanged || visibilityChanged ||
       this.remoteCursorLastLogMs === 0 || now - this.remoteCursorLastLogMs >= REMOTE_CURSOR_LOG_SAMPLE_MS) {
@@ -15325,7 +15351,9 @@ struct RemoteDesktop {
     }
     this.lastTouchWheelMs = now;
     const src = this.toSourceSpace(this.remoteCursorX, this.remoteCursorY);
-    const sendDelta: number = applyRemoteWheelDirection(delta, this.rustdeskReverseWheel);
+    const directedDelta: number = applyRemoteWheelDirection(delta, this.rustdeskReverseWheel);
+    const sendDelta: number = wheelProtocol === 'vnc' ?
+      amplifyVncWheelOutputDelta(directedDelta) : directedDelta;
     this.loader.sendMouseWheel(this.sessionId, src['x'], src['y'], sendDelta);
     const sendIndex: number = ++this.touchWheelSendCount;
     if (sendIndex <= 12 || sendIndex % 50 === 0) {
@@ -16666,13 +16694,13 @@ struct RemoteDesktop {
         return;
       }
 
-      // A mouse-only scrollStep is one portable detent regardless of whether
-      // the vendor reports 1, 45 or 120. Continuous touchpad samples instead
-      // use a per-gesture unit baseline and fractional accumulation.
+      // Mouse degrees already include the user's scrollStep. Preserve that
+      // coefficient as bounded RFB ticks without multiplying the raw degrees;
+      // continuous touchpads use their independent per-gesture normalization.
       let delta: number = 0;
       if (vncSession && !vncContinuousPhysicalAxis) {
         this.vncPhysicalWheelState = resetVncPhysicalWheelState();
-        delta = vncPhysicalMouseWheelDelta(rawVertical);
+        delta = vncPhysicalMouseWheelDelta(rawVertical, event.scrollStep);
       } else if (mouseSource && !vncSession) {
         delta = discreteRemoteWheelDelta(rawVertical, this.currentProtocolName());
       } else {
@@ -16706,7 +16734,9 @@ struct RemoteDesktop {
       this.queueMouseMove(mapped.x, mapped.y);
       this.flushMouseMove();
       const src: Record<string, number> = this.toSourceSpace(mapped.x, mapped.y);
-      const sendDelta: number = applyRemoteWheelDirection(delta, this.rustdeskReverseWheel);
+      const directedDelta: number = applyRemoteWheelDirection(delta, this.rustdeskReverseWheel);
+      const sendDelta: number = vncSession ?
+        amplifyVncWheelOutputDelta(directedDelta) : directedDelta;
       this.loader.sendMouseWheel(this.sessionId, src['x'], src['y'], sendDelta);
       const sendIndex: number = ++this.physicalWheelSendCount;
       if (sendIndex <= 12 || sendIndex % 50 === 0) {

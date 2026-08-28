@@ -24,6 +24,10 @@ constexpr int kRawEncoding = 0;
 constexpr int kCopyRectEncoding = 1;
 constexpr int kZrleEncoding = 16;
 constexpr size_t kMaxTextInputCodepoints = 4096;
+// UI-normalized VNC wheel input can emit up to 80 clicks after the device-
+// accepted 10x gain. Keep a bounded margin for direct native callers without
+// truncating the supported ArkTS path.
+constexpr int kMaxWheelBurstSteps = 128;
 
 /** Accept only the RFB 3.x banner versions supported by the engine. */
 bool protocolBannerIsSupported(const uint8_t* data, size_t size);
@@ -36,6 +40,14 @@ uint8_t clientInitSharedFlag();
  * as 3.3 rather than being silently upgraded to a newer dialect.
  */
 int normalizeRfbMinor(int advertisedMinor);
+
+/**
+ * Legacy RFB 3.3 peers include macOS Screen Sharing, which can defer its
+ * first Cursor pseudo-rectangle. Keep a local pointer during that bootstrap;
+ * modern peers without a Cursor rectangle are treated as framebuffer-cursor
+ * servers (for example UltraVNC with cursor-shape updates disabled).
+ */
+bool keepsLocalCursorDuringBootstrap(int negotiatedMinor);
 
 /**
  * Whether the negotiated security type is followed by SecurityResult.
@@ -52,6 +64,15 @@ bool securityResultExpected(int negotiatedMinor, uint8_t selectedSecurityType);
 std::vector<uint8_t> buildFramebufferUpdateRequest(bool incremental,
                                                    uint16_t width,
                                                    uint16_t height);
+
+/**
+ * Build a bounded RFB PointerEvent wheel burst. Each logical step is one
+ * button-4/5 down/up pair, preserving held primary buttons and clamping the
+ * coordinates to the negotiated framebuffer.
+ */
+std::vector<uint8_t> buildPointerWheelBurst(int buttonMask, int x, int y,
+                                            int delta, int framebufferWidth,
+                                            int framebufferHeight);
 
 /**
  * Resolve the requested true-colour depth. Explicit 8/16/32-bit choices win;

@@ -8017,6 +8017,9 @@ static napi_value CreateRemoteCursorSnapshotValue(
     napi_value protocolShapeAvailable;
     napi_get_boolean(env, snapshot.protocolShapeAvailable, &protocolShapeAvailable);
     napi_set_named_property(env, result, "protocolShapeAvailable", protocolShapeAvailable);
+    napi_value legacyVncCursorBootstrap;
+    napi_get_boolean(env, snapshot.legacyVncCursorBootstrap, &legacyVncCursorBootstrap);
+    napi_set_named_property(env, result, "legacyVncCursorBootstrap", legacyVncCursorBootstrap);
 
     napi_value pixels = nullptr;
     if (transferredPixels != nullptr && !transferredPixels->empty()) {

@@ -2,10 +2,10 @@
   "spdxVersion": "SPDX-2.3",
   "dataLicense": "CC0-1.0",
   "SPDXID": "SPDXRef-DOCUMENT",
-  "name": "RemoteDeskHarmonyOS-728c39c3a1ae67a56bdab092df666859b8bf5c26",
-  "documentNamespace": "https://github.com/Mydstiny/RemoteDeskHarmonyOS/spdx/728c39c3a1ae67a56bdab092df666859b8bf5c26",
+  "name": "RemoteDeskHarmonyOS-5c20204b276ee7eed05ae1cfe9732fdc0fee9299",
+  "documentNamespace": "https://github.com/Mydstiny/RemoteDeskHarmonyOS/spdx/5c20204b276ee7eed05ae1cfe9732fdc0fee9299",
   "creationInfo": {
-    "created": "2026-08-04T13:17:18Z",
+    "created": "2026-08-27T16:25:26Z",
     "creators": [
       "Tool: scripts/generate_sbom.ps1",
       "Organization: RemoteDeskHarmonyOS"
@@ -15,7 +15,7 @@
     {
       "name": "RemoteDeskHarmonyOS",
       "SPDXID": "SPDXRef-Package-RemoteDeskHarmonyOS",
-      "versionInfo": "1.1.2",
+      "versionInfo": "1.1.3",
       "downloadLocation": "https://github.com/Mydstiny/RemoteDeskHarmonyOS",
       "filesAnalyzed": false,
       "licenseConcluded": "AGPL-3.0-or-later",
@@ -983,27 +983,6 @@
       "comment": "Reviewed supplier logo assets selected for offline TOTP matching; each source, hash, license assertion and trademark guidance is recorded in the officialOverrides section of the single-source TOTP manifest; svglogos-catalog entries are not asserted to be official brand-kit assets."
     },
     {
-      "name": "moonlight-qt-official-protocol-icon",
-      "SPDXID": "SPDXRef-Package-Moonlight-Qt-Icon",
-      "versionInfo": "2e13ed9977bc31c73caf8428f08f58d793313ece",
-      "downloadLocation": "https://github.com/moonlight-stream/moonlight-qt/tree/2e13ed9977bc31c73caf8428f08f58d793313ece",
-      "filesAnalyzed": true,
-      "packageVerificationCode": {
-        "packageVerificationCodeValue": "b87433cda9e9811ef51c3a784e6c31c3a3b00a82"
-      },
-      "licenseConcluded": "GPL-3.0-only",
-      "licenseDeclared": "GPL-3.0-only",
-      "copyrightText": "Moonlight Game Streaming Project contributors",
-      "externalRefs": [
-        {
-          "referenceCategory": "PACKAGE-MANAGER",
-          "referenceType": "purl",
-          "referenceLocator": "pkg:github/moonlight-stream/moonlight-qt@2e13ed9977bc31c73caf8428f08f58d793313ece"
-        }
-      ],
-      "comment": "Official app/res/moonlight.svg originalSha256=6fd0ee4fe5b4aad5abaa5d5c9acb9f7d1bda0abadfe9d1582115de9b4ba16aa2; packaged deterministic monochrome tintable transform; geometry and trademark boundary documented in docs/compliance/MOONLIGHT_ICON_PROVENANCE.md"
-    },
-    {
       "name": "moonlight-common-c",
       "SPDXID": "SPDXRef-Package-Moonlight-Common-C",
       "versionInfo": "e41355ea01670fd4c830b384009d31dd0339a705",
@@ -1056,6 +1035,27 @@
         }
       ],
       "comment": "Exact unmodified source snapshot; repository=https://github.com/sleepybishop/nanors; revision=b1e3c22ca0cdc0bb83e3cd6ed1a2fc77869ed99a; tree=b06686f843269415217ebeb90c8975be297f0d30; contentManifestSha256=6e35c00ffe6361ee5fb45fd4c4bc470f94d6ead3596778c633e007f8f3e9b2e0"
+    },
+    {
+      "name": "moonlight-qt-official-protocol-icon",
+      "SPDXID": "SPDXRef-Package-Moonlight-Qt-Icon",
+      "versionInfo": "2e13ed9977bc31c73caf8428f08f58d793313ece",
+      "downloadLocation": "https://github.com/moonlight-stream/moonlight-qt/tree/2e13ed9977bc31c73caf8428f08f58d793313ece",
+      "filesAnalyzed": true,
+      "packageVerificationCode": {
+        "packageVerificationCodeValue": "b87433cda9e9811ef51c3a784e6c31c3a3b00a82"
+      },
+      "licenseConcluded": "GPL-3.0-only",
+      "licenseDeclared": "GPL-3.0-only",
+      "copyrightText": "Moonlight Game Streaming Project contributors",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:github/moonlight-stream/moonlight-qt@2e13ed9977bc31c73caf8428f08f58d793313ece"
+        }
+      ],
+      "comment": "Official app/res/moonlight.svg originalSha256=6fd0ee4fe5b4aad5abaa5d5c9acb9f7d1bda0abadfe9d1582115de9b4ba16aa2; packaged deterministic monochrome tintable transform; geometry and trademark boundary documented in docs/compliance/MOONLIGHT_ICON_PROVENANCE.md"
     }
   ],
   "files": [
@@ -8830,11 +8830,6 @@
       "relatedSpdxElement": "SPDXRef-File-TotpOfficialBrand-authy"
     },
     {
-      "spdxElementId": "SPDXRef-Package-Moonlight-Qt-Icon",
-      "relationshipType": "CONTAINS",
-      "relatedSpdxElement": "SPDXRef-File-Moonlight-Qt-Icon"
-    },
-    {
       "spdxElementId": "SPDXRef-Package-Moonlight-Common-C",
       "relationshipType": "CONTAINS",
       "relatedSpdxElement": "SPDXRef-File-MoonlightVendor-8bcbe6feafe10d42e6eea8bd"
@@ -9422,11 +9417,6 @@
     {
       "spdxElementId": "SPDXRef-Package-RemoteDeskHarmonyOS",
       "relationshipType": "DEPENDS_ON",
-      "relatedSpdxElement": "SPDXRef-Package-Moonlight-Qt-Icon"
-    },
-    {
-      "spdxElementId": "SPDXRef-Package-RemoteDeskHarmonyOS",
-      "relationshipType": "DEPENDS_ON",
       "relatedSpdxElement": "SPDXRef-Package-Moonlight-Common-C"
     },
     {
@@ -9448,6 +9438,16 @@
       "spdxElementId": "SPDXRef-Package-Moonlight-Common-C",
       "relationshipType": "DEPENDS_ON",
       "relatedSpdxElement": "SPDXRef-Package-Moonlight-Nanors"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Moonlight-Qt-Icon",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-Moonlight-Qt-Icon"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-RemoteDeskHarmonyOS",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Package-Moonlight-Qt-Icon"
     }
   ]
 }

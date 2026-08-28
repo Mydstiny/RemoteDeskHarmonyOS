@@ -1,48 +1,60 @@
 {
   "schema": 1,
-  "task": "moonlight-crud-compatibility",
-  "branch": "codex/moonlight-crud-compatibility",
-  "base": "a773346f6dd373c16d3e64cf241fed036b52061e",
-  "head": "79da70a46e5672cf4548856ef00def4c2c1cea34",
-  "phase": "merge",
+  "task": "vnc-cursor-wheel-regression",
+  "branch": "codex/vnc-cursor-wheel-regression",
+  "base": "0b8e5bf602a6f7ddf22918a5ec346f0be1b750a7",
+  "head": "831d2515fef092a25f2515ab2b303105f190fc88",
+  "phase": "ready-for-pr",
   "status": "active",
-  "next": "Push the reviewed branch, merge its PR, then fast-forward local main.",
-  "blockers": [
-    "Device Hypium task is unavailable with 00306054; no on-device test execution is currently claimed."
-  ],
+  "next": "Open the reviewed branch PR, wait for the required check, merge and synchronize main.",
+  "blockers": [],
   "planPaths": [
-    "docs/codex/plans/2026-08-27-moonlight-crud-compatibility.md"
+    "docs/codex/plans/2026-08-27-vnc-cursor-wheel-regression.md"
   ],
   "review": {
     "status": "PASS",
     "taskIds": [
-      "/root/review_moonlight_crud_compat"
+      "/root/vnc_wheel_review",
+      "/root/resource_table_guard_review"
     ],
-    "reviewedHead": "79da70a46e5672cf4548856ef00def4c2c1cea34",
+    "reviewedHead": "099568c4bc0dfee63897e2736cff7a1449ad79d4",
     "scope": [
-      "entry/src/main/ets/services/CloudStore.ets",
-      "entry/src/main/ets/services/MoonlightSettingsLocalService.ets",
-      "entry/src/main/ets/services/MoonlightLocalHostService.ets",
-      "entry/src/main/ets/services/MoonlightDeletionCommandService.ets",
-      "entry/src/main/ets/services/MoonlightHostUnpairRuntime.ets",
-      "entry/src/main/ets/services/MoonlightRepository.ets",
-      "entry/src/main/ets/services/MoonlightCloudDeletionPolicy.ets",
-      "entry/src/main/ets/services/MoonlightStoragePolicy.ets",
-      "entry/src/main/ets/pages/HostListPage.ets",
-      "entry/src/main/ets/pages/MoonlightHostDetailPage.ets",
-      "entry/src/test"
+      "entry/src/main/ets/services/RemoteWheelPolicy.ets",
+      "entry/src/main/ets/services/VncPhysicalWheelPolicy.ets",
+      "entry/src/main/ets/services/VncSessionUiPolicy.ets",
+      "entry/src/main/ets/pages/RemoteDesktop.ets",
+      "entry/src/main/ets/types/rdpnapi.d.ts",
+      "entry/src/main/cpp/extensions/extension_loader_napi.cpp",
+      "entry/src/main/cpp/input/remote_cursor_snapshot.h",
+      "entry/src/main/cpp/types/librdpnapi/index.d.ts",
+      "entry/src/main/cpp/test/callback_entry_integration_test.cpp",
+      "entry/src/main/cpp/vnc/vnc_adapter.cpp",
+      "entry/src/main/cpp/vnc/vnc_adapter.h",
+      "entry/src/main/cpp/vnc/vnc_cursor_protocol.cpp",
+      "entry/src/main/cpp/vnc/vnc_rfb_engine.cpp",
+      "entry/src/main/cpp/vnc/vnc_rfb_engine.h",
+      "entry/src/main/cpp/vnc/vnc_rfb_protocol.cpp",
+      "entry/src/main/cpp/vnc/vnc_rfb_protocol.h",
+      "entry/src/main/cpp/test/vnc_cursor_protocol_test.cpp",
+      "entry/src/main/cpp/test/vnc_rfb_protocol_test.cpp",
+      "entry/src/test/RemoteWheelPolicy.test.ets",
+      "entry/src/test/VncPhysicalWheelPolicy.test.ets",
+      "entry/src/test/VncSessionUiPolicy.test.ets",
+      "scripts/macos_hvigorw.sh",
+      "scripts/tests/test_macos_hvigor_guard.sh"
     ],
-    "lastReceiptId": "moonlight-crud-compatibility-79da70a4-2026-08-27",
+    "lastReceiptId": "vnc-cursor-wheel-regression-resource-table-099568c4-2026-08-28",
     "findings": [],
-    "reason": "Independent read-only review passed for a773346f6..79da70a4 with P0/P1/P2/P3 all zero."
+    "reason": "The prior VNC receipts remain valid and an independent incremental reviewer verified the exact ResourceTable 10310009 recovery delta with P0/P1/P2/P3 all zero."
   },
   "lastVerification": {
-    "baseline": "clean synchronized main@a773346f6",
-    "testCompile": "PASS exact default@OhosTestCompileArkTS 1s427ms; focused static registration exact 257",
-    "assembleHap": "PASS exact signed assembleHap 2m19s836ms sha256=3249768c5030ff113ba3c73c0bee6e4146ad4d45281de42934ae63c897228cbb",
-    "targetedTests": "compile-registered exact 257; legacy replay PASS 1.0.7/1.0.8-initial/1.1.1-initial; ohosTest blocked 00306054",
-    "compliance": "PASS git diff --check and Light",
-    "review": "PASS P0=0 P1=0 P2=0 P3=0 by /root/review_moonlight_crud_compat"
+    "baseline": "clean synchronized main@0b8e5bf60",
+    "testCompile": "PASS exact default@OhosTestCompileArkTS 38s711ms after ResourceTable guard update",
+    "assembleHap": "PASS exact signed assembleHap 3m294ms after ResourceTable guard update",
+    "targetedTests": "PASS exact 10310009 ResourceTable module-context recovery regression; PASS DevEco SAFE assembleApp 9s860ms exit 0; PASS direct 80-step VNC native wire case; full host native 797/813 with 16 known TLS fixture.start environment failures matching baseline",
+    "compliance": "PASS git diff --check, SBOM integrity checks and Light",
+    "review": "PASS /root/vnc_wheel_review at 8e9ed4ea8 plus /root/resource_table_guard_review for bf397173e; P0/P1/P2/P3 all zero",
+    "deviceAcceptance": "PASS user confirmed the reviewed 1.1.3 VNC wheel build on 2026-08-28"
   },
-  "updated": "2026-08-27 Asia/Shanghai"
+  "updated": "2026-08-28 Asia/Shanghai"
 }
