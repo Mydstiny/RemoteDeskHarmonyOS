@@ -1,48 +1,55 @@
 {
   "schema": 1,
-  "task": "system-clipboard-activation-fix",
+  "task": "harmonyos-app-clone",
   "branch": "codex/system-clipboard-activation-fix",
-  "base": "181e79783",
-  "head": "94be1858",
+  "base": "8984f588e",
+  "head": "0ca361a7",
   "phase": "ready-for-device-validation",
   "status": "active",
-  "next": "Validate a release-provisioned build on device without uninstalling the existing package or clearing its data.",
+  "next": "Run release-provisioned phone and tablet app-clone acceptance without uninstalling the existing package or clearing user data.",
   "blockers": [
-    "Device update is blocked by release/debug provisioning mismatch (9568286); the installed app and its data were preserved."
+    "The project does not register an ohosTest module; the focused test command fails with 00302018 Unknown module 'ohosTest'.",
+    "No usable HDC target is connected, and release-provisioned phone/tablet app-clone lifecycle and data-isolation acceptance remain pending.",
+    "The existing device package cannot be updated by the local debug-provisioned HAP (9568286); the installed app and its data must remain intact."
   ],
   "planPaths": [
-    "docs/codex/plans/2026-08-28-system-clipboard-activation-fix.md"
+    "docs/codex/plans/2026-08-28-harmonyos-app-clone.md"
   ],
   "review": {
     "status": "PASS",
     "taskIds": [
-      "/root/clipboard_activation_review"
+      "/root/review_app_clone"
     ],
-    "reviewedHead": "94be18584960994283bb0859aab4f230ad6a1f27",
+    "reviewedHead": "0ca361a73c1b5de8b0c2f29d0b355e0869fc250e",
     "scope": [
-      "entry/src/main/module.json5",
+      "AppScope/app.json5",
+      "entry/src/main/ets/entryability/EntryAbility.ets",
+      "entry/src/main/ets/pages/HostListPage.ets",
+      "entry/src/main/ets/pages/LoginPage.ets",
       "entry/src/main/ets/pages/RemoteDesktop.ets",
-      "entry/src/main/ets/services/ClipboardBridgeService.ets",
-      "entry/src/main/ets/services/ClipboardSyncPolicy.ets",
-      "entry/src/test/ClipboardSyncPolicy.test.ets"
+      "entry/src/main/ets/services/AccountSessionCoordinator.ets",
+      "entry/src/main/ets/services/AppCloneContext.ets",
+      "entry/src/main/ets/services/CloudStore.ets",
+      "entry/src/test/AppCloneContext.test.ets",
+      "entry/src/test/List.test.ets"
     ],
-    "lastReceiptId": "system-clipboard-activation-fix-94be1858-2026-08-28",
     "findings": [
-      "P1: unknown permission errors could throw again and remove the remote-only bridge (fixed in 94be1858)",
-      "P1: clipboardSend incorrectly gated VNC view-only remote-to-local sync (fixed in 94be1858)",
-      "P2: invalid permission request result 2 was reported as user denial (fixed in 94be1858)",
-      "P2: later system-settings authorization did not activate local monitoring (fixed in 94be1858)"
+      "P1: device-wide SystemPasteboard could relay remote clipboard text across the main app and clone (remediated in 0ca361a7)",
+      "P2: local backup/restore cancellation could expose the clone cloud-actions UI (remediated in 0ca361a7)",
+      "P2: runtime probe and security-wiring seams lacked focused tests (remediated in 0ca361a7)"
     ],
-    "reason": "The same independent reviewer verified all four remediated findings and the complete clipboard scope at 94be1858; final P0/P1/P2/P3 are zero."
+    "lastReceiptId": "harmonyos-app-clone-0ca361a7-2026-08-28",
+    "reason": "The same independent reviewer verified the three remediations and complete cumulative scope at 0ca361a7; final P0/P1/P2/P3 are zero."
   },
   "lastVerification": {
-    "baseline": "clean synchronized main@181e79783",
-    "testCompile": "PASS: default@OhosTestCompileArkTS, BUILD SUCCESSFUL in 8 s 624 ms",
-    "assembleHap": "PASS: signed HAP, BUILD SUCCESSFUL in 15 s 905 ms",
-    "targetedTests": "PASS: ClipboardSyncPolicy permission and receive-only activation decisions registered and compiled in the required test gate",
+    "baseline": "Application-clone increment starts at 8984f588e on the user-authorized existing task branch.",
+    "testCompile": "PASS: default@OhosTestCompileArkTS, BUILD SUCCESSFUL in 19 s 215 ms",
+    "assembleHap": "PASS: signed HAP, BUILD SUCCESSFUL in 26 s 610 ms",
+    "targetedTests": "BLOCKED: ohosTest@OhosTestCompileArkTS reports 00302018 Unknown module 'ohosTest'; policy tests are registered in entry/src/test/List.test.ets.",
+    "manifest": "PASS: packaged module metadata contains appClone with maxCount 1 for phone, tablet and 2in1.",
     "compliance": "PASS: Light open-source compliance and git diff --check",
-    "review": "PASS: /root/clipboard_activation_review at 94be1858; all four findings closed; P0/P1/P2/P3 zero",
-    "deviceAcceptance": "BLOCKED: release/debug provisioning mismatch 9568286; existing app data preserved"
+    "review": "PASS: /root/review_app_clone at 0ca361a7 after one P1 and two P2 remediations; P0/P1/P2/P3 zero",
+    "deviceAcceptance": "BLOCKED: no usable HDC target and release/debug provisioning mismatch 9568286; existing app data preserved."
   },
   "updated": "2026-08-28 Asia/Shanghai"
 }

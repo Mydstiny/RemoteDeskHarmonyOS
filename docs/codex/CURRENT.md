@@ -2,81 +2,74 @@
 
 ## Active task
 
-- Task: `system-clipboard-activation-fix`
-- Branch/base: `codex/system-clipboard-activation-fix` from synchronized
-  `main@181e79783`.
-- Phase: implementation and independent review are complete at `94be1858`;
-  device validation awaits a release-provisioned build.
-- Plan: `docs/codex/plans/2026-08-28-system-clipboard-activation-fix.md`
+- Task: `harmonyos-app-clone`
+- Branch: `codex/system-clipboard-activation-fix`; the user explicitly
+  authorized continuing this task in the existing worktree.
+- Incremental base/code head: `8984f588e..0ca361a7`.
+- Phase: implementation and independent review are complete; release-
+  provisioned phone/tablet validation is pending.
+- Plan: `docs/codex/plans/2026-08-28-harmonyos-app-clone.md`
 
 ## Objective
 
-- Make local HarmonyOS system-clipboard text available to RDP, RustDesk and
-  VNC immediately after connection, without requiring a prior file transfer.
-- Preserve current RDP file picker, drag/drop and system-file paste behavior.
-
-## Baseline
-
-- Clean synchronized `main@181e79783`, equal to `origin/main` when started.
-- Two unrelated untracked plan documents are present and excluded from this
-  task: `2026-08-28-harmonyos-app-clone.md` and
-  `2026-08-28-rustdesk-mobile-display-input-quick-optimization.md`.
-
-## Confirmed diagnosis
-
-- API 23 requires `READ_PASTEBOARD` for both `getData()` and
-  `getUnifiedData()`, while the installed 1.1.3 package did not request it.
-- The text bridge converted permission error 201 to empty text, but RDP system
-  file paste was the only path that attempted a late permission request.
-- RDP already advertises `CF_UNICODETEXT` at `MONITOR_READY` and on accepted
-  local text changes, so no native CLIPRDR wake-up change is needed.
-- The current debug provisioning profile already contains the required
-  `READ_PASTEBOARD` ACL.
+- Enable HarmonyOS system application cloning for one RemoteDesk clone on
+  phone, tablet and 2in1 devices.
+- Keep the main application behavior unchanged while the first clone release
+  remains local-only and fail-closed for account, cloud and automatic
+  clipboard integration.
 
 ## Implemented
 
-- Restored the manifest permission for both `EntryAbility` and
-  `RemoteSessionAbility`.
-- Added one shared read-access request used by text sync and RDP system-file
-  paste.
-- The session bridge requests access before local monitoring, establishes a
-  baseline immediately after grant, and reports denial/unavailability instead
-  of silently reading empty text.
-- Permission denial keeps the remote-to-local poll active. A later successful
-  authorization from either the initial prompt, RDP file paste or system
-  settings enables local monitoring immediately without rebuilding the bridge.
-- VNC view-only sessions now start the remote-to-local bridge before the first
-  `ServerCutText` and never request local-read access.
-- Invalid permission requests and ordinary exceptions are reported as
-  unavailable without tearing down the remote-only bridge.
-- Added focused policy coverage for pre-granted, newly granted, denied,
-  invalid/unavailable and receive-only activation states.
+- Declared `multiAppModeType: appClone` with `maxCount: 1`; packaged metadata
+  confirms the declaration for phone, tablet and 2in1.
+- Centralized `getCurrentAppCloneIndex()` behind `AppCloneContext`; index `0`
+  preserves main-app policy, clone indices are local-only, and probe failures
+  fail closed.
+- The clone skips AGC Auth initialization and rejects Account Kit transitions,
+  distributed-table registration, retries and manual/automatic cloud paths.
+- Login and settings UI identify the clone as local-only, hide account/cloud
+  actions and retain local backup/restore.
+- Local backup/restore cancellation closes the clone sheet instead of exposing
+  cloud actions.
+- The clone disables RemoteDesk's complete bidirectional automatic clipboard
+  bridge because SystemPasteboard is device-wide. User-driven system copy and
+  paste still follows platform behavior.
+- Added focused policy tests for index normalization, runtime-probe failure,
+  account/cloud/clipboard guards and local-only sheet navigation.
 
 ## Review
 
-- The first independent review found two P1 and two P2 issues: unsafe unknown
-  error formatting, a send-only startup gate, invalid-result
-  misclassification and no late-grant activation outside RDP file paste.
-- All four findings are fixed in `94be1858`. The same reviewer verified the
-  complete scope: PASS, P0/P1/P2/P3 all zero.
-
-## Next
-
-1. Validate a release-provisioned build on device without removing the existing
-   application or clearing its data.
+- Initial independent review found one P1 and two P2 issues: device-wide
+  clipboard relay, a local-sheet return path into cloud UI, and insufficient
+  runtime/wiring tests.
+- All three were fixed in `0ca361a7`. The same reviewer verified the cumulative
+  scope `8984f588e..0ca361a7`: PASS, P0/P1/P2/P3 all zero.
 
 ## Verification
 
-- `default@OhosTestCompileArkTS`: PASS (`BUILD SUCCESSFUL in 8 s 624 ms`).
-- `assembleHap`: PASS, signed (`BUILD SUCCESSFUL in 15 s 905 ms`).
-- Signed HAP manifest inspection: PASS; permission and both abilities present.
+- `default@OhosTestCompileArkTS`: PASS (`BUILD SUCCESSFUL in 19 s 215 ms`).
+- `assembleHap`: PASS, signed (`BUILD SUCCESSFUL in 26 s 610 ms`), SHA-256
+  `f8e0a1685c5793e295443b240a9d05c9555b7ec6e5d7e814c4d789e6e302fb71`.
+- Packaged manifest inspection: PASS; `appClone`, `maxCount: 1`, phone, tablet
+  and 2in1 are present.
 - Light open-source compliance: PASS.
 - `git diff --check`: PASS.
-- Independent review: PASS at `94be1858`; P0/P1/P2/P3 all zero.
+- Independent review: PASS at `0ca361a7`; P0/P1/P2/P3 all zero.
+
+## Next
+
+1. Install a release-provisioned HAP on one supported phone and one tablet.
+2. Validate clone creation, upgrade, deletion, main uninstall behavior, local
+   data isolation, remote-session concurrency and automatic clipboard denial.
+3. Re-run the inherited system-clipboard release-device acceptance without
+   removing the existing application or clearing its data.
 
 ## Blockers
 
-- Device update is blocked because the installed package uses release
-  provisioning while the local signed HAP uses debug provisioning (install
-  error `9568286`). The existing app was not uninstalled and its data was not
-  cleared.
+- The project does not register an `ohosTest` module; focused test compilation
+  fails with `00302018 Unknown module 'ohosTest'`. The suite is registered in
+  `entry/src/test/List.test.ets` and compiles through the mandatory test gate.
+- HDC could not connect to a usable target in this session.
+- The installed device package uses release provisioning while the local HAP
+  uses debug provisioning (`9568286`); the installed app and data were
+  preserved. Release-provisioned phone/tablet acceptance remains required.
