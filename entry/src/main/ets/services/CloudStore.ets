@@ -435,6 +435,7 @@ import {
   COMPATIBILITY_MUTATION_METADATA_PREFIX,
   COMPATIBILITY_MUTATION_PREFERENCES_NAME,
   compatibilityMutationPreferenceKey,
+  AccountScopedRecoveryBaselineCapture,
   LegacySharedStoreMigrationResult,
   LegacySharedStoreMigrator
 } from './LegacySharedStoreMigrator';
@@ -905,12 +906,13 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
     return this.lastScopeRebindFailure;
   }
 
-  capturePendingCloudBindingSourceBaseline(): boolean {
+  capturePendingCloudBindingSourceBaseline():
+    AccountScopedRecoveryBaselineCapture {
     if (!this.initialized || this.store === null ||
         this.currentScopeToken.kind !== 'huawei_account' ||
         this.currentScopeToken.storeIdentity ===
           ACCOUNT_CLOUD_STORE_IDENTITY) {
-      return false;
+      return { fingerprint: '', storedInSource: false };
     }
     return LegacySharedStoreMigrator.getInstance()
       .captureAccountScopedRecoveryBaseline(

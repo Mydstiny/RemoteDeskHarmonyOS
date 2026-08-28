@@ -9,9 +9,19 @@ import {
   legacyRowOwnershipDecision,
   legacyVncRowMigrationDecision
 } from '../main/ets/services/LegacySharedStoreMigrationPolicy';
+import {
+  legacyMigrationSha256Hex
+} from '../main/ets/services/LegacySharedStoreMigrator';
 
 export default function legacySharedStoreMigrationPolicyTest(): void {
   describe('LegacySharedStoreMigrationPolicy', (): void => {
+    it('hashes_an_empty_mutation_journal_without_a_zero_length_provider_update',
+      0, (): void => {
+        expect(legacyMigrationSha256Hex('')).assertEqual(
+          'e3b0c44298fc1c149afbf4c8996fb924' +
+          '27ae41e4649b934ca495991b7852b855');
+      });
+
     it('refuses_to_hide_source_changes_after_a_committed_migration',
       0, (): void => {
         expect(accountScopedMigrationReceiptDecision(

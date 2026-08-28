@@ -481,6 +481,13 @@ function createBackupManifestV3(
 }
 
 export function localBackupSha256(text: string): string {
+  // Keep the public hash helper total on platform builds that reject a
+  // zero-length DataBlob in Md.updateSync. Non-empty backup behavior is
+  // unchanged; this is the standard SHA-256 digest of empty input.
+  if (text.length === 0) {
+    return 'e3b0c44298fc1c149afbf4c8996fb924' +
+      '27ae41e4649b934ca495991b7852b855';
+  }
   const md = cryptoFramework.createMd('SHA256');
   md.updateSync({ data: new util.TextEncoder().encode(text) });
   const bytes: Uint8Array = md.digestSync().data;

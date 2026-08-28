@@ -101,6 +101,13 @@ function portableVncHostRow(
 
 export default function localBackupPolicyTest(): void {
   describe('LocalBackupPolicy', (): void => {
+    it('hashes_empty_text_with_the_standard_digest_on_compatibility_platforms',
+      0, (): void => {
+        expect(localBackupSha256('')).assertEqual(
+          'e3b0c44298fc1c149afbf4c8996fb924' +
+          '27ae41e4649b934ca495991b7852b855');
+      });
+
     it('allows_backup_for_active_local_stores_without_requiring_cloud_binding',
       0, (): void => {
         const local = deviceLocalScopeToken(1);

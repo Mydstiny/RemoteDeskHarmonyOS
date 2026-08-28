@@ -10,6 +10,7 @@ import {
   AccountScopeToken,
   ACCOUNT_CLOUD_STORE_IDENTITY,
   accountLocalCompatibilityScopeToken,
+  accountStoreIdentity,
   cloudAccountBindingForScope,
   accountScopeToken,
   deviceLocalScopeToken,
@@ -47,12 +48,17 @@ import {
   RemoteSessionTransitionLease
 } from './RemoteSessionTransitionGate';
 import {
+  CLOUD_BINDING_RECOVERY_PREFERENCES_NAME,
   CloudBindingRecoveryState,
+  CloudBindingRecoverySourceAuthority,
   cloudBindingRecoveryAfterProof,
   cloudBindingRecoveryAfterRollback,
   cloudBindingRecoveryIsPending,
   cloudBindingRecoveryRepeatedDialogBlocked,
-  cloudBindingRecoveryRequested
+  cloudBindingRecoveryRequested,
+  cloudBindingRecoverySourceAuthorityKey,
+  cloudBindingRecoverySourceAuthorityInspect,
+  cloudBindingRecoverySourceAuthorityValue
 } from './CloudBindingRecoveryPolicy';
 
 export interface AccountLoginIdentity extends CredentialParams {
@@ -76,7 +82,8 @@ export interface AccountTransitionResult {
 
 type AccountTransitionAction = () => Promise<AccountTransitionResult>;
 
-const ACCOUNT_SESSION_PREFS: string = 'RemoteDesktopAppPrefs';
+const ACCOUNT_SESSION_PREFS: string =
+  CLOUD_BINDING_RECOVERY_PREFERENCES_NAME;
 const LOGIN_MODE_KEY: string = 'loginMode';
 
 /**
@@ -358,13 +365,20 @@ export class AccountSessionCoordinator {
       await PlatformCloudIdentityService.getInstance()
         .proveCurrentCloudAccount(
           this.context, identity.unionID);
-    const switching: AccountScopeToken | null =
+    const requested: AccountScopeToken | null =
       accountScopeToken(
         identity.unionID, generation, 'switching', 'validating',
         platformProof);
-    if (switching === null) {
+    if (requested === null) {
       return this.result(false, 'blocked', '账号没有返回稳定的 UnionID');
     }
+    const expectedLocalStoreIdentity: string =
+      accountStoreIdentity(requested.ownerScopeId);
+    const switching: AccountScopeToken = requested;
+    const sourceAuthority: CloudBindingRecoverySourceAuthority =
+      this.readCloudRecoverySourceAuthority(
+        requested.ownerScopeId,
+        expectedLocalStoreIdentity);
     const previousScope: AccountScopeToken = this.cloneScope(this.current);
     this.transitionLoginModeSnapshot = this.readLoginMode();
     const accountKit: AccountKitService = AccountKitService.getInstance();
@@ -432,13 +446,31 @@ export class AccountSessionCoordinator {
 
     const currentScope: AccountScopeToken = store.currentScope();
     let cloudRecoveryBaselineReady: boolean = true;
+    let capturedRecoveryFingerprint: string = '';
+    let recoveryBaselineStoredInSource: boolean = false;
     if (currentScope.storeIdentity !==
         ACCOUNT_CLOUD_STORE_IDENTITY) {
-      cloudRecoveryBaselineReady =
-        store.capturePendingCloudBindingSourceBaseline();
+      if (sourceAuthority.state === 'recoverable_source') {
+        cloudRecoveryBaselineReady = true;
+      } else if (sourceAuthority.state === 'absent' &&
+          primaryRebindFailure !== 'source_changed') {
+        const baselineCapture =
+          store.capturePendingCloudBindingSourceBaseline();
+        capturedRecoveryFingerprint =
+          baselineCapture.fingerprint;
+        recoveryBaselineStoredInSource =
+          baselineCapture.storedInSource;
+        cloudRecoveryBaselineReady =
+          recoveryBaselineStoredInSource ||
+          capturedRecoveryFingerprint !== '';
+      } else {
+        // An older process may already have admitted local writes. Capturing a
+        // new baseline now would incorrectly classify those rows as unchanged.
+        cloudRecoveryBaselineReady = false;
+      }
       if (!cloudRecoveryBaselineReady) {
         hilog.error(0x0001, 'AccountSession',
-          '本地兼容数据域恢复基线无法落盘；自动云绑定保持关闭');
+          '本地兼容数据域缺少可证明的写入前基线；自动云绑定保持关闭');
       }
     }
     // 云同步是否真正可用的判定必须同时满足: 账号绑定有效 且 物理库已完成
@@ -529,7 +561,27 @@ export class AccountSessionCoordinator {
         previousScope, previousCredential, previousAuth,
         generation + 1, '账号身份无效');
     }
-    if (!this.persistLoginMode('account')) {
+    let recoverySourceAuthorityValue: string = '';
+    if (currentScope.storeIdentity !== ACCOUNT_CLOUD_STORE_IDENTITY) {
+      if (sourceAuthority.state === 'recoverable_source' ||
+          sourceAuthority.state === 'local_source') {
+        recoverySourceAuthorityValue =
+          sourceAuthority.persistedValue;
+      } else if (sourceAuthority.state === 'uncertain' ||
+          primaryRebindFailure === 'source_changed') {
+        recoverySourceAuthorityValue =
+          cloudBindingRecoverySourceAuthorityValue(
+            expectedLocalStoreIdentity, '');
+      } else if (!recoveryBaselineStoredInSource) {
+        recoverySourceAuthorityValue =
+          cloudBindingRecoverySourceAuthorityValue(
+            expectedLocalStoreIdentity,
+            capturedRecoveryFingerprint);
+      }
+    }
+    if (!this.persistAccountLoginState(
+      currentScope.ownerScopeId,
+      recoverySourceAuthorityValue)) {
       return await this.restorePreviousScope(
         previousScope, previousCredential, previousAuth,
         generation + 1, '登录状态未能持久化');
@@ -1059,6 +1111,74 @@ export class AccountSessionCoordinator {
       const prefs = preferences.getPreferencesSync(
         this.context, { name: ACCOUNT_SESSION_PREFS });
       prefs.putSync(LOGIN_MODE_KEY, mode);
+      prefs.flushSync();
+      return true;
+    } catch (_error) {
+      return false;
+    }
+  }
+
+  private readCloudRecoverySourceAuthority(
+    ownerScopeId: string,
+    expectedLocalStoreIdentity: string
+  ): CloudBindingRecoverySourceAuthority {
+    if (this.context === null) {
+      return cloudBindingRecoverySourceAuthorityInspect(
+        '', expectedLocalStoreIdentity, false);
+    }
+    const key: string =
+      cloudBindingRecoverySourceAuthorityKey(ownerScopeId);
+    if (key === '' || expectedLocalStoreIdentity.trim() === '') {
+      return cloudBindingRecoverySourceAuthorityInspect(
+        '', expectedLocalStoreIdentity, false);
+    }
+    try {
+      const prefs = preferences.getPreferencesSync(
+        this.context, { name: ACCOUNT_SESSION_PREFS });
+      const stored: Object = prefs.getSync(key, '') as Object;
+      if (typeof stored !== 'string') {
+        return cloudBindingRecoverySourceAuthorityInspect(
+          '', expectedLocalStoreIdentity, false);
+      }
+      return cloudBindingRecoverySourceAuthorityInspect(
+        stored as string, expectedLocalStoreIdentity, true);
+    } catch (_error) {
+      return cloudBindingRecoverySourceAuthorityInspect(
+        '', expectedLocalStoreIdentity, false);
+    }
+  }
+
+  /**
+   * The login mode and recovery-source authority share one Preferences flush.
+   * Therefore a session cannot publish local writes after a failed baseline
+   * capture unless the next process can identify that exact owner/store and
+   * compare it with the pre-write fingerprint (or refuse an unsafe switch).
+   */
+  private persistAccountLoginState(
+    ownerScopeId: string,
+    recoverySourceAuthorityValue: string
+  ): boolean {
+    if (this.context === null) { return false; }
+    const key: string =
+      cloudBindingRecoverySourceAuthorityKey(ownerScopeId);
+    if (key === '') { return false; }
+    try {
+      const prefs = preferences.getPreferencesSync(
+        this.context, { name: ACCOUNT_SESSION_PREFS });
+      prefs.putSync(LOGIN_MODE_KEY, 'account');
+      if (recoverySourceAuthorityValue !== '') {
+        prefs.putSync(key, recoverySourceAuthorityValue);
+      } else {
+        try {
+          if (prefs.hasSync(key)) { prefs.deleteSync(key); }
+        } catch (error) {
+          // A stale marker only causes another safe source comparison later;
+          // marker cleanup is not allowed to roll back an otherwise valid
+          // local login.
+          hilog.warn(0x0001, 'AccountSession',
+            '云恢复旧标记暂未清理；登录继续 err=' + safeError(error));
+        }
+      }
       prefs.flushSync();
       return true;
     } catch (_error) {

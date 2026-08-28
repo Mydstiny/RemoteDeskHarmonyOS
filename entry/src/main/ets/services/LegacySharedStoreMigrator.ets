@@ -34,6 +34,12 @@ import {
 import { moonlightValidateRecord } from './MoonlightRecordPolicy';
 import { moonlightRecordTypeIsPublicCloudData } from './MoonlightCloudDeletionPolicy';
 import { cloudSyncTableNames } from './CloudSyncPolicy';
+import {
+  CLOUD_BINDING_RECOVERY_PREFERENCES_NAME,
+  CloudBindingRecoverySourceAuthority,
+  cloudBindingRecoverySourceAuthorityInspect,
+  cloudBindingRecoverySourceAuthorityKey
+} from './CloudBindingRecoveryPolicy';
 
 export const ACCOUNT_SCOPED_SOURCE_CHANGED_ERROR: string =
   'account_scoped_source_changed_after_committed_migration';
@@ -51,6 +57,24 @@ export function compatibilityMutationPreferenceKey(
   const store: string = storeIdentity.trim();
   return owner === '' || store === '' ? '' :
     COMPATIBILITY_MUTATION_PREFERENCE_PREFIX + ':' + owner + ':' + store;
+}
+
+export function legacyMigrationSha256Hex(value: string): string {
+  // OpenHarmony 7.0.0.102 Beta2 rejects a zero-length DataBlob in
+  // Md.updateSync with 401. Preserve the standard SHA-256 identity for an
+  // empty mutation journal without asking the provider to update 0 bytes.
+  if (value.length === 0) {
+    return 'e3b0c44298fc1c149afbf4c8996fb924' +
+      '27ae41e4649b934ca495991b7852b855';
+  }
+  const md = cryptoFramework.createMd('SHA256');
+  md.updateSync({ data: new util.TextEncoder().encode(value) });
+  const bytes: Uint8Array = md.digestSync().data;
+  let hex: string = '';
+  for (let i = 0; i < bytes.length; i++) {
+    hex += bytes[i].toString(16).padStart(2, '0');
+  }
+  return hex;
 }
 
 const LEGACY_STORE_NAME: string = 'remotedesktop.db';
@@ -126,6 +150,11 @@ export interface LegacySharedStoreMigrationResult {
   skippedRows: number;
 }
 
+export interface AccountScopedRecoveryBaselineCapture {
+  fingerprint: string;
+  storedInSource: boolean;
+}
+
 export type LegacySharedStoreSourceKind = 'legacy' | 'account_scope';
 
 export interface LegacySharedStoreMigrationOptions {
@@ -151,30 +180,45 @@ export class LegacySharedStoreMigrator {
 
   captureAccountScopedRecoveryBaseline(
     source: relationalStore.RdbStore
-  ): boolean {
+  ): AccountScopedRecoveryBaselineCapture {
+    let fingerprint: string = '';
     try {
       const existing: string | null =
         this.localMetadataValue(
           source,
           ACCOUNT_SCOPED_RECOVERY_BASELINE_KEY);
       if (existing !== null) {
-        return existing.indexOf('journal-v1:') === 0;
+        const validExisting: boolean =
+          /^journal-v1:[0-9a-f]{64}$/.test(existing);
+        return {
+          fingerprint: validExisting ? existing : '',
+          storedInSource: validExisting
+        };
       }
-      const fingerprint: string =
-        this.sourceMutationFingerprint(source);
+      fingerprint = this.sourceMutationFingerprint(source);
+    } catch (error) {
+      hilog.warn(0x0001, 'CloudSync',
+        'account-scoped recovery baseline capture failed: ' +
+        this.errorDetail(error));
+      return { fingerprint: '', storedInSource: false };
+    }
+    try {
       this.insertRow(source, LOCAL_METADATA_TABLE, {
         key: ACCOUNT_SCOPED_RECOVERY_BASELINE_KEY,
         value: fingerprint,
         updatedat: Date.now()
       });
-      return this.localMetadataValue(
-        source,
-        ACCOUNT_SCOPED_RECOVERY_BASELINE_KEY) === fingerprint;
+      const storedInSource: boolean = this.localMetadataValue(
+        source, ACCOUNT_SCOPED_RECOVERY_BASELINE_KEY) === fingerprint;
+      return { fingerprint, storedInSource };
     } catch (error) {
       hilog.warn(0x0001, 'CloudSync',
         'account-scoped recovery baseline write failed: ' +
         this.errorDetail(error));
-      return false;
+      // The caller persists this pre-mutation fingerprint with the login
+      // state. It remains authoritative even when the source RDB rejects the
+      // redundant localmetadata row.
+      return { fingerprint, storedInSource: false };
     }
   }
 
@@ -239,10 +283,27 @@ export class LegacySharedStoreMigrator {
         const currentFingerprint: string =
           this.sourceMutationFingerprint(
             source, compatibilityRevisions);
-        const recoveryBaseline: string | null =
+        let recoveryBaseline: string | null =
           this.localMetadataValue(
             source,
             ACCOUNT_SCOPED_RECOVERY_BASELINE_KEY);
+        if (recoveryBaseline === null) {
+          const sourceAuthority:
+            CloudBindingRecoverySourceAuthority =
+            this.accountScopedRecoverySourceAuthority(
+              context, scope.ownerScopeId, sourceName);
+          if (sourceAuthority.state === 'recoverable_source') {
+            recoveryBaseline =
+              sourceAuthority.baselineFingerprint;
+          } else if (sourceAuthority.state === 'local_source' ||
+              sourceAuthority.state === 'uncertain') {
+            // A durable marker proves this local store may have admitted user
+            // writes after its in-RDB baseline failed. Never let an old
+            // file-stat receipt silently skip those rows.
+            throw new Error(
+              ACCOUNT_SCOPED_SOURCE_CHANGED_ERROR);
+          }
+        }
         const decision =
           accountScopedMigrationReceiptDecision(
             committedReceipt.sourceFingerprint,
@@ -1471,6 +1532,34 @@ export class LegacySharedStoreMigrator {
     return result;
   }
 
+  private accountScopedRecoverySourceAuthority(
+    context: common.Context,
+    ownerScopeId: string,
+    sourceStoreIdentity: string
+  ): CloudBindingRecoverySourceAuthority {
+    const key: string =
+      cloudBindingRecoverySourceAuthorityKey(ownerScopeId);
+    if (key === '') {
+      return cloudBindingRecoverySourceAuthorityInspect(
+        '', sourceStoreIdentity, false);
+    }
+    try {
+      const prefs = preferences.getPreferencesSync(
+        context,
+        { name: CLOUD_BINDING_RECOVERY_PREFERENCES_NAME });
+      const stored: Object = prefs.getSync(key, '') as Object;
+      if (typeof stored !== 'string') {
+        return cloudBindingRecoverySourceAuthorityInspect(
+          '', sourceStoreIdentity, false);
+      }
+      return cloudBindingRecoverySourceAuthorityInspect(
+        stored as string, sourceStoreIdentity, true);
+    } catch (_error) {
+      return cloudBindingRecoverySourceAuthorityInspect(
+        '', sourceStoreIdentity, false);
+    }
+  }
+
   private sourceMutationFingerprint(
     source: relationalStore.RdbStore,
     compatibilityRevisions: Record<string, number> = {}
@@ -1558,21 +1647,7 @@ export class LegacySharedStoreMigrator {
   }
 
   private sha256Hex(value: string): string {
-    // OpenHarmony 7.0.0.102 Beta2 rejects a zero-length DataBlob in
-    // Md.updateSync with 401. Preserve the standard SHA-256 identity for an
-    // empty mutation journal without asking the provider to update 0 bytes.
-    if (value.length === 0) {
-      return 'e3b0c44298fc1c149afbf4c8996fb924' +
-        '27ae41e4649b934ca495991b7852b855';
-    }
-    const md = cryptoFramework.createMd('SHA256');
-    md.updateSync({ data: new util.TextEncoder().encode(value) });
-    const bytes: Uint8Array = md.digestSync().data;
-    let hex: string = '';
-    for (let i = 0; i < bytes.length; i++) {
-      hex += bytes[i].toString(16).padStart(2, '0');
-    }
-    return hex;
+    return legacyMigrationSha256Hex(value);
   }
 
   private stringValue(value: relationalStore.ValueType | undefined): string {

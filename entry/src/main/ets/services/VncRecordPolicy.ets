@@ -77,6 +77,13 @@ export function vncCanonicalJson(values: Record<string, Object>): string {
 }
 
 export function vncPayloadHashSha256(payload: string): string {
+  // OpenHarmony 7.0.0.102 Beta2 rejects a zero-length DataBlob in
+  // Md.updateSync with 401. The empty payload remains hashable for quarantine
+  // and legacy compatibility by returning its standard SHA-256 identity.
+  if (payload.length === 0) {
+    return 'e3b0c44298fc1c149afbf4c8996fb924' +
+      '27ae41e4649b934ca495991b7852b855';
+  }
   const md = cryptoFramework.createMd('SHA256');
   md.updateSync({ data: new util.TextEncoder().encode(payload) });
   const digest: Uint8Array = new Uint8Array(md.digestSync().data);
