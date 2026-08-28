@@ -1,5 +1,5 @@
-export const CURRENT_RELEASE_VERSION: string = '1.1.3';
-export const CURRENT_RELEASE_VERSION_CODE: number = 1001003;
+export const CURRENT_RELEASE_VERSION: string = '1.1.4';
+export const CURRENT_RELEASE_VERSION_CODE: number = 1001004;
 
 export interface ReleaseNotePage {
   id: string;
@@ -11,6 +11,60 @@ export interface ReleaseNotePage {
 export function pagesForReleasedVersion(version: string): ReleaseNotePage[] {
   if (version !== CURRENT_RELEASE_VERSION) { return []; }
   return [
+    {
+      id: 'release-1-1-4',
+      symbol: $rawfile('icons/computer-desktop.svg'),
+      title: '1.1.4：连接、输入与数据恢复更稳',
+      desc: '在保留 1.1.3 全部五协议能力的基础上，集中完善敏感信息保护、剪贴板、会话操控、应用分身和云数据恢复。'
+    },
+    {
+      id: 'release-secret-visibility',
+      symbol: $rawfile('icons/shield-check.svg'),
+      title: '保存的敏感信息由你决定是否显示',
+      desc: '“数据与安全”新增本机显示策略，可按凭据类型隐藏已保存密码；修改主机其他信息时不会误清空原密码，应用锁定和高敏感凭据仍优先保持隐藏。'
+    },
+    {
+      id: 'release-clipboard-activation',
+      symbol: $rawfile('icons/command-line.svg'),
+      title: '文本剪贴板连接后即可使用',
+      desc: 'RDP、RustDesk 与 VNC 会在会话开始时正确激活系统剪贴板读取，无需先传输文件；仅接收模式、权限拒绝提示、断线重连与防回环行为继续保持。'
+    },
+    {
+      id: 'release-app-clone',
+      symbol: $rawfile('icons/folder-open.svg'),
+      title: '支持系统应用分身',
+      desc: '在支持该能力的 HarmonyOS 手机和平板上，可创建一个本地分身并独立保存主机、凭据、密钥和设置；分身默认不登录云账号、不参与云同步，也不启用自动剪贴板桥接。'
+    },
+    {
+      id: 'release-rustdesk-mobile',
+      symbol: $rawfile('icons/computer-desktop.svg'),
+      title: '控制手机时画面和触控更准确',
+      desc: 'RustDesk 修正手机横竖屏切换、纹理方向、缩放和平移坐标；直接触控的点击、滑动、长按与双指手势更贴近手机语义，异常中断时也会主动释放残留输入。'
+    },
+    {
+      id: 'release-session-ui-stability',
+      symbol: $rawfile('icons/key.svg'),
+      title: '键盘侧栏与会话界面更可靠',
+      desc: '图形会话的贴边入口可统一打开或关闭键盘界面，新增 Delete 编辑键；自定义快捷键编辑器会适应横屏、分屏和 PC 窗口，手机沉浸栏与设置折叠区域也更稳定。'
+    },
+    {
+      id: 'release-cloud-recovery',
+      symbol: $rawfile('icons/cloud.svg'),
+      title: '云服务异常不再阻断本地数据',
+      desc: '登录后的权限竞争或历史数据迁移失败时，会优先保留当前账号的本地读取与保存能力，并在条件恢复后安全重试；删除、清空和离线修改不会被旧云数据静默复活。'
+    },
+    {
+      id: 'release-rustdesk-desktop-flip',
+      symbol: $rawfile('icons/cog-6-tooth.svg'),
+      title: 'PC 端新增 RustDesk 桌面翻转',
+      desc: 'HarmonyOS PC 控制电脑时，可从顶部工具栏选择“仅翻转画面”“画面与控制一起翻转”或重置；选择按主机保存在本机，重连、画中画和窗口恢复后继续生效。'
+    },
+    {
+      id: 'release-wheel-direction',
+      symbol: $rawfile('icons/cog-6-tooth.svg'),
+      title: '五种协议可分别设置滚轮方向',
+      desc: '“显示与交互”现在可独立设置 RDP、RustDesk、SSH、VNC 与 Moonlight 的正常或反向滚动，并提供全部正常、全部反向操作；SFTP 文件列表不受影响。'
+    },
     {
       id: 'release-1-1-3',
       symbol: $rawfile('icons/computer-desktop.svg'),
@@ -82,6 +136,12 @@ export function pagesForReleasedVersion(version: string): ReleaseNotePage[] {
       symbol: $rawfile('icons/globe-alt.svg'),
       title: '欢迎使用 1.1.3',
       desc: '现在可以从主机工作台体验五种协议。第一次尝试新能力时先按界面核对服务端、身份与网络条件；完整步骤可从“设置 → 教程 → 操作引导中心”随时查看。'
+    },
+    {
+      id: 'welcome-1-1-4',
+      symbol: $rawfile('icons/globe-alt.svg'),
+      title: '欢迎使用 1.1.4',
+      desc: '本次更新延续五协议工作台，并把会话操控、敏感数据和异常恢复做得更稳。需要回看全部变化时，可随时打开“设置 → 教程 → 本版本更新日志”。'
     }
   ];
 }

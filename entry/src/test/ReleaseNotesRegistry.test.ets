@@ -11,9 +11,18 @@ function containsPage(pages: ReleaseNotePage[], id: string): boolean {
 
 export default function releaseNotesRegistryTest(): void {
   describe('ReleaseNotesRegistry', (): void => {
-    it('describes_the_current_1_1_3_release', 0, (): void => {
+    it('describes_the_current_1_1_4_release_without_removing_1_1_3_pages', 0, (): void => {
       const pages: ReleaseNotePage[] = pagesForReleasedVersion(CURRENT_RELEASE_VERSION);
-      expect(pages.length).assertEqual(12);
+      expect(pages.length).assertEqual(22);
+      expect(containsPage(pages, 'release-1-1-4')).assertTrue();
+      expect(containsPage(pages, 'release-secret-visibility')).assertTrue();
+      expect(containsPage(pages, 'release-clipboard-activation')).assertTrue();
+      expect(containsPage(pages, 'release-app-clone')).assertTrue();
+      expect(containsPage(pages, 'release-rustdesk-mobile')).assertTrue();
+      expect(containsPage(pages, 'release-session-ui-stability')).assertTrue();
+      expect(containsPage(pages, 'release-cloud-recovery')).assertTrue();
+      expect(containsPage(pages, 'release-rustdesk-desktop-flip')).assertTrue();
+      expect(containsPage(pages, 'release-wheel-direction')).assertTrue();
       expect(containsPage(pages, 'release-1-1-3')).assertTrue();
       expect(containsPage(pages, 'release-moonlight-workflow')).assertTrue();
       expect(containsPage(pages, 'release-moonlight-session')).assertTrue();
@@ -25,8 +34,9 @@ export default function releaseNotesRegistryTest(): void {
       expect(containsPage(pages, 'release-security-preflight')).assertTrue();
       expect(containsPage(pages, 'release-guidance')).assertTrue();
       expect(containsPage(pages, 'release-data-diagnostics')).assertTrue();
-      expect(pages[pages.length - 1].id).assertEqual('welcome-1-1-3');
-      expect(pages[pages.length - 1].title).assertEqual('欢迎使用 1.1.3');
+      expect(containsPage(pages, 'welcome-1-1-3')).assertTrue();
+      expect(pages[pages.length - 1].id).assertEqual('welcome-1-1-4');
+      expect(pages[pages.length - 1].title).assertEqual('欢迎使用 1.1.4');
     });
 
     it('does_not_advertise_unverified_or_removed_features', 0, (): void => {
