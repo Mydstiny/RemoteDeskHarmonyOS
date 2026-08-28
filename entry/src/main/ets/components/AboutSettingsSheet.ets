@@ -33,7 +33,7 @@ import {
 
 @Component
 export struct AboutSettingsSheet {
-  @Prop aboutSheetMode: number = 0;
+  @Prop @Watch('onAboutSheetModeChange') aboutSheetMode: number = 0;
   @Prop guideViewportHeight: number = 720;
   @StorageLink('currentTheme') theme: string = 'light';
   @StorageLink('accentColor') accentColor: string = '#007DFF';
@@ -51,12 +51,26 @@ export struct AboutSettingsSheet {
   @State guideLessonContentHeight: number = 0;
   @State releaseNotesIndex: number = 0;
   private releaseNotesController: SwiperController = new SwiperController();
-  private readonly releaseNotesItems: ReleaseNotePage[] =
-    pagesForReleasedVersion(CURRENT_RELEASE_VERSION);
+  @State releaseNotesItems: ReleaseNotePage[] = [];
 
   aboutToAppear(): void {
     this.guideDevice = guideDeviceFor(
       this.isDesktopDevice, this.isPadDevice, this.breakpoint);
+    this.refreshReleaseNotes();
+  }
+
+  private onAboutSheetModeChange(): void {
+    if (this.aboutSheetMode === 4) {
+      this.refreshReleaseNotes();
+    }
+  }
+
+  private refreshReleaseNotes(): void {
+    const currentItems: ReleaseNotePage[] = pagesForReleasedVersion(CURRENT_RELEASE_VERSION);
+    this.releaseNotesItems = currentItems;
+    if (this.releaseNotesIndex >= currentItems.length) {
+      this.releaseNotesIndex = currentItems.length > 0 ? currentItems.length - 1 : 0;
+    }
   }
 
   private pal(): Palette {
