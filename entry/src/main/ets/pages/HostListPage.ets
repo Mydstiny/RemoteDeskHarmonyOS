@@ -4164,6 +4164,10 @@ struct HostListPage {
   }
 
   private returnToCloudSyncActions(): void {
+    if (AppCloneContext.getInstance().localDataSheetReturnCloses()) {
+      this.closeSettingsLeafSheet();
+      return;
+    }
     this.cloudSyncError = '';
     this.cloudSyncStep = CLOUD_SYNC_SHEET_ACTIONS;
   }

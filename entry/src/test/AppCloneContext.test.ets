@@ -1,6 +1,11 @@
 import { describe, expect, it } from '@ohos/hypium';
 import {
+  appCloneAccountTransitionAllowed,
+  appCloneClipboardBridgeAllowed,
+  appCloneCloudOperationAllowed,
+  appCloneLocalDataSheetReturnCloses,
   appClonePolicyForIndex,
+  appClonePolicyFromIndexReader,
   normalizeAppCloneIndex
 } from '../main/ets/services/AppCloneContext';
 
@@ -37,6 +42,30 @@ export default function appCloneContextTest(): void {
       expect(policy.localOnly).assertTrue();
       expect(policy.cloudSyncAllowed).assertFalse();
       expect(policy.accountKitAllowed).assertFalse();
+    });
+
+    it('fails_closed_when_the_runtime_clone_index_probe_throws', 0, (): void => {
+      const detected = appClonePolicyFromIndexReader((): number => 0);
+      const failed = appClonePolicyFromIndexReader((): number => {
+        throw new Error('platform probe unavailable');
+      });
+      expect(detected.detected).assertTrue();
+      expect(detected.localOnly).assertFalse();
+      expect(failed.detected).assertFalse();
+      expect(failed.localOnly).assertTrue();
+    });
+
+    it('keeps_account_cloud_clipboard_and_sheet_guards_fail_closed', 0, (): void => {
+      const main = appClonePolicyForIndex(0);
+      const clone = appClonePolicyForIndex(1);
+      expect(appCloneAccountTransitionAllowed(main)).assertTrue();
+      expect(appCloneCloudOperationAllowed(main)).assertTrue();
+      expect(appCloneClipboardBridgeAllowed(main)).assertTrue();
+      expect(appCloneLocalDataSheetReturnCloses(main)).assertFalse();
+      expect(appCloneAccountTransitionAllowed(clone)).assertFalse();
+      expect(appCloneCloudOperationAllowed(clone)).assertFalse();
+      expect(appCloneClipboardBridgeAllowed(clone)).assertFalse();
+      expect(appCloneLocalDataSheetReturnCloses(clone)).assertTrue();
     });
   });
 }

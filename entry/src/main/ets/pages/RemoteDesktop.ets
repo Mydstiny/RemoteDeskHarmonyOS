@@ -195,6 +195,7 @@ import {
   clipboardSyncEnabledForProtocol,
   resolveClipboardBridgeActivation
 } from '../services/ClipboardSyncPolicy';
+import { AppCloneContext } from '../services/AppCloneContext';
 import { FileTransferLiveTaskService } from '../services/FileTransferLiveTaskService';
 import { RemoteSessionBackgroundTaskService, RemoteSessionBgInfo } from '../services/RemoteSessionBackgroundTaskService';
 import { RemoteSessionLiveViewService, LiveViewConnectionInfo } from '../services/RemoteSessionLiveViewService';
@@ -3707,6 +3708,12 @@ struct RemoteDesktop {
    * AppStorage preferences as a fallback.
    */
   private clipboardBridgeEnabledForSession(): boolean {
+    // SystemPasteboard is shared at device scope. A clone must not read from
+    // or write to it, otherwise two simultaneous remote sessions can relay
+    // clipboard text across the main app and its clone.
+    if (!AppCloneContext.getInstance().clipboardBridgeAllowed()) {
+      return false;
+    }
     const protocol: string = this.currentProtocolName();
     if (protocol === 'vnc') {
       return this.isVncSession() && this.pendingVncHost !== null && this.pendingVncHost.clipboardEnabled;

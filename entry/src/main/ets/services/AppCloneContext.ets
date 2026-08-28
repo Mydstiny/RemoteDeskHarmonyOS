@@ -42,6 +42,42 @@ export function appClonePolicyForIndex(value: number): AppClonePolicySnapshot {
   };
 }
 
+/** Runtime probe seam: platform failures must never reopen account, cloud or clipboard sharing. */
+export function appClonePolicyFromIndexReader(
+  readIndex: () => number
+): AppClonePolicySnapshot {
+  try {
+    return appClonePolicyForIndex(readIndex());
+  } catch (_error) {
+    return appClonePolicyForIndex(-1);
+  }
+}
+
+export function appCloneAccountTransitionAllowed(
+  policy: AppClonePolicySnapshot
+): boolean {
+  return policy.accountKitAllowed;
+}
+
+export function appCloneCloudOperationAllowed(
+  policy: AppClonePolicySnapshot
+): boolean {
+  return policy.cloudSyncAllowed;
+}
+
+/** SystemPasteboard is device-wide, so a clone must disable both bridge directions. */
+export function appCloneClipboardBridgeAllowed(
+  policy: AppClonePolicySnapshot
+): boolean {
+  return !policy.localOnly;
+}
+
+export function appCloneLocalDataSheetReturnCloses(
+  policy: AppClonePolicySnapshot
+): boolean {
+  return policy.localOnly;
+}
+
 /** Process-local owner of the platform clone index and its security policy. */
 export class AppCloneContext {
   private static instance: AppCloneContext;
@@ -57,13 +93,8 @@ export class AppCloneContext {
 
   init(context: common.Context): void {
     if (this.initialized) { return; }
-    let index: number = -1;
-    try {
-      index = context.getApplicationContext().getCurrentAppCloneIndex();
-    } catch (_error) {
-      index = -1;
-    }
-    this.policy = appClonePolicyForIndex(index);
+    this.policy = appClonePolicyFromIndexReader((): number =>
+      context.getApplicationContext().getCurrentAppCloneIndex());
     this.initialized = true;
     hilog.info(DOMAIN, TAG,
       'instance policy detected=%{public}s clone=%{public}s index=%{public}d localOnly=%{public}s',
@@ -87,7 +118,19 @@ export class AppCloneContext {
 
   isLocalOnly(): boolean { return this.policy.localOnly; }
 
-  cloudSyncAllowed(): boolean { return this.policy.cloudSyncAllowed; }
+  cloudSyncAllowed(): boolean {
+    return appCloneCloudOperationAllowed(this.policy);
+  }
 
-  accountKitAllowed(): boolean { return this.policy.accountKitAllowed; }
+  accountKitAllowed(): boolean {
+    return appCloneAccountTransitionAllowed(this.policy);
+  }
+
+  clipboardBridgeAllowed(): boolean {
+    return appCloneClipboardBridgeAllowed(this.policy);
+  }
+
+  localDataSheetReturnCloses(): boolean {
+    return appCloneLocalDataSheetReturnCloses(this.policy);
+  }
 }

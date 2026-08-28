@@ -6794,6 +6794,12 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
     candidateStore: relationalStore.RdbStore,
     lease: AccountSessionLease
   ): Promise<boolean> {
+    if (!AppCloneContext.getInstance().cloudSyncAllowed()) {
+      this.moonlightCloudAvailable = false;
+      this.syncSelection.setRuntimeTableAvailable(
+        MOONLIGHT_CLOUD_TABLE, false);
+      return false;
+    }
     if (!this.moonlightSchemaReceiptReady &&
         this.store === candidateStore && this.isLeaseCurrent(lease)) {
       this.moonlightSchemaReceiptReady =
@@ -6901,6 +6907,12 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
   }
 
   async retryMoonlightCloudRegistration(): Promise<boolean> {
+    if (!AppCloneContext.getInstance().cloudSyncAllowed()) {
+      this.moonlightCloudAvailable = false;
+      this.syncSelection.setRuntimeTableAvailable(
+        MOONLIGHT_CLOUD_TABLE, false);
+      return false;
+    }
     // Do not create a re-enable barrier, issue an AGC call or disturb the
     // deployed eight-table baseline before the production schema deployment
     // receipt is compiled into this build. Durable prerelease intent remains
