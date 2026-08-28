@@ -4,17 +4,17 @@
 
 - Task: `release-1-1-4-notes-and-version`
 - Branch: `codex/system-clipboard-activation-fix`; user authorized work on the current branch.
-- Increment: `851ba369f..d3e11f434`.
+- Increment: `704ce35a9..8c939b538` (follow-up correction to the previously completed 1.1.4 version increment).
 - Phase: implemented, locally verified and independently reviewed; update-popup device acceptance is pending.
 - Plan: `docs/codex/plans/2026-08-28-release-1-1-4-notes-and-version.md`
 
 ## 1.1.4 release result
 
 - The current app version is `1.1.4 / 1001004` across the app manifest, release registry, NAPI metadata, resources, diagnostics, documentation and SBOM.
-- The release popup adds 10 new 1.1.4 cards for the committed changes since 1.1.3 and keeps all 12 existing 1.1.3 cards unchanged, for 22 cards total. The settings entry and unit/device assertions use the same count and final `welcome-1-1-4` page.
+- The current 1.1.4 release popup contains only the 10 new 1.1.4 cards for committed changes since 1.1.3 and ends at `welcome-1-1-4`. The 12 existing 1.1.3 cards remain unchanged in the historical `1.1.3` registry, but are excluded from the current popup. The settings entry and unit/device assertions use the 10-card current count.
 - SBOM provenance identifies source snapshot `fc514ce36` and creation time `2026-08-28T15:50:20Z`; the snapshot includes the version update and final shortcut-editor refinement.
-- Final verification: `default@OhosTestCompileArkTS` PASS (`BUILD SUCCESSFUL in 10 s 869 ms`); signed `assembleHap` PASS (`BUILD SUCCESSFUL in 39 s 893 ms`); signed HAP SHA-256 `acdc3d6ff9c3e4ee5aae35efe1a54e6ec0e39aba47eab1d1958b195d95c40a35`; `git diff --check` and Light compliance PASS.
-- Independent review `/root/release_1_1_4_review`: PASS after closing two P1 consistency/provenance findings and one P2 provenance-time finding; no remaining P0/P1/P2/P3.
+- Final verification: `default@OhosTestCompileArkTS` PASS (`BUILD SUCCESSFUL in 15 s 92 ms`); signed `assembleHap` PASS (`BUILD SUCCESSFUL in 35 s 422 ms`); signed HAP SHA-256 `ffe3f5917616b2fb54ac745c167e44d877c8c4f7ad286a67ecae08c4938e0e89`; `git diff --check` and Light compliance PASS.
+- Independent review `/root/release_1_1_4_review`: follow-up correction PASS with zero findings; current 1.1.4 pages, historical 1.1.3 isolation, settings count and both test suites agree, with no P0/P1/P2/P3.
 
 ## Existing cloud recovery result
 

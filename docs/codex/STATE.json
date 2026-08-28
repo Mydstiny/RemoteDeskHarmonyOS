@@ -2,11 +2,11 @@
   "schema": 1,
   "task": "release-1-1-4-notes-and-version",
   "branch": "codex/system-clipboard-activation-fix",
-  "base": "851ba369feae3582a176c3f9f9b3d2d7bfa7a94e",
-  "head": "d3e11f434c45280a98d0ab9643b4407c4d49e67c",
+  "base": "704ce35a9df63fcd3a2509d44c0be647f479bfb8",
+  "head": "8c939b53805878478474dcc99675f91f0610aadc",
   "phase": "ready-for-device-validation",
   "status": "active",
-  "next": "Upgrade a preserved 1.1.3 install to 1.1.4 and verify the 22-page update popup, once-only marker, page ordering and Settings reopen path.",
+  "next": "Upgrade a preserved 1.1.3 install to 1.1.4 and verify the current-only 10-page update popup, absence of 1.1.3 pages, once-only marker, page ordering and Settings reopen path.",
   "blockers": [
     "Real-device upgrade acceptance for the 1.1.4 popup is pending; this task did not install or uninstall any HAP.",
     "The project does not register ohosTest@OhosTestCompileArkTS (00306054); mandatory default@OhosTestCompileArkTS and assembleHap pass."
@@ -19,36 +19,25 @@
     "taskIds": [
       "/root/release_1_1_4_review"
     ],
-    "reviewedHead": "d3e11f434c45280a98d0ab9643b4407c4d49e67c",
+    "reviewedHead": "8c939b53805878478474dcc99675f91f0610aadc",
     "scope": [
-      "AppScope/app.json5",
-      "README.md",
-      "docs/app-store/USER_GUIDE.md",
-      "docs/compliance/SBOM.spdx.json",
-      "entry/src/main/cpp/napi_init.cpp",
-      "entry/src/main/ets/components/VirtualKeyboardSettingsSheet.ets",
       "entry/src/main/ets/pages/HostListPage.ets",
       "entry/src/main/ets/services/ReleaseNotesRegistry.ets",
-      "entry/src/main/ets/services/RemoteCustomShortcutPolicy.ets",
-      "entry/src/main/resources/base/element/string.json",
       "entry/src/ohosTest/ets/test/GuideContentRegistry.test.ets",
-      "entry/src/test/DiagnosticCaptureExportService.test.ets",
-      "entry/src/test/ReleaseNotesRegistry.test.ets",
-      "entry/src/test/RemoteCustomShortcutPolicy.test.ets",
-      "scripts/generate_sbom.ps1"
+      "entry/src/test/ReleaseNotesRegistry.test.ets"
     ],
     "findings": [],
-    "reason": "The same independent reviewer verified the 1.1.4 version surfaces, cumulative 22-page release registry, unchanged 1.1.3 cards, unit/device assertions and SBOM provenance. Two P1 findings and one P2 finding were remediated; final P0/P1/P2/P3 are zero."
+    "reason": "The same independent reviewer verified that the current 1.1.4 popup contains only its 10 pages, while the unchanged 12-page 1.1.3 registry is available only through an explicit historical-version query. The settings count and unit/device assertions agree; final P0/P1/P2/P3 are zero."
   },
   "lastVerification": {
-    "baseline": "The 1.1.4 release-note increment starts after 851ba369f on the user-authorized existing task branch.",
-    "testCompile": "PASS: default@OhosTestCompileArkTS, BUILD SUCCESSFUL in 10 s 869 ms",
-    "assembleHap": "PASS: signed HAP, BUILD SUCCESSFUL in 39 s 893 ms, SHA-256 acdc3d6ff9c3e4ee5aae35efe1a54e6ec0e39aba47eab1d1958b195d95c40a35",
-    "targetedTests": "PASS compile: 22 release cards, retained 1.1.3 pages, final welcome-1-1-4, diagnostic version code/build id and device guide registry assertions.",
+    "baseline": "The current-only popup correction starts after 704ce35a9 on the user-authorized existing task branch.",
+    "testCompile": "PASS: default@OhosTestCompileArkTS, BUILD SUCCESSFUL in 15 s 92 ms",
+    "assembleHap": "PASS: signed HAP, BUILD SUCCESSFUL in 35 s 422 ms, SHA-256 ffe3f5917616b2fb54ac745c167e44d877c8c4f7ad286a67ecae08c4938e0e89",
+    "targetedTests": "PASS compile: current 1.1.4 registry has 10 pages and excludes 1.1.3 IDs; explicit historical 1.1.3 registry retains 12 unchanged pages; final current page is welcome-1-1-4.",
     "arktsTests": "PASS through mandatory default@OhosTestCompileArkTS; separate ohosTest module task is unregistered (00306054).",
     "compliance": "PASS: Light open-source compliance and git diff --check",
-    "review": "PASS: /root/release_1_1_4_review found no remaining P0/P1/P2/P3 after iterative remediation.",
-    "deviceAcceptance": "PENDING: no HAP was installed or uninstalled; 1.1.3-to-1.1.4 popup and once-only marker require preserved-data device acceptance."
+    "review": "PASS: /root/release_1_1_4_review found zero P0/P1/P2/P3 in the current-only popup correction.",
+    "deviceAcceptance": "PENDING: no HAP was installed or uninstalled; the 1.1.3-to-1.1.4 current-only popup, once-only marker and phone/Pad/PC layout require preserved-data device acceptance."
   },
-  "updated": "2026-08-28 Asia/Shanghai"
+  "updated": "2026-08-29 Asia/Shanghai"
 }
