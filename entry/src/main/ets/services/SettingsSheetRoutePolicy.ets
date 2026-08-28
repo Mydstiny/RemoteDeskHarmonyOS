@@ -136,7 +136,7 @@ export function virtualKeyboardSettingsRouteSpecs(): VirtualKeyboardSettingsRout
       mode: SETTINGS_SHEET_VIRTUAL_KEYBOARD,
       section: 'system',
       title: '系统输入法',
-      height: 760
+      height: 620
     },
     {
       mode: SETTINGS_SHEET_VIRTUAL_KEYBOARD_BEHAVIOR,
@@ -160,7 +160,7 @@ export function virtualKeyboardSettingsRouteSpecs(): VirtualKeyboardSettingsRout
       mode: SETTINGS_SHEET_VIRTUAL_KEYBOARD_CUSTOM,
       section: 'custom',
       title: '自定义组合键',
-      height: 820
+      height: 520
     }
   ];
 }
@@ -179,12 +179,14 @@ export function isVirtualKeyboardSettingsMode(mode: number): boolean {
 }
 
 export function virtualKeyboardSettingsLeafSheetHeight(mode: number,
-  viewportHeight: number = 0): number {
+  viewportHeight: number = 0, customEditorVisible: boolean = false): number {
   const spec: VirtualKeyboardSettingsRouteSpec | null = virtualKeyboardSettingsRouteSpec(mode);
   if (spec === null) { return 0; }
-  if (!Number.isFinite(viewportHeight) || viewportHeight <= 0) { return spec.height; }
+  const preferredHeight: number = mode === SETTINGS_SHEET_VIRTUAL_KEYBOARD_CUSTOM &&
+    customEditorVisible ? 820 : spec.height;
+  if (!Number.isFinite(viewportHeight) || viewportHeight <= 0) { return preferredHeight; }
   const verticalInset: number = viewportHeight < 520 ? 12 : 40;
-  return Math.max(1, Math.min(spec.height, viewportHeight - verticalInset));
+  return Math.max(1, Math.min(preferredHeight, viewportHeight - verticalInset));
 }
 
 export function virtualKeyboardSettingsLeafUsesBottomSheet(mode: number,

@@ -114,7 +114,7 @@ export default function settingsSheetRoutePolicyTest() {
 
     it('adapts_all_virtual_keyboard_leaves_to_live_window_bounds', 0, (): void => {
       expect(virtualKeyboardSettingsLeafSheetHeight(
-        SETTINGS_SHEET_VIRTUAL_KEYBOARD, 720)).assertEqual(680);
+        SETTINGS_SHEET_VIRTUAL_KEYBOARD, 720)).assertEqual(620);
       expect(virtualKeyboardSettingsLeafSheetHeight(
         SETTINGS_SHEET_VIRTUAL_KEYBOARD_BEHAVIOR, 720)).assertEqual(560);
       expect(virtualKeyboardSettingsLeafSheetHeight(
@@ -122,7 +122,11 @@ export default function settingsSheetRoutePolicyTest() {
       expect(virtualKeyboardSettingsLeafSheetHeight(
         SETTINGS_SHEET_VIRTUAL_KEYBOARD_FUNCTIONS, 300)).assertEqual(288);
       expect(virtualKeyboardSettingsLeafSheetHeight(
-        SETTINGS_SHEET_VIRTUAL_KEYBOARD_CUSTOM, 900)).assertEqual(820);
+        SETTINGS_SHEET_VIRTUAL_KEYBOARD_CUSTOM, 900)).assertEqual(520);
+      expect(virtualKeyboardSettingsLeafSheetHeight(
+        SETTINGS_SHEET_VIRTUAL_KEYBOARD_CUSTOM, 900, true)).assertEqual(820);
+      expect(virtualKeyboardSettingsLeafSheetHeight(
+        SETTINGS_SHEET_VIRTUAL_KEYBOARD_CUSTOM, 720, true)).assertEqual(680);
       expect(virtualKeyboardSettingsLeafUsesBottomSheet(
         SETTINGS_SHEET_VIRTUAL_KEYBOARD_CUSTOM, 800, 'sm')).assertTrue();
       expect(virtualKeyboardSettingsLeafUsesBottomSheet(

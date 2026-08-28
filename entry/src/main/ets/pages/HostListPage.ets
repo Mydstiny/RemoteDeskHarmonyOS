@@ -849,6 +849,7 @@ struct HostListPage {
   @State showSettingsPanel: boolean = false;
   @State showSettingsLeafSheet: boolean = false;
   @State settingsLeafSheetMode: number = SETTINGS_SHEET_NONE;
+  @State virtualKeyboardCustomEditorVisible: boolean = false;
   @State vncSettingsLeafDirty: boolean = false;
   @State moonlightSettingsLeafDirty: boolean = false;
   @State moonlightSettingsLeafHostId: string = '';
@@ -3951,6 +3952,7 @@ struct HostListPage {
       prepareAction();
     }
     this.closeLegacySettingsSheetFlags();
+    this.virtualKeyboardCustomEditorVisible = false;
     this.settingsLeafSheetMode = mode;
     this.showSettingsLeafSheet = true;
   }
@@ -14032,7 +14034,8 @@ struct HostListPage {
     }
     if (this.isVirtualKeyboardSettingsLeafSheet()) {
       return virtualKeyboardSettingsLeafSheetHeight(
-        this.settingsLeafSheetMode, this.pageViewportHeight);
+        this.settingsLeafSheetMode, this.pageViewportHeight,
+        this.virtualKeyboardCustomEditorVisible);
     }
     const diagnosticHeight: number = diagnosticLogSettingsLeafSheetHeight(this.settingsLeafSheetMode);
     if (diagnosticHeight > 0) { return diagnosticHeight; }
@@ -14115,7 +14118,10 @@ struct HostListPage {
     } else if (this.isVirtualKeyboardSettingsLeafSheet()) {
       VirtualKeyboardSettingsSheet({
         requestedSection: this.virtualKeyboardSettingsSectionForLeaf(),
-        onClose: (): void => { this.closeSettingsLeafSheet(); }
+        onClose: (): void => { this.closeSettingsLeafSheet(); },
+        onCustomEditorVisibleChange: (visible: boolean): void => {
+          this.virtualKeyboardCustomEditorVisible = visible;
+        }
       })
     } else if (this.isMoonlightSettingsLeafSheet()) {
       MoonlightSettingsSurface({

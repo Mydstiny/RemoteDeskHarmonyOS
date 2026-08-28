@@ -56,6 +56,7 @@ export struct VirtualKeyboardSettingsSheet {
   private readonly service: RemoteKeyboardSettingsService =
     RemoteKeyboardSettingsService.getInstance();
   onClose: () => void = (): void => {};
+  onCustomEditorVisibleChange: (visible: boolean) => void = (_visible: boolean): void => {};
 
   private dark(): boolean { return this.theme === 'dark'; }
   private bg(): string { return this.dark() ? '#11141A' : '#F4F6F9'; }
@@ -229,6 +230,7 @@ export struct VirtualKeyboardSettingsSheet {
 
   private beginEditor(shortcut: RemoteCustomShortcut | null = null): void {
     this.editorVisible = true;
+    this.onCustomEditorVisibleChange(true);
     this.editingId = shortcut === null ? '' : shortcut.id;
     this.modifierCodes = shortcut === null ? [] :
       shortcut.keyCodes.slice(0, Math.max(0, shortcut.keyCodes.length - 1));
@@ -239,6 +241,7 @@ export struct VirtualKeyboardSettingsSheet {
 
   private closeEditor(): void {
     this.editorVisible = false;
+    this.onCustomEditorVisibleChange(false);
     this.editingId = '';
     this.modifierCodes = [];
     this.actionGroup = 'letters';
@@ -663,6 +666,22 @@ export struct VirtualKeyboardSettingsSheet {
     if (this.editorVisible) { this.customEditor() } else { this.customShortcutList() }
   }
 
+  @Builder
+  private pageContent() {
+    if (this.requestedSection === 'behavior') {
+      this.inputBehaviorContent()
+    } else if (this.requestedSection === 'shortcuts') {
+      this.shortcutPlatformContent()
+    } else if (this.requestedSection === 'functions') {
+      this.functionPanelContent()
+    } else if (this.requestedSection === 'custom') {
+      this.customShortcutContent()
+    } else {
+      this.systemInputMethodContent()
+    }
+    Column().height(this.contentLayout().headerBottomPadding + 14)
+  }
+
   build() {
     Column() {
       Row() {
@@ -690,26 +709,25 @@ export struct VirtualKeyboardSettingsSheet {
       }.width('100%').justifyContent(FlexAlign.Center)
 
       Scroll() {
-        Row() {
+        if (this.requestedSection === 'system' || this.requestedSection === 'custom') {
           Column() {
-            if (this.requestedSection === 'behavior') {
-              this.inputBehaviorContent()
-            } else if (this.requestedSection === 'shortcuts') {
-              this.shortcutPlatformContent()
-            } else if (this.requestedSection === 'functions') {
-              this.functionPanelContent()
-            } else if (this.requestedSection === 'custom') {
-              this.customShortcutContent()
-            } else {
-              this.systemInputMethodContent()
-            }
-            Column().height(this.contentLayout().headerBottomPadding + 14)
-          }.width('100%').constraintSize({ maxWidth: this.contentLayout().maxContentWidth })
+            this.pageContent()
+          }.width('100%')
             .padding({
               left: this.contentLayout().contentHorizontalPadding,
               right: this.contentLayout().contentHorizontalPadding
             })
-        }.width('100%').justifyContent(FlexAlign.Center).alignItems(VerticalAlign.Top)
+        } else {
+          Row() {
+            Column() {
+              this.pageContent()
+            }.width('100%').constraintSize({ maxWidth: this.contentLayout().maxContentWidth })
+              .padding({
+                left: this.contentLayout().contentHorizontalPadding,
+                right: this.contentLayout().contentHorizontalPadding
+              })
+          }.width('100%').justifyContent(FlexAlign.Center).alignItems(VerticalAlign.Top)
+        }
       }.width('100%').layoutWeight(1).scrollBar(BarState.Auto).edgeEffect(EdgeEffect.Spring)
     }.width('100%').height('100%').backgroundColor(this.bg())
       .borderRadius(this.contentLayout().cornerRadius)
