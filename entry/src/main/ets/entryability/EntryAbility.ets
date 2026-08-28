@@ -52,6 +52,7 @@ import {
   resolvePersonalizationDefaultsProfile
 } from '../services/PersonalizationDefaultsPolicy';
 import { startupContentPathForAttempt } from '../services/AppStartupPolicy';
+import { AppCloneContext } from '../services/AppCloneContext';
 import auth from '@hw-agconnect/auth';
 
 const DOMAIN = 0x0000;
@@ -190,6 +191,8 @@ export default class EntryAbility extends UIAbility {
 
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
     try {
+      const appClone: AppCloneContext = AppCloneContext.getInstance();
+      appClone.init(this.context);
       // 读取系统颜色模式 (必须在 setColorMode 前 + AppStorage 初始化在前)
       const sysColorMode: number = this.context.config.colorMode ?? 0;
       const sysDark: boolean = sysColorMode === ConfigurationConstant.ColorMode.COLOR_MODE_DARK;
@@ -258,14 +261,18 @@ export default class EntryAbility extends UIAbility {
       RemoteKeyboardSettingsService.getInstance().init(this.context);
       GuideVisibilityService.getInstance().init(this.context);
       this.migrateTerminalFontUnit();
-      // 初始化 AGC Auth SDK (读取 agconnect-services.json)
-      try {
-        const rawFile = this.context.resourceManager.getRawFileContentSync('agconnect-services.json');
-        const json: string = buffer.from(rawFile.buffer).toString();
-        auth.init(this.context, json);
-        hilog.info(0x0001, 'Auth', 'AGC Auth SDK 初始化成功');
-      } catch (err) {
-        hilog.error(0x0001, 'Auth', "AGC Auth SDK 初始化失败: " + JSON.stringify(err));
+      // 应用分身第一版固定本地模式，不初始化 AGC Auth 或任何云账号入口。
+      if (appClone.accountKitAllowed()) {
+        try {
+          const rawFile = this.context.resourceManager.getRawFileContentSync('agconnect-services.json');
+          const json: string = buffer.from(rawFile.buffer).toString();
+          auth.init(this.context, json);
+          hilog.info(0x0001, 'Auth', 'AGC Auth SDK 初始化成功');
+        } catch (err) {
+          hilog.error(0x0001, 'Auth', "AGC Auth SDK 初始化失败: " + JSON.stringify(err));
+        }
+      } else {
+        hilog.info(0x0001, 'Auth', '应用分身本地模式：跳过 AGC Auth SDK 初始化');
       }
       // AccountKit persistence must exist before any silent-login callback can
       // save a credential. Local stores remain usable when it is unavailable.

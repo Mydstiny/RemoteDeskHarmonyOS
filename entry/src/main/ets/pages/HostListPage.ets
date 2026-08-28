@@ -18,6 +18,7 @@ import {
   AccountSessionCoordinator,
   AccountTransitionResult
 } from '../services/AccountSessionCoordinator';
+import { AppCloneContext } from '../services/AppCloneContext';
 import { DataCrypto } from '../services/DataCrypto';
 import { CloudStore } from '../services/CloudStore';
 import { AccountSessionLease, accountSessionLeaseEquals } from '../services/AccountScopePolicy';
@@ -734,6 +735,9 @@ struct HostListPage {
   @State activeRemoteHostId: string = '';
   @State accountDisplayName: string = '';
   @State accountAvatarUrl: string = '';
+  @State appCloneLocalOnly: boolean = false;
+  @State appCloneIsClone: boolean = false;
+  @State appCloneStatusText: string = '';
   @State hostSelectionMode: boolean = false;
   @State hostSelectedIds: Set<string> = new Set();
   @State hostReorderEnabled: boolean = false;
@@ -1720,6 +1724,11 @@ struct HostListPage {
 
   async aboutToAppear(): Promise<void> {
     this.pageActive = true;
+    const appClone: AppCloneContext = AppCloneContext.getInstance();
+    appClone.init(getContext(this) as common.Context);
+    this.appCloneLocalOnly = appClone.isLocalOnly();
+    this.appCloneIsClone = appClone.isClone();
+    this.appCloneStatusText = appClone.snapshot().statusText;
     this.cloudConnectionAvailable =
       CloudStore.getInstance().isCloudAvailable();
     // Keep VNC storage isolated while preparing its display projection before
@@ -4078,6 +4087,10 @@ struct HostListPage {
    * let the existing coordinator perform its normal cloud-first bootstrap.
    */
   private refreshCloudRegistration(): void {
+    if (this.appCloneLocalOnly) {
+      this.cloudConnectionAvailable = false;
+      return;
+    }
     const cloud: CloudStore = CloudStore.getInstance();
     this.cloudConnectionAvailable = cloud.isCloudAvailable();
     if (this.cloudConnectionAvailable) {
@@ -4109,7 +4122,16 @@ struct HostListPage {
    * callers must not assign cloudSyncStep after this method returns.
    */
   private openCloudSyncSheet(initialStep: string = ''): void {
-    this.refreshCloudRegistration();
+    const localDocumentFlow: boolean =
+      initialStep === CLOUD_SYNC_SHEET_BACKUP_CONFIRM ||
+      initialStep === CLOUD_SYNC_SHEET_RESTORE_CONFIRM;
+    if (this.appCloneLocalOnly && !localDocumentFlow) {
+      promptAction.showToast({
+        message: '应用分身仅使用本地数据，云同步已关闭', duration: 2200
+      });
+      return;
+    }
+    if (!this.appCloneLocalOnly) { this.refreshCloudRegistration(); }
     this.openSettingsLeafSheet(SETTINGS_SHEET_POPUP, (): void => {
       this.cloudSyncSelectedTables = CloudSyncSelectionStore.getInstance()
         .persistedSelectedBusinessTables();
@@ -4127,6 +4149,12 @@ struct HostListPage {
   }
 
   private openCloudSyncDetailsSheet(): void {
+    if (this.appCloneLocalOnly) {
+      promptAction.showToast({
+        message: '应用分身仅使用本地数据，云同步已关闭', duration: 2200
+      });
+      return;
+    }
     this.refreshCloudRegistration();
     this.openSettingsLeafSheet(SETTINGS_SHEET_POPUP, (): void => {
       this.cloudSyncError = '';
@@ -10004,6 +10032,12 @@ struct HostListPage {
   }
 
   private async doLogout(): Promise<void> {
+    if (this.appCloneLocalOnly) {
+      promptAction.showToast({
+        message: '应用分身未启用华为账号，无需退出登录', duration: 2200
+      });
+      return;
+    }
     // The coordinator drains sessions, clears plaintext caches and switches to
     // the device-local physical store before this page leaves the account UI.
     const transition: AccountTransitionResult =
@@ -10030,6 +10064,12 @@ struct HostListPage {
 
   // 直接从设置页呼出系统 Huawei ID 登录 (不跳转 LoginPage)
   private async triggerSystemLogin(): Promise<void> {
+    if (this.appCloneLocalOnly) {
+      promptAction.showToast({
+        message: '应用分身使用本地模式，华为账号登录已关闭', duration: 2200
+      });
+      return;
+    }
     try {
       const request = new authentication.HuaweiIDProvider().createAuthorizationWithHuaweiIDRequest();
       request.forceAuthorization = true;
@@ -14022,7 +14062,12 @@ struct HostListPage {
         ListItem() {
           Row() {
             // 左侧头像
-            if (this.accountAvatarUrl !== '') {
+            if (this.appCloneLocalOnly) {
+              Text(this.appCloneIsClone ? '分' : '本').fontSize(18).fontWeight(FontWeight.Bold)
+                .fontColor(Color.White).textAlign(TextAlign.Center)
+                .width(40).height(40).borderRadius(20)
+                .backgroundColor(this.accentColor).padding({ top: 8 })
+            } else if (this.accountAvatarUrl !== '') {
               Image(this.accountAvatarUrl).width(40).height(40).borderRadius(20)
             } else if (this.auth.isLoggedIn()) {
               Text('👤').fontSize(30)
@@ -14031,10 +14076,13 @@ struct HostListPage {
             }
             // 中间信息列
             Column() {
-              Text(this.accountDisplayName !== '' ? this.accountDisplayName : '华为账号')
+              Text(this.appCloneLocalOnly ?
+                (this.appCloneIsClone ? 'RemoteDesk 应用分身' : 'RemoteDesk 本地安全模式') :
+                (this.accountDisplayName !== '' ? this.accountDisplayName : '华为账号'))
                 .fontSize(19).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
                 .fontFamily(this.font())
-              Text('' + this.hostCount + ' 主机 · ' + this.keyCount + ' 密钥 · ' + this.totpCount + ' 2FA')
+              Text(this.appCloneLocalOnly ? this.appCloneStatusText :
+                ('' + this.hostCount + ' 主机 · ' + this.keyCount + ' 密钥 · ' + this.totpCount + ' 2FA'))
                 .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font()).margin({ top: 2 })
             }
             .alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 12 })
@@ -14260,31 +14308,48 @@ struct HostListPage {
 
         ListItem() {
           this.settingsAccordionHeader(SETTINGS_SECTION_CLOUD_SYNC, $r('sys.symbol.cloud_fill'),
-            '云同步', '华为云空间、跨设备数据恢复与手动同步')
+            '云同步', this.appCloneLocalOnly ? this.appCloneStatusText :
+              '华为云空间、跨设备数据恢复与手动同步')
         }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 10 })
 
         ListItem() {
           Column() {
-            Text('云端数据').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text3)
+            Text(this.appCloneLocalOnly ? '分身数据' : '云端数据')
+              .fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text3)
               .fontFamily(this.font()).padding({ left: 8, bottom: 8 })
             Column() {
-              Row() {
-                Row() { SymbolGlyph($r('sys.symbol.cloud_fill')).fontSize(21).fontColor([this.accentColor]) }
-                  .width(40).height(40).borderRadius(20).backgroundColor(this.pal().card).justifyContent(FlexAlign.Center)
-                Column() { Text('管理云同步').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font());
-                  Text(cloudSyncDetailSpec(this.cloudConnectionAvailable).statusText).fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
-                }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 12 })
-                SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(16).fontColor([this.pal().text3])
-              }.width('100%').height(68).padding({ left: 14, right: 16 }).onClick((): void => { this.openCloudSyncSheet(); })
-              this.cardDivider()
-              Row() {
-                Row() { SymbolGlyph($r('sys.symbol.info_circle')).fontSize(20).fontColor([this.accentColor]) }
-                  .width(40).height(40).borderRadius(20).backgroundColor(this.pal().card).justifyContent(FlexAlign.Center)
-                Column() { Text('云同步详情').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font());
-                  Text(cloudSyncDetailSpec(this.cloudConnectionAvailable).statusText).fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
-                }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 12 })
-                SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(16).fontColor([this.pal().text3])
-              }.width('100%').height(68).padding({ left: 14, right: 16 }).onClick((): void => { this.openCloudSyncDetailsSheet(); })
+              if (this.appCloneLocalOnly) {
+                Row() {
+                  Row() { Text(this.appCloneIsClone ? '分' : '本').fontSize(16).fontWeight(FontWeight.Bold).fontColor(this.accentColor) }
+                    .width(40).height(40).borderRadius(20).backgroundColor(this.pal().card)
+                    .justifyContent(FlexAlign.Center)
+                  Column() {
+                    Text(this.appCloneIsClone ? '应用分身 · 本地模式' : '本地安全模式')
+                      .fontSize(AppTheme.fontSize.body)
+                      .fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())
+                    Text('华为账号、云上传与云下载已关闭；本地备份仍可使用')
+                      .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
+                  }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 12 })
+                }.width('100%').height(72).padding({ left: 14, right: 16 })
+              } else {
+                Row() {
+                  Row() { SymbolGlyph($r('sys.symbol.cloud_fill')).fontSize(21).fontColor([this.accentColor]) }
+                    .width(40).height(40).borderRadius(20).backgroundColor(this.pal().card).justifyContent(FlexAlign.Center)
+                  Column() { Text('管理云同步').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font());
+                    Text(cloudSyncDetailSpec(this.cloudConnectionAvailable).statusText).fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
+                  }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 12 })
+                  SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(16).fontColor([this.pal().text3])
+                }.width('100%').height(68).padding({ left: 14, right: 16 }).onClick((): void => { this.openCloudSyncSheet(); })
+                this.cardDivider()
+                Row() {
+                  Row() { SymbolGlyph($r('sys.symbol.info_circle')).fontSize(20).fontColor([this.accentColor]) }
+                    .width(40).height(40).borderRadius(20).backgroundColor(this.pal().card).justifyContent(FlexAlign.Center)
+                  Column() { Text('云同步详情').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font());
+                    Text(cloudSyncDetailSpec(this.cloudConnectionAvailable).statusText).fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
+                  }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 12 })
+                  SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(16).fontColor([this.pal().text3])
+                }.width('100%').height(68).padding({ left: 14, right: 16 }).onClick((): void => { this.openCloudSyncDetailsSheet(); })
+              }
               this.cardDivider()
               Row() {
                 Row() { SymbolGlyph($r('sys.symbol.doc_plaintext')).fontSize(20).fontColor([this.accentColor]) }
@@ -15953,7 +16018,8 @@ struct HostListPage {
         } else {
           Blank().width(44)
         }
-        Text('云同步').fontSize(20).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
+        Text(this.appCloneLocalOnly ? '本地数据管理' : '云同步')
+          .fontSize(20).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
           .fontFamily(this.font()).layoutWeight(1).textAlign(TextAlign.Center)
         if (this.currentCloudSyncSheetSpec().canDismiss) {
           SymbolGlyph($r('sys.symbol.xmark')).fontSize(18).fontColor([this.pal().text2]).width(44).height(36)
@@ -19304,34 +19370,53 @@ struct HostListPage {
 
   @Builder accountSheet() {
     Column() {
-      Text('账号管理').fontSize(19).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
+      Text(this.appCloneLocalOnly ?
+        (this.appCloneIsClone ? '应用分身' : '本地安全模式') : '账号管理')
+        .fontSize(19).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
         .margin({ top: 24, bottom: 20 }).fontFamily(this.font())
       Column() {
-        if (this.auth.isLoggedIn() && this.auth.getAvatarUrl() !== '') {
+        if (this.appCloneLocalOnly) {
+          Text(this.appCloneIsClone ? '分' : '本').fontSize(24).fontWeight(FontWeight.Bold)
+            .fontColor(Color.White).textAlign(TextAlign.Center)
+            .width(64).height(64).borderRadius(32)
+            .backgroundColor(this.accentColor).padding({ top: 14 })
+            .margin({ bottom: 8 })
+        } else if (this.auth.isLoggedIn() && this.auth.getAvatarUrl() !== '') {
           Image(this.auth.getAvatarUrl())
             .width(64).height(64).borderRadius(32)
             .margin({ bottom: 8 })
         }
-        Text(this.auth.isLoggedIn() ? this.auth.getDisplayName() : '未登录')
+        Text(this.appCloneLocalOnly ?
+          (this.appCloneIsClone ? 'RemoteDesk 应用分身' : 'RemoteDesk 本地安全模式') :
+          (this.auth.isLoggedIn() ? this.auth.getDisplayName() : '未登录'))
           .fontSize(AppTheme.fontSize.subtitle)
           .fontWeight(FontWeight.Bold).fontColor(this.pal().text)
-        Text(this.auth.isLoggedIn() ? '华为账号已登录' : '离线模式 · 主机仅本地存储')
+        Text(this.appCloneLocalOnly ?
+          '主机、凭据和密钥与主应用隔离\n华为账号与云同步在分身中关闭' :
+          (this.auth.isLoggedIn() ? '华为账号已登录' : '离线模式 · 主机仅本地存储'))
           .fontSize(12).fontColor(this.pal().text3).margin({ top: 4 })
+          .textAlign(TextAlign.Center).lineHeight(19)
       }.width('100%').alignItems(HorizontalAlign.Center).margin({ bottom: 24 })
       Row() {
         this.statItem('RDP', this.rdpCount, this.accentColor)
         this.statItem('RustDesk', this.rustdeskCount, this.pal().success)
         this.statItem('SSH', this.sshCount, this.pal().editColor)
       }.width('90%').justifyContent(FlexAlign.SpaceEvenly).margin({ bottom: 24 })
-      Button('华为账号登录').width('86%').height(46).fontSize(13).fontWeight(FontWeight.Normal)
-        .backgroundColor(this.accentColor).fontColor('#FFFFFF').borderRadius(12).margin({ bottom: 10 })
-        .onClick(() => {
-          this.closeSettingsLeafSheet();
-          this.triggerSystemLogin();
-        })
-      Button('退出登录').width('86%').height(44).fontSize(14)
-        .backgroundColor(this.pal().surface).fontColor(this.pal().danger).borderRadius(12)
-        .onClick(() => { this.doLogout(); })
+      if (this.appCloneLocalOnly) {
+        Button('完成').width('86%').height(46).fontSize(14)
+          .backgroundColor(this.accentColor).fontColor('#FFFFFF').borderRadius(12)
+          .onClick((): void => { this.closeSettingsLeafSheet(); })
+      } else {
+        Button('华为账号登录').width('86%').height(46).fontSize(13).fontWeight(FontWeight.Normal)
+          .backgroundColor(this.accentColor).fontColor('#FFFFFF').borderRadius(12).margin({ bottom: 10 })
+          .onClick(() => {
+            this.closeSettingsLeafSheet();
+            this.triggerSystemLogin();
+          })
+        Button('退出登录').width('86%').height(44).fontSize(14)
+          .backgroundColor(this.pal().surface).fontColor(this.pal().danger).borderRadius(12)
+          .onClick(() => { this.doLogout(); })
+      }
       Blank().height(32)
     }.width('100%')
     .backgroundColor(this.pal().bg).borderRadius(this.breakpoint === 'sm' ? { topLeft: 20, topRight: 20, bottomLeft: 0, bottomRight: 0 } : 20)

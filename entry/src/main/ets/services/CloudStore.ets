@@ -429,6 +429,7 @@ import {
   LegacyVncRowMigrationDecision,
   legacyVncRowMigrationDecision
 } from './LegacySharedStoreMigrationPolicy';
+import { AppCloneContext } from './AppCloneContext';
 
 const CLOUD_REGISTRATION_PLAN: CloudDistributedRegistrationPlan =
   cloudDistributedRegistrationPlan();
@@ -1299,7 +1300,8 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
       // A physical distributed table is the platform sync boundary. Never
       // register a shared/unbound store: SQL row filters cannot constrain what
       // setDistributedTables/cloudSync publishes for another account.
-      if (cloudDistributedRegistrationAllowed(this.cloudAccountBinding)) {
+      if (AppCloneContext.getInstance().cloudSyncAllowed() &&
+        cloudDistributedRegistrationAllowed(this.cloudAccountBinding)) {
         try {
           await this.store.setDistributedTables(
             CORE_CLOUD_TABLES,
@@ -1343,9 +1345,13 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
         this.syncSelection.setRuntimeTableAvailable(
           MOONLIGHT_CLOUD_TABLE, false);
         this.cloudServiceGuidanceNeeded = false;
-        this.lastError = CLOUD_LIFECYCLE_BLOCKED_REASON;
+        this.lastError = AppCloneContext.getInstance().isLocalOnly()
+          ? AppCloneContext.getInstance().snapshot().statusText + '，云同步已关闭'
+          : CLOUD_LIFECYCLE_BLOCKED_REASON;
         hilog.warn(0x0001, 'CloudSync',
-          '云同步已按安全策略暂停：账号作用域与独立物理库尚未完成验证');
+          AppCloneContext.getInstance().isLocalOnly()
+            ? '本地安全模式：未注册分布式云表'
+            : '云同步已按安全策略暂停：账号作用域与独立物理库尚未完成验证');
       }
       // Resume only this owner's durable Moonlight deletion checkpoint. A
       // pending upload is deferred by the coordinator until bootstrap is safe;
@@ -6405,7 +6411,8 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
   }
 
   isCloudAvailable(): boolean {
-    return this.initialized && this.store !== null && this.cloudAvailable &&
+    return AppCloneContext.getInstance().cloudSyncAllowed() &&
+      this.initialized && this.store !== null && this.cloudAvailable &&
       cloudTransferAllowed(this.cloudAccountBinding);
   }
 
@@ -6972,6 +6979,9 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
    * before any upload is released.
    */
   async retryCloudRegistration(): Promise<boolean> {
+    if (!AppCloneContext.getInstance().cloudSyncAllowed()) {
+      return false;
+    }
     if (this.isCloudAvailable()) {
       if (moonlightCloudSchemaProvisioned() &&
           !this.moonlightCloudAvailable &&

@@ -34,6 +34,7 @@ import { cloudTransferAllowed } from './CloudLifecycleSafetyPolicy';
 import { safeError } from '../utils/SafeLogger';
 import { MoonlightDataLifecycleBarrier } from './MoonlightDataLifecycleBarrier';
 import { MoonlightDataLifecycleRuntime } from './MoonlightDataLifecycleRuntime';
+import { AppCloneContext } from './AppCloneContext';
 
 export interface AccountLoginIdentity extends CredentialParams {
   avatarUrl: string;
@@ -88,6 +89,7 @@ export class AccountSessionCoordinator {
     if (this.initialized) { return true; }
     if (this.initPromise !== null) { return await this.initPromise; }
     this.context = context;
+    AppCloneContext.getInstance().init(context);
     SensitiveDataBarrier.getInstance().init(context as common.UIAbilityContext);
     MoonlightDataLifecycleBarrier.getInstance().registerPort(
       MoonlightDataLifecycleRuntime.getInstance());
@@ -157,6 +159,11 @@ export class AccountSessionCoordinator {
   async transitionToAccount(identity: AccountLoginIdentity,
     options: AccountTransitionOptions = {}): Promise<AccountTransitionResult> {
     const intentGeneration: number = ++this.transitionIntentGeneration;
+    if (!AppCloneContext.getInstance().accountKitAllowed()) {
+      return this.result(false, 'local_only',
+        AppCloneContext.getInstance().snapshot().statusText +
+        '，华为账号登录与云同步不可用');
+    }
     if (!(await this.whenReady())) {
       return this.result(false, 'blocked', '账号生命周期初始化失败');
     }

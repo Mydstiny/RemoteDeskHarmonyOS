@@ -243,6 +243,7 @@ import diagnosticCapturePolicyTest from './DiagnosticCapturePolicy.test';
 import diagnosticCaptureRuntimeTest from './DiagnosticCaptureRuntime.test';
 import diagnosticCaptureExportServiceTest from './DiagnosticCaptureExportService.test';
 import diagnosticRuntimeSnapshotPolicyTest from './DiagnosticRuntimeSnapshotPolicy.test';
+import appCloneContextTest from './AppCloneContext.test';
 
 export default function testsuite() {
   localUnitTest();
@@ -490,4 +491,5 @@ export default function testsuite() {
   diagnosticCaptureRuntimeTest();
   diagnosticCaptureExportServiceTest();
   diagnosticRuntimeSnapshotPolicyTest();
+  appCloneContextTest();
 }
