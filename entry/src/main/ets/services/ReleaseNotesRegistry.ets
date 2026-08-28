@@ -9,7 +9,12 @@ export interface ReleaseNotePage {
 }
 
 export function pagesForReleasedVersion(version: string): ReleaseNotePage[] {
-  if (version !== CURRENT_RELEASE_VERSION) { return []; }
+  if (version === CURRENT_RELEASE_VERSION) { return currentReleasePages(); }
+  if (version === '1.1.3') { return previousReleasePages(); }
+  return [];
+}
+
+function currentReleasePages(): ReleaseNotePage[] {
   return [
     {
       id: 'release-1-1-4',
@@ -65,6 +70,17 @@ export function pagesForReleasedVersion(version: string): ReleaseNotePage[] {
       title: '五种协议可分别设置滚轮方向',
       desc: '“显示与交互”现在可独立设置 RDP、RustDesk、SSH、VNC 与 Moonlight 的正常或反向滚动，并提供全部正常、全部反向操作；SFTP 文件列表不受影响。'
     },
+    {
+      id: 'welcome-1-1-4',
+      symbol: $rawfile('icons/globe-alt.svg'),
+      title: '欢迎使用 1.1.4',
+      desc: '本次更新延续五协议工作台，并把会话操控、敏感数据和异常恢复做得更稳。需要回看全部变化时，可随时打开“设置 → 教程 → 本版本更新日志”。'
+    },
+  ];
+}
+
+function previousReleasePages(): ReleaseNotePage[] {
+  return [
     {
       id: 'release-1-1-3',
       symbol: $rawfile('icons/computer-desktop.svg'),
@@ -136,12 +152,6 @@ export function pagesForReleasedVersion(version: string): ReleaseNotePage[] {
       symbol: $rawfile('icons/globe-alt.svg'),
       title: '欢迎使用 1.1.3',
       desc: '现在可以从主机工作台体验五种协议。第一次尝试新能力时先按界面核对服务端、身份与网络条件；完整步骤可从“设置 → 教程 → 操作引导中心”随时查看。'
-    },
-    {
-      id: 'welcome-1-1-4',
-      symbol: $rawfile('icons/globe-alt.svg'),
-      title: '欢迎使用 1.1.4',
-      desc: '本次更新延续五协议工作台，并把会话操控、敏感数据和异常恢复做得更稳。需要回看全部变化时，可随时打开“设置 → 教程 → 本版本更新日志”。'
     }
   ];
 }

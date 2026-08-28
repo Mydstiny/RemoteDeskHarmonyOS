@@ -40,13 +40,10 @@ export default function guideContentRegistryTest(): void {
       expect(containsGuidePage(guide, 'welcome-five-protocols')).assertTrue();
       expect(containsGuidePage(guide, 'session-toolkit')).assertTrue();
       expect(containsGuidePage(guide, 'data-recovery-and-help')).assertTrue();
-      expect(release.length).assertEqual(22);
+      expect(release.length).assertEqual(10);
       expect(containsReleasePage(release, 'release-1-1-4')).assertTrue();
-      expect(containsReleasePage(release, 'release-1-1-3')).assertTrue();
-      expect(containsReleasePage(release, 'release-moonlight-workflow')).assertTrue();
-      expect(containsReleasePage(release, 'release-ssh-workspace')).assertTrue();
-      expect(containsReleasePage(release, 'release-guidance')).assertTrue();
-      expect(containsReleasePage(release, 'welcome-1-1-3')).assertTrue();
+      expect(containsReleasePage(release, 'release-1-1-3')).assertFalse();
+      expect(containsReleasePage(release, 'welcome-1-1-3')).assertFalse();
       expect(release[release.length - 1].id).assertEqual('welcome-1-1-4');
     });
   });
