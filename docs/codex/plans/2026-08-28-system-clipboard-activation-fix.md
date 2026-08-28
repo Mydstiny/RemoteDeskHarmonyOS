@@ -80,4 +80,3 @@ fixes speculatively.
    applicable, text format-list publication. Then run the two exact Hvigor
    gates, `git diff --check`, Light compliance and one independent review. No
    additional broad security or release process is required for this patch.
-
