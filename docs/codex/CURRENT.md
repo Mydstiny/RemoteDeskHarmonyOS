@@ -4,7 +4,7 @@
 
 - Task: `secret-visibility-policy`
 - Branch/base: `codex/secret-visibility-policy` from synchronized `main@f3b41e5a6`.
-- Phase: ninth-review remediation verified on `410c84b7`; checkpoint commit pending.
+- Phase: tenth-review remediation verified on `91a8b0e8`; checkpoint commit pending.
 - Plan: `docs/codex/plans/2026-08-28-secret-visibility-policy.md`
 
 ## Objective
@@ -39,8 +39,8 @@
   only while its vault/path binding is unchanged.
 - VNC now uses the shared policy while retaining its dedicated secret service,
   plaintext-consent checks, local personalization and rollback behavior. A
-  forgotten VNC password can still be handed to the current connection only,
-  without being persisted.
+  forgotten VNC password can be handed to the current connection only;
+  aborted, backgrounded or destroyed add flows clear every transient handoff.
 - VNC secret mutations are now explicit (`keep` / `replace` / `clear`) and are
   bound to transport, target, port, Gateway, repeater mode, TLS and security
   policy. Editing an endpoint cannot reuse or hand off its old password, and a
@@ -101,8 +101,8 @@
 
 ## Verification (current worktree)
 
-- `default@OhosTestCompileArkTS`: PASS (`BUILD SUCCESSFUL in 10 s 229 ms`).
-- `assembleHap`: PASS, signed (`BUILD SUCCESSFUL in 17 s 781 ms`).
+- `default@OhosTestCompileArkTS`: PASS (`BUILD SUCCESSFUL in 11 s 126 ms`).
+- `assembleHap`: PASS, signed (`BUILD SUCCESSFUL in 17 s 853 ms`).
 - Light open-source compliance: PASS.
 - `git diff --check`: PASS.
 - The focused Hypium tests are registered in `List.test.ets` and compile in the
@@ -112,7 +112,7 @@
 
 ## Next
 
-1. Commit this checkpoint and ask the same reviewer to confirm all thirty-four findings are closed.
+1. Commit this checkpoint and ask the same reviewer to confirm all thirty-five findings are closed.
 2. Rerun final gates and close the branch through PR/main after a clean verdict.
 
 ## Blockers

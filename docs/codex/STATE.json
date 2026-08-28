@@ -3,10 +3,10 @@
   "task": "secret-visibility-policy",
   "branch": "codex/secret-visibility-policy",
   "base": "f3b41e5a6c6ffd7f4e3bc45941877d0ff81d1055",
-  "head": "410c84b7",
+  "head": "91a8b0e8",
   "phase": "review",
   "status": "active",
-  "next": "Commit the ninth-review remediation, obtain a clean cumulative follow-up from the same reviewer, then rerun final gates and close the branch through PR/main.",
+  "next": "Commit the tenth-review remediation, obtain a clean cumulative follow-up from the same reviewer, then rerun final gates and close the branch through PR/main.",
   "blockers": [
     "The optional ohosTest@OhosTestCompileArkTS task is not registered (00306054), so no device-side Hypium execution is claimed."
   ],
@@ -88,17 +88,18 @@
       "P2 seventh review: KeyVaultPage was absent from the declared review scope",
       "P1 eighth review: background windows could retain or reload scrubbed stored-secret projections",
       "P2 eighth review: concurrent visibility Sheets could overwrite a newer policy from a stale snapshot",
-      "P1 ninth review: HostList async authentication continuations could initially project stored plaintext after entering background"
+      "P1 ninth review: HostList async authentication continuations could initially project stored plaintext after entering background",
+      "P2 tenth review: an aborted VNC save-and-connect flow could retain its one-shot password handoff"
     ],
-    "reason": "Nine independent-review rounds found fifteen P1, eighteen P2 and one P3 issue in total. All thirty-four are remediated in the current worktree; a clean cumulative confirmation by the same reviewer is pending."
+    "reason": "Ten independent-review rounds found fifteen P1, nineteen P2 and one P3 issue in total. All thirty-five are remediated in the current worktree; a clean cumulative confirmation by the same reviewer is pending."
   },
   "lastVerification": {
     "baseline": "clean synchronized main@f3b41e5a6",
-    "testCompile": "PASS: default@OhosTestCompileArkTS, BUILD SUCCESSFUL in 10 s 229 ms",
-    "assembleHap": "PASS: signed HAP, BUILD SUCCESSFUL in 17 s 781 ms",
+    "testCompile": "PASS: default@OhosTestCompileArkTS, BUILD SUCCESSFUL in 11 s 126 ms",
+    "assembleHap": "PASS: signed HAP, BUILD SUCCESSFUL in 17 s 853 ms",
     "targetedTests": "REGISTERED_AND_COMPILED; optional ohosTest@OhosTestCompileArkTS unavailable with 00306054; no device execution claimed",
     "compliance": "PASS: Light open-source compliance",
-    "review": "FOLLOW_UP_NOT_PASS: cumulative 15 P1, 18 P2 and 1 P3 findings remediated; same-reviewer clean cumulative follow-up pending",
+    "review": "FOLLOW_UP_NOT_PASS: cumulative 15 P1, 19 P2 and 1 P3 findings remediated; same-reviewer clean cumulative follow-up pending",
     "deviceAcceptance": "PENDING"
   },
   "updated": "2026-08-28 Asia/Shanghai"

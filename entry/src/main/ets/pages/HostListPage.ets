@@ -1023,6 +1023,7 @@ struct HostListPage {
   // 保存并连接必须等新增主机 Sheet 的 native onDisappear 后再交给鉴权 Sheet。
   private pendingAddSheetConnectHostId: string = '';
   private pendingVncConnectHostId: string = '';
+  private pendingVncConnectUserId: string = '';
   private moonlightCatalogHandoffGeneration: number = 0;
   private pendingMoonlightCatalogHandoff: HostAddPostSaveHandoff =
     emptyHostAddPostSaveHandoff();
@@ -1326,6 +1327,12 @@ struct HostListPage {
 
   private onRemoteDesktopBgFlagChange(): void {
     if (this.appInBackground) {
+      if (this.pendingVncConnectHostId !== '') {
+        this.clearPendingVncHandoffsForRecordId(
+          this.pendingVncConnectHostId, this.pendingVncConnectUserId);
+        this.pendingVncConnectHostId = '';
+        this.pendingVncConnectUserId = '';
+      }
       this.clearRustDeskProDismissClassificationTimer();
       if (this.showRustDeskProPreflight && this.rustDeskProPreflightHostId !== '') {
         this.saveRustDeskProAuthDraft();
@@ -2451,9 +2458,11 @@ struct HostListPage {
       return;
     }
     this.refreshHostSnapshotAfterMutation();
+    const currentUserId: string = this.vncHosts.currentUserId();
     this.pendingVncConnectHostId = connectNow ? result.id : '';
+    this.pendingVncConnectUserId = connectNow ? currentUserId : '';
     if (connectNow && !values.rememberPassword && password.length > 0) {
-      VncSessionCredentialHandoff.getInstance().put(this.vncHosts.currentUserId(), result.id, password);
+      VncSessionCredentialHandoff.getInstance().put(currentUserId, result.id, password);
     }
     promptAction.showToast({
       message: connectNow ? 'VNC 主机已保存，正在准备连接' : 'VNC 主机已保存',
@@ -3677,7 +3686,9 @@ struct HostListPage {
     this.modernAddProtocol = '';
     this.vncAddFromModernPicker = false;
     const pendingVncHostId: string = this.pendingVncConnectHostId;
+    const pendingVncUserId: string = this.pendingVncConnectUserId;
     this.pendingVncConnectHostId = '';
+    this.pendingVncConnectUserId = '';
     const pendingHostId: string = this.pendingAddSheetConnectHostId;
     this.pendingAddSheetConnectHostId = '';
     const pendingMoonlightDestination: HostAddPostSaveHandoff =
@@ -3759,11 +3770,15 @@ struct HostListPage {
     }
 
     if (pendingVncHostId !== '') {
-      if (!this.pageActive) { return; }
+      if (!this.pageActive || this.appInBackground) {
+        this.clearPendingVncHandoffsForRecordId(pendingVncHostId, pendingVncUserId);
+        return;
+      }
       hilog.info(0x0001, 'HostList', 'VNC add-host Sheet disappeared; starting saved connection host=' +
         pendingVncHostId);
       const savedVncHost: VncHostView | null = this.vncHosts.find(pendingVncHostId);
       if (savedVncHost === null) {
+        this.clearPendingVncHandoffsForRecordId(pendingVncHostId, pendingVncUserId);
         promptAction.showToast({ message: 'VNC 主机已保存，但连接目标不存在，请刷新后重试', duration: 2200 });
         return;
       }
@@ -4914,7 +4929,11 @@ struct HostListPage {
     }
     const pendingHostId: string = this.pendingAddSheetConnectHostId;
     this.pendingAddSheetConnectHostId = '';
+    const pendingVncHostId: string = this.pendingVncConnectHostId;
+    const pendingVncUserId: string = this.pendingVncConnectUserId;
     this.pendingVncConnectHostId = '';
+    this.pendingVncConnectUserId = '';
+    this.clearPendingVncHandoffsForRecordId(pendingVncHostId, pendingVncUserId);
     if (pendingHostId !== '') {
       this.releaseConnectionAttempt(pendingHostId);
     }
@@ -6123,7 +6142,10 @@ struct HostListPage {
   }
 
   private async connectToHost(host: RemoteHost): Promise<void> {
-    if (!this.pageActive || this.appInBackground) { return; }
+    if (!this.pageActive || this.appInBackground) {
+      this.clearPendingVncCredentialForRemoteHost(host);
+      return;
+    }
     hilog.info(0x0001, 'HostList', 'connectToHost: proto=' + host.protocol +
       ' host=' + maskHost(host.host) + ':' + host.port);
     const moonlightReleased: boolean = MoonlightSessionCoordinator.getInstance()
@@ -8801,13 +8823,19 @@ struct HostListPage {
 
   private clearPendingVncCredentialForRemoteHost(host: RemoteHost): void {
     const vncHostId: string = this.vncRecordIdForHost(host);
-    if (vncHostId === '') { return; }
-    const owner: VncHostView | null = this.vncHosts.find(vncHostId);
-    const userId: string = owner === null ? host.userId.trim() : owner.userId.trim();
+    this.clearPendingVncHandoffsForRecordId(vncHostId, host.userId);
+  }
+
+  private clearPendingVncHandoffsForRecordId(vncHostId: string,
+    fallbackUserId: string = ''): void {
+    const normalizedHostId: string = vncHostId.trim();
+    if (normalizedHostId === '') { return; }
+    const owner: VncHostView | null = this.vncHosts.find(normalizedHostId);
+    const userId: string = owner === null ? fallbackUserId.trim() : owner.userId.trim();
     if (userId === '') { return; }
-    VncSessionCredentialHandoff.getInstance().clear(userId, vncHostId);
-    this.vncCertificateHandoff.clear(userId, 'vnc-cert:' + vncHostId);
-    this.vncPlaintextHandoff.clear(userId, 'vnc-cert:' + vncHostId);
+    VncSessionCredentialHandoff.getInstance().clear(userId, normalizedHostId);
+    this.vncCertificateHandoff.clear(userId, 'vnc-cert:' + normalizedHostId);
+    this.vncPlaintextHandoff.clear(userId, 'vnc-cert:' + normalizedHostId);
   }
 
   private async toggleLock(host: RemoteHost): Promise<void> {
