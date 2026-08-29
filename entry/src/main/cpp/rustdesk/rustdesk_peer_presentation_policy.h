@@ -81,16 +81,18 @@ inline const char* PeerPlatformCategoryName(PeerPlatformCategory category) {
 }
 
 /**
- * RustDesk's hardware-decoded NativeImage is presented with the local
- * producer transform on every peer platform. The decision remains platform
- * invariant: the peer OS label is telemetry, never an orientation switch.
- * Only the eight axis-aligned transforms validated by the renderer policy are
- * accepted, so a malformed or unexpected producer matrix retains the last
- * known-good presentation.
+ * RustDesk's PC hardware-decoded NativeImage accepts only identity and the
+ * vertical texture-origin correction observed on the emulator. Computer
+ * desktop orientation belongs to the encoded frame geometry, so accepting a
+ * producer-side 180-degree rotation or horizontal/axis-swapping transform can
+ * double-apply device-specific Surface metadata on real PC hardware. Phone
+ * and Pad viewers do not sample this mode because their decoder is created
+ * without desktop Surface compatibility. The peer OS label remains telemetry,
+ * never an orientation switch.
  */
 inline Render::NativeImagePresentationMode NativeImageModeForPeerPlatform(
     std::string_view /* platform */) {
-    return Render::NativeImagePresentationMode::ValidatedProducerTransform;
+    return Render::NativeImagePresentationMode::VerticalFlipProducerTransform;
 }
 
 } // namespace RustDeskPresentation
