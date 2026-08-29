@@ -4,9 +4,19 @@
 
 - Task: `per-protocol-pinch-zoom-plan`
 - Branch: `codex/per-protocol-pinch-zoom-plan` from `main@b84224869`.
-- Increment: base implementation/review are complete at `714b791f8`; reset-affordance remediation is reviewed at `4211438a`; display/interaction selection sheets and Moonlight accordion parity are reviewed at `50e2c6b5`; the authorized bindSheet dark-surface increment is reviewed at `4faa18cec`; real-device acceptance and PR closure remain.
-- Phase: five-protocol pinch preferences, graphical canvas gestures/pointer follow, SSH font-pinch gating, protocol-specific reset controls, unified settings-sheet interaction and the ArkTS-only bindSheet increment are implemented; the branch also contains concurrent native commit `a2787161d`, which is outside the bindSheet review.
-- Plan: `docs/codex/plans/2026-08-29-per-protocol-pinch-zoom-and-pointer-follow.md`
+- Increment: base implementation/review are complete at `714b791f8`; reset-affordance remediation is reviewed at `4211438a`; display/interaction selection sheets and Moonlight accordion parity are reviewed at `50e2c6b5`; the authorized bindSheet dark-surface increment is reviewed at `4faa18cec`; RustDesk quality/multimonitor completion is implemented at `ab770ffa4`; real-device acceptance and PR closure remain.
+- Phase: five-protocol gestures/settings, the ArkTS-only bindSheet increment, RustDesk exact quality control and experimental desktop multi-canvas preview are implemented; the branch also contains concurrent native commit `a2787161d`, which remains outside the cumulative branch review.
+- Plans: `docs/codex/plans/2026-08-29-per-protocol-pinch-zoom-and-pointer-follow.md`; `docs/codex/plans/2026-08-29-rustdesk-quality-and-multimonitor-completion.md`.
+
+## RustDesk quality and multimonitor completion
+
+- `Low/Balanced/Best` now maps through the official RustDesk image-quality enum. Cold and live updates share one FIFO generation state; diagnostics distinguish requested/effective/sent values and report local writer success as “已发送”, without inventing a remote quality ACK.
+- Display promotion is an ACK + target-keyframe transaction. Timeout starts an explicit rollback generation, and input stays blocked until rollback ACK + keyframe confirms the prior display.
+- PC-only multi-canvas preview is experimental, default-off and read-only: at most two displays and 2 × 4K aggregate pixels. Each auxiliary display owns its NativeWindow, EGL surface/context, renderer, NativeImage, hardware decoder, queue and telemetry; unsupported hardware decoding degrades to one canvas.
+- Shared EGLDisplay ownership, exact decoder owner/generation leases, serialized lifecycle teardown, 1 ms bounded callback retry and per-display refresh coalescing close the main/aux race, teardown and refresh gaps. Clicking a preview promotes it through the same safe display transaction; no input is sent directly to previews.
+- Automated verification: Rust quality tests 3/3; OHOS RustDesk FFI release PASS for `arm64-v8a` and `x86_64` with both new symbols exported; native host suite 803/819 with every affected RustDesk case passing and 16 known VNC TLS fixture failures; `default@OhosTestCompileArkTS` PASS (`8 s 28 ms`); signed `assembleHap` PASS (`16 s 801 ms`), SHA-256 `58d2e44373ed3d16784612b8823ea19f52874ef85d9e1dcdd84d75b2751bd3c5`; `git diff --check` and Light compliance PASS.
+- Independent review `/root/rustdesk_quality_multicanvas_review`: exact immutable checkpoint `ab770ffa4` PASS; no remaining P0/P1/P2. Real direct/relay quality, multi-monitor correctness and 30-minute resource/thermal acceptance remain pending and are the only open items for this increment.
+- Post-review metadata gate: `default@OhosTestCompileArkTS` PASS (`6 s 298 ms`); signed `assembleHap` PASS (`13 s 306 ms`), SHA-256 `ace87e006497727efe88816a834702f512416c99d5b78683ec0fe844003da5f8`; state validation, `git diff --check` and Light compliance PASS.
 
 ## Per-protocol pinch zoom result
 
