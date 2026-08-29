@@ -22,6 +22,8 @@
 
 能力按“协议 × 能力”独立验收和发布；不适用项记为 N/A。依赖关系为：`configured_endpoint_ipv6=M0+M1`、`dual_stack_racing=M2`、`discovery/control-data=M3`、`RustDesk nat_traversal_ipv6=M4`，后者不得阻塞其他协议的较低层级声明。
 
+实施状态（2026-08-30）：M0 进行中。已建立 ArkTS/native 的 Endpoint V2 parser、formatter、typed server identity 和黄金用例基础，但尚未接入 HostAdd、持久化、NAPI 或各协议 transport 边界；因此 M0 未完成，任何协议能力声明仍保持关闭。
+
 ## 2. 当前能力矩阵
 
 | 协议 | 已有基础 | 主要发布阻断 | 当前判定 |
@@ -38,18 +40,18 @@
 
 ### 3.1 Endpoint V2
 
-建立 ArkTS 与 native 共用语义的版本化端点模型，至少包含：
+建立 ArkTS 与 native 共用语义的版本化端点模型。模型分四层，禁止混用：原始文本只存在于 parse request；校验成功后才生成 canonical value；DNS 结果和 numeric scope 只存在于本次运行的 resolved sockaddr；证书 pin、host key 和 route 只消费 typed server identity 与 canonical endpoint。canonical value 至少包含：
 
 ```text
-hostInput, canonicalHost, family(hostname|ipv4|ipv6), port,
-scopeId/interfaceName?, connectHost, serverName?, endpointVersion
+canonicalHost, family(hostname|ipv4|ipv6), port,
+scope/interfaceName?, scopeKind, endpointVersion
 ```
 
 规则：
 
 - host 与 port 始终分字段；持久化的 IPv6 host 不带方括号。
 - host-only 输入接受 hostname、IPv4、raw IPv6、`[IPv6]`；仅组合输入接受 `[IPv6]:port`，拒绝含 scheme、userinfo、path、CR/LF 或歧义端口的文本。
-- IPv6 经二进制解析后输出稳定 canonical text；authority、URI、日志标签和 UI 统一由 formatter 添加方括号。
+- IPv6 经二进制解析后输出稳定 canonical text；socket/UI authority formatter 使用 `%scope`，URI authority formatter 按 RFC 6874 使用 `%25scope`，两者均仅由 formatter 添加方括号，禁止混用。
 - zone/scope 独立建模。link-local scope 是路由属性，不进入 IP SAN；接口名默认不得跨设备同步。
 - ArkTS、NAPI 和 native 边界均 fail-closed，并设长度上限；不再由各协议手写冒号切割。
 - 提供统一 `formatHostPort`、`formatUserAtHost` 和 IPv6-aware 脱敏函数，禁止完整地址或接口名进入日志。
@@ -58,7 +60,7 @@ M0 同时冻结以下规范性决策：
 
 - ASCII DNS 校验后转小写并去除一个根尾点；第一期拒绝 Unicode host，待引入统一、可审计的 IDNA/Punycode 实现后再开放。
 - 第一期开启手工配置时拒绝 IPv4-mapped IPv6、unspecified `::` 和 multicast；loopback 可用但不得绕过公网监听确认。
-- link-local 必须提供有效 interface-name scope；numeric scope 仅允许本次运行使用，不持久化；global IPv6 携带 zone 直接拒绝。接口失效时给出 scope 错误，不尝试无 scope 连接。
+- link-local 必须提供语法有效且在当前网络可映射的 interface-name scope；numeric scope 仅允许本次运行使用，不持久化；global IPv6 携带 zone 直接拒绝。接口存在性/索引映射在接入网络边界时验证，接口失效时给出 scope 错误，不尝试无 scope 连接。
 - bracketed host-only 输入统一去括号后存储；`canonicalHost` 仅保存 DNS/IP 文本，运行时 `resolvedAddress/sockaddr` 不持久化。
 
 ### 3.2 解析与双栈连接（P1/M2）
