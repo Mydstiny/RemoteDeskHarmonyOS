@@ -97,7 +97,10 @@ export function moonlightRuntimeContext(host: MoonlightHost, lease: AccountSessi
     installationId: moonlightInstallationId(lease.storeIdentity),
     pinnedCertificateSha256: certificateSha256,
     endpoint: {
-      serverName: selected.family === 'hostname' ? selected.host : host.displayName,
+      // Display labels are not TLS identities. Bind certificate verification
+      // to the selected canonical DNS/IP endpoint until a separately verified
+      // advertised server name is persisted.
+      serverName: selected.host,
       addresses: [{
         value: selected.host,
         family: selected.family === 'ipv4' ? 'ipv4' :

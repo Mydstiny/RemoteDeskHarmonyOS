@@ -8,6 +8,12 @@ import {
 } from '../../model/RemoteHost';
 import { Palette, buildDark, buildLight } from '../../common/Theme';
 import { DiscoveredRdpHost } from '../../services/RdpLanDiscoveryService';
+import {
+  EndpointAddressResult,
+  endpointTransportHost,
+  parseEndpointFields,
+  parseEndpointPortText
+} from '../../services/EndpointAddressPolicy';
 
 @Component
 export struct RdpAddFlow {
@@ -58,6 +64,23 @@ export struct RdpAddFlow {
     return this.theme === 'light' ? buildLight(this.accentColor) : buildDark(this.accentColor);
   }
 
+  private parsedEndpoint(): EndpointAddressResult {
+    return parseEndpointFields(this.hostAddress, parseEndpointPortText(this.portText));
+  }
+
+  private endpointIsAccepted(parsed: EndpointAddressResult): boolean {
+    if (!parsed.ok) {
+      this.errorText = parsed.error === 'invalid_port' ? '端口必须在 1-65535 之间' :
+        '请输入有效的域名、IPv4 或 IPv6 地址';
+      return false;
+    }
+    if (parsed.endpoint.scope !== '') {
+      this.errorText = 'RDP 链路本地 IPv6 尚未完成网卡作用域验证，请先使用全局 IPv6 地址';
+      return false;
+    }
+    return true;
+  }
+
   private selectAuthMode(mode: RdpAuthMode): void {
     this.authMode = mode;
     this.errorText = '';
@@ -70,17 +93,18 @@ export struct RdpAddFlow {
   }
 
   private buildHost(): RemoteHost | null {
-    const port: number = parseInt(this.portText);
+    const parsed: EndpointAddressResult = this.parsedEndpoint();
     if (this.label.trim() === '') { this.errorText = '请输入主机名称'; return null; }
-    if (this.hostAddress.trim() === '') { this.errorText = '请输入主机地址'; return null; }
-    if (isNaN(port) || port <= 0 || port > 65535) { this.errorText = '端口必须在 1-65535 之间'; return null; }
+    if (!this.endpointIsAccepted(parsed)) { return null; }
+    const port: number = parsed.endpoint.port;
+    const canonicalHost: string = endpointTransportHost(parsed.endpoint);
     if (this.useLanSearch && this.selectedLanStableId === '') {
       this.errorText = '请先选择局域网搜索结果'; return null;
     }
     const selectedLanHost: DiscoveredRdpHost | undefined = this.lanHosts.find(
       (item: DiscoveredRdpHost): boolean => item.stableId === this.selectedLanStableId);
     if (this.useLanSearch && (selectedLanHost === undefined ||
-      selectedLanHost.host !== this.hostAddress.trim() || selectedLanHost.port !== port)) {
+      selectedLanHost.host !== this.hostAddress || selectedLanHost.port !== port)) {
       this.errorText = '局域网搜索结果已变化，请返回并重新选择'; return null;
     }
     if (this.useLanSearch && this.lanAddressMode !== 'static' && this.lanAddressMode !== 'dynamic') {
@@ -108,7 +132,7 @@ export struct RdpAddFlow {
     host.id = RemoteHost.generateId();
     host.protocol = 'rdp';
     host.label = this.label.trim();
-    host.host = this.hostAddress.trim();
+    host.host = canonicalHost;
     host.port = port;
     if (this.useLanSearch) {
       host.lanAddressMode = this.lanAddressMode === 'dynamic' ? 'dynamic' : 'static';
@@ -206,8 +230,8 @@ export struct RdpAddFlow {
       .width('100%').height(40).borderRadius(10).enabled(!this.lanScanning)
       .backgroundColor(this.pal().surface).fontColor(this.accentColor).margin({ bottom: 10 })
       .onClick((): void => {
-        const port: number = parseInt(this.portText);
-        if (isNaN(port) || port <= 0 || port > 65535) {
+        const port: number = parseEndpointPortText(this.portText);
+        if (port === 0) {
           this.errorText = '请先填写 1-65535 之间的扫描端口'; return;
         }
         this.onStartLanScan(port);
@@ -220,7 +244,7 @@ export struct RdpAddFlow {
       Row() {
         Column() {
           Text(item.deviceName).fontSize(14).fontColor(this.pal().text)
-          Text(item.host + ':' + item.port.toString() +
+          Text((item.host.indexOf(':') >= 0 ? '[' + item.host + ']' : item.host) + ':' + item.port.toString() +
             (item.dynamicCapable ? ' · 支持动态 IP' : ' · 仅静态 IP'))
             .fontSize(11).fontColor(this.pal().text3).margin({ top: 3 })
         }.alignItems(HorizontalAlign.Start).layoutWeight(1)
@@ -340,10 +364,9 @@ export struct RdpAddFlow {
         Button('下一步').width('100%').height(44).borderRadius(12)
           .backgroundColor(this.accentColor).fontColor(Color.White)
           .onClick((): void => {
-            const port: number = parseInt(this.portText);
-            if (this.label.trim() === '' || this.hostAddress.trim() === '' || isNaN(port) || port <= 0 || port > 65535) {
-              this.errorText = '请完整填写名称、地址和有效端口'; return;
-            }
+            const parsed: EndpointAddressResult = this.parsedEndpoint();
+            if (this.label.trim() === '') { this.errorText = '请输入主机名称'; return; }
+            if (!this.endpointIsAccepted(parsed)) { return; }
             if (this.useLanSearch && this.selectedLanStableId === '') {
               this.errorText = '请从局域网搜索结果中选择一台主机'; return;
             }

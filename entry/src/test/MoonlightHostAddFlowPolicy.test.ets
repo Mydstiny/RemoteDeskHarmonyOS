@@ -92,10 +92,18 @@ export default function moonlightHostAddFlowPolicyTest(): void {
       expect(ipv6.address.family).assertEqual('ipv6');
       expect(ipv6.canonical).assertEqual('[2001:db8::20]:47984');
 
+      const expandedIpv6 = parseMoonlightHostAddAddress(
+        '[2001:0DB8:0000:0000:0000:0000:0000:0020]:47984');
+      expect(expandedIpv6.ok).assertTrue();
+      expect(expandedIpv6.address.host).assertEqual('2001:db8::20');
+
       expect(parseMoonlightHostAddAddress('https://gaming-pc.local').ok).assertFalse();
       expect(parseMoonlightHostAddAddress('192.168.1.999').ok).assertFalse();
       expect(parseMoonlightHostAddAddress(':::1').ok).assertFalse();
       expect(parseMoonlightHostAddAddress('gaming-pc.local', '70000').ok).assertFalse();
+      expect(parseMoonlightHostAddAddress(' gaming-pc.local').ok).assertFalse();
+      expect(parseMoonlightHostAddAddress('gaming-pc.local', '47989junk').ok).assertFalse();
+      expect(parseMoonlightHostAddAddress('[fe80::20%wlan0]:47984').ok).assertFalse();
     });
 
     it('keeps_scanning_ephemeral_but_marks_manual_selection_and_identity_as_dirty', 0, (): void => {

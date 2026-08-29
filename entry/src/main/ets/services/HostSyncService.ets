@@ -55,6 +55,11 @@ import {
   RustDeskPeerTwoFactorLegacySource
 } from './RustDeskPeerTwoFactorLegacyMigration';
 import { RustDeskAuthDraftStore } from './RustDeskAuthDraftStore';
+import {
+  EndpointAddressResult,
+  endpointTransportHost,
+  parseEndpointFields
+} from './EndpointAddressPolicy';
 
 export class HostSyncService {
   private static instance: HostSyncService;
@@ -78,6 +83,53 @@ export class HostSyncService {
   private readonly peerTwoFactorBindings: RustDeskPeerTwoFactorBindingStore =
     RustDeskPeerTwoFactorBindingStore.getInstance();
   private keyVaultListenerBound: boolean = false;
+
+  private canonicalizeHostNetworkEndpoints(host: RemoteHost): boolean {
+    if (host.protocol !== 'rdp' && host.protocol !== 'ssh' && host.protocol !== 'rustdesk') {
+      return true;
+    }
+    let sourceHost: string = host.host;
+    let sourcePort: number = host.port;
+    if (host.protocol === 'rustdesk' && host.rustdeskDirectEnabled) {
+      sourceHost = host.rustdeskDirectHost === '' ? host.host : host.rustdeskDirectHost;
+      sourcePort = host.rustdeskDirectPort;
+    }
+    const endpoint: EndpointAddressResult = parseEndpointFields(sourceHost, sourcePort);
+    if (!endpoint.ok || endpoint.endpoint.scope !== '') {
+      hilog.warn(0x0001, 'CloudSync',
+        'HostSyncService: 已拒绝无效或尚未支持作用域的端点 hostId=' +
+        rustDeskRelayIdFingerprint(host.id));
+      return false;
+    }
+    const canonicalHost: string = endpointTransportHost(endpoint.endpoint);
+    const canonicalPort: number = endpoint.endpoint.port;
+    let canonicalGatewayHost: string = host.gatewayHost;
+    let canonicalGatewayPort: number = host.gatewayPort;
+    if (host.protocol === 'rdp' && host.gatewayHost !== '') {
+      const gateway: EndpointAddressResult = parseEndpointFields(host.gatewayHost, host.gatewayPort);
+      if (!gateway.ok || gateway.endpoint.scope !== '') {
+        hilog.warn(0x0001, 'CloudSync',
+          'HostSyncService: 已拒绝无效或尚未支持作用域的 RDP Gateway hostId=' +
+          rustDeskRelayIdFingerprint(host.id));
+        return false;
+      }
+      canonicalGatewayHost = endpointTransportHost(gateway.endpoint);
+      canonicalGatewayPort = gateway.endpoint.port;
+    }
+    // Commit canonical values only after every endpoint in the record passed;
+    // callers must not observe a partially rewritten host when validation fails.
+    host.host = canonicalHost;
+    host.port = canonicalPort;
+    if (host.protocol === 'rustdesk' && host.rustdeskDirectEnabled) {
+      host.rustdeskDirectHost = canonicalHost;
+      host.rustdeskDirectPort = canonicalPort;
+    }
+    if (host.protocol === 'rdp' && host.gatewayHost !== '') {
+      host.gatewayHost = canonicalGatewayHost;
+      host.gatewayPort = canonicalGatewayPort;
+    }
+    return true;
+  }
   private pendingPeerTwoFactorLegacyCandidates:
     Map<string, RustDeskPeerTwoFactorLegacyCandidate> = new Map();
 
@@ -610,6 +662,7 @@ export class HostSyncService {
 
   addHost(host: RemoteHost): boolean {
     if (!host.id) { host.id = RemoteHost.generateId(); }
+    if (!this.canonicalizeHostNetworkEndpoints(host)) { return false; }
     host.createdAt = Date.now();
     const observedAt: number = Date.now();
     this.localHostConfigObservationAt.set(host.id, observedAt);
@@ -647,6 +700,7 @@ export class HostSyncService {
   updateHost(host: RemoteHost): boolean {
     const current: RemoteHost | undefined = this.hosts.get(host.id);
     if (!current) { return false; }
+    if (!this.canonicalizeHostNetworkEndpoints(host)) { return false; }
     const previousPeerEndpoint: string =
       current.protocol === 'rustdesk' ? rustDeskPeerTwoFactorEndpointIdentity(current) : '';
     const nextPeerEndpoint: string =

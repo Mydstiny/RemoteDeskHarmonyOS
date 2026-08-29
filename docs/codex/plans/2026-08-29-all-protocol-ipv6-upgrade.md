@@ -22,7 +22,7 @@
 
 能力按“协议 × 能力”独立验收和发布；不适用项记为 N/A。依赖关系为：`configured_endpoint_ipv6=M0+M1`、`dual_stack_racing=M2`、`discovery/control-data=M3`、`RustDesk nat_traversal_ipv6=M4`，后者不得阻塞其他协议的较低层级声明。
 
-实施状态（2026-08-30）：M0 进行中。已建立 ArkTS/native 的 Endpoint V2 parser、formatter、typed server identity 和黄金用例基础，但尚未接入 HostAdd、持久化、NAPI 或各协议 transport 边界；因此 M0 未完成，任何协议能力声明仍保持关闭。
+实施状态（2026-08-30）：M0 已完成，M1 进行中。Endpoint V2 已接入五协议录入/导入、规范化新写、SSH 代理与跳板链、RustDesk control-plane fingerprint、RDP/VNC 预检以及通用/Moonlight NAPI 边界；非法、歧义和未完成接口存在性验证的 scoped IPv6 均 fail-closed。五类“协议 × 能力”声明已独立定义且仍全部关闭；真实连接、重连和真机矩阵未完成前不发布 `configured_endpoint_ipv6`。
 
 ## 2. 当前能力矩阵
 

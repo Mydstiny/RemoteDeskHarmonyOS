@@ -99,6 +99,11 @@ RDP_TEST_CASE(endpoint_address_parses_ports_and_formats_socket_and_uri_authority
     RDP_ASSERT(ParseAuthority("rdp.example:", 3389U).error == AddressError::InvalidPort);
     RDP_ASSERT(ParseAuthority("0x7f000001.:3389", 3389U).error == AddressError::InvalidIpv4);
     RDP_ASSERT(ParseAuthority("[2001:db8::20]:3390junk", 3389U).error == AddressError::InvalidPort);
+    const ParseResult fields = ParseFields("[2001:0DB8:0:0::20]", 3389U);
+    RDP_ASSERT(fields.ok);
+    RDP_ASSERT(fields.endpoint.canonicalHost() == "2001:db8::20");
+    RDP_ASSERT(fields.endpoint.port() == 3389U);
+    RDP_ASSERT(ParseFields("rdp.example", 0U).error == AddressError::InvalidPort);
 }
 
 RDP_TEST_CASE(endpoint_address_builds_only_validated_typed_stable_identity) {

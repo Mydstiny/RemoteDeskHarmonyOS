@@ -426,8 +426,11 @@ export default function moonlightLocalHostServiceTest(): void {
         id: current.id,
         serverUuid: current.serverUuid,
         displayName: '游戏工作站',
-        addresses: [{ host: 'sunshine.example.test', family: 'hostname', port: 47989 }],
-        preferredAddressKey: 'hostname|sunshine.example.test|47989',
+        addresses: [{
+          host: '2001:0DB8:0000:0000:0000:0000:0000:0020', family: 'ipv6', port: 47989
+        }],
+        preferredAddressKey:
+          'ipv6|2001:0db8:0000:0000:0000:0000:0000:0020|47989',
         httpsPort: 47984,
         hostType: 'sunshine',
         wakeOnLan: { enabled: true, mac: 'AA:BB:CC:DD:EE:FF', broadcast: '192.0.2.255' },
@@ -440,7 +443,8 @@ export default function moonlightLocalHostServiceTest(): void {
         port.active, saved.hostId).record as MoonlightRecord;
       const next = moonlightHostFromRecord(nextRecord) as MoonlightHost;
       expect(next.displayName).assertEqual('游戏工作站');
-      expect(next.addresses[0].host).assertEqual('sunshine.example.test');
+      expect(next.addresses[0].host).assertEqual('2001:db8::20');
+      expect(next.preferredAddressKey).assertEqual('ipv6|2001:db8::20|47989');
       expect(next.httpsPort as number).assertEqual(47984);
       expect(next.wakeOnLan.enabled).assertTrue();
       expect(next.serverUuid).assertEqual(current.serverUuid);

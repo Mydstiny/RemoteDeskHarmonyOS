@@ -3,6 +3,12 @@ import {
   MoonlightAddressFamily,
   MoonlightHostType
 } from '../model/MoonlightModels';
+import {
+  EndpointAddressResult,
+  formatEndpointHostPort,
+  parseEndpointAuthority,
+  parseEndpointPortText
+} from './EndpointAddressPolicy';
 
 export type MoonlightHostAddStep = 1 | 2 | 3 | 4;
 export type MoonlightHostAddMode = 'automatic' | 'manual';
@@ -188,62 +194,6 @@ function fingerprintIsValid(value: string): boolean {
   return /^[0-9a-fA-F]{64}$/.test(value);
 }
 
-function parsePort(value: string): number {
-  if (!/^[0-9]{1,5}$/.test(value)) { return 0; }
-  const parsed: number = Number(value);
-  return validPort(parsed) ? parsed : 0;
-}
-
-function ipv4IsValid(value: string): boolean {
-  const parts: string[] = value.split('.');
-  if (parts.length !== 4) { return false; }
-  for (let index = 0; index < parts.length; index++) {
-    if (!/^(0|[1-9][0-9]{0,2})$/.test(parts[index])) { return false; }
-    const part: number = Number(parts[index]);
-    if (part < 0 || part > 255) { return false; }
-  }
-  return true;
-}
-
-function ipv6IsValid(value: string): boolean {
-  if (value.length < 2 || value.length > 45 || value.indexOf(':') < 0 ||
-      value.indexOf(':::') >= 0 || !/^[0-9a-fA-F:.]+$/.test(value)) {
-    return false;
-  }
-  const doubleColon: number = value.indexOf('::');
-  if (doubleColon >= 0 && value.indexOf('::', doubleColon + 2) >= 0) { return false; }
-  const parts: string[] = value.split(':');
-  let groups: number = 0;
-  for (let index = 0; index < parts.length; index++) {
-    const part: string = parts[index];
-    if (part === '') { continue; }
-    if (part.indexOf('.') >= 0) {
-      if (index !== parts.length - 1 || !ipv4IsValid(part)) { return false; }
-      groups += 2;
-    } else {
-      if (!/^[0-9a-fA-F]{1,4}$/.test(part)) { return false; }
-      groups += 1;
-    }
-  }
-  return doubleColon >= 0 ? groups < 8 : groups === 8;
-}
-
-function hostnameIsValid(value: string): boolean {
-  if (value.length < 1 || value.length > 253 || value.startsWith('.') ||
-      value.endsWith('.') || value.indexOf('..') >= 0) {
-    return false;
-  }
-  const labels: string[] = value.split('.');
-  for (let index = 0; index < labels.length; index++) {
-    const label: string = labels[index];
-    if (label.length < 1 || label.length > 63 || label.startsWith('-') ||
-        label.endsWith('-') || !/^[A-Za-z0-9-]+$/.test(label)) {
-      return false;
-    }
-  }
-  return true;
-}
-
 function addressResult(errorText: string): MoonlightHostAddAddressResult {
   return { ok: false, address: emptyMoonlightAddress(), canonical: '', errorText: errorText };
 }
@@ -252,58 +202,28 @@ export function parseMoonlightHostAddAddress(
   input: string,
   customPortText: string = MOONLIGHT_DEFAULT_CONTROL_PORT.toString()
 ): MoonlightHostAddAddressResult {
-  const source: string = input.trim();
-  if (source === '') { return addressResult('请输入主机地址'); }
-  if (source.indexOf('://') >= 0 || source.indexOf('/') >= 0 ||
-      source.indexOf('@') >= 0 || /\s/.test(source)) {
-    return addressResult('请输入域名、IPv4 或带方括号的 IPv6 地址');
+  if (input === '') { return addressResult('请输入主机地址'); }
+  const defaultPort: number = parseEndpointPortText(customPortText);
+  if (defaultPort === 0) { return addressResult('端口必须在 1-65535 之间'); }
+  const parsed: EndpointAddressResult = parseEndpointAuthority(input, defaultPort);
+  if (!parsed.ok) {
+    if (parsed.error === 'invalid_port') { return addressResult('端口必须在 1-65535 之间'); }
+    if (parsed.error === 'invalid_ipv4') { return addressResult('IPv4 地址格式不正确'); }
+    if (parsed.error === 'invalid_ipv6') { return addressResult('IPv6 地址格式不正确'); }
+    return addressResult('请输入有效的域名、IPv4 或带方括号的 IPv6 地址');
   }
-  let host: string = source;
-  let port: number = parsePort(customPortText.trim());
-  if (port === 0) { return addressResult('端口必须在 1-65535 之间'); }
-  let family: MoonlightAddressFamily = 'hostname';
-  if (source.startsWith('[')) {
-    const close: number = source.indexOf(']');
-    if (close <= 1) { return addressResult('IPv6 地址格式不正确'); }
-    host = source.substring(1, close);
-    const suffix: string = source.substring(close + 1);
-    if (suffix !== '') {
-      if (!suffix.startsWith(':')) { return addressResult('IPv6 地址格式不正确'); }
-      port = parsePort(suffix.substring(1));
-      if (port === 0) { return addressResult('端口必须在 1-65535 之间'); }
-    }
-    if (!ipv6IsValid(host)) { return addressResult('IPv6 地址格式不正确'); }
-    family = 'ipv6';
-  } else if (ipv4IsValid(source)) {
-    family = 'ipv4';
-  } else {
-    const colon: number = source.lastIndexOf(':');
-    if (colon > 0 && source.indexOf(':') === colon) {
-      const suffixPort: number = parsePort(source.substring(colon + 1));
-      if (suffixPort === 0) { return addressResult('端口必须在 1-65535 之间'); }
-      host = source.substring(0, colon);
-      port = suffixPort;
-    }
-    if (ipv4IsValid(host)) {
-      family = 'ipv4';
-    } else if (ipv6IsValid(host)) {
-      family = 'ipv6';
-    } else if (/^[0-9.]+$/.test(host) && host.indexOf('.') >= 0) {
-      return addressResult('IPv4 地址格式不正确');
-    } else if (hostnameIsValid(host)) {
-      family = 'hostname';
-    } else {
-      return addressResult('主机地址格式不正确');
-    }
+  if (parsed.endpoint.scope !== '') {
+    return addressResult('Moonlight 链路本地 IPv6 尚未完成网卡作用域验证，请先使用全局 IPv6 地址');
   }
-  const normalizedHost: string = host.toLowerCase();
-  const canonical: string = family === 'ipv6' ?
-    '[' + normalizedHost + ']:' + port.toString() :
-    normalizedHost + ':' + port.toString();
+  const family: MoonlightAddressFamily = parsed.endpoint.family;
   return {
     ok: true,
-    address: { host: normalizedHost, family: family, port: port },
-    canonical: canonical,
+    address: {
+      host: parsed.endpoint.canonicalHost,
+      family: family,
+      port: parsed.endpoint.port
+    },
+    canonical: formatEndpointHostPort(parsed.endpoint),
     errorText: ''
   };
 }

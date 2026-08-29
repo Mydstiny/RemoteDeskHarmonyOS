@@ -3,6 +3,7 @@
 #include "moonlight/bridge/MoonlightNativeBridge.h"
 #include "moonlight/runtime/MoonlightProductRuntime.h"
 #include "moonlight/runtime/MoonlightProductStreamingRuntime.h"
+#include "common/endpoint_address_policy.h"
 
 #include <algorithm>
 #include <atomic>
@@ -456,6 +457,17 @@ bool parseAddress(napi_env env, napi_value value, MoonlightHostAddress& address,
         error = "address family is not supported";
         return false;
     }
+    const auto parsed = remotedesk::endpoint::ParseHost(
+        address.value, remotedesk::endpoint::ParseMode::Persisted);
+    if (!parsed.ok || !parsed.endpoint.scope().empty() ||
+        (address.family == MoonlightHostAddressFamily::Ipv4 &&
+         parsed.endpoint.family() != remotedesk::endpoint::AddressFamily::Ipv4) ||
+        (address.family == MoonlightHostAddressFamily::Ipv6 &&
+         parsed.endpoint.family() != remotedesk::endpoint::AddressFamily::Ipv6)) {
+        error = "address value does not match its canonical family";
+        return false;
+    }
+    address.value = remotedesk::endpoint::TransportHost(parsed.endpoint);
     return true;
 }
 
@@ -470,6 +482,14 @@ bool parseEndpoint(napi_env env, napi_value value, MoonlightHostEndpoint& endpoi
                             endpoint.serverName, error)) {
         return false;
     }
+    const auto serverIdentity =
+        remotedesk::endpoint::ParseServerIdentity(endpoint.serverName);
+    if (!serverIdentity.ok ||
+        serverIdentity.identity.kind() == remotedesk::endpoint::ServerIdentityKind::None) {
+        error = "endpoint server identity is invalid";
+        return false;
+    }
+    endpoint.serverName = serverIdentity.identity.canonicalName();
     bool present = false;
     napi_value addresses = nullptr;
     bool isArray = false;

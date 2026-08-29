@@ -3677,7 +3677,10 @@ void RustDeskBridge::setDisplayStateCallback(RustDeskDisplayStateCallback callba
     std::lock_guard<std::mutex> lock(impl_->mutex);
     impl_->displayStateCallback = std::move(callback);
 }
-bool RustDeskBridge::supportsNatTraversal() { return mode_ == RustDeskMode::FFI || mode_ == RustDeskMode::EXPERIMENTAL; }
+// The current core supports configured direct/relay TCP paths only. AUTO/NAT
+// coordination and hole punching remain fail-closed until the fixed upstream
+// wire contract and IPv4/IPv6 device matrix are implemented.
+bool RustDeskBridge::supportsNatTraversal() { return false; }
 bool RustDeskBridge::supportsFileTransfer() { return true; }
 
 void registerRustDeskBridge() {

@@ -485,6 +485,24 @@ ParseResult ParseAuthority(const std::string& input, std::uint16_t defaultPort, 
     return parsed;
 }
 
+ParseResult ParseFields(const std::string& hostInput, std::uint16_t port, ParseMode mode) {
+    if (!ValidPort(port)) {
+        return Failed(AddressError::InvalidPort);
+    }
+    ParseResult parsed = ParseHost(hostInput, mode);
+    if (!parsed.ok) {
+        return parsed;
+    }
+    parsed.endpoint = Address(
+        parsed.endpoint.canonicalHost(),
+        parsed.endpoint.family(),
+        port,
+        parsed.endpoint.scope(),
+        parsed.endpoint.scopeKind(),
+        parsed.endpoint.version());
+    return parsed;
+}
+
 std::string TransportHost(const Address& endpoint) {
     if (endpoint.family() != AddressFamily::Ipv6 || endpoint.scope().empty()) {
         return endpoint.canonicalHost();

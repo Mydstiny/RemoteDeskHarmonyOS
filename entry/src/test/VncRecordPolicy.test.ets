@@ -4,7 +4,13 @@ import { vncPayloadHashSha256, vncRecordIsScopeTombstone, vncRecordIsValid,
   vncRecordFromCloudRow, vncSecretPayloadIsMetadataOnly, VNC_SCOPE_TOMBSTONE_PAYLOAD,
   VNC_CLOUD_TABLE, vncRecordHasActiveCiphertext, vncRecordHasActiveEncryptedCiphertext } from
   '../main/ets/services/VncRecordPolicy';
-import { vncHostPayload, vncTrustPayload } from '../main/ets/services/VncModelPolicy';
+import {
+  validateVncGateway,
+  validateVncHost,
+  vncGatewayPayload,
+  vncHostPayload,
+  vncTrustPayload
+} from '../main/ets/services/VncModelPolicy';
 import { encodePlainVncSecret } from '../main/ets/services/VncSecretStoragePolicy';
 
 function validHostRecord(): VncRecord {
@@ -38,6 +44,38 @@ export default function vncRecordPolicyTest(): void {
       });
     it('accepts_non_secret_host_rows_in_the_vnc_owner_domain', 0, (): void => {
       expect(vncRecordIsValid(validHostRecord())).assertTrue();
+    });
+
+    it('canonicalizes_global_ipv6_endpoints_and_keeps_repeater_target_ids_opaque', 0, (): void => {
+      const direct = {
+        label: 'IPv6', host: '[2001:0DB8:0:0:0:0:0:20]', port: 5900, username: '', gatewayId: '',
+        transport: 'direct_tcp' as 'direct_tcp', repeaterMode: 'mode12' as 'mode12',
+        rememberPassword: false, viewOnly: true, displayOverrideEnabled: false, scalingMode: 'fit' as 'fit',
+        clipboardEnabled: false, securityPolicy: 'secure_only' as 'secure_only', tls: true,
+        locked: false, lockType: 0
+      };
+      expect(validateVncHost(direct).length).assertEqual(0);
+      expect(vncHostPayload(direct).indexOf('"host":"2001:db8::20"') >= 0).assertTrue();
+      direct.host = 'fe80::20%wlan0';
+      expect(validateVncHost(direct).length > 0).assertTrue();
+
+      const repeater = {
+        label: 'opaque', host: 'target:id/42', port: 5901, username: '', gatewayId: 'gateway-1',
+        transport: 'ultravnc_repeater' as 'ultravnc_repeater', repeaterMode: 'mode12' as 'mode12',
+        rememberPassword: false, viewOnly: true, displayOverrideEnabled: false, scalingMode: 'fit' as 'fit',
+        clipboardEnabled: false, securityPolicy: 'secure_only' as 'secure_only', tls: true,
+        locked: false, lockType: 0
+      };
+      expect(validateVncHost(repeater).length).assertEqual(0);
+      expect(vncHostPayload(repeater).indexOf('"host":"target:id/42"') >= 0).assertTrue();
+
+      const gateway = {
+        label: 'gateway', transport: 'ultravnc_repeater' as 'ultravnc_repeater',
+        host: '[2001:0DB8::30]', port: 5901, path: '', repeaterMode: 'mode12' as 'mode12',
+        targetId: '42', tls: true, enabled: true
+      };
+      expect(validateVncGateway(gateway).length).assertEqual(0);
+      expect(vncGatewayPayload(gateway).indexOf('"host":"2001:db8::30"') >= 0).assertTrue();
     });
 
     it('accepts_legacy_host_rows_without_clipboard_field', 0, (): void => {

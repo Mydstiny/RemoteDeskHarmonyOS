@@ -12,6 +12,12 @@ import {
   buildSshProxyProfile,
   defaultSshProxyEditorValue
 } from '../../services/SshProxyEditorPolicy';
+import {
+  EndpointAddressResult,
+  endpointTransportHost,
+  parseEndpointFields,
+  parseEndpointPortText
+} from '../../services/EndpointAddressPolicy';
 
 @Component
 export struct SshAddFlow {
@@ -44,17 +50,36 @@ export struct SshAddFlow {
   }
 
   private pal(): Palette { return this.theme === 'light' ? buildLight(this.accentColor) : buildDark(this.accentColor); }
+
+  private parsedEndpoint(): EndpointAddressResult {
+    return parseEndpointFields(this.address, parseEndpointPortText(this.portText));
+  }
+
+  private endpointIsAccepted(parsed: EndpointAddressResult): boolean {
+    if (!parsed.ok) {
+      this.errorText = parsed.error === 'invalid_port' ? '端口必须在 1-65535 之间' :
+        '请输入有效的域名、IPv4 或 IPv6 地址';
+      return false;
+    }
+    if (parsed.endpoint.scope !== '') {
+      this.errorText = 'SSH 链路本地 IPv6 尚未完成网卡作用域验证，请先使用全局 IPv6 地址';
+      return false;
+    }
+    return true;
+  }
+
   private buildHost(): RemoteHost | null {
-    const port: number = parseInt(this.portText);
-    if (this.label.trim() === '' || this.address.trim() === '' || this.username.trim() === '') {
+    const parsed: EndpointAddressResult = this.parsedEndpoint();
+    if (this.label.trim() === '' || this.username.trim() === '') {
       this.errorText = '请完整填写名称、地址和用户名'; return null;
     }
-    if (isNaN(port) || port <= 0 || port > 65535) { this.errorText = '端口必须在 1-65535 之间'; return null; }
+    if (!this.endpointIsAccepted(parsed)) { return null; }
+    const port: number = parsed.endpoint.port;
     if (!this.useKey && this.password === '') { this.errorText = '请输入 SSH 密码'; return null; }
     if (this.useKey && this.keyId === '') { this.errorText = '请选择或导入 SSH 私钥'; return null; }
     const host = new RemoteHost();
     host.id = RemoteHost.generateId(); host.protocol = 'ssh'; host.label = this.label.trim();
-    host.host = this.address.trim(); host.port = port; host.username = this.username.trim();
+    host.host = endpointTransportHost(parsed.endpoint); host.port = port; host.username = this.username.trim();
     host.password = this.useKey ? '' : this.password; host.sshUseKey = this.useKey;
     host.sshKeyId = this.useKey ? this.keyId : ''; host.sshKeyPassphrase = this.useKey ? this.passphrase : '';
     host.sshKeyData = ''; host.sshKeyPath = '';
@@ -135,13 +160,14 @@ export struct SshAddFlow {
               })
               Button('下一步').width('100%').height(44).borderRadius(12).backgroundColor(this.accentColor)
                 .fontColor(Color.White).onClick((): void => {
-                  const port: number = parseInt(this.portText);
-                  if (this.label.trim() === '' || this.address.trim() === '' || this.username.trim() === '' ||
-                    isNaN(port) || port <= 0 || port > 65535) {
+                  const parsed: EndpointAddressResult = this.parsedEndpoint();
+                  if (this.label.trim() === '' || this.username.trim() === '') {
                     this.errorText = '请完整填写基础信息和有效端口'; return;
                   }
+                  if (!this.endpointIsAccepted(parsed)) { return; }
+                  const port: number = parsed.endpoint.port;
                   const proxy: SshProxyEditorBuildResult = buildSshProxyProfile(
-                    'draft-host', this.address, port, this.proxyEditorValue);
+                    'draft-host', endpointTransportHost(parsed.endpoint), port, this.proxyEditorValue);
                   if (!proxy.valid) { this.errorText = proxy.message || '连接方式配置无效'; return; }
                   this.errorText = ''; this.step = 2;
                 })

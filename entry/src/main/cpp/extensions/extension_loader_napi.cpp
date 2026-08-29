@@ -21,6 +21,7 @@
 #include "audio/input_handler.h"
 #include "audio/audio_player.h"
 #include "common/safe_log.h"
+#include "common/endpoint_address_policy.h"
 #include "render/hw_decoder.h"
 #include "render/gl_renderer.h"
 #include "render/video_perf_counters.h"
@@ -1202,6 +1203,25 @@ static bool ReadOptionalNapiInt(napi_env env, napi_value object, const char* key
     return napi_get_value_int32(env, value, &output) == napi_ok;
 }
 
+static bool NormalizePersistedEndpoint(std::string& host, int port) {
+    if (port <= 0 || port > 65535) { return false; }
+    const auto parsed = remotedesk::endpoint::ParseFields(
+        host, static_cast<std::uint16_t>(port), remotedesk::endpoint::ParseMode::Persisted);
+    if (!parsed.ok || !parsed.endpoint.scope().empty()) { return false; }
+    host = remotedesk::endpoint::TransportHost(parsed.endpoint);
+    return true;
+}
+
+static bool NormalizeServerIdentity(std::string& name) {
+    if (name.empty()) { return true; }
+    const auto parsed = remotedesk::endpoint::ParseServerIdentity(name);
+    if (!parsed.ok || parsed.identity.kind() == remotedesk::endpoint::ServerIdentityKind::None) {
+        return false;
+    }
+    name = parsed.identity.canonicalName();
+    return true;
+}
+
 static bool SshSessionLocaleIsSupported(const std::string& locale) {
     return locale.empty() || locale == "C.UTF-8" || locale == "zh_CN.UTF-8" ||
         locale == "zh_TW.UTF-8" || locale == "en_US.UTF-8";
@@ -1269,6 +1289,10 @@ static bool ParseSshRoute(napi_env env, napi_value object, ConnectionConfig& con
     route.kind = sshRouteKindFromType(type);
     route.endpointPort = endpointPort > 0 ? endpointPort : config.port;
     route.connectTimeoutMs = static_cast<uint32_t>(std::max(0, connectTimeoutMs));
+    if (!route.endpointHost.empty() &&
+        !NormalizePersistedEndpoint(route.endpointHost, route.endpointPort)) {
+        return false;
+    }
 
     napi_value hopsValue;
     if (napi_get_named_property(env, routeValue, "hops", &hopsValue) == napi_ok) {
@@ -1303,6 +1327,7 @@ static bool ParseSshRoute(napi_env env, napi_value object, ConnectionConfig& con
             }
             hop.port = port;
             hop.connectTimeoutMs = static_cast<uint32_t>(std::max(0, hopTimeoutMs));
+            if (!NormalizePersistedEndpoint(hop.host, hop.port)) { return false; }
             route.hops.push_back(std::move(hop));
         }
     }
@@ -1998,11 +2023,23 @@ static bool ReadRdpPreflightRequest(
     }
     request.route.targetPort = targetPort;
     request.route.gatewayPort = gatewayPort;
+    if (!NormalizePersistedEndpoint(request.route.targetHost, targetPort) ||
+        (!request.route.gatewayHost.empty() &&
+         !NormalizePersistedEndpoint(request.route.gatewayHost, gatewayPort))) {
+        errorMessage = "RDP preflight endpoint is invalid or uses unsupported scope";
+        return false;
+    }
     if (request.route.targetServerName.empty()) {
         request.route.targetServerName = request.route.targetHost;
     }
     if (request.route.gatewayServerName.empty()) {
         request.route.gatewayServerName = request.route.gatewayHost;
+    }
+    if (!NormalizeServerIdentity(request.route.targetServerName) ||
+        (!request.route.gatewayServerName.empty() &&
+         !NormalizeServerIdentity(request.route.gatewayServerName))) {
+        errorMessage = "RDP preflight server identity is invalid";
+        return false;
     }
 
     if (!ReadNapiNamedString(env, value, "username", request.username, false) ||
@@ -2390,6 +2427,12 @@ napi_value NapiProbeRdpCertificateAsync(napi_env env, napi_callback_info info) {
     }
     if (argc > 2) {
         data->serverName = GetNapiString(env, args[2]);
+    }
+    if (!NormalizePersistedEndpoint(data->host, data->port) ||
+        (!data->serverName.empty() && !NormalizeServerIdentity(data->serverName))) {
+        delete data;
+        napi_throw_error(env, nullptr, "RDP certificate endpoint is invalid or unsupported");
+        return nullptr;
     }
     data->adapter = FindAdapter("rdp");
 
@@ -2948,6 +2991,11 @@ napi_value NapiProbeVncGatewayDeepAsync(napi_env env, napi_callback_info info) {
     if (argc > 12) data->endpointBindingFingerprint = GetNapiString(env, args[12]);
     if (argc > 13) napi_get_value_int64(env, args[13], &data->accountGeneration);
     if (argc > 14) napi_get_value_bool(env, args[14], &data->enabled);
+    if (!NormalizePersistedEndpoint(data->config.host, data->config.port)) {
+        delete data;
+        napi_throw_error(env, nullptr, "VNC Gateway endpoint is invalid or unsupported");
+        return nullptr;
+    }
     data->config.serverName = data->config.host;
     data->cancelled = std::make_shared<std::atomic_bool>(false);
     data->config.cancelled = data->cancelled;
@@ -3046,6 +3094,13 @@ napi_value NapiProbeVncCertificateAsync(napi_env env, napi_callback_info info) {
     if (argc > 1) napi_get_value_int32(env, args[1], &data->config.port);
     if (argc > 2) data->config.serverName = GetNapiString(env, args[2]);
     if (argc > 3) napi_get_value_int32(env, args[3], &data->config.timeoutMs);
+    if (!NormalizePersistedEndpoint(data->config.host, data->config.port) ||
+        (!data->config.serverName.empty() &&
+         !NormalizeServerIdentity(data->config.serverName))) {
+        delete data;
+        napi_throw_error(env, nullptr, "VNC certificate endpoint is invalid or unsupported");
+        return nullptr;
+    }
     data->requestId = g_nextVncCertificateProbeRequestId.fetch_add(1, std::memory_order_relaxed);
     if (data->requestId == 0) {
         data->requestId = g_nextVncCertificateProbeRequestId.fetch_add(1, std::memory_order_relaxed);
@@ -4199,6 +4254,30 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
     if (cfg.vncSecurityPolicy != "secure_only" && cfg.vncSecurityPolicy != "trusted_network" &&
         cfg.vncSecurityPolicy != "allow_plaintext") cfg.vncSecurityPolicy = "secure_only";
 
+    bool endpointValid = true;
+    if (protocolName == "rdp" || protocolName == "ssh" || protocolName == "rustdesk") {
+        endpointValid = NormalizePersistedEndpoint(cfg.host, cfg.port);
+    } else if (protocolName == "vnc") {
+        if (cfg.vncTransport == "direct_tcp") {
+            endpointValid = NormalizePersistedEndpoint(cfg.host, cfg.port);
+        } else {
+            endpointValid = NormalizePersistedEndpoint(cfg.vncGatewayHost, cfg.vncGatewayPort);
+        }
+    }
+    if (endpointValid && protocolName == "rdp" && !cfg.gatewayHost.empty()) {
+        endpointValid = NormalizePersistedEndpoint(cfg.gatewayHost, cfg.gatewayPort);
+    }
+    if (endpointValid && protocolName == "ssh" && !cfg.sshProxyHost.empty() &&
+        cfg.sshProxyType != "legacy_gateway") {
+        endpointValid = NormalizePersistedEndpoint(cfg.sshProxyHost, cfg.sshProxyPort);
+    }
+    if (!endpointValid) {
+        OH_LOG_ERROR(LOG_APP, "[ExtLoader] invalid or unsupported scoped endpoint");
+        napi_value errVal;
+        napi_create_int32(env, protocolName == "ssh" ? ERR_SSH_PROXY_INVALID : -2, &errVal);
+        return errVal;
+    }
+
     if (protocolName == "ssh") {
         if (!ParseSshRoute(env, args[0], cfg)) {
             OH_LOG_ERROR(LOG_APP, "[ExtLoader] invalid SSH route handoff");
@@ -5023,12 +5102,16 @@ static bool ParseSshConnectionConfig(napi_env env, napi_value value,
 
     if (config.host.empty() || config.username.empty()) { return false; }
     if (!hasPort) { config.port = 22; }
-    if (config.port <= 0 || config.port > 65535) { return false; }
+    if (!NormalizePersistedEndpoint(config.host, config.port)) { return false; }
     if (config.width <= 0) { config.width = 80; }
     if (config.height <= 0) { config.height = 24; }
     if (config.authMethod.empty()) { config.authMethod = "password"; }
     if (config.sshProxyType.empty()) {
         config.sshProxyType = config.sshProxyHost.empty() ? "direct" : "http_connect";
+    }
+    if (!config.sshProxyHost.empty() && config.sshProxyType != "legacy_gateway" &&
+        !NormalizePersistedEndpoint(config.sshProxyHost, config.sshProxyPort)) {
+        return false;
     }
     // Parse after the SSH port default is known. An explicit route without an
     // endpointPort must inherit config.port instead of the route struct's

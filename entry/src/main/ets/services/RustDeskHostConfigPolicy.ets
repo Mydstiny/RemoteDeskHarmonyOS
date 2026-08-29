@@ -3,6 +3,12 @@
  */
 import { RustDeskRelayConfig } from '../model/RustDeskRelayConfig';
 import { RustDeskRelayKeyMode, resolveRustDeskRelayKey } from './RustDeskRelayKeyPolicy';
+import {
+  EndpointAddressResult,
+  endpointTransportHost,
+  formatEndpointHostPort,
+  parseEndpointFields
+} from './EndpointAddressPolicy';
 
 export interface RustDeskHostEndpoint {
   host: string;
@@ -50,12 +56,9 @@ export function rustDeskServerKeyError(value: string, required: boolean = false,
  */
 export function rustDeskConnectionError(input: RustDeskConnectionCheckInput): string {
   if (input.directEnabled) {
-    if (input.directHost.trim().length === 0) {
-      return 'RustDesk 直连地址为空';
-    }
-    if (input.directPort <= 0 || input.directPort > 65535) {
-      return 'RustDesk 直连端口无效';
-    }
+    const direct: EndpointAddressResult = parseEndpointFields(input.directHost, input.directPort);
+    if (!direct.ok) { return direct.error === 'invalid_port' ? 'RustDesk 直连端口无效' : 'RustDesk 直连地址无效'; }
+    if (direct.endpoint.scope !== '') { return 'RustDesk 直连链路本地 IPv6 尚未支持'; }
     return '';
   }
   if (input.relayId.trim().length === 0) {
@@ -64,12 +67,10 @@ export function rustDeskConnectionError(input: RustDeskConnectionCheckInput): st
   if (!input.relayExists) {
     return 'RustDesk 绑定的中继配置不存在，请重新选择';
   }
-  if (input.relayHost.trim().length === 0) {
-    return 'RustDesk 中继配置缺少 ID 服务器地址';
-  }
-  if (input.relayPort <= 0 || input.relayPort > 65535) {
-    return 'RustDesk 中继 ID 服务器端口无效';
-  }
+  const relay: EndpointAddressResult = parseEndpointFields(input.relayHost, input.relayPort);
+  if (!relay.ok) { return relay.error === 'invalid_port' ?
+    'RustDesk 中继 ID 服务器端口无效' : 'RustDesk 中继配置缺少有效的 ID 服务器地址'; }
+  if (relay.endpoint.scope !== '') { return 'RustDesk 中继链路本地 IPv6 尚未支持'; }
   const serverKeyError: string = rustDeskServerKeyError(input.relayKey, input.proManaged,
     input.relayKeyMode ?? 'auto');
   if (serverKeyError !== '') {
@@ -104,9 +105,12 @@ export function rustDeskRelayFallbackPort(relay: RustDeskRelayConfig | null): nu
 
 export function shouldBindLegacyRustDeskHostToRelay(protocol: string, directEnabled: boolean,
   relayId: string, host: string, port: number, relayHost: string, relayPort: number): boolean {
+  const legacy: EndpointAddressResult = parseEndpointFields(host, normalizeRustDeskPort(port));
+  const configured: EndpointAddressResult = parseEndpointFields(relayHost, normalizeRustDeskPort(relayPort));
   return protocol === 'rustdesk' && !directEnabled && relayId.trim().length === 0 &&
-    host.trim().toLowerCase() === relayHost.trim().toLowerCase() &&
-    normalizeRustDeskPort(port) === normalizeRustDeskPort(relayPort);
+    legacy.ok && configured.ok && legacy.endpoint.scope === '' && configured.endpoint.scope === '' &&
+    endpointTransportHost(legacy.endpoint) === endpointTransportHost(configured.endpoint) &&
+    legacy.endpoint.port === configured.endpoint.port;
 }
 
 export function rustDeskCardEndpoint(directEnabled: boolean, directHost: string, directPort: number,
@@ -114,7 +118,8 @@ export function rustDeskCardEndpoint(directEnabled: boolean, directHost: string,
   const displayHost: string = directEnabled ? directHost.trim() : host.trim();
   const displayPort: number = directEnabled ?
     normalizeRustDeskPort(directPort, RUSTDESK_PEER_TCP_PORT) : port;
-  return displayHost + ':' + displayPort;
+  const parsed: EndpointAddressResult = parseEndpointFields(displayHost, displayPort);
+  return parsed.ok ? formatEndpointHostPort(parsed.endpoint) : displayHost + ':' + displayPort;
 }
 
 export function shouldAdoptRustDeskDirectPort(directEnabled: boolean, hostDirectPort: number,
@@ -125,15 +130,19 @@ export function shouldAdoptRustDeskDirectPort(directEnabled: boolean, hostDirect
 export function resolveRustDeskHostEndpoint(relay: RustDeskRelayConfig | null, fallbackHost: string,
   directEnabled: boolean, directHost: string, directPort: number): RustDeskHostEndpoint {
   if (directEnabled) {
+    const parsed: EndpointAddressResult = parseEndpointFields(
+      directHost, normalizeRustDeskPort(directPort, RUSTDESK_PEER_TCP_PORT));
     return {
-      host: directHost.trim(),
-      port: normalizeRustDeskPort(directPort, RUSTDESK_PEER_TCP_PORT)
+      host: parsed.ok ? endpointTransportHost(parsed.endpoint) : directHost.trim(),
+      port: parsed.ok ? parsed.endpoint.port : normalizeRustDeskPort(directPort, RUSTDESK_PEER_TCP_PORT)
     };
   }
   if (relay !== null) {
+    const parsed: EndpointAddressResult = parseEndpointFields(
+      relay.idServer, normalizeRustDeskPort(relay.idServerPort));
     return {
-      host: relay.idServer.trim(),
-      port: normalizeRustDeskPort(relay.idServerPort)
+      host: parsed.ok ? endpointTransportHost(parsed.endpoint) : relay.idServer.trim(),
+      port: parsed.ok ? parsed.endpoint.port : normalizeRustDeskPort(relay.idServerPort)
     };
   }
   return {

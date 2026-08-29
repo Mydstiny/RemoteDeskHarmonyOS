@@ -5,6 +5,10 @@
  * Runtime reachability, PINs, session keys, rikey/rikeyid, decoder state and
  * controller device handles deliberately live outside this file.
  */
+import {
+  EndpointAddressResult,
+  parseEndpointFields
+} from '../services/EndpointAddressPolicy';
 
 export type MoonlightAddressFamily = 'ipv4' | 'ipv6' | 'hostname';
 export type MoonlightHostType = 'sunshine' | 'gamestream';
@@ -350,15 +354,33 @@ export function moonlightKeyboardTarget(
 }
 
 export function moonlightAddressKey(address: MoonlightAddress): string {
-  const host: string = address.host.trim().toLowerCase();
+  const normalized: MoonlightAddress = canonicalMoonlightAddress(address);
+  const host: string = normalized.host.toLowerCase();
   return address.family + '|' + host + '|' + address.port.toString();
 }
 
+/** Canonical form used for every new durable Moonlight address write. */
+export function canonicalMoonlightAddress(address: MoonlightAddress): MoonlightAddress {
+  const parsed: EndpointAddressResult = parseEndpointFields(address.host, address.port);
+  if (!parsed.ok || parsed.endpoint.scope !== '' || parsed.endpoint.family !== address.family) {
+    return { host: address.host.trim(), family: address.family, port: address.port };
+  }
+  return {
+    host: parsed.endpoint.canonicalHost,
+    family: address.family,
+    port: parsed.endpoint.port
+  };
+}
+
 export function moonlightAddressIsValid(address: MoonlightAddress): boolean {
-  return address !== undefined && address !== null && typeof address === 'object' &&
-    typeof address.host === 'string' && isBoundedText(address.host.trim(), 1, ADDRESS_MAX_LENGTH) &&
-    isOneOf(address.family, ['ipv4', 'ipv6', 'hostname']) &&
-    isIntegerInRange(address.port, 1, 65535);
+  if (address === undefined || address === null || typeof address !== 'object' ||
+    typeof address.host !== 'string' || !isBoundedText(address.host, 1, ADDRESS_MAX_LENGTH) ||
+    !isOneOf(address.family, ['ipv4', 'ipv6', 'hostname']) ||
+    !isIntegerInRange(address.port, 1, 65535)) {
+    return false;
+  }
+  const parsed: EndpointAddressResult = parseEndpointFields(address.host, address.port);
+  return parsed.ok && parsed.endpoint.scope === '' && parsed.endpoint.family === address.family;
 }
 
 export function moonlightHostIsValid(host: MoonlightHost): boolean {
@@ -375,13 +397,17 @@ export function moonlightHostIsValid(host: MoonlightHost): boolean {
     return false;
   }
   const keys: string[] = [];
+  const compatiblePreferredKeys: string[] = [];
   for (let i = 0; i < host.addresses.length; i++) {
     if (!moonlightAddressIsValid(host.addresses[i])) { return false; }
     const key: string = moonlightAddressKey(host.addresses[i]);
     if (keys.indexOf(key) >= 0) { return false; }
     keys.push(key);
+    compatiblePreferredKeys.push(host.addresses[i].family + '|' +
+      host.addresses[i].host.trim().toLowerCase() + '|' + host.addresses[i].port.toString());
   }
-  if (host.preferredAddressKey !== '' && keys.indexOf(host.preferredAddressKey) < 0) {
+  if (host.preferredAddressKey !== '' && keys.indexOf(host.preferredAddressKey) < 0 &&
+    compatiblePreferredKeys.indexOf(host.preferredAddressKey) < 0) {
     return false;
   }
   return moonlightWakeOnLanIsValid(host.wakeOnLan);

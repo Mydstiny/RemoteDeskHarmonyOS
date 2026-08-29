@@ -116,6 +116,10 @@ ParseResult ParseAuthority(
     const std::string& input,
     std::uint16_t defaultPort,
     ParseMode mode = ParseMode::Persisted);
+ParseResult ParseFields(
+    const std::string& hostInput,
+    std::uint16_t port,
+    ParseMode mode = ParseMode::Persisted);
 
 std::string TransportHost(const Address& endpoint);
 std::string FormatHostPort(const Address& endpoint);

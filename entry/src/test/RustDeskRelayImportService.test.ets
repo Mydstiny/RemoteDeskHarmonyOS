@@ -58,7 +58,7 @@ export default function rustDeskRelayImportServiceTest(): void {
 
     it('parses_bracketed_ipv6_endpoints', 0, (): void => {
       const result: RustDeskRelayImportResult = service.parse('ipv6',
-        '{"host":"[2001:db8::10]:21116","relay":"[2001:db8::20]:21117"}');
+        '{"host":"[2001:0DB8:0:0:0:0:0:10]:21116","relay":"[2001:db8::20]:21117"}');
       expect(result.ok).assertTrue();
       expect(result.idServer).assertEqual('2001:db8::10');
       expect(result.relayServer).assertEqual('2001:db8::20');
@@ -74,6 +74,9 @@ export default function rustDeskRelayImportServiceTest(): void {
         .assertFalse();
       expect(service.parse('bad-relay-port', '{"host":"id.example.com","relay":"[2001:db8::20]:0"}').ok)
         .assertFalse();
+      expect(service.parse('junk-port', '{"host":"id.example.com:21116junk"}').ok).assertFalse();
+      expect(service.parse('outer-space', '{"host":" id.example.com"}').ok).assertFalse();
+      expect(service.parse('scoped', '{"host":"[fe80::20%wlan0]:21116"}').ok).assertFalse();
     });
   });
 }

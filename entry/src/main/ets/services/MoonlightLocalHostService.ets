@@ -6,6 +6,7 @@ import {
   MoonlightHostType,
   MoonlightWakeOnLan,
   MOONLIGHT_DEFAULT_HTTPS_PORT,
+  canonicalMoonlightAddress,
   moonlightAddressKey,
   moonlightHostIsValid
 } from '../model/MoonlightModels';
@@ -124,7 +125,24 @@ function validNow(nowMs: number): boolean {
 }
 
 function copyAddress(value: MoonlightAddress): MoonlightAddress {
-  return { host: value.host.trim(), family: value.family, port: value.port };
+  return canonicalMoonlightAddress(value);
+}
+
+function legacyAddressKey(value: MoonlightAddress): string {
+  return value.family + '|' + value.host.trim().toLowerCase() + '|' + value.port.toString();
+}
+
+function canonicalPreferredAddressKey(
+  addresses: MoonlightAddress[], preferredAddressKey: string
+): string {
+  if (preferredAddressKey === '') { return ''; }
+  for (let index = 0; index < addresses.length; index++) {
+    if (moonlightAddressKey(addresses[index]) === preferredAddressKey ||
+        legacyAddressKey(addresses[index]) === preferredAddressKey) {
+      return moonlightAddressKey(copyAddress(addresses[index]));
+    }
+  }
+  return preferredAddressKey;
 }
 
 function recordWithId(records: MoonlightRecord[], id: string): MoonlightRecord | null {
@@ -285,12 +303,15 @@ export class MoonlightLocalHostService {
 
   updateHost(host: MoonlightHost, nowMs: number): MoonlightLocalHostMutationResult {
     const normalizedId: string = host.id.trim();
+    const normalizedAddresses: MoonlightAddress[] = host.addresses.map(
+      (address: MoonlightAddress): MoonlightAddress => copyAddress(address));
     const normalizedHost: MoonlightHost = {
       id: normalizedId,
       serverUuid: host.serverUuid.trim(),
       displayName: host.displayName.trim(),
-      addresses: host.addresses.map((address: MoonlightAddress): MoonlightAddress => copyAddress(address)),
-      preferredAddressKey: host.preferredAddressKey,
+      addresses: normalizedAddresses,
+      preferredAddressKey: canonicalPreferredAddressKey(
+        host.addresses, host.preferredAddressKey),
       httpsPort: host.httpsPort === undefined ? MOONLIGHT_DEFAULT_HTTPS_PORT : host.httpsPort,
       hostType: host.hostType,
       wakeOnLan: {

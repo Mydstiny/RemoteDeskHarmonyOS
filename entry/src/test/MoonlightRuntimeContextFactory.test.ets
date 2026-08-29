@@ -43,6 +43,9 @@ export default function moonlightRuntimeContextFactoryTest(): void {
       settings.network.preferredAddressFamily = 'ipv6';
       expect(moonlightSelectedHostAddress(host(), settings))
         .assertEqual('[2001:db8::1]:47989');
+      const context = moonlightRuntimeContext(host(), lease(), 11, 2,
+        'a'.repeat(64), settings, 5000) as MoonlightHostContext;
+      expect(context.endpoint.serverName).assertEqual('2001:db8::1');
     });
 
     it('builds_one_safe_host_context_and_slot_zero_launch_contract', 0, (): void => {

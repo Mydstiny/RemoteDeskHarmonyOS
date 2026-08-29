@@ -1,5 +1,10 @@
 import { VncRecord } from '../model/VncRecord';
 import { vncCanonicalJson, vncPayloadHashSha256, VNC_SCHEMA_VERSION } from './VncRecordPolicy';
+import {
+  EndpointAddressResult,
+  endpointTransportHost,
+  parseEndpointFields
+} from './EndpointAddressPolicy';
 
 export type VncTransport = 'direct_tcp' | 'ultravnc_repeater' | 'websocket_gateway' | 'ssh_tunnel';
 export type VncRepeaterMode = 'mode2' | 'mode12';
@@ -114,14 +119,37 @@ export function defaultVncSettings(controlMode: number = 0): VncSettingsValues {
 }
 
 export function validVncPort(port: number): boolean {
-  return Number.isFinite(port) && port >= 1 && port <= 65535;
+  return Number.isSafeInteger(port) && port >= 1 && port <= 65535;
+}
+
+function vncNetworkEndpoint(host: string, port: number): EndpointAddressResult {
+  return parseEndpointFields(host, port);
+}
+
+export function canonicalVncNetworkHost(host: string, port: number): string {
+  const parsed: EndpointAddressResult = vncNetworkEndpoint(host, port);
+  return parsed.ok && parsed.endpoint.scope === '' ? endpointTransportHost(parsed.endpoint) : host;
+}
+
+function appendVncEndpointError(errors: string[], label: string, host: string, port: number): void {
+  const parsed: EndpointAddressResult = vncNetworkEndpoint(host, port);
+  if (!parsed.ok) {
+    errors.push(parsed.error === 'invalid_port' ? label + '端口必须在 1-65535 之间' :
+      label + '必须是有效的域名、IPv4 或 IPv6 地址');
+  } else if (parsed.endpoint.scope !== '') {
+    errors.push(label + '的链路本地 IPv6 尚未完成网卡作用域验证，请先使用全局 IPv6 地址');
+  }
 }
 
 export function validateVncHost(values: VncHostValues): string[] {
   const errors: string[] = [];
   if (values.label.trim() === '') { errors.push('VNC 主机名称不能为空'); }
-  if (values.host.trim() === '') { errors.push('VNC 主机地址不能为空'); }
-  if (!validVncPort(values.port)) { errors.push('VNC 端口必须在 1-65535 之间'); }
+  if (values.transport === 'direct_tcp') {
+    appendVncEndpointError(errors, 'VNC 主机地址', values.host, values.port);
+  } else {
+    if (values.host.trim() === '') { errors.push('VNC Repeater 目标 ID 不能为空'); }
+    if (!validVncPort(values.port)) { errors.push('VNC 端口必须在 1-65535 之间'); }
+  }
   if (values.gatewayId.trim() !== '' && values.transport === 'direct_tcp') {
     errors.push('直连 TCP 不能绑定网关');
   }
@@ -134,8 +162,7 @@ export function validateVncHost(values: VncHostValues): string[] {
 export function validateVncGateway(values: VncGatewayValues): string[] {
   const errors: string[] = [];
   if (values.label.trim() === '') { errors.push('VNC 网关名称不能为空'); }
-  if (values.host.trim() === '') { errors.push('VNC 网关地址不能为空'); }
-  if (!validVncPort(values.port)) { errors.push('VNC 网关端口必须在 1-65535 之间'); }
+  appendVncEndpointError(errors, 'VNC 网关地址', values.host, values.port);
   if (values.transport === 'websocket_gateway' && values.path.trim() === '') {
     errors.push('WebSocket 网关必须配置路径');
   }
@@ -185,7 +212,8 @@ export function vncSettingsPayload(values: VncSettingsValues): string {
 export function vncHostPayload(values: VncHostValues): string {
   const payload: Record<string, Object> = {};
   payload['label'] = values.label.trim();
-  payload['host'] = values.host.trim();
+  payload['host'] = values.transport === 'direct_tcp' ?
+    canonicalVncNetworkHost(values.host, values.port) : values.host.trim();
   payload['port'] = values.port;
   payload['username'] = values.username.trim();
   payload['gatewayId'] = values.gatewayId.trim();
@@ -207,7 +235,7 @@ export function vncGatewayPayload(values: VncGatewayValues): string {
   const payload: Record<string, Object> = {};
   payload['label'] = values.label.trim();
   payload['transport'] = values.transport;
-  payload['host'] = values.host.trim();
+  payload['host'] = canonicalVncNetworkHost(values.host, values.port);
   payload['port'] = values.port;
   payload['path'] = values.path.trim();
   payload['repeaterMode'] = values.repeaterMode;

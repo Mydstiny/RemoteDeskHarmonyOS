@@ -107,6 +107,11 @@ function parsePort(value: string): number {
   return validPort(parsed) ? parsed : 0;
 }
 
+/** Strict UI/import port parser. Whitespace and trailing characters fail closed. */
+export function parseEndpointPortText(value: string): number {
+  return parsePort(value);
+}
+
 function ipv4Octets(value: string): number[] | null {
   const parts: string[] = value.split('.');
   if (parts.length !== 4) { return null; }
@@ -387,6 +392,26 @@ export function parseEndpointAuthority(
     }
   }
   const parsed: EndpointAddressResult = parseEndpointHost(hostText, mode);
+  if (!parsed.ok) { return parsed; }
+  parsed.endpoint = new EndpointAddress(
+    parsed.endpoint.canonicalHost,
+    parsed.endpoint.family,
+    port,
+    parsed.endpoint.scope,
+    parsed.endpoint.scopeKind,
+    parsed.endpoint.version
+  );
+  return parsed;
+}
+
+/** Parse a host field whose port is already stored in a separate field. */
+export function parseEndpointFields(
+  hostInput: string,
+  port: number,
+  mode: EndpointParseMode = 'persisted'
+): EndpointAddressResult {
+  if (!validPort(port)) { return failedEndpoint('invalid_port'); }
+  const parsed: EndpointAddressResult = parseEndpointHost(hostInput, mode);
   if (!parsed.ok) { return parsed; }
   parsed.endpoint = new EndpointAddress(
     parsed.endpoint.canonicalHost,

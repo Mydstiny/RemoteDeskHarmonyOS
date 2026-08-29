@@ -13,6 +13,7 @@ import {
 import { rustDeskProTokenMatchesConnection } from '../main/ets/model/RustDeskProModels';
 import { RemoteHost } from '../main/ets/model/RemoteHost';
 import {
+  rustDeskCardEndpoint,
   rustDeskConnectionError,
   shouldBindLegacyRustDeskHostToRelay
 } from '../main/ets/services/RustDeskHostConfigPolicy';
@@ -112,6 +113,26 @@ export default function rustDeskProConnectionPreflightPolicyTest(): void {
         relayKey: '',
         proManaged: false
       })).assertEqual('');
+    });
+
+    it('accepts_global_ipv6_but_rejects_noncanonical_or_scoped_direct_endpoints', 0, (): void => {
+      expect(rustDeskConnectionError({
+        directEnabled: true, directHost: '2001:db8::20', directPort: 21118,
+        relayId: '', relayExists: false, relayHost: '', relayPort: 0,
+        relayKey: '', proManaged: false
+      })).assertEqual('');
+      expect(rustDeskCardEndpoint(true, '2001:db8::20', 21118, '', 0))
+        .assertEqual('[2001:db8::20]:21118');
+      expect(rustDeskConnectionError({
+        directEnabled: true, directHost: 'fe80::20%wlan0', directPort: 21118,
+        relayId: '', relayExists: false, relayHost: '', relayPort: 0,
+        relayKey: '', proManaged: false
+      })).assertEqual('RustDesk 直连链路本地 IPv6 尚未支持');
+      expect(rustDeskConnectionError({
+        directEnabled: true, directHost: '2001:db8::20:21118junk', directPort: 21118,
+        relayId: '', relayExists: false, relayHost: '', relayPort: 0,
+        relayKey: '', proManaged: false
+      })).assertEqual('RustDesk 直连地址无效');
     });
 
     it('binds_only_a_unique_legacy_endpoint_to_a_relay', 0, (): void => {

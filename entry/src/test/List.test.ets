@@ -215,6 +215,7 @@ import moonlightModelsTest from './MoonlightModels.test';
 import moonlightRecordTest from './MoonlightRecord.test';
 import moonlightRecordPolicyTest from './MoonlightRecordPolicy.test';
 import moonlightCapabilityPolicyTest from './MoonlightCapabilityPolicy.test';
+import ipv6CapabilityPolicyTest from './Ipv6CapabilityPolicy.test';
 import moonlightSettingsPolicyTest from './MoonlightSettingsPolicy.test';
 import moonlightImeTextInputPolicyTest from './MoonlightImeTextInputPolicy.test';
 import moonlightRecordConflictPolicyTest from './MoonlightRecordConflictPolicy.test';
@@ -473,6 +474,7 @@ export default function testsuite() {
   moonlightRecordTest();
   moonlightRecordPolicyTest();
   moonlightCapabilityPolicyTest();
+  ipv6CapabilityPolicyTest();
   moonlightSettingsPolicyTest();
   moonlightRecordConflictPolicyTest();
   moonlightSessionStateTest();

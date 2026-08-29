@@ -12,6 +12,11 @@ import {
   RustDeskControlPlaneCapabilitySource
 } from './RustDeskControlPlanePolicy';
 import { normalizeRustDeskProServerUrl } from './RustDeskProApiPolicy';
+import {
+  EndpointAddressResult,
+  formatEndpointHostPort,
+  parseEndpointFields
+} from './EndpointAddressPolicy';
 
 const CAPABILITY_SCHEMA_VERSION: number = 2;
 const CAPABILITY_HASH_DOMAIN: string =
@@ -97,26 +102,6 @@ function sha256Fingerprint(kind: string, value: string): string {
   return result;
 }
 
-function normalizedEndpointHost(value: string): string {
-  let host: string = value.trim().toLowerCase();
-  const scheme: number = host.indexOf('://');
-  if (scheme >= 0) { host = host.substring(scheme + 3); }
-  const slash: number = host.indexOf('/');
-  if (slash >= 0) { host = host.substring(0, slash); }
-  if (host.indexOf('@') >= 0) { return ''; }
-  if (host.startsWith('[')) {
-    const closing: number = host.indexOf(']');
-    return closing > 1 ? host.substring(0, closing + 1) : '';
-  }
-  const colon: number = host.lastIndexOf(':');
-  if (colon > 0) {
-    const port: string = host.substring(colon + 1);
-    if (/^[0-9]+$/.test(port)) { host = host.substring(0, colon); }
-  }
-  while (host.endsWith('.')) { host = host.substring(0, host.length - 1); }
-  return host;
-}
-
 function canonicalApiOrigin(value: string): string {
   try {
     return normalizeRustDeskProServerUrl(value).toLowerCase();
@@ -126,13 +111,19 @@ function canonicalApiOrigin(value: string): string {
 }
 
 function endpointFingerprint(kind: string, host: string, port: number): string {
-  const normalizedHost: string = normalizedEndpointHost(host);
-  if (normalizedHost === '' || !Number.isInteger(port) ||
-    port <= 0 || port > 65535) {
+  const parsed: EndpointAddressResult = parseEndpointFields(host, port);
+  if (!parsed.ok || parsed.endpoint.scope !== '') {
     return '';
   }
-  return sha256Fingerprint(kind,
-    normalizedHost + ':' + port.toString());
+  return sha256Fingerprint(kind, formatEndpointHostPort(parsed.endpoint));
+}
+
+function endpointComparisonKey(host: string, port: number): string {
+  const parsed: EndpointAddressResult = parseEndpointFields(host, port);
+  if (!parsed.ok || parsed.endpoint.scope !== '') {
+    return 'invalid\u001f' + host + '\u001f' + port.toString();
+  }
+  return formatEndpointHostPort(parsed.endpoint);
 }
 
 export function rustDeskControlPlaneBindingIdentity(
@@ -357,12 +348,10 @@ export function rustDeskRelayCapabilityIdentityChanged(
   return previous.controlPlaneProfile !== next.controlPlaneProfile ||
     canonicalApiOrigin(previous.apiServer) !==
       canonicalApiOrigin(next.apiServer) ||
-    normalizedEndpointHost(previous.idServer) !==
-      normalizedEndpointHost(next.idServer) ||
-    previous.idServerPort !== next.idServerPort ||
-    normalizedEndpointHost(previous.relayServer) !==
-      normalizedEndpointHost(next.relayServer) ||
-    previous.relayPort !== next.relayPort ||
+    endpointComparisonKey(previous.idServer, previous.idServerPort) !==
+      endpointComparisonKey(next.idServer, next.idServerPort) ||
+    endpointComparisonKey(previous.relayServer, previous.relayPort) !==
+      endpointComparisonKey(next.relayServer, next.relayPort) ||
     previous.keyMode !== next.keyMode ||
     previous.key !== next.key;
 }

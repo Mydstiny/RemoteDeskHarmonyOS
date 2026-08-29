@@ -10,7 +10,9 @@ import {
   formatEndpointHostPort,
   formatEndpointUriAuthority,
   parseEndpointAuthority,
+  parseEndpointFields,
   parseEndpointHost,
+  parseEndpointPortText,
   parseEndpointServerIdentity
 } from '../main/ets/services/EndpointAddressPolicy';
 
@@ -118,6 +120,16 @@ export default function endpointAddressPolicyTest(): void {
       expect(parseEndpointAuthority('0x7f000001.:3389', 3389).error).assertEqual('invalid_ipv4');
       expect(parseEndpointAuthority('[2001:db8::20]:3390junk', 3389).error)
         .assertEqual('invalid_port');
+
+      const fields: EndpointAddressResult =
+        parseEndpointFields('[2001:0DB8:0:0::20]', 3389);
+      expect(fields.ok).assertTrue();
+      expect(fields.endpoint.canonicalHost).assertEqual('2001:db8::20');
+      expect(fields.endpoint.port).assertEqual(3389);
+      expect(parseEndpointFields('rdp.example', 0).error).assertEqual('invalid_port');
+      expect(parseEndpointPortText('22')).assertEqual(22);
+      expect(parseEndpointPortText(' 22')).assertEqual(0);
+      expect(parseEndpointPortText('22junk')).assertEqual(0);
     });
 
     it('builds_only_validated_typed_and_stable_server_identities', 0, (): void => {

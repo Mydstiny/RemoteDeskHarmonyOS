@@ -15,6 +15,7 @@ import {
   VncRepeaterMode,
   VncScalingMode,
   VncSecurityPolicy,
+  canonicalVncNetworkHost,
   validateVncHost
 } from '../../services/VncModelPolicy';
 import { VncSettingsService } from '../../services/VncSettingsService';
@@ -357,6 +358,9 @@ export struct VncAddFlow {
     };
     const errors: string[] = validateVncHost(values);
     if (errors.length > 0) { this.errorText = errors[0]; return null; }
+    if (values.transport === 'direct_tcp') {
+      values.host = canonicalVncNetworkHost(values.host, values.port);
+    }
     if (this.securityPolicy === 'secure_only' && !this.tls) {
       this.errorText = '当前安全策略要求 TLS，请打开 TLS 或选择可信网络/允许明文';
       return null;
