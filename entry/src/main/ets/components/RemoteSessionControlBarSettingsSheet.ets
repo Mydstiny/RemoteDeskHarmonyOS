@@ -124,7 +124,7 @@ export struct RemoteSessionControlBarSettingsSheet {
       Scroll() {
         Column() {
           Text('开关开启表示隐藏对应协议的手机/平板侧栏和 PC 顶栏；' +
-            '隐藏后仍可通过边缘控制柄恢复，不影响远程输入。')
+            '隐藏后可返回“显示与交互”设置恢复，不影响远程输入。')
             .fontSize(12).fontColor(this.pal().text2).fontFamily(AppTheme.fontFamily)
             .lineHeight(18).width('100%').padding(13)
             .borderRadius(12).backgroundColor(this.pal().surface).margin({ bottom: 14 })
