@@ -1,8 +1,10 @@
 //! TCP endpoint parsing and DNS-aware connection helpers for RustDesk.
 
 use std::io;
-use std::net::{Ipv4Addr, Ipv6Addr, TcpStream, ToSocketAddrs};
+use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream, ToSocketAddrs};
 use std::str::FromStr;
+use std::sync::mpsc;
+use std::thread;
 use std::time::{Duration, Instant};
 
 const MAX_ENDPOINT_LENGTH: usize = 512;
@@ -338,23 +340,55 @@ fn connect_parsed_endpoint(
     timeout: Duration,
     cancel_epoch: Option<u64>,
 ) -> io::Result<TcpStream> {
+    connect_parsed_endpoint_with_resolver(endpoint, stage, timeout, cancel_epoch, |host, port| {
+        (host.as_str(), port)
+            .to_socket_addrs()
+            .map(|values| values.collect())
+    })
+}
+
+fn connect_parsed_endpoint_with_resolver<F>(
+    endpoint: ParsedEndpoint,
+    stage: &str,
+    timeout: Duration,
+    cancel_epoch: Option<u64>,
+    resolver: F,
+) -> io::Result<TcpStream>
+where
+    F: FnOnce(String, u16) -> io::Result<Vec<SocketAddr>> + Send + 'static,
+{
     let endpoint_id =
         crate::safe_diagnostics::sensitive_id(&format!("{}:{}", endpoint.host, endpoint.port));
+    let deadline = Instant::now() + timeout;
     ensure_not_cancelled(cancel_epoch, stage, &endpoint_id)?;
-    let candidates: Vec<_> = (endpoint.host.as_str(), endpoint.port)
-        .to_socket_addrs()
-        .map_err(|error| {
-            io::Error::new(
-                io::ErrorKind::AddrNotAvailable,
-                format!(
-                    "{} resolve failed endpoint_id={} error_kind={:?}",
-                    stage,
-                    endpoint_id,
-                    error.kind()
-                ),
-            )
-        })?
-        .collect();
+    let resolve_host = endpoint.host.clone();
+    let resolve_port = endpoint.port;
+    let candidates = run_blocking_operation(
+        deadline,
+        cancel_epoch,
+        stage,
+        &endpoint_id,
+        "resolve",
+        move || resolver(resolve_host, resolve_port),
+    )
+    .map_err(|error| {
+        io::Error::new(
+            if matches!(
+                error.kind(),
+                io::ErrorKind::Interrupted | io::ErrorKind::TimedOut
+            ) {
+                error.kind()
+            } else {
+                io::ErrorKind::AddrNotAvailable
+            },
+            format!(
+                "{} resolve failed endpoint_id={} error_kind={:?}",
+                stage,
+                endpoint_id,
+                error.kind()
+            ),
+        )
+    })?;
     if candidates.is_empty() {
         return Err(io::Error::new(
             io::ErrorKind::AddrNotAvailable,
@@ -371,7 +405,6 @@ fn connect_parsed_endpoint(
         candidates.len()
     );
 
-    let deadline = Instant::now() + timeout;
     let mut last_error = None;
     let candidate_count = candidates.len();
     for (index, address) in candidates.into_iter().enumerate() {
@@ -425,33 +458,92 @@ fn connect_parsed_endpoint(
 }
 
 fn connect_candidate(
-    address: &std::net::SocketAddr,
+    address: &SocketAddr,
     deadline: Instant,
     cancel_epoch: Option<u64>,
     stage: &str,
     endpoint_id: &str,
 ) -> io::Result<TcpStream> {
+    let address = *address;
+    let connect_timeout = deadline.saturating_duration_since(Instant::now());
+    if connect_timeout.is_zero() {
+        return Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            "candidate timed out",
+        ));
+    }
+    run_blocking_operation(
+        deadline,
+        cancel_epoch,
+        stage,
+        endpoint_id,
+        "connect",
+        move || TcpStream::connect_timeout(&address, connect_timeout),
+    )
+}
+
+fn run_blocking_operation<T, F>(
+    deadline: Instant,
+    cancel_epoch: Option<u64>,
+    stage: &str,
+    endpoint_id: &str,
+    operation: &str,
+    task: F,
+) -> io::Result<T>
+where
+    T: Send + 'static,
+    F: FnOnce() -> io::Result<T> + Send + 'static,
+{
+    ensure_not_cancelled(cancel_epoch, stage, endpoint_id)?;
+    if deadline.saturating_duration_since(Instant::now()).is_zero() {
+        return Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            format!(
+                "{} {} timed out endpoint_id={}",
+                stage, operation, endpoint_id
+            ),
+        ));
+    }
+    let (sender, receiver) = mpsc::sync_channel(1);
+    thread::Builder::new()
+        .name(format!("rustdesk-{}", operation))
+        .spawn(move || {
+            let _ = sender.send(task());
+        })
+        .map_err(|error| {
+            io::Error::new(
+                error.kind(),
+                format!(
+                    "{} {} worker start failed endpoint_id={}",
+                    stage, operation, endpoint_id
+                ),
+            )
+        })?;
+
     loop {
         ensure_not_cancelled(cancel_epoch, stage, endpoint_id)?;
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
             return Err(io::Error::new(
                 io::ErrorKind::TimedOut,
-                "candidate timed out",
+                format!(
+                    "{} {} timed out endpoint_id={}",
+                    stage, operation, endpoint_id
+                ),
             ));
         }
-        let attempt_timeout = remaining.min(CONNECT_CANCEL_SLICE);
-        match TcpStream::connect_timeout(address, attempt_timeout) {
-            Ok(stream) => return Ok(stream),
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
-                ) =>
-            {
-                continue;
+        match receiver.recv_timeout(remaining.min(CONNECT_CANCEL_SLICE)) {
+            Ok(result) => return result,
+            Err(mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    format!(
+                        "{} {} worker stopped endpoint_id={}",
+                        stage, operation, endpoint_id
+                    ),
+                ));
             }
-            Err(error) => return Err(error),
         }
     }
 }
@@ -473,6 +565,9 @@ fn ensure_not_cancelled(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::net::TcpListener;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
 
     #[test]
     fn parse_endpoint_supports_hostname_and_explicit_port() {
@@ -560,5 +655,98 @@ mod tests {
         assert_eq!(error.kind(), io::ErrorKind::Interrupted);
         assert!(error.to_string().contains("connect cancelled"));
         crate::finish_connect_epoch(epoch, 9001);
+    }
+
+    #[test]
+    fn aaaa_only_resolution_connects_to_ipv6_loopback() {
+        let listener = match TcpListener::bind("[::1]:0") {
+            Ok(value) => value,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::AddrNotAvailable | io::ErrorKind::PermissionDenied
+                ) =>
+            {
+                return;
+            }
+            Err(error) => panic!("IPv6 loopback bind failed: {error}"),
+        };
+        let address = listener.local_addr().unwrap();
+        assert!(address.is_ipv6());
+        let accepter = thread::spawn(move || listener.accept().unwrap());
+        let stream = connect_parsed_endpoint_with_resolver(
+            ParsedEndpoint {
+                host: "aaaa-only.example.test".to_string(),
+                port: address.port(),
+            },
+            "test-aaaa",
+            Duration::from_secs(2),
+            None,
+            move |host, port| {
+                assert_eq!(host, "aaaa-only.example.test");
+                assert_eq!(port, address.port());
+                Ok(vec![address])
+            },
+        )
+        .expect("AAAA-only candidate should connect over IPv6");
+        assert!(stream.peer_addr().unwrap().is_ipv6());
+        drop(stream);
+        accepter.join().unwrap();
+    }
+
+    #[test]
+    fn slow_resolution_is_bounded_by_the_shared_deadline() {
+        let invocations = Arc::new(AtomicUsize::new(0));
+        let worker_invocations = Arc::clone(&invocations);
+        let started = Instant::now();
+        let error = connect_parsed_endpoint_with_resolver(
+            ParsedEndpoint {
+                host: "slow-resolver.example.test".to_string(),
+                port: 21116,
+            },
+            "test-resolve-timeout",
+            Duration::from_millis(80),
+            None,
+            move |_, _| {
+                worker_invocations.fetch_add(1, Ordering::SeqCst);
+                thread::sleep(Duration::from_millis(300));
+                Ok(Vec::new())
+            },
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        assert!(started.elapsed() < Duration::from_millis(250));
+        assert_eq!(invocations.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn cancellable_blocking_operation_starts_the_dialer_once() {
+        let session_id = 9002;
+        let epoch = crate::begin_connect_epoch(session_id);
+        let invocations = Arc::new(AtomicUsize::new(0));
+        let worker_invocations = Arc::clone(&invocations);
+        let canceller = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(40));
+            crate::cancel_pending_connect_for_session(session_id);
+        });
+        let started = Instant::now();
+        let error = run_blocking_operation(
+            Instant::now() + Duration::from_secs(2),
+            Some(epoch),
+            "test-cancel",
+            "test-endpoint",
+            "connect",
+            move || {
+                worker_invocations.fetch_add(1, Ordering::SeqCst);
+                thread::sleep(Duration::from_millis(400));
+                Ok(())
+            },
+        )
+        .unwrap_err();
+        canceller.join().unwrap();
+        assert_eq!(error.kind(), io::ErrorKind::Interrupted);
+        assert!(started.elapsed() < Duration::from_millis(600));
+        assert_eq!(invocations.load(Ordering::SeqCst), 1);
+        crate::finish_connect_epoch(epoch, session_id);
     }
 }

@@ -817,6 +817,12 @@ impl RustDeskConnector {
         data: Vec<u8>,
         timeout: Duration,
     ) -> io::Result<()> {
+        if crate::connect_cancelled(self.connect_epoch) {
+            return Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "file transfer cancelled",
+            ));
+        }
         if self.state != ConnState::Connected {
             return Err(io::Error::new(
                 io::ErrorKind::NotConnected,
@@ -844,79 +850,88 @@ impl RustDeskConnector {
         // does not echo another Done frame back to the sender. Waiting for
         // `awaiting_done` to become empty therefore turns every otherwise
         // successful upload into a 30-second timeout.
-        while !file_upload_sender_complete(pending.len()) && started.elapsed() < timeout {
-            match crypto.recv() {
-                Ok(plaintext) => {
-                    let msg: Message = protobuf::parse_from_bytes(&plaintext)
-                        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-                    match msg.union {
-                        Some(Message_oneof_union::file_response(ref resp)) => {
-                            Self::handle_file_response(
-                                crypto,
-                                resp,
-                                &mut pending,
-                                &mut awaiting_done,
-                            )?;
-                        }
-                        Some(Message_oneof_union::file_action(ref action)) => {
-                            Self::handle_file_action(
-                                crypto,
-                                action,
-                                &mut pending,
-                                &mut awaiting_done,
-                            )?;
-                        }
-                        Some(Message_oneof_union::misc(ref misc)) => {
-                            eprintln!(
-                                "[RustDesk-FFI] file-transfer misc={}",
-                                Self::misc_kind(misc)
-                            );
-                        }
-                        other => {
-                            eprintln!(
-                                "[RustDesk-FFI] file-transfer waiting confirm, ignored msg={}",
-                                Self::message_kind(&other)
-                            );
+        let result = (|| -> io::Result<()> {
+            while !file_upload_sender_complete(pending.len()) && started.elapsed() < timeout {
+                if crate::connect_cancelled(self.connect_epoch) {
+                    return Err(io::Error::new(
+                        io::ErrorKind::Interrupted,
+                        "file transfer cancelled",
+                    ));
+                }
+                match crypto.recv() {
+                    Ok(plaintext) => {
+                        let msg: Message = protobuf::parse_from_bytes(&plaintext)
+                            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+                        match msg.union {
+                            Some(Message_oneof_union::file_response(ref resp)) => {
+                                Self::handle_file_response(
+                                    crypto,
+                                    resp,
+                                    &mut pending,
+                                    &mut awaiting_done,
+                                )?;
+                            }
+                            Some(Message_oneof_union::file_action(ref action)) => {
+                                Self::handle_file_action(
+                                    crypto,
+                                    action,
+                                    &mut pending,
+                                    &mut awaiting_done,
+                                )?;
+                            }
+                            Some(Message_oneof_union::misc(ref misc)) => {
+                                eprintln!(
+                                    "[RustDesk-FFI] file-transfer misc={}",
+                                    Self::misc_kind(misc)
+                                );
+                            }
+                            other => {
+                                eprintln!(
+                                    "[RustDesk-FFI] file-transfer waiting confirm, ignored msg={}",
+                                    Self::message_kind(&other)
+                                );
+                            }
                         }
                     }
-                }
-                Err(err)
-                    if err.kind() == ErrorKind::WouldBlock || err.kind() == ErrorKind::TimedOut =>
-                {
-                    Self::flush_stale_file_uploads(crypto, &mut pending, &mut awaiting_done)?;
-                    let elapsed = started.elapsed().as_secs();
-                    if elapsed > last_wait_report {
-                        last_wait_report = elapsed;
-                        crate::set_last_error(format!(
-                            "file-transfer waiting peer confirm path_id={} elapsed={}s pending={}",
-                            path_id,
-                            elapsed,
-                            pending.len()
-                        ));
+                    Err(err)
+                        if err.kind() == ErrorKind::WouldBlock
+                            || err.kind() == ErrorKind::TimedOut =>
+                    {
+                        Self::flush_stale_file_uploads(crypto, &mut pending, &mut awaiting_done)?;
+                        let elapsed = started.elapsed().as_secs();
+                        if elapsed > last_wait_report {
+                            last_wait_report = elapsed;
+                            crate::set_last_error(format!(
+                                "file-transfer waiting peer confirm path_id={} elapsed={}s pending={}",
+                                path_id,
+                                elapsed,
+                                pending.len()
+                            ));
+                        }
                     }
-                    continue;
+                    Err(err) => return Err(err),
                 }
-                Err(err) => return Err(err),
             }
-        }
-        crypto.set_read_timeout(None).ok();
 
-        if file_upload_sender_complete(pending.len()) {
-            crate::set_last_error(format!(
-                "file transfer sent path_id={} final_done_frames={}",
-                path_id,
-                awaiting_done.len()
-            ));
-            Ok(())
-        } else {
-            Err(io::Error::new(
-                io::ErrorKind::TimedOut,
-                format!(
-                    "file-transfer peer did not confirm upload pending={}",
-                    pending.len()
-                ),
-            ))
-        }
+            if file_upload_sender_complete(pending.len()) {
+                crate::set_last_error(format!(
+                    "file transfer sent path_id={} final_done_frames={}",
+                    path_id,
+                    awaiting_done.len()
+                ));
+                Ok(())
+            } else {
+                Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    format!(
+                        "file-transfer peer did not confirm upload pending={}",
+                        pending.len()
+                    ),
+                ))
+            }
+        })();
+        crypto.set_read_timeout(None).ok();
+        result
     }
 
     /// KeyExchange: 交换 Curve25519 公钥
@@ -945,7 +960,10 @@ impl RustDeskConnector {
             self.send_empty_message(stream)?;
             return Ok(None);
         };
-        let payload = wire::read_frame(stream)?;
+        let payload =
+            wire::read_frame_cancellable(stream, Instant::now() + Duration::from_secs(30), || {
+                crate::connect_cancelled(self.connect_epoch)
+            })?;
         let msg: Message = protobuf::parse_from_bytes(&payload)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 

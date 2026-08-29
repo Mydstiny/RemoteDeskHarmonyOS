@@ -16,8 +16,7 @@ use protobuf::Message;
 use rand::RngCore;
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, TcpStream};
-use std::time::Duration;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum RdState {
@@ -644,11 +643,18 @@ impl RendezvousClient {
     }
 
     fn read_raw_frame(&mut self) -> io::Result<Vec<u8>> {
+        let connect_epoch = self.connect_epoch;
         let stream = self
             .stream
             .as_mut()
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotConnected, "TCP not connected"))?;
-        wire::read_frame(stream)
+        let Some(connect_epoch) = connect_epoch else {
+            return wire::read_frame(stream);
+        };
+        let timeout = stream.read_timeout()?.unwrap_or(Duration::from_secs(30));
+        wire::read_frame_cancellable(stream, Instant::now() + timeout, || {
+            crate::connect_cancelled(connect_epoch)
+        })
     }
 
     fn write_raw_message(&mut self, msg: &RendezvousMessage) -> io::Result<()> {

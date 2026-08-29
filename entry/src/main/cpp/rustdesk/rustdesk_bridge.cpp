@@ -29,6 +29,7 @@
 #include <future>
 #include <memory>
 #include <string>
+#include <system_error>
 #include <thread>
 #include <unordered_set>
 
@@ -462,19 +463,72 @@ static int rdConnectTcpEndpoint(const std::string& host, uint32_t port, int time
         errno = EINVAL;
         return -1;
     }
-    addrinfo hints {};
-    hints.ai_family = AF_UNSPEC;
-    hints.ai_socktype = SOCK_STREAM;
-    addrinfo* addresses = nullptr;
+    const auto deadline = std::chrono::steady_clock::now() +
+        std::chrono::milliseconds(timeoutMs);
+
+    struct ResolveState final {
+        std::mutex mutex;
+        std::condition_variable condition;
+        bool complete = false;
+        int status = EAI_FAIL;
+        addrinfo* addresses = nullptr;
+
+        ~ResolveState() {
+            if (addresses != nullptr) {
+                freeaddrinfo(addresses);
+            }
+        }
+    };
+
+    const auto resolveState = std::make_shared<ResolveState>();
     const std::string portText = std::to_string(port);
-    if (getaddrinfo(host.c_str(), portText.c_str(), &hints, &addresses) != 0 ||
-        addresses == nullptr) {
+    std::thread resolver;
+    try {
+        resolver = std::thread([resolveState, host, portText]() {
+            addrinfo hints {};
+            hints.ai_family = AF_UNSPEC;
+            hints.ai_socktype = SOCK_STREAM;
+            addrinfo* addresses = nullptr;
+            const int status = getaddrinfo(
+                host.c_str(), portText.c_str(), &hints, &addresses);
+            {
+                std::lock_guard<std::mutex> lock(resolveState->mutex);
+                resolveState->status = status;
+                resolveState->addresses = addresses;
+                resolveState->complete = true;
+            }
+            resolveState->condition.notify_one();
+        });
+    } catch (const std::system_error&) {
+        errno = EAGAIN;
+        return -1;
+    } catch (...) {
+        errno = EIO;
+        return -1;
+    }
+
+    addrinfo* addresses = nullptr;
+    {
+        std::unique_lock<std::mutex> lock(resolveState->mutex);
+        if (!resolveState->condition.wait_until(lock, deadline, [resolveState]() {
+                return resolveState->complete;
+            })) {
+            lock.unlock();
+            resolver.detach();
+            errno = ETIMEDOUT;
+            return -1;
+        }
+        if (resolveState->status == 0) {
+            addresses = resolveState->addresses;
+            resolveState->addresses = nullptr;
+        }
+    }
+    resolver.join();
+    if (addresses == nullptr) {
         errno = EHOSTUNREACH;
         return -1;
     }
 
-    const auto deadline = std::chrono::steady_clock::now() +
-        std::chrono::milliseconds(timeoutMs);
     int connectedFd = -1;
     int lastError = ETIMEDOUT;
     for (addrinfo* address = addresses; address != nullptr; address = address->ai_next) {
@@ -3210,6 +3264,18 @@ void RustDeskBridge::disconnectImpl(bool cancelContinuity) {
             return;
         }
         if (callbackThread || worker.get_id() == std::this_thread::get_id()) {
+            deferThread(std::move(worker), done);
+            return;
+        }
+        const auto joinDeadline = std::chrono::steady_clock::now() +
+            std::chrono::milliseconds(500);
+        while (done && !done->load(std::memory_order_acquire) &&
+               std::chrono::steady_clock::now() < joinDeadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        if (done && !done->load(std::memory_order_acquire)) {
+            OH_LOG_WARN(LOG_APP,
+                "[RustDesk-FFI] disconnect join exceeded 500ms; deferring owned worker cleanup");
             deferThread(std::move(worker), done);
             return;
         }
