@@ -5,6 +5,7 @@ import {
   SETTINGS_SHEET_SECRET_VISIBILITY,
   SETTINGS_SHEET_REMOTE_WHEEL_DIRECTION,
   SETTINGS_SHEET_REMOTE_PINCH_ZOOM,
+  SETTINGS_SHEET_SESSION_CONTROL_BAR,
   SETTINGS_SHEET_VIRTUAL_KEYBOARD,
   SETTINGS_SHEET_VIRTUAL_KEYBOARD_BEHAVIOR,
   SETTINGS_SHEET_VIRTUAL_KEYBOARD_CUSTOM,
@@ -35,6 +36,7 @@ import {
   secretVisibilitySettingsLeafSheetHeight,
   remoteWheelDirectionSettingsLeafSheetHeight,
   remotePinchZoomSettingsLeafSheetHeight,
+  sessionControlBarSettingsLeafSheetHeight,
   isVirtualKeyboardSettingsMode,
   moonlightSettingsLeafSheetHeight,
   moonlightSettingsRouteSpec,
@@ -93,6 +95,14 @@ export default function settingsSheetRoutePolicyTest() {
         SETTINGS_SHEET_REMOTE_PINCH_ZOOM)).assertEqual(700);
       expect(remotePinchZoomSettingsLeafSheetHeight(SETTINGS_SHEET_ACCOUNT)).assertEqual(0);
       expect(moonlightSettingsRouteSpec(SETTINGS_SHEET_REMOTE_PINCH_ZOOM)).assertNull();
+    });
+
+    it('allocates_one_per_protocol_session_control_bar_editor_leaf', 0, (): void => {
+      expect(SETTINGS_SHEET_SESSION_CONTROL_BAR).assertEqual(40);
+      expect(sessionControlBarSettingsLeafSheetHeight(
+        SETTINGS_SHEET_SESSION_CONTROL_BAR)).assertEqual(620);
+      expect(sessionControlBarSettingsLeafSheetHeight(SETTINGS_SHEET_ACCOUNT)).assertEqual(0);
+      expect(moonlightSettingsRouteSpec(SETTINGS_SHEET_SESSION_CONTROL_BAR)).assertNull();
     });
 
     it('allocates_five_independent_virtual_keyboard_leaves', 0, (): void => {

@@ -8,6 +8,7 @@ import {
   REMOTE_SESSION_COLLAPSED_TOP_TOUCH_HEIGHT,
   REMOTE_SESSION_COLLAPSED_TOP_WIDTH,
   protocolPreferenceOwner,
+  applyRemoteSessionControlBarPreferenceUpdate,
   remoteKeyboardSidebarAction,
   remoteKeyboardSurfaceOpen,
   remoteSessionControlBarHidden,
@@ -95,6 +96,24 @@ export default function remoteSessionTopBarPolicyTest(): void {
       expect(explicit.rustDeskHidden).assertFalse();
       expect(explicit.vncHidden).assertFalse();
       expect(explicit.moonlightHidden).assertTrue();
+    });
+
+    it('session_control_bar_editor_merges_only_touched_protocols', 0, (): void => {
+      const current = {
+        rdpHidden: false, rustDeskHidden: true, vncHidden: false, moonlightHidden: true
+      };
+      const merged = applyRemoteSessionControlBarPreferenceUpdate(current, {
+        values: {
+          rdpHidden: true, rustDeskHidden: false, vncHidden: true, moonlightHidden: false
+        },
+        touched: {
+          rdpHidden: true, rustDeskHidden: false, vncHidden: true, moonlightHidden: false
+        }
+      });
+      expect(merged.rdpHidden).assertTrue();
+      expect(merged.rustDeskHidden).assertTrue();
+      expect(merged.vncHidden).assertTrue();
+      expect(merged.moonlightHidden).assertTrue();
     });
 
     it('hidden_control_bar_should_dismiss_only_an_open_control_sheet', 0, (): void => {

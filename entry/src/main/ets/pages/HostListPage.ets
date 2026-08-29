@@ -195,6 +195,8 @@ import { VncSettingsSheet } from '../components/VncSettingsSheet';
 import { SecretVisibilitySettingsSheet } from '../components/SecretVisibilitySettingsSheet';
 import { RemoteWheelDirectionSettingsSheet } from '../components/RemoteWheelDirectionSettingsSheet';
 import { RemotePinchZoomSettingsSheet } from '../components/RemotePinchZoomSettingsSheet';
+import { RemoteSessionControlBarSettingsSheet } from
+  '../components/RemoteSessionControlBarSettingsSheet';
 import { VncCertificateTrustManagerSheet } from '../components/VncCertificateTrustManagerSheet';
 import {
   EditableSecretKind,
@@ -416,6 +418,7 @@ import {
   SETTINGS_SHEET_DIAGNOSTIC_LOG,
   SETTINGS_SHEET_REMOTE_PINCH_ZOOM,
   SETTINGS_SHEET_REMOTE_WHEEL_DIRECTION,
+  SETTINGS_SHEET_SESSION_CONTROL_BAR,
   SETTINGS_SHEET_SECRET_VISIBILITY,
   SETTINGS_SHEET_FEEDBACK,
   SETTINGS_SHEET_HALO_COLOR,
@@ -457,6 +460,7 @@ import {
   diagnosticLogSettingsLeafSheetHeight,
   remotePinchZoomSettingsLeafSheetHeight,
   remoteWheelDirectionSettingsLeafSheetHeight,
+  sessionControlBarSettingsLeafSheetHeight,
   secretVisibilitySettingsLeafSheetHeight,
   isVirtualKeyboardSettingsMode,
   moonlightSettingsLeafSheetHeight,
@@ -558,8 +562,9 @@ import {
   REMOTE_SESSION_CONTROL_BAR_HIDDEN_RDP_KEY,
   REMOTE_SESSION_CONTROL_BAR_HIDDEN_RUSTDESK_KEY,
   REMOTE_SESSION_CONTROL_BAR_HIDDEN_VNC_KEY,
+  RemoteSessionControlBarPreferenceUpdate,
   RemoteSessionControlBarVisibility,
-  remoteSessionControlBarHidden,
+  applyRemoteSessionControlBarPreferenceUpdate,
   remoteSessionControlBarSelectionSummary,
   resolveRemoteSessionControlBarVisibility
 } from '../services/RemoteSessionTopBarPolicy';
@@ -1126,7 +1131,6 @@ struct HostListPage {
   sessionControlBarHiddenVnc: boolean = false;
   @StorageLink(REMOTE_SESSION_CONTROL_BAR_HIDDEN_MOONLIGHT_KEY)
   sessionControlBarHiddenMoonlight: boolean = false;
-  @State sessionControlBarProtocolPickerExpanded: boolean = false;
   @StorageLink(RDP_PINCH_ZOOM_ENABLED_KEY) rdpPinchZoomEnabled: boolean = false;
   @StorageLink(RUSTDESK_PINCH_ZOOM_ENABLED_KEY) rustdeskPinchZoomEnabled: boolean = false;
   @StorageLink(SSH_PINCH_ZOOM_ENABLED_KEY) sshPinchZoomEnabled: boolean = true;
@@ -10718,40 +10722,76 @@ struct HostListPage {
     };
   }
 
-  private sessionControlBarHidden(protocol: string): boolean {
-    return remoteSessionControlBarHidden(protocol, this.sessionControlBarVisibility());
-  }
-
-  private sessionControlBarProtocolLabel(protocol: string): string {
-    if (protocol === 'rdp') { return 'RDP'; }
-    if (protocol === 'rustdesk') { return 'RustDesk'; }
-    if (protocol === 'vnc') { return 'VNC'; }
-    return 'Moonlight';
-  }
-
-  private setSessionControlBarHidden(protocol: string, hidden: boolean): void {
-    if (protocol === 'rdp') {
-      this.sessionControlBarHiddenRdp = hidden;
-      this.persistLocalBooleanPref(REMOTE_SESSION_CONTROL_BAR_HIDDEN_RDP_KEY, hidden);
-    } else if (protocol === 'rustdesk') {
-      this.sessionControlBarHiddenRustDesk = hidden;
-      this.persistLocalBooleanPref(REMOTE_SESSION_CONTROL_BAR_HIDDEN_RUSTDESK_KEY, hidden);
-    } else if (protocol === 'vnc') {
-      this.sessionControlBarHiddenVnc = hidden;
-      this.persistLocalBooleanPref(REMOTE_SESSION_CONTROL_BAR_HIDDEN_VNC_KEY, hidden);
-    } else if (protocol === 'moonlight') {
-      this.sessionControlBarHiddenMoonlight = hidden;
-      this.persistLocalBooleanPref(REMOTE_SESSION_CONTROL_BAR_HIDDEN_MOONLIGHT_KEY, hidden);
+  private restoreSessionControlBarPreferenceValue(
+    prefs: preferences.Preferences,
+    key: string,
+    present: boolean,
+    value: boolean
+  ): void {
+    if (present) {
+      prefs.putSync(key, value);
+    } else {
+      prefs.deleteSync(key);
     }
   }
 
-  private saveSessionControlBarHidden(protocol: string, on: boolean): void {
-    const label: string = this.sessionControlBarProtocolLabel(protocol);
-    this.setSessionControlBarHidden(protocol, on);
-    promptAction.showToast({
-      message: label + (on ? ' 会话控制栏已隐藏' : ' 会话控制栏已恢复'),
-      duration: 1400
-    });
+  private saveSessionControlBarVisibility(
+    values: RemoteSessionControlBarVisibility
+  ): boolean {
+    try {
+      const prefs: preferences.Preferences = preferences.getPreferencesSync(
+        getContext(this), { name: 'RemoteDesktopAppPrefs' });
+      const previous: RemoteSessionControlBarVisibility = {
+        rdpHidden: prefs.getSync(REMOTE_SESSION_CONTROL_BAR_HIDDEN_RDP_KEY, false) as boolean,
+        rustDeskHidden: prefs.getSync(
+          REMOTE_SESSION_CONTROL_BAR_HIDDEN_RUSTDESK_KEY, false) as boolean,
+        vncHidden: prefs.getSync(REMOTE_SESSION_CONTROL_BAR_HIDDEN_VNC_KEY, false) as boolean,
+        moonlightHidden: prefs.getSync(
+          REMOTE_SESSION_CONTROL_BAR_HIDDEN_MOONLIGHT_KEY, false) as boolean
+      };
+      const present: RemoteSessionControlBarVisibility = {
+        rdpHidden: prefs.hasSync(REMOTE_SESSION_CONTROL_BAR_HIDDEN_RDP_KEY),
+        rustDeskHidden: prefs.hasSync(REMOTE_SESSION_CONTROL_BAR_HIDDEN_RUSTDESK_KEY),
+        vncHidden: prefs.hasSync(REMOTE_SESSION_CONTROL_BAR_HIDDEN_VNC_KEY),
+        moonlightHidden: prefs.hasSync(REMOTE_SESSION_CONTROL_BAR_HIDDEN_MOONLIGHT_KEY)
+      };
+      try {
+        prefs.putSync(REMOTE_SESSION_CONTROL_BAR_HIDDEN_RDP_KEY, values.rdpHidden);
+        prefs.putSync(REMOTE_SESSION_CONTROL_BAR_HIDDEN_RUSTDESK_KEY, values.rustDeskHidden);
+        prefs.putSync(REMOTE_SESSION_CONTROL_BAR_HIDDEN_VNC_KEY, values.vncHidden);
+        prefs.putSync(REMOTE_SESSION_CONTROL_BAR_HIDDEN_MOONLIGHT_KEY, values.moonlightHidden);
+        prefs.flushSync();
+      } catch (_writeError) {
+        try {
+          this.restoreSessionControlBarPreferenceValue(prefs,
+            REMOTE_SESSION_CONTROL_BAR_HIDDEN_RDP_KEY, present.rdpHidden, previous.rdpHidden);
+          this.restoreSessionControlBarPreferenceValue(prefs,
+            REMOTE_SESSION_CONTROL_BAR_HIDDEN_RUSTDESK_KEY,
+            present.rustDeskHidden, previous.rustDeskHidden);
+          this.restoreSessionControlBarPreferenceValue(prefs,
+            REMOTE_SESSION_CONTROL_BAR_HIDDEN_VNC_KEY, present.vncHidden, previous.vncHidden);
+          this.restoreSessionControlBarPreferenceValue(prefs,
+            REMOTE_SESSION_CONTROL_BAR_HIDDEN_MOONLIGHT_KEY,
+            present.moonlightHidden, previous.moonlightHidden);
+          prefs.flushSync();
+        } catch (_rollbackError) { /* UI retains the last confirmed values. */ }
+        return false;
+      }
+    } catch (_error) {
+      return false;
+    }
+    this.sessionControlBarHiddenRdp = values.rdpHidden;
+    this.sessionControlBarHiddenRustDesk = values.rustDeskHidden;
+    this.sessionControlBarHiddenVnc = values.vncHidden;
+    this.sessionControlBarHiddenMoonlight = values.moonlightHidden;
+    return true;
+  }
+
+  private saveSessionControlBarPreferenceUpdate(
+    update: RemoteSessionControlBarPreferenceUpdate
+  ): boolean {
+    return this.saveSessionControlBarVisibility(applyRemoteSessionControlBarPreferenceUpdate(
+      this.sessionControlBarVisibility(), update));
   }
 
   private saveRustDeskPresenceDetection(on: boolean): void {
@@ -14221,6 +14261,9 @@ struct HostListPage {
     const pinchZoomHeight: number =
       remotePinchZoomSettingsLeafSheetHeight(this.settingsLeafSheetMode);
     if (pinchZoomHeight > 0) { return pinchZoomHeight; }
+    const controlBarHeight: number =
+      sessionControlBarSettingsLeafSheetHeight(this.settingsLeafSheetMode);
+    if (controlBarHeight > 0) { return controlBarHeight; }
     const moonlightHeight: number = moonlightSettingsLeafSheetHeight(this.settingsLeafSheetMode);
     if (moonlightHeight > 0) { return moonlightHeight; }
     const vncHeight: number = vncSettingsLeafSheetHeight(this.settingsLeafSheetMode);
@@ -14292,6 +14335,16 @@ struct HostListPage {
         onClose: (): void => { this.closeSettingsLeafSheet(); },
         onSave: (update: RemotePinchZoomPreferenceUpdate): boolean =>
           this.saveRemotePinchZoomPreferenceUpdate(update)
+      })
+    } else if (this.settingsLeafSheetMode === SETTINGS_SHEET_SESSION_CONTROL_BAR) {
+      RemoteSessionControlBarSettingsSheet({
+        initialRdpHidden: this.sessionControlBarHiddenRdp,
+        initialRustDeskHidden: this.sessionControlBarHiddenRustDesk,
+        initialVncHidden: this.sessionControlBarHiddenVnc,
+        initialMoonlightHidden: this.sessionControlBarHiddenMoonlight,
+        onClose: (): void => { this.closeSettingsLeafSheet(); },
+        onSave: (update: RemoteSessionControlBarPreferenceUpdate): boolean =>
+          this.saveSessionControlBarPreferenceUpdate(update)
       })
     } else if (this.settingsLeafSheetMode === SETTINGS_SHEET_DIAGNOSTIC_LOG) {
       DiagnosticCaptureSettingsSheet({
@@ -15334,11 +15387,10 @@ struct HostListPage {
         }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 10 })
 
         ListItem() {
-          if (this.settingsSectionExpanded(SETTINGS_SECTION_MOONLIGHT)) {
+          Column() {
+            Text('Moonlight').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text3)
+              .fontFamily(this.font()).padding({ left: 8, bottom: 8 })
             Column() {
-              Text('Moonlight').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text3)
-                .fontFamily(this.font()).padding({ left: 8, bottom: 8 })
-              Column() {
               this.protocolActionRow($r('sys.symbol.display'), '画面',
                 '预设、H.264、分辨率、帧率、码率与无画面策略',
                 (): void => { this.openMoonlightSettingsFromSettings(SETTINGS_SHEET_MOONLIGHT_VIDEO); })
@@ -15368,11 +15420,10 @@ struct HostListPage {
               this.protocolActionRow($r('sys.symbol.cloud_fill'), '数据管理',
                 '停止同步、分别删除云端或本机 Moonlight 数据',
                 (): void => { this.openMoonlightSettingsFromSettings(SETTINGS_SHEET_MOONLIGHT_DATA); })
-              }.borderRadius(24).backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
-                .shadow({ radius: 16, color: 'rgba(0,0,0,0.04)', offsetY: 4 })
-                .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
-            }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 20 })
-          }
+            }.borderRadius(24).backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
+              .shadow({ radius: 16, color: 'rgba(0,0,0,0.04)', offsetY: 4 })
+              .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
+          }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 20 })
         }
         .constraintSize({ maxHeight: this.settingsSectionExpanded(SETTINGS_SECTION_MOONLIGHT) ?
           this.settingsSectionExpandedMaxHeight(SETTINGS_SECTION_MOONLIGHT) : 0 })
@@ -17442,52 +17493,26 @@ struct HostListPage {
   }
 
   @Builder sessionControlBarVisibilityRow() {
-    Column() {
-      Row() {
-        Row() {
-          Image($r('app.media.icon_desktop')).width(22).height(22).fillColor(this.pal().text3)
-        }.width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
-        Column() {
-          Text('会话侧栏与顶栏').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
-            .fontColor(this.pal().text).fontFamily(this.font())
-          Text(remoteSessionControlBarSelectionSummary(this.sessionControlBarVisibility()))
-            .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
-            .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-        }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
-        Button(this.sessionControlBarProtocolPickerExpanded ? '收起' : '选择协议')
-          .height(34).padding({ left: 12, right: 12 }).fontSize(12)
-          .fontColor(this.accentColor).backgroundColor(this.pal().surface).borderRadius(8)
-          .onClick((): void => {
-            this.sessionControlBarProtocolPickerExpanded =
-              !this.sessionControlBarProtocolPickerExpanded;
-          })
-      }.width('100%').height(64).padding({ left: 16, right: 16 })
-      if (this.sessionControlBarProtocolPickerExpanded) {
-        Text('选中的协议会同时隐藏手机/平板侧栏和 PC 顶栏；可在此随时恢复。')
-          .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
-          .width('100%').padding({ left: 20, right: 20, bottom: 6 })
-        this.sessionControlBarProtocolSwitchRow('rdp', 'RDP')
-        this.sessionControlBarProtocolSwitchRow('rustdesk', 'RustDesk')
-        this.sessionControlBarProtocolSwitchRow('vnc', 'VNC')
-        this.sessionControlBarProtocolSwitchRow('moonlight', 'Moonlight')
-      }
-    }.width('100%')
-  }
-
-  @Builder sessionControlBarProtocolSwitchRow(protocol: string, label: string) {
     Row() {
+      Row() {
+        Image($r('app.media.icon_desktop')).width(22).height(22).fillColor(this.pal().text3)
+      }.width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
       Column() {
-        Text(label).fontSize(13).fontWeight(FontWeight.Medium)
+        Text('会话侧栏与顶栏').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
           .fontColor(this.pal().text).fontFamily(this.font())
-        Text(this.sessionControlBarHidden(protocol) ? '侧栏和顶栏均已隐藏' : '显示会话控制栏')
+        Text(remoteSessionControlBarSelectionSummary(this.sessionControlBarVisibility()))
           .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
-      }.alignItems(HorizontalAlign.Start).layoutWeight(1)
-      Toggle({ type: ToggleType.Switch, isOn: this.sessionControlBarHidden(protocol) })
-        .selectedColor(this.accentColor).scale({ x: 0.88, y: 0.88 })
-        .accessibilityText((this.sessionControlBarHidden(protocol) ? '显示 ' : '隐藏 ') +
-          label + ' 会话控制栏')
-        .onChange((on: boolean): void => { this.saveSessionControlBarHidden(protocol, on); })
-    }.width('100%').height(58).padding({ left: 52, right: 16 })
+          .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).margin({ top: 2 })
+      }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
+      Button('选择协议').height(34).padding({ left: 12, right: 12 }).fontSize(12)
+        .fontColor(this.accentColor).backgroundColor(this.pal().surface).borderRadius(8)
+        .onClick((): void => {
+          this.openSettingsLeafSheet(SETTINGS_SHEET_SESSION_CONTROL_BAR);
+        })
+    }.width('100%').height(62).padding({ left: 16, right: 16 })
+      .onClick((): void => {
+        this.openSettingsLeafSheet(SETTINGS_SHEET_SESSION_CONTROL_BAR);
+      })
   }
 
   @Builder remotePinchZoomRow() {

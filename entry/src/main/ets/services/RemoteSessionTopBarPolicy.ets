@@ -21,6 +21,11 @@ export interface RemoteSessionControlBarVisibility {
   moonlightHidden: boolean;
 }
 
+export interface RemoteSessionControlBarPreferenceUpdate {
+  values: RemoteSessionControlBarVisibility;
+  touched: RemoteSessionControlBarVisibility;
+}
+
 export interface RemoteSessionControlBarPreferencePresence {
   rustDeskPresent: boolean;
   vncPresent: boolean;
@@ -114,6 +119,21 @@ export function remoteSessionControlBarSelectionSummary(
   if (visibility.vncHidden) { hiddenLabels.push('VNC'); }
   if (visibility.moonlightHidden) { hiddenLabels.push('Moonlight'); }
   return hiddenLabels.length === 0 ? '全部显示' : '已隐藏：' + hiddenLabels.join('、');
+}
+
+/** Merge a settings-sheet draft without reverting protocols changed after it opened. */
+export function applyRemoteSessionControlBarPreferenceUpdate(
+  current: RemoteSessionControlBarVisibility,
+  update: RemoteSessionControlBarPreferenceUpdate
+): RemoteSessionControlBarVisibility {
+  return {
+    rdpHidden: update.touched.rdpHidden ? update.values.rdpHidden : current.rdpHidden,
+    rustDeskHidden: update.touched.rustDeskHidden ?
+      update.values.rustDeskHidden : current.rustDeskHidden,
+    vncHidden: update.touched.vncHidden ? update.values.vncHidden : current.vncHidden,
+    moonlightHidden: update.touched.moonlightHidden ?
+      update.values.moonlightHidden : current.moonlightHidden
+  };
 }
 
 export function resolveRemoteSessionControlBarVisibility(
