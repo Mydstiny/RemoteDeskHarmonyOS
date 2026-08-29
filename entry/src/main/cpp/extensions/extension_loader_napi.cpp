@@ -4082,6 +4082,87 @@ napi_value NapiPresentRdpCachedFrame(napi_env env, napi_callback_info info) {
  * 返回会话 ID (>0=成功, -1=协议未找到, -2=连接失败)
  */
 napi_value NapiConnect(napi_env env, napi_callback_info info) {
+    struct ConnectAdmissionGuard final {
+        int sessionId = 0;
+        std::shared_ptr<SessionContext> session;
+        std::shared_ptr<ProtocolAdapter> adapter;
+        bool armed = false;
+
+        ~ConnectAdmissionGuard() noexcept { rollback(); }
+
+        void arm(int valueSessionId,
+                 const std::shared_ptr<SessionContext>& valueSession,
+                 const std::shared_ptr<ProtocolAdapter>& valueAdapter) noexcept {
+            sessionId = valueSessionId;
+            session = valueSession;
+            adapter = valueAdapter;
+            armed = true;
+        }
+
+        void commit() noexcept {
+            armed = false;
+            session.reset();
+            adapter.reset();
+        }
+
+        void rollback() noexcept {
+            if (!armed) { return; }
+            armed = false;
+            if (!session || !adapter) {
+                session.reset();
+                adapter.reset();
+                return;
+            }
+
+            session->lifecycle.store(
+                SessionContext::Lifecycle::Failed, std::memory_order_release);
+            try {
+                PrepareAdapterForTeardown(adapter, session->identity());
+            } catch (...) {
+                OH_LOG_ERROR(LOG_APP,
+                    "[ExtLoader] connect admission rollback prepare threw");
+            }
+            try {
+                (void)DisconnectAdapterAndDrainVnc(adapter);
+            } catch (...) {
+                OH_LOG_ERROR(LOG_APP,
+                    "[ExtLoader] connect admission rollback disconnect threw");
+            }
+            try {
+                g_sessionRegistry.eraseIf(sessionId, session);
+            } catch (...) {
+                OH_LOG_ERROR(LOG_APP,
+                    "[ExtLoader] connect admission rollback registry erase threw");
+            }
+            if (session->protocolName == "ssh") {
+                try {
+                    (void)g_sshNativeFacade.closeSession(SshSessionHandle {
+                        session->sessionId, "shell",
+                        session->generation.load(std::memory_order_acquire)});
+                } catch (...) {
+                    OH_LOG_ERROR(LOG_APP,
+                        "[ExtLoader] connect admission rollback SSH facade close threw");
+                }
+            }
+            try {
+                ClearNativeNetworkObserver(
+                    sessionId,
+                    session->generation.load(std::memory_order_acquire));
+            } catch (...) {
+                OH_LOG_ERROR(LOG_APP,
+                    "[ExtLoader] connect admission rollback network observer clear threw");
+            }
+            try {
+                (void)DeactivateSessionContextIfActive(adapter, session->identity());
+            } catch (...) {
+                OH_LOG_ERROR(LOG_APP,
+                    "[ExtLoader] connect admission rollback deactivate threw");
+            }
+            session.reset();
+            adapter.reset();
+        }
+    } admission;
+
     try {
     size_t argc = 1;
     napi_value args[1];
@@ -4640,6 +4721,7 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
         }
     }
     g_sessionRegistry.insertOrAssign(sessionId, session);
+    admission.arm(sessionId, session, adapter);
     if (protocolName == "ssh") {
         const SshSessionHandle handle {
             static_cast<uint64_t>(sessionId), "shell",
@@ -4653,7 +4735,7 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
                     adapter->onNetworkChanged(available, networkGeneration);
                 }
             }) != SshSessionManagerResult::Ok) {
-            g_sessionRegistry.eraseIf(sessionId, session);
+            admission.rollback();
             napi_value errVal;
             napi_create_int32(env, ERR_SSH_SESSION_INIT, &errVal);
             return errVal;
@@ -4670,17 +4752,7 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
             // could not publish a complete owner; otherwise the adapter can
             // connect successfully with no visible consumer and later
             // callbacks can be admitted against the previous session.
-            session->lifecycle.store(SessionContext::Lifecycle::Failed,
-                                     std::memory_order_release);
-            PrepareAdapterForTeardown(adapter, session->identity());
-            try {
-                (void)DisconnectAdapterAndDrainVnc(adapter);
-            } catch (...) {
-                OH_LOG_ERROR(LOG_APP,
-                    "[ExtLoader] adapter disconnect after activation failure threw");
-            }
-            g_sessionRegistry.eraseIf(sessionId, session);
-            (void)DeactivateSessionContextIfActive(adapter, session->identity());
+            admission.rollback();
             napi_value errVal;
             napi_create_int32(env, -2, &errVal);
             return errVal;
@@ -5187,28 +5259,10 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
     if (ret != 0) {
         OH_LOG_ERROR(LOG_APP, "[ExtLoader] 连接失败: ret=%{public}d host=%{public}s:%{public}d auth=%{public}s",
             ret, logHost.c_str(), cfg.port, cfg.authMethod.c_str());
-        PrepareAdapterForTeardown(adapter, session->identity());
-        session->lifecycle.store(SessionContext::Lifecycle::Failed,
-                                 std::memory_order_release);
-        // connect() is allowed to have allocated protocol resources before
-        // returning an error.  Teardown must therefore be protocol-agnostic;
-        // restricting this to SSH left failed RDP/RustDesk/VNC attempts with
-        // live sockets, workers, or callback registrations.
-        try {
-            (void)DisconnectAdapterAndDrainVnc(adapter);
-        } catch (...) {
-            OH_LOG_ERROR(LOG_APP,
-                "[ExtLoader] adapter disconnect after connect failure threw");
-        }
-        g_sessionRegistry.eraseIf(sessionId, session);
-        if (protocolName == "ssh") {
-            (void)g_sshNativeFacade.closeSession(SshSessionHandle {
-                session->sessionId, "shell",
-                session->generation.load(std::memory_order_acquire)});
-            ClearNativeNetworkObserver(
-                sessionId, session->generation.load(std::memory_order_acquire));
-        }
-        (void)DeactivateSessionContextIfActive(adapter, session->identity());
+        // connect() may have allocated protocol resources before returning an
+        // error. The admission guard closes every protocol and removes every
+        // registry/facade/observer publication before ArkTS sees the failure.
+        admission.rollback();
         napi_value errVal;
         napi_create_int32(env, ret, &errVal);  // 传递真实错误码而非通用 -2
         return errVal;
@@ -5222,11 +5276,22 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
 
     OH_LOG_INFO(LOG_APP, "[ExtLoader] 连接成功, sessionId=%{public}d", sessionId);
     if (deferSshActivation) {
-        ActivateSessionContext(adapter, session->identity());
+        if (!ActivateSessionContext(adapter, session->identity())) {
+            OH_LOG_ERROR(LOG_APP,
+                "[ExtLoader] deferred SSH session activation failed");
+            admission.rollback();
+            napi_value errVal;
+            napi_create_int32(env, -2, &errVal);
+            return errVal;
+        }
     }
 
     napi_value result;
-    napi_create_int32(env, sessionId, &result);
+    if (napi_create_int32(env, sessionId, &result) != napi_ok) {
+        napi_throw_error(env, nullptr, "connect result creation failed");
+        return nullptr;
+    }
+    admission.commit();
     return result;
     } catch (const std::exception& ex) {
         OH_LOG_ERROR(LOG_APP, "[ExtLoader] connect admission exception: %{public}s", ex.what());

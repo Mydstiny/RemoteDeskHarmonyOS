@@ -3,12 +3,49 @@
 use std::io;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream, ToSocketAddrs};
 use std::str::FromStr;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
 const MAX_ENDPOINT_LENGTH: usize = 512;
 const CONNECT_CANCEL_SLICE: Duration = Duration::from_millis(200);
+const MAX_RESOLVER_WORKERS: usize = 8;
+static ACTIVE_RESOLVER_WORKERS: AtomicUsize = AtomicUsize::new(0);
+
+#[derive(Debug)]
+struct ResolverWorkerPermit {
+    counter: &'static AtomicUsize,
+}
+
+impl ResolverWorkerPermit {
+    fn acquire(counter: &'static AtomicUsize, limit: usize) -> io::Result<Self> {
+        let mut active = counter.load(Ordering::Acquire);
+        loop {
+            if active >= limit {
+                return Err(io::Error::new(
+                    io::ErrorKind::WouldBlock,
+                    "resolver worker limit reached",
+                ));
+            }
+            match counter.compare_exchange_weak(
+                active,
+                active + 1,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return Ok(Self { counter }),
+                Err(actual) => active = actual,
+            }
+        }
+    }
+}
+
+impl Drop for ResolverWorkerPermit {
+    fn drop(&mut self) {
+        self.counter.fetch_sub(1, Ordering::AcqRel);
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ParsedEndpoint {
@@ -363,13 +400,21 @@ where
     ensure_not_cancelled(cancel_epoch, stage, &endpoint_id)?;
     let resolve_host = endpoint.host.clone();
     let resolve_port = endpoint.port;
+    // libc does not provide portable getaddrinfo cancellation. Keep timed-out
+    // workers lifetime-safe and cap their process-wide concurrency so repeated
+    // bad resolvers cannot create an unbounded detached-thread backlog.
+    let resolver_permit =
+        ResolverWorkerPermit::acquire(&ACTIVE_RESOLVER_WORKERS, MAX_RESOLVER_WORKERS)?;
     let candidates = run_blocking_operation(
         deadline,
         cancel_epoch,
         stage,
         &endpoint_id,
         "resolve",
-        move || resolver(resolve_host, resolve_port),
+        move || {
+            let _resolver_permit = resolver_permit;
+            resolver(resolve_host, resolve_port)
+        },
     )
     .map_err(|error| {
         io::Error::new(
@@ -566,7 +611,6 @@ fn ensure_not_cancelled(
 mod tests {
     use super::*;
     use std::net::TcpListener;
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
 
     #[test]
@@ -748,5 +792,19 @@ mod tests {
         assert!(started.elapsed() < Duration::from_millis(600));
         assert_eq!(invocations.load(Ordering::SeqCst), 1);
         crate::finish_connect_epoch(epoch, session_id);
+    }
+
+    #[test]
+    fn resolver_worker_permit_enforces_a_hard_concurrency_limit() {
+        static TEST_ACTIVE: AtomicUsize = AtomicUsize::new(0);
+        let first = ResolverWorkerPermit::acquire(&TEST_ACTIVE, 2).unwrap();
+        let second = ResolverWorkerPermit::acquire(&TEST_ACTIVE, 2).unwrap();
+        let error = ResolverWorkerPermit::acquire(&TEST_ACTIVE, 2).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
+        drop(first);
+        let replacement = ResolverWorkerPermit::acquire(&TEST_ACTIVE, 2).unwrap();
+        drop(second);
+        drop(replacement);
+        assert_eq!(TEST_ACTIVE.load(Ordering::Acquire), 0);
     }
 }

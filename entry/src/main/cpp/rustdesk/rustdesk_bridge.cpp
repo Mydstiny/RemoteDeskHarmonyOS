@@ -482,9 +482,25 @@ static int rdConnectTcpEndpoint(const std::string& host, uint32_t port, int time
 
     const auto resolveState = std::make_shared<ResolveState>();
     const std::string portText = std::to_string(port);
+    static std::atomic<int> activeResolvers{0};
+    constexpr int kMaxConcurrentResolvers = 8;
+    const int previousResolvers =
+        activeResolvers.fetch_add(1, std::memory_order_acq_rel);
+    if (previousResolvers >= kMaxConcurrentResolvers) {
+        activeResolvers.fetch_sub(1, std::memory_order_acq_rel);
+        errno = EAGAIN;
+        return -1;
+    }
     std::thread resolver;
     try {
-        resolver = std::thread([resolveState, host, portText]() {
+        resolver = std::thread([resolveState, host, portText,
+                                resolverCounter = &activeResolvers]() {
+            struct ResolverCounterGuard final {
+                std::atomic<int>* counter;
+                ~ResolverCounterGuard() {
+                    counter->fetch_sub(1, std::memory_order_acq_rel);
+                }
+            } counterGuard { resolverCounter };
             addrinfo hints {};
             hints.ai_family = AF_UNSPEC;
             hints.ai_socktype = SOCK_STREAM;
@@ -500,9 +516,11 @@ static int rdConnectTcpEndpoint(const std::string& host, uint32_t port, int time
             resolveState->condition.notify_one();
         });
     } catch (const std::system_error&) {
+        activeResolvers.fetch_sub(1, std::memory_order_acq_rel);
         errno = EAGAIN;
         return -1;
     } catch (...) {
+        activeResolvers.fetch_sub(1, std::memory_order_acq_rel);
         errno = EIO;
         return -1;
     }
