@@ -446,9 +446,13 @@ import {
 } from '../services/RemoteResolutionPresetPolicy';
 import {
   normalizeRdpRemoteUiScalePreference,
+  rdpSessionOrientationPolicy,
   RDP_DYNAMIC_LAYOUT_SETTLE_MS,
   RdpAdaptiveDisplayResult,
-  resolveRdpAdaptiveDisplay
+  resolveRdpAdaptiveDisplay,
+  resolveRdpDisplaySourceId,
+  shouldAttemptInitialRdpDynamicUpgrade,
+  shouldUseRdpPcAdaptiveDisplay
 } from '../services/RdpAdaptiveDisplayPolicy';
 import {
   normalizeRdpSessionColorDepth,
@@ -1245,6 +1249,7 @@ struct RemoteDesktop {
   private surfaceResizeFrameTimer: number = -1;
   private surfaceResizeSettleTimer: number = -1;
   private rdpDynamicLayoutTimer: number = -1;
+  private rdpWindowDisplayId: number = -1;
   private surfaceResizeBatchStartWidth: number = 0;
   private surfaceResizeBatchStartHeight: number = 0;
   private rendererSourceWidth: number = 0;
@@ -1479,6 +1484,7 @@ struct RemoteDesktop {
   private kbWin: window.Window | null = null;
   private kbAvoidCb: ((data: window.AvoidAreaOptions) => void) | null = null;
   private kbWindowSizeCb: ((size: window.Size) => void) | null = null;
+  private kbDisplayIdCb: ((displayId: number) => void) | null = null;
   private kbListenerGeneration: number = 0;
   private touchHoldDragTimer: number = -1;
   private touchDirectRightClickTimer: number = -1;
@@ -7309,6 +7315,14 @@ struct RemoteDesktop {
           return;
         }
         this.kbWin = w;
+        try {
+          const properties: window.WindowProperties = w.getWindowProperties();
+          if (properties.displayId !== undefined) {
+            this.rdpWindowDisplayId = properties.displayId;
+          }
+        } catch (_e) {
+          // The default display remains a safe bootstrap until the change callback arrives.
+        }
         if (this.isVncSession() || this.isRdpRemoteSession()) {
           this.syncVncToolbarAvoidAreas(w);
         }
@@ -7353,6 +7367,26 @@ struct RemoteDesktop {
           }
         };
         w.on('windowSizeChange', this.kbWindowSizeCb);
+        this.kbDisplayIdCb = (displayId: number): void => {
+          if (!Number.isSafeInteger(displayId) || displayId < 0 ||
+            displayId === this.rdpWindowDisplayId) {
+            return;
+          }
+          const previousDisplayId: number = this.rdpWindowDisplayId;
+          this.rdpWindowDisplayId = displayId;
+          hilog.info(RD_DOMAIN, RD_TAG, 'session window display changed ' +
+            previousDisplayId.toString() + ' -> ' + displayId.toString());
+          if (this.isDesktopDevice && this.isRdpRemoteSession()) {
+            this.cancelRdpDynamicLayout('window-display-change');
+            this.scheduleRdpDynamicLayoutUpdate('window-display-change');
+          }
+        };
+        try {
+          w.on('displayIdChange', this.kbDisplayIdCb);
+        } catch (_e) {
+          // Some non-PC window managers do not expose cross-display events.
+          this.kbDisplayIdCb = null;
+        }
       }).catch((err: Error): void => {
         if (generation !== this.kbListenerGeneration) {
           return;
@@ -7383,9 +7417,18 @@ struct RemoteDesktop {
     } catch (_e) {
       // Window-size listener teardown must still run if avoid-area off failed.
     }
+    try {
+      if (this.kbWin && this.kbDisplayIdCb) {
+        this.kbWin.off('displayIdChange', this.kbDisplayIdCb);
+      }
+    } catch (_e) {
+      // Cross-display listener teardown is best effort during window transfer.
+    }
     this.kbWin = null;
     this.kbAvoidCb = null;
     this.kbWindowSizeCb = null;
+    this.kbDisplayIdCb = null;
+    this.rdpWindowDisplayId = -1;
     this.kbHeight = 0;
     this.vncToolbarSystemTop = 0;
     this.vncToolbarSystemBottom = 0;
@@ -7544,9 +7587,23 @@ struct RemoteDesktop {
     }
   }
 
+  private currentSessionDisplay(): display.Display {
+    const fallback: display.Display = display.getDefaultDisplaySync();
+    const displayId: number = resolveRdpDisplaySourceId(this.rdpWindowDisplayId, fallback.id);
+    if (displayId === fallback.id) {
+      return fallback;
+    }
+    try {
+      return display.getDisplayByIdSync(displayId);
+    } catch (_e) {
+      this.rdpWindowDisplayId = fallback.id;
+      return fallback;
+    }
+  }
+
   private vpToPx(value: number): number {
     try {
-      const d: display.Display = display.getDefaultDisplaySync();
+      const d: display.Display = this.currentSessionDisplay();
       return value * d.densityPixels;
     } catch (_e) {
       return value;
@@ -7601,7 +7658,7 @@ struct RemoteDesktop {
     let densityPixels: number = 1;
     let densityDpi: number = 160;
     try {
-      const currentDisplay: display.Display = display.getDefaultDisplaySync();
+      const currentDisplay: display.Display = this.currentSessionDisplay();
       if (surfaceWidthPx <= 0 || surfaceHeightPx <= 0) {
         surfaceWidthPx = currentDisplay.width;
         surfaceHeightPx = currentDisplay.height;
@@ -8478,10 +8535,12 @@ struct RemoteDesktop {
       // ratio-preserving logical-resolution fallback. This keeps text readable
       // even on older servers that ignore DPI scale fields. Fixed presets keep
       // their explicit geometry and may still use the requested connection DPI.
-      const rdpDisplay: RdpAdaptiveDisplayResult | null =
+      const pcAdaptive: boolean = shouldUseRdpPcAdaptiveDisplay(
+        this.isDesktopDevice, resolutionId);
+      const rdpDisplay: RdpAdaptiveDisplayResult | null = pcAdaptive || resolutionId !== 'auto' ?
         this.resolveRdpDisplayLayout(this.renderWidthPx, this.renderHeightPx,
-          resolutionId !== 'auto');
-      if (resolutionId === 'auto') {
+          resolutionId !== 'auto') : null;
+      if (pcAdaptive) {
         if (rdpDisplay !== null) {
           hilog.info(RD_DOMAIN, RD_TAG, 'RDP density-aware adaptive size=' +
             rdpDisplay.width.toString() + 'x' + rdpDisplay.height.toString() +
@@ -8495,6 +8554,15 @@ struct RemoteDesktop {
             monitorCount: 1,
             rdpDisplay
           };
+        }
+      }
+      if (resolutionId === 'auto' && !this.isDesktopDevice) {
+        const legacyAdaptive: DesktopSize | null = this.adaptiveSurfaceSize(3840, true);
+        if (legacyAdaptive !== null) {
+          legacyAdaptive.colorDepth = colorDepth;
+          hilog.info(RD_DOMAIN, RD_TAG, 'RDP Phone/Pad legacy adaptive size=' +
+            legacyAdaptive.width.toString() + 'x' + legacyAdaptive.height.toString());
+          return legacyAdaptive;
         }
       }
       const preset = rdpResolutionPresetForId(resolutionId);
@@ -11225,7 +11293,7 @@ struct RemoteDesktop {
     this.rdpSessionErrorCode = code;
     this.rdpSessionErrorBackPending = false;
     this.rdpSessionErrorPendingCleanupReason = cleanupReason;
-    this.setPreferredOrientation(window.Orientation.LANDSCAPE, 'LANDSCAPE-RDP-ERROR');
+    void this.applyRdpOrientationPolicy('ERROR');
     if (shouldShowRdpSessionErrorAfterControlPanelDismiss(this.showControlPanel)) {
       this.rdpSessionErrorPendingAfterControlPanel = true;
       this.showControlPanel = false;
@@ -11267,7 +11335,7 @@ struct RemoteDesktop {
     if (this.rdpSessionErrorPendingAfterControlPanel) {
       this.rdpSessionErrorPendingAfterControlPanel = false;
       setTimeout((): void => {
-        this.setPreferredOrientation(window.Orientation.LANDSCAPE, 'LANDSCAPE-RDP-ERROR');
+        void this.applyRdpOrientationPolicy('ERROR');
         this.showRdpSessionErrorSheet = true;
       }, 60);
     }
@@ -11414,8 +11482,9 @@ struct RemoteDesktop {
         return;
       }
       const stats: RdpRenderStats = this.loader.getRdpRenderStats(sessionId);
-      if (stats.displayControlReady && !stats.displayControlDisabled &&
-        stats.displayRequestCount === 0 && this.canRequestRdpDynamicLayout()) {
+      if (shouldAttemptInitialRdpDynamicUpgrade(stats.displayControlReady,
+        stats.displayControlDisabled, stats.displayRequestCount) &&
+        this.canRequestRdpDynamicLayout()) {
         // Upgrade the conservative connection-time geometry to physical-pixel
         // sharpness only after the server has advertised Display Control caps.
         this.requestRdpDynamicLayoutNow('display-control-ready');
@@ -13225,6 +13294,8 @@ struct RemoteDesktop {
       }
       if (host.protocol === 'rustdesk') {
         await this.applyRustDeskOrientationPolicy('connect-success');
+      } else if (host.protocol === 'rdp') {
+        await this.applyRdpOrientationPolicy('CONNECT-SUCCESS');
       } else {
         await this.setPreferredOrientation(window.Orientation.LANDSCAPE, 'LANDSCAPE');
       }
@@ -13396,6 +13467,18 @@ struct RemoteDesktop {
     } else if (policy === 'landscape') {
       await this.setPreferredOrientation(window.Orientation.LANDSCAPE,
         'RUSTDESK-LANDSCAPE-' + reason);
+    }
+  }
+
+  private async applyRdpOrientationPolicy(reason: string): Promise<void> {
+    const resolutionId: string = normalizeRdpResolutionId(
+      this.rdpDesktopResolutionId, this.rdpDesktopPreset);
+    if (rdpSessionOrientationPolicy(this.isDesktopDevice, resolutionId) === 'unspecified') {
+      await this.setPreferredOrientation(window.Orientation.UNSPECIFIED,
+        'RDP-PC-AUTO-UNSPECIFIED-' + reason);
+    } else {
+      await this.setPreferredOrientation(window.Orientation.LANDSCAPE,
+        'RDP-LANDSCAPE-' + reason);
     }
   }
 

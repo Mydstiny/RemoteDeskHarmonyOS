@@ -4069,21 +4069,30 @@ void FreeRdpAdapter::cbChannelDisconnected(void* context, const ChannelDisconnec
     if (std::strcmp(e->name, DISP_DVC_CHANNEL_NAME) == 0) {
         std::lock_guard<std::mutex> displayLock(owner->impl_->displayControlMutex);
         auto* displayControl = reinterpret_cast<DispClientContext*>(e->pInterface);
-        if (displayControl && owner->impl_->displayControl == displayControl) {
+        if (RdpDisplayLayoutPolicy::ShouldDetachDisplayChannel(
+                owner->impl_->displayControl, displayControl)) {
             displayControl->DisplayControlCaps = nullptr;
             displayControl->custom = nullptr;
+            owner->impl_->displayControl = nullptr;
+            owner->impl_->displayControlReady = false;
+            owner->impl_->displayLayoutPending = false;
+            owner->impl_->displayLayoutInFlight = false;
+            owner->impl_->displayMaxNumMonitors = 0;
+            owner->impl_->displayMaxAreaFactorA = 0;
+            owner->impl_->displayMaxAreaFactorB = 0;
+            owner->impl_->displayLastSendUs = 0;
+            owner->impl_->displayInFlightSinceUs = 0;
+            owner->impl_->displayLastResult = "channel_disconnected";
+            OH_LOG_INFO(LOG_APP, "[RDP-DISP] display-control channel disconnected");
+        } else {
+            if (displayControl) {
+                displayControl->DisplayControlCaps = nullptr;
+                displayControl->custom = nullptr;
+            }
+            OH_LOG_INFO(LOG_APP,
+                "[RDP-DISP] ignored stale display-control disconnect interface=%{public}p current=%{public}p",
+                displayControl, owner->impl_->displayControl);
         }
-        owner->impl_->displayControl = nullptr;
-        owner->impl_->displayControlReady = false;
-        owner->impl_->displayLayoutPending = false;
-        owner->impl_->displayLayoutInFlight = false;
-        owner->impl_->displayMaxNumMonitors = 0;
-        owner->impl_->displayMaxAreaFactorA = 0;
-        owner->impl_->displayMaxAreaFactorB = 0;
-        owner->impl_->displayLastSendUs = 0;
-        owner->impl_->displayInFlightSinceUs = 0;
-        owner->impl_->displayLastResult = "channel_disconnected";
-        OH_LOG_INFO(LOG_APP, "[RDP-DISP] display-control channel disconnected");
     }
 #endif
     if (std::strcmp(e->name, CLIPRDR_SVC_CHANNEL_NAME) == 0) {
@@ -4962,31 +4971,28 @@ void FreeRdpAdapter::processEventLoop() {
     auto processDisplayControlQueue = [this]() {
 #if defined(CHANNEL_DISP_CLIENT)
         RdpDisplayLayoutRequest request;
-        DispClientContext* displayControl = nullptr;
         const int64_t nowUs = steadyNowUs();
-        {
-            std::lock_guard<std::mutex> displayLock(impl_->displayControlMutex);
-            if (RdpDisplayLayoutPolicy::HasInFlightTimedOut(
-                    impl_->displayLayoutInFlight, impl_->displayInFlightSinceUs, nowUs)) {
-                impl_->displayLayoutInFlight = false;
-                impl_->displayInFlightSinceUs = 0;
-                impl_->displayFailureCount++;
-                impl_->displayLastResult = "apply_timeout";
-            }
-            if (!impl_->displayControlReady ||
-                impl_->displayControlDisabled || !impl_->displayControl) {
-                return;
-            }
-            if (!RdpDisplayLayoutPolicy::IsSendDue(
-                    impl_->displayLayoutPending, impl_->displayLayoutInFlight,
-                    impl_->displayLastSendUs, nowUs)) {
-                return;
-            }
-            request = impl_->pendingDisplayLayout;
-            impl_->displayLayoutPending = false;
-            impl_->displayLastSendUs = nowUs;
-            displayControl = impl_->displayControl;
+        std::lock_guard<std::mutex> displayLock(impl_->displayControlMutex);
+        if (RdpDisplayLayoutPolicy::HasInFlightTimedOut(
+                impl_->displayLayoutInFlight, impl_->displayInFlightSinceUs, nowUs)) {
+            impl_->displayLayoutInFlight = false;
+            impl_->displayInFlightSinceUs = 0;
+            impl_->displayFailureCount++;
+            impl_->displayLastResult = "apply_timeout";
         }
+        if (!impl_->displayControlReady ||
+            impl_->displayControlDisabled || !impl_->displayControl) {
+            return;
+        }
+        if (!RdpDisplayLayoutPolicy::IsSendDue(
+                impl_->displayLayoutPending, impl_->displayLayoutInFlight,
+                impl_->displayLastSendUs, nowUs)) {
+            return;
+        }
+        request = impl_->pendingDisplayLayout;
+        impl_->displayLayoutPending = false;
+        impl_->displayLastSendUs = nowUs;
+        DispClientContext* displayControl = impl_->displayControl;
         DISPLAY_CONTROL_MONITOR_LAYOUT monitor {};
         monitor.Flags = DISPLAY_CONTROL_MONITOR_PRIMARY;
         monitor.Left = 0;
@@ -5001,7 +5007,6 @@ void FreeRdpAdapter::processEventLoop() {
         const UINT rc = displayControl->SendMonitorLayout
             ? displayControl->SendMonitorLayout(displayControl, 1, &monitor)
             : ERROR_INVALID_FUNCTION;
-        std::lock_guard<std::mutex> displayLock(impl_->displayControlMutex);
         if (rc == CHANNEL_RC_OK) {
             impl_->displayLayoutInFlight = true;
             impl_->displayInFlightSinceUs = nowUs;
@@ -5307,8 +5312,9 @@ void FreeRdpAdapter::mountDriveAfterConnected(const std::string& driveName,
 
 void FreeRdpAdapter::disconnectActiveInstance(RdpShutdownDeadline deadline) {
     if (remainingRdpShutdownBudget(deadline).count() <= 0) {
-        impl_->traceShutdown("freerdp-disconnect", "budget-exhausted");
-        return;
+        // Transport teardown still needs an owner. Start it below and hand it
+        // to the deferred reaper immediately instead of freeing a live context.
+        impl_->traceShutdown("freerdp-disconnect", "budget-exhausted-defer");
     }
     freerdp* activeInstance = nullptr;
     {
@@ -5327,10 +5333,21 @@ void FreeRdpAdapter::disconnectActiveInstance(RdpShutdownDeadline deadline) {
     }
     auto done = std::make_shared<std::atomic<bool>>(false);
     impl_->disconnectWorkerDone = done;
+    const auto eventDone = std::atomic_load_explicit(
+        &impl_->eventThreadDone, std::memory_order_acquire);
     impl_->traceShutdown("freerdp-disconnect", "begin");
     std::thread disconnectWorker;
     try {
-        disconnectWorker = std::thread([retained, activeInstance, done]() {
+        disconnectWorker = std::thread([retained, activeInstance, eventDone, done]() {
+            if (eventDone &&
+                !RdpShutdown::CanStartTransportDisconnect(
+                    eventDone->load(std::memory_order_acquire))) {
+                std::unique_lock<std::mutex> lock(retained->impl_->workerDoneMutex);
+                retained->impl_->workerDoneCv.wait(lock, [eventDone]() {
+                    return RdpShutdown::CanStartTransportDisconnect(
+                        eventDone->load(std::memory_order_acquire));
+                });
+            }
             if (activeInstance->context) {
                 freerdp_abort_connect_context(activeInstance->context);
             }
@@ -6840,6 +6857,9 @@ RdpDisplayLayoutResult FreeRdpAdapter::requestDisplayLayout(
     if (impl_->displayMaxNumMonitors < 1 ||
         !RdpDisplayLayoutPolicy::IsWithinServerAreaCaps(
             request, impl_->displayMaxAreaFactorA, impl_->displayMaxAreaFactorB)) {
+        impl_->displayRequestCount++;
+        impl_->displayFailureCount++;
+        impl_->displayLastResult = "server_caps_exceeded";
         return {false, "server_caps_exceeded",
                 "RDP display layout exceeds the negotiated server caps"};
     }

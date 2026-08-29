@@ -1,9 +1,13 @@
 import { describe, it, expect } from '@ohos/hypium';
 import {
   normalizeRdpRemoteUiScalePreference,
+  rdpSessionOrientationPolicy,
   RDP_DYNAMIC_LAYOUT_SETTLE_MS,
   resolveRdpAdaptiveDisplay,
-  resolveRdpRemoteUiScale
+  resolveRdpDisplaySourceId,
+  resolveRdpRemoteUiScale,
+  shouldAttemptInitialRdpDynamicUpgrade,
+  shouldUseRdpPcAdaptiveDisplay
 } from '../main/ets/services/RdpAdaptiveDisplayPolicy';
 
 export default function rdpAdaptiveDisplayPolicyTest(): void {
@@ -15,6 +19,24 @@ export default function rdpAdaptiveDisplayPolicyTest(): void {
       expect(resolveRdpRemoteUiScale('auto', 2)).assertEqual(180);
       expect(resolveRdpRemoteUiScale('100', 2)).assertEqual(100);
       expect(normalizeRdpRemoteUiScalePreference('175')).assertEqual('auto');
+    });
+
+    it('limits_the_new_adaptive_contract_to_pc_auto_sessions', 0, (): void => {
+      expect(shouldUseRdpPcAdaptiveDisplay(true, 'auto')).assertTrue();
+      expect(shouldUseRdpPcAdaptiveDisplay(false, 'auto')).assertFalse();
+      expect(shouldUseRdpPcAdaptiveDisplay(true, '1920x1080')).assertFalse();
+      expect(rdpSessionOrientationPolicy(true, 'auto')).assertEqual('unspecified');
+      expect(rdpSessionOrientationPolicy(false, 'auto')).assertEqual('landscape');
+      expect(rdpSessionOrientationPolicy(true, '1920x1080')).assertEqual('landscape');
+    });
+
+    it('uses_the_window_display_and_attempts_initial_upgrade_once', 0, (): void => {
+      expect(resolveRdpDisplaySourceId(7, 1)).assertEqual(7);
+      expect(resolveRdpDisplaySourceId(-1, 1)).assertEqual(1);
+      expect(shouldAttemptInitialRdpDynamicUpgrade(true, false, 0)).assertTrue();
+      expect(shouldAttemptInitialRdpDynamicUpgrade(true, false, 1)).assertFalse();
+      expect(shouldAttemptInitialRdpDynamicUpgrade(false, false, 0)).assertFalse();
+      expect(shouldAttemptInitialRdpDynamicUpgrade(true, true, 0)).assertFalse();
     });
 
     it('keeps_physical_pixels_when_dpi_scaling_is_available', 0, (): void => {

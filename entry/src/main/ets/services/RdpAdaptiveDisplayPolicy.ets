@@ -29,6 +29,28 @@ export interface RdpAdaptiveDisplayResult {
 export const RDP_ADAPTIVE_MAX_EDGE_PX: number = 3840;
 export const RDP_DYNAMIC_LAYOUT_SETTLE_MS: number = 500;
 
+export function shouldUseRdpPcAdaptiveDisplay(isDesktopDevice: boolean,
+  resolutionId: string): boolean {
+  return isDesktopDevice && resolutionId === 'auto';
+}
+
+export function rdpSessionOrientationPolicy(isDesktopDevice: boolean,
+  resolutionId: string): 'unspecified' | 'landscape' {
+  return shouldUseRdpPcAdaptiveDisplay(isDesktopDevice, resolutionId) ?
+    'unspecified' : 'landscape';
+}
+
+export function shouldAttemptInitialRdpDynamicUpgrade(displayControlReady: boolean,
+  displayControlDisabled: boolean, requestCount: number): boolean {
+  return displayControlReady && !displayControlDisabled && requestCount === 0;
+}
+
+export function resolveRdpDisplaySourceId(windowDisplayId: number,
+  defaultDisplayId: number): number {
+  return Number.isSafeInteger(windowDisplayId) && windowDisplayId >= 0 ?
+    windowDisplayId : defaultDisplayId;
+}
+
 function validPositive(value: number): boolean {
   return Number.isFinite(value) && value > 0;
 }

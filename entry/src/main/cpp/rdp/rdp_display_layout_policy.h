@@ -50,6 +50,11 @@ inline bool IsSendDue(bool hasPending, bool inFlight, int64_t lastSendUs, int64_
         nowUs - lastSendUs >= kMinimumSendIntervalUs);
 }
 
+inline bool ShouldDetachDisplayChannel(const void* currentChannel,
+                                       const void* disconnectedChannel) {
+    return currentChannel != nullptr && currentChannel == disconnectedChannel;
+}
+
 inline RdpDisplayLayoutResult Validate(const RdpDisplayLayoutRequest& request) {
     if (request.width < 200 || request.width > 8192 ||
         request.height < 200 || request.height > 8192 ||

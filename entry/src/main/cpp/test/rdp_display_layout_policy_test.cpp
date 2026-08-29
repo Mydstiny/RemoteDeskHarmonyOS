@@ -81,3 +81,14 @@ RDP_TEST_CASE(rdp_display_layout_policy_bounds_an_unacknowledged_request) {
     RDP_ASSERT(!RdpDisplayLayoutPolicy::HasInFlightTimedOut(
         false, sentUs, sentUs + 5000000));
 }
+
+RDP_TEST_CASE(rdp_display_layout_policy_ignores_stale_channel_disconnect) {
+    int oldChannel = 0;
+    int currentChannel = 0;
+    RDP_ASSERT(!RdpDisplayLayoutPolicy::ShouldDetachDisplayChannel(
+        &currentChannel, &oldChannel));
+    RDP_ASSERT(RdpDisplayLayoutPolicy::ShouldDetachDisplayChannel(
+        &currentChannel, &currentChannel));
+    RDP_ASSERT(!RdpDisplayLayoutPolicy::ShouldDetachDisplayChannel(
+        nullptr, &oldChannel));
+}

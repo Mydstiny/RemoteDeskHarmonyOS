@@ -51,6 +51,10 @@ constexpr bool CanRun(Action action, bool instanceMutexHeld) {
     return !RequiresInstanceMutexReleased(action) || !instanceMutexHeld;
 }
 
+constexpr bool CanStartTransportDisconnect(bool eventWorkerDone) {
+    return eventWorkerDone;
+}
+
 constexpr bool IsForwardTransition(Phase from, Phase to) {
     return (from == Phase::Running && to == Phase::Quiescing) ||
         (from == Phase::Quiescing && to == Phase::TransportDisconnecting) ||
