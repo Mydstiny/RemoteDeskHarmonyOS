@@ -4,8 +4,8 @@
 
 - Task: `per-protocol-pinch-zoom-plan`
 - Branch: `codex/per-protocol-pinch-zoom-plan` from `main@b84224869`.
-- Increment: base implementation/review are complete at `714b791f8`; reset-affordance remediation is reviewed at `4211438a`; display/interaction selection sheets and Moonlight accordion parity are reviewed at `50e2c6b5`; real-device acceptance and PR closure remain.
-- Phase: five-protocol pinch preferences, graphical canvas gestures/pointer follow, SSH font-pinch gating, protocol-specific reset controls and unified settings-sheet interaction are implemented; no native, Rust, FFI, dependency or resource changes.
+- Increment: base implementation/review are complete at `714b791f8`; reset-affordance remediation is reviewed at `4211438a`; display/interaction selection sheets and Moonlight accordion parity are reviewed at `50e2c6b5`; the authorized bindSheet dark-surface increment is reviewed at `4faa18cec`; real-device acceptance and PR closure remain.
+- Phase: five-protocol pinch preferences, graphical canvas gestures/pointer follow, SSH font-pinch gating, protocol-specific reset controls, unified settings-sheet interaction and the ArkTS-only bindSheet increment are implemented; the branch also contains concurrent native commit `a2787161d`, which is outside the bindSheet review.
 - Plan: `docs/codex/plans/2026-08-29-per-protocol-pinch-zoom-and-pointer-follow.md`
 
 ## Per-protocol pinch zoom result
@@ -19,11 +19,14 @@
 - SSH exposes `更多 → 恢复终端字号`: Profile zoom is an in-memory `host:generation` session override consumed by active and retained Xterm surfaces, and reset removes only that override without mutating the Profile. Legacy sessions return to and persist the default 18-point size.
 - `显示与交互 → 会话侧栏与顶栏` now opens a transactional selection sheet for RDP/RustDesk/VNC/Moonlight, with protocol switches, all-show/all-hide, touched-field merge, rollback and device-local persistence; SSH remains under its existing `更多` menu. Hidden controls are restored by returning to this settings sheet.
 - Moonlight's main settings section now stays mounted and uses the same common height/opacity/scale/translate/clip accordion lifecycle as the other protocol sections, so its expansion and leaf-sheet routing no longer pop through a separate conditional path.
+- Authorized bindSheet increment `6c1df8719` + `4faa18cec`: all 37 native Sheet hosts and their covering content roots resolve to `sheetBg` (`#1C1C1F`) in dark mode. Light mode remains unchanged, including Moonlight's branded connect surface and SSH's fixed terminal-dark surfaces; ordinary pages, system dialogs, popups, canvases and terminal surfaces are outside scope.
+- BindSheet verification at `4faa18cec`: `default@OhosTestCompileArkTS` PASS (`BUILD SUCCESSFUL in 14 s 097 ms`); signed `assembleHap` PASS (`BUILD SUCCESSFUL in 28 s 248 ms`), SHA-256 `626aa735e3ef3b52ff7edf476b4913c5c69d7ab20d99cef0adb4d613d2977e78`; 37/37 static audit, `git diff --check` and Light compliance PASS.
+- Independent review `/root/bindsheet_dark_review`: PASS after correcting Moonlight and SSH light-mode preservation; no remaining P0/P1/P2/P3. Phone/Pad/PC dark/light Sheet visual acceptance remains pending.
 - Settings-sheet increment verification at `50e2c6b5`: `default@OhosTestCompileArkTS` PASS (`BUILD SUCCESSFUL in 10 s 203 ms`); signed `assembleHap` PASS (`BUILD SUCCESSFUL in 23 s 225 ms`), SHA-256 `5efb54645bc3d5b48d91958a3dde8a1c3d66ff588c921922f8328e4fa46a2c86`; `git diff --check` and Light compliance PASS.
 - Reset increment verification at `4211438a`: `default@OhosTestCompileArkTS` PASS (`BUILD SUCCESSFUL in 10 s 909 ms`); signed `assembleHap` PASS (`BUILD SUCCESSFUL in 31 s 919 ms`), SHA-256 `9b50e409bb58ef7073d066516de052f797313a46bf1ff2d0c66eb16c14a791f1`; `git diff --check` and Light compliance PASS.
 - Verification after remediation: `default@OhosTestCompileArkTS` PASS (`BUILD SUCCESSFUL in 29 s 668 ms`); signed `assembleHap` PASS (`BUILD SUCCESSFUL in 16 s 174 ms`), SHA-256 `d0899ec8f965aea61154fb69ba2b527af83ec55f5d2cb8163612aba081d6e50c`; `git diff --check` and Light compliance PASS. The separate `ohosTest@OhosTestCompileArkTS` task remains unavailable (`00306054`), while the registered suites compile through the mandatory default test target.
 - Independent review `/root/pinch_zoom_review`: base PASS at `714b791f8`; reset increment PASS at `4211438a`; settings-sheet increment PASS at `50e2c6b5` after correcting the hidden-control recovery copy; no remaining P0/P1/P2/P3. Real-device gesture, pointer, persistence, reset, settings-sheet and accordion acceptance is pending because HDC reported `Connect server failed`.
-- Next: complete the expanded device matrix, then push the branch, open the PR, pass required checks and merge.
+- Next: complete the expanded gesture/settings matrix and bindSheet dark/light visual sweep, then push the branch, open the PR, pass required checks and merge.
 
 ## 1.1.4 release result
 

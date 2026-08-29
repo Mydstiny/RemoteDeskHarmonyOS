@@ -3,30 +3,57 @@
   "task": "per-protocol-pinch-zoom-plan",
   "branch": "codex/per-protocol-pinch-zoom-plan",
   "base": "b84224869e4e719f6395b04465fb43b27032b156",
-  "head": "50e2c6b5c43177b9a87eccd2a99e2ec1ba95c019",
+  "head": "4faa18cecc30475844a70774d5bee0dc9bfe3615",
   "phase": "device-acceptance",
   "status": "active",
-  "next": "Run the five-protocol real-device gesture, pointer-follow, settings persistence, reset-control and unified settings-sheet lifecycle matrix; then push, open the PR, pass required checks and merge.",
+  "next": "Run the five-protocol real-device gesture/settings matrix and the Phone/Pad/PC bindSheet dark/light visual sweep; then push, open the PR, pass required checks and merge.",
   "blockers": [],
   "planPaths": [
     "docs/codex/plans/2026-08-29-per-protocol-pinch-zoom-and-pointer-follow.md"
   ],
   "review": {
-    "status": "PASS",
+    "status": "REVIEW_REQUIRED",
     "taskIds": [
-      "/root/pinch_zoom_review"
+      "/root/pinch_zoom_review",
+      "/root/bindsheet_dark_review"
     ],
-    "reviewedHead": "50e2c6b5c43177b9a87eccd2a99e2ec1ba95c019",
+    "reviewedHead": "4faa18cecc30475844a70774d5bee0dc9bfe3615",
     "scope": [
+      "entry/src/main/cpp/render/native_image_context_policy.h",
+      "entry/src/main/cpp/rustdesk/rustdesk_peer_presentation_policy.h",
+      "entry/src/main/cpp/test/native_image_context_policy_test.cpp",
+      "entry/src/main/ets/components/AboutSettingsSheet.ets",
+      "entry/src/main/ets/components/ColorPickerSheet.ets",
+      "entry/src/main/ets/components/DiagnosticCaptureSettingsSheet.ets",
+      "entry/src/main/ets/components/FeedbackSettingsSheet.ets",
       "entry/src/main/ets/components/RemotePinchZoomSettingsSheet.ets",
       "entry/src/main/ets/components/RemoteSessionControlBarSettingsSheet.ets",
       "entry/src/main/ets/components/RemoteSessionTopBar.ets",
+      "entry/src/main/ets/components/RemoteWheelDirectionSettingsSheet.ets",
+      "entry/src/main/ets/components/SecretVisibilitySettingsSheet.ets",
+      "entry/src/main/ets/components/VirtualKeyboardSettingsSheet.ets",
       "entry/src/main/ets/components/VncSessionToolbar.ets",
+      "entry/src/main/ets/components/hostadd/HostProtocolPicker.ets",
+      "entry/src/main/ets/components/hostadd/MoonlightHostAddFlow.ets",
+      "entry/src/main/ets/components/hostadd/RdpAddFlow.ets",
+      "entry/src/main/ets/components/hostadd/RustDeskAddFlow.ets",
+      "entry/src/main/ets/components/hostadd/SshAddFlow.ets",
       "entry/src/main/ets/components/moonlight/MoonlightControlCenter.ets",
+      "entry/src/main/ets/components/moonlight/MoonlightConnectStageOverlay.ets",
       "entry/src/main/ets/components/moonlight/MoonlightSessionToolbar.ets",
       "entry/src/main/ets/components/rdp/RdpControlCenter.ets",
       "entry/src/main/ets/components/rdp/RdpSessionToolbar.ets",
+      "entry/src/main/ets/components/ssh/broadcast/SshBroadcastSheet.ets",
+      "entry/src/main/ets/components/ssh/command/SshCommandPalette.ets",
+      "entry/src/main/ets/components/ssh/log/SshSessionLogSheet.ets",
+      "entry/src/main/ets/components/ssh/productivity/SshProductivitySheet.ets",
+      "entry/src/main/ets/components/ssh/profile/SshTerminalProfileSheet.ets",
+      "entry/src/main/ets/components/ssh/workspace/SshTransferCenter.ets",
+      "entry/src/main/ets/components/vnc/VncSheetScaffold.ets",
       "entry/src/main/ets/pages/HostListPage.ets",
+      "entry/src/main/ets/pages/KeyVaultPage.ets",
+      "entry/src/main/ets/pages/LoginPage.ets",
+      "entry/src/main/ets/pages/MoonlightAppCatalogPage.ets",
       "entry/src/main/ets/pages/MoonlightStreamPage.ets",
       "entry/src/main/ets/pages/RemoteDesktop.ets",
       "entry/src/main/ets/pages/SshTerminal.ets",
@@ -44,17 +71,17 @@
       "entry/src/test"
     ],
     "findings": [],
-    "reason": "The same independent reviewer passed settings-sheet checkpoint 50e2c6b5 with no remaining P0/P1/P2/P3 after correcting hidden-control recovery copy; transactional persistence, touched merge, sheet routing and Moonlight accordion parity were verified."
+    "reason": "The bindSheet increment passed /root/bindsheet_dark_review at 4faa18ce with no remaining P0/P1/P2/P3. Cumulative branch review remains required because concurrent native commit a2787161d was explicitly excluded from that review and has no matching receipt recorded in this state."
   },
   "lastVerification": {
-    "baseline": "Reviewed unified settings-sheet checkpoint 50e2c6b5 on main@b84224869; ArkTS/UI/policy/tests/docs only, no native, Rust, FFI, dependency or resource changes.",
-    "testCompile": "PASS: default@OhosTestCompileArkTS, BUILD SUCCESSFUL in 10 s 203 ms.",
-    "assembleHap": "PASS: signed HAP, BUILD SUCCESSFUL in 23 s 225 ms; SHA-256 5efb54645bc3d5b48d91958a3dde8a1c3d66ff588c921922f8328e4fa46a2c86.",
-    "targetedTests": "POLICIES COMPILED: settings-sheet routing, four-protocol control-bar touched merge, transactional persistence integration and common Moonlight accordion lifecycle, plus the prior pinch/reset policy suites.",
+    "baseline": "BindSheet dark-surface increment reviewed at 4faa18ce on main@b84224869; 29 ArkTS/UI files plus plan/current/queue/receipt docs. Concurrent native commit a2787161d is present but excluded from the bindSheet review.",
+    "testCompile": "PASS: default@OhosTestCompileArkTS, BUILD SUCCESSFUL in 14 s 097 ms.",
+    "assembleHap": "PASS: signed HAP, BUILD SUCCESSFUL in 28 s 248 ms; SHA-256 626aa735e3ef3b52ff7edf476b4913c5c69d7ab20d99cef0adb4d613d2977e78.",
+    "targetedTests": "PASS: static audit found 37/37 bindSheet hosts resolving to dark sheetBg; covering roots were inspected, with Moonlight and SSH light-mode fallbacks preserved.",
     "arktsTests": "UNAVAILABLE: separate ohosTest@OhosTestCompileArkTS is not registered (00306054); default@OhosTestCompileArkTS passed.",
     "compliance": "PASS: git diff --check and Light open-source compliance.",
-    "review": "PASS: /root/pinch_zoom_review verified checkpoint 50e2c6b5 with no remaining P0/P1/P2/P3 after one P3 recovery-copy fix.",
-    "deviceAcceptance": "NOT RUN: hdc reported Connect server failed; no device target was available."
+    "review": "BIND_SHEET PASS: /root/bindsheet_dark_review verified 6c1df871 + 4faa18ce after Moonlight/SSH light-mode remediation; no remaining P0/P1/P2/P3. Cumulative branch review is still required for excluded concurrent commit a2787161d.",
+    "deviceAcceptance": "NOT RUN: Phone/Pad/PC dark/light bindSheet visual sweep remains queued."
   },
   "updated": "2026-08-29 Asia/Shanghai"
 }

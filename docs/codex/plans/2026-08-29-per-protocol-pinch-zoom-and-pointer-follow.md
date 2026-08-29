@@ -252,6 +252,16 @@ pwsh -NoProfile -File scripts/verify_open_source_release.ps1 -Mode Light -Reposi
 
 若实现期没有 C++/Rust/FFI/依赖变化，不增加 native ABI、供应链或发布级门禁；若实际跨入这些范围，再按仓库规则补对应验证。
 
+## 授权增量：深色 bindSheet 表面统一
+
+用户在当前活动工作树上授权追加以下相邻 UI 一致性增量：
+
+1. 盘点全仓 37 个 `.bindSheet(` 调用，并把深色模式下的原生 Sheet 容器统一到 `Theme.sheetBg`（`#1C1C1F`）。
+2. 同步修改实际覆盖原生容器的 Sheet 内容根层，避免原生深灰外壳仍被纯黑、浅灰或其他深灰内容覆盖。
+3. 保留浅色模式语义；Moonlight 连接 Sheet 在浅色模式继续使用原品牌暗色表面，仅深色模式切换到 `sheetBg`。
+4. 不修改 `promptAction.showDialog`、`AlertDialog`、`bindPopup`、普通页面背景、远程画布、终端画布和其他非 `bindSheet` 表面。
+5. 以 37/37 原生背景静态审计、内容根层复核、两项强制 Hvigor、`git diff --check`、Light 合规和独立 reviewer PASS 作为完成标准；真机深色视觉巡检作为后续验收项。
+
 ## 非目标
 
 - 不把 RustDesk 的远端 App TouchScale 改造成通用协议能力。
