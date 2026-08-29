@@ -10,7 +10,7 @@ import {
 @Component
 export struct SshSessionLogSheet {
   @StorageProp('accentColor') accentColor: string = '#007DFF';
-  @Prop sheetBackgroundColor: string = '#1C1C1F';
+  @Prop sheetBackgroundColor: string = '#171D25';
   @Prop document: SshSessionLogDocumentV1;
   @Prop results: Array<SshSessionLogSearchHitV1>;
   @Prop ready: boolean = false;

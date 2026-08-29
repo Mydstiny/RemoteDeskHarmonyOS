@@ -13,7 +13,7 @@ import {
 @Component
 export struct SshBroadcastSheet {
   @StorageProp('accentColor') accentColor: string = '#007DFF';
-  @Prop sheetBackgroundColor: string = '#1C1C1F';
+  @Prop sheetBackgroundColor: string = '#341A1A';
   @Prop targets: Array<SshBroadcastTargetV1> = [];
   @Prop selectedHostIds: Array<string> = [];
   @Prop text: string = '';

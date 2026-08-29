@@ -18,7 +18,7 @@ const PROFILE_SCROLLBACKS: number[] = [5000, 10000, 30000, 100000];
 @Component
 export struct SshTerminalProfileSheet {
   @StorageProp('accentColor') accentColor: string = '#007DFF';
-  @Prop sheetBackgroundColor: string = '#1C1C1F';
+  @Prop sheetBackgroundColor: string = '#171D25';
   @Prop profiles: SshTerminalProfileV1[] = [];
   @Prop resolvedProfile: SshTerminalResolvedProfile;
   @Prop globalProfileId: string = '';

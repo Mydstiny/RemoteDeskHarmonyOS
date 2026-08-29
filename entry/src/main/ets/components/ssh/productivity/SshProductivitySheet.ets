@@ -16,7 +16,7 @@ import {
 @Component
 export struct SshProductivitySheet {
   @StorageProp('accentColor') accentColor: string = '#007DFF';
-  @Prop sheetBackgroundColor: string = '#1C1C1F';
+  @Prop sheetBackgroundColor: string = '#171D25';
   @Prop document: SshProductivityDocumentV1;
   @Prop ready: boolean = false;
   @Prop hostId: string = '';

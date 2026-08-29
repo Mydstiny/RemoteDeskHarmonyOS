@@ -5932,7 +5932,8 @@ struct MoonlightStreamPage {
         height: SheetSize.FIT_CONTENT,
         preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
         dragBar: false, showClose: false,
-        backgroundColor: this.theme === 'dark' ? this.pal().sheetBg : '#0E121C',
+        backgroundColor: this.theme === 'dark' ? this.pal().sheetBg :
+          (this.sheetMode === 'connect' ? '#0E121C' : this.pal().sheetBg),
         blurStyle: BlurStyle.NONE,
         maskColor: this.sheetMode === 'connect' ? 'rgba(0,0,0,0.62)' : 'rgba(0,0,0,0.36)',
         onWillDismiss: (action: DismissSheetAction): void => {
