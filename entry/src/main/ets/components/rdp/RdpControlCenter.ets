@@ -34,6 +34,7 @@ export struct RdpControlCenter {
   @Prop diagnosticsEnabled: boolean = false;
   @Prop displayScaleMode: string = 'fit';
   @Prop canvasZoomEnabled: boolean = false;
+  @Prop canvasResetAvailable: boolean = false;
   @Prop reverseWheel: boolean = false;
   @Prop resolutionId: string = 'auto';
   @Prop colorDepth: number = 32;
@@ -53,6 +54,7 @@ export struct RdpControlCenter {
   onDiagnostics: (enabled: boolean) => void = (_enabled: boolean): void => {};
   onDisplayScale: (mode: string) => void = (_mode: string): void => {};
   onCanvasZoom: (enabled: boolean) => void = (_enabled: boolean): void => {};
+  onResetCanvas: () => void = (): void => {};
   onReverseWheel: (enabled: boolean) => void = (_enabled: boolean): void => {};
   onResolution: (id: string) => void = (_id: string): void => {};
   onColorDepth: (depth: number) => void = (_depth: number): void => {};
@@ -204,6 +206,10 @@ export struct RdpControlCenter {
         Divider().color(this.pal().divider)
         this.toggleRow('手势缩放与平移', '在远端画面上双指缩放并移动画布',
           this.canvasZoomEnabled, this.onCanvasZoom)
+        Divider().color(this.pal().divider).margin({ left: 12 })
+        this.actionRow($r('sys.symbol.display'), '复位画面',
+          this.canvasResetAvailable ? '恢复当前显示模式的基线缩放与居中位置' : '画面已处于当前显示模式的基线位置',
+          this.onResetCanvas)
         Divider().color(this.pal().divider).margin({ left: 12 })
         this.toggleRow('反转滚轮方向', '立即同步到当前 RDP 会话输入', this.reverseWheel, this.onReverseWheel)
     }.width('100%').backgroundColor(this.pal().card).borderRadius(16)

@@ -28,6 +28,7 @@ export struct MoonlightControlCenter {
   @Prop physicalControllerPathReady: boolean = false;
   @Prop keyboardAvailable: boolean = false;
   @Prop diagnosticsVisible: boolean = false;
+  @Prop canvasResetAvailable: boolean = false;
   onClose: () => void = (): void => {};
   onOpenKeyboard: () => void = (): void => {};
   onOpenModifiers: () => void = (): void => {};
@@ -35,6 +36,7 @@ export struct MoonlightControlCenter {
   onControlMode: (mode: MoonlightControlMode) => void = (_mode: MoonlightControlMode): void => {};
   onEnterPip: () => void = (): void => {};
   onToggleDiagnostics: () => void = (): void => {};
+  onResetCanvas: () => void = (): void => {};
   onDisconnect: () => void = (): void => {};
 
   private pal(): Palette {
@@ -135,6 +137,10 @@ export struct MoonlightControlCenter {
             this.actionRow($r('sys.symbol.rectangle_on_rectangle'), '画中画',
               this.pipAvailable ? '保持串流并进入系统 PIP' : '当前窗口或系统能力不支持',
               (): void => { this.onEnterPip(); }, this.pipAvailable)
+            Divider().color(this.pal().divider).margin({ left: 58 })
+            this.actionRow($r('sys.symbol.display'), '复位画面',
+              this.canvasResetAvailable ? '恢复适应窗口的基线缩放与居中位置' : '画面已处于适应窗口的基线位置',
+              (): void => { this.onResetCanvas(); })
           }.width('100%').backgroundColor(this.pal().card).borderRadius(16)
             .border({ width: 0.5, color: this.pal().cardBorder })
 

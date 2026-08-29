@@ -1291,7 +1291,7 @@ struct RemoteDesktop {
   // A default display scale must be recalculated when the surface or stream
   // geometry changes.  Only a real local canvas pinch owns a persistent
   // transform across those geometry changes.
-  private canvasTransformGestureModified: boolean = false;
+  @State private canvasTransformGestureModified: boolean = false;
   private canvasPinchActive: boolean = false;
   private canvasPanActive: boolean = false;
   private canvasTwoFingerState: CanvasTwoFingerState = idleCanvasTwoFingerState();
@@ -2172,6 +2172,10 @@ struct RemoteDesktop {
       onCycleDisplayScale: (): void => {
         this.markVncToolbarInteraction();
         this.cycleVncDisplayScale();
+      },
+      onResetCanvas: (): void => {
+        this.markVncToolbarInteraction();
+        this.resetCanvasTransformFromMenu();
       },
       onToggleDiagnostics: (): void => {
         this.markVncToolbarInteraction();
@@ -4768,6 +4772,7 @@ struct RemoteDesktop {
 
   private handleRdpToolbarAction(action: RdpToolbarAction): void {
     if (action === 'control') { this.toggleRdpControlCenter(); return; }
+    if (action === 'resetCanvas') { this.resetCanvasTransformFromMenu(); return; }
     if (action === 'keyboard') { this.openRdpKeyboard(); return; }
     if (action === 'shortcuts') { this.openRdpShortcutPanel(); return; }
     if (action === 'ctrlAltDel') { this.sendCtrlAltDel(); return; }
@@ -4814,6 +4819,8 @@ struct RemoteDesktop {
   }
 
   private resetCanvasTransformFromMenu(): void {
+    this.releaseCanvasPinchInput('canvas-reset-menu');
+    this.clearPhysicalPointerCanvasFollow(true);
     this.resetCanvasToDisplayDefault();
     promptAction.showToast({ message: '画面已重新居中', duration: 1200 });
   }
@@ -18043,6 +18050,7 @@ struct RemoteDesktop {
           controlModeLabel: this.vncControlModeLabel(),
           displayScaleLabel: this.vncDisplayScaleLabel(),
           diagnosticsEnabled: this.vncShowDiagnostics,
+          canvasResetAvailable: this.canvasTransformGestureModified,
           collapsed: this.vncToolbarCollapsed,
           viewportWidth: this.currentRemoteSessionSidebarViewport().width,
           placement: this.vncToolbarPlacement,
@@ -18065,6 +18073,7 @@ struct RemoteDesktop {
                 this.modifierPanelPrepareOnly,
               controlCenterOpen: this.rdpControlCenterVisible,
               diagnosticsVisible: this.rdpShowDiagnostics,
+              canvasResetAvailable: this.canvasTransformGestureModified,
               qualityLabel: this.rdpPerformanceSummary().status,
               qualityColor: this.rdpPerformanceSummary().color,
               availableHeight: this.rdpToolbarAvailableHeight(),
@@ -18081,6 +18090,7 @@ struct RemoteDesktop {
                 this.modifierPanelPrepareOnly,
               controlCenterOpen: this.rdpControlCenterVisible,
               diagnosticsVisible: this.rdpShowDiagnostics,
+              canvasResetAvailable: this.canvasTransformGestureModified,
               qualityLabel: this.rdpPerformanceSummary().status,
               qualityColor: this.rdpPerformanceSummary().color,
               availableHeight: this.rdpToolbarAvailableHeight(),
@@ -18106,6 +18116,7 @@ struct RemoteDesktop {
             diagnosticsEnabled: this.rdpShowDiagnostics,
             displayScaleMode: this.remoteDisplayScaleMode,
             canvasZoomEnabled: this.rdpPinchZoomEnabled,
+            canvasResetAvailable: this.canvasTransformGestureModified,
             reverseWheel: this.rdpReverseWheel,
             resolutionId: normalizeRdpResolutionId(this.rdpDesktopResolutionId, this.rdpDesktopPreset),
             colorDepth: normalizeRdpSessionColorDepth(this.rdpColorDepth),
@@ -18127,6 +18138,7 @@ struct RemoteDesktop {
             onDiagnostics: (enabled: boolean): void => { this.setRdpDiagnosticsPreference(enabled); },
             onDisplayScale: (mode: string): void => { this.setRemoteDisplayScaleMode(mode); },
             onCanvasZoom: (enabled: boolean): void => { this.setRdpCanvasZoomPreference(enabled); },
+            onResetCanvas: (): void => { this.resetCanvasTransformFromMenu(); },
             onReverseWheel: (enabled: boolean): void => { this.setRdpReverseWheelPreference(enabled); },
             onResolution: (id: string): void => { this.setRdpResolutionPreference(id); },
             onColorDepth: (depth: number): void => { this.setRdpColorDepthPreference(depth); },
@@ -18176,6 +18188,7 @@ struct RemoteDesktop {
             this.modifierPanelPrepareOnly,
           diagnosticsEnabled: this.isRdpRemoteSession() ?
             this.rdpShowDiagnostics : this.rustdeskShowDiagnostics,
+          canvasResetAvailable: this.canvasTransformGestureModified,
           rustDeskDisplayCapabilities: this.rustDeskDisplayCapabilities,
           rustDeskDisplaySwitchState: this.rustDeskDisplaySwitchState,
           pendingDisplayResolution: this.rustDeskDisplayPendingResolution,

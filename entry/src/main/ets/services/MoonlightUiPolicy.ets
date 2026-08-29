@@ -19,7 +19,7 @@ export type MoonlightLaunchBlocker =
 export type MoonlightConnectionQuality = 'good' | 'unstable' | 'poor' | 'reconnecting';
 export type MoonlightToolbarAction =
   'control' | 'keyboard' | 'modifiers' | 'controller' | 'audio' | 'display' |
-  'diagnostics' | 'more' | 'disconnect';
+  'resetCanvas' | 'diagnostics' | 'more' | 'disconnect';
 export type MoonlightSettingsSection =
   'video' | 'audio' | 'input' | 'networkSecurity' | 'diagnostics' | 'trust' |
   'data';

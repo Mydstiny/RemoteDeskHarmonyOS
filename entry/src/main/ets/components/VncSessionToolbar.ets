@@ -25,6 +25,7 @@ export interface VncSessionToolbarActions {
   onCycleControlMode: () => void;
   onOpenShortcuts: () => void;
   onCycleDisplayScale: () => void;
+  onResetCanvas: () => void;
   onToggleDiagnostics: () => void;
   onDisconnect: () => void;
   onCollapsedPointerMove: (x: number, y: number) => void;
@@ -44,6 +45,7 @@ export struct VncSessionToolbar {
   @Prop controlModeLabel: string = '触控板';
   @Prop displayScaleLabel: string = '适应';
   @Prop diagnosticsEnabled: boolean = false;
+  @Prop canvasResetAvailable: boolean = false;
   @Prop collapsed: boolean = false;
   @Prop viewportWidth: number = 0;
   @Prop placement: OverlayPlacement = emptyOverlayPlacement('vnc-toolbar');
@@ -58,6 +60,7 @@ export struct VncSessionToolbar {
     onCycleControlMode: (): void => {},
     onOpenShortcuts: (): void => {},
     onCycleDisplayScale: (): void => {},
+    onResetCanvas: (): void => {},
     onToggleDiagnostics: (): void => {},
     onDisconnect: (): void => {},
     onCollapsedPointerMove: (_x: number, _y: number): void => {}
@@ -107,19 +110,28 @@ export struct VncSessionToolbar {
   }
 
   @Builder
+  private primaryActionButtonWithReset(actionId: VncToolbarPrimaryActionId) {
+    if (actionId === 'disconnect') {
+      this.actionButton($r('sys.symbol.display'), '复位', this.canvasResetAvailable,
+        (): void => { this.actions.onResetCanvas(); })
+    }
+    this.primaryActionButton(actionId)
+  }
+
+  @Builder
   private primaryActionButtons(vertical: boolean) {
     if (vertical) {
       Column({ space: 5 }) {
         ForEach(vncToolbarPrimaryActionIds(),
           (actionId: VncToolbarPrimaryActionId): void => {
-            this.primaryActionButton(actionId)
+            this.primaryActionButtonWithReset(actionId)
           }, (actionId: VncToolbarPrimaryActionId): string => actionId)
       }
     } else {
       Row({ space: 5 }) {
         ForEach(vncToolbarPrimaryActionIds(),
           (actionId: VncToolbarPrimaryActionId): void => {
-            this.primaryActionButton(actionId)
+            this.primaryActionButtonWithReset(actionId)
           }, (actionId: VncToolbarPrimaryActionId): string => actionId)
       }
     }

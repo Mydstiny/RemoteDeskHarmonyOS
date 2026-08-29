@@ -521,7 +521,7 @@ struct MoonlightStreamPage {
     { scale: 1, panX: 0, panY: 0, rotation: 0 };
   private moonlightCanvasViewportSnapshot: CanvasViewport | null = null;
   private moonlightCanvasTransformInitialized: boolean = false;
-  private moonlightCanvasTransformModified: boolean = false;
+  @State private moonlightCanvasTransformModified: boolean = false;
   private moonlightTwoFingerState: CanvasTwoFingerState = idleCanvasTwoFingerState();
   private moonlightTwoFingerSequence: number = 0;
   private moonlightTwoFingerSuppressedUntilRelease: boolean = false;
@@ -1518,6 +1518,20 @@ struct MoonlightStreamPage {
         this.moonlightCanvasViewportSnapshot = null;
       }
     }
+  }
+
+  private resetMoonlightCanvasTransformFromMenu(): void {
+    this.cancelActiveMoonlightTouches();
+    this.clearMoonlightPhysicalPointerFollow(true);
+    if (this.rendererHandle > 0) {
+      this.bindMoonlightCanvasTransform(
+        this.rendererSurfaceWidthPx, this.rendererSurfaceHeightPx, false);
+    } else {
+      this.moonlightCanvasTransformModified = false;
+      this.moonlightCanvasTransformInitialized = false;
+      this.moonlightCanvasViewportSnapshot = null;
+    }
+    promptAction.showToast({ message: 'Moonlight 画面已恢复适应窗口', duration: 1200 });
   }
 
   private pollMoonlightSurface(attempt: number): void {
@@ -5356,6 +5370,7 @@ struct MoonlightStreamPage {
 
   private toolbarAction(action: MoonlightToolbarAction): void {
     if (action === 'more') { this.openSheet('control'); return; }
+    if (action === 'resetCanvas') { this.resetMoonlightCanvasTransformFromMenu(); return; }
     if (action === 'disconnect') {
       if (this.terminationBusy) {
         promptAction.showToast({ message: '正在安全退出并释放连接', duration: 1400 });
@@ -5491,6 +5506,7 @@ struct MoonlightStreamPage {
       physicalControllerPathReady: this.physicalControllerPathReady,
       keyboardAvailable: this.inputReady,
       diagnosticsVisible: this.diagnosticsVisible,
+      canvasResetAvailable: this.moonlightCanvasTransformModified,
       viewportWidth: this.surfaceWidthVp,
       viewportHeight: this.surfaceHeightVp,
       onClose: (): void => { this.closeSheet(); },
@@ -5502,6 +5518,7 @@ struct MoonlightStreamPage {
       onOpenController: (): void => { this.openSheet('controller'); },
       onEnterPip: (): void => { this.closeSheet(); void this.moveMoonlightToPip(); },
       onToggleDiagnostics: (): void => { this.toggleDiagnosticsHud(); },
+      onResetCanvas: (): void => { this.resetMoonlightCanvasTransformFromMenu(); },
       onControlMode: (mode: MoonlightControlMode): void => {
         this.applyMoonlightControlMode(mode);
       },
@@ -5683,6 +5700,7 @@ struct MoonlightStreamPage {
             keyboardAvailable: this.inputReady,
             controlModeLabel: this.toolbarControlModeLabel(),
             diagnosticsVisible: this.diagnosticsVisible,
+            canvasResetAvailable: this.moonlightCanvasTransformModified,
             terminationBusy: this.terminationBusy,
             keyboardOpen: this.keyboardOpen || this.keyboardImeActive,
             modifiersOpen: this.showModifierPanel || this.showShortcutPanel,
@@ -5717,6 +5735,7 @@ struct MoonlightStreamPage {
             keyboardAvailable: this.inputReady,
             controlModeLabel: this.toolbarControlModeLabel(),
             diagnosticsVisible: this.diagnosticsVisible,
+            canvasResetAvailable: this.moonlightCanvasTransformModified,
             terminationBusy: this.terminationBusy,
             keyboardOpen: this.keyboardOpen || this.keyboardImeActive,
             modifiersOpen: this.showModifierPanel || this.showShortcutPanel,

@@ -128,6 +128,7 @@ export struct RemoteSessionTopBar {
   @Prop @Watch('onKeyboardSurfaceChange') keyboardOpen: boolean = false;
   @Prop @Watch('onKeyboardSurfaceChange') shortcutsOpen: boolean = false;
   @Prop diagnosticsEnabled: boolean = false;
+  @Prop canvasResetAvailable: boolean = false;
   @Prop rustDeskDisplayCapabilities: RustDeskDisplayCapabilities = EMPTY_RUSTDESK_DISPLAY_CAPABILITIES;
   @Prop rustDeskDisplaySwitchState: RustDeskDisplaySwitchState = EMPTY_RUSTDESK_DISPLAY_SWITCH_STATE;
   @Prop pendingDisplayResolution: RustDeskDisplayResolution = EMPTY_RUSTDESK_DISPLAY_RESOLUTION;
@@ -667,7 +668,8 @@ export struct RemoteSessionTopBar {
           this.menuItem('自定义缩放', 'displaySettings', (): void => {
             this.actions.onSetViewScaleMode('custom');
           }, this.viewScaleMode === 'custom')
-          this.menuItem('重新居中画面', 'displaySettings', (): void => {
+          this.menuItem(this.canvasResetAvailable ? '复位画面（已缩放）' : '复位画面',
+            'displaySettings', (): void => {
             this.actions.onResetCanvasTransform();
           })
           if (this.protocol === 'rustdesk') {
@@ -931,8 +933,10 @@ export struct RemoteSessionTopBar {
       this.iconButton($r('sys.symbol.gearshape_fill'), this.accentColor,
         (): void => { this.toggleMenu('control'); }, 18, '打开会话控制')
     } else if (actionId === 'display') {
-      this.iconButton($r('sys.symbol.display'), this.accentColor,
-        (): void => { this.toggleMenu('display'); }, 18, '打开显示与画质')
+      this.iconButton($r('sys.symbol.display'),
+        this.canvasResetAvailable ? '#2A9D8F' : this.accentColor,
+        (): void => { this.toggleMenu('display'); }, 18,
+        this.canvasResetAvailable ? '打开显示与画质，画面可复位' : '打开显示与画质')
     } else if (actionId === 'desktopFlip') {
       this.iconButton($r('sys.symbol.rectangle_rotate'),
         this.rustDeskDesktopFlipMode === 'reset' ? this.accentColor : '#2A9D8F',

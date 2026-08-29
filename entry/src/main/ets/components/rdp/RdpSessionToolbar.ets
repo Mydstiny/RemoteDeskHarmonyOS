@@ -24,7 +24,7 @@ import {
 } from '../../services/RdpSessionSidebarPolicy';
 
 export type RdpToolbarAction = 'control' | 'keyboard' | 'shortcuts' |
-  'ctrlAltDel' | 'refresh' | 'diagnostics' | 'disconnect';
+  'ctrlAltDel' | 'resetCanvas' | 'refresh' | 'diagnostics' | 'disconnect';
 
 interface RdpToolbarItem {
   action: RdpToolbarAction;
@@ -42,6 +42,7 @@ export struct RdpSessionToolbar {
   @Prop @Watch('onMenuStateChange') shortcutsOpen: boolean = false;
   @Prop @Watch('onMenuStateChange') controlCenterOpen: boolean = false;
   @Prop diagnosticsVisible: boolean = false;
+  @Prop canvasResetAvailable: boolean = false;
   @Prop qualityLabel: string = '实时';
   @Prop qualityColor: string = RDP_SESSION_CONTROL_ACCENT;
   @Prop @Watch('onAvailableHeightChange') availableHeight: number = 640;
@@ -58,7 +59,7 @@ export struct RdpSessionToolbar {
   }
 
   private items(): Array<RdpToolbarItem> {
-    return [
+    const items: Array<RdpToolbarItem> = [
       { action: 'control', label: 'RDP 控制', dangerous: false },
       { action: 'keyboard', label: '键盘', dangerous: false },
       { action: 'shortcuts', label: '组合键', dangerous: false },
@@ -67,6 +68,10 @@ export struct RdpSessionToolbar {
       { action: 'diagnostics', label: '性能', dangerous: false },
       { action: 'disconnect', label: '断开', dangerous: true }
     ];
+    if (this.canvasResetAvailable) {
+      items.splice(1, 0, { action: 'resetCanvas', label: '复位', dangerous: false });
+    }
+    return items;
   }
 
   private railItems(): Array<RdpToolbarItem> {
@@ -79,6 +84,7 @@ export struct RdpSessionToolbar {
 
   private icon(action: RdpToolbarAction): Resource {
     if (action === 'control') { return $r('sys.symbol.display'); }
+    if (action === 'resetCanvas') { return $r('sys.symbol.display'); }
     if (action === 'keyboard' || action === 'shortcuts') { return $r('sys.symbol.keyboard'); }
     if (action === 'ctrlAltDel') { return $r('sys.symbol.exclamationmark_triangle'); }
     if (action === 'refresh') { return $r('sys.symbol.bolt_fill'); }
@@ -90,6 +96,7 @@ export struct RdpSessionToolbar {
     if (action === 'control') { return this.controlCenterOpen; }
     if (action === 'keyboard') { return this.keyboardOpen; }
     if (action === 'shortcuts') { return this.shortcutsOpen; }
+    if (action === 'resetCanvas') { return this.canvasResetAvailable; }
     return action === 'diagnostics' && this.diagnosticsVisible;
   }
 

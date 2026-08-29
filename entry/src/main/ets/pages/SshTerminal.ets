@@ -210,6 +210,7 @@ import {
 } from '../services/SshXtermTabSurfacePolicy';
 import { VirtualKeyBar } from '../components/VirtualKeyBar';
 import {
+  SSH_DEFAULT_TERMINAL_FONT_SIZE,
   SSH_SESSION_LOCALE_KEY,
   normalizeSshTerminalLineSpacing,
   normalizeSshSessionLocale,
@@ -609,7 +610,7 @@ interface SshTerminalSafetyModeSnapshot {
 type SshProductivityShellPhase = 'idle' | 'prompt' | 'command' | 'executed';
 
 type SshHeaderAction = 'new-session' | 'tabs' | 'palette' | 'transfers' | 'restore' |
-  'sidebar' | 'inspector' | 'profile' | 'search' | 'locale' | 'sftp' | 'forwarding' |
+  'sidebar' | 'inspector' | 'profile' | 'reset-font' | 'search' | 'locale' | 'sftp' | 'forwarding' |
   'orientation';
 
 @Entry
@@ -6429,6 +6430,24 @@ struct SshTerminal {
     }, 700);
   }
 
+  private sshTerminalFontResetTarget(): number {
+    return this.terminalProfileEnabled() ?
+      sshTerminalFontSizeForPinch(this.resolvedTerminalProfile.fontSize, 1) :
+      SSH_DEFAULT_TERMINAL_FONT_SIZE;
+  }
+
+  private resetSshTerminalFontSizeFromMore(): void {
+    this.terminalPinchActive = false;
+    this.clearTerminalZoomIndicatorTimer();
+    const target: number = this.sshTerminalFontResetTarget();
+    this.fontSize = this.terminalProfileEnabled() ? target : this.sshSettings.saveFontSize(target);
+    this.terminalZoomIndicatorVisible = false;
+    promptAction.showToast({
+      message: this.terminalProfileEnabled() ? '已恢复当前终端配置字号' : '已恢复默认终端字号',
+      duration: 1200
+    });
+  }
+
   private onSshPinchZoomSettingChange(): void {
     if (!this.sshPinchZoomEnabled && this.terminalPinchActive) {
       this.finishTerminalPinchZoom();
@@ -6679,7 +6698,7 @@ struct SshTerminal {
       '工作区与会话', '显示全部标签', '命令面板', '传输中心',
       '恢复未连接的工作区标签', '显示工作区侧栏', '收起工作区侧栏',
       '显示会话详情', '隐藏会话详情', '取消显示会话详情',
-      '终端搜索', '终端外观', '语言与地区',
+      '终端搜索', '终端外观', '恢复终端字号', '语言与地区',
       sshSessionLocaleLabel(this.sshSessionLocale, true), 'SFTP 文件',
       '浏览与传输远端文件', '隧道转发', '切换横竖屏'
     ];
@@ -6729,6 +6748,8 @@ struct SshTerminal {
         this.setSshWorkspaceInspectorVisible(!this.sshWorkspaceSnapshot.inspectorVisible);
       } else if (action === 'profile') {
         this.openTerminalProfileSheet();
+      } else if (action === 'reset-font') {
+        this.resetSshTerminalFontSizeFromMore();
       } else if (action === 'search') {
         if (this.terminalSearchVisible) { this.focusTerminalSearch(); }
         else { this.openTerminalSearch(); }
@@ -6801,16 +6822,16 @@ struct SshTerminal {
           }
         }
 
-        if (this.terminalSearchAvailable() || this.terminalProfileEnabled()) {
-          Divider().strokeWidth(0.5).color(this.pal().cardBorder).width('100%')
-          if (this.terminalSearchAvailable()) {
-            this.SshHeaderActionRow('终端搜索', this.terminalSearchVisible
-              ? '搜索栏已打开' : '在当前终端输出中查找', 'search')
-          }
-          if (this.terminalProfileEnabled()) {
-            this.SshHeaderActionRow('终端外观', '字体、配色与光标', 'profile')
-          }
+        Divider().strokeWidth(0.5).color(this.pal().cardBorder).width('100%')
+        if (this.terminalSearchAvailable()) {
+          this.SshHeaderActionRow('终端搜索', this.terminalSearchVisible
+            ? '搜索栏已打开' : '在当前终端输出中查找', 'search')
         }
+        if (this.terminalProfileEnabled()) {
+          this.SshHeaderActionRow('终端外观', '字体、配色与光标', 'profile')
+        }
+        this.SshHeaderActionRow('恢复终端字号',
+          '回到 ' + this.sshTerminalFontResetTarget().toString() + ' 号字', 'reset-font')
 
         Divider().strokeWidth(0.5).color(this.pal().cardBorder).width('100%')
         this.SshHeaderActionRow('语言与地区',

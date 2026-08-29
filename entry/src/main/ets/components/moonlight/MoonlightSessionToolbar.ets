@@ -33,6 +33,7 @@ export struct MoonlightSessionToolbar {
   @Prop pipAvailable: boolean = false;
   @Prop keyboardAvailable: boolean = false;
   @Prop diagnosticsVisible: boolean = false;
+  @Prop canvasResetAvailable: boolean = false;
   @Prop keyboardOpen: boolean = false;
   @Prop modifiersOpen: boolean = false;
   @Prop controlModeLabel: string = '触控板';
@@ -62,9 +63,19 @@ export struct MoonlightSessionToolbar {
 
   private items(): MoonlightToolbarItem[] {
     const layout: MoonlightToolbarLayout = this.layout();
-    return moonlightToolbarItems(
+    const items: MoonlightToolbarItem[] = moonlightToolbarItems(
       this.breakpoint, this.audioAvailable, this.controllerAvailable, this.pipAvailable,
       layout.maxVisibleItems, this.keyboardAvailable, this.controlModeLabel);
+    if (!this.canvasResetAvailable) { return items; }
+    const resetItem: MoonlightToolbarItem = {
+      action: 'resetCanvas', label: '复位', dangerous: false,
+      enabled: true, disabledReason: ''
+    };
+    const disconnectIndex: number = items.findIndex(
+      (item: MoonlightToolbarItem): boolean => item.action === 'disconnect');
+    if (disconnectIndex < 0) { items.push(resetItem); }
+    else { items.splice(disconnectIndex, 0, resetItem); }
+    return items;
   }
 
   private railItems(): MoonlightToolbarItem[] {
@@ -94,6 +105,7 @@ export struct MoonlightSessionToolbar {
     if (action === 'controller') { return $r('sys.symbol.gamecontroller_fill'); }
     if (action === 'audio') { return $r('sys.symbol.speaker_slash_fill'); }
     if (action === 'display') { return $r('sys.symbol.display'); }
+    if (action === 'resetCanvas') { return $r('sys.symbol.display'); }
     if (action === 'diagnostics') { return $r('sys.symbol.info_circle'); }
     if (action === 'more') { return $r('sys.symbol.ellipsis_bubble'); }
     return $r('sys.symbol.xmark_circle_fill');
@@ -180,6 +192,7 @@ export struct MoonlightSessionToolbar {
   private itemActive(item: MoonlightToolbarItem): boolean {
     if (item.action === 'keyboard') { return this.keyboardOpen; }
     if (item.action === 'modifiers') { return this.modifiersOpen; }
+    if (item.action === 'resetCanvas') { return this.canvasResetAvailable; }
     return item.action === 'diagnostics' && this.diagnosticsVisible;
   }
 
