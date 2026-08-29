@@ -3,18 +3,20 @@
   "task": "per-protocol-pinch-zoom-plan",
   "branch": "codex/per-protocol-pinch-zoom-plan",
   "base": "b84224869e4e719f6395b04465fb43b27032b156",
-  "head": "b84224869e4e719f6395b04465fb43b27032b156",
-  "phase": "plan-ready",
+  "head": "714b791f8b7d4036f8c36dd8b7da0cb49db30677",
+  "phase": "device-acceptance",
   "status": "active",
-  "next": "Implement the plan beginning with the five-protocol preference migration and Display & Interaction selection sheet; no functional implementation was made in the planning task.",
+  "next": "Run the five-protocol real-device gesture, pointer-follow, settings persistence and lifecycle matrix; then push, open the PR, pass required checks and merge.",
   "blockers": [],
   "planPaths": [
     "docs/codex/plans/2026-08-29-per-protocol-pinch-zoom-and-pointer-follow.md"
   ],
   "review": {
-    "status": "PENDING",
-    "taskIds": [],
-    "reviewedHead": "",
+    "status": "PASS",
+    "taskIds": [
+      "/root/pinch_zoom_review"
+    ],
+    "reviewedHead": "714b791f8b7d4036f8c36dd8b7da0cb49db30677",
     "scope": [
       "entry/src/main/ets/components/RemotePinchZoomSettingsSheet.ets",
       "entry/src/main/ets/pages/HostListPage.ets",
@@ -29,20 +31,21 @@
       "entry/src/main/ets/services/RemoteCanvasTransformPolicy.ets",
       "entry/src/main/ets/services/RemotePinchZoomPreferencePolicy.ets",
       "entry/src/main/ets/services/SettingsSheetRoutePolicy.ets",
-      "entry/src/ohosTest"
+      "entry/src/ohosTest",
+      "entry/src/test"
     ],
     "findings": [],
-    "reason": "Planning-only task; implementation and independent review have not started."
+    "reason": "The same independent read-only reviewer verified checkpoint 714b791f8 after five P1/P2 remediation items; no P0/P1/P2 remain."
   },
   "lastVerification": {
-    "baseline": "Research and plan only from main@b84224869; no ArkTS, C++, Rust, test, resource or dependency code changed.",
-    "testCompile": "PASS: default@OhosTestCompileArkTS, BUILD SUCCESSFUL in 6 s 319 ms.",
-    "assembleHap": "PASS: signed HAP, BUILD SUCCESSFUL in 14 s 869 ms, SHA-256 9d4316b8ff804d0bebed3cdb8d534f53957ec6195c44f0d04db97447665778ae.",
-    "targetedTests": "NOT RUN: no functional implementation exists.",
-    "arktsTests": "NOT RUN: no functional implementation exists.",
-    "compliance": "PASS: git diff --check, compact-state validation and Light open-source compliance.",
-    "review": "PENDING: implementation review is outside this planning-only task.",
-    "deviceAcceptance": "NOT RUN: no functional implementation exists."
+    "baseline": "Reviewed implementation checkpoint 714b791f8 on main@b84224869; ArkTS/UI/policy/tests only, no native, Rust, FFI, dependency or resource changes.",
+    "testCompile": "PASS: default@OhosTestCompileArkTS, BUILD SUCCESSFUL in 29 s 668 ms.",
+    "assembleHap": "PASS: signed HAP, BUILD SUCCESSFUL in 16 s 174 ms; SHA-256 d0899ec8f965aea61154fb69ba2b527af83ec55f5d2cb8163612aba081d6e50c.",
+    "targetedTests": "POLICIES COMPILED: preference migration, gesture ownership, pointer follow including one-axis boundary isolation, settings routing and device-local sync tests are registered in both test lists.",
+    "arktsTests": "UNAVAILABLE: separate ohosTest@OhosTestCompileArkTS is not registered (00306054); default@OhosTestCompileArkTS passed.",
+    "compliance": "PASS: git diff --check and Light open-source compliance.",
+    "review": "PASS: /root/pinch_zoom_review verified checkpoint 714b791f8; five initial P1/P2 findings were remediated and no P0/P1/P2 remain.",
+    "deviceAcceptance": "NOT RUN: hdc reported Connect server failed; no device target was available."
   },
   "updated": "2026-08-29 Asia/Shanghai"
 }

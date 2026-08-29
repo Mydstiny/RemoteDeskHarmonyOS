@@ -4,18 +4,20 @@
 
 - Task: `per-protocol-pinch-zoom-plan`
 - Branch: `codex/per-protocol-pinch-zoom-plan` from `main@b84224869`.
-- Increment: research and an implementation plan only; no functional code has been changed.
-- Phase: official RustDesk study, local five-protocol code inventory and the executable plan are complete; no implementation has started.
+- Increment: implementation and independent review are complete at `714b791f8`; real-device acceptance and PR closure remain.
+- Phase: five-protocol pinch preferences, graphical canvas gestures/pointer follow and SSH font-pinch gating are implemented; no native, Rust, FFI, dependency or resource changes.
 - Plan: `docs/codex/plans/2026-08-29-per-protocol-pinch-zoom-and-pointer-follow.md`
 
-## Per-protocol pinch zoom plan
+## Per-protocol pinch zoom result
 
 - RustDesk official mobile behavior was traced at `master@03a7fc599`: focal-point relative pinch and pan share one ScaleGesture; touchpad cursor movement pans hidden canvas after crossing the visible centre; physical/floating pointer paths add bounded canvas follow and edge scrolling.
-- The local project already has a shared RDP/RustDesk/VNC `CanvasTransform`, renderer viewport mapping and retained-frame redraw. SSH already pinches terminal font size; Moonlight uses the same GL renderer but has no local canvas transform and currently reserves two-finger movement for scroll.
-- The plan introduces device-local RDP/RustDesk/SSH/VNC/Moonlight switches under one `显示与交互` selection sheet, compatible migration from the old shared key, and an explicit RustDesk local-canvas/remote-App-TouchScale mutex.
-- The runtime design replaces the 400 ms post-zoom canvas-pan wait with single-stream pinch plus focal pan, while preserving Fit-state two-finger scroll and static two-finger right-click. A separate safe-zone/edge-zone policy makes relative and absolute pointers reveal hidden canvas without tight cursor adhesion.
-- Planning-document verification: `default@OhosTestCompileArkTS` PASS (`BUILD SUCCESSFUL in 6 s 319 ms`); signed `assembleHap` PASS (`BUILD SUCCESSFUL in 14 s 869 ms`), SHA-256 `9d4316b8ff804d0bebed3cdb8d534f53957ec6195c44f0d04db97447665778ae`; `git diff --check`, compact-state validation and Light compliance PASS.
-- Next: implement the plan in stages, beginning with the preference policy/migration and settings sheet; no implementation is authorized or claimed in this planning task.
+- `显示与交互 → 双指缩放` now opens one editor for RDP, RustDesk, SSH, VNC and Moonlight, with per-protocol switches plus all-on/all-off actions. Values are device-local, migrate compatibly from the old shared preference, use touched-field merge and rollback on partial persistence failure, and publish live through AppStorage.
+- RDP/RustDesk/VNC share focal pinch, same-stream pure two-finger canvas pan, Fit-state scroll/right-click preservation and strict-bounds safe-area/edge-area pointer follow. RustDesk remote App `TouchScale/TouchPan` is mutually exclusive with local canvas transform.
+- Moonlight now owns the same GL canvas-transform lifecycle, keyboard/mouse-mode two-finger pan without a one-finger touch lane, synchronous versioned viewport mirroring for same-event absolute pointer mapping, and gesture cancellation before resize/PIP/rebind rebase. Relative and physical pointers reveal hidden canvas without cross-axis pollution.
+- SSH keeps its existing terminal-font pinch semantics behind the SSH-specific switch; SFTP is unaffected. Disabling a graphical-protocol switch drains active gesture state and restores the base transform where applicable.
+- Verification after remediation: `default@OhosTestCompileArkTS` PASS (`BUILD SUCCESSFUL in 29 s 668 ms`); signed `assembleHap` PASS (`BUILD SUCCESSFUL in 16 s 174 ms`), SHA-256 `d0899ec8f965aea61154fb69ba2b527af83ec55f5d2cb8163612aba081d6e50c`; `git diff --check` and Light compliance PASS. The separate `ohosTest@OhosTestCompileArkTS` task remains unavailable (`00306054`), while the registered suites compile through the mandatory default test target.
+- Independent review `/root/pinch_zoom_review`: PASS at `714b791f8` after closing three P1 and two P2 findings; no remaining P0/P1/P2. Real-device five-protocol gesture, pointer, persistence and lifecycle acceptance is pending because HDC had no available target.
+- Next: complete the device matrix, then push the branch, open the PR, pass required checks and merge.
 
 ## 1.1.4 release result
 
