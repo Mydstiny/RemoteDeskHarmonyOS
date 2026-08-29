@@ -3,10 +3,10 @@
   "task": "per-protocol-pinch-zoom-plan",
   "branch": "codex/per-protocol-pinch-zoom-plan",
   "base": "b84224869e4e719f6395b04465fb43b27032b156",
-  "head": "4211438a9571b12d15ee7380af576dd0681a8dce",
+  "head": "50e2c6b5c43177b9a87eccd2a99e2ec1ba95c019",
   "phase": "device-acceptance",
   "status": "active",
-  "next": "Run the five-protocol real-device gesture, pointer-follow, settings persistence and lifecycle matrix; then push, open the PR, pass required checks and merge.",
+  "next": "Run the five-protocol real-device gesture, pointer-follow, settings persistence, reset-control and unified settings-sheet lifecycle matrix; then push, open the PR, pass required checks and merge.",
   "blockers": [],
   "planPaths": [
     "docs/codex/plans/2026-08-29-per-protocol-pinch-zoom-and-pointer-follow.md"
@@ -16,9 +16,10 @@
     "taskIds": [
       "/root/pinch_zoom_review"
     ],
-    "reviewedHead": "4211438a9571b12d15ee7380af576dd0681a8dce",
+    "reviewedHead": "50e2c6b5c43177b9a87eccd2a99e2ec1ba95c019",
     "scope": [
       "entry/src/main/ets/components/RemotePinchZoomSettingsSheet.ets",
+      "entry/src/main/ets/components/RemoteSessionControlBarSettingsSheet.ets",
       "entry/src/main/ets/components/RemoteSessionTopBar.ets",
       "entry/src/main/ets/components/VncSessionToolbar.ets",
       "entry/src/main/ets/components/moonlight/MoonlightControlCenter.ets",
@@ -36,22 +37,23 @@
       "entry/src/main/ets/services/RemoteCanvasPointerFollowPolicy.ets",
       "entry/src/main/ets/services/RemoteCanvasTransformPolicy.ets",
       "entry/src/main/ets/services/RemotePinchZoomPreferencePolicy.ets",
+      "entry/src/main/ets/services/RemoteSessionTopBarPolicy.ets",
       "entry/src/main/ets/services/MoonlightUiPolicy.ets",
       "entry/src/main/ets/services/SettingsSheetRoutePolicy.ets",
       "entry/src/ohosTest",
       "entry/src/test"
     ],
     "findings": [],
-    "reason": "The same independent reviewer passed reset-affordance remediation checkpoint 4211438a with no remaining P0/P1/P2/P3 after SSH effective-font isolation, narrow-toolbar reachability and baseline-state fixes."
+    "reason": "The same independent reviewer passed settings-sheet checkpoint 50e2c6b5 with no remaining P0/P1/P2/P3 after correcting hidden-control recovery copy; transactional persistence, touched merge, sheet routing and Moonlight accordion parity were verified."
   },
   "lastVerification": {
-    "baseline": "Reviewed reset-affordance remediation checkpoint 4211438a on main@b84224869; ArkTS/UI/policy/tests/docs only, no native, Rust, FFI, dependency or resource changes.",
-    "testCompile": "PASS: default@OhosTestCompileArkTS, BUILD SUCCESSFUL in 10 s 909 ms.",
-    "assembleHap": "PASS: signed HAP, BUILD SUCCESSFUL in 31 s 919 ms; SHA-256 9b50e409bb58ef7073d066516de052f797313a46bf1ff2d0c66eb16c14a791f1.",
-    "targetedTests": "POLICIES COMPILED: preference migration, gesture ownership, pointer follow including one-axis boundary isolation, epsilon baseline reset state, settings routing and device-local sync tests are registered in both test lists.",
+    "baseline": "Reviewed unified settings-sheet checkpoint 50e2c6b5 on main@b84224869; ArkTS/UI/policy/tests/docs only, no native, Rust, FFI, dependency or resource changes.",
+    "testCompile": "PASS: default@OhosTestCompileArkTS, BUILD SUCCESSFUL in 10 s 203 ms.",
+    "assembleHap": "PASS: signed HAP, BUILD SUCCESSFUL in 23 s 225 ms; SHA-256 5efb54645bc3d5b48d91958a3dde8a1c3d66ff588c921922f8328e4fa46a2c86.",
+    "targetedTests": "POLICIES COMPILED: settings-sheet routing, four-protocol control-bar touched merge, transactional persistence integration and common Moonlight accordion lifecycle, plus the prior pinch/reset policy suites.",
     "arktsTests": "UNAVAILABLE: separate ohosTest@OhosTestCompileArkTS is not registered (00306054); default@OhosTestCompileArkTS passed.",
     "compliance": "PASS: git diff --check and Light open-source compliance.",
-    "review": "PASS: /root/pinch_zoom_review verified checkpoint 4211438a with no remaining P0/P1/P2/P3.",
+    "review": "PASS: /root/pinch_zoom_review verified checkpoint 50e2c6b5 with no remaining P0/P1/P2/P3 after one P3 recovery-copy fix.",
     "deviceAcceptance": "NOT RUN: hdc reported Connect server failed; no device target was available."
   },
   "updated": "2026-08-29 Asia/Shanghai"
