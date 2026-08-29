@@ -270,6 +270,8 @@ static_assert(offsetof(RustDeskFfiDisplayInfoSnapshot, resolutionCount) == 172);
 #include <sys/time.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <netdb.h>
+#include <poll.h>
 #include <unistd.h>
 #include <fcntl.h>
 #include <cstring>
@@ -455,50 +457,103 @@ static RustDeskTransportErrorClass rdClassifyTransportMessage(
 // ============================================================
 // RustDesk 真实 TCP 连接 (在独立线程中运行)
 // ============================================================
+static int rdConnectTcpEndpoint(const std::string& host, uint32_t port, int timeoutMs) {
+    if (host.empty() || port == 0 || port > 65535 || timeoutMs <= 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    addrinfo hints {};
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    addrinfo* addresses = nullptr;
+    const std::string portText = std::to_string(port);
+    if (getaddrinfo(host.c_str(), portText.c_str(), &hints, &addresses) != 0 ||
+        addresses == nullptr) {
+        errno = EHOSTUNREACH;
+        return -1;
+    }
+
+    const auto deadline = std::chrono::steady_clock::now() +
+        std::chrono::milliseconds(timeoutMs);
+    int connectedFd = -1;
+    int lastError = ETIMEDOUT;
+    for (addrinfo* address = addresses; address != nullptr; address = address->ai_next) {
+        const auto now = std::chrono::steady_clock::now();
+        if (now >= deadline) { break; }
+        const int fd = socket(address->ai_family, address->ai_socktype, address->ai_protocol);
+        if (fd < 0) {
+            lastError = errno;
+            continue;
+        }
+        const int flags = fcntl(fd, F_GETFL, 0);
+        if (flags < 0 || fcntl(fd, F_SETFL, flags | O_NONBLOCK) != 0) {
+            lastError = errno;
+            close(fd);
+            continue;
+        }
+        int result = ::connect(fd, address->ai_addr,
+                               static_cast<socklen_t>(address->ai_addrlen));
+        if (result != 0 && errno == EINPROGRESS) {
+            pollfd candidate {fd, POLLOUT, 0};
+            do {
+                const auto pollNow = std::chrono::steady_clock::now();
+                if (pollNow >= deadline) {
+                    result = 0;
+                    break;
+                }
+                const int remainingMs = static_cast<int>(std::chrono::duration_cast<
+                    std::chrono::milliseconds>(deadline - pollNow).count());
+                result = poll(&candidate, 1, std::max(1, remainingMs));
+            } while (result < 0 && errno == EINTR);
+            if (result > 0) {
+                int socketError = 0;
+                socklen_t errorLength = sizeof(socketError);
+                if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &socketError, &errorLength) == 0 &&
+                    socketError == 0) {
+                    result = 0;
+                } else {
+                    result = -1;
+                    errno = socketError == 0 ? EIO : socketError;
+                }
+            } else if (result == 0) {
+                result = -1;
+                errno = ETIMEDOUT;
+            }
+        }
+        if (result == 0) {
+            (void)fcntl(fd, F_SETFL, flags);
+            connectedFd = fd;
+            break;
+        }
+        lastError = errno;
+        close(fd);
+    }
+    freeaddrinfo(addresses);
+    if (connectedFd < 0) { errno = lastError; }
+    return connectedFd;
+}
+
 static void rdRealConnectThread(RdIpcConnectReq req, int ipcClientFd) {
+    req.host[sizeof(req.host) - 1] = '\0';
+    req.peerId[sizeof(req.peerId) - 1] = '\0';
     const std::string endpointId = SafeLog::HashForLog(req.host);
     const std::string peerId = SafeLog::HashForLog(req.peerId);
     OH_LOG_INFO(LOG_APP,
                 "[RustDesk-REAL] 开始连接 endpointId=%{public}s port=%{public}u peerId=%{public}s",
                 endpointId.c_str(), req.port, peerId.c_str());
 
-    int tcpFd = socket(AF_INET, SOCK_STREAM, 0);
+    int tcpFd = rdConnectTcpEndpoint(req.host, req.port, 5000);
     if (tcpFd < 0) {
-        OH_LOG_ERROR(LOG_APP, "[RustDesk-REAL] socket 失败: %{public}s", strerror(errno));
-        // 发送错误 ACK
-        uint8_t errAck[6] = {1, 0, 0, 0, RD_IPC_CONNECT_ACK, 0x01};
+        OH_LOG_ERROR(LOG_APP, "[RustDesk-REAL] TCP 连接失败: %{public}s", strerror(errno));
+        uint8_t errAck[6] = {1, 0, 0, 0, RD_IPC_CONNECT_ACK, 0x03};
         send(ipcClientFd, errAck, 6, 0);
         return;
     }
-
-    struct sockaddr_in addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(static_cast<uint16_t>(req.port));
-    if (inet_pton(AF_INET, req.host, &addr.sin_addr) <= 0) {
-        OH_LOG_ERROR(LOG_APP,
-                     "[RustDesk-REAL] 地址解析失败 endpointId=%{public}s",
-                     endpointId.c_str());
-        close(tcpFd);
-        uint8_t errAck[6] = {1, 0, 0, 0, RD_IPC_CONNECT_ACK, 0x02};
-        send(ipcClientFd, errAck, 6, 0);
-        return;
-    }
-
-    // 设置连接超时 5 秒
     struct timeval tv;
     tv.tv_sec = 5;
     tv.tv_usec = 0;
     setsockopt(tcpFd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
     setsockopt(tcpFd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-
-    if (connect(tcpFd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
-        OH_LOG_ERROR(LOG_APP, "[RustDesk-REAL] TCP 连接失败: %{public}s", strerror(errno));
-        close(tcpFd);
-        uint8_t errAck[6] = {1, 0, 0, 0, RD_IPC_CONNECT_ACK, 0x03};
-        send(ipcClientFd, errAck, 6, 0);
-        return;
-    }
     OH_LOG_INFO(LOG_APP, "[RustDesk-REAL] ✓ TCP 已连接 fd=%{public}d", tcpFd);
 
     // RustDesk 协议握手: 发送 SYN 包
@@ -3710,13 +3765,8 @@ int RustDeskBridge::connectExperimental(const ConnectionConfig& cfg) {
     int port = cfg.port > 0 ? cfg.port : RD_DEFAULT_TCP_PORT;
 
     // TCP connect
-    impl_->sockFd = socket(AF_INET, SOCK_STREAM, 0);
-    struct sockaddr_in addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(static_cast<uint16_t>(port));
-    inet_pton(AF_INET, cfg.host.c_str(), &addr.sin_addr);
-    if (::connect(impl_->sockFd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
+    impl_->sockFd = rdConnectTcpEndpoint(cfg.host, static_cast<uint32_t>(port), 5000);
+    if (impl_->sockFd < 0) {
         impl_->setState(ConnectionState::ERROR, "TCP connect failed");
         return -12;
     }

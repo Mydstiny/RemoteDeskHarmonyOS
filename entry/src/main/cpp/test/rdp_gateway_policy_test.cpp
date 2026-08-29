@@ -229,13 +229,30 @@ RDP_TEST_CASE(rdp_gateway_policy_route_identity_binds_all_route_fields) {
     route.gatewayTransport = RdpGatewayTransport::NoWebsockets;
 
     const std::string identity = RdpGatewayPolicy::routeIdentity(route);
-    RDP_ASSERT(identity.find("microsoft_rd_gateway") != std::string::npos);
-    RDP_ASSERT(identity.find("target.internal:3389") != std::string::npos);
-    RDP_ASSERT(identity.find("gateway.internal:443") != std::string::npos);
-    RDP_ASSERT(identity.find("no-websockets") != std::string::npos);
+    RDP_ASSERT(identity.rfind("rdp-route-v2|", 0U) == 0U);
 
     route.gatewayPort = 8443;
     RDP_ASSERT(identity != RdpGatewayPolicy::routeIdentity(route));
+}
+
+RDP_TEST_CASE(rdp_gateway_policy_route_identity_has_no_ipv6_delimiter_collision) {
+    RdpEndpointRoute first;
+    first.endpointMode = RdpEndpointMode::DirectRdp;
+    first.targetHost = "2001:db8::1";
+    first.targetPort = 3389;
+    first.targetServerName = "443:1::2";
+    first.gatewayPort = 0;
+
+    RDP_ASSERT(RdpGatewayPolicy::routeIdentity(first) ==
+        "rdp-route-v2|10:direct_rdp11:2001:db8::14:33898:443:1::20:1:00:4:auto");
+
+    RdpEndpointRoute second = first;
+    second.targetHost = "2001:db8::1:3389";
+    second.targetPort = 443;
+    second.targetServerName = "1::2";
+
+    RDP_ASSERT(RdpGatewayPolicy::routeIdentity(first) !=
+        RdpGatewayPolicy::routeIdentity(second));
 }
 
 RDP_TEST_CASE(rdp_gateway_policy_rejects_unsupported_routes_as_not_supported) {

@@ -3,7 +3,8 @@ import {
   MoonlightHost,
   MoonlightSettings,
   MOONLIGHT_DEFAULT_HTTPS_PORT,
-  moonlightAddressKey,
+  canonicalMoonlightAddress,
+  moonlightAddressMatchesKey,
   moonlightHostIsValid,
   moonlightSettingsAreValid
 } from '../model/MoonlightModels';
@@ -56,15 +57,17 @@ export function moonlightSelectedAddress(host: MoonlightHost,
   const family: string = settings.network.preferredAddressFamily;
   if (family === 'ipv4' || family === 'ipv6') {
     for (let index: number = 0; index < host.addresses.length; index++) {
-      if (host.addresses[index].family === family) { return host.addresses[index]; }
+      if (host.addresses[index].family === family) {
+        return canonicalMoonlightAddress(host.addresses[index]);
+      }
     }
   }
   for (let index: number = 0; index < host.addresses.length; index++) {
-    if (moonlightAddressKey(host.addresses[index]) === host.preferredAddressKey) {
-      return host.addresses[index];
+    if (moonlightAddressMatchesKey(host.addresses[index], host.preferredAddressKey)) {
+      return canonicalMoonlightAddress(host.addresses[index]);
     }
   }
-  return host.addresses[0];
+  return canonicalMoonlightAddress(host.addresses[0]);
 }
 
 export function moonlightSelectedHostAddress(host: MoonlightHost,

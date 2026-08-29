@@ -35,6 +35,7 @@ pub struct RendezvousClient {
     tx_seq: u64,
     rx_seq: u64,
     pending: Option<RendezvousMessage>,
+    connect_epoch: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -132,7 +133,14 @@ impl RendezvousClient {
             tx_seq: 0,
             rx_seq: 0,
             pending: None,
+            connect_epoch: None,
         }
+    }
+
+    pub fn new_with_connect_epoch(connect_epoch: u64) -> Self {
+        let mut client = Self::new();
+        client.connect_epoch = Some(connect_epoch);
+        client
     }
 
     pub fn connect(
@@ -155,7 +163,12 @@ impl RendezvousClient {
     ) -> io::Result<()> {
         self.state = RdState::Connecting;
 
-        let stream = net::connect_tcp_host(host, port, "rendezvous", timeout)?;
+        let stream = match self.connect_epoch {
+            Some(epoch) => {
+                net::connect_tcp_host_cancellable(host, port, "rendezvous", timeout, epoch)?
+            }
+            None => net::connect_tcp_host(host, port, "rendezvous", timeout)?,
+        };
 
         stream.set_read_timeout(Some(timeout))?;
         stream.set_write_timeout(Some(timeout))?;
@@ -480,12 +493,21 @@ impl RendezvousClient {
         server_key: &str,
         conn_type: ConnType,
     ) -> io::Result<TcpStream> {
-        let mut stream = net::connect_tcp_endpoint(
-            relay_server,
-            relay_fallback_port,
-            "relay",
-            Duration::from_secs(10),
-        )?;
+        let mut stream = match self.connect_epoch {
+            Some(epoch) => net::connect_tcp_endpoint_cancellable(
+                relay_server,
+                relay_fallback_port,
+                "relay",
+                Duration::from_secs(10),
+                epoch,
+            )?,
+            None => net::connect_tcp_endpoint(
+                relay_server,
+                relay_fallback_port,
+                "relay",
+                Duration::from_secs(10),
+            )?,
+        };
         stream.set_read_timeout(Some(Duration::from_secs(30)))?;
         stream.set_write_timeout(Some(Duration::from_secs(10)))?;
 
@@ -506,7 +528,15 @@ impl RendezvousClient {
     }
 
     pub fn connect_to_peer(&self, addr: SocketAddr) -> io::Result<TcpStream> {
-        let stream = TcpStream::connect_timeout(&addr, Duration::from_secs(10))?;
+        let stream = match self.connect_epoch {
+            Some(epoch) => net::connect_tcp_socket_address_cancellable(
+                &addr,
+                "peer candidate",
+                Duration::from_secs(10),
+                epoch,
+            )?,
+            None => TcpStream::connect_timeout(&addr, Duration::from_secs(10))?,
+        };
         stream.set_read_timeout(Some(Duration::from_secs(30)))?;
         stream.set_write_timeout(Some(Duration::from_secs(10)))?;
         Ok(stream)
@@ -781,8 +811,8 @@ impl Drop for RendezvousClient {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::rendezvous_proto::{PunchHole, RelayResponse};
+    use super::*;
     use std::io::ErrorKind;
     use std::net::TcpListener;
     use std::thread;
@@ -820,12 +850,7 @@ mod tests {
             other => panic!("expected PunchHoleRequest, got: {:?}", other),
         }
 
-        let relay = request_relay_message(
-            "peer-123",
-            "uuid-123",
-            key,
-            ConnType::DEFAULT_CONN,
-        );
+        let relay = request_relay_message("peer-123", "uuid-123", key, ConnType::DEFAULT_CONN);
         let relay_bytes = relay.write_to_bytes().expect("serialize relay request");
         let parsed_relay: RendezvousMessage =
             protobuf::parse_from_bytes(&relay_bytes).expect("parse relay request");
@@ -853,12 +878,7 @@ mod tests {
             other => panic!("expected PunchHoleRequest, got: {:?}", other),
         }
 
-        let relay = request_relay_message(
-            "peer-123",
-            "uuid-123",
-            "key",
-            ConnType::FILE_TRANSFER,
-        );
+        let relay = request_relay_message("peer-123", "uuid-123", "key", ConnType::FILE_TRANSFER);
         match relay.union {
             Some(RendezvousMessage_oneof_union::request_relay(req)) => {
                 assert_eq!(req.get_conn_type(), ConnType::FILE_TRANSFER);
@@ -873,10 +893,7 @@ mod tests {
         // address in socket_addr (no relay_server). The client must accept
         // that as a direct-connect punch response, not InvalidData.
         let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 5)), 21118);
-        let encoded = encode_test_ipv4(SocketAddrV4::new(
-            Ipv4Addr::new(10, 0, 0, 5),
-            21118,
-        ));
+        let encoded = encode_test_ipv4(SocketAddrV4::new(Ipv4Addr::new(10, 0, 0, 5), 21118));
         let mut resp = PunchHoleResponse::new();
         resp.set_socket_addr(encoded);
         let mut msg = RendezvousMessage::new();
@@ -917,9 +934,7 @@ mod tests {
         relay.set_uuid("file-transfer-route".to_string());
         let mut expected = RendezvousMessage::new();
         expected.union = Some(RendezvousMessage_oneof_union::relay_response(relay));
-        let expected_payload = expected
-            .write_to_bytes()
-            .expect("serialize relay response");
+        let expected_payload = expected.write_to_bytes().expect("serialize relay response");
 
         let server = TcpListener::bind("127.0.0.1:0").expect("bind test server");
         let port = server.local_addr().expect("server addr").port();
@@ -928,8 +943,7 @@ mod tests {
             let _first = wire::read_frame(&mut stream).expect("read first request");
             wire::write_frame(&mut stream, &unexpected_payload)
                 .expect("write unrelated punch hole");
-            wire::write_frame(&mut stream, &expected_payload)
-                .expect("write relay response");
+            wire::write_frame(&mut stream, &expected_payload).expect("write relay response");
         });
 
         let mut rd = RendezvousClient::new();

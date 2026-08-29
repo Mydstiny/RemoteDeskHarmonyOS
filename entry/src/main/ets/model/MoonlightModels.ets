@@ -359,6 +359,14 @@ export function moonlightAddressKey(address: MoonlightAddress): string {
   return address.family + '|' + host + '|' + address.port.toString();
 }
 
+/** Accepts one legacy raw-text key while every new write uses the canonical key. */
+export function moonlightAddressMatchesKey(address: MoonlightAddress, key: string): boolean {
+  if (key === '') { return false; }
+  const legacyKey: string = address.family + '|' +
+    address.host.trim().toLowerCase() + '|' + address.port.toString();
+  return moonlightAddressKey(address) === key || legacyKey === key;
+}
+
 /** Canonical form used for every new durable Moonlight address write. */
 export function canonicalMoonlightAddress(address: MoonlightAddress): MoonlightAddress {
   const parsed: EndpointAddressResult = parseEndpointFields(address.host, address.port);

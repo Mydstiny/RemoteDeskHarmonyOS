@@ -539,6 +539,28 @@ export class RdpRestrictedAdminSecretResult {
   hash: string = '';
 }
 
+/** Versioned, collision-safe local binding for an RDP Restricted Admin secret. */
+export function rdpRestrictedAdminSecretBindingForHost(
+  host: RemoteHost,
+  authIdentityMode: number
+): string {
+  const identity = normalizeRdpCredentialParts(host.username, authIdentityMode);
+  const endpointIdentity: string = lanHostUsesLocalOnlyStorage(host) &&
+    normalizeLanDiscoveryIdentity(host.lanDiscoveryIdentity) !== ''
+    ? 'lan-dynamic:' + normalizeLanDiscoveryIdentity(host.lanDiscoveryIdentity)
+    : 'endpoint:' + host.host.trim().toLowerCase();
+  const field = (value: string): string => value.length.toString() + ':' + value;
+  return 'rdp-binding-v3|' + [
+    endpointIdentity,
+    host.port.toString(),
+    host.customHostname.trim().toLowerCase(),
+    identity.username.trim().toLowerCase(),
+    identity.domain.trim().toLowerCase(),
+    authIdentityMode.toString(),
+    normalizeRdpRestrictedAdminSecretSource(host.rdpRestrictedAdminSecretSource)
+  ].map((value: string): string => field(value)).join('');
+}
+
 /** 单表同步状态 */
 export class TableSyncStatus {
   ok: number = 0;
@@ -8451,21 +8473,7 @@ try { this.rollbackTrackedTransaction(); } catch (_ignored) {}
 
   private rdpRestrictedAdminSecretBinding(host: RemoteHost): string {
     const authIdentityMode: number = AppStorage.get<number>('rdpAuthIdentityMode') ?? 1;
-    const identity = normalizeRdpCredentialParts(host.username, authIdentityMode);
-    const endpointIdentity: string = lanHostUsesLocalOnlyStorage(host) &&
-      normalizeLanDiscoveryIdentity(host.lanDiscoveryIdentity) !== ''
-      ? 'lan-dynamic:' + normalizeLanDiscoveryIdentity(host.lanDiscoveryIdentity)
-      : 'endpoint:' + host.host.trim().toLowerCase();
-    return [
-      'rdp-binding-v2',
-      endpointIdentity,
-      host.port.toString(),
-      host.customHostname.trim().toLowerCase(),
-      identity.username.trim().toLowerCase(),
-      identity.domain.trim().toLowerCase(),
-      authIdentityMode.toString(),
-      normalizeRdpRestrictedAdminSecretSource(host.rdpRestrictedAdminSecretSource)
-    ].join('|');
+    return rdpRestrictedAdminSecretBindingForHost(host, authIdentityMode);
   }
 
   private rdpRestrictedAdminSecretOwnedByCurrentScope(recordId: string): boolean {

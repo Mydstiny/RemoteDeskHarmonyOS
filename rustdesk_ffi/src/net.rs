@@ -1,9 +1,12 @@
 //! TCP endpoint parsing and DNS-aware connection helpers for RustDesk.
 
 use std::io;
-use std::net::{TcpStream, ToSocketAddrs};
+use std::net::{Ipv4Addr, Ipv6Addr, TcpStream, ToSocketAddrs};
 use std::str::FromStr;
 use std::time::{Duration, Instant};
+
+const MAX_ENDPOINT_LENGTH: usize = 512;
+const CONNECT_CANCEL_SLICE: Duration = Duration::from_millis(200);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ParsedEndpoint {
@@ -18,9 +21,31 @@ pub(crate) fn connect_tcp_host(
     stage: &str,
     timeout: Duration,
 ) -> io::Result<TcpStream> {
-    let host = normalize_host(host, stage)?;
+    connect_tcp_host_inner(host, port, stage, timeout, None)
+}
+
+/// Connect with the session-scoped cancellation epoch used by desktop and
+/// file-transfer connection attempts.
+pub(crate) fn connect_tcp_host_cancellable(
+    host: &str,
+    port: u16,
+    stage: &str,
+    timeout: Duration,
+    cancel_epoch: u64,
+) -> io::Result<TcpStream> {
+    connect_tcp_host_inner(host, port, stage, timeout, Some(cancel_epoch))
+}
+
+fn connect_tcp_host_inner(
+    host: &str,
+    port: u16,
+    stage: &str,
+    timeout: Duration,
+    cancel_epoch: Option<u64>,
+) -> io::Result<TcpStream> {
+    let host = canonicalize_tcp_host(host, stage)?;
     validate_port(port, stage, &host)?;
-    connect_parsed_endpoint(ParsedEndpoint { host, port }, stage, timeout)
+    connect_parsed_endpoint(ParsedEndpoint { host, port }, stage, timeout, cancel_epoch)
 }
 
 /// Connect to an endpoint that may contain an explicit port.
@@ -31,29 +56,38 @@ pub(crate) fn connect_tcp_endpoint(
     timeout: Duration,
 ) -> io::Result<TcpStream> {
     let parsed = parse_endpoint(endpoint, default_port, stage)?;
-    connect_parsed_endpoint(parsed, stage, timeout)
+    connect_parsed_endpoint(parsed, stage, timeout, None)
 }
 
-fn normalize_host(host: &str, stage: &str) -> io::Result<String> {
-    let host = host.trim();
-    if host.is_empty() {
-        return Err(invalid_endpoint(stage, host, "host is empty"));
-    }
-    if has_uri_or_path(host) {
-        return Err(invalid_endpoint(
-            stage,
-            host,
-            "URL schemes and paths are not valid TCP hosts",
-        ));
-    }
+pub(crate) fn connect_tcp_endpoint_cancellable(
+    endpoint: &str,
+    default_port: u16,
+    stage: &str,
+    timeout: Duration,
+    cancel_epoch: u64,
+) -> io::Result<TcpStream> {
+    let parsed = parse_endpoint(endpoint, default_port, stage)?;
+    connect_parsed_endpoint(parsed, stage, timeout, Some(cancel_epoch))
+}
+
+pub(crate) fn connect_tcp_socket_address_cancellable(
+    address: &std::net::SocketAddr,
+    stage: &str,
+    timeout: Duration,
+    cancel_epoch: u64,
+) -> io::Result<TcpStream> {
+    let endpoint_id = crate::safe_diagnostics::sensitive_id(&address.to_string());
+    let deadline = Instant::now() + timeout;
+    connect_candidate(address, deadline, Some(cancel_epoch), stage, &endpoint_id)
+}
+
+pub(crate) fn canonicalize_tcp_host(host: &str, stage: &str) -> io::Result<String> {
+    validate_endpoint_text(host, stage, "host")?;
     if host.starts_with('[') || host.ends_with(']') {
         if host.starts_with('[') && host.ends_with(']') && host.len() > 2 {
-            return Ok(host[1..host.len() - 1].to_string());
+            return canonicalize_bracketed_ipv6(&host[1..host.len() - 1], stage, host);
         }
         return Err(invalid_endpoint(stage, host, "invalid bracketed host"));
-    }
-    if host.chars().any(char::is_whitespace) {
-        return Err(invalid_endpoint(stage, host, "host contains whitespace"));
     }
     if host.contains(':') && host.parse::<std::net::SocketAddr>().is_ok() {
         return Err(invalid_endpoint(
@@ -62,30 +96,17 @@ fn normalize_host(host: &str, stage: &str) -> io::Result<String> {
             "host must not include a port; pass port separately",
         ));
     }
-    Ok(host.to_string())
+    canonicalize_host(host, stage, host)
 }
 
 fn parse_endpoint(endpoint: &str, default_port: u16, stage: &str) -> io::Result<ParsedEndpoint> {
-    let endpoint = endpoint.trim();
-    if endpoint.is_empty() {
-        return Err(invalid_endpoint(stage, endpoint, "endpoint is empty"));
-    }
-    if has_uri_or_path(endpoint) || endpoint.chars().any(char::is_whitespace) {
-        return Err(invalid_endpoint(
-            stage,
-            endpoint,
-            "URL schemes, paths, and whitespace are not valid TCP endpoints",
-        ));
-    }
+    validate_endpoint_text(endpoint, stage, "endpoint")?;
 
     if endpoint.starts_with('[') {
         let close = endpoint.find(']').ok_or_else(|| {
             invalid_endpoint(stage, endpoint, "missing closing bracket for IPv6 host")
         })?;
-        let host = &endpoint[1..close];
-        if host.is_empty() {
-            return Err(invalid_endpoint(stage, endpoint, "IPv6 host is empty"));
-        }
+        let host = canonicalize_bracketed_ipv6(&endpoint[1..close], stage, endpoint)?;
         let suffix = &endpoint[close + 1..];
         let port = if suffix.is_empty() {
             default_port
@@ -98,16 +119,13 @@ fn parse_endpoint(endpoint: &str, default_port: u16, stage: &str) -> io::Result<
                 "unexpected text after bracketed IPv6 host",
             ));
         };
-        return Ok(ParsedEndpoint {
-            host: host.to_string(),
-            port,
-        });
+        return Ok(ParsedEndpoint { host, port });
     }
 
     let colon_count = endpoint.chars().filter(|c| *c == ':').count();
     if colon_count == 0 {
         return Ok(ParsedEndpoint {
-            host: endpoint.to_string(),
+            host: canonicalize_host(endpoint, stage, endpoint)?,
             port: default_port,
         });
     }
@@ -117,16 +135,16 @@ fn parse_endpoint(endpoint: &str, default_port: u16, stage: &str) -> io::Result<
             return Err(invalid_endpoint(stage, endpoint, "host is empty"));
         }
         return Ok(ParsedEndpoint {
-            host: host.to_string(),
+            host: canonicalize_host(host, stage, endpoint)?,
             port: parse_port(port_text, stage, endpoint)?,
         });
     }
 
     // An unbracketed multi-colon value is accepted only as a raw IPv6 host;
     // an explicit IPv6 port must use [addr]:port to remain unambiguous.
-    if std::net::Ipv6Addr::from_str(endpoint).is_ok() {
+    if Ipv6Addr::from_str(endpoint).is_ok() {
         return Ok(ParsedEndpoint {
-            host: endpoint.to_string(),
+            host: canonicalize_host(endpoint, stage, endpoint)?,
             port: default_port,
         });
     }
@@ -135,6 +153,140 @@ fn parse_endpoint(endpoint: &str, default_port: u16, stage: &str) -> io::Result<
         endpoint,
         "IPv6 endpoints with an explicit port must use [addr]:port",
     ))
+}
+
+fn validate_endpoint_text(value: &str, stage: &str, kind: &str) -> io::Result<()> {
+    if value.is_empty() {
+        return Err(invalid_endpoint(
+            stage,
+            value,
+            &format!("{} is empty", kind),
+        ));
+    }
+    if value.len() > MAX_ENDPOINT_LENGTH {
+        return Err(invalid_endpoint(
+            stage,
+            value,
+            "endpoint exceeds maximum length",
+        ));
+    }
+    if has_uri_or_path(value)
+        || value
+            .as_bytes()
+            .iter()
+            .any(|byte| *byte < 0x21 || *byte > 0x7e)
+    {
+        return Err(invalid_endpoint(
+            stage,
+            value,
+            "URL syntax, paths, whitespace, and non-ASCII text are not valid TCP endpoints",
+        ));
+    }
+    Ok(())
+}
+
+fn canonicalize_bracketed_ipv6(host: &str, stage: &str, original: &str) -> io::Result<String> {
+    if host.is_empty() {
+        return Err(invalid_endpoint(stage, original, "IPv6 host is empty"));
+    }
+    let canonical = canonicalize_host(host, stage, original)?;
+    if canonical.parse::<Ipv6Addr>().is_err() {
+        return Err(invalid_endpoint(
+            stage,
+            original,
+            "brackets are valid only for IPv6 hosts",
+        ));
+    }
+    Ok(canonical)
+}
+
+fn canonicalize_host(host: &str, stage: &str, original: &str) -> io::Result<String> {
+    if host.is_empty() {
+        return Err(invalid_endpoint(stage, original, "host is empty"));
+    }
+    if host.contains('%') {
+        return Err(invalid_endpoint(
+            stage,
+            original,
+            "scoped IPv6 addresses are not supported by this transport",
+        ));
+    }
+
+    if let Ok(ipv4) = host.parse::<Ipv4Addr>() {
+        let first = ipv4.octets()[0];
+        if first == 0 || first >= 224 {
+            return Err(invalid_endpoint(
+                stage,
+                original,
+                "IPv4 address is not connectable",
+            ));
+        }
+        return Ok(ipv4.to_string());
+    }
+
+    if let Ok(ipv6) = host.parse::<Ipv6Addr>() {
+        let octets = ipv6.octets();
+        let ipv4_mapped =
+            octets[..10].iter().all(|byte| *byte == 0) && octets[10] == 0xff && octets[11] == 0xff;
+        let link_local = octets[0] == 0xfe && (octets[1] & 0xc0) == 0x80;
+        if ipv6.is_unspecified() || ipv6.is_multicast() || ipv4_mapped || link_local {
+            return Err(invalid_endpoint(
+                stage,
+                original,
+                "IPv6 address is not connectable by this transport",
+            ));
+        }
+        return Ok(ipv6.to_string());
+    }
+
+    if host.contains(':') {
+        return Err(invalid_endpoint(stage, original, "invalid IPv6 host"));
+    }
+    if legacy_numeric_host(host) {
+        return Err(invalid_endpoint(stage, original, "invalid IPv4 host"));
+    }
+
+    let hostname = host.strip_suffix('.').unwrap_or(host);
+    if hostname.is_empty()
+        || hostname.len() > 253
+        || hostname.starts_with('.')
+        || hostname.ends_with('.')
+        || hostname.contains("..")
+    {
+        return Err(invalid_endpoint(stage, original, "invalid DNS hostname"));
+    }
+    for label in hostname.split('.') {
+        if label.is_empty()
+            || label.len() > 63
+            || label.starts_with('-')
+            || label.ends_with('-')
+            || !label
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+        {
+            return Err(invalid_endpoint(stage, original, "invalid DNS hostname"));
+        }
+    }
+    Ok(hostname.to_ascii_lowercase())
+}
+
+fn legacy_numeric_host(host: &str) -> bool {
+    let value = host.strip_suffix('.').unwrap_or(host);
+    if !value.is_empty()
+        && value
+            .bytes()
+            .all(|byte| byte == b'.' || byte.is_ascii_digit())
+    {
+        return true;
+    }
+    !value.is_empty()
+        && value.split('.').all(|label| {
+            !label.is_empty()
+                && (label.bytes().all(|byte| byte.is_ascii_digit())
+                    || (label.len() > 2
+                        && (label.starts_with("0x") || label.starts_with("0X"))
+                        && label[2..].bytes().all(|byte| byte.is_ascii_hexdigit())))
+        })
 }
 
 fn parse_port(port_text: &str, stage: &str, endpoint: &str) -> io::Result<u16> {
@@ -160,7 +312,12 @@ fn validate_port(port: u16, stage: &str, endpoint: &str) -> io::Result<u16> {
 }
 
 fn has_uri_or_path(value: &str) -> bool {
-    value.contains("://") || value.contains('/') || value.contains('?') || value.contains('#')
+    value.contains("://")
+        || value.contains('/')
+        || value.contains('\\')
+        || value.contains('@')
+        || value.contains('?')
+        || value.contains('#')
 }
 
 fn invalid_endpoint(stage: &str, endpoint: &str, reason: &str) -> io::Error {
@@ -179,9 +336,11 @@ fn connect_parsed_endpoint(
     endpoint: ParsedEndpoint,
     stage: &str,
     timeout: Duration,
+    cancel_epoch: Option<u64>,
 ) -> io::Result<TcpStream> {
     let endpoint_id =
         crate::safe_diagnostics::sensitive_id(&format!("{}:{}", endpoint.host, endpoint.port));
+    ensure_not_cancelled(cancel_epoch, stage, &endpoint_id)?;
     let candidates: Vec<_> = (endpoint.host.as_str(), endpoint.port)
         .to_socket_addrs()
         .map_err(|error| {
@@ -214,12 +373,26 @@ fn connect_parsed_endpoint(
 
     let deadline = Instant::now() + timeout;
     let mut last_error = None;
-    for address in candidates {
+    let candidate_count = candidates.len();
+    for (index, address) in candidates.into_iter().enumerate() {
+        ensure_not_cancelled(cancel_epoch, stage, &endpoint_id)?;
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
             break;
         }
-        match TcpStream::connect_timeout(&address, remaining) {
+        // M1 remains sequential, but one unreachable candidate must not consume
+        // the entire shared deadline and starve the remaining A/AAAA results.
+        // M2 will replace this fair sequential budget with Happy Eyeballs racing.
+        let candidates_left = candidate_count.saturating_sub(index).max(1) as u32;
+        let candidate_budget = remaining / candidates_left;
+        let candidate_deadline = Instant::now() + candidate_budget.max(CONNECT_CANCEL_SLICE);
+        match connect_candidate(
+            &address,
+            candidate_deadline.min(deadline),
+            cancel_epoch,
+            stage,
+            &endpoint_id,
+        ) {
             Ok(stream) => {
                 eprintln!(
                     "[RustDesk-FFI] {} connected endpoint_id={}",
@@ -251,6 +424,52 @@ fn connect_parsed_endpoint(
     ))
 }
 
+fn connect_candidate(
+    address: &std::net::SocketAddr,
+    deadline: Instant,
+    cancel_epoch: Option<u64>,
+    stage: &str,
+    endpoint_id: &str,
+) -> io::Result<TcpStream> {
+    loop {
+        ensure_not_cancelled(cancel_epoch, stage, endpoint_id)?;
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "candidate timed out",
+            ));
+        }
+        let attempt_timeout = remaining.min(CONNECT_CANCEL_SLICE);
+        match TcpStream::connect_timeout(address, attempt_timeout) {
+            Ok(stream) => return Ok(stream),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
+                ) =>
+            {
+                continue;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+fn ensure_not_cancelled(
+    cancel_epoch: Option<u64>,
+    stage: &str,
+    endpoint_id: &str,
+) -> io::Result<()> {
+    if cancel_epoch.is_some_and(crate::connect_cancelled) {
+        return Err(io::Error::new(
+            io::ErrorKind::Interrupted,
+            format!("{} connect cancelled endpoint_id={}", stage, endpoint_id),
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -258,7 +477,7 @@ mod tests {
     #[test]
     fn parse_endpoint_supports_hostname_and_explicit_port() {
         assert_eq!(
-            parse_endpoint("hbbs.example.com:21116", 21117, "test").unwrap(),
+            parse_endpoint("HBBS.Example.COM.:21116", 21117, "test").unwrap(),
             ParsedEndpoint {
                 host: "hbbs.example.com".to_string(),
                 port: 21116,
@@ -280,7 +499,7 @@ mod tests {
     #[test]
     fn parse_endpoint_supports_raw_ipv6_with_default_port() {
         assert_eq!(
-            parse_endpoint("2001:db8::1", 21116, "test").unwrap(),
+            parse_endpoint("2001:0db8:0:0:0:0:0:1", 21116, "test").unwrap(),
             ParsedEndpoint {
                 host: "2001:db8::1".to_string(),
                 port: 21116,
@@ -299,9 +518,47 @@ mod tests {
     fn parse_endpoint_rejects_url_scheme() {
         let error = parse_endpoint("https://hbbs.example.com", 21116, "test").unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
-        assert!(error.to_string().contains("URL schemes"));
+        assert!(error.to_string().contains("URL syntax"));
         assert!(!error.to_string().contains("hbbs.example.com"));
         assert!(!error.to_string().contains("https://"));
         assert!(error.to_string().contains("endpoint_id="));
+    }
+
+    #[test]
+    fn parse_endpoint_rejects_non_canonical_or_unsafe_inputs() {
+        for endpoint in [
+            " hbbs.example.com",
+            "hbbs.example.com ",
+            "user@hbbs.example.com",
+            "127.1",
+            "0x7f.0.0.1",
+            "224.0.0.1",
+            "[::]",
+            "[::ffff:192.0.2.1]",
+            "[ff02::1]",
+            "[fe80::1%en0]",
+        ] {
+            let error = parse_endpoint(endpoint, 21116, "test").unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::InvalidInput, "{endpoint}");
+            assert!(error.to_string().contains("endpoint_id="), "{endpoint}");
+        }
+    }
+
+    #[test]
+    fn canonicalize_tcp_host_rejects_embedded_port_and_non_ipv6_brackets() {
+        assert!(canonicalize_tcp_host("hbbs.example.com:21116", "test").is_err());
+        assert!(canonicalize_tcp_host("[hbbs.example.com]", "test").is_err());
+    }
+
+    #[test]
+    fn cancellable_connect_observes_session_epoch_before_network_io() {
+        let epoch = crate::begin_connect_epoch(9001);
+        crate::cancel_pending_connect_for_session(9001);
+        let error =
+            connect_tcp_host_cancellable("127.0.0.1", 9, "test", Duration::from_secs(1), epoch)
+                .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::Interrupted);
+        assert!(error.to_string().contains("connect cancelled"));
+        crate::finish_connect_epoch(epoch, 9001);
     }
 }

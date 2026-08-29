@@ -9,7 +9,8 @@ import {
   RemoteHost,
   LockType,
   normalizeRdpCredentialParts,
-  normalizeRdpNtlmHash
+  normalizeRdpNtlmHash,
+  rdpRouteIdentityForValues
 } from '../main/ets/model/RemoteHost';
 import { UserAccount } from '../main/ets/model/UserAccount';
 import { RdpCredential } from '../main/ets/model/RdpCredential';
@@ -190,6 +191,17 @@ export default function localUnitTest() {
       expect(normalizeRdpNtlmHash(' 0123456789abcdef0123456789abcdef '))
         .assertEqual('0123456789ABCDEF0123456789ABCDEF');
       expect(normalizeRdpNtlmHash('not-a-hash')).assertEqual('');
+    });
+
+    it('RDP_route_identity_should_not_collide_on_IPv6_delimiters', 0, () => {
+      const first: string = rdpRouteIdentityForValues(
+        'direct_rdp', '2001:db8::1', 3389, '443:1::2', '', 0, '', 'auto');
+      const second: string = rdpRouteIdentityForValues(
+        'direct_rdp', '2001:db8::1:3389', 443, '1::2', '', 0, '', 'auto');
+
+      expect(first).assertEqual(
+        'rdp-route-v2|10:direct_rdp11:2001:db8::14:33898:443:1::20:1:00:4:auto');
+      expect(first === second).assertFalse();
     });
 
     it('RustDesk_default_port_should_be_21116', 0, () => {

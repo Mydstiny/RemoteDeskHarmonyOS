@@ -84,7 +84,8 @@ export class HostSyncService {
     RustDeskPeerTwoFactorBindingStore.getInstance();
   private keyVaultListenerBound: boolean = false;
 
-  private canonicalizeHostNetworkEndpoints(host: RemoteHost): boolean {
+  /** Canonicalizes every persisted endpoint before any endpoint-bound secret is written. */
+  prepareHostNetworkEndpoints(host: RemoteHost): boolean {
     if (host.protocol !== 'rdp' && host.protocol !== 'ssh' && host.protocol !== 'rustdesk') {
       return true;
     }
@@ -662,7 +663,7 @@ export class HostSyncService {
 
   addHost(host: RemoteHost): boolean {
     if (!host.id) { host.id = RemoteHost.generateId(); }
-    if (!this.canonicalizeHostNetworkEndpoints(host)) { return false; }
+    if (!this.prepareHostNetworkEndpoints(host)) { return false; }
     host.createdAt = Date.now();
     const observedAt: number = Date.now();
     this.localHostConfigObservationAt.set(host.id, observedAt);
@@ -700,7 +701,7 @@ export class HostSyncService {
   updateHost(host: RemoteHost): boolean {
     const current: RemoteHost | undefined = this.hosts.get(host.id);
     if (!current) { return false; }
-    if (!this.canonicalizeHostNetworkEndpoints(host)) { return false; }
+    if (!this.prepareHostNetworkEndpoints(host)) { return false; }
     const previousPeerEndpoint: string =
       current.protocol === 'rustdesk' ? rustDeskPeerTwoFactorEndpointIdentity(current) : '';
     const nextPeerEndpoint: string =

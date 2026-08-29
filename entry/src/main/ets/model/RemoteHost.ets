@@ -160,9 +160,10 @@ export function rdpRouteIdentityForValues(
   const targetName: string = targetServerName.trim() !== '' ? targetServerName : targetHost;
   const gatewayName: string = gatewayServerName.trim() !== '' ? gatewayServerName : gatewayHost;
   const transport: RdpGatewayTransport = normalizeRdpGatewayTransport(gatewayTransport);
-  return mode + '|target=' + targetHost + ':' + targetPort.toString() + ':' + targetName +
-    '|gateway=' + gatewayHost + ':' + gatewayPort.toString() + ':' + gatewayName +
-    '|transport=' + transport;
+  const field = (value: string): string => value.length.toString() + ':' + value;
+  return 'rdp-route-v2|' + field(mode) + field(targetHost) + field(targetPort.toString()) +
+    field(targetName) + field(gatewayHost) + field(gatewayPort.toString()) +
+    field(gatewayName) + field(transport);
 }
 
 export interface DisplayConfigJSON {

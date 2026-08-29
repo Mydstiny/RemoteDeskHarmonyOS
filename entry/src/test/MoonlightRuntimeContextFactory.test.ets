@@ -48,6 +48,16 @@ export default function moonlightRuntimeContextFactoryTest(): void {
       expect(context.endpoint.serverName).assertEqual('2001:db8::1');
     });
 
+    it('selects_a_legacy_expanded_IPv6_preferred_key_without_falling_back', 0,
+      (): void => {
+        const legacy: MoonlightHost = host();
+        legacy.addresses[1].host = '2001:0DB8:0000:0000:0000:0000:0000:0001';
+        legacy.preferredAddressKey = 'ipv6|2001:0db8:0000:0000:0000:0000:0000:0001|47989';
+
+        expect(moonlightSelectedHostAddress(legacy, defaultMoonlightSettings()))
+          .assertEqual('[2001:db8::1]:47989');
+      });
+
     it('builds_one_safe_host_context_and_slot_zero_launch_contract', 0, (): void => {
       const settings = defaultMoonlightSettings();
       const context = moonlightRuntimeContext(host(), lease(), 11, 2,

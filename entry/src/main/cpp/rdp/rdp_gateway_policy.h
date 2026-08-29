@@ -502,10 +502,13 @@ inline std::string routeIdentity(const RdpEndpointRoute& route) {
         ? route.targetHost : route.targetServerName;
     const std::string gatewayName = route.gatewayServerName.empty()
         ? route.gatewayHost : route.gatewayServerName;
-    return std::string(endpointModeName(route.endpointMode)) + "|target=" +
-        route.targetHost + ":" + std::to_string(route.targetPort) + ":" + targetName +
-        "|gateway=" + route.gatewayHost + ":" + std::to_string(route.gatewayPort) + ":" +
-        gatewayName + "|transport=" + gatewayTransportName(route.gatewayTransport);
+    const auto field = [](const std::string& value) {
+        return std::to_string(value.size()) + ":" + value;
+    };
+    return std::string("rdp-route-v2|") + field(endpointModeName(route.endpointMode)) +
+        field(route.targetHost) + field(std::to_string(route.targetPort)) + field(targetName) +
+        field(route.gatewayHost) + field(std::to_string(route.gatewayPort)) +
+        field(gatewayName) + field(gatewayTransportName(route.gatewayTransport));
 }
 
 inline bool isGatewayRoute(RdpEndpointMode mode) {

@@ -14,16 +14,14 @@
 //
 // 所有通信在 rendezvous 阶段是明文，peer 阶段是加密的。
 
-use crate::crypto::{self, KeyPair};
-use crate::crypto_channel::CryptoChannel;
 use crate::control_inbox::{
-    CONTROL_BATCH_LIMIT, ControlInbox, PERMISSION_AUDIO, PERMISSION_BLOCK_INPUT,
+    ControlInbox, CONTROL_BATCH_LIMIT, PERMISSION_AUDIO, PERMISSION_BLOCK_INPUT,
     PERMISSION_CLIPBOARD, PERMISSION_FILE, PERMISSION_KEYBOARD, PERMISSION_PRIVACY_MODE,
     PERMISSION_RECORDING, PERMISSION_RESTART,
 };
-use crate::cursor_state::{
-    CursorCacheMissReason, CursorIdResult, CursorState, CursorStreamUpdate,
-};
+use crate::crypto::{self, KeyPair};
+use crate::crypto_channel::CryptoChannel;
+use crate::cursor_state::{CursorCacheMissReason, CursorIdResult, CursorState, CursorStreamUpdate};
 use crate::net;
 use crate::protocol::message_proto::{
     AudioFormat, AudioFrame, CaptureDisplays, Clipboard, ClipboardFormat, ControlKey, DisplayInfo,
@@ -299,7 +297,11 @@ impl<'a> RendezvousCredentials<'a> {
     fn new(access_key: &'a str, shared_access_key: bool) -> Self {
         Self {
             access_key,
-            server_public_key: if shared_access_key { None } else { Some(access_key) },
+            server_public_key: if shared_access_key {
+                None
+            } else {
+                Some(access_key)
+            },
         }
     }
 }
@@ -314,6 +316,7 @@ pub struct RustDeskConnector {
     progress_callback: Option<(ConnectProgressCallback, usize)>,
     /// streaming 消息统计 — 诊断对端停止发送前的行为
     pub stream_stats: String,
+    connect_epoch: u64,
 }
 
 struct PendingFileUpload {
@@ -358,6 +361,7 @@ impl RustDeskConnector {
             session: Session::new_with_connection_id(connection_id, connect_epoch),
             progress_callback: None,
             stream_stats: String::new(),
+            connect_epoch,
         }
     }
 
@@ -387,7 +391,11 @@ impl RustDeskConnector {
         }
         if let Some((callback, user_data)) = self.progress_callback {
             let c_message = CString::new(message).unwrap_or_else(|_| CString::new("").unwrap());
-            callback(stage, c_message.as_ptr(), user_data as *mut std::ffi::c_void);
+            callback(
+                stage,
+                c_message.as_ptr(),
+                user_data as *mut std::ffi::c_void,
+            );
         }
     }
 
@@ -422,15 +430,20 @@ impl RustDeskConnector {
         shared_access_key: bool,
     ) -> io::Result<()> {
         let credentials = RendezvousCredentials::new(server_key, shared_access_key);
-        let rendezvous_secure = !shared_access_key && !server_key.trim().is_empty() &&
-            !api_token.trim().is_empty();
+        let rendezvous_secure =
+            !shared_access_key && !server_key.trim().is_empty() && !api_token.trim().is_empty();
         // === Phase 1: Rendezvous 握手 ===
         self.set_connect_state(ConnState::RendezvousConnecting);
-        let mut rd = RendezvousClient::new();
+        let mut rd = RendezvousClient::new_with_connect_epoch(self.connect_epoch);
         // 客户端连接远端 ID 时不要 RegisterPeer；RegisterPeer 是被控端注册自己的 ID。
         // Server Pro 的控制端会话 token 必须进入 PunchHoleRequest/RequestRelay。
         // 只有同时拥有真实公钥和 token 时才启用 upstream 的 rendezvous secure_tcp。
-        rd.connect(rendezvous_host, rendezvous_port, server_key, rendezvous_secure)?;
+        rd.connect(
+            rendezvous_host,
+            rendezvous_port,
+            server_key,
+            rendezvous_secure,
+        )?;
 
         self.set_connect_state(ConnState::RequestingRelay);
         let punch = rd.request_force_relay(
@@ -451,9 +464,7 @@ impl RustDeskConnector {
 
         let mut peer_stream = if let Some(relay_uuid) = punch.relay_uuid {
             self.set_connect_state(ConnState::ConnectingToPeer);
-            eprintln!(
-                "[RustDesk-FFI] force-relay ticket accepted relay_endpoint=present"
-            );
+            eprintln!("[RustDesk-FFI] force-relay ticket accepted relay_endpoint=present");
             rd.create_relay(
                 peer_id,
                 &relay_uuid,
@@ -464,8 +475,13 @@ impl RustDeskConnector {
             )?
         } else if !punch.relay_server.trim().is_empty() {
             self.set_connect_state(ConnState::RequestingRelay);
-            let mut relay_rd = RendezvousClient::new();
-            relay_rd.connect(rendezvous_host, rendezvous_port, server_key, rendezvous_secure)?;
+            let mut relay_rd = RendezvousClient::new_with_connect_epoch(self.connect_epoch);
+            relay_rd.connect(
+                rendezvous_host,
+                rendezvous_port,
+                server_key,
+                rendezvous_secure,
+            )?;
             let relay_uuid = relay_rd.request_relay_uuid(
                 peer_id,
                 &punch.relay_server,
@@ -473,9 +489,7 @@ impl RustDeskConnector {
                 api_token,
             )?;
             self.set_connect_state(ConnState::ConnectingToPeer);
-            eprintln!(
-                "[RustDesk-FFI] force-relay request approved relay_endpoint=present"
-            );
+            eprintln!("[RustDesk-FFI] force-relay request approved relay_endpoint=present");
             relay_rd.create_relay(
                 peer_id,
                 &relay_uuid,
@@ -488,9 +502,7 @@ impl RustDeskConnector {
             // OSS hbbs answered a direct peer address and no relay endpoint.
             // Connect it directly instead of failing the whole pipeline.
             self.set_connect_state(ConnState::ConnectingToPeer);
-            eprintln!(
-                "[RustDesk-FFI] punch response direct peer endpoint present"
-            );
+            eprintln!("[RustDesk-FFI] punch response direct peer endpoint present");
             rd.connect_to_peer(peer_addr)?
         } else {
             return Err(io::Error::new(
@@ -569,11 +581,13 @@ impl RustDeskConnector {
             "[RustDesk-FFI] direct connect endpoint=provided port={}",
             peer_port
         );
-        let stream = net::connect_tcp_host(
-            peer_host,
+        let canonical_peer_host = net::canonicalize_tcp_host(peer_host, "direct")?;
+        let stream = net::connect_tcp_host_cancellable(
+            &canonical_peer_host,
             peer_port,
             "direct",
             Duration::from_secs(10),
+            self.connect_epoch,
         )?;
         stream.set_read_timeout(Some(Duration::from_secs(30)))?;
         stream.set_write_timeout(Some(Duration::from_secs(10)))?;
@@ -592,7 +606,7 @@ impl RustDeskConnector {
         // 被控端判定为错误的 direct login username。
         self.session.login_encrypted(
             crypto,
-            peer_host,
+            &canonical_peer_host,
             password,
             preferred_codec,
             image_quality,
@@ -623,11 +637,14 @@ impl RustDeskConnector {
             peer_port
         ));
         self.set_connect_state(ConnState::ConnectingToPeer);
-        let peer_stream = net::connect_tcp_host(
-            peer_host,
+        let canonical_peer_host =
+            net::canonicalize_tcp_host(peer_host, "direct file transfer")?;
+        let peer_stream = net::connect_tcp_host_cancellable(
+            &canonical_peer_host,
             peer_port,
             "direct file transfer",
             Duration::from_secs(10),
+            self.connect_epoch,
         )?;
         peer_stream.set_read_timeout(Some(Duration::from_secs(30)))?;
         peer_stream.set_write_timeout(Some(Duration::from_secs(10)))?;
@@ -644,7 +661,13 @@ impl RustDeskConnector {
         // RustDesk's direct listener expects its address as LoginRequest.username,
         // matching the main direct desktop connection.
         self.session
-            .login_file_transfer_encrypted(crypto, peer_host, password, remote_dir, false)?;
+            .login_file_transfer_encrypted(
+                crypto,
+                &canonical_peer_host,
+                password,
+                remote_dir,
+                false,
+            )?;
         crate::set_last_error("file-transfer direct peer login complete".to_string());
         self.set_connect_state(ConnState::Connected);
         eprintln!("[RustDesk-FFI] direct file-transfer session established");
@@ -666,15 +689,20 @@ impl RustDeskConnector {
         rendezvous_conn_type: RendezvousConnType,
     ) -> io::Result<()> {
         let credentials = RendezvousCredentials::new(server_key, shared_access_key);
-        let rendezvous_secure = !shared_access_key && !server_key.trim().is_empty() &&
-            !api_token.trim().is_empty();
+        let rendezvous_secure =
+            !shared_access_key && !server_key.trim().is_empty() && !api_token.trim().is_empty();
         crate::set_last_error(format!(
             "file-transfer rendezvous connecting port={} strategy=force_relay conn_type={:?}",
             rendezvous_port, rendezvous_conn_type
         ));
         self.set_connect_state(ConnState::RendezvousConnecting);
-        let mut rd = RendezvousClient::new();
-        rd.connect(rendezvous_host, rendezvous_port, server_key, rendezvous_secure)?;
+        let mut rd = RendezvousClient::new_with_connect_epoch(self.connect_epoch);
+        rd.connect(
+            rendezvous_host,
+            rendezvous_port,
+            server_key,
+            rendezvous_secure,
+        )?;
 
         crate::set_last_error("file-transfer requesting force relay".to_string());
         self.set_connect_state(ConnState::RequestingRelay);
@@ -686,8 +714,16 @@ impl RustDeskConnector {
         )?;
         crate::set_last_error(format!(
             "file-transfer force-relay response relay_endpoint={} relay_ticket={} signed_pk_len={}",
-            if punch.relay_server.is_empty() { "absent" } else { "present" },
-            if punch.relay_uuid.is_some() { "present" } else { "absent" },
+            if punch.relay_server.is_empty() {
+                "absent"
+            } else {
+                "present"
+            },
+            if punch.relay_uuid.is_some() {
+                "present"
+            } else {
+                "absent"
+            },
             punch.signed_pk.len()
         ));
         eprintln!(
@@ -710,9 +746,14 @@ impl RustDeskConnector {
             )?
         } else if !punch.relay_server.trim().is_empty() {
             self.set_connect_state(ConnState::RequestingRelay);
-            let mut relay_rd = RendezvousClient::new();
+            let mut relay_rd = RendezvousClient::new_with_connect_epoch(self.connect_epoch);
             crate::set_last_error("file-transfer requesting relay ticket".to_string());
-            relay_rd.connect(rendezvous_host, rendezvous_port, server_key, rendezvous_secure)?;
+            relay_rd.connect(
+                rendezvous_host,
+                rendezvous_port,
+                server_key,
+                rendezvous_secure,
+            )?;
             let relay_uuid = relay_rd.request_relay_uuid(
                 peer_id,
                 &punch.relay_server,
@@ -731,9 +772,7 @@ impl RustDeskConnector {
             )?
         } else if let Some(peer_addr) = punch.peer_addr {
             self.set_connect_state(ConnState::ConnectingToPeer);
-            eprintln!(
-                "[RustDesk-FFI] file-transfer punch response direct peer endpoint present"
-            );
+            eprintln!("[RustDesk-FFI] file-transfer punch response direct peer endpoint present");
             rd.connect_to_peer(peer_addr)?
         } else {
             return Err(io::Error::new(
@@ -760,8 +799,13 @@ impl RustDeskConnector {
         crate::set_last_error("file-transfer peer login".to_string());
         self.set_connect_state(ConnState::LoggingIn);
         let crypto = self.crypto_channel.as_mut().unwrap();
-        self.session
-            .login_file_transfer_encrypted(crypto, peer_id, password, remote_dir, request_approval)?;
+        self.session.login_file_transfer_encrypted(
+            crypto,
+            peer_id,
+            password,
+            remote_dir,
+            request_approval,
+        )?;
         crate::set_last_error("file-transfer peer login complete".to_string());
         self.set_connect_state(ConnState::Connected);
         Ok(())
@@ -896,7 +940,8 @@ impl RustDeskConnector {
         signed_id_pk: &[u8],
         server_public_key: Option<&str>,
     ) -> io::Result<Option<[u8; 32]>> {
-        let Some(sign_pk) = self.decode_signed_peer_pk(peer_id, signed_id_pk, server_public_key)? else {
+        let Some(sign_pk) = self.decode_signed_peer_pk(peer_id, signed_id_pk, server_public_key)?
+        else {
             self.send_empty_message(stream)?;
             return Ok(None);
         };
@@ -1081,7 +1126,10 @@ impl RustDeskConnector {
                 crate::ControlMsg::VideoPressure { level } => {
                     *requested_pressure_level = level.min(3);
                 }
-                crate::ControlMsg::SetImageQuality { quality, generation } => {
+                crate::ControlMsg::SetImageQuality {
+                    quality,
+                    generation,
+                } => {
                     let send_result = Session::send_image_quality(crypto, quality);
                     if let Ok(mut state) = quality_state.lock() {
                         if send_result.is_ok() {
@@ -1113,10 +1161,8 @@ impl RustDeskConnector {
                     }
                 }
                 crate::ControlMsg::SendFile { remote_path, data } => {
-                    let upload_path = Self::normalize_remote_upload_path(
-                        &remote_path,
-                        remote_upload_dir,
-                    );
+                    let upload_path =
+                        Self::normalize_remote_upload_path(&remote_path, remote_upload_dir);
                     let upload_path_id = crate::safe_diagnostics::sensitive_id(&upload_path);
                     let original_path_id = crate::safe_diagnostics::sensitive_id(&remote_path);
                     crate::set_last_error(format!(
@@ -1240,9 +1286,7 @@ impl RustDeskConnector {
         let remote_keyboard_transport = self
             .session
             .peer_info()
-            .map(|info| {
-                Self::keyboard_transport_for_peer(info.get_platform(), info.get_version())
-            })
+            .map(|info| Self::keyboard_transport_for_peer(info.get_platform(), info.get_version()))
             .unwrap_or(RemoteKeyboardTransport::Legacy);
         eprintln!(
             "[RustDesk-FFI] keyboard transport={:?}",
@@ -1547,10 +1591,8 @@ impl RustDeskConnector {
                                 audio_enabled,
                                 Some(target_fps),
                             )?;
-                            if pressure_change_requires_refresh(
-                                preferred_codec,
-                                active_video_codec,
-                            ) {
+                            if pressure_change_requires_refresh(preferred_codec, active_video_codec)
+                            {
                                 Session::send_refresh_video(crypto)?;
                             }
                             stream_options_fps = target_fps;
@@ -1696,11 +1738,7 @@ impl RustDeskConnector {
                         );
                     }
                     if let Some(Misc_oneof_union::follow_current_display(display)) = misc.union {
-                        Self::apply_follow_current_display(
-                            &display_state,
-                            display,
-                            &stream_stats,
-                        );
+                        Self::apply_follow_current_display(&display_state, display, &stream_stats);
                         on_display_state();
                     }
                 }
@@ -1759,11 +1797,7 @@ impl RustDeskConnector {
                     } else {
                         eprintln!(
                             "[RustDesk-FFI] cursor data rejected id={} size={}x{} hot={},{}",
-                            cursor_id,
-                            cursor_width,
-                            cursor_height,
-                            cursor_hot_x,
-                            cursor_hot_y,
+                            cursor_id, cursor_width, cursor_height, cursor_hot_x, cursor_hot_y,
                         );
                     }
                 }
@@ -1977,10 +2011,9 @@ impl RustDeskConnector {
                         }
                     }
                 }
-                let last_video_age_ms =
-                    last_video_at.map(|at| now.duration_since(at).as_millis());
-                let last_refresh_age_ms = last_video_starvation_refresh_at
-                    .map(|at| now.duration_since(at).as_millis());
+                let last_video_age_ms = last_video_at.map(|at| now.duration_since(at).as_millis());
+                let last_refresh_age_ms =
+                    last_video_starvation_refresh_at.map(|at| now.duration_since(at).as_millis());
                 if should_refresh_for_video_starvation(
                     video_count,
                     window_video,
@@ -2172,15 +2205,13 @@ impl RustDeskConnector {
             crate::ControlMsg::SetImageQuality { quality, .. } => {
                 Session::send_image_quality(crypto, quality)
             }
-            crate::ControlMsg::KeyEvent { scancode, pressed } => {
-                Self::send_key_event_encrypted(
-                    crypto,
-                    scancode,
-                    pressed,
-                    physical_modifiers,
-                    remote_keyboard_transport,
-                )
-            }
+            crate::ControlMsg::KeyEvent { scancode, pressed } => Self::send_key_event_encrypted(
+                crypto,
+                scancode,
+                pressed,
+                physical_modifiers,
+                remote_keyboard_transport,
+            ),
             crate::ControlMsg::MouseEvent {
                 x,
                 y,
@@ -2218,7 +2249,11 @@ impl RustDeskConnector {
                 Self::send_mouse_event_encrypted(crypto, x, y, 3, physical_modifiers)
             }
             crate::ControlMsg::Text { text } => Self::send_text_event_encrypted(crypto, &text),
-            crate::ControlMsg::ChangeDisplayResolution { display, width, height } => {
+            crate::ControlMsg::ChangeDisplayResolution {
+                display,
+                width,
+                height,
+            } => {
                 let message = Self::build_display_resolution_message(display, width, height);
                 Self::send_message_encrypted(crypto, &message)
             }
@@ -2428,10 +2463,8 @@ impl RustDeskConnector {
             Self::send_message_encrypted(crypto, &msg)?;
         }
 
-        let remote_dir_id =
-            crate::safe_diagnostics::sensitive_id(&upload.remote_dir);
-        let file_id =
-            crate::safe_diagnostics::sensitive_id(&upload.file_name);
+        let remote_dir_id = crate::safe_diagnostics::sensitive_id(&upload.remote_dir);
+        let file_id = crate::safe_diagnostics::sensitive_id(&upload.file_name);
         eprintln!(
             "[RustDesk-FFI] file upload data: reason={} dir_id={} file_id={} size={} chunks_sent={} chunks_total={} start_blk={} id={}",
             reason,
@@ -2596,10 +2629,8 @@ impl RustDeskConnector {
             {
                 let upload = pending_uploads.remove(pos);
                 if confirm.get_skip() {
-                    let dir_id = crate::safe_diagnostics::sensitive_id(
-                        &upload.remote_dir);
-                    let file_id = crate::safe_diagnostics::sensitive_id(
-                        &upload.file_name);
+                    let dir_id = crate::safe_diagnostics::sensitive_id(&upload.remote_dir);
+                    let file_id = crate::safe_diagnostics::sensitive_id(&upload.file_name);
                     eprintln!(
                         "[RustDesk-FFI] file upload skipped by peer: dir_id={} file_id={} id={}",
                         dir_id, file_id, upload.id
@@ -2647,8 +2678,7 @@ impl RustDeskConnector {
     ) -> io::Result<()> {
         match &resp.union {
             Some(FileResponse_oneof_union::error(err)) => {
-                let error_id =
-                    crate::safe_diagnostics::sensitive_id(err.get_error());
+                let error_id = crate::safe_diagnostics::sensitive_id(err.get_error());
                 crate::set_last_error(format!(
                     "file transfer error id={} file_num={} error_id={}",
                     err.get_id(),
@@ -2828,34 +2858,103 @@ impl RustDeskConnector {
     fn harmony_keycode_to_macos_keycode(scancode: u32) -> Option<u32> {
         Some(match scancode {
             // Number row.
-            2000 => 0x1D, 2001 => 0x12, 2002 => 0x13, 2003 => 0x14, 2004 => 0x15,
-            2005 => 0x17, 2006 => 0x16, 2007 => 0x1A, 2008 => 0x1C, 2009 => 0x19,
+            2000 => 0x1D,
+            2001 => 0x12,
+            2002 => 0x13,
+            2003 => 0x14,
+            2004 => 0x15,
+            2005 => 0x17,
+            2006 => 0x16,
+            2007 => 0x1A,
+            2008 => 0x1C,
+            2009 => 0x19,
             // Letters A-Z.
-            2017 => 0x00, 2018 => 0x0B, 2019 => 0x08, 2020 => 0x02, 2021 => 0x0E,
-            2022 => 0x03, 2023 => 0x05, 2024 => 0x04, 2025 => 0x22, 2026 => 0x26,
-            2027 => 0x28, 2028 => 0x25, 2029 => 0x2E, 2030 => 0x2D, 2031 => 0x1F,
-            2032 => 0x23, 2033 => 0x0C, 2034 => 0x0F, 2035 => 0x01, 2036 => 0x11,
-            2037 => 0x20, 2038 => 0x09, 2039 => 0x0D, 2040 => 0x07, 2041 => 0x10,
+            2017 => 0x00,
+            2018 => 0x0B,
+            2019 => 0x08,
+            2020 => 0x02,
+            2021 => 0x0E,
+            2022 => 0x03,
+            2023 => 0x05,
+            2024 => 0x04,
+            2025 => 0x22,
+            2026 => 0x26,
+            2027 => 0x28,
+            2028 => 0x25,
+            2029 => 0x2E,
+            2030 => 0x2D,
+            2031 => 0x1F,
+            2032 => 0x23,
+            2033 => 0x0C,
+            2034 => 0x0F,
+            2035 => 0x01,
+            2036 => 0x11,
+            2037 => 0x20,
+            2038 => 0x09,
+            2039 => 0x0D,
+            2040 => 0x07,
+            2041 => 0x10,
             2042 => 0x06,
             // Punctuation and editing keys.
-            2043 => 0x2B, 2044 => 0x2F, 2056 => 0x32, 2057 => 0x1B, 2058 => 0x18,
-            2059 => 0x21, 2060 => 0x1E, 2061 => 0x2A, 2062 => 0x29, 2063 => 0x27,
-            2064 => 0x2C, 2049 => 0x30, 2050 => 0x31, 2054 => 0x24,
-            42 | 2055 => 0x33, 2070 => 0x35, 2071 => 0x75,
+            2043 => 0x2B,
+            2044 => 0x2F,
+            2056 => 0x32,
+            2057 => 0x1B,
+            2058 => 0x18,
+            2059 => 0x21,
+            2060 => 0x1E,
+            2061 => 0x2A,
+            2062 => 0x29,
+            2063 => 0x27,
+            2064 => 0x2C,
+            2049 => 0x30,
+            2050 => 0x31,
+            2054 => 0x24,
+            42 | 2055 => 0x33,
+            2070 => 0x35,
+            2071 => 0x75,
             // Modifiers. ArkTS swaps Ctrl/Meta for the selected macOS layout before FFI.
-            2045 => 0x3A, 2046 => 0x3D, 2047 => 0x38, 2048 => 0x3C,
-            2072 => 0x3B, 2073 => 0x3E, 2074 => 0x39, 2076 => 0x37, 2077 => 0x36,
+            2045 => 0x3A,
+            2046 => 0x3D,
+            2047 => 0x38,
+            2048 => 0x3C,
+            2072 => 0x3B,
+            2073 => 0x3E,
+            2074 => 0x39,
+            2076 => 0x37,
+            2077 => 0x36,
             // Navigation and function keys.
-            2012 => 0x7E, 2013 => 0x7D, 2014 => 0x7B, 2015 => 0x7C,
-            2068 => 0x74, 2069 => 0x79, 2081 => 0x73, 2082 => 0x77,
-            2090 => 0x7A, 2091 => 0x78, 2092 => 0x63, 2093 => 0x76,
-            2094 => 0x60, 2095 => 0x61, 2096 => 0x62, 2097 => 0x64,
-            2098 => 0x65, 2099 => 0x6D, 2100 => 0x67, 2101 => 0x6F,
+            2012 => 0x7E,
+            2013 => 0x7D,
+            2014 => 0x7B,
+            2015 => 0x7C,
+            2068 => 0x74,
+            2069 => 0x79,
+            2081 => 0x73,
+            2082 => 0x77,
+            2090 => 0x7A,
+            2091 => 0x78,
+            2092 => 0x63,
+            2093 => 0x76,
+            2094 => 0x60,
+            2095 => 0x61,
+            2096 => 0x62,
+            2097 => 0x64,
+            2098 => 0x65,
+            2099 => 0x6D,
+            2100 => 0x67,
+            2101 => 0x6F,
             // Carbon defines physical virtual-key codes through F20. macOS
             // has no stable CGKeyCode constants for F21-F24, so the UI only
             // offers those four keys for Windows targets.
-            2816 => 0x69, 2817 => 0x6B, 2818 => 0x71, 2819 => 0x6A,
-            2820 => 0x40, 2821 => 0x4F, 2822 => 0x50, 2823 => 0x5A,
+            2816 => 0x69,
+            2817 => 0x6B,
+            2818 => 0x71,
+            2819 => 0x6A,
+            2820 => 0x40,
+            2821 => 0x4F,
+            2822 => 0x50,
+            2823 => 0x5A,
             _ => return None,
         })
     }
@@ -2864,13 +2963,14 @@ impl RustDeskConnector {
     /// extended keys. This is position based; shifted characters reuse the
     /// underlying physical key and let the remote Windows layout/IME decide text.
     fn harmony_keycode_to_windows_scancode(scancode: u32) -> Option<u32> {
-        const NUMBER_ROW: [u32; 10] = [0x0B, 0x02, 0x03, 0x04, 0x05,
-            0x06, 0x07, 0x08, 0x09, 0x0A];
-        const LETTERS_A_TO_Z: [u32; 26] = [0x1E, 0x30, 0x2E, 0x20, 0x12, 0x21,
-            0x22, 0x23, 0x17, 0x24, 0x25, 0x26, 0x32, 0x31, 0x18, 0x19,
-            0x10, 0x13, 0x1F, 0x14, 0x16, 0x2F, 0x11, 0x2D, 0x15, 0x2C];
-        const F1_TO_F12: [u32; 12] = [0x3B, 0x3C, 0x3D, 0x3E, 0x3F, 0x40,
-            0x41, 0x42, 0x43, 0x44, 0x57, 0x58];
+        const NUMBER_ROW: [u32; 10] = [0x0B, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A];
+        const LETTERS_A_TO_Z: [u32; 26] = [
+            0x1E, 0x30, 0x2E, 0x20, 0x12, 0x21, 0x22, 0x23, 0x17, 0x24, 0x25, 0x26, 0x32, 0x31,
+            0x18, 0x19, 0x10, 0x13, 0x1F, 0x14, 0x16, 0x2F, 0x11, 0x2D, 0x15, 0x2C,
+        ];
+        const F1_TO_F12: [u32; 12] = [
+            0x3B, 0x3C, 0x3D, 0x3E, 0x3F, 0x40, 0x41, 0x42, 0x43, 0x44, 0x57, 0x58,
+        ];
 
         if (2000..=2009).contains(&scancode) {
             return Some(NUMBER_ROW[(scancode - 2000) as usize]);
@@ -2891,67 +2991,67 @@ impl RustDeskConnector {
             48..=57 => NUMBER_ROW[(scancode - 48) as usize],
             65..=90 => LETTERS_A_TO_Z[(scancode - 65) as usize],
 
-            42 | 2055 => 0x0E,       // Backspace
-            2012 => 0xE048,          // Up
-            2013 => 0xE050,          // Down
-            2014 => 0xE04B,          // Left
-            2015 => 0xE04D,          // Right
-            2045 => 0x38,            // Left Alt
-            2046 => 0xE038,          // Right Alt / AltGr
-            2047 => 0x2A,            // Left Shift
-            2048 => 0x36,            // Right Shift
-            2049 => 0x0F,            // Tab
-            2050 => 0x39,            // Space
-            2054 => 0x1C,            // Enter
-            2067 => 0xE05D,          // Apps/Menu
-            2068 => 0xE049,          // Page Up
-            2069 => 0xE051,          // Page Down
-            2070 => 0x01,            // Escape
-            2071 => 0xE053,          // Delete
-            2072 => 0x1D,            // Left Ctrl
-            2073 => 0xE01D,          // Right Ctrl
-            2074 => 0x3A,            // Caps Lock
-            2075 => 0x46,            // Scroll Lock
-            2076 => 0xE05B,          // Left Win
-            2077 => 0xE05C,          // Right Win
-            2079 => 0xE037,          // Print Screen / SysRq
+            42 | 2055 => 0x0E, // Backspace
+            2012 => 0xE048,    // Up
+            2013 => 0xE050,    // Down
+            2014 => 0xE04B,    // Left
+            2015 => 0xE04D,    // Right
+            2045 => 0x38,      // Left Alt
+            2046 => 0xE038,    // Right Alt / AltGr
+            2047 => 0x2A,      // Left Shift
+            2048 => 0x36,      // Right Shift
+            2049 => 0x0F,      // Tab
+            2050 => 0x39,      // Space
+            2054 => 0x1C,      // Enter
+            2067 => 0xE05D,    // Apps/Menu
+            2068 => 0xE049,    // Page Up
+            2069 => 0xE051,    // Page Down
+            2070 => 0x01,      // Escape
+            2071 => 0xE053,    // Delete
+            2072 => 0x1D,      // Left Ctrl
+            2073 => 0xE01D,    // Right Ctrl
+            2074 => 0x3A,      // Caps Lock
+            2075 => 0x46,      // Scroll Lock
+            2076 => 0xE05B,    // Left Win
+            2077 => 0xE05C,    // Right Win
+            2079 => 0xE037,    // Print Screen / SysRq
             // Pause/Break is not a normal scan-code down/up sequence on Windows.
             // It intentionally falls back to RustDesk's ControlKey::Pause path.
-            2081 => 0xE047,          // Home
-            2082 => 0xE04F,          // End
-            2083 => 0xE052,          // Insert
-            2102 => 0x45,            // Num Lock
-            2103 => 0x52,            // Numpad 0
-            2104 => 0x4F,            // Numpad 1
-            2105 => 0x50,            // Numpad 2
-            2106 => 0x51,            // Numpad 3
-            2107 => 0x4B,            // Numpad 4
-            2108 => 0x4C,            // Numpad 5
-            2109 => 0x4D,            // Numpad 6
-            2110 => 0x47,            // Numpad 7
-            2111 => 0x48,            // Numpad 8
-            2112 => 0x49,            // Numpad 9
-            2113 => 0xE035,          // Numpad divide
-            2114 => 0x37,            // Numpad multiply
-            2115 => 0x4A,            // Numpad subtract
-            2116 => 0x4E,            // Numpad add
-            2117 => 0x53,            // Numpad decimal
-            2119 => 0xE01C,          // Numpad enter
-            2120 => 0x0D,            // Numpad equals
+            2081 => 0xE047, // Home
+            2082 => 0xE04F, // End
+            2083 => 0xE052, // Insert
+            2102 => 0x45,   // Num Lock
+            2103 => 0x52,   // Numpad 0
+            2104 => 0x4F,   // Numpad 1
+            2105 => 0x50,   // Numpad 2
+            2106 => 0x51,   // Numpad 3
+            2107 => 0x4B,   // Numpad 4
+            2108 => 0x4C,   // Numpad 5
+            2109 => 0x4D,   // Numpad 6
+            2110 => 0x47,   // Numpad 7
+            2111 => 0x48,   // Numpad 8
+            2112 => 0x49,   // Numpad 9
+            2113 => 0xE035, // Numpad divide
+            2114 => 0x37,   // Numpad multiply
+            2115 => 0x4A,   // Numpad subtract
+            2116 => 0x4E,   // Numpad add
+            2117 => 0x53,   // Numpad decimal
+            2119 => 0xE01C, // Numpad enter
+            2120 => 0x0D,   // Numpad equals
 
-            2043 | 188 => 0x33,      // Comma
-            2044 | 190 => 0x34,      // Period
-            2056 | 192 => 0x29,      // Backtick
-            2057 | 189 => 0x0C,      // Minus
-            2058 | 187 => 0x0D,      // Equals
-            2059 | 219 => 0x1A,      // Left bracket
-            2060 | 221 => 0x1B,      // Right bracket
-            2061 | 220 => 0x2B,      // Backslash
-            2062 | 186 => 0x27,      // Semicolon
-            2063 | 222 => 0x28,      // Apostrophe
-            2064 | 191 => 0x35,      // Slash
-            2065 => 0x03,            // @ shares the physical 2 key
-            2066 => 0x0D,            // + shares the physical equals key
+            2043 | 188 => 0x33, // Comma
+            2044 | 190 => 0x34, // Period
+            2056 | 192 => 0x29, // Backtick
+            2057 | 189 => 0x0C, // Minus
+            2058 | 187 => 0x0D, // Equals
+            2059 | 219 => 0x1A, // Left bracket
+            2060 | 221 => 0x1B, // Right bracket
+            2061 | 220 => 0x2B, // Backslash
+            2062 | 186 => 0x27, // Semicolon
+            2063 | 222 => 0x28, // Apostrophe
+            2064 | 191 => 0x35, // Slash
+            2065 => 0x03,       // @ shares the physical 2 key
+            2066 => 0x0D,       // + shares the physical equals key
             _ => return None,
         })
     }
@@ -2994,19 +3094,15 @@ impl RustDeskConnector {
         scancode: u32,
         remote_keyboard_transport: RemoteKeyboardTransport,
     ) -> bool {
-        scancode == Self::MACOS_CAPS_LOCK_RAW_SCANCODE ||
-            (remote_keyboard_transport == RemoteKeyboardTransport::MacosMap && scancode == 2074)
+        scancode == Self::MACOS_CAPS_LOCK_RAW_SCANCODE
+            || (remote_keyboard_transport == RemoteKeyboardTransport::MacosMap && scancode == 2074)
     }
 
     pub(crate) fn next_control_batch(controls: &ControlInbox) -> Vec<crate::ControlMsg> {
         controls.take_batch(CONTROL_BATCH_LIMIT)
     }
 
-    fn log_key_message(
-        scancode: u32,
-        pressed: bool,
-        physical_modifiers: &PhysicalModifierState,
-    ) {
+    fn log_key_message(scancode: u32, pressed: bool, physical_modifiers: &PhysicalModifierState) {
         let modifiers = format!("{:?}", physical_modifiers.active_groups());
         let message = if let Some(control_key) = Self::harmony_keycode_to_control_key(scancode) {
             format!(
@@ -3253,12 +3349,7 @@ impl RustDeskConnector {
         let event_type = if pressed { 1 } else { 2 };
         let mut messages = Vec::with_capacity(if pressed { 2 } else { 1 });
         if pressed {
-            messages.push(Self::build_mouse_message(
-                x,
-                y,
-                0,
-                physical_modifiers,
-            ));
+            messages.push(Self::build_mouse_message(x, y, 0, physical_modifiers));
         }
         messages.push(Self::build_mouse_message(
             0,
@@ -3431,7 +3522,11 @@ impl RustDeskConnector {
             .filter_map(|resolution| {
                 let width = resolution.get_width();
                 let height = resolution.get_height();
-                if width > 0 && height > 0 { Some((width, height)) } else { None }
+                if width > 0 && height > 0 {
+                    Some((width, height))
+                } else {
+                    None
+                }
             })
             .take(crate::RUSTDESK_MAX_DISPLAY_RESOLUTIONS)
             .collect()
@@ -3460,10 +3555,7 @@ impl RustDeskConnector {
         }
     }
 
-    fn populate_display_state(
-        state: &mut crate::RustDeskDisplayState,
-        info: &PeerInfo,
-    ) -> bool {
+    fn populate_display_state(state: &mut crate::RustDeskDisplayState, info: &PeerInfo) -> bool {
         let previous_displays = state.displays.clone();
         let previous_geometry = (
             state.current_display,
@@ -3782,19 +3874,18 @@ mod tests {
     use super::{
         advance_applied_pressure_level, changed_pressure_target_fps,
         pressure_change_requires_refresh, pressure_target_fps, resolution_aware_fps_ceiling,
-        should_refresh_for_video_starvation, ControlKey, KeyEvent_oneof_union,
-        Message_oneof_union, PhysicalModifierState, RemoteKeyboardTransport,
+        should_refresh_for_video_starvation, uses_bounded_vp9_pressure_targets, ControlKey,
+        KeyEvent_oneof_union, Message_oneof_union, PhysicalModifierState, RemoteKeyboardTransport,
         RendezvousCredentials, RustDeskConnector, VP9_PRESSURE_RECOVERY_HOLD_WINDOWS,
-        uses_bounded_vp9_pressure_targets,
     };
+    use crate::protocol::message_proto::KeyboardMode;
     use crate::protocol::message_proto::{
         DisplayInfo, Hash, LoginResponse, Message, Misc_oneof_union, PeerInfo,
         PointerDeviceEvent_oneof_union, Resolution, SupportedResolutions, SwitchDisplay,
         TouchEvent_oneof_union,
     };
-    use crate::{RustDeskDisplayInfoState, RustDeskDisplayState};
-    use crate::protocol::message_proto::KeyboardMode;
     use crate::protocol::wire;
+    use crate::{RustDeskDisplayInfoState, RustDeskDisplayState};
     use protobuf::Message as ProtoMessage;
     use std::net::TcpListener;
     use std::sync::{Arc, Mutex};
@@ -3840,7 +3931,9 @@ mod tests {
         match scale_message.union {
             Some(Message_oneof_union::pointer_device_event(pointer)) => match pointer.union {
                 Some(PointerDeviceEvent_oneof_union::touch_event(touch)) => match touch.union {
-                    Some(TouchEvent_oneof_union::scale_update(update)) => assert_eq!(update.get_scale(), 1250),
+                    Some(TouchEvent_oneof_union::scale_update(update)) => {
+                        assert_eq!(update.get_scale(), 1250)
+                    }
                     _ => panic!("touch scale must use TouchEvent.scale_update"),
                 },
                 _ => panic!("touch scale must use PointerDeviceEvent.touch_event"),
@@ -3854,18 +3947,20 @@ mod tests {
         for (message, expected) in [(pan_start, 0), (pan_update, 1), (pan_end, 2)] {
             match message.union {
                 Some(Message_oneof_union::pointer_device_event(pointer)) => match pointer.union {
-                    Some(PointerDeviceEvent_oneof_union::touch_event(touch)) => match (expected, touch.union) {
-                        (0, Some(TouchEvent_oneof_union::pan_start(pan))) => {
-                            assert_eq!((pan.get_x(), pan.get_y()), (100, 200));
+                    Some(PointerDeviceEvent_oneof_union::touch_event(touch)) => {
+                        match (expected, touch.union) {
+                            (0, Some(TouchEvent_oneof_union::pan_start(pan))) => {
+                                assert_eq!((pan.get_x(), pan.get_y()), (100, 200));
+                            }
+                            (1, Some(TouchEvent_oneof_union::pan_update(pan))) => {
+                                assert_eq!((pan.get_x(), pan.get_y()), (-10, 12));
+                            }
+                            (2, Some(TouchEvent_oneof_union::pan_end(pan))) => {
+                                assert_eq!((pan.get_x(), pan.get_y()), (90, 212));
+                            }
+                            _ => panic!("touch pan phase must use its matching TouchEvent variant"),
                         }
-                        (1, Some(TouchEvent_oneof_union::pan_update(pan))) => {
-                            assert_eq!((pan.get_x(), pan.get_y()), (-10, 12));
-                        }
-                        (2, Some(TouchEvent_oneof_union::pan_end(pan))) => {
-                            assert_eq!((pan.get_x(), pan.get_y()), (90, 212));
-                        }
-                        _ => panic!("touch pan phase must use its matching TouchEvent variant"),
-                    },
+                    }
                     _ => panic!("touch pan must use PointerDeviceEvent.touch_event"),
                 },
                 _ => panic!("touch pan must use a pointer device event"),
@@ -3883,11 +3978,8 @@ mod tests {
             _ => panic!("display switch must use a Misc message"),
         }
 
-        let capture_message = RustDeskConnector::build_capture_displays_message(
-            vec![2],
-            vec![0],
-            vec![1, 2],
-        );
+        let capture_message =
+            RustDeskConnector::build_capture_displays_message(vec![2], vec![0], vec![1, 2]);
         match capture_message.union {
             Some(Message_oneof_union::misc(misc)) => match misc.union {
                 Some(Misc_oneof_union::capture_displays(capture)) => {
@@ -4022,7 +4114,10 @@ mod tests {
             ..RustDeskDisplayState::default()
         };
 
-        assert!(RustDeskConnector::populate_display_state(&mut state, &PeerInfo::new()));
+        assert!(RustDeskConnector::populate_display_state(
+            &mut state,
+            &PeerInfo::new()
+        ));
         assert_eq!(state.current_display, 0);
         assert_eq!((state.width, state.height), (0, 0));
         assert_eq!((state.original_width, state.original_height), (0, 0));
@@ -4098,8 +4193,14 @@ mod tests {
         RustDeskConnector::apply_switch_display_geometry(&display_state, &switch, &stream_stats);
 
         let state = display_state.lock().expect("display state lock");
-        assert_eq!((state.current_display, state.width, state.height), (1, 1920, 1200));
-        assert_eq!((state.displays[0].width, state.displays[0].height), (1920, 1080));
+        assert_eq!(
+            (state.current_display, state.width, state.height),
+            (1, 1920, 1200)
+        );
+        assert_eq!(
+            (state.displays[0].width, state.displays[0].height),
+            (1920, 1080)
+        );
         assert_eq!(state.displays[1].resolutions, vec![(1920, 1200)]);
         assert_eq!(state.displays[1].name, "Secondary");
     }
@@ -4253,12 +4354,7 @@ mod tests {
 
     #[test]
     fn video_starvation_refreshes_silent_stream_after_initial_frames() {
-        assert!(should_refresh_for_video_starvation(
-            2,
-            0,
-            Some(3_000),
-            None,
-        ));
+        assert!(should_refresh_for_video_starvation(2, 0, Some(3_000), None,));
     }
 
     #[test]
@@ -4283,12 +4379,7 @@ mod tests {
 
     #[test]
     fn video_starvation_waits_for_the_first_video_frame() {
-        assert!(!should_refresh_for_video_starvation(
-            0,
-            0,
-            None,
-            None,
-        ));
+        assert!(!should_refresh_for_video_starvation(0, 0, None, None,));
     }
 
     #[test]
@@ -4330,8 +4421,14 @@ mod tests {
         assert_eq!(changed_pressure_target_fps(2, 2, 30, 30, 3, true), Some(18));
         assert_eq!(changed_pressure_target_fps(2, 2, 30, 18, 3, true), None);
         assert_eq!(changed_pressure_target_fps(4, 4, 30, 30, 1, false), None);
-        assert_eq!(changed_pressure_target_fps(4, 4, 60, 60, 2, false), Some(30));
-        assert_eq!(changed_pressure_target_fps(4, 4, 60, 15, 0, false), Some(60));
+        assert_eq!(
+            changed_pressure_target_fps(4, 4, 60, 60, 2, false),
+            Some(30)
+        );
+        assert_eq!(
+            changed_pressure_target_fps(4, 4, 60, 15, 0, false),
+            Some(60)
+        );
     }
 
     #[test]
@@ -4396,7 +4493,10 @@ mod tests {
         match c_down.union {
             Some(Message_oneof_union::key_event(key)) => {
                 assert!(key.down);
-                assert!(key.modifiers.iter().any(|modifier| *modifier == ControlKey::Meta));
+                assert!(key
+                    .modifiers
+                    .iter()
+                    .any(|modifier| *modifier == ControlKey::Meta));
             }
             _ => panic!("command-c down must be a key event"),
         }
@@ -4404,7 +4504,10 @@ mod tests {
         match c_up.union {
             Some(Message_oneof_union::key_event(key)) => {
                 assert!(!key.down);
-                assert!(key.modifiers.iter().any(|modifier| *modifier == ControlKey::Meta));
+                assert!(key
+                    .modifiers
+                    .iter()
+                    .any(|modifier| *modifier == ControlKey::Meta));
             }
             _ => panic!("command-c up must be a key event"),
         }
@@ -4417,13 +4520,8 @@ mod tests {
         let mut modifiers = PhysicalModifierState::default();
         modifiers.update(2076, true);
 
-        let down = RustDeskConnector::build_mouse_button_messages(
-            2184,
-            1806,
-            0x01,
-            true,
-            &modifiers,
-        );
+        let down =
+            RustDeskConnector::build_mouse_button_messages(2184, 1806, 0x01, true, &modifiers);
         assert_eq!(down.len(), 2);
         let down_move = match &down[0].union {
             Some(Message_oneof_union::mouse_event(mouse)) => mouse,
@@ -4445,13 +4543,8 @@ mod tests {
             .iter()
             .any(|modifier| *modifier == ControlKey::Meta));
 
-        let up = RustDeskConnector::build_mouse_button_messages(
-            2184,
-            1806,
-            0x01,
-            false,
-            &modifiers,
-        );
+        let up =
+            RustDeskConnector::build_mouse_button_messages(2184, 1806, 0x01, false, &modifiers);
         assert_eq!(up.len(), 1);
         let up_button = match &up[0].union {
             Some(Message_oneof_union::mouse_event(mouse)) => mouse,
@@ -4495,11 +4588,11 @@ mod tests {
     #[test]
     fn windows_map_uses_physical_scan_codes_instead_of_unicode_characters() {
         for (harmony_keycode, expected_scancode) in [
-            (2017, 0x1E), // A
-            (2038, 0x2F), // V
-            (2001, 0x02), // 1
-            (2057, 0x0C), // minus
-            (2072, 0x1D), // left Ctrl
+            (2017, 0x1E),   // A
+            (2038, 0x2F),   // V
+            (2001, 0x02),   // 1
+            (2057, 0x0C),   // minus
+            (2072, 0x1D),   // left Ctrl
             (2073, 0xE01D), // right Ctrl
             (2076, 0xE05B), // left Win
             (2119, 0xE01C), // numpad Enter
@@ -4601,9 +4694,8 @@ mod tests {
         for (harmony_keycode, expected_macos_keycode) in [(2076, 0x37), (2019, 0x08)] {
             let marked = RustDeskConnector::EXPLICIT_MACOS_MAP_FLAG | harmony_keycode;
             let (message, decoded, mapped) =
-                RustDeskConnector::build_explicit_macos_map_message(
-                    marked, true, &mut modifiers,
-                ).expect("marked macOS shortcut key must map");
+                RustDeskConnector::build_explicit_macos_map_message(marked, true, &mut modifiers)
+                    .expect("marked macOS shortcut key must map");
             assert_eq!(decoded, harmony_keycode);
             assert_eq!(mapped, expected_macos_keycode);
             match message.union {
@@ -4621,16 +4713,46 @@ mod tests {
 
     #[test]
     fn macos_physical_letters_and_controls_use_carbon_virtual_keycodes() {
-        assert_eq!(RustDeskConnector::harmony_keycode_to_macos_keycode(2017), Some(0x00));
-        assert_eq!(RustDeskConnector::harmony_keycode_to_macos_keycode(2035), Some(0x01));
-        assert_eq!(RustDeskConnector::harmony_keycode_to_macos_keycode(2020), Some(0x02));
-        assert_eq!(RustDeskConnector::harmony_keycode_to_macos_keycode(2050), Some(0x31));
-        assert_eq!(RustDeskConnector::harmony_keycode_to_macos_keycode(2072), Some(0x3B));
-        assert_eq!(RustDeskConnector::harmony_keycode_to_macos_keycode(2076), Some(0x37));
-        assert_eq!(RustDeskConnector::harmony_keycode_to_macos_keycode(2014), Some(0x7B));
-        assert_eq!(RustDeskConnector::harmony_keycode_to_macos_keycode(2816), Some(0x69));
-        assert_eq!(RustDeskConnector::harmony_keycode_to_macos_keycode(2823), Some(0x5A));
-        assert_eq!(RustDeskConnector::harmony_keycode_to_macos_keycode(2824), None);
+        assert_eq!(
+            RustDeskConnector::harmony_keycode_to_macos_keycode(2017),
+            Some(0x00)
+        );
+        assert_eq!(
+            RustDeskConnector::harmony_keycode_to_macos_keycode(2035),
+            Some(0x01)
+        );
+        assert_eq!(
+            RustDeskConnector::harmony_keycode_to_macos_keycode(2020),
+            Some(0x02)
+        );
+        assert_eq!(
+            RustDeskConnector::harmony_keycode_to_macos_keycode(2050),
+            Some(0x31)
+        );
+        assert_eq!(
+            RustDeskConnector::harmony_keycode_to_macos_keycode(2072),
+            Some(0x3B)
+        );
+        assert_eq!(
+            RustDeskConnector::harmony_keycode_to_macos_keycode(2076),
+            Some(0x37)
+        );
+        assert_eq!(
+            RustDeskConnector::harmony_keycode_to_macos_keycode(2014),
+            Some(0x7B)
+        );
+        assert_eq!(
+            RustDeskConnector::harmony_keycode_to_macos_keycode(2816),
+            Some(0x69)
+        );
+        assert_eq!(
+            RustDeskConnector::harmony_keycode_to_macos_keycode(2823),
+            Some(0x5A)
+        );
+        assert_eq!(
+            RustDeskConnector::harmony_keycode_to_macos_keycode(2824),
+            None
+        );
     }
 
     #[test]
@@ -4832,12 +4954,7 @@ mod tests {
         });
 
         RustDeskConnector::new()
-            .connect_file_transfer_direct(
-                "127.0.0.1",
-                port,
-                "",
-                r"C:\Users\Public\Documents",
-            )
+            .connect_file_transfer_direct("127.0.0.1", port, "", r"C:\Users\Public\Documents")
             .expect("direct file transfer should use the peer login protocol");
         accept_thread.join().expect("accept thread panicked");
     }

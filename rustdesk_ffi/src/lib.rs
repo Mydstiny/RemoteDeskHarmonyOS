@@ -1067,6 +1067,7 @@ pub(crate) enum ControlMsg {
 
 /// 客户端上下文 — 通过 FFI 不透明指针传递
 struct RustDeskClient {
+    connection_id: u64,
     #[allow(dead_code)]
     peer_id: String,
     host: String,
@@ -1909,6 +1910,7 @@ fn rustdesk_connect_impl(
             });
 
             let ctx = Box::new(RustDeskClient {
+                connection_id,
                 peer_id,
                 host,
                 port,
@@ -2816,15 +2818,20 @@ pub extern "C" fn rustdesk_send_file(
     let password = ctx.password.clone();
     let request_approval = ctx.request_approval;
     let direct_connection = ctx.direct_connection;
+    let connection_id = ctx.connection_id;
     let remote_path_owned = path.clone();
     let remote_dir = split_remote_file_path(&path).0.to_string();
     let transfer_status = Arc::clone(&ctx.transfer_status);
     let transfer_error = Arc::clone(&ctx.transfer_error);
 
     std::thread::spawn(move || {
+        let connect_epoch = begin_connect_epoch(connection_id);
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let mut connector = if direct_connection {
-                let mut candidate = connector::RustDeskConnector::new();
+                let mut candidate = connector::RustDeskConnector::new_with_connection_id(
+                    connection_id,
+                    connect_epoch,
+                );
                 candidate.connect_file_transfer_direct(
                     &host,
                     port,
@@ -2846,7 +2853,10 @@ pub extern "C" fn rustdesk_send_file(
                 let mut route_errors = Vec::new();
                 let mut last_route_kind = std::io::ErrorKind::NotConnected;
                 for conn_type in route_types {
-                    let mut candidate = connector::RustDeskConnector::new();
+                    let mut candidate = connector::RustDeskConnector::new_with_connection_id(
+                        connection_id,
+                        connect_epoch,
+                    );
                     match candidate.connect_file_transfer(
                         &host,
                         port,
@@ -2914,6 +2924,7 @@ pub extern "C" fn rustdesk_send_file(
                 "file-transfer worker panic",
             ))
         });
+        finish_connect_epoch(connect_epoch, connection_id);
 
         match result {
             Ok(()) => {
@@ -3029,6 +3040,7 @@ mod tests {
 
     fn test_client_with_display_state(display_state: RustDeskDisplayState) -> RustDeskClient {
         RustDeskClient {
+            connection_id: 0,
             peer_id: String::new(),
             host: String::new(),
             port: 0,

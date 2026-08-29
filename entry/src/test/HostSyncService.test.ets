@@ -11,6 +11,7 @@
 
 import { describe, beforeAll, beforeEach, afterEach, afterAll, it, expect } from '@ohos/hypium';
 import { HostSyncService } from '../main/ets/services/HostSyncService';
+import { rdpRestrictedAdminSecretBindingForHost } from '../main/ets/services/CloudStore';
 import { RemoteHost, LockType } from '../main/ets/model/RemoteHost';
 
 function makeHost(label: string, protocol: string, host: string, port: number): RemoteHost {
@@ -45,6 +46,21 @@ export default function hostSyncServiceTest() {
   });
 
   describe('HostSyncService_addHost', () => {
+    it('prepare_endpoints_should_canonicalize_before_secret_binding', 0, () => {
+      const host = makeHost('IPv6Rdp', 'rdp', '[2001:0DB8:0:0:0:0:0:1]', 3389);
+      host.username = 'EXAMPLE\\Alice';
+      host.rdpAuthMode = 'restricted_admin';
+      host.rdpRestrictedAdminSecretSource = 'ntlm_hash';
+
+      expect(srv.prepareHostNetworkEndpoints(host)).assertTrue();
+      expect(host.host).assertEqual('2001:db8::1');
+      expect(host.port).assertEqual(3389);
+      const savedBinding: string = rdpRestrictedAdminSecretBindingForHost(host, 1);
+      const reloaded: RemoteHost = RemoteHost.fromJSON(host.toJSON() as Record<string, Object>);
+      expect(rdpRestrictedAdminSecretBindingForHost(reloaded, 1)).assertEqual(savedBinding);
+      expect(savedBinding.startsWith('rdp-binding-v3|')).assertTrue();
+    });
+
     it('count_should_be_1_after_add', 0, () => {
       const host = makeHost('OfficePC', 'rdp', '10.0.0.1', 3389);
       srv.addHost(host);

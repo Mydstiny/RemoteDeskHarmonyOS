@@ -47,10 +47,12 @@
 #include <chrono>
 #include <cstring>
 #include <condition_variable>
+#include <cmath>
 #include <deque>
 #include <exception>
 #include <fstream>
 #include <new>
+#include <limits>
 #include <sstream>
 #include <stdexcept>
 #include <thread>
@@ -1139,19 +1141,55 @@ static void EnsureExtensionsLoaded() {
     }
 }
 
-static std::string GetNapiString(napi_env env, napi_value value) {
+constexpr size_t kMaxGenericNapiStringLength = 4U * 1024U * 1024U;
+
+static bool ReadBoundedNapiStringValue(
+    napi_env env, napi_value value, size_t maxLength, std::string& output) {
+    output.clear();
+    napi_valuetype type = napi_undefined;
+    if (napi_typeof(env, value, &type) != napi_ok || type != napi_string) {
+        return false;
+    }
     size_t len = 0;
     napi_status status = napi_get_value_string_utf8(env, value, nullptr, 0, &len);
-    if (status != napi_ok) {
-        return "";
+    if (status != napi_ok || len > maxLength) {
+        return false;
     }
-    std::vector<char> buffer(len + 1, '\0');
-    size_t copied = 0;
-    status = napi_get_value_string_utf8(env, value, buffer.data(), buffer.size(), &copied);
-    if (status != napi_ok) {
-        return "";
+    try {
+        std::vector<char> buffer(len + 1, '\0');
+        size_t copied = 0;
+        status = napi_get_value_string_utf8(env, value, buffer.data(), buffer.size(), &copied);
+        if (status != napi_ok || copied > maxLength) {
+            return false;
+        }
+        output.assign(buffer.data(), copied);
+        return true;
+    } catch (...) {
+        output.clear();
+        return false;
     }
-    return std::string(buffer.data(), copied);
+}
+
+static std::string GetNapiString(napi_env env, napi_value value) {
+    std::string output;
+    (void)ReadBoundedNapiStringValue(
+        env, value, kMaxGenericNapiStringLength, output);
+    return output;
+}
+
+static bool ReadStrictNapiInt32Value(
+    napi_env env, napi_value value, int32_t& output) {
+    napi_valuetype type = napi_undefined;
+    double numeric = 0.0;
+    if (napi_typeof(env, value, &type) != napi_ok || type != napi_number ||
+        napi_get_value_double(env, value, &numeric) != napi_ok ||
+        !std::isfinite(numeric) || std::trunc(numeric) != numeric ||
+        numeric < static_cast<double>(std::numeric_limits<int32_t>::min()) ||
+        numeric > static_cast<double>(std::numeric_limits<int32_t>::max())) {
+        return false;
+    }
+    output = static_cast<int32_t>(numeric);
+    return true;
 }
 
 static void ParseBoundedSshResponseArray(napi_env env, napi_value object,
@@ -1172,11 +1210,8 @@ static void ParseBoundedSshResponseArray(napi_env env, napi_value object,
         if (napi_get_element(env, value, index, &item) != napi_ok) { continue; }
         napi_valuetype type = napi_undefined;
         if (napi_typeof(env, item, &type) != napi_ok || type != napi_string) { continue; }
-        std::string response = GetNapiString(env, item);
-        if (response.size() > 4096) {
-            secureClearString(response);
-            continue;
-        }
+        std::string response;
+        if (!ReadBoundedNapiStringValue(env, item, 4096, response)) { continue; }
         output.push_back(std::move(response));
     }
 }
@@ -1189,8 +1224,7 @@ static bool ReadOptionalNapiString(napi_env env, napi_value object, const char* 
     if (napi_typeof(env, value, &type) != napi_ok || type == napi_undefined ||
         type == napi_null) { return true; }
     if (type != napi_string) { return false; }
-    output = GetNapiString(env, value);
-    return output.size() <= maxLength;
+    return ReadBoundedNapiStringValue(env, value, maxLength, output);
 }
 
 static bool ReadOptionalNapiInt(napi_env env, napi_value object, const char* key,
@@ -1200,7 +1234,10 @@ static bool ReadOptionalNapiInt(napi_env env, napi_value object, const char* key
     if (present != nullptr) { *present = true; }
     napi_valuetype type = napi_undefined;
     if (napi_typeof(env, value, &type) != napi_ok || type != napi_number) { return false; }
-    return napi_get_value_int32(env, value, &output) == napi_ok;
+    int32_t parsed = 0;
+    if (!ReadStrictNapiInt32Value(env, value, parsed)) { return false; }
+    output = parsed;
+    return true;
 }
 
 static bool NormalizePersistedEndpoint(std::string& host, int port) {
@@ -1575,7 +1612,8 @@ static SshForwardingResult ResolveSshForwardingSession(
 
 static bool ReadNapiNamedString(
     napi_env env, napi_value object, const char* name,
-    std::string& out, bool required) {
+    std::string& out, bool required,
+    size_t maxLength = kMaxGenericNapiStringLength) {
     napi_value value;
     if (napi_get_named_property(env, object, name, &value) != napi_ok) {
         return !required;
@@ -1590,8 +1628,7 @@ static bool ReadNapiNamedString(
     if (type != napi_string) {
         return false;
     }
-    out = GetNapiString(env, value);
-    return true;
+    return ReadBoundedNapiStringValue(env, value, maxLength, out);
 }
 
 static bool ReadNapiNamedInt32(
@@ -1608,7 +1645,7 @@ static bool ReadNapiNamedInt32(
     if (type == napi_undefined || type == napi_null) {
         return !required;
     }
-    if (type != napi_number || napi_get_value_int32(env, value, &out) != napi_ok) {
+    if (type != napi_number || !ReadStrictNapiInt32Value(env, value, out)) {
         return false;
     }
     return true;
@@ -1655,9 +1692,11 @@ static bool ReadSshForwardingConfig(
     int32_t maxBindPort = static_cast<int32_t>(config.maxBindPort);
     int64_t maxBytes = static_cast<int64_t>(config.maxBytes);
     int64_t expiresAtMs = static_cast<int64_t>(config.expiresAtMs);
-    if (!ReadNapiNamedString(env, value, "id", config.id, true) ||
-        !ReadNapiNamedString(env, value, "bindHost", config.bindHost, false) ||
-        !ReadNapiNamedString(env, value, "targetHost", config.targetHost, false) ||
+    if (!ReadNapiNamedString(env, value, "id", config.id, true, 256) ||
+        !ReadNapiNamedString(env, value, "bindHost", config.bindHost, false,
+                             remotedesk::endpoint::kMaxInputLength) ||
+        !ReadNapiNamedString(env, value, "targetHost", config.targetHost, false,
+                             remotedesk::endpoint::kMaxInputLength) ||
         !ReadNapiNamedInt32(env, value, "mode", mode, false) ||
         !ReadNapiNamedInt32(env, value, "bindPort", bindPort, false) ||
         !ReadNapiNamedInt32(env, value, "targetPort", targetPort, false) ||
@@ -1988,17 +2027,22 @@ static bool ReadRdpPreflightRequest(
     std::string endpointMode;
     std::string gatewayTransport;
     if (!ReadNapiNamedString(env, routeValue, "targetHost",
-                             request.route.targetHost, true) ||
+                             request.route.targetHost, true,
+                             remotedesk::endpoint::kMaxInputLength) ||
         !ReadNapiNamedInt32(env, routeValue, "targetPort", targetPort, false) ||
         !ReadNapiNamedString(env, routeValue, "targetServerName",
-                             request.route.targetServerName, false) ||
-        !ReadNapiNamedString(env, routeValue, "endpointMode", endpointMode, false) ||
+                             request.route.targetServerName, false,
+                             remotedesk::endpoint::kMaxInputLength) ||
+        !ReadNapiNamedString(env, routeValue, "endpointMode", endpointMode, false, 64) ||
         !ReadNapiNamedString(env, routeValue, "gatewayHost",
-                             request.route.gatewayHost, false) ||
+                             request.route.gatewayHost, false,
+                             remotedesk::endpoint::kMaxInputLength) ||
         !ReadNapiNamedInt32(env, routeValue, "gatewayPort", gatewayPort, false) ||
         !ReadNapiNamedString(env, routeValue, "gatewayServerName",
-                             request.route.gatewayServerName, false) ||
-        !ReadNapiNamedString(env, routeValue, "gatewayTransport", gatewayTransport, false)) {
+                             request.route.gatewayServerName, false,
+                             remotedesk::endpoint::kMaxInputLength) ||
+        !ReadNapiNamedString(env, routeValue, "gatewayTransport",
+                             gatewayTransport, false, 64)) {
         errorMessage = "RDP preflight route contains an invalid field";
         return false;
     }
@@ -2319,14 +2363,16 @@ napi_value NapiProbeRdpCertificate(napi_env env, napi_callback_info info) {
     std::string host;
     int32_t port = 3389;
     std::string serverName;
-    if (argc > 0) {
-        host = GetNapiString(env, args[0]);
-    }
-    if (argc > 1) {
-        napi_get_value_int32(env, args[1], &port);
-    }
-    if (argc > 2) {
-        serverName = GetNapiString(env, args[2]);
+    const bool validHost = argc > 0 && ReadBoundedNapiStringValue(
+        env, args[0], remotedesk::endpoint::kMaxInputLength, host);
+    const bool validPort = argc <= 1 || ReadStrictNapiInt32Value(env, args[1], port);
+    const bool validServerName = argc <= 2 || ReadBoundedNapiStringValue(
+        env, args[2], remotedesk::endpoint::kMaxInputLength, serverName);
+    if (!validHost || !validPort || !validServerName ||
+        !NormalizePersistedEndpoint(host, port) ||
+        (!serverName.empty() && !NormalizeServerIdentity(serverName))) {
+        napi_throw_type_error(env, nullptr, "RDP certificate endpoint is invalid or unsupported");
+        return nullptr;
     }
 
     auto adapter = FindAdapter("rdp");
@@ -2419,16 +2465,14 @@ napi_value NapiProbeRdpCertificateAsync(napi_env env, napi_callback_info info) {
         return nullptr;
     }
 
-    if (argc > 0) {
-        data->host = GetNapiString(env, args[0]);
-    }
-    if (argc > 1) {
-        napi_get_value_int32(env, args[1], &data->port);
-    }
-    if (argc > 2) {
-        data->serverName = GetNapiString(env, args[2]);
-    }
-    if (!NormalizePersistedEndpoint(data->host, data->port) ||
+    const bool validHost = argc > 0 && ReadBoundedNapiStringValue(
+        env, args[0], remotedesk::endpoint::kMaxInputLength, data->host);
+    const bool validPort = argc <= 1 ||
+        ReadStrictNapiInt32Value(env, args[1], data->port);
+    const bool validServerName = argc <= 2 || ReadBoundedNapiStringValue(
+        env, args[2], remotedesk::endpoint::kMaxInputLength, data->serverName);
+    if (!validHost || !validPort || !validServerName ||
+        !NormalizePersistedEndpoint(data->host, data->port) ||
         (!data->serverName.empty() && !NormalizeServerIdentity(data->serverName))) {
         delete data;
         napi_throw_error(env, nullptr, "RDP certificate endpoint is invalid or unsupported");
@@ -2669,13 +2713,28 @@ napi_value NapiProbeRustDeskPresenceAsync(napi_env env, napi_callback_info info)
         napi_throw_error(env, nullptr, "RustDesk presence probe allocation failed");
         return nullptr;
     }
-    if (argc > 0) { data->host = GetNapiString(env, args[0]); }
-    if (argc > 1) { napi_get_value_int32(env, args[1], &data->port); }
-    if (argc > 2) { data->serverKey = GetNapiString(env, args[2]); }
-    if (argc > 3) { data->peerId = GetNapiString(env, args[3]); }
-    if (argc > 4) { data->token = GetNapiString(env, args[4]); }
-    if (argc > 5) { napi_get_value_bool(env, args[5], &data->direct); }
-    if (argc > 6) { napi_get_value_int32(env, args[6], &data->keyMode); }
+    const bool validHost = argc > 0 && ReadBoundedNapiStringValue(
+        env, args[0], remotedesk::endpoint::kMaxInputLength, data->host);
+    const bool validPort = argc <= 1 ||
+        ReadStrictNapiInt32Value(env, args[1], data->port);
+    const bool validKey = argc <= 2 ||
+        ReadBoundedNapiStringValue(env, args[2], 4096, data->serverKey);
+    const bool validPeerId = argc <= 3 ||
+        ReadBoundedNapiStringValue(env, args[3], 512, data->peerId);
+    const bool validToken = argc <= 4 ||
+        ReadBoundedNapiStringValue(env, args[4], 64 * 1024, data->token);
+    const bool validDirect = argc <= 5 ||
+        napi_get_value_bool(env, args[5], &data->direct) == napi_ok;
+    const bool validKeyMode = argc <= 6 ||
+        ReadStrictNapiInt32Value(env, args[6], data->keyMode);
+    if (!validHost || !validPort || !validKey || !validPeerId || !validToken ||
+        !validDirect || !validKeyMode ||
+        !NormalizePersistedEndpoint(data->host, data->port)) {
+        delete data;
+        napi_throw_error(env, nullptr,
+                         "RustDesk presence endpoint is invalid or unsupported");
+        return nullptr;
+    }
 
     napi_value promise;
     napi_status status = napi_create_promise(env, &data->deferred, &promise);
@@ -2976,22 +3035,38 @@ napi_value NapiProbeVncGatewayDeepAsync(napi_env env, napi_callback_info info) {
         napi_throw_error(env, nullptr, "VNC Gateway deep async allocation failed");
         return nullptr;
     }
-    if (argc > 0) data->config.host = GetNapiString(env, args[0]);
-    if (argc > 1) napi_get_value_int32(env, args[1], &data->config.port);
-    if (argc > 2) data->config.transport = GetNapiString(env, args[2]);
-    if (argc > 3) data->config.repeaterMode = GetNapiString(env, args[3]);
-    if (argc > 4) data->config.repeaterTarget = GetNapiString(env, args[4]);
-    if (argc > 5) napi_get_value_bool(env, args[5], &data->config.tls);
-    if (argc > 6) data->config.expectedCertificateFingerprintSha256 = GetNapiString(env, args[6]);
-    if (argc > 7) napi_get_value_int32(env, args[7], &data->config.connectTimeoutMs);
-    if (argc > 8) data->ownerType = GetNapiString(env, args[8]);
-    if (argc > 9) data->ownerId = GetNapiString(env, args[9]);
-    if (argc > 10) data->userId = GetNapiString(env, args[10]);
-    if (argc > 11) data->storeIdentityFingerprint = GetNapiString(env, args[11]);
-    if (argc > 12) data->endpointBindingFingerprint = GetNapiString(env, args[12]);
-    if (argc > 13) napi_get_value_int64(env, args[13], &data->accountGeneration);
-    if (argc > 14) napi_get_value_bool(env, args[14], &data->enabled);
-    if (!NormalizePersistedEndpoint(data->config.host, data->config.port)) {
+    bool validInput = argc > 0 && ReadBoundedNapiStringValue(
+        env, args[0], remotedesk::endpoint::kMaxInputLength, data->config.host);
+    validInput = validInput && (argc <= 1 ||
+        ReadStrictNapiInt32Value(env, args[1], data->config.port));
+    validInput = validInput && (argc <= 2 ||
+        ReadBoundedNapiStringValue(env, args[2], 64, data->config.transport));
+    validInput = validInput && (argc <= 3 ||
+        ReadBoundedNapiStringValue(env, args[3], 64, data->config.repeaterMode));
+    validInput = validInput && (argc <= 4 || ReadBoundedNapiStringValue(
+        env, args[4], 4096, data->config.repeaterTarget));
+    validInput = validInput && (argc <= 5 ||
+        napi_get_value_bool(env, args[5], &data->config.tls) == napi_ok);
+    validInput = validInput && (argc <= 6 || ReadBoundedNapiStringValue(
+        env, args[6], 256, data->config.expectedCertificateFingerprintSha256));
+    validInput = validInput && (argc <= 7 ||
+        ReadStrictNapiInt32Value(env, args[7], data->config.connectTimeoutMs));
+    validInput = validInput && (argc <= 8 ||
+        ReadBoundedNapiStringValue(env, args[8], 128, data->ownerType));
+    validInput = validInput && (argc <= 9 ||
+        ReadBoundedNapiStringValue(env, args[9], 512, data->ownerId));
+    validInput = validInput && (argc <= 10 ||
+        ReadBoundedNapiStringValue(env, args[10], 512, data->userId));
+    validInput = validInput && (argc <= 11 || ReadBoundedNapiStringValue(
+        env, args[11], 256, data->storeIdentityFingerprint));
+    validInput = validInput && (argc <= 12 || ReadBoundedNapiStringValue(
+        env, args[12], 256, data->endpointBindingFingerprint));
+    validInput = validInput && (argc <= 13 ||
+        napi_get_value_int64(env, args[13], &data->accountGeneration) == napi_ok);
+    validInput = validInput && (argc <= 14 ||
+        napi_get_value_bool(env, args[14], &data->enabled) == napi_ok);
+    if (!validInput ||
+        !NormalizePersistedEndpoint(data->config.host, data->config.port)) {
         delete data;
         napi_throw_error(env, nullptr, "VNC Gateway endpoint is invalid or unsupported");
         return nullptr;
@@ -3090,11 +3165,16 @@ napi_value NapiProbeVncCertificateAsync(napi_env env, napi_callback_info info) {
         napi_throw_error(env, nullptr, "VNC certificate async allocation failed");
         return nullptr;
     }
-    if (argc > 0) data->config.host = GetNapiString(env, args[0]);
-    if (argc > 1) napi_get_value_int32(env, args[1], &data->config.port);
-    if (argc > 2) data->config.serverName = GetNapiString(env, args[2]);
-    if (argc > 3) napi_get_value_int32(env, args[3], &data->config.timeoutMs);
-    if (!NormalizePersistedEndpoint(data->config.host, data->config.port) ||
+    const bool validHost = argc > 0 && ReadBoundedNapiStringValue(
+        env, args[0], remotedesk::endpoint::kMaxInputLength, data->config.host);
+    const bool validPort = argc <= 1 ||
+        ReadStrictNapiInt32Value(env, args[1], data->config.port);
+    const bool validServerName = argc <= 2 || ReadBoundedNapiStringValue(
+        env, args[2], remotedesk::endpoint::kMaxInputLength, data->config.serverName);
+    const bool validTimeout = argc <= 3 ||
+        ReadStrictNapiInt32Value(env, args[3], data->config.timeoutMs);
+    if (!validHost || !validPort || !validServerName || !validTimeout ||
+        !NormalizePersistedEndpoint(data->config.host, data->config.port) ||
         (!data->config.serverName.empty() &&
          !NormalizeServerIdentity(data->config.serverName))) {
         delete data;
@@ -3935,45 +4015,100 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
     napi_value args[1];
     napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
 
+    napi_valuetype configType = napi_undefined;
+    if (argc < 1 || napi_typeof(env, args[0], &configType) != napi_ok ||
+        configType != napi_object) {
+        napi_value errVal;
+        napi_create_int32(env, -2, &errVal);
+        return errVal;
+    }
+
     // 解析 config 对象
     ConnectionConfig cfg;
     SshSecretGuard sshSecretGuard { cfg };
+    bool invalidConfigField = false;
 
-    auto getString = [&](const char* key, std::string& out) {
+    auto getString = [&](const char* key, std::string& out,
+                         size_t maxLength = kMaxGenericNapiStringLength) {
+        bool present = false;
+        if (napi_has_named_property(env, args[0], key, &present) != napi_ok) {
+            invalidConfigField = true;
+            return;
+        }
+        if (!present) { return; }
         napi_value val;
         if (napi_get_named_property(env, args[0], key, &val) == napi_ok) {
             napi_valuetype type = napi_undefined;
-            napi_typeof(env, val, &type);
+            if (napi_typeof(env, val, &type) != napi_ok) {
+                invalidConfigField = true;
+                return;
+            }
+            if (type == napi_undefined) { return; }
             if (type != napi_string) {
+                invalidConfigField = true;
                 return;
             }
-            size_t len = 0;
-            if (napi_get_value_string_utf8(env, val, nullptr, 0, &len) != napi_ok) {
-                return;
+            if (!ReadBoundedNapiStringValue(env, val, maxLength, out)) {
+                invalidConfigField = true;
             }
-            std::vector<char> buf(len + 1, 0);
-            if (napi_get_value_string_utf8(env, val, buf.data(), buf.size(), &len) == napi_ok) {
-                out.assign(buf.data(), len);
-            }
+        } else {
+            invalidConfigField = true;
         }
     };
     auto getInt = [&](const char* key, int& out, bool* present = nullptr) {
+        bool propertyPresent = false;
+        if (napi_has_named_property(env, args[0], key, &propertyPresent) != napi_ok) {
+            invalidConfigField = true;
+            return;
+        }
+        if (!propertyPresent) { return; }
         napi_value val;
         if (napi_get_named_property(env, args[0], key, &val) == napi_ok) {
+            napi_valuetype type = napi_undefined;
+            if (napi_typeof(env, val, &type) != napi_ok) {
+                invalidConfigField = true;
+                return;
+            }
+            if (type == napi_undefined) { return; }
+            int32_t parsed = 0;
+            if (type != napi_number ||
+                !ReadStrictNapiInt32Value(env, val, parsed)) {
+                invalidConfigField = true;
+                return;
+            }
+            out = parsed;
             if (present != nullptr) { *present = true; }
-            napi_get_value_int32(env, val, &out);
+        } else {
+            invalidConfigField = true;
         }
     };
     auto getBool = [&](const char* key, bool& out) {
+        bool present = false;
+        if (napi_has_named_property(env, args[0], key, &present) != napi_ok) {
+            invalidConfigField = true;
+            return;
+        }
+        if (!present) { return; }
         napi_value val;
         if (napi_get_named_property(env, args[0], key, &val) == napi_ok) {
-            napi_get_value_bool(env, val, &out);
+            napi_valuetype type = napi_undefined;
+            if (napi_typeof(env, val, &type) != napi_ok) {
+                invalidConfigField = true;
+                return;
+            }
+            if (type == napi_undefined) { return; }
+            if (type != napi_boolean ||
+                napi_get_value_bool(env, val, &out) != napi_ok) {
+                invalidConfigField = true;
+            }
+        } else {
+            invalidConfigField = true;
         }
     };
 
     std::string protocolName;
-    getString("protocol", protocolName);
-    getString("host", cfg.host);
+    getString("protocol", protocolName, 32);
+    getString("host", cfg.host, remotedesk::endpoint::kMaxInputLength);
     bool hasPort = false;
     getInt("port", cfg.port, &hasPort);
     getString("username", cfg.username);
@@ -3994,17 +4129,17 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
     else cfg.codec = CodecType::H264;
 
     // 🆕 新增字段解析
-    getString("customHostname", cfg.customHostname);
-    getString("gatewayHost", cfg.gatewayHost);
+    getString("customHostname", cfg.customHostname,
+              remotedesk::endpoint::kMaxInputLength);
+    getString("gatewayHost", cfg.gatewayHost,
+              remotedesk::endpoint::kMaxInputLength);
     getInt("gatewayPort", cfg.gatewayPort);
-    getString("rdpEndpointMode", cfg.rdpEndpointMode);
-    getString("rdpGatewayTransport", cfg.rdpGatewayTransport);
-    getString("rdpGatewayServerName", cfg.rdpGatewayServerName);
+    getString("rdpEndpointMode", cfg.rdpEndpointMode, 64);
+    getString("rdpGatewayTransport", cfg.rdpGatewayTransport, 64);
+    getString("rdpGatewayServerName", cfg.rdpGatewayServerName,
+              remotedesk::endpoint::kMaxInputLength);
     getInt("monitorCount", cfg.monitorCount);
-    napi_value multiMonVal;
-    if (napi_get_named_property(env, args[0], "multiMonitor", &multiMonVal) == napi_ok) {
-        napi_get_value_bool(env, multiMonVal, &cfg.multiMonitor);
-    }
+    getBool("multiMonitor", cfg.multiMonitor);
     getInt("colorDepth", cfg.colorDepth);
     getInt("rdpDesktopScaleFactor", cfg.rdpDesktopScaleFactor);
     getInt("rdpDeviceScaleFactor", cfg.rdpDeviceScaleFactor);
@@ -4086,7 +4221,8 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
             return errVal;
         }
         getString("sshProxyType", cfg.sshProxyType);
-        getString("sshProxyHost", cfg.sshProxyHost);
+        getString("sshProxyHost", cfg.sshProxyHost,
+                  remotedesk::endpoint::kMaxInputLength);
         getInt("sshProxyPort", cfg.sshProxyPort);
     getString("sshProxyUsername", cfg.sshProxyUsername);
     getString("sshProxyPassword", cfg.sshProxyPassword);
@@ -4121,11 +4257,9 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
                         responseType != napi_string) {
                         continue;
                     }
-                    std::string response = GetNapiString(env, responseItem);
-                    if (response.size() > 4096) {
-                        secureClearString(response);
-                        continue;
-                    }
+                    std::string response;
+                    if (!ReadBoundedNapiStringValue(
+                            env, responseItem, 4096, response)) { continue; }
                     cfg.sshKeyboardInteractiveResponses.push_back(std::move(response));
                 }
             }
@@ -4174,9 +4308,11 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
     // VNC-only connection contract. These values are assembled from the
     // isolated VNC data domain and are ignored by the other adapters.
     getString("vncTransport", cfg.vncTransport);
-    getString("vncGatewayHost", cfg.vncGatewayHost);
+    getString("vncGatewayHost", cfg.vncGatewayHost,
+              remotedesk::endpoint::kMaxInputLength);
     getInt("vncGatewayPort", cfg.vncGatewayPort);
-    getString("vncServerName", cfg.vncServerName);
+    getString("vncServerName", cfg.vncServerName,
+              remotedesk::endpoint::kMaxInputLength);
     getString("vncGatewayPath", cfg.vncGatewayPath);
     getString("vncRepeaterMode", cfg.vncRepeaterMode);
     getString("vncRepeaterTarget", cfg.vncRepeaterTarget);
@@ -4207,12 +4343,12 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
         cfg.rdDirectIp = false;
     }
     if (cfg.rdDirectPort <= 0) cfg.rdDirectPort = 21118;
-    if (protocolName == "ssh" && !hasPort) {
-        cfg.port = 22;
-    } else if (cfg.port == 0) {
+    if (!hasPort) {
         // RustDesk 的通用端口字段在直连模式代表 peer TCP 端口；
         // 非直连模式才代表 ID/rendezvous 端口，不能落回 RDP 3389。
-        if (protocolName == "rustdesk") {
+        if (protocolName == "ssh") {
+            cfg.port = 22;
+        } else if (protocolName == "rustdesk") {
             cfg.port = cfg.rdDirectIp ? cfg.rdDirectPort : 21116;
         } else if (protocolName == "vnc") {
             cfg.port = 5900;
@@ -4254,6 +4390,13 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
     if (cfg.vncSecurityPolicy != "secure_only" && cfg.vncSecurityPolicy != "trusted_network" &&
         cfg.vncSecurityPolicy != "allow_plaintext") cfg.vncSecurityPolicy = "secure_only";
 
+    if (invalidConfigField) {
+        OH_LOG_ERROR(LOG_APP, "[ExtLoader] invalid NAPI connection config field type");
+        napi_value errVal;
+        napi_create_int32(env, protocolName == "ssh" ? ERR_SSH_PROXY_INVALID : -2, &errVal);
+        return errVal;
+    }
+
     bool endpointValid = true;
     if (protocolName == "rdp" || protocolName == "ssh" || protocolName == "rustdesk") {
         endpointValid = NormalizePersistedEndpoint(cfg.host, cfg.port);
@@ -4270,6 +4413,13 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
     if (endpointValid && protocolName == "ssh" && !cfg.sshProxyHost.empty() &&
         cfg.sshProxyType != "legacy_gateway") {
         endpointValid = NormalizePersistedEndpoint(cfg.sshProxyHost, cfg.sshProxyPort);
+    }
+    if (endpointValid && protocolName == "rdp") {
+        endpointValid = NormalizeServerIdentity(cfg.customHostname) &&
+            NormalizeServerIdentity(cfg.rdpGatewayServerName);
+    }
+    if (endpointValid && protocolName == "vnc") {
+        endpointValid = NormalizeServerIdentity(cfg.vncServerName);
     }
     if (!endpointValid) {
         OH_LOG_ERROR(LOG_APP, "[ExtLoader] invalid or unsupported scoped endpoint");
@@ -5012,29 +5162,78 @@ static bool ParseSshConnectionConfig(napi_env env, napi_value value,
         return false;
     }
 
-    auto getString = [&](const char* key, std::string& out) {
+    bool invalidConfigField = false;
+    auto getString = [&](const char* key, std::string& out,
+                         size_t maxLength = kMaxGenericNapiStringLength) {
+        bool present = false;
+        if (napi_has_named_property(env, value, key, &present) != napi_ok) {
+            invalidConfigField = true;
+            return;
+        }
+        if (!present) { return; }
         napi_value item;
-        if (napi_get_named_property(env, value, key, &item) != napi_ok) { return; }
+        if (napi_get_named_property(env, value, key, &item) != napi_ok) {
+            invalidConfigField = true;
+            return;
+        }
         napi_valuetype type = napi_undefined;
-        if (napi_typeof(env, item, &type) != napi_ok || type != napi_string) { return; }
-        out = GetNapiString(env, item);
+        if (napi_typeof(env, item, &type) != napi_ok) {
+            invalidConfigField = true;
+            return;
+        }
+        if (type == napi_undefined) { return; }
+        if (type != napi_string ||
+            !ReadBoundedNapiStringValue(env, item, maxLength, out)) {
+            invalidConfigField = true;
+        }
     };
     auto getInt = [&](const char* key, int& out, bool* present = nullptr) {
+        bool propertyPresent = false;
+        if (napi_has_named_property(env, value, key, &propertyPresent) != napi_ok) {
+            invalidConfigField = true;
+            return;
+        }
+        if (!propertyPresent) { return; }
         napi_value item;
-        if (napi_get_named_property(env, value, key, &item) != napi_ok) { return; }
+        napi_valuetype type = napi_undefined;
+        if (napi_get_named_property(env, value, key, &item) != napi_ok ||
+            napi_typeof(env, item, &type) != napi_ok) {
+            invalidConfigField = true;
+            return;
+        }
+        if (type == napi_undefined) { return; }
+        int32_t parsed = 0;
+        if (type != napi_number || !ReadStrictNapiInt32Value(env, item, parsed)) {
+            invalidConfigField = true;
+            return;
+        }
+        out = parsed;
         if (present != nullptr) { *present = true; }
-        napi_get_value_int32(env, item, &out);
     };
     auto getBool = [&](const char* key, bool& out) {
+        bool present = false;
+        if (napi_has_named_property(env, value, key, &present) != napi_ok) {
+            invalidConfigField = true;
+            return;
+        }
+        if (!present) { return; }
         napi_value item;
-        if (napi_get_named_property(env, value, key, &item) != napi_ok) { return; }
-        (void)napi_get_value_bool(env, item, &out);
+        napi_valuetype type = napi_undefined;
+        if (napi_get_named_property(env, value, key, &item) != napi_ok ||
+            napi_typeof(env, item, &type) != napi_ok) {
+            invalidConfigField = true;
+            return;
+        }
+        if (type == napi_undefined) { return; }
+        if (type != napi_boolean || napi_get_value_bool(env, item, &out) != napi_ok) {
+            invalidConfigField = true;
+        }
     };
 
     std::string protocol;
-    getString("protocol", protocol);
+    getString("protocol", protocol, 32);
     if (protocol != "ssh") { return false; }
-    getString("host", config.host);
+    getString("host", config.host, remotedesk::endpoint::kMaxInputLength);
     bool hasPort = false;
     getInt("port", config.port, &hasPort);
     getString("username", config.username);
@@ -5053,7 +5252,8 @@ static bool ParseSshConnectionConfig(napi_env env, napi_value value,
     getString("sshJumpHostKeyRawBase64", config.sshJumpHostKeyRawBase64);
     getString("sshJumpHostKeyFingerprintSha256", config.sshJumpHostKeyFingerprintSha256);
     getString("sshProxyType", config.sshProxyType);
-    getString("sshProxyHost", config.sshProxyHost);
+    getString("sshProxyHost", config.sshProxyHost,
+              remotedesk::endpoint::kMaxInputLength);
     getInt("sshProxyPort", config.sshProxyPort);
     getString("sshProxyUsername", config.sshProxyUsername);
     getString("sshProxyPassword", config.sshProxyPassword);
@@ -5064,7 +5264,8 @@ static bool ParseSshConnectionConfig(napi_env env, napi_value value,
     // synchronous connect path; never silently turn it into a direct socket.
     std::string gatewayHost;
     int gatewayPort = 0;
-    getString("gatewayHost", gatewayHost);
+    getString("gatewayHost", gatewayHost,
+              remotedesk::endpoint::kMaxInputLength);
     getInt("gatewayPort", gatewayPort);
     if (config.sshProxyHost.empty() && !gatewayHost.empty()) {
         config.sshProxyHost = gatewayHost;
@@ -5087,11 +5288,8 @@ static bool ParseSshConnectionConfig(napi_env env, napi_value value,
                 if (napi_typeof(env, item, &itemType) != napi_ok || itemType != napi_string) {
                     continue;
                 }
-                std::string response = GetNapiString(env, item);
-                if (response.size() > 4096) {
-                    secureClearString(response);
-                    continue;
-                }
+                std::string response;
+                if (!ReadBoundedNapiStringValue(env, item, 4096, response)) { continue; }
                 config.sshKeyboardInteractiveResponses.push_back(std::move(response));
             }
         }
@@ -5100,6 +5298,7 @@ static bool ParseSshConnectionConfig(napi_env env, napi_value value,
                                  "sshProxyKeyboardInteractiveResponses",
                                  config.sshProxyKeyboardInteractiveResponses);
 
+    if (invalidConfigField) { return false; }
     if (config.host.empty() || config.username.empty()) { return false; }
     if (!hasPort) { config.port = 22; }
     if (!NormalizePersistedEndpoint(config.host, config.port)) { return false; }

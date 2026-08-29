@@ -2479,6 +2479,10 @@ struct HostListPage {
     const requiresLocalRestrictedAdminHash: boolean = host.protocol === 'rdp' &&
       host.rdpAuthMode === 'restricted_admin' &&
       host.rdpRestrictedAdminSecretSource === 'ntlm_hash';
+    if (!this.srv.prepareHostNetworkEndpoints(host)) {
+      promptAction.showToast({ message: '主机地址无效，未保存凭据', duration: 2200 });
+      return;
+    }
     const rustDeskTotpEntryId: string = host.protocol === 'rustdesk' ?
       host.rustdeskTotpEntryId.trim() : '';
     const rustDeskTotpAutoSubmit: boolean = host.protocol === 'rustdesk' &&
@@ -20185,6 +20189,10 @@ struct HostListPage {
         h.rdpCredentialId = '';
         h.username = this.username;
       }
+    }
+    if (!this.srv.prepareHostNetworkEndpoints(h)) {
+      this.sheetErr = '请输入有效的域名、IPv4 或 IPv6 地址';
+      return;
     }
     const existingPassword: string = existingHost === undefined ? '' : existingHost.password;
     const existingPasswordConfigured: boolean = existingHost !== undefined &&
