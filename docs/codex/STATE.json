@@ -3,7 +3,7 @@
   "task": "per-protocol-pinch-zoom-plan",
   "branch": "codex/per-protocol-pinch-zoom-plan",
   "base": "b84224869e4e719f6395b04465fb43b27032b156",
-  "head": "714b791f8b7d4036f8c36dd8b7da0cb49db30677",
+  "head": "4211438a9571b12d15ee7380af576dd0681a8dce",
   "phase": "device-acceptance",
   "status": "active",
   "next": "Run the five-protocol real-device gesture, pointer-follow, settings persistence and lifecycle matrix; then push, open the PR, pass required checks and merge.",
@@ -16,9 +16,15 @@
     "taskIds": [
       "/root/pinch_zoom_review"
     ],
-    "reviewedHead": "714b791f8b7d4036f8c36dd8b7da0cb49db30677",
+    "reviewedHead": "4211438a9571b12d15ee7380af576dd0681a8dce",
     "scope": [
       "entry/src/main/ets/components/RemotePinchZoomSettingsSheet.ets",
+      "entry/src/main/ets/components/RemoteSessionTopBar.ets",
+      "entry/src/main/ets/components/VncSessionToolbar.ets",
+      "entry/src/main/ets/components/moonlight/MoonlightControlCenter.ets",
+      "entry/src/main/ets/components/moonlight/MoonlightSessionToolbar.ets",
+      "entry/src/main/ets/components/rdp/RdpControlCenter.ets",
+      "entry/src/main/ets/components/rdp/RdpSessionToolbar.ets",
       "entry/src/main/ets/pages/HostListPage.ets",
       "entry/src/main/ets/pages/MoonlightStreamPage.ets",
       "entry/src/main/ets/pages/RemoteDesktop.ets",
@@ -30,21 +36,22 @@
       "entry/src/main/ets/services/RemoteCanvasPointerFollowPolicy.ets",
       "entry/src/main/ets/services/RemoteCanvasTransformPolicy.ets",
       "entry/src/main/ets/services/RemotePinchZoomPreferencePolicy.ets",
+      "entry/src/main/ets/services/MoonlightUiPolicy.ets",
       "entry/src/main/ets/services/SettingsSheetRoutePolicy.ets",
       "entry/src/ohosTest",
       "entry/src/test"
     ],
     "findings": [],
-    "reason": "The same independent read-only reviewer verified checkpoint 714b791f8 after five P1/P2 remediation items; no P0/P1/P2 remain."
+    "reason": "The same independent reviewer passed reset-affordance remediation checkpoint 4211438a with no remaining P0/P1/P2/P3 after SSH effective-font isolation, narrow-toolbar reachability and baseline-state fixes."
   },
   "lastVerification": {
-    "baseline": "Reviewed implementation checkpoint 714b791f8 on main@b84224869; ArkTS/UI/policy/tests only, no native, Rust, FFI, dependency or resource changes.",
-    "testCompile": "PASS: default@OhosTestCompileArkTS, BUILD SUCCESSFUL in 29 s 668 ms.",
-    "assembleHap": "PASS: signed HAP, BUILD SUCCESSFUL in 16 s 174 ms; SHA-256 d0899ec8f965aea61154fb69ba2b527af83ec55f5d2cb8163612aba081d6e50c.",
-    "targetedTests": "POLICIES COMPILED: preference migration, gesture ownership, pointer follow including one-axis boundary isolation, settings routing and device-local sync tests are registered in both test lists.",
+    "baseline": "Reviewed reset-affordance remediation checkpoint 4211438a on main@b84224869; ArkTS/UI/policy/tests/docs only, no native, Rust, FFI, dependency or resource changes.",
+    "testCompile": "PASS: default@OhosTestCompileArkTS, BUILD SUCCESSFUL in 10 s 909 ms.",
+    "assembleHap": "PASS: signed HAP, BUILD SUCCESSFUL in 31 s 919 ms; SHA-256 9b50e409bb58ef7073d066516de052f797313a46bf1ff2d0c66eb16c14a791f1.",
+    "targetedTests": "POLICIES COMPILED: preference migration, gesture ownership, pointer follow including one-axis boundary isolation, epsilon baseline reset state, settings routing and device-local sync tests are registered in both test lists.",
     "arktsTests": "UNAVAILABLE: separate ohosTest@OhosTestCompileArkTS is not registered (00306054); default@OhosTestCompileArkTS passed.",
     "compliance": "PASS: git diff --check and Light open-source compliance.",
-    "review": "PASS: /root/pinch_zoom_review verified checkpoint 714b791f8; five initial P1/P2 findings were remediated and no P0/P1/P2 remain.",
+    "review": "PASS: /root/pinch_zoom_review verified checkpoint 4211438a with no remaining P0/P1/P2/P3.",
     "deviceAcceptance": "NOT RUN: hdc reported Connect server failed; no device target was available."
   },
   "updated": "2026-08-29 Asia/Shanghai"

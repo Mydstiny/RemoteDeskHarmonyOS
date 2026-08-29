@@ -134,6 +134,15 @@ moonlightPinchZoomEnabled
 - 相对触控板继续使用已有速度曲线、合帧和 Sunshine relative wire path。pointer-follow 读取 `trackpadCursorX/Y` 预测并更新 canvas，不改变协议增量单位。
 - 物理鼠标继续走已有 renderer viewport absolute geometry；边缘跟随改变 transform 后必须立即失效并重建 geometry generation，避免用旧 content rect 发送绝对坐标。
 
+### 缩放复位入口（2026-08-29 增量）
+
+- 不新增可自由拖动的独立悬浮按钮，避免与键盘、修饰键、诊断 HUD 和协议侧栏争抢边缘位置；复位入口附着于各协议既有工具栏或控制中心。
+- RDP 与 Moonlight 在画布以 epsilon 明显偏离当前显示基线后，向既有工具栏插入高亮“复位”快捷项；各自控制中心同时保留稳定的“复位画面”入口。Moonlight 的窄 PC 顶栏按 viewport 限宽并横向滚动，复位、控制和断开均保持可达。
+- VNC 没有独立控制中心，因此在现有可拖动侧栏中常驻“复位”，画布偏离基线时使用活动色提示；窄 PC 顶栏同样按 viewport 限宽并横向滚动。
+- RustDesk 复用“显示与画质”中的复位项；画布偏离基线时显示按钮变色，菜单文案标记“已缩放”。
+- 图形协议复位只清除手势 scale/pan，保留当前 Fit/100%/自定义显示模式、RustDesk 翻转/旋转、显示器和分辨率选择；执行前结束双指所有权并清除实体鼠标边缘跟随，避免下一帧把画布再次推离基线。
+- SSH 不创建画布按钮；“恢复终端字号”收进现有“更多”菜单。Profile pinch 以 `host:generation` 内存 override 隔离，活动和保留 Xterm surface 读取同一有效字号；复位删除 override、恢复当前解析配置字号且不改 Profile。legacy 会话恢复并持久化默认 18 号字；SFTP 不受影响。
+
 ## 计划修改文件
 
 | 范围 | 主要文件 | 预期变化 |
@@ -145,6 +154,7 @@ moonlightPinchZoomEnabled
 | RDP/RustDesk/VNC | `pages/RemoteDesktop.ets`、相关控制栏/控制中心组件 | 按当前协议取值、相对/绝对指针跟随、互斥收敛 |
 | SSH | `pages/SshTerminal.ets` | 门控既有字号 pinch，不改变 SFTP |
 | Moonlight | `pages/MoonlightStreamPage.ets` | renderer transform、两指仲裁、pointer geometry 代际同步 |
+| 复位入口 | `components/RemoteSessionTopBar.ets`、`VncSessionToolbar.ets`、`rdp/*`、`moonlight/*`、`pages/SshTerminal.ets` | 侧栏/控制中心复位、状态提示、SSH 更多菜单 |
 | 测试 | `ohosTest/...` 对应 policy/UI wiring tests 与两套测试入口 | 迁移、数学、所有权、路由和协议接线覆盖 |
 
 除非实现期发现 renderer viewport 缺少必要版本信息，否则不修改 C++、Rust、FFI、协议 protobuf、第三方依赖、SBOM 或许可文件。

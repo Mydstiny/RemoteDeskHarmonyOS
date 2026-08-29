@@ -4,8 +4,8 @@
 
 - Task: `per-protocol-pinch-zoom-plan`
 - Branch: `codex/per-protocol-pinch-zoom-plan` from `main@b84224869`.
-- Increment: implementation and independent review are complete at `714b791f8`; real-device acceptance and PR closure remain.
-- Phase: five-protocol pinch preferences, graphical canvas gestures/pointer follow and SSH font-pinch gating are implemented; no native, Rust, FFI, dependency or resource changes.
+- Increment: base implementation/review are complete at `714b791f8`; reset-affordance implementation and remediation are independently reviewed at `4211438a`; real-device acceptance and PR closure remain.
+- Phase: five-protocol pinch preferences, graphical canvas gestures/pointer follow, SSH font-pinch gating and protocol-specific reset controls are implemented; no native, Rust, FFI, dependency or resource changes.
 - Plan: `docs/codex/plans/2026-08-29-per-protocol-pinch-zoom-and-pointer-follow.md`
 
 ## Per-protocol pinch zoom result
@@ -15,8 +15,11 @@
 - RDP/RustDesk/VNC share focal pinch, same-stream pure two-finger canvas pan, Fit-state scroll/right-click preservation and strict-bounds safe-area/edge-area pointer follow. RustDesk remote App `TouchScale/TouchPan` is mutually exclusive with local canvas transform.
 - Moonlight now owns the same GL canvas-transform lifecycle, keyboard/mouse-mode two-finger pan without a one-finger touch lane, synchronous versioned viewport mirroring for same-event absolute pointer mapping, and gesture cancellation before resize/PIP/rebind rebase. Relative and physical pointers reveal hidden canvas without cross-axis pollution.
 - SSH keeps its existing terminal-font pinch semantics behind the SSH-specific switch; SFTP is unaffected. Disabling a graphical-protocol switch drains active gesture state and restores the base transform where applicable.
+- Reset affordances now reuse existing chrome: RDP/Moonlight show a highlighted toolbar shortcut only while the canvas differs visibly from its current baseline and keep a stable control-center row; VNC has a permanent sidebar reset; RustDesk marks its existing Display action and reset row when modified. VNC/Moonlight narrow PC toolbars are viewport-bounded and horizontally scrollable. Reset preserves the selected display mode/rotation/flip/resolution, drains gesture ownership and clears pointer-follow before returning to the current mode baseline.
+- SSH exposes `更多 → 恢复终端字号`: Profile zoom is an in-memory `host:generation` session override consumed by active and retained Xterm surfaces, and reset removes only that override without mutating the Profile. Legacy sessions return to and persist the default 18-point size.
+- Reset increment verification at `4211438a`: `default@OhosTestCompileArkTS` PASS (`BUILD SUCCESSFUL in 10 s 909 ms`); signed `assembleHap` PASS (`BUILD SUCCESSFUL in 31 s 919 ms`), SHA-256 `9b50e409bb58ef7073d066516de052f797313a46bf1ff2d0c66eb16c14a791f1`; `git diff --check` and Light compliance PASS.
 - Verification after remediation: `default@OhosTestCompileArkTS` PASS (`BUILD SUCCESSFUL in 29 s 668 ms`); signed `assembleHap` PASS (`BUILD SUCCESSFUL in 16 s 174 ms`), SHA-256 `d0899ec8f965aea61154fb69ba2b527af83ec55f5d2cb8163612aba081d6e50c`; `git diff --check` and Light compliance PASS. The separate `ohosTest@OhosTestCompileArkTS` task remains unavailable (`00306054`), while the registered suites compile through the mandatory default test target.
-- Independent review `/root/pinch_zoom_review`: PASS at `714b791f8` after closing three P1 and two P2 findings; no remaining P0/P1/P2. Real-device five-protocol gesture, pointer, persistence and lifecycle acceptance is pending because HDC had no available target.
+- Independent review `/root/pinch_zoom_review`: base PASS at `714b791f8`; reset increment PASS at `4211438a` after closing SSH renderer/session isolation, narrow-toolbar reachability and baseline-state findings; no remaining P0/P1/P2/P3. Real-device five-protocol gesture, pointer, persistence, reset and lifecycle acceptance is pending because HDC had no available target.
 - Next: complete the device matrix, then push the branch, open the PR, pass required checks and merge.
 
 ## 1.1.4 release result
