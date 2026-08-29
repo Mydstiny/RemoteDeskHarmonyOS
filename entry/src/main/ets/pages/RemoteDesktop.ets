@@ -11901,7 +11901,7 @@ struct RemoteDesktop {
     }
     .width('100%').constraintSize({ maxWidth: 520 })
     .padding({ left: 22, right: 22, top: 20, bottom: 22 })
-    .backgroundColor(this.pal().bg).borderRadius(20)
+    .backgroundColor(this.pal().sheetBg).borderRadius(20)
     .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
     .shadow({ radius: 24, color: 'rgba(0,0,0,0.24)', offsetY: 8 })
   }
@@ -12023,7 +12023,7 @@ struct RemoteDesktop {
       }.width('100%').margin({ top: 10 })
     }.width('100%').constraintSize({ maxWidth: 760 })
       .padding({ left: 22, right: 22, top: 20, bottom: 22 })
-      .backgroundColor(this.pal().bg)
+      .backgroundColor(this.pal().sheetBg)
       .backgroundBlurStyle(BlurStyle.Regular)
       .borderRadius(this.breakpoint === 'sm' ?
         { topLeft: 20, topRight: 20, bottomLeft: 0, bottomRight: 0 } : 20)
@@ -18835,6 +18835,6 @@ struct RemoteDesktop {
     }
     .width('100%')
     .padding({ top: 8, bottom: 24 })
-    .backgroundColor(this.pal().bg)
+    .backgroundColor(this.pal().sheetBg)
   }
 }

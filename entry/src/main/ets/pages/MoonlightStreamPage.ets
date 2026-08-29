@@ -5602,6 +5602,7 @@ struct MoonlightStreamPage {
   @Builder private connectStageSheet() {
     MoonlightConnectStageOverlay({
       inSheet: true,
+      sheetBackgroundColor: this.theme === 'dark' ? this.pal().sheetBg : 'rgba(14,18,28,0.90)',
       phase: this.surfaceRecovering ? 'reconnecting' : this.phase,
       elapsedMs: this.elapsedMs,
       firstFrameSeen: this.surfaceRecovering ? false : this.firstFrameSeen,
@@ -5931,7 +5932,7 @@ struct MoonlightStreamPage {
         height: SheetSize.FIT_CONTENT,
         preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
         dragBar: false, showClose: false,
-        backgroundColor: this.sheetMode === 'connect' ? '#0E121C' : this.pal().sheetBg,
+        backgroundColor: this.theme === 'dark' ? this.pal().sheetBg : '#0E121C',
         blurStyle: BlurStyle.NONE,
         maskColor: this.sheetMode === 'connect' ? 'rgba(0,0,0,0.62)' : 'rgba(0,0,0,0.36)',
         onWillDismiss: (action: DismissSheetAction): void => {

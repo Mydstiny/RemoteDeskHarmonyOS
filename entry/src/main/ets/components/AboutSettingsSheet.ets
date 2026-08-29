@@ -235,7 +235,7 @@ export struct AboutSettingsSheet {
     .width('100%')
     .constraintSize({ maxWidth: 620, maxHeight: this.breakpoint === 'sm' ? 500 : 560 })
     .clip(true)
-    .backgroundColor(this.pal().bg)
+    .backgroundColor(this.pal().sheetBg)
     .backgroundBlurStyle(BlurStyle.Regular)
     .borderRadius(this.breakpoint === 'sm' ?
       { topLeft: 22, topRight: 22, bottomLeft: 0, bottomRight: 0 } : 24)
@@ -322,7 +322,7 @@ export struct AboutSettingsSheet {
     .width('100%')
     .constraintSize({ maxWidth: 620, maxHeight: this.breakpoint === 'sm' ? 500 : 560 })
     .clip(true)
-    .backgroundColor(this.pal().bg)
+    .backgroundColor(this.pal().sheetBg)
     .backgroundBlurStyle(BlurStyle.Regular)
     .borderRadius(this.breakpoint === 'sm' ?
       { topLeft: 22, topRight: 22, bottomLeft: 0, bottomRight: 0 } : 24)
@@ -423,7 +423,7 @@ export struct AboutSettingsSheet {
     .width('100%').height(this.operationGuideLayout().height)
     .constraintSize({ maxWidth: 760, maxHeight: this.operationGuideLayout().height })
     .clip(true)
-    .backgroundColor(this.pal().bg)
+    .backgroundColor(this.pal().sheetBg)
     .backgroundBlurStyle(BlurStyle.Regular)
     .borderRadius(this.breakpoint === 'sm' ?
       { topLeft: 22, topRight: 22, bottomLeft: 0, bottomRight: 0 } : 24)
@@ -584,7 +584,7 @@ export struct AboutSettingsSheet {
     .padding({ left: 24, right: 24, top: 22, bottom: 30 })
     .width('100%')
     .constraintSize({ maxWidth: 620 })
-    .backgroundColor(this.pal().bg)
+    .backgroundColor(this.pal().sheetBg)
     .backgroundBlurStyle(BlurStyle.Regular)
     .borderRadius(this.breakpoint === 'sm' ?
       { topLeft: 22, topRight: 22, bottomLeft: 0, bottomRight: 0 } : 24)
@@ -640,7 +640,7 @@ export struct AboutSettingsSheet {
     }
     .width('100%')
     .constraintSize({ maxWidth: 680 })
-    .backgroundColor(this.pal().bg)
+    .backgroundColor(this.pal().sheetBg)
     .backgroundBlurStyle(BlurStyle.Regular)
     .borderRadius(this.breakpoint === 'sm' ?
       { topLeft: 22, topRight: 22, bottomLeft: 0, bottomRight: 0 } : 24)
@@ -732,7 +732,7 @@ export struct AboutSettingsSheet {
     .width('100%').height('100%')
     .constraintSize({ minHeight: 360, maxWidth: 680, maxHeight: 820 })
     .padding({ left: 24, right: 24, top: 22, bottom: 30 })
-    .backgroundColor(this.pal().bg)
+    .backgroundColor(this.pal().sheetBg)
     .backgroundBlurStyle(BlurStyle.Regular)
     .borderRadius(this.breakpoint === 'sm' ?
       { topLeft: 22, topRight: 22, bottomLeft: 0, bottomRight: 0 } : 24)

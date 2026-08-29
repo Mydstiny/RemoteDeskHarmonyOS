@@ -995,7 +995,7 @@ export struct MoonlightHostAddFlow {
         top: 20,
         bottom: this.breakpoint === 'sm' ? 28 : 24
       })
-        .backgroundColor(this.pal().card)
+        .backgroundColor(this.pal().sheetBg)
     }.width('100%')
   }
 }

@@ -496,7 +496,7 @@ struct LoginPage {
       .width('100%').padding({ left: 24, right: 24, bottom: 36 })
     }
     .width('100%')
-    .backgroundColor(this.pal().bg)
+    .backgroundColor(this.pal().sheetBg)
     .borderRadius(this.breakpoint === 'sm' ? { topLeft: 20, topRight: 20, bottomLeft: 0, bottomRight: 0 } : 20)
   }
 
@@ -536,7 +536,7 @@ struct LoginPage {
         .margin({ bottom: 24 })
     }
     .width('100%')
-    .backgroundColor(this.pal().bg)
+    .backgroundColor(this.pal().sheetBg)
     .borderRadius(this.breakpoint === 'sm' ? { topLeft: 20, topRight: 20, bottomLeft: 0, bottomRight: 0 } : 20)
   }
 }

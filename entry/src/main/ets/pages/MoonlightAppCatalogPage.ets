@@ -1532,7 +1532,8 @@ export struct MoonlightAppCatalogSurface {
       }.width('100%').layoutWeight(1).constraintSize({ maxWidth: 1320 })
         .padding({ left: this.breakpoint === 'sm' ? 14 : 24, right: this.breakpoint === 'sm' ? 14 : 24,
           bottom: 24 })
-    }.width('100%').height(this.catalogSurfaceHeight()).backgroundColor(this.pal().bg)
+    }.width('100%').height(this.catalogSurfaceHeight())
+      .backgroundColor(this.embedded ? this.pal().sheetBg : this.pal().bg)
   }
 
   build() {
@@ -1552,6 +1553,8 @@ export struct MoonlightAppCatalogSurface {
           height: SheetSize.FIT_CONTENT,
           preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
           dragBar: false,
+          backgroundColor: this.pal().sheetBg,
+          blurStyle: BlurStyle.NONE,
           showClose: false,
           onWillDismiss: (action: DismissSheetAction): void => {
             if (this.showLaunchSheet) { this.cancelLaunchSheet(); }
@@ -1563,6 +1566,8 @@ export struct MoonlightAppCatalogSurface {
           height: SheetSize.FIT_CONTENT,
           preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
           dragBar: false,
+          backgroundColor: this.pal().sheetBg,
+          blurStyle: BlurStyle.NONE,
           showClose: false,
           onWillDismiss: (action: DismissSheetAction): void => {
             if (!moonlightRecoverySheetDismissAllowed(this.recoveryActing)) {

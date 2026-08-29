@@ -9,6 +9,7 @@ import {
 @Component
 export struct SshTransferCenter {
   @StorageProp('accentColor') accentColor: string = '#007DFF';
+  @Prop sheetBackgroundColor: string = '#1C1C1F';
   @Prop tasks: Array<SshTransferCenterTaskView> = [];
   @Prop summary: SshTransferCenterSummary = { total: 0, active: 0, attention: 0, completed: 0 };
   @Prop compact: boolean = false;
@@ -136,6 +137,6 @@ export struct SshTransferCenter {
     .width('100%').height('100%')
     .padding({ left: this.compact ? 14 : 20, right: this.compact ? 14 : 20,
       top: 18, bottom: 16 })
-    .backgroundColor('#111820')
+    .backgroundColor(this.sheetBackgroundColor)
   }
 }

@@ -219,7 +219,8 @@ export struct SshAddFlow {
       // Keep the SSH flow inside its parent just like the other host flows.
       .width('100%')
       .height('auto')
-        .padding({ left: 20, right: 20, top: 20, bottom: 22 }).backgroundColor(this.pal().card)
+        .padding({ left: 20, right: 20, top: 20, bottom: 22 })
+        .backgroundColor(this.pal().sheetBg)
     }
   }
 }

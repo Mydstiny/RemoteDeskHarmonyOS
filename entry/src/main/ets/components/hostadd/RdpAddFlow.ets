@@ -381,6 +381,6 @@ export struct RdpAddFlow {
         Text(this.errorText).fontSize(12).fontColor(this.pal().danger).margin({ top: 10 })
       }
     }.width('100%').padding({ left: 20, right: 20, top: 20, bottom: 22 })
-    .backgroundColor(this.pal().card)
+    .backgroundColor(this.pal().sheetBg)
   }
 }

@@ -154,7 +154,7 @@ export struct VncSheetScaffold {
     .width('100%')
     .height(this.fitContent ? 'auto' : '100%')
     .constraintSize({ maxWidth: VNC_SHEET_MAX_WIDTH })
-    .backgroundColor(this.pal().card)
+    .backgroundColor(this.pal().sheetBg)
     .onAreaChange((_old: Area, next: Area): void => {
       const height: number = next.height as number;
       if (Number.isFinite(height) && height > 0 && Math.abs(height - this.measuredHeight) >= 0.5) {

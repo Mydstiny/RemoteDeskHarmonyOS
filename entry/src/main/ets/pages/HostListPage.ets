@@ -15797,7 +15797,7 @@ struct HostListPage {
     }
     .width('100%')
     .padding(20)
-    .backgroundColor(this.pal().bg)
+    .backgroundColor(this.pal().sheetBg)
     .backgroundBlurStyle(BlurStyle.Regular)
     .borderRadius(this.breakpoint === 'sm' ? { topLeft: 20, topRight: 20, bottomLeft: 0, bottomRight: 0 } : 20)
     .constraintSize({ maxWidth: 760 })
@@ -16078,7 +16078,7 @@ struct HostListPage {
             })
         }.width('100%').margin({ top: 12 })
       }
-    }.width('100%').padding(20).backgroundColor(this.pal().bg)
+    }.width('100%').padding(20).backgroundColor(this.pal().sheetBg)
       .backgroundBlurStyle(BlurStyle.Regular)
       .borderRadius(this.breakpoint === 'sm' ?
         { topLeft: 20, topRight: 20, bottomLeft: 0, bottomRight: 0 } : 20)
@@ -16168,7 +16168,7 @@ struct HostListPage {
           .backgroundColor(this.accentColor).fontColor(Color.White).borderRadius(10)
           .margin({ left: 12 }).onClick((): void => { this.confirmVncCredentialPreflight(); })
       }.width('100%').margin({ top: 18 })
-    }.width('100%').padding(20).backgroundColor(this.pal().bg)
+    }.width('100%').padding(20).backgroundColor(this.pal().sheetBg)
       .backgroundBlurStyle(BlurStyle.Regular)
       .borderRadius(this.breakpoint === 'sm' ?
         { topLeft: 20, topRight: 20, bottomLeft: 0, bottomRight: 0 } : 20)
@@ -16201,7 +16201,7 @@ struct HostListPage {
     }
     .width('100%')
     .padding(20)
-    .backgroundColor(this.pal().bg)
+    .backgroundColor(this.pal().sheetBg)
     .backgroundBlurStyle(BlurStyle.Regular)
     .borderRadius(this.breakpoint === 'sm' ? { topLeft: 20, topRight: 20, bottomLeft: 0, bottomRight: 0 } : 20)
     .constraintSize({ maxWidth: 560 })
@@ -16758,7 +16758,7 @@ struct HostListPage {
           }.width('100%').margin({ top: 22 })
         }.width('100%').padding({ left: 24, right: 24, top: 24, bottom: 32 }).alignItems(HorizontalAlign.Start)
       }
-    }.width('100%').backgroundColor(this.pal().bg).borderRadius(24)
+    }.width('100%').backgroundColor(this.pal().sheetBg).borderRadius(24)
       .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.BOTTOM])
   }
 
@@ -16835,7 +16835,7 @@ struct HostListPage {
     }
     .width('100%')
     .constraintSize({ maxWidth: 620 })
-    .backgroundColor(this.pal().bg)
+    .backgroundColor(this.pal().sheetBg)
     .backgroundBlurStyle(BlurStyle.Regular)
     .borderRadius(this.breakpoint === 'sm' ? { topLeft: 22, topRight: 22, bottomLeft: 0, bottomRight: 0 } : 24)
   }
@@ -16932,7 +16932,7 @@ struct HostListPage {
     }
     .width('100%')
     .constraintSize({ maxWidth: 620 })
-    .backgroundColor(this.pal().bg)
+    .backgroundColor(this.pal().sheetBg)
     .backgroundBlurStyle(BlurStyle.Regular)
     .borderRadius(this.breakpoint === 'sm' ? { topLeft: 22, topRight: 22, bottomLeft: 0, bottomRight: 0 } : 24)
   }
@@ -17057,7 +17057,7 @@ struct HostListPage {
     }.width('100%')
     .padding({ left: 24, right: 24, top: 8, bottom: 40 })
     .borderRadius(this.breakpoint === 'sm' ? { topLeft: 20, topRight: 20, bottomLeft: 0, bottomRight: 0 } : 20)
-    .backgroundColor(this.pal().bg).backgroundBlurStyle(BlurStyle.Regular)
+    .backgroundColor(this.pal().sheetBg).backgroundBlurStyle(BlurStyle.Regular)
     .shadow({ radius: this.breakpoint === 'sm' ? 0 : 24, color: this.breakpoint === 'sm' ? 'rgba(0,0,0,0)' : 'rgba(0,0,0,0.12)', offsetY: this.breakpoint === 'sm' ? 0 : 6 })
     .border(this.breakpoint === 'sm'
       ? { width: 0, color: Color.Transparent, style: BorderStyle.Solid }
@@ -18246,7 +18246,7 @@ struct HostListPage {
         .height(this.rustDeskHosts().length > 4 ? 420 : (this.rustDeskHosts().length * 112 + 12))
         .padding({ left: 20, right: 20 }).margin({ bottom: 22 })
       }
-    }.width('100%').backgroundColor(this.pal().bg).constraintSize({ maxWidth: 620, maxHeight: 620 })
+    }.width('100%').backgroundColor(this.pal().sheetBg).constraintSize({ maxWidth: 620, maxHeight: 620 })
     .borderRadius(this.breakpoint === 'sm' ? { topLeft: 20, topRight: 20, bottomLeft: 0, bottomRight: 0 } : 20)
   }
 
@@ -18788,7 +18788,7 @@ struct HostListPage {
     .padding({ left: 24, right: 24, top: 24, bottom: 24 })
     .safeAreaPadding({ bottom: 20 })
     .borderRadius(this.breakpoint === 'sm' ? 0 : 20)
-    .backgroundColor(this.pal().bg)
+    .backgroundColor(this.pal().sheetBg)
     .backgroundBlurStyle(BlurStyle.Regular)
     .shadow({ radius: this.breakpoint === 'sm' ? 0 : 24, color: this.breakpoint === 'sm' ? 'rgba(0,0,0,0)' : 'rgba(0,0,0,0.12)', offsetY: this.breakpoint === 'sm' ? 0 : 6 })
     .border(this.breakpoint === 'sm'
@@ -19028,7 +19028,7 @@ struct HostListPage {
       }.width('100%').padding({ left: 24, right: 24, bottom: 28 })
     }
     .width('100%')
-    .backgroundColor(this.pal().bg)
+    .backgroundColor(this.pal().sheetBg)
     .backgroundBlurStyle(BlurStyle.Regular)
     .shadow(this.breakpoint === 'sm'
       ? { radius: 0, color: 'rgba(0,0,0,0)', offsetY: 0 } as ShadowOptions
@@ -19090,7 +19090,7 @@ struct HostListPage {
     }
     .id('rdpCredentialEditor-' + this.rdpCredEditorKey.toString())
     .width('100%')
-    .backgroundColor(this.pal().bg)
+    .backgroundColor(this.pal().sheetBg)
     .backgroundBlurStyle(BlurStyle.Regular)
     .shadow(this.breakpoint === 'sm'
       ? { radius: 0, color: 'rgba(0,0,0,0)', offsetY: 0 } as ShadowOptions
@@ -19643,7 +19643,7 @@ struct HostListPage {
     }
     .padding({ left: 24, right: 24, top: 24, bottom: 40 })
     .width('100%')
-    .backgroundColor(this.pal().bg)
+    .backgroundColor(this.pal().sheetBg)
     .backgroundBlurStyle(BlurStyle.Regular)
     .shadow(this.breakpoint === 'sm'
       ? { radius: 0, color: 'rgba(0,0,0,0)', offsetY: 0 } as ShadowOptions
@@ -19683,7 +19683,7 @@ struct HostListPage {
       .width('100%').padding({ left: 24, right: 24 })
       Blank().height(24)
     }
-    .width('100%').backgroundColor(this.pal().bg).borderRadius(20).constraintSize({ maxWidth: 720 })
+    .width('100%').backgroundColor(this.pal().sheetBg).borderRadius(20).constraintSize({ maxWidth: 720 })
   }
 
   // ==================== 终端字体颜色选择 Sheet ====================
@@ -19714,7 +19714,7 @@ struct HostListPage {
       .width('100%').padding({ left: 24, right: 24 })
       Blank().height(24)
     }
-    .width('100%').backgroundColor(this.pal().bg).borderRadius(20).constraintSize({ maxWidth: 720 })
+    .width('100%').backgroundColor(this.pal().sheetBg).borderRadius(20).constraintSize({ maxWidth: 720 })
   }
 
   // ==================== 终端字体大小选择 Sheet ====================
@@ -19749,7 +19749,7 @@ struct HostListPage {
       .width('100%').padding({ left: 24, right: 24 })
       Blank().height(24)
     }
-    .width('100%').backgroundColor(this.pal().bg).borderRadius(20).constraintSize({ maxWidth: 720 })
+    .width('100%').backgroundColor(this.pal().sheetBg).borderRadius(20).constraintSize({ maxWidth: 720 })
   }
 
   // ==================== 终端行距选择 Sheet ====================
@@ -19785,7 +19785,7 @@ struct HostListPage {
       .width('100%').padding({ left: 24, right: 24 })
       Blank().height(24)
     }
-    .width('100%').backgroundColor(this.pal().bg).borderRadius(20).constraintSize({ maxWidth: 720 })
+    .width('100%').backgroundColor(this.pal().sheetBg).borderRadius(20).constraintSize({ maxWidth: 720 })
   }
 
   @Builder wallPicker() {
@@ -19802,7 +19802,7 @@ struct HostListPage {
         })
       }.columnsTemplate('1fr 1fr 1fr').rowsGap(12).columnsGap(12).width('100%').height(200)
     }.padding({ left: 24, right: 24, top: 24, bottom: 40 }).width('100%')
-      .backgroundColor(this.pal().bg).borderRadius(this.breakpoint === 'sm' ? { topLeft: 20, topRight: 20, bottomLeft: 0, bottomRight: 0 } : 20)
+      .backgroundColor(this.pal().sheetBg).borderRadius(this.breakpoint === 'sm' ? { topLeft: 20, topRight: 20, bottomLeft: 0, bottomRight: 0 } : 20)
   }
 
   @Builder statItem(label: string, count: number, color: string) {
@@ -19863,7 +19863,7 @@ struct HostListPage {
       }
       Blank().height(32)
     }.width('100%')
-    .backgroundColor(this.pal().bg).borderRadius(this.breakpoint === 'sm' ? { topLeft: 20, topRight: 20, bottomLeft: 0, bottomRight: 0 } : 20)
+    .backgroundColor(this.pal().sheetBg).borderRadius(this.breakpoint === 'sm' ? { topLeft: 20, topRight: 20, bottomLeft: 0, bottomRight: 0 } : 20)
   }
 
   // ==================== Private ====================

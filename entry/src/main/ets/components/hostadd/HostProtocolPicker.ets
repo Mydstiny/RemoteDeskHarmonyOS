@@ -96,6 +96,6 @@ export struct HostProtocolPicker {
       }
       .width('100%').padding({ left: 12, right: 12, top: 8, bottom: 2 })
     }.width('100%').padding({ left: 20, right: 20, top: 20, bottom: 18 })
-    .backgroundColor(this.pal().card)
+    .backgroundColor(this.pal().sheetBg)
   }
 }

@@ -13,6 +13,7 @@ import {
 @Component
 export struct SshBroadcastSheet {
   @StorageProp('accentColor') accentColor: string = '#007DFF';
+  @Prop sheetBackgroundColor: string = '#1C1C1F';
   @Prop targets: Array<SshBroadcastTargetV1> = [];
   @Prop selectedHostIds: Array<string> = [];
   @Prop text: string = '';
@@ -110,6 +111,6 @@ export struct SshBroadcastSheet {
             .onClick((): void => { this.onSend(); })
         }.width('100%').padding({ left: 16, right: 16, bottom: 18 })
       }.layoutWeight(1).width('100%').scrollBar(BarState.Auto)
-    }.width('100%').height('100%').backgroundColor('#341A1A')
+    }.width('100%').height('100%').backgroundColor(this.sheetBackgroundColor)
   }
 }

@@ -182,6 +182,6 @@ export struct RemotePinchZoomSettingsSheet {
           }.width('100%').margin({ top: 18, bottom: 24 })
         }.width('100%').padding({ left: 22, right: 22 })
       }.layoutWeight(1).scrollBar(BarState.Auto).edgeEffect(EdgeEffect.Spring)
-    }.width('100%').height('100%').backgroundColor(this.pal().bg).borderRadius(20)
+    }.width('100%').height('100%').backgroundColor(this.pal().sheetBg).borderRadius(20)
   }
 }

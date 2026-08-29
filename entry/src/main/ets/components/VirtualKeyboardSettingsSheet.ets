@@ -59,7 +59,7 @@ export struct VirtualKeyboardSettingsSheet {
   onCustomEditorVisibleChange: (visible: boolean) => void = (_visible: boolean): void => {};
 
   private dark(): boolean { return this.theme === 'dark'; }
-  private bg(): string { return this.dark() ? '#11141A' : '#F4F6F9'; }
+  private bg(): string { return this.dark() ? '#1C1C1F' : '#F4F6F9'; }
   private card(): string { return this.dark() ? 'rgba(255,255,255,0.075)' : '#FFFFFF'; }
   private cardStroke(): string {
     return this.dark() ? 'rgba(255,255,255,0.10)' : 'rgba(18,24,36,0.08)';

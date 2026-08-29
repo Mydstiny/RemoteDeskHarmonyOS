@@ -5464,6 +5464,7 @@ struct SshTerminal {
   @Builder
   private SftpTransferCenterContent() {
     SshTransferCenter({
+      sheetBackgroundColor: this.pal().sheetBg,
       tasks: this.sftpTransferCenterTasks(),
       summary: this.sftpTransferCenterSummary(),
       compact: this.sshCompactChrome(),
@@ -5856,7 +5857,7 @@ struct SshTerminal {
     }
     .width('100%').height('100%')
     .padding({ left: 16, right: 16, top: 20, bottom: 14 })
-    .backgroundColor('#171D25')
+    .backgroundColor(this.pal().sheetBg)
     .borderRadius(this.sshTabPickerSheetLayout().bottomAnchored
       ? { topLeft: 20, topRight: 20, bottomLeft: 0, bottomRight: 0 } : 20)
   }
@@ -5875,6 +5876,7 @@ struct SshTerminal {
   @Builder
   private sshCommandPaletteSheet() {
     SshCommandPalette({
+      sheetBackgroundColor: this.pal().sheetBg,
       commands: this.sshCommandRegistry,
       compact: this.breakpoint === 'sm',
       onExecute: (commandId: string): void => { this.queueSshCommand(commandId); },
@@ -5919,7 +5921,7 @@ struct SshTerminal {
       }.width('100%')
     }
     .width('100%').padding({ left: 20, right: 20, top: 20, bottom: 18 })
-    .backgroundColor('#171D25')
+    .backgroundColor(this.pal().sheetBg)
     .onAppear((): void => {
       setTimeout((): void => {
         try { focusControl.requestFocus('sshTabRenameInput'); } catch (_err) {}
@@ -12765,6 +12767,7 @@ struct SshTerminal {
   @Builder
   private TerminalProfileSheetContent() {
     SshTerminalProfileSheet({
+      sheetBackgroundColor: this.pal().sheetBg,
       profiles: this.terminalProfiles,
       resolvedProfile: this.resolvedTerminalProfile,
       globalProfileId: this.terminalGlobalProfileId,
@@ -12793,6 +12796,7 @@ struct SshTerminal {
   @Builder
   private SshProductivitySheetContent() {
     SshProductivitySheet({
+      sheetBackgroundColor: this.pal().sheetBg,
       document: this.sshProductivityDocument,
       ready: this.sshProductivityReady,
       sessionLogsEnabled: this.sshSessionLogsEnabled(),
@@ -12844,6 +12848,7 @@ struct SshTerminal {
   @Builder
   private SshSessionLogSheetContent() {
     SshSessionLogSheet({
+      sheetBackgroundColor: this.pal().sheetBg,
       document: this.sshSessionLogDocument,
       results: this.sshSessionLogResults,
       ready: this.sshSessionLogReady,
@@ -12863,6 +12868,7 @@ struct SshTerminal {
   @Builder
   private SshBroadcastSheetContent() {
     SshBroadcastSheet({
+      sheetBackgroundColor: this.pal().sheetBg,
       targets: this.sshBroadcastTargets,
       selectedHostIds: this.sshBroadcastSelectedHostIds,
       text: this.sshBroadcastText,
@@ -13979,7 +13985,7 @@ struct SshTerminal {
           .onClick((): void => { this.finishForwardingConfirmation(true); })
       }.width('100%')
     }.width('100%').padding({ left: 20, right: 20, top: 18, bottom: 18 })
-      .alignItems(HorizontalAlign.Start).backgroundColor('#171D25')
+      .alignItems(HorizontalAlign.Start).backgroundColor(this.pal().sheetBg)
   }
 
   @Builder
@@ -17073,7 +17079,7 @@ struct SshTerminal {
     }
     .width('100%').height('100%')
     .padding({ left: 20, right: 20, top: 20, bottom: 18 })
-    .backgroundColor('#171D25')
+    .backgroundColor(this.pal().sheetBg)
     .borderRadius(18)
   }
 
@@ -18045,7 +18051,8 @@ struct SshTerminal {
     }
     .width('100%').constraintSize({ maxWidth: 620 })
     .padding({ left: 22, right: 22, top: 20, bottom: 22 })
-    .borderRadius(18).backgroundColor(this.sshPal().bg)
+    .borderRadius(18).backgroundColor(rootSheetMountToken > 0 ?
+      this.pal().sheetBg : this.sshPal().bg)
     .onAppear(this.sftpRootSheetAppearHandler(rootSheetMountToken))
   }
 
@@ -18063,7 +18070,7 @@ struct SshTerminal {
         .width('100%').height('100%')
         .constraintSize({ maxWidth: 2000, minHeight: 0 })
         .padding({ left: 20, right: 20, top: 18, bottom: 16 })
-        .backgroundColor(this.sshPal().bg)
+        .backgroundColor(rootSheetMountToken > 0 ? this.pal().sheetBg : this.sshPal().bg)
       } else {
         this.SftpPhoneLegacySheet(rootSheetMountToken)
       }
@@ -18071,7 +18078,7 @@ struct SshTerminal {
     .width('100%')
     .height(this.sftpPadPcLayout() ? '100%' : 'auto')
     .constraintSize({ minHeight: 0 })
-    .backgroundColor(this.sshPal().bg)
+    .backgroundColor(rootSheetMountToken > 0 ? this.pal().sheetBg : this.sshPal().bg)
     .onAppear((): void => {
       if (this.sftpPadPcLayout()) { this.handleSftpRootSheetAppear(rootSheetMountToken); }
     })
@@ -18854,7 +18861,7 @@ struct SshTerminal {
           preferType: SheetType.CENTER,
           width: this.sftpPeerPickerSheetWidth(),
           dragBar: false,
-          backgroundColor: '#171D25',
+          backgroundColor: this.pal().sheetBg,
           blurStyle: BlurStyle.NONE,
           showClose: false,
           maskColor: 'rgba(0,0,0,0.30)',
@@ -18878,7 +18885,7 @@ struct SshTerminal {
             ? SheetType.BOTTOM : SheetType.CENTER,
           width: this.forwardingSheetWidth(),
           dragBar: this.forwardingSheetLayout().bottomAnchored,
-          backgroundColor: '#171D25',
+          backgroundColor: this.pal().sheetBg,
           blurStyle: BlurStyle.NONE,
           showClose: false,
           maskColor: 'rgba(0,0,0,0.42)',
@@ -18905,7 +18912,7 @@ struct SshTerminal {
           preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
           width: this.forwardingConfirmSheetWidth(),
           dragBar: false,
-          backgroundColor: '#171D25',
+          backgroundColor: this.pal().sheetBg,
           blurStyle: BlurStyle.NONE,
           showClose: false,
           maskColor: 'rgba(0,0,0,0.48)',
@@ -18971,7 +18978,7 @@ struct SshTerminal {
           preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
           width: this.breakpoint === 'sm' ? '100%' : '700vp',
           dragBar: this.breakpoint === 'sm',
-          backgroundColor: '#171D25',
+          backgroundColor: this.pal().sheetBg,
           blurStyle: BlurStyle.NONE,
           showClose: false,
           maskColor: 'rgba(0,0,0,0.48)',
@@ -18994,7 +19001,7 @@ struct SshTerminal {
           preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
           width: this.breakpoint === 'sm' ? '100%' : '760vp',
           dragBar: this.breakpoint === 'sm',
-          backgroundColor: '#111820',
+          backgroundColor: this.pal().sheetBg,
           blurStyle: BlurStyle.NONE,
           showClose: false,
           maskColor: 'rgba(0,0,0,0.42)',
@@ -19022,7 +19029,7 @@ struct SshTerminal {
           preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
           width: this.breakpoint === 'sm' ? '100%' : '620vp',
           dragBar: this.breakpoint === 'sm',
-          backgroundColor: '#171D25',
+          backgroundColor: this.pal().sheetBg,
           blurStyle: BlurStyle.NONE,
           showClose: false,
           maskColor: 'rgba(0,0,0,0.42)',
@@ -19048,7 +19055,7 @@ struct SshTerminal {
           preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
           width: this.breakpoint === 'sm' ? '100%' : '760vp',
           dragBar: this.breakpoint === 'sm',
-          backgroundColor: '#171D25',
+          backgroundColor: this.pal().sheetBg,
           blurStyle: BlurStyle.NONE,
           showClose: false,
           maskColor: 'rgba(0,0,0,0.48)',
@@ -19076,7 +19083,7 @@ struct SshTerminal {
           preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
           width: this.breakpoint === 'sm' ? '100%' : '760vp',
           dragBar: this.breakpoint === 'sm',
-          backgroundColor: '#171D25',
+          backgroundColor: this.pal().sheetBg,
           blurStyle: BlurStyle.NONE,
           showClose: false,
           maskColor: 'rgba(0,0,0,0.48)',
@@ -19104,7 +19111,7 @@ struct SshTerminal {
           preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
           width: this.breakpoint === 'sm' ? '100%' : '760vp',
           dragBar: this.breakpoint === 'sm',
-          backgroundColor: '#341A1A',
+          backgroundColor: this.pal().sheetBg,
           blurStyle: BlurStyle.NONE,
           showClose: false,
           maskColor: 'rgba(42,0,0,0.56)',
@@ -19129,7 +19136,7 @@ struct SshTerminal {
           preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
           width: this.breakpoint === 'sm' ? '100%' : '480vp',
           dragBar: this.breakpoint === 'sm',
-          backgroundColor: '#171D25',
+          backgroundColor: this.pal().sheetBg,
           blurStyle: BlurStyle.NONE,
           showClose: false,
           maskColor: 'rgba(0,0,0,0.44)',
@@ -19154,7 +19161,7 @@ struct SshTerminal {
             ? SheetType.BOTTOM : SheetType.CENTER,
           width: this.sshTabPickerSheetWidth(),
           dragBar: this.sshTabPickerSheetLayout().bottomAnchored,
-          backgroundColor: '#171D25',
+          backgroundColor: this.pal().sheetBg,
           blurStyle: BlurStyle.NONE,
           showClose: false,
           onWillDismiss: (action: DismissSheetAction): void => {

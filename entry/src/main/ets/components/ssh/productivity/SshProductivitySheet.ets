@@ -16,6 +16,7 @@ import {
 @Component
 export struct SshProductivitySheet {
   @StorageProp('accentColor') accentColor: string = '#007DFF';
+  @Prop sheetBackgroundColor: string = '#1C1C1F';
   @Prop document: SshProductivityDocumentV1;
   @Prop ready: boolean = false;
   @Prop hostId: string = '';
@@ -306,6 +307,6 @@ export struct SshProductivitySheet {
         }.width('100%').padding({ left: 16, right: 16, bottom: 18 })
       }.layoutWeight(1).width('100%').scrollBar(BarState.Auto)
     }
-    .width('100%').height('100%').backgroundColor('#171D25')
+    .width('100%').height('100%').backgroundColor(this.sheetBackgroundColor)
   }
 }
