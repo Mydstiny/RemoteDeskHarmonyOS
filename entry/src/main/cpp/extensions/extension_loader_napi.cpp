@@ -10581,54 +10581,78 @@ napi_value NapiValidatePublicKeyForAuthorizedKeys(napi_env env, napi_callback_in
  * NAPI: installSshPublicKey(host, port, username, password, privateKeyPem, passphrase, publicKey): object
  * 同步阻塞 — 调用方应在 ArkTS async 上下文中调用并显示 loading 指示器
  */
+static bool ReadSshOperationEndpointArgs(
+    napi_env env, napi_value hostValue, napi_value portValue,
+    std::string& host, int32_t& port);
+
 napi_value NapiInstallSshPublicKey(napi_env env, napi_callback_info info) {
     size_t argc = 7;
-    napi_value args[7];
-    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    napi_value args[7] = {nullptr};
 
-    char hostBuf[256] = {0};
-    char userBuf[256] = {0};
-    char passBuf[512] = {0};
-    char passphraseBuf[256] = {0};
-    char pubKeyBuf[8192] = {0};
-    int port = 22;
+    struct SensitiveInstallInput final {
+        std::string password;
+        std::string privateKeyPem;
+        std::string passphrase;
 
-    if (argc > 0) napi_get_value_string_utf8(env, args[0], hostBuf, sizeof(hostBuf), nullptr);
-    if (argc > 1) napi_get_value_int32(env, args[1], &port);
-    if (argc > 2) napi_get_value_string_utf8(env, args[2], userBuf, sizeof(userBuf), nullptr);
-    if (argc > 3) napi_get_value_string_utf8(env, args[3], passBuf, sizeof(passBuf), nullptr);
-    std::string privateKeyPem;
-    if (argc > 4) privateKeyPem = GetNapiString(env, args[4]);
-    if (argc > 5) napi_get_value_string_utf8(env, args[5], passphraseBuf, sizeof(passphraseBuf), nullptr);
-    if (argc > 6) napi_get_value_string_utf8(env, args[6], pubKeyBuf, sizeof(pubKeyBuf), nullptr);
+        ~SensitiveInstallInput() {
+            secureClearString(password);
+            secureClearString(privateKeyPem);
+            secureClearString(passphrase);
+        }
+    } sensitive;
 
-    const std::string logUser = SafeLog::MaskUser(userBuf);
-    const std::string logHost = SafeLog::MaskHost(hostBuf);
-    OH_LOG_INFO(LOG_APP, "[ExtLoader] installSshPublicKey: %{public}s@%{public}s:%{public}d",
-                logUser.c_str(), logHost.c_str(), port);
+    try {
+        const napi_status infoStatus =
+            napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+        std::string host;
+        std::string username;
+        std::string publicKey;
+        int32_t port = 22;
+        if (infoStatus != napi_ok || argc != 7 ||
+            !ReadSshOperationEndpointArgs(env, args[0], args[1], host, port) ||
+            !ReadBoundedNapiStringValue(env, args[2], 1024, username) ||
+            !ReadBoundedNapiStringValue(env, args[3], 65536, sensitive.password) ||
+            !ReadBoundedNapiStringValue(
+                env, args[4], kMaxGenericNapiStringLength, sensitive.privateKeyPem) ||
+            !ReadBoundedNapiStringValue(env, args[5], 65536, sensitive.passphrase) ||
+            !ReadBoundedNapiStringValue(env, args[6], 8192, publicKey)) {
+            napi_throw_type_error(env, nullptr, "invalid SSH public key install input");
+            return nullptr;
+        }
 
-    SshPublicKeyInstallResult res = installSshPublicKey(
-        std::string(hostBuf), port, std::string(userBuf),
-        std::string(passBuf), privateKeyPem,
-        std::string(passphraseBuf), std::string(pubKeyBuf));
+        const std::string logUser = SafeLog::MaskUser(username);
+        const std::string logHost = SafeLog::MaskHost(host);
+        OH_LOG_INFO(LOG_APP,
+            "[ExtLoader] installSshPublicKey: %{public}s@%{public}s:%{public}d",
+            logUser.c_str(), logHost.c_str(), port);
 
-    napi_value result;
-    napi_create_object(env, &result);
+        const SshPublicKeyInstallResult res = installSshPublicKey(
+            host, port, username, sensitive.password, sensitive.privateKeyPem,
+            sensitive.passphrase, publicKey);
 
-    napi_value valOk, valAlready, valVerified, valCode, valMsg;
-    napi_get_boolean(env, res.ok, &valOk);
-    napi_get_boolean(env, res.alreadyInstalled, &valAlready);
-    napi_get_boolean(env, res.verified, &valVerified);
-    napi_create_int32(env, res.code, &valCode);
-    napi_create_string_utf8(env, res.message.c_str(), NAPI_AUTO_LENGTH, &valMsg);
+        napi_value result;
+        napi_create_object(env, &result);
 
-    napi_set_named_property(env, result, "ok", valOk);
-    napi_set_named_property(env, result, "alreadyInstalled", valAlready);
-    napi_set_named_property(env, result, "verified", valVerified);
-    napi_set_named_property(env, result, "code", valCode);
-    napi_set_named_property(env, result, "message", valMsg);
+        napi_value valOk, valAlready, valVerified, valCode, valMsg;
+        napi_get_boolean(env, res.ok, &valOk);
+        napi_get_boolean(env, res.alreadyInstalled, &valAlready);
+        napi_get_boolean(env, res.verified, &valVerified);
+        napi_create_int32(env, res.code, &valCode);
+        napi_create_string_utf8(env, res.message.c_str(), NAPI_AUTO_LENGTH, &valMsg);
 
-    return result;
+        napi_set_named_property(env, result, "ok", valOk);
+        napi_set_named_property(env, result, "alreadyInstalled", valAlready);
+        napi_set_named_property(env, result, "verified", valVerified);
+        napi_set_named_property(env, result, "code", valCode);
+        napi_set_named_property(env, result, "message", valMsg);
+        return result;
+    } catch (const std::exception& ex) {
+        napi_throw_error(env, nullptr, ex.what());
+        return nullptr;
+    } catch (...) {
+        napi_throw_error(env, nullptr, "SSH public key install native exception");
+        return nullptr;
+    }
 }
 
 static napi_value CreateSshAuthTestResultValue(
