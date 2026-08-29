@@ -263,7 +263,8 @@ function invalidEndpointCharacters(value: string): boolean {
 }
 
 function legacyNumericHost(value: string): boolean {
-  const labels: string[] = value.split('.');
+  const candidate: string = value.endsWith('.') ? value.substring(0, value.length - 1) : value;
+  const labels: string[] = candidate.split('.');
   if (labels.length === 0) { return false; }
   for (let index = 0; index < labels.length; index++) {
     if (!/^[0-9]+$/.test(labels[index]) && !/^0[xX][0-9a-fA-F]+$/.test(labels[index])) {
@@ -279,6 +280,7 @@ function ipv4NotConnectable(octets: number[]): boolean {
 
 function parseScope(value: string, mode: EndpointParseMode): EndpointScopeKind {
   if (/^[0-9]+$/.test(value)) {
+    if (value.length > 10) { return 'none'; }
     const numeric: number = Number(value);
     return mode === 'runtime' && Number.isSafeInteger(numeric) && numeric >= 1 &&
       numeric <= 0xffffffff ? 'numeric' : 'none';
@@ -296,8 +298,8 @@ export function parseEndpointHost(
 ): EndpointAddressResult {
   const source: string = input;
   if (source === '') { return failedEndpoint('empty'); }
-  if (source.length > ENDPOINT_MAX_INPUT_LENGTH) { return failedEndpoint('input_too_long'); }
   if (invalidEndpointCharacters(source)) { return failedEndpoint('invalid_syntax'); }
+  if (source.length > ENDPOINT_MAX_INPUT_LENGTH) { return failedEndpoint('input_too_long'); }
 
   let host: string = source;
   let bracketed: boolean = false;
@@ -320,6 +322,7 @@ export function parseEndpointHost(
     scope = host.substring(percent + 1);
     scopeKind = parseScope(scope, mode);
     if (scopeKind === 'none') { return failedEndpoint('scope_not_portable'); }
+    if (scopeKind === 'numeric') { scope = Number(scope).toString(); }
     host = host.substring(0, percent);
   }
 
@@ -360,8 +363,8 @@ export function parseEndpointAuthority(
   if (!validPort(defaultPort)) { return failedEndpoint('invalid_port'); }
   const source: string = input;
   if (source === '') { return failedEndpoint('empty'); }
-  if (source.length > ENDPOINT_MAX_INPUT_LENGTH) { return failedEndpoint('input_too_long'); }
   if (invalidEndpointCharacters(source)) { return failedEndpoint('invalid_syntax'); }
+  if (source.length > ENDPOINT_MAX_INPUT_LENGTH) { return failedEndpoint('input_too_long'); }
   let hostText: string = source;
   let port: number = defaultPort;
   if (source.startsWith('[')) {

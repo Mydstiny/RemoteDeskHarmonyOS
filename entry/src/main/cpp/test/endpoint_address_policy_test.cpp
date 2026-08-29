@@ -36,6 +36,9 @@ RDP_TEST_CASE(endpoint_address_separates_persisted_and_runtime_scopes) {
     const auto numeric = ParseHost("fe80::20%3", ParseMode::Runtime);
     RDP_ASSERT(numeric.ok);
     RDP_ASSERT(numeric.endpoint.scopeKind() == ScopeKind::Numeric);
+    RDP_ASSERT(ParseHost("fe80::20%0003", ParseMode::Runtime).endpoint.scope() == "3");
+    RDP_ASSERT(ParseHost("fe80::20%00000000003", ParseMode::Runtime).error ==
+        AddressError::ScopeNotPortable);
     RDP_ASSERT(ParseHost("fe80::20%4294967295", ParseMode::Runtime).ok);
     RDP_ASSERT(ParseHost("fe80::20%0", ParseMode::Runtime).error == AddressError::ScopeNotPortable);
     RDP_ASSERT(ParseHost("fe80::20%4294967296", ParseMode::Runtime).error ==
@@ -56,6 +59,11 @@ RDP_TEST_CASE(endpoint_address_rejects_whitespace_unicode_brackets_and_length) {
     RDP_ASSERT(ParseHost("[192.168.31.177]").error == AddressError::InvalidSyntax);
     RDP_ASSERT(ParseHost("[]").error == AddressError::InvalidSyntax);
     RDP_ASSERT(ParseHost(std::string(kMaxInputLength + 1U, 'a')).error == AddressError::InputTooLong);
+    std::string nonAscii;
+    for (std::size_t index = 0U; index < 300U; ++index) {
+        nonAscii += "\xc3\xa9";
+    }
+    RDP_ASSERT(ParseHost(nonAscii).error == AddressError::InvalidSyntax);
 }
 
 RDP_TEST_CASE(endpoint_address_rejects_nonconnectable_and_legacy_numeric_forms) {
@@ -68,6 +76,10 @@ RDP_TEST_CASE(endpoint_address_rejects_nonconnectable_and_legacy_numeric_forms) 
     RDP_ASSERT(ParseHost("0").error == AddressError::InvalidIpv4);
     RDP_ASSERT(ParseHost("2130706433").error == AddressError::InvalidIpv4);
     RDP_ASSERT(ParseHost("0x7f000001").error == AddressError::InvalidIpv4);
+    RDP_ASSERT(ParseHost("0x7f000001.").error == AddressError::InvalidIpv4);
+    RDP_ASSERT(ParseHost("2130706433.").error == AddressError::InvalidIpv4);
+    RDP_ASSERT(ParseHost("017700000001.").error == AddressError::InvalidIpv4);
+    RDP_ASSERT(ParseHost("0x7f.1.").error == AddressError::InvalidIpv4);
     RDP_ASSERT(ParseHost("127.1").error == AddressError::InvalidIpv4);
     RDP_ASSERT(ParseHost(":::1").error == AddressError::InvalidIpv6);
     RDP_ASSERT(ParseHost("rdp.example:3389").error == AddressError::InvalidIpv6);
@@ -85,6 +97,7 @@ RDP_TEST_CASE(endpoint_address_parses_ports_and_formats_socket_and_uri_authority
     RDP_ASSERT(ParseAuthority("rdp.example:0", 3389U).error == AddressError::InvalidPort);
     RDP_ASSERT(ParseAuthority("rdp.example:65536", 3389U).error == AddressError::InvalidPort);
     RDP_ASSERT(ParseAuthority("rdp.example:", 3389U).error == AddressError::InvalidPort);
+    RDP_ASSERT(ParseAuthority("0x7f000001.:3389", 3389U).error == AddressError::InvalidIpv4);
     RDP_ASSERT(ParseAuthority("[2001:db8::20]:3390junk", 3389U).error == AddressError::InvalidPort);
 }
 
@@ -108,6 +121,7 @@ RDP_TEST_CASE(endpoint_address_builds_only_validated_typed_stable_identity) {
     const ServerIdentity wrongKind(ServerIdentityKind::Dns, "2001:db8::20");
     RDP_ASSERT(IdentityV2(parsed.endpoint, wrongKind).error == IdentityError::InvalidServerIdentity);
     RDP_ASSERT(!ParseServerIdentity("\xe4\xb8\xbb\xe6\x9c\xba.example").ok);
+    RDP_ASSERT(!ParseServerIdentity("0x7f000001.").ok);
 
     const Address fabricated("2001:0DB8::20", AddressFamily::Ipv6, 3389U);
     RDP_ASSERT(IdentityV2(fabricated).error == IdentityError::InvalidEndpoint);

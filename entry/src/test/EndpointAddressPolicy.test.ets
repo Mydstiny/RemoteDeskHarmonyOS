@@ -57,6 +57,9 @@ export default function endpointAddressPolicyTest(): void {
       const numeric: EndpointAddressResult = parseEndpointHost('fe80::20%3', 'runtime');
       expect(numeric.ok).assertTrue();
       expect(numeric.endpoint.scopeKind).assertEqual('numeric');
+      expect(parseEndpointHost('fe80::20%0003', 'runtime').endpoint.scope).assertEqual('3');
+      expect(parseEndpointHost('fe80::20%00000000003', 'runtime').error)
+        .assertEqual('scope_not_portable');
       expect(parseEndpointHost('fe80::20%4294967295', 'runtime').ok).assertTrue();
       expect(parseEndpointHost('fe80::20%0', 'runtime').error).assertEqual('scope_not_portable');
       expect(parseEndpointHost('fe80::20%4294967296', 'runtime').error)
@@ -77,6 +80,7 @@ export default function endpointAddressPolicyTest(): void {
       expect(parseEndpointHost('[192.168.31.177]').error).assertEqual('invalid_syntax');
       expect(parseEndpointHost('[]').error).assertEqual('invalid_syntax');
       expect(parseEndpointHost('a'.repeat(513)).error).assertEqual('input_too_long');
+      expect(parseEndpointHost('é'.repeat(300)).error).assertEqual('invalid_syntax');
     });
 
     it('rejects_nonconnectable_and_legacy_numeric_literal_forms', 0, (): void => {
@@ -89,6 +93,10 @@ export default function endpointAddressPolicyTest(): void {
       expect(parseEndpointHost('0').error).assertEqual('invalid_ipv4');
       expect(parseEndpointHost('2130706433').error).assertEqual('invalid_ipv4');
       expect(parseEndpointHost('0x7f000001').error).assertEqual('invalid_ipv4');
+      expect(parseEndpointHost('0x7f000001.').error).assertEqual('invalid_ipv4');
+      expect(parseEndpointHost('2130706433.').error).assertEqual('invalid_ipv4');
+      expect(parseEndpointHost('017700000001.').error).assertEqual('invalid_ipv4');
+      expect(parseEndpointHost('0x7f.1.').error).assertEqual('invalid_ipv4');
       expect(parseEndpointHost('127.1').error).assertEqual('invalid_ipv4');
       expect(parseEndpointHost(':::1').error).assertEqual('invalid_ipv6');
       expect(parseEndpointHost('rdp.example:3389').error).assertEqual('invalid_ipv6');
@@ -107,6 +115,7 @@ export default function endpointAddressPolicyTest(): void {
       expect(parseEndpointAuthority('rdp.example:0', 3389).error).assertEqual('invalid_port');
       expect(parseEndpointAuthority('rdp.example:65536', 3389).error).assertEqual('invalid_port');
       expect(parseEndpointAuthority('rdp.example:', 3389).error).assertEqual('invalid_port');
+      expect(parseEndpointAuthority('0x7f000001.:3389', 3389).error).assertEqual('invalid_ipv4');
       expect(parseEndpointAuthority('[2001:db8::20]:3390junk', 3389).error)
         .assertEqual('invalid_port');
     });
@@ -132,6 +141,8 @@ export default function endpointAddressPolicyTest(): void {
       expect(endpointIdentityV2(parsed.endpoint, wrongKind).error)
         .assertEqual('invalid_server_identity');
       expect(parseEndpointServerIdentity('主机.example').error)
+        .assertEqual('invalid_server_identity');
+      expect(parseEndpointServerIdentity('0x7f000001.').error)
         .assertEqual('invalid_server_identity');
 
       const fabricated: EndpointAddress = new EndpointAddress(

@@ -162,7 +162,7 @@ std::string CanonicalIpv6(const in6_addr& address) {
     return output.str();
 }
 
-ScopeKind ParseScope(std::string_view value, ParseMode mode) {
+ScopeKind ParseScope(std::string_view value, ParseMode mode, std::string& canonicalScope) {
     if (!value.empty() && std::all_of(value.begin(), value.end(), IsAsciiDigit)) {
         if (mode != ParseMode::Runtime || value.size() > 10U) {
             return ScopeKind::None;
@@ -171,7 +171,11 @@ ScopeKind ParseScope(std::string_view value, ParseMode mode) {
         for (char ch : value) {
             numeric = numeric * 10U + static_cast<std::uint64_t>(ch - '0');
         }
-        return numeric >= 1U && numeric <= 0xffffffffULL ? ScopeKind::Numeric : ScopeKind::None;
+        if (numeric < 1U || numeric > 0xffffffffULL) {
+            return ScopeKind::None;
+        }
+        canonicalScope = std::to_string(numeric);
+        return ScopeKind::Numeric;
     }
     if (value.empty() || value.size() > 32U || !IsAsciiAlpha(value.front())) {
         return ScopeKind::None;
@@ -181,6 +185,7 @@ ScopeKind ParseScope(std::string_view value, ParseMode mode) {
             return ScopeKind::None;
         }
     }
+    canonicalScope = std::string(value);
     return ScopeKind::Interface;
 }
 
@@ -212,6 +217,9 @@ std::string CanonicalHostname(std::string value) {
 }
 
 bool LegacyNumericHost(std::string_view value) {
+    if (!value.empty() && value.back() == '.') {
+        value.remove_suffix(1U);
+    }
     std::size_t start = 0U;
     while (start < value.size()) {
         const std::size_t end = value.find('.', start);
@@ -337,11 +345,11 @@ ParseResult ParseHost(const std::string& input, ParseMode mode) {
     if (source.empty()) {
         return Failed(AddressError::Empty);
     }
-    if (source.size() > kMaxInputLength) {
-        return Failed(AddressError::InputTooLong);
-    }
     if (InvalidEndpointCharacters(source)) {
         return Failed(AddressError::InvalidSyntax);
+    }
+    if (source.size() > kMaxInputLength) {
+        return Failed(AddressError::InputTooLong);
     }
 
     std::string host = source;
@@ -363,8 +371,8 @@ ParseResult ParseHost(const std::string& input, ParseMode mode) {
         if (host.find('%', percent + 1U) != std::string::npos) {
             return Failed(AddressError::InvalidSyntax);
         }
-        scope = host.substr(percent + 1U);
-        scopeKind = ParseScope(scope, mode);
+        const std::string rawScope = host.substr(percent + 1U);
+        scopeKind = ParseScope(rawScope, mode, scope);
         if (scopeKind == ScopeKind::None) {
             return Failed(AddressError::ScopeNotPortable);
         }
@@ -428,11 +436,11 @@ ParseResult ParseAuthority(const std::string& input, std::uint16_t defaultPort, 
     if (source.empty()) {
         return Failed(AddressError::Empty);
     }
-    if (source.size() > kMaxInputLength) {
-        return Failed(AddressError::InputTooLong);
-    }
     if (InvalidEndpointCharacters(source)) {
         return Failed(AddressError::InvalidSyntax);
+    }
+    if (source.size() > kMaxInputLength) {
+        return Failed(AddressError::InputTooLong);
     }
     std::string hostText = source;
     std::uint16_t port = defaultPort;
