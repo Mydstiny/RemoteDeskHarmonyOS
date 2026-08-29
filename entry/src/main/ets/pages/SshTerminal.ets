@@ -852,6 +852,8 @@ struct SshTerminal {
   private sshWorkspacePtyResizeTimers: Map<string, number> = new Map<string, number>();
   private sshWorkspacePtyResizePendingSizes: Map<string, string> = new Map<string, string>();
   private terminalSessionProfileIds: Map<string, string> = new Map<string, string>();
+  /** Live font zoom belongs to one SSH transport generation, never to its named Profile. */
+  private terminalSessionFontSizeOverrides: Map<string, number> = new Map<string, number>();
   private resolvedTerminalProfileSessionKey: string = '';
   /** SSH 协议级 keepalive 延迟 */
   @State latencyMs: number = -1;
@@ -1030,6 +1032,9 @@ struct SshTerminal {
   @State cellHvp: number = 20;
   @State cellWvp: number = 9;
   @State renderFontVp: number = 18;
+  /** Page-local effective font; Profile zoom must not leak through shared AppStorage. */
+  @State @Watch('onEffectiveFontSizeChange') terminalEffectiveFontSize: number = 18;
+  @State terminalFontOverrideRevision: number = 0;
   /** Live pinch feedback; durable persistence happens only when the gesture ends. */
   @State terminalZoomIndicatorVisible: boolean = false;
   private terminalPinchStartFontSize: number = 18;
@@ -5483,7 +5488,7 @@ struct SshTerminal {
       cols: this.termCols,
       rows: this.termRows,
       viewportWidth: this.sshWorkspaceViewportWidthForTab(tab.tabId, viewportWidth),
-      fontSize: profile.fontSize,
+      fontSize: this.sshTerminalFontSizeForSurface(tab.hostId, profile),
       lineSpacing: normalizeSshTerminalLineSpacing(profile.lineSpacing),
       bottomAlignSparseContent: !this.isDesktopDevice,
       bottomAlignSafeRows: this.terminalBottomSafeRows(),
@@ -6365,7 +6370,7 @@ struct SshTerminal {
   }
 
   private updateCellSize(): void {
-    const normalized: number = Math.max(12, Math.min(32, this.fontSize));
+    const normalized: number = this.activeSshTerminalFontSize();
     this.renderFontVp = normalized;
     const rowRatio: number = normalizeSshTerminalLineSpacing(this.lineSpacing);
     const widthRatio: number =
@@ -6377,6 +6382,11 @@ struct SshTerminal {
   }
 
   private onFontSizeChange(): void {
+    this.updateCellSize();
+    this.recalcGrid();
+  }
+
+  private onEffectiveFontSizeChange(): void {
     this.updateCellSize();
     this.recalcGrid();
   }
@@ -6399,7 +6409,7 @@ struct SshTerminal {
     }
     this.clearTerminalZoomIndicatorTimer();
     this.terminalPinchActive = true;
-    this.terminalPinchStartFontSize = sshTerminalFontSizeForPinch(this.fontSize, 1);
+    this.terminalPinchStartFontSize = this.activeSshTerminalFontSize();
     this.terminalZoomIndicatorVisible = true;
   }
 
@@ -6407,7 +6417,11 @@ struct SshTerminal {
     if (!this.terminalPinchActive || !this.sshPinchZoomEnabled) { return; }
     const nextFontSize: number = sshTerminalFontSizeForPinch(
       this.terminalPinchStartFontSize, event.scale);
-    if (nextFontSize !== this.fontSize) {
+    if (this.terminalProfileEnabled()) {
+      if (nextFontSize === this.terminalEffectiveFontSize) { return; }
+      this.terminalEffectiveFontSize = nextFontSize;
+      this.setCurrentSshTerminalFontOverride(nextFontSize);
+    } else if (nextFontSize !== this.fontSize) {
       this.fontSize = nextFontSize;
     }
   }
@@ -6419,7 +6433,9 @@ struct SshTerminal {
       // Profile mode treats pinch as a live session zoom. Mutating the named
       // profile or legacy cloud appearance would make a viewport gesture
       // silently affect other hosts and future sessions.
-      this.fontSize = sshTerminalFontSizeForPinch(this.fontSize, 1);
+      this.terminalEffectiveFontSize = sshTerminalFontSizeForPinch(
+        this.terminalEffectiveFontSize, 1);
+      this.setCurrentSshTerminalFontOverride(this.terminalEffectiveFontSize);
     } else {
       this.fontSize = this.sshSettings.saveFontSize(this.fontSize);
     }
@@ -6440,7 +6456,17 @@ struct SshTerminal {
     this.terminalPinchActive = false;
     this.clearTerminalZoomIndicatorTimer();
     const target: number = this.sshTerminalFontResetTarget();
-    this.fontSize = this.terminalProfileEnabled() ? target : this.sshSettings.saveFontSize(target);
+    if (this.terminalProfileEnabled()) {
+      const sessionScopeKey: string = sshTerminalSessionProfileScopeKey(
+        this.hostId.trim(), this.sshTabStore.sessionGeneration(this.hostId.trim()));
+      if (sessionScopeKey.length > 0) {
+        this.terminalSessionFontSizeOverrides.delete(sessionScopeKey);
+        this.terminalFontOverrideRevision = this.terminalFontOverrideRevision + 1;
+      }
+      this.terminalEffectiveFontSize = target;
+    } else {
+      this.fontSize = this.sshSettings.saveFontSize(target);
+    }
     this.terminalZoomIndicatorVisible = false;
     promptAction.showToast({
       message: this.terminalProfileEnabled() ? '已恢复当前终端配置字号' : '已恢复默认终端字号',
@@ -10156,6 +10182,7 @@ struct SshTerminal {
     this.sshTabRenameHostId = '';
     this.sshTabRenameDraft = '';
     this.terminalSessionProfileIds.clear();
+    this.terminalSessionFontSizeOverrides.clear();
     this.resolvedTerminalProfileSessionKey = '';
     this.sshProxyProfilesReady = false;
     this.sshForwardingProfilesReady = false;
@@ -12548,6 +12575,47 @@ struct SshTerminal {
     for (let index = 0; index < staleKeys.length; index++) {
       this.terminalSessionProfileIds.delete(staleKeys[index]);
     }
+    const staleFontKeys: Array<string> = [];
+    this.terminalSessionFontSizeOverrides.forEach((_value: number, key: string): void => {
+      if (key.startsWith(prefix) && key !== keepKey) { staleFontKeys.push(key); }
+    });
+    for (let index = 0; index < staleFontKeys.length; index++) {
+      this.terminalSessionFontSizeOverrides.delete(staleFontKeys[index]);
+    }
+    if (staleFontKeys.length > 0) {
+      this.terminalFontOverrideRevision = this.terminalFontOverrideRevision + 1;
+    }
+  }
+
+  private activeSshTerminalFontSize(): number {
+    return this.terminalProfileEnabled() ?
+      sshTerminalFontSizeForPinch(this.terminalEffectiveFontSize, 1) :
+      sshTerminalFontSizeForPinch(this.fontSize, 1);
+  }
+
+  private setCurrentSshTerminalFontOverride(value: number): void {
+    const normalizedHostId: string = this.hostId.trim();
+    const sessionScopeKey: string = sshTerminalSessionProfileScopeKey(
+      normalizedHostId, this.sshTabStore.sessionGeneration(normalizedHostId));
+    if (sessionScopeKey.length === 0) { return; }
+    this.terminalSessionFontSizeOverrides.set(
+      sessionScopeKey, sshTerminalFontSizeForPinch(value, 1));
+    this.terminalFontOverrideRevision = this.terminalFontOverrideRevision + 1;
+  }
+
+  private sshTerminalFontSizeForSurface(hostId: string,
+    profile: SshTerminalResolvedProfile): number {
+    if (!this.terminalProfileEnabled()) {
+      return sshTerminalFontSizeForPinch(this.fontSize, 1);
+    }
+    const revision: number = this.terminalFontOverrideRevision;
+    const normalizedHostId: string = hostId.trim();
+    const sessionScopeKey: string = sshTerminalSessionProfileScopeKey(
+      normalizedHostId, this.sshTabStore.sessionGeneration(normalizedHostId));
+    const override: number | undefined = sessionScopeKey.length > 0 ?
+      this.terminalSessionFontSizeOverrides.get(sessionScopeKey) : undefined;
+    return override === undefined || revision < 0 ?
+      profile.fontSize : sshTerminalFontSizeForPinch(override, 1);
   }
 
   private resolvedTerminalProfileForHost(hostId: string): SshTerminalResolvedProfile {
@@ -12594,7 +12662,10 @@ struct SshTerminal {
     this.resolvedTerminalProfile = this.terminalProfileStore.resolve(
       normalizedHostId, sessionProfile);
     if (this.sshWorkbenchEnabled) {
-      this.fontSize = this.resolvedTerminalProfile.fontSize;
+      const override: number | undefined = sessionScopeKey.length > 0 ?
+        this.terminalSessionFontSizeOverrides.get(sessionScopeKey) : undefined;
+      this.terminalEffectiveFontSize = override === undefined ?
+        this.resolvedTerminalProfile.fontSize : sshTerminalFontSizeForPinch(override, 1);
       this.lineSpacing = this.resolvedTerminalProfile.lineSpacing;
     } else {
       this.restoreLegacyTerminalAppearance();
@@ -18544,7 +18615,7 @@ struct SshTerminal {
             }
 
             if (this.terminalZoomIndicatorVisible) {
-              Text('字号 ' + this.fontSize.toString() + ' vp')
+              Text('字号 ' + this.activeSshTerminalFontSize().toString() + ' vp')
                 .fontSize(13)
                 .fontColor('#FFFFFF')
                 .fontWeight(FontWeight.Medium)

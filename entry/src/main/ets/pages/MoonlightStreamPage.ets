@@ -95,6 +95,7 @@ import { MOONLIGHT_PINCH_ZOOM_ENABLED_KEY } from
 import {
   baseCanvasTransform,
   canvasTransformCanPan,
+  canvasTransformDiffersFromBaseline,
   CanvasTransform,
   CanvasViewport,
   panCanvasTransform,
@@ -1498,9 +1499,15 @@ struct MoonlightStreamPage {
       this.moonlightCanvasTransform = baseCanvasTransform('fit', 100, next);
       this.moonlightCanvasTransformModified = false;
     }
+    this.refreshMoonlightCanvasTransformModified(next);
     this.moonlightCanvasViewportSnapshot = next;
     this.moonlightCanvasTransformInitialized = true;
     this.submitMoonlightCanvasTransform();
+  }
+
+  private refreshMoonlightCanvasTransformModified(viewport: CanvasViewport): void {
+    this.moonlightCanvasTransformModified = canvasTransformDiffersFromBaseline(
+      this.moonlightCanvasTransform, baseCanvasTransform('fit', 100, viewport));
   }
 
   private onMoonlightPinchZoomSettingChange(): void {
@@ -4116,7 +4123,7 @@ struct MoonlightStreamPage {
     this.moonlightCanvasTransform = panCanvasTransform(
       this.moonlightCanvasTransform, viewport,
       deltaX * pxPerVpX, deltaY * pxPerVpY);
-    this.moonlightCanvasTransformModified = true;
+    this.refreshMoonlightCanvasTransformModified(viewport);
     this.submitMoonlightCanvasTransform();
   }
 
@@ -4168,7 +4175,7 @@ struct MoonlightStreamPage {
     this.moonlightCanvasPinchLastScale = nextScale;
     this.moonlightCanvasPinchLastCenterX = centerX;
     this.moonlightCanvasPinchLastCenterY = centerY;
-    this.moonlightCanvasTransformModified = true;
+    this.refreshMoonlightCanvasTransformModified(viewport);
     this.submitMoonlightCanvasTransform();
   }
 
@@ -4194,7 +4201,7 @@ struct MoonlightStreamPage {
     });
     if (!result.moved) { return; }
     this.moonlightCanvasTransform = result.transform;
-    this.moonlightCanvasTransformModified = true;
+    this.refreshMoonlightCanvasTransformModified(viewport);
     this.trackpadCursorX = result.pointerX;
     this.trackpadCursorY = result.pointerY;
     this.submitMoonlightCanvasTransform();
@@ -4660,7 +4667,7 @@ struct MoonlightStreamPage {
     this.moonlightPhysicalPointerFollowArmed = result.armed;
     if (!result.moved) { return result.active; }
     this.moonlightCanvasTransform = result.transform;
-    this.moonlightCanvasTransformModified = true;
+    this.refreshMoonlightCanvasTransformModified(viewport);
     this.submitMoonlightCanvasTransform();
     return result.active;
   }
@@ -5708,6 +5715,7 @@ struct MoonlightStreamPage {
               this.showModifierPanel || this.showShortcutPanel,
             qualityColor: this.firstFrameSeen ? '#66DD7A' : '#FFCF70',
             qualityLabel: this.firstFrameSeen ? '串流中' : '连接中',
+            viewportWidth: this.surfaceWidthVp,
             availableHeight: this.surfaceHeightVp,
             onAction: (action: MoonlightToolbarAction): void => {
               this.toolbarAction(action);
@@ -5743,6 +5751,7 @@ struct MoonlightStreamPage {
               this.showModifierPanel || this.showShortcutPanel,
             qualityColor: this.firstFrameSeen ? '#66DD7A' : '#FFCF70',
             qualityLabel: this.firstFrameSeen ? '串流中' : '连接中',
+            viewportWidth: this.surfaceWidthVp,
             availableHeight: this.surfaceHeightVp,
             onAction: (action: MoonlightToolbarAction): void => {
               this.toolbarAction(action);

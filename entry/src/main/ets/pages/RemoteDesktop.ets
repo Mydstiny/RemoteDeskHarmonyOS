@@ -408,6 +408,7 @@ import {
 import {
   baseCanvasTransform,
   canvasTransformCanPan,
+  canvasTransformDiffersFromBaseline,
   CanvasTransform,
   CanvasViewport,
   CANVAS_TRANSFORM_MAX_SCALE,
@@ -5139,9 +5140,16 @@ struct RemoteDesktop {
   }
 
   private resetCanvasToDisplayDefault(forceRendererRead: boolean = false): void {
+    const viewport: CanvasViewport = this.currentCanvasViewport(forceRendererRead);
+    this.canvasTransform = this.currentCanvasDisplayDefault(viewport);
+    this.canvasTransformInitialized = true;
+    this.canvasTransformGestureModified = false;
+    this.applyCanvasTransform();
+  }
+
+  private currentCanvasDisplayDefault(viewport: CanvasViewport): CanvasTransform {
     let mode: LocalViewScaleMode = normalizeLocalViewScaleMode(this.remoteDisplayScaleMode);
     let customScalePercent: number = this.remoteDisplayCustomScalePercent;
-    const viewport: CanvasViewport = this.currentCanvasViewport(forceRendererRead);
     if (this.isVncSession()) {
       mode = this.vncDisplayScaleMode === '100' || this.vncDisplayScaleMode === 'custom' ?
         this.vncDisplayScaleMode : 'fit';
@@ -5155,11 +5163,13 @@ struct RemoteDesktop {
         }
       }
     }
-    this.canvasTransform = baseCanvasTransform(mode, customScalePercent, viewport,
+    return baseCanvasTransform(mode, customScalePercent, viewport,
       this.canvasRotationQuarterTurns);
-    this.canvasTransformInitialized = true;
-    this.canvasTransformGestureModified = false;
-    this.applyCanvasTransform();
+  }
+
+  private refreshCanvasTransformModified(viewport: CanvasViewport): void {
+    this.canvasTransformGestureModified = canvasTransformDiffersFromBaseline(
+      this.canvasTransform, this.currentCanvasDisplayDefault(viewport));
   }
 
   private applyCanvasTransform(): void {
@@ -5605,7 +5615,7 @@ struct RemoteDesktop {
       return;
     }
     this.canvasTransform = panCanvasTransform(this.canvasTransform, viewport, deltaX, deltaY);
-    this.canvasTransformGestureModified = true;
+    this.refreshCanvasTransformModified(viewport);
     this.applyCanvasTransform();
   }
 
@@ -5821,7 +5831,7 @@ struct RemoteDesktop {
     this.canvasPinchLastScale = nextScale;
     this.canvasPinchLastCenterX = centerX;
     this.canvasPinchLastCenterY = centerY;
-    this.canvasTransformGestureModified = true;
+    this.refreshCanvasTransformModified(viewport);
     this.applyCanvasTransform();
   }
 
@@ -8967,6 +8977,7 @@ struct RemoteDesktop {
       freePanInsetRatio: current.freePanInsetRatio
     };
     this.canvasTransform = rebaseCanvasTransform(this.canvasTransform, previous, next);
+    this.refreshCanvasTransformModified(next);
   }
 
   /** Disabling local canvas zoom must not leave its last enlarged transform on screen. */
@@ -8993,17 +9004,18 @@ struct RemoteDesktop {
 
   private applyRemotePointerCanvasFollow(remoteX: number, remoteY: number): void {
     if (!this.canvasTransformInitialized || this.rendererHandle <= 0) { return; }
+    const viewport: CanvasViewport = this.currentCanvasViewport();
     const result: CanvasPointerFollowResult = followCanvasForRemotePointer({
       enabled: this.canvasGestureZoomEnabledForCurrentProtocol(),
       transform: this.canvasTransform,
-      viewport: this.currentCanvasViewport(),
+      viewport,
       surfaceTransform: this.currentRemoteSurfaceTransform(),
       remoteX,
       remoteY
     });
     if (!result.moved) { return; }
     this.canvasTransform = result.transform;
-    this.canvasTransformGestureModified = true;
+    this.refreshCanvasTransformModified(viewport);
     this.applyCanvasTransform();
   }
 
@@ -9039,7 +9051,7 @@ struct RemoteDesktop {
     this.physicalPointerCanvasFollowArmed = result.armed;
     if (!result.moved) { return result.active; }
     this.canvasTransform = result.transform;
-    this.canvasTransformGestureModified = true;
+    this.refreshCanvasTransformModified(viewport);
     this.applyCanvasTransform();
     return result.active;
   }
@@ -9667,6 +9679,7 @@ struct RemoteDesktop {
       };
       this.canvasTransform = rebaseCanvasTransform(
         this.canvasTransform, previousViewport, nextViewport);
+      this.refreshCanvasTransformModified(nextViewport);
     }
     this.surfaceWidth = widthVp;
     this.surfaceHeight = heightVp;

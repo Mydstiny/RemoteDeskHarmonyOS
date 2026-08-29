@@ -141,6 +141,12 @@ export struct VncSessionToolbar {
     return this.placement.railRect.height > 0 ? this.placement.railRect.height : fallback;
   }
 
+  private pcExpandedToolbarWidth(): number {
+    const available: number = Number.isFinite(this.viewportWidth) && this.viewportWidth > 0 ?
+      Math.max(1, this.viewportWidth - 24) : 480;
+    return Math.min(480, available);
+  }
+
   private resetRailSwipe(): void {
     animateTo({ duration: 220, curve: curves.responsiveSpringMotion() }, (): void => {
       this.railSwipeX = 0;
@@ -324,14 +330,21 @@ export struct VncSessionToolbar {
         .borderRadius({ topLeft: 9, topRight: 9, bottomLeft: 0, bottomRight: 0 })
         .backgroundColor('rgba(20,24,32,0.84)')
       }
-      Row({ space: 5 }) {
-        this.primaryActionButtons(false)
+      Scroll() {
+        Row({ space: 5 }) {
+          this.primaryActionButtons(false)
+        }
+        .padding(6)
+        .borderRadius(this.viewOnly ?
+          { topLeft: 0, topRight: 0, bottomLeft: 10, bottomRight: 10 } : 10)
+        .backgroundColor('rgba(255,255,255,0.94)')
+        .shadow({ radius: 8, color: 'rgba(0,0,0,0.24)', offsetY: 2 })
       }
-      .padding(6)
-      .borderRadius(this.viewOnly ?
-        { topLeft: 0, topRight: 0, bottomLeft: 10, bottomRight: 10 } : 10)
-      .backgroundColor('rgba(255,255,255,0.94)')
-      .shadow({ radius: 8, color: 'rgba(0,0,0,0.24)', offsetY: 2 })
+      .width(this.pcExpandedToolbarWidth())
+      .height(68)
+      .scrollable(ScrollDirection.Horizontal)
+      .scrollBar(BarState.Auto)
+      .edgeEffect(EdgeEffect.Spring)
       Row() {
         SymbolGlyph($r('sys.symbol.chevron_up')).fontSize(16).fontColor(['#444444'])
       }

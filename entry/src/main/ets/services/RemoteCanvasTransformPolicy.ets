@@ -264,6 +264,20 @@ export function baseCanvasTransform(mode: LocalViewScaleMode, customPercent: num
   }, viewport);
 }
 
+/** Whether a transform is visibly away from its current display-mode baseline. */
+export function canvasTransformDiffersFromBaseline(current: CanvasTransform,
+  baseline: CanvasTransform, scaleEpsilon: number = 0.0005,
+  panEpsilonPx: number = 0.5): boolean {
+  const safeScaleEpsilon: number = Number.isFinite(scaleEpsilon) ?
+    Math.max(0, scaleEpsilon) : 0.0005;
+  const safePanEpsilon: number = Number.isFinite(panEpsilonPx) ?
+    Math.max(0, panEpsilonPx) : 0.5;
+  return Math.abs(current.scale - baseline.scale) > safeScaleEpsilon ||
+    Math.abs(current.panX - baseline.panX) > safePanEpsilon ||
+    Math.abs(current.panY - baseline.panY) > safePanEpsilon ||
+    normalizeCanvasRotation(current.rotation) !== normalizeCanvasRotation(baseline.rotation);
+}
+
 /** Apply a RustDesk-mobile-style relative pinch plus focal-point pan. */
 export function pinchCanvasTransform(current: CanvasTransform, viewport: CanvasViewport,
   focalX: number, focalY: number, relativeScale: number, panDeltaX: number,

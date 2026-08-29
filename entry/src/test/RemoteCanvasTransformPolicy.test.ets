@@ -2,6 +2,7 @@ import { describe, it, expect } from '@ohos/hypium';
 import {
   baseCanvasTransform,
   canvasTransformCanPan,
+  canvasTransformDiffersFromBaseline,
   clampCanvasTransform,
   CANVAS_TRANSFORM_MAX_SCALE,
   normalizeLocalViewScaleMode,
@@ -46,6 +47,16 @@ export default function remoteCanvasTransformPolicyTest() {
       const original = baseCanvasTransform('100', 100, viewport);
       expect(original.scale).assertEqual(2);
       expect(original.panX).assertEqual(0);
+    });
+
+    it('only reports a reset affordance for a visible baseline deviation', 0, (): void => {
+      const baseline: CanvasTransform = baseCanvasTransform('fit', 100, viewport);
+      expect(canvasTransformDiffersFromBaseline(baseline,
+        { scale: baseline.scale, panX: 0.4, panY: -0.4, rotation: 0 })).assertFalse();
+      expect(canvasTransformDiffersFromBaseline(baseline,
+        { scale: baseline.scale, panX: 1, panY: 0, rotation: 0 })).assertTrue();
+      expect(canvasTransformDiffersFromBaseline(baseline,
+        { scale: 1.01, panX: 0, panY: 0, rotation: 0 })).assertTrue();
     });
 
     it('fits a rotated canvas against the swapped display dimensions', 0, (): void => {
