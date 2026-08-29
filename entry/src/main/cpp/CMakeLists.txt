@@ -36,6 +36,7 @@ add_custom_target(remotedesk_build_identity ALL
 
 # -- 通用工具 --
 set(COMMON_SOURCES
+    common/endpoint_address_policy.cpp
     common/safe_log.cpp
     input/remote_cursor_snapshot.cpp
 )
@@ -345,6 +346,7 @@ if(RDP_BUILD_TESTS)
         test/rustdesk_connection_continuity_executor_test.cpp
         test/decoder_pipeline_lifecycle_policy_test.cpp
         test/safe_log_test.cpp
+        test/endpoint_address_policy_test.cpp
         test/moonlight_host_api_test.cpp
         test/moonlight_http_request_formatting_test.cpp
         test/moonlight_http_response_framing_test.cpp
@@ -377,6 +379,7 @@ if(RDP_BUILD_TESTS)
         test/vnc_transport_policy_test.cpp
         test/vnc_certificate_probe_test.cpp
         common/safe_log.cpp
+        common/endpoint_address_policy.cpp
         input/remote_cursor_snapshot.cpp
         ssh/ssh_forwarding_manager.cpp
         ssh/ssh_session_manager.cpp

@@ -1,4 +1,5 @@
 import localUnitTest from './LocalUnit.test';
+import endpointAddressPolicyTest from './EndpointAddressPolicy.test';
 import cloudStoreTest from './CloudStore.test';
 import keyVaultServiceTest from './KeyVaultService.test';
 import lockGateAuthPolicyTest from './LockGateAuthPolicy.test';
@@ -255,6 +256,7 @@ import diagnosticRuntimeSnapshotPolicyTest from './DiagnosticRuntimeSnapshotPoli
 import appCloneContextTest from './AppCloneContext.test';
 
 export default function testsuite() {
+  endpointAddressPolicyTest();
   localUnitTest();
   cloudStoreTest();
   keyVaultServiceTest();
