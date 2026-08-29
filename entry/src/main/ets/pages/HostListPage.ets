@@ -194,6 +194,7 @@ import { VncSettingsService } from '../services/VncSettingsService';
 import { VncSettingsSheet } from '../components/VncSettingsSheet';
 import { SecretVisibilitySettingsSheet } from '../components/SecretVisibilitySettingsSheet';
 import { RemoteWheelDirectionSettingsSheet } from '../components/RemoteWheelDirectionSettingsSheet';
+import { RemotePinchZoomSettingsSheet } from '../components/RemotePinchZoomSettingsSheet';
 import { VncCertificateTrustManagerSheet } from '../components/VncCertificateTrustManagerSheet';
 import {
   EditableSecretKind,
@@ -413,6 +414,7 @@ import {
   SETTINGS_SHEET_ACCOUNT,
   SETTINGS_SHEET_ACCENT_COLOR,
   SETTINGS_SHEET_DIAGNOSTIC_LOG,
+  SETTINGS_SHEET_REMOTE_PINCH_ZOOM,
   SETTINGS_SHEET_REMOTE_WHEEL_DIRECTION,
   SETTINGS_SHEET_SECRET_VISIBILITY,
   SETTINGS_SHEET_FEEDBACK,
@@ -453,6 +455,7 @@ import {
   VirtualKeyboardSettingsSection,
   VirtualKeyboardSettingsRouteSpec,
   diagnosticLogSettingsLeafSheetHeight,
+  remotePinchZoomSettingsLeafSheetHeight,
   remoteWheelDirectionSettingsLeafSheetHeight,
   secretVisibilitySettingsLeafSheetHeight,
   isVirtualKeyboardSettingsMode,
@@ -483,6 +486,23 @@ import {
   remoteWheelSelectionSummary,
   withRemoteWheelPreference
 } from '../services/RemoteWheelPreferencePolicy';
+import {
+  MOONLIGHT_PINCH_ZOOM_ENABLED_KEY,
+  RDP_PINCH_ZOOM_ENABLED_KEY,
+  REMOTE_PINCH_ZOOM_PREFERENCE_VERSION,
+  REMOTE_PINCH_ZOOM_PREFERENCE_VERSION_KEY,
+  RUSTDESK_PINCH_ZOOM_ENABLED_KEY,
+  SSH_PINCH_ZOOM_ENABLED_KEY,
+  VNC_PINCH_ZOOM_ENABLED_KEY,
+  RemotePinchZoomPreferenceMigration,
+  RemotePinchZoomPreferencePresence,
+  RemotePinchZoomPreferenceUpdate,
+  RemotePinchZoomPreferences,
+  applyRemotePinchZoomPreferenceUpdate,
+  migrateRemotePinchZoomPreferences,
+  remotePinchZoomSelectionSummary,
+  withRemotePinchZoomPreference
+} from '../services/RemotePinchZoomPreferencePolicy';
 import {
   SETTINGS_APP_BUNDLE_NAME,
   SETTINGS_BROWSER_VIEW_ACTION,
@@ -1107,7 +1127,11 @@ struct HostListPage {
   @StorageLink(REMOTE_SESSION_CONTROL_BAR_HIDDEN_MOONLIGHT_KEY)
   sessionControlBarHiddenMoonlight: boolean = false;
   @State sessionControlBarProtocolPickerExpanded: boolean = false;
-  @StorageLink('canvasGestureZoomEnabled') canvasGestureZoomEnabled: boolean = false;
+  @StorageLink(RDP_PINCH_ZOOM_ENABLED_KEY) rdpPinchZoomEnabled: boolean = false;
+  @StorageLink(RUSTDESK_PINCH_ZOOM_ENABLED_KEY) rustdeskPinchZoomEnabled: boolean = false;
+  @StorageLink(SSH_PINCH_ZOOM_ENABLED_KEY) sshPinchZoomEnabled: boolean = true;
+  @StorageLink(VNC_PINCH_ZOOM_ENABLED_KEY) vncPinchZoomEnabled: boolean = false;
+  @StorageLink(MOONLIGHT_PINCH_ZOOM_ENABLED_KEY) moonlightPinchZoomEnabled: boolean = false;
   @StorageLink('rdpColorDepth') rdpColorDepth: number = 32;
   @StorageLink('rdpAudioEnabled') rdpAudioEnabled: boolean = true;
   @StorageLink('rdpClipboardEnabled') rdpClipboardEnabled: boolean = true;
@@ -1935,6 +1959,9 @@ struct HostListPage {
         prefs.hasSync('canvasGestureZoomEnabled'),
         defaults.canvasGestureZoomEnabled);
       const savedCanvasGestureZoomEnabled: boolean = canvasZoomPreference.enabled;
+      const savedRemotePinchZoomPreferences: RemotePinchZoomPreferences =
+        this.restoreRemotePinchZoomPreferences(prefs, savedCanvasGestureZoomEnabled,
+          savedRustDeskRemoteAppTouchScaleEnabled);
       const savedRdpColorDepth: number = prefs.getSync('rdpColorDepth', 32) as number;
       const savedRdpAudioEnabled: boolean = prefs.getSync('rdpAudioEnabled', true) as boolean;
       const savedRdpClipboardEnabled: boolean = prefs.getSync('rdpClipboardEnabled', true) as boolean;
@@ -2009,6 +2036,11 @@ struct HostListPage {
       this.sshReverseWheel = savedRemoteWheelPreferences.ssh;
       this.vncReverseWheel = savedRemoteWheelPreferences.vnc;
       this.moonlightReverseWheel = savedRemoteWheelPreferences.moonlight;
+      this.rdpPinchZoomEnabled = savedRemotePinchZoomPreferences.rdp;
+      this.rustdeskPinchZoomEnabled = savedRemotePinchZoomPreferences.rustdesk;
+      this.sshPinchZoomEnabled = savedRemotePinchZoomPreferences.ssh;
+      this.vncPinchZoomEnabled = savedRemotePinchZoomPreferences.vnc;
+      this.moonlightPinchZoomEnabled = savedRemotePinchZoomPreferences.moonlight;
       this.rustdeskSwapMouseButtons = savedRustDeskSwapMouseButtons;
       this.rustdeskTouchpadSpeed =
         Math.max(0.4, Math.min(2.2, savedRustDeskTouchpadSpeed > 0 ? savedRustDeskTouchpadSpeed : 1.0));
@@ -2020,7 +2052,6 @@ struct HostListPage {
         remoteDisplayScalePreferenceVersion, prefs.hasSync('remoteDisplayScaleMode'));
       this.remoteDisplayCustomScalePercent = Math.max(50, Math.min(300,
         Number.isFinite(savedRemoteDisplayCustomScalePercent) ? savedRemoteDisplayCustomScalePercent : 100));
-      this.canvasGestureZoomEnabled = savedCanvasGestureZoomEnabled;
       prefs.putSync('rdpDesktopResolutionId', this.rdpDesktopResolutionId);
       prefs.putSync('remoteDisplayScaleMode', this.remoteDisplayScaleMode);
       prefs.putSync(REMOTE_DISPLAY_SCALE_PREFERENCE_VERSION_KEY,
@@ -2059,6 +2090,11 @@ struct HostListPage {
       AppStorage.setOrCreate(SSH_REVERSE_WHEEL_KEY, this.sshReverseWheel);
       AppStorage.setOrCreate(VNC_REVERSE_WHEEL_KEY, this.vncReverseWheel);
       AppStorage.setOrCreate(MOONLIGHT_REVERSE_WHEEL_KEY, this.moonlightReverseWheel);
+      AppStorage.setOrCreate(RDP_PINCH_ZOOM_ENABLED_KEY, this.rdpPinchZoomEnabled);
+      AppStorage.setOrCreate(RUSTDESK_PINCH_ZOOM_ENABLED_KEY, this.rustdeskPinchZoomEnabled);
+      AppStorage.setOrCreate(SSH_PINCH_ZOOM_ENABLED_KEY, this.sshPinchZoomEnabled);
+      AppStorage.setOrCreate(VNC_PINCH_ZOOM_ENABLED_KEY, this.vncPinchZoomEnabled);
+      AppStorage.setOrCreate(MOONLIGHT_PINCH_ZOOM_ENABLED_KEY, this.moonlightPinchZoomEnabled);
       AppStorage.setOrCreate('rustdeskSwapMouseButtons', this.rustdeskSwapMouseButtons);
       AppStorage.setOrCreate('rustdeskTouchpadSpeed', this.rustdeskTouchpadSpeed);
       AppStorage.setOrCreate('rustdeskControlMode', this.rustdeskControlMode);
@@ -2066,7 +2102,6 @@ struct HostListPage {
       AppStorage.setOrCreate('rdpDesktopResolutionId', this.rdpDesktopResolutionId);
       AppStorage.setOrCreate('remoteDisplayScaleMode', this.remoteDisplayScaleMode);
       AppStorage.setOrCreate('remoteDisplayCustomScalePercent', this.remoteDisplayCustomScalePercent);
-      AppStorage.setOrCreate('canvasGestureZoomEnabled', this.canvasGestureZoomEnabled);
       AppStorage.setOrCreate('rdpColorDepth', this.rdpColorDepth);
       AppStorage.setOrCreate('rdpAudioEnabled', this.rdpAudioEnabled);
       AppStorage.setOrCreate('rdpClipboardEnabled', this.rdpClipboardEnabled);
@@ -10246,6 +10281,154 @@ struct HostListPage {
     }
   }
 
+  private restoreRemotePinchZoomPreferences(
+    prefs: preferences.Preferences,
+    legacyCanvasEnabled: boolean,
+    rustDeskRemoteAppTouchScaleEnabled: boolean
+  ): RemotePinchZoomPreferences {
+    const current: RemotePinchZoomPreferences = {
+      rdp: prefs.getSync(RDP_PINCH_ZOOM_ENABLED_KEY, legacyCanvasEnabled) as boolean,
+      rustdesk: prefs.getSync(RUSTDESK_PINCH_ZOOM_ENABLED_KEY, legacyCanvasEnabled) as boolean,
+      ssh: prefs.getSync(SSH_PINCH_ZOOM_ENABLED_KEY, true) as boolean,
+      vnc: prefs.getSync(VNC_PINCH_ZOOM_ENABLED_KEY, legacyCanvasEnabled) as boolean,
+      moonlight: prefs.getSync(MOONLIGHT_PINCH_ZOOM_ENABLED_KEY, false) as boolean
+    };
+    const present: RemotePinchZoomPreferencePresence = {
+      rdp: prefs.hasSync(RDP_PINCH_ZOOM_ENABLED_KEY),
+      rustdesk: prefs.hasSync(RUSTDESK_PINCH_ZOOM_ENABLED_KEY),
+      ssh: prefs.hasSync(SSH_PINCH_ZOOM_ENABLED_KEY),
+      vnc: prefs.hasSync(VNC_PINCH_ZOOM_ENABLED_KEY),
+      moonlight: prefs.hasSync(MOONLIGHT_PINCH_ZOOM_ENABLED_KEY)
+    };
+    const migration: RemotePinchZoomPreferenceMigration =
+      migrateRemotePinchZoomPreferences(current, present,
+        prefs.getSync(REMOTE_PINCH_ZOOM_PREFERENCE_VERSION_KEY, 0) as number,
+        legacyCanvasEnabled, rustDeskRemoteAppTouchScaleEnabled);
+    if (migration.shouldPersist) {
+      try {
+        prefs.putSync(RDP_PINCH_ZOOM_ENABLED_KEY, migration.values.rdp);
+        prefs.putSync(RUSTDESK_PINCH_ZOOM_ENABLED_KEY, migration.values.rustdesk);
+        prefs.putSync(SSH_PINCH_ZOOM_ENABLED_KEY, migration.values.ssh);
+        prefs.putSync(VNC_PINCH_ZOOM_ENABLED_KEY, migration.values.vnc);
+        prefs.putSync(MOONLIGHT_PINCH_ZOOM_ENABLED_KEY, migration.values.moonlight);
+        prefs.putSync(REMOTE_PINCH_ZOOM_PREFERENCE_VERSION_KEY, migration.version);
+        prefs.flushSync();
+      } catch (_error) { /* Runtime values still preserve the released behavior. */ }
+    }
+    return migration.values;
+  }
+
+  private remotePinchZoomPreferences(): RemotePinchZoomPreferences {
+    return {
+      rdp: this.rdpPinchZoomEnabled,
+      rustdesk: this.rustdeskPinchZoomEnabled,
+      ssh: this.sshPinchZoomEnabled,
+      vnc: this.vncPinchZoomEnabled,
+      moonlight: this.moonlightPinchZoomEnabled
+    };
+  }
+
+  private restoreRemotePinchZoomPreferenceValue(
+    prefs: preferences.Preferences,
+    key: string,
+    present: boolean,
+    value: string | number | boolean
+  ): void {
+    if (present) {
+      prefs.putSync(key, value);
+    } else {
+      prefs.deleteSync(key);
+    }
+  }
+
+  private saveRemotePinchZoomPreferences(
+    values: RemotePinchZoomPreferences,
+    rustDeskRemoteAppTouchScaleOverride?: boolean
+  ): boolean {
+    const nextRemoteAppTouchScale: boolean =
+      rustDeskRemoteAppTouchScaleOverride !== undefined ?
+        rustDeskRemoteAppTouchScaleOverride :
+        (values.rustdesk ? false : this.rustdeskRemoteAppTouchScaleEnabled);
+    const nextValues: RemotePinchZoomPreferences = {
+      rdp: values.rdp,
+      rustdesk: nextRemoteAppTouchScale ? false : values.rustdesk,
+      ssh: values.ssh,
+      vnc: values.vnc,
+      moonlight: values.moonlight
+    };
+    try {
+      const prefs: preferences.Preferences = preferences.getPreferencesSync(
+        getContext(this), { name: 'RemoteDesktopAppPrefs' });
+      const previous: RemotePinchZoomPreferences = {
+        rdp: prefs.getSync(RDP_PINCH_ZOOM_ENABLED_KEY, false) as boolean,
+        rustdesk: prefs.getSync(RUSTDESK_PINCH_ZOOM_ENABLED_KEY, false) as boolean,
+        ssh: prefs.getSync(SSH_PINCH_ZOOM_ENABLED_KEY, true) as boolean,
+        vnc: prefs.getSync(VNC_PINCH_ZOOM_ENABLED_KEY, false) as boolean,
+        moonlight: prefs.getSync(MOONLIGHT_PINCH_ZOOM_ENABLED_KEY, false) as boolean
+      };
+      const present: RemotePinchZoomPreferencePresence = {
+        rdp: prefs.hasSync(RDP_PINCH_ZOOM_ENABLED_KEY),
+        rustdesk: prefs.hasSync(RUSTDESK_PINCH_ZOOM_ENABLED_KEY),
+        ssh: prefs.hasSync(SSH_PINCH_ZOOM_ENABLED_KEY),
+        vnc: prefs.hasSync(VNC_PINCH_ZOOM_ENABLED_KEY),
+        moonlight: prefs.hasSync(MOONLIGHT_PINCH_ZOOM_ENABLED_KEY)
+      };
+      const versionPresent: boolean = prefs.hasSync(REMOTE_PINCH_ZOOM_PREFERENCE_VERSION_KEY);
+      const previousVersion: number = prefs.getSync(
+        REMOTE_PINCH_ZOOM_PREFERENCE_VERSION_KEY, 0) as number;
+      const remoteAppPresent: boolean = prefs.hasSync('rustdeskRemoteAppTouchScaleEnabled');
+      const previousRemoteApp: boolean = prefs.getSync(
+        'rustdeskRemoteAppTouchScaleEnabled', false) as boolean;
+      try {
+        prefs.putSync(RDP_PINCH_ZOOM_ENABLED_KEY, nextValues.rdp);
+        prefs.putSync(RUSTDESK_PINCH_ZOOM_ENABLED_KEY, nextValues.rustdesk);
+        prefs.putSync(SSH_PINCH_ZOOM_ENABLED_KEY, nextValues.ssh);
+        prefs.putSync(VNC_PINCH_ZOOM_ENABLED_KEY, nextValues.vnc);
+        prefs.putSync(MOONLIGHT_PINCH_ZOOM_ENABLED_KEY, nextValues.moonlight);
+        prefs.putSync(REMOTE_PINCH_ZOOM_PREFERENCE_VERSION_KEY,
+          REMOTE_PINCH_ZOOM_PREFERENCE_VERSION);
+        prefs.putSync('rustdeskRemoteAppTouchScaleEnabled', nextRemoteAppTouchScale);
+        prefs.flushSync();
+      } catch (_writeError) {
+        try {
+          this.restoreRemotePinchZoomPreferenceValue(
+            prefs, RDP_PINCH_ZOOM_ENABLED_KEY, present.rdp, previous.rdp);
+          this.restoreRemotePinchZoomPreferenceValue(
+            prefs, RUSTDESK_PINCH_ZOOM_ENABLED_KEY, present.rustdesk, previous.rustdesk);
+          this.restoreRemotePinchZoomPreferenceValue(
+            prefs, SSH_PINCH_ZOOM_ENABLED_KEY, present.ssh, previous.ssh);
+          this.restoreRemotePinchZoomPreferenceValue(
+            prefs, VNC_PINCH_ZOOM_ENABLED_KEY, present.vnc, previous.vnc);
+          this.restoreRemotePinchZoomPreferenceValue(
+            prefs, MOONLIGHT_PINCH_ZOOM_ENABLED_KEY, present.moonlight, previous.moonlight);
+          this.restoreRemotePinchZoomPreferenceValue(
+            prefs, REMOTE_PINCH_ZOOM_PREFERENCE_VERSION_KEY,
+            versionPresent, previousVersion);
+          this.restoreRemotePinchZoomPreferenceValue(
+            prefs, 'rustdeskRemoteAppTouchScaleEnabled', remoteAppPresent, previousRemoteApp);
+          prefs.flushSync();
+        } catch (_rollbackError) { /* UI retains the last fully confirmed values. */ }
+        return false;
+      }
+    } catch (_error) {
+      return false;
+    }
+    this.rdpPinchZoomEnabled = nextValues.rdp;
+    this.rustdeskPinchZoomEnabled = nextValues.rustdesk;
+    this.sshPinchZoomEnabled = nextValues.ssh;
+    this.vncPinchZoomEnabled = nextValues.vnc;
+    this.moonlightPinchZoomEnabled = nextValues.moonlight;
+    this.rustdeskRemoteAppTouchScaleEnabled = nextRemoteAppTouchScale;
+    return true;
+  }
+
+  private saveRemotePinchZoomPreferenceUpdate(
+    update: RemotePinchZoomPreferenceUpdate
+  ): boolean {
+    return this.saveRemotePinchZoomPreferences(applyRemotePinchZoomPreferenceUpdate(
+      this.remotePinchZoomPreferences(), update));
+  }
+
   private restoreRemoteWheelPreferences(
     prefs: preferences.Preferences
   ): RemoteWheelPreferences {
@@ -10952,11 +11135,11 @@ struct HostListPage {
   }
 
   private saveRustDeskRemoteAppTouchScaleEnabled(on: boolean): void {
-    this.rustdeskRemoteAppTouchScaleEnabled = on;
-    this.persistPref('rustdeskRemoteAppTouchScaleEnabled', on);
-    if (on && this.canvasGestureZoomEnabled) {
-      this.canvasGestureZoomEnabled = false;
-      this.persistPref('canvasGestureZoomEnabled', false);
+    const values: RemotePinchZoomPreferences = on ?
+      withRemotePinchZoomPreference(this.remotePinchZoomPreferences(), 'rustdesk', false) :
+      this.remotePinchZoomPreferences();
+    if (!this.saveRemotePinchZoomPreferences(values, on)) {
+      promptAction.showToast({ message: 'RustDesk 触控缩放设置保存失败，请重试', duration: 2200 });
     }
   }
 
@@ -10983,16 +11166,6 @@ struct HostListPage {
     this.persistPref('remoteDisplayCustomScalePercent', this.remoteDisplayCustomScalePercent);
     this.persistPref(REMOTE_DISPLAY_SCALE_PREFERENCE_VERSION_KEY,
       REMOTE_DISPLAY_SCALE_PREFERENCE_VERSION);
-  }
-
-  private saveCanvasGestureZoomEnabled(on: boolean): void {
-    this.canvasGestureZoomEnabled = on;
-    this.persistPref('canvasGestureZoomEnabled', on);
-    this.persistPref('canvasGestureZoomUserConfigured', true);
-    if (on && this.rustdeskRemoteAppTouchScaleEnabled) {
-      this.rustdeskRemoteAppTouchScaleEnabled = false;
-      this.persistPref('rustdeskRemoteAppTouchScaleEnabled', false);
-    }
   }
 
   private saveRdpColorDepth(depth: number): void {
@@ -14045,6 +14218,9 @@ struct HostListPage {
     const wheelDirectionHeight: number =
       remoteWheelDirectionSettingsLeafSheetHeight(this.settingsLeafSheetMode);
     if (wheelDirectionHeight > 0) { return wheelDirectionHeight; }
+    const pinchZoomHeight: number =
+      remotePinchZoomSettingsLeafSheetHeight(this.settingsLeafSheetMode);
+    if (pinchZoomHeight > 0) { return pinchZoomHeight; }
     const moonlightHeight: number = moonlightSettingsLeafSheetHeight(this.settingsLeafSheetMode);
     if (moonlightHeight > 0) { return moonlightHeight; }
     const vncHeight: number = vncSettingsLeafSheetHeight(this.settingsLeafSheetMode);
@@ -14105,6 +14281,17 @@ struct HostListPage {
         onClose: (): void => { this.closeSettingsLeafSheet(); },
         onSave: (update: RemoteWheelPreferenceUpdate): boolean =>
           this.saveRemoteWheelPreferenceUpdate(update)
+      })
+    } else if (this.settingsLeafSheetMode === SETTINGS_SHEET_REMOTE_PINCH_ZOOM) {
+      RemotePinchZoomSettingsSheet({
+        initialRdp: this.rdpPinchZoomEnabled,
+        initialRustDesk: this.rustdeskPinchZoomEnabled,
+        initialSsh: this.sshPinchZoomEnabled,
+        initialVnc: this.vncPinchZoomEnabled,
+        initialMoonlight: this.moonlightPinchZoomEnabled,
+        onClose: (): void => { this.closeSettingsLeafSheet(); },
+        onSave: (update: RemotePinchZoomPreferenceUpdate): boolean =>
+          this.saveRemotePinchZoomPreferenceUpdate(update)
       })
     } else if (this.settingsLeafSheetMode === SETTINGS_SHEET_DIAGNOSTIC_LOG) {
       DiagnosticCaptureSettingsSheet({
@@ -14697,10 +14884,10 @@ struct HostListPage {
               this.cardDivider()
               this.remoteWheelDirectionRow()
               this.cardDivider()
+              this.remotePinchZoomRow()
+              this.cardDivider()
               this.sessionControlBarVisibilityRow()
               if (!this.isDesktopDevice) {
-                this.cardDivider()
-                this.canvasGestureZoomRow()
                 this.cardDivider()
                 Column() {
                   Row() {
@@ -17303,13 +17490,26 @@ struct HostListPage {
     }.width('100%').height(58).padding({ left: 52, right: 16 })
   }
 
-  @Builder canvasGestureZoomRow() {
-    if (!this.isDesktopDevice) {
-      this.rustdeskSwitchRow($r('app.media.icon_desktop'), '双指画布缩放',
-        '缩放后抬手，再双指长按约0.4秒拖动画布；关闭后保留双指右键和滚轮',
-        this.canvasGestureZoomEnabled,
-        (on: boolean): void => { this.saveCanvasGestureZoomEnabled(on); }, true)
-    }
+  @Builder remotePinchZoomRow() {
+    Row() {
+      Row() { Image($r('app.media.icon_desktop')).width(22).height(22).fillColor(this.pal().text3) }
+        .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
+      Column() {
+        Text('双指缩放').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
+          .fontColor(this.pal().text).fontFamily(this.font())
+        Text(remotePinchZoomSelectionSummary(this.remotePinchZoomPreferences()))
+          .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
+          .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).margin({ top: 2 })
+      }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
+      Button('选择协议').height(34).padding({ left: 12, right: 12 }).fontSize(12)
+        .fontColor(this.accentColor).backgroundColor(this.pal().surface).borderRadius(8)
+        .onClick((): void => {
+          this.openSettingsLeafSheet(SETTINGS_SHEET_REMOTE_PINCH_ZOOM);
+        })
+    }.width('100%').height(62).padding({ left: 16, right: 16 })
+      .onClick((): void => {
+        this.openSettingsLeafSheet(SETTINGS_SHEET_REMOTE_PINCH_ZOOM);
+      })
   }
 
   @Builder rdpColorDepthRow() {

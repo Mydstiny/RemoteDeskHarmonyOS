@@ -38,6 +38,8 @@ import remotePhysicalKeyboardPolicyTest from './RemotePhysicalKeyboardPolicy.tes
 import touchpadPointerCurvePolicyTest from './TouchpadPointerCurvePolicy.test';
 import remotePhysicalTouchpadPolicyTest from '../../../test/RemotePhysicalTouchpadPolicy.test';
 import remoteSurfaceTransformPolicyTest from './RemoteSurfaceTransformPolicy.test';
+import remoteCanvasGesturePolicyTest from '../../../test/RemoteCanvasGesturePolicy.test';
+import remoteCanvasPointerFollowPolicyTest from '../../../test/RemoteCanvasPointerFollowPolicy.test';
 import rustDeskDesktopFlipPolicyTest from '../../../test/RustDeskDesktopFlipPolicy.test';
 import remoteCursorStylePolicyTest from './RemoteCursorStylePolicy.test';
 import remoteHostSheetLifecyclePolicyTest from './RemoteHostSheetLifecyclePolicy.test';
@@ -47,6 +49,7 @@ import vncSessionSettingsPolicyTest from './VncSessionSettingsPolicy.test';
 import vncSessionUiPolicyTest from '../../../test/VncSessionUiPolicy.test';
 import remoteWheelPolicyTest from '../../../test/RemoteWheelPolicy.test';
 import remoteWheelPreferencePolicyTest from '../../../test/RemoteWheelPreferencePolicy.test';
+import remotePinchZoomPreferencePolicyTest from '../../../test/RemotePinchZoomPreferencePolicy.test';
 import vncCertificateDecisionHandoffTest from '../../../test/VncCertificateDecisionHandoff.test';
 import vncCertificateSheetPolicyTest from '../../../test/VncCertificateSheetPolicy.test';
 import vncCertificatePreflightPolicyTest from '../../../test/VncCertificatePreflightPolicy.test';
@@ -370,6 +373,8 @@ export default function testsuite() {
   touchpadPointerCurvePolicyTest();
   remotePhysicalTouchpadPolicyTest();
   remoteSurfaceTransformPolicyTest();
+  remoteCanvasGesturePolicyTest();
+  remoteCanvasPointerFollowPolicyTest();
   rustDeskDesktopFlipPolicyTest();
   remoteCursorStylePolicyTest();
   remoteHostSheetLifecyclePolicyTest();
@@ -379,6 +384,7 @@ export default function testsuite() {
   vncSessionUiPolicyTest();
   remoteWheelPolicyTest();
   remoteWheelPreferencePolicyTest();
+  remotePinchZoomPreferencePolicyTest();
   vncCertificateDecisionHandoffTest();
   vncCertificateSheetPolicyTest();
   vncCertificatePreflightPolicyTest();

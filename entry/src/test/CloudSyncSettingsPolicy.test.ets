@@ -33,6 +33,12 @@ export default function cloudSyncSettingsPolicyTest() {
       expect(localNames.indexOf('sshReverseWheel') >= 0).assertTrue();
       expect(localNames.indexOf('vncReverseWheel') >= 0).assertTrue();
       expect(localNames.indexOf('moonlightReverseWheel') >= 0).assertTrue();
+      expect(localNames.indexOf('remotePinchZoomPreferenceVersion') >= 0).assertTrue();
+      expect(localNames.indexOf('rdpPinchZoomEnabled') >= 0).assertTrue();
+      expect(localNames.indexOf('rustdeskPinchZoomEnabled') >= 0).assertTrue();
+      expect(localNames.indexOf('sshPinchZoomEnabled') >= 0).assertTrue();
+      expect(localNames.indexOf('vncPinchZoomEnabled') >= 0).assertTrue();
+      expect(localNames.indexOf('moonlightPinchZoomEnabled') >= 0).assertTrue();
       expect(localNames.indexOf('sshTerminalFontSize') >= 0).assertTrue();
       expect(localNames.indexOf('liveViewMode') >= 0).assertTrue();
       expect(localNames.indexOf('virtualMouseStyle') >= 0).assertTrue();
@@ -48,6 +54,12 @@ export default function cloudSyncSettingsPolicyTest() {
       expect(cloudUserSettingIsSyncable('sshReverseWheel')).assertFalse();
       expect(cloudUserSettingIsSyncable('vncReverseWheel')).assertFalse();
       expect(cloudUserSettingIsSyncable('moonlightReverseWheel')).assertFalse();
+      expect(cloudUserSettingIsSyncable('remotePinchZoomPreferenceVersion')).assertFalse();
+      expect(cloudUserSettingIsSyncable('rdpPinchZoomEnabled')).assertFalse();
+      expect(cloudUserSettingIsSyncable('rustdeskPinchZoomEnabled')).assertFalse();
+      expect(cloudUserSettingIsSyncable('sshPinchZoomEnabled')).assertFalse();
+      expect(cloudUserSettingIsSyncable('vncPinchZoomEnabled')).assertFalse();
+      expect(cloudUserSettingIsSyncable('moonlightPinchZoomEnabled')).assertFalse();
       expect(cloudUserSettingIsSyncable('sshTerminalFontSize')).assertFalse();
       expect(cloudUserSettingIsSyncable('liveViewMode')).assertFalse();
       expect(cloudUserSettingIsSyncable('virtualMouseStyle')).assertFalse();

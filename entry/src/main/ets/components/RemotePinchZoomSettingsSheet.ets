@@ -1,0 +1,187 @@
+import { promptAction } from '@kit.ArkUI';
+import { AppTheme, Palette, buildDark, buildLight } from '../common/Theme';
+import { protocolIcon } from '../services/ProtocolIconPolicy';
+import {
+  RemotePinchZoomPreferenceUpdate,
+  RemotePinchZoomPreferences
+} from '../services/RemotePinchZoomPreferencePolicy';
+
+@Component
+export struct RemotePinchZoomSettingsSheet {
+  @StorageProp('currentTheme') theme: string = 'light';
+  @StorageProp('accentColor') accentColor: string = '#007DFF';
+  @Prop initialRdp: boolean = false;
+  @Prop initialRustDesk: boolean = false;
+  @Prop initialSsh: boolean = true;
+  @Prop initialVnc: boolean = false;
+  @Prop initialMoonlight: boolean = false;
+  onClose: () => void = (): void => {};
+  onSave: (update: RemotePinchZoomPreferenceUpdate) => boolean =
+    (_update: RemotePinchZoomPreferenceUpdate): boolean => false;
+
+  @State draftRdp: boolean = false;
+  @State draftRustDesk: boolean = false;
+  @State draftSsh: boolean = true;
+  @State draftVnc: boolean = false;
+  @State draftMoonlight: boolean = false;
+  private touchedRdp: boolean = false;
+  private touchedRustDesk: boolean = false;
+  private touchedSsh: boolean = false;
+  private touchedVnc: boolean = false;
+  private touchedMoonlight: boolean = false;
+
+  aboutToAppear(): void {
+    this.draftRdp = this.initialRdp;
+    this.draftRustDesk = this.initialRustDesk;
+    this.draftSsh = this.initialSsh;
+    this.draftVnc = this.initialVnc;
+    this.draftMoonlight = this.initialMoonlight;
+    this.touchedRdp = false;
+    this.touchedRustDesk = false;
+    this.touchedSsh = false;
+    this.touchedVnc = false;
+    this.touchedMoonlight = false;
+  }
+
+  private pal(): Palette {
+    return this.theme === 'light' ? buildLight(this.accentColor) : buildDark(this.accentColor);
+  }
+
+  private draft(): RemotePinchZoomPreferences {
+    return {
+      rdp: this.draftRdp,
+      rustdesk: this.draftRustDesk,
+      ssh: this.draftSsh,
+      vnc: this.draftVnc,
+      moonlight: this.draftMoonlight
+    };
+  }
+
+  private setAll(enabled: boolean): void {
+    this.draftRdp = enabled;
+    this.draftRustDesk = enabled;
+    this.draftSsh = enabled;
+    this.draftVnc = enabled;
+    this.draftMoonlight = enabled;
+    this.touchedRdp = true;
+    this.touchedRustDesk = true;
+    this.touchedSsh = true;
+    this.touchedVnc = true;
+    this.touchedMoonlight = true;
+  }
+
+  private save(): void {
+    const update: RemotePinchZoomPreferenceUpdate = {
+      values: this.draft(),
+      touched: {
+        rdp: this.touchedRdp,
+        rustdesk: this.touchedRustDesk,
+        ssh: this.touchedSsh,
+        vnc: this.touchedVnc,
+        moonlight: this.touchedMoonlight
+      }
+    };
+    if (!this.onSave(update)) {
+      promptAction.showToast({ message: '双指缩放设置保存失败，请重试', duration: 2200 });
+      return;
+    }
+    this.onClose();
+  }
+
+  @Builder private header() {
+    Row() {
+      Column() {
+        Text('双指缩放').fontSize(20).fontWeight(FontWeight.Bold)
+          .fontColor(this.pal().text).fontFamily(AppTheme.fontFamily)
+        Text('选择允许触屏双指缩放的远程协议')
+          .fontSize(11).fontColor(this.pal().text3).fontFamily(AppTheme.fontFamily)
+          .margin({ top: 3 })
+      }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+      Text('取消').fontSize(13).fontColor(this.pal().text2)
+        .fontFamily(AppTheme.fontFamily).margin({ right: 18 })
+        .onClick((): void => { this.onClose(); })
+      Text('保存').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.accentColor)
+        .fontFamily(AppTheme.fontFamily).onClick((): void => { this.save(); })
+    }.width('100%').padding({ left: 22, right: 22, top: 22, bottom: 14 })
+  }
+
+  @Builder private protocolRow(icon: Resource, title: string, detail: string,
+    enabled: boolean, onChange: (value: boolean) => void) {
+    Row() {
+      SymbolGlyph(icon).fontSize(21).fontColor([this.pal().text3]).margin({ right: 12 })
+      Column() {
+        Text(title).fontSize(14).fontWeight(FontWeight.Medium)
+          .fontColor(this.pal().text).fontFamily(AppTheme.fontFamily)
+        Text(detail).fontSize(11).fontColor(this.pal().text3)
+          .fontFamily(AppTheme.fontFamily).lineHeight(16).margin({ top: 3 })
+      }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+      Toggle({ type: ToggleType.Switch, isOn: enabled })
+        .selectedColor(this.accentColor).scale({ x: 0.88, y: 0.88 })
+        .onChange(onChange)
+    }.width('100%').padding({ left: 15, right: 12, top: 11, bottom: 11 })
+  }
+
+  @Builder private divider() {
+    Divider().strokeWidth(0.5).color(this.pal().divider).margin({ left: 15, right: 15 })
+  }
+
+  build() {
+    Column() {
+      this.header()
+      Scroll() {
+        Column() {
+          Text('开关只响应触屏手指。实体触控板、滚轮和协议原生输入保持原路径；' +
+            'RustDesk 本地缩放与远端 App 原生触控缩放互斥。')
+            .fontSize(12).fontColor(this.pal().text2).fontFamily(AppTheme.fontFamily)
+            .lineHeight(18).width('100%').padding(13)
+            .borderRadius(12).backgroundColor(this.pal().surface).margin({ bottom: 14 })
+
+          Row() {
+            Button('全部关闭').layoutWeight(1).height(38).borderRadius(10)
+              .backgroundColor(this.pal().surface).fontColor(this.pal().text2).fontSize(12)
+              .onClick((): void => { this.setAll(false); })
+            Button('全部开启').layoutWeight(1).height(38).borderRadius(10)
+              .backgroundColor(this.pal().surface).fontColor(this.pal().text2).fontSize(12)
+              .margin({ left: 8 }).onClick((): void => { this.setAll(true); })
+          }.width('100%').margin({ bottom: 16 })
+
+          Column() {
+            this.protocolRow(protocolIcon('rdp'), 'RDP',
+              '画布捏合、双指移动与放大后光标跟随', this.draftRdp,
+              (value: boolean): void => { this.draftRdp = value; this.touchedRdp = true; })
+            this.divider()
+            this.protocolRow(protocolIcon('rustdesk'), 'RustDesk',
+              '本地画布缩放；开启时关闭远端 App TouchScale', this.draftRustDesk,
+              (value: boolean): void => {
+                this.draftRustDesk = value; this.touchedRustDesk = true;
+              })
+            this.divider()
+            this.protocolRow(protocolIcon('ssh'), 'SSH 终端',
+              '捏合调整终端字号；不影响 SFTP 文件列表', this.draftSsh,
+              (value: boolean): void => { this.draftSsh = value; this.touchedSsh = true; })
+            this.divider()
+            this.protocolRow(protocolIcon('vnc'), 'VNC',
+              '画布捏合、双指移动与放大后光标跟随', this.draftVnc,
+              (value: boolean): void => { this.draftVnc = value; this.touchedVnc = true; })
+            this.divider()
+            this.protocolRow(protocolIcon('moonlight'), 'Moonlight',
+              '串流画布缩放与光标跟随；Fit 状态保留滚轮', this.draftMoonlight,
+              (value: boolean): void => {
+                this.draftMoonlight = value; this.touchedMoonlight = true;
+              })
+          }.width('100%').borderRadius(14).backgroundColor(this.pal().card)
+            .border({ width: 0.5, color: this.pal().cardBorder })
+
+          Row() {
+            Button('取消').height(40).layoutWeight(1).borderRadius(10)
+              .backgroundColor(this.pal().surface).fontColor(this.pal().text2).fontSize(13)
+              .onClick((): void => { this.onClose(); })
+            Button('保存').height(40).layoutWeight(1).borderRadius(10)
+              .backgroundColor(this.accentColor).fontColor(Color.White).fontSize(13)
+              .margin({ left: 10 }).onClick((): void => { this.save(); })
+          }.width('100%').margin({ top: 18, bottom: 24 })
+        }.width('100%').padding({ left: 22, right: 22 })
+      }.layoutWeight(1).scrollBar(BarState.Auto).edgeEffect(EdgeEffect.Spring)
+    }.width('100%').height('100%').backgroundColor(this.pal().bg).borderRadius(20)
+  }
+}

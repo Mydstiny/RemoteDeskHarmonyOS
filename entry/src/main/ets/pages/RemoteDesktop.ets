@@ -388,14 +388,12 @@ import { shouldAcceptRendererViewportSnapshot } from '../services/RemoteRenderer
 import {
   advanceCanvasTwoFingerMove,
   beginCanvasTwoFingerCandidate,
-  CANVAS_TWO_FINGER_HOLD_MS,
   CanvasTwoFingerMoveResult,
   CanvasTwoFingerState,
   claimCanvasTwoFingerPan,
   claimCanvasTwoFingerPinch,
   endCanvasPanOwnership,
   endCanvasPinchOwnership,
-  expireCanvasTwoFingerHold,
   finishCanvasTwoFingerCandidate,
   idleCanvasTwoFingerState,
   shouldApplyCanvasTwoFingerPan,
@@ -424,6 +422,12 @@ import {
   REMOTE_DISPLAY_SCALE_PREFERENCE_VERSION_KEY,
   resolveInitialRemoteDisplayScaleMode
 } from '../services/RemoteCanvasTransformPolicy';
+import {
+  CanvasPhysicalPointerFollowResult,
+  CanvasPointerFollowResult,
+  followCanvasForPhysicalPointer,
+  followCanvasForRemotePointer
+} from '../services/RemoteCanvasPointerFollowPolicy';
 import {
   effectiveRustDeskDesktopFlipMode,
   normalizeRustDeskDesktopFlipMode,
@@ -586,6 +590,11 @@ import {
   RUSTDESK_REVERSE_WHEEL_KEY,
   VNC_REVERSE_WHEEL_KEY
 } from '../services/RemoteWheelPreferencePolicy';
+import {
+  RDP_PINCH_ZOOM_ENABLED_KEY,
+  RUSTDESK_PINCH_ZOOM_ENABLED_KEY,
+  VNC_PINCH_ZOOM_ENABLED_KEY
+} from '../services/RemotePinchZoomPreferencePolicy';
 import {
   accumulateVncPhysicalTouchpadWheel,
   resetVncPhysicalWheelState,
@@ -909,8 +918,12 @@ struct RemoteDesktop {
   sessionControlBarHiddenRustDesk: boolean = false;
   @StorageLink(REMOTE_SESSION_CONTROL_BAR_HIDDEN_VNC_KEY)
   sessionControlBarHiddenVnc: boolean = false;
-  @StorageLink('canvasGestureZoomEnabled') @Watch('onCanvasGestureZoomSettingChange')
-  canvasGestureZoomEnabled: boolean = false;
+  @StorageLink(RDP_PINCH_ZOOM_ENABLED_KEY) @Watch('onRdpPinchZoomSettingChange')
+  rdpPinchZoomEnabled: boolean = false;
+  @StorageLink(RUSTDESK_PINCH_ZOOM_ENABLED_KEY) @Watch('onRustDeskPinchZoomSettingChange')
+  rustdeskPinchZoomEnabled: boolean = false;
+  @StorageLink(VNC_PINCH_ZOOM_ENABLED_KEY) @Watch('onVncPinchZoomSettingChange')
+  vncPinchZoomEnabled: boolean = false;
   @StorageLink('rustdeskShowLocalCursor') rustdeskShowLocalCursor: boolean = true;
   @StorageLink('rustdeskBrowseMode') rustdeskBrowseMode: boolean = false;
   @StorageLink('rustdeskRelativeMouseMode') rustdeskRelativeMouseMode: boolean = false;
@@ -1284,7 +1297,7 @@ struct RemoteDesktop {
   private canvasTwoFingerState: CanvasTwoFingerState = idleCanvasTwoFingerState();
   private canvasTwoFingerLastMove: CanvasTwoFingerMoveResult | null = null;
   private canvasTwoFingerSequence: number = 0;
-  private canvasTwoFingerHoldTimer: number = -1;
+  private canvasTwoFingerSuppressedUntilRelease: boolean = false;
   private canvasPanInputSource: 'none' | 'touch' | 'gesture' = 'none';
   private canvasPanLastOffsetX: number = 0;
   private canvasPanLastOffsetY: number = 0;
@@ -1297,6 +1310,10 @@ struct RemoteDesktop {
   private canvasPinchLastScale: number = 1;
   private canvasPinchLastCenterX: number = 0;
   private canvasPinchLastCenterY: number = 0;
+  private physicalPointerCanvasFollowArmed: boolean = false;
+  private physicalPointerCanvasFollowTimer: number = -1;
+  private physicalPointerCanvasFollowX: number = 0;
+  private physicalPointerCanvasFollowY: number = 0;
   // A gesture owns one geometry snapshot for its whole lifetime. Surface and
   // stream changes release the gesture before a new snapshot can be captured.
   private canvasPinchViewportSnapshot: CanvasViewport | null = null;
@@ -3756,6 +3773,14 @@ struct RemoteDesktop {
     return false;
   }
 
+  private canvasGestureZoomEnabledForCurrentProtocol(): boolean {
+    const protocol: string = this.currentProtocolName();
+    if (protocol === 'rdp') { return this.rdpPinchZoomEnabled; }
+    if (protocol === 'rustdesk') { return this.rustdeskPinchZoomEnabled; }
+    if (protocol === 'vnc') { return this.vncPinchZoomEnabled; }
+    return false;
+  }
+
   private onRemoteWheelPreferenceChange(): void {
     this.touchWheelRemainder = 0;
     this.lastTouchWheelMs = 0;
@@ -4419,11 +4444,16 @@ struct RemoteDesktop {
   private onRemoteAppTouchScaleSettingChange(): void {
     this.releaseCanvasPinchInput('remote-app-touch-scale-setting-change');
     this.resetTouchGesture();
+    if (this.rustdeskRemoteAppTouchScaleEnabled && this.rustdeskPinchZoomEnabled) {
+      this.rustdeskPinchZoomEnabled = false;
+      this.persistSessionPref(RUSTDESK_PINCH_ZOOM_ENABLED_KEY, false);
+    }
   }
 
   private handleRemoteSurfaceHover = (hovered: boolean): void => {
     const changed: boolean = this.remoteSurfaceHovered !== hovered;
     this.remoteSurfaceHovered = hovered;
+    if (!hovered) { this.clearPhysicalPointerCanvasFollow(true); }
     this.syncRemoteSystemPointer('surface-hover', hovered, changed);
   }
 
@@ -4627,8 +4657,8 @@ struct RemoteDesktop {
   }
 
   private setRdpCanvasZoomPreference(enabled: boolean): void {
-    this.canvasGestureZoomEnabled = enabled;
-    this.persistSessionPref('canvasGestureZoomEnabled', enabled);
+    this.rdpPinchZoomEnabled = enabled;
+    this.persistSessionPref(RDP_PINCH_ZOOM_ENABLED_KEY, enabled);
   }
 
   private setRdpReverseWheelPreference(enabled: boolean): void {
@@ -5415,22 +5445,14 @@ struct RemoteDesktop {
     this.rustDeskTouchPinchTransformSnapshot = null;
   }
 
-  private clearCanvasTwoFingerHoldTimer(): void {
-    if (this.canvasTwoFingerHoldTimer >= 0) {
-      clearTimeout(this.canvasTwoFingerHoldTimer);
-      this.canvasTwoFingerHoldTimer = -1;
-    }
-  }
-
   private resetCanvasTwoFingerGesture(): void {
-    this.clearCanvasTwoFingerHoldTimer();
     this.canvasTwoFingerState = idleCanvasTwoFingerState();
     this.canvasTwoFingerLastMove = null;
   }
 
   private canUseCanvasTwoFingerGesture(): boolean {
-    return !this.isKeyboardMouseControlMode() &&
-      (this.canvasGestureZoomEnabled || this.shouldUseRustDeskRemoteAppTouchScale());
+    return this.canvasGestureZoomEnabledForCurrentProtocol() ||
+      this.shouldUseRustDeskRemoteAppTouchScale();
   }
 
   private canPanCanvasForTwoFingerGesture(): boolean {
@@ -5442,7 +5464,7 @@ struct RemoteDesktop {
       // on the local renderer's overflow state.
       return true;
     }
-    if (!this.canvasGestureZoomEnabled) {
+    if (!this.canvasGestureZoomEnabledForCurrentProtocol()) {
       return false;
     }
     if (!this.canvasTransformInitialized) {
@@ -5451,56 +5473,14 @@ struct RemoteDesktop {
     return canvasTransformCanPan(this.canvasTransform, this.currentCanvasViewport());
   }
 
-  private beginCanvasTwoFingerCandidateAt(point: LocalPoint, holdAlreadySatisfied: boolean = false): void {
-    this.clearCanvasTwoFingerHoldTimer();
+  private beginCanvasTwoFingerCandidateAt(point: LocalPoint, span: number = 0): void {
     this.canvasTwoFingerSequence++;
-    const sequenceId: number = this.canvasTwoFingerSequence;
     const remoteAppTarget: boolean = this.shouldUseRustDeskRemoteAppTouchScale();
-    const zoomEnabled: boolean = this.canvasGestureZoomEnabled || remoteAppTarget;
-    const nowMs: number = Date.now();
-    this.canvasTwoFingerState = beginCanvasTwoFingerCandidate(sequenceId, point.x, point.y,
-      holdAlreadySatisfied ? nowMs - CANVAS_TWO_FINGER_HOLD_MS : nowMs,
-      zoomEnabled, this.canPanCanvasForTwoFingerGesture());
-    if (holdAlreadySatisfied) {
-      this.canvasTwoFingerState = expireCanvasTwoFingerHold(this.canvasTwoFingerState, nowMs);
-      return;
-    }
-    if (!this.canvasTwoFingerState.holdTimerPending) {
-      return;
-    }
-    this.canvasTwoFingerHoldTimer = setTimeout((): void => {
-      this.canvasTwoFingerHoldTimer = -1;
-      if (this.canvasTwoFingerState.sequenceId !== sequenceId ||
-        this.canvasTwoFingerState.owner !== 'candidate') {
-        return;
-      }
-      this.canvasTwoFingerState = expireCanvasTwoFingerHold(this.canvasTwoFingerState, Date.now());
-    }, CANVAS_TWO_FINGER_HOLD_MS);
-  }
-
-  /**
-   * API 23 can route an XComponent stream directly to native code. Keep a
-   * real two-finger LongPress recognizer on the transparent ArkUI owner so a
-   * held canvas pan still works when the raw TouchEvent timer is unavailable.
-   */
-  private armCanvasTwoFingerPanFromLongPress(event: GestureEvent): void {
-    if (!this.canUseCanvasTwoFingerGesture() || !this.canPanCanvasForTwoFingerGesture()) {
-      return;
-    }
-    if (this.canvasTwoFingerState.owner === 'idle') {
-      const point: LocalPoint | null = this.gestureCenterPoint(event);
-      if (point === null) {
-        return;
-      }
-      this.beginCanvasTwoFingerCandidateAt(point, true);
-      return;
-    }
-    if (this.canvasTwoFingerState.owner === 'candidate') {
-      this.canvasTwoFingerState = expireCanvasTwoFingerHold(this.canvasTwoFingerState, Date.now());
-      if (!this.canvasTwoFingerState.holdTimerPending) {
-        this.clearCanvasTwoFingerHoldTimer();
-      }
-    }
+    const zoomEnabled: boolean =
+      this.canvasGestureZoomEnabledForCurrentProtocol() || remoteAppTarget;
+    this.canvasTwoFingerState = beginCanvasTwoFingerCandidate(
+      this.canvasTwoFingerSequence, point.x, point.y, Date.now(),
+      zoomEnabled, this.canPanCanvasForTwoFingerGesture(), span);
   }
 
   /**
@@ -5518,7 +5498,7 @@ struct RemoteDesktop {
     if (event.type === TouchType.Down && activeCount >= 2 && this.touchFingerCount < 2) {
       const point: LocalPoint | null = this.averageTouchPoint(event) || this.primaryTouchPoint(event);
       if (point !== null) {
-        this.beginCanvasTwoFingerCandidateAt(point);
+        this.beginCanvasTwoFingerCandidateAt(point, this.twoFingerTouchSpan(event));
       }
       return;
     }
@@ -5526,23 +5506,18 @@ struct RemoteDesktop {
       if (this.canvasTwoFingerState.owner === 'idle') {
         const point: LocalPoint | null = this.averageTouchPoint(event) || this.primaryTouchPoint(event);
         if (point !== null) {
-          this.beginCanvasTwoFingerCandidateAt(point);
+          this.beginCanvasTwoFingerCandidateAt(point, this.twoFingerTouchSpan(event));
         }
       }
       const point: LocalPoint | null = this.averageTouchPoint(event) || this.primaryTouchPoint(event);
       if (point === null || this.canvasTwoFingerState.owner === 'idle') {
         return;
       }
-      const nowMs: number = Date.now();
-      const heldState: CanvasTwoFingerState = expireCanvasTwoFingerHold(
-        this.canvasTwoFingerState, nowMs);
-      const result = advanceCanvasTwoFingerMove(heldState, point.x, point.y, nowMs,
-        this.shouldUseRustDeskRemoteAppTouchScale());
+      const result = advanceCanvasTwoFingerMove(
+        this.canvasTwoFingerState, point.x, point.y, Date.now(),
+        this.shouldUseRustDeskRemoteAppTouchScale(), this.twoFingerTouchSpan(event));
       this.canvasTwoFingerState = result.state;
       this.canvasTwoFingerLastMove = result;
-      if (!this.canvasTwoFingerState.holdTimerPending) {
-        this.clearCanvasTwoFingerHoldTimer();
-      }
       return;
     }
     if (event.type === TouchType.Cancel) {
@@ -5551,13 +5526,11 @@ struct RemoteDesktop {
   }
 
   private finishCanvasTwoFingerCandidateForRelease(wasMoved: boolean): void {
-    if (this.canvasTwoFingerState.owner !== 'candidate' &&
-      this.canvasTwoFingerState.owner !== 'canvas-pan-armed') {
+    if (this.canvasTwoFingerState.owner !== 'candidate') {
       return;
     }
     this.canvasTwoFingerState = finishCanvasTwoFingerCandidate(
       this.canvasTwoFingerState, wasMoved);
-    this.clearCanvasTwoFingerHoldTimer();
   }
 
   private startCanvasPanFromPoint(point: LocalPoint): boolean {
@@ -5574,7 +5547,8 @@ struct RemoteDesktop {
       this.claimCanvasPinchInput();
       return true;
     }
-    if (this.canvasTwoFingerState.owner !== 'canvas-pan' || !this.canvasGestureZoomEnabled) {
+    if (this.canvasTwoFingerState.owner !== 'canvas-pan' ||
+      !this.canvasGestureZoomEnabledForCurrentProtocol()) {
       return false;
     }
     if (!this.canvasTransformInitialized) {
@@ -5629,7 +5603,7 @@ struct RemoteDesktop {
   }
 
   private startCanvasPinch(event: GestureEvent): void {
-    if (!this.canUseCanvasTwoFingerGesture()) {
+    if (this.canvasTwoFingerSuppressedUntilRelease || !this.canUseCanvasTwoFingerGesture()) {
       return;
     }
     if (this.canvasTwoFingerState.owner === 'idle') {
@@ -5640,15 +5614,13 @@ struct RemoteDesktop {
     }
     const remoteAppTarget: boolean = this.shouldUseRustDeskRemoteAppTouchScale();
     const claimed = claimCanvasTwoFingerPinch(this.canvasTwoFingerState, remoteAppTarget);
-    if (claimed.owner === this.canvasTwoFingerState.owner &&
-      (claimed.owner === 'touchpad-scroll' || claimed.owner === 'touchpad-right-click' ||
-        claimed.owner === 'canvas-pan-armed' || claimed.owner === 'canvas-pan' ||
-        claimed.owner === 'remote-touch-pan' ||
-        claimed.owner === 'canvas-pinch' || claimed.owner === 'remote-touch-scale')) {
+    if (claimed.owner === 'touchpad-right-click' || claimed.owner === 'canvas-pan' ||
+      claimed.owner === 'remote-touch-pan' ||
+      (this.canvasPinchActive &&
+        (claimed.owner === 'canvas-pinch' || claimed.owner === 'remote-touch-scale'))) {
       return;
     }
     this.canvasTwoFingerState = claimed;
-    this.clearCanvasTwoFingerHoldTimer();
     if (remoteAppTarget) {
       if (this.startRustDeskRemoteAppTouchScale(event)) {
         // Remote scale owns the same gesture lifecycle as a local pinch. In
@@ -5661,7 +5633,8 @@ struct RemoteDesktop {
       }
       return;
     }
-    if (!this.canvasGestureZoomEnabled || this.canvasTwoFingerState.owner !== 'canvas-pinch') {
+    if (!this.canvasGestureZoomEnabledForCurrentProtocol() ||
+      this.canvasTwoFingerState.owner !== 'canvas-pinch') {
       return;
     }
     if (!this.canvasTransformInitialized) {
@@ -5679,17 +5652,15 @@ struct RemoteDesktop {
 
   /** Two-finger pure translation is a local canvas gesture when content overflows. */
   private startCanvasPan(event: GestureEvent): void {
-    if (!this.canUseCanvasTwoFingerGesture() ||
+    if (this.canvasTwoFingerSuppressedUntilRelease || !this.canUseCanvasTwoFingerGesture() ||
       this.canvasPanActive ||
-      this.canvasTwoFingerState.owner === 'candidate' ||
       this.canvasTwoFingerState.owner === 'touchpad-scroll' ||
       this.canvasTwoFingerState.owner === 'touchpad-right-click') {
       return;
     }
-    if (this.canvasTwoFingerState.owner === 'canvas-pan-armed') {
+    if (this.canvasTwoFingerState.owner === 'candidate') {
       const remoteAppTarget: boolean = this.shouldUseRustDeskRemoteAppTouchScale();
       this.canvasTwoFingerState = claimCanvasTwoFingerPan(this.canvasTwoFingerState, remoteAppTarget);
-      this.clearCanvasTwoFingerHoldTimer();
     }
     if (this.shouldUseRustDeskRemoteAppTouchScale()) {
       if (this.canvasTwoFingerState.owner !== 'remote-touch-pan') {
@@ -5726,12 +5697,8 @@ struct RemoteDesktop {
   }
 
   private updateCanvasPan(event: GestureEvent): void {
-    // PanGesture may recognize before the 400 ms hold and will not call
-    // onActionStart again. Re-evaluate the shared owner on every update so
-    // the first post-hold update can activate the canvas pan path.
     if (!this.canvasPanActive &&
-      (this.canvasTwoFingerState.owner === 'canvas-pan-armed' ||
-        this.canvasTwoFingerState.owner === 'canvas-pan' ||
+      (this.canvasTwoFingerState.owner === 'canvas-pan' ||
         this.canvasTwoFingerState.owner === 'remote-touch-pan')) {
       this.startCanvasPan(event);
     }
@@ -5743,7 +5710,7 @@ struct RemoteDesktop {
       this.updateRustDeskRemoteAppTouchPan(event);
       return;
     }
-    if (this.canvasPinchActive || !this.canvasGestureZoomEnabled) {
+    if (this.canvasPinchActive || !this.canvasGestureZoomEnabledForCurrentProtocol()) {
       return;
     }
     const offsetX: number = Number.isFinite(event.offsetX) ? event.offsetX : this.canvasPanLastOffsetX;
@@ -5818,7 +5785,7 @@ struct RemoteDesktop {
       this.updateRustDeskRemoteAppTouchScale(event);
       return;
     }
-    if (!this.canvasPinchActive || !this.canvasGestureZoomEnabled) {
+    if (!this.canvasPinchActive || !this.canvasGestureZoomEnabledForCurrentProtocol()) {
       return;
     }
     const viewport: CanvasViewport | null = this.canvasPinchViewportSnapshot;
@@ -5854,6 +5821,10 @@ struct RemoteDesktop {
 
   /** Release gesture ownership from every terminal path; safe to call repeatedly. */
   private releaseCanvasPinchInput(reason: string): void {
+    if (reason.indexOf('page-') === 0 || reason.indexOf('disconnect-') === 0 ||
+      reason === 'zoom-setting-change') {
+      this.clearPhysicalPointerCanvasFollow(true);
+    }
     const wasActive: boolean = this.canvasPinchActive || this.rustDeskTouchPinchActive;
     const wasConsumed: boolean = this.canvasPinchInputPhase !== 'idle';
     this.finishCanvasPan();
@@ -8981,9 +8952,103 @@ struct RemoteDesktop {
 
   /** Disabling local canvas zoom must not leave its last enlarged transform on screen. */
   private onCanvasGestureZoomSettingChange(): void {
+    this.clearPhysicalPointerCanvasFollow(true);
     this.releaseCanvasPinchInput('zoom-setting-change');
-    if (!this.canvasGestureZoomEnabled && this.canvasTransformGestureModified) {
+    if (!this.canvasGestureZoomEnabledForCurrentProtocol() &&
+      this.canvasTransformGestureModified) {
       this.resetCanvasToDisplayDefault();
+    }
+  }
+
+  private onRdpPinchZoomSettingChange(): void {
+    if (this.currentProtocolName() === 'rdp') { this.onCanvasGestureZoomSettingChange(); }
+  }
+
+  private onRustDeskPinchZoomSettingChange(): void {
+    if (this.currentProtocolName() === 'rustdesk') { this.onCanvasGestureZoomSettingChange(); }
+  }
+
+  private onVncPinchZoomSettingChange(): void {
+    if (this.currentProtocolName() === 'vnc') { this.onCanvasGestureZoomSettingChange(); }
+  }
+
+  private applyRemotePointerCanvasFollow(remoteX: number, remoteY: number): void {
+    if (!this.canvasTransformInitialized || this.rendererHandle <= 0) { return; }
+    const result: CanvasPointerFollowResult = followCanvasForRemotePointer({
+      enabled: this.canvasGestureZoomEnabledForCurrentProtocol(),
+      transform: this.canvasTransform,
+      viewport: this.currentCanvasViewport(),
+      surfaceTransform: this.currentRemoteSurfaceTransform(),
+      remoteX,
+      remoteY
+    });
+    if (!result.moved) { return; }
+    this.canvasTransform = result.transform;
+    this.canvasTransformGestureModified = true;
+    this.applyCanvasTransform();
+  }
+
+  private clearPhysicalPointerCanvasFollow(resetArmed: boolean): void {
+    if (this.physicalPointerCanvasFollowTimer >= 0) {
+      clearTimeout(this.physicalPointerCanvasFollowTimer);
+      this.physicalPointerCanvasFollowTimer = -1;
+    }
+    if (resetArmed) {
+      this.physicalPointerCanvasFollowArmed = false;
+    }
+  }
+
+  private stepPhysicalPointerCanvasFollow(localX: number, localY: number): boolean {
+    if (!this.connected || this.rendererHandle <= 0 ||
+      this.physicalMouseDownButton >= 0 || this.physicalMouseClickPending ||
+      !this.canvasTransformInitialized) {
+      return false;
+    }
+    const viewport: CanvasViewport = this.currentCanvasViewport();
+    const result: CanvasPhysicalPointerFollowResult = followCanvasForPhysicalPointer({
+      enabled: this.canvasGestureZoomEnabledForCurrentProtocol(),
+      transform: this.canvasTransform,
+      viewport,
+      surfaceWidthVp: this.surfaceWidth,
+      surfaceHeightVp: this.surfaceHeight,
+      localX,
+      localY,
+      pxPerVpX: viewport.surfaceWidth / Math.max(1, this.surfaceWidth),
+      pxPerVpY: viewport.surfaceHeight / Math.max(1, this.surfaceHeight),
+      armed: this.physicalPointerCanvasFollowArmed
+    });
+    this.physicalPointerCanvasFollowArmed = result.armed;
+    if (!result.moved) { return result.active; }
+    this.canvasTransform = result.transform;
+    this.canvasTransformGestureModified = true;
+    this.applyCanvasTransform();
+    return result.active;
+  }
+
+  private schedulePhysicalPointerCanvasFollow(): void {
+    if (this.physicalPointerCanvasFollowTimer >= 0) { return; }
+    this.physicalPointerCanvasFollowTimer = setTimeout((): void => {
+      this.physicalPointerCanvasFollowTimer = -1;
+      const active: boolean = this.stepPhysicalPointerCanvasFollow(
+        this.physicalPointerCanvasFollowX, this.physicalPointerCanvasFollowY);
+      if (!active) { return; }
+      const mapped: MappedPoint = this.mapInputPoint(
+        this.physicalPointerCanvasFollowX, this.physicalPointerCanvasFollowY);
+      if (mapped.inside) {
+        this.queueMouseMove(mapped.x, mapped.y);
+      }
+      this.schedulePhysicalPointerCanvasFollow();
+    }, 30);
+  }
+
+  private updatePhysicalPointerCanvasFollow(localX: number, localY: number): void {
+    this.physicalPointerCanvasFollowX = localX;
+    this.physicalPointerCanvasFollowY = localY;
+    const active: boolean = this.stepPhysicalPointerCanvasFollow(localX, localY);
+    if (active) {
+      this.schedulePhysicalPointerCanvasFollow();
+    } else {
+      this.clearPhysicalPointerCanvasFollow(false);
     }
   }
 
@@ -15903,6 +15968,7 @@ struct RemoteDesktop {
     }
     this.resetTouchpadPointerCurve();
     this.resetCanvasTwoFingerGesture();
+    this.canvasTwoFingerSuppressedUntilRelease = false;
     if (wasDragging) {
       this.showRemoteCursorIndicator(-1, true);
     }
@@ -16003,6 +16069,25 @@ struct RemoteDesktop {
       y: sumY / count,
       inside: true
     };
+  }
+
+  private twoFingerTouchSpan(event: TouchEvent): number {
+    const points: LocalPoint[] = [];
+    this.activeTouchPoints.forEach((point: LocalPoint): void => {
+      if (points.length < 2) {
+        points.push(point);
+      }
+    });
+    if (points.length < 2) {
+      const fallback = event.touches.length >= 2 ? event.touches : event.changedTouches;
+      for (let i = 0; i < fallback.length && points.length < 2; i++) {
+        points.push({ x: fallback[i].x, y: fallback[i].y, inside: true });
+      }
+    }
+    if (points.length < 2) { return 0; }
+    const deltaX: number = points[1].x - points[0].x;
+    const deltaY: number = points[1].y - points[0].y;
+    return Math.sqrt(deltaX * deltaX + deltaY * deltaY);
   }
 
   private primaryTouchPoint(event: TouchEvent): LocalPoint | null {
@@ -16268,6 +16353,7 @@ struct RemoteDesktop {
             nowMs - previousTimeMs : 16;
           this.logTouchpadCurve(stepDx, stepDy, dtMs, curve.gain, pointerSpeed,
             remoteDelta.x, remoteDelta.y, nextX, nextY);
+          this.applyRemotePointerCanvasFollow(nextX, nextY);
           this.setRemoteCursorPrediction(nextX, nextY);
           // Keep the fractional prediction in the pending queue; round only
           // at the protocol boundary in flushMouseMove().
@@ -16545,12 +16631,28 @@ struct RemoteDesktop {
     // verification, including the silent-native-focus-loss case.
     const host: RemoteHost | null = this.pendingHost;
     const controlMode: number = this.currentControlMode();
+    const activeTouchCount: number = this.trackedCanvasTouchCount(event);
+    if (event.sourceTool === SourceTool.Finger && activeTouchCount > 2 &&
+      !this.canvasTwoFingerSuppressedUntilRelease) {
+      // A third contact terminates an already recognized two-finger owner and
+      // suppresses re-entry until this physical touch sequence is fully up.
+      this.releaseCanvasPinchInput('touch-count-change');
+      this.canvasTwoFingerSuppressedUntilRelease = true;
+      this.resetCanvasTwoFingerGesture();
+    }
     if (this.consumeCanvasPinchTouch(event)) {
       return;
     }
-    this.observeCanvasTwoFingerTouch(event);
+    if (!this.canvasTwoFingerSuppressedUntilRelease) {
+      this.observeCanvasTwoFingerTouch(event);
+    }
     if (controlMode === 2) {
       this.hideTouchIndicator();
+      if (this.canUseCanvasTwoFingerGesture() &&
+        (this.trackedCanvasTouchCount(event) >= 2 || this.touchMaxFingers >= 2)) {
+        this.handleTouchPadInput(event);
+        return;
+      }
       if (this.trackedCanvasTouchCount(event) >= 3 || this.touchMaxFingers >= 3) {
         // 键鼠模式下 3 指仅用于控制面板开关, Move 事件不发送鼠标/滚轮
         if (event.type === TouchType.Move) {
@@ -17520,6 +17622,12 @@ struct RemoteDesktop {
       event.stopPropagation();
       const localX: number = event.x as number;
       const localY: number = event.y as number;
+      if (event.sourceTool === SourceTool.MOUSE &&
+        (event.action === MouseAction.Move || event.action === MouseAction.Hover)) {
+        this.updatePhysicalPointerCanvasFollow(localX, localY);
+      } else if (event.action === MouseAction.Press) {
+        this.clearPhysicalPointerCanvasFollow(false);
+      }
       const mapped: MappedPoint = this.mapInputPoint(localX, localY);
       this.logMappedInput('mouse', localX, localY, mapped);
       if (!mapped.inside && event.action !== MouseAction.Release) {
@@ -17886,9 +17994,6 @@ struct RemoteDesktop {
               .onActionUpdate((event: GestureEvent): void => { this.updateCanvasPinch(event); })
               .onActionEnd((_event: GestureEvent): void => { this.endCanvasPinchGesture('gesture-end'); })
               .onActionCancel((): void => { this.endCanvasPinchGesture('gesture-cancel'); }),
-            LongPressGesture({ fingers: 2, duration: CANVAS_TWO_FINGER_HOLD_MS })
-              .allowedTypes([SourceTool.Finger])
-              .onAction((event: GestureEvent): void => { this.armCanvasTwoFingerPanFromLongPress(event); }),
             PanGesture({ fingers: 2, distance: 5 })
               .allowedTypes([SourceTool.Finger])
               .onActionStart((event: GestureEvent): void => { this.startCanvasPan(event); })
@@ -17988,7 +18093,7 @@ struct RemoteDesktop {
             clipboardReady: this.loader.isSessionClipboardReady(this.sessionId),
             diagnosticsEnabled: this.rdpShowDiagnostics,
             displayScaleMode: this.remoteDisplayScaleMode,
-            canvasZoomEnabled: this.canvasGestureZoomEnabled,
+            canvasZoomEnabled: this.rdpPinchZoomEnabled,
             reverseWheel: this.rdpReverseWheel,
             resolutionId: normalizeRdpResolutionId(this.rdpDesktopResolutionId, this.rdpDesktopPreset),
             colorDepth: normalizeRdpSessionColorDepth(this.rdpColorDepth),

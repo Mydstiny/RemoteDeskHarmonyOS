@@ -87,6 +87,7 @@ import {
 import { GUIDE_ALWAYS_VISIBLE_STORAGE_KEY } from '../services/GuideVisibilityPolicy';
 import { GuideVisibilityService } from '../services/GuideVisibilityService';
 import { SSH_REVERSE_WHEEL_KEY } from '../services/RemoteWheelPreferencePolicy';
+import { SSH_PINCH_ZOOM_ENABLED_KEY } from '../services/RemotePinchZoomPreferencePolicy';
 import { showLockGate, lockGateErrorMessage } from '../components/LockGate';
 import { SshXtermSurface, XtermOutputBuffer } from '../components/SshXtermSurface';
 import { SshTerminalSearchBar } from '../components/ssh/search/SshTerminalSearchBar';
@@ -722,6 +723,8 @@ struct SshTerminal {
   @StorageProp('remoteDesktopBgFlag') @Watch('onSshAbilityBackgroundChange')
   appBackgroundSignal: boolean = false;
   @StorageLink(SSH_REVERSE_WHEEL_KEY) sshReverseWheel: boolean = false;
+  @StorageLink(SSH_PINCH_ZOOM_ENABLED_KEY) @Watch('onSshPinchZoomSettingChange')
+  sshPinchZoomEnabled: boolean = true;
   @LocalStorageLink('sessionWindowBackground') @Watch('onSshAbilityBackgroundChange')
   sessionWindowBackground: boolean = false;
   @LocalStorageLink('sessionWindowFullscreen') sessionWindowFullscreen: boolean = false;
@@ -1029,6 +1032,7 @@ struct SshTerminal {
   /** Live pinch feedback; durable persistence happens only when the gesture ends. */
   @State terminalZoomIndicatorVisible: boolean = false;
   private terminalPinchStartFontSize: number = 18;
+  private terminalPinchActive: boolean = false;
   private terminalZoomIndicatorTimer: number = -1;
   private kbCtrl: TextInputController = new TextInputController();
   private srv: HostSyncService = HostSyncService.getInstance();
@@ -6388,12 +6392,18 @@ struct SshTerminal {
   }
 
   private startTerminalPinchZoom(): void {
+    if (!this.sshPinchZoomEnabled) {
+      this.terminalPinchActive = false;
+      return;
+    }
     this.clearTerminalZoomIndicatorTimer();
+    this.terminalPinchActive = true;
     this.terminalPinchStartFontSize = sshTerminalFontSizeForPinch(this.fontSize, 1);
     this.terminalZoomIndicatorVisible = true;
   }
 
   private updateTerminalPinchZoom(event: GestureEvent): void {
+    if (!this.terminalPinchActive || !this.sshPinchZoomEnabled) { return; }
     const nextFontSize: number = sshTerminalFontSizeForPinch(
       this.terminalPinchStartFontSize, event.scale);
     if (nextFontSize !== this.fontSize) {
@@ -6402,6 +6412,8 @@ struct SshTerminal {
   }
 
   private finishTerminalPinchZoom(): void {
+    if (!this.terminalPinchActive) { return; }
+    this.terminalPinchActive = false;
     if (this.terminalProfileEnabled()) {
       // Profile mode treats pinch as a live session zoom. Mutating the named
       // profile or legacy cloud appearance would make a viewport gesture
@@ -6415,6 +6427,12 @@ struct SshTerminal {
       this.terminalZoomIndicatorTimer = -1;
       this.terminalZoomIndicatorVisible = false;
     }, 700);
+  }
+
+  private onSshPinchZoomSettingChange(): void {
+    if (!this.sshPinchZoomEnabled && this.terminalPinchActive) {
+      this.finishTerminalPinchZoom();
+    }
   }
 
   /** 根据 termAreaW/H + 字号反推 cols/rows, 同步到 PTY */

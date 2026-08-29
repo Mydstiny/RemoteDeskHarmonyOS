@@ -90,6 +90,33 @@ import {
 } from '../services/TouchpadPointerCurvePolicy';
 import { applyRemoteWheelDirection, moonlightAxisScrollAmount } from '../services/RemoteWheelPolicy';
 import { MOONLIGHT_REVERSE_WHEEL_KEY } from '../services/RemoteWheelPreferencePolicy';
+import { MOONLIGHT_PINCH_ZOOM_ENABLED_KEY } from
+  '../services/RemotePinchZoomPreferencePolicy';
+import {
+  baseCanvasTransform,
+  canvasTransformCanPan,
+  CanvasTransform,
+  CanvasViewport,
+  panCanvasTransform,
+  pinchCanvasTransform,
+  rebaseCanvasTransform
+} from '../services/RemoteCanvasTransformPolicy';
+import {
+  advanceCanvasTwoFingerMove,
+  beginCanvasTwoFingerCandidate,
+  CanvasTwoFingerState,
+  claimCanvasTwoFingerPinch,
+  idleCanvasTwoFingerState,
+  shouldApplyCanvasTwoFingerPan,
+  shouldPreserveCanvasTwoFingerRightClick,
+  shouldSendCanvasTwoFingerScroll
+} from '../services/RemoteCanvasGesturePolicy';
+import {
+  CanvasLocalPointerFollowResult,
+  CanvasPhysicalPointerFollowResult,
+  followCanvasForLocalPointer,
+  followCanvasForPhysicalPointer
+} from '../services/RemoteCanvasPointerFollowPolicy';
 import rdpnapi from 'librdpnapi.so';
 import {
   MoonlightHostService,
@@ -298,6 +325,8 @@ struct MoonlightStreamPage {
   @StorageProp('liveViewEnabled') liveViewEnabled: boolean = true;
   @StorageProp('liveViewMode') liveViewMode: number = 1;
   @StorageLink(MOONLIGHT_REVERSE_WHEEL_KEY) moonlightReverseWheel: boolean = false;
+  @StorageLink(MOONLIGHT_PINCH_ZOOM_ENABLED_KEY) @Watch('onMoonlightPinchZoomSettingChange')
+  moonlightPinchZoomEnabled: boolean = false;
   @StorageLink(REMOTE_SESSION_CONTROL_BAR_HIDDEN_MOONLIGHT_KEY)
   @Watch('onMoonlightSessionControlBarVisibilityChanged')
   sessionControlBarHiddenMoonlight: boolean = false;
@@ -485,6 +514,23 @@ struct MoonlightStreamPage {
   private trackpadPendingDeltaY: number = 0;
   private trackpadPointerFlushTimer: number = -1;
   private trackpadLastPointerDispatchMs: number = 0;
+  private moonlightCanvasTransform: CanvasTransform =
+    { scale: 1, panX: 0, panY: 0, rotation: 0 };
+  private moonlightCanvasViewportSnapshot: CanvasViewport | null = null;
+  private moonlightCanvasTransformInitialized: boolean = false;
+  private moonlightCanvasTransformModified: boolean = false;
+  private moonlightTwoFingerState: CanvasTwoFingerState = idleCanvasTwoFingerState();
+  private moonlightTwoFingerSequence: number = 0;
+  private moonlightTwoFingerSuppressedUntilRelease: boolean = false;
+  private moonlightCanvasPinchActive: boolean = false;
+  private moonlightCanvasPinchLastScale: number = 1;
+  private moonlightCanvasPinchLastCenterX: number = 0;
+  private moonlightCanvasPinchLastCenterY: number = 0;
+  private moonlightPhysicalPointerFollowArmed: boolean = false;
+  private moonlightPhysicalPointerFollowTimer: number = -1;
+  private moonlightPhysicalPointerFollowX: number = 0;
+  private moonlightPhysicalPointerFollowY: number = 0;
+  private moonlightPhysicalMouseButtonDown: boolean = false;
   private inputSuspended: boolean = false;
   private inputSuspensionAppliedOwnerToken: number = 0;
   private rendererHandle: number = -1;
@@ -754,6 +800,7 @@ struct MoonlightStreamPage {
   private handleMoonlightRemoteSurfaceHover = (hovered: boolean): void => {
     const changed: boolean = this.moonlightRemoteSurfaceHovered !== hovered;
     this.moonlightRemoteSurfaceHovered = hovered;
+    if (!hovered) { this.clearMoonlightPhysicalPointerFollow(true); }
     if (hovered) { this.moonlightToolbarLocalPointerHovered = false; }
     this.syncMoonlightSystemPointer('surface-hover', changed);
   };
@@ -1394,6 +1441,67 @@ struct MoonlightStreamPage {
     this.pollMoonlightSurface(0);
   }
 
+  private moonlightCanvasViewport(widthPx: number = this.rendererSurfaceWidthPx,
+    heightPx: number = this.rendererSurfaceHeightPx): CanvasViewport {
+    return {
+      surfaceWidth: Math.max(1, widthPx > 0 ? widthPx : this.surfaceWidthPx),
+      surfaceHeight: Math.max(1, heightPx > 0 ? heightPx : this.surfaceHeightPx),
+      sourceWidth: Math.max(1, this.streamWidth),
+      sourceHeight: Math.max(1, this.streamHeight),
+      freePanInsetRatio: 0
+    };
+  }
+
+  private submitMoonlightCanvasTransform(): void {
+    if (this.rendererHandle <= 0) { return; }
+    try {
+      rdpnapi.setRendererCanvasTransform(this.rendererHandle,
+        this.moonlightCanvasTransform.scale,
+        this.moonlightCanvasTransform.panX,
+        this.moonlightCanvasTransform.panY, 0);
+      this.geometryGeneration = Math.min(Number.MAX_SAFE_INTEGER,
+        this.geometryGeneration + 1);
+      this.invalidatePhysicalPointerGeometry();
+    } catch (error) {
+      hilog.warn(0x0014, 'MoonlightStreamUi',
+        'canvas transform submit failed: ' + JSON.stringify(error));
+    }
+  }
+
+  private bindMoonlightCanvasTransform(widthPx: number, heightPx: number,
+    preserve: boolean): void {
+    const next: CanvasViewport = this.moonlightCanvasViewport(widthPx, heightPx);
+    if (preserve && this.moonlightCanvasTransformInitialized &&
+      this.moonlightCanvasTransformModified &&
+      this.moonlightCanvasViewportSnapshot !== null) {
+      this.moonlightCanvasTransform = rebaseCanvasTransform(
+        this.moonlightCanvasTransform, this.moonlightCanvasViewportSnapshot, next);
+    } else {
+      this.moonlightCanvasTransform = baseCanvasTransform('fit', 100, next);
+      this.moonlightCanvasTransformModified = false;
+    }
+    this.moonlightCanvasViewportSnapshot = next;
+    this.moonlightCanvasTransformInitialized = true;
+    this.submitMoonlightCanvasTransform();
+  }
+
+  private onMoonlightPinchZoomSettingChange(): void {
+    this.cancelActiveMoonlightTouches();
+    this.clearMoonlightPhysicalPointerFollow(true);
+    if (!this.moonlightPinchZoomEnabled) {
+      this.moonlightCanvasTransformModified = false;
+      if (this.rendererHandle > 0) {
+        this.bindMoonlightCanvasTransform(
+          this.rendererSurfaceWidthPx, this.rendererSurfaceHeightPx, false);
+      } else {
+        // A reconnect/PIP rebind must not revive a transform that was disabled
+        // while the native surface was temporarily unavailable.
+        this.moonlightCanvasTransformInitialized = false;
+        this.moonlightCanvasViewportSnapshot = null;
+      }
+    }
+  }
+
   private pollMoonlightSurface(attempt: number): void {
     this.stopSurfacePoll();
     const waitingForSurface: boolean = !this.streamStartAttempted || this.surfaceSuspended;
@@ -1511,6 +1619,7 @@ struct MoonlightStreamPage {
     }
     this.rendererSurfaceWidthPx = this.surfaceWidthPx;
     this.rendererSurfaceHeightPx = this.surfaceHeightPx;
+    this.bindMoonlightCanvasTransform(this.surfaceWidthPx, this.surfaceHeightPx, rebinding);
     if (rebinding) {
       const rebound = this.sessionCoordinator.rebindSurfaceForRoute(
         this.hostId, this.appId, this.rendererHandle, surfaceId);
@@ -1561,6 +1670,7 @@ struct MoonlightStreamPage {
       rdpnapi.resizeRenderer(this.rendererHandle, width, height);
       this.rendererSurfaceWidthPx = width;
       this.rendererSurfaceHeightPx = height;
+      this.bindMoonlightCanvasTransform(width, height, true);
     } catch (_) {
       this.closeMoonlightRoute('surface-resize-failed');
     }
@@ -1723,6 +1833,8 @@ struct MoonlightStreamPage {
 
   private closeMoonlightRoute(reason: string): void {
     if (this.routeTerminated) { return; }
+    this.clearMoonlightPhysicalPointerFollow(true);
+    this.moonlightPhysicalMouseButtonDown = false;
     if (this.recoveryBound) {
       const action: MoonlightSessionRecoveryTerminalAction =
         this.requestedTerminalAction === 'none' ?
@@ -1963,6 +2075,7 @@ struct MoonlightStreamPage {
   }
 
   private destroyMoonlightRenderer(): void {
+    this.clearMoonlightPhysicalPointerFollow(true);
     const handle: number = this.rendererHandle;
     this.rendererHandle = -1;
     this.rendererSurfaceWidthPx = 0;
@@ -2294,6 +2407,9 @@ struct MoonlightStreamPage {
       this.suspendMoonlightRendererForBackground('pip-renderer-init-failed');
       return false;
     }
+    this.rendererSurfaceWidthPx = surface.surfaceWidth;
+    this.rendererSurfaceHeightPx = surface.surfaceHeight;
+    this.bindMoonlightCanvasTransform(surface.surfaceWidth, surface.surfaceHeight, true);
     this.surfaceId = surface.surfaceId;
     this.pipSurfaceId = surface.surfaceId;
     const rebound = this.sessionCoordinator.rebindSurfaceForRoute(
@@ -2348,6 +2464,9 @@ struct MoonlightStreamPage {
       if (!rdpnapi.setXComponentSurfaceId(
           surface.surfaceId, surface.surfaceWidth, surface.surfaceHeight)) { return; }
       rdpnapi.resizeRenderer(this.rendererHandle, surface.surfaceWidth, surface.surfaceHeight);
+      this.rendererSurfaceWidthPx = surface.surfaceWidth;
+      this.rendererSurfaceHeightPx = surface.surfaceHeight;
+      this.bindMoonlightCanvasTransform(surface.surfaceWidth, surface.surfaceHeight, true);
     } catch (err) {
       hilog.warn(0x0014, 'MoonlightStreamUi',
         'PIP surface resize failed: ' + JSON.stringify(err));
@@ -2913,6 +3032,9 @@ struct MoonlightStreamPage {
       this.recordReconnectFailure(generation);
       return;
     }
+    this.rendererSurfaceWidthPx = this.surfaceWidthPx;
+    this.rendererSurfaceHeightPx = this.surfaceHeightPx;
+    this.bindMoonlightCanvasTransform(this.surfaceWidthPx, this.surfaceHeightPx, true);
 
     let launchConfiguration: MoonlightNativeLaunchConfiguration;
     const decoderCapabilities = probeMoonlightHardwareDecoderCapabilities();
@@ -3839,6 +3961,10 @@ struct MoonlightStreamPage {
     this.trackpadScrollCentroidY = 0;
     this.trackpadScrollCentroidValid = false;
     this.trackpadCurveState = resetTouchpadPointerCurveState();
+    this.moonlightTwoFingerState = idleCanvasTwoFingerState();
+    this.moonlightTwoFingerSuppressedUntilRelease = false;
+    this.moonlightCanvasPinchActive = false;
+    this.moonlightCanvasPinchLastScale = 1;
   }
 
   private trackpadReferenceScale(): number {
@@ -3873,6 +3999,121 @@ struct MoonlightStreamPage {
     return count > 0 ? { x: x / count, y: y / count } : null;
   }
 
+  private trackpadSpan(): number {
+    const points: MoonlightTouchPoint[] = [];
+    this.trackpadVisualTouches.forEach((point: MoonlightTouchPoint): void => {
+      if (points.length < 2) { points.push(point); }
+    });
+    if (points.length < 2) { return 0; }
+    return Math.hypot(points[1].x - points[0].x, points[1].y - points[0].y);
+  }
+
+  private beginMoonlightTwoFingerCandidate(centroid: MoonlightTouchPoint): void {
+    if (this.moonlightTwoFingerSuppressedUntilRelease) { return; }
+    this.moonlightTwoFingerSequence += 1;
+    const canPan: boolean = this.moonlightPinchZoomEnabled &&
+      this.moonlightCanvasTransformInitialized &&
+      canvasTransformCanPan(this.moonlightCanvasTransform,
+        this.moonlightCanvasViewportSnapshot ??
+          this.moonlightCanvasViewport());
+    this.moonlightTwoFingerState = beginCanvasTwoFingerCandidate(
+      this.moonlightTwoFingerSequence, centroid.x, centroid.y, Date.now(),
+      this.moonlightPinchZoomEnabled, canPan, this.trackpadSpan());
+  }
+
+  private panMoonlightCanvas(deltaX: number, deltaY: number): void {
+    if (!this.moonlightPinchZoomEnabled || !this.moonlightCanvasTransformInitialized) { return; }
+    const viewport: CanvasViewport = this.moonlightCanvasViewportSnapshot ??
+      this.moonlightCanvasViewport();
+    const pxPerVpX: number = viewport.surfaceWidth / Math.max(1, this.surfaceWidthVp);
+    const pxPerVpY: number = viewport.surfaceHeight / Math.max(1, this.surfaceHeightVp);
+    this.moonlightCanvasTransform = panCanvasTransform(
+      this.moonlightCanvasTransform, viewport,
+      deltaX * pxPerVpX, deltaY * pxPerVpY);
+    this.moonlightCanvasTransformModified = true;
+    this.submitMoonlightCanvasTransform();
+  }
+
+  private startMoonlightCanvasPinch(event: GestureEvent): void {
+    if (this.moonlightTwoFingerSuppressedUntilRelease ||
+      !this.moonlightPinchZoomEnabled || this.rendererHandle <= 0) { return; }
+    if (!this.moonlightCanvasTransformInitialized) {
+      this.bindMoonlightCanvasTransform(
+        this.rendererSurfaceWidthPx, this.rendererSurfaceHeightPx, false);
+    }
+    if (this.moonlightTwoFingerState.owner === 'idle') {
+      this.moonlightTwoFingerSequence += 1;
+      this.moonlightTwoFingerState = beginCanvasTwoFingerCandidate(
+        this.moonlightTwoFingerSequence, event.pinchCenterX, event.pinchCenterY,
+        Date.now(), true,
+        canvasTransformCanPan(this.moonlightCanvasTransform,
+          this.moonlightCanvasViewportSnapshot ?? this.moonlightCanvasViewport()));
+    }
+    const claimed: CanvasTwoFingerState =
+      claimCanvasTwoFingerPinch(this.moonlightTwoFingerState, false);
+    if (claimed.owner !== 'canvas-pinch') { return; }
+    this.moonlightTwoFingerState = claimed;
+    this.moonlightCanvasPinchActive = true;
+    this.moonlightCanvasPinchLastScale = 1;
+    const viewport: CanvasViewport = this.moonlightCanvasViewportSnapshot ??
+      this.moonlightCanvasViewport();
+    this.moonlightCanvasPinchLastCenterX =
+      event.pinchCenterX * viewport.surfaceWidth / Math.max(1, this.surfaceWidthVp);
+    this.moonlightCanvasPinchLastCenterY =
+      event.pinchCenterY * viewport.surfaceHeight / Math.max(1, this.surfaceHeightVp);
+    this.trackpadGestureMoved = true;
+  }
+
+  private updateMoonlightCanvasPinch(event: GestureEvent): void {
+    if (!this.moonlightCanvasPinchActive || !this.moonlightPinchZoomEnabled) { return; }
+    const viewport: CanvasViewport = this.moonlightCanvasViewportSnapshot ??
+      this.moonlightCanvasViewport();
+    const nextScale: number = Number.isFinite(event.scale) && event.scale > 0 ?
+      event.scale : this.moonlightCanvasPinchLastScale;
+    const centerX: number =
+      event.pinchCenterX * viewport.surfaceWidth / Math.max(1, this.surfaceWidthVp);
+    const centerY: number =
+      event.pinchCenterY * viewport.surfaceHeight / Math.max(1, this.surfaceHeightVp);
+    this.moonlightCanvasTransform = pinchCanvasTransform(
+      this.moonlightCanvasTransform, viewport, centerX, centerY,
+      nextScale / this.moonlightCanvasPinchLastScale,
+      centerX - this.moonlightCanvasPinchLastCenterX,
+      centerY - this.moonlightCanvasPinchLastCenterY);
+    this.moonlightCanvasPinchLastScale = nextScale;
+    this.moonlightCanvasPinchLastCenterX = centerX;
+    this.moonlightCanvasPinchLastCenterY = centerY;
+    this.moonlightCanvasTransformModified = true;
+    this.submitMoonlightCanvasTransform();
+  }
+
+  private finishMoonlightCanvasPinch(): void {
+    this.moonlightCanvasPinchActive = false;
+    this.moonlightCanvasPinchLastScale = 1;
+  }
+
+  private applyMoonlightTrackpadPointerFollow(): void {
+    if (!this.moonlightCanvasTransformInitialized) { return; }
+    const viewport: CanvasViewport = this.moonlightCanvasViewportSnapshot ??
+      this.moonlightCanvasViewport();
+    const result: CanvasLocalPointerFollowResult = followCanvasForLocalPointer({
+      enabled: this.moonlightPinchZoomEnabled,
+      transform: this.moonlightCanvasTransform,
+      viewport,
+      surfaceWidthVp: this.surfaceWidthVp,
+      surfaceHeightVp: this.surfaceHeightVp,
+      localX: this.trackpadCursorX,
+      localY: this.trackpadCursorY,
+      pxPerVpX: viewport.surfaceWidth / Math.max(1, this.surfaceWidthVp),
+      pxPerVpY: viewport.surfaceHeight / Math.max(1, this.surfaceHeightVp)
+    });
+    if (!result.moved) { return; }
+    this.moonlightCanvasTransform = result.transform;
+    this.moonlightCanvasTransformModified = true;
+    this.trackpadCursorX = result.pointerX;
+    this.trackpadCursorY = result.pointerY;
+    this.submitMoonlightCanvasTransform();
+  }
+
   /**
    * Phone/Pad virtual trackpad uses the ordinary Moonlight pointer lane.
    * This matches RDP/VNC's proven input route and avoids coupling cursor motion
@@ -3901,11 +4142,21 @@ struct MoonlightStreamPage {
       }
       this.trackpadPeakContactCount = Math.max(
         this.trackpadPeakContactCount, this.trackpadVisualTouches.size);
+      if (this.trackpadVisualTouches.size > 2) {
+        this.finishMoonlightCanvasPinch();
+        this.moonlightTwoFingerState = idleCanvasTwoFingerState();
+        this.moonlightTwoFingerSuppressedUntilRelease = true;
+        this.trackpadGestureMoved = true;
+        this.trackpadScrollCentroidValid = false;
+        this.clampAndPublishTrackpadCursor();
+        return;
+      }
       const centroid: MoonlightTouchPoint | null = this.trackpadCentroid();
-      if (centroid !== null) {
+      if (centroid !== null && this.trackpadVisualTouches.size === 2) {
         this.trackpadScrollCentroidX = centroid.x;
         this.trackpadScrollCentroidY = centroid.y;
         this.trackpadScrollCentroidValid = true;
+        this.beginMoonlightTwoFingerCandidate(centroid);
       }
       this.clampAndPublishTrackpadCursor();
       return;
@@ -3964,15 +4215,28 @@ struct MoonlightStreamPage {
           const adjustedY: number = relativeY * gain;
           this.trackpadCursorX += adjustedX;
           this.trackpadCursorY += adjustedY;
+          this.applyMoonlightTrackpadPointerFollow();
           this.queueTrackpadPointer(adjustedX, adjustedY);
         }
         this.trackpadScrollCentroidValid = false;
       } else {
         const centroid: MoonlightTouchPoint | null = this.trackpadCentroid();
+        if (centroid !== null && !this.moonlightTwoFingerSuppressedUntilRelease &&
+          this.moonlightTwoFingerState.owner === 'idle') {
+          this.beginMoonlightTwoFingerCandidate(centroid);
+        }
         if (centroid !== null && this.trackpadScrollCentroidValid) {
           const dx: number = centroid.x - this.trackpadScrollCentroidX;
           const dy: number = centroid.y - this.trackpadScrollCentroidY;
-          if (Math.hypot(dx, dy) >= 0.35) {
+          const result = advanceCanvasTwoFingerMove(
+            this.moonlightTwoFingerState, centroid.x, centroid.y, Date.now(),
+            false, this.trackpadSpan());
+          this.moonlightTwoFingerState = result.state;
+          if (shouldApplyCanvasTwoFingerPan(this.moonlightTwoFingerState)) {
+            this.trackpadGestureMoved = true;
+            this.panMoonlightCanvas(result.deltaX, result.deltaY);
+          } else if (shouldSendCanvasTwoFingerScroll(this.moonlightTwoFingerState) &&
+            Math.hypot(dx, dy) >= 0.35) {
             this.trackpadGestureMoved = this.trackpadGestureMoved ||
               this.trackpadGestureMaximumTravel > 6;
             this.sendTrackpadScroll(dx, dy);
@@ -4017,7 +4281,8 @@ struct MoonlightStreamPage {
       this.sendTrackpadButton(1, false);
     } else if (tap && this.trackpadPeakContactCount === 1) {
       this.clickTrackpadButton(1);
-    } else if (tap && this.trackpadPeakContactCount === 2) {
+    } else if (tap && this.trackpadPeakContactCount === 2 &&
+      shouldPreserveCanvasTwoFingerRightClick(this.moonlightTwoFingerState)) {
       this.clickTrackpadButton(3);
     }
     this.resetTrackpadGesture(false);
@@ -4245,6 +4510,65 @@ struct MoonlightStreamPage {
       ' source=' + (pointerPress ? 'press' : 'post-keyboard-motion'));
   }
 
+  private clearMoonlightPhysicalPointerFollow(resetArmed: boolean): void {
+    if (this.moonlightPhysicalPointerFollowTimer >= 0) {
+      clearTimeout(this.moonlightPhysicalPointerFollowTimer);
+      this.moonlightPhysicalPointerFollowTimer = -1;
+    }
+    if (resetArmed) { this.moonlightPhysicalPointerFollowArmed = false; }
+  }
+
+  private stepMoonlightPhysicalPointerFollow(localX: number, localY: number): boolean {
+    if (!this.nativeInputAvailable() || this.moonlightPhysicalMouseButtonDown ||
+      !this.moonlightCanvasTransformInitialized) {
+      return false;
+    }
+    const viewport: CanvasViewport = this.moonlightCanvasViewportSnapshot ??
+      this.moonlightCanvasViewport();
+    const result: CanvasPhysicalPointerFollowResult = followCanvasForPhysicalPointer({
+      enabled: this.moonlightPinchZoomEnabled,
+      transform: this.moonlightCanvasTransform,
+      viewport,
+      surfaceWidthVp: this.surfaceWidthVp,
+      surfaceHeightVp: this.surfaceHeightVp,
+      localX,
+      localY,
+      pxPerVpX: viewport.surfaceWidth / Math.max(1, this.surfaceWidthVp),
+      pxPerVpY: viewport.surfaceHeight / Math.max(1, this.surfaceHeightVp),
+      armed: this.moonlightPhysicalPointerFollowArmed
+    });
+    this.moonlightPhysicalPointerFollowArmed = result.armed;
+    if (!result.moved) { return result.active; }
+    this.moonlightCanvasTransform = result.transform;
+    this.moonlightCanvasTransformModified = true;
+    this.submitMoonlightCanvasTransform();
+    return result.active;
+  }
+
+  private scheduleMoonlightPhysicalPointerFollow(): void {
+    if (this.moonlightPhysicalPointerFollowTimer >= 0) { return; }
+    this.moonlightPhysicalPointerFollowTimer = setTimeout((): void => {
+      this.moonlightPhysicalPointerFollowTimer = -1;
+      const active: boolean = this.stepMoonlightPhysicalPointerFollow(
+        this.moonlightPhysicalPointerFollowX, this.moonlightPhysicalPointerFollowY);
+      if (!active) { return; }
+      this.sendAbsolutePointer(
+        this.moonlightPhysicalPointerFollowX, this.moonlightPhysicalPointerFollowY);
+      this.scheduleMoonlightPhysicalPointerFollow();
+    }, 30);
+  }
+
+  private updateMoonlightPhysicalPointerFollow(localX: number, localY: number): void {
+    this.moonlightPhysicalPointerFollowX = localX;
+    this.moonlightPhysicalPointerFollowY = localY;
+    const active: boolean = this.stepMoonlightPhysicalPointerFollow(localX, localY);
+    if (active) {
+      this.scheduleMoonlightPhysicalPointerFollow();
+    } else {
+      this.clearMoonlightPhysicalPointerFollow(false);
+    }
+  }
+
   private handleMoonlightMouse = (event: MouseEvent): void => {
     // Match the proven RDP/VNC path: an event delivered through ArkUI's
     // onMouse boundary is forwardable even when a vendor HID reports an
@@ -4274,6 +4598,7 @@ struct MoonlightStreamPage {
     }
     let accepted: boolean = false;
     if (event.action === MouseAction.Move || event.action === MouseAction.Hover) {
+      this.updateMoonlightPhysicalPointerFollow(event.x as number, event.y as number);
       this.wakeEmbeddedMacRemoteCursorIfNeeded(false);
       accepted = this.sendAbsolutePointer(event.x as number, event.y as number);
       if (eventIndex <= 12 || eventIndex % 120 === 0) {
@@ -4288,6 +4613,8 @@ struct MoonlightStreamPage {
       return;
     }
     if (event.action === MouseAction.Press || event.action === MouseAction.Release) {
+      this.moonlightPhysicalMouseButtonDown = event.action === MouseAction.Press;
+      this.clearMoonlightPhysicalPointerFollow(false);
       const button: number = this.moonlightPointerButton(event.button as number);
       if (button <= 0) { return; }
       if (event.action === MouseAction.Press) {
@@ -5210,6 +5537,22 @@ struct MoonlightStreamPage {
           .hitTestBehavior(HitTestMode.Block)
           .focusable(false).focusOnTouch(false).defaultFocus(false)
           .onTouch(this.handleMoonlightSurfaceTouch)
+          .gesture(
+            PinchGesture({ fingers: 2, distance: 5 })
+              .allowedTypes([SourceTool.Finger])
+              .onActionStart((event: GestureEvent): void => {
+                this.startMoonlightCanvasPinch(event);
+              })
+              .onActionUpdate((event: GestureEvent): void => {
+                this.updateMoonlightCanvasPinch(event);
+              })
+              .onActionEnd((_event: GestureEvent): void => {
+                this.finishMoonlightCanvasPinch();
+              })
+              .onActionCancel((): void => {
+                this.finishMoonlightCanvasPinch();
+              })
+          )
           .onKeyEvent(this.handleMoonlightKey)
           .onMouse(this.handleMoonlightMouse)
           .onAxisEvent(this.handleMoonlightAxis)

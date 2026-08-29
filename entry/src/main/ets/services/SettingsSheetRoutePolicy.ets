@@ -36,6 +36,7 @@ export const SETTINGS_SHEET_VIRTUAL_KEYBOARD_FUNCTIONS: number = 35;
 export const SETTINGS_SHEET_VIRTUAL_KEYBOARD_CUSTOM: number = 36;
 export const SETTINGS_SHEET_SECRET_VISIBILITY: number = 37;
 export const SETTINGS_SHEET_REMOTE_WHEEL_DIRECTION: number = 38;
+export const SETTINGS_SHEET_REMOTE_PINCH_ZOOM: number = 39;
 
 export const SETTINGS_PANEL_DISMISS_TO_LEAF_OPEN_MS: number = 360;
 
@@ -128,6 +129,10 @@ export function secretVisibilitySettingsLeafSheetHeight(mode: number): number {
 
 export function remoteWheelDirectionSettingsLeafSheetHeight(mode: number): number {
   return mode === SETTINGS_SHEET_REMOTE_WHEEL_DIRECTION ? 680 : 0;
+}
+
+export function remotePinchZoomSettingsLeafSheetHeight(mode: number): number {
+  return mode === SETTINGS_SHEET_REMOTE_PINCH_ZOOM ? 700 : 0;
 }
 
 export function virtualKeyboardSettingsRouteSpecs(): VirtualKeyboardSettingsRouteSpec[] {
