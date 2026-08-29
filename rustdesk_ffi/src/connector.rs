@@ -1045,6 +1045,8 @@ impl RustDeskConnector {
         remote_upload_dir: Option<&str>,
         pending_file_uploads: &mut Vec<PendingFileUpload>,
         requested_pressure_level: &mut u32,
+        current_image_quality: &mut i32,
+        quality_state: &Arc<Mutex<crate::RustDeskQualityState>>,
         physical_modifiers: &mut PhysicalModifierState,
         remote_keyboard_transport: RemoteKeyboardTransport,
         stream_started: Instant,
@@ -1078,6 +1080,37 @@ impl RustDeskConnector {
                 }
                 crate::ControlMsg::VideoPressure { level } => {
                     *requested_pressure_level = level.min(3);
+                }
+                crate::ControlMsg::SetImageQuality { quality, generation } => {
+                    let send_result = Session::send_image_quality(crypto, quality);
+                    if let Ok(mut state) = quality_state.lock() {
+                        if send_result.is_ok() {
+                            // Quality controls are reliable FIFO messages. A
+                            // superseded request can still reach the peer
+                            // before the latest request fails, so always
+                            // publish the last value actually sent. Only the
+                            // current request is allowed to leave pending.
+                            *current_image_quality = quality;
+                            state.sent_quality = quality;
+                            state.applied_generation = generation;
+                            if state.requested_generation == generation {
+                                state.effective_quality = quality;
+                                state.update_status = 2;
+                            }
+                        } else if state.requested_generation == generation {
+                            state.update_status = 3;
+                        }
+                    }
+                    match send_result {
+                        Ok(()) => eprintln!(
+                            "[RustDesk-FFI] live image quality applied generation={} quality={}",
+                            generation, quality
+                        ),
+                        Err(err) => eprintln!(
+                            "[RustDesk-FFI] live image quality failed generation={} quality={} error={}",
+                            generation, quality, err
+                        ),
+                    }
                 }
                 crate::ControlMsg::SendFile { remote_path, data } => {
                     let upload_path = Self::normalize_remote_upload_path(
@@ -1187,6 +1220,7 @@ impl RustDeskConnector {
         fps: u32,
         controls: Arc<ControlInbox>,
         stream_stats: Arc<Mutex<crate::RustDeskStreamStats>>,
+        quality_state: Arc<Mutex<crate::RustDeskQualityState>>,
         display_state: Arc<Mutex<crate::RustDeskDisplayState>>,
         mut on_video: VF,
         mut on_audio_format: AFF,
@@ -1222,6 +1256,7 @@ impl RustDeskConnector {
         crypto.set_read_timeout(Some(Duration::from_millis(20)))?;
 
         let mut stream_options_reasserted = false;
+        let mut image_quality = image_quality.clamp(0, 2);
         let mut empty_reads: u32 = 0; // 连续空读计数
                                       // 消息类型统计 — 用于诊断对端停止发送前的行为
         let mut msg_stats: std::collections::HashMap<&'static str, u64> =
@@ -1279,8 +1314,15 @@ impl RustDeskConnector {
                 "[RustDesk-FFI] streaming: initial stream options failed: {}, exiting",
                 err
             );
+            if let Ok(mut state) = quality_state.lock() {
+                state.update_status = 3;
+            }
             return Err(err);
         } else {
+            if let Ok(mut state) = quality_state.lock() {
+                state.sent_quality = image_quality;
+                state.update_status = 0;
+            }
             stream_options_sent_count += 1;
             stream_options_reasserted = true;
             eprintln!("[RustDesk-FFI] streaming: initial stream options reasserted");
@@ -1329,6 +1371,8 @@ impl RustDeskConnector {
                 remote_upload_dir.as_deref(),
                 &mut pending_file_uploads,
                 &mut requested_pressure_level,
+                &mut image_quality,
+                &quality_state,
                 &mut physical_modifiers,
                 remote_keyboard_transport,
                 stream_started,
@@ -1358,6 +1402,8 @@ impl RustDeskConnector {
                     remote_upload_dir.as_deref(),
                     &mut pending_file_uploads,
                     &mut requested_pressure_level,
+                    &mut image_quality,
+                    &quality_state,
                     &mut physical_modifiers,
                     remote_keyboard_transport,
                     stream_started,
@@ -2123,6 +2169,9 @@ impl RustDeskConnector {
                 Self::send_message_encrypted(crypto, &message)
             }
             crate::ControlMsg::VideoPressure { .. } => Ok(()),
+            crate::ControlMsg::SetImageQuality { quality, .. } => {
+                Session::send_image_quality(crypto, quality)
+            }
             crate::ControlMsg::KeyEvent { scancode, pressed } => {
                 Self::send_key_event_encrypted(
                     crypto,
@@ -2209,6 +2258,7 @@ impl RustDeskConnector {
             crate::ControlMsg::CaptureDisplays { .. } => "capture_displays",
             crate::ControlMsg::RefreshVideoDisplay { .. } => "refresh_video_display",
             crate::ControlMsg::VideoPressure { .. } => "video_pressure",
+            crate::ControlMsg::SetImageQuality { .. } => "image_quality",
             crate::ControlMsg::KeyEvent { .. } => "key",
             crate::ControlMsg::MouseEvent { .. } => "mouse",
             crate::ControlMsg::MouseMove { .. } => "mouse_move",

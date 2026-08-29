@@ -30,6 +30,7 @@ import {
   RendererViewport,
   RustDeskDisplayCapabilities,
   RustDeskDisplaySwitchRequest,
+  RustDeskMultiCanvasPreviewSnapshot,
   RustDeskDiagnosticsSnapshot,
   LocalResourceStats,
   RemoteCursorSnapshot,
@@ -1447,6 +1448,9 @@ export class ExtensionLoader {
         supported: false, sessionActive: false, protocolSnapshotAvailable: false,
         videoSeen: false, receivedRateAvailable: false, presentedRateAvailable: false,
         decodeRateAvailable: false, sessionId, latencyMs: -1, targetBitrateKbps: 0,
+        requestedImageQuality: -1, effectiveImageQuality: -1, sentImageQuality: -1,
+        qualityProfile: -1, qualityFps: 0,
+        qualityRequestedGeneration: 0, qualityAppliedGeneration: 0, qualityUpdateStatus: 0,
         remoteInputPermissionKnown: false, remoteInputAllowed: true,
         remoteClipboardPermissionKnown: false, remoteClipboardAllowed: true,
         remoteFilePermissionKnown: false, remoteFileAllowed: true,
@@ -1672,6 +1676,16 @@ export class ExtensionLoader {
     }
   }
 
+  setRustDeskImageQuality(sessionId: number, quality: number): boolean {
+    try {
+      return rdpnapi.setRustDeskImageQuality(sessionId, quality) as boolean;
+    } catch (err) {
+      hilog.warn(DOMAIN, TAG,
+        '[ExtensionLoader] setRustDeskImageQuality unavailable: ' + JSON.stringify(err));
+      return false;
+    }
+  }
+
   getRustDeskDisplayCapabilities(sessionId: number): RustDeskDisplayCapabilities {
     try {
       return rdpnapi.getRustDeskDisplayCapabilities(sessionId) as RustDeskDisplayCapabilities;
@@ -1684,7 +1698,12 @@ export class ExtensionLoader {
         switchGeneration: 0,
         readySwitchGeneration: 0,
         pendingDisplay: -1,
+        confirmedDisplay: -1,
         inputBlocked: false,
+        multiCanvasPreviewSupported: false,
+        multiCanvasPreviewMaxDisplays: 2,
+        multiCanvasPreviewActive: false,
+        multiCanvasPreviewDisplay: -1,
         width: 0,
         height: 0,
         originalWidth: 0,
@@ -1695,6 +1714,51 @@ export class ExtensionLoader {
         displays: []
       };
     }
+  }
+
+  attachRustDeskMultiCanvasPreview(sessionId: number, display: number, surfaceId: string,
+    surfaceWidth: number, surfaceHeight: number, sourceWidth: number, sourceHeight: number,
+    codec: number): RustDeskMultiCanvasPreviewSnapshot {
+    try {
+      return rdpnapi.attachRustDeskMultiCanvasPreview(sessionId, display, surfaceId,
+        surfaceWidth, surfaceHeight, sourceWidth, sourceHeight, codec) as
+        RustDeskMultiCanvasPreviewSnapshot;
+    } catch (err) {
+      hilog.warn(DOMAIN, TAG,
+        '[ExtensionLoader] attachRustDeskMultiCanvasPreview unavailable: ' + JSON.stringify(err));
+      return this.emptyRustDeskMultiCanvasPreview('native_api_unavailable');
+    }
+  }
+
+  detachRustDeskMultiCanvasPreview(sessionId: number, display: number = -1): boolean {
+    try {
+      return rdpnapi.detachRustDeskMultiCanvasPreview(sessionId, display) as boolean;
+    } catch (err) {
+      hilog.warn(DOMAIN, TAG,
+        '[ExtensionLoader] detachRustDeskMultiCanvasPreview unavailable: ' + JSON.stringify(err));
+      return false;
+    }
+  }
+
+  getRustDeskMultiCanvasPreview(sessionId: number,
+    display: number = -1): RustDeskMultiCanvasPreviewSnapshot {
+    try {
+      return rdpnapi.getRustDeskMultiCanvasPreview(sessionId, display) as
+        RustDeskMultiCanvasPreviewSnapshot;
+    } catch (err) {
+      hilog.warn(DOMAIN, TAG,
+        '[ExtensionLoader] getRustDeskMultiCanvasPreview unavailable: ' + JSON.stringify(err));
+      return this.emptyRustDeskMultiCanvasPreview('native_api_unavailable');
+    }
+  }
+
+  private emptyRustDeskMultiCanvasPreview(reason: string): RustDeskMultiCanvasPreviewSnapshot {
+    return {
+      supported: false, active: false, display: -1, status: 'inactive', reason,
+      decoderBackend: 'paused', sourceWidth: 0, sourceHeight: 0, codec: -1,
+      lastDecodeResult: 0, receivedFrames: 0, acceptedFrames: 0, droppedFrames: 0,
+      presentedFrames: 0, queueDepth: 0, inputDroppedFrames: 0
+    };
   }
 
   beginRustDeskDisplaySwitch(sessionId: number, display: number): RustDeskDisplaySwitchRequest {

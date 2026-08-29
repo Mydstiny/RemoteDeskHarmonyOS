@@ -480,6 +480,10 @@ import {
   requestRustDeskDisplaySwitch,
   shouldRequestRustDeskDisplaySwitch
 } from '../services/RustDeskDisplaySwitchPolicy';
+import {
+  RustDeskMultiCanvasPreviewDecision,
+  selectRustDeskMultiCanvasPreview
+} from '../services/RustDeskMultiCanvasPreviewPolicy';
 import { createTransferSnapshot, TransferProtocol, TransferState } from '../services/FileTransferProgressModel';
 import { isRemoteCompletionConfirmed } from '../services/TransferSessionPolicy';
 import {
@@ -550,6 +554,7 @@ import {
   RustDeskDisplayInfo,
   RustDeskDisplayResolution,
   RustDeskDisplaySwitchRequest,
+  RustDeskMultiCanvasPreviewSnapshot,
   RustDeskDiagnosticsSnapshot,
   SessionConfig,
   SessionTransferStatus
@@ -743,6 +748,11 @@ interface RemoteDesktopSurfaceListener {
   onSurfaceDestroyed(surfaceId: string): void;
 }
 
+interface RustDeskPreviewSurfaceListener {
+  onRustDeskPreviewSurfaceCreated(surfaceId: string): void;
+  onRustDeskPreviewSurfaceDestroyed(surfaceId: string): void;
+}
+
 interface RdpCredentialParts {
   username: string;
   domain: string;
@@ -813,6 +823,9 @@ const EMPTY_RUSTDESK_DIAGNOSTICS: RustDeskDiagnosticsSnapshot = {
   supported: false, sessionActive: false, protocolSnapshotAvailable: false,
   videoSeen: false, receivedRateAvailable: false, presentedRateAvailable: false,
   decodeRateAvailable: false, sessionId: -1, latencyMs: -1, targetBitrateKbps: 0,
+  requestedImageQuality: -1, effectiveImageQuality: -1, sentImageQuality: -1,
+  qualityProfile: -1, qualityFps: 0,
+  qualityRequestedGeneration: 0, qualityAppliedGeneration: 0, qualityUpdateStatus: 0,
   remoteInputPermissionKnown: false, remoteInputAllowed: true,
   remoteClipboardPermissionKnown: false, remoteClipboardAllowed: true,
   remoteFilePermissionKnown: false, remoteFileAllowed: true,
@@ -838,7 +851,12 @@ const EMPTY_RUSTDESK_DISPLAY_CAPABILITIES: RustDeskDisplayCapabilities = {
   switchGeneration: 0,
   readySwitchGeneration: 0,
   pendingDisplay: -1,
+  confirmedDisplay: -1,
   inputBlocked: false,
+  multiCanvasPreviewSupported: false,
+  multiCanvasPreviewMaxDisplays: 2,
+  multiCanvasPreviewActive: false,
+  multiCanvasPreviewDisplay: -1,
   width: 0,
   height: 0,
   originalWidth: 0,
@@ -854,6 +872,13 @@ const EMPTY_RUSTDESK_DISPLAY_RESOLUTION: RustDeskDisplayResolution = {
 };
 const RUSTDESK_DISPLAY_SWITCH_TIMEOUT_MS: number = 5000;
 const RUSTDESK_DISPLAY_RESOLUTION_TIMEOUT_MS: number = 5000;
+
+const EMPTY_RUSTDESK_MULTI_CANVAS_PREVIEW: RustDeskMultiCanvasPreviewSnapshot = {
+  supported: false, active: false, display: -1, status: 'inactive', reason: '',
+  decoderBackend: 'paused', sourceWidth: 0, sourceHeight: 0, codec: -1,
+  lastDecodeResult: 0, receivedFrames: 0, acceptedFrames: 0, droppedFrames: 0,
+  presentedFrames: 0, queueDepth: 0, inputDroppedFrames: 0
+};
 
 const EMPTY_LOCAL_RESOURCE_STATS: LocalResourceStats = {
   supported: false, cpuAvailable: false, cpuPercent: -1, memoryBytes: 0,
@@ -886,6 +911,26 @@ class RemoteDesktopXComponentController extends XComponentController {
   }
 }
 
+class RustDeskPreviewXComponentController extends XComponentController {
+  private listener: RustDeskPreviewSurfaceListener | null = null;
+
+  setListener(listener: RustDeskPreviewSurfaceListener): void {
+    this.listener = listener;
+  }
+
+  onSurfaceCreated(surfaceId: string): void {
+    if (this.listener !== null) {
+      this.listener.onRustDeskPreviewSurfaceCreated(surfaceId);
+    }
+  }
+
+  onSurfaceDestroyed(surfaceId: string): void {
+    if (this.listener !== null) {
+      this.listener.onRustDeskPreviewSurfaceDestroyed(surfaceId);
+    }
+  }
+}
+
 @Entry
 @Component
 struct RemoteDesktop {
@@ -910,6 +955,8 @@ struct RemoteDesktop {
   @StorageLink('rustdeskFilePasteEnabled') rustdeskFilePasteEnabled: boolean = true;
   @StorageLink('rustdeskRemoteAppTouchScaleEnabled') @Watch('onRemoteAppTouchScaleSettingChange')
   rustdeskRemoteAppTouchScaleEnabled: boolean = false;
+  @StorageLink('rustdeskMultiCanvasPreviewEnabled')
+  rustdeskMultiCanvasPreviewEnabled: boolean = false;
   @StorageLink('rustdeskViewScaleMode') rustdeskViewScaleMode: string = 'fit';
   @StorageLink('remoteDisplayScaleMode') remoteDisplayScaleMode: string = 'fit';
   @StorageLink('remoteDisplayCustomScalePercent') remoteDisplayCustomScalePercent: number = 100;
@@ -992,6 +1039,9 @@ struct RemoteDesktop {
   @State rustDeskDisplayCapabilities: RustDeskDisplayCapabilities = EMPTY_RUSTDESK_DISPLAY_CAPABILITIES;
   @State rustDeskDisplayPendingResolution: RustDeskDisplayResolution = EMPTY_RUSTDESK_DISPLAY_RESOLUTION;
   @State showRustDeskDisplayResolutionMenu: boolean = false;
+  @State rustDeskMultiCanvasPreview: RustDeskMultiCanvasPreviewSnapshot =
+    EMPTY_RUSTDESK_MULTI_CANVAS_PREVIEW;
+  @State rustDeskMultiCanvasPreviewDisplay: number = -1;
   @State localResourceStats: LocalResourceStats = EMPTY_LOCAL_RESOURCE_STATS;
   @State rustDeskAuthChoice: RustDeskAuthChoice = 'password';
   @State rustDeskAuthPasswordInput: string = '';
@@ -1028,6 +1078,7 @@ struct RemoteDesktop {
   private keyDispatcher: RemoteKeyDispatcher = new RemoteKeyDispatcher();
   private hostId: string = '';
   private xcId: string = 'rdpSurface';
+  private rustDeskPreviewXcId: string = 'rustdeskPreviewSurface';
   // R0: session/renderer/decoder handle 追踪
   private sessionId: number = -1;
   private rustDeskTwoFactorSessionId: number = -1;
@@ -1169,6 +1220,12 @@ struct RemoteDesktop {
   private pipLastContentWidth: number = 0;
   private pipLastContentHeight: number = 0;
   private xComponentController: RemoteDesktopXComponentController = new RemoteDesktopXComponentController();
+  private rustDeskPreviewController: RustDeskPreviewXComponentController =
+    new RustDeskPreviewXComponentController();
+  private rustDeskPreviewSurfaceId: string = '';
+  private rustDeskPreviewSurfaceWidthPx: number = 0;
+  private rustDeskPreviewSurfaceHeightPx: number = 0;
+  private rustDeskPreviewSurfacePollTimer: number = -1;
   private surfaceWidth: number = 0;
   private surfaceHeight: number = 0;
   private renderWidthPx: number = 0;
@@ -4897,6 +4954,180 @@ struct RemoteDesktop {
     return this.rustDeskDisplayCapabilities.currentDisplay;
   }
 
+  private shouldShowRustDeskMultiCanvasPreview(): boolean {
+    return this.isDesktopDevice && this.rustdeskMultiCanvasPreviewEnabled &&
+      this.isRustDeskSession() && this.rustDeskMultiCanvasPreviewDisplay >= 0;
+  }
+
+  private rustDeskPreviewCandidate(
+    capabilities: RustDeskDisplayCapabilities = this.rustDeskDisplayCapabilities,
+    preferredDisplay: number = -1): RustDeskDisplayInfo | null {
+    const decision: RustDeskMultiCanvasPreviewDecision =
+      selectRustDeskMultiCanvasPreview(
+        this.isDesktopDevice, true, capabilities.currentDisplay,
+        preferredDisplay, capabilities.displays);
+    return decision.accepted ?
+      this.rustDeskDisplayById(decision.display, capabilities.displays) : null;
+  }
+
+  private rustDeskPreviewCodec(): number {
+    if (this.rustDeskDiagnostics.codec >= 0 && this.rustDeskDiagnostics.codec <= 4) {
+      return this.rustDeskDiagnostics.codec;
+    }
+    const preference: number = this.rustdeskCodec;
+    if (preference === 1) { return 2; }
+    if (preference === 2) { return 3; }
+    if (preference === 3) { return 4; }
+    if (preference === 5) { return 1; }
+    return 0;
+  }
+
+  private rustDeskPreviewDisplayLabel(): string {
+    const display: RustDeskDisplayInfo | null =
+      this.rustDeskDisplayById(this.rustDeskMultiCanvasPreviewDisplay);
+    return display === null ? '显示器' : this.rustDeskDisplayLabel(display);
+  }
+
+  private setRustDeskMultiCanvasPreviewEnabled(enabled: boolean): void {
+    if (enabled && (!this.isDesktopDevice || !this.isRustDeskSession())) {
+      promptAction.showToast({ message: '双画布预览目前仅对 PC RustDesk 会话开放', duration: 2000 });
+      return;
+    }
+    if (enabled) {
+      const candidate: RustDeskDisplayInfo | null = this.rustDeskPreviewCandidate();
+      if (candidate === null) {
+        promptAction.showToast({ message: '没有可用于预览的第二个在线显示器', duration: 1800 });
+        return;
+      }
+      this.rustDeskMultiCanvasPreviewDisplay = candidate.display;
+      this.rustdeskMultiCanvasPreviewEnabled = true;
+      this.rustDeskMultiCanvasPreview = EMPTY_RUSTDESK_MULTI_CANVAS_PREVIEW;
+      promptAction.showToast({ message: '已开启实验性双画布预览（第二画布只读）', duration: 2200 });
+      this.pollRustDeskPreviewSurfaceId(0);
+      return;
+    }
+    this.rustdeskMultiCanvasPreviewEnabled = false;
+    this.detachRustDeskMultiCanvasPreview('user-disabled');
+  }
+
+  private attachRustDeskMultiCanvasPreview(): void {
+    if (!this.shouldShowRustDeskMultiCanvasPreview() || this.sessionId <= 0 ||
+      this.rustDeskPreviewSurfaceId.length === 0 ||
+      this.rustDeskPreviewSurfaceWidthPx <= 0 || this.rustDeskPreviewSurfaceHeightPx <= 0) {
+      return;
+    }
+    const display: RustDeskDisplayInfo | null =
+      this.rustDeskDisplayById(this.rustDeskMultiCanvasPreviewDisplay);
+    if (display === null || !display.online ||
+      display.display === this.rustDeskDisplayCapabilities.currentDisplay) {
+      return;
+    }
+    const sourceWidth: number = display.width > 0 ? display.width : display.originalWidth;
+    const sourceHeight: number = display.height > 0 ? display.height : display.originalHeight;
+    if (sourceWidth <= 0 || sourceHeight <= 0) {
+      return;
+    }
+    const snapshot: RustDeskMultiCanvasPreviewSnapshot =
+      this.loader.attachRustDeskMultiCanvasPreview(
+        this.sessionId, display.display, this.rustDeskPreviewSurfaceId,
+        this.rustDeskPreviewSurfaceWidthPx, this.rustDeskPreviewSurfaceHeightPx,
+        sourceWidth, sourceHeight, this.rustDeskPreviewCodec());
+    this.rustDeskMultiCanvasPreview = snapshot;
+    if (!snapshot.active) {
+      promptAction.showToast({
+        message: '双画布资源不可用，已保持单画布：' + snapshot.reason,
+        duration: 2400
+      });
+      this.rustdeskMultiCanvasPreviewEnabled = false;
+      this.rustDeskMultiCanvasPreviewDisplay = -1;
+    }
+  }
+
+  private detachRustDeskMultiCanvasPreview(_reason: string): void {
+    if (this.rustDeskPreviewSurfacePollTimer >= 0) {
+      clearTimeout(this.rustDeskPreviewSurfacePollTimer);
+      this.rustDeskPreviewSurfacePollTimer = -1;
+    }
+    if (this.sessionId > 0) {
+      this.loader.detachRustDeskMultiCanvasPreview(this.sessionId, -1);
+    }
+    this.rustDeskMultiCanvasPreview = EMPTY_RUSTDESK_MULTI_CANVAS_PREVIEW;
+    this.rustDeskMultiCanvasPreviewDisplay = -1;
+  }
+
+  private syncRustDeskMultiCanvasPreview(previousDisplay: number = -1): void {
+    if (!this.rustdeskMultiCanvasPreviewEnabled || !this.isDesktopDevice || this.sessionId <= 0) {
+      return;
+    }
+    const candidate: RustDeskDisplayInfo | null = this.rustDeskPreviewCandidate(
+      this.rustDeskDisplayCapabilities, previousDisplay >= 0 ? previousDisplay :
+        this.rustDeskMultiCanvasPreviewDisplay);
+    if (candidate === null) {
+      this.rustdeskMultiCanvasPreviewEnabled = false;
+      this.detachRustDeskMultiCanvasPreview('no-online-preview-display');
+      promptAction.showToast({ message: '第二显示器已离线，已回退单画布', duration: 2000 });
+      return;
+    }
+    const displayChanged: boolean = candidate.display !== this.rustDeskMultiCanvasPreviewDisplay;
+    this.rustDeskMultiCanvasPreviewDisplay = candidate.display;
+    if (displayChanged || !this.rustDeskMultiCanvasPreview.active) {
+      this.attachRustDeskMultiCanvasPreview();
+    } else {
+      this.rustDeskMultiCanvasPreview =
+        this.loader.getRustDeskMultiCanvasPreview(this.sessionId, candidate.display);
+      if (this.rustDeskMultiCanvasPreview.status === 'failed' ||
+        this.rustDeskMultiCanvasPreview.status === 'reconfigure_required') {
+        this.attachRustDeskMultiCanvasPreview();
+      }
+    }
+  }
+
+  private promoteRustDeskPreviewToInteractive(): void {
+    const target: RustDeskDisplayInfo | null =
+      this.rustDeskDisplayById(this.rustDeskMultiCanvasPreviewDisplay);
+    if (target === null || !target.online || this.rustDeskDisplaySwitchState.inputBlocked) {
+      return;
+    }
+    this.selectRustDeskDisplay(target);
+  }
+
+  onRustDeskPreviewSurfaceCreated(surfaceId: string): void {
+    this.rustDeskPreviewSurfaceId = surfaceId.trim();
+    this.attachRustDeskMultiCanvasPreview();
+  }
+
+  onRustDeskPreviewSurfaceDestroyed(_surfaceId: string): void {
+    this.rustDeskPreviewSurfaceId = '';
+    if (this.sessionId > 0) {
+      this.loader.detachRustDeskMultiCanvasPreview(this.sessionId, -1);
+    }
+    this.rustDeskMultiCanvasPreview = EMPTY_RUSTDESK_MULTI_CANVAS_PREVIEW;
+  }
+
+  private pollRustDeskPreviewSurfaceId(attempt: number): void {
+    if (!this.shouldShowRustDeskMultiCanvasPreview()) {
+      return;
+    }
+    try {
+      const surfaceId: string = this.rustDeskPreviewController.getXComponentSurfaceId();
+      if (surfaceId.trim().length > 0) {
+        this.onRustDeskPreviewSurfaceCreated(surfaceId);
+        return;
+      }
+    } catch (_e) {
+    }
+    if (attempt >= 20) {
+      this.rustdeskMultiCanvasPreviewEnabled = false;
+      this.detachRustDeskMultiCanvasPreview('surface-timeout');
+      promptAction.showToast({ message: '第二画布 Surface 未就绪，已回退单画布', duration: 2200 });
+      return;
+    }
+    this.rustDeskPreviewSurfacePollTimer = setTimeout((): void => {
+      this.rustDeskPreviewSurfacePollTimer = -1;
+      this.pollRustDeskPreviewSurfaceId(attempt + 1);
+    }, 50);
+  }
+
   private resetRustDeskInputAfterGeometryChange(reason: string): void {
     // Drop the coalesced move before any release helper can flush it in the
     // old coordinate space. Release controls themselves remain reliable and
@@ -5046,16 +5277,42 @@ struct RemoteDesktop {
         currentDisplay: capabilities.currentDisplay,
         readySwitchGeneration: capabilities.readySwitchGeneration,
         pendingDisplay: capabilities.pendingDisplay,
+        confirmedDisplay: capabilities.confirmedDisplay,
         inputBlocked: capabilities.inputBlocked
       },
       nowMs,
       RUSTDESK_DISPLAY_SWITCH_TIMEOUT_MS);
     this.rustDeskDisplaySwitchState = observation.state;
     if (observation.notifyTimeout) {
-      promptAction.showToast({
-        message: '远端显示器仍在切换，输入保持暂停，可重新选择显示器',
-        duration: 2200
-      });
+      if (observation.fallbackDisplay >= 0) {
+        const fallback: RustDeskDisplayInfo | null =
+          this.rustDeskDisplayById(observation.fallbackDisplay, capabilities.displays);
+        const rollback = requestRustDeskDisplaySwitch(
+          observation.fallbackDisplay, nowMs, {
+            releaseInput: (): void =>
+              this.resetRustDeskInputAfterGeometryChange('rustdesk-display-switch-timeout'),
+            requestDisplay: (target: number): RustDeskDisplaySwitchRequest =>
+              this.loader.beginRustDeskDisplaySwitch(this.sessionId, target)
+          });
+        if (rollback.request.accepted) {
+          this.rustDeskDisplaySwitchState = rollback.state;
+          promptAction.showToast({
+            message: '显示器切换超时，正在回退到 ' +
+              (fallback === null ? '上一个显示器' : this.rustDeskDisplayLabel(fallback)),
+            duration: 2200
+          });
+        } else {
+          promptAction.showToast({
+            message: '显示器切换超时，自动回退请求未被接受，输入保持暂停',
+            duration: 2400
+          });
+        }
+      } else {
+        promptAction.showToast({
+          message: '显示器切换超时，尚无可回退的已确认显示器，输入保持暂停',
+          duration: 2400
+        });
+      }
     }
     if (!observation.adoptCapabilities) {
       return;
@@ -5083,6 +5340,8 @@ struct RemoteDesktop {
         }
       }
     }
+    this.syncRustDeskMultiCanvasPreview(
+      previous.currentDisplay !== capabilities.currentDisplay ? previous.currentDisplay : -1);
   }
 
   private isRustDeskDisplayResolutionSelected(resolution: RustDeskDisplayResolution): boolean {
@@ -5934,7 +6193,12 @@ struct RemoteDesktop {
     const next: number = quality >= 0 && quality <= 2 ? quality : 1;
     this.rustdeskImageQuality = next;
     this.persistSessionPref('rustdeskImageQuality', next);
-    promptAction.showToast({ message: '画质偏好已保存，重连后完全生效', duration: 2000 });
+    const appliedLive: boolean = this.sessionId >= 0 && this.isRustDeskSession() &&
+      this.loader.setRustDeskImageQuality(this.sessionId, next);
+    promptAction.showToast({
+      message: appliedLive ? '画质更新已发送，等待远端生效' : '画质偏好已保存，下次连接生效',
+      duration: 2000
+    });
   }
 
   private setRustDeskCodecPref(codec: number): void {
@@ -7663,6 +7927,7 @@ struct RemoteDesktop {
     this.physicalKeyboardLayoutConfirmed = false;
     this.physicalKeyboardLayoutPromptVisible = false;
     this.xComponentController.setListener(this);
+    this.rustDeskPreviewController.setListener(this);
     this.restoreSessionControlBarVisibilityPreferences();
     this.restoreRemoteDisplayScalePreference();
     this.restoreRemoteCustomShortcuts();
@@ -8055,6 +8320,7 @@ struct RemoteDesktop {
       if (action === RemoteDesktopBackgroundAction.detach) {
         // Home 手势 / 系统回桌面 → 后台保活
         hilog.info(RD_DOMAIN, RD_TAG, 'aboutToDisappear: background preserve (home gesture)');
+        this.detachRustDeskMultiCanvasPreview('background');
         this.detachForBackground().catch((err: Error): void => {
           hilog.warn(RD_DOMAIN, RD_TAG, 'aboutToDisappear: background preserve failed: ' +
             (err.message ? err.message : JSON.stringify(err)));
@@ -13083,6 +13349,7 @@ struct RemoteDesktop {
       this.connectionError = '';
       this.connectionErrorDetail = '';
     }
+    this.detachRustDeskMultiCanvasPreview('disconnect-' + reason);
     // VNC passwords are connection-scoped memory only. The native session has
     // already received its copy; never retain the transient value across a
     // page/session teardown.
@@ -17843,6 +18110,25 @@ struct RemoteDesktop {
       }.width('100%')
       Scroll() {
         Column({ space: 6 }) {
+          if (this.isDesktopDevice && this.rustDeskDisplayCapabilities.displays.length > 1) {
+            Row() {
+              Column() {
+                Text('实验性双画布预览').fontSize(13).fontColor('#374151')
+                Text(this.rustdeskMultiCanvasPreviewEnabled ?
+                  '第二画布只读；点击后安全切为可控主画布' :
+                  '最多同时显示 2 屏，超出资源预算自动回退')
+                  .fontSize(10).fontColor('#6B7280').margin({ top: 2 })
+              }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+              Toggle({ type: ToggleType.Switch, isOn: this.rustdeskMultiCanvasPreviewEnabled })
+                .selectedColor(this.accentColor)
+                .onChange((enabled: boolean): void => {
+                  this.setRustDeskMultiCanvasPreviewEnabled(enabled);
+                })
+            }
+            .width('100%').padding({ left: 10, right: 8, top: 8, bottom: 8 })
+            .backgroundColor('#F3F4F6').borderRadius(8)
+            Divider().strokeWidth(1).color('#E5E7EB').margin({ top: 2, bottom: 2 })
+          }
           if (this.rustDeskDisplayCapabilities.displays.length > 0) {
             Text('远端显示器').fontSize(12).fontColor('#6B7280').margin({ top: 2, bottom: 2 })
               .alignSelf(ItemAlign.Start)
@@ -17917,7 +18203,8 @@ struct RemoteDesktop {
         libraryname: 'rdpnapi',
         controller: this.xComponentController
       })
-      .width('100%').height('100%')
+      .width(this.shouldShowRustDeskMultiCanvasPreview() ? '50%' : '100%').height('100%')
+      .align(this.shouldShowRustDeskMultiCanvasPreview() ? Alignment.Start : Alignment.Center)
       .backgroundColor('#000000')
       // The surface only renders and forwards pointer events. The hidden
       // TextArea is the sole local keyboard focus owner for desktop input.
@@ -17938,6 +18225,53 @@ struct RemoteDesktop {
       .onAreaChange((_o: Area, n: Area): void => {
         this.handleRemoteSurfaceAreaChange(n);
       })
+
+      if (this.shouldShowRustDeskMultiCanvasPreview()) {
+        Stack({ alignContent: Alignment.TopEnd }) {
+          XComponent({
+            id: this.rustDeskPreviewXcId,
+            type: XComponentType.SURFACE,
+            controller: this.rustDeskPreviewController
+          })
+          .width('100%').height('100%')
+          .backgroundColor('#000000')
+          .focusable(false).focusOnTouch(false)
+          .onLoad((): void => { this.pollRustDeskPreviewSurfaceId(0); })
+          .onDestroy((): void => {
+            this.onRustDeskPreviewSurfaceDestroyed(this.rustDeskPreviewSurfaceId);
+          })
+          .onAreaChange((_oldArea: Area, newArea: Area): void => {
+            const widthPx: number = vp2px(newArea.width as number);
+            const heightPx: number = vp2px(newArea.height as number);
+            const changed: boolean = Math.abs(widthPx - this.rustDeskPreviewSurfaceWidthPx) >= 1 ||
+              Math.abs(heightPx - this.rustDeskPreviewSurfaceHeightPx) >= 1;
+            this.rustDeskPreviewSurfaceWidthPx = widthPx;
+            this.rustDeskPreviewSurfaceHeightPx = heightPx;
+            if (changed) {
+              this.attachRustDeskMultiCanvasPreview();
+            }
+          })
+          Stack() {
+            Text(' ').opacity(0)
+          }
+          .width('100%').height('100%')
+          .backgroundColor(Color.Transparent)
+          .onClick((): void => { this.promoteRustDeskPreviewToInteractive(); })
+          Column() {
+            Text('预览 · ' + this.rustDeskPreviewDisplayLabel())
+              .fontSize(11).fontColor('#FFFFFF')
+            Text(this.rustDeskMultiCanvasPreview.status === 'presenting' ?
+              '只读，点击切为可控主画布' : this.rustDeskMultiCanvasPreview.status)
+              .fontSize(9).fontColor('rgba(255,255,255,0.72)').margin({ top: 2 })
+          }
+          .padding({ left: 10, right: 10, top: 7, bottom: 7 })
+          .backgroundColor('rgba(0,0,0,0.58)').borderRadius(8)
+          .margin({ top: 10, right: 10 })
+          .onClick((): void => { this.promoteRustDeskPreviewToInteractive(); })
+        }
+        .width('50%').height('100%').align(Alignment.End)
+        .border({ width: { left: 1 }, color: 'rgba(255,255,255,0.28)' })
+      }
 
       // Loading / 错误覆盖层
       // 注意: 不透明白底会阻止底层 XComponent 的 surface 创建 (框架优化),
@@ -18251,6 +18585,7 @@ struct RemoteDesktop {
           RustDeskDiagnosticsHud({
             diagnostics: this.rustDeskDiagnostics,
             localResources: this.localResourceStats,
+            multiCanvasPreview: this.rustDeskMultiCanvasPreview,
             protocolLabel: 'RustDesk',
             geometryEpoch: this.rustDeskGeometryEpoch,
             surfaceWidth: this.surfaceWidth,

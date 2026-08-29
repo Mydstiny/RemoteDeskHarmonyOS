@@ -12,6 +12,7 @@ Updated: 2026-08-29 Asia/Shanghai
 6. On the fixed HAP now installed at `192.168.3.235:38451`, verify login survives the historical migration `401`, exact-owner hashed data remains visible, local CRUD survives restart/offline use, and canonical/cloud recovery does not resurrect stale rows.
 7. On `.235`, complete the already-queued RustDesk/RDP/VNC/Moonlight sidebar keyboard-close, scrolling, drag/bounds, touch isolation and phone immersive-bar acceptance.
 8. Decide whether `192.168.3.236:40123` may be destructively uninstalled for the debug HAP or requires a matching release-provisioned acceptance HAP; preserve its existing data until explicitly authorized.
+9. Complete RustDesk quality/multimonitor release acceptance: verify Low/Balanced/Best cold/live/reconnect behavior on direct and relay paths; run 1/2/3-screen ACK/keyframe rollback, DPI/rotation/hot-plug/PIP/background/reconnect/input mapping; on HarmonyOS PC stress the default-off read-only two-canvas preview for 30 minutes and repeated attach/promote/detach cycles against Windows/Linux/macOS peers.
 
 ## Next
 

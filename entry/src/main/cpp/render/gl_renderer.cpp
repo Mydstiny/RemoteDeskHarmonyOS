@@ -50,10 +50,101 @@ static std::mutex g_surfaceStateMutex;
 static std::atomic<int64_t> g_surfaceOwnerHandle {0};
 static std::atomic<bool> g_surfaceDetached {false};
 static std::atomic<uint64_t> g_rendererGeneration {1};
+// Auxiliary canvases are exact-handle resources and must never invalidate the
+// process-global interactive renderer generation merely by being created.
+static std::atomic<uint64_t> g_auxRendererGeneration {1};
 static constexpr double kMaxCanvasScale = 12.0;
+
+// EGL_DEFAULT_DISPLAY is a process connection even though contexts and
+// window surfaces are renderer-local. Keep a single initialize/terminate
+// owner so destroying an auxiliary canvas cannot terminate the interactive
+// canvas's live contexts. A detached ArkUI window leaves EGL-owned objects in
+// an implementation-defined state; in that case retain the process display
+// until process exit, matching the previous fail-safe that skipped terminate.
+static std::mutex g_eglDisplayMutex;
+static EGLDisplay g_sharedEglDisplay = EGL_NO_DISPLAY;
+static size_t g_sharedEglDisplayRefs = 0;
+static bool g_sharedEglDisplayTerminateDeferred = false;
+static EGLint g_sharedEglMajor = 0;
+static EGLint g_sharedEglMinor = 0;
+
+static bool AcquireSharedEglDisplay(
+    EGLDisplay& display, EGLint& major, EGLint& minor) {
+    std::lock_guard<std::mutex> lock(g_eglDisplayMutex);
+    if (g_sharedEglDisplay == EGL_NO_DISPLAY) {
+        const EGLDisplay candidate = eglGetDisplay(EGL_DEFAULT_DISPLAY);
+        if (candidate == EGL_NO_DISPLAY) {
+            return false;
+        }
+        EGLint initializedMajor = 0;
+        EGLint initializedMinor = 0;
+        if (!eglInitialize(candidate, &initializedMajor, &initializedMinor)) {
+            return false;
+        }
+        g_sharedEglDisplay = candidate;
+        g_sharedEglMajor = initializedMajor;
+        g_sharedEglMinor = initializedMinor;
+        g_sharedEglDisplayTerminateDeferred = false;
+    }
+    ++g_sharedEglDisplayRefs;
+    display = g_sharedEglDisplay;
+    major = g_sharedEglMajor;
+    minor = g_sharedEglMinor;
+    OH_LOG_INFO(LOG_APP,
+        "[GL] acquire shared EGLDisplay refs=%{public}zu deferred=%{public}d",
+        g_sharedEglDisplayRefs,
+        g_sharedEglDisplayTerminateDeferred ? 1 : 0);
+    return true;
+}
+
+static void ReleaseSharedEglDisplay(EGLDisplay display, bool safeToTerminate) {
+    if (display == EGL_NO_DISPLAY) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(g_eglDisplayMutex);
+    if (display != g_sharedEglDisplay || g_sharedEglDisplayRefs == 0) {
+        OH_LOG_WARN(LOG_APP,
+            "[GL] reject mismatched shared EGLDisplay release display=%{public}p shared=%{public}p refs=%{public}zu",
+            reinterpret_cast<void*>(display),
+            reinterpret_cast<void*>(g_sharedEglDisplay),
+            g_sharedEglDisplayRefs);
+        return;
+    }
+    if (!safeToTerminate) {
+        g_sharedEglDisplayTerminateDeferred = true;
+    }
+    --g_sharedEglDisplayRefs;
+    OH_LOG_INFO(LOG_APP,
+        "[GL] release shared EGLDisplay refs=%{public}zu deferred=%{public}d",
+        g_sharedEglDisplayRefs,
+        g_sharedEglDisplayTerminateDeferred ? 1 : 0);
+    if (g_sharedEglDisplayRefs == 0 &&
+        !g_sharedEglDisplayTerminateDeferred) {
+        if (eglTerminate(g_sharedEglDisplay)) {
+            g_sharedEglDisplay = EGL_NO_DISPLAY;
+            g_sharedEglMajor = 0;
+            g_sharedEglMinor = 0;
+        } else {
+            g_sharedEglDisplayTerminateDeferred = true;
+            OH_LOG_WARN(LOG_APP,
+                "[GL] shared eglTerminate failed, retaining process display error=%{public}x",
+                eglGetError());
+        }
+    }
+}
 
 static uint64_t AdvanceRendererGeneration() {
     return g_rendererGeneration.fetch_add(1, std::memory_order_acq_rel) + 1;
+}
+
+static uint64_t NextAuxRendererGeneration() {
+    uint64_t generation =
+        g_auxRendererGeneration.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (generation == 0U) {
+        generation =
+            g_auxRendererGeneration.fetch_add(1, std::memory_order_relaxed) + 1;
+    }
+    return generation;
 }
 
 [[maybe_unused]] static void OnSurfaceCreatedCB(OH_NativeXComponent* component, void* window);
@@ -401,6 +492,7 @@ static const float QUAD_VERTICES[] = {
 GLRenderer::GLRenderer()
     : eglDisplay_(EGL_NO_DISPLAY), eglContext_(EGL_NO_CONTEXT),
       eglSurface_(EGL_NO_SURFACE), eglConfig_(nullptr),
+      eglDisplayLeaseHeld_(false),
       shaderProgram_(0), samplerLocation_(0), oesTransformLocation_(-1),
       canvasRotationLocation_(-1),
       rawShaderProgram_(0), rawTexture_(0), rawSamplerLocation_(0),
@@ -425,6 +517,7 @@ GLRenderer::GLRenderer()
       snapshotSourceHeight_(0), snapshotSurfaceWidth_(0), snapshotSurfaceHeight_(0),
       snapshotTransformVersion_(0),
       rawFrameCount_(0), oesFrameCount_(0), rendererHandle_(0),
+      explicitNativeWindow_(nullptr), usesProcessSurface_(true),
       initialized_(false), destroying_(false) {}
 
 GLRenderer::~GLRenderer() {
@@ -491,7 +584,7 @@ bool GLRenderer::MakeCurrent() {
         OH_LOG_WARN(LOG_APP, "[GL] eglMakeCurrent skipped: EGL not ready");
         return false;
     }
-    if (g_surfaceDetached.load(std::memory_order_acquire)) {
+    if (usesProcessSurface_ && g_surfaceDetached.load(std::memory_order_acquire)) {
         OH_LOG_WARN(LOG_APP, "[GL] eglMakeCurrent skipped: XComponent surface already detached");
         return false;
     }
@@ -557,20 +650,15 @@ int GLRenderer::Init(const std::string& xcomponentId, int width, int height) {
 }
 
 bool GLRenderer::InitEGL(const std::string& xcomponentId) {
-    (void)xcomponentId;
-    // 获取默认显示
-    eglDisplay_ = eglGetDisplay(EGL_DEFAULT_DISPLAY);
-    if (eglDisplay_ == EGL_NO_DISPLAY) {
-        OH_LOG_ERROR(LOG_APP, "[GL] eglGetDisplay 失败: %{public}x", eglGetError());
+    EGLint major = 0;
+    EGLint minor = 0;
+    if (!AcquireSharedEglDisplay(eglDisplay_, major, minor)) {
+        OH_LOG_ERROR(LOG_APP,
+            "[GL] acquire/initialize shared EGLDisplay 失败: %{public}x",
+            eglGetError());
         return false;
     }
-
-    // 初始化 EGL
-    EGLint major, minor;
-    if (!eglInitialize(eglDisplay_, &major, &minor)) {
-        OH_LOG_ERROR(LOG_APP, "[GL] eglInitialize 失败: %{public}x", eglGetError());
-        return false;
-    }
+    eglDisplayLeaseHeld_ = true;
     OH_LOG_INFO(LOG_APP, "[GL] EGL 版本 %{public}d.%{public}d", major, minor);
 
     // 选择 EGL 配置
@@ -605,12 +693,35 @@ bool GLRenderer::InitEGL(const std::string& xcomponentId) {
         return false;
     }
 
-    // R1: 优先使用 XComponent 窗口表面, 不可用时回退 Pbuffer
+    // A numeric XComponent SurfaceId owns a renderer-local NativeWindow. This
+    // is the multi-canvas path: no second renderer may overwrite the legacy
+    // process-wide page/PIP surface binding.
     bool surfaceReady = false;
     EGLNativeWindowType nativeWindow = 0;
     uint64_t surfaceWidth = 0;
     uint64_t surfaceHeight = 0;
-    {
+    char* surfaceEnd = nullptr;
+    const unsigned long long parsedSurfaceId = xcomponentId.empty() ? 0ULL :
+        std::strtoull(xcomponentId.c_str(), &surfaceEnd, 10);
+    const bool explicitSurface = parsedSurfaceId > 0ULL && surfaceEnd != nullptr &&
+        *surfaceEnd == '\0';
+    if (explicitSurface) {
+        OHNativeWindow* window = nullptr;
+        const int32_t createResult = OH_NativeWindow_CreateNativeWindowFromSurfaceId(
+            static_cast<uint64_t>(parsedSurfaceId), &window);
+        if (createResult != 0 || window == nullptr) {
+            OH_LOG_ERROR(LOG_APP,
+                "[GL] explicit SurfaceId window creation failed id=%{public}s result=%{public}d",
+                xcomponentId.c_str(), createResult);
+            return false;
+        }
+        explicitNativeWindow_ = window;
+        usesProcessSurface_ = false;
+        nativeWindow = reinterpret_cast<EGLNativeWindowType>(window);
+        surfaceReady = true;
+        surfaceWidth = static_cast<uint64_t>(std::max(width_, 1));
+        surfaceHeight = static_cast<uint64_t>(std::max(height_, 1));
+    } else {
         std::lock_guard<std::mutex> surfaceLock(g_surfaceStateMutex);
         surfaceReady = g_surfaceReady.load(std::memory_order_acquire);
         nativeWindow = g_nativeWindow;
@@ -1190,9 +1301,11 @@ RdpPresentMetrics GLRenderer::PresentFrame(
     std::lock_guard<std::mutex> lock(lifecycleMutex_);
     using clock = std::chrono::steady_clock;
     const auto drawBeginAt = clock::now();
-    if (destroying_ || g_surfaceDetached.load(std::memory_order_acquire) || !initialized_) {
+    const bool surfaceDetached = usesProcessSurface_ &&
+        g_surfaceDetached.load(std::memory_order_acquire);
+    if (destroying_ || surfaceDetached || !initialized_) {
         OH_LOG_WARN(LOG_APP, "[GL] 渲染器未初始化, 跳过渲染");
-        metrics.result = g_surfaceDetached.load(std::memory_order_acquire)
+        metrics.result = surfaceDetached
             ? RdpPresentResult::SurfaceDetached
             : RdpPresentResult::RendererNotReady;
         return metrics;
@@ -1545,14 +1658,17 @@ void GLRenderer::Destroy() {
         redrawCallback_ = nullptr;
         sessionRedrawCallback_ = nullptr;
     }
-    const bool detachedWindowSurface =
+    const bool detachedWindowSurface = usesProcessSurface_ &&
         g_surfaceDetached.load(std::memory_order_acquire) && eglSurface_ != EGL_NO_SURFACE;
     EGLNativeWindowType surfaceWindow = 0;
     bool surfaceWindowOwned = false;
-    {
+    if (usesProcessSurface_) {
         std::lock_guard<std::mutex> surfaceLock(g_surfaceStateMutex);
         surfaceWindow = g_nativeWindow;
         surfaceWindowOwned = g_surfaceIdWindowOwned;
+    } else {
+        surfaceWindow = reinterpret_cast<EGLNativeWindowType>(explicitNativeWindow_);
+        surfaceWindowOwned = explicitNativeWindow_ != nullptr;
     }
     OH_LOG_INFO(LOG_APP,
                 "[GL] Destroy begin init=%{public}d display=%{public}p surface=%{public}p context=%{public}p detached=%{public}d win=%{public}p owned=%{public}d",
@@ -1604,6 +1720,8 @@ void GLRenderer::Destroy() {
         glDeleteVertexArrays(1, &vao_);
         vao_ = 0;
     }
+    const EGLDisplay displayLease = eglDisplay_;
+    const bool releaseDisplayLease = eglDisplayLeaseHeld_;
     if (eglDisplay_ != EGL_NO_DISPLAY) {
         if (hasCurrent) {
             eglMakeCurrent(eglDisplay_, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
@@ -1627,20 +1745,22 @@ void GLRenderer::Destroy() {
                 eglDestroyContext(eglDisplay_, eglContext_);
                 eglContext_ = EGL_NO_CONTEXT;
             }
-            eglTerminate(eglDisplay_);
             eglDisplay_ = EGL_NO_DISPLAY;
         } else {
             if (eglContext_ != EGL_NO_CONTEXT) {
                 eglDestroyContext(eglDisplay_, eglContext_);
                 eglContext_ = EGL_NO_CONTEXT;
             }
-            eglTerminate(eglDisplay_);
             eglDisplay_ = EGL_NO_DISPLAY;
         }
     }
+    eglDisplayLeaseHeld_ = false;
+    if (releaseDisplayLease) {
+        ReleaseSharedEglDisplay(displayLease, !detachedWindowSurface);
+    }
     rawPresentationWidth_ = 0;
     rawPresentationHeight_ = 0;
-    {
+    if (usesProcessSurface_) {
         std::lock_guard<std::mutex> surfaceLock(g_surfaceStateMutex);
         const bool ownsSurfaceWindow = g_surfaceIdWindowOwned && g_nativeWindow != 0 &&
             rendererHandle_ > 0 &&
@@ -1654,6 +1774,11 @@ void GLRenderer::Destroy() {
             g_surfaceIdWindowOwned = false;
             g_surfaceOwnerHandle.store(0, std::memory_order_release);
         }
+    }
+    if (!usesProcessSurface_ && explicitNativeWindow_ != nullptr) {
+        OH_NativeWindow_DestroyNativeWindow(
+            static_cast<OHNativeWindow*>(explicitNativeWindow_));
+        explicitNativeWindow_ = nullptr;
     }
     initialized_ = false;
     destroying_ = false;
@@ -1718,6 +1843,14 @@ static bool IsActiveRendererOwnerAndHandleLocked(
         Render::SessionOwnerMatches(ctx->boundOwner, owner);
 }
 
+static bool IsRendererOwnerAndHandleLocked(
+    int64_t handle, const Render::DecoderSessionIdentity& owner) {
+    const auto ctx = FindRendererContextLocked(handle);
+    return handle > 0 && ctx != nullptr && ctx->renderer != nullptr &&
+        ctx->active && !ctx->detached && !ctx->destroying &&
+        Render::SessionOwnerMatches(ctx->boundOwner, owner);
+}
+
 static std::shared_ptr<GLRenderer> AcquireRendererLocked(int64_t handle,
                                                           bool requireActive,
                                                           uint64_t* generation = nullptr) {
@@ -1730,6 +1863,19 @@ static std::shared_ptr<GLRenderer> AcquireRendererLocked(int64_t handle,
         *generation = ctx->generation;
     }
     return ctx->renderer;
+}
+
+// Auxiliary renderers are active for the same exact session owner without
+// becoming the process-global interactive renderer. Do not route this access
+// through IsActiveRendererHandleLocked(), which intentionally recognizes only
+// g_activeRendererHandle and would reject every auxiliary canvas.
+static std::shared_ptr<GLRenderer> AcquireRendererForOwnerLocked(
+    int64_t handle, const Render::DecoderSessionIdentity& owner,
+    uint64_t* generation = nullptr) {
+    if (!IsRendererOwnerAndHandleLocked(handle, owner)) {
+        return nullptr;
+    }
+    return AcquireRendererLocked(handle, false, generation);
 }
 
 // Public NAPI calls carry only the opaque handle, so pin the current session
@@ -2258,6 +2404,71 @@ bool RendererNapi::IsActiveRendererForOwnerUnderLease(
     int64_t handle, const Render::DecoderSessionIdentity& owner) {
     std::lock_guard<std::mutex> lock(g_activeRendererMutex);
     return IsActiveRendererOwnerAndHandleLocked(handle, owner);
+}
+
+bool RendererNapi::IsRendererForOwnerUnderLease(
+    int64_t handle, const Render::DecoderSessionIdentity& owner) {
+    std::lock_guard<std::mutex> lock(g_activeRendererMutex);
+    return IsRendererOwnerAndHandleLocked(handle, owner);
+}
+
+uint64_t RendererNapi::GetRendererGenerationUnderOwnerLease(
+    int64_t handle, const Render::DecoderSessionIdentity& owner) {
+    std::lock_guard<std::mutex> lock(g_activeRendererMutex);
+    const auto context = FindRendererContextLocked(handle);
+    return context && IsRendererOwnerAndHandleLocked(handle, owner)
+        ? context->generation : 0U;
+}
+
+uint64_t RendererNapi::GetRendererGeneration(
+    int64_t handle, const Render::DecoderSessionIdentity& owner) {
+    auto sinkLease = Render::SharedSessionSinkOwnerLease().acquire(owner);
+    if (!sinkLease) {
+        return 0U;
+    }
+    return GetRendererGenerationUnderOwnerLease(handle, owner);
+}
+
+RendererNapi::OwnedRendererCreationResult RendererNapi::CreateOwnedAuxRenderer(
+    const std::string& surfaceId, int width, int height,
+    const Render::DecoderSessionIdentity& owner) {
+    OwnedRendererCreationResult result;
+    if (surfaceId.empty() || width <= 0 || height <= 0 || !owner.valid()) {
+        return result;
+    }
+    auto ownerLease = Render::SharedSessionSinkOwnerLease().acquire(owner);
+    if (!ownerLease) {
+        return result;
+    }
+    auto renderer = std::shared_ptr<GLRenderer>(new GLRenderer());
+    if (renderer->Init(surfaceId, width, height) != 0) {
+        return result;
+    }
+    auto context = std::make_shared<RendererContext>();
+    context->renderer = renderer;
+    context->owner = owner;
+    context->boundOwner = owner;
+    context->active = true;
+    context->detached = false;
+    context->generation = NextAuxRendererGeneration();
+    int64_t handle = g_nextRendererHandle.fetch_add(1, std::memory_order_relaxed);
+    if (handle <= 0) {
+        handle = g_nextRendererHandle.fetch_add(1, std::memory_order_relaxed);
+    }
+    {
+        std::lock_guard<std::mutex> lock(g_activeRendererMutex);
+        g_rendererContexts.emplace(handle, context);
+    }
+    renderer->SetRendererHandle(handle);
+    result.ok = true;
+    result.rendererHandle = handle;
+    result.rendererGeneration = context->generation;
+    OH_LOG_INFO(LOG_APP,
+        "[GL] auxiliary renderer created handle=%{public}lld generation=%{public}llu surface=%{public}s",
+        static_cast<long long>(handle),
+        static_cast<unsigned long long>(context->generation),
+        surfaceId.c_str());
+    return result;
 }
 
 uint64_t RendererNapi::GetActiveRendererGenerationUnderOwnerLease(
@@ -3074,10 +3285,7 @@ void RendererNapi::MakeCurrent(
     std::shared_ptr<GLRenderer> renderer;
     {
         std::lock_guard<std::mutex> lock(g_activeRendererMutex);
-        if (!IsActiveRendererOwnerAndHandleLocked(handle, owner)) {
-            return;
-        }
-        renderer = AcquireRendererLocked(handle, true);
+        renderer = AcquireRendererForOwnerLocked(handle, owner);
     }
     if (renderer) {
         renderer->MakeCurrent();
@@ -3104,10 +3312,7 @@ void RendererNapi::ReleaseCurrent(
     std::shared_ptr<GLRenderer> renderer;
     {
         std::lock_guard<std::mutex> lock(g_activeRendererMutex);
-        if (!IsActiveRendererOwnerAndHandleLocked(handle, owner)) {
-            return;
-        }
-        renderer = AcquireRendererLocked(handle, true);
+        renderer = AcquireRendererForOwnerLocked(handle, owner);
     }
     if (renderer) {
         renderer->ReleaseCurrent();
@@ -3134,10 +3339,7 @@ void RendererNapi::SetRendererSourceSize(
     std::shared_ptr<GLRenderer> renderer;
     {
         std::lock_guard<std::mutex> lock(g_activeRendererMutex);
-        if (!IsActiveRendererOwnerAndHandleLocked(handle, owner)) {
-            return;
-        }
-        renderer = AcquireRendererLocked(handle, true);
+        renderer = AcquireRendererForOwnerLocked(handle, owner);
     }
     if (renderer) {
         renderer->SetOesSourceSize(width, height);
@@ -3180,11 +3382,7 @@ RdpPresentMetrics RendererNapi::PresentNative(
     uint64_t generation = 0U;
     {
         std::lock_guard<std::mutex> lock(g_activeRendererMutex);
-        if (!IsActiveRendererOwnerAndHandleLocked(handle, owner)) {
-            metrics.result = RdpPresentResult::GenerationMismatch;
-            return metrics;
-        }
-        renderer = AcquireRendererLocked(handle, true, &generation);
+        renderer = AcquireRendererForOwnerLocked(handle, owner, &generation);
     }
     if (!renderer || generation == 0U) {
         metrics.result = RdpPresentResult::NoActiveRenderer;
@@ -3196,7 +3394,7 @@ RdpPresentMetrics RendererNapi::PresentNative(
         std::lock_guard<std::mutex> lock(g_activeRendererMutex);
         const auto context = FindRendererContextLocked(handle);
         if (!context || context->generation != generation ||
-            !IsActiveRendererOwnerAndHandleLocked(handle, owner)) {
+            !IsRendererOwnerAndHandleLocked(handle, owner)) {
             // The swap happened on the retained old renderer, but it is not a
             // presentation acknowledgement for the currently bound Surface.
             // Legacy RenderNative callers still retain the actual draw; only

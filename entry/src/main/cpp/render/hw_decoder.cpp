@@ -686,7 +686,7 @@ int HardwareDecoder::Init(int width, int height, CodecType codec, int64_t render
     //    textureTarget = GL_TEXTURE_EXTERNAL_OES, 由 GLRenderer 采样
     if (rendererHandle > 0) {
         auto ownerLease = Render::SharedSessionSinkOwnerLease().acquire(callbackOwner_);
-        if (!ownerLease || !RendererNapi::IsActiveRendererForOwnerUnderLease(
+        if (!ownerLease || !RendererNapi::IsRendererForOwnerUnderLease(
                 rendererHandle, callbackOwner_)) {
             OH_LOG_ERROR(LOG_APP, "[Decoder] renderer owner is not active before GL init");
             return retireInitResources(-9);
@@ -2124,14 +2124,11 @@ DecoderCallbackTarget AcquireDecoderCallbackTarget(
     return target;
 }
 
-int64_t RegisterDecoderContext(const std::shared_ptr<DecoderContext>& ctx) {
-    if (!ctx) {
-        return 0;
-    }
-    const DecoderSessionIdentity owner =
-        Render::SharedSessionSinkOwnerLease().snapshot();
-    const auto ownerLease = Render::SharedSessionSinkOwnerLease().acquire(owner);
-    if (!ownerLease) {
+int64_t RegisterDecoderContextForOwner(
+    const std::shared_ptr<DecoderContext>& ctx,
+    const DecoderSessionIdentity& owner) {
+    if (!ctx || !owner.valid() ||
+        !Render::SharedSessionSinkOwnerLease().accepts(owner)) {
         return 0;
     }
     const int64_t handle = g_decoderRegistry.registerObject(ctx, owner);
@@ -2146,6 +2143,16 @@ int64_t RegisterDecoderContext(const std::shared_ptr<DecoderContext>& ctx) {
         ctx->dropCounterGeneration = ctx->decoderGeneration;
     }
     return handle;
+}
+
+int64_t RegisterDecoderContext(const std::shared_ptr<DecoderContext>& ctx) {
+    if (!ctx) {
+        return 0;
+    }
+    const DecoderSessionIdentity owner =
+        Render::SharedSessionSinkOwnerLease().snapshot();
+    const auto ownerLease = Render::SharedSessionSinkOwnerLease().acquire(owner);
+    return ownerLease ? RegisterDecoderContextForOwner(ctx, owner) : 0;
 }
 
 bool StopSoftwareWorker(DecoderContext* ctx, bool waitForCompletion = false) {
@@ -3940,8 +3947,15 @@ OwnedDecoderCreationResult DecoderNapi::CreateOwnedHardwareDecoder(
     const DecoderSessionIdentity& owner,
     bool desktopSurfaceCompatibility) {
     OwnedDecoderCreationResult result;
-    if (width <= 0 || height <= 0 || rendererHandle <= 0 || !owner.valid() ||
-        !Render::SharedSessionSinkOwnerLease().accepts(owner)) {
+    if (width <= 0 || height <= 0 || rendererHandle <= 0 || !owner.valid()) {
+        return result;
+    }
+    // Pin the exact session owner through registration, codec init, binding,
+    // telemetry proof and every failure cleanup. Otherwise an owner handoff
+    // can register the context under S2 while this S1 call still destroys by
+    // S1 identity, leaving an unreachable decoder in the registry.
+    const auto ownerLease = Render::SharedSessionSinkOwnerLease().acquire(owner);
+    if (!ownerLease) {
         return result;
     }
     Render::NativeImagePresentationMode presentationMode =
@@ -3961,7 +3975,7 @@ OwnedDecoderCreationResult DecoderNapi::CreateOwnedHardwareDecoder(
     ctx->presentationMode.store(presentationMode, std::memory_order_release);
     ctx->width = width;
     ctx->height = height;
-    const int64_t handle = RegisterDecoderContext(ctx);
+    const int64_t handle = RegisterDecoderContextForOwner(ctx, owner);
     if (handle <= 0) {
         return result;
     }
@@ -3991,6 +4005,211 @@ OwnedDecoderCreationResult DecoderNapi::CreateOwnedHardwareDecoder(
     result.display = proof.display;
     result.rendererGeneration = proof.rendererGeneration;
     return result;
+}
+
+OwnedDecoderCreationResult DecoderNapi::CreateOwnedAuxHardwareDecoder(
+    int width, int height, int codec, int display, int64_t rendererHandle,
+    const DecoderSessionIdentity& owner) {
+    OwnedDecoderCreationResult result;
+    if (width <= 0 || height <= 0 || display < 0 || rendererHandle <= 0 ||
+        !owner.valid()) {
+        return result;
+    }
+    // Keep the owner stable for the full auxiliary creation transaction. The
+    // renderer generation, decoder registry owner, callback identity and
+    // failure cleanup must all describe the same session.
+    const auto ownerLease = Render::SharedSessionSinkOwnerLease().acquire(owner);
+    if (!ownerLease) {
+        return result;
+    }
+    const uint64_t rendererGeneration =
+        RendererNapi::GetRendererGeneration(rendererHandle, owner);
+    if (rendererGeneration == 0U) {
+        return result;
+    }
+
+    auto context = std::make_shared<DecoderContext>();
+    context->useSoftware = false;
+    context->desktopSurfaceCompatibility = true;
+    context->width = width;
+    context->height = height;
+    context->rendererHandle = rendererHandle;
+    context->display = display;
+    context->displayGeneration = 1;
+    const int64_t handle = RegisterDecoderContextForOwner(context, owner);
+    if (handle <= 0) {
+        return result;
+    }
+    auto decoder = std::shared_ptr<HardwareDecoder>(new HardwareDecoder());
+    context->decoder = decoder;
+    if (!decoder->SetCallbackIdentity(
+            handle, owner, context->decoderGeneration) ||
+        decoder->Init(width, height, static_cast<CodecType>(codec), rendererHandle,
+                      true, Render::NativeImagePresentationMode::Identity) != 0) {
+        DestroyDecoderHandle(handle, owner);
+        return result;
+    }
+
+    context->rendererGeneration.store(rendererGeneration, std::memory_order_release);
+    context->presentationDecoderGeneration.store(
+        context->decoderGeneration, std::memory_order_release);
+    context->videoPipelineAttached.store(true, std::memory_order_release);
+    RendererNapi::SetRendererSourceSize(rendererHandle, owner, width, height);
+    const std::weak_ptr<DecoderContext> weakContext = context;
+    decoder->SetErrorCallback([weakContext](DecoderError error,
+                                            const std::string& message) {
+        if (const auto current = weakContext.lock()) {
+            current->recoveryRequested.store(true, std::memory_order_release);
+            OH_LOG_WARN(LOG_APP,
+                "[Decoder] auxiliary pipeline recovery requested display=%{public}d error=%{public}d reason=%{public}s",
+                current->display, static_cast<int>(error), message.c_str());
+        }
+    });
+    decoder->SetMakeCurrentCallback([rendererHandle, owner]() {
+        RendererNapi::MakeCurrent(rendererHandle, owner);
+    });
+    decoder->SetReleaseCurrentCallback([rendererHandle, owner]() {
+        RendererNapi::ReleaseCurrent(rendererHandle, owner);
+    });
+    const uint64_t decoderGeneration = context->decoderGeneration;
+    decoder->SetFrameCallback(
+        [rendererHandle, owner, weakContext, rendererGeneration,
+         decoderGeneration](GLuint textureId, int, int,
+                            const Render::NativeImageTransform& textureTransform) {
+            const RdpPresentMetrics present = RendererNapi::PresentNative(
+                rendererHandle, owner, textureId, textureTransform);
+            if (!present.presented() || present.generation != rendererGeneration) {
+                return;
+            }
+            if (const auto current = weakContext.lock()) {
+                if (current->decoderGeneration == decoderGeneration &&
+                    current->rendererGeneration.load(std::memory_order_acquire) ==
+                        rendererGeneration &&
+                    current->videoPipelineAttached.load(std::memory_order_acquire)) {
+                    SaturatingAdd(current->rendererPresentedFrames, 1);
+                }
+            }
+        });
+    const std::weak_ptr<HardwareDecoder> weakDecoder = decoder;
+    RendererNapi::SetRendererRedrawCallback(rendererHandle, owner, [weakDecoder]() {
+        if (const auto current = weakDecoder.lock()) {
+            current->RequestRedraw();
+        }
+    });
+    decoder->ResetSurfaceRecoveryForBind();
+    decoder->StartRenderThread();
+
+    result.ok = true;
+    result.decoderHandle = handle;
+    result.decoderGeneration = context->decoderGeneration;
+    result.displayGeneration = context->displayGeneration;
+    result.display = display;
+    result.rendererGeneration = rendererGeneration;
+    OH_LOG_INFO(LOG_APP,
+        "[Decoder] auxiliary RustDesk pipeline created display=%{public}d decoder=%{public}lld renderer=%{public}lld codec=%{public}d size=%{public}dx%{public}d",
+        display, static_cast<long long>(handle),
+        static_cast<long long>(rendererHandle), codec, width, height);
+    return result;
+}
+
+int DecoderNapi::DecodeOwnedAuxNative(
+    int64_t decoderHandle, const DecoderSessionIdentity& owner,
+    int display, const VideoFrame& frame) {
+    if (decoderHandle <= 0 || display < 0 || frame.display != display ||
+        !owner.valid() || frame.data == nullptr || frame.size == 0) {
+        return kDecodeInactiveDisplay;
+    }
+    auto ownerLease = Render::SharedSessionSinkOwnerLease().acquire(owner);
+    if (!ownerLease) {
+        return kDecodeInactiveSession;
+    }
+    auto decoderLease = g_decoderRegistry.acquire(decoderHandle, owner);
+    ownerLease = {};
+    if (!decoderLease) {
+        return kDecodeInactiveSession;
+    }
+    // Codec callbacks hold this mutex only long enough to validate their
+    // generation. Avoid dropping a dependent access unit for that tiny
+    // window, while keeping a real reconfigure/teardown bounded so the Rust
+    // receive thread cannot stall behind the preview pipeline.
+    std::unique_lock<std::mutex> pipelineLock(
+        decoderLease->pipelineMutex, std::defer_lock);
+    constexpr auto kAuxFrameLockBudget = std::chrono::microseconds(1000);
+    const auto lockDeadline = std::chrono::steady_clock::now() +
+        kAuxFrameLockBudget;
+    while (!pipelineLock.try_lock() &&
+           std::chrono::steady_clock::now() < lockDeadline) {
+        std::this_thread::yield();
+    }
+    if (!pipelineLock.owns_lock()) {
+        return kDecodeAuxBackpressure;
+    }
+    if (decoderLease->pipelineTransitioning.load(std::memory_order_acquire) ||
+        !decoderLease->videoPipelineAttached.load(std::memory_order_acquire) ||
+        decoderLease->owner != owner || decoderLease->display != display ||
+        !decoderLease->decoder || !decoderLease->decoder->IsInitialized()) {
+        return kDecodeInactiveSession;
+    }
+    if (decoderLease->recoveryRequested.load(std::memory_order_acquire) ||
+        decoderLease->width != frame.width || decoderLease->height != frame.height ||
+        decoderLease->decoder->GetCodecType() != frame.codec) {
+        return kDecodeAuxReconfigureRequired;
+    }
+    const int decodeResult = decoderLease->decoder->Decode(
+        frame.data, frame.size, frame.timestamp, frame.isKeyFrame);
+    return decodeResult == HardwareDecoder::kDecodeKeyframeRequired
+        ? kDecodeHardwareKeyframeRequired : decodeResult;
+}
+
+DecoderPresentationTelemetrySnapshot DecoderNapi::GetOwnedAuxPresentationTelemetry(
+    int64_t decoderHandle, const DecoderSessionIdentity& owner) {
+    DecoderPresentationTelemetrySnapshot snapshot;
+    auto ownerLease = Render::SharedSessionSinkOwnerLease().acquire(owner);
+    if (!ownerLease) {
+        return snapshot;
+    }
+    auto decoderLease = g_decoderRegistry.acquire(decoderHandle, owner);
+    if (!decoderLease) {
+        return snapshot;
+    }
+    std::lock_guard<std::mutex> pipelineLock(decoderLease->pipelineMutex);
+    if (decoderLease->pipelineTransitioning.load(std::memory_order_acquire) ||
+        !decoderLease->videoPipelineAttached.load(std::memory_order_acquire) ||
+        decoderLease->owner != owner || !decoderLease->decoder) {
+        return snapshot;
+    }
+    const HardwareTelemetrySnapshot hardware =
+        decoderLease->decoder->GetTelemetrySnapshot();
+    snapshot.valid = true;
+    snapshot.ready = hardware.initialized;
+    snapshot.hardware = true;
+    snapshot.codec = static_cast<int>(hardware.codec);
+    snapshot.width = decoderLease->width;
+    snapshot.height = decoderLease->height;
+    snapshot.owner = owner;
+    snapshot.decoderHandle = decoderHandle;
+    snapshot.rendererHandle = decoderLease->rendererHandle;
+    snapshot.decoderGeneration = decoderLease->decoderGeneration;
+    snapshot.displayGeneration = decoderLease->displayGeneration;
+    snapshot.display = decoderLease->display;
+    snapshot.rendererGeneration =
+        decoderLease->rendererGeneration.load(std::memory_order_acquire);
+    snapshot.renderedOutputBuffers = hardware.renderedOutputBuffers;
+    snapshot.nativeImageFrames = hardware.outputFrames;
+    snapshot.rendererPresentedFrames =
+        decoderLease->rendererPresentedFrames.load(std::memory_order_acquire);
+    snapshot.queueDepth = hardware.queueDepth;
+    snapshot.inputDroppedFrames = hardware.inputDroppedFrames;
+    snapshot.waitKeyframeDrops = hardware.waitKeyframeDrops;
+    snapshot.inputTruncated = hardware.inputTruncated;
+    snapshot.renderOutputFailures = hardware.renderOutputFailures;
+    snapshot.updateSurfaceFailures = hardware.updateSurfaceFailures;
+    snapshot.coalescedSurfaceNotifications =
+        hardware.coalescedSurfaceNotifications;
+    snapshot.codecLatencyMs = hardware.codecLatencyMs;
+    snapshot.codecLatencyMaxMs = hardware.codecLatencyMaxMs;
+    snapshot.lowLatencyEnabled = hardware.lowLatencyEnabled;
+    return snapshot;
 }
 
 void DecoderNapi::SetActiveSessionId(const DecoderSessionIdentity& owner) {

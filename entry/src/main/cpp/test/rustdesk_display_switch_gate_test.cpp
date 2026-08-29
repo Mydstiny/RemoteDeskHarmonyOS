@@ -1,6 +1,7 @@
 #include "test_runner.h"
 #include "rustdesk/rustdesk_display_control_plane.h"
 #include "rustdesk/rustdesk_display_switch_gate.h"
+#include "rustdesk/rustdesk_multi_canvas_policy.h"
 
 #include <atomic>
 #include <chrono>
@@ -76,6 +77,40 @@ RDP_TEST_CASE(rustdesk_display_switch_can_return_to_the_confirmed_display) {
     RDP_ASSERT(committed.acceptFrame);
     RDP_ASSERT_EQ(gate.snapshot().readyGeneration, returnGeneration);
     RDP_ASSERT_EQ(gate.snapshot().confirmedDisplay, 0);
+}
+
+RDP_TEST_CASE(rustdesk_multi_canvas_budget_keeps_focus_and_one_preview) {
+    const std::vector<RustDeskMultiCanvasDisplayBudgetInput> catalog {
+        {0, 1920, 1080, true},
+        {1, 2560, 1440, true},
+        {2, 1080, 1920, true},
+    };
+    const auto decision = RustDeskSelectMultiCanvasDisplays(
+        1, {2, 0, 2}, catalog);
+    RDP_ASSERT(decision.accepted);
+    RDP_ASSERT(decision.degraded);
+    RDP_ASSERT_EQ(decision.displays.size(), 2U);
+    RDP_ASSERT_EQ(decision.displays[0], 1);
+    RDP_ASSERT_EQ(decision.displays[1], 2);
+    RDP_ASSERT(decision.reason == "resource_budget");
+}
+
+RDP_TEST_CASE(rustdesk_multi_canvas_budget_rejects_offline_focus) {
+    const std::vector<RustDeskMultiCanvasDisplayBudgetInput> catalog {
+        {0, 1920, 1080, false},
+        {1, 1920, 1080, true},
+    };
+    const auto decision = RustDeskSelectMultiCanvasDisplays(0, {1}, catalog);
+    RDP_ASSERT(!decision.accepted);
+    RDP_ASSERT(decision.reason == "focused_display_unavailable");
+}
+
+RDP_TEST_CASE(rustdesk_multi_canvas_preview_never_duplicates_first_or_switch_frame) {
+    RDP_ASSERT(!RustDeskShouldRouteMultiCanvasPreview(0, -1, -1, false, true));
+    RDP_ASSERT(!RustDeskShouldRouteMultiCanvasPreview(0, 0, -1, false, true));
+    RDP_ASSERT(!RustDeskShouldRouteMultiCanvasPreview(1, 0, 1, true, true));
+    RDP_ASSERT(!RustDeskShouldRouteMultiCanvasPreview(1, 0, -1, false, false));
+    RDP_ASSERT(RustDeskShouldRouteMultiCanvasPreview(1, 0, -1, false, true));
 }
 
 RDP_TEST_CASE(rustdesk_display_switch_dispatch_does_not_pin_generation_during_callback) {

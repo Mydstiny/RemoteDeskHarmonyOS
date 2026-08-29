@@ -376,7 +376,7 @@ fn resolve_stream_params_for_config(config: &RustDeskConfig) -> ResolvedStreamPa
     } else {
         profile_params.codec
     };
-    let mut image_quality = if config.image_quality >= 0 {
+    let image_quality = if (0..=2).contains(&config.image_quality) {
         config.image_quality
     } else {
         profile_params.image_quality
@@ -396,13 +396,6 @@ fn resolve_stream_params_for_config(config: &RustDeskConfig) -> ResolvedStreamPa
     if matches!(config.profile, RustDeskProfile::Stable) && config.fps <= 0 {
         effective_fps = effective_fps.min(30);
     }
-    if matches!(
-        config.profile,
-        RustDeskProfile::Stable | RustDeskProfile::Balanced
-    ) {
-        image_quality = image_quality.min(profile_params.image_quality);
-    }
-
     ResolvedStreamParams {
         preferred_codec,
         image_quality,
@@ -497,6 +490,7 @@ pub enum FfiConnectionState {
 /// through `rustdesk_get_stream_stats`; it never reaches into the streaming
 /// thread or consumes the counters.
 pub const RUSTDESK_STREAM_STATS_VERSION: u32 = 1;
+pub const RUSTDESK_QUALITY_STATE_VERSION: u32 = 1;
 pub const RUSTDESK_PERMISSION_STATE_VERSION: u32 = 1;
 pub const RUSTDESK_DISPLAY_SNAPSHOT_VERSION: u32 = 1;
 pub const RUSTDESK_DISPLAY_LIST_VERSION: u32 = 1;
@@ -545,6 +539,43 @@ impl Default for RustDeskStreamStats {
             width: 0,
             height: 0,
             connection_path: 0,
+        }
+    }
+}
+
+/// Versioned image-quality state shared with the HarmonyOS bridge.
+///
+/// `raw_quality` is the latest user preference, `effective_quality` is the
+/// validated local value, and `sent_quality` changes only after the streaming
+/// writer successfully emits the corresponding RustDesk OptionMessage.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct RustDeskQualityState {
+    pub version: u32,
+    pub raw_quality: i32,
+    pub effective_quality: i32,
+    pub sent_quality: i32,
+    pub profile: i32,
+    pub fps: u32,
+    pub requested_generation: u64,
+    pub applied_generation: u64,
+    pub update_status: u32, // 0=idle, 1=pending, 2=applied, 3=failed
+    pub reserved: u32,
+}
+
+impl Default for RustDeskQualityState {
+    fn default() -> Self {
+        Self {
+            version: RUSTDESK_QUALITY_STATE_VERSION,
+            raw_quality: 1,
+            effective_quality: 1,
+            sent_quality: -1,
+            profile: RustDeskProfile::Balanced as i32,
+            fps: 0,
+            requested_generation: 0,
+            applied_generation: 0,
+            update_status: 0,
+            reserved: 0,
         }
     }
 }
@@ -958,6 +989,7 @@ pub(crate) enum ControlMsg {
     Shutdown,
     RefreshVideo,
     VideoPressure { level: u32 },
+    SetImageQuality { quality: i32, generation: u64 },
     KeyEvent {
         scancode: u32,
         pressed: bool,
@@ -1053,6 +1085,7 @@ struct RustDeskClient {
     transfer_error: Arc<Mutex<String>>,
     remote_clipboard: Arc<Mutex<Vec<u8>>>,
     stream_stats: Arc<Mutex<RustDeskStreamStats>>,
+    quality_state: Arc<Mutex<RustDeskQualityState>>,
     display_state: Arc<Mutex<RustDeskDisplayState>>,
 }
 
@@ -1757,9 +1790,19 @@ fn rustdesk_connect_impl(
                 connection_path: if config.direct_connection { 1 } else { 0 },
                 ..RustDeskStreamStats::default()
             }));
+            let quality_state = Arc::new(Mutex::new(RustDeskQualityState {
+                raw_quality: config.image_quality,
+                effective_quality: image_quality,
+                sent_quality: -1,
+                profile: config.profile as i32,
+                fps: effective_fps,
+                update_status: 1,
+                ..RustDeskQualityState::default()
+            }));
             let transfer_status = Arc::new(Mutex::new(RustDeskTransferStatus::default()));
             let transfer_error = Arc::new(Mutex::new(String::new()));
             let stream_stats_for_thread = Arc::clone(&stream_stats);
+            let quality_state_for_thread = Arc::clone(&quality_state);
             let stream_display_state = Arc::clone(&display_state);
             let frame_display_state = Arc::clone(&display_state);
             let display_callback_state = Arc::clone(&display_state);
@@ -1788,6 +1831,7 @@ fn rustdesk_connect_impl(
                     effective_fps,
                     stream_controls,
                     stream_stats_for_thread,
+                    quality_state_for_thread,
                     stream_display_state,
                     |frame| {
                         dispatch_video_frame(
@@ -1882,6 +1926,7 @@ fn rustdesk_connect_impl(
                 transfer_error,
                 remote_clipboard,
                 stream_stats,
+                quality_state,
                 display_state,
             });
 
@@ -2245,6 +2290,54 @@ pub extern "C" fn rustdesk_get_stream_stats(
     unsafe {
         ptr::write(out_stats, *stats);
     }
+    true
+}
+
+/// Queue a live RustDesk image-quality update for the streaming writer.
+#[no_mangle]
+pub extern "C" fn rustdesk_set_image_quality(handle: *mut c_void, quality: c_int) -> bool {
+    if handle.is_null() || !(0..=2).contains(&quality) {
+        set_last_error("rustdesk_set_image_quality invalid arguments");
+        return false;
+    }
+    let ctx = unsafe { &*(handle as *const RustDeskClient) };
+    let generation = {
+        let Ok(mut state) = ctx.quality_state.lock() else {
+            set_last_error("rustdesk_set_image_quality state lock poisoned");
+            return false;
+        };
+        state.requested_generation = state.requested_generation.wrapping_add(1).max(1);
+        state.raw_quality = quality;
+        state.effective_quality = quality;
+        state.update_status = 1;
+        state.requested_generation
+    };
+    if ctx.controls.enqueue(ControlMsg::SetImageQuality { quality, generation }) {
+        true
+    } else {
+        if let Ok(mut state) = ctx.quality_state.lock() {
+            if state.requested_generation == generation {
+                state.update_status = 3;
+            }
+        }
+        false
+    }
+}
+
+/// Copy the latest quality preference/application state without consuming it.
+#[no_mangle]
+pub extern "C" fn rustdesk_get_quality_state(
+    handle: *mut c_void,
+    out_state: *mut RustDeskQualityState,
+) -> bool {
+    if handle.is_null() || out_state.is_null() {
+        return false;
+    }
+    let ctx = unsafe { &*(handle as *const RustDeskClient) };
+    let Ok(state) = ctx.quality_state.lock() else {
+        return false;
+    };
+    unsafe { ptr::write(out_state, *state); }
     true
 }
 
@@ -2953,6 +3046,7 @@ mod tests {
             transfer_error: Arc::new(Mutex::new(String::new())),
             remote_clipboard: Arc::new(Mutex::new(Vec::new())),
             stream_stats: Arc::new(Mutex::new(RustDeskStreamStats::default())),
+            quality_state: Arc::new(Mutex::new(RustDeskQualityState::default())),
             display_state: Arc::new(Mutex::new(display_state)),
         }
     }
@@ -3687,7 +3781,7 @@ mod tests {
     }
 
     #[test]
-    fn balanced_profile_keeps_60fps_and_clamps_best_quality() {
+    fn explicit_best_quality_overrides_balanced_profile_without_changing_fps() {
         let cfg = RustDeskConfig {
             host: std::ptr::null(),
             port: 21116,
@@ -3713,10 +3807,33 @@ mod tests {
         let params = resolve_stream_params_for_config(&cfg);
 
         assert_eq!(params.preferred_codec, 4);
-        assert_eq!(params.image_quality, 1);
+        assert_eq!(params.image_quality, 2);
         assert_eq!(params.effective_fps, 60);
         assert_eq!(params.req_width, 742);
         assert_eq!(params.req_height, 1600);
+    }
+
+    #[test]
+    fn live_image_quality_control_validates_and_tracks_pending_generation() {
+        let mut client = test_client_with_display_state(RustDeskDisplayState::default());
+        let handle = &mut client as *mut RustDeskClient as *mut c_void;
+
+        assert!(!rustdesk_set_image_quality(handle, -1));
+        assert!(!rustdesk_set_image_quality(handle, 3));
+        assert!(rustdesk_set_image_quality(handle, 2));
+
+        let controls = client.controls.take_batch(8);
+        assert!(matches!(controls.as_slice(), [
+            ControlMsg::SetImageQuality { quality: 2, generation: 1 }
+        ]));
+        let mut snapshot = RustDeskQualityState::default();
+        assert!(rustdesk_get_quality_state(handle, &mut snapshot));
+        assert_eq!(snapshot.raw_quality, 2);
+        assert_eq!(snapshot.effective_quality, 2);
+        assert_eq!(snapshot.sent_quality, -1);
+        assert_eq!(snapshot.requested_generation, 1);
+        assert_eq!(snapshot.applied_generation, 0);
+        assert_eq!(snapshot.update_status, 1);
     }
 
     #[test]

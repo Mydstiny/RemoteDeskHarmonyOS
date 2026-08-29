@@ -469,6 +469,8 @@ namespace DecoderNapi {
     constexpr int kDecodeSoftwareFrameDropped = 3;
     constexpr int kDecodeSoftwareKeyframeRequired = 4;
     constexpr int kDecodeHardwareKeyframeRequired = 5;
+    constexpr int kDecodeAuxReconfigureRequired = 6;
+    constexpr int kDecodeAuxBackpressure = 7;
     enum class OwnedSubmitStatus : uint8_t {
         Accepted,
         // The current frame was queued, but an older dependent frame was
@@ -499,6 +501,17 @@ namespace DecoderNapi {
                                int64_t rendererHandle,
                                const DecoderSessionIdentity& owner,
                                bool desktopSurfaceCompatibility = false);
+    /** Create one independent hardware/NativeImage pipeline for a RustDesk display. */
+    REMOTEDESK_DECODER_INTERNAL OwnedDecoderCreationResult
+    CreateOwnedAuxHardwareDecoder(int width, int height, int codec, int display,
+                                  int64_t rendererHandle,
+                                  const DecoderSessionIdentity& owner);
+    REMOTEDESK_DECODER_INTERNAL int DecodeOwnedAuxNative(
+        int64_t decoderHandle, const DecoderSessionIdentity& owner,
+        int display, const VideoFrame& frame);
+    REMOTEDESK_DECODER_INTERNAL DecoderPresentationTelemetrySnapshot
+    GetOwnedAuxPresentationTelemetry(int64_t decoderHandle,
+                                     const DecoderSessionIdentity& owner);
     void SetActiveSessionId(const DecoderSessionIdentity& owner);
     void ClearActiveSessionId(const DecoderSessionIdentity& owner);
     bool SetActiveNativeImagePresentationMode(

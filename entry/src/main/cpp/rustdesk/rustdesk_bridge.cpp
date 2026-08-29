@@ -16,6 +16,7 @@
 #include "rustdesk_display_control_plane.h"
 #include "rustdesk_ffi_lifetime_policy.h"
 #include "rustdesk_ipc.h"
+#include "rustdesk_multi_canvas_policy.h"
 #include "common/safe_log.h"
 #include "extensions/extension_registry.h"
 #include "render/hw_decoder.h"
@@ -29,6 +30,7 @@
 #include <memory>
 #include <string>
 #include <thread>
+#include <unordered_set>
 
 // Rust FFI 函数声明 (extern "C", 来自 librustdesk_ffi.a)
 #ifdef RUSTDESK_USE_REAL_CORE
@@ -120,6 +122,20 @@ extern "C" {
         int32_t connection_path;
     };
     bool  rustdesk_get_stream_stats(void* handle, RustDeskFfiStreamStats* out_stats);
+    struct RustDeskFfiQualityState {
+        uint32_t version;
+        int32_t rawQuality;
+        int32_t effectiveQuality;
+        int32_t sentQuality;
+        int32_t profile;
+        uint32_t fps;
+        uint64_t requestedGeneration;
+        uint64_t appliedGeneration;
+        uint32_t updateStatus;
+        uint32_t reserved;
+    };
+    bool  rustdesk_set_image_quality(void* handle, int quality);
+    bool  rustdesk_get_quality_state(void* handle, RustDeskFfiQualityState* out_state);
     struct RustDeskFfiPermissionState {
         uint32_t version;
         uint32_t knownMask;
@@ -170,6 +186,7 @@ extern "C" {
 }
 
 static constexpr uint32_t kRustDeskStreamStatsVersion = 1;
+static constexpr uint32_t kRustDeskQualityStateVersion = 1;
 static constexpr uint32_t kRustDeskPermissionStateVersion = 1;
 static constexpr uint32_t kRustDeskPermissionKeyboard = 1U << 0;
 static constexpr uint32_t kRustDeskPermissionClipboard = 1U << 2;
@@ -196,6 +213,19 @@ static_assert(offsetof(RustDeskFfiStreamStats, actual_codec) == 80);
 static_assert(offsetof(RustDeskFfiStreamStats, width) == 84);
 static_assert(offsetof(RustDeskFfiStreamStats, height) == 88);
 static_assert(offsetof(RustDeskFfiStreamStats, connection_path) == 92);
+static_assert(sizeof(RustDeskFfiQualityState) == 48,
+              "RustDeskQualityState ABI size changed; update both sides together");
+static_assert(alignof(RustDeskFfiQualityState) == 8,
+              "RustDeskQualityState ABI alignment changed");
+static_assert(offsetof(RustDeskFfiQualityState, version) == 0);
+static_assert(offsetof(RustDeskFfiQualityState, rawQuality) == 4);
+static_assert(offsetof(RustDeskFfiQualityState, effectiveQuality) == 8);
+static_assert(offsetof(RustDeskFfiQualityState, sentQuality) == 12);
+static_assert(offsetof(RustDeskFfiQualityState, profile) == 16);
+static_assert(offsetof(RustDeskFfiQualityState, fps) == 20);
+static_assert(offsetof(RustDeskFfiQualityState, requestedGeneration) == 24);
+static_assert(offsetof(RustDeskFfiQualityState, appliedGeneration) == 32);
+static_assert(offsetof(RustDeskFfiQualityState, updateStatus) == 40);
 static_assert(sizeof(RustDeskFfiPermissionState) == 16,
               "RustDeskPermissionState ABI size changed; update both sides together");
 static_assert(alignof(RustDeskFfiPermissionState) == 4,
@@ -677,6 +707,7 @@ struct RustDeskBridge::Impl {
     ConnectionStateCallback stateCallback;
     RustDeskDisplayStateCallback displayStateCallback;
     RustDeskDisplayControlPlane displayControl;
+    std::unordered_set<int> capturedDisplays;
     std::mutex              mutex;
     std::atomic<uint64_t>   connectSerial {0};
     std::atomic<bool>       disconnectRequested {false};
@@ -1080,6 +1111,39 @@ void RustDeskBridge::onFfiFrame(const void* framePtr, void* userData) {
             ffiFrame->abiVersion,
             ffiFrame->structSize);
         return;
+    }
+
+    // A multi-canvas capture set may contain displays other than the single
+    // interactive canvas. Forward those frames to the session callback as a
+    // preview lane without letting them mutate the ACK/keyframe switch gate.
+    // The Extension layer routes them only to an exact per-display decoder;
+    // its legacy active decoder still rejects the same frame.
+    VideoFrameCallback previewCallback;
+    const RustDeskDisplaySwitchGateSnapshot gateSnapshot =
+        impl->displayControl.snapshot();
+    {
+        std::lock_guard<std::mutex> lock(impl->mutex);
+        const bool explicitlyCaptured =
+            impl->capturedDisplays.find(ffiFrame->display) !=
+            impl->capturedDisplays.end();
+        if (RustDeskShouldRouteMultiCanvasPreview(
+                ffiFrame->display, gateSnapshot.confirmedDisplay,
+                gateSnapshot.pendingDisplay, gateSnapshot.inputBlocked,
+                explicitlyCaptured)) {
+            previewCallback = impl->videoCallback;
+        }
+    }
+    if (previewCallback) {
+        VideoFrame previewFrame;
+        previewFrame.data = ffiFrame->data;
+        previewFrame.size = ffiFrame->size;
+        previewFrame.width = ffiFrame->width;
+        previewFrame.height = ffiFrame->height;
+        previewFrame.codec = rdCodecType(ffiFrame->codec);
+        previewFrame.timestamp = ffiFrame->timestamp;
+        previewFrame.isKeyFrame = ffiFrame->isKeyFrame;
+        previewFrame.display = ffiFrame->display;
+        previewCallback(previewFrame);
     }
 
     // dispatchFrame owns the production lease through active-display
@@ -2155,6 +2219,21 @@ bool RustDeskBridge::reportVideoPressureForSession(uint64_t sessionId,
     return true;
 }
 
+bool RustDeskBridge::setImageQuality(int quality) {
+#ifdef RUSTDESK_USE_REAL_CORE
+    if (quality < 0 || quality > 2 || mode_ != RustDeskMode::FFI ||
+        impl_->disconnectRequested.load(std::memory_order_acquire) ||
+        impl_->ffiStreamEnded.load(std::memory_order_acquire)) {
+        return false;
+    }
+    auto handleLease = impl_->displayControl.acquireHandle();
+    return handleLease && rustdesk_set_image_quality(handleLease.get(), quality);
+#else
+    (void)quality;
+    return false;
+#endif
+}
+
 bool RustDeskBridge::submitTwoFactorCode(const std::string& code) {
 #ifdef RUSTDESK_USE_REAL_CORE
     if (mode_ == RustDeskMode::FFI) {
@@ -2202,6 +2281,18 @@ RustDeskDiagnosticsStats RustDeskBridge::getDiagnostics() const {
             OH_LOG_WARN(LOG_APP,
                 "[RustDesk-FFI] stream diagnostics snapshot rejected: unsupported ABI version=%{public}u",
                 ffiStats.version);
+        }
+        RustDeskFfiQualityState qualityState {};
+        if (rustdesk_get_quality_state(handleLease.get(), &qualityState) &&
+            qualityState.version == kRustDeskQualityStateVersion) {
+            result.requestedImageQuality = qualityState.rawQuality;
+            result.effectiveImageQuality = qualityState.effectiveQuality;
+            result.sentImageQuality = qualityState.sentQuality;
+            result.qualityProfile = qualityState.profile;
+            result.qualityFps = static_cast<int>(qualityState.fps);
+            result.qualityRequestedGeneration = qualityState.requestedGeneration;
+            result.qualityAppliedGeneration = qualityState.appliedGeneration;
+            result.qualityUpdateStatus = static_cast<int>(qualityState.updateStatus);
         }
         RustDeskFfiPermissionState permissionState {};
         if (rustdesk_get_permission_state(handleLease.get(), &permissionState) &&
@@ -2322,6 +2413,7 @@ RustDeskDisplayCapabilities RustDeskBridge::getDisplayCapabilities() const {
     result.switchGeneration = gate.generation;
     result.readySwitchGeneration = gate.readyGeneration;
     result.pendingDisplay = gate.pendingDisplay;
+    result.confirmedDisplay = gate.confirmedDisplay;
     result.inputBlocked = gate.inputBlocked;
 #endif
     return result;
@@ -2361,10 +2453,20 @@ bool RustDeskBridge::captureDisplays(const std::vector<int>& displays) {
 #ifdef RUSTDESK_USE_REAL_CORE
     auto handleLease = impl_->displayControl.acquireHandle();
     if (mode_ == RustDeskMode::FFI && handleLease) {
-        return rustdesk_capture_displays(
+        const bool accepted = rustdesk_capture_displays(
             handleLease.get(),
             displays.empty() ? nullptr : displays.data(),
             displays.size());
+        if (accepted) {
+            std::lock_guard<std::mutex> lock(impl_->mutex);
+            impl_->capturedDisplays.clear();
+            for (const int display : displays) {
+                if (display >= 0 && display < 16) {
+                    impl_->capturedDisplays.insert(display);
+                }
+            }
+        }
+        return accepted;
     }
 #else
     (void)displays;

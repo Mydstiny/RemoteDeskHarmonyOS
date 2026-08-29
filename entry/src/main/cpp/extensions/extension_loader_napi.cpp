@@ -27,6 +27,7 @@
 #include "render/shared_session_context.h"
 #include "video/video_activity_state.h"
 #include "rustdesk/rustdesk_bridge.h"
+#include "rustdesk/rustdesk_multi_canvas_policy.h"
 #include "vnc/vnc_adapter.h"
 #include "vnc/vnc_certificate_probe.h"
 #include "vnc/vnc_rfb_engine.h"
@@ -338,6 +339,42 @@ struct PendingRustDeskFrame {
     std::vector<uint8_t> bytes;
 };
 
+enum class RustDeskMultiCanvasPipelineStatus : int {
+    Starting = 1,
+    Presenting = 2,
+    ReconfigureRequired = 3,
+    Failed = 4,
+    Paused = 5,
+};
+
+struct RustDeskMultiCanvasPipeline {
+    // A frame callback can retain this pipeline after it has been removed
+    // from the session map. Serialize handle use with teardown so no decode
+    // or telemetry query can race exact-owner decoder/renderer destruction.
+    mutable std::mutex lifecycleMutex;
+    int display = -1;
+    int sourceWidth = 0;
+    int sourceHeight = 0;
+    int codec = -1;
+    int surfaceWidth = 0;
+    int surfaceHeight = 0;
+    std::string surfaceId;
+    int64_t rendererHandle = 0;
+    int64_t decoderHandle = 0;
+    uint64_t rendererGeneration = 0;
+    uint64_t decoderGeneration = 0;
+    std::atomic<int> status {
+        static_cast<int>(RustDeskMultiCanvasPipelineStatus::Starting)};
+    std::atomic<int> observedWidth {0};
+    std::atomic<int> observedHeight {0};
+    std::atomic<int> observedCodec {-1};
+    std::atomic<int> lastDecodeResult {0};
+    std::atomic<uint64_t> receivedFrames {0};
+    std::atomic<uint64_t> acceptedFrames {0};
+    std::atomic<uint64_t> droppedFrames {0};
+    std::atomic<uint64_t> lastRefreshRequestAtMs {0};
+};
+
 // 连接会话上下文
 struct SessionContext {
     enum class Lifecycle : uint8_t {
@@ -387,6 +424,9 @@ struct SessionContext {
     uint64_t lastDropCounterGeneration = 0;
     mutable std::mutex pendingRustDeskFrameMutex;
     std::unique_ptr<PendingRustDeskFrame> pendingRustDeskFrame;
+    mutable std::mutex rustDeskMultiCanvasMutex;
+    std::map<int, std::shared_ptr<RustDeskMultiCanvasPipeline>>
+        rustDeskMultiCanvasPipelines;
     std::string vncConnectionPath = "unknown";
     std::string vncRequestedColorDepth = "auto";
 
@@ -395,6 +435,161 @@ struct SessionContext {
             sessionId, generation.load(std::memory_order_acquire), ownerToken};
     }
 };
+
+static std::shared_ptr<RustDeskBridge> GetRustDeskAdapter(
+    const std::shared_ptr<SessionContext>& session) {
+    if (!session || session->protocolName != "rustdesk") {
+        return nullptr;
+    }
+    std::lock_guard<std::mutex> lock(session->adapterMutex);
+    return std::dynamic_pointer_cast<RustDeskBridge>(session->adapter);
+}
+
+static void DestroyRustDeskMultiCanvasPipeline(
+    const DecoderSessionIdentity& owner,
+    const std::shared_ptr<RustDeskMultiCanvasPipeline>& pipeline) {
+    if (!pipeline) {
+        return;
+    }
+    std::lock_guard<std::mutex> lifecycleLock(pipeline->lifecycleMutex);
+    pipeline->status.store(
+        static_cast<int>(RustDeskMultiCanvasPipelineStatus::Paused),
+        std::memory_order_release);
+    if (pipeline->decoderHandle > 0) {
+        DecoderNapi::DestroyDecoderHandle(pipeline->decoderHandle, owner);
+        pipeline->decoderHandle = 0;
+    }
+    if (pipeline->rendererHandle > 0) {
+        RendererNapi::DestroyRendererHandle(pipeline->rendererHandle, owner);
+        pipeline->rendererHandle = 0;
+    }
+}
+
+static void DestroyRustDeskMultiCanvasPipelines(
+    const std::shared_ptr<SessionContext>& session) {
+    if (!session) {
+        return;
+    }
+    std::vector<std::shared_ptr<RustDeskMultiCanvasPipeline>> pipelines;
+    {
+        std::lock_guard<std::mutex> lock(session->rustDeskMultiCanvasMutex);
+        for (auto& entry : session->rustDeskMultiCanvasPipelines) {
+            pipelines.push_back(std::move(entry.second));
+        }
+        session->rustDeskMultiCanvasPipelines.clear();
+    }
+    const DecoderSessionIdentity owner = session->identity();
+    for (const auto& pipeline : pipelines) {
+        DestroyRustDeskMultiCanvasPipeline(owner, pipeline);
+    }
+}
+
+static bool RefreshRustDeskMultiCanvasCaptureSet(
+    const std::shared_ptr<SessionContext>& session) {
+    const std::shared_ptr<RustDeskBridge> bridge = GetRustDeskAdapter(session);
+    if (!bridge) {
+        return false;
+    }
+    const RustDeskDisplayCapabilities capabilities = bridge->getDisplayCapabilities();
+    if (!capabilities.supported || capabilities.currentDisplay < 0) {
+        return false;
+    }
+    std::vector<int> requested;
+    {
+        std::lock_guard<std::mutex> lock(session->rustDeskMultiCanvasMutex);
+        for (const auto& entry : session->rustDeskMultiCanvasPipelines) {
+            requested.push_back(entry.first);
+        }
+    }
+    std::vector<RustDeskMultiCanvasDisplayBudgetInput> catalog;
+    catalog.reserve(capabilities.displays.size());
+    for (const RustDeskDisplayInfo& display : capabilities.displays) {
+        catalog.push_back({
+            display.display,
+            display.width > 0 ? display.width : display.originalWidth,
+            display.height > 0 ? display.height : display.originalHeight,
+            display.online,
+        });
+    }
+    const RustDeskMultiCanvasBudgetDecision decision =
+        RustDeskSelectMultiCanvasDisplays(
+            capabilities.currentDisplay, requested, catalog);
+    return decision.accepted && bridge->captureDisplays(decision.displays);
+}
+
+static void SubmitRustDeskMultiCanvasFrame(
+    const std::shared_ptr<SessionContext>& session, const VideoFrame& frame) {
+    if (!session || session->protocolName != "rustdesk" || frame.display < 0) {
+        return;
+    }
+    std::shared_ptr<RustDeskMultiCanvasPipeline> pipeline;
+    {
+        std::lock_guard<std::mutex> lock(session->rustDeskMultiCanvasMutex);
+        const auto found = session->rustDeskMultiCanvasPipelines.find(frame.display);
+        if (found != session->rustDeskMultiCanvasPipelines.end()) {
+            pipeline = found->second;
+        }
+    }
+    if (!pipeline) {
+        return;
+    }
+    std::unique_lock<std::mutex> lifecycleLock(pipeline->lifecycleMutex);
+    if (pipeline->decoderHandle <= 0) {
+        return;
+    }
+    pipeline->receivedFrames.fetch_add(1, std::memory_order_relaxed);
+    pipeline->observedWidth.store(frame.width, std::memory_order_release);
+    pipeline->observedHeight.store(frame.height, std::memory_order_release);
+    pipeline->observedCodec.store(static_cast<int>(frame.codec),
+                                  std::memory_order_release);
+    const int result = DecoderNapi::DecodeOwnedAuxNative(
+        pipeline->decoderHandle, session->identity(), frame.display, frame);
+    pipeline->lastDecodeResult.store(result, std::memory_order_release);
+    if (result == 0) {
+        pipeline->acceptedFrames.fetch_add(1, std::memory_order_relaxed);
+        pipeline->status.store(
+            static_cast<int>(RustDeskMultiCanvasPipelineStatus::Presenting),
+            std::memory_order_release);
+    } else {
+        pipeline->droppedFrames.fetch_add(1, std::memory_order_relaxed);
+        if (result == DecoderNapi::kDecodeAuxReconfigureRequired) {
+            pipeline->status.store(
+                static_cast<int>(RustDeskMultiCanvasPipelineStatus::ReconfigureRequired),
+                std::memory_order_release);
+        } else if (result != DecoderNapi::kDecodeAuxBackpressure &&
+                   result != DecoderNapi::kDecodeHardwareKeyframeRequired) {
+            pipeline->status.store(
+                static_cast<int>(RustDeskMultiCanvasPipelineStatus::Failed),
+                std::memory_order_release);
+        }
+    }
+    const bool referenceChainDrop =
+        result == DecoderNapi::kDecodeAuxBackpressure ||
+        result == DecoderNapi::kDecodeHardwareKeyframeRequired;
+    bool requestDisplayRefresh = false;
+    if (referenceChainDrop) {
+        constexpr uint64_t kAuxRefreshCoalesceMs = 1000;
+        const uint64_t nowMs = static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now().time_since_epoch()).count());
+        uint64_t previous = pipeline->lastRefreshRequestAtMs.load(
+            std::memory_order_acquire);
+        while ((previous == 0 || nowMs - previous >= kAuxRefreshCoalesceMs) &&
+               !pipeline->lastRefreshRequestAtMs.compare_exchange_weak(
+                   previous, nowMs, std::memory_order_acq_rel,
+                   std::memory_order_acquire)) {
+        }
+        requestDisplayRefresh = previous == 0 ||
+            nowMs - previous >= kAuxRefreshCoalesceMs;
+    }
+    lifecycleLock.unlock();
+    if (requestDisplayRefresh) {
+        const std::shared_ptr<RustDeskBridge> bridge = GetRustDeskAdapter(session);
+        if (bridge) {
+            (void)bridge->refreshVideoDisplay(frame.display);
+        }
+    }
+}
 
 static bool IsSessionCallbackActive(const std::shared_ptr<SessionContext>& session) {
     return session &&
@@ -3086,10 +3281,10 @@ napi_value NapiGetSessionDiagnostics(napi_env env, napi_callback_info info) {
     if (it != g_sessionRegistry.end() && it->second) {
         session = it->second;
         counters = &session->diagnostics;
-        if (it->second->protocolName == "rustdesk" && it->second->adapter) {
+        if (it->second->protocolName == "rustdesk") {
             sessionActive = session->lifecycle.load(std::memory_order_acquire) ==
                 SessionContext::Lifecycle::Active;
-            auto* bridge = dynamic_cast<RustDeskBridge*>(it->second->adapter.get());
+            const std::shared_ptr<RustDeskBridge> bridge = GetRustDeskAdapter(session);
             if (bridge) {
                 nativeStats = bridge->getDiagnostics();
             }
@@ -3207,6 +3402,16 @@ napi_value NapiGetSessionDiagnostics(napi_env env, napi_callback_info info) {
     SetObjectInt32(env, result, "sessionId", sessionId);
     SetObjectInt32(env, result, "latencyMs", nativeStats.latencyMs);
     SetObjectInt32(env, result, "targetBitrateKbps", nativeStats.targetBitrateKbps);
+    SetObjectInt32(env, result, "requestedImageQuality", nativeStats.requestedImageQuality);
+    SetObjectInt32(env, result, "effectiveImageQuality", nativeStats.effectiveImageQuality);
+    SetObjectInt32(env, result, "sentImageQuality", nativeStats.sentImageQuality);
+    SetObjectInt32(env, result, "qualityProfile", nativeStats.qualityProfile);
+    SetObjectInt32(env, result, "qualityFps", nativeStats.qualityFps);
+    SetObjectInt64(env, result, "qualityRequestedGeneration",
+                   static_cast<int64_t>(nativeStats.qualityRequestedGeneration));
+    SetObjectInt64(env, result, "qualityAppliedGeneration",
+                   static_cast<int64_t>(nativeStats.qualityAppliedGeneration));
+    SetObjectInt32(env, result, "qualityUpdateStatus", nativeStats.qualityUpdateStatus);
     SetObjectInt64(env, result, "videoMessages", static_cast<int64_t>(
         vncSession && counters ? counters->ingressFrames.load(std::memory_order_acquire) :
         nativeStats.videoMessages));
@@ -4303,6 +4508,10 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
         }
         const uint64_t callbackCount = session->diagnostics.videoCallbacks.fetch_add(
             1, std::memory_order_relaxed) + 1;
+        // A preview pipeline owns a distinct decoder/NativeImage/renderer.
+        // Submit before the single-canvas active-display gate so an auxiliary
+        // display can render without ever entering the interactive pipeline.
+        SubmitRustDeskMultiCanvasFrame(session, frame);
         if (!DecoderNapi::IsActiveDisplayFrame(session->identity(), frame)) {
             const uint64_t dropped = session->diagnostics.inactiveDisplayFrames.fetch_add(
                 1, std::memory_order_relaxed) + 1;
@@ -5229,6 +5438,9 @@ static NativeDisconnectCoreResult BeginSessionTeardown(
     if (!resources.owner.valid()) {
         resources.owner = session->identity();
     }
+    // Auxiliary pipelines are not part of the process-wide native resource
+    // tuple. Destroy them while the exact session owner is still published.
+    DestroyRustDeskMultiCanvasPipelines(session);
     PrepareAdapterForTeardown(adapter, session->identity());
     DeactivateNativeResources(resources);
     DeactivateSessionContextIfActive(adapter, session->identity());
@@ -5712,6 +5924,7 @@ napi_value NapiDisconnectAll(napi_env env, napi_callback_info info) {
             std::lock_guard<std::mutex> lock(item.second->adapterMutex);
             adapter = item.second->adapter;
         }
+        DestroyRustDeskMultiCanvasPipelines(item.second);
         PrepareAdapterForTeardown(adapter, owner);
     }
     DeactivateNativeResources(resources);
@@ -6115,10 +6328,35 @@ napi_value NapiSendRustDeskTouchpadWheel(napi_env env, napi_callback_info info) 
     }
     bool accepted = false;
     auto it = g_sessionRegistry.find(sessionId);
-    if (it != g_sessionRegistry.end() && it->second &&
-        it->second->protocolName == "rustdesk" && it->second->adapter) {
-        auto* bridge = dynamic_cast<RustDeskBridge*>(it->second->adapter.get());
+    const std::shared_ptr<SessionContext> session =
+        it == g_sessionRegistry.end() ? nullptr : it->second;
+    if (session) {
+        const std::shared_ptr<RustDeskBridge> bridge = GetRustDeskAdapter(session);
         if (bridge) accepted = bridge->sendTouchpadWheel(x, y);
+    }
+    napi_value result;
+    napi_get_boolean(env, accepted, &result);
+    return result;
+}
+
+/** NAPI: setRustDeskImageQuality(sessionId, quality): boolean */
+napi_value NapiSetRustDeskImageQuality(napi_env env, napi_callback_info info) {
+    size_t argc = 2;
+    napi_value args[2];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    int32_t sessionId = 0;
+    int32_t quality = -1;
+    if (argc >= 2) {
+        napi_get_value_int32(env, args[0], &sessionId);
+        napi_get_value_int32(env, args[1], &quality);
+    }
+    bool accepted = false;
+    auto it = g_sessionRegistry.find(sessionId);
+    const std::shared_ptr<SessionContext> session =
+        it == g_sessionRegistry.end() ? nullptr : it->second;
+    if (quality >= 0 && quality <= 2 && IsSessionCallbackActive(session)) {
+        const std::shared_ptr<RustDeskBridge> bridge = GetRustDeskAdapter(session);
+        accepted = bridge != nullptr && bridge->setImageQuality(quality);
     }
     napi_value result;
     napi_get_boolean(env, accepted, &result);
@@ -6135,10 +6373,10 @@ napi_value NapiGetRustDeskDisplayCapabilities(napi_env env, napi_callback_info i
 
     RustDeskDisplayCapabilities capabilities;
     auto it = g_sessionRegistry.find(sessionId);
-    if (it != g_sessionRegistry.end() && it->second &&
-        IsSessionCallbackActive(it->second) &&
-        it->second->protocolName == "rustdesk" && it->second->adapter) {
-        auto* bridge = dynamic_cast<RustDeskBridge*>(it->second->adapter.get());
+    const std::shared_ptr<SessionContext> session =
+        it == g_sessionRegistry.end() ? nullptr : it->second;
+    if (IsSessionCallbackActive(session)) {
+        const std::shared_ptr<RustDeskBridge> bridge = GetRustDeskAdapter(session);
         if (bridge) capabilities = bridge->getDisplayCapabilities();
     }
 
@@ -6151,7 +6389,27 @@ napi_value NapiGetRustDeskDisplayCapabilities(napi_env env, napi_callback_info i
     SetObjectInt64(env, result, "readySwitchGeneration",
                    static_cast<int64_t>(capabilities.readySwitchGeneration));
     SetObjectInt32(env, result, "pendingDisplay", capabilities.pendingDisplay);
+    SetObjectInt32(env, result, "confirmedDisplay", capabilities.confirmedDisplay);
     SetObjectBool(env, result, "inputBlocked", capabilities.inputBlocked);
+    bool multiCanvasPreviewActive = false;
+    int multiCanvasPreviewDisplay = -1;
+    if (session) {
+        std::lock_guard<std::mutex> lock(session->rustDeskMultiCanvasMutex);
+        if (!session->rustDeskMultiCanvasPipelines.empty()) {
+            multiCanvasPreviewActive = true;
+            multiCanvasPreviewDisplay =
+                session->rustDeskMultiCanvasPipelines.begin()->first;
+        }
+    }
+    const size_t onlineDisplayCount = static_cast<size_t>(std::count_if(
+        capabilities.displays.begin(), capabilities.displays.end(),
+        [](const RustDeskDisplayInfo& display) { return display.online; }));
+    SetObjectBool(env, result, "multiCanvasPreviewSupported",
+                  capabilities.supported && onlineDisplayCount > 1U);
+    SetObjectInt32(env, result, "multiCanvasPreviewMaxDisplays",
+                   static_cast<int32_t>(kRustDeskMultiCanvasMaxDisplays));
+    SetObjectBool(env, result, "multiCanvasPreviewActive", multiCanvasPreviewActive);
+    SetObjectInt32(env, result, "multiCanvasPreviewDisplay", multiCanvasPreviewDisplay);
     SetObjectInt32(env, result, "width", capabilities.width);
     SetObjectInt32(env, result, "height", capabilities.height);
     SetObjectInt32(env, result, "originalWidth", capabilities.originalWidth);
@@ -6202,6 +6460,258 @@ napi_value NapiGetRustDeskDisplayCapabilities(napi_env env, napi_callback_info i
     return result;
 }
 
+static const char* RustDeskMultiCanvasStatusName(int status) {
+    switch (static_cast<RustDeskMultiCanvasPipelineStatus>(status)) {
+        case RustDeskMultiCanvasPipelineStatus::Starting: return "starting";
+        case RustDeskMultiCanvasPipelineStatus::Presenting: return "presenting";
+        case RustDeskMultiCanvasPipelineStatus::ReconfigureRequired: return "reconfigure_required";
+        case RustDeskMultiCanvasPipelineStatus::Failed: return "failed";
+        case RustDeskMultiCanvasPipelineStatus::Paused: return "paused";
+        default: return "inactive";
+    }
+}
+
+static napi_value CreateRustDeskMultiCanvasPipelineValue(
+    napi_env env, const std::shared_ptr<SessionContext>& session,
+    const std::shared_ptr<RustDeskMultiCanvasPipeline>& pipeline,
+    const char* reason = "") {
+    napi_value result;
+    napi_create_object(env, &result);
+    std::unique_lock<std::mutex> lifecycleLock;
+    if (pipeline) {
+        lifecycleLock = std::unique_lock<std::mutex>(pipeline->lifecycleMutex);
+    }
+    SetObjectBool(env, result, "supported", session != nullptr &&
+        session->protocolName == "rustdesk");
+    SetObjectBool(env, result, "active", pipeline != nullptr &&
+        pipeline->decoderHandle > 0 && pipeline->rendererHandle > 0);
+    SetObjectInt32(env, result, "display", pipeline ? pipeline->display : -1);
+    const int status = pipeline ? pipeline->status.load(std::memory_order_acquire) : 0;
+    SetObjectString(env, result, "status", RustDeskMultiCanvasStatusName(status));
+    SetObjectString(env, result, "reason", reason == nullptr ? "" : reason);
+    SetObjectString(env, result, "decoderBackend",
+                    pipeline && pipeline->decoderHandle > 0 ? "hardware" : "paused");
+    const int observedWidth = pipeline ?
+        pipeline->observedWidth.load(std::memory_order_acquire) : 0;
+    const int observedHeight = pipeline ?
+        pipeline->observedHeight.load(std::memory_order_acquire) : 0;
+    const int observedCodec = pipeline ?
+        pipeline->observedCodec.load(std::memory_order_acquire) : -1;
+    SetObjectInt32(env, result, "sourceWidth", observedWidth > 0 ? observedWidth :
+                   (pipeline ? pipeline->sourceWidth : 0));
+    SetObjectInt32(env, result, "sourceHeight", observedHeight > 0 ? observedHeight :
+                   (pipeline ? pipeline->sourceHeight : 0));
+    SetObjectInt32(env, result, "codec", observedCodec >= 0 ? observedCodec :
+                   (pipeline ? pipeline->codec : -1));
+    SetObjectInt32(env, result, "lastDecodeResult",
+                   pipeline ? pipeline->lastDecodeResult.load(std::memory_order_acquire) : 0);
+    SetObjectInt64(env, result, "receivedFrames", pipeline ?
+        static_cast<int64_t>(pipeline->receivedFrames.load(std::memory_order_acquire)) : 0);
+    SetObjectInt64(env, result, "acceptedFrames", pipeline ?
+        static_cast<int64_t>(pipeline->acceptedFrames.load(std::memory_order_acquire)) : 0);
+    SetObjectInt64(env, result, "droppedFrames", pipeline ?
+        static_cast<int64_t>(pipeline->droppedFrames.load(std::memory_order_acquire)) : 0);
+    DecoderPresentationTelemetrySnapshot telemetry;
+    if (pipeline && session && pipeline->decoderHandle > 0) {
+        telemetry = DecoderNapi::GetOwnedAuxPresentationTelemetry(
+            pipeline->decoderHandle, session->identity());
+    }
+    SetObjectInt64(env, result, "presentedFrames",
+                   static_cast<int64_t>(telemetry.rendererPresentedFrames));
+    SetObjectInt64(env, result, "queueDepth",
+                   static_cast<int64_t>(telemetry.queueDepth));
+    SetObjectInt64(env, result, "inputDroppedFrames",
+                   static_cast<int64_t>(telemetry.inputDroppedFrames));
+    return result;
+}
+
+/**
+ * NAPI: attachRustDeskMultiCanvasPreview(sessionId, display, surfaceId,
+ *   surfaceWidth, surfaceHeight, sourceWidth, sourceHeight, codec): snapshot
+ */
+napi_value NapiAttachRustDeskMultiCanvasPreview(napi_env env, napi_callback_info info) {
+    size_t argc = 8;
+    napi_value args[8] = {nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    int32_t sessionId = 0;
+    int32_t display = -1;
+    int32_t surfaceWidth = 0;
+    int32_t surfaceHeight = 0;
+    int32_t sourceWidth = 0;
+    int32_t sourceHeight = 0;
+    int32_t codec = -1;
+    const std::string surfaceId = argc >= 3 ? GetNapiString(env, args[2]) : "";
+    if (argc < 8 ||
+        napi_get_value_int32(env, args[0], &sessionId) != napi_ok ||
+        napi_get_value_int32(env, args[1], &display) != napi_ok ||
+        napi_get_value_int32(env, args[3], &surfaceWidth) != napi_ok ||
+        napi_get_value_int32(env, args[4], &surfaceHeight) != napi_ok ||
+        napi_get_value_int32(env, args[5], &sourceWidth) != napi_ok ||
+        napi_get_value_int32(env, args[6], &sourceHeight) != napi_ok ||
+        napi_get_value_int32(env, args[7], &codec) != napi_ok) {
+        return CreateRustDeskMultiCanvasPipelineValue(env, nullptr, nullptr,
+                                                       "invalid_arguments");
+    }
+    auto it = g_sessionRegistry.find(sessionId);
+    const std::shared_ptr<SessionContext> session =
+        it == g_sessionRegistry.end() ? nullptr : it->second;
+    const std::shared_ptr<RustDeskBridge> bridge = GetRustDeskAdapter(session);
+    if (!session || !bridge || !IsSessionCallbackActive(session)) {
+        return CreateRustDeskMultiCanvasPipelineValue(env, session, nullptr,
+                                                       "inactive_session");
+    }
+    const RustDeskDisplayCapabilities capabilities = bridge->getDisplayCapabilities();
+    const auto displayIt = std::find_if(
+        capabilities.displays.begin(), capabilities.displays.end(),
+        [display](const RustDeskDisplayInfo& item) {
+            return item.display == display && item.online;
+        });
+    if (!capabilities.supported || displayIt == capabilities.displays.end() ||
+        display == capabilities.currentDisplay || surfaceId.empty() ||
+        surfaceWidth <= 0 || surfaceHeight <= 0 || sourceWidth <= 0 ||
+        sourceHeight <= 0 || codec < static_cast<int>(CodecType::H264) ||
+        codec > static_cast<int>(CodecType::AV1)) {
+        return CreateRustDeskMultiCanvasPipelineValue(env, session, nullptr,
+                                                       "unsupported_target");
+    }
+    const RustDeskMultiCanvasBudgetDecision budget =
+        RustDeskSelectMultiCanvasDisplays(
+            capabilities.currentDisplay, {display}, {{
+                capabilities.currentDisplay, capabilities.width,
+                capabilities.height, true}, {
+                display, sourceWidth, sourceHeight, true}});
+    if (!budget.accepted || budget.displays.size() != 2) {
+        return CreateRustDeskMultiCanvasPipelineValue(env, session, nullptr,
+                                                       "resource_budget_exceeded");
+    }
+
+    std::vector<std::shared_ptr<RustDeskMultiCanvasPipeline>> retired;
+    {
+        std::lock_guard<std::mutex> lock(session->rustDeskMultiCanvasMutex);
+        for (auto& entry : session->rustDeskMultiCanvasPipelines) {
+            retired.push_back(std::move(entry.second));
+        }
+        session->rustDeskMultiCanvasPipelines.clear();
+    }
+    for (const auto& oldPipeline : retired) {
+        DestroyRustDeskMultiCanvasPipeline(session->identity(), oldPipeline);
+    }
+
+    const RendererNapi::OwnedRendererCreationResult renderer =
+        RendererNapi::CreateOwnedAuxRenderer(
+            surfaceId, surfaceWidth, surfaceHeight, session->identity());
+    if (!renderer.ok) {
+        (void)RefreshRustDeskMultiCanvasCaptureSet(session);
+        return CreateRustDeskMultiCanvasPipelineValue(env, session, nullptr,
+                                                       "renderer_unavailable");
+    }
+    const OwnedDecoderCreationResult decoder =
+        DecoderNapi::CreateOwnedAuxHardwareDecoder(
+            sourceWidth, sourceHeight, codec, display,
+            renderer.rendererHandle, session->identity());
+    if (!decoder.ok) {
+        RendererNapi::DestroyRendererHandle(renderer.rendererHandle,
+                                             session->identity());
+        (void)RefreshRustDeskMultiCanvasCaptureSet(session);
+        return CreateRustDeskMultiCanvasPipelineValue(env, session, nullptr,
+                                                       "decoder_unavailable");
+    }
+
+    auto pipeline = std::make_shared<RustDeskMultiCanvasPipeline>();
+    pipeline->display = display;
+    pipeline->sourceWidth = sourceWidth;
+    pipeline->sourceHeight = sourceHeight;
+    pipeline->codec = codec;
+    pipeline->surfaceWidth = surfaceWidth;
+    pipeline->surfaceHeight = surfaceHeight;
+    pipeline->surfaceId = surfaceId;
+    pipeline->rendererHandle = renderer.rendererHandle;
+    pipeline->rendererGeneration = renderer.rendererGeneration;
+    pipeline->decoderHandle = decoder.decoderHandle;
+    pipeline->decoderGeneration = decoder.decoderGeneration;
+    {
+        std::lock_guard<std::mutex> lock(session->rustDeskMultiCanvasMutex);
+        session->rustDeskMultiCanvasPipelines.emplace(display, pipeline);
+    }
+    if (!RefreshRustDeskMultiCanvasCaptureSet(session)) {
+        {
+            std::lock_guard<std::mutex> lock(session->rustDeskMultiCanvasMutex);
+            session->rustDeskMultiCanvasPipelines.erase(display);
+        }
+        DestroyRustDeskMultiCanvasPipeline(session->identity(), pipeline);
+        return CreateRustDeskMultiCanvasPipelineValue(env, session, nullptr,
+                                                       "capture_not_supported");
+    }
+    (void)bridge->refreshVideoDisplay(display);
+    return CreateRustDeskMultiCanvasPipelineValue(env, session, pipeline);
+}
+
+/** NAPI: detachRustDeskMultiCanvasPreview(sessionId, display): boolean */
+napi_value NapiDetachRustDeskMultiCanvasPreview(napi_env env, napi_callback_info info) {
+    size_t argc = 2;
+    napi_value args[2] = {nullptr, nullptr};
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    int32_t sessionId = 0;
+    int32_t display = -1;
+    if (argc >= 1) napi_get_value_int32(env, args[0], &sessionId);
+    if (argc >= 2) napi_get_value_int32(env, args[1], &display);
+    auto it = g_sessionRegistry.find(sessionId);
+    const std::shared_ptr<SessionContext> session =
+        it == g_sessionRegistry.end() ? nullptr : it->second;
+    bool removed = false;
+    if (session) {
+        std::vector<std::shared_ptr<RustDeskMultiCanvasPipeline>> retired;
+        {
+            std::lock_guard<std::mutex> lock(session->rustDeskMultiCanvasMutex);
+            if (display < 0) {
+                for (auto& entry : session->rustDeskMultiCanvasPipelines) {
+                    retired.push_back(std::move(entry.second));
+                }
+                session->rustDeskMultiCanvasPipelines.clear();
+            } else {
+                const auto found = session->rustDeskMultiCanvasPipelines.find(display);
+                if (found != session->rustDeskMultiCanvasPipelines.end()) {
+                    retired.push_back(std::move(found->second));
+                    session->rustDeskMultiCanvasPipelines.erase(found);
+                }
+            }
+        }
+        removed = !retired.empty();
+        for (const auto& pipeline : retired) {
+            DestroyRustDeskMultiCanvasPipeline(session->identity(), pipeline);
+        }
+        (void)RefreshRustDeskMultiCanvasCaptureSet(session);
+    }
+    napi_value result;
+    napi_get_boolean(env, removed, &result);
+    return result;
+}
+
+/** NAPI: getRustDeskMultiCanvasPreview(sessionId, display): snapshot */
+napi_value NapiGetRustDeskMultiCanvasPreview(napi_env env, napi_callback_info info) {
+    size_t argc = 2;
+    napi_value args[2] = {nullptr, nullptr};
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    int32_t sessionId = 0;
+    int32_t display = -1;
+    if (argc >= 1) napi_get_value_int32(env, args[0], &sessionId);
+    if (argc >= 2) napi_get_value_int32(env, args[1], &display);
+    auto it = g_sessionRegistry.find(sessionId);
+    const std::shared_ptr<SessionContext> session =
+        it == g_sessionRegistry.end() ? nullptr : it->second;
+    std::shared_ptr<RustDeskMultiCanvasPipeline> pipeline;
+    if (session) {
+        std::lock_guard<std::mutex> lock(session->rustDeskMultiCanvasMutex);
+        if (display >= 0) {
+            const auto found = session->rustDeskMultiCanvasPipelines.find(display);
+            if (found != session->rustDeskMultiCanvasPipelines.end()) pipeline = found->second;
+        } else if (!session->rustDeskMultiCanvasPipelines.empty()) {
+            pipeline = session->rustDeskMultiCanvasPipelines.begin()->second;
+        }
+    }
+    return CreateRustDeskMultiCanvasPipelineValue(env, session, pipeline);
+}
+
 /** NAPI: beginRustDeskDisplaySwitch(sessionId, display): { accepted, generation } */
 napi_value NapiBeginRustDeskDisplaySwitch(napi_env env, napi_callback_info info) {
     size_t argc = 2;
@@ -6216,11 +6726,11 @@ napi_value NapiBeginRustDeskDisplaySwitch(napi_env env, napi_callback_info info)
 
     RustDeskDisplaySwitchRequest request;
     auto it = g_sessionRegistry.find(sessionId);
-    if (IsValidRustDeskDisplay(display) && it != g_sessionRegistry.end() && it->second &&
-        IsSessionCallbackActive(it->second) &&
-        it->second->protocolName == "rustdesk" && it->second->adapter) {
-        auto* bridge = dynamic_cast<RustDeskBridge*>(it->second->adapter.get());
-        if (bridge) {
+    const std::shared_ptr<SessionContext> session =
+        it == g_sessionRegistry.end() ? nullptr : it->second;
+    if (IsValidRustDeskDisplay(display) && IsSessionCallbackActive(session)) {
+        const std::shared_ptr<RustDeskBridge> bridge = GetRustDeskAdapter(session);
+        if (bridge && IsSessionCallbackActive(session)) {
             request = bridge->beginDisplaySwitch(display);
         }
     }
@@ -6246,11 +6756,11 @@ napi_value NapiSwitchRustDeskDisplay(napi_env env, napi_callback_info info) {
 
     bool accepted = false;
     auto it = g_sessionRegistry.find(sessionId);
-    if (IsValidRustDeskDisplay(display) && it != g_sessionRegistry.end() && it->second &&
-        IsSessionCallbackActive(it->second) &&
-        it->second->protocolName == "rustdesk" && it->second->adapter) {
-        auto* bridge = dynamic_cast<RustDeskBridge*>(it->second->adapter.get());
-        if (bridge) {
+    const std::shared_ptr<SessionContext> session =
+        it == g_sessionRegistry.end() ? nullptr : it->second;
+    if (IsValidRustDeskDisplay(display) && IsSessionCallbackActive(session)) {
+        const std::shared_ptr<RustDeskBridge> bridge = GetRustDeskAdapter(session);
+        if (bridge && IsSessionCallbackActive(session)) {
             accepted = bridge->switchDisplay(display);
             if (accepted) {
                 OH_LOG_INFO(LOG_APP,
@@ -6282,12 +6792,13 @@ napi_value NapiChangeRustDeskDisplayResolution(napi_env env, napi_callback_info 
     }
     bool accepted = false;
     auto it = g_sessionRegistry.find(sessionId);
-    if (IsValidRustDeskDisplay(display) && it != g_sessionRegistry.end() && it->second &&
-        IsSessionCallbackActive(it->second) &&
-        it->second->protocolName == "rustdesk" &&
-        it->second->adapter) {
-        auto* bridge = dynamic_cast<RustDeskBridge*>(it->second->adapter.get());
-        if (bridge) accepted = bridge->changeDisplayResolution(display, width, height);
+    const std::shared_ptr<SessionContext> session =
+        it == g_sessionRegistry.end() ? nullptr : it->second;
+    if (IsValidRustDeskDisplay(display) && IsSessionCallbackActive(session)) {
+        const std::shared_ptr<RustDeskBridge> bridge = GetRustDeskAdapter(session);
+        if (bridge && IsSessionCallbackActive(session)) {
+            accepted = bridge->changeDisplayResolution(display, width, height);
+        }
     }
     napi_value result;
     napi_get_boolean(env, accepted, &result);
@@ -6307,9 +6818,10 @@ napi_value NapiSendRustDeskTouchScale(napi_env env, napi_callback_info info) {
     }
     bool accepted = false;
     auto it = g_sessionRegistry.find(sessionId);
-    if (it != g_sessionRegistry.end() && it->second && it->second->protocolName == "rustdesk" &&
-        it->second->adapter) {
-        auto* bridge = dynamic_cast<RustDeskBridge*>(it->second->adapter.get());
+    const std::shared_ptr<SessionContext> session =
+        it == g_sessionRegistry.end() ? nullptr : it->second;
+    if (session) {
+        const std::shared_ptr<RustDeskBridge> bridge = GetRustDeskAdapter(session);
         if (bridge) accepted = bridge->sendTouchScale(scale);
     }
     napi_value result;
@@ -6334,9 +6846,10 @@ napi_value NapiSendRustDeskTouchPan(napi_env env, napi_callback_info info) {
     }
     bool accepted = false;
     auto it = g_sessionRegistry.find(sessionId);
-    if (it != g_sessionRegistry.end() && it->second && it->second->protocolName == "rustdesk" &&
-        it->second->adapter) {
-        auto* bridge = dynamic_cast<RustDeskBridge*>(it->second->adapter.get());
+    const std::shared_ptr<SessionContext> session =
+        it == g_sessionRegistry.end() ? nullptr : it->second;
+    if (session) {
+        const std::shared_ptr<RustDeskBridge> bridge = GetRustDeskAdapter(session);
         if (bridge) accepted = bridge->sendTouchPan(phase, x, y);
     }
     napi_value result;
@@ -7942,8 +8455,10 @@ napi_value NapiSubmitRustDesk2FA(napi_env env, napi_callback_info info) {
     std::string code = GetNapiString(env, args[1]);
     bool accepted = false;
     auto it = g_sessionRegistry.find(sessionId);
-    if (it != g_sessionRegistry.end() && it->second->protocolName == "rustdesk" && it->second->adapter) {
-        auto rustdesk = std::dynamic_pointer_cast<RustDeskBridge>(it->second->adapter);
+    const std::shared_ptr<SessionContext> session =
+        it == g_sessionRegistry.end() ? nullptr : it->second;
+    if (session) {
+        const std::shared_ptr<RustDeskBridge> rustdesk = GetRustDeskAdapter(session);
         if (rustdesk) {
             accepted = rustdesk->submitTwoFactorCode(code);
         }
@@ -10091,9 +10606,25 @@ napi_value ExtensionLoaderNapi::Init(napi_env env, napi_value exports) {
                          NapiSendRustDeskTouchpadWheel, nullptr, &fn);
     napi_set_named_property(env, exports, "sendRustDeskTouchpadWheel", fn);
 
+    napi_create_function(env, "setRustDeskImageQuality", NAPI_AUTO_LENGTH,
+                         NapiSetRustDeskImageQuality, nullptr, &fn);
+    napi_set_named_property(env, exports, "setRustDeskImageQuality", fn);
+
     napi_create_function(env, "getRustDeskDisplayCapabilities", NAPI_AUTO_LENGTH,
                          NapiGetRustDeskDisplayCapabilities, nullptr, &fn);
     napi_set_named_property(env, exports, "getRustDeskDisplayCapabilities", fn);
+
+    napi_create_function(env, "attachRustDeskMultiCanvasPreview", NAPI_AUTO_LENGTH,
+                         NapiAttachRustDeskMultiCanvasPreview, nullptr, &fn);
+    napi_set_named_property(env, exports, "attachRustDeskMultiCanvasPreview", fn);
+
+    napi_create_function(env, "detachRustDeskMultiCanvasPreview", NAPI_AUTO_LENGTH,
+                         NapiDetachRustDeskMultiCanvasPreview, nullptr, &fn);
+    napi_set_named_property(env, exports, "detachRustDeskMultiCanvasPreview", fn);
+
+    napi_create_function(env, "getRustDeskMultiCanvasPreview", NAPI_AUTO_LENGTH,
+                         NapiGetRustDeskMultiCanvasPreview, nullptr, &fn);
+    napi_set_named_property(env, exports, "getRustDeskMultiCanvasPreview", fn);
 
     napi_create_function(env, "beginRustDeskDisplaySwitch", NAPI_AUTO_LENGTH,
                          NapiBeginRustDeskDisplaySwitch, nullptr, &fn);

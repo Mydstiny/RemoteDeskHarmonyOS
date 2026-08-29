@@ -156,6 +156,7 @@ private:
     EGLContext eglContext_;
     EGLSurface eglSurface_;
     EGLConfig  eglConfig_;
+    bool eglDisplayLeaseHeld_;
 
     // GL 资源 (外部 OES 纹理路径)
     GLuint shaderProgram_;   // NV12→RGB 着色器程序
@@ -232,6 +233,8 @@ private:
     int  rawFrameCount_;
     int  oesFrameCount_;
     int64_t rendererHandle_;
+    void* explicitNativeWindow_;
+    bool usesProcessSurface_;
     bool initialized_;
     bool destroying_;
     std::mutex lifecycleMutex_;
@@ -270,6 +273,11 @@ private:
 // ============================================================
 
 namespace RendererNapi {
+    struct OwnedRendererCreationResult {
+        bool ok = false;
+        int64_t rendererHandle = 0;
+        uint64_t rendererGeneration = 0;
+    };
     napi_value Init(napi_env env, napi_value exports);
     void MakeCurrent(int64_t handle);
     void MakeCurrent(int64_t handle, const Render::DecoderSessionIdentity& owner);
@@ -335,6 +343,16 @@ namespace RendererNapi {
     // reacquire the non-reentrant shared lease.
     bool IsActiveRendererForOwnerUnderLease(
         int64_t handle, const Render::DecoderSessionIdentity& owner);
+    /** Exact-owner renderer lookup that also admits auxiliary RustDesk canvases. */
+    REMOTEDESK_RENDER_INTERNAL bool IsRendererForOwnerUnderLease(
+        int64_t handle, const Render::DecoderSessionIdentity& owner);
+    REMOTEDESK_RENDER_INTERNAL uint64_t GetRendererGenerationUnderOwnerLease(
+        int64_t handle, const Render::DecoderSessionIdentity& owner);
+    REMOTEDESK_RENDER_INTERNAL uint64_t GetRendererGeneration(
+        int64_t handle, const Render::DecoderSessionIdentity& owner);
+    REMOTEDESK_RENDER_INTERNAL OwnedRendererCreationResult CreateOwnedAuxRenderer(
+        const std::string& surfaceId, int width, int height,
+        const Render::DecoderSessionIdentity& owner);
     REMOTEDESK_RENDER_INTERNAL uint64_t GetActiveRendererGenerationUnderOwnerLease(
         int64_t handle, const Render::DecoderSessionIdentity& owner);
     REMOTEDESK_RENDER_INTERNAL uint64_t GetActiveRendererGeneration(

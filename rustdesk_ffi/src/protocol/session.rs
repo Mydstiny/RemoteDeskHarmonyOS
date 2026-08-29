@@ -449,6 +449,31 @@ impl Session {
         Ok(())
     }
 
+    /// Send only the image-quality field, matching RustDesk's live
+    /// `sessionSetImageQuality` behavior without resetting codec, FPS, audio,
+    /// or privacy options owned by the active session.
+    pub fn send_image_quality(
+        channel: &mut crate::crypto_channel::CryptoChannel,
+        image_quality: i32,
+    ) -> io::Result<()> {
+        let message = Self::build_image_quality_message(image_quality);
+        let payload = message
+            .write_to_bytes()
+            .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
+        channel.send(&payload)?;
+        Ok(())
+    }
+
+    fn build_image_quality_message(image_quality: i32) -> Message {
+        let mut opt = OptionMessage::new();
+        opt.set_image_quality(Self::image_quality_from_pref(image_quality));
+        let mut misc = Misc::new();
+        misc.union = Some(Misc_oneof_union::option(opt));
+        let mut message = Message::new();
+        message.union = Some(Message_oneof_union::misc(misc));
+        message
+    }
+
     pub fn send_refresh_video(
         channel: &mut crate::crypto_channel::CryptoChannel,
     ) -> io::Result<()> {
@@ -1024,6 +1049,24 @@ mod tests {
                 assert_eq!(auth.get_code(), "123456");
                 assert!(auth.get_hwid().is_empty());
             }
+            other => panic!("unexpected Message variant: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn live_best_quality_uses_official_best_image_quality_enum() {
+        let encoded = Session::build_image_quality_message(2)
+            .write_to_bytes()
+            .expect("image-quality message should serialize");
+        let decoded: Message = protobuf::parse_from_bytes(&encoded)
+            .expect("image-quality message should deserialize");
+        match decoded.union {
+            Some(Message_oneof_union::misc(misc)) => match misc.union {
+                Some(Misc_oneof_union::option(option)) => {
+                    assert_eq!(option.get_image_quality(), ImageQuality::Best);
+                }
+                other => panic!("unexpected Misc oneof variant: {:?}", other),
+            },
             other => panic!("unexpected Message variant: {:?}", other),
         }
     }

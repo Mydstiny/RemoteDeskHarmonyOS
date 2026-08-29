@@ -41,6 +41,14 @@ struct RustDeskDiagnosticsStats {
     int width = 0;
     int height = 0;
     int connectionPath = 0; // 0=rendezvous/relay, 1=direct
+    int requestedImageQuality = -1;
+    int effectiveImageQuality = -1;
+    int sentImageQuality = -1;
+    int qualityProfile = -1;
+    int qualityFps = 0;
+    uint64_t qualityRequestedGeneration = 0;
+    uint64_t qualityAppliedGeneration = 0;
+    int qualityUpdateStatus = 0;
     std::string peerPlatform = "unknown";
     bool remoteInputPermissionKnown = false;
     bool remoteInputAllowed = true;
@@ -82,6 +90,7 @@ struct RustDeskDisplayCapabilities {
     uint64_t switchGeneration = 0;
     uint64_t readySwitchGeneration = 0;
     int pendingDisplay = -1;
+    int confirmedDisplay = -1;
     bool inputBlocked = false;
     int width = 0;
     int height = 0;
@@ -181,6 +190,7 @@ public:
     RemoteCursorSnapshot getRemoteCursorSnapshot(bool includePixels) override;
     void            requestFrameRefresh() override;
     void            reportVideoPressure(int level) override;
+    bool            setImageQuality(int quality);
     bool            reportVideoPressureForSession(uint64_t sessionId,
                                                   uint64_t generation,
                                                   uint64_t ownerToken,

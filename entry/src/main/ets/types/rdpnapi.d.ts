@@ -29,6 +29,7 @@ declare module 'librdpnapi.so' {
   export function sendMouse(sessionId: number, x: number, y: number, button: number, pressed: boolean): void;
   export function sendMouseWheel(sessionId: number, x: number, y: number, delta: number): void;
   export function sendRustDeskTouchpadWheel(sessionId: number, x: number, y: number): boolean;
+  export function setRustDeskImageQuality(sessionId: number, quality: number): boolean;
   export function sendText(sessionId: number, text: string): void;
   export function enqueueSshTerminalInput(sessionId: number, text: string,
     expectedGeneration?: number, control?: boolean, ordered?: boolean,
@@ -119,6 +120,12 @@ declare module 'librdpnapi.so' {
   export function getRustDeskDiagnostics(sessionId: number): RustDeskDiagnosticsSnapshot;
   export function replayPendingRustDeskFrame(sessionId: number): boolean;
   export function getRustDeskDisplayCapabilities(sessionId: number): RustDeskDisplayCapabilities;
+  export function attachRustDeskMultiCanvasPreview(sessionId: number, display: number,
+    surfaceId: string, surfaceWidth: number, surfaceHeight: number, sourceWidth: number,
+    sourceHeight: number, codec: number): RustDeskMultiCanvasPreviewSnapshot;
+  export function detachRustDeskMultiCanvasPreview(sessionId: number, display: number): boolean;
+  export function getRustDeskMultiCanvasPreview(sessionId: number,
+    display: number): RustDeskMultiCanvasPreviewSnapshot;
   export function beginRustDeskDisplaySwitch(sessionId: number,
     display: number): RustDeskDisplaySwitchRequest;
   export function switchRustDeskDisplay(sessionId: number, display: number): boolean;
@@ -531,6 +538,14 @@ export interface RustDeskDiagnosticsSnapshot {
   sessionId: number;
   latencyMs: number;
   targetBitrateKbps: number;
+  requestedImageQuality: number;
+  effectiveImageQuality: number;
+  sentImageQuality: number;
+  qualityProfile: number;
+  qualityFps: number;
+  qualityRequestedGeneration: number;
+  qualityAppliedGeneration: number;
+  qualityUpdateStatus: number;
   videoMessages: number;
   receivedFrames: number;
   keyframes: number;
@@ -607,7 +622,12 @@ export interface RustDeskDisplayCapabilities {
   switchGeneration: number;
   readySwitchGeneration: number;
   pendingDisplay: number;
+  confirmedDisplay: number;
   inputBlocked: boolean;
+  multiCanvasPreviewSupported: boolean;
+  multiCanvasPreviewMaxDisplays: number;
+  multiCanvasPreviewActive: boolean;
+  multiCanvasPreviewDisplay: number;
   width: number;
   height: number;
   originalWidth: number;
@@ -621,6 +641,25 @@ export interface RustDeskDisplayCapabilities {
 export interface RustDeskDisplaySwitchRequest {
   accepted: boolean;
   generation: number;
+}
+
+export interface RustDeskMultiCanvasPreviewSnapshot {
+  supported: boolean;
+  active: boolean;
+  display: number;
+  status: string;
+  reason: string;
+  decoderBackend: string;
+  sourceWidth: number;
+  sourceHeight: number;
+  codec: number;
+  lastDecodeResult: number;
+  receivedFrames: number;
+  acceptedFrames: number;
+  droppedFrames: number;
+  presentedFrames: number;
+  queueDepth: number;
+  inputDroppedFrames: number;
 }
 
 export interface LocalResourceStats {

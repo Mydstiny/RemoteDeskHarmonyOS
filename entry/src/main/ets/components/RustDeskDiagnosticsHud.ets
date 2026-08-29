@@ -1,4 +1,8 @@
-import { LocalResourceStats, RustDeskDiagnosticsSnapshot } from '../types/rdpnapi';
+import {
+  LocalResourceStats,
+  RustDeskDiagnosticsSnapshot,
+  RustDeskMultiCanvasPreviewSnapshot
+} from '../types/rdpnapi';
 import {
   formatDiagnosticBitrate,
   formatDiagnosticBytes,
@@ -26,6 +30,14 @@ const EMPTY_DIAGNOSTICS: RustDeskDiagnosticsSnapshot = {
   sessionId: -1,
   latencyMs: -1,
   targetBitrateKbps: 0,
+  requestedImageQuality: -1,
+  effectiveImageQuality: -1,
+  sentImageQuality: -1,
+  qualityProfile: -1,
+  qualityFps: 0,
+  qualityRequestedGeneration: 0,
+  qualityAppliedGeneration: 0,
+  qualityUpdateStatus: 0,
   videoMessages: 0,
   receivedFrames: 0,
   keyframes: 0,
@@ -82,6 +94,12 @@ const EMPTY_RESOURCES: LocalResourceStats = {
   gpuPercent: -1,
   sampledAtMs: 0
 };
+const EMPTY_MULTI_CANVAS_PREVIEW: RustDeskMultiCanvasPreviewSnapshot = {
+  supported: false, active: false, display: -1, status: 'inactive', reason: '',
+  decoderBackend: 'paused', sourceWidth: 0, sourceHeight: 0, codec: -1,
+  lastDecodeResult: 0, receivedFrames: 0, acceptedFrames: 0, droppedFrames: 0,
+  presentedFrames: 0, queueDepth: 0, inputDroppedFrames: 0
+};
 const DRAG_COMMIT_THRESHOLD = 5;
 
 interface RustDeskDiagnosticMetric {
@@ -93,6 +111,7 @@ interface RustDeskDiagnosticMetric {
 export struct RustDeskDiagnosticsHud {
   @Prop diagnostics: RustDeskDiagnosticsSnapshot = EMPTY_DIAGNOSTICS;
   @Prop localResources: LocalResourceStats = EMPTY_RESOURCES;
+  @Prop multiCanvasPreview: RustDeskMultiCanvasPreviewSnapshot = EMPTY_MULTI_CANVAS_PREVIEW;
   @Prop protocolLabel: string = 'RustDesk';
   @Prop geometryEpoch: number = 0;
   @Prop surfaceWidth: number = 0;
@@ -155,6 +174,23 @@ export struct RustDeskDiagnosticsHud {
     return this.diagnostics.remoteInputAllowed ? '允许控制' : '仅查看';
   }
 
+  private imageQualityLabel(quality: number): string {
+    if (quality === 0) { return '流畅'; }
+    if (quality === 1) { return '平衡'; }
+    if (quality === 2) { return '最高'; }
+    return '未上报';
+  }
+
+  private imageQualityStateLabel(): string {
+    if (this.diagnostics.qualityUpdateStatus === 1) { return '等待发送'; }
+    if (this.diagnostics.qualityUpdateStatus === 2) {
+      return this.diagnostics.qualityAppliedGeneration === this.diagnostics.qualityRequestedGeneration ?
+        '已发送' : '发送代次未对齐';
+    }
+    if (this.diagnostics.qualityUpdateStatus === 3) { return '发送失败'; }
+    return '连接初始值';
+  }
+
   private vncRequestedColorDepth(): string {
     const requested: string = this.diagnostics.requestedColorDepth !== '' ?
       this.diagnostics.requestedColorDepth : this.requestedColorDepth;
@@ -188,7 +224,7 @@ export struct RustDeskDiagnosticsHud {
 
   private desiredPanelHeight(): number {
     if (this.protocolLabel === 'VNC') { return 520; }
-    return this.proEnabled ? 380 : 205;
+    return this.proEnabled ? 450 : 285;
   }
 
   private visiblePanelHeight(): number {
@@ -300,6 +336,31 @@ export struct RustDeskDiagnosticsHud {
           label: '远端权限',
           value: this.remotePermissionLabel()
         })
+        this.metricLine({
+          label: '画质 偏好/生效/已发送',
+          value: this.imageQualityLabel(this.diagnostics.requestedImageQuality) + '/' +
+            this.imageQualityLabel(this.diagnostics.effectiveImageQuality) + '/' +
+            this.imageQualityLabel(this.diagnostics.sentImageQuality)
+        })
+        this.metricLine({
+          label: '画质更新',
+          value: this.imageQualityStateLabel() + ' #' +
+            this.diagnostics.qualityAppliedGeneration.toString() + '/' +
+            this.diagnostics.qualityRequestedGeneration.toString()
+        })
+        if (this.multiCanvasPreview.active || this.multiCanvasPreview.reason.length > 0) {
+          this.metricLine({
+            label: '第二画布',
+            value: 'D' + this.multiCanvasPreview.display.toString() + ' ' +
+              this.multiCanvasPreview.status + ' / ' + this.multiCanvasPreview.decoderBackend
+          })
+          this.metricLine({
+            label: '预览 送显/丢帧/队列',
+            value: this.multiCanvasPreview.presentedFrames.toString() + '/' +
+              this.multiCanvasPreview.droppedFrames.toString() + '/' +
+              this.multiCanvasPreview.queueDepth.toString()
+          })
+        }
       }
       this.metricLine({
         label: '帧率 / 送显',

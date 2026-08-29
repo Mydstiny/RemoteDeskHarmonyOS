@@ -158,6 +158,7 @@ import rustDeskControlPlaneCapabilityPolicyTest from './RustDeskControlPlaneCapa
 import rustDeskRelayPersistencePolicyTest from './RustDeskRelayPersistencePolicy.test';
 import rustDeskRelayLayoutPolicyTest from './RustDeskRelayLayoutPolicy.test';
 import rustDeskDisplaySwitchPolicyTest from './RustDeskDisplaySwitchPolicy.test';
+import rustDeskMultiCanvasPreviewPolicyTest from './RustDeskMultiCanvasPreviewPolicy.test';
 import totpBrandServiceTest from './TotpBrandService.test';
 import remoteOverlayViewportPolicyTest from './RemoteOverlayViewportPolicy.test';
 import remoteShortcutPolicyTest from './RemoteShortcutPolicy.test';
@@ -413,6 +414,7 @@ export default function testsuite() {
   rustDeskRelayPersistencePolicyTest();
   rustDeskRelayLayoutPolicyTest();
   rustDeskDisplaySwitchPolicyTest();
+  rustDeskMultiCanvasPreviewPolicyTest();
   totpBrandServiceTest();
   remoteOverlayViewportPolicyTest();
   remoteShortcutPolicyTest();
