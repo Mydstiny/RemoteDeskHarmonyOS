@@ -445,6 +445,12 @@ import {
   rdpResolutionPresetForId
 } from '../services/RemoteResolutionPresetPolicy';
 import {
+  normalizeRdpRemoteUiScalePreference,
+  RDP_DYNAMIC_LAYOUT_SETTLE_MS,
+  RdpAdaptiveDisplayResult,
+  resolveRdpAdaptiveDisplay
+} from '../services/RdpAdaptiveDisplayPolicy';
+import {
   normalizeRdpSessionColorDepth,
   normalizeRdpSessionControlMode,
   normalizeRdpSessionDriveName,
@@ -547,6 +553,8 @@ import {
 import { hashForLog, maskHost, maskUser, safeError } from '../utils/SafeLogger';
 import {
   LocalResourceStats,
+  RdpDisplayLayoutRequest,
+  RdpDisplayLayoutResult,
   RdpRenderStats,
   VncCertificateInfo,
   RemoteCursorSnapshot,
@@ -775,6 +783,7 @@ interface DesktopSize {
   colorDepth: number;
   multiMonitor: boolean;
   monitorCount: number;
+  rdpDisplay?: RdpAdaptiveDisplayResult;
 }
 
 interface MappedPoint {
@@ -992,6 +1001,7 @@ struct RemoteDesktop {
   rdpShowDiagnostics: boolean = false;
   @StorageLink('rdpDesktopResolutionId') rdpDesktopResolutionId: string = 'auto';
   @StorageLink('rdpDesktopPreset') rdpDesktopPreset: number = 0;
+  @StorageLink('rdpRemoteUiScale') rdpRemoteUiScale: string = 'auto';
   @StorageLink('rdpColorDepth') rdpColorDepth: number = 32;
   @StorageLink('rdpAudioEnabled') rdpAudioEnabled: boolean = true;
   @StorageLink('rdpAuthIdentityMode') rdpAuthIdentityMode: number = 1;
@@ -1234,6 +1244,7 @@ struct RemoteDesktop {
     new RemoteSurfaceResizeCoordinator();
   private surfaceResizeFrameTimer: number = -1;
   private surfaceResizeSettleTimer: number = -1;
+  private rdpDynamicLayoutTimer: number = -1;
   private surfaceResizeBatchStartWidth: number = 0;
   private surfaceResizeBatchStartHeight: number = 0;
   private rendererSourceWidth: number = 0;
@@ -4734,11 +4745,28 @@ struct RemoteDesktop {
 
   private setRdpResolutionPreference(id: string): void {
     const next: string = normalizeRdpResolutionId(id, this.rdpDesktopPreset);
+    this.cancelRdpDynamicLayout('resolution-preference');
     this.rdpDesktopResolutionId = next;
     this.rdpDesktopPreset = legacyRdpPresetForResolutionId(next);
     this.persistSessionPref('rdpDesktopResolutionId', next);
     this.persistSessionPref('rdpDesktopPreset', this.rdpDesktopPreset);
-    this.showRdpReconnectPreferenceToast('远端分辨率');
+    if (next === 'auto' && this.requestRdpDynamicLayoutNow('resolution-preference')) {
+      promptAction.showToast({ message: '已请求远端桌面适应当前窗口', duration: 1600 });
+    } else {
+      this.showRdpReconnectPreferenceToast('远端分辨率');
+    }
+  }
+
+  private setRdpRemoteUiScalePreference(value: string): void {
+    const next: string = normalizeRdpRemoteUiScalePreference(value);
+    this.cancelRdpDynamicLayout('remote-ui-scale-preference');
+    this.rdpRemoteUiScale = next;
+    this.persistSessionPref('rdpRemoteUiScale', next);
+    if (this.requestRdpDynamicLayoutNow('remote-ui-scale-preference')) {
+      promptAction.showToast({ message: '已请求更新 Windows 字体与控件大小', duration: 1600 });
+    } else {
+      this.showRdpReconnectPreferenceToast('远端界面大小');
+    }
   }
 
   private setRdpColorDepthPreference(depth: number): void {
@@ -7565,6 +7593,37 @@ struct RemoteDesktop {
     };
   }
 
+  private resolveRdpDisplayLayout(widthPx: number = this.renderWidthPx,
+    heightPx: number = this.renderHeightPx,
+    dpiScaleSupported: boolean = false): RdpAdaptiveDisplayResult | null {
+    let surfaceWidthPx: number = widthPx;
+    let surfaceHeightPx: number = heightPx;
+    let densityPixels: number = 1;
+    let densityDpi: number = 160;
+    try {
+      const currentDisplay: display.Display = display.getDefaultDisplaySync();
+      if (surfaceWidthPx <= 0 || surfaceHeightPx <= 0) {
+        surfaceWidthPx = currentDisplay.width;
+        surfaceHeightPx = currentDisplay.height;
+      }
+      densityPixels = currentDisplay.densityPixels;
+      densityDpi = currentDisplay.densityDPI;
+    } catch (_e) {
+      if (surfaceWidthPx <= 0 || surfaceHeightPx <= 0) {
+        return null;
+      }
+    }
+    return resolveRdpAdaptiveDisplay({
+      surfaceWidthPx,
+      surfaceHeightPx,
+      densityPixels,
+      densityDpi,
+      uiScalePreference: this.rdpRemoteUiScale,
+      dpiScaleSupported,
+      maxEdgePx: 3840
+    });
+  }
+
   /**
    * Return the page XComponent's physical surface size. This is intentionally
    * separate from desktopSize(), which describes the remote video stream.
@@ -8415,13 +8474,27 @@ struct RemoteDesktop {
         AppStorage.get<string>('rdpDesktopResolutionId') ?? '', legacyPreset);
       const colorDepthPref: number = AppStorage.get<number>('rdpColorDepth') ?? 32;
       const colorDepth: number = colorDepthPref === 16 || colorDepthPref === 24 ? colorDepthPref : 32;
+      // Until Display Control capabilities arrive, auto mode starts with the
+      // ratio-preserving logical-resolution fallback. This keeps text readable
+      // even on older servers that ignore DPI scale fields. Fixed presets keep
+      // their explicit geometry and may still use the requested connection DPI.
+      const rdpDisplay: RdpAdaptiveDisplayResult | null =
+        this.resolveRdpDisplayLayout(this.renderWidthPx, this.renderHeightPx,
+          resolutionId !== 'auto');
       if (resolutionId === 'auto') {
-        const adaptiveRdp: DesktopSize | null = this.adaptiveSurfaceSize(3840);
-        if (adaptiveRdp) {
-          adaptiveRdp.colorDepth = colorDepth;
-          hilog.info(RD_DOMAIN, RD_TAG, 'RDP adaptive size=' + adaptiveRdp.width.toString() + 'x' +
-            adaptiveRdp.height.toString() + ' colorDepth=' + colorDepth.toString());
-          return adaptiveRdp;
+        if (rdpDisplay !== null) {
+          hilog.info(RD_DOMAIN, RD_TAG, 'RDP density-aware adaptive size=' +
+            rdpDisplay.width.toString() + 'x' + rdpDisplay.height.toString() +
+            ' scale=' + rdpDisplay.desktopScaleFactor.toString() +
+            ' colorDepth=' + colorDepth.toString());
+          return {
+            width: rdpDisplay.width,
+            height: rdpDisplay.height,
+            colorDepth,
+            multiMonitor: false,
+            monitorCount: 1,
+            rdpDisplay
+          };
         }
       }
       const preset = rdpResolutionPresetForId(resolutionId);
@@ -8439,7 +8512,19 @@ struct RemoteDesktop {
         height: height,
         colorDepth: colorDepth,
         multiMonitor: false,
-        monitorCount: 1
+        monitorCount: 1,
+        rdpDisplay: rdpDisplay === null ? undefined : {
+          width,
+          height,
+          desktopScaleFactor: rdpDisplay.desktopScaleFactor,
+          deviceScaleFactor: rdpDisplay.deviceScaleFactor,
+          physicalWidthMm: rdpDisplay.physicalWidthMm,
+          physicalHeightMm: rdpDisplay.physicalHeightMm,
+          orientation: rdpDisplay.orientation,
+          requestedUiScale: rdpDisplay.requestedUiScale,
+          usesDpiScale: rdpDisplay.usesDpiScale,
+          fallbackReason: rdpDisplay.fallbackReason
+        }
       };
     }
     return {
@@ -9826,6 +9911,69 @@ struct RemoteDesktop {
     this.clearVncSurfaceResizeRefresh();
   }
 
+  private canRequestRdpDynamicLayout(): boolean {
+    return this.isDesktopDevice && this.isRdpRemoteSession() && this.connected &&
+      this.sessionId > 0 && !this.cleanupStarted && !this.remoteDesktopBgFlag &&
+      !this.sessionWindowBackground && !this.renderPreservedInPip &&
+      !this.pipSurfaceTransferInProgress &&
+      normalizeRdpResolutionId(this.rdpDesktopResolutionId, this.rdpDesktopPreset) === 'auto';
+  }
+
+  private requestRdpDynamicLayoutNow(reason: string): boolean {
+    if (!this.canRequestRdpDynamicLayout()) {
+      return false;
+    }
+    const layout: RdpAdaptiveDisplayResult | null =
+      this.resolveRdpDisplayLayout(this.renderWidthPx, this.renderHeightPx, true);
+    if (layout === null) {
+      return false;
+    }
+    const request: RdpDisplayLayoutRequest = {
+      width: layout.width,
+      height: layout.height,
+      physicalWidthMm: layout.physicalWidthMm,
+      physicalHeightMm: layout.physicalHeightMm,
+      orientation: layout.orientation,
+      desktopScaleFactor: layout.desktopScaleFactor,
+      deviceScaleFactor: layout.deviceScaleFactor
+    };
+    const result: RdpDisplayLayoutResult =
+      this.loader.requestRdpDisplayLayout(this.sessionId, request);
+    hilog.info(RD_DOMAIN, RD_TAG, 'RDP dynamic layout reason=' + reason +
+      ' size=' + request.width.toString() + 'x' + request.height.toString() +
+      ' scale=' + request.desktopScaleFactor.toString() +
+      ' accepted=' + result.accepted.toString() + ' code=' + result.code);
+    return result.accepted;
+  }
+
+  private cancelRdpDynamicLayout(reason: string): void {
+    if (this.rdpDynamicLayoutTimer >= 0) {
+      clearTimeout(this.rdpDynamicLayoutTimer);
+      this.rdpDynamicLayoutTimer = -1;
+    }
+    if (this.sessionId <= 0 || !this.isRdpRemoteSession()) {
+      return;
+    }
+    const cancelled: boolean = this.loader.cancelRdpDisplayLayout(this.sessionId);
+    if (cancelled) {
+      hilog.info(RD_DOMAIN, RD_TAG, 'RDP pending dynamic layout cancelled reason=' + reason);
+    }
+  }
+
+  private scheduleRdpDynamicLayoutUpdate(reason: string): void {
+    if (this.rdpDynamicLayoutTimer >= 0) {
+      clearTimeout(this.rdpDynamicLayoutTimer);
+      this.rdpDynamicLayoutTimer = -1;
+    }
+    if (!this.canRequestRdpDynamicLayout()) {
+      return;
+    }
+    this.rdpDynamicLayoutTimer = setTimeout((): void => {
+      this.rdpDynamicLayoutTimer = -1;
+      this.requestRdpDynamicLayoutNow(reason);
+    }, RDP_DYNAMIC_LAYOUT_SETTLE_MS);
+  }
+
   private clearRemoteSurfaceResizeWork(): void {
     if (this.surfaceResizeFrameTimer >= 0) {
       clearTimeout(this.surfaceResizeFrameTimer);
@@ -9835,6 +9983,7 @@ struct RemoteDesktop {
       clearTimeout(this.surfaceResizeSettleTimer);
       this.surfaceResizeSettleTimer = -1;
     }
+    this.cancelRdpDynamicLayout('surface-work-cleared');
     this.surfaceResizeBatchStartWidth = 0;
     this.surfaceResizeBatchStartHeight = 0;
     this.surfaceResizeCoordinator.reset();
@@ -9912,6 +10061,7 @@ struct RemoteDesktop {
     if (this.isVncSession()) {
       this.scheduleVncSurfaceResizeRefresh(this.renderWidthPx, this.renderHeightPx);
     }
+    this.scheduleRdpDynamicLayoutUpdate('surface-resize-settled');
     this.syncRemoteSystemPointer('surface-resize-settled',
       this.remoteSurfaceHovered !== false, true);
     this.publishIndependentWindowReady('surface-resize-settled');
@@ -9927,6 +10077,7 @@ struct RemoteDesktop {
     if (!observation.accepted || observation.geometry === null) {
       return;
     }
+    this.cancelRdpDynamicLayout('surface-resize-observed');
     if (this.surfaceResizeSettleTimer < 0) {
       this.surfaceResizeBatchStartWidth = this.surfaceWidth;
       this.surfaceResizeBatchStartHeight = this.surfaceHeight;
@@ -11263,6 +11414,12 @@ struct RemoteDesktop {
         return;
       }
       const stats: RdpRenderStats = this.loader.getRdpRenderStats(sessionId);
+      if (stats.displayControlReady && !stats.displayControlDisabled &&
+        stats.displayRequestCount === 0 && this.canRequestRdpDynamicLayout()) {
+        // Upgrade the conservative connection-time geometry to physical-pixel
+        // sharpness only after the server has advertised Display Control caps.
+        this.requestRdpDynamicLayoutNow('display-control-ready');
+      }
       hilog.info(RD_DOMAIN, RD_TAG, 'RDP render watchdog stats paints=' +
         stats.paintCount.toString() + ' rendered=' + stats.renderedPaintCount.toString() +
         ' first=' + stats.firstPaintMs.toString() + ' last=' + stats.lastPaintMs.toString() +
@@ -11299,6 +11456,14 @@ struct RemoteDesktop {
         ' resize=' + stats.desktopResizeCount.toString() + '/' +
           stats.desktopResizeFailures.toString() +
         ' gfxChannel=' + (stats.gfxChannelConnected ? 'connected' : 'disconnected') +
+        ' disp=' + (stats.displayControlReady ? 'ready' : 'unavailable') + '/' +
+          (stats.displayControlDisabled ? 'disabled' : stats.displayLastResult) +
+        ' dispRequest=' + stats.displayRequestCount.toString() + '/' +
+          stats.displayFailureCount.toString() +
+        ' dispGeometry=' + stats.displayRequestedWidth.toString() + 'x' +
+          stats.displayRequestedHeight.toString() + '->' +
+          stats.displayEffectiveWidth.toString() + 'x' + stats.displayEffectiveHeight.toString() +
+        ' dispScale=' + stats.displayScaleFactor.toString() +
         ' inputQ=' + stats.inputQueueDepth.toString() + '/' + stats.inputQueueMax.toString() +
         ' inputTextUnits=' + stats.inputTextUnits.toString() +
         ' inputMouseDrops=' + stats.inputDroppedMouseMoves.toString() +
@@ -12747,6 +12912,11 @@ struct RemoteDesktop {
         multiMonitor: desktop.multiMonitor,
         monitorCount: desktop.monitorCount,
         colorDepth: desktop.colorDepth,
+        rdpDesktopScaleFactor: desktop.rdpDisplay?.desktopScaleFactor ?? 100,
+        rdpDeviceScaleFactor: desktop.rdpDisplay?.deviceScaleFactor ?? 100,
+        rdpDesktopPhysicalWidthMm: desktop.rdpDisplay?.physicalWidthMm ?? 0,
+        rdpDesktopPhysicalHeightMm: desktop.rdpDisplay?.physicalHeightMm ?? 0,
+        rdpDesktopOrientation: desktop.rdpDisplay?.orientation ?? 0,
         rdpAuthIdentityMode: host.protocol === 'rdp' ? (AppStorage.get<number>('rdpAuthIdentityMode') ?? 1) : 0,
         rdpAuthMode: rdpAuthMode,
         rdpRestrictedAdminSecretSource: rdpRestrictedAdminSecretSource,
@@ -14017,6 +14187,7 @@ struct RemoteDesktop {
 
   private async detachForBackground(): Promise<void> {
     this.releaseCanvasPinchInput('background-detach');
+    this.cancelRdpDynamicLayout('background-detach');
     if (this.cleanupStarted) {
       return;
     }
@@ -18466,6 +18637,7 @@ struct RemoteDesktop {
             canvasResetAvailable: this.canvasTransformGestureModified,
             reverseWheel: this.rdpReverseWheel,
             resolutionId: normalizeRdpResolutionId(this.rdpDesktopResolutionId, this.rdpDesktopPreset),
+            remoteUiScale: normalizeRdpRemoteUiScalePreference(this.rdpRemoteUiScale),
             colorDepth: normalizeRdpSessionColorDepth(this.rdpColorDepth),
             audioEnabled: this.rdpAudioEnabled,
             driveEnabled: this.rdpDriveEnabled,
@@ -18488,6 +18660,9 @@ struct RemoteDesktop {
             onResetCanvas: (): void => { this.resetCanvasTransformFromMenu(); },
             onReverseWheel: (enabled: boolean): void => { this.setRdpReverseWheelPreference(enabled); },
             onResolution: (id: string): void => { this.setRdpResolutionPreference(id); },
+            onRemoteUiScale: (value: string): void => {
+              this.setRdpRemoteUiScalePreference(value);
+            },
             onColorDepth: (depth: number): void => { this.setRdpColorDepthPreference(depth); },
             onAudio: (enabled: boolean): void => { this.setRdpAudioPreference(enabled); },
             onDrive: (enabled: boolean): void => { this.setRdpDrivePreference(enabled); },

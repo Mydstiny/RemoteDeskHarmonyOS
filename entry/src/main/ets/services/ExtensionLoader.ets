@@ -27,6 +27,8 @@ import {
   VncGatewayDeepHealthPromise,
   VncGatewayDeepHealthResult,
   RdpRenderStats,
+  RdpDisplayLayoutRequest,
+  RdpDisplayLayoutResult,
   RendererViewport,
   RustDeskDisplayCapabilities,
   RustDeskDisplaySwitchRequest,
@@ -1422,6 +1424,16 @@ export class ExtensionLoader {
         desktopResizeCount: 0,
         desktopResizeFailures: 0,
         gfxChannelConnected: false,
+        displayControlReady: false,
+        displayControlDisabled: false,
+        displayRequestedWidth: 0,
+        displayRequestedHeight: 0,
+        displayEffectiveWidth: 0,
+        displayEffectiveHeight: 0,
+        displayScaleFactor: 100,
+        displayRequestCount: 0,
+        displayFailureCount: 0,
+        displayLastResult: 'unavailable',
         inputQueueDepth: 0,
         inputQueueMax: 0,
         inputTextUnits: 0,
@@ -1429,6 +1441,27 @@ export class ExtensionLoader {
         inputNonDisposableOverflow: 0,
         graphicsMode: 'unknown'
       };
+    }
+  }
+
+  requestRdpDisplayLayout(sessionId: number,
+    request: RdpDisplayLayoutRequest): RdpDisplayLayoutResult {
+    try {
+      return rdpnapi.requestRdpDisplayLayout(sessionId, request) as RdpDisplayLayoutResult;
+    } catch (err) {
+      hilog.error(DOMAIN, TAG,
+        '[ExtensionLoader] requestRdpDisplayLayout: ' + JSON.stringify(err));
+      return { accepted: false, code: 'bridge_error', message: '动态分辨率请求失败' };
+    }
+  }
+
+  cancelRdpDisplayLayout(sessionId: number): boolean {
+    try {
+      return rdpnapi.cancelRdpDisplayLayout(sessionId) as boolean;
+    } catch (err) {
+      hilog.warn(DOMAIN, TAG,
+        '[ExtensionLoader] cancelRdpDisplayLayout: ' + JSON.stringify(err));
+      return false;
     }
   }
 

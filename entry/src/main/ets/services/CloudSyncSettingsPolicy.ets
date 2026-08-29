@@ -30,6 +30,8 @@ const DEVICE_LOCAL_USER_SETTING_NAMES: string[] = [
   'terminalLineSpacing',
   'useNativeTerminalCore',
   'rdpDesktopPreset',
+  'rdpDesktopResolutionId',
+  'rdpRemoteUiScale',
   'rdpColorDepth',
   'rdpAudioEnabled',
   'rdpClipboardEnabled',

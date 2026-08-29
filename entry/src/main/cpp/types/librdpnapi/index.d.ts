@@ -445,6 +445,9 @@ export const VERSION: SessionVersionInfo;
     accountGeneration: number, enabled: boolean): VncGatewayDeepHealthPromise;
   export function cancelVncGatewayDeep(requestId: number): boolean;
   export function getRdpRenderStats(sessionId: number): RdpRenderStats;
+  export function requestRdpDisplayLayout(sessionId: number,
+    request: RdpDisplayLayoutRequest): RdpDisplayLayoutResult;
+  export function cancelRdpDisplayLayout(sessionId: number): boolean;
   export function getSessionDiagnostics(sessionId: number): RustDeskDiagnosticsSnapshot;
   export function getRustDeskDiagnostics(sessionId: number): RustDeskDiagnosticsSnapshot;
   export function replayPendingRustDeskFrame(sessionId: number): boolean;
@@ -819,12 +822,38 @@ export interface RdpRenderStats {
   desktopResizeCount: number;
   desktopResizeFailures: number;
   gfxChannelConnected: boolean;
+  displayControlReady: boolean;
+  displayControlDisabled: boolean;
+  displayRequestedWidth: number;
+  displayRequestedHeight: number;
+  displayEffectiveWidth: number;
+  displayEffectiveHeight: number;
+  displayScaleFactor: number;
+  displayRequestCount: number;
+  displayFailureCount: number;
+  displayLastResult: string;
   inputQueueDepth: number;
   inputQueueMax: number;
   inputTextUnits: number;
   inputDroppedMouseMoves: number;
   inputNonDisposableOverflow: number;
   graphicsMode: string;
+}
+
+export interface RdpDisplayLayoutRequest {
+  width: number;
+  height: number;
+  physicalWidthMm: number;
+  physicalHeightMm: number;
+  orientation: number;
+  desktopScaleFactor: number;
+  deviceScaleFactor: number;
+}
+
+export interface RdpDisplayLayoutResult {
+  accepted: boolean;
+  code: string;
+  message: string;
 }
 
 export interface RustDeskDiagnosticsSnapshot {
@@ -1031,6 +1060,11 @@ export interface SessionConfig {
   multiMonitor: boolean;
   monitorCount: number;
   colorDepth: number;
+  rdpDesktopScaleFactor?: number;
+  rdpDeviceScaleFactor?: number;
+  rdpDesktopPhysicalWidthMm?: number;
+  rdpDesktopPhysicalHeightMm?: number;
+  rdpDesktopOrientation?: number;
   rdpAuthIdentityMode?: number; // 0=MicrosoftAccount\email, 1=domain MicrosoftAccount, 2=bare email, 3=.\AzureAD\email, 4=domain AzureAD
   rdpAuthMode?: 'password' | 'blank_password' | 'restricted_admin';
   rdpRestrictedAdminSecretSource?: 'ntlm_hash';

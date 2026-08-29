@@ -40,7 +40,7 @@ export function normalizeRdpSessionDriveName(value: string): string {
 }
 
 export function rdpSessionSettingActivation(key: string): RdpSessionSettingActivation {
-  if (key === 'rdpDesktopResolutionId' || key === 'rdpColorDepth' ||
+  if (key === 'rdpDesktopResolutionId' || key === 'rdpRemoteUiScale' || key === 'rdpColorDepth' ||
     key === 'rdpAudioEnabled' || key === 'rdpDriveEnabled' ||
     key === 'rdpDriveName' || key === 'rdpAuthIdentityMode' ||
     key === 'rdpTlsWithoutNla' || key === 'rdpClipboardEnabled') {

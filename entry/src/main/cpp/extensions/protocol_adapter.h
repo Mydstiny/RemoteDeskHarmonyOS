@@ -96,6 +96,11 @@ struct ConnectionConfig {
     bool        multiMonitor;    // 🆕 多显示器模式
     int         monitorCount;    // 🆕 显示器数量
     int         colorDepth;      // 🆕 色深 (BPP)
+    int         rdpDesktopScaleFactor = 100;
+    int         rdpDeviceScaleFactor = 100;
+    int         rdpDesktopPhysicalWidthMm = 0;
+    int         rdpDesktopPhysicalHeightMm = 0;
+    int         rdpDesktopOrientation = 0;
     int         rdpAuthIdentityMode; // RDP: 0=MicrosoftAccount\email, 1=domain+email, 2=bare email
     RdpAuthenticationMode rdpAuthMode; // RDP: password | blank_password | restricted_admin
     RdpRestrictedAdminSecretSource rdpRestrictedAdminSecretSource;
@@ -341,12 +346,38 @@ struct RdpRenderStats {
     uint64_t desktopResizeCount = 0;
     uint64_t desktopResizeFailures = 0;
     bool gfxChannelConnected = false;
+    bool displayControlReady = false;
+    bool displayControlDisabled = false;
+    int displayRequestedWidth = 0;
+    int displayRequestedHeight = 0;
+    int displayEffectiveWidth = 0;
+    int displayEffectiveHeight = 0;
+    int displayScaleFactor = 100;
+    uint64_t displayRequestCount = 0;
+    uint64_t displayFailureCount = 0;
+    std::string displayLastResult;
     int inputQueueDepth = 0;
     int inputQueueMax = 0;
     int64_t inputTextUnits = 0;
     int64_t inputDroppedMouseMoves = 0;
     int64_t inputNonDisposableOverflow = 0;
     std::string graphicsMode;
+};
+
+struct RdpDisplayLayoutRequest {
+    int width = 0;
+    int height = 0;
+    int physicalWidthMm = 0;
+    int physicalHeightMm = 0;
+    int orientation = 0;
+    int desktopScaleFactor = 100;
+    int deviceScaleFactor = 100;
+};
+
+struct RdpDisplayLayoutResult {
+    bool accepted = false;
+    std::string code;
+    std::string message;
 };
 
 /** SFTP 远端文件条目 */

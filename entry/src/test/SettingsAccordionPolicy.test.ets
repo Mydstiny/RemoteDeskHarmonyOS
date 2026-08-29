@@ -78,10 +78,10 @@ export default function settingsAccordionPolicyTest() {
 
     it('rdp_accordion_height_contains_stacked_phone_rows_and_bottom_spacing', 0, (): void => {
       expect(SETTINGS_RDP_SWITCH_ROW_COUNT).assertEqual(5);
-      expect(settingsRdpExpandedMaxHeight('sm')).assertEqual(912);
-      expect(settingsRdpExpandedMaxHeight('md')).assertEqual(828);
-      expect(settingsRdpExpandedMaxHeight('lg')).assertEqual(828);
-      expect(settingsRdpExpandedMaxHeight('xl')).assertEqual(912);
+      expect(settingsRdpExpandedMaxHeight('sm')).assertEqual(1005);
+      expect(settingsRdpExpandedMaxHeight('md')).assertEqual(893);
+      expect(settingsRdpExpandedMaxHeight('lg')).assertEqual(893);
+      expect(settingsRdpExpandedMaxHeight('xl')).assertEqual(1005);
       expect(settingsRdpExpandedMaxHeight('sm', 6) > settingsRdpExpandedMaxHeight('sm')).assertTrue();
     });
 

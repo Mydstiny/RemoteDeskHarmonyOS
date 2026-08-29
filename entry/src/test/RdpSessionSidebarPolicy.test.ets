@@ -25,6 +25,7 @@ export default function rdpSessionSidebarPolicyTest(): void {
       expect(rdpSessionSettingActivation('rdpControlMode')).assertEqual('live');
       expect(rdpSessionSettingActivation('rdpClipboardEnabled')).assertEqual('reconnect');
       expect(rdpSessionSettingActivation('rdpDesktopResolutionId')).assertEqual('reconnect');
+      expect(rdpSessionSettingActivation('rdpRemoteUiScale')).assertEqual('reconnect');
       expect(rdpSessionSettingActivation('rdpAudioEnabled')).assertEqual('reconnect');
       expect(rdpSessionSettingActivation('rdpDriveEnabled')).assertEqual('reconnect');
     });

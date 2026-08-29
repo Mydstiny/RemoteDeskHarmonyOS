@@ -133,6 +133,7 @@ import hostCardPrivacyPolicyTest from './HostCardPrivacyPolicy.test';
 import unifiedHostCardPolicyTest from './UnifiedHostCardPolicy.test';
 import remoteOrientationPolicyTest from './RemoteOrientationPolicy.test';
 import remoteResolutionPresetPolicyTest from './RemoteResolutionPresetPolicy.test';
+import rdpAdaptiveDisplayPolicyTest from './RdpAdaptiveDisplayPolicy.test';
 import dataSnapshotRevisionPolicyTest from './DataSnapshotRevisionPolicy.test';
 import boundedDocumentIoTest from './BoundedDocumentIo.test';
 import sensitiveDataStatePolicyTest from './SensitiveDataStatePolicy.test';
@@ -389,6 +390,7 @@ export default function testsuite() {
   unifiedHostCardPolicyTest();
   remoteOrientationPolicyTest();
   remoteResolutionPresetPolicyTest();
+  rdpAdaptiveDisplayPolicyTest();
   dataSnapshotRevisionPolicyTest();
   boundedDocumentIoTest();
   sensitiveDataStatePolicyTest();

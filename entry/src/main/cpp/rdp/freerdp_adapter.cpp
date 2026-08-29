@@ -19,6 +19,7 @@
 #include "rdp_background_frame_cache.h"
 #include "rdp_certificate_validation.h"
 #include "rdp_certificate_policy.h"
+#include "rdp_display_layout_policy.h"
 #include "rdp_frame_pump.h"
 #include "rdp_file_clipboard_bridge.h"
 #include "rdp_graphics_lifecycle.h"
@@ -29,6 +30,9 @@
 #include "rdp_input_queue.h"
 #include "rdp_shutdown_state.h"
 #ifdef USE_REAL_FREERDP
+#if defined(CHANNEL_DISP_CLIENT)
+#include <freerdp/channels/disp.h>
+#endif
 #include <freerdp/channels/rdpgfx.h>
 #include <freerdp/client/rdpgfx.h>
 #include <freerdp/codec/color.h>
@@ -1051,12 +1055,14 @@ RdpCertificateInfo probeRdpCertificateOverTls(const std::string& host, int port,
 #include <freerdp/client.h>
 #include <freerdp/client/channels.h>
 #include <freerdp/client/cmdline.h>
+#include <freerdp/client/rdpdr.h>
 #include <freerdp/addin.h>
 #include <freerdp/codec/color.h>
 #include <freerdp/gdi/gdi.h>
 #include <freerdp/event.h>
 #include <freerdp/input.h>
 #include <freerdp/locale/locale.h>
+#include <freerdp/settings.h>
 #include <freerdp/settings_types.h>
 #include <winpr/input.h>
 #include <winpr/wtypes.h>
@@ -1075,9 +1081,6 @@ RdpCertificateInfo probeRdpCertificateOverTls(const std::string& host, int port,
 #define LOG_TAG "RDP_ADAPTER"
 
 #define RDP_TCP_PORT 3389
-
-extern "C" UINT freerdp_ohos_rdpdr_register_drive(rdpContext* context, const char* name,
-                                                  const char* path, uint32_t* pid);
 
 static const char* safeFreeRdpString(const char* value, const char* fallback) {
     return value ? value : fallback;
@@ -1276,8 +1279,10 @@ struct FreeRdpAdapter::Impl {
     // pointer and channel attach/detach transition separately from the text
     // payload lock; bridge methods retain their own internal lock.
     mutable std::mutex      cliprdrMutex;
+    mutable std::mutex      rdpdrMutex;
     std::string             clipboardText;
     CliprdrClientContext*   cliprdr = nullptr;
+    RdpdrClientContext*     rdpdr = nullptr;
     std::unique_ptr<RdpFileClipboardBridge> fileClipboard;
     std::thread             eventThread;
     std::thread             connectThread;
@@ -1312,6 +1317,28 @@ struct FreeRdpAdapter::Impl {
     std::shared_ptr<std::atomic<bool>> disconnectWorkerDone =
         std::make_shared<std::atomic<bool>>(true);
     std::mutex              renderMutex;
+    mutable std::mutex      displayControlMutex;
+#if defined(CHANNEL_DISP_CLIENT)
+    DispClientContext*      displayControl = nullptr;
+#endif
+    bool                    displayControlReady = false;
+    bool                    displayControlDisabled = false;
+    bool                    displayLayoutPending = false;
+    bool                    displayLayoutInFlight = false;
+    uint32_t                displayMaxNumMonitors = 0;
+    uint32_t                displayMaxAreaFactorA = 0;
+    uint32_t                displayMaxAreaFactorB = 0;
+    int64_t                 displayLastSendUs = 0;
+    int64_t                 displayInFlightSinceUs = 0;
+    RdpDisplayLayoutRequest pendingDisplayLayout;
+    int                     displayRequestedWidth = 0;
+    int                     displayRequestedHeight = 0;
+    int                     displayEffectiveWidth = 0;
+    int                     displayEffectiveHeight = 0;
+    int                     displayScaleFactor = 100;
+    uint64_t                displayRequestCount = 0;
+    uint64_t                displayFailureCount = 0;
+    std::string             displayLastResult = "not_negotiated";
     mutable std::mutex      ownerMutex;
     mutable std::mutex      videoTelemetryMutex;
     RdpShutdown::State      shutdownState;
@@ -3682,6 +3709,45 @@ void FreeRdpAdapter::cbErrorInfo(void* context, const ErrorInfoEventArgs* e) {
                 code, static_cast<int>(adapter->getState()));
 }
 
+#if defined(CHANNEL_DISP_CLIENT)
+UINT FreeRdpAdapter::cbDisplayControlCaps(DispClientContext* context,
+                                         UINT32 maxNumMonitors,
+                                         UINT32 maxMonitorAreaFactorA,
+                                         UINT32 maxMonitorAreaFactorB) {
+    if (!context || !context->custom) {
+        return CHANNEL_RC_OK;
+    }
+    auto callbackLease = acquireRdpCallbackContext(
+        static_cast<::rdpContext*>(context->custom));
+    if (!acquireCurrentRdpCallbackOwnerLease(callbackLease)) {
+        return CHANNEL_RC_OK;
+    }
+    FreeRdpAdapter* owner = callbackLease.adapter;
+    if (!owner || !owner->impl_) {
+        return CHANNEL_RC_OK;
+    }
+    std::lock_guard<std::mutex> displayLock(owner->impl_->displayControlMutex);
+    if (owner->impl_->displayControl != context) {
+        return CHANNEL_RC_OK;
+    }
+    owner->impl_->displayMaxNumMonitors = maxNumMonitors;
+    owner->impl_->displayMaxAreaFactorA = maxMonitorAreaFactorA;
+    owner->impl_->displayMaxAreaFactorB = maxMonitorAreaFactorB;
+    const bool usable = maxNumMonitors >= 1 &&
+        maxMonitorAreaFactorA >= DISPLAY_CONTROL_MIN_MONITOR_WIDTH &&
+        maxMonitorAreaFactorB >= DISPLAY_CONTROL_MIN_MONITOR_HEIGHT;
+    owner->impl_->displayControlDisabled = owner->impl_->displayControlDisabled || !usable;
+    owner->impl_->displayControlReady = usable && !owner->impl_->displayControlDisabled;
+    owner->impl_->displayLastResult = owner->impl_->displayControlReady ?
+        "caps_ready" : "caps_invalid";
+    OH_LOG_INFO(LOG_APP,
+        "[RDP-DISP] caps monitors=%{public}u area=%{public}ux%{public}u usable=%{public}s",
+        maxNumMonitors, maxMonitorAreaFactorA, maxMonitorAreaFactorB,
+        usable ? "true" : "false");
+    return CHANNEL_RC_OK;
+}
+#endif
+
 void FreeRdpAdapter::cbChannelConnected(void* context, const ChannelConnectedEventArgs* e) {
     auto callbackLease = acquireRdpCallbackContext(
         static_cast<::rdpContext*>(context));
@@ -3699,6 +3765,28 @@ void FreeRdpAdapter::cbChannelConnected(void* context, const ChannelConnectedEve
     }
     OH_LOG_INFO(LOG_APP, "[RDP] channel connected: %{public}s interface=%{public}p",
                 e->name, e->pInterface);
+#if defined(CHANNEL_DISP_CLIENT)
+    if (std::strcmp(e->name, DISP_DVC_CHANNEL_NAME) == 0 && e->pInterface) {
+        std::lock_guard<std::mutex> displayLock(owner->impl_->displayControlMutex);
+        auto* displayControl = reinterpret_cast<DispClientContext*>(e->pInterface);
+        if (owner->impl_->displayControl && owner->impl_->displayControl != displayControl) {
+            owner->impl_->displayControl->DisplayControlCaps = nullptr;
+            owner->impl_->displayControl->custom = nullptr;
+        }
+        owner->impl_->displayControl = displayControl;
+        displayControl->custom = rdpContext;
+        displayControl->DisplayControlCaps = cbDisplayControlCaps;
+        owner->impl_->displayControlReady = false;
+        owner->impl_->displayControlDisabled = false;
+        owner->impl_->displayLayoutInFlight = false;
+        owner->impl_->displayInFlightSinceUs = 0;
+        owner->impl_->displayMaxNumMonitors = 0;
+        owner->impl_->displayMaxAreaFactorA = 0;
+        owner->impl_->displayMaxAreaFactorB = 0;
+        owner->impl_->displayLastResult = "caps_pending";
+        OH_LOG_INFO(LOG_APP, "[RDP-DISP] display-control channel connected; waiting for caps");
+    }
+#endif
     if (std::strcmp(e->name, CLIPRDR_SVC_CHANNEL_NAME) == 0 && e->pInterface) {
         auto* cliprdr = reinterpret_cast<CliprdrClientContext*>(e->pInterface);
         if (!isRdpCallbackLeaseRegistered(callbackLease) ||
@@ -3746,6 +3834,11 @@ void FreeRdpAdapter::cbChannelConnected(void* context, const ChannelConnectedEve
             OH_LOG_WARN(LOG_APP,
                         "[RDP] file clipboard bridge unavailable; clipboard disabled for this session");
         }
+    }
+    if (std::strcmp(e->name, RDPDR_SVC_CHANNEL_NAME) == 0 && e->pInterface) {
+        std::lock_guard<std::mutex> rdpdrLock(owner->impl_->rdpdrMutex);
+        owner->impl_->rdpdr = reinterpret_cast<RdpdrClientContext*>(e->pInterface);
+        OH_LOG_INFO(LOG_APP, "[RDP] device-redirection channel interface attached");
     }
 #if defined(CHANNEL_RDPGFX_CLIENT)
     if (std::strcmp(e->name, RDPGFX_DVC_CHANNEL_NAME) == 0) {
@@ -3972,6 +4065,27 @@ void FreeRdpAdapter::cbChannelDisconnected(void* context, const ChannelDisconnec
     }
     OH_LOG_INFO(LOG_APP, "[RDP] channel disconnected: %{public}s interface=%{public}p",
                 e->name, e->pInterface);
+#if defined(CHANNEL_DISP_CLIENT)
+    if (std::strcmp(e->name, DISP_DVC_CHANNEL_NAME) == 0) {
+        std::lock_guard<std::mutex> displayLock(owner->impl_->displayControlMutex);
+        auto* displayControl = reinterpret_cast<DispClientContext*>(e->pInterface);
+        if (displayControl && owner->impl_->displayControl == displayControl) {
+            displayControl->DisplayControlCaps = nullptr;
+            displayControl->custom = nullptr;
+        }
+        owner->impl_->displayControl = nullptr;
+        owner->impl_->displayControlReady = false;
+        owner->impl_->displayLayoutPending = false;
+        owner->impl_->displayLayoutInFlight = false;
+        owner->impl_->displayMaxNumMonitors = 0;
+        owner->impl_->displayMaxAreaFactorA = 0;
+        owner->impl_->displayMaxAreaFactorB = 0;
+        owner->impl_->displayLastSendUs = 0;
+        owner->impl_->displayInFlightSinceUs = 0;
+        owner->impl_->displayLastResult = "channel_disconnected";
+        OH_LOG_INFO(LOG_APP, "[RDP-DISP] display-control channel disconnected");
+    }
+#endif
     if (std::strcmp(e->name, CLIPRDR_SVC_CHANNEL_NAME) == 0) {
         if (owner && owner->impl_) {
             std::lock_guard<std::mutex> channelLock(owner->impl_->cliprdrMutex);
@@ -3984,6 +4098,14 @@ void FreeRdpAdapter::cbChannelDisconnected(void* context, const ChannelDisconnec
                 owner->impl_->fileClipboard->detach();
             }
         }
+    }
+    if (std::strcmp(e->name, RDPDR_SVC_CHANNEL_NAME) == 0) {
+        std::lock_guard<std::mutex> rdpdrLock(owner->impl_->rdpdrMutex);
+        if (!e->pInterface ||
+            owner->impl_->rdpdr == reinterpret_cast<RdpdrClientContext*>(e->pInterface)) {
+            owner->impl_->rdpdr = nullptr;
+        }
+        OH_LOG_INFO(LOG_APP, "[RDP] device-redirection channel interface detached");
     }
 #if defined(CHANNEL_RDPGFX_CLIENT)
     if (std::strcmp(e->name, RDPGFX_DVC_CHANNEL_NAME) == 0) {
@@ -4676,6 +4798,21 @@ BOOL FreeRdpAdapter::cbDesktopResize(rdpContext* context) {
     OH_LOG_INFO(LOG_APP,
         "[RDP-RESIZE] complete epoch=%{public}llu size=%{public}dx%{public}d fullResync=true",
         static_cast<unsigned long long>(ticket.epoch), ticket.width, ticket.height);
+    {
+        std::lock_guard<std::mutex> displayLock(adapter->impl_->displayControlMutex);
+        adapter->impl_->displayEffectiveWidth = ticket.width;
+        adapter->impl_->displayEffectiveHeight = ticket.height;
+        adapter->impl_->displayLayoutInFlight = false;
+        adapter->impl_->displayInFlightSinceUs = 0;
+        if (adapter->impl_->displayRequestedWidth > 0 &&
+            adapter->impl_->displayRequestedHeight > 0) {
+            const bool exact = adapter->impl_->displayRequestedWidth == ticket.width &&
+                adapter->impl_->displayRequestedHeight == ticket.height;
+            adapter->impl_->displayLastResult = exact ? "applied" : "server_adjusted";
+        } else {
+            adapter->impl_->displayLastResult = "initial_geometry";
+        }
+    }
     return TRUE;
 }
 
@@ -4822,12 +4959,77 @@ void FreeRdpAdapter::processEventLoop() {
         }
     };
 
+    auto processDisplayControlQueue = [this]() {
+#if defined(CHANNEL_DISP_CLIENT)
+        RdpDisplayLayoutRequest request;
+        DispClientContext* displayControl = nullptr;
+        const int64_t nowUs = steadyNowUs();
+        {
+            std::lock_guard<std::mutex> displayLock(impl_->displayControlMutex);
+            if (RdpDisplayLayoutPolicy::HasInFlightTimedOut(
+                    impl_->displayLayoutInFlight, impl_->displayInFlightSinceUs, nowUs)) {
+                impl_->displayLayoutInFlight = false;
+                impl_->displayInFlightSinceUs = 0;
+                impl_->displayFailureCount++;
+                impl_->displayLastResult = "apply_timeout";
+            }
+            if (!impl_->displayControlReady ||
+                impl_->displayControlDisabled || !impl_->displayControl) {
+                return;
+            }
+            if (!RdpDisplayLayoutPolicy::IsSendDue(
+                    impl_->displayLayoutPending, impl_->displayLayoutInFlight,
+                    impl_->displayLastSendUs, nowUs)) {
+                return;
+            }
+            request = impl_->pendingDisplayLayout;
+            impl_->displayLayoutPending = false;
+            impl_->displayLastSendUs = nowUs;
+            displayControl = impl_->displayControl;
+        }
+        DISPLAY_CONTROL_MONITOR_LAYOUT monitor {};
+        monitor.Flags = DISPLAY_CONTROL_MONITOR_PRIMARY;
+        monitor.Left = 0;
+        monitor.Top = 0;
+        monitor.Width = static_cast<UINT32>(request.width);
+        monitor.Height = static_cast<UINT32>(request.height);
+        monitor.PhysicalWidth = static_cast<UINT32>(request.physicalWidthMm);
+        monitor.PhysicalHeight = static_cast<UINT32>(request.physicalHeightMm);
+        monitor.Orientation = static_cast<UINT32>(request.orientation);
+        monitor.DesktopScaleFactor = static_cast<UINT32>(request.desktopScaleFactor);
+        monitor.DeviceScaleFactor = static_cast<UINT32>(request.deviceScaleFactor);
+        const UINT rc = displayControl->SendMonitorLayout
+            ? displayControl->SendMonitorLayout(displayControl, 1, &monitor)
+            : ERROR_INVALID_FUNCTION;
+        std::lock_guard<std::mutex> displayLock(impl_->displayControlMutex);
+        if (rc == CHANNEL_RC_OK) {
+            impl_->displayLayoutInFlight = true;
+            impl_->displayInFlightSinceUs = nowUs;
+            impl_->displayScaleFactor = request.desktopScaleFactor;
+            impl_->displayLastResult = "sent";
+            OH_LOG_INFO(LOG_APP,
+                "[RDP-DISP] layout sent size=%{public}dx%{public}d scale=%{public}d orientation=%{public}d",
+                request.width, request.height, request.desktopScaleFactor, request.orientation);
+        } else {
+            impl_->displayLayoutInFlight = false;
+            impl_->displayInFlightSinceUs = 0;
+            impl_->displayFailureCount++;
+            impl_->displayControlDisabled = true;
+            impl_->displayLastResult = "send_failed:" + std::to_string(rc);
+            OH_LOG_WARN(LOG_APP,
+                "[RDP-DISP] layout send failed rc=%{public}u; dynamic layout disabled for this session",
+                rc);
+        }
+#endif
+    };
+
     const auto markEventLoopTick = [this]() {
         impl_->lastEventLoopTickUs.store(steadyNowUs(), std::memory_order_release);
         impl_->eventLoopTicks.fetch_add(1, std::memory_order_relaxed);
     };
 
     while (eventLoopRunning_.load(std::memory_order_acquire)) {
+        processDisplayControlQueue();
         DWORD networkCount = 0;
         DWORD handleCount = 0;
         DWORD inputHandleIndex = kInvalidHandleIndex;
@@ -5061,8 +5263,23 @@ void FreeRdpAdapter::mountDriveAfterConnected(const std::string& driveName,
             OH_LOG_INFO(LOG_APP, "[RDP] redirected drive async mount skipped: instance unavailable");
             return;
         }
-        driveRc = freerdp_ohos_rdpdr_register_drive(
-            instance_->context, driveName.c_str(), drivePath.c_str(), &driveId);
+        std::lock_guard<std::mutex> rdpdrLock(impl_->rdpdrMutex);
+        RdpdrClientContext* rdpdr = impl_->rdpdr;
+        if (!rdpdr || !rdpdr->RdpdrRegisterDevice) {
+            OH_LOG_WARN(LOG_APP,
+                        "[RDP] redirected drive unavailable: rdpdr channel interface not ready");
+        } else {
+            const char* driveArgs[] = { driveName.c_str(), drivePath.c_str() };
+            RDPDR_DEVICE* drive = freerdp_device_new(
+                RDPDR_DTYP_FILESYSTEM,
+                sizeof(driveArgs) / sizeof(driveArgs[0]), driveArgs);
+            if (!drive) {
+                driveRc = CHANNEL_RC_NO_MEMORY;
+            } else {
+                driveRc = rdpdr->RdpdrRegisterDevice(rdpdr, drive, &driveId);
+                freerdp_device_free(drive);
+            }
+        }
     }
 
     if (driveRc == CHANNEL_RC_OK) {
@@ -5200,6 +5417,10 @@ void FreeRdpAdapter::cleanupInstance(RdpShutdownDeadline deadline) {
     }
     impl_->resetRdpTransferStatus();
     impl_->clearClipboardState();
+    {
+        std::lock_guard<std::mutex> rdpdrLock(impl_->rdpdrMutex);
+        impl_->rdpdr = nullptr;
+    }
     impl_->presentationEnabled.store(false, std::memory_order_release);
     const Render::DecoderSessionIdentity owner = impl_->ownerSnapshot();
     if (owner.valid()) {
@@ -5210,6 +5431,25 @@ void FreeRdpAdapter::cleanupInstance(RdpShutdownDeadline deadline) {
     }
     impl_->framePump->invalidatePending();
     impl_->stopSessionWorkers(deadline);
+    {
+        std::lock_guard<std::mutex> displayLock(impl_->displayControlMutex);
+#if defined(CHANNEL_DISP_CLIENT)
+        if (impl_->displayControl) {
+            impl_->displayControl->DisplayControlCaps = nullptr;
+            impl_->displayControl->custom = nullptr;
+        }
+        impl_->displayControl = nullptr;
+#endif
+        impl_->displayControlReady = false;
+        impl_->displayLayoutPending = false;
+        impl_->displayLayoutInFlight = false;
+        impl_->displayMaxNumMonitors = 0;
+        impl_->displayMaxAreaFactorA = 0;
+        impl_->displayMaxAreaFactorB = 0;
+        impl_->displayLastSendUs = 0;
+        impl_->displayInFlightSinceUs = 0;
+        impl_->displayLastResult = "session_closed";
+    }
     freerdp* doomedInstance = nullptr;
     {
         std::lock_guard<std::mutex> lock(impl_->instanceMutex);
@@ -5667,6 +5907,29 @@ int FreeRdpAdapter::connect(const ConnectionConfig& cfg) {
         impl_->cursorStore.setGeneration(generation);
         impl_->shutdownStartedUs.store(0, std::memory_order_release);
         impl_->clearPendingErrorInfo();
+        {
+            std::lock_guard<std::mutex> displayLock(impl_->displayControlMutex);
+#if defined(CHANNEL_DISP_CLIENT)
+            impl_->displayControl = nullptr;
+#endif
+            impl_->displayControlReady = false;
+            impl_->displayControlDisabled = false;
+            impl_->displayLayoutPending = false;
+            impl_->displayLayoutInFlight = false;
+            impl_->displayMaxNumMonitors = 0;
+            impl_->displayMaxAreaFactorA = 0;
+            impl_->displayMaxAreaFactorB = 0;
+            impl_->displayLastSendUs = 0;
+            impl_->displayInFlightSinceUs = 0;
+            impl_->displayRequestedWidth = 0;
+            impl_->displayRequestedHeight = 0;
+            impl_->displayEffectiveWidth = 0;
+            impl_->displayEffectiveHeight = 0;
+            impl_->displayScaleFactor = cfg.rdpDesktopScaleFactor;
+            impl_->displayRequestCount = 0;
+            impl_->displayFailureCount = 0;
+            impl_->displayLastResult = "not_negotiated";
+        }
     }
     {
         std::lock_guard<std::mutex> lock(impl_->configMutex);
@@ -5900,6 +6163,35 @@ void FreeRdpAdapter::connectThreadFunc(uint64_t expectedGeneration) {
     freerdp_settings_set_uint32(s, FreeRDP_DesktopHeight,
                                 static_cast<UINT32>(cfg.height > 0 ? cfg.height : 1080));
     freerdp_settings_set_bool(s, FreeRDP_DesktopResize, TRUE);
+    const UINT32 desktopScaleFactor = static_cast<UINT32>(
+        RdpDisplayLayoutPolicy::IsScaleFactorValid(cfg.rdpDesktopScaleFactor)
+            ? cfg.rdpDesktopScaleFactor : 100);
+    const UINT32 deviceScaleFactor = static_cast<UINT32>(
+        RdpDisplayLayoutPolicy::IsScaleFactorValid(cfg.rdpDeviceScaleFactor)
+            ? cfg.rdpDeviceScaleFactor : desktopScaleFactor);
+    freerdp_settings_set_uint32(s, FreeRDP_DesktopScaleFactor, desktopScaleFactor);
+    freerdp_settings_set_uint32(s, FreeRDP_DeviceScaleFactor, deviceScaleFactor);
+    if (cfg.rdpDesktopPhysicalWidthMm >= 10 && cfg.rdpDesktopPhysicalHeightMm >= 10) {
+        freerdp_settings_set_uint32(s, FreeRDP_DesktopPhysicalWidth,
+                                    static_cast<UINT32>(cfg.rdpDesktopPhysicalWidthMm));
+        freerdp_settings_set_uint32(s, FreeRDP_DesktopPhysicalHeight,
+                                    static_cast<UINT32>(cfg.rdpDesktopPhysicalHeightMm));
+    }
+    freerdp_settings_set_uint16(s, FreeRDP_DesktopOrientation,
+                                static_cast<UINT16>(
+                                    RdpDisplayLayoutPolicy::IsOrientationValid(cfg.rdpDesktopOrientation)
+                                        ? cfg.rdpDesktopOrientation : 0));
+    freerdp_settings_set_uint64(s, FreeRDP_MonitorOverrideFlags,
+        FREERDP_MONITOR_OVERRIDE_ORIENTATION |
+        FREERDP_MONITOR_OVERRIDE_DESKTOP_SCALE |
+        FREERDP_MONITOR_OVERRIDE_DEVICE_SCALE);
+#if defined(CHANNEL_DISP_CLIENT)
+    freerdp_settings_set_bool(s, FreeRDP_SupportDisplayControl, TRUE);
+    freerdp_settings_set_bool(s, FreeRDP_DynamicResolutionUpdate, TRUE);
+#else
+    freerdp_settings_set_bool(s, FreeRDP_SupportDisplayControl, FALSE);
+    freerdp_settings_set_bool(s, FreeRDP_DynamicResolutionUpdate, FALSE);
+#endif
     // FreeRDP only dispatches protocol pointer-position updates to
     // pointer.SetPosition when mouse grabbing is enabled.  The ArkTS cursor
     // overlay consumes the callback; it does not change the system pointer.
@@ -6505,6 +6797,19 @@ RdpRenderStats FreeRdpAdapter::getRdpRenderStats() {
     stats.gfxChannelConnected = graphics.gfxInitialized;
     stats.graphicsMode = impl_->graphicsMode;
     {
+        std::lock_guard<std::mutex> displayLock(impl_->displayControlMutex);
+        stats.displayControlReady = impl_->displayControlReady;
+        stats.displayControlDisabled = impl_->displayControlDisabled;
+        stats.displayRequestedWidth = impl_->displayRequestedWidth;
+        stats.displayRequestedHeight = impl_->displayRequestedHeight;
+        stats.displayEffectiveWidth = impl_->displayEffectiveWidth;
+        stats.displayEffectiveHeight = impl_->displayEffectiveHeight;
+        stats.displayScaleFactor = impl_->displayScaleFactor;
+        stats.displayRequestCount = impl_->displayRequestCount;
+        stats.displayFailureCount = impl_->displayFailureCount;
+        stats.displayLastResult = impl_->displayLastResult;
+    }
+    {
         std::lock_guard<std::mutex> inputLock(impl_->inputQueueMutex);
         stats.inputQueueDepth = static_cast<int>(impl_->inputQueue.depth());
         stats.inputQueueMax = static_cast<int>(impl_->inputQueue.maxDepth());
@@ -6513,6 +6818,55 @@ RdpRenderStats FreeRdpAdapter::getRdpRenderStats() {
         stats.inputNonDisposableOverflow = static_cast<int64_t>(impl_->inputQueue.nonDisposableOverflow());
     }
     return stats;
+}
+
+RdpDisplayLayoutResult FreeRdpAdapter::requestDisplayLayout(
+    const RdpDisplayLayoutRequest& request) {
+    const RdpDisplayLayoutResult validation = RdpDisplayLayoutPolicy::Validate(request);
+    if (!validation.accepted) {
+        return validation;
+    }
+    if (!impl_ || getState() != ConnectionState::CONNECTED) {
+        return {false, "not_connected", "RDP session is not connected"};
+    }
+#if defined(CHANNEL_DISP_CLIENT)
+    std::lock_guard<std::mutex> displayLock(impl_->displayControlMutex);
+    if (impl_->displayControlDisabled) {
+        return {false, "disabled", "Dynamic display layout is disabled for this session"};
+    }
+    if (!impl_->displayControlReady || !impl_->displayControl) {
+        return {false, "not_ready", "RDP display-control channel is not ready"};
+    }
+    if (impl_->displayMaxNumMonitors < 1 ||
+        !RdpDisplayLayoutPolicy::IsWithinServerAreaCaps(
+            request, impl_->displayMaxAreaFactorA, impl_->displayMaxAreaFactorB)) {
+        return {false, "server_caps_exceeded",
+                "RDP display layout exceeds the negotiated server caps"};
+    }
+    impl_->pendingDisplayLayout = request;
+    impl_->displayLayoutPending = true;
+    impl_->displayRequestedWidth = request.width;
+    impl_->displayRequestedHeight = request.height;
+    impl_->displayScaleFactor = request.desktopScaleFactor;
+    impl_->displayRequestCount++;
+    impl_->displayLastResult = "queued";
+    return validation;
+#else
+    return {false, "unsupported", "FreeRDP display-control support is not built"};
+#endif
+}
+
+bool FreeRdpAdapter::cancelDisplayLayout() {
+    if (!impl_) {
+        return false;
+    }
+    std::lock_guard<std::mutex> displayLock(impl_->displayControlMutex);
+    const bool cancelled = impl_->displayLayoutPending;
+    impl_->displayLayoutPending = false;
+    if (cancelled) {
+        impl_->displayLastResult = "cancelled";
+    }
+    return cancelled;
 }
 
 bool FreeRdpAdapter::setBackgroundVideoPrewarm(bool enabled, uint32_t intervalMs) {
@@ -7166,6 +7520,19 @@ RdpPreflightResult FreeRdpAdapter::probeRdpCertificateRoute(
 
 RdpRenderStats FreeRdpAdapter::getRdpRenderStats() {
     return RdpRenderStats();
+}
+
+RdpDisplayLayoutResult FreeRdpAdapter::requestDisplayLayout(
+    const RdpDisplayLayoutRequest& request) {
+    const RdpDisplayLayoutResult validation = RdpDisplayLayoutPolicy::Validate(request);
+    if (!validation.accepted) {
+        return validation;
+    }
+    return {false, "unsupported", "Dynamic RDP display layout requires real FreeRDP"};
+}
+
+bool FreeRdpAdapter::cancelDisplayLayout() {
+    return false;
 }
 
 bool FreeRdpAdapter::setBackgroundVideoPrewarm(bool enabled, uint32_t intervalMs) {

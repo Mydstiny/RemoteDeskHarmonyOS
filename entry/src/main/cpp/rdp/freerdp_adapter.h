@@ -22,6 +22,9 @@
 #include <freerdp/event.h>
 #include <freerdp/graphics.h>
 #include <freerdp/client/cliprdr.h>
+#if defined(CHANNEL_DISP_CLIENT)
+#include <freerdp/client/disp.h>
+#endif
 #include <freerdp/version.h>
 #endif
 
@@ -71,6 +74,8 @@ public:
                                            const std::string& serverName) override;
     RdpPreflightResult probeRdpCertificateRoute(const RdpPreflightRequest& request) override;
     RdpRenderStats  getRdpRenderStats() override;
+    RdpDisplayLayoutResult requestDisplayLayout(const RdpDisplayLayoutRequest& request);
+    bool            cancelDisplayLayout();
     bool            setBackgroundVideoPrewarm(bool enabled, uint32_t intervalMs);
     bool            presentCachedBackgroundFrame();
 
@@ -251,6 +256,11 @@ private:
     static void cbErrorInfo(void* context, const ErrorInfoEventArgs* e);
     static void cbChannelConnected(void* context, const ChannelConnectedEventArgs* e);
     static void cbChannelDisconnected(void* context, const ChannelDisconnectedEventArgs* e);
+#if defined(CHANNEL_DISP_CLIENT)
+    static UINT cbDisplayControlCaps(DispClientContext* context, UINT32 maxNumMonitors,
+                                     UINT32 maxMonitorAreaFactorA,
+                                     UINT32 maxMonitorAreaFactorB);
+#endif
     static UINT cbCliprdrMonitorReady(CliprdrClientContext* context, const CLIPRDR_MONITOR_READY* ready);
     static UINT cbCliprdrServerCapabilities(CliprdrClientContext* context,
                                            const CLIPRDR_CAPABILITIES* capabilities);

@@ -26,6 +26,8 @@ export default function cloudSyncSettingsPolicyTest() {
       expect(localNames.indexOf('rustdeskControlMode') >= 0).assertTrue();
       expect(localNames.indexOf('rustdeskImageQuality') >= 0).assertTrue();
       expect(localNames.indexOf('rdpControlMode') >= 0).assertTrue();
+      expect(localNames.indexOf('rdpDesktopResolutionId') >= 0).assertTrue();
+      expect(localNames.indexOf('rdpRemoteUiScale') >= 0).assertTrue();
       expect(localNames.indexOf('rdpColorDepth') >= 0).assertTrue();
       expect(localNames.indexOf('remoteWheelPreferenceVersion') >= 0).assertTrue();
       expect(localNames.indexOf('rdpReverseWheel') >= 0).assertTrue();
@@ -45,6 +47,7 @@ export default function cloudSyncSettingsPolicyTest() {
       expect(localNames.indexOf('secretPresentationPolicyV1') >= 0).assertTrue();
       expect(cloudUserSettingIsDeviceLocal('rustdeskControlMode')).assertTrue();
       expect(cloudUserSettingIsDeviceLocal('rdpControlMode')).assertTrue();
+      expect(cloudUserSettingIsDeviceLocal('rdpRemoteUiScale')).assertTrue();
       expect(cloudUserSettingIsDeviceLocal('accentColor')).assertFalse();
       expect(cloudUserSettingIsSyncable('rustdeskControlMode')).assertFalse();
       expect(cloudUserSettingIsSyncable('rdpControlMode')).assertFalse();

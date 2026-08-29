@@ -3251,12 +3251,105 @@ napi_value NapiGetRdpRenderStats(napi_env env, napi_callback_info info) {
     SetObjectInt64(env, result, "desktopResizeFailures",
                    static_cast<int64_t>(stats.desktopResizeFailures));
     SetObjectBool(env, result, "gfxChannelConnected", stats.gfxChannelConnected);
+    SetObjectBool(env, result, "displayControlReady", stats.displayControlReady);
+    SetObjectBool(env, result, "displayControlDisabled", stats.displayControlDisabled);
+    SetObjectInt32(env, result, "displayRequestedWidth", stats.displayRequestedWidth);
+    SetObjectInt32(env, result, "displayRequestedHeight", stats.displayRequestedHeight);
+    SetObjectInt32(env, result, "displayEffectiveWidth", stats.displayEffectiveWidth);
+    SetObjectInt32(env, result, "displayEffectiveHeight", stats.displayEffectiveHeight);
+    SetObjectInt32(env, result, "displayScaleFactor", stats.displayScaleFactor);
+    SetObjectInt64(env, result, "displayRequestCount",
+                   static_cast<int64_t>(stats.displayRequestCount));
+    SetObjectInt64(env, result, "displayFailureCount",
+                   static_cast<int64_t>(stats.displayFailureCount));
+    SetObjectString(env, result, "displayLastResult", stats.displayLastResult);
     SetObjectInt32(env, result, "inputQueueDepth", stats.inputQueueDepth);
     SetObjectInt32(env, result, "inputQueueMax", stats.inputQueueMax);
     SetObjectInt64(env, result, "inputTextUnits", stats.inputTextUnits);
     SetObjectInt64(env, result, "inputDroppedMouseMoves", stats.inputDroppedMouseMoves);
     SetObjectInt64(env, result, "inputNonDisposableOverflow", stats.inputNonDisposableOverflow);
     SetObjectString(env, result, "graphicsMode", stats.graphicsMode);
+    return result;
+}
+
+/** NAPI: requestRdpDisplayLayout(sessionId, request): RdpDisplayLayoutResult */
+napi_value NapiRequestRdpDisplayLayout(napi_env env, napi_callback_info info) {
+    size_t argc = 2;
+    napi_value args[2];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    int32_t sessionId = 0;
+    if (argc > 0) {
+        napi_get_value_int32(env, args[0], &sessionId);
+    }
+    RdpDisplayLayoutRequest request;
+    if (argc > 1) {
+        const auto getInt = [&](const char* key, int& out) {
+            napi_value value;
+            if (napi_get_named_property(env, args[1], key, &value) == napi_ok) {
+                napi_get_value_int32(env, value, &out);
+            }
+        };
+        getInt("width", request.width);
+        getInt("height", request.height);
+        getInt("physicalWidthMm", request.physicalWidthMm);
+        getInt("physicalHeightMm", request.physicalHeightMm);
+        getInt("orientation", request.orientation);
+        getInt("desktopScaleFactor", request.desktopScaleFactor);
+        getInt("deviceScaleFactor", request.deviceScaleFactor);
+    }
+
+    RdpDisplayLayoutResult layoutResult {
+        false, "not_found", "RDP session was not found"
+    };
+    const auto lookup = g_sessionRegistry.find(sessionId);
+    const std::shared_ptr<SessionContext> session =
+        lookup == g_sessionRegistry.end() ? nullptr : lookup->second;
+    if (session && session->protocolName == "rdp") {
+        std::shared_ptr<ProtocolAdapter> protocolAdapter;
+        if (session->lifecycle.load(std::memory_order_acquire) ==
+            SessionContext::Lifecycle::Active) {
+            std::lock_guard<std::mutex> adapterLock(session->adapterMutex);
+            protocolAdapter = session->adapter;
+        }
+        auto adapter = std::dynamic_pointer_cast<FreeRdpAdapter>(protocolAdapter);
+        layoutResult = adapter
+            ? adapter->requestDisplayLayout(request)
+            : RdpDisplayLayoutResult {false, "not_active", "RDP session is not active"};
+    }
+    napi_value result;
+    napi_create_object(env, &result);
+    SetObjectBool(env, result, "accepted", layoutResult.accepted);
+    SetObjectString(env, result, "code", layoutResult.code);
+    SetObjectString(env, result, "message", layoutResult.message);
+    return result;
+}
+
+/** NAPI: cancelRdpDisplayLayout(sessionId): boolean */
+napi_value NapiCancelRdpDisplayLayout(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    int32_t sessionId = 0;
+    if (argc > 0) {
+        napi_get_value_int32(env, args[0], &sessionId);
+    }
+    bool cancelled = false;
+    const auto lookup = g_sessionRegistry.find(sessionId);
+    const std::shared_ptr<SessionContext> session =
+        lookup == g_sessionRegistry.end() ? nullptr : lookup->second;
+    if (session && session->protocolName == "rdp" &&
+        session->lifecycle.load(std::memory_order_acquire) ==
+            SessionContext::Lifecycle::Active) {
+        std::shared_ptr<ProtocolAdapter> protocolAdapter;
+        {
+            std::lock_guard<std::mutex> adapterLock(session->adapterMutex);
+            protocolAdapter = session->adapter;
+        }
+        auto adapter = std::dynamic_pointer_cast<FreeRdpAdapter>(protocolAdapter);
+        cancelled = adapter && adapter->cancelDisplayLayout();
+    }
+    napi_value result;
+    napi_get_boolean(env, cancelled, &result);
     return result;
 }
 
@@ -3858,6 +3951,29 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
         napi_get_value_bool(env, multiMonVal, &cfg.multiMonitor);
     }
     getInt("colorDepth", cfg.colorDepth);
+    getInt("rdpDesktopScaleFactor", cfg.rdpDesktopScaleFactor);
+    getInt("rdpDeviceScaleFactor", cfg.rdpDeviceScaleFactor);
+    getInt("rdpDesktopPhysicalWidthMm", cfg.rdpDesktopPhysicalWidthMm);
+    getInt("rdpDesktopPhysicalHeightMm", cfg.rdpDesktopPhysicalHeightMm);
+    getInt("rdpDesktopOrientation", cfg.rdpDesktopOrientation);
+    if (cfg.rdpDesktopScaleFactor != 100 && cfg.rdpDesktopScaleFactor != 140 &&
+        cfg.rdpDesktopScaleFactor != 180) {
+        cfg.rdpDesktopScaleFactor = 100;
+    }
+    if (cfg.rdpDeviceScaleFactor != 100 && cfg.rdpDeviceScaleFactor != 140 &&
+        cfg.rdpDeviceScaleFactor != 180) {
+        cfg.rdpDeviceScaleFactor = cfg.rdpDesktopScaleFactor;
+    }
+    if (cfg.rdpDesktopPhysicalWidthMm < 10 || cfg.rdpDesktopPhysicalWidthMm > 10000) {
+        cfg.rdpDesktopPhysicalWidthMm = 0;
+    }
+    if (cfg.rdpDesktopPhysicalHeightMm < 10 || cfg.rdpDesktopPhysicalHeightMm > 10000) {
+        cfg.rdpDesktopPhysicalHeightMm = 0;
+    }
+    if (cfg.rdpDesktopOrientation != 0 && cfg.rdpDesktopOrientation != 90 &&
+        cfg.rdpDesktopOrientation != 180 && cfg.rdpDesktopOrientation != 270) {
+        cfg.rdpDesktopOrientation = 0;
+    }
     getInt("rdpAuthIdentityMode", cfg.rdpAuthIdentityMode);
     std::string rdpAuthModeName;
     std::string rdpRestrictedAdminSecretSourceName;
@@ -10534,6 +10650,12 @@ napi_value ExtensionLoaderNapi::Init(napi_env env, napi_value exports) {
     napi_create_function(env, "getRdpRenderStats", NAPI_AUTO_LENGTH,
                          NapiGetRdpRenderStats, nullptr, &fn);
     napi_set_named_property(env, exports, "getRdpRenderStats", fn);
+    napi_create_function(env, "requestRdpDisplayLayout", NAPI_AUTO_LENGTH,
+                         NapiRequestRdpDisplayLayout, nullptr, &fn);
+    napi_set_named_property(env, exports, "requestRdpDisplayLayout", fn);
+    napi_create_function(env, "cancelRdpDisplayLayout", NAPI_AUTO_LENGTH,
+                         NapiCancelRdpDisplayLayout, nullptr, &fn);
+    napi_set_named_property(env, exports, "cancelRdpDisplayLayout", fn);
     napi_create_function(env, "getSessionDiagnostics", NAPI_AUTO_LENGTH,
                          NapiGetSessionDiagnostics, nullptr, &fn);
     napi_set_named_property(env, exports, "getSessionDiagnostics", fn);

@@ -37,6 +37,7 @@ export struct RdpControlCenter {
   @Prop canvasResetAvailable: boolean = false;
   @Prop reverseWheel: boolean = false;
   @Prop resolutionId: string = 'auto';
+  @Prop remoteUiScale: string = 'auto';
   @Prop colorDepth: number = 32;
   @Prop audioEnabled: boolean = true;
   @Prop driveEnabled: boolean = true;
@@ -57,6 +58,7 @@ export struct RdpControlCenter {
   onResetCanvas: () => void = (): void => {};
   onReverseWheel: (enabled: boolean) => void = (_enabled: boolean): void => {};
   onResolution: (id: string) => void = (_id: string): void => {};
+  onRemoteUiScale: (value: string) => void = (_value: string): void => {};
   onColorDepth: (depth: number) => void = (_depth: number): void => {};
   onAudio: (enabled: boolean) => void = (_enabled: boolean): void => {};
   onDrive: (enabled: boolean) => void = (_enabled: boolean): void => {};
@@ -179,6 +181,10 @@ export struct RdpControlCenter {
         this.metric('上传 / 绘制 / Swap', durationUs(this.stats.uploadP95Us) + ' / ' +
           durationUs(this.stats.drawP95Us) + ' / ' + durationUs(this.stats.swapP95Us))
         this.metric('桌面尺寸', this.stats.desktopWidth.toString() + ' × ' + this.stats.desktopHeight.toString())
+        this.metric('动态布局', this.stats.displayControlDisabled ? '本次已降级' :
+          (this.stats.displayControlReady ? '可用 · ' + this.stats.displayLastResult : '未协商'),
+          this.stats.displayControlDisabled ? this.pal().danger : '')
+        this.metric('远端 UI 比例', this.stats.displayScaleFactor.toString() + '%')
         this.metric('送显 / 替换 / 拒绝', this.stats.pumpRendered.toString() + ' / ' +
           this.stats.pumpReplaced.toString() + ' / ' + this.stats.pumpRejected.toString())
         this.metric('输入队列 / 峰值', this.stats.inputQueueDepth.toString() + ' / ' +
@@ -243,6 +249,19 @@ export struct RdpControlCenter {
           }
         }.width('100%').height(38).scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off)
         Text('当前选择：' + rdpResolutionLabel(this.resolutionId)).fontSize(9)
+          .fontColor(this.pal().text3).width('100%').margin({ top: 5, bottom: 10 })
+        Divider().color(this.pal().divider)
+        Text('远端界面大小').fontSize(11).fontColor(this.pal().text2)
+          .width('100%').margin({ top: 10, bottom: 6 })
+        Scroll() {
+          Row({ space: 6 }) {
+            this.choice('自动', this.remoteUiScale === 'auto', (): void => { this.onRemoteUiScale('auto'); })
+            this.choice('标准', this.remoteUiScale === '100', (): void => { this.onRemoteUiScale('100'); })
+            this.choice('大', this.remoteUiScale === '140', (): void => { this.onRemoteUiScale('140'); })
+            this.choice('特大', this.remoteUiScale === '180', (): void => { this.onRemoteUiScale('180'); })
+          }
+        }.width('100%').height(38).scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off)
+        Text('调整 Windows 字体与控件；与本地画面缩放相互独立').fontSize(9)
           .fontColor(this.pal().text3).width('100%').margin({ top: 5, bottom: 10 })
         Divider().color(this.pal().divider)
         Text('色彩深度').fontSize(11).fontColor(this.pal().text2).width('100%').margin({ top: 10, bottom: 6 })
@@ -314,7 +333,8 @@ export struct RdpControlCenter {
           this.sectionTitle('RDP 通道', this.clipboardEnabled && !this.clipboardReady ?
             '重连后生效' : '立即生效')
           this.channelCard()
-          this.sectionTitle('下次连接', '重连后生效')
+          this.sectionTitle('远端会话参数',
+            this.stats.displayControlReady && this.resolutionId === 'auto' ? '窗口变化可实时生效' : '重连后生效')
           this.reconnectCard()
           this.sectionTitle('连接操作')
           Column() {

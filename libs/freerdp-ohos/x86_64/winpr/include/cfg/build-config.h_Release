@@ -5,8 +5,8 @@
 #define WINPR_KEYMAP_PATH ""
 #define WINPR_PLUGIN_PATH ""
 
-#define WINPR_INSTALL_PREFIX "C:/Users/14288/DevEcoStudioProjects/RemoteDesktop/build/freerdp-ohos/install-x86_64"
-#define WINPR_INSTALL_SYSCONFDIR "C:/Users/14288/DevEcoStudioProjects/RemoteDesktop/build/freerdp-ohos/install-x86_64/etc"
+#define WINPR_INSTALL_PREFIX "/opt/freerdp-ohos/x86_64"
+#define WINPR_INSTALL_SYSCONFDIR "/etc/opt/freerdp-ohos/x86_64"
 
 #define WINPR_LIBRARY_PATH ""
 

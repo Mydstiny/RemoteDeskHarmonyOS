@@ -38,6 +38,7 @@ OHOS_NATIVE="$(ohos_native_root "$OHOS_SDK")"
 OHOS_TOOLCHAIN="$OHOS_NATIVE/build/cmake/ohos.toolchain.cmake"
 OHOS_LLVM="$OHOS_NATIVE/llvm"
 OHOS_AR="$(find_ohos_tool "$OHOS_LLVM/bin" llvm-ar || true)"
+OHOS_NM="$(find_ohos_tool "$OHOS_LLVM/bin" llvm-nm || true)"
 
 if [ ! -f "$OHOS_TOOLCHAIN" ]; then
     echo "ERROR: OHOS toolchain not found at $OHOS_TOOLCHAIN"
@@ -49,6 +50,10 @@ if [ -z "$OHOS_AR" ]; then
     echo "ERROR: llvm-ar not found at $OHOS_AR"
     exit 1
 fi
+if [ -z "$OHOS_NM" ]; then
+    echo "ERROR: llvm-nm not found under $OHOS_LLVM/bin"
+    exit 1
+fi
 
 # 预编译 OpenSSL (与主工程 CMakeLists.txt 使用同一套)
 OPENSSL_DIR="$PROJECT_DIR/libs/openssl/install"
@@ -57,7 +62,9 @@ OPENSSL_DIR="$PROJECT_DIR/libs/openssl/install"
 build_arch() {
     local ARCH="$1"          # arm64-v8a or x86_64
     local BUILD="$BUILD_DIR/$ARCH"
-    local INSTALL="$BUILD_DIR/install-$ARCH"
+    # Keep generated build-config headers and compiled string constants independent
+    # from the developer machine's checkout path.
+    local INSTALL="/opt/freerdp-ohos/$ARCH"
 
     echo "========================================"
     echo " Building FreeRDP for OHOS $ARCH"
@@ -127,10 +134,12 @@ build_arch() {
         -DCHANNEL_AUDIN=OFF \
         -DCHANNEL_CLIPRDR=ON \
         -DCHANNEL_CLIPRDR_CLIENT=ON \
-        -DCHANNEL_DISP=OFF \
+        -DCHANNEL_DISP=ON \
+        -DCHANNEL_DISP_CLIENT=ON \
         -DCHANNEL_DRDYNVC=ON \
         -DCHANNEL_DRDYNVC_CLIENT=ON \
-        -DCHANNEL_DRIVE=OFF \
+        -DCHANNEL_DRIVE=ON \
+        -DCHANNEL_DRIVE_CLIENT=ON \
         -DCHANNEL_ECHO=OFF \
         -DCHANNEL_ENCOMSP=OFF \
         -DCHANNEL_GEOMETRY=OFF \
@@ -211,7 +220,11 @@ build_arch() {
     # 修复 Windows CMake 在 build-config.h 中生成的 backslash 路径
     # (Clang 将 \U \D \R 等解释为 C 转义序列 → 编译错误)
     if [ -f "$BUILD/include/freerdp/build-config.h" ]; then
-        sed -i 's|\\|/|g' "$BUILD/include/freerdp/build-config.h"
+        if [ "$(uname -s)" = "Darwin" ]; then
+            sed -i '' 's|\\|/|g' "$BUILD/include/freerdp/build-config.h"
+        else
+            sed -i 's|\\|/|g' "$BUILD/include/freerdp/build-config.h"
+        fi
         echo "Fixed backslash paths in build-config.h"
     fi
 
@@ -224,9 +237,11 @@ build_arch() {
         rdpsnd-common \
         rdpsnd-client-fake \
         rdpdr-client \
+        drive-client \
         cliprdr-client \
         rdpei-client \
         ainput-client \
+        disp-client \
         rdpgfx-client \
         -- -j"$(jobs_count)"
 
@@ -238,8 +253,8 @@ build_arch() {
     find "$BUILD" -name "libwinpr3.a" -exec cp -v {} "$BUILD_DIR/libs/$ARCH/" \;
 
     # FreeRDP 的客户端 common 与静态通道不会被合入 libfreerdp3.a。
-    # 这里把 freerdp_client_load_addins 所需对象和 rdpsnd/rdpdr/cliprdr/drdynvc/rdpei/ainput
-    # 通道入口打成单独静态库，主工程链接后才能真正加载音频/剪贴板/设备通道。
+    # 这里把 freerdp_client_load_addins 所需对象和 rdpsnd/rdpdr/drive/cliprdr/drdynvc/rdpei/ainput/disp
+    # 通道入口打成单独静态库，主工程链接后才能真正加载音频/剪贴板/设备/动态显示通道。
     local CHANNEL_LIB="$BUILD_DIR/libs/$ARCH/libfreerdp-client-channels.a"
     local CHANNEL_OBJECTS=()
     local OBJECT_DIRS=(
@@ -249,9 +264,11 @@ build_arch() {
         "$BUILD/channels/rdpsnd/common/CMakeFiles/rdpsnd-common.dir"
         "$BUILD/channels/rdpsnd/client/fake/CMakeFiles/rdpsnd-client-fake.dir"
         "$BUILD/channels/rdpdr/client/CMakeFiles/rdpdr-client.dir"
+        "$BUILD/channels/drive/client/CMakeFiles/drive-client.dir"
         "$BUILD/channels/cliprdr/client/CMakeFiles/cliprdr-client.dir"
         "$BUILD/channels/rdpei/client/CMakeFiles/rdpei-client.dir"
         "$BUILD/channels/ainput/client/CMakeFiles/ainput-client.dir"
+        "$BUILD/channels/disp/client/CMakeFiles/disp-client.dir"
         "$BUILD/channels/rdpgfx/client/CMakeFiles/rdpgfx-client.dir"
     )
     for dir in "${OBJECT_DIRS[@]}"; do
@@ -267,6 +284,12 @@ build_arch() {
     fi
     rm -f "$CHANNEL_LIB"
     "$OHOS_AR" rcs "$CHANNEL_LIB" "${CHANNEL_OBJECTS[@]}"
+    for required_symbol in drive_DeviceServiceEntry disp_DVCPluginEntry rdpdr_VirtualChannelEntryEx; do
+        if ! "$OHOS_NM" "$CHANNEL_LIB" | grep " $required_symbol$" >/dev/null; then
+            echo "ERROR: $CHANNEL_LIB is missing required symbol $required_symbol"
+            exit 1
+        fi
+    done
 
     # 同步到 libs/ 下作为 IDE 可复用预编译依赖，避免 DevEco clean 删除 build/ 后丢库。
     local PREBUILT="$PREBUILT_DIR/$ARCH"
@@ -277,6 +300,13 @@ build_arch() {
     cp -v "$BUILD_DIR/libs/$ARCH/libfreerdp-client-channels.a" "$PREBUILT/"
     cp -R "$BUILD/include" "$PREBUILT/"
     cp -R "$BUILD/winpr/include" "$PREBUILT/winpr/"
+    # CMake install/test metadata is host-specific and not consumed by the app.
+    # Some synced workspaces can also surface conflict copies with a " 2" suffix.
+    find "$PREBUILT" -type f \( \
+        -name "cmake_install*.cmake" -o \
+        -name "CTestTestfile*.cmake" -o \
+        -name "* 2.*" \
+    \) -delete
 
     # 验证产物
     if [ -f "$BUILD_DIR/libs/$ARCH/libfreerdp3.a" ] &&
