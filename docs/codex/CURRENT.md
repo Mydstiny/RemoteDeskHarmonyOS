@@ -2,11 +2,20 @@
 
 ## Active task
 
-- Task: `release-1-1-4-notes-and-version`
-- Branch: `codex/system-clipboard-activation-fix`; user authorized work on the current branch.
-- Increment: `c49f165f4..20811b14a` (tutorial release-log refresh follow-up).
-- Phase: implemented, locally verified and independently reviewed; update-popup device acceptance is pending.
-- Plan: `docs/codex/plans/2026-08-28-release-1-1-4-notes-and-version.md`
+- Task: `per-protocol-pinch-zoom-plan`
+- Branch: `codex/per-protocol-pinch-zoom-plan` from `main@b84224869`.
+- Increment: research and an implementation plan only; no functional code has been changed.
+- Phase: official RustDesk study, local five-protocol code inventory and the executable plan are complete; no implementation has started.
+- Plan: `docs/codex/plans/2026-08-29-per-protocol-pinch-zoom-and-pointer-follow.md`
+
+## Per-protocol pinch zoom plan
+
+- RustDesk official mobile behavior was traced at `master@03a7fc599`: focal-point relative pinch and pan share one ScaleGesture; touchpad cursor movement pans hidden canvas after crossing the visible centre; physical/floating pointer paths add bounded canvas follow and edge scrolling.
+- The local project already has a shared RDP/RustDesk/VNC `CanvasTransform`, renderer viewport mapping and retained-frame redraw. SSH already pinches terminal font size; Moonlight uses the same GL renderer but has no local canvas transform and currently reserves two-finger movement for scroll.
+- The plan introduces device-local RDP/RustDesk/SSH/VNC/Moonlight switches under one `显示与交互` selection sheet, compatible migration from the old shared key, and an explicit RustDesk local-canvas/remote-App-TouchScale mutex.
+- The runtime design replaces the 400 ms post-zoom canvas-pan wait with single-stream pinch plus focal pan, while preserving Fit-state two-finger scroll and static two-finger right-click. A separate safe-zone/edge-zone policy makes relative and absolute pointers reveal hidden canvas without tight cursor adhesion.
+- Planning-document verification: `default@OhosTestCompileArkTS` PASS (`BUILD SUCCESSFUL in 6 s 319 ms`); signed `assembleHap` PASS (`BUILD SUCCESSFUL in 14 s 869 ms`), SHA-256 `9d4316b8ff804d0bebed3cdb8d534f53957ec6195c44f0d04db97447665778ae`; `git diff --check`, compact-state validation and Light compliance PASS.
+- Next: implement the plan in stages, beginning with the preference policy/migration and settings sheet; no implementation is authorized or claimed in this planning task.
 
 ## 1.1.4 release result
 
