@@ -57,9 +57,12 @@ import {
 import { RustDeskAuthDraftStore } from './RustDeskAuthDraftStore';
 import {
   EndpointAddressResult,
+  EndpointServerIdentityResult,
   endpointTransportHost,
-  parseEndpointFields
+  parseEndpointFields,
+  parseEndpointServerIdentity
 } from './EndpointAddressPolicy';
+import { normalizeRdpClientHostname } from './RdpConnectionIdentityPolicy';
 
 export class HostSyncService {
   private static instance: HostSyncService;
@@ -106,6 +109,9 @@ export class HostSyncService {
     const canonicalPort: number = endpoint.endpoint.port;
     let canonicalGatewayHost: string = host.gatewayHost;
     let canonicalGatewayPort: number = host.gatewayPort;
+    let canonicalTargetServerName: string = host.customHostname;
+    let canonicalGatewayServerName: string = host.rdpGatewayServerName;
+    let canonicalClientHostname: string = host.rdpClientHostname;
     if (host.protocol === 'rdp' && host.gatewayHost !== '') {
       const gateway: EndpointAddressResult = parseEndpointFields(host.gatewayHost, host.gatewayPort);
       if (!gateway.ok || gateway.endpoint.scope !== '') {
@@ -116,6 +122,23 @@ export class HostSyncService {
       }
       canonicalGatewayHost = endpointTransportHost(gateway.endpoint);
       canonicalGatewayPort = gateway.endpoint.port;
+    }
+    if (host.protocol === 'rdp') {
+      const targetIdentity: EndpointServerIdentityResult =
+        parseEndpointServerIdentity(host.customHostname);
+      const gatewayIdentity: EndpointServerIdentityResult =
+        parseEndpointServerIdentity(host.rdpGatewayServerName);
+      const clientHostname: string | null =
+        normalizeRdpClientHostname(host.rdpClientHostname);
+      if (!targetIdentity.ok || !gatewayIdentity.ok || clientHostname === null) {
+        hilog.warn(0x0001, 'CloudSync',
+          'HostSyncService: 已拒绝无效的 RDP 目标或客户端身份 hostId=' +
+          rustDeskRelayIdFingerprint(host.id));
+        return false;
+      }
+      canonicalTargetServerName = targetIdentity.identity.canonicalName;
+      canonicalGatewayServerName = gatewayIdentity.identity.canonicalName;
+      canonicalClientHostname = clientHostname;
     }
     // Commit canonical values only after every endpoint in the record passed;
     // callers must not observe a partially rewritten host when validation fails.
@@ -128,6 +151,11 @@ export class HostSyncService {
     if (host.protocol === 'rdp' && host.gatewayHost !== '') {
       host.gatewayHost = canonicalGatewayHost;
       host.gatewayPort = canonicalGatewayPort;
+    }
+    if (host.protocol === 'rdp') {
+      host.customHostname = canonicalTargetServerName;
+      host.rdpGatewayServerName = canonicalGatewayServerName;
+      host.rdpClientHostname = canonicalClientHostname;
     }
     return true;
   }

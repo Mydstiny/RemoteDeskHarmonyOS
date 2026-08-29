@@ -85,7 +85,9 @@ struct ConnectionConfig {
     int         width;           // 桌面宽度
     int         height;          // 桌面高度
     CodecType   codec;           // 首选视频编码
-    std::string customHostname;  // 🆕 自定义主机名 (RDP /client-hostname:)
+    std::string customHostname;  // Legacy: RustDesk peer ID; RDP targetServerName fallback
+    std::string targetServerName; // RDP TLS/NLA identity, independent from transport host
+    std::string clientHostname;  // RDP /client-hostname:, never a server identity
     std::string gatewayHost;     // 🆕 RDP 网关地址
     int         gatewayPort;     // 🆕 RDP 网关端口 (默认 443)
     // RDP route is explicit. An empty endpoint mode is a legacy handoff and

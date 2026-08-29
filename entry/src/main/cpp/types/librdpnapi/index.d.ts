@@ -1060,6 +1060,10 @@ export interface SessionConfig {
   multiMonitor: boolean;
   monitorCount: number;
   colorDepth: number;
+  /** RDP TLS/NLA identity; legacy customHostname remains a migration fallback. */
+  targetServerName?: string;
+  /** RDP /client-hostname:, never used as a transport or certificate identity. */
+  clientHostname?: string;
   rdpDesktopScaleFactor?: number;
   rdpDeviceScaleFactor?: number;
   rdpDesktopPhysicalWidthMm?: number;

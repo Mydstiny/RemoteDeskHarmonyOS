@@ -71,6 +71,7 @@ describe('CloudTableAdapter', (): void => {
       rdpendpointmode: 'microsoft_rd_gateway',
       rdpgatewaytransport: 'no-websockets',
       rdpgatewayservername: 'gateway.example.test',
+      rdpclienthostname: 'HARMONY-CLIENT',
       lanaddressmode: 'static',
       landiscoveryidentity: 'peer-stable-id',
       lanlastresolvedat: '1234',
@@ -100,6 +101,7 @@ describe('CloudTableAdapter', (): void => {
     expect(decoded.extension['rdpendpointmode']).assertEqual('microsoft_rd_gateway');
     expect(decoded.extension['rdpgatewaytransport']).assertEqual('no-websockets');
     expect(decoded.extension['rdpgatewayservername']).assertEqual('gateway.example.test');
+    expect(decoded.extension['rdpclienthostname']).assertEqual('HARMONY-CLIENT');
     expect(decoded.extension['rdprestrictedadminhash']).assertUndefined();
     expect(decoded.extension['password']).assertUndefined();
     expect(decoded.extension['sshkeypassphrase']).assertUndefined();
@@ -115,6 +117,7 @@ describe('CloudTableAdapter', (): void => {
     expect(columns.indexOf('rdpendpointmode')).assertEqual(-1);
     expect(columns.indexOf('rdpgatewaytransport')).assertEqual(-1);
     expect(columns.indexOf('rdpgatewayservername')).assertEqual(-1);
+    expect(columns.indexOf('rdpclienthostname')).assertEqual(-1);
   });
 
   it('extracts_legacy_device_trust_only_for_local_migration', (): void => {

@@ -51,14 +51,25 @@ export default function hostSyncServiceTest() {
       host.username = 'EXAMPLE\\Alice';
       host.rdpAuthMode = 'restricted_admin';
       host.rdpRestrictedAdminSecretSource = 'ntlm_hash';
+      host.customHostname = 'SERVER.Example.Test.';
+      host.rdpClientHostname = 'HARMONY-CLIENT';
 
       expect(srv.prepareHostNetworkEndpoints(host)).assertTrue();
       expect(host.host).assertEqual('2001:db8::1');
       expect(host.port).assertEqual(3389);
+      expect(host.customHostname).assertEqual('server.example.test');
+      expect(host.rdpClientHostname).assertEqual('HARMONY-CLIENT');
       const savedBinding: string = rdpRestrictedAdminSecretBindingForHost(host, 1);
       const reloaded: RemoteHost = RemoteHost.fromJSON(host.toJSON() as Record<string, Object>);
       expect(rdpRestrictedAdminSecretBindingForHost(reloaded, 1)).assertEqual(savedBinding);
       expect(savedBinding.startsWith('rdp-binding-v3|')).assertTrue();
+    });
+
+    it('prepare_endpoints_should_reject_client_hostname_as_an_endpoint', 0, () => {
+      const host = makeHost('IdentitySplit', 'rdp', '2001:db8::1', 3389);
+      host.customHostname = 'server.example.test';
+      host.rdpClientHostname = '2001:db8::2';
+      expect(srv.prepareHostNetworkEndpoints(host)).assertFalse();
     });
 
     it('count_should_be_1_after_add', 0, () => {

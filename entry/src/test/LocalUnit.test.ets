@@ -14,6 +14,7 @@ import {
 } from '../main/ets/model/RemoteHost';
 import { UserAccount } from '../main/ets/model/UserAccount';
 import { RdpCredential } from '../main/ets/model/RdpCredential';
+import { normalizeRdpClientHostname } from '../main/ets/services/RdpConnectionIdentityPolicy';
 
 export default function localUnitTest() {
   describe('RemoteHost_Data_Model', () => {
@@ -24,6 +25,8 @@ export default function localUnitTest() {
       host.host = '192.168.1.100';
       host.port = 3389;
       host.username = 'admin';
+      host.customHostname = 'server.example.test';
+      host.rdpClientHostname = 'HARMONY-CLIENT';
 
       expect(host.isValid()).assertTrue();
     });
@@ -69,8 +72,20 @@ export default function localUnitTest() {
       expect(restored.host).assertEqual(host.host);
       expect(restored.port).assertEqual(host.port);
       expect(restored.username).assertEqual(host.username);
+      expect(restored.customHostname).assertEqual(host.customHostname);
+      expect(restored.rdpClientHostname).assertEqual(host.rdpClientHostname);
       expect(restored.locked).assertEqual(host.locked);
       expect(restored.lockType).assertEqual(host.lockType);
+    });
+
+    it('keeps_rdp_client_hostname_separate_from_server_identity', 0, () => {
+      expect(normalizeRdpClientHostname('')).assertEqual('');
+      expect(normalizeRdpClientHostname('HARMONY-CLIENT')).assertEqual('HARMONY-CLIENT');
+      expect(normalizeRdpClientHostname('client.example.test')).assertEqual('client.example.test');
+      expect(normalizeRdpClientHostname('2001:db8::10')).assertNull();
+      expect(normalizeRdpClientHostname('client name')).assertNull();
+      expect(normalizeRdpClientHostname('-client')).assertNull();
+      expect(normalizeRdpClientHostname('client.example.')).assertNull();
     });
 
     it('runtime_clone_should_keep_secret_presence_out_of_serialized_json', 0, () => {

@@ -16,6 +16,7 @@
 #include "rdp_audio_policy.h"
 #include "rdp_auth_identity_policy.h"
 #include "rdp_auth_mode_policy.h"
+#include "rdp_connection_identity_policy.h"
 #include "rdp_background_frame_cache.h"
 #include "rdp_certificate_validation.h"
 #include "rdp_certificate_policy.h"
@@ -105,10 +106,24 @@ bool resolveRdpEndpointRoute(const ConnectionConfig& cfg,
         return false;
     }
 
+    if (!cfg.targetServerName.empty() && !cfg.customHostname.empty() &&
+        cfg.targetServerName != cfg.customHostname) {
+        errorCode = "E-RDP-IDENTITY";
+        errorMessage = "RDP target server identity is ambiguous";
+        return false;
+    }
+    if (!RdpConnectionIdentityPolicy::clientHostnameIsValid(cfg.clientHostname)) {
+        errorCode = "E-RDP-CLIENT-HOSTNAME";
+        errorMessage = "RDP client hostname is invalid";
+        return false;
+    }
+
     route.endpointMode = mode;
     route.targetHost = cfg.host;
     route.targetPort = cfg.port > 0 ? cfg.port : kDefaultRdpPort;
-    route.targetServerName = cfg.customHostname.empty() ? cfg.host : cfg.customHostname;
+    const std::string configuredTargetName = cfg.targetServerName.empty()
+        ? cfg.customHostname : cfg.targetServerName;
+    route.targetServerName = configuredTargetName.empty() ? cfg.host : configuredTargetName;
     route.gatewayHost = cfg.gatewayHost;
     route.gatewayPort = cfg.gatewayPort > 0 ? cfg.gatewayPort : 443;
     route.gatewayServerName = cfg.rdpGatewayServerName.empty()
@@ -3326,8 +3341,8 @@ DWORD FreeRdpAdapter::evaluateCertificate(const char* host, UINT16 port,
         verificationName = gatewayCertificate
             ? (impl_->config.rdpGatewayServerName.empty()
                 ? impl_->config.gatewayHost : impl_->config.rdpGatewayServerName)
-            : (impl_->config.customHostname.empty()
-                ? impl_->config.host : impl_->config.customHostname);
+            : (impl_->config.targetServerName.empty()
+                ? impl_->config.host : impl_->config.targetServerName);
         endpointMode = impl_->config.rdpEndpointMode;
     }
     constexpr DWORD kKnownFlags = VERIFY_CERT_FLAG_LEGACY |
@@ -5948,9 +5963,13 @@ int FreeRdpAdapter::connect(const ConnectionConfig& cfg) {
             impl_->displayLastResult = "not_negotiated";
         }
     }
+    ConnectionConfig normalizedConfig = cfg;
+    if (normalizedConfig.targetServerName.empty()) {
+        normalizedConfig.targetServerName = normalizedConfig.customHostname;
+    }
     {
         std::lock_guard<std::mutex> lock(impl_->configMutex);
-        impl_->config = cfg;
+        impl_->config = normalizedConfig;
     }
     impl_->connecting = true;
     impl_->stopRequested = false;
@@ -6131,6 +6150,9 @@ void FreeRdpAdapter::connectThreadFunc(uint64_t expectedGeneration) {
                 authIdentity.modeName.c_str());
     freerdp_settings_set_string(s, FreeRDP_ServerHostname, route.targetHost.c_str());
     freerdp_settings_set_uint32(s, FreeRDP_ServerPort, static_cast<UINT32>(port));
+    if (!cfg.clientHostname.empty()) {
+        freerdp_settings_set_string(s, FreeRDP_ClientHostname, cfg.clientHostname.c_str());
+    }
     const bool restrictedAdmin = cfg.rdpAuthMode == RdpAuthenticationMode::RestrictedAdmin;
     const bool blankPassword = cfg.rdpAuthMode == RdpAuthenticationMode::BlankPassword;
     const char* authModeName = restrictedAdmin ? "restricted_admin" :
@@ -6378,7 +6400,8 @@ void FreeRdpAdapter::connectThreadFunc(uint64_t expectedGeneration) {
 
     const std::string logHost = SafeLog::MaskHost(cfg.host);
     const std::string logGatewayHost = cfg.gatewayHost.empty() ? "无" : SafeLog::MaskHost(cfg.gatewayHost);
-    const std::string logTargetName = cfg.customHostname.empty() ? "未设置" : SafeLog::MaskHost(cfg.customHostname);
+    const std::string logTargetName = cfg.targetServerName.empty() ?
+        "未设置" : SafeLog::MaskHost(cfg.targetServerName);
     const std::string logUser = SafeLog::MaskUser(effectiveUsername);
     const std::string logDomain = effectiveDomain.empty() ? "无" : SafeLog::MaskUser(effectiveDomain);
     const std::string logDrivePath = driveEnabled ? SafeLog::HashForLog(cfg.rdDrivePath) : "off";
@@ -6651,7 +6674,7 @@ RdpPreflightResult FreeRdpAdapter::probeRdpCertificateRoute(
     ConnectionConfig cfg;
     cfg.host = request.route.targetHost;
     cfg.port = request.route.targetPort;
-    cfg.customHostname = request.route.targetServerName;
+    cfg.targetServerName = request.route.targetServerName;
     cfg.gatewayHost = request.route.gatewayHost;
     cfg.gatewayPort = request.route.gatewayPort;
     cfg.rdpAuthMode = request.targetRestrictedAdmin
@@ -7379,15 +7402,19 @@ std::string FreeRdpAdapter::protocolVersion() { return "3.7.0-skeleton"; }
 // ---- 连接管理 ----
 int FreeRdpAdapter::connect(const ConnectionConfig& cfg) {
     if (impl_->state == ConnectionState::CONNECTED) { disconnect(); }
+    ConnectionConfig normalizedConfig = cfg;
+    if (normalizedConfig.targetServerName.empty()) {
+        normalizedConfig.targetServerName = normalizedConfig.customHostname;
+    }
     {
         std::lock_guard<std::mutex> lock(impl_->configMutex);
-        impl_->config = cfg;
+        impl_->config = normalizedConfig;
     }
 
     RdpEndpointRoute route;
     std::string routeErrorCode;
     std::string routeErrorMessage;
-    if (!resolveRdpEndpointRoute(cfg, route, routeErrorCode, routeErrorMessage)) {
+    if (!resolveRdpEndpointRoute(normalizedConfig, route, routeErrorCode, routeErrorMessage)) {
         impl_->setState(ConnectionState::ERROR,
                         routeErrorMessage + " [" + routeErrorCode + "]");
         return -70;
@@ -7455,7 +7482,7 @@ RdpPreflightResult FreeRdpAdapter::probeRdpCertificateRoute(
     ConnectionConfig cfg;
     cfg.host = request.route.targetHost;
     cfg.port = request.route.targetPort;
-    cfg.customHostname = request.route.targetServerName;
+    cfg.targetServerName = request.route.targetServerName;
     cfg.gatewayHost = request.route.gatewayHost;
     cfg.gatewayPort = request.route.gatewayPort;
     cfg.rdpAuthMode = request.targetRestrictedAdmin

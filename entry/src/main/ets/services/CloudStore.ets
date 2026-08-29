@@ -8655,7 +8655,7 @@ try { this.rollbackTrackedTransaction(); } catch (_ignored) {}
       'rdpgatewaycertificaterouteidentity', 'rustdeskrelayid', 'rustdeskaccountid',
       'rustdeskpasswordmode', 'rustdeskauthmode', 'rustdeskdirectenabled',
       'rustdeskdirecthost', 'rustdeskdirectport', 'rdpcredentialid', 'rdpauthmode',
-      'rdprestrictedadminsecretsource', 'sourcetype',
+      'rdprestrictedadminsecretsource', 'rdpclienthostname', 'sourcetype',
       'rustdeskproaccountid', 'rustdeskpropeerid', 'rustdeskproplatform',
       'rustdeskpromanaged', 'rustdeskprolastseenat', 'rustdeskprosyncerror',
       'rustdesktargetdevice', 'rustdeskadaptiveorientation'
@@ -8831,6 +8831,7 @@ try { this.rollbackTrackedTransaction(); } catch (_ignored) {}
     host.rdpEndpointMode = get('rdpendpointmode', host.rdpEndpointMode);
     host.rdpGatewayTransport = get('rdpgatewaytransport', host.rdpGatewayTransport) || 'auto';
     host.rdpGatewayServerName = get('rdpgatewayservername', host.rdpGatewayServerName);
+    host.rdpClientHostname = get('rdpclienthostname', host.rdpClientHostname);
     host.rustdeskPasswordMode = Number(get('rustdeskpasswordmode', host.rustdeskPasswordMode.toString()));
     host.rustdeskAuthMode = get('rustdeskauthmode', host.rustdeskAuthMode) === 'request_approval' ? 'request_approval' : 'password';
     host.rustdeskDirectEnabled = get('rustdeskdirectenabled', host.rustdeskDirectEnabled ? '1' : '0') === '1';
@@ -8932,6 +8933,7 @@ try { this.rollbackTrackedTransaction(); } catch (_ignored) {}
       host.rdpGatewayCertificateAllowHostMismatch ? '1' : '0';
     values['rdpgatewaycertificaterouteidentity'] =
       host.rdpGatewayCertificateRouteIdentity;
+    values['rdpclienthostname'] = host.rdpClientHostname;
     const personalization: Record<string, string> = remoteHostLocalPersonalizationValues(host);
     const personalizationKeys: string[] = Object.keys(personalization);
     for (let i = 0; i < personalizationKeys.length; i++) {
@@ -8963,6 +8965,7 @@ try { this.rollbackTrackedTransaction(); } catch (_ignored) {}
     values['rdpendpointmode'] = host.rdpEndpointMode;
     values['rdpgatewaytransport'] = host.rdpGatewayTransport;
     values['rdpgatewayservername'] = host.rdpGatewayServerName;
+    values['rdpclienthostname'] = host.rdpClientHostname;
     values['sourcetype'] = host.sourceType;
     values['rustdeskproaccountid'] = host.rustdeskProAccountId;
     values['rustdeskpropeerid'] = host.rustdeskProPeerId;

@@ -32,6 +32,8 @@ export struct RdpAddFlow {
   @State label: string = '';
   @State hostAddress: string = '';
   @State portText: string = '3389';
+  @State targetServerName: string = '';
+  @State clientHostname: string = '';
   @State username: string = '';
   @State password: string = '';
   @State credentialId: string = '';
@@ -134,6 +136,8 @@ export struct RdpAddFlow {
     host.label = this.label.trim();
     host.host = canonicalHost;
     host.port = port;
+    host.customHostname = this.targetServerName;
+    host.rdpClientHostname = this.clientHostname;
     if (this.useLanSearch) {
       host.lanAddressMode = this.lanAddressMode === 'dynamic' ? 'dynamic' : 'static';
       host.lanDiscoveryIdentity = this.selectedLanDynamicCapable ? this.selectedLanStableId : '';
@@ -360,6 +364,10 @@ export struct RdpAddFlow {
         this.inputField('端口', this.portText, '3389',
           (v: string): void => { this.portText = v; }, false,
           !this.useLanSearch || this.selectedLanStableId === '')
+        this.inputField('目标服务器名（可选）', this.targetServerName, '证书或 DNS 名称',
+          (v: string): void => { this.targetServerName = v; })
+        this.inputField('客户端主机名（可选）', this.clientHostname, '发送给 Windows 的客户端名称',
+          (v: string): void => { this.clientHostname = v; })
         if (this.useLanSearch) { this.lanSearchResults() }
         Button('下一步').width('100%').height(44).borderRadius(12)
           .backgroundColor(this.accentColor).fontColor(Color.White)

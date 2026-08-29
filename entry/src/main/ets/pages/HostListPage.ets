@@ -869,6 +869,7 @@ struct HostListPage {
   @State sshPortVal: number = 22;
   @State username: string = '';
   @State chn: string = '';
+  @State rdpClientHostname: string = '';
   @State sheetErr: string = '';
   @State editingHostId: string = '';
   @State wallpaperIdx: number = 0;
@@ -9948,6 +9949,7 @@ struct HostListPage {
     this.sheetPasswordProjectionBinding = this.hostPasswordBindingParts(latestHost);
     this.sheetSecretProjectionInvalidated = false;
     this.chn = latestHost.customHostname;
+    this.rdpClientHostname = latestHost.rdpClientHostname;
     this.selectedRelayId = latestHost.rustdeskRelayId;
     this.selectedAccountId = latestHost.rustdeskAccountId;
     this.selectedRdpCredentialId = latestHost.rdpCredentialId;
@@ -18583,7 +18585,10 @@ struct HostListPage {
           }
 
           if (this.proto === 'rdp') {
-            this.fieldRow('主机名(可选)', '标识', this.chn, (v: string): void => { this.chn = v; })
+            this.fieldRow('目标服务器名(可选)', '证书或 DNS 名称', this.chn,
+              (v: string): void => { this.chn = v; })
+            this.fieldRow('客户端主机名(可选)', '发送给 Windows 的客户端名称',
+              this.rdpClientHostname, (v: string): void => { this.rdpClientHostname = v; })
           }
 
           if (this.proto === 'rustdesk') {
@@ -19962,6 +19967,7 @@ struct HostListPage {
     this.label = ''; this.proto = 'rdp'; this.hostAddr = ''; this.portVal = 3389;
     this.rdpPortVal = 3389; this.sshPortVal = 22;
     this.username = ''; this.sheetPwd = ''; this.chn = ''; this.sheetErr = '';
+    this.rdpClientHostname = '';
     this.sheetPasswordFromStoredProjection = false;
     this.sheetPasswordProjectionBinding = [];
     this.sheetSecretProjectionInvalidated = false;
@@ -20132,6 +20138,7 @@ struct HostListPage {
       h.port = endpoint.port;
       h.username = '';  // RustDesk 不使用用户名
       h.customHostname = this.chn;  // 远程设备ID
+      h.rdpClientHostname = '';
       h.rustdeskRelayId = this.sheetRustdeskDirectEnabled ? '' : this.selectedRelayId;
       h.rustdeskAccountId = this.sheetRustdeskDirectEnabled ? '' : this.selectedAccountId;
       h.rustdeskPasswordMode = this.sheetPwdMode;
@@ -20176,6 +20183,7 @@ struct HostListPage {
       this.portVal = h.port;
       h.customHostname = this.chn;
       if (this.proto === 'rdp') {
+        h.rdpClientHostname = this.rdpClientHostname;
         h.rdpAuthMode = this.sheetRdpAuthMode;
         h.rdpRestrictedAdminSecretSource = this.sheetRdpRestrictedAdminSecretSource;
         if (this.sheetRdpAuthMode === 'password' && this.selectedRdpCredentialId !== '') {
@@ -20186,6 +20194,7 @@ struct HostListPage {
           h.username = this.username.trim();
         }
       } else {
+        h.rdpClientHostname = '';
         h.rdpCredentialId = '';
         h.username = this.username;
       }

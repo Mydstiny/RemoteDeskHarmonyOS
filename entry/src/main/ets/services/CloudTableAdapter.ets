@@ -89,7 +89,7 @@ const REMOTE_HOST_CLOUD_EXTENSION_COLUMNS: string[] = [
   'rustdeskdirectenabled', 'rustdeskdirecthost', 'rustdeskdirectport', 'sshproxytype',
   'sshproxyauthmethod', 'sshproxykeyid',
   'rdpcredentialid', 'rdpauthmode', 'rdprestrictedadminsecretsource', 'sourcetype',
-  'rdpendpointmode', 'rdpgatewaytransport', 'rdpgatewayservername',
+  'rdpendpointmode', 'rdpgatewaytransport', 'rdpgatewayservername', 'rdpclienthostname',
   'rustdesktargetdevice', 'rustdeskadaptiveorientation',
   'lanaddressmode', 'landiscoveryidentity', 'lanlastresolvedat'
 ];

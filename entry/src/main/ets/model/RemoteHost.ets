@@ -180,6 +180,7 @@ export interface RemoteHostJSON {
   userId: string
   label: string
   customHostname: string
+  rdpClientHostname?: string
   protocol: string
   host: string
   port: number
@@ -333,7 +334,9 @@ export class RemoteHost implements LanHostAddressView {
   id: string = '';             // 主机唯一 ID (UUID)
   userId: string = '';         // 关联的华为账号 UnionID
   label: string = '';          // 主机显示名
-  customHostname: string = ''; // 自定义主机名 (RDP /client-hostname:)
+  // Legacy shared column: RDP target TLS/NLA server identity; RustDesk peer ID.
+  customHostname: string = '';
+  rdpClientHostname: string = ''; // RDP /client-hostname:, independent from target identity
   protocol: string = 'rdp';    // 协议类型 ("rdp" | "rustdesk")
   host: string = '';           // IP 或域名
   port: number = 3389;         // 端口号
@@ -547,6 +550,7 @@ export class RemoteHost implements LanHostAddressView {
       userId: this.userId,
       label: this.label,
       customHostname: this.customHostname,
+      rdpClientHostname: this.rdpClientHostname,
       protocol: this.protocol,
       host: this.host,
       port: this.port,
@@ -648,6 +652,9 @@ export class RemoteHost implements LanHostAddressView {
     if (json.userId) { host.userId = json.userId; }
     if (json.label) { host.label = json.label; }
     if (json.customHostname) { host.customHostname = json.customHostname; }
+    if (json.rdpClientHostname !== undefined) {
+      host.rdpClientHostname = json.rdpClientHostname || '';
+    }
     if (json.protocol) { host.protocol = json.protocol; }
     if (json.host) { host.host = json.host; }
     if (json.port) { host.port = json.port; }

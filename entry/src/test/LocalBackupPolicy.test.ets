@@ -301,6 +301,7 @@ export default function localBackupPolicyTest(): void {
           '"rustdeskadaptiveorientation":"1","rdpendpointmode":"microsoft_rd_gateway",' +
           '"rdpgatewaytransport":"no-websockets",' +
           '"rdpgatewayservername":"gateway.example.test",' +
+          '"rdpclienthostname":"HARMONY-CLIENT",' +
           '"sshproxytype":"ssh_jump","sshproxyauthmethod":"publickey",' +
           '"sshproxykeyid":"jump-key",' +
           '"sshjumphostkeyalgorithm":"ssh-ed25519",' +
@@ -320,6 +321,7 @@ export default function localBackupPolicyTest(): void {
       expect(parsed !== null).assertTrue();
       expect(parsed?.extensions?.length).assertEqual(1);
       expect(parsed?.extensions?.[0]['payload'].indexOf('rdpendpointmode') >= 0).assertTrue();
+      expect(parsed?.extensions?.[0]['payload'].indexOf('rdpclienthostname') >= 0).assertTrue();
       expect(parsed?.extensions?.[0]['payload'].indexOf('sshproxytype') >= 0).assertTrue();
       expect(parsed?.extensions?.[0]['payload'].indexOf('sshjumphostkeyalgorithm') >= 0).assertTrue();
       expect(parsed?.extensions?.[0]['payload'].indexOf('localdisplayconfig') >= 0).assertTrue();

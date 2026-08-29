@@ -4,6 +4,7 @@
 
 #include "test_runner.h"
 #include "rdp/rdp_certificate_validation.h"
+#include "rdp/rdp_connection_identity_policy.h"
 #include "rdp/rdp_gateway_policy.h"
 
 #include <openssl/evp.h>
@@ -518,6 +519,19 @@ RDP_TEST_CASE(rdp_gateway_policy_requires_both_stage_pins_and_isolates_rotation)
     target.fingerprintSha256 = rotatedTargetFingerprint;
     request.expectedTargetFingerprintSha256 = rotatedTargetFingerprint;
     RDP_ASSERT(RdpGatewayPolicy::gatewayTrustAllowsRoute(request, gateway, target));
+}
+
+RDP_TEST_CASE(rdp_client_hostname_is_not_an_endpoint_or_server_identity) {
+    RDP_ASSERT(RdpConnectionIdentityPolicy::clientHostnameIsValid(""));
+    RDP_ASSERT(RdpConnectionIdentityPolicy::clientHostnameIsValid("HARMONY-CLIENT"));
+    RDP_ASSERT(RdpConnectionIdentityPolicy::clientHostnameIsValid("client.example.test"));
+    RDP_ASSERT(!RdpConnectionIdentityPolicy::clientHostnameIsValid("2001:db8::10"));
+    RDP_ASSERT(!RdpConnectionIdentityPolicy::clientHostnameIsValid("client name"));
+    RDP_ASSERT(!RdpConnectionIdentityPolicy::clientHostnameIsValid("-client"));
+    RDP_ASSERT(!RdpConnectionIdentityPolicy::clientHostnameIsValid("client-.example"));
+    RDP_ASSERT(!RdpConnectionIdentityPolicy::clientHostnameIsValid("client.example."));
+    RDP_ASSERT(!RdpConnectionIdentityPolicy::clientHostnameIsValid(
+        std::string(254, 'a')));
 }
 
 RDP_TEST_CASE(rdp_certificate_validation_distinguishes_ip_san_from_dns_san) {

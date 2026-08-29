@@ -12968,6 +12968,8 @@ struct RemoteDesktop {
         width: w,
         height: h,
         customHostname: host.customHostname,
+        targetServerName: host.protocol === 'rdp' ? host.customHostname : '',
+        clientHostname: host.protocol === 'rdp' ? host.rdpClientHostname : '',
         gatewayHost: host.gatewayHost,
         gatewayPort: host.gatewayPort,
         rdpEndpointMode: host.protocol === 'rdp' ? normalizeRdpEndpointMode(

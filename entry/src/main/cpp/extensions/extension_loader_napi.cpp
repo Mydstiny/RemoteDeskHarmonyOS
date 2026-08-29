@@ -13,6 +13,7 @@
 #include "disconnect_request_registry.h"
 #include "rdp/freerdp_adapter.h"
 #include "rdp/rdp_auth_mode_policy.h"
+#include "rdp/rdp_connection_identity_policy.h"
 #include "ssh/ssh_adapter.h"
 #include "ssh/ssh_terminal_resume_policy.h"
 #include "ssh/ssh_key_tool.h"
@@ -4131,6 +4132,9 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
     // 🆕 新增字段解析
     getString("customHostname", cfg.customHostname,
               remotedesk::endpoint::kMaxInputLength);
+    getString("targetServerName", cfg.targetServerName,
+              remotedesk::endpoint::kMaxInputLength);
+    getString("clientHostname", cfg.clientHostname, 253);
     getString("gatewayHost", cfg.gatewayHost,
               remotedesk::endpoint::kMaxInputLength);
     getInt("gatewayPort", cfg.gatewayPort);
@@ -4397,6 +4401,18 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
         return errVal;
     }
 
+    if (protocolName == "rdp") {
+        if (cfg.targetServerName.empty()) {
+            cfg.targetServerName = cfg.customHostname;
+        } else if (!cfg.customHostname.empty() &&
+                   cfg.customHostname != cfg.targetServerName) {
+            OH_LOG_ERROR(LOG_APP, "[ExtLoader] conflicting legacy and explicit RDP target identity");
+            napi_value errVal;
+            napi_create_int32(env, -2, &errVal);
+            return errVal;
+        }
+    }
+
     bool endpointValid = true;
     if (protocolName == "rdp" || protocolName == "ssh" || protocolName == "rustdesk") {
         endpointValid = NormalizePersistedEndpoint(cfg.host, cfg.port);
@@ -4415,8 +4431,12 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
         endpointValid = NormalizePersistedEndpoint(cfg.sshProxyHost, cfg.sshProxyPort);
     }
     if (endpointValid && protocolName == "rdp") {
-        endpointValid = NormalizeServerIdentity(cfg.customHostname) &&
-            NormalizeServerIdentity(cfg.rdpGatewayServerName);
+        endpointValid = NormalizeServerIdentity(cfg.targetServerName) &&
+            NormalizeServerIdentity(cfg.rdpGatewayServerName) &&
+            RdpConnectionIdentityPolicy::clientHostnameIsValid(cfg.clientHostname);
+        if (endpointValid) {
+            cfg.customHostname = cfg.targetServerName;
+        }
     }
     if (endpointValid && protocolName == "vnc") {
         endpointValid = NormalizeServerIdentity(cfg.vncServerName);
@@ -4445,7 +4465,8 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
 
     const std::string logHost = SafeLog::MaskHost(cfg.host);
     const std::string logGatewayHost = cfg.gatewayHost.empty() ? "无" : SafeLog::MaskHost(cfg.gatewayHost);
-    const std::string logCustomHostname = cfg.customHostname.empty() ? "未设置" : SafeLog::MaskHost(cfg.customHostname);
+    const std::string logCustomHostname = cfg.targetServerName.empty() ?
+        "未设置" : SafeLog::MaskHost(cfg.targetServerName);
 
     OH_LOG_INFO(LOG_APP, "[ExtLoader] 连接请求: %{public}s → %{public}s:%{public}d"
                 " (分辨率:%{public}dx%{public}d, 多显:%{public}s, 网关:%{public}s:%{public}d, 主机名:%{public}s, 编码:%{public}s)",

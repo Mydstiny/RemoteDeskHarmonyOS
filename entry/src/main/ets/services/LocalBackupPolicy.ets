@@ -99,7 +99,7 @@ const REMOTE_HOST_EXTENSION_PAYLOAD_COLUMNS: string[] = [
   'rustdeskpasswordmode', 'rustdeskauthmode', 'rustdeskdirectenabled',
   'rustdeskdirecthost', 'rustdeskdirectport', 'rdpcredentialid', 'rdpauthmode',
   'rdprestrictedadminsecretsource', 'rdpendpointmode',
-  'rdpgatewaytransport', 'rdpgatewayservername', 'sourcetype',
+  'rdpgatewaytransport', 'rdpgatewayservername', 'rdpclienthostname', 'sourcetype',
   'rustdeskproaccountid',
   'rustdeskpropeerid', 'rustdeskproplatform', 'rustdeskpromanaged',
   'rustdeskprolastseenat', 'rustdeskprosyncerror', 'rustdesktargetdevice',
