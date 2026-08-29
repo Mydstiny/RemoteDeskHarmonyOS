@@ -149,5 +149,27 @@ export default function remoteCanvasPointerFollowPolicyTest(): void {
       expect(result.panDeltaX < 0).assertTrue();
       expect(result.panDeltaY).assertEqual(0);
     });
+
+    it('does not clamp the free local-pointer axis at a one-axis content boundary', 0,
+      (): void => {
+        const horizontalOnlyViewport: CanvasViewport = {
+          surfaceWidth: 1000, surfaceHeight: 600,
+          sourceWidth: 2000, sourceHeight: 600,
+          freePanInsetRatio: 0
+        };
+        const horizontalOnly: CanvasTransform = {
+          scale: 2, panX: 0, panY: 0
+        };
+        const result = followCanvasForLocalPointer({
+          enabled: true, transform: horizontalOnly, viewport: horizontalOnlyViewport,
+          surfaceWidthVp: 1000, surfaceHeightVp: 600,
+          localX: 950, localY: 590, pxPerVpX: 1, pxPerVpY: 1
+        });
+        expect(result.moved).assertTrue();
+        expect(result.panDeltaX < 0).assertTrue();
+        expect(result.panDeltaY).assertEqual(0);
+        expect(result.pointerX < 950).assertTrue();
+        expect(result.pointerY).assertEqual(590);
+      });
   });
 }

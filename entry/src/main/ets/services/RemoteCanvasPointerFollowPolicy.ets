@@ -198,14 +198,20 @@ export function followCanvasForLocalPointer(
     deltaVpX * Math.max(0.01, finite(request.pxPerVpX, 1)),
     deltaVpY * Math.max(0.01, finite(request.pxPerVpY, 1)));
   const moved: boolean = changed(request.transform, next);
+  const panDeltaX: number = moved ? next.panX - request.transform.panX : 0;
+  const panDeltaY: number = moved ? next.panY - request.transform.panY : 0;
   return {
     transform: moved ? next : request.transform,
     moved,
-    panDeltaX: moved ? next.panX - request.transform.panX : 0,
-    panDeltaY: moved ? next.panY - request.transform.panY : 0,
+    panDeltaX,
+    panDeltaY,
     reason: moved ? 'safe-area-follow' : 'content-boundary',
-    pointerX: moved ? pointerX : localX,
-    pointerY: moved ? pointerY : localY
+    // A content boundary can block one axis while the other keeps following.
+    // Clamp only the pointer axis whose canvas actually moved; otherwise a
+    // horizontal edge-follow would unexpectedly pull a free vertical cursor
+    // back into the safe area (and vice versa).
+    pointerX: Math.abs(panDeltaX) > 0.01 ? pointerX : localX,
+    pointerY: Math.abs(panDeltaY) > 0.01 ? pointerY : localY
   };
 }
 

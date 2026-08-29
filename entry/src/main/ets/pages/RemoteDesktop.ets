@@ -5658,6 +5658,17 @@ struct RemoteDesktop {
       this.canvasTwoFingerState.owner === 'touchpad-right-click') {
       return;
     }
+    if (this.canvasTwoFingerState.owner === 'idle') {
+      const center: LocalPoint | null = this.gestureCenterPoint(event);
+      if (center === null) {
+        return;
+      }
+      this.beginCanvasTwoFingerCandidateAt(center);
+      // API 23 devices can deliver the overlay PanGesture while bypassing the
+      // raw TouchEvent observer. Leave one recognizer turn for PinchGesture to
+      // claim span changes; a pure translation is claimed on the first update.
+      return;
+    }
     if (this.canvasTwoFingerState.owner === 'candidate') {
       const remoteAppTarget: boolean = this.shouldUseRustDeskRemoteAppTouchScale();
       this.canvasTwoFingerState = claimCanvasTwoFingerPan(this.canvasTwoFingerState, remoteAppTarget);
@@ -5698,7 +5709,8 @@ struct RemoteDesktop {
 
   private updateCanvasPan(event: GestureEvent): void {
     if (!this.canvasPanActive &&
-      (this.canvasTwoFingerState.owner === 'canvas-pan' ||
+      (this.canvasTwoFingerState.owner === 'candidate' ||
+        this.canvasTwoFingerState.owner === 'canvas-pan' ||
         this.canvasTwoFingerState.owner === 'remote-touch-pan')) {
       this.startCanvasPan(event);
     }

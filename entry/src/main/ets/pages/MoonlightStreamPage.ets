@@ -214,6 +214,8 @@ import {
 } from '../services/MoonlightVideoCapabilityService';
 import { normalizeRendererViewportToSurface } from
   '../services/RemoteSurfaceTransformPolicy';
+import { shouldAcceptRendererViewportSnapshot } from
+  '../services/RemoteRendererViewportPolicy';
 import {
   mapPhysicalKeyForRemoteLayout,
   RemoteKeyboardLayout,
@@ -490,6 +492,7 @@ struct MoonlightStreamPage {
   private physicalPointerGeometryHandle: number = -1;
   private physicalPointerGeometryReadAtMs: number = 0;
   private physicalPointerGeometrySignature: string = '';
+  private moonlightRendererCanvasTransformPendingVersion: number = 0;
   private physicalMouseObservedEvents: number = 0;
   private hitMapGeneration: number = 1;
   private trackpadVisualTouches: Map<number, MoonlightTouchPoint> =
@@ -1455,13 +1458,16 @@ struct MoonlightStreamPage {
   private submitMoonlightCanvasTransform(): void {
     if (this.rendererHandle <= 0) { return; }
     try {
-      rdpnapi.setRendererCanvasTransform(this.rendererHandle,
+      const transformVersion: number = rdpnapi.setRendererCanvasTransform(this.rendererHandle,
         this.moonlightCanvasTransform.scale,
         this.moonlightCanvasTransform.panX,
         this.moonlightCanvasTransform.panY, 0);
       this.geometryGeneration = Math.min(Number.MAX_SAFE_INTEGER,
         this.geometryGeneration + 1);
       this.invalidatePhysicalPointerGeometry();
+      this.moonlightRendererCanvasTransformPendingVersion = transformVersion;
+      this.updatePhysicalPointerGeometryForCanvasTransform(
+        this.moonlightCanvasViewportSnapshot ?? this.moonlightCanvasViewport());
     } catch (error) {
       hilog.warn(0x0014, 'MoonlightStreamUi',
         'canvas transform submit failed: ' + JSON.stringify(error));
@@ -1471,6 +1477,18 @@ struct MoonlightStreamPage {
   private bindMoonlightCanvasTransform(widthPx: number, heightPx: number,
     preserve: boolean): void {
     const next: CanvasViewport = this.moonlightCanvasViewport(widthPx, heightPx);
+    const previous: CanvasViewport | null = this.moonlightCanvasViewportSnapshot;
+    if (this.moonlightCanvasTransformInitialized && previous !== null &&
+      (previous.surfaceWidth !== next.surfaceWidth ||
+        previous.surfaceHeight !== next.surfaceHeight ||
+        previous.sourceWidth !== next.sourceWidth ||
+        previous.sourceHeight !== next.sourceHeight)) {
+      // Rebase is deterministic only between gesture sequences. Ending the
+      // current sequence prevents the next pinch update from combining an old
+      // center/scale snapshot with a resized or reparented surface.
+      this.cancelActiveMoonlightTouches();
+      this.clearMoonlightPhysicalPointerFollow(true);
+    }
     if (preserve && this.moonlightCanvasTransformInitialized &&
       this.moonlightCanvasTransformModified &&
       this.moonlightCanvasViewportSnapshot !== null) {
@@ -3556,6 +3574,52 @@ struct MoonlightStreamPage {
     this.physicalPointerGeometryCache = null;
     this.physicalPointerGeometryHandle = this.rendererHandle;
     this.physicalPointerGeometryReadAtMs = 0;
+    this.moonlightRendererCanvasTransformPendingVersion = 0;
+  }
+
+  /**
+   * Mirror the renderer's contain + canvas-transform viewport immediately.
+   * The native render thread applies a submitted transform asynchronously, so
+   * an absolute mouse event in the same ArkUI turn must not reuse its previous
+   * viewport snapshot.
+   */
+  private updatePhysicalPointerGeometryForCanvasTransform(viewport: CanvasViewport): void {
+    const sourceWidth: number = Math.max(1, viewport.sourceWidth);
+    const sourceHeight: number = Math.max(1, viewport.sourceHeight);
+    const surfaceWidth: number = Math.max(1, viewport.surfaceWidth);
+    const surfaceHeight: number = Math.max(1, viewport.surfaceHeight);
+    const contain: number = Math.min(surfaceWidth / sourceWidth,
+      surfaceHeight / sourceHeight);
+    const physicalScale: number = contain * Math.max(0.01,
+      this.moonlightCanvasTransform.scale);
+    const viewportW: number = Math.max(1, Math.round(sourceWidth * physicalScale));
+    const viewportH: number = Math.max(1, Math.round(sourceHeight * physicalScale));
+    const normalized = normalizeRendererViewportToSurface(
+      Math.round((surfaceWidth - viewportW) / 2 + this.moonlightCanvasTransform.panX),
+      Math.round((surfaceHeight - viewportH) / 2 + this.moonlightCanvasTransform.panY),
+      viewportW, viewportH, surfaceWidth, surfaceHeight,
+      Math.max(1, this.surfaceWidthVp), Math.max(1, this.surfaceHeightVp));
+    if (normalized === null) { return; }
+    const referenceWidth: number = Math.max(2, Math.min(32767,
+      Math.floor(sourceWidth)));
+    const referenceHeight: number = Math.max(2, Math.min(32767,
+      Math.floor(sourceHeight)));
+    const geometry: MoonlightPhysicalPointerGeometry = {
+      contentLeft: normalized.viewportX,
+      contentTop: normalized.viewportY,
+      contentWidth: normalized.viewportW,
+      contentHeight: normalized.viewportH,
+      referenceWidth,
+      referenceHeight,
+      signature: 'renderer|' + this.rendererHandle.toString() + '|' +
+        normalized.viewportX.toFixed(3) + '|' + normalized.viewportY.toFixed(3) + '|' +
+        normalized.viewportW.toFixed(3) + '|' + normalized.viewportH.toFixed(3) + '|' +
+        referenceWidth.toString() + '|' + referenceHeight.toString()
+    };
+    this.physicalPointerGeometryCache = geometry;
+    this.physicalPointerGeometryHandle = this.rendererHandle;
+    this.physicalPointerGeometryReadAtMs = Date.now();
+    this.physicalPointerGeometrySignature = geometry.signature;
   }
 
   private fallbackPhysicalPointerGeometry(): MoonlightPhysicalPointerGeometry {
@@ -3595,6 +3659,14 @@ struct MoonlightStreamPage {
           !Number.isFinite(raw.sourceHeight) || raw.sourceWidth < 2 ||
           raw.sourceWidth > 32767 || raw.sourceHeight < 2 ||
           raw.sourceHeight > 32767) {
+        return this.physicalPointerGeometryCache;
+      }
+      const nativeTransformVersion: number = Number.isFinite(raw.transformVersion) ?
+        raw.transformVersion : 0;
+      if (!shouldAcceptRendererViewportSnapshot(
+        this.moonlightRendererCanvasTransformPendingVersion, nativeTransformVersion)) {
+        // Keep the synchronously mirrored geometry until the render owner has
+        // published the exact transform used by this input event.
         return this.physicalPointerGeometryCache;
       }
       const viewport = normalizeRendererViewportToSurface(
@@ -4299,7 +4371,41 @@ struct MoonlightStreamPage {
   }
 
   private handleMoonlightSurfaceTouch = (event: TouchEvent): void => {
-    if (this.controlMode === 'keyboardMouse') { return; }
+    if (this.controlMode === 'keyboardMouse') {
+      if (!this.moonlightPinchZoomEnabled || event.sourceTool !== SourceTool.Finger) {
+        return;
+      }
+      const phase: MoonlightTouchPhase = this.moonlightTouchPhase(event);
+      if (phase === 'down' && this.trackpadVisualTouches.size === 0) {
+        // Keyboard/mouse mode deliberately ignores one-finger touch. When the
+        // second contact arrives, seed both active contacts so the same shared
+        // two-finger policy can provide pure pan without creating a one-finger
+        // pointer lane in this mode.
+        this.resetTrackpadGesture(false);
+        this.trackpadGestureStartedAtMs = Date.now();
+        for (let index: number = 0; index < event.touches.length; index++) {
+          const id: number = Math.max(1, Math.floor(event.touches[index].id) + 1);
+          this.trackpadVisualTouches.set(id,
+            { x: event.touches[index].x, y: event.touches[index].y });
+        }
+        for (let index: number = 0; index < event.changedTouches.length; index++) {
+          const id: number = Math.max(1, Math.floor(event.changedTouches[index].id) + 1);
+          this.trackpadVisualTouches.set(id,
+            { x: event.changedTouches[index].x, y: event.changedTouches[index].y });
+        }
+        if (this.trackpadVisualTouches.size < 2) {
+          this.resetTrackpadGesture(false);
+          return;
+        }
+      }
+      if (phase !== 'cancel' && this.trackpadVisualTouches.size < 2 &&
+        this.trackpadPeakContactCount < 2) {
+        return;
+      }
+      event.stopPropagation();
+      this.handleMoonlightTrackpad(event, phase);
+      return;
+    }
     this.observeMoonlightAdaptiveInput('touch');
     if (this.resolvedMoonlightControlMode() === 'trackpad') {
       this.handleMoonlightTouch(event);
