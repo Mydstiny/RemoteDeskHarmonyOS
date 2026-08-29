@@ -1,22 +1,20 @@
 # RemoteDesk Queue
 
-Updated: 2026-08-29 Asia/Shanghai
+Updated: 2026-08-30 Asia/Shanghai
 
 ## Now
 
-1. Run the RDP high-DPI matrix on HarmonyOS PC against Windows 10/11/Server: auto plus 100/140/180 UI scale, supported/unsupported `disp`, full/split/free/narrow windows, maximize/restore, continuous drag, PIP/background/reconnect, input/cursor mapping and no stable-ratio black bars. Move an unchanged-size session window between displays with different density and verify `displayIdChange`/XComponent geometry produces the correct physical-pixel request.
-2. Validate per-protocol pinch zoom, reset controls and display/interaction settings on real devices: RDP/RustDesk/VNC/Moonlight focal pinch, same-stream pure pan, Fit scroll/right-click, relative/physical pointer follow, rotation/PIP/reconnect/resize, live-disable reset, sidebar/control-center reset reachability and baseline preservation; verify SSH font pinch plus `更多 → 恢复终端字号`, all-on/all-off, per-protocol persistence/restart and SFTP isolation. Open `会话侧栏与顶栏` as a sheet, exercise four protocol switches, all-show/all-hide, cancel/save/restart and restoring hidden controls from settings; confirm Moonlight expands/collapses and opens all leaf settings like the other protocol sections. Then push, open the PR, pass required checks and merge `codex/per-protocol-pinch-zoom-plan`.
-3. Run a Phone/Pad/PC visual sweep of all reachable bindSheets in dark and light mode, covering CENTER/BOTTOM layouts, Moonlight connect/control/controller/stop modes, SSH/SFTP and gated productivity/log/broadcast surfaces; dark roots must be `#1C1C1F` with no black/gray seams and light behavior must remain unchanged.
-4. Upgrade a preserved 1.1.3 install to 1.1.4 and verify the update popup appears once, contains only the 10 current 1.1.4 pages, starts with the 1.1.4 summary, contains no 1.1.3 page and ends with `welcome-1-1-4`; reopen it from Settings and verify a reused high legacy page index cannot restore pages 10–21 or flash a stale count.
-5. Validate the per-protocol wheel editor and direction matrix on device: change one protocol without affecting the other four; exercise all-normal/all-reverse; cover RDP/RustDesk/VNC physical mouse, physical touchpad and virtual touchpad; Moonlight physical and virtual input; SSH scrollback, alternate buffer and mouse tracking; confirm SFTP is unaffected.
-6. On a HarmonyOS PC viewer, validate the new RustDesk per-host flip popup against affected Windows peers: all three modes, absolute/relative mouse mapping, remote cursor, PIP/foreground restore, reconnect persistence and stale computer metadata resolving to a mobile peer.
-7. On the fixed HAP now installed at `192.168.3.235:38451`, verify login survives the historical migration `401`, exact-owner hashed data remains visible, local CRUD survives restart/offline use, and canonical/cloud recovery does not resurrect stale rows.
-8. On `.235`, complete the already-queued RustDesk/RDP/VNC/Moonlight sidebar keyboard-close, scrolling, drag/bounds, touch isolation and phone immersive-bar acceptance.
-9. Decide whether `192.168.3.236:40123` may be destructively uninstalled for the debug HAP or requires a matching release-provisioned acceptance HAP; preserve its existing data until explicitly authorized.
-10. Complete RustDesk quality/multimonitor release acceptance: verify Low/Balanced/Best cold/live/reconnect behavior on direct and relay paths; run 1/2/3-screen ACK/keyframe rollback, DPI/rotation/hot-plug/PIP/background/reconnect/input mapping; on HarmonyOS PC stress the default-off read-only two-canvas preview for 30 minutes and repeated attach/promote/detach cycles against Windows/Linux/macOS peers.
+1. Run M1 real-device IPv6 acceptance on HarmonyOS Phone/Pad/PC for RDP, RustDesk, SSH/SFTP, VNC and Moonlight: IPv6 literal and AAAA-only add/edit/save/restart, trust or certificate preflight, real control/data session and same-network reconnect. Include RDP direct/Gateway, RustDesk configured ID/relay/direct plus file transfer, SSH direct/proxy/1–3 jump plus SFTP operations, VNC direct/repeater/TLS and Moonlight control/media family consistency.
+2. Record endpoint family, scope presence, resolver owner and sanitized failure stage; verify equivalent IPv6 forms retain the right trust while port, scope, route or server-name changes fail closed. Enable `configured_endpoint_ipv6` per protocol only after its complete matrix passes.
+3. Implement M2 shared-budget Happy Eyeballs and listener completeness: A/AAAA interleaving, bounded stagger, first-success cancellation, network-generation invalidation, proxy/gateway/jump/repeater combinations and explicit SSH `IPV6_V6ONLY` behavior.
 
 ## Next
 
-1. Add real-RDB fault-injection coverage for empty-table clear, unsafe VNC/Moonlight rows and higher-version account sources.
-2. Complete app-clone acceptance on release-provisioned phone and tablet without clearing existing data.
-3. Run Android RustDesk portrait/landscape display, touch and settings-accordion acceptance for the prior increment.
+1. Implement M3 discovery and control/data candidate parity without IPv6 `/64` scanning; include Moonlight scoped mDNS and official RustDesk `socket_addr_v6` candidates.
+2. Implement M4 RustDesk AUTO/NAT/hole-punching as an independent milestone; keep NAT traversal unavailable until fixed-version hbbs/hbbr and controlled-peer matrices pass.
+3. Complete the existing RDP high-DPI, per-protocol gesture/settings, bindSheet dark/light, wheel direction, RustDesk flip/quality/multimonitor, 1.1.4 upgrade and cloud-recovery device matrices before PR closure.
+4. Run a cumulative branch review before merge because this branch contains earlier independently reviewed increments outside the IPv6 task scope.
+
+## Later
+
+1. Add real-RDB fault injection, app-clone acceptance and the remaining Android RustDesk orientation/settings acceptance.

@@ -2,96 +2,30 @@
 
 ## Active task
 
-- Task: `per-protocol-pinch-zoom-plan`
-- Branch: `codex/per-protocol-pinch-zoom-plan` from `main@b84224869`.
-- Increment: RDP high-DPI/adaptive display is implemented at `23af49c5a` and all independent-review findings are closed at `4e3816ec1`; earlier gesture/settings, bindSheet and RustDesk quality/multimonitor increments remain on this branch. Real-device acceptance and PR closure remain.
-- Phase: implementation, automated gates and exact-checkpoint review are complete; device acceptance is active. Concurrent native commit `a2787161d` remains outside the cumulative branch review required before merge.
-- Plans: `docs/codex/plans/2026-08-29-per-protocol-pinch-zoom-and-pointer-follow.md`; `docs/codex/plans/2026-08-29-rustdesk-quality-and-multimonitor-completion.md`; `docs/codex/plans/2026-08-29-rdp-hidpi-adaptive-resolution-upgrade.md`.
+- Task: `all-protocol-ipv6-upgrade`.
+- Branch: `codex/per-protocol-pinch-zoom-plan`; IPv6 task baseline `5a0e05515`, current reviewed code checkpoint `d3f07f4e`, branch remains based on `main@b84224869` as explicitly authorized by the user.
+- Plan: `docs/codex/plans/2026-08-29-all-protocol-ipv6-upgrade.md`.
+- Phase: M0 automated contract gate complete; M1 code-side checkpoint complete and independently reviewed; real-device M1 acceptance is active. M2 Happy Eyeballs, M3 discovery/control-data and M4 RustDesk NAT remain pending.
 
-## RDP high-DPI adaptive display
+## Delivered IPv6 checkpoint
 
-- HarmonyOS PC auto mode starts with a same-ratio logical-resolution readability fallback, then upgrades to physical pixels plus 100/140/180 RDP DPI scale after `disp` caps. Fixed presets remain explicit; Phone/Pad auto keeps its prior landscape adaptive behavior.
-- FreeRDP Display Control supports 500 ms debounce, native rate limiting, one request in flight, latest-wins, caps validation, resize result diagnostics and session-local fallback. PC auto uses `UNSPECIFIED`; window display migration tracks `displayIdChange` and the active display density.
-- `远端界面大小` is device-local and separates Windows font/control scale from local canvas zoom. NAPI/native diagnostics expose requested/effective geometry, scale, capability and failure state.
-- FreeRDP arm64-v8a/x86_64 prebuilts include `disp` and `drive`; reproducible headers, required symbols, provenance and archive hashes are verified.
-- Verification: native 814/830 with all affected RDP cases passing and 16 known sandboxed VNC TLS listener failures; `default@OhosTestCompileArkTS` PASS (`11 s 841 ms`); signed `assembleHap` PASS (`19 s 655 ms`), SHA-256 `8307ef63ce4aa929fd12955f087f3bd827b7e6df4a38c4ab907959a983a06d2d`; both ABI shared objects, provenance, `git diff --check` and Light compliance PASS. Separate `ohosTest@OhosTestCompileArkTS` remains unregistered (`00306054`).
-- Independent review `/root/rdp_hidpi_review`: exact checkpoint `4e3816ec1` PASS after closing 2 P1 and 4 P2 findings; no remaining P0-P3.
-- Acceptance pending: HarmonyOS PC × Windows 10/11/Server, 100/140/180 scale, unsupported `disp`, drag/maximize/split/PIP/background/reconnect, and same-size cross-display migration between different densities.
+- Endpoint V2 now gives RDP, RustDesk, SSH/SFTP, VNC and Moonlight one fail-closed contract for hostname, IPv4, IPv6, bracket, port, canonical write, zone/scope and length handling across ArkTS and native boundaries.
+- Equivalent endpoint forms no longer rely on ad-hoc colon splitting for trust/route identities. RDP separates connect host, target server name and client hostname; IPv6 literals do not emit SNI. FreeRDP arm64-v8a/x86_64 prebuilts include the locked literal-SNI correction.
+- RustDesk configured ID/relay/direct TCP paths share a bounded deadline and cancellation lifecycle. Rust and C++ resolver workers are lifetime-safe and capped at eight process-wide; connection admission failures roll back all session, adapter, SSH facade and network-observer publication.
+- SSH proxy/jump inputs and synchronous public-key installation use strict Endpoint V2/NAPI validation, bounded strings, secret clearing and exception-safe ownership. RDP/VNC probes and Moonlight/common NAPI inputs use the same fail-closed boundary.
+- All five capability families remain disabled until their plan-specific real-device exit criteria pass. In particular, parser/build success is not a product claim for `configured_endpoint_ipv6`; M2–M4 have not been implemented.
 
-## RustDesk quality and multimonitor completion
+## Verification and review
 
-- `Low/Balanced/Best` now maps through the official RustDesk image-quality enum. Cold and live updates share one FIFO generation state; diagnostics distinguish requested/effective/sent values and report local writer success as “已发送”, without inventing a remote quality ACK.
-- Display promotion is an ACK + target-keyframe transaction. Timeout starts an explicit rollback generation, and input stays blocked until rollback ACK + keyframe confirms the prior display.
-- PC-only multi-canvas preview is experimental, default-off and read-only: at most two displays and 2 × 4K aggregate pixels. Each auxiliary display owns its NativeWindow, EGL surface/context, renderer, NativeImage, hardware decoder, queue and telemetry; unsupported hardware decoding degrades to one canvas.
-- Shared EGLDisplay ownership, exact decoder owner/generation leases, serialized lifecycle teardown, 1 ms bounded callback retry and per-display refresh coalescing close the main/aux race, teardown and refresh gaps. Clicking a preview promotes it through the same safe display transaction; no input is sent directly to previews.
-- Automated verification: Rust quality tests 3/3; OHOS RustDesk FFI release PASS for `arm64-v8a` and `x86_64` with both new symbols exported; native host suite 803/819 with every affected RustDesk case passing and 16 known VNC TLS fixture failures; `default@OhosTestCompileArkTS` PASS (`8 s 28 ms`); signed `assembleHap` PASS (`16 s 801 ms`), SHA-256 `58d2e44373ed3d16784612b8823ea19f52874ef85d9e1dcdd84d75b2751bd3c5`; `git diff --check` and Light compliance PASS.
-- Independent review `/root/rustdesk_quality_multicanvas_review`: exact immutable checkpoint `ab770ffa4` PASS; no remaining P0/P1/P2. Real direct/relay quality, multi-monitor correctness and 30-minute resource/thermal acceptance remain pending and are the only open items for this increment.
-- Post-review metadata gate: `default@OhosTestCompileArkTS` PASS (`6 s 298 ms`); signed `assembleHap` PASS (`13 s 306 ms`), SHA-256 `ace87e006497727efe88816a834702f512416c99d5b78683ec0fe844003da5f8`; state validation, `git diff --check` and Light compliance PASS.
-
-## Per-protocol pinch zoom result
-
-- RustDesk official mobile behavior was traced at `master@03a7fc599`: focal-point relative pinch and pan share one ScaleGesture; touchpad cursor movement pans hidden canvas after crossing the visible centre; physical/floating pointer paths add bounded canvas follow and edge scrolling.
-- `显示与交互 → 双指缩放` now opens one editor for RDP, RustDesk, SSH, VNC and Moonlight, with per-protocol switches plus all-on/all-off actions. Values are device-local, migrate compatibly from the old shared preference, use touched-field merge and rollback on partial persistence failure, and publish live through AppStorage.
-- RDP/RustDesk/VNC share focal pinch, same-stream pure two-finger canvas pan, Fit-state scroll/right-click preservation and strict-bounds safe-area/edge-area pointer follow. RustDesk remote App `TouchScale/TouchPan` is mutually exclusive with local canvas transform.
-- Moonlight now owns the same GL canvas-transform lifecycle, keyboard/mouse-mode two-finger pan without a one-finger touch lane, synchronous versioned viewport mirroring for same-event absolute pointer mapping, and gesture cancellation before resize/PIP/rebind rebase. Relative and physical pointers reveal hidden canvas without cross-axis pollution.
-- SSH keeps its existing terminal-font pinch semantics behind the SSH-specific switch; SFTP is unaffected. Disabling a graphical-protocol switch drains active gesture state and restores the base transform where applicable.
-- Reset affordances now reuse existing chrome: RDP/Moonlight show a highlighted toolbar shortcut only while the canvas differs visibly from its current baseline and keep a stable control-center row; VNC has a permanent sidebar reset; RustDesk marks its existing Display action and reset row when modified. VNC/Moonlight narrow PC toolbars are viewport-bounded and horizontally scrollable. Reset preserves the selected display mode/rotation/flip/resolution, drains gesture ownership and clears pointer-follow before returning to the current mode baseline.
-- SSH exposes `更多 → 恢复终端字号`: Profile zoom is an in-memory `host:generation` session override consumed by active and retained Xterm surfaces, and reset removes only that override without mutating the Profile. Legacy sessions return to and persist the default 18-point size.
-- `显示与交互 → 会话侧栏与顶栏` now opens a transactional selection sheet for RDP/RustDesk/VNC/Moonlight, with protocol switches, all-show/all-hide, touched-field merge, rollback and device-local persistence; SSH remains under its existing `更多` menu. Hidden controls are restored by returning to this settings sheet.
-- Moonlight's main settings section now stays mounted and uses the same common height/opacity/scale/translate/clip accordion lifecycle as the other protocol sections, so its expansion and leaf-sheet routing no longer pop through a separate conditional path.
-- Authorized bindSheet increment `6c1df8719` + `4faa18cec`: all 37 native Sheet hosts and their covering content roots resolve to `sheetBg` (`#1C1C1F`) in dark mode. Light mode remains unchanged, including Moonlight's branded connect surface and SSH's fixed terminal-dark surfaces; ordinary pages, system dialogs, popups, canvases and terminal surfaces are outside scope.
-- BindSheet verification at `4faa18cec`: `default@OhosTestCompileArkTS` PASS (`BUILD SUCCESSFUL in 14 s 097 ms`); signed `assembleHap` PASS (`BUILD SUCCESSFUL in 28 s 248 ms`), SHA-256 `626aa735e3ef3b52ff7edf476b4913c5c69d7ab20d99cef0adb4d613d2977e78`; 37/37 static audit, `git diff --check` and Light compliance PASS.
-- Independent review `/root/bindsheet_dark_review`: PASS after correcting Moonlight and SSH light-mode preservation; no remaining P0/P1/P2/P3. Phone/Pad/PC dark/light Sheet visual acceptance remains pending.
-- Settings-sheet increment verification at `50e2c6b5`: `default@OhosTestCompileArkTS` PASS (`BUILD SUCCESSFUL in 10 s 203 ms`); signed `assembleHap` PASS (`BUILD SUCCESSFUL in 23 s 225 ms`), SHA-256 `5efb54645bc3d5b48d91958a3dde8a1c3d66ff588c921922f8328e4fa46a2c86`; `git diff --check` and Light compliance PASS.
-- Reset increment verification at `4211438a`: `default@OhosTestCompileArkTS` PASS (`BUILD SUCCESSFUL in 10 s 909 ms`); signed `assembleHap` PASS (`BUILD SUCCESSFUL in 31 s 919 ms`), SHA-256 `9b50e409bb58ef7073d066516de052f797313a46bf1ff2d0c66eb16c14a791f1`; `git diff --check` and Light compliance PASS.
-- Verification after remediation: `default@OhosTestCompileArkTS` PASS (`BUILD SUCCESSFUL in 29 s 668 ms`); signed `assembleHap` PASS (`BUILD SUCCESSFUL in 16 s 174 ms`), SHA-256 `d0899ec8f965aea61154fb69ba2b527af83ec55f5d2cb8163612aba081d6e50c`; `git diff --check` and Light compliance PASS. The separate `ohosTest@OhosTestCompileArkTS` task remains unavailable (`00306054`), while the registered suites compile through the mandatory default test target.
-- Independent review `/root/pinch_zoom_review`: base PASS at `714b791f8`; reset increment PASS at `4211438a`; settings-sheet increment PASS at `50e2c6b5` after correcting the hidden-control recovery copy; no remaining P0/P1/P2/P3. Real-device gesture, pointer, persistence, reset, settings-sheet and accordion acceptance is pending because HDC reported `Connect server failed`.
-- Next: complete the expanded gesture/settings matrix and bindSheet dark/light visual sweep, then push the branch, open the PR, pass required checks and merge.
-
-## 1.1.4 release result
-
-- The current app version is `1.1.4 / 1001004` across the app manifest, release registry, NAPI metadata, resources, diagnostics, documentation and SBOM.
-- The current 1.1.4 release popup contains only the 10 new 1.1.4 cards for committed changes since 1.1.3 and ends at `welcome-1-1-4`. The 12 existing 1.1.3 cards remain unchanged in the historical `1.1.3` registry, but are excluded from the current popup. The settings entry and unit/device assertions use the 10-card current count.
-- `设置 → 教程 → 本版本更新日志` now reloads the current 1.1.4 registry when the component appears and whenever that subpage is selected, and clamps any reused legacy page index to the current 10-page range.
-- SBOM provenance identifies source snapshot `fc514ce36` and creation time `2026-08-28T15:50:20Z`; the snapshot includes the version update and final shortcut-editor refinement.
-- Final verification: `default@OhosTestCompileArkTS` PASS (`BUILD SUCCESSFUL in 14 s 918 ms`); signed `assembleHap` PASS (`BUILD SUCCESSFUL in 38 s 510 ms`); signed HAP SHA-256 `45cd9c64b7c3a28c6a606594943d3ae79ba27c3e2216d87042edcc891267eada`; `git diff --check` and Light compliance PASS.
-- Independent review `/root/release_1_1_4_review`: tutorial release-log refresh PASS with zero findings; no P0/P1/P2/P3.
-
-## Existing cloud recovery result
-
-- Device logs at `192.168.3.235:38451` showed Account Kit login and RDB creation succeeded, then optional historical account-store migration failed with `401 invalid parameters`; that optional failure was incorrectly surfaced as `账号物理数据域打开失败`.
-- Canonical failure now falls back to the exact same account's hashed local store. Login and local CRUD remain available while cloud recovery is deferred; stale canonical data is never reverse-imported into that authoritative fallback.
-- Local rows commit only when dirty intent is durable in the same RDB transaction. Broken checkpoints are quarantined before writes reopen, and startup/retry share the same durable cloud-admission state.
-- Account migration preserves clear/delete and empty-table semantics. VNC/Moonlight exact schema and public-data rules, higher source schemas, account ownership and crypto ownership remain integrity boundaries rather than arbitrary availability policies.
-
-## Verification
-
-- `default@OhosTestCompileArkTS`: PASS (`BUILD SUCCESSFUL in 6 s 201 ms`).
-- `assembleHap`: PASS, signed (`BUILD SUCCESSFUL in 50 s 090 ms`).
-- Signed HAP SHA-256: `b6bad805365e0af421336fbe796a25cb5baaa28d651a8e1e14e356df733a8ca3`.
+- Rust unit suite: PASS, 209/209. OHOS RustDesk FFI release archives: PASS for arm64-v8a and x86_64; SHA-256 `f957a871f9d3e9749000fad62199503d37676e087e6cbe8a883a17297dfd5f8c` and `2bb4e6bd029ed14efef98279a17bc5f81ac51af8691d3e52f6d08245e95ece03`.
+- Native endpoint/protocol suite reached 838/838 before the final admission/resolver hardening; the final production native sources compiled in both mandatory Hvigor gates.
+- `default@OhosTestCompileArkTS`: PASS (`BUILD SUCCESSFUL in 6 s 651 ms`).
+- Signed `assembleHap`: PASS (`BUILD SUCCESSFUL in 59 s 25 ms`); HAP SHA-256 `afb0416175e377c5d0e00b90083b7f2c05cbb5e0b079fae63f0430bfcdabfffa`.
 - `git diff --check` and Light open-source compliance: PASS.
-- `ohosTest@OhosTestCompileArkTS`: unavailable (`00306054`, task is not registered); focused policies compile through the mandatory test target.
-- Independent review `/root/cloud_sync_fix_review`: PASS; no remaining P0/P1/P2. Non-blocking P3 is deeper real-RDB fault-injection coverage.
+- Independent review `/root/ipv6_shared_rdp_review`: PASS at `d3f07f4e`; both prior P2 findings are closed and final P0/P1/P2 counts are zero.
 
-## Authorized RustDesk desktop-flip increment
+## Next and blockers
 
-- Commits `56db7e612`, `a77e28f3` and `10c149fce` add a PC-only RustDesk top-bar flip icon with a compact three-action popup: image only, image plus controls, and reset.
-- The selected mode is stored per host in device-local personalization, restored across sessions and excluded from cloud-base change detection. Visual and control rotations are independent; PIP and foreground renderer rebinds reapply the visual mode.
-- Authenticated peer platform wins over stale host metadata. Android/iOS peers drain input, reset only the live desktop-flip transform and close the popup; the saved computer preference remains available for a later desktop peer. Phone/Pad viewers and RustDesk phone targets do not expose the action.
-- Continuity reconnects retain the last authenticated peer platform across transient `unknown` diagnostics, preventing mobile sessions from briefly reapplying a stale computer flip during re-authentication.
-- Verification: `default@OhosTestCompileArkTS` PASS (`BUILD SUCCESSFUL in 18 s 232 ms`); signed `assembleHap` PASS (`BUILD SUCCESSFUL in 26 s 727 ms`); signed HAP SHA-256 `db785d6f17a1f8305b62bd1503c5717eb8cee7b324e467e5aba3b721cf3239a7`; `git diff --check` and Light compliance PASS. PC real-device UI/mapping acceptance is pending.
-- Independent review `/root/rustdesk_desktop_flip_review`: PASS after closing one P1 mobile-peer scope issue and one P2 continuity `unknown` transition; no remaining P0/P1/P2.
-
-## Per-protocol wheel-direction increment
-
-- Commits `23ec26df1`, `6f1efab8a` and `701969cb1` replace the shared wheel switch with a `显示与交互` editor for RDP, RustDesk, SSH, VNC and Moonlight, including all-normal and all-reverse actions. SFTP is explicitly unaffected.
-- Each protocol now owns a device-local key and applies direction at its runtime boundary exactly once. Existing shared behavior migrates compatibly for RDP/RustDesk/VNC; SSH and Moonlight default to normal direction.
-- Editor saves use a touched-field patch merged with the latest live values, so changing one protocol cannot revert another protocol changed while the sheet was open. Multi-key persistence has best-effort rollback, and VNC keeps its old cloud payload field only as migration input.
-- Verification: `default@OhosTestCompileArkTS` PASS (`BUILD SUCCESSFUL in 12 s 339 ms`); signed `assembleHap` PASS (`BUILD SUCCESSFUL in 31 s 407 ms`); signed HAP SHA-256 `d7221652b6ba51f07e6f64752e096eb10f29d40548c92aa08b26eea5335d30d8`; `git diff --check` and Light compliance PASS. The separate `ohosTest@OhosTestCompileArkTS` task remains unregistered (`00306054`).
-- Independent review `/root/per_protocol_wheel_review`: PASS after closing the stale-editor P2 and tightening persistence/SSH ownership; no remaining P0/P1/P2. ArkWeb WheelEvent and five-protocol real-device input acceptance remain pending.
-
-## Device acceptance / blockers
-
-- No HDC target was available for this increment; the RDP high-DPI Windows matrix was not run and remains an external release-acceptance item.
-- The fixed HAP was installed successfully on `192.168.3.235:38451` with `install -r`, preserving app data, and `EntryAbility` started successfully. Acceptance must verify login remains usable after the historical migration `401`, exact-owner local data visibility, local save/restart/offline behavior, canonical recovery and no stale-row resurrection.
-- Prior remote keyboard/sidebar acceptance on `.235` remains queued. `.236:40123` still requires a release-provisioned HAP or explicit destructive-uninstall authorization; its existing data remains preserved.
+- Next: connect a HarmonyOS Phone/Pad/PC target and run the M1 IPv6 literal plus AAAA-only matrix for each protocol, including save/restart, trust/preflight, real session, same-network reconnect and SFTP file operations. Only then enable each protocol's `configured_endpoint_ipv6` capability independently.
+- Blocker: HDC returned `Connect server failed`; no target or controlled IPv6/AAAA-only protocol endpoints were available in this session. This blocks device acceptance, not the reviewed code checkpoint.
+- Older RDP high-DPI, gesture/settings, bindSheet, RustDesk quality/multimonitor, release and cloud-recovery device matrices remain queued and were not overwritten by this task.

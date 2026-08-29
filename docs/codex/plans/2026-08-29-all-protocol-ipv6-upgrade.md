@@ -22,7 +22,7 @@
 
 能力按“协议 × 能力”独立验收和发布；不适用项记为 N/A。依赖关系为：`configured_endpoint_ipv6=M0+M1`、`dual_stack_racing=M2`、`discovery/control-data=M3`、`RustDesk nat_traversal_ipv6=M4`，后者不得阻塞其他协议的较低层级声明。
 
-实施状态（2026-08-30）：M0 修复后复核中，M1 进行中。Endpoint V2 已接入五协议录入/导入、规范化新写、SSH 代理与跳板链、RustDesk control-plane fingerprint、RDP/VNC 预检以及通用/Moonlight NAPI 边界；非法、歧义和未完成接口存在性验证的 scoped IPv6 均 fail-closed。首个集成检查点 `97dd7b9ed` 的独立复核为 FAIL（1×P0、3×P1、1×P2）；RDP identity 碰撞、NAPI fail-open/无界分配、Restricted Admin 写入顺序及 Moonlight legacy preferred key 已在后续工作树修复，必须以新不可变提交复核 PASS 后才把 M0 标记完成。五类“协议 × 能力”声明仍全部关闭；真实连接、重连和真机矩阵未完成前不发布 `configured_endpoint_ipv6`。
+实施状态（2026-08-30）：M0 的共享 Endpoint V2、identity V2、fail-closed NAPI 边界与自动化契约门禁已完成；M1 的代码侧检查点已完成并在 `d3f07f4e` 通过独立复核（P0/P1/P2 均为 0），进入真机验收。实现已覆盖五协议录入/导入与规范化新写、SSH 代理/跳板/密钥安装、RustDesk control-plane 与可取消连接生命周期、RDP transport/server-name/client-hostname 分离及 literal SNI、VNC/RDP 预检、Moonlight NAPI 边界；异常连接准入会事务回滚，Rust/C++ 阻塞解析 worker 均有进程级硬上限。自动化结果为 Rust 209/209、OHOS Rust FFI arm64-v8a 与 x86_64、两项强制 Hvigor、`git diff --check` 和 Light 合规全部 PASS。当前无 HDC 目标，IPv6 literal/AAAA-only 的真实连接、重连、信任链和 SFTP 数据操作矩阵尚未执行，因此五类“协议 × 能力”声明继续全部关闭；M2–M4 仍待后续里程碑。
 
 ## 2. 当前能力矩阵
 
