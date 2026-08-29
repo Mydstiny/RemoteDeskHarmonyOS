@@ -7,6 +7,47 @@ export type LegacyVncRowMigrationDecision =
   'migrate' | 'quarantine_owner_mismatch' |
   'quarantine_stale_epoch' | 'quarantine_invalid_payload';
 
+export type AccountScopedMigrationReceiptDecision =
+  'migrate' | 'skip_unchanged' | 'source_changed';
+
+export type AccountScopedLocalOverlayRowDecision =
+  'migrate' | 'other_owner' | 'quarantine_missing_owner' |
+  'quarantine_invalid_local_only' | 'quarantine_invalid_payload';
+
+export function accountScopedMigrationReceiptDecision(
+  committedFingerprint: string | null,
+  currentFingerprint: string,
+  recoveryBaselineFingerprint: string | null = null
+): AccountScopedMigrationReceiptDecision {
+  if (committedFingerprint === null) { return 'migrate'; }
+  if (committedFingerprint.indexOf('journal-v1:') === 0 ||
+      committedFingerprint.indexOf('journal-v2:') === 0) {
+    return committedFingerprint === currentFingerprint
+      ? 'skip_unchanged' : 'source_changed';
+  }
+  // Older receipts used a volatile database-file mtime fingerprint. A local
+  // recovery scope created by the fixed app records its journal baseline
+  // before UI mutations are admitted, so that exact marker is authoritative.
+  // Old installs without the marker retain their existing compatibility path;
+  // they are not globally disconnected by a newly introduced heuristic.
+  if (recoveryBaselineFingerprint === null) {
+    return 'skip_unchanged';
+  }
+  return recoveryBaselineFingerprint === currentFingerprint
+    ? 'skip_unchanged' : 'source_changed';
+}
+
+export function accountScopedMigrationReceiptNeedsUpgrade(
+  committedFingerprint: string,
+  decision: AccountScopedMigrationReceiptDecision,
+  recoveryBaselineFingerprint: string | null
+): boolean {
+  return decision === 'skip_unchanged' &&
+    committedFingerprint.indexOf('journal-v1:') !== 0 &&
+    committedFingerprint.indexOf('journal-v2:') !== 0 &&
+    recoveryBaselineFingerprint !== null;
+}
+
 export function legacyRowOwnershipDecision(
   legacyUserId: string,
   targetKind: AccountScopeKind,
@@ -78,6 +119,32 @@ export function accountScopedRowOwnershipDecision(
   const target: string = targetOwnerScopeId.trim();
   if (owner.length === 0) { return 'quarantine_missing_owner'; }
   return owner === target ? 'target' : 'other_owner';
+}
+
+/**
+ * Local VNC/Moonlight overlay rows are account data even though they are not
+ * distributed tables. Admit only an exact owner, an exact 0/1 local-only flag
+ * and a payload already validated by the protocol policy.
+ */
+export function accountScopedLocalOverlayRowDecision(
+  recordOwnerScopeId: string,
+  targetOwnerScopeId: string,
+  localOnly: number,
+  payloadValid: boolean
+): AccountScopedLocalOverlayRowDecision {
+  const ownership: LegacyRowOwnershipDecision =
+    accountScopedRowOwnershipDecision(
+      recordOwnerScopeId, targetOwnerScopeId);
+  if (ownership === 'quarantine_missing_owner') {
+    return 'quarantine_missing_owner';
+  }
+  if (ownership !== 'target') { return 'other_owner'; }
+  if (!Number.isInteger(localOnly) ||
+      (localOnly !== 0 && localOnly !== 1)) {
+    return 'quarantine_invalid_local_only';
+  }
+  return payloadValid ? 'migrate' :
+    'quarantine_invalid_payload';
 }
 
 /**

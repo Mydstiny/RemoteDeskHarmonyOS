@@ -18,6 +18,7 @@ import {
   AccountSessionCoordinator,
   AccountTransitionResult
 } from '../services/AccountSessionCoordinator';
+import { AppCloneContext } from '../services/AppCloneContext';
 import { DataCrypto } from '../services/DataCrypto';
 import { CloudStore } from '../services/CloudStore';
 import { AccountSessionLease, accountSessionLeaseEquals } from '../services/AccountScopePolicy';
@@ -38,8 +39,14 @@ import {
 import {
   isVncHostProjection, projectVncHost, vncHostRecordIdFromUiId, vncHostUiId
 } from '../services/VncHostListProjectionPolicy';
-import { CloudSyncCoordinator } from '../services/CloudSyncCoordinator';
-import { cloudFirstCompatibleTablesAfterOptionalFailure } from '../services/CloudSyncCoordinatorPolicy';
+import {
+  CloudSyncCoordinator,
+  CloudSyncOperationResult
+} from '../services/CloudSyncCoordinator';
+import {
+  cloudFirstCompatibleTablesAfterOptionalFailure,
+  cloudFirstTablesForSelectionFinalization
+} from '../services/CloudSyncCoordinatorPolicy';
 import { CloudSyncSelectionStore } from '../services/CloudSyncSelectionStore';
 import { cloudSyncSelectableTables, effectiveCloudSyncTables } from '../services/CloudSyncSelectionPolicy';
 import {
@@ -186,6 +193,7 @@ import {
 import { VncSettingsService } from '../services/VncSettingsService';
 import { VncSettingsSheet } from '../components/VncSettingsSheet';
 import { SecretVisibilitySettingsSheet } from '../components/SecretVisibilitySettingsSheet';
+import { RemoteWheelDirectionSettingsSheet } from '../components/RemoteWheelDirectionSettingsSheet';
 import { VncCertificateTrustManagerSheet } from '../components/VncCertificateTrustManagerSheet';
 import {
   EditableSecretKind,
@@ -405,6 +413,7 @@ import {
   SETTINGS_SHEET_ACCOUNT,
   SETTINGS_SHEET_ACCENT_COLOR,
   SETTINGS_SHEET_DIAGNOSTIC_LOG,
+  SETTINGS_SHEET_REMOTE_WHEEL_DIRECTION,
   SETTINGS_SHEET_SECRET_VISIBILITY,
   SETTINGS_SHEET_FEEDBACK,
   SETTINGS_SHEET_HALO_COLOR,
@@ -444,16 +453,36 @@ import {
   VirtualKeyboardSettingsSection,
   VirtualKeyboardSettingsRouteSpec,
   diagnosticLogSettingsLeafSheetHeight,
+  remoteWheelDirectionSettingsLeafSheetHeight,
   secretVisibilitySettingsLeafSheetHeight,
   isVirtualKeyboardSettingsMode,
   moonlightSettingsLeafSheetHeight,
   moonlightSettingsRouteSpec,
   settingsLeafSheetUsesSystemCloseButton,
   settingsLeafOpenDelayMs,
+  virtualKeyboardSettingsLeafSheetHeight,
+  virtualKeyboardSettingsLeafUsesBottomSheet,
   virtualKeyboardSettingsRouteSpec,
   vncSettingsLeafSheetHeight
 } from '../services/SettingsSheetRoutePolicy';
 import { protocolIcon } from '../services/ProtocolIconPolicy';
+import {
+  MOONLIGHT_REVERSE_WHEEL_KEY,
+  RDP_REVERSE_WHEEL_KEY,
+  REMOTE_WHEEL_PREFERENCE_VERSION,
+  REMOTE_WHEEL_PREFERENCE_VERSION_KEY,
+  RUSTDESK_REVERSE_WHEEL_KEY,
+  SSH_REVERSE_WHEEL_KEY,
+  VNC_REVERSE_WHEEL_KEY,
+  RemoteWheelPreferenceMigration,
+  RemoteWheelPreferencePresence,
+  RemoteWheelPreferenceUpdate,
+  RemoteWheelPreferences,
+  applyRemoteWheelPreferenceUpdate,
+  migrateRemoteWheelPreferences,
+  remoteWheelSelectionSummary,
+  withRemoteWheelPreference
+} from '../services/RemoteWheelPreferencePolicy';
 import {
   SETTINGS_APP_BUNDLE_NAME,
   SETTINGS_BROWSER_VIEW_ACTION,
@@ -474,6 +503,8 @@ import {
   SETTINGS_SECTION_VNC,
   SETTINGS_SECTION_SECURITY,
   SETTINGS_SECTION_TUTORIAL,
+  SETTINGS_RDP_SWITCH_ROW_COUNT,
+  SETTINGS_SECURITY_ACTION_ROW_COUNT,
   SETTINGS_VNC_ACTION_ROW_COUNT,
   SETTINGS_MOONLIGHT_ACTION_ROW_COUNT,
   SettingsFeedbackLaunchAttempt,
@@ -483,6 +514,8 @@ import {
   settingsRatingUriCandidates,
   settingsRatingWantAction,
   settingsMoonlightExpandedMaxHeight,
+  settingsRdpExpandedMaxHeight,
+  settingsSecurityExpandedMaxHeight,
   settingsVncExpandedMaxHeight
 } from '../services/SettingsAccordionPolicy';
 import {
@@ -734,6 +767,9 @@ struct HostListPage {
   @State activeRemoteHostId: string = '';
   @State accountDisplayName: string = '';
   @State accountAvatarUrl: string = '';
+  @State appCloneLocalOnly: boolean = false;
+  @State appCloneIsClone: boolean = false;
+  @State appCloneStatusText: string = '';
   @State hostSelectionMode: boolean = false;
   @State hostSelectedIds: Set<string> = new Set();
   @State hostReorderEnabled: boolean = false;
@@ -813,6 +849,7 @@ struct HostListPage {
   @State showSettingsPanel: boolean = false;
   @State showSettingsLeafSheet: boolean = false;
   @State settingsLeafSheetMode: number = SETTINGS_SHEET_NONE;
+  @State virtualKeyboardCustomEditorVisible: boolean = false;
   @State vncSettingsLeafDirty: boolean = false;
   @State moonlightSettingsLeafDirty: boolean = false;
   @State moonlightSettingsLeafHostId: string = '';
@@ -823,6 +860,7 @@ struct HostListPage {
   @State popupSheetMode: number = 0; // 0=crypto, 1=about(用 aboutSheetMode 子路由), 2=SSH host key, 4=RDP certificate
   @State cloudSyncStep: string = CLOUD_SYNC_SHEET_ACTIONS;
   @State cloudConnectionAvailable: boolean = false;
+  private cloudRegistrationRefreshPromise: Promise<void> | null = null;
   /** User's explicit portable-backup sensitivity choice at export time. */
   @State backupFullMode: boolean = false;
   @State cloudSyncError: string = '';
@@ -1048,7 +1086,11 @@ struct HostListPage {
   @StorageLink('rustdeskViewScaleMode') rustdeskViewScaleMode: string = 'fit';
   @StorageLink('rustdeskShowLocalCursor') rustdeskShowLocalCursor: boolean = true;
   @StorageLink('rustdeskRelativeMouseMode') rustdeskRelativeMouseMode: boolean = false;
-  @StorageLink('rustdeskReverseWheel') rustdeskReverseWheel: boolean = false;
+  @StorageLink(RDP_REVERSE_WHEEL_KEY) rdpReverseWheel: boolean = false;
+  @StorageLink(RUSTDESK_REVERSE_WHEEL_KEY) rustdeskReverseWheel: boolean = false;
+  @StorageLink(SSH_REVERSE_WHEEL_KEY) sshReverseWheel: boolean = false;
+  @StorageLink(VNC_REVERSE_WHEEL_KEY) vncReverseWheel: boolean = false;
+  @StorageLink(MOONLIGHT_REVERSE_WHEEL_KEY) moonlightReverseWheel: boolean = false;
   @StorageLink('rustdeskSwapMouseButtons') rustdeskSwapMouseButtons: boolean = false;
   @StorageLink('rustdeskTouchpadSpeed') rustdeskTouchpadSpeed: number = 1.0;
   @StorageLink('rustdeskControlMode') rustdeskControlMode: number = 0; // 0=触控板, 1=直接触控, 2=键鼠
@@ -1720,6 +1762,11 @@ struct HostListPage {
 
   async aboutToAppear(): Promise<void> {
     this.pageActive = true;
+    const appClone: AppCloneContext = AppCloneContext.getInstance();
+    appClone.init(getContext(this) as common.Context);
+    this.appCloneLocalOnly = appClone.isLocalOnly();
+    this.appCloneIsClone = appClone.isClone();
+    this.appCloneStatusText = appClone.snapshot().statusText;
     this.cloudConnectionAvailable =
       CloudStore.getInstance().isCloudAvailable();
     // Keep VNC storage isolated while preparing its display projection before
@@ -1748,6 +1795,8 @@ struct HostListPage {
         prefs.getSync(PERSONALIZATION_DEFAULTS_FRESH_INSTALL_KEY,
           AppStorage.get<boolean>(PERSONALIZATION_DEFAULTS_FRESH_INSTALL_KEY) ?? false) as boolean,
         this.isDesktopDevice);
+      const savedRemoteWheelPreferences: RemoteWheelPreferences =
+        this.restoreRemoteWheelPreferences(prefs);
       // 核心外观设置
       const savedTheme: string = prefs.getSync('currentTheme', '') as string;
       const savedAccent: string = prefs.getSync('accentColor', '') as string;
@@ -1866,7 +1915,6 @@ struct HostListPage {
       const savedRustDeskViewScaleMode: string = prefs.getSync('rustdeskViewScaleMode', 'fit') as string;
       const savedRustDeskShowLocalCursor: boolean = prefs.getSync('rustdeskShowLocalCursor', true) as boolean;
       const savedRustDeskRelativeMouseMode: boolean = prefs.getSync('rustdeskRelativeMouseMode', false) as boolean;
-      const savedRustDeskReverseWheel: boolean = prefs.getSync('rustdeskReverseWheel', false) as boolean;
       const savedRustDeskSwapMouseButtons: boolean = prefs.getSync('rustdeskSwapMouseButtons', false) as boolean;
       const savedRustDeskTouchpadSpeed: number = prefs.getSync('rustdeskTouchpadSpeed', 1.0) as number;
       const savedControlMode: number =
@@ -1956,7 +2004,11 @@ struct HostListPage {
           savedRustDeskViewScaleMode : 'fit';
       this.rustdeskShowLocalCursor = savedRustDeskShowLocalCursor;
       this.rustdeskRelativeMouseMode = savedRustDeskRelativeMouseMode;
-      this.rustdeskReverseWheel = savedRustDeskReverseWheel;
+      this.rdpReverseWheel = savedRemoteWheelPreferences.rdp;
+      this.rustdeskReverseWheel = savedRemoteWheelPreferences.rustdesk;
+      this.sshReverseWheel = savedRemoteWheelPreferences.ssh;
+      this.vncReverseWheel = savedRemoteWheelPreferences.vnc;
+      this.moonlightReverseWheel = savedRemoteWheelPreferences.moonlight;
       this.rustdeskSwapMouseButtons = savedRustDeskSwapMouseButtons;
       this.rustdeskTouchpadSpeed =
         Math.max(0.4, Math.min(2.2, savedRustDeskTouchpadSpeed > 0 ? savedRustDeskTouchpadSpeed : 1.0));
@@ -2002,7 +2054,11 @@ struct HostListPage {
       AppStorage.setOrCreate('rustdeskViewScaleMode', this.rustdeskViewScaleMode);
       AppStorage.setOrCreate('rustdeskShowLocalCursor', this.rustdeskShowLocalCursor);
       AppStorage.setOrCreate('rustdeskRelativeMouseMode', this.rustdeskRelativeMouseMode);
-      AppStorage.setOrCreate('rustdeskReverseWheel', this.rustdeskReverseWheel);
+      AppStorage.setOrCreate(RDP_REVERSE_WHEEL_KEY, this.rdpReverseWheel);
+      AppStorage.setOrCreate(RUSTDESK_REVERSE_WHEEL_KEY, this.rustdeskReverseWheel);
+      AppStorage.setOrCreate(SSH_REVERSE_WHEEL_KEY, this.sshReverseWheel);
+      AppStorage.setOrCreate(VNC_REVERSE_WHEEL_KEY, this.vncReverseWheel);
+      AppStorage.setOrCreate(MOONLIGHT_REVERSE_WHEEL_KEY, this.moonlightReverseWheel);
       AppStorage.setOrCreate('rustdeskSwapMouseButtons', this.rustdeskSwapMouseButtons);
       AppStorage.setOrCreate('rustdeskTouchpadSpeed', this.rustdeskTouchpadSpeed);
       AppStorage.setOrCreate('rustdeskControlMode', this.rustdeskControlMode);
@@ -3896,6 +3952,7 @@ struct HostListPage {
       prepareAction();
     }
     this.closeLegacySettingsSheetFlags();
+    this.virtualKeyboardCustomEditorVisible = false;
     this.settingsLeafSheetMode = mode;
     this.showSettingsLeafSheet = true;
   }
@@ -4078,27 +4135,64 @@ struct HostListPage {
    * let the existing coordinator perform its normal cloud-first bootstrap.
    */
   private refreshCloudRegistration(): void {
+    if (this.appCloneLocalOnly) {
+      this.cloudConnectionAvailable = false;
+      return;
+    }
+    if (this.cloudRegistrationRefreshPromise !== null) { return; }
     const cloud: CloudStore = CloudStore.getInstance();
     this.cloudConnectionAvailable = cloud.isCloudAvailable();
-    if (this.cloudConnectionAvailable) {
+    const operation: Promise<void> = (async (): Promise<void> => {
+      await AccountSessionCoordinator.getInstance()
+        .resumePendingCloudBindingAfterForeground();
+      const lease: AccountSessionLease | null =
+        cloud.currentAccountLease();
+      if (lease === null || !cloud.isLeaseCurrent(lease)) { return; }
+      let restored: boolean = cloud.isCloudAvailable();
+      if (!restored) {
+        restored = await cloud.retryCloudRegistration();
+      }
+      this.cloudConnectionAvailable = cloud.isCloudAvailable();
+      if (!restored || !this.cloudConnectionAvailable ||
+          !cloud.isLeaseCurrent(lease)) { return; }
       if (CloudSyncSelectionStore.getInstance()
         .persistedSelectedBusinessTables()
         .indexOf(MOONLIGHT_CLOUD_TABLE) >= 0) {
-        void cloud.retryMoonlightCloudRegistration();
+        await cloud.retryMoonlightCloudRegistration();
+        if (!cloud.isLeaseCurrent(lease)) { return; }
       }
-      return;
-    }
-    void cloud.retryCloudRegistration().then((restored: boolean): void => {
+      const startupRequired: boolean =
+        !cloud.hasCloudBootstrapCompleted();
+      if (startupRequired ||
+          cloud.hasPendingSelectionReenableBarriers()) {
+        const result: CloudSyncOperationResult =
+          startupRequired
+            ? await CloudSyncCoordinator.getInstance()
+              .requestStartupPull()
+            : await CloudSyncCoordinator.getInstance()
+              .requestForegroundPull();
+        if (!cloud.isLeaseCurrent(lease)) { return; }
+        const finalizedTables: string[] =
+          cloudFirstTablesForSelectionFinalization(
+            result.ok, result.tables, result.failedTables);
+        if (finalizedTables.length > 0 &&
+            !cloud.resumeSelectionReenableAfterCloudFirst(
+              finalizedTables)) {
+          hilog.warn(0x0001, 'HostListPage',
+            'cloud bootstrap completed; selection barriers remain fail-closed');
+        }
+      }
       this.cloudConnectionAvailable = cloud.isCloudAvailable();
-      if (!restored) { return; }
-      void CloudSyncCoordinator.getInstance().requestStartupPull().then(
-        (_result): void => {
-          this.cloudConnectionAvailable = cloud.isCloudAvailable();
-        },
-        (_error: Error): void => {
-          this.cloudConnectionAvailable = cloud.isCloudAvailable();
-        });
+    })();
+    this.cloudRegistrationRefreshPromise = operation;
+    void operation.then((): void => {
+      if (this.cloudRegistrationRefreshPromise === operation) {
+        this.cloudRegistrationRefreshPromise = null;
+      }
     }, (_error: Error): void => {
+      if (this.cloudRegistrationRefreshPromise === operation) {
+        this.cloudRegistrationRefreshPromise = null;
+      }
       this.cloudConnectionAvailable = cloud.isCloudAvailable();
     });
   }
@@ -4109,7 +4203,16 @@ struct HostListPage {
    * callers must not assign cloudSyncStep after this method returns.
    */
   private openCloudSyncSheet(initialStep: string = ''): void {
-    this.refreshCloudRegistration();
+    const localDocumentFlow: boolean =
+      initialStep === CLOUD_SYNC_SHEET_BACKUP_CONFIRM ||
+      initialStep === CLOUD_SYNC_SHEET_RESTORE_CONFIRM;
+    if (this.appCloneLocalOnly && !localDocumentFlow) {
+      promptAction.showToast({
+        message: '应用分身仅使用本地数据，云同步已关闭', duration: 2200
+      });
+      return;
+    }
+    if (!this.appCloneLocalOnly) { this.refreshCloudRegistration(); }
     this.openSettingsLeafSheet(SETTINGS_SHEET_POPUP, (): void => {
       this.cloudSyncSelectedTables = CloudSyncSelectionStore.getInstance()
         .persistedSelectedBusinessTables();
@@ -4127,6 +4230,12 @@ struct HostListPage {
   }
 
   private openCloudSyncDetailsSheet(): void {
+    if (this.appCloneLocalOnly) {
+      promptAction.showToast({
+        message: '应用分身仅使用本地数据，云同步已关闭', duration: 2200
+      });
+      return;
+    }
     this.refreshCloudRegistration();
     this.openSettingsLeafSheet(SETTINGS_SHEET_POPUP, (): void => {
       this.cloudSyncError = '';
@@ -4136,6 +4245,10 @@ struct HostListPage {
   }
 
   private returnToCloudSyncActions(): void {
+    if (AppCloneContext.getInstance().localDataSheetReturnCloses()) {
+      this.closeSettingsLeafSheet();
+      return;
+    }
     this.cloudSyncError = '';
     this.cloudSyncStep = CLOUD_SYNC_SHEET_ACTIONS;
   }
@@ -4625,7 +4738,7 @@ struct HostListPage {
       return 390;
     }
     if (section === SETTINGS_SECTION_RDP) {
-      return 820;
+      return settingsRdpExpandedMaxHeight(this.breakpoint, SETTINGS_RDP_SWITCH_ROW_COUNT);
     }
     if (section === SETTINGS_SECTION_RUSTDESK) {
       return 980;
@@ -4640,7 +4753,7 @@ struct HostListPage {
       return settingsMoonlightExpandedMaxHeight(SETTINGS_MOONLIGHT_ACTION_ROW_COUNT);
     }
     if (section === SETTINGS_SECTION_SECURITY) {
-      return 560;
+      return settingsSecurityExpandedMaxHeight(SETTINGS_SECURITY_ACTION_ROW_COUNT);
     }
     if (section === SETTINGS_SECTION_TUTORIAL) {
       return 300;
@@ -10004,6 +10117,12 @@ struct HostListPage {
   }
 
   private async doLogout(): Promise<void> {
+    if (this.appCloneLocalOnly) {
+      promptAction.showToast({
+        message: '应用分身未启用华为账号，无需退出登录', duration: 2200
+      });
+      return;
+    }
     // The coordinator drains sessions, clears plaintext caches and switches to
     // the device-local physical store before this page leaves the account UI.
     const transition: AccountTransitionResult =
@@ -10030,6 +10149,12 @@ struct HostListPage {
 
   // 直接从设置页呼出系统 Huawei ID 登录 (不跳转 LoginPage)
   private async triggerSystemLogin(): Promise<void> {
+    if (this.appCloneLocalOnly) {
+      promptAction.showToast({
+        message: '应用分身使用本地模式，华为账号登录已关闭', duration: 2200
+      });
+      return;
+    }
     try {
       const request = new authentication.HuaweiIDProvider().createAuthorizationWithHuaweiIDRequest();
       request.forceAuthorization = true;
@@ -10119,6 +10244,133 @@ struct HostListPage {
     } catch (_error) {
       return false;
     }
+  }
+
+  private restoreRemoteWheelPreferences(
+    prefs: preferences.Preferences
+  ): RemoteWheelPreferences {
+    const current: RemoteWheelPreferences = {
+      rdp: prefs.getSync(RDP_REVERSE_WHEEL_KEY, false) as boolean,
+      rustdesk: prefs.getSync(RUSTDESK_REVERSE_WHEEL_KEY, false) as boolean,
+      ssh: prefs.getSync(SSH_REVERSE_WHEEL_KEY, false) as boolean,
+      vnc: prefs.getSync(VNC_REVERSE_WHEEL_KEY, false) as boolean,
+      moonlight: prefs.getSync(MOONLIGHT_REVERSE_WHEEL_KEY, false) as boolean
+    };
+    const present: RemoteWheelPreferencePresence = {
+      rdp: prefs.hasSync(RDP_REVERSE_WHEEL_KEY),
+      rustdesk: prefs.hasSync(RUSTDESK_REVERSE_WHEEL_KEY),
+      ssh: prefs.hasSync(SSH_REVERSE_WHEEL_KEY),
+      vnc: prefs.hasSync(VNC_REVERSE_WHEEL_KEY),
+      moonlight: prefs.hasSync(MOONLIGHT_REVERSE_WHEEL_KEY)
+    };
+    const migration: RemoteWheelPreferenceMigration = migrateRemoteWheelPreferences(
+      current, present,
+      prefs.getSync(REMOTE_WHEEL_PREFERENCE_VERSION_KEY, 0) as number,
+      this.vncSettings.get().reverseWheel);
+    if (migration.shouldPersist) {
+      try {
+        prefs.putSync(RDP_REVERSE_WHEEL_KEY, migration.values.rdp);
+        prefs.putSync(RUSTDESK_REVERSE_WHEEL_KEY, migration.values.rustdesk);
+        prefs.putSync(SSH_REVERSE_WHEEL_KEY, migration.values.ssh);
+        prefs.putSync(VNC_REVERSE_WHEEL_KEY, migration.values.vnc);
+        prefs.putSync(MOONLIGHT_REVERSE_WHEEL_KEY, migration.values.moonlight);
+        prefs.putSync(REMOTE_WHEEL_PREFERENCE_VERSION_KEY, migration.version);
+        prefs.flushSync();
+      } catch (_error) { /* Runtime values still preserve the legacy behavior. */ }
+    }
+    return migration.values;
+  }
+
+  private remoteWheelPreferences(): RemoteWheelPreferences {
+    return {
+      rdp: this.rdpReverseWheel,
+      rustdesk: this.rustdeskReverseWheel,
+      ssh: this.sshReverseWheel,
+      vnc: this.vncReverseWheel,
+      moonlight: this.moonlightReverseWheel
+    };
+  }
+
+  private saveRemoteWheelPreferences(values: RemoteWheelPreferences): boolean {
+    try {
+      const prefs: preferences.Preferences = preferences.getPreferencesSync(
+        getContext(this), { name: 'RemoteDesktopAppPrefs' });
+      const previous: RemoteWheelPreferences = {
+        rdp: prefs.getSync(RDP_REVERSE_WHEEL_KEY, false) as boolean,
+        rustdesk: prefs.getSync(RUSTDESK_REVERSE_WHEEL_KEY, false) as boolean,
+        ssh: prefs.getSync(SSH_REVERSE_WHEEL_KEY, false) as boolean,
+        vnc: prefs.getSync(VNC_REVERSE_WHEEL_KEY, false) as boolean,
+        moonlight: prefs.getSync(MOONLIGHT_REVERSE_WHEEL_KEY, false) as boolean
+      };
+      const present: RemoteWheelPreferencePresence = {
+        rdp: prefs.hasSync(RDP_REVERSE_WHEEL_KEY),
+        rustdesk: prefs.hasSync(RUSTDESK_REVERSE_WHEEL_KEY),
+        ssh: prefs.hasSync(SSH_REVERSE_WHEEL_KEY),
+        vnc: prefs.hasSync(VNC_REVERSE_WHEEL_KEY),
+        moonlight: prefs.hasSync(MOONLIGHT_REVERSE_WHEEL_KEY)
+      };
+      const versionPresent: boolean = prefs.hasSync(REMOTE_WHEEL_PREFERENCE_VERSION_KEY);
+      const previousVersion: number = prefs.getSync(
+        REMOTE_WHEEL_PREFERENCE_VERSION_KEY, 0) as number;
+      try {
+        prefs.putSync(RDP_REVERSE_WHEEL_KEY, values.rdp);
+        prefs.putSync(RUSTDESK_REVERSE_WHEEL_KEY, values.rustdesk);
+        prefs.putSync(SSH_REVERSE_WHEEL_KEY, values.ssh);
+        prefs.putSync(VNC_REVERSE_WHEEL_KEY, values.vnc);
+        prefs.putSync(MOONLIGHT_REVERSE_WHEEL_KEY, values.moonlight);
+        prefs.putSync(REMOTE_WHEEL_PREFERENCE_VERSION_KEY, REMOTE_WHEEL_PREFERENCE_VERSION);
+        prefs.flushSync();
+      } catch (_writeError) {
+        try {
+          this.restoreRemoteWheelPreferenceValue(
+            prefs, RDP_REVERSE_WHEEL_KEY, present.rdp, previous.rdp);
+          this.restoreRemoteWheelPreferenceValue(
+            prefs, RUSTDESK_REVERSE_WHEEL_KEY, present.rustdesk, previous.rustdesk);
+          this.restoreRemoteWheelPreferenceValue(
+            prefs, SSH_REVERSE_WHEEL_KEY, present.ssh, previous.ssh);
+          this.restoreRemoteWheelPreferenceValue(
+            prefs, VNC_REVERSE_WHEEL_KEY, present.vnc, previous.vnc);
+          this.restoreRemoteWheelPreferenceValue(
+            prefs, MOONLIGHT_REVERSE_WHEEL_KEY, present.moonlight, previous.moonlight);
+          this.restoreRemoteWheelPreferenceValue(
+            prefs, REMOTE_WHEEL_PREFERENCE_VERSION_KEY, versionPresent, previousVersion);
+          prefs.flushSync();
+        } catch (_rollbackError) { /* The UI state still retains the last confirmed values. */ }
+        return false;
+      }
+    } catch (_error) {
+      return false;
+    }
+    this.rdpReverseWheel = values.rdp;
+    this.rustdeskReverseWheel = values.rustdesk;
+    this.sshReverseWheel = values.ssh;
+    this.vncReverseWheel = values.vnc;
+    this.moonlightReverseWheel = values.moonlight;
+    return true;
+  }
+
+  private restoreRemoteWheelPreferenceValue(
+    prefs: preferences.Preferences,
+    key: string,
+    present: boolean,
+    value: string | number | boolean
+  ): void {
+    if (present) {
+      prefs.putSync(key, value);
+    } else {
+      prefs.deleteSync(key);
+    }
+  }
+
+  private saveProtocolReverseWheel(protocol: 'rdp' | 'rustdesk' | 'ssh' | 'vnc' | 'moonlight',
+    reversed: boolean): boolean {
+    return this.saveRemoteWheelPreferences(withRemoteWheelPreference(
+      this.remoteWheelPreferences(), protocol, reversed));
+  }
+
+  private saveRemoteWheelPreferenceUpdate(update: RemoteWheelPreferenceUpdate): boolean {
+    return this.saveRemoteWheelPreferences(applyRemoteWheelPreferenceUpdate(
+      this.remoteWheelPreferences(), update));
   }
 
   private reportPreferencePersistence(localSaved: boolean,
@@ -10562,12 +10814,6 @@ struct HostListPage {
   private saveRustDeskFilePasteEnabled(on: boolean): void {
     this.rustdeskFilePasteEnabled = on;
     this.persistPref('rustdeskFilePasteEnabled', this.rustdeskFilePasteEnabled);
-  }
-
-  /** Retain the legacy RustDesk key so existing wheel preferences migrate without data loss. */
-  private saveRemoteReverseWheel(on: boolean): void {
-    this.rustdeskReverseWheel = on;
-    this.persistPref('rustdeskReverseWheel', on);
   }
 
   private saveSshInputMode(mode: number): void {
@@ -11236,8 +11482,8 @@ struct HostListPage {
         .hitTestBehavior(this.showSettingsLeafSheet ? HitTestMode.Default : HitTestMode.None)
       .bindSheet($$this.showSettingsLeafSheet, this.settingsLeafSheet(), {
         height: this.settingsLeafSheetHeight(),
-        preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
-        dragBar: this.breakpoint === 'sm',
+        preferType: this.settingsLeafUsesBottomSheet() ? SheetType.BOTTOM : SheetType.CENTER,
+        dragBar: this.settingsLeafUsesBottomSheet(),
         keyboardAvoidMode: this.settingsLeafKeyboardAvoidMode(),
         backgroundColor: this.pal().sheetBg,
         blurStyle: BlurStyle.NONE,
@@ -13786,20 +14032,31 @@ struct HostListPage {
       // shrink for short lessons and grow only up to the live window.
       return SheetSize.FIT_CONTENT;
     }
-    // Virtual-keyboard leaves own their scrolling body. Let the native large
-    // sheet follow the current phone, tablet, or freeform-window height.
     if (this.isVirtualKeyboardSettingsLeafSheet()) {
-      return SheetSize.LARGE;
+      return virtualKeyboardSettingsLeafSheetHeight(
+        this.settingsLeafSheetMode, this.pageViewportHeight,
+        this.virtualKeyboardCustomEditorVisible);
     }
     const diagnosticHeight: number = diagnosticLogSettingsLeafSheetHeight(this.settingsLeafSheetMode);
     if (diagnosticHeight > 0) { return diagnosticHeight; }
     const secretVisibilityHeight: number =
       secretVisibilitySettingsLeafSheetHeight(this.settingsLeafSheetMode);
     if (secretVisibilityHeight > 0) { return secretVisibilityHeight; }
+    const wheelDirectionHeight: number =
+      remoteWheelDirectionSettingsLeafSheetHeight(this.settingsLeafSheetMode);
+    if (wheelDirectionHeight > 0) { return wheelDirectionHeight; }
     const moonlightHeight: number = moonlightSettingsLeafSheetHeight(this.settingsLeafSheetMode);
     if (moonlightHeight > 0) { return moonlightHeight; }
     const vncHeight: number = vncSettingsLeafSheetHeight(this.settingsLeafSheetMode);
     return vncHeight > 0 ? vncHeight : SheetSize.FIT_CONTENT;
+  }
+
+  private settingsLeafUsesBottomSheet(): boolean {
+    if (this.isVirtualKeyboardSettingsLeafSheet()) {
+      return virtualKeyboardSettingsLeafUsesBottomSheet(
+        this.settingsLeafSheetMode, this.pageViewportHeight, this.breakpoint);
+    }
+    return this.breakpoint === 'sm';
   }
 
   private settingsLeafKeyboardAvoidMode(): SheetKeyboardAvoidMode {
@@ -13838,6 +14095,17 @@ struct HostListPage {
         onSave: (policy: SecretPresentationPolicy): boolean =>
           this.saveSecretPresentationPolicy(policy)
       })
+    } else if (this.settingsLeafSheetMode === SETTINGS_SHEET_REMOTE_WHEEL_DIRECTION) {
+      RemoteWheelDirectionSettingsSheet({
+        initialRdp: this.rdpReverseWheel,
+        initialRustDesk: this.rustdeskReverseWheel,
+        initialSsh: this.sshReverseWheel,
+        initialVnc: this.vncReverseWheel,
+        initialMoonlight: this.moonlightReverseWheel,
+        onClose: (): void => { this.closeSettingsLeafSheet(); },
+        onSave: (update: RemoteWheelPreferenceUpdate): boolean =>
+          this.saveRemoteWheelPreferenceUpdate(update)
+      })
     } else if (this.settingsLeafSheetMode === SETTINGS_SHEET_DIAGNOSTIC_LOG) {
       DiagnosticCaptureSettingsSheet({
         onClose: (): void => { this.closeSettingsLeafSheet(); }
@@ -13850,7 +14118,10 @@ struct HostListPage {
     } else if (this.isVirtualKeyboardSettingsLeafSheet()) {
       VirtualKeyboardSettingsSheet({
         requestedSection: this.virtualKeyboardSettingsSectionForLeaf(),
-        onClose: (): void => { this.closeSettingsLeafSheet(); }
+        onClose: (): void => { this.closeSettingsLeafSheet(); },
+        onCustomEditorVisibleChange: (visible: boolean): void => {
+          this.virtualKeyboardCustomEditorVisible = visible;
+        }
       })
     } else if (this.isMoonlightSettingsLeafSheet()) {
       MoonlightSettingsSurface({
@@ -13873,9 +14144,8 @@ struct HostListPage {
         onOpenGatewayManager: (): void => { this.openVncGatewayManagerFromSettings(); },
         onOpenTrustManager: (): void => { this.openVncTrustManagerFromSettings(); },
         onSaved: (): void => { this.refreshCryptoStatus(); },
-        onReverseWheelSaved: (reverse: boolean): void => {
-          this.saveRemoteReverseWheel(reverse);
-        },
+        onReverseWheelSaved: (reverse: boolean): boolean =>
+          this.saveProtocolReverseWheel('vnc', reverse),
         onDirtyChanged: (dirty: boolean): void => { this.vncSettingsLeafDirty = dirty; }
       })
     } else {
@@ -14022,7 +14292,12 @@ struct HostListPage {
         ListItem() {
           Row() {
             // 左侧头像
-            if (this.accountAvatarUrl !== '') {
+            if (this.appCloneLocalOnly) {
+              Text(this.appCloneIsClone ? '分' : '本').fontSize(18).fontWeight(FontWeight.Bold)
+                .fontColor(Color.White).textAlign(TextAlign.Center)
+                .width(40).height(40).borderRadius(20)
+                .backgroundColor(this.accentColor).padding({ top: 8 })
+            } else if (this.accountAvatarUrl !== '') {
               Image(this.accountAvatarUrl).width(40).height(40).borderRadius(20)
             } else if (this.auth.isLoggedIn()) {
               Text('👤').fontSize(30)
@@ -14031,10 +14306,13 @@ struct HostListPage {
             }
             // 中间信息列
             Column() {
-              Text(this.accountDisplayName !== '' ? this.accountDisplayName : '华为账号')
+              Text(this.appCloneLocalOnly ?
+                (this.appCloneIsClone ? 'RemoteDesk 应用分身' : 'RemoteDesk 本地安全模式') :
+                (this.accountDisplayName !== '' ? this.accountDisplayName : '华为账号'))
                 .fontSize(19).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
                 .fontFamily(this.font())
-              Text('' + this.hostCount + ' 主机 · ' + this.keyCount + ' 密钥 · ' + this.totpCount + ' 2FA')
+              Text(this.appCloneLocalOnly ? this.appCloneStatusText :
+                ('' + this.hostCount + ' 主机 · ' + this.keyCount + ' 密钥 · ' + this.totpCount + ' 2FA'))
                 .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font()).margin({ top: 2 })
             }
             .alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 12 })
@@ -14260,31 +14538,48 @@ struct HostListPage {
 
         ListItem() {
           this.settingsAccordionHeader(SETTINGS_SECTION_CLOUD_SYNC, $r('sys.symbol.cloud_fill'),
-            '云同步', '华为云空间、跨设备数据恢复与手动同步')
+            '云同步', this.appCloneLocalOnly ? this.appCloneStatusText :
+              '华为云空间、跨设备数据恢复与手动同步')
         }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 10 })
 
         ListItem() {
           Column() {
-            Text('云端数据').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text3)
+            Text(this.appCloneLocalOnly ? '分身数据' : '云端数据')
+              .fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text3)
               .fontFamily(this.font()).padding({ left: 8, bottom: 8 })
             Column() {
-              Row() {
-                Row() { SymbolGlyph($r('sys.symbol.cloud_fill')).fontSize(21).fontColor([this.accentColor]) }
-                  .width(40).height(40).borderRadius(20).backgroundColor(this.pal().card).justifyContent(FlexAlign.Center)
-                Column() { Text('管理云同步').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font());
-                  Text(cloudSyncDetailSpec(this.cloudConnectionAvailable).statusText).fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
-                }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 12 })
-                SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(16).fontColor([this.pal().text3])
-              }.width('100%').height(68).padding({ left: 14, right: 16 }).onClick((): void => { this.openCloudSyncSheet(); })
-              this.cardDivider()
-              Row() {
-                Row() { SymbolGlyph($r('sys.symbol.info_circle')).fontSize(20).fontColor([this.accentColor]) }
-                  .width(40).height(40).borderRadius(20).backgroundColor(this.pal().card).justifyContent(FlexAlign.Center)
-                Column() { Text('云同步详情').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font());
-                  Text(cloudSyncDetailSpec(this.cloudConnectionAvailable).statusText).fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
-                }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 12 })
-                SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(16).fontColor([this.pal().text3])
-              }.width('100%').height(68).padding({ left: 14, right: 16 }).onClick((): void => { this.openCloudSyncDetailsSheet(); })
+              if (this.appCloneLocalOnly) {
+                Row() {
+                  Row() { Text(this.appCloneIsClone ? '分' : '本').fontSize(16).fontWeight(FontWeight.Bold).fontColor(this.accentColor) }
+                    .width(40).height(40).borderRadius(20).backgroundColor(this.pal().card)
+                    .justifyContent(FlexAlign.Center)
+                  Column() {
+                    Text(this.appCloneIsClone ? '应用分身 · 本地模式' : '本地安全模式')
+                      .fontSize(AppTheme.fontSize.body)
+                      .fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())
+                    Text('华为账号、云上传与云下载已关闭；本地备份仍可使用')
+                      .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
+                  }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 12 })
+                }.width('100%').height(72).padding({ left: 14, right: 16 })
+              } else {
+                Row() {
+                  Row() { SymbolGlyph($r('sys.symbol.cloud_fill')).fontSize(21).fontColor([this.accentColor]) }
+                    .width(40).height(40).borderRadius(20).backgroundColor(this.pal().card).justifyContent(FlexAlign.Center)
+                  Column() { Text('管理云同步').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font());
+                    Text(cloudSyncDetailSpec(this.cloudConnectionAvailable).statusText).fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
+                  }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 12 })
+                  SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(16).fontColor([this.pal().text3])
+                }.width('100%').height(68).padding({ left: 14, right: 16 }).onClick((): void => { this.openCloudSyncSheet(); })
+                this.cardDivider()
+                Row() {
+                  Row() { SymbolGlyph($r('sys.symbol.info_circle')).fontSize(20).fontColor([this.accentColor]) }
+                    .width(40).height(40).borderRadius(20).backgroundColor(this.pal().card).justifyContent(FlexAlign.Center)
+                  Column() { Text('云同步详情').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font());
+                    Text(cloudSyncDetailSpec(this.cloudConnectionAvailable).statusText).fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
+                  }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 12 })
+                  SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(16).fontColor([this.pal().text3])
+                }.width('100%').height(68).padding({ left: 14, right: 16 }).onClick((): void => { this.openCloudSyncDetailsSheet(); })
+              }
               this.cardDivider()
               Row() {
                 Row() { SymbolGlyph($r('sys.symbol.doc_plaintext')).fontSize(20).fontColor([this.accentColor]) }
@@ -15094,7 +15389,7 @@ struct HostListPage {
               .fontFamily(this.font()).padding({ left: 8, bottom: 8 })
             Column() {
               this.cardActionRow($r('app.media.icon_info'), '本版本更新日志',
-                CURRENT_RELEASE_VERSION + ' · 查看全部 12 项功能与修复',
+                CURRENT_RELEASE_VERSION + ' · 查看全部 10 项功能与修复',
                 (): void => {
                   this.openSettingsLeafSheet(SETTINGS_SHEET_POPUP, (): void => {
                     this.aboutSheetMode = 4;
@@ -15953,7 +16248,8 @@ struct HostListPage {
         } else {
           Blank().width(44)
         }
-        Text('云同步').fontSize(20).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
+        Text(this.appCloneLocalOnly ? '本地数据管理' : '云同步')
+          .fontSize(20).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
           .fontFamily(this.font()).layoutWeight(1).textAlign(TextAlign.Center)
         if (this.currentCloudSyncSheetSpec().canDismiss) {
           SymbolGlyph($r('sys.symbol.xmark')).fontSize(18).fontColor([this.pal().text2]).width(44).height(36)
@@ -16940,33 +17236,22 @@ struct HostListPage {
   }
 
   @Builder remoteWheelDirectionRow() {
-    Column() {
-      Row() {
-        Row() { Image($r('app.media.icon_desktop')).width(22).height(22).fillColor(this.pal().text3) }
-          .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
-        Column() {
-          Text('远程滚轮方向').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
-            .fontColor(this.pal().text).fontFamily(this.font())
-          Text('适用于 RDP、RustDesk、VNC、实体鼠标和触控板')
-            .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
-            .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-        }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
-      }.width('100%').height(54).padding({ left: 16, right: 16 })
-      Row({ space: 8 }) {
-        this.remoteWheelDirectionChip('正常', false)
-        this.remoteWheelDirectionChip('反向', true)
-      }.width('100%').height(42).justifyContent(FlexAlign.Center)
-    }.width('100%')
-  }
-
-  @Builder remoteWheelDirectionChip(label: string, reverse: boolean) {
-    Text(label).fontSize(11).fontWeight(this.rustdeskReverseWheel === reverse ? FontWeight.Medium : FontWeight.Normal)
-      .fontColor(this.rustdeskReverseWheel === reverse ? '#FFFFFF' : this.pal().text2)
-      .textAlign(TextAlign.Center).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-      .width(88).padding({ top: 7, bottom: 7 })
-      .backgroundColor(this.rustdeskReverseWheel === reverse ? this.accentColor : this.pal().surface)
-      .borderRadius(6)
-      .onClick((): void => { this.saveRemoteReverseWheel(reverse); })
+    Row() {
+      Row() { Image($r('app.media.icon_desktop')).width(22).height(22).fillColor(this.pal().text3) }
+        .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
+      Column() {
+        Text('远程滚轮方向').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
+          .fontColor(this.pal().text).fontFamily(this.font())
+        Text(remoteWheelSelectionSummary(this.remoteWheelPreferences()))
+          .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
+          .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).margin({ top: 2 })
+      }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
+      Button('编辑').height(34).padding({ left: 12, right: 12 }).fontSize(12)
+        .fontColor(this.accentColor).backgroundColor(this.pal().surface).borderRadius(8)
+        .onClick((): void => {
+          this.openSettingsLeafSheet(SETTINGS_SHEET_REMOTE_WHEEL_DIRECTION);
+        })
+    }.width('100%').height(62).padding({ left: 16, right: 16 })
   }
 
   @Builder sessionControlBarVisibilityRow() {
@@ -19304,34 +19589,53 @@ struct HostListPage {
 
   @Builder accountSheet() {
     Column() {
-      Text('账号管理').fontSize(19).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
+      Text(this.appCloneLocalOnly ?
+        (this.appCloneIsClone ? '应用分身' : '本地安全模式') : '账号管理')
+        .fontSize(19).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
         .margin({ top: 24, bottom: 20 }).fontFamily(this.font())
       Column() {
-        if (this.auth.isLoggedIn() && this.auth.getAvatarUrl() !== '') {
+        if (this.appCloneLocalOnly) {
+          Text(this.appCloneIsClone ? '分' : '本').fontSize(24).fontWeight(FontWeight.Bold)
+            .fontColor(Color.White).textAlign(TextAlign.Center)
+            .width(64).height(64).borderRadius(32)
+            .backgroundColor(this.accentColor).padding({ top: 14 })
+            .margin({ bottom: 8 })
+        } else if (this.auth.isLoggedIn() && this.auth.getAvatarUrl() !== '') {
           Image(this.auth.getAvatarUrl())
             .width(64).height(64).borderRadius(32)
             .margin({ bottom: 8 })
         }
-        Text(this.auth.isLoggedIn() ? this.auth.getDisplayName() : '未登录')
+        Text(this.appCloneLocalOnly ?
+          (this.appCloneIsClone ? 'RemoteDesk 应用分身' : 'RemoteDesk 本地安全模式') :
+          (this.auth.isLoggedIn() ? this.auth.getDisplayName() : '未登录'))
           .fontSize(AppTheme.fontSize.subtitle)
           .fontWeight(FontWeight.Bold).fontColor(this.pal().text)
-        Text(this.auth.isLoggedIn() ? '华为账号已登录' : '离线模式 · 主机仅本地存储')
+        Text(this.appCloneLocalOnly ?
+          '主机、凭据和密钥与主应用隔离\n华为账号与云同步在分身中关闭' :
+          (this.auth.isLoggedIn() ? '华为账号已登录' : '离线模式 · 主机仅本地存储'))
           .fontSize(12).fontColor(this.pal().text3).margin({ top: 4 })
+          .textAlign(TextAlign.Center).lineHeight(19)
       }.width('100%').alignItems(HorizontalAlign.Center).margin({ bottom: 24 })
       Row() {
         this.statItem('RDP', this.rdpCount, this.accentColor)
         this.statItem('RustDesk', this.rustdeskCount, this.pal().success)
         this.statItem('SSH', this.sshCount, this.pal().editColor)
       }.width('90%').justifyContent(FlexAlign.SpaceEvenly).margin({ bottom: 24 })
-      Button('华为账号登录').width('86%').height(46).fontSize(13).fontWeight(FontWeight.Normal)
-        .backgroundColor(this.accentColor).fontColor('#FFFFFF').borderRadius(12).margin({ bottom: 10 })
-        .onClick(() => {
-          this.closeSettingsLeafSheet();
-          this.triggerSystemLogin();
-        })
-      Button('退出登录').width('86%').height(44).fontSize(14)
-        .backgroundColor(this.pal().surface).fontColor(this.pal().danger).borderRadius(12)
-        .onClick(() => { this.doLogout(); })
+      if (this.appCloneLocalOnly) {
+        Button('完成').width('86%').height(46).fontSize(14)
+          .backgroundColor(this.accentColor).fontColor('#FFFFFF').borderRadius(12)
+          .onClick((): void => { this.closeSettingsLeafSheet(); })
+      } else {
+        Button('华为账号登录').width('86%').height(46).fontSize(13).fontWeight(FontWeight.Normal)
+          .backgroundColor(this.accentColor).fontColor('#FFFFFF').borderRadius(12).margin({ bottom: 10 })
+          .onClick(() => {
+            this.closeSettingsLeafSheet();
+            this.triggerSystemLogin();
+          })
+        Button('退出登录').width('86%').height(44).fontSize(14)
+          .backgroundColor(this.pal().surface).fontColor(this.pal().danger).borderRadius(12)
+          .onClick(() => { this.doLogout(); })
+      }
       Blank().height(32)
     }.width('100%')
     .backgroundColor(this.pal().bg).borderRadius(this.breakpoint === 'sm' ? { topLeft: 20, topRight: 20, bottomLeft: 0, bottomRight: 0 } : 20)

@@ -30,6 +30,12 @@ export default function vncRecordPolicyTest(): void {
     it('uses_the_single_vncrecord_cloud_table', 0, (): void => {
       expect(VNC_CLOUD_TABLE).assertEqual('vncrecordv2');
     });
+    it('hashes_an_empty_legacy_payload_without_calling_a_zero_length_update',
+      0, (): void => {
+        expect(vncPayloadHashSha256('')).assertEqual(
+          'e3b0c44298fc1c149afbf4c8996fb924' +
+          '27ae41e4649b934ca495991b7852b855');
+      });
     it('accepts_non_secret_host_rows_in_the_vnc_owner_domain', 0, (): void => {
       expect(vncRecordIsValid(validHostRecord())).assertTrue();
     });

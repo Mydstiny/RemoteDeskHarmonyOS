@@ -5,6 +5,11 @@
  */
 import rdpnapi from 'librdpnapi.so';
 import {
+  disconnectAllSubmissionMayReleaseTracking,
+  nativeSessionStateBlocksAutomaticTransition,
+  RemoteSessionTransitionGate
+} from './RemoteSessionTransitionGate';
+import {
   SessionConfig,
   SftpFileEntry,
   GeneratedSshKeyPair,
@@ -391,6 +396,8 @@ export class ExtensionLoader {
             submitted ? (requestId > 0 ? 1 : 0) : -1);
         });
     } catch (_err) {}
+    if (!disconnectAllSubmissionMayReleaseTracking(
+      submitted)) { return; }
     this.diagnosticRuntimeSamplingLoop.clear();
     this.diagnosticRuntimeSnapshots.clear();
     try { this.diagnosticSessionModules.clear(); } catch (_err) {}
@@ -462,6 +469,10 @@ export class ExtensionLoader {
   // ====== 协议连接 ======
 
   connect(config: SessionConfig): number {
+    if (!RemoteSessionTransitionGate.getInstance()
+      .newSessionAllowed()) {
+      return -90;
+    }
     const diagnosticModule: DiagnosticConnectionModule | null =
       diagnosticConnectionModule(config.protocol);
     this.recordDiagnosticConnection(diagnosticModule, 'request', 'started');
@@ -489,6 +500,14 @@ export class ExtensionLoader {
   }
 
   connectSshAsync(config: SessionConfig, foreground: boolean = true): SshNativeConnectPromise {
+    if (!RemoteSessionTransitionGate.getInstance()
+      .newSessionAllowed()) {
+      const blocked: SshNativeConnectPromise =
+        Promise.resolve(-90) as SshNativeConnectPromise;
+      blocked.sessionId = -1;
+      blocked.generation = 0;
+      return blocked;
+    }
     const diagnosticModule: DiagnosticConnectionModule = 'connection.ssh_sftp';
     this.recordDiagnosticConnection(diagnosticModule, 'request', 'started');
     this.recordDiagnosticRoutes(config, 'started');
@@ -779,22 +798,34 @@ export class ExtensionLoader {
   }
 
   disconnectAll(): number {
-    this.pendingSshConnects.clear();
     let requestId: number = 0;
     let submitted: boolean = true;
+    let failureDetail: string = '';
     try {
       requestId = rdpnapi.disconnectAll(
         this.rendererHandle, this.decoderHandle, this.audioPlayerHandle) as number;
     } catch (err) {
       submitted = false;
-      hilog.error(DOMAIN, TAG, '[ExtensionLoader] disconnectAll: ' + JSON.stringify(err));
+      failureDetail = JSON.stringify(err);
+      hilog.error(DOMAIN, TAG,
+        '[ExtensionLoader] disconnectAll: ' + failureDetail);
     }
     this.recordAndForgetAllDiagnosticSessions(submitted, requestId);
+    if (!disconnectAllSubmissionMayReleaseTracking(submitted)) {
+      // Keep current, pending and detached activity visible so account repair
+      // cannot prove a false idle state after a rejected native teardown.
+      throw new Error(
+        'native disconnect-all submission failed: ' + failureDetail);
+    }
+    this.pendingSshConnects.clear();
     this.currentSessionId = -1;
     this.facadeGeneration = 0;
     this.rendererHandle = -1;
     this.decoderHandle = -1;
     this.audioPlayerHandle = -1;
+    // The native boundary synchronously claims/deactivates every active
+    // session before returning, even when teardown continues asynchronously.
+    this.detachedSshSessions = [];
     if (requestId > 0) {
       this.teardownRequestId = requestId;
     }
@@ -842,6 +873,28 @@ export class ExtensionLoader {
   }
 
   isConnected(): boolean { return this.currentSessionId > 0; }
+
+  hasSessionActivity(): boolean {
+    if (this.currentSessionId > 0 ||
+        this.pendingSshConnects.size > 0) {
+      return true;
+    }
+    for (let index: number = this.detachedSshSessions.length - 1;
+      index >= 0; index--) {
+      const candidate: DetachedSshSession = this.detachedSshSessions[index];
+      let state: number = 0;
+      try {
+        state = rdpnapi.getConnectionState(candidate.sessionId) as number;
+      } catch (_err) {
+        state = 0;
+      }
+      if (nativeSessionStateBlocksAutomaticTransition(state)) {
+        return true;
+      }
+      this.detachedSshSessions.splice(index, 1);
+    }
+    return false;
+  }
 
   getSessionTransferStatus(sessionId: number): SessionTransferStatus {
     try {

@@ -3,6 +3,7 @@ import {
   SETTINGS_SHEET_ACCOUNT,
   SETTINGS_SHEET_DIAGNOSTIC_LOG,
   SETTINGS_SHEET_SECRET_VISIBILITY,
+  SETTINGS_SHEET_REMOTE_WHEEL_DIRECTION,
   SETTINGS_SHEET_VIRTUAL_KEYBOARD,
   SETTINGS_SHEET_VIRTUAL_KEYBOARD_BEHAVIOR,
   SETTINGS_SHEET_VIRTUAL_KEYBOARD_CUSTOM,
@@ -31,11 +32,14 @@ import {
   settingsLeafOpenDelayMs,
   diagnosticLogSettingsLeafSheetHeight,
   secretVisibilitySettingsLeafSheetHeight,
+  remoteWheelDirectionSettingsLeafSheetHeight,
   isVirtualKeyboardSettingsMode,
   moonlightSettingsLeafSheetHeight,
   moonlightSettingsRouteSpec,
   moonlightSettingsRouteSpecs,
+  virtualKeyboardSettingsContentLayout,
   virtualKeyboardSettingsLeafSheetHeight,
+  virtualKeyboardSettingsLeafUsesBottomSheet,
   virtualKeyboardSettingsRouteSpec,
   virtualKeyboardSettingsRouteSpecs,
   vncSettingsLeafSheetHeight
@@ -73,6 +77,14 @@ export default function settingsSheetRoutePolicyTest() {
       expect(moonlightSettingsRouteSpec(SETTINGS_SHEET_SECRET_VISIBILITY)).assertNull();
     });
 
+    it('allocates_one_per_protocol_remote_wheel_editor_leaf', 0, (): void => {
+      expect(SETTINGS_SHEET_REMOTE_WHEEL_DIRECTION).assertEqual(38);
+      expect(remoteWheelDirectionSettingsLeafSheetHeight(
+        SETTINGS_SHEET_REMOTE_WHEEL_DIRECTION)).assertEqual(680);
+      expect(remoteWheelDirectionSettingsLeafSheetHeight(SETTINGS_SHEET_ACCOUNT)).assertEqual(0);
+      expect(moonlightSettingsRouteSpec(SETTINGS_SHEET_REMOTE_WHEEL_DIRECTION)).assertNull();
+    });
+
     it('allocates_five_independent_virtual_keyboard_leaves', 0, (): void => {
       expect(SETTINGS_SHEET_VIRTUAL_KEYBOARD).assertEqual(32);
       expect(SETTINGS_SHEET_VIRTUAL_KEYBOARD_BEHAVIOR).assertEqual(33);
@@ -98,6 +110,54 @@ export default function settingsSheetRoutePolicyTest() {
       expect(virtualKeyboardSettingsRouteSpec(SETTINGS_SHEET_ACCOUNT)).assertNull();
       expect(isVirtualKeyboardSettingsMode(SETTINGS_SHEET_ACCOUNT)).assertFalse();
       expect(virtualKeyboardSettingsLeafSheetHeight(SETTINGS_SHEET_ACCOUNT)).assertEqual(0);
+    });
+
+    it('adapts_all_virtual_keyboard_leaves_to_live_window_bounds', 0, (): void => {
+      expect(virtualKeyboardSettingsLeafSheetHeight(
+        SETTINGS_SHEET_VIRTUAL_KEYBOARD, 720)).assertEqual(620);
+      expect(virtualKeyboardSettingsLeafSheetHeight(
+        SETTINGS_SHEET_VIRTUAL_KEYBOARD_BEHAVIOR, 720)).assertEqual(560);
+      expect(virtualKeyboardSettingsLeafSheetHeight(
+        SETTINGS_SHEET_VIRTUAL_KEYBOARD_SHORTCUTS, 360)).assertEqual(348);
+      expect(virtualKeyboardSettingsLeafSheetHeight(
+        SETTINGS_SHEET_VIRTUAL_KEYBOARD_FUNCTIONS, 300)).assertEqual(288);
+      expect(virtualKeyboardSettingsLeafSheetHeight(
+        SETTINGS_SHEET_VIRTUAL_KEYBOARD_CUSTOM, 900)).assertEqual(520);
+      expect(virtualKeyboardSettingsLeafSheetHeight(
+        SETTINGS_SHEET_VIRTUAL_KEYBOARD_CUSTOM, 900, true)).assertEqual(820);
+      expect(virtualKeyboardSettingsLeafSheetHeight(
+        SETTINGS_SHEET_VIRTUAL_KEYBOARD_CUSTOM, 720, true)).assertEqual(680);
+      expect(virtualKeyboardSettingsLeafUsesBottomSheet(
+        SETTINGS_SHEET_VIRTUAL_KEYBOARD_CUSTOM, 800, 'sm')).assertTrue();
+      expect(virtualKeyboardSettingsLeafUsesBottomSheet(
+        SETTINGS_SHEET_VIRTUAL_KEYBOARD_CUSTOM, 360, 'md')).assertTrue();
+      expect(virtualKeyboardSettingsLeafUsesBottomSheet(
+        SETTINGS_SHEET_VIRTUAL_KEYBOARD_CUSTOM, 720, 'md')).assertFalse();
+      expect(virtualKeyboardSettingsLeafUsesBottomSheet(
+        SETTINGS_SHEET_ACCOUNT, 360, 'sm')).assertFalse();
+    });
+
+    it('adapts_virtual_keyboard_content_density_to_measured_sheet_size', 0, (): void => {
+      const narrowLandscape = virtualKeyboardSettingsContentLayout(320, 360);
+      expect(narrowLandscape.headerHorizontalPadding).assertEqual(12);
+      expect(narrowLandscape.contentHorizontalPadding).assertEqual(12);
+      expect(narrowLandscape.titleFontSize).assertEqual(18);
+      expect(narrowLandscape.heroIconSize).assertEqual(42);
+      expect(narrowLandscape.cornerRadius).assertEqual(18);
+      expect(narrowLandscape.stackPrimaryActions).assertTrue();
+
+      const splitPad = virtualKeyboardSettingsContentLayout(500, 640);
+      expect(splitPad.headerHorizontalPadding).assertEqual(16);
+      expect(splitPad.contentHorizontalPadding).assertEqual(16);
+      expect(splitPad.titleFontSize).assertEqual(20);
+      expect(splitPad.stackPrimaryActions).assertFalse();
+
+      const desktop = virtualKeyboardSettingsContentLayout(900, 820);
+      expect(desktop.maxContentWidth).assertEqual(720);
+      expect(desktop.headerHorizontalPadding).assertEqual(22);
+      expect(desktop.contentHorizontalPadding).assertEqual(22);
+      expect(desktop.titleFontSize).assertEqual(22);
+      expect(desktop.cornerRadius).assertEqual(28);
     });
 
     it('sizes_vnc_settings_leaves_to_their_content_density', 0, (): void => {

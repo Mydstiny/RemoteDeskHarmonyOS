@@ -38,6 +38,7 @@ import remotePhysicalKeyboardPolicyTest from './RemotePhysicalKeyboardPolicy.tes
 import touchpadPointerCurvePolicyTest from './TouchpadPointerCurvePolicy.test';
 import remotePhysicalTouchpadPolicyTest from '../../../test/RemotePhysicalTouchpadPolicy.test';
 import remoteSurfaceTransformPolicyTest from './RemoteSurfaceTransformPolicy.test';
+import rustDeskDesktopFlipPolicyTest from '../../../test/RustDeskDesktopFlipPolicy.test';
 import remoteCursorStylePolicyTest from './RemoteCursorStylePolicy.test';
 import remoteHostSheetLifecyclePolicyTest from './RemoteHostSheetLifecyclePolicy.test';
 import vncSessionGeometryPolicyTest from './VncSessionGeometryPolicy.test';
@@ -45,6 +46,7 @@ import remoteFloatingPanelPlacementPolicyTest from './RemoteFloatingPanelPlaceme
 import vncSessionSettingsPolicyTest from './VncSessionSettingsPolicy.test';
 import vncSessionUiPolicyTest from '../../../test/VncSessionUiPolicy.test';
 import remoteWheelPolicyTest from '../../../test/RemoteWheelPolicy.test';
+import remoteWheelPreferencePolicyTest from '../../../test/RemoteWheelPreferencePolicy.test';
 import vncCertificateDecisionHandoffTest from '../../../test/VncCertificateDecisionHandoff.test';
 import vncCertificateSheetPolicyTest from '../../../test/VncCertificateSheetPolicy.test';
 import vncCertificatePreflightPolicyTest from '../../../test/VncCertificatePreflightPolicy.test';
@@ -294,7 +296,7 @@ function expectedFocusedCount(scope: string): number {
   if (scope === 'RemoteCanvasInteractionPolicy_real_surface_contract') { return 3; }
   if (scope === 'RemoteKeyboardLayoutSelection_owner_session_generation') { return 3; }
   if (scope === 'RemoteModifierStateController_lifecycle_mirror') { return 1; }
-  if (scope === 'RemoteSessionTopBarPolicy') { return 23; }
+  if (scope === 'RemoteSessionTopBarPolicy') { return 24; }
   if (scope === 'TotpBrandService') { return 23; }
   return 0;
 }
@@ -368,6 +370,7 @@ export default function testsuite() {
   touchpadPointerCurvePolicyTest();
   remotePhysicalTouchpadPolicyTest();
   remoteSurfaceTransformPolicyTest();
+  rustDeskDesktopFlipPolicyTest();
   remoteCursorStylePolicyTest();
   remoteHostSheetLifecyclePolicyTest();
   vncSessionGeometryPolicyTest();
@@ -375,6 +378,7 @@ export default function testsuite() {
   vncSessionSettingsPolicyTest();
   vncSessionUiPolicyTest();
   remoteWheelPolicyTest();
+  remoteWheelPreferencePolicyTest();
   vncCertificateDecisionHandoffTest();
   vncCertificateSheetPolicyTest();
   vncCertificatePreflightPolicyTest();

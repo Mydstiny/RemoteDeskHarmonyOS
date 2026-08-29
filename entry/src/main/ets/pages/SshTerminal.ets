@@ -86,6 +86,7 @@ import {
 } from '../services/SessionContextualGuidePolicy';
 import { GUIDE_ALWAYS_VISIBLE_STORAGE_KEY } from '../services/GuideVisibilityPolicy';
 import { GuideVisibilityService } from '../services/GuideVisibilityService';
+import { SSH_REVERSE_WHEEL_KEY } from '../services/RemoteWheelPreferencePolicy';
 import { showLockGate, lockGateErrorMessage } from '../components/LockGate';
 import { SshXtermSurface, XtermOutputBuffer } from '../components/SshXtermSurface';
 import { SshTerminalSearchBar } from '../components/ssh/search/SshTerminalSearchBar';
@@ -720,6 +721,7 @@ struct SshTerminal {
   @StorageProp(GUIDE_ALWAYS_VISIBLE_STORAGE_KEY) guideAlwaysVisible: boolean = false;
   @StorageProp('remoteDesktopBgFlag') @Watch('onSshAbilityBackgroundChange')
   appBackgroundSignal: boolean = false;
+  @StorageLink(SSH_REVERSE_WHEEL_KEY) sshReverseWheel: boolean = false;
   @LocalStorageLink('sessionWindowBackground') @Watch('onSshAbilityBackgroundChange')
   sessionWindowBackground: boolean = false;
   @LocalStorageLink('sessionWindowFullscreen') sessionWindowFullscreen: boolean = false;
@@ -1134,6 +1136,8 @@ struct SshTerminal {
   private sshPort: number = 22;
   /** 进入 SSH 终端前的系统状态栏文字颜色, 用于离开时恢复 */
   private savedStatusBarColor: string = '#E6E6E6';
+  private sshSystemBarRequestId: number = 0;
+  private sshSystemBarUpdate: Promise<void> = Promise.resolve();
   private terminalDecoder: util.TextDecoder = new util.TextDecoder('utf-8');
   private terminalDecodeRemainder: Uint8Array = new Uint8Array(0);
   private terminalOutputQueue: ArrayBuffer[] = [];
@@ -5490,6 +5494,7 @@ struct SshTerminal {
       profileScrollback: profile.scrollback,
       profileBellStyle: profile.bellStyle,
       profileCopyOnSelect: profile.copyOnSelect,
+      reverseWheel: this.sshReverseWheel,
       viewportHeight: this.sshWorkspaceViewportHeightForTab(tab.tabId, viewportHeight),
       outputBuffer: this.xtermOutputBufferForHost(tab.hostId),
       outputSequence: this.termOutputSequence,
@@ -10766,6 +10771,7 @@ struct SshTerminal {
   onPageShow(): void {
     this.sshAuthPromptPageShown = true;
     this.sshAuthPromptPageReadyAtMs = Date.now() + 720;
+    void this.forceStatusBarDark();
     this.scheduleSshContextualGuide(760);
   }
 
@@ -10839,6 +10845,9 @@ struct SshTerminal {
         this.isLandscape = false;
       }
       hilog.info(0x0000, 'SshTerminal', 'setPreferredOrientation(' + label + ') OK');
+      if (orientation !== window.Orientation.UNSPECIFIED && !this.isDesktopDevice) {
+        void this.forceStatusBarDark();
+      }
     } catch (err) {
       hilog.warn(0x0001, 'SshTerminal', 'setPreferredOrientation(' + label + ') failed code=' +
         sshDiagnosticErrorCode(err));
@@ -10978,53 +10987,112 @@ struct SshTerminal {
     }
   }
 
-  /**
-   * SSH 终端始终深色模式 — 强制系统状态栏/导航栏亮色图标。
-   * 保存进入前的颜色, 离开时由 restoreStatusBar() 恢复。
-   */
+  /** Phone/Pad SSH owns the complete remote interaction surface. */
   private async forceStatusBarDark(): Promise<void> {
-    try {
-      const ctx = this.getUIContext().getHostContext();
-      if (!ctx) { return; }
-      const win: window.Window = await window.getLastWindow(ctx);
-      if (!win) { return; }
-      // 保存当前状态栏颜色 (从全局主题推导)
-      const isDark: boolean = (AppStorage.get<string>('currentTheme') ?? 'light') === 'dark';
-      this.savedStatusBarColor = isDark ? '#E6E6E6' : '#1C1C1C';
-      // 强制深色模式: 亮色图标 + 透明背景
-      await win.setWindowSystemBarProperties({
-        statusBarColor: '#0A0D12',
-        navigationBarColor: '#0A0D12',
-        statusBarContentColor: '#E6E6E6',
-        navigationBarContentColor: '#E6E6E6'
+    const requestId: number = ++this.sshSystemBarRequestId;
+    const update: Promise<void> = this.sshSystemBarUpdate.catch((_error: Error): void => {})
+      .then(async (): Promise<void> => {
+        if (requestId !== this.sshSystemBarRequestId) { return; }
+        try {
+          const ctx = this.getUIContext().getHostContext();
+          if (!ctx) { return; }
+          const win: window.Window = await window.getLastWindow(ctx);
+          if (!win || requestId !== this.sshSystemBarRequestId) { return; }
+          // 保存当前状态栏颜色 (从全局主题推导)
+          const isDark: boolean = (AppStorage.get<string>('currentTheme') ?? 'light') === 'dark';
+          this.savedStatusBarColor = isDark ? '#E6E6E6' : '#1C1C1C';
+          if (!this.isDesktopDevice) {
+            try {
+              await win.setWindowLayoutFullScreen(true);
+            } catch (layoutError) {
+              hilog.warn(0x0001, 'SshTerminal', '[statusBar] layout fullscreen failed code=' +
+                sshDiagnosticErrorCode(layoutError));
+            }
+            try {
+              await win.setSpecificSystemBarEnabled('status', false, false);
+            } catch (statusError) {
+              hilog.warn(0x0001, 'SshTerminal', '[statusBar] hide status failed code=' +
+                sshDiagnosticErrorCode(statusError));
+            }
+            try {
+              await win.setSpecificSystemBarEnabled('navigation', false, false);
+            } catch (navigationError) {
+              hilog.warn(0x0001, 'SshTerminal', '[statusBar] hide navigation failed code=' +
+                sshDiagnosticErrorCode(navigationError));
+            }
+            try {
+              await win.setSpecificSystemBarEnabled('navigationIndicator', false, false);
+            } catch (indicatorError) {
+              hilog.warn(0x0001, 'SshTerminal', '[statusBar] hide indicator failed code=' +
+                sshDiagnosticErrorCode(indicatorError));
+            }
+          }
+          // 强制深色模式: 亮色图标 + 透明背景
+          await win.setWindowSystemBarProperties({
+            statusBarColor: '#0A0D12',
+            navigationBarColor: '#0A0D12',
+            statusBarContentColor: '#E6E6E6',
+            navigationBarContentColor: '#E6E6E6'
+          });
+          hilog.info(0x0000, 'SshTerminal', '[statusBar] ' +
+            (this.isDesktopDevice ? 'dark-content' : 'immersive-hidden') +
+            ', saved=' + this.savedStatusBarColor);
+        } catch (err) {
+          hilog.warn(0x0001, 'SshTerminal', '[statusBar] forceStatusBarDark 失败 code=' +
+            sshDiagnosticErrorCode(err));
+        }
       });
-      hilog.info(0x0000, 'SshTerminal', '[statusBar] 强制深色模式, saved=' + this.savedStatusBarColor);
-    } catch (err) {
-      hilog.warn(0x0001, 'SshTerminal', '[statusBar] forceStatusBarDark 失败 code=' +
-        sshDiagnosticErrorCode(err));
-    }
+    this.sshSystemBarUpdate = update;
+    await update;
   }
 
   /** 恢复系统状态栏颜色到进入 SSH 终端前的值 */
   private async restoreStatusBar(): Promise<void> {
-    try {
-      const ctx = this.getUIContext().getHostContext();
-      if (!ctx) { return; }
-      const win: window.Window = await window.getLastWindow(ctx);
-      if (!win) { return; }
-      const isDark: boolean = (AppStorage.get<string>('currentTheme') ?? 'light') === 'dark';
-      const contentColor: string = isDark ? '#E6E6E6' : '#1C1C1C';
-      await win.setWindowSystemBarProperties({
-        statusBarColor: '#00000000',
-        navigationBarColor: '#00000000',
-        statusBarContentColor: contentColor,
-        navigationBarContentColor: contentColor
+    const requestId: number = ++this.sshSystemBarRequestId;
+    const update: Promise<void> = this.sshSystemBarUpdate.catch((_error: Error): void => {})
+      .then(async (): Promise<void> => {
+        if (requestId !== this.sshSystemBarRequestId) { return; }
+        try {
+          const ctx = this.getUIContext().getHostContext();
+          if (!ctx) { return; }
+          const win: window.Window = await window.getLastWindow(ctx);
+          if (!win || requestId !== this.sshSystemBarRequestId) { return; }
+          const isDark: boolean = (AppStorage.get<string>('currentTheme') ?? 'light') === 'dark';
+          const contentColor: string = isDark ? '#E6E6E6' : '#1C1C1C';
+          if (!this.isDesktopDevice) {
+            try {
+              await win.setSpecificSystemBarEnabled('status', true, false);
+            } catch (statusError) {
+              hilog.warn(0x0001, 'SshTerminal', '[statusBar] restore status failed code=' +
+                sshDiagnosticErrorCode(statusError));
+            }
+            try {
+              await win.setSpecificSystemBarEnabled('navigation', true, false);
+            } catch (navigationError) {
+              hilog.warn(0x0001, 'SshTerminal', '[statusBar] restore navigation failed code=' +
+                sshDiagnosticErrorCode(navigationError));
+            }
+            try {
+              await win.setSpecificSystemBarEnabled('navigationIndicator', true, false);
+            } catch (indicatorError) {
+              hilog.warn(0x0001, 'SshTerminal', '[statusBar] restore indicator failed code=' +
+                sshDiagnosticErrorCode(indicatorError));
+            }
+          }
+          await win.setWindowSystemBarProperties({
+            statusBarColor: '#00000000',
+            navigationBarColor: '#00000000',
+            statusBarContentColor: contentColor,
+            navigationBarContentColor: contentColor
+          });
+          hilog.info(0x0000, 'SshTerminal', '[statusBar] 恢复: ' + contentColor);
+        } catch (err) {
+          hilog.warn(0x0001, 'SshTerminal', '[statusBar] restoreStatusBar 失败 code=' +
+            sshDiagnosticErrorCode(err));
+        }
       });
-      hilog.info(0x0000, 'SshTerminal', '[statusBar] 恢复: ' + contentColor);
-    } catch (err) {
-      hilog.warn(0x0001, 'SshTerminal', '[statusBar] restoreStatusBar 失败 code=' +
-        sshDiagnosticErrorCode(err));
-    }
+    this.sshSystemBarUpdate = update;
+    await update;
   }
 
   /** 监听软键盘高度变化 (window.AvoidAreaType.TYPE_KEYBOARD) */

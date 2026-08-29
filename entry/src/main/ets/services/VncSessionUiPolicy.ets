@@ -60,8 +60,8 @@ export function shouldShowVncSessionToolbar(protocol: string, connected: boolean
 }
 
 export function vncToolbarAutoCollapseDelayMs(connected: boolean,
-  collapsed: boolean): number {
-  return connected && !collapsed ? 20000 : 0;
+  collapsed: boolean, keyboardSurfaceOpen: boolean = false): number {
+  return connected && !collapsed && !keyboardSurfaceOpen ? 20000 : 0;
 }
 
 /** Mobile VNC uses a persistent right rail; PC uses the persistent top bar. */
@@ -75,9 +75,9 @@ export function vncToolbarRailHeight(deviceClass: VncToolbarDeviceClass,
   viewOnly: boolean, collapsed: boolean,
   availableHeight: number = Number.MAX_SAFE_INTEGER): number {
   if (deviceClass === 'pc') { return 0; }
-  const normalizedAvailable: number = Number.isFinite(availableHeight) && availableHeight > 0 ?
-    availableHeight : Number.MAX_SAFE_INTEGER;
-  if (collapsed) { return Math.max(44, Math.min(72, normalizedAvailable)); }
+  const normalizedAvailable: number = Number.isFinite(availableHeight) ?
+    Math.max(1, availableHeight) : Number.MAX_SAFE_INTEGER;
+  if (collapsed) { return Math.max(1, Math.min(72, normalizedAvailable)); }
   const actionCount: number = vncToolbarPrimaryActionIds().length;
   const actionHeight: number = actionCount * 44;
   const actionGaps: number = Math.max(0, actionCount - 1) * 5;
@@ -86,7 +86,7 @@ export function vncToolbarRailHeight(deviceClass: VncToolbarDeviceClass,
   const viewOnlyHeader: number = viewOnly ? 24 + 5 : 0;
   const naturalHeight: number = 12 + collapseHandleHeight + collapseHandleGap +
     actionHeight + actionGaps + viewOnlyHeader;
-  return Math.max(44, Math.min(naturalHeight, normalizedAvailable));
+  return Math.max(1, Math.min(naturalHeight, normalizedAvailable));
 }
 
 export function vncToolbarDefaultSide(_deviceClass: VncToolbarDeviceClass): VncToolbarSide {

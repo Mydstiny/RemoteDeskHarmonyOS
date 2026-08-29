@@ -99,6 +99,7 @@
         webMessageReady: false,
         fitTimer: 0,
         fitGeneration: 0,
+        redispatchingWheel: false,
         config: {
           cols: 80,
           rows: 24,
@@ -113,6 +114,7 @@
           cursorBlink: true,
           scrollback: 10000,
           bellStyle: 'none',
+          reverseWheel: false,
           bottomAlignSparseContent: false,
           bottomAlignSafeRows: 0,
           bottomInsetPx: 10
@@ -609,6 +611,46 @@
           }
           var terminalElement = document.getElementById('terminal');
           terminal.open(terminalElement);
+          terminalElement.addEventListener('wheel', function (event) {
+            if (!event || state.config.reverseWheel !== true ||
+                state.redispatchingWheel === true) return;
+            var target = event.target && typeof event.target.dispatchEvent === 'function'
+              ? event.target : terminalElement;
+            var reversedEvent;
+            try {
+              reversedEvent = new WheelEvent('wheel', {
+                bubbles: true,
+                cancelable: true,
+                composed: true,
+                view: window,
+                detail: Number(event.detail) || 0,
+                screenX: Number(event.screenX) || 0,
+                screenY: Number(event.screenY) || 0,
+                clientX: Number(event.clientX) || 0,
+                clientY: Number(event.clientY) || 0,
+                ctrlKey: event.ctrlKey === true,
+                shiftKey: event.shiftKey === true,
+                altKey: event.altKey === true,
+                metaKey: event.metaKey === true,
+                button: Number(event.button) || 0,
+                buttons: Number(event.buttons) || 0,
+                deltaX: -(Number(event.deltaX) || 0),
+                deltaY: -(Number(event.deltaY) || 0),
+                deltaZ: -(Number(event.deltaZ) || 0),
+                deltaMode: Number(event.deltaMode) || 0
+              });
+            } catch (_) {
+              // Keep the original event intact if this Web runtime cannot
+              // construct a compatible WheelEvent.
+              return;
+            }
+            if (event.cancelable) event.preventDefault();
+            event.stopImmediatePropagation();
+            state.redispatchingWheel = true;
+            try { target.dispatchEvent(reversedEvent); } finally {
+              state.redispatchingWheel = false;
+            }
+          }, { capture: true, passive: false });
           var touchPointerId = -1;
           var touchLastY = 0;
           var touchScrollRemainder = 0;

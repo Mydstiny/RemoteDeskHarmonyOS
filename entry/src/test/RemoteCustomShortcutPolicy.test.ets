@@ -3,6 +3,7 @@ import {
   createRemoteCustomShortcut,
   decodeRemoteCustomShortcuts,
   encodeRemoteCustomShortcuts,
+  remoteCustomShortcutEditorLayout,
   remoteCustomShortcutKeyOptions,
   remoteCustomShortcutAvailableOnPlatform,
   remoteCustomShortcutKeyAvailableOnPlatform,
@@ -71,12 +72,52 @@ export default function remoteCustomShortcutPolicyTest(): void {
       const windowsF24 = { id: 'windows-f24', label: 'Ctrl + F24', keyCodes: [2072, 2827] };
       expect(remoteCustomShortcutAvailableOnPlatform(windowsF24, 'windows')).assertTrue();
       expect(remoteCustomShortcutAvailableOnPlatform(windowsF24, 'macos')).assertFalse();
-      expect(remoteCustomShortcutKeyOptions('navigation').length).assertEqual(15);
+      const directionKeys = remoteCustomShortcutKeyOptions('directions');
+      expect(directionKeys.length).assertEqual(4);
+      expect(directionKeys[0].label).assertEqual('↑');
+      expect(directionKeys[0].keyCode).assertEqual(2012);
+      expect(directionKeys[1].label).assertEqual('↓');
+      expect(directionKeys[1].keyCode).assertEqual(2013);
+      expect(directionKeys[2].label).assertEqual('←');
+      expect(directionKeys[2].keyCode).assertEqual(2014);
+      expect(directionKeys[3].label).assertEqual('→');
+      expect(directionKeys[3].keyCode).assertEqual(2015);
+      expect(remoteCustomShortcutKeyOptions('navigation').length).assertEqual(11);
+      expect(remoteCustomShortcutKeyGroupForKeyCode(2012)).assertEqual('directions');
+      expect(remoteCustomShortcutKeyGroupForKeyCode(2013)).assertEqual('directions');
+      expect(remoteCustomShortcutKeyGroupForKeyCode(2014)).assertEqual('directions');
+      expect(remoteCustomShortcutKeyGroupForKeyCode(2015)).assertEqual('directions');
       expect(remoteCustomShortcutKeyGroupForKeyCode(2043)).assertEqual('symbols');
       expect(remoteCustomShortcutKeyGroupForKeyCode(2049)).assertEqual('navigation');
       expect(remoteCustomShortcutKeyGroupForKeyCode(2050)).assertEqual('navigation');
       expect(remoteCustomShortcutKeyGroupForKeyCode(2054)).assertEqual('navigation');
       expect(remoteCustomShortcutKeyGroupForKeyCode(2055)).assertEqual('navigation');
+    });
+
+    it('adapts_the_editor_layout_to_live_phone_pad_and_pc_viewports', 0, (): void => {
+      const narrowPhone = remoteCustomShortcutEditorLayout(320, 720);
+      expect(narrowPhone.columns).assertEqual(3);
+      expect(narrowPhone.cardPadding).assertEqual(10);
+      expect(narrowPhone.itemGap).assertEqual(3);
+      expect(narrowPhone.itemHeight).assertEqual(30);
+
+      const landscapePhone = remoteCustomShortcutEditorLayout(720, 390);
+      expect(landscapePhone.columns).assertEqual(6);
+      expect(landscapePhone.cardPadding).assertEqual(10);
+      expect(landscapePhone.itemGap).assertEqual(3);
+      expect(landscapePhone.itemHeight).assertEqual(28);
+
+      const splitPad = remoteCustomShortcutEditorLayout(520, 640);
+      expect(splitPad.columns).assertEqual(5);
+      expect(splitPad.itemHeight).assertEqual(30);
+
+      const desktop = remoteCustomShortcutEditorLayout(820, 900);
+      expect(desktop.columns).assertEqual(6);
+      expect(desktop.cardPadding).assertEqual(14);
+
+      const fallback = remoteCustomShortcutEditorLayout(Number.NaN, 0);
+      expect(fallback.columns).assertEqual(4);
+      expect(fallback.itemHeight).assertEqual(30);
     });
   });
 }

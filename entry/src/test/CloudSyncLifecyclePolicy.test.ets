@@ -91,6 +91,26 @@ export default function cloudSyncLifecyclePolicyTest(): void {
       expect(cloudSyncAutomaticUploadAllowed(blocked)).assertFalse();
     });
 
+    it('rebuilds_stale_blocked_metadata_after_restart_from_current_evidence', 0,
+      (): void => {
+        const initial: CloudSyncDurableState =
+          newCloudSyncDurableState(binding(), true, true, 1);
+        const blocked: CloudSyncDurableState =
+          cloudSyncOperationFinished(
+            initial, false, ['remotehosts'],
+            true, 'unknown', true, 2);
+        expect(blocked.phase).assertEqual('blocked');
+        const recovered: CloudSyncDurableState =
+          recoverCloudSyncDurableState(
+            blocked, binding(), true, true, 3);
+        expect(recovered.phase)
+          .assertEqual('recovery_required');
+        expect(cloudSyncAutomaticUploadAllowed(
+          recovered)).assertFalse();
+        expect(cloudSyncDownloadAllowed(
+          recovered)).assertTrue();
+      });
+
     it('keeps_a_watchdog_timeout_in_recovery_until_native_terminal_arrives', 0, (): void => {
       const initial: CloudSyncDurableState =
         newCloudSyncDurableState(binding(), true, true, 1);

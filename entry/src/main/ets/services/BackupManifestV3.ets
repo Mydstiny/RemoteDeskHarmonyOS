@@ -161,7 +161,8 @@ const REMOTE_HOST_EXTENSION_SAFE: string[] = [
   // local backup. These keys are never projected into a distributed table.
   'localpersonalizationversion', 'localdisplayconfig',
   'locallastconnected', 'locallasthealth', 'locallastlatency',
-  'localrustdeskadaptiveorientation', 'localrustdeskprolastseenat',
+  'localrustdeskadaptiveorientation', 'localrustdeskdesktopflipmode',
+  'localrustdeskprolastseenat',
   'localrustdeskprosyncerror'
 ];
 

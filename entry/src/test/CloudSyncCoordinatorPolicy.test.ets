@@ -13,6 +13,7 @@ import {
   cloudSyncBlockedByLocalRestore,
   cloudSyncCallbackIdentityMatches,
   cloudFirstCompatibleTablesAfterOptionalFailure,
+  cloudFirstTablesForSelectionFinalization,
   cloudDistributedTableAutoSync,
   cloudSyncProgressFinished,
   cloudSyncProgressSucceeded,
@@ -26,6 +27,8 @@ import {
   exclusiveCloudOperationLeaseValid,
   exclusiveVncSelectionAdmissionAllowed,
   nextCloudSyncRetryDelayMs,
+  mergeMutationRevisionMaps,
+  mutationRevisionsAfterAcknowledgement,
   retryTablesStillSelected,
   retryVncTablesStillSelected,
   snapshotCloudSyncTables,
@@ -86,6 +89,27 @@ export default function cloudSyncCoordinatorPolicyTest(): void {
       expect(shouldReplayAutomaticPush(1, 2)).assertTrue();
       expect(shouldReplayAutomaticPush(2, 2)).assertFalse();
     });
+
+    it('merges_independent_dirty_markers_and_clears_only_a_covered_revision',
+      0, (): void => {
+        const merged: Record<string, number> = mergeMutationRevisionMaps(
+          { remotehosts: 10, sshkeys: 7 },
+          { remotehosts: 12, totpentries: 9 });
+        expect(merged['remotehosts']).assertEqual(12);
+        expect(merged['sshkeys']).assertEqual(7);
+        expect(merged['totpentries']).assertEqual(9);
+
+        const retained: Record<string, number> =
+          mutationRevisionsAfterAcknowledgement(
+            merged, 'remotehosts', 11);
+        expect(retained['remotehosts']).assertEqual(12);
+        const cleared: Record<string, number> =
+          mutationRevisionsAfterAcknowledgement(
+            retained, 'remotehosts', 12);
+        expect(Object.keys(cleared).indexOf('remotehosts'))
+          .assertEqual(-1);
+        expect(cleared['sshkeys']).assertEqual(7);
+      });
 
     it('waits_for_the_terminal_progress_event_before_confirming_cloud_upload', 0, (): void => {
       expect(cloudSyncProgressFinished(0)).assertFalse();
@@ -234,6 +258,21 @@ export default function cloudSyncCoordinatorPolicyTest(): void {
           'cloudFirst',
           ['remotehosts', 'moonlightrecordv1'],
           ['unknown']).length).assertEqual(0);
+      });
+
+    it('finalizes_established_barriers_for_core_tables_after_optional_failure',
+      0, (): void => {
+        expect(cloudFirstTablesForSelectionFinalization(
+          false,
+          ['usersettings', 'remotehosts', 'moonlightrecordv1'],
+          ['moonlightrecordv1']).join(','))
+          .assertEqual('usersettings,remotehosts');
+        expect(cloudFirstTablesForSelectionFinalization(
+          true, ['usersettings'], []).join(','))
+          .assertEqual('usersettings');
+        expect(cloudFirstTablesForSelectionFinalization(
+          false, ['remotehosts'], ['remotehosts']).length)
+          .assertEqual(0);
       });
 
     it('classifies_version_conflict_and_pauses_automatic_retries', 0, (): void => {

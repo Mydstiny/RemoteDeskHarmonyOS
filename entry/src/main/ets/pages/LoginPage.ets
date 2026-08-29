@@ -19,6 +19,7 @@ import {
 } from '../services/LoginStartupPolicy';
 import { FIRST_LAUNCH_PREPARATION_BLOCKS_UI } from '../services/AppStartupPolicy';
 import { hashForLog } from '../utils/SafeLogger';
+import { AppCloneContext } from '../services/AppCloneContext';
 
 const PREFS_NAME: string = 'RemoteDesktopAppPrefs';
 const KEY_LOGIN_MODE: string = 'loginMode';
@@ -36,9 +37,36 @@ struct LoginPage {
   @State showSkipSheet: boolean = false;
   @State showEnterpriseSheet: boolean = false;
   @State checkingLogin: boolean = true; // 检查持久化登录状态中
+  @State appCloneLocalOnly: boolean = false;
+  @State appCloneIsClone: boolean = false;
+  @State appCloneStatusText: string = '';
 
   aboutToAppear(): void {
     setTimeout(() => { this.showAnimation = true; }, 100);
+
+    const appClone: AppCloneContext = AppCloneContext.getInstance();
+    appClone.init(getContext(this));
+    this.appCloneLocalOnly = appClone.isLocalOnly();
+    this.appCloneIsClone = appClone.isClone();
+    this.appCloneStatusText = appClone.snapshot().statusText;
+    if (this.appCloneLocalOnly) {
+      const firstLaunch: boolean = this.isFirstLaunch();
+      this.checkingLogin = false;
+      if (firstLaunch) {
+        void this.prepareFirstLaunch();
+        return;
+      }
+      let cloneSavedMode: string = '';
+      try {
+        const clonePrefs = preferences.getPreferencesSync(
+          getContext(this), { name: PREFS_NAME });
+        cloneSavedMode = clonePrefs.getSync(KEY_LOGIN_MODE, '') as string;
+      } catch (_error) { cloneSavedMode = ''; }
+      if (cloneSavedMode === 'offline') {
+        setTimeout((): void => { void this.enterOfflineMode(); }, 50);
+      }
+      return;
+    }
 
     // 首次启动 (含卸载重装) → 清除残留登录态, 强制显示登录页
     if (this.isFirstLaunch()) {
@@ -91,6 +119,10 @@ struct LoginPage {
 
   /** 静默恢复登录 (杀后台后保留登录态, 不弹窗) */
   private async trySilentLogin(): Promise<void> {
+    if (this.appCloneLocalOnly) {
+      this.checkingLogin = false;
+      return;
+    }
     await this.ensureAccountSessionReady();
     let restored: boolean = false;
     try {
@@ -163,6 +195,10 @@ struct LoginPage {
    * 华为账号登录 (官方自定义按钮方式)
    */
   private async doHuaweiLogin(): Promise<void> {
+    if (this.appCloneLocalOnly) {
+      this.loginError = '应用分身使用本地模式，华为账号登录与云同步已关闭';
+      return;
+    }
     this.isLoggingIn = true;
     this.loginError = '';
     hilog.info(0x0001, 'LoginDebug', '=== 开始登录 ===');
@@ -229,6 +265,10 @@ struct LoginPage {
 
   private async onLoginSuccess(credential: authentication.AuthorizationWithHuaweiIDCredential,
     showToast: boolean = true): Promise<boolean> {
+    if (this.appCloneLocalOnly) {
+      this.loginError = '应用分身使用本地模式，未接受账号授权结果';
+      return false;
+    }
     await this.ensureAccountSessionReady();
     const unionId: string = credential.unionID ?? '';
     const openId: string = credential.openID ?? '';
@@ -345,35 +385,57 @@ struct LoginPage {
         Blank()
 
         Column() {
-          Button() {
-            if (this.isLoggingIn) {
-              LoadingProgress().width(20).height(20).color(Color.White)
-            } else {
-              Text($r('app.string.btn_login_huawei'))
-                .fontSize(16).fontWeight(FontWeight.Medium).fontColor('#FFFFFF')
-            }
-          }
-          .width('86%').height(50)
-          .backgroundColor(this.accentColor).borderRadius(14)
-          .shadow({ radius: 16, color: this.pal().fabGlow, offsetY: 4 })
-          .enabled(!this.isLoggingIn)
-          .onClick(() => { this.doHuaweiLogin(); })
+          if (this.appCloneLocalOnly) {
+            Column() {
+              Text(this.appCloneIsClone ? '应用分身 · 本地模式' : '本地安全模式')
+                .fontSize(16).fontWeight(FontWeight.Bold)
+                .fontColor(this.pal().text)
+              Text(this.appCloneStatusText +
+                '\n主机、凭据和密钥与主应用隔离；华为账号与云同步在分身中关闭。')
+                .fontSize(12).fontColor(this.pal().text3)
+                .textAlign(TextAlign.Center).lineHeight(19)
+                .margin({ top: 8 })
+            }.width('86%').padding(16).borderRadius(14)
+              .backgroundColor(this.pal().surface)
 
-          Button($r('app.string.btn_offline_mode'))
-            .fontSize(14).fontWeight(FontWeight.Normal)
-            .fontColor(this.pal().text2)
-            .width('86%').height(44)
-            .backgroundColor(this.pal().surface).borderRadius(14)
-            .margin({ top: 10 })
-            .onClick(() => { this.showSkipSheet = true; })
-            .bindSheet($$this.showSkipSheet, this.skipSheetBuilder(), {
-              height: SheetSize.FIT_CONTENT,
-              preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
-              dragBar: this.breakpoint === 'sm',
-              backgroundColor: this.pal().sheetBg,
-              blurStyle: BlurStyle.NONE,
-              showClose: false
-            })
+            Button(this.appCloneIsClone ? '进入应用分身' : '进入本地模式')
+              .fontSize(16).fontWeight(FontWeight.Medium)
+              .fontColor('#FFFFFF').width('86%').height(50)
+              .backgroundColor(this.accentColor).borderRadius(14)
+              .shadow({ radius: 16, color: this.pal().fabGlow, offsetY: 4 })
+              .margin({ top: 12 })
+              .onClick((): void => { void this.enterOfflineMode(); })
+          } else {
+            Button() {
+              if (this.isLoggingIn) {
+                LoadingProgress().width(20).height(20).color(Color.White)
+              } else {
+                Text($r('app.string.btn_login_huawei'))
+                  .fontSize(16).fontWeight(FontWeight.Medium).fontColor('#FFFFFF')
+              }
+            }
+            .width('86%').height(50)
+            .backgroundColor(this.accentColor).borderRadius(14)
+            .shadow({ radius: 16, color: this.pal().fabGlow, offsetY: 4 })
+            .enabled(!this.isLoggingIn)
+            .onClick(() => { this.doHuaweiLogin(); })
+
+            Button($r('app.string.btn_offline_mode'))
+              .fontSize(14).fontWeight(FontWeight.Normal)
+              .fontColor(this.pal().text2)
+              .width('86%').height(44)
+              .backgroundColor(this.pal().surface).borderRadius(14)
+              .margin({ top: 10 })
+              .onClick(() => { this.showSkipSheet = true; })
+              .bindSheet($$this.showSkipSheet, this.skipSheetBuilder(), {
+                height: SheetSize.FIT_CONTENT,
+                preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
+                dragBar: this.breakpoint === 'sm',
+                backgroundColor: this.pal().sheetBg,
+                blurStyle: BlurStyle.NONE,
+                showClose: false
+              })
+          }
 
           if (this.loginError !== '') {
             Text(this.loginError)

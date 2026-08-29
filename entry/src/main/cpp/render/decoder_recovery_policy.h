@@ -33,6 +33,16 @@ inline bool ShouldEnterTerminalDecoderRecovery(bool recreated, uint32_t attempts
     return !recreated || attempts >= kMaxDecoderRecoveryAttemptsPerBinding;
 }
 
+/** A platform decoder and its NativeImage surface have fixed output geometry. */
+inline bool ShouldRecreateDecoderForFrameGeometry(int currentWidth,
+                                                  int currentHeight,
+                                                  int frameWidth,
+                                                  int frameHeight) {
+    return frameWidth > 0 && frameHeight > 0 &&
+        currentWidth > 0 && currentHeight > 0 &&
+        (currentWidth != frameWidth || currentHeight != frameHeight);
+}
+
 } // namespace Render
 
 #endif // DECODER_RECOVERY_POLICY_H

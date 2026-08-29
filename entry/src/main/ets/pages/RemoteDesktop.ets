@@ -3,7 +3,7 @@
  */
 import { display, promptAction, router, window } from '@kit.ArkUI';
 import { inputDevice, pointer, KeyCode } from '@kit.InputKit';
-import { abilityAccessCtrl, common } from '@kit.AbilityKit';
+import { common } from '@kit.AbilityKit';
 import { pasteboard } from '@kit.BasicServicesKit';
 import { image } from '@kit.ImageKit';
 import { HostSyncService } from '../services/HostSyncService';
@@ -185,8 +185,17 @@ import {
 } from '../services/RustDeskDiagnosticsPolicy';
 // PassphraseDialog replaced with inline bindSheet (RemoteDesktop is @Entry, no bindSheet limit)
 import { RemoteKeyDispatcher } from '../services/RemoteKeyDispatcher';
-import { ClipboardBridgeService } from '../services/ClipboardBridgeService';
-import { clipboardSyncEnabledForProtocol } from '../services/ClipboardSyncPolicy';
+import {
+  ClipboardBridgeService,
+  ensureSystemPasteboardReadAccess
+} from '../services/ClipboardBridgeService';
+import {
+  ClipboardBridgeActivationDecision,
+  ClipboardReadAccessDecision,
+  clipboardSyncEnabledForProtocol,
+  resolveClipboardBridgeActivation
+} from '../services/ClipboardSyncPolicy';
+import { AppCloneContext } from '../services/AppCloneContext';
 import { FileTransferLiveTaskService } from '../services/FileTransferLiveTaskService';
 import { RemoteSessionBackgroundTaskService, RemoteSessionBgInfo } from '../services/RemoteSessionBackgroundTaskService';
 import { RemoteSessionLiveViewService, LiveViewConnectionInfo } from '../services/RemoteSessionLiveViewService';
@@ -409,11 +418,22 @@ import {
   normalizeLocalViewScaleMode,
   panCanvasTransform,
   pinchCanvasTransform,
+  rebaseCanvasTransform,
   RDP_CANVAS_FREE_PAN_INSET_RATIO,
   REMOTE_DISPLAY_SCALE_PREFERENCE_VERSION,
   REMOTE_DISPLAY_SCALE_PREFERENCE_VERSION_KEY,
   resolveInitialRemoteDisplayScaleMode
 } from '../services/RemoteCanvasTransformPolicy';
+import {
+  effectiveRustDeskDesktopFlipMode,
+  normalizeRustDeskDesktopFlipMode,
+  reprojectRustDeskDesktopFlipPan,
+  rustDeskDesktopFlipRotations,
+  stableRustDeskDesktopFlipPeerPlatform,
+  RustDeskDesktopFlipMode,
+  RustDeskDesktopFlipPan,
+  RustDeskDesktopFlipRotations
+} from '../services/RustDeskDesktopFlipPolicy';
 import {
   legacyRdpPresetForResolutionId,
   normalizeRdpResolutionId,
@@ -444,7 +464,7 @@ import {
 import { RemoteProtocol } from '../services/RemoteSessionState';
 import {
   canUseRustDeskAdaptiveOrientation,
-  normalizeRustDeskTargetDevice,
+  isRustDeskPhoneSessionForPeer,
   rustDeskOrientationPolicy
 } from '../services/RemoteOrientationPolicy';
 import {
@@ -463,6 +483,7 @@ import {
   REMOTE_SESSION_CONTROL_BAR_HIDDEN_RUSTDESK_KEY,
   REMOTE_SESSION_CONTROL_BAR_HIDDEN_VNC_KEY,
   RemoteSessionControlBarVisibility,
+  remoteKeyboardSurfaceOpen,
   remoteSessionControlBarHidden,
   resolveRemoteSessionControlBarVisibility,
   remoteTopBarLayout,
@@ -470,8 +491,12 @@ import {
   shouldUseRemoteSessionEdgeRail
 } from '../services/RemoteSessionTopBarPolicy';
 import {
+  RemoteSessionSidebarSystemInsets,
+  RemoteSessionSidebarViewport,
   remoteSessionFloatingCardHeight,
-  remoteSessionFloatingCardWidth
+  remoteSessionFloatingCardWidth,
+  remoteSessionSidebarSystemInsets,
+  remoteSessionSidebarViewport
 } from '../services/RemoteSessionSidebarLayoutPolicy';
 import { RemoteSessionCapabilities, resolveSessionCapabilities } from '../services/RemoteSessionCapabilityPolicy';
 import {
@@ -556,6 +581,11 @@ import {
   discreteRemoteWheelDelta,
   shouldForwardContinuousRemoteWheelSample
 } from '../services/RemoteWheelPolicy';
+import {
+  RDP_REVERSE_WHEEL_KEY,
+  RUSTDESK_REVERSE_WHEEL_KEY,
+  VNC_REVERSE_WHEEL_KEY
+} from '../services/RemoteWheelPreferencePolicy';
 import {
   accumulateVncPhysicalTouchpadWheel,
   resetVncPhysicalWheelState,
@@ -884,8 +914,12 @@ struct RemoteDesktop {
   @StorageLink('rustdeskShowLocalCursor') rustdeskShowLocalCursor: boolean = true;
   @StorageLink('rustdeskBrowseMode') rustdeskBrowseMode: boolean = false;
   @StorageLink('rustdeskRelativeMouseMode') rustdeskRelativeMouseMode: boolean = false;
-  // Legacy storage key; now the shared RDP/RustDesk/VNC wheel direction.
-  @StorageLink('rustdeskReverseWheel') rustdeskReverseWheel: boolean = false;
+  @StorageLink(RDP_REVERSE_WHEEL_KEY) @Watch('onRemoteWheelPreferenceChange')
+  rdpReverseWheel: boolean = false;
+  @StorageLink(RUSTDESK_REVERSE_WHEEL_KEY) @Watch('onRemoteWheelPreferenceChange')
+  rustdeskReverseWheel: boolean = false;
+  @StorageLink(VNC_REVERSE_WHEEL_KEY) @Watch('onRemoteWheelPreferenceChange')
+  vncReverseWheel: boolean = false;
   @StorageLink('rustdeskSwapMouseButtons') rustdeskSwapMouseButtons: boolean = false;
   @StorageLink('rustdeskTouchpadSpeed') rustdeskTouchpadSpeed: number = 1.0;
   @StorageLink('virtualMouseStyle') virtualMouseStyle: string = 'arrow';
@@ -1077,6 +1111,10 @@ struct RemoteDesktop {
   private pendingDisappearDecisionTimer: number = -1;
   private disappearDecisionGeneration: number = 0;
   private rustDeskDiagnosticsTimer: number = -1;
+  private rustDeskPeerPlatformCategory: string = 'unknown';
+  private rustDeskRemoteInputPermissionKnown: boolean = false;
+  private rustDeskRemoteInputAllowed: boolean = true;
+  private lastRustDeskInputPermissionToastMs: number = 0;
   private rdpDiagnosticsTimer: number = -1;
   private rustDeskDiagnosticsDockInitialized: boolean = false;
   private vncDiagnosticsDockInitialized: boolean = false;
@@ -1234,6 +1272,8 @@ struct RemoteDesktop {
   private activeTouchPoints: Map<number, LocalPoint> = new Map<number, LocalPoint>();
   private canvasTransform: CanvasTransform = { scale: 1, panX: 0, panY: 0, rotation: 0 };
   private canvasRotationQuarterTurns: number = 0;
+  private canvasControlRotationQuarterTurns: number = 0;
+  @State private rustDeskDesktopFlipMode: RustDeskDesktopFlipMode = 'reset';
   private canvasTransformInitialized: boolean = false;
   // A default display scale must be recalculated when the surface or stream
   // geometry changes.  Only a real local canvas pinch owns a persistent
@@ -1301,6 +1341,8 @@ struct RemoteDesktop {
   @State private vncToolbarSystemRight: number = 0;
   @State private vncToolbarCutoutRects: Array<OverlayRect> = [];
   @State private vncToolbarKeyboardRect: OverlayRect | null = null;
+  @State private remoteSidebarWindowWidth: number = 0;
+  @State private remoteSidebarWindowHeight: number = 0;
   @State modifierPanelMounted: boolean = false;
   @State modifierPanelVisible: boolean = false;
   @State shortcutPanelVisible: boolean = false;
@@ -1350,6 +1392,8 @@ struct RemoteDesktop {
   private touchIndicatorTimer: number = -1;
   private kbWin: window.Window | null = null;
   private kbAvoidCb: ((data: window.AvoidAreaOptions) => void) | null = null;
+  private kbWindowSizeCb: ((size: window.Size) => void) | null = null;
+  private kbListenerGeneration: number = 0;
   private touchHoldDragTimer: number = -1;
   private touchDirectRightClickTimer: number = -1;
   private lastTouchMs: number = 0;
@@ -1736,9 +1780,42 @@ struct RemoteDesktop {
     return occupied;
   }
 
+  private currentRemoteSessionSidebarViewport(): RemoteSessionSidebarViewport {
+    const deviceClass: string =
+      remoteTopBarLayout(this.isDesktopDevice, this.breakpoint, this.isPadDevice).deviceClass;
+    return remoteSessionSidebarViewport(this.surfaceWidth, this.surfaceHeight,
+      this.remoteSidebarWindowWidth, this.remoteSidebarWindowHeight,
+      this.isRdpRemoteSession() && deviceClass === 'phone' &&
+        this.orientationApplied && this.isLandscape);
+  }
+
+  private syncRemoteSidebarWindowViewport(w: window.Window, reason: string): void {
+    try {
+      const rect: window.Rect = w.getWindowProperties().windowRect;
+      const width: number = this.vncToolbarPxToVp(rect.width);
+      const height: number = this.vncToolbarPxToVp(rect.height);
+      if (width <= 0 || height <= 0) {
+        return;
+      }
+      if (Math.abs(width - this.remoteSidebarWindowWidth) >= 0.5 ||
+        Math.abs(height - this.remoteSidebarWindowHeight) >= 0.5) {
+        this.remoteSidebarWindowWidth = width;
+        this.remoteSidebarWindowHeight = height;
+        hilog.info(RD_DOMAIN, RD_TAG, 'sidebar viewport reason=' + reason +
+          ' window=' + Math.round(width).toString() + 'x' + Math.round(height).toString() +
+          'vp surface=' + Math.round(this.surfaceWidth).toString() + 'x' +
+          Math.round(this.surfaceHeight).toString() + 'vp');
+      }
+    } catch (_e) {
+      // A closing or transferred window can temporarily reject properties.
+    }
+  }
+
   private currentVncToolbarViewport(): OverlayViewport {
-    const width: number = this.surfaceWidth > 0 ? this.surfaceWidth : 360;
-    const height: number = this.surfaceHeight > 0 ? this.surfaceHeight : 640;
+    const sidebarViewport: RemoteSessionSidebarViewport =
+      this.currentRemoteSessionSidebarViewport();
+    const width: number = sidebarViewport.width;
+    const height: number = sidebarViewport.height;
     this.vncToolbarPlacementGeneration += 1;
     return {
       width,
@@ -1777,9 +1854,12 @@ struct RemoteDesktop {
       return;
     }
     this.syncVncToolbarPreferenceScope();
-    const collapsed: boolean = this.vncToolbarCollapsed;
     const viewport: OverlayViewport = this.currentVncToolbarViewport();
     const availableHeight: number = this.vncToolbarAvailableHeight(viewport);
+    const collapsed: boolean = this.vncToolbarCollapsed || availableHeight < 68;
+    if (collapsed && !this.vncToolbarCollapsed) {
+      this.vncToolbarCollapsed = true;
+    }
     const request: OverlayPlacementRequest = {
       ownerId: 'vnc-toolbar',
       preferredSide: this.vncToolbarPreferredSide,
@@ -1839,6 +1919,7 @@ struct RemoteDesktop {
     if (!this.isVncSession() && !this.isRdpRemoteSession()) {
       return;
     }
+    this.syncRemoteSidebarWindowViewport(w, 'avoid-area');
     this.vncToolbarSystemTop = 0;
     this.vncToolbarSystemBottom = 0;
     this.vncToolbarSystemLeft = 0;
@@ -1893,6 +1974,19 @@ struct RemoteDesktop {
     } catch (_e) {
       // Keyboard state is also updated by the existing avoid-area callback.
     }
+    const viewportHeight: number = this.currentRemoteSessionSidebarViewport().height;
+    const rawSystemTop: number = this.vncToolbarSystemTop;
+    const rawSystemBottom: number = this.vncToolbarSystemBottom;
+    const verticalInsets: RemoteSessionSidebarSystemInsets =
+      remoteSessionSidebarSystemInsets(viewportHeight, rawSystemTop, rawSystemBottom);
+    this.vncToolbarSystemTop = verticalInsets.top;
+    this.vncToolbarSystemBottom = verticalInsets.bottom;
+    if (rawSystemTop !== verticalInsets.top || rawSystemBottom !== verticalInsets.bottom) {
+      hilog.warn(RD_DOMAIN, RD_TAG, 'toolbar avoid-area rejected viewportHeight=' +
+        Math.round(viewportHeight).toString() + ' rawTop=' +
+        Math.round(rawSystemTop).toString() + ' rawBottom=' +
+        Math.round(rawSystemBottom).toString());
+    }
     if (this.isVncSession()) {
       this.recomputeVncToolbarPlacement('avoid-area');
     }
@@ -1908,13 +2002,17 @@ struct RemoteDesktop {
   private scheduleVncToolbarAutoCollapse(sessionId: number = this.sessionId): void {
     this.clearVncToolbarAutoCollapse();
     const delayMs: number =
-      vncToolbarAutoCollapseDelayMs(this.connected && this.isVncSession(), this.vncToolbarCollapsed);
+      vncToolbarAutoCollapseDelayMs(this.connected && this.isVncSession(), this.vncToolbarCollapsed,
+        remoteKeyboardSurfaceOpen(this.keyboardOpen || this.keyboardImeActive,
+          this.modifierPanelVisible || this.modifierPanelPrepareOnly, this.shortcutPanelVisible));
     if (delayMs <= 0 || sessionId <= 0) {
       return;
     }
     this.vncToolbarCollapseTimer = setTimeout((): void => {
       this.vncToolbarCollapseTimer = -1;
-      if (this.connected && this.isVncSession() && this.sessionId === sessionId) {
+      if (this.connected && this.isVncSession() && this.sessionId === sessionId &&
+          !remoteKeyboardSurfaceOpen(this.keyboardOpen || this.keyboardImeActive,
+            this.modifierPanelVisible || this.modifierPanelPrepareOnly, this.shortcutPanelVisible)) {
         this.vncToolbarCollapsed = true;
         this.recomputeVncToolbarPlacement('auto-collapse');
         this.clampModifierPanelsIntoView();
@@ -2002,6 +2100,10 @@ struct RemoteDesktop {
       promptAction.showToast({ message: '当前 VNC 主机为只读连接，组合键发送已禁用', duration: 1600 });
       return;
     }
+    if (this.keyboardOpen || this.keyboardImeActive) {
+      this.keepKeyboardAfterSheetClose = false;
+      this.dismissKeyboard();
+    }
     if (!this.handleVisible) {
       this.initHandlePosition();
       this.handleVisible = true;
@@ -2033,12 +2135,13 @@ struct RemoteDesktop {
           promptAction.showToast({ message: '当前 VNC 主机为只读连接，键盘输入已禁用', duration: 1600 });
           return;
         }
-        if (this.keyboardOpen) {
+        if (this.keyboardOpen || this.keyboardImeActive) {
           this.keepKeyboardAfterSheetClose = false;
           this.dismissKeyboard();
         } else {
           this.openKeyboard();
         }
+        this.scheduleVncToolbarAutoCollapse();
       },
       onCycleControlMode: (): void => {
         this.markVncToolbarInteraction();
@@ -2046,7 +2149,8 @@ struct RemoteDesktop {
       },
       onOpenShortcuts: (): void => {
         this.markVncToolbarInteraction();
-        this.openVncModifierPanel();
+        this.toggleModifierPanel();
+        this.scheduleVncToolbarAutoCollapse();
       },
       onCycleDisplayScale: (): void => {
         this.markVncToolbarInteraction();
@@ -2075,7 +2179,8 @@ struct RemoteDesktop {
   private isRustDeskPhoneSession(): boolean {
     const host: RemoteHost | null = this.pendingHost;
     return host !== null && host.protocol === 'rustdesk' &&
-      normalizeRustDeskTargetDevice(host.rustdeskTargetDevice) === 'phone';
+      isRustDeskPhoneSessionForPeer(
+        host.rustdeskTargetDevice, this.rustDeskPeerPlatformCategory);
   }
 
   private async refreshPhysicalKeyboardPresence(reason: string): Promise<void> {
@@ -3643,6 +3748,22 @@ struct RemoteDesktop {
     return host === null ? '' : host.protocol;
   }
 
+  private reverseWheelForCurrentProtocol(): boolean {
+    const protocol: string = this.currentProtocolName();
+    if (protocol === 'rdp') { return this.rdpReverseWheel; }
+    if (protocol === 'rustdesk') { return this.rustdeskReverseWheel; }
+    if (protocol === 'vnc') { return this.vncReverseWheel; }
+    return false;
+  }
+
+  private onRemoteWheelPreferenceChange(): void {
+    this.touchWheelRemainder = 0;
+    this.lastTouchWheelMs = 0;
+    this.physicalWheelRemainder = 0;
+    this.vncPhysicalWheelState = resetVncPhysicalWheelState();
+    this.physicalTouchpadWheelState = resetPhysicalTouchpadWheelState();
+  }
+
   private isVncSession(): boolean {
     return this.pendingHost !== null && this.pendingHost.protocol === 'vnc' &&
       this.pendingVncHost !== null;
@@ -3699,6 +3820,12 @@ struct RemoteDesktop {
    * AppStorage preferences as a fallback.
    */
   private clipboardBridgeEnabledForSession(): boolean {
+    // SystemPasteboard is shared at device scope. A clone must not read from
+    // or write to it, otherwise two simultaneous remote sessions can relay
+    // clipboard text across the main app and its clone.
+    if (!AppCloneContext.getInstance().clipboardBridgeAllowed()) {
+      return false;
+    }
     const protocol: string = this.currentProtocolName();
     if (protocol === 'vnc') {
       return this.isVncSession() && this.pendingVncHost !== null && this.pendingVncHost.clipboardEnabled;
@@ -4262,6 +4389,10 @@ struct RemoteDesktop {
       }
       this.vncExternalInputAutoSwitchSessionId = -1;
       this.resetRustDeskPhysicalTouchpadState();
+      this.rustDeskPeerPlatformCategory = 'unknown';
+      this.rustDeskRemoteInputPermissionKnown = false;
+      this.rustDeskRemoteInputAllowed = true;
+      this.lastRustDeskInputPermissionToastMs = 0;
       this.restoreRemoteSystemPointer('connection-state');
       this.stopRustDeskDiagnosticsPolling(true);
       this.stopRdpDiagnosticsPolling(true);
@@ -4271,7 +4402,14 @@ struct RemoteDesktop {
   }
 
   private onRemoteControlModeChange(): void {
+    // A mode change changes the input interpreter while the session remains
+    // connected. Drain the old interpreter before resetting local gesture
+    // state so no queued move, held button, key, or virtual latch crosses it.
+    this.discardPendingMouseMove();
     this.releaseCanvasPinchInput('control-mode-change');
+    this.resetTouchGesture();
+    this.releaseAllHeldKeys();
+    this.resetAllLatches();
     this.resetRustDeskPhysicalTouchpadState();
     this.syncRemoteSystemPointer('control-mode');
     void this.setRemoteNavigationHidden(this.connected, 'control-mode-change');
@@ -4280,6 +4418,7 @@ struct RemoteDesktop {
 
   private onRemoteAppTouchScaleSettingChange(): void {
     this.releaseCanvasPinchInput('remote-app-touch-scale-setting-change');
+    this.resetTouchGesture();
   }
 
   private handleRemoteSurfaceHover = (hovered: boolean): void => {
@@ -4493,8 +4632,8 @@ struct RemoteDesktop {
   }
 
   private setRdpReverseWheelPreference(enabled: boolean): void {
-    this.rustdeskReverseWheel = enabled;
-    this.persistSessionPref('rustdeskReverseWheel', enabled);
+    this.rdpReverseWheel = enabled;
+    this.persistSessionPref(RDP_REVERSE_WHEEL_KEY, enabled);
   }
 
   private showRdpReconnectPreferenceToast(label: string): void {
@@ -4568,7 +4707,7 @@ struct RemoteDesktop {
 
   private openRdpKeyboard(): void {
     this.rdpControlCenterVisible = false;
-    if (this.keyboardOpen) {
+    if (this.keyboardOpen || this.keyboardImeActive) {
       this.keepKeyboardAfterSheetClose = false;
       this.dismissKeyboard();
     } else {
@@ -4584,7 +4723,7 @@ struct RemoteDesktop {
       this.handleVisible = true;
     }
     this.ensureModifierPanelPositions();
-    this.openModifierPanel();
+    this.toggleModifierPanel();
     this.stopRdpDiagnosticsPolling(!this.rdpShowDiagnostics);
   }
 
@@ -4622,9 +4761,10 @@ struct RemoteDesktop {
   }
 
   private rdpToolbarAvailableHeight(): number {
-    const height: number = this.surfaceHeight > 0 ? this.surfaceHeight : 640;
-    const top: number = Math.max(0, this.vncToolbarSystemTop);
-    let bottom: number = Math.max(top, height - Math.max(0, this.vncToolbarSystemBottom));
+    const height: number = this.currentRemoteSessionSidebarViewport().height;
+    const insets: RemoteSessionSidebarSystemInsets = this.rdpToolbarSystemInsets(height);
+    const top: number = insets.top;
+    let bottom: number = Math.max(top, height - insets.bottom);
     if (this.vncToolbarKeyboardRect !== null && this.vncToolbarKeyboardRect.height > 0) {
       bottom = Math.min(bottom, Math.max(top, this.vncToolbarKeyboardRect.y));
     } else if (this.kbHeight > 0) {
@@ -4634,7 +4774,13 @@ struct RemoteDesktop {
   }
 
   private rdpToolbarTopInset(): number {
-    return Math.max(0, this.vncToolbarSystemTop);
+    const height: number = this.currentRemoteSessionSidebarViewport().height;
+    return this.rdpToolbarSystemInsets(height).top;
+  }
+
+  private rdpToolbarSystemInsets(height: number): RemoteSessionSidebarSystemInsets {
+    return remoteSessionSidebarSystemInsets(height,
+      this.vncToolbarSystemTop, this.vncToolbarSystemBottom);
   }
 
   private resetCanvasTransformFromMenu(): void {
@@ -4736,6 +4882,16 @@ struct RemoteDesktop {
     });
   }
 
+  private releaseRustDeskInputBeforeBlock(reason: string): void {
+    this.discardPendingMouseMove();
+    this.releaseCanvasPinchInput(reason);
+    this.resetTouchGesture();
+    this.releaseAllHeldKeys();
+    this.resetAllLatches();
+    this.touchpadAnchorValid = false;
+    this.resetTouchpadPointerCurve();
+  }
+
   /**
    * End every VNC input sequence in the old framebuffer coordinate space
    * before adopting a DesktopSize/framebuffer update. This prevents a held
@@ -4766,6 +4922,8 @@ struct RemoteDesktop {
     if (width <= 0 || height <= 0) {
       return;
     }
+    this.rebaseManualCanvasForSourceGeometry(
+      this.remoteWidth, this.remoteHeight, width, height);
     this.updateRemoteSize({
       width,
       height,
@@ -4776,6 +4934,8 @@ struct RemoteDesktop {
     this.updateOwnedRemoteSessionPipContentSize(width, height);
     if (!this.canvasTransformGestureModified) {
       this.resetCanvasToDisplayDefault(true);
+    } else {
+      this.applyCanvasTransform();
     }
     this.requestRemoteCursorViewRefresh(true);
   }
@@ -4985,6 +5145,91 @@ struct RemoteDesktop {
     this.updateRendererViewportCacheForCanvasTransform(viewport);
   }
 
+  private adoptRustDeskDesktopFlipMode(mode: RustDeskDesktopFlipMode,
+    reason: string, preserveCanvasFocus: boolean): void {
+    const rotations: RustDeskDesktopFlipRotations = rustDeskDesktopFlipRotations(mode);
+    const previousVisual: number = this.canvasRotationQuarterTurns;
+    const pan: RustDeskDesktopFlipPan = preserveCanvasFocus ?
+      reprojectRustDeskDesktopFlipPan(previousVisual, rotations.visualQuarterTurns,
+        this.canvasTransform.panX, this.canvasTransform.panY) :
+      { panX: 0, panY: 0 };
+    this.rustDeskDesktopFlipMode = mode;
+    this.canvasRotationQuarterTurns = rotations.visualQuarterTurns;
+    this.canvasControlRotationQuarterTurns = rotations.inputQuarterTurns;
+    this.canvasTransform = {
+      scale: this.canvasTransform.scale,
+      panX: pan.panX,
+      panY: pan.panY,
+      rotation: rotations.visualQuarterTurns
+    };
+    if (this.rendererHandle > 0) {
+      this.applyCanvasTransform();
+      this.requestRemoteCursorViewRefresh(true);
+      this.syncRemoteSystemPointer('rustdesk-desktop-flip-' + reason,
+        this.remoteSurfaceHovered !== false, true);
+    }
+    hilog.info(RD_DOMAIN, RD_TAG, 'rustdeskFlipApplied reason=' + reason +
+      ' mode=' + mode +
+      ' visualQ=' + rotations.visualQuarterTurns.toString() +
+      ' controlQ=' + rotations.inputQuarterTurns.toString() +
+      ' renderer=' + this.rendererHandle.toString() +
+      ' transformVersion=' + this.rendererCanvasTransformPendingVersion.toString());
+  }
+
+  private restoreRustDeskDesktopFlipMode(host: RemoteHost, reason: string): void {
+    const mode: RustDeskDesktopFlipMode = effectiveRustDeskDesktopFlipMode(
+      host.rustdeskDesktopFlipMode, host.protocol, this.isDesktopDevice,
+      host.rustdeskTargetDevice, this.rustDeskPeerPlatformCategory);
+    this.adoptRustDeskDesktopFlipMode(mode, reason, false);
+  }
+
+  private setRustDeskDesktopFlipMode(mode: RustDeskDesktopFlipMode): void {
+    const host: RemoteHost | null = this.pendingHost;
+    const normalized: RustDeskDesktopFlipMode = normalizeRustDeskDesktopFlipMode(mode);
+    if (host === null || host.protocol !== 'rustdesk' || !this.isDesktopDevice ||
+      this.isRustDeskPhoneSession()) {
+      promptAction.showToast({ message: '仅 PC 端 RustDesk 电脑会话支持画面翻转', duration: 1800 });
+      return;
+    }
+    const existing: RemoteHost | undefined = this.srv.getHost(host.id);
+    if (existing === undefined) {
+      promptAction.showToast({ message: '主机记录不可用，画面翻转设置未保存', duration: 2000 });
+      return;
+    }
+    const next: RemoteHost = existing.runtimeClone();
+    next.rustdeskDesktopFlipMode = normalized;
+    if (!this.srv.updateHost(next)) {
+      hilog.warn(RD_DOMAIN, RD_TAG, 'rustdeskFlip persistence failed hostId=' +
+        hashForLog(host.id) + ' mode=' + normalized);
+      promptAction.showToast({ message: '本机主机设置保存失败，画面翻转未更改', duration: 2200 });
+      return;
+    }
+    host.rustdeskDesktopFlipMode = normalized;
+    this.resetRustDeskInputAfterGeometryChange('rustdesk-desktop-flip');
+    this.adoptRustDeskDesktopFlipMode(normalized, 'user', true);
+    hilog.info(RD_DOMAIN, RD_TAG, 'rustdeskFlip mode changed hostId=' +
+      hashForLog(host.id) + ' mode=' + normalized + ' persisted=1');
+    const message: string = normalized === 'image_only' ? '已仅翻转画面' :
+      (normalized === 'image_and_controls' ? '已翻转控制层和画面' : '画面翻转已复位');
+    promptAction.showToast({ message, duration: 1500 });
+  }
+
+  /** PIP owns a fit-only renderer, but must retain the host's final visual correction. */
+  private applyRustDeskDesktopFlipToPipRenderer(reason: string): void {
+    if (!this.isRustDeskSession() || this.rendererHandle <= 0) { return; }
+    const version: number = this.loader.setRendererCanvasTransform(
+      this.rendererHandle, 1, 0, 0, this.canvasRotationQuarterTurns);
+    if (Number.isFinite(version) && version > 0) {
+      this.rendererCanvasTransformPendingVersion = version;
+    }
+    hilog.info(RD_DOMAIN, RD_TAG, 'rustdeskFlipApplied reason=' + reason +
+      ' mode=' + this.rustDeskDesktopFlipMode +
+      ' visualQ=' + this.canvasRotationQuarterTurns.toString() +
+      ' controlQ=' + this.canvasControlRotationQuarterTurns.toString() +
+      ' renderer=' + this.rendererHandle.toString() +
+      ' transformVersion=' + this.rendererCanvasTransformPendingVersion.toString());
+  }
+
   /** Rotate only the displayed RustDesk phone canvas; the peer keeps its native orientation. */
   private rotateRustDeskRemoteCanvas(): void {
     if (!this.isRustDeskPhoneSession()) {
@@ -4993,6 +5238,7 @@ struct RemoteDesktop {
     }
     this.resetRustDeskInputAfterGeometryChange('rustdesk-canvas-rotation');
     this.canvasRotationQuarterTurns = (this.canvasRotationQuarterTurns + 1) % 4;
+    this.canvasControlRotationQuarterTurns = this.canvasRotationQuarterTurns;
     this.resetCanvasToDisplayDefault(true);
     this.requestRemoteCursorViewRefresh(true);
     this.syncRemoteSystemPointer('rustdesk-canvas-rotation', this.remoteSurfaceHovered !== false, true);
@@ -5704,6 +5950,9 @@ struct RemoteDesktop {
   }
 
   private setRustDeskBrowseMode(on: boolean): void {
+    if (on && !this.rustdeskBrowseMode) {
+      this.releaseRustDeskInputBeforeBlock('rustdesk-browse-mode');
+    }
     this.rustdeskBrowseMode = on;
     this.persistSessionPref('rustdeskBrowseMode', on);
     promptAction.showToast({
@@ -5717,10 +5966,23 @@ struct RemoteDesktop {
     this.persistSessionPref('rustdeskRelativeMouseMode', on);
   }
 
-  /** Retains the legacy key while applying wheel direction to every remote protocol. */
-  private setRemoteReverseWheel(on: boolean): void {
+  private setRustDeskReverseWheel(on: boolean): void {
     this.rustdeskReverseWheel = on;
-    this.persistSessionPref('rustdeskReverseWheel', on);
+    this.persistSessionPref(RUSTDESK_REVERSE_WHEEL_KEY, on);
+  }
+
+  private setCurrentProtocolReverseWheel(on: boolean): void {
+    const protocol: string = this.currentProtocolName();
+    if (protocol === 'rdp') {
+      this.setRdpReverseWheelPreference(on);
+      return;
+    }
+    if (protocol === 'vnc') {
+      this.vncReverseWheel = on;
+      this.persistSessionPref(VNC_REVERSE_WHEEL_KEY, on);
+      return;
+    }
+    this.setRustDeskReverseWheel(on);
   }
 
   private setRustDeskSwapMouseButtons(on: boolean): void {
@@ -5749,7 +6011,7 @@ struct RemoteDesktop {
         promptAction.showToast({ message: '已请求刷新远端画面', duration: 1200 });
       },
       onOpenKeyboard: (): void => {
-        if (this.keyboardOpen) {
+        if (this.keyboardOpen || this.keyboardImeActive) {
           this.keepKeyboardAfterSheetClose = false;
           this.dismissKeyboard();
         } else {
@@ -5765,7 +6027,10 @@ struct RemoteDesktop {
           this.handleSide = 'right';
         }
         this.ensureModifierPanelPositions();
-        this.openModifierPanel();
+        this.toggleModifierPanel();
+      },
+      onCloseKeyboardSurface: (): void => {
+        this.closeRemoteKeyboardSurface();
       },
       onOpenFileTransfer: (): void => {
         this.pickAndSendFile();
@@ -5800,6 +6065,9 @@ struct RemoteDesktop {
       onRotateRemoteDisplay: (): void => {
         this.rotateRustDeskRemoteCanvas();
       },
+      onSetRustDeskDesktopFlipMode: (mode: RustDeskDesktopFlipMode): void => {
+        this.setRustDeskDesktopFlipMode(mode);
+      },
       onOpenRustDeskResolution: (): void => {
         this.openRustDeskDisplayResolutionMenu();
       },
@@ -5825,7 +6093,7 @@ struct RemoteDesktop {
         this.setRustDeskRelativeMouseMode(on);
       },
       onToggleReverseWheel: (on: boolean): void => {
-        this.setRemoteReverseWheel(on);
+        this.setCurrentProtocolReverseWheel(on);
       },
       onToggleSwapMouseButtons: (on: boolean): void => {
         this.setRustDeskSwapMouseButtons(on);
@@ -6328,6 +6596,10 @@ struct RemoteDesktop {
   }
 
   private openModifierPanel(): void {
+    if (this.keyboardOpen || this.keyboardImeActive) {
+      this.keepKeyboardAfterSheetClose = false;
+      this.dismissKeyboard();
+    }
     this.ensureModifierPanelPositions();
     if (!this.modifierPanelUserPositioned) {
       const anchored: FloatingPanelRect = this.defaultModifierPanelPosition();
@@ -6346,6 +6618,7 @@ struct RemoteDesktop {
     this.modifierPanelVisible = false;
     if (this.isVncSession()) {
       this.recomputeVncToolbarPlacement('modifier-panel-close');
+      this.scheduleVncToolbarAutoCollapse();
     }
     this.scheduleModifierPanelUnmount();
   }
@@ -6359,8 +6632,10 @@ struct RemoteDesktop {
   }
 
   private toggleModifierPanel(): void {
-    if (this.modifierPanelVisible) {
-      this.closeModifierPanel();
+    const modifierSurfaceOpen: boolean = remoteKeyboardSurfaceOpen(false,
+      this.modifierPanelVisible || this.modifierPanelPrepareOnly, this.shortcutPanelVisible);
+    if (modifierSurfaceOpen) {
+      this.closeRemoteModifierSurfaces();
     } else if (this.isVncSession()) {
       this.openVncModifierPanel();
     } else {
@@ -6368,10 +6643,28 @@ struct RemoteDesktop {
     }
   }
 
+  private closeRemoteModifierSurfaces(): void {
+    if (this.modifierPanelVisible || this.modifierPanelPrepareOnly) {
+      this.closeModifierPanel();
+    }
+    if (this.shortcutPanelVisible) {
+      this.closeShortcutPanel();
+    }
+  }
+
+  private closeRemoteKeyboardSurface(): void {
+    if (this.keyboardOpen || this.keyboardImeActive) {
+      this.keepKeyboardAfterSheetClose = false;
+      this.dismissKeyboard();
+    }
+    this.closeRemoteModifierSurfaces();
+  }
+
   private closeShortcutPanel(): void {
     this.shortcutPanelVisible = false;
     if (this.isVncSession()) {
       this.recomputeVncToolbarPlacement('shortcut-panel-close');
+      this.scheduleVncToolbarAutoCollapse();
     }
     this.scheduleModifierPanelUnmount();
   }
@@ -6704,12 +6997,25 @@ struct RemoteDesktop {
   }
 
   private registerKeyboardAvoidListener(): void {
+    if (this.kbWin !== null && this.kbAvoidCb !== null && this.kbWindowSizeCb !== null) {
+      if (this.isVncSession() || this.isRdpRemoteSession()) {
+        this.syncVncToolbarAvoidAreas(this.kbWin);
+      }
+      return;
+    }
+    if (this.kbWin !== null || this.kbAvoidCb !== null || this.kbWindowSizeCb !== null) {
+      this.unregisterKeyboardAvoidListener();
+    }
+    const generation: number = ++this.kbListenerGeneration;
     try {
       const ctx: common.Context | undefined = this.getUIContext().getHostContext();
       if (!ctx) {
         return;
       }
       window.getLastWindow(ctx).then((w: window.Window): void => {
+        if (generation !== this.kbListenerGeneration) {
+          return;
+        }
         this.kbWin = w;
         if (this.isVncSession() || this.isRdpRemoteSession()) {
           this.syncVncToolbarAvoidAreas(w);
@@ -6747,7 +7053,19 @@ struct RemoteDesktop {
           }
         };
         w.on('avoidAreaChange', this.kbAvoidCb);
+        this.kbWindowSizeCb = (_size: window.Size): void => {
+          if (this.isVncSession() || this.isRdpRemoteSession()) {
+            // The XComponent can retain the pre-rotation portrait area while
+            // the window manager has already committed landscape geometry.
+            this.syncVncToolbarAvoidAreas(w);
+          }
+        };
+        w.on('windowSizeChange', this.kbWindowSizeCb);
       }).catch((err: Error): void => {
+        if (generation !== this.kbListenerGeneration) {
+          return;
+        }
+        this.unregisterKeyboardAvoidListener();
         hilog.warn(RD_DOMAIN, RD_TAG,
           'registerKeyboardAvoid: getLastWindow failed: ' + err.message);
       });
@@ -6758,15 +7076,24 @@ struct RemoteDesktop {
   }
 
   private unregisterKeyboardAvoidListener(): void {
+    this.kbListenerGeneration += 1;
     try {
       if (this.kbWin && this.kbAvoidCb) {
         this.kbWin.off('avoidAreaChange', this.kbAvoidCb);
       }
     } catch (_e) {
-      // 忽略卸载异常
+      // Avoid-area listener teardown is best effort during window transfer.
+    }
+    try {
+      if (this.kbWin && this.kbWindowSizeCb) {
+        this.kbWin.off('windowSizeChange', this.kbWindowSizeCb);
+      }
+    } catch (_e) {
+      // Window-size listener teardown must still run if avoid-area off failed.
     }
     this.kbWin = null;
     this.kbAvoidCb = null;
+    this.kbWindowSizeCb = null;
     this.kbHeight = 0;
     this.vncToolbarSystemTop = 0;
     this.vncToolbarSystemBottom = 0;
@@ -6774,6 +7101,8 @@ struct RemoteDesktop {
     this.vncToolbarSystemRight = 0;
     this.vncToolbarCutoutRects = [];
     this.vncToolbarKeyboardRect = null;
+    this.remoteSidebarWindowWidth = 0;
+    this.remoteSidebarWindowHeight = 0;
   }
 
   private cancelPendingDisappearDecision(): void {
@@ -7303,6 +7632,9 @@ struct RemoteDesktop {
     this.bindIndependentSessionWindow(routeParams);
     this.stageIndependentWindowAfterAuthentication(routeParams);
     this.cancelPendingDisappearDecision();
+    if (this.connected) {
+      void this.setRemoteNavigationHidden(true, 'page-appear');
+    }
     if (this.connected && (this.isVncSession() || this.isRdpRemoteSession())) {
       if (this.kbWin !== null) {
         this.syncVncToolbarAvoidAreas(this.kbWin);
@@ -7449,6 +7781,7 @@ struct RemoteDesktop {
           const resolvedHost: RemoteHost = this.hostWithResolvedCredential(host);
           this.pendingHost = this.hostWithRdpOneTimeCertificate(resolvedHost, p);
           if (this.pendingHost.protocol === 'rustdesk') {
+            this.restoreRustDeskDesktopFlipMode(this.pendingHost, 'host-restore');
             // Apply the mobile default before the auth sheet and Surface
             // startup. Otherwise a portrait window can remain visible until
             // the native connection reaches its success callback.
@@ -7694,6 +8027,7 @@ struct RemoteDesktop {
       // the process-global XComponent surface as destroyed from this page.
       this.cancelPendingDisappearDecision();
       this.unbindVncAccountScopeListener();
+      this.unregisterKeyboardAvoidListener();
       hilog.info(RD_DOMAIN, RD_TAG,
         'aboutToDisappear: source teardown skipped after independent-window handoff');
       return;
@@ -8477,6 +8811,11 @@ struct RemoteDesktop {
             this.sessionId, this.remoteProtocolOf(this.pendingHost));
         }
         this.nativeHandles.markSurfaceAttached(this.rendererHandle);
+        if (!this.canvasTransformInitialized) {
+          this.resetCanvasToDisplayDefault(true);
+        } else {
+          this.applyCanvasTransform();
+        }
         if (this.decoderHandle > 0) {
           this.loader.rebindActiveVideoPipeline();
           const recoveryArmed: boolean = this.loader.requestDecoderRecovery();
@@ -8613,6 +8952,31 @@ struct RemoteDesktop {
     } else {
       this.applyRemoteCursorMotionState(this.remoteCursorMotion);
     }
+  }
+
+  private rebaseManualCanvasForSourceGeometry(previousWidth: number,
+    previousHeight: number, nextWidth: number, nextHeight: number): void {
+    if (!this.canvasTransformGestureModified || previousWidth <= 0 || previousHeight <= 0 ||
+      nextWidth <= 0 || nextHeight <= 0 ||
+      (previousWidth === nextWidth && previousHeight === nextHeight)) {
+      return;
+    }
+    const current: CanvasViewport = this.currentCanvasViewport();
+    const previous: CanvasViewport = {
+      surfaceWidth: current.surfaceWidth,
+      surfaceHeight: current.surfaceHeight,
+      sourceWidth: previousWidth,
+      sourceHeight: previousHeight,
+      freePanInsetRatio: current.freePanInsetRatio
+    };
+    const next: CanvasViewport = {
+      surfaceWidth: current.surfaceWidth,
+      surfaceHeight: current.surfaceHeight,
+      sourceWidth: nextWidth,
+      sourceHeight: nextHeight,
+      freePanInsetRatio: current.freePanInsetRatio
+    };
+    this.canvasTransform = rebaseCanvasTransform(this.canvasTransform, previous, next);
   }
 
   /** Disabling local canvas zoom must not leave its last enlarged transform on screen. */
@@ -8941,6 +9305,8 @@ struct RemoteDesktop {
     const previousWidth: number = this.remoteWidth;
     const previousHeight: number = this.remoteHeight;
     this.resetRustDeskInputAfterGeometryChange('rustdesk-renderer-geometry');
+    this.rebaseManualCanvasForSourceGeometry(
+      previousWidth, previousHeight, viewport.sourceWidth, viewport.sourceHeight);
     this.updateOwnedRemoteSessionPipContentSize(
       viewport.sourceWidth, viewport.sourceHeight);
     this.updateRemoteSize({
@@ -8952,6 +9318,8 @@ struct RemoteDesktop {
     });
     if (!this.canvasTransformGestureModified) {
       this.resetCanvasToDisplayDefault();
+    } else {
+      this.applyCanvasTransform();
     }
     // The cursor overlay owns its own render scope. Geometry changes do not
     // necessarily move the logical pointer, so explicitly publish the new
@@ -8984,11 +9352,56 @@ struct RemoteDesktop {
         this.stopRustDeskGeometrySync();
         return;
       }
+      this.syncRustDeskPeerInputState(sessionId);
       this.syncRustDeskDisplayCatalog();
       this.syncRustDeskLogicalSizeFromRenderer();
     };
     sync();
     this.rustDeskGeometrySyncTimer = setInterval(sync, REMOTE_GEOMETRY_SYNC_MS);
+  }
+
+  private syncRustDeskPeerInputState(sessionId: number): void {
+    let snapshot: RustDeskDiagnosticsSnapshot;
+    try {
+      snapshot = this.loader.getSessionDiagnostics(sessionId);
+    } catch (_e) {
+      return;
+    }
+    if (this.sessionId !== sessionId || snapshot.sessionId !== sessionId) {
+      return;
+    }
+    const observedPeerPlatform: string = snapshot.peerPlatform !== undefined ?
+      snapshot.peerPlatform : 'unknown';
+    const previousPhoneTarget: boolean = this.isRustDeskPhoneSession();
+    this.rustDeskPeerPlatformCategory = stableRustDeskDesktopFlipPeerPlatform(
+      this.rustDeskPeerPlatformCategory, observedPeerPlatform);
+    const nextPhoneTarget: boolean = this.isRustDeskPhoneSession();
+    if (previousPhoneTarget !== nextPhoneTarget && this.pendingHost !== null &&
+      this.isDesktopDevice) {
+      const nextMode: RustDeskDesktopFlipMode = effectiveRustDeskDesktopFlipMode(
+        this.pendingHost.rustdeskDesktopFlipMode, this.pendingHost.protocol,
+        this.isDesktopDevice, this.pendingHost.rustdeskTargetDevice,
+        this.rustDeskPeerPlatformCategory);
+      if (nextMode !== this.rustDeskDesktopFlipMode) {
+        this.resetRustDeskInputAfterGeometryChange('rustdesk-peer-platform-flip-scope');
+        this.adoptRustDeskDesktopFlipMode(nextMode,
+          nextPhoneTarget ? 'peer-mobile-scope' : 'peer-desktop-scope', true);
+      }
+    }
+    const nextKnown: boolean = snapshot.remoteInputPermissionKnown;
+    const nextAllowed: boolean = !nextKnown || snapshot.remoteInputAllowed;
+    if (!nextAllowed && this.rustDeskRemoteInputAllowed) {
+      // Release while the previous permission snapshot still allows the Up
+      // messages to cross the local gate, then block all new sequences.
+      this.releaseRustDeskInputBeforeBlock('rustdesk-input-permission-disabled');
+      promptAction.showToast({
+        message: '远端未开放输入控制，请在被控手机开启 RustDesk 输入控制/无障碍权限',
+        duration: 2200
+      });
+      this.lastRustDeskInputPermissionToastMs = Date.now();
+    }
+    this.rustDeskRemoteInputPermissionKnown = nextKnown;
+    this.rustDeskRemoteInputAllowed = nextAllowed;
   }
 
   /**
@@ -9018,6 +9431,8 @@ struct RemoteDesktop {
     const previousWidth: number = this.remoteWidth;
     const previousHeight: number = this.remoteHeight;
     this.resetVncInputAfterGeometryChange('vnc-framebuffer-geometry');
+    this.rebaseManualCanvasForSourceGeometry(
+      previousWidth, previousHeight, geometry.width, geometry.height);
     this.vncGeometryEpoch += 1;
     this.updateOwnedRemoteSessionPipContentSize(geometry.width, geometry.height);
     this.updateRemoteSize({
@@ -9030,6 +9445,8 @@ struct RemoteDesktop {
     this.vncGeometryReady = true;
     if (!this.canvasTransformGestureModified) {
       this.resetCanvasToDisplayDefault(true);
+    } else {
+      this.applyCanvasTransform();
     }
     this.requestRemoteCursorViewRefresh(true);
     hilog.info(RD_DOMAIN, RD_TAG, 'VNC framebuffer geometry synchronized: ' +
@@ -9110,7 +9527,11 @@ struct RemoteDesktop {
     this.surfaceResizeBatchStartWidth = 0;
     this.surfaceResizeBatchStartHeight = 0;
     this.restoreModifierPanelPositions(previousSurfaceWidth, previousSurfaceHeight);
-    if (this.isVncSession()) {
+    if ((this.isVncSession() || this.isRdpRemoteSession()) && this.kbWin !== null) {
+      // Orientation changes can deliver the new surface geometry before the
+      // corresponding avoid-area snapshot. Re-read against the settled size.
+      this.syncVncToolbarAvoidAreas(this.kbWin);
+    } else if (this.isVncSession()) {
       this.recomputeVncToolbarPlacement('surface-resize');
     }
     if (this.handleVisible) {
@@ -9150,6 +9571,18 @@ struct RemoteDesktop {
       this.releaseCanvasPinchInput('surface-resize');
     } else {
       clearTimeout(this.surfaceResizeSettleTimer);
+    }
+    if (this.canvasTransformGestureModified) {
+      const previousViewport: CanvasViewport = this.currentCanvasViewport();
+      const nextViewport: CanvasViewport = {
+        surfaceWidth: widthPx,
+        surfaceHeight: heightPx,
+        sourceWidth: previousViewport.sourceWidth,
+        sourceHeight: previousViewport.sourceHeight,
+        freePanInsetRatio: previousViewport.freePanInsetRatio
+      };
+      this.canvasTransform = rebaseCanvasTransform(
+        this.canvasTransform, previousViewport, nextViewport);
     }
     this.surfaceWidth = widthVp;
     this.surfaceHeight = heightVp;
@@ -9225,7 +9658,10 @@ struct RemoteDesktop {
     this.vncGeometrySyncTimer = setInterval(sync, REMOTE_GEOMETRY_SYNC_MS);
   }
 
-  private currentRemoteSurfaceTransform(): RemoteSurfaceTransform {
+  /** Defaults to the outbound input layer; visual overlays pass the display rotation explicitly. */
+  private currentRemoteSurfaceTransform(
+    rotationQuarterTurns: number = this.canvasControlRotationQuarterTurns
+  ): RemoteSurfaceTransform {
     const remoteW: number = this.remoteWidth > 0 ? this.remoteWidth : 1280;
     const remoteH: number = this.remoteHeight > 0 ? this.remoteHeight : 720;
     const surfaceWidthVp: number = this.surfaceWidth > 0 ? this.surfaceWidth : remoteW;
@@ -9247,14 +9683,14 @@ struct RemoteDesktop {
         surfaceHeightPx,
         surfaceWidthVp,
         surfaceHeightVp,
-        rotation: this.canvasRotationQuarterTurns
+        rotation: rotationQuarterTurns
       };
     }
 
     const sourceW: number = this.rendererSourceWidth > 0 ? this.rendererSourceWidth : remoteW;
     const sourceH: number = this.rendererSourceHeight > 0 ? this.rendererSourceHeight : remoteH;
-    const displayedSourceW: number = this.canvasRotationQuarterTurns % 2 === 1 ? sourceH : sourceW;
-    const displayedSourceH: number = this.canvasRotationQuarterTurns % 2 === 1 ? sourceW : sourceH;
+    const displayedSourceW: number = rotationQuarterTurns % 2 === 1 ? sourceH : sourceW;
+    const displayedSourceH: number = rotationQuarterTurns % 2 === 1 ? sourceW : sourceH;
     const scaleW: number = surfaceWidthPx / displayedSourceW;
     const scaleH: number = surfaceHeightPx / displayedSourceH;
     const scale: number = Math.min(scaleW, scaleH);
@@ -9271,7 +9707,7 @@ struct RemoteDesktop {
       surfaceHeightPx,
       surfaceWidthVp,
       surfaceHeightVp,
-      rotation: this.canvasRotationQuarterTurns
+      rotation: rotationQuarterTurns
     };
   }
 
@@ -9374,6 +9810,21 @@ struct RemoteDesktop {
         });
       }
       hilog.info(RD_DOMAIN, RD_TAG, 'dropInput ' + source + ' browseMode=1 protocol=' + protocol);
+      return false;
+    }
+    if (this.isRustDeskSession() && this.rustDeskRemoteInputPermissionKnown &&
+      !this.rustDeskRemoteInputAllowed) {
+      const now: number = Date.now();
+      if (source !== 'mouseMove' &&
+        now - this.lastRustDeskInputPermissionToastMs > 2200) {
+        this.lastRustDeskInputPermissionToastMs = now;
+        promptAction.showToast({
+          message: '远端未开放输入控制，请在被控手机开启 RustDesk 输入控制/无障碍权限',
+          duration: 1800
+        });
+      }
+      hilog.info(RD_DOMAIN, RD_TAG, 'dropInput ' + source +
+        ' rustDeskRemoteInputAllowed=0');
       return false;
     }
     if (this.isRustDeskSession() && this.rustDeskDisplaySwitchState.inputBlocked) {
@@ -11531,9 +11982,15 @@ struct RemoteDesktop {
       this.rendererSourceWidth = 0;
       this.rendererSourceHeight = 0;
       this.canvasRotationQuarterTurns = 0;
+      this.canvasControlRotationQuarterTurns = 0;
       this.canvasTransform = { scale: 1, panX: 0, panY: 0, rotation: 0 };
       this.canvasTransformInitialized = false;
       this.canvasTransformGestureModified = false;
+      if (host.protocol === 'rustdesk') {
+        this.restoreRustDeskDesktopFlipMode(host, 'connect-prepare');
+      } else {
+        this.rustDeskDesktopFlipMode = 'reset';
+      }
       this.vncGeometryReady = !isVnc;
       this.rustDeskDisplaySwitchState = idleRustDeskDisplaySwitchState();
       this.rustDeskDisplayCapabilities = EMPTY_RUSTDESK_DISPLAY_CAPABILITIES;
@@ -12423,6 +12880,12 @@ struct RemoteDesktop {
         orientation === window.Orientation.AUTO_ROTATION_LANDSCAPE ||
         orientation === window.Orientation.USER_ROTATION_LANDSCAPE;
       hilog.info(RD_DOMAIN, RD_TAG, 'setPreferredOrientation(' + label + ') OK');
+      if ((this.isVncSession() || this.isRdpRemoteSession()) && this.kbWin !== null) {
+        this.syncVncToolbarAvoidAreas(this.kbWin);
+      }
+      if (orientation !== window.Orientation.UNSPECIFIED && this.connected) {
+        void this.setRemoteNavigationHidden(true, 'orientation-' + label);
+      }
     } catch (err) {
       const errObj: Error = err as Error;
       hilog.warn(RD_DOMAIN, RD_TAG, 'setPreferredOrientation(' + label + ') failed: ' +
@@ -12448,7 +12911,8 @@ struct RemoteDesktop {
           shouldHideRemoteNavigation(protocol, this.connected);
         const targetStatusBarHidden: boolean = hidden && shouldHideRemoteStatusBar(protocol, this.connected,
           this.isDesktopDevice, this.breakpoint, this.rustdeskControlMode);
-        const forceApply: boolean = reason === 'foreground-restore';
+        const forceApply: boolean = reason === 'foreground-restore' || reason === 'page-appear' ||
+          reason.indexOf('orientation-') === 0;
         if (!forceApply && this.remoteNavigationHidden === targetNavigationHidden &&
           this.remoteStatusBarHidden === targetStatusBarHidden) {
           return;
@@ -12462,6 +12926,9 @@ struct RemoteDesktop {
             return;
           }
           const win: window.Window = await window.getLastWindow(ctx);
+          if (targetNavigationHidden || targetStatusBarHidden) {
+            try { await win.setWindowLayoutFullScreen(true); } catch (_layoutError) {}
+          }
           let statusBarApplied: boolean = true;
           if (forceApply || this.remoteStatusBarHidden !== targetStatusBarHidden) {
             try {
@@ -13092,6 +13559,7 @@ struct RemoteDesktop {
       this.rendererHandle = result.value;
       this.pipRendererHandle = result.value;
       this.nativeHandles.markSurfaceAttached(this.rendererHandle);
+      this.applyRustDeskDesktopFlipToPipRenderer('pip-attach');
 
       if (requiresDecoder) {
         if (!this.loader.rebindActiveVideoPipeline()) {
@@ -13947,28 +14415,42 @@ struct RemoteDesktop {
       return;
     }
     const deadlineMs: number = Date.now() + 10000;
-    const tryStart = (): void => {
+    const tryStart = async (): Promise<void> => {
       if (this.sessionId !== sessionId || this.connectAttemptId !== attemptId || !this.connected ||
         !this.clipboardBridgeEnabledForSession()) {
         return;
       }
-      const capability = this.currentSessionCapabilities().clipboardSend;
-      if (!capability.enabled) {
+      const capabilities: RemoteSessionCapabilities = this.currentSessionCapabilities();
+      const activation: ClipboardBridgeActivationDecision = resolveClipboardBridgeActivation(
+        this.currentProtocolName(), this.clipboardBridgeEnabledForSession(),
+        capabilities.clipboardSend.enabled, capabilities.clipboardReceive.enabled);
+      if (!activation.start) {
         if (Date.now() < deadlineMs) {
-          setTimeout(tryStart, 500);
+          setTimeout((): void => { void tryStart(); }, 500);
         } else {
           hilog.info(RD_DOMAIN, RD_TAG,
-            'clipboard bridge not started after bounded cliprdr wait: ' + capability.reason);
+            'clipboard bridge not started after bounded capability wait: ' +
+              capabilities.clipboardSend.reason);
         }
         return;
       }
       try {
+        let readAccess: ClipboardReadAccessDecision | null = null;
+        if (activation.requestLocalRead) {
+          const context: common.UIAbilityContext =
+            this.getUIContext().getHostContext() as common.UIAbilityContext;
+          readAccess = await ensureSystemPasteboardReadAccess(context);
+        }
+        if (this.sessionId !== sessionId || this.connectAttemptId !== attemptId || !this.connected ||
+          !this.clipboardBridgeEnabledForSession()) {
+          return;
+        }
         if (this.clipboardBridge !== null) {
           this.clipboardBridge.stopMonitoring();
         }
         const bridge: ClipboardBridgeService = new ClipboardBridgeService();
         this.clipboardBridge = bridge;
-        bridge.startMonitoring((text: string): void => {
+        const localMonitoringStarted: boolean = bridge.startMonitoring((text: string): void => {
           try {
             if (this.sessionId !== sessionId || this.connectAttemptId !== attemptId || !this.connected ||
               !this.clipboardBridgeEnabledForSession()) {
@@ -13980,14 +14462,28 @@ struct RemoteDesktop {
           } catch (err) {
             hilog.warn(RD_DOMAIN, RD_TAG, 'clipboard bridge push skipped: ' + JSON.stringify(err));
           }
-        }, (): string => this.loader.getSessionClipboardText(sessionId));
-        hilog.info(RD_DOMAIN, RD_TAG, 'clipboard bridge started');
+        }, (): string => this.loader.getSessionClipboardText(sessionId),
+        readAccess?.granted === true, activation.requestLocalRead);
+        if (!activation.requestLocalRead) {
+          hilog.info(RD_DOMAIN, RD_TAG,
+            'clipboard bridge started in receive-only mode: ' + capabilities.clipboardSend.reason);
+        } else if (readAccess?.granted === true && localMonitoringStarted) {
+          hilog.info(RD_DOMAIN, RD_TAG, 'clipboard bridge started with local read access');
+        } else if (readAccess !== null && !readAccess.granted) {
+          hilog.warn(RD_DOMAIN, RD_TAG, 'clipboard bridge local send unavailable reason=' +
+            readAccess.diagnosticCode);
+          promptAction.showToast({ message: readAccess.userMessage, duration: 2600 });
+        } else {
+          hilog.warn(RD_DOMAIN, RD_TAG,
+            'clipboard bridge local send unavailable reason=listener_start_failed');
+          promptAction.showToast({ message: '无法监听本机剪贴板，请稍后重试', duration: 2600 });
+        }
       } catch (err) {
         this.clipboardBridge = null;
         hilog.warn(RD_DOMAIN, RD_TAG, 'clipboard bridge start skipped: ' + JSON.stringify(err));
       }
     };
-    setTimeout(tryStart, 1500);
+    setTimeout((): void => { void tryStart(); }, 1500);
   }
 
   private goBack(): void {
@@ -14233,7 +14729,11 @@ struct RemoteDesktop {
     this.clearTouchDirectRightClickTimer();
     this.touchDirectRightClickTimer = setTimeout((): void => {
       this.touchDirectRightClickTimer = -1;
-      if (this.touchFingerCount !== 1 || this.touchMoved || !this.touchLeftDown || !this.connected) {
+      // PeerInfo can identify Android/iOS after the gesture starts. Recheck
+      // here so a timer armed during the fallback phase cannot emit a local
+      // right-click into a phone session.
+      if (this.touchFingerCount !== 1 || this.touchMoved || !this.touchLeftDown || !this.connected ||
+        this.isRustDeskPhoneSession()) {
         return;
       }
       this.sendMouseNow(this.remoteCursorX, this.remoteCursorY, 0, false);
@@ -14660,17 +15160,15 @@ struct RemoteDesktop {
   private async ensurePasteboardReadPermission(): Promise<boolean> {
     try {
       const ctx: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
-      const manager: abilityAccessCtrl.AtManager = abilityAccessCtrl.createAtManager();
-      const status: abilityAccessCtrl.GrantStatus = manager.checkAccessTokenSync(
-        ctx.applicationInfo.accessTokenId, 'ohos.permission.READ_PASTEBOARD');
-      if (status === abilityAccessCtrl.GrantStatus.PERMISSION_GRANTED) {
-        return true;
+      const readAccess: ClipboardReadAccessDecision =
+        await ensureSystemPasteboardReadAccess(ctx);
+      if (readAccess.granted && this.clipboardBridge !== null) {
+        this.clipboardBridge.enableLocalMonitoring();
       }
-      const result = await manager.requestPermissionsFromUser(ctx,
-        ['ohos.permission.READ_PASTEBOARD']);
-      return result.authResults.length > 0 && result.authResults[0] === 0;
-    } catch (_err) {
-      hilog.warn(RD_DOMAIN, RD_TAG, 'RDP file clipboard read permission unavailable');
+      return readAccess.granted;
+    } catch (error) {
+      hilog.warn(RD_DOMAIN, RD_TAG, 'RDP file clipboard read permission unavailable: ' +
+        JSON.stringify(error));
       return false;
     }
   }
@@ -14982,9 +15480,10 @@ struct RemoteDesktop {
   }
 
   private openKeyboard(): void {
-    if (this.keyboardOpen) {
+    if (this.keyboardOpen || this.keyboardImeActive) {
       return;
     }
+    this.closeRemoteModifierSurfaces();
     this.hardwareKeyboardProxyActive = false;
     this.keyboardOpen = true;
     this.startRemoteImeSession();
@@ -15010,10 +15509,15 @@ struct RemoteDesktop {
   }
 
   private dismissKeyboard(): void {
-    if (!this.keyboardOpen) {
+    if (!this.keyboardOpen && !this.keyboardImeActive) {
       return;
     }
     this.markKeyboardClosed('control-panel');
+    try {
+      this.keyboardController.stopEditing();
+    } catch (err) {
+      hilog.warn(RD_DOMAIN, RD_TAG, 'keyboard stopEditing failed: ' + JSON.stringify(err));
+    }
     // 将焦点移到 XComponent 以收起键盘
     this.scheduleRemoteInputFocus('keyboard-dismiss');
   }
@@ -15378,10 +15882,11 @@ struct RemoteDesktop {
     this.clearTouchRightClickTimer();
     this.clearTouchDirectRightClickTimer();
     const wasDragging: boolean = this.touchDragActive;
-    if (this.touchDragActive) {
-      // 拖拽结束 — 释放左键
+    if (this.touchDragActive || this.touchLeftDown) {
+      // Every terminal path releases the direct/touchpad left button once.
       this.sendMouseNow(this.remoteCursorX, this.remoteCursorY, 0, false);
     }
+    this.touchLeftDown = false;
     this.touchFingerCount = 0;
     this.touchDragActive = false;
     this.touchDragPending = false;
@@ -15563,7 +16068,8 @@ struct RemoteDesktop {
     }
     this.lastTouchWheelMs = now;
     const src = this.toSourceSpace(this.remoteCursorX, this.remoteCursorY);
-    const directedDelta: number = applyRemoteWheelDirection(delta, this.rustdeskReverseWheel);
+    const reverseWheel: boolean = this.reverseWheelForCurrentProtocol();
+    const directedDelta: number = applyRemoteWheelDirection(delta, reverseWheel);
     const sendDelta: number = wheelProtocol === 'vnc' ?
       amplifyVncWheelOutputDelta(directedDelta) : directedDelta;
     this.loader.sendMouseWheel(this.sessionId, src['x'], src['y'], sendDelta);
@@ -15572,7 +16078,7 @@ struct RemoteDesktop {
       hilog.info(RD_DOMAIN, RD_TAG,
         'touchpad-scroll count=' + sendIndex.toString() +
           ' delta=' + sendDelta.toString() + ' stepDy=' + stepDy.toString() +
-          ' reverse=' + (this.rustdeskReverseWheel ? '1' : '0') +
+          ' reverse=' + (reverseWheel ? '1' : '0') +
           ' remote=' + this.remoteCursorX.toString() + ',' + this.remoteCursorY.toString());
     }
   }
@@ -15897,10 +16403,12 @@ struct RemoteDesktop {
             }
           }
           if (this.touchLeftDown) {
+            this.flushMouseMove();
             this.sendMouseNow(this.remoteCursorX, this.remoteCursorY, 0, false);
             this.touchLeftDown = false;
           }
-          this.touchDragPending = this.touchMaxFingers === 2 && !this.touchMoved;
+          this.touchDragPending = !this.isRustDeskPhoneSession() &&
+            this.touchMaxFingers === 2 && !this.touchMoved;
           return;
         }
         const mapped: MappedPoint = this.mapInputPoint(point.x, point.y);
@@ -15917,7 +16425,9 @@ struct RemoteDesktop {
         this.queueMouseMove(mapped.x, mapped.y, false);
         this.flushMouseMove();
         this.sendMouseNow(mapped.x, mapped.y, 0, true);
-        this.startDirectTouchRightClickTimer();
+        if (!this.isRustDeskPhoneSession()) {
+          this.startDirectTouchRightClickTimer();
+        }
       } else if (event.type === TouchType.Move) {
         this.touchFingerCount = this.trackedCanvasTouchCount(event);
         if (this.touchMaxFingers >= 2) {
@@ -15967,7 +16477,8 @@ struct RemoteDesktop {
         this.touchFingerCount = this.remainingTouchCountAfterLift(event);
         if (this.touchMaxFingers === 2 && event.type === TouchType.Up) {
           this.finishCanvasTwoFingerCandidateForRelease(this.touchMoved);
-          if (!this.touchMoved && shouldPreserveCanvasTwoFingerRightClick(this.canvasTwoFingerState)) {
+          if (!this.isRustDeskPhoneSession() && !this.touchMoved &&
+            shouldPreserveCanvasTwoFingerRightClick(this.canvasTwoFingerState)) {
             this.touchDragPending = true;
           }
         }
@@ -15991,7 +16502,10 @@ struct RemoteDesktop {
         }
         if (this.touchMaxFingers === 2) {
           if (this.touchFingerCount <= 0) {
-            if (event.type === TouchType.Up && !this.touchMoved && this.touchDragPending) {
+            // Recheck the authenticated peer category on the terminal Up: it
+            // may have changed after the first finger armed the candidate.
+            if (event.type === TouchType.Up && !this.touchMoved && this.touchDragPending &&
+              !this.isRustDeskPhoneSession()) {
               this.finishTwoFingerRightClick();
             }
             this.resetTouchGesture();
@@ -16001,6 +16515,14 @@ struct RemoteDesktop {
         const mapped: MappedPoint = this.mapInputPoint(point.x, point.y);
         this.logMappedInput('touch', point.x, point.y, mapped);
         if (this.touchLeftDown) {
+          if (event.type === TouchType.Cancel) {
+            this.discardPendingMouseMove();
+          } else if (this.touchMoved || this.pendingMouseMoveValid) {
+            // Android direct touch must finish MOVE* before LEFT_UP. A queued
+            // post-Up move can otherwise start the next gesture at a stale point.
+            this.queueMouseMove(mapped.x, mapped.y, false);
+            this.flushMouseMove();
+          }
           this.sendMouseNow(mapped.x, mapped.y, 0, false);
         }
         this.touchLeftDown = false;
@@ -16946,7 +17468,8 @@ struct RemoteDesktop {
       this.queueMouseMove(mapped.x, mapped.y);
       this.flushMouseMove();
       const src: Record<string, number> = this.toSourceSpace(mapped.x, mapped.y);
-      const directedDelta: number = applyRemoteWheelDirection(delta, this.rustdeskReverseWheel);
+      const reverseWheel: boolean = this.reverseWheelForCurrentProtocol();
+      const directedDelta: number = applyRemoteWheelDirection(delta, reverseWheel);
       const sendDelta: number = vncSession ?
         amplifyVncWheelOutputDelta(directedDelta) : directedDelta;
       this.loader.sendMouseWheel(this.sessionId, src['x'], src['y'], sendDelta);
@@ -16954,7 +17477,7 @@ struct RemoteDesktop {
       if (sendIndex <= 12 || sendIndex % 50 === 0) {
         hilog.info(RD_DOMAIN, RD_TAG, 'physical-wheel count=' + sendIndex.toString() +
           ' raw=' + rawVertical.toString() + ' delta=' + sendDelta.toString() +
-          ' reverse=' + (this.rustdeskReverseWheel ? '1' : '0') +
+          ' reverse=' + (reverseWheel ? '1' : '0') +
           ' sourceTool=' + event.sourceTool.toString() +
           ' action=' + event.action.toString() +
           ' continuous=' + (vncContinuousPhysicalAxis ? '1' : '0') +
@@ -17397,12 +17920,14 @@ struct RemoteDesktop {
         VncSessionToolbar({
           deviceClass: remoteTopBarLayout(this.isDesktopDevice, this.breakpoint, this.isPadDevice).deviceClass,
           viewOnly: this.isVncViewOnlySession(),
-          keyboardOpen: this.keyboardOpen,
+          keyboardOpen: this.keyboardOpen || this.keyboardImeActive,
+          shortcutsOpen: this.modifierPanelVisible || this.shortcutPanelVisible ||
+            this.modifierPanelPrepareOnly,
           controlModeLabel: this.vncControlModeLabel(),
           displayScaleLabel: this.vncDisplayScaleLabel(),
           diagnosticsEnabled: this.vncShowDiagnostics,
           collapsed: this.vncToolbarCollapsed,
-          viewportWidth: this.surfaceWidth,
+          viewportWidth: this.currentRemoteSessionSidebarViewport().width,
           placement: this.vncToolbarPlacement,
           actions: this.vncToolbarActions(),
           placementActions: {
@@ -17418,8 +17943,9 @@ struct RemoteDesktop {
         if (remoteTopBarLayout(this.isDesktopDevice, this.breakpoint, this.isPadDevice).deviceClass !== 'pc') {
           Stack({ alignContent: Alignment.End }) {
             RdpSessionToolbar({
-              keyboardOpen: this.keyboardOpen,
-              shortcutsOpen: this.modifierPanelVisible || this.shortcutPanelVisible,
+              keyboardOpen: this.keyboardOpen || this.keyboardImeActive,
+              shortcutsOpen: this.modifierPanelVisible || this.shortcutPanelVisible ||
+                this.modifierPanelPrepareOnly,
               controlCenterOpen: this.rdpControlCenterVisible,
               diagnosticsVisible: this.rdpShowDiagnostics,
               qualityLabel: this.rdpPerformanceSummary().status,
@@ -17433,8 +17959,9 @@ struct RemoteDesktop {
         } else {
           Stack({ alignContent: Alignment.Top }) {
             RdpSessionToolbar({
-              keyboardOpen: this.keyboardOpen,
-              shortcutsOpen: this.modifierPanelVisible || this.shortcutPanelVisible,
+              keyboardOpen: this.keyboardOpen || this.keyboardImeActive,
+              shortcutsOpen: this.modifierPanelVisible || this.shortcutPanelVisible ||
+                this.modifierPanelPrepareOnly,
               controlCenterOpen: this.rdpControlCenterVisible,
               diagnosticsVisible: this.rdpShowDiagnostics,
               qualityLabel: this.rdpPerformanceSummary().status,
@@ -17462,7 +17989,7 @@ struct RemoteDesktop {
             diagnosticsEnabled: this.rdpShowDiagnostics,
             displayScaleMode: this.remoteDisplayScaleMode,
             canvasZoomEnabled: this.canvasGestureZoomEnabled,
-            reverseWheel: this.rustdeskReverseWheel,
+            reverseWheel: this.rdpReverseWheel,
             resolutionId: normalizeRdpResolutionId(this.rdpDesktopResolutionId, this.rdpDesktopPreset),
             colorDepth: normalizeRdpSessionColorDepth(this.rdpColorDepth),
             audioEnabled: this.rdpAudioEnabled,
@@ -17522,11 +18049,14 @@ struct RemoteDesktop {
           showLocalCursor: this.rustdeskShowLocalCursor,
           browseMode: this.rustdeskBrowseMode,
           relativeMouseMode: this.rustdeskRelativeMouseMode,
-          reverseWheel: this.rustdeskReverseWheel,
+          reverseWheel: this.reverseWheelForCurrentProtocol(),
           swapMouseButtons: this.rustdeskSwapMouseButtons,
           touchpadSpeed: this.rustdeskTouchpadSpeed,
           rustDeskPhoneTarget: this.isRustDeskPhoneSession(),
-          keyboardOpen: this.keyboardOpen,
+          rustDeskDesktopFlipMode: this.rustDeskDesktopFlipMode,
+          keyboardOpen: this.keyboardOpen || this.keyboardImeActive,
+          shortcutsOpen: this.modifierPanelVisible || this.shortcutPanelVisible ||
+            this.modifierPanelPrepareOnly,
           diagnosticsEnabled: this.isRdpRemoteSession() ?
             this.rdpShowDiagnostics : this.rustdeskShowDiagnostics,
           rustDeskDisplayCapabilities: this.rustDeskDisplayCapabilities,
@@ -17546,7 +18076,7 @@ struct RemoteDesktop {
           if (!this.rdpControlCenterVisible) {
             RdpDiagnosticsHud({
               stats: this.rdpRenderStats,
-              availableWidth: this.surfaceWidth > 0 ? this.surfaceWidth : 360,
+              availableWidth: this.currentRemoteSessionSidebarViewport().width,
               availableHeight: this.rdpToolbarAvailableHeight(),
               topInset: this.rdpToolbarTopInset()
             })
@@ -18090,7 +18620,7 @@ struct RemoteDesktop {
         SymbolGlyph($r('sys.symbol.keyboard'))
           .fontSize(22).fontColor([Color.White])
           .margin({ right: 10 })
-        Text(this.keyboardOpen ? '关闭键盘' : '虚拟键盘')
+        Text((this.keyboardOpen || this.keyboardImeActive) ? '关闭键盘' : '虚拟键盘')
           .fontSize(16).fontColor('#FFFFFF')
       }
       .width('100%').height(52)
@@ -18099,7 +18629,7 @@ struct RemoteDesktop {
       .borderRadius(14)
       .margin({ bottom: 12, left: 24, right: 24 })
       .onClick(() => {
-        if (this.keyboardOpen) {
+        if (this.keyboardOpen || this.keyboardImeActive) {
           this.keepKeyboardAfterSheetClose = false;
           this.showControlPanel = false;
           this.dismissKeyboard();

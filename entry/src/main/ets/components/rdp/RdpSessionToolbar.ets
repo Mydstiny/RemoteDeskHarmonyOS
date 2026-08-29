@@ -38,7 +38,7 @@ export struct RdpSessionToolbar {
   @StorageProp('currentBreakpoint') @Watch('onLayoutChange') breakpoint: string = 'sm';
   @StorageProp('isDesktopDevice') isDesktopDevice: boolean = false;
   @StorageProp('isPadDevice') isPadDevice: boolean = false;
-  @Prop keyboardOpen: boolean = false;
+  @Prop @Watch('onMenuStateChange') keyboardOpen: boolean = false;
   @Prop @Watch('onMenuStateChange') shortcutsOpen: boolean = false;
   @Prop @Watch('onMenuStateChange') controlCenterOpen: boolean = false;
   @Prop diagnosticsVisible: boolean = false;
@@ -100,10 +100,12 @@ export struct RdpSessionToolbar {
   private scheduleHide(): void {
     this.clearTimer();
     const delay: number = moonlightToolbarAutoHideDelayMs(
-      this.layout(), this.pinned, this.controlCenterOpen || this.shortcutsOpen);
+      this.layout(), this.pinned, this.controlCenterOpen || this.shortcutsOpen || this.keyboardOpen);
     if (!this.expanded || delay <= 0) { return; }
     this.hideTimer = setTimeout((): void => {
-      if (!this.pinned && !this.controlCenterOpen && !this.shortcutsOpen) { this.expanded = false; }
+      if (!this.pinned && !this.controlCenterOpen && !this.shortcutsOpen && !this.keyboardOpen) {
+        this.expanded = false;
+      }
       this.clearTimer();
     }, delay);
   }
@@ -116,6 +118,7 @@ export struct RdpSessionToolbar {
     if (this.layout().edgeRail && this.availableHeight < 194) {
       this.clearTimer();
       this.expanded = false;
+      this.railSwipeX = 0;
     }
   }
 
@@ -123,9 +126,32 @@ export struct RdpSessionToolbar {
     return !this.layout().edgeRail || this.availableHeight >= 194;
   }
 
+  private collapsedRailHeight(): number {
+    const safeAvailable: number = Number.isFinite(this.availableHeight) ? this.availableHeight :
+      REMOTE_SESSION_COLLAPSED_RAIL_HEIGHT;
+    return Math.max(1, Math.min(REMOTE_SESSION_COLLAPSED_RAIL_HEIGHT, safeAvailable));
+  }
+
+  private railScrollMaxHeight(layout: MoonlightToolbarLayout): number {
+    return Math.max(1, Math.min(Math.max(1, layout.maxHeight - 120),
+      Math.max(1, this.availableHeight - 116)));
+  }
+
   private invoke(action: RdpToolbarAction): void {
     this.onAction(action);
     this.scheduleHide();
+  }
+
+  private closeActiveKeyboardSurface(): boolean {
+    if (this.keyboardOpen) {
+      this.invoke('keyboard');
+      return true;
+    }
+    if (this.shortcutsOpen) {
+      this.invoke('shortcuts');
+      return true;
+    }
+    return false;
   }
 
   private updateRailSwipe(event: GestureEvent): void {
@@ -140,7 +166,8 @@ export struct RdpSessionToolbar {
   }
 
   private finishRailSwipe(event: GestureEvent): void {
-    const collapse: boolean = remoteSessionRailShouldCollapse(event.offsetX, event.velocityX);
+    const collapse: boolean = remoteSessionRailShouldCollapse(
+      event.offsetX, event.velocityX, event.offsetY);
     this.resetRailSwipe();
     if (!collapse) { return; }
     this.clearTimer();
@@ -170,6 +197,7 @@ export struct RdpSessionToolbar {
     .padding(0).borderRadius(14)
     .backgroundColor(item.dangerous ? this.pal().danger + '20' :
       (this.active(item.action) ? RDP_SESSION_CONTROL_ACCENT_SOFT : this.pal().surface))
+    .focusable(false).focusOnTouch(false)
     .onClick((): void => { this.invoke(item.action); })
     .accessibilityText(item.label + (this.active(item.action) ? '，已打开' : ''))
   }
@@ -181,6 +209,7 @@ export struct RdpSessionToolbar {
     }.width(layout.edgeRail ? layout.iconSize + 18 : 44)
       .height(layout.edgeRail ? 44 : 50).padding(0).borderRadius(14)
       .backgroundColor(this.pal().surface)
+      .focusable(false).focusOnTouch(false)
       .onClick((): void => { this.clearTimer(); this.expanded = false; })
       .accessibilityText('收起 RDP 会话工具栏')
   }
@@ -191,6 +220,7 @@ export struct RdpSessionToolbar {
         .fontSize(17).fontColor([this.pinned ? RDP_SESSION_CONTROL_ACCENT : this.pal().text])
     }.width(44).height(50).padding(0).borderRadius(14)
       .backgroundColor(this.pal().surface)
+      .focusable(false).focusOnTouch(false)
       .onClick((): void => { this.pinned = !this.pinned; this.scheduleHide(); })
       .accessibilityText(this.pinned ? '取消固定 RDP 工具栏' : '固定 RDP 工具栏')
   }
@@ -203,7 +233,7 @@ export struct RdpSessionToolbar {
             .fontColor([REMOTE_SESSION_COLLAPSED_RAIL_ICON])
         }
         .width(REMOTE_SESSION_COLLAPSED_RAIL_WIDTH)
-        .height(REMOTE_SESSION_COLLAPSED_RAIL_HEIGHT)
+        .height(this.collapsedRailHeight())
         .justifyContent(FlexAlign.Center)
         .backgroundColor(REMOTE_SESSION_COLLAPSED_RAIL_BACKGROUND)
         .backdropBlur(16)
@@ -213,11 +243,14 @@ export struct RdpSessionToolbar {
           REMOTE_SESSION_COLLAPSED_RAIL_WIDTH, y: 0 })
       }
       .width(REMOTE_SESSION_COLLAPSED_RAIL_TOUCH_WIDTH)
-      .height(REMOTE_SESSION_COLLAPSED_RAIL_HEIGHT)
+      .height(this.collapsedRailHeight())
+      .focusable(false).focusOnTouch(false)
       .onClick((): void => {
+        if (this.closeActiveKeyboardSurface()) { return; }
         if (this.canExpand()) { this.expanded = true; this.scheduleHide(); }
       })
-      .accessibilityText('展开 RDP 会话工具栏，性能状态' + this.qualityLabel)
+      .accessibilityText((this.keyboardOpen || this.shortcutsOpen) ? '关闭键盘界面' :
+        '展开 RDP 会话工具栏，性能状态' + this.qualityLabel)
     } else {
       Stack() {
         Row() {
@@ -236,8 +269,14 @@ export struct RdpSessionToolbar {
       }
       .width(REMOTE_SESSION_COLLAPSED_TOP_WIDTH)
       .height(REMOTE_SESSION_COLLAPSED_TOP_TOUCH_HEIGHT)
-      .onClick((): void => { this.expanded = true; this.scheduleHide(); })
-      .accessibilityText('展开 RDP 会话顶栏，性能状态' + this.qualityLabel)
+      .focusable(false).focusOnTouch(false)
+      .onClick((): void => {
+        if (this.closeActiveKeyboardSurface()) { return; }
+        this.expanded = true;
+        this.scheduleHide();
+      })
+      .accessibilityText((this.keyboardOpen || this.shortcutsOpen) ? '关闭键盘界面' :
+        '展开 RDP 会话顶栏，性能状态' + this.qualityLabel)
     }
   }
 
@@ -251,8 +290,7 @@ export struct RdpSessionToolbar {
             }, (item: RdpToolbarItem): string => item.action)
           }
         }.width(layout.iconSize + 32)
-          .constraintSize({ maxHeight: Math.max(80,
-            Math.min(layout.maxHeight - 120, this.availableHeight - 116)) })
+          .constraintSize({ maxHeight: this.railScrollMaxHeight(layout) })
           .scrollBar(BarState.Auto).edgeEffect(EdgeEffect.Spring)
         this.toolItem(this.disconnectItem(), layout)
         this.collapseItem(layout)

@@ -4,7 +4,9 @@ import {
   RemoteCustomShortcut,
   RemoteCustomShortcutKeyGroup,
   RemoteCustomShortcutKeyOption,
+  RemoteCustomShortcutEditorLayout,
   RemoteCustomShortcutUpdate,
+  remoteCustomShortcutEditorLayout,
   remoteCustomShortcutKeyGroupForKeyCode,
   remoteCustomShortcutKeyOptions,
   remoteCustomShortcutAvailableOnPlatform,
@@ -23,7 +25,11 @@ import {
   RemoteSystemInputMethodInfo,
   RemoteSystemInputMethodSnapshot
 } from '../services/RemoteKeyboardSettingsService';
-import { VirtualKeyboardSettingsSection } from '../services/SettingsSheetRoutePolicy';
+import {
+  VirtualKeyboardSettingsContentLayout,
+  VirtualKeyboardSettingsSection,
+  virtualKeyboardSettingsContentLayout
+} from '../services/SettingsSheetRoutePolicy';
 
 @Component
 export struct VirtualKeyboardSettingsSheet {
@@ -43,11 +49,14 @@ export struct VirtualKeyboardSettingsSheet {
   @State private modifierCodes: Array<number> = [];
   @State private actionGroup: RemoteCustomShortcutKeyGroup = 'letters';
   @State private actionKeyCode: number = 2017;
+  @State private viewportWidth: number = 360;
+  @State private viewportHeight: number = 640;
   @Prop requestedSection: VirtualKeyboardSettingsSection = 'system';
   private customSequence: number = 0;
   private readonly service: RemoteKeyboardSettingsService =
     RemoteKeyboardSettingsService.getInstance();
   onClose: () => void = (): void => {};
+  onCustomEditorVisibleChange: (visible: boolean) => void = (_visible: boolean): void => {};
 
   private dark(): boolean { return this.theme === 'dark'; }
   private bg(): string { return this.dark() ? '#11141A' : '#F4F6F9'; }
@@ -188,11 +197,40 @@ export struct VirtualKeyboardSettingsSheet {
     if (group === 'digits') { return '数字'; }
     if (group === 'symbols') { return '符号'; }
     if (group === 'functions') { return 'F 键'; }
+    if (group === 'directions') { return '方向'; }
     return '导航';
+  }
+
+  private customEditorLayout(): RemoteCustomShortcutEditorLayout {
+    return remoteCustomShortcutEditorLayout(this.viewportWidth, this.viewportHeight);
+  }
+
+  private contentLayout(): VirtualKeyboardSettingsContentLayout {
+    return virtualKeyboardSettingsContentLayout(this.viewportWidth, this.viewportHeight);
+  }
+
+  /** Keep vertical gesture ownership on the outer sheet Scroll. */
+  private customActionRows(): Array<Array<RemoteCustomShortcutKeyOption>> {
+    const items: Array<RemoteCustomShortcutKeyOption> =
+      remoteCustomShortcutKeyOptions(this.actionGroup, this.platform());
+    const columns: number = this.customEditorLayout().columns;
+    const rows: Array<Array<RemoteCustomShortcutKeyOption>> = [];
+    for (let index: number = 0; index < items.length; index += columns) {
+      rows.push(items.slice(index, Math.min(index + columns, items.length)));
+    }
+    return rows;
+  }
+
+  private customActionEmptyCells(itemCount: number): Array<number> {
+    const result: Array<number> = [];
+    const emptyCount: number = this.customEditorLayout().columns - itemCount;
+    for (let index: number = 0; index < emptyCount; index++) { result.push(index); }
+    return result;
   }
 
   private beginEditor(shortcut: RemoteCustomShortcut | null = null): void {
     this.editorVisible = true;
+    this.onCustomEditorVisibleChange(true);
     this.editingId = shortcut === null ? '' : shortcut.id;
     this.modifierCodes = shortcut === null ? [] :
       shortcut.keyCodes.slice(0, Math.max(0, shortcut.keyCodes.length - 1));
@@ -203,6 +241,7 @@ export struct VirtualKeyboardSettingsSheet {
 
   private closeEditor(): void {
     this.editorVisible = false;
+    this.onCustomEditorVisibleChange(false);
     this.editingId = '';
     this.modifierCodes = [];
     this.actionGroup = 'letters';
@@ -238,7 +277,8 @@ export struct VirtualKeyboardSettingsSheet {
     Column({ space: 3 }) {
       Text(title).fontSize(15).fontWeight(FontWeight.Bold).fontColor(this.text()).width('100%')
       Text(subtitle).fontSize(10).fontColor(this.text2()).width('100%')
-    }.width('100%').alignItems(HorizontalAlign.Start).margin({ top: 20, bottom: 10 })
+    }.width('100%').alignItems(HorizontalAlign.Start)
+      .margin({ top: this.contentLayout().sectionTopMargin, bottom: 10 })
   }
 
   @Builder
@@ -251,7 +291,8 @@ export struct VirtualKeyboardSettingsSheet {
       }.alignItems(HorizontalAlign.Start).layoutWeight(1)
       Toggle({ type: ToggleType.Switch, isOn: enabled })
         .selectedColor(this.accentColor).onChange(onChange)
-    }.width('100%').padding(16).borderRadius(16).backgroundColor(this.card())
+    }.width('100%').padding(this.contentLayout().cardPadding)
+      .borderRadius(16).backgroundColor(this.card())
       .border({ width: 0.5, color: this.cardStroke() })
   }
 
@@ -261,7 +302,12 @@ export struct VirtualKeyboardSettingsSheet {
       Text(title).fontSize(12).fontColor(this.text2()).layoutWeight(1)
       Text(value).fontSize(12).fontColor(this.text()).maxLines(2)
         .textAlign(TextAlign.End)
-    }.width('100%').padding({ left: 16, right: 16, top: 14, bottom: 14 })
+    }.width('100%').padding({
+      left: this.contentLayout().cardPadding,
+      right: this.contentLayout().cardPadding,
+      top: 14,
+      bottom: 14
+    })
       .borderRadius(14).backgroundColor(this.card())
       .border({ width: 0.5, color: this.cardStroke() })
   }
@@ -319,7 +365,8 @@ export struct VirtualKeyboardSettingsSheet {
       }.alignItems(HorizontalAlign.Start).layoutWeight(1)
       SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(14).fontColor([this.text2()])
     }
-    .width('100%').padding(14).borderRadius(14).backgroundColor(this.card())
+    .width('100%').padding(this.contentLayout().cardPadding)
+    .borderRadius(14).backgroundColor(this.card())
     .border({ width: 0.5, color: this.cardStroke() }).margin({ bottom: 6 })
     .onClick((): void => { this.openInputMethodDetail(method); })
     .accessibilityText('打开 ' + method.label + ' 输入法详情')
@@ -349,11 +396,24 @@ export struct VirtualKeyboardSettingsSheet {
 
   @Builder
   private actionChoice(option: RemoteCustomShortcutKeyOption) {
-    Text(option.label).height(30).width('100%').fontSize(9).textAlign(TextAlign.Center)
+    Text(option.label).height(this.customEditorLayout().itemHeight).width('100%')
+      .fontSize(9).textAlign(TextAlign.Center)
       .borderRadius(7)
       .fontColor(this.actionKeyCode === option.keyCode ? '#FFFFFF' : this.text2())
       .backgroundColor(this.actionKeyCode === option.keyCode ? this.accentColor : this.card())
       .onClick((): void => { this.actionKeyCode = option.keyCode; })
+  }
+
+  @Builder
+  private customActionRow(options: Array<RemoteCustomShortcutKeyOption>) {
+    Row({ space: this.customEditorLayout().itemGap }) {
+      ForEach(options, (option: RemoteCustomShortcutKeyOption): void => {
+        Column() { this.actionChoice(option) }.layoutWeight(1)
+      }, (option: RemoteCustomShortcutKeyOption): string => option.keyCode.toString())
+      ForEach(this.customActionEmptyCells(options.length), (index: number): void => {
+        Blank().height(this.customEditorLayout().itemHeight).layoutWeight(1)
+      }, (index: number): string => index.toString())
+    }.width('100%')
   }
 
   @Builder
@@ -365,10 +425,17 @@ export struct VirtualKeyboardSettingsSheet {
         Button('取消').height(32).fontSize(10).backgroundColor(Color.Transparent)
           .fontColor(this.text2()).onClick((): void => { this.closeEditor(); })
       }.width('100%')
-      Row({ space: 6 }) {
-        this.editorPlatformChoice('windows', 'Windows · Ctrl')
-        this.editorPlatformChoice('macos', 'macOS · Cmd')
-      }.width('100%')
+      if (this.contentLayout().stackPrimaryActions) {
+        Column({ space: 6 }) {
+          Row() { this.editorPlatformChoice('windows', 'Windows · Ctrl') }.width('100%')
+          Row() { this.editorPlatformChoice('macos', 'macOS · Cmd') }.width('100%')
+        }.width('100%')
+      } else {
+        Row({ space: 6 }) {
+          this.editorPlatformChoice('windows', 'Windows · Ctrl')
+          this.editorPlatformChoice('macos', 'macOS · Cmd')
+        }.width('100%')
+      }
       Row({ space: 5 }) {
         if (this.platform() === 'macos') {
           this.modifierChoice('Cmd', 2076)
@@ -387,15 +454,14 @@ export struct VirtualKeyboardSettingsSheet {
         this.groupChoice('digits')
         this.groupChoice('symbols')
         this.groupChoice('functions')
+        this.groupChoice('directions')
         this.groupChoice('navigation')
       }.width('100%')
-      Grid() {
-        ForEach(remoteCustomShortcutKeyOptions(this.actionGroup, this.platform()),
-          (option: RemoteCustomShortcutKeyOption): void => {
-            GridItem() { this.actionChoice(option) }
-          }, (option: RemoteCustomShortcutKeyOption): string => option.keyCode.toString())
-      }.columnsTemplate('1fr 1fr 1fr 1fr 1fr').rowsGap(4).columnsGap(4)
-        .width('100%').height(132).scrollBar(BarState.Auto)
+      Column({ space: this.customEditorLayout().itemGap }) {
+        ForEach(this.customActionRows(),
+          (row: Array<RemoteCustomShortcutKeyOption>): void => { this.customActionRow(row) },
+          (row: Array<RemoteCustomShortcutKeyOption>): string => row[0].keyCode.toString())
+      }.width('100%')
       Row() {
         Text(this.draftLabel().length > 0 ? this.draftLabel() : '请选择修饰键和主键')
           .fontSize(11).fontColor(this.draftLabel().length > 0 ? this.text() : this.danger())
@@ -406,7 +472,8 @@ export struct VirtualKeyboardSettingsSheet {
           .enabled(this.draftLabel().length > 0)
           .onClick((): void => { this.saveCustomShortcut(); })
       }.width('100%')
-    }.width('100%').padding(14).borderRadius(14).backgroundColor(this.card())
+    }.width('100%').padding(this.customEditorLayout().cardPadding)
+      .borderRadius(14).backgroundColor(this.card())
       .border({ width: 0.5, color: this.cardStroke() })
   }
 
@@ -446,7 +513,8 @@ export struct VirtualKeyboardSettingsSheet {
     Row({ space: 14 }) {
       Row() {
         SymbolGlyph($r('sys.symbol.keyboard')).fontSize(23).fontColor([this.accentColor])
-      }.width(48).height(48).justifyContent(FlexAlign.Center)
+      }.width(this.contentLayout().heroIconSize).height(this.contentLayout().heroIconSize)
+        .justifyContent(FlexAlign.Center)
         .borderRadius(15).backgroundColor(this.accentSoft())
       Column({ space: 4 }) {
         Text(eyebrow).fontSize(14).fontWeight(FontWeight.Bold).fontColor(this.text())
@@ -469,23 +537,41 @@ export struct VirtualKeyboardSettingsSheet {
             .fontSize(10).fontColor(this.text2()).maxLines(2)
         }
       }.alignItems(HorizontalAlign.Start).layoutWeight(1)
-    }.width('100%').padding(16).borderRadius(20).backgroundColor(this.card())
+    }.width('100%').padding(this.contentLayout().heroPadding)
+      .borderRadius(20).backgroundColor(this.card())
       .border({ width: 0.5, color: this.cardStroke() })
+  }
+
+  @Builder
+  private refreshInputMethodsButton() {
+    Button(this.systemLoading ? '正在刷新…' : '刷新状态')
+      .width('100%').height(42).fontSize(11).borderRadius(12)
+      .backgroundColor(this.card()).fontColor(this.text())
+      .enabled(!this.systemLoading).onClick((): void => { this.refreshSystemInputMethods(); })
+  }
+
+  @Builder
+  private openSystemInputMethodSettingsButton() {
+    Button('系统输入法设置').width('100%').height(42).fontSize(11)
+      .borderRadius(12).backgroundColor(this.accentColor).fontColor('#FFFFFF')
+      .onClick((): void => { this.openSystemSettings(); })
   }
 
   @Builder
   private systemInputMethodContent() {
     this.pageHero('system', 'HarmonyOS 官方输入法')
     this.sectionTitle('输入法状态', '应用只读取公开状态，不会绕过系统权限切换输入法。')
-    Row({ space: 8 }) {
-      Button(this.systemLoading ? '正在刷新…' : '刷新状态')
-        .layoutWeight(1).height(42).fontSize(11).borderRadius(12)
-        .backgroundColor(this.card()).fontColor(this.text())
-        .enabled(!this.systemLoading).onClick((): void => { this.refreshSystemInputMethods(); })
-      Button('系统输入法设置').layoutWeight(2).height(42).fontSize(11)
-        .borderRadius(12).backgroundColor(this.accentColor).fontColor('#FFFFFF')
-        .onClick((): void => { this.openSystemSettings(); })
-    }.width('100%').margin({ bottom: 10 })
+    if (this.contentLayout().stackPrimaryActions) {
+      Column({ space: 8 }) {
+        this.refreshInputMethodsButton()
+        this.openSystemInputMethodSettingsButton()
+      }.width('100%').margin({ bottom: 10 })
+    } else {
+      Row({ space: 8 }) {
+        Column() { this.refreshInputMethodsButton() }.layoutWeight(1)
+        Column() { this.openSystemInputMethodSettingsButton() }.layoutWeight(2)
+      }.width('100%').margin({ bottom: 10 })
+    }
     if (this.systemSnapshot.available) {
       Column({ space: 6 }) {
         this.infoRow('当前输入法', this.systemSnapshot.currentLabel)
@@ -525,10 +611,17 @@ export struct VirtualKeyboardSettingsSheet {
   private shortcutPlatformContent() {
     this.pageHero('shortcuts', '默认快捷键目录')
     this.sectionTitle('平台语义', '设置默认目录；连接中的组合键面板仍可随时切换。')
-    Row({ space: 10 }) {
-      this.platformChoice('windows', 'Windows', '通用键：Ctrl')
-      this.platformChoice('macos', 'macOS', '通用键：Cmd')
-    }.width('100%')
+    if (this.contentLayout().stackPrimaryActions) {
+      Column({ space: 8 }) {
+        Row() { this.platformChoice('windows', 'Windows', '通用键：Ctrl') }.width('100%')
+        Row() { this.platformChoice('macos', 'macOS', '通用键：Cmd') }.width('100%')
+      }.width('100%')
+    } else {
+      Row({ space: 10 }) {
+        this.platformChoice('windows', 'Windows', '通用键：Ctrl')
+        this.platformChoice('macos', 'macOS', '通用键：Cmd')
+      }.width('100%')
+    }
     this.sectionTitle('映射说明', '切换平台只改变快捷键名称与组合目录，不会修改远端系统。')
     Column({ space: 6 }) {
       this.infoRow('Windows 通用组合', 'Ctrl+C / Ctrl+V / Ctrl+Z')
@@ -543,7 +636,7 @@ export struct VirtualKeyboardSettingsSheet {
     this.pageHero('functions', '功能键与面板行为')
     this.sectionTitle('功能键目录', '单独控制扩展功能键是否出现在连接面板。')
     this.switchRow('显示完整功能键页',
-      '包含 F1–F12、方向与导航、Delete、锁定键、PrtSc、Pause 和 Menu',
+      '包含 F1–F24、导航、Delete、锁定键、PrtSc、Pause 和 Menu；方向键始终独立显示',
       this.functionKeysVisible, (enabled: boolean): void => {
         this.functionKeysVisible = enabled;
         this.savePreferences();
@@ -573,39 +666,76 @@ export struct VirtualKeyboardSettingsSheet {
     if (this.editorVisible) { this.customEditor() } else { this.customShortcutList() }
   }
 
+  @Builder
+  private pageContent() {
+    if (this.requestedSection === 'behavior') {
+      this.inputBehaviorContent()
+    } else if (this.requestedSection === 'shortcuts') {
+      this.shortcutPlatformContent()
+    } else if (this.requestedSection === 'functions') {
+      this.functionPanelContent()
+    } else if (this.requestedSection === 'custom') {
+      this.customShortcutContent()
+    } else {
+      this.systemInputMethodContent()
+    }
+    Column().height(this.contentLayout().headerBottomPadding + 14)
+  }
+
   build() {
     Column() {
       Row() {
-        Column({ space: 3 }) {
-          Text('虚拟键盘设置').fontSize(10).fontWeight(FontWeight.Medium)
-            .fontColor(this.accentColor)
-          Text(this.pageTitle()).fontSize(22).fontWeight(FontWeight.Bold).fontColor(this.text())
-          Text(this.pageSubtitle()).fontSize(10).fontColor(this.text2()).maxLines(2)
-        }.alignItems(HorizontalAlign.Start).layoutWeight(1)
-        Button() {
-          SymbolGlyph($r('sys.symbol.xmark')).fontSize(18).fontColor([this.text()])
-        }.width(42).height(42).padding(0).borderRadius(14).backgroundColor(this.card())
-          .border({ width: 0.5, color: this.cardStroke() })
-          .onClick((): void => { this.onClose(); }).accessibilityText('关闭虚拟键盘设置')
-      }.width('100%').padding({ left: 20, right: 16, top: 16, bottom: 14 })
+        Row() {
+          Column({ space: 3 }) {
+            Text('虚拟键盘设置').fontSize(10).fontWeight(FontWeight.Medium)
+              .fontColor(this.accentColor)
+            Text(this.pageTitle()).fontSize(this.contentLayout().titleFontSize)
+              .fontWeight(FontWeight.Bold).fontColor(this.text()).maxLines(1)
+              .textOverflow({ overflow: TextOverflow.Ellipsis })
+            Text(this.pageSubtitle()).fontSize(10).fontColor(this.text2()).maxLines(2)
+          }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+          Button() {
+            SymbolGlyph($r('sys.symbol.xmark')).fontSize(18).fontColor([this.text()])
+          }.width(42).height(42).padding(0).borderRadius(14).backgroundColor(this.card())
+            .border({ width: 0.5, color: this.cardStroke() })
+            .onClick((): void => { this.onClose(); }).accessibilityText('关闭虚拟键盘设置')
+        }.width('100%').constraintSize({ maxWidth: this.contentLayout().maxContentWidth })
+          .padding({
+            left: this.contentLayout().headerHorizontalPadding,
+            right: this.contentLayout().headerHorizontalPadding,
+            top: this.contentLayout().headerTopPadding,
+            bottom: this.contentLayout().headerBottomPadding
+          })
+      }.width('100%').justifyContent(FlexAlign.Center)
 
       Scroll() {
-        Column() {
-          if (this.requestedSection === 'behavior') {
-            this.inputBehaviorContent()
-          } else if (this.requestedSection === 'shortcuts') {
-            this.shortcutPlatformContent()
-          } else if (this.requestedSection === 'functions') {
-            this.functionPanelContent()
-          } else if (this.requestedSection === 'custom') {
-            this.customShortcutContent()
-          } else {
-            this.systemInputMethodContent()
-          }
-          Column().height(28)
-        }.width('100%').padding({ left: 20, right: 20 })
+        if (this.requestedSection === 'system' || this.requestedSection === 'custom') {
+          Column() {
+            this.pageContent()
+          }.width('100%')
+            .padding({
+              left: this.contentLayout().contentHorizontalPadding,
+              right: this.contentLayout().contentHorizontalPadding
+            })
+        } else {
+          Row() {
+            Column() {
+              this.pageContent()
+            }.width('100%').constraintSize({ maxWidth: this.contentLayout().maxContentWidth })
+              .padding({
+                left: this.contentLayout().contentHorizontalPadding,
+                right: this.contentLayout().contentHorizontalPadding
+              })
+          }.width('100%').justifyContent(FlexAlign.Center).alignItems(VerticalAlign.Top)
+        }
       }.width('100%').layoutWeight(1).scrollBar(BarState.Auto).edgeEffect(EdgeEffect.Spring)
     }.width('100%').height('100%').backgroundColor(this.bg())
-      .borderRadius({ topLeft: 28, topRight: 28 })
+      .borderRadius(this.contentLayout().cornerRadius)
+      .onAreaChange((_old: Area, next: Area): void => {
+        const nextWidth: number = next.width as number;
+        const nextHeight: number = next.height as number;
+        if (Number.isFinite(nextWidth) && nextWidth > 0) { this.viewportWidth = nextWidth; }
+        if (Number.isFinite(nextHeight) && nextHeight > 0) { this.viewportHeight = nextHeight; }
+      })
   }
 }

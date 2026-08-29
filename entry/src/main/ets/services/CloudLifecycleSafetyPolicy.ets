@@ -67,6 +67,34 @@ export function cloudTransferAllowed(
   return cloudDistributedRegistrationAllowed(binding, rolloutEnabled);
 }
 
+/** Startup and foreground registration share the same local durability gate. */
+export function cloudRuntimeRegistrationAdmissionAllowed(
+  startupEvidenceReady: boolean,
+  forwardCompatibleSchemaLocalOnly: boolean,
+  localMutationAdmissionReady: boolean,
+  durabilityDegradedLocalOnly: boolean
+): boolean {
+  return startupEvidenceReady &&
+    !forwardCompatibleSchemaLocalOnly &&
+    localMutationAdmissionReady &&
+    !durabilityDegradedLocalOnly;
+}
+
+/** A local business transaction may commit only with same-RDB dirty proof. */
+export function localMutationCommitAllowed(
+  journalRecorded: boolean,
+  transactionalMetadataRecorded: boolean
+): boolean {
+  return journalRecorded || transactionalMetadataRecorded;
+}
+
+/** Any failed secret-container migration keeps cloud registration paused. */
+export function legacyRelayMigrationCloudAdmissionAllowed(
+  migrationResult: number
+): boolean {
+  return Number.isSafeInteger(migrationResult) && migrationResult >= 0;
+}
+
 /**
  * A transient setDistributedTables failure must not remain sticky until the
  * next process restart. Retry only for the same fully-bound account store,

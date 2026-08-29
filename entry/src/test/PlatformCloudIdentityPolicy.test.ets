@@ -2,8 +2,11 @@ import { describe, expect, it } from '@ohos/hypium';
 import {
   platformCloudIdentityFingerprint,
   platformCloudIdentityMatchesAccountKit,
+  platformCloudIdentityProofRetryable,
   platformCloudIdentityProofFromApi23,
-  platformCloudIdentityProofIsValid
+  platformCloudIdentityProofIsValid,
+  platformCloudPermissionRequestDecision,
+  unavailablePlatformCloudIdentityProof
 } from '../main/ets/services/PlatformCloudIdentityPolicy';
 
 export default function platformCloudIdentityPolicyTest():
@@ -39,7 +42,42 @@ export default function platformCloudIdentityPolicyTest():
         expect(platformCloudIdentityFingerprint(
           'platform-account-a') ===
           platformCloudIdentityFingerprint(
-            'platform-account-b')).assertFalse();
+          'platform-account-b')).assertFalse();
+      });
+
+    it('distinguishes_a_blocked_permission_dialog_from_user_denial',
+      0, (): void => {
+        expect(platformCloudPermissionRequestDecision(
+          -1, false, 3)).assertEqual('retryable');
+        expect(platformCloudPermissionRequestDecision(
+          -1, false, 5)).assertEqual('retryable');
+        expect(platformCloudPermissionRequestDecision(
+          -1, false, 12)).assertEqual('retryable');
+        expect(platformCloudPermissionRequestDecision(
+          -1, false, null)).assertEqual('denied');
+        expect(platformCloudPermissionRequestDecision(
+          -1, false, 0)).assertEqual('denied');
+        expect(platformCloudPermissionRequestDecision(
+          -1, true, 0)).assertEqual('denied');
+        expect(platformCloudPermissionRequestDecision(
+          -1, false, 4)).assertEqual('retryable_dialog');
+        expect(platformCloudPermissionRequestDecision(
+          -1, true, 4)).assertEqual('denied');
+        expect(platformCloudPermissionRequestDecision(
+          -1, false, 2)).assertEqual('denied');
+        expect(platformCloudPermissionRequestDecision(
+          2, false, null)).assertEqual('denied');
+        expect(platformCloudPermissionRequestDecision(
+          0, false, 3)).assertEqual('granted');
+        expect(platformCloudIdentityProofRetryable(
+          unavailablePlatformCloudIdentityProof(
+            'permission_dialog_blocked'))).assertTrue();
+        expect(platformCloudIdentityProofRetryable(
+          unavailablePlatformCloudIdentityProof(
+            'permission_unavailable'))).assertTrue();
+        expect(platformCloudIdentityProofRetryable(
+          unavailablePlatformCloudIdentityProof(
+            'permission_denied'))).assertFalse();
       });
   });
 }

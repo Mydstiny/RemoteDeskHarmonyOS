@@ -10,6 +10,8 @@ import {
   SETTINGS_SECTION_RATING,
   SETTINGS_SECTION_TUTORIAL,
   SETTINGS_SECTION_VIRTUAL_KEYBOARD,
+  SETTINGS_RDP_SWITCH_ROW_COUNT,
+  SETTINGS_SECURITY_ACTION_ROW_COUNT,
   SETTINGS_VNC_ACTION_ROW_COUNT,
   SETTINGS_MOONLIGHT_ACTION_ROW_COUNT,
   SETTINGS_RATING_SUBTITLE,
@@ -31,6 +33,8 @@ import {
   settingsRatingUriCandidates,
   settingsRatingWantAction,
   settingsMoonlightExpandedMaxHeight,
+  settingsRdpExpandedMaxHeight,
+  settingsSecurityExpandedMaxHeight,
   settingsVncExpandedMaxHeight
 } from '../main/ets/services/SettingsAccordionPolicy';
 
@@ -70,6 +74,21 @@ export default function settingsAccordionPolicyTest() {
         .assertEqual(SETTINGS_SECTION_MOONLIGHT);
       expect(settingsNextExpandedSection(SETTINGS_SECTION_MOONLIGHT, SETTINGS_SECTION_MOONLIGHT))
         .assertEqual(SETTINGS_SECTION_NONE);
+    });
+
+    it('rdp_accordion_height_contains_stacked_phone_rows_and_bottom_spacing', 0, (): void => {
+      expect(SETTINGS_RDP_SWITCH_ROW_COUNT).assertEqual(5);
+      expect(settingsRdpExpandedMaxHeight('sm')).assertEqual(912);
+      expect(settingsRdpExpandedMaxHeight('md')).assertEqual(828);
+      expect(settingsRdpExpandedMaxHeight('lg')).assertEqual(828);
+      expect(settingsRdpExpandedMaxHeight('xl')).assertEqual(912);
+      expect(settingsRdpExpandedMaxHeight('sm', 6) > settingsRdpExpandedMaxHeight('sm')).assertTrue();
+    });
+
+    it('security_accordion_height_tracks_the_secret_visibility_action_row', 0, (): void => {
+      expect(SETTINGS_SECURITY_ACTION_ROW_COUNT).assertEqual(5);
+      expect(settingsSecurityExpandedMaxHeight()).assertEqual(615);
+      expect(settingsSecurityExpandedMaxHeight(6) > settingsSecurityExpandedMaxHeight()).assertTrue();
     });
 
     it('feedback_and_rating_are_direct_action_rows_not_expandable_sections', 0, (): void => {

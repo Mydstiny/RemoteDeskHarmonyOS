@@ -88,7 +88,8 @@ import {
   TouchpadPointerCurveState,
   touchpadPointerCurve
 } from '../services/TouchpadPointerCurvePolicy';
-import { moonlightAxisScrollAmount } from '../services/RemoteWheelPolicy';
+import { applyRemoteWheelDirection, moonlightAxisScrollAmount } from '../services/RemoteWheelPolicy';
+import { MOONLIGHT_REVERSE_WHEEL_KEY } from '../services/RemoteWheelPreferencePolicy';
 import rdpnapi from 'librdpnapi.so';
 import {
   MoonlightHostService,
@@ -296,6 +297,7 @@ struct MoonlightStreamPage {
   @StorageProp(GUIDE_ALWAYS_VISIBLE_STORAGE_KEY) guideAlwaysVisible: boolean = false;
   @StorageProp('liveViewEnabled') liveViewEnabled: boolean = true;
   @StorageProp('liveViewMode') liveViewMode: number = 1;
+  @StorageLink(MOONLIGHT_REVERSE_WHEEL_KEY) moonlightReverseWheel: boolean = false;
   @StorageLink(REMOTE_SESSION_CONTROL_BAR_HIDDEN_MOONLIGHT_KEY)
   @Watch('onMoonlightSessionControlBarVisibilityChanged')
   sessionControlBarHiddenMoonlight: boolean = false;
@@ -3078,11 +3080,12 @@ struct MoonlightStreamPage {
   }
 
   private openMoonlightKeyboard(): void {
-    if (this.keyboardOpen) { return; }
+    if (this.keyboardOpen || this.keyboardImeActive) { return; }
     if (!this.inputReady || this.routeTerminated) {
       promptAction.showToast({ message: '键盘输入尚未就绪', duration: 1600 });
       return;
     }
+    this.closeMoonlightModifierSurfaces('open-keyboard');
     this.flushInput('open-keyboard');
     this.clearMoonlightPhysicalKeyboardFocusSchedule();
     this.keyboardOpen = true;
@@ -3097,6 +3100,12 @@ struct MoonlightStreamPage {
     this.keyboardOpen = false;
     this.flushInput('close-keyboard');
     this.resetMoonlightImeSession('dismiss');
+    try {
+      this.keyboardController.stopEditing();
+    } catch (error) {
+      hilog.warn(0x0014, 'MoonlightStreamUi',
+        'virtual keyboard stopEditing failed=' + JSON.stringify(error));
+    }
     this.physicalKeyboardProxyFocused = false;
     this.syncMoonlightSystemPointer('virtual-keyboard-dismissed', true);
     this.scheduleMoonlightPhysicalKeyboardFocus('virtual-keyboard-dismissed');
@@ -3604,8 +3613,9 @@ struct MoonlightStreamPage {
     const horizontal: boolean = Math.abs(deltaX) > Math.abs(deltaY);
     const raw: number = horizontal ? deltaX : deltaY;
     if (!Number.isFinite(raw) || Math.abs(raw) < 0.35) { return true; }
-    const amount: number = Math.max(-32768, Math.min(32767,
+    const baseAmount: number = Math.max(-32768, Math.min(32767,
       Math.round(-raw * 4)));
+    const amount: number = applyRemoteWheelDirection(baseAmount, this.moonlightReverseWheel);
     return this.recordTrackpadDispatch(this.sendMoonlightPointer({
       launchKey: this.launchKey,
       action: 'scroll',
@@ -4312,8 +4322,9 @@ struct MoonlightStreamPage {
     const horizontal: number = event.getHorizontalAxisValue();
     const raw: number = Math.abs(vertical) >= Math.abs(horizontal) ? vertical : horizontal;
     if (!Number.isFinite(raw) || raw === 0) { return; }
-    const amount: number = moonlightAxisScrollAmount(
+    const baseAmount: number = moonlightAxisScrollAmount(
       raw, event.sourceTool === SourceTool.TOUCHPAD);
+    const amount: number = applyRemoteWheelDirection(baseAmount, this.moonlightReverseWheel);
     if (amount === 0) { return; }
     const request: MoonlightPointerInputRequest = {
       launchKey: this.launchKey, action: 'scroll',
@@ -4933,15 +4944,21 @@ struct MoonlightStreamPage {
       return;
     }
     if (action === 'keyboard') {
-      if (this.keyboardOpen) { this.dismissMoonlightKeyboard(); }
+      if (this.keyboardOpen || this.keyboardImeActive) { this.dismissMoonlightKeyboard(); }
       else { this.openMoonlightKeyboard(); }
       return;
     }
     if (action === 'modifiers') {
+      if (this.showModifierPanel || this.showShortcutPanel) {
+        this.closeMoonlightModifierSurfaces('toolbar-toggle-close');
+        return;
+      }
+      if (this.keyboardOpen || this.keyboardImeActive) {
+        this.dismissMoonlightKeyboard();
+      }
       this.flushInput('toggle_modifier_from_toolbar');
-      this.showShortcutPanel = false;
       this.placeMoonlightModifierPanel(false);
-      this.showModifierPanel = !this.showModifierPanel;
+      this.showModifierPanel = true;
       this.syncMoonlightSystemPointer('modifier-panel-toggle', true);
       return;
     }
@@ -4959,6 +4976,14 @@ struct MoonlightStreamPage {
     if (action === 'display') {
       void this.moveMoonlightToPip();
     }
+  }
+
+  private closeMoonlightModifierSurfaces(reason: string): void {
+    if (!this.showModifierPanel && !this.showShortcutPanel) { return; }
+    this.flushInput('close_modifier_surfaces_' + reason);
+    this.showModifierPanel = false;
+    this.showShortcutPanel = false;
+    this.syncMoonlightSystemPointer('modifier-surfaces-close-' + reason, true);
   }
 
   private saveRemoteCustomShortcut(id: string, keyCodes: Array<number>): boolean {
@@ -5039,9 +5064,7 @@ struct MoonlightStreamPage {
       onOpenKeyboard: (): void => { this.closeSheet(); this.toolbarAction('keyboard'); },
       onOpenModifiers: (): void => {
         this.closeSheet();
-        this.flushInput('open_modifier_panel');
-        this.placeMoonlightModifierPanel(false);
-        this.showModifierPanel = true;
+        this.toolbarAction('modifiers');
       },
       onOpenController: (): void => { this.openSheet('controller'); },
       onEnterPip: (): void => { this.closeSheet(); void this.moveMoonlightToPip(); },
@@ -5212,7 +5235,10 @@ struct MoonlightStreamPage {
             controlModeLabel: this.toolbarControlModeLabel(),
             diagnosticsVisible: this.diagnosticsVisible,
             terminationBusy: this.terminationBusy,
-            menuOpen: this.showSessionSheet,
+            keyboardOpen: this.keyboardOpen || this.keyboardImeActive,
+            modifiersOpen: this.showModifierPanel || this.showShortcutPanel,
+            menuOpen: this.showSessionSheet || this.keyboardOpen || this.keyboardImeActive ||
+              this.showModifierPanel || this.showShortcutPanel,
             qualityColor: this.firstFrameSeen ? '#66DD7A' : '#FFCF70',
             qualityLabel: this.firstFrameSeen ? '串流中' : '连接中',
             availableHeight: this.surfaceHeightVp,
@@ -5243,7 +5269,10 @@ struct MoonlightStreamPage {
             controlModeLabel: this.toolbarControlModeLabel(),
             diagnosticsVisible: this.diagnosticsVisible,
             terminationBusy: this.terminationBusy,
-            menuOpen: this.showSessionSheet,
+            keyboardOpen: this.keyboardOpen || this.keyboardImeActive,
+            modifiersOpen: this.showModifierPanel || this.showShortcutPanel,
+            menuOpen: this.showSessionSheet || this.keyboardOpen || this.keyboardImeActive ||
+              this.showModifierPanel || this.showShortcutPanel,
             qualityColor: this.firstFrameSeen ? '#66DD7A' : '#FFCF70',
             qualityLabel: this.firstFrameSeen ? '串流中' : '连接中',
             availableHeight: this.surfaceHeightVp,

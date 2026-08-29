@@ -26,13 +26,22 @@ export interface RemoteSessionControlBarPreferencePresence {
   vncPresent: boolean;
 }
 
-export type RemoteTopBarMenuId = 'control' | 'display' | 'keyboardMouse' | 'chat' | 'voice' | 'record';
+export type RemoteTopBarMenuId = 'control' | 'display' | 'desktopFlip' |
+  'keyboardMouse' | 'chat' | 'voice' | 'record';
 
 export type RemoteSessionPrimaryActionId = 'pin' | 'control' | 'display' |
-  'keyboardMouse' | 'keyboard' | 'fileTransfer' | 'diagnostics' | 'disconnect';
+  'desktopFlip' | 'keyboardMouse' | 'keyboard' | 'fileTransfer' |
+  'diagnostics' | 'disconnect';
+
+export type RemoteKeyboardSidebarAction = 'choose' | 'close';
 
 const RUSTDESK_PRIMARY_ACTION_IDS: RemoteSessionPrimaryActionId[] = [
   'pin', 'control', 'display', 'keyboardMouse', 'keyboard',
+  'fileTransfer', 'diagnostics', 'disconnect'
+];
+
+const RUSTDESK_PC_PRIMARY_ACTION_IDS: RemoteSessionPrimaryActionId[] = [
+  'pin', 'control', 'display', 'desktopFlip', 'keyboardMouse', 'keyboard',
   'fileTransfer', 'diagnostics', 'disconnect'
 ];
 
@@ -123,14 +132,44 @@ export function remoteSessionRailDragOffset(offsetX: number): number {
   if (!Number.isFinite(offsetX) || offsetX <= 0) {
     return 0;
   }
-  return Math.min(72, offsetX);
+  // Keep enough of every edge rail visible while previewing the collapse
+  // gesture.  The previous 72vp cap could translate a phone rail completely
+  // outside its parent before the gesture ended.
+  return Math.min(28, offsetX);
 }
 
 export function remoteSessionRailShouldCollapse(offsetX: number,
-  velocityX: number): boolean {
+  velocityX: number, offsetY: number = 0): boolean {
   const safeOffset: number = Number.isFinite(offsetX) ? offsetX : 0;
   const safeVelocity: number = Number.isFinite(velocityX) ? velocityX : 0;
+  const safeOffsetY: number = Number.isFinite(offsetY) ? offsetY : 0;
+  if (Math.abs(safeOffsetY) > Math.abs(safeOffset)) {
+    return false;
+  }
   return safeOffset >= 24 || safeVelocity >= 720;
+}
+
+/**
+ * The system IME and the unified shortcut panel are one user-facing keyboard
+ * surface.  Protocol pages still keep separate ArkUI state for those owners,
+ * so the toolbar must fold every legacy flag before deciding whether its
+ * keyboard affordance opens the chooser or closes the active surface.
+ */
+export function remoteKeyboardSurfaceOpen(
+  virtualKeyboardOpen: boolean,
+  modifierPanelOpen: boolean,
+  shortcutPanelOpen: boolean = false
+): boolean {
+  return virtualKeyboardOpen || modifierPanelOpen || shortcutPanelOpen;
+}
+
+export function remoteKeyboardSidebarAction(
+  virtualKeyboardOpen: boolean,
+  modifierPanelOpen: boolean,
+  shortcutPanelOpen: boolean = false
+): RemoteKeyboardSidebarAction {
+  return remoteKeyboardSurfaceOpen(
+    virtualKeyboardOpen, modifierPanelOpen, shortcutPanelOpen) ? 'close' : 'choose';
 }
 
 const RUSTDESK_DISABLED_REASONS: Record<string, string> = {
@@ -189,9 +228,15 @@ export function shouldUseRemoteSessionEdgeRail(protocol: string,
   return shouldShowRemoteSessionTopBar(protocol) && !isDesktopDevice;
 }
 
-/** PC top bar and Phone/Pad edge rail consume this exact ordered action set. */
-export function remoteSessionPrimaryActionIds(protocol: string): RemoteSessionPrimaryActionId[] {
-  return protocol === 'rustdesk' ? RUSTDESK_PRIMARY_ACTION_IDS.slice() : [];
+/** Keep the desktop workaround out of the shared Phone/Pad edge rail. */
+export function remoteSessionPrimaryActionIds(protocol: string,
+  deviceClass: RemoteTopBarDeviceClass = 'phone',
+  rustDeskPhoneTarget: boolean = false): RemoteSessionPrimaryActionId[] {
+  if (protocol !== 'rustdesk') { return []; }
+  if (deviceClass === 'pc' && !rustDeskPhoneTarget) {
+    return RUSTDESK_PC_PRIMARY_ACTION_IDS.slice();
+  }
+  return RUSTDESK_PRIMARY_ACTION_IDS.slice();
 }
 
 export function remoteTopBarLayout(isDesktopDevice: boolean, breakpoint: string,
@@ -199,9 +244,9 @@ export function remoteTopBarLayout(isDesktopDevice: boolean, breakpoint: string,
   const deviceClass: RemoteTopBarDeviceClass = remoteTopBarDeviceClass(isDesktopDevice, breakpoint, isPadDevice);
   if (deviceClass === 'pc') {
     if (breakpoint !== 'xl') {
-      return { deviceClass, iconSize: 36, itemGap: 4, topOffset: 0, maxVisibleButtons: 8, menuWidth: 320 };
+      return { deviceClass, iconSize: 36, itemGap: 3, topOffset: 0, maxVisibleButtons: 9, menuWidth: 320 };
     }
-    return { deviceClass, iconSize: 44, itemGap: 8, topOffset: 0, maxVisibleButtons: 8, menuWidth: 360 };
+    return { deviceClass, iconSize: 44, itemGap: 8, topOffset: 0, maxVisibleButtons: 9, menuWidth: 360 };
   }
   if (deviceClass === 'pad') {
     return { deviceClass, iconSize: 44, itemGap: 8, topOffset: 8, maxVisibleButtons: 8, menuWidth: 340 };
@@ -249,6 +294,7 @@ export function rustDeskActionAvailability(actionId: string,
     actionId === 'toggleKeyboard' || actionId === 'toggleModifiers' ||
     actionId === 'displaySettings' ||
     actionId === 'rotateDisplay' ||
+    actionId === 'desktopFlip' ||
     actionId === 'keyboardMouseSettings' || actionId === 'browseMode' ||
     actionId === 'togglePrivacyMode' || actionId === 'toggleAudio') {
     return capabilities.connect;

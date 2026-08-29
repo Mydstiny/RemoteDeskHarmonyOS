@@ -27,6 +27,12 @@ export default function cloudSyncSettingsPolicyTest() {
       expect(localNames.indexOf('rustdeskImageQuality') >= 0).assertTrue();
       expect(localNames.indexOf('rdpControlMode') >= 0).assertTrue();
       expect(localNames.indexOf('rdpColorDepth') >= 0).assertTrue();
+      expect(localNames.indexOf('remoteWheelPreferenceVersion') >= 0).assertTrue();
+      expect(localNames.indexOf('rdpReverseWheel') >= 0).assertTrue();
+      expect(localNames.indexOf('rustdeskReverseWheel') >= 0).assertTrue();
+      expect(localNames.indexOf('sshReverseWheel') >= 0).assertTrue();
+      expect(localNames.indexOf('vncReverseWheel') >= 0).assertTrue();
+      expect(localNames.indexOf('moonlightReverseWheel') >= 0).assertTrue();
       expect(localNames.indexOf('sshTerminalFontSize') >= 0).assertTrue();
       expect(localNames.indexOf('liveViewMode') >= 0).assertTrue();
       expect(localNames.indexOf('virtualMouseStyle') >= 0).assertTrue();
@@ -36,6 +42,12 @@ export default function cloudSyncSettingsPolicyTest() {
       expect(cloudUserSettingIsDeviceLocal('accentColor')).assertFalse();
       expect(cloudUserSettingIsSyncable('rustdeskControlMode')).assertFalse();
       expect(cloudUserSettingIsSyncable('rdpControlMode')).assertFalse();
+      expect(cloudUserSettingIsSyncable('remoteWheelPreferenceVersion')).assertFalse();
+      expect(cloudUserSettingIsSyncable('rdpReverseWheel')).assertFalse();
+      expect(cloudUserSettingIsSyncable('rustdeskReverseWheel')).assertFalse();
+      expect(cloudUserSettingIsSyncable('sshReverseWheel')).assertFalse();
+      expect(cloudUserSettingIsSyncable('vncReverseWheel')).assertFalse();
+      expect(cloudUserSettingIsSyncable('moonlightReverseWheel')).assertFalse();
       expect(cloudUserSettingIsSyncable('sshTerminalFontSize')).assertFalse();
       expect(cloudUserSettingIsSyncable('liveViewMode')).assertFalse();
       expect(cloudUserSettingIsSyncable('virtualMouseStyle')).assertFalse();

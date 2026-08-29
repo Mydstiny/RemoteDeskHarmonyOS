@@ -181,6 +181,7 @@ class CoordinatorHooks
     null;
   durableState:
     CloudSyncDurableState | null = null;
+  persistAllowed: boolean = true;
   restoreResolutionAllowed: boolean = true;
   restoreResolutionCount: number = 0;
   restoreResolutionTables: string[] = [];
@@ -195,6 +196,8 @@ class CoordinatorHooks
   startupCompleteCount: number = 0;
   startupPartialCount: number = 0;
   startupPartialAllowed: boolean = true;
+  startupCompleteAllowed: boolean = true;
+  startupCompleteThrowsOnce: boolean = false;
   startupPartialDirtyTables: string[] = [];
   startupPartialCompletedTables: string[] = [];
   startupPartialFailedTables: string[] = [];
@@ -238,7 +241,11 @@ class CoordinatorHooks
     _dirtyTables: string[], _completedTables: string[]
   ): boolean {
     this.startupCompleteCount++;
-    return true;
+    if (this.startupCompleteThrowsOnce) {
+      this.startupCompleteThrowsOnce = false;
+      throw new Error('injected startup finalizer failure');
+    }
+    return this.startupCompleteAllowed;
   }
 
   async completeStartupDownloadPartial(
@@ -289,6 +296,7 @@ class CoordinatorHooks
   persistDurableState(
     state: CloudSyncDurableState
   ): boolean {
+    if (!this.persistAllowed) { return false; }
     this.durableState = state;
     return true;
   }
@@ -1131,6 +1139,34 @@ export default function cloudDataWiringTest():
           accountLease(), 1000)).assertTrue();
       });
 
+    it('keeps_a_local_only_lease_when_cloud_lifecycle_metadata_is_unwritable',
+      0, async (): Promise<void> => {
+        const coordinator = new CloudSyncCoordinator(
+          new FixedSelectionSource(['remotehosts']),
+          new ControlledRetryClock());
+        const hooks = new CoordinatorHooks();
+        hooks.persistAllowed = false;
+        let executions: number = 0;
+        const lease: AccountSessionLease = accountLease();
+        expect(coordinator.bind(
+          lease, accountBinding(),
+          async (): Promise<boolean> => {
+            executions++;
+            return true;
+          }, (_tables: string[]): void => {}, hooks)).assertTrue();
+        expect(coordinator.isDurabilityDegradedLocalOnly())
+          .assertTrue();
+
+        const startup: CloudSyncOperationResult =
+          await coordinator.requestStartupPull();
+        expect(startup.ok).assertFalse();
+        expect(startup.failureKind).assertEqual('cloud_service');
+        expect(executions).assertEqual(0);
+        expect(coordinator.closeMutationGate(lease)).assertTrue();
+        expect(coordinator.reopenMutationGate(lease)).assertTrue();
+        expect(await coordinator.dispose(lease, 1000)).assertTrue();
+      });
+
     it('commits_core_startup_and_vnc_when_optional_moonlight_transfer_fails',
       0, async (): Promise<void> => {
         const coordinator = new CloudSyncCoordinator(
@@ -1238,6 +1274,63 @@ export default function cloudDataWiringTest():
         expect(partialHooks.startupRollbackCount).assertEqual(1);
         expect(partialHooks.bootstrapCompleted).assertFalse();
         expect(await partial.dispose(
+          accountLease(), 1000)).assertTrue();
+      });
+
+    it('reports_local_finalization_failure_after_successful_startup_transfer',
+      0, async (): Promise<void> => {
+        const hooks: CoordinatorHooks = new CoordinatorHooks();
+        hooks.bootstrapCompleted = false;
+        hooks.startupCompleteAllowed = false;
+        const coordinator = new CloudSyncCoordinator(
+          new FixedSelectionSource(['usersettings']),
+          new ControlledRetryClock());
+        expect(coordinator.bind(
+          accountLease(), accountBinding(),
+          async (_table: string): Promise<boolean> => true,
+          (_tables: string[]): void => {}, hooks)).assertTrue();
+
+        const startup: CloudSyncOperationResult =
+          await coordinator.requestStartupPull();
+        expect(startup.ok).assertFalse();
+        expect(startup.failureKind)
+          .assertEqual('local_finalize');
+        expect(hooks.startupCompleteCount).assertEqual(1);
+        expect(hooks.startupRollbackCount).assertEqual(1);
+        expect(hooks.bootstrapCompleted).assertFalse();
+        expect(await coordinator.dispose(
+          accountLease(), 1000)).assertTrue();
+      });
+
+    it('clears_rejected_startup_finalizer_and_allows_an_exact_retry',
+      0, async (): Promise<void> => {
+        const hooks: CoordinatorHooks = new CoordinatorHooks();
+        hooks.bootstrapCompleted = false;
+        hooks.startupCompleteThrowsOnce = true;
+        const coordinator = new CloudSyncCoordinator(
+          new FixedSelectionSource(['usersettings']),
+          new ControlledRetryClock());
+        let executions: number = 0;
+        expect(coordinator.bind(
+          accountLease(), accountBinding(),
+          async (_table: string): Promise<boolean> => {
+            executions++;
+            return true;
+          }, (_tables: string[]): void => {}, hooks)).assertTrue();
+
+        const first: CloudSyncOperationResult =
+          await coordinator.requestStartupPull();
+        expect(first.ok).assertFalse();
+        expect(first.failureKind).assertEqual('local_finalize');
+        expect(first.rollbackFailed).assertFalse();
+        expect(hooks.startupRollbackCount).assertEqual(1);
+
+        const second: CloudSyncOperationResult =
+          await coordinator.requestStartupPull();
+        expect(second.ok).assertTrue();
+        expect(executions).assertEqual(2);
+        expect(hooks.startupCompleteCount).assertEqual(2);
+        expect(await coordinator.dispose(
           accountLease(), 1000)).assertTrue();
       });
 

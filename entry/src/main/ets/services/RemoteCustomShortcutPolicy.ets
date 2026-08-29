@@ -1,5 +1,5 @@
 export type RemoteCustomShortcutKeyGroup =
-  'letters' | 'digits' | 'symbols' | 'functions' | 'navigation';
+  'letters' | 'digits' | 'symbols' | 'functions' | 'directions' | 'navigation';
 
 export interface RemoteCustomShortcut {
   id: string;
@@ -18,6 +18,13 @@ export interface RemoteCustomShortcutUpdate {
   shortcuts: Array<RemoteCustomShortcut>;
 }
 
+export interface RemoteCustomShortcutEditorLayout {
+  columns: number;
+  cardPadding: number;
+  itemGap: number;
+  itemHeight: number;
+}
+
 interface RemoteCustomShortcutEnvelope {
   version: number;
   items: Array<RemoteCustomShortcut>;
@@ -31,6 +38,31 @@ const ALT: number = 2045;
 const SHIFT: number = 2047;
 const WIN: number = 2076;
 const MODIFIERS: Array<number> = [CTRL, ALT, SHIFT, WIN];
+
+/**
+ * Resolve from the live sheet viewport so phones in landscape, split-screen
+ * Pads, and resizable PC windows do not inherit a device-name-sized editor.
+ */
+export function remoteCustomShortcutEditorLayout(viewportWidth: number,
+  viewportHeight: number): RemoteCustomShortcutEditorLayout {
+  const width: number = Number.isFinite(viewportWidth) && viewportWidth > 0 ? viewportWidth : 360;
+  const height: number = Number.isFinite(viewportHeight) && viewportHeight > 0 ? viewportHeight : 640;
+  let columns: number = 6;
+  if (width < 330) {
+    columns = 3;
+  } else if (width < 460) {
+    columns = 4;
+  } else if (width < 680) {
+    columns = 5;
+  }
+  const compactHeight: boolean = height < 460;
+  return {
+    columns: columns,
+    cardPadding: width < 460 || compactHeight ? 10 : 14,
+    itemGap: width < 330 || compactHeight ? 3 : 4,
+    itemHeight: compactHeight ? 28 : 30
+  };
+}
 
 function modifierLabel(keyCode: number): string {
   if (keyCode === CTRL) { return 'Ctrl'; }
@@ -93,16 +125,19 @@ export function remoteCustomShortcutKeyOptions(
     }
     return result;
   }
+  if (group === 'directions') {
+    pushOption(result, '↑', 2012);
+    pushOption(result, '↓', 2013);
+    pushOption(result, '←', 2014);
+    pushOption(result, '→', 2015);
+    return result;
+  }
   pushOption(result, 'Esc', 2070);
   pushOption(result, 'Tab', 2049);
   pushOption(result, 'Enter', 2054);
   pushOption(result, 'Space', 2050);
   pushOption(result, 'Del', 2071);
   pushOption(result, 'Backspace', 2055);
-  pushOption(result, '↑', 2012);
-  pushOption(result, '↓', 2013);
-  pushOption(result, '←', 2014);
-  pushOption(result, '→', 2015);
   pushOption(result, 'Home', 2081);
   pushOption(result, 'End', 2082);
   pushOption(result, 'PgUp', 2068);
@@ -135,7 +170,7 @@ export function remoteCustomShortcutKeyGroupForKeyCode(
   keyCode: number
 ): RemoteCustomShortcutKeyGroup {
   const groups: Array<RemoteCustomShortcutKeyGroup> =
-    ['letters', 'digits', 'symbols', 'functions', 'navigation'];
+    ['letters', 'digits', 'symbols', 'functions', 'directions', 'navigation'];
   for (let groupIndex: number = 0; groupIndex < groups.length; groupIndex++) {
     const options: Array<RemoteCustomShortcutKeyOption> =
       remoteCustomShortcutKeyOptions(groups[groupIndex]);
@@ -148,7 +183,7 @@ export function remoteCustomShortcutKeyGroupForKeyCode(
 
 function actionLabel(keyCode: number): string {
   const groups: Array<RemoteCustomShortcutKeyGroup> =
-    ['letters', 'digits', 'symbols', 'functions', 'navigation'];
+    ['letters', 'digits', 'symbols', 'functions', 'directions', 'navigation'];
   for (let groupIndex = 0; groupIndex < groups.length; groupIndex++) {
     const options: Array<RemoteCustomShortcutKeyOption> =
       remoteCustomShortcutKeyOptions(groups[groupIndex]);

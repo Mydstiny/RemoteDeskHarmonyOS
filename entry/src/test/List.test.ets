@@ -47,6 +47,9 @@ import cryptoLifecyclePolicyTest from './CryptoLifecyclePolicy.test';
 import accountScopePolicyTest from './AccountScopePolicy.test';
 import platformCloudIdentityPolicyTest from './PlatformCloudIdentityPolicy.test';
 import cloudDownloadTransactionPolicyTest from './CloudDownloadTransactionPolicy.test';
+import cloudStartupFinalizationPolicyTest from './CloudStartupFinalizationPolicy.test';
+import cloudBindingRecoveryPolicyTest from './CloudBindingRecoveryPolicy.test';
+import remoteSessionTransitionGateTest from './RemoteSessionTransitionGate.test';
 import cloudLifecycleBarrierPolicyTest from './CloudLifecycleBarrierPolicy.test';
 import cloudMetadataSafetyPolicyTest from './CloudMetadataSafetyPolicy.test';
 import accountCredentialStoragePolicyTest from './AccountCredentialStoragePolicy.test';
@@ -83,6 +86,7 @@ import vncRendererSurfacePolicyTest from './VncRendererSurfacePolicy.test';
 import vncPhysicalKeyboardPolicyTest from './VncPhysicalKeyboardPolicy.test';
 import vncPhysicalWheelPolicyTest from './VncPhysicalWheelPolicy.test';
 import remoteWheelPolicyTest from './RemoteWheelPolicy.test';
+import remoteWheelPreferencePolicyTest from './RemoteWheelPreferencePolicy.test';
 import hostAddSheetLayoutPolicyTest from './HostAddSheetLayoutPolicy.test';
 import cloudSyncCoordinatorPolicyTest from './CloudSyncCoordinatorPolicy.test';
 import localBackupPolicyTest from './LocalBackupPolicy.test';
@@ -115,6 +119,7 @@ import hostAddConnectionHandoffPolicyTest from './HostAddConnectionHandoffPolicy
 import rustDeskHostAddHandoffTest from './RustDeskHostAddHandoff.test';
 import remoteCanvasTransformPolicyTest from './RemoteCanvasTransformPolicy.test';
 import remoteSurfaceTransformPolicyTest from './RemoteSurfaceTransformPolicy.test';
+import rustDeskDesktopFlipPolicyTest from './RustDeskDesktopFlipPolicy.test';
 import remoteSurfaceResizePolicyTest from './RemoteSurfaceResizePolicy.test';
 import remoteRendererViewportPolicyTest from './RemoteRendererViewportPolicy.test';
 import remoteCanvasGesturePolicyTest from './RemoteCanvasGesturePolicy.test';
@@ -243,6 +248,7 @@ import diagnosticCapturePolicyTest from './DiagnosticCapturePolicy.test';
 import diagnosticCaptureRuntimeTest from './DiagnosticCaptureRuntime.test';
 import diagnosticCaptureExportServiceTest from './DiagnosticCaptureExportService.test';
 import diagnosticRuntimeSnapshotPolicyTest from './DiagnosticRuntimeSnapshotPolicy.test';
+import appCloneContextTest from './AppCloneContext.test';
 
 export default function testsuite() {
   localUnitTest();
@@ -294,6 +300,9 @@ export default function testsuite() {
   accountScopePolicyTest();
   platformCloudIdentityPolicyTest();
   cloudDownloadTransactionPolicyTest();
+  cloudStartupFinalizationPolicyTest();
+  cloudBindingRecoveryPolicyTest();
+  remoteSessionTransitionGateTest();
   cloudLifecycleBarrierPolicyTest();
   cloudMetadataSafetyPolicyTest();
   accountCredentialStoragePolicyTest();
@@ -330,6 +339,7 @@ export default function testsuite() {
   vncPhysicalKeyboardPolicyTest();
   vncPhysicalWheelPolicyTest();
   remoteWheelPolicyTest();
+  remoteWheelPreferencePolicyTest();
   hostAddSheetLayoutPolicyTest();
   cloudSyncCoordinatorPolicyTest();
   localBackupPolicyTest();
@@ -362,6 +372,7 @@ export default function testsuite() {
   rustDeskHostAddHandoffTest();
   remoteCanvasTransformPolicyTest();
   remoteSurfaceTransformPolicyTest();
+  rustDeskDesktopFlipPolicyTest();
   remoteSurfaceResizePolicyTest();
   remoteRendererViewportPolicyTest();
   remoteCanvasGesturePolicyTest();
@@ -490,4 +501,5 @@ export default function testsuite() {
   diagnosticCaptureRuntimeTest();
   diagnosticCaptureExportServiceTest();
   diagnosticRuntimeSnapshotPolicyTest();
+  appCloneContextTest();
 }

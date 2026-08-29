@@ -8,6 +8,8 @@ import {
   remoteSessionFloatingCardWidth,
   remoteSessionSidebarMenuMaxHeight,
   remoteSessionSidebarMenuWidth,
+  remoteSessionSidebarSystemInsets,
+  remoteSessionSidebarViewport,
   remoteSessionSidebarVisibleRailHeight
 } from '../main/ets/services/RemoteSessionSidebarLayoutPolicy';
 
@@ -17,6 +19,8 @@ export default function remoteSessionSidebarLayoutPolicyTest(): void {
       expect(remoteSessionSidebarMenuWidth(320, 300, 52, 6)).assertEqual(250);
       expect(remoteSessionSidebarCanvasHeight(320)).assertEqual(304);
       expect(remoteSessionSidebarVisibleRailHeight(320, 364)).assertEqual(304);
+      expect(remoteSessionSidebarCanvasHeight(80)).assertEqual(64);
+      expect(remoteSessionSidebarMenuMaxHeight(80, 48)).assertEqual(16);
     });
 
     it('keeps_requested_pad_width_when_space_is_available', 0, (): void => {
@@ -42,6 +46,33 @@ export default function remoteSessionSidebarLayoutPolicyTest(): void {
       expect(remoteSessionSidebarMenuWidth(Number.NaN, 300, 52, 6)).assertEqual(290);
       expect(remoteSessionSidebarCanvasHeight(Number.NaN)).assertEqual(624);
       expect(remoteSessionSidebarMenuMaxHeight(320, Number.NaN)).assertEqual(304);
+    });
+
+    it('rejects_stale_portrait_insets_after_phone_landscape_rotation', 0, (): void => {
+      const stale = remoteSessionSidebarSystemInsets(391, 386, 0, 44);
+      expect(stale.top).assertEqual(0);
+      expect(stale.bottom).assertEqual(0);
+      const valid = remoteSessionSidebarSystemInsets(391, 24, 18, 44);
+      expect(valid.top).assertEqual(24);
+      expect(valid.bottom).assertEqual(18);
+      const tiny = remoteSessionSidebarSystemInsets(40, 30, 0, 44);
+      expect(tiny.top).assertEqual(0);
+      expect(tiny.bottom).assertEqual(0);
+    });
+
+    it('uses_window_viewport_and_only_normalizes_surface_fallback', 0, (): void => {
+      const windowViewport = remoteSessionSidebarViewport(391, 844, 844, 391, true);
+      expect(windowViewport.width).assertEqual(844);
+      expect(windowViewport.height).assertEqual(391);
+      const portraitPad = remoteSessionSidebarViewport(391, 844, 391, 844, true);
+      expect(portraitPad.width).assertEqual(391);
+      expect(portraitPad.height).assertEqual(844);
+      const phoneLandscapeFallback = remoteSessionSidebarViewport(391, 844, 0, 0, true);
+      expect(phoneLandscapeFallback.width).assertEqual(844);
+      expect(phoneLandscapeFallback.height).assertEqual(391);
+      const orientationNotApplied = remoteSessionSidebarViewport(391, 844, 0, 0, false);
+      expect(orientationNotApplied.width).assertEqual(391);
+      expect(orientationNotApplied.height).assertEqual(844);
     });
   });
 }

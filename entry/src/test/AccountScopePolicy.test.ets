@@ -4,6 +4,7 @@ import {
   accountSessionLeaseEquals,
   accountCloudStoreIdentity,
   accountScopeRebindSucceeded,
+  accountLocalCompatibilityScopeToken,
   accountScopeToken,
   accountStoreIdentity,
   cloudAccountBindingForScope,
@@ -32,6 +33,28 @@ function platformProof(id: string = 'union-a'):
 
 export default function accountScopePolicyTest(): void {
   describe('AccountScopePolicy', (): void => {
+    it('falls_back_to_same_owner_local_store_without_rolling_back_login', 0,
+      (): void => {
+        const requested = accountScopeToken(
+          'union-a', 9, 'switching', 'validating',
+          platformProof('union-a'))!;
+        const fallback =
+          accountLocalCompatibilityScopeToken(requested);
+        expect(fallback !== null).assertTrue();
+        expect(fallback!.ownerScopeId)
+          .assertEqual(requested.ownerScopeId);
+        expect(fallback!.generation)
+          .assertEqual(requested.generation);
+        expect(fallback!.storeIdentity)
+          .assertEqual(accountStoreIdentity(
+            requested.ownerScopeId));
+        expect(fallback!.cloudBindingState)
+          .assertEqual('validating');
+        expect(fallback!.platformIdentityFingerprint)
+          .assertEqual(requested.platformIdentityFingerprint);
+        expect(accountLocalCompatibilityScopeToken(
+          deviceLocalScopeToken(9)) === null).assertTrue();
+      });
     it('rejects_empty_stable_account_identifiers', 0, (): void => {
       expect(stableAccountIdentifierIsValid('')).assertFalse();
       expect(stableAccountIdentifierIsValid('   ')).assertFalse();

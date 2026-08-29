@@ -134,6 +134,7 @@ export default function vncSessionUiPolicyTest(): void {
 
     it('collapses_expanded_live_toolbar_after_twenty_seconds', 0, (): void => {
       expect(vncToolbarAutoCollapseDelayMs(true, false)).assertEqual(20000);
+      expect(vncToolbarAutoCollapseDelayMs(true, false, true)).assertEqual(0);
       expect(vncToolbarAutoCollapseDelayMs(true, true)).assertEqual(0);
       expect(vncToolbarAutoCollapseDelayMs(false, false)).assertEqual(0);
     });
@@ -157,6 +158,8 @@ export default function vncSessionUiPolicyTest(): void {
       expect(vncToolbarRailHeight('phone', false, false, 248)).assertEqual(248);
       expect(vncToolbarRailHeight('pad', true, false, 216)).assertEqual(216);
       expect(vncToolbarRailHeight('phone', false, true, 56)).assertEqual(56);
+      expect(vncToolbarRailHeight('phone', false, true, 28)).assertEqual(28);
+      expect(vncToolbarRailHeight('phone', false, true, 0)).assertEqual(1);
     });
 
     it('isolates_vnc_position_preferences_by_device_and_orientation', 0, (): void => {

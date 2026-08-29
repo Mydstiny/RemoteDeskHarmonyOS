@@ -118,6 +118,49 @@ RDP_TEST_CASE(native_image_policy_validated_producer_accepts_axis_aligned_flip) 
     RDP_ASSERT(resolved[13] == 1.0f);
 }
 
+RDP_TEST_CASE(native_image_policy_validated_producer_accepts_axis_swapping_orientations) {
+    const float rotate90[16] = {
+        0.0f, -1.0f, 0.0f, 0.0f,
+        1.0f, 0.0f, 0.0f, 0.0f,
+        0.0f, 0.0f, 1.0f, 0.0f,
+        0.0f, 1.0f, 0.0f, 1.0f
+    };
+    const float rotate270[16] = {
+        0.0f, 1.0f, 0.0f, 0.0f,
+        -1.0f, 0.0f, 0.0f, 0.0f,
+        0.0f, 0.0f, 1.0f, 0.0f,
+        1.0f, 0.0f, 0.0f, 1.0f
+    };
+    const float transpose[16] = {
+        0.0f, 1.0f, 0.0f, 0.0f,
+        1.0f, 0.0f, 0.0f, 0.0f,
+        0.0f, 0.0f, 1.0f, 0.0f,
+        0.0f, 0.0f, 0.0f, 1.0f
+    };
+    const float transverse[16] = {
+        0.0f, -1.0f, 0.0f, 0.0f,
+        -1.0f, 0.0f, 0.0f, 0.0f,
+        0.0f, 0.0f, 1.0f, 0.0f,
+        1.0f, 1.0f, 0.0f, 1.0f
+    };
+    const Render::NativeImageTransform identity =
+        Render::IdentityNativeImageTransform();
+    RDP_ASSERT(Render::ClassifyNativeImageProducerTransform(0, rotate90) ==
+        Render::NativeImageTransformClass::Rotate90);
+    RDP_ASSERT(Render::ClassifyNativeImageProducerTransform(0, rotate270) ==
+        Render::NativeImageTransformClass::Rotate270);
+    RDP_ASSERT(Render::ClassifyNativeImageProducerTransform(0, transpose) ==
+        Render::NativeImageTransformClass::Transpose);
+    RDP_ASSERT(Render::ClassifyNativeImageProducerTransform(0, transverse) ==
+        Render::NativeImageTransformClass::Transverse);
+    RDP_ASSERT(Render::ResolveNativeImagePresentationTransform(
+        Render::NativeImagePresentationMode::ValidatedProducerTransform,
+        0, rotate90, identity)[1] == -1.0f);
+    RDP_ASSERT(Render::ResolveNativeImagePresentationTransform(
+        Render::NativeImagePresentationMode::ValidatedProducerTransform,
+        0, rotate270, identity)[4] == -1.0f);
+}
+
 RDP_TEST_CASE(native_image_policy_validated_producer_rejects_unclassified_matrix) {
     const float other[16] = {
         1.0f, 0.0f, 0.0f, 0.0f,

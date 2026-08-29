@@ -17,6 +17,7 @@ import {
   normalizeCloudSelectionReenablePhase
 } from '../main/ets/services/CloudSelectionReenablePolicy';
 import {
+  cloudBootstrapMustRestoreWholeTable,
   cloudBootstrapRecordReconcileAction
 } from '../main/ets/services/CloudBootstrapReconcilePolicy';
 
@@ -80,6 +81,16 @@ export default function cloudLifecycleBarrierPolicyTest():
         expect(cloudBootstrapRecordReconcileAction(
           false, 'update', false))
           .assertEqual('invalid');
+      });
+
+    it('restores_the_whole_before_image_for_compatibility_only_intent',
+      0, (): void => {
+        expect(cloudBootstrapMustRestoreWholeTable(
+          42, [])).assertTrue();
+        expect(cloudBootstrapMustRestoreWholeTable(
+          0, ['__table__'])).assertTrue();
+        expect(cloudBootstrapMustRestoreWholeTable(
+          0, ['host-a'])).assertFalse();
       });
 
     it('requires_cloud_first_only_when_a_vnc_scope_is_newly_enabled',

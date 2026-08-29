@@ -157,7 +157,11 @@ function producerTransform(value: string | undefined): DiagnosticProducerTransfo
     case 'identity': return 'identity';
     case 'flip_x': return 'flip_x';
     case 'flip_y': return 'flip_y';
+    case 'rotate_90': return 'rotate_90';
     case 'rotate_180': return 'rotate_180';
+    case 'rotate_270': return 'rotate_270';
+    case 'transpose': return 'transpose';
+    case 'transverse': return 'transverse';
     case 'other': return 'other';
     case 'read_failed': return 'read_failed';
     default: return 'unknown';

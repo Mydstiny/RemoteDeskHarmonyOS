@@ -5,9 +5,12 @@ import {
   cloudDistributedRegistrationAllowed,
   cloudRegistrationRetryAllowed,
   cloudRegistrationRetrySucceeded,
+  cloudRuntimeRegistrationAdmissionAllowed,
   moonlightCloudSchemaProvisioned,
   optionalCloudTableRegistrationAllowed,
   cloudTransferAllowed,
+  legacyRelayMigrationCloudAdmissionAllowed,
+  localMutationCommitAllowed,
   legacyCloudRestTransferAllowed,
   portableBackupExportAllowed,
   portableBackupRestoreAllowed,
@@ -100,6 +103,36 @@ export default function cloudLifecycleSafetyPolicyTest(): void {
           .assertFalse();
         expect(cloudRegistrationRetrySucceeded(false, true, true))
           .assertFalse();
+      });
+
+    it('uses_the_same_durability_gate_for_startup_and_foreground_retry',
+      0, (): void => {
+        expect(cloudRuntimeRegistrationAdmissionAllowed(
+          true, false, true, false)).assertTrue();
+        expect(cloudRuntimeRegistrationAdmissionAllowed(
+          false, false, true, false)).assertFalse();
+        expect(cloudRuntimeRegistrationAdmissionAllowed(
+          true, true, true, false)).assertFalse();
+        expect(cloudRuntimeRegistrationAdmissionAllowed(
+          true, false, false, false)).assertFalse();
+        expect(cloudRuntimeRegistrationAdmissionAllowed(
+          true, false, true, true)).assertFalse();
+      });
+
+    it('never_commits_local_rows_without_same_transaction_dirty_proof',
+      0, (): void => {
+        expect(localMutationCommitAllowed(true, false)).assertTrue();
+        expect(localMutationCommitAllowed(false, true)).assertTrue();
+        expect(localMutationCommitAllowed(false, false)).assertFalse();
+      });
+
+    it('pauses_cloud_for_every_failed_legacy_secret_migration',
+      0, (): void => {
+        // Both malformed payload and transactional migration failures report
+        // a negative result and must follow the same fail-local-only path.
+        expect(legacyRelayMigrationCloudAdmissionAllowed(-1)).assertFalse();
+        expect(legacyRelayMigrationCloudAdmissionAllowed(0)).assertTrue();
+        expect(legacyRelayMigrationCloudAdmissionAllowed(2)).assertTrue();
       });
 
     it('requires_every_isolation_proof_before_optional_table_registration', 0,

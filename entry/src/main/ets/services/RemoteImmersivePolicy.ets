@@ -4,11 +4,12 @@
  * 只描述生命周期决策，不依赖 Window/UI，便于单元测试。
  */
 
-function isRemoteDesktopProtocol(protocol: string): boolean {
-  return protocol === 'rdp' || protocol === 'rustdesk' || protocol === 'vnc';
+function isRemoteSessionProtocol(protocol: string): boolean {
+  return protocol === 'rdp' || protocol === 'rustdesk' || protocol === 'vnc' ||
+    protocol === 'moonlight' || protocol === 'ssh';
 }
 export function shouldHideRemoteNavigation(protocol: string, connected: boolean): boolean {
-  return connected && isRemoteDesktopProtocol(protocol);
+  return connected && isRemoteSessionProtocol(protocol);
 }
 
 /**
@@ -16,16 +17,14 @@ export function shouldHideRemoteNavigation(protocol: string, connected: boolean)
  * notification shade hit area while the remote canvas owns keyboard/mouse input.
  */
 export function shouldHideRemoteStatusBar(protocol: string, connected: boolean,
-  isDesktopDevice: boolean, _breakpoint: string, rustdeskControlMode: number): boolean {
+  isDesktopDevice: boolean, _breakpoint: string, _rustdeskControlMode: number): boolean {
   if (!connected || isDesktopDevice) {
     return false;
   }
-  // RDP/VNC canvases own the complete mobile/Pad input surface. Keep both
-  // official system bars out of that hit area for every control mode.
-  // RustDesk retains its keyboard/mouse-only rule because its touch modes use
-  // the status bar as part of the existing interaction contract.
-  return protocol === 'rdp' || protocol === 'vnc' ||
-    (protocol === 'rustdesk' && rustdeskControlMode === 2);
+  // Every phone/Pad remote-session page owns the complete interaction surface.
+  // A protocol control-mode switch must never silently expose a system hit
+  // target above the remote canvas.
+  return isRemoteSessionProtocol(protocol);
 }
 
 export function shouldReapplyRemoteNavigation(protocol: string, connected: boolean,

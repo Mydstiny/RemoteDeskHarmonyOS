@@ -4,7 +4,11 @@ import { util } from '@kit.ArkTS';
 export type PlatformCloudIdentityProofState =
   'verified' | 'permission_denied' | 'not_logged_in' |
   'identity_unavailable' | 'identity_mismatch' |
+  'permission_dialog_blocked' | 'permission_unavailable' |
   'platform_error';
+
+export type PlatformCloudPermissionRequestDecision =
+  'granted' | 'denied' | 'retryable_dialog' | 'retryable';
 
 /**
  * Opaque proof minted only from the current OS distributed-account API.
@@ -15,6 +19,45 @@ export interface PlatformCloudIdentityProof {
   state: PlatformCloudIdentityProofState;
   fingerprint: string;
   apiRevision: number;
+}
+
+/**
+ * A permission request can fail before a user decision when the Account Kit
+ * surface is still dismissing or the Ability is not yet allowed to present a
+ * second system dialog. Keep that case distinct from an explicit denial so a
+ * foreground-stable caller can retry without forcing another account login.
+ */
+export function platformCloudPermissionRequestDecision(
+  authResult: number,
+  dialogShown: boolean | null,
+  errorReason: number | null
+): PlatformCloudPermissionRequestDecision {
+  if (authResult === 0) { return 'granted'; }
+  if (errorReason === 0 || errorReason === 1 || errorReason === 2 ||
+      errorReason === 6) {
+    return 'denied';
+  }
+  // A result produced without displaying the permission UI is not a user
+  // decision. On the affected API 23 device the Account Kit window race
+  // reports IsPermDialogForbidden=1 together with errorReason=4, despite the
+  // SDK describing reason 4 as privacy-not-agreed. Only the not-shown
+  // combination is retryable; a displayed reason 4 remains a hard denial.
+  if (dialogShown === false && errorReason === 4) {
+    return 'retryable_dialog';
+  }
+  if (errorReason === 3 || errorReason === 5 ||
+      errorReason === 12) {
+    return 'retryable';
+  }
+  if (errorReason === 4) { return 'denied'; }
+  return 'denied';
+}
+
+export function platformCloudIdentityProofRetryable(
+  proof: PlatformCloudIdentityProof
+): boolean {
+  return proof.state === 'permission_dialog_blocked' ||
+    proof.state === 'permission_unavailable';
 }
 
 function sha256Hex(value: string): string {

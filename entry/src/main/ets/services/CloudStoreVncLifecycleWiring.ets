@@ -31,6 +31,8 @@ export interface CloudDownloadTransactionPayload {
   extensions: Array<Record<string, string>>;
   metadata: Array<Record<string, string>>;
   mutationJournal: Array<Record<string, string>>;
+  /** Table-level dirty proof stored outside the record journal. */
+  compatibilityMutationRevisions?: Record<string, number>;
   localTables:
     Record<string, Array<Record<string, string>>>;
 }

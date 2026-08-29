@@ -12,14 +12,15 @@ export default function remoteImmersivePolicyTest(): void {
       expect(shouldHideRemoteNavigation('rdp', true)).assertTrue();
       expect(shouldHideRemoteNavigation('rustdesk', true)).assertTrue();
       expect(shouldHideRemoteNavigation('vnc', true)).assertTrue();
-      expect(shouldHideRemoteNavigation('ssh', true)).assertFalse();
+      expect(shouldHideRemoteNavigation('moonlight', true)).assertTrue();
+      expect(shouldHideRemoteNavigation('ssh', true)).assertTrue();
       expect(shouldHideRemoteNavigation('rdp', false)).assertFalse();
     });
 
-    it('hides_status_bar_for_mobile_rdp_and_rustdesk_keyboard_mouse_mode', 0, (): void => {
+    it('hides_status_bar_for_every_mobile_remote_session_mode', 0, (): void => {
       expect(shouldHideRemoteStatusBar('rustdesk', true, false, 'sm', 2)).assertTrue();
       expect(shouldHideRemoteStatusBar('rustdesk', true, false, 'lg', 2)).assertTrue();
-      expect(shouldHideRemoteStatusBar('rustdesk', true, false, 'sm', 0)).assertFalse();
+      expect(shouldHideRemoteStatusBar('rustdesk', true, false, 'sm', 0)).assertTrue();
       expect(shouldHideRemoteStatusBar('rustdesk', true, true, 'xl', 2)).assertFalse();
       expect(shouldHideRemoteStatusBar('rdp', true, false, 'sm', 0)).assertTrue();
       expect(shouldHideRemoteStatusBar('rdp', true, false, 'lg', 2)).assertTrue();
@@ -27,6 +28,9 @@ export default function remoteImmersivePolicyTest(): void {
       expect(shouldHideRemoteStatusBar('vnc', true, false, 'lg', 2)).assertTrue();
       expect(shouldHideRemoteStatusBar('vnc', true, true, 'xl', 2)).assertFalse();
       expect(shouldHideRemoteStatusBar('rdp', true, true, 'xl', 0)).assertFalse();
+      expect(shouldHideRemoteStatusBar('moonlight', true, false, 'sm', 0)).assertTrue();
+      expect(shouldHideRemoteStatusBar('ssh', true, false, 'sm', 0)).assertTrue();
+      expect(shouldHideRemoteStatusBar('ssh', true, true, 'xl', 0)).assertFalse();
       expect(shouldHideRemoteStatusBar('rustdesk', false, false, 'sm', 2)).assertFalse();
     });
 
@@ -34,7 +38,7 @@ export default function remoteImmersivePolicyTest(): void {
       expect(shouldReapplyRemoteNavigation('rustdesk', true, true)).assertTrue();
       expect(shouldReapplyRemoteNavigation('vnc', true, true)).assertTrue();
       expect(shouldReapplyRemoteNavigation('rdp', true, false)).assertFalse();
-      expect(shouldReapplyRemoteNavigation('ssh', true, true)).assertFalse();
+      expect(shouldReapplyRemoteNavigation('ssh', true, true)).assertTrue();
       expect(shouldReapplyRemoteNavigation('rdp', false, true)).assertFalse();
     });
 

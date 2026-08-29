@@ -35,6 +35,7 @@ export const SETTINGS_SHEET_VIRTUAL_KEYBOARD_SHORTCUTS: number = 34;
 export const SETTINGS_SHEET_VIRTUAL_KEYBOARD_FUNCTIONS: number = 35;
 export const SETTINGS_SHEET_VIRTUAL_KEYBOARD_CUSTOM: number = 36;
 export const SETTINGS_SHEET_SECRET_VISIBILITY: number = 37;
+export const SETTINGS_SHEET_REMOTE_WHEEL_DIRECTION: number = 38;
 
 export const SETTINGS_PANEL_DISMISS_TO_LEAF_OPEN_MS: number = 360;
 
@@ -54,6 +55,21 @@ export interface VirtualKeyboardSettingsRouteSpec {
   section: VirtualKeyboardSettingsSection;
   title: string;
   height: number;
+}
+
+export interface VirtualKeyboardSettingsContentLayout {
+  maxContentWidth: number;
+  headerHorizontalPadding: number;
+  contentHorizontalPadding: number;
+  headerTopPadding: number;
+  headerBottomPadding: number;
+  titleFontSize: number;
+  heroPadding: number;
+  heroIconSize: number;
+  sectionTopMargin: number;
+  cardPadding: number;
+  cornerRadius: number;
+  stackPrimaryActions: boolean;
 }
 
 export function moonlightSettingsRouteSpecs(): MoonlightSettingsRouteSpec[] {
@@ -110,13 +126,17 @@ export function secretVisibilitySettingsLeafSheetHeight(mode: number): number {
   return mode === SETTINGS_SHEET_SECRET_VISIBILITY ? 760 : 0;
 }
 
+export function remoteWheelDirectionSettingsLeafSheetHeight(mode: number): number {
+  return mode === SETTINGS_SHEET_REMOTE_WHEEL_DIRECTION ? 680 : 0;
+}
+
 export function virtualKeyboardSettingsRouteSpecs(): VirtualKeyboardSettingsRouteSpec[] {
   return [
     {
       mode: SETTINGS_SHEET_VIRTUAL_KEYBOARD,
       section: 'system',
       title: '系统输入法',
-      height: 760
+      height: 620
     },
     {
       mode: SETTINGS_SHEET_VIRTUAL_KEYBOARD_BEHAVIOR,
@@ -140,7 +160,7 @@ export function virtualKeyboardSettingsRouteSpecs(): VirtualKeyboardSettingsRout
       mode: SETTINGS_SHEET_VIRTUAL_KEYBOARD_CUSTOM,
       section: 'custom',
       title: '自定义组合键',
-      height: 820
+      height: 520
     }
   ];
 }
@@ -158,9 +178,45 @@ export function isVirtualKeyboardSettingsMode(mode: number): boolean {
   return virtualKeyboardSettingsRouteSpec(mode) !== null;
 }
 
-export function virtualKeyboardSettingsLeafSheetHeight(mode: number): number {
+export function virtualKeyboardSettingsLeafSheetHeight(mode: number,
+  viewportHeight: number = 0, customEditorVisible: boolean = false): number {
   const spec: VirtualKeyboardSettingsRouteSpec | null = virtualKeyboardSettingsRouteSpec(mode);
-  return spec === null ? 0 : spec.height;
+  if (spec === null) { return 0; }
+  const preferredHeight: number = mode === SETTINGS_SHEET_VIRTUAL_KEYBOARD_CUSTOM &&
+    customEditorVisible ? 820 : spec.height;
+  if (!Number.isFinite(viewportHeight) || viewportHeight <= 0) { return preferredHeight; }
+  const verticalInset: number = viewportHeight < 520 ? 12 : 40;
+  return Math.max(1, Math.min(preferredHeight, viewportHeight - verticalInset));
+}
+
+export function virtualKeyboardSettingsLeafUsesBottomSheet(mode: number,
+  viewportHeight: number, breakpoint: string): boolean {
+  if (!isVirtualKeyboardSettingsMode(mode)) { return false; }
+  return breakpoint === 'sm' ||
+    (Number.isFinite(viewportHeight) && viewportHeight > 0 && viewportHeight < 520);
+}
+
+/** Resolve from measured Sheet bounds, including split-screen and freeform windows. */
+export function virtualKeyboardSettingsContentLayout(viewportWidth: number,
+  viewportHeight: number): VirtualKeyboardSettingsContentLayout {
+  const width: number = Number.isFinite(viewportWidth) && viewportWidth > 0 ? viewportWidth : 360;
+  const height: number = Number.isFinite(viewportHeight) && viewportHeight > 0 ? viewportHeight : 640;
+  const narrow: boolean = width < 360;
+  const compact: boolean = width < 520 || height < 480;
+  return {
+    maxContentWidth: 720,
+    headerHorizontalPadding: narrow ? 12 : (compact ? 16 : 22),
+    contentHorizontalPadding: narrow ? 12 : (compact ? 16 : 22),
+    headerTopPadding: height < 480 ? 10 : 16,
+    headerBottomPadding: height < 480 ? 10 : 14,
+    titleFontSize: narrow ? 18 : (compact ? 20 : 22),
+    heroPadding: narrow ? 12 : (compact ? 14 : 16),
+    heroIconSize: narrow ? 42 : (compact ? 44 : 48),
+    sectionTopMargin: height < 480 ? 14 : (compact ? 16 : 20),
+    cardPadding: narrow ? 12 : (compact ? 14 : 16),
+    cornerRadius: height < 480 ? 18 : 28,
+    stackPrimaryActions: width < 340
+  };
 }
 
 export function settingsLeafOpenDelayMs(settingsPanelOpen: boolean): number {

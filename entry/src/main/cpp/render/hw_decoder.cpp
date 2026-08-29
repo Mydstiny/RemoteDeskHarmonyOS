@@ -2037,10 +2037,6 @@ struct DecoderContext {
     std::atomic<uint64_t> rendererPresentedFrames {0};
     int width = 0;
     int height = 0;
-    // The requested decoder size may be an adaptive page size. Once a real
-    // frame arrives, retain its dimensions for PIP and foreground rebinds.
-    bool observedFrameSize = false;
-
     std::mutex softMutex;
     std::condition_variable softCv;
     std::condition_variable softDoneCv;
@@ -2619,7 +2615,6 @@ bool RecreateDecoderForFrame(const std::shared_ptr<DecoderContext>& ctx, const V
     if (result == 0) {
         ctx->width = frame.width;
         ctx->height = frame.height;
-        ctx->observedFrameSize = true;
         if (!ConfigurePipeline(ctx)) {
             ctx->decoder->Destroy();
             ctx->decoder.reset();
@@ -2646,7 +2641,6 @@ bool RecreateDecoderForFrame(const std::shared_ptr<DecoderContext>& ctx, const V
             ctx->useSoftware = true;
             ctx->width = frame.width;
             ctx->height = frame.height;
-            ctx->observedFrameSize = true;
             if (!ConfigurePipeline(ctx)) {
                 ctx->softwareDecoder->Destroy();
                 ctx->softwareDecoder.reset();
@@ -2684,11 +2678,6 @@ int DecodeNativeLocked(const std::shared_ptr<DecoderContext>& ctx, const VideoFr
         OH_LOG_WARN(LOG_APP, "[Decoder] native decode skipped: unsupported codec=%{public}d size=%{public}zu",
                     static_cast<int>(frame.codec), frame.size);
         return -2;
-    }
-    if (frame.width > 0 && frame.height > 0) {
-        ctx->width = frame.width;
-        ctx->height = frame.height;
-        ctx->observedFrameSize = true;
     }
     if (Render::ShouldDropFrameWhileWaitingRecoveryKeyframe(
         ctx->recoveryRequested.load(std::memory_order_acquire), frame.isKeyFrame)) {
@@ -2763,11 +2752,17 @@ int DecodeNativeLocked(const std::shared_ptr<DecoderContext>& ctx, const VideoFr
     }
 
     const CodecType currentCodec = CurrentCodec(ctx.get());
-    if (frame.codec != currentCodec) {
+    const bool frameGeometryChanged =
+        Render::ShouldRecreateDecoderForFrameGeometry(
+            ctx->width, ctx->height,
+            frame.width, frame.height);
+    if (frame.codec != currentCodec || frameGeometryChanged) {
         OH_LOG_WARN(LOG_APP,
-                    "[Decoder] native codec changed: decoder=%{public}d frame=%{public}d size=%{public}zu key=%{public}s frameSize=%{public}dx%{public}d",
-                    static_cast<int>(currentCodec), static_cast<int>(frame.codec), frame.size,
-                    frame.isKeyFrame ? "yes" : "no", frame.width, frame.height);
+                    "[Decoder] native pipeline change: decoderCodec=%{public}d frameCodec=%{public}d oldSize=%{public}dx%{public}d frameSize=%{public}dx%{public}d bytes=%{public}zu key=%{public}s geometryChanged=%{public}s",
+                    static_cast<int>(currentCodec), static_cast<int>(frame.codec),
+                    ctx->width, ctx->height, frame.width, frame.height, frame.size,
+                    frame.isKeyFrame ? "yes" : "no",
+                    frameGeometryChanged ? "yes" : "no");
         if (!frame.isKeyFrame) {
             return -3;
         }
@@ -2786,6 +2781,11 @@ int DecodeNativeLocked(const std::shared_ptr<DecoderContext>& ctx, const VideoFr
             return -3;
         }
         ctx->videoPipelineAttached.store(true, std::memory_order_release);
+    }
+
+    if (frame.width > 0 && frame.height > 0) {
+        ctx->width = frame.width;
+        ctx->height = frame.height;
     }
 
     if (ctx->useSoftware) {

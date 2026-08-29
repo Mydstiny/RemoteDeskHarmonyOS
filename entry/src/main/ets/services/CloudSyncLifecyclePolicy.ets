@@ -66,6 +66,7 @@ function isFailureKind(value: string): boolean {
     value === 'indeterminate' ||
     value === 'restore_pending' ||
     value === 'no_selection' ||
+    value === 'local_finalize' ||
     value === 'unknown';
 }
 
@@ -267,9 +268,20 @@ export function recoverCloudSyncDurableState(
     isFailureKind(candidate.lastFailureKind);
   let phase: CloudSyncLifecyclePhase =
     bindingPhase(binding, transferEnabled, bootstrapCompleted);
-  if (candidate.phase === 'restore_quarantine' ||
-    candidate.phase === 'blocked') {
+  if (candidate.phase === 'restore_quarantine') {
     phase = candidate.phase;
+  } else if (candidate.phase === 'blocked') {
+    // `blocked` is a failure report from an older runtime, not authoritative
+    // business data. Rebuild it from the current binding/bootstrap evidence
+    // so an app upgrade or repaired platform service cannot leave cloud data
+    // permanently sealed behind stale metadata. Explicit restore quarantine
+    // remains durable because it represents an unresolved user direction.
+    const currentPhase: CloudSyncLifecyclePhase =
+      bindingPhase(
+        binding, transferEnabled,
+        bootstrapCompleted);
+    phase = currentPhase === 'ready'
+      ? 'recovery_required' : currentPhase;
   } else if (!candidateIntegrityValid ||
     transientPhase(candidate.phase) ||
     candidate.phase === 'recovery_required') {

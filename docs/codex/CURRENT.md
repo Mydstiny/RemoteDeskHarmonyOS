@@ -2,116 +2,55 @@
 
 ## Active task
 
-- Task: `secret-visibility-policy`
-- Branch/base: `codex/secret-visibility-policy` from synchronized `main@f3b41e5a6`.
-- Phase: implementation, gates and independent review complete; ready for PR/main closure.
-- Plan: `docs/codex/plans/2026-08-28-secret-visibility-policy.md`
+- Task: `release-1-1-4-notes-and-version`
+- Branch: `codex/system-clipboard-activation-fix`; user authorized work on the current branch.
+- Increment: `c49f165f4..20811b14a` (tutorial release-log refresh follow-up).
+- Phase: implemented, locally verified and independently reviewed; update-popup device acceptance is pending.
+- Plan: `docs/codex/plans/2026-08-28-release-1-1-4-notes-and-version.md`
 
-## Objective
+## 1.1.4 release result
 
-- Add a device-local Data Security Sheet for choosing which editable password classes do not reveal saved values.
-- Preserve an existing hidden secret on an empty edit, replace it only with a
-  newly entered value, and keep deletion explicit.
-- Bring VNC host passwords under the shared policy without changing protocol,
-  encryption, cloud-sync, backup or connection behavior.
+- The current app version is `1.1.4 / 1001004` across the app manifest, release registry, NAPI metadata, resources, diagnostics, documentation and SBOM.
+- The current 1.1.4 release popup contains only the 10 new 1.1.4 cards for committed changes since 1.1.3 and ends at `welcome-1-1-4`. The 12 existing 1.1.3 cards remain unchanged in the historical `1.1.3` registry, but are excluded from the current popup. The settings entry and unit/device assertions use the 10-card current count.
+- `设置 → 教程 → 本版本更新日志` now reloads the current 1.1.4 registry when the component appears and whenever that subpage is selected, and clamps any reused legacy page index to the current 10-page range.
+- SBOM provenance identifies source snapshot `fc514ce36` and creation time `2026-08-28T15:50:20Z`; the snapshot includes the version update and final shortcut-editor refinement.
+- Final verification: `default@OhosTestCompileArkTS` PASS (`BUILD SUCCESSFUL in 14 s 918 ms`); signed `assembleHap` PASS (`BUILD SUCCESSFUL in 38 s 510 ms`); signed HAP SHA-256 `45cd9c64b7c3a28c6a606594943d3ae79ba27c3e2216d87042edcc891267eada`; `git diff --check` and Light compliance PASS.
+- Independent review `/root/release_1_1_4_review`: tutorial release-log refresh PASS with zero findings; no P0/P1/P2/P3.
 
-## Baseline
+## Existing cloud recovery result
 
-- Clean synchronized `main@f3b41e5a6`, equal to `origin/main` when started.
+- Device logs at `192.168.3.235:38451` showed Account Kit login and RDB creation succeeded, then optional historical account-store migration failed with `401 invalid parameters`; that optional failure was incorrectly surfaced as `账号物理数据域打开失败`.
+- Canonical failure now falls back to the exact same account's hashed local store. Login and local CRUD remain available while cloud recovery is deferred; stale canonical data is never reverse-imported into that authoritative fallback.
+- Local rows commit only when dirty intent is durable in the same RDB transaction. Broken checkpoints are quarantined before writes reopen, and startup/retry share the same durable cloud-admission state.
+- Account migration preserves clear/delete and empty-table semantics. VNC/Moonlight exact schema and public-data rules, higher source schemas, account ownership and crypto ownership remain integrity boundaries rather than arbitrary availability policies.
 
-## Implemented
+## Verification
 
-- Added a versioned, device-local presentation policy for RDP host passwords,
-  Windows credentials, RustDesk device passwords, SSH passwords/key
-  passphrases and VNC host passwords.
-- Added the Data Security `密码与秘密回显` Sheet with per-class switches,
-  `全部隐藏` and compatibility-default actions. VNC remains hidden by default.
-- Hidden editors now keep the old value on an empty draft and overwrite it only
-  when a new non-empty value is entered; authentication/key binding changes do
-  not accidentally carry an unrelated old secret forward.
-- Secret preservation is bound to the original account/endpoint identity, so a
-  blank hidden field cannot reuse a credential after its host, user, mode or
-  key binding changes.
-- Added runtime-only secret-presence markers so crypto-locked records remain
-  identifiable as configured without exposing or serializing plaintext.
-- Existing SSH private-key bodies are no longer loaded into ordinary page
-  state; replacement uses a password input and explicitly preserves the old key
-  only while its vault/path binding is unchanged.
-- VNC now uses the shared policy while retaining its dedicated secret service,
-  plaintext-consent checks, local personalization and rollback behavior. A
-  forgotten VNC password can be handed to the current connection only;
-  aborted, backgrounded or destroyed add flows clear every transient handoff.
-- VNC secret mutations are now explicit (`keep` / `replace` / `clear`) and are
-  bound to transport, target, port, Gateway, repeater mode, TLS and security
-  policy. Editing an endpoint cannot reuse or hand off its old password, and a
-  visible password that is deliberately cleared removes the saved secret.
-- RustDesk password preservation also binds the one-time/permanent password
-  mode in both the classic editor and Pro preflight draft lifecycle.
-- Runtime-only configured markers now survive HostSync/UI snapshot cloning
-  while remaining absent from model JSON, cloud rows and portable backup.
-- Clearing or rebinding a secret now resets its runtime configured marker;
-  marker-only changes participate in HostSync comparison and use the full
-  sensitive-write/unlock path instead of being mistaken for personalization.
-- RustDesk Pro drafts now carry an explicit stored-password-preservation bit.
-  A password invalidated by changing one-time/permanent mode stays invalid
-  after background restore, even if the user switches back to the old mode.
-- The standard RustDesk connection Sheet now follows the same local visibility
-  policy as Pro: hidden saved passwords never enter its editable `@State`, and
-  approval success clears the old unattended password and marker.
-- Pro address-book reconciliation preserves crypto-locked secret markers,
-  never mistakes redacted plaintext for an absent password, and never replaces
-  a configured local password with a server response.
-- SSH trust, passphrase and key-install mutations retain runtime markers.
-  Switching to an installed key clears the obsolete password, while locked
-  trust-only updates preserve the encrypted private-key passphrase extension.
-- Stored-password projections are now distinguished from user-entered drafts.
-  Background and foreground `DataCrypto` lock transitions scrub projected
-  plaintext from standard/Pro RustDesk, classic RDP/RustDesk/SSH editors, RDP
-  credentials and both VNC edit flows; unlock restoration always re-applies
-  the current local policy; background/non-active windows cannot initially
-  project or restore plaintext, including after an async authentication gate.
-- Both SSH public-key deployment entry points now keep only sanitized host
-  projections or minimal display views in responsive state, including clearing
-  proxy passwords/passphrases. The independent KeyVault Sheet passes only key
-  and host IDs, refetches live secrets after the lock gate, rejects crypto-locked
-  access, and supports both KeyVault and legacy inline authentication keys.
-- The device-local presentation store now publishes process-local changes.
-  Editors and settings Sheets subscribe for their visible lifecycle, so another
-  window immediately clears hidden projections; per-kind writes read the latest
-  policy first, preventing stale Sheets from reopening another kind. Nothing is
-  synchronized to cloud or backup.
-- Unlock/policy restoration now requires the opening snapshot, live record and
-  editor endpoint/user/auth/mode/key binding to agree. Deleted or rebound
-  records clear their projection and block the stale panel until reopened.
-- SSH key installation records full host/target-key operation identities across
-  async verification, then refetches both before committing; concurrent change,
-  deletion or crypto relock leaves local authentication untouched.
-- Legacy SSH proxy password/passphrase ciphertext now has runtime presence
-  markers and survives permitted trust-only writes while the crypto vault is
-  locked. Canonical proxy rebinding clears both the legacy values and markers.
-- Switching an SSH host to a newly installed KeyVault key replaces `sshKeyId`
-  and clears obsolete inline key data, passphrase and configured markers.
-- RustDesk approval is blocked while a saved password is crypto-redacted; a
-  persistence race after connection triggers immediate session cleanup rather
-  than leaving the old unattended password behind.
-- HostList change detection now includes runtime secret markers, and the
-  RustDesk trust manager consumes those markers when plaintext is redacted.
-- Classified `secretPresentationPolicyV1` as device-local and added focused
-  policy, mutation, route and cloud-sync classification tests.
+- `default@OhosTestCompileArkTS`: PASS (`BUILD SUCCESSFUL in 6 s 201 ms`).
+- `assembleHap`: PASS, signed (`BUILD SUCCESSFUL in 50 s 090 ms`).
+- Signed HAP SHA-256: `b6bad805365e0af421336fbe796a25cb5baaa28d651a8e1e14e356df733a8ca3`.
+- `git diff --check` and Light open-source compliance: PASS.
+- `ohosTest@OhosTestCompileArkTS`: unavailable (`00306054`, task is not registered); focused policies compile through the mandatory test target.
+- Independent review `/root/cloud_sync_fix_review`: PASS; no remaining P0/P1/P2. Non-blocking P3 is deeper real-RDB fault-injection coverage.
 
-## Verification (current worktree)
+## Authorized RustDesk desktop-flip increment
 
-- `default@OhosTestCompileArkTS`: PASS (`BUILD SUCCESSFUL in 5 s 521 ms`).
-- `assembleHap`: PASS, signed (`BUILD SUCCESSFUL in 11 s 873 ms`).
-- Light open-source compliance: PASS.
-- `git diff --check`: PASS.
-- Same independent reviewer: PASS at `2b31d4cb`; all 35 findings closed, P0/P1/P2/P3 zero.
-- Focused Hypium tests compile in the required gate; optional device task is unavailable (`00306054`).
+- Commits `56db7e612`, `a77e28f3` and `10c149fce` add a PC-only RustDesk top-bar flip icon with a compact three-action popup: image only, image plus controls, and reset.
+- The selected mode is stored per host in device-local personalization, restored across sessions and excluded from cloud-base change detection. Visual and control rotations are independent; PIP and foreground renderer rebinds reapply the visual mode.
+- Authenticated peer platform wins over stale host metadata. Android/iOS peers drain input, reset only the live desktop-flip transform and close the popup; the saved computer preference remains available for a later desktop peer. Phone/Pad viewers and RustDesk phone targets do not expose the action.
+- Continuity reconnects retain the last authenticated peer platform across transient `unknown` diagnostics, preventing mobile sessions from briefly reapplying a stale computer flip during re-authentication.
+- Verification: `default@OhosTestCompileArkTS` PASS (`BUILD SUCCESSFUL in 18 s 232 ms`); signed `assembleHap` PASS (`BUILD SUCCESSFUL in 26 s 727 ms`); signed HAP SHA-256 `db785d6f17a1f8305b62bd1503c5717eb8cee7b324e467e5aba3b721cf3239a7`; `git diff --check` and Light compliance PASS. PC real-device UI/mapping acceptance is pending.
+- Independent review `/root/rustdesk_desktop_flip_review`: PASS after closing one P1 mobile-peer scope issue and one P2 continuity `unknown` transition; no remaining P0/P1/P2.
 
-## Next
+## Per-protocol wheel-direction increment
 
-1. Open the reviewed branch PR, wait for required checks, merge and synchronize `main`.
+- Commits `23ec26df1`, `6f1efab8a` and `701969cb1` replace the shared wheel switch with a `显示与交互` editor for RDP, RustDesk, SSH, VNC and Moonlight, including all-normal and all-reverse actions. SFTP is explicitly unaffected.
+- Each protocol now owns a device-local key and applies direction at its runtime boundary exactly once. Existing shared behavior migrates compatibly for RDP/RustDesk/VNC; SSH and Moonlight default to normal direction.
+- Editor saves use a touched-field patch merged with the latest live values, so changing one protocol cannot revert another protocol changed while the sheet was open. Multi-key persistence has best-effort rollback, and VNC keeps its old cloud payload field only as migration input.
+- Verification: `default@OhosTestCompileArkTS` PASS (`BUILD SUCCESSFUL in 12 s 339 ms`); signed `assembleHap` PASS (`BUILD SUCCESSFUL in 31 s 407 ms`); signed HAP SHA-256 `d7221652b6ba51f07e6f64752e096eb10f29d40548c92aa08b26eea5335d30d8`; `git diff --check` and Light compliance PASS. The separate `ohosTest@OhosTestCompileArkTS` task remains unregistered (`00306054`).
+- Independent review `/root/per_protocol_wheel_review`: PASS after closing the stale-editor P2 and tightening persistence/SSH ownership; no remaining P0/P1/P2. ArkWeb WheelEvent and five-protocol real-device input acceptance remain pending.
 
-## Blockers
+## Device acceptance / blockers
 
-- Device/Hypium acceptance was not run; `ohosTest@OhosTestCompileArkTS` is not registered (`00306054`).
+- The fixed HAP was installed successfully on `192.168.3.235:38451` with `install -r`, preserving app data, and `EntryAbility` started successfully. Acceptance must verify login remains usable after the historical migration `401`, exact-owner local data visibility, local save/restart/offline behavior, canonical recovery and no stale-row resurrection.
+- Prior remote keyboard/sidebar acceptance on `.235` remains queued. `.236:40123` still requires a release-provisioned HAP or explicit destructive-uninstall authorization; its existing data remains preserved.

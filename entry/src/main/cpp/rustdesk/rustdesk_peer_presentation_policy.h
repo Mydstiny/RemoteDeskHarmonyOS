@@ -84,7 +84,7 @@ inline const char* PeerPlatformCategoryName(PeerPlatformCategory category) {
  * RustDesk's hardware-decoded NativeImage is presented with the local
  * producer transform on every peer platform. The decision remains platform
  * invariant: the peer OS label is telemetry, never an orientation switch.
- * Only the four axis-aligned transforms validated by the renderer policy are
+ * Only the eight axis-aligned transforms validated by the renderer policy are
  * accepted, so a malformed or unexpected producer matrix retains the last
  * known-good presentation.
  */

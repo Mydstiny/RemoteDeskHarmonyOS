@@ -40,10 +40,20 @@ export default function remoteKeyboardSettingsPolicyTest(): void {
 
       const windowsCopy = windows.filter((item): boolean => item.id === 'copy')[0];
       const macosCopy = macos.filter((item): boolean => item.id === 'copy')[0];
+      const windowsDelete = windows.filter((item): boolean => item.id === 'delete')[0];
+      const macosDelete = macos.filter((item): boolean => item.id === 'delete')[0];
       expect(windowsCopy.chord).assertEqual('Ctrl+C');
       expect(windowsCopy.keyCodes[0]).assertEqual(2072);
       expect(macosCopy.chord).assertEqual('Cmd+C');
       expect(macosCopy.keyCodes[0]).assertEqual(2076);
+      expect(windowsDelete.label).assertEqual('向前删除');
+      expect(windowsDelete.chord).assertEqual('Delete');
+      expect(windowsDelete.keyCodes.length).assertEqual(1);
+      expect(windowsDelete.keyCodes[0]).assertEqual(2071);
+      expect(macosDelete.label).assertEqual('向前删除');
+      expect(macosDelete.chord).assertEqual('Delete');
+      expect(macosDelete.keyCodes.length).assertEqual(1);
+      expect(macosDelete.keyCodes[0]).assertEqual(2071);
       expect(macos.filter((item): boolean => item.id === 'macPreviousTab')[0].chord)
         .assertEqual('Shift+Cmd+[');
       expect(macos.filter((item): boolean => item.id === 'macNextTab')[0].chord)
@@ -67,8 +77,12 @@ export default function remoteKeyboardSettingsPolicyTest(): void {
     it('marks_rustdesk_macos_keys_for_explicit_physical_map_transport', 0, (): void => {
       expect(remoteShortcutTransportKeyCode('rustdesk', 'macos', 2076)).assertEqual(133148);
       expect(remoteShortcutTransportKeyCode('rustdesk', 'macos', 2019)).assertEqual(133091);
+      expect(remoteShortcutTransportKeyCode('rustdesk', 'macos', 2071)).assertEqual(133143);
       expect(remoteShortcutTransportKeyCode('rustdesk', 'windows', 2076)).assertEqual(2076);
+      expect(remoteShortcutTransportKeyCode('rdp', 'windows', 2071)).assertEqual(2071);
       expect(remoteShortcutTransportKeyCode('vnc', 'macos', 2076)).assertEqual(2076);
+      expect(remoteShortcutTransportKeyCode('vnc', 'macos', 2071)).assertEqual(2071);
+      expect(remoteShortcutTransportKeyCode('moonlight', 'macos', 2071)).assertEqual(2071);
     });
   });
 }

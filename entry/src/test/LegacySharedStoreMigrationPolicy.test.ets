@@ -1,14 +1,67 @@
 import { describe, expect, it } from '@ohos/hypium';
 import {
+  accountScopedMigrationReceiptDecision,
+  accountScopedMigrationReceiptNeedsUpgrade,
   accountScopedCryptoParamsMayMigrate,
+  accountScopedLocalOverlayRowDecision,
   accountScopedRowOwnershipDecision,
   legacyCryptoParamsMayMigrate,
   legacyRowOwnershipDecision,
   legacyVncRowMigrationDecision
 } from '../main/ets/services/LegacySharedStoreMigrationPolicy';
+import {
+  legacyMigrationSha256Hex
+} from '../main/ets/services/LegacySharedStoreMigrator';
 
 export default function legacySharedStoreMigrationPolicyTest(): void {
   describe('LegacySharedStoreMigrationPolicy', (): void => {
+    it('hashes_an_empty_mutation_journal_without_a_zero_length_provider_update',
+      0, (): void => {
+        expect(legacyMigrationSha256Hex('')).assertEqual(
+          'e3b0c44298fc1c149afbf4c8996fb924' +
+          '27ae41e4649b934ca495991b7852b855');
+      });
+
+    it('refuses_to_hide_source_changes_after_a_committed_migration',
+      0, (): void => {
+        expect(accountScopedMigrationReceiptDecision(
+          null, 'journal-v1:current')).assertEqual('migrate');
+        expect(accountScopedMigrationReceiptDecision(
+          'journal-v1:same', 'journal-v1:same'))
+          .assertEqual('skip_unchanged');
+        expect(accountScopedMigrationReceiptDecision(
+          'journal-v1:old', 'journal-v1:changed'))
+          .assertEqual('source_changed');
+        expect(accountScopedMigrationReceiptDecision(
+          'legacy-file-fingerprint', 'journal-v1:changed',
+          null)).assertEqual('skip_unchanged');
+        expect(accountScopedMigrationReceiptDecision(
+          'legacy-file-fingerprint', 'journal-v1:changed',
+          'journal-v1:baseline')).assertEqual('source_changed');
+        expect(accountScopedMigrationReceiptDecision(
+          'legacy-file-fingerprint', 'journal-v1:baseline',
+          'journal-v1:baseline')).assertEqual('skip_unchanged');
+        expect(accountScopedMigrationReceiptNeedsUpgrade(
+          'legacy-file-fingerprint', 'skip_unchanged',
+          'journal-v1:baseline'))
+          .assertTrue();
+        expect(accountScopedMigrationReceiptNeedsUpgrade(
+          'legacy-file-fingerprint', 'skip_unchanged', null))
+          .assertFalse();
+        expect(accountScopedMigrationReceiptDecision(
+          'journal-v1:empty', 'journal-v1:changed', null))
+          .assertEqual('source_changed');
+        expect(accountScopedMigrationReceiptDecision(
+          'journal-v1:same', 'journal-v2:compatibility-dirty',
+          'journal-v1:same')).assertEqual('source_changed');
+        expect(accountScopedMigrationReceiptDecision(
+          'journal-v2:same', 'journal-v2:same'))
+          .assertEqual('skip_unchanged');
+        expect(accountScopedMigrationReceiptNeedsUpgrade(
+          'journal-v2:same', 'skip_unchanged',
+          'journal-v1:baseline')).assertFalse();
+      });
+
     it('claims_blank_legacy_owner_only_for_a_verified_account', 0, (): void => {
       expect(legacyRowOwnershipDecision('', 'huawei_account', 'union-a'))
         .assertEqual('target');
@@ -68,6 +121,27 @@ export default function legacySharedStoreMigrationPolicyTest(): void {
       expect(accountScopedRowOwnershipDecision('union-a', 'owner-a'))
         .assertEqual('other_owner');
     });
+
+    it('migrates_valid_local_only_vnc_and_moonlight_overlay_rows',
+      0, (): void => {
+        // Both protocol tables share the same exact owner/local-only gate;
+        // their payload validators run before this policy decision.
+        expect(accountScopedLocalOverlayRowDecision(
+          'owner-a', 'owner-a', 1, true))
+          .assertEqual('migrate');
+        expect(accountScopedLocalOverlayRowDecision(
+          'owner-a', 'owner-a', 0, true))
+          .assertEqual('migrate');
+        expect(accountScopedLocalOverlayRowDecision(
+          'owner-b', 'owner-a', 1, true))
+          .assertEqual('other_owner');
+        expect(accountScopedLocalOverlayRowDecision(
+          'owner-a', 'owner-a', 2, true))
+          .assertEqual('quarantine_invalid_local_only');
+        expect(accountScopedLocalOverlayRowDecision(
+          'owner-a', 'owner-a', 1, false))
+          .assertEqual('quarantine_invalid_payload');
+      });
 
     it('account_scoped_crypto_requires_a_single_matching_owner_scope', 0,
       (): void => {

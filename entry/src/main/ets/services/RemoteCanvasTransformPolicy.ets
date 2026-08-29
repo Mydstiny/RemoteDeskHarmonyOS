@@ -212,6 +212,44 @@ export function panCanvasTransform(current: CanvasTransform, viewport: CanvasVie
   }, viewport);
 }
 
+/**
+ * Preserve the content point under the surface centre while rebasing a manual
+ * zoom onto new window or stream geometry. The user multiplier is retained;
+ * only the pixel pan is projected into the new viewport and clamped.
+ */
+export function rebaseCanvasTransform(current: CanvasTransform,
+  previousViewport: CanvasViewport, nextViewport: CanvasViewport): CanvasTransform {
+  const old: CanvasTransform = clampCanvasTransform(current, previousViewport);
+  const rotation: number = normalizeCanvasRotation(old.rotation);
+  const oldScale: number = absoluteScale(old, previousViewport);
+  const oldSourceWidth: number = displayedSourceWidth(old, previousViewport);
+  const oldSourceHeight: number = displayedSourceHeight(old, previousViewport);
+  const oldSurfaceWidth: number = positive(previousViewport.surfaceWidth, 1);
+  const oldSurfaceHeight: number = positive(previousViewport.surfaceHeight, 1);
+  const oldLeft: number = (oldSurfaceWidth - oldSourceWidth * oldScale) / 2 + old.panX;
+  const oldTop: number = (oldSurfaceHeight - oldSourceHeight * oldScale) / 2 + old.panY;
+  const focusRatioX: number = clamp(
+    (oldSurfaceWidth / 2 - oldLeft) / Math.max(0.01, oldSourceWidth * oldScale), 0, 1);
+  const focusRatioY: number = clamp(
+    (oldSurfaceHeight / 2 - oldTop) / Math.max(0.01, oldSourceHeight * oldScale), 0, 1);
+
+  const nextScale: number = containScaleForRotation(nextViewport, rotation) * old.scale;
+  const nextSourceWidth: number = rotation % 2 === 1 ?
+    positive(nextViewport.sourceHeight, 1) : positive(nextViewport.sourceWidth, 1);
+  const nextSourceHeight: number = rotation % 2 === 1 ?
+    positive(nextViewport.sourceWidth, 1) : positive(nextViewport.sourceHeight, 1);
+  const nextSurfaceWidth: number = positive(nextViewport.surfaceWidth, 1);
+  const nextSurfaceHeight: number = positive(nextViewport.surfaceHeight, 1);
+  const nextBaseLeft: number = (nextSurfaceWidth - nextSourceWidth * nextScale) / 2;
+  const nextBaseTop: number = (nextSurfaceHeight - nextSourceHeight * nextScale) / 2;
+  return clampCanvasTransform({
+    scale: old.scale,
+    panX: nextSurfaceWidth / 2 - nextBaseLeft - focusRatioX * nextSourceWidth * nextScale,
+    panY: nextSurfaceHeight / 2 - nextBaseTop - focusRatioY * nextSourceHeight * nextScale,
+    rotation
+  }, nextViewport);
+}
+
 export function baseCanvasTransform(mode: LocalViewScaleMode, customPercent: number,
   viewport: CanvasViewport, rotation: number = 0): CanvasTransform {
   const normalizedRotation: number = normalizeCanvasRotation(rotation);

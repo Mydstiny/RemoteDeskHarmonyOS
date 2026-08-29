@@ -35,7 +35,7 @@ export interface CloudSyncRetryRecord {
 export type CloudSyncFailureKind =
   'none' | 'version_conflict' | 'empty_snapshot' | 'tombstone_cleanup' |
   'unsafe_payload' | 'cloud_service' | 'network' | 'indeterminate' |
-  'restore_pending' | 'no_selection' | 'unknown';
+  'restore_pending' | 'no_selection' | 'local_finalize' | 'unknown';
 
 export type CloudSyncWatchdogTimeoutKind =
   'none' | 'accept_timeout' | 'idle_timeout' | 'overall_timeout';
@@ -229,6 +229,21 @@ export function cloudFirstCompatibleTablesAfterOptionalFailure(
   return completedCore ? completed : [];
 }
 
+/**
+ * Tables whose cloud-first data is durably committed and may therefore
+ * advance a pending selection barrier. Optional rollout failures keep the
+ * overall result failed, but must not strand successfully applied core tables.
+ */
+export function cloudFirstTablesForSelectionFinalization(
+  ok: boolean,
+  tables: string[],
+  failedTables: string[]
+): string[] {
+  return ok ? tables.slice() :
+    cloudFirstCompatibleTablesAfterOptionalFailure(
+      'cloudFirst', tables, failedTables);
+}
+
 /** These failures must stop native-first retries until the user resolves them. */
 export function shouldBlockAutomaticRetry(kind: CloudSyncFailureKind): boolean {
   return kind === 'version_conflict' || kind === 'empty_snapshot' ||
@@ -263,6 +278,9 @@ export function cloudSyncFailureMessage(kind: CloudSyncFailureKind): string {
   }
   if (kind === 'no_selection') {
     return '尚未选择可同步的数据类型；未启动云端传输，也未改变现有同步状态。';
+  }
+  if (kind === 'local_finalize') {
+    return '云端下载已结束，但本地事务收尾未完成；数据仍受保护，应用会在前台自动重新核对。';
   }
   return '云同步未完成，数据未确认全部同步，请稍后重试。';
 }
@@ -408,6 +426,57 @@ export function coalesceAutomaticPush(pendingTable: string, incomingTable: strin
 
 export function shouldReplayAutomaticPush(completedVersion: number, currentVersion: number): boolean {
   return currentVersion > completedVersion;
+}
+
+/**
+ * A business-row commit may outlive either mutation-intent backend. Keep the
+ * newest revision from the RDB journal and the independent compatibility
+ * marker so a repaired cloud runtime can replay the table later.
+ */
+export function mergeMutationRevisionMaps(
+  primary: Record<string, number>,
+  compatibility: Record<string, number>
+): Record<string, number> {
+  const result: Record<string, number> = {};
+  const primaryTables: string[] = Object.keys(primary);
+  for (let i = 0; i < primaryTables.length; i++) {
+    const table: string = primaryTables[i];
+    const revision: number = primary[table];
+    if (table !== '' && Number.isFinite(revision) && revision > 0) {
+      result[table] = Math.floor(revision);
+    }
+  }
+  const compatibilityTables: string[] = Object.keys(compatibility);
+  for (let i = 0; i < compatibilityTables.length; i++) {
+    const table: string = compatibilityTables[i];
+    const revision: number = compatibility[table];
+    if (table !== '' && Number.isFinite(revision) &&
+      revision > (result[table] || 0)) {
+      result[table] = Math.floor(revision);
+    }
+  }
+  return result;
+}
+
+/** Clear only the compatibility intent covered by one confirmed upload. */
+export function mutationRevisionsAfterAcknowledgement(
+  current: Record<string, number>,
+  table: string,
+  coveredRevision: number
+): Record<string, number> {
+  const normalized: Record<string, number> =
+    mergeMutationRevisionMaps(current, {});
+  const result: Record<string, number> = {};
+  const tables: string[] = Object.keys(normalized);
+  for (let i = 0; i < tables.length; i++) {
+    const candidate: string = tables[i];
+    if (candidate === table && coveredRevision > 0 &&
+      normalized[candidate] <= coveredRevision) {
+      continue;
+    }
+    result[candidate] = normalized[candidate];
+  }
+  return result;
 }
 
 /** Progress.SYNC_FINISH is the only event that confirms the transfer settled. */

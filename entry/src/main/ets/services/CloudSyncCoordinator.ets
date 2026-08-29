@@ -95,6 +95,7 @@ function diagnosticCloudFailureCode(failure: CloudSyncFailureKind): number {
     case 'restore_pending': return 8;
     case 'no_selection': return 9;
     case 'unknown': return 10;
+    case 'local_finalize': return 11;
   }
 }
 
@@ -488,6 +489,10 @@ export class CloudSyncCoordinator {
   private bindingEpoch: number = 0;
   private currentBinding: CloudAccountBinding = unboundCloudAccountBinding();
   private transfersEnabled: boolean = false;
+  // If lifecycle metadata cannot be persisted, the coordinator still owns a
+  // local-only lease so CRUD and account navigation remain available. Cloud
+  // transfer stays disabled until a later bind can persist a fresh state.
+  private durabilityDegradedLocalOnly: boolean = false;
   private durableState: CloudSyncDurableState | null = null;
   private vncSelectionMutationPending: boolean = false;
   private exclusiveVncSelectionLease:
@@ -530,6 +535,7 @@ export class CloudSyncCoordinator {
       this.retryClock.cancel(this.retryTimer);
       this.retryTimer = -1;
     }
+    this.durabilityDegradedLocalOnly = false;
     this.executor = executor;
     this.onCloudFirstApplied = onCloudFirstApplied;
     this.hooks = hooks;
@@ -577,14 +583,21 @@ export class CloudSyncCoordinator {
         this.bootstrapCompleted
       );
     if (!this.persistDurableCandidate(recoveredState)) {
-      this.resetFailedBinding();
-      return false;
+      this.durabilityDegradedLocalOnly = true;
+      this.durableState = recoveredState;
+      this.transfersEnabled = false;
+      hilog.warn(DOMAIN, TAG,
+        'cloud lifecycle metadata unavailable; retained local-only coordinator lease');
     }
     this.restoreRetryRecord();
     this.restoreDirtyTables();
     this.restoreConflictTables();
     this.restoreMutationJournal();
     return true;
+  }
+
+  isDurabilityDegradedLocalOnly(): boolean {
+    return this.durabilityDegradedLocalOnly;
   }
 
   currentAccountLease(): AccountSessionLease | null {
@@ -678,6 +691,7 @@ export class CloudSyncCoordinator {
     this.currentLease = null;
     this.currentBinding = unboundCloudAccountBinding();
     this.transfersEnabled = false;
+    this.durabilityDegradedLocalOnly = false;
     this.durableState = null;
     this.pendingPull = null;
     this.startupPull = null;
@@ -760,7 +774,7 @@ export class CloudSyncCoordinator {
     const checkpointFailure: CloudSyncOperationResult = {
       ok: false, source: 'startup', tables: [],
       failedTables: this.selectedTables(),
-      rollbackFailed: false, failureKind: 'unknown'
+      rollbackFailed: false, failureKind: 'local_finalize'
     };
     const operation: Promise<CloudSyncOperationResult> = checkpointFailed
       ? Promise.resolve(checkpointFailure)
@@ -789,11 +803,57 @@ export class CloudSyncCoordinator {
         initialJournalRevisions, initialMutationVersions,
         restoreBlocked, startupCheckpointStarted);
     });
-    this.startupPull = completed.then((result: CloudSyncOperationResult): CloudSyncOperationResult => {
-      this.startupPull = null;
-      return result;
-    });
-    return this.startupPull;
+    const recovered: Promise<CloudSyncOperationResult> = completed.then(
+      (result: CloudSyncOperationResult): CloudSyncOperationResult =>
+        result,
+      async (_error: Error): Promise<CloudSyncOperationResult> =>
+        await this.recoverStartupFinalizationException(
+          initialBootstrap, restoreBlocked,
+          startupCheckpointStarted));
+    this.startupPull = recovered;
+    void recovered.then(
+      (_result: CloudSyncOperationResult): void => {
+        if (this.startupPull === recovered) {
+          this.startupPull = null;
+        }
+      }, (_error: Error): void => {
+        if (this.startupPull === recovered) {
+          this.startupPull = null;
+        }
+      });
+    return recovered;
+  }
+
+  private async recoverStartupFinalizationException(
+    initialBootstrap: boolean,
+    restoreBlocked: boolean,
+    startupCheckpointStarted: boolean
+  ): Promise<CloudSyncOperationResult> {
+    let rollbackFailed: boolean = false;
+    if (initialBootstrap && !restoreBlocked &&
+        startupCheckpointStarted) {
+      try {
+        rollbackFailed = this.hooks === null ||
+          this.hooks.rollbackStartupDownload === undefined ||
+          !(await this.hooks.rollbackStartupDownload());
+      } catch (_rollbackError) {
+        rollbackFailed = true;
+      }
+    }
+    this.startupState = 'pending';
+    if (this.hooks && this.hooks.setStartupSyncPending) {
+      try {
+        this.hooks.setStartupSyncPending(false);
+      } catch (_pendingError) { /* fail closed in memory */ }
+    }
+    return {
+      ok: false,
+      source: 'startup',
+      tables: this.selectedTables(),
+      failedTables: this.selectedTables(),
+      rollbackFailed,
+      failureKind: 'local_finalize'
+    };
   }
 
   private requestStartupCloudFirst(): Promise<CloudSyncOperationResult> {
@@ -907,6 +967,8 @@ export class CloudSyncCoordinator {
         this.hooks.completeStartupDownload === undefined ||
         !this.hooks.completeStartupDownload(
           initialDirty.slice(), result.tables.slice())) {
+        hilog.error(DOMAIN, TAG,
+          'startup transfer succeeded but local download finalization failed stage=download_transaction');
         const restored: boolean =
           this.hooks !== null &&
           this.hooks.rollbackStartupDownload !==
@@ -917,7 +979,7 @@ export class CloudSyncCoordinator {
           tables: result.tables.slice(),
           failedTables: initialDirty.slice(),
           rollbackFailed: !restored,
-          failureKind: 'unknown'
+          failureKind: 'local_finalize'
         };
       }
     }
@@ -941,21 +1003,25 @@ export class CloudSyncCoordinator {
       }
       if (this.hooks && this.hooks.markCloudBootstrapCompleted &&
         !this.hooks.markCloudBootstrapCompleted()) {
+        hilog.error(DOMAIN, TAG,
+          'startup local finalization failed stage=bootstrap_marker');
         finalResult = {
           ok: false, source: result.source,
           tables: result.tables.slice(),
           failedTables: result.tables.slice(),
-          rollbackFailed: false, failureKind: 'unknown'
+          rollbackFailed: false, failureKind: 'local_finalize'
         };
         compatibilityCommitted = false;
       } else {
         this.bootstrapCompleted = true;
         if (!this.persistBootstrapCompletion()) {
+          hilog.error(DOMAIN, TAG,
+            'startup local finalization failed stage=lifecycle_persist');
           finalResult = {
             ok: false, source: result.source,
             tables: result.tables.slice(),
             failedTables: result.tables.slice(),
-            rollbackFailed: false, failureKind: 'unknown'
+            rollbackFailed: false, failureKind: 'local_finalize'
           };
           compatibilityCommitted = false;
         }
@@ -1017,7 +1083,8 @@ export class CloudSyncCoordinator {
       this.startupState = 'pending';
       return {
         ok: false, source: result.source, tables: result.tables.slice(),
-        failedTables: result.tables.slice(), rollbackFailed: false, failureKind: 'unknown'
+        failedTables: result.tables.slice(), rollbackFailed: false,
+        failureKind: 'local_finalize'
       };
     }
     this.bootstrapCompleted = true;
@@ -1028,7 +1095,8 @@ export class CloudSyncCoordinator {
       this.startupState = 'pending';
       return {
         ok: false, source: result.source, tables: result.tables.slice(),
-        failedTables: result.tables.slice(), rollbackFailed: false, failureKind: 'unknown'
+        failedTables: result.tables.slice(), rollbackFailed: false,
+        failureKind: 'local_finalize'
       };
     }
     this.startupState = 'ready';
@@ -2547,6 +2615,10 @@ export class CloudSyncCoordinator {
         hilog.error(DOMAIN, TAG,
           'persist cloud lifecycle state rejected phase=' + state.phase +
           ' generation=' + state.generation.toString());
+        if (this.durabilityDegradedLocalOnly) {
+          this.durableState = state;
+          return true;
+        }
         return false;
       }
       this.durableState = state;
@@ -2554,6 +2626,10 @@ export class CloudSyncCoordinator {
     } catch (err) {
       hilog.error(DOMAIN, TAG,
         'persist cloud lifecycle state failed: ' + JSON.stringify(err));
+      if (this.durabilityDegradedLocalOnly) {
+        this.durableState = state;
+        return true;
+      }
       return false;
     }
   }
@@ -2567,6 +2643,7 @@ export class CloudSyncCoordinator {
     this.currentLease = null;
     this.currentBinding = unboundCloudAccountBinding();
     this.transfersEnabled = false;
+    this.durabilityDegradedLocalOnly = false;
     this.durableState = null;
     this.pendingPull = null;
     this.startupPull = null;
