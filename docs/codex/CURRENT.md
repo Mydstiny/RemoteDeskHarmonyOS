@@ -4,9 +4,19 @@
 
 - Task: `per-protocol-pinch-zoom-plan`
 - Branch: `codex/per-protocol-pinch-zoom-plan` from `main@b84224869`.
-- Increment: base implementation/review are complete at `714b791f8`; reset-affordance remediation is reviewed at `4211438a`; display/interaction selection sheets and Moonlight accordion parity are reviewed at `50e2c6b5`; the authorized bindSheet dark-surface increment is reviewed at `4faa18cec`; RustDesk quality/multimonitor completion is implemented at `ab770ffa4`; real-device acceptance and PR closure remain.
-- Phase: five-protocol gestures/settings, the ArkTS-only bindSheet increment, RustDesk exact quality control and experimental desktop multi-canvas preview are implemented; the branch also contains concurrent native commit `a2787161d`, which remains outside the cumulative branch review.
-- Plans: `docs/codex/plans/2026-08-29-per-protocol-pinch-zoom-and-pointer-follow.md`; `docs/codex/plans/2026-08-29-rustdesk-quality-and-multimonitor-completion.md`.
+- Increment: RDP high-DPI/adaptive display is implemented at `23af49c5a` and all independent-review findings are closed at `4e3816ec1`; earlier gesture/settings, bindSheet and RustDesk quality/multimonitor increments remain on this branch. Real-device acceptance and PR closure remain.
+- Phase: implementation, automated gates and exact-checkpoint review are complete; device acceptance is active. Concurrent native commit `a2787161d` remains outside the cumulative branch review required before merge.
+- Plans: `docs/codex/plans/2026-08-29-per-protocol-pinch-zoom-and-pointer-follow.md`; `docs/codex/plans/2026-08-29-rustdesk-quality-and-multimonitor-completion.md`; `docs/codex/plans/2026-08-29-rdp-hidpi-adaptive-resolution-upgrade.md`.
+
+## RDP high-DPI adaptive display
+
+- HarmonyOS PC auto mode starts with a same-ratio logical-resolution readability fallback, then upgrades to physical pixels plus 100/140/180 RDP DPI scale after `disp` caps. Fixed presets remain explicit; Phone/Pad auto keeps its prior landscape adaptive behavior.
+- FreeRDP Display Control supports 500 ms debounce, native rate limiting, one request in flight, latest-wins, caps validation, resize result diagnostics and session-local fallback. PC auto uses `UNSPECIFIED`; window display migration tracks `displayIdChange` and the active display density.
+- `远端界面大小` is device-local and separates Windows font/control scale from local canvas zoom. NAPI/native diagnostics expose requested/effective geometry, scale, capability and failure state.
+- FreeRDP arm64-v8a/x86_64 prebuilts include `disp` and `drive`; reproducible headers, required symbols, provenance and archive hashes are verified.
+- Verification: native 814/830 with all affected RDP cases passing and 16 known sandboxed VNC TLS listener failures; `default@OhosTestCompileArkTS` PASS (`11 s 841 ms`); signed `assembleHap` PASS (`19 s 655 ms`), SHA-256 `8307ef63ce4aa929fd12955f087f3bd827b7e6df4a38c4ab907959a983a06d2d`; both ABI shared objects, provenance, `git diff --check` and Light compliance PASS. Separate `ohosTest@OhosTestCompileArkTS` remains unregistered (`00306054`).
+- Independent review `/root/rdp_hidpi_review`: exact checkpoint `4e3816ec1` PASS after closing 2 P1 and 4 P2 findings; no remaining P0-P3.
+- Acceptance pending: HarmonyOS PC × Windows 10/11/Server, 100/140/180 scale, unsupported `disp`, drag/maximize/split/PIP/background/reconnect, and same-size cross-display migration between different densities.
 
 ## RustDesk quality and multimonitor completion
 
@@ -82,5 +92,6 @@
 
 ## Device acceptance / blockers
 
+- No HDC target was available for this increment; the RDP high-DPI Windows matrix was not run and remains an external release-acceptance item.
 - The fixed HAP was installed successfully on `192.168.3.235:38451` with `install -r`, preserving app data, and `EntryAbility` started successfully. Acceptance must verify login remains usable after the historical migration `401`, exact-owner local data visibility, local save/restart/offline behavior, canonical recovery and no stale-row resurrection.
 - Prior remote keyboard/sidebar acceptance on `.235` remains queued. `.236:40123` still requires a release-provisioned HAP or explicit destructive-uninstall authorization; its existing data remains preserved.
