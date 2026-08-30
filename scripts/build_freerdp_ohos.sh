@@ -403,6 +403,10 @@ build_arch() {
         "$OUTPUT/libfreerdp3.a" \
         "$OUTPUT/libwinpr3.a" \
         "$OUTPUT/libfreerdp-client-channels.a"
+    if "$OHOS_NM" -u "$OUTPUT/libwinpr3.a" | grep -F "pthread_cancel" >/dev/null; then
+        echo "ERROR: $OUTPUT/libwinpr3.a references unsupported OHOS symbol pthread_cancel"
+        exit 1
+    fi
 
     # 同步到 libs/ 下作为 IDE 可复用预编译依赖，避免 DevEco clean 删除 build/ 后丢库。
     local PREBUILT="$PREBUILT_DIR/$ARCH"

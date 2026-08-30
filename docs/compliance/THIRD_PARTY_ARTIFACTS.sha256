@@ -6,10 +6,10 @@
 d09fc7686d23dc7018ecf23b847ba8d7a9e3a4f0d6455814860423a3a3353712 *libs/ffmpeg-ohos/x86_64/lib/libswscale.a
 26648c05c7f9689038d36bae1f37ad351e64abd4938cc16d587465dd8e6cf8e9 *libs/freerdp-ohos/arm64-v8a/libfreerdp3.a
 6f17f1ce1b1955ccfa436fd891636290605c9475764e224228892dfaf09a3602 *libs/freerdp-ohos/arm64-v8a/libfreerdp-client-channels.a
-143d58beb75fb32fa4e7401fd8b7fd47c3ed6d129546a025480055ecd61d2853 *libs/freerdp-ohos/arm64-v8a/libwinpr3.a
+e13b05ec24732d835a564fb99df43dbe0ed221f285469569958322b7cebedadf *libs/freerdp-ohos/arm64-v8a/libwinpr3.a
 a7a2d5203a45c3ac8c49d42afcfa08a98597fa128691dd8001fe3f1aa1664072 *libs/freerdp-ohos/x86_64/libfreerdp3.a
 ff05605c6dea30e7f2b18f7495dcc20e119459c710033c9fb1b3b6a01ebab231 *libs/freerdp-ohos/x86_64/libfreerdp-client-channels.a
-494c6a5dd26f9b318ac8a35aab9782a197f4587649fef3feefa8bf293036e2fd *libs/freerdp-ohos/x86_64/libwinpr3.a
+4a63ba47876ea46d9158a8149c17f43be2d84b7b7239dfc89524d1d4281ccf1f *libs/freerdp-ohos/x86_64/libwinpr3.a
 832bbf50b38c59e224033340e77cceb314a482effa42c7ff2d98fa19b82ecbe6 *libs/libssh2/build-arm64-ohos/src/libssh2.a
 94e68d7e74a7088d35ee9ab1d778a8636b8c99c5e21a01802b06b68150f4d1c9 *libs/libssh2/build-x86_64-ohos/src/libssh2.a
 832bbf50b38c59e224033340e77cceb314a482effa42c7ff2d98fa19b82ecbe6 *libs/libssh2/install/arm64-v8a/lib/libssh2.a

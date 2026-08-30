@@ -1,6 +1,6 @@
 $ErrorActionPreference = 'Stop'
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
-$expectedRevision = 'fc914f5eb3c9def5f757469650f5b4cb2ae72cec'
+$expectedRevision = '4d645c86e1fdcc6159b2b3a4c4f652e46985f8ba'
 $modules = Join-Path $repo '.gitmodules'
 $url = (& git config -f $modules --get submodule.freerdp.url).Trim()
 $branch = (& git config -f $modules --get submodule.freerdp.branch).Trim()
@@ -25,10 +25,10 @@ if ($sourceStatus.Count -ne 0) {
 $expectedArtifacts = @{
   'libs/freerdp-ohos/arm64-v8a/libfreerdp3.a' = '26648c05c7f9689038d36bae1f37ad351e64abd4938cc16d587465dd8e6cf8e9'
   'libs/freerdp-ohos/arm64-v8a/libfreerdp-client-channels.a' = '6f17f1ce1b1955ccfa436fd891636290605c9475764e224228892dfaf09a3602'
-  'libs/freerdp-ohos/arm64-v8a/libwinpr3.a' = '143d58beb75fb32fa4e7401fd8b7fd47c3ed6d129546a025480055ecd61d2853'
+  'libs/freerdp-ohos/arm64-v8a/libwinpr3.a' = 'e13b05ec24732d835a564fb99df43dbe0ed221f285469569958322b7cebedadf'
   'libs/freerdp-ohos/x86_64/libfreerdp3.a' = 'a7a2d5203a45c3ac8c49d42afcfa08a98597fa128691dd8001fe3f1aa1664072'
   'libs/freerdp-ohos/x86_64/libfreerdp-client-channels.a' = 'ff05605c6dea30e7f2b18f7495dcc20e119459c710033c9fb1b3b6a01ebab231'
-  'libs/freerdp-ohos/x86_64/libwinpr3.a' = '494c6a5dd26f9b318ac8a35aab9782a197f4587649fef3feefa8bf293036e2fd'
+  'libs/freerdp-ohos/x86_64/libwinpr3.a' = '4a63ba47876ea46d9158a8149c17f43be2d84b7b7239dfc89524d1d4281ccf1f'
 }
 $inventory = Get-Content (Join-Path $repo 'docs/compliance/THIRD_PARTY_ARTIFACTS.sha256')
 $forbiddenPathMarkers = @(
@@ -57,6 +57,9 @@ foreach ($relative in $expectedArtifacts.Keys) {
     if ($archiveText.Contains($marker)) {
       throw "FreeRDP artifact contains a machine-specific path marker '$marker': $relative"
     }
+  }
+  if ($relative.EndsWith('/libwinpr3.a') -and $archiveText.Contains('pthread_cancel')) {
+    throw "FreeRDP WinPR artifact references unsupported OHOS symbol pthread_cancel: $relative"
   }
 }
 foreach ($arch in @('arm64-v8a', 'x86_64')) {

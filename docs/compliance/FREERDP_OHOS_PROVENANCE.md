@@ -1,7 +1,7 @@
 # FreeRDP OHOS provenance
 
 The application gitlink is
-`fc914f5eb3c9def5f757469650f5b4cb2ae72cec`, a local OHOS adaptation based on
+`4d645c86e1fdcc6159b2b3a4c4f652e46985f8ba`, a local OHOS adaptation based on
 upstream `https://github.com/FreeRDP/FreeRDP`. Its target publication location
 is this repository's `freerdp-ohos` branch, as configured in `.gitmodules`.
 This exact revision is not yet recorded as remotely reachable. The checked-in
@@ -23,6 +23,8 @@ archive ordering, rejects conflict copies and machine-specific paths, checks
 the generated `FreeRDP_GatewayConnectHostname` setting, and verifies required
 display, drive and RDPDR symbols. ThinLTO/IPO is disabled because OHOS Clang
 otherwise embeds absolute module identifiers despite prefix-map flags.
+The build also rejects WinPR archives that reference `pthread_cancel`, which
+is not available in the OpenHarmony target libc.
 
 The artifacts recorded here were verified on 2026-08-30 by two clean builds
 from different `/private/tmp` roots. Their complete prebuilt trees were
