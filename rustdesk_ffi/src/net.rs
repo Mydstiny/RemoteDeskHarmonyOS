@@ -1147,6 +1147,16 @@ mod tests {
     use std::net::TcpListener;
     use std::sync::Arc;
 
+    fn assert_socketpair_peer_closed(peer: RawFd) {
+        let mut byte = 0u8;
+        // Reading EOF from the other socketpair endpoint proves that the
+        // winner's open-file description was closed. Checking the numeric fd
+        // itself is racy because another parallel test may immediately reuse
+        // that descriptor number.
+        let result = unsafe { libc::recv(peer, &mut byte as *mut u8 as *mut libc::c_void, 1, 0) };
+        assert_eq!(result, 0);
+    }
+
     #[test]
     fn happy_eyeballs_interleaves_families_and_removes_duplicates() {
         let v6_first: SocketAddr = "[2001:db8::1]:21116".parse().unwrap();
@@ -1238,8 +1248,7 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::Interrupted);
-        assert_eq!(unsafe { libc::fcntl(descriptors[0], libc::F_GETFD) }, -1);
-        assert_eq!(io::Error::last_os_error().raw_os_error(), Some(libc::EBADF));
+        assert_socketpair_peer_closed(descriptors[1]);
 
         unsafe { libc::close(descriptors[1]) };
         crate::finish_connect_epoch(epoch, 90_021);
@@ -1277,8 +1286,7 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::Interrupted);
-        assert_eq!(unsafe { libc::fcntl(descriptors[0], libc::F_GETFD) }, -1);
-        assert_eq!(io::Error::last_os_error().raw_os_error(), Some(libc::EBADF));
+        assert_socketpair_peer_closed(descriptors[1]);
 
         unsafe { libc::close(descriptors[1]) };
         crate::finish_connect_epoch(epoch, 90_022);
