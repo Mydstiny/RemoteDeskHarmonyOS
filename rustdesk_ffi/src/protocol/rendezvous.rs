@@ -5,8 +5,9 @@
 // BytesCodec 帧承载 secretbox 加密 payload。
 
 use super::rendezvous_proto::{
-    ConnType, KeyExchange, NatType, PunchHoleRequest, PunchHoleResponse_Failure, RegisterPeer,
-    RegisterPk, RendezvousMessage, RendezvousMessage_oneof_union, RequestRelay, TestNatRequest,
+    ConnType, KeyExchange, NatType, PunchHoleRequest, PunchHoleResponse, PunchHoleResponse_Failure,
+    RegisterPeer, RegisterPk, RendezvousMessage, RendezvousMessage_oneof_union, RequestRelay,
+    TestNatRequest,
 };
 use super::wire;
 use crate::crypto;
@@ -83,8 +84,9 @@ pub struct TcpNatProbeResult {
 fn punch_hole_refusal_kind(
     failure: PunchHoleResponse_Failure,
     other_failure: &str,
+    has_unknown_failure: bool,
 ) -> io::ErrorKind {
-    if !other_failure.is_empty() {
+    if has_unknown_failure || !other_failure.is_empty() {
         return io::ErrorKind::Other;
     }
     match failure {
@@ -94,6 +96,10 @@ fn punch_hole_refusal_kind(
         PunchHoleResponse_Failure::LICENSE_MISMATCH
         | PunchHoleResponse_Failure::LICENSE_OVERUSE => io::ErrorKind::PermissionDenied,
     }
+}
+
+fn punch_hole_response_has_unknown_failure(response: &PunchHoleResponse) -> bool {
+    response.get_unknown_fields().get(3).is_some()
 }
 
 /// A short-lived UDP mapping registration against hbbs. The socket remains
@@ -523,7 +529,11 @@ impl RendezvousClient {
                             other.to_string()
                         };
                         return Err(io::Error::new(
-                            punch_hole_refusal_kind(resp.get_failure(), other),
+                            punch_hole_refusal_kind(
+                                resp.get_failure(),
+                                other,
+                                punch_hole_response_has_unknown_failure(&resp),
+                            ),
                             format!("{} ({})", reason, req_debug),
                         ));
                     }
@@ -1409,7 +1419,7 @@ impl Drop for RendezvousClient {
 #[cfg(test)]
 mod tests {
     use super::super::rendezvous_proto::{
-        PunchHole, PunchHoleResponse, RegisterPeerResponse, RelayResponse, TestNatResponse,
+        PunchHole, RegisterPeerResponse, RelayResponse, TestNatResponse,
     };
     use super::*;
     use std::io::ErrorKind;
@@ -1419,28 +1429,34 @@ mod tests {
     #[test]
     fn punch_hole_refusal_preserves_offline_and_license_semantics() {
         assert_eq!(
-            punch_hole_refusal_kind(PunchHoleResponse_Failure::ID_NOT_EXIST, ""),
+            punch_hole_refusal_kind(PunchHoleResponse_Failure::ID_NOT_EXIST, "", false),
             ErrorKind::NotFound
         );
         assert_eq!(
-            punch_hole_refusal_kind(PunchHoleResponse_Failure::OFFLINE, ""),
+            punch_hole_refusal_kind(PunchHoleResponse_Failure::OFFLINE, "", false),
             ErrorKind::NotFound
         );
         assert_eq!(
-            punch_hole_refusal_kind(PunchHoleResponse_Failure::LICENSE_MISMATCH, ""),
+            punch_hole_refusal_kind(PunchHoleResponse_Failure::LICENSE_MISMATCH, "", false),
             ErrorKind::PermissionDenied
         );
         assert_eq!(
-            punch_hole_refusal_kind(PunchHoleResponse_Failure::LICENSE_OVERUSE, ""),
+            punch_hole_refusal_kind(PunchHoleResponse_Failure::LICENSE_OVERUSE, "", false),
             ErrorKind::PermissionDenied
         );
         assert_eq!(
             punch_hole_refusal_kind(
                 PunchHoleResponse_Failure::ID_NOT_EXIST,
                 "token rejected by policy",
+                false,
             ),
             ErrorKind::Other,
             "unstructured server text must never become authoritative offline evidence"
+        );
+        assert_eq!(
+            punch_hole_refusal_kind(PunchHoleResponse_Failure::ID_NOT_EXIST, "", true),
+            ErrorKind::Other,
+            "a future enum value must not inherit proto3's ID_NOT_EXIST default"
         );
     }
 
@@ -1815,6 +1831,33 @@ mod tests {
             "NAT request deadline restarted before response: {elapsed:?}"
         );
         server_thread.join().expect("NAT deadline fixture thread");
+    }
+
+    #[test]
+    fn future_punch_failure_enum_is_not_reported_as_offline() {
+        // RendezvousMessage.punch_hole_response (field 11) containing a
+        // PunchHoleResponse.failure (field 3) value unknown to this client.
+        // rust-protobuf keeps 99 in unknown_fields and leaves the typed enum
+        // at proto3's zero default (ID_NOT_EXIST), so the production branch
+        // must inspect the unknown field before classifying the refusal.
+        let payload = vec![0x5a, 0x02, 0x18, 0x63];
+
+        let server = TcpListener::bind("127.0.0.1:0").expect("bind future failure fixture");
+        let port = server.local_addr().expect("future failure address").port();
+        let server_thread = thread::spawn(move || {
+            let (mut stream, _) = server.accept().expect("accept future failure probe");
+            let _request = wire::read_frame(&mut stream).expect("read punch request");
+            wire::write_frame(&mut stream, &payload).expect("write future failure response");
+        });
+
+        let mut rd = RendezvousClient::new();
+        rd.connect("127.0.0.1", port, "", false)
+            .expect("connect future failure fixture");
+        let error = rd
+            .request_force_relay("peer-123", "key", "", ConnType::DEFAULT_CONN)
+            .expect_err("future failure enum must remain a non-authoritative refusal");
+        assert_eq!(error.kind(), ErrorKind::Other);
+        server_thread.join().expect("future failure fixture thread");
     }
 
     #[test]
