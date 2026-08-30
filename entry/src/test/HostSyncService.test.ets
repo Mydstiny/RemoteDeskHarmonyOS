@@ -84,6 +84,19 @@ export default function hostSyncServiceTest() {
         const globalScoped: RemoteHost = makeHost(
           'GlobalScope', 'ssh', '2001:db8::20%wlan0', 22);
         expect(srv.prepareHostNetworkEndpoints(globalScoped)).assertFalse();
+
+        const scopedProxy: RemoteHost = makeHost(
+          'ScopedProxy', 'ssh', '2001:db8::20', 22);
+        scopedProxy.proxyHost = '[FE80:0:0:0:0:0:0:30%wlan0]';
+        scopedProxy.proxyPort = 22;
+        expect(srv.prepareHostNetworkEndpoints(scopedProxy)).assertTrue();
+        expect(scopedProxy.proxyHost).assertEqual('fe80::30%wlan0');
+
+        const numericProxy: RemoteHost = makeHost(
+          'NumericProxy', 'ssh', '2001:db8::20', 22);
+        numericProxy.proxyHost = 'fe80::30%12';
+        numericProxy.proxyPort = 22;
+        expect(srv.prepareHostNetworkEndpoints(numericProxy)).assertFalse();
       });
 
     it('count_should_be_1_after_add', 0, () => {

@@ -336,6 +336,10 @@ export default function localBackupPolicyTest(): void {
           id: 'ssh-global', userid: 'owner-test', protocol: 'ssh',
           host: '2001:db8::20', port: '22'
         }, {
+          id: 'ssh-scoped-proxy', userid: 'owner-test', protocol: 'ssh',
+          host: '2001:db8::30', port: '22',
+          proxyhost: 'fe80::30%wlan0', proxyport: '22'
+        }, {
           id: 'ssh-scoped', userid: 'owner-test', protocol: 'ssh',
           host: 'fe80::20%wlan0', port: '22'
         });
@@ -343,6 +347,11 @@ export default function localBackupPolicyTest(): void {
           id: 'remotehosts:ssh-global', tablename: 'remotehosts',
           recordid: 'ssh-global',
           payload: '{"sshhostkeyfingerprintsha256":"SHA256:global"}',
+          updatedat: '100'
+        }, {
+          id: 'remotehosts:ssh-scoped-proxy', tablename: 'remotehosts',
+          recordid: 'ssh-scoped-proxy',
+          payload: '{"sshhostkeyfingerprintsha256":"SHA256:scoped-proxy"}',
           updatedat: '100'
         }, {
           id: 'remotehosts:ssh-scoped', tablename: 'remotehosts',
@@ -369,7 +378,7 @@ export default function localBackupPolicyTest(): void {
         expect(plan?.tables['remotehosts'][0]['id']).assertEqual('ssh-global');
         expect(plan?.extensions.length).assertEqual(1);
         expect(plan?.extensions[0]['recordid']).assertEqual('ssh-global');
-        expect(plan?.quarantinedRows).assertEqual(2);
+        expect(plan?.quarantinedRows).assertEqual(4);
       });
 
     it('rejects_duplicate_primary_keys', 0, (): void => {

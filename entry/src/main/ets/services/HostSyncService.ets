@@ -117,6 +117,8 @@ export class HostSyncService {
     let canonicalTargetServerName: string = host.customHostname;
     let canonicalGatewayServerName: string = host.rdpGatewayServerName;
     let canonicalClientHostname: string = host.rdpClientHostname;
+    let canonicalProxyHost: string = host.proxyHost;
+    let canonicalProxyPort: number = host.proxyPort;
     if (host.protocol === 'rdp' && host.gatewayHost !== '') {
       const gateway: EndpointAddressResult = parseEndpointFields(host.gatewayHost, host.gatewayPort);
       if (!gateway.ok || gateway.endpoint.scope !== '') {
@@ -127,6 +129,21 @@ export class HostSyncService {
       }
       canonicalGatewayHost = endpointTransportHost(gateway.endpoint);
       canonicalGatewayPort = gateway.endpoint.port;
+    }
+    if (host.protocol === 'ssh' && host.proxyHost !== '') {
+      const proxy: EndpointAddressResult = parseEndpointFields(
+        host.proxyHost, host.proxyPort);
+      const proxyInterfaceScope: boolean = proxy.ok &&
+        proxy.endpoint.scopeKind === 'interface' &&
+        proxy.endpoint.scope !== '';
+      if (!proxy.ok || (proxy.endpoint.scope !== '' && !proxyInterfaceScope)) {
+        hilog.warn(0x0001, 'CloudSync',
+          'HostSyncService: 已拒绝无效或不可持久化的 SSH 代理端点 hostId=' +
+          rustDeskRelayIdFingerprint(host.id));
+        return false;
+      }
+      canonicalProxyHost = endpointTransportHost(proxy.endpoint);
+      canonicalProxyPort = proxy.endpoint.port;
     }
     if (host.protocol === 'rdp') {
       const targetIdentity: EndpointServerIdentityResult =
@@ -161,6 +178,10 @@ export class HostSyncService {
       host.customHostname = canonicalTargetServerName;
       host.rdpGatewayServerName = canonicalGatewayServerName;
       host.rdpClientHostname = canonicalClientHostname;
+    }
+    if (host.protocol === 'ssh' && host.proxyHost !== '') {
+      host.proxyHost = canonicalProxyHost;
+      host.proxyPort = canonicalProxyPort;
     }
     return true;
   }

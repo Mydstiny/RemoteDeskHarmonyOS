@@ -64,6 +64,15 @@ export default function cloudSensitiveTransferPolicyTest(): void {
         expect(cloudTableRowsAreDownloadCompatible(
           'remotehosts', global, false, encrypted)).assertTrue();
 
+        const scopedProxy: Array<Record<string, string>> = [{
+          id: 'ssh-scoped-proxy', protocol: 'ssh', host: '2001:db8::20',
+          proxyhost: 'fe80::30%wlan0'
+        }];
+        expect(cloudTableRowsAreUploadSafe(
+          'remotehosts', scopedProxy, false, encrypted)).assertFalse();
+        expect(cloudTableRowsAreDownloadCompatible(
+          'remotehosts', scopedProxy, false, encrypted)).assertFalse();
+
         const scoped: Array<Record<string, string>> = [{
           id: 'ssh-scoped', protocol: 'ssh', host: 'fe80::20%wlan0'
         }];

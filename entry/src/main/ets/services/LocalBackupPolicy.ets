@@ -166,7 +166,7 @@ function scrubDeviceLocalRustDeskPeerTwoFactorExport(
     const rows: Array<Record<string, string>> = tables[table] || [];
     for (let r = 0; r < rows.length; r++) {
       if (table === 'remotehosts' && remoteHostEndpointIsDevicePrivateForTransfer(
-        rows[r]['protocol'] || '', rows[r]['host'])) {
+        rows[r]['protocol'] || '', rows[r]['host'], rows[r]['proxyhost'])) {
         if ((rows[r]['id'] || '') !== '') { devicePrivateHostIds.add(rows[r]['id']); }
         continue;
       }
@@ -1111,7 +1111,8 @@ export function adaptLocalBackupDocumentForRestore(
     const transferableRows: Array<Record<string, string>> = [];
     for (let rowIndex: number = 0; rowIndex < sourceRows.length; rowIndex++) {
       if (table === 'remotehosts' && remoteHostEndpointIsDevicePrivateForTransfer(
-        sourceRows[rowIndex]['protocol'] || '', sourceRows[rowIndex]['host'])) {
+        sourceRows[rowIndex]['protocol'] || '', sourceRows[rowIndex]['host'],
+        sourceRows[rowIndex]['proxyhost'])) {
         if ((sourceRows[rowIndex]['id'] || '') !== '') {
           devicePrivateHostIds.add(sourceRows[rowIndex]['id']);
         }

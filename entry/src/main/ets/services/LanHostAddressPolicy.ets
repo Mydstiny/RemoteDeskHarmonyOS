@@ -1,4 +1,4 @@
-/** Address provenance and refresh rules shared by RDP and RustDesk LAN add flows. */
+/** Address provenance, device-local routing and refresh rules for saved hosts. */
 import { EndpointAddressResult, parseEndpointHost } from './EndpointAddressPolicy';
 
 export type LanHostAddressMode = 'manual' | 'static' | 'dynamic';
@@ -9,6 +9,7 @@ export const DYNAMIC_LAN_HOST_EXTENSION_TABLE: string = 'dynamiclanhosts';
 export interface LanHostAddressView {
   protocol: string;
   host?: string;
+  proxyHost?: string;
   lanAddressMode: string;
   lanDiscoveryIdentity: string;
   lanLastResolvedAt: number;
@@ -42,9 +43,22 @@ export function sshEndpointUsesDeviceLocalScope(protocol: string,
 
 /** Fail closed when inspecting an untrusted cloud/backup row before parsing. */
 export function remoteHostEndpointIsDevicePrivateForTransfer(protocol: string,
-  host: string | undefined): boolean {
-  return (protocol === 'rdp' || protocol === 'ssh' || protocol === 'rustdesk') &&
-    host !== undefined && host.indexOf('%') >= 0;
+  host: string | undefined, proxyHost?: string): boolean {
+  if (protocol !== 'rdp' && protocol !== 'ssh' && protocol !== 'rustdesk') {
+    return false;
+  }
+  if (host !== undefined && host.indexOf('%') >= 0) { return true; }
+  // proxyHost is the compatibility mirror of an HTTP/SOCKS/FRP endpoint or
+  // the first ProxyJump hop. Interface names are meaningful only on the
+  // source device, so one scoped route component makes the complete SSH row
+  // non-transferable even when the final target itself is global.
+  return protocol === 'ssh' && proxyHost !== undefined &&
+    proxyHost.indexOf('%') >= 0;
+}
+
+function sshRouteUsesDeviceLocalScope(host: LanHostAddressView): boolean {
+  return sshEndpointUsesDeviceLocalScope(host.protocol, host.host) ||
+    sshEndpointUsesDeviceLocalScope(host.protocol, host.proxyHost);
 }
 
 function lanDiscoveryIdentityKey(protocol: string, value: string): string {
@@ -61,14 +75,14 @@ export function lanHostUsesDynamicAddressStorage(host: LanHostAddressView): bool
 
 export function lanHostUsesLocalOnlyStorage(host: LanHostAddressView): boolean {
   return lanHostUsesDynamicAddressStorage(host) ||
-    sshEndpointUsesDeviceLocalScope(host.protocol, host.host);
+    sshRouteUsesDeviceLocalScope(host);
 }
 
 export function lanHostLocalOnlyStorageIsValid(host: LanHostAddressView): boolean {
   if (lanHostUsesDynamicAddressStorage(host)) {
     return lanHostCanSelectDynamic(host.protocol, host.lanDiscoveryIdentity);
   }
-  return sshEndpointUsesDeviceLocalScope(host.protocol, host.host);
+  return sshRouteUsesDeviceLocalScope(host);
 }
 
 export function lanHostCanSelectDynamic(protocol: string, identity: string): boolean {

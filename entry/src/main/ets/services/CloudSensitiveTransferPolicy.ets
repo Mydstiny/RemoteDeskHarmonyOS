@@ -252,7 +252,8 @@ export function cloudTableRowsAreUploadSafe(
   if (table === 'remotehosts') {
     for (let i = 0; i < rows.length; i++) {
       if (remoteHostEndpointIsDevicePrivateForTransfer(
-        rows[i]['protocol'] || '', rows[i]['host'])) { return false; }
+        rows[i]['protocol'] || '', rows[i]['host'],
+        rows[i]['proxyhost'])) { return false; }
     }
   }
   if (table === MOONLIGHT_CLOUD_TABLE) {
@@ -283,7 +284,8 @@ export function cloudTableRowsAreDownloadCompatible(
   if (table === 'remotehosts') {
     for (let i = 0; i < rows.length; i++) {
       if (remoteHostEndpointIsDevicePrivateForTransfer(
-        rows[i]['protocol'] || '', rows[i]['host'])) { return false; }
+        rows[i]['protocol'] || '', rows[i]['host'],
+        rows[i]['proxyhost'])) { return false; }
     }
   }
   if (table === MOONLIGHT_CLOUD_TABLE) {

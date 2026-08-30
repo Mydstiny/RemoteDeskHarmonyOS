@@ -11599,6 +11599,12 @@ try { this.rollbackTrackedTransaction(); } catch (_ignored) {}
       return this.setLastMutation(DataMutationResult.failure(
         host.id, 'invalid_data', '主机属于其他账号，已拒绝保存'));
     }
+    if (lanHostUsesLocalOnlyStorage(host) ||
+      remoteHostEndpointIsDevicePrivateForTransfer(
+        host.protocol, host.host, host.proxyHost)) {
+      return this.setLastMutation(DataMutationResult.failure(
+        host.id, 'invalid_data', '设备私有路由不能写入云同步表'));
+    }
     host.userId = this.currentOwnerScopeId();
     if (!this.sensitiveWriteAllowed(host.id)) { return false; }
     let code = 'local_write_failed';
@@ -11629,6 +11635,12 @@ try { this.rollbackTrackedTransaction(); } catch (_ignored) {}
     if (!this.recordOwnerWriteAllowed(host.userId)) {
       return this.setLastMutation(DataMutationResult.failure(
         host.id, 'invalid_data', '主机属于其他账号，已拒绝更新'));
+    }
+    if (lanHostUsesLocalOnlyStorage(host) ||
+      remoteHostEndpointIsDevicePrivateForTransfer(
+        host.protocol, host.host, host.proxyHost)) {
+      return this.setLastMutation(DataMutationResult.failure(
+        host.id, 'invalid_data', '设备私有路由不能写入云同步表'));
     }
     host.userId = this.currentOwnerScopeId();
     if (!this.sensitiveWriteAllowed(host.id)) { return false; }
@@ -13072,7 +13084,8 @@ try { this.rollbackTrackedTransaction(); } catch (_ignored) {}
         try {
           const host: RemoteHost = decrypt ? this.rowToHost(rs) : this.rowToHostRaw(rs);
           if (decrypt && (lanHostUsesLocalOnlyStorage(host) ||
-            remoteHostEndpointIsDevicePrivateForTransfer(host.protocol, host.host))) {
+            remoteHostEndpointIsDevicePrivateForTransfer(
+              host.protocol, host.host, host.proxyHost))) {
             skipped++;
             hilog.warn(0x0001, 'CloudSync',
               'device-private host quarantined from remotehosts hostId=' +
@@ -13292,6 +13305,9 @@ try { this.rollbackTrackedTransaction(); } catch (_ignored) {}
   private updateHostInternal(host: RemoteHost, encrypt: boolean): boolean {
     if (!this.store) { return false; }
     if (!this.recordOwnerWriteAllowed(host.userId)) { return false; }
+    if (lanHostUsesLocalOnlyStorage(host) ||
+      remoteHostEndpointIsDevicePrivateForTransfer(
+        host.protocol, host.host, host.proxyHost)) { return false; }
     host.userId = this.currentOwnerScopeId();
     try {
       let vb: relationalStore.ValuesBucket;

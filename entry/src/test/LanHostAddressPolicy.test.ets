@@ -96,6 +96,17 @@ export default function lanHostAddressPolicyTest() {
           'ssh', '[fe80::20%25wlan0]')).assertTrue();
         expect(remoteHostEndpointIsDevicePrivateForTransfer(
           'rdp', 'fe80::20%wlan0')).assertTrue();
+
+        const scopedProxy = {
+          protocol: 'ssh', host: '2001:db8::20',
+          proxyHost: 'fe80::30%wlan0', lanAddressMode: 'manual',
+          lanDiscoveryIdentity: '', lanLastResolvedAt: 0
+        };
+        expect(lanHostUsesLocalOnlyStorage(scopedProxy)).assertTrue();
+        expect(lanHostLocalOnlyStorageIsValid(scopedProxy)).assertTrue();
+        expect(lanHostMayUseRemoteHostsCloudTable(scopedProxy)).assertFalse();
+        expect(remoteHostEndpointIsDevicePrivateForTransfer(
+          'ssh', '2001:db8::20', 'fe80::30%wlan0')).assertTrue();
       });
 
     it('keeps dynamic Restricted Admin secrets inside the active account', 0, () => {
