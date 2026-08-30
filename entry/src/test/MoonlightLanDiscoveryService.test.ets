@@ -199,6 +199,7 @@ export default function moonlightLanDiscoveryServiceTest(): void {
         expect(results.length).assertEqual(1);
         expect(results[0].ownerId).assertEqual('owner-a');
         expect(results[0].generation).assertEqual(4);
+        expect(results[0].serviceKey).assertEqual('_nvstream._tcp|gaming pc');
         expect(results[0].serviceName).assertEqual('Gaming PC');
         expect(results[0].serverUuid).assertEqual('sunshine-1');
         expect(results[0].host).assertEqual('192.168.1.20');

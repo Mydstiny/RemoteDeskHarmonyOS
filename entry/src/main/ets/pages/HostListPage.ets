@@ -139,9 +139,11 @@ import {
   MoonlightHostAddState,
   MoonlightHostAddCandidate,
   MoonlightHostAddDiscoveryKey,
+  MoonlightHostAddLanCandidate,
   MoonlightHostAddVerification,
   MoonlightHostAddCatalogSummary,
   cloneMoonlightHostAddVerification,
+  mergeMoonlightHostAddLanCandidate,
   moonlightHostAddNativeAddresses,
   moonlightMergeCandidateAddresses,
   moonlightHostAddServerIdentity,
@@ -3266,45 +3268,17 @@ struct HostListPage {
         !this.moonlightDiscoveryRunning) {
       return;
     }
-    const scopedHost: string = candidate.host +
-      (candidate.scope === '' ? '' : '%' + candidate.scope);
-    const hostText: string = candidate.family === 'ipv6' ?
-      '[' + scopedHost + ']' : scopedHost;
-    const parsed = parseMoonlightHostAddAddress(hostText, candidate.port.toString());
-    if (!parsed.ok) { return; }
-    const serverUuid: string = candidate.serverUuid.trim() !== '' ?
-      candidate.serverUuid.trim() : parsed.canonical;
-    const nextCandidate: MoonlightHostAddCandidate = {
-      serverUuid: serverUuid,
-      displayName: candidate.serviceName.trim() || parsed.address.host,
-      address: parsed.address,
-      addresses: [parsed.address],
-      paired: false,
-      reachable: true,
-      lastSeenAt: Date.now()
+    const route: MoonlightHostAddLanCandidate = {
+      serviceKey: candidate.serviceKey,
+      serviceName: candidate.serviceName,
+      serverUuid: candidate.serverUuid,
+      host: candidate.host,
+      family: candidate.family,
+      scope: candidate.scope,
+      port: candidate.port
     };
-    const next: MoonlightHostAddCandidate[] = this.moonlightLanCandidates.slice();
-    let replaceIndex: number = -1;
-    for (let index = 0; index < next.length; index++) {
-      if (next[index].serverUuid === serverUuid ||
-          moonlightAddressKey(next[index].address) === moonlightAddressKey(parsed.address)) {
-        replaceIndex = index;
-        break;
-      }
-    }
-    if (replaceIndex >= 0) {
-      const existing: MoonlightHostAddCandidate = next[replaceIndex];
-      const source: MoonlightAddress[] = existing.addresses === undefined ?
-        [parsed.address] : existing.addresses.concat([parsed.address]);
-      const addresses: MoonlightAddress[] = moonlightMergeCandidateAddresses(
-        existing.address, source);
-      nextCandidate.address = existing.address;
-      nextCandidate.addresses = addresses;
-      next[replaceIndex] = nextCandidate;
-    } else if (next.length < 32) {
-      next.push(nextCandidate);
-    }
-    this.moonlightLanCandidates = next;
+    this.moonlightLanCandidates = mergeMoonlightHostAddLanCandidate(
+      this.moonlightLanCandidates, route, Date.now());
   }
 
   private startMoonlightLanDiscovery(key: MoonlightHostAddDiscoveryKey): void {

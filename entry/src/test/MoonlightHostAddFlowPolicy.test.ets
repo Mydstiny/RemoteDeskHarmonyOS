@@ -19,6 +19,7 @@ import {
   moonlightHostAddDismissDecision,
   moonlightHostAddNativeAddress,
   moonlightHostAddNativeAddresses,
+  mergeMoonlightHostAddLanCandidate,
   moonlightMergeCandidateAddresses,
   moonlightHostAddServerIdentity,
   moonlightHostAddDiscoveryIsCurrent,
@@ -28,6 +29,7 @@ import {
   MoonlightHostAddBeginResult,
   MoonlightHostAddCandidate,
   MoonlightHostAddDiscoveryBeginResult,
+  MoonlightHostAddLanCandidate,
   MoonlightHostAddState,
   MoonlightHostAddTransitionResult,
   MoonlightHostAddVerification,
@@ -174,6 +176,55 @@ export default function moonlightHostAddFlowPolicyTest(): void {
       expect(paired.address.scope).assertEqual('wlan0');
       expect((paired.candidateAddresses as MoonlightAddress[])[0].scope).assertEqual('wlan0');
     });
+
+    it('aggregates_uuid_less_dual_stack_mdns_routes_by_service_identity', 0,
+      (): void => {
+        const serviceKey: string = '_nvstream._tcp|gaming pc';
+        const ipv4: MoonlightHostAddLanCandidate = {
+          serviceKey: serviceKey,
+          serviceName: 'Gaming PC',
+          serverUuid: '',
+          host: '192.0.2.20',
+          family: 'ipv4',
+          scope: '',
+          port: 47989
+        };
+        const ipv6: MoonlightHostAddLanCandidate = {
+          serviceKey: serviceKey,
+          serviceName: 'Gaming PC',
+          serverUuid: '',
+          host: 'fe80::20',
+          family: 'ipv6',
+          scope: 'wlan0',
+          port: 47989
+        };
+
+        let candidates: MoonlightHostAddCandidate[] =
+          mergeMoonlightHostAddLanCandidate([], ipv4, 1000);
+        candidates = mergeMoonlightHostAddLanCandidate(candidates, ipv6, 1001);
+
+        expect(candidates.length).assertEqual(1);
+        expect(candidates[0].discoveryServiceKey).assertEqual(serviceKey);
+        expect(candidates[0].serverUuid).assertEqual('192.0.2.20:47989');
+        expect(candidates[0].serverUuid === serviceKey).assertFalse();
+        expect((candidates[0].addresses as MoonlightAddress[]).length).assertEqual(2);
+        expect((candidates[0].addresses as MoonlightAddress[])[0].family).assertEqual('ipv4');
+        expect((candidates[0].addresses as MoonlightAddress[])[1].family).assertEqual('ipv6');
+        expect((candidates[0].addresses as MoonlightAddress[])[1].scope).assertEqual('wlan0');
+
+        const withUuid: MoonlightHostAddLanCandidate = {
+          serviceKey: serviceKey,
+          serviceName: 'Gaming PC',
+          serverUuid: 'sunshine-real-uuid',
+          host: 'fe80::20',
+          family: 'ipv6',
+          scope: 'wlan0',
+          port: 47989
+        };
+        candidates = mergeMoonlightHostAddLanCandidate(candidates, withUuid, 1002);
+        expect(candidates.length).assertEqual(1);
+        expect(candidates[0].serverUuid).assertEqual('sunshine-real-uuid');
+      });
 
     it('keeps_scanning_ephemeral_but_marks_manual_selection_and_identity_as_dirty', 0, (): void => {
       let state: MoonlightHostAddState = createMoonlightHostAddState(7);

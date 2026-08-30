@@ -25,12 +25,25 @@ export const MOONLIGHT_DEFAULT_CONTROL_PORT: number = 47989;
 
 export interface MoonlightHostAddCandidate {
   serverUuid: string;
+  /** DNS-SD instance key; never treated as an authoritative server UUID. */
+  discoveryServiceKey?: string;
   displayName: string;
   address: MoonlightAddress;
   addresses?: MoonlightAddress[];
   paired: boolean;
   reachable: boolean;
   lastSeenAt: number;
+}
+
+/** Platform-neutral view of one resolved mDNS route. */
+export interface MoonlightHostAddLanCandidate {
+  serviceKey: string;
+  serviceName: string;
+  serverUuid: string;
+  host: string;
+  family: MoonlightAddressFamily;
+  scope: string;
+  port: number;
 }
 
 export interface MoonlightHostAddVerification {
@@ -351,6 +364,71 @@ export function parseMoonlightHostAddAddress(
     canonical: formatEndpointHostPort(parsed.endpoint),
     errorText: ''
   };
+}
+
+/**
+ * Adds one resolved LAN route while retaining a single host card per DNS-SD
+ * service instance. The service key is scan-local aggregation metadata only;
+ * the endpoint fallback remains a non-authoritative UUID hint until
+ * serverinfo returns the real UUID.
+ */
+export function mergeMoonlightHostAddLanCandidate(
+  current: MoonlightHostAddCandidate[],
+  candidate: MoonlightHostAddLanCandidate,
+  observedAt: number,
+  maximum: number = 32
+): MoonlightHostAddCandidate[] {
+  const limit: number = Number.isSafeInteger(maximum) && maximum > 0 ?
+    Math.min(maximum, 32) : 32;
+  const next: MoonlightHostAddCandidate[] = current.slice(0, limit);
+  const serviceKey: string = candidate.serviceKey.trim();
+  if (serviceKey === '') { return next; }
+  const scopedHost: string = candidate.host +
+    (candidate.scope === '' ? '' : '%' + candidate.scope);
+  const hostText: string = candidate.family === 'ipv6' ?
+    '[' + scopedHost + ']' : scopedHost;
+  const parsed: MoonlightHostAddAddressResult = parseMoonlightHostAddAddress(
+    hostText, candidate.port.toString());
+  if (!parsed.ok || parsed.address.family !== candidate.family) { return next; }
+
+  const advertisedUuid: string = candidate.serverUuid.trim();
+  const discovered: MoonlightHostAddCandidate = {
+    serverUuid: advertisedUuid !== '' ? advertisedUuid : parsed.canonical,
+    discoveryServiceKey: serviceKey,
+    displayName: candidate.serviceName.trim() || parsed.address.host,
+    address: parsed.address,
+    addresses: [parsed.address],
+    paired: false,
+    reachable: true,
+    lastSeenAt: Number.isSafeInteger(observedAt) && observedAt >= 0 ? observedAt : 0
+  };
+
+  let replaceIndex: number = -1;
+  for (let index: number = 0; index < next.length; index++) {
+    const existingServiceKey: string = next[index].discoveryServiceKey === undefined ? '' :
+      (next[index].discoveryServiceKey as string);
+    if (existingServiceKey === serviceKey ||
+        (advertisedUuid !== '' && next[index].serverUuid === advertisedUuid) ||
+        moonlightAddressKey(next[index].address) === moonlightAddressKey(parsed.address)) {
+      replaceIndex = index;
+      break;
+    }
+  }
+  if (replaceIndex < 0) {
+    if (next.length < limit) { next.push(discovered); }
+    return next;
+  }
+
+  const existing: MoonlightHostAddCandidate = next[replaceIndex];
+  const routes: MoonlightAddress[] = existing.addresses === undefined ?
+    [existing.address, parsed.address] : existing.addresses.concat([parsed.address]);
+  discovered.serverUuid = advertisedUuid !== '' ? advertisedUuid : existing.serverUuid;
+  discovered.discoveryServiceKey = existing.discoveryServiceKey === undefined ?
+    serviceKey : existing.discoveryServiceKey;
+  discovered.address = existing.address;
+  discovered.addresses = moonlightMergeCandidateAddresses(existing.address, routes);
+  next[replaceIndex] = discovered;
+  return next;
 }
 
 export function selectMoonlightHostAddCandidate(

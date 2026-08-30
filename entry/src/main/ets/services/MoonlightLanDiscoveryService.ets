@@ -38,6 +38,8 @@ export interface MoonlightLanServiceAttribute {
 export interface MoonlightLanDiscoveryCandidate {
   ownerId: string;
   generation: number;
+  /** Stable DNS-SD instance identity for per-scan route aggregation only. */
+  serviceKey: string;
   serviceType: string;
   serviceName: string;
   serverUuid: string;
@@ -348,7 +350,8 @@ export function resolveMoonlightLanCandidate(
   if (!validOwnerId(fence.ownerId) || !validGeneration(fence.generation)) {
     return null;
   }
-  if (moonlightLanServiceKey(discovered) === '') {
+  const serviceKey: string = moonlightLanServiceKey(discovered);
+  if (serviceKey === '') {
     return null;
   }
   const resolvedType: string = normalizeBoundedText(resolved.serviceType, MAX_SERVICE_NAME_LENGTH);
@@ -379,6 +382,7 @@ export function resolveMoonlightLanCandidate(
   return {
     ownerId: fence.ownerId,
     generation: fence.generation,
+    serviceKey: serviceKey,
     serviceType: MOONLIGHT_MDNS_SERVICE_TYPE,
     serviceName: discoveredName,
     serverUuid: readServerUuid(attributes),
@@ -580,7 +584,7 @@ export class MoonlightLanDiscoveryService {
         return;
       }
       const scope: string = candidate.scope === '' ? '' : '%' + candidate.scope;
-      const candidateKey: string = (candidate.serverUuid === '' ? candidate.serviceName :
+      const candidateKey: string = (candidate.serverUuid === '' ? candidate.serviceKey :
         candidate.serverUuid) + '|' + candidate.family + '|' +
         candidate.host + scope + '|' + candidate.port.toString();
       this.resolvingRouteKeys.delete(routeKey);
