@@ -48,6 +48,16 @@ enum SshError {
     ERR_SSH_REACTOR_QUEUE_FULL  = -55,
     ERR_SSH_SFTP_DURABILITY_UNSUPPORTED = -56,
     ERR_SSH_SESSION_STALE       = -57,
+
+    // Extended transport diagnostics (-6x). These values are appended rather
+    // than inserted into the legacy groups because ArkTS persists and reports
+    // the numeric native contract.
+    ERR_SSH_DNS_TIMEOUT         = -61,
+    ERR_SSH_DNS_CANCELLED       = -62,
+    ERR_SSH_DNS_RESOURCE_EXHAUSTED = -63,
+    ERR_SSH_CONNECT_CANCELLED   = -64,
+    ERR_SSH_CONNECT_REFUSED     = -65,
+    ERR_SSH_CONNECT_NO_ROUTE    = -66,
 };
 
 #endif // SSH_ERROR_H

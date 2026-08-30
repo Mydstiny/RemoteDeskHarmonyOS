@@ -69,12 +69,23 @@ int effectiveOperationError(const std::shared_ptr<SshOperationControl>& control,
 }
 
 std::string operationErrorMessage(int code) {
-    if (code == ERR_SSH_AUTH_CANCELLED || code == ERR_SSH_SESSION_CLOSED) {
+    if (code == ERR_SSH_AUTH_CANCELLED || code == ERR_SSH_SESSION_CLOSED ||
+        code == ERR_SSH_DNS_CANCELLED || code == ERR_SSH_CONNECT_CANCELLED) {
         return "SSH operation cancelled";
     }
-    if (code == ERR_SSH_CONNECT_TIMEOUT || code == ERR_SSH_KEX_TIMEOUT ||
+    if (code == ERR_SSH_CONNECT_TIMEOUT || code == ERR_SSH_DNS_TIMEOUT ||
+        code == ERR_SSH_KEX_TIMEOUT ||
         code == ERR_SSH_AUTH_TIMEOUT || code == ERR_SSH_COMMAND_TIMEOUT) {
         return "SSH operation deadline exceeded";
+    }
+    if (code == ERR_SSH_DNS_RESOURCE_EXHAUSTED) {
+        return "SSH resolver capacity exhausted";
+    }
+    if (code == ERR_SSH_CONNECT_REFUSED) {
+        return "SSH connection refused";
+    }
+    if (code == ERR_SSH_CONNECT_NO_ROUTE) {
+        return "SSH network route unavailable";
     }
     if (code == ERR_SSH_HOSTKEY_MISMATCH) {
         return "target host key trust is missing or no longer matches this route";

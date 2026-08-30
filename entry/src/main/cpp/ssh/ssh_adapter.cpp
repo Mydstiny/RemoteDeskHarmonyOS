@@ -10,6 +10,7 @@
 #include "common/happy_eyeballs_connector.h"
 #include "common/network_generation_fence.h"
 #include "ssh_auth_policy.h"
+#include "ssh_connect_error_policy.h"
 #include "ssh_network_generation_policy.h"
 #include "ssh_network_lifecycle_policy.h"
 #include "ssh_proxy_target_policy.h"
@@ -1660,10 +1661,14 @@ int SshAdapter::tcpConnect(const std::string& host, int port) {
     const remotedesk::net::ResolveResult resolution =
         remotedesk::net::ResolveAndConnectTcp(
             transportHost, portString, options, connection);
-    if (resolution.status != remotedesk::net::ResolveStatus::Ready) {
-        OH_LOG_ERROR(LOG_APP, "[SSH] DNS 解析失败: host=%{public}s code=%{public}d",
-                     logHost.c_str(), resolution.gaiError);
-        return ERR_SSH_DNS_RESOLVE;
+    const int resolutionError = SshConnectErrorPolicy::fromResolution(resolution);
+    if (resolutionError != ERR_SSH_SUCCESS) {
+        OH_LOG_ERROR(LOG_APP,
+                     "[SSH] DNS 阶段失败: host=%{public}s status=%{public}d "
+                     "gai=%{public}d sshError=%{public}d",
+                     logHost.c_str(), static_cast<int>(resolution.status),
+                     resolution.gaiError, resolutionError);
+        return resolutionError;
     }
 
     OH_LOG_INFO(LOG_APP, "[SSH] 正在连接 %{public}s:%{public}d (AF_UNSPEC) ...",
@@ -1677,18 +1682,13 @@ int SshAdapter::tcpConnect(const std::string& host, int port) {
         return 0;
     }
     sockFd_ = -1;
-    if (connection.status == remotedesk::net::ConnectStatus::Cancelled) {
-        OH_LOG_WARN(LOG_APP, "[SSH] 连接已取消: %{public}s:%{public}d",
-                    logHost.c_str(), port);
-        return ERR_SSH_CONNECT_TIMEOUT;
-    }
-    if (connection.status == remotedesk::net::ConnectStatus::TimedOut) {
-        OH_LOG_ERROR(LOG_APP, "[SSH] 连接超时: %{public}s:%{public}d", logHost.c_str(), port);
-        return ERR_SSH_CONNECT_TIMEOUT;
-    }
-    OH_LOG_ERROR(LOG_APP, "[SSH] 所有地址连接失败: host=%{public}s error=%{public}d",
-                 logHost.c_str(), connection.lastError);
-    return ERR_SSH_SOCKET_CONNECT;
+    const int connectionError = SshConnectErrorPolicy::fromConnection(connection);
+    OH_LOG_ERROR(LOG_APP,
+                 "[SSH] TCP 阶段失败: host=%{public}s status=%{public}d "
+                 "errno=%{public}d sshError=%{public}d",
+                 logHost.c_str(), static_cast<int>(connection.status),
+                 connection.lastError, connectionError);
+    return connectionError;
 }
 
 int SshAdapter::sendSocketBytes(const uint8_t* data, size_t len, int timeoutSec) {

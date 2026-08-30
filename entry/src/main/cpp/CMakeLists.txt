@@ -306,6 +306,7 @@ if(RDP_BUILD_TESTS)
         test/ssh_pty_recovery_policy_test.cpp
         test/ssh_reconnect_policy_test.cpp
         test/ssh_network_lifecycle_policy_test.cpp
+        test/ssh_connect_error_policy_test.cpp
         test/ssh_session_manager_test.cpp
         test/ssh_pending_connect_registry_test.cpp
         test/ssh_operation_control_test.cpp
