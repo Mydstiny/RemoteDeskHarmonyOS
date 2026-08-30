@@ -24,11 +24,13 @@ using SshOperationPublicKeyValidator =
 SshHostKeyInfo probeSshHostKeyWithTransportForOperation(
     const ConnectionConfig& config,
     const std::shared_ptr<SshOperationControl>& control,
+    remotedesk::net::NetworkGenerationSnapshot networkSnapshot,
     const SshOperationTransportFactory& transportFactory);
 
 SshAuthTestResult testSshKeyAuthWithTransportForOperation(
     const ConnectionConfig& config,
     const std::shared_ptr<SshOperationControl>& control,
+    remotedesk::net::NetworkGenerationSnapshot networkSnapshot,
     const SshOperationTransportFactory& transportFactory,
     const SshOperationPrivateKeyValidator& privateKeyValidator);
 
@@ -36,6 +38,7 @@ SshPublicKeyInstallResult installSshPublicKeyWithTransportForOperation(
     const ConnectionConfig& config,
     const std::string& publicKey,
     const std::shared_ptr<SshOperationControl>& control,
+    remotedesk::net::NetworkGenerationSnapshot networkSnapshot,
     const SshOperationTransportFactory& transportFactory,
     const SshOperationPublicKeyValidator& publicKeyValidator);
 

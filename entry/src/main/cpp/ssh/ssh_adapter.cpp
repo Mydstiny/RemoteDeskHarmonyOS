@@ -3059,10 +3059,11 @@ int SshAdapter::connect(const ConnectionConfig& cfg) {
 
 int SshAdapter::connectForOperation(
     const ConnectionConfig& cfg, SshOperationSessionMode mode,
+    remotedesk::net::NetworkGenerationSnapshot networkSnapshot,
     SshOperationHostKeySnapshot& hostKey) {
     hostKey = SshOperationHostKeySnapshot {};
     if (isReactorThread()) {
-        return connectForOperationInternal(cfg, mode, hostKey);
+        return connectForOperationInternal(cfg, mode, networkSnapshot, hostKey);
     }
 
     const bool hadPreviousState =
@@ -3072,13 +3073,15 @@ int SshAdapter::connectForOperation(
         connectCancelRequested_.store(false, std::memory_order_release);
     }
     startReader();
-    return runOnReactor([this, &cfg, mode, &hostKey]() {
-        return connectForOperationInternal(cfg, mode, hostKey);
+    return runOnReactor([this, &cfg, mode, networkSnapshot, &hostKey]() {
+        return connectForOperationInternal(
+            cfg, mode, networkSnapshot, hostKey);
     });
 }
 
 int SshAdapter::connectForOperationInternal(
     const ConnectionConfig& cfg, SshOperationSessionMode mode,
+    remotedesk::net::NetworkGenerationSnapshot networkSnapshot,
     SshOperationHostKeySnapshot& hostKey) {
     if (!assertSessionOwner("operation_connect")) {
         return ERR_SSH_SESSION_INIT;
@@ -3095,8 +3098,14 @@ int SshAdapter::connectForOperationInternal(
         disconnect();
         return ERR_SSH_AUTH_CANCELLED;
     }
-    connectNetworkSnapshot_ =
-        remotedesk::net::ProcessNetworkGenerationFence().snapshot();
+    remotedesk::net::NetworkGenerationFence& networkFence =
+        remotedesk::net::ProcessNetworkGenerationFence();
+    if (networkSnapshot.generation == 0 || !networkSnapshot.available ||
+        networkFence.shouldCancel(networkSnapshot)) {
+        disconnect();
+        return ERR_SSH_SESSION_CLOSED;
+    }
+    connectNetworkSnapshot_ = networkSnapshot;
     // Auxiliary workers have no interactive prompt broker. Authenticated
     // operations must therefore arrive with an already route-bound target pin.
     if (cfg.sshHostKeyPromptEnabled ||

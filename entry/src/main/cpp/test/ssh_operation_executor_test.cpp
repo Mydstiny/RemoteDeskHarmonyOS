@@ -18,6 +18,8 @@ struct FakeSshOperationState {
     int commandExitCode = 0;
     std::string commandOutput = "REMOTEDESK_KEY_INSTALLED\n";
     std::function<void()> onConnect;
+    std::function<bool(remotedesk::net::NetworkGenerationSnapshot)>
+        routeCancelled;
 
     std::string host;
     int port = 0;
@@ -35,6 +37,7 @@ struct FakeSshOperationState {
     std::vector<std::string> proxyResponses;
     std::vector<SshJumpHopHandoff> handoffs;
     SshOperationTransportMode mode = SshOperationTransportMode::ProbeOnly;
+    remotedesk::net::NetworkGenerationSnapshot networkSnapshot {};
     bool targetPasswordEmpty = false;
     bool targetPrivateKeyEmpty = false;
     bool targetPassphraseEmpty = false;
@@ -61,6 +64,7 @@ public:
 
     int connectForOperation(
         const ConnectionConfig& config, SshOperationTransportMode mode,
+        remotedesk::net::NetworkGenerationSnapshot networkSnapshot,
         SshOperationTransportHostKey& hostKey) override {
         state_->events.push_back("connect");
         state_->host = config.host;
@@ -79,6 +83,7 @@ public:
         state_->proxyResponses = config.sshProxyKeyboardInteractiveResponses;
         state_->handoffs = config.sshJumpHopHandoffs;
         state_->mode = mode;
+        state_->networkSnapshot = networkSnapshot;
         state_->targetPasswordEmpty = config.password.empty();
         state_->targetPrivateKeyEmpty = config.privateKeyPem.empty();
         state_->targetPassphraseEmpty = config.privateKeyPassphrase.empty();
@@ -92,14 +97,17 @@ public:
         state_->jumpSecretPresent = !config.sshJumpHopHandoffs.empty() &&
             !config.sshJumpHopHandoffs.front().password.empty();
         if (state_->onConnect) { state_->onConnect(); }
-        if (state_->connectCode == 0) {
+        const int connectCode = state_->routeCancelled &&
+            state_->routeCancelled(networkSnapshot)
+                ? ERR_SSH_SESSION_CLOSED : state_->connectCode;
+        if (connectCode == 0) {
             hostKey.ok = true;
             hostKey.algorithm = "ssh-ed25519";
             hostKey.fingerprintSha256 = "SHA256:fake";
             hostKey.rawBase64 = "fake-raw";
             hostKey.serverBanner = "SSH-2.0-fake";
         }
-        return state_->connectCode;
+        return connectCode;
     }
 
     int executeCommand(
@@ -133,6 +141,11 @@ SshOperationTransportFactory fakeFactory(
         if (retainedTransport) { *retainedTransport = transport; }
         return transport;
     };
+}
+
+remotedesk::net::NetworkGenerationSnapshot operationNetworkSnapshot(
+    std::uint64_t generation = 7001) {
+    return remotedesk::net::NetworkGenerationSnapshot {generation, true};
 }
 
 ConnectionConfig operationCredentials() {
@@ -249,7 +262,8 @@ RDP_TEST_CASE(ssh_operation_probe_keeps_scoped_ipv6_route_but_strips_target_auth
     std::shared_ptr<SshOperationTransport> retainedTransport;
 
     const SshHostKeyInfo result = probeSshHostKeyWithTransportForOperation(
-        config, control, fakeFactory(state, &retainedTransport));
+        config, control, operationNetworkSnapshot(),
+        fakeFactory(state, &retainedTransport));
 
     RDP_ASSERT(result.ok);
     RDP_ASSERT(result.host == "fe80::1234%wlan0");
@@ -262,6 +276,8 @@ RDP_TEST_CASE(ssh_operation_probe_keeps_scoped_ipv6_route_but_strips_target_auth
     RDP_ASSERT(routeEquals(state->route, config.sshRoute));
     RDP_ASSERT(state->proxyType == "direct");
     RDP_ASSERT(state->mode == SshOperationTransportMode::ProbeOnly);
+    RDP_ASSERT(state->networkSnapshot.generation == 7001);
+    RDP_ASSERT(state->networkSnapshot.available);
     RDP_ASSERT(state->targetPasswordEmpty);
     RDP_ASSERT(state->targetPrivateKeyEmpty);
     RDP_ASSERT(state->targetPassphraseEmpty);
@@ -287,7 +303,7 @@ RDP_TEST_CASE(ssh_operation_auth_requires_host_key_before_validation_or_transpor
     auto control = std::make_shared<SshOperationControl>(5002);
 
     const SshAuthTestResult result = testSshKeyAuthWithTransportForOperation(
-        config, control, fakeFactory(state),
+        config, control, operationNetworkSnapshot(), fakeFactory(state),
         [&validationCalls](const std::string&, const std::string&) {
             ++validationCalls;
             return SshOperationPrivateKeyValidation {true, ""};
@@ -305,7 +321,7 @@ RDP_TEST_CASE(ssh_operation_auth_sanitizes_config_before_authenticated_transport
     auto control = std::make_shared<SshOperationControl>(5003);
 
     const SshAuthTestResult result = testSshKeyAuthWithTransportForOperation(
-        config, control, fakeFactory(state),
+        config, control, operationNetworkSnapshot(), fakeFactory(state),
         [state](const std::string& privateKey, const std::string& passphrase) {
             state->events.push_back("validate-private-key");
             return SshOperationPrivateKeyValidation {
@@ -359,7 +375,8 @@ RDP_TEST_CASE(ssh_operation_cancel_and_deadline_reach_transport_and_override_err
         };
 
         const SshHostKeyInfo result = probeSshHostKeyWithTransportForOperation(
-            directScopedIpv6OperationConfig(), control, fakeFactory(state));
+            directScopedIpv6OperationConfig(), control,
+            operationNetworkSnapshot(), fakeFactory(state));
 
         RDP_ASSERT(!result.ok);
         RDP_ASSERT(result.errorCode == ERR_SSH_AUTH_CANCELLED);
@@ -378,7 +395,8 @@ RDP_TEST_CASE(ssh_operation_cancel_and_deadline_reach_transport_and_override_err
         };
 
         const SshHostKeyInfo result = probeSshHostKeyWithTransportForOperation(
-            directScopedIpv6OperationConfig(), control, fakeFactory(state));
+            directScopedIpv6OperationConfig(), control,
+            operationNetworkSnapshot(), fakeFactory(state));
 
         RDP_ASSERT(!result.ok);
         RDP_ASSERT(result.errorCode == ERR_SSH_CONNECT_TIMEOUT);
@@ -394,7 +412,8 @@ RDP_TEST_CASE(ssh_operation_install_authenticates_before_authorized_keys_command
 
     const SshPublicKeyInstallResult result =
         installSshPublicKeyWithTransportForOperation(
-            config, publicKey, control, fakeFactory(state),
+            config, publicKey, control, operationNetworkSnapshot(),
+            fakeFactory(state),
             [state](const std::string& candidate) {
                 state->events.push_back("validate-public-key");
                 return candidate == "ssh-ed25519 AAAATEST remotedesk@test";
@@ -423,12 +442,42 @@ RDP_TEST_CASE(ssh_operation_install_cancellation_after_auth_never_runs_command) 
     const SshPublicKeyInstallResult result =
         installSshPublicKeyWithTransportForOperation(
             proxyJumpIpv6OperationConfig(), "ssh-ed25519 AAAATEST", control,
-            fakeFactory(state), [](const std::string&) { return true; });
+            operationNetworkSnapshot(), fakeFactory(state),
+            [](const std::string&) { return true; });
 
     RDP_ASSERT(!result.ok);
     RDP_ASSERT(result.code == ERR_SSH_AUTH_CANCELLED);
     RDP_ASSERT(state->command.empty());
     const std::vector<std::string> expected {
         "factory", "connect", "cancel", "disconnect"};
+    RDP_ASSERT(state->events == expected);
+}
+
+RDP_TEST_CASE(ssh_operation_install_keeps_queue_generation_before_mutation) {
+    auto state = std::make_shared<FakeSshOperationState>();
+    auto control = std::make_shared<SshOperationControl>(5008);
+    remotedesk::net::NetworkGenerationFence fence(8100, true);
+    const remotedesk::net::NetworkGenerationSnapshot admitted = fence.snapshot();
+    state->onConnect = [&fence]() {
+        RDP_ASSERT(fence.update(true, 8101));
+    };
+    state->routeCancelled = [&fence](
+        remotedesk::net::NetworkGenerationSnapshot networkSnapshot) {
+        return fence.shouldCancel(networkSnapshot);
+    };
+
+    const SshPublicKeyInstallResult result =
+        installSshPublicKeyWithTransportForOperation(
+            proxyJumpIpv6OperationConfig(), "ssh-ed25519 AAAATEST", control,
+            admitted, fakeFactory(state),
+            [](const std::string&) { return true; });
+
+    RDP_ASSERT(!result.ok);
+    RDP_ASSERT(result.code == ERR_SSH_SESSION_CLOSED);
+    RDP_ASSERT(state->networkSnapshot.generation == 8100);
+    RDP_ASSERT(state->networkSnapshot.available);
+    RDP_ASSERT(state->command.empty());
+    const std::vector<std::string> expected {
+        "factory", "connect", "disconnect"};
     RDP_ASSERT(state->events == expected);
 }

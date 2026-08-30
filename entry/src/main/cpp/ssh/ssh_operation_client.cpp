@@ -18,6 +18,7 @@ public:
 
     int connectForOperation(
         const ConnectionConfig& config, SshOperationTransportMode mode,
+        remotedesk::net::NetworkGenerationSnapshot networkSnapshot,
         SshOperationTransportHostKey& hostKey) override {
         SshOperationHostKeySnapshot snapshot;
         const int code = adapter_->connectForOperation(
@@ -25,6 +26,7 @@ public:
             mode == SshOperationTransportMode::Authenticated
                 ? SshOperationSessionMode::Authenticated
                 : SshOperationSessionMode::ProbeOnly,
+            networkSnapshot,
             snapshot);
         hostKey.ok = snapshot.ok;
         hostKey.algorithm = std::move(snapshot.algorithm);
@@ -64,16 +66,18 @@ std::shared_ptr<SshOperationTransport> makeOperationTransport() {
 
 SshHostKeyInfo probeSshHostKeyForOperation(
     const ConnectionConfig& config,
-    const std::shared_ptr<SshOperationControl>& control) {
+    const std::shared_ptr<SshOperationControl>& control,
+    remotedesk::net::NetworkGenerationSnapshot networkSnapshot) {
     return probeSshHostKeyWithTransportForOperation(
-        config, control, makeOperationTransport);
+        config, control, networkSnapshot, makeOperationTransport);
 }
 
 SshAuthTestResult testSshKeyAuthForOperation(
     const ConnectionConfig& config,
-    const std::shared_ptr<SshOperationControl>& control) {
+    const std::shared_ptr<SshOperationControl>& control,
+    remotedesk::net::NetworkGenerationSnapshot networkSnapshot) {
     return testSshKeyAuthWithTransportForOperation(
-        config, control, makeOperationTransport,
+        config, control, networkSnapshot, makeOperationTransport,
         [](const std::string& privateKeyPem,
            const std::string& privateKeyPassphrase) {
             const SshPrivateKeyInfo info = inspectSshPrivateKey(
@@ -84,8 +88,9 @@ SshAuthTestResult testSshKeyAuthForOperation(
 
 SshPublicKeyInstallResult installSshPublicKeyForOperation(
     const ConnectionConfig& config, const std::string& publicKey,
-    const std::shared_ptr<SshOperationControl>& control) {
+    const std::shared_ptr<SshOperationControl>& control,
+    remotedesk::net::NetworkGenerationSnapshot networkSnapshot) {
     return installSshPublicKeyWithTransportForOperation(
-        config, publicKey, control, makeOperationTransport,
+        config, publicKey, control, networkSnapshot, makeOperationTransport,
         validatePublicKeyForAuthorizedKeys);
 }

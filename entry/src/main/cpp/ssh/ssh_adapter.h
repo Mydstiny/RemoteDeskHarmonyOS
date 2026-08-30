@@ -109,6 +109,7 @@ public:
      */
     int connectForOperation(const ConnectionConfig& cfg,
                             SshOperationSessionMode mode,
+                            remotedesk::net::NetworkGenerationSnapshot networkSnapshot,
                             SshOperationHostKeySnapshot& hostKey);
     void disconnect() override;
     ConnectionState getState() override;
@@ -309,6 +310,7 @@ private:
     int connectInternal(const ConnectionConfig& cfg, bool preserveOwner = false);
     int connectForOperationInternal(const ConnectionConfig& cfg,
                                     SshOperationSessionMode mode,
+                                    remotedesk::net::NetworkGenerationSnapshot networkSnapshot,
                                     SshOperationHostKeySnapshot& hostKey);
     int authenticateConfiguredUser(const ConnectionConfig& cfg);
     void resetTransportForRecovery();

@@ -1,6 +1,7 @@
 #ifndef SSH_OPERATION_TRANSPORT_H
 #define SSH_OPERATION_TRANSPORT_H
 
+#include "common/network_generation_fence.h"
 #include "extensions/protocol_adapter.h"
 
 #include <cstdint>
@@ -40,6 +41,7 @@ public:
     virtual int connectForOperation(
         const ConnectionConfig& config,
         SshOperationTransportMode mode,
+        remotedesk::net::NetworkGenerationSnapshot networkSnapshot,
         SshOperationTransportHostKey& hostKey) = 0;
     virtual int executeCommand(
         const std::string& command,

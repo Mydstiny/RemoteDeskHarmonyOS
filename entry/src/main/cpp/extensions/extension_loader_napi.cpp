@@ -11568,15 +11568,16 @@ static void ExecuteSshProductionOperation(napi_env /*env*/, void* rawData) {
         switch (data->kind) {
             case SshProductionOperationKind::ProbeHostKey:
                 data->hostKeyResult = probeSshHostKeyForOperation(
-                    data->config, data->control);
+                    data->config, data->control, data->networkSnapshot);
                 break;
             case SshProductionOperationKind::TestKeyAuth:
                 data->authResult = testSshKeyAuthForOperation(
-                    data->config, data->control);
+                    data->config, data->control, data->networkSnapshot);
                 break;
             case SshProductionOperationKind::InstallPublicKey:
                 data->installResult = installSshPublicKeyForOperation(
-                    data->config, data->publicKey, data->control);
+                    data->config, data->publicKey, data->control,
+                    data->networkSnapshot);
                 break;
         }
     } catch (const std::exception& ex) {
