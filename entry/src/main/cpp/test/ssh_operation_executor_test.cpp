@@ -124,10 +124,14 @@ private:
 };
 
 SshOperationTransportFactory fakeFactory(
-    const std::shared_ptr<FakeSshOperationState>& state) {
-    return [state]() {
+    const std::shared_ptr<FakeSshOperationState>& state,
+    std::shared_ptr<SshOperationTransport>* retainedTransport = nullptr) {
+    return [state, retainedTransport]() {
         state->events.push_back("factory");
-        return std::make_shared<FakeSshOperationTransport>(state);
+        std::shared_ptr<SshOperationTransport> transport =
+            std::make_shared<FakeSshOperationTransport>(state);
+        if (retainedTransport) { *retainedTransport = transport; }
+        return transport;
     };
 }
 
@@ -242,9 +246,10 @@ RDP_TEST_CASE(ssh_operation_probe_keeps_scoped_ipv6_route_but_strips_target_auth
     auto state = std::make_shared<FakeSshOperationState>();
     const ConnectionConfig config = directScopedIpv6OperationConfig();
     auto control = std::make_shared<SshOperationControl>(5001);
+    std::shared_ptr<SshOperationTransport> retainedTransport;
 
     const SshHostKeyInfo result = probeSshHostKeyWithTransportForOperation(
-        config, control, fakeFactory(state));
+        config, control, fakeFactory(state, &retainedTransport));
 
     RDP_ASSERT(result.ok);
     RDP_ASSERT(result.host == "fe80::1234%wlan0");
@@ -268,6 +273,7 @@ RDP_TEST_CASE(ssh_operation_probe_keeps_scoped_ipv6_route_but_strips_target_auth
     const std::vector<std::string> expected {
         "factory", "connect", "disconnect"};
     RDP_ASSERT(state->events == expected);
+    RDP_ASSERT(retainedTransport != nullptr);
     RDP_ASSERT(control->cancel(SshOperationCancelReason::User));
     RDP_ASSERT(state->cancelRequests == 0);
     RDP_ASSERT(state->events == expected);
