@@ -15,36 +15,91 @@ function Invoke-GitText {
   return ($result -join [Environment]::NewLine).Trim()
 }
 
+function New-ExactGitBundle {
+  param(
+    [string]$Repository,
+    [string]$Commit,
+    [string]$OutputPath,
+    [string]$BundleBranch,
+    [string]$ScratchPath
+  )
+
+  # `git bundle create <file> <raw-commit>` produces an empty bundle because a
+  # bundle must advertise a ref. Create that ref only in an isolated local
+  # clone so the source checkout and its refs are never mutated.
+  Invoke-GitText -Repository $Repository -Arguments @(
+    'clone', '--quiet', '--shared', '--no-checkout', '--', $Repository, $ScratchPath
+  ) | Out-Null
+  try {
+    Invoke-GitText -Repository $ScratchPath -Arguments @(
+      'update-ref', "refs/heads/$BundleBranch", $Commit
+    ) | Out-Null
+    Invoke-GitText -Repository $ScratchPath -Arguments @(
+      'bundle', 'create', $OutputPath, "refs/heads/$BundleBranch"
+    ) | Out-Null
+  } finally {
+    if (Test-Path -LiteralPath $ScratchPath) {
+      Remove-Item -LiteralPath $ScratchPath -Recurse -Force
+    }
+  }
+}
+
 try {
   New-Item -ItemType Directory -Force -Path $stage | Out-Null
   New-Item -ItemType Directory -Force -Path $output | Out-Null
 
   $refCommit = Invoke-GitText -Repository $root -Arguments @('rev-parse', "$Ref^{commit}")
   $submodulePath = Join-Path $root 'freerdp'
-  $submoduleCommit = Invoke-GitText -Repository $submodulePath -Arguments @('rev-parse', 'HEAD')
+  $submoduleEntry = Invoke-GitText -Repository $root -Arguments @(
+    'ls-tree', $refCommit, '--', 'freerdp'
+  )
+  if ($submoduleEntry -notmatch '^160000 commit ([0-9a-fA-F]{40,64})\s+freerdp$') {
+    throw "Root commit $refCommit does not contain the expected freerdp gitlink."
+  }
+  $submoduleCommit = $Matches[1].ToLowerInvariant()
+  if (-not (Test-Path -LiteralPath $submodulePath -PathType Container)) {
+    throw "FreeRDP submodule checkout is missing at $submodulePath."
+  }
+  try {
+    $availableSubmoduleCommit = Invoke-GitText -Repository $submodulePath -Arguments @(
+      'rev-parse', "$submoduleCommit^{commit}"
+    )
+  } catch {
+    throw "FreeRDP gitlink object $submoduleCommit for root $refCommit is unavailable in the local submodule. Run git submodule update --init before creating the migration bundle."
+  }
+  if ($availableSubmoduleCommit -ne $submoduleCommit) {
+    throw "FreeRDP gitlink $submoduleCommit did not resolve to the same commit object."
+  }
   $sourceZip = Join-Path $stage 'RemoteDeskHarmonyOS-source.zip'
   $bundle = Join-Path $stage 'RemoteDeskHarmonyOS-main.bundle'
   $submoduleZip = Join-Path $stage 'freerdp-ohos-source.zip'
   $submoduleBundle = Join-Path $stage 'freerdp-ohos.bundle'
 
-  Invoke-GitText -Repository $root -Arguments @('archive', '--format=zip', "--output=$sourceZip", $Ref) | Out-Null
-  Invoke-GitText -Repository $root -Arguments @('bundle', 'create', $bundle, $Ref) | Out-Null
-  Invoke-GitText -Repository $submodulePath -Arguments @('archive', '--format=zip', "--output=$submoduleZip", 'HEAD') | Out-Null
-  Invoke-GitText -Repository $submodulePath -Arguments @('bundle', 'create', $submoduleBundle, 'HEAD') | Out-Null
+  Invoke-GitText -Repository $root -Arguments @(
+    'archive', '--format=zip', "--output=$sourceZip", $refCommit
+  ) | Out-Null
+  New-ExactGitBundle -Repository $root -Commit $refCommit -OutputPath $bundle `
+    -BundleBranch 'remotedesk-migration' -ScratchPath (Join-Path $stage '.root-bundle-work')
+  Invoke-GitText -Repository $submodulePath -Arguments @(
+    'archive', '--format=zip', "--output=$submoduleZip", $submoduleCommit
+  ) | Out-Null
+  New-ExactGitBundle -Repository $submodulePath -Commit $submoduleCommit `
+    -OutputPath $submoduleBundle -BundleBranch 'freerdp-ohos' `
+    -ScratchPath (Join-Path $stage '.freerdp-bundle-work')
 
   $manifest = @(
     'RemoteDeskHarmonyOS migration bundle',
     "Generated: $(Get-Date -Format 'yyyy-MM-ddTHH:mm:ssK')",
     "Root ref: $Ref",
     "Root commit: $refCommit",
-    "freerdp public-base submodule commit: $submoduleCommit",
+    "freerdp gitlink commit: $submoduleCommit",
     'freerdp patched tree: 54cc9b12e3040bba73773a5439d4f8023d46ac7a',
     '',
     'Included:',
     '- RemoteDeskHarmonyOS-source.zip: tracked source snapshot, including docs/codex shared state and the FreeRDP OHOS patch series.',
-    '- RemoteDeskHarmonyOS-main.bundle: public main Git history.',
-    '- freerdp-ohos-source.zip: tracked public-base submodule source snapshot.',
-    '- freerdp-ohos.bundle: public-base submodule Git history.',
+    '- RemoteDeskHarmonyOS-main.bundle: Git history ending exactly at the requested root commit.',
+    '- freerdp-ohos-source.zip: source snapshot of the exact FreeRDP gitlink in that root commit.',
+    '- freerdp-ohos.bundle: Git history ending exactly at that FreeRDP gitlink commit.',
     '',
     'Not included:',
     '- untracked files, logs, screenshots, build output, SDKs, signing material, AGConnect secrets, local properties, user databases and private Codex memory.',
