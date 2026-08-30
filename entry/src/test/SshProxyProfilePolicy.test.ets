@@ -128,6 +128,27 @@ export default function sshProxyProfilePolicyTest(): void {
       expect(validateSshProxyProfile(visitor).code).assertEqual('E-SSH-PROXY-FRP-CONTROL-PLANE');
     });
 
+    it('keeps_interface_scope_in_the_local_connection_namespace_only', 0, (): void => {
+      const direct: SshRoute = directRoute();
+      direct.endpointHost = 'fe80::20%wlan0';
+      expect(validateSshRoute(direct).valid).assertTrue();
+
+      const http: SshRoute = directRoute();
+      http.type = 'http_connect';
+      http.endpointHost = 'fe80::20%wlan0';
+      expect(validateSshRoute(http).valid).assertFalse();
+      expect(validateSshRoute(http).code).assertEqual('E-SSH-PROXY-ENDPOINT-HOST');
+
+      const jump: SshRoute = directRoute();
+      jump.type = 'ssh_jump';
+      jump.endpointHost = 'target.example';
+      jump.hops = [jumpHop(1)];
+      jump.hops[0].host = 'fe80::30%wlan0';
+      expect(validateSshRoute(jump).valid).assertTrue();
+      jump.endpointHost = 'fe80::20%wlan0';
+      expect(validateSshRoute(jump).valid).assertFalse();
+    });
+
     it('uses_only_canonical_profile_fields_and_denies_secret_fields', 0, (): void => {
       const valid: SshProxyProfileV1 = profile();
       expect(validateSshProxyProfile(valid).valid).assertTrue();

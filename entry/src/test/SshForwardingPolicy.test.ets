@@ -85,6 +85,52 @@ export default function sshForwardingPolicyTest(): void {
         .assertEqual('E-SSH-FORWARD-PUBLIC-BIND-CONFIRMATION');
       profile.allowPublicBind = true;
       expect(validateSshForwardingProfile(profile).valid).assertTrue();
+
+      profile.allowPublicBind = false;
+      profile.bindHost = '127.example.com';
+      expect(validateSshForwardingProfile(profile).code)
+        .assertEqual('E-SSH-FORWARD-PUBLIC-BIND-CONFIRMATION');
+      profile.bindHost = '127.0.0.2';
+      expect(validateSshForwardingProfile(profile).valid).assertTrue();
+    });
+
+    it('normalizes_endpoint_v2_hosts_and_rejects_truncation_or_authorities', 0, (): void => {
+      const ipv6: SshForwardingProfile = localProfile();
+      ipv6.bindHost = '[::1]';
+      ipv6.targetHost = '[2001:0DB8:0:0::20]';
+      const normalized = validateSshForwardingProfile(ipv6);
+      expect(normalized.valid).assertTrue();
+      expect(normalized.profile.bindHost).assertEqual('::1');
+      expect(normalized.profile.targetHost).assertEqual('2001:db8::20');
+
+      const scoped: SshForwardingProfile = localProfile();
+      scoped.targetHost = 'fe80::20%wlan0';
+      expect(validateSshForwardingProfile(scoped).code)
+        .assertEqual('E-SSH-FORWARD-TARGET-HOST');
+      scoped.mode = 'remote';
+      expect(validateSshForwardingProfile(scoped).profile.targetHost)
+        .assertEqual('fe80::20%wlan0');
+      scoped.bindHost = 'fe80::10%wlan0';
+      scoped.allowPublicBind = true;
+      expect(validateSshForwardingProfile(scoped).code)
+        .assertEqual('E-SSH-FORWARD-BIND-HOST');
+      scoped.mode = 'local';
+      scoped.targetHost = '2001:db8::20';
+      expect(validateSshForwardingProfile(scoped).valid).assertTrue();
+      scoped.targetHost = 'fe80::20%12';
+      expect(validateSshForwardingProfile(scoped).code)
+        .assertEqual('E-SSH-FORWARD-TARGET-HOST');
+
+      const malformed: SshForwardingProfile = localProfile();
+      malformed.targetHost = 'target.example:22';
+      expect(validateSshForwardingProfile(malformed).code)
+        .assertEqual('E-SSH-FORWARD-TARGET-HOST');
+      malformed.targetHost = 'a'.repeat(256);
+      expect(validateSshForwardingProfile(malformed).code)
+        .assertEqual('E-SSH-FORWARD-TARGET-HOST');
+      malformed.id = 'i'.repeat(97);
+      expect(validateSshForwardingProfile(malformed).code)
+        .assertEqual('E-SSH-FORWARD-ID');
     });
 
     it('bounds ports, connection count, profile count and IDs', 0, (): void => {

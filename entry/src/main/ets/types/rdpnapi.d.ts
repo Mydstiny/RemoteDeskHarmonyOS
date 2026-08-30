@@ -1036,6 +1036,9 @@ export interface SshForwardingSnapshot {
   ownerGeneration: number;
   transferredBytes: number;
   expiresAtMs: number;
+  actualBindHost: string;
+  actualBindPort: number;
+  actualBindFamily: number; // 0=unknown, 2=IPv4, 10=IPv6 on OHOS/POSIX
 }
 
 export interface SshForwardingProfile {

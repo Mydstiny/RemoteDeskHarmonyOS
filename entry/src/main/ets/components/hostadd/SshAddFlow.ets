@@ -61,10 +61,6 @@ export struct SshAddFlow {
         '请输入有效的域名、IPv4 或 IPv6 地址';
       return false;
     }
-    if (parsed.endpoint.scope !== '') {
-      this.errorText = 'SSH 链路本地 IPv6 尚未完成网卡作用域验证，请先使用全局 IPv6 地址';
-      return false;
-    }
     return true;
   }
 

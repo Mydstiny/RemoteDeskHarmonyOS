@@ -13709,6 +13709,7 @@ struct SshTerminal {
           state: 'needsRebind', activeConnections: runtime.activeConnections,
           transferredBytes: runtime.transferredBytes, lastError: runtime.lastError,
           actualBindHost: runtime.actualBindHost, actualBindPort: runtime.actualBindPort,
+          actualBindFamily: runtime.actualBindFamily,
           updatedAtMs: runtime.updatedAtMs
         };
       });

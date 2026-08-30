@@ -1,3 +1,9 @@
+import {
+  EndpointAddressResult,
+  endpointTransportHost,
+  parseEndpointHost
+} from './EndpointAddressPolicy';
+
 /**
  * SSH port-forwarding profile contract.
  *
@@ -113,13 +119,41 @@ function isValidBoundedUint(value: number): boolean {
 }
 
 function isLoopbackHost(value: string): boolean {
-  const host: string = value.trim().toLowerCase();
-  return host === 'localhost' || host === '::1' || host.startsWith('127.');
+  const parsed: EndpointAddressResult = parseEndpointHost(value, 'persisted');
+  if (!parsed.ok) { return false; }
+  if (parsed.endpoint.family === 'hostname') {
+    return parsed.endpoint.canonicalHost === 'localhost';
+  }
+  if (parsed.endpoint.family === 'ipv4') {
+    return parsed.endpoint.canonicalHost.split('.')[0] === '127';
+  }
+  return parsed.endpoint.canonicalHost === '::1';
 }
 
-function boundedHost(value: string, fallback: string = ''): string {
+function trimmedHost(value: string, fallback: string = ''): string {
   const normalized: string = value.trim();
-  return (normalized.length > 0 ? normalized : fallback).substring(0, 255);
+  return normalized.length > 0 ? normalized : fallback;
+}
+
+interface ForwardingHostNormalization {
+  ok: boolean;
+  host: string;
+  scoped: boolean;
+}
+
+function normalizeForwardingHost(value: string, allowWildcard: boolean): ForwardingHostNormalization {
+  if (value === '0.0.0.0' && allowWildcard) {
+    return { ok: true, host: value, scoped: false };
+  }
+  if ((value === '::' || value === '[::]') && allowWildcard) {
+    return { ok: true, host: '::', scoped: false };
+  }
+  const parsed: EndpointAddressResult = parseEndpointHost(value, 'persisted');
+  if (!parsed.ok) { return { ok: false, host: '', scoped: false }; }
+  const host: string = endpointTransportHost(parsed.endpoint);
+  return host.length <= 255 ?
+    { ok: true, host: host, scoped: parsed.endpoint.scope !== '' } :
+    { ok: false, host: '', scoped: false };
 }
 
 function normalizedProfile(profile: SshForwardingProfile): SshForwardingProfile {
@@ -135,11 +169,11 @@ function normalizedProfile(profile: SshForwardingProfile): SshForwardingProfile 
     ? 'manual' : (isStartPolicy(profile.startPolicy)
       ? profile.startPolicy as SshForwardingStartPolicy : 'manual');
   return {
-    id: profile.id.trim().substring(0, 96),
+    id: profile.id.trim(),
     mode,
-    bindHost: boundedHost(profile.bindHost, SSH_FORWARDING_DEFAULT_BIND_HOST),
+    bindHost: trimmedHost(profile.bindHost, SSH_FORWARDING_DEFAULT_BIND_HOST),
     bindPort: profile.bindPort,
-    targetHost: boundedHost(profile.targetHost),
+    targetHost: trimmedHost(profile.targetHost),
     targetPort: profile.targetPort,
     maxConnections: profile.maxConnections,
     enabled: profile.enabled === true,
@@ -179,7 +213,7 @@ export function validateSshForwardingProfile(profile: SshForwardingProfile): Ssh
     ? SSH_FORWARDING_DEFAULT_MAX_BIND_PORT : normalized.maxBindPort;
   const maxBytes: number = normalized.maxBytes === undefined ? 0 : normalized.maxBytes;
   const expiresAtMs: number = normalized.expiresAtMs === undefined ? 0 : normalized.expiresAtMs;
-  if (normalized.id.length === 0) {
+  if (normalized.id.length === 0 || normalized.id.length > 96) {
     return { valid: false, code: 'E-SSH-FORWARD-ID', message: '转发规则缺少稳定 ID', profile: normalized };
   }
   if (!isForwardingMode(normalized.mode)) {
@@ -196,6 +230,20 @@ export function validateSshForwardingProfile(profile: SshForwardingProfile): Ssh
   if (normalized.bindHost.length === 0 || normalized.bindHost.length > 255) {
     return { valid: false, code: 'E-SSH-FORWARD-BIND-HOST', message: '监听地址无效', profile: normalized };
   }
+  const bindHost: ForwardingHostNormalization = normalizeForwardingHost(
+    normalized.bindHost, true);
+  if (!bindHost.ok) {
+    return { valid: false, code: 'E-SSH-FORWARD-BIND-HOST', message: '监听地址无效', profile: normalized };
+  }
+  if (normalized.mode === 'remote' && bindHost.scoped) {
+    return {
+      valid: false,
+      code: 'E-SSH-FORWARD-BIND-HOST',
+      message: '远程监听地址不能引用本机网卡作用域',
+      profile: normalized
+    };
+  }
+  normalized.bindHost = bindHost.host;
   if (!normalized.allowPublicBind && !isLoopbackHost(normalized.bindHost)) {
     return {
       valid: false,
@@ -258,6 +306,20 @@ export function validateSshForwardingProfile(profile: SshForwardingProfile): Ssh
   if (normalized.targetHost.length === 0 || normalized.targetHost.length > 255) {
     return { valid: false, code: 'E-SSH-FORWARD-TARGET-HOST', message: '目标地址不能为空', profile: normalized };
   }
+  const targetHost: ForwardingHostNormalization = normalizeForwardingHost(
+    normalized.targetHost, false);
+  if (!targetHost.ok) {
+    return { valid: false, code: 'E-SSH-FORWARD-TARGET-HOST', message: '目标地址无效', profile: normalized };
+  }
+  if (normalized.mode === 'local' && targetHost.scoped) {
+    return {
+      valid: false,
+      code: 'E-SSH-FORWARD-TARGET-HOST',
+      message: '本地转发的目标由远端解析，不能引用本机网卡作用域',
+      profile: normalized
+    };
+  }
+  normalized.targetHost = targetHost.host;
   if (!isValidPort(normalized.targetPort)) {
     return { valid: false, code: 'E-SSH-FORWARD-TARGET-PORT', message: '目标端口必须为 1-65535', profile: normalized };
   }

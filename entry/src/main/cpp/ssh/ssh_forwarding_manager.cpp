@@ -1,4 +1,5 @@
 #include "ssh_forwarding_manager.h"
+#include "common/endpoint_address_policy.h"
 
 #include <algorithm>
 #include <cctype>
@@ -33,24 +34,20 @@ bool SshForwardingManager::isValidMode(SshForwardingMode mode) {
 }
 
 bool SshForwardingManager::isLoopbackHost(const std::string& host) {
-    const std::string normalized = trim(host);
-    if (normalized == "localhost" || normalized == "::1" || normalized == "[::1]") {
-        return true;
+    const auto parsed = remotedesk::endpoint::ParseHost(
+        trim(host), remotedesk::endpoint::ParseMode::Persisted);
+    if (!parsed.ok) {
+        return false;
     }
-    if (normalized.size() >= 4 && normalized.compare(0, 4, "127.") == 0) {
-        return true;
+    switch (parsed.endpoint.family()) {
+        case remotedesk::endpoint::AddressFamily::Hostname:
+            return parsed.endpoint.canonicalHost() == "localhost";
+        case remotedesk::endpoint::AddressFamily::Ipv4:
+            return parsed.endpoint.canonicalHost().compare(0, 4, "127.") == 0;
+        case remotedesk::endpoint::AddressFamily::Ipv6:
+            return parsed.endpoint.canonicalHost() == "::1";
     }
     return false;
-}
-
-std::string SshForwardingManager::trimAndBound(const std::string& value,
-                                               size_t maxLength,
-                                               const std::string& fallback) {
-    const std::string normalized = trim(value);
-    if (normalized.empty()) {
-        return fallback;
-    }
-    return normalized.substr(0, maxLength);
 }
 
 bool SshForwardingManager::isValidPort(int port) {
@@ -65,18 +62,35 @@ SshForwardingResult SshForwardingManager::validateAndNormalize(SshForwardingConf
     if (config.schemaVersion == 0) {
         config.schemaVersion = 1;
     }
-    config.id = trimAndBound(config.id, 96);
-    config.bindHost = trimAndBound(config.bindHost, 255, kDefaultBindHost);
-    config.targetHost = trimAndBound(config.targetHost, 255);
+    config.id = trim(config.id);
+    config.bindHost = trim(config.bindHost);
+    config.targetHost = trim(config.targetHost);
+    if (config.bindHost.empty()) {
+        config.bindHost = kDefaultBindHost;
+    }
 
-    if (config.id.empty()) {
+    if (config.id.empty() || config.id.size() > 96U) {
         return SshForwardingResult::InvalidId;
     }
     if (!isValidMode(config.mode)) {
         return SshForwardingResult::InvalidMode;
     }
-    if (config.bindHost.empty() || config.bindHost.size() > 255) {
+    if (config.bindHost.empty() || config.bindHost.size() > 255U) {
         return SshForwardingResult::InvalidBindHost;
+    }
+    if (config.bindHost == "[::]") {
+        config.bindHost = "::";
+    } else if (config.bindHost != "0.0.0.0" && config.bindHost != "::") {
+        const auto parsed = remotedesk::endpoint::ParseHost(
+            config.bindHost, remotedesk::endpoint::ParseMode::Persisted);
+        if (!parsed.ok ||
+            (config.mode == SshForwardingMode::Remote &&
+             !parsed.endpoint.scope().empty())) {
+            // Remote listeners are created by the SSH server. A local
+            // interface name has no meaning in that namespace.
+            return SshForwardingResult::InvalidBindHost;
+        }
+        config.bindHost = remotedesk::endpoint::TransportHost(parsed.endpoint);
     }
     if (!config.allowPublicBind && !isLoopbackHost(config.bindHost)) {
         return SshForwardingResult::PublicBindNotAllowed;
@@ -99,13 +113,38 @@ SshForwardingResult SshForwardingManager::validateAndNormalize(SshForwardingConf
         }
         return SshForwardingResult::Ok;
     }
-    if (config.targetHost.empty() || config.targetHost.size() > 255) {
+    if (config.targetHost.empty() || config.targetHost.size() > 255U) {
         return SshForwardingResult::InvalidTargetHost;
     }
+    const auto target = remotedesk::endpoint::ParseHost(
+        config.targetHost, remotedesk::endpoint::ParseMode::Persisted);
+    if (!target.ok ||
+        (config.mode != SshForwardingMode::Remote && !target.endpoint.scope().empty())) {
+        // Local forwarding targets are resolved by the SSH server and do not
+        // share this device's interface namespace. Remote-forward targets are
+        // connected locally and may retain an interface scope.
+        return SshForwardingResult::InvalidTargetHost;
+    }
+    config.targetHost = remotedesk::endpoint::TransportHost(target.endpoint);
     if (!isValidPort(config.targetPort)) {
         return SshForwardingResult::InvalidTargetPort;
     }
     return SshForwardingResult::Ok;
+}
+
+bool SshForwardingManager::normalizeRuntimeTargetHost(std::string& host) {
+    if (host.empty() || host.size() > remotedesk::endpoint::kMaxInputLength) {
+        return false;
+    }
+    const auto parsed = remotedesk::endpoint::ParseHost(
+        host, remotedesk::endpoint::ParseMode::Runtime);
+    if (!parsed.ok || !parsed.endpoint.scope().empty()) {
+        // SOCKS5 does not carry an IPv6 scope identifier. A domain-form `%`
+        // fallback would silently change a scoped literal into a DNS name.
+        return false;
+    }
+    host = remotedesk::endpoint::TransportHost(parsed.endpoint);
+    return host.size() <= 255U;
 }
 
 SshForwardingResult SshForwardingManager::upsert(const SshForwardingConfig& config) {
@@ -184,11 +223,17 @@ SshForwardingResult SshForwardingManager::start(const std::string& id,
     entry->second.sessionGeneration = sessionGeneration;
     entry->second.lastError = 0;
     entry->second.transferredBytes = 0;
+    entry->second.actualBindHost.clear();
+    entry->second.actualBindPort = 0;
+    entry->second.actualBindFamily = 0;
     return SshForwardingResult::Ok;
 }
 
 SshForwardingResult SshForwardingManager::markListening(const std::string& id,
-                                                        uint64_t sessionGeneration) {
+                                                        uint64_t sessionGeneration,
+                                                        const std::string& actualBindHost,
+                                                        int actualBindPort,
+                                                        int actualBindFamily) {
     std::lock_guard<std::mutex> lock(mutex_);
     const auto entry = entries_.find(id);
     if (entry == entries_.end()) {
@@ -204,6 +249,9 @@ SshForwardingResult SshForwardingManager::markListening(const std::string& id,
         return SshForwardingResult::InvalidState;
     }
     entry->second.state = SshForwardingState::Listening;
+    entry->second.actualBindHost = actualBindHost;
+    entry->second.actualBindPort = actualBindPort;
+    entry->second.actualBindFamily = actualBindFamily;
     return SshForwardingResult::Ok;
 }
 
@@ -259,6 +307,9 @@ SshForwardingResult SshForwardingManager::completeStop(const std::string& id) {
     entry->second.state = SshForwardingState::Stopped;
     entry->second.sessionGeneration = 0;
     entry->second.lastError = 0;
+    entry->second.actualBindHost.clear();
+    entry->second.actualBindPort = 0;
+    entry->second.actualBindFamily = 0;
     return SshForwardingResult::Ok;
 }
 
@@ -400,6 +451,9 @@ void SshForwardingManager::resetRuntimeAfterTransportClose() {
         entry.activeConnections = 0;
         entry.lastError = 0;
         entry.transferredBytes = 0;
+        entry.actualBindHost.clear();
+        entry.actualBindPort = 0;
+        entry.actualBindFamily = 0;
     }
 }
 
@@ -412,6 +466,9 @@ SshForwardingSnapshot SshForwardingManager::toSnapshot(const Entry& entry) {
     snapshot.lastError = entry.lastError;
     snapshot.transferredBytes = entry.transferredBytes;
     snapshot.expiresAtMs = entry.config.expiresAtMs;
+    snapshot.actualBindHost = entry.actualBindHost;
+    snapshot.actualBindPort = entry.actualBindPort;
+    snapshot.actualBindFamily = entry.actualBindFamily;
     return snapshot;
 }
 

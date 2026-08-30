@@ -8,6 +8,7 @@
 #include "ssh_key_tool.h"
 #include "ssh_algorithm_prefs.h"
 #include "ssh_auth_policy.h"
+#include "ssh_proxy_target_policy.h"
 #include "ssh_route_policy.h"
 
 #include <openssl/evp.h>
@@ -31,6 +32,7 @@
 #include <sys/select.h>
 
 #ifdef __OHOS__
+#include "common/happy_eyeballs_connector.h"
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -936,6 +938,26 @@ bool validatePublicKeyForAuthorizedKeys(const std::string& publicKeyOpenSsh) {
 
 /** 内部: 建立 TCP 连接到 host:port (非阻塞, 带超时) */
 static int tcpConnectWithTimeout(const std::string& host, int port, int timeoutSec) {
+    if (port <= 0 || port > 65535) { return -1; }
+    const remotedesk::ssh::ProxyTargetResult endpoint =
+        remotedesk::ssh::PrepareProxyTarget(
+            "direct", host, static_cast<std::uint16_t>(port));
+    if (!endpoint.ok) { return -1; }
+    const std::string& transportHost = endpoint.transportHost;
+#ifdef __OHOS__
+    remotedesk::net::ConnectOptions options;
+    options.deadline = std::chrono::steady_clock::now() +
+        std::chrono::seconds(std::max(1, timeoutSec));
+    remotedesk::net::ConnectResult connection;
+    const remotedesk::net::ResolveResult resolution =
+        remotedesk::net::ResolveAndConnectTcp(
+            transportHost, std::to_string(port), options, connection);
+    if (resolution.status != remotedesk::net::ResolveStatus::Ready ||
+        connection.status != remotedesk::net::ConnectStatus::Connected) {
+        return -1;
+    }
+    return connection.descriptor;
+#else
     struct addrinfo hints;
     memset(&hints, 0, sizeof(hints));
     hints.ai_family = AF_UNSPEC;
@@ -945,7 +967,7 @@ static int tcpConnectWithTimeout(const std::string& host, int port, int timeoutS
     snprintf(portStr, sizeof(portStr), "%d", port);
 
     struct addrinfo* res = nullptr;
-    int ret = getaddrinfo(host.c_str(), portStr, &hints, &res);
+    int ret = getaddrinfo(transportHost.c_str(), portStr, &hints, &res);
     if (ret != 0 || !res) {
         return -1;
     }
@@ -1032,6 +1054,7 @@ static int tcpConnectWithTimeout(const std::string& host, int port, int timeoutS
 
     freeaddrinfo(res);
     return sock;
+#endif
 }
 
 static void closeSocketFd(int sock) {
@@ -1146,12 +1169,20 @@ static void runSshJumpOperationRelay(const std::shared_ptr<SshJumpOperationState
 static int connectThroughSshJumpOperation(
     const std::string& host, int port, const SshProxyOptions& proxy) {
     const std::string authMethod = proxy.authMethod.empty() ? "password" : proxy.authMethod;
-    if (proxy.host.empty() || proxy.port <= 0 || proxy.port > 65535 ||
+    if (port <= 0 || port > 65535 || proxy.host.empty() ||
+        proxy.port <= 0 || proxy.port > 65535 ||
         proxy.username.empty() ||
         (authMethod != "password" && authMethod != "publickey" &&
          authMethod != "kbd-interactive" && authMethod != "keyboard-interactive")) {
         return -2;
     }
+    // The final target is resolved by the bastion. Validate and canonicalize
+    // it before connecting to the bastion so a device-local "%interface"
+    // can never cross into that remote namespace.
+    const remotedesk::ssh::ProxyTargetResult target =
+        remotedesk::ssh::PrepareProxyTarget(
+            "ssh_jump", host, static_cast<std::uint16_t>(port));
+    if (!target.ok) { return -2; }
     const int bastionSock = tcpConnectWithTimeout(proxy.host, proxy.port, 10);
     if (bastionSock < 0) { return -1; }
     if (!setSocketIoTimeout(bastionSock, 10)) {
@@ -1220,7 +1251,8 @@ static int connectThroughSshJumpOperation(
         closeSshJumpOperationState(state);
         return -2;
     }
-    state->channel = libssh2_channel_direct_tcpip(state->session, host.c_str(), port);
+    state->channel = libssh2_channel_direct_tcpip(
+        state->session, target.transportHost.c_str(), port);
     if (state->channel == nullptr) {
         closeSshJumpOperationState(state);
         return -2;
@@ -1357,7 +1389,8 @@ static bool receiveProxyHeaders(int sock, std::string& headers, size_t maxLen) {
 }
 
 static bool connectThroughProxy(
-    int sock, const std::string& targetHost, int targetPort, const SshProxyOptions& proxy) {
+    int sock, const remotedesk::ssh::ProxyTargetResult& target,
+    const SshProxyOptions& proxy) {
     const std::string proxyType = proxy.type.empty() ? "direct" : proxy.type;
     if (proxyType == "direct") {
         return true;
@@ -1369,9 +1402,8 @@ static bool connectThroughProxy(
     }
     if ((proxyType != "http_connect" && proxyType != "socks5") ||
         proxy.host.empty() || proxy.port <= 0 || proxy.port > 65535 ||
-        targetHost.empty() || targetPort <= 0 || targetPort > 65535 ||
-        targetHost.size() > 255 ||
-        targetHost.find_first_of("\r\n") != std::string::npos ||
+        !target.ok || target.endpoint.port() == 0 ||
+        target.transportHost.empty() || target.transportHost.size() > 255 ||
         proxy.host.find_first_of("\r\n") != std::string::npos) {
         return false;
     }
@@ -1380,22 +1412,11 @@ static bool connectThroughProxy(
         return false;
     }
 
-    std::string normalizedTarget = targetHost;
-    if (normalizedTarget.size() >= 2 && normalizedTarget.front() == '[' &&
-        normalizedTarget.back() == ']') {
-        normalizedTarget = normalizedTarget.substr(1, normalizedTarget.size() - 2);
-    }
-    if (normalizedTarget.empty() || normalizedTarget.size() > 255) {
-        return false;
-    }
+    const std::string& normalizedTarget = target.transportHost;
+    const int targetPort = static_cast<int>(target.endpoint.port());
 
     if (proxyType == "http_connect") {
-        std::string hostHeader = normalizedTarget;
-        in6_addr ipv6 {};
-        if (inet_pton(AF_INET6, normalizedTarget.c_str(), &ipv6) == 1) {
-            hostHeader = "[" + normalizedTarget + "]";
-        }
-        hostHeader += ":" + std::to_string(targetPort);
+        const std::string& hostHeader = target.uriAuthority;
         if (proxy.username.find_first_of("\r\n") != std::string::npos ||
             proxy.password.find_first_of("\r\n") != std::string::npos) {
             return false;
@@ -1524,13 +1545,20 @@ static int connectForSshOperation(
         return connectThroughSshJumpOperation(host, port, proxy);
     }
     const bool direct = proxyType == "direct";
+    remotedesk::ssh::ProxyTargetResult target;
+    if (proxyType == "http_connect" || proxyType == "socks5") {
+        if (port <= 0 || port > 65535) { return -3; }
+        target = remotedesk::ssh::PrepareProxyTarget(
+            proxyType, host, static_cast<std::uint16_t>(port));
+        if (!target.ok) { return -3; }
+    }
     const std::string connectHost = direct ? host : proxy.host;
     const int connectPort = direct ? port : proxy.port;
     int sock = tcpConnectWithTimeout(connectHost, connectPort, 10);
     if (sock < 0) {
         return -1;
     }
-    if (!direct && !connectThroughProxy(sock, host, port, proxy)) {
+    if (!direct && !connectThroughProxy(sock, target, proxy)) {
         closeSocketFd(sock);
         return -2;
     }

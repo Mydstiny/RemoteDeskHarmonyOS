@@ -197,8 +197,13 @@ export function validateSshRoute(route: SshRoute): SshRouteValidationResult {
     record['endpointHost'] as string : null;
   const endpoint: EndpointAddressResult = endpointHostInput === null ?
     new EndpointAddressResult() : parseEndpointFields(endpointHostInput, record['endpointPort'] as number);
-  if (!endpoint.ok || endpoint.endpoint.scope !== '') {
-    return invalidRoute('E-SSH-PROXY-ENDPOINT-HOST', 'SSH endpoint host 无效或尚未支持作用域 IPv6', route);
+  // endpointHost is resolved in the local namespace only for direct. HTTP
+  // CONNECT/SOCKS and the final ProxyJump target are interpreted remotely, so
+  // a local interface zone must never cross that protocol boundary.
+  const endpointScopeAllowed: boolean = typeValue === 'direct';
+  if (!endpoint.ok || (!endpointScopeAllowed && endpoint.endpoint.scope !== '')) {
+    return invalidRoute('E-SSH-PROXY-ENDPOINT-HOST',
+      'SSH endpoint host 无效，或该远端解析路由不能携带本机网卡作用域', route);
   }
   const endpointHost: string = endpointTransportHost(endpoint.endpoint);
   if (!validTimeout(record['connectTimeoutMs'])) {
@@ -235,8 +240,9 @@ export function validateSshRoute(route: SshRoute): SshRouteValidationResult {
     }
     const parsedHop: EndpointAddressResult =
       parseEndpointFields(hostInput, hopRecord['port'] as number);
-    if (!parsedHop.ok || parsedHop.endpoint.scope !== '') {
-      return invalidRoute('E-SSH-PROXY-HOP', 'SSH jump hop 地址无效或尚未支持作用域 IPv6', route);
+    if (!parsedHop.ok || (index > 0 && parsedHop.endpoint.scope !== '')) {
+      return invalidRoute('E-SSH-PROXY-HOP',
+        'SSH jump hop 地址无效，或后续 hop 携带了仅首跳可用的本机网卡作用域', route);
     }
     const host: string = endpointTransportHost(parsedHop.endpoint);
     const rawKey: string | null = text(hopRecord, 'expectedHostKeyRawBase64');
@@ -305,8 +311,8 @@ export function validateSshProxyProfile(profile: SshProxyProfileV1): SshProxyPro
   }
   const parsedProxy: EndpointAddressResult = needsProxyEndpoint ?
     parseEndpointFields(proxyHostInput, record['proxyPort'] as number) : new EndpointAddressResult();
-  if (needsProxyEndpoint && (!parsedProxy.ok || parsedProxy.endpoint.scope !== '')) {
-    return { valid: false, code: 'E-SSH-PROXY-ENDPOINT', message: '代理或 FRP TCP 地址无效或尚未支持作用域 IPv6', profile: null };
+  if (needsProxyEndpoint && !parsedProxy.ok) {
+    return { valid: false, code: 'E-SSH-PROXY-ENDPOINT', message: '代理或 FRP TCP 地址无效', profile: null };
   }
   const proxyHost: string = parsedProxy.ok ? endpointTransportHost(parsedProxy.endpoint) : proxyHostInput;
   if (!needsProxyEndpoint && (proxyHost.length > 0 || hasOwn(record, 'proxyPort'))) {

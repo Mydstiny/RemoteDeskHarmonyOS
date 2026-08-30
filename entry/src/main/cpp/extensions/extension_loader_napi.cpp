@@ -1479,6 +1479,28 @@ static bool FinalizeSshRoute(ConnectionConfig& config) {
         config.sshJumpHopHandoffs.size() > config.sshRoute.hops.size()) {
         return false;
     }
+    const auto targetEndpoint = remotedesk::endpoint::ParseFields(
+        config.sshRoute.endpointHost,
+        static_cast<std::uint16_t>(config.sshRoute.endpointPort),
+        remotedesk::endpoint::ParseMode::Persisted);
+    if (!targetEndpoint.ok ||
+        (config.sshRoute.kind != SshRouteKind::Direct &&
+         !targetEndpoint.endpoint.scope().empty())) {
+        return false;
+    }
+    config.sshRoute.endpointHost =
+        remotedesk::endpoint::TransportHost(targetEndpoint.endpoint);
+    for (size_t index = 0; index < config.sshRoute.hops.size(); ++index) {
+        SshJumpHop& hop = config.sshRoute.hops[index];
+        const auto hopEndpoint = remotedesk::endpoint::ParseFields(
+            hop.host, static_cast<std::uint16_t>(hop.port),
+            remotedesk::endpoint::ParseMode::Persisted);
+        if (!hopEndpoint.ok ||
+            (index > 0 && !hopEndpoint.endpoint.scope().empty())) {
+            return false;
+        }
+        hop.host = remotedesk::endpoint::TransportHost(hopEndpoint.endpoint);
+    }
     if (config.sshRoute.kind != SshRouteKind::SshJump &&
         !config.sshJumpHopHandoffs.empty()) {
         return false;
@@ -1837,6 +1859,9 @@ static napi_value CreateSshForwardingSnapshotValue(
                    static_cast<int64_t>(snapshot.transferredBytes));
     SetObjectInt64(env, result, "expiresAtMs",
                    static_cast<int64_t>(snapshot.expiresAtMs));
+    SetObjectString(env, result, "actualBindHost", snapshot.actualBindHost);
+    SetObjectInt32(env, result, "actualBindPort", snapshot.actualBindPort);
+    SetObjectInt32(env, result, "actualBindFamily", snapshot.actualBindFamily);
     return result;
 }
 

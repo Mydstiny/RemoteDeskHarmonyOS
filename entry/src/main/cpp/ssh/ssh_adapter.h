@@ -8,6 +8,7 @@
 #define SSH_ADAPTER_H
 
 #include "protocol_adapter.h"
+#include "ssh_forward_target_connector.h"
 #include "ssh_terminal_diagnostics.h"
 #include <libssh2.h>
 #include <libssh2_sftp.h>
@@ -299,7 +300,9 @@ private:
         SshForwardingMode mode = SshForwardingMode::Local;
         int fd = -1;
         LIBSSH2_LISTENER* remoteListener = nullptr;
+        std::string boundHost;
         int boundPort = 0;
+        int boundFamily = 0;
     };
 
     struct LocalForwardConnection {
@@ -309,6 +312,7 @@ private:
         int localFd = -1;
         LIBSSH2_CHANNEL* channel = nullptr;
         bool localConnecting = false;
+        SshForwardTargetConnectTask targetConnectTask;
         bool localEof = false;
         bool channelEof = false;
         bool channelEofSent = false;
@@ -406,11 +410,11 @@ private:
     // All forwarding modes are owned by the same reactor as the terminal
     // session. Local/dynamic use a local listener; remote uses a libssh2
     // remote listener and relays its accepted channels to a local target.
-    int createLocalForwardListener(const SshForwardingConfig& config, int& errorCode);
+    int createLocalForwardListener(const SshForwardingConfig& config,
+                                   std::string& boundHost, int& boundPort,
+                                   int& boundFamily, int& errorCode);
     LIBSSH2_LISTENER* createRemoteForwardListener(const SshForwardingConfig& config,
                                                   int& boundPort, int& errorCode);
-    int createForwardTargetSocket(const std::string& host, int port,
-                                  bool& connecting, int& errorCode);
     int pumpDynamicSocksHandshakeLocked(LocalForwardConnection& connection);
     bool queueDynamicSocksFailureLocked(LocalForwardConnection& connection,
                                         uint8_t replyCode);
@@ -670,6 +674,7 @@ private:
     static constexpr int kReactorWaitSliceMs = 5;
     static constexpr size_t kForwardBufferLimit = 512 * 1024;
     static constexpr size_t kForwardAcceptBatch = 8;
+    static constexpr size_t kMaxForwardTargetConnectWorkers = 8;
     std::chrono::steady_clock::time_point keepaliveNextDue_ =
         std::chrono::steady_clock::time_point::max();
     uint32_t keepaliveConsecutiveFailures_ = 0;

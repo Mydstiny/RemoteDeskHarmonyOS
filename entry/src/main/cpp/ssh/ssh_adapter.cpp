@@ -6,8 +6,11 @@
  * 所有 libssh2 调用使用非阻塞模式 + select() 轮询.
  */
 #include "ssh_adapter.h"
+#include "common/endpoint_address_policy.h"
+#include "common/happy_eyeballs_connector.h"
 #include "ssh_auth_policy.h"
 #include "ssh_network_lifecycle_policy.h"
+#include "ssh_proxy_target_policy.h"
 #include "ssh_route_policy.h"
 #include "ssh_sftp_operation_policy.h"
 #include "extension_registry.h"
@@ -419,7 +422,15 @@ SshForwardingResult SshAdapter::startForwarding(const std::string& id,
             int boundPort = snapshot.config.bindPort;
             listener.remoteListener = createRemoteForwardListener(
                 snapshot.config, boundPort, errorCode);
+            listener.boundHost = snapshot.config.bindHost;
             listener.boundPort = boundPort;
+            const auto remoteBind = remotedesk::endpoint::ParseHost(
+                snapshot.config.bindHost, remotedesk::endpoint::ParseMode::Persisted);
+            listener.boundFamily = remoteBind.ok &&
+                remoteBind.endpoint.family() == remotedesk::endpoint::AddressFamily::Ipv4
+                ? AF_INET
+                : remoteBind.ok && remoteBind.endpoint.family() ==
+                    remotedesk::endpoint::AddressFamily::Ipv6 ? AF_INET6 : AF_UNSPEC;
             if (listener.remoteListener == nullptr) {
                 forwardingManager_.fail(id, currentGeneration, errorCode);
                 OH_LOG_ERROR(LOG_APP,
@@ -428,7 +439,9 @@ SshForwardingResult SshAdapter::startForwarding(const std::string& id,
                 return SshForwardingResult::TransportFailure;
             }
         } else {
-            const int listenerFd = createLocalForwardListener(snapshot.config, errorCode);
+            const int listenerFd = createLocalForwardListener(
+                snapshot.config, listener.boundHost, listener.boundPort,
+                listener.boundFamily, errorCode);
             if (listenerFd < 0) {
                 forwardingManager_.fail(id, currentGeneration, errorCode);
                 OH_LOG_ERROR(LOG_APP,
@@ -439,21 +452,26 @@ SshForwardingResult SshAdapter::startForwarding(const std::string& id,
             listener.fd = listenerFd;
         }
         localForwardListeners_[id] = std::move(listener);
+        const LocalForwardListener& activeListener = localForwardListeners_.at(id);
         const SshForwardingResult listening =
-            forwardingManager_.markListening(id, currentGeneration);
+            forwardingManager_.markListening(
+                id, currentGeneration, activeListener.boundHost,
+                activeListener.boundPort, activeListener.boundFamily);
         if (listening != SshForwardingResult::Ok) {
             closeLocalForwardRuntimeLocked(id);
             forwardingManager_.fail(id, currentGeneration, EINVAL);
             return listening;
         }
         OH_LOG_INFO(LOG_APP,
-                    "[SSH] forwarding listening id=%{public}s mode=%{public}d bind=%{public}s:%{public}d "
-                    "target=%{public}s:%{public}d fd=%{public}d remote=%{public}d",
+                    "[SSH] forwarding listening id=%{public}s mode=%{public}d bindId=%{public}s "
+                    "bindPort=%{public}d family=%{public}d target=%{public}s:%{public}d "
+                    "fd=%{public}d remote=%{public}d",
                     id.c_str(), static_cast<int>(snapshot.config.mode),
-                    snapshot.config.bindHost.c_str(), snapshot.config.bindPort,
+                    SafeLog::MaskHost(activeListener.boundHost).c_str(),
+                    activeListener.boundPort, activeListener.boundFamily,
                     SafeLog::MaskHost(snapshot.config.targetHost).c_str(),
-                    snapshot.config.targetPort, listener.fd,
-                    listener.remoteListener != nullptr ? 1 : 0);
+                    snapshot.config.targetPort, activeListener.fd,
+                    activeListener.remoteListener != nullptr ? 1 : 0);
         return SshForwardingResult::Ok;
     };
     if (isReactorThread()) {
@@ -578,17 +596,18 @@ std::vector<SshForwardingSnapshot> SshAdapter::forwardingSnapshots() const {
 }
 
 int SshAdapter::createLocalForwardListener(const SshForwardingConfig& config,
-                                           int& errorCode) {
+                                           std::string& boundHost, int& boundPort,
+                                           int& boundFamily, int& errorCode) {
     errorCode = 0;
+    boundHost.clear();
+    boundPort = 0;
+    boundFamily = AF_UNSPEC;
     if (!isReactorThread()) {
         errorCode = EPERM;
         return -1;
     }
 
-    std::string bindHost = config.bindHost;
-    if (bindHost.size() >= 2 && bindHost.front() == '[' && bindHost.back() == ']') {
-        bindHost = bindHost.substr(1, bindHost.size() - 2);
-    }
+    const std::string& bindHost = config.bindHost;
     char portString[16] = {0};
     snprintf(portString, sizeof(portString), "%d", config.bindPort);
 
@@ -614,6 +633,18 @@ int SshAdapter::createLocalForwardListener(const SshForwardingConfig& config,
         }
         int reuse = 1;
         (void)setsockopt(candidate, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
+        if (address->ai_family == AF_INET6) {
+            // A single IPv6 forwarding profile is IPv6-only by contract.
+            // Dual-stack exposure must be represented by a second explicit
+            // IPv4 listener instead of depending on platform defaults.
+            const int ipv6Only = 1;
+            if (setsockopt(candidate, IPPROTO_IPV6, IPV6_V6ONLY,
+                           &ipv6Only, sizeof(ipv6Only)) != 0) {
+                lastError = errno;
+                close(candidate);
+                continue;
+            }
+        }
         const int flags = fcntl(candidate, F_GETFL, 0);
         if (flags < 0 || fcntl(candidate, F_SETFL, flags | O_NONBLOCK) < 0) {
             lastError = errno;
@@ -634,6 +665,37 @@ int SshAdapter::createLocalForwardListener(const SshForwardingConfig& config,
             close(candidate);
             continue;
         }
+        sockaddr_storage actualAddress {};
+        socklen_t actualLength = sizeof(actualAddress);
+        if (getsockname(candidate, reinterpret_cast<sockaddr*>(&actualAddress),
+                        &actualLength) != 0) {
+            lastError = errno;
+            close(candidate);
+            continue;
+        }
+        char numericHost[NI_MAXHOST] = {0};
+        char numericService[NI_MAXSERV] = {0};
+        const int nameResult = getnameinfo(
+            reinterpret_cast<const sockaddr*>(&actualAddress), actualLength,
+            numericHost, sizeof(numericHost), numericService, sizeof(numericService),
+            NI_NUMERICHOST | NI_NUMERICSERV);
+        if (nameResult != 0) {
+            lastError = EADDRNOTAVAIL;
+            close(candidate);
+            continue;
+        }
+        char* end = nullptr;
+        errno = 0;
+        const long parsedPort = strtol(numericService, &end, 10);
+        if (errno != 0 || end == numericService || *end != '\0' ||
+            parsedPort <= 0 || parsedPort > 65535) {
+            lastError = EADDRNOTAVAIL;
+            close(candidate);
+            continue;
+        }
+        boundHost = numericHost;
+        boundPort = static_cast<int>(parsedPort);
+        boundFamily = actualAddress.ss_family;
         listenerFd = candidate;
         break;
     }
@@ -658,10 +720,7 @@ LIBSSH2_LISTENER* SshAdapter::createRemoteForwardListener(
         return nullptr;
     }
 
-    std::string bindHost = config.bindHost;
-    if (bindHost.size() >= 2 && bindHost.front() == '[' && bindHost.back() == ']') {
-        bindHost = bindHost.substr(1, bindHost.size() - 2);
-    }
+    const std::string& bindHost = config.bindHost;
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
     while (std::chrono::steady_clock::now() < deadline) {
         LIBSSH2_LISTENER* listener = libssh2_channel_forward_listen_ex(
@@ -687,76 +746,6 @@ LIBSSH2_LISTENER* SshAdapter::createRemoteForwardListener(
     }
     errorCode = ETIMEDOUT;
     return nullptr;
-}
-
-int SshAdapter::createForwardTargetSocket(const std::string& host, int port,
-                                          bool& connecting, int& errorCode) {
-    connecting = false;
-    errorCode = 0;
-    if (!isReactorThread()) {
-        errorCode = EPERM;
-        return -1;
-    }
-    if (host.empty() || port <= 0 || port > 65535) {
-        errorCode = EINVAL;
-        return -1;
-    }
-    std::string normalizedHost = host;
-    if (normalizedHost.size() >= 2 && normalizedHost.front() == '[' &&
-        normalizedHost.back() == ']') {
-        normalizedHost = normalizedHost.substr(1, normalizedHost.size() - 2);
-    }
-    addrinfo hints {};
-    hints.ai_family = AF_UNSPEC;
-    hints.ai_socktype = SOCK_STREAM;
-    hints.ai_protocol = IPPROTO_TCP;
-    addrinfo* addresses = nullptr;
-    const int resolveResult = getaddrinfo(normalizedHost.c_str(), std::to_string(port).c_str(),
-                                          &hints, &addresses);
-    if (resolveResult != 0 || addresses == nullptr) {
-        errorCode = EHOSTUNREACH;
-        return -1;
-    }
-
-    int lastError = EHOSTUNREACH;
-    int socketFd = -1;
-    for (addrinfo* address = addresses; address != nullptr; address = address->ai_next) {
-        const int candidate = socket(address->ai_family, address->ai_socktype,
-                                      address->ai_protocol);
-        if (candidate < 0) {
-            lastError = errno;
-            continue;
-        }
-        const int flags = fcntl(candidate, F_GETFL, 0);
-        const int descriptorFlags = fcntl(candidate, F_GETFD, 0);
-        if (flags < 0 || fcntl(candidate, F_SETFL, flags | O_NONBLOCK) < 0) {
-            lastError = errno;
-            close(candidate);
-            continue;
-        }
-        if (descriptorFlags >= 0) {
-            (void)fcntl(candidate, F_SETFD, descriptorFlags | FD_CLOEXEC);
-        }
-        const int connectResult = ::connect(candidate, address->ai_addr, address->ai_addrlen);
-        if (connectResult == 0) {
-            socketFd = candidate;
-            connecting = false;
-            break;
-        }
-        if (errno == EINPROGRESS || errno == EALREADY || errno == EINTR) {
-            socketFd = candidate;
-            connecting = true;
-            break;
-        }
-        lastError = errno;
-        close(candidate);
-    }
-    freeaddrinfo(addresses);
-    if (socketFd < 0) {
-        errorCode = lastError;
-        return -1;
-    }
-    return socketFd;
 }
 
 bool SshAdapter::queueDynamicSocksFailureLocked(LocalForwardConnection& connection,
@@ -905,7 +894,9 @@ int SshAdapter::pumpDynamicSocksHandshakeLocked(LocalForwardConnection& connecti
             (static_cast<int>(connection.socksInput[portOffset]) << 8) |
             static_cast<int>(connection.socksInput[portOffset + 1]);
         if (connection.dynamicTargetHost.empty() || connection.dynamicTargetPort <= 0 ||
-            connection.dynamicTargetPort > 65535) {
+            connection.dynamicTargetPort > 65535 ||
+            !SshForwardingManager::normalizeRuntimeTargetHost(
+                connection.dynamicTargetHost)) {
             return queueDynamicSocksFailureLocked(connection, 0x04)
                 ? kSocksCloseAfterFlush : -1;
         }
@@ -941,9 +932,6 @@ int SshAdapter::openLocalForwardChannelLocked(LocalForwardConnection& connection
     if (targetHost.empty() || targetPort <= 0 || targetPort > 65535) {
         return -1;
     }
-    if (targetHost.size() >= 2 && targetHost.front() == '[' && targetHost.back() == ']') {
-        targetHost = targetHost.substr(1, targetHost.size() - 2);
-    }
     connection.channel = libssh2_channel_direct_tcpip_ex(
         session_, targetHost.c_str(), targetPort, "127.0.0.1", 0);
     if (connection.channel != nullptr) {
@@ -961,6 +949,20 @@ int SshAdapter::openLocalForwardChannelLocked(LocalForwardConnection& connection
 
 bool SshAdapter::pumpLocalForwardConnectionLocked(LocalForwardConnection& connection,
                                                    const SshForwardingConfig& config) {
+    if (connection.targetConnectTask.pending()) {
+        if (!connection.targetConnectTask.ready()) {
+            return connection.sessionGeneration == diagnostics_.sessionGeneration();
+        }
+        const SshForwardTargetConnectResult target = connection.targetConnectTask.take();
+        if (target.descriptor < 0) {
+            OH_LOG_WARN(LOG_APP,
+                        "[SSH] remote forwarding target 连接失败 id=%{public}s errno=%{public}d",
+                        connection.profileId.c_str(), target.errorCode);
+            return false;
+        }
+        connection.localFd = target.descriptor;
+        connection.localConnecting = false;
+    }
     if (connection.localFd < 0 || connection.sessionGeneration != diagnostics_.sessionGeneration()) {
         return false;
     }
@@ -1199,6 +1201,7 @@ bool SshAdapter::pumpLocalForwardConnectionLocked(LocalForwardConnection& connec
 }
 
 void SshAdapter::closeLocalForwardConnectionLocked(LocalForwardConnection& connection) {
+    connection.targetConnectTask.cancelAndClose();
     if (connection.channel != nullptr) {
         libssh2_channel_free(connection.channel);
         connection.channel = nullptr;
@@ -1315,40 +1318,46 @@ void SshAdapter::serviceForwardingOnReactor() {
                     }
                     break;
                 }
+                const size_t pendingTargetConnections = static_cast<size_t>(std::count_if(
+                    localForwardConnections_.begin(), localForwardConnections_.end(),
+                    [](const LocalForwardConnection& connection) {
+                        return connection.targetConnectTask.pending();
+                    }));
+                if (pendingTargetConnections >= kMaxForwardTargetConnectWorkers) {
+                    libssh2_channel_free(channel);
+                    OH_LOG_WARN(LOG_APP,
+                                "[SSH] remote forwarding target worker 已达上限 id=%{public}s",
+                                listener.profileId.c_str());
+                    break;
+                }
                 const SshForwardingResult acquired = forwardingManager_.acquireConnection(
                     listener.profileId, listener.sessionGeneration);
                 if (acquired != SshForwardingResult::Ok) {
                     libssh2_channel_free(channel);
                     continue;
                 }
-                bool connecting = false;
-                int errorCode = 0;
-                const int targetFd = createForwardTargetSocket(
-                    snapshot.config.targetHost, snapshot.config.targetPort,
-                    connecting, errorCode);
-                if (targetFd < 0) {
-                    (void)forwardingManager_.releaseConnection(listener.profileId,
-                                                                listener.sessionGeneration);
-                    libssh2_channel_free(channel);
-                    OH_LOG_WARN(LOG_APP,
-                                "[SSH] remote forwarding target 连接失败 id=%{public}s errno=%{public}d",
-                                listener.profileId.c_str(), errorCode);
-                    continue;
-                }
+                bool queued = false;
                 try {
                     LocalForwardConnection connection;
                     connection.profileId = listener.profileId;
                     connection.sessionGeneration = listener.sessionGeneration;
                     connection.mode = SshForwardingMode::Remote;
-                    connection.localFd = targetFd;
-                    connection.localConnecting = connecting;
                     connection.channel = channel;
-                    localForwardConnections_.push_back(std::move(connection));
+                    if (connection.targetConnectTask.start(
+                            snapshot.config.targetHost, snapshot.config.targetPort)) {
+                        localForwardConnections_.push_back(std::move(connection));
+                        queued = true;
+                    }
                 } catch (...) {
+                    // Cleanup below owns the manager slot and libssh2 channel.
+                }
+                if (!queued) {
                     (void)forwardingManager_.releaseConnection(listener.profileId,
                                                                 listener.sessionGeneration);
-                    close(targetFd);
                     libssh2_channel_free(channel);
+                    OH_LOG_WARN(LOG_APP,
+                                "[SSH] remote forwarding target worker 启动失败 id=%{public}s",
+                                listener.profileId.c_str());
                 }
             }
             continue;
@@ -1605,96 +1614,62 @@ int SshAdapter::waitSocketOnFd(int fd, int direction, int timeoutSec) {
 // ============================================================
 
 int SshAdapter::tcpConnect(const std::string& host, int port) {
-    const std::string logHost = SafeLog::MaskHost(host);
     if (host.empty() || port <= 0 || port > 65535) {
+        const std::string logHost = SafeLog::MaskHost(host);
         OH_LOG_ERROR(LOG_APP, "[SSH] 地址参数无效: host=%{public}s port=%{public}d",
                      logHost.c_str(), port);
         return ERR_SSH_DNS_RESOLVE;
     }
-
-    struct addrinfo hints {};
-    hints.ai_family = AF_UNSPEC;
-    hints.ai_socktype = SOCK_STREAM;
-    hints.ai_protocol = IPPROTO_TCP;
+    const auto endpoint = remotedesk::endpoint::ParseFields(
+        host, static_cast<std::uint16_t>(port),
+        remotedesk::endpoint::ParseMode::Persisted);
+    if (!endpoint.ok) {
+        return ERR_SSH_DNS_RESOLVE;
+    }
+    const std::string transportHost =
+        remotedesk::endpoint::TransportHost(endpoint.endpoint);
+    const std::string logHost = SafeLog::MaskHost(transportHost);
 
     char portString[16] = {0};
     snprintf(portString, sizeof(portString), "%d", port);
-    struct addrinfo* addresses = nullptr;
-    const int resolveResult = getaddrinfo(host.c_str(), portString, &hints, &addresses);
-    if (resolveResult != 0 || addresses == nullptr) {
+    remotedesk::net::ConnectOptions options;
+    options.deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    options.cancelled = [this]() {
+        return connectCancelRequested_.load(std::memory_order_acquire);
+    };
+    options.restoreBlocking = false;
+    remotedesk::net::ConnectResult connection;
+    const remotedesk::net::ResolveResult resolution =
+        remotedesk::net::ResolveAndConnectTcp(
+            transportHost, portString, options, connection);
+    if (resolution.status != remotedesk::net::ResolveStatus::Ready) {
         OH_LOG_ERROR(LOG_APP, "[SSH] DNS 解析失败: host=%{public}s code=%{public}d",
-                     logHost.c_str(), resolveResult);
+                     logHost.c_str(), resolution.gaiError);
         return ERR_SSH_DNS_RESOLVE;
     }
 
     OH_LOG_INFO(LOG_APP, "[SSH] 正在连接 %{public}s:%{public}d (AF_UNSPEC) ...",
                 logHost.c_str(), port);
 
-    bool sawSocketError = false;
-    bool sawTimeout = false;
-    for (struct addrinfo* address = addresses; address != nullptr; address = address->ai_next) {
-        sockFd_ = static_cast<int>(socket(address->ai_family, address->ai_socktype,
-                                          address->ai_protocol));
-        if (sockFd_ < 0) {
-            sawSocketError = true;
-            continue;
-        }
-
-        const int flags = fcntl(sockFd_, F_GETFL, 0);
-        if (flags < 0 || fcntl(sockFd_, F_SETFL, flags | O_NONBLOCK) < 0) {
-            sawSocketError = true;
-            close(sockFd_);
-            sockFd_ = -1;
-            continue;
-        }
-
-        int ret = ::connect(sockFd_, address->ai_addr, address->ai_addrlen);
-        if (ret < 0 && errno == EINPROGRESS) {
-            const int waitResult = waitSocket(1, 10);
-            if (waitResult == -2) {
-                sawTimeout = true;
-                close(sockFd_);
-                sockFd_ = -1;
-                continue;
-            }
-            if (waitResult != 0) {
-                sawSocketError = true;
-                close(sockFd_);
-                sockFd_ = -1;
-                continue;
-            }
-
-            int socketError = 0;
-            socklen_t socketErrorLength = sizeof(socketError);
-            if (getsockopt(sockFd_, SOL_SOCKET, SO_ERROR, &socketError,
-                           &socketErrorLength) != 0 || socketError != 0) {
-                sawSocketError = true;
-                close(sockFd_);
-                sockFd_ = -1;
-                continue;
-            }
-        } else if (ret < 0) {
-            sawSocketError = true;
-            close(sockFd_);
-            sockFd_ = -1;
-            continue;
-        }
-
-        const int family = address->ai_family;
-        freeaddrinfo(addresses);
+    if (connection.status == remotedesk::net::ConnectStatus::Connected &&
+        connection.descriptor >= 0) {
+        sockFd_ = connection.descriptor;
         OH_LOG_INFO(LOG_APP, "[SSH] TCP 连接建立成功, family=%{public}d fd=%{public}d",
-                    family, sockFd_);
+                    connection.family, sockFd_);
         return 0;
     }
-
-    freeaddrinfo(addresses);
     sockFd_ = -1;
-    if (sawTimeout) {
+    if (connection.status == remotedesk::net::ConnectStatus::Cancelled) {
+        OH_LOG_WARN(LOG_APP, "[SSH] 连接已取消: %{public}s:%{public}d",
+                    logHost.c_str(), port);
+        return ERR_SSH_CONNECT_TIMEOUT;
+    }
+    if (connection.status == remotedesk::net::ConnectStatus::TimedOut) {
         OH_LOG_ERROR(LOG_APP, "[SSH] 连接超时: %{public}s:%{public}d", logHost.c_str(), port);
         return ERR_SSH_CONNECT_TIMEOUT;
     }
-    OH_LOG_ERROR(LOG_APP, "[SSH] 所有地址连接失败: host=%{public}s socketError=%{public}s",
-                 logHost.c_str(), sawSocketError ? "yes" : "no");
+    OH_LOG_ERROR(LOG_APP, "[SSH] 所有地址连接失败: host=%{public}s error=%{public}d",
+                 logHost.c_str(), connection.lastError);
     return ERR_SSH_SOCKET_CONNECT;
 }
 
@@ -1808,25 +1783,23 @@ int SshAdapter::connectThroughProxy(const ConnectionConfig& cfg) {
         return ERR_SSH_PROXY_INVALID;
     }
 
+    const int targetPort = cfg.port > 0 ? cfg.port : 22;
+    const auto target = remotedesk::ssh::PrepareProxyTarget(
+        type, cfg.host, static_cast<std::uint16_t>(targetPort));
+    if (!target.ok) {
+        return ERR_SSH_PROXY_INVALID;
+    }
+
     int ret = tcpConnect(cfg.sshProxyHost, cfg.sshProxyPort);
     if (ret != 0) { return ret; }
 
-    std::string targetHost = cfg.host;
-    if (targetHost.size() >= 2 && targetHost.front() == '[' && targetHost.back() == ']') {
-        targetHost = targetHost.substr(1, targetHost.size() - 2);
-    }
-    const int targetPort = cfg.port > 0 ? cfg.port : 22;
+    const std::string& targetHost = target.transportHost;
     if (targetHost.empty() || targetHost.size() > 255) {
         return ERR_SSH_PROXY_INVALID;
     }
 
     if (type == "http_connect") {
-        std::string hostHeader = targetHost;
-        in6_addr ipv6 {};
-        if (inet_pton(AF_INET6, targetHost.c_str(), &ipv6) == 1) {
-            hostHeader = "[" + targetHost + "]";
-        }
-        hostHeader += ":" + std::to_string(targetPort);
+        const std::string& hostHeader = target.uriAuthority;
         std::string request = "CONNECT " + hostHeader + " HTTP/1.1\r\n";
         request += "Host: " + hostHeader + "\r\n";
         request += "Proxy-Connection: Keep-Alive\r\n";
@@ -1969,6 +1942,30 @@ int SshAdapter::connectThroughSshJump(const ConnectionConfig& cfg) {
             1, SshRouteKind::SshJump, cfg.host, cfg.port, *hops, "", 10000})) {
         return ERR_SSH_PROXY_INVALID;
     }
+    const auto targetEndpoint = remotedesk::endpoint::ParseFields(
+        cfg.host, static_cast<std::uint16_t>(cfg.port),
+        remotedesk::endpoint::ParseMode::Persisted);
+    if (!targetEndpoint.ok || !targetEndpoint.endpoint.scope().empty()) {
+        // The final target is resolved by the last jump server. Interface
+        // scopes belong to the local network namespace and cannot cross it.
+        return ERR_SSH_PROXY_INVALID;
+    }
+    const std::string normalizedTargetHost =
+        remotedesk::endpoint::TransportHost(targetEndpoint.endpoint);
+    std::vector<SshJumpHop> normalizedHops = *hops;
+    for (size_t index = 0; index < normalizedHops.size(); ++index) {
+        const auto hopEndpoint = remotedesk::endpoint::ParseFields(
+            normalizedHops[index].host,
+            static_cast<std::uint16_t>(normalizedHops[index].port),
+            remotedesk::endpoint::ParseMode::Persisted);
+        if (!hopEndpoint.ok ||
+            (index > 0 && !hopEndpoint.endpoint.scope().empty())) {
+            return ERR_SSH_PROXY_INVALID;
+        }
+        normalizedHops[index].host =
+            remotedesk::endpoint::TransportHost(hopEndpoint.endpoint);
+    }
+    hops = &normalizedHops;
     if (cfg.sshJumpHopHandoffs.size() > hops->size()) {
         return ERR_SSH_PROXY_INVALID;
     }
@@ -2177,17 +2174,12 @@ int SshAdapter::connectThroughSshJump(const ConnectionConfig& cfg) {
         }
 
         const std::string nextHost = index + 1 < hops->size()
-            ? (*hops)[index + 1].host : cfg.host;
+            ? (*hops)[index + 1].host : normalizedTargetHost;
         const int nextPort = index + 1 < hops->size()
             ? (*hops)[index + 1].port : cfg.port;
-        std::string normalizedNextHost = nextHost;
-        if (normalizedNextHost.size() >= 2 && normalizedNextHost.front() == '[' &&
-            normalizedNextHost.back() == ']') {
-            normalizedNextHost = normalizedNextHost.substr(1, normalizedNextHost.size() - 2);
-        }
         LIBSSH2_CHANNEL* channel = nullptr;
         while ((channel = libssh2_channel_direct_tcpip_ex(
-                    runtime->session, normalizedNextHost.c_str(), nextPort,
+                    runtime->session, nextHost.c_str(), nextPort,
                     "127.0.0.1", 22)) == nullptr) {
             if (libssh2_session_last_errno(runtime->session) != LIBSSH2_ERROR_EAGAIN) {
                 return fail(ERR_SSH_PROXY_FAILED);
@@ -2218,11 +2210,11 @@ int SshAdapter::connectThroughSshJump(const ConnectionConfig& cfg) {
         startRelay();
         OH_LOG_INFO(LOG_APP,
                     "[SSH] ProxyJump hop=%{public}zu ready next=%{public}s:%{public}d",
-                    index + 1, SafeLog::MaskHost(normalizedNextHost).c_str(), nextPort);
+                    index + 1, SafeLog::MaskHost(nextHost).c_str(), nextPort);
     }
 
     OH_LOG_INFO(LOG_APP, "[SSH] ProxyJump chain established hops=%{public}zu target=%{public}s:%{public}d",
-                hops->size(), SafeLog::MaskHost(cfg.host).c_str(), cfg.port);
+                hops->size(), SafeLog::MaskHost(normalizedTargetHost).c_str(), cfg.port);
     return 0;
 }
 
