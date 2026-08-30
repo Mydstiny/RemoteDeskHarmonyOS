@@ -30,6 +30,19 @@ inline void sshSecureWipe(void* memory, std::size_t size) noexcept {
     }
 }
 
+inline void sshWipeSensitiveString(std::string& value) noexcept {
+    if (!value.empty()) {
+        sshSecureWipe(value.data(), value.size());
+    }
+}
+
+template <typename StringContainer>
+inline void sshWipeSensitiveStrings(StringContainer& values) noexcept {
+    for (auto& value : values) {
+        sshWipeSensitiveString(value);
+    }
+}
+
 /** Wipes the current payload on every scope exit without retaining a pointer
  * that container growth could invalidate. The container remains valid and
  * keeps its size so tests and callers can verify the entire payload was zeroed.
@@ -58,11 +71,7 @@ public:
     explicit SshSensitiveStringCollectionGuard(
         StringContainer& values) noexcept : values_(values) {}
     ~SshSensitiveStringCollectionGuard() noexcept {
-        for (auto& value : values_) {
-            if (!value.empty()) {
-                sshSecureWipe(value.data(), value.size());
-            }
-        }
+        sshWipeSensitiveStrings(values_);
     }
 
     SshSensitiveStringCollectionGuard(

@@ -210,7 +210,7 @@ public:
 
     /** Read the current one-shot keyboard-interactive prompt, if any. */
     bool getAuthPrompt(SshAuthPromptRequest& out) const;
-    bool respondAuthPrompt(const SshAuthPromptResponse& response);
+    bool respondAuthPrompt(SshAuthPromptResponse response);
     bool cancelAuthPrompt(uint64_t requestId, uint64_t expectedGeneration);
 
     /** Internal libssh2 callback bridge shared by target and jump auth. */

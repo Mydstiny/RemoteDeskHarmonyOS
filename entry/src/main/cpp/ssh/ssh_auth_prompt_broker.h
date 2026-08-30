@@ -9,12 +9,15 @@
 #ifndef SSH_AUTH_PROMPT_BROKER_H
 #define SSH_AUTH_PROMPT_BROKER_H
 
+#include "ssh_sensitive_buffer.h"
+
 #include <algorithm>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <mutex>
 #include <string>
+#include <utility>
 #include <vector>
 
 struct SshAuthPrompt {
@@ -54,6 +57,64 @@ struct SshAuthPromptResponse {
     uint64_t generation = 0;
     std::vector<std::string> responses;
     bool cancelled = false;
+
+    SshAuthPromptResponse() = default;
+    SshAuthPromptResponse(
+        uint32_t responseSchemaVersion, uint64_t responseRequestId,
+        uint64_t responseSessionId, uint64_t responseGeneration,
+        std::vector<std::string> responseValues, bool responseCancelled)
+        : schemaVersion(responseSchemaVersion),
+          requestId(responseRequestId),
+          sessionId(responseSessionId),
+          generation(responseGeneration),
+          responses(std::move(responseValues)),
+          cancelled(responseCancelled) {}
+
+    SshAuthPromptResponse(const SshAuthPromptResponse& other)
+        : schemaVersion(other.schemaVersion),
+          requestId(other.requestId),
+          sessionId(other.sessionId),
+          generation(other.generation),
+          responses(other.responses),
+          cancelled(other.cancelled) {}
+
+    SshAuthPromptResponse(SshAuthPromptResponse&& other) noexcept
+        : schemaVersion(other.schemaVersion),
+          requestId(other.requestId),
+          sessionId(other.sessionId),
+          generation(other.generation),
+          responses(std::move(other.responses)),
+          cancelled(other.cancelled) {}
+
+    SshAuthPromptResponse& operator=(const SshAuthPromptResponse& other) {
+        if (this == &other) { return *this; }
+        wipeResponses();
+        schemaVersion = other.schemaVersion;
+        requestId = other.requestId;
+        sessionId = other.sessionId;
+        generation = other.generation;
+        responses = other.responses;
+        cancelled = other.cancelled;
+        return *this;
+    }
+
+    SshAuthPromptResponse& operator=(SshAuthPromptResponse&& other) noexcept {
+        if (this == &other) { return *this; }
+        wipeResponses();
+        schemaVersion = other.schemaVersion;
+        requestId = other.requestId;
+        sessionId = other.sessionId;
+        generation = other.generation;
+        responses = std::move(other.responses);
+        cancelled = other.cancelled;
+        return *this;
+    }
+
+    ~SshAuthPromptResponse() noexcept { wipeResponses(); }
+
+    void wipeResponses() noexcept {
+        sshWipeSensitiveStrings(responses);
+    }
 };
 
 enum class SshAuthPromptWaitResult : uint8_t {
@@ -81,6 +142,7 @@ public:
         std::vector<std::string>& responses,
         std::chrono::steady_clock::time_point absoluteDeadline =
             std::chrono::steady_clock::time_point::max()) {
+        sshWipeSensitiveStrings(responses);
         responses.clear();
         if (prompts.empty()) {
             return SshAuthPromptWaitResult::Responded;
@@ -222,18 +284,20 @@ public:
         return true;
     }
 
-    bool respond(const SshAuthPromptResponse& response) {
+    bool respond(SshAuthPromptResponse response) {
         std::lock_guard<std::mutex> lock(mutex_);
         if (!pending_ || closed_ || response.requestId != pendingRequest_.requestId ||
             response.sessionId != pendingRequest_.sessionId ||
             response.generation != pendingRequest_.generation || response.cancelled ||
+            responseReady_ ||
             response.responses.size() != pendingRequest_.prompts.size()) {
             return false;
         }
         for (const std::string& value : response.responses) {
             if (value.size() > kMaxPromptBytes) { return false; }
         }
-        responseValues_ = response.responses;
+        sshWipeSensitiveStrings(responseValues_);
+        responseValues_ = std::move(response.responses);
         responseReady_ = true;
         cv_.notify_all();
         return true;
@@ -291,10 +355,7 @@ private:
     void clearPendingLocked() {
         pending_ = false;
         responseReady_ = false;
-        for (std::string& value : responseValues_) {
-            volatile char* bytes = value.data();
-            for (size_t index = 0; index < value.size(); ++index) { bytes[index] = '\0'; }
-        }
+        sshWipeSensitiveStrings(responseValues_);
         responseValues_.clear();
         pendingRequest_ = {};
     }

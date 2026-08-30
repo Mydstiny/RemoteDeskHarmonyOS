@@ -26,6 +26,7 @@
 #include "ssh/ssh_operation_executor.h"
 #include "ssh/ssh_session_manager.h"
 #include "ssh/ssh_pending_connect_registry.h"
+#include "ssh/ssh_sensitive_buffer.h"
 #include "audio/input_handler.h"
 #include "audio/audio_player.h"
 #include "common/safe_log.h"
@@ -1284,6 +1285,7 @@ constexpr size_t kMaxSshForwardingIdLength = 96U;
 
 static bool ReadBoundedNapiStringValue(
     napi_env env, napi_value value, size_t maxLength, std::string& output) {
+    sshWipeSensitiveString(output);
     output.clear();
     napi_valuetype type = napi_undefined;
     if (napi_typeof(env, value, &type) != napi_ok || type != napi_string) {
@@ -1296,6 +1298,7 @@ static bool ReadBoundedNapiStringValue(
     }
     try {
         std::vector<char> buffer(len + 1, '\0');
+        SshSensitiveBufferGuard<std::vector<char>> bufferGuard(buffer);
         size_t copied = 0;
         status = napi_get_value_string_utf8(env, value, buffer.data(), buffer.size(), &copied);
         if (status != napi_ok || copied > maxLength) {
@@ -1304,6 +1307,7 @@ static bool ReadBoundedNapiStringValue(
         output.assign(buffer.data(), copied);
         return true;
     } catch (...) {
+        sshWipeSensitiveString(output);
         output.clear();
         return false;
     }
@@ -1349,6 +1353,8 @@ static bool ReadStrictNapiInt64Value(
 static void ParseBoundedSshResponseArray(napi_env env, napi_value object,
                                          const char* property,
                                          std::vector<std::string>& output) {
+    sshWipeSensitiveStrings(output);
+    output.clear();
     if (object == nullptr || property == nullptr) { return; }
     napi_value value;
     bool isArray = false;
@@ -1359,14 +1365,21 @@ static void ParseBoundedSshResponseArray(napi_env env, napi_value object,
     uint32_t count = 0;
     if (napi_get_array_length(env, value, &count) != napi_ok) { return; }
     count = std::min<uint32_t>(count, 32);
+    try {
+        output.reserve(count);
+    } catch (...) {
+        return;
+    }
     for (uint32_t index = 0; index < count; ++index) {
         napi_value item;
         if (napi_get_element(env, value, index, &item) != napi_ok) { continue; }
         napi_valuetype type = napi_undefined;
         if (napi_typeof(env, item, &type) != napi_ok || type != napi_string) { continue; }
-        std::string response;
-        if (!ReadBoundedNapiStringValue(env, item, 4096, response)) { continue; }
-        output.push_back(std::move(response));
+        output.emplace_back();
+        if (!ReadBoundedNapiStringValue(env, item, 4096, output.back())) {
+            sshWipeSensitiveString(output.back());
+            output.pop_back();
+        }
     }
 }
 
@@ -1651,6 +1664,8 @@ static bool FinalizeSshRoute(ConnectionConfig& config) {
 static bool ReadStrictBoundedSshResponseArray(
     napi_env env, napi_value object, const char* property,
     std::vector<std::string>& output) {
+    sshWipeSensitiveStrings(output);
+    output.clear();
     bool present = false;
     if (napi_has_named_property(env, object, property, &present) != napi_ok) {
         return false;
@@ -1671,12 +1686,24 @@ static bool ReadStrictBoundedSshResponseArray(
     if (napi_get_array_length(env, value, &count) != napi_ok || count > 32) {
         return false;
     }
+    try {
+        output.reserve(count);
+    } catch (...) {
+        return false;
+    }
     for (uint32_t index = 0; index < count; ++index) {
         napi_value item;
-        if (napi_get_element(env, value, index, &item) != napi_ok) { return false; }
-        std::string response;
-        if (!ReadBoundedNapiStringValue(env, item, 4096, response)) { return false; }
-        output.push_back(std::move(response));
+        if (napi_get_element(env, value, index, &item) != napi_ok) {
+            sshWipeSensitiveStrings(output);
+            output.clear();
+            return false;
+        }
+        output.emplace_back();
+        if (!ReadBoundedNapiStringValue(env, item, 4096, output.back())) {
+            sshWipeSensitiveStrings(output);
+            output.clear();
+            return false;
+        }
     }
     return true;
 }
@@ -4857,33 +4884,9 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
             cfg.sshProxyPort = cfg.gatewayPort;
             if (cfg.sshProxyType.empty()) { cfg.sshProxyType = "legacy_gateway"; }
         }
-        napi_value responseValue;
-        bool isArray = false;
-        if (napi_get_named_property(env, args[0], "keyboardInteractiveResponses",
-                                    &responseValue) == napi_ok &&
-            napi_is_array(env, responseValue, &isArray) == napi_ok && isArray) {
-            uint32_t responseCount = 0;
-            if (napi_get_array_length(env, responseValue, &responseCount) == napi_ok) {
-                // A bounded response list prevents a malformed config from
-                // allocating unbounded secret material in the native bridge.
-                responseCount = std::min<uint32_t>(responseCount, 32);
-                for (uint32_t index = 0; index < responseCount; ++index) {
-                    napi_value responseItem;
-                    if (napi_get_element(env, responseValue, index, &responseItem) != napi_ok) {
-                        continue;
-                    }
-                    napi_valuetype responseType = napi_undefined;
-                    if (napi_typeof(env, responseItem, &responseType) != napi_ok ||
-                        responseType != napi_string) {
-                        continue;
-                    }
-                    std::string response;
-                    if (!ReadBoundedNapiStringValue(
-                            env, responseItem, 4096, response)) { continue; }
-                    cfg.sshKeyboardInteractiveResponses.push_back(std::move(response));
-                }
-            }
-        }
+        ParseBoundedSshResponseArray(
+            env, args[0], "keyboardInteractiveResponses",
+            cfg.sshKeyboardInteractiveResponses);
         ParseBoundedSshResponseArray(env, args[0],
                                      "sshProxyKeyboardInteractiveResponses",
                                      cfg.sshProxyKeyboardInteractiveResponses);
@@ -5939,27 +5942,9 @@ static bool ParseSshConnectionConfig(napi_env env, napi_value value,
         if (config.sshProxyType.empty()) { config.sshProxyType = "legacy_gateway"; }
     }
 
-    napi_value responseValue;
-    bool isArray = false;
-    if (napi_get_named_property(env, value, "keyboardInteractiveResponses",
-                                &responseValue) == napi_ok &&
-        napi_is_array(env, responseValue, &isArray) == napi_ok && isArray) {
-        uint32_t responseCount = 0;
-        if (napi_get_array_length(env, responseValue, &responseCount) == napi_ok) {
-            responseCount = std::min<uint32_t>(responseCount, 32);
-            for (uint32_t index = 0; index < responseCount; ++index) {
-                napi_value item;
-                if (napi_get_element(env, responseValue, index, &item) != napi_ok) { continue; }
-                napi_valuetype itemType = napi_undefined;
-                if (napi_typeof(env, item, &itemType) != napi_ok || itemType != napi_string) {
-                    continue;
-                }
-                std::string response;
-                if (!ReadBoundedNapiStringValue(env, item, 4096, response)) { continue; }
-                config.sshKeyboardInteractiveResponses.push_back(std::move(response));
-            }
-        }
-    }
+    ParseBoundedSshResponseArray(
+        env, value, "keyboardInteractiveResponses",
+        config.sshKeyboardInteractiveResponses);
     ParseBoundedSshResponseArray(env, value,
                                  "sshProxyKeyboardInteractiveResponses",
                                  config.sshProxyKeyboardInteractiveResponses);
@@ -9141,6 +9126,7 @@ static bool ReadSshAuthPromptResponse(
     if (napi_get_named_property(env, object, "cancelled", &value) == napi_ok) {
         (void)napi_get_value_bool(env, value, &response.cancelled);
     }
+    response.wipeResponses();
     response.responses.clear();
     ParseBoundedSshResponseArray(env, object, "responses", response.responses);
     return true;
@@ -9186,7 +9172,7 @@ napi_value NapiRespondSshAuthPrompt(napi_env env, napi_callback_info info) {
         const SshForwardingResult result = ResolveSshForwardingSession(
             static_cast<int32_t>(response.sessionId), response.generation, access);
         accepted = result == SshForwardingResult::Ok &&
-            access.adapter->respondAuthPrompt(response);
+            access.adapter->respondAuthPrompt(std::move(response));
     }
     napi_value result;
     napi_get_boolean(env, accepted, &result);

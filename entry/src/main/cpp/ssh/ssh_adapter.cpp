@@ -347,14 +347,14 @@ bool SshAdapter::getAuthPrompt(SshAuthPromptRequest& out) const {
     return authPromptBroker_.snapshot(out);
 }
 
-bool SshAdapter::respondAuthPrompt(const SshAuthPromptResponse& response) {
+bool SshAdapter::respondAuthPrompt(SshAuthPromptResponse response) {
     if (response.cancelled) {
         return cancelAuthPrompt(response.requestId, response.generation);
     }
     if (response.sessionId == 0 || response.generation == 0) {
         return false;
     }
-    return authPromptBroker_.respond(response);
+    return authPromptBroker_.respond(std::move(response));
 }
 
 bool SshAdapter::cancelAuthPrompt(uint64_t requestId, uint64_t expectedGeneration) {

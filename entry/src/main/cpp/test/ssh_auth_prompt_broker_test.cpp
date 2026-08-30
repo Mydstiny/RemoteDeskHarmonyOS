@@ -2,7 +2,20 @@
 #include "ssh/ssh_auth_prompt_broker.h"
 
 #include <chrono>
+#include <algorithm>
 #include <thread>
+
+RDP_TEST_CASE(ssh_auth_prompt_response_wipes_every_owned_copy) {
+    SshAuthPromptResponse response {
+        1, 1, 2, 3, {"password-copy", "654321"}, false};
+    response.wipeResponses();
+    RDP_ASSERT(std::all_of(
+        response.responses[0].begin(), response.responses[0].end(),
+        [](char byte) { return byte == '\0'; }));
+    RDP_ASSERT(std::all_of(
+        response.responses[1].begin(), response.responses[1].end(),
+        [](char byte) { return byte == '\0'; }));
+}
 
 RDP_TEST_CASE(ssh_auth_prompt_broker_round_trip_preserves_prompt_metadata) {
     SshAuthPromptBroker broker;
