@@ -199,6 +199,26 @@ ConnectResult connectedResult(ActiveSocket winner,
         result.attemptedCandidates = attempted;
         return result;
     }
+#if defined(RDP_TESTS_ONLY)
+    if (options.afterRestoreForTest) {
+        try {
+            options.afterRestoreForTest();
+        } catch (...) {
+            result.status = ConnectStatus::Cancelled;
+            result.lastError = ECANCELED;
+            result.attemptedCandidates = attempted;
+            return result;
+        }
+    }
+#endif
+    // Cancellation can race the fcntl restoration above. The descriptor is
+    // still guarded here, so cancellation wins until the exact handoff.
+    if (cancellationRequested(options.cancelled)) {
+        result.status = ConnectStatus::Cancelled;
+        result.lastError = ECANCELED;
+        result.attemptedCandidates = attempted;
+        return result;
+    }
     result.status = ConnectStatus::Connected;
     result.family = winner.address.family;
     result.attemptedCandidates = attempted;

@@ -46,6 +46,10 @@ struct ConnectOptions final {
     std::function<bool()> cancelled;
     std::size_t maxCandidates = 16;
     bool restoreBlocking = true;
+#if defined(RDP_TESTS_ONLY)
+    /** Deterministic seam for cancellation after winner flag restoration. */
+    std::function<void()> afterRestoreForTest;
+#endif
 };
 
 struct ConnectResult final {

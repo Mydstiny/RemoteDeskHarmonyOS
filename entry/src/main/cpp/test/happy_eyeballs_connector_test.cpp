@@ -132,6 +132,32 @@ RDP_TEST_CASE(happy_eyeballs_honors_cancellation_before_socket_creation) {
     RDP_ASSERT(result.attemptedCandidates == 0U);
 }
 
+RDP_TEST_CASE(happy_eyeballs_cancellation_after_restore_closes_winner) {
+    const int listener = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    RDP_ASSERT(listener >= 0);
+    sockaddr_in bound{};
+    bound.sin_family = AF_INET;
+    bound.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    bound.sin_port = 0;
+    RDP_ASSERT(::bind(listener, reinterpret_cast<sockaddr*>(&bound), sizeof(bound)) == 0);
+    RDP_ASSERT(::listen(listener, 1) == 0);
+    socklen_t boundLength = sizeof(bound);
+    RDP_ASSERT(::getsockname(listener, reinterpret_cast<sockaddr*>(&bound),
+                             &boundLength) == 0);
+
+    std::atomic<bool> cancelled{false};
+    remotedesk::net::ConnectOptions options;
+    options.deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    options.cancelled = [&cancelled]() { return cancelled.load(); };
+    options.afterRestoreForTest = [&cancelled]() { cancelled.store(true); };
+    const auto result = remotedesk::net::ConnectTcpCandidates(
+        {address4("127.0.0.1", ntohs(bound.sin_port))}, options);
+    RDP_ASSERT(result.status == remotedesk::net::ConnectStatus::Cancelled);
+    RDP_ASSERT(result.descriptor < 0);
+    RDP_ASSERT(result.lastError == ECANCELED);
+    ::close(listener);
+}
+
 RDP_TEST_CASE(happy_eyeballs_resolves_ipv6_literal_without_dns_worker) {
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
     const auto result = remotedesk::net::ResolveTcpAddresses(
