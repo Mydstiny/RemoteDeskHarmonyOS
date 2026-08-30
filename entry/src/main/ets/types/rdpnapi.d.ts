@@ -171,14 +171,6 @@ declare module 'librdpnapi.so' {
   export function inspectSshPrivateKey(privateKeyPem: string, passphrase: string): SshPrivateKeyInfo;
   export function changeSshPrivateKeyPassphrase(privateKeyPem: string, oldPassphrase: string, newPassphrase: string): string;
   export function validatePublicKeyForAuthorizedKeys(publicKeyOpenSsh: string): boolean;
-  export function installSshPublicKey(host: string, port: number, username: string, password: string, privateKeyPem: string, passphrase: string, publicKey: string): SshPublicKeyInstallResult;
-  export function testSshKeyAuth(host: string, port: number, username: string, privateKeyPem: string,
-    passphrase: string, proxy?: SshProxyConfig): SshAuthTestResult;
-  export function testSshKeyAuthAsync(host: string, port: number, username: string, privateKeyPem: string,
-    passphrase: string, proxy?: SshProxyConfig): Promise<SshAuthTestResult>;
-  export function probeSshHostKey(host: string, port: number, proxy?: SshProxyConfig): SshHostKeyInfo;
-  export function probeSshHostKeyAsync(host: string, port: number,
-    proxy?: SshProxyConfig): Promise<SshHostKeyInfo>;
   export function probeSshHostKeyOperationAsync(config: SessionConfig, operationId: number,
     timeoutMs: number): Promise<SshHostKeyInfo> & { operationId: number };
   export function testSshKeyAuthOperationAsync(config: SessionConfig, operationId: number,

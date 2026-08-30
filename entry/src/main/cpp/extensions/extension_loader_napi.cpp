@@ -11991,27 +11991,7 @@ napi_value ExtensionLoaderNapi::Init(napi_env env, napi_value exports) {
                          NapiValidatePublicKeyForAuthorizedKeys, nullptr, &fn);
     napi_set_named_property(env, exports, "validatePublicKeyForAuthorizedKeys", fn);
 
-    // SSH 远端安装/测试
-    napi_create_function(env, "installSshPublicKey", NAPI_AUTO_LENGTH,
-                         NapiInstallSshPublicKey, nullptr, &fn);
-    napi_set_named_property(env, exports, "installSshPublicKey", fn);
-
-    napi_create_function(env, "testSshKeyAuth", NAPI_AUTO_LENGTH,
-                         NapiTestSshKeyAuth, nullptr, &fn);
-    napi_set_named_property(env, exports, "testSshKeyAuth", fn);
-
-    napi_create_function(env, "testSshKeyAuthAsync", NAPI_AUTO_LENGTH,
-                         NapiTestSshKeyAuthAsync, nullptr, &fn);
-    napi_set_named_property(env, exports, "testSshKeyAuthAsync", fn);
-
-    napi_create_function(env, "probeSshHostKey", NAPI_AUTO_LENGTH,
-                         NapiProbeSshHostKey, nullptr, &fn);
-    napi_set_named_property(env, exports, "probeSshHostKey", fn);
-
-    napi_create_function(env, "probeSshHostKeyAsync", NAPI_AUTO_LENGTH,
-                         NapiProbeSshHostKeyAsync, nullptr, &fn);
-    napi_set_named_property(env, exports, "probeSshHostKeyAsync", fn);
-
+    // SSH 远端操作只暴露路由绑定、可取消的异步接口。
     napi_create_function(env, "probeSshHostKeyOperationAsync", NAPI_AUTO_LENGTH,
                          NapiProbeSshHostKeyOperationAsync, nullptr, &fn);
     napi_set_named_property(env, exports, "probeSshHostKeyOperationAsync", fn);
