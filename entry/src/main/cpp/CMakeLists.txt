@@ -306,6 +306,7 @@ if(RDP_BUILD_TESTS)
         test/ssh_pty_recovery_policy_test.cpp
         test/ssh_reconnect_policy_test.cpp
         test/ssh_network_lifecycle_policy_test.cpp
+        test/ssh_route_call_surface_contract_test.cpp
         test/ssh_connect_error_policy_test.cpp
         test/ssh_sensitive_buffer_test.cpp
         test/ssh_session_manager_test.cpp
@@ -470,6 +471,7 @@ if(RDP_BUILD_TESTS)
         RDP_NATIVE_CALLBACK_TESTING=1
         RDP_TESTS_ONLY=1
         RDP_MOONLIGHT_HOST_OPUS_TEST=1
+        REMOTEDESK_NATIVE_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
     )
     # RDP_TESTS_ONLY returns before the production-wide C++ standard block
     # below. Keep the standalone host test target explicit so headers using
