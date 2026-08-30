@@ -38,6 +38,7 @@ add_custom_target(remotedesk_build_identity ALL
 set(COMMON_SOURCES
     common/endpoint_address_policy.cpp
     common/happy_eyeballs_connector.cpp
+    common/network_generation_fence.cpp
     common/safe_log.cpp
     input/remote_cursor_snapshot.cpp
 )
@@ -357,6 +358,7 @@ if(RDP_BUILD_TESTS)
         test/safe_log_test.cpp
         test/endpoint_address_policy_test.cpp
         test/happy_eyeballs_connector_test.cpp
+        test/network_generation_fence_test.cpp
         test/moonlight_host_api_test.cpp
         test/moonlight_http_request_formatting_test.cpp
         test/moonlight_http_response_framing_test.cpp
@@ -391,6 +393,7 @@ if(RDP_BUILD_TESTS)
         common/safe_log.cpp
         common/endpoint_address_policy.cpp
         common/happy_eyeballs_connector.cpp
+        common/network_generation_fence.cpp
         input/remote_cursor_snapshot.cpp
         ssh/ssh_forward_target_connector.cpp
         ssh/ssh_proxy_target_policy.cpp
