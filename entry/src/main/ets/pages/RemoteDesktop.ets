@@ -5070,7 +5070,8 @@ struct RemoteDesktop {
       this.loader.attachRustDeskMultiCanvasPreview(
         this.sessionId, display.display, this.rustDeskPreviewSurfaceId,
         this.rustDeskPreviewSurfaceWidthPx, this.rustDeskPreviewSurfaceHeightPx,
-        sourceWidth, sourceHeight, this.rustDeskPreviewCodec());
+        sourceWidth, sourceHeight, this.rustDeskPreviewCodec(),
+        this.canvasVisualFlipX, this.canvasVisualFlipY);
     this.rustDeskMultiCanvasPreview = snapshot;
     if (!snapshot.active) {
       promptAction.showToast({
@@ -5513,6 +5514,7 @@ struct RemoteDesktop {
     };
     if (this.rendererHandle > 0) {
       this.applyCanvasTransform();
+      this.syncRustDeskMultiCanvasPreviewVisualTransform(reason);
       this.requestRemoteCursorViewRefresh(true);
       this.syncRemoteSystemPointer('rustdesk-desktop-flip-' + reason,
         this.remoteSurfaceHovered !== false, true);
@@ -5525,6 +5527,22 @@ struct RemoteDesktop {
       ' controlY=' + (state.controlFlipY ? '1' : '0') +
       ' renderer=' + this.rendererHandle.toString() +
       ' transformVersion=' + this.rendererCanvasTransformPendingVersion.toString());
+  }
+
+  /** The read-only second canvas shares the host's visual correction, never its input axes. */
+  private syncRustDeskMultiCanvasPreviewVisualTransform(reason: string): void {
+    if (!this.rustDeskMultiCanvasPreview.active || this.sessionId <= 0 ||
+      this.rustDeskMultiCanvasPreview.display < 0) {
+      return;
+    }
+    const accepted: boolean = this.loader.setRustDeskMultiCanvasPreviewTransform(
+      this.sessionId, this.rustDeskMultiCanvasPreview.display,
+      this.canvasVisualFlipX, this.canvasVisualFlipY);
+    hilog.info(RD_DOMAIN, RD_TAG, 'rustdeskFlipPreviewApplied reason=' + reason +
+      ' display=' + this.rustDeskMultiCanvasPreview.display.toString() +
+      ' visualX=' + (this.canvasVisualFlipX ? '1' : '0') +
+      ' visualY=' + (this.canvasVisualFlipY ? '1' : '0') +
+      ' accepted=' + (accepted ? '1' : '0'));
   }
 
   private restoreRustDeskDesktopFlipMode(host: RemoteHost, reason: string): void {

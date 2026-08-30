@@ -127,7 +127,10 @@ declare module 'librdpnapi.so' {
   export function getRustDeskDisplayCapabilities(sessionId: number): RustDeskDisplayCapabilities;
   export function attachRustDeskMultiCanvasPreview(sessionId: number, display: number,
     surfaceId: string, surfaceWidth: number, surfaceHeight: number, sourceWidth: number,
-    sourceHeight: number, codec: number): RustDeskMultiCanvasPreviewSnapshot;
+    sourceHeight: number, codec: number, visualFlipX?: boolean,
+    visualFlipY?: boolean): RustDeskMultiCanvasPreviewSnapshot;
+  export function setRustDeskMultiCanvasPreviewTransform(sessionId: number, display: number,
+    visualFlipX: boolean, visualFlipY: boolean): boolean;
   export function detachRustDeskMultiCanvasPreview(sessionId: number, display: number): boolean;
   export function getRustDeskMultiCanvasPreview(sessionId: number,
     display: number): RustDeskMultiCanvasPreviewSnapshot;

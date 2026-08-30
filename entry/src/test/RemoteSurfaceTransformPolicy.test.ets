@@ -143,5 +143,32 @@ export default function remoteSurfaceTransformPolicyTest(): void {
       expect(Math.abs(vertical.x - 10) < 0.01).assertTrue();
       expect(Math.abs(vertical.y + 5) < 0.01).assertTrue();
     });
+
+    it('keeps_mirrored_viewport_start_edges_inside', 0, (): void => {
+      const horizontal: RemoteSurfaceTransform = {
+        remoteWidth: 100, remoteHeight: 80,
+        viewportX: 0, viewportY: 0, viewportW: 100, viewportH: 80,
+        surfaceWidthPx: 100, surfaceHeightPx: 80,
+        surfaceWidthVp: 100, surfaceHeightVp: 80,
+        flipX: true
+      };
+      const left = surfacePointToRemote(horizontal, 0, 40);
+      expect(left.inside).assertTrue();
+      expect(left.x).assertEqual(99);
+
+      const vertical: RemoteSurfaceTransform = { ...horizontal, flipX: false, flipY: true };
+      const top = surfacePointToRemote(vertical, 50, 0);
+      expect(top.inside).assertTrue();
+      expect(top.y).assertEqual(79);
+
+      const both: RemoteSurfaceTransform = { ...horizontal, flipY: true };
+      const topLeft = surfacePointToRemote(both, 0, 0);
+      expect(topLeft.inside).assertTrue();
+      expect(topLeft.x).assertEqual(99);
+      expect(topLeft.y).assertEqual(79);
+
+      const outside = surfacePointToRemote(both, -0.01, -0.01);
+      expect(outside.inside).assertFalse();
+    });
   });
 }

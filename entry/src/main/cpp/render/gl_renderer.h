@@ -362,6 +362,11 @@ namespace RendererNapi {
     REMOTEDESK_RENDER_INTERNAL OwnedRendererCreationResult CreateOwnedAuxRenderer(
         const std::string& surfaceId, int width, int height,
         const Render::DecoderSessionIdentity& owner);
+    /** Publish a transform to an exact-owner renderer, including auxiliary canvases. */
+    REMOTEDESK_RENDER_INTERNAL uint64_t SetRendererCanvasTransform(
+        int64_t handle, const Render::DecoderSessionIdentity& owner,
+        double scale, double panX, double panY, int rotationQuarterTurns,
+        bool flipX, bool flipY);
     REMOTEDESK_RENDER_INTERNAL uint64_t GetActiveRendererGenerationUnderOwnerLease(
         int64_t handle, const Render::DecoderSessionIdentity& owner);
     REMOTEDESK_RENDER_INTERNAL uint64_t GetActiveRendererGeneration(

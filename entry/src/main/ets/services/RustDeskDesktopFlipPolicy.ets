@@ -56,15 +56,18 @@ function modeFromMask(mask: number): RustDeskDesktopFlipMode {
  * The old 180-degree modes meant both visual axes, optionally both controls.
  */
 export function normalizeRustDeskDesktopFlipMode(
-  value: string | undefined
+  value: Object | null | undefined
 ): RustDeskDesktopFlipMode {
+  if (typeof value !== 'string') {
+    return 'reset';
+  }
   if (value === 'image_only') {
     return modeFromMask(VISUAL_FLIP_Y | VISUAL_FLIP_X);
   }
   if (value === 'image_and_controls') {
     return modeFromMask(ALL_FLIP_FLAGS);
   }
-  if (value === 'reset' || value === undefined) {
+  if (value === 'reset') {
     return 'reset';
   }
   if (value.startsWith('axes_')) {

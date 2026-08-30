@@ -198,7 +198,11 @@ export function surfacePointToRemote(transform: RemoteSurfaceTransform,
   return {
     x: clamp(rawX, 0, Math.max(0, remoteW - 1)),
     y: clamp(rawY, 0, Math.max(0, remoteH - 1)),
-    inside: validInput && rawX >= 0 && rawY >= 0 && rawX < remoteW && rawY < remoteH
+    // Membership belongs to the unmirrored displayed viewport. A mirrored
+    // start edge is represented by rawW/rawH before the final pixel clamp;
+    // judging the reflected raw value would incorrectly discard that edge.
+    inside: validInput && displayedX >= 0 && displayedY >= 0 &&
+      displayedX < displayW && displayedY < displayH
   };
 }
 

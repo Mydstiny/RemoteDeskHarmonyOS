@@ -7339,11 +7339,13 @@ static napi_value CreateRustDeskMultiCanvasPipelineValue(
 
 /**
  * NAPI: attachRustDeskMultiCanvasPreview(sessionId, display, surfaceId,
- *   surfaceWidth, surfaceHeight, sourceWidth, sourceHeight, codec): snapshot
+ *   surfaceWidth, surfaceHeight, sourceWidth, sourceHeight, codec,
+ *   visualFlipX?, visualFlipY?): snapshot
  */
 napi_value NapiAttachRustDeskMultiCanvasPreview(napi_env env, napi_callback_info info) {
-    size_t argc = 8;
-    napi_value args[8] = {nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
+    size_t argc = 10;
+    napi_value args[10] = {nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+                           nullptr, nullptr};
     napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
     int32_t sessionId = 0;
     int32_t display = -1;
@@ -7352,6 +7354,8 @@ napi_value NapiAttachRustDeskMultiCanvasPreview(napi_env env, napi_callback_info
     int32_t sourceWidth = 0;
     int32_t sourceHeight = 0;
     int32_t codec = -1;
+    bool visualFlipX = false;
+    bool visualFlipY = false;
     const std::string surfaceId = argc >= 3 ? GetNapiString(env, args[2]) : "";
     if (argc < 8 ||
         napi_get_value_int32(env, args[0], &sessionId) != napi_ok ||
@@ -7364,6 +7368,8 @@ napi_value NapiAttachRustDeskMultiCanvasPreview(napi_env env, napi_callback_info
         return CreateRustDeskMultiCanvasPipelineValue(env, nullptr, nullptr,
                                                        "invalid_arguments");
     }
+    if (argc >= 9) (void)napi_get_value_bool(env, args[8], &visualFlipX);
+    if (argc >= 10) (void)napi_get_value_bool(env, args[9], &visualFlipY);
     auto it = g_sessionRegistry.find(sessionId);
     const std::shared_ptr<SessionContext> session =
         it == g_sessionRegistry.end() ? nullptr : it->second;
@@ -7417,6 +7423,15 @@ napi_value NapiAttachRustDeskMultiCanvasPreview(napi_env env, napi_callback_info
         return CreateRustDeskMultiCanvasPipelineValue(env, session, nullptr,
                                                        "renderer_unavailable");
     }
+    if (RendererNapi::SetRendererCanvasTransform(
+            renderer.rendererHandle, session->identity(), 1.0, 0.0, 0.0, 0,
+            visualFlipX, visualFlipY) == 0U) {
+        RendererNapi::DestroyRendererHandle(renderer.rendererHandle,
+                                             session->identity());
+        (void)RefreshRustDeskMultiCanvasCaptureSet(session);
+        return CreateRustDeskMultiCanvasPipelineValue(env, session, nullptr,
+                                                       "renderer_transform_unavailable");
+    }
     const OwnedDecoderCreationResult decoder =
         DecoderNapi::CreateOwnedAuxHardwareDecoder(
             sourceWidth, sourceHeight, codec, display,
@@ -7456,6 +7471,45 @@ napi_value NapiAttachRustDeskMultiCanvasPreview(napi_env env, napi_callback_info
     }
     (void)bridge->refreshVideoDisplay(display);
     return CreateRustDeskMultiCanvasPipelineValue(env, session, pipeline);
+}
+
+/** NAPI: setRustDeskMultiCanvasPreviewTransform(sessionId, display, flipX, flipY): boolean */
+napi_value NapiSetRustDeskMultiCanvasPreviewTransform(napi_env env, napi_callback_info info) {
+    size_t argc = 4;
+    napi_value args[4] = {nullptr, nullptr, nullptr, nullptr};
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    int32_t sessionId = 0;
+    int32_t display = -1;
+    bool flipX = false;
+    bool flipY = false;
+    bool accepted = false;
+    if (argc >= 4 &&
+        napi_get_value_int32(env, args[0], &sessionId) == napi_ok &&
+        napi_get_value_int32(env, args[1], &display) == napi_ok &&
+        napi_get_value_bool(env, args[2], &flipX) == napi_ok &&
+        napi_get_value_bool(env, args[3], &flipY) == napi_ok) {
+        const auto it = g_sessionRegistry.find(sessionId);
+        const std::shared_ptr<SessionContext> session =
+            it == g_sessionRegistry.end() ? nullptr : it->second;
+        std::shared_ptr<RustDeskMultiCanvasPipeline> pipeline;
+        if (session && IsSessionCallbackActive(session)) {
+            std::lock_guard<std::mutex> lock(session->rustDeskMultiCanvasMutex);
+            const auto found = session->rustDeskMultiCanvasPipelines.find(display);
+            if (found != session->rustDeskMultiCanvasPipelines.end()) {
+                pipeline = found->second;
+            }
+        }
+        if (pipeline) {
+            std::lock_guard<std::mutex> lifecycleLock(pipeline->lifecycleMutex);
+            accepted = pipeline->rendererHandle > 0 &&
+                RendererNapi::SetRendererCanvasTransform(
+                    pipeline->rendererHandle, session->identity(),
+                    1.0, 0.0, 0.0, 0, flipX, flipY) > 0U;
+        }
+    }
+    napi_value result;
+    napi_get_boolean(env, accepted, &result);
+    return result;
 }
 
 /** NAPI: detachRustDeskMultiCanvasPreview(sessionId, display): boolean */
@@ -11393,6 +11447,10 @@ napi_value ExtensionLoaderNapi::Init(napi_env env, napi_value exports) {
     napi_create_function(env, "attachRustDeskMultiCanvasPreview", NAPI_AUTO_LENGTH,
                          NapiAttachRustDeskMultiCanvasPreview, nullptr, &fn);
     napi_set_named_property(env, exports, "attachRustDeskMultiCanvasPreview", fn);
+
+    napi_create_function(env, "setRustDeskMultiCanvasPreviewTransform", NAPI_AUTO_LENGTH,
+                         NapiSetRustDeskMultiCanvasPreviewTransform, nullptr, &fn);
+    napi_set_named_property(env, exports, "setRustDeskMultiCanvasPreviewTransform", fn);
 
     napi_create_function(env, "detachRustDeskMultiCanvasPreview", NAPI_AUTO_LENGTH,
                          NapiDetachRustDeskMultiCanvasPreview, nullptr, &fn);

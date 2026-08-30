@@ -2520,6 +2520,23 @@ RendererNapi::OwnedRendererCreationResult RendererNapi::CreateOwnedAuxRenderer(
     return result;
 }
 
+uint64_t RendererNapi::SetRendererCanvasTransform(
+    int64_t handle, const Render::DecoderSessionIdentity& owner,
+    double scale, double panX, double panY, int rotationQuarterTurns,
+    bool flipX, bool flipY) {
+    auto sinkLease = Render::SharedSessionSinkOwnerLease().acquire(owner);
+    if (!sinkLease) {
+        return 0U;
+    }
+    std::shared_ptr<GLRenderer> renderer;
+    {
+        std::lock_guard<std::mutex> lock(g_activeRendererMutex);
+        renderer = AcquireRendererForOwnerLocked(handle, owner);
+    }
+    return renderer ? renderer->SetCanvasTransform(
+        scale, panX, panY, rotationQuarterTurns, flipX, flipY) : 0U;
+}
+
 uint64_t RendererNapi::GetActiveRendererGenerationUnderOwnerLease(
     int64_t handle, const Render::DecoderSessionIdentity& owner) {
     std::lock_guard<std::mutex> lock(g_activeRendererMutex);

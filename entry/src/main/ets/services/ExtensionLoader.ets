@@ -1779,15 +1779,30 @@ export class ExtensionLoader {
 
   attachRustDeskMultiCanvasPreview(sessionId: number, display: number, surfaceId: string,
     surfaceWidth: number, surfaceHeight: number, sourceWidth: number, sourceHeight: number,
-    codec: number): RustDeskMultiCanvasPreviewSnapshot {
+    codec: number, visualFlipX: boolean = false,
+    visualFlipY: boolean = false): RustDeskMultiCanvasPreviewSnapshot {
     try {
       return rdpnapi.attachRustDeskMultiCanvasPreview(sessionId, display, surfaceId,
-        surfaceWidth, surfaceHeight, sourceWidth, sourceHeight, codec) as
+        surfaceWidth, surfaceHeight, sourceWidth, sourceHeight, codec,
+        visualFlipX, visualFlipY) as
         RustDeskMultiCanvasPreviewSnapshot;
     } catch (err) {
       hilog.warn(DOMAIN, TAG,
         '[ExtensionLoader] attachRustDeskMultiCanvasPreview unavailable: ' + JSON.stringify(err));
       return this.emptyRustDeskMultiCanvasPreview('native_api_unavailable');
+    }
+  }
+
+  setRustDeskMultiCanvasPreviewTransform(sessionId: number, display: number,
+    visualFlipX: boolean, visualFlipY: boolean): boolean {
+    try {
+      return rdpnapi.setRustDeskMultiCanvasPreviewTransform(
+        sessionId, display, visualFlipX, visualFlipY) as boolean;
+    } catch (err) {
+      hilog.warn(DOMAIN, TAG,
+        '[ExtensionLoader] setRustDeskMultiCanvasPreviewTransform unavailable: ' +
+        JSON.stringify(err));
+      return false;
     }
   }
 

@@ -45,6 +45,8 @@ export default function rustDeskDesktopFlipPolicyTest(): void {
       expect(normalizeRustDeskDesktopFlipMode('axes_16')).assertEqual('reset');
       expect(normalizeRustDeskDesktopFlipMode('unknown')).assertEqual('reset');
       expect(normalizeRustDeskDesktopFlipMode(undefined)).assertEqual('reset');
+      expect(normalizeRustDeskDesktopFlipMode(null)).assertEqual('reset');
+      expect(normalizeRustDeskDesktopFlipMode(7)).assertEqual('reset');
     });
 
     it('scopes_the_override_to_desktop_computer_peers', 0, (): void => {
