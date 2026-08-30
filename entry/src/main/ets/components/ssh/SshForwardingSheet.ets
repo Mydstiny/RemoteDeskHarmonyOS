@@ -1,5 +1,9 @@
 import { Palette, buildDark } from '../../common/Theme';
 import {
+  formatEndpointFieldsHostPort,
+  formatListenerHostPort
+} from '../../services/EndpointAddressPolicy';
+import {
   resolveSshForwardingEditorSheetLayout,
   SshForwardingMode,
   SshForwardingProfile,
@@ -270,9 +274,9 @@ export struct SshForwardingSheet {
   }
 
   private profileSummary(profile: SshForwardingProfile): string {
-    const bind: string = profile.bindHost + ':' + profile.bindPort.toString();
+    const bind: string = formatListenerHostPort(profile.bindHost, profile.bindPort);
     if (profile.mode === 'dynamic') { return bind + ' · SOCKS5'; }
-    return bind + ' → ' + profile.targetHost + ':' + profile.targetPort.toString();
+    return bind + ' → ' + formatEndpointFieldsHostPort(profile.targetHost, profile.targetPort);
   }
 
   @Builder private field(title: string, value: string, hint: string,
@@ -355,8 +359,8 @@ export struct SshForwardingSheet {
           .fontSize(11).fontColor(this.pal().text2).margin({ left: 6 })
       }.width('100%')
       if (this.selectedRuntime() !== null) {
-        Text('监听 ' + this.selectedRuntime()!.actualBindHost + ':' +
-          this.selectedRuntime()!.actualBindPort.toString())
+        Text('监听 ' + formatListenerHostPort(this.selectedRuntime()!.actualBindHost,
+          this.selectedRuntime()!.actualBindPort, 'runtime'))
           .fontSize(11).fontColor(this.pal().text2).width('100%')
         Row() {
           Text('连接 ' + this.selectedRuntime()!.activeConnections.toString()).fontSize(11)
@@ -563,14 +567,15 @@ export struct SshForwardingSheet {
         Column({ space: 8 }) {
           Row() {
             Text('监听地址').fontSize(11).fontColor(this.pal().text3).layoutWeight(1)
-            Text(this.selectedProfile()!.bindHost + ':' +
-              this.selectedProfile()!.bindPort.toString())
+            Text(formatListenerHostPort(this.selectedProfile()!.bindHost,
+              this.selectedProfile()!.bindPort))
               .fontSize(11).fontColor(this.pal().text)
           }.width('100%')
           Row() {
             Text('目标').fontSize(11).fontColor(this.pal().text3).layoutWeight(1)
             Text(this.selectedProfile()!.mode === 'dynamic' ? 'SOCKS5 CONNECT' :
-              this.selectedProfile()!.targetHost + ':' + this.selectedProfile()!.targetPort.toString())
+              formatEndpointFieldsHostPort(this.selectedProfile()!.targetHost,
+                this.selectedProfile()!.targetPort))
               .fontSize(11).fontColor(this.pal().text)
           }.width('100%')
           Row() {

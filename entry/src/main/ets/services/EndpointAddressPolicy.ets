@@ -438,6 +438,41 @@ export function formatEndpointHostPort(endpoint: EndpointAddress): string {
     host + ':' + endpoint.port.toString();
 }
 
+/** Parse separately stored fields and format an unambiguous socket authority. */
+export function formatEndpointFieldsHostPort(
+  hostInput: string,
+  port: number,
+  mode: EndpointParseMode = 'persisted'
+): string {
+  const parsed: EndpointAddressResult = parseEndpointFields(hostInput, port, mode);
+  return parsed.ok ? formatEndpointHostPort(parsed.endpoint) : '';
+}
+
+/** Format a validated listener address, including explicit IPv4/IPv6 wildcards. */
+export function formatListenerHostPort(
+  hostInput: string,
+  port: number,
+  mode: EndpointParseMode = 'persisted'
+): string {
+  if (!validPort(port)) { return ''; }
+  if (hostInput === '::' || hostInput === '[::]') { return '[::]:' + port.toString(); }
+  if (hostInput === '0.0.0.0') { return '0.0.0.0:' + port.toString(); }
+  return formatEndpointFieldsHostPort(hostInput, port, mode);
+}
+
+/** Format SSH-style user@authority text without hand-built IPv6 delimiters. */
+export function formatUserAtHost(
+  username: string,
+  hostInput: string,
+  port: number,
+  mode: EndpointParseMode = 'persisted'
+): string {
+  const authority: string = formatEndpointFieldsHostPort(hostInput, port, mode);
+  if (authority === '') { return ''; }
+  const user: string = username.trim();
+  return user === '' ? authority : user + '@' + authority;
+}
+
 export function formatEndpointUriAuthority(endpoint: EndpointAddress): string {
   let host: string = endpoint.canonicalHost;
   if (endpoint.family === 'ipv6' && endpoint.scope !== '') {

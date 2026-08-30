@@ -7,8 +7,11 @@ import {
   EndpointServerIdentity,
   EndpointServerIdentityResult,
   endpointTransportHost,
+  formatEndpointFieldsHostPort,
   formatEndpointHostPort,
+  formatListenerHostPort,
   formatEndpointUriAuthority,
+  formatUserAtHost,
   parseEndpointAuthority,
   parseEndpointFields,
   parseEndpointHost,
@@ -131,6 +134,25 @@ export default function endpointAddressPolicyTest(): void {
       expect(parseEndpointPortText(' 22')).assertEqual(0);
       expect(parseEndpointPortText('22junk')).assertEqual(0);
     });
+
+    it('formats_separate_endpoint_fields_and_user_authorities_without_ipv6_ambiguity', 0,
+      (): void => {
+        expect(formatEndpointFieldsHostPort('SSH.Example.COM.', 22))
+          .assertEqual('ssh.example.com:22');
+        expect(formatUserAtHost('alice', '192.0.2.40', 2222))
+          .assertEqual('alice@192.0.2.40:2222');
+        expect(formatUserAtHost('alice', '2001:0db8:0:0:0:0:0:40', 22))
+          .assertEqual('alice@[2001:db8::40]:22');
+        expect(formatUserAtHost('alice', 'fe80::40%wlan0', 22))
+          .assertEqual('alice@[fe80::40%wlan0]:22');
+        expect(formatUserAtHost('', '[2001:db8::41]', 2200))
+          .assertEqual('[2001:db8::41]:2200');
+        expect(formatListenerHostPort('::', 1080)).assertEqual('[::]:1080');
+        expect(formatListenerHostPort('[::]', 1080)).assertEqual('[::]:1080');
+        expect(formatListenerHostPort('0.0.0.0', 1080)).assertEqual('0.0.0.0:1080');
+        expect(formatUserAtHost('alice', ':::1', 22)).assertEqual('');
+        expect(formatEndpointFieldsHostPort('2001:db8::40', 0)).assertEqual('');
+      });
 
     it('builds_only_validated_typed_and_stable_server_identities', 0, (): void => {
       const parsed: EndpointAddressResult = parseEndpointAuthority('[2001:db8::20]:3389', 3389);

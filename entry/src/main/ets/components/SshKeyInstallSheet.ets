@@ -20,6 +20,7 @@ import { DataCrypto } from '../services/DataCrypto';
 import { HostSyncService } from '../services/HostSyncService';
 import { KeyVaultService } from '../services/KeyVaultService';
 import { AccountSessionCoordinator } from '../services/AccountSessionCoordinator';
+import { formatUserAtHost } from '../services/EndpointAddressPolicy';
 import { SshPublicKeyInstallResult, SshAuthTestResult } from '../types/rdpnapi';
 import { SshProxyProfileStore } from '../services/SshProxyProfileStore';
 import { SshProxyRuntimePlan, resolveSshProxyRuntimePlan } from
@@ -384,7 +385,7 @@ export struct SshKeyInstallSheet {
       Column() {
         Text(host.label).fontSize(14).fontWeight(FontWeight.Medium)
           .fontColor(this.pal().text).fontFamily(this.font()).maxLines(1)
-        Text(host.username + '@' + host.host + ':' + host.port)
+        Text(formatUserAtHost(host.username, host.host, host.port))
           .fontSize(11).fontColor(this.pal().text3).maxLines(1)
         // 认证方式
         Row() {

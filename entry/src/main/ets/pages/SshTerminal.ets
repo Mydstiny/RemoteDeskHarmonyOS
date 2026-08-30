@@ -73,6 +73,11 @@ import {
   remoteSessionLocalHandoffFailureOwnsSession
 } from '../services/RemoteSessionTerminationPolicy';
 import { AccountSessionCoordinator } from '../services/AccountSessionCoordinator';
+import {
+  formatEndpointFieldsHostPort,
+  formatListenerHostPort,
+  formatUserAtHost
+} from '../services/EndpointAddressPolicy';
 import { RemoteProtocol } from '../services/RemoteSessionState';
 import { KeyVaultService } from '../services/KeyVaultService';
 import { RemoteHost } from '../model/RemoteHost';
@@ -1915,7 +1920,8 @@ struct SshTerminal {
               : 'SSH 需要额外认证')
               .fontSize(18).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
             Text(this.sshAuthPrompt!.kind === 'host_key'
-              ? this.sshAuthPrompt!.endpointHost + ':' + this.sshAuthPrompt!.endpointPort.toString()
+              ? formatEndpointFieldsHostPort(this.sshAuthPrompt!.endpointHost,
+                this.sshAuthPrompt!.endpointPort, 'runtime')
               : this.sshAuthPrompt!.targetHost)
               .fontSize(12).fontColor(this.pal().text2).margin({ top: 4 })
               .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
@@ -2465,7 +2471,7 @@ struct SshTerminal {
       tabId: tab.tabId,
       hostId: tab.hostId,
       label: this.sshWorkspaceTabTitle(tab),
-      address: host === undefined ? '' : host.username + '@' + host.host + ':' + host.port.toString(),
+      address: host === undefined ? '' : formatUserAtHost(host.username, host.host, host.port),
       state: 'disconnected',
       sessionId: -1,
       generation: 0,
@@ -3566,7 +3572,7 @@ struct SshTerminal {
     this.refreshForwardingProfiles(targetHostId);
     this.visibleSshHostId = targetHostId;
     this.hostLabel = host.label;
-    this.userAtHost = host.username + '@' + host.host + ':' + host.port.toString();
+    this.userAtHost = formatUserAtHost(host.username, host.host, host.port);
     this.sshHost = host.host;
     this.sshPort = host.port;
 
@@ -5952,7 +5958,7 @@ struct SshTerminal {
               Column() {
                 Text(host.label).fontSize(14).fontColor('#F4F7FA')
                   .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-                Text(host.username + '@' + host.host + ':' + host.port.toString())
+                Text(formatUserAtHost(host.username, host.host, host.port))
                   .fontSize(11).fontColor('rgba(242,244,247,0.56)')
                   .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
               }.alignItems(HorizontalAlign.Start).layoutWeight(1)
@@ -7574,7 +7580,7 @@ struct SshTerminal {
 
   private sftpPeerHostAddress(): string {
     const host: RemoteHost | undefined = this.sftpPeerHost();
-    return host === undefined ? '' : host.username + '@' + host.host + ':' + host.port.toString();
+    return host === undefined ? '' : formatUserAtHost(host.username, host.host, host.port);
   }
 
   /** Every SSH consumer resolves the same canonical, fail-closed route profile. */
@@ -7604,7 +7610,8 @@ struct SshTerminal {
     const handoffs: SshJumpHopHandoff[] = [];
     for (let index: number = 0; index < plan.route.hops.length; index++) {
       const hop: SshJumpHop = plan.route.hops[index];
-      const label: string = '第 ' + (index + 1).toString() + ' 跳 ' + hop.username + '@' + hop.host;
+      const label: string = '第 ' + (index + 1).toString() + ' 跳 ' +
+        formatUserAtHost(hop.username, hop.host, hop.port);
       if (hop.authMethod === 'kbd-interactive') {
         handoffs.push({ password: '', privateKeyPem: '', privateKeyPassphrase: '',
           keyboardInteractiveResponses: [] });
@@ -7681,7 +7688,8 @@ struct SshTerminal {
     const handoffs: SshJumpHopHandoff[] = [];
     for (let index: number = 0; index < plan.route.hops.length; index++) {
       const hop: SshJumpHop = plan.route.hops[index];
-      const label: string = '第 ' + (index + 1).toString() + ' 跳 ' + hop.username + '@' + hop.host;
+      const label: string = '第 ' + (index + 1).toString() + ' 跳 ' +
+        formatUserAtHost(hop.username, hop.host, hop.port);
       if (hop.authMethod === 'kbd-interactive') {
         handoffs.push({ password: '', privateKeyPem: '', privateKeyPassphrase: '',
           keyboardInteractiveResponses: [] });
@@ -8042,7 +8050,7 @@ struct SshTerminal {
           return -1;
         }
         this.sshTabStore.open(owner, host.label,
-          host.username + '@' + host.host + ':' + host.port.toString());
+          formatUserAtHost(host.username, host.host, host.port));
         this.sshTabStore.update(owner, 'connected', connectedSessionId, '', generation);
         if (this.sftpRightEndpoint === 'ssh' && this.sftpPeerHostId === owner) {
           this.sftpPeerSessionId = connectedSessionId;
@@ -10551,7 +10559,7 @@ struct SshTerminal {
       this.refreshForwardingProfiles();
       this.visibleSshHostId = initialHostId;
       this.hostLabel = initialHost.label;
-      this.userAtHost = initialHost.username + '@' + initialHost.host + ':' + initialHost.port;
+      this.userAtHost = formatUserAtHost(initialHost.username, initialHost.host, initialHost.port);
       this.sshTabStore.openAndActivate(initialHostId, this.hostLabel, this.userAtHost);
       this.reconcileRetainedSshTabStates();
       this.refreshSshTabViews();
@@ -10658,7 +10666,7 @@ struct SshTerminal {
         const host: RemoteHost | undefined = this.srv.getHost(this.hostId);
         if (host) {
           this.hostLabel = host.label;
-          this.userAtHost = host.username + '@' + host.host + ':' + host.port;
+          this.userAtHost = formatUserAtHost(host.username, host.host, host.port);
           // The tab was published before the orientation await so the xterm
           // document can already be warming up. These assignments keep the
           // route-owned metadata authoritative after the await.
@@ -11857,7 +11865,7 @@ struct SshTerminal {
     // any UTF-8 suffix from the previous identity must not cross into it.
     this.resetTerminalDecodeState(bindingHostId);
     this.sshTabStore.openAndActivate(bindingHostId, host.label,
-      host.username + '@' + host.host + ':' + host.port.toString());
+      formatUserAtHost(host.username, host.host, host.port));
     this.sshTabStore.beginConnection(bindingHostId);
     this.markXtermSurfaceNotReady(bindingHostId);
     this.refreshSshTabViews();
@@ -14033,7 +14041,7 @@ struct SshTerminal {
       }
       const confirmed: boolean = await this.promptForwardingConfirmation(
         '确认开放监听地址',
-        profile.bindHost + ':' + profile.bindPort.toString() +
+        formatListenerHostPort(profile.bindHost, profile.bindPort) +
           ' 可能被局域网或公网设备访问。仅在你信任当前网络和目标服务时继续。',
         '确认保存', true);
       if (!confirmed || this.terminalClosing || pageGeneration !== this.pageGeneration ||
@@ -14093,7 +14101,7 @@ struct SshTerminal {
     const confirmed: boolean = await this.promptForwardingConfirmation(
       '删除隧道规则',
       '删除 ' + sshForwardingModeLabel(profile.mode) + ' ' +
-        profile.bindHost + ':' + profile.bindPort.toString() + '？正在运行时会先安全停止。',
+        formatListenerHostPort(profile.bindHost, profile.bindPort) + '？正在运行时会先安全停止。',
       '删除', true);
     if (!confirmed || this.terminalClosing || pageGeneration !== this.pageGeneration ||
       owner !== this.hostId.trim()) { return; }
@@ -17253,7 +17261,7 @@ struct SshTerminal {
                 Column() {
                   Text(host.label).fontSize(14).fontWeight(FontWeight.Medium).fontColor('#F4F7FA')
                     .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-                  Text(host.username + '@' + host.host + ':' + host.port.toString())
+                  Text(formatUserAtHost(host.username, host.host, host.port))
                     .fontSize(11).fontColor('rgba(242,244,247,0.56)')
                     .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
                 }.alignItems(HorizontalAlign.Start).layoutWeight(1)

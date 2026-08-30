@@ -12,7 +12,12 @@ import { abilityAccessCtrl, common, ConfigurationConstant, Want } from '@kit.Abi
 import { authentication } from '@kit.AccountKit';
 import { inputDevice } from '@kit.InputKit';
 import { HostSyncService } from '../services/HostSyncService';
-import { EndpointAddressResult, parseEndpointFields } from '../services/EndpointAddressPolicy';
+import {
+  EndpointAddressResult,
+  formatEndpointFieldsHostPort,
+  formatUserAtHost,
+  parseEndpointFields
+} from '../services/EndpointAddressPolicy';
 import { AuthService } from '../services/AuthService';
 import { KeyVaultService } from '../services/KeyVaultService';
 import {
@@ -8272,10 +8277,10 @@ struct HostListPage {
     this.sshPreflightGeneration = generation;
     this.sshPreflightOpenedAt = Date.now();
     this.sshPreflightHostId = host.id;
-    this.sshPreflightHostLabel = host.username + '@' + host.host + ':' + host.port.toString();
+    this.sshPreflightHostLabel = formatUserAtHost(host.username, host.host, host.port);
     this.sshPreflightSavedAlgorithm = host.sshHostKeyAlgorithm;
     this.sshPreflightJumpHostLabel = host.sshProxyType === 'ssh_jump' && host.proxyHost.trim() !== ''
-      ? host.proxyHost + ':' + host.proxyPort.toString() : '';
+      ? formatEndpointFieldsHostPort(host.proxyHost, host.proxyPort) : '';
     this.sshPreflightState = SshPreflightState.PROBING;
     this.sshPreflightHostKeyInfo = null;
     this.sshPreflightJumpHostKeyInfo = null;
@@ -8507,7 +8512,7 @@ struct HostListPage {
           return;
         }
         this.sshPreflightJumpHostKeyInfo = jumpInfo;
-        this.sshPreflightJumpHostLabel = hop.host + ':' + hop.port.toString();
+        this.sshPreflightJumpHostLabel = formatEndpointFieldsHostPort(hop.host, hop.port);
         const jumpTrust: SshJumpHostKeyProbeTrust =
           classifySshJumpHostKeyProbeTrust(host, jumpInfo.rawBase64);
         if (jumpTrust !== 'trusted') {
@@ -12760,22 +12765,23 @@ struct HostListPage {
       } else if (host.protocol === 'ssh') {
         Text('SSH').fontSize(11).fontColor(this.pal().text3).width(30)
         Text(this.protectedHostCardValue(host,
-          (host.username.trim() === '' ? '' : host.username + '@') +
-            host.host + ':' + host.port.toString()))
+          formatUserAtHost(host.username, host.host, host.port)))
           .fontSize(this.breakpoint === 'sm' ? 12 : 13).fontColor(this.pal().text2)
           .fontFamily(this.font()).layoutWeight(1)
           .textOverflow({ overflow: TextOverflow.Ellipsis }).maxLines(1)
       } else if (host.protocol === 'vnc') {
         Text('VNC').fontSize(11).fontColor(this.pal().text3).width(30)
         Text(this.protectedHostCardValue(host, host.gatewayHost.trim() === '' ?
-          host.host + ':' + host.port.toString() :
-          host.host + ':' + host.port.toString() + ' · 网关 ' + host.gatewayHost))
+          formatEndpointFieldsHostPort(host.host, host.port) :
+          formatEndpointFieldsHostPort(host.host, host.port) + ' · 网关 ' +
+            formatEndpointFieldsHostPort(host.gatewayHost, host.gatewayPort)))
           .fontSize(this.breakpoint === 'sm' ? 12 : 13).fontColor(this.pal().text2)
           .fontFamily(this.font()).layoutWeight(1)
           .textOverflow({ overflow: TextOverflow.Ellipsis }).maxLines(1)
       } else {
         Text('RDP').fontSize(11).fontColor(this.pal().text3).width(30)
-        Text(this.protectedHostCardValue(host, host.host + ':' + host.port.toString()))
+        Text(this.protectedHostCardValue(host,
+          formatEndpointFieldsHostPort(host.host, host.port)))
           .fontSize(this.breakpoint === 'sm' ? 12 : 13)
           .fontColor(this.pal().text2).fontFamily(this.font()).layoutWeight(1)
           .textOverflow({ overflow: TextOverflow.Ellipsis }).maxLines(1)
@@ -13774,7 +13780,8 @@ struct HostListPage {
             Text(this.hostPlatformText(host) + '  ·  ' + this.protectedHostCardValue(host,
               host.protocol === 'rustdesk' ? rustDeskCardEndpoint(host.rustdeskDirectEnabled,
                 host.rustdeskDirectHost, host.rustdeskDirectPort, host.host, host.port) :
-                host.host + ':' + host.port))
+              host.protocol === 'ssh' ? formatUserAtHost(host.username, host.host, host.port) :
+                formatEndpointFieldsHostPort(host.host, host.port)))
               .fontSize(this.breakpoint === 'sm' ? 12 : 14).fontColor(this.pal().text2)
               .margin({ top: this.breakpoint === 'sm' ? 3 : 4 }).fontFamily(this.font())
               .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
@@ -14357,8 +14364,9 @@ struct HostListPage {
         Column() {
           Text('部署 SSH 公钥').fontSize(20).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
           if (this.sshPublicKeyInstallHost !== null) {
-            Text(this.sshPublicKeyInstallHost.username + '@' + this.sshPublicKeyInstallHost.host + ':' +
-              this.sshPublicKeyInstallHost.port.toString()).fontSize(12).fontColor(this.pal().text3).margin({ top: 4 })
+            Text(formatUserAtHost(this.sshPublicKeyInstallHost.username,
+              this.sshPublicKeyInstallHost.host, this.sshPublicKeyInstallHost.port))
+              .fontSize(12).fontColor(this.pal().text3).margin({ top: 4 })
           }
         }.alignItems(HorizontalAlign.Start).layoutWeight(1)
         Button() { SymbolGlyph($r('sys.symbol.xmark')).fontSize(17).fontColor([this.pal().text2]) }
@@ -17195,7 +17203,7 @@ struct HostListPage {
                   Column() {
                     Text(host.label).fontSize(15).fontWeight(FontWeight.Medium)
                       .fontColor(this.pal().text).fontFamily(this.font()).maxLines(1)
-                    Text(host.username + '@' + host.host + ':' + host.port.toString())
+                    Text(formatUserAtHost(host.username, host.host, host.port))
                       .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
                       .maxLines(1).margin({ top: 2 })
                   }.alignItems(HorizontalAlign.Start).layoutWeight(1)
@@ -17273,7 +17281,7 @@ struct HostListPage {
                   Column() {
                     Text(host.label).fontSize(15).fontWeight(FontWeight.Medium)
                       .fontColor(this.pal().text).fontFamily(this.font()).maxLines(1)
-                    Text(host.host + ':' + host.port.toString())
+                    Text(formatEndpointFieldsHostPort(host.host, host.port))
                       .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
                       .maxLines(1).margin({ top: 2 })
                   }.alignItems(HorizontalAlign.Start).layoutWeight(1)
