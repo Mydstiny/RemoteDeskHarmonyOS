@@ -14,16 +14,50 @@
 # 用法:
 #   export DEVECO_SDK_HOME="/Applications/DevEco-Studio.app/Contents/sdk"
 #   ./scripts/build_freerdp_ohos.sh [arm64|x86_64|all]
+#
+# 可复现性复核可为两次 clean build 分别设置绝对路径：
+#   REMOTEDESK_FREERDP_WORK_DIR、REMOTEDESK_FREERDP_OUTPUT_DIR、
+#   REMOTEDESK_FREERDP_PREBUILT_DIR。可选的
+#   REMOTEDESK_FREERDP_EXPECTED_REVISION 会在编译前锁定源码 revision。
 # =============================================================================
 
-set -e
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 FREERDP_SRC="$PROJECT_DIR/freerdp"
-BUILD_DIR="$PROJECT_DIR/build/freerdp-ohos"
-PREBUILT_DIR="$PROJECT_DIR/libs/freerdp-ohos"
+BUILD_OUTPUT_DIR="${REMOTEDESK_FREERDP_OUTPUT_DIR:-$PROJECT_DIR/build/freerdp-ohos}"
+PREBUILT_DIR="${REMOTEDESK_FREERDP_PREBUILT_DIR:-$PROJECT_DIR/libs/freerdp-ohos}"
+if [ -n "${REMOTEDESK_FREERDP_WORK_DIR:-}" ]; then
+    BUILD_WORK_DIR="$REMOTEDESK_FREERDP_WORK_DIR"
+else
+    BUILD_WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/remotedesk-freerdp-ohos.XXXXXX")"
+    trap 'rm -rf "$BUILD_WORK_DIR"' EXIT
+fi
 . "$SCRIPT_DIR/resolve_ohos_sdk.sh"
+
+require_safe_root() {
+    local LABEL="$1"
+    local ROOT="$2"
+    case "$ROOT" in
+        /*) ;;
+        *) echo "ERROR: $LABEL must be an absolute path: $ROOT"; exit 1 ;;
+    esac
+    case "/$ROOT/" in
+        *"/../"*) echo "ERROR: $LABEL must not contain '..': $ROOT"; exit 1 ;;
+    esac
+    case "$ROOT" in
+        /|"$PROJECT_DIR"|"$FREERDP_SRC"|"$SCRIPT_DIR")
+            echo "ERROR: unsafe $LABEL: $ROOT"
+            exit 1
+            ;;
+    esac
+}
+
+require_safe_root "FreeRDP work root" "$BUILD_WORK_DIR"
+require_safe_root "FreeRDP output root" "$BUILD_OUTPUT_DIR"
+require_safe_root "FreeRDP prebuilt root" "$PREBUILT_DIR"
+mkdir -p "$BUILD_WORK_DIR" "$BUILD_OUTPUT_DIR" "$PREBUILT_DIR"
 
 # ---- 前置检查 ----
 if [ ! -d "$FREERDP_SRC" ]; then
@@ -32,6 +66,18 @@ if [ ! -d "$FREERDP_SRC" ]; then
     exit 1
 fi
 
+FREERDP_REVISION="$(git -C "$FREERDP_SRC" rev-parse HEAD)"
+if [ -n "$(git -C "$FREERDP_SRC" status --porcelain)" ]; then
+    echo "ERROR: FreeRDP source worktree is dirty; commit it before producing attributable artifacts."
+    exit 1
+fi
+if [ -n "${REMOTEDESK_FREERDP_EXPECTED_REVISION:-}" ] &&
+   [ "$FREERDP_REVISION" != "$REMOTEDESK_FREERDP_EXPECTED_REVISION" ]; then
+    echo "ERROR: FreeRDP revision mismatch: expected $REMOTEDESK_FREERDP_EXPECTED_REVISION, got $FREERDP_REVISION"
+    exit 1
+fi
+echo "FreeRDP revision: $FREERDP_REVISION"
+
 # OHOS SDK
 OHOS_SDK="$(resolve_ohos_sdk)"
 OHOS_NATIVE="$(ohos_native_root "$OHOS_SDK")"
@@ -39,6 +85,7 @@ OHOS_TOOLCHAIN="$OHOS_NATIVE/build/cmake/ohos.toolchain.cmake"
 OHOS_LLVM="$OHOS_NATIVE/llvm"
 OHOS_AR="$(find_ohos_tool "$OHOS_LLVM/bin" llvm-ar || true)"
 OHOS_NM="$(find_ohos_tool "$OHOS_LLVM/bin" llvm-nm || true)"
+OHOS_STRINGS="$(find_ohos_tool "$OHOS_LLVM/bin" llvm-strings || true)"
 
 if [ ! -f "$OHOS_TOOLCHAIN" ]; then
     echo "ERROR: OHOS toolchain not found at $OHOS_TOOLCHAIN"
@@ -54,14 +101,45 @@ if [ -z "$OHOS_NM" ]; then
     echo "ERROR: llvm-nm not found under $OHOS_LLVM/bin"
     exit 1
 fi
+if [ -z "$OHOS_STRINGS" ]; then
+    echo "ERROR: llvm-strings not found under $OHOS_LLVM/bin"
+    exit 1
+fi
 
 # 预编译 OpenSSL (与主工程 CMakeLists.txt 使用同一套)
 OPENSSL_DIR="$PROJECT_DIR/libs/openssl/install"
 
+archive_contains_host_path() {
+    local ARCHIVE="$1"
+    local LINE
+    local FOUND=0
+    while IFS= read -r LINE; do
+        case "$LINE" in
+            *"$PROJECT_DIR"*|*"$BUILD_WORK_DIR"*|*"$OHOS_SDK"*|*"/Users/"*|*"RemoteDeskHarmonyOS"*|*"remotedesk-freerdp-ohos."*|*":/Users/"*|*":\\Users\\"*)
+                FOUND=1
+                ;;
+        esac
+    done < <("$OHOS_STRINGS" -a "$ARCHIVE")
+    [ "$FOUND" -eq 1 ]
+}
+
+verify_archive_paths() {
+    local ARCHIVE
+    for ARCHIVE in "$@"; do
+        if archive_contains_host_path "$ARCHIVE"; then
+            echo "ERROR: host or temporary build path leaked into $ARCHIVE"
+            exit 1
+        fi
+    done
+}
+
 # ---- Build function ----
 build_arch() {
     local ARCH="$1"          # arm64-v8a or x86_64
-    local BUILD="$BUILD_DIR/$ARCH"
+    # Keep Ninja/CMake's high-churn object tree outside synced workspaces.
+    # Desktop file providers can otherwise create "name 2.o" conflict copies
+    # while parallel compilation is running and those copies may enter .a files.
+    local BUILD="$BUILD_WORK_DIR/$ARCH"
     # Keep generated build-config headers and compiled string constants independent
     # from the developer machine's checkout path.
     local INSTALL="/opt/freerdp-ohos/$ARCH"
@@ -111,12 +189,17 @@ build_arch() {
 
     export PKG_CONFIG_PATH="$FFMPEG_DIR/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
 
+    # OHOS clang stores the absolute source filename in ThinLTO bitcode module
+    # identifiers even when all prefix-map flags are present.  These archives
+    # are linked into the app later, so disable archive-level IPO to keep the
+    # vendored inputs reproducible and free of developer-machine paths.
     cmake "$FREERDP_SRC" \
         -G Ninja \
         -DCMAKE_TOOLCHAIN_FILE="$OHOS_TOOLCHAIN" \
         -DOHOS_ARCH="$ARCH" \
         -DCMAKE_SYSROOT="$OHOS_SYSROOT" \
         -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=OFF \
         -DBUILD_SHARED_LIBS=OFF \
         -DWITH_CLIENT_COMMON=ON \
         -DWITH_CLIENT=OFF \
@@ -127,7 +210,6 @@ build_arch() {
         -DWITH_MANPAGES=OFF \
         -DWITH_CHANNELS=ON \
         -DWITH_CLIENT_CHANNELS=ON \
-        -DWITH_SERVER_CHANNELS=OFF \
         -DWITH_SERVER_CHANNELS=OFF \
         -DCHANNEL_AINPUT=ON \
         -DCHANNEL_AINPUT_CLIENT=ON \
@@ -245,17 +327,42 @@ build_arch() {
         rdpgfx-client \
         -- -j"$(jobs_count)"
 
-    # 收集产物
-    mkdir -p "$BUILD_DIR/libs/$ARCH"
+    local SETTINGS_KEYS="$BUILD/include/freerdp/settings_keys.h"
+    local BUILD_CONFIG="$BUILD/include/freerdp/config.h"
+    if ! grep -F "FreeRDP_GatewayConnectHostname = 2027" "$SETTINGS_KEYS" >/dev/null; then
+        echo "ERROR: generated settings_keys.h is missing FreeRDP_GatewayConnectHostname"
+        exit 1
+    fi
+    for required_define in CHANNEL_DISP_CLIENT CHANNEL_DRIVE_CLIENT; do
+        if ! grep -E "^#define ${required_define}[[:space:]]*$" "$BUILD_CONFIG" >/dev/null; then
+            echo "ERROR: generated config.h is missing $required_define"
+            exit 1
+        fi
+    done
 
-    # 从 build tree 找 .a 文件
-    find "$BUILD" -name "libfreerdp3.a" -exec cp -v {} "$BUILD_DIR/libs/$ARCH/" \;
-    find "$BUILD" -name "libwinpr3.a" -exec cp -v {} "$BUILD_DIR/libs/$ARCH/" \;
+    # 收集产物
+    local OUTPUT="$BUILD_OUTPUT_DIR/libs/$ARCH"
+    rm -rf "$OUTPUT"
+    mkdir -p "$OUTPUT"
+
+    # Copy only the canonical targets; broad find-based copies can mask a
+    # file-provider conflict copy with the same logical archive name.
+    cp -v "$BUILD/libfreerdp/libfreerdp3.a" "$OUTPUT/"
+    cp -v "$BUILD/winpr/libwinpr/libwinpr3.a" "$OUTPUT/"
 
     # FreeRDP 的客户端 common 与静态通道不会被合入 libfreerdp3.a。
     # 这里把 freerdp_client_load_addins 所需对象和 rdpsnd/rdpdr/drive/cliprdr/drdynvc/rdpei/ainput/disp
     # 通道入口打成单独静态库，主工程链接后才能真正加载音频/剪贴板/设备/动态显示通道。
-    local CHANNEL_LIB="$BUILD_DIR/libs/$ARCH/libfreerdp-client-channels.a"
+    local CONFLICT_COPY
+    CONFLICT_COPY="$(find "$BUILD" -type f \( \
+        -name "* 2.*" -o -name "* 3.*" -o -name "* 4.*" \
+        \) -print -quit)"
+    if [ -n "$CONFLICT_COPY" ]; then
+        echo "ERROR: conflict-copy artifact detected in isolated build: $CONFLICT_COPY"
+        exit 1
+    fi
+
+    local CHANNEL_LIB="$OUTPUT/libfreerdp-client-channels.a"
     local CHANNEL_OBJECTS=()
     local OBJECT_DIRS=(
         "$BUILD/client/common/CMakeFiles/freerdp-client.dir"
@@ -273,9 +380,9 @@ build_arch() {
     )
     for dir in "${OBJECT_DIRS[@]}"; do
         if [ -d "$dir" ]; then
-            while IFS= read -r -d '' obj; do
+            while IFS= read -r obj; do
                 CHANNEL_OBJECTS+=("$obj")
-            done < <(find "$dir" -name "*.o" -print0)
+            done < <(find "$dir" -name "*.o" -print | LC_ALL=C sort)
         fi
     done
     if [ "${#CHANNEL_OBJECTS[@]}" -eq 0 ]; then
@@ -283,37 +390,44 @@ build_arch() {
         exit 1
     fi
     rm -f "$CHANNEL_LIB"
-    "$OHOS_AR" rcs "$CHANNEL_LIB" "${CHANNEL_OBJECTS[@]}"
+    # Explicit deterministic mode plus stable member ordering makes the
+    # vendored archive checksum reproducible across clean builds.
+    "$OHOS_AR" rcsD "$CHANNEL_LIB" "${CHANNEL_OBJECTS[@]}"
     for required_symbol in drive_DeviceServiceEntry disp_DVCPluginEntry rdpdr_VirtualChannelEntryEx; do
         if ! "$OHOS_NM" "$CHANNEL_LIB" | grep " $required_symbol$" >/dev/null; then
             echo "ERROR: $CHANNEL_LIB is missing required symbol $required_symbol"
             exit 1
         fi
     done
+    verify_archive_paths \
+        "$OUTPUT/libfreerdp3.a" \
+        "$OUTPUT/libwinpr3.a" \
+        "$OUTPUT/libfreerdp-client-channels.a"
 
     # 同步到 libs/ 下作为 IDE 可复用预编译依赖，避免 DevEco clean 删除 build/ 后丢库。
     local PREBUILT="$PREBUILT_DIR/$ARCH"
-    rm -rf "$PREBUILT"
-    mkdir -p "$PREBUILT/winpr"
-    cp -v "$BUILD_DIR/libs/$ARCH/libfreerdp3.a" "$PREBUILT/"
-    cp -v "$BUILD_DIR/libs/$ARCH/libwinpr3.a" "$PREBUILT/"
-    cp -v "$BUILD_DIR/libs/$ARCH/libfreerdp-client-channels.a" "$PREBUILT/"
-    cp -R "$BUILD/include" "$PREBUILT/"
-    cp -R "$BUILD/winpr/include" "$PREBUILT/winpr/"
+    local PREBUILT_STAGE="$BUILD_WORK_DIR/prebuilt-$ARCH"
+    rm -rf "$PREBUILT_STAGE"
+    mkdir -p "$PREBUILT_STAGE/winpr"
+    cp -v "$OUTPUT/libfreerdp3.a" "$PREBUILT_STAGE/"
+    cp -v "$OUTPUT/libwinpr3.a" "$PREBUILT_STAGE/"
+    cp -v "$OUTPUT/libfreerdp-client-channels.a" "$PREBUILT_STAGE/"
+    cp -R "$BUILD/include" "$PREBUILT_STAGE/"
+    cp -R "$BUILD/winpr/include" "$PREBUILT_STAGE/winpr/"
     # CMake install/test metadata is host-specific and not consumed by the app.
-    # Some synced workspaces can also surface conflict copies with a " 2" suffix.
-    find "$PREBUILT" -type f \( \
+    find "$PREBUILT_STAGE" -type f \( \
         -name "cmake_install*.cmake" -o \
-        -name "CTestTestfile*.cmake" -o \
-        -name "* 2.*" \
+        -name "CTestTestfile*.cmake" \
     \) -delete
+    rm -rf "$PREBUILT"
+    mv "$PREBUILT_STAGE" "$PREBUILT"
 
     # 验证产物
-    if [ -f "$BUILD_DIR/libs/$ARCH/libfreerdp3.a" ] &&
-       [ -f "$BUILD_DIR/libs/$ARCH/libwinpr3.a" ] &&
-       [ -f "$BUILD_DIR/libs/$ARCH/libfreerdp-client-channels.a" ]; then
-        echo "FreeRDP $ARCH build complete: $BUILD_DIR/libs/$ARCH/"
-        ls -lh "$BUILD_DIR/libs/$ARCH/"
+    if [ -f "$OUTPUT/libfreerdp3.a" ] &&
+       [ -f "$OUTPUT/libwinpr3.a" ] &&
+       [ -f "$OUTPUT/libfreerdp-client-channels.a" ]; then
+        echo "FreeRDP $ARCH build complete: $OUTPUT/"
+        ls -lh "$OUTPUT/"
     else
         echo "ERROR: FreeRDP $ARCH build failed — missing .a files"
         exit 1
@@ -342,6 +456,6 @@ esac
 
 echo "========================================"
 echo " FreeRDP OHOS cross-compilation DONE"
-echo " Libraries: $BUILD_DIR/libs/"
+echo " Libraries: $BUILD_OUTPUT_DIR/libs/"
 echo " IDE prebuilt: $PREBUILT_DIR/"
 echo "========================================"
