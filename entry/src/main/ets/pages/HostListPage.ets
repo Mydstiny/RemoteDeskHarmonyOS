@@ -312,6 +312,7 @@ import {
   SshOperationTargetAuth
 } from '../services/SshOperationConfigPolicy';
 import {
+  sshOperationRouteSecretConsumeAllowed,
   SshOperationRouteSecretResult,
   SshOperationRouteSecretScope,
   SshOperationRouteSecretService
@@ -8373,7 +8374,10 @@ struct HostListPage {
     legacyProxyPassphrase: string = '',
     allowTransient: boolean = true): SshOperationRouteSecrets | null {
     let scope: SshOperationRouteSecretScope | undefined = undefined;
-    if (allowTransient) {
+    if (sshOperationRouteSecretConsumeAllowed({
+      explicitUserAction: allowTransient,
+      appInBackground: this.appInBackground
+    })) {
       const current = AccountSessionCoordinator.getInstance().currentScope();
       scope = {
         ownerScopeId: current.ownerScopeId,
@@ -14310,10 +14314,12 @@ struct HostListPage {
         ownerScopeId: currentScope.ownerScopeId,
         storeIdentity: currentScope.storeIdentity,
         accountGeneration: currentScope.generation
-      });
+    });
     if (!routeSecretsResult.ok) {
-      this.sshPublicKeyInstallError = routeSecretsResult.message +
-        '；请先连接该主机完成一次性预认证，并在 60 秒内重试';
+      const retryHint: string =
+        routeSecretsResult.code === 'E-SSH-OPERATION-HOP-INTERACTIVE-NONREPLAYABLE' ? '' :
+          '；请先连接该主机完成一次性预认证，并在 60 秒内重试';
+      this.sshPublicKeyInstallError = routeSecretsResult.message + retryHint;
       return;
     }
     const auth: SshOperationTargetAuth = {

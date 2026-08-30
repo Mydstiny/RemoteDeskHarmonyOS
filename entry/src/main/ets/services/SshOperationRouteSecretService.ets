@@ -26,6 +26,30 @@ export interface SshOperationRouteSecretClock {
   now(): number;
 }
 
+export interface SshOperationRouteSecretTimer {
+  schedule(callback: () => void, delayMs: number): number;
+  cancel(timerId: number): void;
+}
+
+export interface SshOperationRouteSecretPublishFence {
+  authenticated: boolean;
+  expectedHostId: string;
+  actualHostId: string;
+  expectedRouteIdentity: string;
+  actualRouteIdentity: string;
+  expectedSessionId: number;
+  actualSessionId: number;
+  expectedGeneration: number;
+  actualGeneration: number;
+  hostOwnerScopeId: string;
+  currentOwnerScopeId: string;
+}
+
+export interface SshOperationRouteSecretConsumeContext {
+  explicitUserAction: boolean;
+  appInBackground: boolean;
+}
+
 interface PendingSshOperationRouteSecret {
   binding: SshOperationRouteSecretBinding;
   secrets: SshOperationRouteSecrets;
@@ -36,8 +60,12 @@ class SystemSshOperationRouteSecretClock implements SshOperationRouteSecretClock
   now(): number { return Date.now(); }
 }
 
-function cloneStrings(values: string[] | undefined): string[] {
-  return values === undefined ? [] : values.map((value: string): string => value);
+class SystemSshOperationRouteSecretTimer implements SshOperationRouteSecretTimer {
+  schedule(callback: () => void, delayMs: number): number {
+    return setTimeout(callback, delayMs);
+  }
+
+  cancel(timerId: number): void { clearTimeout(timerId); }
 }
 
 /** Private keys stay authoritative in KeyVault and are never duplicated in this broker. */
@@ -46,7 +74,9 @@ function cloneHandoffForBroker(value: SshJumpHopHandoff): SshJumpHopHandoff {
     password: value.password || '',
     privateKeyPem: '',
     privateKeyPassphrase: value.privateKeyPassphrase || '',
-    keyboardInteractiveResponses: cloneStrings(value.keyboardInteractiveResponses)
+    // Keyboard-interactive answers can contain an already-consumed OTP or a
+    // challenge-specific response. They are never replayable broker data.
+    keyboardInteractiveResponses: []
   };
 }
 
@@ -102,6 +132,40 @@ function bindingEquals(left: SshOperationRouteSecretBinding,
     left.hostId === right.hostId && left.routeIdentity === right.routeIdentity;
 }
 
+/** KBI answers are challenge-bound and may already be consumed OTP/MFA values. */
+export function sshOperationRouteHasNonReplayableAuthentication(
+  plan: SshProxyRuntimePlan
+): boolean {
+  if (!plan.valid || plan.route.type !== 'ssh_jump') { return false; }
+  for (let index: number = 0; index < plan.route.hops.length; index++) {
+    if (plan.route.hops[index].authMethod === 'kbd-interactive') { return true; }
+  }
+  return false;
+}
+
+/** Exact post-authentication fence for publishing captured route credentials. */
+export function sshOperationRouteSecretPublishAllowed(
+  fence: SshOperationRouteSecretPublishFence
+): boolean {
+  return fence.authenticated && fence.expectedHostId.trim().length > 0 &&
+    fence.expectedHostId.trim() === fence.actualHostId.trim() &&
+    fence.expectedRouteIdentity.trim().length > 0 &&
+    fence.expectedRouteIdentity.trim() === fence.actualRouteIdentity.trim() &&
+    Number.isSafeInteger(fence.expectedSessionId) && fence.expectedSessionId > 0 &&
+    fence.expectedSessionId === fence.actualSessionId &&
+    Number.isSafeInteger(fence.expectedGeneration) && fence.expectedGeneration > 0 &&
+    fence.expectedGeneration === fence.actualGeneration &&
+    fence.hostOwnerScopeId.trim().length > 0 &&
+    fence.hostOwnerScopeId.trim() === fence.currentOwnerScopeId.trim();
+}
+
+/** Background/silent probes must never consume an interactive one-shot handoff. */
+export function sshOperationRouteSecretConsumeAllowed(
+  context: SshOperationRouteSecretConsumeContext
+): boolean {
+  return context.explicitUserAction && !context.appInBackground;
+}
+
 /**
  * Process-memory-only, account/route-bound, one-shot handoff for auxiliary SSH
  * operations. This class deliberately has no serialization or storage API.
@@ -109,10 +173,14 @@ function bindingEquals(left: SshOperationRouteSecretBinding,
 export class SshOperationRouteSecretBroker {
   private pending: PendingSshOperationRouteSecret[] = [];
   private readonly clock: SshOperationRouteSecretClock;
+  private readonly timer: SshOperationRouteSecretTimer;
+  private cleanupTimerId: number = -1;
 
   constructor(clock: SshOperationRouteSecretClock =
-    new SystemSshOperationRouteSecretClock()) {
+    new SystemSshOperationRouteSecretClock(), timer: SshOperationRouteSecretTimer =
+    new SystemSshOperationRouteSecretTimer()) {
     this.clock = clock;
+    this.timer = timer;
   }
 
   put(binding: SshOperationRouteSecretBinding,
@@ -137,6 +205,7 @@ export class SshOperationRouteSecretBroker {
       secrets: cloneSecretsForBroker(secrets),
       createdAtMs: this.clock.now()
     });
+    this.scheduleCleanup();
     return true;
   }
 
@@ -150,6 +219,7 @@ export class SshOperationRouteSecretBroker {
       this.pending.splice(index, 1);
       const result: SshOperationRouteSecrets = cloneSecretsForBroker(item.secrets);
       scrubSecrets(item.secrets);
+      this.scheduleCleanup();
       return result;
     }
     return null;
@@ -168,6 +238,7 @@ export class SshOperationRouteSecretBroker {
       }
     }
     this.pending = next;
+    this.scheduleCleanup();
   }
 
   cleanup(): void {
@@ -177,20 +248,46 @@ export class SshOperationRouteSecretBroker {
       const item: PendingSshOperationRouteSecret = this.pending[index];
       if (!Number.isSafeInteger(item.createdAtMs) || item.createdAtMs < 0 ||
         nowMs < item.createdAtMs ||
-        nowMs - item.createdAtMs > SSH_OPERATION_ROUTE_SECRET_TTL_MS) {
+        nowMs - item.createdAtMs >= SSH_OPERATION_ROUTE_SECRET_TTL_MS) {
         scrubSecrets(item.secrets);
       } else {
         next.push(item);
       }
     }
     this.pending = next;
+    this.scheduleCleanup();
   }
 
   clearAll(): void {
+    this.cancelCleanupTimer();
     for (let index: number = 0; index < this.pending.length; index++) {
       scrubSecrets(this.pending[index].secrets);
     }
     this.pending = [];
+  }
+
+  pendingCountForTest(): number { return this.pending.length; }
+
+  private cancelCleanupTimer(): void {
+    if (this.cleanupTimerId === -1) { return; }
+    this.timer.cancel(this.cleanupTimerId);
+    this.cleanupTimerId = -1;
+  }
+
+  private scheduleCleanup(): void {
+    this.cancelCleanupTimer();
+    if (this.pending.length === 0) { return; }
+    const nowMs: number = this.clock.now();
+    let delayMs: number = SSH_OPERATION_ROUTE_SECRET_TTL_MS;
+    for (let index: number = 0; index < this.pending.length; index++) {
+      const createdAtMs: number = this.pending[index].createdAtMs;
+      const remainingMs: number = createdAtMs + SSH_OPERATION_ROUTE_SECRET_TTL_MS - nowMs;
+      delayMs = Math.min(delayMs, Math.max(0, remainingMs));
+    }
+    this.cleanupTimerId = this.timer.schedule((): void => {
+      this.cleanupTimerId = -1;
+      this.cleanup();
+    }, delayMs);
   }
 }
 
@@ -215,8 +312,9 @@ function routeNeedsTransientSecrets(plan: SshProxyRuntimePlan): boolean {
   return plan.route.type === 'ssh_jump' && plan.route.hops.length > 0;
 }
 
-function stagedSecretsMatchPlan(plan: SshProxyRuntimePlan,
+export function sshOperationRouteSecretsMatchPlan(plan: SshProxyRuntimePlan,
   secrets: SshOperationRouteSecrets): boolean {
+  if (sshOperationRouteHasNonReplayableAuthentication(plan)) { return false; }
   if ((plan.route.type === 'http_connect' || plan.route.type === 'socks5') &&
     plan.proxyAuthRequired) {
     return secrets.proxyPassword.length > 0;
@@ -227,8 +325,6 @@ function stagedSecretsMatchPlan(plan: SshProxyRuntimePlan,
     const hop: SshJumpHop = plan.route.hops[index];
     const handoff: SshJumpHopHandoff = secrets.jumpHandoffs[index];
     if (hop.authMethod === 'password' && (handoff.password || '').length === 0) { return false; }
-    if (hop.authMethod === 'kbd-interactive' &&
-      (handoff.keyboardInteractiveResponses || []).length === 0) { return false; }
   }
   return true;
 }
@@ -251,7 +347,8 @@ export class SshOperationRouteSecretService {
   stage(host: RemoteHost, plan: SshProxyRuntimePlan,
     scope: SshOperationRouteSecretScope,
     secrets: SshOperationRouteSecrets): boolean {
-    if (!routeNeedsTransientSecrets(plan) || !stagedSecretsMatchPlan(plan, secrets)) {
+    if (!routeNeedsTransientSecrets(plan) ||
+      !sshOperationRouteSecretsMatchPlan(plan, secrets)) {
       return false;
     }
     const binding: SshOperationRouteSecretBinding | null =
@@ -274,6 +371,10 @@ export class SshOperationRouteSecretService {
     if (!plan.valid) {
       return failure(plan.code || 'E-SSH-OPERATION-ROUTE',
         plan.message || 'SSH 连接路径无效');
+    }
+    if (sshOperationRouteHasNonReplayableAuthentication(plan)) {
+      return failure('E-SSH-OPERATION-HOP-INTERACTIVE-NONREPLAYABLE',
+        '键盘交互或 OTP 必须在每个辅助 SSH 会话中重新认证，当前操作已安全拒绝');
     }
     let staged: SshOperationRouteSecrets | null = null;
     if (routeNeedsTransientSecrets(plan) && scope !== undefined) {
@@ -325,18 +426,9 @@ export class SshOperationRouteSecretService {
         continue;
       }
       if (hop.authMethod === 'kbd-interactive') {
-        const responses: string[] = plan.source === 'legacy' && index === 0 ?
-          (host.sshProxyPassword.length === 0 ? [] : [host.sshProxyPassword]) :
-          (stagedHandoff === null ? [] :
-            cloneStrings(stagedHandoff.keyboardInteractiveResponses));
-        if (responses.length === 0) {
-          if (staged !== null) { scrubSecrets(staged); }
-          return failure('E-SSH-OPERATION-HOP-INTERACTIVE',
-            prefix + '需要一次性键盘交互响应');
-        }
-        handoffs.push({ password: '', privateKeyPem: '', privateKeyPassphrase: '',
-          keyboardInteractiveResponses: responses });
-        continue;
+        if (staged !== null) { scrubSecrets(staged); }
+        return failure('E-SSH-OPERATION-HOP-INTERACTIVE-NONREPLAYABLE',
+          prefix + '键盘交互或 OTP 不可重放');
       }
       const keyId: string = index < plan.hopKeyIds.length ? plan.hopKeyIds[index] : '';
       const key = this.keys.getSshKey(keyId);

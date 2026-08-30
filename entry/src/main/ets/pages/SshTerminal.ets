@@ -132,6 +132,8 @@ import {
 } from '../types/rdpnapi';
 import { SshPreflightService } from '../services/SshPreflightService';
 import {
+  sshOperationRouteHasNonReplayableAuthentication,
+  sshOperationRouteSecretPublishAllowed,
   SshOperationRouteSecretScope,
   SshOperationRouteSecretService
 } from '../services/SshOperationRouteSecretService';
@@ -1612,7 +1614,8 @@ struct SshTerminal {
     routeIdentity: string, proxyPassword: string,
     jumpHandoffs: SshJumpHopHandoff[]): void {
     this.clearSshRouteSecretCapture();
-    if (plan.source !== 'profile') { return; }
+    if (plan.source !== 'profile' ||
+      sshOperationRouteHasNonReplayableAuthentication(plan)) { return; }
     this.sshRouteSecretCaptureHostId = host.id.trim();
     this.sshRouteSecretCaptureIdentity = routeIdentity.trim();
     this.sshRouteSecretCaptureProxyPassword = proxyPassword;
@@ -1621,8 +1624,7 @@ struct SshTerminal {
         password: handoff.password || '',
         privateKeyPem: '',
         privateKeyPassphrase: handoff.privateKeyPassphrase || '',
-        keyboardInteractiveResponses: (handoff.keyboardInteractiveResponses || []).map(
-          (response: string): string => response)
+        keyboardInteractiveResponses: []
       }));
   }
 
@@ -1635,36 +1637,25 @@ struct SshTerminal {
     this.sshRouteSecretCaptureGeneration = generation;
   }
 
-  private captureSshRouteKeyboardInteractiveResponse(prompt: SshAuthPromptRequest,
-    values: string[]): void {
-    if (prompt.kind !== 'keyboard_interactive' ||
-      prompt.sessionId !== this.sshRouteSecretCaptureSessionId ||
-      prompt.generation !== this.sshRouteSecretCaptureGeneration ||
-      prompt.hop.indexOf('hop-') !== 0) { return; }
-    const oneBasedIndex: number = Number(prompt.hop.substring(4));
-    if (!Number.isSafeInteger(oneBasedIndex) || oneBasedIndex <= 0 ||
-      oneBasedIndex > this.sshRouteSecretCaptureJumpHandoffs.length) { return; }
-    const handoff: SshJumpHopHandoff =
-      this.sshRouteSecretCaptureJumpHandoffs[oneBasedIndex - 1];
-    const existing: string[] = handoff.keyboardInteractiveResponses || [];
-    if (existing.length + values.length > 32) {
-      this.clearSshRouteSecretCapture();
-      return;
-    }
-    handoff.keyboardInteractiveResponses = existing.concat(
-      values.map((value: string): string => value));
-  }
-
   private publishSshRouteSecretCapture(host: RemoteHost, plan: SshProxyRuntimePlan,
     routeIdentity: string, sessionId: number, generation: number): void {
-    if (host.id.trim() !== this.sshRouteSecretCaptureHostId ||
-      routeIdentity.trim() !== this.sshRouteSecretCaptureIdentity ||
-      sessionId !== this.sshRouteSecretCaptureSessionId ||
-      generation !== this.sshRouteSecretCaptureGeneration) {
+    const currentScope = AccountSessionCoordinator.getInstance().currentScope();
+    if (!sshOperationRouteSecretPublishAllowed({
+      authenticated: sessionId > 0,
+      expectedHostId: this.sshRouteSecretCaptureHostId,
+      actualHostId: host.id,
+      expectedRouteIdentity: this.sshRouteSecretCaptureIdentity,
+      actualRouteIdentity: routeIdentity,
+      expectedSessionId: this.sshRouteSecretCaptureSessionId,
+      actualSessionId: sessionId,
+      expectedGeneration: this.sshRouteSecretCaptureGeneration,
+      actualGeneration: generation,
+      hostOwnerScopeId: host.userId,
+      currentOwnerScopeId: currentScope.ownerScopeId
+    })) {
       this.clearSshRouteSecretCapture();
       return;
     }
-    const currentScope = AccountSessionCoordinator.getInstance().currentScope();
     const scope: SshOperationRouteSecretScope = {
       ownerScopeId: currentScope.ownerScopeId,
       storeIdentity: currentScope.storeIdentity,
@@ -1903,7 +1894,6 @@ struct SshTerminal {
       this.clearSshAuthPromptState();
       return;
     }
-    this.captureSshRouteKeyboardInteractiveResponse(prompt, responseValues);
     // Do not retain password/OTP material while the native broker advances to
     // a possible next keyboard-interactive round.
     this.clearSshAuthPromptState();

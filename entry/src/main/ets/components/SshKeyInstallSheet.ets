@@ -268,8 +268,11 @@ export struct SshKeyInstallSheet {
     const routeSecrets: SshOperationRouteSecretResult =
       SshOperationRouteSecretService.getInstance().resolve(host, plan, '', routeScope);
     if (!routeSecrets.ok) {
+      const retryHint: string =
+        routeSecrets.code === 'E-SSH-OPERATION-HOP-INTERACTIVE-NONREPLAYABLE' ? '' :
+          '；请先连接主机完成预认证，并在 60 秒内重试';
       promptAction.showToast({
-        message: routeSecrets.message + '；请先连接主机完成预认证，并在 60 秒内重试', duration: 3000
+        message: routeSecrets.message + retryHint, duration: 3000
       });
       return;
     }
