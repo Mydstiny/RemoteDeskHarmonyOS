@@ -15,7 +15,6 @@
 #include <string>
 #include <cstdint>
 #include <vector>
-#include <libssh2.h>
 
 // ============================================================
 // 返回结构体
