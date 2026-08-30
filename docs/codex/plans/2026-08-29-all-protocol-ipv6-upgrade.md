@@ -22,7 +22,9 @@
 
 能力按“协议 × 能力”独立验收和发布；不适用项记为 N/A。依赖关系为：`configured_endpoint_ipv6=M0+M1`、`dual_stack_racing=M2`、`discovery/control-data=M3`、`RustDesk nat_traversal_ipv6=M4`，后者不得阻塞其他协议的较低层级声明。
 
-实施状态（2026-08-30）：M0 的共享 Endpoint V2、identity V2、fail-closed NAPI 边界与自动化契约门禁已完成；M1 的代码侧检查点已完成并在 `d3f07f4e` 通过独立复核（P0/P1/P2 均为 0），进入真机验收。实现已覆盖五协议录入/导入与规范化新写、SSH 代理/跳板/密钥安装、RustDesk control-plane 与可取消连接生命周期、RDP transport/server-name/client-hostname 分离及 literal SNI、VNC/RDP 预检、Moonlight NAPI 边界；异常连接准入会事务回滚，Rust/C++ 阻塞解析 worker 均有进程级硬上限。自动化结果为 Rust 209/209、OHOS Rust FFI arm64-v8a 与 x86_64、两项强制 Hvigor、`git diff --check` 和 Light 合规全部 PASS。当前无 HDC 目标，IPv6 literal/AAAA-only 的真实连接、重连、信任链和 SFTP 数据操作矩阵尚未执行，因此五类“协议 × 能力”声明继续全部关闭；M2–M4 仍待后续里程碑。
+实施状态（2026-08-31）：M0–M3 的代码侧实现已完成。共享 Endpoint/identity 契约、受控 Happy Eyeballs、scoped IPv6、网络 generation 失效、代理/网关/跳板/转发、发现去重以及控制面/数据面 family 交接均已落地；RDP、VNC、Moonlight、SSH/SFTP 与 RustDesk 的自动化回归和两个 OHOS ABI 构建通过。RustDesk 官方 `socket_addr_v6` 被严格标记为 UDP/KCP 候选，屏幕、文件与 presence 共用 route planner；当前产品没有可执行的 UDP/KCP transport，因此 UDP-only 路由会 fail closed，有 relay 时保持 relay fallback，不会把它误当 TCP 或误报在线。
+
+M4 只完成了可审计的发布边界和既有 NAT/registration/heartbeat plumbing 的收口，尚未达到发布条件：版本化 FFI capability ABI 仅发布 Direct/Relay TCP，AUTO、UDP/KCP 与 NAT traversal 位继续关闭。最终本地自动化为 Rust no-default 237/237、完整特性 247/247、native 926/926、OHOS RustDesk FFI arm64-v8a/x86_64、两项强制 Hvigor、`git diff --check`、Rust format 与 Light 合规全部 PASS。当前 HDC 仍无可用目标，也没有固定版本 hbbs/hbbr、受控 peer 和 IPv6/NAT64/VPN 端点矩阵；所以五类“协议 × 能力”声明保持关闭，M1–M3 真机退出条件与 M4 可执行 UDP/NAT 状态机仍待外部验收/后续实现，不能把代码侧完成写成产品能力已发布。
 
 ## 2. 当前能力矩阵
 
