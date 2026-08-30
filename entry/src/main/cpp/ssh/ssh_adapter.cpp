@@ -2477,12 +2477,20 @@ int SshAdapter::connectThroughSshJump(ConnectionConfig& cfg) {
         }
         libssh2_session_set_blocking(runtime->session, 0);
 
-        int rc = 0;
-        while ((rc = libssh2_session_handshake(runtime->session, runtime->transportFd)) ==
-               LIBSSH2_ERROR_EAGAIN) {
+        int rc = LIBSSH2_ERROR_EAGAIN;
+        while (true) {
             if (connectRouteDeadlineExpired()) {
                 return fail(ERR_SSH_KEX_TIMEOUT);
             }
+            if (!admitRouteWrite(connectNetworkSnapshot_, [&]() {
+                    // libssh2_session_handshake() emits the client banner and
+                    // KEX packets on both the initial call and EAGAIN retries.
+                    rc = libssh2_session_handshake(
+                        runtime->session, runtime->transportFd);
+                })) {
+                return fail(routeWriteFailure(ERR_SSH_KEX_TIMEOUT));
+            }
+            if (rc != LIBSSH2_ERROR_EAGAIN) { break; }
             if (waitSocketOnFd(runtime->transportFd, 2,
                                std::max(1, static_cast<int>(hop.connectTimeoutMs / 1000))) != 0) {
                 return fail(ERR_SSH_KEX_TIMEOUT);
@@ -3026,19 +3034,25 @@ int SshAdapter::sshHandshake() {
     OH_LOG_INFO(LOG_APP, "[SSH] 算法偏好已设置");
 
     // KEX 握手 (非阻塞 + select 轮询)
-    int rc;
-    while ((rc = libssh2_session_handshake(session_, sockFd_)) == LIBSSH2_ERROR_EAGAIN) {
+    int rc = LIBSSH2_ERROR_EAGAIN;
+    while (true) {
         if (connectRouteDeadlineExpired()) {
-            libssh2_session_free(session_);
-            session_ = nullptr;
             return ERR_SSH_KEX_TIMEOUT;
         }
+        if (!admitRouteWrite(connectNetworkSnapshot_, [&]() {
+                // This call is an outbound primitive even before a session is
+                // established: it can send the banner and KEX packets.
+                rc = libssh2_session_handshake(session_, sockFd_);
+            })) {
+            // The caller owns central teardown. It will retire a stale socket
+            // before releasing this partially initialized libssh2 session.
+            return routeWriteFailure(ERR_SSH_KEX_TIMEOUT);
+        }
+        if (rc != LIBSSH2_ERROR_EAGAIN) { break; }
         int w = waitSocket(2, 30); // 30s KEX timeout
         if (w != 0) {
             OH_LOG_ERROR(LOG_APP, "[SSH] KEX 握手超时");
-            libssh2_session_free(session_);
-            session_ = nullptr;
-            return ERR_SSH_KEX_TIMEOUT;
+            return w == -3 ? ERR_SSH_SESSION_CLOSED : ERR_SSH_KEX_TIMEOUT;
         }
     }
     if (rc) {
@@ -3046,8 +3060,6 @@ int SshAdapter::sshHandshake() {
         libssh2_session_last_error(session_, &errMsg, nullptr, 0);
         OH_LOG_ERROR(LOG_APP, "[SSH] KEX握手失败: rc=%{public}d msg=%{public}s serverBanner=%{public}s",
                      rc, errMsg ? errMsg : "unknown", serverBanner_.c_str());
-        libssh2_session_free(session_);
-        session_ = nullptr;
         return ERR_SSH_KEX_FAILED;
     }
 
@@ -3068,8 +3080,6 @@ int SshAdapter::sshHandshake() {
         savedCfg_.expectedHostKeyFingerprintSha256, false, "目标主机",
         savedCfg_.host, savedCfg_.port, -1);
     if (hostKeyResult != 0) {
-        libssh2_session_free(session_);
-        session_ = nullptr;
         return hostKeyResult;
     }
 

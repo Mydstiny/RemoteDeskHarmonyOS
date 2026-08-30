@@ -97,6 +97,34 @@ RDP_TEST_CASE(ssh_network_generation_policy_fences_window_adjust_capable_reads) 
     RDP_ASSERT_EQ(implicitWindowAdjustWrites, 1);
 }
 
+RDP_TEST_CASE(ssh_network_generation_policy_fences_handshake_initial_and_retry) {
+    remotedesk::net::NetworkGenerationFence fence(85, true);
+    const remotedesk::net::NetworkGenerationSnapshot captured = fence.snapshot();
+    int handshakeCalls = 0;
+    int bannerOrKexPackets = 0;
+    const auto simulatedLibssh2Handshake = [&]() {
+        ++handshakeCalls;
+        ++bannerOrKexPackets;
+    };
+
+    // The initial call is not a local setup operation; it may immediately
+    // put the SSH banner or KEXINIT on the route.
+    RDP_ASSERT(SshNetworkGenerationPolicy::admitWrite(
+        fence, captured, []() { return false; },
+        simulatedLibssh2Handshake));
+    RDP_ASSERT_EQ(handshakeCalls, 1);
+    RDP_ASSERT_EQ(bannerOrKexPackets, 1);
+
+    // Every EAGAIN continuation must reacquire admission. If the route changed
+    // while poll/select was waiting, the continuation emits nothing.
+    RDP_ASSERT(fence.update(true, 86));
+    RDP_ASSERT(!SshNetworkGenerationPolicy::admitWrite(
+        fence, captured, []() { return false; },
+        simulatedLibssh2Handshake));
+    RDP_ASSERT_EQ(handshakeCalls, 1);
+    RDP_ASSERT_EQ(bannerOrKexPackets, 1);
+}
+
 RDP_TEST_CASE(ssh_network_generation_retry_uses_only_newer_available_routes) {
     const remotedesk::net::NetworkGenerationSnapshot captured {10, true};
     RDP_ASSERT(SshNetworkGenerationPolicy::retryDecision(
