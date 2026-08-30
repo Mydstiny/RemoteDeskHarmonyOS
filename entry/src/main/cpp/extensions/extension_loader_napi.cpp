@@ -35,6 +35,7 @@
 #include "vnc/vnc_rfb_engine.h"
 #include "vnc/vnc_rfb_protocol.h"
 #include "vnc/vnc_transport.h"
+#include "vnc/vnc_transport_policy.h"
 #include <napi/native_api.h>
 #include <hilog/log.h>
 #include <map>
@@ -3287,13 +3288,12 @@ napi_value NapiProbeVncGatewayDeepAsync(napi_env env, napi_callback_info info) {
         napi_get_value_int64(env, args[13], &data->accountGeneration) == napi_ok);
     validInput = validInput && (argc <= 14 ||
         napi_get_value_bool(env, args[14], &data->enabled) == napi_ok);
-    if (!validInput ||
-        !NormalizePersistedEndpoint(data->config.host, data->config.port)) {
+    if (!validInput || !vncNormalizeCertificateEndpoint(
+            data->config.host, data->config.port, data->config.serverName)) {
         delete data;
         napi_throw_error(env, nullptr, "VNC Gateway endpoint is invalid or unsupported");
         return nullptr;
     }
-    data->config.serverName = data->config.host;
     data->cancelled = std::make_shared<std::atomic_bool>(false);
     data->config.cancelled = data->cancelled;
     data->environmentState = GetVncCertificateProbeEnvironmentState(env);

@@ -447,8 +447,13 @@ void VncRfbEngine::run() {
         if (!config_.vncGatewayHost.empty()) transportConfig.host = config_.vncGatewayHost;
         if (config_.vncGatewayPort > 0) transportConfig.port = config_.vncGatewayPort;
     }
-    if (transportConfig.serverName.empty()) {
-        transportConfig.serverName = transportConfig.host;
+    if (transportConfig.serverName.empty() &&
+        !vncNormalizeCertificateEndpoint(
+            transportConfig.host, transportConfig.port,
+            transportConfig.serverName)) {
+        setState(ConnectionState::ERROR, "VNC transport endpoint 无效");
+        clearSensitiveConfig();
+        return;
     }
     if (!transport_.connect(transportConfig, error)) {
         if (stopRequested_.load(std::memory_order_acquire)) {

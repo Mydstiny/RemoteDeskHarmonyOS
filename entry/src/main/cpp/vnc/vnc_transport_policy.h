@@ -29,6 +29,30 @@ inline bool vncEndpointIsIpLiteral(const std::string& value) {
          parsed.endpoint.family() == remotedesk::endpoint::AddressFamily::Ipv6);
 }
 
+/**
+ * Normalize the socket endpoint while deriving the default certificate
+ * identity from the scope-free canonical host. A link-local interface scope
+ * is a routing attribute and must never become an IP SAN identity.
+ */
+inline bool vncNormalizeCertificateEndpoint(
+    std::string& transportHost,
+    int port,
+    std::string& defaultServerName) {
+    defaultServerName.clear();
+    if (port < 1 || port > 65535) {
+        return false;
+    }
+    const auto parsed = remotedesk::endpoint::ParseFields(
+        transportHost, static_cast<std::uint16_t>(port),
+        remotedesk::endpoint::ParseMode::Persisted);
+    if (!parsed.ok) {
+        return false;
+    }
+    transportHost = remotedesk::endpoint::TransportHost(parsed.endpoint);
+    defaultServerName = parsed.endpoint.canonicalHost();
+    return true;
+}
+
 inline bool vncResolveCertificateIdentity(
     const std::string& transportHost,
     const std::string& configuredServerName,

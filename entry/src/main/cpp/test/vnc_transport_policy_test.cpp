@@ -23,10 +23,17 @@ RDP_TEST_CASE(vnc_native_transport_allows_direct_and_repeater_only) {
 }
 
 RDP_TEST_CASE(vnc_scoped_ipv6_uses_transport_scope_but_scope_free_tls_identity) {
+    std::string transportHost = "[fe80::20%wlan0]";
+    std::string defaultServerName;
+    RDP_ASSERT(vncNormalizeCertificateEndpoint(
+        transportHost, 5900, defaultServerName));
+    RDP_ASSERT(transportHost == "fe80::20%wlan0");
+    RDP_ASSERT(defaultServerName == "fe80::20");
+
     std::string identity;
     bool sendSni = true;
     RDP_ASSERT(vncResolveCertificateIdentity(
-        "[fe80::20%wlan0]", "", identity, sendSni));
+        transportHost, defaultServerName, identity, sendSni));
     RDP_ASSERT(identity == "fe80::20");
     RDP_ASSERT(!sendSni);
 
@@ -36,6 +43,11 @@ RDP_TEST_CASE(vnc_scoped_ipv6_uses_transport_scope_but_scope_free_tls_identity) 
     RDP_ASSERT(sendSni);
     RDP_ASSERT(!vncResolveCertificateIdentity(
         "fe80::20%wlan0", "bad%identity", identity, sendSni));
+
+    transportHost = "fe80::20%7";
+    RDP_ASSERT(!vncNormalizeCertificateEndpoint(
+        transportHost, 5900, defaultServerName));
+    RDP_ASSERT(defaultServerName.empty());
 }
 
 RDP_TEST_CASE(vnc_websocket_authority_formats_ipv6_and_rfc6874_scope) {
