@@ -875,7 +875,7 @@
     {
       "name": "FreeRDP-WinPR",
       "SPDXID": "SPDXRef-Native-FreeRDP-WinPR",
-      "versionInfo": "dae8276ac7361b8d14f7b87d41163fe03dbb944e+tree.54cc9b12e3040bba73773a5439d4f8023d46ac7a",
+      "versionInfo": "dae8276ac7361b8d14f7b87d41163fe03dbb944e+tree.24a880d801892e3d6f1b8c78534e51eaeca8b0d8",
       "downloadLocation": "https://github.com/Mydstiny/RemoteDeskHarmonyOS",
       "filesAnalyzed": false,
       "licenseConcluded": "Apache-2.0",

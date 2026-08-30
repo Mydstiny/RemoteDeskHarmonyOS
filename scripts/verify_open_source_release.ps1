@@ -226,7 +226,7 @@ if ($gitmodules -notmatch 'https://github.com/Mydstiny/RemoteDeskHarmonyOS.git' 
   Add-Failure 'FreeRDP OHOS submodule does not have a public reproducible source.'
 }
 $freerdpBaseRevision = 'dae8276ac7361b8d14f7b87d41163fe03dbb944e'
-$freerdpPatchedTree = '54cc9b12e3040bba73773a5439d4f8023d46ac7a'
+$freerdpPatchedTree = '24a880d801892e3d6f1b8c78534e51eaeca8b0d8'
 $freerdpGitlink = (& git -C $root ls-files --stage -- freerdp).Trim()
 if (-not $freerdpGitlink.StartsWith("160000 $freerdpBaseRevision ")) {
   Add-Failure 'FreeRDP gitlink is not locked to the public patch base.'
@@ -236,6 +236,7 @@ $freerdpPatchExpectations = @{
   'patches/freerdp-ohos/0002-Add-bounded-dual-stack-TCP-racing.patch' = '577df010d9c75307f79fe7055b97ee41c8f91a25b42dbc3fdd0b97cb21a8948e'
   'patches/freerdp-ohos/0003-Add-gateway-safe-dual-stack-routing.patch' = '0b232174a4ff599bc0d5feff81d56c776ee9a2a1752c64b7badd64c272fa2c86'
   'patches/freerdp-ohos/0004-Fix-thread-termination-on-OHOS.patch' = '4f082d9358e0c11599977f24eacf092d2305f11825006061b13411213277c157'
+  'patches/freerdp-ohos/0005-Add-deterministic-IPv6-gateway-and-resolver-tests.patch' = '17c5a149ac1feed76f0ae26fb09248472fdc9b2ab2d543ddb69e7d23d1ddc23c'
 }
 foreach ($relative in $freerdpPatchExpectations.Keys) {
   $path = Join-Path $root $relative

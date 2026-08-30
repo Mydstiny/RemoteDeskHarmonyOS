@@ -1,13 +1,14 @@
 $ErrorActionPreference = 'Stop'
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 $expectedBaseRevision = 'dae8276ac7361b8d14f7b87d41163fe03dbb944e'
-$expectedPatchedTree = '54cc9b12e3040bba73773a5439d4f8023d46ac7a'
+$expectedPatchedTree = '24a880d801892e3d6f1b8c78534e51eaeca8b0d8'
 $expectedVersion = "$expectedBaseRevision+tree.$expectedPatchedTree"
 $expectedPatchSha256 = [ordered]@{
   'patches/freerdp-ohos/0001-fix-omit-TLS-SNI-for-IP-literals.patch' = '31b34d9da81d30faf223a9e919264ab2638e2c0f102a92fc976263d0a0fb6812'
   'patches/freerdp-ohos/0002-Add-bounded-dual-stack-TCP-racing.patch' = '577df010d9c75307f79fe7055b97ee41c8f91a25b42dbc3fdd0b97cb21a8948e'
   'patches/freerdp-ohos/0003-Add-gateway-safe-dual-stack-routing.patch' = '0b232174a4ff599bc0d5feff81d56c776ee9a2a1752c64b7badd64c272fa2c86'
   'patches/freerdp-ohos/0004-Fix-thread-termination-on-OHOS.patch' = '4f082d9358e0c11599977f24eacf092d2305f11825006061b13411213277c157'
+  'patches/freerdp-ohos/0005-Add-deterministic-IPv6-gateway-and-resolver-tests.patch' = '17c5a149ac1feed76f0ae26fb09248472fdc9b2ab2d543ddb69e7d23d1ddc23c'
 }
 $patches = @($expectedPatchSha256.Keys)
 
@@ -73,10 +74,10 @@ try {
   }
 }
 $expectedArtifacts = @{
-  'libs/freerdp-ohos/arm64-v8a/libfreerdp3.a' = '26648c05c7f9689038d36bae1f37ad351e64abd4938cc16d587465dd8e6cf8e9'
+  'libs/freerdp-ohos/arm64-v8a/libfreerdp3.a' = '99101a9405961588f7f83236b61eee77ca0eda12d76ea6cdcdec935a5efbd702'
   'libs/freerdp-ohos/arm64-v8a/libfreerdp-client-channels.a' = '6f17f1ce1b1955ccfa436fd891636290605c9475764e224228892dfaf09a3602'
   'libs/freerdp-ohos/arm64-v8a/libwinpr3.a' = 'e13b05ec24732d835a564fb99df43dbe0ed221f285469569958322b7cebedadf'
-  'libs/freerdp-ohos/x86_64/libfreerdp3.a' = 'a7a2d5203a45c3ac8c49d42afcfa08a98597fa128691dd8001fe3f1aa1664072'
+  'libs/freerdp-ohos/x86_64/libfreerdp3.a' = 'b20182b553860747366ff561d8c698f75f3fed93b167741454fba9c3d2b0e2c6'
   'libs/freerdp-ohos/x86_64/libfreerdp-client-channels.a' = 'ff05605c6dea30e7f2b18f7495dcc20e119459c710033c9fb1b3b6a01ebab231'
   'libs/freerdp-ohos/x86_64/libwinpr3.a' = '4a63ba47876ea46d9158a8149c17f43be2d84b7b7239dfc89524d1d4281ccf1f'
 }
@@ -168,8 +169,8 @@ foreach ($field in $freerdpManifestFields) {
 }
 if ($manifestSchema.properties.freerdpSubmoduleCommit.pattern -ne '^[0-9a-f]{40}$' -or
     $manifestSchema.properties.freerdpPatchedTree.pattern -ne '^[0-9a-f]{40}$' -or
-    $manifestSchema.properties.freerdpPatchSha256.minItems -ne 4 -or
-    $manifestSchema.properties.freerdpPatchSha256.maxItems -ne 4 -or
+    $manifestSchema.properties.freerdpPatchSha256.minItems -ne 5 -or
+    $manifestSchema.properties.freerdpPatchSha256.maxItems -ne 5 -or
     $manifestSchema.properties.freerdpPatchSha256.items.pattern -ne '^[0-9a-f]{64}$') {
   throw 'Release manifest FreeRDP field constraints are incomplete or stale.'
 }

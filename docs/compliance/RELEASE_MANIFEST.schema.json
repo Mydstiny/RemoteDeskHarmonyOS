@@ -13,7 +13,7 @@
     "rustdeskProtocolSha256": { "type": "array", "items": { "type": "string", "pattern": "^[0-9a-f]{64}$" }, "minItems": 2 },
     "freerdpSubmoduleCommit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
     "freerdpPatchedTree": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
-    "freerdpPatchSha256": { "type": "array", "items": { "type": "string", "pattern": "^[0-9a-f]{64}$" }, "minItems": 4, "maxItems": 4 },
+    "freerdpPatchSha256": { "type": "array", "items": { "type": "string", "pattern": "^[0-9a-f]{64}$" }, "minItems": 5, "maxItems": 5 },
     "buildCommand": { "type": "string" },
     "toolchainVersions": { "type": "object" },
     "sourceOfferUrl": { "type": "string", "format": "uri" },

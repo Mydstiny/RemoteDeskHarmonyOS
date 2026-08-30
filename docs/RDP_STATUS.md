@@ -19,8 +19,8 @@ RemoteDesktop.ets
 arm64-v8a 与 x86_64 的发布预编译位于 `libs/freerdp-ohos/`，由
 `scripts/build_freerdp_ohos.sh all` 可复现生成。
 FreeRDP 输入固定为公开 gitlink `dae8276ac7361b8d14f7b87d41163fe03dbb944e`
-加仓库内四个有序 OHOS 补丁；构建前必须得到 tree
-`54cc9b12e3040bba73773a5439d4f8023d46ac7a`。
+加仓库内五个有序 OHOS 补丁；构建前必须得到 tree
+`24a880d801892e3d6f1b8c78534e51eaeca8b0d8`。
 
 ## 高 DPI 与窗口适配契约
 

@@ -93,7 +93,7 @@ try {
     "Root ref: $Ref",
     "Root commit: $refCommit",
     "freerdp gitlink commit: $submoduleCommit",
-    'freerdp patched tree: 54cc9b12e3040bba73773a5439d4f8023d46ac7a',
+    'freerdp patched tree: 24a880d801892e3d6f1b8c78534e51eaeca8b0d8',
     '',
     'Included:',
     '- RemoteDeskHarmonyOS-source.zip: tracked source snapshot, including docs/codex shared state and the FreeRDP OHOS patch series.',
