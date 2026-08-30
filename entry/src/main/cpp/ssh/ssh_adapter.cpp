@@ -161,7 +161,7 @@ namespace {
     struct SshJumpKeyboardContext {
         SshAdapter* adapter = nullptr;
         const std::string* password = nullptr;
-        const std::vector<std::string>* explicitResponses = nullptr;
+        std::vector<std::string>* explicitResponses = nullptr;
         size_t* presetIndex = nullptr;
         bool* passwordFallbackUsed = nullptr;
         std::string targetHost;
@@ -1528,6 +1528,11 @@ void SshAdapter::setState(ConnectionState s, const std::string& message) {
             setSshLifecycleState(SshSessionLifecycleState::Closed);
             break;
     }
+    setConnectionStateOnly(s, message);
+}
+
+void SshAdapter::setConnectionStateOnly(
+    ConnectionState s, const std::string& message) {
     ConnectionStateCallback callback;
     {
         std::lock_guard<std::mutex> lock(stateCallbackMutex_);
@@ -1865,7 +1870,7 @@ int SshAdapter::receiveProxyHeaders(std::string& headers, size_t maxLen, int tim
     return 0;
 }
 
-int SshAdapter::connectThroughProxy(const ConnectionConfig& cfg) {
+int SshAdapter::connectThroughProxy(ConnectionConfig& cfg) {
     const std::string type = cfg.sshProxyType.empty() ? "direct" : cfg.sshProxyType;
     if (!sshRouteTypeIsKnown(type)) {
         OH_LOG_ERROR(LOG_APP, "[SSH] 未知的代理类型: %{public}s", type.c_str());
@@ -2071,7 +2076,7 @@ int SshAdapter::connectThroughProxy(const ConnectionConfig& cfg) {
     return 0;
 }
 
-int SshAdapter::connectThroughSshJump(const ConnectionConfig& cfg) {
+int SshAdapter::connectThroughSshJump(ConnectionConfig& cfg) {
     if (cfg.host.empty() || cfg.port <= 0 || cfg.port > 65535) {
         return ERR_SSH_PROXY_INVALID;
     }
@@ -2125,7 +2130,7 @@ int SshAdapter::connectThroughSshJump(const ConnectionConfig& cfg) {
     }
 
     const std::string emptySecret;
-    const std::vector<std::string> emptyResponses;
+    std::vector<std::string> emptyResponses;
     auto hopPassword = [&](size_t index) -> const std::string& {
         if (index < cfg.sshJumpHopHandoffs.size() &&
             !cfg.sshJumpHopHandoffs[index].password.empty()) {
@@ -2147,7 +2152,7 @@ int SshAdapter::connectThroughSshJump(const ConnectionConfig& cfg) {
         }
         return index == 0 ? cfg.sshProxyPrivateKeyPassphrase : emptySecret;
     };
-    auto hopResponses = [&](size_t index) -> const std::vector<std::string>& {
+    auto hopResponses = [&](size_t index) -> std::vector<std::string>& {
         if (index < cfg.sshJumpHopHandoffs.size()) {
             return cfg.sshJumpHopHandoffs[index].keyboardInteractiveResponses;
         }
@@ -2285,7 +2290,7 @@ int SshAdapter::connectThroughSshJump(const ConnectionConfig& cfg) {
         const std::string& password = hopPassword(index);
         const std::string& privateKey = hopPrivateKey(index);
         const std::string& passphrase = hopPassphrase(index);
-        const std::vector<std::string>& responses = hopResponses(index);
+        std::vector<std::string>& responses = hopResponses(index);
         auto authenticateInteractive = [&](bool allowPasswordFallback) -> int {
             void** abstract = libssh2_session_abstract(runtime->session);
             if (abstract == nullptr) { return ERR_SSH_AUTH_FAILED; }
@@ -2882,7 +2887,7 @@ int SshAdapter::fillKeyboardInteractiveResponses(
     const char* name, int nameLen, const char* instruction, int instructionLen,
     int numPrompts, const LIBSSH2_USERAUTH_KBDINT_PROMPT* prompts,
     LIBSSH2_USERAUTH_KBDINT_RESPONSE* responses,
-    const std::vector<std::string>* explicitResponses,
+    std::vector<std::string>* explicitResponses,
     const std::string* password, bool allowPasswordFallback,
     const std::string& targetHost, const std::string& hop,
     size_t& presetIndex, bool& passwordFallbackUsed) {
@@ -2923,6 +2928,8 @@ int SshAdapter::fillKeyboardInteractiveResponses(
         explicitResponses->size() - presetIndex >= promptCount) {
         values.insert(values.end(), explicitResponses->begin() + presetIndex,
                       explicitResponses->begin() + presetIndex + promptCount);
+        SshAuthReplayPolicy::clearConsumedResponses(
+            *explicitResponses, presetIndex, promptCount);
         presetIndex += promptCount;
         explicitAuthResponseConsumed_.store(true, std::memory_order_release);
     } else {
@@ -3417,7 +3424,7 @@ int SshAdapter::connectForOperationInternal(
 
     savedCfg_ = cfg;
     setState(ConnectionState::CONNECTING, "SSH operation connecting");
-    int result = connectThroughProxy(cfg);
+    int result = connectThroughProxy(savedCfg_);
     if (result != 0) {
         disconnect();
         return result;
@@ -3523,21 +3530,31 @@ int SshAdapter::connectInternal(const ConnectionConfig& cfg, bool preserveOwner)
         remotedesk::net::ProcessNetworkGenerationFence();
     connectNetworkSnapshot_ = networkFence.snapshot();
 
-    auto failConnect = [this, preserveOwner](int code, const std::string& message) {
-        if (preserveOwner) {
+    auto failConnect = [this, preserveOwner](
+        int code, const std::string& message,
+        bool preserveLifecycle = false) {
+        if (preserveOwner || preserveLifecycle) {
             // Keep the owner reactor and saved configuration alive so the
-            // recovery loop can retry without replaying terminal input.
+            // recovery loop or an explicit re-authentication can rebuild the
+            // route without replaying terminal input.
             resetTransportForRecovery();
         } else {
             disconnect();
         }
-        setState(ConnectionState::ERROR, message);
+        if (preserveLifecycle) {
+            setSshLifecycleState(
+                SshSessionLifecycleState::NeedsAuthentication,
+                "reauthentication_required");
+            setConnectionStateOnly(ConnectionState::ERROR, message);
+        } else {
+            setState(ConnectionState::ERROR, message);
+        }
         return code;
     };
 
     // 保存配置 (用于后续认证和重连)
     savedCfg_ = cfg;
-    auto attemptConnect = [this, &cfg]() -> std::pair<int, std::string> {
+    auto attemptConnect = [this]() -> std::pair<int, std::string> {
         if (connectRouteDeadlineExpired()) {
             return {ERR_SSH_CONNECT_TIMEOUT, "SSH connection deadline exceeded"};
         }
@@ -3545,7 +3562,7 @@ int SshAdapter::connectInternal(const ConnectionConfig& cfg, bool preserveOwner)
         setState(ConnectionState::CONNECTING, "SSH connecting");
 
         // Step 1: TCP 连接
-        int ret = connectThroughProxy(cfg);
+        int ret = connectThroughProxy(savedCfg_);
         if (ret < 0) {
             // Proxy validation/handshake may fail after a TCP socket has
             // already been opened. The caller owns cleanup and retry policy.
@@ -3559,7 +3576,7 @@ int SshAdapter::connectInternal(const ConnectionConfig& cfg, bool preserveOwner)
         }
 
         // Step 4: 用户认证 (公钥优先, 失败时回退密码)
-        ret = authenticateConfiguredUser(cfg);
+        ret = authenticateConfiguredUser(savedCfg_);
         if (ret < 0) {
             return {ret, "SSH authentication failed [" + std::to_string(ret) + "]"};
         }
@@ -3573,11 +3590,11 @@ int SshAdapter::connectInternal(const ConnectionConfig& cfg, bool preserveOwner)
         // Step 6: LANG is a channel environment request, not terminal input.
         // Refusal is non-fatal because many servers deliberately omit LANG
         // from AcceptEnv while still providing a fully usable shell.
-        (void)requestSessionLocale(cfg.sshLocale);
+        (void)requestSessionLocale(savedCfg_.sshLocale);
 
-        // Step 7: 请求 PTY (SSH 调用方将 cfg.width/height 传为终端 cols/rows)
-        int ptyCols = cfg.width > 0 ? cfg.width : 80;
-        int ptyRows = cfg.height > 0 ? cfg.height : 24;
+        // Step 7: 请求 PTY (SSH 调用方将 width/height 传为终端 cols/rows)
+        int ptyCols = savedCfg_.width > 0 ? savedCfg_.width : 80;
+        int ptyRows = savedCfg_.height > 0 ? savedCfg_.height : 24;
         ret = requestPty(ptyCols, ptyRows);
         if (ret < 0) {
             return {ret,
@@ -3603,9 +3620,9 @@ int SshAdapter::connectInternal(const ConnectionConfig& cfg, bool preserveOwner)
         // creating a second writer; it simply waits for the callback before
         // consuming remote output.
         startReader();
-        const std::string logHost = SafeLog::MaskHost(cfg.host);
+        const std::string logHost = SafeLog::MaskHost(savedCfg_.host);
         OH_LOG_INFO(LOG_APP, "[SSH] SSH 连接建立完成 (libssh2 完整握手, %{public}s:%{public}d)",
-                    logHost.c_str(), cfg.port);
+                    logHost.c_str(), savedCfg_.port);
         return {0, ""};
     };
 
@@ -3631,13 +3648,11 @@ int SshAdapter::connectInternal(const ConnectionConfig& cfg, bool preserveOwner)
             if (!SshAuthReplayPolicy::allowsAutomaticNewSession(
                     explicitAuthResponseConsumed_.load(
                         std::memory_order_acquire))) {
-                setSshLifecycleState(
-                    SshSessionLifecycleState::NeedsAuthentication,
-                    "reauthentication_required");
                 return failConnect(
                     ERR_SSH_AUTH_CANCELLED,
                     "SSH network changed after one-time authentication; "
-                    "fresh authentication is required");
+                    "fresh authentication is required",
+                    true);
             }
             const auto retryDecision = [&]() {
                 return SshNetworkGenerationPolicy::retryDecision(
@@ -3706,12 +3721,10 @@ int SshAdapter::connectInternal(const ConnectionConfig& cfg, bool preserveOwner)
             !SshAuthReplayPolicy::allowsAutomaticNewSession(
                 explicitAuthResponseConsumed_.load(
                     std::memory_order_acquire))) {
-            setSshLifecycleState(
-                SshSessionLifecycleState::NeedsAuthentication,
-                "reauthentication_required");
             return failConnect(
                 ERR_SSH_AUTH_CANCELLED,
-                "SSH PTY recovery requires fresh one-time authentication");
+                "SSH PTY recovery requires fresh one-time authentication",
+                true);
         }
         const bool canRetry = outcome.first == ERR_SSH_PTY_FAILED &&
             SshPtyRecoveryPolicy::retryable(lastPtyFailureClass_) &&
@@ -3898,7 +3911,7 @@ bool SshAdapter::reconnectAfterTransportFailure() {
         setSshLifecycleState(
             SshSessionLifecycleState::NeedsAuthentication,
             "reauthentication_required");
-        setState(
+        setConnectionStateOnly(
             ConnectionState::ERROR,
             "SSH transport recovery requires fresh one-time authentication");
         reactorCommandCondition_.notify_all();

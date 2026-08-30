@@ -11601,6 +11601,9 @@ static void ExecuteSshProductionOperation(napi_env /*env*/, void* rawData) {
         data->workerFailed = true;
         data->errorMessage = "SSH production operation failed: unknown native exception";
     }
+    // The attempt result no longer needs credentials. Retire all copies on
+    // the worker immediately instead of waiting for JS-thread completion.
+    ClearSshConnectionSecrets(data->config);
     data->control->finish();
     if (watchdog.joinable()) { watchdog.join(); }
     ApplySshProductionOperationCancellation(*data);

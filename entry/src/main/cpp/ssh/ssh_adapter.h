@@ -217,7 +217,7 @@ public:
         const char* name, int nameLen, const char* instruction, int instructionLen,
         int numPrompts, const LIBSSH2_USERAUTH_KBDINT_PROMPT* prompts,
         LIBSSH2_USERAUTH_KBDINT_RESPONSE* responses,
-        const std::vector<std::string>* explicitResponses,
+        std::vector<std::string>* explicitResponses,
         const std::string* password, bool allowPasswordFallback,
         const std::string& targetHost, const std::string& hop,
         size_t& presetIndex, bool& passwordFallbackUsed);
@@ -395,6 +395,8 @@ private:
     SshPtyFailureClass lastPtyFailureClass_ = SshPtyFailureClass::NONE;
 
     void setState(ConnectionState s, const std::string& message = "");
+    /** Publish the legacy connection state without replacing a richer SSH lifecycle state. */
+    void setConnectionStateOnly(ConnectionState s, const std::string& message);
 
     // exchangeBanner() 已移除 — libssh2 内部处理 banner
 
@@ -402,8 +404,8 @@ private:
     int tcpConnect(const std::string& host, int port);
 
     /** 在已连接的代理 socket 上完成 HTTP CONNECT/SOCKS5 握手。 */
-    int connectThroughProxy(const ConnectionConfig& cfg);
-    int connectThroughSshJump(const ConnectionConfig& cfg);
+    int connectThroughProxy(ConnectionConfig& cfg);
+    int connectThroughSshJump(ConnectionConfig& cfg);
     void sshJumpRelayLoop();
     void stopSshJumpRelay();
     int waitSocketOnFd(int fd, int direction, int timeoutSec);

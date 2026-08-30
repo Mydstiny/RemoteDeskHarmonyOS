@@ -124,6 +124,12 @@ RDP_TEST_CASE(ssh_auth_replay_policy_separates_route_and_target_one_shot_answers
         config, SshOneShotAuthScope::RouteOnly));
     RDP_ASSERT(SshAuthReplayPolicy::allowsAutomaticNewSession(false));
     RDP_ASSERT(!SshAuthReplayPolicy::allowsAutomaticNewSession(true));
+
+    std::vector<std::string> consumed {"first-otp", "second-otp", "unused"};
+    SshAuthReplayPolicy::clearConsumedResponses(consumed, 0, 2);
+    RDP_ASSERT(consumed[0].empty());
+    RDP_ASSERT(consumed[1].empty());
+    RDP_ASSERT(consumed[2] == "unused");
 }
 
 RDP_TEST_CASE(ssh_session_manager_network_notification_runs_outside_manager_lock) {

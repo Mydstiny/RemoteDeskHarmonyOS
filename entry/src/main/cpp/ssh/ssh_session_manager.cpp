@@ -43,6 +43,7 @@ bool SshSessionManager::validTransition(SshSessionLifecycleState from,
                 to == SshSessionLifecycleState::Closing;
         case SshSessionLifecycleState::Ready:
             return to == SshSessionLifecycleState::NetworkLost ||
+                to == SshSessionLifecycleState::NeedsAuthentication ||
                 to == SshSessionLifecycleState::Closing ||
                 to == SshSessionLifecycleState::Failed;
         case SshSessionLifecycleState::NetworkLost:

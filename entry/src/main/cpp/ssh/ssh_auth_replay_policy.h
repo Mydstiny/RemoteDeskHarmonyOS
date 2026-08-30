@@ -3,6 +3,7 @@
 
 #include "extensions/protocol_adapter.h"
 
+#include <algorithm>
 #include <cstdint>
 
 enum class SshOneShotAuthScope : std::uint8_t {
@@ -32,6 +33,25 @@ struct SshAuthReplayPolicy final {
 
     static bool allowsAutomaticNewSession(bool explicitResponseConsumed) noexcept {
         return !explicitResponseConsumed;
+    }
+
+    static void clearConsumedResponses(
+        std::vector<std::string>& responses, std::size_t first,
+        std::size_t count) noexcept {
+        const std::size_t end = first > responses.size()
+            ? responses.size()
+            : std::min(responses.size(), first +
+                std::min(count, responses.size() - first));
+        for (std::size_t index = first; index < end; ++index) {
+            std::string& response = responses[index];
+            if (!response.empty()) {
+                volatile char* bytes = response.data();
+                for (std::size_t offset = 0; offset < response.size(); ++offset) {
+                    bytes[offset] = '\0';
+                }
+            }
+            response.clear();
+        }
     }
 };
 

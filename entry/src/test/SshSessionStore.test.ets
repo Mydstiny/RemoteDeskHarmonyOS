@@ -72,6 +72,17 @@ export default function sshSessionStoreTest(): void {
       expect(store.context(adopted)?.hostId).assertEqual('host-owner');
     });
 
+    it('keeps fresh authentication actionable after a ready session loses credentials', 0,
+      (): void => {
+        const store: SshSessionStore = new SshSessionStore();
+        const active: SshSessionHandle = handle(48);
+        expect(store.registerExisting('host-reauth', 'Reauth', 'user@reauth', active, 'Ready'))
+          .assertTrue();
+        expect(store.transition(active, 'NeedsAuthentication', 'reauthentication_required'))
+          .assertTrue();
+        expect(store.context(active)?.state).assertEqual('NeedsAuthentication');
+      });
+
     it('reclaims a terminal owner before enforcing capacity', 0, (): void => {
       const store: SshSessionStore = new SshSessionStore(1);
       const first: SshSessionHandle = handle(45);
