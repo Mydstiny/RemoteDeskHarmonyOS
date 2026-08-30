@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
+#include <functional>
 
 enum class SshNetworkRetryDecision : std::uint8_t {
     Complete = 0,
@@ -51,6 +52,32 @@ struct SshNetworkGenerationPolicy final {
         const remotedesk::net::NetworkGenerationFence& fence,
         const remotedesk::net::NetworkGenerationSnapshot& captured) {
         return callerCancelled || fence.shouldCancel(captured);
+    }
+
+    /**
+     * Serialize one outbound protocol primitive with the process-network
+     * generation update. Cancellation is checked both before and inside the
+     * admission lock so a caller cannot pass a stale pre-check and then emit
+     * bytes after a route change has won the race.
+     */
+    static bool admitWrite(
+        const remotedesk::net::NetworkGenerationFence& fence,
+        const remotedesk::net::NetworkGenerationSnapshot& captured,
+        const std::function<bool()>& cancelled,
+        const std::function<void()>& write) {
+        if (!write || captured.generation == 0 || !captured.available ||
+            (cancelled && cancelled())) {
+            return false;
+        }
+        bool invoked = false;
+        const bool current = fence.admitIfCurrent(captured, [&]() {
+            if (cancelled && cancelled()) {
+                return;
+            }
+            invoked = true;
+            write();
+        });
+        return current && invoked;
     }
 
     /** Decide only from immutable snapshots and the original deadline.

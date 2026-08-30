@@ -477,6 +477,7 @@ private:
     bool admitRouteWrite(
         const remotedesk::net::NetworkGenerationSnapshot& networkSnapshot,
         const std::function<void()>& write) const;
+    bool admitConnectedRouteWrite(const std::function<void()>& write) const;
     int waitSocket(int direction, int timeoutSec);
     int waitSocketMilliseconds(int direction, int timeoutMs);
 
@@ -717,6 +718,11 @@ private:
     /** Cooperative wait/yield for an SFTP slice while retaining handle ownership. */
     bool yieldSftpSlice(std::unique_lock<std::mutex>& sessionLock,
                         int direction, int timeoutSec);
+    /** Close a remote SFTP handle without emitting on a retired route. */
+    int closeSftpHandleLocked(
+        LIBSSH2_SFTP_HANDLE* handle,
+        std::unique_lock<std::mutex>& sessionLock,
+        bool directory = false);
 
     // Keep each SFTP ownership slice below the terminal input latency budget.
     // The session mutex is released between slices; the outer SFTP mutex keeps

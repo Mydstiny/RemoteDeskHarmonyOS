@@ -44,6 +44,27 @@ RDP_TEST_CASE(ssh_network_generation_policy_cancels_every_stale_route) {
         false, fence, fence.snapshot()));
 }
 
+RDP_TEST_CASE(ssh_network_generation_policy_admits_writes_only_on_current_route) {
+    remotedesk::net::NetworkGenerationFence fence(70, true);
+    const remotedesk::net::NetworkGenerationSnapshot captured = fence.snapshot();
+    int writes = 0;
+    RDP_ASSERT(SshNetworkGenerationPolicy::admitWrite(
+        fence, captured, []() { return false; }, [&writes]() { ++writes; }));
+    RDP_ASSERT_EQ(writes, 1);
+
+    int cancellationChecks = 0;
+    RDP_ASSERT(!SshNetworkGenerationPolicy::admitWrite(
+        fence, captured,
+        [&cancellationChecks]() { return ++cancellationChecks >= 2; },
+        [&writes]() { ++writes; }));
+    RDP_ASSERT_EQ(writes, 1);
+
+    RDP_ASSERT(fence.update(true, 71));
+    RDP_ASSERT(!SshNetworkGenerationPolicy::admitWrite(
+        fence, captured, []() { return false; }, [&writes]() { ++writes; }));
+    RDP_ASSERT_EQ(writes, 1);
+}
+
 RDP_TEST_CASE(ssh_network_generation_retry_uses_only_newer_available_routes) {
     const remotedesk::net::NetworkGenerationSnapshot captured {10, true};
     RDP_ASSERT(SshNetworkGenerationPolicy::retryDecision(

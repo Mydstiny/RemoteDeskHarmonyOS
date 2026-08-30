@@ -752,9 +752,15 @@ LIBSSH2_LISTENER* SshAdapter::createRemoteForwardListener(
     const std::string& bindHost = config.bindHost;
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
     while (std::chrono::steady_clock::now() < deadline) {
-        LIBSSH2_LISTENER* listener = libssh2_channel_forward_listen_ex(
-            session_, bindHost.c_str(), config.bindPort, &boundPort,
-            static_cast<int>(config.maxConnections));
+        LIBSSH2_LISTENER* listener = nullptr;
+        if (!admitConnectedRouteWrite([&]() {
+                listener = libssh2_channel_forward_listen_ex(
+                    session_, bindHost.c_str(), config.bindPort, &boundPort,
+                    static_cast<int>(config.maxConnections));
+            })) {
+            errorCode = ECANCELED;
+            return nullptr;
+        }
         if (listener != nullptr) {
             return listener;
         }
@@ -961,8 +967,12 @@ int SshAdapter::openLocalForwardChannelLocked(LocalForwardConnection& connection
     if (targetHost.empty() || targetPort <= 0 || targetPort > 65535) {
         return -1;
     }
-    connection.channel = libssh2_channel_direct_tcpip_ex(
-        session_, targetHost.c_str(), targetPort, "127.0.0.1", 0);
+    if (!admitConnectedRouteWrite([&]() {
+            connection.channel = libssh2_channel_direct_tcpip_ex(
+                session_, targetHost.c_str(), targetPort, "127.0.0.1", 0);
+        })) {
+        return -1;
+    }
     if (connection.channel != nullptr) {
         return 1;
     }
@@ -1138,9 +1148,15 @@ bool SshAdapter::pumpLocalForwardConnectionLocked(LocalForwardConnection& connec
     }
 
     if (connection.channel != nullptr && !connection.toChannel.empty()) {
-        const ssize_t written = libssh2_channel_write(
-            connection.channel, reinterpret_cast<const char*>(connection.toChannel.data()),
-            connection.toChannel.size());
+        ssize_t written = LIBSSH2_ERROR_SOCKET_SEND;
+        if (!admitConnectedRouteWrite([&]() {
+                written = libssh2_channel_write(
+                    connection.channel,
+                    reinterpret_cast<const char*>(connection.toChannel.data()),
+                    connection.toChannel.size());
+            })) {
+            return false;
+        }
         if (written > 0) {
             connection.toChannel.erase(connection.toChannel.begin(),
                                        connection.toChannel.begin() + written);
@@ -1151,7 +1167,12 @@ bool SshAdapter::pumpLocalForwardConnectionLocked(LocalForwardConnection& connec
 
     if (connection.channel != nullptr && connection.localEof &&
         connection.toChannel.empty() && !connection.channelEofSent) {
-        const int eofResult = libssh2_channel_send_eof(connection.channel);
+        int eofResult = LIBSSH2_ERROR_SOCKET_SEND;
+        if (!admitConnectedRouteWrite([&]() {
+                eofResult = libssh2_channel_send_eof(connection.channel);
+            })) {
+            return false;
+        }
         if (eofResult == 0) {
             connection.channelEofSent = true;
         } else if (eofResult != LIBSSH2_ERROR_EAGAIN) {
@@ -1255,7 +1276,13 @@ void SshAdapter::closeLocalForwardRuntimeLocked(const std::string& id) {
             close(listener->second.fd);
         }
         if (listener->second.remoteListener != nullptr) {
-            (void)libssh2_channel_forward_cancel(listener->second.remoteListener);
+            if (state_.load(std::memory_order_acquire) ==
+                    ConnectionState::CONNECTED) {
+                (void)admitConnectedRouteWrite([&]() {
+                    (void)libssh2_channel_forward_cancel(
+                        listener->second.remoteListener);
+                });
+            }
             listener->second.remoteListener = nullptr;
         }
         localForwardListeners_.erase(listener);
@@ -1334,7 +1361,15 @@ void SshAdapter::serviceForwardingOnReactor() {
 
         if (listener.mode == SshForwardingMode::Remote) {
             for (size_t accepted = 0; accepted < kForwardAcceptBatch; ++accepted) {
-                LIBSSH2_CHANNEL* channel = libssh2_channel_forward_accept(listener.remoteListener);
+                LIBSSH2_CHANNEL* channel = nullptr;
+                LIBSSH2_LISTENER* const remoteListener =
+                    listener.remoteListener;
+                if (!admitConnectedRouteWrite([&channel, remoteListener]() {
+                        channel = libssh2_channel_forward_accept(
+                            remoteListener);
+                    })) {
+                    return;
+                }
                 if (channel == nullptr) {
                     const int libssh2Error = libssh2_session_last_errno(session_);
                     if (libssh2Error != LIBSSH2_ERROR_EAGAIN) {
@@ -1586,26 +1621,23 @@ int SshAdapter::routeWriteFailure(int deadlineError) const noexcept {
 bool SshAdapter::admitRouteWrite(
     const remotedesk::net::NetworkGenerationSnapshot& networkSnapshot,
     const std::function<void()>& write) const {
-    if (!write || !networkSnapshot.available ||
-        networkSnapshot.generation == 0 ||
-        networkSnapshot.generation != connectNetworkSnapshot_.generation ||
-        networkSnapshot.available != connectNetworkSnapshot_.available ||
-        connectCancelRequested_.load(std::memory_order_acquire) ||
-        connectRouteDeadlineExpired()) {
-        return false;
-    }
-    bool invoked = false;
-    const bool current =
-        remotedesk::net::ProcessNetworkGenerationFence().admitIfCurrent(
-            networkSnapshot, [this, &write, &invoked]() {
-                if (connectCancelRequested_.load(std::memory_order_acquire) ||
-                    connectRouteDeadlineExpired()) {
-                    return;
-                }
-                invoked = true;
-                write();
-            });
-    return current && invoked;
+    return SshNetworkGenerationPolicy::admitWrite(
+        remotedesk::net::ProcessNetworkGenerationFence(), networkSnapshot,
+        [this, &networkSnapshot]() {
+            return networkSnapshot.generation !=
+                    connectNetworkSnapshot_.generation ||
+                networkSnapshot.available != connectNetworkSnapshot_.available ||
+                connectCancelRequested_.load(std::memory_order_acquire) ||
+                connectRouteDeadlineExpired();
+        },
+        write);
+}
+
+bool SshAdapter::admitConnectedRouteWrite(
+    const std::function<void()>& write) const {
+    return state_.load(std::memory_order_acquire) ==
+            ConnectionState::CONNECTED &&
+        admitRouteWrite(connectNetworkSnapshot_, write);
 }
 
 int SshAdapter::waitSocket(int direction, int timeoutSec) {
@@ -2398,9 +2430,17 @@ int SshAdapter::connectThroughSshJump(ConnectionConfig& cfg) {
             return fail(ERR_SSH_CONNECT_TIMEOUT);
         }
         LIBSSH2_CHANNEL* channel = nullptr;
-        while ((channel = libssh2_channel_direct_tcpip_ex(
-                    runtime->session, nextHost.c_str(), nextPort,
-                    "127.0.0.1", 22)) == nullptr) {
+        while (channel == nullptr) {
+            if (!admitRouteWrite(connectNetworkSnapshot_, [&]() {
+                    channel = libssh2_channel_direct_tcpip_ex(
+                        runtime->session, nextHost.c_str(), nextPort,
+                        "127.0.0.1", 22);
+                })) {
+                return fail(routeWriteFailure(ERR_SSH_CONNECT_TIMEOUT));
+            }
+            if (channel != nullptr) {
+                break;
+            }
             if (libssh2_session_last_errno(runtime->session) != LIBSSH2_ERROR_EAGAIN) {
                 return fail(ERR_SSH_PROXY_FAILED);
             }
@@ -2510,7 +2550,13 @@ void SshAdapter::sshJumpRelayLoop() {
                     }
                 }
                 if (state.peerEof && state.toChannel.empty() && !state.channelEofSent) {
-                    const int eofResult = libssh2_channel_send_eof(runtime.channel);
+                    int eofResult = LIBSSH2_ERROR_SOCKET_SEND;
+                    if (!admitRouteWrite(connectNetworkSnapshot_, [&]() {
+                            eofResult = libssh2_channel_send_eof(runtime.channel);
+                        })) {
+                        relayFailure = true;
+                        break;
+                    }
                     if (eofResult == 0) {
                         state.channelEofSent = true;
                     } else if (eofResult != LIBSSH2_ERROR_EAGAIN) {
@@ -3181,7 +3227,15 @@ int SshAdapter::openChannel() {
     if (!session_) { return ERR_SSH_CHANNEL_OPEN; }
     if (connectRouteDeadlineExpired()) { return ERR_SSH_CHANNEL_OPEN; }
 
-    while ((channel_ = libssh2_channel_open_session(session_)) == nullptr) {
+    while (channel_ == nullptr) {
+        if (!admitRouteWrite(connectNetworkSnapshot_, [&]() {
+                channel_ = libssh2_channel_open_session(session_);
+            })) {
+            return routeWriteFailure(ERR_SSH_CHANNEL_OPEN);
+        }
+        if (channel_ != nullptr) {
+            break;
+        }
         if (connectRouteDeadlineExpired()) {
             return ERR_SSH_CHANNEL_OPEN;
         }
@@ -3224,7 +3278,15 @@ int SshAdapter::requestPty(int cols, int rows) {
     }
 
     int rc;
-    while ((rc = libssh2_channel_request_pty(channel_, "xterm-256color")) == LIBSSH2_ERROR_EAGAIN) {
+    while (true) {
+        if (!admitRouteWrite(connectNetworkSnapshot_, [&]() {
+                rc = libssh2_channel_request_pty(channel_, "xterm-256color");
+            })) {
+            return failPty(LIBSSH2_ERROR_SOCKET_SEND);
+        }
+        if (rc != LIBSSH2_ERROR_EAGAIN) {
+            break;
+        }
         if (connectRouteDeadlineExpired()) {
             return failPty(LIBSSH2_ERROR_TIMEOUT);
         }
@@ -3241,8 +3303,15 @@ int SshAdapter::requestPty(int cols, int rows) {
 
     // 设置初始窗口大小；该请求同样可能返回 EAGAIN，不能把失败
     // 静默当成成功，否则远端会以默认尺寸启动并破坏终端布局。
-    while ((rc = libssh2_channel_request_pty_size(channel_, cols, rows)) ==
-           LIBSSH2_ERROR_EAGAIN) {
+    while (true) {
+        if (!admitRouteWrite(connectNetworkSnapshot_, [&]() {
+                rc = libssh2_channel_request_pty_size(channel_, cols, rows);
+            })) {
+            return failPty(LIBSSH2_ERROR_SOCKET_SEND);
+        }
+        if (rc != LIBSSH2_ERROR_EAGAIN) {
+            break;
+        }
         if (connectRouteDeadlineExpired()) {
             return failPty(LIBSSH2_ERROR_TIMEOUT);
         }
@@ -3270,8 +3339,16 @@ int SshAdapter::requestSessionLocale(const std::string& locale) {
     }
 
     int rc;
-    while ((rc = libssh2_channel_setenv(channel_, "LANG", locale.c_str())) ==
-           LIBSSH2_ERROR_EAGAIN) {
+    while (true) {
+        if (!admitRouteWrite(connectNetworkSnapshot_, [&]() {
+                rc = libssh2_channel_setenv(
+                    channel_, "LANG", locale.c_str());
+            })) {
+            return routeWriteFailure(LIBSSH2_ERROR_TIMEOUT);
+        }
+        if (rc != LIBSSH2_ERROR_EAGAIN) {
+            break;
+        }
         if (connectRouteDeadlineExpired()) {
             return LIBSSH2_ERROR_TIMEOUT;
         }
@@ -3304,7 +3381,15 @@ int SshAdapter::startShell() {
     if (connectRouteDeadlineExpired()) { return ERR_SSH_SHELL_FAILED; }
 
     int rc;
-    while ((rc = libssh2_channel_shell(channel_)) == LIBSSH2_ERROR_EAGAIN) {
+    while (true) {
+        if (!admitRouteWrite(connectNetworkSnapshot_, [&]() {
+                rc = libssh2_channel_shell(channel_);
+            })) {
+            return routeWriteFailure(ERR_SSH_SHELL_FAILED);
+        }
+        if (rc != LIBSSH2_ERROR_EAGAIN) {
+            break;
+        }
         if (connectRouteDeadlineExpired()) {
             return ERR_SSH_SHELL_FAILED;
         }
@@ -4075,7 +4160,15 @@ int SshAdapter::ensureSftpLocked(std::unique_lock<std::mutex>& sessionLock) {
     }
     if (sftp_) { return 0; }
 
-    while ((sftp_ = libssh2_sftp_init(session_)) == nullptr) {
+    while (sftp_ == nullptr) {
+        if (!admitConnectedRouteWrite([&]() {
+                sftp_ = libssh2_sftp_init(session_);
+            })) {
+            return ERR_SSH_SESSION_CLOSED;
+        }
+        if (sftp_ != nullptr) {
+            break;
+        }
         int err = libssh2_session_last_errno(session_);
         if (err == LIBSSH2_ERROR_EAGAIN) {
             if (!yieldSftpSlice(sessionLock, 2, 1)) {
@@ -4137,6 +4230,30 @@ bool SshAdapter::yieldSftpSlice(std::unique_lock<std::mutex>& sessionLock,
         !connectCancelRequested_.load(std::memory_order_acquire);
 }
 
+int SshAdapter::closeSftpHandleLocked(
+    LIBSSH2_SFTP_HANDLE* handle,
+    std::unique_lock<std::mutex>& sessionLock,
+    bool directory) {
+    if (handle == nullptr || !sessionLock.owns_lock()) {
+        return ERR_SSH_SESSION_CLOSED;
+    }
+    int rc = LIBSSH2_ERROR_EAGAIN;
+    while (true) {
+        if (!admitConnectedRouteWrite([&]() {
+                rc = directory ? libssh2_sftp_closedir(handle)
+                               : libssh2_sftp_close(handle);
+            })) {
+            return ERR_SSH_SESSION_CLOSED;
+        }
+        if (rc != LIBSSH2_ERROR_EAGAIN) {
+            return rc;
+        }
+        if (!yieldSftpSlice(sessionLock, 2, 1)) {
+            return ERR_SSH_WRITE_FAILED;
+        }
+    }
+}
+
 int SshAdapter::sendFileData(const std::string& remotePath, const uint8_t* data, uint32_t len) {
     if (remotePath.empty() || (data == nullptr && len > 0)) {
         return -1;
@@ -4154,10 +4271,20 @@ int SshAdapter::sendFileData(const std::string& remotePath, const uint8_t* data,
     if (rc != 0) { return rc; }
 
     LIBSSH2_SFTP_HANDLE* handle = nullptr;
-    while ((handle = libssh2_sftp_open(sftp_, remotePath.c_str(),
-        LIBSSH2_FXF_WRITE | LIBSSH2_FXF_CREAT | LIBSSH2_FXF_TRUNC,
-        LIBSSH2_SFTP_S_IRUSR | LIBSSH2_SFTP_S_IWUSR |
-        LIBSSH2_SFTP_S_IRGRP | LIBSSH2_SFTP_S_IROTH)) == nullptr) {
+    while (handle == nullptr) {
+        if (!admitConnectedRouteWrite([&]() {
+                handle = libssh2_sftp_open(
+                    sftp_, remotePath.c_str(),
+                    LIBSSH2_FXF_WRITE | LIBSSH2_FXF_CREAT |
+                        LIBSSH2_FXF_TRUNC,
+                    LIBSSH2_SFTP_S_IRUSR | LIBSSH2_SFTP_S_IWUSR |
+                        LIBSSH2_SFTP_S_IRGRP | LIBSSH2_SFTP_S_IROTH);
+            })) {
+            return ERR_SSH_SESSION_CLOSED;
+        }
+        if (handle != nullptr) {
+            break;
+        }
         int err = libssh2_session_last_errno(session_);
         if (err == LIBSSH2_ERROR_EAGAIN) {
             if (!yieldSftpSlice(sessionLock, 2, 1)) {
@@ -4173,11 +4300,16 @@ int SshAdapter::sendFileData(const std::string& remotePath, const uint8_t* data,
     uint32_t total = 0;
     while (total < len) {
         size_t chunk = std::min<size_t>(kSftpSliceBytes, len - total);
-        ssize_t written = libssh2_sftp_write(handle,
-            reinterpret_cast<const char*>(data + total), chunk);
+        ssize_t written = LIBSSH2_ERROR_SOCKET_SEND;
+        if (!admitConnectedRouteWrite([&]() {
+                written = libssh2_sftp_write(
+                    handle, reinterpret_cast<const char*>(data + total), chunk);
+            })) {
+            return ERR_SSH_SESSION_CLOSED;
+        }
         if (written == LIBSSH2_ERROR_EAGAIN) {
             if (!yieldSftpSlice(sessionLock, 1, 1)) {
-                libssh2_sftp_close(handle);
+                (void)closeSftpHandleLocked(handle, sessionLock);
                 return ERR_SSH_WRITE_FAILED;
             }
             continue;
@@ -4185,12 +4317,12 @@ int SshAdapter::sendFileData(const std::string& remotePath, const uint8_t* data,
         if (written <= 0) {
             OH_LOG_ERROR(LOG_APP, "[SFTP] 写入失败: pathId=%{public}s ret=%{public}zd",
                          pathId.c_str(), written);
-            libssh2_sftp_close(handle);
+            (void)closeSftpHandleLocked(handle, sessionLock);
             return ERR_SSH_WRITE_FAILED;
         }
         total += static_cast<uint32_t>(written);
         if (total < len && !yieldSftpSlice(sessionLock, -1, 0)) {
-            libssh2_sftp_close(handle);
+            (void)closeSftpHandleLocked(handle, sessionLock);
             return ERR_SSH_WRITE_FAILED;
         }
     }
@@ -4199,29 +4331,31 @@ int SshAdapter::sendFileData(const std::string& remotePath, const uint8_t* data,
     // flushed its file handle. Treat an unsupported fsync extension as an
     // explicit capability failure instead of silently claiming durability.
     int syncRc = LIBSSH2_ERROR_EAGAIN;
-    while ((syncRc = libssh2_sftp_fsync(handle)) == LIBSSH2_ERROR_EAGAIN) {
+    while (true) {
+        if (!admitConnectedRouteWrite([&]() {
+                syncRc = libssh2_sftp_fsync(handle);
+            })) {
+            return ERR_SSH_SESSION_CLOSED;
+        }
+        if (syncRc != LIBSSH2_ERROR_EAGAIN) {
+            break;
+        }
         if (!yieldSftpSlice(sessionLock, 2, 1)) {
-            libssh2_sftp_close(handle);
+            (void)closeSftpHandleLocked(handle, sessionLock);
             return ERR_SSH_WRITE_FAILED;
         }
     }
     if (syncRc != 0) {
         const unsigned long sftpError = libssh2_sftp_last_error(sftp_);
-        while (libssh2_sftp_close(handle) == LIBSSH2_ERROR_EAGAIN) {
-            if (!yieldSftpSlice(sessionLock, 2, 1)) { break; }
-        }
+        (void)closeSftpHandleLocked(handle, sessionLock);
         return sftpError == LIBSSH2_FX_OP_UNSUPPORTED
             ? ERR_SSH_SFTP_DURABILITY_UNSUPPORTED : ERR_SSH_WRITE_FAILED;
     }
 
-    while ((rc = libssh2_sftp_close(handle)) == LIBSSH2_ERROR_EAGAIN) {
-        if (!yieldSftpSlice(sessionLock, 2, 1)) {
-            libssh2_sftp_close(handle);
-            return ERR_SSH_WRITE_FAILED;
-        }
-    }
+    rc = closeSftpHandleLocked(handle, sessionLock);
     OH_LOG_INFO(LOG_APP, "[SFTP] 上传完成: pathId=%{public}s bytes=%{public}u rc=%{public}d",
                 pathId.c_str(), len, rc);
+    if (rc == ERR_SSH_SESSION_CLOSED) { return rc; }
     return rc == 0 ? static_cast<int>(len) : ERR_SSH_WRITE_FAILED;
 }
 
@@ -4245,9 +4379,18 @@ int SshAdapter::writeRemoteFileChunk(const std::string& remotePath, const uint8_
     unsigned long flags = LIBSSH2_FXF_WRITE | LIBSSH2_FXF_CREAT;
     if (truncate) { flags |= LIBSSH2_FXF_TRUNC; }
     LIBSSH2_SFTP_HANDLE* handle = nullptr;
-    while ((handle = libssh2_sftp_open(sftp_, remotePath.c_str(), flags,
-        LIBSSH2_SFTP_S_IRUSR | LIBSSH2_SFTP_S_IWUSR |
-        LIBSSH2_SFTP_S_IRGRP | LIBSSH2_SFTP_S_IROTH)) == nullptr) {
+    while (handle == nullptr) {
+        if (!admitConnectedRouteWrite([&]() {
+                handle = libssh2_sftp_open(
+                    sftp_, remotePath.c_str(), flags,
+                    LIBSSH2_SFTP_S_IRUSR | LIBSSH2_SFTP_S_IWUSR |
+                        LIBSSH2_SFTP_S_IRGRP | LIBSSH2_SFTP_S_IROTH);
+            })) {
+            return ERR_SSH_SESSION_CLOSED;
+        }
+        if (handle != nullptr) {
+            break;
+        }
         int err = libssh2_session_last_errno(session_);
         if (err == LIBSSH2_ERROR_EAGAIN) {
             if (!yieldSftpSlice(sessionLock, 2, 1)) {
@@ -4264,11 +4407,16 @@ int SshAdapter::writeRemoteFileChunk(const std::string& remotePath, const uint8_
     uint32_t total = 0;
     while (total < len) {
         size_t chunk = std::min<size_t>(kSftpSliceBytes, len - total);
-        ssize_t written = libssh2_sftp_write(handle,
-            reinterpret_cast<const char*>(data + total), chunk);
+        ssize_t written = LIBSSH2_ERROR_SOCKET_SEND;
+        if (!admitConnectedRouteWrite([&]() {
+                written = libssh2_sftp_write(
+                    handle, reinterpret_cast<const char*>(data + total), chunk);
+            })) {
+            return ERR_SSH_SESSION_CLOSED;
+        }
         if (written == LIBSSH2_ERROR_EAGAIN) {
             if (!yieldSftpSlice(sessionLock, 1, 1)) {
-                libssh2_sftp_close(handle);
+                (void)closeSftpHandleLocked(handle, sessionLock);
                 return ERR_SSH_WRITE_FAILED;
             }
             continue;
@@ -4278,38 +4426,40 @@ int SshAdapter::writeRemoteFileChunk(const std::string& remotePath, const uint8_
                          pathId.c_str(),
                          static_cast<unsigned long long>(offset + total),
                          written);
-            libssh2_sftp_close(handle);
+            (void)closeSftpHandleLocked(handle, sessionLock);
             return ERR_SSH_WRITE_FAILED;
         }
         total += static_cast<uint32_t>(written);
         if (total < len && !yieldSftpSlice(sessionLock, -1, 0)) {
-            libssh2_sftp_close(handle);
+            (void)closeSftpHandleLocked(handle, sessionLock);
             return ERR_SSH_WRITE_FAILED;
         }
     }
 
     int syncRc = LIBSSH2_ERROR_EAGAIN;
-    while ((syncRc = libssh2_sftp_fsync(handle)) == LIBSSH2_ERROR_EAGAIN) {
+    while (true) {
+        if (!admitConnectedRouteWrite([&]() {
+                syncRc = libssh2_sftp_fsync(handle);
+            })) {
+            return ERR_SSH_SESSION_CLOSED;
+        }
+        if (syncRc != LIBSSH2_ERROR_EAGAIN) {
+            break;
+        }
         if (!yieldSftpSlice(sessionLock, 2, 1)) {
-            libssh2_sftp_close(handle);
+            (void)closeSftpHandleLocked(handle, sessionLock);
             return ERR_SSH_WRITE_FAILED;
         }
     }
     if (syncRc != 0) {
         const unsigned long sftpError = libssh2_sftp_last_error(sftp_);
-        while (libssh2_sftp_close(handle) == LIBSSH2_ERROR_EAGAIN) {
-            if (!yieldSftpSlice(sessionLock, 2, 1)) { break; }
-        }
+        (void)closeSftpHandleLocked(handle, sessionLock);
         return sftpError == LIBSSH2_FX_OP_UNSUPPORTED
             ? ERR_SSH_SFTP_DURABILITY_UNSUPPORTED : ERR_SSH_WRITE_FAILED;
     }
 
-    while ((rc = libssh2_sftp_close(handle)) == LIBSSH2_ERROR_EAGAIN) {
-        if (!yieldSftpSlice(sessionLock, 2, 1)) {
-            libssh2_sftp_close(handle);
-            return ERR_SSH_WRITE_FAILED;
-        }
-    }
+    rc = closeSftpHandleLocked(handle, sessionLock);
+    if (rc == ERR_SSH_SESSION_CLOSED) { return rc; }
     return rc == 0 ? static_cast<int>(total) : ERR_SSH_WRITE_FAILED;
 }
 
@@ -4329,7 +4479,15 @@ int SshAdapter::listRemoteDir(const std::string& remotePath, std::vector<SftpFil
     std::string dirPath = remotePath.empty() ? "." : remotePath;
     const std::string pathId = SafeLog::HashForLog(dirPath);
     LIBSSH2_SFTP_HANDLE* handle = nullptr;
-    while ((handle = libssh2_sftp_opendir(sftp_, dirPath.c_str())) == nullptr) {
+    while (handle == nullptr) {
+        if (!admitConnectedRouteWrite([&]() {
+                handle = libssh2_sftp_opendir(sftp_, dirPath.c_str());
+            })) {
+            return ERR_SSH_SESSION_CLOSED;
+        }
+        if (handle != nullptr) {
+            break;
+        }
         int err = libssh2_session_last_errno(session_);
         if (err == LIBSSH2_ERROR_EAGAIN) {
             if (!yieldSftpSlice(sessionLock, 2, 1)) {
@@ -4348,11 +4506,18 @@ int SshAdapter::listRemoteDir(const std::string& remotePath, std::vector<SftpFil
         char longEntryBuf[4096] = {0};
         LIBSSH2_SFTP_ATTRIBUTES attrs;
         memset(&attrs, 0, sizeof(attrs));
-        int n = libssh2_sftp_readdir_ex(handle, nameBuf, sizeof(nameBuf) - 1,
-            longEntryBuf, sizeof(longEntryBuf) - 1, &attrs);
+        int n = LIBSSH2_ERROR_SOCKET_SEND;
+        if (!admitConnectedRouteWrite([&]() {
+                n = libssh2_sftp_readdir_ex(
+                    handle, nameBuf, sizeof(nameBuf) - 1,
+                    longEntryBuf, sizeof(longEntryBuf) - 1, &attrs);
+            })) {
+            (void)closeSftpHandleLocked(handle, sessionLock, true);
+            return ERR_SSH_SESSION_CLOSED;
+        }
         if (n == LIBSSH2_ERROR_EAGAIN) {
             if (!yieldSftpSlice(sessionLock, 2, 1)) {
-                libssh2_sftp_closedir(handle);
+                (void)closeSftpHandleLocked(handle, sessionLock, true);
                 return ERR_SSH_READ_FAILED;
             }
             continue;
@@ -4402,16 +4567,13 @@ int SshAdapter::listRemoteDir(const std::string& remotePath, std::vector<SftpFil
         }
         entries.push_back(entry);
         if (!yieldSftpSlice(sessionLock, -1, 0)) {
-            libssh2_sftp_closedir(handle);
+            (void)closeSftpHandleLocked(handle, sessionLock, true);
             return ERR_SSH_READ_FAILED;
         }
     }
 
-    while ((rc = libssh2_sftp_closedir(handle)) == LIBSSH2_ERROR_EAGAIN) {
-        if (!yieldSftpSlice(sessionLock, 2, 1)) {
-            return ERR_SSH_READ_FAILED;
-        }
-    }
+    rc = closeSftpHandleLocked(handle, sessionLock, true);
+    if (rc == ERR_SSH_SESSION_CLOSED) { return rc; }
     if (rc != 0 || readFailed) { return ERR_SSH_READ_FAILED; }
     OH_LOG_INFO(LOG_APP, "[SFTP] 目录读取完成: pathId=%{public}s count=%{public}zu",
                 pathId.c_str(), entries.size());
@@ -4434,7 +4596,16 @@ int SshAdapter::readRemoteFile(const std::string& remotePath, std::vector<uint8_
     if (rc != 0) { return rc; }
 
     LIBSSH2_SFTP_HANDLE* handle = nullptr;
-    while ((handle = libssh2_sftp_open(sftp_, remotePath.c_str(), LIBSSH2_FXF_READ, 0)) == nullptr) {
+    while (handle == nullptr) {
+        if (!admitConnectedRouteWrite([&]() {
+                handle = libssh2_sftp_open(
+                    sftp_, remotePath.c_str(), LIBSSH2_FXF_READ, 0);
+            })) {
+            return ERR_SSH_SESSION_CLOSED;
+        }
+        if (handle != nullptr) {
+            break;
+        }
         int err = libssh2_session_last_errno(session_);
         if (err == LIBSSH2_ERROR_EAGAIN) {
             if (!yieldSftpSlice(sessionLock, 2, 1)) {
@@ -4449,10 +4620,17 @@ int SshAdapter::readRemoteFile(const std::string& remotePath, std::vector<uint8_
 
     std::vector<uint8_t> buf(kSftpSliceBytes);
     while (true) {
-        ssize_t n = libssh2_sftp_read(handle, reinterpret_cast<char*>(buf.data()), buf.size());
+        ssize_t n = LIBSSH2_ERROR_SOCKET_SEND;
+        if (!admitConnectedRouteWrite([&]() {
+                n = libssh2_sftp_read(
+                    handle, reinterpret_cast<char*>(buf.data()), buf.size());
+            })) {
+            (void)closeSftpHandleLocked(handle, sessionLock);
+            return ERR_SSH_SESSION_CLOSED;
+        }
         if (n == LIBSSH2_ERROR_EAGAIN) {
             if (!yieldSftpSlice(sessionLock, 0, 1)) {
-                libssh2_sftp_close(handle);
+                (void)closeSftpHandleLocked(handle, sessionLock);
                 return ERR_SSH_READ_FAILED;
             }
             continue;
@@ -4460,32 +4638,28 @@ int SshAdapter::readRemoteFile(const std::string& remotePath, std::vector<uint8_
         if (n < 0) {
             OH_LOG_ERROR(LOG_APP, "[SFTP] 读取文件失败: pathId=%{public}s ret=%{public}zd",
                          pathId.c_str(), n);
-            libssh2_sftp_close(handle);
+            (void)closeSftpHandleLocked(handle, sessionLock);
             return ERR_SSH_READ_FAILED;
         }
         if (n == 0) { break; }
         out.insert(out.end(), buf.begin(), buf.begin() + n);
         if (out.size() > 100 * 1024 * 1024) {
             OH_LOG_WARN(LOG_APP, "[SFTP] 下载超过 100MB, 已中止: pathId=%{public}s", pathId.c_str());
-            libssh2_sftp_close(handle);
+            (void)closeSftpHandleLocked(handle, sessionLock);
             out.clear();
             return -2;
         }
         if (!yieldSftpSlice(sessionLock, -1, 0)) {
-            libssh2_sftp_close(handle);
+            (void)closeSftpHandleLocked(handle, sessionLock);
             out.clear();
             return ERR_SSH_READ_FAILED;
         }
     }
 
-    while ((rc = libssh2_sftp_close(handle)) == LIBSSH2_ERROR_EAGAIN) {
-        if (!yieldSftpSlice(sessionLock, 2, 1)) {
-            out.clear();
-            return ERR_SSH_READ_FAILED;
-        }
-    }
+    rc = closeSftpHandleLocked(handle, sessionLock);
     OH_LOG_INFO(LOG_APP, "[SFTP] 下载完成: pathId=%{public}s bytes=%{public}zu rc=%{public}d",
                 pathId.c_str(), out.size(), rc);
+    if (rc == ERR_SSH_SESSION_CLOSED) { return rc; }
     return rc == 0 ? static_cast<int>(out.size()) : ERR_SSH_READ_FAILED;
 }
 
@@ -4506,7 +4680,16 @@ int SshAdapter::readRemoteFileChunk(const std::string& remotePath, uint64_t offs
     if (rc != 0) { return rc; }
 
     LIBSSH2_SFTP_HANDLE* handle = nullptr;
-    while ((handle = libssh2_sftp_open(sftp_, remotePath.c_str(), LIBSSH2_FXF_READ, 0)) == nullptr) {
+    while (handle == nullptr) {
+        if (!admitConnectedRouteWrite([&]() {
+                handle = libssh2_sftp_open(
+                    sftp_, remotePath.c_str(), LIBSSH2_FXF_READ, 0);
+            })) {
+            return ERR_SSH_SESSION_CLOSED;
+        }
+        if (handle != nullptr) {
+            break;
+        }
         int err = libssh2_session_last_errno(session_);
         if (err == LIBSSH2_ERROR_EAGAIN) {
             if (!yieldSftpSlice(sessionLock, 2, 1)) {
@@ -4524,10 +4707,17 @@ int SshAdapter::readRemoteFileChunk(const std::string& remotePath, uint64_t offs
     while (out.size() < maxLen) {
         const size_t remain = static_cast<size_t>(maxLen) - out.size();
         const size_t want = std::min(buf.size(), remain);
-        ssize_t n = libssh2_sftp_read(handle, reinterpret_cast<char*>(buf.data()), want);
+        ssize_t n = LIBSSH2_ERROR_SOCKET_SEND;
+        if (!admitConnectedRouteWrite([&]() {
+                n = libssh2_sftp_read(
+                    handle, reinterpret_cast<char*>(buf.data()), want);
+            })) {
+            (void)closeSftpHandleLocked(handle, sessionLock);
+            return ERR_SSH_SESSION_CLOSED;
+        }
         if (n == LIBSSH2_ERROR_EAGAIN) {
             if (!yieldSftpSlice(sessionLock, 0, 1)) {
-                libssh2_sftp_close(handle);
+                (void)closeSftpHandleLocked(handle, sessionLock);
                 return ERR_SSH_READ_FAILED;
             }
             continue;
@@ -4537,24 +4727,20 @@ int SshAdapter::readRemoteFileChunk(const std::string& remotePath, uint64_t offs
                          pathId.c_str(),
                          static_cast<unsigned long long>(offset + out.size()),
                          n);
-            libssh2_sftp_close(handle);
+            (void)closeSftpHandleLocked(handle, sessionLock);
             return ERR_SSH_READ_FAILED;
         }
         if (n == 0) { break; }
         out.insert(out.end(), buf.begin(), buf.begin() + n);
         if (out.size() < maxLen && !yieldSftpSlice(sessionLock, -1, 0)) {
-            libssh2_sftp_close(handle);
+            (void)closeSftpHandleLocked(handle, sessionLock);
             out.clear();
             return ERR_SSH_READ_FAILED;
         }
     }
 
-    while ((rc = libssh2_sftp_close(handle)) == LIBSSH2_ERROR_EAGAIN) {
-        if (!yieldSftpSlice(sessionLock, 2, 1)) {
-            out.clear();
-            return ERR_SSH_READ_FAILED;
-        }
-    }
+    rc = closeSftpHandleLocked(handle, sessionLock);
+    if (rc == ERR_SSH_SESSION_CLOSED) { return rc; }
     return rc == 0 ? static_cast<int>(out.size()) : ERR_SSH_READ_FAILED;
 }
 
@@ -4571,7 +4757,15 @@ int SshAdapter::removeRemoteFile(const std::string& remotePath) {
     std::unique_lock<std::mutex> sessionLock(sessionMutex_);
     int rc = ensureSftpLocked(sessionLock);
     if (rc != 0) { return rc; }
-    while ((rc = libssh2_sftp_unlink(sftp_, remotePath.c_str())) == LIBSSH2_ERROR_EAGAIN) {
+    while (true) {
+        if (!admitConnectedRouteWrite([&]() {
+                rc = libssh2_sftp_unlink(sftp_, remotePath.c_str());
+            })) {
+            return ERR_SSH_SESSION_CLOSED;
+        }
+        if (rc != LIBSSH2_ERROR_EAGAIN) {
+            break;
+        }
         if (!yieldSftpSlice(sessionLock, 2, 1)) {
             return ERR_SSH_WRITE_FAILED;
         }
@@ -4593,7 +4787,15 @@ int SshAdapter::removeRemoteDir(const std::string& remotePath) {
     std::unique_lock<std::mutex> sessionLock(sessionMutex_);
     int rc = ensureSftpLocked(sessionLock);
     if (rc != 0) { return rc; }
-    while ((rc = libssh2_sftp_rmdir(sftp_, remotePath.c_str())) == LIBSSH2_ERROR_EAGAIN) {
+    while (true) {
+        if (!admitConnectedRouteWrite([&]() {
+                rc = libssh2_sftp_rmdir(sftp_, remotePath.c_str());
+            })) {
+            return ERR_SSH_SESSION_CLOSED;
+        }
+        if (rc != LIBSSH2_ERROR_EAGAIN) {
+            break;
+        }
         if (!yieldSftpSlice(sessionLock, 2, 1)) {
             return ERR_SSH_WRITE_FAILED;
         }
@@ -4615,9 +4817,19 @@ int SshAdapter::makeRemoteDir(const std::string& remotePath) {
     std::unique_lock<std::mutex> sessionLock(sessionMutex_);
     int rc = ensureSftpLocked(sessionLock);
     if (rc != 0) { return rc; }
-    while ((rc = libssh2_sftp_mkdir(sftp_, remotePath.c_str(),
-        LIBSSH2_SFTP_S_IRWXU | LIBSSH2_SFTP_S_IRGRP |
-        LIBSSH2_SFTP_S_IXGRP | LIBSSH2_SFTP_S_IROTH | LIBSSH2_SFTP_S_IXOTH)) == LIBSSH2_ERROR_EAGAIN) {
+    while (true) {
+        if (!admitConnectedRouteWrite([&]() {
+                rc = libssh2_sftp_mkdir(
+                    sftp_, remotePath.c_str(),
+                    LIBSSH2_SFTP_S_IRWXU | LIBSSH2_SFTP_S_IRGRP |
+                        LIBSSH2_SFTP_S_IXGRP | LIBSSH2_SFTP_S_IROTH |
+                        LIBSSH2_SFTP_S_IXOTH);
+            })) {
+            return ERR_SSH_SESSION_CLOSED;
+        }
+        if (rc != LIBSSH2_ERROR_EAGAIN) {
+            break;
+        }
         if (!yieldSftpSlice(sessionLock, 2, 1)) {
             return ERR_SSH_WRITE_FAILED;
         }
@@ -4640,7 +4852,16 @@ int SshAdapter::renameRemotePath(const std::string& oldPath, const std::string& 
     std::unique_lock<std::mutex> sessionLock(sessionMutex_);
     int rc = ensureSftpLocked(sessionLock);
     if (rc != 0) { return rc; }
-    while ((rc = libssh2_sftp_rename(sftp_, oldPath.c_str(), newPath.c_str())) == LIBSSH2_ERROR_EAGAIN) {
+    while (true) {
+        if (!admitConnectedRouteWrite([&]() {
+                rc = libssh2_sftp_rename(
+                    sftp_, oldPath.c_str(), newPath.c_str());
+            })) {
+            return ERR_SSH_SESSION_CLOSED;
+        }
+        if (rc != LIBSSH2_ERROR_EAGAIN) {
+            break;
+        }
         if (!yieldSftpSlice(sessionLock, 2, 1)) {
             return ERR_SSH_WRITE_FAILED;
         }
@@ -4665,8 +4886,16 @@ int SshAdapter::renameRemotePathAtomic(const std::string& oldPath,
     std::unique_lock<std::mutex> sessionLock(sessionMutex_);
     int rc = ensureSftpLocked(sessionLock);
     if (rc != 0) { return rc; }
-    while ((rc = libssh2_sftp_posix_rename(sftp_, oldPath.c_str(), newPath.c_str())) ==
-           LIBSSH2_ERROR_EAGAIN) {
+    while (true) {
+        if (!admitConnectedRouteWrite([&]() {
+                rc = libssh2_sftp_posix_rename(
+                    sftp_, oldPath.c_str(), newPath.c_str());
+            })) {
+            return ERR_SSH_SESSION_CLOSED;
+        }
+        if (rc != LIBSSH2_ERROR_EAGAIN) {
+            break;
+        }
         if (!yieldSftpSlice(sessionLock, 2, 1)) {
             return ERR_SSH_WRITE_FAILED;
         }
@@ -4707,9 +4936,10 @@ bool SshAdapter::classifySftpTransportFailure(int operationError) {
         operationError == ERR_SSH_REACTOR_QUEUE_FULL) {
         return false;
     }
-    const auto classifyOnOwner = [this]() {
+    const auto classifyOnOwner = [this, operationError]() {
         const ConnectionState currentState = state_.load(std::memory_order_acquire);
-        bool transportLost = transportRecoveryRequested_.load(std::memory_order_acquire) ||
+        bool transportLost = operationError == ERR_SSH_SESSION_CLOSED ||
+            transportRecoveryRequested_.load(std::memory_order_acquire) ||
             currentState == ConnectionState::RECONNECTING;
         int libssh2Error = 0;
         {
@@ -4898,9 +5128,22 @@ int SshAdapter::writeTerminalData(const uint8_t* data, size_t len, uint64_t sequ
                 state_.load(std::memory_order_acquire) != ConnectionState::CONNECTED) {
                 return ERR_SSH_SESSION_CLOSED;
             }
-            diagnostics_.recordWriteAttempt(sequence);
-            rc = libssh2_channel_write(channel_,
-                reinterpret_cast<const char*>(data) + total, len - total);
+            if (!admitConnectedRouteWrite([&]() {
+                    diagnostics_.recordWriteAttempt(sequence);
+                    rc = libssh2_channel_write(
+                        channel_, reinterpret_cast<const char*>(data) + total,
+                        len - total);
+                })) {
+                if (state_.load(std::memory_order_acquire) ==
+                        ConnectionState::CONNECTED &&
+                    !connectCancelRequested_.load(std::memory_order_acquire)) {
+                    terminalInputAccepting_.store(false, std::memory_order_release);
+                    transportRecoveryRequested_.store(true,
+                                                      std::memory_order_release);
+                    reactorCommandCondition_.notify_all();
+                }
+                return ERR_SSH_SESSION_CLOSED;
+            }
         }
         if (rc == LIBSSH2_ERROR_EAGAIN) {
             diagnostics_.recordWriteEagain();
@@ -5259,6 +5502,9 @@ int SshAdapter::executeChannelRequest(
 
     std::lock_guard<std::recursive_mutex> lifecycleLock(lifecycleMutex_);
     std::unique_lock<std::mutex> sessionLock(sessionMutex_);
+    const remotedesk::net::NetworkGenerationSnapshot routeSnapshot =
+        requiredNetworkSnapshot != nullptr
+            ? *requiredNetworkSnapshot : connectNetworkSnapshot_;
     auto requiredRouteCurrent = [this, requiredNetworkSnapshot]() {
         return requiredNetworkSnapshot == nullptr ||
             (requiredNetworkSnapshot->available &&
@@ -5305,7 +5551,15 @@ int SshAdapter::executeChannelRequest(
     };
 
     LIBSSH2_CHANNEL* commandChannel = nullptr;
-    while ((commandChannel = libssh2_channel_open_session(session_)) == nullptr) {
+    while (commandChannel == nullptr) {
+        if (!admitRouteWrite(routeSnapshot, [&]() {
+                commandChannel = libssh2_channel_open_session(session_);
+            })) {
+            return ERR_SSH_SESSION_CLOSED;
+        }
+        if (commandChannel != nullptr) {
+            break;
+        }
         if (std::chrono::steady_clock::now() >= deadline) {
             return ERR_SSH_COMMAND_TIMEOUT;
         }
@@ -5321,7 +5575,12 @@ int SshAdapter::executeChannelRequest(
         if (commandChannel == nullptr) { return; }
         int closeResult = LIBSSH2_ERROR_EAGAIN;
         while (closeResult == LIBSSH2_ERROR_EAGAIN) {
-            closeResult = libssh2_channel_close(commandChannel);
+            if (!admitRouteWrite(routeSnapshot, [&]() {
+                    closeResult = libssh2_channel_close(commandChannel);
+                })) {
+                commandChannel = nullptr;
+                return;
+            }
             if (closeResult == LIBSSH2_ERROR_EAGAIN) {
                 if (!waitForRequest()) { break; }
             }
@@ -5336,21 +5595,15 @@ int SshAdapter::executeChannelRequest(
             closeChannel();
             return ERR_SSH_COMMAND_TIMEOUT;
         }
-        if (requiredNetworkSnapshot != nullptr) {
-            if (!admitRouteWrite(*requiredNetworkSnapshot, [&]() {
-                    startupResult = subsystem
-                        ? libssh2_channel_subsystem(
-                            commandChannel, request.c_str())
-                        : libssh2_channel_exec(
-                            commandChannel, request.c_str());
-                })) {
-                closeChannel();
-                return routeWriteFailure(ERR_SSH_COMMAND_TIMEOUT);
-            }
-        } else {
-            startupResult = subsystem
-                ? libssh2_channel_subsystem(commandChannel, request.c_str())
-                : libssh2_channel_exec(commandChannel, request.c_str());
+        if (!admitRouteWrite(routeSnapshot, [&]() {
+                startupResult = subsystem
+                    ? libssh2_channel_subsystem(
+                        commandChannel, request.c_str())
+                    : libssh2_channel_exec(
+                        commandChannel, request.c_str());
+            })) {
+            closeChannel();
+            return routeWriteFailure(ERR_SSH_COMMAND_TIMEOUT);
         }
         if (startupResult != LIBSSH2_ERROR_EAGAIN) { break; }
         if (!waitForRequest()) {
@@ -5363,10 +5616,10 @@ int SshAdapter::executeChannelRequest(
         return ERR_SSH_SUBSYSTEM_FAILED;
     }
 
-    // A generation change after libssh2 accepts the request is an unknown
-    // server-side outcome. This route-bound entry point is used only by the
+    // A generation change after libssh2 accepts a request is an unknown
+    // server-side outcome. The optional required snapshot is used by the
     // exact authorized_keys command, whose grep-before-append form is
-    // idempotent; the outer generation runner may safely repeat it.
+    // idempotent; only that caller's outer generation runner may repeat it.
 
     constexpr size_t kMaxCommandOutputBytes = 64 * 1024 * 1024;
     std::vector<uint8_t> buffer(32768);
@@ -5477,7 +5730,15 @@ int SshAdapter::sendChannelSignal(const std::string& signal) {
         return ERR_SSH_SESSION_CLOSED;
     }
     int rc;
-    while ((rc = libssh2_channel_signal(channel_, signal.c_str())) == LIBSSH2_ERROR_EAGAIN) {
+    while (true) {
+        if (!admitConnectedRouteWrite([&]() {
+                rc = libssh2_channel_signal(channel_, signal.c_str());
+            })) {
+            return ERR_SSH_SESSION_CLOSED;
+        }
+        if (rc != LIBSSH2_ERROR_EAGAIN) {
+            break;
+        }
         sessionLock.unlock();
         const int waitResult = isReactorThread()
             ? waitSocketMilliseconds(2, kReactorWaitSliceMs) : waitSocket(2, 5);
@@ -5506,7 +5767,15 @@ int SshAdapter::sendChannelEof() {
         return ERR_SSH_SESSION_CLOSED;
     }
     int rc;
-    while ((rc = libssh2_channel_send_eof(channel_)) == LIBSSH2_ERROR_EAGAIN) {
+    while (true) {
+        if (!admitConnectedRouteWrite([&]() {
+                rc = libssh2_channel_send_eof(channel_);
+            })) {
+            return ERR_SSH_SESSION_CLOSED;
+        }
+        if (rc != LIBSSH2_ERROR_EAGAIN) {
+            break;
+        }
         sessionLock.unlock();
         const int waitResult = isReactorThread()
             ? waitSocketMilliseconds(2, kReactorWaitSliceMs) : waitSocket(2, 5);
@@ -5605,7 +5874,12 @@ void SshAdapter::resizePty(int cols, int rows) {
     if (channel_ && state_.load(std::memory_order_acquire) == ConnectionState::CONNECTED) {
         int rc = LIBSSH2_ERROR_EAGAIN;
         while (rc == LIBSSH2_ERROR_EAGAIN) {
-            rc = libssh2_channel_request_pty_size(channel_, cols, rows);
+            if (!admitConnectedRouteWrite([&]() {
+                    rc = libssh2_channel_request_pty_size(
+                        channel_, cols, rows);
+                })) {
+                break;
+            }
             if (rc == LIBSSH2_ERROR_EAGAIN) {
                 sessionLock.unlock();
                 const int waitResult = isReactorThread()
@@ -5671,7 +5945,15 @@ int SshAdapter::measureLatencyMs() {
     const auto deadline = start + kProbeBudget;
     int secondsToNext = 0;
     int rc = LIBSSH2_ERROR_EAGAIN;
-    while ((rc = libssh2_keepalive_send(session_, &secondsToNext)) == LIBSSH2_ERROR_EAGAIN) {
+    while (true) {
+        if (!admitConnectedRouteWrite([&]() {
+                rc = libssh2_keepalive_send(session_, &secondsToNext);
+            })) {
+            return -2;
+        }
+        if (rc != LIBSSH2_ERROR_EAGAIN) {
+            break;
+        }
         if (std::chrono::steady_clock::now() >= deadline) {
             return -2;
         }
@@ -5732,7 +6014,11 @@ void SshAdapter::serviceKeepaliveOnReactor() {
         if (!readerRunning_.load(std::memory_order_acquire)) {
             return;
         }
-        rc = libssh2_keepalive_send(session_, &secondsToNext);
+        if (!admitConnectedRouteWrite([&]() {
+                rc = libssh2_keepalive_send(session_, &secondsToNext);
+            })) {
+            return;
+        }
         if (rc != LIBSSH2_ERROR_EAGAIN) {
             break;
         }
