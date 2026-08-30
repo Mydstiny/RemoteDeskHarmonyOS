@@ -103,7 +103,12 @@ public:
             }
         }
         if (handler) {
-            return handler(request, absoluteDeadline, cancellationProbe);
+            outcome = handler(request, absoluteDeadline, cancellationProbe);
+        }
+        if (outcome.error == MoonlightTransportError::None &&
+            outcome.resolvedAddress.empty()) {
+            outcome.resolvedAddress = request.connectAddress();
+            outcome.resolvedFamily = request.family();
         }
         return outcome;
     }

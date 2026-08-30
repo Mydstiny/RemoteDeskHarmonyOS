@@ -87,6 +87,7 @@ RDP_TEST_CASE(happy_eyeballs_falls_back_to_reachable_family) {
     RDP_ASSERT(result.family == AF_INET);
     RDP_ASSERT(result.descriptor >= 0);
     RDP_ASSERT(result.attemptedCandidates == 2U);
+    RDP_ASSERT(result.numericAddress == "127.0.0.1");
     ::close(result.descriptor);
     ::close(listener);
 }
@@ -117,6 +118,8 @@ RDP_TEST_CASE(happy_eyeballs_falls_back_from_ipv4_to_ipv6) {
     RDP_ASSERT(result.family == AF_INET6);
     RDP_ASSERT(result.descriptor >= 0);
     RDP_ASSERT(result.attemptedCandidates == 2U);
+    RDP_ASSERT(!result.numericAddress.empty());
+    RDP_ASSERT(result.numericAddress.find("::1") != std::string::npos);
     ::close(result.descriptor);
     ::close(listener);
 }

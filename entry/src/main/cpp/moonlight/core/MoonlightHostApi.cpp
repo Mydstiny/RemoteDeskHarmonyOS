@@ -140,6 +140,29 @@ std::string transportHostFor(const MoonlightHostAddress& address) {
     return address.scope.empty() ? address.value : address.value + "%" + address.scope;
 }
 
+std::optional<std::string> normalizedTransportWinner(
+    const MoonlightTransportOutcome& outcome) {
+    if (outcome.resolvedAddress.empty() ||
+        outcome.resolvedFamily == MoonlightHostAddressFamily::Unspecified) {
+        return std::nullopt;
+    }
+    const auto parsed = remotedesk::endpoint::ParseHost(
+        outcome.resolvedAddress, remotedesk::endpoint::ParseMode::Runtime);
+    if (!parsed.ok ||
+        parsed.endpoint.family() == remotedesk::endpoint::AddressFamily::Hostname) {
+        return std::nullopt;
+    }
+    const bool familyMatches =
+        (outcome.resolvedFamily == MoonlightHostAddressFamily::Ipv4 &&
+         parsed.endpoint.family() == remotedesk::endpoint::AddressFamily::Ipv4) ||
+        (outcome.resolvedFamily == MoonlightHostAddressFamily::Ipv6 &&
+         parsed.endpoint.family() == remotedesk::endpoint::AddressFamily::Ipv6);
+    if (!familyMatches) {
+        return std::nullopt;
+    }
+    return remotedesk::endpoint::TransportHost(parsed.endpoint);
+}
+
 bool isValidUuid(const std::string& value) noexcept {
     if (value.size() != 36U) {
         return false;
@@ -1731,6 +1754,19 @@ MoonlightHostResult executeRegistered(const std::shared_ptr<HostApiState>& impl,
                 return result;
             }
 
+            const auto resolvedWinner = normalizedTransportWinner(outcome);
+            if (!resolvedWinner.has_value()) {
+                // The control response is unusable for a family-stable media
+                // handoff unless the transport can name its numeric winner.
+                // Never silently re-resolve the logical hostname here.
+                diagnostic.code = MoonlightHostError::TransportFailure;
+                diagnostic.stage = MoonlightTransportStage::Commit;
+                result.diagnostics.push_back(std::move(diagnostic));
+                result.error = MoonlightHostError::TransportFailure;
+                result.mutationOutcomeUnknown = !shape.readOnly;
+                return result;
+            }
+
             if (!shape.xmlResponse) {
                 stateError = dispositionError(state);
                 if (stateError != MoonlightHostError::None ||
@@ -1744,11 +1780,8 @@ MoonlightHostResult executeRegistered(const std::shared_ptr<HostApiState>& impl,
                     return result;
                 }
                 result.asset.assign(outcome.body.begin(), outcome.body.end());
-                result.resolvedAddress = outcome.resolvedAddress.empty()
-                    ? transportHostFor(call.endpoint.addresses[attempt]) : outcome.resolvedAddress;
-                result.resolvedFamily = outcome.resolvedFamily ==
-                    MoonlightHostAddressFamily::Unspecified
-                    ? call.endpoint.addresses[attempt].family : outcome.resolvedFamily;
+                result.resolvedAddress = *resolvedWinner;
+                result.resolvedFamily = outcome.resolvedFamily;
                 diagnostic.code = MoonlightHostError::None;
                 diagnostic.stage = MoonlightTransportStage::Complete;
                 result.diagnostics.push_back(std::move(diagnostic));
@@ -1834,11 +1867,8 @@ MoonlightHostResult executeRegistered(const std::shared_ptr<HostApiState>& impl,
 
             diagnostic.code = MoonlightHostError::None;
             diagnostic.stage = MoonlightTransportStage::Complete;
-            result.resolvedAddress = outcome.resolvedAddress.empty()
-                ? transportHostFor(call.endpoint.addresses[attempt]) : outcome.resolvedAddress;
-            result.resolvedFamily = outcome.resolvedFamily ==
-                MoonlightHostAddressFamily::Unspecified
-                ? call.endpoint.addresses[attempt].family : outcome.resolvedFamily;
+            result.resolvedAddress = *resolvedWinner;
+            result.resolvedFamily = outcome.resolvedFamily;
             result.diagnostics.push_back(std::move(diagnostic));
             result.error = MoonlightHostError::None;
             if (requestOperation == MoonlightHostOperation::ServerInfo &&

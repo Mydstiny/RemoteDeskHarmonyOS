@@ -540,6 +540,8 @@ public:
     MoonlightTransportOutcome execute(const MoonlightTransportRequest& request,
                                       std::chrono::steady_clock::time_point,
                                       const CancellationProbe& cancellationProbe) override {
+        currentResolvedAddress_ = request.connectAddress();
+        currentResolvedFamily_ = request.family();
         CapturedPairStep capture;
         capture.operation = request.operation();
         capture.scheme = request.scheme();
@@ -597,17 +599,19 @@ public:
     bool transcriptVerified() const noexcept { return transcriptVerified_; }
 
 private:
-    static MoonlightTransportOutcome response(const std::string& body) {
+    MoonlightTransportOutcome response(const std::string& body) const {
         MoonlightTransportOutcome result;
         result.stage = MoonlightTransportStage::Body;
         result.sendState = MoonlightTransportSendState::ConfirmedResponse;
         result.httpStatus = 200;
         result.body = body;
         result.receivedBodyBytes = body.size();
+        result.resolvedAddress = currentResolvedAddress_;
+        result.resolvedFamily = currentResolvedFamily_;
         return result;
     }
 
-    static MoonlightTransportOutcome pairedResponse() {
+    MoonlightTransportOutcome pairedResponse() const {
         return response("<root status_code=\"200\"><paired>1</paired></root>");
     }
 
@@ -755,6 +759,9 @@ private:
     std::vector<std::uint8_t> clientChallengeHash_;
     std::vector<std::uint8_t> key_;
     std::vector<CapturedPairStep> captures_;
+    std::string currentResolvedAddress_;
+    MoonlightHostAddressFamily currentResolvedFamily_ =
+        MoonlightHostAddressFamily::Unspecified;
     ServerFault fault_ = ServerFault::None;
     std::size_t unpairCount_ = 0U;
     bool transcriptVerified_ = false;

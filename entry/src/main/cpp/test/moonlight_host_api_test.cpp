@@ -79,6 +79,14 @@ public:
         if (handler) {
             return handler(request, absoluteDeadline, cancellationProbe);
         }
+        if (outcome.error == MoonlightTransportError::None &&
+            outcome.resolvedAddress.empty()) {
+            // The production transport always returns the numeric socket
+            // winner. Scripted success fixtures mirror that invariant unless
+            // a dedicated malformed-transport fixture is used.
+            outcome.resolvedAddress = request.connectAddress();
+            outcome.resolvedFamily = request.family();
+        }
         return outcome;
     }
 
@@ -112,7 +120,10 @@ public:
         sawSensitiveRequest_ = containsRaw(request.url(), "A1B2C3D4") &&
                                containsRaw(request.url(), "0011223344556677");
         redacted_ = request.redactedDebugString();
-        return xmlResponseBody();
+        auto outcome = xmlResponseBody();
+        outcome.resolvedAddress = request.connectAddress();
+        outcome.resolvedFamily = request.family();
+        return outcome;
     }
 
     bool sawSensitiveRequest() const noexcept { return sawSensitiveRequest_; }
@@ -136,6 +147,31 @@ private:
 
     bool sawSensitiveRequest_ = false;
     std::string redacted_;
+};
+
+class MissingWinnerTransport final : public MoonlightHostTransport {
+public:
+    MoonlightTransportOutcome execute(
+        const MoonlightTransportRequest&,
+        std::chrono::steady_clock::time_point,
+        const CancellationProbe&) override {
+        return xmlResponseBody();
+    }
+
+private:
+    static MoonlightTransportOutcome xmlResponseBody() {
+        MoonlightTransportOutcome outcome;
+        outcome.stage = MoonlightTransportStage::Body;
+        outcome.sendState = MoonlightTransportSendState::ConfirmedResponse;
+        outcome.httpStatus = 200;
+        outcome.body =
+            "<root status_code=\"200\"><hostname>Gaming PC</hostname>"
+            "<uniqueid>host-001</uniqueid><appversion>7.1.431.-1</appversion>"
+            "<state>SUNSHINE_SERVER_READY</state><PairStatus>1</PairStatus>"
+            "<currentgame>0</currentgame></root>";
+        outcome.receivedBodyBytes = outcome.body.size();
+        return outcome;
+    }
 };
 
 class BlockingGate final {
@@ -652,6 +688,19 @@ RDP_TEST_CASE(moonlight_host_api_keeps_link_local_scope_typed_across_control_req
     RDP_ASSERT(result.resolvedAddress.has_value());
     RDP_ASSERT(*result.resolvedAddress == "fe80::20%wlan0");
     RDP_ASSERT_EQ(result.resolvedFamily, MoonlightHostAddressFamily::Ipv6);
+}
+
+RDP_TEST_CASE(moonlight_host_api_rejects_success_without_numeric_transport_winner) {
+    auto transport = std::make_shared<MissingWinnerTransport>();
+    MoonlightHostApi api(transport, uuidGenerator());
+
+    const auto result = api.execute(callFor(MoonlightHostOperation::ServerInfo));
+
+    RDP_ASSERT_EQ(result.error, MoonlightHostError::TransportFailure);
+    RDP_ASSERT(!result.resolvedAddress.has_value());
+    RDP_ASSERT(!result.serverInfo.has_value());
+    RDP_ASSERT(!result.diagnostics.empty());
+    RDP_ASSERT_EQ(result.diagnostics.back().stage, MoonlightTransportStage::Commit);
 }
 
 RDP_TEST_CASE(moonlight_host_api_returns_http_tls_body_and_xml_failures_without_collapsing_codes) {

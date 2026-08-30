@@ -219,10 +219,26 @@ ConnectResult connectedResult(ActiveSocket winner,
         result.attemptedCandidates = attempted;
         return result;
     }
+    result.numericAddress = numericHost(winner.address);
+    if (result.numericAddress.empty()) {
+        // Consumers use the numeric winner to keep control and data channels
+        // on the same address family. A connected descriptor without that
+        // identity must never fall back to the original hostname.
+        result.status = ConnectStatus::Failed;
+        result.lastError = EADDRNOTAVAIL;
+        result.attemptedCandidates = attempted;
+        return result;
+    }
+    if (cancellationRequested(options.cancelled)) {
+        result.status = ConnectStatus::Cancelled;
+        result.lastError = ECANCELED;
+        result.attemptedCandidates = attempted;
+        result.numericAddress.clear();
+        return result;
+    }
     result.status = ConnectStatus::Connected;
     result.family = winner.address.family;
     result.attemptedCandidates = attempted;
-    result.numericAddress = numericHost(winner.address);
     result.descriptor = winnerGuard.release();
     return result;
 }
