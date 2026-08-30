@@ -2,6 +2,7 @@
 #include "ssh/ssh_auth_replay_policy.h"
 #include "ssh/ssh_network_lifecycle_policy.h"
 #include "ssh/ssh_network_generation_policy.h"
+#include "ssh/ssh_route_teardown_policy.h"
 #include "ssh/ssh_session_manager.h"
 
 #include <cassert>
@@ -154,6 +155,65 @@ RDP_TEST_CASE(ssh_network_generation_policy_bounds_every_stage_to_original_deadl
         routeDeadline, routeDeadline - std::chrono::milliseconds(1)));
     RDP_ASSERT(SshNetworkGenerationPolicy::deadlineExpired(
         routeDeadline, routeDeadline));
+}
+
+RDP_TEST_CASE(ssh_route_teardown_retries_eagain_only_on_current_route) {
+    using Decision = SshRouteTeardownDecision;
+    using Policy = SshRouteTeardownPolicy;
+    const auto startedAt = Policy::Clock::time_point(std::chrono::seconds(20));
+    const auto deadline = Policy::deadline(startedAt);
+
+    RDP_ASSERT(Policy::decide(
+        true, -37, -37, startedAt, deadline) ==
+        Decision::RetryCurrentRoute);
+    RDP_ASSERT(Policy::decide(
+        true, 0, -37, startedAt, deadline) == Decision::Complete);
+    RDP_ASSERT(Policy::decide(
+        true, -7, -37, startedAt, deadline) == Decision::Complete);
+    RDP_ASSERT(Policy::decide(
+        false, -37, -37, startedAt, deadline) ==
+        Decision::RetireTransport);
+    RDP_ASSERT(Policy::decide(
+        true, -37, -37, deadline, deadline) ==
+        Decision::RetireTransport);
+}
+
+RDP_TEST_CASE(ssh_route_teardown_reacquires_admission_after_eagain) {
+    using Decision = SshRouteTeardownDecision;
+    using Policy = SshRouteTeardownPolicy;
+    remotedesk::net::NetworkGenerationFence fence(90, true);
+    const remotedesk::net::NetworkGenerationSnapshot captured = fence.snapshot();
+    const auto startedAt = Policy::Clock::time_point(std::chrono::seconds(30));
+    const auto deadline = Policy::deadline(startedAt);
+    int closeAttempts = 0;
+    int closePackets = 0;
+
+    int result = -37;
+    const bool firstAdmission = fence.admitIfCurrent(captured, [&]() {
+        ++closeAttempts;
+        ++closePackets;
+    });
+    RDP_ASSERT(Policy::decide(
+        firstAdmission, result, -37, startedAt, deadline) ==
+        Decision::RetryCurrentRoute);
+    RDP_ASSERT_EQ(closeAttempts, 1);
+    RDP_ASSERT_EQ(closePackets, 1);
+
+    // A route update can win while libssh2 is waiting to retry CLOSE. The
+    // second attempt must be rejected and converted into socket retirement;
+    // no second old-route packet is emitted.
+    RDP_ASSERT(fence.update(true, 91));
+    result = -37;
+    const bool secondAdmission = fence.admitIfCurrent(captured, [&]() {
+        ++closeAttempts;
+        ++closePackets;
+    });
+    RDP_ASSERT(Policy::decide(
+        secondAdmission, result, -37,
+        startedAt + std::chrono::milliseconds(1), deadline) ==
+        Decision::RetireTransport);
+    RDP_ASSERT_EQ(closeAttempts, 1);
+    RDP_ASSERT_EQ(closePackets, 1);
 }
 
 RDP_TEST_CASE(ssh_auth_replay_policy_separates_route_and_target_one_shot_answers) {

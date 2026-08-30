@@ -391,6 +391,10 @@ private:
     SshForwardingManager forwardingManager_;
     std::map<std::string, LocalForwardListener> localForwardListeners_;
     std::vector<LocalForwardConnection> localForwardConnections_;
+    // Accepted remote-forward channels that could not finish an admitted
+    // non-blocking free are retained here and retried by the reactor. A raw
+    // pointer must never be dropped on EAGAIN because libssh2 still owns it.
+    std::vector<LIBSSH2_CHANNEL*> deferredForwardChannelCloses_;
     int lastPtyLibssh2Error_ = 0;
     SshPtyFailureClass lastPtyFailureClass_ = SshPtyFailureClass::NONE;
 
@@ -429,9 +433,23 @@ private:
     bool pumpLocalForwardConnectionLocked(LocalForwardConnection& connection,
                                            const SshForwardingConfig& config);
     void serviceForwardingOnReactor();
-    void closeLocalForwardConnectionLocked(LocalForwardConnection& connection);
+    bool tryFreeConnectedForwardChannelLocked(LIBSSH2_CHANNEL*& channel);
+    void deferForwardChannelCloseLocked(LIBSSH2_CHANNEL* channel);
+    bool closeLocalForwardConnectionLocked(LocalForwardConnection& connection);
     void closeLocalForwardRuntimeLocked(const std::string& id);
-    void closeAllForwardingRuntimeLocked();
+
+    struct TransportTeardownContext {
+        std::chrono::steady_clock::time_point deadline;
+        bool transportRetired = false;
+    };
+    void retirePrimaryTransportNoWireLocked(
+        TransportTeardownContext& context) noexcept;
+    int runTransportTeardownPrimitiveLocked(
+        TransportTeardownContext& context,
+        const std::function<int()>& primitive);
+    void teardownAllForwardingRuntimeLocked(
+        TransportTeardownContext& context);
+    void teardownSessionHandlesLocked(const char* description);
 
     // ---- SSH 协议方法 (libssh2 集成) ----
 

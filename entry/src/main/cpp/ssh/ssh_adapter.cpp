@@ -16,6 +16,7 @@
 #include "ssh_network_lifecycle_policy.h"
 #include "ssh_proxy_target_policy.h"
 #include "ssh_route_policy.h"
+#include "ssh_route_teardown_policy.h"
 #include "ssh_sensitive_buffer.h"
 #include "ssh_sftp_operation_policy.h"
 #include "extension_registry.h"
@@ -1256,12 +1257,43 @@ bool SshAdapter::pumpLocalForwardConnectionLocked(LocalForwardConnection& connec
     return true;
 }
 
-void SshAdapter::closeLocalForwardConnectionLocked(LocalForwardConnection& connection) {
-    connection.targetConnectTask.cancelAndClose();
-    if (connection.channel != nullptr) {
-        libssh2_channel_free(connection.channel);
-        connection.channel = nullptr;
+bool SshAdapter::tryFreeConnectedForwardChannelLocked(
+    LIBSSH2_CHANNEL*& channel) {
+    if (channel == nullptr) { return true; }
+    int result = LIBSSH2_ERROR_EAGAIN;
+    if (!admitConnectedRouteWrite([&]() {
+            // libssh2_channel_free() automatically closes an open channel and
+            // can therefore emit SSH_MSG_CHANNEL_CLOSE before it releases the
+            // local object.
+            result = libssh2_channel_free(channel);
+        }) || result == LIBSSH2_ERROR_EAGAIN) {
+        return false;
     }
+    channel = nullptr;
+    return true;
+}
+
+void SshAdapter::deferForwardChannelCloseLocked(LIBSSH2_CHANNEL* channel) {
+    if (channel == nullptr) { return; }
+    if (tryFreeConnectedForwardChannelLocked(channel)) { return; }
+    try {
+        deferredForwardChannelCloses_.push_back(channel);
+    } catch (...) {
+        // Never discard a live libssh2 pointer on allocation failure. Retire
+        // the descriptor without closing it (preventing fd reuse), then allow
+        // libssh2 to release only local state. Recovery owns the final close.
+        if (sockFd_ >= 0) { (void)shutdown(sockFd_, SHUT_RDWR); }
+        (void)libssh2_channel_free(channel);
+        transportRecoveryRequested_.store(true, std::memory_order_release);
+        reactorCommandCondition_.notify_all();
+    }
+}
+
+bool SshAdapter::closeLocalForwardConnectionLocked(
+    LocalForwardConnection& connection) {
+    connection.targetConnectTask.cancelAndClose();
+    const bool channelReleased =
+        tryFreeConnectedForwardChannelLocked(connection.channel);
     if (connection.localFd >= 0) {
         shutdown(connection.localFd, SHUT_RDWR);
         close(connection.localFd);
@@ -1270,9 +1302,11 @@ void SshAdapter::closeLocalForwardConnectionLocked(LocalForwardConnection& conne
     if (connection.sessionGeneration != 0) {
         (void)forwardingManager_.releaseConnection(connection.profileId,
                                                     connection.sessionGeneration);
+        connection.sessionGeneration = 0;
     }
     connection.toChannel.clear();
     connection.toLocal.clear();
+    return channelReleased;
 }
 
 void SshAdapter::closeLocalForwardRuntimeLocked(const std::string& id) {
@@ -1280,18 +1314,21 @@ void SshAdapter::closeLocalForwardRuntimeLocked(const std::string& id) {
     if (listener != localForwardListeners_.end()) {
         if (listener->second.fd >= 0) {
             close(listener->second.fd);
+            listener->second.fd = -1;
         }
         if (listener->second.remoteListener != nullptr) {
-            if (state_.load(std::memory_order_acquire) ==
-                    ConnectionState::CONNECTED) {
-                (void)admitConnectedRouteWrite([&]() {
-                    (void)libssh2_channel_forward_cancel(
-                        listener->second.remoteListener);
-                });
+            int cancelResult = LIBSSH2_ERROR_EAGAIN;
+            const bool admitted = admitConnectedRouteWrite([&]() {
+                cancelResult = libssh2_channel_forward_cancel(
+                    listener->second.remoteListener);
+            });
+            if (admitted && cancelResult != LIBSSH2_ERROR_EAGAIN) {
+                listener->second.remoteListener = nullptr;
             }
-            listener->second.remoteListener = nullptr;
         }
-        localForwardListeners_.erase(listener);
+        if (listener->second.remoteListener == nullptr) {
+            localForwardListeners_.erase(listener);
+        }
     }
     for (auto connection = localForwardConnections_.begin();
          connection != localForwardConnections_.end();) {
@@ -1299,18 +1336,11 @@ void SshAdapter::closeLocalForwardRuntimeLocked(const std::string& id) {
             ++connection;
             continue;
         }
-        closeLocalForwardConnectionLocked(*connection);
-        connection = localForwardConnections_.erase(connection);
-    }
-}
-
-void SshAdapter::closeAllForwardingRuntimeLocked() {
-    while (!localForwardListeners_.empty()) {
-        closeLocalForwardRuntimeLocked(localForwardListeners_.begin()->first);
-    }
-    while (!localForwardConnections_.empty()) {
-        closeLocalForwardConnectionLocked(localForwardConnections_.back());
-        localForwardConnections_.pop_back();
+        if (closeLocalForwardConnectionLocked(*connection)) {
+            connection = localForwardConnections_.erase(connection);
+        } else {
+            ++connection;
+        }
     }
 }
 
@@ -1322,6 +1352,16 @@ void SshAdapter::serviceForwardingOnReactor() {
     std::unique_lock<std::mutex> sessionLock(sessionMutex_);
     if (session_ == nullptr || sockFd_ < 0) {
         return;
+    }
+    for (auto channel = deferredForwardChannelCloses_.begin();
+         channel != deferredForwardChannelCloses_.end();) {
+        if (!tryFreeConnectedForwardChannelLocked(*channel)) {
+            // Retain the exact pointer and retry on the next reactor turn.
+            // Do not accept another remote-forward channel while libssh2 is
+            // still completing this channel's non-blocking close.
+            return;
+        }
+        channel = deferredForwardChannelCloses_.erase(channel);
     }
 
     struct ForwardListenerFailure {
@@ -1392,9 +1432,9 @@ void SshAdapter::serviceForwardingOnReactor() {
                     localForwardConnections_.begin(), localForwardConnections_.end(),
                     [](const LocalForwardConnection& connection) {
                         return connection.targetConnectTask.pending();
-                    }));
+                }));
                 if (pendingTargetConnections >= kMaxForwardTargetConnectWorkers) {
-                    libssh2_channel_free(channel);
+                    deferForwardChannelCloseLocked(channel);
                     OH_LOG_WARN(LOG_APP,
                                 "[SSH] remote forwarding target worker 已达上限 id=%{public}s",
                                 listener.profileId.c_str());
@@ -1403,7 +1443,7 @@ void SshAdapter::serviceForwardingOnReactor() {
                 const SshForwardingResult acquired = forwardingManager_.acquireConnection(
                     listener.profileId, listener.sessionGeneration);
                 if (acquired != SshForwardingResult::Ok) {
-                    libssh2_channel_free(channel);
+                    deferForwardChannelCloseLocked(channel);
                     continue;
                 }
                 bool queued = false;
@@ -1424,7 +1464,7 @@ void SshAdapter::serviceForwardingOnReactor() {
                 if (!queued) {
                     (void)forwardingManager_.releaseConnection(listener.profileId,
                                                                 listener.sessionGeneration);
-                    libssh2_channel_free(channel);
+                    deferForwardChannelCloseLocked(channel);
                     OH_LOG_WARN(LOG_APP,
                                 "[SSH] remote forwarding target worker 启动失败 id=%{public}s",
                                 listener.profileId.c_str());
@@ -1504,8 +1544,11 @@ void SshAdapter::serviceForwardingOnReactor() {
                                        afterPump.lastError});
         }
         if (!pumped) {
-            closeLocalForwardConnectionLocked(*connection);
-            connection = localForwardConnections_.erase(connection);
+            if (closeLocalForwardConnectionLocked(*connection)) {
+                connection = localForwardConnections_.erase(connection);
+            } else {
+                ++connection;
+            }
         } else {
             ++connection;
         }
@@ -1652,6 +1695,170 @@ bool SshAdapter::admitConnectedRouteRead(
     // returning payload. Treat it as an outbound primitive even though the API
     // is named "read".
     return admitConnectedRouteWrite(read);
+}
+
+void SshAdapter::retirePrimaryTransportNoWireLocked(
+    TransportTeardownContext& context) noexcept {
+    if (context.transportRetired) { return; }
+    // Keep the descriptor allocated until every libssh2 object is gone. A
+    // close here could let another thread reuse the same integer while
+    // libssh2 still retains it; shutdown makes every later send fail locally
+    // without opening that fd-reuse window.
+    if (sockFd_ >= 0) { (void)shutdown(sockFd_, SHUT_RDWR); }
+    if (session_ != nullptr) {
+        // After shutdown there is no remote progress to wait for. Blocking
+        // mode lets libssh2 finish its local state-machine cleanup instead of
+        // handing an EAGAIN-owned pointer back to a caller that is retiring it.
+        libssh2_session_set_blocking(session_, 1);
+    }
+    context.transportRetired = true;
+}
+
+int SshAdapter::runTransportTeardownPrimitiveLocked(
+    TransportTeardownContext& context,
+    const std::function<int()>& primitive) {
+    if (!primitive) { return 0; }
+    while (!context.transportRetired) {
+        int result = LIBSSH2_ERROR_EAGAIN;
+        const bool admitted =
+            remotedesk::net::ProcessNetworkGenerationFence().admitIfCurrent(
+                connectNetworkSnapshot_, [&]() { result = primitive(); });
+        const SshRouteTeardownDecision decision =
+            SshRouteTeardownPolicy::decide(
+                admitted, result, LIBSSH2_ERROR_EAGAIN,
+                std::chrono::steady_clock::now(), context.deadline);
+        if (decision == SshRouteTeardownDecision::Complete) {
+            return result;
+        }
+        if (decision == SshRouteTeardownDecision::RetireTransport ||
+            sockFd_ < 0) {
+            retirePrimaryTransportNoWireLocked(context);
+            break;
+        }
+
+        struct pollfd descriptor {
+            sockFd_, POLLIN | POLLOUT | POLLERR | POLLHUP, 0
+        };
+        int pollResult;
+        do {
+            pollResult = poll(
+                &descriptor, 1,
+                SshRouteTeardownPolicy::kPollSliceMilliseconds);
+        } while (pollResult < 0 && errno == EINTR);
+        if (pollResult < 0) {
+            retirePrimaryTransportNoWireLocked(context);
+            break;
+        }
+    }
+
+    // The descriptor is shut down but deliberately not closed, so these
+    // calls can only advance/free libssh2's local state. Bound even this path
+    // defensively in case a future libssh2 version reports a spurious EAGAIN.
+    int result = LIBSSH2_ERROR_EAGAIN;
+    for (std::uint32_t attempt = 0;
+         attempt < SshRouteTeardownPolicy::kLocalReleaseAttempts &&
+         result == LIBSSH2_ERROR_EAGAIN;
+         ++attempt) {
+        result = primitive();
+    }
+    return result;
+}
+
+void SshAdapter::teardownAllForwardingRuntimeLocked(
+    TransportTeardownContext& context) {
+    for (auto& [id, listener] : localForwardListeners_) {
+        (void)id;
+        if (listener.fd >= 0) {
+            (void)shutdown(listener.fd, SHUT_RDWR);
+            close(listener.fd);
+            listener.fd = -1;
+        }
+        if (listener.remoteListener != nullptr) {
+            LIBSSH2_LISTENER* const remoteListener = listener.remoteListener;
+            (void)runTransportTeardownPrimitiveLocked(context, [remoteListener]() {
+                return libssh2_channel_forward_cancel(remoteListener);
+            });
+            listener.remoteListener = nullptr;
+        }
+    }
+    localForwardListeners_.clear();
+
+    for (LocalForwardConnection& connection : localForwardConnections_) {
+        connection.targetConnectTask.cancelAndClose();
+        if (connection.localFd >= 0) {
+            (void)shutdown(connection.localFd, SHUT_RDWR);
+            close(connection.localFd);
+            connection.localFd = -1;
+        }
+        if (connection.sessionGeneration != 0) {
+            (void)forwardingManager_.releaseConnection(
+                connection.profileId, connection.sessionGeneration);
+            connection.sessionGeneration = 0;
+        }
+        if (connection.channel != nullptr) {
+            (void)runTransportTeardownPrimitiveLocked(context, [&]() {
+                return libssh2_channel_free(connection.channel);
+            });
+            connection.channel = nullptr;
+        }
+        connection.toChannel.clear();
+        connection.toLocal.clear();
+    }
+    localForwardConnections_.clear();
+
+    for (LIBSSH2_CHANNEL*& channel : deferredForwardChannelCloses_) {
+        if (channel == nullptr) { continue; }
+        (void)runTransportTeardownPrimitiveLocked(context, [&]() {
+            return libssh2_channel_free(channel);
+        });
+        channel = nullptr;
+    }
+    deferredForwardChannelCloses_.clear();
+}
+
+void SshAdapter::teardownSessionHandlesLocked(const char* description) {
+    TransportTeardownContext context {
+        SshRouteTeardownPolicy::deadline(std::chrono::steady_clock::now()),
+        false
+    };
+    if (sockFd_ < 0 ||
+        remotedesk::net::ProcessNetworkGenerationFence().shouldCancel(
+            connectNetworkSnapshot_)) {
+        retirePrimaryTransportNoWireLocked(context);
+    }
+
+    teardownAllForwardingRuntimeLocked(context);
+    if (sftp_ != nullptr) {
+        (void)runTransportTeardownPrimitiveLocked(context, [&]() {
+            return libssh2_sftp_shutdown(sftp_);
+        });
+        sftp_ = nullptr;
+    }
+    if (channel_ != nullptr) {
+        (void)runTransportTeardownPrimitiveLocked(context, [&]() {
+            return libssh2_channel_free(channel_);
+        });
+        channel_ = nullptr;
+    }
+    if (session_ != nullptr) {
+        (void)runTransportTeardownPrimitiveLocked(context, [&]() {
+            return libssh2_session_disconnect(
+                session_, description != nullptr ? description : "Client disconnecting");
+        });
+        const int freeResult = runTransportTeardownPrimitiveLocked(context, [&]() {
+            return libssh2_session_free(session_);
+        });
+        if (freeResult == LIBSSH2_ERROR_EAGAIN) {
+            OH_LOG_WARN(LOG_APP,
+                        "[SSH] local session release remained EAGAIN after transport retirement");
+        }
+        session_ = nullptr;
+    }
+    if (sockFd_ >= 0) {
+        (void)shutdown(sockFd_, SHUT_RDWR);
+        close(sockFd_);
+        sockFd_ = -1;
+    }
 }
 
 int SshAdapter::waitSocket(int direction, int timeoutSec) {
@@ -2471,7 +2678,9 @@ int SshAdapter::connectThroughSshJump(ConnectionConfig& cfg) {
             !configureSocketPair(socketPair)) {
             if (socketPair[0] >= 0) { close(socketPair[0]); }
             if (socketPair[1] >= 0) { close(socketPair[1]); }
-            libssh2_channel_free(channel);
+            // The channel remains linked to runtime->session. fail() retires
+            // that runtime's transport before session_free releases it; do not
+            // call channel_free here outside route admission.
             return fail(ERR_SSH_SOCKET_CREATE);
         }
         {
@@ -2673,12 +2882,19 @@ void SshAdapter::stopSshJumpRelay() {
     jumpRelayRunning_.store(false, std::memory_order_release);
     std::lock_guard<std::mutex> runtimeLock(jumpRuntimeMutex_);
     for (JumpHopRuntime& runtime : jumpHopRuntimes_) {
+        // Every runtime transport was shut down above while its descriptor is
+        // still reserved. libssh2 cleanup below can therefore release local
+        // channel/session state but cannot put a CLOSE/DISCONNECT packet on an
+        // obsolete route or a newly reused fd.
+        if (runtime.session != nullptr) {
+            libssh2_session_set_blocking(runtime.session, 1);
+        }
         if (runtime.channel != nullptr) {
-            libssh2_channel_free(runtime.channel);
+            (void)libssh2_channel_free(runtime.channel);
             runtime.channel = nullptr;
         }
         if (runtime.session != nullptr) {
-            libssh2_session_free(runtime.session);
+            (void)libssh2_session_free(runtime.session);
             runtime.session = nullptr;
         }
         if (runtime.channelPeerFd >= 0) {
@@ -3909,26 +4125,8 @@ void SshAdapter::disconnect() {
         std::lock_guard<std::mutex> sftpLock(sftpOperationMutex_);
         std::unique_lock<std::mutex> sessionLock(sessionMutex_);
         std::lock_guard<std::mutex> writeFence(inputWriteFenceMutex_);
-        closeAllForwardingRuntimeLocked();
-        if (sftp_) {
-            libssh2_sftp_shutdown(sftp_);
-            sftp_ = nullptr;
-        }
-        if (channel_) {
-            libssh2_channel_free(channel_);
-            channel_ = nullptr;
-        }
-        if (session_) {
-            libssh2_session_disconnect(session_, "Client disconnecting");
-            libssh2_session_free(session_);
-            session_ = nullptr;
-        }
-        if (sockFd_ >= 0) {
-            shutdown(sockFd_, SHUT_RDWR);
-            close(sockFd_);
-            sockFd_ = -1;
-            OH_LOG_INFO(LOG_APP, "[SSH] TCP 连接已断开");
-        }
+        teardownSessionHandlesLocked("Client disconnecting");
+        OH_LOG_INFO(LOG_APP, "[SSH] TCP 连接已断开");
         ioGeneration_.fetch_add(1, std::memory_order_acq_rel);
         authenticated_ = false;
         secureClearString(savedCfg_.password);
@@ -3980,25 +4178,7 @@ void SshAdapter::resetTransportForRecovery() {
     std::lock_guard<std::mutex> sftpLock(sftpOperationMutex_);
     std::unique_lock<std::mutex> sessionLock(sessionMutex_);
     std::lock_guard<std::mutex> writeFence(inputWriteFenceMutex_);
-    closeAllForwardingRuntimeLocked();
-    if (sftp_) {
-        libssh2_sftp_shutdown(sftp_);
-        sftp_ = nullptr;
-    }
-    if (channel_) {
-        libssh2_channel_free(channel_);
-        channel_ = nullptr;
-    }
-    if (session_) {
-        libssh2_session_disconnect(session_, "SSH transport recovery");
-        libssh2_session_free(session_);
-        session_ = nullptr;
-    }
-    if (sockFd_ >= 0) {
-        shutdown(sockFd_, SHUT_RDWR);
-        close(sockFd_);
-        sockFd_ = -1;
-    }
+    teardownSessionHandlesLocked("SSH transport recovery");
     ioGeneration_.fetch_add(1, std::memory_order_acq_rel);
     authenticated_ = false;
     keepaliveNextDue_ = std::chrono::steady_clock::time_point::max();
@@ -5619,7 +5799,20 @@ int SshAdapter::executeChannelRequest(
                 if (!waitForRequest()) { break; }
             }
         }
-        libssh2_channel_free(commandChannel);
+        int freeResult = LIBSSH2_ERROR_EAGAIN;
+        while (freeResult == LIBSSH2_ERROR_EAGAIN) {
+            if (!admitRouteWrite(routeSnapshot, [&]() {
+                    freeResult = libssh2_channel_free(commandChannel);
+                })) {
+                // The session retains the channel and its later stale-route
+                // teardown will retire the socket before releasing it.
+                commandChannel = nullptr;
+                return;
+            }
+            if (freeResult == LIBSSH2_ERROR_EAGAIN && !waitForRequest()) {
+                break;
+            }
+        }
         commandChannel = nullptr;
     };
 
