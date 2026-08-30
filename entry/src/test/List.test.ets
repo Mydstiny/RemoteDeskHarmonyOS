@@ -190,6 +190,7 @@ import sshProxyEditorPolicyTest from './SshProxyEditorPolicy.test';
 import sshProxyRuntimePolicyTest from './SshProxyRuntimePolicy.test';
 import sshHostKeyTrustPolicyTest from './SshHostKeyTrustPolicy.test';
 import sshOperationConfigPolicyTest from './SshOperationConfigPolicy.test';
+import sshOperationRouteSecretServiceTest from './SshOperationRouteSecretService.test';
 import sshPreflightServiceTest from './SshPreflightService.test';
 import sshForwardingEditorPolicyTest from './SshForwardingEditorPolicy.test';
 import sshModalCoordinatorTest from './SshModalCoordinator.test';
@@ -452,6 +453,7 @@ export default function testsuite() {
   sshProxyRuntimePolicyTest();
   sshHostKeyTrustPolicyTest();
   sshOperationConfigPolicyTest();
+  sshOperationRouteSecretServiceTest();
   sshPreflightServiceTest();
   sshForwardingEditorPolicyTest();
   sshModalCoordinatorTest();

@@ -8,17 +8,30 @@
  *   4. 安装公钥 → 验证新密钥 → 可选切换 Host
  */
 import { promptAction } from '@kit.ArkUI';
+import { common } from '@kit.AbilityKit';
 import { cryptoFramework } from '@kit.CryptoArchitectureKit';
 import { util } from '@kit.ArkTS';
 import { RemoteHost } from '../model/RemoteHost';
 import { SshKey } from '../model/SshKey';
 import { Palette, buildDark, buildLight, AppTheme } from '../common/Theme';
 import { showLockGate, lockGateErrorMessage } from './LockGate';
-import { ExtensionLoader } from '../services/ExtensionLoader';
+import { ExtensionLoader, SshNativeOperationPromise } from '../services/ExtensionLoader';
 import { DataCrypto } from '../services/DataCrypto';
 import { HostSyncService } from '../services/HostSyncService';
 import { KeyVaultService } from '../services/KeyVaultService';
-import { SshPublicKeyInstallResult, SshAuthTestResult, GeneratedSshKeyPair } from '../types/rdpnapi';
+import { SshPublicKeyInstallResult, SshAuthTestResult } from '../types/rdpnapi';
+import { SshProxyProfileStore } from '../services/SshProxyProfileStore';
+import { SshProxyRuntimePlan, resolveSshProxyRuntimePlan } from
+  '../services/SshProxyRuntimePolicy';
+import {
+  buildSshOperationSessionConfig,
+  SshOperationConfigResult,
+  SshOperationTargetAuth
+} from '../services/SshOperationConfigPolicy';
+import {
+  SshOperationRouteSecretResult,
+  SshOperationRouteSecretService
+} from '../services/SshOperationRouteSecretService';
 
 interface SshKeyInstallHostView {
   id: string;
@@ -58,6 +71,9 @@ export struct SshKeyInstallSheet {
   private loader: ExtensionLoader = ExtensionLoader.getInstance();
   private hostSync: HostSyncService = HostSyncService.getInstance();
   private kvs: KeyVaultService = KeyVaultService.getInstance();
+  private proxyProfiles: SshProxyProfileStore = new SshProxyProfileStore();
+  private proxyProfilesReady: boolean = false;
+  private operationId: number = 0;
   private hostDataUnsubscribe: (() => void) | null = null;
 
   private pal(): Palette {
@@ -67,6 +83,7 @@ export struct SshKeyInstallSheet {
   private font(): string { return AppTheme.fontFamily; }
 
   aboutToAppear(): void {
+    this.proxyProfilesReady = this.proxyProfiles.init(getContext(this) as common.Context);
     this.loadHosts();
     if (!this.hostDataUnsubscribe) {
       this.hostDataUnsubscribe = this.hostSync.onDataChange((): void => {
@@ -76,9 +93,17 @@ export struct SshKeyInstallSheet {
   }
 
   aboutToDisappear(): void {
+    this.cancelOperation();
     if (this.hostDataUnsubscribe) {
       this.hostDataUnsubscribe();
       this.hostDataUnsubscribe = null;
+    }
+  }
+
+  private cancelOperation(): void {
+    if (this.operationId > 0) {
+      this.loader.cancelSshOperation(this.operationId);
+      this.operationId = 0;
     }
   }
 
@@ -217,6 +242,43 @@ export struct SshKeyInstallSheet {
       promptAction.showToast({ message: '所选 SSH 私钥不可用，请先解锁后重试', duration: 2000 });
       return;
     }
+    if (!this.proxyProfilesReady) {
+      promptAction.showToast({ message: 'SSH 连接方式存储不可读，请重新打开后重试', duration: 2200 });
+      return;
+    }
+    const plan: SshProxyRuntimePlan = resolveSshProxyRuntimePlan(
+      host, this.proxyProfiles.load(host.id));
+    const routeSecrets: SshOperationRouteSecretResult =
+      SshOperationRouteSecretService.getInstance().resolve(host, plan);
+    if (!routeSecrets.ok) {
+      promptAction.showToast({
+        message: routeSecrets.message + '；请从主机列表连接并完成一次性预认证', duration: 3000
+      });
+      return;
+    }
+    const installAuth: SshOperationTargetAuth = {
+      authMethod: host.sshUseKey ? 'publickey' : 'password',
+      password: host.sshUseKey ? '' : host.password,
+      privateKeyPem: authPrivateKey,
+      privateKeyPassphrase: host.sshUseKey ? authPassphrase : '',
+      keyboardInteractiveResponses: []
+    };
+    const installConfig: SshOperationConfigResult = buildSshOperationSessionConfig(
+      host, plan, 'install', installAuth, routeSecrets.secrets);
+    if (!installConfig.ok || installConfig.config === null) {
+      promptAction.showToast({ message: installConfig.message, duration: 2600 });
+      return;
+    }
+    const verifyAuth: SshOperationTargetAuth = {
+      authMethod: 'publickey', password: '', privateKeyPem: targetKey.privateKey,
+      privateKeyPassphrase: '', keyboardInteractiveResponses: []
+    };
+    const verifyConfig: SshOperationConfigResult = buildSshOperationSessionConfig(
+      host, plan, 'key_auth', verifyAuth, routeSecrets.secrets);
+    if (!verifyConfig.ok || verifyConfig.config === null) {
+      promptAction.showToast({ message: verifyConfig.message, duration: 2600 });
+      return;
+    }
     const hostOperationIdentity: string = this.hostOperationIdentity(host);
     const targetKeyOperationIdentity: string = this.targetKeyOperationIdentity(targetKey);
 
@@ -227,11 +289,12 @@ export struct SshKeyInstallSheet {
     this.hostSwitchSaveError = '';
 
     try {
-      const result: SshPublicKeyInstallResult = this.loader.installSshPublicKey(
-        host.host, host.port, host.username,
-        host.sshUseKey ? '' : host.password, authPrivateKey, authPassphrase,
-        targetKey.publicKey
-      );
+      const installOperation: SshNativeOperationPromise<SshPublicKeyInstallResult> =
+        this.loader.installSshPublicKeyOperationAsync(
+          installConfig.config, targetKey.publicKey, 60000);
+      this.operationId = installOperation.operationId;
+      const result: SshPublicKeyInstallResult = await installOperation;
+      if (this.operationId === installOperation.operationId) { this.operationId = 0; }
       this.installResult = result;
 
       if (result['ok']) {
@@ -239,10 +302,11 @@ export struct SshKeyInstallSheet {
         this.step = 2;
         this.verifying = true;
 
-        const testResult: SshAuthTestResult = await this.loader.testSshKeyAuthAsync(
-          host.host, host.port, host.username,
-          targetKey.privateKey, ''
-        );
+        const verifyOperation: SshNativeOperationPromise<SshAuthTestResult> =
+          this.loader.testSshKeyAuthOperationAsync(verifyConfig.config, 45000);
+        this.operationId = verifyOperation.operationId;
+        const testResult: SshAuthTestResult = await verifyOperation;
+        if (this.operationId === verifyOperation.operationId) { this.operationId = 0; }
         this.verifyResult = testResult;
         this.verifying = false;
 
@@ -288,11 +352,13 @@ export struct SshKeyInstallSheet {
         this.step = 3;
       }
     } catch (err) {
+      this.verifying = false;
       this.installResult = {
         ok: false, alreadyInstalled: false, verified: false, code: -99,
         message: '[CC-SSHKEY-10] 安装异常: ' + JSON.stringify(err)
       };
     }
+    this.cancelOperation();
     this.installing = false;
   }
 

@@ -307,6 +307,10 @@ import {
   SshOperationTargetAuth
 } from '../services/SshOperationConfigPolicy';
 import {
+  SshOperationRouteSecretResult,
+  SshOperationRouteSecretService
+} from '../services/SshOperationRouteSecretService';
+import {
   SshHostKeyRouteBinding,
   sshHostKeyRouteBinding,
   sshHostKeyTrustIsCurrent
@@ -654,7 +658,6 @@ import {
   SshAuthTestResult,
   SshHostKeyInfo,
   SshJumpHop,
-  SshJumpHopHandoff,
   SshPrivateKeyInfo,
   SshPublicKeyInstallResult
 } from '../types/rdpnapi';
@@ -1353,6 +1356,7 @@ struct HostListPage {
   private sshPublicKeyInstallBindingInvalidated: boolean = false;
   @State sshPublicKeyInstallBusy: boolean = false;
   @State sshPublicKeyInstallError: string = '';
+  private sshPublicKeyInstallOperationId: number = 0;
 
   private finishHostPassphrasePrompt(value: string): void {
     if (this.hlPassphraseResolve) {
@@ -5116,6 +5120,10 @@ struct HostListPage {
       this.loader.cancelSshOperation(this.sshHostKeyOperationId);
       this.sshHostKeyOperationId = 0;
     }
+    if (this.sshPublicKeyInstallOperationId > 0) {
+      this.loader.cancelSshOperation(this.sshPublicKeyInstallOperationId);
+      this.sshPublicKeyInstallOperationId = 0;
+    }
     this.hostPresencePageGeneration += 1;
     this.hostLoadRefreshPresence = false;
     if (this.hostLoadRefreshTimer !== -1) {
@@ -8347,47 +8355,10 @@ struct HostListPage {
   /** Resolve only credentials already available in device-local memory. */
   private sshOperationRouteSecrets(host: RemoteHost, plan: SshProxyRuntimePlan,
     legacyProxyPassphrase: string = ''): SshOperationRouteSecrets | null {
-    let proxyPassword: string = '';
-    if ((plan.route.type === 'http_connect' || plan.route.type === 'socks5') &&
-      plan.proxyAuthRequired) {
-      proxyPassword = plan.source === 'legacy' ? host.sshProxyPassword : '';
-      if (proxyPassword.length === 0) { return null; }
-    }
-    if (plan.route.type !== 'ssh_jump') {
-      return { proxyPassword, jumpHandoffs: [] };
-    }
-    if (!sshProxyRuntimeHasStrictJumpBindings(plan)) { return null; }
-    const handoffs: SshJumpHopHandoff[] = [];
-    for (let index: number = 0; index < plan.route.hops.length; index++) {
-      const hop: SshJumpHop = plan.route.hops[index];
-      if (hop.authMethod === 'password') {
-        const password: string = plan.source === 'legacy' && index === 0 ?
-          host.sshProxyPassword : '';
-        if (password.length === 0) { return null; }
-        handoffs.push({ password, privateKeyPem: '', privateKeyPassphrase: '',
-          keyboardInteractiveResponses: [] });
-        continue;
-      }
-      if (hop.authMethod === 'kbd-interactive') {
-        const response: string = plan.source === 'legacy' && index === 0 ?
-          host.sshProxyPassword : '';
-        if (response.length === 0) { return null; }
-        handoffs.push({ password: '', privateKeyPem: '', privateKeyPassphrase: '',
-          keyboardInteractiveResponses: [response] });
-        continue;
-      }
-      const keyId: string = index < plan.hopKeyIds.length ? plan.hopKeyIds[index] : '';
-      const key = KeyVaultService.getInstance().getSshKey(keyId);
-      if (key === undefined || key.privateKey.length === 0) { return null; }
-      let passphrase: string = plan.source === 'legacy' && index === 0 ?
-        (legacyProxyPassphrase || host.sshProxyKeyPassphrase) : '';
-      const info: SshPrivateKeyInfo = this.loader.inspectSshPrivateKey(key.privateKey, passphrase);
-      if (!info.ok) { return null; }
-      if (!info.encrypted) { passphrase = ''; }
-      handoffs.push({ password: '', privateKeyPem: key.privateKey,
-        privateKeyPassphrase: passphrase, keyboardInteractiveResponses: [] });
-    }
-    return { proxyPassword, jumpHandoffs: handoffs };
+    const result: SshOperationRouteSecretResult =
+      SshOperationRouteSecretService.getInstance().resolve(
+        host, plan, legacyProxyPassphrase);
+    return result.ok ? result.secrets : null;
   }
 
   private sshPlanWithPendingLegacyJumpTrust(host: RemoteHost): SshProxyRuntimePlan {
@@ -14193,12 +14164,20 @@ struct HostListPage {
   }
 
   private closeSshPublicKeyInstallSheet(): void {
+    if (this.sshPublicKeyInstallOperationId > 0) {
+      this.loader.cancelSshOperation(this.sshPublicKeyInstallOperationId);
+      this.sshPublicKeyInstallOperationId = 0;
+    }
     this.beginRemoteHostSheetClose(REMOTE_HOST_SHEET_PUBLIC_KEY);
     this.showSshPublicKeyInstallSheet = false;
     this.showRemoteHostSheet = false;
   }
 
   private resetSshPublicKeyInstallSheetState(): void {
+    if (this.sshPublicKeyInstallOperationId > 0) {
+      this.loader.cancelSshOperation(this.sshPublicKeyInstallOperationId);
+      this.sshPublicKeyInstallOperationId = 0;
+    }
     this.sshPublicKeyInstallHost = null;
     this.sshPublicKeyInstallKeyId = '';
     this.sshPublicKeyInstallPassword = '';
@@ -14266,19 +14245,47 @@ struct HostListPage {
     }
     let authPrivateKey = '';
     if (host.sshUseKey) {
-      const authKey = this.keyVault.getSshKey(host.sshKeyId);
-      if (authKey === undefined) { this.sshPublicKeyInstallError = '当前主机的认证私钥不在密钥保险库中'; return; }
-      authPrivateKey = authKey.privateKey;
+      authPrivateKey = this.resolveSshKeyMaterial(host).privateKey;
+      if (authPrivateKey.length === 0) {
+        this.sshPublicKeyInstallError = '当前主机的认证私钥不在密钥保险库中'; return;
+      }
+    }
+    if (!this.sshProxyProfilesReady) {
+      this.sshPublicKeyInstallError = 'SSH 连接方式存储不可读，请重新打开应用后重试';
+      return;
+    }
+    const plan: SshProxyRuntimePlan = resolveSshProxyRuntimePlan(
+      host, this.sshProxyProfiles.load(host.id));
+    const routeSecretsResult: SshOperationRouteSecretResult =
+      SshOperationRouteSecretService.getInstance().resolve(host, plan);
+    if (!routeSecretsResult.ok) {
+      this.sshPublicKeyInstallError = routeSecretsResult.message +
+        '；请从主机连接流程完成一次性预认证';
+      return;
+    }
+    const auth: SshOperationTargetAuth = {
+      authMethod: host.sshUseKey ? 'publickey' : 'password',
+      password: host.sshUseKey ? '' : password,
+      privateKeyPem: authPrivateKey,
+      privateKeyPassphrase: host.sshUseKey ? passphrase : '',
+      keyboardInteractiveResponses: []
+    };
+    const configResult: SshOperationConfigResult = buildSshOperationSessionConfig(
+      host, plan, 'install', auth, routeSecretsResult.secrets);
+    if (!configResult.ok || configResult.config === null) {
+      this.sshPublicKeyInstallError = configResult.message;
+      return;
     }
     this.sshPublicKeyInstallBusy = true;
     this.sshPublicKeyInstallError = '';
     try {
-      const result: SshPublicKeyInstallResult = await new Promise<SshPublicKeyInstallResult>((resolve) => {
-        setTimeout((): void => {
-          resolve(this.loader.installSshPublicKey(host.host, host.port, host.username,
-            host.sshUseKey ? '' : password, authPrivateKey, passphrase, publicKey));
-        }, 0);
-      });
+      const operation: SshNativeOperationPromise<SshPublicKeyInstallResult> =
+        this.loader.installSshPublicKeyOperationAsync(configResult.config, publicKey, 60000);
+      this.sshPublicKeyInstallOperationId = operation.operationId;
+      const result: SshPublicKeyInstallResult = await operation;
+      if (this.sshPublicKeyInstallOperationId === operation.operationId) {
+        this.sshPublicKeyInstallOperationId = 0;
+      }
       if (!result.ok) {
         this.sshPublicKeyInstallError = result.message || '公钥部署失败，请检查认证信息和服务器权限';
         return;
@@ -14290,6 +14297,10 @@ struct HostListPage {
     } catch (_err) {
       this.sshPublicKeyInstallError = '公钥部署失败，请稍后重试';
     } finally {
+      if (this.sshPublicKeyInstallOperationId > 0) {
+        this.loader.cancelSshOperation(this.sshPublicKeyInstallOperationId);
+        this.sshPublicKeyInstallOperationId = 0;
+      }
       this.sshPublicKeyInstallBusy = false;
     }
   }
