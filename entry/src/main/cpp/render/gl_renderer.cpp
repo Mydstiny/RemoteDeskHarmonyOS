@@ -360,23 +360,30 @@ layout(location = 0) in vec2 aPosition;
 layout(location = 1) in vec2 aTexCoord;
 out vec2 vTexCoord;
 uniform int uCanvasRotation;
+uniform int uCanvasFlipX;
+uniform int uCanvasFlipY;
 
-vec2 rotateTexCoord(vec2 coord) {
+vec2 canvasTexCoord(vec2 coord) {
+    vec2 rotated = coord;
     if (uCanvasRotation == 1) {
-        return vec2(coord.y, 1.0 - coord.x);
+        rotated = vec2(coord.y, 1.0 - coord.x);
+    } else if (uCanvasRotation == 2) {
+        rotated = vec2(1.0 - coord.x, 1.0 - coord.y);
+    } else if (uCanvasRotation == 3) {
+        rotated = vec2(1.0 - coord.y, coord.x);
     }
-    if (uCanvasRotation == 2) {
-        return vec2(1.0 - coord.x, 1.0 - coord.y);
+    if (uCanvasFlipX != 0) {
+        rotated.x = 1.0 - rotated.x;
     }
-    if (uCanvasRotation == 3) {
-        return vec2(1.0 - coord.y, coord.x);
+    if (uCanvasFlipY != 0) {
+        rotated.y = 1.0 - rotated.y;
     }
-    return coord;
+    return rotated;
 }
 
 void main() {
     gl_Position = vec4(aPosition, 0.0, 1.0);
-    vTexCoord = rotateTexCoord(aTexCoord);
+    vTexCoord = canvasTexCoord(aTexCoord);
 }
 )";
 
@@ -388,23 +395,30 @@ layout(location = 1) in vec2 aTexCoord;
 out vec2 vTexCoord;
 uniform mat4 uTexTransform;
 uniform int uCanvasRotation;
+uniform int uCanvasFlipX;
+uniform int uCanvasFlipY;
 
-vec2 rotateTexCoord(vec2 coord) {
+vec2 canvasTexCoord(vec2 coord) {
+    vec2 rotated = coord;
     if (uCanvasRotation == 1) {
-        return vec2(coord.y, 1.0 - coord.x);
+        rotated = vec2(coord.y, 1.0 - coord.x);
+    } else if (uCanvasRotation == 2) {
+        rotated = vec2(1.0 - coord.x, 1.0 - coord.y);
+    } else if (uCanvasRotation == 3) {
+        rotated = vec2(1.0 - coord.y, coord.x);
     }
-    if (uCanvasRotation == 2) {
-        return vec2(1.0 - coord.x, 1.0 - coord.y);
+    if (uCanvasFlipX != 0) {
+        rotated.x = 1.0 - rotated.x;
     }
-    if (uCanvasRotation == 3) {
-        return vec2(1.0 - coord.y, coord.x);
+    if (uCanvasFlipY != 0) {
+        rotated.y = 1.0 - rotated.y;
     }
-    return coord;
+    return rotated;
 }
 
 void main() {
     gl_Position = vec4(aPosition, 0.0, 1.0);
-    vTexCoord = (uTexTransform * vec4(rotateTexCoord(aTexCoord), 0.0, 1.0)).xy;
+    vTexCoord = (uTexTransform * vec4(canvasTexCoord(aTexCoord), 0.0, 1.0)).xy;
 }
 )";
 
@@ -494,9 +508,10 @@ GLRenderer::GLRenderer()
       eglSurface_(EGL_NO_SURFACE), eglConfig_(nullptr),
       eglDisplayLeaseHeld_(false),
       shaderProgram_(0), samplerLocation_(0), oesTransformLocation_(-1),
-      canvasRotationLocation_(-1),
+      canvasRotationLocation_(-1), canvasFlipXLocation_(-1), canvasFlipYLocation_(-1),
       rawShaderProgram_(0), rawTexture_(0), rawSamplerLocation_(0),
-      rawCanvasRotationLocation_(-1),
+      rawCanvasRotationLocation_(-1), rawCanvasFlipXLocation_(-1),
+      rawCanvasFlipYLocation_(-1),
       uploadPbo_{0, 0}, uploadPboCapacity_{0, 0}, uploadPboIndex_(0),
       pboUploadEnabled_(false), pboUploadFailedLogged_(false),
       rawTextureWidth_(0), rawTextureHeight_(0),
@@ -507,10 +522,11 @@ GLRenderer::GLRenderer()
       presentationPath_(PresentationPath::UNKNOWN),
       lastVpX_(0), lastVpY_(0), lastVpW_(0), lastVpH_(0),
       canvasScale_(1.0), canvasPanX_(0.0), canvasPanY_(0.0),
-      canvasRotationQuarterTurns_(0),
+      canvasRotationQuarterTurns_(0), canvasFlipX_(false), canvasFlipY_(false),
       canvasTransformVersion_(0), pendingCanvasScale_(1.0),
       pendingCanvasPanX_(0.0), pendingCanvasPanY_(0.0),
-      pendingCanvasRotationQuarterTurns_(0),
+      pendingCanvasRotationQuarterTurns_(0), pendingCanvasFlipX_(false),
+      pendingCanvasFlipY_(false),
       appliedCanvasTransformVersion_(0),
       viewportSnapshotVersion_(0), snapshotVpX_(0), snapshotVpY_(0),
       snapshotVpW_(0), snapshotVpH_(0), snapshotSourceWidth_(0),
@@ -565,6 +581,8 @@ void GLRenderer::ApplyPendingCanvasTransformLocked() {
         const double panX = pendingCanvasPanX_.load(std::memory_order_relaxed);
         const double panY = pendingCanvasPanY_.load(std::memory_order_relaxed);
         const int rotation = pendingCanvasRotationQuarterTurns_.load(std::memory_order_relaxed);
+        const bool flipX = pendingCanvasFlipX_.load(std::memory_order_relaxed);
+        const bool flipY = pendingCanvasFlipY_.load(std::memory_order_relaxed);
         const uint64_t after = canvasTransformVersion_.load(std::memory_order_acquire);
         if (before != after || (after & 1U) != 0U) {
             continue;
@@ -573,6 +591,8 @@ void GLRenderer::ApplyPendingCanvasTransformLocked() {
         canvasPanX_ = panX;
         canvasPanY_ = panY;
         canvasRotationQuarterTurns_ = rotation;
+        canvasFlipX_ = flipX;
+        canvasFlipY_ = flipY;
         appliedCanvasTransformVersion_ = after;
         return;
     }
@@ -784,10 +804,14 @@ bool GLRenderer::InitGL() {
     samplerLocation_ = glGetUniformLocation(shaderProgram_, "uTexture");
     oesTransformLocation_ = glGetUniformLocation(shaderProgram_, "uTexTransform");
     canvasRotationLocation_ = glGetUniformLocation(shaderProgram_, "uCanvasRotation");
-    if (samplerLocation_ < 0 || oesTransformLocation_ < 0 || canvasRotationLocation_ < 0) {
+    canvasFlipXLocation_ = glGetUniformLocation(shaderProgram_, "uCanvasFlipX");
+    canvasFlipYLocation_ = glGetUniformLocation(shaderProgram_, "uCanvasFlipY");
+    if (samplerLocation_ < 0 || oesTransformLocation_ < 0 || canvasRotationLocation_ < 0 ||
+        canvasFlipXLocation_ < 0 || canvasFlipYLocation_ < 0) {
         OH_LOG_ERROR(LOG_APP,
-                     "[GL] OES shader uniforms missing sampler=%{public}d transform=%{public}d rotation=%{public}d",
-                     samplerLocation_, oesTransformLocation_, canvasRotationLocation_);
+                     "[GL] OES shader uniforms missing sampler=%{public}d transform=%{public}d rotation=%{public}d flipX=%{public}d flipY=%{public}d",
+                     samplerLocation_, oesTransformLocation_, canvasRotationLocation_,
+                     canvasFlipXLocation_, canvasFlipYLocation_);
         return false;
     }
 
@@ -797,6 +821,10 @@ bool GLRenderer::InitGL() {
         ? glGetUniformLocation(rawShaderProgram_, "uTexture") : 0;
     rawCanvasRotationLocation_ = rawShaderProgram_ > 0
         ? glGetUniformLocation(rawShaderProgram_, "uCanvasRotation") : -1;
+    rawCanvasFlipXLocation_ = rawShaderProgram_ > 0
+        ? glGetUniformLocation(rawShaderProgram_, "uCanvasFlipX") : -1;
+    rawCanvasFlipYLocation_ = rawShaderProgram_ > 0
+        ? glGetUniformLocation(rawShaderProgram_, "uCanvasFlipY") : -1;
 
     // 创建全屏四边形几何体
     CreateQuadGeometry();
@@ -1228,6 +1256,12 @@ RdpPresentMetrics GLRenderer::RenderRawBGRAInternal(
     if (rawCanvasRotationLocation_ >= 0) {
         glUniform1i(rawCanvasRotationLocation_, canvasRotationQuarterTurns_);
     }
+    if (rawCanvasFlipXLocation_ >= 0) {
+        glUniform1i(rawCanvasFlipXLocation_, canvasFlipX_ ? 1 : 0);
+    }
+    if (rawCanvasFlipYLocation_ >= 0) {
+        glUniform1i(rawCanvasFlipYLocation_, canvasFlipY_ ? 1 : 0);
+    }
 
     glBindVertexArray(vao_);
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
@@ -1356,6 +1390,8 @@ RdpPresentMetrics GLRenderer::PresentFrame(
     glBindTexture(GL_TEXTURE_EXTERNAL_OES, textureId);
     glUniform1i(samplerLocation_, 0);
     glUniform1i(canvasRotationLocation_, canvasRotationQuarterTurns_);
+    glUniform1i(canvasFlipXLocation_, canvasFlipX_ ? 1 : 0);
+    glUniform1i(canvasFlipYLocation_, canvasFlipY_ ? 1 : 0);
     glUniformMatrix4fv(oesTransformLocation_, 1, GL_FALSE,
                        textureTransform.data());
 
@@ -1461,7 +1497,7 @@ void GLRenderer::SetOesSourceSize(int width, int height) {
 }
 
 uint64_t GLRenderer::SetCanvasTransform(double scale, double panX, double panY,
-                                        int rotationQuarterTurns) {
+                                        int rotationQuarterTurns, bool flipX, bool flipY) {
     if (!std::isfinite(scale) || scale <= 0.0 || !std::isfinite(panX) || !std::isfinite(panY)) {
         OH_LOG_WARN(LOG_APP, "[GL] ignored invalid canvas transform");
         return 0;
@@ -1478,6 +1514,8 @@ uint64_t GLRenderer::SetCanvasTransform(double scale, double panX, double panY,
         pendingCanvasPanX_.store(panX, std::memory_order_relaxed);
         pendingCanvasPanY_.store(panY, std::memory_order_relaxed);
         pendingCanvasRotationQuarterTurns_.store(normalizedRotation, std::memory_order_relaxed);
+        pendingCanvasFlipX_.store(flipX, std::memory_order_relaxed);
+        pendingCanvasFlipY_.store(flipY, std::memory_order_relaxed);
         publishedVersion = canvasTransformVersion_.fetch_add(1, std::memory_order_release) + 1;
     }
     RequestRedraw();
@@ -1541,6 +1579,12 @@ RdpPresentMetrics GLRenderer::RenderRetainedFrameLocked(uint64_t expectedGenerat
     glUniform1i(rawSamplerLocation_, 0);
     if (rawCanvasRotationLocation_ >= 0) {
         glUniform1i(rawCanvasRotationLocation_, canvasRotationQuarterTurns_);
+    }
+    if (rawCanvasFlipXLocation_ >= 0) {
+        glUniform1i(rawCanvasFlipXLocation_, canvasFlipX_ ? 1 : 0);
+    }
+    if (rawCanvasFlipYLocation_ >= 0) {
+        glUniform1i(rawCanvasFlipYLocation_, canvasFlipY_ ? 1 : 0);
     }
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, rawTexture_);
@@ -2063,25 +2107,30 @@ napi_value NapiResizeRenderer(napi_env env, napi_callback_info info) {
     return undefined;
 }
 
-/** NAPI: setRendererCanvasTransform(handle, scale, panX, panY, rotationQuarterTurns): number */
+/** NAPI: setRendererCanvasTransform(handle, scale, panX, panY, rotationQuarterTurns, flipX, flipY): number */
 napi_value NapiSetRendererCanvasTransform(napi_env env, napi_callback_info info) {
-    size_t argc = 5;
-    napi_value args[5];
+    size_t argc = 7;
+    napi_value args[7];
     napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
     int64_t handleVal = 0;
     double scale = 1.0;
     double panX = 0.0;
     double panY = 0.0;
     int32_t rotationQuarterTurns = 0;
+    bool flipX = false;
+    bool flipY = false;
     if (argc > 0) napi_get_value_int64(env, args[0], &handleVal);
     if (argc > 1) napi_get_value_double(env, args[1], &scale);
     if (argc > 2) napi_get_value_double(env, args[2], &panX);
     if (argc > 3) napi_get_value_double(env, args[3], &panY);
     if (argc > 4) napi_get_value_int32(env, args[4], &rotationQuarterTurns);
+    if (argc > 5) napi_get_value_bool(env, args[5], &flipX);
+    if (argc > 6) napi_get_value_bool(env, args[6], &flipY);
     auto access = AcquirePublicRenderer(handleVal);
     uint64_t version = 0;
     if (access.renderer) {
-        version = access.renderer->SetCanvasTransform(scale, panX, panY, rotationQuarterTurns);
+        version = access.renderer->SetCanvasTransform(
+            scale, panX, panY, rotationQuarterTurns, flipX, flipY);
     }
     napi_value result;
     napi_create_double(env, static_cast<double>(version), &result);

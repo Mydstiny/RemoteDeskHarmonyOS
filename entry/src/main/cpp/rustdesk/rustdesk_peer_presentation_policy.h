@@ -81,14 +81,14 @@ inline const char* PeerPlatformCategoryName(PeerPlatformCategory category) {
 }
 
 /**
- * RustDesk's PC hardware-decoded NativeImage accepts only identity and the
- * vertical texture-origin correction observed on the emulator. Computer
- * desktop orientation belongs to the encoded frame geometry, so accepting a
- * producer-side 180-degree rotation or horizontal/axis-swapping transform can
- * double-apply device-specific Surface metadata on real PC hardware. Phone
- * and Pad viewers do not sample this mode because their decoder is created
- * without desktop Surface compatibility. The peer OS label remains telemetry,
- * never an orientation switch.
+ * RustDesk upstream identifies this class of failure as viewer texture-path
+ * behavior, not remote operating-system orientation. Our device evidence also
+ * shows the same Windows peer label and FlipY producer class can require
+ * different treatment on different HarmonyOS PC graphics stacks. Therefore a
+ * peer-platform switch is unsafe. Keep the producer contract restricted to
+ * identity or a vertical texture-origin correction, then apply explicit local
+ * visual/control axes in the renderer. Phone and Pad viewers never sample this
+ * desktop compatibility policy.
  */
 inline Render::NativeImagePresentationMode NativeImageModeForPeerPlatform(
     std::string_view /* platform */) {

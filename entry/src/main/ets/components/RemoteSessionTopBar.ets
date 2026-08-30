@@ -26,7 +26,13 @@ import {
   RustDeskDisplayResolution
 } from '../types/rdpnapi';
 import { RustDeskDisplaySwitchState } from '../services/RustDeskDisplaySwitchPolicy';
-import { RustDeskDesktopFlipMode } from '../services/RustDeskDesktopFlipPolicy';
+import {
+  rustDeskDesktopFlipState,
+  toggleRustDeskDesktopFlipAxis,
+  RustDeskDesktopFlipAxis,
+  RustDeskDesktopFlipMode,
+  RustDeskDesktopFlipState
+} from '../services/RustDeskDesktopFlipPolicy';
 import {
   remoteSessionSidebarAnchoredMenuTop,
   remoteSessionSidebarCanvasHeight,
@@ -201,6 +207,15 @@ export struct RemoteSessionTopBar {
   private toggleMenu(menu: string): void {
     this.activeMenu = this.activeMenu === menu ? '' : menu;
     this.scheduleAutoCollapse();
+  }
+
+  private desktopFlipState(): RustDeskDesktopFlipState {
+    return rustDeskDesktopFlipState(this.rustDeskDesktopFlipMode);
+  }
+
+  private toggleDesktopFlipAxis(axis: RustDeskDesktopFlipAxis): void {
+    this.actions.onSetRustDeskDesktopFlipMode(toggleRustDeskDesktopFlipAxis(
+      this.rustDeskDesktopFlipMode, axis));
   }
 
   private closeMenus(): void {
@@ -821,12 +836,18 @@ export struct RemoteSessionTopBar {
     Column() {
       this.menuHeader('画面翻转', $r('sys.symbol.rectangle_rotate'))
       Column() {
-        this.menuItem('仅翻转画面', 'desktopFlip', (): void => {
-          this.actions.onSetRustDeskDesktopFlipMode('image_only');
-        }, this.rustDeskDesktopFlipMode === 'image_only')
-        this.menuItem('翻转控制层和画面', 'desktopFlip', (): void => {
-          this.actions.onSetRustDeskDesktopFlipMode('image_and_controls');
-        }, this.rustDeskDesktopFlipMode === 'image_and_controls')
+        this.menuItem('画面上下翻转', 'desktopFlip', (): void => {
+          this.toggleDesktopFlipAxis('visual_y');
+        }, this.desktopFlipState().visualFlipY)
+        this.menuItem('画面左右翻转', 'desktopFlip', (): void => {
+          this.toggleDesktopFlipAxis('visual_x');
+        }, this.desktopFlipState().visualFlipX)
+        this.menuItem('控制层上下翻转', 'desktopFlip', (): void => {
+          this.toggleDesktopFlipAxis('control_y');
+        }, this.desktopFlipState().controlFlipY)
+        this.menuItem('控制层左右翻转', 'desktopFlip', (): void => {
+          this.toggleDesktopFlipAxis('control_x');
+        }, this.desktopFlipState().controlFlipX)
         this.menuItem('复位', 'desktopFlip', (): void => {
           this.actions.onSetRustDeskDesktopFlipMode('reset');
         }, this.rustDeskDesktopFlipMode === 'reset')

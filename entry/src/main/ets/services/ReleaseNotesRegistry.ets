@@ -62,7 +62,7 @@ function currentReleasePages(): ReleaseNotePage[] {
       id: 'release-rustdesk-desktop-flip',
       symbol: $rawfile('icons/cog-6-tooth.svg'),
       title: 'PC 端新增 RustDesk 桌面翻转',
-      desc: 'HarmonyOS PC 控制电脑时，可从顶部工具栏选择“仅翻转画面”“画面与控制一起翻转”或重置；选择按主机保存在本机，重连、画中画和窗口恢复后继续生效。'
+      desc: 'HarmonyOS PC 控制电脑时，可从顶部工具栏分别切换画面与控制层的上下、左右翻转或一键复位；选择按主机保存在本机，重连、画中画和窗口恢复后继续生效。'
     },
     {
       id: 'release-wheel-direction',

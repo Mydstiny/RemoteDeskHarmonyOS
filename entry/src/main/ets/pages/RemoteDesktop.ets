@@ -433,11 +433,11 @@ import {
   effectiveRustDeskDesktopFlipMode,
   normalizeRustDeskDesktopFlipMode,
   reprojectRustDeskDesktopFlipPan,
-  rustDeskDesktopFlipRotations,
+  rustDeskDesktopFlipState,
   stableRustDeskDesktopFlipPeerPlatform,
   RustDeskDesktopFlipMode,
   RustDeskDesktopFlipPan,
-  RustDeskDesktopFlipRotations
+  RustDeskDesktopFlipState
 } from '../services/RustDeskDesktopFlipPolicy';
 import {
   legacyRdpPresetForResolutionId,
@@ -1360,6 +1360,10 @@ struct RemoteDesktop {
   private canvasTransform: CanvasTransform = { scale: 1, panX: 0, panY: 0, rotation: 0 };
   private canvasRotationQuarterTurns: number = 0;
   private canvasControlRotationQuarterTurns: number = 0;
+  private canvasVisualFlipX: boolean = false;
+  private canvasVisualFlipY: boolean = false;
+  private canvasControlFlipX: boolean = false;
+  private canvasControlFlipY: boolean = false;
   @State private rustDeskDesktopFlipMode: RustDeskDesktopFlipMode = 'reset';
   private canvasTransformInitialized: boolean = false;
   // A default display scale must be recalculated when the surface or stream
@@ -5476,7 +5480,7 @@ struct RemoteDesktop {
     const submittedVersion: number = this.loader.setRendererCanvasTransform(this.rendererHandle,
       this.canvasTransform.scale,
       this.canvasTransform.panX, this.canvasTransform.panY,
-      this.canvasRotationQuarterTurns);
+      this.canvasRotationQuarterTurns, this.canvasVisualFlipX, this.canvasVisualFlipY);
     if (Number.isFinite(submittedVersion) && submittedVersion > 0) {
       this.rendererCanvasTransformPendingVersion = submittedVersion;
     }
@@ -5488,20 +5492,24 @@ struct RemoteDesktop {
 
   private adoptRustDeskDesktopFlipMode(mode: RustDeskDesktopFlipMode,
     reason: string, preserveCanvasFocus: boolean): void {
-    const rotations: RustDeskDesktopFlipRotations = rustDeskDesktopFlipRotations(mode);
-    const previousVisual: number = this.canvasRotationQuarterTurns;
+    const normalized: RustDeskDesktopFlipMode = normalizeRustDeskDesktopFlipMode(mode);
+    const state: RustDeskDesktopFlipState = rustDeskDesktopFlipState(normalized);
     const pan: RustDeskDesktopFlipPan = preserveCanvasFocus ?
-      reprojectRustDeskDesktopFlipPan(previousVisual, rotations.visualQuarterTurns,
+      reprojectRustDeskDesktopFlipPan(this.rustDeskDesktopFlipMode, normalized,
         this.canvasTransform.panX, this.canvasTransform.panY) :
       { panX: 0, panY: 0 };
-    this.rustDeskDesktopFlipMode = mode;
-    this.canvasRotationQuarterTurns = rotations.visualQuarterTurns;
-    this.canvasControlRotationQuarterTurns = rotations.inputQuarterTurns;
+    this.rustDeskDesktopFlipMode = normalized;
+    this.canvasRotationQuarterTurns = 0;
+    this.canvasControlRotationQuarterTurns = 0;
+    this.canvasVisualFlipX = state.visualFlipX;
+    this.canvasVisualFlipY = state.visualFlipY;
+    this.canvasControlFlipX = state.controlFlipX;
+    this.canvasControlFlipY = state.controlFlipY;
     this.canvasTransform = {
       scale: this.canvasTransform.scale,
       panX: pan.panX,
       panY: pan.panY,
-      rotation: rotations.visualQuarterTurns
+      rotation: 0
     };
     if (this.rendererHandle > 0) {
       this.applyCanvasTransform();
@@ -5510,9 +5518,11 @@ struct RemoteDesktop {
         this.remoteSurfaceHovered !== false, true);
     }
     hilog.info(RD_DOMAIN, RD_TAG, 'rustdeskFlipApplied reason=' + reason +
-      ' mode=' + mode +
-      ' visualQ=' + rotations.visualQuarterTurns.toString() +
-      ' controlQ=' + rotations.inputQuarterTurns.toString() +
+      ' mode=' + normalized +
+      ' visualX=' + (state.visualFlipX ? '1' : '0') +
+      ' visualY=' + (state.visualFlipY ? '1' : '0') +
+      ' controlX=' + (state.controlFlipX ? '1' : '0') +
+      ' controlY=' + (state.controlFlipY ? '1' : '0') +
       ' renderer=' + this.rendererHandle.toString() +
       ' transformVersion=' + this.rendererCanvasTransformPendingVersion.toString());
   }
@@ -5550,8 +5560,7 @@ struct RemoteDesktop {
     this.adoptRustDeskDesktopFlipMode(normalized, 'user', true);
     hilog.info(RD_DOMAIN, RD_TAG, 'rustdeskFlip mode changed hostId=' +
       hashForLog(host.id) + ' mode=' + normalized + ' persisted=1');
-    const message: string = normalized === 'image_only' ? '已仅翻转画面' :
-      (normalized === 'image_and_controls' ? '已翻转控制层和画面' : '画面翻转已复位');
+    const message: string = normalized === 'reset' ? '画面与控制层已复位' : '翻转设置已更新';
     promptAction.showToast({ message, duration: 1500 });
   }
 
@@ -5559,7 +5568,8 @@ struct RemoteDesktop {
   private applyRustDeskDesktopFlipToPipRenderer(reason: string): void {
     if (!this.isRustDeskSession() || this.rendererHandle <= 0) { return; }
     const version: number = this.loader.setRendererCanvasTransform(
-      this.rendererHandle, 1, 0, 0, this.canvasRotationQuarterTurns);
+      this.rendererHandle, 1, 0, 0, this.canvasRotationQuarterTurns,
+      this.canvasVisualFlipX, this.canvasVisualFlipY);
     if (Number.isFinite(version) && version > 0) {
       this.rendererCanvasTransformPendingVersion = version;
     }
@@ -5567,6 +5577,10 @@ struct RemoteDesktop {
       ' mode=' + this.rustDeskDesktopFlipMode +
       ' visualQ=' + this.canvasRotationQuarterTurns.toString() +
       ' controlQ=' + this.canvasControlRotationQuarterTurns.toString() +
+      ' visualX=' + (this.canvasVisualFlipX ? '1' : '0') +
+      ' visualY=' + (this.canvasVisualFlipY ? '1' : '0') +
+      ' controlX=' + (this.canvasControlFlipX ? '1' : '0') +
+      ' controlY=' + (this.canvasControlFlipY ? '1' : '0') +
       ' renderer=' + this.rendererHandle.toString() +
       ' transformVersion=' + this.rendererCanvasTransformPendingVersion.toString());
   }
@@ -5578,6 +5592,10 @@ struct RemoteDesktop {
       return;
     }
     this.resetRustDeskInputAfterGeometryChange('rustdesk-canvas-rotation');
+    this.canvasVisualFlipX = false;
+    this.canvasVisualFlipY = false;
+    this.canvasControlFlipX = false;
+    this.canvasControlFlipY = false;
     this.canvasRotationQuarterTurns = (this.canvasRotationQuarterTurns + 1) % 4;
     this.canvasControlRotationQuarterTurns = this.canvasRotationQuarterTurns;
     this.resetCanvasToDisplayDefault(true);
@@ -10241,9 +10259,11 @@ struct RemoteDesktop {
     this.vncGeometrySyncTimer = setInterval(sync, REMOTE_GEOMETRY_SYNC_MS);
   }
 
-  /** Defaults to the outbound input layer; visual overlays pass the display rotation explicitly. */
+  /** Defaults to the outbound control layer; visual-only correction never rewrites input. */
   private currentRemoteSurfaceTransform(
-    rotationQuarterTurns: number = this.canvasControlRotationQuarterTurns
+    rotationQuarterTurns: number = this.canvasControlRotationQuarterTurns,
+    flipX: boolean = this.canvasControlFlipX,
+    flipY: boolean = this.canvasControlFlipY
   ): RemoteSurfaceTransform {
     const remoteW: number = this.remoteWidth > 0 ? this.remoteWidth : 1280;
     const remoteH: number = this.remoteHeight > 0 ? this.remoteHeight : 720;
@@ -10266,7 +10286,9 @@ struct RemoteDesktop {
         surfaceHeightPx,
         surfaceWidthVp,
         surfaceHeightVp,
-        rotation: rotationQuarterTurns
+        rotation: rotationQuarterTurns,
+        flipX,
+        flipY
       };
     }
 
@@ -10290,7 +10312,9 @@ struct RemoteDesktop {
       surfaceHeightPx,
       surfaceWidthVp,
       surfaceHeightVp,
-      rotation: rotationQuarterTurns
+      rotation: rotationQuarterTurns,
+      flipX,
+      flipY
     };
   }
 
@@ -12581,6 +12605,10 @@ struct RemoteDesktop {
       this.rendererSourceHeight = 0;
       this.canvasRotationQuarterTurns = 0;
       this.canvasControlRotationQuarterTurns = 0;
+      this.canvasVisualFlipX = false;
+      this.canvasVisualFlipY = false;
+      this.canvasControlFlipX = false;
+      this.canvasControlFlipY = false;
       this.canvasTransform = { scale: 1, panX: 0, panY: 0, rotation: 0 };
       this.canvasTransformInitialized = false;
       this.canvasTransformGestureModified = false;

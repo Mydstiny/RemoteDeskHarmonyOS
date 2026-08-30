@@ -98,5 +98,50 @@ export default function remoteSurfaceTransformPolicyTest(): void {
       expect(Math.abs(delta.x - 20) < 0.01).assertTrue();
       expect(Math.abs(delta.y + 10) < 0.01).assertTrue();
     });
+
+    it('round-trips_independent_horizontal_and_vertical_mirrors', 0, (): void => {
+      const horizontal: RemoteSurfaceTransform = {
+        remoteWidth: 100, remoteHeight: 80,
+        viewportX: 0, viewportY: 0, viewportW: 100, viewportH: 80,
+        surfaceWidthPx: 100, surfaceHeightPx: 80,
+        surfaceWidthVp: 100, surfaceHeightVp: 80,
+        flipX: true
+      };
+      const horizontalLocal = remotePointToSurface(horizontal, 20, 30);
+      expect(Math.abs(horizontalLocal.x - 80) < 0.01).assertTrue();
+      expect(Math.abs(horizontalLocal.y - 30) < 0.01).assertTrue();
+      const horizontalRemote = surfacePointToRemote(
+        horizontal, horizontalLocal.x, horizontalLocal.y);
+      expect(Math.abs(horizontalRemote.x - 20) < 0.01).assertTrue();
+      expect(Math.abs(horizontalRemote.y - 30) < 0.01).assertTrue();
+
+      const vertical: RemoteSurfaceTransform = {
+        ...horizontal,
+        flipX: false,
+        flipY: true
+      };
+      const verticalLocal = remotePointToSurface(vertical, 20, 30);
+      expect(Math.abs(verticalLocal.x - 20) < 0.01).assertTrue();
+      expect(Math.abs(verticalLocal.y - 50) < 0.01).assertTrue();
+      const verticalRemote = surfacePointToRemote(vertical, verticalLocal.x, verticalLocal.y);
+      expect(Math.abs(verticalRemote.x - 20) < 0.01).assertTrue();
+      expect(Math.abs(verticalRemote.y - 30) < 0.01).assertTrue();
+    });
+
+    it('mirrors_only_the_selected_relative_pointer_axis', 0, (): void => {
+      const base: RemoteSurfaceTransform = {
+        remoteWidth: 100, remoteHeight: 80,
+        viewportX: 0, viewportY: 0, viewportW: 100, viewportH: 80,
+        surfaceWidthPx: 100, surfaceHeightPx: 80,
+        surfaceWidthVp: 100, surfaceHeightVp: 80,
+        flipX: true
+      };
+      const horizontal = surfaceDeltaToRemote(base, 10, 5);
+      expect(Math.abs(horizontal.x + 10) < 0.01).assertTrue();
+      expect(Math.abs(horizontal.y - 5) < 0.01).assertTrue();
+      const vertical = surfaceDeltaToRemote({ ...base, flipX: false, flipY: true }, 10, 5);
+      expect(Math.abs(vertical.x - 10) < 0.01).assertTrue();
+      expect(Math.abs(vertical.y + 5) < 0.01).assertTrue();
+    });
   });
 }

@@ -183,7 +183,7 @@ declare module 'librdpnapi.so' {
   export function renderRawBGRA(handle: number, data: ArrayBuffer, width: number, height: number, stride: number): void;
   export function resizeRenderer(handle: number, width: number, height: number): void;
   export function setRendererCanvasTransform(handle: number, scale: number, panX: number, panY: number,
-    rotationQuarterTurns?: number): number;
+    rotationQuarterTurns?: number, flipX?: boolean, flipY?: boolean): number;
   export function testRender(handle: number): void;
   export function registerNativeXComponent(): boolean;
   export function setXComponentSurfaceId(surfaceId: string, width: number, height: number): boolean;

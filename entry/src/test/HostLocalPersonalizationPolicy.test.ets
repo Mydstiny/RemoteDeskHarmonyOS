@@ -48,7 +48,7 @@ export default function hostLocalPersonalizationPolicyTest(): void {
       expect(cloud.lastHealth).assertEqual(3);
       expect(cloud.lastLatency).assertEqual(72);
       expect(cloud.rustdeskAdaptiveOrientation).assertTrue();
-      expect(cloud.rustdeskDesktopFlipMode).assertEqual('image_only');
+      expect(cloud.rustdeskDesktopFlipMode).assertEqual('axes_3');
       expect(cloud.rustdeskProLastSeenAt).assertEqual(202);
       expect(cloud.rustdeskProSyncError).assertEqual('not_seen');
     });
