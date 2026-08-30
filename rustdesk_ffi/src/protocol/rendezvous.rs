@@ -5,8 +5,8 @@
 // BytesCodec 帧承载 secretbox 加密 payload。
 
 use super::rendezvous_proto::{
-    ConnType, KeyExchange, NatType, PunchHoleRequest, RegisterPeer, RegisterPk, RendezvousMessage,
-    RendezvousMessage_oneof_union, RequestRelay, TestNatRequest,
+    ConnType, KeyExchange, NatType, PunchHoleRequest, PunchHoleResponse_Failure, RegisterPeer,
+    RegisterPk, RendezvousMessage, RendezvousMessage_oneof_union, RequestRelay, TestNatRequest,
 };
 use super::wire;
 use crate::crypto;
@@ -78,6 +78,22 @@ pub struct TcpNatProbeResult {
     pub nat_type: NatType,
     pub first_mapped_port: u16,
     pub second_mapped_port: u16,
+}
+
+fn punch_hole_refusal_kind(
+    failure: PunchHoleResponse_Failure,
+    other_failure: &str,
+) -> io::ErrorKind {
+    if !other_failure.is_empty() {
+        return io::ErrorKind::Other;
+    }
+    match failure {
+        PunchHoleResponse_Failure::ID_NOT_EXIST | PunchHoleResponse_Failure::OFFLINE => {
+            io::ErrorKind::NotFound
+        }
+        PunchHoleResponse_Failure::LICENSE_MISMATCH
+        | PunchHoleResponse_Failure::LICENSE_OVERUSE => io::ErrorKind::PermissionDenied,
+    }
 }
 
 /// A short-lived UDP mapping registration against hbbs. The socket remains
@@ -507,7 +523,7 @@ impl RendezvousClient {
                             other.to_string()
                         };
                         return Err(io::Error::new(
-                            io::ErrorKind::ConnectionRefused,
+                            punch_hole_refusal_kind(resp.get_failure(), other),
                             format!("{} ({})", reason, req_debug),
                         ));
                     }
@@ -1393,6 +1409,34 @@ mod tests {
     use std::io::ErrorKind;
     use std::net::TcpListener;
     use std::thread;
+
+    #[test]
+    fn punch_hole_refusal_preserves_offline_and_license_semantics() {
+        assert_eq!(
+            punch_hole_refusal_kind(PunchHoleResponse_Failure::ID_NOT_EXIST, ""),
+            ErrorKind::NotFound
+        );
+        assert_eq!(
+            punch_hole_refusal_kind(PunchHoleResponse_Failure::OFFLINE, ""),
+            ErrorKind::NotFound
+        );
+        assert_eq!(
+            punch_hole_refusal_kind(PunchHoleResponse_Failure::LICENSE_MISMATCH, ""),
+            ErrorKind::PermissionDenied
+        );
+        assert_eq!(
+            punch_hole_refusal_kind(PunchHoleResponse_Failure::LICENSE_OVERUSE, ""),
+            ErrorKind::PermissionDenied
+        );
+        assert_eq!(
+            punch_hole_refusal_kind(
+                PunchHoleResponse_Failure::ID_NOT_EXIST,
+                "token rejected by policy",
+            ),
+            ErrorKind::Other,
+            "unstructured server text must never become authoritative offline evidence"
+        );
+    }
 
     fn encode_test_ipv4(addr: SocketAddrV4) -> Vec<u8> {
         // AddrMangle with a deterministic zero time component. Production

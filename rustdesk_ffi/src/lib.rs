@@ -2535,9 +2535,7 @@ fn presence_probe_timeout(timeout_ms: u32) -> Duration {
 }
 
 fn classify_presence_probe_failure(stage: PresenceProbeStage, error: &io::Error) -> (c_int, c_int) {
-    if stage == PresenceProbeStage::RendezvousRoute
-        && error.kind() == io::ErrorKind::ConnectionRefused
-    {
+    if stage == PresenceProbeStage::RendezvousRoute && error.kind() == io::ErrorKind::NotFound {
         return (2, 1);
     }
     match error.kind() {
@@ -2569,9 +2567,9 @@ pub extern "C" fn rustdesk_cancel_presence_probe(request_id: u64) -> bool {
 /// Probe a RustDesk peer without opening a desktop session.
 ///
 /// One absolute deadline covers endpoint resolution, the hbbs connection and
-/// the route transaction. Only an explicit refusal from the route transaction
-/// is authoritative evidence that the peer is offline; a refused TCP connect
-/// remains unknown because it can indicate a broken client/server path.
+/// the route transaction. Only a structured ID_NOT_EXIST/OFFLINE route response
+/// is authoritative evidence that the peer is offline. Transport, license,
+/// authentication and unstructured server refusals remain unknown.
 #[no_mangle]
 pub extern "C" fn rustdesk_probe_presence_with_deadline(
     cfg: *const RustDeskConfig,
@@ -3557,8 +3555,10 @@ mod tests {
     }
 
     #[test]
-    fn presence_connect_refusal_is_unknown_but_route_refusal_is_offline() {
+    fn presence_only_structured_route_not_found_is_offline() {
         let refused = io::Error::new(io::ErrorKind::ConnectionRefused, "refused");
+        let denied = io::Error::new(io::ErrorKind::PermissionDenied, "license denied");
+        let offline = io::Error::new(io::ErrorKind::NotFound, "offline");
         assert_eq!(
             classify_presence_probe_failure(PresenceProbeStage::RendezvousConnect, &refused),
             (0, 4)
@@ -3569,6 +3569,14 @@ mod tests {
         );
         assert_eq!(
             classify_presence_probe_failure(PresenceProbeStage::RendezvousRoute, &refused),
+            (0, 4)
+        );
+        assert_eq!(
+            classify_presence_probe_failure(PresenceProbeStage::RendezvousRoute, &denied),
+            (0, 4)
+        );
+        assert_eq!(
+            classify_presence_probe_failure(PresenceProbeStage::RendezvousRoute, &offline),
             (2, 1)
         );
     }
