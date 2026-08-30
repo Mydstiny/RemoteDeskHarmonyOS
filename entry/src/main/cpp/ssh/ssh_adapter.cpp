@@ -8,7 +8,9 @@
 #include "ssh_adapter.h"
 #include "common/endpoint_address_policy.h"
 #include "common/happy_eyeballs_connector.h"
+#include "common/network_generation_fence.h"
 #include "ssh_auth_policy.h"
+#include "ssh_network_generation_policy.h"
 #include "ssh_network_lifecycle_policy.h"
 #include "ssh_proxy_target_policy.h"
 #include "ssh_route_policy.h"
@@ -252,7 +254,9 @@ void SshAdapter::onNetworkChanged(bool available, uint64_t networkGeneration) {
             available, reactorRunning, connected)) {
         setSshLifecycleState(SshSessionLifecycleState::NetworkLost);
         setState(ConnectionState::RECONNECTING,
-                 "SSH network unavailable, waiting for recovery");
+                 available
+                     ? "SSH network route changed, reconnecting"
+                     : "SSH network unavailable, waiting for recovery");
         transportRecoveryRequested_.store(true, std::memory_order_release);
     }
     if (SshNetworkLifecyclePolicy::shouldWakeRecovery(available, reactorRunning)) {
@@ -1510,11 +1514,18 @@ void SshAdapter::setState(ConnectionState s, const std::string& message) {
     }
 }
 
+bool SshAdapter::connectRouteCancelled() const {
+    return SshNetworkGenerationPolicy::shouldCancel(
+        connectCancelRequested_.load(std::memory_order_acquire),
+        remotedesk::net::ProcessNetworkGenerationFence(),
+        connectNetworkSnapshot_);
+}
+
 int SshAdapter::waitSocket(int direction, int timeoutSec) {
     if (sockFd_ < 0) {
         return -1;
     }
-    if (connectCancelRequested_.load(std::memory_order_acquire)) {
+    if (connectRouteCancelled()) {
         return -3;
     }
 
@@ -1522,7 +1533,7 @@ int SshAdapter::waitSocket(int direction, int timeoutSec) {
     const auto deadline = std::chrono::steady_clock::now() +
         std::chrono::milliseconds(timeoutMilliseconds);
     while (true) {
-        if (connectCancelRequested_.load(std::memory_order_acquire)) {
+        if (connectRouteCancelled()) {
             return -3;
         }
         const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -1555,12 +1566,12 @@ int SshAdapter::waitSocket(int direction, int timeoutSec) {
 
 int SshAdapter::waitSocketMilliseconds(int direction, int timeoutMs) {
     if (sockFd_ < 0) { return -1; }
-    if (connectCancelRequested_.load(std::memory_order_acquire)) { return -3; }
+    if (connectRouteCancelled()) { return -3; }
     const int boundedMs = std::max(1, std::min(timeoutMs, 100));
     const auto deadline = std::chrono::steady_clock::now() +
         std::chrono::milliseconds(boundedMs);
     while (true) {
-        if (connectCancelRequested_.load(std::memory_order_acquire)) { return -3; }
+        if (connectRouteCancelled()) { return -3; }
         const auto remaining = std::chrono::duration_cast<std::chrono::microseconds>(
             deadline - std::chrono::steady_clock::now()).count();
         if (remaining <= 0) { return -2; }
@@ -1590,7 +1601,7 @@ int SshAdapter::waitSocketOnFd(int fd, int direction, int timeoutSec) {
     const auto deadline = std::chrono::steady_clock::now() +
         std::chrono::milliseconds(timeoutMilliseconds);
     while (true) {
-        if (connectCancelRequested_.load(std::memory_order_acquire)) { return -3; }
+        if (connectRouteCancelled()) { return -3; }
         const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
             deadline - std::chrono::steady_clock::now()).count();
         if (remaining <= 0) { return -2; }
@@ -1634,8 +1645,15 @@ int SshAdapter::tcpConnect(const std::string& host, int port) {
     snprintf(portString, sizeof(portString), "%d", port);
     remotedesk::net::ConnectOptions options;
     options.deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
-    options.cancelled = [this]() {
-        return connectCancelRequested_.load(std::memory_order_acquire);
+    remotedesk::net::NetworkGenerationFence& networkFence =
+        remotedesk::net::ProcessNetworkGenerationFence();
+    const remotedesk::net::NetworkGenerationSnapshot networkSnapshot =
+        connectNetworkSnapshot_.generation == 0
+            ? networkFence.snapshot() : connectNetworkSnapshot_;
+    options.cancelled = [this, &networkFence, networkSnapshot]() {
+        return SshNetworkGenerationPolicy::shouldCancel(
+            connectCancelRequested_.load(std::memory_order_acquire),
+            networkFence, networkSnapshot);
     };
     options.restoreBlocking = false;
     remotedesk::net::ConnectResult connection;
@@ -3044,6 +3062,8 @@ int SshAdapter::connectForOperationInternal(
         disconnect();
         return ERR_SSH_AUTH_CANCELLED;
     }
+    connectNetworkSnapshot_ =
+        remotedesk::net::ProcessNetworkGenerationFence().snapshot();
     // Auxiliary workers have no interactive prompt broker. Authenticated
     // operations must therefore arrive with an already route-bound target pin.
     if (cfg.sshHostKeyPromptEnabled ||
@@ -3131,6 +3151,8 @@ int SshAdapter::connectInternal(const ConnectionConfig& cfg, bool preserveOwner)
         setState(ConnectionState::ERROR, "SSH connect cancelled");
         return ERR_SSH_SESSION_CLOSED;
     }
+    connectNetworkSnapshot_ =
+        remotedesk::net::ProcessNetworkGenerationFence().snapshot();
 
     auto failConnect = [this, preserveOwner](int code, const std::string& message) {
         if (preserveOwner) {

@@ -1,6 +1,8 @@
 #include "ssh_forward_target_connector.h"
 
 #include "common/happy_eyeballs_connector.h"
+#include "common/network_generation_fence.h"
+#include "ssh_network_generation_policy.h"
 
 #include <cerrno>
 #include <cstddef>
@@ -34,7 +36,8 @@ public:
 
 SshForwardTargetConnectResult connectTarget(
     std::string host, int port, std::chrono::steady_clock::time_point deadline,
-    const std::shared_ptr<std::atomic<bool>>& cancellation) noexcept {
+    const std::shared_ptr<std::atomic<bool>>& cancellation,
+    remotedesk::net::NetworkGenerationSnapshot networkSnapshot) noexcept {
     SshForwardTargetConnectResult result;
     try {
         if (host.size() >= 2 && host.front() == '[' && host.back() == ']') {
@@ -42,8 +45,12 @@ SshForwardTargetConnectResult connectTarget(
         }
         remotedesk::net::ConnectOptions options;
         options.deadline = deadline;
-        options.cancelled = [cancellation]() noexcept {
-            return cancellation->load(std::memory_order_acquire);
+        remotedesk::net::NetworkGenerationFence& networkFence =
+            remotedesk::net::ProcessNetworkGenerationFence();
+        options.cancelled = [cancellation, &networkFence, networkSnapshot]() {
+            return SshNetworkGenerationPolicy::shouldCancel(
+                cancellation->load(std::memory_order_acquire),
+                networkFence, networkSnapshot);
         };
         options.restoreBlocking = false;
 
@@ -117,11 +124,15 @@ bool SshForwardTargetConnectTask::start(
     try {
         cancellation_ = std::make_shared<std::atomic<bool>>(false);
         const auto deadline = std::chrono::steady_clock::now() + timeout;
+        const remotedesk::net::NetworkGenerationSnapshot networkSnapshot =
+            remotedesk::net::ProcessNetworkGenerationFence().snapshot();
         completion_ = std::async(
             std::launch::async,
-            [host, port, deadline, cancellation = cancellation_]() mutable noexcept {
+            [host, port, deadline, cancellation = cancellation_,
+             networkSnapshot]() mutable noexcept {
                 const TargetConnectWorkerPermit permit;
-                return connectTarget(std::move(host), port, deadline, cancellation);
+                return connectTarget(
+                    std::move(host), port, deadline, cancellation, networkSnapshot);
             });
         return true;
     } catch (...) {

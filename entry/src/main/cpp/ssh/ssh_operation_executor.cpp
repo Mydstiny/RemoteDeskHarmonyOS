@@ -60,6 +60,8 @@ int effectiveOperationError(const std::shared_ptr<SshOperationControl>& control,
             return ERR_SSH_AUTH_CANCELLED;
         case SshOperationCancelReason::Deadline:
             return ERR_SSH_CONNECT_TIMEOUT;
+        case SshOperationCancelReason::NetworkChanged:
+            return ERR_SSH_SESSION_CLOSED;
         case SshOperationCancelReason::None:
             return fallback;
     }

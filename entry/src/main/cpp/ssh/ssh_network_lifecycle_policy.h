@@ -19,7 +19,11 @@ struct SshNetworkLifecyclePolicy final {
     static inline bool shouldRequestRecovery(bool available,
                                              bool reactorRunning,
                                              bool connected) noexcept {
-        return !available && reactorRunning && connected;
+        (void)available;
+        // Every accepted generation invalidates the current route, including
+        // available=true capability/properties callbacks for VPN, DNS, prefix,
+        // and interface changes that have no unavailable interval.
+        return reactorRunning && connected;
     }
 
     static inline bool shouldWakeRecovery(bool available,

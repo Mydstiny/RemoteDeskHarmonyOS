@@ -14,6 +14,7 @@ enum class SshOperationCancelReason : std::uint8_t {
     None = 0,
     User = 1,
     Deadline = 2,
+    NetworkChanged = 3,
 };
 
 /**

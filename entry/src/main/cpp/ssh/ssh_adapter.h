@@ -35,6 +35,7 @@
 #include "ssh_auth_prompt_broker.h"
 #include "ssh_reconnect_policy.h"
 #include "ssh_session_types.h"
+#include "common/network_generation_fence.h"
 
 #define SSH_ADAPTER_VERSION "2.0.0"
 #define SSH_BUFFER_SIZE 65536
@@ -441,6 +442,7 @@ private:
     int startShell();
 
     /** 非阻塞等待并重试 libssh2 操作 (0=读 1=写) */
+    bool connectRouteCancelled() const;
     int waitSocket(int direction, int timeoutSec);
     int waitSocketMilliseconds(int direction, int timeoutMs);
 
@@ -476,6 +478,9 @@ private:
     std::atomic<bool> recoveryAttemptInProgress_{false};
     std::atomic<uint64_t> lastNetworkGeneration_{0};
     std::atomic<bool> networkAvailable_{true};
+    // One route attempt (direct/proxy/jump) owns one process-network snapshot.
+    // Reconnect captures a fresh snapshot before resolving again.
+    remotedesk::net::NetworkGenerationSnapshot connectNetworkSnapshot_ {};
 
     static constexpr size_t kDetachedTerminalMaxChunks = 512;
     static constexpr size_t kDetachedTerminalMaxBytes = 8 * 1024 * 1024;

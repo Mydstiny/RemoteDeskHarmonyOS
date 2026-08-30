@@ -33,6 +33,8 @@
 
 #ifdef __OHOS__
 #include "common/happy_eyeballs_connector.h"
+#include "common/network_generation_fence.h"
+#include "ssh_network_generation_policy.h"
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -948,6 +950,14 @@ static int tcpConnectWithTimeout(const std::string& host, int port, int timeoutS
     remotedesk::net::ConnectOptions options;
     options.deadline = std::chrono::steady_clock::now() +
         std::chrono::seconds(std::max(1, timeoutSec));
+    remotedesk::net::NetworkGenerationFence& networkFence =
+        remotedesk::net::ProcessNetworkGenerationFence();
+    const remotedesk::net::NetworkGenerationSnapshot networkSnapshot =
+        networkFence.snapshot();
+    options.cancelled = [&networkFence, networkSnapshot]() {
+        return SshNetworkGenerationPolicy::shouldCancel(
+            false, networkFence, networkSnapshot);
+    };
     remotedesk::net::ConnectResult connection;
     const remotedesk::net::ResolveResult resolution =
         remotedesk::net::ResolveAndConnectTcp(

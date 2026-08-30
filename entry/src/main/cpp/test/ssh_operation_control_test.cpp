@@ -42,6 +42,19 @@ RDP_TEST_CASE(ssh_operation_control_deadline_wakes_transport_once) {
     control->finish();
 }
 
+RDP_TEST_CASE(ssh_operation_control_network_change_is_level_triggered) {
+    auto control = std::make_shared<SshOperationControl>(43);
+    assert(control->cancel(SshOperationCancelReason::NetworkChanged));
+    assert(control->cancelReason() == SshOperationCancelReason::NetworkChanged);
+
+    std::atomic<int> callbacks {0};
+    assert(control->bindTransportCancel([&callbacks]() {
+        callbacks.fetch_add(1, std::memory_order_acq_rel);
+    }));
+    assert(callbacks.load(std::memory_order_acquire) == 1);
+    control->finish();
+}
+
 RDP_TEST_CASE(ssh_operation_control_bind_cancel_race_delivers_once) {
     for (std::uint64_t iteration = 1; iteration <= 200; ++iteration) {
         auto control = std::make_shared<SshOperationControl>(10000 + iteration);

@@ -11492,6 +11492,8 @@ struct SshProductionOperationAsyncData {
     ConnectionConfig config {};
     std::string publicKey;
     std::shared_ptr<SshOperationControl> control;
+    std::unique_ptr<NativeNetworkObserverLease> networkObserverLease;
+    remotedesk::net::NetworkGenerationSnapshot networkSnapshot {};
     SshHostKeyInfo hostKeyResult {};
     SshAuthTestResult authResult {};
     SshPublicKeyInstallResult installResult {};
@@ -11510,9 +11512,13 @@ static void ApplySshProductionOperationCancellation(
     if (!data.control || !data.control->cancelled()) { return; }
     const bool deadline = data.control->cancelReason() ==
         SshOperationCancelReason::Deadline;
-    const int code = deadline ? ERR_SSH_CONNECT_TIMEOUT : ERR_SSH_AUTH_CANCELLED;
-    const std::string message = deadline
-        ? "SSH operation deadline exceeded" : "SSH operation cancelled";
+    const bool networkChanged = data.control->cancelReason() ==
+        SshOperationCancelReason::NetworkChanged;
+    const int code = deadline ? ERR_SSH_CONNECT_TIMEOUT :
+        (networkChanged ? ERR_SSH_SESSION_CLOSED : ERR_SSH_AUTH_CANCELLED);
+    const std::string message = deadline ? "SSH operation deadline exceeded" :
+        (networkChanged ? "SSH operation network changed" :
+                          "SSH operation cancelled");
     switch (data.kind) {
         case SshProductionOperationKind::ProbeHostKey:
             data.hostKeyResult = SshHostKeyInfo {};
@@ -11537,10 +11543,26 @@ static void ExecuteSshProductionOperation(napi_env /*env*/, void* rawData) {
     std::thread watchdog;
     try {
         watchdog = std::thread(
-            [control = data->control, deadline = data->deadline]() {
-                if (!control->waitUntilFinishedOrCancelled(deadline) &&
-                    !control->cancelled()) {
-                    (void)control->cancel(SshOperationCancelReason::Deadline);
+            [control = data->control, deadline = data->deadline,
+             networkSnapshot = data->networkSnapshot]() {
+                constexpr auto kNetworkPoll = std::chrono::milliseconds(50);
+                while (!control->cancelled()) {
+                    if (remotedesk::net::ProcessNetworkGenerationFence().shouldCancel(
+                            networkSnapshot)) {
+                        (void)control->cancel(
+                            SshOperationCancelReason::NetworkChanged);
+                        break;
+                    }
+                    const auto now = std::chrono::steady_clock::now();
+                    if (now >= deadline) {
+                        (void)control->cancel(SshOperationCancelReason::Deadline);
+                        break;
+                    }
+                    const auto nextWake = std::min(deadline, now + kNetworkPoll);
+                    if (control->waitUntilFinishedOrCancelled(nextWake) ||
+                        control->cancelled()) {
+                        break;
+                    }
                 }
             });
         switch (data->kind) {
@@ -11653,6 +11675,22 @@ static napi_value QueueSshProductionOperation(
     }
     data->deadline = std::chrono::steady_clock::now() +
         std::chrono::milliseconds(data->timeoutMs);
+#if defined(__MUSL__)
+    data->networkObserverLease.reset(
+        new (std::nothrow) NativeNetworkObserverLease());
+    if (!data->networkObserverLease || !data->networkObserverLease->active()) {
+        napi_throw_error(env, "E-SSH-NETWORK-OBSERVER",
+                         "SSH network observer is unavailable");
+        return nullptr;
+    }
+#endif
+    data->networkSnapshot =
+        remotedesk::net::ProcessNetworkGenerationFence().snapshot();
+    if (!data->networkSnapshot.available) {
+        napi_throw_error(env, "E-SSH-NETWORK-UNAVAILABLE",
+                         "SSH network is unavailable");
+        return nullptr;
+    }
     try {
         data->control = std::make_shared<SshOperationControl>(data->operationId);
     } catch (...) {
