@@ -15,6 +15,7 @@
 #include "common/safe_log.h"
 #include "common/happy_eyeballs_connector.h"
 #include "common/endpoint_address_policy.h"
+#include "common/network_generation_fence.h"
 #include "rdp_audio_policy.h"
 #include "rdp_auth_identity_policy.h"
 #include "rdp_auth_mode_policy.h"
@@ -28,6 +29,11 @@
 #include "rdp_graphics_lifecycle.h"
 #include "rdp_keymap.h"
 #include "rdp_negotiation_parser.h"
+#include "rdp_network_action_gate.h"
+#include "rdp_network_recovery_policy.h"
+#include "rdp_platform_retirement_gate.h"
+#include "rdp_reconnect_credential_policy.h"
+#include "rdp_teardown_retirement_fence.h"
 #include "rdp_performance_policy.h"
 #include "rdp_redraw_notifier.h"
 #include "rdp_input_queue.h"
@@ -57,6 +63,7 @@
 #include <sys/time.h>
 #include <unistd.h>
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cerrno>
 #include <chrono>
@@ -67,6 +74,7 @@
 #include <functional>
 #include <iomanip>
 #include <limits>
+#include <optional>
 #include <sstream>
 #include <thread>
 #include <utility>
@@ -97,6 +105,18 @@ bool isIpAddressLiteral(const std::string& input) {
 constexpr int kDefaultRdpPort = 3389;
 constexpr int kRdpCertFlagUntrustedRoot = 0x01;
 constexpr int kRdpCertFlagHostMismatch = 0x02;
+
+struct RdpNetworkWorkerCompletionGuard final {
+    std::shared_ptr<std::atomic<bool>> done;
+    std::condition_variable& completion;
+
+    ~RdpNetworkWorkerCompletionGuard() {
+        if (done) {
+            done->store(true, std::memory_order_release);
+        }
+        completion.notify_all();
+    }
+};
 
 bool resolveRdpEndpointRoute(const ConnectionConfig& cfg,
                              RdpEndpointRoute& route,
@@ -263,6 +283,8 @@ RdpPreflightResult makeRdpPreflightError(const RdpPreflightRequest& request,
 
 const char* directRdpPreflightStage(int errorCode) {
     switch (errorCode) {
+        case -39:
+            return "network";
         case -10:
         case -11:
             return "endpoint";
@@ -293,6 +315,8 @@ const char* directRdpPreflightStage(int errorCode) {
 
 const char* directRdpPreflightErrorCode(int errorCode) {
     switch (errorCode) {
+        case -39:
+            return "E-RDP-NETWORK-CHANGED";
         case -10:
             return "E-RDP-ENDPOINT";
         case -11:
@@ -323,11 +347,16 @@ const char* directRdpPreflightErrorCode(int errorCode) {
 }
 
 bool directRdpPreflightCanTryRealConnection(const RdpCertificateInfo& info) {
+    if (info.errorCode == -39) {
+        return false;
+    }
     return RdpPreflightPolicy::preflightAllowsRealConnection(
         info.preflightStatus, directRdpPreflightErrorCode(info.errorCode), info.riskFlags);
 }
 
 using RdpShutdownDeadline = std::chrono::steady_clock::time_point;
+constexpr auto kRdpNetworkTeardownRetirementTimeout =
+    std::chrono::seconds(5);
 
 struct RdpShutdownTicket {
     explicit RdpShutdownTicket(RdpShutdownDeadline value, uint64_t serialValue)
@@ -353,14 +382,17 @@ std::chrono::milliseconds remainingRdpShutdownBudget(RdpShutdownDeadline deadlin
 #endif
 
 [[maybe_unused]] void secureClearString(std::string& value) {
-    if (!value.empty()) {
-        volatile char* data = value.data();
-        for (size_t index = 0; index < value.size(); ++index) {
-            data[index] = '\0';
-        }
-    }
-    value.clear();
+    RdpReconnectCredentialPolicy::secureClear(value);
 }
+
+struct RdpReconnectSecretGuard final {
+    ConnectionConfig& config;
+
+    ~RdpReconnectSecretGuard() {
+        secureClearString(config.password);
+        secureClearString(config.rdpRestrictedAdminHash);
+    }
+};
 
 #ifdef USE_REAL_FREERDP
 void secureClearFreeRdpPasswordHash(rdpSettings* settings) {
@@ -500,6 +532,18 @@ RdpCertificateInfo makeProbeError(const std::string& host, int port, int code,
     return info;
 }
 
+bool rdpProbeCancelled(const std::function<bool()>& cancelled) {
+    return cancelled && cancelled();
+}
+
+RdpCertificateInfo makeNetworkChangedProbeError(
+    const std::string& host, int port) {
+    return makeProbeError(
+        host, port, -39,
+        "RDP preflight cancelled because the default network changed "
+        "[E-RDP-NETWORK-CHANGED]");
+}
+
 std::string openSslErrorStack() {
     std::ostringstream details;
     bool first = true;
@@ -536,58 +580,99 @@ const char* sslErrorName(int sslError) {
     }
 }
 
-bool sendAll(int fd, const uint8_t* data, size_t size, int& errorCode) {
-    errorCode = 0;
-    size_t sent = 0;
-    while (sent < size) {
-        const ssize_t n = send(fd, data + sent, size - sent, 0);
-        if (n <= 0) {
-            errorCode = n == 0 ? ECONNRESET : errno;
+bool waitForFdUntil(int fd, bool writable,
+                    std::chrono::steady_clock::time_point deadline,
+                    int& errorCode,
+                    const std::function<bool()>& cancelled) {
+    for (;;) {
+        if (rdpProbeCancelled(cancelled)) {
+            errorCode = ECANCELED;
             return false;
         }
-        sent += static_cast<size_t>(n);
-    }
-    return true;
-}
-
-bool waitForReadableUntil(int fd, std::chrono::steady_clock::time_point deadline,
-                          int& errorCode) {
-    for (;;) {
         const auto now = std::chrono::steady_clock::now();
         if (now >= deadline) {
             errorCode = ETIMEDOUT;
             return false;
         }
-        const auto remainingMs = std::chrono::duration_cast<std::chrono::milliseconds>(
-            deadline - now).count();
+        const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+            deadline - now);
+        const auto slice = std::min(remaining, std::chrono::milliseconds(50));
+        const auto sliceUs = std::max<int64_t>(
+            1, std::chrono::duration_cast<std::chrono::microseconds>(slice).count());
         timeval timeout {};
-        timeout.tv_sec = static_cast<long>(remainingMs / 1000);
-        timeout.tv_usec = static_cast<long>((remainingMs % 1000) * 1000);
+        timeout.tv_sec = static_cast<long>(sliceUs / 1000000);
+        timeout.tv_usec = static_cast<long>(sliceUs % 1000000);
         fd_set readSet;
+        fd_set writeSet;
         FD_ZERO(&readSet);
-        FD_SET(fd, &readSet);
-        const int result = select(fd + 1, &readSet, nullptr, nullptr, &timeout);
+        FD_ZERO(&writeSet);
+        if (writable) {
+            FD_SET(fd, &writeSet);
+        } else {
+            FD_SET(fd, &readSet);
+        }
+        const int result = select(
+            fd + 1, writable ? nullptr : &readSet,
+            writable ? &writeSet : nullptr, nullptr, &timeout);
         if (result > 0) {
             return true;
         }
-        if (result == 0) {
-            errorCode = ETIMEDOUT;
-            return false;
+        if (result == 0 || errno == EINTR) {
+            continue;
         }
-        if (errno != EINTR) {
-            errorCode = errno;
-            return false;
-        }
+        errorCode = errno;
+        return false;
     }
 }
 
+bool sendAll(int fd, const uint8_t* data, size_t size,
+             std::chrono::steady_clock::time_point deadline,
+             int& errorCode, const std::function<bool()>& cancelled) {
+    errorCode = 0;
+    size_t sent = 0;
+    while (sent < size) {
+        if (rdpProbeCancelled(cancelled)) {
+            errorCode = ECANCELED;
+            return false;
+        }
+        const ssize_t n = send(fd, data + sent, size - sent, 0);
+        if (n > 0) {
+            sent += static_cast<size_t>(n);
+            continue;
+        }
+        if (n == 0) {
+            errorCode = ECONNRESET;
+            return false;
+        }
+        if (errno == EINTR) {
+            continue;
+        }
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            if (waitForFdUntil(fd, true, deadline, errorCode, cancelled)) {
+                continue;
+            }
+            return false;
+        }
+        errorCode = errno;
+        return false;
+    }
+    return true;
+}
+
+bool waitForReadableUntil(int fd, std::chrono::steady_clock::time_point deadline,
+                          int& errorCode,
+                          const std::function<bool()>& cancelled) {
+    return waitForFdUntil(fd, false, deadline, errorCode, cancelled);
+}
+
 bool recvExactWithDeadline(int fd, uint8_t* data, size_t size, int timeoutMs,
-                           int& errorCode) {
+                           int& errorCode,
+                           const std::function<bool()>& cancelled) {
     const auto deadline = std::chrono::steady_clock::now() +
         std::chrono::milliseconds(timeoutMs);
     size_t received = 0;
     while (received < size) {
-        if (!waitForReadableUntil(fd, deadline, errorCode)) {
+        if (!waitForReadableUntil(fd, deadline, errorCode, cancelled)) {
             return false;
         }
         const ssize_t count = recv(fd, data + received, size - received, 0);
@@ -608,9 +693,13 @@ bool recvExactWithDeadline(int fd, uint8_t* data, size_t size, int timeoutMs,
 }
 
 RdpCertificateInfo probeGatewayCertificateOverTls(const std::string& host, int port,
-                                                   const std::string& serverName) {
+                                                   const std::string& serverName,
+                                                   const std::function<bool()>& cancelled) {
     const int effectivePort = port > 0 ? port : 443;
     const std::string verifyName = serverName.empty() ? host : serverName;
+    if (rdpProbeCancelled(cancelled)) {
+        return makeNetworkChangedProbeError(host, effectivePort);
+    }
     if (host.empty()) {
         return makeProbeError(host, effectivePort, -30, "RD Gateway host is empty");
     }
@@ -619,15 +708,25 @@ RdpCertificateInfo probeGatewayCertificateOverTls(const std::string& host, int p
     remotedesk::net::ConnectOptions connectOptions;
     connectOptions.deadline = std::chrono::steady_clock::now() +
         std::chrono::milliseconds(5000);
+    connectOptions.cancelled = cancelled;
+    connectOptions.restoreBlocking = false;
     remotedesk::net::ConnectResult connection;
     const remotedesk::net::ResolveResult resolution =
         remotedesk::net::ResolveAndConnectTcp(
             host, portText, connectOptions, connection);
     if (resolution.status != remotedesk::net::ResolveStatus::Ready) {
+        if (resolution.status == remotedesk::net::ResolveStatus::Cancelled ||
+            rdpProbeCancelled(cancelled)) {
+            return makeNetworkChangedProbeError(host, effectivePort);
+        }
         return makeProbeError(host, effectivePort, -31, "Unable to resolve RD Gateway host");
     }
     if (connection.status != remotedesk::net::ConnectStatus::Connected ||
         connection.descriptor < 0) {
+        if (connection.status == remotedesk::net::ConnectStatus::Cancelled ||
+            rdpProbeCancelled(cancelled)) {
+            return makeNetworkChangedProbeError(host, effectivePort);
+        }
         return makeProbeError(host, effectivePort, -32, "Unable to connect to RD Gateway");
     }
     const int fd = connection.descriptor;
@@ -659,11 +758,44 @@ RdpCertificateInfo probeGatewayCertificateOverTls(const std::string& host, int p
         return makeProbeError(host, effectivePort, -35,
                               "Unable to configure RD Gateway TLS session");
     }
-    ERR_clear_error();
-    errno = 0;
-    const int tlsResult = SSL_connect(ssl);
+    const auto tlsDeadline = std::chrono::steady_clock::now() +
+        std::chrono::milliseconds(8000);
+    int tlsResult = -1;
+    int sslError = SSL_ERROR_NONE;
+    int waitError = 0;
+    while (!rdpProbeCancelled(cancelled) &&
+           std::chrono::steady_clock::now() < tlsDeadline) {
+        ERR_clear_error();
+        errno = 0;
+        tlsResult = SSL_connect(ssl);
+        if (tlsResult == 1) {
+            break;
+        }
+        sslError = SSL_get_error(ssl, tlsResult);
+        if (sslError == SSL_ERROR_WANT_READ) {
+            if (!waitForFdUntil(fd, false, tlsDeadline, waitError, cancelled)) {
+                break;
+            }
+            continue;
+        }
+        if (sslError == SSL_ERROR_WANT_WRITE) {
+            if (!waitForFdUntil(fd, true, tlsDeadline, waitError, cancelled)) {
+                break;
+            }
+            continue;
+        }
+        break;
+    }
     if (tlsResult != 1) {
-        const int sslError = SSL_get_error(ssl, tlsResult);
+        if (rdpProbeCancelled(cancelled) || waitError == ECANCELED) {
+            SSL_free(ssl);
+            SSL_CTX_free(sslCtx);
+            close(fd);
+            return makeNetworkChangedProbeError(host, effectivePort);
+        }
+        if (sslError == SSL_ERROR_NONE) {
+            sslError = SSL_get_error(ssl, tlsResult);
+        }
         const int socketError = sslError == SSL_ERROR_SYSCALL ? errno : 0;
         const std::string opensslDetails = openSslErrorStack();
         std::ostringstream message;
@@ -680,6 +812,13 @@ RdpCertificateInfo probeGatewayCertificateOverTls(const std::string& host, int p
         SSL_CTX_free(sslCtx);
         close(fd);
         return makeProbeError(host, effectivePort, -36, message.str());
+    }
+
+    if (rdpProbeCancelled(cancelled)) {
+        SSL_free(ssl);
+        SSL_CTX_free(sslCtx);
+        close(fd);
+        return makeNetworkChangedProbeError(host, effectivePort);
     }
 
     X509* certificate = SSL_get_peer_certificate(ssl);
@@ -743,11 +882,15 @@ RdpCertificateInfo probeGatewayCertificateOverTls(const std::string& host, int p
     SSL_free(ssl);
     SSL_CTX_free(sslCtx);
     close(fd);
+    if (rdpProbeCancelled(cancelled)) {
+        return makeNetworkChangedProbeError(host, effectivePort);
+    }
     return info;
 }
 
 RdpCertificateInfo probeRdpCertificateOverTls(const std::string& host, int port,
-                                              const std::string& serverName) {
+                                              const std::string& serverName,
+                                              const std::function<bool()>& cancelled) {
     const int effectivePort = port > 0 ? port : kDefaultRdpPort;
     const std::string verifyName = serverName.empty() ? host : serverName;
     const std::string logHost = SafeLog::MaskHost(host);
@@ -755,6 +898,9 @@ RdpCertificateInfo probeRdpCertificateOverTls(const std::string& host, int port,
     const int64_t startedUs = probeNowUs();
     OH_LOG_INFO(LOG_APP, "[RDP-CERT] probe start host=%{public}s:%{public}d targetName=%{public}s",
                 logHost.c_str(), effectivePort, logServerName.c_str());
+    if (rdpProbeCancelled(cancelled)) {
+        return makeNetworkChangedProbeError(host, effectivePort);
+    }
     if (host.empty()) {
         return makeProbeError(host, effectivePort, -10, "RDP host is empty");
     }
@@ -763,11 +909,17 @@ RdpCertificateInfo probeRdpCertificateOverTls(const std::string& host, int port,
     remotedesk::net::ConnectOptions connectOptions;
     connectOptions.deadline = std::chrono::steady_clock::now() +
         std::chrono::milliseconds(5000);
+    connectOptions.cancelled = cancelled;
+    connectOptions.restoreBlocking = false;
     remotedesk::net::ConnectResult connection;
     const remotedesk::net::ResolveResult resolution =
         remotedesk::net::ResolveAndConnectTcp(
             host, portText, connectOptions, connection);
     if (resolution.status != remotedesk::net::ResolveStatus::Ready) {
+        if (resolution.status == remotedesk::net::ResolveStatus::Cancelled ||
+            rdpProbeCancelled(cancelled)) {
+            return makeNetworkChangedProbeError(host, effectivePort);
+        }
         OH_LOG_WARN(LOG_APP, "[RDP-CERT] resolve failed host=%{public}s:%{public}d gai=%{public}d",
                     logHost.c_str(), effectivePort, resolution.gaiError);
         return makeProbeError(host, effectivePort, -11, "Unable to resolve RDP host");
@@ -776,6 +928,10 @@ RdpCertificateInfo probeRdpCertificateOverTls(const std::string& host, int port,
 
     if (connection.status != remotedesk::net::ConnectStatus::Connected ||
         connection.descriptor < 0) {
+        if (connection.status == remotedesk::net::ConnectStatus::Cancelled ||
+            rdpProbeCancelled(cancelled)) {
+            return makeNetworkChangedProbeError(host, effectivePort);
+        }
         OH_LOG_WARN(LOG_APP, "[RDP-CERT] tcp connect failed host=%{public}s:%{public}d err=%{public}d elapsedMs=%{public}lld",
                     logHost.c_str(), effectivePort, connection.lastError,
                     static_cast<long long>((probeNowUs() - startedUs) / 1000));
@@ -797,8 +953,14 @@ RdpCertificateInfo probeRdpCertificateOverTls(const std::string& host, int port,
         0x03, 0x00, 0x00, 0x00
     };
     int sendError = 0;
-    if (!sendAll(fd, kNegotiateTls, sizeof(kNegotiateTls), sendError)) {
+    const auto negotiationDeadline = std::chrono::steady_clock::now() +
+        std::chrono::milliseconds(8000);
+    if (!sendAll(fd, kNegotiateTls, sizeof(kNegotiateTls),
+                 negotiationDeadline, sendError, cancelled)) {
         close(fd);
+        if (sendError == ECANCELED || rdpProbeCancelled(cancelled)) {
+            return makeNetworkChangedProbeError(host, effectivePort);
+        }
         std::ostringstream message;
         message << "Unable to send RDP negotiation request";
         if (sendError != 0) {
@@ -814,9 +976,12 @@ RdpCertificateInfo probeRdpCertificateOverTls(const std::string& host, int port,
     uint8_t tpktHeader[RdpNegotiation::RdpTpktAccumulator::kHeaderSize] = {0};
     int readError = 0;
     if (!recvExactWithDeadline(fd, tpktHeader, sizeof(tpktHeader),
-                               kNegotiationReadTimeoutMs, readError) ||
+                               kNegotiationReadTimeoutMs, readError, cancelled) ||
         !accumulator.append(tpktHeader, sizeof(tpktHeader))) {
         close(fd);
+        if (readError == ECANCELED || rdpProbeCancelled(cancelled)) {
+            return makeNetworkChangedProbeError(host, effectivePort);
+        }
         std::ostringstream message;
         message << "Unable to read RDP negotiation response";
         if (readError != 0) {
@@ -837,9 +1002,12 @@ RdpCertificateInfo probeRdpCertificateOverTls(const std::string& host, int port,
         std::vector<uint8_t> body(expectedLength -
                                   RdpNegotiation::RdpTpktAccumulator::kHeaderSize);
         if (!recvExactWithDeadline(fd, body.data(), body.size(),
-                                   kNegotiationReadTimeoutMs, readError) ||
+                                   kNegotiationReadTimeoutMs, readError, cancelled) ||
             !accumulator.append(body.data(), body.size())) {
             close(fd);
+            if (readError == ECANCELED || rdpProbeCancelled(cancelled)) {
+                return makeNetworkChangedProbeError(host, effectivePort);
+            }
             std::ostringstream message;
             message << "Unable to read complete RDP negotiation response";
             if (readError != 0) {
@@ -936,11 +1104,44 @@ RdpCertificateInfo probeRdpCertificateOverTls(const std::string& host, int port,
             return makeProbeError(host, effectivePort, -24, message);
         }
     }
-    ERR_clear_error();
-    errno = 0;
-    const int tlsResult = SSL_connect(ssl);
+    const auto tlsDeadline = std::chrono::steady_clock::now() +
+        std::chrono::milliseconds(8000);
+    int tlsResult = -1;
+    int sslError = SSL_ERROR_NONE;
+    int waitError = 0;
+    while (!rdpProbeCancelled(cancelled) &&
+           std::chrono::steady_clock::now() < tlsDeadline) {
+        ERR_clear_error();
+        errno = 0;
+        tlsResult = SSL_connect(ssl);
+        if (tlsResult == 1) {
+            break;
+        }
+        sslError = SSL_get_error(ssl, tlsResult);
+        if (sslError == SSL_ERROR_WANT_READ) {
+            if (!waitForFdUntil(fd, false, tlsDeadline, waitError, cancelled)) {
+                break;
+            }
+            continue;
+        }
+        if (sslError == SSL_ERROR_WANT_WRITE) {
+            if (!waitForFdUntil(fd, true, tlsDeadline, waitError, cancelled)) {
+                break;
+            }
+            continue;
+        }
+        break;
+    }
     if (tlsResult != 1) {
-        const int sslError = SSL_get_error(ssl, tlsResult);
+        if (rdpProbeCancelled(cancelled) || waitError == ECANCELED) {
+            SSL_free(ssl);
+            SSL_CTX_free(sslCtx);
+            close(fd);
+            return makeNetworkChangedProbeError(host, effectivePort);
+        }
+        if (sslError == SSL_ERROR_NONE) {
+            sslError = SSL_get_error(ssl, tlsResult);
+        }
         const int socketError = sslError == SSL_ERROR_SYSCALL ? errno : 0;
         const std::string opensslDetails = openSslErrorStack();
         std::ostringstream message;
@@ -961,6 +1162,12 @@ RdpCertificateInfo probeRdpCertificateOverTls(const std::string& host, int port,
                     logHost.c_str(), effectivePort, sslError, socketError,
                     message.str().c_str());
         return makeProbeError(host, effectivePort, -22, message.str());
+    }
+    if (rdpProbeCancelled(cancelled)) {
+        SSL_free(ssl);
+        SSL_CTX_free(sslCtx);
+        close(fd);
+        return makeNetworkChangedProbeError(host, effectivePort);
     }
     OH_LOG_INFO(LOG_APP, "[RDP-CERT] tls handshake ok host=%{public}s:%{public}d",
                 logHost.c_str(), effectivePort);
@@ -1026,6 +1233,9 @@ RdpCertificateInfo probeRdpCertificateOverTls(const std::string& host, int port,
     SSL_free(ssl);
     SSL_CTX_free(sslCtx);
     close(fd);
+    if (rdpProbeCancelled(cancelled)) {
+        return makeNetworkChangedProbeError(host, effectivePort);
+    }
     OH_LOG_INFO(LOG_APP,
                 "[RDP-CERT] probe ok host=%{public}s:%{public}d fingerprint=%{public}s rootTrusted=%{public}s hostMismatch=%{public}s elapsedMs=%{public}lld",
                 logHost.c_str(), effectivePort,
@@ -1245,8 +1455,40 @@ static std::vector<UINT16> utf8ToUtf16(const std::string& text) {
 
 static std::atomic<uint64_t> g_nextRdpSessionGeneration {1};
 
-void deferRdpWorker(std::thread worker, std::shared_ptr<void> keepAlive,
-                    std::shared_ptr<std::atomic<bool>> done);
+class RdpWorkerLifecycleOwner;
+
+class RdpWorkerReservation final {
+public:
+    RdpWorkerReservation() noexcept = default;
+    ~RdpWorkerReservation();
+    RdpWorkerReservation(RdpWorkerReservation&& other) noexcept;
+    RdpWorkerReservation& operator=(RdpWorkerReservation&& other) noexcept;
+
+    RdpWorkerReservation(const RdpWorkerReservation&) = delete;
+    RdpWorkerReservation& operator=(const RdpWorkerReservation&) = delete;
+
+    explicit operator bool() const noexcept { return owner_ != nullptr; }
+    void release() noexcept;
+
+private:
+    friend class RdpWorkerLifecycleOwner;
+    friend bool deferRdpWorker(
+        RdpWorkerReservation&, std::thread&, std::shared_ptr<void>,
+        std::shared_ptr<std::atomic<bool>>) noexcept;
+
+    RdpWorkerReservation(
+        RdpWorkerLifecycleOwner* owner, size_t slot) noexcept
+        : owner_(owner), slot_(slot) {}
+
+    RdpWorkerLifecycleOwner* owner_ = nullptr;
+    size_t slot_ = 0;
+};
+
+RdpWorkerReservation reserveRdpWorker() noexcept;
+bool deferRdpWorker(
+    RdpWorkerReservation& reservation, std::thread& worker,
+    std::shared_ptr<void> keepAlive,
+    std::shared_ptr<std::atomic<bool>> done) noexcept;
 
 struct FreeRdpAdapter::Impl {
     TransferRuntimeStatus transferStatus;
@@ -1278,9 +1520,26 @@ struct FreeRdpAdapter::Impl {
     std::thread             eventThread;
     std::thread             connectThread;
     std::thread             driveThread;
+    RdpWorkerReservation   eventThreadReservation;
+    RdpWorkerReservation   connectThreadReservation;
+    RdpWorkerReservation   driveThreadReservation;
+    // Every admitted connection reserves the complete asynchronous teardown
+    // chain before its connect worker can create a FreeRDP transport. The
+    // shared owner is captured by deferred cleanup so a newer generation may
+    // replace this slot without dropping the old instance's cleanup rights.
+    mutable std::mutex      teardownReservationMutex;
+    uint64_t                teardownReservationGeneration = 0;
+    std::shared_ptr<RdpTeardownReservations> teardownReservations;
+    RdpTeardownRetirementFence teardownRetirementFence;
     std::mutex              stateMutex;
     std::mutex              instanceMutex;
+    uint64_t                instanceGeneration = 0;
     std::mutex              shutdownMutex;
+    // Network callbacks schedule bounded recovery work. Public connect and
+    // disconnect take the same recursive lane so a stale recovery cannot
+    // start after an explicit disconnect has completed.
+    RdpNetworkActionGate    networkActionGate;
+    RdpNetworkRecoveryPolicy networkRecovery;
     // Serialize RDP drive status with reset/commit so a deferred mount worker
     // cannot publish stale state after a reconnect starts.
     std::mutex              transferStatusMutex;
@@ -1376,6 +1635,7 @@ struct FreeRdpAdapter::Impl {
     std::mutex              inputQueueMutex;
     std::condition_variable inputQueueCv;
     std::thread             inputQueueThread;
+    RdpWorkerReservation   inputQueueThreadReservation;
     std::shared_ptr<std::atomic<bool>> inputQueueDone =
         std::make_shared<std::atomic<bool>>(true);
     RdpInputQueue           inputQueue;
@@ -1416,6 +1676,58 @@ struct FreeRdpAdapter::Impl {
     std::atomic<uint64_t>   lastRenderBytes {0};
     int                     lastFrameWidth = 0;
     int                     lastFrameHeight = 0;
+
+    void installTeardownReservations(
+        uint64_t generation,
+        const std::shared_ptr<RdpTeardownReservations>& reservations) {
+        {
+            std::lock_guard<std::mutex> lock(teardownReservationMutex);
+            teardownReservationGeneration = generation;
+            teardownReservations = reservations;
+        }
+        teardownRetirementFence.admit(generation);
+    }
+
+    std::shared_ptr<RdpTeardownReservations> snapshotTeardownReservations(
+        uint64_t expectedGeneration = 0) const {
+        std::lock_guard<std::mutex> lock(teardownReservationMutex);
+        if (expectedGeneration != 0 &&
+            teardownReservationGeneration != expectedGeneration) {
+            return nullptr;
+        }
+        return teardownReservations;
+    }
+
+    void clearTeardownReservationsIfCurrent(
+        uint64_t generation,
+        const std::shared_ptr<RdpTeardownReservations>& reservations) {
+        bool cleared = false;
+        {
+            std::lock_guard<std::mutex> lock(teardownReservationMutex);
+            if (teardownReservationGeneration == generation &&
+                teardownReservations.get() == reservations.get()) {
+                teardownReservations.reset();
+                teardownReservationGeneration = 0;
+                cleared = true;
+            }
+        }
+        if (cleared) {
+            (void)teardownRetirementFence.retire(generation);
+        }
+    }
+
+    void interruptTeardownRetirementWait() noexcept {
+        teardownRetirementFence.interrupt();
+    }
+
+    RdpTeardownRetirementWaitResult waitForTeardownRetirement(
+        uint64_t sessionGeneration, uint64_t networkActionToken,
+        std::chrono::steady_clock::time_point deadline) {
+        return teardownRetirementFence.waitUntilRetired(
+            sessionGeneration, deadline, [this, networkActionToken]() {
+                return networkRecovery.isCurrent(networkActionToken, true);
+            });
+    }
     bool                    forceNextFullFrame = false;
     std::string             graphicsMode = "gdi";
 
@@ -1617,15 +1929,29 @@ struct FreeRdpAdapter::Impl {
                 "[RDP] input worker missing adapter lifetime");
             return false;
         }
+        RdpWorkerReservation workerReservation = reserveRdpWorker();
+        if (!workerReservation) {
+            OH_LOG_ERROR(LOG_APP,
+                "[RDP] input worker rejected: deferred-owner capacity exhausted");
+            return false;
+        }
+        std::shared_ptr<std::atomic<bool>> done;
+        try {
+            done = std::make_shared<std::atomic<bool>>(false);
+        } catch (...) {
+            OH_LOG_ERROR(LOG_APP,
+                "[RDP] input worker rejected: completion fence unavailable");
+            return false;
+        }
         inputQueueStop.store(false, std::memory_order_release);
         inputQueue.clear();
         inputQueue.resetMetrics();
         const uint64_t workerGeneration =
             inputQueueGeneration.fetch_add(1, std::memory_order_acq_rel) + 1;
         inputQueueRunning.store(true, std::memory_order_release);
-        auto done = std::make_shared<std::atomic<bool>>(false);
         std::atomic_store_explicit(&inputQueueDone, done, std::memory_order_release);
         try {
+            inputQueueThreadReservation = std::move(workerReservation);
             inputQueueThread = std::thread([this, retained, done, workerGeneration]() {
                 inputQueueWorkerLoop(retained.get(), workerGeneration);
                 inputQueueRunning.store(false, std::memory_order_release);
@@ -1633,6 +1959,7 @@ struct FreeRdpAdapter::Impl {
                 inputQueueCv.notify_all();
             });
         } catch (const std::exception& e) {
+            inputQueueThreadReservation.release();
             inputQueueRunning.store(false, std::memory_order_release);
             inputQueueStop.store(true, std::memory_order_release);
             inputQueue.clear();
@@ -1640,6 +1967,7 @@ struct FreeRdpAdapter::Impl {
             OH_LOG_WARN(LOG_APP, "[RDP] input queue worker start failed: %{public}s", e.what());
             return false;
         } catch (...) {
+            inputQueueThreadReservation.release();
             inputQueueRunning.store(false, std::memory_order_release);
             inputQueueStop.store(true, std::memory_order_release);
             inputQueue.clear();
@@ -1654,6 +1982,7 @@ struct FreeRdpAdapter::Impl {
         {
             std::lock_guard<std::mutex> lock(inputQueueMutex);
             if (!inputQueueThread.joinable()) {
+                inputQueueThreadReservation.release();
                 inputQueueRunning.store(false, std::memory_order_release);
                 inputQueueStop.store(false, std::memory_order_release);
                 return;
@@ -1674,11 +2003,13 @@ struct FreeRdpAdapter::Impl {
             lock.unlock();
             if (completed) {
                 inputQueueThread.join();
+                inputQueueThreadReservation.release();
             } else {
                 OH_LOG_WARN(LOG_APP,
                     "[RDP] input worker exceeded shutdown budget; deferring join");
-                deferRdpWorker(std::move(inputQueueThread), lifetime.lock(),
-                               doneFence);
+                (void)deferRdpWorker(
+                    inputQueueThreadReservation, inputQueueThread,
+                    lifetime.lock(), doneFence);
                 return;
             }
         }
@@ -1769,24 +2100,31 @@ struct FreeRdpAdapter::Impl {
         RendererNapi::UnregisterActiveRedrawCallback(callbackToken);
         if (notifier) {
             if (!notifier->disableAndWaitWithin(remainingRdpShutdownBudget(deadline))) {
-                auto drained = std::make_shared<std::atomic<bool>>(false);
-                auto retained = lifetime.lock();
-                try {
-                    std::thread drainThread([notifier, drained]() {
-                        // The notifier's callback state is shared with every
-                        // in-flight notify call, so the deferred owner does
-                        // not need an unbounded retry loop to keep a raw gate
-                        // alive. One bounded drain attempt is sufficient.
-                        (void)notifier->disableAndWaitWithin(
-                            std::chrono::milliseconds(500));
-                        drained->store(true, std::memory_order_release);
-                    });
-                    deferRdpWorker(std::move(drainThread), retained, drained);
-                } catch (const std::exception& e) {
+                RdpWorkerReservation workerReservation = reserveRdpWorker();
+                if (!workerReservation) {
                     OH_LOG_WARN(LOG_APP,
-                        "[RDP] redraw drain worker start failed: %{public}s", e.what());
-                } catch (...) {
-                    OH_LOG_WARN(LOG_APP, "[RDP] redraw drain worker start failed");
+                        "[RDP] redraw drain rejected: deferred-owner capacity exhausted");
+                } else {
+                    auto retained = lifetime.lock();
+                    try {
+                        auto drained = std::make_shared<std::atomic<bool>>(false);
+                        std::thread drainThread([notifier, drained]() {
+                            // The notifier's callback state is shared with every
+                            // in-flight notify call, so the deferred owner does
+                            // not need an unbounded retry loop to keep a raw gate
+                            // alive. One bounded drain attempt is sufficient.
+                            (void)notifier->disableAndWaitWithin(
+                                std::chrono::milliseconds(500));
+                            drained->store(true, std::memory_order_release);
+                        });
+                        (void)deferRdpWorker(
+                            workerReservation, drainThread, retained, drained);
+                    } catch (const std::exception& e) {
+                        OH_LOG_WARN(LOG_APP,
+                            "[RDP] redraw drain worker start failed: %{public}s", e.what());
+                    } catch (...) {
+                        OH_LOG_WARN(LOG_APP, "[RDP] redraw drain worker start failed");
+                    }
                 }
             }
         }
@@ -1827,6 +2165,13 @@ struct FreeRdpAdapter::Impl {
 // caller only waits for the supplied deadline; the owner joins after the
 // worker's done fence, never by detaching or by blocking a static destructor.
 struct DeferredRdpWorker {
+    DeferredRdpWorker() = default;
+    DeferredRdpWorker(
+        std::thread&& workerValue, std::shared_ptr<void> keepAliveValue,
+        std::shared_ptr<std::atomic<bool>> doneValue) noexcept
+        : worker(std::move(workerValue)),
+          keepAlive(std::move(keepAliveValue)), done(std::move(doneValue)) {}
+
     std::thread worker;
     std::shared_ptr<void> keepAlive;
     std::shared_ptr<std::atomic<bool>> done;
@@ -1845,29 +2190,35 @@ public:
         }
     }
 
-    void enqueue(std::thread worker, std::shared_ptr<void> keepAlive,
-                 std::shared_ptr<std::atomic<bool>> done) {
-        if (!worker.joinable()) {
-            return;
-        }
-        {
+    RdpWorkerReservation reserve() noexcept {
+        try {
             std::lock_guard<std::mutex> lock(mutex_);
-            pending_.push_back(DeferredRdpWorker {
-                std::move(worker), std::move(keepAlive), std::move(done)});
+            if (stopping_ || workerDone_ || reservedCount_ >= slots_.size()) {
+                return {};
+            }
+            for (size_t index = 0; index < slots_.size(); ++index) {
+                if (!slots_[index].reserved) {
+                    slots_[index].reserved = true;
+                    ++reservedCount_;
+                    return RdpWorkerReservation(this, index);
+                }
+            }
+        } catch (...) {
+            return {};
         }
-        cv_.notify_one();
+        return {};
     }
 
     bool drainWithin(std::chrono::milliseconds timeout) {
         std::unique_lock<std::mutex> lock(mutex_);
         return cv_.wait_for(lock, timeout, [this]() {
-            return pending_.empty() && active_ == 0;
+            return reservedCount_ == 0 && pendingCount_ == 0 && active_ == 0;
         });
     }
 
     std::size_t remaining() const {
         std::lock_guard<std::mutex> lock(mutex_);
-        return pending_.size() + active_;
+        return reservedCount_;
     }
 
     bool shutdownWithin(std::chrono::milliseconds timeout) {
@@ -1889,37 +2240,100 @@ public:
     }
 
 private:
+    friend class RdpWorkerReservation;
+    friend bool deferRdpWorker(
+        RdpWorkerReservation&, std::thread&, std::shared_ptr<void>,
+        std::shared_ptr<std::atomic<bool>>) noexcept;
+
+    struct Slot final {
+        bool reserved = false;
+        std::optional<DeferredRdpWorker> item;
+    };
+
+    bool commit(
+        size_t slotIndex, std::thread& worker,
+        std::shared_ptr<void> keepAlive,
+        std::shared_ptr<std::atomic<bool>> done) noexcept {
+        if (!worker.joinable()) {
+            release(slotIndex);
+            return true;
+        }
+        try {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (slotIndex >= slots_.size() || !slots_[slotIndex].reserved ||
+                slots_[slotIndex].item.has_value() || workerDone_) {
+                return false;
+            }
+            slots_[slotIndex].item.emplace(
+                std::move(worker), std::move(keepAlive), std::move(done));
+            ++pendingCount_;
+            cv_.notify_one();
+            return true;
+        } catch (...) {
+            // A valid reserved slot performs only noexcept moves. The caller
+            // still owns the joinable thread if the platform mutex fails;
+            // deferRdpWorker treats that as a fatal lifecycle invariant.
+            return false;
+        }
+    }
+
+    void release(size_t slotIndex) noexcept {
+        try {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (slotIndex >= slots_.size() || !slots_[slotIndex].reserved ||
+                slots_[slotIndex].item.has_value()) {
+                return;
+            }
+            slots_[slotIndex].reserved = false;
+            if (reservedCount_ > 0) {
+                --reservedCount_;
+            }
+            cv_.notify_all();
+        } catch (...) {
+            std::abort();
+        }
+    }
+
     void run() {
         for (;;) {
             DeferredRdpWorker item;
+            size_t activeSlot = slots_.size();
             {
                 std::unique_lock<std::mutex> lock(mutex_);
-                cv_.wait(lock, [this]() { return stopping_ || !pending_.empty(); });
-                if (pending_.empty() && stopping_) {
+                cv_.wait(lock, [this]() { return stopping_ || pendingCount_ != 0; });
+                if (pendingCount_ == 0 && reservedCount_ == 0 && stopping_) {
                     workerDone_ = true;
                     cv_.notify_all();
                     return;
                 }
-                item = std::move(pending_.front());
-                pending_.pop_front();
-                ++active_;
-            }
-            // Each deferred worker has an independent completion fence. Do
-            // not let one stalled worker block completed workers behind it.
-            if (item.done && !item.done->load(std::memory_order_acquire)) {
-                {
-                    std::lock_guard<std::mutex> lock(mutex_);
-                    pending_.push_back(std::move(item));
-                    --active_;
+                for (size_t index = 0; index < slots_.size(); ++index) {
+                    if (!slots_[index].item.has_value()) {
+                        continue;
+                    }
+                    const auto& done = slots_[index].item->done;
+                    if (!done || done->load(std::memory_order_acquire)) {
+                        activeSlot = index;
+                        break;
+                    }
                 }
-                cv_.notify_all();
-                std::this_thread::sleep_for(std::chrono::milliseconds(1));
-                continue;
+                if (activeSlot == slots_.size()) {
+                    lock.unlock();
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                    continue;
+                }
+                item = std::move(slots_[activeSlot].item.value());
+                slots_[activeSlot].item.reset();
+                --pendingCount_;
+                ++active_;
             }
             item.worker.join();
             item.keepAlive.reset();
             {
                 std::lock_guard<std::mutex> lock(mutex_);
+                slots_[activeSlot].reserved = false;
+                if (reservedCount_ > 0) {
+                    --reservedCount_;
+                }
                 --active_;
                 cv_.notify_all();
             }
@@ -1928,7 +2342,13 @@ private:
 
     mutable std::mutex mutex_;
     std::condition_variable cv_;
-    std::deque<DeferredRdpWorker> pending_;
+    // Every protocol worker reserves one fixed slot before std::thread is
+    // started. Capacity exhaustion therefore rejects admission before a
+    // joinable object exists; commit is allocation-free and cannot overflow.
+    static constexpr size_t kMaximumDeferredWorkers = 64;
+    std::array<Slot, kMaximumDeferredWorkers> slots_;
+    size_t reservedCount_ = 0;
+    size_t pendingCount_ = 0;
     std::thread worker_;
     bool stopping_ = false;
     bool workerDone_ = false;
@@ -1944,6 +2364,49 @@ RdpWorkerLifecycleOwner& rdpWorkerOwner() {
         g_rdpWorkerOwner = new RdpWorkerLifecycleOwner();
     }
     return *g_rdpWorkerOwner;
+}
+
+RdpWorkerReservation::~RdpWorkerReservation() {
+    release();
+}
+
+RdpWorkerReservation::RdpWorkerReservation(
+    RdpWorkerReservation&& other) noexcept
+    : owner_(other.owner_), slot_(other.slot_) {
+    other.owner_ = nullptr;
+    other.slot_ = 0;
+}
+
+RdpWorkerReservation& RdpWorkerReservation::operator=(
+    RdpWorkerReservation&& other) noexcept {
+    if (this == &other) {
+        return *this;
+    }
+    release();
+    owner_ = other.owner_;
+    slot_ = other.slot_;
+    other.owner_ = nullptr;
+    other.slot_ = 0;
+    return *this;
+}
+
+void RdpWorkerReservation::release() noexcept {
+    if (!owner_) {
+        return;
+    }
+    RdpWorkerLifecycleOwner* owner = owner_;
+    const size_t slot = slot_;
+    owner_ = nullptr;
+    slot_ = 0;
+    owner->release(slot);
+}
+
+RdpWorkerReservation reserveRdpWorker() noexcept {
+    try {
+        return rdpWorkerOwner().reserve();
+    } catch (...) {
+        return {};
+    }
 }
 
 bool shutdownRdpWorkersWithin(std::chrono::milliseconds timeout) {
@@ -1974,11 +2437,217 @@ std::size_t rdpWorkerRemaining() {
     return g_rdpWorkerOwner == nullptr ? 0 : g_rdpWorkerOwner->remaining();
 }
 
-void deferRdpWorker(std::thread worker, std::shared_ptr<void> keepAlive,
-                    std::shared_ptr<std::atomic<bool>> done) {
-    rdpWorkerOwner().enqueue(std::move(worker), std::move(keepAlive),
-                             std::move(done));
+bool deferRdpWorker(
+    RdpWorkerReservation& reservation, std::thread& worker,
+    std::shared_ptr<void> keepAlive,
+    std::shared_ptr<std::atomic<bool>> done) noexcept {
+    if (!worker.joinable()) {
+        reservation.release();
+        return true;
+    }
+    if (!reservation.owner_) {
+        OH_LOG_ERROR(LOG_APP,
+            "[RDP] refusing deferred handoff without a pre-start reservation");
+        std::abort();
+    }
+    RdpWorkerLifecycleOwner* owner = reservation.owner_;
+    const size_t slot = reservation.slot_;
+    if (!owner->commit(
+            slot, worker, std::move(keepAlive), std::move(done))) {
+        OH_LOG_ERROR(LOG_APP,
+            "[RDP] reserved deferred worker handoff invariant failed");
+        std::abort();
+    }
+    reservation.owner_ = nullptr;
+    reservation.slot_ = 0;
+    return true;
 }
+
+enum class RdpTeardownWorkerRole : size_t {
+    DisconnectTransport = 0,
+    WaitForConnectWorker,
+    RetirePlatformInstance,
+    PostDisconnectCallback,
+    Count,
+};
+
+class RdpTeardownReservations final
+    : public std::enable_shared_from_this<RdpTeardownReservations> {
+public:
+    static std::shared_ptr<RdpTeardownReservations> Create(
+        uint64_t generation) noexcept {
+        try {
+            auto owner = std::shared_ptr<RdpTeardownReservations>(
+                new RdpTeardownReservations(generation));
+            for (Carrier& carrier : owner->carriers_) {
+                carrier.done = std::make_shared<std::atomic<bool>>(false);
+                carrier.reservation = reserveRdpWorker();
+                if (!carrier.reservation) {
+                    return nullptr;
+                }
+            }
+            try {
+                for (size_t roleIndex = 0;
+                     roleIndex < owner->carriers_.size(); ++roleIndex) {
+                    owner->carriers_[roleIndex].worker = std::thread(
+                        [owner, roleIndex]() {
+                            owner->runCarrier(roleIndex);
+                        });
+                }
+            } catch (...) {
+                owner->cancelAndJoinFailedAdmission();
+                return nullptr;
+            }
+            return owner;
+        } catch (...) {
+            return nullptr;
+        }
+    }
+
+    uint64_t generation() const noexcept { return generation_; }
+
+    void markPlatformRetirementPending() noexcept {
+        platformRetirementGate_.markPending();
+    }
+
+    bool canReleaseAbsentInstanceOwner() const noexcept {
+        return platformRetirementGate_.canReleaseAbsentInstanceOwner();
+    }
+
+    bool submit(
+        RdpTeardownWorkerRole role, std::function<void()> task) noexcept {
+        if (!task) {
+            return false;
+        }
+        std::shared_ptr<RdpTeardownReservations> keepAlive;
+        try {
+            keepAlive = shared_from_this();
+        } catch (...) {
+            return false;
+        }
+        Carrier& carrier = carriers_[index(role)];
+        std::thread worker;
+        RdpWorkerReservation reservation;
+        std::shared_ptr<std::atomic<bool>> done;
+        try {
+            std::lock_guard<std::mutex> lock(carrier.mutex);
+            if (carrier.submitted || carrier.cancelled ||
+                !carrier.worker.joinable() || !carrier.reservation) {
+                return false;
+            }
+            carrier.task = std::move(task);
+            carrier.submitted = true;
+            worker = std::move(carrier.worker);
+            reservation = std::move(carrier.reservation);
+            done = carrier.done;
+        } catch (...) {
+            return false;
+        }
+        carrier.cv.notify_all();
+        (void)deferRdpWorker(
+            reservation, worker, std::move(keepAlive), std::move(done));
+        return true;
+    }
+
+    void retireUnusedCarriers() noexcept {
+        std::shared_ptr<RdpTeardownReservations> keepAlive;
+        try {
+            keepAlive = shared_from_this();
+        } catch (...) {
+            std::abort();
+        }
+        for (Carrier& carrier : carriers_) {
+            std::thread worker;
+            RdpWorkerReservation reservation;
+            std::shared_ptr<std::atomic<bool>> done;
+            try {
+                std::lock_guard<std::mutex> lock(carrier.mutex);
+                if (carrier.submitted || carrier.cancelled ||
+                    !carrier.worker.joinable()) {
+                    continue;
+                }
+                carrier.cancelled = true;
+                worker = std::move(carrier.worker);
+                reservation = std::move(carrier.reservation);
+                done = carrier.done;
+            } catch (...) {
+                std::abort();
+            }
+            carrier.cv.notify_all();
+            (void)deferRdpWorker(
+                reservation, worker, keepAlive, std::move(done));
+        }
+    }
+
+private:
+    struct Carrier final {
+        std::mutex mutex;
+        std::condition_variable cv;
+        std::function<void()> task;
+        std::thread worker;
+        RdpWorkerReservation reservation;
+        std::shared_ptr<std::atomic<bool>> done;
+        bool submitted = false;
+        bool cancelled = false;
+    };
+
+    explicit RdpTeardownReservations(uint64_t generation) noexcept
+        : generation_(generation) {}
+
+    static constexpr size_t index(RdpTeardownWorkerRole role) noexcept {
+        return static_cast<size_t>(role);
+    }
+
+    static constexpr size_t kReservationCount =
+        static_cast<size_t>(RdpTeardownWorkerRole::Count);
+
+    void runCarrier(size_t roleIndex) noexcept {
+        Carrier& carrier = carriers_[roleIndex];
+        std::function<void()> task;
+        try {
+            std::unique_lock<std::mutex> lock(carrier.mutex);
+            carrier.cv.wait(lock, [&carrier]() {
+                return carrier.submitted || carrier.cancelled;
+            });
+            if (!carrier.cancelled) {
+                task = std::move(carrier.task);
+            }
+        } catch (...) {
+            std::abort();
+        }
+        if (task) {
+            try {
+                task();
+            } catch (...) {
+                // Every carrier owns one essential raw-resource transition.
+                // Continuing after it throws would silently lose teardown.
+                std::abort();
+            }
+        }
+        carrier.done->store(true, std::memory_order_release);
+    }
+
+    void cancelAndJoinFailedAdmission() noexcept {
+        for (Carrier& carrier : carriers_) {
+            try {
+                {
+                    std::lock_guard<std::mutex> lock(carrier.mutex);
+                    carrier.cancelled = true;
+                }
+                carrier.cv.notify_all();
+                if (carrier.worker.joinable()) {
+                    carrier.worker.join();
+                }
+            } catch (...) {
+                std::abort();
+            }
+        }
+    }
+
+    uint64_t generation_ = 0;
+    RdpPlatformRetirementGate platformRetirementGate_;
+    std::array<Carrier, kReservationCount> carriers_;
+};
 
 static std::mutex g_rdpAudioCallbackMutex;
 static AudioDataCallback g_rdpAudioCallback;
@@ -2743,6 +3412,11 @@ static int captureRdpPreflightCertificate(freerdp* instance, const BYTE* data,
     if (!state) {
         return 0;
     }
+    if (rdpProbeCancelled(state->request.cancelled)) {
+        (void)freerdp_abort_connect_context(
+            instance ? instance->context : nullptr);
+        return 0;
+    }
     if (!preflightFlagsAreSupported(flags)) {
         state->unsupportedFlags = true;
         return 0;
@@ -2970,6 +3644,11 @@ static DWORD WINAPI probeVerifyRdpPreflightCertificate(
 
 static RdpPreflightResult probeRdpCertificateRouteWithFreeRdp(
     const RdpPreflightRequest& request) {
+    if (rdpProbeCancelled(request.cancelled)) {
+        return makeRdpPreflightError(
+            request, "network", "E-RDP-NETWORK-CHANGED",
+            "RDP route preflight cancelled because the default network changed");
+    }
     RdpPreflightResult result = makeRdpPreflightError(
         request, "gateway", "E-RDP-GATEWAY-TLS", "Microsoft RD Gateway preflight failed");
     RdpGatewayPolicy::initializeGatewayTransportResult(
@@ -2979,7 +3658,12 @@ static RdpPreflightResult probeRdpCertificateRouteWithFreeRdp(
     // No HTTP/RPC/WebSocket request and no RDP X.224 bytes are sent here.
     const RdpCertificateInfo inspectedGateway = probeGatewayCertificateOverTls(
         request.route.gatewayHost, request.route.gatewayPort,
-        request.route.gatewayServerName);
+        request.route.gatewayServerName, request.cancelled);
+    if (inspectedGateway.errorCode == -39 || rdpProbeCancelled(request.cancelled)) {
+        return makeRdpPreflightError(
+            request, "network", "E-RDP-NETWORK-CHANGED",
+            "RDP route preflight cancelled because the default network changed");
+    }
     result.gatewayCertificate = rdpCertificateRecordFromInfo(
         inspectedGateway, "gateway");
     if (!request.expectedGatewayFingerprintSha256.empty() &&
@@ -3032,6 +3716,11 @@ static RdpPreflightResult probeRdpCertificateRouteWithFreeRdp(
         result.errorMessage.clear();
         result.requiresUserDecision = true;
         return result;
+    }
+    if (rdpProbeCancelled(request.cancelled)) {
+        return makeRdpPreflightError(
+            request, "network", "E-RDP-NETWORK-CHANGED",
+            "RDP route preflight cancelled because the default network changed");
     }
 
     RdpPreflightRequest authenticatedRequest = request;
@@ -3133,7 +3822,55 @@ static RdpPreflightResult probeRdpCertificateRouteWithFreeRdp(
     instance->VerifyX509Certificate = probeVerifyRdpPreflightX509;
     instance->VerifyCertificateEx = probeVerifyRdpPreflightEx;
     instance->VerifyChangedCertificateEx = probeVerifyChangedRdpPreflightEx;
+    std::mutex cancellationMutex;
+    std::condition_variable cancellationCv;
+    bool connectComplete = false;
+    std::thread cancellationWatcher;
+    if (request.cancelled) {
+        try {
+            cancellationWatcher = std::thread([
+                &request, instance, &cancellationMutex,
+                &cancellationCv, &connectComplete]() {
+                for (;;) {
+                    if (rdpProbeCancelled(request.cancelled)) {
+                        if (instance->context) {
+                            (void)freerdp_abort_connect_context(instance->context);
+                        }
+                        return;
+                    }
+                    std::unique_lock<std::mutex> lock(cancellationMutex);
+                    if (cancellationCv.wait_for(
+                            lock, std::chrono::milliseconds(25),
+                            [&connectComplete]() { return connectComplete; })) {
+                        return;
+                    }
+                }
+            });
+        } catch (...) {
+            {
+                std::lock_guard<std::mutex> lock(g_rdpPreflightMutex);
+                g_rdpPreflightStates.erase(instance);
+            }
+            instance->VerifyCertificate = nullptr;
+            instance->VerifyX509Certificate = nullptr;
+            instance->VerifyCertificateEx = nullptr;
+            instance->VerifyChangedCertificateEx = nullptr;
+            freerdp_context_free(instance);
+            freerdp_free(instance);
+            return makeRdpPreflightError(
+                request, "network", "E-RDP-NETWORK-WATCHER",
+                "Unable to start the RDP preflight cancellation watcher");
+        }
+    }
     BOOL connected = freerdp_connect(instance);
+    {
+        std::lock_guard<std::mutex> lock(cancellationMutex);
+        connectComplete = true;
+    }
+    cancellationCv.notify_all();
+    if (cancellationWatcher.joinable()) {
+        cancellationWatcher.join();
+    }
 
     {
         std::lock_guard<std::mutex> lock(g_rdpPreflightMutex);
@@ -3148,6 +3885,7 @@ static RdpPreflightResult probeRdpCertificateRouteWithFreeRdp(
         // is defensive: target callback normally aborts before post-connect.
         freerdp_disconnect(instance);
     }
+    const bool networkCancelled = rdpProbeCancelled(request.cancelled);
     const DWORD lastError = instance->context ? freerdp_get_last_error(instance->context) : 0;
     const bool standardRdpSecuritySelected = instance->settings != nullptr &&
         freerdp_settings_get_bool(instance->settings, FreeRDP_UseRdpSecurityLayer) &&
@@ -3157,7 +3895,11 @@ static RdpPreflightResult probeRdpCertificateRouteWithFreeRdp(
     const bool targetSeen = state->result.targetCertificate.present;
     const bool targetMetadataInvalid = state->targetCertificateMetadataInvalid;
     const bool gatewayMetadataInvalid = state->gatewayCertificateMetadataInvalid;
-    if (targetMetadataInvalid || gatewayMetadataInvalid) {
+    if (networkCancelled) {
+        result = makeRdpPreflightError(
+            request, "network", "E-RDP-NETWORK-CHANGED",
+            "RDP route preflight cancelled because the default network changed");
+    } else if (targetMetadataInvalid || gatewayMetadataInvalid) {
         const bool targetStage = targetMetadataInvalid;
         result.stage = targetStage ? "target" : "gateway";
         result.errorCode = targetStage ? "E-RDP-TARGET-CERT" : "E-RDP-GATEWAY-CERT";
@@ -4830,22 +5572,38 @@ bool FreeRdpAdapter::startEventLoop() {
     if (!retained) {
         return false;
     }
+    RdpWorkerReservation workerReservation = reserveRdpWorker();
+    if (!workerReservation) {
+        OH_LOG_ERROR(LOG_APP,
+            "[RDP] event worker rejected: deferred-owner capacity exhausted");
+        return false;
+    }
+    std::shared_ptr<std::atomic<bool>> done;
+    try {
+        done = std::make_shared<std::atomic<bool>>(false);
+    } catch (...) {
+        OH_LOG_ERROR(LOG_APP,
+            "[RDP] event worker rejected: completion fence unavailable");
+        return false;
+    }
     eventLoopRunning_.store(true, std::memory_order_release);
-    auto done = std::make_shared<std::atomic<bool>>(false);
     std::atomic_store_explicit(&impl_->eventThreadDone, done, std::memory_order_release);
     try {
+        impl_->eventThreadReservation = std::move(workerReservation);
         impl_->eventThread = std::thread([retained, done]() {
             retained->processEventLoop();
             done->store(true, std::memory_order_release);
             retained->impl_->workerDoneCv.notify_all();
         });
     } catch (const std::exception& e) {
+        impl_->eventThreadReservation.release();
         eventLoopRunning_.store(false, std::memory_order_release);
         done->store(true, std::memory_order_release);
         OH_LOG_ERROR(LOG_APP,
             "[RDP] event loop worker start failed: %{public}s", e.what());
         return false;
     } catch (...) {
+        impl_->eventThreadReservation.release();
         eventLoopRunning_.store(false, std::memory_order_release);
         done->store(true, std::memory_order_release);
         OH_LOG_ERROR(LOG_APP, "[RDP] event loop worker start failed");
@@ -4859,10 +5617,16 @@ void FreeRdpAdapter::stopEventLoop(RdpShutdownDeadline deadline) {
     eventLoopRunning_.store(false, std::memory_order_release);
     const auto doneFence = std::atomic_load_explicit(
         &impl_->eventThreadDone, std::memory_order_acquire);
+    if (!impl_->eventThread.joinable()) {
+        impl_->eventThreadReservation.release();
+        impl_->traceShutdown("event-stop", "not-started");
+        return;
+    }
     if (impl_->eventThread.joinable()) {
         if (impl_->eventThread.get_id() == std::this_thread::get_id()) {
-            deferRdpWorker(std::move(impl_->eventThread),
-                           impl_->lifetime.lock(), doneFence);
+            (void)deferRdpWorker(
+                impl_->eventThreadReservation, impl_->eventThread,
+                impl_->lifetime.lock(), doneFence);
         } else {
             std::unique_lock<std::mutex> lock(impl_->workerDoneMutex);
             const bool done = impl_->workerDoneCv.wait_for(
@@ -4872,11 +5636,13 @@ void FreeRdpAdapter::stopEventLoop(RdpShutdownDeadline deadline) {
             lock.unlock();
             if (done) {
                 impl_->eventThread.join();
+                impl_->eventThreadReservation.release();
             } else {
                 OH_LOG_WARN(LOG_APP,
                     "[RDP] event worker exceeded shutdown budget; deferring join");
-                deferRdpWorker(std::move(impl_->eventThread),
-                               impl_->lifetime.lock(), doneFence);
+                (void)deferRdpWorker(
+                    impl_->eventThreadReservation, impl_->eventThread,
+                    impl_->lifetime.lock(), doneFence);
             }
         }
     }
@@ -5121,12 +5887,14 @@ void FreeRdpAdapter::joinConnectThread(RdpShutdownDeadline deadline) {
     const auto doneFence = std::atomic_load_explicit(
         &impl_->connectThreadDone, std::memory_order_acquire);
     if (!impl_->connectThread.joinable()) {
+        impl_->connectThreadReservation.release();
         impl_->traceShutdown("connect-join", "not-started");
         return;
     }
     if (impl_->connectThread.get_id() == std::this_thread::get_id()) {
-        deferRdpWorker(std::move(impl_->connectThread),
-                       impl_->lifetime.lock(), doneFence);
+        (void)deferRdpWorker(
+            impl_->connectThreadReservation, impl_->connectThread,
+            impl_->lifetime.lock(), doneFence);
         impl_->connectThreadStarted.store(false, std::memory_order_release);
         impl_->traceShutdown("connect-join", "self-deferred");
         return;
@@ -5139,11 +5907,13 @@ void FreeRdpAdapter::joinConnectThread(RdpShutdownDeadline deadline) {
     lock.unlock();
     if (done) {
         impl_->connectThread.join();
+        impl_->connectThreadReservation.release();
     } else {
         OH_LOG_WARN(LOG_APP,
             "[RDP] connect worker exceeded shutdown budget; deferring join");
-        deferRdpWorker(std::move(impl_->connectThread),
-                       impl_->lifetime.lock(), doneFence);
+        (void)deferRdpWorker(
+            impl_->connectThreadReservation, impl_->connectThread,
+            impl_->lifetime.lock(), doneFence);
     }
     impl_->connectThreadStarted.store(false, std::memory_order_release);
     impl_->traceShutdown("connect-join", "complete");
@@ -5154,12 +5924,14 @@ void FreeRdpAdapter::joinDriveThread(RdpShutdownDeadline deadline) {
     const auto doneFence = std::atomic_load_explicit(
         &impl_->driveThreadDone, std::memory_order_acquire);
     if (!impl_->driveThread.joinable()) {
+        impl_->driveThreadReservation.release();
         impl_->traceShutdown("drive-join", "not-started");
         return;
     }
     if (impl_->driveThread.get_id() == std::this_thread::get_id()) {
-        deferRdpWorker(std::move(impl_->driveThread),
-                       impl_->lifetime.lock(), doneFence);
+        (void)deferRdpWorker(
+            impl_->driveThreadReservation, impl_->driveThread,
+            impl_->lifetime.lock(), doneFence);
         impl_->driveThreadStarted.store(false, std::memory_order_release);
         impl_->traceShutdown("drive-join", "self-deferred");
         return;
@@ -5172,11 +5944,13 @@ void FreeRdpAdapter::joinDriveThread(RdpShutdownDeadline deadline) {
     lock.unlock();
     if (done) {
         impl_->driveThread.join();
+        impl_->driveThreadReservation.release();
     } else {
         OH_LOG_WARN(LOG_APP,
             "[RDP] drive worker exceeded shutdown budget; deferring join");
-        deferRdpWorker(std::move(impl_->driveThread),
-                       impl_->lifetime.lock(), doneFence);
+        (void)deferRdpWorker(
+            impl_->driveThreadReservation, impl_->driveThread,
+            impl_->lifetime.lock(), doneFence);
     }
     impl_->driveThreadStarted.store(false, std::memory_order_release);
     impl_->traceShutdown("drive-join", "complete");
@@ -5203,21 +5977,36 @@ void FreeRdpAdapter::startDriveMountAfterConnected(const std::string& driveName,
         return;
     }
     if (!retained) return;
-    auto done = std::make_shared<std::atomic<bool>>(false);
-    std::atomic_store_explicit(&impl_->driveThreadDone, done, std::memory_order_release);
+    RdpWorkerReservation workerReservation = reserveRdpWorker();
+    if (!workerReservation) {
+        OH_LOG_WARN(LOG_APP,
+            "[RDP] redirected drive worker rejected: deferred-owner capacity exhausted");
+        return;
+    }
+    std::shared_ptr<std::atomic<bool>> done;
     try {
+        done = std::make_shared<std::atomic<bool>>(false);
+        std::atomic_store_explicit(
+            &impl_->driveThreadDone, done, std::memory_order_release);
+        impl_->driveThreadReservation = std::move(workerReservation);
         impl_->driveThread = std::thread([retained, done, driveName, drivePath, generation]() {
             retained->mountDriveAfterConnected(driveName, drivePath, generation);
             done->store(true, std::memory_order_release);
             retained->impl_->workerDoneCv.notify_all();
         });
     } catch (const std::exception& e) {
-        done->store(true, std::memory_order_release);
+        impl_->driveThreadReservation.release();
+        if (done) {
+            done->store(true, std::memory_order_release);
+        }
         OH_LOG_WARN(LOG_APP,
             "[RDP] redirected drive async mount thread failed: %{public}s", e.what());
         return;
     } catch (...) {
-        done->store(true, std::memory_order_release);
+        impl_->driveThreadReservation.release();
+        if (done) {
+            done->store(true, std::memory_order_release);
+        }
         OH_LOG_WARN(LOG_APP,
             "[RDP] redirected drive async mount thread failed");
         return;
@@ -5303,7 +6092,9 @@ void FreeRdpAdapter::mountDriveAfterConnected(const std::string& driveName,
     }
 }
 
-void FreeRdpAdapter::disconnectActiveInstance(RdpShutdownDeadline deadline) {
+bool FreeRdpAdapter::disconnectActiveInstance(
+    RdpShutdownDeadline deadline,
+    const std::shared_ptr<RdpTeardownReservations>& teardownReservations) {
     if (remainingRdpShutdownBudget(deadline).count() <= 0) {
         // Transport teardown still needs an owner. Start it below and hand it
         // to the deferred reaper immediately instead of freeing a live context.
@@ -5316,22 +6107,28 @@ void FreeRdpAdapter::disconnectActiveInstance(RdpShutdownDeadline deadline) {
     }
     if (!activeInstance) {
         impl_->traceShutdown("freerdp-disconnect", "no-instance");
-        return;
+        return true;
     }
     const auto retained = impl_->lifetime.lock();
     if (!retained) {
         OH_LOG_WARN(LOG_APP,
             "[RDP] cannot defer FreeRDP disconnect without shared adapter lifetime");
-        return;
+        return false;
     }
-    auto done = std::make_shared<std::atomic<bool>>(false);
-    impl_->disconnectWorkerDone = done;
+    if (!teardownReservations) {
+        OH_LOG_ERROR(LOG_APP,
+            "[RDP] disconnect task missing its pre-admitted teardown owner");
+        return false;
+    }
     const auto eventDone = std::atomic_load_explicit(
         &impl_->eventThreadDone, std::memory_order_acquire);
     impl_->traceShutdown("freerdp-disconnect", "begin");
-    std::thread disconnectWorker;
+    std::shared_ptr<std::atomic<bool>> done;
     try {
-        disconnectWorker = std::thread([retained, activeInstance, eventDone, done]() {
+        done = std::make_shared<std::atomic<bool>>(false);
+        impl_->disconnectWorkerDone = done;
+        std::function<void()> disconnectTask = [
+            retained, activeInstance, eventDone, done]() {
             if (eventDone &&
                 !RdpShutdown::CanStartTransportDisconnect(
                     eventDone->load(std::memory_order_acquire))) {
@@ -5347,17 +6144,30 @@ void FreeRdpAdapter::disconnectActiveInstance(RdpShutdownDeadline deadline) {
             freerdp_disconnect(activeInstance);
             done->store(true, std::memory_order_release);
             retained->impl_->workerDoneCv.notify_all();
-        });
+        };
+        if (!teardownReservations->submit(
+                RdpTeardownWorkerRole::DisconnectTransport,
+                std::move(disconnectTask))) {
+            done->store(true, std::memory_order_release);
+            OH_LOG_ERROR(LOG_APP,
+                "[RDP] disconnect carrier was unavailable");
+            return false;
+        }
     } catch (const std::exception& e) {
-        done->store(true, std::memory_order_release);
+        if (done) {
+            done->store(true, std::memory_order_release);
+        }
         OH_LOG_ERROR(LOG_APP,
-            "[RDP] FreeRDP disconnect worker start failed: %{public}s", e.what());
-        return;
+            "[RDP] FreeRDP disconnect task materialization failed: %{public}s",
+            e.what());
+        return false;
     } catch (...) {
-        done->store(true, std::memory_order_release);
+        if (done) {
+            done->store(true, std::memory_order_release);
+        }
         OH_LOG_ERROR(LOG_APP,
-            "[RDP] FreeRDP disconnect worker start failed");
-        return;
+            "[RDP] FreeRDP disconnect task materialization failed");
+        return false;
     }
     const auto waitBudget = remainingRdpShutdownBudget(deadline);
     std::unique_lock<std::mutex> lock(impl_->workerDoneMutex);
@@ -5366,16 +6176,44 @@ void FreeRdpAdapter::disconnectActiveInstance(RdpShutdownDeadline deadline) {
     });
     lock.unlock();
     if (completed) {
-        disconnectWorker.join();
+        impl_->traceShutdown("freerdp-disconnect", "completed-within-budget");
     } else {
         OH_LOG_WARN(LOG_APP,
-            "[RDP] FreeRDP disconnect exceeded total deadline; deferring worker");
-        deferRdpWorker(std::move(disconnectWorker), retained, done);
+            "[RDP] FreeRDP disconnect exceeded total deadline; "
+            "fixed teardown owner remains active");
     }
     impl_->traceShutdown("freerdp-disconnect", "complete");
+    return true;
 }
 
-void FreeRdpAdapter::cleanupInstance(RdpShutdownDeadline deadline) {
+void FreeRdpAdapter::cleanupInstance(
+    RdpShutdownDeadline deadline, uint64_t expectedGeneration,
+    std::shared_ptr<RdpTeardownReservations> teardownReservations) {
+    std::lock_guard<std::recursive_mutex> operationLock(
+        impl_->networkActionGate.mutex());
+    if (expectedGeneration != 0 &&
+        impl_->sessionGeneration.load(std::memory_order_acquire) !=
+            expectedGeneration) {
+        OH_LOG_INFO(LOG_APP,
+            "[RDP] stale instance cleanup ignored generation=%{public}llu",
+            static_cast<unsigned long long>(expectedGeneration));
+        return;
+    }
+    if (!teardownReservations) {
+        teardownReservations = impl_->snapshotTeardownReservations(
+            expectedGeneration);
+    }
+    const uint64_t teardownGeneration = expectedGeneration != 0
+        ? expectedGeneration
+        : (teardownReservations
+            ? teardownReservations->generation()
+            : impl_->sessionGeneration.load(std::memory_order_acquire));
+    if (teardownReservations &&
+        teardownReservations->generation() != teardownGeneration) {
+        OH_LOG_ERROR(LOG_APP,
+            "[RDP] refusing cleanup with a mismatched teardown reservation owner");
+        return;
+    }
     if (deadline == RdpShutdownDeadline::max()) {
         deadline = impl_->getOrCreateShutdownTicket()->deadline;
     }
@@ -5393,9 +6231,16 @@ void FreeRdpAdapter::cleanupInstance(RdpShutdownDeadline deadline) {
         if (!impl_->cleanupDeferredForWorker.exchange(true, std::memory_order_acq_rel)) {
             const auto retained = impl_->lifetime.lock();
             if (retained) {
-                auto retireDone = std::make_shared<std::atomic<bool>>(false);
+                if (!teardownReservations) {
+                    impl_->cleanupDeferredForWorker.store(false, std::memory_order_release);
+                    OH_LOG_ERROR(LOG_APP,
+                        "[RDP] deferred cleanup missing its pre-admitted carrier owner");
+                    return;
+                }
                 try {
-                    std::thread retire([retained, connectDoneFence, deadline, retireDone]() {
+                    std::function<void()> retire = [
+                        retained, connectDoneFence, deadline,
+                        teardownGeneration, teardownReservations]() {
                         std::unique_lock<std::mutex> lock(retained->impl_->workerDoneMutex);
                         retained->impl_->workerDoneCv.wait(lock, [connectDoneFence]() {
                             return connectDoneFence->load(std::memory_order_acquire);
@@ -5403,21 +6248,37 @@ void FreeRdpAdapter::cleanupInstance(RdpShutdownDeadline deadline) {
                         lock.unlock();
                         retained->impl_->cleanupDeferredForWorker.store(
                             false, std::memory_order_release);
-                        retained->cleanupInstance(deadline);
-                        retireDone->store(true, std::memory_order_release);
+                        retained->cleanupInstance(
+                            deadline, teardownGeneration,
+                            teardownReservations);
                         retained->impl_->workerDoneCv.notify_all();
-                    });
-                    deferRdpWorker(std::move(retire), retained, retireDone);
+                    };
+                    if (!teardownReservations->submit(
+                            RdpTeardownWorkerRole::WaitForConnectWorker,
+                            std::move(retire))) {
+                        OH_LOG_ERROR(LOG_APP,
+                            "[RDP] connect-worker cleanup carrier was unavailable");
+                        std::abort();
+                    }
                 } catch (...) {
                     impl_->cleanupDeferredForWorker.store(false, std::memory_order_release);
                     OH_LOG_ERROR(LOG_APP,
-                        "[RDP] failed to defer cleanup until connect worker completion");
+                        "[RDP] failed to materialize connect-worker cleanup task");
+                    std::abort();
                 }
             } else {
                 impl_->cleanupDeferredForWorker.store(false, std::memory_order_release);
                 OH_LOG_ERROR(LOG_APP,
                     "[RDP] cannot defer cleanup without shared adapter lifetime");
             }
+        }
+        return;
+    }
+    if (!teardownReservations) {
+        std::lock_guard<std::mutex> lock(impl_->instanceMutex);
+        if (instance_ != nullptr) {
+            OH_LOG_ERROR(LOG_APP,
+                "[RDP] refusing to release an instance without its pre-admitted teardown owner");
         }
         return;
     }
@@ -5463,10 +6324,34 @@ void FreeRdpAdapter::cleanupInstance(RdpShutdownDeadline deadline) {
     freerdp* doomedInstance = nullptr;
     {
         std::lock_guard<std::mutex> lock(impl_->instanceMutex);
+        if (instance_ != nullptr && teardownGeneration != 0 &&
+            impl_->instanceGeneration != teardownGeneration) {
+            OH_LOG_INFO(LOG_APP,
+                "[RDP] stale instance detach ignored generation=%{public}llu current=%{public}llu",
+                static_cast<unsigned long long>(teardownGeneration),
+                static_cast<unsigned long long>(impl_->instanceGeneration));
+            return;
+        }
         doomedInstance = instance_;
+        if (doomedInstance) {
+            // From this point the raw instance is owned by the final platform
+            // retire path, even after it is detached from the public slot.
+            // The connect-worker epilogue must not clear this generation's
+            // reservation while callback/worker fences are still draining.
+            teardownReservations->markPlatformRetirementPending();
+        }
         instance_ = nullptr;
+        impl_->instanceGeneration = 0;
     }
     if (!doomedInstance) {
+        if (!teardownReservations->canReleaseAbsentInstanceOwner()) {
+            impl_->traceShutdown(
+                "context-free", "platform-retirement-pending");
+            return;
+        }
+        teardownReservations->retireUnusedCarriers();
+        impl_->clearTeardownReservationsIfCurrent(
+            teardownGeneration, teardownReservations);
         impl_->traceShutdown("context-free", "no-instance");
         return;
     }
@@ -5510,7 +6395,9 @@ void FreeRdpAdapter::cleanupInstance(RdpShutdownDeadline deadline) {
     const auto driveDone = std::atomic_load_explicit(
         &impl_->driveThreadDone, std::memory_order_acquire);
     const bool releaseGdi = impl_->gdiInitialized.exchange(false, std::memory_order_acq_rel);
-    auto platformCleanup = [doomedInstance, retainedAdapter, releaseGdi]() {
+    auto platformCleanup = [
+        doomedInstance, retainedAdapter, releaseGdi,
+        teardownGeneration, teardownReservations]() {
         rdpContext* doomedContext = doomedInstance->context;
         // PubSub is part of the FreeRDP instance and may be touched by the
         // disconnect worker.  Removing the registry carrier above makes late
@@ -5543,13 +6430,19 @@ void FreeRdpAdapter::cleanupInstance(RdpShutdownDeadline deadline) {
             OH_LOG_ERROR(LOG_APP,
                          "[RDP] callback quarantine release refused before confirmed source revoke");
         }
+        if (retainedAdapter) {
+            teardownReservations->retireUnusedCarriers();
+            retainedAdapter->impl_->clearTeardownReservationsIfCurrent(
+                teardownGeneration, teardownReservations);
+        }
     };
     // A timed-out freerdp_disconnect may still be unwinding the same context.
     // Never wait for it on the callback/teardown caller (the callback may be
     // the disconnect worker itself); hand the ordered platform cleanup to a
     // second bounded-owner job that waits only on the worker done fence.
-    auto finalCleanup = [platformCleanup, retainedAdapter, disconnectDone,
-                         eventDone, driveDone]() mutable {
+    auto finalCleanup = [
+        platformCleanup, retainedAdapter, disconnectDone, eventDone, driveDone,
+        teardownReservations]() mutable {
         const auto allWorkersDone = [disconnectDone, eventDone, driveDone]() {
             return (!disconnectDone || disconnectDone->load(std::memory_order_acquire)) &&
                 (!eventDone || eventDone->load(std::memory_order_acquire)) &&
@@ -5564,24 +6457,34 @@ void FreeRdpAdapter::cleanupInstance(RdpShutdownDeadline deadline) {
                 "[RDP] refusing platform cleanup while worker fences are live");
             return;
         }
-        auto retireDone = std::make_shared<std::atomic<bool>>(false);
+        if (!teardownReservations) {
+            OH_LOG_ERROR(LOG_APP,
+                "[RDP] deferred platform cleanup missing its pre-admitted carrier owner");
+            return;
+        }
         try {
-            std::thread retire([platformCleanup, retainedAdapter, allWorkersDone,
-                                retireDone]() mutable {
+            std::function<void()> retire = [
+                platformCleanup, retainedAdapter, allWorkersDone]() mutable {
                 std::unique_lock<std::mutex> lock(retainedAdapter->impl_->workerDoneMutex);
                 retainedAdapter->impl_->workerDoneCv.wait(lock, allWorkersDone);
                 lock.unlock();
                 platformCleanup();
-                retireDone->store(true, std::memory_order_release);
                 retainedAdapter->impl_->workerDoneCv.notify_all();
-            });
-            deferRdpWorker(std::move(retire), retainedAdapter, retireDone);
+            };
+            if (!teardownReservations->submit(
+                    RdpTeardownWorkerRole::RetirePlatformInstance,
+                    std::move(retire))) {
+                OH_LOG_ERROR(LOG_APP,
+                    "[RDP] platform cleanup carrier was unavailable");
+                std::abort();
+            }
         } catch (...) {
-            // If a retire thread cannot be created, do not free a live
-            // FreeRDP context. The original worker owner remains responsible
-            // for a subsequent explicit drain attempt.
+            // The fixed reservation already owns the raw platform context.
+            // Continuing after failure to materialize its allocation-only
+            // type erasure would discard that owner, so fail-stop instead.
             OH_LOG_ERROR(LOG_APP,
-                "[RDP] failed to start deferred platform cleanup owner");
+                "[RDP] failed to materialize deferred platform cleanup task");
+            std::abort();
         }
     };
     if (admission) {
@@ -5605,6 +6508,10 @@ void FreeRdpAdapter::queuePostDisconnectTeardown() {
     // initial ticket here; subsequent/reentrant callbacks never mint a new
     // budget or owner.
     const auto ticket = impl_->getOrCreateShutdownTicket();
+    const uint64_t teardownGeneration =
+        impl_->sessionGeneration.load(std::memory_order_acquire);
+    const auto teardownReservations =
+        impl_->snapshotTeardownReservations(teardownGeneration);
     const auto retained = impl_->lifetime.lock();
     if (!retained) {
         impl_->postDisconnectTeardownQueued.store(false, std::memory_order_release);
@@ -5612,25 +6519,43 @@ void FreeRdpAdapter::queuePostDisconnectTeardown() {
                     "[RDP] PostDisconnect teardown deferred without shared adapter owner");
         return;
     }
-    auto done = std::make_shared<std::atomic<bool>>(false);
+    if (!teardownReservations) {
+        impl_->postDisconnectTeardownQueued.store(false, std::memory_order_release);
+        OH_LOG_ERROR(LOG_APP,
+            "[RDP] PostDisconnect teardown missing its pre-admitted carrier owner");
+        return;
+    }
     try {
-        std::thread teardown([retained, ticket, done]() {
+        std::function<void()> teardown = [
+            retained, ticket, teardownGeneration,
+            teardownReservations]() {
             if (ticket) {
-                retained->cleanupInstance(ticket->deadline);
+                retained->cleanupInstance(
+                    ticket->deadline, teardownGeneration,
+                    teardownReservations);
             }
-            done->store(true, std::memory_order_release);
             retained->impl_->workerDoneCv.notify_all();
-        });
-        deferRdpWorker(std::move(teardown), retained, done);
+        };
+        if (!teardownReservations->submit(
+                RdpTeardownWorkerRole::PostDisconnectCallback,
+                std::move(teardown))) {
+            impl_->postDisconnectTeardownQueued.store(
+                false, std::memory_order_release);
+            OH_LOG_ERROR(LOG_APP,
+                "[RDP] PostDisconnect teardown carrier was unavailable");
+            std::abort();
+        }
     } catch (const std::exception& e) {
         impl_->postDisconnectTeardownQueued.store(false, std::memory_order_release);
         OH_LOG_ERROR(LOG_APP,
-                     "[RDP] PostDisconnect teardown worker start failed: %{public}s",
+                     "[RDP] PostDisconnect teardown task materialization failed: %{public}s",
                      e.what());
+        std::abort();
     } catch (...) {
         impl_->postDisconnectTeardownQueued.store(false, std::memory_order_release);
         OH_LOG_ERROR(LOG_APP,
-                     "[RDP] PostDisconnect teardown worker start failed");
+                     "[RDP] PostDisconnect teardown task materialization failed");
+        std::abort();
     }
 }
 
@@ -5832,14 +6757,62 @@ UINT FreeRdpAdapter::InvokeRdpsndCallbackForTestingWithToken(
 std::shared_ptr<std::atomic<bool>> FreeRdpAdapter::QueueBlockedWorkerForTesting() {
     auto release = std::make_shared<std::atomic<bool>>(false);
     auto done = std::make_shared<std::atomic<bool>>(false);
+    RdpWorkerReservation workerReservation = reserveRdpWorker();
+    if (!workerReservation) {
+        return nullptr;
+    }
     std::thread worker([release, done]() {
         while (!release->load(std::memory_order_acquire)) {
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
         done->store(true, std::memory_order_release);
     });
-    deferRdpWorker(std::move(worker), nullptr, done);
+    (void)deferRdpWorker(workerReservation, worker, nullptr, done);
     return release;
+}
+
+bool FreeRdpAdapter::VerifyTeardownCarrierIsolationForTesting() {
+    const auto carriers = RdpTeardownReservations::Create(
+        g_nextRdpSessionGeneration.fetch_add(1, std::memory_order_relaxed));
+    if (!carriers) {
+        return false;
+    }
+    auto releaseBlocked = std::make_shared<std::atomic<bool>>(false);
+    auto blockedEntered = std::make_shared<std::atomic<bool>>(false);
+    auto siblingRan = std::make_shared<std::atomic<bool>>(false);
+    std::function<void()> blocked = [releaseBlocked, blockedEntered]() {
+        blockedEntered->store(true, std::memory_order_release);
+        while (!releaseBlocked->load(std::memory_order_acquire)) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+    };
+    std::function<void()> sibling = [siblingRan]() {
+        siblingRan->store(true, std::memory_order_release);
+    };
+    const bool blockedSubmitted = carriers->submit(
+        RdpTeardownWorkerRole::DisconnectTransport, std::move(blocked));
+    const bool siblingSubmitted = carriers->submit(
+        RdpTeardownWorkerRole::RetirePlatformInstance, std::move(sibling));
+    carriers->retireUnusedCarriers();
+
+    const auto observationDeadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(1);
+    while ((!blockedEntered->load(std::memory_order_acquire) ||
+            !siblingRan->load(std::memory_order_acquire)) &&
+           std::chrono::steady_clock::now() < observationDeadline) {
+        std::this_thread::yield();
+    }
+    const bool isolated =
+        blockedEntered->load(std::memory_order_acquire) &&
+        siblingRan->load(std::memory_order_acquire) &&
+        !releaseBlocked->load(std::memory_order_acquire);
+    const bool blockedStillOwned =
+        !rdpWorkerOwner().drainWithin(std::chrono::milliseconds(20));
+    releaseBlocked->store(true, std::memory_order_release);
+    const bool drained =
+        rdpWorkerOwner().drainWithin(std::chrono::milliseconds(1000));
+    return blockedSubmitted && siblingSubmitted && isolated &&
+        blockedStillOwned && drained;
 }
 
 bool FreeRdpAdapter::DrainDeferredWorkersWithinForTesting(uint32_t timeoutMs) {
@@ -5862,8 +6835,9 @@ RemoteCursorSnapshot FreeRdpAdapter::getRemoteCursorSnapshot(bool includePixels)
 FreeRdpAdapter::~FreeRdpAdapter() {
     // 断开活跃连接或等待连接线程结束
     disconnect();
-    (void)RdpFramePump::shutdownDeferredJoinsWithin(std::chrono::milliseconds(500));
-    (void)shutdownRdpWorkersWithin(std::chrono::milliseconds(500));
+    // Deferred join owners are process-scoped. Stopping either owner from an
+    // individual adapter destructor can reject work for another live RDP
+    // session, especially while that session owns teardown reservations.
 }
 
 // ---- 协议元信息 ----
@@ -5873,6 +6847,19 @@ std::string FreeRdpAdapter::protocolVersion() { return FREERDP_VERSION_FULL; }
 
 // ---- 连接管理 (异步, 不阻塞 NAPI 线程) ----
 int FreeRdpAdapter::connect(const ConnectionConfig& cfg) {
+    std::lock_guard<std::recursive_mutex> operationLock(
+        impl_->networkActionGate.mutex());
+    impl_->networkRecovery.admitConnectionOwner();
+    impl_->interruptTeardownRetirementWait();
+    return connectInternal(cfg, 0);
+}
+
+int FreeRdpAdapter::connectInternal(
+    const ConnectionConfig& cfg, uint64_t networkActionToken) {
+    if (networkActionToken != 0 &&
+        !impl_->networkRecovery.isCurrent(networkActionToken, true)) {
+        return -125;
+    }
     std::shared_ptr<FreeRdpAdapter> retained;
     try {
         retained = shared_from_this();
@@ -5890,10 +6877,33 @@ int FreeRdpAdapter::connect(const ConnectionConfig& cfg) {
     // invoke std::terminate even though the public state is already ERROR.
     // Route every joinable/connecting attempt through the idempotent shutdown
     // path before publishing a new generation.
+    bool hasPreviousTransport = false;
+    {
+        std::lock_guard<std::mutex> lock(impl_->instanceMutex);
+        hasPreviousTransport = instance_ != nullptr;
+    }
     if (getState() == ConnectionState::CONNECTED ||
         impl_->connecting.load(std::memory_order_acquire) ||
-        impl_->connectThread.joinable()) {
-        disconnect();
+        impl_->connectThread.joinable() || hasPreviousTransport) {
+        disconnectInternal(networkActionToken == 0);
+    }
+    bool previousTransportRetiring = false;
+    {
+        std::lock_guard<std::mutex> lock(impl_->instanceMutex);
+        previousTransportRetiring = instance_ != nullptr;
+    }
+    const bool previousPlatformCleanupPending =
+        impl_->snapshotTeardownReservations() != nullptr;
+    if (previousTransportRetiring || previousPlatformCleanupPending) {
+        impl_->setState(
+            ConnectionState::ERROR,
+            "The previous RDP transport or platform context is still retiring "
+            "[E-RDP-TEARDOWN-PENDING]");
+        return -103;
+    }
+    if (networkActionToken != 0 &&
+        !impl_->networkRecovery.isCurrent(networkActionToken, true)) {
+        return -125;
     }
     {
         std::lock_guard<std::mutex> shutdownLock(impl_->shutdownMutex);
@@ -5947,7 +6957,8 @@ int FreeRdpAdapter::connect(const ConnectionConfig& cfg) {
     }
     {
         std::lock_guard<std::mutex> lock(impl_->configMutex);
-        impl_->config = normalizedConfig;
+        RdpReconnectCredentialPolicy::replace(
+            impl_->config, normalizedConfig);
     }
     impl_->connecting = true;
     impl_->stopRequested = false;
@@ -5974,29 +6985,101 @@ int FreeRdpAdapter::connect(const ConnectionConfig& cfg) {
     if (oldAudioAdmission) {
         (void)closeRdpCallbackAdmission(oldAudioAdmission, "connect-rebind");
     }
-    impl_->setState(ConnectionState::CONNECTING, "Connecting...");
+    impl_->setState(
+        networkActionToken == 0
+            ? ConnectionState::CONNECTING
+            : ConnectionState::RECONNECTING,
+        networkActionToken == 0
+            ? "Connecting..."
+            : "RDP network changed; resolving the endpoint again");
+    if (networkActionToken != 0 &&
+        !impl_->networkRecovery.isCurrent(networkActionToken, true)) {
+        return -125;
+    }
 
     // 在独立线程中执行 freerdp_connect(), 避免阻塞 NAPI/ArkTS UI
     const uint64_t connectGeneration =
         impl_->sessionGeneration.load(std::memory_order_acquire);
-    auto connectDone = std::make_shared<std::atomic<bool>>(false);
-    std::atomic_store_explicit(&impl_->connectThreadDone, connectDone,
-                               std::memory_order_release);
+    const remotedesk::net::NetworkGenerationSnapshot networkSnapshot =
+        remotedesk::net::ProcessNetworkGenerationFence().snapshot();
+    if (!networkSnapshot.available) {
+        impl_->connecting.store(false, std::memory_order_release);
+        impl_->setState(
+            ConnectionState::ERROR,
+            "RDP default network is unavailable [E-RDP-NETWORK-UNAVAILABLE]");
+        return -101;
+    }
+    const auto teardownReservations =
+        RdpTeardownReservations::Create(connectGeneration);
+    if (!teardownReservations) {
+        impl_->connecting.store(false, std::memory_order_release);
+        impl_->setState(
+            ConnectionState::ERROR,
+            "RDP teardown capacity is exhausted "
+            "[E-RDP-TEARDOWN-CAPACITY]");
+        return -102;
+    }
+    impl_->installTeardownReservations(
+        connectGeneration, teardownReservations);
+    RdpWorkerReservation workerReservation = reserveRdpWorker();
+    if (!workerReservation) {
+        teardownReservations->retireUnusedCarriers();
+        impl_->clearTeardownReservationsIfCurrent(
+            connectGeneration, teardownReservations);
+        impl_->connecting.store(false, std::memory_order_release);
+        impl_->setState(
+            ConnectionState::ERROR,
+            "RDP connect worker capacity is exhausted [E-RDP-WORKER-CAPACITY]");
+        return -102;
+    }
+    std::shared_ptr<std::atomic<bool>> connectDone;
     try {
-        impl_->connectThread = std::thread([retained, connectDone, connectGeneration]() {
+        connectDone = std::make_shared<std::atomic<bool>>(false);
+        std::atomic_store_explicit(
+            &impl_->connectThreadDone, connectDone, std::memory_order_release);
+        impl_->connectThreadReservation = std::move(workerReservation);
+        impl_->connectThread = std::thread([
+            retained, connectDone, connectGeneration, networkSnapshot,
+            teardownReservations]() {
             try {
-                retained->connectThreadFunc(connectGeneration);
+                retained->connectThreadFunc(
+                    connectGeneration, networkSnapshot.generation,
+                    teardownReservations);
             } catch (...) {
                 retained->impl_->connecting.store(false, std::memory_order_release);
-                retained->impl_->setState(
-                    ConnectionState::ERROR, "RDP connect worker failed [E-RDP-WORKER]");
+                if (!retained->impl_->stopRequested.load(std::memory_order_acquire) &&
+                    !remotedesk::net::ProcessNetworkGenerationFence().shouldCancel(
+                        networkSnapshot)) {
+                    retained->impl_->setState(
+                        ConnectionState::ERROR,
+                        "RDP connect worker failed [E-RDP-WORKER]");
+                }
+            }
+            bool ownsInstance = false;
+            {
+                std::lock_guard<std::mutex> lock(
+                    retained->impl_->instanceMutex);
+                ownsInstance = retained->instance_ != nullptr &&
+                    retained->impl_->instanceGeneration == connectGeneration;
+            }
+            if (!ownsInstance &&
+                teardownReservations->canReleaseAbsentInstanceOwner()) {
+                teardownReservations->retireUnusedCarriers();
+                retained->impl_->clearTeardownReservationsIfCurrent(
+                    connectGeneration, teardownReservations);
             }
             connectDone->store(true, std::memory_order_release);
             retained->impl_->workerDoneCv.notify_all();
         });
     } catch (const std::exception& e) {
+        impl_->connectThreadReservation.release();
+        teardownReservations->retireUnusedCarriers();
+        impl_->clearTeardownReservationsIfCurrent(
+            connectGeneration, teardownReservations);
         impl_->connecting = false;
-        connectDone->store(true, std::memory_order_release);
+        if (connectDone) {
+            connectDone->store(true, std::memory_order_release);
+        }
         {
             std::lock_guard<std::mutex> lock(impl_->configMutex);
             secureClearString(impl_->config.rdpRestrictedAdminHash);
@@ -6005,8 +7088,14 @@ int FreeRdpAdapter::connect(const ConnectionConfig& cfg) {
             std::string("thread start failed [E-RDP-THREAD]: ") + e.what());
         return -11;
     } catch (...) {
+        impl_->connectThreadReservation.release();
+        teardownReservations->retireUnusedCarriers();
+        impl_->clearTeardownReservationsIfCurrent(
+            connectGeneration, teardownReservations);
         impl_->connecting = false;
-        connectDone->store(true, std::memory_order_release);
+        if (connectDone) {
+            connectDone->store(true, std::memory_order_release);
+        }
         {
             std::lock_guard<std::mutex> lock(impl_->configMutex);
             secureClearString(impl_->config.rdpRestrictedAdminHash);
@@ -6020,16 +7109,30 @@ int FreeRdpAdapter::connect(const ConnectionConfig& cfg) {
     return 0;
 }
 
-void FreeRdpAdapter::connectThreadFunc(uint64_t expectedGeneration) {
-    const auto isCurrentAttempt = [this, expectedGeneration]() {
+void FreeRdpAdapter::connectThreadFunc(
+    uint64_t expectedGeneration, uint64_t expectedNetworkGeneration,
+    const std::shared_ptr<RdpTeardownReservations>& teardownReservations) {
+    const auto isCurrentAttempt = [
+        this, expectedGeneration, expectedNetworkGeneration]() {
         return impl_->sessionGeneration.load(std::memory_order_acquire) ==
                 expectedGeneration &&
-            !impl_->stopRequested.load(std::memory_order_acquire);
+            !impl_->stopRequested.load(std::memory_order_acquire) &&
+            !remotedesk::net::ProcessNetworkGenerationFence().shouldCancel(
+                remotedesk::net::NetworkGenerationSnapshot {
+                    expectedNetworkGeneration, true});
+    };
+    const auto cleanupAttempt = [this, expectedGeneration,
+                                 teardownReservations]() {
+        cleanupInstance(
+            RdpShutdownDeadline::max(), expectedGeneration,
+            teardownReservations);
     };
     if (!isCurrentAttempt()) {
+        impl_->connecting.store(false, std::memory_order_release);
         return;
     }
     ConnectionConfig cfg;
+    RdpReconnectSecretGuard secretGuard {cfg};
     {
         std::lock_guard<std::mutex> lock(impl_->configMutex);
         cfg = impl_->config;
@@ -6083,11 +7186,12 @@ void FreeRdpAdapter::connectThreadFunc(uint64_t expectedGeneration) {
         }
         std::lock_guard<std::mutex> lock(impl_->instanceMutex);
         instance_ = newInstance;
+        impl_->instanceGeneration = expectedGeneration;
     }
     instance_->ContextSize = sizeof(FreeRdpContext);
     if (!freerdp_context_new(instance_)) {
         impl_->setState(ConnectionState::ERROR, "freerdp_context_new() 失败 [E-FREERDP-CTX]");
-        cleanupInstance();
+        cleanupAttempt();
         impl_->connecting = false;
         return;
     }
@@ -6100,13 +7204,13 @@ void FreeRdpAdapter::connectThreadFunc(uint64_t expectedGeneration) {
             ctx->owner, ctx->generation)) {
         impl_->setState(ConnectionState::ERROR,
                         "FreeRDP callback admission registration failed [E-RDP-CALLBACK]");
-        cleanupInstance();
+        cleanupAttempt();
         impl_->connecting = false;
         return;
     }
     if (!isCurrentAttempt()) {
         impl_->traceShutdown("connect-cancel", "after-context");
-        cleanupInstance();
+        cleanupAttempt();
         impl_->connecting = false;
         return;
     }
@@ -6141,7 +7245,7 @@ void FreeRdpAdapter::connectThreadFunc(uint64_t expectedGeneration) {
         impl_->setState(ConnectionState::ERROR,
                         restrictedAdmin ? "Restricted Admin NTLM Hash 无效 [E-RDP-AUTH-HASH]" :
                             "RDP 认证配置无效 [E-RDP-AUTH-CONFIG]");
-        cleanupInstance();
+        cleanupAttempt();
         impl_->connecting = false;
         return;
     }
@@ -6159,7 +7263,7 @@ void FreeRdpAdapter::connectThreadFunc(uint64_t expectedGeneration) {
             secureClearString(restrictedAdminHash);
             impl_->setState(ConnectionState::ERROR,
                             "RDP Restricted Admin Hash 配置失败 [E-RDP-AUTH-HASH]");
-            cleanupInstance();
+            cleanupAttempt();
             impl_->connecting = false;
             return;
         }
@@ -6223,7 +7327,7 @@ void FreeRdpAdapter::connectThreadFunc(uint64_t expectedGeneration) {
         !freerdp_settings_set_uint32(s, FreeRDP_KeyboardLayout, keyboardLayout)) {
         impl_->setState(ConnectionState::ERROR,
                         "RDP keyboard capability configuration failed [E-RDP-KBD-CAPS]");
-        cleanupInstance();
+        cleanupAttempt();
         impl_->connecting = false;
         return;
     }
@@ -6248,7 +7352,7 @@ void FreeRdpAdapter::connectThreadFunc(uint64_t expectedGeneration) {
             ? transportSecurity.errorCode : "E-RDP-TLS-COMPAT";
         impl_->setState(ConnectionState::ERROR,
                         "RDP TLS 兼容模式不支持当前路由或认证方式 [" + code + "]");
-        cleanupInstance();
+        cleanupAttempt();
         impl_->connecting = false;
         return;
     }
@@ -6454,7 +7558,7 @@ void FreeRdpAdapter::connectThreadFunc(uint64_t expectedGeneration) {
     if (!freerdp_get_current_addin_provider()) {
         OH_LOG_ERROR(LOG_APP, "[RDP] static addin provider missing");
         impl_->setState(ConnectionState::ERROR, "RDP static channel provider missing");
-        cleanupInstance();
+        cleanupAttempt();
         impl_->connecting = false;
         return;
     }
@@ -6471,14 +7575,14 @@ void FreeRdpAdapter::connectThreadFunc(uint64_t expectedGeneration) {
     // ---- 执行连接 ----
     if (!isCurrentAttempt()) {
         impl_->traceShutdown("connect-cancel", "before-connect");
-        cleanupInstance();
+        cleanupAttempt();
         impl_->connecting = false;
         return;
     }
     OH_LOG_INFO(LOG_APP, "[RDP] 开始 freerdp_connect...");
     BOOL ok = freerdp_connect(instance_);
     if (!isCurrentAttempt()) {
-        cleanupInstance();
+        cleanupAttempt();
         impl_->connecting = false;
         return;
     }
@@ -6495,14 +7599,14 @@ void FreeRdpAdapter::connectThreadFunc(uint64_t expectedGeneration) {
             }
         }
         // 正确释放: context_free → free
-        cleanupInstance();
+        cleanupAttempt();
         impl_->connecting = false;
         return;
     }
 
     // 连接成功 — 启动事件循环
     if (!isCurrentAttempt()) {
-        cleanupInstance();
+        cleanupAttempt();
         impl_->connecting = false;
         return;
     }
@@ -6511,11 +7615,20 @@ void FreeRdpAdapter::connectThreadFunc(uint64_t expectedGeneration) {
         impl_->setState(ConnectionState::ERROR,
                         "RDP event loop worker start failed [E-RDP-EVENT-WORKER]");
         const auto ticket = impl_->getOrCreateShutdownTicket();
-        disconnectActiveInstance(ticket->deadline);
-        cleanupInstance(ticket->deadline);
+        if (disconnectActiveInstance(
+                ticket->deadline, teardownReservations)) {
+            cleanupInstance(
+                ticket->deadline, expectedGeneration,
+                teardownReservations);
+        }
         impl_->connecting = false;
         OH_LOG_ERROR(LOG_APP,
             "[RDP] event loop unavailable; refusing CONNECTED session [E-RDP-EVENT-WORKER]");
+        return;
+    }
+
+    if (!isCurrentAttempt()) {
+        impl_->connecting.store(false, std::memory_order_release);
         return;
     }
 
@@ -6538,9 +7651,31 @@ void FreeRdpAdapter::connectThreadFunc(uint64_t expectedGeneration) {
 }
 
 void FreeRdpAdapter::disconnect() {
+    std::lock_guard<std::recursive_mutex> operationLock(
+        impl_->networkActionGate.mutex());
+    const uint64_t retirementToken =
+        impl_->networkRecovery.retireConnectionOwner();
+    impl_->interruptTeardownRetirementWait();
+    disconnectInternal();
+    std::lock_guard<std::mutex> lock(impl_->configMutex);
+    (void)RdpReconnectCredentialPolicy::clearIfStillRetired(
+        impl_->config, impl_->networkRecovery, retirementToken);
+}
+
+void FreeRdpAdapter::disconnectInternal(bool publishDisconnected) {
     std::unique_lock<std::mutex> shutdownLock(impl_->shutdownMutex);
     if (!impl_->shutdownState.requestDisconnect()) {
         impl_->traceShutdown("request", "duplicate");
+        const bool teardownComplete = impl_->shutdownState.phase() ==
+            RdpShutdown::Phase::Complete;
+        shutdownLock.unlock();
+        if (publishDisconnected && teardownComplete) {
+            const ConnectionState state = getState();
+            if (state != ConnectionState::DISCONNECTED &&
+                state != ConnectionState::ERROR) {
+                impl_->setState(ConnectionState::DISCONNECTED, "Disconnected");
+            }
+        }
         return;
     }
     impl_->beginShutdownTrace();
@@ -6551,6 +7686,8 @@ void FreeRdpAdapter::disconnect() {
     impl_->clearClipboardState();
     const uint64_t disconnectGeneration =
         impl_->sessionGeneration.load(std::memory_order_acquire);
+    const auto teardownReservations =
+        impl_->snapshotTeardownReservations(disconnectGeneration);
     {
         std::lock_guard<std::mutex> cursorLock(impl_->cursorLifecycleMutex);
         impl_->cursorStore.setVisibleIfGeneration(disconnectGeneration, false);
@@ -6575,11 +7712,24 @@ void FreeRdpAdapter::disconnect() {
 
     impl_->shutdownState.advance(RdpShutdown::Phase::Quiescing,
                                  RdpShutdown::Phase::TransportDisconnecting);
-    disconnectActiveInstance(deadline);
+    if (!disconnectActiveInstance(deadline, teardownReservations)) {
+        impl_->connecting = false;
+        impl_->shutdownState.reset();
+        std::atomic_store_explicit(
+            &impl_->shutdownTicket, std::shared_ptr<RdpShutdownTicket> {},
+            std::memory_order_release);
+        shutdownLock.unlock();
+        impl_->setState(
+            ConnectionState::ERROR,
+            "RDP transport teardown could not start; the instance was retained "
+            "for retry [E-RDP-TEARDOWN-RETRY]");
+        return;
+    }
     impl_->shutdownState.advance(RdpShutdown::Phase::TransportDisconnecting,
                                  RdpShutdown::Phase::Releasing);
     impl_->connecting = false;
-    cleanupInstance(deadline);
+    cleanupInstance(
+        deadline, disconnectGeneration, teardownReservations);
     std::shared_ptr<Render::CallbackAdmissionContext> oldAudioAdmission;
     {
         std::lock_guard<std::mutex> lock(g_rdpAudioCallbackMutex);
@@ -6598,7 +7748,7 @@ void FreeRdpAdapter::disconnect() {
     // state callback is allowed to request another disconnect or connect; the
     // shutdown state above already makes that re-entry idempotent.
     shutdownLock.unlock();
-    if (state != ConnectionState::DISCONNECTED &&
+    if (publishDisconnected && state != ConnectionState::DISCONNECTED &&
         state != ConnectionState::ERROR) {
         impl_->setState(ConnectionState::DISCONNECTED, "Disconnected");
     }
@@ -6610,6 +7760,269 @@ void FreeRdpAdapter::disconnect() {
         std::memory_order_release);
     OH_LOG_INFO(LOG_APP, "[RDP] FreeRDP session disconnected/cleaned");
     return;
+}
+
+void FreeRdpAdapter::onNetworkChanged(
+    bool available, uint64_t networkGeneration) {
+    const RdpNetworkRecoveryAction action =
+        impl_->networkRecovery.onNetworkChanged(available, networkGeneration);
+    if (!action.accepted) {
+        return;
+    }
+    // Wake a waiter owned by the previous action token. It will observe the
+    // token change and leave without publishing state or starting transport.
+    impl_->interruptTeardownRetirementWait();
+
+    // The token check and transport cancellation share the same lane as
+    // explicit connect/disconnect. Without this boundary, a connect could
+    // admit a newer owner after onNetworkChanged() minted its action but
+    // before the old action aborted the active FreeRDP context.
+    if (!impl_->networkActionGate.runIfCurrent(
+            impl_->networkRecovery, action.token, false, [this]() {
+                impl_->stopRequested.store(true, std::memory_order_release);
+                std::lock_guard<std::mutex> lock(impl_->instanceMutex);
+                if (instance_ && instance_->context) {
+                    (void)freerdp_abort_connect_context(instance_->context);
+                }
+            })) {
+        return;
+    }
+
+    std::shared_ptr<FreeRdpAdapter> retained;
+    try {
+        retained = shared_from_this();
+    } catch (...) {
+        retained.reset();
+    }
+    if (!retained) {
+        try {
+            std::lock_guard<std::recursive_mutex> operationLock(
+                impl_->networkActionGate.mutex());
+            if (impl_->networkRecovery.isCurrent(action.token)) {
+                const uint64_t retirementToken =
+                    impl_->networkRecovery.retireConnectionOwner();
+                {
+                    std::lock_guard<std::mutex> lock(impl_->configMutex);
+                    (void)RdpReconnectCredentialPolicy::clearIfStillRetired(
+                        impl_->config, impl_->networkRecovery, retirementToken);
+                }
+                impl_->setState(
+                    ConnectionState::ERROR,
+                    "RDP network recovery lost its session owner "
+                    "[E-RDP-NETWORK-OWNER]");
+            }
+        } catch (...) {
+            OH_LOG_ERROR(LOG_APP,
+                "[RDP] failed to publish missing network recovery owner");
+        }
+        return;
+    }
+    RdpWorkerReservation workerReservation = reserveRdpWorker();
+    if (!workerReservation) {
+        try {
+            std::lock_guard<std::recursive_mutex> operationLock(
+                impl_->networkActionGate.mutex());
+            if (impl_->networkRecovery.isCurrent(action.token)) {
+                const uint64_t retirementToken =
+                    impl_->networkRecovery.retireConnectionOwner();
+                {
+                    std::lock_guard<std::mutex> lock(impl_->configMutex);
+                    (void)RdpReconnectCredentialPolicy::clearIfStillRetired(
+                        impl_->config, impl_->networkRecovery, retirementToken);
+                }
+                impl_->setState(
+                    ConnectionState::ERROR,
+                    "RDP network recovery worker capacity is exhausted "
+                    "[E-RDP-NETWORK-WORKER-CAPACITY]");
+            }
+        } catch (...) {
+            OH_LOG_ERROR(LOG_APP,
+                "[RDP] network worker capacity failure publication failed");
+        }
+        return;
+    }
+    std::shared_ptr<std::atomic<bool>> done;
+    std::thread worker;
+    try {
+        done = std::make_shared<std::atomic<bool>>(false);
+        worker = std::thread([retained, action, done]() {
+            RdpNetworkWorkerCompletionGuard completion {
+                done, retained->impl_->workerDoneCv};
+            try {
+                uint64_t retiringSessionGeneration = 0;
+                {
+                    std::lock_guard<std::recursive_mutex> operationLock(
+                        retained->impl_->networkActionGate.mutex());
+                    if (!retained->impl_->networkRecovery.isCurrent(
+                            action.token)) {
+                        return;
+                    }
+
+                    retained->impl_->setState(
+                        ConnectionState::RECONNECTING,
+                        action.reconnectNow
+                            ? "RDP network changed; resolving the endpoint again"
+                            : "RDP is waiting for the default network");
+                    // State callbacks may synchronously request an explicit
+                    // connect/disconnect. Revalidate before transport teardown.
+                    if (!retained->impl_->networkRecovery.isCurrent(
+                            action.token)) {
+                        return;
+                    }
+
+                    retiringSessionGeneration = retained->impl_
+                        ->sessionGeneration.load(std::memory_order_acquire);
+                    // A network migration is not a terminal user disconnect.
+                    // Keep RECONNECTING visible while the old transport is
+                    // quiesced.
+                    retained->disconnectInternal(
+                        action.publishDisconnectedOnTeardown);
+                    if (!retained->impl_->networkRecovery.isCurrent(
+                            action.token)) {
+                        return;
+                    }
+
+                    if (!action.reconnectNow) {
+                        retained->impl_->setState(
+                            ConnectionState::RECONNECTING,
+                            "RDP is waiting for the default network");
+                        return;
+                    }
+                }
+
+                // disconnectInternal() deliberately returns after its bounded
+                // caller budget. The raw FreeRDP context can still be owned by
+                // a deferred carrier, so wait outside the user-action lane.
+                // A newer network/user token interrupts this exact wait; a
+                // successful retirement admits exactly one reconnect below.
+                const auto retirementWait = retained->impl_
+                    ->waitForTeardownRetirement(
+                        retiringSessionGeneration, action.token,
+                        std::chrono::steady_clock::now() +
+                            kRdpNetworkTeardownRetirementTimeout);
+                if (retirementWait ==
+                    RdpTeardownRetirementWaitResult::Cancelled) {
+                    return;
+                }
+                if (retirementWait ==
+                    RdpTeardownRetirementWaitResult::TimedOut) {
+                    std::lock_guard<std::recursive_mutex> operationLock(
+                        retained->impl_->networkActionGate.mutex());
+                    if (retained->impl_->networkRecovery.isCurrent(
+                            action.token, true)) {
+                        const uint64_t retirementToken = retained->impl_
+                            ->networkRecovery.retireConnectionOwner();
+                        retained->impl_->interruptTeardownRetirementWait();
+                        {
+                            std::lock_guard<std::mutex> lock(
+                                retained->impl_->configMutex);
+                            (void)RdpReconnectCredentialPolicy::clearIfStillRetired(
+                                retained->impl_->config,
+                                retained->impl_->networkRecovery,
+                                retirementToken);
+                        }
+                        retained->impl_->setState(
+                            ConnectionState::ERROR,
+                            "RDP network recovery timed out waiting for the "
+                            "previous transport [E-RDP-NETWORK-TEARDOWN-TIMEOUT]");
+                    }
+                    return;
+                }
+
+                std::lock_guard<std::recursive_mutex> operationLock(
+                    retained->impl_->networkActionGate.mutex());
+                if (!retained->impl_->networkRecovery.isCurrent(
+                        action.token, true)) {
+                    return;
+                }
+                ConnectionConfig reconnectConfig;
+                RdpReconnectSecretGuard secretGuard {reconnectConfig};
+                {
+                    std::lock_guard<std::mutex> lock(
+                        retained->impl_->configMutex);
+                    reconnectConfig = retained->impl_->config;
+                }
+                if (RdpReconnectCredentialPolicy::requiresUserResubmission(
+                        reconnectConfig)) {
+                    const uint64_t retirementToken = retained->impl_
+                        ->networkRecovery.retireConnectionOwner();
+                    retained->impl_->interruptTeardownRetirementWait();
+                    {
+                        std::lock_guard<std::mutex> lock(
+                            retained->impl_->configMutex);
+                        (void)RdpReconnectCredentialPolicy::clearIfStillRetired(
+                            retained->impl_->config,
+                            retained->impl_->networkRecovery, retirementToken);
+                    }
+                    retained->impl_->setState(
+                        ConnectionState::ERROR,
+                        "RDP network changed; Restricted Admin credentials "
+                        "must be submitted again [E-RDP-NETWORK-REAUTH]");
+                    return;
+                }
+
+                const int result = retained->connectInternal(
+                    reconnectConfig, action.token);
+                if (result != 0 &&
+                    retained->impl_->networkRecovery.isCurrent(action.token)) {
+                    retained->impl_->setState(
+                        ConnectionState::ERROR,
+                        "RDP network recovery failed [E-RDP-NETWORK-RECOVERY]");
+                }
+            } catch (...) {
+                try {
+                    std::lock_guard<std::recursive_mutex> operationLock(
+                        retained->impl_->networkActionGate.mutex());
+                    if (retained->impl_->networkRecovery.isCurrent(action.token)) {
+                        const uint64_t retirementToken = retained->impl_
+                            ->networkRecovery.retireConnectionOwner();
+                        {
+                            std::lock_guard<std::mutex> lock(
+                                retained->impl_->configMutex);
+                            (void)RdpReconnectCredentialPolicy::clearIfStillRetired(
+                                retained->impl_->config,
+                                retained->impl_->networkRecovery,
+                                retirementToken);
+                        }
+                        retained->impl_->setState(
+                            ConnectionState::ERROR,
+                            "RDP network recovery failed unexpectedly "
+                            "[E-RDP-NETWORK-EXCEPTION]");
+                    }
+                } catch (...) {
+                    OH_LOG_ERROR(LOG_APP,
+                        "[RDP] network recovery exception publication failed");
+                }
+            }
+        });
+    } catch (...) {
+        if (done) {
+            done->store(true, std::memory_order_release);
+        }
+        impl_->workerDoneCv.notify_all();
+        try {
+            std::lock_guard<std::recursive_mutex> operationLock(
+                impl_->networkActionGate.mutex());
+            if (impl_->networkRecovery.isCurrent(action.token)) {
+                const uint64_t retirementToken =
+                    impl_->networkRecovery.retireConnectionOwner();
+                {
+                    std::lock_guard<std::mutex> lock(impl_->configMutex);
+                    (void)RdpReconnectCredentialPolicy::clearIfStillRetired(
+                        impl_->config, impl_->networkRecovery, retirementToken);
+                }
+                impl_->setState(
+                    ConnectionState::ERROR,
+                    "RDP network recovery worker could not start "
+                    "[E-RDP-NETWORK-WORKER]");
+            }
+        } catch (...) {
+            OH_LOG_ERROR(LOG_APP,
+                "[RDP] network worker failure publication failed");
+        }
+        return;
+    }
+    (void)deferRdpWorker(workerReservation, worker, retained, done);
 }
 
 ConnectionState FreeRdpAdapter::getState() {
@@ -6643,9 +8056,10 @@ void FreeRdpAdapter::requestFrameRefresh() {
     }
 }
 
-RdpCertificateInfo FreeRdpAdapter::probeRdpCertificate(const std::string& host, int port,
-                                                       const std::string& serverName) {
-    return probeRdpCertificateOverTls(host, port, serverName);
+RdpCertificateInfo FreeRdpAdapter::probeRdpCertificate(
+    const std::string& host, int port, const std::string& serverName,
+    const std::function<bool()>& cancelled) {
+    return probeRdpCertificateOverTls(host, port, serverName, cancelled);
 }
 
 RdpPreflightResult FreeRdpAdapter::probeRdpCertificateRoute(
@@ -6676,7 +8090,8 @@ RdpPreflightResult FreeRdpAdapter::probeRdpCertificateRoute(
     }
 
     const RdpCertificateInfo info = probeRdpCertificateOverTls(
-        route.targetHost, route.targetPort, route.targetServerName);
+        route.targetHost, route.targetPort, route.targetServerName,
+        normalized.cancelled);
     RdpPreflightResult result;
     result.ok = info.ok;
     result.preflightStatus = info.ok ? RdpPreflightPolicy::kCompleted :
@@ -7206,6 +8621,9 @@ struct FreeRdpAdapter::Impl {
     AudioDataCallback       audioCallback;
     ConnectionStateCallback stateCallback;
     std::string             clipboardText;
+    mutable std::mutex      configMutex;
+    RdpNetworkActionGate    networkActionGate;
+    RdpNetworkRecoveryPolicy networkRecovery;
     int                     sockFd = -1;
     uint32_t                selectedProtocol = 0;
     bool                    tlsEnabled = false;
@@ -7370,7 +8788,7 @@ RemoteCursorSnapshot FreeRdpAdapter::getRemoteCursorSnapshot(bool includePixels)
 }
 
 FreeRdpAdapter::~FreeRdpAdapter() {
-    if (impl_->state == ConnectionState::CONNECTED) { disconnect(); }
+    disconnect();
 }
 
 // ---- 协议元信息 ----
@@ -7380,14 +8798,30 @@ std::string FreeRdpAdapter::protocolVersion() { return "3.7.0-skeleton"; }
 
 // ---- 连接管理 ----
 int FreeRdpAdapter::connect(const ConnectionConfig& cfg) {
-    if (impl_->state == ConnectionState::CONNECTED) { disconnect(); }
+    std::lock_guard<std::recursive_mutex> operationLock(
+        impl_->networkActionGate.mutex());
+    impl_->networkRecovery.admitConnectionOwner();
+    impl_->interruptTeardownRetirementWait();
+    return connectInternal(cfg, 0);
+}
+
+int FreeRdpAdapter::connectInternal(
+    const ConnectionConfig& cfg, uint64_t networkActionToken) {
+    if (networkActionToken != 0 &&
+        !impl_->networkRecovery.isCurrent(networkActionToken, true)) {
+        return -125;
+    }
+    if (impl_->state == ConnectionState::CONNECTED) {
+        disconnectInternal(networkActionToken == 0);
+    }
     ConnectionConfig normalizedConfig = cfg;
     if (normalizedConfig.targetServerName.empty()) {
         normalizedConfig.targetServerName = normalizedConfig.customHostname;
     }
     {
         std::lock_guard<std::mutex> lock(impl_->configMutex);
-        impl_->config = normalizedConfig;
+        RdpReconnectCredentialPolicy::replace(
+            impl_->config, normalizedConfig);
     }
 
     RdpEndpointRoute route;
@@ -7401,7 +8835,7 @@ int FreeRdpAdapter::connect(const ConnectionConfig& cfg) {
     RdpGatewayPolicy::normalizeRouteConfig(normalizedConfig, route);
     {
         std::lock_guard<std::mutex> lock(impl_->configMutex);
-        impl_->config = normalizedConfig;
+        RdpGatewayPolicy::normalizeRouteConfig(impl_->config, route);
     }
     if (route.endpointMode == RdpEndpointMode::MicrosoftRdGateway) {
         // The skeleton has no HTTP/RPC/WebSocket tunnel implementation. It
@@ -7410,7 +8844,17 @@ int FreeRdpAdapter::connect(const ConnectionConfig& cfg) {
                         "Microsoft RD Gateway requires the FreeRDP runtime [E-RDP-GATEWAY-AWARE-UNAVAILABLE]");
         return -71;
     }
-    impl_->setState(ConnectionState::CONNECTING, "Connecting...");
+    impl_->setState(
+        networkActionToken == 0
+            ? ConnectionState::CONNECTING
+            : ConnectionState::RECONNECTING,
+        networkActionToken == 0
+            ? "Connecting..."
+            : "RDP network changed; resolving the endpoint again");
+    if (networkActionToken != 0 &&
+        !impl_->networkRecovery.isCurrent(networkActionToken, true)) {
+        return -125;
+    }
 
     const int port = route.targetPort;
     int ret;
@@ -7418,17 +8862,17 @@ int FreeRdpAdapter::connect(const ConnectionConfig& cfg) {
     ret = rdpTcpConnect(route.targetHost, port, impl_->sockFd);
     if (ret < 0) { impl_->setState(ConnectionState::ERROR, "TCP connection failed"); return ret; }
     ret = rdpSendX224ConnectionRequest(impl_->sockFd);
-    if (ret < 0) { impl_->setState(ConnectionState::ERROR, "X.224 failed"); disconnect(); return -22; }
+    if (ret < 0) { impl_->setState(ConnectionState::ERROR, "X.224 failed"); disconnectInternal(); return -22; }
     ret = rdpRecvX224ConnectionConfirm(impl_->sockFd);
-    if (ret < 0) { impl_->setState(ConnectionState::ERROR, "X.224 confirm failed"); disconnect(); return -23; }
+    if (ret < 0) { impl_->setState(ConnectionState::ERROR, "X.224 confirm failed"); disconnectInternal(); return -23; }
     ret = rdpSendNegotiationRequest(impl_->sockFd);
-    if (ret < 0) { impl_->setState(ConnectionState::ERROR, "RDP neg req failed"); disconnect(); return -24; }
+    if (ret < 0) { impl_->setState(ConnectionState::ERROR, "RDP neg req failed"); disconnectInternal(); return -24; }
     ret = rdpRecvNegotiationResponse(impl_->sockFd, impl_->selectedProtocol, impl_->tlsEnabled);
-    if (ret < 0) { impl_->setState(ConnectionState::ERROR, "RDP neg resp failed"); disconnect(); return -25; }
+    if (ret < 0) { impl_->setState(ConnectionState::ERROR, "RDP neg resp failed"); disconnectInternal(); return -25; }
     ret = rdpSendMcsConnectInitial(impl_->sockFd);
-    if (ret < 0) { impl_->setState(ConnectionState::ERROR, "MCS init failed"); disconnect(); return -26; }
+    if (ret < 0) { impl_->setState(ConnectionState::ERROR, "MCS init failed"); disconnectInternal(); return -26; }
     ret = rdpRecvMcsConnectResponse(impl_->sockFd);
-    if (ret < 0) { impl_->setState(ConnectionState::ERROR, "MCS resp failed"); disconnect(); return -27; }
+    if (ret < 0) { impl_->setState(ConnectionState::ERROR, "MCS resp failed"); disconnectInternal(); return -27; }
 
     impl_->setState(ConnectionState::CONNECTED, "RDP session established (skeleton)");
     const std::string logHost = SafeLog::MaskHost(cfg.host);
@@ -7438,6 +8882,18 @@ int FreeRdpAdapter::connect(const ConnectionConfig& cfg) {
 }
 
 void FreeRdpAdapter::disconnect() {
+    std::lock_guard<std::recursive_mutex> operationLock(
+        impl_->networkActionGate.mutex());
+    const uint64_t retirementToken =
+        impl_->networkRecovery.retireConnectionOwner();
+    impl_->interruptTeardownRetirementWait();
+    disconnectInternal();
+    std::lock_guard<std::mutex> lock(impl_->configMutex);
+    (void)RdpReconnectCredentialPolicy::clearIfStillRetired(
+        impl_->config, impl_->networkRecovery, retirementToken);
+}
+
+void FreeRdpAdapter::disconnectInternal(bool publishDisconnected) {
     impl_->cursorStore.setVisible(false);
     if (impl_->sockFd >= 0) {
         shutdown(impl_->sockFd, SHUT_RDWR);
@@ -7446,8 +8902,43 @@ void FreeRdpAdapter::disconnect() {
     }
     impl_->selectedProtocol = 0;
     impl_->tlsEnabled = false;
-    impl_->setState(ConnectionState::DISCONNECTED, "Disconnected");
-    OH_LOG_INFO(LOG_APP, "[RDP] Disconnected");
+    if (publishDisconnected) {
+        impl_->setState(ConnectionState::DISCONNECTED, "Disconnected");
+        OH_LOG_INFO(LOG_APP, "[RDP] Disconnected");
+    }
+}
+
+void FreeRdpAdapter::onNetworkChanged(
+    bool available, uint64_t networkGeneration) {
+    const RdpNetworkRecoveryAction action =
+        impl_->networkRecovery.onNetworkChanged(available, networkGeneration);
+    if (!action.accepted) {
+        return;
+    }
+    impl_->interruptTeardownRetirementWait();
+    std::lock_guard<std::recursive_mutex> operationLock(
+        impl_->networkActionGate.mutex());
+    if (!impl_->networkRecovery.isCurrent(action.token)) {
+        return;
+    }
+    impl_->setState(ConnectionState::RECONNECTING,
+                    "RDP network changed; stopping the old transport");
+    if (!impl_->networkRecovery.isCurrent(action.token)) {
+        return;
+    }
+    disconnectInternal(action.publishDisconnectedOnTeardown);
+    {
+        std::lock_guard<std::mutex> lock(impl_->configMutex);
+        (void)RdpReconnectCredentialPolicy::retireOwnerAndClear(
+            impl_->config, impl_->networkRecovery);
+    }
+    impl_->setState(
+        ConnectionState::ERROR,
+        available
+            ? "RDP network recovery requires the FreeRDP runtime "
+              "[E-RDP-NETWORK-RECOVERY-UNAVAILABLE]"
+            : "RDP default network is unavailable "
+              "[E-RDP-NETWORK-UNAVAILABLE]");
 }
 
 ConnectionState FreeRdpAdapter::getState() { return impl_->state; }
@@ -7456,9 +8947,10 @@ void FreeRdpAdapter::requestFrameRefresh() {
     OH_LOG_WARN(LOG_APP, "[RDP] requestFrameRefresh skipped: skeleton adapter has no video surface");
 }
 
-RdpCertificateInfo FreeRdpAdapter::probeRdpCertificate(const std::string& host, int port,
-                                                       const std::string& serverName) {
-    return probeRdpCertificateOverTls(host, port, serverName);
+RdpCertificateInfo FreeRdpAdapter::probeRdpCertificate(
+    const std::string& host, int port, const std::string& serverName,
+    const std::function<bool()>& cancelled) {
+    return probeRdpCertificateOverTls(host, port, serverName, cancelled);
 }
 
 RdpPreflightResult FreeRdpAdapter::probeRdpCertificateRoute(
@@ -7491,7 +8983,7 @@ RdpPreflightResult FreeRdpAdapter::probeRdpCertificateRoute(
     }
     const RdpCertificateInfo info = probeRdpCertificateOverTls(
         normalizedRoute.targetHost, normalizedRoute.targetPort,
-        normalizedRoute.targetServerName);
+        normalizedRoute.targetServerName, normalized.cancelled);
     RdpPreflightResult result;
     result.ok = info.ok;
     result.preflightStatus = info.ok ? RdpPreflightPolicy::kCompleted :

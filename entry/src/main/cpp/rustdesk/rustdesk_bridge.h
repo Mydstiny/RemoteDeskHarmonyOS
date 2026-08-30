@@ -199,7 +199,7 @@ public:
     void            setSessionIdentity(uint64_t sessionId) override;
     void            setSessionOwnerToken(uint64_t ownerToken);
     void            setContinuityGenerationCallback(ContinuityGenerationCallback callback);
-    void            onNetworkChanged(bool available, uint64_t networkGeneration);
+    void            onNetworkChanged(bool available, uint64_t networkGeneration) override;
     uint64_t        sessionGeneration() const;
     bool            submitTwoFactorCode(const std::string& code);
     RustDeskDiagnosticsStats getDiagnostics() const;

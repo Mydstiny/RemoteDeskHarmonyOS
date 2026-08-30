@@ -334,6 +334,8 @@ if(RDP_BUILD_TESTS)
         test/rdp_graphics_lifecycle_test.cpp
         test/rdp_certificate_policy_test.cpp
         test/rdp_gateway_policy_test.cpp
+        test/rdp_network_recovery_policy_test.cpp
+        test/rdp_network_retry_policy_test.cpp
         test/rdp_negotiation_parser_test.cpp
         test/rdp_auth_identity_policy_test.cpp
         test/rdp_auth_mode_policy_test.cpp
@@ -359,6 +361,7 @@ if(RDP_BUILD_TESTS)
         test/endpoint_address_policy_test.cpp
         test/happy_eyeballs_connector_test.cpp
         test/network_generation_fence_test.cpp
+        test/native_network_observer_state_test.cpp
         test/moonlight_host_api_test.cpp
         test/moonlight_http_request_formatting_test.cpp
         test/moonlight_http_response_framing_test.cpp

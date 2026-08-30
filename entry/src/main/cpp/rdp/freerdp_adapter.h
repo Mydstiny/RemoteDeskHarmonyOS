@@ -32,6 +32,8 @@
 class FreeRdpAdapter;
 
 #ifdef USE_REAL_FREERDP
+class RdpTeardownReservations;
+
 /**
  * FreeRDP 3.x 自定义上下文 — 在 rdpContext 后嵌入 adapter 回指针
  * FreeRDP 3.x 要求设置 ContextSize 并通过 freerdp_context_new() 分配.
@@ -62,6 +64,7 @@ public:
     int             connect(const ConnectionConfig& cfg) override;
     void            disconnect() override;
     ConnectionState getState() override;
+    void            onNetworkChanged(bool available, uint64_t networkGeneration) override;
     void            setSessionIdentity(uint64_t sessionId) override;
     void            setSessionOwner(const Render::DecoderSessionIdentity& owner);
     // Used by static FreeRDP ABI entries immediately before platform
@@ -71,7 +74,8 @@ public:
     RemoteCursorSnapshot getRemoteCursorSnapshot(bool includePixels) override;
     void            requestFrameRefresh() override;
     RdpCertificateInfo probeRdpCertificate(const std::string& host, int port,
-                                           const std::string& serverName) override;
+                                           const std::string& serverName,
+                                           const std::function<bool()>& cancelled = {}) override;
     RdpPreflightResult probeRdpCertificateRoute(const RdpPreflightRequest& request) override;
     RdpRenderStats  getRdpRenderStats() override;
     RdpDisplayLayoutResult requestDisplayLayout(const RdpDisplayLayoutRequest& request);
@@ -188,6 +192,7 @@ public:
         uint64_t capturedToken, const BYTE* data, size_t size,
         UINT32 sampleRate, UINT16 channels, UINT16 bitsPerSample);
     static std::shared_ptr<std::atomic<bool>> QueueBlockedWorkerForTesting();
+    static bool VerifyTeardownCarrierIsolationForTesting();
     static bool DrainDeferredWorkersWithinForTesting(uint32_t timeoutMs);
     static bool ShutdownDeferredWorkersWithinForTesting(uint32_t timeoutMs);
     static std::size_t DeferredWorkerRemainingForTesting();
@@ -196,6 +201,9 @@ public:
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
+
+    int connectInternal(const ConnectionConfig& cfg, uint64_t networkActionToken);
+    void disconnectInternal(bool publishDisconnected = true);
 
 #ifdef USE_REAL_FREERDP
     // FreeRDP 客户端实例 + 事件循环
@@ -207,10 +215,18 @@ private:
     void processEventLoop();
     void joinConnectThread(std::chrono::steady_clock::time_point deadline);
     void joinDriveThread(std::chrono::steady_clock::time_point deadline);
-    void disconnectActiveInstance(std::chrono::steady_clock::time_point deadline);
+    bool disconnectActiveInstance(
+        std::chrono::steady_clock::time_point deadline,
+        const std::shared_ptr<RdpTeardownReservations>& teardownReservations);
     void cleanupInstance(std::chrono::steady_clock::time_point deadline =
-                         std::chrono::steady_clock::time_point::max());
-    void connectThreadFunc(uint64_t expectedGeneration);    // 连接线程 (异步, 不阻塞 NAPI)
+                             std::chrono::steady_clock::time_point::max(),
+                         uint64_t expectedGeneration = 0,
+                         std::shared_ptr<RdpTeardownReservations>
+                             teardownReservations = nullptr);
+    void connectThreadFunc(uint64_t expectedGeneration,
+                           uint64_t expectedNetworkGeneration,
+                           const std::shared_ptr<RdpTeardownReservations>&
+                               teardownReservations); // async connect worker
     void startDriveMountAfterConnected(const std::string& driveName,
                                        const std::string& drivePath,
                                        uint64_t generation);

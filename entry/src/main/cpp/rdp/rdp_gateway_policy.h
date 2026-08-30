@@ -13,6 +13,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cerrno>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -87,6 +88,9 @@ struct RdpPreflightRequest {
     bool gatewayAllowTimeAnomaly = false;
     uint64_t generation = 0;
     std::string requestId;
+    // Runtime-only cancellation. It is never parsed from or serialized to
+    // ArkTS and lets a network-generation change abort preflight I/O.
+    std::function<bool()> cancelled;
 };
 
 struct RdpPreflightResult {

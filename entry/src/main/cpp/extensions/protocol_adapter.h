@@ -461,6 +461,9 @@ public:
     /** 获取当前连接状态 */
     virtual ConnectionState getState() = 0;
 
+    /** Default-network generation changed; adapters must reject stale I/O. */
+    virtual void onNetworkChanged(bool /*available*/, uint64_t /*networkGeneration*/) {}
+
     /** Inject the loader-owned identity before starting a new connection. */
     virtual void setSessionIdentity(uint64_t /*sessionId*/) {}
 
@@ -558,11 +561,13 @@ public:
 
     /** RDP 证书预检。非 RDP 协议返回 ok=false。 */
     virtual RdpCertificateInfo probeRdpCertificate(const std::string& host, int port,
-                                                   const std::string& serverName) {
+                                                   const std::string& serverName,
+                                                   const std::function<bool()>& cancelled = {}) {
         RdpCertificateInfo info;
         info.host = host;
         info.port = port;
         (void)serverName;
+        (void)cancelled;
         info.errorCode = -1;
         info.errorMessage = "RDP certificate probing is not supported by this protocol";
         return info;

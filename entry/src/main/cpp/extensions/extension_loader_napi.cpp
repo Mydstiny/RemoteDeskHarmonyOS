@@ -9,11 +9,13 @@
 #include "protocol_adapter.h"
 #include "session_teardown_executor.h"
 #include "session_registry.h"
+#include "native_network_observer_state.h"
 #include "key_sequence_dispatch.h"
 #include "disconnect_request_registry.h"
 #include "rdp/freerdp_adapter.h"
 #include "rdp/rdp_auth_mode_policy.h"
 #include "rdp/rdp_connection_identity_policy.h"
+#include "rdp/rdp_network_retry_policy.h"
 #include "ssh/ssh_adapter.h"
 #include "ssh/ssh_terminal_resume_policy.h"
 #include "ssh/ssh_key_tool.h"
@@ -25,6 +27,7 @@
 #include "audio/audio_player.h"
 #include "common/safe_log.h"
 #include "common/endpoint_address_policy.h"
+#include "common/network_generation_fence.h"
 #include "render/hw_decoder.h"
 #include "render/gl_renderer.h"
 #include "render/video_perf_counters.h"
@@ -857,49 +860,107 @@ static bool DispatchRustDeskNetworkEvent(
 }
 
 #if defined(__MUSL__)
-static std::mutex g_nativeNetworkObserverMutex;
-static uint32_t g_nativeNetworkObserverId = 0;
-static int32_t g_nativeNetworkObserverSessionId = 0;
-static uint64_t g_nativeNetworkObserverSessionGeneration = 0;
-static std::shared_ptr<SessionContext> g_nativeNetworkObserverSession;
-static std::atomic<uint64_t> g_nativeNetworkGeneration {1};
+using NativeNetworkObserverState =
+    remotedesk::net::NativeNetworkObserverState<SessionContext>;
+static NativeNetworkObserverState g_nativeNetworkObserverState {1};
+
+static bool DispatchNativeNetworkSession(
+    const std::shared_ptr<SessionContext>& session, int32_t sessionId,
+    uint64_t sessionGeneration, bool available, uint64_t networkGeneration) {
+    if (!session || sessionId <= 0 || sessionGeneration == 0 ||
+        networkGeneration == 0 ||
+        session->lifecycle.load(std::memory_order_acquire) !=
+            SessionContext::Lifecycle::Active ||
+        session->generation.load(std::memory_order_acquire) != sessionGeneration) {
+        return false;
+    }
+    const std::string& protocol = session->protocolName;
+    if (protocol != "rdp" && protocol != "vnc" && protocol != "rustdesk") {
+        return false;
+    }
+    std::shared_ptr<ProtocolAdapter> adapter;
+    {
+        std::lock_guard<std::mutex> lock(session->adapterMutex);
+        adapter = session->adapter;
+    }
+    if (!adapter) {
+        return false;
+    }
+    const DecoderSessionIdentity owner = session->identity();
+    auto ownerLease = Render::SharedSessionSinkOwnerLease().acquire(owner);
+    if (!ownerLease ||
+        session->generation.load(std::memory_order_acquire) != sessionGeneration ||
+        session->lifecycle.load(std::memory_order_acquire) !=
+            SessionContext::Lifecycle::Active) {
+        return false;
+    }
+    adapter->onNetworkChanged(available, networkGeneration);
+    return true;
+}
 
 static void DispatchNativeNetworkAvailability(bool available) {
-    int32_t sessionId = 0;
-    uint64_t sessionGeneration = 0;
-    std::shared_ptr<SessionContext> session;
-    {
-        std::lock_guard<std::mutex> lock(g_nativeNetworkObserverMutex);
-        sessionId = g_nativeNetworkObserverSessionId;
-        sessionGeneration = g_nativeNetworkObserverSessionGeneration;
-        session = g_nativeNetworkObserverSession;
+    const NativeNetworkObserverState::DispatchSnapshot dispatch =
+        g_nativeNetworkObserverState.publishAvailability(
+            available, [](bool currentAvailable, uint64_t generation) {
+                (void)remotedesk::net::ProcessNetworkGenerationFence().update(
+                    currentAvailable, generation);
+            });
+    size_t sessionCount = 0;
+    for (const auto& target : dispatch.targets) {
+        try {
+            if (DispatchNativeNetworkSession(
+                    target.second.session, target.first,
+                    target.second.sessionGeneration, available,
+                    dispatch.networkGeneration)) {
+                ++sessionCount;
+            }
+        } catch (...) {
+            OH_LOG_ERROR(LOG_APP,
+                "[ExtLoader] native network session dispatch threw sessionId=%{public}d generation=%{public}llu",
+                target.first,
+                static_cast<unsigned long long>(dispatch.networkGeneration));
+        }
     }
-    const uint64_t networkGeneration =
-        g_nativeNetworkGeneration.fetch_add(1, std::memory_order_acq_rel) + 1;
-    if (sessionId != 0 && sessionGeneration != 0) {
-        (void)DispatchRustDeskNetworkSession(
-            session, sessionId, sessionGeneration, available, networkGeneration);
+    size_t sshCount = 0;
+    try {
+        sshCount = g_sshNativeFacade.notifyNetworkAvailability(
+            available, dispatch.networkGeneration);
+    } catch (...) {
+        OH_LOG_ERROR(LOG_APP,
+            "[ExtLoader] native SSH network dispatch threw generation=%{public}llu",
+            static_cast<unsigned long long>(dispatch.networkGeneration));
     }
-    const size_t sshCount = g_sshNativeFacade.notifyNetworkAvailability(
-        available, networkGeneration);
-    if (sshCount > 0) {
+    if (sessionCount > 0 || sshCount > 0) {
         OH_LOG_INFO(LOG_APP,
-            "[ExtLoader] SSH network availability=%{public}s sessions=%{public}zu generation=%{public}llu",
-            available ? "available" : "lost", sshCount,
-            static_cast<unsigned long long>(networkGeneration));
+            "[ExtLoader] network availability=%{public}s sessions=%{public}zu sshSessions=%{public}zu generation=%{public}llu",
+            available ? "available" : "lost", sessionCount, sshCount,
+            static_cast<unsigned long long>(dispatch.networkGeneration));
+    }
+}
+
+static void DispatchNativeNetworkAvailabilityNoexcept(bool available) noexcept {
+    try {
+        DispatchNativeNetworkAvailability(available);
+    } catch (...) {
+        // Never let allocation or adapter exceptions cross the OHOS C ABI.
+        // publishAvailability() updates the process fence before snapshot
+        // allocation, so in-flight connection attempts still fail closed.
+        OH_LOG_ERROR(LOG_APP,
+            "[ExtLoader] native network callback failed closed availability=%{public}s",
+            available ? "available" : "lost");
     }
 }
 
 static void OnNativeNetworkAvailable(NetConn_NetHandle* /*netHandle*/) {
-    DispatchNativeNetworkAvailability(true);
+    DispatchNativeNetworkAvailabilityNoexcept(true);
 }
 
 static void OnNativeNetworkLost(NetConn_NetHandle* /*netHandle*/) {
-    DispatchNativeNetworkAvailability(false);
+    DispatchNativeNetworkAvailabilityNoexcept(false);
 }
 
 static void OnNativeNetworkUnavailable() {
-    DispatchNativeNetworkAvailability(false);
+    DispatchNativeNetworkAvailabilityNoexcept(false);
 }
 
 static NetConn_NetConnCallback kNativeNetworkCallbacks {
@@ -912,11 +973,8 @@ static NetConn_NetConnCallback kNativeNetworkCallbacks {
 };
 
 static bool EnsureNativeNetworkObserver() {
-    {
-        std::lock_guard<std::mutex> lock(g_nativeNetworkObserverMutex);
-        if (g_nativeNetworkObserverId != 0) {
-            return true;
-        }
+    if (g_nativeNetworkObserverState.hasObserver()) {
+        return true;
     }
     // Do not call the system registration API while holding our state lock:
     // some platform implementations can deliver an initial availability
@@ -924,77 +982,108 @@ static bool EnsureNativeNetworkObserver() {
     uint32_t callbackId = 0;
     const int32_t result = OH_NetConn_RegisterDefaultNetConnCallback(
         &kNativeNetworkCallbacks, &callbackId);
-    if (result != 0) {
+    if (result != 0 || callbackId == 0) {
         OH_LOG_WARN(LOG_APP,
-            "[ExtLoader] native network observer registration failed result=%{public}d",
-            result);
+            "[ExtLoader] native network observer registration failed result=%{public}d callbackId=%{public}u",
+            result, callbackId);
         return false;
     }
-    bool keepRegistration = false;
-    {
-        std::lock_guard<std::mutex> lock(g_nativeNetworkObserverMutex);
-        if (g_nativeNetworkObserverId == 0) {
-            g_nativeNetworkObserverId = callbackId;
-            keepRegistration = true;
-        }
-    }
+    const bool keepRegistration =
+        g_nativeNetworkObserverState.installObserverIfAbsent(callbackId);
     if (!keepRegistration) {
         OH_NetConn_UnregisterNetConnCallback(callbackId);
     }
     return true;
 }
 
-static void UpdateNativeNetworkObserver(
+static bool AcquireNativeNetworkObserverLease() {
+    g_nativeNetworkObserverState.addTransientConsumer();
+    if (EnsureNativeNetworkObserver()) {
+        return true;
+    }
+    const uint32_t callbackId =
+        g_nativeNetworkObserverState.releaseTransientConsumerAndTakeObserverIfIdle();
+    if (callbackId != 0) {
+        OH_NetConn_UnregisterNetConnCallback(callbackId);
+    }
+    return false;
+}
+
+static void ReleaseNativeNetworkObserverLease() {
+    const uint32_t callbackId =
+        g_nativeNetworkObserverState.releaseTransientConsumerAndTakeObserverIfIdle();
+    if (callbackId != 0) {
+        OH_NetConn_UnregisterNetConnCallback(callbackId);
+    }
+}
+
+static bool UpdateNativeNetworkObserver(
     const std::shared_ptr<SessionContext>& session) {
     if (!session) {
-        return;
+        return false;
     }
-    if (!EnsureNativeNetworkObserver() || session->protocolName != "rustdesk") {
-        return;
+    const bool trackedProtocol = session->protocolName == "rdp" ||
+        session->protocolName == "vnc" || session->protocolName == "rustdesk" ||
+        session->protocolName == "ssh";
+    if (!trackedProtocol) {
+        return false;
+    }
+    // Hold a transient consumer across register -> exact target insertion.
+    // Otherwise the last concurrent teardown could observe no target after
+    // EnsureNativeNetworkObserver() returns and unregister the callback before
+    // this session becomes visible.
+    g_nativeNetworkObserverState.addTransientConsumer();
+    struct TransientConsumerRelease final {
+        ~TransientConsumerRelease() { ReleaseNativeNetworkObserverLease(); }
+    } release;
+    if (!EnsureNativeNetworkObserver()) {
+        return false;
     }
     const int32_t sessionId = static_cast<int32_t>(session->sessionId);
     const uint64_t sessionGeneration =
         session->generation.load(std::memory_order_acquire);
     if (sessionId <= 0 || sessionGeneration == 0) {
-        return;
+        return false;
     }
-    std::lock_guard<std::mutex> lock(g_nativeNetworkObserverMutex);
-    g_nativeNetworkObserverSessionId = sessionId;
-    g_nativeNetworkObserverSessionGeneration = sessionGeneration;
-    g_nativeNetworkObserverSession = session;
+    return g_nativeNetworkObserverState.track(
+        sessionId, sessionGeneration, session);
 }
 
 static void ClearNativeNetworkObserver(
     int32_t sessionId, uint64_t sessionGeneration) {
-    uint32_t callbackId = 0;
-    {
-        std::lock_guard<std::mutex> lock(g_nativeNetworkObserverMutex);
-        if (g_nativeNetworkObserverSessionId == sessionId &&
-            g_nativeNetworkObserverSessionGeneration == sessionGeneration) {
-            g_nativeNetworkObserverSessionId = 0;
-            g_nativeNetworkObserverSessionGeneration = 0;
-            g_nativeNetworkObserverSession.reset();
-        }
-        // SSH sessions are managed separately from the single RustDesk
-        // observer target. Keep the platform registration while either side
-        // still has a live consumer, and release it only after the last one.
-        if (g_nativeNetworkObserverId != 0 &&
-            g_nativeNetworkObserverSessionId == 0 &&
-            g_sshNativeFacade.snapshots().empty()) {
-            callbackId = g_nativeNetworkObserverId;
-            g_nativeNetworkObserverId = 0;
-        }
-    }
+    const uint32_t callbackId =
+        g_nativeNetworkObserverState.eraseExactAndTakeObserverIfIdle(
+            sessionId, sessionGeneration);
     if (callbackId != 0) {
         OH_NetConn_UnregisterNetConnCallback(callbackId);
     }
 }
 #else
-static void UpdateNativeNetworkObserver(
-    const std::shared_ptr<SessionContext>& /*session*/) {}
+static bool AcquireNativeNetworkObserverLease() { return false; }
+static void ReleaseNativeNetworkObserverLease() {}
+static bool UpdateNativeNetworkObserver(
+    const std::shared_ptr<SessionContext>& /*session*/) { return true; }
 static void ClearNativeNetworkObserver(
     int32_t /*sessionId*/, uint64_t /*sessionGeneration*/) {}
 #endif
+
+class NativeNetworkObserverLease final {
+public:
+    NativeNetworkObserverLease() : active_(AcquireNativeNetworkObserverLease()) {}
+    ~NativeNetworkObserverLease() {
+        if (active_) {
+            ReleaseNativeNetworkObserverLease();
+        }
+    }
+
+    NativeNetworkObserverLease(const NativeNetworkObserverLease&) = delete;
+    NativeNetworkObserverLease& operator=(const NativeNetworkObserverLease&) = delete;
+
+    bool active() const { return active_; }
+
+private:
+    bool active_ = false;
+};
 
 // SSH 推送回调的 TSFN 映射 (sessionId → registration). 由 setOnDataCallback /
 // disconnect 维护。registration 先停止生产者，再释放 TSFN，避免 reader 线程
@@ -2586,6 +2675,55 @@ napi_value NapiListProtocols(napi_env env, napi_callback_info /*info*/) {
     return result;
 }
 
+static RdpCertificateInfo MakeRdpNetworkChangedCertificateInfo(
+    const std::string& host, int port, const std::string& serverName) {
+    RdpCertificateInfo result;
+    result.host = host;
+    result.port = port;
+    result.serverName = serverName.empty() ? host : serverName;
+    result.errorCode = -39;
+    result.errorMessage =
+        "RDP preflight cancelled because the default network changed "
+        "[E-RDP-NETWORK-CHANGED]";
+    result.preflightStatus = RdpPreflightPolicy::kUnavailable;
+    return result;
+}
+
+static RdpCertificateInfo ProbeRdpCertificateOnCurrentNetwork(
+    const std::shared_ptr<ProtocolAdapter>& adapter,
+    const std::string& host, int port, const std::string& serverName) {
+    if (!adapter) {
+        RdpCertificateInfo result;
+        result.host = host;
+        result.port = port;
+        result.errorCode = -1;
+        result.errorMessage = "RDP adapter is not available";
+        return result;
+    }
+    return RdpNetworkRetryPolicy::runOnCurrentNetwork<RdpCertificateInfo>(
+        []() {
+            return remotedesk::net::ProcessNetworkGenerationFence().snapshot();
+        },
+        [&](const remotedesk::net::NetworkGenerationSnapshot& captured) {
+            const auto cancelled = [captured]() {
+                return remotedesk::net::ProcessNetworkGenerationFence().shouldCancel(
+                    captured);
+            };
+            return adapter->probeRdpCertificate(
+                host, port, serverName, cancelled);
+        },
+        [](const RdpCertificateInfo& result) { return result.errorCode == -39; },
+        [&]() {
+            return MakeRdpNetworkChangedCertificateInfo(
+                host, port, serverName);
+        },
+        [](const remotedesk::net::NetworkGenerationSnapshot& current) {
+            OH_LOG_INFO(LOG_APP,
+                "[RDP-CERT] retrying on current network generation=%{public}llu",
+                static_cast<unsigned long long>(current.generation));
+        });
+}
+
 /**
  * NAPI: probeRdpCertificate(host: string, port: number, serverName: string): RdpCertificateInfo
  */
@@ -2611,8 +2749,15 @@ napi_value NapiProbeRdpCertificate(napi_env env, napi_callback_info info) {
 
     auto adapter = FindAdapter("rdp");
     RdpCertificateInfo cert;
+    NativeNetworkObserverLease observerLease;
+    if (!observerLease.active()) {
+        napi_throw_error(env, "E-RDP-NETWORK-OBSERVER",
+                         "RDP network observer is unavailable");
+        return nullptr;
+    }
     if (adapter) {
-        cert = adapter->probeRdpCertificate(host, port, serverName);
+        cert = ProbeRdpCertificateOnCurrentNetwork(
+            adapter, host, port, serverName);
     } else {
         cert.host = host;
         cert.port = port;
@@ -2633,6 +2778,7 @@ struct RdpCertificateProbeAsyncData {
     napi_deferred deferred = nullptr;
     napi_async_work work = nullptr;
     bool workerFailed = false;
+    std::unique_ptr<NativeNetworkObserverLease> observerLease;
 };
 
 static void ExecuteRdpCertificateProbeAsync(napi_env /*env*/, void* rawData) {
@@ -2649,7 +2795,8 @@ static void ExecuteRdpCertificateProbeAsync(napi_env /*env*/, void* rawData) {
 
     try {
         // execute 回调只访问 C++ 数据；禁止在此线程调用任何 NAPI API。
-        data->result = data->adapter->probeRdpCertificate(data->host, data->port, data->serverName);
+        data->result = ProbeRdpCertificateOnCurrentNetwork(
+            data->adapter, data->host, data->port, data->serverName);
     } catch (const std::exception& ex) {
         data->workerFailed = true;
         data->errorMessage = std::string("RDP certificate probe failed: ") + ex.what();
@@ -2713,6 +2860,13 @@ napi_value NapiProbeRdpCertificateAsync(napi_env env, napi_callback_info info) {
         napi_throw_error(env, nullptr, "RDP certificate endpoint is invalid or unsupported");
         return nullptr;
     }
+    data->observerLease.reset(new (std::nothrow) NativeNetworkObserverLease());
+    if (!data->observerLease || !data->observerLease->active()) {
+        delete data;
+        napi_throw_error(env, "E-RDP-NETWORK-OBSERVER",
+                         "RDP network observer is unavailable");
+        return nullptr;
+    }
     data->adapter = FindAdapter("rdp");
 
     napi_value promise;
@@ -2761,7 +2915,72 @@ struct RdpPreflightRouteProbeAsyncData {
     napi_deferred deferred = nullptr;
     napi_async_work work = nullptr;
     bool workerFailed = false;
+    std::unique_ptr<NativeNetworkObserverLease> observerLease;
+
+    ~RdpPreflightRouteProbeAsyncData() {
+        secureClearString(request.password);
+        request.cancelled = {};
+    }
 };
+
+static RdpPreflightResult MakeRdpNetworkChangedPreflightResult(
+    const RdpPreflightRequest& request) {
+    RdpPreflightResult result;
+    result.endpointMode = request.route.endpointMode;
+    result.routeIdentity = RdpGatewayPolicy::routeIdentity(request.route);
+    result.generation = request.generation;
+    result.requestId = request.requestId;
+    result.stage = "network";
+    result.errorCode = "E-RDP-NETWORK-CHANGED";
+    result.errorMessage =
+        "RDP route preflight cancelled because the default network changed";
+    result.preflightStatus = RdpPreflightPolicy::kUnavailable;
+    RdpGatewayPolicy::initializeGatewayTransportResult(
+        result, request.route.gatewayTransport);
+    return result;
+}
+
+static RdpPreflightResult ProbeRdpRouteOnCurrentNetwork(
+    const std::shared_ptr<ProtocolAdapter>& adapter,
+    RdpPreflightRequest& request) {
+    if (!adapter) {
+        RdpPreflightResult result;
+        result.endpointMode = request.route.endpointMode;
+        result.routeIdentity = RdpGatewayPolicy::routeIdentity(request.route);
+        result.generation = request.generation;
+        result.requestId = request.requestId;
+        result.stage = "endpoint";
+        result.errorCode = "E-RDP-ADAPTER";
+        result.errorMessage = "RDP adapter is not available";
+        RdpGatewayPolicy::initializeGatewayTransportResult(
+            result, request.route.gatewayTransport);
+        return result;
+    }
+    return RdpNetworkRetryPolicy::runOnCurrentNetwork<RdpPreflightResult>(
+        []() {
+            return remotedesk::net::ProcessNetworkGenerationFence().snapshot();
+        },
+        [&](const remotedesk::net::NetworkGenerationSnapshot& captured) {
+            request.cancelled = [captured]() {
+                return remotedesk::net::ProcessNetworkGenerationFence().shouldCancel(
+                    captured);
+            };
+            struct CancellationReset final {
+                RdpPreflightRequest& request;
+                ~CancellationReset() { request.cancelled = {}; }
+            } reset {request};
+            return adapter->probeRdpCertificateRoute(request);
+        },
+        [](const RdpPreflightResult& result) {
+            return result.errorCode == "E-RDP-NETWORK-CHANGED";
+        },
+        [&]() { return MakeRdpNetworkChangedPreflightResult(request); },
+        [](const remotedesk::net::NetworkGenerationSnapshot& current) {
+            OH_LOG_INFO(LOG_APP,
+                "[RDP-PREFLIGHT] retrying route on current network generation=%{public}llu",
+                static_cast<unsigned long long>(current.generation));
+        });
+}
 
 static void ExecuteRdpPreflightRouteProbeAsync(napi_env /*env*/, void* rawData) {
     auto* data = static_cast<RdpPreflightRouteProbeAsyncData*>(rawData);
@@ -2769,19 +2988,8 @@ static void ExecuteRdpPreflightRouteProbeAsync(napi_env /*env*/, void* rawData) 
         return;
     }
     try {
-        if (!data->adapter) {
-            data->result.endpointMode = data->request.route.endpointMode;
-            data->result.routeIdentity = RdpGatewayPolicy::routeIdentity(data->request.route);
-            data->result.generation = data->request.generation;
-            data->result.requestId = data->request.requestId;
-            data->result.stage = "endpoint";
-            data->result.errorCode = "E-RDP-ADAPTER";
-            data->result.errorMessage = "RDP adapter is not available";
-            RdpGatewayPolicy::initializeGatewayTransportResult(
-                data->result, data->request.route.gatewayTransport);
-            return;
-        }
-        data->result = data->adapter->probeRdpCertificateRoute(data->request);
+        data->result = ProbeRdpRouteOnCurrentNetwork(
+            data->adapter, data->request);
     } catch (const std::exception& ex) {
         data->workerFailed = true;
         data->errorMessage = std::string("RDP route preflight failed: ") + ex.what();
@@ -2841,6 +3049,13 @@ napi_value NapiProbeRdpCertificateRouteAsync(napi_env env, napi_callback_info in
     if (!ReadRdpPreflightRequest(env, args[0], data->request, parseError)) {
         delete data;
         napi_throw_type_error(env, "E-RDP-PREFLIGHT-REQUEST", parseError.c_str());
+        return nullptr;
+    }
+    data->observerLease.reset(new (std::nothrow) NativeNetworkObserverLease());
+    if (!data->observerLease || !data->observerLease->active()) {
+        delete data;
+        napi_throw_error(env, "E-RDP-NETWORK-OBSERVER",
+                         "RDP network observer is unavailable");
         return nullptr;
     }
     data->adapter = FindAdapter("rdp");
@@ -5460,6 +5675,38 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
         OH_LOG_INFO(LOG_APP, "[ExtLoader] audio callback disabled by session config");
     }
 
+    const bool observesNativeNetwork = protocolName == "rdp" ||
+        protocolName == "vnc" || protocolName == "rustdesk" ||
+        protocolName == "ssh";
+#if defined(__MUSL__)
+    std::unique_ptr<NativeNetworkObserverLease> connectObserverLease;
+    if (observesNativeNetwork) {
+        connectObserverLease.reset(
+            new (std::nothrow) NativeNetworkObserverLease());
+        if (!connectObserverLease || !connectObserverLease->active()) {
+            secureClearString(cfg.rdpRestrictedAdminHash);
+            admission.rollback();
+            napi_value errVal;
+            napi_create_int32(env, -103, &errVal);
+            return errVal;
+        }
+    }
+#endif
+    if (observesNativeNetwork) {
+        // Register before the protocol worker snapshots the current network.
+        // Some OHOS implementations deliver the initial availability callback
+        // synchronously from registration; doing this after connect() could
+        // invalidate the first worker before the session became a dispatch
+        // target. Admission rollback removes the exact target on failure.
+        if (!UpdateNativeNetworkObserver(session)) {
+            secureClearString(cfg.rdpRestrictedAdminHash);
+            admission.rollback();
+            napi_value errVal;
+            napi_create_int32(env, -103, &errVal);
+            return errVal;
+        }
+    }
+
     // 建立连接 — 回调必须先注册，避免 FreeRDP 连接线程早于 rdpsnd/OHAudio 回调。
     int ret = adapter->connect(cfg);
     // FreeRdpAdapter owns the independent session copy after connect().  The
@@ -5475,12 +5722,6 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
         napi_value errVal;
         napi_create_int32(env, ret, &errVal);  // 传递真实错误码而非通用 -2
         return errVal;
-    }
-
-    if (protocolName == "rustdesk" || protocolName == "ssh") {
-        // RustDesk keeps one exact observer target; SSH dispatches through the
-        // session manager and only needs the registration alive.
-        UpdateNativeNetworkObserver(session);
     }
 
     OH_LOG_INFO(LOG_APP, "[ExtLoader] 连接成功, sessionId=%{public}d", sessionId);
@@ -5891,10 +6132,6 @@ static void CompleteSshConnectAsync(napi_env env, napi_status status, void* rawD
             "[ExtLoader] SSH async completion owner=%{public}s id=%{public}d elapsedMs=%{public}lld",
             data->foreground ? "foreground" : "detached",
             data->sessionId, elapsedMs());
-        UpdateNativeNetworkObserver(data->session);
-        OH_LOG_INFO(LOG_APP,
-            "[ExtLoader] SSH async completion observer done id=%{public}d elapsedMs=%{public}lld",
-            data->sessionId, elapsedMs());
         napi_value result;
         napi_create_int32(env, data->sessionId, &result);
         napi_resolve_deferred(env, data->deferred, result);
@@ -5963,6 +6200,12 @@ napi_value NapiConnectSshAsync(napi_env env, napi_callback_info info) {
     }
     if (!RegisterSshConnectSession(*data)) {
         napi_throw_error(env, nullptr, "SSH async session allocation failed");
+        return nullptr;
+    }
+    if (!UpdateNativeNetworkObserver(data->session)) {
+        CleanupSshConnectFailure(*data);
+        napi_throw_error(env, "E-SSH-NETWORK-OBSERVER",
+                         "SSH network observer is unavailable");
         return nullptr;
     }
 
@@ -6252,7 +6495,8 @@ static NativeDisconnectCoreResult BeginSessionTeardown(
     // check, while the one that held this lane before us completed all ups.
     keyDispatchLock.unlock();
 
-    if (session->protocolName == "rustdesk") {
+    if (session->protocolName == "rdp" || session->protocolName == "vnc" ||
+        session->protocolName == "rustdesk") {
         ClearNativeNetworkObserver(
             sessionId, session->generation.load(std::memory_order_acquire));
     }
@@ -6732,7 +6976,9 @@ napi_value NapiDisconnectAll(napi_env env, napi_callback_info info) {
             (void)g_sshNativeFacade.closeSession(SshSessionHandle {
                 item.second->sessionId, "shell", owner.generation});
             ClearNativeNetworkObserver(item.first, owner.generation);
-        } else if (item.second->protocolName == "rustdesk") {
+        } else if (item.second->protocolName == "rdp" ||
+                   item.second->protocolName == "vnc" ||
+                   item.second->protocolName == "rustdesk") {
             // The native network observer retains the SessionContext.  Clear
             // it before removing the registry entry even when this batch is
             // racing a per-session disconnect; the generation check keeps a

@@ -134,7 +134,7 @@ public:
     void setSessionGeneration(uint64_t generation);
 
     /** Platform network availability event, fenced by its monotonic generation. */
-    void onNetworkChanged(bool available, uint64_t networkGeneration);
+    void onNetworkChanged(bool available, uint64_t networkGeneration) override;
 
     // Forwarding profiles are owned by this SSH adapter. Runtime transitions
     // are serialized through the same session-owner reactor as libssh2.

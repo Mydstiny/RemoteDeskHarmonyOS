@@ -17,6 +17,7 @@
 #include <mutex>
 #include <memory>
 #include <thread>
+#include <vector>
 
 #if defined(RDP_NATIVE_CALLBACK_TESTING)
 extern "C" bool RdpTestProductionDisconnectRegistryRoundTrip(
@@ -1660,14 +1661,47 @@ RDP_TEST_CASE(freerdp_rdpsnd_production_entry_holds_owner_lease) {
     FreeRdpAdapter::ClearRdpsndCallbackForTesting(nextOwner);
     DeactivateOwner(nextOwner);
 
-    // Exercise the production FreeRDP deferred-owner path with a worker that
-    // cannot finish inside the first two budgets.  The API must return with a
-    // visible remaining item, never detach it, and join only after release.
-    auto blockedRelease = FreeRdpAdapter::QueueBlockedWorkerForTesting();
+    // Every critical teardown role receives its own carrier before transport
+    // admission. A blocked SDK disconnect must not head-of-line block the
+    // sibling platform-retire carrier or the global non-blocking join owner.
+    RDP_ASSERT(FreeRdpAdapter::VerifyTeardownCarrierIsolationForTesting());
+
+    // The deferred owner is process-scoped. Destroying an unrelated idle
+    // adapter while another session has deferred work must not stop that
+    // global owner or reject the next session's reservation.
+    auto crossSessionRelease =
+        FreeRdpAdapter::QueueBlockedWorkerForTesting();
+    RDP_ASSERT(crossSessionRelease != nullptr);
+    {
+        auto idleAdapter = std::make_shared<FreeRdpAdapter>();
+        idleAdapter.reset();
+    }
+    auto postDestructionRelease =
+        FreeRdpAdapter::QueueBlockedWorkerForTesting();
+    RDP_ASSERT(postDestructionRelease != nullptr);
+    crossSessionRelease->store(true, std::memory_order_release);
+    postDestructionRelease->store(true, std::memory_order_release);
+    RDP_ASSERT(FreeRdpAdapter::DrainDeferredWorkersWithinForTesting(1000));
+
+    // Fill every production deferred-owner slot with workers that cannot
+    // complete. The next admission must fail before it starts a thread; no
+    // callback-boundary fallback may synchronously join or detach it.
+    constexpr size_t kDeferredWorkerCapacity = 64;
+    std::vector<std::shared_ptr<std::atomic<bool>>> blockedReleases;
+    blockedReleases.reserve(kDeferredWorkerCapacity);
+    for (size_t index = 0; index < kDeferredWorkerCapacity; ++index) {
+        auto release = FreeRdpAdapter::QueueBlockedWorkerForTesting();
+        RDP_ASSERT(release != nullptr);
+        blockedReleases.push_back(std::move(release));
+    }
+    RDP_ASSERT(FreeRdpAdapter::QueueBlockedWorkerForTesting() == nullptr);
     RDP_ASSERT(!FreeRdpAdapter::DrainDeferredWorkersWithinForTesting(20));
-    RDP_ASSERT(FreeRdpAdapter::DeferredWorkerRemainingForTesting() >= 1);
+    RDP_ASSERT_EQ(FreeRdpAdapter::DeferredWorkerRemainingForTesting(),
+                  kDeferredWorkerCapacity);
     RDP_ASSERT(!FreeRdpAdapter::ShutdownDeferredWorkersWithinForTesting(50));
-    blockedRelease->store(true, std::memory_order_release);
+    for (const auto& release : blockedReleases) {
+        release->store(true, std::memory_order_release);
+    }
     RDP_ASSERT(FreeRdpAdapter::DrainDeferredWorkersWithinForTesting(1000));
     RDP_ASSERT_EQ(FreeRdpAdapter::DeferredWorkerRemainingForTesting(),
                   static_cast<size_t>(0));
