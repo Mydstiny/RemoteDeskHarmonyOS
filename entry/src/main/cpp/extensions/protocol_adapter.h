@@ -134,6 +134,7 @@ struct ConnectionConfig {
     // an unknown/changed key before any authentication material is sent.
     bool        sshHostKeyPromptEnabled;
     std::string sshTrustHostId;                 // durable RemoteHost/profile owner id
+    std::string sshHostKeyRouteIdentity;         // canonical route identity for prompt TOCTOU fencing
     // ProxyJump 的跳板机与目标机是两个独立的 SSH endpoint，必须分别绑定 key。
     std::string sshJumpHostKeyRawBase64;
     std::string sshJumpHostKeyFingerprintSha256;

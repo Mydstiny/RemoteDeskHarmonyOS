@@ -8183,6 +8183,16 @@ struct RemoteDesktop {
         if (host) {
           this.hostLabel = host.label;
 
+          // SSH owns a dedicated page with the native pre-auth host-key
+          // broker. Refuse the retired generic-session entry so a crafted or
+          // stale route cannot bypass canonical route-bound trust handling.
+          if (host.protocol === 'ssh') {
+            this.connecting = false;
+            this.connectionError = 'SSH 会话入口无效 [E-SSH-SESSION-OWNER]';
+            this.connectionErrorDetail = '请从主机列表进入 SSH 终端并重新完成安全校验。';
+            return;
+          }
+
           // 主机锁验证 (若已在列表页验证过则跳过)
           const authenticated: boolean = (p['authenticated'] as boolean) === true;
           if (host.locked && !authenticated) {

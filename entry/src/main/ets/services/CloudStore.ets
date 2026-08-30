@@ -8762,6 +8762,8 @@ try { this.rollbackTrackedTransaction(); } catch (_ignored) {}
     host.sshHostKeyTrustMode = Number(
       get('sshhostkeytrustmode',
         host.sshHostKeyTrustMode.toString()));
+    host.sshHostKeyRouteIdentity =
+      get('sshhostkeyrouteidentity', host.sshHostKeyRouteIdentity);
     host.sshJumpHostKeyAlgorithm =
       get('sshjumphostkeyalgorithm', host.sshJumpHostKeyAlgorithm);
     host.sshJumpHostKeyFingerprintSha256 =
@@ -8923,6 +8925,8 @@ try { this.rollbackTrackedTransaction(); } catch (_ignored) {}
       host.sshHostKeyTrustedAt.toString();
     values['sshhostkeytrustmode'] =
       host.sshHostKeyTrustMode.toString();
+    values['sshhostkeyrouteidentity'] =
+      host.sshHostKeyRouteIdentity;
     values['sshjumphostkeyalgorithm'] =
       host.sshJumpHostKeyAlgorithm;
     values['sshjumphostkeyfingerprintsha256'] =

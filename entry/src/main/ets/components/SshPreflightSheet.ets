@@ -234,6 +234,7 @@ export class SshPreflightController {
       hostId: this.host.id,
       expectedHostKeyRawBase64: this.hostKeyInfo?.rawBase64 || this.host.sshHostKeyRawBase64,
       expectedHostKeyFingerprintSha256: this.hostKeyInfo?.fingerprintSha256 || this.host.sshHostKeyFingerprintSha256,
+      targetRouteIdentity: this.host.sshHostKeyRouteIdentity,
       expectedJumpHostKeyRawBase64: this.jumpHostKeyInfo?.rawBase64 || this.host.sshJumpHostKeyRawBase64,
       expectedJumpHostKeyFingerprintSha256: this.jumpHostKeyInfo?.fingerprintSha256 ||
         this.host.sshJumpHostKeyFingerprintSha256,

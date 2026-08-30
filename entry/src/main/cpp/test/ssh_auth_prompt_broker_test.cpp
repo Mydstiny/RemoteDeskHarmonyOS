@@ -103,6 +103,7 @@ RDP_TEST_CASE(ssh_auth_prompt_broker_host_key_decision_is_bound_and_has_no_secre
     std::thread worker([&]() {
         waitResult = broker.waitForHostKeyDecision(
             61, 9201, "target.example", "hop-2", "host-record-1",
+            "ssh-hostkey-route-v1|target=example",
             "jump-2.example", 2222, 1, "ssh-ed25519", "SHA256:new",
             "AAAAC3NzaC1lZDI1NTE5AAAA", "SHA256:old", true);
     });
@@ -115,6 +116,7 @@ RDP_TEST_CASE(ssh_auth_prompt_broker_host_key_decision_is_bound_and_has_no_secre
     RDP_ASSERT(request.sessionId == 61);
     RDP_ASSERT(request.generation == 9201);
     RDP_ASSERT(request.trustHostId == "host-record-1");
+    RDP_ASSERT(request.routeIdentity == "ssh-hostkey-route-v1|target=example");
     RDP_ASSERT(request.endpointHost == "jump-2.example");
     RDP_ASSERT(request.endpointPort == 2222);
     RDP_ASSERT(request.hostKeyHopIndex == 1);

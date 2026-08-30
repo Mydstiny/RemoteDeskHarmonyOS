@@ -2443,6 +2443,7 @@ int SshAdapter::verifyHostKey(LIBSSH2_SESSION* session,
     const SshAuthPromptWaitResult waitResult = authPromptBroker_.waitForHostKeyDecision(
         diagnostics_.snapshot().sessionId, diagnostics_.sessionGeneration(), savedCfg_.host,
         endpointLabel ? endpointLabel : "SSH endpoint", savedCfg_.sshTrustHostId,
+        savedCfg_.sshHostKeyRouteIdentity,
         endpointHost, endpointPort, hopIndex, sshHostKeyTypeName(keyType), currentFp,
         currentRaw, expectedFingerprintSha256, hasExpectedKey);
     setSshLifecycleState(SshSessionLifecycleState::Authenticating);

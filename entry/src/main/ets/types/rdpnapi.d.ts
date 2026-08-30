@@ -798,6 +798,7 @@ export interface SessionConfig {
   expectedHostKeyFingerprintSha256?: string;
   sshHostKeyPromptEnabled?: boolean;
   sshTrustHostId?: string;
+  sshHostKeyRouteIdentity?: string;
   sshJumpHostKeyRawBase64?: string;
   sshJumpHostKeyFingerprintSha256?: string;
   expectedRdpCertificateFingerprintSha256?: string;
@@ -963,6 +964,7 @@ export interface SshAuthPromptRequest {
   expiresAtMs: number;
   kind: 'keyboard_interactive' | 'host_key';
   trustHostId: string;
+  routeIdentity: string;
   endpointHost: string;
   endpointPort: number;
   hostKeyHopIndex: number;

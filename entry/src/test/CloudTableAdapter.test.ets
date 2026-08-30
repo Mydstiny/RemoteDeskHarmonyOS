@@ -76,6 +76,7 @@ describe('CloudTableAdapter', (): void => {
       landiscoveryidentity: 'peer-stable-id',
       lanlastresolvedat: '1234',
       sshhostkeyfingerprintsha256: 'must-stay-local',
+      sshhostkeyrouteidentity: 'must-stay-local-route',
       rdpcertificateallowhostmismatch: '1',
       rdprestrictedadminhash: '0123456789ABCDEF0123456789ABCDEF',
       password: 'must-not-leak',
@@ -107,6 +108,7 @@ describe('CloudTableAdapter', (): void => {
     expect(decoded.extension['sshkeypassphrase']).assertUndefined();
     expect(decoded.extension['sshhostkeyfingerprintsha256'])
       .assertUndefined();
+    expect(decoded.extension['sshhostkeyrouteidentity']).assertUndefined();
     expect(decoded.extension['rdpcertificateallowhostmismatch'])
       .assertUndefined();
     expect(decoded.displayConfigJson.indexOf('"width":1920') >= 0).assertTrue();

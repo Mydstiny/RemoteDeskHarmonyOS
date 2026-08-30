@@ -130,6 +130,7 @@ const SECRET_COLUMNS: Record<string, string[]> = {
 const REMOTE_HOST_EXTENSION_TRUST: string[] = [
   'sshhostkeyalgorithm', 'sshhostkeyfingerprintsha256',
   'sshhostkeyrawbase64', 'sshhostkeytrustedat', 'sshhostkeytrustmode',
+  'sshhostkeyrouteidentity',
   'sshjumphostkeyalgorithm', 'sshjumphostkeyfingerprintsha256',
   'sshjumphostkeyrawbase64', 'sshjumphostkeytrustedat', 'sshjumphostkeytrustmode',
   'rdpcertificatefingerprintsha256', 'rdpcertificatesubject',

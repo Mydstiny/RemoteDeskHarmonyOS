@@ -293,9 +293,13 @@ import {
 import {
   SshProxyRuntimePlan,
   resolveSshProxyRuntimePlan,
-  sshProxyRuntimeHasStrictJumpBindings,
-  sshProxyRuntimeNeedsTerminalSecrets
+  sshProxyRuntimeHasStrictJumpBindings
 } from '../services/SshProxyRuntimePolicy';
+import {
+  SshHostKeyRouteBinding,
+  sshHostKeyRouteBinding,
+  sshHostKeyTrustIsCurrent
+} from '../services/SshHostKeyTrustPolicy';
 import {
   nextRdpCertificateProbeGeneration,
   shouldApplyRdpCertificateProbeResult
@@ -1313,6 +1317,7 @@ struct HostListPage {
   private readonly sshWorkspaceCapabilityStore: SshWorkspaceCapabilityStore =
     new SshWorkspaceCapabilityStore();
   private readonly sshProxyProfiles: SshProxyProfileStore = new SshProxyProfileStore();
+  private sshProxyProfilesReady: boolean = false;
   private lightSensing: LightSensingService = LightSensingService.getInstance();
   @State showPassphraseSheet: boolean = false;
   private hlPassphraseResolve: ((v: string) => void) | null = null;
@@ -1826,7 +1831,7 @@ struct HostListPage {
     this.sshWorkbenchEnabled = this.sshWorkspaceCapabilityStore.load(
       getContext(this) as common.Context);
     this.refreshSshNotificationAuthorization();
-    this.sshProxyProfiles.init(getContext(this) as common.Context);
+    this.sshProxyProfilesReady = this.sshProxyProfiles.init(getContext(this) as common.Context);
     this.proSync.init(getContext(this) as common.Context);
     // 恢复 TOTP 隐私保护状态 (Preferences 持久化)
     try {
@@ -6408,17 +6413,14 @@ struct HostListPage {
           });
           return;
         }
-        // The legacy preflight API can only authenticate a single flat hop.
-        // Credential-bearing profiles are handed to the terminal's one-shot
-        // broker, where all ordered hops and dynamic MFA prompts are retained.
-        if (proxyPlan.route.type === 'ssh_jump' ||
-          sshProxyRuntimeNeedsTerminalSecrets(proxyPlan)) {
-          const sshParams: Record<string, Object> = {};
-          sshParams['hostId'] = host.id;
-          sshParams['authenticated'] = true;
-          this.openSessionDestination('pages/SshTerminal', sshParams, 'ssh_broker_handoff');
-          return;
-        }
+        // A durable profile is authoritative for every route kind. The
+        // terminal owns the native pre-auth host-key broker and can therefore
+        // verify the exact canonical path without falling back to flat fields.
+        const sshParams: Record<string, Object> = {};
+        sshParams['hostId'] = host.id;
+        sshParams['authenticated'] = true;
+        this.openSessionDestination('pages/SshTerminal', sshParams, 'ssh_broker_handoff');
+        return;
       }
       // T-210: SSH 前置校验 (指纹 + 私钥密码) → 通过后才路由
       this.openSshPreflight(host);
@@ -8399,6 +8401,18 @@ struct HostListPage {
     try {
       await new Promise<void>((r) => setTimeout(r, 80));
       if (!this.isCurrentSshPreflight(host, generation)) { return; }
+      if (!this.sshProxyProfilesReady) {
+        this.sshPreflightState = SshPreflightState.ERROR;
+        this.sshPreflightError = 'SSH 连接方式存储不可读，请重新打开应用后重试。';
+        return;
+      }
+      const trustPlan: SshProxyRuntimePlan = resolveSshProxyRuntimePlan(
+        host, this.sshProxyProfiles.load(host.id));
+      if (!trustPlan.valid) {
+        this.sshPreflightState = SshPreflightState.ERROR;
+        this.sshPreflightError = trustPlan.message || 'SSH 连接路径无效';
+        return;
+      }
       const info = await this.loader.probeSshHostKeyAsync(
         host.host, host.port, this.sshPreflightProxy(host));
       if (!this.isCurrentSshPreflight(host, generation)) { return; }
@@ -8420,11 +8434,12 @@ struct HostListPage {
       }
       this.sshPreflightHostKeyInfo = info;
       this.sshPreflightJumpHostKeyInfo = jumpInfo;
-      const targetChanged = host.sshHostKeyTrustMode === 1 && host.sshHostKeyRawBase64 !== '' &&
+      const targetTrustCurrent: boolean = sshHostKeyTrustIsCurrent(host, trustPlan);
+      const targetChanged = targetTrustCurrent && host.sshHostKeyRawBase64 !== '' &&
         host.sshHostKeyRawBase64 !== info.rawBase64;
       const jumpChanged = jumpInfo !== null && host.sshJumpHostKeyTrustMode === 1 &&
         host.sshJumpHostKeyRawBase64 !== '' && host.sshJumpHostKeyRawBase64 !== jumpInfo.rawBase64;
-      const targetNeedsTrust = host.sshHostKeyTrustMode !== 1 || host.sshHostKeyRawBase64 === '' ||
+      const targetNeedsTrust = !targetTrustCurrent || host.sshHostKeyRawBase64 === '' ||
         host.sshHostKeyRawBase64 !== info.rawBase64;
       const jumpNeedsTrust = jumpInfo !== null &&
         (host.sshJumpHostKeyTrustMode !== 1 || host.sshJumpHostKeyRawBase64 === '' ||
@@ -8449,7 +8464,11 @@ struct HostListPage {
     const info = this.sshPreflightHostKeyInfo;
     if (this.sshPreflightUsesJump(host) && !this.sshPreflightJumpHostKeyInfo) { return; }
     const updated: RemoteHost = host.runtimeClone();
-    this.applySshPreflightTrust(updated, info, this.sshPreflightJumpHostKeyInfo);
+    if (!this.applySshPreflightTrust(updated, info, this.sshPreflightJumpHostKeyInfo)) {
+      this.sshPreflightState = SshPreflightState.ERROR;
+      this.sshPreflightError = 'SSH 连接路径已变化，请取消后重新预检。';
+      return;
+    }
     if (!this.srv.updateHost(updated)) {
       this.sshPreflightState = SshPreflightState.ERROR;
       this.sshPreflightError = 'SSH 指纹验证成功，但信任记录保存失败；连接已停止。';
@@ -8464,7 +8483,11 @@ struct HostListPage {
     const info = this.sshPreflightHostKeyInfo;
     if (this.sshPreflightUsesJump(host) && !this.sshPreflightJumpHostKeyInfo) { return; }
     const updated: RemoteHost = host.runtimeClone();
-    this.applySshPreflightTrust(updated, info, this.sshPreflightJumpHostKeyInfo);
+    if (!this.applySshPreflightTrust(updated, info, this.sshPreflightJumpHostKeyInfo)) {
+      this.sshPreflightState = SshPreflightState.ERROR;
+      this.sshPreflightError = 'SSH 连接路径已变化，请取消后重新预检。';
+      return;
+    }
     if (!this.srv.updateHost(updated)) {
       this.sshPreflightState = SshPreflightState.ERROR;
       this.sshPreflightError = 'SSH 新指纹验证成功，但信任记录保存失败；连接已停止。';
@@ -8474,13 +8497,18 @@ struct HostListPage {
   }
 
   private applySshPreflightTrust(host: RemoteHost, targetInfo: SshHostKeyInfo,
-    jumpInfo: SshHostKeyInfo | null): void {
+    jumpInfo: SshHostKeyInfo | null): boolean {
+    const plan: SshProxyRuntimePlan = resolveSshProxyRuntimePlan(
+      host, this.sshProxyProfiles.load(host.id));
+    const binding: SshHostKeyRouteBinding = sshHostKeyRouteBinding(host, plan);
+    if (!binding.ok) { return false; }
     const trustedAt: number = Date.now();
     host.sshHostKeyAlgorithm = targetInfo.algorithm;
     host.sshHostKeyFingerprintSha256 = targetInfo.fingerprintSha256;
     host.sshHostKeyRawBase64 = targetInfo.rawBase64;
     host.sshHostKeyTrustedAt = trustedAt;
     host.sshHostKeyTrustMode = 1;
+    host.sshHostKeyRouteIdentity = binding.identity;
     if (jumpInfo !== null) {
       host.sshJumpHostKeyAlgorithm = jumpInfo.algorithm;
       host.sshJumpHostKeyFingerprintSha256 = jumpInfo.fingerprintSha256;
@@ -8488,6 +8516,7 @@ struct HostListPage {
       host.sshJumpHostKeyTrustedAt = trustedAt;
       host.sshJumpHostKeyTrustMode = 1;
     }
+    return true;
   }
 
   /** T-210: 检查私钥密码 */
@@ -8676,11 +8705,19 @@ struct HostListPage {
   /** T-210: 一切就绪 — 创建 token 并路由 */
   private doSshPreflightReady(host: RemoteHost, generation: number): void {
     if (!this.isCurrentSshPreflight(host, generation)) { return; }
+    const plan: SshProxyRuntimePlan = resolveSshProxyRuntimePlan(
+      host, this.sshProxyProfiles.load(host.id));
+    const binding: SshHostKeyRouteBinding = sshHostKeyRouteBinding(host, plan);
+    if (!binding.ok || !sshHostKeyTrustIsCurrent(host, plan)) {
+      this.sshPreflightState = SshPreflightState.ERROR;
+      this.sshPreflightError = 'SSH 指纹尚未绑定当前连接路径，请重新确认。';
+      return;
+    }
     const svc = SshPreflightService.getInstance();
     const passphrase = this.sshPreflightPassphraseInput || host.sshKeyPassphrase;
     const proxyPassphrase = this.sshPreflightProxyPassphraseInput || host.sshProxyKeyPassphrase;
-    const rawBase64 = this.sshPreflightHostKeyInfo?.rawBase64 || host.sshHostKeyRawBase64;
-    const fp = this.sshPreflightHostKeyInfo?.fingerprintSha256 || host.sshHostKeyFingerprintSha256;
+    const rawBase64 = host.sshHostKeyRawBase64;
+    const fp = host.sshHostKeyFingerprintSha256;
     const jumpRawBase64 = this.sshPreflightJumpHostKeyInfo?.rawBase64 || host.sshJumpHostKeyRawBase64;
     const jumpFp = this.sshPreflightJumpHostKeyInfo?.fingerprintSha256 ||
       host.sshJumpHostKeyFingerprintSha256;
@@ -8688,6 +8725,7 @@ struct HostListPage {
       hostId: host.id,
       expectedHostKeyRawBase64: rawBase64,
       expectedHostKeyFingerprintSha256: fp,
+      targetRouteIdentity: binding.identity,
       expectedJumpHostKeyRawBase64: jumpRawBase64,
       expectedJumpHostKeyFingerprintSha256: jumpFp,
       privateKeyPassphrase: passphrase,
@@ -20632,9 +20670,12 @@ struct HostListPage {
   }
 
   private collectSshTrustedHosts(): RemoteHost[] {
+    if (!this.sshProxyProfilesReady) { return []; }
     return this.srv.getAllHosts().filter((h: RemoteHost): boolean => {
-      return h.protocol === 'ssh' &&
-        (h.sshHostKeyTrustMode === 1 || h.sshHostKeyFingerprintSha256 !== '' || h.sshHostKeyRawBase64 !== '');
+      if (h.protocol !== 'ssh') { return false; }
+      const plan: SshProxyRuntimePlan = resolveSshProxyRuntimePlan(
+        h, this.sshProxyProfiles.load(h.id));
+      return sshHostKeyTrustIsCurrent(h, plan);
     });
   }
 
@@ -20738,6 +20779,7 @@ struct HostListPage {
       updated.sshHostKeyRawBase64 = '';
       updated.sshHostKeyTrustedAt = 0;
       updated.sshHostKeyTrustMode = 0;
+      updated.sshHostKeyRouteIdentity = '';
       updated.sshJumpHostKeyAlgorithm = '';
       updated.sshJumpHostKeyFingerprintSha256 = '';
       updated.sshJumpHostKeyRawBase64 = '';
@@ -20755,6 +20797,13 @@ struct HostListPage {
 
   private async refreshSshHostKey(host: RemoteHost): Promise<void> {
     if (this.sshHostKeyBusyId !== '') { return; }
+    if (!this.sshProxyProfilesReady || this.sshProxyProfiles.load(host.id) !== null) {
+      promptAction.showToast({
+        message: '该主机使用规范连接路径，请发起一次连接并在原生预认证弹窗中重新确认指纹',
+        duration: 3000
+      });
+      return;
+    }
     if (host.locked) {
       const r = await showLockGate(host.label, 'biometric');
       if (!r.ok) {
@@ -20786,7 +20835,12 @@ struct HostListPage {
         }
       }
       const updated: RemoteHost = host.runtimeClone();
-      this.applySshPreflightTrust(updated, info, jumpInfo);
+      if (!this.applySshPreflightTrust(updated, info, jumpInfo)) {
+        promptAction.showToast({
+          message: 'SSH 连接路径已变化，请从主机列表重新预检', duration: 2400
+        });
+        return;
+      }
       if (this.srv.updateHost(updated)) {
         promptAction.showToast({ message: 'SSH 指纹已更新', duration: 1500 });
       } else {

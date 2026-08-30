@@ -36,6 +36,7 @@ struct SshAuthPromptRequest {
     uint64_t expiresAtMs = 0;
     std::string kind = "keyboard_interactive";
     std::string trustHostId;
+    std::string routeIdentity;
     std::string endpointHost;
     int endpointPort = 0;
     int hostKeyHopIndex = -1;
@@ -136,6 +137,7 @@ public:
     SshAuthPromptWaitResult waitForHostKeyDecision(
         uint64_t sessionId, uint64_t generation, const std::string& targetHost,
         const std::string& hop, const std::string& trustHostId,
+        const std::string& routeIdentity,
         const std::string& endpointHost, int endpointPort, int hopIndex,
         const std::string& algorithm, const std::string& fingerprintSha256,
         const std::string& rawBase64, const std::string& expectedFingerprintSha256,
@@ -155,6 +157,7 @@ public:
             request.round = ++round_;
             request.kind = "host_key";
             request.trustHostId = bounded(trustHostId, 128);
+            request.routeIdentity = bounded(routeIdentity, 4096);
             request.endpointHost = bounded(endpointHost, 255);
             request.endpointPort = endpointPort;
             request.hostKeyHopIndex = hopIndex;

@@ -226,6 +226,12 @@ import {
   resolveSshProxyRuntimePlan,
   sshProxyRuntimeHasStrictJumpBindings
 } from '../services/SshProxyRuntimePolicy';
+import {
+  SshHostKeyPins,
+  SshHostKeyRouteBinding,
+  sshHostKeyPinsForRoute,
+  sshHostKeyRouteBinding
+} from '../services/SshHostKeyTrustPolicy';
 import { shouldPollSshNativeConnectionState } from '../services/SshTransportPolicy';
 import { SshForwardingSheet } from '../components/ssh/SshForwardingSheet';
 import {
@@ -1696,15 +1702,21 @@ struct SshTerminal {
     }
     const current: RemoteHost | undefined = this.srv.getHost(ownerId);
     if (current === undefined || current.protocol !== 'ssh') { return false; }
+    if (!this.sshProxyProfilesReady) { return false; }
+    const plan: SshProxyRuntimePlan = this.terminalSshProxyPlan(current);
+    const binding: SshHostKeyRouteBinding = sshHostKeyRouteBinding(current, plan);
+    if (!binding.ok || prompt.routeIdentity !== binding.identity) { return false; }
     const trustedAt: number = Date.now();
     if (prompt.hostKeyHopIndex < 0) {
-      if (current.host.trim() !== endpointHost || current.port !== prompt.endpointPort) { return false; }
+      if (plan.route.endpointHost.trim() !== endpointHost ||
+        plan.route.endpointPort !== prompt.endpointPort) { return false; }
       const updated: RemoteHost = current.runtimeClone();
       updated.sshHostKeyAlgorithm = prompt.hostKeyAlgorithm.trim();
       updated.sshHostKeyFingerprintSha256 = fingerprint;
       updated.sshHostKeyRawBase64 = rawBase64;
       updated.sshHostKeyTrustedAt = trustedAt;
       updated.sshHostKeyTrustMode = 1;
+      updated.sshHostKeyRouteIdentity = binding.identity;
       return this.srv.updateHost(updated);
     }
 
@@ -7722,6 +7734,11 @@ struct SshTerminal {
     if (!proxyPlan.valid) {
       throw new Error(proxyPlan.message + ' [' + proxyPlan.code + ']');
     }
+    const targetPins: SshHostKeyPins = sshHostKeyPinsForRoute(host, proxyPlan);
+    if (!targetPins.trusted) {
+      throw new Error('SSH 主机指纹尚未绑定当前连接路径，请先从主机列表完成安全预检 ' +
+        '[E-SSH-SFTP-TRUST-BINDING]');
+    }
     let keyData: string = host.sshKeyData;
     let keyEncryptedHint: boolean = false;
     if (host.sshKeyId.length > 0) {
@@ -7789,12 +7806,13 @@ struct SshTerminal {
       authMethod: useKey ? 'publickey' : 'password',
       privateKeyPem: useKey ? keyData : '',
       privateKeyPassphrase: keyPassphrase,
-      expectedHostKeyRawBase64: host.sshHostKeyRawBase64,
-      expectedHostKeyFingerprintSha256: host.sshHostKeyFingerprintSha256,
+      expectedHostKeyRawBase64: targetPins.rawBase64,
+      expectedHostKeyFingerprintSha256: targetPins.fingerprintSha256,
       sshJumpHostKeyRawBase64: host.sshJumpHostKeyRawBase64,
       sshJumpHostKeyFingerprintSha256: host.sshJumpHostKeyFingerprintSha256,
       sshHostKeyPromptEnabled: true,
-      sshTrustHostId: host.id
+      sshTrustHostId: host.id,
+      sshHostKeyRouteIdentity: targetPins.routeIdentity
     };
   }
 
@@ -10510,6 +10528,7 @@ struct SshTerminal {
             this.preflightProxyPassphrase = tokenData.proxyPrivateKeyPassphrase || '';
             this.preflightExpectedHostKeyRaw = tokenData.expectedHostKeyRawBase64;
             this.preflightExpectedHostKeyFp = tokenData.expectedHostKeyFingerprintSha256;
+            this.preflightTargetRouteIdentity = tokenData.targetRouteIdentity || '';
             this.preflightExpectedJumpHostKeyRaw = tokenData.expectedJumpHostKeyRawBase64;
             this.preflightExpectedJumpHostKeyFp = tokenData.expectedJumpHostKeyFingerprintSha256;
             hilog.info(0x0001, 'SshTerminal', 'preflight token consumed ok');
@@ -11626,6 +11645,7 @@ struct SshTerminal {
   private preflightProxyPassphrase: string = '';
   private preflightExpectedHostKeyRaw: string = '';
   private preflightExpectedHostKeyFp: string = '';
+  private preflightTargetRouteIdentity: string = '';
   private preflightExpectedJumpHostKeyRaw: string = '';
   private preflightExpectedJumpHostKeyFp: string = '';
 
@@ -11635,6 +11655,7 @@ struct SshTerminal {
     this.preflightProxyPassphrase = '';
     this.preflightExpectedHostKeyRaw = '';
     this.preflightExpectedHostKeyFp = '';
+    this.preflightTargetRouteIdentity = '';
     this.preflightExpectedJumpHostKeyRaw = '';
     this.preflightExpectedJumpHostKeyFp = '';
   }
@@ -11756,6 +11777,19 @@ struct SshTerminal {
       if (!proxyPlan.valid) {
         throw new Error(proxyPlan.message + ' [' + proxyPlan.code + ']');
       }
+      const targetBinding: SshHostKeyRouteBinding = sshHostKeyRouteBinding(host, proxyPlan);
+      if (!targetBinding.ok) {
+        throw new Error('SSH 连接路径无法建立安全身份 [E-SSH-HOSTKEY-ROUTE]');
+      }
+      const targetPins: SshHostKeyPins = sshHostKeyPinsForRoute(host, proxyPlan);
+      if (preflightMatchesHost && (!targetBinding.ok || !targetPins.trusted ||
+        this.preflightTargetRouteIdentity !== targetBinding.identity ||
+        this.preflightExpectedHostKeyRaw !== targetPins.rawBase64 ||
+        this.preflightExpectedHostKeyFp !== targetPins.fingerprintSha256)) {
+        this.clearPreflightBinding();
+        throw new Error('SSH 安全预检与当前连接路径不一致，请从主机列表重新连接 ' +
+          '[E-SSH-PREFLIGHT-ROUTE-STALE]');
+      }
       const proxyPassword: string = await this.terminalProxyPassword(
         proxyPlan, pageGeneration, bindingGeneration, bindingHostId);
       if (!this.isSshBindingActive(pageGeneration, bindingGeneration, bindingHostId)) { return; }
@@ -11796,12 +11830,11 @@ struct SshTerminal {
         privateKeyPem: useKey ? keyData : '',
         privateKeyPassphrase: keyPassphrase,
         sshLocale: normalizeSshSessionLocale(this.sshSessionLocale),
-        expectedHostKeyRawBase64: (preflightMatchesHost ? this.preflightExpectedHostKeyRaw : '') ||
-          host.sshHostKeyRawBase64,
-        expectedHostKeyFingerprintSha256: (preflightMatchesHost ? this.preflightExpectedHostKeyFp : '') ||
-          host.sshHostKeyFingerprintSha256,
+        expectedHostKeyRawBase64: targetPins.rawBase64,
+        expectedHostKeyFingerprintSha256: targetPins.fingerprintSha256,
         sshHostKeyPromptEnabled: true,
         sshTrustHostId: host.id,
+        sshHostKeyRouteIdentity: targetBinding.identity,
         sshJumpHostKeyRawBase64: (preflightMatchesHost ? this.preflightExpectedJumpHostKeyRaw : '') ||
           host.sshJumpHostKeyRawBase64,
         sshJumpHostKeyFingerprintSha256: (preflightMatchesHost ? this.preflightExpectedJumpHostKeyFp : '') ||

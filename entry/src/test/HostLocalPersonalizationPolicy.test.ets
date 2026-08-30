@@ -87,6 +87,7 @@ export default function hostLocalPersonalizationPolicyTest(): void {
       local.rustdeskProLastSeenAt = 456;
       local.rustdeskProSyncError = 'offline';
       local.sshHostKeyFingerprintSha256 = 'SHA256:local';
+      local.sshHostKeyRouteIdentity = 'ssh-hostkey-route-v1|local';
       expect(remoteHostCloudBaseChanged(before, local)).assertFalse();
 
       local.label = 'Desk renamed';

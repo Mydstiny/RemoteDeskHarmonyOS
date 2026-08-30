@@ -1430,7 +1430,9 @@ static const char* SshRouteTypeName(SshRouteKind kind) {
 
 static bool FinalizeSshRoute(ConnectionConfig& config) {
     if (config.sshHostKeyPromptEnabled &&
-        (config.sshTrustHostId.empty() || config.sshTrustHostId.size() > 128)) {
+        (config.sshTrustHostId.empty() || config.sshTrustHostId.size() > 128 ||
+         config.sshHostKeyRouteIdentity.empty() ||
+         config.sshHostKeyRouteIdentity.size() > 4096)) {
         return false;
     }
     const std::string configuredType = config.sshProxyType.empty()
@@ -2020,6 +2022,7 @@ static napi_value CreateSshAuthPromptValue(
     SetObjectInt64(env, result, "expiresAtMs", static_cast<int64_t>(request.expiresAtMs));
     SetObjectString(env, result, "kind", request.kind);
     SetObjectString(env, result, "trustHostId", request.trustHostId);
+    SetObjectString(env, result, "routeIdentity", request.routeIdentity);
     SetObjectString(env, result, "endpointHost", request.endpointHost);
     SetObjectInt32(env, result, "endpointPort", request.endpointPort);
     SetObjectInt32(env, result, "hostKeyHopIndex", request.hostKeyHopIndex);
@@ -4568,6 +4571,7 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
     getString("expectedHostKeyFingerprintSha256", cfg.expectedHostKeyFingerprintSha256);
     getBool("sshHostKeyPromptEnabled", cfg.sshHostKeyPromptEnabled);
     getString("sshTrustHostId", cfg.sshTrustHostId);
+    getString("sshHostKeyRouteIdentity", cfg.sshHostKeyRouteIdentity, 4096);
     getString("sshJumpHostKeyRawBase64", cfg.sshJumpHostKeyRawBase64);
     getString("sshJumpHostKeyFingerprintSha256", cfg.sshJumpHostKeyFingerprintSha256);
     if (protocolName == "ssh") {
@@ -5626,6 +5630,7 @@ static bool ParseSshConnectionConfig(napi_env env, napi_value value,
     getString("expectedHostKeyFingerprintSha256", config.expectedHostKeyFingerprintSha256);
     getBool("sshHostKeyPromptEnabled", config.sshHostKeyPromptEnabled);
     getString("sshTrustHostId", config.sshTrustHostId);
+    getString("sshHostKeyRouteIdentity", config.sshHostKeyRouteIdentity, 4096);
     getString("sshJumpHostKeyRawBase64", config.sshJumpHostKeyRawBase64);
     getString("sshJumpHostKeyFingerprintSha256", config.sshJumpHostKeyFingerprintSha256);
     getString("sshProxyType", config.sshProxyType);

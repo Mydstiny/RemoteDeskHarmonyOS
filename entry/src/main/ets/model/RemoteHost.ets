@@ -212,6 +212,7 @@ export interface RemoteHostJSON {
   sshHostKeyRawBase64: string
   sshHostKeyTrustedAt: number
   sshHostKeyTrustMode: number
+  sshHostKeyRouteIdentity?: string
   sshJumpHostKeyAlgorithm: string
   sshJumpHostKeyFingerprintSha256: string
   sshJumpHostKeyRawBase64: string
@@ -360,6 +361,7 @@ export class RemoteHost implements LanHostAddressView {
   sshHostKeyRawBase64: string = '';          // raw key blob base64 (精确比对)
   sshHostKeyTrustedAt: number = 0;           // 信任时间戳 ms
   sshHostKeyTrustMode: number = 0;           // 0=unknown, 1=trusted
+  sshHostKeyRouteIdentity: string = '';       // Endpoint V2 + 完整代理/跳板路径绑定
   // ProxyJump 跳板机 host key 信任，独立于目标 SSH 主机。
   sshJumpHostKeyAlgorithm: string = '';
   sshJumpHostKeyFingerprintSha256: string = '';
@@ -582,6 +584,7 @@ export class RemoteHost implements LanHostAddressView {
       sshHostKeyRawBase64: this.sshHostKeyRawBase64,
       sshHostKeyTrustedAt: this.sshHostKeyTrustedAt,
       sshHostKeyTrustMode: this.sshHostKeyTrustMode,
+      sshHostKeyRouteIdentity: this.sshHostKeyRouteIdentity,
       sshJumpHostKeyAlgorithm: this.sshJumpHostKeyAlgorithm,
       sshJumpHostKeyFingerprintSha256: this.sshJumpHostKeyFingerprintSha256,
       sshJumpHostKeyRawBase64: this.sshJumpHostKeyRawBase64,
@@ -692,6 +695,9 @@ export class RemoteHost implements LanHostAddressView {
     if (json.sshHostKeyRawBase64) { host.sshHostKeyRawBase64 = json.sshHostKeyRawBase64; }
     if (json.sshHostKeyTrustedAt !== undefined) { host.sshHostKeyTrustedAt = json.sshHostKeyTrustedAt; }
     if (json.sshHostKeyTrustMode !== undefined) { host.sshHostKeyTrustMode = json.sshHostKeyTrustMode; }
+    if (json.sshHostKeyRouteIdentity !== undefined) {
+      host.sshHostKeyRouteIdentity = json.sshHostKeyRouteIdentity || '';
+    }
     if (json.sshJumpHostKeyAlgorithm) { host.sshJumpHostKeyAlgorithm = json.sshJumpHostKeyAlgorithm; }
     if (json.sshJumpHostKeyFingerprintSha256) {
       host.sshJumpHostKeyFingerprintSha256 = json.sshJumpHostKeyFingerprintSha256;

@@ -82,7 +82,7 @@ const REMOTE_HOST_EXTENSION_PAYLOAD_COLUMNS: string[] = [
   'sshproxykeypassphrase', 'sshkeyid', 'sshproxytype',
   'sshproxyauthmethod', 'sshproxykeyid', 'sshhostkeyalgorithm',
   'sshhostkeyfingerprintsha256', 'sshhostkeyrawbase64', 'sshhostkeytrustedat',
-  'sshhostkeytrustmode', 'sshjumphostkeyalgorithm',
+  'sshhostkeytrustmode', 'sshhostkeyrouteidentity', 'sshjumphostkeyalgorithm',
   'sshjumphostkeyfingerprintsha256', 'sshjumphostkeyrawbase64',
   'sshjumphostkeytrustedat', 'sshjumphostkeytrustmode',
   'rdpcertificatefingerprintsha256', 'rdpcertificatesubject',

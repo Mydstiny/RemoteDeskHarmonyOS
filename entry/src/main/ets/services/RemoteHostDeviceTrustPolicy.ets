@@ -7,6 +7,7 @@ const DEVICE_LOCAL_TRUST_KEYS: string[] = [
   'sshhostkeyrawbase64',
   'sshhostkeytrustedat',
   'sshhostkeytrustmode',
+  'sshhostkeyrouteidentity',
   'rdpcertificatefingerprintsha256',
   'rdpcertificatesubject',
   'rdpcertificateissuer',
