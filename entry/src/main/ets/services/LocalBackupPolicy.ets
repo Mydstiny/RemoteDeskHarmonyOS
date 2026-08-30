@@ -38,6 +38,7 @@ import {
   AccountScopeToken,
   AccountSessionLease
 } from './AccountScopePolicy';
+import { remoteHostEndpointIsDevicePrivateForTransfer } from './LanHostAddressPolicy';
 
 export const LOCAL_BACKUP_FORMAT: string = 'remotedesktop-local-backup';
 export const LOCAL_BACKUP_VERSION: number = 3;
@@ -157,12 +158,18 @@ function scrubDeviceLocalRustDeskPeerTwoFactorExport(
   extensions: Array<Record<string, string>>
 ): PortableBackupData {
   const safeTables: Record<string, Array<Record<string, string>>> = {};
+  const devicePrivateHostIds: Set<string> = new Set<string>();
   const tableNames: string[] = Object.keys(tables);
   for (let i = 0; i < tableNames.length; i++) {
     const table: string = tableNames[i];
     safeTables[table] = [];
     const rows: Array<Record<string, string>> = tables[table] || [];
     for (let r = 0; r < rows.length; r++) {
+      if (table === 'remotehosts' && remoteHostEndpointIsDevicePrivateForTransfer(
+        rows[r]['protocol'] || '', rows[r]['host'])) {
+        if ((rows[r]['id'] || '') !== '') { devicePrivateHostIds.add(rows[r]['id']); }
+        continue;
+      }
       const next: Record<string, string> = {};
       const keys: string[] = Object.keys(rows[r]);
       for (let k = 0; k < keys.length; k++) {
@@ -178,6 +185,10 @@ function scrubDeviceLocalRustDeskPeerTwoFactorExport(
   }
   const safeExtensions: Array<Record<string, string>> = [];
   for (let i = 0; i < extensions.length; i++) {
+    if (localBackupExtensionOwnerTable(extensions[i]['tablename'] || '') === 'remotehosts' &&
+      devicePrivateHostIds.has(extensions[i]['recordid'] || '')) {
+      continue;
+    }
     const next: Record<string, string> = {};
     const keys: string[] = Object.keys(extensions[i]);
     for (let k = 0; k < keys.length; k++) { next[keys[k]] = extensions[i][keys[k]]; }
@@ -1092,11 +1103,25 @@ export function adaptLocalBackupDocumentForRestore(
   const sourcePresentTables: string[] = Object.keys(portable.tables);
   const presentTables: string[] = [];
   let quarantinedRows: number = portable.excludedRows;
+  const devicePrivateHostIds: Set<string> = new Set<string>();
   for (let i = 0; i < sourcePresentTables.length; i++) {
     const table: string = sourcePresentTables[i];
     if (table === MOONLIGHT_CLOUD_TABLE) { continue; }
+    const sourceRows: Array<Record<string, string>> = portable.tables[table];
+    const transferableRows: Array<Record<string, string>> = [];
+    for (let rowIndex: number = 0; rowIndex < sourceRows.length; rowIndex++) {
+      if (table === 'remotehosts' && remoteHostEndpointIsDevicePrivateForTransfer(
+        sourceRows[rowIndex]['protocol'] || '', sourceRows[rowIndex]['host'])) {
+        if ((sourceRows[rowIndex]['id'] || '') !== '') {
+          devicePrivateHostIds.add(sourceRows[rowIndex]['id']);
+        }
+        quarantinedRows++;
+        continue;
+      }
+      transferableRows.push(sourceRows[rowIndex]);
+    }
     const rebound: Array<Record<string, string>> =
-      reboundRows(table, portable.tables[table], owner);
+      reboundRows(table, transferableRows, owner);
     if (table === 'vncrecordv2') {
       const valid: Array<Record<string, string>> =
         sensitivityMode === 'full'
@@ -1144,6 +1169,16 @@ export function adaptLocalBackupDocumentForRestore(
     presentLocalTables.push(MOONLIGHT_LOCAL_TABLE);
     quarantinedRows += moonlight.quarantinedRows;
   }
+  const extensions: Array<Record<string, string>> = [];
+  for (let i = 0; i < portable.extensions.length; i++) {
+    const extension: Record<string, string> = portable.extensions[i];
+    if (localBackupExtensionOwnerTable(extension['tablename'] || '') === 'remotehosts' &&
+      devicePrivateHostIds.has(extension['recordid'] || '')) {
+      quarantinedRows++;
+      continue;
+    }
+    extensions.push(extension);
+  }
   return {
     sourceFormatVersion: document.version,
     sourceAccountScope: sourceOwner,
@@ -1152,7 +1187,7 @@ export function adaptLocalBackupDocumentForRestore(
     restoreMode: 'merge',
     sensitivityMode,
     tables,
-    extensions: portable.extensions,
+    extensions,
     localTables,
     presentTables,
     presentLocalTables,

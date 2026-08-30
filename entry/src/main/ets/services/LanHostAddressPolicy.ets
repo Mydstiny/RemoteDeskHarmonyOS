@@ -41,10 +41,10 @@ export function sshEndpointUsesDeviceLocalScope(protocol: string,
 }
 
 /** Fail closed when inspecting an untrusted cloud/backup row before parsing. */
-export function sshEndpointIsDevicePrivateForTransfer(protocol: string,
+export function remoteHostEndpointIsDevicePrivateForTransfer(protocol: string,
   host: string | undefined): boolean {
-  return protocol === 'ssh' && host !== undefined &&
-    (host.indexOf('%') >= 0 || sshEndpointUsesDeviceLocalScope(protocol, host));
+  return (protocol === 'rdp' || protocol === 'ssh' || protocol === 'rustdesk') &&
+    host !== undefined && host.indexOf('%') >= 0;
 }
 
 function lanDiscoveryIdentityKey(protocol: string, value: string): string {

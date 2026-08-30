@@ -19,6 +19,7 @@ import {
   isMoonlightRecordTypeSelected,
   normalizeMoonlightCloudSyncSelection
 } from './MoonlightCloudSyncSelectionPolicy';
+import { remoteHostEndpointIsDevicePrivateForTransfer } from './LanHostAddressPolicy';
 import { moonlightValidateRecord } from './MoonlightRecordPolicy';
 
 export type CloudCiphertextProbe = (value: string) => boolean;
@@ -248,6 +249,12 @@ export function cloudTableRowsAreUploadSafe(
   cryptoConfigured: boolean,
   ciphertextProbe: CloudCiphertextProbe
 ): boolean {
+  if (table === 'remotehosts') {
+    for (let i = 0; i < rows.length; i++) {
+      if (remoteHostEndpointIsDevicePrivateForTransfer(
+        rows[i]['protocol'] || '', rows[i]['host'])) { return false; }
+    }
+  }
   if (table === MOONLIGHT_CLOUD_TABLE) {
     return moonlightCloudRowsAreUploadSafe(
       rows, cryptoConfigured, ciphertextProbe);
@@ -273,6 +280,12 @@ export function cloudTableRowsAreDownloadCompatible(
   cryptoConfigured: boolean,
   ciphertextProbe: CloudCiphertextProbe
 ): boolean {
+  if (table === 'remotehosts') {
+    for (let i = 0; i < rows.length; i++) {
+      if (remoteHostEndpointIsDevicePrivateForTransfer(
+        rows[i]['protocol'] || '', rows[i]['host'])) { return false; }
+    }
+  }
   if (table === MOONLIGHT_CLOUD_TABLE) {
     return moonlightCloudRowsAreDownloadCompatible(rows, ciphertextProbe);
   }

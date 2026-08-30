@@ -33,6 +33,7 @@ import {
   lanRestrictedAdminSecretOwnedByScope,
   lanHostUsesDynamicAddressStorage,
   lanHostUsesLocalOnlyStorage,
+  remoteHostEndpointIsDevicePrivateForTransfer,
   normalizeLanDiscoveryIdentity
 } from './LanHostAddressPolicy';
 import {
@@ -13066,6 +13067,14 @@ try { this.rollbackTrackedTransaction(); } catch (_ignored) {}
         }
         try {
           const host: RemoteHost = decrypt ? this.rowToHost(rs) : this.rowToHostRaw(rs);
+          if (decrypt && (lanHostUsesLocalOnlyStorage(host) ||
+            remoteHostEndpointIsDevicePrivateForTransfer(host.protocol, host.host))) {
+            skipped++;
+            hilog.warn(0x0001, 'CloudSync',
+              'device-private host quarantined from remotehosts hostId=' +
+              rustDeskRelayIdFingerprint(host.id));
+            continue;
+          }
           result.push(this.mergeHostExtension(host));
           loaded++;
         } catch (rowErr) {

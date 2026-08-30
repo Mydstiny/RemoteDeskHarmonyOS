@@ -54,6 +54,34 @@ export default function cloudSensitiveTransferPolicyTest(): void {
           'rdpcredentials', rows, true, encrypted)).assertFalse();
       });
 
+    it('blocks_device_private_ssh_endpoints_but_keeps_global_ipv6_portable', 0,
+      (): void => {
+        const global: Array<Record<string, string>> = [{
+          id: 'ssh-global', protocol: 'ssh', host: '2001:db8::20'
+        }];
+        expect(cloudTableRowsAreUploadSafe(
+          'remotehosts', global, false, encrypted)).assertTrue();
+        expect(cloudTableRowsAreDownloadCompatible(
+          'remotehosts', global, false, encrypted)).assertTrue();
+
+        const scoped: Array<Record<string, string>> = [{
+          id: 'ssh-scoped', protocol: 'ssh', host: 'fe80::20%wlan0'
+        }];
+        expect(cloudTableRowsAreUploadSafe(
+          'remotehosts', scoped, false, encrypted)).assertFalse();
+        expect(cloudTableRowsAreDownloadCompatible(
+          'remotehosts', scoped, false, encrypted)).assertFalse();
+
+        const malformedScope: Array<Record<string, string>> = [{
+          id: 'ssh-numeric', protocol: 'ssh', host: 'fe80::20%12'
+        }];
+        expect(cloudTableRowsAreDownloadCompatible(
+          'remotehosts', malformedScope, false, encrypted)).assertFalse();
+        expect(cloudTableRowsAreUploadSafe('remotehosts', [{
+          id: 'rdp-legacy', protocol: 'rdp', host: 'fe80::20%wlan0'
+        }], false, encrypted)).assertFalse();
+      });
+
     it('pauses_remote_secret_paths_for_disable_and_all_vnc_for_reset',
       0, (): void => {
         const selected: string[] = [

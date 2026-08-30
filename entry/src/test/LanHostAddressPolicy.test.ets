@@ -9,7 +9,7 @@ import {
   lanHostRefreshCandidateMatches,
   lanHostUsesDynamicAddressStorage,
   lanHostUsesLocalOnlyStorage,
-  sshEndpointIsDevicePrivateForTransfer,
+  remoteHostEndpointIsDevicePrivateForTransfer,
   normalizeLanHostAddressMode
 } from '../main/ets/services/LanHostAddressPolicy';
 
@@ -90,9 +90,12 @@ export default function lanHostAddressPolicyTest() {
         };
         expect(lanHostUsesLocalOnlyStorage(global)).assertFalse();
         expect(lanHostMayUseRemoteHostsCloudTable(global)).assertTrue();
-        expect(sshEndpointIsDevicePrivateForTransfer('ssh', 'fe80::20%12')).assertTrue();
-        expect(sshEndpointIsDevicePrivateForTransfer('ssh', '[fe80::20%25wlan0]')).assertTrue();
-        expect(sshEndpointIsDevicePrivateForTransfer('rdp', 'fe80::20%wlan0')).assertFalse();
+        expect(remoteHostEndpointIsDevicePrivateForTransfer(
+          'ssh', 'fe80::20%12')).assertTrue();
+        expect(remoteHostEndpointIsDevicePrivateForTransfer(
+          'ssh', '[fe80::20%25wlan0]')).assertTrue();
+        expect(remoteHostEndpointIsDevicePrivateForTransfer(
+          'rdp', 'fe80::20%wlan0')).assertTrue();
       });
 
     it('keeps dynamic Restricted Admin secrets inside the active account', 0, () => {
