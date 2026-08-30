@@ -220,7 +220,7 @@ function focusedDescribeNames(scope: string): string[] {
       'MoonlightCloudStatusPolicy',
       'MoonlightBackupPolicy', 'MoonlightReconnectPolicy',
       'MoonlightRuntimeContextFactory', 'RemoteSessionServiceLeasePolicy',
-      'MoonlightNetworkHandlePolicy'];
+      'MoonlightNetworkHandlePolicy', 'MoonlightLanDiscoveryService'];
   }
   if (scope === 'RustDeskProAddressBookPolicy') {
     return ['RustDeskProAddressBookPolicy'];
@@ -286,7 +286,7 @@ function focusedDescribeNames(scope: string): string[] {
 }
 
 function expectedFocusedCount(scope: string): number {
-  if (scope === 'MoonlightDomainPolicy') { return 257; }
+  if (scope === 'MoonlightDomainPolicy') { return 270; }
   if (scope === 'RustDeskProAddressBookPolicy') { return 8; }
   if (scope === 'RustDeskProAddressBookApiService') { return 4; }
   if (scope === 'RustDeskProAddressBookSyncService') { return 7; }
