@@ -9052,7 +9052,17 @@ struct HostListPage {
           ok = info.ok;
         }
       } else if (host.protocol === 'vnc') {
-        const probe = this.loader.probeVncCertificateAsync(host.host, host.port, host.host, 3000);
+        const vncHostId: string = this.vncRecordIdForHost(host);
+        const vncHost: VncHostView | null = vncHostId === '' ? null : this.vncHosts.find(vncHostId);
+        if (vncHost === null) {
+          throw new Error('VNC 主机记录不存在');
+        }
+        const endpoint: VncTlsEndpointResolution = this.resolveVncCertificateEndpoint(vncHost);
+        if (!endpoint.ok) {
+          throw new Error(endpoint.errorCode || 'E-VNC-ENDPOINT-INVALID');
+        }
+        const probe = this.loader.probeVncCertificateAsync(
+          endpoint.connectHost, endpoint.connectPort, endpoint.serverName, 3000);
         const info: VncCertificateInfo = await probe;
         ok = info.ok;
       } else if (host.protocol === 'ssh') {
