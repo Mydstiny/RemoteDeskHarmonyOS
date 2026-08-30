@@ -256,6 +256,12 @@ if (-not (Test-Path $freerdpProvenancePath -PathType Leaf)) {
     Add-Failure 'FreeRDP OHOS base and patch provenance is incomplete or stale.'
   }
 }
+$thirdPartyNotices = Get-Content -Raw (Join-Path $root 'THIRD_PARTY_NOTICES.md')
+if ($thirdPartyNotices -notmatch $freerdpBaseRevision -or
+    $thirdPartyNotices -notmatch $freerdpPatchedTree -or
+    $thirdPartyNotices -notmatch 'patches/freerdp-ohos/') {
+  Add-Failure 'Third-party notices do not identify the effective FreeRDP patch inputs.'
+}
 $about = Get-Content -Raw (Join-Path $root 'entry/src/main/ets/components/AboutSettingsSheet.ets')
 if ($about -notmatch 'AGPL-3.0-or-later' -or
     $about -notmatch 'https://github.com/Mydstiny/RemoteDeskHarmonyOS') {

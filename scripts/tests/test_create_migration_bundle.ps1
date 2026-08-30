@@ -27,6 +27,8 @@ try {
   $fixtureScripts = Join-Path $fixtureRepo 'scripts'
   $fixtureSubmodule = Join-Path $fixtureRepo 'freerdp'
   $fixtureOutput = Join-Path $fixtureRoot 'output'
+  $patchedTreeA = '1111111111111111111111111111111111111111'
+  $patchedTreeB = '2222222222222222222222222222222222222222'
   New-Item -ItemType Directory -Force -Path $fixtureScripts | Out-Null
   Copy-Item -LiteralPath (Join-Path $repo 'scripts\create_migration_bundle.ps1') `
     -Destination (Join-Path $fixtureScripts 'create_migration_bundle.ps1')
@@ -45,12 +47,21 @@ try {
   Initialize-TestRepository -Path $fixtureRepo -Branch 'main'
   Set-Content -LiteralPath (Join-Path $fixtureRepo 'root.txt') `
     -Value 'root-version-a' -Encoding utf8NoBOM
-  Invoke-TestGit -Repository $fixtureRepo -GitArgs @('add', 'root.txt') | Out-Null
+  Set-Content -LiteralPath (Join-Path $fixtureScripts 'build_freerdp_ohos.sh') `
+    -Value "FREERDP_PATCHED_TREE=`"$patchedTreeA`"" -Encoding utf8NoBOM
+  Invoke-TestGit -Repository $fixtureRepo -GitArgs @(
+    'add', 'root.txt', 'scripts/build_freerdp_ohos.sh'
+  ) | Out-Null
   Invoke-TestGit -Repository $fixtureRepo -GitArgs @(
     'update-index', '--add', '--cacheinfo', '160000', $submoduleCommitA, 'freerdp'
   ) | Out-Null
   Invoke-TestGit -Repository $fixtureRepo -GitArgs @('commit', '--quiet', '-m', 'root a') | Out-Null
   $rootCommitA = Invoke-TestGit -Repository $fixtureRepo -GitArgs @('rev-parse', 'HEAD')
+  Set-Content -LiteralPath (Join-Path $fixtureScripts 'build_freerdp_ohos.sh') `
+    -Value "FREERDP_PATCHED_TREE=`"$patchedTreeB`"" -Encoding utf8NoBOM
+  Invoke-TestGit -Repository $fixtureRepo -GitArgs @(
+    'add', 'scripts/build_freerdp_ohos.sh'
+  ) | Out-Null
   Invoke-TestGit -Repository $fixtureRepo -GitArgs @(
     'update-index', '--cacheinfo', '160000', $submoduleCommitB, 'freerdp'
   ) | Out-Null
@@ -72,8 +83,10 @@ try {
     Join-Path $expandedPackage 'MIGRATION_MANIFEST.txt')
   if ($manifest -notmatch [regex]::Escape("Root commit: $rootCommitA") -or
       $manifest -notmatch [regex]::Escape("freerdp gitlink commit: $submoduleCommitA") -or
-      $manifest -match [regex]::Escape("freerdp gitlink commit: $submoduleCommitB")) {
-    throw 'Migration manifest is not bound to the requested root gitlink.'
+      $manifest -match [regex]::Escape("freerdp gitlink commit: $submoduleCommitB") -or
+      $manifest -notmatch [regex]::Escape("freerdp patched tree: $patchedTreeA") -or
+      $manifest -match [regex]::Escape("freerdp patched tree: $patchedTreeB")) {
+    throw 'Migration manifest is not bound to the requested root FreeRDP inputs.'
   }
 
   $expandedSubmodule = Join-Path $fixtureRoot 'expanded-submodule'

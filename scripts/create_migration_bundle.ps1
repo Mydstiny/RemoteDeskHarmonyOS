@@ -44,6 +44,22 @@ function New-ExactGitBundle {
   }
 }
 
+function Get-RootFreeRdpPatchedTree {
+  param([string]$Repository, [string]$Commit)
+
+  $buildScript = Invoke-GitText -Repository $Repository -Arguments @(
+    'show', "${Commit}:scripts/build_freerdp_ohos.sh"
+  )
+  $treeMatch = [regex]::Match(
+    $buildScript,
+    '(?m)^FREERDP_PATCHED_TREE="([0-9a-f]{40})"$'
+  )
+  if (-not $treeMatch.Success) {
+    throw "Root commit $Commit does not declare a valid FREERDP_PATCHED_TREE."
+  }
+  return $treeMatch.Groups[1].Value
+}
+
 try {
   New-Item -ItemType Directory -Force -Path $stage | Out-Null
   New-Item -ItemType Directory -Force -Path $output | Out-Null
@@ -70,6 +86,7 @@ try {
   if ($availableSubmoduleCommit -ne $submoduleCommit) {
     throw "FreeRDP gitlink $submoduleCommit did not resolve to the same commit object."
   }
+  $freerdpPatchedTree = Get-RootFreeRdpPatchedTree -Repository $root -Commit $refCommit
   $sourceZip = Join-Path $stage 'RemoteDeskHarmonyOS-source.zip'
   $bundle = Join-Path $stage 'RemoteDeskHarmonyOS-main.bundle'
   $submoduleZip = Join-Path $stage 'freerdp-ohos-source.zip'
@@ -93,7 +110,7 @@ try {
     "Root ref: $Ref",
     "Root commit: $refCommit",
     "freerdp gitlink commit: $submoduleCommit",
-    'freerdp patched tree: 24a880d801892e3d6f1b8c78534e51eaeca8b0d8',
+    "freerdp patched tree: $freerdpPatchedTree",
     '',
     'Included:',
     '- RemoteDeskHarmonyOS-source.zip: tracked source snapshot, including docs/codex shared state and the FreeRDP OHOS patch series.',

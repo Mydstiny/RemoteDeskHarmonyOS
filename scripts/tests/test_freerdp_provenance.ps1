@@ -153,6 +153,17 @@ foreach ($expectedSourceOfferValue in @(
   }
 }
 
+$thirdPartyNotices = Get-Content -Raw (Join-Path $repo 'THIRD_PARTY_NOTICES.md')
+foreach ($expectedNoticeValue in @(
+  $expectedBaseRevision,
+  $expectedPatchedTree,
+  'patches/freerdp-ohos/'
+)) {
+  if (-not $thirdPartyNotices.Contains($expectedNoticeValue)) {
+    throw "FreeRDP third-party notice is missing '$expectedNoticeValue'."
+  }
+}
+
 $manifestSchema = Get-Content -Raw (
   Join-Path $repo 'docs/compliance/RELEASE_MANIFEST.schema.json') | ConvertFrom-Json
 $manifestRequired = @($manifestSchema.required)
