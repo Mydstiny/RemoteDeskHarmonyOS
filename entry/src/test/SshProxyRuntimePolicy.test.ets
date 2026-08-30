@@ -79,6 +79,55 @@ export default function sshProxyRuntimePolicyTest(): void {
         resolveSshProxyRuntimePlan(host(), profile))).assertTrue();
     });
 
+    it('preserves_a_three_hop_profile_and_its_per_hop_key_references', 0,
+      (): void => {
+        const profile: SshProxyProfileV1 = {
+          schemaVersion: 1,
+          hostId: 'host-a',
+          route: {
+            schemaVersion: 1, type: 'ssh_jump', endpointHost: 'target.example',
+            endpointPort: 22, connectTimeoutMs: 12000,
+            hops: [
+              { host: '2001:db8::10', port: 22, username: 'one',
+                authMethod: 'publickey',
+                expectedHostKeyFingerprintSha256: 'SHA256:first',
+                connectTimeoutMs: 9000 },
+              { host: 'jump-2.example', port: 2222, username: 'two',
+                authMethod: 'password',
+                expectedHostKeyFingerprintSha256: 'SHA256:second',
+                connectTimeoutMs: 8000 },
+              { host: '2001:db8::30', port: 2200, username: 'three',
+                authMethod: 'kbd-interactive',
+                expectedHostKeyFingerprintSha256: 'SHA256:third',
+                connectTimeoutMs: 7000 }
+            ]
+          },
+          hopMetadata: [
+            { hopId: 'one', label: '第一跳', keyId: 'key-one',
+              hostKeyPolicy: 'strict', position: 0 },
+            { hopId: 'two', label: '第二跳', keyId: '',
+              hostKeyPolicy: 'strict', position: 1 },
+            { hopId: 'three', label: '第三跳', keyId: '',
+              hostKeyPolicy: 'strict', position: 2 }
+          ]
+        };
+        const plan = resolveSshProxyRuntimePlan(host(), profile);
+        expect(plan.valid).assertTrue();
+        expect(plan.route.hops.length).assertEqual(3);
+        expect(plan.route.hops[0].host).assertEqual('2001:db8::10');
+        expect(plan.route.hops[1].port).assertEqual(2222);
+        expect(plan.route.hops[2].authMethod).assertEqual('kbd-interactive');
+        expect(plan.hopKeyIds.join(',')).assertEqual('key-one,,');
+        expect(sshProxyRuntimeHasStrictJumpBindings(plan)).assertTrue();
+
+        profile.route.hops[0].host = 'mutated-after-resolve.example';
+        if (profile.hopMetadata !== undefined) {
+          profile.hopMetadata[0].keyId = 'mutated-key';
+        }
+        expect(plan.route.hops[0].host).assertEqual('2001:db8::10');
+        expect(plan.hopKeyIds[0]).assertEqual('key-one');
+      });
+
     it('maps_legacy_flat_routes_only_when_no_profile_exists', 0, (): void => {
       const value: RemoteHost = host();
       value.sshProxyType = 'frp_tcp';

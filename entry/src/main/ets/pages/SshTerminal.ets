@@ -119,8 +119,6 @@ import {
   SshJumpHop,
   SshJumpHopHandoff,
   SshPrivateKeyInfo,
-  SshRoute,
-  SshRouteType,
   SshAuthPrompt,
   SshAuthPromptRequest,
   SshAuthPromptResponse,
@@ -7463,51 +7461,7 @@ struct SshTerminal {
     return host === undefined ? '' : host.username + '@' + host.host + ':' + host.port.toString();
   }
 
-  private sshRouteTypeForHost(host: RemoteHost): SshRouteType {
-    const configuredType: string = host.proxyHost.trim().length > 0 ? host.sshProxyType : 'direct';
-    // legacy_gateway remains an invalid native route. Keeping the value in
-    // this explicit object makes the policy reject it instead of mapping it
-    // to a direct socket.
-    return configuredType as SshRouteType;
-  }
-
-  private sshRouteForHost(host: RemoteHost): SshRoute {
-    const routeType: SshRouteType = this.sshRouteTypeForHost(host);
-    const hops: SshJumpHop[] = [];
-    if (routeType === 'ssh_jump') {
-      hops.push({
-        host: host.proxyHost,
-        port: host.proxyPort,
-        username: host.proxyUsername,
-        authMethod: host.sshProxyAuthMethod,
-        expectedHostKeyRawBase64: host.sshJumpHostKeyRawBase64,
-        expectedHostKeyFingerprintSha256: host.sshJumpHostKeyFingerprintSha256,
-        connectTimeoutMs: 10000
-      });
-    }
-    return {
-      schemaVersion: 1,
-      type: routeType,
-      endpointHost: host.host,
-      endpointPort: host.port,
-      hops: hops,
-      connectTimeoutMs: 10000
-    };
-  }
-
-  private sshJumpHopHandoffsForHost(host: RemoteHost, privateKeyPem: string,
-    privateKeyPassphrase: string): SshJumpHopHandoff[] {
-    if (this.sshRouteTypeForHost(host) !== 'ssh_jump') { return []; }
-    const publicKey: boolean = host.sshProxyAuthMethod === 'publickey';
-    return [{
-      password: publicKey ? '' : host.sshProxyPassword,
-      privateKeyPem: publicKey ? privateKeyPem : '',
-      privateKeyPassphrase: publicKey ? privateKeyPassphrase : '',
-      keyboardInteractiveResponses: []
-    }];
-  }
-
-  /** Terminal connections use the canonical profile; SFTP keeps its accepted legacy path. */
+  /** Every SSH consumer resolves the same canonical, fail-closed route profile. */
   private terminalSshProxyPlan(host: RemoteHost): SshProxyRuntimePlan {
     return resolveSshProxyRuntimePlan(host, this.sshProxyProfiles.load(host.id));
   }
@@ -7568,6 +7522,90 @@ struct SshTerminal {
       } else if (!info.ok || passphrase.length === 0) {
         passphrase = await this.promptSshSecret('ProxyJump 私钥', label + ' 的私钥密码', '私钥密码');
         if (!this.isSshBindingActive(pageGeneration, bindingGeneration, host.id)) { return []; }
+        info = this.loader.inspectSshPrivateKey(key.privateKey, passphrase);
+        if (!info.ok) {
+          throw new Error('第 ' + (index + 1).toString() +
+            ' 跳私钥密码错误或密钥不可用 [E-SSH-JUMP-PASSPHRASE]');
+        }
+      }
+      handoffs.push({ password: '', privateKeyPem: key.privateKey,
+        privateKeyPassphrase: passphrase, keyboardInteractiveResponses: [] });
+    }
+    return handoffs;
+  }
+
+  private isSftpPeerConnectRequestActive(pageGeneration: number, selectionEpoch: number,
+    hostId: string): boolean {
+    return this.isPageGenerationActive(pageGeneration) &&
+      selectionEpoch === this.sftpPeerSelectionEpoch &&
+      this.sftpPeerHostId.trim() === hostId.trim();
+  }
+
+  private async sftpPeerProxyPassword(host: RemoteHost, plan: SshProxyRuntimePlan,
+    pageGeneration: number, selectionEpoch: number): Promise<string> {
+    if (!plan.proxyAuthRequired ||
+      (plan.route.type !== 'http_connect' && plan.route.type !== 'socks5')) { return ''; }
+    const password: string = await this.promptSshSecret(
+      plan.route.type === 'http_connect' ? 'SFTP HTTP 代理认证' : 'SFTP SOCKS5 代理认证',
+      plan.proxyUsername.length > 0 ? '请输入 ' + plan.proxyUsername + ' 的代理密码' : '请输入代理密码',
+      '代理密码');
+    if (!this.isSftpPeerConnectRequestActive(pageGeneration, selectionEpoch, host.id)) {
+      throw new Error('SFTP 会话请求已过期');
+    }
+    if (password.length === 0) { throw new Error('已取消代理认证 [E-SSH-PROXY-AUTH-CANCELLED]'); }
+    return password;
+  }
+
+  private async sftpPeerJumpHandoffs(host: RemoteHost, plan: SshProxyRuntimePlan,
+    pageGeneration: number, selectionEpoch: number): Promise<SshJumpHopHandoff[]> {
+    if (plan.route.type !== 'ssh_jump') { return []; }
+    if (!sshProxyRuntimeHasStrictJumpBindings(plan)) {
+      throw new Error('ProxyJump 每一跳都必须配置 SHA256 host-key 指纹 [E-SSH-JUMP-HOSTKEY]');
+    }
+    const handoffs: SshJumpHopHandoff[] = [];
+    for (let index: number = 0; index < plan.route.hops.length; index++) {
+      const hop: SshJumpHop = plan.route.hops[index];
+      const label: string = '第 ' + (index + 1).toString() + ' 跳 ' + hop.username + '@' + hop.host;
+      if (hop.authMethod === 'kbd-interactive') {
+        handoffs.push({ password: '', privateKeyPem: '', privateKeyPassphrase: '',
+          keyboardInteractiveResponses: [] });
+        continue;
+      }
+      if (hop.authMethod === 'password') {
+        let password: string = plan.source === 'legacy' && index === 0 ? host.sshProxyPassword : '';
+        if (password.length === 0) {
+          password = await this.promptSshSecret('SFTP ProxyJump 认证',
+            label + ' 的 SSH 密码', 'SSH 密码');
+          if (!this.isSftpPeerConnectRequestActive(pageGeneration, selectionEpoch, host.id)) {
+            throw new Error('SFTP 会话请求已过期');
+          }
+        }
+        if (password.length === 0) {
+          throw new Error('已取消第 ' + (index + 1).toString() +
+            ' 跳认证 [E-SSH-JUMP-AUTH-CANCELLED]');
+        }
+        handoffs.push({ password, privateKeyPem: '', privateKeyPassphrase: '',
+          keyboardInteractiveResponses: [] });
+        continue;
+      }
+      const keyId: string = index < plan.hopKeyIds.length ? plan.hopKeyIds[index] :
+        (plan.source === 'legacy' && index === 0 ? host.sshProxyKeyId : '');
+      const key = KeyVaultService.getInstance().getSshKey(keyId);
+      if (key === undefined || key.privateKey.length === 0) {
+        throw new Error('第 ' + (index + 1).toString() +
+          ' 跳私钥不存在或已从密钥保险库移除 [E-SSH-JUMP-KEY-MISSING]');
+      }
+      let passphrase: string = plan.source === 'legacy' && index === 0
+        ? host.sshProxyKeyPassphrase : '';
+      let info: SshPrivateKeyInfo = this.loader.inspectSshPrivateKey(key.privateKey, passphrase);
+      if (info.ok && !info.encrypted) {
+        passphrase = '';
+      } else if (!info.ok || passphrase.length === 0) {
+        passphrase = await this.promptSshSecret('SFTP ProxyJump 私钥',
+          label + ' 的私钥密码', '私钥密码');
+        if (!this.isSftpPeerConnectRequestActive(pageGeneration, selectionEpoch, host.id)) {
+          throw new Error('SFTP 会话请求已过期');
+        }
         info = this.loader.inspectSshPrivateKey(key.privateKey, passphrase);
         if (!info.ok) {
           throw new Error('第 ' + (index + 1).toString() +
@@ -7677,6 +7715,13 @@ struct SshTerminal {
       selectionEpoch !== this.sftpPeerSelectionEpoch) {
       throw new Error('SFTP 会话请求已过期');
     }
+    if (!this.sshProxyProfilesReady) {
+      throw new Error('SSH 连接方式存储不可读 [E-SSH-PROXY-STORE]');
+    }
+    const proxyPlan: SshProxyRuntimePlan = this.terminalSshProxyPlan(host);
+    if (!proxyPlan.valid) {
+      throw new Error(proxyPlan.message + ' [' + proxyPlan.code + ']');
+    }
     let keyData: string = host.sshKeyData;
     let keyEncryptedHint: boolean = false;
     if (host.sshKeyId.length > 0) {
@@ -7707,35 +7752,12 @@ struct SshTerminal {
       }
     }
 
-    let proxyKeyData: string = '';
-    let proxyKeyPassphrase: string = host.sshProxyKeyPassphrase;
-    let proxyKeyEncryptedHint: boolean = false;
-    if (host.sshProxyKeyId.length > 0) {
-      const proxyKey = KeyVaultService.getInstance().getSshKey(host.sshProxyKeyId);
-      if (proxyKey !== undefined) {
-        proxyKeyData = proxyKey.privateKey;
-        proxyKeyEncryptedHint = proxyKey.privateKeyEncrypted;
-      }
-    }
-    if (host.sshProxyType === 'ssh_jump' && host.sshProxyAuthMethod === 'publickey') {
-      if (proxyKeyData.length === 0) { throw new Error('跳板机私钥不存在'); }
-      let proxyInfo: SshPrivateKeyInfo = this.loader.inspectSshPrivateKey(
-        proxyKeyData, proxyKeyPassphrase);
-      if (proxyInfo.ok && !proxyInfo.encrypted) {
-        proxyKeyPassphrase = '';
-      } else if (proxyKeyPassphrase.length === 0 || proxyKeyEncryptedHint || !proxyInfo.ok) {
-        if (!this.isPageGenerationActive(requestPageGeneration) ||
-          selectionEpoch !== this.sftpPeerSelectionEpoch) {
-          throw new Error('SFTP 会话请求已过期');
-        }
-        proxyKeyPassphrase = await this.promptPassphrase();
-        if (!this.isPageGenerationActive(requestPageGeneration) ||
-          selectionEpoch !== this.sftpPeerSelectionEpoch) {
-          throw new Error('SFTP 会话请求已过期');
-        }
-        proxyInfo = this.loader.inspectSshPrivateKey(proxyKeyData, proxyKeyPassphrase);
-        if (!proxyInfo.ok) { throw new Error('跳板机私钥密码错误'); }
-      }
+    const proxyPassword: string = await this.sftpPeerProxyPassword(
+      host, proxyPlan, requestPageGeneration, selectionEpoch);
+    const jumpHandoffs: SshJumpHopHandoff[] = await this.sftpPeerJumpHandoffs(
+      host, proxyPlan, requestPageGeneration, selectionEpoch);
+    if (!this.isSftpPeerConnectRequestActive(requestPageGeneration, selectionEpoch, host.id)) {
+      throw new Error('SFTP 会话请求已过期');
     }
     return {
       protocol: 'ssh',
@@ -7748,14 +7770,15 @@ struct SshTerminal {
       customHostname: host.customHostname,
       gatewayHost: '',
       gatewayPort: 0,
-      sshRoute: this.sshRouteForHost(host),
-      sshJumpHopHandoffs: this.sshJumpHopHandoffsForHost(host, proxyKeyData, proxyKeyPassphrase),
-      sshProxyType: host.proxyHost.length > 0 ? host.sshProxyType : 'direct',
-      sshProxyHost: host.proxyHost,
-      sshProxyPort: host.proxyPort,
-      sshProxyUsername: host.proxyUsername,
-      sshProxyPassword: '',
-      sshProxyAuthMethod: host.sshProxyType === 'ssh_jump' ? host.sshProxyAuthMethod : undefined,
+      sshRoute: proxyPlan.route,
+      sshJumpHopHandoffs: jumpHandoffs,
+      sshProxyType: proxyPlan.route.type,
+      sshProxyHost: proxyPlan.proxyHost,
+      sshProxyPort: proxyPlan.proxyPort,
+      sshProxyUsername: proxyPlan.proxyUsername,
+      sshProxyPassword: proxyPassword,
+      sshProxyAuthMethod: proxyPlan.route.type === 'ssh_jump' && proxyPlan.route.hops.length > 0
+        ? proxyPlan.route.hops[0].authMethod : undefined,
       sshProxyPrivateKeyPem: '',
       sshProxyPrivateKeyPassphrase: '',
       domain: '',
