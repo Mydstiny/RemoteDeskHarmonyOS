@@ -111,6 +111,7 @@ import moonlightRuntimeContextFactoryTest from '../../../test/MoonlightRuntimeCo
 import remoteSessionWindowPolicyTest from '../../../test/RemoteSessionWindowPolicy.test';
 import remoteSessionServiceLeasePolicyTest from '../../../test/RemoteSessionServiceLeasePolicy.test';
 import moonlightNetworkHandlePolicyTest from '../../../test/MoonlightNetworkHandlePolicy.test';
+import moonlightLanDiscoveryServiceTest from '../../../test/MoonlightLanDiscoveryService.test';
 import { FOCUSED_TEST_REGISTRATION_AUDIT } from '../../../main/ets/services/FocusedTestRegistrationAudit';
 
 function requestedClassScope(): string {
@@ -187,6 +188,7 @@ function registerFocusedRepairSuite(scope: string): number {
     moonlightRuntimeContextFactoryTest();
     remoteSessionServiceLeasePolicyTest();
     moonlightNetworkHandlePolicyTest();
+    moonlightLanDiscoveryServiceTest();
   } else {
     return 0;
   }
@@ -440,4 +442,5 @@ export default function testsuite() {
   remoteSessionWindowPolicyTest();
   remoteSessionServiceLeasePolicyTest();
   moonlightNetworkHandlePolicyTest();
+  moonlightLanDiscoveryServiceTest();
 }

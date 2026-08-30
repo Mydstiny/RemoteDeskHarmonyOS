@@ -695,6 +695,24 @@ RDP_TEST_CASE(moonlight_product_streaming_policy_rejects_unproven_modes) {
         true, MoonlightStreamAudioLayout::Stereo, 393279U));
 }
 
+RDP_TEST_CASE(moonlight_product_streaming_maps_dual_stack_winner_to_common_c) {
+    MoonlightProductLaunchStage stage;
+    stage.key = {91U, 92U, 93U};
+    stage.address = "2001:db8::44";
+    stage.serverInfo.appVersion = "7.1.0";
+    stage.serverInfo.gfeVersion = "3.27";
+
+    MoonlightCommonCRequest common;
+    RDP_ASSERT(moonlightProductPopulateCommonCServer(
+        common.server, stage,
+        profile(MoonlightStreamCodec::H264, MoonlightStreamBitDepth::Bit8,
+                MoonlightStreamChroma::Yuv420)));
+    RDP_ASSERT(common.server.address == "2001:db8::44");
+    RDP_ASSERT(common.server.authenticated);
+    RDP_ASSERT_EQ(common.server.hostCapabilityGeneration, 92U);
+    RDP_ASSERT_EQ(common.server.codecProfiles.size(), static_cast<std::size_t>(1));
+}
+
 RDP_TEST_CASE(moonlight_stream_config_carries_prior_adjustments_without_rewriting_them) {
     auto request = readyRequest();
     request.priorAdjustments.push_back({

@@ -255,6 +255,7 @@ import moonlightHostUnpairRuntimeTest from './MoonlightHostUnpairRuntime.test';
 import remoteSessionWindowPolicyTest from './RemoteSessionWindowPolicy.test';
 import remoteSessionServiceLeasePolicyTest from './RemoteSessionServiceLeasePolicy.test';
 import moonlightNetworkHandlePolicyTest from './MoonlightNetworkHandlePolicy.test';
+import moonlightLanDiscoveryServiceTest from './MoonlightLanDiscoveryService.test';
 import diagnosticCapturePolicyTest from './DiagnosticCapturePolicy.test';
 import diagnosticCaptureRuntimeTest from './DiagnosticCaptureRuntime.test';
 import diagnosticCaptureExportServiceTest from './DiagnosticCaptureExportService.test';
@@ -519,6 +520,7 @@ export default function testsuite() {
   remoteSessionWindowPolicyTest();
   remoteSessionServiceLeasePolicyTest();
   moonlightNetworkHandlePolicyTest();
+  moonlightLanDiscoveryServiceTest();
   diagnosticCapturePolicyTest();
   diagnosticCaptureRuntimeTest();
   diagnosticCaptureExportServiceTest();

@@ -371,14 +371,12 @@ MoonlightProductStreamStartResult MoonlightProductStreamingRuntime::start(
     common.accountOwnerToken = stage.key.ownerToken;
     common.deferRuntimeCapabilityProof = true;
     common.streamConfig = std::move(*streamConfig);
-    common.server.address = stage.address;
-    common.server.appVersion = stage.serverInfo.appVersion;
-    common.server.gfeVersion = stage.serverInfo.gfeVersion;
-    common.server.authenticated = true;
-    common.server.hostCapabilityGeneration = stage.key.generation;
-    // The profile is admitted only because conservativeOffer() verified the
-    // matching bit from the authenticated server launch receipt.
-    common.server.codecProfiles = {moonlightHardwareVideoProfile(request.codec)};
+    if (!moonlightProductPopulateCommonCServer(
+            common.server, stage,
+            moonlightHardwareVideoProfile(request.codec))) {
+        std::fill(stage.remoteInputKey.begin(), stage.remoteInputKey.end(), 0U);
+        return finishBeforeCommonC("server_evidence_unavailable");
+    }
     common.launchLease = MoonlightRtspLaunchLease(
         stage.remoteInputKey, stage.remoteInputKeyId,
         std::move(stage.rtspSessionUrl), stage.key.ownerToken,
