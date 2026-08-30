@@ -161,6 +161,7 @@ namespace {
 
     struct SshJumpKeyboardContext {
         SshAdapter* adapter = nullptr;
+        int transportFd = -1;
         const std::string* password = nullptr;
         std::vector<std::string>* explicitResponses = nullptr;
         size_t* presetIndex = nullptr;
@@ -185,6 +186,7 @@ namespace {
         }
         const int result = context->adapter->fillKeyboardInteractiveResponses(
             name, nameLen, instruction, instructionLen, numPrompts, prompts, responses,
+            context->transportFd,
             context->explicitResponses, context->password,
             context->allowPasswordFallback, context->targetHost, context->hopLabel,
             *context->presetIndex, *context->passwordFallbackUsed);
@@ -2560,13 +2562,13 @@ int SshAdapter::connectThroughSshJump(ConnectionConfig& cfg) {
             authPromptFailure_.store(0, std::memory_order_release);
             bool passwordFallbackUsed = false;
             SshJumpKeyboardContext context {
-                this, &password, &responses, &authPromptPresetIndex_,
+                this, runtime->transportFd, &password, &responses, &authPromptPresetIndex_,
                 &passwordFallbackUsed, hop.host, hopLabel, allowPasswordFallback
             };
             *abstract = &context;
             int authResult = 0;
             while (true) {
-                authResponseAdmission_.reset();
+                authRouteAdmission_.endCall();
                 if (connectRouteDeadlineExpired()) {
                     authPromptHop_ = "target";
                     return ERR_SSH_AUTH_TIMEOUT;
@@ -2574,11 +2576,17 @@ int SshAdapter::connectThroughSshJump(ConnectionConfig& cfg) {
                 if (connectRouteCancelled()) {
                     authPromptHop_ = "target";
                     return ERR_SSH_SESSION_CLOSED;
+                }
+                if (!beginKeyboardInteractiveCallAdmission()) {
+                    authPromptHop_ = "target";
+                    return routeWriteFailure(ERR_SSH_AUTH_TIMEOUT);
                 }
                 authResult = libssh2_userauth_keyboard_interactive(
                     runtime->session, hop.username.c_str(),
                     &sshJumpKeyboardInteractiveCallback);
-                authResponseAdmission_.reset();
+                authRouteAdmission_.endCall();
+                const int callbackFailure =
+                    authPromptFailure_.load(std::memory_order_acquire);
                 if (connectRouteDeadlineExpired()) {
                     authPromptHop_ = "target";
                     return ERR_SSH_AUTH_TIMEOUT;
@@ -2586,6 +2594,10 @@ int SshAdapter::connectThroughSshJump(ConnectionConfig& cfg) {
                 if (connectRouteCancelled()) {
                     authPromptHop_ = "target";
                     return ERR_SSH_SESSION_CLOSED;
+                }
+                if (callbackFailure != 0) {
+                    authPromptHop_ = "target";
+                    return callbackFailure;
                 }
                 if (authResult != LIBSSH2_ERROR_EAGAIN) { break; }
                 if (waitSocketOnFd(runtime->transportFd, 2, 30) != 0) {
@@ -3185,6 +3197,7 @@ int SshAdapter::fillKeyboardInteractiveResponses(
     const char* name, int nameLen, const char* instruction, int instructionLen,
     int numPrompts, const LIBSSH2_USERAUTH_KBDINT_PROMPT* prompts,
     LIBSSH2_USERAUTH_KBDINT_RESPONSE* responses,
+    int transportFd,
     std::vector<std::string>* explicitResponses,
     const std::string* password, bool allowPasswordFallback,
     const std::string& targetHost, const std::string& hop,
@@ -3192,7 +3205,10 @@ int SshAdapter::fillKeyboardInteractiveResponses(
     if (numPrompts <= 0) {
         return 0;
     }
-    authResponseAdmission_.reset();
+    authRouteAdmission_.enterCallback();
+    SshScopeExit abortUnadmittedResponse([this, transportFd]() {
+        abortKeyboardInteractiveCallbackNoWire(transportFd);
+    });
     if (responses == nullptr || prompts == nullptr ||
         static_cast<uint32_t>(numPrompts) > SshAuthPromptBroker::kMaxPrompts) {
         return ERR_SSH_AUTH_FAILED;
@@ -3267,17 +3283,9 @@ int SshAdapter::fillKeyboardInteractiveResponses(
     if (connectRouteDeadlineExpired()) {
         return ERR_SSH_AUTH_TIMEOUT;
     }
-    remotedesk::net::NetworkGenerationAdmission admission =
-        remotedesk::net::ProcessNetworkGenerationFence().acquireAdmission(
-            connectNetworkSnapshot_);
-    if (!admission ||
-        connectCancelRequested_.load(std::memory_order_acquire)) {
+    if (!holdKeyboardInteractiveResponseAdmission()) {
         return ERR_SSH_SESSION_CLOSED;
     }
-    authResponseAdmission_.reset(
-        new (std::nothrow) remotedesk::net::NetworkGenerationAdmission(
-            std::move(admission)));
-    if (!authResponseAdmission_) { return ERR_SSH_AUTH_FAILED; }
 
     for (size_t index = 0; index < values.size(); ++index) {
         if (values[index].size() > SshAuthPromptBroker::kMaxPromptBytes) {
@@ -3295,7 +3303,36 @@ int SshAdapter::fillKeyboardInteractiveResponses(
         responses[index].length = static_cast<unsigned int>(
             std::min<size_t>(values[index].size(), UINT_MAX));
     }
+    abortUnadmittedResponse.dismiss();
     return 0;
+}
+
+bool SshAdapter::beginKeyboardInteractiveCallAdmission() {
+    return authRouteAdmission_.beginCall(
+        remotedesk::net::ProcessNetworkGenerationFence(),
+        connectNetworkSnapshot_, [this]() {
+            return connectCancelRequested_.load(std::memory_order_acquire) ||
+                connectRouteDeadlineExpired();
+        });
+}
+
+bool SshAdapter::holdKeyboardInteractiveResponseAdmission() {
+    return authRouteAdmission_.holdResponse(
+        remotedesk::net::ProcessNetworkGenerationFence(),
+        connectNetworkSnapshot_, [this]() {
+            return connectCancelRequested_.load(std::memory_order_acquire) ||
+                connectRouteDeadlineExpired();
+        });
+}
+
+void SshAdapter::abortKeyboardInteractiveCallbackNoWire(
+    int transportFd) noexcept {
+    authRouteAdmission_.endCall();
+    // The libssh2 callback cannot return an error to suppress the pending
+    // INFO_RESPONSE packet. If response admission failed, retire the exact
+    // still-reserved descriptor before callback return so that packet cannot
+    // escape on an obsolete route (or a later fd reuse).
+    if (transportFd >= 0) { (void)shutdown(transportFd, SHUT_RDWR); }
 }
 
 int SshAdapter::keyboardInteractiveResponseRound(
@@ -3304,6 +3341,7 @@ int SshAdapter::keyboardInteractiveResponseRound(
     LIBSSH2_USERAUTH_KBDINT_RESPONSE* responses) {
     return fillKeyboardInteractiveResponses(
         name, nameLen, instruction, instructionLen, numPrompts, prompts, responses,
+        sockFd_,
         &savedCfg_.sshKeyboardInteractiveResponses, &savedCfg_.password,
         authPromptAllowPasswordFallback_, savedCfg_.host, authPromptHop_,
         authPromptPresetIndex_, authPromptPasswordFallbackUsed_);
@@ -3354,21 +3392,27 @@ int SshAdapter::authenticateKeyboardInteractive(bool allowPasswordFallback) {
     authPromptFailure_.store(0, std::memory_order_release);
     int rc;
     while (true) {
-        authResponseAdmission_.reset();
+        authRouteAdmission_.endCall();
         if (connectRouteDeadlineExpired()) {
             return ERR_SSH_AUTH_TIMEOUT;
         }
         if (connectRouteCancelled()) {
             return ERR_SSH_SESSION_CLOSED;
         }
+        if (!beginKeyboardInteractiveCallAdmission()) {
+            return routeWriteFailure(ERR_SSH_AUTH_TIMEOUT);
+        }
         rc = libssh2_userauth_keyboard_interactive(
             session_, savedCfg_.username.c_str(),
             &SshAdapter::keyboardInteractiveCallback);
-        authResponseAdmission_.reset();
+        authRouteAdmission_.endCall();
+        const int callbackFailure =
+            authPromptFailure_.load(std::memory_order_acquire);
         if (connectRouteDeadlineExpired()) {
             return ERR_SSH_AUTH_TIMEOUT;
         }
         if (connectRouteCancelled()) { return ERR_SSH_SESSION_CLOSED; }
+        if (callbackFailure != 0) { return callbackFailure; }
         if (rc != LIBSSH2_ERROR_EAGAIN) { break; }
         int w = waitSocket(2, 30);
         if (w != 0) {

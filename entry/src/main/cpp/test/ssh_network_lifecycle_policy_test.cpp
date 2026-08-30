@@ -1,5 +1,6 @@
 #include "test_runner.h"
 #include "ssh/ssh_auth_replay_policy.h"
+#include "ssh/ssh_keyboard_interactive_route_admission.h"
 #include "ssh/ssh_network_lifecycle_policy.h"
 #include "ssh/ssh_network_generation_policy.h"
 #include "ssh/ssh_route_teardown_policy.h"
@@ -7,6 +8,7 @@
 
 #include <cassert>
 #include <chrono>
+#include <future>
 
 RDP_TEST_CASE(ssh_network_lifecycle_policy_fences_duplicate_generations) {
     RDP_ASSERT(SshNetworkLifecyclePolicy::acceptsGeneration(0, 1));
@@ -123,6 +125,42 @@ RDP_TEST_CASE(ssh_network_generation_policy_fences_handshake_initial_and_retry) 
         simulatedLibssh2Handshake));
     RDP_ASSERT_EQ(handshakeCalls, 1);
     RDP_ASSERT_EQ(bannerOrKexPackets, 1);
+}
+
+RDP_TEST_CASE(ssh_keyboard_interactive_route_admission_splits_prompt_wait) {
+    using namespace std::chrono_literals;
+    remotedesk::net::NetworkGenerationFence fence(87, true);
+    SshKeyboardInteractiveRouteAdmission admission;
+    const remotedesk::net::NetworkGenerationSnapshot first = fence.snapshot();
+
+    RDP_ASSERT(admission.beginCall(fence, first, []() { return false; }));
+    auto firstUpdate = std::async(std::launch::async, [&fence]() {
+        return fence.update(true, 88);
+    });
+    RDP_ASSERT(firstUpdate.wait_for(20ms) == std::future_status::timeout);
+
+    // Callback entry releases the initial request lease before a human/MFA
+    // wait. The network observer can therefore publish a new generation.
+    admission.enterCallback();
+    RDP_ASSERT(firstUpdate.wait_for(1s) == std::future_status::ready);
+    RDP_ASSERT(firstUpdate.get());
+    RDP_ASSERT(!admission.holdResponse(
+        fence, first, []() { return false; }));
+
+    const remotedesk::net::NetworkGenerationSnapshot second = fence.snapshot();
+    RDP_ASSERT(admission.beginCall(fence, second, []() { return false; }));
+    admission.enterCallback();
+    RDP_ASSERT(admission.holdResponse(
+        fence, second, []() { return false; }));
+    auto secondUpdate = std::async(std::launch::async, [&fence]() {
+        return fence.update(true, 89);
+    });
+    RDP_ASSERT(secondUpdate.wait_for(20ms) == std::future_status::timeout);
+
+    // The response lease spans callback return and the enclosing libssh2 call.
+    admission.endCall();
+    RDP_ASSERT(secondUpdate.wait_for(1s) == std::future_status::ready);
+    RDP_ASSERT(secondUpdate.get());
 }
 
 RDP_TEST_CASE(ssh_network_generation_retry_uses_only_newer_available_routes) {

@@ -34,6 +34,7 @@
 #include "ssh_forwarding_manager.h"
 #include "ssh_route_policy.h"
 #include "ssh_auth_prompt_broker.h"
+#include "ssh_keyboard_interactive_route_admission.h"
 #include "ssh_reconnect_policy.h"
 #include "ssh_session_types.h"
 #include "common/network_generation_fence.h"
@@ -217,6 +218,7 @@ public:
         const char* name, int nameLen, const char* instruction, int instructionLen,
         int numPrompts, const LIBSSH2_USERAUTH_KBDINT_PROMPT* prompts,
         LIBSSH2_USERAUTH_KBDINT_RESPONSE* responses,
+        int transportFd,
         std::vector<std::string>* explicitResponses,
         const std::string* password, bool allowPasswordFallback,
         const std::string& targetHost, const std::string& hop,
@@ -360,10 +362,9 @@ private:
     // survives route and transport failures so no automatic path can submit
     // that answer to a second SSH session; a user-initiated connect resets it.
     std::atomic<bool> explicitAuthResponseConsumed_{false};
-    // Acquired only after a KBI response is ready, then held until the
-    // enclosing libssh2 call has admitted or rejected that response packet.
-    std::unique_ptr<remotedesk::net::NetworkGenerationAdmission>
-        authResponseAdmission_;
+    // The initial request and callback response are separate admission
+    // phases so a blocking MFA prompt never pins the process network fence.
+    SshKeyboardInteractiveRouteAdmission authRouteAdmission_;
 
     // ---- libssh2 会话和通道 ----
     LIBSSH2_SESSION* session_;
@@ -470,6 +471,9 @@ private:
         const char* name, int nameLen, const char* instruction, int instructionLen,
         int numPrompts, const LIBSSH2_USERAUTH_KBDINT_PROMPT* prompts,
         LIBSSH2_USERAUTH_KBDINT_RESPONSE* responses, void** abstract);
+    bool beginKeyboardInteractiveCallAdmission();
+    bool holdKeyboardInteractiveResponseAdmission();
+    void abortKeyboardInteractiveCallbackNoWire(int transportFd) noexcept;
 
     /** 打开 SSH 会话通道 */
     int openChannel();
