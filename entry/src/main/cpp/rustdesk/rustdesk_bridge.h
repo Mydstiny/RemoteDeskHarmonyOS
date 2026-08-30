@@ -254,14 +254,34 @@ public:
                                            uint64_t networkGeneration,
                                            bool userInitiated, uint64_t generation,
                                            uint64_t ownerToken);
+    bool InvokeProgressCallbackForTesting(int stage, const char* message,
+                                          uint64_t generation,
+                                          uint64_t ownerToken);
     void SetAttemptDequeuedHookForTesting(std::function<void()> hook);
+    void SetNetworkActionReadyHookForTesting(std::function<void(uint64_t)> hook);
     void SetFirstFrameClaimHookForTesting(std::function<void()> hook);
+    void SetFfiStateCommitHookForTesting(std::function<void()> hook);
     void SetContinuityAttemptStageHookForTesting(std::function<void(int)> hook);
     void SetContinuityConnectResultHookForTesting(
         std::function<int(uint64_t, uint64_t)> hook);
+    void SetDisplaySwitchFfiHookForTesting(
+        std::function<bool(void*, int)> hook);
+    void SetDisplayCapabilitiesFfiHookForTesting(
+        std::function<bool(void*, RustDeskDisplayCapabilities&)> hook);
+    void SetDisplayCapabilitiesBeforeSnapshotHookForTesting(
+        std::function<void()> hook);
+    void SetTwoFactorFfiHookForTesting(
+        std::function<bool(uint64_t, const std::string&)> hook);
+    bool AttachFfiOutboundHandleForTesting(void* handle);
+    bool RetireFfiOutboundHandleForTesting(void* expectedHandle);
     void SetContinuityConfigForTesting(const ConnectionConfig& config);
     uint32_t continuityConnectCallCountForTesting() const;
+    std::size_t continuityRemainingCountForTesting() const;
+    bool continuityNetworkAvailableForTesting() const;
     void ArmFirstGenerationFrameForTesting();
+    bool QueueDeferredCancelledSessionRetirementForTesting(uint64_t sessionId);
+    void CompleteDeferredCancelledSessionRetirementForTesting();
+    std::size_t pendingCancelledSessionRetirementsForTesting() const;
 #endif
 
     // ---- 扩展功能 ----
@@ -280,7 +300,8 @@ private:
     int connectInternal(
         const ConnectionConfig& cfg,
         const RustDeskConnectionContinuityExecutor::PreparedAttemptTicket* continuityTicket);
-    void applyContinuityFastQuiesce();
+    void applyContinuityFastQuiesce(
+        const RustDeskConnectionContinuityExecutor::ActionAdmission& admission = {});
     void onContinuityMaintenance(uint64_t nowMs);
     void disconnectImpl(bool cancelContinuity);
 

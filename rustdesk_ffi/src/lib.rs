@@ -45,12 +45,19 @@ use std::sync::mpsc::Sender;
 static LAST_ERROR: Mutex<String> = Mutex::new(String::new());
 static RUSTDESK_MOUSE_ENQUEUE_COUNT: AtomicU64 = AtomicU64::new(0);
 // 每个连接尝试都有独立 epoch。取消一个 session 只标记它自己的 epoch，
-// 不会让另一个 RustDesk 连接的 2FA/批准等待线程退出。
+// 不会让另一个 RustDesk 连接的 2FA/批准等待线程退出。会话取消同时保持为
+// sticky，直到 native admission 明确 rearm；这封住“C++ 已取消、Rust 尚未
+// 登记 epoch”的窗口。
 static CONNECT_EPOCH: AtomicU64 = AtomicU64::new(0);
-static CANCELLED_EPOCHS: LazyLock<Mutex<HashSet<u64>>> =
-    LazyLock::new(|| Mutex::new(HashSet::new()));
-static ACTIVE_CONNECT_EPOCHS: LazyLock<Mutex<HashMap<u64, Vec<u64>>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
+#[derive(Default)]
+struct ConnectEpochState {
+    active: HashMap<u64, Vec<u64>>,
+    cancelled_epochs: HashSet<u64>,
+    cancelled_sessions: HashSet<u64>,
+}
+
+static CONNECT_EPOCH_STATE: LazyLock<Mutex<ConnectEpochState>> =
+    LazyLock::new(|| Mutex::new(ConnectEpochState::default()));
 static ACTIVE_PRESENCE_PROBES: LazyLock<Mutex<HashMap<u64, PresenceProbeRegistration>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 static LEGACY_PRESENCE_REQUEST_ID: AtomicU64 = AtomicU64::new(0);
@@ -75,8 +82,14 @@ struct PendingTwoFactor {
 
 pub(crate) fn begin_connect_epoch(session_id: u64) -> u64 {
     let epoch = CONNECT_EPOCH.fetch_add(1, Ordering::SeqCst).wrapping_add(1);
-    if let Ok(mut active) = ACTIVE_CONNECT_EPOCHS.lock() {
-        active.entry(session_id).or_default().push(epoch);
+    if let Ok(mut state) = CONNECT_EPOCH_STATE.lock() {
+        state.active.entry(session_id).or_default().push(epoch);
+        if session_id != 0 && state.cancelled_sessions.contains(&session_id) {
+            state.cancelled_epochs.insert(epoch);
+        }
+    } else {
+        // A poisoned admission registry cannot safely allow network I/O.
+        return 0;
     }
     epoch
 }
@@ -86,10 +99,11 @@ pub(crate) fn current_connect_epoch() -> u64 {
 }
 
 pub(crate) fn connect_cancelled(epoch: u64) -> bool {
-    CANCELLED_EPOCHS
-        .lock()
-        .map(|cancelled| cancelled.contains(&epoch))
-        .unwrap_or(true)
+    epoch == 0
+        || CONNECT_EPOCH_STATE
+            .lock()
+            .map(|state| state.cancelled_epochs.contains(&epoch))
+            .unwrap_or(true)
 }
 
 pub(crate) fn register_pending_2fa(
@@ -121,43 +135,123 @@ pub(crate) fn clear_pending_2fa(epoch: u64, session_id: u64) {
 }
 
 fn finish_connect_epoch(epoch: u64, session_id: u64) {
-    if let Ok(mut active) = ACTIVE_CONNECT_EPOCHS.lock() {
-        let remove_session = if let Some(epochs) = active.get_mut(&session_id) {
+    if let Ok(mut state) = CONNECT_EPOCH_STATE.lock() {
+        let remove_session = if let Some(epochs) = state.active.get_mut(&session_id) {
             epochs.retain(|active_epoch| *active_epoch != epoch);
             epochs.is_empty()
         } else {
             false
         };
         if remove_session {
-            active.remove(&session_id);
+            state.active.remove(&session_id);
+        }
+        state.cancelled_epochs.remove(&epoch);
+    }
+}
+
+/// Owns one connect epoch from synchronous admission until an asynchronous
+/// worker has fully stopped using it. Constructing this value before spawning
+/// is essential: a native cancel followed by rearm must still leave the
+/// already-admitted old worker's epoch cancelled when that worker starts late.
+struct ConnectEpochReservation {
+    epoch: u64,
+    session_id: u64,
+}
+
+impl ConnectEpochReservation {
+    fn new(session_id: u64) -> Self {
+        Self {
+            epoch: begin_connect_epoch(session_id),
+            session_id,
         }
     }
-    if let Ok(mut cancelled) = CANCELLED_EPOCHS.lock() {
-        cancelled.remove(&epoch);
+
+    fn epoch(&self) -> u64 {
+        self.epoch
     }
+}
+
+impl Drop for ConnectEpochReservation {
+    fn drop(&mut self) {
+        finish_connect_epoch(self.epoch, self.session_id);
+    }
+}
+
+/// Build the exact closure handed to the file-transfer thread builder.
+///
+/// The reservation is constructed while preparing the closure, not when the
+/// closure eventually runs. Keeping this boundary separate makes the
+/// cancel-before-worker-start guarantee deterministic in tests and prevents a
+/// scheduling delay from moving admission to the wrong side of native rearm.
+fn reserve_file_transfer_worker<F, R>(
+    connection_id: u64,
+    worker: F,
+) -> impl FnOnce() -> R + Send + 'static
+where
+    F: FnOnce(u64) -> R + Send + 'static,
+    R: Send + 'static,
+{
+    let reservation = ConnectEpochReservation::new(connection_id);
+    move || worker(reservation.epoch())
+}
+
+fn spawn_reserved_file_transfer_worker<F>(
+    transfer_id: u64,
+    connection_id: u64,
+    worker: F,
+) -> io::Result<std::thread::JoinHandle<()>>
+where
+    F: FnOnce(u64) + Send + 'static,
+{
+    let reserved_worker = reserve_file_transfer_worker(connection_id, worker);
+    std::thread::Builder::new()
+        .name(format!("rustdesk-file-{transfer_id}"))
+        .spawn(reserved_worker)
 }
 
 fn cancel_connect_epoch(epoch: u64) {
-    if let Ok(mut cancelled) = CANCELLED_EPOCHS.lock() {
-        cancelled.insert(epoch);
+    if let Ok(mut state) = CONNECT_EPOCH_STATE.lock() {
+        state.cancelled_epochs.insert(epoch);
     }
 }
 
+pub(crate) fn rearm_pending_connect_for_session(session_id: u64) -> bool {
+    if session_id == 0 {
+        return false;
+    }
+    CONNECT_EPOCH_STATE
+        .lock()
+        .map(|mut state| {
+            state.cancelled_sessions.remove(&session_id);
+            true
+        })
+        .unwrap_or(false)
+}
+
+fn forget_cancelled_connect_session(session_id: u64) -> bool {
+    if session_id == 0 {
+        return false;
+    }
+    CONNECT_EPOCH_STATE
+        .lock()
+        .map(|mut state| state.cancelled_sessions.remove(&session_id))
+        .unwrap_or(false)
+}
+
 pub(crate) fn cancel_pending_connect_for_session(session_id: u64) {
-    let epochs: Vec<u64> = if let Ok(active) = ACTIVE_CONNECT_EPOCHS.lock() {
+    if let Ok(mut state) = CONNECT_EPOCH_STATE.lock() {
         if session_id == 0 {
-            active
+            let epochs: Vec<u64> = state
+                .active
                 .values()
                 .flat_map(|values| values.iter().copied())
-                .collect()
+                .collect();
+            state.cancelled_epochs.extend(epochs);
         } else {
-            active.get(&session_id).cloned().unwrap_or_default()
+            state.cancelled_sessions.insert(session_id);
+            let epochs = state.active.get(&session_id).cloned().unwrap_or_default();
+            state.cancelled_epochs.extend(epochs);
         }
-    } else {
-        Vec::new()
-    };
-    for epoch in epochs {
-        cancel_connect_epoch(epoch);
     }
     if let Ok(mut pending) = PENDING_2FA.lock() {
         if session_id == 0 {
@@ -2482,6 +2576,24 @@ pub extern "C" fn rustdesk_cancel_pending_connect_for_session(session_id: u64) {
     cancel_pending_connect_for_session(session_id);
 }
 
+/// Admit a fresh native-owned connection after a session-scoped cancellation.
+/// The native caller serializes this transition with its own disconnect fence;
+/// a later cancellation therefore either marks the new Rust epoch or remains
+/// sticky until that epoch is registered.
+#[no_mangle]
+pub extern "C" fn rustdesk_rearm_pending_connect_for_session(session_id: u64) -> bool {
+    rearm_pending_connect_for_session(session_id)
+}
+
+/// Drop the sticky cancellation tombstone after native has retired every
+/// possible not-yet-registered starter for this session. Already registered
+/// workers remain cancelled through `cancelled_epochs` until their reservation
+/// is dropped.
+#[no_mangle]
+pub extern "C" fn rustdesk_forget_cancelled_connect_session(session_id: u64) -> bool {
+    forget_cancelled_connect_session(session_id)
+}
+
 fn copy_string_to_c_buffer(value: &str, buffer: *mut c_char, buffer_len: usize) -> usize {
     let bytes = value.as_bytes();
     if !buffer.is_null() && buffer_len > 0 {
@@ -3294,11 +3406,16 @@ pub extern "C" fn rustdesk_send_file(
     let remote_dir = split_remote_file_path(&path).0.to_string();
     let transfer_status = Arc::clone(&ctx.transfer_status);
     let transfer_error = Arc::clone(&ctx.transfer_error);
-
-    std::thread::spawn(move || {
-        let connect_epoch = begin_connect_epoch(connection_id);
-        let route_deadline = connector::route_deadline_for_strategy(connection_strategy);
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    let spawn_failure_status = Arc::clone(&ctx.transfer_status);
+    let spawn_failure_error = Arc::clone(&ctx.transfer_error);
+    // The shared production launcher reserves synchronously while native
+    // still holds continuity admission and the client-handle lease.
+    let spawn_result = spawn_reserved_file_transfer_worker(
+        transfer_id,
+        connection_id,
+        move |connect_epoch| {
+            let route_deadline = connector::route_deadline_for_strategy(connection_strategy);
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let mut connector = if direct_connection {
                 let mut candidate = connector::RustDeskConnector::new_with_connection_id(
                     connection_id,
@@ -3399,48 +3516,70 @@ pub extern "C" fn rustdesk_send_file(
                 "file-transfer worker panic",
             ))
         });
-        finish_connect_epoch(connect_epoch, connection_id);
-
-        match result {
-            Ok(()) => {
-                if let Ok(mut error) = transfer_error.lock() {
-                    error.clear();
+            match result {
+                Ok(()) => {
+                    if let Ok(mut error) = transfer_error.lock() {
+                        error.clear();
+                    }
+                    if let Ok(mut status) = transfer_status.lock() {
+                        *status = RustDeskTransferStatus {
+                            state: 3,
+                            transfer_id,
+                            transferred_bytes: len as u64,
+                            total_bytes: len as u64,
+                            diagnostic_code: 0,
+                        };
+                    }
                 }
-                if let Ok(mut status) = transfer_status.lock() {
-                    *status = RustDeskTransferStatus {
-                        state: 3,
+                Err(err) => {
+                    let (code, detail) =
+                        pipeline_error_classification("file_transfer_failed", &err);
+                    let message = structured_error("file_transfer", code, detail, transfer_id);
+                    set_last_error(message.clone());
+                    eprintln!(
+                        "[RustDesk-FFI] file-transfer failed transfer_id={} kind={:?} code={}",
                         transfer_id,
-                        transferred_bytes: len as u64,
-                        total_bytes: len as u64,
-                        diagnostic_code: 0,
-                    };
+                        err.kind(),
+                        code
+                    );
+                    if let Ok(mut error) = transfer_error.lock() {
+                        *error = message;
+                    }
+                    if let Ok(mut status) = transfer_status.lock() {
+                        *status = RustDeskTransferStatus {
+                            state: 4,
+                            transfer_id,
+                            transferred_bytes: 0,
+                            total_bytes: len as u64,
+                            diagnostic_code: 1,
+                        };
+                    }
                 }
             }
-            Err(err) => {
-                let (code, detail) = pipeline_error_classification("file_transfer_failed", &err);
-                let message = structured_error("file_transfer", code, detail, transfer_id);
-                set_last_error(message.clone());
-                eprintln!(
-                    "[RustDesk-FFI] file-transfer failed transfer_id={} kind={:?} code={}",
-                    transfer_id,
-                    err.kind(),
-                    code
-                );
-                if let Ok(mut error) = transfer_error.lock() {
-                    *error = message;
-                }
-                if let Ok(mut status) = transfer_status.lock() {
-                    *status = RustDeskTransferStatus {
-                        state: 4,
-                        transfer_id,
-                        transferred_bytes: 0,
-                        total_bytes: len as u64,
-                        diagnostic_code: 1,
-                    };
-                }
-            }
+        },
+    );
+    if let Err(error) = spawn_result {
+        let message = structured_error(
+            "file_transfer",
+            "worker_unavailable",
+            error.to_string(),
+            transfer_id,
+        );
+        set_last_error(message.clone());
+        if let Ok(mut transfer_error) = spawn_failure_error.lock() {
+            *transfer_error = message;
         }
-    });
+        if let Ok(mut status) = spawn_failure_status.lock() {
+            *status = RustDeskTransferStatus {
+                state: 4,
+                transfer_id,
+                transferred_bytes: 0,
+                total_bytes: len as u64,
+                diagnostic_code: 1,
+            };
+        }
+        return -2;
+    }
     0
 }
 
@@ -3606,6 +3745,101 @@ mod tests {
         assert!(!register_presence_probe(request_id));
         assert!(abandon_presence_probe(request_id));
         assert!(!abandon_presence_probe(request_id));
+    }
+
+    #[test]
+    fn session_cancel_is_sticky_until_native_rearms_connect() {
+        let session_id = u64::MAX - 60_001;
+        cancel_pending_connect_for_session(session_id);
+
+        // Cancellation wins even when Rust registers the epoch after the
+        // native cancel call returned.
+        let cancelled_epoch = begin_connect_epoch(session_id);
+        assert!(connect_cancelled(cancelled_epoch));
+        finish_connect_epoch(cancelled_epoch, session_id);
+
+        assert!(rearm_pending_connect_for_session(session_id));
+        let admitted_epoch = begin_connect_epoch(session_id);
+        assert!(!connect_cancelled(admitted_epoch));
+        finish_connect_epoch(admitted_epoch, session_id);
+    }
+
+    #[test]
+    fn sticky_session_cancel_does_not_cross_connection_identity() {
+        let cancelled_session = u64::MAX - 60_002;
+        let admitted_session = u64::MAX - 60_003;
+        cancel_pending_connect_for_session(cancelled_session);
+
+        let cancelled_epoch = begin_connect_epoch(cancelled_session);
+        let admitted_epoch = begin_connect_epoch(admitted_session);
+        assert!(connect_cancelled(cancelled_epoch));
+        assert!(!connect_cancelled(admitted_epoch));
+
+        finish_connect_epoch(cancelled_epoch, cancelled_session);
+        finish_connect_epoch(admitted_epoch, admitted_session);
+        assert!(rearm_pending_connect_for_session(cancelled_session));
+    }
+
+    #[test]
+    fn cancellation_after_rearm_is_sticky_for_a_late_epoch() {
+        use std::sync::Barrier;
+
+        let session_id = u64::MAX - 60_004;
+        cancel_pending_connect_for_session(session_id);
+        assert!(rearm_pending_connect_for_session(session_id));
+
+        let cancel_start = Arc::new(Barrier::new(2));
+        let cancel_done = Arc::new(Barrier::new(2));
+        let worker_start = Arc::clone(&cancel_start);
+        let worker_done = Arc::clone(&cancel_done);
+        let cancel_worker = std::thread::spawn(move || {
+            worker_start.wait();
+            cancel_pending_connect_for_session(session_id);
+            worker_done.wait();
+        });
+        cancel_start.wait();
+        cancel_done.wait();
+        cancel_worker.join().expect("cancel worker");
+
+        // Models native rearm winning first, followed by disconnect before
+        // rustdesk_connect_v6 has registered the Rust epoch.
+        let late_epoch = begin_connect_epoch(session_id);
+        assert!(connect_cancelled(late_epoch));
+        finish_connect_epoch(late_epoch, session_id);
+        assert!(rearm_pending_connect_for_session(session_id));
+    }
+
+    #[test]
+    fn file_transfer_reservation_stays_cancelled_after_rearm_before_late_worker_runs() {
+        let session_id = u64::MAX - 60_005;
+        assert!(rearm_pending_connect_for_session(session_id));
+        let reserved_worker =
+            reserve_file_transfer_worker(session_id, |epoch| connect_cancelled(epoch));
+
+        // Cancel and rearm before the prepared production worker closure is
+        // ever submitted. If reservation creation moves back inside that
+        // closure, the late worker will register only after rearm and this
+        // assertion will fail.
+        cancel_pending_connect_for_session(session_id);
+        assert!(rearm_pending_connect_for_session(session_id));
+        let late_worker = std::thread::spawn(reserved_worker);
+        assert!(late_worker.join().expect("late file-transfer worker"));
+    }
+
+    #[test]
+    fn final_session_retirement_forgets_sticky_tombstone_not_active_epoch() {
+        let session_id = u64::MAX - 60_006;
+        let reservation = ConnectEpochReservation::new(session_id);
+        cancel_pending_connect_for_session(session_id);
+        assert!(connect_cancelled(reservation.epoch()));
+
+        assert!(forget_cancelled_connect_session(session_id));
+        assert!(connect_cancelled(reservation.epoch()));
+        drop(reservation);
+
+        let fresh_epoch = begin_connect_epoch(session_id);
+        assert!(!connect_cancelled(fresh_epoch));
+        finish_connect_epoch(fresh_epoch, session_id);
     }
 
     #[test]

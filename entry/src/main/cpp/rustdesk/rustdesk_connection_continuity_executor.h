@@ -352,13 +352,21 @@ public:
     };
 
     struct Callbacks {
-        std::function<void()> fastQuiesce;
-        std::function<void(const std::string&)> publishVisibleState;
+        // Side-effecting callbacks receive the originating action admission.
+        // Consumers validate it at their own commit boundary so an older
+        // network generation cannot act after a newer generation is admitted.
+        std::function<void(const ActionAdmission&)> fastQuiesce;
+        // The consumer must validate admission at the same commit boundary
+        // which mutates its visible state. Forwarding the token here closes
+        // the final check/use window between executor validation and a bridge
+        // state publication.
+        std::function<void(const std::string&, const ActionAdmission&)>
+            publishVisibleState;
         std::function<bool(uint32_t)> startAttempt;
-        std::function<void()> cancelAttempt;
+        std::function<void(const ActionAdmission&)> cancelAttempt;
         std::function<void(uint64_t)> maintenancePoll;
-        std::function<void()> firstGenerationReady;
-        std::function<AttemptTicket()> makeAttemptTicket;
+        std::function<void(const ActionAdmission&)> firstGenerationReady;
+        std::function<AttemptTicket(const ActionAdmission&)> makeAttemptTicket;
         std::function<PreparedAttemptTicket(const AttemptTicket&)> prepareAttemptTicket;
 #if defined(RDP_NATIVE_CALLBACK_TESTING)
         // Only test builds may provide a ticket factory without a production
@@ -405,8 +413,18 @@ public:
     RustDeskContinuityAction onTransportEvent(const RustDeskTransportEvent& event,
                                               ActionAdmission admission = {}) {
         RustDeskContinuityAction action;
+        if (!isAdmitted(admission)) {
+            return action;
+        }
         {
             std::lock_guard<std::mutex> lock(ownerMutex_);
+            // The bridge rotates the action token before calling the executor.
+            // Revalidate while owning the policy commit boundary so a delayed
+            // transport callback cannot mutate the owner after a newer network
+            // action has already been admitted.
+            if (!isAdmitted(admission)) {
+                return action;
+            }
             action = owner_.onTransportEvent(event);
         }
         consumeVisibleAction(action, event.networkAvailable, admission);
@@ -414,30 +432,86 @@ public:
     }
 
     RustDeskContinuityAction onNetworkChanged(bool available, uint64_t generation,
-                                               uint64_t nowMs) {
-        RustDeskContinuityAction action;
-        {
-            std::lock_guard<std::mutex> lock(ownerMutex_);
-            action = owner_.onNetworkChanged(available, generation, nowMs);
-        }
-        consumeVisibleAction(action, available, {});
+                                               uint64_t nowMs,
+                                               ActionAdmission admission = {}) {
+        RustDeskContinuityAction action = commitNetworkChanged(
+            available, generation, nowMs, admission);
+        consumeNetworkAction(action, available, admission);
         return action;
     }
 
-    void recordAttemptResult(bool succeeded, uint64_t nowMs) {
+    /**
+     * Commit only the policy-owner half of a network observation.
+     *
+     * The bridge uses this split entry while holding its admission boundary,
+     * so invalidating an FFI generation and advancing the continuity owner are
+     * one ordered transaction. External callbacks and reconnect work are
+     * deliberately consumed after that boundary is released.
+     */
+    RustDeskContinuityAction commitNetworkChanged(
+        bool available, uint64_t generation, uint64_t nowMs,
+        ActionAdmission admission = {}) {
+        RustDeskContinuityAction action;
+#if defined(RDP_NATIVE_CALLBACK_TESTING)
+        NetworkActionReadyHook actionReadyHook;
+        {
+            std::lock_guard<std::mutex> lock(workerMutex_);
+            actionReadyHook = networkActionReadyHook_;
+        }
+        if (actionReadyHook) {
+            // This hook intentionally runs before owner mutation. Bridge tests
+            // use it to hold an action after its token rotated but before the
+            // policy commit, which is the critical same-generation race.
+            actionReadyHook(generation);
+        }
+#endif
+        if (!isAdmitted(admission)) {
+            return action;
+        }
+        {
+            std::lock_guard<std::mutex> lock(ownerMutex_);
+            if (!isAdmitted(admission)) {
+                return action;
+            }
+            action = owner_.onNetworkChanged(available, generation, nowMs);
+        }
+        return action;
+    }
+
+    void consumeNetworkAction(
+        const RustDeskContinuityAction& action, bool available,
+        const ActionAdmission& admission = {}) {
+        consumeVisibleAction(action, available, admission);
+    }
+
+    void recordAttemptResult(bool succeeded, uint64_t nowMs,
+                             ActionAdmission admission = {}) {
+        if (!isAdmitted(admission)) {
+            return;
+        }
         RustDeskContinuityState state;
         {
             std::lock_guard<std::mutex> lock(ownerMutex_);
+            // Network actions mutate the owner under this same mutex after
+            // rotating their admission token. The second check therefore
+            // prevents an old result from being charged to the new retry
+            // window; if the old result already owns the mutex, the newer
+            // network transition deterministically overwrites it afterwards.
+            if (!isAdmitted(admission)) {
+                return;
+            }
             owner_.recordAttemptResult(succeeded, nowMs);
             state = owner_.state();
         }
         if (succeeded) {
-            publish("CONNECTED_WAITING_FOR_FIRST_FRAME");
+            publish("CONNECTED_WAITING_FOR_FIRST_FRAME", admission);
         } else if (state == RustDeskContinuityState::RetryPending) {
-            publish("RECONNECTING_RETRY_SCHEDULED");
-            wakeWorker();
+            publish("RECONNECTING_RETRY_SCHEDULED", admission);
+            if (isAdmitted(admission)) {
+                wakeWorker();
+            }
         } else {
-            publish("FAILED_RETRY_BUDGET_EXHAUSTED");
+            publish("FAILED_RETRY_BUDGET_EXHAUSTED", admission);
         }
     }
 
@@ -454,13 +528,14 @@ public:
         }
         const Callbacks callbacks = callbacksSnapshot();
         if (callbacks.firstGenerationReady && isAdmitted(admission)) {
-            callbacks.firstGenerationReady();
+            callbacks.firstGenerationReady(admission);
         }
         publish("CONNECTED", admission);
     }
 
-    void onNetworkAvailable(bool available, uint64_t generation, uint64_t nowMs) {
-        (void)onNetworkChanged(available, generation, nowMs);
+    void onNetworkAvailable(bool available, uint64_t generation, uint64_t nowMs,
+                            ActionAdmission admission = {}) {
+        (void)onNetworkChanged(available, generation, nowMs, std::move(admission));
     }
 
     void cancel() {
@@ -470,7 +545,7 @@ public:
         }
         const Callbacks callbacks = callbacksSnapshot();
         if (callbacks.cancelAttempt) {
-            callbacks.cancelAttempt();
+            callbacks.cancelAttempt({});
         }
         {
             std::lock_guard<std::mutex> lock(workerMutex_);
@@ -576,10 +651,16 @@ public:
 
 #if defined(RDP_NATIVE_CALLBACK_TESTING)
     using AttemptDequeuedHook = std::function<void()>;
+    using NetworkActionReadyHook = std::function<void(uint64_t)>;
 
     void setAttemptDequeuedHookForTesting(AttemptDequeuedHook hook) {
         std::lock_guard<std::mutex> lock(workerMutex_);
         attemptDequeuedHook_ = std::move(hook);
+    }
+
+    void setNetworkActionReadyHookForTesting(NetworkActionReadyHook hook) {
+        std::lock_guard<std::mutex> lock(workerMutex_);
+        networkActionReadyHook_ = std::move(hook);
     }
 #endif
 
@@ -662,7 +743,7 @@ private:
         const Callbacks callbacks = callbacksSnapshot();
         AttemptTicket ticket;
         if (callbacks.makeAttemptTicket) {
-            ticket = callbacks.makeAttemptTicket();
+            ticket = callbacks.makeAttemptTicket(admission);
 #if defined(RDP_NATIVE_CALLBACK_TESTING)
         } else if (callbacks.testAttemptTicketFactory) {
             ticket = callbacks.testAttemptTicketFactory();
@@ -681,8 +762,17 @@ private:
             return (!admission || admission()) &&
                 (!ticketAdmission || ticketAdmission());
         };
+        if (!isAdmitted(ticket.validator)) {
+            return;
+        }
         {
             std::lock_guard<std::mutex> lock(workerMutex_);
+            // Revalidate while owning the pending-ticket commit boundary. If
+            // a newer network action has already rotated the token it either
+            // wins this check or queues its own ticket after this lock.
+            if (!isAdmitted(ticket.validator)) {
+                return;
+            }
             pendingAttempt_ = true;
             pendingAction_ = action;
             pendingTicket_ = std::move(ticket);
@@ -702,18 +792,26 @@ private:
         const Callbacks callbacks = callbacksSnapshot();
         if (action.cancelAttempt) {
             if (callbacks.cancelAttempt) {
-                callbacks.cancelAttempt();
+                callbacks.cancelAttempt(admission);
+            }
+            if (!isAdmitted(admission)) {
+                return;
             }
             // A queued ticket may still name the resolver generation which
             // was just retired. Drop it before publishing the replacement
             // action; an already-dequeued production ticket is rejected by
             // the bridge admission-epoch rotation in cancelAttempt.
-            std::lock_guard<std::mutex> lock(workerMutex_);
-            pendingAttempt_ = false;
-            pendingTicket_ = AttemptTicket {};
+            {
+                std::lock_guard<std::mutex> lock(workerMutex_);
+                if (!isAdmitted(admission)) {
+                    return;
+                }
+                pendingAttempt_ = false;
+                pendingTicket_ = AttemptTicket {};
+            }
         }
         if (action.fastQuiesce && callbacks.fastQuiesce) {
-            callbacks.fastQuiesce();
+            callbacks.fastQuiesce(admission);
         }
         if (!isAdmitted(admission)) {
             return;
@@ -814,7 +912,7 @@ private:
             started = callbacks.startAttempt(action.attempt);
         }
         if (!started && isAdmitted(prepared.validator)) {
-            recordAttemptResult(false, nowMs());
+            recordAttemptResult(false, nowMs(), prepared.validator);
         }
     }
 
@@ -854,7 +952,8 @@ private:
         }
         const Callbacks callbacks = callbacksSnapshot();
         if (callbacks.publishVisibleState) {
-            callbacks.publishVisibleState(message ? std::string(message) : std::string());
+            callbacks.publishVisibleState(
+                message ? std::string(message) : std::string(), admission);
         }
     }
 
@@ -880,6 +979,7 @@ private:
     AttemptTicket pendingTicket_;
 #if defined(RDP_NATIVE_CALLBACK_TESTING)
     AttemptDequeuedHook attemptDequeuedHook_;
+    NetworkActionReadyHook networkActionReadyHook_;
 #endif
 };
 

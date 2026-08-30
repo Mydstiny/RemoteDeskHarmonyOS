@@ -261,7 +261,7 @@ RDP_TEST_CASE(rustdesk_display_control_plane_reset_clears_pending_ready_and_inpu
     control.detachHandle();
 }
 
-RDP_TEST_CASE(rustdesk_display_capability_query_pins_handle_until_snapshot_completes) {
+RDP_TEST_CASE(rustdesk_display_capability_query_pins_handle_through_ffi_query) {
     RustDeskDisplayControlPlane control;
     int fakeHandle = 11;
     RDP_ASSERT(control.attachHandle(&fakeHandle));
@@ -344,6 +344,110 @@ RDP_TEST_CASE(rustdesk_display_capability_query_pins_handle_until_snapshot_compl
     RDP_ASSERT(snapshot.inputBlocked);
 }
 
+RDP_TEST_CASE(rustdesk_display_capability_query_releases_handle_before_snapshot) {
+    RustDeskDisplayControlPlane control;
+    int fakeHandle = 12;
+    RDP_ASSERT(control.attachHandle(&fakeHandle));
+    const auto pendingRequest = control.beginDisplaySwitch(
+        5,
+        []() { return true; },
+        [](void*, int) { return true; });
+    RDP_ASSERT(pendingRequest.accepted);
+
+    std::mutex stateMutex;
+    std::condition_variable stateChanged;
+    bool queryEntered = false;
+    bool releaseQuery = false;
+    bool detachStarted = false;
+    bool detachCompleted = false;
+    void* detached = nullptr;
+    RustDeskDisplaySwitchGateSnapshot snapshot;
+
+    std::thread queryThread([&]() {
+        const bool queried = control.queryDisplayState(
+            []() { return true; },
+            [&](void* handle) {
+                RDP_ASSERT_EQ(handle, static_cast<void*>(&fakeHandle));
+                {
+                    std::lock_guard<std::mutex> lock(stateMutex);
+                    queryEntered = true;
+                }
+                stateChanged.notify_all();
+                std::unique_lock<std::mutex> lock(stateMutex);
+                RDP_ASSERT(stateChanged.wait_for(
+                    lock, std::chrono::seconds(1), [&]() {
+                        return releaseQuery;
+                    }));
+                return true;
+            },
+            snapshot);
+        RDP_ASSERT(queried);
+    });
+
+    {
+        std::unique_lock<std::mutex> lock(stateMutex);
+        RDP_ASSERT(stateChanged.wait_for(lock, std::chrono::seconds(1), [&]() {
+            return queryEntered;
+        }));
+    }
+
+    bool detachedWhileDisplayHeld = false;
+    std::thread detachThread;
+    {
+        // Production retirement owns this display boundary before it asks
+        // for the exclusive handle gate. Keeping the lease in this thread
+        // lets the test break a regression-induced cycle instead of hanging.
+        auto retirementDisplayLease = control.acquireDisplayLease();
+        (void)retirementDisplayLease;
+        detachThread = std::thread([&]() {
+            {
+                std::lock_guard<std::mutex> lock(stateMutex);
+                detachStarted = true;
+            }
+            stateChanged.notify_all();
+            detached = control.detachHandle();
+            {
+                std::lock_guard<std::mutex> lock(stateMutex);
+                detachCompleted = true;
+            }
+            stateChanged.notify_all();
+        });
+
+        {
+            std::unique_lock<std::mutex> lock(stateMutex);
+            RDP_ASSERT(stateChanged.wait_for(lock, std::chrono::seconds(1), [&]() {
+                return detachStarted;
+            }));
+            RDP_ASSERT(!stateChanged.wait_for(
+                lock, std::chrono::milliseconds(50), [&]() {
+                    return detachCompleted;
+                }));
+            releaseQuery = true;
+        }
+        stateChanged.notify_all();
+        {
+            std::unique_lock<std::mutex> lock(stateMutex);
+            detachedWhileDisplayHeld = stateChanged.wait_for(
+                lock, std::chrono::seconds(1), [&]() {
+                    return detachCompleted;
+                });
+        }
+        // If queryDisplayState still held the shared handle while requesting
+        // this display lock, the exclusive detach above could not finish
+        // until this scope ended. Releasing the lease keeps a failing test
+        // recoverable and allows both worker threads to join below.
+    }
+
+    detachThread.join();
+    queryThread.join();
+    RDP_ASSERT(detachedWhileDisplayHeld);
+    RDP_ASSERT_EQ(detached, static_cast<void*>(&fakeHandle));
+    RDP_ASSERT(!control.hasHandle());
+    RDP_ASSERT_EQ(snapshot.generation, pendingRequest.generation);
+    RDP_ASSERT_EQ(snapshot.pendingDisplay, 5);
+    RDP_ASSERT(snapshot.inputBlocked);
+}
+
 RDP_TEST_CASE(rustdesk_display_switch_ffi_call_pins_handle_until_result) {
     RustDeskDisplayControlPlane control;
     int fakeHandle = 13;
@@ -423,4 +527,64 @@ RDP_TEST_CASE(rustdesk_display_switch_ffi_call_pins_handle_until_result) {
     RDP_ASSERT_EQ(detached, static_cast<void*>(&fakeHandle));
     RDP_ASSERT(detachCompleted);
     RDP_ASSERT(!control.hasHandle());
+}
+
+RDP_TEST_CASE(rustdesk_outbound_lanes_fail_closed_behind_network_retirement) {
+    RustDeskDisplayControlPlane control;
+    int fakeHandle = 29;
+    RDP_ASSERT(control.attachHandle(&fakeHandle));
+
+    std::mutex admissionMutex;
+    bool streamActive = true;
+    std::atomic<int> started {0};
+    std::atomic<int> inputCalls {0};
+    std::atomic<int> fileCalls {0};
+    std::atomic<int> clipboardCalls {0};
+    std::atomic<bool> inputAccepted {true};
+    std::atomic<bool> fileAccepted {true};
+    std::atomic<bool> clipboardAccepted {true};
+
+    // Model a network action after it owns admission but before it retires
+    // the handle. Outbound callers may queue behind the action, but none may
+    // reach the old FFI pointer once the action closes admission.
+    std::unique_lock<std::mutex> networkAction(admissionMutex);
+    const auto launch = [&](std::atomic<int>& calls,
+                            std::atomic<bool>& accepted) {
+        auto* callsPtr = &calls;
+        auto* acceptedPtr = &accepted;
+        return std::thread([&, callsPtr, acceptedPtr]() {
+            started.fetch_add(1, std::memory_order_acq_rel);
+            acceptedPtr->store(control.dispatchOutbound(
+                admissionMutex,
+                [&]() { return streamActive; },
+                [&](void* handle) {
+                    RDP_ASSERT_EQ(handle, static_cast<void*>(&fakeHandle));
+                    callsPtr->fetch_add(1, std::memory_order_acq_rel);
+                    return true;
+                }), std::memory_order_release);
+        });
+    };
+    std::thread inputThread = launch(inputCalls, inputAccepted);
+    std::thread fileThread = launch(fileCalls, fileAccepted);
+    std::thread clipboardThread = launch(clipboardCalls, clipboardAccepted);
+    const auto deadline = std::chrono::steady_clock::now() +
+        std::chrono::seconds(1);
+    while (started.load(std::memory_order_acquire) != 3 &&
+           std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::yield();
+    }
+    RDP_ASSERT_EQ(started.load(std::memory_order_acquire), 3);
+    streamActive = false;
+    networkAction.unlock();
+
+    inputThread.join();
+    fileThread.join();
+    clipboardThread.join();
+    RDP_ASSERT(!inputAccepted.load(std::memory_order_acquire));
+    RDP_ASSERT(!fileAccepted.load(std::memory_order_acquire));
+    RDP_ASSERT(!clipboardAccepted.load(std::memory_order_acquire));
+    RDP_ASSERT_EQ(inputCalls.load(std::memory_order_acquire), 0);
+    RDP_ASSERT_EQ(fileCalls.load(std::memory_order_acquire), 0);
+    RDP_ASSERT_EQ(clipboardCalls.load(std::memory_order_acquire), 0);
+    RDP_ASSERT_EQ(control.detachHandle(), static_cast<void*>(&fakeHandle));
 }
