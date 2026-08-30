@@ -1,11 +1,15 @@
 import { describe, it, expect } from '@ohos/hypium';
 import {
   lanHostCanSelectDynamic,
+  lanHostLocalOnlyStorageIsValid,
   lanLocalExtensionMayEnterPortableBackup,
   lanRestrictedAdminSecretOwnedByScope,
   lanHostMayUseRemoteHostsCloudTable,
   lanHostNeedsAddressRefresh,
   lanHostRefreshCandidateMatches,
+  lanHostUsesDynamicAddressStorage,
+  lanHostUsesLocalOnlyStorage,
+  sshEndpointIsDevicePrivateForTransfer,
   normalizeLanHostAddressMode
 } from '../main/ets/services/LanHostAddressPolicy';
 
@@ -14,10 +18,11 @@ export default function lanHostAddressPolicyTest() {
     it('keeps legacy and manual records on the existing cloud path', 0, () => {
       expect(normalizeLanHostAddressMode(undefined)).assertEqual('manual');
       expect(lanHostMayUseRemoteHostsCloudTable({
-        protocol: 'rdp', lanAddressMode: 'manual', lanDiscoveryIdentity: '', lanLastResolvedAt: 0
+        protocol: 'rdp', host: '10.0.0.1', lanAddressMode: 'manual',
+        lanDiscoveryIdentity: '', lanLastResolvedAt: 0
       })).assertTrue();
       expect(lanHostMayUseRemoteHostsCloudTable({
-        protocol: 'rustdesk', lanAddressMode: 'static',
+        protocol: 'rustdesk', host: '10.0.0.2', lanAddressMode: 'static',
         lanDiscoveryIdentity: 'peer-1', lanLastResolvedAt: 100
       })).assertTrue();
     });
@@ -31,7 +36,7 @@ export default function lanHostAddressPolicyTest() {
 
     it('refreshes only stale device-local dynamic records', 0, () => {
       const dynamic = {
-        protocol: 'rdp', lanAddressMode: 'dynamic',
+        protocol: 'rdp', host: '192.168.1.20', lanAddressMode: 'dynamic',
         lanDiscoveryIdentity: 'AA:BB', lanLastResolvedAt: 1000
       };
       expect(lanHostNeedsAddressRefresh(dynamic, 2000, 1000)).assertTrue();
@@ -41,7 +46,7 @@ export default function lanHostAddressPolicyTest() {
 
     it('matches refreshes by exact normalized identity and protocol', 0, () => {
       const host = {
-        protocol: 'rustdesk', lanAddressMode: 'dynamic',
+        protocol: 'rustdesk', host: '192.168.1.20', lanAddressMode: 'dynamic',
         lanDiscoveryIdentity: 'PEER-1', lanLastResolvedAt: 1
       };
       expect(lanHostRefreshCandidateMatches(host, {
@@ -66,6 +71,29 @@ export default function lanHostAddressPolicyTest() {
       expect(lanLocalExtensionMayEnterPortableBackup('dynamiclanhosts')).assertFalse();
       expect(lanLocalExtensionMayEnterPortableBackup('remotehosts')).assertTrue();
     });
+
+    it('keeps_only_interface_scoped_ssh_endpoints_in_device_local_storage', 0,
+      (): void => {
+        const scoped = {
+          protocol: 'ssh', host: 'fe80::20%wlan0', lanAddressMode: 'manual',
+          lanDiscoveryIdentity: '', lanLastResolvedAt: 0
+        };
+        expect(lanHostUsesLocalOnlyStorage(scoped)).assertTrue();
+        expect(lanHostUsesDynamicAddressStorage(scoped)).assertFalse();
+        expect(lanHostLocalOnlyStorageIsValid(scoped)).assertTrue();
+        expect(lanHostMayUseRemoteHostsCloudTable(scoped)).assertFalse();
+        expect(lanHostNeedsAddressRefresh(scoped, 1000, 0)).assertFalse();
+
+        const global = {
+          protocol: 'ssh', host: '2001:db8::20', lanAddressMode: 'manual',
+          lanDiscoveryIdentity: '', lanLastResolvedAt: 0
+        };
+        expect(lanHostUsesLocalOnlyStorage(global)).assertFalse();
+        expect(lanHostMayUseRemoteHostsCloudTable(global)).assertTrue();
+        expect(sshEndpointIsDevicePrivateForTransfer('ssh', 'fe80::20%12')).assertTrue();
+        expect(sshEndpointIsDevicePrivateForTransfer('ssh', '[fe80::20%25wlan0]')).assertTrue();
+        expect(sshEndpointIsDevicePrivateForTransfer('rdp', 'fe80::20%wlan0')).assertFalse();
+      });
 
     it('keeps dynamic Restricted Admin secrets inside the active account', 0, () => {
       expect(lanRestrictedAdminSecretOwnedByScope(true, '', 'owner-a')).assertTrue();

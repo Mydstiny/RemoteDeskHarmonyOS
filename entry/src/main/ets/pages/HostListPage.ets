@@ -334,7 +334,7 @@ import {
   lanHostNeedsAddressRefresh,
   lanHostRefreshCandidateMatches,
   LanHostRefreshCandidate,
-  lanHostUsesLocalOnlyStorage
+  lanHostUsesDynamicAddressStorage
 } from '../services/LanHostAddressPolicy';
 import {
   hostListProtocolForTab,
@@ -6350,11 +6350,11 @@ struct HostListPage {
       promptAction.showToast({ message: '已有连接请求正在处理，请等待当前弹窗结束', duration: 1800 });
       return;
     }
-    if (lanHostUsesLocalOnlyStorage(host)) {
+    if (lanHostUsesDynamicAddressStorage(host)) {
       promptAction.showToast({ message: '正在刷新局域网动态地址…', duration: 1200 });
       await this.refreshDynamicLanHosts(true, host.id);
       const refreshed: RemoteHost | undefined = this.srv.getHost(host.id);
-      if (refreshed !== undefined && lanHostUsesLocalOnlyStorage(refreshed)) {
+      if (refreshed !== undefined && lanHostUsesDynamicAddressStorage(refreshed)) {
         host = refreshed.runtimeClone();
       }
       if (protocolNeedsArbitration &&
@@ -10943,7 +10943,7 @@ struct HostListPage {
     const scope = CloudStore.getInstance().currentScope();
     const now: number = Date.now();
     const targets: RemoteHost[] = this.srv.getAllHosts().filter((host: RemoteHost): boolean => {
-      if (!lanHostUsesLocalOnlyStorage(host)) { return false; }
+      if (!lanHostUsesDynamicAddressStorage(host)) { return false; }
       if (targetHostId !== '' && host.id !== targetHostId) { return false; }
       return force || lanHostNeedsAddressRefresh(
         host, now, DYNAMIC_LAN_ADDRESS_FRESHNESS_MS);

@@ -37,7 +37,10 @@ import {
   rustDeskRelayCapabilityIdentityChanged
 } from './RustDeskControlPlaneCapabilityPolicy';
 import { remoteHostCloudBaseChanged } from './HostLocalPersonalizationPolicy';
-import { lanHostUsesLocalOnlyStorage } from './LanHostAddressPolicy';
+import {
+  lanHostUsesDynamicAddressStorage,
+  lanHostUsesLocalOnlyStorage
+} from './LanHostAddressPolicy';
 import { KeyVaultService } from './KeyVaultService';
 import { AccountSessionCoordinator } from './AccountSessionCoordinator';
 import {
@@ -99,9 +102,11 @@ export class HostSyncService {
       sourcePort = host.rustdeskDirectPort;
     }
     const endpoint: EndpointAddressResult = parseEndpointFields(sourceHost, sourcePort);
-    if (!endpoint.ok || endpoint.endpoint.scope !== '') {
+    const sshInterfaceScope: boolean = endpoint.ok && host.protocol === 'ssh' &&
+      endpoint.endpoint.scopeKind === 'interface' && endpoint.endpoint.scope !== '';
+    if (!endpoint.ok || (endpoint.endpoint.scope !== '' && !sshInterfaceScope)) {
       hilog.warn(0x0001, 'CloudSync',
-        'HostSyncService: 已拒绝无效或尚未支持作用域的端点 hostId=' +
+        'HostSyncService: 已拒绝无效或不可持久化的端点 hostId=' +
         rustDeskRelayIdFingerprint(host.id));
       return false;
     }
@@ -736,9 +741,11 @@ export class HostSyncService {
       host.protocol === 'rustdesk' ? rustDeskPeerTwoFactorEndpointIdentity(host) : '';
     const currentLocalOnly: boolean = lanHostUsesLocalOnlyStorage(current);
     const nextLocalOnly: boolean = lanHostUsesLocalOnlyStorage(host);
-    if (currentLocalOnly !== nextLocalOnly) {
+    const storageScopeChanged: boolean = currentLocalOnly !== nextLocalOnly;
+    if (storageScopeChanged &&
+      (current.protocol !== 'ssh' || host.protocol !== 'ssh')) {
       hilog.warn(0x0001, 'CloudSync',
-        'HostSyncService.updateHost: 已拒绝隐式切换云/本机存储策略 hostId=' +
+        'HostSyncService.updateHost: 已拒绝非 SSH 主机切换云/本机存储策略 hostId=' +
         rustDeskRelayIdFingerprint(host.id));
       return false;
     }
@@ -780,9 +787,12 @@ export class HostSyncService {
     const cloudBaseChanged: boolean = remoteHostCloudBaseChanged(current, host) ||
       current.runtimeSecretStateSignature() !== host.runtimeSecretStateSignature();
     if (this.ready) {
-      const ok: boolean = nextLocalOnly ? this.cloud.updateDynamicLanHost(host) :
-        (cloudBaseChanged ? this.cloud.updateHost(host) :
-          this.cloud.updateHostLocalPersonalization(host));
+      const ok: boolean = storageScopeChanged
+        ? (nextLocalOnly ? this.cloud.moveSshHostToDeviceLocal(host) :
+          this.cloud.moveSshHostToCloud(host))
+        : (nextLocalOnly ? this.cloud.updateDynamicLanHost(host) :
+          (cloudBaseChanged ? this.cloud.updateHost(host) :
+            this.cloud.updateHostLocalPersonalization(host)));
       if (!ok) {
         if (removedPeerBinding !== null &&
           !this.peerTwoFactorBindings.save(removedPeerBinding)) {
@@ -800,7 +810,9 @@ export class HostSyncService {
           rustDeskRelayIdFingerprint(host.id));
         return false;
       }
-      if (!nextLocalOnly && cloudBaseChanged) { this.cloud.pushTable('remotehosts'); }
+      if (storageScopeChanged || (!nextLocalOnly && cloudBaseChanged)) {
+        this.cloud.pushTable('remotehosts');
+      }
     }
     scrubRustDeskPeerTwoFactorRuntime(host);
     if (nextPeerEndpoint !== '' && this.peerTwoFactorBindings.isLoaded()) {
@@ -818,8 +830,8 @@ export class HostSyncService {
   /** Accept only the fields an exact LAN discovery match is allowed to refresh. */
   updateDynamicLanAddress(host: RemoteHost): boolean {
     const current: RemoteHost | undefined = this.hosts.get(host.id);
-    if (current === undefined || !lanHostUsesLocalOnlyStorage(current) ||
-      !lanHostUsesLocalOnlyStorage(host) || current.protocol !== host.protocol ||
+    if (current === undefined || !lanHostUsesDynamicAddressStorage(current) ||
+      !lanHostUsesDynamicAddressStorage(host) || current.protocol !== host.protocol ||
       current.lanDiscoveryIdentity !== host.lanDiscoveryIdentity) {
       return false;
     }

@@ -72,6 +72,14 @@ export default function cloudStoreTest() {
       expect(cs.insertDynamicLanHost(host)).assertFalse();
       expect(cs.updateDynamicLanHost(host)).assertFalse();
       expect(cs.deleteDynamicLanHost(host.id)).assertFalse();
+
+      const scopedSsh = new RemoteHost();
+      scopedSsh.id = 'scoped-ssh';
+      scopedSsh.protocol = 'ssh';
+      scopedSsh.host = 'fe80::20%wlan0';
+      expect(cs.moveSshHostToDeviceLocal(scopedSsh)).assertFalse();
+      scopedSsh.host = '2001:db8::20';
+      expect(cs.moveSshHostToCloud(scopedSsh)).assertFalse();
     });
   });
 

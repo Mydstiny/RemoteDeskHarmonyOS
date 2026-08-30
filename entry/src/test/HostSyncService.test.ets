@@ -72,6 +72,20 @@ export default function hostSyncServiceTest() {
       expect(srv.prepareHostNetworkEndpoints(host)).assertFalse();
     });
 
+    it('prepare_endpoints_should_keep_only_interface_scoped_ssh_link_local', 0,
+      (): void => {
+        const scoped: RemoteHost = makeHost(
+          'ScopedSsh', 'ssh', '[FE80:0:0:0:0:0:0:20%wlan0]', 22);
+        expect(srv.prepareHostNetworkEndpoints(scoped)).assertTrue();
+        expect(scoped.host).assertEqual('fe80::20%wlan0');
+
+        const numeric: RemoteHost = makeHost('NumericScope', 'ssh', 'fe80::20%12', 22);
+        expect(srv.prepareHostNetworkEndpoints(numeric)).assertFalse();
+        const globalScoped: RemoteHost = makeHost(
+          'GlobalScope', 'ssh', '2001:db8::20%wlan0', 22);
+        expect(srv.prepareHostNetworkEndpoints(globalScoped)).assertFalse();
+      });
+
     it('count_should_be_1_after_add', 0, () => {
       const host = makeHost('OfficePC', 'rdp', '10.0.0.1', 3389);
       srv.addHost(host);
@@ -152,6 +166,24 @@ export default function hostSyncServiceTest() {
       const updated: RemoteHost | undefined = srv.getHost(host.id);
       expect(updated !== undefined && updated.passwordConfigured).assertFalse();
     });
+
+    it('allows_ssh_edits_to_cross_the_device_local_scope_boundary', 0,
+      (): void => {
+        const scoped: RemoteHost = makeHost(
+          'ScopedSsh', 'ssh', 'fe80::20%wlan0', 22);
+        scoped.password = 'secret';
+        expect(srv.addHost(scoped)).assertTrue();
+        const portable: RemoteHost = scoped.runtimeClone();
+        portable.host = '2001:db8::20';
+        expect(srv.updateHost(portable)).assertTrue();
+        const restored: RemoteHost | undefined = srv.getHost(scoped.id);
+        expect(restored !== undefined && restored.host).assertEqual('2001:db8::20');
+
+        const localAgain: RemoteHost = portable.runtimeClone();
+        localAgain.host = 'fe80::20%en0';
+        expect(srv.updateHost(localAgain)).assertTrue();
+        expect(srv.updateDynamicLanAddress(localAgain)).assertFalse();
+      });
   });
 
   describe('HostSyncService_workspace', () => {

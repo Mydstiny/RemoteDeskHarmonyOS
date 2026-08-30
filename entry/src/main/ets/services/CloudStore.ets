@@ -28,8 +28,10 @@ import {
 } from '../model/RemoteHost';
 import {
   DYNAMIC_LAN_HOST_EXTENSION_TABLE,
+  lanHostLocalOnlyStorageIsValid,
   lanLocalExtensionMayEnterPortableBackup,
   lanRestrictedAdminSecretOwnedByScope,
+  lanHostUsesDynamicAddressStorage,
   lanHostUsesLocalOnlyStorage,
   normalizeLanDiscoveryIdentity
 } from './LanHostAddressPolicy';
@@ -453,6 +455,10 @@ const TABLES: string[] = CLOUD_REGISTRATION_PLAN.optionalSuperset;
 const CORE_CLOUD_TABLES: string[] = CLOUD_REGISTRATION_PLAN.baseline;
 const RDP_RESTRICTED_ADMIN_SECRET_TABLE: string = 'rdprestrictedadminsecrets';
 const DYNAMIC_LAN_HOST_AAD_TABLE: string = 'localextensions/dynamiclanhosts';
+const DEVICE_LOCAL_HOST_SECRET_KEYS: string[] = [
+  'password', 'sshkeydata', 'sshkeypassphrase',
+  'sshproxypassword', 'sshproxykeypassphrase'
+];
 const LOCAL_METADATA_TABLE: string = 'localmetadata';
 const VNC_HOST_LOCAL_PERSONALIZATION_PREFIX: string =
   'vnc_host_local_personalization_v1:';
@@ -10231,7 +10237,8 @@ try { this.rollbackTrackedTransaction(); } catch (_ignored) {}
           const sensitive: boolean =
             (table === 'remotehosts' && (key === 'sshkeypassphrase' ||
               key === 'sshproxypassword' || key === 'sshproxykeypassphrase')) ||
-            (table === DYNAMIC_LAN_HOST_EXTENSION_TABLE && key === 'password') ||
+            (table === DYNAMIC_LAN_HOST_EXTENSION_TABLE &&
+              DEVICE_LOCAL_HOST_SECRET_KEYS.indexOf(key) >= 0) ||
             (table === RDP_RESTRICTED_ADMIN_SECRET_TABLE &&
               (key === 'hash' || key === 'binding'));
           if (!sensitive || value === '') {
@@ -10805,7 +10812,7 @@ try { this.rollbackTrackedTransaction(); } catch (_ignored) {}
             (key === 'sshkeypassphrase' || key === 'sshproxypassword' ||
               key === 'sshproxykeypassphrase');
           const dynamicHostSecret: boolean = table === DYNAMIC_LAN_HOST_EXTENSION_TABLE &&
-            key === 'password';
+            DEVICE_LOCAL_HOST_SECRET_KEYS.indexOf(key) >= 0;
           if ((remoteHostSecret || dynamicHostSecret) && crypto.isEncrypted(value)) {
             const aadTable: string = dynamicHostSecret
               ? DYNAMIC_LAN_HOST_AAD_TABLE : 'localextensions/remotehosts';
@@ -11251,8 +11258,7 @@ try { this.rollbackTrackedTransaction(); } catch (_ignored) {}
           const host: RemoteHost = RemoteHost.fromJSON(json);
           if (host.id !== recordId || host.userId !== this.currentOwnerScopeId() ||
             !lanHostUsesLocalOnlyStorage(host) ||
-            (host.protocol !== 'rdp' && host.protocol !== 'rustdesk') ||
-            normalizeLanDiscoveryIdentity(host.lanDiscoveryIdentity) === '') {
+            !lanHostLocalOnlyStorageIsValid(host)) {
             continue;
           }
           const storedPassword: string = values['password'] ?? '';
@@ -11260,6 +11266,26 @@ try { this.rollbackTrackedTransaction(); } catch (_ignored) {}
           host.password = this.decryptIfReady(
             DataCrypto.getInstance(), DYNAMIC_LAN_HOST_AAD_TABLE, host.id,
             'password', storedPassword);
+          const storedSshKeyData: string = values['sshkeydata'] ?? '';
+          host.sshKeyDataConfigured = storedSshKeyData.length > 0;
+          host.sshKeyData = this.decryptIfReady(
+            DataCrypto.getInstance(), DYNAMIC_LAN_HOST_AAD_TABLE, host.id,
+            'sshkeydata', storedSshKeyData);
+          const storedSshKeyPassphrase: string = values['sshkeypassphrase'] ?? '';
+          host.sshKeyPassphraseConfigured = storedSshKeyPassphrase.length > 0;
+          host.sshKeyPassphrase = this.decryptIfReady(
+            DataCrypto.getInstance(), DYNAMIC_LAN_HOST_AAD_TABLE, host.id,
+            'sshkeypassphrase', storedSshKeyPassphrase);
+          const storedProxyPassword: string = values['sshproxypassword'] ?? '';
+          host.sshProxyPasswordConfigured = storedProxyPassword.length > 0;
+          host.sshProxyPassword = this.decryptIfReady(
+            DataCrypto.getInstance(), DYNAMIC_LAN_HOST_AAD_TABLE, host.id,
+            'sshproxypassword', storedProxyPassword);
+          const storedProxyPassphrase: string = values['sshproxykeypassphrase'] ?? '';
+          host.sshProxyKeyPassphraseConfigured = storedProxyPassphrase.length > 0;
+          host.sshProxyKeyPassphrase = this.decryptIfReady(
+            DataCrypto.getInstance(), DYNAMIC_LAN_HOST_AAD_TABLE, host.id,
+            'sshproxykeypassphrase', storedProxyPassphrase);
           result.push(host);
         } catch (rowError) {
           hilog.warn(0x0001, 'CloudSync',
@@ -11317,7 +11343,8 @@ try { this.rollbackTrackedTransaction(); } catch (_ignored) {}
       const current: RemoteHost = RemoteHost.fromJSON(
         JSON.parse(values['hostjson']) as RemoteHostJSON);
       if (current.id !== host.id || current.userId !== this.currentOwnerScopeId() ||
-        !lanHostUsesLocalOnlyStorage(current) || current.protocol !== host.protocol ||
+        !lanHostUsesDynamicAddressStorage(current) ||
+        !lanHostUsesDynamicAddressStorage(host) || current.protocol !== host.protocol ||
         current.lanDiscoveryIdentity !== host.lanDiscoveryIdentity ||
         host.host.trim() === '' || host.port <= 0 || host.port > 65535 ||
         !Number.isFinite(host.lanLastResolvedAt) || host.lanLastResolvedAt <= 0) {
@@ -11376,6 +11403,117 @@ try { this.rollbackTrackedTransaction(); } catch (_ignored) {}
     }
   }
 
+  /** Atomically retract a portable SSH row and replace it with one local-only row. */
+  moveSshHostToDeviceLocal(host: RemoteHost): boolean {
+    if (!this.store) {
+      return this.setLastMutation(DataMutationResult.failure(
+        host.id, 'not_ready', '本地数据库未就绪'));
+    }
+    if (!this.localMutationAllowed()) {
+      return this.setLastMutation(DataMutationResult.failure(
+        host.id, 'restore_in_progress', '恢复进行中，暂不能切换存储范围'));
+    }
+    if (host.protocol !== 'ssh' || !this.recordOwnerWriteAllowed(host.userId) ||
+      !lanHostUsesLocalOnlyStorage(host) || !lanHostLocalOnlyStorageIsValid(host) ||
+      Object.keys(this.loadLocalExtension(
+        DYNAMIC_LAN_HOST_EXTENSION_TABLE, host.id)).length > 0) {
+      return this.setLastMutation(DataMutationResult.failure(
+        host.id, 'invalid_data', 'SSH 主机不能切换为本机存储'));
+    }
+    host.userId = this.currentOwnerScopeId();
+    if (!this.sensitiveWriteAllowed(host.id)) { return false; }
+    let code: 'local_write_failed' | 'not_found' |
+      'extension_write_failed' | 'journal_write_failed' = 'local_write_failed';
+    try {
+      const values: Record<string, string> = this.deviceLocalHostValues(host);
+      this.store.beginTransaction();
+      if (!this.saveLocalExtension(
+        DYNAMIC_LAN_HOST_EXTENSION_TABLE, host.id, values)) {
+        code = 'extension_write_failed';
+        throw new Error('device-local SSH extension insert failed');
+      }
+      const predicates = new relationalStore.RdbPredicates('remotehosts');
+      predicates.equalTo('id', host.id);
+      this.addCurrentOwnerPredicate(predicates);
+      if (!rdbSingleRowAffected(this.store.deleteSync(predicates))) {
+        code = 'not_found';
+        throw new Error('portable SSH source row missing');
+      }
+      if (!this.deleteLocalExtension('remotehosts', host.id)) {
+        code = 'extension_write_failed';
+        throw new Error('portable SSH extension cleanup failed');
+      }
+      if (!this.recordLocalMutation('remotehosts', host.id, 'delete')) {
+        code = 'journal_write_failed';
+        throw new Error('portable SSH deletion journal failed');
+      }
+      this.commitTrackedTransaction();
+      return this.setLastMutation(DataMutationResult.success(host.id));
+    } catch (err) {
+      try { this.rollbackTrackedTransaction(); } catch (_ignored) {}
+      hilog.error(0x0001, 'CloudSync',
+        '[CloudStore] move SSH host to device-local failed: ' + safeError(err));
+      return this.setLastMutation(DataMutationResult.failure(
+        host.id, code, 'SSH 主机存储范围切换未完成'));
+    }
+  }
+
+  /** Atomically replace one scoped device-local SSH row with a portable row. */
+  moveSshHostToCloud(host: RemoteHost): boolean {
+    if (!this.store) {
+      return this.setLastMutation(DataMutationResult.failure(
+        host.id, 'not_ready', '本地数据库未就绪'));
+    }
+    if (!this.localMutationAllowed()) {
+      return this.setLastMutation(DataMutationResult.failure(
+        host.id, 'restore_in_progress', '恢复进行中，暂不能切换存储范围'));
+    }
+    const sourceValues: Record<string, string> =
+      this.loadLocalExtension(DYNAMIC_LAN_HOST_EXTENSION_TABLE, host.id);
+    let sourceHost: RemoteHost | null = null;
+    try {
+      sourceHost = sourceValues['hostjson'] === undefined ? null : RemoteHost.fromJSON(
+        JSON.parse(sourceValues['hostjson']) as RemoteHostJSON);
+    } catch (_error) {
+      sourceHost = null;
+    }
+    if (host.protocol !== 'ssh' || !this.recordOwnerWriteAllowed(host.userId) ||
+      lanHostUsesLocalOnlyStorage(host) || sourceValues['ownerid'] !== this.currentOwnerScopeId() ||
+      sourceHost === null || sourceHost.id !== host.id || sourceHost.protocol !== 'ssh') {
+      return this.setLastMutation(DataMutationResult.failure(
+        host.id, 'invalid_data', 'SSH 主机不能切换为云同步存储'));
+    }
+    host.userId = this.currentOwnerScopeId();
+    if (!this.sensitiveWriteAllowed(host.id)) { return false; }
+    let code: 'local_write_failed' | 'extension_write_failed' |
+      'journal_write_failed' = 'local_write_failed';
+    try {
+      this.store.beginTransaction();
+      const bucket: relationalStore.ValuesBucket = this.hostToBucket(host);
+      bucket['updatedat'] = Date.now();
+      if (!rdbInsertSucceeded(this.store.insertSync('remotehosts', bucket))) {
+        throw new Error('portable SSH destination insert failed');
+      }
+      if (!this.saveHostExtension(host) || !this.deleteLocalExtension(
+        DYNAMIC_LAN_HOST_EXTENSION_TABLE, host.id)) {
+        code = 'extension_write_failed';
+        throw new Error('device-local SSH extension transition failed');
+      }
+      if (!this.recordLocalMutation('remotehosts', host.id, 'add')) {
+        code = 'journal_write_failed';
+        throw new Error('portable SSH insertion journal failed');
+      }
+      this.commitTrackedTransaction();
+      return this.setLastMutation(DataMutationResult.success(host.id));
+    } catch (err) {
+      try { this.rollbackTrackedTransaction(); } catch (_ignored) {}
+      hilog.error(0x0001, 'CloudSync',
+        '[CloudStore] move SSH host to cloud failed: ' + safeError(err));
+      return this.setLastMutation(DataMutationResult.failure(
+        host.id, code, 'SSH 主机存储范围切换未完成'));
+    }
+  }
+
   private dynamicLanHostJSON(host: RemoteHost): RemoteHostJSON {
     const json: RemoteHostJSON = host.toJSON();
     // Dynamic records are complete local rows, but secret material must still
@@ -11386,6 +11524,28 @@ try { this.rollbackTrackedTransaction(); } catch (_ignored) {}
     json.sshProxyPassword = '';
     json.sshProxyKeyPassphrase = '';
     return json;
+  }
+
+  private deviceLocalHostValues(host: RemoteHost): Record<string, string> {
+    const crypto: DataCrypto = DataCrypto.getInstance();
+    const values: Record<string, string> = {};
+    values['schemaversion'] = '1';
+    values['ownerid'] = this.currentOwnerScopeId();
+    values['hostjson'] = JSON.stringify(this.dynamicLanHostJSON(host));
+    values['password'] = this.encryptIfReady(
+      crypto, DYNAMIC_LAN_HOST_AAD_TABLE, host.id, 'password', host.password);
+    values['sshkeydata'] = this.encryptIfReady(
+      crypto, DYNAMIC_LAN_HOST_AAD_TABLE, host.id, 'sshkeydata', host.sshKeyData);
+    values['sshkeypassphrase'] = this.encryptIfReady(
+      crypto, DYNAMIC_LAN_HOST_AAD_TABLE, host.id,
+      'sshkeypassphrase', host.sshKeyPassphrase);
+    values['sshproxypassword'] = this.encryptIfReady(
+      crypto, DYNAMIC_LAN_HOST_AAD_TABLE, host.id,
+      'sshproxypassword', host.sshProxyPassword);
+    values['sshproxykeypassphrase'] = this.encryptIfReady(
+      crypto, DYNAMIC_LAN_HOST_AAD_TABLE, host.id,
+      'sshproxykeypassphrase', host.sshProxyKeyPassphrase);
+    return values;
   }
 
   private saveDynamicLanHost(host: RemoteHost, _updating: boolean): boolean {
@@ -11399,21 +11559,14 @@ try { this.rollbackTrackedTransaction(); } catch (_ignored) {}
     }
     if (!this.recordOwnerWriteAllowed(host.userId) ||
       !lanHostUsesLocalOnlyStorage(host) ||
-      (host.protocol !== 'rdp' && host.protocol !== 'rustdesk') ||
-      normalizeLanDiscoveryIdentity(host.lanDiscoveryIdentity) === '') {
+      !lanHostLocalOnlyStorageIsValid(host)) {
       return this.setLastMutation(DataMutationResult.failure(
-        host.id, 'invalid_data', '动态主机缺少可信的局域网发现身份'));
+        host.id, 'invalid_data', '本机主机缺少可信的设备私有路由身份'));
     }
     host.userId = this.currentOwnerScopeId();
     if (!this.sensitiveWriteAllowed(host.id)) { return false; }
     try {
-      const values: Record<string, string> = {};
-      values['schemaversion'] = '1';
-      values['ownerid'] = this.currentOwnerScopeId();
-      values['hostjson'] = JSON.stringify(this.dynamicLanHostJSON(host));
-      values['password'] = this.encryptIfReady(
-        DataCrypto.getInstance(), DYNAMIC_LAN_HOST_AAD_TABLE, host.id,
-        'password', host.password);
+      const values: Record<string, string> = this.deviceLocalHostValues(host);
       this.store.beginTransaction();
       if (!this.saveLocalExtension(DYNAMIC_LAN_HOST_EXTENSION_TABLE, host.id, values) ||
         ((host.protocol !== 'rdp' || normalizeRdpAuthMode(host.rdpAuthMode) !== 'restricted_admin' ||
