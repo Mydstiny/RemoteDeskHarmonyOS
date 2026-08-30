@@ -30,6 +30,26 @@ bool NetworkGenerationFence::shouldCancel(
         captured.generation != current_.generation;
 }
 
+bool NetworkGenerationFence::admitIfCurrent(
+    const NetworkGenerationSnapshot& captured,
+    const std::function<void()>& admission) const {
+    if (!admission) { return false; }
+    NetworkGenerationAdmission lease = acquireAdmission(captured);
+    if (!lease) { return false; }
+    admission();
+    return true;
+}
+
+NetworkGenerationAdmission NetworkGenerationFence::acquireAdmission(
+    const NetworkGenerationSnapshot& captured) const {
+    std::unique_lock<std::mutex> lock(mutex_);
+    const bool current = captured.available && current_.available &&
+        captured.generation != 0 &&
+        captured.generation == current_.generation;
+    if (!current) { lock.unlock(); }
+    return NetworkGenerationAdmission(std::move(lock), current);
+}
+
 NetworkGenerationFence& ProcessNetworkGenerationFence() {
     static NetworkGenerationFence fence;
     return fence;

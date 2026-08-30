@@ -38,10 +38,12 @@ public:
 
     int executeCommand(
         const std::string& command,
+        remotedesk::net::NetworkGenerationSnapshot networkSnapshot,
         SshOperationTransportCommandResult& result,
         int timeoutMs) override {
         SshCommandResult adapterResult;
-        const int code = adapter_->executeCommand(command, adapterResult, timeoutMs);
+        const int code = adapter_->executeCommandForOperation(
+            command, adapterResult, networkSnapshot, timeoutMs);
         result.exitCode = adapterResult.exitCode;
         result.signaled = adapterResult.signaled;
         result.signal = std::move(adapterResult.signal);

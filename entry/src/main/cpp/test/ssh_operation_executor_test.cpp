@@ -19,6 +19,8 @@ struct FakeSshOperationState {
     int commandExitCode = 0;
     std::string commandOutput = "REMOTEDESK_KEY_INSTALLED\n";
     std::function<void()> onConnect;
+    std::function<void()> beforeExecute;
+    std::function<void()> onExecute;
     std::function<bool(remotedesk::net::NetworkGenerationSnapshot)>
         routeCancelled;
 
@@ -113,11 +115,18 @@ public:
 
     int executeCommand(
         const std::string& command,
+        remotedesk::net::NetworkGenerationSnapshot networkSnapshot,
         SshOperationTransportCommandResult& result,
         int timeoutMs) override {
+        if (state_->beforeExecute) { state_->beforeExecute(); }
+        if (state_->routeCancelled &&
+            state_->routeCancelled(networkSnapshot)) {
+            return ERR_SSH_SESSION_CLOSED;
+        }
         state_->events.push_back("execute");
         state_->command = command;
         state_->commandTimeoutMs = timeoutMs;
+        if (state_->onExecute) { state_->onExecute(); }
         result.exitCode = state_->commandExitCode;
         result.stdoutBytes.assign(
             state_->commandOutput.begin(), state_->commandOutput.end());
@@ -488,7 +497,7 @@ RDP_TEST_CASE(ssh_operation_network_retry_rebuilds_install_on_current_generation
     auto control = std::make_shared<SshOperationControl>(5009);
     remotedesk::net::NetworkGenerationFence fence(8200, true);
     bool changed = false;
-    state->onConnect = [&fence, &changed]() {
+    state->beforeExecute = [&fence, &changed]() {
         if (!changed) {
             changed = true;
             RDP_ASSERT(fence.update(true, 8201));
@@ -521,6 +530,50 @@ RDP_TEST_CASE(ssh_operation_network_retry_rebuilds_install_on_current_generation
         "factory", "connect", "disconnect",
         "factory", "connect", "execute", "disconnect"};
     RDP_ASSERT(state->events == expected);
+    RDP_ASSERT(!control->cancelled());
+}
+
+RDP_TEST_CASE(ssh_operation_network_retry_repeats_only_idempotent_admitted_install) {
+    auto state = std::make_shared<FakeSshOperationState>();
+    auto control = std::make_shared<SshOperationControl>(5012);
+    remotedesk::net::NetworkGenerationFence fence(8500, true);
+    bool changedAfterAdmission = false;
+    state->onExecute = [&fence, &changedAfterAdmission]() {
+        if (!changedAfterAdmission) {
+            changedAfterAdmission = true;
+            RDP_ASSERT(fence.update(true, 8501));
+        }
+    };
+    state->routeCancelled = [&fence](
+        remotedesk::net::NetworkGenerationSnapshot networkSnapshot) {
+        return fence.shouldCancel(networkSnapshot);
+    };
+    std::vector<std::uint64_t> attemptedGenerations;
+    SshPublicKeyInstallResult latest;
+
+    const SshOperationNetworkRetryResult retryResult =
+        runSshOperationNetworkAttempts(
+            fence.snapshot(),
+            std::chrono::steady_clock::now() + std::chrono::seconds(1),
+            control, [&fence]() { return fence.snapshot(); },
+            [&](remotedesk::net::NetworkGenerationSnapshot networkSnapshot) {
+                attemptedGenerations.push_back(networkSnapshot.generation);
+                latest = installSshPublicKeyWithTransportForOperation(
+                    proxyJumpIpv6OperationConfig(), "ssh-ed25519 AAAATEST",
+                    control, networkSnapshot, fakeFactory(state),
+                    [](const std::string&) { return true; });
+            });
+
+    RDP_ASSERT(retryResult == SshOperationNetworkRetryResult::Finished);
+    RDP_ASSERT(latest.ok);
+    RDP_ASSERT((attemptedGenerations ==
+        std::vector<std::uint64_t> {8500, 8501}));
+    const std::vector<std::string> expected {
+        "factory", "connect", "execute", "disconnect",
+        "factory", "connect", "execute", "disconnect"};
+    RDP_ASSERT(state->events == expected);
+    RDP_ASSERT(state->command.find("grep -Fqx") != std::string::npos);
+    RDP_ASSERT(state->command.find("authorized_keys") != std::string::npos);
     RDP_ASSERT(!control->cancelled());
 }
 

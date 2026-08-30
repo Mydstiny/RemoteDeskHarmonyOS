@@ -21,6 +21,7 @@
 #include <deque>
 #include <future>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <utility>
 #include <type_traits>
@@ -231,6 +232,15 @@ public:
     int executeCommand(const std::string& command, SshCommandResult& result,
                        int timeoutMs = 30000);
 
+    /**
+     * Execute the idempotent auxiliary-operation command only if its exact
+     * admission generation still owns this transport.
+     */
+    int executeCommandForOperation(
+        const std::string& command, SshCommandResult& result,
+        remotedesk::net::NetworkGenerationSnapshot networkSnapshot,
+        int timeoutMs = 30000);
+
     /** 在独立 SSH channel 上启动 subsystem 并收集其输出。 */
     int executeSubsystem(const std::string& subsystem, SshCommandResult& result,
                          int timeoutMs = 30000);
@@ -344,6 +354,10 @@ private:
     bool authPromptAllowPasswordFallback_ = false;
     size_t authPromptPresetIndex_ = 0;
     bool authPromptPasswordFallbackUsed_ = false;
+    // Acquired only after a KBI response is ready, then held until the
+    // enclosing libssh2 call has admitted or rejected that response packet.
+    std::unique_ptr<remotedesk::net::NetworkGenerationAdmission>
+        authResponseAdmission_;
 
     // ---- libssh2 会话和通道 ----
     LIBSSH2_SESSION* session_;
@@ -445,6 +459,9 @@ private:
 
     /** 非阻塞等待并重试 libssh2 操作 (0=读 1=写) */
     bool connectRouteCancelled() const;
+    bool admitRouteWrite(
+        const remotedesk::net::NetworkGenerationSnapshot& networkSnapshot,
+        const std::function<void()>& write) const;
     int waitSocket(int direction, int timeoutSec);
     int waitSocketMilliseconds(int direction, int timeoutMs);
 
@@ -683,8 +700,11 @@ private:
     // the libssh2 SFTP handle alive while the terminal writer/reader run.
     static constexpr size_t kSftpSliceBytes = 32 * 1024;
 
-    int executeChannelRequest(const std::string& request, bool subsystem,
-                              SshCommandResult& result, int timeoutMs);
+    int executeChannelRequest(
+        const std::string& request, bool subsystem,
+        SshCommandResult& result, int timeoutMs,
+        const remotedesk::net::NetworkGenerationSnapshot*
+            requiredNetworkSnapshot = nullptr);
 };
 
 /** 注册到 ExtensionSystem */

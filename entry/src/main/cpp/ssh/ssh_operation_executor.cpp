@@ -368,7 +368,8 @@ SshPublicKeyInstallResult installSshPublicKeyWithTransportForOperation(
         "grep -Fqx '" + publicKey + "' \"$HOME/.ssh/authorized_keys\" && "
         "printf 'REMOTEDESK_KEY_INSTALLED\\n'; fi";
     SshOperationTransportCommandResult commandResult;
-    code = operation.transport().executeCommand(command, commandResult, 30000);
+    code = operation.transport().executeCommand(
+        command, networkSnapshot, commandResult, 30000);
     code = effectiveOperationError(control, code);
     if (code != 0 || commandResult.exitCode != 0) {
         return installFailure(code != 0 ? code : ERR_SSH_SUBSYSTEM_FAILED,

@@ -45,6 +45,7 @@ public:
         SshOperationTransportHostKey& hostKey) = 0;
     virtual int executeCommand(
         const std::string& command,
+        remotedesk::net::NetworkGenerationSnapshot networkSnapshot,
         SshOperationTransportCommandResult& result,
         int timeoutMs) = 0;
     virtual void disconnect() = 0;

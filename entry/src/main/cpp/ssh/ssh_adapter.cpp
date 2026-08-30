@@ -1525,6 +1525,29 @@ bool SshAdapter::connectRouteCancelled() const {
         connectNetworkSnapshot_);
 }
 
+bool SshAdapter::admitRouteWrite(
+    const remotedesk::net::NetworkGenerationSnapshot& networkSnapshot,
+    const std::function<void()>& write) const {
+    if (!write || !networkSnapshot.available ||
+        networkSnapshot.generation == 0 ||
+        networkSnapshot.generation != connectNetworkSnapshot_.generation ||
+        networkSnapshot.available != connectNetworkSnapshot_.available ||
+        connectCancelRequested_.load(std::memory_order_acquire)) {
+        return false;
+    }
+    bool invoked = false;
+    const bool current =
+        remotedesk::net::ProcessNetworkGenerationFence().admitIfCurrent(
+            networkSnapshot, [this, &write, &invoked]() {
+                if (connectCancelRequested_.load(std::memory_order_acquire)) {
+                    return;
+                }
+                invoked = true;
+                write();
+            });
+    return current && invoked;
+}
+
 int SshAdapter::waitSocket(int direction, int timeoutSec) {
     if (sockFd_ < 0) {
         return -1;
@@ -1700,13 +1723,21 @@ int SshAdapter::sendSocketBytes(const uint8_t* data, size_t len, int timeoutSec)
     }
     size_t total = 0;
     while (total < len) {
-        const ssize_t sent = ::send(sockFd_, data + total, len - total, 0);
+        ssize_t sent = -1;
+        int sendError = 0;
+        if (!admitRouteWrite(connectNetworkSnapshot_, [&]() {
+                sent = ::send(sockFd_, data + total, len - total, 0);
+                sendError = sent < 0 ? errno : 0;
+            })) {
+            return ERR_SSH_SESSION_CLOSED;
+        }
         if (sent > 0) {
             total += static_cast<size_t>(sent);
             continue;
         }
-        if (sent < 0 && (errno == EINTR)) { continue; }
-        if (sent < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+        if (sent < 0 && sendError == EINTR) { continue; }
+        if (sent < 0 &&
+            (sendError == EAGAIN || sendError == EWOULDBLOCK)) {
             if (waitSocket(1, timeoutSec) != 0) { return ERR_SSH_CONNECT_TIMEOUT; }
             continue;
         }
@@ -2142,9 +2173,19 @@ int SshAdapter::connectThroughSshJump(const ConnectionConfig& cfg) {
         }
 
         char* methods = nullptr;
-        while ((methods = libssh2_userauth_list(
-                    runtime->session, hop.username.c_str(), hop.username.size())) == nullptr &&
-               libssh2_session_last_errno(runtime->session) == LIBSSH2_ERROR_EAGAIN) {
+        while (true) {
+            if (!admitRouteWrite(connectNetworkSnapshot_, [&]() {
+                    methods = libssh2_userauth_list(
+                        runtime->session, hop.username.c_str(),
+                        hop.username.size());
+                })) {
+                return fail(ERR_SSH_SESSION_CLOSED);
+            }
+            if (methods != nullptr ||
+                libssh2_session_last_errno(runtime->session) !=
+                    LIBSSH2_ERROR_EAGAIN) {
+                break;
+            }
             if (waitSocketOnFd(runtime->transportFd, 2, 30) != 0) {
                 return fail(ERR_SSH_AUTH_TIMEOUT);
             }
@@ -2177,9 +2218,21 @@ int SshAdapter::connectThroughSshJump(const ConnectionConfig& cfg) {
             };
             *abstract = &context;
             int authResult = 0;
-            while ((authResult = libssh2_userauth_keyboard_interactive(
-                        runtime->session, hop.username.c_str(),
-                        &sshJumpKeyboardInteractiveCallback)) == LIBSSH2_ERROR_EAGAIN) {
+            while (true) {
+                authResponseAdmission_.reset();
+                if (connectRouteCancelled()) {
+                    authPromptHop_ = "target";
+                    return ERR_SSH_SESSION_CLOSED;
+                }
+                authResult = libssh2_userauth_keyboard_interactive(
+                    runtime->session, hop.username.c_str(),
+                    &sshJumpKeyboardInteractiveCallback);
+                authResponseAdmission_.reset();
+                if (connectRouteCancelled()) {
+                    authPromptHop_ = "target";
+                    return ERR_SSH_SESSION_CLOSED;
+                }
+                if (authResult != LIBSSH2_ERROR_EAGAIN) { break; }
                 if (waitSocketOnFd(runtime->transportFd, 2, 30) != 0) {
                     authPromptHop_ = "target";
                     return ERR_SSH_AUTH_TIMEOUT;
@@ -2194,10 +2247,17 @@ int SshAdapter::connectThroughSshJump(const ConnectionConfig& cfg) {
         if (authMethod == "publickey") {
             if (privateKey.empty()) { return fail(ERR_SSH_PROXY_AUTH); }
             const char* keyPassphrase = passphrase.empty() ? nullptr : passphrase.c_str();
-            while ((rc = libssh2_userauth_publickey_frommemory(
-                        runtime->session, hop.username.c_str(), hop.username.size(),
-                        nullptr, 0, privateKey.c_str(), privateKey.size(), keyPassphrase)) ==
-                   LIBSSH2_ERROR_EAGAIN) {
+            while (true) {
+                if (!admitRouteWrite(connectNetworkSnapshot_, [&]() {
+                        rc = libssh2_userauth_publickey_frommemory(
+                            runtime->session, hop.username.c_str(),
+                            hop.username.size(), nullptr, 0,
+                            privateKey.c_str(), privateKey.size(),
+                            keyPassphrase);
+                    })) {
+                    return fail(ERR_SSH_SESSION_CLOSED);
+                }
+                if (rc != LIBSSH2_ERROR_EAGAIN) { break; }
                 if (waitSocketOnFd(runtime->transportFd, 2, 30) != 0) {
                     return fail(ERR_SSH_AUTH_TIMEOUT);
                 }
@@ -2206,9 +2266,15 @@ int SshAdapter::connectThroughSshJump(const ConnectionConfig& cfg) {
             rc = authenticateInteractive(true);
         } else {
             if (password.empty()) { return fail(ERR_SSH_PROXY_AUTH); }
-            while ((rc = libssh2_userauth_password(
-                        runtime->session, hop.username.c_str(), password.c_str())) ==
-                   LIBSSH2_ERROR_EAGAIN) {
+            while (true) {
+                if (!admitRouteWrite(connectNetworkSnapshot_, [&]() {
+                        rc = libssh2_userauth_password(
+                            runtime->session, hop.username.c_str(),
+                            password.c_str());
+                    })) {
+                    return fail(ERR_SSH_SESSION_CLOSED);
+                }
+                if (rc != LIBSSH2_ERROR_EAGAIN) { break; }
                 if (waitSocketOnFd(runtime->transportFd, 2, 30) != 0) {
                     return fail(ERR_SSH_AUTH_TIMEOUT);
                 }
@@ -2317,9 +2383,17 @@ void SshAdapter::sshJumpRelayLoop() {
                     }
                 }
                 if (!state.toChannel.empty()) {
-                    const ssize_t written = libssh2_channel_write(
-                        runtime.channel, reinterpret_cast<const char*>(state.toChannel.data()),
-                        state.toChannel.size());
+                    ssize_t written = LIBSSH2_ERROR_EAGAIN;
+                    if (!admitRouteWrite(connectNetworkSnapshot_, [&]() {
+                            written = libssh2_channel_write(
+                                runtime.channel,
+                                reinterpret_cast<const char*>(
+                                    state.toChannel.data()),
+                                state.toChannel.size());
+                        })) {
+                        relayFailure = true;
+                        break;
+                    }
                     if (written > 0) {
                         state.toChannel.erase(state.toChannel.begin(),
                                               state.toChannel.begin() + written);
@@ -2604,9 +2678,18 @@ int SshAdapter::authenticatePassword() {
 
     // 查询服务器支持的认证方法
     char* userList = nullptr;
-    while ((userList = libssh2_userauth_list(session_,
-               savedCfg_.username.c_str(), savedCfg_.username.length())) == nullptr &&
-           libssh2_session_last_errno(session_) == LIBSSH2_ERROR_EAGAIN) {
+    while (true) {
+        if (!admitRouteWrite(connectNetworkSnapshot_, [&]() {
+                userList = libssh2_userauth_list(
+                    session_, savedCfg_.username.c_str(),
+                    savedCfg_.username.length());
+            })) {
+            return ERR_SSH_SESSION_CLOSED;
+        }
+        if (userList != nullptr ||
+            libssh2_session_last_errno(session_) != LIBSSH2_ERROR_EAGAIN) {
+            break;
+        }
         if (waitSocket(2, 30) != 0) {
             OH_LOG_ERROR(LOG_APP, "[SSH] 查询密码认证方法超时");
             return ERR_SSH_AUTH_TIMEOUT;
@@ -2624,9 +2707,15 @@ int SshAdapter::authenticatePassword() {
 
     // 密码认证 (非阻塞)
     int rc;
-    while ((rc = libssh2_userauth_password(session_,
-               savedCfg_.username.c_str(),
-               savedCfg_.password.c_str())) == LIBSSH2_ERROR_EAGAIN) {
+    while (true) {
+        if (!admitRouteWrite(connectNetworkSnapshot_, [&]() {
+                rc = libssh2_userauth_password(
+                    session_, savedCfg_.username.c_str(),
+                    savedCfg_.password.c_str());
+            })) {
+            return ERR_SSH_SESSION_CLOSED;
+        }
+        if (rc != LIBSSH2_ERROR_EAGAIN) { break; }
         int w = waitSocket(2, 30); // 30s auth timeout
         if (w != 0) {
             OH_LOG_ERROR(LOG_APP, "[SSH] 密码认证超时");
@@ -2680,6 +2769,7 @@ int SshAdapter::fillKeyboardInteractiveResponses(
     if (numPrompts <= 0) {
         return 0;
     }
+    authResponseAdmission_.reset();
     if (responses == nullptr || prompts == nullptr ||
         static_cast<uint32_t>(numPrompts) > SshAuthPromptBroker::kMaxPrompts) {
         return ERR_SSH_AUTH_FAILED;
@@ -2742,6 +2832,21 @@ int SshAdapter::fillKeyboardInteractiveResponses(
         }
     }
 
+    if (connectCancelRequested_.load(std::memory_order_acquire)) {
+        return ERR_SSH_SESSION_CLOSED;
+    }
+    remotedesk::net::NetworkGenerationAdmission admission =
+        remotedesk::net::ProcessNetworkGenerationFence().acquireAdmission(
+            connectNetworkSnapshot_);
+    if (!admission ||
+        connectCancelRequested_.load(std::memory_order_acquire)) {
+        return ERR_SSH_SESSION_CLOSED;
+    }
+    authResponseAdmission_.reset(
+        new (std::nothrow) remotedesk::net::NetworkGenerationAdmission(
+            std::move(admission)));
+    if (!authResponseAdmission_) { return ERR_SSH_AUTH_FAILED; }
+
     for (size_t index = 0; index < values.size(); ++index) {
         if (values[index].size() > SshAuthPromptBroker::kMaxPromptBytes) {
             return ERR_SSH_AUTH_FAILED;
@@ -2779,10 +2884,18 @@ int SshAdapter::authenticateKeyboardInteractive(bool allowPasswordFallback) {
     if (!session_) { return ERR_SSH_AUTH_FAILED; }
 
     char* userList = nullptr;
-    while ((userList = libssh2_userauth_list(
-                session_, savedCfg_.username.c_str(),
-                static_cast<unsigned int>(savedCfg_.username.size()))) == nullptr &&
-           libssh2_session_last_errno(session_) == LIBSSH2_ERROR_EAGAIN) {
+    while (true) {
+        if (!admitRouteWrite(connectNetworkSnapshot_, [&]() {
+                userList = libssh2_userauth_list(
+                    session_, savedCfg_.username.c_str(),
+                    static_cast<unsigned int>(savedCfg_.username.size()));
+            })) {
+            return ERR_SSH_SESSION_CLOSED;
+        }
+        if (userList != nullptr ||
+            libssh2_session_last_errno(session_) != LIBSSH2_ERROR_EAGAIN) {
+            break;
+        }
         if (waitSocket(2, 30) != 0) {
             OH_LOG_ERROR(LOG_APP, "[SSH] 查询 keyboard-interactive 方法超时");
             return ERR_SSH_AUTH_TIMEOUT;
@@ -2805,9 +2918,17 @@ int SshAdapter::authenticateKeyboardInteractive(bool allowPasswordFallback) {
     authPromptPasswordFallbackUsed_ = false;
     authPromptFailure_.store(0, std::memory_order_release);
     int rc;
-    while ((rc = libssh2_userauth_keyboard_interactive(
-                session_, savedCfg_.username.c_str(),
-                &SshAdapter::keyboardInteractiveCallback)) == LIBSSH2_ERROR_EAGAIN) {
+    while (true) {
+        authResponseAdmission_.reset();
+        if (connectRouteCancelled()) {
+            return ERR_SSH_SESSION_CLOSED;
+        }
+        rc = libssh2_userauth_keyboard_interactive(
+            session_, savedCfg_.username.c_str(),
+            &SshAdapter::keyboardInteractiveCallback);
+        authResponseAdmission_.reset();
+        if (connectRouteCancelled()) { return ERR_SSH_SESSION_CLOSED; }
+        if (rc != LIBSSH2_ERROR_EAGAIN) { break; }
         int w = waitSocket(2, 30);
         if (w != 0) {
             OH_LOG_ERROR(LOG_APP, "[SSH] keyboard-interactive 认证超时");
@@ -2847,12 +2968,16 @@ int SshAdapter::authenticatePublicKey(const std::string& username,
     const char* pass = passphrase.empty() ? nullptr : passphrase.c_str();
 
     int rc;
-    while ((rc = libssh2_userauth_publickey_frommemory(
-                session_,
-                username.c_str(), username.length(),
-                nullptr, 0,
-                privateKeyPem.c_str(), privateKeyPem.length(),
-                pass)) == LIBSSH2_ERROR_EAGAIN) {
+    while (true) {
+        if (!admitRouteWrite(connectNetworkSnapshot_, [&]() {
+                rc = libssh2_userauth_publickey_frommemory(
+                    session_, username.c_str(), username.length(),
+                    nullptr, 0, privateKeyPem.c_str(),
+                    privateKeyPem.length(), pass);
+            })) {
+            return ERR_SSH_SESSION_CLOSED;
+        }
+        if (rc != LIBSSH2_ERROR_EAGAIN) { break; }
         int w = waitSocket(2, 30);
         if (w != 0) {
             OH_LOG_ERROR(LOG_APP, "[SSH] 公钥认证超时");
@@ -4808,6 +4933,21 @@ int SshAdapter::executeCommand(const std::string& command, SshCommandResult& res
     return executeChannelRequest(command, false, result, timeoutMs);
 }
 
+int SshAdapter::executeCommandForOperation(
+    const std::string& command, SshCommandResult& result,
+    remotedesk::net::NetworkGenerationSnapshot networkSnapshot,
+    int timeoutMs) {
+    if (!isReactorThread() && readerRunning_.load(std::memory_order_acquire)) {
+        return runOnReactor(
+            [this, command, &result, networkSnapshot, timeoutMs]() {
+                return executeCommandForOperation(
+                    command, result, networkSnapshot, timeoutMs);
+            });
+    }
+    return executeChannelRequest(
+        command, false, result, timeoutMs, &networkSnapshot);
+}
+
 int SshAdapter::executeSubsystem(const std::string& subsystem, SshCommandResult& result,
                                  int timeoutMs) {
     if (!isReactorThread() && readerRunning_.load(std::memory_order_acquire)) {
@@ -4818,12 +4958,24 @@ int SshAdapter::executeSubsystem(const std::string& subsystem, SshCommandResult&
     return executeChannelRequest(subsystem, true, result, timeoutMs);
 }
 
-int SshAdapter::executeChannelRequest(const std::string& request, bool subsystem,
-                                      SshCommandResult& result, int timeoutMs) {
+int SshAdapter::executeChannelRequest(
+    const std::string& request, bool subsystem,
+    SshCommandResult& result, int timeoutMs,
+    const remotedesk::net::NetworkGenerationSnapshot*
+        requiredNetworkSnapshot) {
     result = SshCommandResult {};
     if (request.empty()) { return ERR_SSH_SUBSYSTEM_FAILED; }
     if (timeoutMs <= 0) { timeoutMs = 30000; }
     if (!isReactorThread() && readerRunning_.load(std::memory_order_acquire)) {
+        if (requiredNetworkSnapshot != nullptr) {
+            const remotedesk::net::NetworkGenerationSnapshot captured =
+                *requiredNetworkSnapshot;
+            return runOnReactor(
+                [this, request, subsystem, &result, timeoutMs, captured]() {
+                    return executeChannelRequest(
+                        request, subsystem, result, timeoutMs, &captured);
+                });
+        }
         return runOnReactor([this, request, subsystem, &result, timeoutMs]() {
             return executeChannelRequest(request, subsystem, result, timeoutMs);
         });
@@ -4833,7 +4985,20 @@ int SshAdapter::executeChannelRequest(const std::string& request, bool subsystem
 
     std::lock_guard<std::recursive_mutex> lifecycleLock(lifecycleMutex_);
     std::unique_lock<std::mutex> sessionLock(sessionMutex_);
-    if (!session_ || state_.load(std::memory_order_acquire) != ConnectionState::CONNECTED) {
+    auto requiredRouteCurrent = [this, requiredNetworkSnapshot]() {
+        return requiredNetworkSnapshot == nullptr ||
+            (requiredNetworkSnapshot->available &&
+             requiredNetworkSnapshot->generation != 0 &&
+             requiredNetworkSnapshot->generation ==
+                 connectNetworkSnapshot_.generation &&
+             requiredNetworkSnapshot->available ==
+                 connectNetworkSnapshot_.available &&
+             !remotedesk::net::ProcessNetworkGenerationFence().shouldCancel(
+                 *requiredNetworkSnapshot));
+    };
+    if (!session_ ||
+        state_.load(std::memory_order_acquire) != ConnectionState::CONNECTED ||
+        !requiredRouteCurrent()) {
         return ERR_SSH_SESSION_CLOSED;
     }
     auto waitForRequest = [&]() -> bool {
@@ -4858,7 +5023,8 @@ int SshAdapter::executeChannelRequest(const std::string& request, bool subsystem
         }
         sessionLock.lock();
         return ready && session_ != nullptr &&
-            !connectCancelRequested_.load(std::memory_order_acquire);
+            !connectCancelRequested_.load(std::memory_order_acquire) &&
+            requiredRouteCurrent();
     };
 
     LIBSSH2_CHANNEL* commandChannel = nullptr;
@@ -4885,9 +5051,24 @@ int SshAdapter::executeChannelRequest(const std::string& request, bool subsystem
     };
 
     int startupResult = LIBSSH2_ERROR_EAGAIN;
-    while ((startupResult = subsystem
+    while (true) {
+        if (requiredNetworkSnapshot != nullptr) {
+            if (!admitRouteWrite(*requiredNetworkSnapshot, [&]() {
+                    startupResult = subsystem
+                        ? libssh2_channel_subsystem(
+                            commandChannel, request.c_str())
+                        : libssh2_channel_exec(
+                            commandChannel, request.c_str());
+                })) {
+                closeChannel();
+                return ERR_SSH_SESSION_CLOSED;
+            }
+        } else {
+            startupResult = subsystem
                 ? libssh2_channel_subsystem(commandChannel, request.c_str())
-                : libssh2_channel_exec(commandChannel, request.c_str())) == LIBSSH2_ERROR_EAGAIN) {
+                : libssh2_channel_exec(commandChannel, request.c_str());
+        }
+        if (startupResult != LIBSSH2_ERROR_EAGAIN) { break; }
         if (!waitForRequest()) {
             closeChannel();
             return ERR_SSH_COMMAND_TIMEOUT;
@@ -4897,6 +5078,11 @@ int SshAdapter::executeChannelRequest(const std::string& request, bool subsystem
         closeChannel();
         return ERR_SSH_SUBSYSTEM_FAILED;
     }
+
+    // A generation change after libssh2 accepts the request is an unknown
+    // server-side outcome. This route-bound entry point is used only by the
+    // exact authorized_keys command, whose grep-before-append form is
+    // idempotent; the outer generation runner may safely repeat it.
 
     constexpr size_t kMaxCommandOutputBytes = 64 * 1024 * 1024;
     std::vector<uint8_t> buffer(32768);
@@ -4919,7 +5105,9 @@ int SshAdapter::executeChannelRequest(const std::string& request, bool subsystem
         return true;
     };
     while (!(stdoutDone && stderrDone)) {
-        if (isReactorThread() && !readerRunning_.load(std::memory_order_acquire)) {
+        if ((isReactorThread() &&
+             !readerRunning_.load(std::memory_order_acquire)) ||
+            !requiredRouteCurrent()) {
             closeChannel();
             return ERR_SSH_SESSION_CLOSED;
         }
