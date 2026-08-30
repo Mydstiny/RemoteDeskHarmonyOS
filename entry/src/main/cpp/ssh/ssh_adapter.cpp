@@ -2821,6 +2821,37 @@ int SshAdapter::authenticatePublicKey(const std::string& username,
     return 0;
 }
 
+int SshAdapter::authenticateConfiguredUser(const ConnectionConfig& cfg) {
+    setState(ConnectionState::AUTHENTICATING, "SSH authenticating");
+    OH_LOG_INFO(LOG_APP, "[SSH] \u8ba4\u8bc1\u65b9\u5f0f=%{public}s", cfg.authMethod.c_str());
+    auto authenticatePasswordWithFallback = [this]() {
+        const int passwordResult = authenticatePassword();
+        if (!sshPasswordFallbackAllowsKeyboardInteractive(
+                advertisedAuthMethods_, passwordResult)) {
+            return passwordResult;
+        }
+        OH_LOG_WARN(LOG_APP,
+                    "[SSH] password method failed; trying advertised keyboard-interactive fallback");
+        const int interactiveResult = authenticateKeyboardInteractive(true);
+        return sshPasswordFallbackFinalResult(passwordResult, interactiveResult);
+    };
+
+    int result = ERR_SSH_AUTH_FAILED;
+    if (cfg.authMethod == "kbd-interactive" || cfg.authMethod == "keyboard-interactive") {
+        result = authenticateKeyboardInteractive(true);
+    } else if (cfg.authMethod == "publickey" && !cfg.privateKeyPem.empty()) {
+        result = authenticatePublicKey(
+            cfg.username, cfg.privateKeyPem, cfg.privateKeyPassphrase);
+        if (result < 0 && !cfg.password.empty()) {
+            OH_LOG_WARN(LOG_APP, "[SSH] \u516c\u94a5\u8ba4\u8bc1\u5931\u8d25, \u56de\u9000\u5230\u5bc6\u7801\u8ba4\u8bc1");
+            result = authenticatePasswordWithFallback();
+        }
+    } else {
+        result = authenticatePasswordWithFallback();
+    }
+    return result;
+}
+
 int SshAdapter::openChannel() {
     if (!assertSessionOwner("open_channel")) {
         return ERR_SSH_CHANNEL_OPEN;
@@ -2975,6 +3006,102 @@ int SshAdapter::connect(const ConnectionConfig& cfg) {
     });
 }
 
+int SshAdapter::connectForOperation(
+    const ConnectionConfig& cfg, SshOperationSessionMode mode,
+    SshOperationHostKeySnapshot& hostKey) {
+    hostKey = SshOperationHostKeySnapshot {};
+    if (isReactorThread()) {
+        return connectForOperationInternal(cfg, mode, hostKey);
+    }
+
+    const bool hadPreviousState =
+        state_.load(std::memory_order_acquire) != ConnectionState::DISCONNECTED;
+    if (hadPreviousState) {
+        disconnect();
+        connectCancelRequested_.store(false, std::memory_order_release);
+    }
+    startReader();
+    return runOnReactor([this, &cfg, mode, &hostKey]() {
+        return connectForOperationInternal(cfg, mode, hostKey);
+    });
+}
+
+int SshAdapter::connectForOperationInternal(
+    const ConnectionConfig& cfg, SshOperationSessionMode mode,
+    SshOperationHostKeySnapshot& hostKey) {
+    if (!assertSessionOwner("operation_connect")) {
+        return ERR_SSH_SESSION_INIT;
+    }
+    std::lock_guard<std::recursive_mutex> lifecycleLock(lifecycleMutex_);
+    hostKey = SshOperationHostKeySnapshot {};
+    authPromptBroker_.resetForNewConnection();
+    authPromptFailure_.store(0, std::memory_order_release);
+    authPromptHop_ = "target";
+    authPromptAllowPasswordFallback_ = false;
+    authPromptPresetIndex_ = 0;
+    authPromptPasswordFallbackUsed_ = false;
+    if (connectCancelRequested_.load(std::memory_order_acquire)) {
+        disconnect();
+        return ERR_SSH_AUTH_CANCELLED;
+    }
+    // Auxiliary workers have no interactive prompt broker. Authenticated
+    // operations must therefore arrive with an already route-bound target pin.
+    if (cfg.sshHostKeyPromptEnabled ||
+        (mode == SshOperationSessionMode::Authenticated &&
+         cfg.expectedHostKeyRawBase64.empty() &&
+         cfg.expectedHostKeyFingerprintSha256.empty())) {
+        disconnect();
+        return ERR_SSH_HOSTKEY_MISMATCH;
+    }
+
+    savedCfg_ = cfg;
+    setState(ConnectionState::CONNECTING, "SSH operation connecting");
+    int result = connectThroughProxy(cfg);
+    if (result != 0) {
+        disconnect();
+        return result;
+    }
+    result = sshHandshake();
+    if (result != 0) {
+        disconnect();
+        return result;
+    }
+
+    size_t keyLength = 0;
+    int keyType = LIBSSH2_HOSTKEY_TYPE_UNKNOWN;
+    const char* rawKey = libssh2_session_hostkey(session_, &keyLength, &keyType);
+    const char* fingerprint = libssh2_hostkey_hash(
+        session_, LIBSSH2_HOSTKEY_HASH_SHA256);
+    if (rawKey == nullptr || keyLength == 0 || fingerprint == nullptr) {
+        disconnect();
+        return ERR_SSH_HOSTKEY_MISMATCH;
+    }
+    hostKey.algorithm = sshHostKeyTypeName(keyType);
+    hostKey.rawBase64 = encodeBase64(
+        reinterpret_cast<const unsigned char*>(rawKey), keyLength);
+    std::string fingerprintBase64 = encodeBase64(
+        reinterpret_cast<const unsigned char*>(fingerprint), 32);
+    while (!fingerprintBase64.empty() && fingerprintBase64.back() == '=') {
+        fingerprintBase64.pop_back();
+    }
+    hostKey.fingerprintSha256 = "SHA256:" + fingerprintBase64;
+    const char* banner = libssh2_session_banner_get(session_);
+    if (banner != nullptr) { hostKey.serverBanner = banner; }
+    hostKey.ok = true;
+
+    if (mode == SshOperationSessionMode::Authenticated) {
+        result = authenticateConfiguredUser(cfg);
+        if (result != 0) {
+            disconnect();
+            return result;
+        }
+    }
+    setState(ConnectionState::CONNECTED,
+             mode == SshOperationSessionMode::Authenticated
+                 ? "SSH operation authenticated" : "SSH operation probe ready");
+    return 0;
+}
+
 int SshAdapter::connectInternal(const ConnectionConfig& cfg, bool preserveOwner) {
     if (!assertSessionOwner("connect")) {
         return ERR_SSH_SESSION_INIT;
@@ -3038,34 +3165,7 @@ int SshAdapter::connectInternal(const ConnectionConfig& cfg, bool preserveOwner)
         }
 
         // Step 4: 用户认证 (公钥优先, 失败时回退密码)
-        setState(ConnectionState::AUTHENTICATING, "SSH authenticating");
-        OH_LOG_INFO(LOG_APP, "[SSH] 认证方式=%{public}s", cfg.authMethod.c_str());
-        auto authenticatePasswordWithFallback = [this]() {
-            const int passwordResult = authenticatePassword();
-            if (!sshPasswordFallbackAllowsKeyboardInteractive(
-                    advertisedAuthMethods_, passwordResult)) {
-                return passwordResult;
-            }
-            OH_LOG_WARN(LOG_APP,
-                        "[SSH] password method failed; trying advertised keyboard-interactive fallback");
-            const int interactiveResult = authenticateKeyboardInteractive(true);
-            // Once the advertised keyboard-interactive method is attempted,
-            // its outcome is authoritative. Preserve cancellation, timeout,
-            // prompt expiry and authentication failure instead of masking
-            // them with the earlier "password not advertised" result.
-            return sshPasswordFallbackFinalResult(passwordResult, interactiveResult);
-        };
-        if (cfg.authMethod == "kbd-interactive" || cfg.authMethod == "keyboard-interactive") {
-            ret = authenticateKeyboardInteractive(true);
-        } else if (cfg.authMethod == "publickey" && !cfg.privateKeyPem.empty()) {
-            ret = authenticatePublicKey(cfg.username, cfg.privateKeyPem, cfg.privateKeyPassphrase);
-            if (ret < 0 && !cfg.password.empty()) {
-                OH_LOG_WARN(LOG_APP, "[SSH] 公钥认证失败, 回退到密码认证");
-                ret = authenticatePasswordWithFallback();
-            }
-        } else {
-            ret = authenticatePasswordWithFallback();
-        }
+        ret = authenticateConfiguredUser(cfg);
         if (ret < 0) {
             return {ret, "SSH authentication failed [" + std::to_string(ret) + "]"};
         }

@@ -94,6 +94,7 @@ set(SSH_SOURCES
     ssh/ssh_forwarding_manager.cpp
     ssh/ssh_session_manager.cpp
     ssh/ssh_key_tool.cpp
+    ssh/ssh_operation_client.cpp
 )
 
 # -- VNC 适配器 --
@@ -305,6 +306,7 @@ if(RDP_BUILD_TESTS)
         test/ssh_network_lifecycle_policy_test.cpp
         test/ssh_session_manager_test.cpp
         test/ssh_pending_connect_registry_test.cpp
+        test/ssh_operation_control_test.cpp
         test/ssh_route_policy_test.cpp
         test/ssh_proxy_target_policy_test.cpp
         test/ssh_forward_target_connector_test.cpp

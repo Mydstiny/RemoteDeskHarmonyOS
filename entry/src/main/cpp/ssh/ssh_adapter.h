@@ -101,6 +101,24 @@ struct SshCommandResult {
     std::vector<uint8_t> stderrBytes;
 };
 
+/**
+ * Host-key material captured by an auxiliary SSH operation after KEX.
+ * The snapshot never contains credentials and is valid only for the exact
+ * production route used by connectForOperation().
+ */
+struct SshOperationHostKeySnapshot {
+    bool ok = false;
+    std::string algorithm;
+    std::string fingerprintSha256;
+    std::string rawBase64;
+    std::string serverBanner;
+};
+
+enum class SshOperationSessionMode {
+    ProbeOnly,
+    Authenticated,
+};
+
 enum class SshTerminalInputStatus {
     ACCEPTED,
     QUEUE_FULL,
@@ -132,6 +150,14 @@ public:
     std::string protocolVersion() override;
 
     int connect(const ConnectionConfig& cfg) override;
+    /**
+     * Establish the production SSH transport without allocating a PTY/shell.
+     * ProbeOnly stops after KEX; Authenticated verifies the target host key and
+     * authenticates before returning. The caller must disconnect the adapter.
+     */
+    int connectForOperation(const ConnectionConfig& cfg,
+                            SshOperationSessionMode mode,
+                            SshOperationHostKeySnapshot& hostKey);
     void disconnect() override;
     ConnectionState getState() override;
 
@@ -329,6 +355,10 @@ private:
     };
 
     int connectInternal(const ConnectionConfig& cfg, bool preserveOwner = false);
+    int connectForOperationInternal(const ConnectionConfig& cfg,
+                                    SshOperationSessionMode mode,
+                                    SshOperationHostKeySnapshot& hostKey);
+    int authenticateConfiguredUser(const ConnectionConfig& cfg);
     void resetTransportForRecovery();
     bool reconnectAfterTransportFailure();
     bool assertSessionOwner(const char* operation) const noexcept;

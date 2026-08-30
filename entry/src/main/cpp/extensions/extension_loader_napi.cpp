@@ -17,6 +17,8 @@
 #include "ssh/ssh_adapter.h"
 #include "ssh/ssh_terminal_resume_policy.h"
 #include "ssh/ssh_key_tool.h"
+#include "ssh/ssh_operation_client.h"
+#include "ssh/ssh_operation_control.h"
 #include "ssh/ssh_session_manager.h"
 #include "ssh/ssh_pending_connect_registry.h"
 #include "audio/input_handler.h"
@@ -11185,6 +11187,266 @@ napi_value NapiProbeSshHostKeyAsync(napi_env env, napi_callback_info info) {
     }
 }
 
+enum class SshProductionOperationKind {
+    ProbeHostKey,
+    TestKeyAuth,
+    InstallPublicKey,
+};
+
+static SshOperationRegistry& ProductionSshOperationRegistry() {
+    static SshOperationRegistry registry;
+    return registry;
+}
+
+struct SshProductionOperationAsyncData {
+    SshProductionOperationKind kind = SshProductionOperationKind::ProbeHostKey;
+    std::uint64_t operationId = 0;
+    std::uint32_t timeoutMs = 30000;
+    std::chrono::steady_clock::time_point deadline =
+        std::chrono::steady_clock::time_point::max();
+    ConnectionConfig config {};
+    std::string publicKey;
+    std::shared_ptr<SshOperationControl> control;
+    SshHostKeyInfo hostKeyResult {};
+    SshAuthTestResult authResult {};
+    SshPublicKeyInstallResult installResult {};
+    bool workerFailed = false;
+    std::string errorMessage;
+    napi_deferred deferred = nullptr;
+    napi_async_work work = nullptr;
+
+    ~SshProductionOperationAsyncData() {
+        ClearSshConnectionSecrets(config);
+    }
+};
+
+static void ApplySshProductionOperationCancellation(
+    SshProductionOperationAsyncData& data) {
+    if (!data.control || !data.control->cancelled()) { return; }
+    const bool deadline = data.control->cancelReason() ==
+        SshOperationCancelReason::Deadline;
+    const int code = deadline ? ERR_SSH_CONNECT_TIMEOUT : ERR_SSH_AUTH_CANCELLED;
+    const std::string message = deadline
+        ? "SSH operation deadline exceeded" : "SSH operation cancelled";
+    switch (data.kind) {
+        case SshProductionOperationKind::ProbeHostKey:
+            data.hostKeyResult = SshHostKeyInfo {};
+            data.hostKeyResult.host = data.config.host;
+            data.hostKeyResult.port = data.config.port;
+            data.hostKeyResult.errorCode = code;
+            data.hostKeyResult.errorMessage = message;
+            break;
+        case SshProductionOperationKind::TestKeyAuth:
+            data.authResult = SshAuthTestResult {false, code, message};
+            break;
+        case SshProductionOperationKind::InstallPublicKey:
+            data.installResult = SshPublicKeyInstallResult {
+                false, false, false, code, message};
+            break;
+    }
+}
+
+static void ExecuteSshProductionOperation(napi_env /*env*/, void* rawData) {
+    auto* data = static_cast<SshProductionOperationAsyncData*>(rawData);
+    if (data == nullptr || !data->control) { return; }
+    std::thread watchdog;
+    try {
+        watchdog = std::thread(
+            [control = data->control, deadline = data->deadline]() {
+                if (!control->waitUntilFinishedOrCancelled(deadline) &&
+                    !control->cancelled()) {
+                    (void)control->cancel(SshOperationCancelReason::Deadline);
+                }
+            });
+        switch (data->kind) {
+            case SshProductionOperationKind::ProbeHostKey:
+                data->hostKeyResult = probeSshHostKeyForOperation(
+                    data->config, data->control);
+                break;
+            case SshProductionOperationKind::TestKeyAuth:
+                data->authResult = testSshKeyAuthForOperation(
+                    data->config, data->control);
+                break;
+            case SshProductionOperationKind::InstallPublicKey:
+                data->installResult = installSshPublicKeyForOperation(
+                    data->config, data->publicKey, data->control);
+                break;
+        }
+    } catch (const std::exception& ex) {
+        data->workerFailed = true;
+        data->errorMessage = std::string("SSH production operation failed: ") + ex.what();
+    } catch (...) {
+        data->workerFailed = true;
+        data->errorMessage = "SSH production operation failed: unknown native exception";
+    }
+    data->control->finish();
+    if (watchdog.joinable()) { watchdog.join(); }
+    ApplySshProductionOperationCancellation(*data);
+}
+
+static napi_value CreateSshPublicKeyInstallResultValue(
+    napi_env env, const SshPublicKeyInstallResult& resultValue) {
+    napi_value result;
+    napi_create_object(env, &result);
+    SetObjectBool(env, result, "ok", resultValue.ok);
+    SetObjectBool(env, result, "alreadyInstalled", resultValue.alreadyInstalled);
+    SetObjectBool(env, result, "verified", resultValue.verified);
+    SetObjectInt32(env, result, "code", resultValue.code);
+    SetObjectString(env, result, "message", resultValue.message);
+    return result;
+}
+
+static void CompleteSshProductionOperation(
+    napi_env env, napi_status status, void* rawData) {
+    auto* data = static_cast<SshProductionOperationAsyncData*>(rawData);
+    if (data == nullptr) { return; }
+    (void)ProductionSshOperationRegistry().eraseIf(
+        data->operationId, data->control);
+    if (status != napi_ok || data->workerFailed) {
+        napi_value error;
+        const std::string message = data->errorMessage.empty()
+            ? "SSH production operation async work failed" : data->errorMessage;
+        napi_create_string_utf8(env, message.c_str(), NAPI_AUTO_LENGTH, &error);
+        napi_reject_deferred(env, data->deferred, error);
+    } else {
+        napi_value result = nullptr;
+        switch (data->kind) {
+            case SshProductionOperationKind::ProbeHostKey:
+                result = CreateSshHostKeyInfoValue(env, data->hostKeyResult);
+                break;
+            case SshProductionOperationKind::TestKeyAuth:
+                result = CreateSshAuthTestResultValue(env, data->authResult);
+                break;
+            case SshProductionOperationKind::InstallPublicKey:
+                result = CreateSshPublicKeyInstallResultValue(env, data->installResult);
+                break;
+        }
+        napi_resolve_deferred(env, data->deferred, result);
+    }
+    napi_delete_async_work(env, data->work);
+    delete data;
+}
+
+static bool ReadSshProductionOperationIdentity(
+    napi_env env, napi_value operationIdValue, napi_value timeoutValue,
+    std::uint64_t& operationId, std::uint32_t& timeoutMs) {
+    int64_t parsedOperationId = 0;
+    int32_t parsedTimeoutMs = 0;
+    if (!ReadStrictNapiInt64Value(env, operationIdValue, parsedOperationId) ||
+        !ReadStrictNapiInt32Value(env, timeoutValue, parsedTimeoutMs) ||
+        parsedOperationId <= 0 || parsedTimeoutMs < 1000 || parsedTimeoutMs > 120000) {
+        return false;
+    }
+    operationId = static_cast<std::uint64_t>(parsedOperationId);
+    timeoutMs = static_cast<std::uint32_t>(parsedTimeoutMs);
+    return true;
+}
+
+static napi_value QueueSshProductionOperation(
+    napi_env env, napi_callback_info info, SshProductionOperationKind kind) {
+    const size_t expectedArgs = kind == SshProductionOperationKind::InstallPublicKey ? 4 : 3;
+    size_t argc = expectedArgs;
+    napi_value args[4] = {nullptr, nullptr, nullptr, nullptr};
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    std::unique_ptr<SshProductionOperationAsyncData> data(
+        new (std::nothrow) SshProductionOperationAsyncData());
+    if (!data) {
+        napi_throw_error(env, nullptr, "SSH production operation allocation failed");
+        return nullptr;
+    }
+    data->kind = kind;
+    const size_t operationIdIndex = kind == SshProductionOperationKind::InstallPublicKey ? 2 : 1;
+    const size_t timeoutIndex = operationIdIndex + 1;
+    if (argc != expectedArgs || !ParseSshConnectionConfig(env, args[0], data->config) ||
+        !ReadSshProductionOperationIdentity(
+            env, args[operationIdIndex], args[timeoutIndex],
+            data->operationId, data->timeoutMs) ||
+        (kind == SshProductionOperationKind::InstallPublicKey &&
+         !ReadBoundedNapiStringValue(env, args[1], 8192, data->publicKey))) {
+        napi_throw_type_error(env, nullptr, "invalid SSH production operation input");
+        return nullptr;
+    }
+    data->deadline = std::chrono::steady_clock::now() +
+        std::chrono::milliseconds(data->timeoutMs);
+    try {
+        data->control = std::make_shared<SshOperationControl>(data->operationId);
+    } catch (...) {
+        napi_throw_error(env, nullptr, "SSH production operation control allocation failed");
+        return nullptr;
+    }
+    if (!ProductionSshOperationRegistry().insert(data->control)) {
+        napi_throw_error(env, nullptr, "duplicate or excessive SSH operation id");
+        return nullptr;
+    }
+
+    napi_value promise;
+    napi_status status = napi_create_promise(env, &data->deferred, &promise);
+    if (status != napi_ok) {
+        (void)ProductionSshOperationRegistry().eraseIf(
+            data->operationId, data->control);
+        napi_throw_error(env, nullptr, "SSH production operation promise creation failed");
+        return nullptr;
+    }
+    napi_value resource;
+    status = napi_create_string_utf8(
+        env, "SshProductionOperationAsync", NAPI_AUTO_LENGTH, &resource);
+    if (status != napi_ok ||
+        napi_create_async_work(env, resource, resource,
+            ExecuteSshProductionOperation, CompleteSshProductionOperation,
+            data.get(), &data->work) != napi_ok) {
+        (void)ProductionSshOperationRegistry().eraseIf(
+            data->operationId, data->control);
+        napi_throw_error(env, nullptr, "SSH production operation work creation failed");
+        return nullptr;
+    }
+    SetObjectInt64(env, promise, "operationId", static_cast<int64_t>(data->operationId));
+    status = napi_queue_async_work(env, data->work);
+    if (status != napi_ok) {
+        napi_delete_async_work(env, data->work);
+        (void)ProductionSshOperationRegistry().eraseIf(
+            data->operationId, data->control);
+        napi_throw_error(env, nullptr, "SSH production operation work queue failed");
+        return nullptr;
+    }
+    data.release();
+    return promise;
+}
+
+/** NAPI: probeSshHostKeyOperationAsync(config, operationId, timeoutMs). */
+napi_value NapiProbeSshHostKeyOperationAsync(napi_env env, napi_callback_info info) {
+    return QueueSshProductionOperation(
+        env, info, SshProductionOperationKind::ProbeHostKey);
+}
+
+/** NAPI: testSshKeyAuthOperationAsync(config, operationId, timeoutMs). */
+napi_value NapiTestSshKeyAuthOperationAsync(napi_env env, napi_callback_info info) {
+    return QueueSshProductionOperation(
+        env, info, SshProductionOperationKind::TestKeyAuth);
+}
+
+/** NAPI: installSshPublicKeyOperationAsync(config, publicKey, operationId, timeoutMs). */
+napi_value NapiInstallSshPublicKeyOperationAsync(napi_env env, napi_callback_info info) {
+    return QueueSshProductionOperation(
+        env, info, SshProductionOperationKind::InstallPublicKey);
+}
+
+/** NAPI: cancelSshOperation(operationId): boolean. */
+napi_value NapiCancelSshOperation(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1] = {nullptr};
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    int64_t operationId = 0;
+    if (argc != 1 || !ReadStrictNapiInt64Value(env, args[0], operationId) ||
+        operationId <= 0) {
+        napi_throw_type_error(env, nullptr, "invalid SSH operation id");
+        return nullptr;
+    }
+    napi_value result;
+    napi_get_boolean(env, ProductionSshOperationRegistry().cancel(
+        static_cast<std::uint64_t>(operationId), SshOperationCancelReason::User), &result);
+    return result;
+}
+
 /**
  * NAPI: requestFrameRefresh(): void
  *
@@ -11750,6 +12012,22 @@ napi_value ExtensionLoaderNapi::Init(napi_env env, napi_value exports) {
                          NapiProbeSshHostKeyAsync, nullptr, &fn);
     napi_set_named_property(env, exports, "probeSshHostKeyAsync", fn);
 
-    OH_LOG_INFO(LOG_APP, "[ExtLoader] NAPI 方法已注册: ... probeSshHostKeyAsync");
+    napi_create_function(env, "probeSshHostKeyOperationAsync", NAPI_AUTO_LENGTH,
+                         NapiProbeSshHostKeyOperationAsync, nullptr, &fn);
+    napi_set_named_property(env, exports, "probeSshHostKeyOperationAsync", fn);
+
+    napi_create_function(env, "testSshKeyAuthOperationAsync", NAPI_AUTO_LENGTH,
+                         NapiTestSshKeyAuthOperationAsync, nullptr, &fn);
+    napi_set_named_property(env, exports, "testSshKeyAuthOperationAsync", fn);
+
+    napi_create_function(env, "installSshPublicKeyOperationAsync", NAPI_AUTO_LENGTH,
+                         NapiInstallSshPublicKeyOperationAsync, nullptr, &fn);
+    napi_set_named_property(env, exports, "installSshPublicKeyOperationAsync", fn);
+
+    napi_create_function(env, "cancelSshOperation", NAPI_AUTO_LENGTH,
+                         NapiCancelSshOperation, nullptr, &fn);
+    napi_set_named_property(env, exports, "cancelSshOperation", fn);
+
+    OH_LOG_INFO(LOG_APP, "[ExtLoader] NAPI 方法已注册: ... cancelSshOperation");
     return exports;
 }
