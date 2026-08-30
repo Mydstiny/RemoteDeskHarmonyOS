@@ -37,6 +37,7 @@ add_custom_target(remotedesk_build_identity ALL
 # -- 通用工具 --
 set(COMMON_SOURCES
     common/endpoint_address_policy.cpp
+    common/happy_eyeballs_connector.cpp
     common/safe_log.cpp
     input/remote_cursor_snapshot.cpp
 )
@@ -88,6 +89,8 @@ set(AUDIO_SOURCES
 # -- SSH 适配器 --
 set(SSH_SOURCES
     ssh/ssh_adapter.cpp
+    ssh/ssh_proxy_target_policy.cpp
+    ssh/ssh_forward_target_connector.cpp
     ssh/ssh_forwarding_manager.cpp
     ssh/ssh_session_manager.cpp
     ssh/ssh_key_tool.cpp
@@ -303,6 +306,8 @@ if(RDP_BUILD_TESTS)
         test/ssh_session_manager_test.cpp
         test/ssh_pending_connect_registry_test.cpp
         test/ssh_route_policy_test.cpp
+        test/ssh_proxy_target_policy_test.cpp
+        test/ssh_forward_target_connector_test.cpp
         test/ssh_forwarding_manager_test.cpp
         test/ssh_sftp_operation_policy_test.cpp
         test/video_activity_state_test.cpp
@@ -347,6 +352,7 @@ if(RDP_BUILD_TESTS)
         test/decoder_pipeline_lifecycle_policy_test.cpp
         test/safe_log_test.cpp
         test/endpoint_address_policy_test.cpp
+        test/happy_eyeballs_connector_test.cpp
         test/moonlight_host_api_test.cpp
         test/moonlight_http_request_formatting_test.cpp
         test/moonlight_http_response_framing_test.cpp
@@ -380,7 +386,10 @@ if(RDP_BUILD_TESTS)
         test/vnc_certificate_probe_test.cpp
         common/safe_log.cpp
         common/endpoint_address_policy.cpp
+        common/happy_eyeballs_connector.cpp
         input/remote_cursor_snapshot.cpp
+        ssh/ssh_forward_target_connector.cpp
+        ssh/ssh_proxy_target_policy.cpp
         ssh/ssh_forwarding_manager.cpp
         ssh/ssh_session_manager.cpp
         rdp/rdp_audio_policy.cpp
