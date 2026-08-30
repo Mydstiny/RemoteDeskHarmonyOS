@@ -1281,6 +1281,12 @@ fn validate_peer_candidate(address: SocketAddr) -> io::Result<()> {
         ));
     }
     if let IpAddr::V6(address) = address.ip() {
+        if address.to_ipv4_mapped().is_some() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "rendezvous IPv6 candidate must not contain an IPv4-mapped address",
+            ));
+        }
         if address.is_unicast_link_local() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -1583,6 +1589,17 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn inbound_socket_addr_v6_rejects_ipv4_mapped_fixture() {
+        let mapped_fixture = [
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0xc0, 0x00,
+            0x02, 0x01, 0x7e, 0x52,
+        ];
+        let error = decode_peer_candidates(&[], &mapped_fixture, PeerCandidateTransport::Tcp)
+            .expect_err("socket_addr_v6 must not smuggle an IPv4-mapped address");
+        assert_eq!(error.kind(), ErrorKind::InvalidData);
     }
 
     #[test]
