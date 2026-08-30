@@ -1148,6 +1148,14 @@ mod tests {
     use std::sync::Arc;
 
     fn assert_socketpair_peer_closed(peer: RawFd) {
+        let mut poll_fd = libc::pollfd {
+            fd: peer,
+            events: libc::POLLIN | libc::POLLHUP,
+            revents: 0,
+        };
+        // Keep a closure regression from hanging the entire test process.
+        let ready = unsafe { libc::poll(&mut poll_fd, 1, 500) };
+        assert_eq!(ready, 1, "socketpair peer did not close within 500 ms");
         let mut byte = 0u8;
         // Reading EOF from the other socketpair endpoint proves that the
         // winner's open-file description was closed. Checking the numeric fd
