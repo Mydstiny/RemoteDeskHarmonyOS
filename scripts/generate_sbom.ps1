@@ -37,7 +37,7 @@ foreach ($package in ($metadata.packages | Sort-Object name, version)) {
 }
 $native = @(
   @('RustDesk-protocol','93d064a9b0eb58ab94db88ff727a877ef773c0d8','AGPL-3.0','https://github.com/rustdesk/rustdesk'),
-  @('FreeRDP-WinPR','dae8276ac7361b8d14f7b87d41163fe03dbb944e','Apache-2.0','https://github.com/FreeRDP/FreeRDP'),
+  @('FreeRDP-WinPR','fc914f5eb3c9def5f757469650f5b4cb2ae72cec','Apache-2.0','https://github.com/Mydstiny/RemoteDeskHarmonyOS'),
   @('OpenSSL','bundled-ohos','Apache-2.0','https://www.openssl.org/'),
   @('FFmpeg','bundled-ohos','LGPL-2.1-or-later','https://ffmpeg.org/'),
   @('libssh2','1.11.1','BSD-3-Clause','https://www.libssh2.org/'),
