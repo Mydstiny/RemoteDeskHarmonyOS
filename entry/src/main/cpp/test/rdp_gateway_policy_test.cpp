@@ -285,6 +285,32 @@ RDP_TEST_CASE(rdp_gateway_policy_keeps_interface_scopes_in_the_client_namespace)
         RdpEndpointMode::MicrosoftRdGateway, true));
 }
 
+RDP_TEST_CASE(rdp_route_normalization_publishes_scope_free_certificate_identities) {
+    struct RouteConfig {
+        std::string host;
+        int port = 0;
+        std::string targetServerName;
+        std::string gatewayHost;
+        int gatewayPort = 0;
+        std::string rdpGatewayServerName;
+        std::string rdpEndpointMode;
+        std::string rdpGatewayTransport;
+    } config;
+    RdpEndpointRoute route;
+    route.endpointMode = RdpEndpointMode::DirectRdp;
+    route.targetHost = "fe80::1%en0";
+    route.targetPort = 3389;
+    route.targetServerName = "fe80::1";
+    route.gatewayPort = 443;
+
+    RdpGatewayPolicy::normalizeRouteConfig(config, route);
+
+    RDP_ASSERT(config.host == "fe80::1%en0");
+    RDP_ASSERT(config.targetServerName == "fe80::1");
+    RDP_ASSERT(config.rdpEndpointMode == "direct_rdp");
+    RDP_ASSERT(config.rdpGatewayTransport == "auto");
+}
+
 RDP_TEST_CASE(rdp_gateway_policy_does_not_cross_match_gateway_and_target_pins) {
     const int64_t nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::system_clock::now().time_since_epoch()).count();

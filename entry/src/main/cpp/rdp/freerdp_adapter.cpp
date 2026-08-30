@@ -220,13 +220,6 @@ bool resolveRdpEndpointRoute(const ConnectionConfig& cfg,
     return true;
 }
 
-void normalizeRdpRouteFields(ConnectionConfig& cfg, const RdpEndpointRoute& route) {
-    cfg.rdpEndpointMode = RdpGatewayPolicy::endpointModeName(route.endpointMode);
-    cfg.rdpGatewayTransport = RdpGatewayPolicy::gatewayTransportName(route.gatewayTransport);
-    cfg.gatewayPort = route.gatewayPort;
-    cfg.rdpGatewayServerName = route.gatewayServerName;
-}
-
 RdpPreflightResult makeRdpPreflightError(const RdpPreflightRequest& request,
                                          const std::string& stage,
                                          const std::string& errorCode,
@@ -6055,16 +6048,13 @@ void FreeRdpAdapter::connectThreadFunc(uint64_t expectedGeneration) {
         impl_->connecting = false;
         return;
     }
-    normalizeRdpRouteFields(cfg, route);
+    RdpGatewayPolicy::normalizeRouteConfig(cfg, route);
     // Certificate callbacks read the active route from the shared config.
     // Publish only the normalized route fields; credentials remain owned by
     // the worker copy and are cleared independently below.
     {
         std::lock_guard<std::mutex> lock(impl_->configMutex);
-        impl_->config.rdpEndpointMode = cfg.rdpEndpointMode;
-        impl_->config.rdpGatewayTransport = cfg.rdpGatewayTransport;
-        impl_->config.gatewayPort = cfg.gatewayPort;
-        impl_->config.rdpGatewayServerName = cfg.rdpGatewayServerName;
+        RdpGatewayPolicy::normalizeRouteConfig(impl_->config, route);
     }
 
     freerdp* newInstance = freerdp_new();
@@ -7407,6 +7397,11 @@ int FreeRdpAdapter::connect(const ConnectionConfig& cfg) {
         impl_->setState(ConnectionState::ERROR,
                         routeErrorMessage + " [" + routeErrorCode + "]");
         return -70;
+    }
+    RdpGatewayPolicy::normalizeRouteConfig(normalizedConfig, route);
+    {
+        std::lock_guard<std::mutex> lock(impl_->configMutex);
+        impl_->config = normalizedConfig;
     }
     if (route.endpointMode == RdpEndpointMode::MicrosoftRdGateway) {
         // The skeleton has no HTTP/RPC/WebSocket tunnel implementation. It

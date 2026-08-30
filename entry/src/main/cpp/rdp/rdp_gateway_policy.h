@@ -511,6 +511,18 @@ inline std::string routeIdentity(const RdpEndpointRoute& route) {
         field(gatewayName) + field(gatewayTransportName(route.gatewayTransport));
 }
 
+template <typename Config>
+inline void normalizeRouteConfig(Config& config, const RdpEndpointRoute& route) {
+    config.host = route.targetHost;
+    config.port = route.targetPort;
+    config.targetServerName = route.targetServerName;
+    config.gatewayHost = route.gatewayHost;
+    config.gatewayPort = route.gatewayPort;
+    config.rdpGatewayServerName = route.gatewayServerName;
+    config.rdpEndpointMode = endpointModeName(route.endpointMode);
+    config.rdpGatewayTransport = gatewayTransportName(route.gatewayTransport);
+}
+
 inline bool isGatewayRoute(RdpEndpointMode mode) {
     return mode == RdpEndpointMode::MicrosoftRdGateway ||
         mode == RdpEndpointMode::VendorHttpsBastion ||
