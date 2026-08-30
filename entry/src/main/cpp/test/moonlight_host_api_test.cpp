@@ -635,6 +635,25 @@ RDP_TEST_CASE(moonlight_host_api_formats_ipv6_and_uses_one_absolute_deadline_acr
     RDP_ASSERT(captures[0].url != captures[1].url);
 }
 
+RDP_TEST_CASE(moonlight_host_api_keeps_link_local_scope_typed_across_control_request) {
+    std::vector<CapturedRequest> captures;
+    auto call = callFor(MoonlightHostOperation::ServerInfo);
+    call.endpoint.serverName = "fe80::20";
+    call.endpoint.addresses = {
+        {"fe80::20", MoonlightHostAddressFamily::Ipv6, "wlan0"},
+    };
+
+    const auto result = executeOnce(call, xmlResponse(serverInfoXml()), &captures);
+    RDP_ASSERT(result.ok());
+    RDP_ASSERT_EQ(captures.size(), static_cast<std::size_t>(1));
+    RDP_ASSERT(captures[0].connectAddress == "fe80::20%wlan0");
+    RDP_ASSERT(contains(captures[0].url,
+                        "http://[fe80::20%25wlan0]:47989/serverinfo"));
+    RDP_ASSERT(result.resolvedAddress.has_value());
+    RDP_ASSERT(*result.resolvedAddress == "fe80::20%wlan0");
+    RDP_ASSERT_EQ(result.resolvedFamily, MoonlightHostAddressFamily::Ipv6);
+}
+
 RDP_TEST_CASE(moonlight_host_api_returns_http_tls_body_and_xml_failures_without_collapsing_codes) {
     auto httpCall = callFor(MoonlightHostOperation::ServerInfo);
     RDP_ASSERT_EQ(executeOnce(httpCall, xmlResponse("not used", 401)).error,
@@ -770,6 +789,7 @@ RDP_TEST_CASE(moonlight_host_api_allows_read_only_fallback_but_never_replays_unk
         RDP_ASSERT_EQ(transport->captures().size(), static_cast<std::size_t>(2));
         RDP_ASSERT(result.resolvedAddress.has_value());
         RDP_ASSERT(*result.resolvedAddress == "192.0.2.11");
+        RDP_ASSERT_EQ(result.resolvedFamily, MoonlightHostAddressFamily::Ipv4);
     }
     {
         auto transport = std::make_shared<ScriptedTransport>();

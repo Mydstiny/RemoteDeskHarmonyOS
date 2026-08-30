@@ -439,12 +439,13 @@ bool parseRequestKey(napi_env env, napi_value value,
 
 bool parseAddress(napi_env env, napi_value value, MoonlightHostAddress& address,
                   std::string& error) {
-    static const std::unordered_set<std::string> allowed {"value", "family"};
+    static const std::unordered_set<std::string> allowed {"value", "family", "scope"};
     std::string family;
     if (!readExactObject(env, value, allowed, error) ||
         !readRequiredString(env, value, "value", kMaxAddressBytes,
                             address.value, error) ||
-        !readRequiredString(env, value, "family", 16U, family, error)) {
+        !readRequiredString(env, value, "family", 16U, family, error) ||
+        !readOptionalString(env, value, "scope", 32U, address.scope, error)) {
         return false;
     }
     if (family == "ipv4") {
@@ -457,9 +458,16 @@ bool parseAddress(napi_env env, napi_value value, MoonlightHostAddress& address,
         error = "address family is not supported";
         return false;
     }
+    if (address.value.find('%') != std::string::npos ||
+        (!address.scope.empty() && address.family != MoonlightHostAddressFamily::Ipv6)) {
+        error = "address value or scope is not canonical";
+        return false;
+    }
     const auto parsed = remotedesk::endpoint::ParseHost(
-        address.value, remotedesk::endpoint::ParseMode::Persisted);
-    if (!parsed.ok || !parsed.endpoint.scope().empty() ||
+        address.value + (address.scope.empty() ? std::string() : "%" + address.scope),
+        remotedesk::endpoint::ParseMode::Persisted);
+    if (!parsed.ok || parsed.endpoint.canonicalHost() != address.value ||
+        parsed.endpoint.scope() != address.scope ||
         (address.family == MoonlightHostAddressFamily::Ipv4 &&
          parsed.endpoint.family() != remotedesk::endpoint::AddressFamily::Ipv4) ||
         (address.family == MoonlightHostAddressFamily::Ipv6 &&
@@ -467,7 +475,8 @@ bool parseAddress(napi_env env, napi_value value, MoonlightHostAddress& address,
         error = "address value does not match its canonical family";
         return false;
     }
-    address.value = remotedesk::endpoint::TransportHost(parsed.endpoint);
+    address.value = parsed.endpoint.canonicalHost();
+    address.scope = parsed.endpoint.scope();
     return true;
 }
 

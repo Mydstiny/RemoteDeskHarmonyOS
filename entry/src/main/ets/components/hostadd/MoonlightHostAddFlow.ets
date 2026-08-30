@@ -8,6 +8,7 @@ import {
   beginMoonlightHostAddOperation,
   cancelMoonlightHostAddDiscovery,
   cancelMoonlightHostAddOperation,
+  cloneMoonlightHostAddVerification,
   cloneMoonlightHostAddState,
   committedMoonlightHostAddId,
   completeMoonlightHostAddCatalog,
@@ -120,10 +121,12 @@ export struct MoonlightHostAddFlow {
   onVerify: (
     address: MoonlightAddress,
     selectedServerUuid: string,
+    candidateAddresses: MoonlightAddress[],
     key: MoonlightHostAddOperationKey
   ) => Promise<MoonlightHostAddVerification | null> = (
     _address: MoonlightAddress,
     _selectedServerUuid: string,
+    _candidateAddresses: MoonlightAddress[],
     _key: MoonlightHostAddOperationKey
   ): Promise<MoonlightHostAddVerification | null> => Promise.resolve(null);
   onPreparePairing: (
@@ -331,16 +334,20 @@ export struct MoonlightHostAddFlow {
   private async verifyHost(): Promise<void> {
     let address: MoonlightAddress;
     let serverUuid: string = '';
+    let candidateAddresses: MoonlightAddress[] = [];
     if (this.flow.mode === 'automatic') {
       const candidate: MoonlightHostAddCandidate | null = this.selectedCandidate();
       if (candidate === null) { this.withError('请选择一台已发现的主机'); return; }
       address = candidate.address;
       serverUuid = candidate.serverUuid;
+      candidateAddresses = candidate.addresses === undefined ?
+        [candidate.address] : candidate.addresses;
     } else {
       const parsed = parseMoonlightHostAddAddress(
         this.flow.manualAddressText, this.flow.manualPortText);
       if (!parsed.ok) { this.withError(parsed.errorText); return; }
       address = parsed.address;
+      candidateAddresses = [parsed.address];
     }
     this.pauseDiscovery();
     const begin: MoonlightHostAddBeginResult =
@@ -348,7 +355,7 @@ export struct MoonlightHostAddFlow {
     this.flow = begin.state;
     try {
       const result: MoonlightHostAddVerification | null =
-        await this.onVerify(address, serverUuid, begin.key);
+        await this.onVerify(address, serverUuid, candidateAddresses, begin.key);
       if (!moonlightHostAddOperationIsCurrent(this.flow, begin.key)) { return; }
       if (result === null) {
         this.withError('无法验证主机，请检查 Sunshine、地址与网络后重试');
@@ -407,23 +414,10 @@ export struct MoonlightHostAddFlow {
           /^[0-9a-fA-F]{64}$/.test(completion.certificateSha256) &&
           this.flow.verification !== null) {
         const withFingerprint: MoonlightHostAddState = cloneMoonlightHostAddState(this.flow);
-        withFingerprint.verification = {
-          serverUuid: this.flow.verification.serverUuid,
-          serverName: this.flow.verification.serverName,
-          hostType: this.flow.verification.hostType,
-          version: this.flow.verification.version,
-          address: {
-            host: this.flow.verification.address.host,
-            family: this.flow.verification.address.family,
-            port: this.flow.verification.address.port
-          },
-          httpsPort: this.flow.verification.httpsPort,
-          paired: this.flow.verification.paired,
-          fingerprintSha256: completion.certificateSha256,
-          certificateChanged: this.flow.verification.certificateChanged,
-          udpVerified: this.flow.verification.udpVerified,
-          duplicateHostId: this.flow.verification.duplicateHostId
-        };
+        const pairedVerification: MoonlightHostAddVerification =
+          cloneMoonlightHostAddVerification(this.flow.verification);
+        pairedVerification.fingerprintSha256 = completion.certificateSha256;
+        withFingerprint.verification = pairedVerification;
         this.flow = withFingerprint;
       }
       this.flow = completeMoonlightHostAddPairing(
@@ -549,8 +543,9 @@ export struct MoonlightHostAddFlow {
   private addressSummary(): string {
     const address: MoonlightAddress = this.flow.selectedAddress;
     if (address.host === '') { return '—'; }
+    const scope: string = address.scope === undefined ? '' : address.scope;
     return address.family === 'ipv6' ?
-      '[' + address.host + ']:' + address.port.toString() :
+      '[' + address.host + (scope === '' ? '' : '%' + scope) + ']:' + address.port.toString() :
       address.host + ':' + address.port.toString();
   }
 

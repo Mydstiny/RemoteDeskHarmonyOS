@@ -32,6 +32,7 @@ export interface MoonlightNativeRequestKey {
 export interface MoonlightNativeAddress {
   value: string;
   family: 'unspecified' | 'ipv4' | 'ipv6';
+  scope?: string;
 }
 
 export interface MoonlightNativeEndpoint {

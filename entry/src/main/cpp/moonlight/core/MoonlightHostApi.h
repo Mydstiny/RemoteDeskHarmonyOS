@@ -149,6 +149,9 @@ struct REMOTEDESK_MOONLIGHT_HOST_HIDDEN MoonlightHostLimits final {
 struct REMOTEDESK_MOONLIGHT_HOST_HIDDEN MoonlightHostAddress final {
     std::string value;
     MoonlightHostAddressFamily family = MoonlightHostAddressFamily::Unspecified;
+    // Device-local interface scope for a link-local IPv6 address. Keep it
+    // separate so socket and URI formatting cannot be confused.
+    std::string scope;
 };
 
 struct REMOTEDESK_MOONLIGHT_HOST_HIDDEN MoonlightHostEndpoint final {
@@ -232,6 +235,10 @@ struct REMOTEDESK_MOONLIGHT_HOST_HIDDEN MoonlightTransportOutcome final {
     int httpStatus = 0;
     std::string body;
     std::size_t receivedBodyBytes = 0;
+    // Numeric winner selected by the transport race. Scoped IPv6 retains its
+    // zone suffix so the media handoff cannot silently re-resolve the host.
+    std::string resolvedAddress;
+    MoonlightHostAddressFamily resolvedFamily = MoonlightHostAddressFamily::Unspecified;
 };
 
 class REMOTEDESK_MOONLIGHT_HOST_HIDDEN MoonlightHostTransport {
@@ -322,6 +329,7 @@ struct REMOTEDESK_MOONLIGHT_HOST_HIDDEN MoonlightHostResult final {
     // streaming must reuse the successful control-plane address instead of
     // silently falling back to endpoint.addresses.front().
     std::optional<std::string> resolvedAddress;
+    MoonlightHostAddressFamily resolvedFamily = MoonlightHostAddressFamily::Unspecified;
     std::vector<std::uint8_t> asset;
     std::vector<MoonlightHostDiagnostic> diagnostics;
 

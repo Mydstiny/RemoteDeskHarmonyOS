@@ -16,7 +16,8 @@ import { MoonlightAppCachePort } from './MoonlightAppCacheService';
 import { AccountSessionLease, cloneAccountSessionLease } from './AccountScopePolicy';
 import {
   MoonlightHostAddOperationKey,
-  MoonlightHostAddState
+  MoonlightHostAddState,
+  moonlightMergeCandidateAddresses
 } from './MoonlightHostAddFlowPolicy';
 import {
   MoonlightRecordMeta,
@@ -129,7 +130,17 @@ function copyAddress(value: MoonlightAddress): MoonlightAddress {
 }
 
 function legacyAddressKey(value: MoonlightAddress): string {
-  return value.family + '|' + value.host.trim().toLowerCase() + '|' + value.port.toString();
+  const scope: string = value.scope === undefined ? '' : value.scope.trim();
+  return value.family + '|' +
+    value.host.trim().toLowerCase() + (scope === '' ? '' : '%' + scope) +
+    '|' + value.port.toString();
+}
+
+function mergeAddresses(primary: MoonlightAddress,
+  candidates: MoonlightAddress[] | undefined,
+  existing: MoonlightAddress[] = []): MoonlightAddress[] {
+  return moonlightMergeCandidateAddresses(primary,
+    (candidates === undefined ? [] : candidates).concat(existing));
 }
 
 function canonicalPreferredAddressKey(
@@ -577,11 +588,13 @@ export class MoonlightLocalHostService {
     const serverUuid: string = verification.serverUuid.trim();
     const displayName: string = (state.displayName.trim() || verification.serverName.trim());
     const address: MoonlightAddress = copyAddress(verification.address);
+    const verifiedAddresses: MoonlightAddress[] = mergeAddresses(
+      address, verification.candidateAddresses);
     if (serverUuid === '' || displayName === '' || !moonlightHostIsValid({
       id: 'moonlight-host|' + sha256Hex(serverUuid),
       serverUuid: serverUuid,
       displayName: displayName,
-      addresses: [address],
+      addresses: verifiedAddresses,
       preferredAddressKey: moonlightAddressKey(address),
       httpsPort: verification.httpsPort === undefined ? MOONLIGHT_DEFAULT_HTTPS_PORT :
         verification.httpsPort,
@@ -636,12 +649,17 @@ export class MoonlightLocalHostService {
     // card. Legacy records without this field remain intentionally unlocked.
     const locked: boolean = currentHostBusiness !== null &&
       currentHostBusiness['locked'] === true;
+    const currentAddresses: MoonlightAddress[] = currentHostBusiness !== null &&
+      Array.isArray(currentHostBusiness['addresses']) ?
+      currentHostBusiness['addresses'] as MoonlightAddress[] : [];
+    const addresses: MoonlightAddress[] = mergeAddresses(
+      address, verification.candidateAddresses, currentAddresses);
     const hostType: MoonlightHostType = verification.hostType;
     const host: MoonlightHost = {
       id: hostId,
       serverUuid: serverUuid,
       displayName: displayName,
-      addresses: [address],
+      addresses: addresses,
       preferredAddressKey: moonlightAddressKey(address),
       httpsPort: verification.httpsPort === undefined ? MOONLIGHT_DEFAULT_HTTPS_PORT :
         verification.httpsPort,

@@ -75,7 +75,6 @@ import { RustDeskAccount } from '../model/RustDeskAccount';
 import { TotpEntry } from '../model/TotpEntry';
 import {
   MoonlightAddress,
-  MoonlightAddressFamily,
   MoonlightHost,
   MoonlightHostType,
   MOONLIGHT_DEFAULT_HTTPS_PORT,
@@ -137,6 +136,10 @@ import {
   MoonlightHostAddDiscoveryKey,
   MoonlightHostAddVerification,
   MoonlightHostAddCatalogSummary,
+  cloneMoonlightHostAddVerification,
+  moonlightHostAddNativeAddresses,
+  moonlightMergeCandidateAddresses,
+  moonlightHostAddServerIdentity,
   parseMoonlightHostAddAddress
 } from '../services/MoonlightHostAddFlowPolicy';
 import {
@@ -2748,7 +2751,11 @@ struct HostListPage {
 
   private moonlightAddressLabel(host: MoonlightHost): string {
     const selected: MoonlightAddress | null = this.moonlightPreferredAddress(host);
-    return selected === null ? '未保存地址' : selected.host + ':' + selected.port.toString();
+    if (selected === null) { return '未保存地址'; }
+    const scope: string = selected.scope === undefined ? '' : selected.scope;
+    const scopedHost: string = selected.host + (scope === '' ? '' : '%' + scope);
+    return (selected.family === 'ipv6' ? '[' + scopedHost + ']' : scopedHost) +
+      ':' + selected.port.toString();
   }
 
   private moonlightPreferredAddress(host: MoonlightHost): MoonlightAddress | null {
@@ -2762,12 +2769,6 @@ struct HostListPage {
       }
     }
     return selected;
-  }
-
-  private moonlightAddressFamily(value: string): MoonlightAddressFamily {
-    const host: string = value.trim();
-    if (host.indexOf(':') >= 0) { return 'ipv6'; }
-    return /^\d{1,3}(\.\d{1,3}){3}$/.test(host) ? 'ipv4' : 'hostname';
   }
 
   private protectedMoonlightCardValue(host: MoonlightHost, visibleValue: string): string {
@@ -2840,7 +2841,8 @@ struct HostListPage {
     const preferred: MoonlightAddress | null = this.moonlightPreferredAddress(current.host);
     this.moonlightSheetHostId = hostId;
     this.moonlightEditName = current.host.displayName;
-    this.moonlightEditAddress = preferred === null ? '' : preferred.host;
+    this.moonlightEditAddress = preferred === null ? '' : preferred.host +
+      (preferred.scope === undefined ? '' : '%' + preferred.scope);
     this.moonlightEditPortText = preferred === null ? '47989' : preferred.port.toString();
     this.moonlightEditHttpsPortText = (current.host.httpsPort === undefined
       ? MOONLIGHT_DEFAULT_HTTPS_PORT : current.host.httpsPort).toString();
@@ -2889,11 +2891,13 @@ struct HostListPage {
     }
     const current: MoonlightHost = view.host;
     const previousPreferred: MoonlightAddress | null = this.moonlightPreferredAddress(current);
-    const preferred: MoonlightAddress = {
-      host: this.moonlightEditAddress.trim(),
-      family: this.moonlightAddressFamily(this.moonlightEditAddress),
-      port: port
-    };
+    const parsedAddress = parseMoonlightHostAddAddress(
+      this.moonlightEditAddress.trim(), port.toString());
+    if (!parsedAddress.ok) {
+      this.moonlightEditError = parsedAddress.errorText;
+      return;
+    }
+    const preferred: MoonlightAddress = parsedAddress.address;
     const addresses: MoonlightAddress[] = [];
     let replaced: boolean = false;
     for (let index: number = 0; index < current.addresses.length; index++) {
@@ -2903,7 +2907,10 @@ struct HostListPage {
         addresses.push(preferred);
         replaced = true;
       } else {
-        addresses.push({ host: address.host, family: address.family, port: address.port });
+        addresses.push({
+          host: address.host, family: address.family, port: address.port,
+          scope: address.scope
+        });
       }
     }
     if (!replaced) { addresses.push(preferred); }
@@ -3221,8 +3228,10 @@ struct HostListPage {
         !this.moonlightDiscoveryRunning) {
       return;
     }
+    const scopedHost: string = candidate.host +
+      (candidate.scope === '' ? '' : '%' + candidate.scope);
     const hostText: string = candidate.family === 'ipv6' ?
-      '[' + candidate.host + ']' : candidate.host;
+      '[' + scopedHost + ']' : scopedHost;
     const parsed = parseMoonlightHostAddAddress(hostText, candidate.port.toString());
     if (!parsed.ok) { return; }
     const serverUuid: string = candidate.serverUuid.trim() !== '' ?
@@ -3231,6 +3240,7 @@ struct HostListPage {
       serverUuid: serverUuid,
       displayName: candidate.serviceName.trim() || parsed.address.host,
       address: parsed.address,
+      addresses: [parsed.address],
       paired: false,
       reachable: true,
       lastSeenAt: Date.now()
@@ -3239,13 +3249,19 @@ struct HostListPage {
     let replaceIndex: number = -1;
     for (let index = 0; index < next.length; index++) {
       if (next[index].serverUuid === serverUuid ||
-          next[index].address.host === parsed.address.host &&
-          next[index].address.port === parsed.address.port) {
+          moonlightAddressKey(next[index].address) === moonlightAddressKey(parsed.address)) {
         replaceIndex = index;
         break;
       }
     }
     if (replaceIndex >= 0) {
+      const existing: MoonlightHostAddCandidate = next[replaceIndex];
+      const source: MoonlightAddress[] = existing.addresses === undefined ?
+        [parsed.address] : existing.addresses.concat([parsed.address]);
+      const addresses: MoonlightAddress[] = moonlightMergeCandidateAddresses(
+        existing.address, source);
+      nextCandidate.address = existing.address;
+      nextCandidate.addresses = addresses;
       next[replaceIndex] = nextCandidate;
     } else if (next.length < 32) {
       next.push(nextCandidate);
@@ -3419,8 +3435,6 @@ struct HostListPage {
         pinnedTrustAvailable && !/^[0-9a-f]{64}$/.test(fingerprint)) {
       return null;
     }
-    const family: 'unspecified' | 'ipv4' | 'ipv6' = verification.address.family === 'ipv4' ?
-      'ipv4' : verification.address.family === 'ipv6' ? 'ipv6' : 'unspecified';
     const context: MoonlightHostContext = {
       lease: lease,
       ownerScopeFingerprint: moonlightOwnerScopeFingerprint(lease.ownerScopeId),
@@ -3430,8 +3444,9 @@ struct HostListPage {
       serverUuid: verification.serverUuid,
       installationId: moonlightInstallationId(lease.storeIdentity),
       endpoint: {
-        serverName: verification.serverName.trim() || verification.address.host,
-        addresses: [{ value: verification.address.host, family: family }],
+        serverName: moonlightHostAddServerIdentity(verification.address),
+        addresses: moonlightHostAddNativeAddresses(
+          verification.address, verification.candidateAddresses),
         httpPort: verification.address.port,
         httpsPort: verification.httpsPort === undefined ? MOONLIGHT_DEFAULT_HTTPS_PORT :
           verification.httpsPort,
@@ -3536,23 +3551,12 @@ struct HostListPage {
         errorText: '主机未完成配对（' + result.code + '）'
       };
     }
-    this.moonlightActiveVerification = {
-      serverUuid: verification.serverUuid,
-      serverName: verification.serverName,
-      hostType: verification.hostType,
-      version: verification.version,
-      address: {
-        host: verification.address.host,
-        family: verification.address.family,
-        port: verification.address.port
-      },
-      httpsPort: verification.httpsPort,
-      paired: true,
-      fingerprintSha256: fingerprint,
-      certificateChanged: false,
-      udpVerified: verification.udpVerified,
-      duplicateHostId: verification.duplicateHostId
-    };
+    const pairedVerification: MoonlightHostAddVerification =
+      cloneMoonlightHostAddVerification(verification);
+    pairedVerification.paired = true;
+    pairedVerification.fingerprintSha256 = fingerprint;
+    pairedVerification.certificateChanged = false;
+    this.moonlightActiveVerification = pairedVerification;
     return {
       paired: true,
       certificateSha256: fingerprint,
@@ -3563,6 +3567,7 @@ struct HostListPage {
   private async moonlightVerifyHost(
     address: MoonlightAddress,
     selectedServerUuid: string,
+    candidateAddresses: MoonlightAddress[],
     key: MoonlightHostAddOperationKey
   ): Promise<MoonlightHostAddVerification | null> {
     if (!this.pageActive || key.ownerToken !== this.moonlightAddOwnerToken ||
@@ -3597,20 +3602,24 @@ struct HostListPage {
     if (requestedFence === null) { return null; }
     this.clearMoonlightVerificationState();
     this.moonlightPendingVerificationFence = requestedFence;
-    const verification: MoonlightHostAddVerification | null =
+    const probedVerification: MoonlightHostAddVerification | null =
       await this.moonlightLanProbeService.verify(address, verificationUuidHint);
-    if (verification === null || !this.pageActive ||
+    if (probedVerification === null || !this.pageActive ||
         !store.isLeaseCurrent(capturedLease) ||
         key.ownerToken !== this.moonlightAddOwnerToken ||
         !moonlightHostOperationFenceEquals(
           this.moonlightPendingVerificationFence, requestedFence) ||
-        !moonlightVerificationMatchesFence(verification, requestedFence)) {
+        !moonlightVerificationMatchesFence(probedVerification, requestedFence)) {
       if (moonlightHostOperationFenceEquals(
         this.moonlightPendingVerificationFence, requestedFence)) {
         this.moonlightPendingVerificationFence = null;
       }
       return null;
     }
+    const verification: MoonlightHostAddVerification =
+      cloneMoonlightHostAddVerification(probedVerification);
+    verification.candidateAddresses = moonlightMergeCandidateAddresses(
+      verification.address, candidateAddresses);
     const activeFence: MoonlightHostOperationFence | null =
       createMoonlightHostOperationFence(
         key.ownerToken, key.generation,
@@ -18202,9 +18211,11 @@ struct HostListPage {
         onVerify: (
           address: MoonlightAddress,
           selectedServerUuid: string,
+          candidateAddresses: MoonlightAddress[],
           key: MoonlightHostAddOperationKey
         ): Promise<MoonlightHostAddVerification | null> =>
-          this.moonlightVerifyHost(address, selectedServerUuid, key),
+          this.moonlightVerifyHost(
+            address, selectedServerUuid, candidateAddresses, key),
         onPreparePairing: (key: MoonlightHostAddOperationKey):
           Promise<MoonlightPairingPreparation> => this.moonlightPairingPreparation(key),
         onAwaitPairing: (

@@ -70,12 +70,25 @@ export default function moonlightModelsTest(): void {
       host.addresses = [expanded];
       host.preferredAddressKey = expanded.family + '|' +
         expanded.host.toLowerCase() + '|' + expanded.port.toString();
+      expect(moonlightHostIsValid(host)).assertFalse();
+      host.addresses = [compact];
+      host.preferredAddressKey = moonlightAddressKey(compact);
       expect(moonlightHostIsValid(host)).assertTrue();
-      expanded.family = 'hostname';
+      compact.family = 'hostname';
       expect(moonlightHostIsValid(host)).assertFalse();
-      expanded.family = 'ipv6';
-      expanded.host = 'fe80::20%wlan0';
+      compact.family = 'ipv6';
+      compact.host = 'fe80::20%wlan0';
       expect(moonlightHostIsValid(host)).assertFalse();
+      compact.host = 'fe80::20';
+      compact.scope = 'wlan0';
+      host.preferredAddressKey = moonlightAddressKey(compact);
+      expect(moonlightHostIsValid(host)).assertTrue();
+      expect(canonicalMoonlightAddress(compact).scope).assertEqual('wlan0');
+      const differentlyCasedScope: MoonlightAddress = {
+        host: 'fe80::20', family: 'ipv6', port: 47989, scope: 'WLAN0'
+      };
+      expect(moonlightAddressKey(compact) ===
+        moonlightAddressKey(differentlyCasedScope)).assertFalse();
     });
 
     it('maps_legacy_input_records_without_rejecting_old_local_or_cloud_data', 0,

@@ -10,7 +10,7 @@ import {
   rejectMoonlightCatalogLaunchHandoff
 } from './MoonlightAppCatalogPage';
 import { MoonlightSettingsSurface } from './MoonlightSettingsPage';
-import { MoonlightHost } from '../model/MoonlightModels';
+import { MoonlightAddress, MoonlightHost } from '../model/MoonlightModels';
 import { CloudStore } from '../services/CloudStore';
 import {
   AccountSessionLease,
@@ -188,8 +188,11 @@ struct MoonlightHostDetailPage {
 
   private addressLabel(): string {
     if (this.host === null || this.host.addresses.length === 0) { return '未保存地址'; }
-    const first = this.host.addresses[0];
-    return first.host + ':' + first.port.toString();
+    const first: MoonlightAddress = this.host.addresses[0];
+    const scope: string = first.scope === undefined ? '' : first.scope;
+    const scopedHost: string = first.host + (scope === '' ? '' : '%' + scope);
+    return (first.family === 'ipv6' ? '[' + scopedHost + ']' : scopedHost) +
+      ':' + first.port.toString();
   }
 
   private lastUpdateLabel(): string {

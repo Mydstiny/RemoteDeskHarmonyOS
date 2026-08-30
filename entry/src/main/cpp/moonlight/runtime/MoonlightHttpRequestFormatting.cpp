@@ -1,6 +1,6 @@
 #include "moonlight/runtime/MoonlightHttpRequestFormatting.h"
 
-#include <arpa/inet.h>
+#include "common/endpoint_address_policy.h"
 
 #include <algorithm>
 
@@ -49,38 +49,54 @@ bool buildMoonlightHttp11GetRequest(std::string_view authorityHost,
         return false;
     }
 
-    const bool ipv6Literal = authorityHost.find(':') != std::string_view::npos;
-    const std::string portText = std::to_string(port);
-    output.reserve(4U + target.size() + 17U + authorityHost.size() + portText.size() +
-                   (ipv6Literal ? 2U : 0U) + 63U);
+    const auto parsed = remotedesk::endpoint::ParseFields(
+        std::string(authorityHost), port, remotedesk::endpoint::ParseMode::Runtime);
+    if (!parsed.ok) { return false; }
+    const std::string authority =
+        remotedesk::endpoint::FormatUriAuthority(parsed.endpoint);
+    output.reserve(4U + target.size() + 17U + authority.size() + 63U);
     output.append("GET ");
     output.append(target.data(), target.size());
     output.append(" HTTP/1.1\r\nHost: ");
-    if (ipv6Literal) {
-        output.push_back('[');
-    }
-    output.append(authorityHost.data(), authorityHost.size());
-    if (ipv6Literal) {
-        output.push_back(']');
-    }
-    output.push_back(':');
-    output.append(portText);
+    output.append(authority);
     output.append("\r\nAccept: application/xml, */*\r\nConnection: close\r\n\r\n");
     return true;
 }
 
 std::optional<std::string> moonlightTlsServerName(
-    std::string_view connectAddress) {
-    if (!safeAuthorityHost(connectAddress) ||
-        connectAddress.find(':') != std::string_view::npos) {
+    std::string_view serverName) {
+    if (!safeAuthorityHost(serverName)) {
         return std::nullopt;
     }
-    const std::string value(connectAddress);
-    in_addr ipv4 {};
-    if (::inet_pton(AF_INET, value.c_str(), &ipv4) == 1) {
+    const auto parsed = remotedesk::endpoint::ParseServerIdentity(
+        std::string(serverName));
+    if (!parsed.ok || parsed.identity.kind() !=
+        remotedesk::endpoint::ServerIdentityKind::Dns) {
         return std::nullopt;
     }
-    return value;
+    return parsed.identity.canonicalName();
+}
+
+std::string moonlightHttpAuthorityHost(std::string_view serverName,
+                                       std::string_view connectAddress) {
+    if (!safeAuthorityHost(serverName) || !safeAuthorityHost(connectAddress)) {
+        return {};
+    }
+    const auto identity = remotedesk::endpoint::ParseServerIdentity(
+        std::string(serverName));
+    if (!identity.ok || identity.identity.kind() ==
+        remotedesk::endpoint::ServerIdentityKind::None) {
+        return {};
+    }
+    if (identity.identity.kind() == remotedesk::endpoint::ServerIdentityKind::Ip) {
+        const auto candidate = remotedesk::endpoint::ParseHost(
+            std::string(connectAddress), remotedesk::endpoint::ParseMode::Runtime);
+        if (candidate.ok && candidate.endpoint.canonicalHost() ==
+            identity.identity.canonicalName()) {
+            return std::string(connectAddress);
+        }
+    }
+    return identity.identity.canonicalName();
 }
 
 } // namespace remotedesk::moonlight

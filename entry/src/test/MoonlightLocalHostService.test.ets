@@ -9,7 +9,8 @@ import { AccountSessionLease, accountSessionLeaseEquals, cloneAccountSessionLeas
   '../main/ets/services/AccountScopePolicy';
 import {
   MoonlightHostAddOperationKey,
-  MoonlightHostAddState
+  MoonlightHostAddState,
+  MoonlightHostAddVerification
 } from '../main/ets/services/MoonlightHostAddFlowPolicy';
 import {
   MoonlightRepositoryCommit,
@@ -205,6 +206,31 @@ export default function moonlightLocalHostServiceTest(): void {
         (hostRecord as MoonlightRecord).payload) as Record<string, Object>;
       expect(payload['httpsPort']).assertEqual(48084);
     });
+
+    it('persists_dual_stack_candidates_and_keeps_interface_scope_local', 0,
+      (): void => {
+        const port = new MemoryMoonlightHostPort();
+        const state: MoonlightHostAddState = readyAddState();
+        (state.verification as MoonlightHostAddVerification).candidateAddresses = [
+          { host: '192.0.2.20', family: 'ipv4', port: 47989 },
+          { host: 'fe80::20', family: 'ipv6', port: 47989, scope: 'wlan0' }
+        ];
+        state.activeOperation = 'save';
+        const result = new MoonlightLocalHostService(port).save(
+          state, saveKey(state), 1000);
+        expect(result.ok).assertTrue();
+        let hostRecord: MoonlightRecord | null = null;
+        port.rows.forEach((value: MoonlightRecord): void => {
+          if (value.recordType === 'host') { hostRecord = value; }
+        });
+        const host: MoonlightHost | null = moonlightHostFromRecord(
+          hostRecord as MoonlightRecord);
+        expect(host !== null).assertTrue();
+        expect((host as MoonlightHost).addresses.length).assertEqual(2);
+        expect((host as MoonlightHost).addresses[1].family).assertEqual('ipv6');
+        expect((host as MoonlightHost).addresses[1].scope).assertEqual('wlan0');
+        expect(port.localOnly.get('owner-a:' + result.hostId) as number).assertEqual(1);
+      });
 
     it('persists_the_same_local_host_graph_without_an_account_login', 0,
       (): void => {

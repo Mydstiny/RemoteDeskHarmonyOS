@@ -229,6 +229,25 @@ export default function moonlightLanDiscoveryServiceTest(): void {
         service.stop();
       });
 
+    it('tombstones_a_service_after_permanent_resolve_failure', 0,
+      async (): Promise<void> => {
+        const port: FakeMoonlightMdnsPort = new FakeMoonlightMdnsPort();
+        const service: MoonlightLanDiscoveryService = new MoonlightLanDiscoveryService(
+          undefined as common.Context, port, { maxResults: 2 });
+        service.start('owner-a', 6, (_candidate: MoonlightLanDiscoveryCandidate): void => {});
+        const discovery: FakeMoonlightMdnsDiscovery = port.discoveries[0];
+
+        discovery.emitFound(serviceInfo('always-fails'));
+        port.rejectAt(0);
+        await settleMicrotasks();
+        port.rejectAt(1);
+        await settleMicrotasks();
+        discovery.emitFound(serviceInfo('always-fails'));
+
+        expect(port.requests.length).assertEqual(2);
+        service.stop();
+      });
+
     it('deduplicates_service_instances_and_enforces_a_result_bound', 0,
       async (): Promise<void> => {
         const port: FakeMoonlightMdnsPort = new FakeMoonlightMdnsPort();
@@ -245,12 +264,15 @@ export default function moonlightLanDiscoveryServiceTest(): void {
         discovery.emitFound(serviceInfo('two'));
         discovery.emitFound(serviceInfo('three'));
         expect(port.requests.length).assertEqual(2);
-        expect(service.acceptedResultCount()).assertEqual(2);
+        expect(service.acceptedResultCount()).assertEqual(0);
 
         port.resolveAt(0, resolvedInfo('one', '192.168.1.20', 47989, 'same-server'));
         port.resolveAt(1, resolvedInfo('two', '192.168.1.20', 47989, 'same-server'));
         await settleMicrotasks();
         expect(results.length).assertEqual(1);
+        expect(service.acceptedResultCount()).assertEqual(1);
+        discovery.emitFound(serviceInfo('one'));
+        expect(port.requests.length).assertEqual(2);
         service.stop();
       });
 
@@ -319,14 +341,20 @@ export default function moonlightLanDiscoveryServiceTest(): void {
       const mismatched: mdns.LocalServiceInfo = resolvedInfo('Other PC');
       expect(resolveMoonlightLanCandidate(firstFence, discovered, mismatched) === null).assertTrue();
 
-      const resolved: mdns.LocalServiceInfo = resolvedInfo('Gaming PC', 'fe80::20', 47989);
+      const resolved: mdns.LocalServiceInfo = resolvedInfo(
+        'Gaming PC', 'fe80::20%wlan0', 47989);
       const candidate: MoonlightLanDiscoveryCandidate | null =
         resolveMoonlightLanCandidate(firstFence, discovered, resolved);
       expect(candidate === null).assertFalse();
       if (candidate !== null) {
         expect(candidate.family).assertEqual('ipv6');
+        expect(candidate.host).assertEqual('fe80::20');
+        expect(candidate.scope).assertEqual('wlan0');
+        expect(candidate.interfaceName).assertEqual('wlan0');
         expect(candidate.generation).assertEqual(1);
       }
+      expect(resolveMoonlightLanCandidate(firstFence, discovered,
+        resolvedInfo('Gaming PC', 'fe80::20', 47989)) === null).assertTrue();
     });
 
     it('requires_mdns_and_serverinfo_uuid_to_match_without_truncation', 0, (): void => {

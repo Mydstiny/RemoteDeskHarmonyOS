@@ -564,6 +564,32 @@ export function moonlightRecordBusinessPayload(
   return values === null ? null : businessPayload(values);
 }
 
+/** Link-local interface scopes are device routing state and never portable. */
+export function moonlightRecordContainsDevicePrivateEndpoint(
+  record: MoonlightRecord
+): boolean {
+  if (record.recordType !== 'host' || record.deletedAt > 0) { return false; }
+  const values: Record<string, Object> | null = payloadObject(record.payload);
+  if (values === null || !Array.isArray(values['addresses'])) { return false; }
+  const addresses: MoonlightAddress[] = values['addresses'] as MoonlightAddress[];
+  for (let index = 0; index < addresses.length; index++) {
+    const address: MoonlightAddress = addresses[index];
+    if (address === undefined || address === null || typeof address !== 'object') {
+      continue;
+    }
+    // Treat an embedded zone as device-private even though the typed model
+    // rejects it. This closes the promotion/filtering gap for malformed legacy
+    // or tampered local rows before any cloud serializer can see the value.
+    if (typeof address.host === 'string' && address.host.indexOf('%') >= 0) {
+      return true;
+    }
+    if (address.scope !== undefined && address.scope !== '') {
+      return true;
+    }
+  }
+  return false;
+}
+
 function settingsPayloadIsValid(values: Record<string, Object>): boolean {
   if (!keysAreAllowed(values, [
     'schemaVersion', 'video', 'audio', 'input', 'network', 'background', 'security',

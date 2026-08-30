@@ -14,6 +14,9 @@ import {
   MoonlightNativeLaunchConfiguration
 } from './MoonlightHostService';
 import {
+  moonlightHostAddNativeAddresses
+} from './MoonlightHostAddFlowPolicy';
+import {
   moonlightInstallationId,
   moonlightOwnerScopeFingerprint
 } from './MoonlightRuntimeSupport';
@@ -74,8 +77,10 @@ export function moonlightSelectedHostAddress(host: MoonlightHost,
   settings: MoonlightSettings): string {
   const selected: MoonlightAddress | null = moonlightSelectedAddress(host, settings);
   if (selected === null) { return ''; }
+  const scope: string = selected.scope === undefined ? '' : selected.scope;
+  const scopedHost: string = selected.host + (scope === '' ? '' : '%' + scope);
   const address: string = selected.family === 'ipv6'
-    ? '[' + selected.host + ']' : selected.host;
+    ? '[' + scopedHost + ']' : scopedHost;
   return address + ':' + selected.port.toString();
 }
 
@@ -104,11 +109,7 @@ export function moonlightRuntimeContext(host: MoonlightHost, lease: AccountSessi
       // to the selected canonical DNS/IP endpoint until a separately verified
       // advertised server name is persisted.
       serverName: selected.host,
-      addresses: [{
-        value: selected.host,
-        family: selected.family === 'ipv4' ? 'ipv4' :
-          selected.family === 'ipv6' ? 'ipv6' : 'unspecified'
-      }],
+      addresses: moonlightHostAddNativeAddresses(selected, host.addresses),
       httpPort: selected.port,
       httpsPort: host.httpsPort === undefined ? MOONLIGHT_DEFAULT_HTTPS_PORT :
         host.httpsPort,

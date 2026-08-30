@@ -86,6 +86,9 @@ bool endpointValid(const MoonlightBridgeRequest& request) noexcept {
     }
     for (const auto& address : endpoint.addresses) {
         if (!boundedText(address.value, kMaxAddressBytes) ||
+            (!address.scope.empty() &&
+             (!boundedText(address.scope, 32U) ||
+              address.family != MoonlightHostAddressFamily::Ipv6)) ||
             (address.family != MoonlightHostAddressFamily::Unspecified &&
              address.family != MoonlightHostAddressFamily::Ipv4 &&
              address.family != MoonlightHostAddressFamily::Ipv6)) {
