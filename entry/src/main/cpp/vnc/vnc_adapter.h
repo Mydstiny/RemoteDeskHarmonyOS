@@ -16,8 +16,10 @@
 
 #include "extensions/protocol_adapter.h"
 #include "render/video_perf_counters.h"
+#include "vnc_network_recovery_policy.h"
 #include "vnc_rfb_engine.h"
 #include <atomic>
+#include <chrono>
 #include <functional>
 #include <mutex>
 #include <memory>
@@ -33,6 +35,8 @@ public:
     int         connect(const ConnectionConfig& cfg) override;
     void        disconnect() override;
     ConnectionState getState() override;
+    void        onNetworkChanged(bool available,
+                                 uint64_t networkGeneration) override;
     void        setSessionIdentity(uint64_t sessionId) override;
     void        setSessionOwner(const Render::DecoderSessionIdentity& owner);
     RemoteCursorSnapshot getRemoteCursorSnapshot(bool includePixels) override;
@@ -55,6 +59,24 @@ public:
         const VideoFrame& frame, const Render::DecoderSessionIdentity& capturedOwner);
     bool        StartSelfStoppingEngineForTesting();
     void        SetEngineStartHookForTesting(std::function<int(VncRfbEngine&)> hook);
+    void        SetBeforeNetworkRetirementWaitHookForTesting(
+        std::function<void()> hook);
+    void        SetAfterNetworkDetachHookForTesting(
+        std::function<void()> hook);
+    bool        WaitForNetworkRecoveryActiveForTesting(
+        std::chrono::milliseconds timeout);
+    bool        WaitForNetworkRecoveryIdleForTesting(
+        std::chrono::milliseconds timeout);
+    size_t      PendingNetworkRecoveryJobsForTesting();
+    size_t      MaxPendingNetworkRecoveryJobsForTesting();
+    size_t      PendingStateCallbacksForTesting();
+    size_t      MaxPendingStateCallbacksForTesting();
+    void        SetBeforeStateCarrierOperationLockHookForTesting(
+        std::function<void()> hook);
+    bool        WaitForStateCallbacksIdleForTesting(
+        std::chrono::milliseconds timeout);
+    bool        IsNetworkRecoveryWorkerThreadForTesting() const;
+    bool        RetainsReconnectCredentialMaterialForTesting();
     void        InvokeProtocolCursorCallbackForTesting(
         const VncCursorProtocol::DecodedCursor& cursor);
     void        UpdatePredictedCursorPositionForTesting(int x, int y);
@@ -68,9 +90,28 @@ public:
 
 private:
     struct StartingSlot;
-    std::shared_ptr<VncRfbEngine> detachEngineLocked(ConnectionStateCallback& callback);
+    struct NetworkRecoveryJob;
+    int connectInternal(const ConnectionConfig& cfg, uint64_t expectedToken,
+                        uint64_t expectedNetworkGeneration);
+    void disconnectInternal(bool publishDisconnected);
+    std::shared_ptr<VncRfbEngine> detachEngineLocked(
+        ConnectionStateCallback* callback,
+        ConnectionState detachedState = ConnectionState::DISCONNECTED);
     std::shared_ptr<VncRfbEngine> detachStartingEngineLocked();
     bool acceptsStartingSlot(const std::shared_ptr<StartingSlot>& slot);
+    bool enqueueNetworkRecovery(NetworkRecoveryJob& job);
+    bool waitForNetworkRetirementWithin(std::chrono::milliseconds timeout);
+    bool isNetworkRecoveryWorkerThread() const;
+    bool retireEnginesBeforeReplacement(
+        std::shared_ptr<VncRfbEngine>& engine,
+        std::shared_ptr<VncRfbEngine>& startingEngine);
+    void runNetworkRecoveryWorker();
+    void stopNetworkRecoveryWorker();
+    void publishNetworkStateIfCurrent(
+        uint64_t token, ConnectionState state, const std::string& message,
+        bool requireAvailable = false);
+    void failNetworkRecoveryIfCurrent(uint64_t token,
+                                      const std::string& message);
     void dispatchVideoFrame(const VideoFrame& frame,
                             const Render::DecoderSessionIdentity& capturedOwner);
 

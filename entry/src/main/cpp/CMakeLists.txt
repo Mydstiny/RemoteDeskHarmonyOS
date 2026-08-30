@@ -393,6 +393,8 @@ if(RDP_BUILD_TESTS)
         test/vnc_cursor_protocol_test.cpp
         test/vnc_transport_policy_test.cpp
         test/vnc_certificate_probe_test.cpp
+        test/vnc_network_recovery_policy_test.cpp
+        test/vnc_adapter_network_recovery_test.cpp
         common/safe_log.cpp
         common/endpoint_address_policy.cpp
         common/happy_eyeballs_connector.cpp
@@ -453,6 +455,7 @@ if(RDP_BUILD_TESTS)
         vnc/vnc_certificate_probe.cpp
         vnc/vnc_transport.cpp
         vnc/vnc_rfb_engine.cpp
+        vnc/vnc_adapter.cpp
         test/vnc_keymap_test.cpp
         test/vnc_rfb_protocol_test.cpp
     )

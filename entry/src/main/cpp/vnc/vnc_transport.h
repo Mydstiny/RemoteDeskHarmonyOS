@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <atomic>
 #include <chrono>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -33,6 +34,14 @@ struct VncTransportConfig {
     // Shared with the owning connection attempt so close/cancel can produce a
     // stable certificate cancellation code instead of a generic I/O error.
     std::shared_ptr<std::atomic_bool> cancelled;
+    // Non-zero only for a live session attempt. The process network fence
+    // invalidates DNS, candidate racing, TLS and established I/O from an old
+    // default-network generation. Standalone certificate probes keep zero
+    // here and use their existing request-scoped cancellation owner.
+    uint64_t networkGeneration = 0;
+#if defined(RDP_TESTS_ONLY)
+    std::function<void()> afterConnectRestoreForTesting;
+#endif
 };
 
 class VncTransport {
@@ -48,11 +57,18 @@ public:
     bool writeAll(const uint8_t* source, size_t size, std::string& error);
     void close();
     bool isOpen() const;
+#if defined(RDP_NATIVE_CALLBACK_TESTING)
+    // Takes ownership of one connected stream descriptor so established read
+    // and write cancellation can exercise the production I/O loops.
+    void adoptConnectedSocketForTesting(int socketFd,
+                                        uint64_t networkGeneration);
+#endif
 
 private:
     bool connectTcp(const std::string& host, int port,
                     std::chrono::steady_clock::time_point deadline,
                     const std::shared_ptr<std::atomic_bool>& cancelled,
+                    uint64_t networkGeneration,
                     std::string& error);
     bool enableTls(const VncTransportConfig& config,
                    std::chrono::steady_clock::time_point deadline,
@@ -78,6 +94,10 @@ private:
     void* sslContext_ = nullptr;
     void* ssl_ = nullptr;
     std::shared_ptr<std::atomic_bool> cancelled_;
+    uint64_t networkGeneration_ = 0;
+#if defined(RDP_TESTS_ONLY)
+    std::function<void()> afterConnectRestoreForTesting_;
+#endif
     std::mutex writeMutex_;
     std::vector<uint8_t> websocketIncoming_;
     size_t websocketIncomingOffset_ = 0;

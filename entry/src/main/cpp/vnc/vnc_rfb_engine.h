@@ -28,7 +28,8 @@ public:
         std::function<void(const VncCursorProtocol::DecodedCursor&)>;
 
     VncRfbEngine(const ConnectionConfig& config, VideoFrameCallback frameCallback,
-                 StateCallback stateCallback, CursorCallback cursorCallback);
+                 StateCallback stateCallback, CursorCallback cursorCallback,
+                 uint64_t networkGeneration = 0);
     ~VncRfbEngine();
 
     VncRfbEngine(const VncRfbEngine&) = delete;
@@ -69,6 +70,8 @@ public:
     bool invokeFrameCallbackForTesting(const VideoFrame& frame);
     int startWorkerForTesting(std::function<void()> callback);
     void setStopObserverForTesting(std::function<void()> observer);
+    void emitStateForTesting(ConnectionState state,
+                             const std::string& message);
     static uint32_t keySymForHarmonyCodeForTesting(uint32_t keyCode);
 #endif
 
@@ -110,6 +113,8 @@ private:
     static uint32_t keySymForHarmonyCode(uint32_t keyCode);
     static uint8_t reverseBits(uint8_t value);
     static bool isTimeout(const std::string& error);
+    bool networkGenerationInvalidated() const;
+    void releaseCallbacks();
     void setState(ConnectionState state, const std::string& message);
     void clearSensitiveConfig();
 
@@ -123,6 +128,7 @@ private:
     std::atomic<bool> clipboardReady_ {false};
     std::atomic<ConnectionState> state_ {ConnectionState::DISCONNECTED};
     std::atomic<bool> stopRequested_ {false};
+    uint64_t networkGeneration_ = 0;
 #if defined(RDP_NATIVE_CALLBACK_TESTING)
     std::function<void()> stopObserver_;
 #endif

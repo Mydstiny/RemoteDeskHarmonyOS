@@ -11,6 +11,7 @@
 #include "vnc_rfb_protocol.h"
 #include "vnc_transport_policy.h"
 
+#include "common/network_generation_fence.h"
 #include "common/safe_log.h"
 #if defined(VNC_DIAGNOSTICS) && VNC_DIAGNOSTICS
 #define VNC_DIAGNOSTICS_ENABLED 1
@@ -212,10 +213,14 @@ VncDeferredJoiner& deferredJoiner() {
 } // namespace
 
 VncRfbEngine::VncRfbEngine(const ConnectionConfig& config, VideoFrameCallback frameCallback,
-                           StateCallback stateCallback, CursorCallback cursorCallback)
+                           StateCallback stateCallback, CursorCallback cursorCallback,
+                           uint64_t networkGeneration)
     : config_(config), frameCallback_(std::move(frameCallback)),
       stateCallback_(std::move(stateCallback)),
-      cursorCallback_(std::move(cursorCallback)) {}
+      cursorCallback_(std::move(cursorCallback)),
+      networkGeneration_(networkGeneration == 0
+          ? remotedesk::net::ProcessNetworkGenerationFence().snapshot().generation
+          : networkGeneration) {}
 
 VncRfbEngine::~VncRfbEngine() {
     if (worker_.joinable() && !stopWithin(std::chrono::milliseconds(500))) {
@@ -249,6 +254,7 @@ int VncRfbEngine::start() {
         }
         workerStateCv_.notify_all();
         clearSensitiveConfig();
+        releaseCallbacks();
         return -12;
     }
     return 0;
@@ -350,6 +356,7 @@ bool VncRfbEngine::stopWithin(std::chrono::milliseconds timeout) {
     if (!worker_.joinable()) {
         clearSensitiveConfig();
         setState(ConnectionState::DISCONNECTED, "VNC 已断开");
+        releaseCallbacks();
         return true;
     }
     std::unique_lock<std::mutex> lock(workerStateMutex_);
@@ -362,6 +369,7 @@ bool VncRfbEngine::stopWithin(std::chrono::milliseconds timeout) {
     }
     clearSensitiveConfig();
     setState(ConnectionState::DISCONNECTED, "VNC 已断开");
+    releaseCallbacks();
     return true;
 }
 
@@ -407,8 +415,18 @@ void VncRfbEngine::run() {
             engine->workerStateCv_.notify_all();
         }
     } workerDone {this};
+    struct CallbackRelease {
+        VncRfbEngine* engine;
+        ~CallbackRelease() { engine->releaseCallbacks(); }
+    } callbackRelease {this};
     setState(ConnectionState::CONNECTING, "VNC 正在连接");
     std::string error;
+    if (networkGenerationInvalidated()) {
+        setState(ConnectionState::RECONNECTING,
+                 "VNC 网络已变化，等待重新解析端点");
+        clearSensitiveConfig();
+        return;
+    }
     if (config_.vncSecurityPolicy.empty()) config_.vncSecurityPolicy = "secure_only";
     if (config_.vncSecurityPolicy == "secure_only" && !config_.vncTls) {
         setState(ConnectionState::ERROR, "VNC 安全策略要求 TLS");
@@ -443,6 +461,7 @@ void VncRfbEngine::run() {
         config_.vncExpectedCertificateFingerprintSha256;
     transportConfig.cancelled = std::shared_ptr<std::atomic_bool>(
         &stopRequested_, [](std::atomic_bool*) {});
+    transportConfig.networkGeneration = networkGeneration_;
     if (config_.vncTransport == "ultravnc_repeater") {
         if (!config_.vncGatewayHost.empty()) transportConfig.host = config_.vncGatewayHost;
         if (config_.vncGatewayPort > 0) transportConfig.port = config_.vncGatewayPort;
@@ -458,6 +477,9 @@ void VncRfbEngine::run() {
     if (!transport_.connect(transportConfig, error)) {
         if (stopRequested_.load(std::memory_order_acquire)) {
             setState(ConnectionState::DISCONNECTED, "VNC 连接已取消");
+        } else if (networkGenerationInvalidated()) {
+            setState(ConnectionState::RECONNECTING,
+                     "VNC 网络已变化，等待重新解析端点");
         } else {
             setState(ConnectionState::ERROR, "VNC transport 连接失败: " + error);
         }
@@ -468,6 +490,9 @@ void VncRfbEngine::run() {
         transport_.close();
         if (stopRequested_.load(std::memory_order_acquire)) {
             setState(ConnectionState::DISCONNECTED, "VNC 连接已取消");
+        } else if (networkGenerationInvalidated()) {
+            setState(ConnectionState::RECONNECTING,
+                     "VNC 网络已变化，等待重新解析端点");
         } else {
             setState(ConnectionState::ERROR, "VNC RFB 握手失败: " + error);
         }
@@ -483,22 +508,48 @@ void VncRfbEngine::run() {
     secureClear(config_.password);
     setState(ConnectionState::CONNECTED, "VNC 已连接");
     if (!sendFramebufferUpdateRequest(false, error)) {
-        setState(ConnectionState::ERROR, "VNC 首帧请求失败: " + error);
+        if (networkGenerationInvalidated()) {
+            setState(ConnectionState::RECONNECTING,
+                     "VNC 网络已变化，等待重新解析端点");
+        } else {
+            setState(ConnectionState::ERROR, "VNC 首帧请求失败: " + error);
+        }
         transport_.close();
         clearSensitiveConfig();
         return;
     }
     VNC_DIAG_INFO("[VNC-DIAG] initial framebuffer update request sent incremental=0 bytes=10");
-    if (!receiveLoop(error) && !stopRequested_.load(std::memory_order_acquire)) {
+    if (!receiveLoop(error) && !stopRequested_.load(std::memory_order_acquire) &&
+        !networkGenerationInvalidated()) {
         setState(ConnectionState::ERROR, "VNC 会话已结束: " + error);
     }
     transport_.close();
     if (stopRequested_.load(std::memory_order_acquire)) {
         setState(ConnectionState::DISCONNECTED, "VNC 连接已取消");
+    } else if (networkGenerationInvalidated()) {
+        setState(ConnectionState::RECONNECTING,
+                 "VNC 网络已变化，等待重新解析端点");
     } else if (state() != ConnectionState::ERROR) {
         setState(ConnectionState::DISCONNECTED, "VNC 服务器已断开");
     }
     clearSensitiveConfig();
+}
+
+bool VncRfbEngine::networkGenerationInvalidated() const {
+    return networkGeneration_ == 0 ||
+        remotedesk::net::ProcessNetworkGenerationFence().shouldCancel(
+            remotedesk::net::NetworkGenerationSnapshot {
+                networkGeneration_, true});
+}
+
+void VncRfbEngine::releaseCallbacks() {
+    std::lock_guard<std::mutex> lock(callbackMutex_);
+    frameCallback_ = nullptr;
+    stateCallback_ = nullptr;
+    cursorCallback_ = nullptr;
+#if defined(RDP_NATIVE_CALLBACK_TESTING)
+    stopObserver_ = nullptr;
+#endif
 }
 
 bool VncRfbEngine::handshake(std::string& error) {
@@ -1377,6 +1428,10 @@ int VncRfbEngine::startWorkerForTesting(std::function<void()> callback) {
                     engine->workerStateCv_.notify_all();
                 }
             } done {this};
+            struct TestCallbackRelease {
+                VncRfbEngine* engine;
+                ~TestCallbackRelease() { engine->releaseCallbacks(); }
+            } release {this};
             callback();
         });
     } catch (const std::exception&) {
@@ -1465,6 +1520,11 @@ uint32_t VncRfbEngine::keySymForHarmonyCode(uint32_t keyCode) {
 }
 
 #if defined(RDP_NATIVE_CALLBACK_TESTING)
+void VncRfbEngine::emitStateForTesting(
+    ConnectionState state, const std::string& message) {
+    setState(state, message);
+}
+
 uint32_t VncRfbEngine::keySymForHarmonyCodeForTesting(uint32_t keyCode) {
     return keySymForHarmonyCode(keyCode);
 }
