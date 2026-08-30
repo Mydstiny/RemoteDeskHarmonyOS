@@ -17,6 +17,7 @@ import {
 } from './SshProxyRuntimePolicy';
 
 export type SshOperationPurpose = 'probe' | 'key_auth' | 'install';
+export type SshJumpHostKeyProbeTrust = 'trust_first' | 'trusted' | 'changed';
 
 export interface SshOperationTargetAuth {
   authMethod: 'password' | 'publickey' | 'kbd-interactive';
@@ -36,6 +37,14 @@ export class SshOperationConfigResult {
   code: string = 'E-SSH-OPERATION-CONFIG';
   message: string = 'SSH 操作配置无效';
   config: SessionConfig | null = null;
+}
+
+/** Decide whether a directly probed legacy jump may receive credentials. */
+export function classifySshJumpHostKeyProbeTrust(host: RemoteHost,
+  rawBase64: string): SshJumpHostKeyProbeTrust {
+  const saved: string = host.sshJumpHostKeyRawBase64.trim();
+  if (host.sshJumpHostKeyTrustMode !== 1 || saved.length === 0) { return 'trust_first'; }
+  return saved === rawBase64.trim() ? 'trusted' : 'changed';
 }
 
 function invalid(code: string, message: string): SshOperationConfigResult {

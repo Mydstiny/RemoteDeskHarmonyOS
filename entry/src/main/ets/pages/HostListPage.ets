@@ -250,7 +250,8 @@ import {
 import {
   ExtensionLoader,
   NativeDisconnectIdentity,
-  NativeDisconnectSubmission
+  NativeDisconnectSubmission,
+  SshNativeOperationPromise
 } from '../services/ExtensionLoader';
 import { RemoteSessionWindowLauncher } from '../services/RemoteSessionWindowLauncher';
 import {
@@ -293,8 +294,18 @@ import {
 import {
   SshProxyRuntimePlan,
   resolveSshProxyRuntimePlan,
-  sshProxyRuntimeHasStrictJumpBindings
+  sshProxyRuntimeHasStrictJumpBindings,
+  sshProxyRuntimeNeedsTerminalSecrets
 } from '../services/SshProxyRuntimePolicy';
+import {
+  buildDirectSshHostKeyProbeConfig,
+  buildSshOperationSessionConfig,
+  classifySshJumpHostKeyProbeTrust,
+  SshOperationConfigResult,
+  SshJumpHostKeyProbeTrust,
+  SshOperationRouteSecrets,
+  SshOperationTargetAuth
+} from '../services/SshOperationConfigPolicy';
 import {
   SshHostKeyRouteBinding,
   sshHostKeyRouteBinding,
@@ -640,10 +651,12 @@ import {
   RdpPreflightResult,
   RustDeskPresenceResult,
   RustDeskPresenceProbePromise,
+  SshAuthTestResult,
   SshHostKeyInfo,
+  SshJumpHop,
+  SshJumpHopHandoff,
   SshPrivateKeyInfo,
-  SshPublicKeyInstallResult,
-  SshProxyConfig
+  SshPublicKeyInstallResult
 } from '../types/rdpnapi';
 import { SessionConfig } from '../types/rdpnapi';
 import {
@@ -826,6 +839,7 @@ struct HostListPage {
   private hostPresencePageGeneration: number = 0;
   private hostPresenceProbeGenerations: Map<string, number> = new Map();
   private hostPresenceProbeRequestIds: Map<string, number> = new Map();
+  private sshPresenceOperationIds: Map<string, number> = new Map();
   private hostPresenceRefreshRunning: boolean = false;
   // HostSyncService emits synchronously for local presence observations. Keep
   // that callback from starting a second list snapshot while the probe owns
@@ -970,6 +984,7 @@ struct HostListPage {
   @State sshPreflightHostKeyInfo: SshHostKeyInfo | null = null;
   @State sshPreflightJumpHostLabel: string = '';
   @State sshPreflightJumpHostKeyInfo: SshHostKeyInfo | null = null;
+  @State sshPreflightAwaitingJumpTrust: boolean = false;
   @State sshPreflightError: string = '';
   @State sshPreflightPassphraseInput: string = '';
   @State sshPreflightProxyPassphraseInput: string = '';
@@ -977,6 +992,7 @@ struct HostListPage {
   @State sshPreflightPassphraseSaveToHost: boolean = false;
   @State sshPreflightProxyPassphraseSaveToHost: boolean = false;
   @State sshPreflightPassphraseScope: string = 'target'; // target | proxy
+  private sshPreflightOperationId: number = 0;
   @State showRdpCertificatePreflight: boolean = false;
   @State rdpCertificateState: number = RdpCertificatePreflightState.PROBING;
   private rdpCertificateOpenedAt: number = 0;
@@ -1253,6 +1269,7 @@ struct HostListPage {
   @State cryptoResetCountdown: number = 0;
   @State secretPresentationPolicyJson: string = '';
   @State sshHostKeyBusyId: string = '';
+  private sshHostKeyOperationId: number = 0;
   @State sshTrustedHostsView: RemoteHost[] = [];
   @State rdpCertificateBusyId: string = '';
   @State rdpTrustedHostsView: RemoteHost[] = [];
@@ -5093,6 +5110,12 @@ struct HostListPage {
     this.moonlightAddOwnerToken += 1;
     this.invalidateMoonlightCatalogHandoff();
     this.cancelRustDeskPresenceProbes();
+    this.cancelSshPresenceOperations();
+    this.cancelSshPreflightOperation();
+    if (this.sshHostKeyOperationId > 0) {
+      this.loader.cancelSshOperation(this.sshHostKeyOperationId);
+      this.sshHostKeyOperationId = 0;
+    }
     this.hostPresencePageGeneration += 1;
     this.hostLoadRefreshPresence = false;
     if (this.hostLoadRefreshTimer !== -1) {
@@ -8226,6 +8249,7 @@ struct HostListPage {
       return;
     }
     const generation: number = nextRemoteHostSheetGeneration(this.sshPreflightGeneration);
+    this.cancelSshPreflightOperation();
     this.sshPreflightGeneration = generation;
     this.sshPreflightOpenedAt = Date.now();
     this.sshPreflightHostId = host.id;
@@ -8236,6 +8260,7 @@ struct HostListPage {
     this.sshPreflightState = SshPreflightState.PROBING;
     this.sshPreflightHostKeyInfo = null;
     this.sshPreflightJumpHostKeyInfo = null;
+    this.sshPreflightAwaitingJumpTrust = false;
     this.sshPreflightError = '';
     this.sshPreflightPassphraseInput = '';
     this.sshPreflightProxyPassphraseInput = '';
@@ -8254,6 +8279,7 @@ struct HostListPage {
   /** T-210: 关闭 preflight */
   private doSshPreflightCancel(closeSheet: boolean = true): void {
     const hostId: string = this.sshPreflightHostId;
+    this.cancelSshPreflightOperation();
     this.sshPreflightGeneration = nextRemoteHostSheetGeneration(this.sshPreflightGeneration);
     this.sshPreflightClosingHostId = hostId;
     this.sshPreflightClosing = true;
@@ -8274,6 +8300,7 @@ struct HostListPage {
   }
 
   private handleSshPreflightSheetDisappear(): void {
+    this.cancelSshPreflightOperation();
     this.noteSheetDismissed();
     const routeParams: Record<string, Object> | null = this.sshPreflightPendingRouteParams;
     const nextHostId: string = this.sshPreflightPendingHostId;
@@ -8287,6 +8314,7 @@ struct HostListPage {
     this.sshPreflightHostKeyInfo = null;
     this.sshPreflightJumpHostLabel = '';
     this.sshPreflightJumpHostKeyInfo = null;
+    this.sshPreflightAwaitingJumpTrust = false;
     this.sshPreflightError = '';
     if (routeParams !== null) {
       setTimeout((): void => {
@@ -8309,30 +8337,83 @@ struct HostListPage {
     return this.srv.getHost(this.sshPreflightHostId);
   }
 
-  /**
-   * 主机指纹/密钥预检必须使用与最终 SSH 会话相同的传输路径。
-   * 指纹探测本身不带 expected key, 否则 native 会在变化时只返回失败，
-   * UI 无法展示新指纹供用户比较；认证预检和最终连接再带上绑定值。
-   */
-  private sshPreflightProxy(host: RemoteHost, includeExpectedJumpKey: boolean = false): SshProxyConfig {
-    const isJump: boolean = host.sshProxyType === 'ssh_jump';
-    const proxyKeyMaterial: SshKeyMaterial = this.resolveSshProxyKeyMaterial(host);
-    const proxyAuthMethod = host.sshProxyAuthMethod;
-    const proxyPassphrase: string = this.sshPreflightProxyPassphraseInput || host.sshProxyKeyPassphrase;
+  private emptySshOperationTargetAuth(): SshOperationTargetAuth {
     return {
-      type: host.proxyHost.length > 0 ? host.sshProxyType : 'direct',
-      host: host.proxyHost,
-      port: host.proxyPort,
-      username: host.proxyUsername,
-      password: isJump && proxyAuthMethod !== 'publickey' ? host.sshProxyPassword : '',
-      privateKeyPem: isJump && proxyAuthMethod === 'publickey' ? proxyKeyMaterial.privateKey : '',
-      privateKeyPassphrase: isJump && proxyAuthMethod === 'publickey'
-        ? proxyPassphrase : '',
-      authMethod: isJump ? proxyAuthMethod : undefined,
-      expectedHostKeyRawBase64: includeExpectedJumpKey && isJump ? host.sshJumpHostKeyRawBase64 : '',
-      expectedHostKeyFingerprintSha256: includeExpectedJumpKey && isJump
-        ? host.sshJumpHostKeyFingerprintSha256 : ''
+      authMethod: 'password', password: '', privateKeyPem: '',
+      privateKeyPassphrase: '', keyboardInteractiveResponses: []
     };
+  }
+
+  /** Resolve only credentials already available in device-local memory. */
+  private sshOperationRouteSecrets(host: RemoteHost, plan: SshProxyRuntimePlan,
+    legacyProxyPassphrase: string = ''): SshOperationRouteSecrets | null {
+    let proxyPassword: string = '';
+    if ((plan.route.type === 'http_connect' || plan.route.type === 'socks5') &&
+      plan.proxyAuthRequired) {
+      proxyPassword = plan.source === 'legacy' ? host.sshProxyPassword : '';
+      if (proxyPassword.length === 0) { return null; }
+    }
+    if (plan.route.type !== 'ssh_jump') {
+      return { proxyPassword, jumpHandoffs: [] };
+    }
+    if (!sshProxyRuntimeHasStrictJumpBindings(plan)) { return null; }
+    const handoffs: SshJumpHopHandoff[] = [];
+    for (let index: number = 0; index < plan.route.hops.length; index++) {
+      const hop: SshJumpHop = plan.route.hops[index];
+      if (hop.authMethod === 'password') {
+        const password: string = plan.source === 'legacy' && index === 0 ?
+          host.sshProxyPassword : '';
+        if (password.length === 0) { return null; }
+        handoffs.push({ password, privateKeyPem: '', privateKeyPassphrase: '',
+          keyboardInteractiveResponses: [] });
+        continue;
+      }
+      if (hop.authMethod === 'kbd-interactive') {
+        const response: string = plan.source === 'legacy' && index === 0 ?
+          host.sshProxyPassword : '';
+        if (response.length === 0) { return null; }
+        handoffs.push({ password: '', privateKeyPem: '', privateKeyPassphrase: '',
+          keyboardInteractiveResponses: [response] });
+        continue;
+      }
+      const keyId: string = index < plan.hopKeyIds.length ? plan.hopKeyIds[index] : '';
+      const key = KeyVaultService.getInstance().getSshKey(keyId);
+      if (key === undefined || key.privateKey.length === 0) { return null; }
+      let passphrase: string = plan.source === 'legacy' && index === 0 ?
+        (legacyProxyPassphrase || host.sshProxyKeyPassphrase) : '';
+      const info: SshPrivateKeyInfo = this.loader.inspectSshPrivateKey(key.privateKey, passphrase);
+      if (!info.ok) { return null; }
+      if (!info.encrypted) { passphrase = ''; }
+      handoffs.push({ password: '', privateKeyPem: key.privateKey,
+        privateKeyPassphrase: passphrase, keyboardInteractiveResponses: [] });
+    }
+    return { proxyPassword, jumpHandoffs: handoffs };
+  }
+
+  private sshPlanWithPendingLegacyJumpTrust(host: RemoteHost): SshProxyRuntimePlan {
+    const stored: SshProxyProfileV1 | null = this.sshProxyProfiles.load(host.id);
+    if (stored !== null || this.sshPreflightJumpHostKeyInfo === null) {
+      return resolveSshProxyRuntimePlan(host, stored);
+    }
+    const pending: RemoteHost = host.runtimeClone();
+    pending.sshJumpHostKeyRawBase64 = this.sshPreflightJumpHostKeyInfo.rawBase64;
+    pending.sshJumpHostKeyFingerprintSha256 =
+      this.sshPreflightJumpHostKeyInfo.fingerprintSha256;
+    return resolveSshProxyRuntimePlan(pending, null);
+  }
+
+  private cancelSshPreflightOperation(): void {
+    if (this.sshPreflightOperationId > 0) {
+      this.loader.cancelSshOperation(this.sshPreflightOperationId);
+      this.sshPreflightOperationId = 0;
+    }
+  }
+
+  private cancelSshPresenceOperations(): void {
+    this.sshPresenceOperationIds.forEach((operationId: number): void => {
+      if (operationId > 0) { this.loader.cancelSshOperation(operationId); }
+    });
+    this.sshPresenceOperationIds.clear();
   }
 
   private resolveSshProxyKeyMaterial(host: RemoteHost): SshKeyMaterial {
@@ -8371,6 +8452,7 @@ struct HostListPage {
   private doSshPreflightRetryWrap(): void {
     const host = this.getSshPreflightHost();
     if (host) {
+      this.cancelSshPreflightOperation();
       this.sshPreflightState = SshPreflightState.PROBING;
       this.doSshPreflightProbe(host, this.sshPreflightGeneration);
     }
@@ -8406,24 +8488,25 @@ struct HostListPage {
         this.sshPreflightError = 'SSH 连接方式存储不可读，请重新打开应用后重试。';
         return;
       }
-      const trustPlan: SshProxyRuntimePlan = resolveSshProxyRuntimePlan(
+      let trustPlan: SshProxyRuntimePlan = resolveSshProxyRuntimePlan(
         host, this.sshProxyProfiles.load(host.id));
       if (!trustPlan.valid) {
         this.sshPreflightState = SshPreflightState.ERROR;
         this.sshPreflightError = trustPlan.message || 'SSH 连接路径无效';
         return;
       }
-      const info = await this.loader.probeSshHostKeyAsync(
-        host.host, host.port, this.sshPreflightProxy(host));
-      if (!this.isCurrentSshPreflight(host, generation)) { return; }
-      if (!info.ok) {
-        this.sshPreflightState = SshPreflightState.ERROR;
-        this.sshPreflightError = info.errorMessage || '无法读取 SSH 主机指纹';
-        return;
-      }
       let jumpInfo: SshHostKeyInfo | null = null;
-      if (this.sshPreflightUsesJump(host)) {
-        jumpInfo = await this.loader.probeSshHostKeyAsync(host.proxyHost, host.proxyPort);
+      if (trustPlan.route.type === 'ssh_jump' && trustPlan.source === 'legacy' &&
+        trustPlan.route.hops.length === 1) {
+        const hop: SshJumpHop = trustPlan.route.hops[0];
+        const jumpProbe: SshNativeOperationPromise<SshHostKeyInfo> =
+          this.loader.probeSshHostKeyOperationAsync(
+            buildDirectSshHostKeyProbeConfig(hop.host, hop.port), 15000);
+        this.sshPreflightOperationId = jumpProbe.operationId;
+        jumpInfo = await jumpProbe;
+        if (this.sshPreflightOperationId === jumpProbe.operationId) {
+          this.sshPreflightOperationId = 0;
+        }
         if (!this.isCurrentSshPreflight(host, generation)) { return; }
         if (!jumpInfo.ok) {
           this.sshPreflightState = SshPreflightState.ERROR;
@@ -8431,9 +8514,63 @@ struct HostListPage {
             (jumpInfo.errorMessage || '跳板机 KEX 握手失败');
           return;
         }
+        this.sshPreflightJumpHostKeyInfo = jumpInfo;
+        this.sshPreflightJumpHostLabel = hop.host + ':' + hop.port.toString();
+        const jumpTrust: SshJumpHostKeyProbeTrust =
+          classifySshJumpHostKeyProbeTrust(host, jumpInfo.rawBase64);
+        if (jumpTrust !== 'trusted') {
+          this.sshPreflightAwaitingJumpTrust = true;
+          this.sshPreflightSavedAlgorithm = host.sshJumpHostKeyAlgorithm;
+          this.sshPreflightState = jumpTrust === 'changed' ?
+            SshPreflightState.HOST_KEY_CHANGED : SshPreflightState.TRUST_FIRST_TIME;
+          return;
+        }
+        this.sshPreflightAwaitingJumpTrust = false;
+        this.sshPreflightSavedAlgorithm = host.sshHostKeyAlgorithm;
+        trustPlan = this.sshPlanWithPendingLegacyJumpTrust(host);
+      } else if (trustPlan.route.type === 'ssh_jump' &&
+        !sshProxyRuntimeHasStrictJumpBindings(trustPlan)) {
+        this.sshPreflightState = SshPreflightState.ERROR;
+        this.sshPreflightError = 'ProxyJump 每一跳都必须先绑定 SHA256 主机指纹';
+        return;
+      }
+      const routeSecrets: SshOperationRouteSecrets | null = this.sshOperationRouteSecrets(
+        host, trustPlan, this.sshPreflightProxyPassphraseInput);
+      if (routeSecrets === null) {
+        if (trustPlan.route.type === 'ssh_jump' && trustPlan.route.hops.length === 1 &&
+          trustPlan.route.hops[0].authMethod === 'publickey') {
+          this.showSshPreflightPassphrase(
+            '需要跳板机私钥密码才能按当前连接路径读取目标指纹', false, 'proxy');
+        } else {
+          this.sshPreflightState = SshPreflightState.ERROR;
+          this.sshPreflightError = sshProxyRuntimeNeedsTerminalSecrets(trustPlan) ?
+            '当前连接路径需要一次性代理或逐跳凭据，请从连接方式发起原生预认证' :
+            '当前 SSH 连接路径的本机凭据不可用';
+        }
+        return;
+      }
+      const configResult: SshOperationConfigResult = buildSshOperationSessionConfig(
+        host, trustPlan, 'probe', this.emptySshOperationTargetAuth(), routeSecrets);
+      if (!configResult.ok || configResult.config === null) {
+        this.sshPreflightState = SshPreflightState.ERROR;
+        this.sshPreflightError = configResult.message;
+        return;
+      }
+      const targetProbe: SshNativeOperationPromise<SshHostKeyInfo> =
+        this.loader.probeSshHostKeyOperationAsync(configResult.config, 45000);
+      this.sshPreflightOperationId = targetProbe.operationId;
+      const info: SshHostKeyInfo = await targetProbe;
+      if (this.sshPreflightOperationId === targetProbe.operationId) {
+        this.sshPreflightOperationId = 0;
+      }
+      if (!this.isCurrentSshPreflight(host, generation)) { return; }
+      if (!info.ok) {
+        this.sshPreflightState = SshPreflightState.ERROR;
+        this.sshPreflightError = info.errorMessage || '无法读取 SSH 主机指纹';
+        return;
       }
       this.sshPreflightHostKeyInfo = info;
-      this.sshPreflightJumpHostKeyInfo = jumpInfo;
+      if (jumpInfo !== null) { this.sshPreflightJumpHostKeyInfo = jumpInfo; }
       const targetTrustCurrent: boolean = sshHostKeyTrustIsCurrent(host, trustPlan);
       const targetChanged = targetTrustCurrent && host.sshHostKeyRawBase64 !== '' &&
         host.sshHostKeyRawBase64 !== info.rawBase64;
@@ -8458,8 +8595,35 @@ struct HostListPage {
     }
   }
 
+  private trustPendingSshJumpAndContinue(host: RemoteHost, generation: number): void {
+    if (!this.isCurrentSshPreflight(host, generation) ||
+      !this.sshPreflightAwaitingJumpTrust || this.sshPreflightJumpHostKeyInfo === null) {
+      return;
+    }
+    const jumpInfo: SshHostKeyInfo = this.sshPreflightJumpHostKeyInfo;
+    const updated: RemoteHost = host.runtimeClone();
+    updated.sshJumpHostKeyAlgorithm = jumpInfo.algorithm;
+    updated.sshJumpHostKeyFingerprintSha256 = jumpInfo.fingerprintSha256;
+    updated.sshJumpHostKeyRawBase64 = jumpInfo.rawBase64;
+    updated.sshJumpHostKeyTrustedAt = Date.now();
+    updated.sshJumpHostKeyTrustMode = 1;
+    if (!this.srv.updateHost(updated)) {
+      this.sshPreflightState = SshPreflightState.ERROR;
+      this.sshPreflightError = '跳板机指纹确认成功，但信任记录保存失败；连接已停止。';
+      return;
+    }
+    this.sshPreflightAwaitingJumpTrust = false;
+    this.sshPreflightHostKeyInfo = null;
+    this.sshPreflightState = SshPreflightState.PROBING;
+    void this.doSshPreflightProbe(updated, generation);
+  }
+
   /** T-210: 用户确认信任 (首次) */
   private doSshPreflightTrustFirst(host: RemoteHost, generation: number): void {
+    if (this.sshPreflightAwaitingJumpTrust) {
+      this.trustPendingSshJumpAndContinue(host, generation);
+      return;
+    }
     if (!this.isCurrentSshPreflight(host, generation) || !this.sshPreflightHostKeyInfo) { return; }
     const info = this.sshPreflightHostKeyInfo;
     if (this.sshPreflightUsesJump(host) && !this.sshPreflightJumpHostKeyInfo) { return; }
@@ -8479,6 +8643,10 @@ struct HostListPage {
 
   /** T-210: 指纹变更 → 更新信任 */
   private doSshPreflightUpdateTrust(host: RemoteHost, generation: number): void {
+    if (this.sshPreflightAwaitingJumpTrust) {
+      this.trustPendingSshJumpAndContinue(host, generation);
+      return;
+    }
     if (!this.isCurrentSshPreflight(host, generation) || !this.sshPreflightHostKeyInfo) { return; }
     const info = this.sshPreflightHostKeyInfo;
     if (this.sshPreflightUsesJump(host) && !this.sshPreflightJumpHostKeyInfo) { return; }
@@ -8529,15 +8697,17 @@ struct HostListPage {
         this.sshPreflightError = '跳板机私钥不存在或已从密钥保险库移除';
         return;
       }
+      const proxyPassphrase: string = this.sshPreflightProxyPassphraseInput ||
+        host.sshProxyKeyPassphrase;
       const proxyKeyInfo: SshPrivateKeyInfo = this.loader.inspectSshPrivateKey(
-        proxyMaterial.privateKey, host.sshProxyKeyPassphrase);
+        proxyMaterial.privateKey, proxyPassphrase);
       if (proxyKeyInfo.ok && !proxyKeyInfo.encrypted) {
         this.sshPreflightProxyPassphraseInput = '';
-      } else if (host.sshProxyKeyPassphrase === '' &&
+      } else if (proxyPassphrase === '' &&
         (proxyMaterial.encryptedHint || proxyKeyInfo.encrypted)) {
         this.showSshPreflightPassphrase('', false, 'proxy');
         return;
-      } else if (host.sshProxyKeyPassphrase !== '' && !proxyKeyInfo.ok) {
+      } else if (proxyPassphrase !== '' && !proxyKeyInfo.ok) {
         this.showSshPreflightPassphrase('已保存的跳板机私钥密码不可用，请重新输入', true, 'proxy');
         return;
       } else if (!proxyKeyInfo.ok) {
@@ -8546,7 +8716,7 @@ struct HostListPage {
           (proxyKeyInfo.error || '无法解析私钥');
         return;
       } else {
-        this.sshPreflightProxyPassphraseInput = host.sshProxyKeyPassphrase;
+        this.sshPreflightProxyPassphraseInput = proxyPassphrase;
       }
     }
     if (!host.sshUseKey) { this.doSshPreflightReady(host, generation); return; }
@@ -8589,11 +8759,30 @@ struct HostListPage {
     try {
       await new Promise<void>((r) => setTimeout(r, 60));
       if (!this.isCurrentSshPreflight(host, generation)) { return; }
-      const keyData = this.resolveSshKeyMaterial(host).privateKey;
-      const result = await this.loader.testSshKeyAuthAsync(
-        host.host, host.port, host.username, keyData, passphrase,
-        this.sshPreflightProxy(host, true)
-      );
+      const keyData: string = this.resolveSshKeyMaterial(host).privateKey;
+      const plan: SshProxyRuntimePlan = resolveSshProxyRuntimePlan(
+        host, this.sshProxyProfiles.load(host.id));
+      const routeSecrets: SshOperationRouteSecrets | null = this.sshOperationRouteSecrets(
+        host, plan, this.sshPreflightProxyPassphraseInput);
+      const auth: SshOperationTargetAuth = {
+        authMethod: 'publickey', password: '', privateKeyPem: keyData,
+        privateKeyPassphrase: passphrase, keyboardInteractiveResponses: []
+      };
+      const configResult: SshOperationConfigResult = routeSecrets === null ?
+        new SshOperationConfigResult() :
+        buildSshOperationSessionConfig(host, plan, 'key_auth', auth, routeSecrets);
+      if (!configResult.ok || configResult.config === null) {
+        this.sshPreflightState = SshPreflightState.ERROR;
+        this.sshPreflightError = configResult.message || 'SSH 连接路径凭据不可用';
+        return;
+      }
+      const operation: SshNativeOperationPromise<SshAuthTestResult> =
+        this.loader.testSshKeyAuthOperationAsync(configResult.config, 45000);
+      this.sshPreflightOperationId = operation.operationId;
+      const result: SshAuthTestResult = await operation;
+      if (this.sshPreflightOperationId === operation.operationId) {
+        this.sshPreflightOperationId = 0;
+      }
       if (!this.isCurrentSshPreflight(host, generation)) { return; }
       if (result.ok) {
         this.doSshPreflightReady(host, generation);
@@ -8652,7 +8841,12 @@ struct HostListPage {
       this.sshPreflightPassphraseScope = 'target';
       this.sshPreflightPassphraseInput = '';
       this.sshPreflightError = '';
-      this.doSshPreflightCheckPassphrase(host, generation);
+      if (this.sshPreflightHostKeyInfo === null) {
+        this.sshPreflightState = SshPreflightState.PROBING;
+        await this.doSshPreflightProbe(host, generation);
+      } else {
+        this.doSshPreflightCheckPassphrase(host, generation);
+      }
     } catch (_e) {
       if (!this.isCurrentSshPreflight(host, generation)) { return; }
       this.showSshPreflightPassphrase('跳板机私钥验证异常', false, 'proxy');
@@ -8676,10 +8870,29 @@ struct HostListPage {
         this.showSshPreflightPassphrase('此私钥实际未设置密码，请在密钥管理中重新设置密码');
         return;
       }
-      const result = await this.loader.testSshKeyAuthAsync(
-        host.host, host.port, host.username, keyData, this.sshPreflightPassphraseInput,
-        this.sshPreflightProxy(host, true)
-      );
+      const plan: SshProxyRuntimePlan = resolveSshProxyRuntimePlan(
+        host, this.sshProxyProfiles.load(host.id));
+      const routeSecrets: SshOperationRouteSecrets | null = this.sshOperationRouteSecrets(
+        host, plan, this.sshPreflightProxyPassphraseInput);
+      const auth: SshOperationTargetAuth = {
+        authMethod: 'publickey', password: '', privateKeyPem: keyData,
+        privateKeyPassphrase: this.sshPreflightPassphraseInput,
+        keyboardInteractiveResponses: []
+      };
+      const configResult: SshOperationConfigResult = routeSecrets === null ?
+        new SshOperationConfigResult() :
+        buildSshOperationSessionConfig(host, plan, 'key_auth', auth, routeSecrets);
+      if (!configResult.ok || configResult.config === null) {
+        this.showSshPreflightPassphrase(configResult.message || 'SSH 连接路径凭据不可用');
+        return;
+      }
+      const operation: SshNativeOperationPromise<SshAuthTestResult> =
+        this.loader.testSshKeyAuthOperationAsync(configResult.config, 45000);
+      this.sshPreflightOperationId = operation.operationId;
+      const result: SshAuthTestResult = await operation;
+      if (this.sshPreflightOperationId === operation.operationId) {
+        this.sshPreflightOperationId = 0;
+      }
       if (!this.isCurrentSshPreflight(host, generation)) { return; }
       if (result.ok) {
         if (this.sshPreflightPassphraseSaveToHost) {
@@ -8713,6 +8926,13 @@ struct HostListPage {
       this.sshPreflightError = 'SSH 指纹尚未绑定当前连接路径，请重新确认。';
       return;
     }
+    const routeSecrets: SshOperationRouteSecrets | null = this.sshOperationRouteSecrets(
+      host, plan, this.sshPreflightProxyPassphraseInput);
+    if (routeSecrets === null) {
+      this.sshPreflightState = SshPreflightState.ERROR;
+      this.sshPreflightError = 'SSH 连接路径的一次性凭据已失效，请重新预检。';
+      return;
+    }
     const svc = SshPreflightService.getInstance();
     const passphrase = this.sshPreflightPassphraseInput || host.sshKeyPassphrase;
     const proxyPassphrase = this.sshPreflightProxyPassphraseInput || host.sshProxyKeyPassphrase;
@@ -8729,7 +8949,10 @@ struct HostListPage {
       expectedJumpHostKeyRawBase64: jumpRawBase64,
       expectedJumpHostKeyFingerprintSha256: jumpFp,
       privateKeyPassphrase: passphrase,
-      proxyPrivateKeyPassphrase: proxyPassphrase
+      proxyPrivateKeyPassphrase: proxyPassphrase,
+      routeSecretsRouteIdentity: binding.identity,
+      proxyPassword: routeSecrets.proxyPassword,
+      jumpHandoffs: routeSecrets.jumpHandoffs
     });
     const params: Record<string, Object> = {};
     params['hostId'] = host.id;
@@ -8840,6 +9063,8 @@ struct HostListPage {
     }
 
     this.setHostPresenceProbeBusy(host.id, true);
+    const pageGeneration: number = this.hostPresencePageGeneration;
+    const probeGeneration: number = this.nextHostPresenceProbeGeneration(host.id);
     const startedAt: number = Date.now();
     try {
       let ok: boolean = false;
@@ -8860,10 +9085,31 @@ struct HostListPage {
         const info: VncCertificateInfo = await probe;
         ok = info.ok;
       } else if (host.protocol === 'ssh') {
-        const info: SshHostKeyInfo = await this.loader.probeSshHostKeyAsync(
-          host.host, host.port, this.sshPreflightProxy(host));
+        if (!this.sshProxyProfilesReady) {
+          throw new Error('SSH 连接方式存储不可读');
+        }
+        const plan: SshProxyRuntimePlan = resolveSshProxyRuntimePlan(
+          host, this.sshProxyProfiles.load(host.id));
+        const routeSecrets: SshOperationRouteSecrets | null =
+          this.sshOperationRouteSecrets(host, plan);
+        if (routeSecrets === null) {
+          throw new Error('SSH 在线探测需要一次性路由凭据');
+        }
+        const configResult: SshOperationConfigResult = buildSshOperationSessionConfig(
+          host, plan, 'probe', this.emptySshOperationTargetAuth(), routeSecrets);
+        if (!configResult.ok || configResult.config === null) {
+          throw new Error(configResult.message);
+        }
+        const operation: SshNativeOperationPromise<SshHostKeyInfo> =
+          this.loader.probeSshHostKeyOperationAsync(configResult.config, 15000);
+        this.sshPresenceOperationIds.set(host.id, operation.operationId);
+        const info: SshHostKeyInfo = await operation;
+        if ((this.sshPresenceOperationIds.get(host.id) ?? 0) === operation.operationId) {
+          this.sshPresenceOperationIds.delete(host.id);
+        }
         ok = info.ok;
       }
+      if (!this.isCurrentHostPresenceProbe(host.id, pageGeneration, probeGeneration)) { return; }
       const latencyMs: number = Date.now() - startedAt;
       if (host.protocol !== 'vnc') {
         // Use the observation path so the local card updates even when a
@@ -8883,11 +9129,13 @@ struct HostListPage {
         });
       }
     } catch (_err) {
+      if (!this.isCurrentHostPresenceProbe(host.id, pageGeneration, probeGeneration)) { return; }
       this.setHostPresenceOverride(host.id, 'unknown');
       if (showToast) {
         promptAction.showToast({ message: host.protocol.toUpperCase() + ' 检测失败', duration: 1800 });
       }
     } finally {
+      this.sshPresenceOperationIds.delete(host.id);
       this.setHostPresenceProbeBusy(host.id, false);
     }
   }
@@ -16342,9 +16590,11 @@ struct HostListPage {
   @Builder sshPreflightTrustFirstContent() {
     Column() {
       this.sshHostKeyInfoCard()
-      Text(this.sshPreflightJumpHostKeyInfo ?
+      Text(this.sshPreflightAwaitingJumpTrust ?
+        '连接目标前，请先确认跳板机指纹与服务器管理员提供的一致；确认前不会发送跳板认证凭据。' :
+        (this.sshPreflightJumpHostKeyInfo ?
         '这是首次连接该 SSH 主机或跳板机。请分别确认指纹与服务器管理员提供的一致。' :
-        '这是首次连接该 SSH 主机。请确认此指纹与服务器管理员提供的一致。')
+        '这是首次连接该 SSH 主机。请确认此指纹与服务器管理员提供的一致。'))
         .fontSize(13).fontColor(this.pal().text2).margin({ top: 16 }).fontFamily(this.font())
       Text('确认后, RemoteDesktop 会分别保存 endpoint 指纹, 后续连接会自动校验。')
         .fontSize(12).fontColor(this.pal().text3).margin({ top: 8 }).fontFamily(this.font())
@@ -16375,7 +16625,9 @@ struct HostListPage {
       Divider().margin({ top: 12, bottom: 12 }).color(this.pal().divider)
       Text('当前指纹').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text2).fontFamily(this.font()).margin({ bottom: 8 })
       this.sshHostKeyInfoCard()
-      Text('这可能表示服务器重装或密钥轮换, 也可能是中间人攻击。')
+      Text(this.sshPreflightAwaitingJumpTrust ?
+        '跳板机指纹已改变；确认前不会向该跳板发送任何认证凭据。' :
+        '这可能表示服务器重装或密钥轮换, 也可能是中间人攻击。')
         .fontSize(13).fontColor('#FF5252').margin({ top: 16 }).fontFamily(this.font())
     }.width('100%')
   }
@@ -20797,10 +21049,9 @@ struct HostListPage {
 
   private async refreshSshHostKey(host: RemoteHost): Promise<void> {
     if (this.sshHostKeyBusyId !== '') { return; }
-    if (!this.sshProxyProfilesReady || this.sshProxyProfiles.load(host.id) !== null) {
+    if (!this.sshProxyProfilesReady) {
       promptAction.showToast({
-        message: '该主机使用规范连接路径，请发起一次连接并在原生预认证弹窗中重新确认指纹',
-        duration: 3000
+        message: 'SSH 连接方式存储不可读，请重新打开应用后重试', duration: 2600
       });
       return;
     }
@@ -20814,25 +21065,74 @@ struct HostListPage {
     }
     this.sshHostKeyBusyId = host.id;
     try {
-      const info: SshHostKeyInfo = await this.loader.probeSshHostKeyAsync(
-        host.host, host.port, this.sshPreflightProxy(host));
+      let routeHost: RemoteHost = host;
+      let plan: SshProxyRuntimePlan = resolveSshProxyRuntimePlan(
+        host, this.sshProxyProfiles.load(host.id));
+      if (!plan.valid) {
+        promptAction.showToast({ message: plan.message, duration: 2600 });
+        return;
+      }
+      let jumpInfo: SshHostKeyInfo | null = null;
+      if (plan.route.type === 'ssh_jump' && plan.source === 'legacy' &&
+        plan.route.hops.length === 1) {
+        const hop: SshJumpHop = plan.route.hops[0];
+        const jumpProbe: SshNativeOperationPromise<SshHostKeyInfo> =
+          this.loader.probeSshHostKeyOperationAsync(
+            buildDirectSshHostKeyProbeConfig(hop.host, hop.port), 15000);
+        this.sshHostKeyOperationId = jumpProbe.operationId;
+        jumpInfo = await jumpProbe;
+        if (this.sshHostKeyOperationId === jumpProbe.operationId) {
+          this.sshHostKeyOperationId = 0;
+        }
+        if (!this.pageActive) { return; }
+        if (!jumpInfo.ok) {
+          promptAction.showToast({
+            message: '跳板机指纹获取失败: ' +
+              (jumpInfo.errorMessage || '无法读取 SSH 主机指纹'), duration: 2500
+          });
+          return;
+        }
+        if (classifySshJumpHostKeyProbeTrust(host, jumpInfo.rawBase64) !== 'trusted') {
+          promptAction.showToast({
+            message: '跳板机指纹尚未信任或已变化，请从主机列表发起连接并确认',
+            duration: 3000
+          });
+          return;
+        }
+        routeHost = host.runtimeClone();
+        routeHost.sshJumpHostKeyRawBase64 = jumpInfo.rawBase64;
+        routeHost.sshJumpHostKeyFingerprintSha256 = jumpInfo.fingerprintSha256;
+        plan = resolveSshProxyRuntimePlan(routeHost, null);
+      }
+      const routeSecrets: SshOperationRouteSecrets | null =
+        this.sshOperationRouteSecrets(host, plan);
+      if (routeSecrets === null) {
+        promptAction.showToast({
+          message: '该连接路径需要一次性凭据，请发起连接并在原生预认证中确认指纹',
+          duration: 3000
+        });
+        return;
+      }
+      const configResult: SshOperationConfigResult = buildSshOperationSessionConfig(
+        routeHost, plan, 'probe', this.emptySshOperationTargetAuth(), routeSecrets);
+      if (!configResult.ok || configResult.config === null) {
+        promptAction.showToast({ message: configResult.message, duration: 2600 });
+        return;
+      }
+      const operation: SshNativeOperationPromise<SshHostKeyInfo> =
+        this.loader.probeSshHostKeyOperationAsync(configResult.config, 45000);
+      this.sshHostKeyOperationId = operation.operationId;
+      const info: SshHostKeyInfo = await operation;
+      if (this.sshHostKeyOperationId === operation.operationId) {
+        this.sshHostKeyOperationId = 0;
+      }
+      if (!this.pageActive) { return; }
       if (!info.ok) {
         promptAction.showToast({
           message: '重新获取失败: ' + (info.errorMessage || '无法读取 SSH 主机指纹'),
           duration: 2500
         });
         return;
-      }
-      let jumpInfo: SshHostKeyInfo | null = null;
-      if (this.sshPreflightUsesJump(host)) {
-        jumpInfo = await this.loader.probeSshHostKeyAsync(host.proxyHost, host.proxyPort);
-        if (!jumpInfo.ok) {
-          promptAction.showToast({
-            message: '跳板机指纹获取失败: ' + (jumpInfo.errorMessage || '无法读取 SSH 主机指纹'),
-            duration: 2500
-          });
-          return;
-        }
       }
       const updated: RemoteHost = host.runtimeClone();
       if (!this.applySshPreflightTrust(updated, info, jumpInfo)) {
@@ -20851,6 +21151,10 @@ struct HostListPage {
     } catch (err) {
       promptAction.showToast({ message: '重新获取异常: ' + JSON.stringify(err), duration: 2500 });
     } finally {
+      if (this.sshHostKeyOperationId > 0) {
+        this.loader.cancelSshOperation(this.sshHostKeyOperationId);
+        this.sshHostKeyOperationId = 0;
+      }
       this.sshHostKeyBusyId = '';
     }
   }

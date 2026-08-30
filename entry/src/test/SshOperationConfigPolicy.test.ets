@@ -3,6 +3,7 @@ import { RemoteHost } from '../main/ets/model/RemoteHost';
 import {
   buildDirectSshHostKeyProbeConfig,
   buildSshOperationSessionConfig,
+  classifySshJumpHostKeyProbeTrust,
   SshOperationRouteSecrets,
   SshOperationTargetAuth
 } from '../main/ets/services/SshOperationConfigPolicy';
@@ -138,6 +139,15 @@ export default function sshOperationConfigPolicyTest(): void {
       expect(config.host).assertEqual('fe80::7%wlan0');
       expect(config.sshRoute?.endpointHost).assertEqual('fe80::7%wlan0');
       expect(config.sshRoute?.endpointPort).assertEqual(2222);
+    });
+
+    it('requires_jump_trust_before_any_route_credentials_are_sent', 0, (): void => {
+      const value: RemoteHost = host();
+      expect(classifySshJumpHostKeyProbeTrust(value, 'AAAAFIRST')).assertEqual('trust_first');
+      value.sshJumpHostKeyTrustMode = 1;
+      value.sshJumpHostKeyRawBase64 = 'AAAAFIRST';
+      expect(classifySshJumpHostKeyProbeTrust(value, 'AAAAFIRST')).assertEqual('trusted');
+      expect(classifySshJumpHostKeyProbeTrust(value, 'AAAACHANGED')).assertEqual('changed');
     });
   });
 }
