@@ -1,20 +1,20 @@
 # RemoteDesk Queue
 
-Updated: 2026-08-30 Asia/Shanghai
+Updated: 2026-08-31 Asia/Shanghai
 
 ## Now
 
-1. Run M1 real-device IPv6 acceptance on HarmonyOS Phone/Pad/PC for RDP, RustDesk, SSH/SFTP, VNC and Moonlight: IPv6 literal and AAAA-only add/edit/save/restart, trust or certificate preflight, real control/data session and same-network reconnect. Include RDP direct/Gateway, RustDesk configured ID/relay/direct plus file transfer, SSH direct/proxy/1–3 jump plus SFTP operations, VNC direct/repeater/TLS and Moonlight control/media family consistency.
-2. Record endpoint family, scope presence, resolver owner and sanitized failure stage; verify equivalent IPv6 forms retain the right trust while port, scope, route or server-name changes fail closed. Enable `configured_endpoint_ipv6` per protocol only after its complete matrix passes.
-3. Implement M2 shared-budget Happy Eyeballs and listener completeness: A/AAAA interleaving, bounded stagger, first-success cancellation, network-generation invalidation, proxy/gateway/jump/repeater combinations and explicit SSH `IPV6_V6ONLY` behavior.
+1. Complete the cumulative M0-M4 boundary code review at `8e7d8a8c`, close every P0-P2 finding and record a content-addressed PASS receipt.
+2. Run per-protocol M1-M3 device acceptance on HarmonyOS Phone/Pad/PC: IPv6 literal, AAAA-only, A/AAAA fallback, scope, save/restart, trust/preflight, real control/data traffic, same-network reconnect and route-generation change. Include RDP direct/Gateway, RustDesk ID/relay/direct/presence/file transfer, SSH direct/proxy/1-3 jump/forwarding/SFTP, VNC direct/repeater/TLS and Moonlight discovery/control/media.
+3. Record resolver owner, candidate family, scope presence and sanitized failure stage. Enable `configured_endpoint_ipv6`, `dual_stack_racing`, `discovery_ipv6` and `protocol_control_data_ipv6` independently only after each protocol's complete applicable matrix passes.
+4. Implement RustDesk M4's executable cancellable UDP/KCP NAT transport, then validate fixed hbbs/hbbr and controlled peers across symmetric NAT, CGNAT, UDP-blocked, TCP-only, global/IPv6-only, NAT64 and relay fallback before enabling AUTO or `nat_traversal_ipv6`.
 
 ## Next
 
-1. Implement M3 discovery and control/data candidate parity without IPv6 `/64` scanning; include Moonlight scoped mDNS and official RustDesk `socket_addr_v6` candidates.
-2. Implement M4 RustDesk AUTO/NAT/hole-punching as an independent milestone; keep NAT traversal unavailable until fixed-version hbbs/hbbr and controlled-peer matrices pass.
-3. Complete the existing RDP high-DPI, per-protocol gesture/settings, bindSheet dark/light, wheel direction, RustDesk five-action flip/quality/multimonitor, 1.1.4 upgrade and cloud-recovery device matrices before PR closure.
-4. Run a cumulative branch review before merge because this branch contains earlier independently reviewed increments outside the IPv6 task scope.
+1. Complete the existing RDP high-DPI, per-protocol gesture/settings, bindSheet dark/light, wheel direction, RustDesk flip/quality/multimonitor, 1.1.4 upgrade and cloud-recovery device matrices before PR closure.
+2. After device evidence and required checks pass, push the task branch, open the PR, pass `open-source-compliance`, merge to `main` and clean the merged branch.
 
 ## Later
 
-1. Add real-RDB fault injection, app-clone acceptance and the remaining Android RustDesk orientation/settings acceptance.
+1. Add a controllable Moonlight ProductStreaming accepted-to-active synchronous terminal barrier regression.
+2. Add real-RDB fault injection, app-clone acceptance and the remaining Android RustDesk orientation/settings acceptance.

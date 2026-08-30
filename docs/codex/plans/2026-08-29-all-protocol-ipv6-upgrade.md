@@ -26,7 +26,9 @@
 
 M4 只完成了可审计的发布边界和既有 NAT/registration/heartbeat plumbing 的收口，尚未达到发布条件：版本化 FFI capability ABI 仅发布 Direct/Relay TCP，AUTO、UDP/KCP 与 NAT traversal 位继续关闭。最终本地自动化为 Rust no-default 237/237、完整特性 247/247、native 926/926、OHOS RustDesk FFI arm64-v8a/x86_64、两项强制 Hvigor、`git diff --check`、Rust format 与 Light 合规全部 PASS。当前 HDC 仍无可用目标，也没有固定版本 hbbs/hbbr、受控 peer 和 IPv6/NAT64/VPN 端点矩阵；所以五类“协议 × 能力”声明保持关闭，M1–M3 真机退出条件与 M4 可执行 UDP/NAT 状态机仍待外部验收/后续实现，不能把代码侧完成写成产品能力已发布。
 
-## 2. 当前能力矩阵
+## 2. 实施前审查基线能力矩阵
+
+下表固定描述计划审查基线 `1051588dd` 的能力缺口，用于解释后续改造来源，不代表 2026-08-31 代码检查点的现状；最新实施与发布状态以上一节为准。
 
 | 协议 | 已有基础 | 主要发布阻断 | 当前判定 |
 |---|---|---|---|

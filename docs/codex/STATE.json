@@ -47,7 +47,7 @@
       "scripts/verify_open_source_release.ps1"
     ],
     "findings": [],
-    "reason": "The initial M0-M1 checkpoint passed at d3f07f4e. The declared cumulative code scope now covers the complete M0-M4 implementation increment and supporting release artifacts at 8e7d8a8c; final shared/RDP/VNC/Moonlight, SSH/SFTP and RustDesk follow-up reviews are required before a new PASS receipt."
+    "reason": "The initial M0-M1 checkpoint passed at d3f07f4e. The declared cumulative code scope now covers the complete M0-M3 implementation, the M4 fail-closed release boundary and supporting release artifacts at 8e7d8a8c; final shared/RDP/VNC/Moonlight, SSH/SFTP and RustDesk follow-up reviews are required before a new PASS receipt."
   },
   "lastVerification": {
     "baseline": "M0-M3 code-side implementation and the M4 fail-closed release boundary are complete at 8e7d8a8c from task baseline 5a0e05515 on the user-authorized existing branch.",

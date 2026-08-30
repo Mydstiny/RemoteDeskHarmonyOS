@@ -3,36 +3,33 @@
 ## Active task
 
 - Task: `all-protocol-ipv6-upgrade`.
-- Branch: `codex/per-protocol-pinch-zoom-plan`; IPv6 task baseline `5a0e05515`, current reviewed code checkpoint `d3f07f4e`, branch remains based on `main@b84224869` as explicitly authorized by the user.
+- Branch: `codex/per-protocol-pinch-zoom-plan`; task baseline `5a0e05515`, code checkpoint `8e7d8a8c`, review-scope checkpoint `671afcc2`, based on the user-authorized `main@b84224869`.
+- Relative state at the review checkpoint: ahead of `main` by 96 commits, behind by 0, one worktree, clean.
 - Plan: `docs/codex/plans/2026-08-29-all-protocol-ipv6-upgrade.md`.
-- Phase: M0 automated contract gate complete; M1 code-side checkpoint complete and independently reviewed; real-device M1 acceptance is active. M2 Happy Eyeballs, M3 discovery/control-data and M4 RustDesk NAT remain pending.
+- Phase: M0-M3 code-side implementation complete; M4 release boundary complete but executable UDP/KCP NAT transport and all real-device exit criteria remain pending. Final cumulative review is in progress.
 
-## Delivered IPv6 checkpoint
+## Delivered IPv6 code checkpoint
 
-- Endpoint V2 now gives RDP, RustDesk, SSH/SFTP, VNC and Moonlight one fail-closed contract for hostname, IPv4, IPv6, bracket, port, canonical write, zone/scope and length handling across ArkTS and native boundaries.
-- Equivalent endpoint forms no longer rely on ad-hoc colon splitting for trust/route identities. RDP separates connect host, target server name and client hostname; IPv6 literals do not emit SNI. FreeRDP arm64-v8a/x86_64 prebuilts include the locked literal-SNI correction.
-- RustDesk configured ID/relay/direct TCP paths share a bounded deadline and cancellation lifecycle. Rust and C++ resolver workers are lifetime-safe and capped at eight process-wide; connection admission failures roll back all session, adapter, SSH facade and network-observer publication.
-- SSH proxy/jump inputs and synchronous public-key installation use strict Endpoint V2/NAPI validation, bounded strings, secret clearing and exception-safe ownership. RDP/VNC probes and Moonlight/common NAPI inputs use the same fail-closed boundary.
-- All five capability families remain disabled until their plan-specific real-device exit criteria pass. In particular, parser/build success is not a product claim for `configured_endpoint_ipv6`; M2–M4 have not been implemented.
+- Endpoint V2 gives RDP, RustDesk, SSH/SFTP, VNC and Moonlight one fail-closed hostname/IPv4/IPv6/bracket/port/scope contract across persistence, ArkTS, NAPI and native boundaries. Route, certificate and host-key identities use canonical typed inputs rather than ad-hoc colon splitting.
+- Shared-budget Happy Eyeballs interleaves A/AAAA candidates, cancels losers and respects deadlines. Network-generation fences retire stale DNS, connect, reconnect, pairing, probe and presence work after route changes.
+- RDP separates transport host, target server name and client hostname; literals omit SNI. Direct and Gateway routes use the patched, reproducibly built dual-stack FreeRDP artifacts. VNC separates scoped transport from TLS identity and covers direct/repeater recovery. Moonlight carries the numeric control winner and scope into media, with family-aware mDNS deduplication.
+- SSH/SFTP direct, HTTP/SOCKS, ProxyJump, forwarding, probe/auth/key-install and file operations share canonical route data, bounded cancellation, host-key trust and transient-secret ownership.
+- RustDesk configured ID/relay/direct, presence, screen and file transfer share resolver, route-planner and network-generation rules. Official `socket_addr_v6` remains a UDP/KCP candidate; UDP-only routes fail closed and relay fallback remains available.
+- The versioned RustDesk transport-capability ABI publishes only supported Direct/Relay TCP behavior. AUTO, UDP/KCP and NAT traversal remain disabled. All five product-facing IPv6 capability families remain false until their plan-specific device matrices pass.
 
 ## Verification and review
 
-- Rust unit suite: PASS, 209/209. OHOS RustDesk FFI release archives: PASS for arm64-v8a and x86_64; SHA-256 `f957a871f9d3e9749000fad62199503d37676e087e6cbe8a883a17297dfd5f8c` and `2bb4e6bd029ed14efef98279a17bc5f81ac51af8691d3e52f6d08245e95ece03`.
-- Native endpoint/protocol suite reached 838/838 before the final admission/resolver hardening; the final production native sources compiled in both mandatory Hvigor gates.
-- `default@OhosTestCompileArkTS`: PASS (`BUILD SUCCESSFUL in 6 s 651 ms`).
-- Signed `assembleHap`: PASS (`BUILD SUCCESSFUL in 59 s 25 ms`); HAP SHA-256 `afb0416175e377c5d0e00b90083b7f2c05cbb5e0b079fae63f0430bfcdabfffa`.
-- `git diff --check` and Light open-source compliance: PASS.
-- Independent review `/root/ipv6_shared_rdp_review`: PASS at `d3f07f4e`; both prior P2 findings are closed and final P0/P1/P2 counts are zero.
-
-## Reviewed RustDesk flip increment
-
-- Scoped checkpoints `b11dd222e` and `2a3a0aa4d` implement one top-bar popup with exactly five actions: visual vertical, visual horizontal, control vertical, control horizontal and reset. The four axes compose independently and persist per host; released three-state values migrate safely and malformed non-string values reset.
-- Main OES/RAW renderers, PIP and the read-only PC multi-canvas preview share visual axes; pointer, cursor, touch and wheel mapping use only the selected control axes. Mirrored viewport start edges remain interactive. Phone/Pad, RustDesk phone peers and other protocols retain their prior transforms.
-- Final verification: native host suite PASS 858/858; `default@OhosTestCompileArkTS` PASS in 42 s 974 ms; signed `assembleHap` PASS in 6 s 345 ms, HAP SHA-256 `cff8e0210ed4fb8d47e7e04ef93775d515191f80868cbd23c45d915a1066c280`; `git diff --check` and Light compliance PASS. Independent follow-up `/root/rustdesk_flip_review` closed all three P2 findings with final P0/P1/P2 zero.
-- Device acceptance remains pending for affected HarmonyOS PC GPU/OES paths, rapid flip with reconnect/PIP/detach, dual-canvas retained redraw and non-1x DPR edge gestures. The scoped PASS does not replace the queued cumulative branch review.
+- Rust: PASS, 237/237 without default features and 247/247 with full features. OHOS RustDesk FFI release builds and required symbol checks: PASS for arm64-v8a and x86_64.
+- Native endpoint/protocol suite: PASS, 926/926.
+- `default@OhosTestCompileArkTS`: PASS (`BUILD SUCCESSFUL in 6 s 57 ms` at the code checkpoint; `6 s 161 ms` after the review-scope documentation change).
+- Signed `assembleHap`: PASS (`BUILD SUCCESSFUL in 52 s 275 ms` at the code checkpoint; `7 s 842 ms` after the review-scope documentation change). HAP SHA-256: `9fd1b8c57607403031a75f67198a3238ecd340e2deefe09dae9f0c2b105b8070`.
+- Rust format, `git diff --check` and Light open-source compliance: PASS.
+- Prior scoped reviews are PASS. Final cumulative reviewers `/root/ipv6_shared_rdp_review`, `/root/ipv6_ssh_review` and `/root/ipv6_rustdesk_review` are rechecking the immutable checkpoint; no final receipt is claimed yet.
+- Non-blocking known gap: Moonlight accepted-to-active synchronous terminal completion has layered common-C/ArkTS coverage but no direct production-runtime barrier fixture.
 
 ## Next and blockers
 
-- Next: connect a HarmonyOS Phone/Pad/PC target and run the M1 IPv6 literal plus AAAA-only matrix for each protocol, including save/restart, trust/preflight, real session, same-network reconnect and SFTP file operations. Only then enable each protocol's `configured_endpoint_ipv6` capability independently.
-- Blocker: HDC returned `Connect server failed`; no target or controlled IPv6/AAAA-only protocol endpoints were available in this session. This blocks device acceptance, not the reviewed code checkpoint.
+- Next: finish cumulative review and receipt, then run M1-M3 IPv6 literal, AAAA-only, dual-stack fallback, discovery/control-data, reconnect, trust and SFTP matrices on HarmonyOS Phone/Pad/PC before enabling any protocol capability independently.
+- RustDesk M4 still requires an executable cancellable UDP/KCP NAT state machine plus fixed-version hbbs/hbbr and controlled-peer coverage for symmetric NAT, CGNAT, UDP-blocked, IPv6-only, NAT64 and relay fallback. This does not block the lower capability levels of other protocols.
+- Blocker: `hdc list targets` returned `Connect server failed`; no target or controlled IPv6/AAAA-only/NAT64/VPN protocol endpoints were available. This blocks device/release acceptance, not the locally verified code checkpoint.
 - Older RDP high-DPI, gesture/settings, bindSheet, RustDesk quality/multimonitor, release and cloud-recovery device matrices remain queued and were not overwritten by this task.
