@@ -1058,8 +1058,8 @@ mod tests {
         let encoded = Session::build_image_quality_message(2)
             .write_to_bytes()
             .expect("image-quality message should serialize");
-        let decoded: Message = protobuf::parse_from_bytes(&encoded)
-            .expect("image-quality message should deserialize");
+        let decoded: Message =
+            protobuf::parse_from_bytes(&encoded).expect("image-quality message should deserialize");
         match decoded.union {
             Some(Message_oneof_union::misc(misc)) => match misc.union {
                 Some(Misc_oneof_union::option(option)) => {

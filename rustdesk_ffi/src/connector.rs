@@ -33,8 +33,11 @@ use crate::protocol::message_proto::{
     SupportedResolutions, SwitchDisplay, TouchEvent, TouchPanEnd, TouchPanStart, TouchPanUpdate,
     TouchScaleUpdate, VideoFrame, VideoFrame_oneof_union,
 };
-use crate::protocol::rendezvous::RendezvousClient;
-use crate::protocol::rendezvous_proto::ConnType as RendezvousConnType;
+use crate::protocol::rendezvous::{
+    encode_socket_addr_v6, PeerCandidateTransport, PunchHoleInfo, RendezvousClient,
+    RendezvousRouteOptions,
+};
+use crate::protocol::rendezvous_proto::{ConnType as RendezvousConnType, NatType};
 use crate::protocol::session::{AuthEventCallback, Session, VIDEO_ACK_REQUIRED};
 use crate::protocol::wire;
 use protobuf::{Message as ProtoMessage, ProtobufEnum};
@@ -42,7 +45,7 @@ use protobuf::{Message as ProtoMessage, ProtobufEnum};
 use std::ffi::{c_char, c_void, CString};
 use std::io;
 use std::io::ErrorKind;
-use std::net::TcpStream;
+use std::net::{SocketAddr, TcpStream};
 use std::os::raw::c_int;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -278,6 +281,72 @@ pub enum ConnState {
     Error(String),
 }
 
+#[repr(i32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RustDeskConnectionStrategy {
+    ForceRelay = 0,
+    DirectIp = 1,
+    Auto = 2,
+}
+
+impl RustDeskConnectionStrategy {
+    pub fn from_raw(value: c_int) -> io::Result<Self> {
+        match value {
+            0 => Ok(Self::ForceRelay),
+            1 => Ok(Self::DirectIp),
+            2 => Ok(Self::Auto),
+            _ => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "invalid RustDesk connection strategy",
+            )),
+        }
+    }
+}
+
+const AUTO_ROUTE_TIMEOUT: Duration = Duration::from_secs(20);
+
+pub(crate) fn route_deadline_for_strategy(strategy: RustDeskConnectionStrategy) -> Option<Instant> {
+    (strategy == RustDeskConnectionStrategy::Auto).then(|| Instant::now() + AUTO_ROUTE_TIMEOUT)
+}
+
+fn route_stage_timeout(
+    deadline: Option<Instant>,
+    maximum: Duration,
+    connect_epoch: u64,
+    stage: &str,
+) -> io::Result<Duration> {
+    if crate::connect_cancelled(connect_epoch) {
+        return Err(io::Error::new(
+            io::ErrorKind::Interrupted,
+            format!("{} cancelled", stage),
+        ));
+    }
+    let Some(deadline) = deadline else {
+        return Ok(maximum);
+    };
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    if remaining.is_zero() {
+        return Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            format!("{} exceeded the shared AUTO route deadline", stage),
+        ));
+    }
+    Ok(remaining.min(maximum))
+}
+
+/// Opt-in wire features for the versioned FFI. Product code intentionally
+/// supplies zero until UDP/KCP and global IPv6 have completed device testing.
+pub const RUSTDESK_NAT_FLAG_UDP_MAPPING: u32 = 1 << 0;
+pub const RUSTDESK_NAT_FLAG_IPV6_CANDIDATE: u32 = 1 << 1;
+pub const RUSTDESK_NAT_SUPPORTED_FLAGS: u32 =
+    RUSTDESK_NAT_FLAG_UDP_MAPPING | RUSTDESK_NAT_FLAG_IPV6_CANDIDATE;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct RustDeskNatTraversalConfig {
+    pub flags: u32,
+    pub probe_serial: i32,
+}
+
 /// Progress emitted while the synchronous RustDesk handshake is running.
 /// The FFI entry point executes this work on a native worker thread, so the
 /// callback is deliberately small and carries only a short, owned C string
@@ -407,6 +476,333 @@ impl RustDeskConnector {
         self.session.set_auth_callback(callback, user_data);
     }
 
+    fn prepare_rendezvous_route(
+        &self,
+        rendezvous_host: &str,
+        rendezvous_port: u16,
+        rendezvous: &RendezvousClient,
+        strategy: RustDeskConnectionStrategy,
+        nat_config: RustDeskNatTraversalConfig,
+        route_deadline: Option<Instant>,
+    ) -> io::Result<(
+        RendezvousRouteOptions,
+        Option<crate::protocol::rendezvous::UdpNatLease>,
+    )> {
+        if strategy != RustDeskConnectionStrategy::Auto {
+            return Ok((RendezvousRouteOptions::force_relay(), None));
+        }
+
+        let nat_type = match RendezvousClient::probe_tcp_nat(
+            rendezvous_host,
+            rendezvous_port,
+            nat_config.probe_serial,
+            self.connect_epoch,
+            route_stage_timeout(
+                route_deadline,
+                Duration::from_secs(4),
+                self.connect_epoch,
+                "AUTO NAT probe",
+            )?,
+        ) {
+            Ok(result) => {
+                eprintln!(
+                    "[RustDesk-FFI] NAT test complete type={:?} mapped_port_stability={}",
+                    result.nat_type,
+                    if result.first_mapped_port == result.second_mapped_port {
+                        "stable"
+                    } else {
+                        "changed"
+                    }
+                );
+                result.nat_type
+            }
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => return Err(error),
+            Err(error) => {
+                route_stage_timeout(
+                    route_deadline,
+                    Duration::from_secs(4),
+                    self.connect_epoch,
+                    "AUTO NAT probe fallback",
+                )?;
+                eprintln!(
+                    "[RustDesk-FFI] NAT test unavailable kind={:?}; continuing with UNKNOWN_NAT",
+                    error.kind()
+                );
+                NatType::UNKNOWN_NAT
+            }
+        };
+
+        let mut udp_lease = None;
+        if nat_config.flags & RUSTDESK_NAT_FLAG_UDP_MAPPING != 0 {
+            match rendezvous.peer_address() {
+                Ok(server_address) => match RendezvousClient::register_udp_mapping(
+                    server_address,
+                    nat_config.probe_serial,
+                    route_stage_timeout(
+                        route_deadline,
+                        Duration::from_millis(800),
+                        self.connect_epoch,
+                        "AUTO UDP mapping",
+                    )?,
+                    Some(self.connect_epoch),
+                ) {
+                    Ok(lease) => udp_lease = Some(lease),
+                    Err(error) if error.kind() == io::ErrorKind::Interrupted => return Err(error),
+                    Err(error) => {
+                        route_stage_timeout(
+                            route_deadline,
+                            Duration::from_millis(800),
+                            self.connect_epoch,
+                            "AUTO UDP mapping fallback",
+                        )?;
+                        eprintln!(
+                            "[RustDesk-FFI] UDP mapping unavailable family={} kind={:?}",
+                            if server_address.is_ipv6() {
+                                "ipv6"
+                            } else {
+                                "ipv4"
+                            },
+                            error.kind()
+                        );
+                    }
+                },
+                Err(error) => {
+                    eprintln!(
+                        "[RustDesk-FFI] UDP mapping endpoint unavailable kind={:?}",
+                        error.kind()
+                    );
+                }
+            }
+        }
+
+        let udp_port = udp_lease
+            .as_ref()
+            .map(|lease| lease.mapped_port())
+            .unwrap_or(0);
+        let socket_addr_v6 = if nat_config.flags & RUSTDESK_NAT_FLAG_IPV6_CANDIDATE != 0 {
+            match udp_lease
+                .as_ref()
+                .and_then(|lease| lease.local_address().ok())
+                .filter(SocketAddr::is_ipv6)
+            {
+                Some(mut address) => {
+                    address.set_port(udp_port);
+                    encode_socket_addr_v6(address)?
+                }
+                None => Vec::new(),
+            }
+        } else {
+            Vec::new()
+        };
+        if let Some(lease) = udp_lease.as_mut() {
+            // One explicit refresh proves the registration remains live while
+            // TCP NAT classification and route preparation complete.
+            if let Err(error) = lease.heartbeat(
+                nat_config.probe_serial,
+                route_stage_timeout(
+                    route_deadline,
+                    Duration::from_millis(300),
+                    self.connect_epoch,
+                    "AUTO UDP mapping refresh",
+                )?,
+                Some(self.connect_epoch),
+            ) {
+                if error.kind() == io::ErrorKind::Interrupted {
+                    return Err(error);
+                }
+                route_stage_timeout(
+                    route_deadline,
+                    Duration::from_millis(300),
+                    self.connect_epoch,
+                    "AUTO UDP mapping refresh fallback",
+                )?;
+                eprintln!(
+                    "[RustDesk-FFI] UDP mapping refresh unavailable kind={:?}",
+                    error.kind()
+                );
+            }
+        }
+        Ok((
+            RendezvousRouteOptions::automatic(nat_type, udp_port, socket_addr_v6),
+            udp_lease,
+        ))
+    }
+
+    fn direct_candidate_timeout(punch: &PunchHoleInfo) -> Duration {
+        if punch.is_local || punch.peer_nat_type == NatType::SYMMETRIC {
+            Duration::from_secs(1)
+        } else {
+            Duration::from_secs(5)
+        }
+    }
+
+    fn request_and_create_relay(
+        &mut self,
+        rendezvous_host: &str,
+        rendezvous_port: u16,
+        relay_fallback_port: u16,
+        server_key: &str,
+        api_token: &str,
+        peer_id: &str,
+        credentials: &RendezvousCredentials<'_>,
+        rendezvous_secure: bool,
+        conn_type: RendezvousConnType,
+        relay_server: &str,
+        signed_pk_present: bool,
+        route_deadline: Option<Instant>,
+    ) -> io::Result<TcpStream> {
+        self.set_connect_state(ConnState::RequestingRelay);
+        let mut relay_rendezvous = RendezvousClient::new_with_connect_epoch(self.connect_epoch);
+        relay_rendezvous.connect_with_timeout(
+            rendezvous_host,
+            rendezvous_port,
+            server_key,
+            rendezvous_secure,
+            route_stage_timeout(
+                route_deadline,
+                Duration::from_secs(10),
+                self.connect_epoch,
+                "AUTO relay rendezvous connect",
+            )?,
+        )?;
+        let relay_uuid = relay_rendezvous.request_relay_uuid_with_timeout(
+            peer_id,
+            relay_server,
+            signed_pk_present,
+            api_token,
+            route_stage_timeout(
+                route_deadline,
+                Duration::from_secs(10),
+                self.connect_epoch,
+                "AUTO relay request",
+            )?,
+        )?;
+        self.set_connect_state(ConnState::ConnectingToPeer);
+        relay_rendezvous.create_relay_with_timeout(
+            peer_id,
+            &relay_uuid,
+            relay_server,
+            relay_fallback_port,
+            credentials.access_key,
+            conn_type,
+            route_stage_timeout(
+                route_deadline,
+                Duration::from_secs(10),
+                self.connect_epoch,
+                "AUTO relay connect",
+            )?,
+        )
+    }
+
+    fn open_rendezvous_peer_stream(
+        &mut self,
+        mut rendezvous: RendezvousClient,
+        punch: &PunchHoleInfo,
+        local_address: Option<SocketAddr>,
+        strategy: RustDeskConnectionStrategy,
+        rendezvous_host: &str,
+        rendezvous_port: u16,
+        relay_fallback_port: u16,
+        server_key: &str,
+        api_token: &str,
+        peer_id: &str,
+        credentials: &RendezvousCredentials<'_>,
+        rendezvous_secure: bool,
+        conn_type: RendezvousConnType,
+        route_deadline: Option<Instant>,
+    ) -> io::Result<TcpStream> {
+        let has_tcp_candidate = punch
+            .peer_candidates
+            .iter()
+            .any(|candidate| candidate.transport == PeerCandidateTransport::Tcp);
+
+        if strategy == RustDeskConnectionStrategy::Auto && has_tcp_candidate {
+            self.set_connect_state(ConnState::ConnectingToPeer);
+            rendezvous.disconnect();
+            match rendezvous.connect_to_peer_candidates(
+                &punch.peer_candidates,
+                local_address,
+                route_stage_timeout(
+                    route_deadline,
+                    Self::direct_candidate_timeout(punch),
+                    self.connect_epoch,
+                    "AUTO direct candidate connect",
+                )?,
+            ) {
+                Ok(stream) => {
+                    eprintln!("[RustDesk-FFI] AUTO selected direct TCP candidate");
+                    return Ok(stream);
+                }
+                Err(error) => {
+                    eprintln!(
+                        "[RustDesk-FFI] AUTO direct TCP candidates failed kind={:?}; relay_fallback={}",
+                        error.kind(),
+                        if punch.relay_uuid.is_some() || !punch.relay_server.trim().is_empty() {
+                            "available"
+                        } else {
+                            "absent"
+                        }
+                    );
+                    if punch.relay_uuid.is_none() && punch.relay_server.trim().is_empty() {
+                        return Err(error);
+                    }
+                }
+            }
+        }
+
+        if let Some(relay_uuid) = punch.relay_uuid.as_deref() {
+            self.set_connect_state(ConnState::ConnectingToPeer);
+            return rendezvous.create_relay_with_timeout(
+                peer_id,
+                relay_uuid,
+                &punch.relay_server,
+                relay_fallback_port,
+                credentials.access_key,
+                conn_type,
+                route_stage_timeout(
+                    route_deadline,
+                    Duration::from_secs(10),
+                    self.connect_epoch,
+                    "AUTO relay connect",
+                )?,
+            );
+        }
+        if !punch.relay_server.trim().is_empty() {
+            return self.request_and_create_relay(
+                rendezvous_host,
+                rendezvous_port,
+                relay_fallback_port,
+                server_key,
+                api_token,
+                peer_id,
+                credentials,
+                rendezvous_secure,
+                conn_type,
+                &punch.relay_server,
+                !punch.signed_pk.is_empty(),
+                route_deadline,
+            );
+        }
+        if has_tcp_candidate {
+            self.set_connect_state(ConnState::ConnectingToPeer);
+            rendezvous.disconnect();
+            return rendezvous.connect_to_peer_candidates(
+                &punch.peer_candidates,
+                local_address,
+                route_stage_timeout(
+                    route_deadline,
+                    Self::direct_candidate_timeout(punch),
+                    self.connect_epoch,
+                    "direct candidate connect",
+                )?,
+            );
+        }
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "rendezvous route contains only gated UDP/KCP candidates and no relay fallback",
+        ))
+    }
+
     /// 完整连接流程 (阻塞)
     ///
     /// rendezvous_host: Rendezvous 服务器地址
@@ -428,88 +824,89 @@ impl RustDeskConnector {
         fps: u32,
         request_approval: bool,
         shared_access_key: bool,
+        connection_strategy: RustDeskConnectionStrategy,
+        nat_config: RustDeskNatTraversalConfig,
     ) -> io::Result<()> {
+        if connection_strategy == RustDeskConnectionStrategy::DirectIp {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "direct-IP strategy must use connect_direct",
+            ));
+        }
         let credentials = RendezvousCredentials::new(server_key, shared_access_key);
         let rendezvous_secure =
             !shared_access_key && !server_key.trim().is_empty() && !api_token.trim().is_empty();
+        let route_deadline = route_deadline_for_strategy(connection_strategy);
         // === Phase 1: Rendezvous 握手 ===
         self.set_connect_state(ConnState::RendezvousConnecting);
         let mut rd = RendezvousClient::new_with_connect_epoch(self.connect_epoch);
         // 客户端连接远端 ID 时不要 RegisterPeer；RegisterPeer 是被控端注册自己的 ID。
         // Server Pro 的控制端会话 token 必须进入 PunchHoleRequest/RequestRelay。
         // 只有同时拥有真实公钥和 token 时才启用 upstream 的 rendezvous secure_tcp。
-        rd.connect(
+        rd.connect_with_timeout(
             rendezvous_host,
             rendezvous_port,
             server_key,
             rendezvous_secure,
+            route_stage_timeout(
+                route_deadline,
+                Duration::from_secs(10),
+                self.connect_epoch,
+                "rendezvous connect",
+            )?,
+        )?;
+
+        let local_address = rd.local_address().ok();
+        let (route_options, _udp_lease) = self.prepare_rendezvous_route(
+            rendezvous_host,
+            rendezvous_port,
+            &rd,
+            connection_strategy,
+            nat_config,
+            route_deadline,
         )?;
 
         self.set_connect_state(ConnState::RequestingRelay);
-        let punch = rd.request_force_relay(
+        let punch = rd.request_route_with_timeout(
             peer_id,
             credentials.access_key,
             api_token,
             RendezvousConnType::DEFAULT_CONN,
+            route_options,
+            route_stage_timeout(
+                route_deadline,
+                Duration::from_secs(9),
+                self.connect_epoch,
+                "rendezvous route request",
+            )?,
         )?;
 
         // === Phase 2: Peer TCP + 加密通道 ===
         eprintln!(
-            "[RustDesk-FFI] force-relay response peer_endpoint={} relay_endpoint={} relay_ticket={} signed_pk_len={}",
-            if punch.peer_addr.is_some() { "present" } else { "absent" },
+            "[RustDesk-FFI] route response strategy={:?} peer_candidates={} relay_endpoint={} relay_ticket={} signed_pk_len={}",
+            connection_strategy,
+            punch.peer_candidates.len(),
             if punch.relay_server.is_empty() { "absent" } else { "present" },
             if punch.relay_uuid.is_some() { "present" } else { "absent" },
             punch.signed_pk.len()
         );
 
-        let mut peer_stream = if let Some(relay_uuid) = punch.relay_uuid {
-            self.set_connect_state(ConnState::ConnectingToPeer);
-            eprintln!("[RustDesk-FFI] force-relay ticket accepted relay_endpoint=present");
-            rd.create_relay(
-                peer_id,
-                &relay_uuid,
-                &punch.relay_server,
-                relay_fallback_port,
-                credentials.access_key,
-                RendezvousConnType::DEFAULT_CONN,
-            )?
-        } else if !punch.relay_server.trim().is_empty() {
-            self.set_connect_state(ConnState::RequestingRelay);
-            let mut relay_rd = RendezvousClient::new_with_connect_epoch(self.connect_epoch);
-            relay_rd.connect(
-                rendezvous_host,
-                rendezvous_port,
-                server_key,
-                rendezvous_secure,
-            )?;
-            let relay_uuid = relay_rd.request_relay_uuid(
-                peer_id,
-                &punch.relay_server,
-                !punch.signed_pk.is_empty(),
-                api_token,
-            )?;
-            self.set_connect_state(ConnState::ConnectingToPeer);
-            eprintln!("[RustDesk-FFI] force-relay request approved relay_endpoint=present");
-            relay_rd.create_relay(
-                peer_id,
-                &relay_uuid,
-                &punch.relay_server,
-                relay_fallback_port,
-                credentials.access_key,
-                RendezvousConnType::DEFAULT_CONN,
-            )?
-        } else if let Some(peer_addr) = punch.peer_addr {
-            // OSS hbbs answered a direct peer address and no relay endpoint.
-            // Connect it directly instead of failing the whole pipeline.
-            self.set_connect_state(ConnState::ConnectingToPeer);
-            eprintln!("[RustDesk-FFI] punch response direct peer endpoint present");
-            rd.connect_to_peer(peer_addr)?
-        } else {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "force-relay response did not include a relay endpoint",
-            ));
-        };
+        let mut peer_stream = self.open_rendezvous_peer_stream(
+            rd,
+            &punch,
+            local_address,
+            connection_strategy,
+            rendezvous_host,
+            rendezvous_port,
+            relay_fallback_port,
+            server_key,
+            api_token,
+            peer_id,
+            &credentials,
+            rendezvous_secure,
+            RendezvousConnType::DEFAULT_CONN,
+            route_deadline,
+        )?;
 
         // KeyExchange: 发送自己的公钥，接收对端公钥
         self.set_connect_state(ConnState::KeyExchanging);
@@ -637,8 +1034,7 @@ impl RustDeskConnector {
             peer_port
         ));
         self.set_connect_state(ConnState::ConnectingToPeer);
-        let canonical_peer_host =
-            net::canonicalize_tcp_host(peer_host, "direct file transfer")?;
+        let canonical_peer_host = net::canonicalize_tcp_host(peer_host, "direct file transfer")?;
         let peer_stream = net::connect_tcp_host_cancellable(
             &canonical_peer_host,
             peer_port,
@@ -660,14 +1056,13 @@ impl RustDeskConnector {
         })?;
         // RustDesk's direct listener expects its address as LoginRequest.username,
         // matching the main direct desktop connection.
-        self.session
-            .login_file_transfer_encrypted(
-                crypto,
-                &canonical_peer_host,
-                password,
-                remote_dir,
-                false,
-            )?;
+        self.session.login_file_transfer_encrypted(
+            crypto,
+            &canonical_peer_host,
+            password,
+            remote_dir,
+            false,
+        )?;
         crate::set_last_error("file-transfer direct peer login complete".to_string());
         self.set_connect_state(ConnState::Connected);
         eprintln!("[RustDesk-FFI] direct file-transfer session established");
@@ -687,33 +1082,69 @@ impl RustDeskConnector {
         request_approval: bool,
         shared_access_key: bool,
         rendezvous_conn_type: RendezvousConnType,
+        connection_strategy: RustDeskConnectionStrategy,
+        nat_config: RustDeskNatTraversalConfig,
+        route_deadline: Option<Instant>,
     ) -> io::Result<()> {
+        if connection_strategy == RustDeskConnectionStrategy::DirectIp {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "direct-IP strategy must use connect_file_transfer_direct",
+            ));
+        }
         let credentials = RendezvousCredentials::new(server_key, shared_access_key);
         let rendezvous_secure =
             !shared_access_key && !server_key.trim().is_empty() && !api_token.trim().is_empty();
         crate::set_last_error(format!(
-            "file-transfer rendezvous connecting port={} strategy=force_relay conn_type={:?}",
-            rendezvous_port, rendezvous_conn_type
+            "file-transfer rendezvous connecting port={} strategy={:?} conn_type={:?}",
+            rendezvous_port, connection_strategy, rendezvous_conn_type
         ));
         self.set_connect_state(ConnState::RendezvousConnecting);
         let mut rd = RendezvousClient::new_with_connect_epoch(self.connect_epoch);
-        rd.connect(
+        rd.connect_with_timeout(
             rendezvous_host,
             rendezvous_port,
             server_key,
             rendezvous_secure,
+            route_stage_timeout(
+                route_deadline,
+                Duration::from_secs(10),
+                self.connect_epoch,
+                "file-transfer rendezvous connect",
+            )?,
         )?;
 
-        crate::set_last_error("file-transfer requesting force relay".to_string());
+        let local_address = rd.local_address().ok();
+        let (route_options, _udp_lease) = self.prepare_rendezvous_route(
+            rendezvous_host,
+            rendezvous_port,
+            &rd,
+            connection_strategy,
+            nat_config,
+            route_deadline,
+        )?;
+
+        crate::set_last_error(format!(
+            "file-transfer requesting route strategy={:?}",
+            connection_strategy
+        ));
         self.set_connect_state(ConnState::RequestingRelay);
-        let punch = rd.request_force_relay(
+        let punch = rd.request_route_with_timeout(
             peer_id,
             credentials.access_key,
             api_token,
             rendezvous_conn_type,
+            route_options,
+            route_stage_timeout(
+                route_deadline,
+                Duration::from_secs(9),
+                self.connect_epoch,
+                "file-transfer rendezvous route request",
+            )?,
         )?;
         crate::set_last_error(format!(
-            "file-transfer force-relay response relay_endpoint={} relay_ticket={} signed_pk_len={}",
+            "file-transfer route response candidates={} relay_endpoint={} relay_ticket={} signed_pk_len={}",
+            punch.peer_candidates.len(),
             if punch.relay_server.is_empty() {
                 "absent"
             } else {
@@ -727,59 +1158,30 @@ impl RustDeskConnector {
             punch.signed_pk.len()
         ));
         eprintln!(
-            "[RustDesk-FFI] file-transfer force-relay response relay_endpoint={} relay_ticket={} signed_pk_len={}",
+            "[RustDesk-FFI] file-transfer route response strategy={:?} candidates={} relay_endpoint={} relay_ticket={} signed_pk_len={}",
+            connection_strategy,
+            punch.peer_candidates.len(),
             if punch.relay_server.is_empty() { "absent" } else { "present" },
             if punch.relay_uuid.is_some() { "present" } else { "absent" },
             punch.signed_pk.len()
         );
 
-        let mut peer_stream = if let Some(relay_uuid) = punch.relay_uuid {
-            crate::set_last_error("file-transfer connecting approved relay".to_string());
-            self.set_connect_state(ConnState::ConnectingToPeer);
-            rd.create_relay(
-                peer_id,
-                &relay_uuid,
-                &punch.relay_server,
-                relay_fallback_port,
-                credentials.access_key,
-                rendezvous_conn_type,
-            )?
-        } else if !punch.relay_server.trim().is_empty() {
-            self.set_connect_state(ConnState::RequestingRelay);
-            let mut relay_rd = RendezvousClient::new_with_connect_epoch(self.connect_epoch);
-            crate::set_last_error("file-transfer requesting relay ticket".to_string());
-            relay_rd.connect(
-                rendezvous_host,
-                rendezvous_port,
-                server_key,
-                rendezvous_secure,
-            )?;
-            let relay_uuid = relay_rd.request_relay_uuid(
-                peer_id,
-                &punch.relay_server,
-                !punch.signed_pk.is_empty(),
-                api_token,
-            )?;
-            crate::set_last_error("file-transfer connecting approved relay".to_string());
-            self.set_connect_state(ConnState::ConnectingToPeer);
-            relay_rd.create_relay(
-                peer_id,
-                &relay_uuid,
-                &punch.relay_server,
-                relay_fallback_port,
-                credentials.access_key,
-                rendezvous_conn_type,
-            )?
-        } else if let Some(peer_addr) = punch.peer_addr {
-            self.set_connect_state(ConnState::ConnectingToPeer);
-            eprintln!("[RustDesk-FFI] file-transfer punch response direct peer endpoint present");
-            rd.connect_to_peer(peer_addr)?
-        } else {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "file-transfer force-relay response did not include a relay endpoint",
-            ));
-        };
+        let mut peer_stream = self.open_rendezvous_peer_stream(
+            rd,
+            &punch,
+            local_address,
+            connection_strategy,
+            rendezvous_host,
+            rendezvous_port,
+            relay_fallback_port,
+            server_key,
+            api_token,
+            peer_id,
+            &credentials,
+            rendezvous_secure,
+            rendezvous_conn_type,
+            route_deadline,
+        )?;
 
         crate::set_last_error("file-transfer key exchanging".to_string());
         self.set_connect_state(ConnState::KeyExchanging);
@@ -3892,9 +4294,10 @@ mod tests {
     use super::{
         advance_applied_pressure_level, changed_pressure_target_fps,
         pressure_change_requires_refresh, pressure_target_fps, resolution_aware_fps_ceiling,
-        should_refresh_for_video_starvation, uses_bounded_vp9_pressure_targets, ControlKey,
-        KeyEvent_oneof_union, Message_oneof_union, PhysicalModifierState, RemoteKeyboardTransport,
-        RendezvousCredentials, RustDeskConnector, VP9_PRESSURE_RECOVERY_HOLD_WINDOWS,
+        route_deadline_for_strategy, route_stage_timeout, should_refresh_for_video_starvation,
+        uses_bounded_vp9_pressure_targets, ControlKey, KeyEvent_oneof_union, Message_oneof_union,
+        PhysicalModifierState, RemoteKeyboardTransport, RendezvousCredentials,
+        RustDeskConnectionStrategy, RustDeskConnector, VP9_PRESSURE_RECOVERY_HOLD_WINDOWS,
     };
     use crate::protocol::message_proto::KeyboardMode;
     use crate::protocol::message_proto::{
@@ -3902,18 +4305,142 @@ mod tests {
         PointerDeviceEvent_oneof_union, Resolution, SupportedResolutions, SwitchDisplay,
         TouchEvent_oneof_union,
     };
+    use crate::protocol::rendezvous::{
+        PeerCandidate, PeerCandidateSource, PeerCandidateTransport, PunchHoleInfo, RendezvousClient,
+    };
+    use crate::protocol::rendezvous_proto::{
+        ConnType as RendezvousConnType, NatType, RendezvousMessage, RendezvousMessage_oneof_union,
+    };
     use crate::protocol::wire;
     use crate::{RustDeskDisplayInfoState, RustDeskDisplayState};
     use protobuf::Message as ProtoMessage;
     use std::net::TcpListener;
     use std::sync::{Arc, Mutex};
     use std::thread;
+    use std::time::{Duration, Instant};
 
     fn resolution(width: i32, height: i32) -> Resolution {
         let mut value = Resolution::new();
         value.set_width(width);
         value.set_height(height);
         value
+    }
+
+    #[test]
+    fn auto_route_deadline_is_shared_and_cancellation_preempts_it() {
+        let session_id = 90_041;
+        let epoch = crate::begin_connect_epoch(session_id);
+        let deadline = route_deadline_for_strategy(RustDeskConnectionStrategy::Auto)
+            .expect("AUTO must create a deadline");
+        let timeout = route_stage_timeout(
+            Some(deadline),
+            Duration::from_secs(30),
+            epoch,
+            "test AUTO route",
+        )
+        .expect("active route budget");
+        assert!(timeout <= super::AUTO_ROUTE_TIMEOUT);
+        assert_eq!(
+            route_stage_timeout(
+                Some(Instant::now() - Duration::from_millis(1)),
+                Duration::from_secs(1),
+                epoch,
+                "expired AUTO route",
+            )
+            .expect_err("expired budget must fail")
+            .kind(),
+            std::io::ErrorKind::TimedOut
+        );
+        crate::cancel_connect_epoch(epoch);
+        assert_eq!(
+            route_stage_timeout(
+                Some(deadline),
+                Duration::from_secs(1),
+                epoch,
+                "cancelled AUTO route",
+            )
+            .expect_err("cancellation must preempt the budget")
+            .kind(),
+            std::io::ErrorKind::Interrupted
+        );
+        crate::finish_connect_epoch(epoch, session_id);
+    }
+
+    fn assert_direct_failure_falls_back_to_relay(conn_type: RendezvousConnType) {
+        let unavailable = TcpListener::bind("127.0.0.1:0").expect("bind unavailable fixture");
+        let direct_address = unavailable
+            .local_addr()
+            .expect("unavailable fixture address");
+        drop(unavailable);
+
+        let relay = TcpListener::bind("127.0.0.1:0").expect("bind relay fixture");
+        let relay_address = relay.local_addr().expect("relay fixture address");
+        let relay_thread = thread::spawn(move || {
+            let (mut stream, _) = relay.accept().expect("accept relay connection");
+            let payload = wire::read_frame(&mut stream).expect("read relay request");
+            let message =
+                RendezvousMessage::parse_from_bytes(&payload).expect("parse relay request");
+            match message.union {
+                Some(RendezvousMessage_oneof_union::request_relay(request)) => {
+                    assert_eq!(request.get_conn_type(), conn_type);
+                    assert_eq!(request.get_uuid(), "relay-ticket");
+                }
+                other => panic!("expected RequestRelay, got: {other:?}"),
+            }
+        });
+
+        let session_id = match conn_type {
+            RendezvousConnType::DEFAULT_CONN => 90_042,
+            RendezvousConnType::FILE_TRANSFER => 90_043,
+            _ => 90_044,
+        };
+        let epoch = crate::begin_connect_epoch(session_id);
+        let mut connector = RustDeskConnector::new_with_connection_id(session_id, epoch);
+        let punch = PunchHoleInfo {
+            relay_server: relay_address.to_string(),
+            signed_pk: Vec::new(),
+            peer_candidates: vec![PeerCandidate {
+                address: direct_address,
+                source: PeerCandidateSource::SocketAddr,
+                transport: PeerCandidateTransport::Tcp,
+            }],
+            relay_uuid: Some("relay-ticket".to_string()),
+            peer_nat_type: NatType::SYMMETRIC,
+            is_local: true,
+        };
+        let credentials = RendezvousCredentials::new("", false);
+        let stream = connector
+            .open_rendezvous_peer_stream(
+                RendezvousClient::new_with_connect_epoch(epoch),
+                &punch,
+                None,
+                RustDeskConnectionStrategy::Auto,
+                "127.0.0.1",
+                21116,
+                relay_address.port(),
+                "",
+                "",
+                "peer-123",
+                &credentials,
+                false,
+                conn_type,
+                route_deadline_for_strategy(RustDeskConnectionStrategy::Auto),
+            )
+            .expect("direct failure must fall back to relay");
+        assert_eq!(stream.peer_addr().unwrap(), relay_address);
+        drop(stream);
+        relay_thread.join().expect("relay fixture thread");
+        crate::finish_connect_epoch(epoch, session_id);
+    }
+
+    #[test]
+    fn screen_route_direct_failure_falls_back_to_relay() {
+        assert_direct_failure_falls_back_to_relay(RendezvousConnType::DEFAULT_CONN);
+    }
+
+    #[test]
+    fn file_transfer_route_direct_failure_falls_back_to_relay() {
+        assert_direct_failure_falls_back_to_relay(RendezvousConnType::FILE_TRANSFER);
     }
 
     #[test]

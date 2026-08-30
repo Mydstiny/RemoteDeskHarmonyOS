@@ -361,11 +361,14 @@ impl ControlInbox {
             return;
         }
         if enabled {
-            self.permission_enabled.fetch_or(permission, Ordering::Release);
+            self.permission_enabled
+                .fetch_or(permission, Ordering::Release);
         } else {
-            self.permission_enabled.fetch_and(!permission, Ordering::Release);
+            self.permission_enabled
+                .fetch_and(!permission, Ordering::Release);
         }
-        self.permission_known.fetch_or(permission, Ordering::Release);
+        self.permission_known
+            .fetch_or(permission, Ordering::Release);
 
         if enabled {
             return;
@@ -483,9 +486,9 @@ impl ControlInbox {
     }
 
     fn discard_permission_controls(state: &mut ControlInboxState, permission: u32) {
-        state.reliable.retain(|queued| {
-            required_permission(&queued.message) != Some(permission)
-        });
+        state
+            .reliable
+            .retain(|queued| required_permission(&queued.message) != Some(permission));
         if state
             .mouse_move
             .as_ref()
@@ -892,7 +895,9 @@ fn explicit_view_only_permission_drops_pending_input_and_rejects_new_input() {
     inbox.update_permission(PERMISSION_KEYBOARD, false);
 
     assert!(!inbox.enqueue(ControlMsg::MouseMove { x: 30, y: 40 }));
-    assert!(!inbox.enqueue(ControlMsg::Text { text: "blocked".into() }));
+    assert!(!inbox.enqueue(ControlMsg::Text {
+        text: "blocked".into()
+    }));
     assert!(matches!(
         inbox.take_batch(CONTROL_BATCH_LIMIT).as_slice(),
         [ControlMsg::RefreshVideo]

@@ -17,6 +17,7 @@
 #include "rustdesk_ffi_lifetime_policy.h"
 #include "rustdesk_ipc.h"
 #include "rustdesk_multi_canvas_policy.h"
+#include "common/happy_eyeballs_connector.h"
 #include "common/safe_log.h"
 #include "extensions/extension_registry.h"
 #include "render/hw_decoder.h"
@@ -71,6 +72,17 @@ extern "C" {
         void (*on_progress)(int, const char*, void*),
         void* user_data);
     void* rustdesk_connect_v5(
+        const void* cfg,
+        void (*on_frame)(const void*, void*),
+        void (*on_audio)(const void*, void*),
+        void (*on_cursor)(const void*, void*),
+        void (*on_disconnect)(int, const char*, void*),
+        void (*on_display)(const void*, void*),
+        void (*on_auth)(int, const char*, void*),
+        void (*on_progress)(int, const char*, void*),
+        bool (*on_peer_platform)(const char*, void*),
+        void* user_data);
+    void* rustdesk_connect_v6(
         const void* cfg,
         void (*on_frame)(const void*, void*),
         void (*on_audio)(const void*, void*),
@@ -463,146 +475,29 @@ static int rdConnectTcpEndpoint(const std::string& host, uint32_t port, int time
         errno = EINVAL;
         return -1;
     }
-    const auto deadline = std::chrono::steady_clock::now() +
+    remotedesk::net::ConnectOptions options;
+    options.deadline = std::chrono::steady_clock::now() +
         std::chrono::milliseconds(timeoutMs);
-
-    struct ResolveState final {
-        std::mutex mutex;
-        std::condition_variable condition;
-        bool complete = false;
-        int status = EAI_FAIL;
-        addrinfo* addresses = nullptr;
-
-        ~ResolveState() {
-            if (addresses != nullptr) {
-                freeaddrinfo(addresses);
-            }
-        }
-    };
-
-    const auto resolveState = std::make_shared<ResolveState>();
-    const std::string portText = std::to_string(port);
-    static std::atomic<int> activeResolvers{0};
-    constexpr int kMaxConcurrentResolvers = 8;
-    const int previousResolvers =
-        activeResolvers.fetch_add(1, std::memory_order_acq_rel);
-    if (previousResolvers >= kMaxConcurrentResolvers) {
-        activeResolvers.fetch_sub(1, std::memory_order_acq_rel);
-        errno = EAGAIN;
+    remotedesk::net::ConnectResult connection;
+    const remotedesk::net::ResolveResult resolution =
+        remotedesk::net::ResolveAndConnectTcp(
+            host, std::to_string(port), options, connection);
+    if (resolution.status != remotedesk::net::ResolveStatus::Ready) {
+        errno = resolution.status == remotedesk::net::ResolveStatus::TimedOut
+            ? ETIMEDOUT : resolution.status == remotedesk::net::ResolveStatus::Cancelled
+                ? ECANCELED : resolution.status == remotedesk::net::ResolveStatus::ResourceExhausted
+                    ? EAGAIN : EHOSTUNREACH;
         return -1;
     }
-    std::thread resolver;
-    try {
-        resolver = std::thread([resolveState, host, portText,
-                                resolverCounter = &activeResolvers]() {
-            struct ResolverCounterGuard final {
-                std::atomic<int>* counter;
-                ~ResolverCounterGuard() {
-                    counter->fetch_sub(1, std::memory_order_acq_rel);
-                }
-            } counterGuard { resolverCounter };
-            addrinfo hints {};
-            hints.ai_family = AF_UNSPEC;
-            hints.ai_socktype = SOCK_STREAM;
-            addrinfo* addresses = nullptr;
-            const int status = getaddrinfo(
-                host.c_str(), portText.c_str(), &hints, &addresses);
-            {
-                std::lock_guard<std::mutex> lock(resolveState->mutex);
-                resolveState->status = status;
-                resolveState->addresses = addresses;
-                resolveState->complete = true;
-            }
-            resolveState->condition.notify_one();
-        });
-    } catch (const std::system_error&) {
-        activeResolvers.fetch_sub(1, std::memory_order_acq_rel);
-        errno = EAGAIN;
-        return -1;
-    } catch (...) {
-        activeResolvers.fetch_sub(1, std::memory_order_acq_rel);
-        errno = EIO;
+    if (connection.status != remotedesk::net::ConnectStatus::Connected ||
+        connection.descriptor < 0) {
+        errno = connection.status == remotedesk::net::ConnectStatus::TimedOut
+            ? ETIMEDOUT : connection.status == remotedesk::net::ConnectStatus::Cancelled
+                ? ECANCELED : (connection.lastError == 0 ? EHOSTUNREACH
+                                                         : connection.lastError);
         return -1;
     }
-
-    addrinfo* addresses = nullptr;
-    {
-        std::unique_lock<std::mutex> lock(resolveState->mutex);
-        if (!resolveState->condition.wait_until(lock, deadline, [resolveState]() {
-                return resolveState->complete;
-            })) {
-            lock.unlock();
-            resolver.detach();
-            errno = ETIMEDOUT;
-            return -1;
-        }
-        if (resolveState->status == 0) {
-            addresses = resolveState->addresses;
-            resolveState->addresses = nullptr;
-        }
-    }
-    resolver.join();
-    if (addresses == nullptr) {
-        errno = EHOSTUNREACH;
-        return -1;
-    }
-
-    int connectedFd = -1;
-    int lastError = ETIMEDOUT;
-    for (addrinfo* address = addresses; address != nullptr; address = address->ai_next) {
-        const auto now = std::chrono::steady_clock::now();
-        if (now >= deadline) { break; }
-        const int fd = socket(address->ai_family, address->ai_socktype, address->ai_protocol);
-        if (fd < 0) {
-            lastError = errno;
-            continue;
-        }
-        const int flags = fcntl(fd, F_GETFL, 0);
-        if (flags < 0 || fcntl(fd, F_SETFL, flags | O_NONBLOCK) != 0) {
-            lastError = errno;
-            close(fd);
-            continue;
-        }
-        int result = ::connect(fd, address->ai_addr,
-                               static_cast<socklen_t>(address->ai_addrlen));
-        if (result != 0 && errno == EINPROGRESS) {
-            pollfd candidate {fd, POLLOUT, 0};
-            do {
-                const auto pollNow = std::chrono::steady_clock::now();
-                if (pollNow >= deadline) {
-                    result = 0;
-                    break;
-                }
-                const int remainingMs = static_cast<int>(std::chrono::duration_cast<
-                    std::chrono::milliseconds>(deadline - pollNow).count());
-                result = poll(&candidate, 1, std::max(1, remainingMs));
-            } while (result < 0 && errno == EINTR);
-            if (result > 0) {
-                int socketError = 0;
-                socklen_t errorLength = sizeof(socketError);
-                if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &socketError, &errorLength) == 0 &&
-                    socketError == 0) {
-                    result = 0;
-                } else {
-                    result = -1;
-                    errno = socketError == 0 ? EIO : socketError;
-                }
-            } else if (result == 0) {
-                result = -1;
-                errno = ETIMEDOUT;
-            }
-        }
-        if (result == 0) {
-            (void)fcntl(fd, F_SETFL, flags);
-            connectedFd = fd;
-            break;
-        }
-        lastError = errno;
-        close(fd);
-    }
-    freeaddrinfo(addresses);
-    if (connectedFd < 0) { errno = lastError; }
-    return connectedFd;
+    return connection.descriptor;
 }
 
 static void rdRealConnectThread(RdIpcConnectReq req, int ipcClientFd) {
@@ -890,7 +785,7 @@ struct RustDeskBridge::Impl {
     // Workers handed to the process-wide deferred join owner keep the FFI
     // callback context alive until their underlying Rust thread has joined.
     std::atomic<uint32_t> ffiDeferredJoinCount {0};
-    // Count every rustdesk_connect_v5() call until its returned handle has
+    // Count every rustdesk_connect_v6() call until its returned handle has
     // completed rustdesk_disconnect(). A raw callback user-data pointer may
     // be read before the callback-active counter can be incremented.
     std::atomic<uint32_t> ffiHandleJoinPending {0};
@@ -2951,7 +2846,8 @@ int RustDeskBridge::connectInternal(
                 }
                 impl->ffiCallbackContext = callbackContext;
             }
-            RustDeskFfiConfig ffiCfg = {};  // 零初始化 — 消除未初始化 padding/新字段风险
+            RustDeskFfiConfigV6 ffiCfgV6 = {}; // zero-init policy tail and reserved bytes
+            RustDeskFfiConfig& ffiCfg = ffiCfgV6.legacy;
             ffiCfg.host     = cfg.host.c_str();
             ffiCfg.port     = cfg.port > 0 ? cfg.port :
                 (cfg.rdDirectIp ? 21118 : RD_DEFAULT_TCP_PORT);
@@ -2981,6 +2877,12 @@ int RustDeskBridge::connectInternal(
                 OH_LOG_INFO(LOG_APP, "[RustDesk-FFI] direct_connection=true peerId=%{public}s port=%{public}d",
                     logHost.c_str(), ffiCfg.port);
             }
+            ffiCfgV6.connection_strategy = cfg.rdDirectIp ? 1 :
+                (cfg.rdConnectionStrategy == "auto" ? 2 : 0);
+            // UDP/KCP advertisement and AUTO remain product-gated until the
+            // fixed hbbs/hbbr + controlled-peer device matrix is accepted.
+            ffiCfgV6.nat_traversal_flags = 0;
+            ffiCfgV6.nat_probe_serial = 0;
             OH_LOG_INFO(LOG_APP,
                 "[RustDesk-FFI] ffiCfg codec=%{public}d(%{public}s) quality=%{public}d privacy=%{public}s audio=%{public}s authMode=%{public}d size=%{public}dx%{public}d profile=%{public}d fps=%{public}d relayFallbackPort=%{public}d",
                 ffiCfg.codec,
@@ -3000,8 +2902,8 @@ int RustDeskBridge::connectInternal(
             // the callback context before crossing the FFI boundary and keep
             // the reservation until the returned handle is disconnected.
             RustDeskFfiConnectReservation handleReservation(impl);
-            void* ffiHandle = rustdesk_connect_v5(
-                &ffiCfg, onFfiFrame, onFfiAudio, onFfiCursor, onFfiDisconnect,
+            void* ffiHandle = rustdesk_connect_v6(
+                &ffiCfgV6, onFfiFrame, onFfiAudio, onFfiCursor, onFfiDisconnect,
                 onFfiDisplay, onFfiAuth, onFfiProgress, onFfiPeerPlatform,
                 callbackUserData);
             if (ffiHandle != nullptr) {

@@ -135,6 +135,16 @@ struct RustDeskFfiConfig {
     int         relay_fallback_port;
 };
 
+// Versioned route policy. The legacy 104-byte config remains the leading
+// field so older ABI entry points and the presence probe stay unchanged.
+struct RustDeskFfiConfigV6 {
+    RustDeskFfiConfig legacy;
+    int      connection_strategy; // 0=force relay, 1=direct IP, 2=AUTO
+    uint32_t nat_traversal_flags;  // product remains zero until device acceptance
+    int      nat_probe_serial;
+    uint32_t reserved;
+};
+
 /** Result of a non-authenticating RustDesk peer presence probe. */
 struct RustDeskPresenceResult {
     int state = 0;      // 0=unknown, 1=online, 2=offline
@@ -146,6 +156,12 @@ static_assert(offsetof(RustDeskFfiConfig, relay_fallback_port) == 96,
               "RustDeskConfig ABI tail offset changed; update Rust and C++ together");
 static_assert(sizeof(RustDeskFfiConfig) == 104,
               "RustDeskConfig ABI size changed; update Rust and C++ together");
+static_assert(offsetof(RustDeskFfiConfigV6, legacy) == 0,
+              "RustDeskConfigV6 must preserve the legacy leading layout");
+static_assert(offsetof(RustDeskFfiConfigV6, connection_strategy) == 104,
+              "RustDeskConfigV6 policy offset changed; update Rust and C++ together");
+static_assert(sizeof(RustDeskFfiConfigV6) == 120,
+              "RustDeskConfigV6 ABI size changed; update Rust and C++ together");
 
 enum class RustDeskMode {
     IPC = 0,           // IPC 转发 → rustdesk_helper

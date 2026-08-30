@@ -95,6 +95,7 @@ for ABI_TARGET in "${ABIS[@]}"; do
     require_symbol rustdesk_change_display_resolution
     require_symbol rustdesk_send_touch_scale
     require_symbol rustdesk_send_touch_pan
+    require_symbol rustdesk_connect_v6
 done
 
 echo "RustDesk FFI build complete for $TARGET_ARCH"
