@@ -25,7 +25,8 @@ function endpoint(ownerType: 'host' | 'gateway' = 'gateway'): VncTrustEndpoint {
     ownerId: ownerType === 'gateway' ? 'gateway-1' : 'host-1',
     userId: 'user-1',
     storeIdentityFingerprint: STORE,
-    endpointBindingFingerprint: BINDING
+    endpointBindingFingerprint: BINDING,
+    localOnly: false
   };
 }
 
@@ -84,7 +85,8 @@ export default function vncTrustServiceTest(): void {
         ownerId: 'gateway-1',
         userId: scope.ownerScopeId,
         storeIdentityFingerprint: OTHER_STORE,
-        endpointBindingFingerprint: BINDING
+        endpointBindingFingerprint: BINDING,
+        localOnly: false
       };
       expect(service.trustForEndpoint(staleEndpoint) === null).assertTrue();
       expect(service.isTrusted(staleEndpoint, 'd'.repeat(64))).assertFalse();

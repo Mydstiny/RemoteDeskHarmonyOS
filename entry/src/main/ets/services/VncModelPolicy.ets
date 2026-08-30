@@ -128,7 +128,22 @@ function vncNetworkEndpoint(host: string, port: number): EndpointAddressResult {
 
 export function canonicalVncNetworkHost(host: string, port: number): string {
   const parsed: EndpointAddressResult = vncNetworkEndpoint(host, port);
-  return parsed.ok && parsed.endpoint.scope === '' ? endpointTransportHost(parsed.endpoint) : host;
+  return parsed.ok ? endpointTransportHost(parsed.endpoint) : host;
+}
+
+/** Interface-scoped link-local endpoints are valid only on this device. */
+export function vncNetworkEndpointRequiresLocalStorage(host: string, port: number): boolean {
+  const parsed: EndpointAddressResult = vncNetworkEndpoint(host, port);
+  return parsed.ok && parsed.endpoint.scopeKind === 'interface';
+}
+
+export function vncHostRequiresLocalStorage(values: VncHostValues): boolean {
+  return values.transport === 'direct_tcp' &&
+    vncNetworkEndpointRequiresLocalStorage(values.host, values.port);
+}
+
+export function vncGatewayRequiresLocalStorage(values: VncGatewayValues): boolean {
+  return vncNetworkEndpointRequiresLocalStorage(values.host, values.port);
 }
 
 function appendVncEndpointError(errors: string[], label: string, host: string, port: number): void {
@@ -136,8 +151,6 @@ function appendVncEndpointError(errors: string[], label: string, host: string, p
   if (!parsed.ok) {
     errors.push(parsed.error === 'invalid_port' ? label + '端口必须在 1-65535 之间' :
       label + '必须是有效的域名、IPv4 或 IPv6 地址');
-  } else if (parsed.endpoint.scope !== '') {
-    errors.push(label + '的链路本地 IPv6 尚未完成网卡作用域验证，请先使用全局 IPv6 地址');
   }
 }
 

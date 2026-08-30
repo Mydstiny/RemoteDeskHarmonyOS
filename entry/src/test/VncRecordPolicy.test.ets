@@ -1,12 +1,15 @@
 import { describe, it, expect } from '@ohos/hypium';
 import { VncRecord } from '../main/ets/model/VncRecord';
-import { vncPayloadHashSha256, vncRecordIsScopeTombstone, vncRecordIsValid,
+import { vncPayloadHashSha256, vncRecordContainsDevicePrivateEndpoint,
+  vncRecordIsScopeTombstone, vncRecordIsValid,
   vncRecordFromCloudRow, vncSecretPayloadIsMetadataOnly, VNC_SCOPE_TOMBSTONE_PAYLOAD,
   VNC_CLOUD_TABLE, vncRecordHasActiveCiphertext, vncRecordHasActiveEncryptedCiphertext } from
   '../main/ets/services/VncRecordPolicy';
 import {
+  canonicalVncNetworkHost,
   validateVncGateway,
   validateVncHost,
+  vncNetworkEndpointRequiresLocalStorage,
   vncGatewayPayload,
   vncHostPayload,
   vncTrustPayload
@@ -57,7 +60,15 @@ export default function vncRecordPolicyTest(): void {
       expect(validateVncHost(direct).length).assertEqual(0);
       expect(vncHostPayload(direct).indexOf('"host":"2001:db8::20"') >= 0).assertTrue();
       direct.host = 'fe80::20%wlan0';
-      expect(validateVncHost(direct).length > 0).assertTrue();
+      expect(validateVncHost(direct).length).assertEqual(0);
+      expect(canonicalVncNetworkHost(direct.host, direct.port))
+        .assertEqual('fe80::20%wlan0');
+      expect(vncNetworkEndpointRequiresLocalStorage(direct.host, direct.port)).assertTrue();
+      expect(vncHostPayload(direct).indexOf('"host":"fe80::20%wlan0"') >= 0).assertTrue();
+      const scopedHostRecord: VncRecord = validHostRecord();
+      scopedHostRecord.payload = vncHostPayload(direct);
+      scopedHostRecord.payloadHashSha256 = vncPayloadHashSha256(scopedHostRecord.payload);
+      expect(vncRecordContainsDevicePrivateEndpoint(scopedHostRecord)).assertTrue();
 
       const repeater = {
         label: 'opaque', host: 'target:id/42', port: 5901, username: '', gatewayId: 'gateway-1',
@@ -76,6 +87,15 @@ export default function vncRecordPolicyTest(): void {
       };
       expect(validateVncGateway(gateway).length).assertEqual(0);
       expect(vncGatewayPayload(gateway).indexOf('"host":"2001:db8::30"') >= 0).assertTrue();
+      gateway.host = '[fe80::30%en0]';
+      expect(validateVncGateway(gateway).length).assertEqual(0);
+      expect(vncNetworkEndpointRequiresLocalStorage(gateway.host, gateway.port)).assertTrue();
+      expect(vncGatewayPayload(gateway).indexOf('"host":"fe80::30%en0"') >= 0).assertTrue();
+
+      const malformedScoped: VncRecord = validHostRecord();
+      malformedScoped.payload = malformedScoped.payload.replace('192.0.2.10', 'global.example%en0');
+      malformedScoped.payloadHashSha256 = vncPayloadHashSha256(malformedScoped.payload);
+      expect(vncRecordContainsDevicePrivateEndpoint(malformedScoped)).assertTrue();
     });
 
     it('accepts_legacy_host_rows_without_clipboard_field', 0, (): void => {

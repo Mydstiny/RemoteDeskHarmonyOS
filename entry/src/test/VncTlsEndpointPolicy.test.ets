@@ -42,6 +42,26 @@ export default function vncTlsEndpointPolicyTest(): void {
       expect(result.endpointBindingFingerprint.length).assertEqual(64);
     });
 
+    it('separates_scoped_ipv6_connect_host_from_tls_identity', 0, (): void => {
+      const input: VncTlsHostInput = host();
+      input.host = '[fe80:0:0::10%wlan0]';
+      const result = resolveVncTlsEndpoint(input, null);
+      expect(result.ok).assertTrue();
+      expect(result.connectHost).assertEqual('fe80::10%wlan0');
+      expect(result.serverName).assertEqual('fe80::10');
+      expect(result.trustOwner === null ? false : result.trustOwner.localOnly).assertTrue();
+
+      const repeater: VncTlsHostInput = host('ultravnc_repeater');
+      const scopedGateway: VncTlsGatewayInput = gateway();
+      scopedGateway.host = 'fe80::8%eth0';
+      const gatewayResult = resolveVncTlsEndpoint(repeater, scopedGateway);
+      expect(gatewayResult.ok).assertTrue();
+      expect(gatewayResult.connectHost).assertEqual('fe80::8%eth0');
+      expect(gatewayResult.serverName).assertEqual('fe80::8');
+      expect(gatewayResult.trustOwner === null ? false : gatewayResult.trustOwner.localOnly)
+        .assertTrue();
+    });
+
     it('rejects_secure_only_without_host_tls', 0, (): void => {
       const input: VncTlsHostInput = host();
       input.tls = false;

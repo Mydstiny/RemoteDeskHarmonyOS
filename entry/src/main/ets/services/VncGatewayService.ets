@@ -4,7 +4,8 @@ import { CloudStore } from './CloudStore';
 import { VncRecord } from '../model/VncRecord';
 import {
   VncGatewayValues, VncTransport, VncRepeaterMode, defaultVncSettings,
-  validateVncGateway, vncGatewayPayload, finalizeVncRecord
+  validateVncGateway, vncGatewayPayload, finalizeVncRecord,
+  vncGatewayRequiresLocalStorage
 } from './VncModelPolicy';
 import { VncCloudSyncService } from './VncCloudSyncService';
 import { VncSecretService } from './VncSecretService';
@@ -109,6 +110,13 @@ export class VncGatewayService {
     }
     const currentRecord: VncRecord | null = id === '' ? null : this.findActiveRecord(id);
     const current: VncGatewayView | null = currentRecord === null ? null : this.toView(currentRecord);
+    const localOnly: boolean = vncGatewayRequiresLocalStorage(values);
+    const previousLocalOnly: boolean = currentRecord !== null &&
+      vncGatewayRequiresLocalStorage(this.parsePayload(currentRecord.payload));
+    if (currentRecord !== null && localOnly !== previousLocalOnly) {
+      result.message = 'VNC 网关不能用同一 ID 在云同步地址与本机网卡作用域地址之间转换，请新建网关';
+      return this.diagnosticSaveResult(result);
+    }
     const record: VncRecord = new VncRecord();
     const now: number = Date.now();
     record.id = id === '' ? VncRecord.generateId('vncgw') : id;
@@ -132,7 +140,7 @@ export class VncGatewayService {
     record.updatedAt = now;
     record.syncVersion = current === null ? 1 : current.syncVersion + 1;
     finalizeVncRecord(record);
-    if (!this.cloud.upsertVncRecord(record)) {
+    if (!this.cloud.upsertVncRecord(record, localOnly)) {
       result.message = this.cloud.getLastMutationResult().message || 'VNC 网关保存失败';
       return this.diagnosticSaveResult(result);
     }
@@ -144,7 +152,7 @@ export class VncGatewayService {
       if (!invalidation.ok) {
         const rolledBack: boolean = currentRecord === null
           ? this.cloud.discardVncRecordAfterFailedCreate(record.userId, record.id)
-          : this.cloud.upsertVncRecord(currentRecord);
+          : this.cloud.upsertVncRecord(currentRecord, previousLocalOnly);
         result.message = rolledBack
           ? invalidation.message + '；网关配置已回滚'
           : invalidation.message + '；网关配置回滚失败，请检查 VNC 数据状态';
@@ -153,7 +161,7 @@ export class VncGatewayService {
     }
     if (accessToken.length > 0) {
       const secretResult = this.secrets.save(record.userId, record.id, 'gateway', 'gateway_token',
-        accessToken, values.label, allowPlaintext);
+        accessToken, values.label, allowPlaintext, localOnly);
       if (!secretResult.ok) {
         // The gateway row and its token are one logical mutation even though
         // they occupy two rows in the single VNC table. Restore the previous
@@ -161,7 +169,7 @@ export class VncGatewayService {
         // fails after the gateway payload was written.
         const rolledBack: boolean = currentRecord === null
           ? this.cloud.discardVncRecordAfterFailedCreate(record.userId, record.id)
-          : this.cloud.upsertVncRecord(currentRecord);
+          : this.cloud.upsertVncRecord(currentRecord, previousLocalOnly);
         result.message = rolledBack
           ? secretResult.message + '；网关配置已回滚'
           : secretResult.message + '；网关配置回滚失败，请检查 VNC 数据状态';
@@ -176,15 +184,20 @@ export class VncGatewayService {
   remove(id: string): boolean {
     recordDiagnosticEvent('network.routing', 'routing_vnc_gateway', 'started');
     const previousRecord: VncRecord | null = this.findActiveRecord(id);
-    const ok: boolean = this.cloud.deleteVncRecord(this.getUserId(), id);
+    const previousLocalOnly: boolean = previousRecord !== null &&
+      vncGatewayRequiresLocalStorage(this.parsePayload(previousRecord.payload));
+    const ok: boolean = this.cloud.deleteVncRecord(
+      this.getUserId(), id, previousLocalOnly);
     if (ok) {
       const invalidation = this.trust.invalidateOwner('gateway', id);
       if (!invalidation.ok) {
-        if (previousRecord !== null) { this.cloud.upsertVncRecord(previousRecord); }
+        if (previousRecord !== null) {
+          this.cloud.upsertVncRecord(previousRecord, previousLocalOnly);
+        }
         recordDiagnosticEvent('network.routing', 'routing_vnc_gateway', 'failed', 0, 0, -1);
         return false;
       }
-      this.secrets.remove(this.getUserId(), id, 'gateway_token');
+      this.secrets.remove(this.getUserId(), id, 'gateway_token', previousLocalOnly);
       this.emitChange();
     }
     recordDiagnosticEvent('network.routing', 'routing_vnc_gateway',

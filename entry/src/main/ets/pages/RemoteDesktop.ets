@@ -3178,7 +3178,8 @@ struct RemoteDesktop {
       ownerId: endpoint.trustOwner.ownerId,
       userId: endpoint.trustOwner.userId,
       storeIdentityFingerprint: endpoint.trustOwner.storeIdentityFingerprint,
-      endpointBindingFingerprint: endpoint.trustOwner.endpointBindingFingerprint
+      endpointBindingFingerprint: endpoint.trustOwner.endpointBindingFingerprint,
+      localOnly: endpoint.trustOwner.localOnly
     };
   }
 

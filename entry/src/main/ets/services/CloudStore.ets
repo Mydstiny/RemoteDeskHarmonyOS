@@ -211,6 +211,7 @@ import {
   vncRecordFromCloudRow,
   vncRecordIdentity,
   vncRecordIsValid,
+  vncRecordContainsDevicePrivateEndpoint,
   vncRecordIsScopeTombstone,
   vncRecordToCloudRow,
   vncRecordWins,
@@ -489,6 +490,37 @@ const VNC_CLOUD_TABLE_RENAME_KEY: string =
 const VNC_LEGACY_MIGRATION_KEY: string = 'vnc_legacy_vncrecords_migrated_v1';
 const TABLE_MUTATION_RECORD_ID: string = '__table__';
 const VNC_RESET_EPOCH_KEY: string = 'vnc_reset_epoch';
+
+function vncPrivateOwnerKey(record: VncRecord): string {
+  if (record.deletedAt > 0 ||
+    (record.recordType !== 'host' && record.recordType !== 'gateway') ||
+    !vncRecordContainsDevicePrivateEndpoint(record)) {
+    return '';
+  }
+  return record.recordType + '|' + record.id;
+}
+
+function vncCompanionOwnerKey(record: VncRecord): string {
+  if (record.ownerType !== 'host' && record.ownerType !== 'gateway') { return ''; }
+  return record.ownerType + '|' + record.ownerId;
+}
+
+function vncPrivateOwnerKeys(records: VncRecord[]): Set<string> {
+  const result: Set<string> = new Set<string>();
+  for (let i = 0; i < records.length; i++) {
+    const key: string = vncPrivateOwnerKey(records[i]);
+    if (key !== '') { result.add(key); }
+  }
+  return result;
+}
+
+function vncRecordIsBoundToPrivateOwner(record: VncRecord,
+  privateOwners: Set<string>): boolean {
+  const direct: string = vncPrivateOwnerKey(record);
+  if (direct !== '' && privateOwners.has(direct)) { return true; }
+  const companion: string = vncCompanionOwnerKey(record);
+  return companion !== '' && privateOwners.has(companion);
+}
 
 function diagnosticLocalMutationCode(code: DataMutationCode): number {
   switch (code) {
@@ -5328,6 +5360,9 @@ try { this.rollbackTrackedTransaction(); } catch (_ignored) {}
   private vncCloudRowsAreUploadSafe(): boolean {
     if (!this.store) { return false; }
     try {
+      const privateOwners: Set<string> = vncPrivateOwnerKeys(
+        this.loadVncRecordsFromTable(
+          VNC_LOCAL_TABLE, true, this.currentOwnerScopeId(), false));
       const predicates =
         new relationalStore.RdbPredicates(VNC_CLOUD_TABLE);
       this.addCurrentOwnerPredicate(predicates);
@@ -5343,6 +5378,8 @@ try { this.rollbackTrackedTransaction(); } catch (_ignored) {}
         const record: VncRecord = this.vncRecordFromResult(rows);
         if (!vncRecordIsValid(record) ||
           record.resetEpoch !== currentEpoch ||
+          vncRecordContainsDevicePrivateEndpoint(record) ||
+          vncRecordIsBoundToPrivateOwner(record, privateOwners) ||
           (record.recordType === 'secret' &&
             record.deletedAt <= 0 &&
             !vncRecordHasActiveEncryptedCiphertext(record))) {
@@ -13460,6 +13497,7 @@ try { this.rollbackTrackedTransaction(); } catch (_ignored) {}
     // Explicit plaintext consent is device-local. It never authorizes a
     // portable/cloud copy, even when the VNC secret scope is selected.
     const effectiveLocalOnly: boolean = localOnly || plainSecret ||
+      vncRecordContainsDevicePrivateEndpoint(record) ||
       this.selectionReenableBlocked(VNC_CLOUD_TABLE) ||
       (!forceCloud &&
       (!physicalTableSelected || !scopeSelected || !secretAllowed));
@@ -13637,6 +13675,7 @@ try { this.rollbackTrackedTransaction(); } catch (_ignored) {}
       this.syncSelection.selectedBusinessTables().indexOf(VNC_CLOUD_TABLE) >= 0;
     const records: VncRecord[] =
       this.mergeVncRecords(true, this.currentOwnerScopeId(), false);
+    const privateOwners: Set<string> = vncPrivateOwnerKeys(records);
     let cloudChanged: boolean = false;
     try {
       this.store.beginTransaction();
@@ -13645,7 +13684,9 @@ try { this.rollbackTrackedTransaction(); } catch (_ignored) {}
         const selected: boolean = this.vncSyncSelection.isRecordTypeSelected(record.recordType);
         const secretAllowed: boolean = record.recordType !== 'secret' ||
           this.vncSyncSelection.secretsAllowed();
-        if (physicalTableSelected && selected &&
+        const portable: boolean = !vncRecordContainsDevicePrivateEndpoint(record) &&
+          !vncRecordIsBoundToPrivateOwner(record, privateOwners);
+        if (physicalTableSelected && selected && portable &&
           secretAllowed &&
           (allowBarrierPromotion ||
             !this.selectionReenableBlocked(
@@ -13699,6 +13740,12 @@ try { this.rollbackTrackedTransaction(); } catch (_ignored) {}
         // records even when they happen to use a valid physical-table shape.
         if (!vncRecordIsValid(record)) { continue; }
         if (record.id === '' || (!includeDeleted && record.deletedAt > 0)) { continue; }
+        if (table === VNC_CLOUD_TABLE && vncRecordContainsDevicePrivateEndpoint(record)) {
+          // A scoped endpoint copied in by an older or malformed client is
+          // quarantined in place: never expose it to runtime or mirror it
+          // back out from this device.
+          continue;
+        }
         if (table === VNC_CLOUD_TABLE && applySelection) {
           const physicalTableSelected: boolean =
             this.syncSelection.selectedBusinessTables().indexOf(VNC_CLOUD_TABLE) >= 0;
@@ -13723,8 +13770,10 @@ try { this.rollbackTrackedTransaction(); } catch (_ignored) {}
   private mergeVncRecords(includeDeleted: boolean, userId: string = '', applySelection: boolean = true): VncRecord[] {
     const cloudRows: VncRecord[] = this.loadVncRecordsFromTable(VNC_CLOUD_TABLE, true, userId, applySelection);
     const localRows: VncRecord[] = this.loadVncRecordsFromTable(VNC_LOCAL_TABLE, true, userId, applySelection);
+    const privateOwners: Set<string> = vncPrivateOwnerKeys(localRows);
     const merged: Map<string, VncRecord> = new Map<string, VncRecord>();
     for (let i = 0; i < cloudRows.length; i++) {
+      if (vncRecordIsBoundToPrivateOwner(cloudRows[i], privateOwners)) { continue; }
       merged.set(vncRecordIdentity(cloudRows[i].userId, cloudRows[i].id), cloudRows[i]);
     }
     for (let i = 0; i < localRows.length; i++) {

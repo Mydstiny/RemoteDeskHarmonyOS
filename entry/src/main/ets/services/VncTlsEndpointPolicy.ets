@@ -7,6 +7,11 @@ import {
   validVncPort
 } from './VncModelPolicy';
 import { vncCanonicalJson, vncPayloadHashSha256 } from './VncRecordPolicy';
+import {
+  EndpointAddressResult,
+  endpointTransportHost,
+  parseEndpointFields
+} from './EndpointAddressPolicy';
 
 export type VncTlsEndpointOwnerType = 'host' | 'gateway';
 
@@ -48,6 +53,7 @@ export interface VncTrustOwner {
   userId: string;
   storeIdentityFingerprint: string;
   endpointBindingFingerprint: string;
+  localOnly: boolean;
 }
 
 export interface VncTlsEndpointResolution {
@@ -193,6 +199,10 @@ export function resolveVncTlsEndpoint(host: VncTlsHostInput,
   }
 
   if (host.transport === 'direct_tcp') {
+    const endpoint: EndpointAddressResult = parseEndpointFields(hostAddress, host.port);
+    if (!endpoint.ok) { return failure(host, 'E-VNC-ENDPOINT-BINDING'); }
+    const connectHost: string = endpointTransportHost(endpoint.endpoint);
+    const serverName: string = endpoint.endpoint.canonicalHost;
     if (host.gatewayId.trim() !== '' || gateway !== null) {
       return failure(host, 'E-VNC-ENDPOINT-OWNER');
     }
@@ -202,14 +212,14 @@ export function resolveVncTlsEndpoint(host: VncTlsHostInput,
     const ownerType: VncTlsEndpointOwnerType = 'host';
     const endpointBindingFingerprint: string = bindingFingerprint(
       ownerType, hostId, userId, storeIdentityFingerprint, host.transport,
-      hostAddress, host.port, hostAddress, host.tls);
+      connectHost, host.port, serverName, host.tls);
     const result: VncTlsEndpointResolution = emptyResolution(host);
     result.ok = true;
     result.endpointOwnerType = ownerType;
     result.endpointOwnerId = hostId;
-    result.connectHost = hostAddress;
+    result.connectHost = connectHost;
     result.connectPort = host.port;
-    result.serverName = hostAddress;
+    result.serverName = serverName;
     result.tlsRequired = host.tls;
     result.endpointBindingFingerprint = endpointBindingFingerprint;
     result.trustOwner = {
@@ -217,7 +227,8 @@ export function resolveVncTlsEndpoint(host: VncTlsHostInput,
       ownerId: hostId,
       userId: userId,
       storeIdentityFingerprint: storeIdentityFingerprint,
-      endpointBindingFingerprint: endpointBindingFingerprint
+      endpointBindingFingerprint: endpointBindingFingerprint,
+      localOnly: endpoint.endpoint.scopeKind === 'interface'
     };
     return result;
   }
@@ -242,6 +253,11 @@ export function resolveVncTlsEndpoint(host: VncTlsHostInput,
   if (gateway.host.trim() === '' || !validVncPort(gateway.port)) {
     return failure(host, 'E-VNC-ENDPOINT-BINDING');
   }
+  const gatewayEndpoint: EndpointAddressResult =
+    parseEndpointFields(gateway.host.trim(), gateway.port);
+  if (!gatewayEndpoint.ok) { return failure(host, 'E-VNC-ENDPOINT-BINDING'); }
+  const gatewayConnectHost: string = endpointTransportHost(gatewayEndpoint.endpoint);
+  const gatewayServerName: string = gatewayEndpoint.endpoint.canonicalHost;
   if (host.securityPolicy === 'secure_only' && !gateway.tls) {
     return failure(host, 'E-VNC-TLS-REQUIRED');
   }
@@ -255,15 +271,15 @@ export function resolveVncTlsEndpoint(host: VncTlsHostInput,
   const ownerType: VncTlsEndpointOwnerType = 'gateway';
   const endpointBindingFingerprint: string = bindingFingerprint(
     ownerType, gateway.id.trim(), userId, storeIdentityFingerprint, gateway.transport,
-    gateway.host.trim(),
-    gateway.port, gateway.host.trim(), gateway.tls);
+    gatewayConnectHost,
+    gateway.port, gatewayServerName, gateway.tls);
   const result: VncTlsEndpointResolution = emptyResolution(host);
   result.ok = true;
   result.endpointOwnerType = ownerType;
   result.endpointOwnerId = gateway.id.trim();
-  result.connectHost = gateway.host.trim();
+  result.connectHost = gatewayConnectHost;
   result.connectPort = gateway.port;
-  result.serverName = gateway.host.trim();
+  result.serverName = gatewayServerName;
   result.tlsRequired = gateway.tls;
   result.repeaterTarget = target;
   result.usedLegacyTargetFallback = usedLegacyTargetFallback;
@@ -273,7 +289,8 @@ export function resolveVncTlsEndpoint(host: VncTlsHostInput,
     ownerId: gateway.id.trim(),
     userId: userId,
     storeIdentityFingerprint: storeIdentityFingerprint,
-    endpointBindingFingerprint: endpointBindingFingerprint
+    endpointBindingFingerprint: endpointBindingFingerprint,
+    localOnly: gatewayEndpoint.endpoint.scopeKind === 'interface'
   };
   return result;
 }

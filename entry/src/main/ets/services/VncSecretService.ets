@@ -62,7 +62,8 @@ export class VncSecretService {
   }
 
   save(userId: string, ownerId: string, ownerType: VncOwnerType, kind: VncSecretKind,
-    plaintext: string, label: string, allowPlaintext: boolean = false): VncSecretSaveResult {
+    plaintext: string, label: string, allowPlaintext: boolean = false,
+    localOnly: boolean = false): VncSecretSaveResult {
     const result: VncSecretSaveResult = {
       ok: false, message: '', recordId: this.recordId(ownerId, kind), code: 'invalid'
     };
@@ -118,7 +119,7 @@ export class VncSecretService {
     next.updatedAt = now;
     next.deletedAt = 0;
     next.payloadHashSha256 = vncPayloadHashSha256(next.payload);
-    if (!this.cloud.upsertVncRecord(next)) {
+    if (!this.cloud.upsertVncRecord(next, localOnly)) {
       result.message = this.cloud.getLastMutationResult().message || 'VNC 凭据保存失败';
       return result;
     }
@@ -197,11 +198,12 @@ export class VncSecretService {
       isPlainVncSecretEnvelope(record.ciphertext);
   }
 
-  remove(userId: string, ownerId: string, kind: VncSecretKind): boolean {
+  remove(userId: string, ownerId: string, kind: VncSecretKind,
+    localOnly: boolean = false): boolean {
     const id: string = this.recordId(ownerId, kind);
     const record: VncRecord | null = this.find(userId, id);
     if (record === null) { return true; }
-    const removed: boolean = this.cloud.deleteVncRecord(userId, id);
+    const removed: boolean = this.cloud.deleteVncRecord(userId, id, localOnly);
     if (removed) { this.setPlainConsent(userId, id, false); }
     return removed;
   }

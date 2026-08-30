@@ -1263,11 +1263,15 @@ static bool ReadOptionalNapiInt(napi_env env, napi_value object, const char* key
     return true;
 }
 
-static bool NormalizePersistedEndpoint(std::string& host, int port) {
+static bool NormalizePersistedEndpoint(
+    std::string& host, int port, std::string* canonicalHost = nullptr) {
     if (port <= 0 || port > 65535) { return false; }
     const auto parsed = remotedesk::endpoint::ParseFields(
         host, static_cast<std::uint16_t>(port), remotedesk::endpoint::ParseMode::Persisted);
-    if (!parsed.ok || !parsed.endpoint.scope().empty()) { return false; }
+    if (!parsed.ok) { return false; }
+    if (canonicalHost != nullptr) {
+        *canonicalHost = parsed.endpoint.canonicalHost();
+    }
     host = remotedesk::endpoint::TransportHost(parsed.endpoint);
     return true;
 }
@@ -4605,7 +4609,7 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
         endpointValid = NormalizeServerIdentity(cfg.vncServerName);
     }
     if (!endpointValid) {
-        OH_LOG_ERROR(LOG_APP, "[ExtLoader] invalid or unsupported scoped endpoint");
+        OH_LOG_ERROR(LOG_APP, "[ExtLoader] invalid endpoint or server identity");
         napi_value errVal;
         napi_create_int32(env, protocolName == "ssh" ? ERR_SSH_PROXY_INVALID : -2, &errVal);
         return errVal;

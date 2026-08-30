@@ -4,6 +4,8 @@
 #include "vnc_certificate_probe.h"
 
 #include "common/safe_log.h"
+#include "common/happy_eyeballs_connector.h"
+#include "vnc_transport_policy.h"
 
 #include <arpa/inet.h>
 #include <cerrno>
@@ -23,11 +25,8 @@
 #include <iomanip>
 #include <limits>
 #include <memory>
-#include <condition_variable>
-#include <mutex>
 #include <sstream>
 #include <string>
-#include <thread>
 #include <vector>
 
 #if !defined(RDP_TESTS_ONLY)
@@ -61,9 +60,6 @@ constexpr size_t kMaxResolvedAddresses = 16;
 constexpr int kMaxPeerChainDepth = 8;
 constexpr int kMinTimeoutMs = 100;
 constexpr int kMaxTimeoutMs = 120000;
-constexpr int kMaxConcurrentResolvers = 8;
-
-std::atomic<int> g_activeResolvers {0};
 
 using Clock = std::chrono::steady_clock;
 
@@ -89,13 +85,6 @@ bool validAsciiEndpoint(const std::string& value) {
         }
     }
     return true;
-}
-
-bool isIpLiteral(const std::string& value) {
-    in_addr ipv4 {};
-    in6_addr ipv6 {};
-    return inet_pton(AF_INET, value.c_str(), &ipv4) == 1 ||
-        inet_pton(AF_INET6, value.c_str(), &ipv6) == 1;
 }
 
 bool hasTimeRemaining(const ProbeDeadline& deadline, int& remainingMs) {
@@ -156,169 +145,28 @@ WaitStatus waitForFd(int fd, short events, const ProbeDeadline& deadline,
     }
 }
 
-bool setNonBlocking(int fd) {
-    const int flags = ::fcntl(fd, F_GETFL, 0);
-    return flags >= 0 && ::fcntl(fd, F_SETFL, flags | O_NONBLOCK) == 0;
-}
-
-WaitStatus connectAddress(int fd, const sockaddr* address, socklen_t addressLength,
-                          const ProbeDeadline& deadline,
-                          const std::shared_ptr<std::atomic_bool>& token) {
-    if (isCancelled(token)) {
-        return WaitStatus::Cancelled;
-    }
-    int remainingMs = 0;
-    if (!hasTimeRemaining(deadline, remainingMs)) {
-        return WaitStatus::TimedOut;
-    }
-    if (::connect(fd, address, addressLength) == 0) {
-        if (isCancelled(token)) {
-            return WaitStatus::Cancelled;
-        }
-        return hasTimeRemaining(deadline, remainingMs) ? WaitStatus::Ready : WaitStatus::TimedOut;
-    }
-    if (errno != EINPROGRESS) {
-        return WaitStatus::Failed;
-    }
-    const WaitStatus waitStatus = waitForFd(fd, POLLOUT, deadline, token);
-    if (waitStatus != WaitStatus::Ready) {
-        return waitStatus;
-    }
-    int socketError = 0;
-    socklen_t socketErrorLength = sizeof(socketError);
-    if (::getsockopt(fd, SOL_SOCKET, SO_ERROR, &socketError, &socketErrorLength) != 0 ||
-        socketError != 0) {
-        return WaitStatus::Failed;
-    }
-    return WaitStatus::Ready;
-}
-
-struct ResolvedAddress {
-    sockaddr_storage storage {};
-    socklen_t length = 0;
-    int family = AF_UNSPEC;
-    int socktype = SOCK_STREAM;
-    int protocol = 0;
-};
-
-struct ResolveState {
-    std::mutex mutex;
-    std::condition_variable condition;
-    bool done = false;
-    bool abandoned = false;
-    int lookupResult = EAI_FAIL;
-    std::vector<ResolvedAddress> addresses;
-};
-
 WaitStatus resolveAddresses(const std::string& host, const std::string& port,
                             const ProbeDeadline& deadline,
                             const std::shared_ptr<std::atomic_bool>& token,
-                            std::vector<ResolvedAddress>& addresses, int& lookupResult) {
-    const int previousResolvers = g_activeResolvers.fetch_add(1, std::memory_order_acq_rel);
-    if (previousResolvers >= kMaxConcurrentResolvers) {
-        g_activeResolvers.fetch_sub(1, std::memory_order_acq_rel);
-        lookupResult = EAI_AGAIN;
+                            std::vector<remotedesk::net::ResolvedAddress>& addresses,
+                            int& lookupResult) {
+    auto resolved = remotedesk::net::ResolveTcpAddresses(
+        host, port, deadline.value, [token]() { return isCancelled(token); },
+        AF_UNSPEC, kMaxResolvedAddresses);
+    lookupResult = resolved.gaiError;
+    addresses = std::move(resolved.addresses);
+    switch (resolved.status) {
+    case remotedesk::net::ResolveStatus::Ready:
+        return addresses.empty() ? WaitStatus::Failed : WaitStatus::Ready;
+    case remotedesk::net::ResolveStatus::Cancelled:
+        return WaitStatus::Cancelled;
+    case remotedesk::net::ResolveStatus::TimedOut:
+        return WaitStatus::TimedOut;
+    case remotedesk::net::ResolveStatus::Failed:
+    case remotedesk::net::ResolveStatus::ResourceExhausted:
         return WaitStatus::Failed;
     }
-    auto state = std::make_shared<ResolveState>();
-    std::thread resolver;
-    try {
-        resolver = std::thread([state, host, port]() {
-            struct ResolverCounter {
-                ~ResolverCounter() {
-                    g_activeResolvers.fetch_sub(1, std::memory_order_acq_rel);
-                }
-            } resolverCounter;
-            int result = EAI_FAIL;
-            addrinfo* resolved = nullptr;
-            std::vector<ResolvedAddress> copied;
-            try {
-                addrinfo hints {};
-                hints.ai_family = AF_UNSPEC;
-                hints.ai_socktype = SOCK_STREAM;
-                result = ::getaddrinfo(host.c_str(), port.c_str(), &hints, &resolved);
-                if (result == 0 && resolved != nullptr) {
-                    for (addrinfo* item = resolved;
-                         item != nullptr && copied.size() < kMaxResolvedAddresses;
-                         item = item->ai_next) {
-                        if (item->ai_addr == nullptr || item->ai_addrlen <= 0 ||
-                            item->ai_addrlen > sizeof(sockaddr_storage)) {
-                            continue;
-                        }
-                        ResolvedAddress address;
-                        std::memcpy(&address.storage, item->ai_addr,
-                                    static_cast<size_t>(item->ai_addrlen));
-                        address.length = static_cast<socklen_t>(item->ai_addrlen);
-                        address.family = item->ai_family;
-                        address.socktype = item->ai_socktype;
-                        address.protocol = item->ai_protocol;
-                        copied.push_back(address);
-                    }
-                }
-            } catch (...) {
-                // Resolver threads must never let allocation/copy failures
-                // escape into std::terminate. Publish a stable lookup error.
-                result = EAI_MEMORY;
-                copied.clear();
-            }
-            if (resolved != nullptr) {
-                ::freeaddrinfo(resolved);
-            }
-            {
-                std::lock_guard<std::mutex> lock(state->mutex);
-                state->lookupResult = result;
-                if (!state->abandoned) {
-                    state->addresses = std::move(copied);
-                }
-                state->done = true;
-            }
-            state->condition.notify_one();
-        });
-    } catch (...) {
-        g_activeResolvers.fetch_sub(1, std::memory_order_acq_rel);
-        lookupResult = EAI_MEMORY;
-        return WaitStatus::Failed;
-    }
-
-    WaitStatus status = WaitStatus::Ready;
-    bool resolverDone = false;
-    {
-        std::unique_lock<std::mutex> lock(state->mutex);
-        while (!state->done) {
-            if (isCancelled(token)) {
-                state->abandoned = true;
-                status = WaitStatus::Cancelled;
-                break;
-            }
-            int remainingMs = 0;
-            if (!hasTimeRemaining(deadline, remainingMs)) {
-                state->abandoned = true;
-                status = WaitStatus::TimedOut;
-                break;
-            }
-            const auto waitMs = std::chrono::milliseconds(std::min(remainingMs, 50));
-            state->condition.wait_for(lock, waitMs);
-        }
-        const bool done = state->done;
-        resolverDone = done;
-        if (status == WaitStatus::Ready) {
-            lookupResult = state->lookupResult;
-            addresses = std::move(state->addresses);
-            if (lookupResult != 0 || addresses.empty()) {
-                status = WaitStatus::Failed;
-            }
-        }
-    }
-    if (status == WaitStatus::Ready || resolverDone) {
-        resolver.join();
-    } else {
-        // A platform resolver may remain in libc after the caller's deadline.
-        // Detach only that resolver; its shared state owns all copied results
-        // and frees the native addrinfo before publishing completion. The
-        // bounded in-flight gate prevents unbounded detached-thread growth.
-        resolver.detach();
-    }
-    return status;
+    return WaitStatus::Failed;
 }
 
 void appendBoundedPrintable(std::string& output, const unsigned char* data, size_t length,
@@ -478,7 +326,7 @@ bool verifyHostName(X509* certificate, const std::string& name) {
     if (certificate == nullptr || name.empty()) {
         return true;
     }
-    if (isIpLiteral(name)) {
+    if (vncEndpointIsIpLiteral(name)) {
         return X509_check_ip_asc(certificate, name.c_str(), 0) == 1;
     }
     return X509_check_host(certificate, name.c_str(), name.size(), 0, nullptr) == 1;
@@ -605,10 +453,14 @@ std::string vncRedactCertificateMessageForLog(const std::string& message) {
 VncCertificateInfo probeVncCertificate(const VncCertificateProbeConfig& config) {
     const int timeoutMs = boundedTimeout(config.timeoutMs);
     const ProbeDeadline deadline {Clock::now() + std::chrono::milliseconds(timeoutMs)};
+    std::string verifyName;
+    bool sendSni = false;
     if (!validAsciiEndpoint(config.host) || config.port < 1 || config.port > 65535 ||
         (config.timeoutMs != 0 && (config.timeoutMs < kMinTimeoutMs ||
                                    config.timeoutMs > kMaxTimeoutMs)) ||
-        (!config.serverName.empty() && !validAsciiEndpoint(config.serverName))) {
+        (!config.serverName.empty() && !validAsciiEndpoint(config.serverName)) ||
+        !vncResolveCertificateIdentity(
+            config.host, config.serverName, verifyName, sendSni)) {
         return errorResult(config, VncCertificateProbeErrorCode::InvalidInput);
     }
     if (isCancelled(config.cancelled)) {
@@ -616,7 +468,7 @@ VncCertificateInfo probeVncCertificate(const VncCertificateProbeConfig& config) 
     }
 
     const std::string portText = std::to_string(config.port);
-    std::vector<ResolvedAddress> addresses;
+    std::vector<remotedesk::net::ResolvedAddress> addresses;
     int lookup = EAI_FAIL;
     const WaitStatus resolveStatus = resolveAddresses(config.host, portText, deadline,
                                                       config.cancelled, addresses, lookup);
@@ -634,42 +486,23 @@ VncCertificateInfo probeVncCertificate(const VncCertificateProbeConfig& config) 
         return errorResult(config, VncCertificateProbeErrorCode::ResolveFailed);
     }
 
-    int socketFd = -1;
-    WaitStatus connectStatus = WaitStatus::Failed;
-    for (const ResolvedAddress& address : addresses) {
-        if (isCancelled(config.cancelled)) {
-            connectStatus = WaitStatus::Cancelled;
-            break;
-        }
-        socketFd = ::socket(address.family, address.socktype, address.protocol);
-        if (socketFd < 0 || !setNonBlocking(socketFd)) {
-            closeSocket(socketFd);
-            continue;
-        }
-        connectStatus = connectAddress(socketFd,
-                                       reinterpret_cast<const sockaddr*>(&address.storage),
-                                       address.length,
-                                       deadline, config.cancelled);
-        if (connectStatus == WaitStatus::Ready) {
-            break;
-        }
-        closeSocket(socketFd);
-        if (connectStatus == WaitStatus::Cancelled || connectStatus == WaitStatus::TimedOut) {
-            break;
-        }
-    }
-    if (connectStatus == WaitStatus::Cancelled) {
-        closeSocket(socketFd);
+    remotedesk::net::ConnectOptions options;
+    options.deadline = deadline.value;
+    options.cancelled = [token = config.cancelled]() { return isCancelled(token); };
+    options.restoreBlocking = false;
+    const remotedesk::net::ConnectResult connection =
+        remotedesk::net::ConnectTcpCandidates(addresses, options);
+    if (connection.status == remotedesk::net::ConnectStatus::Cancelled) {
         return errorResult(config, VncCertificateProbeErrorCode::Cancelled);
     }
-    if (connectStatus == WaitStatus::TimedOut) {
-        closeSocket(socketFd);
+    if (connection.status == remotedesk::net::ConnectStatus::TimedOut) {
         return errorResult(config, VncCertificateProbeErrorCode::ConnectTimeout);
     }
-    if (socketFd < 0 || connectStatus != WaitStatus::Ready) {
-        closeSocket(socketFd);
+    if (connection.status != remotedesk::net::ConnectStatus::Connected ||
+        connection.descriptor < 0) {
         return errorResult(config, VncCertificateProbeErrorCode::ConnectFailed);
     }
+    int socketFd = connection.descriptor;
 
     SSL_CTX* context = SSL_CTX_new(TLS_client_method());
     if (context == nullptr || SSL_CTX_set_min_proto_version(context, TLS1_2_VERSION) != 1) {
@@ -689,11 +522,7 @@ VncCertificateInfo probeVncCertificate(const VncCertificateProbeConfig& config) 
         closeSocket(socketFd);
         return errorResult(config, VncCertificateProbeErrorCode::TlsContextFailed);
     }
-    std::string verifyName = config.serverName;
-    if (verifyName.empty() && !isIpLiteral(config.host)) {
-        verifyName = config.host;
-    }
-    if (!verifyName.empty() && !isIpLiteral(verifyName) &&
+    if (sendSni &&
         SSL_set_tlsext_host_name(ssl, verifyName.c_str()) != 1) {
         SSL_free(ssl);
         SSL_CTX_free(context);

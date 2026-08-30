@@ -16,6 +16,37 @@ RDP_TEST_CASE(vnc_native_transport_allows_direct_and_repeater_only) {
     RDP_ASSERT(vncNativeRepeaterViewerModeIsAvailable("mode12"));
     RDP_ASSERT(!vncNativeRepeaterViewerModeIsAvailable("mode2"));
     RDP_ASSERT(!vncNativeRepeaterViewerModeIsAvailable("unexpected"));
+    RDP_ASSERT(vncEndpointIsIpLiteral("192.0.2.20"));
+    RDP_ASSERT(vncEndpointIsIpLiteral("2001:db8::20"));
+    RDP_ASSERT(vncEndpointIsIpLiteral("fe80::20%wlan0"));
+    RDP_ASSERT(!vncEndpointIsIpLiteral("vnc.example"));
+}
+
+RDP_TEST_CASE(vnc_scoped_ipv6_uses_transport_scope_but_scope_free_tls_identity) {
+    std::string identity;
+    bool sendSni = true;
+    RDP_ASSERT(vncResolveCertificateIdentity(
+        "[fe80::20%wlan0]", "", identity, sendSni));
+    RDP_ASSERT(identity == "fe80::20");
+    RDP_ASSERT(!sendSni);
+
+    RDP_ASSERT(vncResolveCertificateIdentity(
+        "fe80::20%wlan0", "vnc.example", identity, sendSni));
+    RDP_ASSERT(identity == "vnc.example");
+    RDP_ASSERT(sendSni);
+    RDP_ASSERT(!vncResolveCertificateIdentity(
+        "fe80::20%wlan0", "bad%identity", identity, sendSni));
+}
+
+RDP_TEST_CASE(vnc_websocket_authority_formats_ipv6_and_rfc6874_scope) {
+    std::string authority;
+    RDP_ASSERT(vncFormatWebSocketAuthority("2001:db8::20", 443, authority));
+    RDP_ASSERT(authority == "[2001:db8::20]:443");
+    RDP_ASSERT(vncFormatWebSocketAuthority("fe80::20%wlan0", 443, authority));
+    RDP_ASSERT(authority == "[fe80::20%25wlan0]:443");
+    RDP_ASSERT(vncFormatWebSocketAuthority("vnc.example", 443, authority));
+    RDP_ASSERT(authority == "vnc.example:443");
+    RDP_ASSERT(!vncFormatWebSocketAuthority("fe80::20%7", 443, authority));
 }
 
 RDP_TEST_CASE(vnc_transport_rejects_unknown_before_network_access) {
