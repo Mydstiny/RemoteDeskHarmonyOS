@@ -4,6 +4,7 @@
 #include "common/network_generation_fence.h"
 #include "extensions/protocol_adapter.h"
 
+#include <chrono>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -42,7 +43,8 @@ public:
         const ConnectionConfig& config,
         SshOperationTransportMode mode,
         remotedesk::net::NetworkGenerationSnapshot networkSnapshot,
-        SshOperationTransportHostKey& hostKey) = 0;
+        SshOperationTransportHostKey& hostKey,
+        std::chrono::steady_clock::time_point deadline) = 0;
     virtual int executeCommand(
         const std::string& command,
         remotedesk::net::NetworkGenerationSnapshot networkSnapshot,

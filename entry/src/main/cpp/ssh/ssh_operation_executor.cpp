@@ -248,7 +248,8 @@ SshHostKeyInfo probeSshHostKeyWithTransportForOperation(
     const ConnectionConfig& source,
     const std::shared_ptr<SshOperationControl>& control,
     remotedesk::net::NetworkGenerationSnapshot networkSnapshot,
-    const SshOperationTransportFactory& transportFactory) {
+    const SshOperationTransportFactory& transportFactory,
+    std::chrono::steady_clock::time_point deadline) {
     ConnectionConfig config = source;
     OperationSecretGuard secretGuard(config);
     clearTargetAuthentication(config);
@@ -264,7 +265,8 @@ SshHostKeyInfo probeSshHostKeyWithTransportForOperation(
     }
     SshOperationTransportHostKey snapshot;
     int code = operation.transport().connectForOperation(
-        config, SshOperationTransportMode::ProbeOnly, networkSnapshot, snapshot);
+        config, SshOperationTransportMode::ProbeOnly, networkSnapshot, snapshot,
+        deadline);
     code = effectiveOperationError(control, code);
     if (code != 0 || !snapshot.ok) {
         return hostKeyFailure(config, code == 0 ? ERR_SSH_HOSTKEY_MISMATCH : code);
@@ -286,7 +288,8 @@ SshAuthTestResult testSshKeyAuthWithTransportForOperation(
     const std::shared_ptr<SshOperationControl>& control,
     remotedesk::net::NetworkGenerationSnapshot networkSnapshot,
     const SshOperationTransportFactory& transportFactory,
-    const SshOperationPrivateKeyValidator& privateKeyValidator) {
+    const SshOperationPrivateKeyValidator& privateKeyValidator,
+    std::chrono::steady_clock::time_point deadline) {
     if (!hasTargetHostKeyBinding(source)) {
         return authFailure(ERR_SSH_HOSTKEY_MISMATCH);
     }
@@ -318,7 +321,8 @@ SshAuthTestResult testSshKeyAuthWithTransportForOperation(
     }
     SshOperationTransportHostKey snapshot;
     int code = operation.transport().connectForOperation(
-        config, SshOperationTransportMode::Authenticated, networkSnapshot, snapshot);
+        config, SshOperationTransportMode::Authenticated, networkSnapshot, snapshot,
+        deadline);
     code = effectiveOperationError(control, code);
     if (code != 0) { return authFailure(code); }
     return SshAuthTestResult {true, 0, "key auth succeeded"};
@@ -329,7 +333,8 @@ SshPublicKeyInstallResult installSshPublicKeyWithTransportForOperation(
     const std::shared_ptr<SshOperationControl>& control,
     remotedesk::net::NetworkGenerationSnapshot networkSnapshot,
     const SshOperationTransportFactory& transportFactory,
-    const SshOperationPublicKeyValidator& publicKeyValidator) {
+    const SshOperationPublicKeyValidator& publicKeyValidator,
+    std::chrono::steady_clock::time_point deadline) {
     if (!publicKeyValidator || !publicKeyValidator(publicKey)) {
         return installFailure(-1, "public key failed validation");
     }
@@ -349,7 +354,8 @@ SshPublicKeyInstallResult installSshPublicKeyWithTransportForOperation(
     }
     SshOperationTransportHostKey snapshot;
     int code = operation.transport().connectForOperation(
-        config, SshOperationTransportMode::Authenticated, networkSnapshot, snapshot);
+        config, SshOperationTransportMode::Authenticated, networkSnapshot, snapshot,
+        deadline);
     code = effectiveOperationError(control, code);
     if (code != 0) { return installFailure(code); }
     if (control->cancelled()) {

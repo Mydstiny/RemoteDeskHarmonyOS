@@ -4,6 +4,7 @@
 #include "ssh/ssh_session_manager.h"
 
 #include <cassert>
+#include <chrono>
 
 RDP_TEST_CASE(ssh_network_lifecycle_policy_fences_duplicate_generations) {
     RDP_ASSERT(SshNetworkLifecyclePolicy::acceptsGeneration(0, 1));
@@ -75,6 +76,31 @@ RDP_TEST_CASE(ssh_network_generation_retry_respects_cancel_deadline_and_budget) 
         SshNetworkGenerationPolicy::kMaxRouteAttempts,
         false, false, captured, current) ==
         SshNetworkRetryDecision::StopExhausted);
+}
+
+RDP_TEST_CASE(ssh_network_generation_policy_bounds_every_stage_to_original_deadline) {
+    using Clock = SshNetworkGenerationPolicy::Clock;
+    const auto startedAt = Clock::time_point(std::chrono::seconds(10));
+    const auto routeDeadline =
+        SshNetworkGenerationPolicy::initialRouteDeadline(startedAt);
+    RDP_ASSERT(routeDeadline == startedAt + std::chrono::milliseconds(
+        SshNetworkGenerationPolicy::kInitialRouteDeadlineMilliseconds));
+
+    const auto earlyStage =
+        SshNetworkGenerationPolicy::boundedStageDeadline(
+            startedAt + std::chrono::seconds(1), routeDeadline,
+            std::chrono::seconds(10));
+    RDP_ASSERT(earlyStage == startedAt + std::chrono::seconds(11));
+
+    const auto lateStage =
+        SshNetworkGenerationPolicy::boundedStageDeadline(
+            startedAt + std::chrono::seconds(25), routeDeadline,
+            std::chrono::seconds(10));
+    RDP_ASSERT(lateStage == routeDeadline);
+    RDP_ASSERT(!SshNetworkGenerationPolicy::deadlineExpired(
+        routeDeadline, routeDeadline - std::chrono::milliseconds(1)));
+    RDP_ASSERT(SshNetworkGenerationPolicy::deadlineExpired(
+        routeDeadline, routeDeadline));
 }
 
 RDP_TEST_CASE(ssh_session_manager_network_notification_runs_outside_manager_lock) {

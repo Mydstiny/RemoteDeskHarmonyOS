@@ -11569,16 +11569,18 @@ static void ExecuteSshProductionOperation(napi_env /*env*/, void* rawData) {
                 switch (data->kind) {
                     case SshProductionOperationKind::ProbeHostKey:
                         data->hostKeyResult = probeSshHostKeyForOperation(
-                            data->config, data->control, networkSnapshot);
+                            data->config, data->control, networkSnapshot,
+                            data->deadline);
                         break;
                     case SshProductionOperationKind::TestKeyAuth:
                         data->authResult = testSshKeyAuthForOperation(
-                            data->config, data->control, networkSnapshot);
+                            data->config, data->control, networkSnapshot,
+                            data->deadline);
                         break;
                     case SshProductionOperationKind::InstallPublicKey:
                         data->installResult = installSshPublicKeyForOperation(
                             data->config, data->publicKey, data->control,
-                            networkSnapshot);
+                            networkSnapshot, data->deadline);
                         break;
                 }
             });

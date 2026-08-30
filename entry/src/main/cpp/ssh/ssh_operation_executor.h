@@ -46,14 +46,18 @@ SshHostKeyInfo probeSshHostKeyWithTransportForOperation(
     const ConnectionConfig& config,
     const std::shared_ptr<SshOperationControl>& control,
     remotedesk::net::NetworkGenerationSnapshot networkSnapshot,
-    const SshOperationTransportFactory& transportFactory);
+    const SshOperationTransportFactory& transportFactory,
+    std::chrono::steady_clock::time_point deadline =
+        std::chrono::steady_clock::time_point::max());
 
 SshAuthTestResult testSshKeyAuthWithTransportForOperation(
     const ConnectionConfig& config,
     const std::shared_ptr<SshOperationControl>& control,
     remotedesk::net::NetworkGenerationSnapshot networkSnapshot,
     const SshOperationTransportFactory& transportFactory,
-    const SshOperationPrivateKeyValidator& privateKeyValidator);
+    const SshOperationPrivateKeyValidator& privateKeyValidator,
+    std::chrono::steady_clock::time_point deadline =
+        std::chrono::steady_clock::time_point::max());
 
 SshPublicKeyInstallResult installSshPublicKeyWithTransportForOperation(
     const ConnectionConfig& config,
@@ -61,6 +65,8 @@ SshPublicKeyInstallResult installSshPublicKeyWithTransportForOperation(
     const std::shared_ptr<SshOperationControl>& control,
     remotedesk::net::NetworkGenerationSnapshot networkSnapshot,
     const SshOperationTransportFactory& transportFactory,
-    const SshOperationPublicKeyValidator& publicKeyValidator);
+    const SshOperationPublicKeyValidator& publicKeyValidator,
+    std::chrono::steady_clock::time_point deadline =
+        std::chrono::steady_clock::time_point::max());
 
 #endif // SSH_OPERATION_EXECUTOR_H

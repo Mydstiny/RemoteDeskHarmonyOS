@@ -111,7 +111,8 @@ public:
     int connectForOperation(const ConnectionConfig& cfg,
                             SshOperationSessionMode mode,
                             remotedesk::net::NetworkGenerationSnapshot networkSnapshot,
-                            SshOperationHostKeySnapshot& hostKey);
+                            SshOperationHostKeySnapshot& hostKey,
+                            std::chrono::steady_clock::time_point deadline);
     void disconnect() override;
     ConnectionState getState() override;
 
@@ -321,7 +322,8 @@ private:
     int connectForOperationInternal(const ConnectionConfig& cfg,
                                     SshOperationSessionMode mode,
                                     remotedesk::net::NetworkGenerationSnapshot networkSnapshot,
-                                    SshOperationHostKeySnapshot& hostKey);
+                                    SshOperationHostKeySnapshot& hostKey,
+                                    std::chrono::steady_clock::time_point deadline);
     int authenticateConfiguredUser(const ConnectionConfig& cfg);
     void resetTransportForRecovery();
     bool reconnectAfterTransportFailure();
@@ -459,6 +461,13 @@ private:
 
     /** 非阻塞等待并重试 libssh2 操作 (0=读 1=写) */
     bool connectRouteCancelled() const;
+    std::chrono::steady_clock::time_point connectRouteDeadline() const noexcept;
+    void setConnectRouteDeadline(
+        std::chrono::steady_clock::time_point deadline) noexcept;
+    bool connectRouteDeadlineExpired() const noexcept;
+    std::chrono::steady_clock::time_point boundedConnectStageDeadline(
+        std::chrono::milliseconds stageBudget) const noexcept;
+    int routeWriteFailure(int deadlineError) const noexcept;
     bool admitRouteWrite(
         const remotedesk::net::NetworkGenerationSnapshot& networkSnapshot,
         const std::function<void()>& write) const;
@@ -500,6 +509,14 @@ private:
     // One route attempt (direct/proxy/jump) owns one process-network snapshot.
     // Reconnect captures a fresh snapshot before resolving again.
     remotedesk::net::NetworkGenerationSnapshot connectNetworkSnapshot_ {};
+    // Connection establishment and auxiliary operations share one immutable
+    // absolute deadline across DNS, proxy/jump, KEX, auth and channel work.
+    // Store clock ticks atomically because the ProxyJump relay also consults
+    // the admission boundary while the owner activates or retires a route.
+    std::atomic<std::chrono::steady_clock::duration::rep>
+        connectRouteDeadlineTicks_ {
+            std::chrono::steady_clock::time_point::max()
+                .time_since_epoch().count()};
 
     static constexpr size_t kDetachedTerminalMaxChunks = 512;
     static constexpr size_t kDetachedTerminalMaxBytes = 8 * 1024 * 1024;

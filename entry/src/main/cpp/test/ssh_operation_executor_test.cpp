@@ -41,6 +41,7 @@ struct FakeSshOperationState {
     std::vector<SshJumpHopHandoff> handoffs;
     SshOperationTransportMode mode = SshOperationTransportMode::ProbeOnly;
     remotedesk::net::NetworkGenerationSnapshot networkSnapshot {};
+    std::vector<std::chrono::steady_clock::time_point> connectDeadlines;
     bool targetPasswordEmpty = false;
     bool targetPrivateKeyEmpty = false;
     bool targetPassphraseEmpty = false;
@@ -68,8 +69,10 @@ public:
     int connectForOperation(
         const ConnectionConfig& config, SshOperationTransportMode mode,
         remotedesk::net::NetworkGenerationSnapshot networkSnapshot,
-        SshOperationTransportHostKey& hostKey) override {
+        SshOperationTransportHostKey& hostKey,
+        std::chrono::steady_clock::time_point deadline) override {
         state_->events.push_back("connect");
+        state_->connectDeadlines.push_back(deadline);
         state_->host = config.host;
         state_->port = config.port;
         state_->username = config.username;
@@ -509,23 +512,27 @@ RDP_TEST_CASE(ssh_operation_network_retry_rebuilds_install_on_current_generation
     };
     std::vector<std::uint64_t> attemptedGenerations;
     SshPublicKeyInstallResult latest;
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(1);
 
     const SshOperationNetworkRetryResult retryResult =
         runSshOperationNetworkAttempts(
-            fence.snapshot(),
-            std::chrono::steady_clock::now() + std::chrono::seconds(1),
+            fence.snapshot(), deadline,
             control, [&fence]() { return fence.snapshot(); },
             [&](remotedesk::net::NetworkGenerationSnapshot networkSnapshot) {
                 attemptedGenerations.push_back(networkSnapshot.generation);
                 latest = installSshPublicKeyWithTransportForOperation(
                     proxyJumpIpv6OperationConfig(), "ssh-ed25519 AAAATEST",
                     control, networkSnapshot, fakeFactory(state),
-                    [](const std::string&) { return true; });
+                    [](const std::string&) { return true; }, deadline);
             });
 
     RDP_ASSERT(retryResult == SshOperationNetworkRetryResult::Finished);
     RDP_ASSERT(latest.ok);
     RDP_ASSERT((attemptedGenerations == std::vector<std::uint64_t> {8200, 8201}));
+    RDP_ASSERT(state->connectDeadlines.size() == 2);
+    RDP_ASSERT(state->connectDeadlines[0] == deadline);
+    RDP_ASSERT(state->connectDeadlines[1] == deadline);
     const std::vector<std::string> expected {
         "factory", "connect", "disconnect",
         "factory", "connect", "execute", "disconnect"};

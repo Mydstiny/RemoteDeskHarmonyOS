@@ -2,6 +2,8 @@
 
 #include "common/network_generation_fence.h"
 
+#include <algorithm>
+#include <chrono>
 #include <cstdint>
 
 enum class SshNetworkRetryDecision : std::uint8_t {
@@ -20,9 +22,29 @@ enum class SshNetworkRetryDecision : std::uint8_t {
  * candidate from an obsolete network.
  */
 struct SshNetworkGenerationPolicy final {
+    using Clock = std::chrono::steady_clock;
+    using TimePoint = Clock::time_point;
+
     static constexpr std::uint32_t kMaxRouteAttempts = 3;
     static constexpr int kRetryPollMilliseconds = 50;
-    static constexpr int kInitialRetryWindowMilliseconds = 30000;
+    static constexpr int kInitialRouteDeadlineMilliseconds = 30000;
+
+    static TimePoint initialRouteDeadline(TimePoint startedAt) noexcept {
+        return startedAt + std::chrono::milliseconds(
+            kInitialRouteDeadlineMilliseconds);
+    }
+
+    static TimePoint boundedStageDeadline(
+        TimePoint startedAt, TimePoint routeDeadline,
+        std::chrono::milliseconds stageBudget) noexcept {
+        const TimePoint stageDeadline = startedAt +
+            std::max(stageBudget, std::chrono::milliseconds::zero());
+        return std::min(stageDeadline, routeDeadline);
+    }
+
+    static bool deadlineExpired(TimePoint deadline, TimePoint now) noexcept {
+        return now >= deadline;
+    }
 
     static bool shouldCancel(
         bool callerCancelled,

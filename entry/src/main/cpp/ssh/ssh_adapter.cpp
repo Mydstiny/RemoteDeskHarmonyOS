@@ -52,6 +52,22 @@ namespace {
     std::once_flag g_libssh2_init_flag;
     constexpr int kSocksCloseAfterFlush = -2;
 
+    class SshScopeExit final {
+    public:
+        explicit SshScopeExit(std::function<void()> callback)
+            : callback_(std::move(callback)) {}
+        ~SshScopeExit() {
+            if (callback_) { callback_(); }
+        }
+        SshScopeExit(const SshScopeExit&) = delete;
+        SshScopeExit& operator=(const SshScopeExit&) = delete;
+
+        void dismiss() noexcept { callback_ = nullptr; }
+
+    private:
+        std::function<void()> callback_;
+    };
+
     void encodeBase64To(const unsigned char* data, size_t len, std::string& out) {
         static const char b64chars[] =
             "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -1525,6 +1541,38 @@ bool SshAdapter::connectRouteCancelled() const {
         connectNetworkSnapshot_);
 }
 
+std::chrono::steady_clock::time_point
+SshAdapter::connectRouteDeadline() const noexcept {
+    return std::chrono::steady_clock::time_point(
+        std::chrono::steady_clock::duration(
+            connectRouteDeadlineTicks_.load(std::memory_order_acquire)));
+}
+
+void SshAdapter::setConnectRouteDeadline(
+    std::chrono::steady_clock::time_point deadline) noexcept {
+    connectRouteDeadlineTicks_.store(
+        deadline.time_since_epoch().count(), std::memory_order_release);
+}
+
+bool SshAdapter::connectRouteDeadlineExpired() const noexcept {
+    const auto deadline = connectRouteDeadline();
+    return deadline != std::chrono::steady_clock::time_point::max() &&
+        SshNetworkGenerationPolicy::deadlineExpired(
+            deadline, std::chrono::steady_clock::now());
+}
+
+std::chrono::steady_clock::time_point
+SshAdapter::boundedConnectStageDeadline(
+    std::chrono::milliseconds stageBudget) const noexcept {
+    return SshNetworkGenerationPolicy::boundedStageDeadline(
+        std::chrono::steady_clock::now(), connectRouteDeadline(), stageBudget);
+}
+
+int SshAdapter::routeWriteFailure(int deadlineError) const noexcept {
+    return connectRouteDeadlineExpired() ? deadlineError
+                                         : ERR_SSH_SESSION_CLOSED;
+}
+
 bool SshAdapter::admitRouteWrite(
     const remotedesk::net::NetworkGenerationSnapshot& networkSnapshot,
     const std::function<void()>& write) const {
@@ -1532,14 +1580,16 @@ bool SshAdapter::admitRouteWrite(
         networkSnapshot.generation == 0 ||
         networkSnapshot.generation != connectNetworkSnapshot_.generation ||
         networkSnapshot.available != connectNetworkSnapshot_.available ||
-        connectCancelRequested_.load(std::memory_order_acquire)) {
+        connectCancelRequested_.load(std::memory_order_acquire) ||
+        connectRouteDeadlineExpired()) {
         return false;
     }
     bool invoked = false;
     const bool current =
         remotedesk::net::ProcessNetworkGenerationFence().admitIfCurrent(
             networkSnapshot, [this, &write, &invoked]() {
-                if (connectCancelRequested_.load(std::memory_order_acquire)) {
+                if (connectCancelRequested_.load(std::memory_order_acquire) ||
+                    connectRouteDeadlineExpired()) {
                     return;
                 }
                 invoked = true;
@@ -1555,10 +1605,13 @@ int SshAdapter::waitSocket(int direction, int timeoutSec) {
     if (connectRouteCancelled()) {
         return -3;
     }
+    if (connectRouteDeadlineExpired()) {
+        return -2;
+    }
 
     const int timeoutMilliseconds = std::max(0, timeoutSec) * 1000;
-    const auto deadline = std::chrono::steady_clock::now() +
-        std::chrono::milliseconds(timeoutMilliseconds);
+    const auto deadline = boundedConnectStageDeadline(
+        std::chrono::milliseconds(timeoutMilliseconds));
     while (true) {
         if (connectRouteCancelled()) {
             return -3;
@@ -1594,9 +1647,10 @@ int SshAdapter::waitSocket(int direction, int timeoutSec) {
 int SshAdapter::waitSocketMilliseconds(int direction, int timeoutMs) {
     if (sockFd_ < 0) { return -1; }
     if (connectRouteCancelled()) { return -3; }
+    if (connectRouteDeadlineExpired()) { return -2; }
     const int boundedMs = std::max(1, std::min(timeoutMs, 100));
-    const auto deadline = std::chrono::steady_clock::now() +
-        std::chrono::milliseconds(boundedMs);
+    const auto deadline = boundedConnectStageDeadline(
+        std::chrono::milliseconds(boundedMs));
     while (true) {
         if (connectRouteCancelled()) { return -3; }
         const auto remaining = std::chrono::duration_cast<std::chrono::microseconds>(
@@ -1624,9 +1678,10 @@ int SshAdapter::waitSocketMilliseconds(int direction, int timeoutMs) {
 
 int SshAdapter::waitSocketOnFd(int fd, int direction, int timeoutSec) {
     if (fd < 0) { return -1; }
+    if (connectRouteDeadlineExpired()) { return -2; }
     const int timeoutMilliseconds = std::max(1, timeoutSec) * 1000;
-    const auto deadline = std::chrono::steady_clock::now() +
-        std::chrono::milliseconds(timeoutMilliseconds);
+    const auto deadline = boundedConnectStageDeadline(
+        std::chrono::milliseconds(timeoutMilliseconds));
     while (true) {
         if (connectRouteCancelled()) { return -3; }
         const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -1652,6 +1707,9 @@ int SshAdapter::waitSocketOnFd(int fd, int direction, int timeoutSec) {
 // ============================================================
 
 int SshAdapter::tcpConnect(const std::string& host, int port) {
+    if (connectRouteDeadlineExpired()) {
+        return ERR_SSH_CONNECT_TIMEOUT;
+    }
     if (host.empty() || port <= 0 || port > 65535) {
         const std::string logHost = SafeLog::MaskHost(host);
         OH_LOG_ERROR(LOG_APP, "[SSH] 地址参数无效: host=%{public}s port=%{public}d",
@@ -1671,7 +1729,7 @@ int SshAdapter::tcpConnect(const std::string& host, int port) {
     char portString[16] = {0};
     snprintf(portString, sizeof(portString), "%d", port);
     remotedesk::net::ConnectOptions options;
-    options.deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    options.deadline = boundedConnectStageDeadline(std::chrono::seconds(10));
     remotedesk::net::NetworkGenerationFence& networkFence =
         remotedesk::net::ProcessNetworkGenerationFence();
     const remotedesk::net::NetworkGenerationSnapshot networkSnapshot =
@@ -1723,13 +1781,16 @@ int SshAdapter::sendSocketBytes(const uint8_t* data, size_t len, int timeoutSec)
     }
     size_t total = 0;
     while (total < len) {
+        if (connectRouteDeadlineExpired()) {
+            return ERR_SSH_CONNECT_TIMEOUT;
+        }
         ssize_t sent = -1;
         int sendError = 0;
         if (!admitRouteWrite(connectNetworkSnapshot_, [&]() {
                 sent = ::send(sockFd_, data + total, len - total, 0);
                 sendError = sent < 0 ? errno : 0;
             })) {
-            return ERR_SSH_SESSION_CLOSED;
+            return routeWriteFailure(ERR_SSH_CONNECT_TIMEOUT);
         }
         if (sent > 0) {
             total += static_cast<size_t>(sent);
@@ -1752,6 +1813,9 @@ int SshAdapter::receiveSocketBytes(uint8_t* data, size_t len, int timeoutSec) {
     }
     size_t total = 0;
     while (total < len) {
+        if (connectRouteDeadlineExpired()) {
+            return ERR_SSH_CONNECT_TIMEOUT;
+        }
         const ssize_t received = ::recv(sockFd_, data + total, len - total, 0);
         if (received > 0) {
             total += static_cast<size_t>(received);
@@ -1776,6 +1840,9 @@ int SshAdapter::receiveProxyHeaders(std::string& headers, size_t maxLen, int tim
     // libssh2_session_handshake() gets the socket.
     char byte = 0;
     while (headers.find("\r\n\r\n") == std::string::npos) {
+        if (connectRouteDeadlineExpired()) {
+            return ERR_SSH_CONNECT_TIMEOUT;
+        }
         const ssize_t received = ::recv(sockFd_, &byte, 1, 0);
         if (received > 0) {
             headers.push_back(byte);
@@ -2132,6 +2199,9 @@ int SshAdapter::connectThroughSshJump(const ConnectionConfig& cfg) {
     };
 
     for (size_t index = 0; index < hops->size(); ++index) {
+        if (connectRouteDeadlineExpired()) {
+            return fail(ERR_SSH_CONNECT_TIMEOUT);
+        }
         const SshJumpHop& hop = (*hops)[index];
         JumpHopRuntime* runtime = nullptr;
         {
@@ -2147,6 +2217,9 @@ int SshAdapter::connectThroughSshJump(const ConnectionConfig& cfg) {
         int rc = 0;
         while ((rc = libssh2_session_handshake(runtime->session, runtime->transportFd)) ==
                LIBSSH2_ERROR_EAGAIN) {
+            if (connectRouteDeadlineExpired()) {
+                return fail(ERR_SSH_KEX_TIMEOUT);
+            }
             if (waitSocketOnFd(runtime->transportFd, 2,
                                std::max(1, static_cast<int>(hop.connectTimeoutMs / 1000))) != 0) {
                 return fail(ERR_SSH_KEX_TIMEOUT);
@@ -2174,12 +2247,15 @@ int SshAdapter::connectThroughSshJump(const ConnectionConfig& cfg) {
 
         char* methods = nullptr;
         while (true) {
+            if (connectRouteDeadlineExpired()) {
+                return fail(ERR_SSH_AUTH_TIMEOUT);
+            }
             if (!admitRouteWrite(connectNetworkSnapshot_, [&]() {
                     methods = libssh2_userauth_list(
                         runtime->session, hop.username.c_str(),
                         hop.username.size());
-                })) {
-                return fail(ERR_SSH_SESSION_CLOSED);
+            })) {
+                return fail(routeWriteFailure(ERR_SSH_AUTH_TIMEOUT));
             }
             if (methods != nullptr ||
                 libssh2_session_last_errno(runtime->session) !=
@@ -2220,6 +2296,10 @@ int SshAdapter::connectThroughSshJump(const ConnectionConfig& cfg) {
             int authResult = 0;
             while (true) {
                 authResponseAdmission_.reset();
+                if (connectRouteDeadlineExpired()) {
+                    authPromptHop_ = "target";
+                    return ERR_SSH_AUTH_TIMEOUT;
+                }
                 if (connectRouteCancelled()) {
                     authPromptHop_ = "target";
                     return ERR_SSH_SESSION_CLOSED;
@@ -2228,6 +2308,10 @@ int SshAdapter::connectThroughSshJump(const ConnectionConfig& cfg) {
                     runtime->session, hop.username.c_str(),
                     &sshJumpKeyboardInteractiveCallback);
                 authResponseAdmission_.reset();
+                if (connectRouteDeadlineExpired()) {
+                    authPromptHop_ = "target";
+                    return ERR_SSH_AUTH_TIMEOUT;
+                }
                 if (connectRouteCancelled()) {
                     authPromptHop_ = "target";
                     return ERR_SSH_SESSION_CLOSED;
@@ -2248,6 +2332,9 @@ int SshAdapter::connectThroughSshJump(const ConnectionConfig& cfg) {
             if (privateKey.empty()) { return fail(ERR_SSH_PROXY_AUTH); }
             const char* keyPassphrase = passphrase.empty() ? nullptr : passphrase.c_str();
             while (true) {
+                if (connectRouteDeadlineExpired()) {
+                    return fail(ERR_SSH_AUTH_TIMEOUT);
+                }
                 if (!admitRouteWrite(connectNetworkSnapshot_, [&]() {
                         rc = libssh2_userauth_publickey_frommemory(
                             runtime->session, hop.username.c_str(),
@@ -2255,7 +2342,7 @@ int SshAdapter::connectThroughSshJump(const ConnectionConfig& cfg) {
                             privateKey.c_str(), privateKey.size(),
                             keyPassphrase);
                     })) {
-                    return fail(ERR_SSH_SESSION_CLOSED);
+                    return fail(routeWriteFailure(ERR_SSH_AUTH_TIMEOUT));
                 }
                 if (rc != LIBSSH2_ERROR_EAGAIN) { break; }
                 if (waitSocketOnFd(runtime->transportFd, 2, 30) != 0) {
@@ -2267,12 +2354,15 @@ int SshAdapter::connectThroughSshJump(const ConnectionConfig& cfg) {
         } else {
             if (password.empty()) { return fail(ERR_SSH_PROXY_AUTH); }
             while (true) {
+                if (connectRouteDeadlineExpired()) {
+                    return fail(ERR_SSH_AUTH_TIMEOUT);
+                }
                 if (!admitRouteWrite(connectNetworkSnapshot_, [&]() {
                         rc = libssh2_userauth_password(
                             runtime->session, hop.username.c_str(),
                             password.c_str());
                     })) {
-                    return fail(ERR_SSH_SESSION_CLOSED);
+                    return fail(routeWriteFailure(ERR_SSH_AUTH_TIMEOUT));
                 }
                 if (rc != LIBSSH2_ERROR_EAGAIN) { break; }
                 if (waitSocketOnFd(runtime->transportFd, 2, 30) != 0) {
@@ -2294,12 +2384,18 @@ int SshAdapter::connectThroughSshJump(const ConnectionConfig& cfg) {
             ? (*hops)[index + 1].host : normalizedTargetHost;
         const int nextPort = index + 1 < hops->size()
             ? (*hops)[index + 1].port : cfg.port;
+        if (connectRouteDeadlineExpired()) {
+            return fail(ERR_SSH_CONNECT_TIMEOUT);
+        }
         LIBSSH2_CHANNEL* channel = nullptr;
         while ((channel = libssh2_channel_direct_tcpip_ex(
                     runtime->session, nextHost.c_str(), nextPort,
                     "127.0.0.1", 22)) == nullptr) {
             if (libssh2_session_last_errno(runtime->session) != LIBSSH2_ERROR_EAGAIN) {
                 return fail(ERR_SSH_PROXY_FAILED);
+            }
+            if (connectRouteDeadlineExpired()) {
+                return fail(ERR_SSH_CONNECT_TIMEOUT);
             }
             if (waitSocketOnFd(runtime->transportFd, 2, 30) != 0) {
                 return fail(ERR_SSH_CONNECT_TIMEOUT);
@@ -2349,6 +2445,7 @@ void SshAdapter::sshJumpRelayLoop() {
     std::array<uint8_t, SSH_BUFFER_SIZE> buffer {};
 
     while (!jumpRelayStopRequested_.load(std::memory_order_acquire)) {
+        if (connectRouteDeadlineExpired()) { break; }
         bool progress = false;
         bool relayFailure = false;
         fd_set readSet;
@@ -2526,6 +2623,9 @@ int SshAdapter::verifyHostKey(LIBSSH2_SESSION* session,
                               bool required, const char* endpointLabel,
                               const std::string& endpointHost, int endpointPort,
                               int hopIndex) {
+    if (connectRouteDeadlineExpired()) {
+        return ERR_SSH_AUTH_TIMEOUT;
+    }
     if (session == nullptr) {
         return ERR_SSH_SESSION_INIT;
     }
@@ -2570,7 +2670,8 @@ int SshAdapter::verifyHostKey(LIBSSH2_SESSION* session,
         endpointLabel ? endpointLabel : "SSH endpoint", savedCfg_.sshTrustHostId,
         savedCfg_.sshHostKeyRouteIdentity,
         endpointHost, endpointPort, hopIndex, sshHostKeyTypeName(keyType), currentFp,
-        currentRaw, expectedFingerprintSha256, hasExpectedKey);
+        currentRaw, expectedFingerprintSha256, hasExpectedKey,
+        connectRouteDeadline());
     setSshLifecycleState(SshSessionLifecycleState::Authenticating);
     switch (waitResult) {
         case SshAuthPromptWaitResult::Cancelled:
@@ -2604,6 +2705,9 @@ int SshAdapter::sshHandshake() {
     if (!assertSessionOwner("handshake")) {
         return ERR_SSH_SESSION_INIT;
     }
+    if (connectRouteDeadlineExpired()) {
+        return ERR_SSH_KEX_TIMEOUT;
+    }
     session_ = libssh2_session_init();
     if (!session_) {
         OH_LOG_ERROR(LOG_APP, "[SSH] libssh2_session_init 失败");
@@ -2626,6 +2730,11 @@ int SshAdapter::sshHandshake() {
     // KEX 握手 (非阻塞 + select 轮询)
     int rc;
     while ((rc = libssh2_session_handshake(session_, sockFd_)) == LIBSSH2_ERROR_EAGAIN) {
+        if (connectRouteDeadlineExpired()) {
+            libssh2_session_free(session_);
+            session_ = nullptr;
+            return ERR_SSH_KEX_TIMEOUT;
+        }
         int w = waitSocket(2, 30); // 30s KEX timeout
         if (w != 0) {
             OH_LOG_ERROR(LOG_APP, "[SSH] KEX 握手超时");
@@ -2679,12 +2788,15 @@ int SshAdapter::authenticatePassword() {
     // 查询服务器支持的认证方法
     char* userList = nullptr;
     while (true) {
+        if (connectRouteDeadlineExpired()) {
+            return ERR_SSH_AUTH_TIMEOUT;
+        }
         if (!admitRouteWrite(connectNetworkSnapshot_, [&]() {
                 userList = libssh2_userauth_list(
                     session_, savedCfg_.username.c_str(),
                     savedCfg_.username.length());
             })) {
-            return ERR_SSH_SESSION_CLOSED;
+            return routeWriteFailure(ERR_SSH_AUTH_TIMEOUT);
         }
         if (userList != nullptr ||
             libssh2_session_last_errno(session_) != LIBSSH2_ERROR_EAGAIN) {
@@ -2708,12 +2820,15 @@ int SshAdapter::authenticatePassword() {
     // 密码认证 (非阻塞)
     int rc;
     while (true) {
+        if (connectRouteDeadlineExpired()) {
+            return ERR_SSH_AUTH_TIMEOUT;
+        }
         if (!admitRouteWrite(connectNetworkSnapshot_, [&]() {
                 rc = libssh2_userauth_password(
                     session_, savedCfg_.username.c_str(),
                     savedCfg_.password.c_str());
             })) {
-            return ERR_SSH_SESSION_CLOSED;
+            return routeWriteFailure(ERR_SSH_AUTH_TIMEOUT);
         }
         if (rc != LIBSSH2_ERROR_EAGAIN) { break; }
         int w = waitSocket(2, 30); // 30s auth timeout
@@ -2774,6 +2889,9 @@ int SshAdapter::fillKeyboardInteractiveResponses(
         static_cast<uint32_t>(numPrompts) > SshAuthPromptBroker::kMaxPrompts) {
         return ERR_SSH_AUTH_FAILED;
     }
+    if (connectRouteDeadlineExpired()) {
+        return ERR_SSH_AUTH_TIMEOUT;
+    }
 
     for (int index = 0; index < numPrompts; ++index) {
         responses[index].text = nullptr;
@@ -2814,7 +2932,7 @@ int SshAdapter::fillKeyboardInteractiveResponses(
             const SshAuthPromptWaitResult waitResult = authPromptBroker_.waitForResponse(
                 diagnostics_.snapshot().sessionId, diagnostics_.sessionGeneration(),
                 targetHost, hop, name, nameLen, instruction, instructionLen,
-                promptList, values);
+                promptList, values, connectRouteDeadline());
             setSshLifecycleState(SshSessionLifecycleState::Authenticating);
             switch (waitResult) {
                 case SshAuthPromptWaitResult::Responded:
@@ -2834,6 +2952,9 @@ int SshAdapter::fillKeyboardInteractiveResponses(
 
     if (connectCancelRequested_.load(std::memory_order_acquire)) {
         return ERR_SSH_SESSION_CLOSED;
+    }
+    if (connectRouteDeadlineExpired()) {
+        return ERR_SSH_AUTH_TIMEOUT;
     }
     remotedesk::net::NetworkGenerationAdmission admission =
         remotedesk::net::ProcessNetworkGenerationFence().acquireAdmission(
@@ -2885,12 +3006,15 @@ int SshAdapter::authenticateKeyboardInteractive(bool allowPasswordFallback) {
 
     char* userList = nullptr;
     while (true) {
+        if (connectRouteDeadlineExpired()) {
+            return ERR_SSH_AUTH_TIMEOUT;
+        }
         if (!admitRouteWrite(connectNetworkSnapshot_, [&]() {
                 userList = libssh2_userauth_list(
                     session_, savedCfg_.username.c_str(),
                     static_cast<unsigned int>(savedCfg_.username.size()));
             })) {
-            return ERR_SSH_SESSION_CLOSED;
+            return routeWriteFailure(ERR_SSH_AUTH_TIMEOUT);
         }
         if (userList != nullptr ||
             libssh2_session_last_errno(session_) != LIBSSH2_ERROR_EAGAIN) {
@@ -2920,6 +3044,9 @@ int SshAdapter::authenticateKeyboardInteractive(bool allowPasswordFallback) {
     int rc;
     while (true) {
         authResponseAdmission_.reset();
+        if (connectRouteDeadlineExpired()) {
+            return ERR_SSH_AUTH_TIMEOUT;
+        }
         if (connectRouteCancelled()) {
             return ERR_SSH_SESSION_CLOSED;
         }
@@ -2927,6 +3054,9 @@ int SshAdapter::authenticateKeyboardInteractive(bool allowPasswordFallback) {
             session_, savedCfg_.username.c_str(),
             &SshAdapter::keyboardInteractiveCallback);
         authResponseAdmission_.reset();
+        if (connectRouteDeadlineExpired()) {
+            return ERR_SSH_AUTH_TIMEOUT;
+        }
         if (connectRouteCancelled()) { return ERR_SSH_SESSION_CLOSED; }
         if (rc != LIBSSH2_ERROR_EAGAIN) { break; }
         int w = waitSocket(2, 30);
@@ -2969,13 +3099,16 @@ int SshAdapter::authenticatePublicKey(const std::string& username,
 
     int rc;
     while (true) {
+        if (connectRouteDeadlineExpired()) {
+            return ERR_SSH_AUTH_TIMEOUT;
+        }
         if (!admitRouteWrite(connectNetworkSnapshot_, [&]() {
                 rc = libssh2_userauth_publickey_frommemory(
                     session_, username.c_str(), username.length(),
                     nullptr, 0, privateKeyPem.c_str(),
                     privateKeyPem.length(), pass);
             })) {
-            return ERR_SSH_SESSION_CLOSED;
+            return routeWriteFailure(ERR_SSH_AUTH_TIMEOUT);
         }
         if (rc != LIBSSH2_ERROR_EAGAIN) { break; }
         int w = waitSocket(2, 30);
@@ -3033,8 +3166,12 @@ int SshAdapter::openChannel() {
         return ERR_SSH_CHANNEL_OPEN;
     }
     if (!session_) { return ERR_SSH_CHANNEL_OPEN; }
+    if (connectRouteDeadlineExpired()) { return ERR_SSH_CHANNEL_OPEN; }
 
     while ((channel_ = libssh2_channel_open_session(session_)) == nullptr) {
+        if (connectRouteDeadlineExpired()) {
+            return ERR_SSH_CHANNEL_OPEN;
+        }
         if (libssh2_session_last_errno(session_) == LIBSSH2_ERROR_EAGAIN) {
             int w = waitSocket(2, 15); // 15s channel timeout
             if (w != 0) {
@@ -3064,15 +3201,20 @@ int SshAdapter::requestPty(int cols, int rows) {
         lastPtyFailureClass_ = SshPtyFailureClass::PERMANENT;
         return ERR_SSH_PTY_FAILED;
     }
-
     auto failPty = [this](int libssh2Error) {
         lastPtyLibssh2Error_ = libssh2Error;
         lastPtyFailureClass_ = classifyPtyFailure(libssh2Error);
         return ERR_SSH_PTY_FAILED;
     };
+    if (connectRouteDeadlineExpired()) {
+        return failPty(LIBSSH2_ERROR_TIMEOUT);
+    }
 
     int rc;
     while ((rc = libssh2_channel_request_pty(channel_, "xterm-256color")) == LIBSSH2_ERROR_EAGAIN) {
+        if (connectRouteDeadlineExpired()) {
+            return failPty(LIBSSH2_ERROR_TIMEOUT);
+        }
         int w = waitSocket(2, 15);
         if (w != 0) {
             OH_LOG_ERROR(LOG_APP, "[SSH] PTY 请求超时");
@@ -3088,6 +3230,9 @@ int SshAdapter::requestPty(int cols, int rows) {
     // 静默当成成功，否则远端会以默认尺寸启动并破坏终端布局。
     while ((rc = libssh2_channel_request_pty_size(channel_, cols, rows)) ==
            LIBSSH2_ERROR_EAGAIN) {
+        if (connectRouteDeadlineExpired()) {
+            return failPty(LIBSSH2_ERROR_TIMEOUT);
+        }
         int w = waitSocket(2, 15);
         if (w != 0) {
             OH_LOG_ERROR(LOG_APP, "[SSH] PTY 尺寸请求超时");
@@ -3107,10 +3252,16 @@ int SshAdapter::requestSessionLocale(const std::string& locale) {
     if (!assertSessionOwner("request_session_locale") || !channel_) {
         return LIBSSH2_ERROR_BAD_USE;
     }
+    if (connectRouteDeadlineExpired()) {
+        return LIBSSH2_ERROR_TIMEOUT;
+    }
 
     int rc;
     while ((rc = libssh2_channel_setenv(channel_, "LANG", locale.c_str())) ==
            LIBSSH2_ERROR_EAGAIN) {
+        if (connectRouteDeadlineExpired()) {
+            return LIBSSH2_ERROR_TIMEOUT;
+        }
         const int waitResult = waitSocket(2, 15);
         if (waitResult != 0) {
             OH_LOG_WARN(LOG_APP,
@@ -3137,9 +3288,13 @@ int SshAdapter::startShell() {
         return ERR_SSH_SHELL_FAILED;
     }
     if (!channel_) { return ERR_SSH_SHELL_FAILED; }
+    if (connectRouteDeadlineExpired()) { return ERR_SSH_SHELL_FAILED; }
 
     int rc;
     while ((rc = libssh2_channel_shell(channel_)) == LIBSSH2_ERROR_EAGAIN) {
+        if (connectRouteDeadlineExpired()) {
+            return ERR_SSH_SHELL_FAILED;
+        }
         int w = waitSocket(2, 15);
         if (w != 0) {
             OH_LOG_ERROR(LOG_APP, "[SSH] 启动 Shell 超时");
@@ -3185,10 +3340,12 @@ int SshAdapter::connect(const ConnectionConfig& cfg) {
 int SshAdapter::connectForOperation(
     const ConnectionConfig& cfg, SshOperationSessionMode mode,
     remotedesk::net::NetworkGenerationSnapshot networkSnapshot,
-    SshOperationHostKeySnapshot& hostKey) {
+    SshOperationHostKeySnapshot& hostKey,
+    std::chrono::steady_clock::time_point deadline) {
     hostKey = SshOperationHostKeySnapshot {};
     if (isReactorThread()) {
-        return connectForOperationInternal(cfg, mode, networkSnapshot, hostKey);
+        return connectForOperationInternal(
+            cfg, mode, networkSnapshot, hostKey, deadline);
     }
 
     const bool hadPreviousState =
@@ -3198,20 +3355,27 @@ int SshAdapter::connectForOperation(
         connectCancelRequested_.store(false, std::memory_order_release);
     }
     startReader();
-    return runOnReactor([this, &cfg, mode, networkSnapshot, &hostKey]() {
-        return connectForOperationInternal(
-            cfg, mode, networkSnapshot, hostKey);
-    });
+    return runOnReactor(
+        [this, &cfg, mode, networkSnapshot, &hostKey, deadline]() {
+            return connectForOperationInternal(
+                cfg, mode, networkSnapshot, hostKey, deadline);
+        });
 }
 
 int SshAdapter::connectForOperationInternal(
     const ConnectionConfig& cfg, SshOperationSessionMode mode,
     remotedesk::net::NetworkGenerationSnapshot networkSnapshot,
-    SshOperationHostKeySnapshot& hostKey) {
+    SshOperationHostKeySnapshot& hostKey,
+    std::chrono::steady_clock::time_point deadline) {
     if (!assertSessionOwner("operation_connect")) {
         return ERR_SSH_SESSION_INIT;
     }
     std::lock_guard<std::recursive_mutex> lifecycleLock(lifecycleMutex_);
+    const auto previousDeadline = connectRouteDeadline();
+    setConnectRouteDeadline(deadline);
+    SshScopeExit deadlineRestore([this, previousDeadline]() {
+        setConnectRouteDeadline(previousDeadline);
+    });
     hostKey = SshOperationHostKeySnapshot {};
     authPromptBroker_.resetForNewConnection();
     authPromptFailure_.store(0, std::memory_order_release);
@@ -3222,6 +3386,10 @@ int SshAdapter::connectForOperationInternal(
     if (connectCancelRequested_.load(std::memory_order_acquire)) {
         disconnect();
         return ERR_SSH_AUTH_CANCELLED;
+    }
+    if (connectRouteDeadlineExpired()) {
+        disconnect();
+        return ERR_SSH_CONNECT_TIMEOUT;
     }
     remotedesk::net::NetworkGenerationFence& networkFence =
         remotedesk::net::ProcessNetworkGenerationFence();
@@ -3247,6 +3415,10 @@ int SshAdapter::connectForOperationInternal(
     if (result != 0) {
         disconnect();
         return result;
+    }
+    if (connectRouteDeadlineExpired()) {
+        disconnect();
+        return ERR_SSH_CONNECT_TIMEOUT;
     }
     result = sshHandshake();
     if (result != 0) {
@@ -3283,6 +3455,10 @@ int SshAdapter::connectForOperationInternal(
             return result;
         }
     }
+    if (connectRouteDeadlineExpired()) {
+        disconnect();
+        return ERR_SSH_CONNECT_TIMEOUT;
+    }
     if (connectRouteCancelled()) {
         disconnect();
         return ERR_SSH_SESSION_CLOSED;
@@ -3290,6 +3466,9 @@ int SshAdapter::connectForOperationInternal(
     setState(ConnectionState::CONNECTED,
              mode == SshOperationSessionMode::Authenticated
                  ? "SSH operation authenticated" : "SSH operation probe ready");
+    // Keep the caller's immutable operation deadline active for a following
+    // route-bound command/SFTP step. disconnect() retires it with the route.
+    deadlineRestore.dismiss();
     return 0;
 }
 
@@ -3298,6 +3477,14 @@ int SshAdapter::connectInternal(const ConnectionConfig& cfg, bool preserveOwner)
         return ERR_SSH_SESSION_INIT;
     }
     std::lock_guard<std::recursive_mutex> lifecycleLock(lifecycleMutex_);
+    const auto previousDeadline = connectRouteDeadline();
+    const auto routeDeadline =
+        SshNetworkGenerationPolicy::initialRouteDeadline(
+            std::chrono::steady_clock::now());
+    setConnectRouteDeadline(routeDeadline);
+    SshScopeExit deadlineRestore([this, previousDeadline]() {
+        setConnectRouteDeadline(previousDeadline);
+    });
     if (!preserveOwner) {
         setSshLifecycleState(SshSessionLifecycleState::Created);
         networkAvailable_.store(true, std::memory_order_release);
@@ -3344,6 +3531,9 @@ int SshAdapter::connectInternal(const ConnectionConfig& cfg, bool preserveOwner)
     // 保存配置 (用于后续认证和重连)
     savedCfg_ = cfg;
     auto attemptConnect = [this, &cfg]() -> std::pair<int, std::string> {
+        if (connectRouteDeadlineExpired()) {
+            return {ERR_SSH_CONNECT_TIMEOUT, "SSH connection deadline exceeded"};
+        }
         ioGeneration_.fetch_add(1, std::memory_order_acq_rel);
         setState(ConnectionState::CONNECTING, "SSH connecting");
 
@@ -3420,35 +3610,40 @@ int SshAdapter::connectInternal(const ConnectionConfig& cfg, bool preserveOwner)
         ? 1U : SshPtyRecoveryPolicy::kMaxInitialAttempts;
     uint32_t ptyAttemptsStarted = 0;
     uint32_t networkAttemptsStarted = 1;
-    auto networkRetryDeadline = std::chrono::steady_clock::time_point::max();
     while (true) {
         ++ptyAttemptsStarted;
         const auto outcome = attemptConnect();
         remotedesk::net::NetworkGenerationSnapshot currentNetwork =
             networkFence.snapshot();
+        if (connectRouteDeadlineExpired()) {
+            return failConnect(
+                ERR_SSH_CONNECT_TIMEOUT,
+                "SSH connection deadline exceeded");
+        }
         if (networkFence.shouldCancel(connectNetworkSnapshot_)) {
-            if (networkRetryDeadline ==
-                std::chrono::steady_clock::time_point::max()) {
-                networkRetryDeadline = std::chrono::steady_clock::now() +
-                    std::chrono::milliseconds(
-                        SshNetworkGenerationPolicy::kInitialRetryWindowMilliseconds);
-            }
             const auto retryDecision = [&]() {
                 return SshNetworkGenerationPolicy::retryDecision(
                     networkAttemptsStarted,
                     connectCancelRequested_.load(std::memory_order_acquire) ||
                         !readerRunning_.load(std::memory_order_acquire),
-                    std::chrono::steady_clock::now() >= networkRetryDeadline,
+                    std::chrono::steady_clock::now() >= routeDeadline,
                     connectNetworkSnapshot_, currentNetwork);
             };
             SshNetworkRetryDecision decision = retryDecision();
             while (decision ==
                    SshNetworkRetryDecision::WaitForAvailableNetwork) {
+                const auto now = std::chrono::steady_clock::now();
+                if (now >= routeDeadline) {
+                    decision = SshNetworkRetryDecision::StopDeadline;
+                    break;
+                }
                 std::unique_lock<std::mutex> retryLock(reactorCommandMutex_);
-                reactorCommandCondition_.wait_for(
+                reactorCommandCondition_.wait_until(
                     retryLock,
-                    std::chrono::milliseconds(
-                        SshNetworkGenerationPolicy::kRetryPollMilliseconds),
+                    std::min(
+                        routeDeadline,
+                        now + std::chrono::milliseconds(
+                            SshNetworkGenerationPolicy::kRetryPollMilliseconds)),
                     [this]() {
                         return connectCancelRequested_.load(
                                    std::memory_order_acquire) ||
@@ -3504,9 +3699,13 @@ int SshAdapter::connectInternal(const ConnectionConfig& cfg, bool preserveOwner)
         resetTransportForRecovery();
         prepareAuthenticationAttempt();
         std::unique_lock<std::mutex> retryLock(reactorCommandMutex_);
-        reactorCommandCondition_.wait_for(
+        const auto retryNow = std::chrono::steady_clock::now();
+        reactorCommandCondition_.wait_until(
             retryLock,
-            std::chrono::milliseconds(SshPtyRecoveryPolicy::kRetryDelayMilliseconds),
+            std::min(
+                routeDeadline,
+                retryNow + std::chrono::milliseconds(
+                    SshPtyRecoveryPolicy::kRetryDelayMilliseconds)),
             [this]() {
                 return connectCancelRequested_.load(std::memory_order_acquire) ||
                     !readerRunning_.load(std::memory_order_acquire);
@@ -3514,6 +3713,11 @@ int SshAdapter::connectInternal(const ConnectionConfig& cfg, bool preserveOwner)
         if (connectCancelRequested_.load(std::memory_order_acquire) ||
             !readerRunning_.load(std::memory_order_acquire)) {
             return failConnect(ERR_SSH_SESSION_CLOSED, "SSH connect cancelled during PTY recovery");
+        }
+        if (connectRouteDeadlineExpired()) {
+            return failConnect(
+                ERR_SSH_CONNECT_TIMEOUT,
+                "SSH connection deadline exceeded during PTY recovery");
         }
     }
 }
@@ -3604,6 +3808,7 @@ void SshAdapter::disconnect() {
     transportRecoveryRequested_.store(false, std::memory_order_release);
     recoveryAttemptInProgress_.store(false, std::memory_order_release);
     networkAvailable_.store(true, std::memory_order_release);
+    setConnectRouteDeadline(std::chrono::steady_clock::time_point::max());
     forwardingManager_.resetRuntimeAfterTransportClose();
     // Do not invoke user code while sessionMutex_ is held. A state callback
     // can synchronously update the page and call back into disconnect/send.
@@ -4980,8 +5185,8 @@ int SshAdapter::executeChannelRequest(
             return executeChannelRequest(request, subsystem, result, timeoutMs);
         });
     }
-    const auto deadline = std::chrono::steady_clock::now() +
-        std::chrono::milliseconds(timeoutMs);
+    const auto deadline = boundedConnectStageDeadline(
+        std::chrono::milliseconds(timeoutMs));
 
     std::lock_guard<std::recursive_mutex> lifecycleLock(lifecycleMutex_);
     std::unique_lock<std::mutex> sessionLock(sessionMutex_);
@@ -4996,6 +5201,9 @@ int SshAdapter::executeChannelRequest(
              !remotedesk::net::ProcessNetworkGenerationFence().shouldCancel(
                  *requiredNetworkSnapshot));
     };
+    if (std::chrono::steady_clock::now() >= deadline) {
+        return ERR_SSH_COMMAND_TIMEOUT;
+    }
     if (!session_ ||
         state_.load(std::memory_order_acquire) != ConnectionState::CONNECTED ||
         !requiredRouteCurrent()) {
@@ -5029,6 +5237,9 @@ int SshAdapter::executeChannelRequest(
 
     LIBSSH2_CHANNEL* commandChannel = nullptr;
     while ((commandChannel = libssh2_channel_open_session(session_)) == nullptr) {
+        if (std::chrono::steady_clock::now() >= deadline) {
+            return ERR_SSH_COMMAND_TIMEOUT;
+        }
         if (libssh2_session_last_errno(session_) != LIBSSH2_ERROR_EAGAIN) {
             return ERR_SSH_CHANNEL_OPEN;
         }
@@ -5052,6 +5263,10 @@ int SshAdapter::executeChannelRequest(
 
     int startupResult = LIBSSH2_ERROR_EAGAIN;
     while (true) {
+        if (std::chrono::steady_clock::now() >= deadline) {
+            closeChannel();
+            return ERR_SSH_COMMAND_TIMEOUT;
+        }
         if (requiredNetworkSnapshot != nullptr) {
             if (!admitRouteWrite(*requiredNetworkSnapshot, [&]() {
                     startupResult = subsystem
@@ -5061,7 +5276,7 @@ int SshAdapter::executeChannelRequest(
                             commandChannel, request.c_str());
                 })) {
                 closeChannel();
-                return ERR_SSH_SESSION_CLOSED;
+                return routeWriteFailure(ERR_SSH_COMMAND_TIMEOUT);
             }
         } else {
             startupResult = subsystem

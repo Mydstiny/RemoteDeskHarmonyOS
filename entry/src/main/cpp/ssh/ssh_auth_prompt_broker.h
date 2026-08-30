@@ -78,11 +78,21 @@ public:
         const std::string& hop, const char* name, int nameLen,
         const char* instruction, int instructionLen,
         const std::vector<SshAuthPrompt>& prompts,
-        std::vector<std::string>& responses) {
+        std::vector<std::string>& responses,
+        std::chrono::steady_clock::time_point absoluteDeadline =
+            std::chrono::steady_clock::time_point::max()) {
         responses.clear();
         if (prompts.empty()) {
             return SshAuthPromptWaitResult::Responded;
         }
+        const auto startedAt = std::chrono::steady_clock::now();
+        const auto deadline = std::min(startedAt + kTimeout, absoluteDeadline);
+        if (deadline <= startedAt) {
+            return SshAuthPromptWaitResult::TimedOut;
+        }
+        const auto remainingMilliseconds =
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                deadline - startedAt).count();
 
         SshAuthPromptRequest request;
         {
@@ -104,7 +114,8 @@ public:
                 request.prompts.resize(kMaxPrompts);
             }
             request.expiresAtMs = nowMs() +
-                static_cast<uint64_t>(kTimeout.count()) * 1000ULL;
+                static_cast<uint64_t>(
+                    std::max<int64_t>(0, remainingMilliseconds));
             pendingRequest_ = request;
             pending_ = true;
             responseReady_ = false;
@@ -114,7 +125,6 @@ public:
         cv_.notify_all();
 
         std::unique_lock<std::mutex> lock(mutex_);
-        const auto deadline = std::chrono::steady_clock::now() + kTimeout;
         while (!responseReady_ && !cancelled_ && !closed_) {
             if (cv_.wait_until(lock, deadline) == std::cv_status::timeout) {
                 break;
@@ -141,7 +151,17 @@ public:
         const std::string& endpointHost, int endpointPort, int hopIndex,
         const std::string& algorithm, const std::string& fingerprintSha256,
         const std::string& rawBase64, const std::string& expectedFingerprintSha256,
-        bool changed) {
+        bool changed,
+        std::chrono::steady_clock::time_point absoluteDeadline =
+            std::chrono::steady_clock::time_point::max()) {
+        const auto startedAt = std::chrono::steady_clock::now();
+        const auto deadline = std::min(startedAt + kTimeout, absoluteDeadline);
+        if (deadline <= startedAt) {
+            return SshAuthPromptWaitResult::TimedOut;
+        }
+        const auto remainingMilliseconds =
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                deadline - startedAt).count();
         SshAuthPromptRequest request;
         {
             std::lock_guard<std::mutex> lock(mutex_);
@@ -167,7 +187,8 @@ public:
             request.expectedHostKeyFingerprintSha256 = bounded(expectedFingerprintSha256, 255);
             request.hostKeyChanged = changed;
             request.expiresAtMs = nowMs() +
-                static_cast<uint64_t>(kTimeout.count()) * 1000ULL;
+                static_cast<uint64_t>(
+                    std::max<int64_t>(0, remainingMilliseconds));
             pendingRequest_ = request;
             pending_ = true;
             responseReady_ = false;
@@ -177,7 +198,6 @@ public:
         cv_.notify_all();
 
         std::unique_lock<std::mutex> lock(mutex_);
-        const auto deadline = std::chrono::steady_clock::now() + kTimeout;
         while (!responseReady_ && !cancelled_ && !closed_) {
             if (cv_.wait_until(lock, deadline) == std::cv_status::timeout) {
                 break;

@@ -130,3 +130,16 @@ RDP_TEST_CASE(ssh_auth_prompt_broker_host_key_decision_is_bound_and_has_no_secre
     worker.join();
     RDP_ASSERT(waitResult == SshAuthPromptWaitResult::Responded);
 }
+
+RDP_TEST_CASE(ssh_auth_prompt_broker_never_extends_an_expired_route_deadline) {
+    SshAuthPromptBroker broker;
+    std::vector<std::string> responses;
+    const SshAuthPromptWaitResult result = broker.waitForResponse(
+        71, 9301, "target.example", "target", "", 0, "", 0,
+        std::vector<SshAuthPrompt> {{"OTP:", false}}, responses,
+        std::chrono::steady_clock::now() - std::chrono::milliseconds(1));
+    RDP_ASSERT(result == SshAuthPromptWaitResult::TimedOut);
+    SshAuthPromptRequest request;
+    RDP_ASSERT(!broker.snapshot(request));
+    RDP_ASSERT(responses.empty());
+}

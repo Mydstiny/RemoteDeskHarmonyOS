@@ -19,7 +19,8 @@ public:
     int connectForOperation(
         const ConnectionConfig& config, SshOperationTransportMode mode,
         remotedesk::net::NetworkGenerationSnapshot networkSnapshot,
-        SshOperationTransportHostKey& hostKey) override {
+        SshOperationTransportHostKey& hostKey,
+        std::chrono::steady_clock::time_point deadline) override {
         SshOperationHostKeySnapshot snapshot;
         const int code = adapter_->connectForOperation(
             config,
@@ -27,7 +28,8 @@ public:
                 ? SshOperationSessionMode::Authenticated
                 : SshOperationSessionMode::ProbeOnly,
             networkSnapshot,
-            snapshot);
+            snapshot,
+            deadline);
         hostKey.ok = snapshot.ok;
         hostKey.algorithm = std::move(snapshot.algorithm);
         hostKey.fingerprintSha256 = std::move(snapshot.fingerprintSha256);
@@ -69,15 +71,17 @@ std::shared_ptr<SshOperationTransport> makeOperationTransport() {
 SshHostKeyInfo probeSshHostKeyForOperation(
     const ConnectionConfig& config,
     const std::shared_ptr<SshOperationControl>& control,
-    remotedesk::net::NetworkGenerationSnapshot networkSnapshot) {
+    remotedesk::net::NetworkGenerationSnapshot networkSnapshot,
+    std::chrono::steady_clock::time_point deadline) {
     return probeSshHostKeyWithTransportForOperation(
-        config, control, networkSnapshot, makeOperationTransport);
+        config, control, networkSnapshot, makeOperationTransport, deadline);
 }
 
 SshAuthTestResult testSshKeyAuthForOperation(
     const ConnectionConfig& config,
     const std::shared_ptr<SshOperationControl>& control,
-    remotedesk::net::NetworkGenerationSnapshot networkSnapshot) {
+    remotedesk::net::NetworkGenerationSnapshot networkSnapshot,
+    std::chrono::steady_clock::time_point deadline) {
     return testSshKeyAuthWithTransportForOperation(
         config, control, networkSnapshot, makeOperationTransport,
         [](const std::string& privateKeyPem,
@@ -85,14 +89,15 @@ SshAuthTestResult testSshKeyAuthForOperation(
             const SshPrivateKeyInfo info = inspectSshPrivateKey(
                 privateKeyPem, privateKeyPassphrase);
             return SshOperationPrivateKeyValidation {info.ok, info.error};
-        });
+        }, deadline);
 }
 
 SshPublicKeyInstallResult installSshPublicKeyForOperation(
     const ConnectionConfig& config, const std::string& publicKey,
     const std::shared_ptr<SshOperationControl>& control,
-    remotedesk::net::NetworkGenerationSnapshot networkSnapshot) {
+    remotedesk::net::NetworkGenerationSnapshot networkSnapshot,
+    std::chrono::steady_clock::time_point deadline) {
     return installSshPublicKeyWithTransportForOperation(
         config, publicKey, control, networkSnapshot, makeOperationTransport,
-        validatePublicKeyForAuthorizedKeys);
+        validatePublicKeyForAuthorizedKeys, deadline);
 }
