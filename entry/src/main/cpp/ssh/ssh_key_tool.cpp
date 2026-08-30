@@ -8,6 +8,7 @@
 #include "ssh_key_tool.h"
 #include "ssh_algorithm_prefs.h"
 #include "ssh_auth_policy.h"
+#include "ssh_libssh2_session.h"
 #include "ssh_proxy_target_policy.h"
 #include "ssh_route_policy.h"
 
@@ -146,7 +147,9 @@ static void sshProxyKeyboardInteractiveCallback(
             responses[index].length = 0;
             continue;
         }
-        char* allocated = static_cast<char*>(std::malloc(response.size()));
+        SshSensitiveBufferGuard<std::string> responseGuard(response);
+        char* allocated = static_cast<char*>(
+            sshAllocateTrackedSensitive(response.size()));
         if (allocated == nullptr) {
             responses[index].text = nullptr;
             responses[index].length = 0;
@@ -1203,7 +1206,7 @@ static int connectThroughSshJumpOperation(
     const std::shared_ptr<SshJumpOperationState> state =
         std::make_shared<SshJumpOperationState>();
     state->bastionSock = bastionSock;
-    state->session = libssh2_session_init();
+    state->session = sshCreateTrackedLibssh2Session();
     if (state->session == nullptr) {
         closeSshJumpOperationState(state);
         return -1;
@@ -1610,7 +1613,7 @@ SshPublicKeyInstallResult installSshPublicKey(
     }
 
     // 3. libssh2 会话
-    LIBSSH2_SESSION* session = libssh2_session_init();
+    LIBSSH2_SESSION* session = sshCreateTrackedLibssh2Session();
     if (!session) {
 #ifdef __OHOS__
         close(sock);
@@ -1813,7 +1816,7 @@ SshAuthTestResult testSshKeyAuth(
         return result;
     }
 
-    LIBSSH2_SESSION* session = libssh2_session_init();
+    LIBSSH2_SESSION* session = sshCreateTrackedLibssh2Session();
     if (!session) {
 #ifdef __OHOS__
         close(sock);
@@ -1895,7 +1898,7 @@ SshHostKeyInfo probeSshHostKey(
     }
 
     // Step 2: libssh2 session init
-    LIBSSH2_SESSION* session = libssh2_session_init();
+    LIBSSH2_SESSION* session = sshCreateTrackedLibssh2Session();
     if (!session) {
         result.errorCode = -2;
         result.errorMessage = "libssh2 session init failed";

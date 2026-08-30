@@ -22,6 +22,25 @@ std::string readProductionAdapter() {
         std::istreambuf_iterator<char>());
 }
 
+std::string readProductionLibssh2SessionPolicy() {
+    const std::string path =
+        std::string(REMOTEDESK_NATIVE_SOURCE_DIR) +
+        "/ssh/ssh_libssh2_session.h";
+    std::ifstream input(path, std::ios::binary);
+    return std::string(
+        std::istreambuf_iterator<char>(input),
+        std::istreambuf_iterator<char>());
+}
+
+std::string readProductionKeyTool() {
+    const std::string path =
+        std::string(REMOTEDESK_NATIVE_SOURCE_DIR) + "/ssh/ssh_key_tool.cpp";
+    std::ifstream input(path, std::ios::binary);
+    return std::string(
+        std::istreambuf_iterator<char>(input),
+        std::istreambuf_iterator<char>());
+}
+
 std::string stripCommentsAndLiterals(const std::string& source) {
     enum class State { Code, LineComment, BlockComment, String, Character };
     State state = State::Code;
@@ -241,15 +260,31 @@ RDP_TEST_CASE(ssh_production_call_surface_routes_teardown_through_retirement) {
 
 RDP_TEST_CASE(ssh_production_call_surface_owns_kbi_secret_release) {
     const std::string code = stripCommentsAndLiterals(readProductionAdapter());
+    const std::string allocator = stripCommentsAndLiterals(
+        readProductionLibssh2SessionPolicy());
+    const std::string keyTool = stripCommentsAndLiterals(readProductionKeyTool());
     RDP_ASSERT(callPositions(code, "libssh2_session_init(").empty());
-    const auto extendedInit = callPositions(code, "libssh2_session_init_ex(");
+    RDP_ASSERT(callPositions(code, "libssh2_session_init_ex(").empty());
+    RDP_ASSERT(callPositions(keyTool, "libssh2_session_init(").empty());
+    RDP_ASSERT(callPositions(keyTool, "libssh2_session_init_ex(").empty());
+    const auto extendedInit = callPositions(
+        allocator, "libssh2_session_init_ex(");
     RDP_ASSERT(extendedInit.size() == 1);
     RDP_ASSERT(nearbyBefore(
-        code, extendedInit.front(), 200,
-        {"createSshSession("}));
+        allocator, extendedInit.front(), 200,
+        {"sshCreateTrackedLibssh2Session("}));
     RDP_ASSERT(nearbyAfter(
-        code, extendedInit.front(), 250, "sshLibssh2Free"));
+        allocator, extendedInit.front(), 300, "sshLibssh2TrackedFree"));
+    RDP_ASSERT(callPositions(
+        allocator, "sshAllocateTrackedSensitive(").size() == 1);
+    RDP_ASSERT(callPositions(
+        allocator, "sshReallocateTrackedSensitive(").size() == 1);
+    RDP_ASSERT(callPositions(
+        code, "sshCreateTrackedLibssh2Session(").size() == 2);
+    RDP_ASSERT(callPositions(
+        keyTool, "sshCreateTrackedLibssh2Session(").size() == 4);
     RDP_ASSERT(callPositions(code, "sshAllocateTrackedSensitive(").size() == 1);
+    RDP_ASSERT(callPositions(keyTool, "sshAllocateTrackedSensitive(").size() == 1);
     RDP_ASSERT(callPositions(
         code, "SshSensitiveStringCollectionGuard<").size() == 1);
 }

@@ -1,6 +1,8 @@
 #pragma once
 
+#include <algorithm>
 #include <cstddef>
+#include <cstring>
 #include <cstdlib>
 #include <mutex>
 #include <string>
@@ -73,10 +75,11 @@ private:
 };
 
 /**
- * Tracks callback-owned buffers that libssh2 promises to release after it has
- * copied a keyboard-interactive response. A custom session free callback uses
- * this registry to wipe the exact allocation before std::free(). Pointer and
- * length metadata are non-secret and shared across concurrent SSH sessions.
+ * Tracks allocations that can contain SSH authentication material. Production
+ * libssh2 sessions register every allocator result, rather than only callback
+ * response buffers, because libssh2 copies keyboard-interactive answers into
+ * an internal SSH_MSG_USERAUTH_INFO_RESPONSE packet before transport send.
+ * Pointer and length metadata are non-secret and shared across sessions.
  */
 class SshSensitiveAllocationRegistry final {
 public:
@@ -93,6 +96,14 @@ public:
     bool tracked(void* pointer) const noexcept {
         std::lock_guard<std::mutex> lock(mutex_);
         return allocations_.find(pointer) != allocations_.end();
+    }
+
+    bool sizeOf(void* pointer, std::size_t& size) const noexcept {
+        std::lock_guard<std::mutex> lock(mutex_);
+        const auto allocation = allocations_.find(pointer);
+        if (allocation == allocations_.end()) { return false; }
+        size = allocation->second;
+        return true;
     }
 
     bool wipeAndForget(void* pointer) noexcept {
@@ -133,4 +144,34 @@ inline void* sshAllocateTrackedSensitive(std::size_t size) noexcept {
         return nullptr;
     }
     return allocation;
+}
+
+inline void sshFreeTrackedSensitive(void* pointer) noexcept {
+    if (pointer == nullptr) { return; }
+    (void)sshSensitiveAllocationRegistry().wipeAndForget(pointer);
+    std::free(pointer);
+}
+
+/** Reallocates without allowing the C allocator to release an un-wiped copy. */
+inline void* sshReallocateTrackedSensitive(
+    void* pointer, std::size_t size) noexcept {
+    if (pointer == nullptr) {
+        return sshAllocateTrackedSensitive(size);
+    }
+    if (size == 0) {
+        sshFreeTrackedSensitive(pointer);
+        return nullptr;
+    }
+
+    std::size_t previousSize = 0;
+    if (!sshSensitiveAllocationRegistry().sizeOf(pointer, previousSize)) {
+        // Production libssh2 allocations must all be registered. Preserve the
+        // original pointer and fail closed if that ownership contract breaks.
+        return nullptr;
+    }
+    void* replacement = sshAllocateTrackedSensitive(size);
+    if (replacement == nullptr) { return nullptr; }
+    std::memcpy(replacement, pointer, std::min(previousSize, size));
+    sshFreeTrackedSensitive(pointer);
+    return replacement;
 }

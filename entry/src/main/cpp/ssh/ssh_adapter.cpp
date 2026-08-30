@@ -17,6 +17,7 @@
 #include "ssh_proxy_target_policy.h"
 #include "ssh_route_policy.h"
 #include "ssh_route_teardown_policy.h"
+#include "ssh_libssh2_session.h"
 #include "ssh_sensitive_buffer.h"
 #include "ssh_sftp_operation_policy.h"
 #include "extension_registry.h"
@@ -69,36 +70,6 @@ namespace {
     private:
         std::function<void()> callback_;
     };
-
-    void* sshLibssh2Alloc(size_t count, void**) {
-        return std::malloc(count);
-    }
-
-    void sshLibssh2Free(void* pointer, void**) {
-        if (pointer == nullptr) { return; }
-        (void)sshSensitiveAllocationRegistry().wipeAndForget(pointer);
-        std::free(pointer);
-    }
-
-    void* sshLibssh2Realloc(void* pointer, size_t count, void**) {
-        if (pointer != nullptr &&
-            sshSensitiveAllocationRegistry().tracked(pointer)) {
-            if (count == 0) {
-                (void)sshSensitiveAllocationRegistry().wipeAndForget(pointer);
-                std::free(pointer);
-            }
-            // Never let realloc move a tracked secret without wiping the old
-            // allocation. libssh2 does not resize KBI callback responses; if
-            // that contract changes, fail the allocation instead.
-            return nullptr;
-        }
-        return std::realloc(pointer, count);
-    }
-
-    LIBSSH2_SESSION* createSshSession() {
-        return libssh2_session_init_ex(
-            &sshLibssh2Alloc, &sshLibssh2Free, &sshLibssh2Realloc, nullptr);
-    }
 
     void encodeBase64To(const unsigned char* data, size_t len, std::string& out) {
         static const char b64chars[] =
@@ -2502,7 +2473,7 @@ int SshAdapter::connectThroughSshJump(ConnectionConfig& cfg) {
         {
             std::lock_guard<std::mutex> runtimeLock(jumpRuntimeMutex_);
             runtime = &jumpHopRuntimes_[index];
-            runtime->session = createSshSession();
+            runtime->session = sshCreateTrackedLibssh2Session();
         }
         if (runtime == nullptr || runtime->session == nullptr) {
             return fail(ERR_SSH_SESSION_INIT);
@@ -3056,7 +3027,7 @@ int SshAdapter::sshHandshake() {
     if (connectRouteDeadlineExpired()) {
         return ERR_SSH_KEX_TIMEOUT;
     }
-    session_ = createSshSession();
+    session_ = sshCreateTrackedLibssh2Session();
     if (!session_) {
         OH_LOG_ERROR(LOG_APP, "[SSH] libssh2_session_init 失败");
         return ERR_SSH_SESSION_INIT;

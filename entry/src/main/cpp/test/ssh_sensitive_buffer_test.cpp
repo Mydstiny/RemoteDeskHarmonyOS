@@ -1,4 +1,5 @@
 #include "ssh/ssh_sensitive_buffer.h"
+#include "ssh/ssh_libssh2_session.h"
 #include "test_runner.h"
 
 #include <algorithm>
@@ -78,6 +79,39 @@ RDP_TEST_CASE(ssh_sensitive_allocation_registry_wipes_before_library_free) {
         [](char byte) { return byte == '\0'; }));
     std::free(allocation);
     RDP_ASSERT(sshSensitiveAllocationRegistry().pendingCount() == baseline);
+}
+
+RDP_TEST_CASE(ssh_libssh2_allocator_tracks_every_internal_allocation) {
+    const std::size_t baseline =
+        sshSensitiveAllocationRegistry().pendingCount();
+    void* abstract = nullptr;
+    auto* allocation = static_cast<char*>(
+        sshLibssh2TrackedAlloc(13, &abstract));
+    RDP_ASSERT(allocation != nullptr);
+    RDP_ASSERT(sshSensitiveAllocationRegistry().tracked(allocation));
+    RDP_ASSERT(sshSensitiveAllocationRegistry().pendingCount() == baseline + 1);
+    std::memcpy(allocation, "packet-secret", 13);
+
+    auto* replacement = static_cast<char*>(
+        sshLibssh2TrackedRealloc(allocation, 26, &abstract));
+    RDP_ASSERT(replacement != nullptr);
+    RDP_ASSERT(std::string(replacement, 13) == "packet-secret");
+    RDP_ASSERT(sshSensitiveAllocationRegistry().tracked(replacement));
+    RDP_ASSERT(sshSensitiveAllocationRegistry().pendingCount() == baseline + 1);
+
+    sshLibssh2TrackedFree(replacement, &abstract);
+    RDP_ASSERT(sshSensitiveAllocationRegistry().pendingCount() == baseline);
+}
+
+RDP_TEST_CASE(ssh_libssh2_allocator_rejects_untracked_realloc) {
+    auto* allocation = static_cast<char*>(std::malloc(8));
+    RDP_ASSERT(allocation != nullptr);
+    std::memcpy(allocation, "original", 8);
+    void* abstract = nullptr;
+    RDP_ASSERT(sshLibssh2TrackedRealloc(allocation, 16, &abstract) == nullptr);
+    RDP_ASSERT(std::string(allocation, 8) == "original");
+    sshSecureWipe(allocation, 8);
+    std::free(allocation);
 }
 
 RDP_TEST_CASE(ssh_sensitive_append_reserves_before_first_secret_byte) {
