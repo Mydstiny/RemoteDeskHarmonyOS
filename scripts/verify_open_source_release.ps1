@@ -37,12 +37,14 @@ $required = @(
   'docs/compliance/OWNERSHIP_AND_RELICENSING.md',
   'docs/compliance/LICENSE_DECISION_RECORD.md',
   'docs/compliance/SOURCE_OFFER.md',
+  'docs/compliance/FREERDP_OHOS_PROVENANCE.md',
   'docs/compliance/MOONLIGHT_COMMON_C_PROVENANCE.md',
   'docs/compliance/MOONLIGHT_ICON_PROVENANCE.md',
   'entry/src/main/cpp/moonlight/upstream/UPSTREAM.lock.json',
   'scripts/build_moonlight_common_vendor.sh',
   'scripts/build_moonlight_common_vendor.ps1',
   'scripts/verify_moonlight_vendor.py',
+  'scripts/tests/test_freerdp_provenance.ps1',
   'rustdesk_vendor/libs/hbb_common/protos/UPSTREAM.yml',
   'rustdesk_vendor/libs/hbb_common/protos/NOTICE'
 )
@@ -346,6 +348,16 @@ if ($diffExitCode -ne 0) {
 }
 
 if ($Mode -eq 'Release') {
+  $freerdpProvenanceGate = Join-Path $root 'scripts/tests/test_freerdp_provenance.ps1'
+  try {
+    $freerdpProvenanceOutput = @(& $freerdpProvenanceGate 2>&1)
+    if ($LASTEXITCODE -ne 0) {
+      Add-Failure ('Release blocked: FreeRDP provenance gate failed: ' +
+        ($freerdpProvenanceOutput -join '; '))
+    }
+  } catch {
+    Add-Failure ('Release blocked: FreeRDP provenance gate failed: ' + $_.Exception.Message)
+  }
   $moonlightBuildScript = Join-Path $root 'scripts/build_moonlight_common_vendor.ps1'
   try {
     $moonlightBuildOutput = @(& $moonlightBuildScript -RepositoryRoot $root 2>&1)

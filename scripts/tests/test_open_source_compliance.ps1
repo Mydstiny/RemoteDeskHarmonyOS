@@ -10,6 +10,11 @@ $requiredTracked = @(
 if (-not (Test-Path $gate)) {
   throw 'Compliance gate is missing.'
 }
+$gateContent = Get-Content -Raw $gate
+if (-not $gateContent.Contains('scripts/tests/test_freerdp_provenance.ps1') -or
+    -not $gateContent.Contains('Release blocked: FreeRDP provenance gate failed:')) {
+  throw 'Release compliance does not enforce the complete FreeRDP provenance gate.'
+}
 foreach ($relative in $requiredTracked) {
   & git -C $repo ls-files --error-unmatch $relative *> $null
   if ($LASTEXITCODE -ne 0) {

@@ -2,12 +2,26 @@ $ErrorActionPreference = 'Stop'
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 $expectedBaseRevision = 'dae8276ac7361b8d14f7b87d41163fe03dbb944e'
 $expectedPatchedTree = '54cc9b12e3040bba73773a5439d4f8023d46ac7a'
-$patches = @(
-  'patches/freerdp-ohos/0001-fix-omit-TLS-SNI-for-IP-literals.patch',
-  'patches/freerdp-ohos/0002-Add-bounded-dual-stack-TCP-racing.patch',
-  'patches/freerdp-ohos/0003-Add-gateway-safe-dual-stack-routing.patch',
-  'patches/freerdp-ohos/0004-Fix-thread-termination-on-OHOS.patch'
-)
+$expectedVersion = "$expectedBaseRevision+tree.$expectedPatchedTree"
+$expectedPatchSha256 = [ordered]@{
+  'patches/freerdp-ohos/0001-fix-omit-TLS-SNI-for-IP-literals.patch' = '31b34d9da81d30faf223a9e919264ab2638e2c0f102a92fc976263d0a0fb6812'
+  'patches/freerdp-ohos/0002-Add-bounded-dual-stack-TCP-racing.patch' = '577df010d9c75307f79fe7055b97ee41c8f91a25b42dbc3fdd0b97cb21a8948e'
+  'patches/freerdp-ohos/0003-Add-gateway-safe-dual-stack-routing.patch' = '0b232174a4ff599bc0d5feff81d56c776ee9a2a1752c64b7badd64c272fa2c86'
+  'patches/freerdp-ohos/0004-Fix-thread-termination-on-OHOS.patch' = '4f082d9358e0c11599977f24eacf092d2305f11825006061b13411213277c157'
+}
+$patches = @($expectedPatchSha256.Keys)
+
+function Get-NormalizedTextSha256([string]$Path) {
+  $text = [IO.File]::ReadAllText($Path)
+  $normalized = $text.Replace("`r`n", "`n").Replace("`r", "`n")
+  $bytes = [Text.UTF8Encoding]::new($false).GetBytes($normalized)
+  $stream = [IO.MemoryStream]::new($bytes, $false)
+  try {
+    return (Get-FileHash -InputStream $stream -Algorithm SHA256).Hash.ToLowerInvariant()
+  } finally {
+    $stream.Dispose()
+  }
+}
 $modules = Join-Path $repo '.gitmodules'
 $url = (& git config -f $modules --get submodule.freerdp.url).Trim()
 $branch = (& git config -f $modules --get submodule.freerdp.branch).Trim()
@@ -30,8 +44,12 @@ if ($sourceStatus.Count -ne 0) {
   throw 'FreeRDP source worktree is dirty; artifacts cannot be attributed to one revision.'
 }
 foreach ($relative in $patches) {
-  if (-not (Test-Path (Join-Path $repo $relative) -PathType Leaf)) {
+  $path = Join-Path $repo $relative
+  if (-not (Test-Path $path -PathType Leaf)) {
     throw "FreeRDP patch is missing: $relative"
+  }
+  if ((Get-NormalizedTextSha256 $path) -ne $expectedPatchSha256[$relative]) {
+    throw "FreeRDP patch hash mismatch: $relative"
   }
 }
 $verificationRoot = Join-Path ([IO.Path]::GetTempPath()) (
@@ -105,6 +123,68 @@ foreach ($arch in @('arm64-v8a', 'x86_64')) {
   $settingsKeys = Join-Path $repo "libs/freerdp-ohos/$arch/include/freerdp/settings_keys.h"
   if ((Get-Content -Raw $settingsKeys) -notmatch '(?m)^\s*FreeRDP_GatewayConnectHostname = 2027,\s*$') {
     throw "FreeRDP gateway connect-host setting is missing for $arch"
+  }
+}
+
+$sbom = Get-Content -Raw (Join-Path $repo 'docs/compliance/SBOM.spdx.json') |
+  ConvertFrom-Json
+$freerdpPackages = @($sbom.packages | Where-Object {
+  $_.SPDXID -eq 'SPDXRef-Native-FreeRDP-WinPR'
+})
+if ($freerdpPackages.Count -ne 1 -or
+    $freerdpPackages[0].name -ne 'FreeRDP-WinPR' -or
+    $freerdpPackages[0].versionInfo -ne $expectedVersion -or
+    $freerdpPackages[0].downloadLocation -ne 'https://github.com/Mydstiny/RemoteDeskHarmonyOS' -or
+    $freerdpPackages[0].licenseDeclared -ne 'Apache-2.0' -or
+    $freerdpPackages[0].licenseConcluded -ne 'Apache-2.0') {
+  throw 'FreeRDP SBOM package metadata is missing or stale.'
+}
+
+$sourceOffer = Get-Content -Raw (Join-Path $repo 'docs/compliance/SOURCE_OFFER.md')
+foreach ($expectedSourceOfferValue in @(
+  $expectedBaseRevision,
+  $expectedPatchedTree,
+  'patches/freerdp-ohos/',
+  'docs/compliance/FREERDP_OHOS_PROVENANCE.md'
+)) {
+  if (-not $sourceOffer.Contains($expectedSourceOfferValue)) {
+    throw "FreeRDP source offer is missing '$expectedSourceOfferValue'."
+  }
+}
+
+$manifestSchema = Get-Content -Raw (
+  Join-Path $repo 'docs/compliance/RELEASE_MANIFEST.schema.json') | ConvertFrom-Json
+$manifestRequired = @($manifestSchema.required)
+$manifestProperties = @($manifestSchema.properties.PSObject.Properties.Name)
+$freerdpManifestFields = @(
+  'freerdpSubmoduleCommit',
+  'freerdpPatchedTree',
+  'freerdpPatchSha256'
+)
+foreach ($field in $freerdpManifestFields) {
+  if ($manifestRequired -notcontains $field -or $manifestProperties -notcontains $field) {
+    throw "Release manifest schema does not require FreeRDP field '$field'."
+  }
+}
+if ($manifestSchema.properties.freerdpSubmoduleCommit.pattern -ne '^[0-9a-f]{40}$' -or
+    $manifestSchema.properties.freerdpPatchedTree.pattern -ne '^[0-9a-f]{40}$' -or
+    $manifestSchema.properties.freerdpPatchSha256.minItems -ne 4 -or
+    $manifestSchema.properties.freerdpPatchSha256.maxItems -ne 4 -or
+    $manifestSchema.properties.freerdpPatchSha256.items.pattern -ne '^[0-9a-f]{64}$') {
+  throw 'Release manifest FreeRDP field constraints are incomplete or stale.'
+}
+
+$manifestExample = Get-Content -Raw (
+  Join-Path $repo 'docs/compliance/RELEASE_MANIFEST.example.json') | ConvertFrom-Json
+if ($manifestExample.freerdpSubmoduleCommit -ne $expectedBaseRevision -or
+    $manifestExample.freerdpPatchedTree -ne $expectedPatchedTree -or
+    @($manifestExample.freerdpPatchSha256).Count -ne $patches.Count) {
+  throw 'Release manifest example FreeRDP provenance is incomplete or stale.'
+}
+for ($index = 0; $index -lt $patches.Count; $index++) {
+  if ($manifestExample.freerdpPatchSha256[$index] -ne
+      $expectedPatchSha256[$patches[$index]]) {
+    throw "Release manifest example FreeRDP patch hash mismatch at index $index."
   }
 }
 Write-Host 'FreeRDP public base + patch provenance test passed.'
