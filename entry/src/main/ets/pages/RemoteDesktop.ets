@@ -572,11 +572,11 @@ import {
   SessionTransferStatus
 } from '../types/rdpnapi';
 import {
-  normalizeRustDeskPort,
+  resolveRustDeskHostEndpoint,
   rustDeskRelayFallbackPort,
-  RUSTDESK_PEER_TCP_PORT,
   rustDeskAuthModeForConnection,
-  rustDeskConnectionError
+  rustDeskConnectionError,
+  RustDeskHostEndpoint
 } from '../services/RustDeskHostConfigPolicy';
 import {
   mapPhysicalKeyForRemoteLayout,
@@ -12985,21 +12985,11 @@ struct RemoteDesktop {
         throw new Error(rustDeskStrategyAvailability.message +
           ' [E-RUSTDESK-STRATEGY-' + rustDeskStrategyAvailability.code + ']');
       }
-      const directHost: string = host.rustdeskDirectHost.trim();
-      if (rustDeskDirect && directHost.length === 0) {
-        throw new Error('RustDesk 直连地址为空，请在主机编辑中填写局域网地址 [E-RUSTDESK-DIRECT-HOST]');
-      }
-      let sessionHost: string = rustDeskDirect ? directHost : host.host;
-      let sessionPort: number = rustDeskDirect ?
-        normalizeRustDeskPort(host.rustdeskDirectPort, RUSTDESK_PEER_TCP_PORT) : host.port;
-      if (isVnc && vncEndpointForConnect !== null) {
-        sessionHost = vncEndpointForConnect.connectHost;
-        sessionPort = vncEndpointForConnect.connectPort;
-      }
-      if (host.protocol === 'rustdesk' && !rustDeskDirect) {
+      let rustDeskEndpoint: RustDeskHostEndpoint | null = null;
+      if (host.protocol === 'rustdesk') {
         const rustDeskError: string = rustDeskConnectionError({
-          directEnabled: false,
-          directHost: '',
+          directEnabled: rustDeskDirect,
+          directHost: host.rustdeskDirectHost,
           directPort: host.rustdeskDirectPort,
           relayId: host.rustdeskRelayId,
           relayExists: rustDeskRelay !== undefined,
@@ -13007,12 +12997,20 @@ struct RemoteDesktop {
           relayPort: rustDeskRelay ? rustDeskRelay.idServerPort : 0,
           relayKey: rustDeskRelay ? rustDeskRelay.key : '',
           relayKeyMode: rustDeskRelay ? rustDeskRelay.keyMode : 'auto',
-          proManaged: rustDeskConnection !== null &&
-            rustDeskConnection.requiresAccount
+          proManaged: rustDeskConnection !== null && rustDeskConnection.requiresAccount
         });
-        if (rustDeskError !== '') { throw new Error(rustDeskError + ' [E-RUSTDESK-CONFIG]'); }
-        sessionHost = rustDeskRelay?.idServer.trim() ?? '';
-        sessionPort = normalizeRustDeskPort(rustDeskRelay?.idServerPort ?? 0);
+        if (rustDeskError !== '') {
+          throw new Error(rustDeskError + ' [E-RUSTDESK-CONFIG]');
+        }
+        rustDeskEndpoint = resolveRustDeskHostEndpoint(
+          rustDeskRelay ?? null, host.host, rustDeskDirect,
+          host.rustdeskDirectHost, host.rustdeskDirectPort);
+      }
+      let sessionHost: string = rustDeskEndpoint === null ? host.host : rustDeskEndpoint.host;
+      let sessionPort: number = rustDeskEndpoint === null ? host.port : rustDeskEndpoint.port;
+      if (isVnc && vncEndpointForConnect !== null) {
+        sessionHost = vncEndpointForConnect.connectHost;
+        sessionPort = vncEndpointForConnect.connectPort;
       }
       const cfg: SessionConfig = {
         protocol: host.protocol,

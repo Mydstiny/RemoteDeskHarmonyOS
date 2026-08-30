@@ -154,6 +154,7 @@ import vncHostFlowPolicyTest from './VncHostFlowPolicy.test';
 import vncFloatingPanelLifecyclePolicyTest from './VncFloatingPanelLifecyclePolicy.test';
 import vncSessionUiPolicyTest from './VncSessionUiPolicy.test';
 import rustDeskRelaySavePolicyTest from './RustDeskRelaySavePolicy.test';
+import rustDeskHostConfigPolicyTest from './RustDeskHostConfigPolicy.test';
 import rustDeskConnectionContextPolicyTest from './RustDeskConnectionContextPolicy.test';
 import rustDeskConnectionStrategyPolicyTest from './RustDeskConnectionStrategyPolicy.test';
 import rustDeskControlPlaneCapabilityPolicyTest from './RustDeskControlPlaneCapabilityPolicy.test';
@@ -417,6 +418,7 @@ export default function testsuite() {
   vncFloatingPanelLifecyclePolicyTest();
   vncSessionUiPolicyTest();
   rustDeskRelaySavePolicyTest();
+  rustDeskHostConfigPolicyTest();
   rustDeskConnectionContextPolicyTest();
   rustDeskConnectionStrategyPolicyTest();
   rustDeskControlPlaneCapabilityPolicyTest();

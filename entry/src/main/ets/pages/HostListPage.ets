@@ -9169,8 +9169,10 @@ struct HostListPage {
         endpointPort = endpoint.port;
       } else if (relay !== undefined) {
         const context: RustDeskConnectionContext = this.rustDeskConnectionContext(host, relay);
-        endpointHost = relay.idServer;
-        endpointPort = relay.idServerPort;
+        const endpoint: RustDeskHostEndpoint = resolveRustDeskHostEndpoint(
+          relay, host.host, false, host.rustdeskDirectHost, host.rustdeskDirectPort);
+        endpointHost = endpoint.host;
+        endpointPort = endpoint.port;
         serverKey = relay.key;
         token = context.accessToken;
         keyMode = rustDeskRelayKeyModeForFfi(relay.key, relay.keyMode);
