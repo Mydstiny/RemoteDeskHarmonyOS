@@ -10531,6 +10531,16 @@ struct SshTerminal {
             this.preflightTargetRouteIdentity = tokenData.targetRouteIdentity || '';
             this.preflightExpectedJumpHostKeyRaw = tokenData.expectedJumpHostKeyRawBase64;
             this.preflightExpectedJumpHostKeyFp = tokenData.expectedJumpHostKeyFingerprintSha256;
+            this.preflightRouteSecretsIdentity = tokenData.routeSecretsRouteIdentity || '';
+            this.preflightProxyPassword = tokenData.proxyPassword || '';
+            this.preflightJumpHandoffs = (tokenData.jumpHandoffs || []).map(
+              (handoff: SshJumpHopHandoff): SshJumpHopHandoff => ({
+                password: handoff.password || '',
+                privateKeyPem: handoff.privateKeyPem || '',
+                privateKeyPassphrase: handoff.privateKeyPassphrase || '',
+                keyboardInteractiveResponses: (handoff.keyboardInteractiveResponses || []).map(
+                  (response: string): string => response)
+              }));
             hilog.info(0x0001, 'SshTerminal', 'preflight token consumed ok');
           } else {
             hilog.warn(0x0001, 'SshTerminal', 'preflight token expired or missing');
@@ -11648,6 +11658,9 @@ struct SshTerminal {
   private preflightTargetRouteIdentity: string = '';
   private preflightExpectedJumpHostKeyRaw: string = '';
   private preflightExpectedJumpHostKeyFp: string = '';
+  private preflightRouteSecretsIdentity: string = '';
+  private preflightProxyPassword: string = '';
+  private preflightJumpHandoffs: SshJumpHopHandoff[] = [];
 
   private clearPreflightBinding(): void {
     this.preflightHostId = '';
@@ -11658,6 +11671,9 @@ struct SshTerminal {
     this.preflightTargetRouteIdentity = '';
     this.preflightExpectedJumpHostKeyRaw = '';
     this.preflightExpectedJumpHostKeyFp = '';
+    this.preflightRouteSecretsIdentity = '';
+    this.preflightProxyPassword = '';
+    this.preflightJumpHandoffs = [];
   }
 
   private resolveSshSecretPrompt(value: string): void {
@@ -11790,11 +11806,20 @@ struct SshTerminal {
         throw new Error('SSH 安全预检与当前连接路径不一致，请从主机列表重新连接 ' +
           '[E-SSH-PREFLIGHT-ROUTE-STALE]');
       }
-      const proxyPassword: string = await this.terminalProxyPassword(
-        proxyPlan, pageGeneration, bindingGeneration, bindingHostId);
+      const preflightRouteSecretsCurrent: boolean = preflightMatchesHost &&
+        this.preflightRouteSecretsIdentity.length > 0 &&
+        this.preflightRouteSecretsIdentity === targetBinding.identity;
+      const proxyPassword: string = preflightRouteSecretsCurrent ? this.preflightProxyPassword :
+        await this.terminalProxyPassword(proxyPlan, pageGeneration, bindingGeneration, bindingHostId);
       if (!this.isSshBindingActive(pageGeneration, bindingGeneration, bindingHostId)) { return; }
-      const jumpHandoffs: SshJumpHopHandoff[] = await this.terminalJumpHandoffs(
-        host, proxyPlan, pageGeneration, bindingGeneration);
+      const jumpHandoffs: SshJumpHopHandoff[] = preflightRouteSecretsCurrent ?
+        this.preflightJumpHandoffs.map((handoff: SshJumpHopHandoff): SshJumpHopHandoff => ({
+          password: handoff.password || '',
+          privateKeyPem: handoff.privateKeyPem || '',
+          privateKeyPassphrase: handoff.privateKeyPassphrase || '',
+          keyboardInteractiveResponses: (handoff.keyboardInteractiveResponses || []).map(
+            (response: string): string => response)
+        })) : await this.terminalJumpHandoffs(host, proxyPlan, pageGeneration, bindingGeneration);
       if (!this.isSshBindingActive(pageGeneration, bindingGeneration, bindingHostId)) { return; }
 
       const cfg: SessionConfig = {
