@@ -276,6 +276,46 @@ export default function moonlightLanDiscoveryServiceTest(): void {
         service.stop();
       });
 
+    it('retains_ipv4_and_scoped_ipv6_routes_for_the_same_service_uuid', 0,
+      async (): Promise<void> => {
+        const port: FakeMoonlightMdnsPort = new FakeMoonlightMdnsPort();
+        const results: Array<MoonlightLanDiscoveryCandidate> = [];
+        const service: MoonlightLanDiscoveryService = new MoonlightLanDiscoveryService(
+          undefined as common.Context, port, { maxResults: 2 });
+        service.start('owner-a', 9, (candidate: MoonlightLanDiscoveryCandidate): void => {
+          results.push(candidate);
+        });
+
+        const discovery: FakeMoonlightMdnsDiscovery = port.discoveries[0];
+        const ipv4: mdns.LocalServiceInfo = serviceInfo(
+          'dual-stack-host', MOONLIGHT_MDNS_SERVICE_TYPE, '192.168.1.20', 47989);
+        const scopedIpv6: mdns.LocalServiceInfo = serviceInfo(
+          'dual-stack-host', MOONLIGHT_MDNS_SERVICE_TYPE, 'fe80::20%wlan0', 47989);
+        discovery.emitFound(ipv4);
+        discovery.emitFound(ipv4);
+        discovery.emitFound(scopedIpv6);
+        discovery.emitFound(scopedIpv6);
+        discovery.emitFound(serviceInfo(
+          'dual-stack-host', MOONLIGHT_MDNS_SERVICE_TYPE, 'fe80::20%eth0', 47989));
+        expect(port.requests.length).assertEqual(2);
+
+        port.resolveAt(0, resolvedInfo(
+          'dual-stack-host', '192.168.1.20', 47989, 'same-server'));
+        port.resolveAt(1, resolvedInfo(
+          'dual-stack-host', 'fe80::20%wlan0', 47989, 'same-server'));
+        await settleMicrotasks();
+
+        expect(results.length).assertEqual(2);
+        expect(results[0].serverUuid).assertEqual('same-server');
+        expect(results[0].family).assertEqual('ipv4');
+        expect(results[1].serverUuid).assertEqual('same-server');
+        expect(results[1].family).assertEqual('ipv6');
+        expect(results[1].host).assertEqual('fe80::20');
+        expect(results[1].scope).assertEqual('wlan0');
+        expect(service.acceptedResultCount()).assertEqual(2);
+        service.stop();
+      });
+
     it('fences_late_resolve_and_native_callbacks_by_owner_and_generation', 0,
       async (): Promise<void> => {
         const port: FakeMoonlightMdnsPort = new FakeMoonlightMdnsPort();

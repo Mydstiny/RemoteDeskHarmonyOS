@@ -283,6 +283,48 @@ export function moonlightLanServiceKey(serviceInfo: mdns.LocalServiceInfo): stri
   return MOONLIGHT_MDNS_SERVICE_TYPE + '|' + serviceName.toLowerCase();
 }
 
+function moonlightLanKeyPart(value: string): string {
+  return value.length.toString() + ':' + value;
+}
+
+/**
+ * Returns the bounded resolver-admission identity for one advertised route.
+ * A DNS-SD instance can be reported once per address family or interface, so
+ * the instance name alone must not tombstone its remaining IPv4/IPv6 routes.
+ * Missing host/port data intentionally collapses to one instance-level key
+ * until the daemon supplies enough route information to distinguish it.
+ */
+export function moonlightLanResolveKey(serviceInfo: mdns.LocalServiceInfo): string {
+  const serviceKey: string = moonlightLanServiceKey(serviceInfo);
+  if (serviceKey === '') {
+    return '';
+  }
+  const host: mdns.NetAddress | undefined = resolveHost(serviceInfo);
+  const port: number | undefined = resolvePort(serviceInfo);
+  if (host === undefined) {
+    return moonlightLanKeyPart(serviceKey) + '|' + moonlightLanKeyPart('') + '|' +
+      moonlightLanKeyPart('') + '|' + moonlightLanKeyPart('') + '|' +
+      moonlightLanKeyPart(port === undefined ? '' : port.toString());
+  }
+  const rawHost: string = normalizeBoundedText(host.address, MAX_SERVICE_NAME_LENGTH);
+  const advertisedFamily: MoonlightLanAddressFamily = resolveFamily(host);
+  let canonicalHost: string = rawHost.toLowerCase();
+  let scope: string = '';
+  if (rawHost !== '') {
+    const parsed: EndpointAddressResult = parseEndpointFields(
+      rawHost, port === undefined ? 1 : port);
+    if (parsed.ok) {
+      canonicalHost = parsed.endpoint.canonicalHost;
+      scope = parsed.endpoint.scope;
+    }
+  }
+  return moonlightLanKeyPart(serviceKey) + '|' +
+    moonlightLanKeyPart(advertisedFamily) + '|' +
+    moonlightLanKeyPart(canonicalHost) + '|' +
+    moonlightLanKeyPart(scope) + '|' +
+    moonlightLanKeyPart(port === undefined ? '' : port.toString());
+}
+
 export function moonlightLanDiscoveryFenceEquals(
   first: MoonlightLanDiscoveryFence | null,
   second: MoonlightLanDiscoveryFence | null
@@ -369,8 +411,8 @@ export class MoonlightLanDiscoveryService {
   private runToken: number = 0;
   private running: boolean = false;
   private acceptedKeys: Set<string> = new Set<string>();
-  private attemptedServiceKeys: Set<string> = new Set<string>();
-  private resolvingKeys: Set<string> = new Set<string>();
+  private attemptedRouteKeys: Set<string> = new Set<string>();
+  private resolvingRouteKeys: Set<string> = new Set<string>();
 
   constructor(context: common.Context, mdnsPort: MoonlightLanMdnsPort = SYSTEM_MOONLIGHT_MDNS_PORT,
     options: MoonlightLanDiscoveryOptions = {}) {
@@ -433,8 +475,8 @@ export class MoonlightLanDiscoveryService {
     this.serviceFoundHandler = null;
     this.serviceLostHandler = null;
     this.acceptedKeys.clear();
-    this.attemptedServiceKeys.clear();
-    this.resolvingKeys.clear();
+    this.attemptedRouteKeys.clear();
+    this.resolvingRouteKeys.clear();
 
     if (discovery === null) {
       return;
@@ -493,22 +535,22 @@ export class MoonlightLanDiscoveryService {
     if (!this.isCurrent(fence, runToken)) {
       return;
     }
-    const serviceKey: string = moonlightLanServiceKey(serviceInfo);
-    if (serviceKey === '' || this.resolvingKeys.has(serviceKey) ||
-        this.attemptedServiceKeys.has(serviceKey) ||
+    const routeKey: string = moonlightLanResolveKey(serviceInfo);
+    if (routeKey === '' || this.resolvingRouteKeys.has(routeKey) ||
+        this.attemptedRouteKeys.has(routeKey) ||
         this.acceptedKeys.size >= this.maxResults ||
-        this.attemptedServiceKeys.size >= this.maxResults) {
+        this.attemptedRouteKeys.size >= this.maxResults) {
       return;
     }
-    // A scan spends its bounded service budget on first admission. Failed
+    // A scan spends its bounded route budget on first admission. Failed
     // resolves remain tombstoned so repeated daemon events cannot create an
     // unbounded sequence of system resolver requests.
-    this.attemptedServiceKeys.add(serviceKey);
-    this.resolvingKeys.add(serviceKey);
-    this.resolveService(serviceInfo, fence, runToken, candidateCallback, 1);
+    this.attemptedRouteKeys.add(routeKey);
+    this.resolvingRouteKeys.add(routeKey);
+    this.resolveService(serviceInfo, routeKey, fence, runToken, candidateCallback, 1);
   }
 
-  private resolveService(serviceInfo: mdns.LocalServiceInfo,
+  private resolveService(serviceInfo: mdns.LocalServiceInfo, routeKey: string,
     fence: MoonlightLanDiscoveryFence, runToken: number,
     candidateCallback: (candidate: MoonlightLanDiscoveryCandidate) => void,
     attempt: number): void {
@@ -520,9 +562,10 @@ export class MoonlightLanDiscoveryService {
       resolvePromise = this.mdnsPort.resolveLocalService(this.context, serviceInfo);
     } catch (_error) {
       if (attempt < MAX_RESOLVE_ATTEMPTS_PER_SERVICE) {
-        this.resolveService(serviceInfo, fence, runToken, candidateCallback, attempt + 1);
+        this.resolveService(serviceInfo, routeKey, fence, runToken,
+          candidateCallback, attempt + 1);
       } else {
-        this.resolvingKeys.delete(moonlightLanServiceKey(serviceInfo));
+        this.resolvingRouteKeys.delete(routeKey);
       }
       return;
     }
@@ -533,15 +576,14 @@ export class MoonlightLanDiscoveryService {
       const candidate: MoonlightLanDiscoveryCandidate | null =
         resolveMoonlightLanCandidate(fence, serviceInfo, resolved);
       if (candidate === null) {
-        this.resolvingKeys.delete(moonlightLanServiceKey(serviceInfo));
+        this.resolvingRouteKeys.delete(routeKey);
         return;
       }
       const scope: string = candidate.scope === '' ? '' : '%' + candidate.scope;
       const candidateKey: string = (candidate.serverUuid === '' ? candidate.serviceName :
         candidate.serverUuid) + '|' + candidate.family + '|' +
         candidate.host + scope + '|' + candidate.port.toString();
-      const serviceKey: string = moonlightLanServiceKey(serviceInfo);
-      this.resolvingKeys.delete(serviceKey);
+      this.resolvingRouteKeys.delete(routeKey);
       if (this.acceptedKeys.has(candidateKey) || this.acceptedKeys.size >= this.maxResults) {
         return;
       }
@@ -556,10 +598,11 @@ export class MoonlightLanDiscoveryService {
         return;
       }
       if (attempt >= MAX_RESOLVE_ATTEMPTS_PER_SERVICE) {
-        this.resolvingKeys.delete(moonlightLanServiceKey(serviceInfo));
+        this.resolvingRouteKeys.delete(routeKey);
       }
       if (attempt < MAX_RESOLVE_ATTEMPTS_PER_SERVICE) {
-        this.resolveService(serviceInfo, fence, runToken, candidateCallback, attempt + 1);
+        this.resolveService(serviceInfo, routeKey, fence, runToken,
+          candidateCallback, attempt + 1);
       }
     });
   }
