@@ -218,6 +218,7 @@ public:
         const char* name, int nameLen, const char* instruction, int instructionLen,
         int numPrompts, const LIBSSH2_USERAUTH_KBDINT_PROMPT* prompts,
         LIBSSH2_USERAUTH_KBDINT_RESPONSE* responses,
+        void** allocatorAbstract,
         int transportFd,
         std::vector<std::string>* explicitResponses,
         const std::string* password, bool allowPasswordFallback,
@@ -286,6 +287,9 @@ public:
     bool classifySftpTransportFailure(int operationError);
 
 private:
+#ifdef RDP_NATIVE_CALLBACK_TESTING
+    friend class SshAdapterRuntimeTestAccess;
+#endif
     struct LocalForwardListener {
         std::string profileId;
         uint64_t sessionGeneration = 0;
@@ -335,7 +339,8 @@ private:
     int keyboardInteractiveResponseRound(
         const char* name, int nameLen, const char* instruction, int instructionLen,
         int numPrompts, const LIBSSH2_USERAUTH_KBDINT_PROMPT* prompts,
-        LIBSSH2_USERAUTH_KBDINT_RESPONSE* responses);
+        LIBSSH2_USERAUTH_KBDINT_RESPONSE* responses,
+        void** allocatorAbstract);
 
     int sockFd_;
     // Incremented whenever the socket/channel ownership changes. Reader
@@ -456,6 +461,9 @@ private:
 
     /** KEX 密钥交换 + 主机密钥验证 */
     int sshHandshake();
+    /** Run one non-blocking libssh2 KEX under the captured route admission. */
+    int handshakeSessionOnRoute(LIBSSH2_SESSION* session, int transportFd,
+                                int timeoutSeconds);
 
     /** 验证指定 SSH endpoint 的 host key；ProxyJump 跳板机要求必须有预期 key。 */
     int verifyHostKey(LIBSSH2_SESSION* session, const std::string& expectedRawBase64,
@@ -544,6 +552,13 @@ private:
     // One route attempt (direct/proxy/jump) owns one process-network snapshot.
     // Reconnect captures a fresh snapshot before resolving again.
     remotedesk::net::NetworkGenerationSnapshot connectNetworkSnapshot_ {};
+#ifdef RDP_NATIVE_CALLBACK_TESTING
+    std::function<void()> handshakeEagainHookForTesting_;
+    std::function<void()> keyboardInteractiveRoundHookForTesting_;
+    std::function<void(ssize_t)> channelReadHookForTesting_;
+    std::function<void()> transportShutdownHookForTesting_;
+    std::function<void()> transportCloseHookForTesting_;
+#endif
     // Connection establishment and auxiliary operations share one immutable
     // absolute deadline across DNS, proxy/jump, KEX, auth and channel work.
     // Store clock ticks atomically because the ProxyJump relay also consults

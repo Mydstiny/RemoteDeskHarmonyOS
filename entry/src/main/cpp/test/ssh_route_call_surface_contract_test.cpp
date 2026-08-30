@@ -32,6 +32,16 @@ std::string readProductionLibssh2SessionPolicy() {
         std::istreambuf_iterator<char>());
 }
 
+std::string readProductionLibssh2SessionReaper() {
+    const std::string path =
+        std::string(REMOTEDESK_NATIVE_SOURCE_DIR) +
+        "/ssh/ssh_libssh2_session.cpp";
+    std::ifstream input(path, std::ios::binary);
+    return std::string(
+        std::istreambuf_iterator<char>(input),
+        std::istreambuf_iterator<char>());
+}
+
 std::string readProductionKeyTool() {
     const std::string path =
         std::string(REMOTEDESK_NATIVE_SOURCE_DIR) + "/ssh/ssh_key_tool.cpp";
@@ -165,12 +175,26 @@ RDP_TEST_CASE(ssh_production_call_surface_fences_handshake_and_kbi) {
     RDP_ASSERT(!code.empty());
 
     const auto handshakes = callPositions(code, "libssh2_session_handshake(");
-    RDP_ASSERT(handshakes.size() == 2);
+    RDP_ASSERT(handshakes.size() == 1);
     RDP_ASSERT(everyCallIsIn(
-        code, handshakes, {"connectThroughSshJump", "sshHandshake"}));
+        code, handshakes, {"handshakeSessionOnRoute"}));
     RDP_ASSERT(std::all_of(handshakes.begin(), handshakes.end(), [&](std::size_t position) {
         return nearbyBefore(code, position, 700, {"admitRouteWrite("});
     }));
+    const auto guardedHandshakeCalls = callPositions(
+        code, "handshakeSessionOnRoute(");
+    RDP_ASSERT(guardedHandshakeCalls.size() == 3);
+    RDP_ASSERT(std::count_if(
+        guardedHandshakeCalls.begin(), guardedHandshakeCalls.end(),
+        [&](std::size_t position) {
+            return enclosingAdapterMethod(code, position) ==
+                "connectThroughSshJump";
+        }) == 1);
+    RDP_ASSERT(std::count_if(
+        guardedHandshakeCalls.begin(), guardedHandshakeCalls.end(),
+        [&](std::size_t position) {
+            return enclosingAdapterMethod(code, position) == "sshHandshake";
+        }) == 1);
 
     const auto interactive = callPositions(
         code, "libssh2_userauth_keyboard_interactive(");
@@ -226,13 +250,23 @@ RDP_TEST_CASE(ssh_production_call_surface_routes_teardown_through_retirement) {
         code, disconnects.front(), 500,
         {"runTransportTeardownPrimitiveLocked("}));
 
-    const auto sessionFrees = callPositions(code, "libssh2_session_free(");
-    RDP_ASSERT(sessionFrees.size() == 2);
+    const auto immediateSessionFrees = callPositions(
+        code, "sshFreeTrackedLibssh2Session(");
+    RDP_ASSERT(immediateSessionFrees.size() == 1);
     RDP_ASSERT(everyCallIsIn(
-        code, sessionFrees,
+        code, immediateSessionFrees,
+        {"teardownSessionHandlesLocked"}));
+    const auto sessionRetires = callPositions(
+        code, "sshRetireTrackedLibssh2Session(");
+    RDP_ASSERT(sessionRetires.size() == 2);
+    RDP_ASSERT(everyCallIsIn(
+        code, sessionRetires,
         {"teardownSessionHandlesLocked", "stopSshJumpRelay"}));
+    std::vector<std::size_t> sessionReleases = immediateSessionFrees;
+    sessionReleases.insert(
+        sessionReleases.end(), sessionRetires.begin(), sessionRetires.end());
     RDP_ASSERT(std::all_of(
-        sessionFrees.begin(), sessionFrees.end(), [&](std::size_t position) {
+        sessionReleases.begin(), sessionReleases.end(), [&](std::size_t position) {
             return nearbyBefore(
                 code, position, 1600,
                 {"runTransportTeardownPrimitiveLocked(", "shutdown("});
@@ -255,7 +289,7 @@ RDP_TEST_CASE(ssh_production_call_surface_routes_teardown_through_retirement) {
     RDP_ASSERT(handshakeStart != std::string::npos);
     RDP_ASSERT(handshakeEnd != std::string::npos);
     RDP_ASSERT(code.substr(handshakeStart, handshakeEnd - handshakeStart)
-        .find("libssh2_session_free(") == std::string::npos);
+        .find("sshFreeTrackedLibssh2Session(") == std::string::npos);
 }
 
 RDP_TEST_CASE(ssh_production_call_surface_owns_kbi_secret_release) {
@@ -265,26 +299,76 @@ RDP_TEST_CASE(ssh_production_call_surface_owns_kbi_secret_release) {
     const std::string keyTool = stripCommentsAndLiterals(readProductionKeyTool());
     RDP_ASSERT(callPositions(code, "libssh2_session_init(").empty());
     RDP_ASSERT(callPositions(code, "libssh2_session_init_ex(").empty());
+    RDP_ASSERT(callPositions(code, "libssh2_session_free(").empty());
     RDP_ASSERT(callPositions(keyTool, "libssh2_session_init(").empty());
     RDP_ASSERT(callPositions(keyTool, "libssh2_session_init_ex(").empty());
+    RDP_ASSERT(callPositions(keyTool, "libssh2_session_free(").empty());
     const auto extendedInit = callPositions(
         allocator, "libssh2_session_init_ex(");
     RDP_ASSERT(extendedInit.size() == 1);
     RDP_ASSERT(nearbyBefore(
-        allocator, extendedInit.front(), 200,
+        allocator, extendedInit.front(), 500,
         {"sshCreateTrackedLibssh2Session("}));
     RDP_ASSERT(nearbyAfter(
         allocator, extendedInit.front(), 300, "sshLibssh2TrackedFree"));
+    const auto wrappedFree = callPositions(
+        allocator, "libssh2_session_free(");
+    RDP_ASSERT(wrappedFree.size() == 1);
+    RDP_ASSERT(nearbyBefore(
+        allocator, wrappedFree.front(), 400,
+        {"sshFreeTrackedLibssh2Session("}));
+    const auto retiredIoCallbacks = callPositions(
+        allocator, "libssh2_session_callback_set2(");
+    RDP_ASSERT(retiredIoCallbacks.size() == 2);
+    RDP_ASSERT(std::all_of(
+        retiredIoCallbacks.begin(), retiredIoCallbacks.end(),
+        [&](std::size_t position) {
+            return nearbyBefore(
+                allocator, position, 900,
+                {"sshQuarantineTrackedLibssh2SessionWithScheduling("});
+        }));
     RDP_ASSERT(callPositions(
-        allocator, "sshAllocateTrackedSensitive(").size() == 1);
-    RDP_ASSERT(callPositions(
-        allocator, "sshReallocateTrackedSensitive(").size() == 1);
+        allocator, "sshAllocateTrackedSensitive(").size() == 2);
     RDP_ASSERT(callPositions(
         code, "sshCreateTrackedLibssh2Session(").size() == 2);
     RDP_ASSERT(callPositions(
         keyTool, "sshCreateTrackedLibssh2Session(").size() == 4);
-    RDP_ASSERT(callPositions(code, "sshAllocateTrackedSensitive(").size() == 1);
-    RDP_ASSERT(callPositions(keyTool, "sshAllocateTrackedSensitive(").size() == 1);
+    RDP_ASSERT(callPositions(
+        code, "sshFreeTrackedLibssh2Session(").size() == 1);
+    RDP_ASSERT(callPositions(
+        code, "sshRetireTrackedLibssh2Session(").size() == 2);
+    RDP_ASSERT(callPositions(
+        keyTool, "sshFreeTrackedLibssh2Session(").empty());
+    RDP_ASSERT(callPositions(
+        keyTool, "sshRetireTrackedLibssh2Session(").size() == 12);
+    RDP_ASSERT(callPositions(code, "sshAllocateTrackedSensitive(").empty());
+    RDP_ASSERT(callPositions(keyTool, "sshAllocateTrackedSensitive(").empty());
+    RDP_ASSERT(callPositions(
+        code, "sshAllocateLibssh2CallbackSensitive(").size() == 1);
+    RDP_ASSERT(callPositions(
+        keyTool, "sshAllocateLibssh2CallbackSensitive(").size() == 1);
+    RDP_ASSERT(callPositions(
+        code, "sshSetLibssh2ApplicationContext(").empty());
+    RDP_ASSERT(callPositions(
+        keyTool, "sshSetLibssh2ApplicationContext(").empty());
+    RDP_ASSERT(callPositions(
+        code, "SshLibssh2ApplicationContextBinding applicationBinding(").size() == 2);
+    RDP_ASSERT(callPositions(
+        keyTool, "SshLibssh2ApplicationContextBinding applicationBinding(").size() == 1);
     RDP_ASSERT(callPositions(
         code, "SshSensitiveStringCollectionGuard<").size() == 1);
+}
+
+RDP_TEST_CASE(ssh_production_deferred_reaper_is_joinable_and_bounded) {
+    const std::string code = stripCommentsAndLiterals(
+        readProductionLibssh2SessionReaper());
+    RDP_ASSERT(!code.empty());
+    RDP_ASSERT(code.find(".detach(") == std::string::npos);
+    RDP_ASSERT(callPositions(code, ".join(").size() == 1);
+    RDP_ASSERT(code.find("kDeferredReaperAttemptLimit = 8") !=
+        std::string::npos);
+    RDP_ASSERT(code.find(
+        "attempt < kDeferredReaperAttemptLimit") != std::string::npos);
+    RDP_ASSERT(callPositions(
+        code, "sshReapDeferredTrackedLibssh2SessionsPass(false)").size() == 3);
 }

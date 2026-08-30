@@ -155,10 +155,16 @@ inline void* sshAllocateTrackedSensitive(std::size_t size) noexcept {
     return allocation;
 }
 
-inline void sshFreeTrackedSensitive(void* pointer) noexcept {
-    if (pointer == nullptr) { return; }
-    (void)sshSensitiveAllocationRegistry().wipeAndForget(pointer);
+inline bool sshFreeTrackedSensitive(void* pointer) noexcept {
+    if (pointer == nullptr) { return false; }
+    if (!sshSensitiveAllocationRegistry().wipeAndForget(pointer)) {
+        // Unknown pointers are never safe to release here. In particular, a
+        // duplicate or cross-session libssh2 free callback must fail closed
+        // instead of reaching the C allocator for a second time.
+        return false;
+    }
     std::free(pointer);
+    return true;
 }
 
 /** Reallocates without allowing the C allocator to release an un-wiped copy. */

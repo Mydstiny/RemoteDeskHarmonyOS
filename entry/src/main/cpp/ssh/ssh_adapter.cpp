@@ -23,7 +23,14 @@
 #include "extension_registry.h"
 #include "common/safe_log.h"
 #include "ssh_algorithm_prefs.h"
+#if defined(RDP_TESTS_ONLY)
+#define LOG_APP 0
+#define OH_LOG_ERROR(...) ((void)0)
+#define OH_LOG_INFO(...) ((void)0)
+#define OH_LOG_WARN(...) ((void)0)
+#else
 #include <hilog/log.h>
+#endif
 #include <sys/socket.h>
 #include <poll.h>
 #include <netinet/in.h>
@@ -180,13 +187,18 @@ namespace {
             *abstract == nullptr) {
             return;
         }
-        auto* context = static_cast<SshJumpKeyboardContext*>(*abstract);
+        auto* context = static_cast<SshJumpKeyboardContext*>(
+            sshLibssh2ApplicationContext(abstract));
+        if (context == nullptr) {
+            return;
+        }
         if (context->adapter == nullptr || context->presetIndex == nullptr ||
             context->passwordFallbackUsed == nullptr) {
             return;
         }
         const int result = context->adapter->fillKeyboardInteractiveResponses(
             name, nameLen, instruction, instructionLen, numPrompts, prompts, responses,
+            abstract,
             context->transportFd,
             context->explicitResponses, context->password,
             context->allowPasswordFallback, context->targetHost, context->hopLabel,
@@ -1707,7 +1719,14 @@ void SshAdapter::retirePrimaryTransportNoWireLocked(
     // close here could let another thread reuse the same integer while
     // libssh2 still retains it; shutdown makes every later send fail locally
     // without opening that fd-reuse window.
-    if (sockFd_ >= 0) { (void)shutdown(sockFd_, SHUT_RDWR); }
+    if (sockFd_ >= 0) {
+        (void)shutdown(sockFd_, SHUT_RDWR);
+#ifdef RDP_NATIVE_CALLBACK_TESTING
+        if (transportShutdownHookForTesting_) {
+            transportShutdownHookForTesting_();
+        }
+#endif
+    }
     if (session_ != nullptr) {
         // After shutdown there is no remote progress to wait for. Blocking
         // mode lets libssh2 finish its local state-machine cleanup instead of
@@ -1849,18 +1868,31 @@ void SshAdapter::teardownSessionHandlesLocked(const char* description) {
                 session_, description != nullptr ? description : "Client disconnecting");
         });
         const int freeResult = runTransportTeardownPrimitiveLocked(context, [&]() {
-            return libssh2_session_free(session_);
+            return sshFreeTrackedLibssh2Session(session_);
         });
         if (freeResult == LIBSSH2_ERROR_EAGAIN) {
             OH_LOG_WARN(LOG_APP,
                         "[SSH] local session release remained EAGAIN after transport retirement");
         }
-        session_ = nullptr;
+        if (session_ != nullptr) {
+            const int retireResult =
+                sshRetireTrackedLibssh2Session(session_);
+            if (retireResult != 0) {
+                OH_LOG_WARN(LOG_APP,
+                            "[SSH] deferred local session release rc=%{public}d",
+                            retireResult);
+            }
+        }
     }
     if (sockFd_ >= 0) {
         (void)shutdown(sockFd_, SHUT_RDWR);
         close(sockFd_);
         sockFd_ = -1;
+#ifdef RDP_NATIVE_CALLBACK_TESTING
+        if (transportCloseHookForTesting_) {
+            transportCloseHookForTesting_();
+        }
+#endif
     }
 }
 
@@ -1932,8 +1964,10 @@ int SshAdapter::waitSocketMilliseconds(int direction, int timeoutMs) {
         if (direction == 1 || direction == 2) { FD_SET(fd, &wfds); }
         const auto boundedRemaining = std::min<int64_t>(remaining, 100'000);
         struct timeval tv = {
-            static_cast<long>(boundedRemaining / 1'000'000),
-            static_cast<long>((boundedRemaining % 1'000'000) / 1'000)
+            static_cast<decltype(timeval::tv_sec)>(
+                boundedRemaining / 1'000'000),
+            static_cast<decltype(timeval::tv_usec)>(
+                (boundedRemaining % 1'000'000) / 1'000)
         };
         const int ret = select(fd + 1, &rfds, &wfds, nullptr, &tv);
         if (ret < 0 && errno == EINTR) { continue; }
@@ -2480,29 +2514,13 @@ int SshAdapter::connectThroughSshJump(ConnectionConfig& cfg) {
         }
         libssh2_session_set_blocking(runtime->session, 0);
 
-        int rc = LIBSSH2_ERROR_EAGAIN;
-        while (true) {
-            if (connectRouteDeadlineExpired()) {
-                return fail(ERR_SSH_KEX_TIMEOUT);
-            }
-            if (!admitRouteWrite(connectNetworkSnapshot_, [&]() {
-                    // libssh2_session_handshake() emits the client banner and
-                    // KEX packets on both the initial call and EAGAIN retries.
-                    rc = libssh2_session_handshake(
-                        runtime->session, runtime->transportFd);
-                })) {
-                return fail(routeWriteFailure(ERR_SSH_KEX_TIMEOUT));
-            }
-            if (rc != LIBSSH2_ERROR_EAGAIN) { break; }
-            if (waitSocketOnFd(runtime->transportFd, 2,
-                               std::max(1, static_cast<int>(hop.connectTimeoutMs / 1000))) != 0) {
-                return fail(ERR_SSH_KEX_TIMEOUT);
-            }
-        }
-        if (rc != 0) {
+        const int handshakeResult = handshakeSessionOnRoute(
+            runtime->session, runtime->transportFd,
+            std::max(1, static_cast<int>(hop.connectTimeoutMs / 1000)));
+        if (handshakeResult != 0) {
             OH_LOG_ERROR(LOG_APP, "[SSH] ProxyJump hop=%{public}zu handshake failed rc=%{public}d",
-                         index, rc);
-            return fail(ERR_SSH_KEX_FAILED);
+                         index, handshakeResult);
+            return fail(handshakeResult);
         }
 
         const std::string hopLabel = "hop-" + std::to_string(index + 1);
@@ -2555,9 +2573,8 @@ int SshAdapter::connectThroughSshJump(ConnectionConfig& cfg) {
         const std::string& privateKey = hopPrivateKey(index);
         const std::string& passphrase = hopPassphrase(index);
         std::vector<std::string>& responses = hopResponses(index);
+        int rc = 0;
         auto authenticateInteractive = [&](bool allowPasswordFallback) -> int {
-            void** abstract = libssh2_session_abstract(runtime->session);
-            if (abstract == nullptr) { return ERR_SSH_AUTH_FAILED; }
             authPromptHop_ = hopLabel;
             authPromptPresetIndex_ = 0;
             authPromptFailure_.store(0, std::memory_order_release);
@@ -2566,7 +2583,11 @@ int SshAdapter::connectThroughSshJump(ConnectionConfig& cfg) {
                 this, runtime->transportFd, &password, &responses, &authPromptPresetIndex_,
                 &passwordFallbackUsed, hop.host, hopLabel, allowPasswordFallback
             };
-            *abstract = &context;
+            SshLibssh2ApplicationContextBinding applicationBinding(
+                runtime->session, &context);
+            if (!applicationBinding.valid()) {
+                return ERR_SSH_AUTH_FAILED;
+            }
             int authResult = 0;
             while (true) {
                 authRouteAdmission_.endCall();
@@ -2915,8 +2936,7 @@ void SshAdapter::stopSshJumpRelay() {
             runtime.channel = nullptr;
         }
         if (runtime.session != nullptr) {
-            (void)libssh2_session_free(runtime.session);
-            runtime.session = nullptr;
+            (void)sshRetireTrackedLibssh2Session(runtime.session);
         }
         if (runtime.channelPeerFd >= 0) {
             close(runtime.channelPeerFd);
@@ -3020,6 +3040,39 @@ int SshAdapter::verifyHostKey(LIBSSH2_SESSION* session,
     return 0;
 }
 
+int SshAdapter::handshakeSessionOnRoute(
+    LIBSSH2_SESSION* session, int transportFd, int timeoutSeconds) {
+    if (session == nullptr || transportFd < 0) {
+        return ERR_SSH_SESSION_INIT;
+    }
+    int rc = LIBSSH2_ERROR_EAGAIN;
+    while (true) {
+        if (connectRouteDeadlineExpired()) {
+            return ERR_SSH_KEX_TIMEOUT;
+        }
+        if (!admitRouteWrite(connectNetworkSnapshot_, [&]() {
+                // libssh2_session_handshake() emits the client banner and
+                // KEX packets on both the initial call and EAGAIN retries.
+                rc = libssh2_session_handshake(session, transportFd);
+            })) {
+            return routeWriteFailure(ERR_SSH_KEX_TIMEOUT);
+        }
+        if (rc != LIBSSH2_ERROR_EAGAIN) { break; }
+#ifdef RDP_NATIVE_CALLBACK_TESTING
+        if (handshakeEagainHookForTesting_) {
+            handshakeEagainHookForTesting_();
+        }
+#endif
+        const int waitResult = waitSocketOnFd(
+            transportFd, 2, std::max(1, timeoutSeconds));
+        if (waitResult != 0) {
+            return waitResult == -3 ? ERR_SSH_SESSION_CLOSED
+                                    : ERR_SSH_KEX_TIMEOUT;
+        }
+    }
+    return rc == 0 ? 0 : ERR_SSH_KEX_FAILED;
+}
+
 int SshAdapter::sshHandshake() {
     if (!assertSessionOwner("handshake")) {
         return ERR_SSH_SESSION_INIT;
@@ -3047,33 +3100,13 @@ int SshAdapter::sshHandshake() {
     OH_LOG_INFO(LOG_APP, "[SSH] 算法偏好已设置");
 
     // KEX 握手 (非阻塞 + select 轮询)
-    int rc = LIBSSH2_ERROR_EAGAIN;
-    while (true) {
-        if (connectRouteDeadlineExpired()) {
-            return ERR_SSH_KEX_TIMEOUT;
-        }
-        if (!admitRouteWrite(connectNetworkSnapshot_, [&]() {
-                // This call is an outbound primitive even before a session is
-                // established: it can send the banner and KEX packets.
-                rc = libssh2_session_handshake(session_, sockFd_);
-            })) {
-            // The caller owns central teardown. It will retire a stale socket
-            // before releasing this partially initialized libssh2 session.
-            return routeWriteFailure(ERR_SSH_KEX_TIMEOUT);
-        }
-        if (rc != LIBSSH2_ERROR_EAGAIN) { break; }
-        int w = waitSocket(2, 30); // 30s KEX timeout
-        if (w != 0) {
-            OH_LOG_ERROR(LOG_APP, "[SSH] KEX 握手超时");
-            return w == -3 ? ERR_SSH_SESSION_CLOSED : ERR_SSH_KEX_TIMEOUT;
-        }
-    }
-    if (rc) {
+    const int handshakeResult = handshakeSessionOnRoute(session_, sockFd_, 30);
+    if (handshakeResult != 0) {
         char* errMsg = nullptr;
         libssh2_session_last_error(session_, &errMsg, nullptr, 0);
         OH_LOG_ERROR(LOG_APP, "[SSH] KEX握手失败: rc=%{public}d msg=%{public}s serverBanner=%{public}s",
-                     rc, errMsg ? errMsg : "unknown", serverBanner_.c_str());
-        return ERR_SSH_KEX_FAILED;
+                     handshakeResult, errMsg ? errMsg : "unknown", serverBanner_.c_str());
+        return handshakeResult;
     }
 
     // 主机密钥指纹 (SHA256, 用于日志)
@@ -3186,9 +3219,14 @@ void SshAdapter::keyboardInteractiveCallback(
         return;
     }
 
-    auto* adapter = static_cast<SshAdapter*>(*abstract);
+    auto* adapter = static_cast<SshAdapter*>(
+        sshLibssh2ApplicationContext(abstract));
+    if (adapter == nullptr) {
+        return;
+    }
     const int result = adapter->keyboardInteractiveResponseRound(
-        name, nameLen, instruction, instructionLen, numPrompts, prompts, responses);
+        name, nameLen, instruction, instructionLen, numPrompts, prompts, responses,
+        abstract);
     if (result != 0) {
         adapter->recordAuthPromptFailure(result);
     }
@@ -3198,6 +3236,7 @@ int SshAdapter::fillKeyboardInteractiveResponses(
     const char* name, int nameLen, const char* instruction, int instructionLen,
     int numPrompts, const LIBSSH2_USERAUTH_KBDINT_PROMPT* prompts,
     LIBSSH2_USERAUTH_KBDINT_RESPONSE* responses,
+    void** allocatorAbstract,
     int transportFd,
     std::vector<std::string>* explicitResponses,
     const std::string* password, bool allowPasswordFallback,
@@ -3207,6 +3246,11 @@ int SshAdapter::fillKeyboardInteractiveResponses(
         return 0;
     }
     authRouteAdmission_.enterCallback();
+#ifdef RDP_NATIVE_CALLBACK_TESTING
+    if (keyboardInteractiveRoundHookForTesting_) {
+        keyboardInteractiveRoundHookForTesting_();
+    }
+#endif
     SshScopeExit abortUnadmittedResponse([this, transportFd]() {
         abortKeyboardInteractiveCallbackNoWire(transportFd);
     });
@@ -3265,6 +3309,13 @@ int SshAdapter::fillKeyboardInteractiveResponses(
             setSshLifecycleState(SshSessionLifecycleState::Authenticating);
             switch (waitResult) {
                 case SshAuthPromptWaitResult::Responded:
+                    // A response supplied by the user is one-shot material in
+                    // exactly the same way as a preset OTP. If the route is
+                    // retired before libssh2 can send it, the outer recovery
+                    // loop must require a fresh prompt instead of opening a
+                    // new session and replaying the value.
+                    explicitAuthResponseConsumed_.store(
+                        true, std::memory_order_release);
                     break;
                 case SshAuthPromptWaitResult::Cancelled:
                     return ERR_SSH_AUTH_CANCELLED;
@@ -3297,7 +3348,8 @@ int SshAdapter::fillKeyboardInteractiveResponses(
             continue;
         }
         char* allocated = static_cast<char*>(
-            sshAllocateTrackedSensitive(values[index].size()));
+            sshAllocateLibssh2CallbackSensitive(
+                values[index].size(), allocatorAbstract));
         if (allocated == nullptr) {
             return ERR_SSH_AUTH_FAILED;
         }
@@ -3341,9 +3393,11 @@ void SshAdapter::abortKeyboardInteractiveCallbackNoWire(
 int SshAdapter::keyboardInteractiveResponseRound(
     const char* name, int nameLen, const char* instruction, int instructionLen,
     int numPrompts, const LIBSSH2_USERAUTH_KBDINT_PROMPT* prompts,
-    LIBSSH2_USERAUTH_KBDINT_RESPONSE* responses) {
+    LIBSSH2_USERAUTH_KBDINT_RESPONSE* responses,
+    void** allocatorAbstract) {
     return fillKeyboardInteractiveResponses(
         name, nameLen, instruction, instructionLen, numPrompts, prompts, responses,
+        allocatorAbstract,
         sockFd_,
         &savedCfg_.sshKeyboardInteractiveResponses, &savedCfg_.password,
         authPromptAllowPasswordFallback_, savedCfg_.host, authPromptHop_,
@@ -3383,9 +3437,9 @@ int SshAdapter::authenticateKeyboardInteractive(bool allowPasswordFallback) {
         return ERR_SSH_AUTH_METHODS;
     }
 
-    void** abstract = libssh2_session_abstract(session_);
-    if (abstract != nullptr) {
-        *abstract = this;
+    SshLibssh2ApplicationContextBinding applicationBinding(session_, this);
+    if (!applicationBinding.valid()) {
+        return ERR_SSH_AUTH_FAILED;
     }
 
     authPromptAllowPasswordFallback_ = allowPasswordFallback;
@@ -5944,6 +5998,11 @@ int SshAdapter::executeChannelRequest(
                 closeChannel();
                 return ERR_SSH_SESSION_CLOSED;
             }
+#ifdef RDP_NATIVE_CALLBACK_TESTING
+            if (channelReadHookForTesting_) {
+                channelReadHookForTesting_(readResult);
+            }
+#endif
             if (readResult == LIBSSH2_ERROR_EAGAIN) {
                 // Wait below; stderr may still have pending bytes.
             } else if (readResult < 0) {
@@ -5971,6 +6030,11 @@ int SshAdapter::executeChannelRequest(
                 closeChannel();
                 return ERR_SSH_SESSION_CLOSED;
             }
+#ifdef RDP_NATIVE_CALLBACK_TESTING
+            if (channelReadHookForTesting_) {
+                channelReadHookForTesting_(readResult);
+            }
+#endif
             if (readResult == LIBSSH2_ERROR_EAGAIN) {
                 // Wait below.
             } else if (readResult < 0) {

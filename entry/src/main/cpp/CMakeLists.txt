@@ -90,6 +90,7 @@ set(AUDIO_SOURCES
 # -- SSH 适配器 --
 set(SSH_SOURCES
     ssh/ssh_adapter.cpp
+    ssh/ssh_libssh2_session.cpp
     ssh/ssh_proxy_target_policy.cpp
     ssh/ssh_forward_target_connector.cpp
     ssh/ssh_forwarding_manager.cpp
@@ -309,6 +310,9 @@ if(RDP_BUILD_TESTS)
         test/ssh_route_call_surface_contract_test.cpp
         test/ssh_connect_error_policy_test.cpp
         test/ssh_sensitive_buffer_test.cpp
+        ssh/ssh_adapter.cpp
+        ssh/ssh_libssh2_session.cpp
+        test/ssh_adapter_runtime_test.cpp
         test/ssh_session_manager_test.cpp
         test/ssh_pending_connect_registry_test.cpp
         test/ssh_operation_control_test.cpp
@@ -479,9 +483,11 @@ if(RDP_BUILD_TESTS)
     target_compile_features(rdp_native_tests PRIVATE cxx_std_17)
     target_include_directories(rdp_native_tests PRIVATE ${OPENSSL_INCLUDE_DIR})
     find_library(REMOTEDESK_HOST_OPUS_LIBRARY NAMES opus REQUIRED)
+    find_library(REMOTEDESK_HOST_LIBSSH2_LIBRARY NAMES ssh2 REQUIRED)
     target_link_libraries(rdp_native_tests PRIVATE
         OpenSSL::SSL OpenSSL::Crypto ZLIB::ZLIB
         ${REMOTEDESK_HOST_OPUS_LIBRARY}
+        ${REMOTEDESK_HOST_LIBSSH2_LIBRARY}
     )
 endif()
 

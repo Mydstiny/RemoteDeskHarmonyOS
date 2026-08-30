@@ -132,7 +132,11 @@ static void sshProxyKeyboardInteractiveCallback(
         *abstract == nullptr) {
         return;
     }
-    auto* context = static_cast<SshProxyKeyboardContext*>(*abstract);
+    auto* context = static_cast<SshProxyKeyboardContext*>(
+        sshLibssh2ApplicationContext(abstract));
+    if (context == nullptr) {
+        return;
+    }
     for (int index = 0; index < numPrompts; ++index) {
         std::string response;
         if (context->explicitResponses != nullptr && index >= 0 &&
@@ -149,7 +153,7 @@ static void sshProxyKeyboardInteractiveCallback(
         }
         SshSensitiveBufferGuard<std::string> responseGuard(response);
         char* allocated = static_cast<char*>(
-            sshAllocateTrackedSensitive(response.size()));
+            sshAllocateLibssh2CallbackSensitive(response.size(), abstract));
         if (allocated == nullptr) {
             responses[index].text = nullptr;
             responses[index].length = 0;
@@ -1078,6 +1082,15 @@ static void closeSocketFd(int sock) {
 #endif
 }
 
+static void shutdownSocketFd(int sock) {
+    if (sock < 0) { return; }
+#ifdef __OHOS__
+    (void)shutdown(sock, SHUT_RDWR);
+#else
+    (void)shutdown(sock, SD_BOTH);
+#endif
+}
+
 static bool setSocketIoTimeout(int sock, int timeoutSec);
 
 struct SshJumpOperationState {
@@ -1088,13 +1101,20 @@ struct SshJumpOperationState {
 };
 
 static void closeSshJumpOperationState(const std::shared_ptr<SshJumpOperationState>& state) {
+    // Retire both descriptors while their numeric values remain reserved.
+    // Any libssh2 cleanup below therefore fails locally instead of writing to
+    // an obsolete route or to a descriptor reused by another connection.
+    shutdownSocketFd(state->relayFd);
+    shutdownSocketFd(state->bastionSock);
+    if (state->session != nullptr) {
+        libssh2_session_set_blocking(state->session, 1);
+    }
     if (state->channel != nullptr) {
         libssh2_channel_free(state->channel);
         state->channel = nullptr;
     }
     if (state->session != nullptr) {
-        libssh2_session_free(state->session);
-        state->session = nullptr;
+        (void)sshRetireTrackedLibssh2Session(state->session);
     }
     if (state->relayFd >= 0) {
         closeSocketFd(state->relayFd);
@@ -1248,11 +1268,17 @@ static int connectThroughSshJumpOperation(
         SshProxyKeyboardContext context {
             &proxy.password, &proxy.keyboardInteractiveResponses
         };
-        void** abstract = libssh2_session_abstract(state->session);
-        if (abstract != nullptr) { *abstract = &context; }
-        rc = libssh2_userauth_keyboard_interactive(
-            state->session, proxy.username.c_str(),
-            &sshProxyKeyboardInteractiveCallback);
+        {
+            SshLibssh2ApplicationContextBinding applicationBinding(
+                state->session, &context);
+            if (!applicationBinding.valid()) {
+                closeSshJumpOperationState(state);
+                return -2;
+            }
+            rc = libssh2_userauth_keyboard_interactive(
+                state->session, proxy.username.c_str(),
+                &sshProxyKeyboardInteractiveCallback);
+        }
     } else {
         if (proxy.password.empty()) {
             closeSshJumpOperationState(state);
@@ -1634,7 +1660,7 @@ SshPublicKeyInstallResult installSshPublicKey(
         libssh2_session_last_error(session, &errMsg, nullptr, 0);
         result.code = -4;
         result.message = "handshake failed: " + (errMsg ? std::string(errMsg) : "unknown");
-        libssh2_session_free(session);
+        (void)sshRetireTrackedLibssh2Session(session);
 #ifdef __OHOS__
         close(sock);
 #else
@@ -1672,7 +1698,7 @@ SshPublicKeyInstallResult installSshPublicKey(
         result.code = -5;
         result.message = "authentication failed: " + (errMsg ? std::string(errMsg) : "unknown");
         libssh2_session_disconnect(session, "bye");
-        libssh2_session_free(session);
+        (void)sshRetireTrackedLibssh2Session(session);
 #ifdef __OHOS__
         close(sock);
 #else
@@ -1715,7 +1741,7 @@ SshPublicKeyInstallResult installSshPublicKey(
         result.code = -6;
         result.message = "channel open failed";
         libssh2_session_disconnect(session, "bye");
-        libssh2_session_free(session);
+        (void)sshRetireTrackedLibssh2Session(session);
 #ifdef __OHOS__
         close(sock);
 #else
@@ -1732,7 +1758,7 @@ SshPublicKeyInstallResult installSshPublicKey(
         result.message = "exec failed: " + (errMsg ? std::string(errMsg) : "unknown");
         libssh2_channel_free(channel);
         libssh2_session_disconnect(session, "bye");
-        libssh2_session_free(session);
+        (void)sshRetireTrackedLibssh2Session(session);
 #ifdef __OHOS__
         close(sock);
 #else
@@ -1756,7 +1782,7 @@ SshPublicKeyInstallResult installSshPublicKey(
         result.message = "install command exit=" + std::to_string(exitCode) +
                          (output.empty() ? "" : " output=" + output);
         libssh2_session_disconnect(session, "bye");
-        libssh2_session_free(session);
+        (void)sshRetireTrackedLibssh2Session(session);
 #ifdef __OHOS__
         close(sock);
 #else
@@ -1771,7 +1797,7 @@ SshPublicKeyInstallResult installSshPublicKey(
 
     // 8. 断开
     libssh2_session_disconnect(session, "bye");
-    libssh2_session_free(session);
+    (void)sshRetireTrackedLibssh2Session(session);
 #ifdef __OHOS__
     close(sock);
 #else
@@ -1836,7 +1862,7 @@ SshAuthTestResult testSshKeyAuth(
         libssh2_session_last_error(session, &errMsg, nullptr, 0);
         result.code = -3;
         result.message = "handshake failed: " + (errMsg ? std::string(errMsg) : "unknown");
-        libssh2_session_free(session);
+        (void)sshRetireTrackedLibssh2Session(session);
 #ifdef __OHOS__
         close(sock);
 #else
@@ -1863,7 +1889,7 @@ SshAuthTestResult testSshKeyAuth(
     }
 
     libssh2_session_disconnect(session, "bye");
-    libssh2_session_free(session);
+    (void)sshRetireTrackedLibssh2Session(session);
 #ifdef __OHOS__
     close(sock);
 #else
@@ -1922,7 +1948,7 @@ SshHostKeyInfo probeSshHostKey(
         // 获取 server banner (握手低层可能已有)
         const char* banner = libssh2_session_banner_get(session);
         if (banner) { result.serverBanner = banner; }
-        libssh2_session_free(session);
+        (void)sshRetireTrackedLibssh2Session(session);
 #ifdef __OHOS__
         close(sock);
 #else
@@ -1945,7 +1971,7 @@ SshHostKeyInfo probeSshHostKey(
         result.errorCode = -4;
         result.errorMessage = "failed to get host key blob";
         libssh2_session_disconnect(session, "bye");
-        libssh2_session_free(session);
+        (void)sshRetireTrackedLibssh2Session(session);
 #ifdef __OHOS__
         close(sock);
 #else
@@ -1974,7 +2000,7 @@ SshHostKeyInfo probeSshHostKey(
 
     // Step 9: 断开并释放 libssh2 资源
     libssh2_session_disconnect(session, "bye");
-    libssh2_session_free(session);
+    (void)sshRetireTrackedLibssh2Session(session);
 #ifdef __OHOS__
     close(sock);
 #else
