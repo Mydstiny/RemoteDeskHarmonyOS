@@ -1844,11 +1844,22 @@ int SshAdapter::connectThroughProxy(const ConnectionConfig& cfg) {
                 encodeBase64To(
                     reinterpret_cast<const unsigned char*>(credentials.data()),
                     credentials.size(), encoded);
-                request += "Proxy-Authorization: Basic ";
+                constexpr char kProxyAuthorizationPrefix[] =
+                    "Proxy-Authorization: Basic ";
+                constexpr std::size_t kAuthorizationTerminatorsSize = 4U;
+                const std::size_t sensitiveSuffixSize =
+                    (sizeof(kProxyAuthorizationPrefix) - 1U) + encoded.size() +
+                    kAuthorizationTerminatorsSize;
+                if (!sshReserveSensitiveAppend(request, sensitiveSuffixSize)) {
+                    return ERR_SSH_PROXY_INVALID;
+                }
+                request.append(kProxyAuthorizationPrefix,
+                               sizeof(kProxyAuthorizationPrefix) - 1U);
                 request.append(encoded);
-                request += "\r\n";
+                request.append("\r\n\r\n");
+            } else {
+                request.append("\r\n");
             }
-            request += "\r\n";
             ret = sendSocketBytes(
                 reinterpret_cast<const uint8_t*>(request.data()), request.size(), 10);
         }
