@@ -101,6 +101,37 @@ RDP_TEST_CASE(rustdesk_continuity_executor_cancel_removes_pending_attempt) {
     RDP_ASSERT(cancelled);
 }
 
+RDP_TEST_CASE(rustdesk_continuity_executor_replaces_retired_network_attempt) {
+    int attempts = 0;
+    int cancellations = 0;
+    RustDeskConnectionContinuityExecutor::Callbacks callbacks;
+    callbacks.startAttempt = [&](uint32_t) {
+        ++attempts;
+        return true;
+    };
+#if defined(RDP_NATIVE_CALLBACK_TESTING)
+    callbacks.testAttemptTicketFactory = MakeExplicitTestTicket;
+#endif
+    callbacks.cancelAttempt = [&]() { ++cancellations; };
+    RustDeskConnectionContinuityExecutor executor(std::move(callbacks), false);
+    executor.begin(190, 250, 0);
+
+    RDP_ASSERT(!executor.onNetworkChanged(true, 70, 1).startAttempt);
+    const auto changed = executor.onNetworkChanged(true, 71, 2);
+    RDP_ASSERT(changed.cancelAttempt);
+    RDP_ASSERT(changed.startAttempt);
+    RDP_ASSERT_EQ(cancellations, 1);
+    executor.pumpForTesting(2);
+    RDP_ASSERT_EQ(attempts, 1);
+
+    const auto unavailable = executor.onNetworkChanged(false, 72, 3);
+    RDP_ASSERT(unavailable.cancelAttempt);
+    RDP_ASSERT(!unavailable.startAttempt);
+    RDP_ASSERT_EQ(cancellations, 2);
+    executor.pumpForTesting(3);
+    RDP_ASSERT_EQ(attempts, 1);
+}
+
 RDP_TEST_CASE(rustdesk_continuity_quiesce_closes_all_producers_and_reopens_after_frame) {
     RustDeskContinuityQuiesceState state;
     state.closeForTransportLoss();

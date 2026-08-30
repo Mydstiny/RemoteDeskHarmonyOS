@@ -109,6 +109,7 @@ struct RustDeskTransportEvent {
 struct RustDeskContinuityAction {
     bool visibleTransportLost = false;
     bool fastQuiesce = false;
+    bool cancelAttempt = false;
     bool startAttempt = false;
     bool terminal = false;
     uint32_t attempt = 0;
@@ -194,23 +195,47 @@ public:
         if (generation != 0 && generation < networkGeneration_) {
             return {};
         }
+        const bool generationChanged = generation != 0 &&
+            networkGeneration_ != 0 && generation > networkGeneration_;
         if (generation != 0) {
             networkGeneration_ = generation;
         }
         const bool changed = networkAvailable_ != available;
+        const bool invalidated = generationChanged || (changed && !available);
         networkAvailable_ = available;
-        if (!available || cancelled_ ||
+        if (cancelled_) {
+            return {};
+        }
+
+        if (invalidated) {
+            RustDeskContinuityAction action;
+            action.visibleTransportLost = true;
+            action.fastQuiesce = true;
+            action.cancelAttempt = true;
+            fastQuiesced_ = true;
+            state_ = RustDeskContinuityState::TransportLost;
+            retryScheduled_ = false;
+            attemptInFlight_ = false;
+            nextRetryMs_ = 0;
+            if (generationChanged) {
+                // A new network generation owns a fresh resolver result and
+                // retry window. Never charge it for candidates selected on
+                // the retired network.
+                attempts_ = 0;
+                windowStartedMs_ = nowMs;
+            }
+            if (available) {
+                action = scheduleFirstAttempt(nowMs, action);
+            }
+            return action;
+        }
+
+        if (!available ||
             (state_ != RustDeskContinuityState::TransportLost &&
              state_ != RustDeskContinuityState::RetryPending)) {
             return {};
         }
         if (!changed && (retryScheduled_ || attemptInFlight_)) {
-            return {};
-        }
-        if (!available) {
-            retryScheduled_ = false;
-            attemptInFlight_ = false;
-            nextRetryMs_ = 0;
             return {};
         }
         return scheduleFirstAttempt(nowMs, {});

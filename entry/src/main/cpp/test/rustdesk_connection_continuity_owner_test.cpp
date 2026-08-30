@@ -25,9 +25,47 @@ RDP_TEST_CASE(rustdesk_continuity_network_unavailable_waits_without_budget_consu
     RDP_ASSERT_EQ(owner.attempts(), 0);
     const auto duplicate = owner.onNetworkChanged(false, 80, 200);
     RDP_ASSERT(!duplicate.startAttempt);
+    RDP_ASSERT(!duplicate.cancelAttempt);
     const auto available = owner.onNetworkChanged(true, 80, 300);
     RDP_ASSERT(available.startAttempt);
     RDP_ASSERT_EQ(available.attempt, 1);
+}
+
+RDP_TEST_CASE(rustdesk_continuity_network_loss_cancels_candidates_before_waiting) {
+    RustDeskConnectionContinuityOwner owner;
+    owner.begin(81, 800, 0);
+    const auto unavailable = owner.onNetworkChanged(false, 40, 100);
+    RDP_ASSERT(unavailable.visibleTransportLost);
+    RDP_ASSERT(unavailable.fastQuiesce);
+    RDP_ASSERT(unavailable.cancelAttempt);
+    RDP_ASSERT(!unavailable.startAttempt);
+    RDP_ASSERT_EQ(owner.state(), RustDeskContinuityState::TransportLost);
+
+    const auto restored = owner.onNetworkChanged(true, 40, 200);
+    RDP_ASSERT(!restored.cancelAttempt);
+    RDP_ASSERT(restored.startAttempt);
+    RDP_ASSERT_EQ(restored.attempt, static_cast<uint32_t>(1));
+}
+
+RDP_TEST_CASE(rustdesk_continuity_new_network_generation_restarts_connected_resolution) {
+    RustDeskConnectionContinuityOwner owner;
+    owner.begin(82, 801, 0);
+    RDP_ASSERT(!owner.onNetworkChanged(true, 50, 10).cancelAttempt);
+
+    const auto changed = owner.onNetworkChanged(true, 51, 20);
+    RDP_ASSERT(changed.visibleTransportLost);
+    RDP_ASSERT(changed.fastQuiesce);
+    RDP_ASSERT(changed.cancelAttempt);
+    RDP_ASSERT(changed.startAttempt);
+    RDP_ASSERT_EQ(changed.attempt, static_cast<uint32_t>(1));
+    RDP_ASSERT_EQ(owner.networkGeneration(), static_cast<uint64_t>(51));
+
+    const auto duplicate = owner.onNetworkChanged(true, 51, 30);
+    RDP_ASSERT(!duplicate.cancelAttempt);
+    RDP_ASSERT(!duplicate.startAttempt);
+    const auto stale = owner.onNetworkChanged(true, 50, 40);
+    RDP_ASSERT(!stale.cancelAttempt);
+    RDP_ASSERT_EQ(owner.networkGeneration(), static_cast<uint64_t>(51));
 }
 
 RDP_TEST_CASE(rustdesk_continuity_duplicate_network_generation_keeps_retry_budget) {

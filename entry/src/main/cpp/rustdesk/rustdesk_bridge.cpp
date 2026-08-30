@@ -1863,6 +1863,22 @@ RustDeskBridge::RustDeskBridge(RustDeskMode mode)
         return startContinuityAttempt(ticket);
     };
     continuityCallbacks.cancelAttempt = [this]() {
+        {
+            // Retire every ticket and callback which captured the old
+            // resolver/network generation before asking Rust to stop its
+            // socket candidates. The replacement ticket is created only
+            // after this callback returns and therefore observes the new
+            // admission epoch.
+            std::lock_guard<std::mutex> admissionLock(
+                impl_->continuityAdmissionMutex);
+            impl_->ffiAdmissionEpoch.fetch_add(1, std::memory_order_acq_rel);
+            impl_->ffiStreamEnded.store(true, std::memory_order_release);
+            impl_->continuityAttemptToken.store(0, std::memory_order_release);
+            impl_->continuityNetworkCallCancelled.store(
+                true, std::memory_order_release);
+            impl_->awaitingFirstGenerationFrame.store(
+                false, std::memory_order_release);
+        }
 #ifdef RUSTDESK_USE_REAL_CORE
         rustdesk_cancel_pending_connect_for_session(
             impl_->sessionId.load(std::memory_order_acquire));

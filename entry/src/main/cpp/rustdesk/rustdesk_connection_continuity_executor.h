@@ -700,6 +700,18 @@ private:
             return;
         }
         const Callbacks callbacks = callbacksSnapshot();
+        if (action.cancelAttempt) {
+            if (callbacks.cancelAttempt) {
+                callbacks.cancelAttempt();
+            }
+            // A queued ticket may still name the resolver generation which
+            // was just retired. Drop it before publishing the replacement
+            // action; an already-dequeued production ticket is rejected by
+            // the bridge admission-epoch rotation in cancelAttempt.
+            std::lock_guard<std::mutex> lock(workerMutex_);
+            pendingAttempt_ = false;
+            pendingTicket_ = AttemptTicket {};
+        }
         if (action.fastQuiesce && callbacks.fastQuiesce) {
             callbacks.fastQuiesce();
         }
