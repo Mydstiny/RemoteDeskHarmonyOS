@@ -39,12 +39,12 @@ import {
   vncStoreIdentityFingerprint
 } from '../services/VncTrustService';
 import {
+  dispatchVncCertificateProbeIfAdmitted,
   VncTlsEndpointResolution,
-  VncTlsHostInput,
   VncTlsGatewayInput,
   vncTlsHostInput,
   vncTlsGatewayInput,
-  resolveVncTlsEndpoint
+  resolveVncTlsEndpointForAccount
 } from '../services/VncTlsEndpointPolicy';
 import {
   classifyVncCertificateProbeForOwner,
@@ -561,6 +561,7 @@ import {
   RdpDisplayLayoutResult,
   RdpRenderStats,
   VncCertificateInfo,
+  VncCertificateProbePromise,
   RemoteCursorSnapshot,
   RustDeskDisplayCapabilities,
   RustDeskDisplayInfo,
@@ -3150,16 +3151,8 @@ struct RemoteDesktop {
 
   private resolveVncCertificateEndpoint(host: VncHostView): VncTlsEndpointResolution {
     const scope = AccountSessionCoordinator.getInstance().currentScope();
-    const storeFingerprint: string = this.vncCertificateStoreFingerprint();
-    if (scope.ownerScopeId.trim() === '' || scope.storeIdentity.trim() === '' || scope.generation <= 0 ||
-      host.userId.trim() === '' || host.userId.trim() !== scope.ownerScopeId.trim()) {
-      return resolveVncTlsEndpoint({
-        id: '', userId: '', storeIdentityFingerprint: '', label: '', host: '', port: 0,
-        username: '', gatewayId: '', transport: host.transport, repeaterMode: host.repeaterMode,
-        targetId: '', securityPolicy: host.securityPolicy, tls: host.tls
-      }, null);
-    }
-    const hostInput: VncTlsHostInput = vncTlsHostInput(
+    const storeFingerprint: string = vncStoreIdentityFingerprint(scope.storeIdentity);
+    const hostInput = vncTlsHostInput(
       host.id, host.userId, host, host.host, storeFingerprint);
     let gatewayInput: VncTlsGatewayInput | null = null;
     if (host.gatewayId.trim() !== '') {
@@ -3171,7 +3164,13 @@ struct RemoteDesktop {
     }
     // The resolver is the single source for the socket, SNI, TLS owner and
     // endpoint binding used by both the probe and the final connection.
-    const resolved: VncTlsEndpointResolution = resolveVncTlsEndpoint(hostInput, gatewayInput);
+    const resolved: VncTlsEndpointResolution = resolveVncTlsEndpointForAccount(
+      hostInput, gatewayInput, {
+        ownerScopeId: scope.ownerScopeId,
+        storeIdentity: scope.storeIdentity,
+        storeIdentityFingerprint: storeFingerprint,
+        generation: scope.generation
+      });
     return resolved;
   }
 
@@ -3396,11 +3395,19 @@ struct RemoteDesktop {
       return;
     }
     try {
-      const probe = this.loader.probeVncCertificateAsync(
-        this.vncCertificateEndpoint.connectHost,
-        this.vncCertificateEndpoint.connectPort,
-        this.vncCertificateEndpoint.serverName,
-        VNC_CERTIFICATE_PROBE_TIMEOUT_MS);
+      const probe: VncCertificateProbePromise | null =
+        dispatchVncCertificateProbeIfAdmitted(
+          this.vncCertificateEndpoint, VNC_CERTIFICATE_PROBE_TIMEOUT_MS,
+          (connectHost: string, connectPort: number, serverName: string,
+            timeoutMs: number): VncCertificateProbePromise =>
+            this.loader.probeVncCertificateAsync(
+              connectHost, connectPort, serverName, timeoutMs));
+      if (probe === null) {
+        this.vncCertificateState = VncCertificatePreflightState.ERROR;
+        this.vncCertificateError = 'E-VNC-PROBE-ADMISSION';
+        this.setVncCertificateSheetState(VncCertificatePreflightState.ERROR);
+        return;
+      }
       this.vncCertificateProbeRequestId = probe.requestId;
       const info: VncCertificateInfo = await probe;
       const activeIdentity: VncCertificateProbeIdentity | null = this.vncCertificateProbeIdentity;

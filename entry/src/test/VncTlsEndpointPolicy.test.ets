@@ -1,6 +1,9 @@
 import { describe, it, expect } from '@ohos/hypium';
 import {
+  dispatchVncCertificateProbeIfAdmitted,
   resolveVncTlsEndpoint,
+  resolveVncTlsEndpointForAccount,
+  VncTlsAccountScopeInput,
   VncTlsGatewayInput,
   VncTlsHostInput
 } from '../main/ets/services/VncTlsEndpointPolicy';
@@ -21,6 +24,15 @@ function gateway(): VncTlsGatewayInput {
     transport: 'ultravnc_repeater',
     host: '198.51.100.8', port: 5901, repeaterMode: 'mode12', legacyTargetId: '', tls: true,
     enabled: true
+  };
+}
+
+function accountScope(): VncTlsAccountScopeInput {
+  return {
+    ownerScopeId: 'user-1',
+    storeIdentity: 'physical-store-1',
+    storeIdentityFingerprint: 'e'.repeat(64),
+    generation: 3
   };
 }
 
@@ -170,6 +182,62 @@ export default function vncTlsEndpointPolicyTest(): void {
       const input: VncTlsHostInput = host();
       input.transport = 'websocket_gateway';
       expect(resolveVncTlsEndpoint(input, null).errorCode).assertEqual('E-VNC-ENDPOINT-TRANSPORT');
+    });
+
+    it('dispatches_the_canonical_ipv6_probe_only_after_account_admission', 0, (): void => {
+      const input: VncTlsHostInput = host();
+      input.host = '[2001:db8::10]';
+      const endpoint = resolveVncTlsEndpointForAccount(input, null, accountScope());
+      let nativeRequests: number = 0;
+      const operation: string | null = dispatchVncCertificateProbeIfAdmitted(
+        endpoint, 3000,
+        (connectHost: string, connectPort: number, serverName: string,
+          timeoutMs: number): string => {
+          nativeRequests += 1;
+          return connectHost + '|' + connectPort.toString() + '|' + serverName + '|' +
+            timeoutMs.toString();
+        });
+      expect(endpoint.ok).assertTrue();
+      expect(operation).assertEqual('2001:db8::10|5900|2001:db8::10|3000');
+      expect(nativeRequests).assertEqual(1);
+    });
+
+    it('issues_zero_native_requests_for_stale_or_invalid_account_scopes', 0, (): void => {
+      const scopes: VncTlsAccountScopeInput[] = [];
+      const missingOwner: VncTlsAccountScopeInput = accountScope();
+      missingOwner.ownerScopeId = '';
+      scopes.push(missingOwner);
+      const wrongOwner: VncTlsAccountScopeInput = accountScope();
+      wrongOwner.ownerScopeId = 'user-2';
+      scopes.push(wrongOwner);
+      const missingStore: VncTlsAccountScopeInput = accountScope();
+      missingStore.storeIdentity = '';
+      scopes.push(missingStore);
+      const wrongStore: VncTlsAccountScopeInput = accountScope();
+      wrongStore.storeIdentityFingerprint = 'f'.repeat(64);
+      scopes.push(wrongStore);
+      const zeroGeneration: VncTlsAccountScopeInput = accountScope();
+      zeroGeneration.generation = 0;
+      scopes.push(zeroGeneration);
+      const fractionalGeneration: VncTlsAccountScopeInput = accountScope();
+      fractionalGeneration.generation = 1.5;
+      scopes.push(fractionalGeneration);
+
+      let nativeRequests: number = 0;
+      for (let i = 0; i < scopes.length; i++) {
+        const endpoint = resolveVncTlsEndpointForAccount(host(), null, scopes[i]);
+        const operation: string | null = dispatchVncCertificateProbeIfAdmitted(
+          endpoint, 3000,
+          (_connectHost: string, _connectPort: number, _serverName: string,
+            _timeoutMs: number): string => {
+            nativeRequests += 1;
+            return 'native-request';
+          });
+        expect(endpoint.ok).assertFalse();
+        expect(endpoint.errorCode).assertEqual('E-VNC-ACCOUNT-SCOPE');
+        expect(operation === null).assertTrue();
+      }
+      expect(nativeRequests).assertEqual(0);
     });
   });
 }

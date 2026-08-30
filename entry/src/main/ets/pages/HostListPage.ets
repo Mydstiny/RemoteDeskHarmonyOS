@@ -333,9 +333,10 @@ import {
   VncCertificateProbeIdentity
 } from '../services/VncCertificateProbeLifecyclePolicy';
 import {
+  dispatchVncCertificateProbeIfAdmitted,
   VncTlsGatewayInput,
   VncTlsEndpointResolution,
-  resolveVncTlsEndpoint,
+  resolveVncTlsEndpointForAccount,
   vncTlsGatewayInput,
   vncTlsHostInput
 } from '../services/VncTlsEndpointPolicy';
@@ -649,6 +650,7 @@ import { FeedbackSettingsSheet } from '../components/FeedbackSettingsSheet';
 import { VirtualKeyboardSettingsSheet } from '../components/VirtualKeyboardSettingsSheet';
 import {
   VncCertificateInfo,
+  VncCertificateProbePromise,
   RdpCertificateInfo,
   RdpCertificateRecord,
   RdpPreflightRequest,
@@ -7553,7 +7555,7 @@ struct HostListPage {
 
   private resolveVncCertificateEndpoint(host: VncHostView): VncTlsEndpointResolution {
     const scope = AccountSessionCoordinator.getInstance().currentScope();
-    const store: string = this.vncCertificateStoreFingerprint();
+    const store: string = vncStoreIdentityFingerprint(scope.storeIdentity);
     const hostInput = vncTlsHostInput(host.id, host.userId, host, host.host, store);
     let gatewayInput: VncTlsGatewayInput | null = null;
     if (host.gatewayId.trim() !== '') {
@@ -7562,13 +7564,12 @@ struct HostListPage {
         gatewayInput = vncTlsGatewayInput(gateway.id, gateway.userId, gateway, store);
       }
     }
-    // Account scope and physical store are part of the resolver input. A
-    // stale account therefore produces an endpoint error instead of a route.
-    if (scope.ownerScopeId.trim() === '' || scope.generation <= 0 ||
-      host.userId.trim() !== scope.ownerScopeId.trim()) {
-      return resolveVncTlsEndpoint(hostInput, gatewayInput);
-    }
-    return resolveVncTlsEndpoint(hostInput, gatewayInput);
+    return resolveVncTlsEndpointForAccount(hostInput, gatewayInput, {
+      ownerScopeId: scope.ownerScopeId,
+      storeIdentity: scope.storeIdentity,
+      storeIdentityFingerprint: store,
+      generation: scope.generation
+    });
   }
 
   private vncCertificateTrustEndpoint(endpoint: VncTlsEndpointResolution): VncTrustEndpoint | null {
@@ -7726,8 +7727,16 @@ struct HostListPage {
     const endpoint: VncTlsEndpointResolution | null = this.vncCertificateEndpoint;
     if (endpoint === null || !endpoint.ok) { return; }
     try {
-      const probe = this.loader.probeVncCertificateAsync(
-        endpoint.connectHost, endpoint.connectPort, endpoint.serverName, 10000);
+      const probe: VncCertificateProbePromise | null =
+        dispatchVncCertificateProbeIfAdmitted(
+          endpoint, 10000,
+          (connectHost: string, connectPort: number, serverName: string,
+            timeoutMs: number): VncCertificateProbePromise =>
+            this.loader.probeVncCertificateAsync(
+              connectHost, connectPort, serverName, timeoutMs));
+      if (probe === null) {
+        throw new Error('E-VNC-PROBE-ADMISSION');
+      }
       this.vncCertificateProbeRequestId = probe.requestId;
       const info: VncCertificateInfo = await probe;
       if (this.vncCertificateProbeGeneration !== generation ||
@@ -9061,8 +9070,16 @@ struct HostListPage {
         if (!endpoint.ok) {
           throw new Error(endpoint.errorCode || 'E-VNC-ENDPOINT-INVALID');
         }
-        const probe = this.loader.probeVncCertificateAsync(
-          endpoint.connectHost, endpoint.connectPort, endpoint.serverName, 3000);
+        const probe: VncCertificateProbePromise | null =
+          dispatchVncCertificateProbeIfAdmitted(
+            endpoint, 3000,
+            (connectHost: string, connectPort: number, serverName: string,
+              timeoutMs: number): VncCertificateProbePromise =>
+              this.loader.probeVncCertificateAsync(
+                connectHost, connectPort, serverName, timeoutMs));
+        if (probe === null) {
+          throw new Error('E-VNC-PROBE-ADMISSION');
+        }
         const info: VncCertificateInfo = await probe;
         ok = info.ok;
       } else if (host.protocol === 'ssh') {

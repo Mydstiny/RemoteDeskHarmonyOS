@@ -47,6 +47,14 @@ export interface VncTlsGatewayInput {
   enabled: boolean;
 }
 
+/** Immutable account snapshot that must authorize a certificate probe. */
+export interface VncTlsAccountScopeInput {
+  ownerScopeId: string;
+  storeIdentity: string;
+  storeIdentityFingerprint: string;
+  generation: number;
+}
+
 export interface VncTrustOwner {
   ownerType: VncTlsEndpointOwnerType;
   ownerId: string;
@@ -293,6 +301,46 @@ export function resolveVncTlsEndpoint(host: VncTlsHostInput,
     localOnly: gatewayEndpoint.endpoint.scopeKind === 'interface'
   };
   return result;
+}
+
+/**
+ * Resolve an endpoint only when it still belongs to the supplied account and
+ * physical store generation. Callers must take this snapshot immediately
+ * before dispatching native I/O.
+ */
+export function resolveVncTlsEndpointForAccount(host: VncTlsHostInput,
+  gateway: VncTlsGatewayInput | null,
+  scope: VncTlsAccountScopeInput): VncTlsEndpointResolution {
+  const ownerScopeId: string = scope.ownerScopeId.trim();
+  const storeIdentityFingerprint: string =
+    scope.storeIdentityFingerprint.trim().toLowerCase();
+  if (ownerScopeId === '' || scope.storeIdentity.trim() === '' ||
+    !Number.isSafeInteger(scope.generation) || scope.generation <= 0 ||
+    host.userId.trim() === '' || host.userId.trim() !== ownerScopeId ||
+    !isSha256Fingerprint(storeIdentityFingerprint) ||
+    host.storeIdentityFingerprint.trim().toLowerCase() !== storeIdentityFingerprint) {
+    return failure(host, 'E-VNC-ACCOUNT-SCOPE');
+  }
+  return resolveVncTlsEndpoint(host, gateway);
+}
+
+/**
+ * The only certificate-probe dispatch gate. Invalid account/endpoint results
+ * return null without invoking the supplied native starter.
+ */
+export function dispatchVncCertificateProbeIfAdmitted<T>(
+  endpoint: VncTlsEndpointResolution,
+  timeoutMs: number,
+  start: (connectHost: string, connectPort: number,
+    serverName: string, timeoutMs: number) => T
+): T | null {
+  if (!endpoint.ok || endpoint.trustOwner === null ||
+    endpoint.connectHost.trim() === '' || !validVncPort(endpoint.connectPort) ||
+    endpoint.serverName.trim() === '' ||
+    !Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) {
+    return null;
+  }
+  return start(endpoint.connectHost, endpoint.connectPort, endpoint.serverName, timeoutMs);
 }
 
 export function vncTrustOwnerForEndpoint(
