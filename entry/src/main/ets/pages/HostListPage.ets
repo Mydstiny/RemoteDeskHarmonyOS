@@ -308,6 +308,7 @@ import {
 } from '../services/SshOperationConfigPolicy';
 import {
   SshOperationRouteSecretResult,
+  SshOperationRouteSecretScope,
   SshOperationRouteSecretService
 } from '../services/SshOperationRouteSecretService';
 import {
@@ -1437,6 +1438,7 @@ struct HostListPage {
 
   private onRemoteDesktopBgFlagChange(): void {
     if (this.appInBackground) {
+      SshOperationRouteSecretService.getInstance().clearAll();
       if (this.pendingVncConnectHostId !== '') {
         this.clearPendingVncHandoffsForRecordId(
           this.pendingVncConnectHostId, this.pendingVncConnectUserId);
@@ -8361,12 +8363,22 @@ struct HostListPage {
     };
   }
 
-  /** Resolve only credentials already available in device-local memory. */
+  /** Resolve only account/route-bound credentials already available in memory. */
   private sshOperationRouteSecrets(host: RemoteHost, plan: SshProxyRuntimePlan,
-    legacyProxyPassphrase: string = ''): SshOperationRouteSecrets | null {
+    legacyProxyPassphrase: string = '',
+    allowTransient: boolean = true): SshOperationRouteSecrets | null {
+    let scope: SshOperationRouteSecretScope | undefined = undefined;
+    if (allowTransient) {
+      const current = AccountSessionCoordinator.getInstance().currentScope();
+      scope = {
+        ownerScopeId: current.ownerScopeId,
+        storeIdentity: current.storeIdentity,
+        accountGeneration: current.generation
+      };
+    }
     const result: SshOperationRouteSecretResult =
       SshOperationRouteSecretService.getInstance().resolve(
-        host, plan, legacyProxyPassphrase);
+        host, plan, legacyProxyPassphrase, scope);
     return result.ok ? result.secrets : null;
   }
 
@@ -9089,7 +9101,7 @@ struct HostListPage {
         const plan: SshProxyRuntimePlan = resolveSshProxyRuntimePlan(
           host, this.sshProxyProfiles.load(host.id));
         const routeSecrets: SshOperationRouteSecrets | null =
-          this.sshOperationRouteSecrets(host, plan);
+          this.sshOperationRouteSecrets(host, plan, '', showToast);
         if (routeSecrets === null) {
           throw new Error('SSH 在线探测需要一次性路由凭据');
         }
@@ -14285,11 +14297,16 @@ struct HostListPage {
     }
     const plan: SshProxyRuntimePlan = resolveSshProxyRuntimePlan(
       host, this.sshProxyProfiles.load(host.id));
+    const currentScope = AccountSessionCoordinator.getInstance().currentScope();
     const routeSecretsResult: SshOperationRouteSecretResult =
-      SshOperationRouteSecretService.getInstance().resolve(host, plan);
+      SshOperationRouteSecretService.getInstance().resolve(host, plan, '', {
+        ownerScopeId: currentScope.ownerScopeId,
+        storeIdentity: currentScope.storeIdentity,
+        accountGeneration: currentScope.generation
+      });
     if (!routeSecretsResult.ok) {
       this.sshPublicKeyInstallError = routeSecretsResult.message +
-        '；请从主机连接流程完成一次性预认证';
+        '；请先连接该主机完成一次性预认证，并在 60 秒内重试';
       return;
     }
     const auth: SshOperationTargetAuth = {

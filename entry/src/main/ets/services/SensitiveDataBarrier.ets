@@ -9,6 +9,7 @@ import { RemoteSessionPipService } from './RemoteSessionPipService';
 import { RustDeskProSyncService } from './RustDeskProSyncService';
 import { RustDeskHostAddHandoff } from './RustDeskHostAddHandoff';
 import { SshPreflightService } from './SshPreflightService';
+import { SshOperationRouteSecretService } from './SshOperationRouteSecretService';
 import { VncSessionCredentialHandoff } from './VncSessionCredentialHandoff';
 import { VncPlaintextDecisionHandoff } from './VncPlaintextDecisionHandoff';
 import { MoonlightDataLifecycleBarrier } from './MoonlightDataLifecycleBarrier';
@@ -86,6 +87,7 @@ export class SensitiveDataBarrier {
     VncSessionCredentialHandoff.getInstance().clearAll();
     VncPlaintextDecisionHandoff.getInstance().clearAll();
     SshPreflightService.getInstance().clearAll();
+    SshOperationRouteSecretService.getInstance().clearAll();
     if (!(await DataCrypto.getInstance().prepareScopeTransition(10000))) {
       hilog.error(0x0001, 'AccountSession',
         'crypto tasks did not reach a terminal state; account transition blocked');

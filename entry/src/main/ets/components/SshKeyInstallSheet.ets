@@ -19,6 +19,7 @@ import { ExtensionLoader, SshNativeOperationPromise } from '../services/Extensio
 import { DataCrypto } from '../services/DataCrypto';
 import { HostSyncService } from '../services/HostSyncService';
 import { KeyVaultService } from '../services/KeyVaultService';
+import { AccountSessionCoordinator } from '../services/AccountSessionCoordinator';
 import { SshPublicKeyInstallResult, SshAuthTestResult } from '../types/rdpnapi';
 import { SshProxyProfileStore } from '../services/SshProxyProfileStore';
 import { SshProxyRuntimePlan, resolveSshProxyRuntimePlan } from
@@ -30,6 +31,7 @@ import {
 } from '../services/SshOperationConfigPolicy';
 import {
   SshOperationRouteSecretResult,
+  SshOperationRouteSecretScope,
   SshOperationRouteSecretService
 } from '../services/SshOperationRouteSecretService';
 
@@ -55,6 +57,8 @@ export struct SshKeyInstallSheet {
   @StorageLink('currentTheme') theme: string = 'light';
   @StorageProp('accentColor') accentColor: string = '#007DFF';
   @StorageProp('currentBreakpoint') breakpoint: string = 'sm';
+  @StorageProp('remoteDesktopBgFlag') @Watch('onAppBackgroundChange')
+  appInBackground: boolean = false;
   onComplete?: () => void;
 
   @State hosts: SshKeyInstallHostView[] = [];
@@ -81,6 +85,12 @@ export struct SshKeyInstallSheet {
   }
 
   private font(): string { return AppTheme.fontFamily; }
+
+  private onAppBackgroundChange(): void {
+    if (this.appInBackground) {
+      SshOperationRouteSecretService.getInstance().clearAll();
+    }
+  }
 
   aboutToAppear(): void {
     this.proxyProfilesReady = this.proxyProfiles.init(getContext(this) as common.Context);
@@ -248,11 +258,17 @@ export struct SshKeyInstallSheet {
     }
     const plan: SshProxyRuntimePlan = resolveSshProxyRuntimePlan(
       host, this.proxyProfiles.load(host.id));
+    const currentScope = AccountSessionCoordinator.getInstance().currentScope();
+    const routeScope: SshOperationRouteSecretScope = {
+      ownerScopeId: currentScope.ownerScopeId,
+      storeIdentity: currentScope.storeIdentity,
+      accountGeneration: currentScope.generation
+    };
     const routeSecrets: SshOperationRouteSecretResult =
-      SshOperationRouteSecretService.getInstance().resolve(host, plan);
+      SshOperationRouteSecretService.getInstance().resolve(host, plan, '', routeScope);
     if (!routeSecrets.ok) {
       promptAction.showToast({
-        message: routeSecrets.message + '；请从主机列表连接并完成一次性预认证', duration: 3000
+        message: routeSecrets.message + '；请先连接主机完成预认证，并在 60 秒内重试', duration: 3000
       });
       return;
     }

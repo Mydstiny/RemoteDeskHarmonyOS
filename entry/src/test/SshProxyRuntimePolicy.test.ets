@@ -79,6 +79,27 @@ export default function sshProxyRuntimePolicyTest(): void {
         resolveSshProxyRuntimePlan(host(), profile))).assertTrue();
     });
 
+    it('classifies_keyboard_interactive_jump_auth_as_transient', 0, (): void => {
+      const profile: SshProxyProfileV1 = {
+        schemaVersion: 1,
+        hostId: 'host-a',
+        route: {
+          schemaVersion: 1, type: 'ssh_jump', endpointHost: 'target.example',
+          endpointPort: 22, connectTimeoutMs: 10000,
+          hops: [{
+            host: 'jump.example', port: 22, username: 'jump',
+            authMethod: 'kbd-interactive',
+            expectedHostKeyFingerprintSha256: 'SHA256:jump', connectTimeoutMs: 10000
+          }]
+        },
+        hopMetadata: [{
+          hopId: 'jump', label: '跳板', keyId: '', hostKeyPolicy: 'strict', position: 0
+        }]
+      };
+      expect(sshProxyRuntimeNeedsTerminalSecrets(
+        resolveSshProxyRuntimePlan(host(), profile))).assertTrue();
+    });
+
     it('preserves_a_three_hop_profile_and_its_per_hop_key_references', 0,
       (): void => {
         const profile: SshProxyProfileV1 = {

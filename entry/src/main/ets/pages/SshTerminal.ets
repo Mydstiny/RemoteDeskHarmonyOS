@@ -127,6 +127,10 @@ import {
 } from '../types/rdpnapi';
 import { SshPreflightService } from '../services/SshPreflightService';
 import {
+  SshOperationRouteSecretScope,
+  SshOperationRouteSecretService
+} from '../services/SshOperationRouteSecretService';
+import {
   decideSshBackgroundSignalAction,
   SshBackgroundSignalTaskRegistry,
   SshBackgroundSignalAction,
@@ -1132,6 +1136,16 @@ struct SshTerminal {
   /** Page-owned identity for a detached desktop pre-authentication connect. */
   private sshAuthPromptPendingSessionId: number = 0;
   private sshAuthPromptPendingGeneration: number = 0;
+  /**
+   * Authentication material collected for the current profile route. It is
+   * published only after native authentication succeeds, then scrubbed.
+   */
+  private sshRouteSecretCaptureHostId: string = '';
+  private sshRouteSecretCaptureIdentity: string = '';
+  private sshRouteSecretCaptureProxyPassword: string = '';
+  private sshRouteSecretCaptureJumpHandoffs: SshJumpHopHandoff[] = [];
+  private sshRouteSecretCaptureSessionId: number = 0;
+  private sshRouteSecretCaptureGeneration: number = 0;
   private sshAuthPromptRequestId: number = 0;
   private sshAuthPromptSubmitting: boolean = false;
   // Native snapshot() can briefly outlive respond()/cancel() while the owner
@@ -1569,6 +1583,95 @@ struct SshTerminal {
     this.sshAuthPromptPendingGeneration = 0;
   }
 
+  private clearSshRouteSecretCapture(): void {
+    this.sshRouteSecretCaptureHostId = '';
+    this.sshRouteSecretCaptureIdentity = '';
+    this.sshRouteSecretCaptureProxyPassword = '';
+    for (let index: number = 0; index < this.sshRouteSecretCaptureJumpHandoffs.length; index++) {
+      const handoff: SshJumpHopHandoff = this.sshRouteSecretCaptureJumpHandoffs[index];
+      handoff.password = '';
+      handoff.privateKeyPem = '';
+      handoff.privateKeyPassphrase = '';
+      const responses: string[] = handoff.keyboardInteractiveResponses || [];
+      for (let responseIndex: number = 0; responseIndex < responses.length; responseIndex++) {
+        responses[responseIndex] = '';
+      }
+      handoff.keyboardInteractiveResponses = [];
+    }
+    this.sshRouteSecretCaptureJumpHandoffs = [];
+    this.sshRouteSecretCaptureSessionId = 0;
+    this.sshRouteSecretCaptureGeneration = 0;
+  }
+
+  private prepareSshRouteSecretCapture(host: RemoteHost, plan: SshProxyRuntimePlan,
+    routeIdentity: string, proxyPassword: string,
+    jumpHandoffs: SshJumpHopHandoff[]): void {
+    this.clearSshRouteSecretCapture();
+    if (plan.source !== 'profile') { return; }
+    this.sshRouteSecretCaptureHostId = host.id.trim();
+    this.sshRouteSecretCaptureIdentity = routeIdentity.trim();
+    this.sshRouteSecretCaptureProxyPassword = proxyPassword;
+    this.sshRouteSecretCaptureJumpHandoffs = jumpHandoffs.map(
+      (handoff: SshJumpHopHandoff): SshJumpHopHandoff => ({
+        password: handoff.password || '',
+        privateKeyPem: '',
+        privateKeyPassphrase: handoff.privateKeyPassphrase || '',
+        keyboardInteractiveResponses: (handoff.keyboardInteractiveResponses || []).map(
+          (response: string): string => response)
+      }));
+  }
+
+  private bindSshRouteSecretCapture(sessionId: number, generation: number): void {
+    if (this.sshRouteSecretCaptureHostId.length === 0 || sessionId <= 0 || generation <= 0) {
+      this.clearSshRouteSecretCapture();
+      return;
+    }
+    this.sshRouteSecretCaptureSessionId = sessionId;
+    this.sshRouteSecretCaptureGeneration = generation;
+  }
+
+  private captureSshRouteKeyboardInteractiveResponse(prompt: SshAuthPromptRequest,
+    values: string[]): void {
+    if (prompt.kind !== 'keyboard_interactive' ||
+      prompt.sessionId !== this.sshRouteSecretCaptureSessionId ||
+      prompt.generation !== this.sshRouteSecretCaptureGeneration ||
+      prompt.hop.indexOf('hop-') !== 0) { return; }
+    const oneBasedIndex: number = Number(prompt.hop.substring(4));
+    if (!Number.isSafeInteger(oneBasedIndex) || oneBasedIndex <= 0 ||
+      oneBasedIndex > this.sshRouteSecretCaptureJumpHandoffs.length) { return; }
+    const handoff: SshJumpHopHandoff =
+      this.sshRouteSecretCaptureJumpHandoffs[oneBasedIndex - 1];
+    const existing: string[] = handoff.keyboardInteractiveResponses || [];
+    if (existing.length + values.length > 32) {
+      this.clearSshRouteSecretCapture();
+      return;
+    }
+    handoff.keyboardInteractiveResponses = existing.concat(
+      values.map((value: string): string => value));
+  }
+
+  private publishSshRouteSecretCapture(host: RemoteHost, plan: SshProxyRuntimePlan,
+    routeIdentity: string, sessionId: number, generation: number): void {
+    if (host.id.trim() !== this.sshRouteSecretCaptureHostId ||
+      routeIdentity.trim() !== this.sshRouteSecretCaptureIdentity ||
+      sessionId !== this.sshRouteSecretCaptureSessionId ||
+      generation !== this.sshRouteSecretCaptureGeneration) {
+      this.clearSshRouteSecretCapture();
+      return;
+    }
+    const currentScope = AccountSessionCoordinator.getInstance().currentScope();
+    const scope: SshOperationRouteSecretScope = {
+      ownerScopeId: currentScope.ownerScopeId,
+      storeIdentity: currentScope.storeIdentity,
+      accountGeneration: currentScope.generation
+    };
+    SshOperationRouteSecretService.getInstance().stage(host, plan, scope, {
+      proxyPassword: this.sshRouteSecretCaptureProxyPassword,
+      jumpHandoffs: this.sshRouteSecretCaptureJumpHandoffs
+    });
+    this.clearSshRouteSecretCapture();
+  }
+
   private clearSshAuthPromptState(): void {
     if (this.sshAuthPromptShowTimer !== -1) {
       clearTimeout(this.sshAuthPromptShowTimer);
@@ -1795,6 +1898,7 @@ struct SshTerminal {
       this.clearSshAuthPromptState();
       return;
     }
+    this.captureSshRouteKeyboardInteractiveResponse(prompt, responseValues);
     // Do not retain password/OTP material while the native broker advances to
     // a possible next keyboard-interactive round.
     this.clearSshAuthPromptState();
@@ -10151,6 +10255,7 @@ struct SshTerminal {
     // retain its resolver while the new SSH binding is being established.
     this.clearSshSecretPrompt();
     this.clearPreflightBinding();
+    this.clearSshRouteSecretCapture();
     this.sftpPeerConnectPromise = null;
     this.sftpPeerConnectHostId = '';
     this.sshAuthPromptPageShown = false;
@@ -11293,6 +11398,10 @@ struct SshTerminal {
   }
 
   private onSshAbilityBackgroundChange(): void {
+    if (this.sshContextualGuideInBackground()) {
+      this.clearSshRouteSecretCapture();
+      SshOperationRouteSecretService.getInstance().clearAll();
+    }
     if (!this.sshContextualGuideInBackground()) {
       this.scheduleSshContextualGuide();
     }
@@ -11865,6 +11974,8 @@ struct SshTerminal {
         sshJumpHostKeyFingerprintSha256: (preflightMatchesHost ? this.preflightExpectedJumpHostKeyFp : '') ||
           host.sshJumpHostKeyFingerprintSha256
       };
+      this.prepareSshRouteSecretCapture(
+        host, proxyPlan, targetBinding.identity, proxyPassword, jumpHandoffs);
       // The native config now owns the one-shot authentication inputs for
       // this connect attempt; do not keep the preflight passphrase or raw
       // host-key material in the page after constructing it.
@@ -11879,12 +11990,15 @@ struct SshTerminal {
         connectPromise.sessionId : 0;
       this.sshAuthPromptPendingGeneration = connectPromise.generation > 0 ?
         connectPromise.generation : 0;
+      this.bindSshRouteSecretCapture(
+        this.sshAuthPromptPendingSessionId, this.sshAuthPromptPendingGeneration);
       const connectedSessionId: number = await connectPromise;
       this.clearSshAuthPromptPendingIdentity(connectPromise.sessionId);
       if (!this.isSshBindingActive(pageGeneration, bindingGeneration, bindingHostId)) {
         // ExtensionLoader cancels an in-flight connect during page teardown;
         // only disconnect a resolved session if it is still the current one.
         if (connectedSessionId > 0) { this.loader.disconnectSshSession(connectedSessionId); }
+        this.clearSshRouteSecretCapture();
         return;
       }
       hilog.info(0x0001, 'SshTerminal',
@@ -11892,6 +12006,8 @@ struct SshTerminal {
       if (connectedSessionId <= 0) {
         throw new Error('连接失败 (code=' + connectedSessionId.toString() + ')');
       }
+      this.publishSshRouteSecretCapture(host, proxyPlan, targetBinding.identity,
+        connectedSessionId, connectPromise.generation);
       if (!await this.attachSshSession(
         pageGeneration, bindingGeneration, connectedSessionId, bindingHostId)) {
         if (this.isSshBindingActive(pageGeneration, bindingGeneration, bindingHostId)) {
@@ -11900,6 +12016,7 @@ struct SshTerminal {
         return;
       }
     } catch (err) {
+      this.clearSshRouteSecretCapture();
       const msg: string = (err as Error).message || 'SSH 连接失败';
       if (!this.isSshBindingActive(pageGeneration, bindingGeneration, bindingHostId)) { return; }
       this.connecting = false;
