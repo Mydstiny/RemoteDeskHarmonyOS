@@ -523,6 +523,14 @@ inline bool restrictedAdminGatewayRouteIsSupported(
     return !targetRestrictedAdmin || endpointMode != RdpEndpointMode::MicrosoftRdGateway;
 }
 
+inline bool targetInterfaceScopeIsAllowed(
+    RdpEndpointMode endpointMode, bool targetHasInterfaceScope) {
+    // An interface scope belongs to this client.  It can select the egress
+    // interface for a direct connection, but it has no meaning in the remote
+    // namespace where an RD Gateway resolves and connects to the target.
+    return !targetHasInterfaceScope || endpointMode != RdpEndpointMode::MicrosoftRdGateway;
+}
+
 inline bool isSupportedRdpRoute(RdpEndpointMode mode) {
     return mode == RdpEndpointMode::DirectRdp ||
         mode == RdpEndpointMode::TransparentTcpRdp ||

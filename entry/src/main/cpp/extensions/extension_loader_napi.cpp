@@ -1264,13 +1264,17 @@ static bool ReadOptionalNapiInt(napi_env env, napi_value object, const char* key
 }
 
 static bool NormalizePersistedEndpoint(
-    std::string& host, int port, std::string* canonicalHost = nullptr) {
+    std::string& host, int port, std::string* canonicalHost = nullptr,
+    bool* hasInterfaceScope = nullptr) {
     if (port <= 0 || port > 65535) { return false; }
     const auto parsed = remotedesk::endpoint::ParseFields(
         host, static_cast<std::uint16_t>(port), remotedesk::endpoint::ParseMode::Persisted);
     if (!parsed.ok) { return false; }
     if (canonicalHost != nullptr) {
         *canonicalHost = parsed.endpoint.canonicalHost();
+    }
+    if (hasInterfaceScope != nullptr) {
+        *hasInterfaceScope = !parsed.endpoint.scope().empty();
     }
     host = remotedesk::endpoint::TransportHost(parsed.endpoint);
     return true;
@@ -2142,17 +2146,28 @@ static bool ReadRdpPreflightRequest(
     }
     request.route.targetPort = targetPort;
     request.route.gatewayPort = gatewayPort;
-    if (!NormalizePersistedEndpoint(request.route.targetHost, targetPort) ||
+    std::string targetDefaultIdentity;
+    std::string gatewayDefaultIdentity;
+    bool targetHasInterfaceScope = false;
+    if (!NormalizePersistedEndpoint(
+            request.route.targetHost, targetPort, &targetDefaultIdentity,
+            &targetHasInterfaceScope) ||
         (!request.route.gatewayHost.empty() &&
-         !NormalizePersistedEndpoint(request.route.gatewayHost, gatewayPort))) {
+         !NormalizePersistedEndpoint(
+             request.route.gatewayHost, gatewayPort, &gatewayDefaultIdentity))) {
         errorMessage = "RDP preflight endpoint is invalid or uses unsupported scope";
         return false;
     }
+    if (!RdpGatewayPolicy::targetInterfaceScopeIsAllowed(
+            request.route.endpointMode, targetHasInterfaceScope)) {
+        errorMessage = "RDP preflight RD Gateway target cannot use a local interface scope";
+        return false;
+    }
     if (request.route.targetServerName.empty()) {
-        request.route.targetServerName = request.route.targetHost;
+        request.route.targetServerName = targetDefaultIdentity;
     }
     if (request.route.gatewayServerName.empty()) {
-        request.route.gatewayServerName = request.route.gatewayHost;
+        request.route.gatewayServerName = gatewayDefaultIdentity;
     }
     if (!NormalizeServerIdentity(request.route.targetServerName) ||
         (!request.route.gatewayServerName.empty() &&

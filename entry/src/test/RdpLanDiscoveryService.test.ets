@@ -30,6 +30,8 @@ export default function rdpLanDiscoveryServiceTest() {
       expect(values[0]).assertEqual('192.168.1.129');
       expect(rdpLanCandidateAddresses('not-an-ip', 24).length).assertEqual(0);
       expect(rdpLanCandidateAddresses('203.0.113.8', 24).length).assertEqual(0);
+      expect(rdpLanCandidateAddresses('fe80::20', 64).length).assertEqual(0);
+      expect(rdpLanCandidateAddresses('2001:db8::20', 64).length).assertEqual(0);
     });
   });
 

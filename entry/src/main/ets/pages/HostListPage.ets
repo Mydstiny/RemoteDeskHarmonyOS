@@ -12,6 +12,7 @@ import { abilityAccessCtrl, common, ConfigurationConstant, Want } from '@kit.Abi
 import { authentication } from '@kit.AccountKit';
 import { inputDevice } from '@kit.InputKit';
 import { HostSyncService } from '../services/HostSyncService';
+import { EndpointAddressResult, parseEndpointFields } from '../services/EndpointAddressPolicy';
 import { AuthService } from '../services/AuthService';
 import { KeyVaultService } from '../services/KeyVaultService';
 import {
@@ -6576,15 +6577,23 @@ struct HostListPage {
       this.rdpGatewayPreflightOneTimeFingerprint.length > 0 &&
       rdpCertificateRouteIsCurrent(
         this.rdpGatewayPreflightOneTimeRouteIdentity, routeIdentity);
+    const targetEndpoint: EndpointAddressResult =
+      parseEndpointFields(host.host, host.port, 'persisted');
+    const gatewayEndpoint: EndpointAddressResult | null = host.gatewayHost === '' ? null :
+      parseEndpointFields(host.gatewayHost, host.gatewayPort > 0 ? host.gatewayPort : 443, 'persisted');
+    const targetDefaultIdentity: string = targetEndpoint.ok ?
+      targetEndpoint.endpoint.canonicalHost : host.host;
+    const gatewayDefaultIdentity: string = gatewayEndpoint !== null && gatewayEndpoint.ok ?
+      gatewayEndpoint.endpoint.canonicalHost : host.gatewayHost;
     return {
       route: {
         endpointMode: mode,
         targetHost: host.host,
         targetPort: host.port,
-        targetServerName: host.customHostname || host.host,
+        targetServerName: host.customHostname || targetDefaultIdentity,
         gatewayHost: host.gatewayHost,
         gatewayPort: host.gatewayPort > 0 ? host.gatewayPort : 443,
-        gatewayServerName: host.rdpGatewayServerName || host.gatewayHost,
+        gatewayServerName: host.rdpGatewayServerName || gatewayDefaultIdentity,
         gatewayTransport: (host.rdpGatewayTransport || 'auto') as
           'auto' | 'http' | 'rpc' | 'websocket' | 'no-websockets'
       },

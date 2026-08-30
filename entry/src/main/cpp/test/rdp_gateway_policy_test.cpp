@@ -274,6 +274,17 @@ RDP_TEST_CASE(rdp_gateway_policy_rejects_restricted_admin_without_gateway_creden
         RdpEndpointMode::MicrosoftRdGateway, false));
 }
 
+RDP_TEST_CASE(rdp_gateway_policy_keeps_interface_scopes_in_the_client_namespace) {
+    RDP_ASSERT(RdpGatewayPolicy::targetInterfaceScopeIsAllowed(
+        RdpEndpointMode::DirectRdp, true));
+    RDP_ASSERT(RdpGatewayPolicy::targetInterfaceScopeIsAllowed(
+        RdpEndpointMode::TransparentTcpRdp, true));
+    RDP_ASSERT(RdpGatewayPolicy::targetInterfaceScopeIsAllowed(
+        RdpEndpointMode::MicrosoftRdGateway, false));
+    RDP_ASSERT(!RdpGatewayPolicy::targetInterfaceScopeIsAllowed(
+        RdpEndpointMode::MicrosoftRdGateway, true));
+}
+
 RDP_TEST_CASE(rdp_gateway_policy_does_not_cross_match_gateway_and_target_pins) {
     const int64_t nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::system_clock::now().time_since_epoch()).count();

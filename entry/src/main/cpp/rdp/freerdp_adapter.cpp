@@ -13,6 +13,8 @@
 #include "render/video_perf_counters.h"
 #include "video/video_activity_state.h"
 #include "common/safe_log.h"
+#include "common/happy_eyeballs_connector.h"
+#include "common/endpoint_address_policy.h"
 #include "rdp_audio_policy.h"
 #include "rdp_auth_identity_policy.h"
 #include "rdp_auth_mode_policy.h"
@@ -79,6 +81,19 @@
 
 namespace {
 
+bool isIpAddressLiteral(const std::string& input) {
+    std::string value = input;
+    if (value.size() >= 2U && value.front() == '[' && value.back() == ']') {
+        value = value.substr(1U, value.size() - 2U);
+    }
+    const std::size_t scope = value.find('%');
+    if (scope != std::string::npos) { value.resize(scope); }
+    in_addr ipv4{};
+    in6_addr ipv6{};
+    return inet_pton(AF_INET, value.c_str(), &ipv4) == 1 ||
+        inet_pton(AF_INET6, value.c_str(), &ipv6) == 1;
+}
+
 constexpr int kDefaultRdpPort = 3389;
 constexpr int kRdpCertFlagUntrustedRoot = 0x01;
 constexpr int kRdpCertFlagHostMismatch = 0x02;
@@ -119,15 +134,41 @@ bool resolveRdpEndpointRoute(const ConnectionConfig& cfg,
     }
 
     route.endpointMode = mode;
-    route.targetHost = cfg.host;
     route.targetPort = cfg.port > 0 ? cfg.port : kDefaultRdpPort;
+    route.gatewayPort = cfg.gatewayPort > 0 ? cfg.gatewayPort : 443;
+    if (route.targetPort <= 0 || route.targetPort > 65535 ||
+        route.gatewayPort <= 0 || route.gatewayPort > 65535) {
+        errorCode = "E-RDP-ENDPOINT";
+        errorMessage = "RDP endpoint port is invalid";
+        return false;
+    }
+    const auto targetEndpoint = remotedesk::endpoint::ParseFields(
+        cfg.host, static_cast<std::uint16_t>(route.targetPort),
+        remotedesk::endpoint::ParseMode::Persisted);
+    if (!targetEndpoint.ok) {
+        errorCode = "E-RDP-ENDPOINT";
+        errorMessage = "RDP target endpoint is invalid";
+        return false;
+    }
+    if (!RdpGatewayPolicy::targetInterfaceScopeIsAllowed(
+            mode, !targetEndpoint.endpoint.scope().empty())) {
+        errorCode = "E-RDP-GATEWAY-TARGET-SCOPE";
+        errorMessage = "RD Gateway target cannot use this device's interface scope";
+        return false;
+    }
+    route.targetHost = remotedesk::endpoint::TransportHost(targetEndpoint.endpoint);
     const std::string configuredTargetName = cfg.targetServerName.empty()
         ? cfg.customHostname : cfg.targetServerName;
-    route.targetServerName = configuredTargetName.empty() ? cfg.host : configuredTargetName;
-    route.gatewayHost = cfg.gatewayHost;
-    route.gatewayPort = cfg.gatewayPort > 0 ? cfg.gatewayPort : 443;
-    route.gatewayServerName = cfg.rdpGatewayServerName.empty()
-        ? cfg.gatewayHost : cfg.rdpGatewayServerName;
+    const auto targetIdentity = remotedesk::endpoint::ParseServerIdentity(
+        configuredTargetName.empty() ? targetEndpoint.endpoint.canonicalHost() :
+            configuredTargetName);
+    if (!targetIdentity.ok ||
+        targetIdentity.identity.kind() == remotedesk::endpoint::ServerIdentityKind::None) {
+        errorCode = "E-RDP-IDENTITY";
+        errorMessage = "RDP target server identity is invalid";
+        return false;
+    }
+    route.targetServerName = targetIdentity.identity.canonicalName();
     route.gatewayTransport = transport;
 
     if (route.targetHost.empty()) {
@@ -135,27 +176,31 @@ bool resolveRdpEndpointRoute(const ConnectionConfig& cfg,
         errorMessage = "RDP target host is empty";
         return false;
     }
-    if (route.targetPort <= 0 || route.targetPort > 65535 ||
-        route.gatewayPort <= 0 || route.gatewayPort > 65535) {
-        errorCode = "E-RDP-ENDPOINT";
-        errorMessage = "RDP endpoint port is invalid";
-        return false;
-    }
     if (mode == RdpEndpointMode::MicrosoftRdGateway) {
-        if (route.gatewayHost.empty()) {
+        if (cfg.gatewayHost.empty()) {
             errorCode = "E-RDP-ENDPOINT";
             errorMessage = "Microsoft RD Gateway requires gatewayHost";
             return false;
         }
-        // FreeRDP uses GatewayHostname for both the transport peer and the
-        // TLS hostname/SNI. Do not accept a second name that the locked
-        // runtime cannot apply independently.
-        if (cfg.rdpGatewayServerName.size() > 0 &&
-            cfg.rdpGatewayServerName != route.gatewayHost) {
-            errorCode = "E-RDP-GATEWAY-SNI";
-            errorMessage = "Gateway server name must match gatewayHost";
+        const auto gatewayEndpoint = remotedesk::endpoint::ParseFields(
+            cfg.gatewayHost, static_cast<std::uint16_t>(route.gatewayPort),
+            remotedesk::endpoint::ParseMode::Persisted);
+        if (!gatewayEndpoint.ok) {
+            errorCode = "E-RDP-ENDPOINT";
+            errorMessage = "RDP Gateway endpoint is invalid";
             return false;
         }
+        route.gatewayHost = remotedesk::endpoint::TransportHost(gatewayEndpoint.endpoint);
+        const auto gatewayIdentity = remotedesk::endpoint::ParseServerIdentity(
+            cfg.rdpGatewayServerName.empty() ? gatewayEndpoint.endpoint.canonicalHost() :
+                cfg.rdpGatewayServerName);
+        if (!gatewayIdentity.ok ||
+            gatewayIdentity.identity.kind() == remotedesk::endpoint::ServerIdentityKind::None) {
+            errorCode = "E-RDP-GATEWAY-SNI";
+            errorMessage = "RDP Gateway server identity is invalid";
+            return false;
+        }
+        route.gatewayServerName = gatewayIdentity.identity.canonicalName();
         if (!RdpGatewayPolicy::restrictedAdminGatewayRouteIsSupported(
                 mode, cfg.rdpAuthMode == RdpAuthenticationMode::RestrictedAdmin)) {
             errorCode = "E-RDP-GATEWAY-AUTH";
@@ -167,7 +212,7 @@ bool resolveRdpEndpointRoute(const ConnectionConfig& cfg,
         errorMessage = std::string("RDP endpoint mode is not supported: ") +
             RdpGatewayPolicy::endpointModeName(mode);
         return false;
-    } else if (!route.gatewayHost.empty()) {
+    } else if (!cfg.gatewayHost.empty() || !cfg.rdpGatewayServerName.empty()) {
         errorCode = "E-RDP-ENDPOINT";
         errorMessage = "gatewayHost cannot be used with a direct RDP route";
         return false;
@@ -498,46 +543,6 @@ const char* sslErrorName(int sslError) {
     }
 }
 
-int connectWithTimeout(int fd, const sockaddr* addr, socklen_t addrLen, int timeoutMs) {
-    const int oldFlags = fcntl(fd, F_GETFL, 0);
-    if (oldFlags < 0) {
-        return -errno;
-    }
-    if (fcntl(fd, F_SETFL, oldFlags | O_NONBLOCK) < 0) {
-        return -errno;
-    }
-    int rc = connect(fd, addr, addrLen);
-    if (rc == 0) {
-        fcntl(fd, F_SETFL, oldFlags);
-        return 0;
-    }
-    if (errno != EINPROGRESS) {
-        const int err = errno;
-        fcntl(fd, F_SETFL, oldFlags);
-        return -err;
-    }
-
-    fd_set wfds;
-    FD_ZERO(&wfds);
-    FD_SET(fd, &wfds);
-    timeval tv {};
-    tv.tv_sec = timeoutMs / 1000;
-    tv.tv_usec = (timeoutMs % 1000) * 1000;
-    rc = select(fd + 1, nullptr, &wfds, nullptr, &tv);
-    if (rc <= 0) {
-        fcntl(fd, F_SETFL, oldFlags);
-        return rc == 0 ? -ETIMEDOUT : -errno;
-    }
-    int soError = 0;
-    socklen_t soErrorLen = sizeof(soError);
-    if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &soError, &soErrorLen) < 0) {
-        fcntl(fd, F_SETFL, oldFlags);
-        return -errno;
-    }
-    fcntl(fd, F_SETFL, oldFlags);
-    return soError == 0 ? 0 : -soError;
-}
-
 bool sendAll(int fd, const uint8_t* data, size_t size, int& errorCode) {
     errorCode = 0;
     size_t sent = 0;
@@ -617,37 +622,26 @@ RdpCertificateInfo probeGatewayCertificateOverTls(const std::string& host, int p
         return makeProbeError(host, effectivePort, -30, "RD Gateway host is empty");
     }
 
-    addrinfo hints {};
-    hints.ai_family = AF_UNSPEC;
-    hints.ai_socktype = SOCK_STREAM;
-    addrinfo* results = nullptr;
     const std::string portText = std::to_string(effectivePort);
-    const int gai = getaddrinfo(host.c_str(), portText.c_str(), &hints, &results);
-    if (gai != 0 || results == nullptr) {
+    remotedesk::net::ConnectOptions connectOptions;
+    connectOptions.deadline = std::chrono::steady_clock::now() +
+        std::chrono::milliseconds(5000);
+    remotedesk::net::ConnectResult connection;
+    const remotedesk::net::ResolveResult resolution =
+        remotedesk::net::ResolveAndConnectTcp(
+            host, portText, connectOptions, connection);
+    if (resolution.status != remotedesk::net::ResolveStatus::Ready) {
         return makeProbeError(host, effectivePort, -31, "Unable to resolve RD Gateway host");
     }
-
-    int fd = -1;
-    for (addrinfo* ai = results; ai != nullptr; ai = ai->ai_next) {
-        fd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
-        if (fd < 0) {
-            continue;
-        }
-        timeval timeout {};
-        timeout.tv_sec = 8;
-        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
-        setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
-        if (connectWithTimeout(fd, ai->ai_addr,
-                               static_cast<socklen_t>(ai->ai_addrlen), 5000) == 0) {
-            break;
-        }
-        close(fd);
-        fd = -1;
-    }
-    freeaddrinfo(results);
-    if (fd < 0) {
+    if (connection.status != remotedesk::net::ConnectStatus::Connected ||
+        connection.descriptor < 0) {
         return makeProbeError(host, effectivePort, -32, "Unable to connect to RD Gateway");
     }
+    const int fd = connection.descriptor;
+    timeval timeout {};
+    timeout.tv_sec = 8;
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
 
     SSL_CTX* sslCtx = SSL_CTX_new(TLS_client_method());
     if (sslCtx == nullptr) {
@@ -664,7 +658,8 @@ RdpCertificateInfo probeGatewayCertificateOverTls(const std::string& host, int p
                               "Unable to create RD Gateway TLS session");
     }
     if (SSL_set_fd(ssl, fd) != 1 ||
-        (!verifyName.empty() && SSL_set_tlsext_host_name(ssl, verifyName.c_str()) != 1)) {
+        (!verifyName.empty() && !isIpAddressLiteral(verifyName) &&
+         SSL_set_tlsext_host_name(ssl, verifyName.c_str()) != 1)) {
         SSL_free(ssl);
         SSL_CTX_free(sslCtx);
         close(fd);
@@ -771,45 +766,33 @@ RdpCertificateInfo probeRdpCertificateOverTls(const std::string& host, int port,
         return makeProbeError(host, effectivePort, -10, "RDP host is empty");
     }
 
-    addrinfo hints {};
-    hints.ai_family = AF_UNSPEC;
-    hints.ai_socktype = SOCK_STREAM;
-    addrinfo* results = nullptr;
     const std::string portText = std::to_string(effectivePort);
-    const int gai = getaddrinfo(host.c_str(), portText.c_str(), &hints, &results);
-    if (gai != 0 || !results) {
+    remotedesk::net::ConnectOptions connectOptions;
+    connectOptions.deadline = std::chrono::steady_clock::now() +
+        std::chrono::milliseconds(5000);
+    remotedesk::net::ConnectResult connection;
+    const remotedesk::net::ResolveResult resolution =
+        remotedesk::net::ResolveAndConnectTcp(
+            host, portText, connectOptions, connection);
+    if (resolution.status != remotedesk::net::ResolveStatus::Ready) {
         OH_LOG_WARN(LOG_APP, "[RDP-CERT] resolve failed host=%{public}s:%{public}d gai=%{public}d",
-                    logHost.c_str(), effectivePort, gai);
+                    logHost.c_str(), effectivePort, resolution.gaiError);
         return makeProbeError(host, effectivePort, -11, "Unable to resolve RDP host");
     }
     OH_LOG_INFO(LOG_APP, "[RDP-CERT] resolve ok host=%{public}s:%{public}d", logHost.c_str(), effectivePort);
 
-    int fd = -1;
-    int lastConnectErr = 0;
-    for (addrinfo* ai = results; ai != nullptr; ai = ai->ai_next) {
-        fd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
-        if (fd < 0) {
-            continue;
-        }
-        timeval tv {};
-        tv.tv_sec = 8;
-        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-        setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
-        const int rc = connectWithTimeout(fd, ai->ai_addr, static_cast<socklen_t>(ai->ai_addrlen), 5000);
-        if (rc == 0) {
-            break;
-        }
-        lastConnectErr = rc;
-        close(fd);
-        fd = -1;
-    }
-    freeaddrinfo(results);
-    if (fd < 0) {
+    if (connection.status != remotedesk::net::ConnectStatus::Connected ||
+        connection.descriptor < 0) {
         OH_LOG_WARN(LOG_APP, "[RDP-CERT] tcp connect failed host=%{public}s:%{public}d err=%{public}d elapsedMs=%{public}lld",
-                    logHost.c_str(), effectivePort, lastConnectErr,
+                    logHost.c_str(), effectivePort, connection.lastError,
                     static_cast<long long>((probeNowUs() - startedUs) / 1000));
         return makeProbeError(host, effectivePort, -12, "Unable to connect to RDP host");
     }
+    const int fd = connection.descriptor;
+    timeval tv {};
+    tv.tv_sec = 8;
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
     OH_LOG_INFO(LOG_APP, "[RDP-CERT] tcp connected host=%{public}s:%{public}d elapsedMs=%{public}lld",
                 logHost.c_str(), effectivePort,
                 static_cast<long long>((probeNowUs() - startedUs) / 1000));
@@ -946,7 +929,7 @@ RdpCertificateInfo probeRdpCertificateOverTls(const std::string& host, int port,
             : "Unable to bind RDP TLS socket (openssl=" + opensslDetails + ")";
         return makeProbeError(host, effectivePort, -23, message);
     }
-    if (!verifyName.empty()) {
+    if (!verifyName.empty() && !isIpAddressLiteral(verifyName)) {
         ERR_clear_error();
         errno = 0;
         if (SSL_set_tlsext_host_name(ssl, verifyName.c_str()) != 1) {
@@ -3103,6 +3086,8 @@ static RdpPreflightResult probeRdpCertificateRouteWithFreeRdp(
     freerdp_settings_set_uint32(settings, FreeRDP_ServerPort,
                                 static_cast<UINT32>(request.route.targetPort));
     freerdp_settings_set_string(settings, FreeRDP_GatewayHostname,
+                                request.route.gatewayServerName.c_str());
+    freerdp_settings_set_string(settings, FreeRDP_GatewayConnectHostname,
                                 request.route.gatewayHost.c_str());
     freerdp_settings_set_uint32(settings, FreeRDP_GatewayPort,
                                 static_cast<UINT32>(request.route.gatewayPort));
@@ -6355,7 +6340,8 @@ void FreeRdpAdapter::connectThreadFunc(uint64_t expectedGeneration) {
     }
 
     // 目标服务器名: 连接仍走目标 host/port, NLA/CredSSP 使用该名称生成
-    // TERMSRV/<name>；Gateway TLS/SNI 仍由 FreeRDP 使用 GatewayHostname。
+    // TERMSRV/<name>；Gateway TLS/SNI uses GatewayHostname while the patched
+    // GatewayConnectHostname remains the transport-only peer.
     if (!route.targetServerName.empty()) {
         freerdp_settings_set_string(s, FreeRDP_UserSpecifiedServerName,
                                     route.targetServerName.c_str());
@@ -6371,7 +6357,10 @@ void FreeRdpAdapter::connectThreadFunc(uint64_t expectedGeneration) {
         RdpGatewayPolicy::transportFlags(route.gatewayTransport);
     freerdp_settings_set_bool(s, FreeRDP_GatewayEnabled, gatewayRoute ? TRUE : FALSE);
     if (gatewayRoute) {
-        freerdp_settings_set_string(s, FreeRDP_GatewayHostname, route.gatewayHost.c_str());
+        freerdp_settings_set_string(s, FreeRDP_GatewayHostname,
+                                    route.gatewayServerName.c_str());
+        freerdp_settings_set_string(s, FreeRDP_GatewayConnectHostname,
+                                    route.gatewayHost.c_str());
         freerdp_settings_set_uint32(s, FreeRDP_GatewayPort,
                                     static_cast<UINT32>(route.gatewayPort));
         freerdp_settings_set_bool(s, FreeRDP_GatewayRpcTransport,
