@@ -1143,6 +1143,7 @@ static void EnsureExtensionsLoaded() {
 }
 
 constexpr size_t kMaxGenericNapiStringLength = 4U * 1024U * 1024U;
+constexpr size_t kMaxSshForwardingIdLength = 96U;
 
 static bool ReadBoundedNapiStringValue(
     napi_env env, napi_value value, size_t maxLength, std::string& output) {
@@ -1793,7 +1794,8 @@ static bool ReadSshForwardingConfig(
     int32_t maxBindPort = static_cast<int32_t>(config.maxBindPort);
     int64_t maxBytes = static_cast<int64_t>(config.maxBytes);
     int64_t expiresAtMs = static_cast<int64_t>(config.expiresAtMs);
-    if (!ReadNapiNamedString(env, value, "id", config.id, true, 256) ||
+    if (!ReadNapiNamedString(env, value, "id", config.id, true,
+                             kMaxSshForwardingIdLength) ||
         !ReadNapiNamedString(env, value, "bindHost", config.bindHost, false,
                              remotedesk::endpoint::kMaxInputLength) ||
         !ReadNapiNamedString(env, value, "targetHost", config.targetHost, false,
@@ -1885,9 +1887,114 @@ static napi_value CreateSshForwardingSnapshotsValue(
 
 static napi_value CreateSshForwardingResultValue(
     napi_env env, SshForwardingResult resultCode) {
-    napi_value result;
-    napi_create_int32(env, static_cast<int32_t>(resultCode), &result);
+    napi_value result = nullptr;
+    if (napi_create_int32(env, static_cast<int32_t>(resultCode), &result) != napi_ok) {
+        return nullptr;
+    }
     return result;
+}
+
+// Reserve one extra argv slot so callbacks with surplus arguments are
+// rejected instead of being silently truncated to the declared arity.
+static bool ReadExactNapiCallbackArgs(
+    napi_env env, napi_callback_info info, size_t expectedArgc,
+    napi_value* args, size_t capacity) noexcept {
+    if (args == nullptr || capacity <= expectedArgc) {
+        return false;
+    }
+    size_t argc = capacity;
+    return napi_get_cb_info(env, info, &argc, args, nullptr, nullptr) == napi_ok &&
+        argc == expectedArgc;
+}
+
+static SshForwardingResult ReadSshForwardingOwnerArgs(
+    napi_env env, const napi_value* args, int32_t& sessionId,
+    uint64_t& generation) noexcept {
+    int64_t generationValue = 0;
+    if (args == nullptr ||
+        !ReadStrictNapiInt32Value(env, args[0], sessionId) || sessionId <= 0) {
+        return SshForwardingResult::NotFound;
+    }
+    if (!ReadStrictNapiInt64Value(env, args[1], generationValue) ||
+        generationValue <= 0) {
+        return SshForwardingResult::MissingGeneration;
+    }
+    generation = static_cast<uint64_t>(generationValue);
+    return SshForwardingResult::Ok;
+}
+
+static SshForwardingResult ReadSshForwardingIdArg(
+    napi_env env, napi_value value, std::string& id) noexcept {
+    return ReadBoundedNapiStringValue(
+               env, value, kMaxSshForwardingIdLength, id) && !id.empty()
+        ? SshForwardingResult::Ok
+        : SshForwardingResult::InvalidId;
+}
+
+enum class SshForwardingNapiOperation : uint8_t {
+    Remove,
+    Start,
+    MarkListening,
+    Stop,
+    CompleteStop,
+    AcquireConnection,
+    ReleaseConnection,
+};
+
+static napi_value InvokeSshForwardingIdOperation(
+    napi_env env, napi_callback_info info,
+    SshForwardingNapiOperation operation) noexcept {
+    SshForwardingResult resultCode = SshForwardingResult::TransportFailure;
+    try {
+        napi_value args[4] = {nullptr, nullptr, nullptr, nullptr};
+        int32_t sessionId = 0;
+        uint64_t generation = 0;
+        std::string id;
+        if (!ReadExactNapiCallbackArgs(env, info, 3U, args, std::size(args))) {
+            resultCode = SshForwardingResult::MissingGeneration;
+        } else if ((resultCode = ReadSshForwardingOwnerArgs(
+                        env, args, sessionId, generation)) ==
+                       SshForwardingResult::Ok &&
+                   (resultCode = ReadSshForwardingIdArg(env, args[2], id)) ==
+                       SshForwardingResult::Ok) {
+            SshForwardingSessionAccess access;
+            resultCode = ResolveSshForwardingSession(
+                sessionId, generation, access);
+            if (resultCode == SshForwardingResult::Ok) {
+                switch (operation) {
+                    case SshForwardingNapiOperation::Remove:
+                        resultCode = access.adapter->removeForwarding(id);
+                        break;
+                    case SshForwardingNapiOperation::Start:
+                        resultCode = access.adapter->startForwarding(id, access.generation);
+                        break;
+                    case SshForwardingNapiOperation::MarkListening:
+                        resultCode = access.adapter->markForwardingListening(
+                            id, access.generation);
+                        break;
+                    case SshForwardingNapiOperation::Stop:
+                        resultCode = access.adapter->requestForwardingStop(
+                            id, access.generation);
+                        break;
+                    case SshForwardingNapiOperation::CompleteStop:
+                        resultCode = access.adapter->completeForwardingStop(
+                            id, access.generation);
+                        break;
+                    case SshForwardingNapiOperation::AcquireConnection:
+                        resultCode = access.adapter->acquireForwardingConnection(
+                            id, access.generation);
+                        break;
+                    case SshForwardingNapiOperation::ReleaseConnection:
+                        resultCode = access.adapter->releaseForwardingConnection(
+                            id, access.generation);
+                        break;
+                }
+            }
+        }
+    } catch (...) {
+        resultCode = SshForwardingResult::TransportFailure;
+    }
+    return CreateSshForwardingResultValue(env, resultCode);
 }
 
 static napi_value CreateSshAuthPromptValue(
@@ -8808,252 +8915,131 @@ napi_value NapiGetSshSessionEvents(napi_env env, napi_callback_info info) {
  * lifecycle request.
  */
 napi_value NapiConfigureSshForwarding(napi_env env, napi_callback_info info) {
-    size_t argc = 3;
-    napi_value args[3] = {nullptr, nullptr, nullptr};
-    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
-
-    int32_t sessionId = 0;
-    int64_t generationValue = 0;
-    SshForwardingResult resultCode = SshForwardingResult::MissingGeneration;
-    if (argc > 0) {
-        (void)napi_get_value_int32(env, args[0], &sessionId);
-    }
-    if (argc > 1) {
-        (void)napi_get_value_int64(env, args[1], &generationValue);
-    }
-    SshForwardingSessionAccess access;
-    resultCode = ResolveSshForwardingSession(
-        sessionId, generationValue > 0 ? static_cast<uint64_t>(generationValue) : 0,
-        access);
-    if (resultCode == SshForwardingResult::Ok) {
-        SshForwardingConfig config;
-        if (argc < 3 || !ReadSshForwardingConfig(env, args[2], config)) {
-            resultCode = SshForwardingResult::InvalidId;
+    SshForwardingResult resultCode = SshForwardingResult::TransportFailure;
+    try {
+        napi_value args[4] = {nullptr, nullptr, nullptr, nullptr};
+        int32_t sessionId = 0;
+        uint64_t generation = 0;
+        if (!ReadExactNapiCallbackArgs(env, info, 3U, args, std::size(args))) {
+            resultCode = SshForwardingResult::MissingGeneration;
         } else {
-            resultCode = access.adapter->configureForwarding(config);
+            resultCode = ReadSshForwardingOwnerArgs(
+                env, args, sessionId, generation);
+            if (resultCode == SshForwardingResult::Ok) {
+                SshForwardingSessionAccess access;
+                resultCode = ResolveSshForwardingSession(
+                    sessionId, generation, access);
+                if (resultCode == SshForwardingResult::Ok) {
+                    SshForwardingConfig config;
+                    if (!ReadSshForwardingConfig(env, args[2], config)) {
+                        resultCode = SshForwardingResult::InvalidId;
+                    } else {
+                        resultCode = access.adapter->configureForwarding(config);
+                    }
+                }
+            }
         }
+    } catch (...) {
+        resultCode = SshForwardingResult::TransportFailure;
     }
     return CreateSshForwardingResultValue(env, resultCode);
 }
 
 napi_value NapiRemoveSshForwarding(napi_env env, napi_callback_info info) {
-    size_t argc = 3;
-    napi_value args[3] = {nullptr, nullptr, nullptr};
-    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
-
-    int32_t sessionId = 0;
-    int64_t generationValue = 0;
-    if (argc > 0) {
-        (void)napi_get_value_int32(env, args[0], &sessionId);
-    }
-    if (argc > 1) {
-        (void)napi_get_value_int64(env, args[1], &generationValue);
-    }
-    const std::string id = argc > 2 ? GetNapiString(env, args[2]) : "";
-    SshForwardingSessionAccess access;
-    SshForwardingResult resultCode = ResolveSshForwardingSession(
-        sessionId, generationValue > 0 ? static_cast<uint64_t>(generationValue) : 0,
-        access);
-    if (resultCode == SshForwardingResult::Ok) {
-        resultCode = access.adapter->removeForwarding(id);
-    }
-    return CreateSshForwardingResultValue(env, resultCode);
+    return InvokeSshForwardingIdOperation(
+        env, info, SshForwardingNapiOperation::Remove);
 }
 
 napi_value NapiStartSshForwarding(napi_env env, napi_callback_info info) {
-    size_t argc = 3;
-    napi_value args[3] = {nullptr, nullptr, nullptr};
-    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
-
-    int32_t sessionId = 0;
-    int64_t generationValue = 0;
-    if (argc > 0) {
-        (void)napi_get_value_int32(env, args[0], &sessionId);
-    }
-    if (argc > 1) {
-        (void)napi_get_value_int64(env, args[1], &generationValue);
-    }
-    const std::string id = argc > 2 ? GetNapiString(env, args[2]) : "";
-    SshForwardingSessionAccess access;
-    SshForwardingResult resultCode = ResolveSshForwardingSession(
-        sessionId, generationValue > 0 ? static_cast<uint64_t>(generationValue) : 0,
-        access);
-    if (resultCode == SshForwardingResult::Ok) {
-        resultCode = access.adapter->startForwarding(id, access.generation);
-    }
-    return CreateSshForwardingResultValue(env, resultCode);
+    return InvokeSshForwardingIdOperation(
+        env, info, SshForwardingNapiOperation::Start);
 }
 
 napi_value NapiMarkSshForwardingListening(napi_env env, napi_callback_info info) {
-    size_t argc = 3;
-    napi_value args[3] = {nullptr, nullptr, nullptr};
-    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
-
-    int32_t sessionId = 0;
-    int64_t generationValue = 0;
-    if (argc > 0) {
-        (void)napi_get_value_int32(env, args[0], &sessionId);
-    }
-    if (argc > 1) {
-        (void)napi_get_value_int64(env, args[1], &generationValue);
-    }
-    const std::string id = argc > 2 ? GetNapiString(env, args[2]) : "";
-    SshForwardingSessionAccess access;
-    SshForwardingResult resultCode = ResolveSshForwardingSession(
-        sessionId, generationValue > 0 ? static_cast<uint64_t>(generationValue) : 0,
-        access);
-    if (resultCode == SshForwardingResult::Ok) {
-        resultCode = access.adapter->markForwardingListening(id, access.generation);
-    }
-    return CreateSshForwardingResultValue(env, resultCode);
+    return InvokeSshForwardingIdOperation(
+        env, info, SshForwardingNapiOperation::MarkListening);
 }
 
 napi_value NapiFailSshForwarding(napi_env env, napi_callback_info info) {
-    size_t argc = 4;
-    napi_value args[4] = {nullptr, nullptr, nullptr, nullptr};
-    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
-
-    int32_t sessionId = 0;
-    int64_t generationValue = 0;
-    int32_t error = 0;
-    if (argc > 0) {
-        (void)napi_get_value_int32(env, args[0], &sessionId);
-    }
-    if (argc > 1) {
-        (void)napi_get_value_int64(env, args[1], &generationValue);
-    }
-    const std::string id = argc > 2 ? GetNapiString(env, args[2]) : "";
-    if (argc > 3) {
-        (void)napi_get_value_int32(env, args[3], &error);
-    }
-    SshForwardingSessionAccess access;
-    SshForwardingResult resultCode = ResolveSshForwardingSession(
-        sessionId, generationValue > 0 ? static_cast<uint64_t>(generationValue) : 0,
-        access);
-    if (resultCode == SshForwardingResult::Ok) {
-        resultCode = access.adapter->failForwarding(id, access.generation, error);
+    SshForwardingResult resultCode = SshForwardingResult::TransportFailure;
+    try {
+        napi_value args[5] = {nullptr, nullptr, nullptr, nullptr, nullptr};
+        int32_t sessionId = 0;
+        uint64_t generation = 0;
+        int32_t error = 0;
+        std::string id;
+        if (!ReadExactNapiCallbackArgs(env, info, 4U, args, std::size(args))) {
+            resultCode = SshForwardingResult::MissingGeneration;
+        } else if ((resultCode = ReadSshForwardingOwnerArgs(
+                        env, args, sessionId, generation)) ==
+                       SshForwardingResult::Ok &&
+                   (resultCode = ReadSshForwardingIdArg(env, args[2], id)) ==
+                       SshForwardingResult::Ok) {
+            if (!ReadStrictNapiInt32Value(env, args[3], error)) {
+                resultCode = SshForwardingResult::InvalidState;
+            } else {
+                SshForwardingSessionAccess access;
+                resultCode = ResolveSshForwardingSession(
+                    sessionId, generation, access);
+                if (resultCode == SshForwardingResult::Ok) {
+                    resultCode = access.adapter->failForwarding(
+                        id, access.generation, error);
+                }
+            }
+        }
+    } catch (...) {
+        resultCode = SshForwardingResult::TransportFailure;
     }
     return CreateSshForwardingResultValue(env, resultCode);
 }
 
 napi_value NapiStopSshForwarding(napi_env env, napi_callback_info info) {
-    size_t argc = 3;
-    napi_value args[3] = {nullptr, nullptr, nullptr};
-    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
-
-    int32_t sessionId = 0;
-    int64_t generationValue = 0;
-    if (argc > 0) {
-        (void)napi_get_value_int32(env, args[0], &sessionId);
-    }
-    if (argc > 1) {
-        (void)napi_get_value_int64(env, args[1], &generationValue);
-    }
-    const std::string id = argc > 2 ? GetNapiString(env, args[2]) : "";
-    SshForwardingSessionAccess access;
-    SshForwardingResult resultCode = ResolveSshForwardingSession(
-        sessionId, generationValue > 0 ? static_cast<uint64_t>(generationValue) : 0,
-        access);
-    if (resultCode == SshForwardingResult::Ok) {
-        resultCode = access.adapter->requestForwardingStop(id, access.generation);
-    }
-    return CreateSshForwardingResultValue(env, resultCode);
+    return InvokeSshForwardingIdOperation(
+        env, info, SshForwardingNapiOperation::Stop);
 }
 
 napi_value NapiCompleteSshForwardingStop(napi_env env, napi_callback_info info) {
-    size_t argc = 3;
-    napi_value args[3] = {nullptr, nullptr, nullptr};
-    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
-
-    int32_t sessionId = 0;
-    int64_t generationValue = 0;
-    if (argc > 0) {
-        (void)napi_get_value_int32(env, args[0], &sessionId);
-    }
-    if (argc > 1) {
-        (void)napi_get_value_int64(env, args[1], &generationValue);
-    }
-    const std::string id = argc > 2 ? GetNapiString(env, args[2]) : "";
-    SshForwardingSessionAccess access;
-    SshForwardingResult resultCode = ResolveSshForwardingSession(
-        sessionId, generationValue > 0 ? static_cast<uint64_t>(generationValue) : 0,
-        access);
-    if (resultCode == SshForwardingResult::Ok) {
-        resultCode = access.adapter->completeForwardingStop(id, access.generation);
-    }
-    return CreateSshForwardingResultValue(env, resultCode);
+    return InvokeSshForwardingIdOperation(
+        env, info, SshForwardingNapiOperation::CompleteStop);
 }
 
 napi_value NapiAcquireSshForwardingConnection(napi_env env, napi_callback_info info) {
-    size_t argc = 3;
-    napi_value args[3] = {nullptr, nullptr, nullptr};
-    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
-
-    int32_t sessionId = 0;
-    int64_t generationValue = 0;
-    if (argc > 0) {
-        (void)napi_get_value_int32(env, args[0], &sessionId);
-    }
-    if (argc > 1) {
-        (void)napi_get_value_int64(env, args[1], &generationValue);
-    }
-    const std::string id = argc > 2 ? GetNapiString(env, args[2]) : "";
-    SshForwardingSessionAccess access;
-    SshForwardingResult resultCode = ResolveSshForwardingSession(
-        sessionId, generationValue > 0 ? static_cast<uint64_t>(generationValue) : 0,
-        access);
-    if (resultCode == SshForwardingResult::Ok) {
-        resultCode = access.adapter->acquireForwardingConnection(id, access.generation);
-    }
-    return CreateSshForwardingResultValue(env, resultCode);
+    return InvokeSshForwardingIdOperation(
+        env, info, SshForwardingNapiOperation::AcquireConnection);
 }
 
 napi_value NapiReleaseSshForwardingConnection(napi_env env, napi_callback_info info) {
-    size_t argc = 3;
-    napi_value args[3] = {nullptr, nullptr, nullptr};
-    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
-
-    int32_t sessionId = 0;
-    int64_t generationValue = 0;
-    if (argc > 0) {
-        (void)napi_get_value_int32(env, args[0], &sessionId);
-    }
-    if (argc > 1) {
-        (void)napi_get_value_int64(env, args[1], &generationValue);
-    }
-    const std::string id = argc > 2 ? GetNapiString(env, args[2]) : "";
-    SshForwardingSessionAccess access;
-    SshForwardingResult resultCode = ResolveSshForwardingSession(
-        sessionId, generationValue > 0 ? static_cast<uint64_t>(generationValue) : 0,
-        access);
-    if (resultCode == SshForwardingResult::Ok) {
-        resultCode = access.adapter->releaseForwardingConnection(id, access.generation);
-    }
-    return CreateSshForwardingResultValue(env, resultCode);
+    return InvokeSshForwardingIdOperation(
+        env, info, SshForwardingNapiOperation::ReleaseConnection);
 }
 
 napi_value NapiGetSshForwardingSnapshots(napi_env env, napi_callback_info info) {
-    size_t argc = 2;
-    napi_value args[2] = {nullptr, nullptr};
-    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
-
+    SshForwardingResult resultCode = SshForwardingResult::TransportFailure;
     int32_t sessionId = 0;
-    int64_t generationValue = 0;
-    if (argc > 0) {
-        (void)napi_get_value_int32(env, args[0], &sessionId);
-    }
-    if (argc > 1) {
-        (void)napi_get_value_int64(env, args[1], &generationValue);
-    }
-    SshForwardingSessionAccess access;
-    SshForwardingResult resultCode = ResolveSshForwardingSession(
-        sessionId, generationValue > 0 ? static_cast<uint64_t>(generationValue) : 0,
-        access);
+    uint64_t requestedGeneration = 0;
+    uint64_t generation = 0;
     std::vector<SshForwardingSnapshot> snapshots;
-    const uint64_t generation = resultCode == SshForwardingResult::Ok
-        ? access.generation : 0;
-    if (resultCode == SshForwardingResult::Ok) {
-        snapshots = access.adapter->forwardingSnapshots();
+    try {
+        napi_value args[3] = {nullptr, nullptr, nullptr};
+        if (!ReadExactNapiCallbackArgs(env, info, 2U, args, std::size(args))) {
+            resultCode = SshForwardingResult::MissingGeneration;
+        } else {
+            resultCode = ReadSshForwardingOwnerArgs(
+                env, args, sessionId, requestedGeneration);
+            if (resultCode == SshForwardingResult::Ok) {
+                SshForwardingSessionAccess access;
+                resultCode = ResolveSshForwardingSession(
+                    sessionId, requestedGeneration, access);
+                if (resultCode == SshForwardingResult::Ok) {
+                    snapshots = access.adapter->forwardingSnapshots();
+                    generation = access.generation;
+                }
+            }
+        }
+    } catch (...) {
+        snapshots.clear();
+        generation = 0;
+        resultCode = SshForwardingResult::TransportFailure;
     }
     return CreateSshForwardingSnapshotsValue(
         env, sessionId, resultCode, generation, snapshots);
