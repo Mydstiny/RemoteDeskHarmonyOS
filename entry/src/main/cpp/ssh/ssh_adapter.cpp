@@ -15,6 +15,7 @@
 #include "ssh_network_lifecycle_policy.h"
 #include "ssh_proxy_target_policy.h"
 #include "ssh_route_policy.h"
+#include "ssh_sensitive_buffer.h"
 #include "ssh_sftp_operation_policy.h"
 #include "extension_registry.h"
 #include "common/safe_log.h"
@@ -51,10 +52,10 @@ namespace {
     std::once_flag g_libssh2_init_flag;
     constexpr int kSocksCloseAfterFlush = -2;
 
-    std::string encodeBase64(const unsigned char* data, size_t len) {
+    void encodeBase64To(const unsigned char* data, size_t len, std::string& out) {
         static const char b64chars[] =
             "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-        std::string out;
+        out.clear();
         out.reserve(((len + 2) / 3) * 4);
         for (size_t i = 0; i < len; i += 3) {
             unsigned int n = static_cast<unsigned int>(data[i]) << 16;
@@ -69,6 +70,11 @@ namespace {
             out += (i + 1 < len) ? b64chars[(n >> 6) & 0x3F] : '=';
             out += (i + 2 < len) ? b64chars[n & 0x3F] : '=';
         }
+    }
+
+    std::string encodeBase64(const unsigned char* data, size_t len) {
+        std::string out;
+        encodeBase64To(data, len, out);
         return out;
     }
 
@@ -85,10 +91,7 @@ namespace {
 
     void secureClearString(std::string& value) {
         if (!value.empty()) {
-            volatile char* data = value.data();
-            for (size_t index = 0; index < value.size(); ++index) {
-                data[index] = '\0';
-            }
+            sshSecureWipe(value.data(), value.size());
         }
         value.clear();
     }
@@ -1818,21 +1821,37 @@ int SshAdapter::connectThroughProxy(const ConnectionConfig& cfg) {
 
     if (type == "http_connect") {
         const std::string& hostHeader = target.uriAuthority;
-        std::string request = "CONNECT " + hostHeader + " HTTP/1.1\r\n";
-        request += "Host: " + hostHeader + "\r\n";
-        request += "Proxy-Connection: Keep-Alive\r\n";
-        if (!cfg.sshProxyUsername.empty() || !cfg.sshProxyPassword.empty()) {
-            if (cfg.sshProxyUsername.find_first_of("\r\n") != std::string::npos ||
-                cfg.sshProxyPassword.find_first_of("\r\n") != std::string::npos) {
-                return ERR_SSH_PROXY_INVALID;
+        {
+            std::string request = "CONNECT " + hostHeader + " HTTP/1.1\r\n";
+            SshSensitiveBufferGuard<std::string> requestGuard(request);
+            request += "Host: " + hostHeader + "\r\n";
+            request += "Proxy-Connection: Keep-Alive\r\n";
+            if (!cfg.sshProxyUsername.empty() || !cfg.sshProxyPassword.empty()) {
+                if (cfg.sshProxyUsername.find_first_of("\r\n") != std::string::npos ||
+                    cfg.sshProxyPassword.find_first_of("\r\n") != std::string::npos) {
+                    return ERR_SSH_PROXY_INVALID;
+                }
+                std::string credentials;
+                SshSensitiveBufferGuard<std::string> credentialsGuard(credentials);
+                credentials.reserve(cfg.sshProxyUsername.size() + 1U +
+                                    cfg.sshProxyPassword.size());
+                credentials.append(cfg.sshProxyUsername);
+                credentials.push_back(':');
+                credentials.append(cfg.sshProxyPassword);
+
+                std::string encoded;
+                SshSensitiveBufferGuard<std::string> encodedGuard(encoded);
+                encodeBase64To(
+                    reinterpret_cast<const unsigned char*>(credentials.data()),
+                    credentials.size(), encoded);
+                request += "Proxy-Authorization: Basic ";
+                request.append(encoded);
+                request += "\r\n";
             }
-            const std::string credentials = cfg.sshProxyUsername + ":" + cfg.sshProxyPassword;
-            const std::string encoded = encodeBase64(
-                reinterpret_cast<const unsigned char*>(credentials.data()), credentials.size());
-            request += "Proxy-Authorization: Basic " + encoded + "\r\n";
+            request += "\r\n";
+            ret = sendSocketBytes(
+                reinterpret_cast<const uint8_t*>(request.data()), request.size(), 10);
         }
-        request += "\r\n";
-        ret = sendSocketBytes(reinterpret_cast<const uint8_t*>(request.data()), request.size(), 10);
         if (ret != 0) { return ret; }
 
         std::string response;
@@ -1871,14 +1890,17 @@ int SshAdapter::connectThroughProxy(const ConnectionConfig& cfg) {
             cfg.sshProxyPassword.size() > 255) {
             return ERR_SSH_PROXY_AUTH;
         }
-        std::vector<uint8_t> auth;
-        auth.reserve(3 + cfg.sshProxyUsername.size() + cfg.sshProxyPassword.size());
-        auth.push_back(0x01);
-        auth.push_back(static_cast<uint8_t>(cfg.sshProxyUsername.size()));
-        auth.insert(auth.end(), cfg.sshProxyUsername.begin(), cfg.sshProxyUsername.end());
-        auth.push_back(static_cast<uint8_t>(cfg.sshProxyPassword.size()));
-        auth.insert(auth.end(), cfg.sshProxyPassword.begin(), cfg.sshProxyPassword.end());
-        ret = sendSocketBytes(auth.data(), auth.size(), 10);
+        {
+            std::vector<uint8_t> auth;
+            SshSensitiveBufferGuard<std::vector<uint8_t>> authGuard(auth);
+            auth.reserve(3 + cfg.sshProxyUsername.size() + cfg.sshProxyPassword.size());
+            auth.push_back(0x01);
+            auth.push_back(static_cast<uint8_t>(cfg.sshProxyUsername.size()));
+            auth.insert(auth.end(), cfg.sshProxyUsername.begin(), cfg.sshProxyUsername.end());
+            auth.push_back(static_cast<uint8_t>(cfg.sshProxyPassword.size()));
+            auth.insert(auth.end(), cfg.sshProxyPassword.begin(), cfg.sshProxyPassword.end());
+            ret = sendSocketBytes(auth.data(), auth.size(), 10);
+        }
         if (ret != 0) { return ret; }
         uint8_t authReply[2] = {0};
         ret = receiveSocketBytes(authReply, sizeof(authReply), 10);
