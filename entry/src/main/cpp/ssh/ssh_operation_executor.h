@@ -29,6 +29,11 @@ enum class SshOperationNetworkRetryResult {
     NetworkChanged,
 };
 
+enum class SshOperationNewSessionPolicy {
+    RetrySafe,
+    RequiresFreshAuthentication,
+};
+
 using SshOperationNetworkSnapshotProvider = std::function<
     remotedesk::net::NetworkGenerationSnapshot()>;
 using SshOperationNetworkAttempt = std::function<void(
@@ -40,6 +45,7 @@ SshOperationNetworkRetryResult runSshOperationNetworkAttempts(
     std::chrono::steady_clock::time_point deadline,
     const std::shared_ptr<SshOperationControl>& control,
     const SshOperationNetworkSnapshotProvider& snapshotProvider,
+    SshOperationNewSessionPolicy newSessionPolicy,
     const SshOperationNetworkAttempt& attempt);
 
 SshHostKeyInfo probeSshHostKeyWithTransportForOperation(

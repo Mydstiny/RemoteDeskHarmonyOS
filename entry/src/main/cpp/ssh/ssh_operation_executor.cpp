@@ -171,6 +171,7 @@ SshOperationNetworkRetryResult runSshOperationNetworkAttempts(
     std::chrono::steady_clock::time_point deadline,
     const std::shared_ptr<SshOperationControl>& control,
     const SshOperationNetworkSnapshotProvider& snapshotProvider,
+    SshOperationNewSessionPolicy newSessionPolicy,
     const SshOperationNetworkAttempt& attempt) {
     if (!control || !snapshotProvider || !attempt) {
         return SshOperationNetworkRetryResult::Cancelled;
@@ -207,6 +208,13 @@ SshOperationNetworkRetryResult runSshOperationNetworkAttempts(
                 attemptsStarted, control->cancelled(),
                 std::chrono::steady_clock::now() >= deadline,
                 captured, current);
+        if (newSessionPolicy ==
+                SshOperationNewSessionPolicy::RequiresFreshAuthentication &&
+            (decision == SshNetworkRetryDecision::RetryCurrentNetwork ||
+             decision == SshNetworkRetryDecision::WaitForAvailableNetwork)) {
+            (void)control->cancel(SshOperationCancelReason::NetworkChanged);
+            return SshOperationNetworkRetryResult::NetworkChanged;
+        }
         while (decision == SshNetworkRetryDecision::WaitForAvailableNetwork) {
             const auto now = std::chrono::steady_clock::now();
             if (now >= deadline) {

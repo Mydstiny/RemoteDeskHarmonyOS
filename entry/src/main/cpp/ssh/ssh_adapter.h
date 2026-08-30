@@ -356,6 +356,10 @@ private:
     bool authPromptAllowPasswordFallback_ = false;
     size_t authPromptPresetIndex_ = 0;
     bool authPromptPasswordFallbackUsed_ = false;
+    // Set only when an explicit KBI/OTP answer is handed to libssh2. The bit
+    // survives route and transport failures so no automatic path can submit
+    // that answer to a second SSH session; a user-initiated connect resets it.
+    std::atomic<bool> explicitAuthResponseConsumed_{false};
     // Acquired only after a KBI response is ready, then held until the
     // enclosing libssh2 call has admitted or rejected that response packet.
     std::unique_ptr<remotedesk::net::NetworkGenerationAdmission>

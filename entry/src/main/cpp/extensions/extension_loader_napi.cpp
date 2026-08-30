@@ -18,6 +18,7 @@
 #include "rdp/rdp_connection_identity_policy.h"
 #include "rdp/rdp_network_retry_policy.h"
 #include "ssh/ssh_adapter.h"
+#include "ssh/ssh_auth_replay_policy.h"
 #include "ssh/ssh_terminal_resume_policy.h"
 #include "ssh/ssh_key_tool.h"
 #include "ssh/ssh_operation_client.h"
@@ -11559,11 +11560,20 @@ static void ExecuteSshProductionOperation(napi_env /*env*/, void* rawData) {
                     }
                 }
             });
+        const SshOneShotAuthScope authScope =
+            data->kind == SshProductionOperationKind::InstallPublicKey
+                ? SshOneShotAuthScope::RouteAndTarget
+                : SshOneShotAuthScope::RouteOnly;
+        const SshOperationNewSessionPolicy newSessionPolicy =
+            SshAuthReplayPolicy::hasExplicitResponses(data->config, authScope)
+                ? SshOperationNewSessionPolicy::RequiresFreshAuthentication
+                : SshOperationNewSessionPolicy::RetrySafe;
         (void)runSshOperationNetworkAttempts(
             data->networkSnapshot, data->deadline, data->control,
             []() {
                 return remotedesk::net::ProcessNetworkGenerationFence().snapshot();
             },
+            newSessionPolicy,
             [data](remotedesk::net::NetworkGenerationSnapshot networkSnapshot) {
                 data->networkSnapshot = networkSnapshot;
                 switch (data->kind) {

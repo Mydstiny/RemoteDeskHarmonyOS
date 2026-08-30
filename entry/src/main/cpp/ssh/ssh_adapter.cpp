@@ -10,6 +10,7 @@
 #include "common/happy_eyeballs_connector.h"
 #include "common/network_generation_fence.h"
 #include "ssh_auth_policy.h"
+#include "ssh_auth_replay_policy.h"
 #include "ssh_connect_error_policy.h"
 #include "ssh_network_generation_policy.h"
 #include "ssh_network_lifecycle_policy.h"
@@ -267,6 +268,10 @@ void SshAdapter::onNetworkChanged(bool available, uint64_t networkGeneration) {
         return;
     }
     networkAvailable_.store(available, std::memory_order_release);
+    // A response belongs to the route generation displayed with its prompt.
+    // Wake a pending KBI round immediately; a safe retry will publish a fresh
+    // request after resetting the broker for the new generation.
+    authPromptBroker_.cancelAll();
     const bool reactorRunning = readerRunning_.load(std::memory_order_acquire);
     const bool connected = state_.load(std::memory_order_acquire) ==
         ConnectionState::CONNECTED;
@@ -2919,6 +2924,7 @@ int SshAdapter::fillKeyboardInteractiveResponses(
         values.insert(values.end(), explicitResponses->begin() + presetIndex,
                       explicitResponses->begin() + presetIndex + promptCount);
         presetIndex += promptCount;
+        explicitAuthResponseConsumed_.store(true, std::memory_order_release);
     } else {
         const bool canUsePassword = allowPasswordFallback && password != nullptr &&
             !password->empty() &&
@@ -3486,6 +3492,7 @@ int SshAdapter::connectInternal(const ConnectionConfig& cfg, bool preserveOwner)
         setConnectRouteDeadline(previousDeadline);
     });
     if (!preserveOwner) {
+        explicitAuthResponseConsumed_.store(false, std::memory_order_release);
         setSshLifecycleState(SshSessionLifecycleState::Created);
         networkAvailable_.store(true, std::memory_order_release);
     }
@@ -3621,6 +3628,17 @@ int SshAdapter::connectInternal(const ConnectionConfig& cfg, bool preserveOwner)
                 "SSH connection deadline exceeded");
         }
         if (networkFence.shouldCancel(connectNetworkSnapshot_)) {
+            if (!SshAuthReplayPolicy::allowsAutomaticNewSession(
+                    explicitAuthResponseConsumed_.load(
+                        std::memory_order_acquire))) {
+                setSshLifecycleState(
+                    SshSessionLifecycleState::NeedsAuthentication,
+                    "reauthentication_required");
+                return failConnect(
+                    ERR_SSH_AUTH_CANCELLED,
+                    "SSH network changed after one-time authentication; "
+                    "fresh authentication is required");
+            }
             const auto retryDecision = [&]() {
                 return SshNetworkGenerationPolicy::retryDecision(
                     networkAttemptsStarted,
@@ -3683,6 +3701,17 @@ int SshAdapter::connectInternal(const ConnectionConfig& cfg, bool preserveOwner)
         }
         if (outcome.first == 0) {
             return 0;
+        }
+        if (outcome.first == ERR_SSH_PTY_FAILED &&
+            !SshAuthReplayPolicy::allowsAutomaticNewSession(
+                explicitAuthResponseConsumed_.load(
+                    std::memory_order_acquire))) {
+            setSshLifecycleState(
+                SshSessionLifecycleState::NeedsAuthentication,
+                "reauthentication_required");
+            return failConnect(
+                ERR_SSH_AUTH_CANCELLED,
+                "SSH PTY recovery requires fresh one-time authentication");
         }
         const bool canRetry = outcome.first == ERR_SSH_PTY_FAILED &&
             SshPtyRecoveryPolicy::retryable(lastPtyFailureClass_) &&
@@ -3859,6 +3888,27 @@ bool SshAdapter::reconnectAfterTransportFailure() {
         return false;
     }
 
+    auto stopForFreshAuthentication = [this]() {
+        resetTransportForRecovery();
+        stopTerminalInput();
+        readerRunning_.store(false, std::memory_order_release);
+        transportRecoveryRequested_.store(false, std::memory_order_release);
+        recoveryAttemptInProgress_.store(false, std::memory_order_release);
+        networkAvailable_.store(true, std::memory_order_release);
+        setSshLifecycleState(
+            SshSessionLifecycleState::NeedsAuthentication,
+            "reauthentication_required");
+        setState(
+            ConnectionState::ERROR,
+            "SSH transport recovery requires fresh one-time authentication");
+        reactorCommandCondition_.notify_all();
+        return false;
+    };
+    if (!SshAuthReplayPolicy::allowsAutomaticNewSession(
+            explicitAuthResponseConsumed_.load(std::memory_order_acquire))) {
+        return stopForFreshAuthentication();
+    }
+
     const auto recoveryStartedAt = std::chrono::steady_clock::now();
     uint32_t attemptsStarted = 0;
     setSshLifecycleState(SshSessionLifecycleState::NetworkLost);
@@ -3932,6 +3982,12 @@ bool SshAdapter::reconnectAfterTransportFailure() {
             OH_LOG_INFO(LOG_APP, "[SSH] transport recovery succeeded attempt=%{public}u",
                         attemptsStarted);
             return true;
+        }
+
+        if (!SshAuthReplayPolicy::allowsAutomaticNewSession(
+                explicitAuthResponseConsumed_.load(
+                    std::memory_order_acquire))) {
+            return stopForFreshAuthentication();
         }
 
         OH_LOG_WARN(LOG_APP,

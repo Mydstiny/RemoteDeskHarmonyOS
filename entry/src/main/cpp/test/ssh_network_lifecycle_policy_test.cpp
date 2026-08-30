@@ -1,4 +1,5 @@
 #include "test_runner.h"
+#include "ssh/ssh_auth_replay_policy.h"
 #include "ssh/ssh_network_lifecycle_policy.h"
 #include "ssh/ssh_network_generation_policy.h"
 #include "ssh/ssh_session_manager.h"
@@ -101,6 +102,28 @@ RDP_TEST_CASE(ssh_network_generation_policy_bounds_every_stage_to_original_deadl
         routeDeadline, routeDeadline - std::chrono::milliseconds(1)));
     RDP_ASSERT(SshNetworkGenerationPolicy::deadlineExpired(
         routeDeadline, routeDeadline));
+}
+
+RDP_TEST_CASE(ssh_auth_replay_policy_separates_route_and_target_one_shot_answers) {
+    ConnectionConfig config;
+    config.sshKeyboardInteractiveResponses = {"target-otp"};
+    RDP_ASSERT(!SshAuthReplayPolicy::hasExplicitResponses(
+        config, SshOneShotAuthScope::RouteOnly));
+    RDP_ASSERT(SshAuthReplayPolicy::hasExplicitResponses(
+        config, SshOneShotAuthScope::RouteAndTarget));
+
+    config.sshKeyboardInteractiveResponses.clear();
+    config.sshProxyKeyboardInteractiveResponses = {"proxy-otp"};
+    RDP_ASSERT(SshAuthReplayPolicy::hasExplicitResponses(
+        config, SshOneShotAuthScope::RouteOnly));
+
+    config.sshProxyKeyboardInteractiveResponses.clear();
+    config.sshJumpHopHandoffs.emplace_back();
+    config.sshJumpHopHandoffs.back().keyboardInteractiveResponses = {"hop-otp"};
+    RDP_ASSERT(SshAuthReplayPolicy::hasExplicitResponses(
+        config, SshOneShotAuthScope::RouteOnly));
+    RDP_ASSERT(SshAuthReplayPolicy::allowsAutomaticNewSession(false));
+    RDP_ASSERT(!SshAuthReplayPolicy::allowsAutomaticNewSession(true));
 }
 
 RDP_TEST_CASE(ssh_session_manager_network_notification_runs_outside_manager_lock) {
