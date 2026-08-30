@@ -1,6 +1,13 @@
 $ErrorActionPreference = 'Stop'
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
-$expectedRevision = '4d645c86e1fdcc6159b2b3a4c4f652e46985f8ba'
+$expectedBaseRevision = 'dae8276ac7361b8d14f7b87d41163fe03dbb944e'
+$expectedPatchedTree = '54cc9b12e3040bba73773a5439d4f8023d46ac7a'
+$patches = @(
+  'patches/freerdp-ohos/0001-fix-omit-TLS-SNI-for-IP-literals.patch',
+  'patches/freerdp-ohos/0002-Add-bounded-dual-stack-TCP-racing.patch',
+  'patches/freerdp-ohos/0003-Add-gateway-safe-dual-stack-routing.patch',
+  'patches/freerdp-ohos/0004-Fix-thread-termination-on-OHOS.patch'
+)
 $modules = Join-Path $repo '.gitmodules'
 $url = (& git config -f $modules --get submodule.freerdp.url).Trim()
 $branch = (& git config -f $modules --get submodule.freerdp.branch).Trim()
@@ -11,16 +18,41 @@ if ($branch -ne 'freerdp-ohos') {
   throw "FreeRDP submodule branch is not locked to freerdp-ohos: $branch"
 }
 $sourceRevision = (& git -C (Join-Path $repo 'freerdp') rev-parse HEAD).Trim()
-if ($sourceRevision -ne $expectedRevision) {
+if ($sourceRevision -ne $expectedBaseRevision) {
   throw "FreeRDP source revision mismatch: $sourceRevision"
 }
 $indexedGitlink = (& git -C $repo ls-files --stage -- freerdp).Trim()
-if (-not $indexedGitlink.StartsWith("160000 $expectedRevision ")) {
-  throw "FreeRDP gitlink is not locked to $expectedRevision"
+if (-not $indexedGitlink.StartsWith("160000 $expectedBaseRevision ")) {
+  throw "FreeRDP gitlink is not locked to public base $expectedBaseRevision"
 }
 $sourceStatus = @(& git -C (Join-Path $repo 'freerdp') status --porcelain)
 if ($sourceStatus.Count -ne 0) {
   throw 'FreeRDP source worktree is dirty; artifacts cannot be attributed to one revision.'
+}
+foreach ($relative in $patches) {
+  if (-not (Test-Path (Join-Path $repo $relative) -PathType Leaf)) {
+    throw "FreeRDP patch is missing: $relative"
+  }
+}
+$verificationRoot = Join-Path ([IO.Path]::GetTempPath()) (
+  'remotedesk-freerdp-provenance-' + [Guid]::NewGuid().ToString('N'))
+try {
+  & git clone --quiet --no-checkout (Join-Path $repo 'freerdp') $verificationRoot
+  if ($LASTEXITCODE -ne 0) { throw 'Unable to clone the pinned FreeRDP base for patch verification.' }
+  & git -C $verificationRoot checkout --quiet --detach $expectedBaseRevision
+  if ($LASTEXITCODE -ne 0) { throw 'Unable to check out the pinned FreeRDP public base.' }
+  foreach ($relative in $patches) {
+    & git -C $verificationRoot apply --index --whitespace=error-all (Join-Path $repo $relative)
+    if ($LASTEXITCODE -ne 0) { throw "Unable to apply FreeRDP patch: $relative" }
+  }
+  $actualPatchedTree = (& git -C $verificationRoot write-tree).Trim()
+  if ($LASTEXITCODE -ne 0 -or $actualPatchedTree -ne $expectedPatchedTree) {
+    throw "FreeRDP patched tree mismatch: $actualPatchedTree"
+  }
+} finally {
+  if (Test-Path $verificationRoot) {
+    Remove-Item -LiteralPath $verificationRoot -Recurse -Force
+  }
 }
 $expectedArtifacts = @{
   'libs/freerdp-ohos/arm64-v8a/libfreerdp3.a' = '26648c05c7f9689038d36bae1f37ad351e64abd4938cc16d587465dd8e6cf8e9'
@@ -75,4 +107,4 @@ foreach ($arch in @('arm64-v8a', 'x86_64')) {
     throw "FreeRDP gateway connect-host setting is missing for $arch"
   }
 }
-Write-Host 'FreeRDP public provenance test passed.'
+Write-Host 'FreeRDP public base + patch provenance test passed.'

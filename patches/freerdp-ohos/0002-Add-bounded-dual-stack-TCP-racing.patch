@@ -1,0 +1,539 @@
+From 87d5856150f84df808545b72345cd1bb2faed14f Mon Sep 17 00:00:00 2001
+From: Mydstiny <181178314+Mydstiny@users.noreply.github.com>
+Date: Sun, 30 Aug 2026 11:13:14 +0800
+Subject: [PATCH 2/4] Add bounded dual-stack TCP racing
+
+---
+ libfreerdp/core/tcp.c | 460 ++++++++++++++++++++++++++++++++++++++++--
+ 1 file changed, 438 insertions(+), 22 deletions(-)
+
+diff --git a/libfreerdp/core/tcp.c b/libfreerdp/core/tcp.c
+index 021c6296072de41b0bd071bac377ed6000549fae..2423ae1dfb0a344873093413b37290634a9f842e 100644
+--- a/libfreerdp/core/tcp.c
++++ b/libfreerdp/core/tcp.c
+@@ -25,9 +25,12 @@
+ #include <time.h>
+ #include <errno.h>
+ #include <fcntl.h>
++#include <limits.h>
+ 
+ #include <winpr/crt.h>
++#include <winpr/interlocked.h>
+ #include <winpr/platform.h>
++#include <winpr/thread.h>
+ #include <winpr/winsock.h>
+ 
+ #include "rdp.h"
+@@ -791,21 +794,133 @@ struct addrinfo* freerdp_tcp_resolve_host(const char* hostname, int port, int ai
+ 	return result;
+ }
+ 
+-static BOOL freerdp_tcp_is_hostname_resolvable(rdpContext* context, const char* hostname)
++#if !defined(_WIN32) && defined(WINPR_HAVE_POLL_H)
++#define FREERDP_HAPPY_EYEBALLS_MAX_CANDIDATES 16
++#define FREERDP_HAPPY_EYEBALLS_DELAY_MS 250
++#define FREERDP_HAPPY_EYEBALLS_CANCEL_SLICE_MS 50
++#define FREERDP_RESOLVE_MAX_WORKERS 8
++
++typedef struct
++{
++	volatile LONG references;
++	char* hostname;
++	char service[16];
++	int aiFlags;
++	int status;
++	struct addrinfo* result;
++} FREERDP_RESOLVE_STATE;
++
++typedef enum
+ {
+-	struct addrinfo* result = freerdp_tcp_resolve_host(hostname, -1, 0);
++	FREERDP_RESOLVE_READY = 0,
++	FREERDP_RESOLVE_FAILED,
++	FREERDP_RESOLVE_RESOURCE_EXHAUSTED,
++	FREERDP_RESOLVE_TIMED_OUT,
++	FREERDP_RESOLVE_CANCELLED
++} FREERDP_RESOLVE_STATUS;
+ 
+-	if (!result)
++static volatile LONG gFreerdpActiveResolvers = 0;
++
++static void freerdp_tcp_resolve_state_release(FREERDP_RESOLVE_STATE* state)
++{
++	if (!state || (InterlockedDecrement(&state->references) != 0))
++		return;
++	if (state->result)
++		freeaddrinfo(state->result);
++	free(state->hostname);
++	free(state);
++}
++
++static DWORD freerdp_tcp_resolve_worker(LPVOID argument)
++{
++	FREERDP_RESOLVE_STATE* state = (FREERDP_RESOLVE_STATE*)argument;
++	struct addrinfo hints = WINPR_C_ARRAY_INIT;
++	hints.ai_family = AF_UNSPEC;
++	hints.ai_socktype = SOCK_STREAM;
++	hints.ai_flags = state->aiFlags;
++	state->status = getaddrinfo(state->hostname, state->service, &hints, &state->result);
++	(void)InterlockedDecrement(&gFreerdpActiveResolvers);
++	freerdp_tcp_resolve_state_release(state);
++	return 0;
++}
++
++static FREERDP_RESOLVE_STATUS freerdp_tcp_resolve_host_bounded(
++    rdpContext* context, const char* hostname, int port, int aiFlags, UINT64 deadline,
++    struct addrinfo** result)
++{
++	WINPR_ASSERT(context);
++	WINPR_ASSERT(hostname);
++	WINPR_ASSERT(result);
++	*result = nullptr;
++	if (InterlockedIncrement(&gFreerdpActiveResolvers) > FREERDP_RESOLVE_MAX_WORKERS)
+ 	{
+-		freerdp_set_last_error_if_not(context, FREERDP_ERROR_DNS_NAME_NOT_FOUND);
++		(void)InterlockedDecrement(&gFreerdpActiveResolvers);
++		return FREERDP_RESOLVE_RESOURCE_EXHAUSTED;
++	}
+ 
+-		return FALSE;
++	FREERDP_RESOLVE_STATE* state = (FREERDP_RESOLVE_STATE*)calloc(1, sizeof(*state));
++	if (!state)
++	{
++		(void)InterlockedDecrement(&gFreerdpActiveResolvers);
++		return FREERDP_RESOLVE_RESOURCE_EXHAUSTED;
++	}
++	state->references = 2;
++	state->hostname = _strdup(hostname);
++	state->aiFlags = aiFlags;
++	state->status = EAI_FAIL;
++	if (!state->hostname || (sprintf_s(state->service, sizeof(state->service), "%d", port) < 0))
++	{
++		(void)InterlockedDecrement(&gFreerdpActiveResolvers);
++		freerdp_tcp_resolve_state_release(state);
++		freerdp_tcp_resolve_state_release(state);
++		return FREERDP_RESOLVE_RESOURCE_EXHAUSTED;
+ 	}
+ 
+-	freerdp_set_last_error_log(context, 0);
+-	freeaddrinfo(result);
+-	return TRUE;
++	HANDLE thread = CreateThread(nullptr, 0, freerdp_tcp_resolve_worker, state, 0, nullptr);
++	if (!thread)
++	{
++		(void)InterlockedDecrement(&gFreerdpActiveResolvers);
++		freerdp_tcp_resolve_state_release(state);
++		freerdp_tcp_resolve_state_release(state);
++		return FREERDP_RESOLVE_RESOURCE_EXHAUSTED;
++	}
++
++	FREERDP_RESOLVE_STATUS outcome = FREERDP_RESOLVE_FAILED;
++	for (;;)
++	{
++		if (freerdp_shall_disconnect_context(context))
++		{
++			outcome = FREERDP_RESOLVE_CANCELLED;
++			break;
++		}
++		const UINT64 now = GetTickCount64();
++		if ((deadline != UINT64_MAX) && (now >= deadline))
++		{
++			outcome = FREERDP_RESOLVE_TIMED_OUT;
++			break;
++		}
++		DWORD wait = FREERDP_HAPPY_EYEBALLS_CANCEL_SLICE_MS;
++		if (deadline != UINT64_MAX)
++			wait = (DWORD)MIN((UINT64)wait, deadline - now);
++		const DWORD waitStatus = WaitForSingleObject(thread, wait);
++		if (waitStatus == WAIT_OBJECT_0)
++		{
++			if ((state->status == 0) && state->result)
++			{
++				*result = state->result;
++				state->result = nullptr;
++				outcome = FREERDP_RESOLVE_READY;
++			}
++			break;
++		}
++		if (waitStatus != WAIT_TIMEOUT)
++			break;
++	}
++	CloseHandle(thread);
++	freerdp_tcp_resolve_state_release(state);
++	return outcome;
+ }
++#endif
+ 
+ static BOOL freerdp_tcp_connect_timeout(rdpContext* context, int sockfd, struct sockaddr* addr,
+                                         size_t addrlen, UINT32 timeout)
+@@ -1227,17 +1342,307 @@ static void log_connection_address(const char* hostname, struct addrinfo* addr)
+ 	free(peerAddress);
+ }
+ 
++#if !defined(_WIN32) && defined(WINPR_HAVE_POLL_H)
++typedef struct
++{
++	struct addrinfo* addr;
++	int sockfd;
++	int originalFlags;
++} FREERDP_HAPPY_EYEBALLS_CANDIDATE;
++
++static BOOL freerdp_tcp_addrinfo_allowed(rdpContext* context, const struct addrinfo* addr)
++{
++	WINPR_ASSERT(context);
++	WINPR_ASSERT(addr);
++
++	if ((addr->ai_family != AF_INET) && (addr->ai_family != AF_INET6))
++		return FALSE;
++
++	const UINT32 forceIPvX =
++	    freerdp_settings_get_uint32(context->settings, FreeRDP_ForceIPvX);
++	if ((forceIPvX == 4) && (addr->ai_family != AF_INET))
++		return FALSE;
++	if ((forceIPvX == 6) && (addr->ai_family != AF_INET6))
++		return FALSE;
++	return TRUE;
++}
++
++static BOOL freerdp_tcp_addrinfo_equal(const struct addrinfo* first,
++                                       const struct addrinfo* second)
++{
++	WINPR_ASSERT(first);
++	WINPR_ASSERT(second);
++
++	if (first->ai_family != second->ai_family)
++		return FALSE;
++
++	if (first->ai_family == AF_INET)
++	{
++		const struct sockaddr_in* lhs = (const struct sockaddr_in*)first->ai_addr;
++		const struct sockaddr_in* rhs = (const struct sockaddr_in*)second->ai_addr;
++		return (lhs->sin_port == rhs->sin_port) &&
++		       (memcmp(&lhs->sin_addr, &rhs->sin_addr, sizeof(lhs->sin_addr)) == 0);
++	}
++
++	const struct sockaddr_in6* lhs = (const struct sockaddr_in6*)first->ai_addr;
++	const struct sockaddr_in6* rhs = (const struct sockaddr_in6*)second->ai_addr;
++	return (lhs->sin6_port == rhs->sin6_port) && (lhs->sin6_scope_id == rhs->sin6_scope_id) &&
++	       (memcmp(&lhs->sin6_addr, &rhs->sin6_addr, sizeof(lhs->sin6_addr)) == 0);
++}
++
++static size_t freerdp_tcp_interleave_addrinfo(
++    rdpContext* context, struct addrinfo* result,
++    FREERDP_HAPPY_EYEBALLS_CANDIDATE candidates[FREERDP_HAPPY_EYEBALLS_MAX_CANDIDATES])
++{
++	struct addrinfo* first[FREERDP_HAPPY_EYEBALLS_MAX_CANDIDATES] = WINPR_C_ARRAY_INIT;
++	struct addrinfo* second[FREERDP_HAPPY_EYEBALLS_MAX_CANDIDATES] = WINPR_C_ARRAY_INIT;
++	size_t firstCount = 0;
++	size_t secondCount = 0;
++	int firstFamily = AF_UNSPEC;
++
++	for (struct addrinfo* addr = result; addr; addr = addr->ai_next)
++	{
++		if (!freerdp_tcp_addrinfo_allowed(context, addr))
++			continue;
++		if (firstFamily == AF_UNSPEC)
++			firstFamily = addr->ai_family;
++
++		struct addrinfo** family = addr->ai_family == firstFamily ? first : second;
++		size_t* familyCount = addr->ai_family == firstFamily ? &firstCount : &secondCount;
++		if (*familyCount >= FREERDP_HAPPY_EYEBALLS_MAX_CANDIDATES)
++			continue;
++
++		BOOL duplicate = FALSE;
++		for (size_t index = 0; index < *familyCount; index++)
++		{
++			if (freerdp_tcp_addrinfo_equal(family[index], addr))
++			{
++				duplicate = TRUE;
++				break;
++			}
++		}
++		if (!duplicate)
++			family[(*familyCount)++] = addr;
++	}
++
++	if ((firstCount == 0) && (secondCount == 0))
++		return 0;
++
++	size_t output = 0;
++	for (size_t index = 0; output < FREERDP_HAPPY_EYEBALLS_MAX_CANDIDATES; index++)
++	{
++		BOOL appended = FALSE;
++		if (index < firstCount)
++		{
++			candidates[output].addr = first[index];
++			candidates[output].sockfd = -1;
++			candidates[output].originalFlags = -1;
++			output++;
++			appended = TRUE;
++		}
++		if ((index < secondCount) && (output < FREERDP_HAPPY_EYEBALLS_MAX_CANDIDATES))
++		{
++			candidates[output].addr = second[index];
++			candidates[output].sockfd = -1;
++			candidates[output].originalFlags = -1;
++			output++;
++			appended = TRUE;
++		}
++		if (!appended)
++			break;
++	}
++	return output;
++}
++
++static void freerdp_tcp_close_happy_eyeballs_candidates(
++    FREERDP_HAPPY_EYEBALLS_CANDIDATE* candidates, size_t count, int winner)
++{
++	for (size_t index = 0; index < count; index++)
++	{
++		if ((candidates[index].sockfd >= 0) && (candidates[index].sockfd != winner))
++		{
++			close(candidates[index].sockfd);
++			candidates[index].sockfd = -1;
++		}
++	}
++}
++
++static int freerdp_host_connect_happy_eyeballs(rdpContext* context, const char* hostname,
++                                               struct addrinfo* result, UINT64 deadline)
++{
++	FREERDP_HAPPY_EYEBALLS_CANDIDATE
++	    candidates[FREERDP_HAPPY_EYEBALLS_MAX_CANDIDATES] = WINPR_C_ARRAY_INIT;
++	const size_t candidateCount = freerdp_tcp_interleave_addrinfo(context, result, candidates);
++	if (candidateCount == 0)
++	{
++		freerdp_set_last_error_if_not(context, FREERDP_ERROR_CONNECT_FAILED);
++		return -1;
++	}
++
++	UINT64 nextLaunchAt = GetTickCount64();
++	size_t nextCandidate = 0;
++	size_t activeCount = 0;
++
++	for (;;)
++	{
++		UINT64 now = GetTickCount64();
++		if (freerdp_shall_disconnect_context(context))
++		{
++			freerdp_tcp_close_happy_eyeballs_candidates(candidates, candidateCount, -1);
++			freerdp_set_last_error_if_not(context, FREERDP_ERROR_CONNECT_CANCELLED);
++			return -1;
++		}
++		if ((deadline != UINT64_MAX) && (now >= deadline))
++			break;
++
++		while ((nextCandidate < candidateCount) &&
++		       ((activeCount == 0) || (now >= nextLaunchAt)))
++		{
++			FREERDP_HAPPY_EYEBALLS_CANDIDATE* candidate = &candidates[nextCandidate++];
++			candidate->sockfd = socket(candidate->addr->ai_family, candidate->addr->ai_socktype,
++			                           candidate->addr->ai_protocol);
++			if (candidate->sockfd >= 0)
++			{
++				candidate->originalFlags = fcntl(candidate->sockfd, F_GETFL, 0);
++				if ((candidate->originalFlags < 0) ||
++				    (fcntl(candidate->sockfd, F_SETFL, candidate->originalFlags | O_NONBLOCK) < 0))
++				{
++					close(candidate->sockfd);
++					candidate->sockfd = -1;
++				}
++			}
++
++			if (candidate->sockfd >= 0)
++			{
++				log_connection_address(hostname, candidate->addr);
++				const int status = connect(candidate->sockfd, candidate->addr->ai_addr,
++				                           candidate->addr->ai_addrlen);
++				if (status == 0)
++				{
++					const int winner = candidate->sockfd;
++					if (fcntl(winner, F_SETFL, candidate->originalFlags) < 0)
++					{
++						close(winner);
++						candidate->sockfd = -1;
++						continue;
++					}
++					freerdp_tcp_close_happy_eyeballs_candidates(candidates, candidateCount,
++					                                              winner);
++					return winner;
++				}
++				if ((errno == EINPROGRESS) || (errno == EWOULDBLOCK) || (errno == EALREADY) ||
++				    (errno == EINTR))
++					activeCount++;
++				else
++				{
++					close(candidate->sockfd);
++					candidate->sockfd = -1;
++				}
++			}
++
++			now = GetTickCount64();
++			nextLaunchAt = activeCount > 0 ? now + FREERDP_HAPPY_EYEBALLS_DELAY_MS : now;
++			if (activeCount > 0)
++				break;
++		}
++
++		if ((activeCount == 0) && (nextCandidate >= candidateCount))
++			break;
++
++		struct pollfd pollset[FREERDP_HAPPY_EYEBALLS_MAX_CANDIDATES] = WINPR_C_ARRAY_INIT;
++		size_t mapping[FREERDP_HAPPY_EYEBALLS_MAX_CANDIDATES] = WINPR_C_ARRAY_INIT;
++		nfds_t pollCount = 0;
++		for (size_t index = 0; index < candidateCount; index++)
++		{
++			if (candidates[index].sockfd < 0)
++				continue;
++			pollset[pollCount].fd = candidates[index].sockfd;
++			pollset[pollCount].events = POLLOUT;
++			mapping[pollCount] = index;
++			pollCount++;
++		}
++
++		now = GetTickCount64();
++		UINT64 waitMs = FREERDP_HAPPY_EYEBALLS_CANCEL_SLICE_MS;
++		if ((nextCandidate < candidateCount) && (nextLaunchAt > now))
++			waitMs = MIN(waitMs, nextLaunchAt - now);
++		if ((deadline != UINT64_MAX) && (deadline > now))
++			waitMs = MIN(waitMs, deadline - now);
++		const int pollTimeout = WINPR_ASSERTING_INT_CAST(int, MIN(waitMs, INT_MAX));
++		const int pollStatus = poll(pollset, pollCount, pollTimeout);
++		if ((pollStatus < 0) && (errno == EINTR))
++			continue;
++		if (pollStatus < 0)
++			break;
++
++		for (nfds_t pollIndex = 0; pollIndex < pollCount; pollIndex++)
++		{
++			if (pollset[pollIndex].revents == 0)
++				continue;
++
++			FREERDP_HAPPY_EYEBALLS_CANDIDATE* candidate = &candidates[mapping[pollIndex]];
++			INT32 socketError = 0;
++			socklen_t errorLength = sizeof(socketError);
++			if ((getsockopt(candidate->sockfd, SOL_SOCKET, SO_ERROR, &socketError, &errorLength) ==
++			     0) &&
++			    (socketError == 0))
++			{
++				const int winner = candidate->sockfd;
++				if (fcntl(winner, F_SETFL, candidate->originalFlags) < 0)
++				{
++					close(winner);
++					candidate->sockfd = -1;
++					activeCount--;
++					continue;
++				}
++				freerdp_tcp_close_happy_eyeballs_candidates(candidates, candidateCount, winner);
++				return winner;
++			}
++
++			close(candidate->sockfd);
++			candidate->sockfd = -1;
++			activeCount--;
++		}
++		if ((activeCount == 0) && (nextCandidate < candidateCount))
++			nextLaunchAt = GetTickCount64();
++	}
++
++	freerdp_tcp_close_happy_eyeballs_candidates(candidates, candidateCount, -1);
++	freerdp_set_last_error_if_not(context, FREERDP_ERROR_CONNECT_FAILED);
++	return -1;
++}
++#endif
++
+ static int freerdp_host_connect(rdpContext* context, const char* hostname, int port, DWORD timeout)
+ {
+ 	int sockfd = -1;
+ 	struct addrinfo* addr = nullptr;
+-	struct addrinfo* result = freerdp_tcp_resolve_host(hostname, port, 0);
++	struct addrinfo* result = nullptr;
++
++#if !defined(_WIN32) && defined(WINPR_HAVE_POLL_H)
++	const UINT64 startedAt = GetTickCount64();
++	const UINT64 deadline = timeout > 0 ? startedAt + timeout : UINT64_MAX;
++	const FREERDP_RESOLVE_STATUS resolveStatus = freerdp_tcp_resolve_host_bounded(
++	    context, hostname, port, 0, deadline, &result);
++	if (resolveStatus != FREERDP_RESOLVE_READY)
++	{
++		if (resolveStatus == FREERDP_RESOLVE_CANCELLED)
++			freerdp_set_last_error_if_not(context, FREERDP_ERROR_CONNECT_CANCELLED);
++		else if (resolveStatus == FREERDP_RESOLVE_FAILED)
++			freerdp_set_last_error_if_not(context, FREERDP_ERROR_DNS_NAME_NOT_FOUND);
++		else
++			freerdp_set_last_error_if_not(context, FREERDP_ERROR_CONNECT_FAILED);
++		return -1;
++	}
++#else
++	result = freerdp_tcp_resolve_host(hostname, port, 0);
+ 
+ 	if (!result)
+ 	{
+ 		freerdp_set_last_error_if_not(context, FREERDP_ERROR_DNS_NAME_NOT_FOUND);
+ 		return -1;
+ 	}
++#endif
+ 	freerdp_set_last_error_log(context, 0);
+ 
+ 	/* By default we take the first returned entry.
+@@ -1246,6 +1651,11 @@ static int freerdp_host_connect(rdpContext* context, const char* hostname, int p
+ 	 */
+ 	result = reorder_addrinfo_by_preference(context, result);
+ 
++#if !defined(_WIN32) && defined(WINPR_HAVE_POLL_H)
++	sockfd = freerdp_host_connect_happy_eyeballs(context, hostname, result, deadline);
++	goto fail;
++#else
++
+ 	const int rc = get_next_addrinfo(context, result, &addr, FREERDP_ERROR_DNS_NAME_NOT_FOUND);
+ 	if (rc < 0)
+ 		goto fail;
+@@ -1273,6 +1683,7 @@ static int freerdp_host_connect(rdpContext* context, const char* hostname, int p
+ 				goto fail;
+ 		}
+ 	} while (sockfd < 0);
++#endif
+ 
+ fail:
+ 	freeaddrinfo(result);
+@@ -1316,23 +1727,28 @@ int freerdp_tcp_default_connect(rdpContext* context, rdpSettings* settings, cons
+ 		sockfd = freerdp_vsock_connect(context, vsock, port);
+ 	else
+ 	{
+-		if (!settings->GatewayEnabled)
++		if (!settings->GatewayEnabled && settings->RemoteAssistanceMode &&
++		    (settings->TargetNetAddressCount > 0))
+ 		{
+-			if (!freerdp_tcp_is_hostname_resolvable(context, hostname) ||
+-			    settings->RemoteAssistanceMode)
+-			{
+-				if (settings->TargetNetAddressCount > 0)
+-				{
+-					WINPR_ASSERT(port <= UINT16_MAX);
+-					sockfd = freerdp_tcp_connect_multi(
+-					    context, settings->TargetNetAddresses, settings->TargetNetPorts,
+-					    settings->TargetNetAddressCount, (UINT16)port, timeout);
+-				}
+-			}
++			WINPR_ASSERT(port <= UINT16_MAX);
++			sockfd = freerdp_tcp_connect_multi(
++			    context, settings->TargetNetAddresses, settings->TargetNetPorts,
++			    settings->TargetNetAddressCount, (UINT16)port, timeout);
+ 		}
+ 
+-		if (sockfd <= 0)
++		if (sockfd < 0)
+ 			sockfd = freerdp_host_connect(context, hostname, port, timeout);
++
++		if ((sockfd < 0) && !settings->GatewayEnabled &&
++		    !settings->RemoteAssistanceMode && (settings->TargetNetAddressCount > 0) &&
++		    (freerdp_get_last_error(context) == FREERDP_ERROR_DNS_NAME_NOT_FOUND))
++		{
++			freerdp_set_last_error_log(context, 0);
++			WINPR_ASSERT(port <= UINT16_MAX);
++			sockfd = freerdp_tcp_connect_multi(
++			    context, settings->TargetNetAddresses, settings->TargetNetPorts,
++			    settings->TargetNetAddressCount, (UINT16)port, timeout);
++		}
+ 	}
+ 
+ 	if (!vsock)

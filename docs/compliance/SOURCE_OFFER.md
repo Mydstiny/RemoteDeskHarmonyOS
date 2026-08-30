@@ -4,6 +4,13 @@
 SPDX SBOM、release manifest、RustDesk proto 修订/哈希和第三方来源。
 源码长期地址为 `https://github.com/Mydstiny/RemoteDeskHarmonyOS`。
 
+FreeRDP/WinPR 对应源码由公开子模块基线
+`dae8276ac7361b8d14f7b87d41163fe03dbb944e` 与
+`patches/freerdp-ohos/` 下四个有序补丁共同构成。源码归档必须同时包含
+子模块 gitlink、补丁系列和
+`docs/compliance/FREERDP_OHOS_PROVENANCE.md`；应用后 tree 必须是
+`54cc9b12e3040bba73773a5439d4f8023d46ac7a`。
+
 Moonlight 产物一旦进入 HAP，源码归档必须完整包含
 `entry/src/main/cpp/moonlight/upstream/moonlight-common-c/`、项目的
 `vendor-build/` 与 `patches/`，并保持以下版本不变：moonlight-common-c

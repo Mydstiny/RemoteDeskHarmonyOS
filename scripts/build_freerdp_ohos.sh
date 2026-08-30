@@ -26,6 +26,15 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 FREERDP_SRC="$PROJECT_DIR/freerdp"
+FREERDP_BASE_REVISION="dae8276ac7361b8d14f7b87d41163fe03dbb944e"
+FREERDP_PATCHED_TREE="54cc9b12e3040bba73773a5439d4f8023d46ac7a"
+FREERDP_PATCH_DIR="$PROJECT_DIR/patches/freerdp-ohos"
+FREERDP_PATCH_FILES=(
+    "$FREERDP_PATCH_DIR/0001-fix-omit-TLS-SNI-for-IP-literals.patch"
+    "$FREERDP_PATCH_DIR/0002-Add-bounded-dual-stack-TCP-racing.patch"
+    "$FREERDP_PATCH_DIR/0003-Add-gateway-safe-dual-stack-routing.patch"
+    "$FREERDP_PATCH_DIR/0004-Fix-thread-termination-on-OHOS.patch"
+)
 BUILD_OUTPUT_DIR="${REMOTEDESK_FREERDP_OUTPUT_DIR:-$PROJECT_DIR/build/freerdp-ohos}"
 PREBUILT_DIR="${REMOTEDESK_FREERDP_PREBUILT_DIR:-$PROJECT_DIR/libs/freerdp-ohos}"
 if [ -n "${REMOTEDESK_FREERDP_WORK_DIR:-}" ]; then
@@ -58,6 +67,8 @@ require_safe_root "FreeRDP work root" "$BUILD_WORK_DIR"
 require_safe_root "FreeRDP output root" "$BUILD_OUTPUT_DIR"
 require_safe_root "FreeRDP prebuilt root" "$PREBUILT_DIR"
 mkdir -p "$BUILD_WORK_DIR" "$BUILD_OUTPUT_DIR" "$PREBUILT_DIR"
+FREERDP_PATCH_REPOSITORY="$BUILD_WORK_DIR/source-repository"
+FREERDP_BUILD_SRC="$BUILD_WORK_DIR/source"
 
 # ---- 前置检查 ----
 if [ ! -d "$FREERDP_SRC" ]; then
@@ -71,12 +82,44 @@ if [ -n "$(git -C "$FREERDP_SRC" status --porcelain)" ]; then
     echo "ERROR: FreeRDP source worktree is dirty; commit it before producing attributable artifacts."
     exit 1
 fi
+if [ "$FREERDP_REVISION" != "$FREERDP_BASE_REVISION" ]; then
+    echo "ERROR: FreeRDP public base mismatch: expected $FREERDP_BASE_REVISION, got $FREERDP_REVISION"
+    exit 1
+fi
 if [ -n "${REMOTEDESK_FREERDP_EXPECTED_REVISION:-}" ] &&
    [ "$FREERDP_REVISION" != "$REMOTEDESK_FREERDP_EXPECTED_REVISION" ]; then
     echo "ERROR: FreeRDP revision mismatch: expected $REMOTEDESK_FREERDP_EXPECTED_REVISION, got $FREERDP_REVISION"
     exit 1
 fi
-echo "FreeRDP revision: $FREERDP_REVISION"
+for PATCH_FILE in "${FREERDP_PATCH_FILES[@]}"; do
+    if [ ! -f "$PATCH_FILE" ]; then
+        echo "ERROR: FreeRDP patch is missing: $PATCH_FILE"
+        exit 1
+    fi
+done
+
+# Keep the gitlink remotely reachable and reconstruct the reviewed OHOS source
+# in the already-isolated build root. The final tree check makes patch order,
+# content and application semantics one attributable build input.
+rm -rf "$FREERDP_PATCH_REPOSITORY" "$FREERDP_BUILD_SRC"
+git clone --quiet --shared --no-checkout "$FREERDP_SRC" "$FREERDP_PATCH_REPOSITORY"
+git -C "$FREERDP_PATCH_REPOSITORY" checkout --quiet --detach "$FREERDP_BASE_REVISION"
+for PATCH_FILE in "${FREERDP_PATCH_FILES[@]}"; do
+    git -C "$FREERDP_PATCH_REPOSITORY" apply --index --whitespace=error-all "$PATCH_FILE"
+done
+FREERDP_ACTUAL_TREE="$(git -C "$FREERDP_PATCH_REPOSITORY" write-tree)"
+if [ "$FREERDP_ACTUAL_TREE" != "$FREERDP_PATCHED_TREE" ]; then
+    echo "ERROR: FreeRDP patched tree mismatch: expected $FREERDP_PATCHED_TREE, got $FREERDP_ACTUAL_TREE"
+    exit 1
+fi
+# Build from an exported tree with no repository metadata. This preserves the
+# established FREERDP_GIT_REVISION="n/a" artifact contract while provenance is
+# still anchored by the verified base revision, patch bytes and final tree ID.
+mkdir -p "$FREERDP_BUILD_SRC"
+git -C "$FREERDP_PATCH_REPOSITORY" archive "$FREERDP_ACTUAL_TREE" |
+    tar -xf - -C "$FREERDP_BUILD_SRC"
+echo "FreeRDP public base: $FREERDP_REVISION"
+echo "FreeRDP patched tree: $FREERDP_ACTUAL_TREE"
 
 # OHOS SDK
 OHOS_SDK="$(resolve_ohos_sdk)"
@@ -193,7 +236,7 @@ build_arch() {
     # identifiers even when all prefix-map flags are present.  These archives
     # are linked into the app later, so disable archive-level IPO to keep the
     # vendored inputs reproducible and free of developer-machine paths.
-    cmake "$FREERDP_SRC" \
+    cmake "$FREERDP_BUILD_SRC" \
         -G Ninja \
         -DCMAKE_TOOLCHAIN_FILE="$OHOS_TOOLCHAIN" \
         -DOHOS_ARCH="$ARCH" \

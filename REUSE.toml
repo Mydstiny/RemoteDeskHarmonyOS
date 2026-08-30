@@ -13,7 +13,7 @@ SPDX-FileCopyrightText = "Moonlight Game Streaming Project contributors"
 SPDX-License-Identifier = "GPL-3.0-only"
 
 [[annotations]]
-path = ["freerdp/**", "libs/**", "rustdesk_vendor/**", "LICENSES/**"]
+path = ["freerdp/**", "patches/freerdp-ohos/**", "libs/**", "rustdesk_vendor/**", "LICENSES/**"]
 precedence = "aggregate"
 SPDX-FileCopyrightText = "Upstream authors; see THIRD_PARTY_NOTICES.md"
 SPDX-License-Identifier = "LicenseRef-ThirdParty"

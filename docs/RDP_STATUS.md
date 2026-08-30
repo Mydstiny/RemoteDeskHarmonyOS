@@ -1,6 +1,6 @@
 # RDP 当前状态
 
-更新时间：2026-08-29
+更新时间：2026-08-30
 
 ## 运行架构
 
@@ -18,6 +18,9 @@ RemoteDesktop.ets
 `USE_REAL_FREERDP=OFF` 只保留为不含真实协议能力的编译骨架，不是发布路径。
 arm64-v8a 与 x86_64 的发布预编译位于 `libs/freerdp-ohos/`，由
 `scripts/build_freerdp_ohos.sh all` 可复现生成。
+FreeRDP 输入固定为公开 gitlink `dae8276ac7361b8d14f7b87d41163fe03dbb944e`
+加仓库内四个有序 OHOS 补丁；构建前必须得到 tree
+`54cc9b12e3040bba73773a5439d4f8023d46ac7a`。
 
 ## 高 DPI 与窗口适配契约
 

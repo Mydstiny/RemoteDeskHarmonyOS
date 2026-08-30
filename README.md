@@ -65,7 +65,7 @@ ArkUI pages/components
 | `entry/src/main/ets/` | ArkTS 页面、组件、模型、服务和策略 |
 | `entry/src/main/cpp/` | NAPI、协议适配、渲染、音视频与原生测试 |
 | `rustdesk_ffi/` | RustDesk Rust FFI、协议会话与 Rust 测试 |
-| `freerdp/` | 指向本仓库公开 `freerdp-ohos` 分支的 FreeRDP 子模块 |
+| `freerdp/` | 指向本仓库公开 `freerdp-ohos` 基线的 FreeRDP 子模块；OHOS 差异位于 `patches/freerdp-ohos/` |
 | `scripts/` | 依赖构建、SBOM、合规、clean-clone 和 Git hook 脚本 |
 | `docs/compliance/` | SPDX SBOM、来源、发布门禁、回滚和开源合规记录 |
 | `LICENSES/` | 项目与第三方许可证文本 |
@@ -78,8 +78,8 @@ Set-Location RemoteDeskHarmonyOS
 ```
 
 如果已普通 clone，执行 `git submodule update --init --recursive`。FreeRDP
-OHOS 修改历史位于同一 GitHub 仓库的 `freerdp-ohos` 分支；主分支通过
-gitlink 固定到可复现修订。
+公开基线位于同一 GitHub 仓库的 `freerdp-ohos` 分支；主分支以 gitlink
+固定基线，并通过仓库内有序 patch 系列重建经过复核的 OHOS 源码 tree。
 
 ## Windows/macOS 双端协作
 

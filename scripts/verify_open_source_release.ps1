@@ -223,6 +223,36 @@ if ($gitmodules -notmatch 'https://github.com/Mydstiny/RemoteDeskHarmonyOS.git' 
     $gitmodules -notmatch 'branch\s*=\s*freerdp-ohos') {
   Add-Failure 'FreeRDP OHOS submodule does not have a public reproducible source.'
 }
+$freerdpBaseRevision = 'dae8276ac7361b8d14f7b87d41163fe03dbb944e'
+$freerdpPatchedTree = '54cc9b12e3040bba73773a5439d4f8023d46ac7a'
+$freerdpGitlink = (& git -C $root ls-files --stage -- freerdp).Trim()
+if (-not $freerdpGitlink.StartsWith("160000 $freerdpBaseRevision ")) {
+  Add-Failure 'FreeRDP gitlink is not locked to the public patch base.'
+}
+$freerdpPatchExpectations = @{
+  'patches/freerdp-ohos/0001-fix-omit-TLS-SNI-for-IP-literals.patch' = '31b34d9da81d30faf223a9e919264ab2638e2c0f102a92fc976263d0a0fb6812'
+  'patches/freerdp-ohos/0002-Add-bounded-dual-stack-TCP-racing.patch' = '577df010d9c75307f79fe7055b97ee41c8f91a25b42dbc3fdd0b97cb21a8948e'
+  'patches/freerdp-ohos/0003-Add-gateway-safe-dual-stack-routing.patch' = '0b232174a4ff599bc0d5feff81d56c776ee9a2a1752c64b7badd64c272fa2c86'
+  'patches/freerdp-ohos/0004-Fix-thread-termination-on-OHOS.patch' = '4f082d9358e0c11599977f24eacf092d2305f11825006061b13411213277c157'
+}
+foreach ($relative in $freerdpPatchExpectations.Keys) {
+  $path = Join-Path $root $relative
+  if (-not (Test-Path $path -PathType Leaf) -or
+      (Get-NormalizedTextSha256 $path) -ne $freerdpPatchExpectations[$relative]) {
+    Add-Failure "FreeRDP patch is missing or changed without provenance review: $relative"
+  }
+}
+$freerdpProvenancePath = Join-Path $root 'docs/compliance/FREERDP_OHOS_PROVENANCE.md'
+if (-not (Test-Path $freerdpProvenancePath -PathType Leaf)) {
+  Add-Failure 'FreeRDP OHOS provenance document is missing.'
+} else {
+  $freerdpProvenance = Get-Content -Raw $freerdpProvenancePath
+  if ($freerdpProvenance -notmatch $freerdpBaseRevision -or
+      $freerdpProvenance -notmatch $freerdpPatchedTree -or
+      $freerdpProvenance -notmatch 'patches/freerdp-ohos') {
+    Add-Failure 'FreeRDP OHOS base and patch provenance is incomplete or stale.'
+  }
+}
 $about = Get-Content -Raw (Join-Path $root 'entry/src/main/ets/components/AboutSettingsSheet.ets')
 if ($about -notmatch 'AGPL-3.0-or-later' -or
     $about -notmatch 'https://github.com/Mydstiny/RemoteDeskHarmonyOS') {

@@ -37,13 +37,14 @@ try {
     "Generated: $(Get-Date -Format 'yyyy-MM-ddTHH:mm:ssK')",
     "Root ref: $Ref",
     "Root commit: $refCommit",
-    "freerdp submodule commit: $submoduleCommit",
+    "freerdp public-base submodule commit: $submoduleCommit",
+    'freerdp patched tree: 54cc9b12e3040bba73773a5439d4f8023d46ac7a',
     '',
     'Included:',
-    '- RemoteDeskHarmonyOS-source.zip: tracked source snapshot, including docs/codex shared state.',
+    '- RemoteDeskHarmonyOS-source.zip: tracked source snapshot, including docs/codex shared state and the FreeRDP OHOS patch series.',
     '- RemoteDeskHarmonyOS-main.bundle: public main Git history.',
-    '- freerdp-ohos-source.zip: tracked submodule source snapshot.',
-    '- freerdp-ohos.bundle: submodule Git history.',
+    '- freerdp-ohos-source.zip: tracked public-base submodule source snapshot.',
+    '- freerdp-ohos.bundle: public-base submodule Git history.',
     '',
     'Not included:',
     '- untracked files, logs, screenshots, build output, SDKs, signing material, AGConnect secrets, local properties, user databases and private Codex memory.',
@@ -52,7 +53,7 @@ try {
     '1. Extract this package outside an existing checkout.',
     '2. Clone RemoteDeskHarmonyOS-main.bundle into RemoteDeskHarmonyOS.',
     '3. Add https://github.com/Mydstiny/RemoteDeskHarmonyOS.git as origin and fetch --prune.',
-    '4. Restore the freerdp submodule from freerdp-ohos-source.zip or use git submodule update --init --recursive.',
+    '4. Restore the FreeRDP public base from freerdp-ohos-source.zip or use git submodule update --init --recursive; keep patches/freerdp-ohos from the root source.',
     '5. Configure core.hooksPath=.githooks, install pwsh, then run scripts/sync_workspace.sh status.'
   )
   $manifestPath = Join-Path $stage 'MIGRATION_MANIFEST.txt'

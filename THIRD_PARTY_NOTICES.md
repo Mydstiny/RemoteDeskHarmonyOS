@@ -7,7 +7,7 @@ source and license files before redistribution.
 | Component | Source / locked version | License | Local role |
 |---|---|---|---|
 | RustDesk protocol definitions | rustdesk/rustdesk commit `93d064a9b0eb58ab94db88ff727a877ef773c0d8`, hbb_common gitlink `387603f47cbb15c0d3dc3d67ae3396d3eb707daf`; trailing whitespace removed locally | AGPL-3.0 | `rustdesk_vendor/.../protos` code generation |
-| FreeRDP / WinPR | `freerdp-ohos` branch, gitlink `4d645c86e1fdcc6159b2b3a4c4f652e46985f8ba`; upstream FreeRDP; publication status in `docs/compliance/FREERDP_OHOS_PROVENANCE.md` | Apache-2.0 | RDP protocol/static libraries |
+| FreeRDP / WinPR | `freerdp-ohos` public-base gitlink `dae8276ac7361b8d14f7b87d41163fe03dbb944e` plus the ordered local patch series in `patches/freerdp-ohos/`; effective tree `54cc9b12e3040bba73773a5439d4f8023d46ac7a`; upstream FreeRDP | Apache-2.0 | RDP protocol/static libraries |
 | OpenSSL | bundled build inputs/artifacts under `libs/openssl` | Apache-2.0 | TLS and cryptography |
 | FFmpeg | 8.1.2 source archive and bundled OHOS artifacts; see `docs/compliance/FFMPEG_OHOS_PROVENANCE.md` | LGPL-2.1-or-later; GPL/non-free components disabled | VP8/VP9/AV1 software decode fallback |
 | libssh2 | bundled source/artifacts; upstream COPYING retained | BSD-3-Clause | SSH/SFTP |
