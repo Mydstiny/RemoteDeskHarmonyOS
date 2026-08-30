@@ -517,6 +517,13 @@ export const VERSION: SessionVersionInfo;
   export function probeSshHostKey(host: string, port: number, proxy?: SshProxyConfig): SshHostKeyInfo;
   export function probeSshHostKeyAsync(host: string, port: number,
     proxy?: SshProxyConfig): Promise<SshHostKeyInfo>;
+  export function probeSshHostKeyOperationAsync(config: SessionConfig, operationId: number,
+    timeoutMs: number): Promise<SshHostKeyInfo> & { operationId: number };
+  export function testSshKeyAuthOperationAsync(config: SessionConfig, operationId: number,
+    timeoutMs: number): Promise<SshAuthTestResult> & { operationId: number };
+  export function installSshPublicKeyOperationAsync(config: SessionConfig, publicKey: string,
+    operationId: number, timeoutMs: number): Promise<SshPublicKeyInstallResult> & { operationId: number };
+  export function cancelSshOperation(operationId: number): boolean;
 
   export function initRenderer(xcId: string, width: number, height: number): number;
   export function destroyRenderer(handle: number): void;

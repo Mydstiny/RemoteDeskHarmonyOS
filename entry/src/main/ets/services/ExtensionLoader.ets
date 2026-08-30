@@ -182,6 +182,10 @@ export interface SshNativeConnectPromise extends Promise<number> {
   generation: number;
 }
 
+export interface SshNativeOperationPromise<T> extends Promise<T> {
+  operationId: number;
+}
+
 export interface SshPendingConnectIdentity {
   sessionId: number;
   generation: number;
@@ -197,6 +201,7 @@ export interface NativeDisconnectIdentity extends
 export class ExtensionLoader {
   private static instance: ExtensionLoader;
   private static nextFacadeGeneration: number = 1;
+  private static nextSshOperationId: number = 1;
   private currentSessionId: number = -1;
   private facadeGeneration: number = 0;
   private sshConnectGeneration: number = 0;
@@ -1069,6 +1074,13 @@ export class ExtensionLoader {
   private allocateFacadeGeneration(): number {
     const value: number = ExtensionLoader.nextFacadeGeneration;
     ExtensionLoader.nextFacadeGeneration =
+      value >= Number.MAX_SAFE_INTEGER ? 1 : value + 1;
+    return value;
+  }
+
+  private allocateSshOperationId(): number {
+    const value: number = ExtensionLoader.nextSshOperationId;
+    ExtensionLoader.nextSshOperationId =
       value >= Number.MAX_SAFE_INTEGER ? 1 : value + 1;
     return value;
   }
@@ -2774,6 +2786,155 @@ export class ExtensionLoader {
       return rdpnapi.validatePublicKeyForAuthorizedKeys(publicKeyOpenSsh) as boolean;
     } catch (err) {
       hilog.error(DOMAIN, TAG, '[ExtensionLoader] validatePublicKeyForAuthorizedKeys: ' + JSON.stringify(err));
+      return false;
+    }
+  }
+
+  /**
+   * Route-aware SSH host-key probe. The native operation owns its absolute
+   * deadline and exposes an id that callers can cancel when their UI owner
+   * disappears or starts a replacement request.
+   */
+  probeSshHostKeyOperationAsync(config: SessionConfig,
+                                timeoutMs: number = 15000): SshNativeOperationPromise<SshHostKeyInfo> {
+    const operationId: number = this.allocateSshOperationId();
+    recordDiagnosticEvent('connection.ssh_sftp', 'ssh_preflight', 'started');
+    this.recordDiagnosticRoutes(config, 'started');
+    try {
+      const nativePromise: SshNativeOperationPromise<SshHostKeyInfo> =
+        rdpnapi.probeSshHostKeyOperationAsync(config, operationId, timeoutMs) as
+          SshNativeOperationPromise<SshHostKeyInfo>;
+      const settled: SshNativeOperationPromise<SshHostKeyInfo> = nativePromise.then(
+        (result: SshHostKeyInfo): SshHostKeyInfo => {
+          recordDiagnosticEvent('connection.ssh_sftp', 'ssh_preflight',
+            result.ok ? 'succeeded' : 'failed', 0, 0, result.errorCode);
+          this.recordDiagnosticRoutes(config, result.ok ? 'succeeded' : 'failed',
+            0, 0, result.ok ? 0 : result.errorCode);
+          return result;
+        }, (err: Object): SshHostKeyInfo => {
+          recordDiagnosticEvent('connection.ssh_sftp', 'ssh_preflight', 'failed', 0, 0, -99);
+          this.recordDiagnosticRoutes(config, 'failed', 0, 0, -99);
+          hilog.error(DOMAIN, TAG,
+            '[ExtensionLoader] probeSshHostKeyOperationAsync: ' + JSON.stringify(err));
+          return {
+            ok: false, host: config.host, port: config.port, algorithm: '',
+            fingerprintSha256: '', rawBase64: '', serverBanner: '', errorCode: -99,
+            errorMessage: '[CC-SSH-09] route-aware probe NAPI error: ' + JSON.stringify(err)
+          };
+        }) as SshNativeOperationPromise<SshHostKeyInfo>;
+      settled.operationId = operationId;
+      return settled;
+    } catch (err) {
+      recordDiagnosticEvent('connection.ssh_sftp', 'ssh_preflight', 'failed', 0, 0, -99);
+      this.recordDiagnosticRoutes(config, 'failed', 0, 0, -99);
+      hilog.error(DOMAIN, TAG,
+        '[ExtensionLoader] probeSshHostKeyOperationAsync: ' + JSON.stringify(err));
+      const failure: SshHostKeyInfo = {
+        ok: false, host: config.host, port: config.port, algorithm: '',
+        fingerprintSha256: '', rawBase64: '', serverBanner: '', errorCode: -99,
+        errorMessage: '[CC-SSH-09] route-aware probe NAPI error: ' + JSON.stringify(err)
+      };
+      const failed: SshNativeOperationPromise<SshHostKeyInfo> = Promise.resolve(failure) as
+        SshNativeOperationPromise<SshHostKeyInfo>;
+      failed.operationId = operationId;
+      return failed;
+    }
+  }
+
+  /** Route-aware SSH public-key authentication test. */
+  testSshKeyAuthOperationAsync(config: SessionConfig,
+                               timeoutMs: number = 30000): SshNativeOperationPromise<SshAuthTestResult> {
+    const operationId: number = this.allocateSshOperationId();
+    recordDiagnosticEvent('security.ssh_key', 'ssh_key_auth_test', 'started');
+    this.recordDiagnosticRoutes(config, 'started');
+    try {
+      const nativePromise: SshNativeOperationPromise<SshAuthTestResult> =
+        rdpnapi.testSshKeyAuthOperationAsync(config, operationId, timeoutMs) as
+          SshNativeOperationPromise<SshAuthTestResult>;
+      const settled: SshNativeOperationPromise<SshAuthTestResult> = nativePromise.then(
+        (result: SshAuthTestResult): SshAuthTestResult => {
+          recordDiagnosticEvent('security.ssh_key', 'ssh_key_auth_test',
+            result.ok ? 'succeeded' : 'failed', 0, 0, result.code);
+          this.recordDiagnosticRoutes(config, result.ok ? 'succeeded' : 'failed',
+            0, 0, result.ok ? 0 : result.code);
+          return result;
+        }, (err: Object): SshAuthTestResult => {
+          recordDiagnosticEvent('security.ssh_key', 'ssh_key_auth_test', 'failed', 0, 0, -99);
+          this.recordDiagnosticRoutes(config, 'failed', 0, 0, -99);
+          hilog.error(DOMAIN, TAG,
+            '[ExtensionLoader] testSshKeyAuthOperationAsync: ' + JSON.stringify(err));
+          return { ok: false, code: -99,
+            message: '[CC-SSHKEY-08] route-aware auth NAPI error: ' + JSON.stringify(err) };
+        }) as SshNativeOperationPromise<SshAuthTestResult>;
+      settled.operationId = operationId;
+      return settled;
+    } catch (err) {
+      recordDiagnosticEvent('security.ssh_key', 'ssh_key_auth_test', 'failed', 0, 0, -99);
+      this.recordDiagnosticRoutes(config, 'failed', 0, 0, -99);
+      hilog.error(DOMAIN, TAG,
+        '[ExtensionLoader] testSshKeyAuthOperationAsync: ' + JSON.stringify(err));
+      const failure: SshAuthTestResult = {
+        ok: false, code: -99,
+        message: '[CC-SSHKEY-08] route-aware auth NAPI error: ' + JSON.stringify(err)
+      };
+      const failed: SshNativeOperationPromise<SshAuthTestResult> = Promise.resolve(failure) as
+        SshNativeOperationPromise<SshAuthTestResult>;
+      failed.operationId = operationId;
+      return failed;
+    }
+  }
+
+  /** Route-aware, idempotent authorized_keys update. */
+  installSshPublicKeyOperationAsync(config: SessionConfig, publicKey: string,
+                                    timeoutMs: number = 45000):
+    SshNativeOperationPromise<SshPublicKeyInstallResult> {
+    const operationId: number = this.allocateSshOperationId();
+    recordDiagnosticEvent('security.ssh_key', 'ssh_key_install', 'started');
+    this.recordDiagnosticRoutes(config, 'started');
+    try {
+      const nativePromise: SshNativeOperationPromise<SshPublicKeyInstallResult> =
+        rdpnapi.installSshPublicKeyOperationAsync(config, publicKey, operationId, timeoutMs) as
+          SshNativeOperationPromise<SshPublicKeyInstallResult>;
+      const settled: SshNativeOperationPromise<SshPublicKeyInstallResult> = nativePromise.then(
+        (result: SshPublicKeyInstallResult): SshPublicKeyInstallResult => {
+          recordDiagnosticEvent('security.ssh_key', 'ssh_key_install',
+            result.ok ? 'succeeded' : 'failed', 0, 0, result.code,
+            0, result.alreadyInstalled ? 1 : 0);
+          this.recordDiagnosticRoutes(config, result.ok ? 'succeeded' : 'failed',
+            0, 0, result.ok ? 0 : result.code);
+          return result;
+        }, (err: Object): SshPublicKeyInstallResult => {
+          recordDiagnosticEvent('security.ssh_key', 'ssh_key_install', 'failed', 0, 0, -99);
+          this.recordDiagnosticRoutes(config, 'failed', 0, 0, -99);
+          hilog.error(DOMAIN, TAG,
+            '[ExtensionLoader] installSshPublicKeyOperationAsync: ' + JSON.stringify(err));
+          return { ok: false, alreadyInstalled: false, verified: false, code: -99,
+            message: '[CC-SSHKEY-07] route-aware install NAPI error: ' + JSON.stringify(err) };
+        }) as SshNativeOperationPromise<SshPublicKeyInstallResult>;
+      settled.operationId = operationId;
+      return settled;
+    } catch (err) {
+      recordDiagnosticEvent('security.ssh_key', 'ssh_key_install', 'failed', 0, 0, -99);
+      this.recordDiagnosticRoutes(config, 'failed', 0, 0, -99);
+      hilog.error(DOMAIN, TAG,
+        '[ExtensionLoader] installSshPublicKeyOperationAsync: ' + JSON.stringify(err));
+      const failure: SshPublicKeyInstallResult = {
+        ok: false, alreadyInstalled: false, verified: false, code: -99,
+        message: '[CC-SSHKEY-07] route-aware install NAPI error: ' + JSON.stringify(err)
+      };
+      const failed: SshNativeOperationPromise<SshPublicKeyInstallResult> = Promise.resolve(failure) as
+        SshNativeOperationPromise<SshPublicKeyInstallResult>;
+      failed.operationId = operationId;
+      return failed;
+    }
+  }
+
+  cancelSshOperation(operationId: number): boolean {
+    if (!Number.isSafeInteger(operationId) || operationId <= 0) { return false; }
+    try {
+      return rdpnapi.cancelSshOperation(operationId) as boolean;
+    } catch (err) {
+      hilog.error(DOMAIN, TAG, '[ExtensionLoader] cancelSshOperation: ' + JSON.stringify(err));
       return false;
     }
   }
