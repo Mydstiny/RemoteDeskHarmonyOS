@@ -1,7 +1,9 @@
 #include "ssh_operation_executor.h"
 
 #include "ssh_error.h"
+#include "ssh_network_generation_policy.h"
 
+#include <algorithm>
 #include <utility>
 
 namespace {
@@ -163,6 +165,84 @@ SshPublicKeyInstallResult installFailure(int code,
 }
 
 } // namespace
+
+SshOperationNetworkRetryResult runSshOperationNetworkAttempts(
+    remotedesk::net::NetworkGenerationSnapshot initialSnapshot,
+    std::chrono::steady_clock::time_point deadline,
+    const std::shared_ptr<SshOperationControl>& control,
+    const SshOperationNetworkSnapshotProvider& snapshotProvider,
+    const SshOperationNetworkAttempt& attempt) {
+    if (!control || !snapshotProvider || !attempt) {
+        return SshOperationNetworkRetryResult::Cancelled;
+    }
+
+    auto cancelledResult = [&control]() {
+        switch (control->cancelReason()) {
+            case SshOperationCancelReason::Deadline:
+                return SshOperationNetworkRetryResult::Deadline;
+            case SshOperationCancelReason::NetworkChanged:
+                return SshOperationNetworkRetryResult::NetworkChanged;
+            case SshOperationCancelReason::User:
+            case SshOperationCancelReason::None:
+                return SshOperationNetworkRetryResult::Cancelled;
+        }
+        return SshOperationNetworkRetryResult::Cancelled;
+    };
+
+    remotedesk::net::NetworkGenerationSnapshot captured = initialSnapshot;
+    std::uint32_t attemptsStarted = 0;
+    while (true) {
+        if (control->cancelled()) { return cancelledResult(); }
+        if (std::chrono::steady_clock::now() >= deadline) {
+            (void)control->cancel(SshOperationCancelReason::Deadline);
+            return SshOperationNetworkRetryResult::Deadline;
+        }
+
+        ++attemptsStarted;
+        attempt(captured);
+
+        remotedesk::net::NetworkGenerationSnapshot current = snapshotProvider();
+        SshNetworkRetryDecision decision =
+            SshNetworkGenerationPolicy::retryDecision(
+                attemptsStarted, control->cancelled(),
+                std::chrono::steady_clock::now() >= deadline,
+                captured, current);
+        while (decision == SshNetworkRetryDecision::WaitForAvailableNetwork) {
+            const auto now = std::chrono::steady_clock::now();
+            if (now >= deadline) {
+                (void)control->cancel(SshOperationCancelReason::Deadline);
+                return SshOperationNetworkRetryResult::Deadline;
+            }
+            const auto nextWake = std::min(
+                deadline, now + std::chrono::milliseconds(
+                    SshNetworkGenerationPolicy::kRetryPollMilliseconds));
+            (void)control->waitUntilFinishedOrCancelled(nextWake);
+            current = snapshotProvider();
+            decision = SshNetworkGenerationPolicy::retryDecision(
+                attemptsStarted, control->cancelled(),
+                std::chrono::steady_clock::now() >= deadline,
+                captured, current);
+        }
+
+        switch (decision) {
+            case SshNetworkRetryDecision::Complete:
+                return SshOperationNetworkRetryResult::Finished;
+            case SshNetworkRetryDecision::RetryCurrentNetwork:
+                captured = current;
+                break;
+            case SshNetworkRetryDecision::StopCancelled:
+                return cancelledResult();
+            case SshNetworkRetryDecision::StopDeadline:
+                (void)control->cancel(SshOperationCancelReason::Deadline);
+                return SshOperationNetworkRetryResult::Deadline;
+            case SshNetworkRetryDecision::StopExhausted:
+                (void)control->cancel(SshOperationCancelReason::NetworkChanged);
+                return SshOperationNetworkRetryResult::NetworkChanged;
+            case SshNetworkRetryDecision::WaitForAvailableNetwork:
+                break;
+        }
+    }
+}
 
 SshHostKeyInfo probeSshHostKeyWithTransportForOperation(
     const ConnectionConfig& source,

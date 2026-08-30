@@ -1,6 +1,7 @@
 #include "test_runner.h"
 
 #include "ssh/ssh_error.h"
+#include "ssh/ssh_network_generation_policy.h"
 #include "ssh/ssh_operation_executor.h"
 
 #include <functional>
@@ -480,4 +481,100 @@ RDP_TEST_CASE(ssh_operation_install_keeps_queue_generation_before_mutation) {
     const std::vector<std::string> expected {
         "factory", "connect", "disconnect"};
     RDP_ASSERT(state->events == expected);
+}
+
+RDP_TEST_CASE(ssh_operation_network_retry_rebuilds_install_on_current_generation) {
+    auto state = std::make_shared<FakeSshOperationState>();
+    auto control = std::make_shared<SshOperationControl>(5009);
+    remotedesk::net::NetworkGenerationFence fence(8200, true);
+    bool changed = false;
+    state->onConnect = [&fence, &changed]() {
+        if (!changed) {
+            changed = true;
+            RDP_ASSERT(fence.update(true, 8201));
+        }
+    };
+    state->routeCancelled = [&fence](
+        remotedesk::net::NetworkGenerationSnapshot networkSnapshot) {
+        return fence.shouldCancel(networkSnapshot);
+    };
+    std::vector<std::uint64_t> attemptedGenerations;
+    SshPublicKeyInstallResult latest;
+
+    const SshOperationNetworkRetryResult retryResult =
+        runSshOperationNetworkAttempts(
+            fence.snapshot(),
+            std::chrono::steady_clock::now() + std::chrono::seconds(1),
+            control, [&fence]() { return fence.snapshot(); },
+            [&](remotedesk::net::NetworkGenerationSnapshot networkSnapshot) {
+                attemptedGenerations.push_back(networkSnapshot.generation);
+                latest = installSshPublicKeyWithTransportForOperation(
+                    proxyJumpIpv6OperationConfig(), "ssh-ed25519 AAAATEST",
+                    control, networkSnapshot, fakeFactory(state),
+                    [](const std::string&) { return true; });
+            });
+
+    RDP_ASSERT(retryResult == SshOperationNetworkRetryResult::Finished);
+    RDP_ASSERT(latest.ok);
+    RDP_ASSERT((attemptedGenerations == std::vector<std::uint64_t> {8200, 8201}));
+    const std::vector<std::string> expected {
+        "factory", "connect", "disconnect",
+        "factory", "connect", "execute", "disconnect"};
+    RDP_ASSERT(state->events == expected);
+    RDP_ASSERT(!control->cancelled());
+}
+
+RDP_TEST_CASE(ssh_operation_network_retry_waits_for_available_generation) {
+    auto control = std::make_shared<SshOperationControl>(5010);
+    remotedesk::net::NetworkGenerationFence fence(8300, true);
+    std::vector<std::uint64_t> attemptedGenerations;
+    int snapshotCalls = 0;
+
+    const SshOperationNetworkRetryResult retryResult =
+        runSshOperationNetworkAttempts(
+            fence.snapshot(),
+            std::chrono::steady_clock::now() + std::chrono::seconds(1),
+            control,
+            [&fence, &snapshotCalls]() {
+                ++snapshotCalls;
+                if (snapshotCalls == 2) {
+                    RDP_ASSERT(fence.update(true, 8302));
+                }
+                return fence.snapshot();
+            },
+            [&fence, &attemptedGenerations](
+                remotedesk::net::NetworkGenerationSnapshot networkSnapshot) {
+                attemptedGenerations.push_back(networkSnapshot.generation);
+                if (attemptedGenerations.size() == 1) {
+                    RDP_ASSERT(fence.update(false, 8301));
+                }
+            });
+
+    RDP_ASSERT(retryResult == SshOperationNetworkRetryResult::Finished);
+    RDP_ASSERT((attemptedGenerations == std::vector<std::uint64_t> {8300, 8302}));
+    RDP_ASSERT(!control->cancelled());
+}
+
+RDP_TEST_CASE(ssh_operation_network_retry_is_bounded_under_route_churn) {
+    auto control = std::make_shared<SshOperationControl>(5011);
+    remotedesk::net::NetworkGenerationFence fence(8400, true);
+    std::uint64_t nextGeneration = 8401;
+    std::vector<std::uint64_t> attemptedGenerations;
+
+    const SshOperationNetworkRetryResult retryResult =
+        runSshOperationNetworkAttempts(
+            fence.snapshot(),
+            std::chrono::steady_clock::now() + std::chrono::seconds(1),
+            control, [&fence]() { return fence.snapshot(); },
+            [&fence, &nextGeneration, &attemptedGenerations](
+                remotedesk::net::NetworkGenerationSnapshot networkSnapshot) {
+                attemptedGenerations.push_back(networkSnapshot.generation);
+                RDP_ASSERT(fence.update(true, nextGeneration++));
+            });
+
+    RDP_ASSERT(retryResult == SshOperationNetworkRetryResult::NetworkChanged);
+    RDP_ASSERT(attemptedGenerations.size() ==
+        SshNetworkGenerationPolicy::kMaxRouteAttempts);
+    RDP_ASSERT(control->cancelReason() ==
+        SshOperationCancelReason::NetworkChanged);
 }

@@ -5,6 +5,7 @@
 #include "ssh_operation_control.h"
 #include "ssh_operation_transport.h"
 
+#include <chrono>
 #include <functional>
 #include <memory>
 #include <string>
@@ -20,6 +21,26 @@ using SshOperationPrivateKeyValidator = std::function<
     SshOperationPrivateKeyValidation(const std::string&, const std::string&)>;
 using SshOperationPublicKeyValidator =
     std::function<bool(const std::string&)>;
+
+enum class SshOperationNetworkRetryResult {
+    Finished,
+    Cancelled,
+    Deadline,
+    NetworkChanged,
+};
+
+using SshOperationNetworkSnapshotProvider = std::function<
+    remotedesk::net::NetworkGenerationSnapshot()>;
+using SshOperationNetworkAttempt = std::function<void(
+    remotedesk::net::NetworkGenerationSnapshot)>;
+
+/** Run complete operation attempts under one immutable absolute deadline. */
+SshOperationNetworkRetryResult runSshOperationNetworkAttempts(
+    remotedesk::net::NetworkGenerationSnapshot initialSnapshot,
+    std::chrono::steady_clock::time_point deadline,
+    const std::shared_ptr<SshOperationControl>& control,
+    const SshOperationNetworkSnapshotProvider& snapshotProvider,
+    const SshOperationNetworkAttempt& attempt);
 
 SshHostKeyInfo probeSshHostKeyWithTransportForOperation(
     const ConnectionConfig& config,

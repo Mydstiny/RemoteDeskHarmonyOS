@@ -3158,6 +3158,10 @@ int SshAdapter::connectForOperationInternal(
             return result;
         }
     }
+    if (connectRouteCancelled()) {
+        disconnect();
+        return ERR_SSH_SESSION_CLOSED;
+    }
     setState(ConnectionState::CONNECTED,
              mode == SshOperationSessionMode::Authenticated
                  ? "SSH operation authenticated" : "SSH operation probe ready");
@@ -3173,12 +3177,15 @@ int SshAdapter::connectInternal(const ConnectionConfig& cfg, bool preserveOwner)
         setSshLifecycleState(SshSessionLifecycleState::Created);
         networkAvailable_.store(true, std::memory_order_release);
     }
-    authPromptBroker_.resetForNewConnection();
-    authPromptFailure_.store(0, std::memory_order_release);
-    authPromptHop_ = "target";
-    authPromptAllowPasswordFallback_ = false;
-    authPromptPresetIndex_ = 0;
-    authPromptPasswordFallbackUsed_ = false;
+    auto prepareAuthenticationAttempt = [this]() {
+        authPromptBroker_.resetForNewConnection();
+        authPromptFailure_.store(0, std::memory_order_release);
+        authPromptHop_ = "target";
+        authPromptAllowPasswordFallback_ = false;
+        authPromptPresetIndex_ = 0;
+        authPromptPasswordFallbackUsed_ = false;
+    };
+    prepareAuthenticationAttempt();
     if (connectCancelRequested_.load(std::memory_order_acquire)) {
         OH_LOG_INFO(LOG_APP, "[SSH] 连接在开始前已取消");
         if (preserveOwner) {
@@ -3193,8 +3200,9 @@ int SshAdapter::connectInternal(const ConnectionConfig& cfg, bool preserveOwner)
         setState(ConnectionState::ERROR, "SSH connect cancelled");
         return ERR_SSH_SESSION_CLOSED;
     }
-    connectNetworkSnapshot_ =
-        remotedesk::net::ProcessNetworkGenerationFence().snapshot();
+    remotedesk::net::NetworkGenerationFence& networkFence =
+        remotedesk::net::ProcessNetworkGenerationFence();
+    connectNetworkSnapshot_ = networkFence.snapshot();
 
     auto failConnect = [this, preserveOwner](int code, const std::string& message) {
         if (preserveOwner) {
@@ -3261,6 +3269,11 @@ int SshAdapter::connectInternal(const ConnectionConfig& cfg, bool preserveOwner)
             return {ret, "SSH shell start failed [" + std::to_string(ret) + "]"};
         }
 
+        if (connectRouteCancelled()) {
+            return {ERR_SSH_SESSION_CLOSED,
+                    "SSH network changed before route activation"};
+        }
+
         startTerminalInput();
         setState(ConnectionState::CONNECTED, "SSH connected");
         // Start the per-session owner before the page publishes its push
@@ -3278,16 +3291,82 @@ int SshAdapter::connectInternal(const ConnectionConfig& cfg, bool preserveOwner)
     // PTY negotiation. Rebuild the complete transport a bounded number of
     // times. A recovery already has its own three-attempt loop, so it gets one
     // PTY attempt per outer recovery cycle instead of multiplying retries.
-    const uint32_t maxAttempts = preserveOwner
+    const uint32_t maxPtyAttempts = preserveOwner
         ? 1U : SshPtyRecoveryPolicy::kMaxInitialAttempts;
-    for (uint32_t attempt = 0; attempt < maxAttempts; ++attempt) {
+    uint32_t ptyAttemptsStarted = 0;
+    uint32_t networkAttemptsStarted = 1;
+    auto networkRetryDeadline = std::chrono::steady_clock::time_point::max();
+    while (true) {
+        ++ptyAttemptsStarted;
         const auto outcome = attemptConnect();
+        remotedesk::net::NetworkGenerationSnapshot currentNetwork =
+            networkFence.snapshot();
+        if (networkFence.shouldCancel(connectNetworkSnapshot_)) {
+            if (networkRetryDeadline ==
+                std::chrono::steady_clock::time_point::max()) {
+                networkRetryDeadline = std::chrono::steady_clock::now() +
+                    std::chrono::milliseconds(
+                        SshNetworkGenerationPolicy::kInitialRetryWindowMilliseconds);
+            }
+            const auto retryDecision = [&]() {
+                return SshNetworkGenerationPolicy::retryDecision(
+                    networkAttemptsStarted,
+                    connectCancelRequested_.load(std::memory_order_acquire) ||
+                        !readerRunning_.load(std::memory_order_acquire),
+                    std::chrono::steady_clock::now() >= networkRetryDeadline,
+                    connectNetworkSnapshot_, currentNetwork);
+            };
+            SshNetworkRetryDecision decision = retryDecision();
+            while (decision ==
+                   SshNetworkRetryDecision::WaitForAvailableNetwork) {
+                std::unique_lock<std::mutex> retryLock(reactorCommandMutex_);
+                reactorCommandCondition_.wait_for(
+                    retryLock,
+                    std::chrono::milliseconds(
+                        SshNetworkGenerationPolicy::kRetryPollMilliseconds),
+                    [this]() {
+                        return connectCancelRequested_.load(
+                                   std::memory_order_acquire) ||
+                            !readerRunning_.load(std::memory_order_acquire);
+                    });
+                currentNetwork = networkFence.snapshot();
+                decision = retryDecision();
+            }
+            if (decision == SshNetworkRetryDecision::RetryCurrentNetwork) {
+                ++networkAttemptsStarted;
+                OH_LOG_WARN(
+                    LOG_APP,
+                    "[SSH] 网络代际变化, 重建完整路由 generation=%{public}llu "
+                    "attempt=%{public}u/%{public}u",
+                    static_cast<unsigned long long>(currentNetwork.generation),
+                    networkAttemptsStarted,
+                    SshNetworkGenerationPolicy::kMaxRouteAttempts);
+                resetTransportForRecovery();
+                prepareAuthenticationAttempt();
+                connectNetworkSnapshot_ = currentNetwork;
+                ptyAttemptsStarted = 0;
+                continue;
+            }
+            if (decision == SshNetworkRetryDecision::StopDeadline) {
+                return failConnect(
+                    ERR_SSH_CONNECT_TIMEOUT,
+                    "SSH network retry deadline exceeded");
+            }
+            if (decision == SshNetworkRetryDecision::StopCancelled) {
+                return failConnect(
+                    ERR_SSH_SESSION_CLOSED,
+                    "SSH connect cancelled during network retry");
+            }
+            return failConnect(
+                ERR_SSH_SESSION_CLOSED,
+                "SSH network changed and route retry was exhausted");
+        }
         if (outcome.first == 0) {
             return 0;
         }
         const bool canRetry = outcome.first == ERR_SSH_PTY_FAILED &&
             SshPtyRecoveryPolicy::retryable(lastPtyFailureClass_) &&
-            attempt + 1 < maxAttempts &&
+            ptyAttemptsStarted < maxPtyAttempts &&
             !connectCancelRequested_.load(std::memory_order_acquire);
         if (!canRetry) {
             return failConnect(outcome.first, outcome.second);
@@ -3296,8 +3375,9 @@ int SshAdapter::connectInternal(const ConnectionConfig& cfg, bool preserveOwner)
         OH_LOG_WARN(LOG_APP,
                     "[SSH] PTY 瞬态失败, 重建 SSH 传输 attempt=%{public}u/%{public}u "
                     "libssh2=%{public}d",
-                    attempt + 1, maxAttempts, lastPtyLibssh2Error_);
+                    ptyAttemptsStarted, maxPtyAttempts, lastPtyLibssh2Error_);
         resetTransportForRecovery();
+        prepareAuthenticationAttempt();
         std::unique_lock<std::mutex> retryLock(reactorCommandMutex_);
         reactorCommandCondition_.wait_for(
             retryLock,
@@ -3311,8 +3391,6 @@ int SshAdapter::connectInternal(const ConnectionConfig& cfg, bool preserveOwner)
             return failConnect(ERR_SSH_SESSION_CLOSED, "SSH connect cancelled during PTY recovery");
         }
     }
-
-    return failConnect(ERR_SSH_PTY_FAILED, "SSH PTY recovery exhausted");
 }
 
 void SshAdapter::disconnect() {

@@ -42,6 +42,41 @@ RDP_TEST_CASE(ssh_network_generation_policy_cancels_every_stale_route) {
         false, fence, fence.snapshot()));
 }
 
+RDP_TEST_CASE(ssh_network_generation_retry_uses_only_newer_available_routes) {
+    const remotedesk::net::NetworkGenerationSnapshot captured {10, true};
+    RDP_ASSERT(SshNetworkGenerationPolicy::retryDecision(
+        1, false, false, captured,
+        remotedesk::net::NetworkGenerationSnapshot {10, true}) ==
+        SshNetworkRetryDecision::Complete);
+    RDP_ASSERT(SshNetworkGenerationPolicy::retryDecision(
+        1, false, false, captured,
+        remotedesk::net::NetworkGenerationSnapshot {11, false}) ==
+        SshNetworkRetryDecision::WaitForAvailableNetwork);
+    RDP_ASSERT(SshNetworkGenerationPolicy::retryDecision(
+        1, false, false, captured,
+        remotedesk::net::NetworkGenerationSnapshot {12, true}) ==
+        SshNetworkRetryDecision::RetryCurrentNetwork);
+    RDP_ASSERT(SshNetworkGenerationPolicy::retryDecision(
+        1, false, false, captured,
+        remotedesk::net::NetworkGenerationSnapshot {9, true}) ==
+        SshNetworkRetryDecision::StopExhausted);
+}
+
+RDP_TEST_CASE(ssh_network_generation_retry_respects_cancel_deadline_and_budget) {
+    const remotedesk::net::NetworkGenerationSnapshot captured {20, true};
+    const remotedesk::net::NetworkGenerationSnapshot current {21, true};
+    RDP_ASSERT(SshNetworkGenerationPolicy::retryDecision(
+        1, true, false, captured, current) ==
+        SshNetworkRetryDecision::StopCancelled);
+    RDP_ASSERT(SshNetworkGenerationPolicy::retryDecision(
+        1, false, true, captured, current) ==
+        SshNetworkRetryDecision::StopDeadline);
+    RDP_ASSERT(SshNetworkGenerationPolicy::retryDecision(
+        SshNetworkGenerationPolicy::kMaxRouteAttempts,
+        false, false, captured, current) ==
+        SshNetworkRetryDecision::StopExhausted);
+}
+
 RDP_TEST_CASE(ssh_session_manager_network_notification_runs_outside_manager_lock) {
     SshSessionManager manager;
     SshNativeFacade facade(manager);

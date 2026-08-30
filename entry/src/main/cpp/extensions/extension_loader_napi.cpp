@@ -22,6 +22,7 @@
 #include "ssh/ssh_key_tool.h"
 #include "ssh/ssh_operation_client.h"
 #include "ssh/ssh_operation_control.h"
+#include "ssh/ssh_operation_executor.h"
 #include "ssh/ssh_session_manager.h"
 #include "ssh/ssh_pending_connect_registry.h"
 #include "audio/input_handler.h"
@@ -11543,43 +11544,44 @@ static void ExecuteSshProductionOperation(napi_env /*env*/, void* rawData) {
     std::thread watchdog;
     try {
         watchdog = std::thread(
-            [control = data->control, deadline = data->deadline,
-             networkSnapshot = data->networkSnapshot]() {
-                constexpr auto kNetworkPoll = std::chrono::milliseconds(50);
+            [control = data->control, deadline = data->deadline]() {
+                constexpr auto kDeadlinePoll = std::chrono::milliseconds(50);
                 while (!control->cancelled()) {
-                    if (remotedesk::net::ProcessNetworkGenerationFence().shouldCancel(
-                            networkSnapshot)) {
-                        (void)control->cancel(
-                            SshOperationCancelReason::NetworkChanged);
-                        break;
-                    }
                     const auto now = std::chrono::steady_clock::now();
                     if (now >= deadline) {
                         (void)control->cancel(SshOperationCancelReason::Deadline);
                         break;
                     }
-                    const auto nextWake = std::min(deadline, now + kNetworkPoll);
+                    const auto nextWake = std::min(deadline, now + kDeadlinePoll);
                     if (control->waitUntilFinishedOrCancelled(nextWake) ||
                         control->cancelled()) {
                         break;
                     }
                 }
             });
-        switch (data->kind) {
-            case SshProductionOperationKind::ProbeHostKey:
-                data->hostKeyResult = probeSshHostKeyForOperation(
-                    data->config, data->control, data->networkSnapshot);
-                break;
-            case SshProductionOperationKind::TestKeyAuth:
-                data->authResult = testSshKeyAuthForOperation(
-                    data->config, data->control, data->networkSnapshot);
-                break;
-            case SshProductionOperationKind::InstallPublicKey:
-                data->installResult = installSshPublicKeyForOperation(
-                    data->config, data->publicKey, data->control,
-                    data->networkSnapshot);
-                break;
-        }
+        (void)runSshOperationNetworkAttempts(
+            data->networkSnapshot, data->deadline, data->control,
+            []() {
+                return remotedesk::net::ProcessNetworkGenerationFence().snapshot();
+            },
+            [data](remotedesk::net::NetworkGenerationSnapshot networkSnapshot) {
+                data->networkSnapshot = networkSnapshot;
+                switch (data->kind) {
+                    case SshProductionOperationKind::ProbeHostKey:
+                        data->hostKeyResult = probeSshHostKeyForOperation(
+                            data->config, data->control, networkSnapshot);
+                        break;
+                    case SshProductionOperationKind::TestKeyAuth:
+                        data->authResult = testSshKeyAuthForOperation(
+                            data->config, data->control, networkSnapshot);
+                        break;
+                    case SshProductionOperationKind::InstallPublicKey:
+                        data->installResult = installSshPublicKeyForOperation(
+                            data->config, data->publicKey, data->control,
+                            networkSnapshot);
+                        break;
+                }
+            });
     } catch (const std::exception& ex) {
         data->workerFailed = true;
         data->errorMessage = std::string("SSH production operation failed: ") + ex.what();
