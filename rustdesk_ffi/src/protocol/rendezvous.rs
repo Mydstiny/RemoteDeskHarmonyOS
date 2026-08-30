@@ -66,6 +66,84 @@ pub struct PeerCandidate {
     pub transport: PeerCandidateTransport,
 }
 
+/// Executable route classes derived from one official hbbs response.
+///
+/// `socket_addr_v6` is deliberately tracked as UDP/KCP, not promoted to TCP.
+/// Keeping this summary beside the schema decoder gives screen, presence and
+/// file-transfer callers one release-aware answer about whether the response
+/// can be used by the transports currently shipped in the product.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PeerRoutePlan {
+    direct_tcp: bool,
+    udp_kcp: bool,
+    relay_ticket: bool,
+    relay_request: bool,
+}
+
+impl PunchHoleInfo {
+    pub fn route_plan(&self) -> PeerRoutePlan {
+        let has_relay_endpoint = !self.relay_server.trim().is_empty();
+        let has_relay_ticket = self
+            .relay_uuid
+            .as_deref()
+            .is_some_and(|uuid| !uuid.trim().is_empty());
+        PeerRoutePlan {
+            direct_tcp: self
+                .peer_candidates
+                .iter()
+                .any(|candidate| candidate.transport == PeerCandidateTransport::Tcp),
+            udp_kcp: self
+                .peer_candidates
+                .iter()
+                .any(|candidate| candidate.transport == PeerCandidateTransport::Udp),
+            relay_ticket: has_relay_endpoint && has_relay_ticket,
+            relay_request: has_relay_endpoint && self.relay_uuid.is_none(),
+        }
+    }
+}
+
+impl PeerRoutePlan {
+    pub fn has_direct_tcp(self) -> bool {
+        self.direct_tcp
+    }
+
+    pub fn has_udp_kcp(self) -> bool {
+        self.udp_kcp
+    }
+
+    pub fn has_relay_ticket(self) -> bool {
+        self.relay_ticket
+    }
+
+    pub fn has_relay_request(self) -> bool {
+        self.relay_request
+    }
+
+    pub fn has_relay_fallback(self) -> bool {
+        self.relay_ticket || self.relay_request
+    }
+
+    pub fn has_executable_route(self) -> bool {
+        self.direct_tcp || self.has_relay_fallback()
+    }
+
+    pub fn ensure_executable(self) -> io::Result<()> {
+        if self.has_executable_route() {
+            return Ok(());
+        }
+        if self.udp_kcp {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "rendezvous route contains only gated UDP/KCP candidates and no relay fallback",
+            ));
+        }
+        Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "rendezvous route contains no executable peer or relay endpoint",
+        ))
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct RendezvousRouteOptions {
     nat_type: NatType,
@@ -1605,6 +1683,57 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn route_plan_keeps_udp_kcp_gated_but_accepts_relay_or_tcp() {
+        let ipv6 = SocketAddr::new("2001:db8::5".parse().unwrap(), 21118);
+        let udp_only = PunchHoleInfo {
+            relay_server: String::new(),
+            signed_pk: Vec::new(),
+            peer_candidates: vec![PeerCandidate {
+                address: ipv6,
+                source: PeerCandidateSource::SocketAddrV6,
+                transport: PeerCandidateTransport::Udp,
+            }],
+            relay_uuid: None,
+            peer_nat_type: NatType::UNKNOWN_NAT,
+            is_local: false,
+        };
+        let udp_plan = udp_only.route_plan();
+        assert!(udp_plan.has_udp_kcp());
+        assert!(!udp_plan.has_direct_tcp());
+        assert!(!udp_plan.has_executable_route());
+        assert_eq!(
+            udp_plan
+                .ensure_executable()
+                .expect_err("UDP/KCP-only route stays release-gated")
+                .kind(),
+            ErrorKind::Unsupported
+        );
+
+        let relay = PunchHoleInfo {
+            relay_server: "relay.example:21117".to_string(),
+            relay_uuid: Some("relay-ticket".to_string()),
+            ..udp_only.clone()
+        };
+        let relay_plan = relay.route_plan();
+        assert!(relay_plan.has_udp_kcp());
+        assert!(relay_plan.has_relay_ticket());
+        assert!(relay_plan.has_relay_fallback());
+        assert!(relay_plan.ensure_executable().is_ok());
+
+        let tcp = PunchHoleInfo {
+            peer_candidates: vec![PeerCandidate {
+                address: "192.0.2.5:21118".parse().unwrap(),
+                source: PeerCandidateSource::SocketAddr,
+                transport: PeerCandidateTransport::Tcp,
+            }],
+            ..udp_only
+        };
+        let tcp_plan = tcp.route_plan();
+        assert!(tcp_plan.has_direct_tcp());
+        assert!(tcp_plan.ensure_executable().is_ok());
     }
 
     #[test]

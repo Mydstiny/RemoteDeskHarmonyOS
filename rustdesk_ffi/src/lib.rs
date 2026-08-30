@@ -595,6 +595,40 @@ pub struct RustDeskConfigV6 {
     pub reserved: u32,
 }
 
+pub const RUSTDESK_TRANSPORT_CAPABILITIES_ABI_V1: u32 = 1;
+pub const RUSTDESK_CONNECTION_STRATEGY_FORCE_RELAY: u32 = 1 << 0;
+pub const RUSTDESK_CONNECTION_STRATEGY_DIRECT_IP: u32 = 1 << 1;
+pub const RUSTDESK_CONNECTION_STRATEGY_AUTO: u32 = 1 << 2;
+pub const RUSTDESK_PEER_CANDIDATE_TRANSPORT_TCP: u32 = 1 << 0;
+pub const RUSTDESK_PEER_CANDIDATE_TRANSPORT_UDP_KCP: u32 = 1 << 1;
+
+/// Versioned release boundary shared with the native bridge. These are
+/// product capabilities, not merely code paths compiled into the Rust crate.
+/// AUTO and UDP/KCP stay absent until the fixed-server and device matrix has
+/// been accepted.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RustDeskTransportCapabilitiesV1 {
+    pub abi_version: u32,
+    pub struct_size: u32,
+    pub connection_strategy_mask: u32,
+    pub peer_candidate_transport_mask: u32,
+    pub nat_traversal_flags: u32,
+    pub reserved: [u32; 3],
+}
+
+const fn release_transport_capabilities_v1() -> RustDeskTransportCapabilitiesV1 {
+    RustDeskTransportCapabilitiesV1 {
+        abi_version: RUSTDESK_TRANSPORT_CAPABILITIES_ABI_V1,
+        struct_size: std::mem::size_of::<RustDeskTransportCapabilitiesV1>() as u32,
+        connection_strategy_mask: RUSTDESK_CONNECTION_STRATEGY_FORCE_RELAY
+            | RUSTDESK_CONNECTION_STRATEGY_DIRECT_IP,
+        peer_candidate_transport_mask: RUSTDESK_PEER_CANDIDATE_TRANSPORT_TCP,
+        nat_traversal_flags: 0,
+        reserved: [0; 3],
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 struct RustDeskConnectOptions {
     connection_strategy: connector::RustDeskConnectionStrategy,
@@ -604,10 +638,17 @@ struct RustDeskConnectOptions {
 fn validate_release_connection_strategy(
     strategy: connector::RustDeskConnectionStrategy,
 ) -> io::Result<()> {
-    if strategy == connector::RustDeskConnectionStrategy::Auto {
+    let strategy_bit = match strategy {
+        connector::RustDeskConnectionStrategy::ForceRelay => {
+            RUSTDESK_CONNECTION_STRATEGY_FORCE_RELAY
+        }
+        connector::RustDeskConnectionStrategy::DirectIp => RUSTDESK_CONNECTION_STRATEGY_DIRECT_IP,
+        connector::RustDeskConnectionStrategy::Auto => RUSTDESK_CONNECTION_STRATEGY_AUTO,
+    };
+    if release_transport_capabilities_v1().connection_strategy_mask & strategy_bit == 0 {
         return Err(io::Error::new(
             io::ErrorKind::Unsupported,
-            "RustDesk AUTO/NAT traversal remains release-gated",
+            "RustDesk connection strategy remains release-gated",
         ));
     }
     Ok(())
@@ -2440,6 +2481,21 @@ pub extern "C" fn rustdesk_connect_v5(
     )
 }
 
+/// Return the exact route transports enabled by this release. Native callers
+/// compare both the ABI metadata and masks before starting network work.
+#[no_mangle]
+pub extern "C" fn rustdesk_get_transport_capabilities_v1(
+    out_capabilities: *mut RustDeskTransportCapabilitiesV1,
+) -> bool {
+    if out_capabilities.is_null() {
+        return false;
+    }
+    unsafe {
+        *out_capabilities = release_transport_capabilities_v1();
+    }
+    true
+}
+
 /// Create a RustDesk connection with an explicit route/NAT policy while
 /// preserving the legacy config ABI as the leading field of RustDeskConfigV6.
 #[no_mangle]
@@ -2775,7 +2831,7 @@ pub extern "C" fn rustdesk_probe_presence_with_deadline(
                         .map_err(|error| (PresenceProbeStage::RendezvousRoute, error))
                 })
                 .and_then(|remaining| {
-                    rendezvous
+                    let route = rendezvous
                         .request_route_with_timeout(
                             &peer_id,
                             &server_key,
@@ -2784,7 +2840,10 @@ pub extern "C" fn rustdesk_probe_presence_with_deadline(
                             RendezvousRouteOptions::force_relay(),
                             remaining,
                         )
-                        .map(|_| ())
+                        .map_err(|error| (PresenceProbeStage::RendezvousRoute, error))?;
+                    route
+                        .route_plan()
+                        .ensure_executable()
                         .map_err(|error| (PresenceProbeStage::RendezvousRoute, error))
                 })
         }
@@ -3680,7 +3739,15 @@ pub extern "C" fn rustdesk_version() -> *const c_char {
 mod tests {
     use super::*;
     use crate::protocol::message_proto::{EncodedVideoFrame, VideoFrame_oneof_union};
+    use crate::protocol::rendezvous::encode_socket_addr_v6;
+    use crate::protocol::rendezvous_proto::{
+        PunchHoleResponse, RendezvousMessage, RendezvousMessage_oneof_union,
+    };
+    use crate::protocol::wire;
+    use protobuf::Message as ProtoMessage;
     use std::ffi::CString;
+    use std::net::{SocketAddr, TcpListener};
+    use std::thread;
 
     #[test]
     fn rustdesk_config_v6_preserves_legacy_abi_prefix() {
@@ -3691,6 +3758,110 @@ mod tests {
             104
         );
         assert_eq!(std::mem::size_of::<RustDeskConfigV6>(), 120);
+    }
+
+    #[test]
+    fn transport_capabilities_v1_keep_auto_and_udp_kcp_release_gated() {
+        assert_eq!(std::mem::size_of::<RustDeskTransportCapabilitiesV1>(), 32);
+        assert_eq!(
+            std::mem::offset_of!(RustDeskTransportCapabilitiesV1, connection_strategy_mask),
+            8
+        );
+        assert_eq!(
+            std::mem::offset_of!(RustDeskTransportCapabilitiesV1, reserved),
+            20
+        );
+        assert!(!rustdesk_get_transport_capabilities_v1(std::ptr::null_mut()));
+
+        let mut capabilities = RustDeskTransportCapabilitiesV1::default();
+        assert!(rustdesk_get_transport_capabilities_v1(&mut capabilities));
+        assert_eq!(
+            capabilities.abi_version,
+            RUSTDESK_TRANSPORT_CAPABILITIES_ABI_V1
+        );
+        assert_eq!(capabilities.struct_size, 32);
+        assert_eq!(
+            capabilities.connection_strategy_mask,
+            RUSTDESK_CONNECTION_STRATEGY_FORCE_RELAY | RUSTDESK_CONNECTION_STRATEGY_DIRECT_IP
+        );
+        assert_eq!(
+            capabilities.connection_strategy_mask & RUSTDESK_CONNECTION_STRATEGY_AUTO,
+            0
+        );
+        assert_eq!(
+            capabilities.peer_candidate_transport_mask,
+            RUSTDESK_PEER_CANDIDATE_TRANSPORT_TCP
+        );
+        assert_eq!(
+            capabilities.peer_candidate_transport_mask & RUSTDESK_PEER_CANDIDATE_TRANSPORT_UDP_KCP,
+            0
+        );
+        assert_eq!(capabilities.nat_traversal_flags, 0);
+        assert_eq!(capabilities.reserved, [0; 3]);
+    }
+
+    #[test]
+    fn presence_udp_kcp_only_route_remains_unknown() {
+        let mut response = PunchHoleResponse::new();
+        response.set_socket_addr_v6(
+            encode_socket_addr_v6(
+                "[2001:db8::91]:21118"
+                    .parse::<SocketAddr>()
+                    .expect("parse IPv6 fixture"),
+            )
+            .expect("encode IPv6 fixture"),
+        );
+        let mut message = RendezvousMessage::new();
+        message.union = Some(RendezvousMessage_oneof_union::punch_hole_response(response));
+        let payload = message.write_to_bytes().expect("serialize route fixture");
+
+        let server = TcpListener::bind("127.0.0.1:0").expect("bind rendezvous fixture");
+        let server_port = server
+            .local_addr()
+            .expect("rendezvous fixture address")
+            .port();
+        let server_thread = thread::spawn(move || {
+            let (mut stream, _) = server.accept().expect("accept presence probe");
+            let _request = wire::read_frame(&mut stream).expect("read presence route request");
+            wire::write_frame(&mut stream, &payload).expect("write UDP-only route response");
+        });
+
+        let host = CString::new("127.0.0.1").unwrap();
+        let peer_id = CString::new("peer-presence").unwrap();
+        let empty = CString::new("").unwrap();
+        let config = RustDeskConfig {
+            host: host.as_ptr(),
+            port: i32::from(server_port),
+            key: empty.as_ptr(),
+            username: peer_id.as_ptr(),
+            password: empty.as_ptr(),
+            width: 0,
+            height: 0,
+            codec: 0,
+            image_quality: 0,
+            privacy_mode: false,
+            audio_enabled: false,
+            profile: RustDeskProfile::Stable,
+            fps: 0,
+            direct_connection: false,
+            auth_mode: 0,
+            key_mode: 0,
+            token: empty.as_ptr(),
+            connection_id: 92_101,
+            relay_fallback_port: 0,
+        };
+        let request_id = u64::MAX - 92_101;
+        assert!(register_presence_probe(request_id));
+        let mut result = RustDeskPresenceResult::default();
+        assert!(rustdesk_probe_presence_with_deadline(
+            &config,
+            request_id,
+            2_000,
+            &mut result,
+        ));
+        server_thread.join().expect("presence fixture thread");
+        assert_eq!(result.state, 0, "unsupported UDP/KCP is not online proof");
+        assert_eq!(result.error_code, 4);
     }
 
     #[test]

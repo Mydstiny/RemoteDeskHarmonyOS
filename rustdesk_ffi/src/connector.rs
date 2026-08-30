@@ -34,8 +34,7 @@ use crate::protocol::message_proto::{
     TouchScaleUpdate, VideoFrame, VideoFrame_oneof_union,
 };
 use crate::protocol::rendezvous::{
-    encode_socket_addr_v6, PeerCandidateTransport, PunchHoleInfo, RendezvousClient,
-    RendezvousRouteOptions,
+    encode_socket_addr_v6, PunchHoleInfo, RendezvousClient, RendezvousRouteOptions,
 };
 use crate::protocol::rendezvous_proto::{ConnType as RendezvousConnType, NatType};
 use crate::protocol::session::{AuthEventCallback, Session, VIDEO_ACK_REQUIRED};
@@ -711,12 +710,10 @@ impl RustDeskConnector {
         conn_type: RendezvousConnType,
         route_deadline: Option<Instant>,
     ) -> io::Result<TcpStream> {
-        let has_tcp_candidate = punch
-            .peer_candidates
-            .iter()
-            .any(|candidate| candidate.transport == PeerCandidateTransport::Tcp);
+        let route_plan = punch.route_plan();
+        route_plan.ensure_executable()?;
 
-        if strategy == RustDeskConnectionStrategy::Auto && has_tcp_candidate {
+        if strategy == RustDeskConnectionStrategy::Auto && route_plan.has_direct_tcp() {
             self.set_connect_state(ConnState::ConnectingToPeer);
             rendezvous.disconnect();
             match rendezvous.connect_to_peer_candidates(
@@ -737,20 +734,30 @@ impl RustDeskConnector {
                     eprintln!(
                         "[RustDesk-FFI] AUTO direct TCP candidates failed kind={:?}; relay_fallback={}",
                         error.kind(),
-                        if punch.relay_uuid.is_some() || !punch.relay_server.trim().is_empty() {
+                        if route_plan.has_relay_fallback() {
                             "available"
                         } else {
                             "absent"
                         }
                     );
-                    if punch.relay_uuid.is_none() && punch.relay_server.trim().is_empty() {
+                    if !route_plan.has_relay_fallback() {
                         return Err(error);
                     }
                 }
             }
         }
 
-        if let Some(relay_uuid) = punch.relay_uuid.as_deref() {
+        if route_plan.has_relay_ticket() {
+            let relay_uuid = punch
+                .relay_uuid
+                .as_deref()
+                .filter(|uuid| !uuid.trim().is_empty())
+                .ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "rendezvous route planner lost its relay ticket",
+                    )
+                })?;
             self.set_connect_state(ConnState::ConnectingToPeer);
             return rendezvous.create_relay_with_timeout(
                 peer_id,
@@ -767,7 +774,7 @@ impl RustDeskConnector {
                 )?,
             );
         }
-        if !punch.relay_server.trim().is_empty() {
+        if route_plan.has_relay_request() {
             return self.request_and_create_relay(
                 rendezvous_host,
                 rendezvous_port,
@@ -783,7 +790,7 @@ impl RustDeskConnector {
                 route_deadline,
             );
         }
-        if has_tcp_candidate {
+        if route_plan.has_direct_tcp() {
             self.set_connect_state(ConnState::ConnectingToPeer);
             rendezvous.disconnect();
             return rendezvous.connect_to_peer_candidates(
@@ -798,8 +805,8 @@ impl RustDeskConnector {
             );
         }
         Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "rendezvous route contains only gated UDP/KCP candidates and no relay fallback",
+            io::ErrorKind::Other,
+            "rendezvous route planner admitted a route without a matching selector",
         ))
     }
 

@@ -94,6 +94,8 @@ extern "C" {
         void (*on_progress)(int, const char*, void*),
         bool (*on_peer_platform)(const char*, void*),
         void* user_data);
+    bool  rustdesk_get_transport_capabilities_v1(
+        RustDeskFfiTransportCapabilitiesV1* out_capabilities);
     void  rustdesk_disconnect(void* handle);
     void  rustdesk_cancel_pending_connect();
     void  rustdesk_cancel_pending_connect_for_session(uint64_t session_id);
@@ -209,6 +211,14 @@ static constexpr uint32_t kRustDeskPermissionClipboard = 1U << 2;
 static constexpr uint32_t kRustDeskPermissionFile = 1U << 4;
 static constexpr uint32_t kRustDeskDisplaySnapshotVersion = 1;
 static constexpr uint32_t kRustDeskVideoFrameAbiVersion = 2;
+static constexpr uint32_t kRustDeskTransportCapabilitiesVersion = 1;
+static constexpr uint32_t kRustDeskStrategyForceRelay = 1U << 0;
+static constexpr uint32_t kRustDeskStrategyDirectIp = 1U << 1;
+static constexpr uint32_t kRustDeskStrategyAuto = 1U << 2;
+static constexpr uint32_t kRustDeskPeerTransportTcp = 1U << 0;
+static constexpr uint32_t kRustDeskPeerTransportUdpKcp = 1U << 1;
+static constexpr uint32_t kRustDeskReleaseStrategyMask =
+    kRustDeskStrategyForceRelay | kRustDeskStrategyDirectIp;
 static_assert(sizeof(RustDeskFfiStreamStats) == 96,
               "RustDeskStreamStats ABI size changed; update both sides together");
 static_assert(alignof(RustDeskFfiStreamStats) == 8,
@@ -3361,6 +3371,51 @@ int RustDeskBridge::connectInternal(
     if (mode_ == RustDeskMode::FFI) {
         // ---- FFI 模式: 直接调用 librustdesk_ffi.a ----
         OH_LOG_INFO(LOG_APP, "[RustDesk-FFI] Using real core (protobuf protocol)");
+        RustDeskFfiTransportCapabilitiesV1 transportCapabilities {};
+        const bool capabilityRead =
+            rustdesk_get_transport_capabilities_v1(&transportCapabilities);
+        const bool capabilityContractMatches = capabilityRead &&
+            transportCapabilities.abiVersion == kRustDeskTransportCapabilitiesVersion &&
+            transportCapabilities.structSize ==
+                sizeof(RustDeskFfiTransportCapabilitiesV1) &&
+            transportCapabilities.connectionStrategyMask ==
+                kRustDeskReleaseStrategyMask &&
+            transportCapabilities.peerCandidateTransportMask ==
+                kRustDeskPeerTransportTcp &&
+            transportCapabilities.natTraversalFlags == 0 &&
+            transportCapabilities.reserved[0] == 0 &&
+            transportCapabilities.reserved[1] == 0 &&
+            transportCapabilities.reserved[2] == 0;
+        if (!capabilityContractMatches) {
+            const std::string message =
+                "RDERR|stage=strategy|code=transport_capability_contract|attempt=" +
+                std::to_string(sessionId) +
+                "|detail=Rust and native transport capability boundary mismatch";
+            impl_->setState(ConnectionState::ERROR, message, connectAdmission);
+            OH_LOG_ERROR(LOG_APP,
+                "[RustDesk-FFI] transport capability contract rejected read=%{public}s abi=%{public}u size=%{public}u strategyMask=%{public}u candidateMask=%{public}u natFlags=%{public}u autoBit=%{public}u udpKcpBit=%{public}u",
+                capabilityRead ? "true" : "false",
+                transportCapabilities.abiVersion,
+                transportCapabilities.structSize,
+                transportCapabilities.connectionStrategyMask,
+                transportCapabilities.peerCandidateTransportMask,
+                transportCapabilities.natTraversalFlags,
+                transportCapabilities.connectionStrategyMask & kRustDeskStrategyAuto,
+                transportCapabilities.peerCandidateTransportMask & kRustDeskPeerTransportUdpKcp);
+            return -45;
+        }
+        const uint32_t requestedStrategy = connectionStrategy == "direct_ip"
+            ? kRustDeskStrategyDirectIp : kRustDeskStrategyForceRelay;
+        if ((transportCapabilities.connectionStrategyMask & requestedStrategy) == 0) {
+            const std::string message =
+                "RDERR|stage=strategy|code=strategy_unavailable|attempt=" +
+                std::to_string(sessionId) +
+                "|detail=requested strategy is not enabled by the Rust core";
+            impl_->setState(ConnectionState::ERROR, message, connectAdmission);
+            OH_LOG_ERROR(LOG_APP,
+                "[RustDesk-FFI] requested strategy rejected by capability mask");
+            return -42;
+        }
         const std::string logHost = SafeLog::HashForLog(cfg.host);
         const int effectivePort = cfg.port > 0 ? cfg.port :
             (cfg.rdDirectIp ? 21118 : RD_DEFAULT_TCP_PORT);

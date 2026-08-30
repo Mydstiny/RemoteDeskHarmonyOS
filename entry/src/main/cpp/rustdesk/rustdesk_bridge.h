@@ -145,6 +145,18 @@ struct RustDeskFfiConfigV6 {
     uint32_t reserved;
 };
 
+// Versioned release capability boundary returned by the Rust core. Compiled
+// code paths are not automatically product capabilities: both sides must
+// explicitly agree before any route/network work starts.
+struct RustDeskFfiTransportCapabilitiesV1 {
+    uint32_t abiVersion;
+    uint32_t structSize;
+    uint32_t connectionStrategyMask;
+    uint32_t peerCandidateTransportMask;
+    uint32_t natTraversalFlags;
+    uint32_t reserved[3];
+};
+
 /** Result of a non-authenticating RustDesk peer presence probe. */
 struct RustDeskPresenceResult {
     int state = 0;      // 0=unknown, 1=online, 2=offline
@@ -162,6 +174,14 @@ static_assert(offsetof(RustDeskFfiConfigV6, connection_strategy) == 104,
               "RustDeskConfigV6 policy offset changed; update Rust and C++ together");
 static_assert(sizeof(RustDeskFfiConfigV6) == 120,
               "RustDeskConfigV6 ABI size changed; update Rust and C++ together");
+static_assert(sizeof(RustDeskFfiTransportCapabilitiesV1) == 32,
+              "RustDesk transport capability ABI size changed");
+static_assert(alignof(RustDeskFfiTransportCapabilitiesV1) == 4,
+              "RustDesk transport capability ABI alignment changed");
+static_assert(offsetof(RustDeskFfiTransportCapabilitiesV1, connectionStrategyMask) == 8,
+              "RustDesk transport capability strategy offset changed");
+static_assert(offsetof(RustDeskFfiTransportCapabilitiesV1, reserved) == 20,
+              "RustDesk transport capability reserved offset changed");
 
 enum class RustDeskMode {
     IPC = 0,           // IPC 转发 → rustdesk_helper
