@@ -545,13 +545,11 @@ fn connect_parsed_endpoint(
     cancel_epoch: Option<u64>,
 ) -> io::Result<TcpStream> {
     connect_parsed_endpoint_with_resolver(endpoint, stage, timeout, cancel_epoch, |host, port| {
-        (host.as_str(), port)
-            .to_socket_addrs()
-            .map(|values| values.collect())
+        (host.as_str(), port).to_socket_addrs()
     })
 }
 
-fn connect_parsed_endpoint_with_resolver<F>(
+fn connect_parsed_endpoint_with_resolver<F, I>(
     endpoint: ParsedEndpoint,
     stage: &str,
     timeout: Duration,
@@ -559,7 +557,8 @@ fn connect_parsed_endpoint_with_resolver<F>(
     resolver: F,
 ) -> io::Result<TcpStream>
 where
-    F: FnOnce(String, u16) -> io::Result<Vec<SocketAddr>> + Send + 'static,
+    F: FnOnce(String, u16) -> io::Result<I> + Send + 'static,
+    I: IntoIterator<Item = SocketAddr>,
 {
     let endpoint_id =
         crate::safe_diagnostics::sensitive_id(&format!("{}:{}", endpoint.host, endpoint.port));
@@ -592,7 +591,7 @@ where
         "resolve",
         move || {
             let _resolver_permit = resolver_permit;
-            resolver(resolve_host, resolve_port)
+            resolver(resolve_host, resolve_port).map(collect_bounded_candidates)
         },
     )
     .map_err(|error| {
@@ -651,15 +650,16 @@ struct ActiveCandidate {
     address: SocketAddr,
 }
 
-fn interleave_candidates(candidates: Vec<SocketAddr>) -> Vec<SocketAddr> {
-    let Some(first) = candidates.first() else {
-        return candidates;
-    };
-    let first_is_ipv6 = first.is_ipv6();
+fn collect_bounded_candidates<I>(candidates: I) -> Vec<SocketAddr>
+where
+    I: IntoIterator<Item = SocketAddr>,
+{
+    let mut first_is_ipv6 = None;
     let mut first_family = Vec::with_capacity(MAX_CONNECT_CANDIDATES);
     let mut second_family = Vec::with_capacity(MAX_CONNECT_CANDIDATES);
     for address in candidates {
-        let family = if address.is_ipv6() == first_is_ipv6 {
+        let preferred_family = *first_is_ipv6.get_or_insert_with(|| address.is_ipv6());
+        let family = if address.is_ipv6() == preferred_family {
             &mut first_family
         } else {
             &mut second_family
@@ -916,7 +916,7 @@ fn connect_candidates_happy_eyeballs(
     stage: &str,
     endpoint_id: &str,
 ) -> io::Result<TcpStream> {
-    let candidates = interleave_candidates(candidates);
+    let candidates = collect_bounded_candidates(candidates);
     if candidates.is_empty() {
         return Err(io::Error::new(
             io::ErrorKind::AddrNotAvailable,
@@ -1154,12 +1154,12 @@ mod tests {
         let v4_first: SocketAddr = "192.0.2.1:21116".parse().unwrap();
         let v4_second: SocketAddr = "192.0.2.2:21116".parse().unwrap();
         assert_eq!(
-            interleave_candidates(vec![v6_first, v6_first, v6_second, v4_first, v4_second,]),
+            collect_bounded_candidates(vec![v6_first, v6_first, v6_second, v4_first, v4_second,]),
             vec![v6_first, v4_first, v6_second, v4_second]
         );
 
         assert_eq!(
-            interleave_candidates(vec![v4_first, v4_second, v6_first, v6_second]),
+            collect_bounded_candidates(vec![v4_first, v4_second, v6_first, v6_second]),
             vec![v4_first, v6_first, v4_second, v6_second]
         );
     }
@@ -1172,10 +1172,26 @@ mod tests {
         let ipv4: SocketAddr = "192.0.2.1:21116".parse().unwrap();
         candidates.push(ipv4);
 
-        let ordered = interleave_candidates(candidates);
+        let ordered = collect_bounded_candidates(candidates);
         assert_eq!(ordered.len(), MAX_CONNECT_CANDIDATES);
         assert!(ordered[0].is_ipv6());
         assert_eq!(ordered[1], ipv4);
+    }
+
+    #[test]
+    fn resolver_candidate_collection_has_a_hard_allocation_bound() {
+        let candidates = (1..=(MAX_CONNECT_CANDIDATES * 64)).map(|suffix| {
+            SocketAddr::V6(SocketAddrV6::new(
+                Ipv6Addr::from(suffix as u128),
+                21116,
+                0,
+                0,
+            ))
+        });
+
+        let bounded = collect_bounded_candidates(candidates);
+        assert_eq!(bounded.len(), MAX_CONNECT_CANDIDATES);
+        assert!(bounded.iter().all(SocketAddr::is_ipv6));
     }
 
     #[test]
