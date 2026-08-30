@@ -68,6 +68,14 @@ try {
   Invoke-TestGit -Repository $fixtureRepo -GitArgs @('commit', '--quiet', '-m', 'root b') | Out-Null
 
   $fixtureScript = Join-Path $fixtureScripts 'create_migration_bundle.ps1'
+  $fixtureScriptSource = Get-Content -Raw -LiteralPath $fixtureScript
+  $windowsNewLineScript = $fixtureScriptSource.Replace(
+    '[Environment]::NewLine', '"`r`n"')
+  if ($windowsNewLineScript -eq $fixtureScriptSource) {
+    throw 'Migration fixture could not enable Windows CRLF output simulation.'
+  }
+  Set-Content -LiteralPath $fixtureScript -Value $windowsNewLineScript `
+    -Encoding utf8NoBOM -NoNewline
   & $fixtureScript -OutputDirectory $fixtureOutput -Ref $rootCommitA
   if ($LASTEXITCODE -ne 0) {
     throw 'Migration bundle fixture command failed.'

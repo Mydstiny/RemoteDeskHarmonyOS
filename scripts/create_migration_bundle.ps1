@@ -52,7 +52,7 @@ function Get-RootFreeRdpPatchedTree {
   )
   $treeMatch = [regex]::Match(
     $buildScript,
-    '(?m)^FREERDP_PATCHED_TREE="([0-9a-f]{40})"$'
+    '(?m)^FREERDP_PATCHED_TREE="([0-9a-f]{40})"\r?$'
   )
   if (-not $treeMatch.Success) {
     throw "Root commit $Commit does not declare a valid FREERDP_PATCHED_TREE."
