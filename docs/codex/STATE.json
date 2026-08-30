@@ -97,6 +97,7 @@
     "targetedTests": "PASS: Rust 209/209; OHOS RustDesk FFI arm64-v8a and x86_64 release builds; native endpoint/protocol suite 838/838 before final hardening, with final production native compilation covered by both Hvigor gates.",
     "compliance": "PASS: git diff --check and Light open-source compliance.",
     "review": "PASS: /root/ipv6_shared_rdp_review reviewed d3f07f4e; no remaining P0/P1/P2.",
+    "rustdeskFlipIncrement": "PASS: scoped commits b11dd222e and 2a3a0aa4d provide the exact five visual/control axis actions, per-host persistence, main/PIP/multi-canvas rendering and mirrored input mapping; native 858/858, both Hvigor gates, Light compliance and independent follow-up review passed. Real HarmonyOS PC graphics-stack acceptance remains pending.",
     "deviceAcceptance": "NOT RUN: no HDC target or controlled IPv6 endpoints were available; configured_endpoint_ipv6 and all higher capability declarations remain disabled."
   },
   "updated": "2026-08-30 Asia/Shanghai"

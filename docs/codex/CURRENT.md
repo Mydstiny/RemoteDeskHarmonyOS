@@ -24,6 +24,13 @@
 - `git diff --check` and Light open-source compliance: PASS.
 - Independent review `/root/ipv6_shared_rdp_review`: PASS at `d3f07f4e`; both prior P2 findings are closed and final P0/P1/P2 counts are zero.
 
+## Reviewed RustDesk flip increment
+
+- Scoped checkpoints `b11dd222e` and `2a3a0aa4d` implement one top-bar popup with exactly five actions: visual vertical, visual horizontal, control vertical, control horizontal and reset. The four axes compose independently and persist per host; released three-state values migrate safely and malformed non-string values reset.
+- Main OES/RAW renderers, PIP and the read-only PC multi-canvas preview share visual axes; pointer, cursor, touch and wheel mapping use only the selected control axes. Mirrored viewport start edges remain interactive. Phone/Pad, RustDesk phone peers and other protocols retain their prior transforms.
+- Final verification: native host suite PASS 858/858; `default@OhosTestCompileArkTS` PASS in 42 s 974 ms; signed `assembleHap` PASS in 6 s 345 ms, HAP SHA-256 `cff8e0210ed4fb8d47e7e04ef93775d515191f80868cbd23c45d915a1066c280`; `git diff --check` and Light compliance PASS. Independent follow-up `/root/rustdesk_flip_review` closed all three P2 findings with final P0/P1/P2 zero.
+- Device acceptance remains pending for affected HarmonyOS PC GPU/OES paths, rapid flip with reconnect/PIP/detach, dual-canvas retained redraw and non-1x DPR edge gestures. The scoped PASS does not replace the queued cumulative branch review.
+
 ## Next and blockers
 
 - Next: connect a HarmonyOS Phone/Pad/PC target and run the M1 IPv6 literal plus AAAA-only matrix for each protocol, including save/restart, trust/preflight, real session, same-network reconnect and SFTP file operations. Only then enable each protocol's `configured_endpoint_ipv6` capability independently.

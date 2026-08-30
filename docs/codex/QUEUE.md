@@ -12,7 +12,7 @@ Updated: 2026-08-30 Asia/Shanghai
 
 1. Implement M3 discovery and control/data candidate parity without IPv6 `/64` scanning; include Moonlight scoped mDNS and official RustDesk `socket_addr_v6` candidates.
 2. Implement M4 RustDesk AUTO/NAT/hole-punching as an independent milestone; keep NAT traversal unavailable until fixed-version hbbs/hbbr and controlled-peer matrices pass.
-3. Complete the existing RDP high-DPI, per-protocol gesture/settings, bindSheet dark/light, wheel direction, RustDesk flip/quality/multimonitor, 1.1.4 upgrade and cloud-recovery device matrices before PR closure.
+3. Complete the existing RDP high-DPI, per-protocol gesture/settings, bindSheet dark/light, wheel direction, RustDesk five-action flip/quality/multimonitor, 1.1.4 upgrade and cloud-recovery device matrices before PR closure.
 4. Run a cumulative branch review before merge because this branch contains earlier independently reviewed increments outside the IPv6 task scope.
 
 ## Later
