@@ -127,6 +127,10 @@ struct REMOTEDESK_MOONLIGHT_PAIRING_HIDDEN MoonlightPairingRequest final {
     std::string serverUuid;
     std::string hostLabel;
     std::uint32_t serverMajorVersion = 0;
+    // Zero captures the current default-network generation. ProductRuntime
+    // supplies the generation that authenticated serverUuid and version so
+    // pairing cannot mix identity evidence across a route/DNS transition.
+    std::uint64_t expectedNetworkGeneration = 0U;
     std::chrono::milliseconds timeout {120000};
     bool allowLegacySha1 = false;
     MoonlightSecureBuffer pin;

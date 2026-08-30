@@ -4,6 +4,7 @@
 #include "moonlight/runtime/MoonlightProductRuntime.h"
 #include "moonlight/runtime/MoonlightProductStreamingRuntime.h"
 #include "common/endpoint_address_policy.h"
+#include "extensions/native_network_observer_lease.h"
 
 #include <algorithm>
 #include <atomic>
@@ -58,12 +59,36 @@ struct AsyncRequestControl final {
 
 struct MoonlightEnvState final {
     explicit MoonlightEnvState(napi_env valueEnv)
-        : env(valueEnv), bridge(std::make_shared<MoonlightNativeBridge>(
-                             createMoonlightProductRuntimePort())) {}
+        : env(valueEnv) {
+        networkObserverLeaseActive.store(
+            remotedesk::net::AcquireProcessNetworkObserverLease(),
+            std::memory_order_release);
+        if (!networkObserverLeaseActive.load(std::memory_order_acquire)) {
+            return;
+        }
+        try {
+            bridge = std::make_shared<MoonlightNativeBridge>(
+                createMoonlightProductRuntimePort());
+        } catch (...) {
+            releaseNetworkObserverLease();
+            throw;
+        }
+    }
+
+    ~MoonlightEnvState() { releaseNetworkObserverLease(); }
+
+    void releaseNetworkObserverLease() noexcept {
+        bool expected = true;
+        if (networkObserverLeaseActive.compare_exchange_strong(
+                expected, false, std::memory_order_acq_rel)) {
+            remotedesk::net::ReleaseProcessNetworkObserverLease();
+        }
+    }
 
     napi_env env = nullptr;
     std::atomic<bool> closing {false};
     std::shared_ptr<MoonlightNativeBridge> bridge;
+    std::atomic<bool> networkObserverLeaseActive {false};
     std::mutex pendingMutex;
     std::unordered_map<MoonlightBridgeRequestKey,
                        std::shared_ptr<AsyncRequestControl>, NapiKeyHash> pending;
@@ -112,6 +137,7 @@ void cleanupEnvironment(void* rawData) noexcept {
             state->bridge->shutdown();
         }
         MoonlightProductStreamingRuntime::process().shutdown();
+        state->releaseNetworkObserverLease();
     } catch (...) {
         // The environment is already closing; no exception may cross NAPI.
     }
@@ -1065,6 +1091,13 @@ napi_value requestAsyncImpl(napi_env env, napi_callback_info info) {
         return nullptr;
     }
     auto state = stateFor(env);
+    if (state != nullptr &&
+        !state->networkObserverLeaseActive.load(std::memory_order_acquire) &&
+        !state->closing.load(std::memory_order_acquire)) {
+        napi_throw_error(env, "E-MOONLIGHT-NETWORK-OBSERVER",
+                         "Moonlight network observer is unavailable");
+        return nullptr;
+    }
     if (state == nullptr || state->bridge == nullptr ||
         state->closing.load(std::memory_order_acquire)) {
         napi_throw_error(env, "E-MOONLIGHT-SHUTDOWN", "Moonlight bridge is shutting down");
@@ -1992,7 +2025,10 @@ napi_value Init(napi_env env, napi_value exports) {
                 }
             }
             state->closing.store(true, std::memory_order_release);
-            state->bridge->shutdown();
+            if (state->bridge != nullptr) {
+                state->bridge->shutdown();
+            }
+            state->releaseNetworkObserverLease();
         }
     } catch (...) {
         // The exports below remain callable and fail closed without env state.

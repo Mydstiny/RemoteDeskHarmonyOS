@@ -1,5 +1,7 @@
 #include "moonlight/pairing/MoonlightPairingManager.h"
 
+#include "common/network_generation_fence.h"
+
 #include <openssl/asn1.h>
 #include <openssl/bio.h>
 #include <openssl/crypto.h>
@@ -105,11 +107,13 @@ struct PairingKeyHash final {
 };
 
 struct ActivePairing final {
-    ActivePairing(MoonlightPairingOperationKey valueKey, std::string valueLane)
-        : key(valueKey), lane(std::move(valueLane)) {}
+    ActivePairing(MoonlightPairingOperationKey valueKey, std::string valueLane,
+                  remotedesk::net::NetworkGenerationSnapshot valueNetwork)
+        : key(valueKey), lane(std::move(valueLane)), network(valueNetwork) {}
 
     MoonlightPairingOperationKey key {};
     std::string lane;
+    remotedesk::net::NetworkGenerationSnapshot network {};
     std::atomic<bool> cancelled{false};
 };
 
@@ -779,7 +783,8 @@ bool hasOnlyPairingPayload(const MoonlightPairingPayload& payload,
 
 MoonlightRemoteCleanup runRemoteCleanup(
     const std::shared_ptr<MoonlightPairingManager::Impl>& impl,
-    const MoonlightPairingRequest& request, MoonlightPairingResult& result) noexcept {
+    const MoonlightPairingRequest& request, MoonlightPairingResult& result,
+    std::uint64_t expectedNetworkGeneration) noexcept {
     try {
         MoonlightHostCall call;
         call.key = hostKey(request.key);
@@ -787,6 +792,7 @@ MoonlightRemoteCleanup runRemoteCleanup(
         call.endpoint = request.endpoint;
         call.endpoint.pinnedTrustAvailable = false;
         call.timeout = kCleanupTimeout;
+        call.expectedNetworkGeneration = expectedNetworkGeneration;
         const auto hostResult = impl->hostApi->execute(call);
         result.transportAttempts += hostResult.diagnostics.size();
         if (hostResult.ok() && hostResult.action.has_value() && hostResult.action->accepted) {
@@ -895,8 +901,17 @@ MoonlightPairingResult MoonlightPairingManager::execute(MoonlightPairingRequest 
             return result;
         }
 
+        const auto network =
+            remotedesk::net::ProcessNetworkGenerationFence().snapshot();
+        if (!network.available || network.generation == 0U ||
+            (request.expectedNetworkGeneration != 0U &&
+             request.expectedNetworkGeneration != network.generation)) {
+            result.code = MoonlightPairingCode::Stale;
+            transition(MoonlightPairingStage::Failed);
+            return result;
+        }
         const std::string lane = laneFor(request);
-        auto active = std::make_shared<ActivePairing>(request.key, lane);
+        auto active = std::make_shared<ActivePairing>(request.key, lane, network);
         {
             std::lock_guard<std::mutex> lock(impl->mutex);
             if (impl->shuttingDown) {
@@ -933,7 +948,8 @@ MoonlightPairingResult MoonlightPairingManager::execute(MoonlightPairingRequest 
         bool cleanupHandled = false;
         ScopeExit exceptionCleanup([&]() {
             if (remoteMutationPossible && !cleanupHandled) {
-                result.remoteCleanup = runRemoteCleanup(impl, request, result);
+                result.remoteCleanup = runRemoteCleanup(
+                    impl, request, result, active->network.generation);
             }
         });
         BindingLease bindingLease(impl->tlsBindingPort, request.key);
@@ -941,6 +957,11 @@ MoonlightPairingResult MoonlightPairingManager::execute(MoonlightPairingRequest 
         auto stoppedCode = [&]() -> std::optional<MoonlightPairingCode> {
             if (active->cancelled.load(std::memory_order_acquire)) {
                 return MoonlightPairingCode::Cancelled;
+            }
+            if (!active->network.available ||
+                remotedesk::net::ProcessNetworkGenerationFence().shouldCancel(
+                    active->network)) {
+                return MoonlightPairingCode::Stale;
             }
             if (impl->monotonicClock() >= deadline) {
                 return MoonlightPairingCode::DeadlineExceeded;
@@ -953,7 +974,8 @@ MoonlightPairingResult MoonlightPairingManager::execute(MoonlightPairingRequest 
                 transition(MoonlightPairingStage::Cancelling);
             }
             if (cleanup && remoteMutationPossible) {
-                result.remoteCleanup = runRemoteCleanup(impl, request, result);
+                result.remoteCleanup = runRemoteCleanup(
+                    impl, request, result, active->network.generation);
             }
             cleanupHandled = true;
             exceptionCleanup.disarm();
@@ -967,11 +989,14 @@ MoonlightPairingResult MoonlightPairingManager::execute(MoonlightPairingRequest 
             QueryWiper queryWiper(call);
             call.key = hostKey(request.key);
             call.endpoint = request.endpoint;
+            call.expectedNetworkGeneration = active->network.generation;
             if (const auto stopped = stoppedCode(); stopped.has_value()) {
                 MoonlightHostResult stoppedResult;
                 stoppedResult.key = call.key;
                 stoppedResult.error = *stopped == MoonlightPairingCode::Cancelled
                                           ? MoonlightHostError::Cancelled
+                                      : *stopped == MoonlightPairingCode::Stale
+                                          ? MoonlightHostError::StaleRequest
                                           : MoonlightHostError::DeadlineExceeded;
                 observeHostResult(stoppedResult, result);
                 return stoppedResult;
@@ -1116,9 +1141,12 @@ MoonlightPairingResult MoonlightPairingManager::execute(MoonlightPairingRequest 
         try {
             review = impl->trustPort->review(
                 request.key, serverCertificate.candidate, deadline,
-                [active]() { return active->cancelled.load(std::memory_order_acquire); });
+                [&stoppedCode]() { return stoppedCode().has_value(); });
         } catch (...) {
             return finish(MoonlightPairingCode::Unavailable, true);
+        }
+        if (const auto stopped = stoppedCode(); stopped.has_value()) {
+            return finish(*stopped, true);
         }
         result.trustChange = review.change;
         if (review.decision != MoonlightTrustDecision::Accept) {
@@ -1141,12 +1169,15 @@ MoonlightPairingResult MoonlightPairingManager::execute(MoonlightPairingRequest 
             bindCode = impl->tlsBindingPort->bind(
                 request.key, request.endpoint, serverCertificate.canonicalDer,
                 serverCertificate.candidate.certificateSha256, deadline,
-                [active]() { return active->cancelled.load(std::memory_order_acquire); },
+                [&stoppedCode]() { return stoppedCode().has_value(); },
                 acquired.lease);
         } catch (...) {
             bindCode = MoonlightPairingPortCode::Unavailable;
         }
         bindingLease.markBound();
+        if (const auto stopped = stoppedCode(); stopped.has_value()) {
+            return finish(*stopped, true);
+        }
         if (bindCode != MoonlightPairingPortCode::Ok) {
             const auto code = bindCode == MoonlightPairingPortCode::Cancelled
                                   ? MoonlightPairingCode::Cancelled
@@ -1316,6 +1347,7 @@ MoonlightPairingResult MoonlightPairingManager::execute(MoonlightPairingRequest 
         finalChallenge.endpoint.pinnedTrustAvailable = true;
         QueryWiper finalWiper(finalChallenge);
         finalChallenge.key = hostKey(request.key);
+        finalChallenge.expectedNetworkGeneration = active->network.generation;
         const auto finalRemaining = remainingTimeout(impl, deadline, false);
         if (finalRemaining < MoonlightHostLimits::kMinTimeout) {
             return finish(MoonlightPairingCode::DeadlineExceeded, true);

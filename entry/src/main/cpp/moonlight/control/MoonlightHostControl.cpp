@@ -1,5 +1,7 @@
 #include "moonlight/control/MoonlightHostControl.h"
 
+#include "common/network_generation_fence.h"
+
 #include <openssl/crypto.h>
 
 #include <algorithm>
@@ -167,11 +169,13 @@ struct ControlKeyHash final {
 struct ActiveControl final {
     ActiveControl(MoonlightHostControlOperationKey valueKey, std::string valueLane,
                   bool valueMutation)
-        : key(valueKey), lane(std::move(valueLane)), mutation(valueMutation) {}
+        : key(valueKey), lane(std::move(valueLane)), mutation(valueMutation),
+          network(remotedesk::net::ProcessNetworkGenerationFence().snapshot()) {}
 
     MoonlightHostControlOperationKey key {};
     std::string lane;
     bool mutation = false;
+    remotedesk::net::NetworkGenerationSnapshot network {};
     std::atomic<bool> cancelled {false};
 };
 
@@ -529,6 +533,11 @@ std::optional<MoonlightHostControlCode> stopped(
     if (generationStale(impl, active)) {
         return MoonlightHostControlCode::Stale;
     }
+    if (!active->network.available ||
+        remotedesk::net::ProcessNetworkGenerationFence().shouldCancel(
+            active->network)) {
+        return MoonlightHostControlCode::Stale;
+    }
     try {
         if (impl->monotonicClock() >= deadline) {
             return MoonlightHostControlCode::DeadlineExceeded;
@@ -560,6 +569,7 @@ MoonlightHostResult executeHostCall(
     std::chrono::steady_clock::time_point deadline, MoonlightHostCall& call) {
     call.key = hostKey(context.key);
     call.endpoint = context.endpoint;
+    call.expectedNetworkGeneration = active->network.generation;
     if (const auto stop = stopped(impl, active, deadline); stop.has_value()) {
         MoonlightHostResult result;
         result.key = call.key;
@@ -682,6 +692,7 @@ MoonlightHostControlResult::MoonlightHostControlResult(
       apps(std::move(other.apps)), asset(std::move(other.asset)),
       rtspSessionUrl(std::move(other.rtspSessionUrl)),
       sessionAddress(std::move(other.sessionAddress)),
+      sessionNetworkGeneration(other.sessionNetworkGeneration),
       sessionServerInfo(std::move(other.sessionServerInfo)),
       effectiveLaunchConfiguration(std::move(other.effectiveLaunchConfiguration)),
       stageTrace(std::move(other.stageTrace)),
@@ -711,6 +722,7 @@ MoonlightHostControlResult& MoonlightHostControlResult::operator=(
         asset = std::move(other.asset);
         rtspSessionUrl = std::move(other.rtspSessionUrl);
         sessionAddress = std::move(other.sessionAddress);
+        sessionNetworkGeneration = other.sessionNetworkGeneration;
         sessionServerInfo = std::move(other.sessionServerInfo);
         effectiveLaunchConfiguration = std::move(other.effectiveLaunchConfiguration);
         stageTrace = std::move(other.stageTrace);
@@ -1094,7 +1106,10 @@ MoonlightHostControlResult MoonlightHostControl::runLaunch(
         }
         result.rtspSessionUrl = std::move(action.action->rtspSessionUrl);
         result.sessionAddress = std::move(action.resolvedAddress);
-        if (!result.sessionAddress.has_value() || result.sessionAddress->empty()) {
+        result.sessionNetworkGeneration = action.networkGeneration;
+        if (!result.sessionAddress.has_value() || result.sessionAddress->empty() ||
+            result.sessionNetworkGeneration == 0U ||
+            result.sessionNetworkGeneration != admission.active->network.generation) {
             result.postconditionTruth = MoonlightHostControlTruth::Unknown;
             secureWipeOptionalString(result.rtspSessionUrl);
             return finish(std::move(result), MoonlightHostControlCode::OutcomeUnknown);

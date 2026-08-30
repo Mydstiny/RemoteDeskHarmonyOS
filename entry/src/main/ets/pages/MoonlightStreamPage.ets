@@ -1674,6 +1674,10 @@ struct MoonlightStreamPage {
     }
     this.streamStartAttempted = true;
     const result = this.sessionCoordinator.start(this.sessionStartRequest(true));
+    if (result.code === 'reconnect_reserved') {
+      this.nativeSessionId = -1;
+      return;
+    }
     if (!result.accepted) {
       this.phase = 'failed'; this.errorCode = 'internal';
       if (this.pageActive) {

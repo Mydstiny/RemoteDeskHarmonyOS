@@ -20,6 +20,7 @@ struct MoonlightProductLaunchStage final {
     std::string hostId;
     std::string serverUuid;
     std::string address;
+    std::uint64_t networkGeneration = 0U;
     std::uint32_t appId = 0U;
     MoonlightBridgeLaunchConfiguration configuration {};
     MoonlightServerInfo serverInfo {};

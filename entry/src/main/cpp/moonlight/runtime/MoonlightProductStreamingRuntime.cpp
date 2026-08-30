@@ -4,6 +4,7 @@
 #include "moonlight/media/MoonlightStreamConfig.h"
 #include "moonlight/media/MoonlightVideoCodecSupport.h"
 #include "moonlight/input/MoonlightProductInputRuntime.h"
+#include "common/network_generation_fence.h"
 
 #include <algorithm>
 #include <chrono>
@@ -143,6 +144,7 @@ const char* startCode(MoonlightCommonCStartStatus status) noexcept {
     switch (status) {
         case MoonlightCommonCStartStatus::Accepted: return "accepted";
         case MoonlightCommonCStartStatus::Busy: return "busy";
+        case MoonlightCommonCStartStatus::NetworkChanged: return "network_changed";
         case MoonlightCommonCStartStatus::RuntimeProofRequired: return "runtime_proof_required";
         case MoonlightCommonCStartStatus::InvalidRequest: return "invalid_request";
         case MoonlightCommonCStartStatus::InternalFailure: return "internal_failure";
@@ -161,6 +163,7 @@ const char* snapshotCode(const MoonlightCommonCSnapshot& source,
     }
     switch (source.terminalCode) {
         case MoonlightCommonCCode::Cancelled: return "cancelled";
+        case MoonlightCommonCCode::NetworkChanged: return "network_changed";
         case MoonlightCommonCCode::DeadlineExceeded: return "deadline_exceeded";
         case MoonlightCommonCCode::VideoNegotiationRejected:
             return "codec_unsupported";
@@ -193,6 +196,7 @@ struct MoonlightProductStreamingRuntime::State final {
     MoonlightBridgeRequestKey startingLaunchKey {};
     bool startingCancelRequested = false;
     MoonlightSessionKey terminalDuringStart {};
+    std::string terminalCodeDuringStart;
     MoonlightBridgeRequestKey terminalLaunchKey {};
     MoonlightProductStreamSnapshot terminalReceipt {};
     std::shared_ptr<MoonlightProductSessionMediaPort> activeMedia;
@@ -266,7 +270,10 @@ bool MoonlightProductStreamingRuntime::stageLaunch(
     MoonlightProductLaunchStage stage) noexcept {
     if (!stage.key.valid() || stage.hostId.empty() || stage.serverUuid.empty() ||
         stage.address.empty() || stage.appId == 0U || stage.rtspSessionUrl.empty() ||
-        stage.expiresAtMonotonicMs <= monotonicMs()) {
+        stage.expiresAtMonotonicMs <= monotonicMs() ||
+        stage.networkGeneration == 0U ||
+        remotedesk::net::ProcessNetworkGenerationFence().shouldCancel(
+            {stage.networkGeneration, true})) {
         std::fill(stage.remoteInputKey.begin(), stage.remoteInputKey.end(), 0U);
         return false;
     }
@@ -310,11 +317,19 @@ MoonlightProductStreamStartResult MoonlightProductStreamingRuntime::start(
             value.staged->expiresAtMonotonicMs <= monotonicMs()) {
             return {false, "launch_lease_missing", {}};
         }
+        if (remotedesk::net::ProcessNetworkGenerationFence().shouldCancel(
+                {value.staged->networkGeneration, true})) {
+            std::fill(value.staged->remoteInputKey.begin(),
+                      value.staged->remoteInputKey.end(), 0U);
+            value.staged.reset();
+            return {false, "network_changed", {}};
+        }
         stage = std::move(*value.staged);
         value.staged.reset();
         value.startingLaunchKey = request.launchKey;
         value.startingCancelRequested = false;
         value.terminalDuringStart = {};
+        value.terminalCodeDuringStart.clear();
         value.terminalInputTeardownKey = {};
         value.terminalInputTeardownObserved = false;
         value.terminalInputLocalCleanupComplete = false;
@@ -329,10 +344,16 @@ MoonlightProductStreamStartResult MoonlightProductStreamingRuntime::start(
             value.startingLaunchKey = {};
             value.startingCancelRequested = false;
             value.terminalDuringStart = {};
+            value.terminalCodeDuringStart.clear();
         }
         return MoonlightProductStreamStartResult{
             false, cancelled ? "cancelled" : code, {}};
     };
+    if (remotedesk::net::ProcessNetworkGenerationFence().shouldCancel(
+            {stage.networkGeneration, true})) {
+        std::fill(stage.remoteInputKey.begin(), stage.remoteInputKey.end(), 0U);
+        return finishBeforeCommonC("network_changed");
+    }
     if (request.rendererHandle <= 0 || request.surfaceWidth <= 0 ||
         request.surfaceHeight <= 0) {
         std::fill(stage.remoteInputKey.begin(), stage.remoteInputKey.end(), 0U);
@@ -369,6 +390,7 @@ MoonlightProductStreamStartResult MoonlightProductStreamingRuntime::start(
     common.sessionId = stage.key.requestId;
     common.generation = stage.key.generation;
     common.accountOwnerToken = stage.key.ownerToken;
+    common.networkGeneration = stage.networkGeneration;
     common.deferRuntimeCapabilityProof = true;
     common.streamConfig = std::move(*streamConfig);
     if (!moonlightProductPopulateCommonCServer(
@@ -404,6 +426,7 @@ MoonlightProductStreamStartResult MoonlightProductStreamingRuntime::start(
             value.startingLaunchKey = {};
             value.startingCancelRequested = false;
             value.terminalDuringStart = {};
+            value.terminalCodeDuringStart.clear();
             return {false, "cancelled", {}};
         }
     }
@@ -422,6 +445,7 @@ MoonlightProductStreamStartResult MoonlightProductStreamingRuntime::start(
             value.startingLaunchKey = {};
             value.startingCancelRequested = false;
             value.terminalDuringStart = {};
+            value.terminalCodeDuringStart.clear();
         }
         return {false, cancelled ? "cancelled" : startCode(started.status), {}};
     }
@@ -431,13 +455,17 @@ MoonlightProductStreamStartResult MoonlightProductStreamingRuntime::start(
         std::lock_guard<std::mutex> lock(value.mutex);
         const bool alreadyTerminal = value.startingLaunchKey == launchKey &&
             value.terminalDuringStart == started.key;
+        const auto terminalCode = value.terminalCodeDuringStart;
         cancelDuringStart = value.startingLaunchKey == launchKey &&
             value.startingCancelRequested;
         value.startingLaunchKey = {};
         value.startingCancelRequested = false;
         value.terminalDuringStart = {};
+        value.terminalCodeDuringStart.clear();
         if (alreadyTerminal) {
-            return {false, cancelDuringStart ? "cancelled" : "terminal",
+            return {false,
+                    cancelDuringStart ? "cancelled" :
+                        (terminalCode.empty() ? "terminal" : terminalCode),
                     started.key};
         }
         value.activeLaunchKey = launchKey;
@@ -1031,6 +1059,9 @@ void MoonlightProductStreamingRuntime::completeTerminal(
         value.terminalInputRemoteNeutral = false;
     } else if (value.startingLaunchKey == launchKey) {
         value.terminalDuringStart = sessionKey;
+        value.terminalCodeDuringStart =
+            source.matched && source.terminal ? snapshotCode(source, false) :
+                                                "terminal";
     }
 }
 

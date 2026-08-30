@@ -10,6 +10,7 @@
 #include "session_teardown_executor.h"
 #include "session_registry.h"
 #include "native_network_observer_state.h"
+#include "native_network_observer_lease.h"
 #include "key_sequence_dispatch.h"
 #include "disconnect_request_registry.h"
 #include "rdp/freerdp_adapter.h"
@@ -955,6 +956,22 @@ static void OnNativeNetworkAvailable(NetConn_NetHandle* /*netHandle*/) {
     DispatchNativeNetworkAvailabilityNoexcept(true);
 }
 
+static void OnNativeNetworkCapabilitiesChanged(
+    NetConn_NetHandle* /*netHandle*/,
+    NetConn_NetCapabilities* /*capabilities*/) {
+    // Bearer, validated-network, VPN, and DNS64 capability changes can alter
+    // routing without an unavailable interval. Retire every old candidate.
+    DispatchNativeNetworkAvailabilityNoexcept(true);
+}
+
+static void OnNativeNetworkPropertiesChanged(
+    NetConn_NetHandle* /*netHandle*/,
+    NetConn_ConnectionProperties* /*properties*/) {
+    // Address, prefix, route, DNS, and interface changes invalidate DNS and
+    // sockaddr results captured under the previous default-network view.
+    DispatchNativeNetworkAvailabilityNoexcept(true);
+}
+
 static void OnNativeNetworkLost(NetConn_NetHandle* /*netHandle*/) {
     DispatchNativeNetworkAvailabilityNoexcept(false);
 }
@@ -965,8 +982,8 @@ static void OnNativeNetworkUnavailable() {
 
 static NetConn_NetConnCallback kNativeNetworkCallbacks {
     OnNativeNetworkAvailable,
-    nullptr,
-    nullptr,
+    OnNativeNetworkCapabilitiesChanged,
+    OnNativeNetworkPropertiesChanged,
     OnNativeNetworkLost,
     OnNativeNetworkUnavailable,
     nullptr,
@@ -1084,6 +1101,26 @@ public:
 private:
     bool active_ = false;
 };
+
+namespace remotedesk::net {
+
+bool AcquireProcessNetworkObserverLease() noexcept {
+    try {
+        return ::AcquireNativeNetworkObserverLease();
+    } catch (...) {
+        return false;
+    }
+}
+
+void ReleaseProcessNetworkObserverLease() noexcept {
+    try {
+        ::ReleaseNativeNetworkObserverLease();
+    } catch (...) {
+        // A release runs from N-API environment teardown and must not escape.
+    }
+}
+
+} // namespace remotedesk::net
 
 // SSH 推送回调的 TSFN 映射 (sessionId → registration). 由 setOnDataCallback /
 // disconnect 维护。registration 先停止生产者，再释放 TSFN，避免 reader 线程

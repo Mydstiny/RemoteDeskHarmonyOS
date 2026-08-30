@@ -55,6 +55,7 @@ export default function moonlightSessionStateTest(): void {
         .assertEqual('invalid_transition');
       expect(moonlightSessionTransitionIsAllowed('verifying', 'catalog')).assertTrue();
       expect(moonlightSessionTransitionIsAllowed('negotiating', 'reconnecting')).assertTrue();
+      expect(moonlightSessionTransitionIsAllowed('launching', 'reconnecting')).assertTrue();
       expect(negotiating().phase).assertEqual('negotiating');
     });
 

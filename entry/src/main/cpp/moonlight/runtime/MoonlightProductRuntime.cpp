@@ -1657,6 +1657,8 @@ private:
             pairingRequest.serverUuid = request.serverUuid;
             pairingRequest.hostLabel = request.hostId;
             pairingRequest.serverMajorVersion = serverMajorVersion;
+            pairingRequest.expectedNetworkGeneration =
+                serverInfo.networkGeneration;
             pairingRequest.timeout = request.timeout;
             pairingRequest.allowLegacySha1 = request.allowLegacySha1;
             pairingRequest.pin = MoonlightSecureBuffer(std::move(request.pin));
@@ -1674,6 +1676,7 @@ private:
             cleanup.key = hostKey(request.key);
             cleanup.operation = MoonlightHostOperation::Unpair;
             cleanup.endpoint = request.endpoint;
+            cleanup.expectedNetworkGeneration = serverInfo.networkGeneration;
             cleanup.timeout = std::min(
                 request.timeout, MoonlightHostLimits::kDefaultTimeout);
             const MoonlightHostResult cleanupResult =
@@ -1952,6 +1955,7 @@ private:
             stage.hostId = request.hostId;
             stage.serverUuid = request.serverUuid;
             stage.address = *source.sessionAddress;
+            stage.networkGeneration = source.sessionNetworkGeneration;
             stage.appId = request.appId;
             stage.configuration = effectiveLaunchConfiguration;
             stage.serverInfo = std::move(*source.sessionServerInfo);

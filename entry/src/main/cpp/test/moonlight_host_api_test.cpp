@@ -1,4 +1,5 @@
 #include "moonlight/core/MoonlightHostApi.h"
+#include "common/network_generation_fence.h"
 #include "test_runner.h"
 
 #include <atomic>
@@ -975,6 +976,61 @@ RDP_TEST_CASE(moonlight_host_api_exact_cancel_stale_and_duplicate_request_fences
                       stale ? MoonlightHostError::StaleRequest : MoonlightHostError::Cancelled);
         RDP_ASSERT(!result.serverInfo.has_value());
     }
+}
+
+RDP_TEST_CASE(moonlight_host_api_retires_inflight_and_expected_generation_before_transport) {
+    remotedesk::net::NetworkGenerationFence fence(41U, true);
+    auto transport = std::make_shared<ScriptedTransport>();
+    std::atomic<bool> cancellationObserved {false};
+    transport->setHandler(
+        [&](const MoonlightTransportRequest&,
+            std::chrono::steady_clock::time_point,
+            const MoonlightHostTransport::CancellationProbe& probe) {
+            RDP_ASSERT(fence.update(true, 42U));
+            cancellationObserved.store(probe(), std::memory_order_release);
+            return transportFailure(
+                MoonlightTransportError::Cancelled,
+                MoonlightTransportStage::Connect,
+                MoonlightTransportSendState::NotSent);
+        });
+    MoonlightHostApi api(transport, uuidGenerator(), &fence);
+    auto call = callFor(MoonlightHostOperation::ServerInfo, false,
+                        {191U, 8U, 7U});
+
+    const auto retired = api.execute(call);
+    RDP_ASSERT(cancellationObserved.load(std::memory_order_acquire));
+    RDP_ASSERT_EQ(retired.error, MoonlightHostError::StaleRequest);
+    RDP_ASSERT_EQ(retired.networkGeneration, static_cast<std::uint64_t>(41U));
+
+    call.key.requestId = 192U;
+    call.expectedNetworkGeneration = 41U;
+    const auto rejected = api.execute(call);
+    RDP_ASSERT_EQ(rejected.error, MoonlightHostError::StaleRequest);
+    RDP_ASSERT_EQ(rejected.networkGeneration, static_cast<std::uint64_t>(42U));
+    RDP_ASSERT_EQ(transport->captures().size(), static_cast<std::size_t>(1U));
+
+    transport->setHandler(
+        [&](const MoonlightTransportRequest& request,
+            std::chrono::steady_clock::time_point,
+            const MoonlightHostTransport::CancellationProbe&) {
+            RDP_ASSERT(fence.update(true, 43U));
+            auto outcome = xmlResponse(
+                "<root status_code=\"200\"><gamesession>1</gamesession></root>");
+            outcome.resolvedAddress = request.connectAddress();
+            outcome.resolvedFamily = request.family();
+            return outcome;
+        });
+    call = callFor(MoonlightHostOperation::Launch, true,
+                   {193U, 8U, 7U});
+    call.query = launchQuery();
+    call.expectedNetworkGeneration = 42U;
+    const auto mutation = api.execute(call);
+    RDP_ASSERT_EQ(mutation.error, MoonlightHostError::ActionUnknown);
+    RDP_ASSERT(mutation.action.has_value());
+    RDP_ASSERT(mutation.action->outcomeUnknown);
+    RDP_ASSERT(mutation.mutationOutcomeUnknown);
+    RDP_ASSERT_EQ(mutation.networkGeneration, static_cast<std::uint64_t>(42U));
+    RDP_ASSERT_EQ(transport->captures().size(), static_cast<std::size_t>(2U));
 }
 
 RDP_TEST_CASE(moonlight_host_api_destructor_cancels_and_drains_inflight_transport) {

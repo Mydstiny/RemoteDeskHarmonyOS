@@ -6,6 +6,7 @@ import {
 import {
   MoonlightCoordinatorEvent,
   MoonlightRuntimePort,
+  MoonlightRuntimeStartResult,
   MoonlightRuntimePollScheduler,
   MoonlightSessionCoordinator,
   MoonlightSessionStartRequest,
@@ -34,7 +35,10 @@ class FakeMoonlightRuntime implements MoonlightRuntimePort {
   rebindSurfaceCalls: number = 0;
   audioLifecycleCalls: number = 0;
   lastAddress: string = '';
-  startResult: boolean = true;
+  startResult: MoonlightRuntimeStartResult = {
+    accepted: true,
+    code: 'accepted'
+  };
   cancelResult: boolean = true;
   stopResult: boolean = true;
   surfaceLifecycleResult: boolean = true;
@@ -43,7 +47,8 @@ class FakeMoonlightRuntime implements MoonlightRuntimePort {
   nativeId: number = 42;
   lastOperationGeneration: number = 0;
 
-  start(request: MoonlightSessionStartRequest, operationGeneration: number): boolean {
+  start(request: MoonlightSessionStartRequest,
+    operationGeneration: number): MoonlightRuntimeStartResult {
     this.startCalls += 1;
     this.lastAddress = request.hostAddress;
     this.lastOperationGeneration = operationGeneration;
@@ -294,7 +299,7 @@ export default function moonlightSessionCoordinatorTest(): void {
 
         const terminal: MoonlightNativeStreamSnapshot = runtimeSnapshot();
         terminal.terminal = true;
-        terminal.code = 'connection_terminated';
+        terminal.code = 'network_changed';
         runtime.currentSnapshot = terminal;
         expect(scheduler.runNext(Date.now())).assertTrue();
         const state: MoonlightSessionStateSnapshot =
@@ -304,6 +309,8 @@ export default function moonlightSessionCoordinatorTest(): void {
           activeMoonlightRecord(registry) as ActiveRemoteSessionRecord;
         expect(active.protocolConnected).assertFalse();
         expect(active.renderAttached).assertFalse();
+        expect(moonlightRuntimeNativeError('network_changed'))
+          .assertEqual('NETWORK_UNREACHABLE');
         coordinator.resetForTest();
         registry.resetForTest();
       });
@@ -716,19 +723,48 @@ export default function moonlightSessionCoordinatorTest(): void {
 
     it('uses_the_next_sequence_for_staged_runtime_start_failure', 0, (): void => {
       const runtime: FakeMoonlightRuntime = new FakeMoonlightRuntime();
-      runtime.startResult = false;
+      runtime.startResult = { accepted: false, code: 'decoder_failed' };
       const registry: ActiveRemoteSessionRegistry = ActiveRemoteSessionRegistry.getInstance();
       registry.resetForTest();
       registry.bindScope('owner-1', 1);
       const coordinator: MoonlightSessionCoordinator = new MoonlightSessionCoordinator(runtime, registry);
       const failed = coordinator.start(productRequest(true));
       expect(failed.code).assertEqual('runtime_start_failed');
+      expect(failed.nativeCode).assertEqual('decoder_failed');
       expect((failed.state as MoonlightSessionStateSnapshot).phase).assertEqual('failed');
+      expect((failed.state as MoonlightSessionStateSnapshot).errorCode)
+        .assertEqual('decoder_failed');
       expect((failed.state as MoonlightSessionStateSnapshot).lastEventSequence).assertEqual(5);
       expect(activeMoonlightRecord(registry)).assertNull();
       coordinator.resetForTest();
       registry.resetForTest();
     });
+
+    it('rotates_a_staged_network_change_into_the_existing_reconnect_reservation', 0,
+      (): void => {
+        const runtime: FakeMoonlightRuntime = new FakeMoonlightRuntime();
+        runtime.startResult = { accepted: false, code: 'network_changed' };
+        const registry: ActiveRemoteSessionRegistry = ActiveRemoteSessionRegistry.getInstance();
+        registry.resetForTest();
+        registry.bindScope('owner-1', 1);
+        const coordinator: MoonlightSessionCoordinator =
+          new MoonlightSessionCoordinator(runtime, registry);
+        const result = coordinator.start(productRequest(true));
+        expect(result.accepted).assertTrue();
+        expect(result.code).assertEqual('reconnect_reserved');
+        expect(result.nativeCode).assertEqual('network_changed');
+        expect((result.state as MoonlightSessionStateSnapshot).phase)
+          .assertEqual('reconnecting');
+        expect((result.state as MoonlightSessionStateSnapshot).generation).assertEqual(2);
+        expect(result.nativeSessionId).assertEqual(-1);
+        const active: ActiveRemoteSessionRecord =
+          activeMoonlightRecord(registry) as ActiveRemoteSessionRecord;
+        expect(active.sessionId).assertEqual(2);
+        expect(active.protocolConnected).assertFalse();
+        expect(runtime.startCalls).assertEqual(1);
+        coordinator.resetForTest();
+        registry.resetForTest();
+      });
 
     it('cancels_a_prelaunch_reservation_and_fences_native_teardown_failures', 0,
       async (): Promise<void> => {
