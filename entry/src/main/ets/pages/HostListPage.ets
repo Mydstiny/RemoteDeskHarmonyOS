@@ -635,6 +635,7 @@ import {
   RdpPreflightRequest,
   RdpPreflightResult,
   RustDeskPresenceResult,
+  RustDeskPresenceProbePromise,
   SshHostKeyInfo,
   SshPrivateKeyInfo,
   SshPublicKeyInstallResult,
@@ -820,6 +821,7 @@ struct HostListPage {
   // result before the card can consume it.
   private hostPresencePageGeneration: number = 0;
   private hostPresenceProbeGenerations: Map<string, number> = new Map();
+  private hostPresenceProbeRequestIds: Map<string, number> = new Map();
   private hostPresenceRefreshRunning: boolean = false;
   // HostSyncService emits synchronously for local presence observations. Keep
   // that callback from starting a second list snapshot while the probe owns
@@ -5085,6 +5087,7 @@ struct HostListPage {
     this.moonlightLanCandidates = [];
     this.moonlightAddOwnerToken += 1;
     this.invalidateMoonlightCatalogHandoff();
+    this.cancelRustDeskPresenceProbes();
     this.hostPresencePageGeneration += 1;
     this.hostLoadRefreshPresence = false;
     if (this.hostLoadRefreshTimer !== -1) {
@@ -8749,7 +8752,17 @@ struct HostListPage {
     return ConnectionHealth.BAD;
   }
 
+  private cancelRustDeskPresenceProbes(): void {
+    this.hostPresenceProbeRequestIds.forEach((requestId: number): void => {
+      if (requestId > 0) {
+        this.loader.cancelRustDeskPresenceProbe(requestId);
+      }
+    });
+    this.hostPresenceProbeRequestIds.clear();
+  }
+
   private async probeRustDeskPresenceWithTimeout(
+    hostId: string,
     endpointHost: string,
     endpointPort: number,
     serverKey: string,
@@ -8758,19 +8771,21 @@ struct HostListPage {
     direct: boolean,
     keyMode: number
   ): Promise<RustDeskPresenceResult> {
-    const timeoutResult: Promise<RustDeskPresenceResult> = new Promise<RustDeskPresenceResult>((resolve): void => {
-      setTimeout((): void => {
-        resolve({ state: 0, latencyMs: -1, errorCode: 6 });
-      }, 5000);
-    });
-    // The native probe has transport-level timeouts, but the UI also needs a
-    // bounded completion when a native async request is delayed during device
-    // sleep, relay startup, or an interrupted network transition.
-    return await Promise.race([
-      this.loader.probeRustDeskPresenceAsync(
-        endpointHost, endpointPort, serverKey, peerId, token, direct, keyMode),
-      timeoutResult
-    ]);
+    // The native request owns one absolute five-second deadline. Retaining its
+    // request id lets lifecycle cancellation stop the worker instead of merely
+    // ignoring a Promise that continues in the background.
+    const probe: RustDeskPresenceProbePromise = this.loader.probeRustDeskPresenceAsync(
+      endpointHost, endpointPort, serverKey, peerId, token, direct, keyMode, 5000);
+    if (probe.requestId > 0) {
+      this.hostPresenceProbeRequestIds.set(hostId, probe.requestId);
+    }
+    try {
+      return await probe;
+    } finally {
+      if ((this.hostPresenceProbeRequestIds.get(hostId) ?? 0) === probe.requestId) {
+        this.hostPresenceProbeRequestIds.delete(hostId);
+      }
+    }
   }
 
   private async probeHostConnectivity(host: RemoteHost, showToast: boolean = true): Promise<void> {
@@ -8924,7 +8939,7 @@ struct HostListPage {
         return;
       }
       const result: RustDeskPresenceResult = await this.probeRustDeskPresenceWithTimeout(
-        endpointHost, endpointPort, serverKey, peerId, token, direct, keyMode);
+        host.id, endpointHost, endpointPort, serverKey, peerId, token, direct, keyMode);
       markResult(result.state, result.latencyMs);
       if (showToast) {
         const text: string = result.state === 1 ?
@@ -10833,6 +10848,7 @@ struct HostListPage {
     this.persistLocalBooleanPref('rustdeskPresenceDetectionEnabled', on);
     // Invalidate an in-flight probe and remove page-local results. Turning the
     // feature back on starts a fresh sweep against the current host snapshot.
+    this.cancelRustDeskPresenceProbes();
     this.hostPresencePageGeneration += 1;
     this.hostPresenceOverrides.clear();
     this.hostPresenceProbeGenerations.clear();

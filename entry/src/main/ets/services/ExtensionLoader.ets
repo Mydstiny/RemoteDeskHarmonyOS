@@ -23,6 +23,7 @@ import {
   RdpPreflightRequest,
   RdpPreflightResult,
   RustDeskPresenceResult,
+  RustDeskPresenceProbePromise,
   VncCertificateProbePromise,
   VncGatewayDeepHealthPromise,
   VncGatewayDeepHealthResult,
@@ -1259,21 +1260,48 @@ export class ExtensionLoader {
     }
   }
 
-  async probeRustDeskPresenceAsync(host: string, port: number, serverKey: string,
-    peerId: string, token: string, direct: boolean, keyMode: number): Promise<RustDeskPresenceResult> {
+  probeRustDeskPresenceAsync(host: string, port: number, serverKey: string,
+    peerId: string, token: string, direct: boolean, keyMode: number,
+    timeoutMs: number = 5000): RustDeskPresenceProbePromise {
     recordDiagnosticEvent('connection.rustdesk', 'rustdesk_presence', 'started');
     try {
-      const result: RustDeskPresenceResult =
-        await rdpnapi.probeRustDeskPresenceAsync(host, port, serverKey, peerId, token,
-          direct, keyMode) as RustDeskPresenceResult;
-      recordDiagnosticEvent('connection.rustdesk', 'rustdesk_presence',
-        result.errorCode === 0 ? 'succeeded' : 'failed', 0, 0,
-        result.errorCode, result.latencyMs > 0 ? result.latencyMs : 0);
-      return result;
+      const nativeProbe: RustDeskPresenceProbePromise =
+        rdpnapi.probeRustDeskPresenceAsync(host, port, serverKey, peerId, token,
+          direct, keyMode, timeoutMs) as RustDeskPresenceProbePromise;
+      const settled: RustDeskPresenceProbePromise = nativeProbe.then(
+        (result: RustDeskPresenceResult): RustDeskPresenceResult => {
+          recordDiagnosticEvent('connection.rustdesk', 'rustdesk_presence',
+            result.errorCode === 0 ? 'succeeded' : 'failed', nativeProbe.requestId, 0,
+            result.errorCode, result.latencyMs > 0 ? result.latencyMs : 0);
+          return result;
+        },
+        (err: Object): RustDeskPresenceResult => {
+          recordDiagnosticEvent('connection.rustdesk', 'rustdesk_presence', 'failed',
+            nativeProbe.requestId, 0, -1);
+          hilog.error(DOMAIN, TAG,
+            '[ExtensionLoader] probeRustDeskPresenceAsync: ' + JSON.stringify(err));
+          return { state: 0, latencyMs: -1, errorCode: 5 };
+        }) as RustDeskPresenceProbePromise;
+      settled.requestId = nativeProbe.requestId;
+      return settled;
     } catch (err) {
       recordDiagnosticEvent('connection.rustdesk', 'rustdesk_presence', 'failed', 0, 0, -1);
       hilog.error(DOMAIN, TAG, '[ExtensionLoader] probeRustDeskPresenceAsync: ' + JSON.stringify(err));
-      return { state: 0, latencyMs: -1, errorCode: 5 };
+      const failure: RustDeskPresenceResult = { state: 0, latencyMs: -1, errorCode: 5 };
+      const failed: RustDeskPresenceProbePromise =
+        Promise.resolve(failure) as RustDeskPresenceProbePromise;
+      failed.requestId = 0;
+      return failed;
+    }
+  }
+
+  cancelRustDeskPresenceProbe(requestId: number): boolean {
+    try {
+      return rdpnapi.cancelRustDeskPresenceProbe(requestId) as boolean;
+    } catch (err) {
+      hilog.error(DOMAIN, TAG,
+        '[ExtensionLoader] cancelRustDeskPresenceProbe: ' + JSON.stringify(err));
+      return false;
     }
   }
 

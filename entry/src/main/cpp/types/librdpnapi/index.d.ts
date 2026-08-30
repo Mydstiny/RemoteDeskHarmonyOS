@@ -435,7 +435,9 @@ export const VERSION: SessionVersionInfo;
   export function probeRdpCertificateRouteAsync(
     request: RdpPreflightRequest): Promise<RdpPreflightResult>;
   export function probeRustDeskPresenceAsync(host: string, port: number, serverKey: string,
-    peerId: string, token: string, direct: boolean, keyMode: number): Promise<RustDeskPresenceResult>;
+    peerId: string, token: string, direct: boolean, keyMode: number,
+    timeoutMs?: number): RustDeskPresenceProbePromise;
+  export function cancelRustDeskPresenceProbe(requestId: number): boolean;
   export function probeVncCertificateAsync(host: string, port: number,
     serverName: string, timeoutMs?: number): VncCertificateProbePromise;
   export function cancelVncCertificateProbe(requestId: number): boolean;
@@ -736,6 +738,10 @@ export interface RustDeskPresenceResult {
   state: number;
   latencyMs: number;
   errorCode: number;
+}
+
+export interface RustDeskPresenceProbePromise extends Promise<RustDeskPresenceResult> {
+  requestId: number;
 }
 
 export interface VncCertificateInfo {

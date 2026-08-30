@@ -38,7 +38,7 @@ use cursor_state::CursorStreamUpdate;
 use protocol::message_proto::{
     AudioFormat, AudioFrame, EncodedVideoFrames, VideoFrame, VideoFrame_oneof_union,
 };
-use protocol::rendezvous::RendezvousClient;
+use protocol::rendezvous::{RendezvousClient, RendezvousRouteOptions};
 use protocol::session::AuthEventCallback;
 use std::sync::mpsc::Sender;
 
@@ -51,8 +51,21 @@ static CANCELLED_EPOCHS: LazyLock<Mutex<HashSet<u64>>> =
     LazyLock::new(|| Mutex::new(HashSet::new()));
 static ACTIVE_CONNECT_EPOCHS: LazyLock<Mutex<HashMap<u64, Vec<u64>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
+static ACTIVE_PRESENCE_PROBES: LazyLock<Mutex<HashMap<u64, PresenceProbeRegistration>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+static LEGACY_PRESENCE_REQUEST_ID: AtomicU64 = AtomicU64::new(0);
 static PENDING_2FA: LazyLock<Mutex<HashMap<u64, PendingTwoFactor>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
+
+const PRESENCE_PROBE_MAX_TIMEOUT: Duration = Duration::from_secs(5);
+const PRESENCE_PROBE_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
+const PRESENCE_PROBE_SESSION_ID: u64 = u64::MAX;
+
+#[derive(Debug, Clone, Copy)]
+enum PresenceProbeRegistration {
+    Registered { cancelled: bool },
+    Active { epoch: u64 },
+}
 
 struct PendingTwoFactor {
     epoch: u64,
@@ -153,6 +166,100 @@ pub(crate) fn cancel_pending_connect_for_session(session_id: u64) {
             pending.retain(|_, value| value.session_id != session_id);
         }
     }
+}
+
+fn register_presence_probe(request_id: u64) -> bool {
+    if request_id == 0 {
+        return false;
+    }
+    let Ok(mut probes) = ACTIVE_PRESENCE_PROBES.lock() else {
+        return false;
+    };
+    if probes.contains_key(&request_id) {
+        return false;
+    }
+    probes.insert(
+        request_id,
+        PresenceProbeRegistration::Registered { cancelled: false },
+    );
+    true
+}
+
+fn begin_presence_probe(request_id: u64) -> io::Result<u64> {
+    let mut probes = ACTIVE_PRESENCE_PROBES.lock().map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::Other,
+            "RustDesk presence probe registry lock poisoned",
+        )
+    })?;
+    let Some(registration) = probes.get_mut(&request_id) else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "RustDesk presence probe was not registered",
+        ));
+    };
+    let cancelled = match *registration {
+        PresenceProbeRegistration::Registered { cancelled } => cancelled,
+        PresenceProbeRegistration::Active { .. } => {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "RustDesk presence probe is already active",
+            ));
+        }
+    };
+    let epoch = begin_connect_epoch(PRESENCE_PROBE_SESSION_ID);
+    *registration = PresenceProbeRegistration::Active { epoch };
+    drop(probes);
+    if cancelled {
+        cancel_connect_epoch(epoch);
+    }
+    Ok(epoch)
+}
+
+fn finish_presence_probe(request_id: u64, epoch: u64) {
+    if let Ok(mut probes) = ACTIVE_PRESENCE_PROBES.lock() {
+        // Keep the presence registry lock until the epoch is retired. A
+        // concurrent cancel must either mark this live epoch first or observe
+        // that the request no longer exists; it must never recreate a stale
+        // cancelled-epoch entry after completion.
+        finish_connect_epoch(epoch, PRESENCE_PROBE_SESSION_ID);
+        probes.remove(&request_id);
+        return;
+    }
+    finish_connect_epoch(epoch, PRESENCE_PROBE_SESSION_ID);
+}
+
+fn cancel_presence_probe(request_id: u64) -> bool {
+    let Ok(mut probes) = ACTIVE_PRESENCE_PROBES.lock() else {
+        return false;
+    };
+    let Some(registration) = probes.get_mut(&request_id) else {
+        return false;
+    };
+    match registration {
+        PresenceProbeRegistration::Registered { cancelled } => {
+            *cancelled = true;
+            true
+        }
+        PresenceProbeRegistration::Active { epoch } => {
+            cancel_connect_epoch(*epoch);
+            true
+        }
+    }
+}
+
+fn abandon_presence_probe(request_id: u64) -> bool {
+    let Ok(mut probes) = ACTIVE_PRESENCE_PROBES.lock() else {
+        return false;
+    };
+    if matches!(
+        probes.get(&request_id),
+        Some(PresenceProbeRegistration::Registered { .. })
+    ) {
+        probes.remove(&request_id);
+        return true;
+    }
+    false
 }
 
 fn structured_error(stage: &str, code: &str, detail: impl Into<String>, attempt: u64) -> String {
@@ -2397,19 +2504,83 @@ pub extern "C" fn rustdesk_last_error(buffer: *mut c_char, buffer_len: usize) ->
     copy_string_to_c_buffer(&message, buffer, buffer_len)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PresenceProbeStage {
+    Input,
+    DirectConnect,
+    RendezvousConnect,
+    RendezvousRoute,
+}
+
+struct PresenceProbeEpochGuard {
+    request_id: u64,
+    epoch: u64,
+}
+
+impl Drop for PresenceProbeEpochGuard {
+    fn drop(&mut self) {
+        finish_presence_probe(self.request_id, self.epoch);
+    }
+}
+
+fn presence_probe_remaining(deadline: Instant) -> io::Result<Duration> {
+    deadline
+        .checked_duration_since(Instant::now())
+        .filter(|remaining| !remaining.is_zero())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::TimedOut, "presence deadline expired"))
+}
+
+fn presence_probe_timeout(timeout_ms: u32) -> Duration {
+    Duration::from_millis(u64::from(timeout_ms.max(1))).min(PRESENCE_PROBE_MAX_TIMEOUT)
+}
+
+fn classify_presence_probe_failure(stage: PresenceProbeStage, error: &io::Error) -> (c_int, c_int) {
+    if stage == PresenceProbeStage::RendezvousRoute
+        && error.kind() == io::ErrorKind::ConnectionRefused
+    {
+        return (2, 1);
+    }
+    match error.kind() {
+        io::ErrorKind::TimedOut => (0, 2),
+        io::ErrorKind::InvalidInput | io::ErrorKind::InvalidData => (0, 3),
+        io::ErrorKind::Interrupted => (0, 6),
+        _ => (0, 4),
+    }
+}
+
+/// Register a cancellable presence request before its async worker is queued.
+#[no_mangle]
+pub extern "C" fn rustdesk_register_presence_probe(request_id: u64) -> bool {
+    register_presence_probe(request_id)
+}
+
+/// Remove a registered request whose async worker could not be queued.
+#[no_mangle]
+pub extern "C" fn rustdesk_abandon_presence_probe(request_id: u64) -> bool {
+    abandon_presence_probe(request_id)
+}
+
+/// Cancel a registered or active presence request without affecting sessions.
+#[no_mangle]
+pub extern "C" fn rustdesk_cancel_presence_probe(request_id: u64) -> bool {
+    cancel_presence_probe(request_id)
+}
+
 /// Probe a RustDesk peer without opening a desktop session.
 ///
-/// Rendezvous responses are authoritative for relay/ID mode: a route response
-/// means the peer is currently registered, while an explicit refusal means it
-/// is offline or unknown to the server. Network and protocol failures remain
-/// unknown so the homepage does not turn a broken client/server path into a
-/// false offline result. Direct mode only checks the configured peer listener.
+/// One absolute deadline covers endpoint resolution, the hbbs connection and
+/// the route transaction. Only an explicit refusal from the route transaction
+/// is authoritative evidence that the peer is offline; a refused TCP connect
+/// remains unknown because it can indicate a broken client/server path.
 #[no_mangle]
-pub extern "C" fn rustdesk_probe_presence(
+pub extern "C" fn rustdesk_probe_presence_with_deadline(
     cfg: *const RustDeskConfig,
+    request_id: u64,
+    timeout_ms: u32,
     out_result: *mut RustDeskPresenceResult,
 ) -> bool {
     if out_result.is_null() {
+        abandon_presence_probe(request_id);
         return false;
     }
     let mut result = RustDeskPresenceResult {
@@ -2417,64 +2588,97 @@ pub extern "C" fn rustdesk_probe_presence(
         latency_ms: -1,
         error_code: 3,
     };
-    if cfg.is_null() {
-        unsafe {
-            *out_result = result;
+    let epoch = match begin_presence_probe(request_id) {
+        Ok(epoch) => epoch,
+        Err(_) => {
+            unsafe {
+                *out_result = result;
+            }
+            return false;
         }
-        return true;
-    }
-
-    let config = unsafe { &*cfg };
-    let started = Instant::now();
-    let host = ffi_string(config.host);
-    let peer_id = ffi_string(config.username);
-    let server_key = ffi_string(config.key);
-    let api_token = ffi_string(config.token);
-    let port = if config.port > 0 {
-        config.port as u16
-    } else if config.direct_connection {
-        21118
-    } else {
-        21116
     };
+    let _guard = PresenceProbeEpochGuard { request_id, epoch };
+    let started = Instant::now();
+    let timeout = presence_probe_timeout(timeout_ms);
+    let deadline = started + timeout;
 
-    let probe =
+    let probe: Result<(), (PresenceProbeStage, io::Error)> = if cfg.is_null() {
+        Err((
+            PresenceProbeStage::Input,
+            io::Error::new(io::ErrorKind::InvalidInput, "presence config is null"),
+        ))
+    } else {
+        let config = unsafe { &*cfg };
+        let host = ffi_string(config.host);
+        let peer_id = ffi_string(config.username);
+        let server_key = ffi_string(config.key);
+        let api_token = ffi_string(config.token);
+        let port = if config.port > 0 {
+            config.port as u16
+        } else if config.direct_connection {
+            21118
+        } else {
+            21116
+        };
         if host.trim().is_empty() || (!config.direct_connection && peer_id.trim().is_empty()) {
-            Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "RustDesk presence endpoint or peer identity is missing",
+            Err((
+                PresenceProbeStage::Input,
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "RustDesk presence endpoint or peer identity is missing",
+                ),
             ))
         } else if config.direct_connection {
-            net::connect_tcp_host(
-                &host,
-                port,
-                "rustdesk_presence_direct",
-                Duration::from_secs(3),
-            )
-            .map(|_| ())
+            presence_probe_remaining(deadline)
+                .map_err(|error| (PresenceProbeStage::DirectConnect, error))
+                .and_then(|remaining| {
+                    net::connect_tcp_host_cancellable(
+                        &host,
+                        port,
+                        "rustdesk_presence_direct",
+                        remaining.min(PRESENCE_PROBE_CONNECT_TIMEOUT),
+                        epoch,
+                    )
+                    .map(|_| ())
+                    .map_err(|error| (PresenceProbeStage::DirectConnect, error))
+                })
         } else {
             let shared_access_key = config.key_mode == 2;
             let rendezvous_secure =
                 !shared_access_key && !server_key.trim().is_empty() && !api_token.trim().is_empty();
-            let mut rendezvous = RendezvousClient::new();
-            rendezvous
-                .connect_with_timeout(
-                    &host,
-                    port,
-                    &server_key,
-                    rendezvous_secure,
-                    Duration::from_secs(3),
-                )
-                .and_then(|_| {
-                    rendezvous.request_force_relay(
-                        &peer_id,
-                        &server_key,
-                        &api_token,
-                        protocol::rendezvous_proto::ConnType::DEFAULT_CONN,
-                    )
+            let mut rendezvous = RendezvousClient::new_with_connect_epoch(epoch);
+            presence_probe_remaining(deadline)
+                .map_err(|error| (PresenceProbeStage::RendezvousConnect, error))
+                .and_then(|remaining| {
+                    rendezvous
+                        .connect_with_timeout(
+                            &host,
+                            port,
+                            &server_key,
+                            rendezvous_secure,
+                            remaining.min(PRESENCE_PROBE_CONNECT_TIMEOUT),
+                        )
+                        .map_err(|error| (PresenceProbeStage::RendezvousConnect, error))
                 })
-                .map(|_| ())
-        };
+                .and_then(|_| {
+                    presence_probe_remaining(deadline)
+                        .map_err(|error| (PresenceProbeStage::RendezvousRoute, error))
+                })
+                .and_then(|remaining| {
+                    rendezvous
+                        .request_route_with_timeout(
+                            &peer_id,
+                            &server_key,
+                            &api_token,
+                            protocol::rendezvous_proto::ConnType::DEFAULT_CONN,
+                            RendezvousRouteOptions::force_relay(),
+                            remaining,
+                        )
+                        .map(|_| ())
+                        .map_err(|error| (PresenceProbeStage::RendezvousRoute, error))
+                })
+        }
+    };
 
     result.latency_ms = started.elapsed().as_millis().min(i32::MAX as u128) as c_int;
     match probe {
@@ -2482,29 +2686,35 @@ pub extern "C" fn rustdesk_probe_presence(
             result.state = 1;
             result.error_code = 0;
         }
-        Err(error) if error.kind() == io::ErrorKind::ConnectionRefused => {
-            result.state = 2;
-            result.error_code = 1;
-        }
-        Err(error) if error.kind() == io::ErrorKind::TimedOut => {
-            result.error_code = 2;
-        }
-        Err(error)
-            if matches!(
-                error.kind(),
-                io::ErrorKind::InvalidInput | io::ErrorKind::InvalidData
-            ) =>
-        {
-            result.error_code = 3;
-        }
-        Err(_) => {
-            result.error_code = 4;
+        Err((stage, error)) => {
+            (result.state, result.error_code) = classify_presence_probe_failure(stage, &error);
         }
     }
     unsafe {
         *out_result = result;
     }
     true
+}
+
+/// Compatibility entry point for callers that predate request-scoped probes.
+#[no_mangle]
+pub extern "C" fn rustdesk_probe_presence(
+    cfg: *const RustDeskConfig,
+    out_result: *mut RustDeskPresenceResult,
+) -> bool {
+    let request_id = (1u64 << 63)
+        | LEGACY_PRESENCE_REQUEST_ID
+            .fetch_add(1, Ordering::Relaxed)
+            .wrapping_add(1);
+    if !register_presence_probe(request_id) {
+        return false;
+    }
+    rustdesk_probe_presence_with_deadline(
+        cfg,
+        request_id,
+        PRESENCE_PROBE_MAX_TIMEOUT.as_millis() as u32,
+        out_result,
+    )
 }
 
 /// Copy a non-destructive stream telemetry snapshot for one FFI connection.
@@ -3344,6 +3554,50 @@ mod tests {
             104
         );
         assert_eq!(std::mem::size_of::<RustDeskConfigV6>(), 120);
+    }
+
+    #[test]
+    fn presence_connect_refusal_is_unknown_but_route_refusal_is_offline() {
+        let refused = io::Error::new(io::ErrorKind::ConnectionRefused, "refused");
+        assert_eq!(
+            classify_presence_probe_failure(PresenceProbeStage::RendezvousConnect, &refused),
+            (0, 4)
+        );
+        assert_eq!(
+            classify_presence_probe_failure(PresenceProbeStage::DirectConnect, &refused),
+            (0, 4)
+        );
+        assert_eq!(
+            classify_presence_probe_failure(PresenceProbeStage::RendezvousRoute, &refused),
+            (2, 1)
+        );
+    }
+
+    #[test]
+    fn presence_probe_deadline_is_hard_capped() {
+        assert_eq!(presence_probe_timeout(0), Duration::from_millis(1));
+        assert_eq!(presence_probe_timeout(2_500), Duration::from_millis(2_500));
+        assert_eq!(presence_probe_timeout(90_000), PRESENCE_PROBE_MAX_TIMEOUT);
+    }
+
+    #[test]
+    fn presence_probe_can_be_cancelled_before_worker_start() {
+        let request_id = u64::MAX - 50_001;
+        assert!(register_presence_probe(request_id));
+        assert!(cancel_presence_probe(request_id));
+        let epoch = begin_presence_probe(request_id).expect("begin cancelled probe");
+        assert!(connect_cancelled(epoch));
+        finish_presence_probe(request_id, epoch);
+        assert!(!cancel_presence_probe(request_id));
+    }
+
+    #[test]
+    fn presence_probe_registration_rejects_duplicate_and_abandons_unqueued_work() {
+        let request_id = u64::MAX - 50_002;
+        assert!(register_presence_probe(request_id));
+        assert!(!register_presence_probe(request_id));
+        assert!(abandon_presence_probe(request_id));
+        assert!(!abandon_presence_probe(request_id));
     }
 
     #[test]

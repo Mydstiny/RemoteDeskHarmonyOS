@@ -68,7 +68,13 @@
 #ifdef RUSTDESK_USE_REAL_CORE
 extern "C" {
     size_t rustdesk_last_error(char* buffer, size_t buffer_len);
-    bool rustdesk_probe_presence(const RustDeskFfiConfig* cfg, RustDeskPresenceResult* result);
+    bool rustdesk_register_presence_probe(uint64_t requestId);
+    bool rustdesk_abandon_presence_probe(uint64_t requestId);
+    bool rustdesk_cancel_presence_probe(uint64_t requestId);
+    bool rustdesk_probe_presence_with_deadline(const RustDeskFfiConfig* cfg,
+                                              uint64_t requestId,
+                                              uint32_t timeoutMs,
+                                              RustDeskPresenceResult* result);
 }
 #endif
 
@@ -2866,6 +2872,8 @@ napi_value NapiProbeRdpCertificateRouteAsync(napi_env env, napi_callback_info in
 }
 
 struct RustDeskPresenceProbeAsyncData {
+    uint64_t requestId = 0;
+    int32_t timeoutMs = 5000;
     std::string host;
     int32_t port = 21116;
     std::string serverKey;
@@ -2892,7 +2900,8 @@ static void ExecuteRustDeskPresenceProbeAsync(napi_env /*env*/, void* rawData) {
     config.direct_connection = data->direct;
     config.key_mode = data->keyMode;
 #ifdef RUSTDESK_USE_REAL_CORE
-    if (!rustdesk_probe_presence(&config, &data->result)) {
+    if (!rustdesk_probe_presence_with_deadline(
+            &config, data->requestId, static_cast<uint32_t>(data->timeoutMs), &data->result)) {
         data->result.state = 0;
         data->result.latencyMs = -1;
         data->result.errorCode = 5;
@@ -2926,10 +2935,12 @@ static void CompleteRustDeskPresenceProbeAsync(
     delete data;
 }
 
-/** NAPI: probeRustDeskPresenceAsync(host, port, key, peerId, token, direct, keyMode) */
+static std::atomic<uint64_t> g_nextRustDeskPresenceRequestId{1};
+
+/** NAPI: probeRustDeskPresenceAsync(host, port, key, peerId, token, direct, keyMode, timeoutMs) */
 napi_value NapiProbeRustDeskPresenceAsync(napi_env env, napi_callback_info info) {
-    size_t argc = 7;
-    napi_value args[7] = {nullptr};
+    size_t argc = 8;
+    napi_value args[8] = {nullptr};
     napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
     auto* data = new (std::nothrow) RustDeskPresenceProbeAsyncData();
     if (data == nullptr) {
@@ -2950,8 +2961,11 @@ napi_value NapiProbeRustDeskPresenceAsync(napi_env env, napi_callback_info info)
         napi_get_value_bool(env, args[5], &data->direct) == napi_ok;
     const bool validKeyMode = argc <= 6 ||
         ReadStrictNapiInt32Value(env, args[6], data->keyMode);
+    const bool validTimeout = argc <= 7 ||
+        ReadStrictNapiInt32Value(env, args[7], data->timeoutMs);
     if (!validHost || !validPort || !validKey || !validPeerId || !validToken ||
-        !validDirect || !validKeyMode ||
+        !validDirect || !validKeyMode || !validTimeout ||
+        data->timeoutMs < 100 || data->timeoutMs > 5000 ||
         !NormalizePersistedEndpoint(data->host, data->port)) {
         delete data;
         napi_throw_error(env, nullptr,
@@ -2981,14 +2995,50 @@ napi_value NapiProbeRustDeskPresenceAsync(napi_env env, napi_callback_info info)
         napi_throw_error(env, nullptr, "RustDesk presence probe async work creation failed");
         return nullptr;
     }
+    data->requestId = g_nextRustDeskPresenceRequestId.fetch_add(1, std::memory_order_relaxed);
+    if (data->requestId == 0) {
+        data->requestId = g_nextRustDeskPresenceRequestId.fetch_add(1, std::memory_order_relaxed);
+    }
+#ifdef RUSTDESK_USE_REAL_CORE
+    if (!rustdesk_register_presence_probe(data->requestId)) {
+        napi_delete_async_work(env, data->work);
+        delete data;
+        napi_throw_error(env, nullptr, "RustDesk presence probe registration failed");
+        return nullptr;
+    }
+#endif
+    napi_value requestIdValue;
+    napi_create_int64(env, static_cast<int64_t>(data->requestId), &requestIdValue);
+    napi_set_named_property(env, promise, "requestId", requestIdValue);
     status = napi_queue_async_work(env, data->work);
     if (status != napi_ok) {
+#ifdef RUSTDESK_USE_REAL_CORE
+        (void)rustdesk_abandon_presence_probe(data->requestId);
+#endif
         napi_delete_async_work(env, data->work);
         delete data;
         napi_throw_error(env, nullptr, "RustDesk presence probe async work queue failed");
         return nullptr;
     }
     return promise;
+}
+
+napi_value NapiCancelRustDeskPresenceProbe(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1] = {nullptr};
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    int64_t requestId = 0;
+    const bool parsed = argc == 1 &&
+        napi_get_value_int64(env, args[0], &requestId) == napi_ok && requestId > 0;
+    bool cancelled = false;
+#ifdef RUSTDESK_USE_REAL_CORE
+    if (parsed) {
+        cancelled = rustdesk_cancel_presence_probe(static_cast<uint64_t>(requestId));
+    }
+#endif
+    napi_value result;
+    napi_get_boolean(env, cancelled, &result);
+    return result;
 }
 
 struct VncCertificateProbeAsyncData {
@@ -11234,6 +11284,9 @@ napi_value ExtensionLoaderNapi::Init(napi_env env, napi_value exports) {
     napi_create_function(env, "probeRustDeskPresenceAsync", NAPI_AUTO_LENGTH,
                          NapiProbeRustDeskPresenceAsync, nullptr, &fn);
     napi_set_named_property(env, exports, "probeRustDeskPresenceAsync", fn);
+    napi_create_function(env, "cancelRustDeskPresenceProbe", NAPI_AUTO_LENGTH,
+                         NapiCancelRustDeskPresenceProbe, nullptr, &fn);
+    napi_set_named_property(env, exports, "cancelRustDeskPresenceProbe", fn);
 
     napi_create_function(env, "probeVncCertificateAsync", NAPI_AUTO_LENGTH,
                          NapiProbeVncCertificateAsync, nullptr, &fn);
