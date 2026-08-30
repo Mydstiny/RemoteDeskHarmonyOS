@@ -2676,7 +2676,8 @@ static void CompleteRdpCertificateProbeAsync(napi_env env, napi_status status, v
     } else {
         napi_value result = CreateRdpCertificateInfoValue(env, data->result);
         napi_resolve_deferred(env, data->deferred, result);
-        OH_LOG_INFO(LOG_APP, "[RDP-CERT-ASYNC] complete host=%{public}s", data->host.c_str());
+        const std::string logHost = SafeLog::MaskHost(data->host);
+        OH_LOG_INFO(LOG_APP, "[RDP-CERT-ASYNC] complete host=%{public}s", logHost.c_str());
     }
 
     napi_delete_async_work(env, data->work);
@@ -2738,8 +2739,9 @@ napi_value NapiProbeRdpCertificateAsync(napi_env env, napi_callback_info info) {
         return nullptr;
     }
 
+    const std::string logHost = SafeLog::MaskHost(data->host);
     OH_LOG_INFO(LOG_APP, "[RDP-CERT-ASYNC] queued host=%{public}s port=%{public}d",
-        data->host.c_str(), data->port);
+        logHost.c_str(), data->port);
     status = napi_queue_async_work(env, data->work);
     if (status != napi_ok) {
         napi_delete_async_work(env, data->work);
