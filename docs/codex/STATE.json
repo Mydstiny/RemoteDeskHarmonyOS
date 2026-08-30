@@ -3,10 +3,10 @@
   "task": "all-protocol-ipv6-upgrade",
   "branch": "codex/per-protocol-pinch-zoom-plan",
   "base": "5a0e055159402fcdf50aeea91760d99e3c017f39",
-  "head": "8e7d8a8c232d4d362cf4fb1d956bdbd7544037af",
+  "head": "9c7c56b65d0259834bd2bc5d5d795e07ad6d3f8f",
   "phase": "M0-M3-code-complete-M4-release-gated",
   "status": "active",
-  "next": "Complete the cumulative independent review and receipt, then run the M1-M3 real-device IPv6 matrix; implement and validate an executable RustDesk UDP/KCP NAT state machine before considering AUTO or nat_traversal_ipv6 release flags.",
+  "next": "Run the M1-M3 real-device IPv6 matrix; implement and validate an executable RustDesk UDP/KCP NAT state machine before considering AUTO or nat_traversal_ipv6 release flags.",
   "blockers": [
     "No HDC target or controlled IPv6/AAAA-only/NAT64/VPN protocol endpoints were available; HDC returned Connect server failed.",
     "RustDesk M4 release acceptance requires fixed-version hbbs/hbbr, a controlled peer and an executable UDP/KCP NAT transport matrix; AUTO, UDP/KCP and NAT capability bits remain disabled."
@@ -15,13 +15,13 @@
     "docs/codex/plans/2026-08-29-all-protocol-ipv6-upgrade.md"
   ],
   "review": {
-    "status": "REVIEW_REQUIRED",
+    "status": "PASS",
     "taskIds": [
       "/root/ipv6_shared_rdp_review",
       "/root/ipv6_ssh_review",
       "/root/ipv6_rustdesk_review"
     ],
-    "reviewedHead": "d3f07f4efbee57b8685497fa842d3b2b37ccb06f",
+    "reviewedHead": "9c7c56b65d0259834bd2bc5d5d795e07ad6d3f8f",
     "scope": [
       ".gitattributes",
       "README.md",
@@ -47,15 +47,15 @@
       "scripts/verify_open_source_release.ps1"
     ],
     "findings": [],
-    "reason": "The initial M0-M1 checkpoint passed at d3f07f4e. The declared cumulative code scope now covers the complete M0-M3 implementation, the M4 fail-closed release boundary and supporting release artifacts at 8e7d8a8c; final shared/RDP/VNC/Moonlight, SSH/SFTP and RustDesk follow-up reviews are required before a new PASS receipt."
+    "reason": "The cumulative M0-M3 implementation and M4 fail-closed release boundary at 9c7c56b65 passed independent shared/RDP/VNC/Moonlight, SSH/SFTP and RustDesk review. Every reviewer reported P0=0, P1=0, P2=0 and P3=0."
   },
   "lastVerification": {
-    "baseline": "M0-M3 code-side implementation and the M4 fail-closed release boundary are complete at 8e7d8a8c from task baseline 5a0e05515 on the user-authorized existing branch.",
-    "testCompile": "PASS: default@OhosTestCompileArkTS, BUILD SUCCESSFUL in 6 s 57 ms.",
-    "assembleHap": "PASS: signed assembleHap, BUILD SUCCESSFUL in 52 s 275 ms; SHA-256 9fd1b8c57607403031a75f67198a3238ecd340e2deefe09dae9f0c2b105b8070.",
-    "targetedTests": "PASS: Rust no-default 237/237 and full 247/247; OHOS RustDesk FFI arm64-v8a and x86_64 release builds; native endpoint/protocol suite 926/926.",
+    "baseline": "M0-M3 code-side implementation and the M4 fail-closed release boundary are complete at 9c7c56b65 from task baseline 5a0e05515 on the user-authorized existing branch.",
+    "testCompile": "PASS: default@OhosTestCompileArkTS, BUILD SUCCESSFUL in 7 s 208 ms.",
+    "assembleHap": "PASS: signed assembleHap, BUILD SUCCESSFUL in 8 s 779 ms; SHA-256 58e790631e63b01d645e1395194340af622ecc357303476eb3599da5b0820f01.",
+    "targetedTests": "PASS: Rust no-default 237/237 and full 247/247; OHOS RustDesk FFI arm64-v8a and x86_64 release builds; native endpoint/protocol suite 976/976, including a real IPv6 Paramiko SSH fixture and exact file-descriptor reuse isolation.",
     "compliance": "PASS: cargo fmt --check, git diff --check and Light open-source compliance.",
-    "review": "PENDING: reuse /root/ipv6_shared_rdp_review, /root/ipv6_ssh_review and /root/ipv6_rustdesk_review for the declared cumulative scope.",
+    "review": "PASS: /root/ipv6_shared_rdp_review, /root/ipv6_ssh_review and /root/ipv6_rustdesk_review each reported P0=0, P1=0, P2=0 and P3=0 at 9c7c56b65.",
     "rustdeskFlipIncrement": "PASS: scoped commits b11dd222e and 2a3a0aa4d provide the exact five visual/control axis actions, per-host persistence, main/PIP/multi-canvas rendering and mirrored input mapping; native 858/858, both Hvigor gates, Light compliance and independent follow-up review passed. Real HarmonyOS PC graphics-stack acceptance remains pending.",
     "deviceAcceptance": "NOT RUN: HDC returned Connect server failed and no controlled IPv6 endpoints were available; configured_endpoint_ipv6, dual_stack_racing, discovery_ipv6, protocol_control_data_ipv6 and nat_traversal_ipv6 declarations remain disabled."
   },
