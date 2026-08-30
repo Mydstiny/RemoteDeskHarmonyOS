@@ -478,6 +478,12 @@ private:
         const remotedesk::net::NetworkGenerationSnapshot& networkSnapshot,
         const std::function<void()>& write) const;
     bool admitConnectedRouteWrite(const std::function<void()>& write) const;
+    /**
+     * libssh2 channel reads can synchronously emit SSH window-adjust packets.
+     * Keep those apparently inbound calls behind the same route fence as an
+     * explicit write so a generation update cannot leave an old-route send.
+     */
+    bool admitConnectedRouteRead(const std::function<void()>& read) const;
     int waitSocket(int direction, int timeoutSec);
     int waitSocketMilliseconds(int direction, int timeoutMs);
 

@@ -65,6 +65,37 @@ RDP_TEST_CASE(ssh_network_generation_policy_admits_writes_only_on_current_route)
     RDP_ASSERT_EQ(writes, 1);
 }
 
+RDP_TEST_CASE(ssh_network_generation_policy_fences_window_adjust_capable_reads) {
+    remotedesk::net::NetworkGenerationFence fence(80, true);
+    const remotedesk::net::NetworkGenerationSnapshot captured = fence.snapshot();
+    bool adapterStillConnectedBeforeCallback = true;
+    int channelReads = 0;
+    int implicitWindowAdjustWrites = 0;
+    const auto simulatedLibssh2ChannelRead = [&]() {
+        ++channelReads;
+        ++implicitWindowAdjustWrites;
+    };
+
+    RDP_ASSERT(SshNetworkGenerationPolicy::admitWrite(
+        fence, captured,
+        [&]() { return !adapterStillConnectedBeforeCallback; },
+        simulatedLibssh2ChannelRead));
+    RDP_ASSERT_EQ(channelReads, 1);
+    RDP_ASSERT_EQ(implicitWindowAdjustWrites, 1);
+
+    // The platform commits the process fence before dispatching the SSH
+    // callback. Even while the adapter's state still says CONNECTED, an old
+    // channel read must not run because it can emit WINDOW_ADJUST.
+    RDP_ASSERT(fence.update(true, 81));
+    RDP_ASSERT(adapterStillConnectedBeforeCallback);
+    RDP_ASSERT(!SshNetworkGenerationPolicy::admitWrite(
+        fence, captured,
+        [&]() { return !adapterStillConnectedBeforeCallback; },
+        simulatedLibssh2ChannelRead));
+    RDP_ASSERT_EQ(channelReads, 1);
+    RDP_ASSERT_EQ(implicitWindowAdjustWrites, 1);
+}
+
 RDP_TEST_CASE(ssh_network_generation_retry_uses_only_newer_available_routes) {
     const remotedesk::net::NetworkGenerationSnapshot captured {10, true};
     RDP_ASSERT(SshNetworkGenerationPolicy::retryDecision(

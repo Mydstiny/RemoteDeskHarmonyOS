@@ -1188,8 +1188,14 @@ bool SshAdapter::pumpLocalForwardConnectionLocked(LocalForwardConnection& connec
             const size_t readLength = static_cast<size_t>(std::min<uint64_t>(
                 remaining == 0 ? static_cast<uint64_t>(buffer.size()) : remaining,
                 static_cast<uint64_t>(buffer.size())));
-            const ssize_t received = libssh2_channel_read(
-                connection.channel, reinterpret_cast<char*>(buffer.data()), readLength);
+            ssize_t received = LIBSSH2_ERROR_SOCKET_SEND;
+            if (!admitConnectedRouteRead([&]() {
+                    received = libssh2_channel_read(
+                        connection.channel,
+                        reinterpret_cast<char*>(buffer.data()), readLength);
+                })) {
+                return false;
+            }
             if (received > 0) {
                 if (forwardingManager_.recordBytes(connection.profileId,
                                                     connection.sessionGeneration,
@@ -1638,6 +1644,14 @@ bool SshAdapter::admitConnectedRouteWrite(
     return state_.load(std::memory_order_acquire) ==
             ConnectionState::CONNECTED &&
         admitRouteWrite(connectNetworkSnapshot_, write);
+}
+
+bool SshAdapter::admitConnectedRouteRead(
+    const std::function<void()>& read) const {
+    // libssh2_channel_read_ex() may replenish the remote receive window before
+    // returning payload. Treat it as an outbound primitive even though the API
+    // is named "read".
+    return admitConnectedRouteWrite(read);
 }
 
 int SshAdapter::waitSocket(int direction, int timeoutSec) {
@@ -2568,8 +2582,20 @@ void SshAdapter::sshJumpRelayLoop() {
                         if (state.toPeer.size() >= kRelayBufferLimit) { break; }
                         const size_t readLength = std::min(
                             buffer.size(), kRelayBufferLimit - state.toPeer.size());
-                        const ssize_t received = libssh2_channel_read(
-                            runtime.channel, reinterpret_cast<char*>(buffer.data()), readLength);
+                        ssize_t received = LIBSSH2_ERROR_SOCKET_SEND;
+                        // A channel read can emit WINDOW_ADJUST. The jump relay
+                        // is also alive while the target session is still being
+                        // established, so use the captured route rather than a
+                        // CONNECTED-only admission.
+                        if (!admitRouteWrite(connectNetworkSnapshot_, [&]() {
+                                received = libssh2_channel_read(
+                                    runtime.channel,
+                                    reinterpret_cast<char*>(buffer.data()),
+                                    readLength);
+                            })) {
+                            relayFailure = true;
+                            break;
+                        }
                         if (received > 0) {
                             try {
                                 state.toPeer.insert(state.toPeer.end(), buffer.begin(),
@@ -5370,8 +5396,16 @@ void SshAdapter::drainShellOutputOnReactor() {
             return;
         }
         while (readerRunning_.load(std::memory_order_acquire)) {
-            const ssize_t n = libssh2_channel_read(
-                channel_, reinterpret_cast<char*>(buffer.data()), buffer.size());
+            ssize_t n = LIBSSH2_ERROR_SOCKET_SEND;
+            if (!admitConnectedRouteRead([&]() {
+                    n = libssh2_channel_read(
+                        channel_, reinterpret_cast<char*>(buffer.data()),
+                        buffer.size());
+                })) {
+                readError = true;
+                readErrorCode = ERR_SSH_SESSION_CLOSED;
+                break;
+            }
             if (n == LIBSSH2_ERROR_EAGAIN) { break; }
             if (n < 0) {
                 if (n == LIBSSH2_ERROR_SOCKET_RECV) {
@@ -5651,8 +5685,15 @@ int SshAdapter::executeChannelRequest(
         serviceTerminalInput();
         bool progressed = false;
         if (!stdoutDone) {
-            ssize_t readResult = libssh2_channel_read(
-                commandChannel, reinterpret_cast<char*>(buffer.data()), buffer.size());
+            ssize_t readResult = LIBSSH2_ERROR_SOCKET_SEND;
+            if (!admitRouteWrite(routeSnapshot, [&]() {
+                    readResult = libssh2_channel_read(
+                        commandChannel, reinterpret_cast<char*>(buffer.data()),
+                        buffer.size());
+                })) {
+                closeChannel();
+                return ERR_SSH_SESSION_CLOSED;
+            }
             if (readResult == LIBSSH2_ERROR_EAGAIN) {
                 // Wait below; stderr may still have pending bytes.
             } else if (readResult < 0) {
@@ -5671,8 +5712,15 @@ int SshAdapter::executeChannelRequest(
             }
         }
         if (!stderrDone) {
-            ssize_t readResult = libssh2_channel_read_stderr(
-                commandChannel, reinterpret_cast<char*>(buffer.data()), buffer.size());
+            ssize_t readResult = LIBSSH2_ERROR_SOCKET_SEND;
+            if (!admitRouteWrite(routeSnapshot, [&]() {
+                    readResult = libssh2_channel_read_stderr(
+                        commandChannel,
+                        reinterpret_cast<char*>(buffer.data()), buffer.size());
+                })) {
+                closeChannel();
+                return ERR_SSH_SESSION_CLOSED;
+            }
             if (readResult == LIBSSH2_ERROR_EAGAIN) {
                 // Wait below.
             } else if (readResult < 0) {
@@ -5813,7 +5861,13 @@ int SshAdapter::readData(uint8_t* buf, size_t bufSize) {
         // Push mode owns the socket poll. The legacy readData API is a
         // non-blocking compatibility read and must never select while holding
         // sessionMutex_ or on the ArkUI thread.
-        ssize_t n = libssh2_channel_read(channel_, reinterpret_cast<char*>(buf), bufSize);
+        ssize_t n = LIBSSH2_ERROR_SOCKET_SEND;
+        if (!admitConnectedRouteRead([&]() {
+                n = libssh2_channel_read(
+                    channel_, reinterpret_cast<char*>(buf), bufSize);
+            })) {
+            return ERR_SSH_SESSION_CLOSED;
+        }
         if (n == LIBSSH2_ERROR_EAGAIN) {
             return 0;
         }
@@ -6317,7 +6371,15 @@ void SshAdapter::readerLoop() {
         std::vector<uint8_t> accumulated;
         accumulated.reserve(kBufSize * 2);
         while (readerRunning_.load()) {
-            ssize_t n = libssh2_channel_read(ch, reinterpret_cast<char*>(buf.data()), kBufSize);
+            ssize_t n = LIBSSH2_ERROR_SOCKET_SEND;
+            if (!admitConnectedRouteRead([&]() {
+                    n = libssh2_channel_read(
+                        ch, reinterpret_cast<char*>(buf.data()), kBufSize);
+                })) {
+                readError = true;
+                readErrorCode = ERR_SSH_SESSION_CLOSED;
+                break;
+            }
             if (n == LIBSSH2_ERROR_EAGAIN) { break; }
             if (n < 0) {
                 if (n == LIBSSH2_ERROR_SOCKET_RECV) {
