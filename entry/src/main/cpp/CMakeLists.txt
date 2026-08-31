@@ -366,6 +366,7 @@ if(RDP_BUILD_TESTS)
         test/decoder_pipeline_lifecycle_policy_test.cpp
         test/safe_log_test.cpp
         test/endpoint_address_policy_test.cpp
+        test/connection_port_policy_test.cpp
         test/happy_eyeballs_connector_test.cpp
         test/network_generation_fence_test.cpp
         test/native_network_observer_state_test.cpp

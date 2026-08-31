@@ -7,6 +7,7 @@
 
 #include "extension_registry.h"
 #include "protocol_adapter.h"
+#include "connection_port_policy.h"
 #include "session_teardown_executor.h"
 #include "session_registry.h"
 #include "native_network_observer_state.h"
@@ -4994,11 +4995,21 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
         cfg.rdConnectionStrategy = "invalid";
         cfg.rdDirectIp = false;
     }
-    if ((hasGatewayPort && (cfg.gatewayPort <= 0 || cfg.gatewayPort > 65535)) ||
-        (hasRdDirectPort && (cfg.rdDirectPort <= 0 || cfg.rdDirectPort > 65535)) ||
-        (hasRdRelayPort && (cfg.rdRelayPort <= 0 || cfg.rdRelayPort > 65535)) ||
-        (hasVncGatewayPort &&
-         (cfg.vncGatewayPort <= 0 || cfg.vncGatewayPort > 65535))) {
+    remotedesk::extensions::ConnectionPortPolicyInput portPolicy;
+    portPolicy.protocol = protocolName;
+    portPolicy.rdpGatewayHost = cfg.gatewayHost;
+    portPolicy.sshProxyType = cfg.sshProxyType;
+    portPolicy.rustDeskDirect = cfg.rdDirectIp;
+    portPolicy.vncTransport = cfg.vncTransport;
+    portPolicy.hasGatewayPort = hasGatewayPort;
+    portPolicy.gatewayPort = cfg.gatewayPort;
+    portPolicy.hasRustDeskDirectPort = hasRdDirectPort;
+    portPolicy.rustDeskDirectPort = cfg.rdDirectPort;
+    portPolicy.hasRustDeskRelayPort = hasRdRelayPort;
+    portPolicy.rustDeskRelayPort = cfg.rdRelayPort;
+    portPolicy.hasVncGatewayPort = hasVncGatewayPort;
+    portPolicy.vncGatewayPort = cfg.vncGatewayPort;
+    if (remotedesk::extensions::HasInvalidActiveOptionalPort(portPolicy)) {
         invalidConfigField = true;
     }
     if (!hasRdDirectPort) cfg.rdDirectPort = 21118;
