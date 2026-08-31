@@ -910,16 +910,17 @@ static bool DispatchNativeNetworkSession(
 static void DispatchNativeNetworkAvailability(bool available) {
     const NativeNetworkObserverState::DispatchSnapshot dispatch =
         g_nativeNetworkObserverState.publishAvailability(
-            available, [](bool currentAvailable, uint64_t generation) {
+            available, [](bool routeAttemptAllowed, uint64_t generation) {
                 (void)remotedesk::net::ProcessNetworkGenerationFence().update(
-                    currentAvailable, generation);
+                    routeAttemptAllowed, generation);
             });
     size_t sessionCount = 0;
     for (const auto& target : dispatch.targets) {
         try {
             if (DispatchNativeNetworkSession(
                     target.second.session, target.first,
-                    target.second.sessionGeneration, available,
+                    target.second.sessionGeneration,
+                    dispatch.routeAttemptAllowed,
                     dispatch.networkGeneration)) {
                 ++sessionCount;
             }
@@ -933,7 +934,7 @@ static void DispatchNativeNetworkAvailability(bool available) {
     size_t sshCount = 0;
     try {
         sshCount = g_sshNativeFacade.notifyNetworkAvailability(
-            available, dispatch.networkGeneration);
+            dispatch.routeAttemptAllowed, dispatch.networkGeneration);
     } catch (...) {
         OH_LOG_ERROR(LOG_APP,
             "[ExtLoader] native SSH network dispatch threw generation=%{public}llu",
@@ -941,8 +942,10 @@ static void DispatchNativeNetworkAvailability(bool available) {
     }
     if (sessionCount > 0 || sshCount > 0) {
         OH_LOG_INFO(LOG_APP,
-            "[ExtLoader] network availability=%{public}s sessions=%{public}zu sshSessions=%{public}zu generation=%{public}llu",
-            available ? "available" : "lost", sessionCount, sshCount,
+            "[ExtLoader] defaultNetwork=%{public}s routeAttempts=%{public}s sessions=%{public}zu sshSessions=%{public}zu generation=%{public}llu",
+            dispatch.observedDefaultAvailable ? "available" : "unavailable",
+            dispatch.routeAttemptAllowed ? "allowed" : "blocked",
+            sessionCount, sshCount,
             static_cast<unsigned long long>(dispatch.networkGeneration));
     }
 }
@@ -952,32 +955,11 @@ static void DispatchNativeNetworkAvailabilityNoexcept(bool available) noexcept {
         DispatchNativeNetworkAvailability(available);
     } catch (...) {
         // Never let allocation or adapter exceptions cross the OHOS C ABI.
-        // publishAvailability() updates the process fence before snapshot
-        // allocation, so in-flight connection attempts still fail closed.
+        // publishAvailability() updates the route generation before snapshot
+        // allocation, so in-flight work captured on the old route still ends.
         OH_LOG_ERROR(LOG_APP,
-            "[ExtLoader] native network callback failed closed availability=%{public}s",
+            "[ExtLoader] native network callback dispatch failed availability=%{public}s",
             available ? "available" : "lost");
-    }
-}
-
-static void RestoreNetworkFenceForObserverDegradation() noexcept {
-    try {
-        const auto current =
-            remotedesk::net::ProcessNetworkGenerationFence().snapshot();
-        if (current.available) {
-            return;
-        }
-        const auto restored = g_nativeNetworkObserverState.publishAvailability(
-            true, [](bool available, uint64_t generation) {
-                (void)remotedesk::net::ProcessNetworkGenerationFence().update(
-                    available, generation);
-            });
-        OH_LOG_WARN(LOG_APP,
-            "[ExtLoader] cleared stale network-unavailable fence after observer degradation generation=%{public}llu",
-            static_cast<unsigned long long>(restored.networkGeneration));
-    } catch (...) {
-        OH_LOG_ERROR(LOG_APP,
-            "[ExtLoader] failed to clear stale network fence after observer degradation");
     }
 }
 
@@ -1034,10 +1016,6 @@ static bool EnsureNativeNetworkObserver() {
         OH_LOG_WARN(LOG_APP,
             "[ExtLoader] native network observer registration failed result=%{public}d callbackId=%{public}u",
             result, callbackId);
-        // Once callback registration is unavailable, socket/connect outcomes
-        // become the source of truth. Do not let a previously observed lost
-        // network permanently reject every protocol before it reaches I/O.
-        RestoreNetworkFenceForObserverDegradation();
         return false;
     }
     const bool keepRegistration =

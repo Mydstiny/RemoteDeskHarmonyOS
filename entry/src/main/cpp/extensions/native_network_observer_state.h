@@ -24,7 +24,8 @@ public:
     };
 
     struct DispatchSnapshot final {
-        bool available = false;
+        bool observedDefaultAvailable = false;
+        bool routeAttemptAllowed = true;
         uint64_t networkGeneration = 0;
         std::vector<std::pair<int32_t, Target>> targets;
     };
@@ -89,13 +90,16 @@ public:
         std::lock_guard<std::mutex> lock(mutex_);
         ++networkGeneration_;
 
-        // The process fence and target snapshot deliberately share this
-        // ordering lock with track(). A session is therefore either in this
-        // dispatch batch or starts after the new fence has been published.
-        publishFence(available, networkGeneration_);
+        // A default-network callback proves that the route generation
+        // changed, but "no default network" does not prove that a requested
+        // LAN, VPN, or link-local endpoint is unreachable. Keep new socket
+        // attempts admissible and let their actual I/O result decide.
+        // The process fence and target snapshot deliberately share this lock
+        // with track(), so old DNS/socket work is still retired exactly.
+        publishFence(true, networkGeneration_);
 
         DispatchSnapshot snapshot;
-        snapshot.available = available;
+        snapshot.observedDefaultAvailable = available;
         snapshot.networkGeneration = networkGeneration_;
         snapshot.targets.reserve(targets_.size());
         for (const auto& target : targets_) {

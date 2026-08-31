@@ -64,7 +64,9 @@ RDP_TEST_CASE(native_network_observer_serializes_fence_before_late_target) {
     tracker.join();
 
     RDP_ASSERT_EQ(snapshot.networkGeneration, static_cast<uint64_t>(2));
-    RDP_ASSERT(!publishedAvailable.load(std::memory_order_acquire));
+    RDP_ASSERT(!snapshot.observedDefaultAvailable);
+    RDP_ASSERT(snapshot.routeAttemptAllowed);
+    RDP_ASSERT(publishedAvailable.load(std::memory_order_acquire));
     RDP_ASSERT_EQ(
         publishedGeneration.load(std::memory_order_acquire),
         static_cast<uint64_t>(2));
