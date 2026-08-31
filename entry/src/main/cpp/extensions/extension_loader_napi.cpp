@@ -867,6 +867,10 @@ static bool DispatchRustDeskNetworkEvent(
 using NativeNetworkObserverState =
     remotedesk::net::NativeNetworkObserverState<SessionContext>;
 static NativeNetworkObserverState g_nativeNetworkObserverState {1};
+// Registration must be single-flight. Otherwise one concurrent caller can
+// install a live observer while another registration failure incorrectly
+// degrades the shared network fence that the live observer just published.
+static std::mutex g_nativeNetworkObserverRegistrationMutex;
 
 static bool DispatchNativeNetworkSession(
     const std::shared_ptr<SessionContext>& session, int32_t sessionId,
@@ -1014,6 +1018,8 @@ static NetConn_NetConnCallback kNativeNetworkCallbacks {
 };
 
 static bool EnsureNativeNetworkObserver() {
+    std::lock_guard<std::mutex> registrationLock(
+        g_nativeNetworkObserverRegistrationMutex);
     if (g_nativeNetworkObserverState.hasObserver()) {
         return true;
     }
