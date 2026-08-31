@@ -6,6 +6,8 @@
 #include "common/endpoint_address_policy.h"
 #include "extensions/native_network_observer_lease.h"
 
+#include <hilog/log.h>
+
 #include <algorithm>
 #include <atomic>
 #include <cmath>
@@ -22,6 +24,11 @@
 #include <vector>
 
 namespace {
+
+#undef LOG_DOMAIN
+#undef LOG_TAG
+#define LOG_DOMAIN 0x0042
+#define LOG_TAG "MOON_NAPI"
 
 using namespace remotedesk::moonlight;
 
@@ -64,7 +71,8 @@ struct MoonlightEnvState final {
             remotedesk::net::AcquireProcessNetworkObserverLease(),
             std::memory_order_release);
         if (!networkObserverLeaseActive.load(std::memory_order_acquire)) {
-            return;
+            OH_LOG_WARN(LOG_APP,
+                "network observer unavailable; continuing without network-change callbacks");
         }
         try {
             bridge = std::make_shared<MoonlightNativeBridge>(
@@ -1091,13 +1099,6 @@ napi_value requestAsyncImpl(napi_env env, napi_callback_info info) {
         return nullptr;
     }
     auto state = stateFor(env);
-    if (state != nullptr &&
-        !state->networkObserverLeaseActive.load(std::memory_order_acquire) &&
-        !state->closing.load(std::memory_order_acquire)) {
-        napi_throw_error(env, "E-MOONLIGHT-NETWORK-OBSERVER",
-                         "Moonlight network observer is unavailable");
-        return nullptr;
-    }
     if (state == nullptr || state->bridge == nullptr ||
         state->closing.load(std::memory_order_acquire)) {
         napi_throw_error(env, "E-MOONLIGHT-SHUTDOWN", "Moonlight bridge is shutting down");

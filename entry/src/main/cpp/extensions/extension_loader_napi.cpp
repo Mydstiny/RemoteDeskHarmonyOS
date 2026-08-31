@@ -955,6 +955,27 @@ static void DispatchNativeNetworkAvailabilityNoexcept(bool available) noexcept {
     }
 }
 
+static void RestoreNetworkFenceForObserverDegradation() noexcept {
+    try {
+        const auto current =
+            remotedesk::net::ProcessNetworkGenerationFence().snapshot();
+        if (current.available) {
+            return;
+        }
+        const auto restored = g_nativeNetworkObserverState.publishAvailability(
+            true, [](bool available, uint64_t generation) {
+                (void)remotedesk::net::ProcessNetworkGenerationFence().update(
+                    available, generation);
+            });
+        OH_LOG_WARN(LOG_APP,
+            "[ExtLoader] cleared stale network-unavailable fence after observer degradation generation=%{public}llu",
+            static_cast<unsigned long long>(restored.networkGeneration));
+    } catch (...) {
+        OH_LOG_ERROR(LOG_APP,
+            "[ExtLoader] failed to clear stale network fence after observer degradation");
+    }
+}
+
 static void OnNativeNetworkAvailable(NetConn_NetHandle* /*netHandle*/) {
     DispatchNativeNetworkAvailabilityNoexcept(true);
 }
@@ -1006,6 +1027,10 @@ static bool EnsureNativeNetworkObserver() {
         OH_LOG_WARN(LOG_APP,
             "[ExtLoader] native network observer registration failed result=%{public}d callbackId=%{public}u",
             result, callbackId);
+        // Once callback registration is unavailable, socket/connect outcomes
+        // become the source of truth. Do not let a previously observed lost
+        // network permanently reject every protocol before it reaches I/O.
+        RestoreNetworkFenceForObserverDegradation();
         return false;
     }
     const bool keepRegistration =
@@ -2817,9 +2842,8 @@ napi_value NapiProbeRdpCertificate(napi_env env, napi_callback_info info) {
     RdpCertificateInfo cert;
     NativeNetworkObserverLease observerLease;
     if (!observerLease.active()) {
-        napi_throw_error(env, "E-RDP-NETWORK-OBSERVER",
-                         "RDP network observer is unavailable");
-        return nullptr;
+        OH_LOG_WARN(LOG_APP,
+            "[RDP-CERT] network observer unavailable; continuing without network-change callbacks");
     }
     if (adapter) {
         cert = ProbeRdpCertificateOnCurrentNetwork(
@@ -2928,10 +2952,8 @@ napi_value NapiProbeRdpCertificateAsync(napi_env env, napi_callback_info info) {
     }
     data->observerLease.reset(new (std::nothrow) NativeNetworkObserverLease());
     if (!data->observerLease || !data->observerLease->active()) {
-        delete data;
-        napi_throw_error(env, "E-RDP-NETWORK-OBSERVER",
-                         "RDP network observer is unavailable");
-        return nullptr;
+        OH_LOG_WARN(LOG_APP,
+            "[RDP-CERT-ASYNC] network observer unavailable; continuing without network-change callbacks");
     }
     data->adapter = FindAdapter("rdp");
 
@@ -3119,10 +3141,8 @@ napi_value NapiProbeRdpCertificateRouteAsync(napi_env env, napi_callback_info in
     }
     data->observerLease.reset(new (std::nothrow) NativeNetworkObserverLease());
     if (!data->observerLease || !data->observerLease->active()) {
-        delete data;
-        napi_throw_error(env, "E-RDP-NETWORK-OBSERVER",
-                         "RDP network observer is unavailable");
-        return nullptr;
+        OH_LOG_WARN(LOG_APP,
+            "[RDP-PREFLIGHT-ASYNC] network observer unavailable; continuing without network-change callbacks");
     }
     data->adapter = FindAdapter("rdp");
 
@@ -5726,11 +5746,9 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
         connectObserverLease.reset(
             new (std::nothrow) NativeNetworkObserverLease());
         if (!connectObserverLease || !connectObserverLease->active()) {
-            secureClearString(cfg.rdpRestrictedAdminHash);
-            admission.rollback();
-            napi_value errVal;
-            napi_create_int32(env, -103, &errVal);
-            return errVal;
+            OH_LOG_WARN(LOG_APP,
+                "[ExtLoader] protocol=%{public}s network observer unavailable; continuing without network-change callbacks",
+                protocolName.c_str());
         }
     }
 #endif
@@ -5739,13 +5757,12 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
         // Some OHOS implementations deliver the initial availability callback
         // synchronously from registration; doing this after connect() could
         // invalidate the first worker before the session became a dispatch
-        // target. Admission rollback removes the exact target on failure.
+        // target. Observer registration is best-effort: a platform callback
+        // failure must not disable otherwise usable protocol transports.
         if (!UpdateNativeNetworkObserver(session)) {
-            secureClearString(cfg.rdpRestrictedAdminHash);
-            admission.rollback();
-            napi_value errVal;
-            napi_create_int32(env, -103, &errVal);
-            return errVal;
+            OH_LOG_WARN(LOG_APP,
+                "[ExtLoader] protocol=%{public}s sessionId=%{public}d network observer tracking unavailable; continuing without network-change callbacks",
+                protocolName.c_str(), sessionId);
         }
     }
 
@@ -6227,10 +6244,9 @@ napi_value NapiConnectSshAsync(napi_env env, napi_callback_info info) {
         return nullptr;
     }
     if (!UpdateNativeNetworkObserver(data->session)) {
-        CleanupSshConnectFailure(*data);
-        napi_throw_error(env, "E-SSH-NETWORK-OBSERVER",
-                         "SSH network observer is unavailable");
-        return nullptr;
+        OH_LOG_WARN(LOG_APP,
+            "[SSH-CONNECT-ASYNC] sessionId=%{public}d network observer unavailable; continuing without network-change callbacks",
+            data->sessionId);
     }
 
     napi_value promise;
@@ -11683,9 +11699,8 @@ static napi_value QueueSshProductionOperation(
     data->networkObserverLease.reset(
         new (std::nothrow) NativeNetworkObserverLease());
     if (!data->networkObserverLease || !data->networkObserverLease->active()) {
-        napi_throw_error(env, "E-SSH-NETWORK-OBSERVER",
-                         "SSH network observer is unavailable");
-        return nullptr;
+        OH_LOG_WARN(LOG_APP,
+            "[SSH-OPERATION] network observer unavailable; continuing without network-change callbacks");
     }
 #endif
     data->networkSnapshot =
