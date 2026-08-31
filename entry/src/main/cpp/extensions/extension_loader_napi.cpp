@@ -907,13 +907,18 @@ static bool DispatchNativeNetworkSession(
     return true;
 }
 
-static void DispatchNativeNetworkAvailability(bool available) {
+static void DispatchNativeNetworkAvailability(
+    bool available, int32_t networkId, bool networkIdKnown) {
     const NativeNetworkObserverState::DispatchSnapshot dispatch =
-        g_nativeNetworkObserverState.publishAvailability(
-            available, [](bool routeAttemptAllowed, uint64_t generation) {
+        g_nativeNetworkObserverState.observeAvailability(
+            available, networkId, networkIdKnown,
+            [](bool routeAttemptAllowed, uint64_t generation) {
                 (void)remotedesk::net::ProcessNetworkGenerationFence().update(
                     routeAttemptAllowed, generation);
             });
+    if (!dispatch.generationAdvanced) {
+        return;
+    }
     size_t sessionCount = 0;
     for (const auto& target : dispatch.targets) {
         try {
@@ -942,20 +947,23 @@ static void DispatchNativeNetworkAvailability(bool available) {
     }
     if (sessionCount > 0 || sshCount > 0) {
         OH_LOG_INFO(LOG_APP,
-            "[ExtLoader] defaultNetwork=%{public}s routeAttempts=%{public}s sessions=%{public}zu sshSessions=%{public}zu generation=%{public}llu",
+            "[ExtLoader] defaultNetwork=%{public}s netId=%{public}d routeAttempts=%{public}s sessions=%{public}zu sshSessions=%{public}zu generation=%{public}llu",
             dispatch.observedDefaultAvailable ? "available" : "unavailable",
+            dispatch.networkIdKnown ? dispatch.networkId : -1,
             dispatch.routeAttemptAllowed ? "allowed" : "blocked",
             sessionCount, sshCount,
             static_cast<unsigned long long>(dispatch.networkGeneration));
     }
 }
 
-static void DispatchNativeNetworkAvailabilityNoexcept(bool available) noexcept {
+static void DispatchNativeNetworkAvailabilityNoexcept(
+    bool available, int32_t networkId, bool networkIdKnown) noexcept {
     try {
-        DispatchNativeNetworkAvailability(available);
+        DispatchNativeNetworkAvailability(
+            available, networkId, networkIdKnown);
     } catch (...) {
         // Never let allocation or adapter exceptions cross the OHOS C ABI.
-        // publishAvailability() updates the route generation before snapshot
+        // observeAvailability() updates the route generation before snapshot
         // allocation, so in-flight work captured on the old route still ends.
         OH_LOG_ERROR(LOG_APP,
             "[ExtLoader] native network callback dispatch failed availability=%{public}s",
@@ -963,38 +971,26 @@ static void DispatchNativeNetworkAvailabilityNoexcept(bool available) noexcept {
     }
 }
 
-static void OnNativeNetworkAvailable(NetConn_NetHandle* /*netHandle*/) {
-    DispatchNativeNetworkAvailabilityNoexcept(true);
+static void OnNativeNetworkAvailable(NetConn_NetHandle* netHandle) {
+    DispatchNativeNetworkAvailabilityNoexcept(
+        true, netHandle == nullptr ? 0 : netHandle->netId,
+        netHandle != nullptr);
 }
 
-static void OnNativeNetworkCapabilitiesChanged(
-    NetConn_NetHandle* /*netHandle*/,
-    NetConn_NetCapabilities* /*capabilities*/) {
-    // Bearer, validated-network, VPN, and DNS64 capability changes can alter
-    // routing without an unavailable interval. Retire every old candidate.
-    DispatchNativeNetworkAvailabilityNoexcept(true);
-}
-
-static void OnNativeNetworkPropertiesChanged(
-    NetConn_NetHandle* /*netHandle*/,
-    NetConn_ConnectionProperties* /*properties*/) {
-    // Address, prefix, route, DNS, and interface changes invalidate DNS and
-    // sockaddr results captured under the previous default-network view.
-    DispatchNativeNetworkAvailabilityNoexcept(true);
-}
-
-static void OnNativeNetworkLost(NetConn_NetHandle* /*netHandle*/) {
-    DispatchNativeNetworkAvailabilityNoexcept(false);
+static void OnNativeNetworkLost(NetConn_NetHandle* netHandle) {
+    DispatchNativeNetworkAvailabilityNoexcept(
+        false, netHandle == nullptr ? 0 : netHandle->netId,
+        netHandle != nullptr);
 }
 
 static void OnNativeNetworkUnavailable() {
-    DispatchNativeNetworkAvailabilityNoexcept(false);
+    DispatchNativeNetworkAvailabilityNoexcept(false, 0, false);
 }
 
 static NetConn_NetConnCallback kNativeNetworkCallbacks {
     OnNativeNetworkAvailable,
-    OnNativeNetworkCapabilitiesChanged,
-    OnNativeNetworkPropertiesChanged,
+    nullptr,
+    nullptr,
     OnNativeNetworkLost,
     OnNativeNetworkUnavailable,
     nullptr,

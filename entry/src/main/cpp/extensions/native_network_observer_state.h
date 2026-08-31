@@ -24,8 +24,11 @@ public:
     };
 
     struct DispatchSnapshot final {
+        bool generationAdvanced = false;
         bool observedDefaultAvailable = false;
         bool routeAttemptAllowed = true;
+        bool networkIdKnown = false;
+        int32_t networkId = 0;
         uint64_t networkGeneration = 0;
         std::vector<std::pair<int32_t, Target>> targets;
     };
@@ -85,9 +88,49 @@ public:
     }
 
     template <typename FencePublisher>
-    DispatchSnapshot publishAvailability(
-        bool available, FencePublisher&& publishFence) {
+    DispatchSnapshot observeAvailability(
+        bool available, int32_t networkId, bool networkIdKnown,
+        FencePublisher&& publishFence) {
         std::lock_guard<std::mutex> lock(mutex_);
+
+        if (!availabilityObservationSeen_) {
+            availabilityObservationSeen_ = true;
+            observedDefaultAvailable_ = available;
+            if (networkIdKnown) {
+                activeNetworkId_ = networkId;
+                activeNetworkIdKnown_ = true;
+            }
+            return snapshotLocked(false);
+        }
+
+        // A lost callback for the previous default network can arrive after
+        // the replacement network is already active. It must not retire the
+        // replacement transport.
+        if (!available && networkIdKnown && activeNetworkIdKnown_ &&
+            networkId != activeNetworkId_) {
+            return snapshotLocked(false);
+        }
+
+        bool changed = observedDefaultAvailable_ != available;
+        if (available && observedDefaultAvailable_) {
+            if (networkIdKnown && activeNetworkIdKnown_) {
+                changed = networkId != activeNetworkId_;
+            } else if (networkIdKnown) {
+                // Learning the identity of the already-observed network is
+                // not itself a route change.
+                activeNetworkId_ = networkId;
+                activeNetworkIdKnown_ = true;
+            }
+        }
+        if (!changed) {
+            return snapshotLocked(false);
+        }
+
+        observedDefaultAvailable_ = available;
+        if (networkIdKnown) {
+            activeNetworkId_ = networkId;
+            activeNetworkIdKnown_ = true;
+        }
         ++networkGeneration_;
 
         // A default-network callback proves that the route generation
@@ -98,14 +141,7 @@ public:
         // with track(), so old DNS/socket work is still retired exactly.
         publishFence(true, networkGeneration_);
 
-        DispatchSnapshot snapshot;
-        snapshot.observedDefaultAvailable = available;
-        snapshot.networkGeneration = networkGeneration_;
-        snapshot.targets.reserve(targets_.size());
-        for (const auto& target : targets_) {
-            snapshot.targets.push_back(target);
-        }
-        return snapshot;
+        return snapshotLocked(true);
     }
 
     uint64_t networkGeneration() const {
@@ -124,6 +160,22 @@ public:
     }
 
 private:
+    DispatchSnapshot snapshotLocked(bool generationAdvanced) const {
+        DispatchSnapshot snapshot;
+        snapshot.generationAdvanced = generationAdvanced;
+        snapshot.observedDefaultAvailable = observedDefaultAvailable_;
+        snapshot.networkIdKnown = activeNetworkIdKnown_;
+        snapshot.networkId = activeNetworkId_;
+        snapshot.networkGeneration = networkGeneration_;
+        if (generationAdvanced) {
+            snapshot.targets.reserve(targets_.size());
+            for (const auto& target : targets_) {
+                snapshot.targets.push_back(target);
+            }
+        }
+        return snapshot;
+    }
+
     uint32_t takeObserverIfIdleLocked() {
         if (observerId_ == 0 || transientConsumers_ != 0 || !targets_.empty()) {
             return 0;
@@ -137,6 +189,10 @@ private:
     uint32_t observerId_ = 0;
     size_t transientConsumers_ = 0;
     uint64_t networkGeneration_ = 1;
+    bool availabilityObservationSeen_ = false;
+    bool observedDefaultAvailable_ = false;
+    bool activeNetworkIdKnown_ = false;
+    int32_t activeNetworkId_ = 0;
     std::map<int32_t, Target> targets_;
 };
 
