@@ -113,6 +113,7 @@ struct KcpOwner {
     shared: Arc<KcpShared>,
     outbound: Option<mpsc::Sender<OutboundCommand>>,
     shutdown: watch::Sender<bool>,
+    graceful_drain: watch::Sender<bool>,
     worker: Mutex<Option<JoinHandle<()>>>,
     local_address: SocketAddr,
     peer_address: SocketAddr,
@@ -129,10 +130,12 @@ impl KcpOwner {
 
 impl Drop for KcpOwner {
     fn drop(&mut self) {
-        // Closing the application queue lets the worker drain every accepted
-        // frame into KCP, close its stream sender and keep pumping UDP for one
-        // bounded retransmission window. Explicit shutdown/cancellation still
-        // uses request_shutdown() for immediate teardown.
+        // Start the absolute drain deadline before closing the application
+        // queue. The worker may itself be backpressured by kcp-sys, so the
+        // deadline must not depend on it naturally reaching writer.shutdown().
+        // Explicit shutdown/cancellation still uses request_shutdown() for
+        // immediate teardown.
+        self.graceful_drain.send_replace(true);
         self.outbound.take();
         if let Ok(mut worker) = self.worker.lock() {
             if let Some(handle) = worker.take() {
@@ -207,6 +210,7 @@ impl KcpPeerStream {
         let worker_shared = Arc::clone(&shared);
         let (outbound, outbound_rx) = mpsc::channel(KCP_OUTBOUND_CAPACITY);
         let (shutdown, shutdown_rx) = watch::channel(false);
+        let (graceful_drain, graceful_drain_rx) = watch::channel(false);
         let worker_shutdown = shutdown.clone();
         let worker_race_cancel = Arc::clone(&race_cancel);
         let (ready_tx, ready_rx) = std_mpsc::sync_channel::<Result<(), StoredError>>(1);
@@ -229,6 +233,7 @@ impl KcpPeerStream {
                         worker_shared.clone(),
                         outbound_rx,
                         shutdown_rx,
+                        graceful_drain_rx,
                         ready_tx.clone(),
                         deadline,
                         cancel_epoch,
@@ -259,6 +264,7 @@ impl KcpPeerStream {
                         shared,
                         outbound: Some(outbound),
                         shutdown,
+                        graceful_drain,
                         worker: Mutex::new(Some(worker)),
                         local_address,
                         peer_address,
@@ -702,6 +708,7 @@ async fn run_kcp_worker(
     shared: Arc<KcpShared>,
     outbound: mpsc::Receiver<OutboundCommand>,
     mut shutdown: watch::Receiver<bool>,
+    mut graceful_drain: watch::Receiver<bool>,
     ready: std_mpsc::SyncSender<Result<(), StoredError>>,
     deadline: Instant,
     cancel_epoch: Option<u64>,
@@ -770,15 +777,50 @@ async fn run_kcp_worker(
     let mut write_task = Box::pin(pump_kcp_writes(writer, outbound));
     let mut stop = Box::pin(wait_for_shutdown(shutdown));
 
-    let result = tokio::select! {
-        result = &mut read_task => result,
-        result = &mut write_task => result,
-        result = &mut io_task => match result {
-            Ok(result) => result,
-            Err(error) if error.is_cancelled() => Ok(()),
-            Err(error) => Err(io::Error::new(io::ErrorKind::Other, format!("KCP UDP task failed: {error}"))),
-        },
-        _ = &mut stop => Ok(()),
+    let mut write_complete = false;
+    let mut graceful_deadline = (*graceful_drain.borrow())
+        .then(|| tokio::time::Instant::now() + KCP_GRACEFUL_DRAIN_TIMEOUT);
+    let result = loop {
+        let deadline_for_wait = graceful_deadline;
+        let drain_timeout = async move {
+            match deadline_for_wait {
+                Some(deadline) => tokio::time::sleep_until(deadline).await,
+                None => std::future::pending::<()>().await,
+            }
+        };
+        tokio::pin!(drain_timeout);
+
+        tokio::select! {
+            result = &mut read_task => break result,
+            result = &mut write_task, if !write_complete => match result {
+                Ok(()) => {
+                    write_complete = true;
+                    // Closing the outbound receiver implies the last owner is
+                    // dropping. Start the same absolute bound even if this
+                    // branch wins the race with the watch notification.
+                    if graceful_deadline.is_none() {
+                        graceful_deadline = Some(
+                            tokio::time::Instant::now() + KCP_GRACEFUL_DRAIN_TIMEOUT,
+                        );
+                    }
+                }
+                Err(error) => break Err(error),
+            },
+            result = &mut io_task => break match result {
+                Ok(result) => result,
+                Err(error) if error.is_cancelled() => Ok(()),
+                Err(error) => Err(io::Error::new(io::ErrorKind::Other, format!("KCP UDP task failed: {error}"))),
+            },
+            _ = &mut stop => break Ok(()),
+            changed = graceful_drain.changed(), if graceful_deadline.is_none() => {
+                if changed.is_err() || *graceful_drain.borrow() {
+                    graceful_deadline = Some(
+                        tokio::time::Instant::now() + KCP_GRACEFUL_DRAIN_TIMEOUT,
+                    );
+                }
+            },
+            _ = &mut drain_timeout => break Ok(()),
+        }
     };
     io_task.abort();
     result
@@ -864,6 +906,44 @@ async fn pump_udp(
     }
 }
 
+#[cfg(test)]
+async fn pump_udp_until_blackhole(
+    socket: Arc<tokio::net::UdpSocket>,
+    input: mpsc::Sender<KcpPacket>,
+    mut output: mpsc::Receiver<KcpPacket>,
+    mut blackhole: watch::Receiver<bool>,
+) -> io::Result<()> {
+    let mut buffer = [0u8; KCP_DATAGRAM_SIZE];
+    loop {
+        if *blackhole.borrow() {
+            std::future::pending::<()>().await;
+        }
+        tokio::select! {
+            packet = output.recv() => {
+                let packet = packet.ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::BrokenPipe, "KCP endpoint output closed")
+                })?;
+                socket.send(&packet.inner()).await?;
+            }
+            result = socket.recv(&mut buffer) => {
+                let size = result?;
+                if size < std::mem::size_of::<KcpPacketHeader>() {
+                    continue;
+                }
+                input
+                    .send(BytesMut::from(&buffer[..size]).into())
+                    .await
+                    .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "KCP endpoint input closed"))?;
+            }
+            changed = blackhole.changed() => {
+                if changed.is_err() || *blackhole.borrow() {
+                    std::future::pending::<()>().await;
+                }
+            }
+        }
+    }
+}
+
 async fn pump_kcp_reads<R>(mut reader: R, shared: Arc<KcpShared>) -> io::Result<()>
 where
     R: tokio::io::AsyncRead + Unpin,
@@ -923,11 +1003,6 @@ where
         }
     }
     writer.shutdown().await?;
-    // `kcp-sys` closes its application sender synchronously, then drains its
-    // internal send queue and waits for transport ACKs in background tasks.
-    // Keep the endpoint and UDP pump alive for a bounded retransmission window
-    // before the owner thread exits.
-    tokio::time::sleep(KCP_GRACEFUL_DRAIN_TIMEOUT).await;
     Ok(())
 }
 
@@ -1000,6 +1075,72 @@ pub(crate) fn spawn_test_kcp_echo_server(
         })
     });
     Ok((server_address, handle))
+}
+
+#[cfg(test)]
+fn spawn_test_kcp_blackhole_after_handshake(
+    address: SocketAddr,
+) -> io::Result<(
+    SocketAddr,
+    std_mpsc::Receiver<()>,
+    JoinHandle<io::Result<()>>,
+)> {
+    let socket = UdpSocket::bind(address)?;
+    socket.set_nonblocking(true)?;
+    let server_address = socket.local_addr()?;
+    let (blackholed_tx, blackholed_rx) = std_mpsc::sync_channel(1);
+    let handle = thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        runtime.block_on(async move {
+            let socket = Arc::new(tokio::net::UdpSocket::from_std(socket)?);
+            let mut punch = [0u8; KCP_DATAGRAM_SIZE];
+            let (_, client_address) =
+                tokio::time::timeout(Duration::from_secs(3), socket.recv_from(&mut punch))
+                    .await
+                    .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "test punch timeout"))??;
+            socket.connect(client_address).await?;
+            socket.send(&[]).await?;
+
+            let mut endpoint = KcpEndpoint::new();
+            endpoint.run().await;
+            let input = endpoint.input_sender();
+            let output = endpoint.output_receiver().ok_or_else(|| {
+                io::Error::new(io::ErrorKind::Other, "test KCP output unavailable")
+            })?;
+            let (blackhole_control, blackhole_rx) = watch::channel(false);
+            let io_task = tokio::spawn(pump_udp_until_blackhole(
+                socket,
+                input,
+                output,
+                blackhole_rx,
+            ));
+            let conn_id = tokio::time::timeout(Duration::from_secs(3), endpoint.accept())
+                .await
+                .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "test KCP accept timeout"))?
+                .map_err(|error| {
+                    io::Error::new(io::ErrorKind::Other, format!("test KCP accept: {error}"))
+                })?;
+            let _stream = KcpStream::new(&endpoint, conn_id).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::Other, "test KCP stream unavailable")
+            })?;
+
+            // Let the final handshake datagram leave the server, then stop
+            // consuming and acknowledging every subsequent KCP packet while
+            // keeping the fixture alive beyond the client's drain deadline.
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            blackhole_control.send_replace(true);
+            blackholed_tx.send(()).map_err(|_| {
+                io::Error::new(io::ErrorKind::BrokenPipe, "blackhole owner stopped")
+            })?;
+            tokio::time::sleep(KCP_GRACEFUL_DRAIN_TIMEOUT + Duration::from_secs(2)).await;
+            io_task.abort();
+            let _ = io_task.await;
+            Ok(())
+        })
+    });
+    Ok((server_address, blackholed_rx, handle))
 }
 
 #[cfg(test)]
@@ -1157,17 +1298,88 @@ mod tests {
     }
 
     #[test]
+    fn kcp_last_owner_drop_is_bounded_after_peer_stops_acknowledging() {
+        let bind = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
+        let (server_address, blackholed, server) =
+            spawn_test_kcp_blackhole_after_handshake(bind).expect("bind KCP blackhole fixture");
+        let socket = UdpSocket::bind(bind).expect("bind KCP blackhole client");
+        let stream = KcpPeerStream::connect(socket, server_address, Duration::from_secs(3), None)
+            .expect("connect KCP blackhole client");
+        blackholed
+            .recv_timeout(Duration::from_secs(1))
+            .expect("fixture must stop acknowledging after handshake");
+
+        let sender = stream
+            .owner
+            .outbound
+            .as_ref()
+            .expect("KCP outbound sender")
+            .clone();
+        let saturation_deadline = Instant::now() + Duration::from_secs(3);
+        let mut accepted = 0usize;
+        let mut continuously_full_since = None;
+        let mut command = OutboundCommand::Data(vec![0xA5; 64 * 1024]);
+        loop {
+            match sender.try_send(command) {
+                Ok(()) => {
+                    accepted += 1;
+                    continuously_full_since = None;
+                    command = OutboundCommand::Data(vec![0xA5; 64 * 1024]);
+                }
+                Err(mpsc::error::TrySendError::Full(returned)) => {
+                    command = returned;
+                    let full_since = continuously_full_since.get_or_insert_with(Instant::now);
+                    if full_since.elapsed() >= Duration::from_millis(250) {
+                        break;
+                    }
+                    thread::sleep(KCP_QUEUE_WAIT_SLICE);
+                }
+                Err(mpsc::error::TrySendError::Closed(_)) => {
+                    panic!(
+                        "KCP worker closed before the blackhole queue saturated: {:?}",
+                        stream.owner.shared.current_error()
+                    );
+                }
+            }
+            assert!(
+                Instant::now() < saturation_deadline,
+                "KCP blackhole queue did not saturate"
+            );
+        }
+        assert!(
+            accepted > KCP_OUTBOUND_CAPACITY,
+            "fixture must move data into kcp-sys before outer saturation: accepted={accepted}"
+        );
+        drop(sender);
+
+        let started = Instant::now();
+        drop(stream);
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed <= KCP_GRACEFUL_DRAIN_TIMEOUT + Duration::from_secs(1),
+            "last-owner drop exceeded the absolute drain bound: {elapsed:?}"
+        );
+
+        server
+            .join()
+            .expect("join KCP blackhole fixture")
+            .expect("KCP blackhole fixture");
+    }
+
+    #[test]
     fn kcp_backpressure_write_observes_session_cancellation() {
         let session_id = 0x4B43_5002;
         let epoch = crate::begin_connect_epoch(session_id);
         let shared = Arc::new(KcpShared::new());
         let (outbound, outbound_rx) = mpsc::channel(1);
         let (shutdown, _shutdown_rx) = watch::channel(false);
+        let (graceful_drain, _graceful_drain_rx) = watch::channel(false);
         let mut stream = KcpPeerStream {
             owner: Arc::new(KcpOwner {
                 shared,
                 outbound: Some(outbound),
                 shutdown,
+                graceful_drain,
                 worker: Mutex::new(None),
                 local_address: "127.0.0.1:41001".parse().unwrap(),
                 peer_address: "127.0.0.1:41002".parse().unwrap(),
