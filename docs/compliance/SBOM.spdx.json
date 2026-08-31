@@ -2,10 +2,10 @@
   "spdxVersion": "SPDX-2.3",
   "dataLicense": "CC0-1.0",
   "SPDXID": "SPDXRef-DOCUMENT",
-  "name": "RemoteDeskHarmonyOS-b4d8cbb7095d7e9fb2fd8b66b7ca8d84047297e0",
-  "documentNamespace": "https://github.com/Mydstiny/RemoteDeskHarmonyOS/spdx/b4d8cbb7095d7e9fb2fd8b66b7ca8d84047297e0",
+  "name": "RemoteDeskHarmonyOS-f7228c4a27d293a574567f40d29d4082b9d1828b",
+  "documentNamespace": "https://github.com/Mydstiny/RemoteDeskHarmonyOS/spdx/f7228c4a27d293a574567f40d29d4082b9d1828b",
   "creationInfo": {
-    "created": "2026-08-31T01:38:37Z",
+    "created": "2026-08-31T01:56:25Z",
     "creators": [
       "Tool: scripts/generate_sbom.ps1",
       "Organization: RemoteDeskHarmonyOS"
