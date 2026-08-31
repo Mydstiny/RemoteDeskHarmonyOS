@@ -3,10 +3,10 @@
   "task": "all-protocol-ipv6-upgrade",
   "branch": "codex/per-protocol-pinch-zoom-plan",
   "base": "5a0e055159402fcdf50aeea91760d99e3c017f39",
-  "head": "fa98d94fcdf300050a59807ed99ef707b885f07f",
+  "head": "ce5ab902c8591a6e08b3228c1e5d7c66013d9e2f",
   "phase": "M0-M4-local-code-complete-release-gated",
   "status": "active",
-  "next": "Run the M1-M3 real-device IPv6 matrix and validate the completed RustDesk UDP/KCP state machine against fixed-version hbbs/hbbr and controlled NAT/IPv6 peers before considering any capability flag.",
+  "next": "Run the 1.1.5 14-page update-Swiper and M1-M3 IPv6 real-device matrices, then validate the completed RustDesk UDP/KCP state machine against fixed-version hbbs/hbbr and controlled NAT/IPv6 peers before considering any capability flag.",
   "blockers": [
     "No HDC target or controlled IPv6/AAAA-only/NAT64/VPN protocol endpoints were available; HDC returned Connect server failed.",
     "RustDesk M4 release acceptance requires fixed-version hbbs/hbbr and controlled peers across the NAT/IPv6 topology matrix; AUTO, UDP/KCP and NAT capability bits remain disabled."
@@ -19,15 +19,18 @@
     "taskIds": [
       "/root/ipv6_shared_rdp_review",
       "/root/ipv6_ssh_review",
-      "/root/ipv6_rustdesk_review"
+      "/root/ipv6_rustdesk_review",
+      "/root/release_115_review"
     ],
-    "reviewedHead": "fa98d94fcdf300050a59807ed99ef707b885f07f",
+    "reviewedHead": "ce5ab902c8591a6e08b3228c1e5d7c66013d9e2f",
     "scope": [
       ".gitattributes",
+      "AppScope/app.json5",
       "README.md",
       "REUSE.toml",
       "THIRD_PARTY_NOTICES.md",
       "docs/RDP_STATUS.md",
+      "docs/app-store",
       "docs/compliance",
       "entry/src/main",
       "entry/src/ohosTest",
@@ -47,19 +50,20 @@
       "scripts/verify_open_source_release.ps1"
     ],
     "findings": [],
-    "reason": "The earlier cumulative protocol reviews remain valid. /root/ipv6_shared_rdp_review verified the complete post-review hardening increment through fa98d94f after the observer-registration P1 was closed by serialized first registration and the Moonlight add-only theme-contrast P3 was closed with a single shared option state and palette-readable label. Final P0=0, P1=0, P2=0 and P3=0."
+    "reason": "The earlier cumulative protocol reviews remain valid. /root/release_115_review inspected the 1.1.5 version and 14-page Swiper increment, found one P2 hard-coded 10-page label, verified its registry-derived remediation at fb30744b, and confirmed ce5ab902 only anchors SBOM metadata to that reviewed code checkpoint. Final P0=0, P1=0, P2=0 and P3=0."
   },
   "lastVerification": {
-    "baseline": "M0-M4 local code-side implementation, compliance and post-review hardening are complete through fa98d94f from task baseline 5a0e05515 on the user-authorized existing branch; every product IPv6 and RustDesk UDP/KCP/NAT capability flag remains release-gated.",
-    "testCompile": "PASS: default@OhosTestCompileArkTS at the f7228c4a code checkpoint (6 s 534 ms), after the 041c5166 SBOM refresh (6 s 7 ms), and after final Moonlight picker remediation at fa98d94f (7 s 163 ms).",
-    "assembleHap": "PASS: signed assembleHap at the f7228c4a code checkpoint (1 min 955 ms), after the 041c5166 SBOM refresh (8 s 276 ms; SHA-256 20671712d2c55d67deaa3485c5f5da769af0714948c1185d7d81a8a4f5a8a64f), and after final Moonlight picker remediation at fa98d94f (9 s 351 ms).",
+    "baseline": "M0-M4 local code-side implementation, compliance, post-review hardening and the 1.1.5 metadata/14-page update-Swiper increment are complete through ce5ab902 from task baseline 5a0e05515 on the user-authorized existing branch; every product IPv6 and RustDesk UDP/KCP/NAT capability flag remains release-gated.",
+    "testCompile": "PASS: default@OhosTestCompileArkTS after the final 1.1.5 code/SBOM checkpoint completed in 6 s 408 ms.",
+    "assembleHap": "PASS: signed assembleHap after the final 1.1.5 code/SBOM checkpoint completed in 8 s 717 ms; pack.info is 1.1.5 / 1001005 and signed HAP SHA-256 is d08730dd6cd61e54d15e9abe1023028655e778ae2351ac2a2a4720761ef9737f.",
     "targetedTests": "PASS: Rust no-default 250/250 and host-linkable alacritty_terminal 260/260; deterministic handshaken ACK-blackhole graceful-drain regression; OHOS RustDesk FFI arm64-v8a and x86_64 release builds; native endpoint/protocol suite 976/976 after observer single-flight hardening, including a real IPv6 Paramiko SSH fixture and exact file-descriptor reuse isolation; ArkTS test compilation covers schema-v3 redaction and all five protocol families.",
-    "compliance": "PASS: cargo fmt --check, git diff --check, exact non-duplicated KCP SBOM relationships and Light open-source compliance through fa98d94f.",
-    "review": "PASS: prior shared/RDP/VNC/Moonlight, SSH/SFTP and RustDesk reviews remain valid; /root/ipv6_shared_rdp_review verified 041c5166..fa98d94f after P1/P3 remediation and reported P0=0, P1=0, P2=0 and P3=0.",
+    "compliance": "PASS: cargo fmt --check, git diff --check, exact non-duplicated KCP SBOM relationships, a 1.1.5 root package anchored to fb30744bd, and Light open-source compliance through ce5ab902.",
+    "review": "PASS: prior shared/RDP/VNC/Moonlight, SSH/SFTP and RustDesk reviews remain valid; /root/release_115_review verified the complete 1.1.5 increment and P2 remediation plus final SBOM metadata, reporting P0=0, P1=0, P2=0 and P3=0.",
+    "release115": "PASS: all version sources and pack.info agree on 1.1.5 / 1001005; current release has exactly 14 pages, contains no 1.1.4, shows 1.1.5 on only its overview, derives the UI count from the registry, and preserves explicit 1.1.4/1.1.3 histories at 10/12 pages.",
     "diagnostics": "PASS: schema v3 records only closed redacted configured endpoint/route and hostname/IPv4/IPv6/scoped-IPv6 candidate facts for RDP, RustDesk, SSH/SFTP, VNC and Moonlight; raw endpoints are rejected and actual resolver winner/fallback telemetry remains future work.",
-    "coordinationDocs": "PASS: after the final state and review-receipt refresh, default@OhosTestCompileArkTS completed in 7 s 175 ms and signed assembleHap completed in 8 s 803 ms.",
+    "coordinationDocs": "PASS: the final state and review-receipt refresh was followed by both mandatory Hvigor gates, git diff --check and Light open-source compliance on 2026-08-31.",
     "rustdeskFlipIncrement": "PASS: scoped commits b11dd222e and 2a3a0aa4d provide the exact five visual/control axis actions, per-host persistence, main/PIP/multi-canvas rendering and mirrored input mapping; native 858/858, both Hvigor gates, Light compliance and independent follow-up review passed. Real HarmonyOS PC graphics-stack acceptance remains pending.",
-    "deviceAcceptance": "NOT RUN: HDC returned Connect server failed and no fixed hbbs/hbbr or controlled IPv6/AAAA-only/NAT64/VPN endpoints were available; configured_endpoint_ipv6, dual_stack_racing, discovery_ipv6, protocol_control_data_ipv6 and nat_traversal_ipv6 declarations remain disabled."
+    "deviceAcceptance": "NOT RUN: HDC returned Connect server failed and no fixed hbbs/hbbr or controlled IPv6/AAAA-only/NAT64/VPN endpoints were available; the 1.1.5 update-Swiper visual matrix remains pending and configured_endpoint_ipv6, dual_stack_racing, discovery_ipv6, protocol_control_data_ipv6 and nat_traversal_ipv6 declarations remain disabled."
   },
   "updated": "2026-08-31 Asia/Shanghai"
 }

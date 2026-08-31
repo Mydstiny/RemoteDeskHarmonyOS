@@ -10,7 +10,7 @@ Updated: 2026-08-31 Asia/Shanghai
 
 ## Next
 
-1. Complete the existing RDP high-DPI, per-protocol gesture/settings, bindSheet dark/light, wheel direction, RustDesk flip/quality/multimonitor, Moonlight FAB add-shell/runtime-gate, 1.1.4 upgrade and cloud-recovery device matrices before PR closure.
+1. Complete the existing RDP high-DPI, per-protocol gesture/settings, bindSheet dark/light, wheel direction, RustDesk flip/quality/multimonitor, Moonlight FAB add-shell/runtime-gate, 1.1.5 14-page update-Swiper and cloud-recovery device matrices before PR closure.
 2. After device evidence and required checks pass, push the task branch, open the PR, pass `open-source-compliance`, merge to `main` and clean the merged branch.
 
 ## Later
