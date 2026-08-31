@@ -3,12 +3,12 @@
   "task": "all-protocol-ipv6-upgrade",
   "branch": "codex/per-protocol-pinch-zoom-plan",
   "base": "5a0e055159402fcdf50aeea91760d99e3c017f39",
-  "head": "ce5ab902c8591a6e08b3228c1e5d7c66013d9e2f",
+  "head": "f59f31d95c4b2791b4c2ca35c981314bbc0df365",
   "phase": "M0-M4-local-code-complete-release-gated",
   "status": "active",
   "next": "Run the 1.1.5 14-page update-Swiper and M1-M3 IPv6 real-device matrices, then validate the completed RustDesk UDP/KCP state machine against fixed-version hbbs/hbbr and controlled NAT/IPv6 peers before considering any capability flag.",
   "blockers": [
-    "No HDC target or controlled IPv6/AAAA-only/NAT64/VPN protocol endpoints were available; HDC returned Connect server failed.",
+    "No HDC target or controlled IPv6/AAAA-only/NAT64/VPN protocol endpoints were available; both available HDC binaries returned an empty target list.",
     "RustDesk M4 release acceptance requires fixed-version hbbs/hbbr and controlled peers across the NAT/IPv6 topology matrix; AUTO, UDP/KCP and NAT capability bits remain disabled."
   ],
   "planPaths": [
@@ -20,9 +20,10 @@
       "/root/ipv6_shared_rdp_review",
       "/root/ipv6_ssh_review",
       "/root/ipv6_rustdesk_review",
-      "/root/release_115_review"
+      "/root/release_115_review",
+      "/root/ipv6_blocker_review_retry"
     ],
-    "reviewedHead": "ce5ab902c8591a6e08b3228c1e5d7c66013d9e2f",
+    "reviewedHead": "f59f31d95c4b2791b4c2ca35c981314bbc0df365",
     "scope": [
       ".gitattributes",
       "AppScope/app.json5",
@@ -50,20 +51,20 @@
       "scripts/verify_open_source_release.ps1"
     ],
     "findings": [],
-    "reason": "The earlier cumulative protocol reviews remain valid. /root/release_115_review inspected the 1.1.5 version and 14-page Swiper increment, found one P2 hard-coded 10-page label, verified its registry-derived remediation at fb30744b, and confirmed ce5ab902 only anchors SBOM metadata to that reviewed code checkpoint. Final P0=0, P1=0, P2=0 and P3=0."
+    "reason": "/root/ipv6_blocker_review_retry independently rescanned the full IPv6 increment from the 1.1.4 baseline 5a0e05515 through a1991db21 and verified closure of the active-route port, default-network veto and cross-protocol field false blockers without weakening real security gates. Its f59f31d9 follow-up confirmed an SBOM-metadata-only anchor update. Final P0=0, P1=0, P2=0 and P3=0."
   },
   "lastVerification": {
-    "baseline": "M0-M4 local code-side implementation, compliance, post-review hardening and the 1.1.5 metadata/14-page update-Swiper increment are complete through ce5ab902 from task baseline 5a0e05515 on the user-authorized existing branch; every product IPv6 and RustDesk UDP/KCP/NAT capability flag remains release-gated.",
-    "testCompile": "PASS: default@OhosTestCompileArkTS after the final 1.1.5 code/SBOM checkpoint completed in 6 s 408 ms.",
-    "assembleHap": "PASS: signed assembleHap after the final 1.1.5 code/SBOM checkpoint completed in 8 s 717 ms; pack.info is 1.1.5 / 1001005 and signed HAP SHA-256 is d08730dd6cd61e54d15e9abe1023028655e778ae2351ac2a2a4720761ef9737f.",
-    "targetedTests": "PASS: Rust no-default 250/250 and host-linkable alacritty_terminal 260/260; deterministic handshaken ACK-blackhole graceful-drain regression; OHOS RustDesk FFI arm64-v8a and x86_64 release builds; native endpoint/protocol suite 976/976 after observer single-flight hardening, including a real IPv6 Paramiko SSH fixture and exact file-descriptor reuse isolation; ArkTS test compilation covers schema-v3 redaction and all five protocol families.",
-    "compliance": "PASS: cargo fmt --check, git diff --check, exact non-duplicated KCP SBOM relationships, a 1.1.5 root package anchored to fb30744bd, and Light open-source compliance through ce5ab902.",
-    "review": "PASS: prior shared/RDP/VNC/Moonlight, SSH/SFTP and RustDesk reviews remain valid; /root/release_115_review verified the complete 1.1.5 increment and P2 remediation plus final SBOM metadata, reporting P0=0, P1=0, P2=0 and P3=0.",
+    "baseline": "M0-M4 local code-side implementation, compliance, 1.1.5 metadata/14-page update-Swiper and the full 1.1.4-baseline false-blocker remediation are complete through reviewed code checkpoint a1991db21 and SBOM checkpoint f59f31d9 on the user-authorized existing branch; every product IPv6 and RustDesk UDP/KCP/NAT capability flag remains release-gated.",
+    "testCompile": "PASS: default@OhosTestCompileArkTS after the reviewed blocker-remediation/SBOM checkpoint completed in 6 s 683 ms.",
+    "assembleHap": "PASS: signed assembleHap after the reviewed blocker-remediation/SBOM checkpoint completed in 8 s 131 ms; pack.info is 1.1.5 / 1001005 and signed HAP SHA-256 is 114dae916984b93f3c87283012e46886646e38f586457d582441fba09f7fc28f.",
+    "targetedTests": "PASS: Rust no-default 250/250 and host-linkable alacritty_terminal 260/260; deterministic handshaken ACK-blackhole graceful-drain regression; OHOS RustDesk FFI arm64-v8a and x86_64 release builds; native endpoint/protocol suite 979/979 after active-route port isolation, observer degradation and active-protocol field parsing, including a real IPv6 Paramiko SSH fixture and exact file-descriptor reuse isolation; ArkTS test compilation covers schema-v3 redaction and all five protocol families.",
+    "compliance": "PASS: cargo fmt --check, git diff --check, exact non-duplicated KCP SBOM relationships, a 1.1.5 root package with 144 packages and 406 relationships anchored to a1991db21, and Light open-source compliance through f59f31d9.",
+    "review": "PASS: /root/ipv6_blocker_review_retry rescanned 5a0e05515..a1991db21 and verified the f59f31d9 SBOM-only follow-up, reporting P0=0, P1=0, P2=0 and P3=0; prior protocol and 1.1.5 release reviews remain valid.",
     "release115": "PASS: all version sources and pack.info agree on 1.1.5 / 1001005; current release has exactly 14 pages, contains no 1.1.4, shows 1.1.5 on only its overview, derives the UI count from the registry, and preserves explicit 1.1.4/1.1.3 histories at 10/12 pages.",
     "diagnostics": "PASS: schema v3 records only closed redacted configured endpoint/route and hostname/IPv4/IPv6/scoped-IPv6 candidate facts for RDP, RustDesk, SSH/SFTP, VNC and Moonlight; raw endpoints are rejected and actual resolver winner/fallback telemetry remains future work.",
-    "coordinationDocs": "PASS: the final state and review-receipt refresh was followed by both mandatory Hvigor gates, git diff --check and Light open-source compliance on 2026-08-31.",
+    "coordinationDocs": "PASS: the blocker-remediation state, handoff and content-addressed review receipt were refreshed and followed by both mandatory Hvigor gates, git diff --check and Light open-source compliance on 2026-08-31.",
     "rustdeskFlipIncrement": "PASS: scoped commits b11dd222e and 2a3a0aa4d provide the exact five visual/control axis actions, per-host persistence, main/PIP/multi-canvas rendering and mirrored input mapping; native 858/858, both Hvigor gates, Light compliance and independent follow-up review passed. Real HarmonyOS PC graphics-stack acceptance remains pending.",
-    "deviceAcceptance": "NOT RUN: HDC returned Connect server failed and no fixed hbbs/hbbr or controlled IPv6/AAAA-only/NAT64/VPN endpoints were available; the 1.1.5 update-Swiper visual matrix remains pending and configured_endpoint_ipv6, dual_stack_racing, discovery_ipv6, protocol_control_data_ipv6 and nat_traversal_ipv6 declarations remain disabled."
+    "deviceAcceptance": "NOT RUN: both SDK-selected and DevEco-bundled HDC commands returned no target, and no fixed hbbs/hbbr or controlled IPv6/AAAA-only/NAT64/VPN endpoints were available; the 1.1.5 update-Swiper visual matrix remains pending and configured_endpoint_ipv6, dual_stack_racing, discovery_ipv6, protocol_control_data_ipv6 and nat_traversal_ipv6 declarations remain disabled."
   },
   "updated": "2026-08-31 Asia/Shanghai"
 }
