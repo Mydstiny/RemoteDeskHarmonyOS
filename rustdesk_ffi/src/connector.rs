@@ -23,7 +23,7 @@ use crate::crypto::{self, KeyPair};
 use crate::crypto_channel::CryptoChannel;
 use crate::cursor_state::{CursorCacheMissReason, CursorIdResult, CursorState, CursorStreamUpdate};
 use crate::net;
-use crate::peer_stream::PeerStream;
+use crate::peer_stream::{KcpPeerStream, PeerStream};
 use crate::protocol::message_proto::{
     AudioFormat, AudioFrame, CaptureDisplays, Clipboard, ClipboardFormat, ControlKey, DisplayInfo,
     DisplayResolution, EncodedVideoFrames, FileAction, FileAction_oneof_union, FileEntry,
@@ -35,7 +35,8 @@ use crate::protocol::message_proto::{
     TouchScaleUpdate, VideoFrame, VideoFrame_oneof_union,
 };
 use crate::protocol::rendezvous::{
-    encode_socket_addr_v6, PunchHoleInfo, RendezvousClient, RendezvousRouteOptions,
+    encode_socket_addr_v6, PeerCandidate, PunchHoleInfo, RendezvousClient, RendezvousRouteOptions,
+    UdpNatLease,
 };
 use crate::protocol::rendezvous_proto::{ConnType as RendezvousConnType, NatType};
 use crate::protocol::session::{AuthEventCallback, Session, VIDEO_ACK_REQUIRED};
@@ -45,8 +46,9 @@ use protobuf::{Message as ProtoMessage, ProtobufEnum};
 use std::ffi::{c_char, c_void, CString};
 use std::io;
 use std::io::ErrorKind;
-use std::net::{SocketAddr, TcpStream};
+use std::net::{SocketAddr, TcpStream, UdpSocket};
 use std::os::raw::c_int;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -362,6 +364,11 @@ struct RendezvousCredentials<'a> {
     server_public_key: Option<&'a str>,
 }
 
+enum DirectRouteAttempt {
+    Tcp(io::Result<TcpStream>),
+    UdpKcp(io::Result<KcpPeerStream>),
+}
+
 impl<'a> RendezvousCredentials<'a> {
     fn new(access_key: &'a str, shared_access_key: bool) -> Self {
         Self {
@@ -636,6 +643,178 @@ impl RustDeskConnector {
         }
     }
 
+    fn open_auto_direct_peer_stream(
+        &self,
+        rendezvous: &RendezvousClient,
+        peer_candidates: &[PeerCandidate],
+        local_address: Option<SocketAddr>,
+        udp_peer: Option<(UdpSocket, SocketAddr)>,
+        timeout: Duration,
+    ) -> io::Result<PeerStream> {
+        let has_tcp = peer_candidates.iter().any(|candidate| {
+            candidate.transport == crate::protocol::rendezvous::PeerCandidateTransport::Tcp
+        });
+        match (has_tcp, udp_peer) {
+            (true, None) => rendezvous
+                .connect_to_peer_candidates(peer_candidates, local_address, timeout)
+                .map(PeerStream::from),
+            (false, Some((socket, peer_address))) => {
+                KcpPeerStream::connect(socket, peer_address, timeout, Some(self.connect_epoch))
+                    .map(PeerStream::from)
+            }
+            (true, Some((socket, peer_address))) => self.race_direct_peer_streams(
+                peer_candidates.to_vec(),
+                local_address,
+                socket,
+                peer_address,
+                timeout,
+            ),
+            (false, None) => Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "AUTO route has no executable direct peer transport",
+            )),
+        }
+    }
+
+    fn race_direct_peer_streams(
+        &self,
+        peer_candidates: Vec<PeerCandidate>,
+        local_address: Option<SocketAddr>,
+        udp_socket: UdpSocket,
+        udp_peer_address: SocketAddr,
+        timeout: Duration,
+    ) -> io::Result<PeerStream> {
+        let deadline = Instant::now()
+            .checked_add(timeout)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "route timeout overflow"))?;
+        let race_cancel = Arc::new(AtomicBool::new(false));
+        let (sender, receiver) = std::sync::mpsc::channel::<DirectRouteAttempt>();
+        let mut started = 0usize;
+        let mut last_error = None;
+
+        let tcp_sender = sender.clone();
+        let tcp_cancel = Arc::clone(&race_cancel);
+        let connect_epoch = self.connect_epoch;
+        match std::thread::Builder::new()
+            .name("rustdesk-direct-tcp".to_string())
+            .spawn(move || {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                let result = if remaining.is_zero() {
+                    Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "direct TCP race deadline exceeded before start",
+                    ))
+                } else {
+                    RendezvousClient::connect_to_peer_candidates_racing(
+                        &peer_candidates,
+                        local_address,
+                        remaining,
+                        connect_epoch,
+                        &tcp_cancel,
+                    )
+                };
+                let _ = tcp_sender.send(DirectRouteAttempt::Tcp(result));
+            }) {
+            Ok(_) => started += 1,
+            Err(error) => {
+                last_error = Some(io::Error::new(
+                    error.kind(),
+                    format!("start direct TCP transport worker: {error}"),
+                ));
+            }
+        }
+
+        let udp_sender = sender.clone();
+        let udp_cancel = Arc::clone(&race_cancel);
+        match std::thread::Builder::new()
+            .name("rustdesk-direct-kcp".to_string())
+            .spawn(move || {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                let result = if remaining.is_zero() {
+                    Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "direct UDP/KCP race deadline exceeded before start",
+                    ))
+                } else {
+                    KcpPeerStream::connect_with_race_cancel(
+                        udp_socket,
+                        udp_peer_address,
+                        remaining,
+                        Some(connect_epoch),
+                        udp_cancel,
+                    )
+                };
+                let _ = udp_sender.send(DirectRouteAttempt::UdpKcp(result));
+            }) {
+            Ok(_) => started += 1,
+            Err(error) => {
+                last_error = Some(io::Error::new(
+                    error.kind(),
+                    format!("start direct UDP/KCP transport worker: {error}"),
+                ));
+            }
+        }
+        drop(sender);
+
+        let mut completed = 0usize;
+        while completed < started {
+            if crate::connect_cancelled(self.connect_epoch) {
+                race_cancel.store(true, Ordering::Release);
+                return Err(io::Error::new(
+                    io::ErrorKind::Interrupted,
+                    "direct peer transport race cancelled",
+                ));
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                race_cancel.store(true, Ordering::Release);
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "direct peer transport race deadline exceeded",
+                ));
+            }
+            match receiver.recv_timeout(remaining.min(Duration::from_millis(50))) {
+                Ok(DirectRouteAttempt::Tcp(Ok(stream))) => {
+                    race_cancel.store(true, Ordering::Release);
+                    eprintln!("[RustDesk-FFI] AUTO selected direct TCP candidate");
+                    return Ok(stream.into());
+                }
+                Ok(DirectRouteAttempt::UdpKcp(Ok(stream))) => {
+                    race_cancel.store(true, Ordering::Release);
+                    eprintln!(
+                        "[RustDesk-FFI] AUTO selected direct UDP/KCP candidate family={}",
+                        if udp_peer_address.is_ipv6() {
+                            "ipv6"
+                        } else {
+                            "ipv4"
+                        }
+                    );
+                    return Ok(stream.into());
+                }
+                Ok(DirectRouteAttempt::Tcp(Err(error)))
+                | Ok(DirectRouteAttempt::UdpKcp(Err(error))) => {
+                    completed += 1;
+                    if error.kind() == io::ErrorKind::Interrupted
+                        && crate::connect_cancelled(self.connect_epoch)
+                    {
+                        race_cancel.store(true, Ordering::Release);
+                        return Err(error);
+                    }
+                    last_error = Some(error);
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+            }
+        }
+        race_cancel.store(true, Ordering::Release);
+        Err(last_error.unwrap_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "direct peer transport workers stopped without a result",
+            )
+        }))
+    }
+
     fn request_and_create_relay(
         &mut self,
         rendezvous_host: &str,
@@ -699,6 +878,7 @@ impl RustDeskConnector {
         mut rendezvous: RendezvousClient,
         punch: &PunchHoleInfo,
         local_address: Option<SocketAddr>,
+        udp_lease: Option<UdpNatLease>,
         strategy: RustDeskConnectionStrategy,
         rendezvous_host: &str,
         rendezvous_port: u16,
@@ -712,28 +892,42 @@ impl RustDeskConnector {
         route_deadline: Option<Instant>,
     ) -> io::Result<PeerStream> {
         let route_plan = punch.route_plan();
-        route_plan.ensure_executable()?;
+        let udp_peer = if strategy == RustDeskConnectionStrategy::Auto {
+            match udp_lease {
+                Some(lease) => lease.into_peer_socket(&punch.peer_candidates)?,
+                None => None,
+            }
+        } else {
+            None
+        };
+        route_plan.ensure_executable_with_udp(udp_peer.is_some())?;
+        if route_plan.has_udp_kcp() && udp_peer.is_none() {
+            eprintln!(
+                "[RustDesk-FFI] UDP/KCP route candidate unavailable without a same-family active lease"
+            );
+        }
 
-        if strategy == RustDeskConnectionStrategy::Auto && route_plan.has_direct_tcp() {
+        if strategy == RustDeskConnectionStrategy::Auto
+            && (route_plan.has_direct_tcp() || udp_peer.is_some())
+        {
             self.set_connect_state(ConnState::ConnectingToPeer);
             rendezvous.disconnect();
-            match rendezvous.connect_to_peer_candidates(
+            match self.open_auto_direct_peer_stream(
+                &rendezvous,
                 &punch.peer_candidates,
                 local_address,
+                udp_peer,
                 route_stage_timeout(
                     route_deadline,
                     Self::direct_candidate_timeout(punch),
                     self.connect_epoch,
-                    "AUTO direct candidate connect",
+                    "AUTO direct transport race",
                 )?,
             ) {
-                Ok(stream) => {
-                    eprintln!("[RustDesk-FFI] AUTO selected direct TCP candidate");
-                    return Ok(stream.into());
-                }
+                Ok(stream) => return Ok(stream),
                 Err(error) => {
                     eprintln!(
-                        "[RustDesk-FFI] AUTO direct TCP candidates failed kind={:?}; relay_fallback={}",
+                        "[RustDesk-FFI] AUTO direct transports failed kind={:?}; relay_fallback={}",
                         error.kind(),
                         if route_plan.has_relay_fallback() {
                             "available"
@@ -741,6 +935,9 @@ impl RustDeskConnector {
                             "absent"
                         }
                     );
+                    if error.kind() == io::ErrorKind::Interrupted {
+                        return Err(error);
+                    }
                     if !route_plan.has_relay_fallback() {
                         return Err(error);
                     }
@@ -871,7 +1068,7 @@ impl RustDeskConnector {
         )?;
 
         let local_address = rd.local_address().ok();
-        let (route_options, _udp_lease) = self.prepare_rendezvous_route(
+        let (route_options, udp_lease) = self.prepare_rendezvous_route(
             rendezvous_host,
             rendezvous_port,
             &rd,
@@ -909,6 +1106,7 @@ impl RustDeskConnector {
             rd,
             &punch,
             local_address,
+            udp_lease,
             connection_strategy,
             rendezvous_host,
             rendezvous_port,
@@ -1129,7 +1327,7 @@ impl RustDeskConnector {
         )?;
 
         let local_address = rd.local_address().ok();
-        let (route_options, _udp_lease) = self.prepare_rendezvous_route(
+        let (route_options, udp_lease) = self.prepare_rendezvous_route(
             rendezvous_host,
             rendezvous_port,
             &rd,
@@ -1184,6 +1382,7 @@ impl RustDeskConnector {
             rd,
             &punch,
             local_address,
+            udp_lease,
             connection_strategy,
             rendezvous_host,
             rendezvous_port,
@@ -4313,6 +4512,7 @@ mod tests {
         PhysicalModifierState, RemoteKeyboardTransport, RendezvousCredentials,
         RustDeskConnectionStrategy, RustDeskConnector, VP9_PRESSURE_RECOVERY_HOLD_WINDOWS,
     };
+    use crate::peer_stream::{spawn_test_kcp_echo_server, PeerStream};
     use crate::protocol::message_proto::KeyboardMode;
     use crate::protocol::message_proto::{
         DisplayInfo, Hash, LoginResponse, Message, Misc_oneof_union, PeerInfo,
@@ -4320,7 +4520,8 @@ mod tests {
         TouchEvent_oneof_union,
     };
     use crate::protocol::rendezvous::{
-        PeerCandidate, PeerCandidateSource, PeerCandidateTransport, PunchHoleInfo, RendezvousClient,
+        PeerCandidate, PeerCandidateSource, PeerCandidateTransport, PunchHoleInfo,
+        RendezvousClient, UdpNatLease,
     };
     use crate::protocol::rendezvous_proto::{
         ConnType as RendezvousConnType, NatType, RendezvousMessage, RendezvousMessage_oneof_union,
@@ -4328,7 +4529,8 @@ mod tests {
     use crate::protocol::wire;
     use crate::{RustDeskDisplayInfoState, RustDeskDisplayState};
     use protobuf::Message as ProtoMessage;
-    use std::net::TcpListener;
+    use std::io::{Read, Write};
+    use std::net::{IpAddr, Ipv4Addr, Shutdown, SocketAddr, TcpListener, UdpSocket};
     use std::sync::{Arc, Mutex};
     use std::thread;
     use std::time::{Duration, Instant};
@@ -4380,6 +4582,135 @@ mod tests {
         crate::finish_connect_epoch(epoch, session_id);
     }
 
+    #[test]
+    fn auto_route_executes_udp_kcp_with_a_matching_nat_lease() {
+        let payload = b"connector-kcp-route".to_vec();
+        let bind = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
+        let (peer_address, peer) =
+            spawn_test_kcp_echo_server(bind, payload.clone()).expect("bind KCP peer fixture");
+        let udp_socket = UdpSocket::bind(bind).expect("bind mapped UDP socket");
+        udp_socket
+            .connect(peer_address)
+            .expect("connect mapped UDP fixture");
+        let udp_lease = UdpNatLease::from_connected_socket_for_test(udp_socket)
+            .expect("create mapped UDP lease fixture");
+
+        let session_id = 90_045;
+        let epoch = crate::begin_connect_epoch(session_id);
+        let mut connector = RustDeskConnector::new_with_connection_id(session_id, epoch);
+        let punch = PunchHoleInfo {
+            relay_server: String::new(),
+            signed_pk: Vec::new(),
+            peer_candidates: vec![PeerCandidate {
+                address: peer_address,
+                source: PeerCandidateSource::SocketAddr,
+                transport: PeerCandidateTransport::Udp,
+            }],
+            relay_uuid: None,
+            peer_nat_type: NatType::ASYMMETRIC,
+            is_local: true,
+        };
+        let credentials = RendezvousCredentials::new("", false);
+        let mut stream = connector
+            .open_rendezvous_peer_stream(
+                RendezvousClient::new_with_connect_epoch(epoch),
+                &punch,
+                None,
+                Some(udp_lease),
+                RustDeskConnectionStrategy::Auto,
+                "127.0.0.1",
+                21116,
+                21117,
+                "",
+                "",
+                "peer-kcp",
+                &credentials,
+                false,
+                RendezvousConnType::DEFAULT_CONN,
+                route_deadline_for_strategy(RustDeskConnectionStrategy::Auto),
+            )
+            .expect("UDP/KCP-only AUTO route must execute with its lease");
+        assert!(matches!(&stream, PeerStream::Kcp(_)));
+        stream.write_all(&payload).expect("write KCP route payload");
+        let mut echoed = vec![0u8; payload.len()];
+        stream
+            .read_exact(&mut echoed)
+            .expect("read KCP route payload");
+        assert_eq!(echoed, payload);
+        stream.shutdown(Shutdown::Both).expect("shutdown KCP route");
+        drop(stream);
+        peer.join().expect("join KCP peer fixture").unwrap();
+        crate::finish_connect_epoch(epoch, session_id);
+    }
+
+    #[test]
+    fn auto_route_tcp_winner_cancels_the_kcp_sibling() {
+        let tcp = TcpListener::bind("127.0.0.1:0").expect("bind TCP peer fixture");
+        let tcp_address = tcp.local_addr().expect("TCP peer address");
+        let tcp_peer = thread::spawn(move || {
+            let (stream, _) = tcp.accept().expect("accept TCP peer route");
+            thread::sleep(Duration::from_millis(100));
+            drop(stream);
+        });
+        let udp_blackhole = UdpSocket::bind("127.0.0.1:0").expect("bind UDP blackhole");
+        let udp_address = udp_blackhole.local_addr().expect("UDP blackhole address");
+        let udp_socket = UdpSocket::bind("127.0.0.1:0").expect("bind mapped UDP socket");
+        udp_socket
+            .connect(udp_address)
+            .expect("connect mapped UDP fixture");
+        let udp_lease = UdpNatLease::from_connected_socket_for_test(udp_socket)
+            .expect("create mapped UDP lease fixture");
+
+        let session_id = 90_046;
+        let epoch = crate::begin_connect_epoch(session_id);
+        let mut connector = RustDeskConnector::new_with_connection_id(session_id, epoch);
+        let punch = PunchHoleInfo {
+            relay_server: String::new(),
+            signed_pk: Vec::new(),
+            peer_candidates: vec![
+                PeerCandidate {
+                    address: udp_address,
+                    source: PeerCandidateSource::SocketAddr,
+                    transport: PeerCandidateTransport::Udp,
+                },
+                PeerCandidate {
+                    address: tcp_address,
+                    source: PeerCandidateSource::SocketAddr,
+                    transport: PeerCandidateTransport::Tcp,
+                },
+            ],
+            relay_uuid: None,
+            peer_nat_type: NatType::ASYMMETRIC,
+            is_local: true,
+        };
+        let credentials = RendezvousCredentials::new("", false);
+        let stream = connector
+            .open_rendezvous_peer_stream(
+                RendezvousClient::new_with_connect_epoch(epoch),
+                &punch,
+                None,
+                Some(udp_lease),
+                RustDeskConnectionStrategy::Auto,
+                "127.0.0.1",
+                21116,
+                21117,
+                "",
+                "",
+                "peer-race",
+                &credentials,
+                false,
+                RendezvousConnType::DEFAULT_CONN,
+                route_deadline_for_strategy(RustDeskConnectionStrategy::Auto),
+            )
+            .expect("TCP must win against an unresponsive KCP peer");
+        assert!(matches!(&stream, PeerStream::Tcp(_)));
+        drop(stream);
+        tcp_peer.join().expect("join TCP peer fixture");
+        thread::sleep(Duration::from_millis(80));
+        drop(udp_blackhole);
+        crate::finish_connect_epoch(epoch, session_id);
+    }
+
     fn assert_direct_failure_falls_back_to_relay(conn_type: RendezvousConnType) {
         let unavailable = TcpListener::bind("127.0.0.1:0").expect("bind unavailable fixture");
         let direct_address = unavailable
@@ -4427,6 +4758,7 @@ mod tests {
             .open_rendezvous_peer_stream(
                 RendezvousClient::new_with_connect_epoch(epoch),
                 &punch,
+                None,
                 None,
                 RustDeskConnectionStrategy::Auto,
                 "127.0.0.1",

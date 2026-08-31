@@ -16,6 +16,7 @@ use protobuf::Message;
 use rand::RngCore;
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, TcpStream, UdpSocket};
+use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -124,17 +125,28 @@ impl PeerRoutePlan {
     }
 
     pub fn has_executable_route(self) -> bool {
-        self.direct_tcp || self.has_relay_fallback()
+        self.has_executable_route_with_udp(false)
+    }
+
+    /// UDP/KCP is executable only while the caller still owns a registered
+    /// same-family UDP socket. Structural route consumers such as presence
+    /// probes intentionally remain conservative because they acquire no lease.
+    pub fn has_executable_route_with_udp(self, usable_udp_lease: bool) -> bool {
+        self.direct_tcp || (self.udp_kcp && usable_udp_lease) || self.has_relay_fallback()
     }
 
     pub fn ensure_executable(self) -> io::Result<()> {
-        if self.has_executable_route() {
+        self.ensure_executable_with_udp(false)
+    }
+
+    pub fn ensure_executable_with_udp(self, usable_udp_lease: bool) -> io::Result<()> {
+        if self.has_executable_route_with_udp(usable_udp_lease) {
             return Ok(());
         }
         if self.udp_kcp {
             return Err(io::Error::new(
                 io::ErrorKind::Unsupported,
-                "rendezvous route contains only gated UDP/KCP candidates and no relay fallback",
+                "rendezvous UDP/KCP candidates have no same-family active NAT lease or relay fallback",
             ));
         }
         Err(io::Error::new(
@@ -197,6 +209,33 @@ impl UdpNatLease {
 
     pub fn local_address(&self) -> io::Result<SocketAddr> {
         self.socket.local_addr()
+    }
+
+    /// Consume the mapping lease only when the rendezvous response contains a
+    /// UDP/KCP peer candidate in the socket's address family. Reconnecting the
+    /// returned socket to that peer preserves the mapped local UDP port.
+    pub fn into_peer_socket(
+        self,
+        candidates: &[PeerCandidate],
+    ) -> io::Result<Option<(UdpSocket, SocketAddr)>> {
+        let local_address = self.socket.local_addr()?;
+        let peer_address = candidates
+            .iter()
+            .find(|candidate| {
+                candidate.transport == PeerCandidateTransport::Udp
+                    && candidate.address.is_ipv4() == local_address.is_ipv4()
+            })
+            .map(|candidate| candidate.address);
+        Ok(peer_address.map(|address| (self.socket, address)))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn from_connected_socket_for_test(socket: UdpSocket) -> io::Result<Self> {
+        Ok(Self {
+            server_address: socket.peer_addr()?,
+            mapped_port: socket.local_addr()?.port(),
+            socket,
+        })
     }
 
     /// Refresh the mapping with one bounded TestNat exchange. This is a client
@@ -933,41 +972,29 @@ impl RendezvousClient {
         local_address: Option<SocketAddr>,
         timeout: Duration,
     ) -> io::Result<TcpStream> {
-        let mut addresses = Vec::new();
-        for candidate in candidates {
-            if candidate.transport == PeerCandidateTransport::Tcp
-                && !addresses.contains(&candidate.address)
-            {
-                addresses.push(candidate.address);
-            }
-        }
-        if addresses.is_empty() {
-            return Err(io::Error::new(
-                io::ErrorKind::Unsupported,
-                "rendezvous response has no supported TCP peer candidate",
-            ));
-        }
-        let stream = match (self.connect_epoch, local_address) {
-            (Some(epoch), Some(local_address)) => {
-                net::connect_tcp_socket_addresses_bound_cancellable(
-                    &addresses,
-                    local_address,
-                    "peer candidate",
-                    timeout,
-                    epoch,
-                )?
-            }
-            (Some(epoch), None) => net::connect_tcp_socket_addresses_cancellable(
-                &addresses,
-                "peer candidate",
-                timeout,
-                epoch,
-            )?,
-            (None, _) => net::connect_tcp_socket_addresses(&addresses, "peer candidate", timeout)?,
-        };
-        stream.set_read_timeout(Some(Duration::from_secs(30)))?;
-        stream.set_write_timeout(Some(Duration::from_secs(10)))?;
-        Ok(stream)
+        connect_to_peer_candidates_inner(
+            candidates,
+            local_address,
+            timeout,
+            self.connect_epoch,
+            None,
+        )
+    }
+
+    pub(crate) fn connect_to_peer_candidates_racing(
+        candidates: &[PeerCandidate],
+        local_address: Option<SocketAddr>,
+        timeout: Duration,
+        connect_epoch: u64,
+        race_cancel: &AtomicBool,
+    ) -> io::Result<TcpStream> {
+        connect_to_peer_candidates_inner(
+            candidates,
+            local_address,
+            timeout,
+            Some(connect_epoch),
+            Some(race_cancel),
+        )
     }
 
     pub fn local_address(&self) -> io::Result<SocketAddr> {
@@ -1231,6 +1258,68 @@ impl RendezvousClient {
         }
         Ok(())
     }
+}
+
+fn connect_to_peer_candidates_inner(
+    candidates: &[PeerCandidate],
+    local_address: Option<SocketAddr>,
+    timeout: Duration,
+    connect_epoch: Option<u64>,
+    race_cancel: Option<&AtomicBool>,
+) -> io::Result<TcpStream> {
+    let mut addresses = Vec::new();
+    for candidate in candidates {
+        if candidate.transport == PeerCandidateTransport::Tcp
+            && !addresses.contains(&candidate.address)
+        {
+            addresses.push(candidate.address);
+        }
+    }
+    if addresses.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "rendezvous response has no supported TCP peer candidate",
+        ));
+    }
+    let stream = match (connect_epoch, race_cancel, local_address) {
+        (Some(epoch), Some(race_cancel), local_address) => {
+            net::connect_tcp_socket_addresses_race_cancellable(
+                &addresses,
+                local_address,
+                "peer candidate",
+                timeout,
+                epoch,
+                race_cancel,
+            )?
+        }
+        (Some(epoch), None, Some(local_address)) => {
+            net::connect_tcp_socket_addresses_bound_cancellable(
+                &addresses,
+                local_address,
+                "peer candidate",
+                timeout,
+                epoch,
+            )?
+        }
+        (Some(epoch), None, None) => net::connect_tcp_socket_addresses_cancellable(
+            &addresses,
+            "peer candidate",
+            timeout,
+            epoch,
+        )?,
+        (None, None, _) => {
+            net::connect_tcp_socket_addresses(&addresses, "peer candidate", timeout)?
+        }
+        (None, Some(_), _) => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "race cancellation requires a connection epoch",
+            ));
+        }
+    };
+    stream.set_read_timeout(Some(Duration::from_secs(30)))?;
+    stream.set_write_timeout(Some(Duration::from_secs(10)))?;
+    Ok(stream)
 }
 
 fn remaining_timeout(deadline: Instant, stage: &str) -> io::Result<Duration> {
@@ -1686,7 +1775,7 @@ mod tests {
     }
 
     #[test]
-    fn route_plan_keeps_udp_kcp_gated_but_accepts_relay_or_tcp() {
+    fn route_plan_requires_an_active_udp_lease_or_tcp_or_relay() {
         let ipv6 = SocketAddr::new("2001:db8::5".parse().unwrap(), 21118);
         let udp_only = PunchHoleInfo {
             relay_server: String::new(),
@@ -1704,10 +1793,12 @@ mod tests {
         assert!(udp_plan.has_udp_kcp());
         assert!(!udp_plan.has_direct_tcp());
         assert!(!udp_plan.has_executable_route());
+        assert!(udp_plan.has_executable_route_with_udp(true));
+        assert!(udp_plan.ensure_executable_with_udp(true).is_ok());
         assert_eq!(
             udp_plan
                 .ensure_executable()
-                .expect_err("UDP/KCP-only route stays release-gated")
+                .expect_err("UDP/KCP-only route needs a live lease")
                 .kind(),
             ErrorKind::Unsupported
         );
@@ -1734,6 +1825,63 @@ mod tests {
         let tcp_plan = tcp.route_plan();
         assert!(tcp_plan.has_direct_tcp());
         assert!(tcp_plan.ensure_executable().is_ok());
+    }
+
+    #[test]
+    fn udp_nat_lease_selects_only_a_same_family_udp_candidate() {
+        let rendezvous = UdpSocket::bind("127.0.0.1:0").expect("bind UDP rendezvous fixture");
+        let rendezvous_address = rendezvous.local_addr().unwrap();
+        let socket = UdpSocket::bind("127.0.0.1:0").expect("bind mapped UDP socket");
+        let mapped_port = socket.local_addr().unwrap().port();
+        socket
+            .connect(rendezvous_address)
+            .expect("connect mapped UDP socket");
+        let lease = UdpNatLease {
+            socket,
+            server_address: rendezvous_address,
+            mapped_port,
+        };
+        let ipv6_udp: SocketAddr = "[2001:db8::5]:21118".parse().unwrap();
+        let ipv4_tcp: SocketAddr = "192.0.2.5:21118".parse().unwrap();
+        let ipv4_udp: SocketAddr = "127.0.0.1:21118".parse().unwrap();
+        let candidates = [
+            PeerCandidate {
+                address: ipv6_udp,
+                source: PeerCandidateSource::SocketAddrV6,
+                transport: PeerCandidateTransport::Udp,
+            },
+            PeerCandidate {
+                address: ipv4_tcp,
+                source: PeerCandidateSource::SocketAddr,
+                transport: PeerCandidateTransport::Tcp,
+            },
+            PeerCandidate {
+                address: ipv4_udp,
+                source: PeerCandidateSource::SocketAddr,
+                transport: PeerCandidateTransport::Udp,
+            },
+        ];
+        let (socket, selected) = lease
+            .into_peer_socket(&candidates)
+            .expect("inspect mapped socket")
+            .expect("same-family UDP candidate");
+        assert_eq!(selected, ipv4_udp);
+        assert_eq!(socket.local_addr().unwrap().port(), mapped_port);
+
+        let mismatch = UdpSocket::bind("127.0.0.1:0").expect("bind mismatched UDP socket");
+        mismatch
+            .connect(rendezvous_address)
+            .expect("connect mismatched UDP socket");
+        let mismatch_port = mismatch.local_addr().unwrap().port();
+        let mismatch_lease = UdpNatLease {
+            socket: mismatch,
+            server_address: rendezvous_address,
+            mapped_port: mismatch_port,
+        };
+        assert!(mismatch_lease
+            .into_peer_socket(&candidates[..1])
+            .expect("inspect mismatched lease")
+            .is_none());
     }
 
     #[test]

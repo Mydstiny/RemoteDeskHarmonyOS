@@ -5,7 +5,7 @@ use std::io;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV6, TcpStream, ToSocketAddrs};
 use std::os::fd::{FromRawFd, RawFd};
 use std::str::FromStr;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -137,7 +137,7 @@ pub(crate) fn connect_tcp_socket_addresses(
     stage: &str,
     timeout: Duration,
 ) -> io::Result<TcpStream> {
-    connect_tcp_socket_addresses_inner_optional(addresses, None, stage, timeout, None)
+    connect_tcp_socket_addresses_inner_optional(addresses, None, stage, timeout, None, None)
 }
 
 pub(crate) fn connect_tcp_socket_addresses_bound_cancellable(
@@ -153,6 +153,28 @@ pub(crate) fn connect_tcp_socket_addresses_bound_cancellable(
         stage,
         timeout,
         Some(cancel_epoch),
+        None,
+    )
+}
+
+/// Connect peer candidates while observing both the session epoch and a
+/// transport-race token. The latter cancels only sibling direct attempts; it
+/// never mutates the session-wide cancellation registry.
+pub(crate) fn connect_tcp_socket_addresses_race_cancellable(
+    addresses: &[SocketAddr],
+    local_address: Option<SocketAddr>,
+    stage: &str,
+    timeout: Duration,
+    cancel_epoch: u64,
+    race_cancel: &AtomicBool,
+) -> io::Result<TcpStream> {
+    connect_tcp_socket_addresses_inner_optional(
+        addresses,
+        local_address,
+        stage,
+        timeout,
+        Some(cancel_epoch),
+        Some(race_cancel),
     )
 }
 
@@ -169,6 +191,7 @@ fn connect_tcp_socket_addresses_inner(
         stage,
         timeout,
         Some(cancel_epoch),
+        None,
     )
 }
 
@@ -178,6 +201,7 @@ fn connect_tcp_socket_addresses_inner_optional(
     stage: &str,
     timeout: Duration,
     cancel_epoch: Option<u64>,
+    race_cancel: Option<&AtomicBool>,
 ) -> io::Result<TcpStream> {
     let family_summary = format!(
         "count={},v4={},v6={},bound={}",
@@ -193,6 +217,7 @@ fn connect_tcp_socket_addresses_inner_optional(
         local_address,
         deadline,
         cancel_epoch,
+        race_cancel,
         stage,
         &endpoint_id,
     )
@@ -572,6 +597,7 @@ where
             None,
             deadline,
             cancel_epoch,
+            None,
             stage,
             &endpoint_id,
         );
@@ -633,6 +659,7 @@ where
         None,
         deadline,
         cancel_epoch,
+        None,
         stage,
         &endpoint_id,
     )?;
@@ -866,16 +893,26 @@ fn finish_candidate(
     winner: ActiveCandidate,
     active: &mut Vec<ActiveCandidate>,
     cancel_epoch: Option<u64>,
+    race_cancel: Option<&AtomicBool>,
     stage: &str,
     endpoint_id: &str,
 ) -> io::Result<TcpStream> {
-    finish_candidate_with_post_restore(winner, active, cancel_epoch, stage, endpoint_id, || {})
+    finish_candidate_with_post_restore(
+        winner,
+        active,
+        cancel_epoch,
+        race_cancel,
+        stage,
+        endpoint_id,
+        || {},
+    )
 }
 
 fn finish_candidate_with_post_restore<F>(
     winner: ActiveCandidate,
     active: &mut Vec<ActiveCandidate>,
     cancel_epoch: Option<u64>,
+    race_cancel: Option<&AtomicBool>,
     stage: &str,
     endpoint_id: &str,
     post_restore: F,
@@ -883,7 +920,7 @@ fn finish_candidate_with_post_restore<F>(
 where
     F: FnOnce(),
 {
-    if let Err(error) = ensure_not_cancelled(cancel_epoch, stage, endpoint_id) {
+    if let Err(error) = ensure_connect_active(cancel_epoch, race_cancel, stage, endpoint_id) {
         close_candidates(active, None);
         // SAFETY: winner has already been removed from active and remains
         // uniquely owned by this function until it is handed to TcpStream.
@@ -898,7 +935,7 @@ where
         return Err(error);
     }
     post_restore();
-    if let Err(error) = ensure_not_cancelled(cancel_epoch, stage, endpoint_id) {
+    if let Err(error) = ensure_connect_active(cancel_epoch, race_cancel, stage, endpoint_id) {
         unsafe { libc::close(winner.descriptor) };
         return Err(error);
     }
@@ -913,6 +950,7 @@ fn connect_candidates_happy_eyeballs(
     local_address: Option<SocketAddr>,
     deadline: Instant,
     cancel_epoch: Option<u64>,
+    race_cancel: Option<&AtomicBool>,
     stage: &str,
     endpoint_id: &str,
 ) -> io::Result<TcpStream> {
@@ -932,7 +970,7 @@ fn connect_candidates_happy_eyeballs(
     let mut last_error = None;
 
     loop {
-        if let Err(error) = ensure_not_cancelled(cancel_epoch, stage, endpoint_id) {
+        if let Err(error) = ensure_connect_active(cancel_epoch, race_cancel, stage, endpoint_id) {
             close_candidates(&mut active, None);
             return Err(error);
         }
@@ -957,7 +995,14 @@ fn connect_candidates_happy_eyeballs(
                         .position(|value| value.descriptor == descriptor)
                         .expect("new winner must be active");
                     let winner = active.remove(winner_index);
-                    return finish_candidate(winner, &mut active, cancel_epoch, stage, endpoint_id);
+                    return finish_candidate(
+                        winner,
+                        &mut active,
+                        cancel_epoch,
+                        race_cancel,
+                        stage,
+                        endpoint_id,
+                    );
                 }
                 Ok((candidate, false)) => {
                     active.push(candidate);
@@ -1043,7 +1088,14 @@ fn connect_candidates_happy_eyeballs(
             };
             if status == 0 && socket_error == 0 {
                 let winner = active.remove(index);
-                return finish_candidate(winner, &mut active, cancel_epoch, stage, endpoint_id);
+                return finish_candidate(
+                    winner,
+                    &mut active,
+                    cancel_epoch,
+                    race_cancel,
+                    stage,
+                    endpoint_id,
+                );
             }
             let error = if socket_error != 0 {
                 io::Error::from_raw_os_error(socket_error)
@@ -1136,6 +1188,25 @@ fn ensure_not_cancelled(
         return Err(io::Error::new(
             io::ErrorKind::Interrupted,
             format!("{} connect cancelled endpoint_id={}", stage, endpoint_id),
+        ));
+    }
+    Ok(())
+}
+
+fn ensure_connect_active(
+    cancel_epoch: Option<u64>,
+    race_cancel: Option<&AtomicBool>,
+    stage: &str,
+    endpoint_id: &str,
+) -> io::Result<()> {
+    ensure_not_cancelled(cancel_epoch, stage, endpoint_id)?;
+    if race_cancel.is_some_and(|cancel| cancel.load(Ordering::Acquire)) {
+        return Err(io::Error::new(
+            io::ErrorKind::Interrupted,
+            format!(
+                "{} transport race cancelled endpoint_id={}",
+                stage, endpoint_id
+            ),
         ));
     }
     Ok(())
@@ -1251,6 +1322,7 @@ mod tests {
             winner,
             &mut Vec::new(),
             Some(epoch),
+            None,
             "test",
             "cancelled-winner",
         )
@@ -1288,6 +1360,7 @@ mod tests {
             winner,
             &mut Vec::new(),
             Some(epoch),
+            None,
             "test",
             "post-restore-cancelled-winner",
             || crate::cancel_connect_epoch(epoch),
@@ -1298,6 +1371,45 @@ mod tests {
 
         unsafe { libc::close(descriptors[1]) };
         crate::finish_connect_epoch(epoch, 90_022);
+    }
+
+    #[test]
+    fn transport_race_token_closes_a_completed_tcp_candidate() {
+        let mut descriptors = [-1; 2];
+        // SAFETY: descriptors points to storage for the two socketpair outputs.
+        assert_eq!(
+            unsafe {
+                libc::socketpair(
+                    libc::AF_UNIX,
+                    libc::SOCK_STREAM,
+                    0,
+                    descriptors.as_mut_ptr(),
+                )
+            },
+            0
+        );
+        let epoch = crate::begin_connect_epoch(90_023);
+        let race_cancel = AtomicBool::new(true);
+        let winner = ActiveCandidate {
+            descriptor: descriptors[0],
+            original_flags: unsafe { libc::fcntl(descriptors[0], libc::F_GETFL) },
+            address: "127.0.0.1:9".parse().unwrap(),
+        };
+
+        let error = finish_candidate(
+            winner,
+            &mut Vec::new(),
+            Some(epoch),
+            Some(&race_cancel),
+            "test",
+            "race-cancelled-winner",
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::Interrupted);
+        assert_socketpair_peer_closed(descriptors[1]);
+
+        unsafe { libc::close(descriptors[1]) };
+        crate::finish_connect_epoch(epoch, 90_023);
     }
 
     #[test]

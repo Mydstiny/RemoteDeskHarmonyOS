@@ -149,7 +149,34 @@ impl KcpPeerStream {
         timeout: Duration,
         cancel_epoch: Option<u64>,
     ) -> io::Result<Self> {
+        Self::connect_inner(
+            socket,
+            peer_address,
+            timeout,
+            cancel_epoch,
+            Arc::new(AtomicBool::new(false)),
+        )
+    }
+
+    pub(crate) fn connect_with_race_cancel(
+        socket: UdpSocket,
+        peer_address: SocketAddr,
+        timeout: Duration,
+        cancel_epoch: Option<u64>,
+        race_cancel: Arc<AtomicBool>,
+    ) -> io::Result<Self> {
+        Self::connect_inner(socket, peer_address, timeout, cancel_epoch, race_cancel)
+    }
+
+    fn connect_inner(
+        socket: UdpSocket,
+        peer_address: SocketAddr,
+        timeout: Duration,
+        cancel_epoch: Option<u64>,
+        race_cancel: Arc<AtomicBool>,
+    ) -> io::Result<Self> {
         validate_timeout(timeout)?;
+        ensure_connect_active(cancel_epoch, &race_cancel)?;
         let local_before_connect = socket.local_addr()?;
         if local_before_connect.is_ipv4() != peer_address.is_ipv4() {
             return Err(io::Error::new(
@@ -169,6 +196,7 @@ impl KcpPeerStream {
         let (outbound, outbound_rx) = mpsc::channel(KCP_OUTBOUND_CAPACITY);
         let (shutdown, shutdown_rx) = watch::channel(false);
         let worker_shutdown = shutdown.clone();
+        let worker_race_cancel = Arc::clone(&race_cancel);
         let (ready_tx, ready_rx) = std_mpsc::sync_channel::<Result<(), StoredError>>(1);
         let deadline = Instant::now()
             .checked_add(timeout)
@@ -192,6 +220,7 @@ impl KcpPeerStream {
                         ready_tx.clone(),
                         deadline,
                         cancel_epoch,
+                        worker_race_cancel,
                     ))
                 });
 
@@ -207,17 +236,24 @@ impl KcpPeerStream {
 
         let ready_wait = timeout.saturating_add(Duration::from_millis(250));
         match ready_rx.recv_timeout(ready_wait) {
-            Ok(Ok(())) => Ok(Self {
-                owner: Arc::new(KcpOwner {
-                    shared,
-                    outbound,
-                    shutdown,
-                    worker: Mutex::new(Some(worker)),
-                    local_address,
-                    peer_address,
-                }),
-                timeouts: Mutex::new(StreamTimeouts::default()),
-            }),
+            Ok(Ok(())) => {
+                if let Err(error) = ensure_connect_active(cancel_epoch, &race_cancel) {
+                    worker_shutdown.send_replace(true);
+                    let _ = worker.join();
+                    return Err(error);
+                }
+                Ok(Self {
+                    owner: Arc::new(KcpOwner {
+                        shared,
+                        outbound,
+                        shutdown,
+                        worker: Mutex::new(Some(worker)),
+                        local_address,
+                        peer_address,
+                    }),
+                    timeouts: Mutex::new(StreamTimeouts::default()),
+                })
+            }
             Ok(Err(error)) => {
                 worker_shutdown.send_replace(true);
                 let _ = worker.join();
@@ -575,8 +611,18 @@ fn remaining(deadline: Instant, stage: &str) -> io::Result<Duration> {
         })
 }
 
-fn connect_cancelled(cancel_epoch: Option<u64>) -> bool {
-    cancel_epoch.is_some_and(crate::connect_cancelled)
+fn connect_cancelled(cancel_epoch: Option<u64>, race_cancel: &AtomicBool) -> bool {
+    race_cancel.load(Ordering::Acquire) || cancel_epoch.is_some_and(crate::connect_cancelled)
+}
+
+fn ensure_connect_active(cancel_epoch: Option<u64>, race_cancel: &AtomicBool) -> io::Result<()> {
+    if connect_cancelled(cancel_epoch, race_cancel) {
+        return Err(io::Error::new(
+            io::ErrorKind::Interrupted,
+            "UDP/KCP connection cancelled",
+        ));
+    }
+    Ok(())
 }
 
 async fn run_kcp_worker(
@@ -587,9 +633,17 @@ async fn run_kcp_worker(
     ready: std_mpsc::SyncSender<Result<(), StoredError>>,
     deadline: Instant,
     cancel_epoch: Option<u64>,
+    race_cancel: Arc<AtomicBool>,
 ) -> io::Result<()> {
     let socket = Arc::new(tokio::net::UdpSocket::from_std(socket)?);
-    punch_udp(Arc::clone(&socket), deadline, cancel_epoch, &mut shutdown).await?;
+    punch_udp(
+        Arc::clone(&socket),
+        deadline,
+        cancel_epoch,
+        &race_cancel,
+        &mut shutdown,
+    )
+    .await?;
 
     let mut endpoint = KcpEndpoint::new();
     endpoint.run().await;
@@ -603,7 +657,7 @@ async fn run_kcp_worker(
     let connect_timeout = remaining(deadline, "handshake")?;
     let mut connect = Box::pin(endpoint.connect(connect_timeout, 0, 0, Default::default()));
     let conn_id = loop {
-        if *shutdown.borrow() || connect_cancelled(cancel_epoch) {
+        if *shutdown.borrow() || connect_cancelled(cancel_epoch, &race_cancel) {
             io_task.abort();
             return Err(io::Error::new(
                 io::ErrorKind::Interrupted,
@@ -662,6 +716,7 @@ async fn punch_udp(
     socket: Arc<tokio::net::UdpSocket>,
     route_deadline: Instant,
     cancel_epoch: Option<u64>,
+    race_cancel: &AtomicBool,
     shutdown: &mut watch::Receiver<bool>,
 ) -> io::Result<()> {
     let punch_deadline = route_deadline.min(Instant::now() + UDP_PUNCH_MAX_DURATION);
@@ -670,7 +725,7 @@ async fn punch_udp(
     socket.send(&[]).await?;
 
     loop {
-        if *shutdown.borrow() || connect_cancelled(cancel_epoch) {
+        if *shutdown.borrow() || connect_cancelled(cancel_epoch, race_cancel) {
             return Err(io::Error::new(
                 io::ErrorKind::Interrupted,
                 "UDP punch cancelled",
@@ -796,81 +851,76 @@ async fn wait_for_shutdown(mut shutdown: watch::Receiver<bool>) {
 }
 
 #[cfg(test)]
+pub(crate) fn spawn_test_kcp_echo_server(
+    address: SocketAddr,
+    expected: Vec<u8>,
+) -> io::Result<(SocketAddr, JoinHandle<io::Result<()>>)> {
+    let socket = UdpSocket::bind(address)?;
+    socket.set_nonblocking(true)?;
+    let server_address = socket.local_addr()?;
+    let handle = thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        runtime.block_on(async move {
+            let socket = Arc::new(tokio::net::UdpSocket::from_std(socket)?);
+            let mut punch = [0u8; KCP_DATAGRAM_SIZE];
+            let (_, client_address) =
+                tokio::time::timeout(Duration::from_secs(3), socket.recv_from(&mut punch))
+                    .await
+                    .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "test punch timeout"))??;
+            socket.connect(client_address).await?;
+            socket.send(&[]).await?;
+
+            let mut endpoint = KcpEndpoint::new();
+            endpoint.run().await;
+            let input = endpoint.input_sender();
+            let output = endpoint.output_receiver().ok_or_else(|| {
+                io::Error::new(io::ErrorKind::Other, "test KCP output unavailable")
+            })?;
+            let (stop_tx, stop_rx) = watch::channel(false);
+            let io_task = tokio::spawn(pump_udp(socket, input, output, stop_rx));
+            let conn_id = tokio::time::timeout(Duration::from_secs(3), endpoint.accept())
+                .await
+                .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "test KCP accept timeout"))?
+                .map_err(|error| {
+                    io::Error::new(io::ErrorKind::Other, format!("test KCP accept: {error}"))
+                })?;
+            let mut stream = KcpStream::new(&endpoint, conn_id).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::Other, "test KCP stream unavailable")
+            })?;
+            let mut received = vec![0u8; expected.len()];
+            tokio::time::timeout(Duration::from_secs(3), stream.read_exact(&mut received))
+                .await
+                .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "test KCP read timeout"))??;
+            if received != expected {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "test KCP payload mismatch",
+                ));
+            }
+            stream.write_all(&received).await?;
+            stream.flush().await?;
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            stop_tx.send_replace(true);
+            io_task.abort();
+            Ok(())
+        })
+    });
+    Ok((server_address, handle))
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
-
-    fn spawn_echo_server(
-        address: SocketAddr,
-        expected: Vec<u8>,
-    ) -> io::Result<(SocketAddr, JoinHandle<io::Result<()>>)> {
-        let socket = UdpSocket::bind(address)?;
-        socket.set_nonblocking(true)?;
-        let server_address = socket.local_addr()?;
-        let handle = thread::spawn(move || {
-            let runtime = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()?;
-            runtime.block_on(async move {
-                let socket = Arc::new(tokio::net::UdpSocket::from_std(socket)?);
-                let mut punch = [0u8; KCP_DATAGRAM_SIZE];
-                let (_, client_address) =
-                    tokio::time::timeout(Duration::from_secs(3), socket.recv_from(&mut punch))
-                        .await
-                        .map_err(|_| {
-                            io::Error::new(io::ErrorKind::TimedOut, "test punch timeout")
-                        })??;
-                socket.connect(client_address).await?;
-                socket.send(&[]).await?;
-
-                let mut endpoint = KcpEndpoint::new();
-                endpoint.run().await;
-                let input = endpoint.input_sender();
-                let output = endpoint.output_receiver().ok_or_else(|| {
-                    io::Error::new(io::ErrorKind::Other, "test KCP output unavailable")
-                })?;
-                let (stop_tx, stop_rx) = watch::channel(false);
-                let io_task = tokio::spawn(pump_udp(socket, input, output, stop_rx));
-                let conn_id = tokio::time::timeout(Duration::from_secs(3), endpoint.accept())
-                    .await
-                    .map_err(|_| {
-                        io::Error::new(io::ErrorKind::TimedOut, "test KCP accept timeout")
-                    })?
-                    .map_err(|error| {
-                        io::Error::new(io::ErrorKind::Other, format!("test KCP accept: {error}"))
-                    })?;
-                let mut stream = KcpStream::new(&endpoint, conn_id).ok_or_else(|| {
-                    io::Error::new(io::ErrorKind::Other, "test KCP stream unavailable")
-                })?;
-                let mut received = vec![0u8; expected.len()];
-                tokio::time::timeout(Duration::from_secs(3), stream.read_exact(&mut received))
-                    .await
-                    .map_err(|_| {
-                        io::Error::new(io::ErrorKind::TimedOut, "test KCP read timeout")
-                    })??;
-                if received != expected {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "test KCP payload mismatch",
-                    ));
-                }
-                stream.write_all(&received).await?;
-                stream.flush().await?;
-                tokio::time::sleep(Duration::from_millis(300)).await;
-                stop_tx.send_replace(true);
-                io_task.abort();
-                Ok(())
-            })
-        });
-        Ok((server_address, handle))
-    }
 
     fn exercise_official_kcp_loopback(server_bind: SocketAddr, client_bind: SocketAddr) {
         let payload = (0..96 * 1024)
             .map(|index| (index % 251) as u8)
             .collect::<Vec<_>>();
         let (server_address, server) =
-            spawn_echo_server(server_bind, payload.clone()).expect("bind KCP echo server");
+            spawn_test_kcp_echo_server(server_bind, payload.clone()).expect("bind KCP echo server");
         let socket = UdpSocket::bind(client_bind).expect("bind KCP client");
         let mut reader =
             KcpPeerStream::connect(socket, server_address, Duration::from_secs(3), None)
@@ -949,5 +999,43 @@ mod tests {
         canceller.join().expect("join KCP canceller");
         fixture.join().expect("join punch fixture");
         crate::finish_connect_epoch(epoch, session_id);
+    }
+
+    #[test]
+    fn kcp_handshake_observes_the_transport_race_token() {
+        let server = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind punch fixture");
+        server
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .expect("bound fixture timeout");
+        let server_address = server.local_addr().expect("punch fixture address");
+        let fixture = thread::spawn(move || {
+            let mut packet = [0u8; KCP_DATAGRAM_SIZE];
+            let (_, peer) = server.recv_from(&mut packet).expect("receive UDP punch");
+            server.send_to(&[], peer).expect("answer UDP punch");
+            thread::sleep(Duration::from_millis(250));
+        });
+
+        let race_cancel = Arc::new(AtomicBool::new(false));
+        let canceller_token = Arc::clone(&race_cancel);
+        let canceller = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(60));
+            canceller_token.store(true, Ordering::Release);
+        });
+        let socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind KCP client");
+        let started = Instant::now();
+        let error = KcpPeerStream::connect_with_race_cancel(
+            socket,
+            server_address,
+            Duration::from_secs(2),
+            None,
+            race_cancel,
+        )
+        .err()
+        .expect("race-cancelled KCP handshake must fail");
+        assert_eq!(error.kind(), io::ErrorKind::Interrupted);
+        assert!(started.elapsed() < Duration::from_millis(750));
+
+        canceller.join().expect("join KCP race canceller");
+        fixture.join().expect("join punch fixture");
     }
 }
