@@ -2,10 +2,10 @@
   "spdxVersion": "SPDX-2.3",
   "dataLicense": "CC0-1.0",
   "SPDXID": "SPDXRef-DOCUMENT",
-  "name": "RemoteDeskHarmonyOS-390e682c0a5e87e9e3fadc3d389298d356004689",
-  "documentNamespace": "https://github.com/Mydstiny/RemoteDeskHarmonyOS/spdx/390e682c0a5e87e9e3fadc3d389298d356004689",
+  "name": "RemoteDeskHarmonyOS-b4d8cbb7095d7e9fb2fd8b66b7ca8d84047297e0",
+  "documentNamespace": "https://github.com/Mydstiny/RemoteDeskHarmonyOS/spdx/b4d8cbb7095d7e9fb2fd8b66b7ca8d84047297e0",
   "creationInfo": {
-    "created": "2026-08-31T00:12:15Z",
+    "created": "2026-08-31T01:38:37Z",
     "creators": [
       "Tool: scripts/generate_sbom.ps1",
       "Organization: RemoteDeskHarmonyOS"
@@ -1360,6 +1360,16 @@
       "filesAnalyzed": false,
       "licenseConcluded": "BSD-3-Clause",
       "licenseDeclared": "BSD-3-Clause",
+      "copyrightText": "See THIRD_PARTY_NOTICES.md"
+    },
+    {
+      "name": "skywind3000-KCP",
+      "SPDXID": "SPDXRef-Native-skywind3000-KCP",
+      "versionInfo": "7f9805887b0909c52c825925f123e7a84da37167",
+      "downloadLocation": "https://github.com/skywind3000/kcp",
+      "filesAnalyzed": false,
+      "licenseConcluded": "MIT",
+      "licenseDeclared": "MIT",
       "copyrightText": "See THIRD_PARTY_NOTICES.md"
     },
     {
@@ -9878,6 +9888,16 @@
       "spdxElementId": "SPDXRef-Package-RemoteDeskHarmonyOS",
       "relationshipType": "DEPENDS_ON",
       "relatedSpdxElement": "SPDXRef-Package-Moonlight-Qt-Icon"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-RemoteDeskHarmonyOS",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Cargo-kcp-sys-0.1.0"
+    },
+    {
+      "spdxElementId": "SPDXRef-Cargo-kcp-sys-0.1.0",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-Native-skywind3000-KCP"
     }
   ]
 }

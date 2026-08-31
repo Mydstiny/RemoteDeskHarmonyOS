@@ -8,6 +8,12 @@ if ($LASTEXITCODE -ne 0) { throw 'cargo metadata failed.' }
 $metadata = $metadataJson | ConvertFrom-Json
 $commit = (& git -C $root rev-parse HEAD).Trim()
 $output = Join-Path $root 'docs/compliance/SBOM.spdx.json'
+$kcpSysPackageId = 'SPDXRef-Cargo-kcp-sys-0.1.0'
+$bundledKcpPackageId = 'SPDXRef-Native-skywind3000-KCP'
+$managedKcpRelationshipKeys = @(
+  "SPDXRef-Package-RemoteDeskHarmonyOS|DEPENDS_ON|$kcpSysPackageId",
+  "$kcpSysPackageId|CONTAINS|$bundledKcpPackageId"
+)
 
 # Asset/vendor workflows append file-level SPDX records after the Cargo/native
 # base is generated. Preserve those explicitly managed package/file records so
@@ -22,7 +28,10 @@ if (Test-Path $output -PathType Leaf) {
     $_.SPDXID -ne 'SPDXRef-Package-RemoteDeskHarmonyOS'
   })
   $preservedFiles = @($existing.files)
-  $preservedRelationships = @($existing.relationships)
+  $preservedRelationships = @($existing.relationships | Where-Object {
+    $key = "$($_.spdxElementId)|$($_.relationshipType)|$($_.relatedSpdxElement)"
+    $managedKcpRelationshipKeys -notcontains $key
+  })
 }
 
 $packages = [System.Collections.Generic.List[object]]::new()
@@ -60,6 +69,7 @@ $native = @(
   @('libssh2','1.11.1','BSD-3-Clause','https://www.libssh2.org/'),
   @('Mbed-TLS','bundled-ohos','Apache-2.0','https://github.com/Mbed-TLS/mbedtls'),
   @('Opus','bundled-ohos-fixed-point','BSD-3-Clause','https://opus-codec.org/'),
+  @('skywind3000-KCP','7f9805887b0909c52c825925f123e7a84da37167','MIT','https://github.com/skywind3000/kcp'),
   @('zlib','platform-system','Zlib','https://zlib.net/'),
   @('Huawei-AGConnect-Auth','1.0.2','LicenseRef-Huawei-AGConnect','https://developer.huawei.com/')
 )
@@ -75,6 +85,20 @@ foreach ($item in $native) {
 foreach ($package in $preservedPackages) {
   $packages.Add($package)
 }
+$relationships = [System.Collections.Generic.List[object]]::new()
+foreach ($relationship in $preservedRelationships) {
+  $relationships.Add($relationship)
+}
+$relationships.Add([ordered]@{
+  spdxElementId = 'SPDXRef-Package-RemoteDeskHarmonyOS'
+  relationshipType = 'DEPENDS_ON'
+  relatedSpdxElement = $kcpSysPackageId
+})
+$relationships.Add([ordered]@{
+  spdxElementId = $kcpSysPackageId
+  relationshipType = 'CONTAINS'
+  relatedSpdxElement = $bundledKcpPackageId
+})
 $document = [ordered]@{
   spdxVersion = 'SPDX-2.3'
   dataLicense = 'CC0-1.0'
@@ -87,7 +111,7 @@ $document = [ordered]@{
   }
   packages = $packages
   files = $preservedFiles
-  relationships = $preservedRelationships
+  relationships = $relationships
 }
 $json = $document | ConvertTo-Json -Depth 12
 [IO.File]::WriteAllText($output, $json + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
