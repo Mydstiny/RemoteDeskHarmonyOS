@@ -22,9 +22,11 @@
 
 能力按“协议 × 能力”独立验收和发布；不适用项记为 N/A。依赖关系为：`configured_endpoint_ipv6=M0+M1`、`dual_stack_racing=M2`、`discovery/control-data=M3`、`RustDesk nat_traversal_ipv6=M4`，后者不得阻塞其他协议的较低层级声明。
 
-实施状态（2026-08-31）：M0–M3 的代码侧实现已在检查点 `9c7c56b65` 完成并通过最终累计复核。共享 Endpoint/identity 契约、受控 Happy Eyeballs、scoped IPv6、网络 generation 失效、代理/网关/跳板/转发、发现去重以及控制面/数据面 family 交接均已落地；SSH/SFTP 的握手、交互认证、channel/SFTP 读写、窗口调整和 teardown 调用面均纳入 generation admission，交互响应缓冲在释放前擦除，延期回收在有界、可 join 的单 worker 中 fail closed。RDP、VNC、Moonlight、SSH/SFTP 与 RustDesk 的自动化回归和两个 OHOS ABI 构建通过。RustDesk 官方 `socket_addr_v6` 被严格标记为 UDP/KCP 候选，屏幕、文件与 presence 共用 route planner；当前产品没有可执行的 UDP/KCP transport，因此 UDP-only 路由会 fail closed，有 relay 时保持 relay fallback，不会把它误当 TCP 或误报在线。
+实施状态（2026-08-31）：M0–M3 的代码侧实现已在检查点 `9c7c56b65` 完成并通过最终累计复核。共享 Endpoint/identity 契约、受控 Happy Eyeballs、scoped IPv6、网络 generation 失效、代理/网关/跳板/转发、发现去重以及控制面/数据面 family 交接均已落地；SSH/SFTP 的握手、交互认证、channel/SFTP 读写、窗口调整和 teardown 调用面均纳入 generation admission，交互响应缓冲在释放前擦除，延期回收在有界、可 join 的单 worker 中 fail closed。RDP、VNC、Moonlight、SSH/SFTP 与 RustDesk 的自动化回归和两个 OHOS ABI 构建通过。
 
-M4 只完成了可审计的发布边界和既有 NAT/registration/heartbeat plumbing 的收口，尚未达到发布条件：版本化 FFI capability ABI 仅发布 Direct/Relay TCP，AUTO、UDP/KCP 与 NAT traversal 位继续关闭。最终本地自动化为 Rust no-default 237/237、完整特性 247/247、native 976/976（含真实 IPv6 Paramiko SSH 与精确 fd 复用隔离）、OHOS RustDesk FFI arm64-v8a/x86_64、两项强制 Hvigor、`git diff --check`、Rust format 与 Light 合规全部 PASS；三路最终累计复核均为 P0–P3 零 finding。当前 HDC 仍无可用目标，也没有固定版本 hbbs/hbbr、受控 peer 和 IPv6/NAT64/VPN 端点矩阵；所以五类“协议 × 能力”声明保持关闭，M1–M3 真机退出条件与 M4 可执行 UDP/NAT 状态机仍待外部验收/后续实现，不能把代码侧完成写成产品能力已发布。
+M4 的本地代码侧状态机已在实现检查点 `f7228c4a` 完成，并由合规检查点 `041c5166` 固定最终 SBOM：官方 `kcp-sys` 依赖按精确 revision 固定并同步 provenance、SBOM 与 notice；`UdpNatLease` 从 NAT registration/heartbeat 保持到 route selection，只把同地址族 UDP 候选交给官方 KCP `PeerStream`；AUTO 在共享 deadline 内并发竞速 TCP 与 UDP/KCP，首个成功者取消同级 loser，会话取消直接终止且不得误入 relay，全部 direct 失败后仍使用既有 relay ticket/request fallback。屏幕和文件传输复用该 selector；presence 不持有 UDP lease，继续保守地拒绝 UDP-only 在线判定。KCP flush 在健康路径排空已接受数据，背压写可响应会话取消，最后一个 owner 的正常释放由独立信号启动绝对 3 秒 drain deadline，即使对端在握手后停止 ACK 也不会无限阻塞。版本化 FFI capability ABI 仍只发布 Direct/Relay TCP，AUTO、UDP/KCP 与 NAT traversal 位继续关闭。
+
+最终本地自动化为 Rust no-default 250/250、host-linkable `alacritty_terminal` 260/260、native 976/976（含真实 IPv6 Paramiko SSH 与精确 fd 复用隔离）、OHOS RustDesk FFI arm64-v8a/x86_64、两项强制 Hvigor、`git diff --check`、Rust format 与 Light 合规全部 PASS；独立 reviewer 对完整增量 `9c7c56b65..041c5166` 的最终结论为 P0=P1=P2=P3=0。macOS `--all-features` 仅因宿主未提供 `libopus` 无法链接，两个 OHOS ABI 已实际完成 Opus 链接与符号检查。当前 HDC 仍无可用目标，也没有固定版本 hbbs/hbbr、受控 peer 和 IPv6/NAT64/VPN 端点矩阵；所以五类“协议 × 能力”声明保持关闭，M1–M4 真机/拓扑退出条件仍待外部验收，不能把代码侧完成写成产品能力已发布。
 
 ## 2. 实施前审查基线能力矩阵
 
