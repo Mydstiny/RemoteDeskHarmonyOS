@@ -182,6 +182,14 @@ private:
         }
         const uint32_t observerId = observerId_;
         observerId_ = 0;
+        // No target or transient consumer can own work from the old observer
+        // after this point. The first callback from a future registration is
+        // therefore a fresh baseline, even if the device changed networks
+        // while no observer was installed.
+        availabilityObservationSeen_ = false;
+        observedDefaultAvailable_ = false;
+        activeNetworkIdKnown_ = false;
+        activeNetworkId_ = 0;
         return observerId;
     }
 

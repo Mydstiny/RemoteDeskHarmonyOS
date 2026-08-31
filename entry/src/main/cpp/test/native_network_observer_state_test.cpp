@@ -169,3 +169,22 @@ RDP_TEST_CASE(native_network_observer_exact_teardown_waits_for_last_consumer) {
     RDP_ASSERT_EQ(state.targetCount(), static_cast<size_t>(0));
     RDP_ASSERT(!state.hasObserver());
 }
+
+RDP_TEST_CASE(native_network_observer_reregistration_starts_fresh_baseline) {
+    remotedesk::net::NativeNetworkObserverState<ObserverTestSession> state(50);
+    size_t publishCount = 0;
+    const auto publish = [&](bool, uint64_t) { ++publishCount; };
+
+    RDP_ASSERT(state.installObserverIfAbsent(101));
+    RDP_ASSERT(!state.observeAvailability(
+        true, 501, true, publish).generationAdvanced);
+    RDP_ASSERT_EQ(state.releaseTransientConsumerAndTakeObserverIfIdle(), 101U);
+
+    RDP_ASSERT(state.installObserverIfAbsent(102));
+    const auto nextRegistration = state.observeAvailability(
+        true, 777, true, publish);
+    RDP_ASSERT(!nextRegistration.generationAdvanced);
+    RDP_ASSERT_EQ(nextRegistration.networkId, 777);
+    RDP_ASSERT_EQ(nextRegistration.networkGeneration, static_cast<uint64_t>(50));
+    RDP_ASSERT_EQ(publishCount, static_cast<size_t>(0));
+}
