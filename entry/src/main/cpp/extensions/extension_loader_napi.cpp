@@ -4755,16 +4755,21 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
 
     std::string protocolName;
     getString("protocol", protocolName, 32);
+    const bool isRdp = protocolName == "rdp";
+    const bool isSsh = protocolName == "ssh";
+    const bool isRustDesk = protocolName == "rustdesk";
+    const bool isVnc = protocolName == "vnc";
     getString("host", cfg.host, remotedesk::endpoint::kMaxInputLength);
     bool hasPort = false;
     getInt("port", cfg.port, &hasPort);
     getString("username", cfg.username);
     getString("password", cfg.password);
-    getString("domain", cfg.domain);
     getInt("width", cfg.width);
     getInt("height", cfg.height);
     std::string codecName;
-    getString("codec", codecName);
+    if (isRdp || isRustDesk) {
+        getString("codec", codecName);
+    }
     std::transform(codecName.begin(), codecName.end(), codecName.begin(),
         [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
     if (codecName == "H265") cfg.codec = CodecType::H265;
@@ -4772,55 +4777,62 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
     else if (codecName == "VP9") cfg.codec = CodecType::VP9;
     else if (codecName == "AV1") cfg.codec = CodecType::AV1;
     else if (codecName == "H264") cfg.codec = CodecType::H264;
-    else if (protocolName == "rustdesk") cfg.codec = CodecType::AUTO;
+    else if (isRustDesk) cfg.codec = CodecType::AUTO;
     else cfg.codec = CodecType::H264;
 
-    // 🆕 新增字段解析
-    getString("customHostname", cfg.customHostname,
-              remotedesk::endpoint::kMaxInputLength);
-    getString("targetServerName", cfg.targetServerName,
-              remotedesk::endpoint::kMaxInputLength);
-    getString("clientHostname", cfg.clientHostname, 253);
-    getString("gatewayHost", cfg.gatewayHost,
-              remotedesk::endpoint::kMaxInputLength);
+    // Parse only fields owned by the active protocol. ArkTS config objects are
+    // wider than any one adapter; an inactive field must not reject an
+    // otherwise valid connection for another protocol.
+    if (isRdp || isRustDesk) {
+        getString("customHostname", cfg.customHostname,
+                  remotedesk::endpoint::kMaxInputLength);
+    }
     bool hasGatewayPort = false;
-    getInt("gatewayPort", cfg.gatewayPort, &hasGatewayPort);
-    getString("rdpEndpointMode", cfg.rdpEndpointMode, 64);
-    getString("rdpGatewayTransport", cfg.rdpGatewayTransport, 64);
-    getString("rdpGatewayServerName", cfg.rdpGatewayServerName,
-              remotedesk::endpoint::kMaxInputLength);
-    getInt("monitorCount", cfg.monitorCount);
-    getBool("multiMonitor", cfg.multiMonitor);
-    getInt("colorDepth", cfg.colorDepth);
-    getInt("rdpDesktopScaleFactor", cfg.rdpDesktopScaleFactor);
-    getInt("rdpDeviceScaleFactor", cfg.rdpDeviceScaleFactor);
-    getInt("rdpDesktopPhysicalWidthMm", cfg.rdpDesktopPhysicalWidthMm);
-    getInt("rdpDesktopPhysicalHeightMm", cfg.rdpDesktopPhysicalHeightMm);
-    getInt("rdpDesktopOrientation", cfg.rdpDesktopOrientation);
-    if (cfg.rdpDesktopScaleFactor != 100 && cfg.rdpDesktopScaleFactor != 140 &&
-        cfg.rdpDesktopScaleFactor != 180) {
-        cfg.rdpDesktopScaleFactor = 100;
+    if (isRdp || isSsh) {
+        getString("gatewayHost", cfg.gatewayHost,
+                  remotedesk::endpoint::kMaxInputLength);
+        getInt("gatewayPort", cfg.gatewayPort, &hasGatewayPort);
     }
-    if (cfg.rdpDeviceScaleFactor != 100 && cfg.rdpDeviceScaleFactor != 140 &&
-        cfg.rdpDeviceScaleFactor != 180) {
-        cfg.rdpDeviceScaleFactor = cfg.rdpDesktopScaleFactor;
-    }
-    if (cfg.rdpDesktopPhysicalWidthMm < 10 || cfg.rdpDesktopPhysicalWidthMm > 10000) {
-        cfg.rdpDesktopPhysicalWidthMm = 0;
-    }
-    if (cfg.rdpDesktopPhysicalHeightMm < 10 || cfg.rdpDesktopPhysicalHeightMm > 10000) {
-        cfg.rdpDesktopPhysicalHeightMm = 0;
-    }
-    if (cfg.rdpDesktopOrientation != 0 && cfg.rdpDesktopOrientation != 90 &&
-        cfg.rdpDesktopOrientation != 180 && cfg.rdpDesktopOrientation != 270) {
-        cfg.rdpDesktopOrientation = 0;
-    }
-    getInt("rdpAuthIdentityMode", cfg.rdpAuthIdentityMode);
-    std::string rdpAuthModeName;
-    std::string rdpRestrictedAdminSecretSourceName;
-    getString("rdpAuthMode", rdpAuthModeName);
-    getString("rdpRestrictedAdminSecretSource", rdpRestrictedAdminSecretSourceName);
-    if (protocolName == "rdp") {
+    if (isRdp) {
+        getString("domain", cfg.domain);
+        getString("targetServerName", cfg.targetServerName,
+                  remotedesk::endpoint::kMaxInputLength);
+        getString("clientHostname", cfg.clientHostname, 253);
+        getString("rdpEndpointMode", cfg.rdpEndpointMode, 64);
+        getString("rdpGatewayTransport", cfg.rdpGatewayTransport, 64);
+        getString("rdpGatewayServerName", cfg.rdpGatewayServerName,
+                  remotedesk::endpoint::kMaxInputLength);
+        getInt("monitorCount", cfg.monitorCount);
+        getBool("multiMonitor", cfg.multiMonitor);
+        getInt("colorDepth", cfg.colorDepth);
+        getInt("rdpDesktopScaleFactor", cfg.rdpDesktopScaleFactor);
+        getInt("rdpDeviceScaleFactor", cfg.rdpDeviceScaleFactor);
+        getInt("rdpDesktopPhysicalWidthMm", cfg.rdpDesktopPhysicalWidthMm);
+        getInt("rdpDesktopPhysicalHeightMm", cfg.rdpDesktopPhysicalHeightMm);
+        getInt("rdpDesktopOrientation", cfg.rdpDesktopOrientation);
+        if (cfg.rdpDesktopScaleFactor != 100 && cfg.rdpDesktopScaleFactor != 140 &&
+            cfg.rdpDesktopScaleFactor != 180) {
+            cfg.rdpDesktopScaleFactor = 100;
+        }
+        if (cfg.rdpDeviceScaleFactor != 100 && cfg.rdpDeviceScaleFactor != 140 &&
+            cfg.rdpDeviceScaleFactor != 180) {
+            cfg.rdpDeviceScaleFactor = cfg.rdpDesktopScaleFactor;
+        }
+        if (cfg.rdpDesktopPhysicalWidthMm < 10 || cfg.rdpDesktopPhysicalWidthMm > 10000) {
+            cfg.rdpDesktopPhysicalWidthMm = 0;
+        }
+        if (cfg.rdpDesktopPhysicalHeightMm < 10 || cfg.rdpDesktopPhysicalHeightMm > 10000) {
+            cfg.rdpDesktopPhysicalHeightMm = 0;
+        }
+        if (cfg.rdpDesktopOrientation != 0 && cfg.rdpDesktopOrientation != 90 &&
+            cfg.rdpDesktopOrientation != 180 && cfg.rdpDesktopOrientation != 270) {
+            cfg.rdpDesktopOrientation = 0;
+        }
+        getInt("rdpAuthIdentityMode", cfg.rdpAuthIdentityMode);
+        std::string rdpAuthModeName;
+        std::string rdpRestrictedAdminSecretSourceName;
+        getString("rdpAuthMode", rdpAuthModeName);
+        getString("rdpRestrictedAdminSecretSource", rdpRestrictedAdminSecretSourceName);
         std::string rawRdpRestrictedAdminHash;
         getString("rdpRestrictedAdminHash", rawRdpRestrictedAdminHash);
         RdpAuthenticationPolicy rdpAuth = ParseRdpAuthenticationPolicy(
@@ -4853,18 +4865,17 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
         secureClearString(rdpAuth.normalizedNtlmHash);
     }
 
-    // 🆕 SSH 认证字段
-    getString("authMethod", cfg.authMethod);
-    getString("privateKeyPem", cfg.privateKeyPem);
-    getString("privateKeyPassphrase", cfg.privateKeyPassphrase);
-    getString("expectedHostKeyRawBase64", cfg.expectedHostKeyRawBase64);
-    getString("expectedHostKeyFingerprintSha256", cfg.expectedHostKeyFingerprintSha256);
-    getBool("sshHostKeyPromptEnabled", cfg.sshHostKeyPromptEnabled);
-    getString("sshTrustHostId", cfg.sshTrustHostId);
-    getString("sshHostKeyRouteIdentity", cfg.sshHostKeyRouteIdentity, 4096);
-    getString("sshJumpHostKeyRawBase64", cfg.sshJumpHostKeyRawBase64);
-    getString("sshJumpHostKeyFingerprintSha256", cfg.sshJumpHostKeyFingerprintSha256);
-    if (protocolName == "ssh") {
+    if (isSsh) {
+        getString("authMethod", cfg.authMethod);
+        getString("privateKeyPem", cfg.privateKeyPem);
+        getString("privateKeyPassphrase", cfg.privateKeyPassphrase);
+        getString("expectedHostKeyRawBase64", cfg.expectedHostKeyRawBase64);
+        getString("expectedHostKeyFingerprintSha256", cfg.expectedHostKeyFingerprintSha256);
+        getBool("sshHostKeyPromptEnabled", cfg.sshHostKeyPromptEnabled);
+        getString("sshTrustHostId", cfg.sshTrustHostId);
+        getString("sshHostKeyRouteIdentity", cfg.sshHostKeyRouteIdentity, 4096);
+        getString("sshJumpHostKeyRawBase64", cfg.sshJumpHostKeyRawBase64);
+        getString("sshJumpHostKeyFingerprintSha256", cfg.sshJumpHostKeyFingerprintSha256);
         getString("sshLocale", cfg.sshLocale);
         if (!SshSessionLocaleIsSupported(cfg.sshLocale)) {
             OH_LOG_ERROR(LOG_APP, "[ExtLoader] unsupported SSH session locale");
@@ -4876,9 +4887,9 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
         getString("sshProxyHost", cfg.sshProxyHost,
                   remotedesk::endpoint::kMaxInputLength);
         getInt("sshProxyPort", cfg.sshProxyPort);
-    getString("sshProxyUsername", cfg.sshProxyUsername);
-    getString("sshProxyPassword", cfg.sshProxyPassword);
-    getString("sshProxyAuthMethod", cfg.sshProxyAuthMethod);
+        getString("sshProxyUsername", cfg.sshProxyUsername);
+        getString("sshProxyPassword", cfg.sshProxyPassword);
+        getString("sshProxyAuthMethod", cfg.sshProxyAuthMethod);
         getString("sshProxyPrivateKeyPem", cfg.sshProxyPrivateKeyPem);
         getString("sshProxyPrivateKeyPassphrase", cfg.sshProxyPrivateKeyPassphrase);
         // The old SSH UI wrote proxy data into the generic RDP gateway fields.
@@ -4896,78 +4907,91 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
                                      "sshProxyKeyboardInteractiveResponses",
                                      cfg.sshProxyKeyboardInteractiveResponses);
     }
-    if (cfg.authMethod.empty()) cfg.authMethod = "password";
-    // RustDesk 扩展配置
-    getInt("rdImageQuality", cfg.rdImageQuality);
-    getBool("rdDirectIp", cfg.rdDirectIp);
-    getString("rdConnectionStrategy", cfg.rdConnectionStrategy);
     bool hasRdDirectPort = false;
-    getInt("rdDirectPort", cfg.rdDirectPort, &hasRdDirectPort);
-    getBool("rdLanDiscovery", cfg.rdLanDiscovery);
-    getBool("rdPrivacyMode", cfg.rdPrivacyMode);
-    getBool("rdAudioEnabled", cfg.rdAudioEnabled);
-    getBool("rdClipboardEnabled", cfg.rdClipboardEnabled);
-    getString("rdDriveName", cfg.rdDriveName);
-    getString("rdDrivePath", cfg.rdDrivePath);
-    getString("expectedRdpCertificateFingerprintSha256", cfg.expectedRdpCertificateFingerprintSha256);
-    getString("expectedRdpGatewayCertificateFingerprintSha256",
-              cfg.expectedRdpGatewayCertificateFingerprintSha256);
-    getBool("rdpAllowUntrustedRoot", cfg.rdpAllowUntrustedRoot);
-    getBool("rdpAllowHostMismatch", cfg.rdpAllowHostMismatch);
-    getBool("rdpCertificateAllowUnpinnedOnce", cfg.rdpCertificateAllowUnpinnedOnce);
-    getBool("rdpAllowStandardSecurityOnce", cfg.rdpAllowStandardSecurityOnce);
-    getBool("rdpTlsWithoutNla", cfg.rdpTlsWithoutNla);
-    getBool("rdpCertificateAllowTimeAnomalyOnce", cfg.rdpCertificateAllowTimeAnomalyOnce);
-    getBool("rdpGatewayAllowUntrustedRoot", cfg.rdpGatewayAllowUntrustedRoot);
-    getBool("rdpGatewayAllowHostMismatch", cfg.rdpGatewayAllowHostMismatch);
-    getBool("rdpGatewayCertificateAllowUnpinnedOnce",
-            cfg.rdpGatewayCertificateAllowUnpinnedOnce);
-    getBool("rdpGatewayCertificateAllowTimeAnomalyOnce",
-            cfg.rdpGatewayCertificateAllowTimeAnomalyOnce);
-    getInt("rdPasswordMode", cfg.rdPasswordMode);
-    getInt("rdAuthMode", cfg.rdAuthMode);
-    getInt("rdPasswordLength", cfg.rdPasswordLength);
-    getString("rdRelayId", cfg.rdRelayId);
-    getString("rdAccountId", cfg.rdAccountId);
-    getString("rdServerKey", cfg.rdServerKey);
-    getInt("rdServerKeyMode", cfg.rdServerKeyMode);
     bool hasRdRelayPort = false;
-    getInt("rdRelayPort", cfg.rdRelayPort, &hasRdRelayPort);
-    getString("rdAccessToken", cfg.rdAccessToken);
+    if (isRustDesk) {
+        getInt("rdImageQuality", cfg.rdImageQuality);
+        getBool("rdDirectIp", cfg.rdDirectIp);
+        getString("rdConnectionStrategy", cfg.rdConnectionStrategy);
+        getInt("rdDirectPort", cfg.rdDirectPort, &hasRdDirectPort);
+        getBool("rdLanDiscovery", cfg.rdLanDiscovery);
+        getBool("rdPrivacyMode", cfg.rdPrivacyMode);
+        getInt("rdPasswordMode", cfg.rdPasswordMode);
+        getInt("rdAuthMode", cfg.rdAuthMode);
+        getInt("rdPasswordLength", cfg.rdPasswordLength);
+        getString("rdRelayId", cfg.rdRelayId);
+        getString("rdAccountId", cfg.rdAccountId);
+        getString("rdServerKey", cfg.rdServerKey);
+        getInt("rdServerKeyMode", cfg.rdServerKeyMode);
+        getInt("rdRelayPort", cfg.rdRelayPort, &hasRdRelayPort);
+        getString("rdAccessToken", cfg.rdAccessToken);
+    }
+    if (isRdp || isRustDesk) {
+        getBool("rdAudioEnabled", cfg.rdAudioEnabled);
+        getBool("rdClipboardEnabled", cfg.rdClipboardEnabled);
+    } else {
+        // ConnectionConfig predates VNC/SSH and defaults remote audio on.
+        // Those protocols do not own this shared media flag.
+        cfg.rdAudioEnabled = false;
+        cfg.rdClipboardEnabled = false;
+    }
+    if (isRdp) {
+        getString("rdDriveName", cfg.rdDriveName);
+        getString("rdDrivePath", cfg.rdDrivePath);
+        getString("expectedRdpCertificateFingerprintSha256",
+                  cfg.expectedRdpCertificateFingerprintSha256);
+        getString("expectedRdpGatewayCertificateFingerprintSha256",
+                  cfg.expectedRdpGatewayCertificateFingerprintSha256);
+        getBool("rdpAllowUntrustedRoot", cfg.rdpAllowUntrustedRoot);
+        getBool("rdpAllowHostMismatch", cfg.rdpAllowHostMismatch);
+        getBool("rdpCertificateAllowUnpinnedOnce", cfg.rdpCertificateAllowUnpinnedOnce);
+        getBool("rdpAllowStandardSecurityOnce", cfg.rdpAllowStandardSecurityOnce);
+        getBool("rdpTlsWithoutNla", cfg.rdpTlsWithoutNla);
+        getBool("rdpCertificateAllowTimeAnomalyOnce", cfg.rdpCertificateAllowTimeAnomalyOnce);
+        getBool("rdpGatewayAllowUntrustedRoot", cfg.rdpGatewayAllowUntrustedRoot);
+        getBool("rdpGatewayAllowHostMismatch", cfg.rdpGatewayAllowHostMismatch);
+        getBool("rdpGatewayCertificateAllowUnpinnedOnce",
+                cfg.rdpGatewayCertificateAllowUnpinnedOnce);
+        getBool("rdpGatewayCertificateAllowTimeAnomalyOnce",
+                cfg.rdpGatewayCertificateAllowTimeAnomalyOnce);
+    }
 
     // VNC-only connection contract. These values are assembled from the
     // isolated VNC data domain and are ignored by the other adapters.
-    getString("vncTransport", cfg.vncTransport);
-    getString("vncGatewayHost", cfg.vncGatewayHost,
-              remotedesk::endpoint::kMaxInputLength);
     bool hasVncGatewayPort = false;
-    getInt("vncGatewayPort", cfg.vncGatewayPort, &hasVncGatewayPort);
-    getString("vncServerName", cfg.vncServerName,
-              remotedesk::endpoint::kMaxInputLength);
-    getString("vncGatewayPath", cfg.vncGatewayPath);
-    getString("vncRepeaterMode", cfg.vncRepeaterMode);
-    getString("vncRepeaterTarget", cfg.vncRepeaterTarget);
-    getBool("vncTls", cfg.vncTls);
-    getBool("vncViewOnly", cfg.vncViewOnly);
-    getBool("vncClipboardEnabled", cfg.vncClipboardEnabled);
-    getString("vncSecurityPolicy", cfg.vncSecurityPolicy);
-    getInt("vncConnectTimeoutMs", cfg.vncConnectTimeoutMs);
-    getInt("vncAuthTimeoutMs", cfg.vncAuthTimeoutMs);
-    getInt("vncFirstFrameTimeoutMs", cfg.vncFirstFrameTimeoutMs);
-    getString("vncImageQualityPreset", cfg.vncImageQualityPreset);
-    getString("vncPreferredEncoding", cfg.vncPreferredEncoding);
-    getString("vncColorDepth", cfg.vncColorDepth);
-    getInt("vncFrameRateLimit", cfg.vncFrameRateLimit);
-    getString("vncExpectedCertificateFingerprintSha256", cfg.vncExpectedCertificateFingerprintSha256);
+    if (isVnc) {
+        getString("vncTransport", cfg.vncTransport);
+        getString("vncGatewayHost", cfg.vncGatewayHost,
+                  remotedesk::endpoint::kMaxInputLength);
+        getInt("vncGatewayPort", cfg.vncGatewayPort, &hasVncGatewayPort);
+        getString("vncServerName", cfg.vncServerName,
+                  remotedesk::endpoint::kMaxInputLength);
+        getString("vncGatewayPath", cfg.vncGatewayPath);
+        getString("vncRepeaterMode", cfg.vncRepeaterMode);
+        getString("vncRepeaterTarget", cfg.vncRepeaterTarget);
+        getBool("vncTls", cfg.vncTls);
+        getBool("vncViewOnly", cfg.vncViewOnly);
+        getBool("vncClipboardEnabled", cfg.vncClipboardEnabled);
+        getString("vncSecurityPolicy", cfg.vncSecurityPolicy);
+        getInt("vncConnectTimeoutMs", cfg.vncConnectTimeoutMs);
+        getInt("vncAuthTimeoutMs", cfg.vncAuthTimeoutMs);
+        getInt("vncFirstFrameTimeoutMs", cfg.vncFirstFrameTimeoutMs);
+        getString("vncImageQualityPreset", cfg.vncImageQualityPreset);
+        getString("vncPreferredEncoding", cfg.vncPreferredEncoding);
+        getString("vncColorDepth", cfg.vncColorDepth);
+        getInt("vncFrameRateLimit", cfg.vncFrameRateLimit);
+        getString("vncExpectedCertificateFingerprintSha256",
+                  cfg.vncExpectedCertificateFingerprintSha256);
+    }
 
-    if (cfg.rdConnectionStrategy.empty()) {
+    if (isRustDesk && cfg.rdConnectionStrategy.empty()) {
         cfg.rdConnectionStrategy = cfg.rdDirectIp ? "direct_ip" : "force_relay";
-    } else if (cfg.rdConnectionStrategy == "direct_ip") {
+    } else if (isRustDesk && cfg.rdConnectionStrategy == "direct_ip") {
         cfg.rdDirectIp = true;
-    } else if (cfg.rdConnectionStrategy == "force_relay" ||
-               cfg.rdConnectionStrategy == "auto") {
+    } else if (isRustDesk && (cfg.rdConnectionStrategy == "force_relay" ||
+               cfg.rdConnectionStrategy == "auto")) {
         cfg.rdDirectIp = false;
-    } else {
+    } else if (isRustDesk) {
         // Preserve an explicit invalid sentinel so native rejects the request
         // instead of silently changing a future/typoed strategy to relay.
         cfg.rdConnectionStrategy = "invalid";
@@ -4990,15 +5014,15 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
     if (remotedesk::extensions::HasInvalidActiveOptionalPort(portPolicy)) {
         invalidConfigField = true;
     }
-    if (!hasRdDirectPort) cfg.rdDirectPort = 21118;
+    if (isRustDesk && !hasRdDirectPort) cfg.rdDirectPort = 21118;
     if (!hasPort) {
         // RustDesk 的通用端口字段在直连模式代表 peer TCP 端口；
         // 非直连模式才代表 ID/rendezvous 端口，不能落回 RDP 3389。
-        if (protocolName == "ssh") {
+        if (isSsh) {
             cfg.port = 22;
-        } else if (protocolName == "rustdesk") {
+        } else if (isRustDesk) {
             cfg.port = cfg.rdDirectIp ? cfg.rdDirectPort : 21116;
-        } else if (protocolName == "vnc") {
+        } else if (isVnc) {
             cfg.port = 5900;
         } else {
             cfg.port = 3389;
@@ -5006,46 +5030,50 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
     }
     if (cfg.width == 0) cfg.width = 1920;
     if (cfg.height == 0) cfg.height = 1080;
-    if (!hasGatewayPort) cfg.gatewayPort = 443;
-    if (cfg.colorDepth == 0) cfg.colorDepth = 32;
-    if (cfg.rdImageQuality < 0 || cfg.rdImageQuality > 2) cfg.rdImageQuality = 1;
-    if (cfg.rdPasswordMode != 1) cfg.rdPasswordMode = 0;
-    if (cfg.rdAuthMode != 1) cfg.rdAuthMode = 0;
-    if (cfg.rdPasswordLength != 8 && cfg.rdPasswordLength != 10) cfg.rdPasswordLength = 6;
-    if (cfg.rdServerKeyMode != 1 && cfg.rdServerKeyMode != 2) cfg.rdServerKeyMode = 0;
-    if (!hasRdRelayPort) cfg.rdRelayPort = 21117;
-    if (cfg.vncTransport.empty()) cfg.vncTransport = "direct_tcp";
-    if (cfg.vncGatewayPath.empty()) cfg.vncGatewayPath = "/vnc";
-    // An omitted mode gets the only viewer mode we currently support. An
-    // explicitly unknown mode is preserved so policy/Native reject it
-    // instead of silently changing the requested repeater role.
-    if (cfg.vncRepeaterMode.empty()) cfg.vncRepeaterMode = "mode12";
-    if (!hasVncGatewayPort) cfg.vncGatewayPort = 5901;
-    if (cfg.vncConnectTimeoutMs <= 0 || cfg.vncConnectTimeoutMs > 120000) cfg.vncConnectTimeoutMs = 10000;
-    if (cfg.vncAuthTimeoutMs <= 0 || cfg.vncAuthTimeoutMs > 120000) cfg.vncAuthTimeoutMs = 15000;
-    if (cfg.vncFirstFrameTimeoutMs <= 0 || cfg.vncFirstFrameTimeoutMs > 120000) cfg.vncFirstFrameTimeoutMs = 15000;
-    if (cfg.vncImageQualityPreset != "speed" && cfg.vncImageQualityPreset != "quality") {
-        cfg.vncImageQualityPreset = "balanced";
+    if ((isRdp || isSsh) && !hasGatewayPort) cfg.gatewayPort = 443;
+    if (isRdp && cfg.colorDepth == 0) cfg.colorDepth = 32;
+    if (isRustDesk) {
+        if (cfg.rdImageQuality < 0 || cfg.rdImageQuality > 2) cfg.rdImageQuality = 1;
+        if (cfg.rdPasswordMode != 1) cfg.rdPasswordMode = 0;
+        if (cfg.rdAuthMode != 1) cfg.rdAuthMode = 0;
+        if (cfg.rdPasswordLength != 8 && cfg.rdPasswordLength != 10) cfg.rdPasswordLength = 6;
+        if (cfg.rdServerKeyMode != 1 && cfg.rdServerKeyMode != 2) cfg.rdServerKeyMode = 0;
+        if (!hasRdRelayPort) cfg.rdRelayPort = 21117;
     }
-    if (cfg.vncPreferredEncoding != "raw" && cfg.vncPreferredEncoding != "zrle") {
-        cfg.vncPreferredEncoding = "auto";
+    if (isVnc) {
+        if (cfg.vncTransport.empty()) cfg.vncTransport = "direct_tcp";
+        if (cfg.vncGatewayPath.empty()) cfg.vncGatewayPath = "/vnc";
+        // An omitted mode gets the only viewer mode we currently support. An
+        // explicitly unknown mode is preserved so policy/Native reject it
+        // instead of silently changing the requested repeater role.
+        if (cfg.vncRepeaterMode.empty()) cfg.vncRepeaterMode = "mode12";
+        if (!hasVncGatewayPort) cfg.vncGatewayPort = 5901;
+        if (cfg.vncConnectTimeoutMs <= 0 || cfg.vncConnectTimeoutMs > 120000) cfg.vncConnectTimeoutMs = 10000;
+        if (cfg.vncAuthTimeoutMs <= 0 || cfg.vncAuthTimeoutMs > 120000) cfg.vncAuthTimeoutMs = 15000;
+        if (cfg.vncFirstFrameTimeoutMs <= 0 || cfg.vncFirstFrameTimeoutMs > 120000) cfg.vncFirstFrameTimeoutMs = 15000;
+        if (cfg.vncImageQualityPreset != "speed" && cfg.vncImageQualityPreset != "quality") {
+            cfg.vncImageQualityPreset = "balanced";
+        }
+        if (cfg.vncPreferredEncoding != "raw" && cfg.vncPreferredEncoding != "zrle") {
+            cfg.vncPreferredEncoding = "auto";
+        }
+        if (cfg.vncColorDepth != "32" && cfg.vncColorDepth != "16" && cfg.vncColorDepth != "8") {
+            cfg.vncColorDepth = "auto";
+        }
+        if (cfg.vncFrameRateLimit != 0 && cfg.vncFrameRateLimit != 15 &&
+            cfg.vncFrameRateLimit != 60) cfg.vncFrameRateLimit = 30;
+        if (cfg.vncSecurityPolicy != "secure_only" && cfg.vncSecurityPolicy != "trusted_network" &&
+            cfg.vncSecurityPolicy != "allow_plaintext") cfg.vncSecurityPolicy = "secure_only";
     }
-    if (cfg.vncColorDepth != "32" && cfg.vncColorDepth != "16" && cfg.vncColorDepth != "8") {
-        cfg.vncColorDepth = "auto";
-    }
-    if (cfg.vncFrameRateLimit != 0 && cfg.vncFrameRateLimit != 15 &&
-        cfg.vncFrameRateLimit != 60) cfg.vncFrameRateLimit = 30;
-    if (cfg.vncSecurityPolicy != "secure_only" && cfg.vncSecurityPolicy != "trusted_network" &&
-        cfg.vncSecurityPolicy != "allow_plaintext") cfg.vncSecurityPolicy = "secure_only";
 
     if (invalidConfigField) {
         OH_LOG_ERROR(LOG_APP, "[ExtLoader] invalid NAPI connection config field type");
         napi_value errVal;
-        napi_create_int32(env, protocolName == "ssh" ? ERR_SSH_PROXY_INVALID : -2, &errVal);
+        napi_create_int32(env, isSsh ? ERR_SSH_PROXY_INVALID : -2, &errVal);
         return errVal;
     }
 
-    if (protocolName == "rdp") {
+    if (isRdp) {
         if (cfg.targetServerName.empty()) {
             cfg.targetServerName = cfg.customHostname;
         } else if (!cfg.customHostname.empty() &&
