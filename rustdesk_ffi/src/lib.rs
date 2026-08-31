@@ -14,7 +14,7 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::{c_char, c_void, CStr, CString};
 use std::io;
-use std::net::{Shutdown, TcpStream};
+use std::net::Shutdown;
 use std::os::raw::c_int;
 use std::ptr;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -29,12 +29,14 @@ mod cursor_state;
 mod net;
 #[cfg(feature = "opus-audio")]
 pub mod opus_ffi;
+pub mod peer_stream;
 pub mod protocol;
 mod safe_diagnostics;
 pub mod terminal_core;
 
 use control_inbox::ControlInbox;
 use cursor_state::CursorStreamUpdate;
+use peer_stream::PeerStream;
 use protocol::message_proto::{
     AudioFormat, AudioFrame, EncodedVideoFrames, VideoFrame, VideoFrame_oneof_union,
 };
@@ -1400,7 +1402,7 @@ struct RustDeskClient {
     connection_strategy: connector::RustDeskConnectionStrategy,
     nat_config: connector::RustDeskNatTraversalConfig,
     controls: Arc<ControlInbox>,
-    shutdown_stream: Option<TcpStream>,
+    shutdown_stream: Option<PeerStream>,
     stream_handle: Option<std::thread::JoinHandle<io::Result<()>>>,
     transfer_status: Arc<Mutex<RustDeskTransferStatus>>,
     transfer_error: Arc<Mutex<String>>,

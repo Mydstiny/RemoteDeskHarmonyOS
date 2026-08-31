@@ -23,6 +23,7 @@ use crate::crypto::{self, KeyPair};
 use crate::crypto_channel::CryptoChannel;
 use crate::cursor_state::{CursorCacheMissReason, CursorIdResult, CursorState, CursorStreamUpdate};
 use crate::net;
+use crate::peer_stream::PeerStream;
 use crate::protocol::message_proto::{
     AudioFormat, AudioFrame, CaptureDisplays, Clipboard, ClipboardFormat, ControlKey, DisplayInfo,
     DisplayResolution, EncodedVideoFrames, FileAction, FileAction_oneof_union, FileEntry,
@@ -709,7 +710,7 @@ impl RustDeskConnector {
         rendezvous_secure: bool,
         conn_type: RendezvousConnType,
         route_deadline: Option<Instant>,
-    ) -> io::Result<TcpStream> {
+    ) -> io::Result<PeerStream> {
         let route_plan = punch.route_plan();
         route_plan.ensure_executable()?;
 
@@ -728,7 +729,7 @@ impl RustDeskConnector {
             ) {
                 Ok(stream) => {
                     eprintln!("[RustDesk-FFI] AUTO selected direct TCP candidate");
-                    return Ok(stream);
+                    return Ok(stream.into());
                 }
                 Err(error) => {
                     eprintln!(
@@ -759,50 +760,56 @@ impl RustDeskConnector {
                     )
                 })?;
             self.set_connect_state(ConnState::ConnectingToPeer);
-            return rendezvous.create_relay_with_timeout(
-                peer_id,
-                relay_uuid,
-                &punch.relay_server,
-                relay_fallback_port,
-                credentials.access_key,
-                conn_type,
-                route_stage_timeout(
-                    route_deadline,
-                    Duration::from_secs(10),
-                    self.connect_epoch,
-                    "AUTO relay connect",
-                )?,
-            );
+            return rendezvous
+                .create_relay_with_timeout(
+                    peer_id,
+                    relay_uuid,
+                    &punch.relay_server,
+                    relay_fallback_port,
+                    credentials.access_key,
+                    conn_type,
+                    route_stage_timeout(
+                        route_deadline,
+                        Duration::from_secs(10),
+                        self.connect_epoch,
+                        "AUTO relay connect",
+                    )?,
+                )
+                .map(PeerStream::from);
         }
         if route_plan.has_relay_request() {
-            return self.request_and_create_relay(
-                rendezvous_host,
-                rendezvous_port,
-                relay_fallback_port,
-                server_key,
-                api_token,
-                peer_id,
-                credentials,
-                rendezvous_secure,
-                conn_type,
-                &punch.relay_server,
-                !punch.signed_pk.is_empty(),
-                route_deadline,
-            );
+            return self
+                .request_and_create_relay(
+                    rendezvous_host,
+                    rendezvous_port,
+                    relay_fallback_port,
+                    server_key,
+                    api_token,
+                    peer_id,
+                    credentials,
+                    rendezvous_secure,
+                    conn_type,
+                    &punch.relay_server,
+                    !punch.signed_pk.is_empty(),
+                    route_deadline,
+                )
+                .map(PeerStream::from);
         }
         if route_plan.has_direct_tcp() {
             self.set_connect_state(ConnState::ConnectingToPeer);
             rendezvous.disconnect();
-            return rendezvous.connect_to_peer_candidates(
-                &punch.peer_candidates,
-                local_address,
-                route_stage_timeout(
-                    route_deadline,
-                    Self::direct_candidate_timeout(punch),
-                    self.connect_epoch,
-                    "direct candidate connect",
-                )?,
-            );
+            return rendezvous
+                .connect_to_peer_candidates(
+                    &punch.peer_candidates,
+                    local_address,
+                    route_stage_timeout(
+                        route_deadline,
+                        Self::direct_candidate_timeout(punch),
+                        self.connect_epoch,
+                        "direct candidate connect",
+                    )?,
+                )
+                .map(PeerStream::from);
         }
         Err(io::Error::new(
             io::ErrorKind::Other,
@@ -1344,7 +1351,7 @@ impl RustDeskConnector {
     }
 
     /// KeyExchange: 交换 Curve25519 公钥
-    fn key_exchange(&mut self, stream: &mut TcpStream) -> io::Result<()> {
+    fn key_exchange(&mut self, stream: &mut PeerStream) -> io::Result<()> {
         // 发送自己的公钥 (32 bytes, raw)
         use std::io::{Read, Write};
         stream.write_all(&self.keypair.public_key)?;
@@ -1359,7 +1366,7 @@ impl RustDeskConnector {
 
     fn secure_peer_connection(
         &mut self,
-        stream: &mut TcpStream,
+        stream: &mut PeerStream,
         peer_id: &str,
         signed_id_pk: &[u8],
         server_public_key: Option<&str>,
@@ -1485,7 +1492,7 @@ impl RustDeskConnector {
         Ok(Some(pk))
     }
 
-    fn send_empty_message(&self, stream: &mut TcpStream) -> io::Result<()> {
+    fn send_empty_message(&self, stream: &mut PeerStream) -> io::Result<()> {
         let msg = Message::new();
         let bytes = msg
             .write_to_bytes()
@@ -3892,7 +3899,7 @@ impl RustDeskConnector {
         &self.state
     }
 
-    pub fn try_clone_stream(&self) -> io::Result<TcpStream> {
+    pub fn try_clone_stream(&self) -> io::Result<PeerStream> {
         let crypto = self
             .crypto_channel
             .as_ref()

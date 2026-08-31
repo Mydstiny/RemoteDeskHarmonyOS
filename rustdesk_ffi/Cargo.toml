@@ -55,6 +55,7 @@ rand = "0.8"                         # 随机数 (keypair, nonce)
 # the one locked by the audited upstream client snapshot documented in
 # docs/compliance/RUSTDESK_KCP_PROVENANCE.md.
 kcp-sys = { git = "https://github.com/rustdesk-org/kcp-sys", rev = "32a6c09fc6223f54aea83981a6aa8995931d29be" }
+bytes = "1"
 tokio = { version = "1", features = ["io-util", "net", "rt", "sync", "time"] }
 
 base64 = "0.22"

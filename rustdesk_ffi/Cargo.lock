@@ -808,6 +808,7 @@ version = "0.1.0"
 dependencies = [
  "alacritty_terminal",
  "base64",
+ "bytes",
  "ed25519-dalek",
  "kcp-sys",
  "libc",

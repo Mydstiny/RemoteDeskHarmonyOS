@@ -12,7 +12,7 @@ pub const MAX_FRAME_SIZE: usize = 16 * 1024 * 1024;
 const CANCELLABLE_READ_SLICE: Duration = Duration::from_millis(200);
 
 /// 读取一帧，返回 payload 字节数组。
-pub fn read_frame(stream: &mut TcpStream) -> io::Result<Vec<u8>> {
+pub fn read_frame<R: Read>(stream: &mut R) -> io::Result<Vec<u8>> {
     let header = read_len_with_header(stream)?;
     let len = header.len;
 
@@ -38,12 +38,28 @@ pub fn read_frame(stream: &mut TcpStream) -> io::Result<Vec<u8>> {
 /// Read one complete frame while retaining partial header/payload bytes across
 /// socket timeouts. The caller supplies one absolute deadline so DNS/connect
 /// and protocol handshakes can share a bounded cancellation contract.
-pub fn read_frame_cancellable<F>(
-    stream: &mut TcpStream,
+pub trait TimedRead: Read {
+    fn read_timeout(&self) -> io::Result<Option<Duration>>;
+    fn set_read_timeout(&self, timeout: Option<Duration>) -> io::Result<()>;
+}
+
+impl TimedRead for TcpStream {
+    fn read_timeout(&self) -> io::Result<Option<Duration>> {
+        TcpStream::read_timeout(self)
+    }
+
+    fn set_read_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {
+        TcpStream::set_read_timeout(self, timeout)
+    }
+}
+
+pub fn read_frame_cancellable<S, F>(
+    stream: &mut S,
     deadline: Instant,
     mut cancelled: F,
 ) -> io::Result<Vec<u8>>
 where
+    S: TimedRead,
     F: FnMut() -> bool,
 {
     let original_timeout = stream.read_timeout()?;
@@ -92,14 +108,15 @@ where
     }
 }
 
-fn read_exact_until<F>(
-    stream: &mut TcpStream,
+fn read_exact_until<S, F>(
+    stream: &mut S,
     buffer: &mut [u8],
     deadline: Instant,
     frame_started: bool,
     cancelled: &mut F,
 ) -> io::Result<()>
 where
+    S: TimedRead,
     F: FnMut() -> bool,
 {
     let mut offset = 0usize;
@@ -151,7 +168,7 @@ fn frame_deadline_error(frame_started: bool) -> io::Error {
 }
 
 /// 写入一帧。
-pub fn write_frame(stream: &mut TcpStream, payload: &[u8]) -> io::Result<()> {
+pub fn write_frame<W: Write>(stream: &mut W, payload: &[u8]) -> io::Result<()> {
     let len = payload.len();
     if len > MAX_FRAME_SIZE {
         return Err(io::Error::new(
