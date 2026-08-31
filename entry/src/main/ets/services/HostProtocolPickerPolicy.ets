@@ -11,26 +11,27 @@ export interface HostProtocolPickerOptionState {
   opacity: number;
 }
 
-/** Keeps the option-card contract shared with RustDesk and gates Moonlight on
- * the capability probed after the user explicitly opens the FAB.
+/** Keeps the option-card contract shared with RustDesk while separating the
+ * add-flow entry from native pairing and streaming readiness.
  */
 export function resolveHostProtocolPickerOption(
   protocol: string,
   moonlightProtocolAvailable: boolean,
-  _moonlightFabEntryAvailable: boolean = false
+  moonlightFabEntryAvailable: boolean = false
 ): HostProtocolPickerOptionState {
   const runtimeAvailable: boolean = protocol !== 'moonlight' || moonlightProtocolAvailable;
-  // The visible shell is never a substitute for verified native Host Control.
-  // This keeps the released FAB route fail-closed on unsupported devices.
-  const routeEnabled: boolean = runtimeAvailable;
-  const shellOnly: boolean = false;
+  const routeEnabled: boolean = runtimeAvailable ||
+    (protocol === 'moonlight' && moonlightFabEntryAvailable);
+  // Shell admission only opens the add flow. Pairing and streaming continue
+  // to use their independent native capability checks.
+  const shellOnly: boolean = protocol === 'moonlight' && routeEnabled && !runtimeAvailable;
   return {
     protocol: protocol,
     enabled: routeEnabled,
     routeEnabled: routeEnabled,
     runtimeAvailable: runtimeAvailable,
     shellOnly: shellOnly,
-    statusLabel: routeEnabled ? '' : HOST_PROTOCOL_COMING_SOON_LABEL,
+    statusLabel: shellOnly ? '仅添加' : (routeEnabled ? '' : HOST_PROTOCOL_COMING_SOON_LABEL),
     opacity: routeEnabled ? 1 : 0.58
   };
 }

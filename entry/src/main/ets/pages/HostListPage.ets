@@ -18467,7 +18467,9 @@ struct HostListPage {
   @Builder hostAddSheetContent() {
     if (this.addSheetShowsModernPicker) {
       HostAddWizardSheet({
-        moonlightFabEntryAvailable: false,
+        // Opening the local add flow must not depend on an optional native
+        // network-observer lease. Pairing and streaming remain capability-gated.
+        moonlightFabEntryAvailable: true,
         moonlightProtocolAvailable: this.moonlightProtocolAvailable,
         onSelectProtocol: (protocol: string): void => {
           this.modernAddProtocol = protocol;
