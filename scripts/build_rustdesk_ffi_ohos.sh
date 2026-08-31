@@ -60,6 +60,7 @@ for ABI_TARGET in "${ABIS[@]}"; do
         CLANG_TARGET="x86_64-linux-ohos"
     fi
     TARGET_CFLAGS="--target=$CLANG_TARGET '--sysroot=$OHOS_SYSROOT' -D__MUSL__ -fPIC"
+    KCP_SYS_INCLUDE_PATH="$OHOS_SYSROOT/usr/include:$OHOS_SYSROOT/usr/include/$CLANG_TARGET"
 
     if [ ! -f "$TARGET_CC" ] || [ ! -f "$TARGET_CXX" ] || [ ! -f "$TARGET_AR" ]; then
         echo "ERROR: OHOS target toolchain is incomplete for $TARGET under $OHOS_LLVM"
@@ -75,6 +76,7 @@ for ABI_TARGET in "${ABIS[@]}"; do
             "CFLAGS_${TARGET_ENV}=$TARGET_CFLAGS" \
             "CXXFLAGS_${TARGET_ENV}=$TARGET_CFLAGS" \
             CC_SHELL_ESCAPED_FLAGS=1 \
+            KCP_SYS_EXTRA_HEADER_PATH="$KCP_SYS_INCLUDE_PATH" \
             "CARGO_TARGET_${TARGET_ENV_UPPER}_LINKER=$TARGET_CXX" \
             "CARGO_TARGET_${TARGET_ENV_UPPER}_RUSTFLAGS=-C link-arg=--target=$CLANG_TARGET -C link-arg=--sysroot=$OHOS_SYSROOT" \
             OPUS_LIB_DIR="$OPUS_LIB_DIR" \

@@ -2,10 +2,10 @@
   "spdxVersion": "SPDX-2.3",
   "dataLicense": "CC0-1.0",
   "SPDXID": "SPDXRef-DOCUMENT",
-  "name": "RemoteDeskHarmonyOS-fc514ce3648779352627e81ec737bbe63ec4f81b",
-  "documentNamespace": "https://github.com/Mydstiny/RemoteDeskHarmonyOS/spdx/fc514ce3648779352627e81ec737bbe63ec4f81b",
+  "name": "RemoteDeskHarmonyOS-390e682c0a5e87e9e3fadc3d389298d356004689",
+  "documentNamespace": "https://github.com/Mydstiny/RemoteDeskHarmonyOS/spdx/390e682c0a5e87e9e3fadc3d389298d356004689",
   "creationInfo": {
-    "created": "2026-08-28T15:50:20Z",
+    "created": "2026-08-31T00:12:15Z",
     "creators": [
       "Tool: scripts/generate_sbom.ps1",
       "Organization: RemoteDeskHarmonyOS"
@@ -53,9 +53,29 @@
       "copyrightText": "NOASSERTION"
     },
     {
+      "name": "anyhow",
+      "SPDXID": "SPDXRef-Cargo-anyhow-1.0.104",
+      "versionInfo": "1.0.104",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "filesAnalyzed": false,
+      "licenseConcluded": "MIT OR Apache-2.0",
+      "licenseDeclared": "MIT OR Apache-2.0",
+      "copyrightText": "NOASSERTION"
+    },
+    {
       "name": "arrayvec",
       "SPDXID": "SPDXRef-Cargo-arrayvec-0.7.6",
       "versionInfo": "0.7.6",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "filesAnalyzed": false,
+      "licenseConcluded": "MIT OR Apache-2.0",
+      "licenseDeclared": "MIT OR Apache-2.0",
+      "copyrightText": "NOASSERTION"
+    },
+    {
+      "name": "auto_impl",
+      "SPDXID": "SPDXRef-Cargo-auto-impl-1.3.0",
+      "versionInfo": "1.3.0",
       "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
       "filesAnalyzed": false,
       "licenseConcluded": "MIT OR Apache-2.0",
@@ -83,6 +103,16 @@
       "copyrightText": "NOASSERTION"
     },
     {
+      "name": "bindgen",
+      "SPDXID": "SPDXRef-Cargo-bindgen-0.71.1",
+      "versionInfo": "0.71.1",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "filesAnalyzed": false,
+      "licenseConcluded": "BSD-3-Clause",
+      "licenseDeclared": "BSD-3-Clause",
+      "copyrightText": "NOASSERTION"
+    },
+    {
       "name": "bitflags",
       "SPDXID": "SPDXRef-Cargo-bitflags-2.13.1",
       "versionInfo": "2.13.1",
@@ -103,6 +133,26 @@
       "copyrightText": "NOASSERTION"
     },
     {
+      "name": "byteorder",
+      "SPDXID": "SPDXRef-Cargo-byteorder-1.5.0",
+      "versionInfo": "1.5.0",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "filesAnalyzed": false,
+      "licenseConcluded": "Unlicense OR MIT",
+      "licenseDeclared": "Unlicense OR MIT",
+      "copyrightText": "NOASSERTION"
+    },
+    {
+      "name": "bytes",
+      "SPDXID": "SPDXRef-Cargo-bytes-1.12.1",
+      "versionInfo": "1.12.1",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "filesAnalyzed": false,
+      "licenseConcluded": "MIT",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION"
+    },
+    {
       "name": "cc",
       "SPDXID": "SPDXRef-Cargo-cc-1.2.67",
       "versionInfo": "1.2.67",
@@ -110,6 +160,16 @@
       "filesAnalyzed": false,
       "licenseConcluded": "MIT OR Apache-2.0",
       "licenseDeclared": "MIT OR Apache-2.0",
+      "copyrightText": "NOASSERTION"
+    },
+    {
+      "name": "cexpr",
+      "SPDXID": "SPDXRef-Cargo-cexpr-0.6.0",
+      "versionInfo": "0.6.0",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "filesAnalyzed": false,
+      "licenseConcluded": "Apache-2.0/MIT",
+      "licenseDeclared": "Apache-2.0/MIT",
       "copyrightText": "NOASSERTION"
     },
     {
@@ -133,6 +193,16 @@
       "copyrightText": "NOASSERTION"
     },
     {
+      "name": "clang-sys",
+      "SPDXID": "SPDXRef-Cargo-clang-sys-1.9.1",
+      "versionInfo": "1.9.1",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "filesAnalyzed": false,
+      "licenseConcluded": "Apache-2.0",
+      "licenseDeclared": "Apache-2.0",
+      "copyrightText": "NOASSERTION"
+    },
+    {
       "name": "const-oid",
       "SPDXID": "SPDXRef-Cargo-const-oid-0.9.6",
       "versionInfo": "0.9.6",
@@ -146,6 +216,16 @@
       "name": "cpufeatures",
       "SPDXID": "SPDXRef-Cargo-cpufeatures-0.2.17",
       "versionInfo": "0.2.17",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "filesAnalyzed": false,
+      "licenseConcluded": "MIT OR Apache-2.0",
+      "licenseDeclared": "MIT OR Apache-2.0",
+      "copyrightText": "NOASSERTION"
+    },
+    {
+      "name": "crossbeam-utils",
+      "SPDXID": "SPDXRef-Cargo-crossbeam-utils-0.8.22",
+      "versionInfo": "0.8.22",
       "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
       "filesAnalyzed": false,
       "licenseConcluded": "MIT OR Apache-2.0",
@@ -180,6 +260,16 @@
       "filesAnalyzed": false,
       "licenseConcluded": "BSD-3-Clause",
       "licenseDeclared": "BSD-3-Clause",
+      "copyrightText": "NOASSERTION"
+    },
+    {
+      "name": "dashmap",
+      "SPDXID": "SPDXRef-Cargo-dashmap-6.2.1",
+      "versionInfo": "6.2.1",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "filesAnalyzed": false,
+      "licenseConcluded": "MIT",
+      "licenseDeclared": "MIT",
       "copyrightText": "NOASSERTION"
     },
     {
@@ -223,6 +313,16 @@
       "copyrightText": "NOASSERTION"
     },
     {
+      "name": "either",
+      "SPDXID": "SPDXRef-Cargo-either-1.18.0",
+      "versionInfo": "1.18.0",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "filesAnalyzed": false,
+      "licenseConcluded": "MIT OR Apache-2.0",
+      "licenseDeclared": "MIT OR Apache-2.0",
+      "copyrightText": "NOASSERTION"
+    },
+    {
       "name": "errno",
       "SPDXID": "SPDXRef-Cargo-errno-0.3.14",
       "versionInfo": "0.3.14",
@@ -236,6 +336,26 @@
       "name": "find-msvc-tools",
       "SPDXID": "SPDXRef-Cargo-find-msvc-tools-0.1.9",
       "versionInfo": "0.1.9",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "filesAnalyzed": false,
+      "licenseConcluded": "MIT OR Apache-2.0",
+      "licenseDeclared": "MIT OR Apache-2.0",
+      "copyrightText": "NOASSERTION"
+    },
+    {
+      "name": "futures-core",
+      "SPDXID": "SPDXRef-Cargo-futures-core-0.3.34",
+      "versionInfo": "0.3.34",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "filesAnalyzed": false,
+      "licenseConcluded": "MIT OR Apache-2.0",
+      "licenseDeclared": "MIT OR Apache-2.0",
+      "copyrightText": "NOASSERTION"
+    },
+    {
+      "name": "futures-sink",
+      "SPDXID": "SPDXRef-Cargo-futures-sink-0.3.34",
+      "versionInfo": "0.3.34",
       "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
       "filesAnalyzed": false,
       "licenseConcluded": "MIT OR Apache-2.0",
@@ -263,6 +383,26 @@
       "copyrightText": "NOASSERTION"
     },
     {
+      "name": "glob",
+      "SPDXID": "SPDXRef-Cargo-glob-0.3.4",
+      "versionInfo": "0.3.4",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "filesAnalyzed": false,
+      "licenseConcluded": "MIT OR Apache-2.0",
+      "licenseDeclared": "MIT OR Apache-2.0",
+      "copyrightText": "NOASSERTION"
+    },
+    {
+      "name": "hashbrown",
+      "SPDXID": "SPDXRef-Cargo-hashbrown-0.14.5",
+      "versionInfo": "0.14.5",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "filesAnalyzed": false,
+      "licenseConcluded": "MIT OR Apache-2.0",
+      "licenseDeclared": "MIT OR Apache-2.0",
+      "copyrightText": "NOASSERTION"
+    },
+    {
       "name": "home",
       "SPDXID": "SPDXRef-Cargo-home-0.5.12",
       "versionInfo": "0.5.12",
@@ -283,9 +423,39 @@
       "copyrightText": "NOASSERTION"
     },
     {
+      "name": "itertools",
+      "SPDXID": "SPDXRef-Cargo-itertools-0.13.0",
+      "versionInfo": "0.13.0",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "filesAnalyzed": false,
+      "licenseConcluded": "MIT OR Apache-2.0",
+      "licenseDeclared": "MIT OR Apache-2.0",
+      "copyrightText": "NOASSERTION"
+    },
+    {
       "name": "jobserver",
       "SPDXID": "SPDXRef-Cargo-jobserver-0.1.35",
       "versionInfo": "0.1.35",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "filesAnalyzed": false,
+      "licenseConcluded": "MIT OR Apache-2.0",
+      "licenseDeclared": "MIT OR Apache-2.0",
+      "copyrightText": "NOASSERTION"
+    },
+    {
+      "name": "kcp-sys",
+      "SPDXID": "SPDXRef-Cargo-kcp-sys-0.1.0",
+      "versionInfo": "0.1.0",
+      "downloadLocation": "git+https://github.com/rustdesk-org/kcp-sys?rev=32a6c09fc6223f54aea83981a6aa8995931d29be#32a6c09fc6223f54aea83981a6aa8995931d29be",
+      "filesAnalyzed": false,
+      "licenseConcluded": "MIT",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION"
+    },
+    {
+      "name": "lazy_static",
+      "SPDXID": "SPDXRef-Cargo-lazy-static-1.5.0",
+      "versionInfo": "1.5.0",
       "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
       "filesAnalyzed": false,
       "licenseConcluded": "MIT OR Apache-2.0",
@@ -300,6 +470,16 @@
       "filesAnalyzed": false,
       "licenseConcluded": "MIT OR Apache-2.0",
       "licenseDeclared": "MIT OR Apache-2.0",
+      "copyrightText": "NOASSERTION"
+    },
+    {
+      "name": "libloading",
+      "SPDXID": "SPDXRef-Cargo-libloading-0.8.9",
+      "versionInfo": "0.8.9",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "filesAnalyzed": false,
+      "licenseConcluded": "ISC",
+      "licenseDeclared": "ISC",
       "copyrightText": "NOASSERTION"
     },
     {
@@ -343,6 +523,56 @@
       "copyrightText": "NOASSERTION"
     },
     {
+      "name": "minimal-lexical",
+      "SPDXID": "SPDXRef-Cargo-minimal-lexical-0.2.1",
+      "versionInfo": "0.2.1",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "filesAnalyzed": false,
+      "licenseConcluded": "MIT/Apache-2.0",
+      "licenseDeclared": "MIT/Apache-2.0",
+      "copyrightText": "NOASSERTION"
+    },
+    {
+      "name": "mio",
+      "SPDXID": "SPDXRef-Cargo-mio-1.2.2",
+      "versionInfo": "1.2.2",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "filesAnalyzed": false,
+      "licenseConcluded": "MIT",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION"
+    },
+    {
+      "name": "nom",
+      "SPDXID": "SPDXRef-Cargo-nom-7.1.3",
+      "versionInfo": "7.1.3",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "filesAnalyzed": false,
+      "licenseConcluded": "MIT",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION"
+    },
+    {
+      "name": "nu-ansi-term",
+      "SPDXID": "SPDXRef-Cargo-nu-ansi-term-0.50.3",
+      "versionInfo": "0.50.3",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "filesAnalyzed": false,
+      "licenseConcluded": "MIT",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION"
+    },
+    {
+      "name": "once_cell",
+      "SPDXID": "SPDXRef-Cargo-once-cell-1.21.4",
+      "versionInfo": "1.21.4",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "filesAnalyzed": false,
+      "licenseConcluded": "MIT OR Apache-2.0",
+      "licenseDeclared": "MIT OR Apache-2.0",
+      "copyrightText": "NOASSERTION"
+    },
+    {
       "name": "opaque-debug",
       "SPDXID": "SPDXRef-Cargo-opaque-debug-0.3.1",
       "versionInfo": "0.3.1",
@@ -370,6 +600,16 @@
       "filesAnalyzed": false,
       "licenseConcluded": "MIT OR Apache-2.0",
       "licenseDeclared": "MIT OR Apache-2.0",
+      "copyrightText": "NOASSERTION"
+    },
+    {
+      "name": "pin-project-lite",
+      "SPDXID": "SPDXRef-Cargo-pin-project-lite-0.2.17",
+      "versionInfo": "0.2.17",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "filesAnalyzed": false,
+      "licenseConcluded": "Apache-2.0 OR MIT",
+      "licenseDeclared": "Apache-2.0 OR MIT",
       "copyrightText": "NOASSERTION"
     },
     {
@@ -503,6 +743,16 @@
       "copyrightText": "NOASSERTION"
     },
     {
+      "name": "regex",
+      "SPDXID": "SPDXRef-Cargo-regex-1.13.1",
+      "versionInfo": "1.13.1",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "filesAnalyzed": false,
+      "licenseConcluded": "MIT OR Apache-2.0",
+      "licenseDeclared": "MIT OR Apache-2.0",
+      "copyrightText": "NOASSERTION"
+    },
+    {
       "name": "regex-automata",
       "SPDXID": "SPDXRef-Cargo-regex-automata-0.4.17",
       "versionInfo": "0.4.17",
@@ -530,6 +780,16 @@
       "filesAnalyzed": false,
       "licenseConcluded": "MIT OR Apache-2.0",
       "licenseDeclared": "MIT OR Apache-2.0",
+      "copyrightText": "NOASSERTION"
+    },
+    {
+      "name": "rustc-hash",
+      "SPDXID": "SPDXRef-Cargo-rustc-hash-2.1.3",
+      "versionInfo": "2.1.3",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "filesAnalyzed": false,
+      "licenseConcluded": "Apache-2.0 OR MIT",
+      "licenseDeclared": "Apache-2.0 OR MIT",
       "copyrightText": "NOASSERTION"
     },
     {
@@ -633,6 +893,26 @@
       "copyrightText": "NOASSERTION"
     },
     {
+      "name": "sharded-slab",
+      "SPDXID": "SPDXRef-Cargo-sharded-slab-0.1.7",
+      "versionInfo": "0.1.7",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "filesAnalyzed": false,
+      "licenseConcluded": "MIT",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION"
+    },
+    {
+      "name": "shlex",
+      "SPDXID": "SPDXRef-Cargo-shlex-1.3.0",
+      "versionInfo": "1.3.0",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "filesAnalyzed": false,
+      "licenseConcluded": "MIT OR Apache-2.0",
+      "licenseDeclared": "MIT OR Apache-2.0",
+      "copyrightText": "NOASSERTION"
+    },
+    {
       "name": "shlex",
       "SPDXID": "SPDXRef-Cargo-shlex-2.0.1",
       "versionInfo": "2.0.1",
@@ -683,6 +963,16 @@
       "copyrightText": "NOASSERTION"
     },
     {
+      "name": "socket2",
+      "SPDXID": "SPDXRef-Cargo-socket2-0.6.5",
+      "versionInfo": "0.6.5",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "filesAnalyzed": false,
+      "licenseConcluded": "MIT OR Apache-2.0",
+      "licenseDeclared": "MIT OR Apache-2.0",
+      "copyrightText": "NOASSERTION"
+    },
+    {
       "name": "spki",
       "SPDXID": "SPDXRef-Cargo-spki-0.7.3",
       "versionInfo": "0.7.3",
@@ -710,6 +1000,126 @@
       "filesAnalyzed": false,
       "licenseConcluded": "MIT OR Apache-2.0",
       "licenseDeclared": "MIT OR Apache-2.0",
+      "copyrightText": "NOASSERTION"
+    },
+    {
+      "name": "syn",
+      "SPDXID": "SPDXRef-Cargo-syn-3.0.4",
+      "versionInfo": "3.0.4",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "filesAnalyzed": false,
+      "licenseConcluded": "MIT OR Apache-2.0",
+      "licenseDeclared": "MIT OR Apache-2.0",
+      "copyrightText": "NOASSERTION"
+    },
+    {
+      "name": "thiserror",
+      "SPDXID": "SPDXRef-Cargo-thiserror-2.0.20",
+      "versionInfo": "2.0.20",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "filesAnalyzed": false,
+      "licenseConcluded": "MIT OR Apache-2.0",
+      "licenseDeclared": "MIT OR Apache-2.0",
+      "copyrightText": "NOASSERTION"
+    },
+    {
+      "name": "thiserror-impl",
+      "SPDXID": "SPDXRef-Cargo-thiserror-impl-2.0.20",
+      "versionInfo": "2.0.20",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "filesAnalyzed": false,
+      "licenseConcluded": "MIT OR Apache-2.0",
+      "licenseDeclared": "MIT OR Apache-2.0",
+      "copyrightText": "NOASSERTION"
+    },
+    {
+      "name": "thread_local",
+      "SPDXID": "SPDXRef-Cargo-thread-local-1.1.10",
+      "versionInfo": "1.1.10",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "filesAnalyzed": false,
+      "licenseConcluded": "MIT OR Apache-2.0",
+      "licenseDeclared": "MIT OR Apache-2.0",
+      "copyrightText": "NOASSERTION"
+    },
+    {
+      "name": "tokio",
+      "SPDXID": "SPDXRef-Cargo-tokio-1.53.1",
+      "versionInfo": "1.53.1",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "filesAnalyzed": false,
+      "licenseConcluded": "MIT",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION"
+    },
+    {
+      "name": "tokio-macros",
+      "SPDXID": "SPDXRef-Cargo-tokio-macros-2.7.2",
+      "versionInfo": "2.7.2",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "filesAnalyzed": false,
+      "licenseConcluded": "MIT",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION"
+    },
+    {
+      "name": "tokio-util",
+      "SPDXID": "SPDXRef-Cargo-tokio-util-0.7.19",
+      "versionInfo": "0.7.19",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "filesAnalyzed": false,
+      "licenseConcluded": "MIT",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION"
+    },
+    {
+      "name": "tracing",
+      "SPDXID": "SPDXRef-Cargo-tracing-0.1.44",
+      "versionInfo": "0.1.44",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "filesAnalyzed": false,
+      "licenseConcluded": "MIT",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION"
+    },
+    {
+      "name": "tracing-attributes",
+      "SPDXID": "SPDXRef-Cargo-tracing-attributes-0.1.31",
+      "versionInfo": "0.1.31",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "filesAnalyzed": false,
+      "licenseConcluded": "MIT",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION"
+    },
+    {
+      "name": "tracing-core",
+      "SPDXID": "SPDXRef-Cargo-tracing-core-0.1.36",
+      "versionInfo": "0.1.36",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "filesAnalyzed": false,
+      "licenseConcluded": "MIT",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION"
+    },
+    {
+      "name": "tracing-log",
+      "SPDXID": "SPDXRef-Cargo-tracing-log-0.2.0",
+      "versionInfo": "0.2.0",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "filesAnalyzed": false,
+      "licenseConcluded": "MIT",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION"
+    },
+    {
+      "name": "tracing-subscriber",
+      "SPDXID": "SPDXRef-Cargo-tracing-subscriber-0.3.23",
+      "versionInfo": "0.3.23",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "filesAnalyzed": false,
+      "licenseConcluded": "MIT",
+      "licenseDeclared": "MIT",
       "copyrightText": "NOASSERTION"
     },
     {
@@ -804,8 +1214,28 @@
     },
     {
       "name": "zerocopy",
+      "SPDXID": "SPDXRef-Cargo-zerocopy-0.7.35",
+      "versionInfo": "0.7.35",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "filesAnalyzed": false,
+      "licenseConcluded": "BSD-2-Clause OR Apache-2.0 OR MIT",
+      "licenseDeclared": "BSD-2-Clause OR Apache-2.0 OR MIT",
+      "copyrightText": "NOASSERTION"
+    },
+    {
+      "name": "zerocopy",
       "SPDXID": "SPDXRef-Cargo-zerocopy-0.8.52",
       "versionInfo": "0.8.52",
+      "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
+      "filesAnalyzed": false,
+      "licenseConcluded": "BSD-2-Clause OR Apache-2.0 OR MIT",
+      "licenseDeclared": "BSD-2-Clause OR Apache-2.0 OR MIT",
+      "copyrightText": "NOASSERTION"
+    },
+    {
+      "name": "zerocopy-derive",
+      "SPDXID": "SPDXRef-Cargo-zerocopy-derive-0.7.35",
+      "versionInfo": "0.7.35",
       "downloadLocation": "registry+https://github.com/rust-lang/crates.io-index",
       "filesAnalyzed": false,
       "licenseConcluded": "BSD-2-Clause OR Apache-2.0 OR MIT",

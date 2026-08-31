@@ -1377,6 +1377,16 @@ string(ASCII 31 RUSTDESK_CARGO_RUSTFLAG_SEPARATOR)
 set(RUSTDESK_CARGO_ENCODED_RUSTFLAGS
     "-Clink-arg=--target=${RUSTDESK_FFI_CLANG_TARGET}${RUSTDESK_CARGO_RUSTFLAG_SEPARATOR}-Clink-arg=--sysroot=${RUSTDESK_OHOS_SYSROOT}")
 
+# kcp-sys@32a6c09 uses libclang at build time. On a macOS host libclang must
+# receive both the OHOS generic and target-specific libc include directories.
+# Other hosts keep their native libclang discovery; in particular this avoids
+# corrupting Windows drive-letter paths in the upstream colon-delimited option.
+set(RUSTDESK_KCP_CARGO_ENV)
+if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Darwin")
+    set(RUSTDESK_KCP_CARGO_ENV
+        "KCP_SYS_EXTRA_HEADER_PATH=${RUSTDESK_OHOS_SYSROOT}/usr/include:${RUSTDESK_OHOS_SYSROOT}/usr/include/${RUSTDESK_FFI_CLANG_TARGET}")
+endif()
+
 if(NOT EXISTS ${RUSTDESK_PROTO_DIR}/message.proto OR NOT EXISTS ${RUSTDESK_PROTO_DIR}/rendezvous.proto)
     message(FATAL_ERROR
         "RustDesk: missing protocol definitions in ${RUSTDESK_PROTO_DIR}. "
@@ -1426,6 +1436,7 @@ target_link_libraries(moonlight_audio_bridge_link_probe PRIVATE
 add_custom_command(
     OUTPUT ${RUSTDESK_FFI_LIB}
     COMMAND ${CMAKE_COMMAND} -E env
+        ${RUSTDESK_KCP_CARGO_ENV}
         "OPUS_LIB_DIR=${RUSTDESK_OPUS_LIB_DIR}"
         "CC_${RUSTDESK_FFI_TARGET}=${CMAKE_C_COMPILER}"
         "CXX_${RUSTDESK_FFI_TARGET}=${CMAKE_CXX_COMPILER}"

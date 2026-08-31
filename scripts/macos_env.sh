@@ -82,6 +82,17 @@ export CFLAGS_x86_64_unknown_linux_ohos="--target=x86_64-linux-ohos --sysroot=$o
 export CXXFLAGS_x86_64_unknown_linux_ohos="$CFLAGS_x86_64_unknown_linux_ohos"
 export CARGO_TARGET_X86_64_UNKNOWN_LINUX_OHOS_LINKER="$ohos_native/llvm/bin/clang++"
 export CARGO_TARGET_X86_64_UNKNOWN_LINUX_OHOS_RUSTFLAGS="-C link-arg=--target=x86_64-linux-ohos -C link-arg=--sysroot=$ohos_native/sysroot"
+
+# The RustDesk-pinned kcp-sys build generates its small C ABI with libclang.
+# Apple's command-line libclang does not discover the SDK libc headers when it
+# is loaded as a library, so host Cargo tests need the SDK include explicitly.
+# OHOS cross-build entry points override this with the target sysroot below.
+if command -v xcrun >/dev/null 2>&1; then
+    macos_sdk_root="$(xcrun --show-sdk-path 2>/dev/null || true)"
+    if [ -f "$macos_sdk_root/usr/include/stdlib.h" ]; then
+        export KCP_SYS_EXTRA_HEADER_PATH="$macos_sdk_root/usr/include"
+    fi
+fi
 local_pwsh_wrapper="$script_dir/../.tools/bin/pwsh"
 local_pwsh="$script_dir/../.tools/pwsh/pwsh"
 if [ -x "$local_pwsh_wrapper" ]; then

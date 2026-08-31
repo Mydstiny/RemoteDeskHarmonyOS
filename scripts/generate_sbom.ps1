@@ -7,6 +7,23 @@ $metadataJson = & cargo metadata --format-version 1 --locked --filter-platform a
 if ($LASTEXITCODE -ne 0) { throw 'cargo metadata failed.' }
 $metadata = $metadataJson | ConvertFrom-Json
 $commit = (& git -C $root rev-parse HEAD).Trim()
+$output = Join-Path $root 'docs/compliance/SBOM.spdx.json'
+
+# Asset/vendor workflows append file-level SPDX records after the Cargo/native
+# base is generated. Preserve those explicitly managed package/file records so
+# refreshing Cargo dependencies cannot silently erase their provenance.
+$preservedPackages = @()
+$preservedFiles = @()
+$preservedRelationships = @()
+if (Test-Path $output -PathType Leaf) {
+  $existing = Get-Content -Raw $output | ConvertFrom-Json
+  $preservedPackages = @($existing.packages | Where-Object {
+    $_.SPDXID -like 'SPDXRef-Package-*' -and
+    $_.SPDXID -ne 'SPDXRef-Package-RemoteDeskHarmonyOS'
+  })
+  $preservedFiles = @($existing.files)
+  $preservedRelationships = @($existing.relationships)
+}
 
 $packages = [System.Collections.Generic.List[object]]::new()
 $packages.Add([ordered]@{
@@ -55,6 +72,9 @@ foreach ($item in $native) {
     copyrightText = 'See THIRD_PARTY_NOTICES.md'
   })
 }
+foreach ($package in $preservedPackages) {
+  $packages.Add($package)
+}
 $document = [ordered]@{
   spdxVersion = 'SPDX-2.3'
   dataLicense = 'CC0-1.0'
@@ -66,8 +86,9 @@ $document = [ordered]@{
     creators = @('Tool: scripts/generate_sbom.ps1', 'Organization: RemoteDeskHarmonyOS')
   }
   packages = $packages
+  files = $preservedFiles
+  relationships = $preservedRelationships
 }
-$output = Join-Path $root 'docs/compliance/SBOM.spdx.json'
 $json = $document | ConvertTo-Json -Depth 12
 [IO.File]::WriteAllText($output, $json + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
 Write-Host "Wrote SPDX SBOM with $($packages.Count) packages to $output"
