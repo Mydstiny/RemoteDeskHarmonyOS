@@ -16,6 +16,10 @@ import {
   DiagnosticClock,
   FrozenDiagnosticCapture
 } from '../main/ets/services/DiagnosticCaptureRuntime';
+import {
+  DiagnosticNetworkFacts,
+  diagnosticNetworkFactsForEndpoints
+} from '../main/ets/services/DiagnosticCapturePolicy';
 
 class ExportFakeClock implements DiagnosticClock {
   uptime: number = 100;
@@ -75,7 +79,7 @@ export default function diagnosticCaptureExportServiceTest(): void {
       const summary: Record<string, Object> =
         JSON.parse(lines[lines.length - 1]) as Record<string, Object>;
       expect(manifest['kind'] as string).assertEqual('manifest');
-      expect(manifest['schemaVersion'] as number).assertEqual(2);
+      expect(manifest['schemaVersion'] as number).assertEqual(3);
       expect(manifest['appVersionCode'] as number).assertEqual(1001004);
       expect((manifest['buildId'] as string).startsWith('1.1.4+')).assertTrue();
       expect(summary['kind'] as string).assertEqual('summary');
@@ -95,7 +99,10 @@ export default function diagnosticCaptureExportServiceTest(): void {
       for (let i: number = 0; i < canaries.length; i++) {
         runtime.record('connection.ssh_sftp', canaries[i], 'failed', 987654321);
       }
-      runtime.record('connection.ssh_sftp', 'ssh_session_event', 'state', 987654321, 4, 1);
+      const network: DiagnosticNetworkFacts = diagnosticNetworkFactsForEndpoints(
+        '2001:db8::91', 22, '192.0.2.92', 1080);
+      runtime.record('connection.ssh_sftp', 'ssh_session_event', 'state',
+        987654321, 4, 1, 0, 0, 0, undefined, network);
       clock.uptime += 20;
       clock.wall += 20;
       runtime.stop();
@@ -106,8 +113,46 @@ export default function diagnosticCaptureExportServiceTest(): void {
         expect(result.text.indexOf(canaries[i])).assertEqual(-1);
       }
       expect(result.text.indexOf('987654321')).assertEqual(-1);
+      expect(result.text.indexOf('2001:db8::91')).assertEqual(-1);
+      expect(result.text.indexOf('192.0.2.92')).assertEqual(-1);
       expect(result.text.indexOf('session-1') >= 0).assertTrue();
       expect(result.text.indexOf('"runtime"') >= 0).assertTrue();
+      expect(result.text.indexOf('"configuredEndpointFamily":"ipv6"') >= 0).assertTrue();
+      expect(result.text.indexOf('"configuredRouteFamily":"ipv4"') >= 0).assertTrue();
+    });
+
+    it('serializes_address_family_facts_for_every_connection_module', 0, (): void => {
+      const clock: ExportFakeClock = new ExportFakeClock();
+      const runtime: DiagnosticCaptureRuntime = new DiagnosticCaptureRuntime(clock);
+      runtime.start(3, [
+        'connection.rdp', 'connection.rustdesk', 'connection.ssh_sftp',
+        'connection.vnc', 'connection.moonlight'
+      ]);
+      const ipv4: DiagnosticNetworkFacts = diagnosticNetworkFactsForEndpoints(
+        '192.0.2.40', 3389);
+      const ipv6: DiagnosticNetworkFacts = diagnosticNetworkFactsForEndpoints(
+        '2001:db8::40', 3389);
+      runtime.record('connection.rdp', 'rdp_connection_request', 'started',
+        0, 0, 0, 0, 0, 0, undefined, ipv4);
+      runtime.record('connection.rustdesk', 'rustdesk_connection_request', 'started',
+        0, 0, 0, 0, 0, 0, undefined, ipv6);
+      runtime.record('connection.ssh_sftp', 'ssh_session_event', 'started',
+        0, 0, 0, 0, 0, 0, undefined, ipv4);
+      runtime.record('connection.vnc', 'vnc_connection_request', 'started',
+        0, 0, 0, 0, 0, 0, undefined, ipv6);
+      runtime.record('connection.moonlight', 'moonlight_state_changed', 'started',
+        0, 0, 0, 0, 0, 0, undefined, ipv6);
+      runtime.stop();
+      const result: DiagnosticSerializationResult =
+        serializeDiagnosticCapture(runtime.frozenCapture());
+      expect(result.ok).assertTrue();
+      expect(result.text.indexOf('"moduleId":"connection.rdp"') >= 0).assertTrue();
+      expect(result.text.indexOf('"moduleId":"connection.rustdesk"') >= 0).assertTrue();
+      expect(result.text.indexOf('"moduleId":"connection.ssh_sftp"') >= 0).assertTrue();
+      expect(result.text.indexOf('"moduleId":"connection.vnc"') >= 0).assertTrue();
+      expect(result.text.indexOf('"moduleId":"connection.moonlight"') >= 0).assertTrue();
+      expect(result.text.indexOf('192.0.2.40')).assertEqual(-1);
+      expect(result.text.indexOf('2001:db8::40')).assertEqual(-1);
     });
 
     it('rejects_forged_capture_strings_before_any_bytes_are_created', 0, (): void => {
@@ -118,6 +163,12 @@ export default function diagnosticCaptureExportServiceTest(): void {
       expect(result.ok).assertFalse();
       expect(result.text).assertEqual('');
       expect(result.bytes.length).assertEqual(0);
+
+      const networkCapture: FrozenDiagnosticCapture = frozenCapture();
+      networkCapture.events[1].network.configuredEndpointFamily =
+        '2001:db8::forged' as 'ipv6';
+      expect(validateFrozenDiagnosticCapture(networkCapture)).assertFalse();
+      expect(serializeDiagnosticCapture(networkCapture).bytes.length).assertEqual(0);
     });
 
     it('serializes_after_wall_clock_rollback_using_monotonic_projection', 0, (): void => {

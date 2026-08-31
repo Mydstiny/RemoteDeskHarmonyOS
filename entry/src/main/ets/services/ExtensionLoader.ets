@@ -76,8 +76,11 @@ import {
   RemoteSessionNativeDisconnectOwner
 } from './RemoteSessionTerminationPolicy';
 import {
+  DiagnosticNetworkFacts,
   DiagnosticOutcome,
-  DiagnosticRuntimeFacts
+  DiagnosticRuntimeFacts,
+  diagnosticNetworkFactsForEndpoints,
+  emptyDiagnosticNetworkFacts
 } from './DiagnosticCapturePolicy';
 import {
   diagnosticCaptureIdForModule,
@@ -176,6 +179,34 @@ function diagnosticRouteTypeCode(value: string): number {
   }
 }
 
+function diagnosticNetworkFactsForConfig(config: SessionConfig): DiagnosticNetworkFacts {
+  try {
+    const protocol: string = config.protocol.trim().toLowerCase();
+    let routeHost: string = '';
+    let routePort: number = 0;
+    if (protocol === 'rdp') {
+      routeHost = config.gatewayHost ?? '';
+      routePort = config.gatewayPort ?? 0;
+    } else if (protocol === 'vnc') {
+      routeHost = config.vncGatewayHost ?? '';
+      routePort = config.vncGatewayPort ?? 0;
+    } else if (protocol === 'ssh' || protocol === 'sftp') {
+      const routeType: string = config.sshRoute?.type ?? config.sshProxyType ?? 'direct';
+      if (routeType === 'ssh_jump' && (config.sshRoute?.hops.length ?? 0) > 0) {
+        routeHost = config.sshRoute?.hops[0].host ?? '';
+        routePort = config.sshRoute?.hops[0].port ?? 0;
+      } else if (routeType !== 'direct') {
+        routeHost = config.sshProxyHost ?? '';
+        routePort = config.sshProxyPort ?? 0;
+      }
+    }
+    return diagnosticNetworkFactsForEndpoints(
+      config.host, config.port, routeHost, routePort);
+  } catch (_err) {
+    return emptyDiagnosticNetworkFacts();
+  }
+}
+
 export interface SshNativeConnectPromise extends Promise<number> {
   sessionId: number;
   generation: number;
@@ -214,6 +245,8 @@ export class ExtensionLoader {
   private detachedSshSessions: DetachedSshSession[] = [];
   private diagnosticSessionModules: Map<number, DiagnosticConnectionModule> =
     new Map<number, DiagnosticConnectionModule>();
+  private diagnosticSessionNetworks: Map<number, DiagnosticNetworkFacts> =
+    new Map<number, DiagnosticNetworkFacts>();
   private diagnosticConnectionStates: Map<number, DiagnosticConnectionObservation> =
     new Map<number, DiagnosticConnectionObservation>();
   private diagnosticRuntimeSnapshots: DiagnosticRuntimeSnapshotGate =
@@ -245,7 +278,8 @@ export class ExtensionLoader {
         diagnosticDesktopRuntimeEventCode(desktopModule), 'state', sessionId, 0,
         source.codec, facts.latencyMs, facts.frames,
         Number.isSafeInteger(source.receivedBytes) && source.receivedBytes > 0 ?
-          source.receivedBytes : 0, facts);
+          source.receivedBytes : 0, facts,
+        this.diagnosticSessionNetworks.get(sessionId));
     } catch (_err) {
       // Runtime capture must never affect a diagnostics HUD or session poll.
     }
@@ -265,7 +299,8 @@ export class ExtensionLoader {
         source.sessionGeneration > 0 ? source.sessionGeneration : 0, 0,
         facts.latencyMs, facts.frames,
         Number.isSafeInteger(source.remoteReadBytes) && source.remoteReadBytes > 0 ?
-          source.remoteReadBytes : 0, facts);
+          source.remoteReadBytes : 0, facts,
+        this.diagnosticSessionNetworks.get(sessionId));
     } catch (_err) {
       // Runtime capture must never affect terminal diagnostics.
     }
@@ -292,23 +327,29 @@ export class ExtensionLoader {
 
   private recordDiagnosticConnection(moduleId: DiagnosticConnectionModule | null,
     kind: DiagnosticConnectionEventKind, outcome: DiagnosticOutcome,
-    sessionId: number = 0, generation: number = 0, code: number = 0): void {
+    sessionId: number = 0, generation: number = 0, code: number = 0,
+    network?: DiagnosticNetworkFacts): void {
     try {
       if (moduleId === null) { return; }
+      const safeNetwork: DiagnosticNetworkFacts | undefined = network ??
+        (sessionId > 0 ? this.diagnosticSessionNetworks.get(sessionId) : undefined);
       recordDiagnosticEvent(moduleId, diagnosticConnectionEventCode(moduleId, kind), outcome,
-        sessionId > 0 ? sessionId : 0, generation > 0 ? generation : 0, code);
+        sessionId > 0 ? sessionId : 0, generation > 0 ? generation : 0, code,
+        0, 0, 0, undefined, safeNetwork);
     } catch (_err) {
       // Diagnostic side effects can never participate in a business transaction.
     }
   }
 
   private trackDiagnosticSession(sessionId: number,
-    moduleId: DiagnosticConnectionModule | null): void {
+    moduleId: DiagnosticConnectionModule | null,
+    network: DiagnosticNetworkFacts = emptyDiagnosticNetworkFacts()): void {
     try {
       if (moduleId === null || sessionId <= 0) { return; }
       // Keep only protocol identity outside a capture so a later capture can
       // observe an already-live connection. No host or credential is retained.
       this.diagnosticSessionModules.set(sessionId, moduleId);
+      this.diagnosticSessionNetworks.set(sessionId, network);
       this.diagnosticConnectionStates.delete(sessionId);
       this.diagnosticRuntimeSamplingLoop.track(sessionId);
     } catch (_err) {
@@ -325,6 +366,7 @@ export class ExtensionLoader {
         this.diagnosticRuntimeSnapshots.forget(moduleId, sessionId);
       }
       this.diagnosticSessionModules.delete(sessionId);
+      this.diagnosticSessionNetworks.delete(sessionId);
       this.diagnosticConnectionStates.delete(sessionId);
       this.diagnosticRuntimeSamplingLoop.forget(sessionId);
     } catch (_err) {
@@ -375,10 +417,15 @@ export class ExtensionLoader {
   private transferDiagnosticSessionTo(target: ExtensionLoader, sessionId: number): void {
     let moduleId: DiagnosticConnectionModule | undefined;
     let observation: DiagnosticConnectionObservation | undefined;
+    let network: DiagnosticNetworkFacts | undefined;
     try { moduleId = this.diagnosticSessionModules.get(sessionId); } catch (_err) {}
     try { observation = this.diagnosticConnectionStates.get(sessionId); } catch (_err) {}
+    try { network = this.diagnosticSessionNetworks.get(sessionId); } catch (_err) {}
     target.forgetDiagnosticSession(sessionId);
-    if (moduleId !== undefined) { target.trackDiagnosticSession(sessionId, moduleId); }
+    if (moduleId !== undefined) {
+      target.trackDiagnosticSession(sessionId, moduleId,
+        network ?? emptyDiagnosticNetworkFacts());
+    }
     if (observation !== undefined) {
       try {
         target.diagnosticConnectionStates.set(sessionId, {
@@ -391,6 +438,7 @@ export class ExtensionLoader {
       try { this.diagnosticRuntimeSnapshots.forget(moduleId, sessionId); } catch (_err) {}
     }
     try { this.diagnosticSessionModules.delete(sessionId); } catch (_err) {}
+    try { this.diagnosticSessionNetworks.delete(sessionId); } catch (_err) {}
     try { this.diagnosticConnectionStates.delete(sessionId); } catch (_err) {}
     this.diagnosticRuntimeSamplingLoop.forget(sessionId);
   }
@@ -409,6 +457,7 @@ export class ExtensionLoader {
     this.diagnosticRuntimeSamplingLoop.clear();
     this.diagnosticRuntimeSnapshots.clear();
     try { this.diagnosticSessionModules.clear(); } catch (_err) {}
+    try { this.diagnosticSessionNetworks.clear(); } catch (_err) {}
     try { this.diagnosticConnectionStates.clear(); } catch (_err) {}
   }
 
@@ -433,35 +482,41 @@ export class ExtensionLoader {
     try {
       if (!isDiagnosticModuleCapturing('network.routing')) { return; }
       const protocol: string = config.protocol.trim().toLowerCase();
+      const network: DiagnosticNetworkFacts = diagnosticNetworkFactsForConfig(config);
       if (protocol === 'rdp' &&
         (config.rdpEndpointMode === 'microsoft_rd_gateway' ||
           (config.gatewayHost ?? '').trim().length > 0)) {
         recordDiagnosticEvent('network.routing', 'routing_rdp_gateway', outcome,
           sessionId > 0 ? sessionId : 0, generation > 0 ? generation : 0,
-          code !== 0 ? code : diagnosticRouteTypeCode(config.rdpGatewayTransport ?? 'auto'));
+          code !== 0 ? code : diagnosticRouteTypeCode(config.rdpGatewayTransport ?? 'auto'),
+          0, 0, 0, undefined, network);
       }
       if (protocol === 'rustdesk') {
         const strategy: string = config.rdConnectionStrategy ?? 'auto';
         if (strategy !== 'direct_ip' || (config.rdRelayId ?? '').trim().length > 0) {
           recordDiagnosticEvent('network.routing', 'routing_rustdesk_relay', outcome,
             sessionId > 0 ? sessionId : 0, generation > 0 ? generation : 0,
-            code !== 0 ? code : diagnosticRouteTypeCode(strategy));
+            code !== 0 ? code : diagnosticRouteTypeCode(strategy),
+            0, 0, 0, undefined, network);
         }
         if ((config.rdAccessToken ?? '').length > 0) {
           recordDiagnosticEvent('network.routing', 'routing_rustdesk_pro', outcome,
-            sessionId > 0 ? sessionId : 0, generation > 0 ? generation : 0, code);
+            sessionId > 0 ? sessionId : 0, generation > 0 ? generation : 0, code,
+            0, 0, 0, undefined, network);
         }
       }
       if (protocol === 'vnc' && (config.vncGatewayHost ?? '').trim().length > 0) {
         recordDiagnosticEvent('network.routing', 'routing_vnc_gateway', outcome,
-          sessionId > 0 ? sessionId : 0, generation > 0 ? generation : 0, code);
+          sessionId > 0 ? sessionId : 0, generation > 0 ? generation : 0, code,
+          0, 0, 0, undefined, network);
       }
       if ((protocol === 'ssh' || protocol === 'sftp')) {
         const proxyType: string = config.sshProxyType ?? config.sshRoute?.type ?? 'direct';
         if (proxyType !== 'direct') {
           recordDiagnosticEvent('network.routing', 'routing_ssh_proxy', outcome,
             sessionId > 0 ? sessionId : 0, generation > 0 ? generation : 0,
-            code !== 0 ? code : diagnosticRouteTypeCode(proxyType));
+            code !== 0 ? code : diagnosticRouteTypeCode(proxyType),
+            0, 0, 0, undefined, network);
         }
       }
     } catch (_err) {
@@ -483,24 +538,28 @@ export class ExtensionLoader {
     }
     const diagnosticModule: DiagnosticConnectionModule | null =
       diagnosticConnectionModule(config.protocol);
-    this.recordDiagnosticConnection(diagnosticModule, 'request', 'started');
+    const diagnosticNetwork: DiagnosticNetworkFacts =
+      diagnosticNetworkFactsForConfig(config);
+    this.recordDiagnosticConnection(
+      diagnosticModule, 'request', 'started', 0, 0, 0, diagnosticNetwork);
     this.recordDiagnosticRoutes(config, 'started');
     this.sshConnectGeneration++;
     try {
       const sessionId: number = rdpnapi.connect(config) as number;
       this.currentSessionId = sessionId;
       this.facadeGeneration = sessionId > 0 ? this.allocateFacadeGeneration() : 0;
-      this.trackDiagnosticSession(sessionId, diagnosticModule);
+      this.trackDiagnosticSession(sessionId, diagnosticModule, diagnosticNetwork);
       this.recordDiagnosticConnection(diagnosticModule, 'request',
         sessionId > 0 ? 'succeeded' : 'failed', sessionId,
-        this.facadeGeneration, sessionId > 0 ? 0 : sessionId);
+        this.facadeGeneration, sessionId > 0 ? 0 : sessionId, diagnosticNetwork);
       this.recordDiagnosticRoutes(config, sessionId > 0 ? 'succeeded' : 'failed',
         sessionId, this.facadeGeneration, sessionId > 0 ? 0 : sessionId);
       return this.currentSessionId;
     } catch (err) {
       this.currentSessionId = -1;
       this.facadeGeneration = 0;
-      this.recordDiagnosticConnection(diagnosticModule, 'request', 'failed', 0, 0, -1);
+      this.recordDiagnosticConnection(
+        diagnosticModule, 'request', 'failed', 0, 0, -1, diagnosticNetwork);
       this.recordDiagnosticRoutes(config, 'failed', 0, 0, -1);
       hilog.error(DOMAIN, TAG, '[ExtensionLoader] connect: code=' + ((err as Record<string, Object>)['code'] || 'ERR') + ' msg=' + JSON.stringify(err));
       return -1;
@@ -517,7 +576,10 @@ export class ExtensionLoader {
       return blocked;
     }
     const diagnosticModule: DiagnosticConnectionModule = 'connection.ssh_sftp';
-    this.recordDiagnosticConnection(diagnosticModule, 'request', 'started');
+    const diagnosticNetwork: DiagnosticNetworkFacts =
+      diagnosticNetworkFactsForConfig(config);
+    this.recordDiagnosticConnection(
+      diagnosticModule, 'request', 'started', 0, 0, 0, diagnosticNetwork);
     this.recordDiagnosticRoutes(config, 'started');
     try {
       const nativePromise: SshNativeConnectPromise =
@@ -528,7 +590,8 @@ export class ExtensionLoader {
         foreground
       };
       if (identity.sessionId <= 0 || identity.generation <= 0) {
-        this.recordDiagnosticConnection(diagnosticModule, 'request', 'failed', 0, 0, -2);
+        this.recordDiagnosticConnection(
+          diagnosticModule, 'request', 'failed', 0, 0, -2, diagnosticNetwork);
         this.recordDiagnosticRoutes(config, 'failed', 0, 0, -2);
         hilog.error(DOMAIN, TAG, '[ExtensionLoader] connectSshAsync: native identity missing');
         const rejected: SshNativeConnectPromise = Promise.resolve(-1) as SshNativeConnectPromise;
@@ -536,7 +599,8 @@ export class ExtensionLoader {
         rejected.generation = 0;
         return rejected;
       }
-      this.trackDiagnosticSession(identity.sessionId, diagnosticModule);
+      this.trackDiagnosticSession(
+        identity.sessionId, diagnosticModule, diagnosticNetwork);
       this.pendingSshConnects.set(identity.sessionId, identity);
       // Only the foreground owner updates the legacy facade target. Detached
       // SFTP sessions remain addressable through their explicit session id.
@@ -553,7 +617,7 @@ export class ExtensionLoader {
           }
           this.recordDiagnosticConnection(diagnosticModule, 'request',
             result > 0 ? 'succeeded' : 'failed', identity.sessionId,
-            identity.generation, result > 0 ? 0 : result);
+            identity.generation, result > 0 ? 0 : result, diagnosticNetwork);
           this.recordDiagnosticRoutes(config, result > 0 ? 'succeeded' : 'failed',
             identity.sessionId, identity.generation, result > 0 ? 0 : result);
           if (result <= 0) { this.forgetDiagnosticSession(identity.sessionId); }
@@ -566,7 +630,7 @@ export class ExtensionLoader {
             this.facadeGeneration = 0;
           }
           this.recordDiagnosticConnection(diagnosticModule, 'request', 'failed',
-            identity.sessionId, identity.generation, -1);
+            identity.sessionId, identity.generation, -1, diagnosticNetwork);
           this.recordDiagnosticRoutes(config, 'failed', identity.sessionId,
             identity.generation, -1);
           this.forgetDiagnosticSession(identity.sessionId);
@@ -577,7 +641,8 @@ export class ExtensionLoader {
       settled.generation = identity.generation;
       return settled;
     } catch (err) {
-      this.recordDiagnosticConnection(diagnosticModule, 'request', 'failed', 0, 0, -1);
+      this.recordDiagnosticConnection(
+        diagnosticModule, 'request', 'failed', 0, 0, -1, diagnosticNetwork);
       this.recordDiagnosticRoutes(config, 'failed', 0, 0, -1);
       hilog.error(DOMAIN, TAG, '[ExtensionLoader] connectSshAsync: ' + JSON.stringify(err));
       const rejected: SshNativeConnectPromise = Promise.resolve(-1) as SshNativeConnectPromise;
@@ -1121,15 +1186,19 @@ export class ExtensionLoader {
   }
 
   probeRdpCertificate(host: string, port: number, serverName: string): RdpCertificateInfo {
-    recordDiagnosticEvent('connection.rdp', 'rdp_preflight', 'started');
+    const network: DiagnosticNetworkFacts = diagnosticNetworkFactsForEndpoints(host, port);
+    recordDiagnosticEvent('connection.rdp', 'rdp_preflight', 'started',
+      0, 0, 0, 0, 0, 0, undefined, network);
     try {
       const result: RdpCertificateInfo =
         rdpnapi.probeRdpCertificate(host, port, serverName) as RdpCertificateInfo;
       recordDiagnosticEvent('connection.rdp', 'rdp_preflight',
-        result.ok ? 'succeeded' : 'failed', 0, 0, result.errorCode);
+        result.ok ? 'succeeded' : 'failed', 0, 0, result.errorCode,
+        0, 0, 0, undefined, network);
       return result;
     } catch (err) {
-      recordDiagnosticEvent('connection.rdp', 'rdp_preflight', 'failed', 0, 0, -1);
+      recordDiagnosticEvent('connection.rdp', 'rdp_preflight', 'failed',
+        0, 0, -1, 0, 0, 0, undefined, network);
       hilog.error(DOMAIN, TAG, '[ExtensionLoader] probeRdpCertificate: ' + JSON.stringify(err));
       return {
         ok: false,
@@ -1154,15 +1223,19 @@ export class ExtensionLoader {
   }
 
   async probeRdpCertificateAsync(host: string, port: number, serverName: string): Promise<RdpCertificateInfo> {
-    recordDiagnosticEvent('connection.rdp', 'rdp_preflight', 'started');
+    const network: DiagnosticNetworkFacts = diagnosticNetworkFactsForEndpoints(host, port);
+    recordDiagnosticEvent('connection.rdp', 'rdp_preflight', 'started',
+      0, 0, 0, 0, 0, 0, undefined, network);
     try {
       const result: RdpCertificateInfo =
         await rdpnapi.probeRdpCertificateAsync(host, port, serverName) as RdpCertificateInfo;
       recordDiagnosticEvent('connection.rdp', 'rdp_preflight',
-        result.ok ? 'succeeded' : 'failed', 0, 0, result.errorCode);
+        result.ok ? 'succeeded' : 'failed', 0, 0, result.errorCode,
+        0, 0, 0, undefined, network);
       return result;
     } catch (err) {
-      recordDiagnosticEvent('connection.rdp', 'rdp_preflight', 'failed', 0, 0, -1);
+      recordDiagnosticEvent('connection.rdp', 'rdp_preflight', 'failed',
+        0, 0, -1, 0, 0, 0, undefined, network);
       hilog.error(DOMAIN, TAG, '[ExtensionLoader] probeRdpCertificateAsync: ' + JSON.stringify(err));
       return {
         ok: false,
@@ -1188,32 +1261,38 @@ export class ExtensionLoader {
 
   async probeRdpCertificateRouteAsync(
     request: RdpPreflightRequest): Promise<RdpPreflightResult> {
+    const network: DiagnosticNetworkFacts = diagnosticNetworkFactsForEndpoints(
+      request.route.targetHost, request.route.targetPort ?? 3389,
+      request.route.gatewayHost ?? '', request.route.gatewayPort ?? 443);
     recordDiagnosticEvent('connection.rdp', 'rdp_preflight', 'started',
-      0, request.generation ?? 0);
+      0, request.generation ?? 0, 0, 0, 0, 0, undefined, network);
     const gatewayRoute: boolean = (request.route.gatewayHost ?? '').trim().length > 0 ||
       request.route.endpointMode === 'microsoft_rd_gateway';
     if (gatewayRoute) {
       recordDiagnosticEvent('network.routing', 'routing_rdp_gateway', 'started',
         0, request.generation ?? 0,
-        diagnosticRouteTypeCode(request.route.gatewayTransport ?? 'auto'));
+        diagnosticRouteTypeCode(request.route.gatewayTransport ?? 'auto'),
+        0, 0, 0, undefined, network);
     }
     try {
       const result: RdpPreflightResult =
         await rdpnapi.probeRdpCertificateRouteAsync(request) as RdpPreflightResult;
       recordDiagnosticEvent('connection.rdp', 'rdp_preflight',
-        result.ok ? 'succeeded' : 'failed', 0, result.generation, result.ok ? 0 : -1);
+        result.ok ? 'succeeded' : 'failed', 0, result.generation, result.ok ? 0 : -1,
+        0, 0, 0, undefined, network);
       if (gatewayRoute) {
         recordDiagnosticEvent('network.routing', 'routing_rdp_gateway',
           result.ok ? 'succeeded' : 'failed', 0, result.generation,
-          result.ok ? diagnosticRouteTypeCode(result.gatewayTransportNegotiated) : -1);
+          result.ok ? diagnosticRouteTypeCode(result.gatewayTransportNegotiated) : -1,
+          0, 0, 0, undefined, network);
       }
       return result;
     } catch (err) {
       recordDiagnosticEvent('connection.rdp', 'rdp_preflight', 'failed',
-        0, request.generation ?? 0, -1);
+        0, request.generation ?? 0, -1, 0, 0, 0, undefined, network);
       if (gatewayRoute) {
         recordDiagnosticEvent('network.routing', 'routing_rdp_gateway', 'failed',
-          0, request.generation ?? 0, -1);
+          0, request.generation ?? 0, -1, 0, 0, 0, undefined, network);
       }
       hilog.error(DOMAIN, TAG,
         '[ExtensionLoader] probeRdpCertificateRouteAsync: ' + JSON.stringify(err));
@@ -1274,7 +1353,9 @@ export class ExtensionLoader {
   probeRustDeskPresenceAsync(host: string, port: number, serverKey: string,
     peerId: string, token: string, direct: boolean, keyMode: number,
     timeoutMs: number = 5000): RustDeskPresenceProbePromise {
-    recordDiagnosticEvent('connection.rustdesk', 'rustdesk_presence', 'started');
+    const network: DiagnosticNetworkFacts = diagnosticNetworkFactsForEndpoints(host, port);
+    recordDiagnosticEvent('connection.rustdesk', 'rustdesk_presence', 'started',
+      0, 0, 0, 0, 0, 0, undefined, network);
     try {
       const nativeProbe: RustDeskPresenceProbePromise =
         rdpnapi.probeRustDeskPresenceAsync(host, port, serverKey, peerId, token,
@@ -1283,12 +1364,13 @@ export class ExtensionLoader {
         (result: RustDeskPresenceResult): RustDeskPresenceResult => {
           recordDiagnosticEvent('connection.rustdesk', 'rustdesk_presence',
             result.errorCode === 0 ? 'succeeded' : 'failed', nativeProbe.requestId, 0,
-            result.errorCode, result.latencyMs > 0 ? result.latencyMs : 0);
+            result.errorCode, result.latencyMs > 0 ? result.latencyMs : 0,
+            0, 0, undefined, network);
           return result;
         },
         (err: Object): RustDeskPresenceResult => {
           recordDiagnosticEvent('connection.rustdesk', 'rustdesk_presence', 'failed',
-            nativeProbe.requestId, 0, -1);
+            nativeProbe.requestId, 0, -1, 0, 0, 0, undefined, network);
           hilog.error(DOMAIN, TAG,
             '[ExtensionLoader] probeRustDeskPresenceAsync: ' + JSON.stringify(err));
           return { state: 0, latencyMs: -1, errorCode: 5 };
@@ -1296,7 +1378,8 @@ export class ExtensionLoader {
       settled.requestId = nativeProbe.requestId;
       return settled;
     } catch (err) {
-      recordDiagnosticEvent('connection.rustdesk', 'rustdesk_presence', 'failed', 0, 0, -1);
+      recordDiagnosticEvent('connection.rustdesk', 'rustdesk_presence', 'failed',
+        0, 0, -1, 0, 0, 0, undefined, network);
       hilog.error(DOMAIN, TAG, '[ExtensionLoader] probeRustDeskPresenceAsync: ' + JSON.stringify(err));
       const failure: RustDeskPresenceResult = { state: 0, latencyMs: -1, errorCode: 5 };
       const failed: RustDeskPresenceProbePromise =
@@ -1318,21 +1401,25 @@ export class ExtensionLoader {
 
   probeVncCertificateAsync(host: string, port: number, serverName: string,
     timeoutMs: number = 10000): VncCertificateProbePromise {
-    recordDiagnosticEvent('connection.vnc', 'vnc_preflight', 'started');
+    const network: DiagnosticNetworkFacts = diagnosticNetworkFactsForEndpoints(host, port);
+    recordDiagnosticEvent('connection.vnc', 'vnc_preflight', 'started',
+      0, 0, 0, 0, 0, 0, undefined, network);
     try {
       const probe: VncCertificateProbePromise =
         rdpnapi.probeVncCertificateAsync(host, port, serverName, timeoutMs) as VncCertificateProbePromise;
       void probe.then((result): void => {
         recordDiagnosticEvent('connection.vnc', 'vnc_preflight',
           result.ok ? 'succeeded' : 'failed', probe.requestId > 0 ? probe.requestId : 0,
-          0, result.errorCode);
+          0, result.errorCode, 0, 0, 0, undefined, network);
       }, (): void => {
         recordDiagnosticEvent('connection.vnc', 'vnc_preflight', 'failed',
-          probe.requestId > 0 ? probe.requestId : 0, 0, -1);
+          probe.requestId > 0 ? probe.requestId : 0, 0, -1,
+          0, 0, 0, undefined, network);
       });
       return probe;
     } catch (err) {
-      recordDiagnosticEvent('connection.vnc', 'vnc_preflight', 'failed', 0, 0, -1);
+      recordDiagnosticEvent('connection.vnc', 'vnc_preflight', 'failed',
+        0, 0, -1, 0, 0, 0, undefined, network);
       hilog.error(DOMAIN, TAG, '[ExtensionLoader] probeVncCertificateAsync: ' + JSON.stringify(err));
       // A synchronous NAPI failure cannot provide a cancellable request id;
       // propagate it so callers fail closed instead of receiving an
@@ -1355,8 +1442,10 @@ export class ExtensionLoader {
     timeoutMs: number, ownerType: string, ownerId: string, userId: string,
     storeIdentityFingerprint: string, endpointBindingFingerprint: string,
     accountGeneration: number, enabled: boolean): VncGatewayDeepHealthPromise {
+    const network: DiagnosticNetworkFacts = diagnosticNetworkFactsForEndpoints(host, port);
     recordDiagnosticEvent('network.routing', 'routing_vnc_gateway', 'started',
-      0, accountGeneration, diagnosticRouteTypeCode(transport));
+      0, accountGeneration, diagnosticRouteTypeCode(transport),
+      0, 0, 0, undefined, network);
     try {
       const probe: VncGatewayDeepHealthPromise =
         rdpnapi.probeVncGatewayDeepAsync(host, port, transport, repeaterMode, target,
@@ -1367,15 +1456,17 @@ export class ExtensionLoader {
         recordDiagnosticEvent('network.routing', 'routing_vnc_gateway',
           result.protocolReady ? 'succeeded' : 'failed',
           probe.requestId > 0 ? probe.requestId : 0, accountGeneration,
-          result.protocolReady ? diagnosticRouteTypeCode(transport) : -1);
+          result.protocolReady ? diagnosticRouteTypeCode(transport) : -1,
+          0, 0, 0, undefined, network);
       }, (): void => {
         recordDiagnosticEvent('network.routing', 'routing_vnc_gateway', 'failed',
-          probe.requestId > 0 ? probe.requestId : 0, accountGeneration, -1);
+          probe.requestId > 0 ? probe.requestId : 0, accountGeneration, -1,
+          0, 0, 0, undefined, network);
       });
       return probe;
     } catch (err) {
       recordDiagnosticEvent('network.routing', 'routing_vnc_gateway', 'failed',
-        0, accountGeneration, -1);
+        0, accountGeneration, -1, 0, 0, 0, undefined, network);
       hilog.error(DOMAIN, TAG, '[ExtensionLoader] probeVncGatewayDeepAsync: ' + JSON.stringify(err));
       const failure: VncGatewayDeepHealthResult = {
         stage: 'FAILED', code: 'E-VNC-GATEWAY-DEEP', message: 'Gateway 深度检查失败', protocolReady: false,
@@ -2797,7 +2888,9 @@ export class ExtensionLoader {
   probeSshHostKeyOperationAsync(config: SessionConfig,
                                 timeoutMs: number = 15000): SshNativeOperationPromise<SshHostKeyInfo> {
     const operationId: number = this.allocateSshOperationId();
-    recordDiagnosticEvent('connection.ssh_sftp', 'ssh_preflight', 'started');
+    const network: DiagnosticNetworkFacts = diagnosticNetworkFactsForConfig(config);
+    recordDiagnosticEvent('connection.ssh_sftp', 'ssh_preflight', 'started',
+      0, 0, 0, 0, 0, 0, undefined, network);
     this.recordDiagnosticRoutes(config, 'started');
     try {
       const nativePromise: SshNativeOperationPromise<SshHostKeyInfo> =
@@ -2806,12 +2899,14 @@ export class ExtensionLoader {
       const settled: SshNativeOperationPromise<SshHostKeyInfo> = nativePromise.then(
         (result: SshHostKeyInfo): SshHostKeyInfo => {
           recordDiagnosticEvent('connection.ssh_sftp', 'ssh_preflight',
-            result.ok ? 'succeeded' : 'failed', 0, 0, result.errorCode);
+            result.ok ? 'succeeded' : 'failed', 0, 0, result.errorCode,
+            0, 0, 0, undefined, network);
           this.recordDiagnosticRoutes(config, result.ok ? 'succeeded' : 'failed',
             0, 0, result.ok ? 0 : result.errorCode);
           return result;
         }, (err: Object): SshHostKeyInfo => {
-          recordDiagnosticEvent('connection.ssh_sftp', 'ssh_preflight', 'failed', 0, 0, -99);
+          recordDiagnosticEvent('connection.ssh_sftp', 'ssh_preflight', 'failed',
+            0, 0, -99, 0, 0, 0, undefined, network);
           this.recordDiagnosticRoutes(config, 'failed', 0, 0, -99);
           hilog.error(DOMAIN, TAG,
             '[ExtensionLoader] probeSshHostKeyOperationAsync: ' + JSON.stringify(err));
@@ -2824,7 +2919,8 @@ export class ExtensionLoader {
       settled.operationId = operationId;
       return settled;
     } catch (err) {
-      recordDiagnosticEvent('connection.ssh_sftp', 'ssh_preflight', 'failed', 0, 0, -99);
+      recordDiagnosticEvent('connection.ssh_sftp', 'ssh_preflight', 'failed',
+        0, 0, -99, 0, 0, 0, undefined, network);
       this.recordDiagnosticRoutes(config, 'failed', 0, 0, -99);
       hilog.error(DOMAIN, TAG,
         '[ExtensionLoader] probeSshHostKeyOperationAsync: ' + JSON.stringify(err));

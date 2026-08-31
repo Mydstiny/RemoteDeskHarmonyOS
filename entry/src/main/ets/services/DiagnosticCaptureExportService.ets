@@ -14,7 +14,9 @@ import {
   DIAGNOSTIC_MAX_EXPORT_BYTES,
   DIAGNOSTIC_MAX_SESSION_REFS,
   DIAGNOSTIC_REDACTION_POLICY_VERSION,
+  DiagnosticAddressFamily,
   DiagnosticModuleId,
+  DiagnosticNetworkFacts,
   DiagnosticOutcome,
   DiagnosticRuntimeBackend,
   DiagnosticRuntimeCodec,
@@ -28,6 +30,7 @@ import {
   diagnosticEventIsAllowed,
   diagnosticLevelForOutcome,
   diagnosticModuleIsKnown,
+  diagnosticNetworkFactsAreValid,
   diagnosticOutcomeIsAllowed,
   diagnosticRuntimeFactsAreValid,
   diagnosticSafeInteger,
@@ -99,6 +102,7 @@ interface DiagnosticEventLine {
   count: number;
   bytes: number;
   runtime: DiagnosticRuntimeFacts;
+  network: DiagnosticNetworkFacts;
 }
 
 interface DiagnosticSummaryLine {
@@ -150,7 +154,8 @@ function eventLine(event: DiagnosticCaptureEvent): DiagnosticEventLine {
     durationMs: event.durationMs,
     count: event.count,
     bytes: event.bytes,
-    runtime: event.runtime
+    runtime: event.runtime,
+    network: event.network
   };
 }
 
@@ -232,7 +237,8 @@ function eventIsValid(event: DiagnosticCaptureEvent, capture: FrozenDiagnosticCa
     !diagnosticOutcomeIsAllowed(event.outcome) ||
     event.level !== diagnosticLevelForOutcome(event.outcome) ||
     !sessionRefIsValid(event.sessionRef) ||
-    !diagnosticRuntimeFactsAreValid(event.runtime)) {
+    !diagnosticRuntimeFactsAreValid(event.runtime) ||
+    !diagnosticNetworkFactsAreValid(event.network)) {
     return false;
   }
   return true;
@@ -276,6 +282,39 @@ function jsonNumber(source: Record<string, Object>, key: string): number | null 
 function jsonString(source: Record<string, Object>, key: string): string | null {
   const value: Object = source[key];
   return typeof value === 'string' ? value as string : null;
+}
+
+function jsonBoolean(source: Record<string, Object>, key: string): boolean | null {
+  const value: Object = source[key];
+  return typeof value === 'boolean' ? value as boolean : null;
+}
+
+function jsonNetworkFacts(value: Object): DiagnosticNetworkFacts | null {
+  if (typeof value !== 'object' || value === null) { return null; }
+  const source: Record<string, Object> = value as Record<string, Object>;
+  if (!objectHasExactKeys(source, [
+    'configuredEndpointFamily', 'configuredRouteFamily', 'hostnameCandidate',
+    'ipv4Candidate', 'ipv6Candidate', 'scopedIpv6'
+  ])) { return null; }
+  const endpointFamily: string | null = jsonString(source, 'configuredEndpointFamily');
+  const routeFamily: string | null = jsonString(source, 'configuredRouteFamily');
+  const hostnameCandidate: boolean | null = jsonBoolean(source, 'hostnameCandidate');
+  const ipv4Candidate: boolean | null = jsonBoolean(source, 'ipv4Candidate');
+  const ipv6Candidate: boolean | null = jsonBoolean(source, 'ipv6Candidate');
+  const scopedIpv6: boolean | null = jsonBoolean(source, 'scopedIpv6');
+  if (endpointFamily === null || routeFamily === null || hostnameCandidate === null ||
+    ipv4Candidate === null || ipv6Candidate === null || scopedIpv6 === null) {
+    return null;
+  }
+  const facts: DiagnosticNetworkFacts = {
+    configuredEndpointFamily: endpointFamily as DiagnosticAddressFamily,
+    configuredRouteFamily: routeFamily as DiagnosticAddressFamily,
+    hostnameCandidate: hostnameCandidate,
+    ipv4Candidate: ipv4Candidate,
+    ipv6Candidate: ipv6Candidate,
+    scopedIpv6: scopedIpv6
+  };
+  return diagnosticNetworkFactsAreValid(facts) ? facts : null;
 }
 
 function jsonRuntimeFacts(value: Object): DiagnosticRuntimeFacts | null {
@@ -375,7 +414,7 @@ export function validateDiagnosticJsonl(text: string): boolean {
       if (!objectHasExactKeys(parsed, [
         'kind', 'schemaVersion', 'sequence', 'elapsedMs', 'wallTimeMs', 'moduleId',
         'eventCode', 'level', 'outcome', 'sessionRef', 'generation', 'code',
-        'durationMs', 'count', 'bytes', 'runtime'
+        'durationMs', 'count', 'bytes', 'runtime', 'network'
       ]) || jsonString(parsed, 'kind') !== 'event' ||
         jsonNumber(parsed, 'schemaVersion') !== DIAGNOSTIC_CAPTURE_SCHEMA_VERSION) { return false; }
       const moduleId: string | null = jsonString(parsed, 'moduleId');
@@ -392,17 +431,19 @@ export function validateDiagnosticJsonl(text: string): boolean {
       const count: number | null = jsonNumber(parsed, 'count');
       const bytes: number | null = jsonNumber(parsed, 'bytes');
       const runtime: DiagnosticRuntimeFacts | null = jsonRuntimeFacts(parsed['runtime']);
+      const network: DiagnosticNetworkFacts | null = jsonNetworkFacts(parsed['network']);
       if (moduleId === null || eventCode === null || level === null || outcome === null ||
         sessionRef === null || sequence === null || elapsedMs === null || wallTimeMs === null ||
         generation === null || code === null || durationMs === null || count === null || bytes === null ||
-        runtime === null ||
+        runtime === null || network === null ||
         !diagnosticModuleIsKnown(moduleId) || !diagnosticOutcomeIsAllowed(outcome)) { return false; }
       events.push({
         sequence: sequence, elapsedMs: elapsedMs, wallTimeMs: wallTimeMs,
         moduleId: moduleId as DiagnosticModuleId, eventCode: eventCode,
         level: level as 'info' | 'warn' | 'error', outcome: outcome as DiagnosticOutcome,
         sessionRef: sessionRef, generation: generation, code: code,
-        durationMs: durationMs, count: count, bytes: bytes, runtime: runtime
+        durationMs: durationMs, count: count, bytes: bytes, runtime: runtime,
+        network: network
       });
     }
     const dropped: number | null = jsonNumber(last, 'droppedEventCount');

@@ -32,8 +32,11 @@ import {
   MoonlightSessionRecoveryRuntimePort
 } from './MoonlightSessionRecoveryRuntime';
 import {
+  DiagnosticNetworkFacts,
   DiagnosticOutcome,
-  DiagnosticRuntimeFacts
+  DiagnosticRuntimeFacts,
+  diagnosticNetworkFactsForAuthority,
+  emptyDiagnosticNetworkFacts
 } from './DiagnosticCapturePolicy';
 import {
   diagnosticCaptureIdForModule,
@@ -61,6 +64,7 @@ class MoonlightSessionReservationIdentity {
   effectiveSettingsEncoded: string = '';
   resetRemoteInputBeforeAdmission: boolean = false;
   desktopSurfaceCompatibility: boolean = false;
+  network: DiagnosticNetworkFacts = emptyDiagnosticNetworkFacts();
 }
 
 export interface MoonlightSessionStartRequest {
@@ -809,6 +813,9 @@ export class MoonlightSessionCoordinator {
       }
     }
 
+    const diagnosticNetwork: DiagnosticNetworkFacts =
+      this.reservationIdentity?.network ?? emptyDiagnosticNetworkFacts();
+
     const transition = applyMoonlightSessionEvent(this.state, sessionEvent(event));
     if (!transition.applied) {
       if (transition.reason === 'stale_generation') {
@@ -885,7 +892,8 @@ export class MoonlightSessionCoordinator {
     recordDiagnosticEvent('connection.moonlight', 'moonlight_state_changed',
       diagnosticMoonlightSessionOutcome(event.type),
       event.nativeSessionId > 0 ? event.nativeSessionId : 0,
-      event.generation, diagnosticMoonlightSessionCode(event.type));
+      event.generation, diagnosticMoonlightSessionCode(event.type),
+      0, 0, 0, undefined, diagnosticNetwork);
     this.notifySnapshotSubscribers();
     if ((event.type === 'failed' || event.type === 'stopped') &&
         this.applyPendingBoundScopeIfIdle()) {
@@ -1308,6 +1316,7 @@ export class MoonlightSessionCoordinator {
       request.resetRemoteInputBeforeAdmission === true;
     identity.desktopSurfaceCompatibility =
       request.desktopSurfaceCompatibility === true;
+    identity.network = diagnosticNetworkFactsForAuthority(request.hostAddress);
     return identity;
   }
 
@@ -1434,7 +1443,8 @@ export class MoonlightSessionCoordinator {
         0, facts.latencyMs, facts.frames,
         source.acceptedVideoBytes !== undefined &&
           Number.isSafeInteger(source.acceptedVideoBytes) && source.acceptedVideoBytes > 0 ?
-          source.acceptedVideoBytes : 0, facts);
+          source.acceptedVideoBytes : 0, facts,
+        this.reservationIdentity?.network);
     } catch (_err) {
       // Runtime capture remains isolated from stream lifecycle decisions.
     }
@@ -1564,6 +1574,8 @@ export class MoonlightSessionCoordinator {
   private enterReconnectReservationBeforeNativeStart(nativeCode: string): boolean {
     const current: MoonlightSessionStateSnapshot | null = this.state;
     const oldReservationSessionId: number = this.reservationSessionId;
+    const diagnosticNetwork: DiagnosticNetworkFacts =
+      this.reservationIdentity?.network ?? emptyDiagnosticNetworkFacts();
     if (nativeCode !== 'network_changed' || current === null ||
         oldReservationSessionId <= 0 || this.nativeSessionId > 0 ||
         current.phase === 'stopping' || current.phase === 'failed' ||
@@ -1603,7 +1615,8 @@ export class MoonlightSessionCoordinator {
     this.pendingTeardownDetailCode = '';
     recordDiagnosticEvent('connection.moonlight', 'moonlight_state_changed',
       'retry', 0, current.generation,
-      diagnosticMoonlightSessionCode('transportLost'));
+      diagnosticMoonlightSessionCode('transportLost'),
+      0, 0, 0, undefined, diagnosticNetwork);
     this.notifySnapshotSubscribers();
     return true;
   }

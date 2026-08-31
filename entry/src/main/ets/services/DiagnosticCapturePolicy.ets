@@ -1,3 +1,9 @@
+import {
+  EndpointAddressResult,
+  parseEndpointAuthority,
+  parseEndpointFields
+} from './EndpointAddressPolicy';
+
 export type DiagnosticModuleId =
   'core.app' |
   'connection.rdp' |
@@ -49,6 +55,19 @@ export type DiagnosticProducerTransform =
   'rotate_90' | 'rotate_180' | 'rotate_270' | 'transpose' | 'transverse' |
   'other' | 'read_failed';
 
+export type DiagnosticAddressFamily =
+  'unknown' | 'hostname' | 'ipv4' | 'ipv6' | 'mixed';
+
+/** Closed, address-free network metadata safe for exported diagnostics. */
+export interface DiagnosticNetworkFacts {
+  configuredEndpointFamily: DiagnosticAddressFamily;
+  configuredRouteFamily: DiagnosticAddressFamily;
+  hostnameCandidate: boolean;
+  ipv4Candidate: boolean;
+  ipv6Candidate: boolean;
+  scopedIpv6: boolean;
+}
+
 export interface DiagnosticRuntimeFacts {
   state: DiagnosticRuntimeState;
   backend: DiagnosticRuntimeBackend;
@@ -77,8 +96,8 @@ export interface DiagnosticEventSpec {
   eventCode: string;
 }
 
-export const DIAGNOSTIC_CAPTURE_SCHEMA_VERSION: number = 2;
-export const DIAGNOSTIC_REDACTION_POLICY_VERSION: number = 2;
+export const DIAGNOSTIC_CAPTURE_SCHEMA_VERSION: number = 3;
+export const DIAGNOSTIC_REDACTION_POLICY_VERSION: number = 3;
 export const DIAGNOSTIC_DEFAULT_DURATION_MINUTES: number = 10;
 export const DIAGNOSTIC_MAX_EVENTS: number = 10000;
 export const DIAGNOSTIC_MAX_EVENT_BYTES: number = 1024;
@@ -300,4 +319,144 @@ export function copyDiagnosticRuntimeFacts(
     height: facts.height, frames: facts.frames, dropped: facts.dropped,
     errors: facts.errors, queueDepth: facts.queueDepth, latencyMs: facts.latencyMs
   };
+}
+
+const DIAGNOSTIC_ADDRESS_FAMILIES: DiagnosticAddressFamily[] = [
+  'unknown', 'hostname', 'ipv4', 'ipv6', 'mixed'
+];
+
+export function emptyDiagnosticNetworkFacts(): DiagnosticNetworkFacts {
+  return {
+    configuredEndpointFamily: 'unknown',
+    configuredRouteFamily: 'unknown',
+    hostnameCandidate: false,
+    ipv4Candidate: false,
+    ipv6Candidate: false,
+    scopedIpv6: false
+  };
+}
+
+export function diagnosticNetworkFactsAreValid(facts: DiagnosticNetworkFacts): boolean {
+  if (DIAGNOSTIC_ADDRESS_FAMILIES.indexOf(facts.configuredEndpointFamily) < 0 ||
+    DIAGNOSTIC_ADDRESS_FAMILIES.indexOf(facts.configuredRouteFamily) < 0 ||
+    typeof facts.hostnameCandidate !== 'boolean' ||
+    typeof facts.ipv4Candidate !== 'boolean' ||
+    typeof facts.ipv6Candidate !== 'boolean' ||
+    typeof facts.scopedIpv6 !== 'boolean') {
+    return false;
+  }
+  if (facts.scopedIpv6 && !facts.ipv6Candidate) { return false; }
+  if (facts.configuredEndpointFamily === 'hostname' && !facts.hostnameCandidate) {
+    return false;
+  }
+  if (facts.configuredEndpointFamily === 'ipv4' && !facts.ipv4Candidate) {
+    return false;
+  }
+  if (facts.configuredEndpointFamily === 'ipv6' && !facts.ipv6Candidate) {
+    return false;
+  }
+  if (facts.configuredRouteFamily === 'hostname' && !facts.hostnameCandidate) {
+    return false;
+  }
+  if (facts.configuredRouteFamily === 'ipv4' && !facts.ipv4Candidate) {
+    return false;
+  }
+  if (facts.configuredRouteFamily === 'ipv6' && !facts.ipv6Candidate) {
+    return false;
+  }
+  return true;
+}
+
+export function copyDiagnosticNetworkFacts(
+  facts: DiagnosticNetworkFacts): DiagnosticNetworkFacts {
+  return {
+    configuredEndpointFamily: facts.configuredEndpointFamily,
+    configuredRouteFamily: facts.configuredRouteFamily,
+    hostnameCandidate: facts.hostnameCandidate,
+    ipv4Candidate: facts.ipv4Candidate,
+    ipv6Candidate: facts.ipv6Candidate,
+    scopedIpv6: facts.scopedIpv6
+  };
+}
+
+export function diagnosticNetworkFactsForEndpoints(endpointHost: string,
+  endpointPort: number, routeHost: string = '', routePort: number = 0): DiagnosticNetworkFacts {
+  try {
+    const endpoint: EndpointAddressResult = parseEndpointFields(
+      endpointHost, endpointPort > 0 ? endpointPort : 1, 'runtime');
+    const endpointFamily: DiagnosticAddressFamily = endpoint.ok ?
+      endpoint.endpoint.family : 'unknown';
+    let routeFamily: DiagnosticAddressFamily = 'unknown';
+    let routeScopedIpv6: boolean = false;
+    if (routeHost.trim().length > 0) {
+      const route: EndpointAddressResult = parseEndpointFields(
+        routeHost, routePort > 0 ? routePort : 1, 'runtime');
+      routeFamily = route.ok ? route.endpoint.family : 'unknown';
+      routeScopedIpv6 = route.ok && route.endpoint.family === 'ipv6' &&
+        route.endpoint.scope.length > 0;
+    }
+    return {
+      configuredEndpointFamily: endpointFamily,
+      configuredRouteFamily: routeFamily,
+      hostnameCandidate: endpointFamily === 'hostname' || routeFamily === 'hostname',
+      ipv4Candidate: endpointFamily === 'ipv4' || routeFamily === 'ipv4',
+      ipv6Candidate: endpointFamily === 'ipv6' || routeFamily === 'ipv6',
+      scopedIpv6: routeScopedIpv6 || (endpoint.ok &&
+        endpoint.endpoint.family === 'ipv6' && endpoint.endpoint.scope.length > 0)
+    };
+  } catch (_err) {
+    return emptyDiagnosticNetworkFacts();
+  }
+}
+
+export function diagnosticNetworkFactsForAuthority(authority: string,
+  defaultPort: number = 1): DiagnosticNetworkFacts {
+  try {
+    const parsed: EndpointAddressResult = parseEndpointAuthority(
+      authority, defaultPort > 0 ? defaultPort : 1, 'runtime');
+    if (!parsed.ok) { return emptyDiagnosticNetworkFacts(); }
+    return {
+      configuredEndpointFamily: parsed.endpoint.family,
+      configuredRouteFamily: 'unknown',
+      hostnameCandidate: parsed.endpoint.family === 'hostname',
+      ipv4Candidate: parsed.endpoint.family === 'ipv4',
+      ipv6Candidate: parsed.endpoint.family === 'ipv6',
+      scopedIpv6: parsed.endpoint.family === 'ipv6' && parsed.endpoint.scope.length > 0
+    };
+  } catch (_err) {
+    return emptyDiagnosticNetworkFacts();
+  }
+}
+
+/** Build facts for ordered Moonlight-style candidate lists without retaining addresses. */
+export function diagnosticNetworkFactsForCandidates(families: string[],
+  scopedIpv6: boolean = false): DiagnosticNetworkFacts {
+  try {
+    let hostnameCandidate: boolean = false;
+    let ipv4Candidate: boolean = false;
+    let ipv6Candidate: boolean = false;
+    for (let index: number = 0; index < families.length; index++) {
+      const family: string = families[index].trim().toLowerCase();
+      if (family === 'ipv4') { ipv4Candidate = true; }
+      else if (family === 'ipv6') { ipv6Candidate = true; }
+      else if (family === 'hostname' || family === 'unspecified') {
+        hostnameCandidate = true;
+      }
+    }
+    const familyCount: number = (hostnameCandidate ? 1 : 0) +
+      (ipv4Candidate ? 1 : 0) + (ipv6Candidate ? 1 : 0);
+    const configuredEndpointFamily: DiagnosticAddressFamily = familyCount === 0 ? 'unknown' :
+      (familyCount > 1 ? 'mixed' :
+        (ipv6Candidate ? 'ipv6' : (ipv4Candidate ? 'ipv4' : 'hostname')));
+    return {
+      configuredEndpointFamily: configuredEndpointFamily,
+      configuredRouteFamily: 'unknown',
+      hostnameCandidate: hostnameCandidate,
+      ipv4Candidate: ipv4Candidate,
+      ipv6Candidate: ipv6Candidate,
+      scopedIpv6: scopedIpv6 && ipv6Candidate
+    };
+  } catch (_err) {
+    return emptyDiagnosticNetworkFacts();
+  }
 }

@@ -8,16 +8,20 @@ import {
   DIAGNOSTIC_MAX_SESSION_REFS,
   DiagnosticEventLevel,
   DiagnosticModuleId,
+  DiagnosticNetworkFacts,
   DiagnosticOutcome,
   DiagnosticRuntimeFacts,
   DiagnosticStopReason,
+  copyDiagnosticNetworkFacts,
   copyDiagnosticRuntimeFacts,
   diagnosticDurationIsAllowed,
   diagnosticEventIsAllowed,
   diagnosticLevelForOutcome,
+  diagnosticNetworkFactsAreValid,
   diagnosticOutcomeIsAllowed,
   diagnosticRuntimeFactsAreValid,
   diagnosticSafeInteger,
+  emptyDiagnosticNetworkFacts,
   emptyDiagnosticRuntimeFacts,
   normalizeDiagnosticModules
 } from './DiagnosticCapturePolicy';
@@ -54,6 +58,7 @@ export interface DiagnosticCaptureEvent {
   count: number;
   bytes: number;
   runtime: DiagnosticRuntimeFacts;
+  network: DiagnosticNetworkFacts;
 }
 
 export interface DiagnosticCaptureStatus {
@@ -168,7 +173,8 @@ export class DiagnosticCaptureRuntime {
   record(moduleId: DiagnosticModuleId, eventCode: string, outcome: DiagnosticOutcome,
     correlationId: number = 0, generation: number = 0, code: number = 0,
     durationMs: number = 0, count: number = 0, bytes: number = 0,
-    runtime?: DiagnosticRuntimeFacts): boolean {
+    runtime?: DiagnosticRuntimeFacts,
+    network?: DiagnosticNetworkFacts): boolean {
     if (!this.isModuleCapturing(moduleId)) { return false; }
     try {
       if (!diagnosticEventIsAllowed(moduleId, eventCode) ||
@@ -184,11 +190,14 @@ export class DiagnosticCaptureRuntime {
       const safeBytes: number | null = diagnosticSafeInteger(bytes);
       const safeRuntime: DiagnosticRuntimeFacts = runtime === undefined ?
         emptyDiagnosticRuntimeFacts() : copyDiagnosticRuntimeFacts(runtime);
+      const safeNetwork: DiagnosticNetworkFacts = network === undefined ?
+        emptyDiagnosticNetworkFacts() : copyDiagnosticNetworkFacts(network);
       if (safeCorrelation === null || safeCorrelation < 0 ||
         safeGeneration === null || safeGeneration < 0 || safeCode === null ||
         safeDuration === null || safeDuration < 0 ||
         safeCount === null || safeCount < 0 || safeBytes === null || safeBytes < 0 ||
-        !diagnosticRuntimeFactsAreValid(safeRuntime)) {
+        !diagnosticRuntimeFactsAreValid(safeRuntime) ||
+        !diagnosticNetworkFactsAreValid(safeNetwork)) {
         this.droppedEventCount += 1;
         return false;
       }
@@ -199,7 +208,7 @@ export class DiagnosticCaptureRuntime {
       }
       return this.appendEventAt(uptime, moduleId, eventCode, outcome,
         safeCorrelation, safeGeneration, safeCode, safeDuration, safeCount, safeBytes,
-        safeRuntime);
+        safeRuntime, safeNetwork);
     } catch (_err) {
       this.droppedEventCount += 1;
       return false;
@@ -305,7 +314,8 @@ export class DiagnosticCaptureRuntime {
     eventCode: string, outcome: DiagnosticOutcome,
     correlationId: number, generation: number, code: number,
     durationMs: number, count: number, bytes: number,
-    runtime: DiagnosticRuntimeFacts): boolean {
+    runtime: DiagnosticRuntimeFacts,
+    network: DiagnosticNetworkFacts = emptyDiagnosticNetworkFacts()): boolean {
     const terminalEvent: boolean = moduleId === 'core.app' &&
       (eventCode === 'capture_stopped' || eventCode === 'capture_expired');
     const eventLimit: number = terminalEvent ? DIAGNOSTIC_MAX_EVENTS : DIAGNOSTIC_MAX_EVENTS - 1;
@@ -333,7 +343,8 @@ export class DiagnosticCaptureRuntime {
       durationMs: durationMs,
       count: count,
       bytes: bytes,
-      runtime: copyDiagnosticRuntimeFacts(runtime)
+      runtime: copyDiagnosticRuntimeFacts(runtime),
+      network: copyDiagnosticNetworkFacts(network)
     };
     const eventBytes: number = new util.TextEncoder().encode(JSON.stringify(event)).length + 1;
     const reservedTerminalBytes: number = terminalEvent ? 0 : DIAGNOSTIC_MAX_EVENT_BYTES;
@@ -406,7 +417,8 @@ export class DiagnosticCaptureRuntime {
       durationMs: source.durationMs,
       count: source.count,
       bytes: source.bytes,
-      runtime: copyDiagnosticRuntimeFacts(source.runtime)
+      runtime: copyDiagnosticRuntimeFacts(source.runtime),
+      network: copyDiagnosticNetworkFacts(source.network)
     };
   }
 
@@ -448,10 +460,11 @@ export function recordDiagnosticEvent(moduleId: DiagnosticModuleId,
   eventCode: string, outcome: DiagnosticOutcome, correlationId: number = 0,
   generation: number = 0, code: number = 0, durationMs: number = 0,
   count: number = 0, bytes: number = 0,
-  runtime?: DiagnosticRuntimeFacts): void {
+  runtime?: DiagnosticRuntimeFacts,
+  network?: DiagnosticNetworkFacts): void {
   try {
     DiagnosticCaptureRuntime.getInstance().record(moduleId, eventCode, outcome,
-      correlationId, generation, code, durationMs, count, bytes, runtime);
+      correlationId, generation, code, durationMs, count, bytes, runtime, network);
   } catch (_err) {
     // Diagnostics are a best-effort side channel and can never fail a producer.
   }

@@ -4,6 +4,7 @@ import {
   DIAGNOSTIC_CAPTURE_SCHEMA_VERSION,
   DIAGNOSTIC_REDACTION_POLICY_VERSION,
   DiagnosticModuleId,
+  DiagnosticNetworkFacts,
   DiagnosticRuntimeFacts,
   diagnosticAllModules,
   diagnosticDurationIsAllowed,
@@ -12,6 +13,10 @@ import {
   diagnosticLevelForOutcome,
   diagnosticModuleIsKnown,
   diagnosticModuleSpecs,
+  diagnosticNetworkFactsAreValid,
+  diagnosticNetworkFactsForAuthority,
+  diagnosticNetworkFactsForCandidates,
+  diagnosticNetworkFactsForEndpoints,
   diagnosticOutcomeIsAllowed,
   diagnosticRuntimeFactsAreValid,
   normalizeDiagnosticModules
@@ -22,8 +27,8 @@ export default function diagnosticCapturePolicyTest(): void {
     it('accepts_only_the_six_fixed_one_to_thirty_minute_options', 0, (): void => {
       expect(diagnosticDurationOptions().join(',')).assertEqual('1,3,5,10,15,30');
       expect(DIAGNOSTIC_DEFAULT_DURATION_MINUTES).assertEqual(10);
-      expect(DIAGNOSTIC_CAPTURE_SCHEMA_VERSION).assertEqual(2);
-      expect(DIAGNOSTIC_REDACTION_POLICY_VERSION).assertEqual(2);
+      expect(DIAGNOSTIC_CAPTURE_SCHEMA_VERSION).assertEqual(3);
+      expect(DIAGNOSTIC_REDACTION_POLICY_VERSION).assertEqual(3);
       expect(diagnosticDurationIsAllowed(1)).assertTrue();
       expect(diagnosticDurationIsAllowed(30)).assertTrue();
       expect(diagnosticDurationIsAllowed(0)).assertFalse();
@@ -75,6 +80,41 @@ export default function diagnosticCapturePolicyTest(): void {
       facts.width = 1920;
       facts.backend = 'endpoint.example.invalid' as 'hardware';
       expect(diagnosticRuntimeFactsAreValid(facts)).assertFalse();
+    });
+
+    it('classifies_ipv4_ipv6_hostname_and_mixed_candidates_without_addresses', 0, (): void => {
+      const ipv6: DiagnosticNetworkFacts = diagnosticNetworkFactsForEndpoints(
+        '2001:db8::20', 3389, 'gateway.example.invalid', 443);
+      expect(ipv6.configuredEndpointFamily).assertEqual('ipv6');
+      expect(ipv6.configuredRouteFamily).assertEqual('hostname');
+      expect(ipv6.hostnameCandidate).assertTrue();
+      expect(ipv6.ipv6Candidate).assertTrue();
+      expect(ipv6.ipv4Candidate).assertFalse();
+      expect(diagnosticNetworkFactsAreValid(ipv6)).assertTrue();
+
+      const routedScoped: DiagnosticNetworkFacts = diagnosticNetworkFactsForEndpoints(
+        '192.0.2.20', 22, 'fe80::20%3', 22);
+      expect(routedScoped.configuredRouteFamily).assertEqual('ipv6');
+      expect(routedScoped.ipv4Candidate).assertTrue();
+      expect(routedScoped.ipv6Candidate).assertTrue();
+      expect(routedScoped.scopedIpv6).assertTrue();
+
+      const scoped: DiagnosticNetworkFacts = diagnosticNetworkFactsForAuthority(
+        '[fe80::20%3]:47989');
+      expect(scoped.configuredEndpointFamily).assertEqual('ipv6');
+      expect(scoped.ipv6Candidate).assertTrue();
+      expect(scoped.scopedIpv6).assertTrue();
+
+      const mixed: DiagnosticNetworkFacts = diagnosticNetworkFactsForCandidates(
+        ['ipv6', 'ipv4', 'unspecified']);
+      expect(mixed.configuredEndpointFamily).assertEqual('mixed');
+      expect(mixed.hostnameCandidate).assertTrue();
+      expect(mixed.ipv4Candidate).assertTrue();
+      expect(mixed.ipv6Candidate).assertTrue();
+      mixed.scopedIpv6 = true;
+      expect(diagnosticNetworkFactsAreValid(mixed)).assertTrue();
+      mixed.ipv6Candidate = false;
+      expect(diagnosticNetworkFactsAreValid(mixed)).assertFalse();
     });
 
     it('uses_a_closed_outcome_set_and_derives_levels_without_free_text', 0, (): void => {
