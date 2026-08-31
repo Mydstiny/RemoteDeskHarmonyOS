@@ -1,5 +1,5 @@
-export const CURRENT_RELEASE_VERSION: string = '1.1.4';
-export const CURRENT_RELEASE_VERSION_CODE: number = 1001004;
+export const CURRENT_RELEASE_VERSION: string = '1.1.5';
+export const CURRENT_RELEASE_VERSION_CODE: number = 1001005;
 
 export interface ReleaseNotePage {
   id: string;
@@ -10,18 +10,57 @@ export interface ReleaseNotePage {
 
 export function pagesForReleasedVersion(version: string): ReleaseNotePage[] {
   if (version === CURRENT_RELEASE_VERSION) { return currentReleasePages(); }
-  if (version === '1.1.3') { return previousReleasePages(); }
+  if (version === '1.1.4') { return release114Pages(); }
+  if (version === '1.1.3') { return release113Pages(); }
   return [];
 }
 
 function currentReleasePages(): ReleaseNotePage[] {
-  return [
+  const introduction: ReleaseNotePage[] = [
     {
-      id: 'release-1-1-4',
+      id: 'release-1-1-5',
       symbol: $rawfile('icons/computer-desktop.svg'),
-      title: '1.1.4：连接、输入与数据恢复更稳',
-      desc: '在保留 1.1.3 全部五协议能力的基础上，集中完善敏感信息保护、剪贴板、会话操控、应用分身和云数据恢复。'
+      title: '1.1.5：连接、显示与网络适配再升级',
+      desc: '本次更新在五协议工作台现有能力上，继续完善会话画面控制、PC 显示适配、RustDesk 多显示器、连接恢复与脱敏诊断。'
+    }
+  ];
+  const additions: ReleaseNotePage[] = [
+    {
+      id: 'release-session-view-controls',
+      symbol: $rawfile('icons/cog-6-tooth.svg'),
+      title: '远程画面操作可按协议调整',
+      desc: 'RDP、RustDesk、VNC 与 Moonlight 可分别保存双指缩放偏好，并从会话控制区恢复画面状态；选择项、隐藏项和恢复入口都按协议保持一致。'
     },
+    {
+      id: 'release-rustdesk-quality-displays',
+      symbol: $rawfile('icons/computer-desktop.svg'),
+      title: 'RustDesk 质量与多显示器更完整',
+      desc: '会话可选择低延迟、均衡或最佳质量；HarmonyOS PC 的实验多画布模式最多同时查看两块远端显示器，异常时会安全回退到单画布。'
+    },
+    {
+      id: 'release-rdp-adaptive-display',
+      symbol: $rawfile('icons/computer-desktop.svg'),
+      title: 'RDP 更好适配高 DPI 与多屏 PC',
+      desc: 'PC 端会结合活动显示器密度、窗口尺寸和方向请求合适的远端画面；跨屏或服务端不支持动态调整时，会保留可用会话并采用兼容回退。'
+    },
+    {
+      id: 'release-network-diagnostics',
+      symbol: $rawfile('icons/globe-alt.svg'),
+      title: '连接恢复与双栈诊断更清晰',
+      desc: '网络切换会淘汰过期的连接和重连任务，Moonlight 添加入口不再被可选探测临时置灰；抓日志可按连接记录脱敏 IPv4/IPv6 地址族与作用域，不导出原始地址。'
+    },
+    {
+      id: 'welcome-1-1-5',
+      symbol: $rawfile('icons/globe-alt.svg'),
+      title: '准备就绪，开始连接',
+      desc: '五协议工作台会继续按真实运行能力开放入口；需要回看本次变化时，可随时打开“设置 → 教程 → 本版本更新日志”。'
+    }
+  ];
+  return introduction.concat(release114FeaturePages()).concat(additions);
+}
+
+function release114FeaturePages(): ReleaseNotePage[] {
+  return [
     {
       id: 'release-secret-visibility',
       symbol: $rawfile('icons/shield-check.svg'),
@@ -69,17 +108,31 @@ function currentReleasePages(): ReleaseNotePage[] {
       symbol: $rawfile('icons/cog-6-tooth.svg'),
       title: '五种协议可分别设置滚轮方向',
       desc: '“显示与交互”现在可独立设置 RDP、RustDesk、SSH、VNC 与 Moonlight 的正常或反向滚动，并提供全部正常、全部反向操作；SFTP 文件列表不受影响。'
-    },
+    }
+  ];
+}
+
+function release114Pages(): ReleaseNotePage[] {
+  const introduction: ReleaseNotePage[] = [
+    {
+      id: 'release-1-1-4',
+      symbol: $rawfile('icons/computer-desktop.svg'),
+      title: '1.1.4：连接、输入与数据恢复更稳',
+      desc: '在保留 1.1.3 全部五协议能力的基础上，集中完善敏感信息保护、剪贴板、会话操控、应用分身和云数据恢复。'
+    }
+  ];
+  const conclusion: ReleaseNotePage[] = [
     {
       id: 'welcome-1-1-4',
       symbol: $rawfile('icons/globe-alt.svg'),
       title: '欢迎使用 1.1.4',
       desc: '本次更新延续五协议工作台，并把会话操控、敏感数据和异常恢复做得更稳。需要回看全部变化时，可随时打开“设置 → 教程 → 本版本更新日志”。'
-    },
+    }
   ];
+  return introduction.concat(release114FeaturePages()).concat(conclusion);
 }
 
-function previousReleasePages(): ReleaseNotePage[] {
+function release113Pages(): ReleaseNotePage[] {
   return [
     {
       id: 'release-1-1-3',

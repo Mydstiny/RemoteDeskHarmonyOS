@@ -80,8 +80,8 @@ export default function diagnosticCaptureExportServiceTest(): void {
         JSON.parse(lines[lines.length - 1]) as Record<string, Object>;
       expect(manifest['kind'] as string).assertEqual('manifest');
       expect(manifest['schemaVersion'] as number).assertEqual(3);
-      expect(manifest['appVersionCode'] as number).assertEqual(1001004);
-      expect((manifest['buildId'] as string).startsWith('1.1.4+')).assertTrue();
+      expect(manifest['appVersionCode'] as number).assertEqual(1001005);
+      expect((manifest['buildId'] as string).startsWith('1.1.5+')).assertTrue();
       expect(summary['kind'] as string).assertEqual('summary');
       expect(summary['eventCount'] as number).assertEqual(capture.events.length);
       expect(summary['serializedBytes'] as number).assertEqual(result.bytes.length);

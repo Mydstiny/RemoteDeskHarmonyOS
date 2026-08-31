@@ -40,11 +40,18 @@ export default function guideContentRegistryTest(): void {
       expect(containsGuidePage(guide, 'welcome-five-protocols')).assertTrue();
       expect(containsGuidePage(guide, 'session-toolkit')).assertTrue();
       expect(containsGuidePage(guide, 'data-recovery-and-help')).assertTrue();
-      expect(release.length).assertEqual(10);
-      expect(containsReleasePage(release, 'release-1-1-4')).assertTrue();
+      expect(release.length).assertEqual(14);
+      expect(release.length <= 14).assertTrue();
+      expect(containsReleasePage(release, 'release-1-1-5')).assertTrue();
+      expect(containsReleasePage(release, 'release-session-view-controls')).assertTrue();
+      expect(containsReleasePage(release, 'release-rustdesk-quality-displays')).assertTrue();
+      expect(containsReleasePage(release, 'release-rdp-adaptive-display')).assertTrue();
+      expect(containsReleasePage(release, 'release-network-diagnostics')).assertTrue();
+      expect(containsReleasePage(release, 'release-1-1-4')).assertFalse();
+      expect(containsReleasePage(release, 'welcome-1-1-4')).assertFalse();
       expect(containsReleasePage(release, 'release-1-1-3')).assertFalse();
       expect(containsReleasePage(release, 'welcome-1-1-3')).assertFalse();
-      expect(release[release.length - 1].id).assertEqual('welcome-1-1-4');
+      expect(release[release.length - 1].id).assertEqual('welcome-1-1-5');
     });
   });
 }

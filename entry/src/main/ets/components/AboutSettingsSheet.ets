@@ -165,7 +165,7 @@ export struct AboutSettingsSheet {
   @Builder releaseNotesSheet() {
     Column() {
       Row() {
-        Text(CURRENT_RELEASE_VERSION + ' 本版本更新日志').fontSize(20).fontWeight(FontWeight.Bold)
+        Text('本版本更新日志').fontSize(20).fontWeight(FontWeight.Bold)
           .fontColor(this.pal().text).fontFamily(this.font())
         Blank()
         SymbolGlyph($r('sys.symbol.xmark')).fontSize(18).fontColor([this.pal().text2])
