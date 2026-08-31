@@ -1,6 +1,7 @@
 import { describe, it, expect } from '@ohos/hypium';
 import {
   CURRENT_RELEASE_VERSION,
+  currentReleasePageCount,
   pagesForReleasedVersion,
   ReleaseNotePage
 } from '../main/ets/services/ReleaseNotesRegistry';
@@ -14,6 +15,7 @@ export default function releaseNotesRegistryTest(): void {
     it('describes_the_current_1_1_5_release_in_at_most_fourteen_pages', 0, (): void => {
       const pages: ReleaseNotePage[] = pagesForReleasedVersion(CURRENT_RELEASE_VERSION);
       expect(pages.length).assertEqual(14);
+      expect(currentReleasePageCount()).assertEqual(pages.length);
       expect(pages.length <= 14).assertTrue();
       expect(containsPage(pages, 'release-1-1-5')).assertTrue();
       expect(containsPage(pages, 'release-secret-visibility')).assertTrue();

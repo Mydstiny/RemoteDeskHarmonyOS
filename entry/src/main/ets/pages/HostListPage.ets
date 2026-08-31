@@ -652,7 +652,10 @@ import {
   resolveStoredHaloColorForTheme,
   shouldMigrateLegacyHaloColorToTheme
 } from '../services/HaloColorPolicy';
-import { CURRENT_RELEASE_VERSION } from '../services/ReleaseNotesRegistry';
+import {
+  CURRENT_RELEASE_VERSION,
+  currentReleasePageCount
+} from '../services/ReleaseNotesRegistry';
 import { AboutSettingsSheet } from '../components/AboutSettingsSheet';
 import { DiagnosticCaptureSettingsSheet } from '../components/DiagnosticCaptureSettingsSheet';
 import { FeedbackSettingsSheet } from '../components/FeedbackSettingsSheet';
@@ -16015,7 +16018,8 @@ struct HostListPage {
               .fontFamily(this.font()).padding({ left: 8, bottom: 8 })
             Column() {
               this.cardActionRow($r('app.media.icon_info'), '本版本更新日志',
-                CURRENT_RELEASE_VERSION + ' · 查看全部 10 项功能与修复',
+                CURRENT_RELEASE_VERSION + ' · 查看全部 ' +
+                  currentReleasePageCount().toString() + ' 项功能与修复',
                 (): void => {
                   this.openSettingsLeafSheet(SETTINGS_SHEET_POPUP, (): void => {
                     this.aboutSheetMode = 4;

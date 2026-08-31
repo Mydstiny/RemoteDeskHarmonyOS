@@ -6,6 +6,7 @@ import {
 } from '../../../main/ets/services/GuideContentRegistry';
 import {
   CURRENT_RELEASE_VERSION,
+  currentReleasePageCount,
   pagesForReleasedVersion,
   ReleaseNotePage
 } from '../../../main/ets/services/ReleaseNotesRegistry';
@@ -41,6 +42,7 @@ export default function guideContentRegistryTest(): void {
       expect(containsGuidePage(guide, 'session-toolkit')).assertTrue();
       expect(containsGuidePage(guide, 'data-recovery-and-help')).assertTrue();
       expect(release.length).assertEqual(14);
+      expect(currentReleasePageCount()).assertEqual(release.length);
       expect(release.length <= 14).assertTrue();
       expect(containsReleasePage(release, 'release-1-1-5')).assertTrue();
       expect(containsReleasePage(release, 'release-session-view-controls')).assertTrue();

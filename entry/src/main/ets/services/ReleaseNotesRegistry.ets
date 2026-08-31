@@ -15,6 +15,10 @@ export function pagesForReleasedVersion(version: string): ReleaseNotePage[] {
   return [];
 }
 
+export function currentReleasePageCount(): number {
+  return currentReleasePages().length;
+}
+
 function currentReleasePages(): ReleaseNotePage[] {
   const introduction: ReleaseNotePage[] = [
     {
