@@ -28,6 +28,8 @@ const KCP_INBOUND_CAPACITY: usize = 32 * 1024 * 1024;
 const KCP_OUTBOUND_CAPACITY: usize = 128;
 const KCP_IO_CHUNK_SIZE: usize = 32 * 1024;
 const KCP_QUEUE_WAIT_SLICE: Duration = Duration::from_millis(2);
+const KCP_FLUSH_WAIT_SLICE: Duration = Duration::from_millis(20);
+const KCP_GRACEFUL_DRAIN_TIMEOUT: Duration = Duration::from_secs(3);
 const UDP_PUNCH_INITIAL_INTERVAL: Duration = Duration::from_millis(20);
 const UDP_PUNCH_MAX_INTERVAL: Duration = Duration::from_millis(200);
 const UDP_PUNCH_MAX_DURATION: Duration = Duration::from_secs(20);
@@ -49,6 +51,11 @@ impl StoredError {
     fn to_io(&self) -> io::Error {
         io::Error::new(self.kind, self.message.clone())
     }
+}
+
+enum OutboundCommand {
+    Data(Vec<u8>),
+    Flush(std_mpsc::SyncSender<Result<(), StoredError>>),
 }
 
 struct InboundState {
@@ -104,11 +111,12 @@ impl KcpShared {
 
 struct KcpOwner {
     shared: Arc<KcpShared>,
-    outbound: mpsc::Sender<Vec<u8>>,
+    outbound: Option<mpsc::Sender<OutboundCommand>>,
     shutdown: watch::Sender<bool>,
     worker: Mutex<Option<JoinHandle<()>>>,
     local_address: SocketAddr,
     peer_address: SocketAddr,
+    cancel_epoch: Option<u64>,
 }
 
 impl KcpOwner {
@@ -121,7 +129,11 @@ impl KcpOwner {
 
 impl Drop for KcpOwner {
     fn drop(&mut self) {
-        self.request_shutdown();
+        // Closing the application queue lets the worker drain every accepted
+        // frame into KCP, close its stream sender and keep pumping UDP for one
+        // bounded retransmission window. Explicit shutdown/cancellation still
+        // uses request_shutdown() for immediate teardown.
+        self.outbound.take();
         if let Ok(mut worker) = self.worker.lock() {
             if let Some(handle) = worker.take() {
                 let _ = handle.join();
@@ -245,11 +257,12 @@ impl KcpPeerStream {
                 Ok(Self {
                     owner: Arc::new(KcpOwner {
                         shared,
-                        outbound,
+                        outbound: Some(outbound),
                         shutdown,
                         worker: Mutex::new(Some(worker)),
                         local_address,
                         peer_address,
+                        cancel_epoch,
                     }),
                     timeouts: Mutex::new(StreamTimeouts::default()),
                 })
@@ -338,6 +351,62 @@ impl KcpPeerStream {
 
     pub fn shutdown(&self, _how: Shutdown) -> io::Result<()> {
         self.owner.request_shutdown();
+        Ok(())
+    }
+
+    fn enqueue_outbound(
+        &self,
+        mut command: OutboundCommand,
+        deadline: Option<Instant>,
+        stage: &str,
+    ) -> io::Result<()> {
+        loop {
+            self.ensure_write_active(stage)?;
+            let sender = self.owner.outbound.as_ref().ok_or_else(|| {
+                io::Error::new(io::ErrorKind::BrokenPipe, "KCP outbound queue is closed")
+            })?;
+            match sender.try_send(command) {
+                Ok(()) => return Ok(()),
+                Err(mpsc::error::TrySendError::Closed(_)) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::BrokenPipe,
+                        "KCP outbound queue is closed",
+                    ));
+                }
+                Err(mpsc::error::TrySendError::Full(returned)) => command = returned,
+            }
+            if deadline.is_some_and(|value| Instant::now() >= value) {
+                self.owner.request_shutdown();
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    format!("KCP {stage} timed out waiting for queue capacity"),
+                ));
+            }
+            thread::sleep(KCP_QUEUE_WAIT_SLICE);
+        }
+    }
+
+    fn ensure_write_active(&self, stage: &str) -> io::Result<()> {
+        if self
+            .owner
+            .cancel_epoch
+            .is_some_and(crate::connect_cancelled)
+        {
+            self.owner.request_shutdown();
+            return Err(io::Error::new(
+                // std::io::Write::write_all retries Interrupted forever.
+                // ConnectionAborted is terminal and therefore lets a
+                // cancelled file worker leave a backpressured write.
+                io::ErrorKind::ConnectionAborted,
+                format!("KCP {stage} cancelled"),
+            ));
+        }
+        if self.owner.shared.closed.load(Ordering::SeqCst) {
+            return Err(self.owner.shared.current_error().map_or_else(
+                || io::Error::new(io::ErrorKind::BrokenPipe, "KCP stream is closed"),
+                |error| error.to_io(),
+            ));
+        }
         Ok(())
     }
 }
@@ -435,42 +504,45 @@ impl Write for KcpPeerStream {
         }
         let timeout = self.write_timeout()?;
         let deadline = timeout.and_then(|value| Instant::now().checked_add(value));
-        let mut payload = buffer.to_vec();
-        loop {
-            if self.owner.shared.closed.load(Ordering::SeqCst) {
-                return Err(self.owner.shared.current_error().map_or_else(
-                    || io::Error::new(io::ErrorKind::BrokenPipe, "KCP stream is closed"),
-                    |error| error.to_io(),
-                ));
-            }
-            match self.owner.outbound.try_send(payload) {
-                Ok(()) => return Ok(buffer.len()),
-                Err(mpsc::error::TrySendError::Closed(_)) => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::BrokenPipe,
-                        "KCP outbound queue is closed",
-                    ));
-                }
-                Err(mpsc::error::TrySendError::Full(returned)) => payload = returned,
-            }
-            if deadline.is_some_and(|value| Instant::now() >= value) {
-                return Err(io::Error::new(
-                    io::ErrorKind::TimedOut,
-                    "KCP write timed out waiting for queue capacity",
-                ));
-            }
-            thread::sleep(KCP_QUEUE_WAIT_SLICE);
-        }
+        self.enqueue_outbound(OutboundCommand::Data(buffer.to_vec()), deadline, "write")?;
+        Ok(buffer.len())
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        if self.owner.shared.closed.load(Ordering::SeqCst) {
-            return Err(self.owner.shared.current_error().map_or_else(
-                || io::Error::new(io::ErrorKind::BrokenPipe, "KCP stream is closed"),
-                |error| error.to_io(),
-            ));
+        let timeout = self.write_timeout()?;
+        let deadline = timeout.and_then(|value| Instant::now().checked_add(value));
+        let (acknowledge, acknowledged) = std_mpsc::sync_channel::<Result<(), StoredError>>(1);
+        self.enqueue_outbound(OutboundCommand::Flush(acknowledge), deadline, "flush")?;
+        loop {
+            self.ensure_write_active("flush")?;
+            let wait = match deadline {
+                Some(deadline) => deadline
+                    .checked_duration_since(Instant::now())
+                    .filter(|remaining| !remaining.is_zero())
+                    .ok_or_else(|| {
+                        self.owner.request_shutdown();
+                        io::Error::new(io::ErrorKind::TimedOut, "KCP flush timed out")
+                    })?
+                    .min(KCP_FLUSH_WAIT_SLICE),
+                None => KCP_FLUSH_WAIT_SLICE,
+            };
+            match acknowledged.recv_timeout(wait) {
+                Ok(Ok(())) => return Ok(()),
+                Ok(Err(error)) => return Err(error.to_io()),
+                Err(std_mpsc::RecvTimeoutError::Timeout) => continue,
+                Err(std_mpsc::RecvTimeoutError::Disconnected) => {
+                    return Err(self.owner.shared.current_error().map_or_else(
+                        || {
+                            io::Error::new(
+                                io::ErrorKind::BrokenPipe,
+                                "KCP worker stopped before flush completed",
+                            )
+                        },
+                        |error| error.to_io(),
+                    ));
+                }
+            }
         }
-        Ok(())
     }
 }
 
@@ -628,7 +700,7 @@ fn ensure_connect_active(cancel_epoch: Option<u64>, race_cancel: &AtomicBool) ->
 async fn run_kcp_worker(
     socket: UdpSocket,
     shared: Arc<KcpShared>,
-    outbound: mpsc::Receiver<Vec<u8>>,
+    outbound: mpsc::Receiver<OutboundCommand>,
     mut shutdown: watch::Receiver<bool>,
     ready: std_mpsc::SyncSender<Result<(), StoredError>>,
     deadline: Instant,
@@ -828,15 +900,35 @@ where
     }
 }
 
-async fn pump_kcp_writes<W>(mut writer: W, mut outbound: mpsc::Receiver<Vec<u8>>) -> io::Result<()>
+async fn pump_kcp_writes<W>(
+    mut writer: W,
+    mut outbound: mpsc::Receiver<OutboundCommand>,
+) -> io::Result<()>
 where
     W: tokio::io::AsyncWrite + Unpin,
 {
-    while let Some(payload) = outbound.recv().await {
-        writer.write_all(&payload).await?;
-        writer.flush().await?;
+    while let Some(command) = outbound.recv().await {
+        match command {
+            OutboundCommand::Data(payload) => writer.write_all(&payload).await?,
+            OutboundCommand::Flush(acknowledge) => match writer.flush().await {
+                Ok(()) => {
+                    let _ = acknowledge.send(Ok(()));
+                }
+                Err(error) => {
+                    let stored = StoredError::from_io(&error);
+                    let _ = acknowledge.send(Err(stored));
+                    return Err(error);
+                }
+            },
+        }
     }
-    writer.shutdown().await
+    writer.shutdown().await?;
+    // `kcp-sys` closes its application sender synchronously, then drains its
+    // internal send queue and waits for transport ACKs in background tasks.
+    // Keep the endpoint and UDP pump alive for a bounded retransmission window
+    // before the owner thread exits.
+    tokio::time::sleep(KCP_GRACEFUL_DRAIN_TIMEOUT).await;
+    Ok(())
 }
 
 async fn wait_for_shutdown(mut shutdown: watch::Receiver<bool>) {
@@ -1037,5 +1129,81 @@ mod tests {
 
         canceller.join().expect("join KCP race canceller");
         fixture.join().expect("join punch fixture");
+    }
+
+    #[test]
+    fn kcp_flush_drains_accepted_bytes_before_immediate_drop() {
+        let payload = (0..256 * 1024)
+            .map(|index| (index % 251) as u8)
+            .collect::<Vec<_>>();
+        let bind = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
+        let (server_address, server) =
+            spawn_test_kcp_echo_server(bind, payload.clone()).expect("bind KCP drain fixture");
+        let socket = UdpSocket::bind(bind).expect("bind KCP drain client");
+        let mut stream =
+            KcpPeerStream::connect(socket, server_address, Duration::from_secs(3), None)
+                .expect("connect KCP drain client");
+        stream
+            .set_write_timeout(Some(Duration::from_secs(3)))
+            .expect("set KCP drain timeout");
+        stream.write_all(&payload).expect("queue KCP drain payload");
+        stream.flush().expect("flush KCP application queue");
+        drop(stream);
+
+        server
+            .join()
+            .expect("join KCP drain fixture")
+            .expect("KCP peer must receive every byte before client drop");
+    }
+
+    #[test]
+    fn kcp_backpressure_write_observes_session_cancellation() {
+        let session_id = 0x4B43_5002;
+        let epoch = crate::begin_connect_epoch(session_id);
+        let shared = Arc::new(KcpShared::new());
+        let (outbound, outbound_rx) = mpsc::channel(1);
+        let (shutdown, _shutdown_rx) = watch::channel(false);
+        let mut stream = KcpPeerStream {
+            owner: Arc::new(KcpOwner {
+                shared,
+                outbound: Some(outbound),
+                shutdown,
+                worker: Mutex::new(None),
+                local_address: "127.0.0.1:41001".parse().unwrap(),
+                peer_address: "127.0.0.1:41002".parse().unwrap(),
+                cancel_epoch: Some(epoch),
+            }),
+            timeouts: Mutex::new(StreamTimeouts::default()),
+        };
+        stream.write_all(b"fill-queue").expect("fill KCP queue");
+
+        let (result_tx, result_rx) = std_mpsc::sync_channel(1);
+        let (drop_tx, drop_rx) = std_mpsc::sync_channel(1);
+        let blocked = thread::spawn(move || {
+            let started = Instant::now();
+            let error = stream
+                .write_all(b"must-cancel")
+                .expect_err("blocked KCP write must observe session cancellation");
+            result_tx
+                .send((error.kind(), started.elapsed()))
+                .expect("report cancelled KCP write");
+            drop(stream);
+            drop_tx.send(()).expect("report KCP writer drop");
+        });
+        thread::sleep(Duration::from_millis(50));
+        crate::cancel_connect_epoch(epoch);
+        assert!(crate::connect_cancelled(epoch));
+        let (kind, elapsed) = result_rx
+            .recv_timeout(Duration::from_millis(750))
+            .expect("cancelled KCP write must return promptly");
+        assert_eq!(kind, io::ErrorKind::ConnectionAborted);
+        assert!(elapsed < Duration::from_millis(750));
+        drop_rx
+            .recv_timeout(Duration::from_millis(750))
+            .expect("cancelled KCP stream drop must not block");
+        blocked.join().expect("join blocked KCP writer");
+
+        drop(outbound_rx);
+        crate::finish_connect_epoch(epoch, session_id);
     }
 }

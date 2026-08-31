@@ -582,28 +582,11 @@ impl RustDeskConnector {
             }
         }
 
-        let udp_port = udp_lease
-            .as_ref()
-            .map(|lease| lease.mapped_port())
-            .unwrap_or(0);
-        let socket_addr_v6 = if nat_config.flags & RUSTDESK_NAT_FLAG_IPV6_CANDIDATE != 0 {
-            match udp_lease
-                .as_ref()
-                .and_then(|lease| lease.local_address().ok())
-                .filter(SocketAddr::is_ipv6)
-            {
-                Some(mut address) => {
-                    address.set_port(udp_port);
-                    encode_socket_addr_v6(address)?
-                }
-                None => Vec::new(),
-            }
-        } else {
-            Vec::new()
-        };
         if let Some(lease) = udp_lease.as_mut() {
             // One explicit refresh proves the registration remains live while
-            // TCP NAT classification and route preparation complete.
+            // TCP NAT classification and route preparation complete. Derive
+            // the advertised wire fields only after this refresh because a
+            // NAT can remap the public UDP port between exchanges.
             if let Err(error) = lease.heartbeat(
                 nat_config.probe_serial,
                 route_stage_timeout(
@@ -629,6 +612,25 @@ impl RustDeskConnector {
                 );
             }
         }
+        let udp_port = udp_lease
+            .as_ref()
+            .map(|lease| lease.mapped_port())
+            .unwrap_or(0);
+        let socket_addr_v6 = if nat_config.flags & RUSTDESK_NAT_FLAG_IPV6_CANDIDATE != 0 {
+            match udp_lease
+                .as_ref()
+                .and_then(|lease| lease.local_address().ok())
+                .filter(SocketAddr::is_ipv6)
+            {
+                Some(mut address) => {
+                    address.set_port(udp_port);
+                    encode_socket_addr_v6(address)?
+                }
+                None => Vec::new(),
+            }
+        } else {
+            Vec::new()
+        };
         Ok((
             RendezvousRouteOptions::automatic(nat_type, udp_port, socket_addr_v6),
             udp_lease,
@@ -1432,6 +1434,12 @@ impl RustDeskConnector {
         data: Vec<u8>,
         timeout: Duration,
     ) -> io::Result<()> {
+        if timeout.is_zero() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "file transfer timeout must be positive",
+            ));
+        }
         if crate::connect_cancelled(self.connect_epoch) {
             return Err(io::Error::new(
                 io::ErrorKind::Interrupted,
@@ -1452,7 +1460,18 @@ impl RustDeskConnector {
         })?;
 
         crypto.set_read_timeout(Some(Duration::from_millis(250)))?;
-        let upload = Self::request_file_upload(crypto, remote_path, data)?;
+        if let Err(error) = crypto.set_write_timeout(Some(timeout.min(Duration::from_secs(10)))) {
+            let _ = crypto.set_read_timeout(None);
+            return Err(error);
+        }
+        let upload = match Self::request_file_upload(crypto, remote_path, data) {
+            Ok(upload) => upload,
+            Err(error) => {
+                let _ = crypto.set_read_timeout(None);
+                let _ = crypto.set_write_timeout(None);
+                return Err(error);
+            }
+        };
         let mut pending = vec![upload];
         let mut awaiting_done: Vec<AwaitingFileDone> = Vec::new();
         let started = Instant::now();
@@ -1545,7 +1564,20 @@ impl RustDeskConnector {
                 ))
             }
         })();
-        crypto.set_read_timeout(None).ok();
+        let result = match result {
+            Err(error)
+                if error.kind() == io::ErrorKind::ConnectionAborted
+                    && crate::connect_cancelled(self.connect_epoch) =>
+            {
+                Err(io::Error::new(
+                    io::ErrorKind::Interrupted,
+                    "file transfer cancelled during KCP write",
+                ))
+            }
+            other => other,
+        };
+        let _ = crypto.set_read_timeout(None);
+        let _ = crypto.set_write_timeout(None);
         result
     }
 
@@ -4509,10 +4541,11 @@ mod tests {
         pressure_change_requires_refresh, pressure_target_fps, resolution_aware_fps_ceiling,
         route_deadline_for_strategy, route_stage_timeout, should_refresh_for_video_starvation,
         uses_bounded_vp9_pressure_targets, ControlKey, KeyEvent_oneof_union, Message_oneof_union,
-        PhysicalModifierState, RemoteKeyboardTransport, RendezvousCredentials,
+        PendingFileUpload, PhysicalModifierState, RemoteKeyboardTransport, RendezvousCredentials,
         RustDeskConnectionStrategy, RustDeskConnector, VP9_PRESSURE_RECOVERY_HOLD_WINDOWS,
     };
-    use crate::peer_stream::{spawn_test_kcp_echo_server, PeerStream};
+    use crate::crypto_channel::CryptoChannel;
+    use crate::peer_stream::{spawn_test_kcp_echo_server, KcpPeerStream, PeerStream};
     use crate::protocol::message_proto::KeyboardMode;
     use crate::protocol::message_proto::{
         DisplayInfo, Hash, LoginResponse, Message, Misc_oneof_union, PeerInfo,
@@ -4530,7 +4563,7 @@ mod tests {
     use crate::{RustDeskDisplayInfoState, RustDeskDisplayState};
     use protobuf::Message as ProtoMessage;
     use std::io::{Read, Write};
-    use std::net::{IpAddr, Ipv4Addr, Shutdown, SocketAddr, TcpListener, UdpSocket};
+    use std::net::{IpAddr, Ipv4Addr, Shutdown, SocketAddr, TcpListener, TcpStream, UdpSocket};
     use std::sync::{Arc, Mutex};
     use std::thread;
     use std::time::{Duration, Instant};
@@ -4641,6 +4674,128 @@ mod tests {
         drop(stream);
         peer.join().expect("join KCP peer fixture").unwrap();
         crate::finish_connect_epoch(epoch, session_id);
+    }
+
+    #[test]
+    fn auto_route_kcp_winner_survives_sibling_race_cancellation() {
+        let payload = b"connector-kcp-race-winner".to_vec();
+        let bind = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
+        let (peer_address, peer) =
+            spawn_test_kcp_echo_server(bind, payload.clone()).expect("bind KCP peer fixture");
+        let unavailable_tcp = TcpListener::bind(bind).expect("bind unavailable TCP fixture");
+        let tcp_address = unavailable_tcp.local_addr().unwrap();
+        drop(unavailable_tcp);
+        let udp_socket = UdpSocket::bind(bind).expect("bind mapped UDP socket");
+        udp_socket
+            .connect(peer_address)
+            .expect("connect mapped UDP fixture");
+        let udp_lease = UdpNatLease::from_connected_socket_for_test(udp_socket)
+            .expect("create mapped UDP lease fixture");
+
+        let session_id = 90_047;
+        let epoch = crate::begin_connect_epoch(session_id);
+        let mut connector = RustDeskConnector::new_with_connection_id(session_id, epoch);
+        let punch = PunchHoleInfo {
+            relay_server: String::new(),
+            signed_pk: Vec::new(),
+            peer_candidates: vec![
+                PeerCandidate {
+                    address: tcp_address,
+                    source: PeerCandidateSource::SocketAddr,
+                    transport: PeerCandidateTransport::Tcp,
+                },
+                PeerCandidate {
+                    address: peer_address,
+                    source: PeerCandidateSource::SocketAddr,
+                    transport: PeerCandidateTransport::Udp,
+                },
+            ],
+            relay_uuid: None,
+            peer_nat_type: NatType::ASYMMETRIC,
+            is_local: true,
+        };
+        let credentials = RendezvousCredentials::new("", false);
+        let mut stream = connector
+            .open_rendezvous_peer_stream(
+                RendezvousClient::new_with_connect_epoch(epoch),
+                &punch,
+                None,
+                Some(udp_lease),
+                RustDeskConnectionStrategy::Auto,
+                "127.0.0.1",
+                21116,
+                21117,
+                "",
+                "",
+                "peer-kcp-race",
+                &credentials,
+                false,
+                RendezvousConnType::DEFAULT_CONN,
+                route_deadline_for_strategy(RustDeskConnectionStrategy::Auto),
+            )
+            .expect("KCP must win after the TCP sibling fails");
+        assert!(matches!(&stream, PeerStream::Kcp(_)));
+        stream
+            .write_all(&payload)
+            .expect("write through winning KCP route");
+        stream.flush().expect("flush winning KCP route");
+        let mut echoed = vec![0u8; payload.len()];
+        stream
+            .read_exact(&mut echoed)
+            .expect("winning KCP route must survive sibling token cancellation");
+        assert_eq!(echoed, payload);
+        stream.shutdown(Shutdown::Both).unwrap();
+        drop(stream);
+        peer.join().expect("join KCP peer fixture").unwrap();
+        crate::finish_connect_epoch(epoch, session_id);
+    }
+
+    #[test]
+    fn file_kcp_flush_delivers_block_and_done_before_connector_drop() {
+        let upload = PendingFileUpload {
+            id: 731,
+            remote_dir: "/fixture".to_string(),
+            file_name: "drain.bin".to_string(),
+            data: b"file-kcp-drain-fixture".to_vec(),
+            requested_at: Instant::now(),
+        };
+
+        let tcp_listener = TcpListener::bind("127.0.0.1:0").expect("bind TCP capture fixture");
+        let tcp_address = tcp_listener.local_addr().unwrap();
+        let capture = thread::spawn(move || {
+            let (mut stream, _) = tcp_listener.accept().expect("accept TCP capture");
+            let mut bytes = Vec::new();
+            stream
+                .read_to_end(&mut bytes)
+                .expect("capture file wire bytes");
+            bytes
+        });
+        let tcp_stream = TcpStream::connect(tcp_address).expect("connect TCP capture");
+        let mut tcp_crypto = CryptoChannel::new_plain(tcp_stream);
+        RustDeskConnector::send_file_upload_data(&mut tcp_crypto, &upload, "fixture", 0)
+            .expect("serialize production file block and Done over TCP");
+        drop(tcp_crypto);
+        let expected = capture.join().expect("join TCP capture fixture");
+        assert!(!expected.is_empty());
+
+        let bind = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
+        let (server_address, server) =
+            spawn_test_kcp_echo_server(bind, expected).expect("bind KCP file fixture");
+        let socket = UdpSocket::bind(bind).expect("bind KCP file client");
+        let kcp = KcpPeerStream::connect(socket, server_address, Duration::from_secs(3), None)
+            .expect("connect KCP file client");
+        let mut kcp_crypto = CryptoChannel::new_plain(kcp);
+        kcp_crypto
+            .set_write_timeout(Some(Duration::from_secs(3)))
+            .expect("bound KCP file writes");
+        RustDeskConnector::send_file_upload_data(&mut kcp_crypto, &upload, "fixture", 0)
+            .expect("send production file block and Done over KCP");
+        drop(kcp_crypto);
+
+        server
+            .join()
+            .expect("join KCP file fixture")
+            .expect("KCP peer must receive block and Done before connector drop");
     }
 
     #[test]

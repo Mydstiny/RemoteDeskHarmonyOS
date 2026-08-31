@@ -1961,9 +1961,8 @@ mod tests {
         let server = UdpSocket::bind("127.0.0.1:0").expect("bind UDP fixture");
         let address = server.local_addr().expect("UDP fixture address");
         let server_thread = thread::spawn(move || {
-            let response = test_nat_response_message(40123);
             let mut buffer = [0u8; 1500];
-            for _ in 0..2 {
+            for mapped_port in [40123, 40124] {
                 let (length, source) = server.recv_from(&mut buffer).expect("receive NAT request");
                 let request = RendezvousMessage::parse_from_bytes(&buffer[..length])
                     .expect("parse NAT request");
@@ -1972,7 +1971,7 @@ mod tests {
                     Some(RendezvousMessage_oneof_union::test_nat_request(_))
                 ));
                 server
-                    .send_to(&response, source)
+                    .send_to(&test_nat_response_message(mapped_port), source)
                     .expect("send NAT response");
             }
         });
@@ -1981,12 +1980,29 @@ mod tests {
             RendezvousClient::register_udp_mapping(address, 7, Duration::from_secs(1), None)
                 .expect("register UDP mapping");
         assert_eq!(lease.mapped_port(), 40123);
-        assert_eq!(
-            lease
-                .heartbeat(8, Duration::from_secs(1), None)
-                .expect("refresh UDP mapping"),
-            40123
+        let refreshed_port = lease
+            .heartbeat(8, Duration::from_secs(1), None)
+            .expect("refresh UDP mapping");
+        assert_eq!(refreshed_port, 40124);
+        assert_eq!(lease.mapped_port(), 40124);
+
+        let punch = punch_hole_request_message(
+            "peer-remapped",
+            "key",
+            "token",
+            &RendezvousRouteOptions::automatic(
+                NatType::ASYMMETRIC,
+                lease.mapped_port(),
+                Vec::new(),
+            ),
+            ConnType::DEFAULT_CONN,
         );
+        match punch.union {
+            Some(RendezvousMessage_oneof_union::punch_hole_request(request)) => {
+                assert_eq!(request.get_udp_port(), 40124);
+            }
+            other => panic!("expected remapped PunchHoleRequest, got: {other:?}"),
+        }
         server_thread.join().expect("UDP fixture thread");
     }
 

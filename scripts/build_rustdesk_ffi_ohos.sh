@@ -80,7 +80,7 @@ for ABI_TARGET in "${ABIS[@]}"; do
             "CARGO_TARGET_${TARGET_ENV_UPPER}_LINKER=$TARGET_CXX" \
             "CARGO_TARGET_${TARGET_ENV_UPPER}_RUSTFLAGS=-C link-arg=--target=$CLANG_TARGET -C link-arg=--sysroot=$OHOS_SYSROOT" \
             OPUS_LIB_DIR="$OPUS_LIB_DIR" \
-            "$CARGO_BIN" build --release --target "$TARGET"
+            "$CARGO_BIN" build --locked --release --target "$TARGET"
     )
     # Do not use grep -q here: with pipefail, grep can close the pipe after
     # the first match and make nm exit with SIGPIPE (141) on large archives.
