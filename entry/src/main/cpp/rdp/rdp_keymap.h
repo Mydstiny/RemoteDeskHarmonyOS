@@ -19,6 +19,13 @@ inline bool isHarmonyPauseKeyCode(uint32_t keyCode) {
 
 inline uint32_t mapHarmonyKeyCodeToRdpScancode(uint32_t keyCode) {
     switch (keyCode) {
+        // HarmonyOS consumer keys -> Windows Set 1 extended scan codes.
+        case 10: return 0xE022; // Media play / pause
+        case 12: return 0xE019; // Media next track
+        case 13: return 0xE010; // Media previous track
+        case 16: return 0xE030; // Volume up
+        case 17: return 0xE02E; // Volume down
+
         // ASCII letters (backwards-compat, keep but prefer Harmony codes below).
         case 65: return 0x1E;  // A
         case 66: return 0x30;  // B

@@ -3586,6 +3586,11 @@ impl RustDeskConnector {
     /// source receives and composes the keystrokes exactly like a local keyboard.
     fn harmony_keycode_to_macos_keycode(scancode: u32) -> Option<u32> {
         Some(match scancode {
+            // Carbon kVK_VolumeUp / kVK_VolumeDown. Media transport keys use
+            // NX_SYSDEFINED events rather than stable CGKeyCode values and
+            // are therefore not intercepted for RustDesk macOS sessions.
+            16 => 0x48,
+            17 => 0x49,
             // Number row.
             2000 => 0x1D,
             2001 => 0x12,
@@ -3719,6 +3724,12 @@ impl RustDeskConnector {
             // Compatibility with desktop-style ASCII key events.
             48..=57 => NUMBER_ROW[(scancode - 48) as usize],
             65..=90 => LETTERS_A_TO_Z[(scancode - 65) as usize],
+
+            10 => 0xE022, // Media play / pause
+            12 => 0xE019, // Media next track
+            13 => 0xE010, // Media previous track
+            16 => 0xE030, // Volume up
+            17 => 0xE02E, // Volume down
 
             42 | 2055 => 0x0E, // Backspace
             2012 => 0xE048,    // Up
@@ -3937,6 +3948,8 @@ impl RustDeskConnector {
 
     fn harmony_keycode_to_control_key(scancode: u32) -> Option<ControlKey> {
         match scancode {
+            16 => Some(ControlKey::VolumeUp),
+            17 => Some(ControlKey::VolumeDown),
             42 | 2055 => Some(ControlKey::Backspace),
             2071 => Some(ControlKey::Delete),
             2012 => Some(ControlKey::UpArrow),
@@ -5866,6 +5879,30 @@ mod tests {
     }
 
     #[test]
+    fn windows_map_covers_harmony_consumer_media_and_volume_keys() {
+        for (harmony_keycode, expected_scancode) in [
+            (10, 0xE022),
+            (12, 0xE019),
+            (13, 0xE010),
+            (16, 0xE030),
+            (17, 0xE02E),
+        ] {
+            assert_eq!(
+                RustDeskConnector::harmony_keycode_to_windows_scancode(harmony_keycode),
+                Some(expected_scancode)
+            );
+        }
+        assert_eq!(
+            RustDeskConnector::harmony_keycode_to_control_key(16),
+            Some(ControlKey::VolumeUp)
+        );
+        assert_eq!(
+            RustDeskConnector::harmony_keycode_to_control_key(17),
+            Some(ControlKey::VolumeDown)
+        );
+    }
+
+    #[test]
     fn caps_lock_preserves_physical_hold_duration() {
         let mut modifiers = PhysicalModifierState::default();
         let down = RustDeskConnector::build_key_message(2074, true, &mut modifiers).unwrap();
@@ -5977,6 +6014,22 @@ mod tests {
         );
         assert_eq!(
             RustDeskConnector::harmony_keycode_to_macos_keycode(2824),
+            None
+        );
+    }
+
+    #[test]
+    fn macos_map_covers_harmony_consumer_volume_keys_only() {
+        assert_eq!(
+            RustDeskConnector::harmony_keycode_to_macos_keycode(16),
+            Some(0x48)
+        );
+        assert_eq!(
+            RustDeskConnector::harmony_keycode_to_macos_keycode(17),
+            Some(0x49)
+        );
+        assert_eq!(
+            RustDeskConnector::harmony_keycode_to_macos_keycode(10),
             None
         );
     }

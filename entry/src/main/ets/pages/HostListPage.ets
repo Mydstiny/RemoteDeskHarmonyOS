@@ -461,6 +461,7 @@ import {
   SETTINGS_SHEET_REMOTE_PINCH_ZOOM,
   SETTINGS_SHEET_REMOTE_WHEEL_DIRECTION,
   SETTINGS_SHEET_SESSION_CONTROL_BAR,
+  SETTINGS_SHEET_HARMONY_SHORTCUT_BLOCKING,
   SETTINGS_SHEET_SECRET_VISIBILITY,
   SETTINGS_SHEET_FEEDBACK,
   SETTINGS_SHEET_HALO_COLOR,
@@ -4867,7 +4868,7 @@ struct HostListPage {
       return 1110;
     }
     if (section === SETTINGS_SECTION_VIRTUAL_KEYBOARD) {
-      return 390;
+      return 470;
     }
     if (section === SETTINGS_SECTION_RDP) {
       return settingsRdpExpandedMaxHeight(this.breakpoint, SETTINGS_RDP_SWITCH_ROW_COUNT);
@@ -15834,13 +15835,13 @@ struct HostListPage {
 
         ListItem() {
           this.settingsAccordionHeader(SETTINGS_SECTION_VIRTUAL_KEYBOARD,
-            $r('sys.symbol.keyboard'), '虚拟键盘',
-            'HarmonyOS 输入法、Windows/macOS 组合键、功能键与自定义')
+            $r('sys.symbol.keyboard'), '键盘',
+            '输入法、实体键盘、HarmonyOS 快捷键与远端组合键')
         }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 10 })
 
         ListItem() {
           Column() {
-            Text('虚拟键盘').fontSize(13).fontWeight(FontWeight.Medium)
+            Text('键盘').fontSize(13).fontWeight(FontWeight.Medium)
               .fontColor(this.pal().text3).fontFamily(this.font()).padding({ left: 8, bottom: 8 })
             Column() {
               this.cardActionRow($r('app.media.icon_phone'), '系统输入法',
@@ -15858,6 +15859,10 @@ struct HostListPage {
               this.cardActionRow($r('app.media.icon_info'), '功能键与面板',
                 'F1–F12、导航键、连续发送与面板触控',
                 (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_VIRTUAL_KEYBOARD_FUNCTIONS); })
+              this.cardDivider()
+              this.cardActionRow($r('sys.symbol.lock_shield_fill'), '屏蔽鸿蒙快捷键',
+                '按设备类型与协议选择实体键盘拦截范围',
+                (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_HARMONY_SHORTCUT_BLOCKING); })
               this.cardDivider()
               this.cardActionRow($r('app.media.icon_palette'), '自定义组合键',
                 '创建、编辑与删除跨连接复用的快捷键',

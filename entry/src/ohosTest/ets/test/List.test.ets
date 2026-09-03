@@ -35,6 +35,8 @@ import hostAddDraftTest from './HostAddDraft.test';
 import rustDeskCardBadgePolicyTest from './RustDeskCardBadgePolicy.test';
 import rustDeskDiagnosticsPolicyTest from './RustDeskDiagnosticsPolicy.test';
 import remotePhysicalKeyboardPolicyTest from './RemotePhysicalKeyboardPolicy.test';
+import harmonyShortcutBlockingPolicyTest from '../../../test/HarmonyShortcutBlockingPolicy.test';
+import harmonyShortcutCaptureServiceTest from '../../../test/HarmonyShortcutCaptureService.test';
 import touchpadPointerCurvePolicyTest from './TouchpadPointerCurvePolicy.test';
 import remotePhysicalTouchpadPolicyTest from '../../../test/RemotePhysicalTouchpadPolicy.test';
 import remoteSurfaceTransformPolicyTest from './RemoteSurfaceTransformPolicy.test';
@@ -374,6 +376,8 @@ export default function testsuite() {
   rustDeskCardBadgePolicyTest();
   rustDeskDiagnosticsPolicyTest();
   remotePhysicalKeyboardPolicyTest();
+  harmonyShortcutBlockingPolicyTest();
+  harmonyShortcutCaptureServiceTest();
   vncPhysicalKeyboardPolicyTest();
   vncPhysicalWheelPolicyTest();
   hostAddSheetLayoutPolicyTest();

@@ -157,6 +157,19 @@ RDP_TEST_CASE(moonlight_keyboard_maps_harmony_namespace_to_official_prefixed_vk)
     RDP_ASSERT(mapHarmonyKeyCodeToMoonlight(0xFFFFFFFFU).supported == false);
 }
 
+RDP_TEST_CASE(moonlight_keyboard_maps_harmony_consumer_keys_to_windows_vk) {
+    RDP_ASSERT_EQ(mapHarmonyKeyCodeToMoonlight(10U).protocolKeyCode,
+                  static_cast<std::uint16_t>(0x80B3U));
+    RDP_ASSERT_EQ(mapHarmonyKeyCodeToMoonlight(12U).protocolKeyCode,
+                  static_cast<std::uint16_t>(0x80B0U));
+    RDP_ASSERT_EQ(mapHarmonyKeyCodeToMoonlight(13U).protocolKeyCode,
+                  static_cast<std::uint16_t>(0x80B1U));
+    RDP_ASSERT_EQ(mapHarmonyKeyCodeToMoonlight(16U).protocolKeyCode,
+                  static_cast<std::uint16_t>(0x80AFU));
+    RDP_ASSERT_EQ(mapHarmonyKeyCodeToMoonlight(17U).protocolKeyCode,
+                  static_cast<std::uint16_t>(0x80AEU));
+}
+
 RDP_TEST_CASE(moonlight_keyboard_catalog_covers_the_complete_standard_physical_keyboard) {
     for (std::uint32_t keyCode = 48U; keyCode <= 57U; ++keyCode) {
         RDP_ASSERT(mapHarmonyKeyCodeToMoonlight(keyCode).supported);

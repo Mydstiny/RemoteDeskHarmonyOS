@@ -23,6 +23,27 @@ export function remoteInputWindowActiveAfterEvent(current: boolean, eventName: s
   return current;
 }
 
+/** Visibility alone is not proof of keyboard focus. Only WMS events with an
+ * explicit focus/lifecycle meaning may turn an unknown snapshot into a known
+ * one; this prevents a second visible PC window from stealing global keys. */
+export function remoteInputWindowFocusKnownAfterEvent(
+  currentKnown: boolean,
+  eventName: string
+): boolean {
+  return eventName === 'active' || eventName === 'inactive' ||
+    eventName === 'hidden' || eventName === 'destroyed' ? true : currentKnown;
+}
+
+/** A best-effort WMS off() may fail during a window handoff. Generation
+ * fencing makes any callback retained by the old Window harmless. */
+export function remoteInputWindowListenerIsCurrent(
+  registrationGeneration: number,
+  currentGeneration: number
+): boolean {
+  return Number.isSafeInteger(registrationGeneration) &&
+    registrationGeneration === currentGeneration;
+}
+
 /** Track only protocol buttons whose DOWN was actually submitted. Lifecycle
  * cleanup can then release real holds without synthesizing unrelated UPs. */
 export function remoteMouseButtonsAfterEvent(current: Array<number>, button: number,

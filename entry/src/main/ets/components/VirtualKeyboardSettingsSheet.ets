@@ -30,6 +30,20 @@ import {
   VirtualKeyboardSettingsSection,
   virtualKeyboardSettingsContentLayout
 } from '../services/SettingsSheetRoutePolicy';
+import { protocolIcon } from '../services/ProtocolIconPolicy';
+import {
+  defaultHarmonyShortcutBlockingPreferences,
+  decodeHarmonyShortcutBlockingPreferences,
+  encodeHarmonyShortcutBlockingPreferences,
+  harmonyShortcutBlockingEnabled,
+  harmonyShortcutBlockingSelectionSummary,
+  harmonyShortcutDeviceClasses,
+  harmonyShortcutProtocolSelection,
+  harmonyShortcutProtocols,
+  HarmonyShortcutBlockingPreferences,
+  HarmonyShortcutDeviceClass,
+  HarmonyShortcutProtocol
+} from '../services/HarmonyShortcutBlockingPolicy';
 
 @Component
 export struct VirtualKeyboardSettingsSheet {
@@ -51,6 +65,8 @@ export struct VirtualKeyboardSettingsSheet {
   @State private actionKeyCode: number = 2017;
   @State private viewportWidth: number = 360;
   @State private viewportHeight: number = 640;
+  @State private harmonyShortcutBlocking: HarmonyShortcutBlockingPreferences =
+    defaultHarmonyShortcutBlockingPreferences();
   @Prop requestedSection: VirtualKeyboardSettingsSection = 'system';
   private customSequence: number = 0;
   private readonly service: RemoteKeyboardSettingsService =
@@ -79,6 +95,7 @@ export struct VirtualKeyboardSettingsSheet {
     this.functionKeysVisible = values.functionKeysVisible;
     this.closeAfterShortcut = values.closePanelAfterShortcut;
     this.customShortcuts = this.service.loadCustomShortcuts(context);
+    this.harmonyShortcutBlocking = this.service.loadHarmonyShortcutBlocking(context);
     if (this.requestedSection === 'system') { this.refreshSystemInputMethods(); }
   }
 
@@ -87,6 +104,7 @@ export struct VirtualKeyboardSettingsSheet {
     if (this.requestedSection === 'shortcuts') { return '快捷键平台'; }
     if (this.requestedSection === 'functions') { return '功能键与面板'; }
     if (this.requestedSection === 'custom') { return '自定义组合键'; }
+    if (this.requestedSection === 'harmonyShortcuts') { return '屏蔽鸿蒙快捷键'; }
     return '系统输入法';
   }
 
@@ -103,6 +121,9 @@ export struct VirtualKeyboardSettingsSheet {
     if (this.requestedSection === 'custom') {
       return '创建可在所有远程连接中复用的快捷组合';
     }
+    if (this.requestedSection === 'harmonyShortcuts') {
+      return '按设备类型和协议决定实体键盘是否优先交给远端';
+    }
     return '查看当前输入法，并进入 HarmonyOS 官方设置';
   }
 
@@ -118,7 +139,7 @@ export struct VirtualKeyboardSettingsSheet {
       closePanelAfterShortcut: this.closeAfterShortcut
     };
     if (!this.service.savePreferences(values, getContext(this) as common.Context)) {
-      promptAction.showToast({ message: '虚拟键盘设置保存失败', duration: 2000 });
+      promptAction.showToast({ message: '键盘设置保存失败', duration: 2000 });
     }
   }
 
@@ -129,6 +150,68 @@ export struct VirtualKeyboardSettingsSheet {
       this.actionKeyCode = 2090;
     }
     this.savePreferences();
+  }
+
+  private setHarmonyShortcutBlocking(
+    deviceClass: HarmonyShortcutDeviceClass,
+    protocol: HarmonyShortcutProtocol,
+    enabled: boolean
+  ): void {
+    const before: string = encodeHarmonyShortcutBlockingPreferences(
+      this.harmonyShortcutBlocking);
+    const next: HarmonyShortcutBlockingPreferences | null =
+      this.service.setHarmonyShortcutBlockingPreference(
+        deviceClass, protocol, enabled, getContext(this) as common.Context);
+    if (next === null) {
+      this.harmonyShortcutBlocking = decodeHarmonyShortcutBlockingPreferences(before);
+      promptAction.showToast({ message: '鸿蒙快捷键屏蔽设置保存失败', duration: 2000 });
+      return;
+    }
+    this.harmonyShortcutBlocking = next;
+  }
+
+  private setHarmonyShortcutDeviceBlocking(
+    deviceClass: HarmonyShortcutDeviceClass,
+    enabled: boolean
+  ): void {
+    const before: string = encodeHarmonyShortcutBlockingPreferences(
+      this.harmonyShortcutBlocking);
+    const next: HarmonyShortcutBlockingPreferences | null =
+      this.service.setHarmonyShortcutDeviceBlocking(
+        deviceClass, enabled, getContext(this) as common.Context);
+    if (next === null) {
+      this.harmonyShortcutBlocking = decodeHarmonyShortcutBlockingPreferences(before);
+      promptAction.showToast({ message: '鸿蒙快捷键屏蔽设置保存失败', duration: 2000 });
+      return;
+    }
+    this.harmonyShortcutBlocking = next;
+  }
+
+  private harmonyShortcutDeviceLabel(deviceClass: HarmonyShortcutDeviceClass): string {
+    if (deviceClass === 'phone') { return '手机'; }
+    if (deviceClass === 'pad') { return '平板'; }
+    return 'PC / 2in1';
+  }
+
+  private harmonyShortcutDeviceSubtitle(deviceClass: HarmonyShortcutDeviceClass): string {
+    const selection = harmonyShortcutProtocolSelection(
+      this.harmonyShortcutBlocking, deviceClass);
+    let count: number = 0;
+    if (selection.rdp) { count++; }
+    if (selection.rustdesk) { count++; }
+    if (selection.vnc) { count++; }
+    if (selection.moonlight) { count++; }
+    return count === 0 ? '全部可用协议跟随系统' :
+      (count === 4 ? '全部可用协议优先远端' :
+        '已选择 ' + count.toString() + ' 个协议');
+  }
+
+  private harmonyShortcutProtocolLabel(protocol: HarmonyShortcutProtocol): string {
+    if (protocol === 'rdp') { return 'RDP'; }
+    if (protocol === 'rustdesk') { return 'RustDesk'; }
+    if (protocol === 'ssh') { return 'SSH'; }
+    if (protocol === 'vnc') { return 'VNC'; }
+    return 'Moonlight';
   }
 
   private refreshSystemInputMethods(): void {
@@ -531,6 +614,9 @@ export struct VirtualKeyboardSettingsSheet {
         } else if (section === 'custom') {
           Text(this.customShortcuts.length.toString() + ' 个已保存 · 上限 32 个')
             .fontSize(10).fontColor(this.text2()).maxLines(2)
+        } else if (section === 'harmonyShortcuts') {
+          Text(harmonyShortcutBlockingSelectionSummary(this.harmonyShortcutBlocking))
+            .fontSize(10).fontColor(this.text2()).maxLines(2)
         } else {
           Text(this.systemLoading ? '正在读取系统输入法状态' :
             (this.systemSnapshot.available ? '当前：' + this.systemSnapshot.currentLabel : '由系统统一管理'))
@@ -667,6 +753,68 @@ export struct VirtualKeyboardSettingsSheet {
   }
 
   @Builder
+  private harmonyShortcutProtocolRow(
+    deviceClass: HarmonyShortcutDeviceClass,
+    protocol: HarmonyShortcutProtocol
+  ) {
+    Row() {
+      SymbolGlyph(protocolIcon(protocol)).fontSize(18).fontColor([this.text2()])
+        .margin({ right: 10 })
+      Text(this.harmonyShortcutProtocolLabel(protocol))
+        .fontSize(12).fontWeight(FontWeight.Medium).fontColor(this.text()).layoutWeight(1)
+      Toggle({
+        type: ToggleType.Switch,
+        isOn: harmonyShortcutBlockingEnabled(
+          this.harmonyShortcutBlocking, deviceClass, protocol)
+      }).selectedColor(this.accentColor).scale({ x: 0.86, y: 0.86 })
+        .onChange((enabled: boolean): void => {
+          this.setHarmonyShortcutBlocking(deviceClass, protocol, enabled);
+        })
+    }.width('100%').padding({ left: 13, right: 10, top: 8, bottom: 8 })
+  }
+
+  @Builder
+  private harmonyShortcutDeviceCard(deviceClass: HarmonyShortcutDeviceClass) {
+    Column() {
+      Row() {
+        Column({ space: 2 }) {
+          Text(this.harmonyShortcutDeviceLabel(deviceClass))
+            .fontSize(13).fontWeight(FontWeight.Bold).fontColor(this.text())
+          Text(this.harmonyShortcutDeviceSubtitle(deviceClass))
+            .fontSize(9).fontColor(this.text2())
+        }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+        Button('全关').height(30).fontSize(9).borderRadius(8)
+          .backgroundColor(this.card()).fontColor(this.text2())
+          .onClick((): void => { this.setHarmonyShortcutDeviceBlocking(deviceClass, false); })
+        Button('全开').height(30).fontSize(9).borderRadius(8)
+          .backgroundColor(this.accentSoft()).fontColor(this.accentColor)
+          .margin({ left: 6 })
+          .onClick((): void => { this.setHarmonyShortcutDeviceBlocking(deviceClass, true); })
+      }.width('100%').padding({ left: 14, right: 10, top: 12, bottom: 8 })
+      Divider().strokeWidth(0.5).color(this.cardStroke()).margin({ left: 12, right: 12 })
+      ForEach(harmonyShortcutProtocols(), (protocol: HarmonyShortcutProtocol): void => {
+        this.harmonyShortcutProtocolRow(deviceClass, protocol)
+      }, (protocol: HarmonyShortcutProtocol): string => deviceClass + ':' + protocol)
+    }.width('100%').borderRadius(15).backgroundColor(this.card())
+      .border({ width: 0.5, color: this.cardStroke() }).margin({ bottom: 10 })
+  }
+
+  @Builder
+  private harmonyShortcutBlockingContent() {
+    this.pageHero('harmonyShortcuts', '实体键盘优先级')
+    this.sectionTitle('按设备类型配置', '每个开关只影响对应设备类型和远程协议。')
+    Text('开启后，仅在选中的远程会话处于前台时屏蔽本机响应。API 23 可直接拦截音量与媒体键；' +
+      'F1–F24 和应用可收到的组合键在输入法之前转发。RustDesk 仅拦截所有协商键盘模式都有稳定远程映射的音量键；' +
+      'SSH 终端没有媒体/音量键的标准字节序列，因此不提供该协议选项。系统完全保留、未向应用派发的组合键无法覆盖。')
+      .fontSize(10).fontColor(this.text2()).lineHeight(16).width('100%')
+      .padding(12).borderRadius(12).backgroundColor(this.accentSoft()).margin({ bottom: 12 })
+    ForEach(harmonyShortcutDeviceClasses(),
+      (deviceClass: HarmonyShortcutDeviceClass): void => {
+        this.harmonyShortcutDeviceCard(deviceClass)
+      }, (deviceClass: HarmonyShortcutDeviceClass): string => deviceClass)
+  }
+
+  @Builder
   private pageContent() {
     if (this.requestedSection === 'behavior') {
       this.inputBehaviorContent()
@@ -676,6 +824,8 @@ export struct VirtualKeyboardSettingsSheet {
       this.functionPanelContent()
     } else if (this.requestedSection === 'custom') {
       this.customShortcutContent()
+    } else if (this.requestedSection === 'harmonyShortcuts') {
+      this.harmonyShortcutBlockingContent()
     } else {
       this.systemInputMethodContent()
     }
@@ -687,7 +837,7 @@ export struct VirtualKeyboardSettingsSheet {
       Row() {
         Row() {
           Column({ space: 3 }) {
-            Text('虚拟键盘设置').fontSize(10).fontWeight(FontWeight.Medium)
+            Text('键盘设置').fontSize(10).fontWeight(FontWeight.Medium)
               .fontColor(this.accentColor)
             Text(this.pageTitle()).fontSize(this.contentLayout().titleFontSize)
               .fontWeight(FontWeight.Bold).fontColor(this.text()).maxLines(1)
@@ -698,7 +848,7 @@ export struct VirtualKeyboardSettingsSheet {
             SymbolGlyph($r('sys.symbol.xmark')).fontSize(18).fontColor([this.text()])
           }.width(42).height(42).padding(0).borderRadius(14).backgroundColor(this.card())
             .border({ width: 0.5, color: this.cardStroke() })
-            .onClick((): void => { this.onClose(); }).accessibilityText('关闭虚拟键盘设置')
+            .onClick((): void => { this.onClose(); }).accessibilityText('关闭键盘设置')
         }.width('100%').constraintSize({ maxWidth: this.contentLayout().maxContentWidth })
           .padding({
             left: this.contentLayout().headerHorizontalPadding,

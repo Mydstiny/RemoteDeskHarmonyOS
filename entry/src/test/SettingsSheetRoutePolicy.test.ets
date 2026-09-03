@@ -6,6 +6,7 @@ import {
   SETTINGS_SHEET_REMOTE_WHEEL_DIRECTION,
   SETTINGS_SHEET_REMOTE_PINCH_ZOOM,
   SETTINGS_SHEET_SESSION_CONTROL_BAR,
+  SETTINGS_SHEET_HARMONY_SHORTCUT_BLOCKING,
   SETTINGS_SHEET_VIRTUAL_KEYBOARD,
   SETTINGS_SHEET_VIRTUAL_KEYBOARD_BEHAVIOR,
   SETTINGS_SHEET_VIRTUAL_KEYBOARD_CUSTOM,
@@ -105,21 +106,23 @@ export default function settingsSheetRoutePolicyTest() {
       expect(moonlightSettingsRouteSpec(SETTINGS_SHEET_SESSION_CONTROL_BAR)).assertNull();
     });
 
-    it('allocates_five_independent_virtual_keyboard_leaves', 0, (): void => {
+    it('allocates_six_independent_keyboard_leaves', 0, (): void => {
       expect(SETTINGS_SHEET_VIRTUAL_KEYBOARD).assertEqual(32);
       expect(SETTINGS_SHEET_VIRTUAL_KEYBOARD_BEHAVIOR).assertEqual(33);
       expect(SETTINGS_SHEET_VIRTUAL_KEYBOARD_SHORTCUTS).assertEqual(34);
       expect(SETTINGS_SHEET_VIRTUAL_KEYBOARD_FUNCTIONS).assertEqual(35);
       expect(SETTINGS_SHEET_VIRTUAL_KEYBOARD_CUSTOM).assertEqual(36);
       const specs = virtualKeyboardSettingsRouteSpecs();
-      expect(specs.length).assertEqual(5);
+      expect(SETTINGS_SHEET_HARMONY_SHORTCUT_BLOCKING).assertEqual(41);
+      expect(specs.length).assertEqual(6);
       expect(specs[0].section).assertEqual('system');
       expect(specs[1].section).assertEqual('behavior');
       expect(specs[2].section).assertEqual('shortcuts');
       expect(specs[3].section).assertEqual('functions');
       expect(specs[4].section).assertEqual('custom');
+      expect(specs[5].section).assertEqual('harmonyShortcuts');
       for (let i = 0; i < specs.length; i++) {
-        expect(specs[i].mode).assertEqual(32 + i);
+        if (i < 5) { expect(specs[i].mode).assertEqual(32 + i); }
         expect(specs[i].height > 0).assertTrue();
         expect(specs[i].title.length > 0).assertTrue();
         expect(isVirtualKeyboardSettingsMode(specs[i].mode)).assertTrue();
@@ -127,6 +130,10 @@ export default function settingsSheetRoutePolicyTest() {
       }
       expect(virtualKeyboardSettingsRouteSpec(SETTINGS_SHEET_VIRTUAL_KEYBOARD_CUSTOM)?.title)
         .assertEqual('自定义组合键');
+      expect(virtualKeyboardSettingsRouteSpec(SETTINGS_SHEET_HARMONY_SHORTCUT_BLOCKING)?.title)
+        .assertEqual('屏蔽鸿蒙快捷键');
+      expect(virtualKeyboardSettingsLeafSheetHeight(SETTINGS_SHEET_HARMONY_SHORTCUT_BLOCKING))
+        .assertEqual(820);
       expect(virtualKeyboardSettingsRouteSpec(SETTINGS_SHEET_ACCOUNT)).assertNull();
       expect(isVirtualKeyboardSettingsMode(SETTINGS_SHEET_ACCOUNT)).assertFalse();
       expect(virtualKeyboardSettingsLeafSheetHeight(SETTINGS_SHEET_ACCOUNT)).assertEqual(0);
@@ -147,6 +154,10 @@ export default function settingsSheetRoutePolicyTest() {
         SETTINGS_SHEET_VIRTUAL_KEYBOARD_CUSTOM, 900, true)).assertEqual(820);
       expect(virtualKeyboardSettingsLeafSheetHeight(
         SETTINGS_SHEET_VIRTUAL_KEYBOARD_CUSTOM, 720, true)).assertEqual(680);
+      expect(virtualKeyboardSettingsLeafSheetHeight(
+        SETTINGS_SHEET_HARMONY_SHORTCUT_BLOCKING, 900)).assertEqual(820);
+      expect(virtualKeyboardSettingsLeafSheetHeight(
+        SETTINGS_SHEET_HARMONY_SHORTCUT_BLOCKING, 720)).assertEqual(680);
       expect(virtualKeyboardSettingsLeafUsesBottomSheet(
         SETTINGS_SHEET_VIRTUAL_KEYBOARD_CUSTOM, 800, 'sm')).assertTrue();
       expect(virtualKeyboardSettingsLeafUsesBottomSheet(

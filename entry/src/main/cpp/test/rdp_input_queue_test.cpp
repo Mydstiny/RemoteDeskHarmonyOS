@@ -144,6 +144,14 @@ RDP_TEST_CASE(rdp_keymap_covers_f13_through_f24_and_extended_keys) {
     RDP_ASSERT_EQ(mapHarmonyKeyCodeToRdpScancode(2119), 0xE01CU);
 }
 
+RDP_TEST_CASE(rdp_keymap_maps_harmony_consumer_keys_to_extended_scancodes) {
+    RDP_ASSERT_EQ(mapHarmonyKeyCodeToRdpScancode(10), 0xE022U);
+    RDP_ASSERT_EQ(mapHarmonyKeyCodeToRdpScancode(12), 0xE019U);
+    RDP_ASSERT_EQ(mapHarmonyKeyCodeToRdpScancode(13), 0xE010U);
+    RDP_ASSERT_EQ(mapHarmonyKeyCodeToRdpScancode(16), 0xE030U);
+    RDP_ASSERT_EQ(mapHarmonyKeyCodeToRdpScancode(17), 0xE02EU);
+}
+
 RDP_TEST_CASE(rdp_keymap_covers_every_key_family_used_by_shortcut_catalogs) {
     for (uint32_t keyCode = 2017; keyCode <= 2042; ++keyCode) {
         RDP_ASSERT(mapHarmonyKeyCodeToRdpScancode(keyCode) != 0U);

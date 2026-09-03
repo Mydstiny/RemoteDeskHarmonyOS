@@ -165,6 +165,18 @@ import {
   REMOTE_KEYBOARD_SHORTCUT_PLATFORM_KEY
 } from '../services/RemoteKeyboardSettingsPolicy';
 import {
+  decodeHarmonyShortcutBlockingPreferences,
+  harmonyShortcutCaptureEligible,
+  harmonyShortcutCaptureKeyCodes,
+  harmonyShortcutBlockingEnabled,
+  harmonyShortcutDeviceClass,
+  HARMONY_SHORTCUT_BLOCKING_STORAGE_KEY
+} from '../services/HarmonyShortcutBlockingPolicy';
+import {
+  HarmonyCapturedSystemKeyEvent,
+  HarmonyShortcutCaptureService
+} from '../services/HarmonyShortcutCaptureService';
+import {
   remoteVirtualTouchpadKeyboardGuide,
   RemoteVirtualTouchpadKeyboardGuide,
   shouldRetryRemoteVirtualTouchpadKeyboardGuide,
@@ -498,6 +510,8 @@ import {
   physicalMousePressDisposition,
   PhysicalMousePressDisposition,
   remoteInputWindowActiveAfterEvent,
+  remoteInputWindowFocusKnownAfterEvent,
+  remoteInputWindowListenerIsCurrent,
   remoteMouseButtonsAfterEvent,
   remoteInputBlockedReason,
   resolvePhysicalMouseReleaseButton,
@@ -1003,6 +1017,9 @@ struct RemoteDesktop {
   @StorageProp('isDesktopDevice') isDesktopDevice: boolean = false;
   @StorageProp('isPadDevice') isPadDevice: boolean = false;
   @StorageProp(REMOTE_KEYBOARD_SHORTCUT_PLATFORM_KEY) shortcutPlatformMode: string = 'windows';
+  @StorageLink(HARMONY_SHORTCUT_BLOCKING_STORAGE_KEY)
+  @Watch('onHarmonyShortcutBlockingChange')
+  harmonyShortcutBlockingEncoded: string = '';
   @StorageProp(GUIDE_ALWAYS_VISIBLE_STORAGE_KEY) guideAlwaysVisible: boolean = false;
   @StorageLink('rustdeskControlMode') @Watch('onRemoteControlModeChange')
   rustdeskControlMode: number = 0; // 0=touchpad, 1=direct touch, 2=keyboard/mouse
@@ -1038,7 +1055,8 @@ struct RemoteDesktop {
   @StorageLink(VNC_PINCH_ZOOM_ENABLED_KEY) @Watch('onVncPinchZoomSettingChange')
   vncPinchZoomEnabled: boolean = false;
   @StorageLink('rustdeskShowLocalCursor') rustdeskShowLocalCursor: boolean = true;
-  @StorageLink('rustdeskBrowseMode') rustdeskBrowseMode: boolean = false;
+  @StorageLink('rustdeskBrowseMode') @Watch('onHarmonyShortcutInputOwnerChange')
+  rustdeskBrowseMode: boolean = false;
   @StorageLink('rustdeskRelativeMouseMode') rustdeskRelativeMouseMode: boolean = false;
   @StorageLink(RDP_REVERSE_WHEEL_KEY) @Watch('onRemoteWheelPreferenceChange')
   rdpReverseWheel: boolean = false;
@@ -1087,13 +1105,13 @@ struct RemoteDesktop {
   @State connectionProgressMessage: string = '';
   @State connectionError: string = '';
   @State connectionErrorDetail: string = '';
-  @State showRdpSessionErrorSheet: boolean = false;
+  @State @Watch('onHarmonyShortcutInputOwnerChange') showRdpSessionErrorSheet: boolean = false;
   @State rdpSessionErrorTitle: string = '你的会话已断开';
   @State rdpSessionErrorMessage: string = '';
   @State rdpSessionErrorCode: string = '';
-  @State showRustDeskAuthSheet: boolean = false;
-  @State showRustDeskTwoFactorSheet: boolean = false;
-  @State showVncCertificateSheet: boolean = false;
+  @State @Watch('onHarmonyShortcutInputOwnerChange') showRustDeskAuthSheet: boolean = false;
+  @State @Watch('onHarmonyShortcutInputOwnerChange') showRustDeskTwoFactorSheet: boolean = false;
+  @State @Watch('onHarmonyShortcutInputOwnerChange') showVncCertificateSheet: boolean = false;
   @State vncCertificateState: VncCertificatePreflightState = VncCertificatePreflightState.IDLE;
   @State vncCertificateInfo: VncCertificateInfo | null = null;
   @State vncCertificateError: string = '';
@@ -1101,10 +1119,11 @@ struct RemoteDesktop {
   @State vncCertificateWarning: string = '';
   @State rustDeskDiagnostics: RustDeskDiagnosticsSnapshot = EMPTY_RUSTDESK_DIAGNOSTICS;
   @State rdpRenderStats: RdpRenderStats = EMPTY_RDP_RENDER_STATS;
-  @State rdpControlCenterVisible: boolean = false;
+  @State @Watch('onHarmonyShortcutInputOwnerChange') rdpControlCenterVisible: boolean = false;
   @State rustDeskDisplayCapabilities: RustDeskDisplayCapabilities = EMPTY_RUSTDESK_DISPLAY_CAPABILITIES;
   @State rustDeskDisplayPendingResolution: RustDeskDisplayResolution = EMPTY_RUSTDESK_DISPLAY_RESOLUTION;
-  @State showRustDeskDisplayResolutionMenu: boolean = false;
+  @State @Watch('onHarmonyShortcutInputOwnerChange')
+  showRustDeskDisplayResolutionMenu: boolean = false;
   @State rustDeskMultiCanvasPreview: RustDeskMultiCanvasPreviewSnapshot =
     EMPTY_RUSTDESK_MULTI_CANVAS_PREVIEW;
   @State rustDeskMultiCanvasPreviewDisplay: number = -1;
@@ -1138,6 +1157,10 @@ struct RemoteDesktop {
   private readonly vncHosts: VncHostService = VncHostService.getInstance();
   private readonly vncGateways: VncGatewayService = VncGatewayService.getInstance();
   private readonly vncTrust: VncTrustService = VncTrustService.getInstance();
+  private readonly harmonyShortcutCapture: HarmonyShortcutCaptureService =
+    HarmonyShortcutCaptureService.getInstance();
+  private readonly harmonyShortcutCaptureOwner: string =
+    this.harmonyShortcutCapture.createOwner('remote-desktop');
   private nativeHandles: NativeSessionHandles =
     new NativeSessionHandles(new ProductionNativeHandleAdapter((): ExtensionLoader => this.loader));
   private clipboardBridge: ClipboardBridgeService | null = null;
@@ -1479,8 +1502,8 @@ struct RemoteDesktop {
   private pendingModifierPanelSessionId: number = -1;
   private modifierPanelPrepareOnly: boolean = false;
   // 三指控制面板
-  @State showControlPanel: boolean = false;
-  @State keyboardOpen: boolean = false;
+  @State @Watch('onHarmonyShortcutInputOwnerChange') showControlPanel: boolean = false;
+  @State @Watch('onHarmonyShortcutInputOwnerChange') keyboardOpen: boolean = false;
   @State fileTransferBusy: boolean = false;
   @State fileTransferProgress: number = -1;
   @State fileTransferStatus: string = '';
@@ -1512,8 +1535,8 @@ struct RemoteDesktop {
   @State private remoteSidebarWindowWidth: number = 0;
   @State private remoteSidebarWindowHeight: number = 0;
   @State modifierPanelMounted: boolean = false;
-  @State modifierPanelVisible: boolean = false;
-  @State shortcutPanelVisible: boolean = false;
+  @State @Watch('onHarmonyShortcutInputOwnerChange') modifierPanelVisible: boolean = false;
+  @State @Watch('onHarmonyShortcutInputOwnerChange') shortcutPanelVisible: boolean = false;
   @State remoteCustomShortcuts: Array<RemoteCustomShortcut> = [];
   @State modifierPanelX: number = 8;
   @State modifierPanelY: number = 70;
@@ -1566,6 +1589,9 @@ struct RemoteDesktop {
   private kbWindowEventCb: ((event: window.WindowEventType) => void) | null = null;
   private sessionWindowMinimized: boolean = false;
   private sessionWindowActive: boolean = true;
+  private harmonyShortcutWindowActive: boolean = false;
+  private harmonyShortcutWindowFocusKnown: boolean = false;
+  private harmonyShortcutWindowStatusKnown: boolean = false;
   private kbListenerGeneration: number = 0;
   private touchHoldDragTimer: number = -1;
   private touchDirectRightClickTimer: number = -1;
@@ -1646,7 +1672,8 @@ struct RemoteDesktop {
   private rustDeskGeometrySyncTimer: number = -1;
   private vncGeometrySyncTimer: number = -1;
   private vncSurfaceResizeRefreshTimer: number = -1;
-  @State rustDeskDisplaySwitchState: RustDeskDisplaySwitchState =
+  @State @Watch('onHarmonyShortcutInputOwnerChange')
+  rustDeskDisplaySwitchState: RustDeskDisplaySwitchState =
     idleRustDeskDisplaySwitchState();
   private rustDeskDisplayResolutionPendingSinceMs: number = 0;
   private lastBrowseModeBlockedToastMs: number = 0;
@@ -1762,6 +1789,7 @@ struct RemoteDesktop {
     if (host.protocol !== 'rdp' && host.protocol !== 'rustdesk' && host.protocol !== 'vnc') { return; }
     this.externalInputPromptedThisSession = true;
     this.inputDevicePromptVisible = true;
+    this.syncHarmonyShortcutCapture('input-device-prompt-open');
     const name: string = deviceName && deviceName.length > 0 ? deviceName : '键盘/鼠标';
     const protocolLabel: string = host.protocol === 'rdp' ? 'Windows RDP' :
       (host.protocol === 'rustdesk' ? 'RustDesk' : 'VNC');
@@ -1774,6 +1802,7 @@ struct RemoteDesktop {
       ]
     }).then((result: Object): void => {
       this.inputDevicePromptVisible = false;
+      this.syncHarmonyShortcutCapture('input-device-prompt-close');
       const r: Record<string, number> = result as Record<string, number>;
       if (r['index'] === 1) {
         if (host.protocol === 'rdp') {
@@ -1801,6 +1830,7 @@ struct RemoteDesktop {
       }
     }).catch((_err: Error): void => {
       this.inputDevicePromptVisible = false;
+      this.syncHarmonyShortcutCapture('input-device-prompt-dismiss');
     });
   }
 
@@ -3961,6 +3991,106 @@ struct RemoteDesktop {
     return host === null ? '' : host.protocol;
   }
 
+  private harmonyShortcutBlockingActive(): boolean {
+    return harmonyShortcutBlockingEnabled(
+      decodeHarmonyShortcutBlockingPreferences(this.harmonyShortcutBlockingEncoded),
+      harmonyShortcutDeviceClass(this.isDesktopDevice, this.isPadDevice),
+      this.currentProtocolName());
+  }
+
+  private onHarmonyShortcutBlockingChange(): void {
+    this.syncHarmonyShortcutCapture('preference-change');
+  }
+
+  private onHarmonyShortcutInputOwnerChange(): void {
+    this.syncHarmonyShortcutCapture('input-owner-change');
+  }
+
+  private harmonyShortcutModalOwnsInput(): boolean {
+    return this.showRdpSessionErrorSheet || this.showRustDeskAuthSheet ||
+      this.showRustDeskTwoFactorSheet || this.showVncCertificateSheet ||
+      this.showPassphraseSheet || this.showControlPanel || this.keyboardOpen ||
+      this.modifierPanelVisible || this.shortcutPanelVisible ||
+      this.rdpControlCenterVisible || this.showRustDeskDisplayResolutionMenu ||
+      this.inputDevicePromptVisible || this.physicalKeyboardLayoutPromptVisible ||
+      this.virtualTouchpadKeyboardGuidePromptVisible;
+  }
+
+  private harmonyShortcutRemoteInputAllowed(): boolean {
+    const protocol: string = this.currentProtocolName();
+    const lifecycleBlocked: boolean = shouldBlockRemoteInputForLifecycle(
+      this.currentAbilityBackgroundState() || this.sessionWindowMinimized ||
+        !this.sessionWindowActive,
+      this.cleanupStarted, this.bgRestorePending, this.restoreInProgress,
+      this.renderPreservedInPip, this.pipSurfaceTransferInProgress);
+    if (lifecycleBlocked || this.isVncViewOnlySession() ||
+      shouldBlockRemoteInputForBrowseMode(protocol, this.rustdeskBrowseMode)) {
+      return false;
+    }
+    if (this.isRustDeskSession() &&
+      ((this.rustDeskRemoteInputPermissionKnown && !this.rustDeskRemoteInputAllowed) ||
+        this.rustDeskDisplaySwitchState.inputBlocked)) {
+      return false;
+    }
+    if (this.isVncSession() && !this.vncGeometryReady) { return false; }
+    if (this.isRdpRemoteSession() && !this.rdpGeometryReady) { return false; }
+    return true;
+  }
+
+  private syncHarmonyShortcutCapture(reason: string): void {
+    const protocol: string = this.currentProtocolName();
+    const enabled: boolean = harmonyShortcutCaptureEligible({
+      configured: this.harmonyShortcutBlockingActive(),
+      foreground: !this.currentAbilityBackgroundState(),
+      windowActive: this.harmonyShortcutWindowFocusKnown &&
+        this.harmonyShortcutWindowStatusKnown &&
+        !this.sessionWindowMinimized && this.harmonyShortcutWindowActive,
+      sessionReady: this.pendingHost !== null && this.connected &&
+        this.sessionId > 0 && this.inputForwardReady && !this.cleanupStarted,
+      inputAllowed: this.harmonyShortcutRemoteInputAllowed(),
+      modalOwnsInput: this.harmonyShortcutModalOwnsInput()
+    });
+    if (!enabled) {
+      this.harmonyShortcutCapture.deactivate(this.harmonyShortcutCaptureOwner);
+      return;
+    }
+    const count: number = this.harmonyShortcutCapture.activate(
+      this.harmonyShortcutCaptureOwner,
+      (event: HarmonyCapturedSystemKeyEvent): void => {
+        this.handleHarmonyCapturedSystemKey(event);
+      }, harmonyShortcutCaptureKeyCodes(protocol, this.physicalKeyboardLayout));
+    hilog.info(RD_DOMAIN, RD_TAG,
+      'harmony-shortcut-capture reason=' + reason + ' protocol=' +
+      this.currentProtocolName() + ' subscriptions=' + count.toString());
+  }
+
+  private handleHarmonyCapturedSystemKey(event: HarmonyCapturedSystemKeyEvent): void {
+    const pressed: boolean = event.cancelled ? false : event.pressed;
+    if (pressed && !this.canForwardInput('harmony-system-key')) { return; }
+    if (this.sessionId <= 0) { return; }
+    // inputConsumer emits the canonical Harmony namespace. Do not run VNC's
+    // Android compatibility normalization here: media key 10 would become the
+    // number-row key 3 instead of XF86AudioPlay.
+    const remoteKeyCode: number = event.keyCode;
+    try {
+      if (pressed) {
+        this.loader.sendKey(this.sessionId, remoteKeyCode, true);
+        this.markPhysicalRemoteKeyDown(remoteKeyCode);
+      } else if (this.clearPhysicalRemoteKeyDown(remoteKeyCode)) {
+        this.loader.sendKey(this.sessionId, remoteKeyCode, false);
+      }
+      hilog.info(RD_DOMAIN, RD_TAG,
+        'harmony-system-key local=' + event.keyCode.toString() +
+        ' remote=' + remoteKeyCode.toString() +
+        ' down=' + (pressed ? '1' : '0') +
+        ' cancelled=' + (event.cancelled ? '1' : '0') +
+        ' device=' + event.deviceId.toString());
+    } catch (error) {
+      hilog.warn(RD_DOMAIN, RD_TAG,
+        'harmony-system-key forward failed=' + JSON.stringify(error));
+    }
+  }
+
   private reverseWheelForCurrentProtocol(): boolean {
     const protocol: string = this.currentProtocolName();
     if (protocol === 'rdp') { return this.rdpReverseWheel; }
@@ -5424,6 +5554,7 @@ struct RemoteDesktop {
     const changed: boolean = this.rdpGeometryReady || this.inputForwardReady;
     this.rdpGeometryReady = false;
     this.inputForwardReady = false;
+    this.syncHarmonyShortcutCapture('rdp-geometry-pending');
     if (changed) {
       hilog.info(RD_DOMAIN, RD_TAG, 'RDP input geometry pending reason=' + reason +
         ' remote=' + this.remoteWidth.toString() + 'x' + this.remoteHeight.toString() +
@@ -5444,6 +5575,7 @@ struct RemoteDesktop {
       return;
     }
     this.inputForwardReady = ready;
+    this.syncHarmonyShortcutCapture('rdp-input-' + reason);
     hilog.info(RD_DOMAIN, RD_TAG, 'RDP input readiness=' + (ready ? 'ready' : 'blocked') +
       ' reason=' + reason +
       ' stability=' + (this.rdpInputStabilityGateReady ? '1' : '0') +
@@ -6547,6 +6679,7 @@ struct RemoteDesktop {
       this.releaseRustDeskInputBeforeBlock('rustdesk-browse-mode');
     }
     this.rustdeskBrowseMode = on;
+    this.syncHarmonyShortcutCapture('rustdesk-browse-mode');
     this.persistSessionPref('rustdeskBrowseMode', on);
     promptAction.showToast({
       message: on ? '已开启浏览模式，仅查看远端画面' : '已关闭浏览模式，可继续控制远端',
@@ -7700,6 +7833,9 @@ struct RemoteDesktop {
           // 初始读取失败, 后续 avoidAreaChange 会更新
         }
         this.kbAvoidCb = (data: window.AvoidAreaOptions): void => {
+          if (!remoteInputWindowListenerIsCurrent(generation, this.kbListenerGeneration)) {
+            return;
+          }
           if (data.type === window.AvoidAreaType.TYPE_KEYBOARD) {
             const previousHeight: number = this.kbHeight;
             const nextHeight: number = px2vp(data.area.bottomRect.height);
@@ -7724,6 +7860,9 @@ struct RemoteDesktop {
         };
         w.on('avoidAreaChange', this.kbAvoidCb);
         this.kbWindowSizeCb = (_size: window.Size): void => {
+          if (!remoteInputWindowListenerIsCurrent(generation, this.kbListenerGeneration)) {
+            return;
+          }
           if (this.isVncSession() || this.isRdpRemoteSession()) {
             // The XComponent can retain the pre-rotation portrait area while
             // the window manager has already committed landscape geometry.
@@ -7731,15 +7870,18 @@ struct RemoteDesktop {
           }
         };
         w.on('windowSizeChange', this.kbWindowSizeCb);
-        try {
-          this.sessionWindowMinimized =
-            w.getWindowStatus() === window.WindowStatusType.MINIMIZE;
-          this.kbWindowStatusCb = (status: window.WindowStatusType): void => {
+        const statusCallback = (status: window.WindowStatusType): void => {
+            if (!remoteInputWindowListenerIsCurrent(generation, this.kbListenerGeneration)) {
+              return;
+            }
             const minimized: boolean = status === window.WindowStatusType.MINIMIZE;
+            this.harmonyShortcutWindowStatusKnown = true;
             if (minimized === this.sessionWindowMinimized) {
+              this.syncHarmonyShortcutCapture('window-status-change');
               return;
             }
             this.sessionWindowMinimized = minimized;
+            this.syncHarmonyShortcutCapture('window-status-change');
             hilog.info(RD_DOMAIN, RD_TAG, 'session window status=' + status.toString() +
               ' inputMinimized=' + (minimized ? '1' : '0'));
             if (minimized) {
@@ -7752,38 +7894,78 @@ struct RemoteDesktop {
               this.restartClipboardBridgeIfActiveForeground();
             }
           };
-          w.on('windowStatusChange', this.kbWindowStatusCb);
+        try {
+          w.on('windowStatusChange', statusCallback);
+          this.kbWindowStatusCb = statusCallback;
+          try {
+            this.sessionWindowMinimized =
+              w.getWindowStatus() === window.WindowStatusType.MINIMIZE;
+            this.harmonyShortcutWindowStatusKnown = true;
+          } catch (_snapshotError) {
+            this.harmonyShortcutWindowStatusKnown = false;
+          }
+          this.syncHarmonyShortcutCapture('window-status-initial');
         } catch (_e) {
           this.kbWindowStatusCb = null;
           this.sessionWindowMinimized = false;
+          this.harmonyShortcutWindowStatusKnown = false;
         }
+        // Subscribe before taking the focus snapshot. Otherwise an INACTIVE
+        // transition between isFocused() and on() leaves a visible secondary
+        // PC window falsely owning the process-wide consumer-key capture.
+        const eventCallback = (event: window.WindowEventType): void => {
+          if (!remoteInputWindowListenerIsCurrent(generation, this.kbListenerGeneration)) {
+            return;
+          }
+          let eventName: string = 'shown';
+          if (event === window.WindowEventType.WINDOW_ACTIVE) {
+            eventName = 'active';
+          } else if (event === window.WindowEventType.WINDOW_INACTIVE) {
+            eventName = 'inactive';
+          } else if (event === window.WindowEventType.WINDOW_HIDDEN) {
+            eventName = 'hidden';
+          } else if (event === window.WindowEventType.WINDOW_DESTROYED) {
+            eventName = 'destroyed';
+          }
+          const wasActive: boolean = this.sessionWindowActive;
+          this.sessionWindowActive = remoteInputWindowActiveAfterEvent(
+            this.sessionWindowActive, eventName);
+          this.harmonyShortcutWindowActive = remoteInputWindowActiveAfterEvent(
+            this.harmonyShortcutWindowActive, eventName);
+          this.harmonyShortcutWindowFocusKnown = remoteInputWindowFocusKnownAfterEvent(
+            this.harmonyShortcutWindowFocusKnown, eventName);
+          this.syncHarmonyShortcutCapture('window-event-' + eventName);
+          if (wasActive && !this.sessionWindowActive) {
+            hilog.info(RD_DOMAIN, RD_TAG, 'session window input inactive event=' +
+              event.toString());
+            this.closeRemoteInputForWindowTransition('window-inactive');
+          }
+        };
         try {
-          this.kbWindowEventCb = (event: window.WindowEventType): void => {
-            let eventName: string = 'shown';
-            if (event === window.WindowEventType.WINDOW_ACTIVE) {
-              eventName = 'active';
-            } else if (event === window.WindowEventType.WINDOW_INACTIVE) {
-              eventName = 'inactive';
-            } else if (event === window.WindowEventType.WINDOW_HIDDEN) {
-              eventName = 'hidden';
-            } else if (event === window.WindowEventType.WINDOW_DESTROYED) {
-              eventName = 'destroyed';
-            }
-            const wasActive: boolean = this.sessionWindowActive;
-            this.sessionWindowActive = remoteInputWindowActiveAfterEvent(
-              this.sessionWindowActive, eventName);
-            if (wasActive && !this.sessionWindowActive) {
-              hilog.info(RD_DOMAIN, RD_TAG, 'session window input inactive event=' +
-                event.toString());
-              this.closeRemoteInputForWindowTransition('window-inactive');
-            }
-          };
-          w.on('windowEvent', this.kbWindowEventCb);
+          w.on('windowEvent', eventCallback);
+          this.kbWindowEventCb = eventCallback;
         } catch (_e) {
           this.kbWindowEventCb = null;
           this.sessionWindowActive = true;
+          this.harmonyShortcutWindowActive = false;
+          this.harmonyShortcutWindowFocusKnown = false;
+          this.syncHarmonyShortcutCapture('window-event-unavailable');
+        }
+        if (this.kbWindowEventCb !== null) {
+          try {
+            this.sessionWindowActive = w.isFocused();
+            this.harmonyShortcutWindowActive = this.sessionWindowActive;
+            this.harmonyShortcutWindowFocusKnown = true;
+          } catch (_snapshotError) {
+            this.harmonyShortcutWindowActive = false;
+            this.harmonyShortcutWindowFocusKnown = false;
+          }
+          this.syncHarmonyShortcutCapture('window-focus-initial');
         }
         this.kbDisplayIdCb = (displayId: number): void => {
+          if (!remoteInputWindowListenerIsCurrent(generation, this.kbListenerGeneration)) {
+            return;
+          }
           if (!Number.isSafeInteger(displayId) || displayId < 0 ||
             displayId === this.rdpWindowDisplayId) {
             return;
@@ -7871,6 +8053,9 @@ struct RemoteDesktop {
     this.kbWindowEventCb = null;
     this.sessionWindowMinimized = false;
     this.sessionWindowActive = true;
+    this.harmonyShortcutWindowActive = false;
+    this.harmonyShortcutWindowFocusKnown = false;
+    this.harmonyShortcutWindowStatusKnown = false;
     this.rdpWindowDisplayId = -1;
     this.kbHeight = 0;
     this.vncToolbarSystemTop = 0;
@@ -8002,6 +8187,11 @@ struct RemoteDesktop {
   }
 
   private applyAbilityBackgroundState(isBackground: boolean): void {
+    if (isBackground) {
+      this.harmonyShortcutCapture.deactivate(this.harmonyShortcutCaptureOwner);
+    } else {
+      this.syncHarmonyShortcutCapture('ability-foreground');
+    }
     if (isBackground) {
       this.cancelPendingDisappearDecision();
       this.invalidatePendingRdpCredentialAttemptOnBackground();
@@ -8484,6 +8674,7 @@ struct RemoteDesktop {
     }
     this.pcWindowHandoffStarted = true;
     this.inputForwardReady = false;
+    this.syncHarmonyShortcutCapture('pc-window-handoff');
     this.clearRemoteInputFocusSchedule();
     this.clearRemoteInputFocusAcknowledgement();
     // Keep a handle to the originating UIContent's router. Once the target
@@ -8693,6 +8884,7 @@ struct RemoteDesktop {
         this.pendingVncHost = vncHost;
         const vncRemoteHost: RemoteHost = this.transientRemoteHostForVnc(vncHost);
         this.pendingHost = vncRemoteHost;
+        this.syncHarmonyShortcutCapture('vnc-route-ready');
         this.vncAuthResolved = false;
         this.vncTransientPassword = '';
         this.vncTransientCredentialProvided = false;
@@ -8778,6 +8970,7 @@ struct RemoteDesktop {
             }
           }
           this.pendingHost = resolvedHost;
+          this.syncHarmonyShortcutCapture('host-route-ready');
           if (restoring) {
             RdpSessionCredentialHandoff.getInstance().clearIfMatches(
               this.rdpCredentialRouteOwnerId, this.rdpCredentialRouteHostId,
@@ -9012,6 +9205,7 @@ struct RemoteDesktop {
   }
 
   aboutToDisappear(): void {
+    this.harmonyShortcutCapture.deactivate(this.harmonyShortcutCaptureOwner);
     this.clearRdpInputStabilityTimer();
     if (this.cryptoStateUnsubscribe !== null) {
       this.cryptoStateUnsubscribe();
@@ -10574,6 +10768,7 @@ struct RemoteDesktop {
     }
     this.rustDeskRemoteInputPermissionKnown = nextKnown;
     this.rustDeskRemoteInputAllowed = nextAllowed;
+    this.syncHarmonyShortcutCapture('rustdesk-input-permission');
   }
 
   /**
@@ -10598,6 +10793,7 @@ struct RemoteDesktop {
       this.remoteWidth, this.remoteHeight, snapshot.sessionActive,
       snapshot.receivedFrames, snapshot.width, snapshot.height)) {
       this.vncGeometryReady = true;
+      this.syncHarmonyShortcutCapture('vnc-geometry-ready');
       return;
     }
     const previousWidth: number = this.remoteWidth;
@@ -10615,6 +10811,7 @@ struct RemoteDesktop {
       monitorCount: 1
     });
     this.vncGeometryReady = true;
+    this.syncHarmonyShortcutCapture('vnc-geometry-ready');
     if (!this.canvasTransformGestureModified) {
       this.resetCanvasToDisplayDefault(true);
     } else {
@@ -11285,6 +11482,7 @@ struct RemoteDesktop {
 
   private handleVirtualTouchpadKeyboardGuideFailure(err: Error): void {
     this.virtualTouchpadKeyboardGuidePromptVisible = false;
+    this.syncHarmonyShortcutCapture('virtual-touchpad-guide-failed');
     hilog.warn(RD_DOMAIN, RD_TAG,
       'virtual-touchpad-keyboard-guide dismissed error=' + JSON.stringify(err));
     if (!shouldRetryRemoteVirtualTouchpadKeyboardGuide(
@@ -11314,6 +11512,7 @@ struct RemoteDesktop {
     const guide: RemoteVirtualTouchpadKeyboardGuide =
       remoteVirtualTouchpadKeyboardGuide(protocol);
     this.virtualTouchpadKeyboardGuidePromptVisible = true;
+    this.syncHarmonyShortcutCapture('virtual-touchpad-guide-open');
     try {
       promptAction.showDialog({
         title: guide.title,
@@ -11325,6 +11524,7 @@ struct RemoteDesktop {
         ]
       }).then((result: Object): void => {
         this.virtualTouchpadKeyboardGuidePromptVisible = false;
+        this.syncHarmonyShortcutCapture('virtual-touchpad-guide-close');
         this.virtualTouchpadKeyboardGuideRetryCount = 0;
         guideVisibility.markShownInRuntimeSession(markerKey, sessionIdentity);
         guideVisibility.markShown(getContext(this) as common.Context, markerKey);
@@ -11347,6 +11547,7 @@ struct RemoteDesktop {
       return;
     }
     this.physicalKeyboardLayoutPromptVisible = true;
+    this.syncHarmonyShortcutCapture('keyboard-layout-prompt-open');
     this.hardwareKeyboardProxyActive = false;
     this.releaseAllHeldKeys();
     promptAction.showDialog({
@@ -11365,12 +11566,14 @@ struct RemoteDesktop {
         RemoteKeyboardLayout.MACOS : RemoteKeyboardLayout.WINDOWS;
       this.physicalKeyboardLayoutConfirmed = true;
       this.physicalKeyboardLayoutPromptVisible = false;
+      this.syncHarmonyShortcutCapture('keyboard-layout-prompt-close');
       this.physicalTouchpadPinchState = resetPhysicalTouchpadPinchState();
       hilog.info(RD_DOMAIN, RD_TAG, 'physical-keyboard-layout selected=' +
         this.physicalKeyboardLayout);
       this.scheduleRemoteInputFocus('keyboard-layout-selected');
     }).catch((err: Error): void => {
       this.physicalKeyboardLayoutPromptVisible = false;
+      this.syncHarmonyShortcutCapture('keyboard-layout-prompt-dismiss');
       hilog.warn(RD_DOMAIN, RD_TAG, 'physical-keyboard-layout dismissed error=' +
         JSON.stringify(err));
     });
@@ -12400,7 +12603,7 @@ struct RemoteDesktop {
     this.rdpRenderWatchdogTimer = setTimeout(poll, 1500);
   }
 
-  @State showPassphraseSheet: boolean = false;
+  @State @Watch('onHarmonyShortcutInputOwnerChange') showPassphraseSheet: boolean = false;
   private rdpPassphraseResolve: ((v: string) => void) | null = null;
   @State rdpPassphraseInput: string = '';
   @State rdpPassphraseShowPw: boolean = false;
@@ -14169,6 +14372,7 @@ struct RemoteDesktop {
         this.armRdpInputStabilityGate(sid, attemptId);
       } else {
         this.inputForwardReady = true;
+        this.syncHarmonyShortcutCapture('connect-success');
         this.scheduleRemoteInputFocus('connect-success');
       }
       if (host.protocol === 'rustdesk') {
@@ -14496,6 +14700,7 @@ struct RemoteDesktop {
   }
 
   private disconnectAndCleanup(reason: string): void {
+    this.harmonyShortcutCapture.deactivate(this.harmonyShortcutCaptureOwner);
     const explicitUserDisconnect: boolean = reason.indexOf('explicit') >= 0 ||
       reason.indexOf('toolbar') >= 0 || reason.indexOf('topbar') >= 0 ||
       reason.indexOf('remote-back') >= 0;
@@ -15805,6 +16010,7 @@ struct RemoteDesktop {
         this.resumeRustDeskDiagnosticsAfterForeground();
         this.startRemoteCursorPolling(this.sessionId);
         this.inputForwardReady = true;
+        this.syncHarmonyShortcutCapture('background-preauthenticated');
         this.reclaimRemoteSystemPointerAfterForeground('background-preauthenticated');
         this.scheduleRemoteInputFocus('background-preauthenticated');
         this.publishIndependentWindowReady('background-preauthenticated');
@@ -15919,6 +16125,7 @@ struct RemoteDesktop {
         if (!this.isRdpRemoteSession()) {
           this.inputForwardReady = true;
         }
+        this.syncHarmonyShortcutCapture('background-restore');
         this.startRemoteCursorPolling(this.sessionId);
         this.reclaimRemoteSystemPointerAfterForeground('background-restore');
         this.scheduleRemoteInputFocus('background-restore');

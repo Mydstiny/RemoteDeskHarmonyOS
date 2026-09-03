@@ -38,6 +38,7 @@ export const SETTINGS_SHEET_SECRET_VISIBILITY: number = 37;
 export const SETTINGS_SHEET_REMOTE_WHEEL_DIRECTION: number = 38;
 export const SETTINGS_SHEET_REMOTE_PINCH_ZOOM: number = 39;
 export const SETTINGS_SHEET_SESSION_CONTROL_BAR: number = 40;
+export const SETTINGS_SHEET_HARMONY_SHORTCUT_BLOCKING: number = 41;
 
 export const SETTINGS_PANEL_DISMISS_TO_LEAF_OPEN_MS: number = 360;
 
@@ -50,7 +51,7 @@ export interface MoonlightSettingsRouteSpec {
 }
 
 export type VirtualKeyboardSettingsSection =
-  'system' | 'behavior' | 'shortcuts' | 'functions' | 'custom';
+  'system' | 'behavior' | 'shortcuts' | 'functions' | 'custom' | 'harmonyShortcuts';
 
 export interface VirtualKeyboardSettingsRouteSpec {
   mode: number;
@@ -171,6 +172,12 @@ export function virtualKeyboardSettingsRouteSpecs(): VirtualKeyboardSettingsRout
       section: 'custom',
       title: '自定义组合键',
       height: 520
+    },
+    {
+      mode: SETTINGS_SHEET_HARMONY_SHORTCUT_BLOCKING,
+      section: 'harmonyShortcuts',
+      title: '屏蔽鸿蒙快捷键',
+      height: 820
     }
   ];
 }

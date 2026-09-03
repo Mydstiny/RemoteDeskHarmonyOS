@@ -175,6 +175,8 @@ import remoteKeyboardLayoutSelectionPolicyTest from './RemoteKeyboardLayoutSelec
 import remoteModifierStateControllerTest from './RemoteModifierStateController.test';
 import remoteCustomShortcutPolicyTest from './RemoteCustomShortcutPolicy.test';
 import remoteKeyboardSettingsPolicyTest from './RemoteKeyboardSettingsPolicy.test';
+import harmonyShortcutBlockingPolicyTest from './HarmonyShortcutBlockingPolicy.test';
+import harmonyShortcutCaptureServiceTest from './HarmonyShortcutCaptureService.test';
 import remoteVirtualTouchpadGuidePolicyTest from './RemoteVirtualTouchpadGuidePolicy.test';
 import sessionContextualGuidePolicyTest from './SessionContextualGuidePolicy.test';
 import guideVisibilityPolicyTest from './GuideVisibilityPolicy.test';
@@ -444,6 +446,8 @@ export default function testsuite() {
   remoteModifierStateControllerTest();
   remoteCustomShortcutPolicyTest();
   remoteKeyboardSettingsPolicyTest();
+  harmonyShortcutBlockingPolicyTest();
+  harmonyShortcutCaptureServiceTest();
   remoteVirtualTouchpadGuidePolicyTest();
   sessionContextualGuidePolicyTest();
   guideVisibilityPolicyTest();

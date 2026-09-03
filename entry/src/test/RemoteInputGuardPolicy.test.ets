@@ -4,6 +4,8 @@ import {
   physicalMousePressDisposition,
   PhysicalMousePressDisposition,
   remoteInputWindowActiveAfterEvent,
+  remoteInputWindowFocusKnownAfterEvent,
+  remoteInputWindowListenerIsCurrent,
   remoteMouseButtonsAfterEvent,
   remoteInputBlockedReason,
   resolvePhysicalMouseReleaseButton,
@@ -58,6 +60,22 @@ export default function remoteInputGuardPolicyTest(): void {
       expect(active).assertTrue();
       expect(shouldBlockRemoteInputForLifecycle(!active, false, false, false, false, false))
         .assertFalse();
+    });
+
+    it('does_not_treat_visibility_or_unknown_events_as_focus_evidence', 0, (): void => {
+      expect(remoteInputWindowFocusKnownAfterEvent(false, 'shown')).assertFalse();
+      expect(remoteInputWindowFocusKnownAfterEvent(false, 'unknown')).assertFalse();
+      expect(remoteInputWindowFocusKnownAfterEvent(false, 'active')).assertTrue();
+      expect(remoteInputWindowFocusKnownAfterEvent(false, 'inactive')).assertTrue();
+      expect(remoteInputWindowFocusKnownAfterEvent(false, 'hidden')).assertTrue();
+      expect(remoteInputWindowFocusKnownAfterEvent(false, 'destroyed')).assertTrue();
+    });
+
+    it('rejects_callbacks_from_an_unregistered_window_generation', 0, (): void => {
+      expect(remoteInputWindowListenerIsCurrent(4, 4)).assertTrue();
+      expect(remoteInputWindowListenerIsCurrent(4, 5)).assertFalse();
+      expect(remoteInputWindowListenerIsCurrent(5, 4)).assertFalse();
+      expect(remoteInputWindowListenerIsCurrent(4.5, 4.5)).assertFalse();
     });
 
     it('releases_only_buttons_with_a_submitted_down', 0, (): void => {

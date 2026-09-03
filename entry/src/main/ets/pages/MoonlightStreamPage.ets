@@ -46,6 +46,23 @@ import {
 import { RemoteKeyboardSettingsService } from '../services/RemoteKeyboardSettingsService';
 import { RemoteShortcutPlatform } from '../services/RemoteKeyboardSettingsPolicy';
 import {
+  decodeHarmonyShortcutBlockingPreferences,
+  harmonyShortcutCaptureEligible,
+  harmonyShortcutCaptureKeyCodes,
+  harmonyShortcutBlockingEnabled,
+  harmonyShortcutDeviceClass,
+  HARMONY_SHORTCUT_BLOCKING_STORAGE_KEY
+} from '../services/HarmonyShortcutBlockingPolicy';
+import {
+  HarmonyCapturedSystemKeyEvent,
+  HarmonyShortcutCaptureService
+} from '../services/HarmonyShortcutCaptureService';
+import {
+  remoteInputWindowActiveAfterEvent,
+  remoteInputWindowFocusKnownAfterEvent,
+  remoteInputWindowListenerIsCurrent
+} from '../services/RemoteInputGuardPolicy';
+import {
   MoonlightEffectiveSettings,
   MoonlightInputControlMode,
   MoonlightKeyboardTarget,
@@ -344,6 +361,9 @@ struct MoonlightStreamPage {
   @StorageProp('currentBreakpoint') breakpoint: string = 'sm';
   @StorageProp('isDesktopDevice') isDesktopDevice: boolean = false;
   @StorageProp('isPadDevice') isPadDevice: boolean = false;
+  @StorageLink(HARMONY_SHORTCUT_BLOCKING_STORAGE_KEY)
+  @Watch('onHarmonyShortcutBlockingChange')
+  harmonyShortcutBlockingEncoded: string = '';
   @StorageProp(GUIDE_ALWAYS_VISIBLE_STORAGE_KEY) guideAlwaysVisible: boolean = false;
   @StorageProp('liveViewEnabled') liveViewEnabled: boolean = true;
   @StorageProp('liveViewMode') liveViewMode: number = 1;
@@ -374,16 +394,16 @@ struct MoonlightStreamPage {
   @State audioReady: boolean = false;
   @State showConnectStage: boolean = true;
   @State pendingConnectStageSheet: boolean = false;
-  @State showSessionSheet: boolean = false;
+  @State @Watch('onHarmonyShortcutInputOwnerChange') showSessionSheet: boolean = false;
   @State sheetMode: MoonlightSessionSheetMode = 'none';
   @State pendingSheetMode: MoonlightSessionSheetMode = 'none';
   @State controlMode: MoonlightControlMode = 'adaptive';
   @State adaptiveControlMode: MoonlightResolvedControlMode = 'trackpad';
   @State sessionChanges: number = 0;
-  @State showController: boolean = false;
+  @State @Watch('onHarmonyShortcutInputOwnerChange') showController: boolean = false;
   @State controllerEditing: boolean = false;
-  @State showModifierPanel: boolean = false;
-  @State showShortcutPanel: boolean = false;
+  @State @Watch('onHarmonyShortcutInputOwnerChange') showModifierPanel: boolean = false;
+  @State @Watch('onHarmonyShortcutInputOwnerChange') showShortcutPanel: boolean = false;
   @State modifierPanelX: number = 8;
   @State modifierPanelY: number = 62;
   @State shortcutPanelX: number = 8;
@@ -393,7 +413,7 @@ struct MoonlightStreamPage {
   @State shortcutPanelWidth: number = 320;
   @State shortcutPanelHeight: number = 430;
   @State remoteCustomShortcuts: Array<RemoteCustomShortcut> = [];
-  @State keyboardOpen: boolean = false;
+  @State @Watch('onHarmonyShortcutInputOwnerChange') keyboardOpen: boolean = false;
   @State keyboardText: string = '';
   @State diagnosticsVisible: boolean = false;
   @State diagnosticsExpanded: boolean = false;
@@ -430,6 +450,19 @@ struct MoonlightStreamPage {
     MoonlightSessionRecoveryRuntime.getInstance();
   private readonly desktopFlipStore: MoonlightDesktopFlipStore =
     new MoonlightDesktopFlipStore();
+  private readonly harmonyShortcutCapture: HarmonyShortcutCaptureService =
+    HarmonyShortcutCaptureService.getInstance();
+  private readonly harmonyShortcutCaptureOwner: string =
+    this.harmonyShortcutCapture.createOwner('moonlight');
+  private harmonyShortcutWindow: window.Window | null = null;
+  private harmonyShortcutWindowStatusCallback:
+    ((status: window.WindowStatusType) => void) | null = null;
+  private harmonyShortcutWindowEventCallback:
+    ((event: window.WindowEventType) => void) | null = null;
+  private harmonyShortcutWindowListenerGeneration: number = 0;
+  private harmonyShortcutWindowMinimized: boolean = true;
+  private harmonyShortcutWindowActive: boolean = false;
+  private harmonyShortcutWindowFocusKnown: boolean = false;
   private accountScopeUnsubscribe: (() => void) | null = null;
   private snapshotUnsubscribe: (() => void) | null = null;
   private pageActive: boolean = false;
@@ -1071,6 +1104,7 @@ struct MoonlightStreamPage {
       if (!background) {
         void this.setMoonlightSystemBarsHidden(true, 'preserved-page-appear');
         this.applyMoonlightAbilityBackground(false);
+        this.syncHarmonyShortcutCapture('preserved-page-appear');
         this.scheduleMoonlightPhysicalKeyboardFocus('preserved-page-appear');
         this.syncMoonlightSystemPointer('preserved-page-appear', true);
       }
@@ -1085,12 +1119,14 @@ struct MoonlightStreamPage {
     const params: Record<string, Object> = router.getParams() as Record<string, Object>;
     this.sessionWindowId = typeof params['sessionWindowId'] === 'string'
       ? (params['sessionWindowId'] as string).trim() : '';
+    this.registerHarmonyShortcutWindowListeners();
     void this.setMoonlightSystemBarsHidden(true, 'page-appear');
     this.appInBackground = this.sessionWindowId.length > 0 ?
       this.sessionWindowBackground : this.appBackgroundSignal;
     const route: MoonlightRouteIdentity = moonlightRouteIdentity(params, true);
     this.hostId = route.valid ? route.hostId : '';
     this.appId = route.valid ? route.appId : '';
+    this.syncHarmonyShortcutCapture('route-ready');
     hilog.info(0x0014, 'MoonlightStreamUi',
       'aboutToAppear route-valid=' + (route.valid ? '1' : '0'));
     this.launchKey = {
@@ -1331,6 +1367,8 @@ struct MoonlightStreamPage {
   private finalizeMoonlightPageDisappear(): void {
     this.cancelPendingMoonlightDisappearDecision();
     this.pageActive = false;
+    this.unregisterHarmonyShortcutWindowListeners();
+    this.harmonyShortcutCapture.deactivate(this.harmonyShortcutCaptureOwner);
     this.clearMoonlightContextualGuideRetry();
     this.pipLifecycleGeneration += 1;
     this.pipPrepareInFlight = false;
@@ -2036,6 +2074,7 @@ struct MoonlightStreamPage {
   }
 
   private closeMoonlightRoute(reason: string): void {
+    this.harmonyShortcutCapture.deactivate(this.harmonyShortcutCaptureOwner);
     if (this.routeTerminated) { return; }
     this.clearMoonlightPhysicalPointerFollow(true);
     this.moonlightPhysicalMouseButtonDown = false;
@@ -2413,6 +2452,11 @@ struct MoonlightStreamPage {
   private applyMoonlightAbilityBackground(isBackground: boolean): void {
     const changed: boolean = this.appInBackground !== isBackground;
     this.appInBackground = isBackground;
+    if (isBackground) {
+      this.harmonyShortcutCapture.deactivate(this.harmonyShortcutCaptureOwner);
+    } else {
+      this.syncHarmonyShortcutCapture('ability-foreground');
+    }
     if (isBackground) {
       this.restoreMoonlightSystemPointer('ability-background');
     } else {
@@ -3363,11 +3407,13 @@ struct MoonlightStreamPage {
         this.scheduleMoonlightPhysicalKeyboardFocus('input-ready');
       }
       this.syncMoonlightSystemPointer('input-readiness');
+      this.syncHarmonyShortcutCapture('input-readiness');
     } catch (_) {
       this.inputReady = false;
       this.controllerReady = false;
       this.physicalControllerPathReady = false;
       this.syncMoonlightSystemPointer('input-readiness-error');
+      this.syncHarmonyShortcutCapture('input-readiness-error');
     }
   }
 
@@ -4037,6 +4083,7 @@ struct MoonlightStreamPage {
     if (!this.inputReady || !this.routeLeaseValid()) {
       this.inputSuspended = suspended;
       this.syncMoonlightSystemPointer('input-suspended-' + reason);
+      this.syncHarmonyShortcutCapture('input-suspended-' + reason);
       return false;
     }
     try {
@@ -4056,10 +4103,12 @@ struct MoonlightStreamPage {
         this.inputSuspended = true;
       }
       this.syncMoonlightSystemPointer('input-suspended-' + reason);
+      this.syncHarmonyShortcutCapture('input-suspended-' + reason);
       return accepted;
     } catch (_) {
       if (suspended) { this.inputSuspended = true; }
       this.syncMoonlightSystemPointer('input-suspended-error-' + reason);
+      this.syncHarmonyShortcutCapture('input-suspended-error-' + reason);
       return false;
     }
   }
@@ -4623,6 +4672,172 @@ struct MoonlightStreamPage {
       this.isDesktopDevice, this.sessionWindowId, this.controlMode);
   }
 
+  private harmonyShortcutBlockingActive(): boolean {
+    return harmonyShortcutBlockingEnabled(
+      decodeHarmonyShortcutBlockingPreferences(this.harmonyShortcutBlockingEncoded),
+      harmonyShortcutDeviceClass(this.isDesktopDevice, this.isPadDevice),
+      'moonlight');
+  }
+
+  private onHarmonyShortcutBlockingChange(): void {
+    this.syncHarmonyShortcutCapture('preference-change');
+  }
+
+  private onHarmonyShortcutInputOwnerChange(): void {
+    this.syncHarmonyShortcutCapture('input-owner-change');
+  }
+
+  private registerHarmonyShortcutWindowListeners(): void {
+    if (this.harmonyShortcutWindow !== null &&
+      this.harmonyShortcutWindowStatusCallback !== null &&
+      this.harmonyShortcutWindowEventCallback !== null) { return; }
+    this.unregisterHarmonyShortcutWindowListeners();
+    const generation: number = ++this.harmonyShortcutWindowListenerGeneration;
+    const context: common.Context | undefined = this.getUIContext().getHostContext();
+    if (!context) { return; }
+    window.getLastWindow(context).then((current: window.Window): void => {
+      if (generation !== this.harmonyShortcutWindowListenerGeneration) { return; }
+      this.harmonyShortcutWindow = current;
+      const eventCallback = (event: window.WindowEventType): void => {
+        if (!remoteInputWindowListenerIsCurrent(
+          generation, this.harmonyShortcutWindowListenerGeneration)) { return; }
+        let eventName: string = 'shown';
+        if (event === window.WindowEventType.WINDOW_ACTIVE) {
+          eventName = 'active';
+        } else if (event === window.WindowEventType.WINDOW_INACTIVE) {
+          eventName = 'inactive';
+        } else if (event === window.WindowEventType.WINDOW_HIDDEN) {
+          eventName = 'hidden';
+        } else if (event === window.WindowEventType.WINDOW_DESTROYED) {
+          eventName = 'destroyed';
+        }
+        this.harmonyShortcutWindowActive = remoteInputWindowActiveAfterEvent(
+          this.harmonyShortcutWindowActive, eventName);
+        this.harmonyShortcutWindowFocusKnown = remoteInputWindowFocusKnownAfterEvent(
+          this.harmonyShortcutWindowFocusKnown, eventName);
+        this.syncHarmonyShortcutCapture('window-event-' + eventName);
+      };
+      try {
+        current.on('windowEvent', eventCallback);
+        this.harmonyShortcutWindowEventCallback = eventCallback;
+      } catch (error) {
+        this.harmonyShortcutWindowEventCallback = null;
+        this.harmonyShortcutWindowActive = false;
+        this.harmonyShortcutWindowFocusKnown = false;
+        hilog.warn(0x0014, 'MoonlightStreamUi',
+          'harmony shortcut window focus unavailable=' + JSON.stringify(error));
+      }
+      if (this.harmonyShortcutWindowEventCallback !== null) {
+        try {
+          this.harmonyShortcutWindowActive = current.isFocused();
+          this.harmonyShortcutWindowFocusKnown = true;
+        } catch (error) {
+          this.harmonyShortcutWindowActive = false;
+          this.harmonyShortcutWindowFocusKnown = false;
+          hilog.warn(0x0014, 'MoonlightStreamUi',
+            'harmony shortcut focus snapshot unavailable=' + JSON.stringify(error));
+        }
+      }
+      const statusCallback = (status: window.WindowStatusType): void => {
+        if (!remoteInputWindowListenerIsCurrent(
+          generation, this.harmonyShortcutWindowListenerGeneration)) { return; }
+        this.harmonyShortcutWindowMinimized =
+          status === window.WindowStatusType.MINIMIZE;
+        this.syncHarmonyShortcutCapture('window-status-change');
+      };
+      try {
+        current.on('windowStatusChange', statusCallback);
+        this.harmonyShortcutWindowStatusCallback = statusCallback;
+      } catch (error) {
+        this.harmonyShortcutWindowStatusCallback = null;
+        this.harmonyShortcutWindowMinimized = true;
+        hilog.warn(0x0014, 'MoonlightStreamUi',
+          'harmony shortcut window status unavailable=' + JSON.stringify(error));
+      }
+      if (this.harmonyShortcutWindowStatusCallback !== null) {
+        try {
+          this.harmonyShortcutWindowMinimized =
+            current.getWindowStatus() === window.WindowStatusType.MINIMIZE;
+        } catch (error) {
+          this.harmonyShortcutWindowMinimized = true;
+          hilog.warn(0x0014, 'MoonlightStreamUi',
+            'harmony shortcut status snapshot unavailable=' + JSON.stringify(error));
+        }
+      }
+      this.syncHarmonyShortcutCapture('window-listeners-ready');
+    }).catch((error: Error): void => {
+      if (generation !== this.harmonyShortcutWindowListenerGeneration) { return; }
+      this.unregisterHarmonyShortcutWindowListeners();
+      hilog.warn(0x0014, 'MoonlightStreamUi',
+        'harmony shortcut getLastWindow failed=' + error.message);
+    });
+  }
+
+  private unregisterHarmonyShortcutWindowListeners(): void {
+    this.harmonyShortcutWindowListenerGeneration += 1;
+    const current: window.Window | null = this.harmonyShortcutWindow;
+    if (current !== null && this.harmonyShortcutWindowStatusCallback !== null) {
+      try {
+        current.off('windowStatusChange', this.harmonyShortcutWindowStatusCallback);
+      } catch (_error) {}
+    }
+    if (current !== null && this.harmonyShortcutWindowEventCallback !== null) {
+      try {
+        current.off('windowEvent', this.harmonyShortcutWindowEventCallback);
+      } catch (_error) {}
+    }
+    this.harmonyShortcutWindow = null;
+    this.harmonyShortcutWindowStatusCallback = null;
+    this.harmonyShortcutWindowEventCallback = null;
+    this.harmonyShortcutWindowMinimized = true;
+    this.harmonyShortcutWindowActive = false;
+    this.harmonyShortcutWindowFocusKnown = false;
+    this.harmonyShortcutCapture.deactivate(this.harmonyShortcutCaptureOwner);
+  }
+
+  private syncHarmonyShortcutCapture(reason: string): void {
+    const enabled: boolean = harmonyShortcutCaptureEligible({
+      configured: this.harmonyShortcutBlockingActive(),
+      foreground: this.pageActive && !this.appInBackground,
+      windowActive: this.harmonyShortcutWindowFocusKnown &&
+        !this.harmonyShortcutWindowMinimized && this.harmonyShortcutWindowActive,
+      sessionReady: !this.routeTerminated && this.nativeSessionId > 0 &&
+        this.inputReady && this.hostId.trim().length > 0,
+      inputAllowed: !this.inputSuspended && this.nativeInputAvailable() &&
+        this.moonlightPhysicalKeyboardCaptureEnabled(),
+      modalOwnsInput: this.moonlightPointerInteractionBlocked() ||
+        this.physicalKeyboardLayoutPromptVisible
+    });
+    if (!enabled) {
+      this.harmonyShortcutCapture.deactivate(this.harmonyShortcutCaptureOwner);
+      return;
+    }
+    const count: number = this.harmonyShortcutCapture.activate(
+      this.harmonyShortcutCaptureOwner,
+      (event: HarmonyCapturedSystemKeyEvent): void => {
+        this.handleHarmonyCapturedSystemKey(event);
+      }, harmonyShortcutCaptureKeyCodes('moonlight', this.physicalKeyboardLayout));
+    hilog.info(0x0014, 'MoonlightStreamUi',
+      'harmony-shortcut-capture reason=' + reason +
+      ' subscriptions=' + count.toString());
+  }
+
+  private handleHarmonyCapturedSystemKey(event: HarmonyCapturedSystemKeyEvent): void {
+    if (!this.nativeInputAvailable() || !this.moonlightPhysicalKeyboardCaptureEnabled()) {
+      return;
+    }
+    const pressed: boolean = event.cancelled ? false : event.pressed;
+    const remoteKeyCode: number = event.keyCode;
+    const accepted: boolean = this.sendMoonlightKey(remoteKeyCode, pressed);
+    hilog.info(0x0014, 'MoonlightStreamUi',
+      'harmony-system-key local=' + event.keyCode.toString() +
+      ' remote=' + remoteKeyCode.toString() +
+      ' down=' + (pressed ? '1' : '0') +
+      ' cancelled=' + (event.cancelled ? '1' : '0') +
+      ' device=' + event.deviceId.toString() +
+      ' accepted=' + (accepted ? '1' : '0'));
+  }
+
   private moonlightModifierKeyPressed(event: KeyEvent, key: string): boolean {
     try {
       return event.getModifierKeyState !== undefined &&
@@ -4640,7 +4855,8 @@ struct MoonlightStreamPage {
       this.moonlightModifierKeyPressed(event, 'Alt'),
       this.moonlightModifierKeyPressed(event, 'Ctrl'), event.metaKey === 1,
       fullPhysicalKeyboardCapture ||
-        this.effectiveSettings.input.forwardSystemShortcuts);
+        this.effectiveSettings.input.forwardSystemShortcuts ||
+        this.harmonyShortcutBlockingActive());
   }
 
   private clearMoonlightPhysicalKeyboardFocusSchedule(): void {
@@ -4684,6 +4900,7 @@ struct MoonlightStreamPage {
     if (this.physicalKeyboardLayoutPromptVisible || !this.pageActive ||
         this.routeTerminated) { return; }
     this.physicalKeyboardLayoutPromptVisible = true;
+    this.syncHarmonyShortcutCapture('keyboard-layout-prompt-open');
     this.clearMoonlightPhysicalKeyboardFocusSchedule();
     this.physicalKeyboardProxyFocused = false;
     this.flushInput('keyboard-layout-prompt');
@@ -4700,6 +4917,7 @@ struct MoonlightStreamPage {
       ]
     }).then((result: Object): void => {
       this.physicalKeyboardLayoutPromptVisible = false;
+      this.syncHarmonyShortcutCapture('keyboard-layout-prompt-close');
       if (!this.pageActive || this.routeTerminated) {
         this.restoreMoonlightSystemPointer('keyboard-layout-stale');
         return;
@@ -4717,6 +4935,7 @@ struct MoonlightStreamPage {
       this.scheduleMoonlightPhysicalKeyboardFocus('keyboard-layout-selected');
     }).catch((error: Error): void => {
       this.physicalKeyboardLayoutPromptVisible = false;
+      this.syncHarmonyShortcutCapture('keyboard-layout-prompt-dismiss');
       this.syncMoonlightSystemPointer('keyboard-layout-dismissed', true);
       this.scheduleMoonlightPhysicalKeyboardFocus('keyboard-layout-dismissed');
       hilog.warn(0x0014, 'MoonlightStreamUi',
@@ -5041,6 +5260,7 @@ struct MoonlightStreamPage {
       this.clearMoonlightPhysicalKeyboardFocusSchedule();
       this.physicalKeyboardProxyFocused = false;
     }
+    this.syncHarmonyShortcutCapture('session-snapshot');
     if (terminal) {
       hilog.warn(0x0014, 'MoonlightStreamUi',
         'terminal snapshot phase=' + snapshot.phase +

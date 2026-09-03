@@ -303,6 +303,11 @@ MoonlightKeyboardMapping mapHarmonyKeyCodeToMoonlight(
     }
 
     switch (harmonyKeyCode) {
+        case 10U: return ordinaryMapping(0xB3U); // VK_MEDIA_PLAY_PAUSE
+        case 12U: return ordinaryMapping(0xB0U); // VK_MEDIA_NEXT_TRACK
+        case 13U: return ordinaryMapping(0xB1U); // VK_MEDIA_PREV_TRACK
+        case 16U: return ordinaryMapping(0xAFU); // VK_VOLUME_UP
+        case 17U: return ordinaryMapping(0xAEU); // VK_VOLUME_DOWN
         case 2012U: return ordinaryMapping(0x26U);
         case 2013U: return ordinaryMapping(0x28U);
         case 2014U: return ordinaryMapping(0x25U);

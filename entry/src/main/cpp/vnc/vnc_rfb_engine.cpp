@@ -1461,6 +1461,11 @@ uint32_t VncRfbEngine::keySymForHarmonyCode(uint32_t keyCode) {
     if (keyCode >= 2816 && keyCode <= 2827) return 0xFFCA + (keyCode - 2816);
     if (keyCode >= 2103 && keyCode <= 2112) return 0xFFB0 + (keyCode - 2103);
     switch (keyCode) {
+        case 10: return 0x1008FF14; // XF86AudioPlay
+        case 12: return 0x1008FF17; // XF86AudioNext
+        case 13: return 0x1008FF16; // XF86AudioPrev
+        case 16: return 0x1008FF13; // XF86AudioRaiseVolume
+        case 17: return 0x1008FF11; // XF86AudioLowerVolume
         case 2045: return 0xFFE9; // Alt left
         case 2046: return 0xFFEA; // Alt right
         case 2047: return 0xFFE1; // Shift left
