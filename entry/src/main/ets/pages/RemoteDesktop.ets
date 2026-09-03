@@ -19406,6 +19406,7 @@ struct RemoteDesktop {
             surfaceHeight: this.surfaceHeight,
             refreshMs: 1000,
             requestedEncoding: '',
+            requestedCodecPreference: this.rustdeskCodec,
             requestedColorDepth: '',
             requestedFrameRate: 0,
             metricMask: 63,

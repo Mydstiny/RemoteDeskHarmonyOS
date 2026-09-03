@@ -9,7 +9,8 @@ import {
   formatDiagnosticDurationUs,
   formatDiagnosticFrameRate,
   formatDiagnosticLatency,
-  rustDeskCodecLabel,
+  RustDeskCodecAlignment,
+  rustDeskCodecAlignment,
   rustDeskDiagnosticsStreamState
 } from '../services/RustDeskDiagnosticsPolicy';
 
@@ -118,6 +119,7 @@ export struct RustDeskDiagnosticsHud {
   @Prop surfaceHeight: number = 0;
   @Prop refreshMs: number = 1000;
   @Prop requestedEncoding: string = '';
+  @Prop requestedCodecPreference: number = 0;
   @Prop requestedColorDepth: string = '';
   @Prop requestedFrameRate: number = 0;
   @Prop metricMask: number = 63;
@@ -189,6 +191,11 @@ export struct RustDeskDiagnosticsHud {
     }
     if (this.diagnostics.qualityUpdateStatus === 3) { return '发送失败'; }
     return '连接初始值';
+  }
+
+  private codecAlignment(): RustDeskCodecAlignment {
+    return rustDeskCodecAlignment(
+      this.requestedCodecPreference, this.diagnostics.codec, this.diagnostics.videoSeen);
   }
 
   private vncRequestedColorDepth(): string {
@@ -383,10 +390,16 @@ export struct RustDeskDiagnosticsHud {
           (this.diagnostics.height > 0 ? this.diagnostics.height.toString() : '—')
       })
       this.metricLine({
-        label: '编码 / 解码',
+        label: this.protocolLabel === 'VNC' ? '编码 / 解码' : '编码 偏好/实际',
         value: this.protocolLabel === 'VNC' ? 'RAW BGRA' :
-          rustDeskCodecLabel(this.diagnostics.codec) + ' / ' + this.diagnostics.decoderBackend
+          this.codecAlignment().preference + ' / ' + this.codecAlignment().actual
       })
+      if (this.protocolLabel !== 'VNC') {
+        this.metricLine({
+          label: '编码状态 / 解码器',
+          value: this.codecAlignment().state + ' / ' + this.diagnostics.decoderBackend
+        })
+      }
       this.metricLine({
         label: '路径',
         value: this.diagnostics.protocolSnapshotAvailable ?

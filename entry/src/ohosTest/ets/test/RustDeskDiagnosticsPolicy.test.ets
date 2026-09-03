@@ -8,7 +8,10 @@ import {
   formatDiagnosticRate,
   resolveRustDeskProDiagnosticsToggle,
   rustDeskDiagnosticsStreamState,
+  rustDeskCodecAlignment,
+  rustDeskCodecForPreference,
   rustDeskCodecLabel,
+  rustDeskCodecPreferenceLabel,
   shouldEnableRustDeskPro,
   shouldShowSessionDiagnostics,
   shouldShowRustDeskDiagnostics
@@ -76,6 +79,42 @@ export default function rustDeskDiagnosticsPolicyTest(): void {
       expect(rustDeskCodecLabel(3)).assertEqual('VP9');
       expect(rustDeskCodecLabel(4)).assertEqual('AV1');
       expect(rustDeskCodecLabel(-1)).assertEqual('—');
+    });
+
+    it('keeps_preference_numbering_distinct_from_actual_frame_numbering', 0, (): void => {
+      expect(rustDeskCodecPreferenceLabel(0)).assertEqual('自动');
+      expect(rustDeskCodecPreferenceLabel(1)).assertEqual('VP8');
+      expect(rustDeskCodecPreferenceLabel(2)).assertEqual('VP9');
+      expect(rustDeskCodecPreferenceLabel(3)).assertEqual('AV1');
+      expect(rustDeskCodecPreferenceLabel(4)).assertEqual('H264');
+      expect(rustDeskCodecPreferenceLabel(5)).assertEqual('H265');
+      expect(rustDeskCodecForPreference(1)).assertEqual(2);
+      expect(rustDeskCodecForPreference(2)).assertEqual(3);
+      expect(rustDeskCodecForPreference(3)).assertEqual(4);
+      expect(rustDeskCodecForPreference(4)).assertEqual(0);
+      expect(rustDeskCodecForPreference(5)).assertEqual(1);
+    });
+
+    it('reports_preference_and_actual_codec_alignment_without_faking_live_apply', 0, (): void => {
+      const waiting = rustDeskCodecAlignment(5, -1, false);
+      expect(waiting.preference).assertEqual('H265');
+      expect(waiting.actual).assertEqual('等待视频流');
+      expect(waiting.aligned).assertFalse();
+
+      const automatic = rustDeskCodecAlignment(0, 3, true);
+      expect(automatic.actual).assertEqual('VP9');
+      expect(automatic.state).assertEqual('自动协商');
+      expect(automatic.aligned).assertTrue();
+
+      const aligned = rustDeskCodecAlignment(5, 1, true);
+      expect(aligned.state).assertEqual('偏好与实际流已对齐');
+      expect(aligned.aligned).assertTrue();
+
+      const pendingReconnect = rustDeskCodecAlignment(5, 0, true);
+      expect(pendingReconnect.preference).assertEqual('H265');
+      expect(pendingReconnect.actual).assertEqual('H264');
+      expect(pendingReconnect.state).assertEqual('待重连重新协商');
+      expect(pendingReconnect.aligned).assertFalse();
     });
   });
 }

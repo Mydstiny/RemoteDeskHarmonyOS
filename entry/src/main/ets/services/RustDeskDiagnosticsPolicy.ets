@@ -112,3 +112,46 @@ export function rustDeskCodecLabel(codec: number): string {
   if (codec === 4) { return 'AV1'; }
   return '—';
 }
+
+export function rustDeskCodecPreferenceLabel(preference: number): string {
+  if (preference === 1) { return 'VP8'; }
+  if (preference === 2) { return 'VP9'; }
+  if (preference === 3) { return 'AV1'; }
+  if (preference === 4) { return 'H264'; }
+  if (preference === 5) { return 'H265'; }
+  return '自动';
+}
+
+export function rustDeskCodecForPreference(preference: number): number {
+  if (preference === 1) { return 2; }
+  if (preference === 2) { return 3; }
+  if (preference === 3) { return 4; }
+  if (preference === 4) { return 0; }
+  if (preference === 5) { return 1; }
+  return -1;
+}
+
+export interface RustDeskCodecAlignment {
+  preference: string;
+  actual: string;
+  state: string;
+  aligned: boolean;
+}
+
+/** Keep the reconnect-scoped preference distinct from the codec observed on real frames. */
+export function rustDeskCodecAlignment(
+  preference: number, actualCodec: number, videoSeen: boolean): RustDeskCodecAlignment {
+  const requested: string = rustDeskCodecPreferenceLabel(preference);
+  const actual: string = rustDeskCodecLabel(actualCodec);
+  if (!videoSeen || actualCodec < 0 || actualCodec > 4) {
+    return { preference: requested, actual: '等待视频流', state: '等待实际编码', aligned: false };
+  }
+  const expected: number = rustDeskCodecForPreference(preference);
+  if (expected < 0) {
+    return { preference: requested, actual, state: '自动协商', aligned: true };
+  }
+  if (expected === actualCodec) {
+    return { preference: requested, actual, state: '偏好与实际流已对齐', aligned: true };
+  }
+  return { preference: requested, actual, state: '待重连重新协商', aligned: false };
+}
