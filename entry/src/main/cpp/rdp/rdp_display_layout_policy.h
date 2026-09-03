@@ -42,6 +42,31 @@ inline bool HasInFlightTimedOut(bool inFlight, int64_t inFlightSinceUs, int64_t 
         nowUs - inFlightSinceUs >= kInFlightTimeoutUs;
 }
 
+struct InFlightTimeoutResolution {
+    bool timedOut = false;
+    bool layoutPending = false;
+    bool layoutInFlight = false;
+    bool displayControlDisabled = false;
+};
+
+inline InFlightTimeoutResolution ResolveInFlightTimeout(bool hasPending,
+                                                        bool inFlight,
+                                                        bool disabled,
+                                                        int64_t inFlightSinceUs,
+                                                        int64_t nowUs) {
+    if (!HasInFlightTimedOut(inFlight, inFlightSinceUs, nowUs)) {
+        return {false, hasPending, inFlight, disabled};
+    }
+    // DISP has no request identifier in DesktopResize. Once a response times
+    // out, sending a coalesced follow-up would let the late response to A be
+    // mistaken for B. Fail closed for this channel generation instead.
+    return {true, false, false, true};
+}
+
+inline bool ShouldResolveResizeAsRequest(bool inFlight, bool disabled) {
+    return inFlight && !disabled;
+}
+
 inline bool IsSendDue(bool hasPending, bool inFlight, int64_t lastSendUs, int64_t nowUs) {
     if (!hasPending || inFlight) {
         return false;
@@ -53,6 +78,42 @@ inline bool IsSendDue(bool hasPending, bool inFlight, int64_t lastSendUs, int64_
 inline bool ShouldDetachDisplayChannel(const void* currentChannel,
                                        const void* disconnectedChannel) {
     return currentChannel != nullptr && currentChannel == disconnectedChannel;
+}
+
+inline std::string ResolveCompletedRequestStatus(bool followUpPending,
+                                                  int requestedWidth,
+                                                  int requestedHeight,
+                                                  int effectiveWidth,
+                                                  int effectiveHeight) {
+    // requestDisplayLayout() coalesces a newer request into one pending slot
+    // while the previous layout is in flight. The older completion must not
+    // masquerade as acknowledgement of that newer request.
+    if (followUpPending) {
+        return "queued";
+    }
+    if (requestedWidth <= 0 || requestedHeight <= 0) {
+        return "initial_geometry";
+    }
+    return requestedWidth == effectiveWidth && requestedHeight == effectiveHeight
+        ? "applied" : "server_adjusted";
+}
+
+inline std::string ResolveCancelledRequestStatus(bool requestInFlight) {
+    return requestInFlight ? "sent" : "cancelled";
+}
+
+struct RequestedGeometry {
+    int width = 0;
+    int height = 0;
+};
+
+inline RequestedGeometry ResolveRequestedGeometryAfterPendingCancellation(
+    bool requestInFlight, int currentRequestedWidth, int currentRequestedHeight,
+    int inFlightWidth, int inFlightHeight) {
+    if (requestInFlight && inFlightWidth > 0 && inFlightHeight > 0) {
+        return {inFlightWidth, inFlightHeight};
+    }
+    return {currentRequestedWidth, currentRequestedHeight};
 }
 
 inline RdpDisplayLayoutResult Validate(const RdpDisplayLayoutRequest& request) {

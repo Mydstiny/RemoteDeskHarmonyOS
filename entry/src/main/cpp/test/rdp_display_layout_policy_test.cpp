@@ -82,6 +82,25 @@ RDP_TEST_CASE(rdp_display_layout_policy_bounds_an_unacknowledged_request) {
         false, sentUs, sentUs + 5000000));
 }
 
+RDP_TEST_CASE(rdp_display_layout_policy_fail_closes_timeout_before_follow_up_send) {
+    constexpr int64_t sentUs = 1000000;
+    const auto resolution = RdpDisplayLayoutPolicy::ResolveInFlightTimeout(
+        true, true, false, sentUs,
+        sentUs + RdpDisplayLayoutPolicy::kInFlightTimeoutUs);
+
+    RDP_ASSERT(resolution.timedOut);
+    RDP_ASSERT(!resolution.layoutPending);
+    RDP_ASSERT(!resolution.layoutInFlight);
+    RDP_ASSERT(resolution.displayControlDisabled);
+    RDP_ASSERT(!RdpDisplayLayoutPolicy::IsSendDue(
+        resolution.layoutPending, resolution.layoutInFlight,
+        sentUs, sentUs + RdpDisplayLayoutPolicy::kInFlightTimeoutUs));
+    // A late DesktopResize cannot be accepted as completion of the discarded
+    // follow-up B once the uncorrelatable channel generation is disabled.
+    RDP_ASSERT(!RdpDisplayLayoutPolicy::ShouldResolveResizeAsRequest(
+        resolution.layoutInFlight, resolution.displayControlDisabled));
+}
+
 RDP_TEST_CASE(rdp_display_layout_policy_ignores_stale_channel_disconnect) {
     int oldChannel = 0;
     int currentChannel = 0;
@@ -91,4 +110,32 @@ RDP_TEST_CASE(rdp_display_layout_policy_ignores_stale_channel_disconnect) {
         &currentChannel, &currentChannel));
     RDP_ASSERT(!RdpDisplayLayoutPolicy::ShouldDetachDisplayChannel(
         nullptr, &oldChannel));
+}
+
+RDP_TEST_CASE(rdp_display_layout_policy_keeps_follow_up_resize_queued) {
+    // A completed 2560x1600 while a newer 2880x1800 request occupies the
+    // coalesced pending slot must not publish "server_adjusted" for B.
+    RDP_ASSERT(RdpDisplayLayoutPolicy::ResolveCompletedRequestStatus(
+        true, 2880, 1800, 2560, 1600) == "queued");
+    RDP_ASSERT(RdpDisplayLayoutPolicy::ResolveCompletedRequestStatus(
+        false, 2880, 1800, 2880, 1800) == "applied");
+    RDP_ASSERT(RdpDisplayLayoutPolicy::ResolveCompletedRequestStatus(
+        false, 2880, 1800, 2560, 1600) == "server_adjusted");
+}
+
+RDP_TEST_CASE(rdp_display_layout_policy_preserves_an_in_flight_request_when_follow_up_is_cancelled) {
+    RDP_ASSERT(RdpDisplayLayoutPolicy::ResolveCancelledRequestStatus(true) == "sent");
+    RDP_ASSERT(RdpDisplayLayoutPolicy::ResolveCancelledRequestStatus(false) == "cancelled");
+
+    const auto active =
+        RdpDisplayLayoutPolicy::ResolveRequestedGeometryAfterPendingCancellation(
+            true, 2880, 1800, 2560, 1600);
+    RDP_ASSERT(active.width == 2560);
+    RDP_ASSERT(active.height == 1600);
+
+    const auto idle =
+        RdpDisplayLayoutPolicy::ResolveRequestedGeometryAfterPendingCancellation(
+            false, 2880, 1800, 0, 0);
+    RDP_ASSERT(idle.width == 2880);
+    RDP_ASSERT(idle.height == 1800);
 }

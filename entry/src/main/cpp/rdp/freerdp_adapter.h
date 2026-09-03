@@ -78,6 +78,8 @@ public:
                                            const std::function<bool()>& cancelled = {}) override;
     RdpPreflightResult probeRdpCertificateRoute(const RdpPreflightRequest& request) override;
     RdpRenderStats  getRdpRenderStats() override;
+    bool            acknowledgeRdpInputGeometry(uint64_t epoch, int width, int height) override;
+    bool            synchronizeRendererGeometry();
     RdpDisplayLayoutResult requestDisplayLayout(const RdpDisplayLayoutRequest& request);
     bool            cancelDisplayLayout();
     bool            setBackgroundVideoPrewarm(bool enabled, uint32_t intervalMs);

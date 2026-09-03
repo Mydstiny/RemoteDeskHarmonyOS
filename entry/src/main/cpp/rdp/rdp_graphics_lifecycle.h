@@ -32,11 +32,28 @@ struct RdpGraphicsLifecycleSnapshot {
     uintptr_t gfxChannelContext = 0;
 };
 
+struct RdpRendererGeometryReplay {
+    bool ready = false;
+    uint64_t epoch = 0;
+    int width = 0;
+    int height = 0;
+};
+
+inline RdpRendererGeometryReplay ResolveRdpRendererGeometryReplay(
+        const RdpGraphicsLifecycleSnapshot& graphics) {
+    if (graphics.resizeInProgress || graphics.desktopWidth <= 0 ||
+        graphics.desktopHeight <= 0) {
+        return {};
+    }
+    return {true, graphics.epoch, graphics.desktopWidth, graphics.desktopHeight};
+}
+
 class RdpGraphicsLifecycle {
 public:
     static constexpr int kMaxDesktopDimension = 16384;
 
     void reset(int width, int height, bool gfxRequested);
+    bool reconcileInitialDesktopSize(int width, int height);
     RdpResizeTicket beginResize(int width, int height);
     void completeResize(uint64_t epoch, bool success);
 

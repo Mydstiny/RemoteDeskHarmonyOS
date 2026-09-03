@@ -19,6 +19,18 @@ void RdpGraphicsLifecycle::reset(int width, int height, bool gfxRequested) {
     channelInitializing_ = false;
 }
 
+bool RdpGraphicsLifecycle::reconcileInitialDesktopSize(int width, int height) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!ValidDesktopSize(width, height) || snapshot_.resizeInProgress ||
+        snapshot_.epoch != 0) {
+        return false;
+    }
+    snapshot_.desktopWidth = width;
+    snapshot_.desktopHeight = height;
+    snapshot_.presentationAllowed = true;
+    return true;
+}
+
 RdpResizeTicket RdpGraphicsLifecycle::beginResize(int width, int height) {
     std::lock_guard<std::mutex> lock(mutex_);
     RdpResizeTicket ticket;

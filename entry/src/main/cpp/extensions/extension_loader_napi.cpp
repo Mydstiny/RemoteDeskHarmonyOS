@@ -3938,9 +3938,22 @@ napi_value NapiGetRdpRenderStats(napi_env env, napi_callback_info info) {
     }
 
     RdpRenderStats stats;
-    auto it = g_sessionRegistry.find(sessionId);
-    if (it != g_sessionRegistry.end() && it->second->adapter) {
-        stats = it->second->adapter->getRdpRenderStats();
+    const auto lookup = g_sessionRegistry.find(sessionId);
+    const std::shared_ptr<SessionContext> session =
+        lookup == g_sessionRegistry.end() ? nullptr : lookup->second;
+    if (session && session->protocolName == "rdp" &&
+        session->lifecycle.load(std::memory_order_acquire) ==
+            SessionContext::Lifecycle::Active) {
+        std::shared_ptr<ProtocolAdapter> protocolAdapter;
+        {
+            std::lock_guard<std::mutex> adapterLock(session->adapterMutex);
+            protocolAdapter = session->adapter;
+        }
+        auto adapter = std::dynamic_pointer_cast<FreeRdpAdapter>(protocolAdapter);
+        if (adapter && session->lifecycle.load(std::memory_order_acquire) ==
+                SessionContext::Lifecycle::Active) {
+            stats = adapter->getRdpRenderStats();
+        }
     }
 
     napi_value result;
@@ -4015,6 +4028,7 @@ napi_value NapiGetRdpRenderStats(napi_env env, napi_callback_info info) {
                    static_cast<int64_t>(stats.desktopResizeCount));
     SetObjectInt64(env, result, "desktopResizeFailures",
                    static_cast<int64_t>(stats.desktopResizeFailures));
+    SetObjectBool(env, result, "desktopResizeInProgress", stats.desktopResizeInProgress);
     SetObjectBool(env, result, "gfxChannelConnected", stats.gfxChannelConnected);
     SetObjectBool(env, result, "displayControlReady", stats.displayControlReady);
     SetObjectBool(env, result, "displayControlDisabled", stats.displayControlDisabled);
@@ -4025,15 +4039,94 @@ napi_value NapiGetRdpRenderStats(napi_env env, napi_callback_info info) {
     SetObjectInt32(env, result, "displayScaleFactor", stats.displayScaleFactor);
     SetObjectInt64(env, result, "displayRequestCount",
                    static_cast<int64_t>(stats.displayRequestCount));
+    SetObjectInt64(env, result, "displayChannelRequestCount",
+                   static_cast<int64_t>(stats.displayChannelRequestCount));
     SetObjectInt64(env, result, "displayFailureCount",
                    static_cast<int64_t>(stats.displayFailureCount));
+    SetObjectBool(env, result, "displayLayoutPending", stats.displayLayoutPending);
+    SetObjectBool(env, result, "displayLayoutInFlight", stats.displayLayoutInFlight);
     SetObjectString(env, result, "displayLastResult", stats.displayLastResult);
+    SetObjectBool(env, result, "inputGeometryReady", stats.inputGeometryReady);
+    SetObjectInt64(env, result, "inputGeometryAcknowledgedEpoch",
+                   static_cast<int64_t>(stats.inputGeometryAcknowledgedEpoch));
+    SetObjectInt64(env, result, "inputGeometryFenceDrops",
+                   static_cast<int64_t>(stats.inputGeometryFenceDrops));
     SetObjectInt32(env, result, "inputQueueDepth", stats.inputQueueDepth);
     SetObjectInt32(env, result, "inputQueueMax", stats.inputQueueMax);
     SetObjectInt64(env, result, "inputTextUnits", stats.inputTextUnits);
     SetObjectInt64(env, result, "inputDroppedMouseMoves", stats.inputDroppedMouseMoves);
     SetObjectInt64(env, result, "inputNonDisposableOverflow", stats.inputNonDisposableOverflow);
     SetObjectString(env, result, "graphicsMode", stats.graphicsMode);
+    return result;
+}
+
+/** NAPI: acknowledgeRdpInputGeometry(sessionId, epoch, width, height): boolean */
+napi_value NapiAcknowledgeRdpInputGeometry(napi_env env, napi_callback_info info) {
+    size_t argc = 4;
+    napi_value args[4];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    int32_t sessionId = 0;
+    int64_t epoch = 0;
+    int32_t width = 0;
+    int32_t height = 0;
+    bool acknowledged = false;
+    if (argc >= 4 &&
+        napi_get_value_int32(env, args[0], &sessionId) == napi_ok &&
+        napi_get_value_int64(env, args[1], &epoch) == napi_ok &&
+        napi_get_value_int32(env, args[2], &width) == napi_ok &&
+        napi_get_value_int32(env, args[3], &height) == napi_ok && epoch >= 0) {
+        const auto lookup = g_sessionRegistry.find(sessionId);
+        const std::shared_ptr<SessionContext> session =
+            lookup == g_sessionRegistry.end() ? nullptr : lookup->second;
+        if (session && session->protocolName == "rdp" &&
+            session->lifecycle.load(std::memory_order_acquire) ==
+                SessionContext::Lifecycle::Active) {
+            std::shared_ptr<ProtocolAdapter> protocolAdapter;
+            {
+                std::lock_guard<std::mutex> adapterLock(session->adapterMutex);
+                protocolAdapter = session->adapter;
+            }
+            auto adapter = std::dynamic_pointer_cast<FreeRdpAdapter>(protocolAdapter);
+            acknowledged = adapter &&
+                session->lifecycle.load(std::memory_order_acquire) ==
+                    SessionContext::Lifecycle::Active &&
+                adapter->acknowledgeRdpInputGeometry(
+                    static_cast<uint64_t>(epoch), width, height);
+        }
+    }
+    napi_value result;
+    napi_get_boolean(env, acknowledged, &result);
+    return result;
+}
+
+/** NAPI: synchronizeRdpRendererGeometry(sessionId): boolean */
+napi_value NapiSynchronizeRdpRendererGeometry(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    int32_t sessionId = 0;
+    bool synchronized = false;
+    if (argc >= 1 && napi_get_value_int32(env, args[0], &sessionId) == napi_ok) {
+        const auto lookup = g_sessionRegistry.find(sessionId);
+        const std::shared_ptr<SessionContext> session =
+            lookup == g_sessionRegistry.end() ? nullptr : lookup->second;
+        if (session && session->protocolName == "rdp" &&
+            session->lifecycle.load(std::memory_order_acquire) ==
+                SessionContext::Lifecycle::Active) {
+            std::shared_ptr<ProtocolAdapter> protocolAdapter;
+            {
+                std::lock_guard<std::mutex> adapterLock(session->adapterMutex);
+                protocolAdapter = session->adapter;
+            }
+            auto adapter = std::dynamic_pointer_cast<FreeRdpAdapter>(protocolAdapter);
+            synchronized = adapter &&
+                session->lifecycle.load(std::memory_order_acquire) ==
+                    SessionContext::Lifecycle::Active &&
+                adapter->synchronizeRendererGeometry();
+        }
+    }
+    napi_value result;
+    napi_get_boolean(env, synchronized, &result);
     return result;
 }
 
@@ -12097,6 +12190,12 @@ napi_value ExtensionLoaderNapi::Init(napi_env env, napi_value exports) {
     napi_create_function(env, "getRdpRenderStats", NAPI_AUTO_LENGTH,
                          NapiGetRdpRenderStats, nullptr, &fn);
     napi_set_named_property(env, exports, "getRdpRenderStats", fn);
+    napi_create_function(env, "acknowledgeRdpInputGeometry", NAPI_AUTO_LENGTH,
+                         NapiAcknowledgeRdpInputGeometry, nullptr, &fn);
+    napi_set_named_property(env, exports, "acknowledgeRdpInputGeometry", fn);
+    napi_create_function(env, "synchronizeRdpRendererGeometry", NAPI_AUTO_LENGTH,
+                         NapiSynchronizeRdpRendererGeometry, nullptr, &fn);
+    napi_set_named_property(env, exports, "synchronizeRdpRendererGeometry", fn);
     napi_create_function(env, "requestRdpDisplayLayout", NAPI_AUTO_LENGTH,
                          NapiRequestRdpDisplayLayout, nullptr, &fn);
     napi_set_named_property(env, exports, "requestRdpDisplayLayout", fn);

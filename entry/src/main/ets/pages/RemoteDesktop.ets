@@ -459,10 +459,20 @@ import {
   normalizeRdpRemoteUiScalePreference,
   rdpSessionOrientationPolicy,
   RDP_DYNAMIC_LAYOUT_SETTLE_MS,
+  RDP_INPUT_STABILITY_DELAY_MS,
   RdpAdaptiveDisplayResult,
+  RdpConfirmedDesktopGeometry,
+  RdpInputGeometryObservation,
+  rdpCursorPositionRevisionAfterGeometryChange,
+  rdpRendererAttachStabilityDelayMs,
+  releaseRdpInputForGeometryChange,
+  resumeRdpGeometryAfterRendererAttach,
+  resolveRdpInputGeometryObservation,
+  resolveRdpInputReadinessTransition,
   resolveRdpAdaptiveDisplay,
   resolveRdpDisplaySourceId,
   shouldAttemptInitialRdpDynamicUpgrade,
+  shouldPreserveLiveRdpGeometry,
   shouldUseRdpPcAdaptiveDisplay
 } from '../services/RdpAdaptiveDisplayPolicy';
 import {
@@ -1116,6 +1126,11 @@ struct RemoteDesktop {
   private decoderHandle: number = -1;
   private surfaceReady: boolean = false;
   private inputForwardReady: boolean = false;
+  private rdpInputStabilityGateReady: boolean = false;
+  private rdpInputStabilityTimer: number = -1;
+  private rdpGeometryReady: boolean = false;
+  private rdpPendingLayoutWidth: number = 0;
+  private rdpPendingLayoutHeight: number = 0;
   private connectStarted: boolean = false;
   private cleanupStarted: boolean = false;
   private bgRestorePending: boolean = false; // T-252: 后台保活恢复待处理 (替代 AppStorage 时序问题)
@@ -1288,6 +1303,7 @@ struct RemoteDesktop {
   private remoteHeight: number = 1080;
   private rustDeskGeometryEpoch: number = 0;
   private vncGeometryEpoch: number = 0;
+  private rdpGeometryEpoch: number = 0;
   private vncGeometryReady: boolean = false;
   private remoteCursorX: number = 960;
   private remoteCursorY: number = 540;
@@ -5250,6 +5266,105 @@ struct RemoteDesktop {
     this.invalidateRendererViewportCache();
   }
 
+  /** Release every sequence that was started in the old RDP desktop space. */
+  private resetRdpInputAfterGeometryChange(reason: string): void {
+    releaseRdpInputForGeometryChange({
+      discardPendingMouseMove: (): void => this.discardPendingMouseMove(),
+      releaseCanvasPinchInput: (): void => this.releaseCanvasPinchInput(reason),
+      releaseAllHeldKeys: (): void => this.releaseAllHeldKeys(),
+      releaseHeldPointerState: (): void => {
+        if (this.touchLeftDown) {
+          this.sendMouseNow(this.remoteCursorX, this.remoteCursorY, 0, false);
+          this.touchLeftDown = false;
+        }
+        if (this.physicalMouseDownButton >= 0) {
+          this.sendMouseNow(this.remoteCursorX, this.remoteCursorY,
+            this.physicalMouseDownButton, false);
+          this.physicalMouseDownButton = -1;
+        }
+      },
+      resetTouchGesture: (): void => this.resetTouchGesture(),
+      resetAllLatches: (): void => this.resetAllLatches(),
+      resetTouchpadState: (): void => {
+        this.touchpadAnchorValid = false;
+        this.resetTouchpadPointerCurve();
+        this.resetRustDeskPhysicalTouchpadState();
+      },
+      invalidateViewport: (): void => this.invalidateRendererViewportCache()
+    });
+  }
+
+  private markRdpGeometryPending(reason: string): void {
+    if (!this.isRdpRemoteSession()) {
+      return;
+    }
+    if (this.inputForwardReady) {
+      // Release held buttons/keys while the old coordinate space is still
+      // authoritative. Once the gate closes, canForwardInput() fails closed.
+      this.resetRdpInputAfterGeometryChange(reason);
+    }
+    const changed: boolean = this.rdpGeometryReady || this.inputForwardReady;
+    this.rdpGeometryReady = false;
+    this.inputForwardReady = false;
+    if (changed) {
+      hilog.info(RD_DOMAIN, RD_TAG, 'RDP input geometry pending reason=' + reason +
+        ' remote=' + this.remoteWidth.toString() + 'x' + this.remoteHeight.toString() +
+        ' requested=' + this.rdpPendingLayoutWidth.toString() + 'x' +
+        this.rdpPendingLayoutHeight.toString());
+    }
+  }
+
+  private refreshRdpInputForwardReadiness(reason: string): void {
+    if (!this.isRdpRemoteSession()) {
+      return;
+    }
+    const transition = resolveRdpInputReadinessTransition(
+      this.inputForwardReady, this.connected, this.sessionId,
+      this.rdpInputStabilityGateReady, this.rdpGeometryReady);
+    const ready: boolean = transition.inputReady;
+    if (ready === this.inputForwardReady) {
+      return;
+    }
+    this.inputForwardReady = ready;
+    hilog.info(RD_DOMAIN, RD_TAG, 'RDP input readiness=' + (ready ? 'ready' : 'blocked') +
+      ' reason=' + reason +
+      ' stability=' + (this.rdpInputStabilityGateReady ? '1' : '0') +
+      ' geometry=' + (this.rdpGeometryReady ? '1' : '0') +
+      ' session=' + this.sessionId.toString() +
+      ' attempt=' + this.connectAttemptId.toString());
+    if (transition.becameReady) {
+      this.scheduleRemoteInputFocus('rdp-' + reason);
+      this.publishIndependentWindowReady('rdp-' + reason);
+    }
+  }
+
+  private clearRdpInputStabilityTimer(): void {
+    if (this.rdpInputStabilityTimer >= 0) {
+      clearTimeout(this.rdpInputStabilityTimer);
+      this.rdpInputStabilityTimer = -1;
+    }
+  }
+
+  private armRdpInputStabilityGate(sessionId: number, attemptId: number,
+    delayMs: number = RDP_INPUT_STABILITY_DELAY_MS): void {
+    this.clearRdpInputStabilityTimer();
+    this.rdpInputStabilityGateReady = delayMs <= 0;
+    if (delayMs <= 0) {
+      this.refreshRdpInputForwardReadiness('video-stability-gate');
+      return;
+    }
+    this.rdpInputStabilityTimer = setTimeout((): void => {
+      this.rdpInputStabilityTimer = -1;
+      if (this.sessionId !== sessionId || this.connectAttemptId !== attemptId ||
+        !this.connected || !this.isRdpRemoteSession() || this.cleanupStarted ||
+        this.remoteDesktopBgFlag || this.sessionWindowBackground) {
+        return;
+      }
+      this.rdpInputStabilityGateReady = true;
+      this.refreshRdpInputForwardReadiness('video-stability-gate');
+    }, delayMs);
+  }
+
   private applyRustDeskDisplayGeometry(display: RustDeskDisplayInfo): void {
     const width: number = display.width > 0 ? display.width : display.originalWidth;
     const height: number = display.height > 0 ? display.height : display.originalHeight;
@@ -7952,7 +8067,10 @@ struct RemoteDesktop {
     // PIP preparation can precede the first decoded frame. Re-read native
     // diagnostics after attachment so the controller ratio follows the first
     // actual peer frame instead of the adaptive request dimensions.
-    const delays: number[] = [0, 120, 300, 700, 1400, 2600];
+    // Display Control accepts a resize for up to five seconds. Keep sampling
+    // beyond that bound so a late valid DesktopResize (or its fail-closed
+    // fallback) cannot leave PIP pinned to the previous aspect ratio.
+    const delays: number[] = [0, 120, 300, 700, 1400, 2600, 4200, 5400, 6200];
     for (const delayMs of delays) {
       const timer: number = setTimeout((): void => {
         this.refreshActivePipContentSize();
@@ -7968,6 +8086,7 @@ struct RemoteDesktop {
       RemoteSessionWindowCoordinator.getInstance().resolve(id);
     if (record === null || record.request.target !== 'remote_desktop') { return; }
     this.sessionWindowId = id;
+    this.sessionWindowReadyCommitted = false;
     this.loader = record.runtime.loader;
     this.activeSessionRegistry = record.runtime.activeSessionRegistry;
     hilog.info(RD_DOMAIN, RD_TAG,
@@ -8499,8 +8618,31 @@ struct RemoteDesktop {
    */
   private resumeRustDeskDiagnosticsAfterForeground(): void {
     if (this.isRdpRemoteSession()) {
+      const sessionId: number = this.sessionId;
+      const attemptId: number = this.connectAttemptId;
+      const stabilityDelayMs: number = rdpRendererAttachStabilityDelayMs(
+        this.sessionWindowId, this.sessionWindowReadyCommitted);
+      // A restored renderer (including the normal authenticated PC window
+      // handoff) must re-establish both the native monitor and the coordinate
+      // barrier before input is admitted in the new page instance.
+      resumeRdpGeometryAfterRendererAttach({
+        blockInputUntilConfirmed: (): void => {
+          this.clearRdpInputStabilityTimer();
+          this.rdpInputStabilityGateReady = stabilityDelayMs <= 0;
+          this.rdpGeometryReady = false;
+          this.inputForwardReady = false;
+        },
+        synchronizeGeometry: (): void =>
+          this.syncRdpLogicalSizeFromNative(sessionId, attemptId),
+        startRenderWatchdog: (): void => this.startRdpRenderWatchdog(sessionId, attemptId),
+        startNativeStateMonitor: (): void =>
+          this.startRdpNativeStateMonitor(sessionId, attemptId)
+      });
+      if (stabilityDelayMs > 0) {
+        this.armRdpInputStabilityGate(sessionId, attemptId, stabilityDelayMs);
+      }
       this.startRdpDiagnosticsPolling();
-      this.startRdpTransferStatusPolling(this.sessionId, this.connectAttemptId);
+      this.startRdpTransferStatusPolling(sessionId, attemptId);
       return;
     }
     if (!this.shouldShowActiveDiagnostics()) {
@@ -8569,6 +8711,7 @@ struct RemoteDesktop {
   }
 
   aboutToDisappear(): void {
+    this.clearRdpInputStabilityTimer();
     if (this.cryptoStateUnsubscribe !== null) {
       this.cryptoStateUnsubscribe();
       this.cryptoStateUnsubscribe = null;
@@ -10172,6 +10315,109 @@ struct RemoteDesktop {
       ' receivedFrames=' + snapshot.receivedFrames.toString());
   }
 
+  /**
+   * RDP Display Control can upgrade the initial density-readable fallback
+   * (for example 1600x1000) to the physical desktop (2880x1800). The renderer
+   * and FreeRDP then operate in the new space, so pointer coordinates must
+   * adopt it as one transaction instead of retaining the connection request.
+   */
+  private syncRdpLogicalSizeFromNative(sessionId: number, attemptId: number): void {
+    if (!this.isRdpRemoteSession() || !this.connected || this.sessionId !== sessionId ||
+      this.connectAttemptId !== attemptId ||
+      this.rendererHandle <= 0) {
+      return;
+    }
+    try {
+      const stats: RdpRenderStats = this.loader.getRdpRenderStats(sessionId);
+      const viewport = this.loader.getRendererViewport(this.rendererHandle);
+      if (viewport === null) {
+        return;
+      }
+      const observation: RdpInputGeometryObservation = resolveRdpInputGeometryObservation(
+        this.sessionId, this.connectAttemptId, sessionId, attemptId,
+        viewport.sourceWidth, viewport.sourceHeight,
+        stats.desktopWidth, stats.desktopHeight,
+        this.remoteWidth, this.remoteHeight,
+        stats.displayLayoutPending, stats.displayLayoutInFlight,
+        stats.desktopResizeInProgress, stats.inputGeometryReady,
+        this.rdpInputStabilityGateReady);
+      if (observation.status === 'stale') {
+        return;
+      }
+      if (observation.status === 'pending' || observation.geometry === null) {
+        this.markRdpGeometryPending('native-observation-' + stats.displayLastResult);
+        return;
+      }
+      const geometry: RdpConfirmedDesktopGeometry = observation.geometry;
+      this.rendererSourceWidth = geometry.width;
+      this.rendererSourceHeight = geometry.height;
+      if (!observation.geometryChanged) {
+        if (!this.loader.acknowledgeRdpInputGeometry(
+          sessionId, stats.graphicsEpoch, geometry.width, geometry.height)) {
+          this.markRdpGeometryPending('native-geometry-ack-rejected');
+          return;
+        }
+        this.rdpPendingLayoutWidth = 0;
+        this.rdpPendingLayoutHeight = 0;
+        this.rdpGeometryEpoch = Math.max(this.rdpGeometryEpoch, stats.graphicsEpoch);
+        this.rdpGeometryReady = true;
+        this.refreshRdpInputForwardReadiness('geometry-confirmed');
+        return;
+      }
+      const previousWidth: number = this.remoteWidth;
+      const previousHeight: number = this.remoteHeight;
+      this.markRdpGeometryPending('rdp-desktop-geometry');
+      this.rebaseManualCanvasForSourceGeometry(
+        previousWidth, previousHeight, geometry.width, geometry.height);
+      this.rendererSourceWidth = geometry.width;
+      this.rendererSourceHeight = geometry.height;
+      this.updateOwnedRemoteSessionPipContentSize(geometry.width, geometry.height);
+      this.updateRemoteSize({
+        width: geometry.width,
+        height: geometry.height,
+        colorDepth: 32,
+        multiMonitor: false,
+        monitorCount: 1
+      });
+      if (!this.canvasTransformGestureModified) {
+        this.resetCanvasToDisplayDefault(true);
+      } else {
+        this.applyCanvasTransform();
+      }
+      this.remoteCursorPositionRevision = rdpCursorPositionRevisionAfterGeometryChange(
+        this.remoteCursorPositionRevision, true);
+      // A cursor revision may already have been consumed and clamped against
+      // the old desktop. Re-read the unchanged native snapshot in the new
+      // coordinate space instead of waiting for the remote cursor to move.
+      this.remoteCursorMotion = createRemoteCursorMotionState(
+        this.remoteCursorX, this.remoteCursorY);
+      this.pollRemoteCursor(sessionId);
+      this.requestRemoteCursorViewRefresh(true);
+      this.syncRemoteSystemPointer('rdp-desktop-geometry',
+        this.remoteSurfaceHovered !== false, true);
+      if (!this.loader.acknowledgeRdpInputGeometry(
+        sessionId, stats.graphicsEpoch, geometry.width, geometry.height)) {
+        this.markRdpGeometryPending('native-geometry-ack-rejected');
+        return;
+      }
+      this.rdpPendingLayoutWidth = 0;
+      this.rdpPendingLayoutHeight = 0;
+      this.rdpGeometryEpoch = Math.max(this.rdpGeometryEpoch, stats.graphicsEpoch);
+      this.rdpGeometryReady = true;
+      this.refreshRdpInputForwardReadiness('geometry-updated');
+      hilog.info(RD_DOMAIN, RD_TAG, 'RDP input geometry synchronized: ' +
+        previousWidth.toString() + 'x' + previousHeight.toString() + ' -> ' +
+        geometry.width.toString() + 'x' + geometry.height.toString() +
+        ' renderer=' + viewport.sourceWidth.toString() + 'x' +
+        viewport.sourceHeight.toString() +
+        ' graphicsEpoch=' + stats.graphicsEpoch.toString() +
+        ' resizeCount=' + stats.desktopResizeCount.toString() +
+        ' inputFenceDrops=' + stats.inputGeometryFenceDrops.toString());
+    } catch (_e) {
+      // Native geometry is unavailable while the RDP resize transaction is in flight.
+    }
+  }
+
   private stopVncGeometrySync(): void {
     if (this.vncGeometrySyncTimer >= 0) {
       clearInterval(this.vncGeometrySyncTimer);
@@ -10208,6 +10454,11 @@ struct RemoteDesktop {
     };
     const result: RdpDisplayLayoutResult =
       this.loader.requestRdpDisplayLayout(this.sessionId, request);
+    if (result.accepted) {
+      this.rdpPendingLayoutWidth = request.width;
+      this.rdpPendingLayoutHeight = request.height;
+      this.markRdpGeometryPending('display-layout-' + reason);
+    }
     hilog.info(RD_DOMAIN, RD_TAG, 'RDP dynamic layout reason=' + reason +
       ' size=' + request.width.toString() + 'x' + request.height.toString() +
       ' scale=' + request.desktopScaleFactor.toString() +
@@ -10225,6 +10476,8 @@ struct RemoteDesktop {
     }
     const cancelled: boolean = this.loader.cancelRdpDisplayLayout(this.sessionId);
     if (cancelled) {
+      this.rdpPendingLayoutWidth = 0;
+      this.rdpPendingLayoutHeight = 0;
       hilog.info(RD_DOMAIN, RD_TAG, 'RDP pending dynamic layout cancelled reason=' + reason);
     }
   }
@@ -10571,7 +10824,8 @@ struct RemoteDesktop {
       ' view=' + Math.round(this.surfaceWidth).toString() + 'x' + Math.round(this.surfaceHeight).toString() +
       ' desktop=' + this.remoteWidth.toString() + 'x' + this.remoteHeight.toString() +
       ' geometryEpoch=' +
-      (this.isVncSession() ? this.vncGeometryEpoch : this.rustDeskGeometryEpoch).toString() +
+      (this.isRdpRemoteSession() ? this.rdpGeometryEpoch :
+        (this.isVncSession() ? this.vncGeometryEpoch : this.rustDeskGeometryEpoch)).toString() +
       ' inside=' + (mapped.inside ? 'true' : 'false'));
   }
 
@@ -10627,6 +10881,14 @@ struct RemoteDesktop {
       hilog.info(RD_DOMAIN, RD_TAG, 'dropInput ' + source +
         ' vncGeometryReady=0 framebuffer=' + this.remoteWidth.toString() + 'x' +
         this.remoteHeight.toString());
+      return false;
+    }
+    if (this.isRdpRemoteSession() && !this.rdpGeometryReady) {
+      hilog.info(RD_DOMAIN, RD_TAG, 'dropInput ' + source +
+        ' rdpGeometryReady=0 desktop=' + this.remoteWidth.toString() + 'x' +
+        this.remoteHeight.toString() +
+        ' pending=' + this.rdpPendingLayoutWidth.toString() + 'x' +
+        this.rdpPendingLayoutHeight.toString());
       return false;
     }
     if (this.connected && this.sessionId > 0 && this.inputForwardReady) {
@@ -11632,32 +11894,7 @@ struct RemoteDesktop {
         return;
       }
       const state: number = this.loader.getConnectionState(sessionId);
-      try {
-        const vp = this.loader.getRendererViewport(this.rendererHandle);
-        if (vp !== null) {
-          const sourceWidth: number = vp.sourceWidth;
-          const sourceHeight: number = vp.sourceHeight;
-          if (sourceWidth > 0 && sourceHeight > 0 &&
-            (sourceWidth !== this.rendererSourceWidth || sourceHeight !== this.rendererSourceHeight)) {
-            this.rendererSourceWidth = sourceWidth;
-            this.rendererSourceHeight = sourceHeight;
-            // This monitor reads the native snapshot directly, so invalidate
-            // the local geometry cache before preserving a user transform.
-            // Otherwise a resize while zoomed keeps the old source dimensions
-            // in the next pinch calculation and input projection.
-            this.invalidateRendererViewportCache();
-            if (!this.canvasTransformGestureModified) {
-              this.resetCanvasToDisplayDefault(true);
-            }
-            hilog.info(RD_DOMAIN, RD_TAG, 'RDP desktop size synchronized from renderer: ' +
-              sourceWidth.toString() + 'x' + sourceHeight.toString() +
-              ' (renderer source only; remote logical size preserved=' +
-              this.remoteWidth.toString() + 'x' + this.remoteHeight.toString() + ')');
-          }
-        }
-      } catch (_e) {
-        // Renderer may be temporarily unavailable while a resize transaction is rebuilding GDI.
-      }
+      this.syncRdpLogicalSizeFromNative(sessionId, attemptId);
       if (state === 4 || state === 0) {
         const nativeMessage: string = this.loader.getConnectionLastMessage(sessionId);
         hilog.error(RD_DOMAIN, RD_TAG, 'RDP native post-connect state=' + state.toString() +
@@ -11690,7 +11927,7 @@ struct RemoteDesktop {
       }
       const stats: RdpRenderStats = this.loader.getRdpRenderStats(sessionId);
       if (shouldAttemptInitialRdpDynamicUpgrade(stats.displayControlReady,
-        stats.displayControlDisabled, stats.displayRequestCount) &&
+        stats.displayControlDisabled, stats.displayChannelRequestCount) &&
         this.canRequestRdpDynamicLayout()) {
         // Upgrade the conservative connection-time geometry to physical-pixel
         // sharpness only after the server has advertised Display Control caps.
@@ -11730,12 +11967,16 @@ struct RemoteDesktop {
         ' desktop=' + stats.desktopWidth.toString() + 'x' + stats.desktopHeight.toString() +
         ' gfxEpoch=' + stats.graphicsEpoch.toString() +
         ' resize=' + stats.desktopResizeCount.toString() + '/' +
-          stats.desktopResizeFailures.toString() +
+          stats.desktopResizeFailures.toString() + '/' +
+          (stats.desktopResizeInProgress ? 'in-flight' : 'idle') +
         ' gfxChannel=' + (stats.gfxChannelConnected ? 'connected' : 'disconnected') +
         ' disp=' + (stats.displayControlReady ? 'ready' : 'unavailable') + '/' +
           (stats.displayControlDisabled ? 'disabled' : stats.displayLastResult) +
         ' dispRequest=' + stats.displayRequestCount.toString() + '/' +
+          stats.displayChannelRequestCount.toString() + '/' +
           stats.displayFailureCount.toString() +
+        ' dispPending=' + (stats.displayLayoutPending ? '1' : '0') + '/' +
+          (stats.displayLayoutInFlight ? '1' : '0') +
         ' dispGeometry=' + stats.displayRequestedWidth.toString() + 'x' +
           stats.displayRequestedHeight.toString() + '->' +
           stats.displayEffectiveWidth.toString() + 'x' + stats.displayEffectiveHeight.toString() +
@@ -11743,6 +11984,9 @@ struct RemoteDesktop {
         ' inputQ=' + stats.inputQueueDepth.toString() + '/' + stats.inputQueueMax.toString() +
         ' inputTextUnits=' + stats.inputTextUnits.toString() +
         ' inputMouseDrops=' + stats.inputDroppedMouseMoves.toString() +
+        ' inputGeometry=' + (stats.inputGeometryReady ? 'ready' : 'blocked') + '/' +
+          stats.inputGeometryAcknowledgedEpoch.toString() +
+        ' inputGeometryDrops=' + stats.inputGeometryFenceDrops.toString() +
         ' inputPriorityOverflow=' + stats.inputNonDisposableOverflow.toString() +
         ' gfx=' + stats.graphicsMode);
       const renderedProgress = stats.renderedPaintCount > this.rdpWatchdogLastRendered;
@@ -12091,6 +12335,7 @@ struct RemoteDesktop {
     this.stopVncGeometrySync();
     this.rustDeskGeometryEpoch = 0;
     this.vncGeometryEpoch = 0;
+    this.rdpGeometryEpoch = 0;
     this.vncGeometryReady = false;
     this.remoteCursorShapeLoadToken += 1;
     this.clearRemoteCursorShapeLoadWatchdog();
@@ -12788,6 +13033,7 @@ struct RemoteDesktop {
       }
       this.rendererSourceWidth = 0;
       this.rendererSourceHeight = 0;
+      this.rdpGeometryEpoch = 0;
       this.canvasRotationQuarterTurns = 0;
       this.canvasControlRotationQuarterTurns = 0;
       this.canvasVisualFlipX = false;
@@ -13435,6 +13681,11 @@ struct RemoteDesktop {
       // identity fencing prevents foreground/PiP restoration from repeating it.
       this.virtualTouchpadKeyboardGuideRetryCount = 0;
       this.inputForwardReady = false;
+      this.clearRdpInputStabilityTimer();
+      this.rdpInputStabilityGateReady = false;
+      this.rdpGeometryReady = false;
+      this.rdpPendingLayoutWidth = 0;
+      this.rdpPendingLayoutHeight = 0;
       // NapiConnect publishes the exact session owner synchronously. Decoder
       // registration must happen after that transaction; cold-start calls
       // before connect have no owner and fail closed, producing a connected
@@ -13549,13 +13800,7 @@ struct RemoteDesktop {
         this.startRdpRenderWatchdog(sid, attemptId);
         this.startRdpNativeStateMonitor(sid, attemptId);
         this.startRdpTransferStatusPolling(sid, attemptId);
-        setTimeout((): void => {
-          if (this.sessionId === sid && this.connected && this.connectAttemptId === attemptId) {
-            this.inputForwardReady = true;
-            hilog.info(RD_DOMAIN, RD_TAG, 'RDP input forwarding enabled after video-stability gate');
-            this.scheduleRemoteInputFocus('rdp-input-ready');
-          }
-        }, 2000);
+        this.armRdpInputStabilityGate(sid, attemptId);
       } else {
         this.inputForwardReady = true;
         this.scheduleRemoteInputFocus('connect-success');
@@ -13630,6 +13875,11 @@ struct RemoteDesktop {
       this.remotePointerFocusRecoveryNeeded = false;
       this.hardwareKeyboardProxyActive = false;
       this.inputForwardReady = false;
+      this.clearRdpInputStabilityTimer();
+      this.rdpInputStabilityGateReady = false;
+      this.rdpGeometryReady = false;
+      this.rdpPendingLayoutWidth = 0;
+      this.rdpPendingLayoutHeight = 0;
       this.connectStarted = false;
       this.connecting = false;
       const errObj: Error = err as Error;
@@ -14028,6 +14278,11 @@ struct RemoteDesktop {
         this.currentRemoteSessionPresentationLease();
       this.connectAttemptId++;
       this.inputForwardReady = false;
+      this.clearRdpInputStabilityTimer();
+      this.rdpInputStabilityGateReady = false;
+      this.rdpGeometryReady = false;
+      this.rdpPendingLayoutWidth = 0;
+      this.rdpPendingLayoutHeight = 0;
       const shouldRestoreOrientation: boolean = this.orientationApplied;
       this.scheduleNativeDisconnectAfterPip(
         reason, shouldRestoreOrientation, cleanupStartedAtMs,
@@ -14633,6 +14888,9 @@ struct RemoteDesktop {
 
     // 暂停输入转发
     this.inputForwardReady = false;
+    this.clearRdpInputStabilityTimer();
+    this.rdpInputStabilityGateReady = false;
+    this.rdpGeometryReady = false;
 
     const backgroundMedia: RemoteSessionMediaSnapshot = this.currentRemoteMediaSnapshot();
 
@@ -14954,6 +15212,11 @@ struct RemoteDesktop {
     this.clearPipRestoreRetry();
     this.clearBackgroundRenderRetry();
     this.inputForwardReady = false;
+    this.clearRdpInputStabilityTimer();
+    this.rdpInputStabilityGateReady = false;
+    this.rdpGeometryReady = false;
+    this.rdpPendingLayoutWidth = 0;
+    this.rdpPendingLayoutHeight = 0;
     this.connected = false;
     this.connecting = false;
     this.connectStarted = false;
@@ -15276,7 +15539,9 @@ struct RemoteDesktop {
             (err.message ? err.message : JSON.stringify(err)));
         });
         this.resumeRustDeskDiagnosticsAfterForeground();
-        this.inputForwardReady = true;
+        if (!this.isRdpRemoteSession()) {
+          this.inputForwardReady = true;
+        }
         this.startRemoteCursorPolling(this.sessionId);
         this.reclaimRemoteSystemPointerAfterForeground('background-restore');
         this.scheduleRemoteInputFocus('background-restore');
@@ -15433,13 +15698,20 @@ struct RemoteDesktop {
         return;
       }
       const desktop: DesktopSize = this.desktopSize(this.pendingHost);
-      this.updateRemoteSize(desktop);
-      const pageSurface: RemoteSessionPipContentSize = this.currentPageSurfaceSize(desktop.width, desktop.height);
+      const preserveRdpGeometry: boolean = shouldPreserveLiveRdpGeometry(
+        this.currentProtocolName(), this.connected, this.sessionId);
+      if (!preserveRdpGeometry) {
+        this.updateRemoteSize(desktop);
+      }
+      const pageSurface: RemoteSessionPipContentSize = this.currentPageSurfaceSize(
+        preserveRdpGeometry ? this.remoteWidth : desktop.width,
+        preserveRdpGeometry ? this.remoteHeight : desktop.height);
       const ok: boolean = rdpnapi.setXComponentSurfaceId(
         surfaceId, pageSurface.width, pageSurface.height) as boolean;
       hilog.info(RD_DOMAIN, RD_TAG, 'setXComponentSurfaceId: surfaceId=' + surfaceId +
         ' page=' + pageSurface.width + 'x' + pageSurface.height +
-        ' remote=' + desktop.width + 'x' + desktop.height +
+        ' remote=' + this.remoteWidth + 'x' + this.remoteHeight +
+        ' preserveRdpGeometry=' + (preserveRdpGeometry ? '1' : '0') +
         ' ok=' + (ok ? 'true' : 'false'));
       this.surfaceReady = ok;
       this.tryStartConnect();

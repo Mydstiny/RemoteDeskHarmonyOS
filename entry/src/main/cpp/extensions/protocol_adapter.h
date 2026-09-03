@@ -348,6 +348,7 @@ struct RdpRenderStats {
     uint64_t graphicsEpoch = 0;
     uint64_t desktopResizeCount = 0;
     uint64_t desktopResizeFailures = 0;
+    bool desktopResizeInProgress = false;
     bool gfxChannelConnected = false;
     bool displayControlReady = false;
     bool displayControlDisabled = false;
@@ -357,8 +358,14 @@ struct RdpRenderStats {
     int displayEffectiveHeight = 0;
     int displayScaleFactor = 100;
     uint64_t displayRequestCount = 0;
+    uint64_t displayChannelRequestCount = 0;
     uint64_t displayFailureCount = 0;
+    bool displayLayoutPending = false;
+    bool displayLayoutInFlight = false;
     std::string displayLastResult;
+    bool inputGeometryReady = true;
+    uint64_t inputGeometryAcknowledgedEpoch = 0;
+    uint64_t inputGeometryFenceDrops = 0;
     int inputQueueDepth = 0;
     int inputQueueMax = 0;
     int64_t inputTextUnits = 0;
@@ -590,6 +597,7 @@ public:
 
     /** RDP 渲染统计。非 RDP 协议返回全 0。 */
     virtual RdpRenderStats getRdpRenderStats() { return RdpRenderStats(); }
+    virtual bool acknowledgeRdpInputGeometry(uint64_t, int, int) { return false; }
 
     // ---- R5: 文件传输 ----
     /** 是否支持文件传输 */

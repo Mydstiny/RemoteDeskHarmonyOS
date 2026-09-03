@@ -65,6 +65,9 @@ import {
 import { shouldBindSurfaceBeforeForegroundRenderer } from './RemoteForegroundRestorePolicy';
 import { rdpRouteIdentityForValues } from '../model/RemoteHost';
 import {
+  replayRdpRendererGeometryAfterPipelineBinding
+} from './RdpPipelineGeometryReplayPolicy';
+import {
   nativeFacadeStateAfterDisconnectSubmission,
   nativeDisconnectOwnerMatchesFacade,
   nativeDisconnectReceiptCanReleaseRegistry,
@@ -1616,6 +1619,7 @@ export class ExtensionLoader {
         graphicsEpoch: 0,
         desktopResizeCount: 0,
         desktopResizeFailures: 0,
+        desktopResizeInProgress: false,
         gfxChannelConnected: false,
         displayControlReady: false,
         displayControlDisabled: false,
@@ -1625,8 +1629,14 @@ export class ExtensionLoader {
         displayEffectiveHeight: 0,
         displayScaleFactor: 100,
         displayRequestCount: 0,
+        displayChannelRequestCount: 0,
         displayFailureCount: 0,
+        displayLayoutPending: false,
+        displayLayoutInFlight: false,
         displayLastResult: 'unavailable',
+        inputGeometryReady: true,
+        inputGeometryAcknowledgedEpoch: 0,
+        inputGeometryFenceDrops: 0,
         inputQueueDepth: 0,
         inputQueueMax: 0,
         inputTextUnits: 0,
@@ -1634,6 +1644,28 @@ export class ExtensionLoader {
         inputNonDisposableOverflow: 0,
         graphicsMode: 'unknown'
       };
+    }
+  }
+
+  acknowledgeRdpInputGeometry(sessionId: number, epoch: number,
+    width: number, height: number): boolean {
+    try {
+      return rdpnapi.acknowledgeRdpInputGeometry(
+        sessionId, epoch, width, height) as boolean;
+    } catch (err) {
+      hilog.warn(DOMAIN, TAG,
+        '[ExtensionLoader] acknowledgeRdpInputGeometry: ' + JSON.stringify(err));
+      return false;
+    }
+  }
+
+  synchronizeRdpRendererGeometry(sessionId: number): boolean {
+    try {
+      return rdpnapi.synchronizeRdpRendererGeometry(sessionId) as boolean;
+    } catch (err) {
+      hilog.warn(DOMAIN, TAG,
+        '[ExtensionLoader] synchronizeRdpRendererGeometry: ' + JSON.stringify(err));
+      return false;
     }
   }
 
@@ -1817,6 +1849,13 @@ export class ExtensionLoader {
   bindVideoPipeline(decoderHandle: number, rendererHandle: number): boolean {
     try {
       const bound: boolean = rdpnapi.bindVideoPipeline(decoderHandle, rendererHandle) as boolean;
+      const synchronized: boolean = replayRdpRendererGeometryAfterPipelineBinding(
+        bound, this.currentSessionId,
+        (sessionId: number): boolean => this.synchronizeRdpRendererGeometry(sessionId));
+      if (synchronized) {
+        hilog.info(DOMAIN, TAG,
+          '[ExtensionLoader] bindVideoPipeline RDP geometry synchronized=true');
+      }
       if (bound && this.currentSessionId > 0) {
         // RustDesk may deliver its first keyframe while connect() is
         // publishing the session but before ArkTS can bind the decoder. The
@@ -1841,6 +1880,13 @@ export class ExtensionLoader {
   rebindActiveVideoPipeline(): boolean {
     try {
       const rebound: boolean = rdpnapi.rebindActiveVideoPipeline() as boolean;
+      const synchronized: boolean = replayRdpRendererGeometryAfterPipelineBinding(
+        rebound, this.currentSessionId,
+        (sessionId: number): boolean => this.synchronizeRdpRendererGeometry(sessionId));
+      if (synchronized) {
+        hilog.info(DOMAIN, TAG,
+          '[ExtensionLoader] rebindActiveVideoPipeline RDP geometry synchronized=true');
+      }
       if (rebound && this.currentSessionId > 0) {
         const replayed: boolean = rdpnapi.replayPendingRustDeskFrame(
           this.currentSessionId) as boolean;

@@ -471,6 +471,9 @@ export const VERSION: SessionVersionInfo;
     accountGeneration: number, enabled: boolean): VncGatewayDeepHealthPromise;
   export function cancelVncGatewayDeep(requestId: number): boolean;
   export function getRdpRenderStats(sessionId: number): RdpRenderStats;
+  export function acknowledgeRdpInputGeometry(sessionId: number, epoch: number,
+    width: number, height: number): boolean;
+  export function synchronizeRdpRendererGeometry(sessionId: number): boolean;
   export function requestRdpDisplayLayout(sessionId: number,
     request: RdpDisplayLayoutRequest): RdpDisplayLayoutResult;
   export function cancelRdpDisplayLayout(sessionId: number): boolean;
@@ -853,6 +856,7 @@ export interface RdpRenderStats {
   graphicsEpoch: number;
   desktopResizeCount: number;
   desktopResizeFailures: number;
+  desktopResizeInProgress: boolean;
   gfxChannelConnected: boolean;
   displayControlReady: boolean;
   displayControlDisabled: boolean;
@@ -862,8 +866,14 @@ export interface RdpRenderStats {
   displayEffectiveHeight: number;
   displayScaleFactor: number;
   displayRequestCount: number;
+  displayChannelRequestCount: number;
   displayFailureCount: number;
+  displayLayoutPending: boolean;
+  displayLayoutInFlight: boolean;
   displayLastResult: string;
+  inputGeometryReady: boolean;
+  inputGeometryAcknowledgedEpoch: number;
+  inputGeometryFenceDrops: number;
   inputQueueDepth: number;
   inputQueueMax: number;
   inputTextUnits: number;

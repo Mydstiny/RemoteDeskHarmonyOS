@@ -205,3 +205,88 @@ RDP_TEST_CASE(rdp_pause_is_a_dedicated_atomic_input_event) {
     RDP_ASSERT(queue.pop(event));
     RDP_ASSERT_EQ(event.type, RdpInputEventType::Pause);
 }
+
+RDP_TEST_CASE(rdp_input_geometry_fence_rejects_old_pointer_epochs_across_unsolicited_resize) {
+    RdpInputGeometryFence fence;
+    fence.reset(0, 1600, 1000);
+    RDP_ASSERT(fence.snapshot().ready);
+    const RdpInputGeometrySnapshot oldGeometry = fence.captureGeometry();
+    RDP_ASSERT_EQ(oldGeometry.epoch, 0ULL);
+    RDP_ASSERT_EQ(oldGeometry.width, 1600);
+    RDP_ASSERT_EQ(oldGeometry.height, 1000);
+
+    // A server-initiated resize closes the native gate synchronously, before
+    // ArkTS's next 500 ms geometry poll can observe the new desktop.
+    fence.beginResize(1, 3200, 2000);
+    RDP_ASSERT(!fence.snapshot().ready);
+    int moveX = 1599;
+    int moveY = 999;
+    RDP_ASSERT(!fence.preparePointer(
+        oldGeometry.epoch, oldGeometry.width, oldGeometry.height,
+        false, moveX, moveY));
+    int releaseX = 1599;
+    int releaseY = 999;
+    RDP_ASSERT(fence.preparePointer(
+        oldGeometry.epoch, oldGeometry.width, oldGeometry.height,
+        true, releaseX, releaseY));
+    RDP_ASSERT_EQ(releaseX, 3199);
+    RDP_ASSERT_EQ(releaseY, 1999);
+    RDP_ASSERT(!fence.acknowledge(0, 1600, 1000));
+    RDP_ASSERT(fence.acknowledge(1, 3200, 2000));
+    RDP_ASSERT(fence.snapshot().ready);
+    int currentX = 3199;
+    int currentY = 1999;
+    RDP_ASSERT(fence.preparePointer(1, 3200, 2000, false, currentX, currentY));
+
+    // An event captured immediately before the next resize is rejected by
+    // the worker even if it was already queued when the epoch advanced.
+    const RdpInputGeometrySnapshot firstGeometry = fence.captureGeometry();
+    fence.beginResize(2, 2560, 1600);
+    int staleX = 100;
+    int staleY = 100;
+    RDP_ASSERT(!fence.preparePointer(
+        firstGeometry.epoch, firstGeometry.width, firstGeometry.height,
+        false, staleX, staleY));
+    RDP_ASSERT(!fence.acknowledge(1, 3200, 2000));
+    RDP_ASSERT(fence.acknowledge(2, 2560, 1600));
+    const RdpInputGeometryFenceSnapshot snapshot = fence.snapshot();
+    RDP_ASSERT(snapshot.ready);
+    RDP_ASSERT_EQ(snapshot.acknowledgedEpoch, 2ULL);
+    RDP_ASSERT_EQ(snapshot.droppedPointerEvents, 2ULL);
+}
+
+RDP_TEST_CASE(rdp_final_pointer_queue_rechecks_epoch_at_transport_dispatch) {
+    RdpInputGeometryFence fence;
+    fence.reset(0, 1600, 1000);
+    const RdpInputGeometrySnapshot captured = fence.captureGeometry();
+    RdpFinalPointerQueue finalQueue;
+    finalQueue.push(RdpQueuedInputEvent::Mouse(
+        0, 0, 1599, 999, true, captured.epoch,
+        captured.width, captured.height));
+
+    // Model the exact production interleave: the input worker has already
+    // posted its notification, then DesktopResize advances the epoch before
+    // the event loop performs the final FreeRDP send.
+    fence.beginResize(1, 3200, 2000);
+    RdpQueuedInputEvent staleMove;
+    RDP_ASSERT(finalQueue.pop(staleMove));
+    int staleX = staleMove.x;
+    int staleY = staleMove.y;
+    RDP_ASSERT(!fence.preparePointer(
+        staleMove.geometryEpoch, staleMove.geometryWidth,
+        staleMove.geometryHeight, false, staleX, staleY));
+
+    finalQueue.push(RdpQueuedInputEvent::Mouse(
+        0, 0, 1599, 999, false, captured.epoch,
+        captured.width, captured.height));
+    RdpQueuedInputEvent release;
+    RDP_ASSERT(finalQueue.pop(release));
+    int releaseX = release.x;
+    int releaseY = release.y;
+    RDP_ASSERT(fence.preparePointer(
+        release.geometryEpoch, release.geometryWidth,
+        release.geometryHeight, true, releaseX, releaseY));
+    RDP_ASSERT_EQ(releaseX, 3199);
+    RDP_ASSERT_EQ(releaseY, 1999);
+    RDP_ASSERT_EQ(finalQueue.depth(), 0U);
+}

@@ -105,6 +105,10 @@ bool isIpAddressLiteral(const std::string& input) {
 constexpr int kDefaultRdpPort = 3389;
 constexpr int kRdpCertFlagUntrustedRoot = 0x01;
 constexpr int kRdpCertFlagHostMismatch = 0x02;
+// Private notification consumed only by processEventLoop(). The actual
+// pointer payload remains in RdpFinalPointerQueue so its geometry epoch is
+// still available at the final FreeRDP transport dispatch.
+constexpr uint32_t kRdpGeometryAwarePointerEvent = 0x7F010001U;
 
 struct RdpNetworkWorkerCompletionGuard final {
     std::shared_ptr<std::atomic<bool>> done;
@@ -1609,6 +1613,8 @@ struct FreeRdpAdapter::Impl {
     uint32_t                displayMaxAreaFactorB = 0;
     int64_t                 displayLastSendUs = 0;
     int64_t                 displayInFlightSinceUs = 0;
+    int                     displayInFlightWidth = 0;
+    int                     displayInFlightHeight = 0;
     RdpDisplayLayoutRequest pendingDisplayLayout;
     int                     displayRequestedWidth = 0;
     int                     displayRequestedHeight = 0;
@@ -1616,6 +1622,7 @@ struct FreeRdpAdapter::Impl {
     int                     displayEffectiveHeight = 0;
     int                     displayScaleFactor = 100;
     uint64_t                displayRequestCount = 0;
+    uint64_t                displayChannelRequestCount = 0;
     uint64_t                displayFailureCount = 0;
     std::string             displayLastResult = "not_negotiated";
     mutable std::mutex      ownerMutex;
@@ -1668,6 +1675,12 @@ struct FreeRdpAdapter::Impl {
     std::shared_ptr<std::atomic<bool>> inputQueueDone =
         std::make_shared<std::atomic<bool>>(true);
     RdpInputQueue           inputQueue;
+    std::mutex              finalPointerQueueMutex;
+    RdpFinalPointerQueue    finalPointerQueue;
+    // Serializes adapter geometry snapshots with owner-bound renderer source
+    // publication after decoder bind/rebind and native resize callbacks.
+    std::mutex              rendererGeometrySyncMutex;
+    RdpInputGeometryFence   inputGeometryFence;
     std::atomic<uint64_t>   inputQueueGeneration {0};
     std::atomic<bool>       inputQueueRunning {false};
     std::atomic<bool>       inputQueueStop {false};
@@ -1910,12 +1923,11 @@ struct FreeRdpAdapter::Impl {
             case RdpInputEventType::Mouse:
             case RdpInputEventType::MouseWheel:
             {
-                const UINT32 packedPosition =
-                    (static_cast<UINT32>(static_cast<UINT16>(event.x)) << 16) |
-                    static_cast<UINT32>(static_cast<UINT16>(event.y));
-                (void)post(FREERDP_INPUT_MOUSE_EVENT,
-                           static_cast<uintptr_t>(event.flags),
-                           static_cast<uintptr_t>(packedPosition));
+                std::lock_guard<std::mutex> pointerLock(finalPointerQueueMutex);
+                finalPointerQueue.push(event);
+                if (!post(kRdpGeometryAwarePointerEvent, 0, 0)) {
+                    (void)finalPointerQueue.discardNewest();
+                }
                 break;
             }
         }
@@ -1975,6 +1987,10 @@ struct FreeRdpAdapter::Impl {
         inputQueueStop.store(false, std::memory_order_release);
         inputQueue.clear();
         inputQueue.resetMetrics();
+        {
+            std::lock_guard<std::mutex> pointerLock(finalPointerQueueMutex);
+            finalPointerQueue.clear();
+        }
         const uint64_t workerGeneration =
             inputQueueGeneration.fetch_add(1, std::memory_order_acq_rel) + 1;
         inputQueueRunning.store(true, std::memory_order_release);
@@ -2014,6 +2030,10 @@ struct FreeRdpAdapter::Impl {
                 inputQueueThreadReservation.release();
                 inputQueueRunning.store(false, std::memory_order_release);
                 inputQueueStop.store(false, std::memory_order_release);
+                {
+                    std::lock_guard<std::mutex> pointerLock(finalPointerQueueMutex);
+                    finalPointerQueue.clear();
+                }
                 return;
             }
             inputQueueStop.store(true, std::memory_order_release);
@@ -2048,6 +2068,10 @@ struct FreeRdpAdapter::Impl {
             inputQueueStop.store(false, std::memory_order_release);
             inputQueue.clear();
         }
+        {
+            std::lock_guard<std::mutex> pointerLock(finalPointerQueueMutex);
+            finalPointerQueue.clear();
+        }
     }
 
     void enqueueInputEvent(RdpQueuedInputEvent event) {
@@ -2062,7 +2086,8 @@ struct FreeRdpAdapter::Impl {
         inputQueueCv.notify_one();
     }
 
-    void enqueueMouseButtonWithMove(UINT16 moveFlags, UINT16 buttonFlags, UINT16 x, UINT16 y) {
+    void enqueueMouseButtonWithMove(UINT16 moveFlags, UINT16 buttonFlags, UINT16 x, UINT16 y,
+                                    const RdpInputGeometrySnapshot& geometry) {
         {
             std::lock_guard<std::mutex> lock(inputQueueMutex);
             if (!inputQueueRunning.load(std::memory_order_acquire) ||
@@ -2071,8 +2096,12 @@ struct FreeRdpAdapter::Impl {
             }
             // The queue materializes this latest move before the button event,
             // preserving click/drag targets while coalescing prior movement.
-            inputQueue.enqueue(RdpQueuedInputEvent::Mouse(moveFlags, 0, x, y, true));
-            inputQueue.enqueue(RdpQueuedInputEvent::Mouse(buttonFlags, 0, x, y, false));
+            inputQueue.enqueue(RdpQueuedInputEvent::Mouse(
+                moveFlags, 0, x, y, true, geometry.epoch,
+                geometry.width, geometry.height));
+            inputQueue.enqueue(RdpQueuedInputEvent::Mouse(
+                buttonFlags, 0, x, y, false, geometry.epoch,
+                geometry.width, geometry.height));
         }
         inputQueueCv.notify_one();
     }
@@ -4554,8 +4583,13 @@ void FreeRdpAdapter::cbChannelConnected(void* context, const ChannelConnectedEve
         displayControl->DisplayControlCaps = cbDisplayControlCaps;
         owner->impl_->displayControlReady = false;
         owner->impl_->displayControlDisabled = false;
+        owner->impl_->displayLayoutPending = false;
         owner->impl_->displayLayoutInFlight = false;
+        owner->impl_->displayLastSendUs = 0;
         owner->impl_->displayInFlightSinceUs = 0;
+        owner->impl_->displayInFlightWidth = 0;
+        owner->impl_->displayInFlightHeight = 0;
+        owner->impl_->displayChannelRequestCount = 0;
         owner->impl_->displayMaxNumMonitors = 0;
         owner->impl_->displayMaxAreaFactorA = 0;
         owner->impl_->displayMaxAreaFactorB = 0;
@@ -4858,6 +4892,8 @@ void FreeRdpAdapter::cbChannelDisconnected(void* context, const ChannelDisconnec
             owner->impl_->displayMaxAreaFactorB = 0;
             owner->impl_->displayLastSendUs = 0;
             owner->impl_->displayInFlightSinceUs = 0;
+            owner->impl_->displayInFlightWidth = 0;
+            owner->impl_->displayInFlightHeight = 0;
             owner->impl_->displayLastResult = "channel_disconnected";
             OH_LOG_INFO(LOG_APP, "[RDP-DISP] display-control channel disconnected");
         } else {
@@ -5155,6 +5191,44 @@ BOOL FreeRdpAdapter::cbPostConnect(freerdp* instance) {
         gdi_free(instance);
         return FALSE;
     }
+
+    const int negotiatedWidth = callbackLease.context->gdi
+        ? callbackLease.context->gdi->width : 0;
+    const int negotiatedHeight = callbackLease.context->gdi
+        ? callbackLease.context->gdi->height : 0;
+    RdpGraphicsLifecycleSnapshot negotiatedGraphics;
+    {
+        std::lock_guard<std::mutex> geometryLock(
+            self->impl_->rendererGeometrySyncMutex);
+        if (!self->impl_->graphicsLifecycle.reconcileInitialDesktopSize(
+                negotiatedWidth, negotiatedHeight)) {
+            OH_LOG_ERROR(LOG_APP,
+                "[RDP] invalid negotiated desktop geometry size=%{public}dx%{public}d [E-RDP-INITIAL-GEOMETRY]",
+                negotiatedWidth, negotiatedHeight);
+            gdi_free(instance);
+            return FALSE;
+        }
+        negotiatedGraphics = self->impl_->graphicsLifecycle.snapshot();
+        self->impl_->inputGeometryFence.reset(
+            negotiatedGraphics.epoch, negotiatedGraphics.desktopWidth,
+            negotiatedGraphics.desktopHeight);
+        const Render::DecoderSessionIdentity negotiatedOwner = callbackLease.owner;
+        if (negotiatedOwner.valid()) {
+            RendererNapi::SetActiveSourceSize(
+                negotiatedOwner, negotiatedWidth, negotiatedHeight);
+        } else {
+            RendererNapi::SetActiveSourceSize(negotiatedWidth, negotiatedHeight);
+        }
+    }
+    {
+        std::lock_guard<std::mutex> displayLock(self->impl_->displayControlMutex);
+        self->impl_->displayEffectiveWidth = negotiatedWidth;
+        self->impl_->displayEffectiveHeight = negotiatedHeight;
+    }
+    OH_LOG_INFO(LOG_APP,
+        "[RDP-INPUT-GEOMETRY] initial negotiated epoch=%{public}llu size=%{public}dx%{public}d",
+        static_cast<unsigned long long>(negotiatedGraphics.epoch),
+        negotiatedWidth, negotiatedHeight);
 
     rdpPointer pointer = {};
     pointer.size = sizeof(HarmonyRdpPointer);
@@ -5525,6 +5599,14 @@ BOOL FreeRdpAdapter::cbDesktopResize(rdpContext* context) {
         return FALSE;
     }
 
+    // Fence pointer input before any renderer/GDI mutation. Events already
+    // queued for the old coordinate space carry the previous epoch and are
+    // discarded at the event-loop's final transport dispatch. ArkTS reopens
+    // this fence only after it adopts and acknowledges the completed native
+    // geometry.
+    adapter->impl_->inputGeometryFence.beginResize(
+        ticket.epoch, ticket.width, ticket.height);
+
     OH_LOG_INFO(LOG_APP,
         "[RDP-RESIZE] begin epoch=%{public}llu size=%{public}dx%{public}d",
         static_cast<unsigned long long>(ticket.epoch), ticket.width, ticket.height);
@@ -5551,12 +5633,6 @@ BOOL FreeRdpAdapter::cbDesktopResize(rdpContext* context) {
             adapter->impl_->lastFrameHeight = 0;
             adapter->impl_->lastRenderBytes.store(0, std::memory_order_release);
             adapter->impl_->forceNextFullFrame = true;
-            const Render::DecoderSessionIdentity owner = adapter->impl_->ownerSnapshot();
-            if (owner.valid()) {
-                RendererNapi::SetActiveSourceSize(owner, ticket.width, ticket.height);
-            } else {
-                RendererNapi::SetActiveSourceSize(ticket.width, ticket.height);
-            }
             pumpStarted = adapter->impl_->framePump->start();
         }
     }
@@ -5580,6 +5656,20 @@ BOOL FreeRdpAdapter::cbDesktopResize(rdpContext* context) {
         return FALSE;
     }
 
+    {
+        // Publish only after graphicsLifecycle contains the completed size.
+        // A concurrent post-bind replay either runs before this block (and is
+        // overwritten here) or after it (and reads the same completed size).
+        std::lock_guard<std::mutex> geometryLock(
+            adapter->impl_->rendererGeometrySyncMutex);
+        const Render::DecoderSessionIdentity owner = adapter->impl_->ownerSnapshot();
+        if (owner.valid()) {
+            RendererNapi::SetActiveSourceSize(owner, ticket.width, ticket.height);
+        } else {
+            RendererNapi::SetActiveSourceSize(ticket.width, ticket.height);
+        }
+    }
+
     OH_LOG_INFO(LOG_APP,
         "[RDP-RESIZE] complete epoch=%{public}llu size=%{public}dx%{public}d fullResync=true",
         static_cast<unsigned long long>(ticket.epoch), ticket.width, ticket.height);
@@ -5587,15 +5677,26 @@ BOOL FreeRdpAdapter::cbDesktopResize(rdpContext* context) {
         std::lock_guard<std::mutex> displayLock(adapter->impl_->displayControlMutex);
         adapter->impl_->displayEffectiveWidth = ticket.width;
         adapter->impl_->displayEffectiveHeight = ticket.height;
-        adapter->impl_->displayLayoutInFlight = false;
-        adapter->impl_->displayInFlightSinceUs = 0;
-        if (adapter->impl_->displayRequestedWidth > 0 &&
-            adapter->impl_->displayRequestedHeight > 0) {
-            const bool exact = adapter->impl_->displayRequestedWidth == ticket.width &&
-                adapter->impl_->displayRequestedHeight == ticket.height;
-            adapter->impl_->displayLastResult = exact ? "applied" : "server_adjusted";
-        } else {
-            adapter->impl_->displayLastResult = "initial_geometry";
+        if (RdpDisplayLayoutPolicy::ShouldResolveResizeAsRequest(
+                adapter->impl_->displayLayoutInFlight,
+                adapter->impl_->displayControlDisabled)) {
+            const int completedRequestWidth =
+                adapter->impl_->displayInFlightWidth;
+            const int completedRequestHeight =
+                adapter->impl_->displayInFlightHeight;
+            adapter->impl_->displayLayoutInFlight = false;
+            adapter->impl_->displayInFlightSinceUs = 0;
+            adapter->impl_->displayInFlightWidth = 0;
+            adapter->impl_->displayInFlightHeight = 0;
+            adapter->impl_->displayLastResult =
+                RdpDisplayLayoutPolicy::ResolveCompletedRequestStatus(
+                    adapter->impl_->displayLayoutPending,
+                    completedRequestWidth,
+                    completedRequestHeight,
+                    ticket.width, ticket.height);
+        } else if (!adapter->impl_->displayControlDisabled &&
+                   !adapter->impl_->displayLayoutPending) {
+            adapter->impl_->displayLastResult = "server_resize";
         }
     }
     return TRUE;
@@ -5727,22 +5828,40 @@ void FreeRdpAdapter::processEventLoop() {
                         static_cast<UINT16>(reinterpret_cast<uintptr_t>(message.wParam)),
                         static_cast<UINT16>(reinterpret_cast<uintptr_t>(message.lParam)));
                     break;
+                case kRdpGeometryAwarePointerEvent:
+                {
+                    RdpQueuedInputEvent event;
+                    {
+                        std::lock_guard<std::mutex> pointerLock(
+                            impl_->finalPointerQueueMutex);
+                        if (!impl_->finalPointerQueue.pop(event)) {
+                            OH_LOG_WARN(LOG_APP,
+                                "[RDP] pointer notification had no geometry payload");
+                            break;
+                        }
+                    }
+                    const bool buttonRelease = event.type == RdpInputEventType::Mouse &&
+                        !event.isMouseMove && (event.flags & PTR_FLAGS_DOWN) == 0;
+                    int x = event.x;
+                    int y = event.y;
+                    if (!impl_->inputGeometryFence.preparePointer(
+                            event.geometryEpoch, event.geometryWidth,
+                            event.geometryHeight, buttonRelease, x, y)) {
+                        break;
+                    }
+                    (void)freerdp_input_send_mouse_event(
+                        instance_->input, event.flags,
+                        static_cast<UINT16>(x), static_cast<UINT16>(y));
+                    break;
+                }
                 case FREERDP_INPUT_MOUSE_EVENT:
                 case FREERDP_INPUT_EXTENDED_MOUSE_EVENT:
                 {
-                    const UINT32 packed = static_cast<UINT32>(
-                        reinterpret_cast<uintptr_t>(message.lParam));
-                    const UINT16 x = static_cast<UINT16>((packed >> 16) & 0xFFFFU);
-                    const UINT16 y = static_cast<UINT16>(packed & 0xFFFFU);
-                    const UINT16 flags = static_cast<UINT16>(
-                        reinterpret_cast<uintptr_t>(message.wParam));
-                    if (message.id == FREERDP_INPUT_EXTENDED_MOUSE_EVENT) {
-                        (void)freerdp_input_send_extended_mouse_event(
-                            instance_->input, flags, x, y);
-                    } else {
-                        (void)freerdp_input_send_mouse_event(
-                            instance_->input, flags, x, y);
-                    }
+                    // Every product pointer event uses the geometry-aware
+                    // private notification above. An untracked standard mouse
+                    // message has no epoch and must fail closed after resize.
+                    OH_LOG_WARN(LOG_APP,
+                        "[RDP] ignored pointer message without geometry epoch");
                     break;
                 }
                 case FREERDP_INPUT_KEYBOARD_PAUSE_EVENT:
@@ -5773,12 +5892,26 @@ void FreeRdpAdapter::processEventLoop() {
         RdpDisplayLayoutRequest request;
         const int64_t nowUs = steadyNowUs();
         std::lock_guard<std::mutex> displayLock(impl_->displayControlMutex);
-        if (RdpDisplayLayoutPolicy::HasInFlightTimedOut(
-                impl_->displayLayoutInFlight, impl_->displayInFlightSinceUs, nowUs)) {
-            impl_->displayLayoutInFlight = false;
+        const auto timeout = RdpDisplayLayoutPolicy::ResolveInFlightTimeout(
+            impl_->displayLayoutPending, impl_->displayLayoutInFlight,
+            impl_->displayControlDisabled, impl_->displayInFlightSinceUs, nowUs);
+        if (timeout.timedOut) {
+            if (impl_->displayInFlightWidth > 0 &&
+                impl_->displayInFlightHeight > 0) {
+                impl_->displayRequestedWidth = impl_->displayInFlightWidth;
+                impl_->displayRequestedHeight = impl_->displayInFlightHeight;
+            }
+            impl_->displayLayoutPending = timeout.layoutPending;
+            impl_->displayLayoutInFlight = timeout.layoutInFlight;
+            impl_->displayControlDisabled = timeout.displayControlDisabled;
             impl_->displayInFlightSinceUs = 0;
+            impl_->displayInFlightWidth = 0;
+            impl_->displayInFlightHeight = 0;
             impl_->displayFailureCount++;
             impl_->displayLastResult = "apply_timeout";
+            OH_LOG_WARN(LOG_APP,
+                "[RDP-DISP] layout apply timed out; discarded pending follow-up and disabled dynamic layout for this channel generation");
+            return;
         }
         if (!impl_->displayControlReady ||
             impl_->displayControlDisabled || !impl_->displayControl) {
@@ -5810,6 +5943,8 @@ void FreeRdpAdapter::processEventLoop() {
         if (rc == CHANNEL_RC_OK) {
             impl_->displayLayoutInFlight = true;
             impl_->displayInFlightSinceUs = nowUs;
+            impl_->displayInFlightWidth = request.width;
+            impl_->displayInFlightHeight = request.height;
             impl_->displayScaleFactor = request.desktopScaleFactor;
             impl_->displayLastResult = "sent";
             OH_LOG_INFO(LOG_APP,
@@ -5818,6 +5953,8 @@ void FreeRdpAdapter::processEventLoop() {
         } else {
             impl_->displayLayoutInFlight = false;
             impl_->displayInFlightSinceUs = 0;
+            impl_->displayInFlightWidth = 0;
+            impl_->displayInFlightHeight = 0;
             impl_->displayFailureCount++;
             impl_->displayControlDisabled = true;
             impl_->displayLastResult = "send_failed:" + std::to_string(rc);
@@ -6360,6 +6497,9 @@ void FreeRdpAdapter::cleanupInstance(
         impl_->displayMaxAreaFactorB = 0;
         impl_->displayLastSendUs = 0;
         impl_->displayInFlightSinceUs = 0;
+        impl_->displayInFlightWidth = 0;
+        impl_->displayInFlightHeight = 0;
+        impl_->displayChannelRequestCount = 0;
         impl_->displayLastResult = "session_closed";
     }
     freerdp* doomedInstance = nullptr;
@@ -6982,12 +7122,15 @@ int FreeRdpAdapter::connectInternal(
             impl_->displayMaxAreaFactorB = 0;
             impl_->displayLastSendUs = 0;
             impl_->displayInFlightSinceUs = 0;
+            impl_->displayInFlightWidth = 0;
+            impl_->displayInFlightHeight = 0;
             impl_->displayRequestedWidth = 0;
             impl_->displayRequestedHeight = 0;
             impl_->displayEffectiveWidth = 0;
             impl_->displayEffectiveHeight = 0;
             impl_->displayScaleFactor = cfg.rdpDesktopScaleFactor;
             impl_->displayRequestCount = 0;
+            impl_->displayChannelRequestCount = 0;
             impl_->displayFailureCount = 0;
             impl_->displayLastResult = "not_negotiated";
         }
@@ -7444,6 +7587,11 @@ void FreeRdpAdapter::connectThreadFunc(
         static_cast<int>(freerdp_settings_get_uint32(s, FreeRDP_DesktopWidth)),
         static_cast<int>(freerdp_settings_get_uint32(s, FreeRDP_DesktopHeight)),
         graphicsMode != RdpPerformancePolicy::GraphicsMode::GdiFallback);
+    const RdpGraphicsLifecycleSnapshot initialGraphics =
+        impl_->graphicsLifecycle.snapshot();
+    impl_->inputGeometryFence.reset(
+        initialGraphics.epoch, initialGraphics.desktopWidth,
+        initialGraphics.desktopHeight);
 
     const bool requestedDriveEnabled = !cfg.rdDrivePath.empty();
     // 二阶段共享盘: 连接阶段只加载 rdpdr 通道, 不注册文件盘设备。
@@ -8195,9 +8343,20 @@ RdpRenderStats FreeRdpAdapter::getRdpRenderStats() {
     if (!impl_) {
         return stats;
     }
+    // cbDesktopResize replaces the shared_ptr under workerLifecycleMutex.
+    // Copy a lifetime-stable snapshot under the same mutex before sampling;
+    // renderMutex protects render counters, not the shared_ptr object itself.
+    std::shared_ptr<RdpFramePump> framePump;
+    {
+        std::lock_guard<std::mutex> lifecycleLock(impl_->workerLifecycleMutex);
+        framePump = impl_->framePump;
+    }
+    if (!framePump) {
+        return stats;
+    }
     std::lock_guard<std::mutex> lock(impl_->renderMutex);
     stats.paintCount = impl_->paintCount.load(std::memory_order_acquire);
-    stats.renderedPaintCount = static_cast<int>(impl_->framePump->rendered());
+    stats.renderedPaintCount = static_cast<int>(framePump->rendered());
     const int64_t firstPaintUs = impl_->firstPaintUs.load(std::memory_order_acquire);
     const int64_t lastPaintUs = impl_->lastPaintUs.load(std::memory_order_acquire);
     const int64_t nowUs = steadyNowUs();
@@ -8218,17 +8377,17 @@ RdpRenderStats FreeRdpAdapter::getRdpRenderStats() {
     stats.networkCheckCount = impl_->networkCheckCount.load(std::memory_order_acquire);
     stats.networkCheckFailures = impl_->networkCheckFailures.load(std::memory_order_acquire);
     stats.inputPostFailures = impl_->inputPostFailures.load(std::memory_order_acquire);
-    stats.skippedPaintCount = static_cast<int>(impl_->framePump->replaced());
-    stats.slowRenderCount = static_cast<int>(impl_->framePump->adaptationCount());
-    stats.minRenderIntervalUs = impl_->framePump->targetIntervalUs();
-    stats.lastRenderCostUs = impl_->framePump->lastWorkerCostUs();
+    stats.skippedPaintCount = static_cast<int>(framePump->replaced());
+    stats.slowRenderCount = static_cast<int>(framePump->adaptationCount());
+    stats.minRenderIntervalUs = framePump->targetIntervalUs();
+    stats.lastRenderCostUs = framePump->lastWorkerCostUs();
     stats.lastRenderBytes = impl_->lastRenderBytes.load(std::memory_order_acquire);
-    stats.pumpSubmitted = impl_->framePump->submitted();
-    stats.pumpRendered = impl_->framePump->rendered();
-    stats.pumpReplaced = impl_->framePump->replaced();
-    stats.pumpRejected = impl_->framePump->rejected();
+    stats.pumpSubmitted = framePump->submitted();
+    stats.pumpRendered = framePump->rendered();
+    stats.pumpReplaced = framePump->replaced();
+    stats.pumpRejected = framePump->rejected();
     const RdpPresentationMetricsSnapshot presentation =
-        impl_->framePump->metricsSnapshot(steadyNowUs());
+        framePump->metricsSnapshot(steadyNowUs());
     stats.lastRenderResult = presentation.lastPresentResult;
     stats.invalidEvents = presentation.invalidEvents;
     stats.invalidPixels = presentation.invalidPixels;
@@ -8258,7 +8417,7 @@ RdpRenderStats FreeRdpAdapter::getRdpRenderStats() {
     stats.workerP50Us = presentation.workerUs.p50;
     stats.workerP95Us = presentation.workerUs.p95;
     stats.workerMaxUs = presentation.workerUs.max;
-    const RdpGlUploadGateSnapshot uploadGate = impl_->framePump->glUploadGateSnapshot();
+    const RdpGlUploadGateSnapshot uploadGate = framePump->glUploadGateSnapshot();
     stats.glUploadGateDecision = static_cast<int>(uploadGate.decision);
     stats.glUploadEvaluatedSamples = uploadGate.evaluatedSamples;
     stats.glUploadSwapP95Us = uploadGate.uploadSwapP95Us;
@@ -8269,6 +8428,7 @@ RdpRenderStats FreeRdpAdapter::getRdpRenderStats() {
     stats.graphicsEpoch = graphics.epoch;
     stats.desktopResizeCount = graphics.resizeCount;
     stats.desktopResizeFailures = graphics.resizeFailures;
+    stats.desktopResizeInProgress = graphics.resizeInProgress;
     stats.gfxChannelConnected = graphics.gfxInitialized;
     stats.graphicsMode = impl_->graphicsMode;
     {
@@ -8281,9 +8441,17 @@ RdpRenderStats FreeRdpAdapter::getRdpRenderStats() {
         stats.displayEffectiveHeight = impl_->displayEffectiveHeight;
         stats.displayScaleFactor = impl_->displayScaleFactor;
         stats.displayRequestCount = impl_->displayRequestCount;
+        stats.displayChannelRequestCount = impl_->displayChannelRequestCount;
         stats.displayFailureCount = impl_->displayFailureCount;
+        stats.displayLayoutPending = impl_->displayLayoutPending;
+        stats.displayLayoutInFlight = impl_->displayLayoutInFlight;
         stats.displayLastResult = impl_->displayLastResult;
     }
+    const RdpInputGeometryFenceSnapshot inputGeometry =
+        impl_->inputGeometryFence.snapshot();
+    stats.inputGeometryReady = inputGeometry.ready;
+    stats.inputGeometryAcknowledgedEpoch = inputGeometry.acknowledgedEpoch;
+    stats.inputGeometryFenceDrops = inputGeometry.droppedPointerEvents;
     {
         std::lock_guard<std::mutex> inputLock(impl_->inputQueueMutex);
         stats.inputQueueDepth = static_cast<int>(impl_->inputQueue.depth());
@@ -8293,6 +8461,49 @@ RdpRenderStats FreeRdpAdapter::getRdpRenderStats() {
         stats.inputNonDisposableOverflow = static_cast<int64_t>(impl_->inputQueue.nonDisposableOverflow());
     }
     return stats;
+}
+
+bool FreeRdpAdapter::acknowledgeRdpInputGeometry(uint64_t epoch, int width, int height) {
+    if (!impl_ || width <= 0 || height <= 0) {
+        return false;
+    }
+    const RdpGraphicsLifecycleSnapshot graphics = impl_->graphicsLifecycle.snapshot();
+    if (graphics.resizeInProgress || graphics.epoch != epoch ||
+        graphics.desktopWidth != width || graphics.desktopHeight != height) {
+        return false;
+    }
+    const bool acknowledged = impl_->inputGeometryFence.acknowledge(
+        epoch, width, height);
+    if (acknowledged) {
+        OH_LOG_INFO(LOG_APP,
+            "[RDP-INPUT-GEOMETRY] acknowledged epoch=%{public}llu size=%{public}dx%{public}d",
+            static_cast<unsigned long long>(epoch), width, height);
+    }
+    return acknowledged;
+}
+
+bool FreeRdpAdapter::synchronizeRendererGeometry() {
+    if (!impl_) {
+        return false;
+    }
+    std::lock_guard<std::mutex> geometryLock(impl_->rendererGeometrySyncMutex);
+    const RdpGraphicsLifecycleSnapshot graphics = impl_->graphicsLifecycle.snapshot();
+    const RdpRendererGeometryReplay replay =
+        ResolveRdpRendererGeometryReplay(graphics);
+    if (!replay.ready) {
+        return false;
+    }
+    const Render::DecoderSessionIdentity owner = impl_->ownerSnapshot();
+    if (!owner.valid()) {
+        return false;
+    }
+    RendererNapi::SetActiveSourceSize(
+        owner, replay.width, replay.height);
+    OH_LOG_INFO(LOG_APP,
+        "[RDP-INPUT-GEOMETRY] renderer synchronized after pipeline bind epoch=%{public}llu size=%{public}dx%{public}d",
+        static_cast<unsigned long long>(replay.epoch),
+        replay.width, replay.height);
+    return true;
 }
 
 RdpDisplayLayoutResult FreeRdpAdapter::requestDisplayLayout(
@@ -8316,6 +8527,7 @@ RdpDisplayLayoutResult FreeRdpAdapter::requestDisplayLayout(
         !RdpDisplayLayoutPolicy::IsWithinServerAreaCaps(
             request, impl_->displayMaxAreaFactorA, impl_->displayMaxAreaFactorB)) {
         impl_->displayRequestCount++;
+        impl_->displayChannelRequestCount++;
         impl_->displayFailureCount++;
         impl_->displayLastResult = "server_caps_exceeded";
         return {false, "server_caps_exceeded",
@@ -8327,6 +8539,7 @@ RdpDisplayLayoutResult FreeRdpAdapter::requestDisplayLayout(
     impl_->displayRequestedHeight = request.height;
     impl_->displayScaleFactor = request.desktopScaleFactor;
     impl_->displayRequestCount++;
+    impl_->displayChannelRequestCount++;
     impl_->displayLastResult = "queued";
     return validation;
 #else
@@ -8342,7 +8555,15 @@ bool FreeRdpAdapter::cancelDisplayLayout() {
     const bool cancelled = impl_->displayLayoutPending;
     impl_->displayLayoutPending = false;
     if (cancelled) {
-        impl_->displayLastResult = "cancelled";
+        const auto requestedGeometry =
+            RdpDisplayLayoutPolicy::ResolveRequestedGeometryAfterPendingCancellation(
+                impl_->displayLayoutInFlight,
+                impl_->displayRequestedWidth, impl_->displayRequestedHeight,
+                impl_->displayInFlightWidth, impl_->displayInFlightHeight);
+        impl_->displayRequestedWidth = requestedGeometry.width;
+        impl_->displayRequestedHeight = requestedGeometry.height;
+        impl_->displayLastResult = RdpDisplayLayoutPolicy::ResolveCancelledRequestStatus(
+            impl_->displayLayoutInFlight);
     }
     return cancelled;
 }
@@ -8438,9 +8659,13 @@ void FreeRdpAdapter::sendMouse(int x, int y, MouseButton button, bool pressed) {
     }
     const UINT16 ux = static_cast<UINT16>(x);
     const UINT16 uy = static_cast<UINT16>(y);
+    const RdpInputGeometrySnapshot geometry =
+        impl_->inputGeometryFence.captureGeometry();
     const int buttonValue = static_cast<int>(button);
     if (buttonValue < 0) {
-        impl_->enqueueInputEvent(RdpQueuedInputEvent::Mouse(PTR_FLAGS_MOVE, 0, ux, uy, true));
+        impl_->enqueueInputEvent(RdpQueuedInputEvent::Mouse(
+            PTR_FLAGS_MOVE, 0, ux, uy, true, geometry.epoch,
+            geometry.width, geometry.height));
         return;
     }
 
@@ -8460,7 +8685,7 @@ void FreeRdpAdapter::sendMouse(int x, int y, MouseButton button, bool pressed) {
         "[RDP] sendMouse queued flags=0x%{public}04x x=%{public}d y=%{public}d button=%{public}d pressed=%{public}s",
         flags, x, y, buttonValue, pressed ? "down" : "up");
     // 先移动到目标点，再发送纯按钮事件。队列中旧 mouse move 会被清理，避免点击被旧移动拖慢。
-    impl_->enqueueMouseButtonWithMove(PTR_FLAGS_MOVE, flags, ux, uy);
+    impl_->enqueueMouseButtonWithMove(PTR_FLAGS_MOVE, flags, ux, uy, geometry);
 }
 
 void FreeRdpAdapter::sendMouseWheel(int x, int y, int delta) {
@@ -8473,8 +8698,11 @@ void FreeRdpAdapter::sendMouseWheel(int x, int y, int delta) {
         flags |= PTR_FLAGS_WHEEL_NEGATIVE;
     }
     flags |= magnitude;
+    const RdpInputGeometrySnapshot geometry =
+        impl_->inputGeometryFence.captureGeometry();
     impl_->enqueueInputEvent(RdpQueuedInputEvent::MouseWheel(
-        flags, 0, static_cast<UINT16>(x), static_cast<UINT16>(y)));
+        flags, 0, static_cast<UINT16>(x), static_cast<UINT16>(y),
+        geometry.epoch, geometry.width, geometry.height));
 }
 
 void FreeRdpAdapter::sendText(const std::string& text) {
@@ -8687,6 +8915,11 @@ struct FreeRdpAdapter::Impl {
         std::lock_guard<std::mutex> lock(videoTelemetryMutex);
         return videoTelemetryCallback;
     }
+
+    // The skeleton has no deferred FreeRDP context to retire, but public
+    // lifecycle entrypoints share the same interrupt contract as the real
+    // adapter. Keep this an explicit no-op so the default CMake variant links.
+    void interruptTeardownRetirementWait() noexcept {}
 
     void setState(ConnectionState s, const std::string& msg = "") {
         state = s;
@@ -9084,6 +9317,17 @@ RdpPreflightResult FreeRdpAdapter::probeRdpCertificateRoute(
 
 RdpRenderStats FreeRdpAdapter::getRdpRenderStats() {
     return RdpRenderStats();
+}
+
+bool FreeRdpAdapter::acknowledgeRdpInputGeometry(uint64_t epoch, int width, int height) {
+    (void)epoch;
+    (void)width;
+    (void)height;
+    return false;
+}
+
+bool FreeRdpAdapter::synchronizeRendererGeometry() {
+    return false;
 }
 
 RdpDisplayLayoutResult FreeRdpAdapter::requestDisplayLayout(

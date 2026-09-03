@@ -3,12 +3,21 @@ import {
   normalizeRdpRemoteUiScalePreference,
   rdpSessionOrientationPolicy,
   RDP_DYNAMIC_LAYOUT_SETTLE_MS,
+  rdpCursorPositionRevisionAfterGeometryChange,
+  rdpRendererAttachStabilityDelayMs,
+  releaseRdpInputForGeometryChange,
+  resumeRdpGeometryAfterRendererAttach,
   resolveRdpAdaptiveDisplay,
+  resolveConfirmedRdpDesktopGeometry,
   resolveRdpDisplaySourceId,
+  resolveRdpInputGeometryObservation,
+  resolveRdpInputReadinessTransition,
   resolveRdpRemoteUiScale,
   shouldAttemptInitialRdpDynamicUpgrade,
+  shouldPreserveLiveRdpGeometry,
   shouldUseRdpPcAdaptiveDisplay
 } from '../main/ets/services/RdpAdaptiveDisplayPolicy';
+import { RemoteModifierStateController } from '../main/ets/services/RemoteModifierStateController';
 
 export default function rdpAdaptiveDisplayPolicyTest(): void {
   describe('RdpAdaptiveDisplayPolicy', (): void => {
@@ -38,6 +47,159 @@ export default function rdpAdaptiveDisplayPolicyTest(): void {
       expect(shouldAttemptInitialRdpDynamicUpgrade(false, false, 0)).assertFalse();
       expect(shouldAttemptInitialRdpDynamicUpgrade(true, true, 0)).assertFalse();
     });
+
+    it('adopts_only_a_renderer_and_freerdp_confirmed_desktop_geometry', 0, (): void => {
+      const upgraded = resolveConfirmedRdpDesktopGeometry(2880, 1800, 2880, 1800);
+      expect(upgraded === null).assertFalse();
+      expect(upgraded?.width).assertEqual(2880);
+      expect(upgraded?.height).assertEqual(1800);
+
+      // During cbDesktopResize the renderer and completed lifecycle may be on
+      // opposite sides of the transaction. Input must retain the old space.
+      expect(resolveConfirmedRdpDesktopGeometry(2880, 1800, 1600, 1000) === null).assertTrue();
+      expect(resolveConfirmedRdpDesktopGeometry(0, 1800, 2880, 1800) === null).assertTrue();
+      expect(resolveConfirmedRdpDesktopGeometry(20000, 1800, 20000, 1800) === null).assertTrue();
+    });
+
+    it('fences_input_from_resize_mismatch_until_the_current_attempt_is_confirmed', 0, (): void => {
+      const mismatch = resolveRdpInputGeometryObservation(
+        9, 3, 9, 3, 2880, 1800, 1600, 1000,
+        1600, 1000, false, true, true, false, true);
+      expect(mismatch.status).assertEqual('pending');
+      expect(mismatch.inputReady).assertFalse();
+
+      // Both producers can still expose the old geometry while Display
+      // Control is in flight. That is not permission to reopen input.
+      const oldWhileQueued = resolveRdpInputGeometryObservation(
+        9, 3, 9, 3, 1600, 1000, 1600, 1000,
+        1600, 1000, true, false, false, true, true);
+      expect(oldWhileQueued.status).assertEqual('pending');
+
+      const confirmed = resolveRdpInputGeometryObservation(
+        9, 3, 9, 3, 2880, 1800, 2880, 1800,
+        1600, 1000, false, false, false, true, true);
+      expect(confirmed.status).assertEqual('confirmed');
+      expect(confirmed.geometryChanged).assertTrue();
+      expect(confirmed.inputReady).assertTrue();
+    });
+
+    it('ignores_old_attempts_and_keeps_fixed_geometry_behind_the_stability_gate', 0,
+      (): void => {
+        const stale = resolveRdpInputGeometryObservation(
+          11, 5, 11, 4, 1920, 1080, 1920, 1080,
+          1920, 1080, false, false, false, true, true);
+        expect(stale.status).assertEqual('stale');
+
+        const fixedBeforeVideoStable = resolveRdpInputGeometryObservation(
+          11, 5, 11, 5, 1920, 1080, 1920, 1080,
+          1920, 1080, false, false, false, true, false);
+        expect(fixedBeforeVideoStable.status).assertEqual('confirmed');
+        expect(fixedBeforeVideoStable.geometryChanged).assertFalse();
+        expect(fixedBeforeVideoStable.inputReady).assertFalse();
+      });
+
+    it('keeps_native_resize_authoritative_when_local_pending_state_is_lost', 0,
+      (): void => {
+        const reattachedWhileSent = resolveRdpInputGeometryObservation(
+          31, 8, 31, 8, 1600, 1000, 1600, 1000,
+          1600, 1000, false, true, false, true, true);
+        expect(reattachedWhileSent.status).assertEqual('pending');
+
+        const followUpQueuedAfterFirstCompletion = resolveRdpInputGeometryObservation(
+          31, 8, 31, 8, 2560, 1600, 2560, 1600,
+          1600, 1000, true, false, false, false, true);
+        expect(followUpQueuedAfterFirstCompletion.status).assertEqual('pending');
+
+        const firstInFlightAfterFollowUpCancel = resolveRdpInputGeometryObservation(
+          31, 8, 31, 8, 1600, 1000, 1600, 1000,
+          1600, 1000, false, true, false, true, true);
+        expect(firstInFlightAfterFollowUpCancel.status).assertEqual('pending');
+
+        const unsolicitedResize = resolveRdpInputGeometryObservation(
+          31, 8, 31, 8, 1600, 1000, 1600, 1000,
+          1600, 1000, false, false, true, false, true);
+        expect(unsolicitedResize.status).assertEqual('pending');
+      });
+
+    it('retains_the_cold_stability_wait_only_for_a_fresh_independent_window', 0,
+      (): void => {
+        expect(rdpRendererAttachStabilityDelayMs('window-1', false)).assertEqual(2000);
+        expect(rdpRendererAttachStabilityDelayMs('window-1', true)).assertEqual(0);
+        expect(rdpRendererAttachStabilityDelayMs('', false)).assertEqual(0);
+      });
+
+    it('publishes_independent_window_ready_when_the_last_rdp_barrier_opens', 0,
+      (): void => {
+        const stabilityFirst = resolveRdpInputReadinessTransition(
+          false, true, 21, true, false);
+        expect(stabilityFirst.inputReady).assertFalse();
+        expect(stabilityFirst.becameReady).assertFalse();
+        const geometryLast = resolveRdpInputReadinessTransition(
+          stabilityFirst.inputReady, true, 21, true, true);
+        expect(geometryLast.inputReady).assertTrue();
+        expect(geometryLast.becameReady).assertTrue();
+        const stabilityFirstSteady = resolveRdpInputReadinessTransition(
+          geometryLast.inputReady, true, 21, true, true);
+        expect(stabilityFirstSteady.becameReady).assertFalse();
+
+        const geometryFirst = resolveRdpInputReadinessTransition(
+          false, true, 22, false, true);
+        expect(geometryFirst.inputReady).assertFalse();
+        expect(geometryFirst.becameReady).assertFalse();
+        const stabilityLast = resolveRdpInputReadinessTransition(
+          geometryFirst.inputReady, true, 22, true, true);
+        expect(stabilityLast.inputReady).assertTrue();
+        expect(stabilityLast.becameReady).assertTrue();
+        const geometryFirstSteady = resolveRdpInputReadinessTransition(
+          stabilityLast.inputReady, true, 22, true, true);
+        expect(geometryFirstSteady.becameReady).assertFalse();
+      });
+
+    it('preserves_live_handoff_geometry_and_reobserves_a_static_cursor_revision', 0,
+      (): void => {
+        expect(shouldPreserveLiveRdpGeometry('rdp', true, 21)).assertTrue();
+        expect(shouldPreserveLiveRdpGeometry('rdp', false, 21)).assertFalse();
+        expect(shouldPreserveLiveRdpGeometry('vnc', true, 21)).assertFalse();
+        expect(rdpCursorPositionRevisionAfterGeometryChange(17, true)).assertEqual(-1);
+        expect(rdpCursorPositionRevisionAfterGeometryChange(17, false)).assertEqual(17);
+      });
+
+    it('restarts_geometry_monitors_before_a_restored_window_can_accept_input', 0,
+      (): void => {
+        const steps: string[] = [];
+        resumeRdpGeometryAfterRendererAttach({
+          blockInputUntilConfirmed: (): void => { steps.push('block'); },
+          synchronizeGeometry: (): void => { steps.push('sync'); },
+          startRenderWatchdog: (): void => { steps.push('watchdog'); },
+          startNativeStateMonitor: (): void => { steps.push('monitor'); }
+        });
+        expect(steps.join(',')).assertEqual('block,sync,watchdog,monitor');
+      });
+
+    it('clears_locked_modifiers_and_pointer_sequences_at_the_geometry_barrier', 0,
+      (): void => {
+        const steps: string[] = [];
+        const modifiers = new RemoteModifierStateController();
+        modifiers.setDown('ctrl', true);
+        modifiers.setDown('alt', true);
+        releaseRdpInputForGeometryChange({
+          discardPendingMouseMove: (): void => { steps.push('discard-move'); },
+          releaseCanvasPinchInput: (): void => { steps.push('pinch'); },
+          releaseAllHeldKeys: (): void => { steps.push('keys-up'); },
+          releaseHeldPointerState: (): void => { steps.push('pointer-up'); },
+          resetTouchGesture: (): void => { steps.push('touch-reset'); },
+          resetAllLatches: (): void => {
+            modifiers.reset();
+            steps.push('latches-reset');
+          },
+          resetTouchpadState: (): void => { steps.push('touchpad-reset'); },
+          invalidateViewport: (): void => { steps.push('viewport-reset'); }
+        });
+        expect(modifiers.snapshot().ctrl).assertFalse();
+        expect(modifiers.snapshot().alt).assertFalse();
+        expect(steps.join(',')).assertEqual(
+          'discard-move,pinch,keys-up,pointer-up,touch-reset,latches-reset,touchpad-reset,viewport-reset');
+      });
 
     it('keeps_physical_pixels_when_dpi_scaling_is_available', 0, (): void => {
       const result = resolveRdpAdaptiveDisplay({
