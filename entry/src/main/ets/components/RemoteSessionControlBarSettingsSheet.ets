@@ -2,6 +2,7 @@ import { promptAction } from '@kit.ArkUI';
 import { AppTheme, Palette, buildDark, buildLight } from '../common/Theme';
 import { protocolIcon } from '../services/ProtocolIconPolicy';
 import {
+  protectRemoteSessionControlBarVisibility,
   RemoteSessionControlBarPreferenceUpdate,
   RemoteSessionControlBarVisibility
 } from '../services/RemoteSessionTopBarPolicy';
@@ -14,6 +15,7 @@ export struct RemoteSessionControlBarSettingsSheet {
   @Prop initialRustDeskHidden: boolean = false;
   @Prop initialVncHidden: boolean = false;
   @Prop initialMoonlightHidden: boolean = false;
+  @Prop @Watch('onQuickExitDisabledChange') quickExitDisabled: boolean = false;
   onClose: () => void = (): void => {};
   onSave: (update: RemoteSessionControlBarPreferenceUpdate) => boolean =
     (_update: RemoteSessionControlBarPreferenceUpdate): boolean => false;
@@ -28,14 +30,26 @@ export struct RemoteSessionControlBarSettingsSheet {
   private touchedMoonlight: boolean = false;
 
   aboutToAppear(): void {
-    this.draftRdpHidden = this.initialRdpHidden;
-    this.draftRustDeskHidden = this.initialRustDeskHidden;
-    this.draftVncHidden = this.initialVncHidden;
-    this.draftMoonlightHidden = this.initialMoonlightHidden;
+    const initial: RemoteSessionControlBarVisibility =
+      protectRemoteSessionControlBarVisibility({
+        rdpHidden: this.initialRdpHidden,
+        rustDeskHidden: this.initialRustDeskHidden,
+        vncHidden: this.initialVncHidden,
+        moonlightHidden: this.initialMoonlightHidden
+      }, this.quickExitDisabled);
+    this.draftRdpHidden = initial.rdpHidden;
+    this.draftRustDeskHidden = initial.rustDeskHidden;
+    this.draftVncHidden = initial.vncHidden;
+    this.draftMoonlightHidden = initial.moonlightHidden;
     this.touchedRdp = false;
     this.touchedRustDesk = false;
     this.touchedVnc = false;
     this.touchedMoonlight = false;
+  }
+
+  private onQuickExitDisabledChange(): void {
+    if (!this.quickExitDisabled) { return; }
+    this.setAll(false);
   }
 
   private pal(): Palette {
@@ -43,15 +57,16 @@ export struct RemoteSessionControlBarSettingsSheet {
   }
 
   private draft(): RemoteSessionControlBarVisibility {
-    return {
+    return protectRemoteSessionControlBarVisibility({
       rdpHidden: this.draftRdpHidden,
       rustDeskHidden: this.draftRustDeskHidden,
       vncHidden: this.draftVncHidden,
       moonlightHidden: this.draftMoonlightHidden
-    };
+    }, this.quickExitDisabled);
   }
 
   private setAll(hidden: boolean): void {
+    if (hidden && this.quickExitDisabled) { return; }
     this.draftRdpHidden = hidden;
     this.draftRustDeskHidden = hidden;
     this.draftVncHidden = hidden;
@@ -103,12 +118,14 @@ export struct RemoteSessionControlBarSettingsSheet {
       Column() {
         Text(title).fontSize(14).fontWeight(FontWeight.Medium)
           .fontColor(this.pal().text).fontFamily(AppTheme.fontFamily)
-        Text(hidden ? '侧栏和顶栏均已隐藏' : '显示会话侧栏与顶栏')
+        Text(this.quickExitDisabled ? '关闭快捷退出时必须显示' :
+          (hidden ? '侧栏和顶栏均已隐藏' : '显示会话侧栏与顶栏'))
           .fontSize(11).fontColor(this.pal().text3)
           .fontFamily(AppTheme.fontFamily).lineHeight(16).margin({ top: 3 })
       }.alignItems(HorizontalAlign.Start).layoutWeight(1)
       Toggle({ type: ToggleType.Switch, isOn: hidden })
         .selectedColor(this.accentColor).scale({ x: 0.88, y: 0.88 })
+        .enabled(!this.quickExitDisabled).opacity(this.quickExitDisabled ? 0.45 : 1)
         .accessibilityText((hidden ? '显示 ' : '隐藏 ') + title + ' 会话控制栏')
         .onChange(onChange)
     }.width('100%').padding({ left: 15, right: 12, top: 11, bottom: 11 })
@@ -123,8 +140,10 @@ export struct RemoteSessionControlBarSettingsSheet {
       this.header()
       Scroll() {
         Column() {
-          Text('开关开启表示隐藏对应协议的手机/平板侧栏和 PC 顶栏；' +
-            '隐藏后可返回“显示与交互”设置恢复，不影响远程输入。')
+          Text(this.quickExitDisabled ?
+            '“关闭快捷退出”已开启。为确保始终存在退出按钮，所有协议的会话控制栏必须显示。' :
+            '开关开启表示隐藏对应协议的手机/平板侧栏和 PC 顶栏；' +
+              '隐藏后可返回“显示与交互”设置恢复，不影响远程输入。')
             .fontSize(12).fontColor(this.pal().text2).fontFamily(AppTheme.fontFamily)
             .lineHeight(18).width('100%').padding(13)
             .borderRadius(12).backgroundColor(this.pal().surface).margin({ bottom: 14 })
@@ -136,6 +155,7 @@ export struct RemoteSessionControlBarSettingsSheet {
             Button('全部隐藏').layoutWeight(1).height(38).borderRadius(10)
               .backgroundColor(this.pal().surface).fontColor(this.pal().text2).fontSize(12)
               .margin({ left: 8 }).onClick((): void => { this.setAll(true); })
+              .enabled(!this.quickExitDisabled).opacity(this.quickExitDisabled ? 0.45 : 1)
           }.width('100%').margin({ bottom: 16 })
 
           Column() {

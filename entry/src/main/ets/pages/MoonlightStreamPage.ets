@@ -18,6 +18,11 @@ import { GUIDE_ALWAYS_VISIBLE_STORAGE_KEY } from '../services/GuideVisibilityPol
 import { GuideVisibilityService } from '../services/GuideVisibilityService';
 import {
   REMOTE_SESSION_CONTROL_BAR_HIDDEN_MOONLIGHT_KEY,
+  REMOTE_SESSION_QUICK_EXIT_DISABLED_KEY,
+  RemoteSessionQuickExitRestoreState,
+  protectRemoteSessionControlBarVisibility,
+  resolveRemoteSessionQuickExitRestore,
+  shouldConsumeRemoteSessionBack,
   shouldDismissRemoteSessionControlSheet
 } from '../services/RemoteSessionTopBarPolicy';
 import { MoonlightConnectStageOverlay } from '../components/moonlight/MoonlightConnectStageOverlay';
@@ -69,7 +74,9 @@ import {
   MoonlightResolvedControlMode,
   MOONLIGHT_DISAPPEAR_BACKGROUND_SIGNAL_WAIT_MS,
   MOONLIGHT_PRESENTATION_STALL_MS,
+  MoonlightConnectSheetExitPlan,
   moonlightConnectSheetMountReady,
+  moonlightConnectSheetExitPlan,
   moonlightCanResizeRendererInPlace,
   moonlightAdaptiveControlModeForSource,
   moonlightInitialAdaptiveControlMode,
@@ -346,6 +353,9 @@ struct MoonlightStreamPage {
   @StorageLink(REMOTE_SESSION_CONTROL_BAR_HIDDEN_MOONLIGHT_KEY)
   @Watch('onMoonlightSessionControlBarVisibilityChanged')
   sessionControlBarHiddenMoonlight: boolean = false;
+  @StorageLink(REMOTE_SESSION_QUICK_EXIT_DISABLED_KEY)
+  @Watch('onMoonlightQuickExitDisabledChanged')
+  remoteSessionQuickExitDisabled: boolean = false;
   @StorageLink('remoteDesktopBgFlag') @Watch('onRemoteDesktopBgFlagChange')
   appBackgroundSignal: boolean = false;
   @LocalStorageLink('sessionWindowBackground') @Watch('onSessionWindowBackgroundChange')
@@ -985,20 +995,64 @@ struct MoonlightStreamPage {
     try {
       const prefs = preferences.getPreferencesSync(
         getContext(this), { name: 'RemoteDesktopAppPrefs' });
-      this.sessionControlBarHiddenMoonlight =
-        prefs.getSync(REMOTE_SESSION_CONTROL_BAR_HIDDEN_MOONLIGHT_KEY, false) as boolean;
+      const storedQuickExitDisabled: boolean = prefs.getSync(
+        REMOTE_SESSION_QUICK_EXIT_DISABLED_KEY, false) as boolean;
+      const restored: RemoteSessionQuickExitRestoreState =
+        resolveRemoteSessionQuickExitRestore({
+          rdpHidden: false,
+          rustDeskHidden: false,
+          vncHidden: false,
+          moonlightHidden:
+            prefs.getSync(REMOTE_SESSION_CONTROL_BAR_HIDDEN_MOONLIGHT_KEY, false) as boolean
+        }, true, storedQuickExitDisabled, this.remoteSessionQuickExitDisabled);
+      this.remoteSessionQuickExitDisabled = restored.quickExitDisabled;
+      this.sessionControlBarHiddenMoonlight = restored.visibility.moonlightHidden;
+      if (this.remoteSessionQuickExitDisabled) {
+        prefs.putSync(REMOTE_SESSION_CONTROL_BAR_HIDDEN_MOONLIGHT_KEY, false);
+        prefs.flushSync();
+      }
     } catch (error) {
-      this.sessionControlBarHiddenMoonlight = false;
+      const fallback: RemoteSessionQuickExitRestoreState =
+        resolveRemoteSessionQuickExitRestore({
+          rdpHidden: false,
+          rustDeskHidden: false,
+          vncHidden: false,
+          moonlightHidden: false
+        }, false, false, this.remoteSessionQuickExitDisabled);
+      this.remoteSessionQuickExitDisabled = fallback.quickExitDisabled;
+      this.sessionControlBarHiddenMoonlight = fallback.visibility.moonlightHidden;
       hilog.warn(0x0014, 'MoonlightStreamUi',
-        'restore control bar visibility fallback to visible: ' + JSON.stringify(error));
+        'restore control bar visibility fallback to visible/AppStorage: ' + JSON.stringify(error));
     }
     AppStorage.setOrCreate(REMOTE_SESSION_CONTROL_BAR_HIDDEN_MOONLIGHT_KEY,
       this.sessionControlBarHiddenMoonlight);
+    AppStorage.setOrCreate(REMOTE_SESSION_QUICK_EXIT_DISABLED_KEY,
+      this.remoteSessionQuickExitDisabled);
+  }
+
+  private moonlightSessionControlBarHidden(): boolean {
+    return protectRemoteSessionControlBarVisibility({
+      rdpHidden: false,
+      rustDeskHidden: false,
+      vncHidden: false,
+      moonlightHidden: this.sessionControlBarHiddenMoonlight
+    }, this.remoteSessionQuickExitDisabled).moonlightHidden;
+  }
+
+  private moonlightSessionActive(): boolean {
+    return !this.routeTerminated && (this.sessionReserved || this.nativeSessionId > 0 ||
+      (this.phase !== 'failed' && this.phase !== 'disconnected'));
+  }
+
+  private onMoonlightQuickExitDisabledChanged(): void {
+    if (!this.remoteSessionQuickExitDisabled) { return; }
+    this.sessionControlBarHiddenMoonlight = false;
+    AppStorage.setOrCreate(REMOTE_SESSION_CONTROL_BAR_HIDDEN_MOONLIGHT_KEY, false);
   }
 
   private onMoonlightSessionControlBarVisibilityChanged(): void {
     if (shouldDismissRemoteSessionControlSheet(
-      this.sessionControlBarHiddenMoonlight,
+      this.moonlightSessionControlBarHidden(),
       this.showSessionSheet,
       this.sheetMode)) {
       this.closeSheet();
@@ -2205,10 +2259,12 @@ struct MoonlightStreamPage {
    * keeps the shared protocol registry occupied until its receipt arrives, so
    * the page never needs to remain visible while common-c drains.
    */
-  private disconnectMoonlightImmediately(reason: string): void {
+  private disconnectMoonlightImmediately(
+    reason: string,
+    waitForSheetDisappear: boolean = this.showSessionSheet
+  ): void {
     if (this.terminationBusy) { return; }
     this.terminationBusy = true;
-    const sheetWasVisible: boolean = this.showSessionSheet;
     try {
       if (!this.routeTerminated) {
         this.requestedTerminalAction = 'disconnect';
@@ -2220,7 +2276,7 @@ struct MoonlightStreamPage {
       this.closeSheet();
     } finally {
       this.terminationBusy = false;
-      this.requestSessionSurfaceClose(sheetWasVisible);
+      this.requestSessionSurfaceClose(waitForSheetDisappear);
     }
   }
 
@@ -5319,11 +5375,22 @@ struct MoonlightStreamPage {
 
   private cancelConnection(): void {
     if (this.terminationBusy) { return; }
-    this.disconnectMoonlightImmediately('connection-cancelled');
+    const plan: MoonlightConnectSheetExitPlan = moonlightConnectSheetExitPlan(
+      'explicit', this.remoteSessionQuickExitDisabled,
+      this.moonlightSessionActive(), this.showSessionSheet);
+    if (plan.disconnect) {
+      this.disconnectMoonlightImmediately(
+        'connection-cancelled', plan.waitForDisappear);
+    }
   }
 
   onBackPress(): boolean {
     if (this.terminationBusy) { return true; }
+    if (shouldConsumeRemoteSessionBack(
+      this.remoteSessionQuickExitDisabled, this.moonlightSessionActive())) {
+      promptAction.showToast({ message: '远程连接中，请使用断开按钮退出', duration: 1200 });
+      return true;
+    }
     this.disconnectMoonlightImmediately('system-back');
     return true;
   }
@@ -5821,7 +5888,7 @@ struct MoonlightStreamPage {
         .zIndex(120)
         .hitTestBehavior(HitTestMode.None)
 
-      if (!this.sessionControlBarHiddenMoonlight) {
+      if (!this.moonlightSessionControlBarHidden()) {
         if (this.toolbarLayout().edgeRail) {
           Stack({ alignContent: Alignment.End }) {
             MoonlightSessionToolbar({
@@ -6061,7 +6128,19 @@ struct MoonlightStreamPage {
         maskColor: this.sheetMode === 'connect' ? 'rgba(0,0,0,0.62)' : 'rgba(0,0,0,0.36)',
         onWillDismiss: (action: DismissSheetAction): void => {
           if (this.sheetMode === 'connect') {
-            this.disconnectMoonlightImmediately('system-sheet-back');
+            const plan: MoonlightConnectSheetExitPlan = moonlightConnectSheetExitPlan(
+              'interactive', this.remoteSessionQuickExitDisabled,
+              this.moonlightSessionActive(), this.showSessionSheet);
+            if (plan.blocked) {
+              promptAction.showToast({
+                message: '远程连接中，请使用取消或断开按钮退出', duration: 1200
+              });
+              return;
+            }
+            if (plan.disconnect) {
+              this.disconnectMoonlightImmediately(
+                'system-sheet-back', plan.waitForDisappear);
+            }
           }
           action.dismiss();
         },

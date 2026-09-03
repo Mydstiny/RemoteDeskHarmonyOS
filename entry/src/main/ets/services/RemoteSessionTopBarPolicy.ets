@@ -13,6 +13,8 @@ export const REMOTE_SESSION_CONTROL_BAR_HIDDEN_VNC_KEY: string =
   'remoteSessionControlBarHiddenVnc';
 export const REMOTE_SESSION_CONTROL_BAR_HIDDEN_MOONLIGHT_KEY: string =
   'remoteSessionControlBarHiddenMoonlight';
+export const REMOTE_SESSION_QUICK_EXIT_DISABLED_KEY: string =
+  'remoteSessionQuickExitDisabled';
 
 export interface RemoteSessionControlBarVisibility {
   rdpHidden: boolean;
@@ -29,6 +31,145 @@ export interface RemoteSessionControlBarPreferenceUpdate {
 export interface RemoteSessionControlBarPreferencePresence {
   rustDeskPresent: boolean;
   vncPresent: boolean;
+}
+
+export interface RemoteSessionBooleanPreferencePort {
+  has: (key: string) => boolean;
+  read: (key: string, fallback: boolean) => boolean;
+  put: (key: string, value: boolean) => void;
+  remove: (key: string) => void;
+  flush: () => void;
+}
+
+interface RemoteSessionBooleanPreferenceSnapshot {
+  key: string;
+  present: boolean;
+  value: boolean;
+}
+
+export interface RemoteSessionQuickExitRestoreState {
+  quickExitDisabled: boolean;
+  visibility: RemoteSessionControlBarVisibility;
+}
+
+/** Keep the already-published AppStorage value when disk Preferences cannot
+ * be read. This makes a transient storage error fail safe for an open window. */
+export function resolveRemoteSessionQuickExitRestore(
+  visibility: RemoteSessionControlBarVisibility,
+  preferenceReadable: boolean,
+  storedQuickExitDisabled: boolean,
+  currentQuickExitDisabled: boolean
+): RemoteSessionQuickExitRestoreState {
+  const quickExitDisabled: boolean = preferenceReadable ?
+    storedQuickExitDisabled : currentQuickExitDisabled;
+  return {
+    quickExitDisabled,
+    visibility: protectRemoteSessionControlBarVisibility(
+      visibility, quickExitDisabled)
+  };
+}
+
+/** Persist the protection bit and its four visibility invariants as one
+ * compensating transaction. A partial put/flush failure restores both values
+ * and original key presence before returning failure to the UI. */
+export function commitRemoteSessionQuickExitPreference(
+  port: RemoteSessionBooleanPreferencePort,
+  quickExitDisabled: boolean
+): boolean {
+  const keys: string[] = [
+    REMOTE_SESSION_QUICK_EXIT_DISABLED_KEY,
+    REMOTE_SESSION_CONTROL_BAR_HIDDEN_RDP_KEY,
+    REMOTE_SESSION_CONTROL_BAR_HIDDEN_RUSTDESK_KEY,
+    REMOTE_SESSION_CONTROL_BAR_HIDDEN_VNC_KEY,
+    REMOTE_SESSION_CONTROL_BAR_HIDDEN_MOONLIGHT_KEY
+  ];
+  const snapshot: RemoteSessionBooleanPreferenceSnapshot[] = [];
+  try {
+    for (let index: number = 0; index < keys.length; index++) {
+      const key: string = keys[index];
+      snapshot.push({
+        key,
+        present: port.has(key),
+        value: port.read(key, false)
+      });
+    }
+  } catch (_readError) {
+    return false;
+  }
+  try {
+    port.put(REMOTE_SESSION_QUICK_EXIT_DISABLED_KEY, quickExitDisabled);
+    if (quickExitDisabled) {
+      for (let index: number = 1; index < keys.length; index++) {
+        port.put(keys[index], false);
+      }
+    }
+    port.flush();
+    return true;
+  } catch (_writeError) {
+    try {
+      for (let index: number = 0; index < snapshot.length; index++) {
+        const item: RemoteSessionBooleanPreferenceSnapshot = snapshot[index];
+        if (item.present) {
+          port.put(item.key, item.value);
+        } else {
+          port.remove(item.key);
+        }
+      }
+      port.flush();
+    } catch (_rollbackError) { /* Caller retains the last confirmed UI state. */ }
+    return false;
+  }
+}
+
+/** When shortcut exit is disabled, every graphical session must retain its
+ * app-owned disconnect affordance regardless of an older hide preference. */
+export function protectRemoteSessionControlBarVisibility(
+  visibility: RemoteSessionControlBarVisibility,
+  quickExitDisabled: boolean
+): RemoteSessionControlBarVisibility {
+  if (!quickExitDisabled) {
+    return {
+      rdpHidden: visibility.rdpHidden,
+      rustDeskHidden: visibility.rustDeskHidden,
+      vncHidden: visibility.vncHidden,
+      moonlightHidden: visibility.moonlightHidden
+    };
+  }
+  return {
+    rdpHidden: false,
+    rustDeskHidden: false,
+    vncHidden: false,
+    moonlightHidden: false
+  };
+}
+
+/** Preserve the existing PC keyboard safety guard while making the user
+ * preference apply to Back gestures/keys on every device class. */
+export function shouldConsumeRemoteSessionBack(
+  quickExitDisabled: boolean,
+  sessionActive: boolean,
+  platformSafetyGuard: boolean = false
+): boolean {
+  return sessionActive && (quickExitDisabled || platformSafetyGuard);
+}
+
+export function remoteSessionShortcutExitAllowed(
+  quickExitDisabled: boolean,
+  sessionActive: boolean
+): boolean {
+  return !quickExitDisabled || !sessionActive;
+}
+
+/** Native Sheets receive Back/mask/swipe before the page receives Back.
+ * Explicit button-driven and lifecycle-driven closes have already recorded a
+ * transition reason and must remain allowed. */
+export function remoteSessionInteractiveDismissAllowed(
+  quickExitDisabled: boolean,
+  sessionActive: boolean,
+  explicitTransition: boolean
+): boolean {
+  return explicitTransition || !shouldConsumeRemoteSessionBack(
+    quickExitDisabled, sessionActive);
 }
 
 export type RemoteTopBarMenuId = 'control' | 'display' | 'desktopFlip' |
@@ -167,7 +308,9 @@ export function shouldDismissRemoteSessionControlSheet(
 }
 
 export function remoteSessionControlBarSelectionSummary(
-  visibility: RemoteSessionControlBarVisibility): string {
+  visibility: RemoteSessionControlBarVisibility,
+  quickExitDisabled: boolean = false): string {
+  if (quickExitDisabled) { return '快捷退出已关闭 · 全部显示'; }
   const hiddenLabels: string[] = [];
   if (visibility.rdpHidden) { hiddenLabels.push('RDP'); }
   if (visibility.rustDeskHidden) { hiddenLabels.push('RustDesk'); }

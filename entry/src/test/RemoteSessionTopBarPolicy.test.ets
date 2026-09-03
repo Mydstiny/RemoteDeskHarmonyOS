@@ -1,6 +1,11 @@
 import { expect } from '@ohos/hypium';
 import { auditedDescribe as describe, auditedIt as it } from '../main/ets/services/FocusedTestRegistrationAudit';
 import {
+  REMOTE_SESSION_CONTROL_BAR_HIDDEN_MOONLIGHT_KEY,
+  REMOTE_SESSION_CONTROL_BAR_HIDDEN_RDP_KEY,
+  REMOTE_SESSION_CONTROL_BAR_HIDDEN_RUSTDESK_KEY,
+  REMOTE_SESSION_CONTROL_BAR_HIDDEN_VNC_KEY,
+  REMOTE_SESSION_QUICK_EXIT_DISABLED_KEY,
   REMOTE_SESSION_COLLAPSED_RAIL_HEIGHT,
   REMOTE_SESSION_COLLAPSED_RAIL_TOUCH_WIDTH,
   REMOTE_SESSION_COLLAPSED_RAIL_WIDTH,
@@ -8,11 +13,17 @@ import {
   REMOTE_SESSION_COLLAPSED_TOP_TOUCH_HEIGHT,
   REMOTE_SESSION_COLLAPSED_TOP_WIDTH,
   protocolPreferenceOwner,
+  RemoteSessionBooleanPreferencePort,
   applyRemoteSessionControlBarPreferenceUpdate,
+  commitRemoteSessionQuickExitPreference,
+  protectRemoteSessionControlBarVisibility,
   remoteKeyboardSidebarAction,
   remoteKeyboardSurfaceOpen,
   remoteSessionControlBarHidden,
   remoteSessionControlBarSelectionSummary,
+  remoteSessionInteractiveDismissAllowed,
+  remoteSessionShortcutExitAllowed,
+  resolveRemoteSessionQuickExitRestore,
   remoteSessionPrimaryActionIds,
   remoteSessionRailDragOffset,
   remoteSessionRailShouldCollapse,
@@ -20,6 +31,7 @@ import {
   reduceRustDeskTopBarSubMenuState,
   rustDeskTouchpadSpeedOptions,
   shouldOpenRustDeskTopBarSubMenu,
+  shouldConsumeRemoteSessionBack,
   resolveRemoteSessionControlBarVisibility,
   remoteTopBarDeviceClass,
   remoteTopBarLayout,
@@ -31,6 +43,41 @@ import {
   shouldShowRustDeskTopBar,
   shouldUseRustDeskEdgeRail
 } from '../main/ets/services/RemoteSessionTopBarPolicy';
+
+class QuickExitPreferencePortFake implements RemoteSessionBooleanPreferencePort {
+  private values: Map<string, boolean> = new Map<string, boolean>();
+  private failPutKey: string = '';
+  private failPutConsumed: boolean = false;
+  private failFlushOnce: boolean = false;
+
+  has(key: string): boolean { return this.values.has(key); }
+
+  read(key: string, fallback: boolean): boolean {
+    const value: boolean | undefined = this.values.get(key);
+    return value === undefined ? fallback : value;
+  }
+
+  put(key: string, value: boolean): void {
+    if (!this.failPutConsumed && this.failPutKey === key) {
+      this.failPutConsumed = true;
+      throw new Error('injected put failure');
+    }
+    this.values.set(key, value);
+  }
+
+  remove(key: string): void { this.values.delete(key); }
+
+  flush(): void {
+    if (this.failFlushOnce) {
+      this.failFlushOnce = false;
+      throw new Error('injected flush failure');
+    }
+  }
+
+  seed(key: string, value: boolean): void { this.values.set(key, value); }
+  failPutAt(key: string): void { this.failPutKey = key; }
+  failNextFlush(): void { this.failFlushOnce = true; }
+}
 
 export default function remoteSessionTopBarPolicyTest(): void {
   // Keep one exact class boundary around this multi-domain policy suite.  The
@@ -119,6 +166,112 @@ export default function remoteSessionTopBarPolicyTest(): void {
       expect(merged.vncHidden).assertTrue();
       expect(merged.moonlightHidden).assertTrue();
     });
+
+    it('quick_exit_protection_forces_all_graphical_controls_visible_without_mutation', 0,
+      (): void => {
+        const stored = {
+          rdpHidden: true, rustDeskHidden: false, vncHidden: true, moonlightHidden: true
+        };
+        const unprotected = protectRemoteSessionControlBarVisibility(stored, false);
+        expect(unprotected.rdpHidden).assertTrue();
+        expect(unprotected.rustDeskHidden).assertFalse();
+        expect(unprotected.vncHidden).assertTrue();
+        expect(unprotected.moonlightHidden).assertTrue();
+        const protectedVisibility = protectRemoteSessionControlBarVisibility(stored, true);
+        expect(protectedVisibility.rdpHidden).assertFalse();
+        expect(protectedVisibility.rustDeskHidden).assertFalse();
+        expect(protectedVisibility.vncHidden).assertFalse();
+        expect(protectedVisibility.moonlightHidden).assertFalse();
+        expect(stored.rdpHidden).assertTrue();
+        expect(stored.vncHidden).assertTrue();
+        expect(remoteSessionControlBarSelectionSummary(stored, true))
+          .assertEqual('快捷退出已关闭 · 全部显示');
+      });
+
+    it('quick_exit_protection_consumes_back_only_for_an_active_session', 0, (): void => {
+      expect(shouldConsumeRemoteSessionBack(true, true)).assertTrue();
+      expect(shouldConsumeRemoteSessionBack(true, false)).assertFalse();
+      expect(shouldConsumeRemoteSessionBack(false, true, true)).assertTrue();
+      expect(shouldConsumeRemoteSessionBack(false, true, false)).assertFalse();
+      expect(shouldConsumeRemoteSessionBack(false, false, true)).assertFalse();
+    });
+
+    it('quick_exit_protection_blocks_only_active_session_shortcuts', 0, (): void => {
+      expect(remoteSessionShortcutExitAllowed(true, true)).assertFalse();
+      expect(remoteSessionShortcutExitAllowed(true, false)).assertTrue();
+      expect(remoteSessionShortcutExitAllowed(false, true)).assertTrue();
+    });
+
+    it('quick_exit_protection_blocks_native_sheet_gestures_but_not_explicit_actions', 0,
+      (): void => {
+        // RustDesk auth, RustDesk 2FA and VNC certificate Sheets all use this
+        // policy because ArkUI routes interactive dismissal before page Back.
+        expect(remoteSessionInteractiveDismissAllowed(true, true, false)).assertFalse();
+        expect(remoteSessionInteractiveDismissAllowed(true, true, true)).assertTrue();
+        expect(remoteSessionInteractiveDismissAllowed(true, false, false)).assertTrue();
+        expect(remoteSessionInteractiveDismissAllowed(false, true, false)).assertTrue();
+      });
+
+    it('quick_exit_transaction_rolls_back_values_and_key_presence_after_put_failure', 0,
+      (): void => {
+        const port: QuickExitPreferencePortFake = new QuickExitPreferencePortFake();
+        port.seed(REMOTE_SESSION_CONTROL_BAR_HIDDEN_RDP_KEY, true);
+        port.seed(REMOTE_SESSION_CONTROL_BAR_HIDDEN_RUSTDESK_KEY, false);
+        port.seed(REMOTE_SESSION_CONTROL_BAR_HIDDEN_MOONLIGHT_KEY, true);
+        port.failPutAt(REMOTE_SESSION_CONTROL_BAR_HIDDEN_VNC_KEY);
+
+        expect(commitRemoteSessionQuickExitPreference(port, true)).assertFalse();
+        expect(port.has(REMOTE_SESSION_QUICK_EXIT_DISABLED_KEY)).assertFalse();
+        expect(port.read(REMOTE_SESSION_CONTROL_BAR_HIDDEN_RDP_KEY, false)).assertTrue();
+        expect(port.read(REMOTE_SESSION_CONTROL_BAR_HIDDEN_RUSTDESK_KEY, true)).assertFalse();
+        expect(port.has(REMOTE_SESSION_CONTROL_BAR_HIDDEN_VNC_KEY)).assertFalse();
+        expect(port.read(REMOTE_SESSION_CONTROL_BAR_HIDDEN_MOONLIGHT_KEY, false)).assertTrue();
+      });
+
+    it('quick_exit_transaction_rolls_back_after_flush_failure', 0, (): void => {
+      const port: QuickExitPreferencePortFake = new QuickExitPreferencePortFake();
+      port.seed(REMOTE_SESSION_QUICK_EXIT_DISABLED_KEY, false);
+      port.seed(REMOTE_SESSION_CONTROL_BAR_HIDDEN_RDP_KEY, true);
+      port.seed(REMOTE_SESSION_CONTROL_BAR_HIDDEN_RUSTDESK_KEY, false);
+      port.seed(REMOTE_SESSION_CONTROL_BAR_HIDDEN_VNC_KEY, true);
+      port.failNextFlush();
+
+      expect(commitRemoteSessionQuickExitPreference(port, true)).assertFalse();
+      expect(port.read(REMOTE_SESSION_QUICK_EXIT_DISABLED_KEY, true)).assertFalse();
+      expect(port.read(REMOTE_SESSION_CONTROL_BAR_HIDDEN_RDP_KEY, false)).assertTrue();
+      expect(port.read(REMOTE_SESSION_CONTROL_BAR_HIDDEN_RUSTDESK_KEY, true)).assertFalse();
+      expect(port.read(REMOTE_SESSION_CONTROL_BAR_HIDDEN_VNC_KEY, false)).assertTrue();
+      expect(port.has(REMOTE_SESSION_CONTROL_BAR_HIDDEN_MOONLIGHT_KEY)).assertFalse();
+    });
+
+    it('quick_exit_transaction_commits_protection_and_all_visibility_invariants', 0,
+      (): void => {
+        const port: QuickExitPreferencePortFake = new QuickExitPreferencePortFake();
+        port.seed(REMOTE_SESSION_CONTROL_BAR_HIDDEN_RDP_KEY, true);
+        expect(commitRemoteSessionQuickExitPreference(port, true)).assertTrue();
+        expect(port.read(REMOTE_SESSION_QUICK_EXIT_DISABLED_KEY, false)).assertTrue();
+        expect(port.read(REMOTE_SESSION_CONTROL_BAR_HIDDEN_RDP_KEY, true)).assertFalse();
+        expect(port.read(REMOTE_SESSION_CONTROL_BAR_HIDDEN_RUSTDESK_KEY, true)).assertFalse();
+        expect(port.read(REMOTE_SESSION_CONTROL_BAR_HIDDEN_VNC_KEY, true)).assertFalse();
+        expect(port.read(REMOTE_SESSION_CONTROL_BAR_HIDDEN_MOONLIGHT_KEY, true)).assertFalse();
+      });
+
+    it('direct_route_restore_uses_disk_when_readable_and_app_storage_when_not', 0,
+      (): void => {
+        const hidden = {
+          rdpHidden: true, rustDeskHidden: true, vncHidden: true, moonlightHidden: true
+        };
+        const readable = resolveRemoteSessionQuickExitRestore(hidden, true, false, true);
+        expect(readable.quickExitDisabled).assertFalse();
+        expect(readable.visibility.rdpHidden).assertTrue();
+        expect(readable.visibility.moonlightHidden).assertTrue();
+        const failedRead = resolveRemoteSessionQuickExitRestore(hidden, false, false, true);
+        expect(failedRead.quickExitDisabled).assertTrue();
+        expect(failedRead.visibility.rdpHidden).assertFalse();
+        expect(failedRead.visibility.rustDeskHidden).assertFalse();
+        expect(failedRead.visibility.vncHidden).assertFalse();
+        expect(failedRead.visibility.moonlightHidden).assertFalse();
+      });
 
     it('hidden_control_bar_should_dismiss_only_an_open_control_sheet', 0, (): void => {
       expect(shouldDismissRemoteSessionControlSheet(true, true, 'control')).assertTrue();

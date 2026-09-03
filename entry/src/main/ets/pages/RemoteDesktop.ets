@@ -538,11 +538,17 @@ import {
   REMOTE_SESSION_CONTROL_BAR_HIDDEN_RDP_KEY,
   REMOTE_SESSION_CONTROL_BAR_HIDDEN_RUSTDESK_KEY,
   REMOTE_SESSION_CONTROL_BAR_HIDDEN_VNC_KEY,
+  REMOTE_SESSION_QUICK_EXIT_DISABLED_KEY,
   RemoteSessionControlBarVisibility,
+  RemoteSessionQuickExitRestoreState,
+  protectRemoteSessionControlBarVisibility,
   remoteKeyboardSurfaceOpen,
   remoteSessionControlBarHidden,
+  remoteSessionInteractiveDismissAllowed,
+  resolveRemoteSessionQuickExitRestore,
   resolveRemoteSessionControlBarVisibility,
   remoteTopBarLayout,
+  shouldConsumeRemoteSessionBack,
   shouldShowRemoteSessionTopBar,
   shouldUseRemoteSessionEdgeRail
 } from '../services/RemoteSessionTopBarPolicy';
@@ -1017,6 +1023,8 @@ struct RemoteDesktop {
   sessionControlBarHiddenRustDesk: boolean = false;
   @StorageLink(REMOTE_SESSION_CONTROL_BAR_HIDDEN_VNC_KEY)
   sessionControlBarHiddenVnc: boolean = false;
+  @StorageLink(REMOTE_SESSION_QUICK_EXIT_DISABLED_KEY)
+  remoteSessionQuickExitDisabled: boolean = false;
   @StorageLink(RDP_PINCH_ZOOM_ENABLED_KEY) @Watch('onRdpPinchZoomSettingChange')
   rdpPinchZoomEnabled: boolean = false;
   @StorageLink(RUSTDESK_PINCH_ZOOM_ENABLED_KEY) @Watch('onRustDeskPinchZoomSettingChange')
@@ -1811,12 +1819,12 @@ struct RemoteDesktop {
   }
 
   private sessionControlBarVisibility(): RemoteSessionControlBarVisibility {
-    return {
+    return protectRemoteSessionControlBarVisibility({
       rdpHidden: this.sessionControlBarHiddenRdp,
       rustDeskHidden: this.sessionControlBarHiddenRustDesk,
       vncHidden: this.sessionControlBarHiddenVnc,
       moonlightHidden: false
-    };
+    }, this.remoteSessionQuickExitDisabled);
   }
 
   private isSessionControlBarHidden(protocol: string): boolean {
@@ -2708,7 +2716,17 @@ struct RemoteDesktop {
   }
 
   private handleRustDeskAuthSheetDismiss(action: DismissSheetAction): void {
-    if (this.rustDeskAuthDismissReason === 'confirm' || this.rustDeskAuthDismissReason === 'cancel') {
+    const explicitTransition: boolean = this.rustDeskAuthDismissReason !== 'none' ||
+      this.currentAbilityBackgroundState();
+    if (!remoteSessionInteractiveDismissAllowed(
+      this.remoteSessionQuickExitDisabled, this.remoteSessionExitActive(), explicitTransition)) {
+      promptAction.showToast({
+        message: '快捷退出已关闭，请使用连接面板内按钮继续或退出', duration: 1400
+      });
+      return;
+    }
+    if (this.rustDeskAuthDismissReason === 'confirm' ||
+      this.rustDeskAuthDismissReason === 'cancel') {
       action.dismiss();
       return;
     }
@@ -3106,6 +3124,14 @@ struct RemoteDesktop {
   }
 
   private handleRustDeskTwoFactorSheetDismiss(action: DismissSheetAction): void {
+    if (!remoteSessionInteractiveDismissAllowed(
+      this.remoteSessionQuickExitDisabled, this.remoteSessionExitActive(),
+      this.rustDeskTwoFactorDismissReason !== 'none')) {
+      promptAction.showToast({
+        message: '快捷退出已关闭，请使用 2FA 面板内的取消按钮退出', duration: 1400
+      });
+      return;
+    }
     if (this.rustDeskTwoFactorDismissReason === 'none') {
       this.cancelRustDeskTwoFactor();
     }
@@ -3777,6 +3803,14 @@ struct RemoteDesktop {
   }
 
   private handleVncCertificateSheetDismiss(action: DismissSheetAction): void {
+    if (!remoteSessionInteractiveDismissAllowed(
+      this.remoteSessionQuickExitDisabled, this.remoteSessionExitActive(),
+      this.vncCertificateState === VncCertificatePreflightState.CLOSING)) {
+      promptAction.showToast({
+        message: '快捷退出已关闭，请使用证书面板内按钮继续或退出', duration: 1400
+      });
+      return;
+    }
     if (this.vncCertificateState === VncCertificatePreflightState.CLOSING) {
       action.dismiss();
       return;
@@ -4635,11 +4669,13 @@ struct RemoteDesktop {
   private restoreSessionControlBarVisibilityPreferences(): void {
     try {
       const prefs = preferences.getPreferencesSync(getContext(this), { name: 'RemoteDesktopAppPrefs' });
+      const storedQuickExitDisabled: boolean = prefs.getSync(
+        REMOTE_SESSION_QUICK_EXIT_DISABLED_KEY, false) as boolean;
       const rustDeskPreferencePresent: boolean =
         prefs.hasSync(REMOTE_SESSION_CONTROL_BAR_HIDDEN_RUSTDESK_KEY);
       const vncPreferencePresent: boolean =
         prefs.hasSync(REMOTE_SESSION_CONTROL_BAR_HIDDEN_VNC_KEY);
-      const visibility: RemoteSessionControlBarVisibility =
+      const storedVisibility: RemoteSessionControlBarVisibility =
         resolveRemoteSessionControlBarVisibility({
           rdpHidden: prefs.getSync(REMOTE_SESSION_CONTROL_BAR_HIDDEN_RDP_KEY, false) as boolean,
           rustDeskHidden:
@@ -4650,6 +4686,12 @@ struct RemoteDesktop {
           rustDeskPresent: rustDeskPreferencePresent,
           vncPresent: vncPreferencePresent
         }, prefs.getSync(PC_SESSION_TOP_BAR_HIDDEN_KEY, false) as boolean);
+      const restored: RemoteSessionQuickExitRestoreState =
+        resolveRemoteSessionQuickExitRestore(
+          storedVisibility, true, storedQuickExitDisabled,
+          this.remoteSessionQuickExitDisabled);
+      this.remoteSessionQuickExitDisabled = restored.quickExitDisabled;
+      const visibility: RemoteSessionControlBarVisibility = restored.visibility;
       this.sessionControlBarHiddenRdp = visibility.rdpHidden;
       this.sessionControlBarHiddenRustDesk = visibility.rustDeskHidden;
       this.sessionControlBarHiddenVnc = visibility.vncHidden;
@@ -4661,13 +4703,28 @@ struct RemoteDesktop {
         prefs.putSync(REMOTE_SESSION_CONTROL_BAR_HIDDEN_VNC_KEY,
           this.sessionControlBarHiddenVnc);
       }
-      if (!rustDeskPreferencePresent || !vncPreferencePresent) { prefs.flushSync(); }
+      if (this.remoteSessionQuickExitDisabled) {
+        prefs.putSync(REMOTE_SESSION_CONTROL_BAR_HIDDEN_RDP_KEY, false);
+        prefs.putSync(REMOTE_SESSION_CONTROL_BAR_HIDDEN_RUSTDESK_KEY, false);
+        prefs.putSync(REMOTE_SESSION_CONTROL_BAR_HIDDEN_VNC_KEY, false);
+      }
+      if (!rustDeskPreferencePresent || !vncPreferencePresent ||
+        this.remoteSessionQuickExitDisabled) { prefs.flushSync(); }
     } catch (err) {
-      this.sessionControlBarHiddenRdp = false;
-      this.sessionControlBarHiddenRustDesk = false;
-      this.sessionControlBarHiddenVnc = false;
+      const fallback: RemoteSessionQuickExitRestoreState =
+        resolveRemoteSessionQuickExitRestore({
+          rdpHidden: false,
+          rustDeskHidden: false,
+          vncHidden: false,
+          moonlightHidden: false
+        }, false, false, this.remoteSessionQuickExitDisabled);
+      this.remoteSessionQuickExitDisabled = fallback.quickExitDisabled;
+      this.sessionControlBarHiddenRdp = fallback.visibility.rdpHidden;
+      this.sessionControlBarHiddenRustDesk = fallback.visibility.rustDeskHidden;
+      this.sessionControlBarHiddenVnc = fallback.visibility.vncHidden;
       hilog.warn(RD_DOMAIN, RD_TAG,
-        'restoreSessionControlBarVisibilityPreferences fallback to visible: ' + JSON.stringify(err));
+        'restoreSessionControlBarVisibilityPreferences fallback to visible/AppStorage: ' +
+        JSON.stringify(err));
     }
     AppStorage.setOrCreate(REMOTE_SESSION_CONTROL_BAR_HIDDEN_RDP_KEY,
       this.sessionControlBarHiddenRdp);
@@ -4675,6 +4732,8 @@ struct RemoteDesktop {
       this.sessionControlBarHiddenRustDesk);
     AppStorage.setOrCreate(REMOTE_SESSION_CONTROL_BAR_HIDDEN_VNC_KEY,
       this.sessionControlBarHiddenVnc);
+    AppStorage.setOrCreate(REMOTE_SESSION_QUICK_EXIT_DISABLED_KEY,
+      this.remoteSessionQuickExitDisabled);
   }
 
   /** Keep direct-to-session navigation on the same safe Fit migration as the settings page. */
@@ -10058,17 +10117,28 @@ struct RemoteDesktop {
     }
   }
 
+  private remoteSessionExitActive(): boolean {
+    return this.connected || this.connecting || this.sessionId > 0;
+  }
+
   onBackPress(): boolean {
-    if (this.sessionId <= 0 || !shouldConsumeRemoteBack(this.connected, this.isDesktopDevice,
-      this.breakpoint, this.isKeyboardMouseControlMode(), this.physicalKeyboardConnected,
-      this.hardwareKeyboardProxyActive)) {
+    const sessionActive: boolean = this.remoteSessionExitActive();
+    const platformSafetyGuard: boolean = this.sessionId > 0 && shouldConsumeRemoteBack(
+      this.connected, this.isDesktopDevice, this.breakpoint,
+      this.isKeyboardMouseControlMode(), this.physicalKeyboardConnected,
+      this.hardwareKeyboardProxyActive);
+    if (!shouldConsumeRemoteSessionBack(
+      this.remoteSessionQuickExitDisabled, sessionActive, platformSafetyGuard)) {
       return false;
     }
     // PC 键盘的 Ctrl+Back/Meta+Back 可能被系统解释为页面返回。远控期间
     // 页面退出只允许走明确的断开按钮，避免系统快捷键销毁协议会话。
     this.releaseAllHeldKeys();
     this.scheduleRemoteInputFocus('back-consumed');
-    hilog.info(RD_DOMAIN, RD_TAG, 'remote-back-consumed connected=1');
+    hilog.info(RD_DOMAIN, RD_TAG,
+      'remote-back-consumed protected=' +
+      (this.remoteSessionQuickExitDisabled ? '1' : '0') +
+      ' connected=' + (this.connected ? '1' : '0'));
     promptAction.showToast({ message: '远程连接中，请使用断开按钮退出', duration: 1200 });
     return true;
   }
@@ -19444,6 +19514,20 @@ struct RemoteDesktop {
                 .fontSize(11).fontColor('rgba(255,255,255,0.38)')
                 .margin({ top: 5 })
             }
+            if (this.remoteSessionQuickExitDisabled) {
+              Button('取消连接')
+                .height(40)
+                .padding({ left: 22, right: 22 })
+                .margin({ top: 24 })
+                .borderRadius(10)
+                .backgroundColor('rgba(255,255,255,0.14)')
+                .fontColor('#FFFFFF')
+                .onClick((): void => {
+                  this.disconnectAndCleanup(
+                    this.currentProtocolName() + '-protected-connecting-cancel');
+                  this.goBack();
+                })
+            }
           } else {
             Text($r('app.string.connection_error')).fontSize(18).fontColor(this.pal().danger)
             Text(this.connectionError).fontSize(13)
@@ -19943,6 +20027,14 @@ struct RemoteDesktop {
           showClose: false,
           maskColor: 'rgba(0,0,0,0.48)',
           onWillDismiss: (action: DismissSheetAction): void => {
+            if (!remoteSessionInteractiveDismissAllowed(
+              this.remoteSessionQuickExitDisabled, this.remoteSessionExitActive(),
+              this.rdpSessionErrorBackPending)) {
+              promptAction.showToast({
+                message: '快捷退出已关闭，请使用会话已断开面板内的返回按钮', duration: 1400
+              });
+              return;
+            }
             this.rdpSessionErrorBackPending = true;
             action.dismiss();
           },

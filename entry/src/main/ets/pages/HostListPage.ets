@@ -605,9 +605,13 @@ import {
   REMOTE_SESSION_CONTROL_BAR_HIDDEN_RDP_KEY,
   REMOTE_SESSION_CONTROL_BAR_HIDDEN_RUSTDESK_KEY,
   REMOTE_SESSION_CONTROL_BAR_HIDDEN_VNC_KEY,
+  REMOTE_SESSION_QUICK_EXIT_DISABLED_KEY,
   RemoteSessionControlBarPreferenceUpdate,
   RemoteSessionControlBarVisibility,
+  RemoteSessionBooleanPreferencePort,
   applyRemoteSessionControlBarPreferenceUpdate,
+  commitRemoteSessionQuickExitPreference,
+  protectRemoteSessionControlBarVisibility,
   remoteSessionControlBarSelectionSummary,
   resolveRemoteSessionControlBarVisibility
 } from '../services/RemoteSessionTopBarPolicy';
@@ -1201,6 +1205,8 @@ struct HostListPage {
   sessionControlBarHiddenVnc: boolean = false;
   @StorageLink(REMOTE_SESSION_CONTROL_BAR_HIDDEN_MOONLIGHT_KEY)
   sessionControlBarHiddenMoonlight: boolean = false;
+  @StorageLink(REMOTE_SESSION_QUICK_EXIT_DISABLED_KEY)
+  remoteSessionQuickExitDisabled: boolean = false;
   @StorageLink(RDP_PINCH_ZOOM_ENABLED_KEY) rdpPinchZoomEnabled: boolean = false;
   @StorageLink(RUSTDESK_PINCH_ZOOM_ENABLED_KEY) rustdeskPinchZoomEnabled: boolean = false;
   @StorageLink(SSH_PINCH_ZOOM_ENABLED_KEY) sshPinchZoomEnabled: boolean = true;
@@ -1922,7 +1928,9 @@ struct HostListPage {
         prefs.getSync('groupedHostCards', defaults.groupedHostCards) as boolean;
       const savedHostCardSensitiveInfoHidden: boolean =
         prefs.getSync(HOST_CARD_SENSITIVE_INFO_HIDDEN_KEY, false) as boolean;
-      const sessionControlBarVisibility: RemoteSessionControlBarVisibility =
+      const savedRemoteSessionQuickExitDisabled: boolean =
+        prefs.getSync(REMOTE_SESSION_QUICK_EXIT_DISABLED_KEY, false) as boolean;
+      const storedSessionControlBarVisibility: RemoteSessionControlBarVisibility =
         resolveRemoteSessionControlBarVisibility({
           rdpHidden: prefs.getSync(REMOTE_SESSION_CONTROL_BAR_HIDDEN_RDP_KEY, false) as boolean,
           rustDeskHidden:
@@ -1934,6 +1942,9 @@ struct HostListPage {
           rustDeskPresent: prefs.hasSync(REMOTE_SESSION_CONTROL_BAR_HIDDEN_RUSTDESK_KEY),
           vncPresent: prefs.hasSync(REMOTE_SESSION_CONTROL_BAR_HIDDEN_VNC_KEY)
         }, prefs.getSync(PC_SESSION_TOP_BAR_HIDDEN_KEY, false) as boolean);
+      const sessionControlBarVisibility: RemoteSessionControlBarVisibility =
+        protectRemoteSessionControlBarVisibility(
+          storedSessionControlBarVisibility, savedRemoteSessionQuickExitDisabled);
       const savedRustDeskPresenceDetection: boolean =
         prefs.getSync('rustdeskPresenceDetectionEnabled',
           defaults.rustdeskPresenceDetectionEnabled) as boolean;
@@ -1988,6 +1999,7 @@ struct HostListPage {
       this.sessionControlBarHiddenRustDesk = sessionControlBarVisibility.rustDeskHidden;
       this.sessionControlBarHiddenVnc = sessionControlBarVisibility.vncHidden;
       this.sessionControlBarHiddenMoonlight = sessionControlBarVisibility.moonlightHidden;
+      this.remoteSessionQuickExitDisabled = savedRemoteSessionQuickExitDisabled;
       AppStorage.setOrCreate(REMOTE_SESSION_CONTROL_BAR_HIDDEN_RDP_KEY,
         this.sessionControlBarHiddenRdp);
       AppStorage.setOrCreate(REMOTE_SESSION_CONTROL_BAR_HIDDEN_RUSTDESK_KEY,
@@ -1996,6 +2008,17 @@ struct HostListPage {
         this.sessionControlBarHiddenVnc);
       AppStorage.setOrCreate(REMOTE_SESSION_CONTROL_BAR_HIDDEN_MOONLIGHT_KEY,
         this.sessionControlBarHiddenMoonlight);
+      AppStorage.setOrCreate(REMOTE_SESSION_QUICK_EXIT_DISABLED_KEY,
+        this.remoteSessionQuickExitDisabled);
+      if (!prefs.hasSync(REMOTE_SESSION_QUICK_EXIT_DISABLED_KEY)) {
+        prefs.putSync(REMOTE_SESSION_QUICK_EXIT_DISABLED_KEY, false);
+      }
+      if (this.remoteSessionQuickExitDisabled) {
+        prefs.putSync(REMOTE_SESSION_CONTROL_BAR_HIDDEN_RDP_KEY, false);
+        prefs.putSync(REMOTE_SESSION_CONTROL_BAR_HIDDEN_RUSTDESK_KEY, false);
+        prefs.putSync(REMOTE_SESSION_CONTROL_BAR_HIDDEN_VNC_KEY, false);
+        prefs.putSync(REMOTE_SESSION_CONTROL_BAR_HIDDEN_MOONLIGHT_KEY, false);
+      }
       this.rustdeskPresenceDetectionEnabled = savedRustDeskPresenceDetection;
       AppStorage.setOrCreate('rustdeskPresenceDetectionEnabled', this.rustdeskPresenceDetectionEnabled);
       if (savedWallpaper !== '') { AppStorage.setOrCreate('wallpaperColor', savedWallpaper); }
@@ -4838,7 +4861,7 @@ struct HostListPage {
       return 520;
     }
     if (section === SETTINGS_SECTION_DISPLAY_INTERACTION) {
-      return 1040;
+      return 1110;
     }
     if (section === SETTINGS_SECTION_VIRTUAL_KEYBOARD) {
       return 390;
@@ -11438,9 +11461,16 @@ struct HostListPage {
   private saveSessionControlBarVisibility(
     values: RemoteSessionControlBarVisibility
   ): boolean {
+    let quickExitDisabled: boolean = this.remoteSessionQuickExitDisabled;
+    let effective: RemoteSessionControlBarVisibility =
+      protectRemoteSessionControlBarVisibility(values, quickExitDisabled);
     try {
       const prefs: preferences.Preferences = preferences.getPreferencesSync(
         getContext(this), { name: 'RemoteDesktopAppPrefs' });
+      quickExitDisabled = prefs.getSync(
+        REMOTE_SESSION_QUICK_EXIT_DISABLED_KEY,
+        this.remoteSessionQuickExitDisabled) as boolean;
+      effective = protectRemoteSessionControlBarVisibility(values, quickExitDisabled);
       const previous: RemoteSessionControlBarVisibility = {
         rdpHidden: prefs.getSync(REMOTE_SESSION_CONTROL_BAR_HIDDEN_RDP_KEY, false) as boolean,
         rustDeskHidden: prefs.getSync(
@@ -11456,10 +11486,10 @@ struct HostListPage {
         moonlightHidden: prefs.hasSync(REMOTE_SESSION_CONTROL_BAR_HIDDEN_MOONLIGHT_KEY)
       };
       try {
-        prefs.putSync(REMOTE_SESSION_CONTROL_BAR_HIDDEN_RDP_KEY, values.rdpHidden);
-        prefs.putSync(REMOTE_SESSION_CONTROL_BAR_HIDDEN_RUSTDESK_KEY, values.rustDeskHidden);
-        prefs.putSync(REMOTE_SESSION_CONTROL_BAR_HIDDEN_VNC_KEY, values.vncHidden);
-        prefs.putSync(REMOTE_SESSION_CONTROL_BAR_HIDDEN_MOONLIGHT_KEY, values.moonlightHidden);
+        prefs.putSync(REMOTE_SESSION_CONTROL_BAR_HIDDEN_RDP_KEY, effective.rdpHidden);
+        prefs.putSync(REMOTE_SESSION_CONTROL_BAR_HIDDEN_RUSTDESK_KEY, effective.rustDeskHidden);
+        prefs.putSync(REMOTE_SESSION_CONTROL_BAR_HIDDEN_VNC_KEY, effective.vncHidden);
+        prefs.putSync(REMOTE_SESSION_CONTROL_BAR_HIDDEN_MOONLIGHT_KEY, effective.moonlightHidden);
         prefs.flushSync();
       } catch (_writeError) {
         try {
@@ -11480,10 +11510,45 @@ struct HostListPage {
     } catch (_error) {
       return false;
     }
-    this.sessionControlBarHiddenRdp = values.rdpHidden;
-    this.sessionControlBarHiddenRustDesk = values.rustDeskHidden;
-    this.sessionControlBarHiddenVnc = values.vncHidden;
-    this.sessionControlBarHiddenMoonlight = values.moonlightHidden;
+    this.remoteSessionQuickExitDisabled = quickExitDisabled;
+    AppStorage.setOrCreate(REMOTE_SESSION_QUICK_EXIT_DISABLED_KEY, quickExitDisabled);
+    this.sessionControlBarHiddenRdp = effective.rdpHidden;
+    this.sessionControlBarHiddenRustDesk = effective.rustDeskHidden;
+    this.sessionControlBarHiddenVnc = effective.vncHidden;
+    this.sessionControlBarHiddenMoonlight = effective.moonlightHidden;
+    return true;
+  }
+
+  private saveRemoteSessionQuickExitDisabled(on: boolean): boolean {
+    try {
+      const prefs: preferences.Preferences = preferences.getPreferencesSync(
+        getContext(this), { name: 'RemoteDesktopAppPrefs' });
+      const port: RemoteSessionBooleanPreferencePort = {
+        has: (key: string): boolean => prefs.hasSync(key),
+        read: (key: string, fallback: boolean): boolean =>
+          prefs.getSync(key, fallback) as boolean,
+        put: (key: string, value: boolean): void => { prefs.putSync(key, value); },
+        remove: (key: string): void => { prefs.deleteSync(key); },
+        flush: (): void => { prefs.flushSync(); }
+      };
+      if (!commitRemoteSessionQuickExitPreference(port, on)) {
+        return false;
+      }
+    } catch (_error) {
+      return false;
+    }
+    this.remoteSessionQuickExitDisabled = on;
+    AppStorage.setOrCreate(REMOTE_SESSION_QUICK_EXIT_DISABLED_KEY, on);
+    if (on) {
+      this.sessionControlBarHiddenRdp = false;
+      this.sessionControlBarHiddenRustDesk = false;
+      this.sessionControlBarHiddenVnc = false;
+      this.sessionControlBarHiddenMoonlight = false;
+      AppStorage.setOrCreate(REMOTE_SESSION_CONTROL_BAR_HIDDEN_RDP_KEY, false);
+      AppStorage.setOrCreate(REMOTE_SESSION_CONTROL_BAR_HIDDEN_RUSTDESK_KEY, false);
+      AppStorage.setOrCreate(REMOTE_SESSION_CONTROL_BAR_HIDDEN_VNC_KEY, false);
+      AppStorage.setOrCreate(REMOTE_SESSION_CONTROL_BAR_HIDDEN_MOONLIGHT_KEY, false);
+    }
     return true;
   }
 
@@ -15111,6 +15176,7 @@ struct HostListPage {
         initialRustDeskHidden: this.sessionControlBarHiddenRustDesk,
         initialVncHidden: this.sessionControlBarHiddenVnc,
         initialMoonlightHidden: this.sessionControlBarHiddenMoonlight,
+        quickExitDisabled: this.remoteSessionQuickExitDisabled,
         onClose: (): void => { this.closeSettingsLeafSheet(); },
         onSave: (update: RemoteSessionControlBarPreferenceUpdate): boolean =>
           this.saveSessionControlBarPreferenceUpdate(update)
@@ -15694,7 +15760,7 @@ struct HostListPage {
 
         ListItem() {
           this.settingsAccordionHeader(SETTINGS_SECTION_DISPLAY_INTERACTION, $r('sys.symbol.desktop_fill'),
-            '显示与交互', '本地缩放、滚轮方向与会话控制栏')
+            '显示与交互', '本地缩放、滚轮方向、退出保护与会话控制栏')
         }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 10 })
 
         ListItem() {
@@ -15707,6 +15773,8 @@ struct HostListPage {
               this.remoteWheelDirectionRow()
               this.cardDivider()
               this.remotePinchZoomRow()
+              this.cardDivider()
+              this.remoteSessionQuickExitRow()
               this.cardDivider()
               this.sessionControlBarVisibilityRow()
               if (!this.isDesktopDevice) {
@@ -18399,7 +18467,8 @@ struct HostListPage {
       Column() {
         Text('会话侧栏与顶栏').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
           .fontColor(this.pal().text).fontFamily(this.font())
-        Text(remoteSessionControlBarSelectionSummary(this.sessionControlBarVisibility()))
+        Text(remoteSessionControlBarSelectionSummary(
+          this.sessionControlBarVisibility(), this.remoteSessionQuickExitDisabled))
           .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
           .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).margin({ top: 2 })
       }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
@@ -18412,6 +18481,31 @@ struct HostListPage {
       .onClick((): void => {
         this.openSettingsLeafSheet(SETTINGS_SHEET_SESSION_CONTROL_BAR);
       })
+  }
+
+  @Builder remoteSessionQuickExitRow() {
+    Row() {
+      Row() {
+        SymbolGlyph($r('sys.symbol.lock_shield_fill')).fontSize(22).fontColor([this.pal().text3])
+      }.width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
+      Column() {
+        Text('关闭快捷退出').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
+          .fontColor(this.pal().text).fontFamily(this.font())
+        Text(this.remoteSessionQuickExitDisabled ?
+          '已开启：只能使用会话控制栏或顶栏按钮退出' :
+          '允许系统返回和 SSH Ctrl+Shift+Q 退出会话')
+          .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
+          .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis }).margin({ top: 2 })
+      }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
+      Toggle({ type: ToggleType.Switch, isOn: this.remoteSessionQuickExitDisabled })
+        .selectedColor(this.accentColor).scale({ x: 0.88, y: 0.88 })
+        .accessibilityText('关闭快捷退出')
+        .onChange((on: boolean): void => {
+          if (!this.saveRemoteSessionQuickExitDisabled(on)) {
+            promptAction.showToast({ message: '快捷退出设置保存失败，已保留原状态', duration: 2200 });
+          }
+        })
+    }.width('100%').height(68).padding({ left: 16, right: 16 })
   }
 
   @Builder remotePinchZoomRow() {

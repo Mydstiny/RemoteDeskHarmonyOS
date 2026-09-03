@@ -27,7 +27,7 @@
 import { KeyboardAvoidMode, promptAction, router, window } from '@kit.ArkUI';
 import { common } from '@kit.AbilityKit';
 import { util } from '@kit.ArkTS';
-import { unifiedDataChannel, uniformTypeDescriptor } from '@kit.ArkData';
+import { preferences, unifiedDataChannel, uniformTypeDescriptor } from '@kit.ArkData';
 import { pasteboard, BusinessError } from '@kit.BasicServicesKit';
 import { fileIo, picker } from '@kit.CoreFileKit';
 import { inputDevice, KeyCode } from '@kit.InputKit';
@@ -94,6 +94,13 @@ import { GUIDE_ALWAYS_VISIBLE_STORAGE_KEY } from '../services/GuideVisibilityPol
 import { GuideVisibilityService } from '../services/GuideVisibilityService';
 import { SSH_REVERSE_WHEEL_KEY } from '../services/RemoteWheelPreferencePolicy';
 import { SSH_PINCH_ZOOM_ENABLED_KEY } from '../services/RemotePinchZoomPreferencePolicy';
+import {
+  REMOTE_SESSION_QUICK_EXIT_DISABLED_KEY,
+  RemoteSessionQuickExitRestoreState,
+  remoteSessionShortcutExitAllowed,
+  resolveRemoteSessionQuickExitRestore,
+  shouldConsumeRemoteSessionBack
+} from '../services/RemoteSessionTopBarPolicy';
 import { showLockGate, lockGateErrorMessage } from '../components/LockGate';
 import { SshXtermSurface, XtermOutputBuffer } from '../components/SshXtermSurface';
 import { SshTerminalSearchBar } from '../components/ssh/search/SshTerminalSearchBar';
@@ -200,6 +207,7 @@ import {
 } from '../services/SshTerminalOrientationPolicy';
 import {
   sshTerminalTabChromeRenderKey,
+  sshTerminalTabsHaveLiveSession,
   SshTerminalTabStore,
   SshTerminalTabCloseResult,
   SshTerminalTabView,
@@ -636,6 +644,8 @@ type SshHeaderAction = 'new-session' | 'tabs' | 'palette' | 'transfers' | 'resto
 struct SshTerminal {
   @StorageLink('currentTheme') theme: string = 'light';
   @StorageProp('accentColor') accentColor: string = '#007DFF';
+  @StorageLink(REMOTE_SESSION_QUICK_EXIT_DISABLED_KEY)
+  remoteSessionQuickExitDisabled: boolean = false;
   @State connected: boolean = false;
   @State connecting: boolean = true;
   @State connectionError: string = '';
@@ -2103,6 +2113,41 @@ struct SshTerminal {
     const active: SshTerminalTabView | undefined = this.sshTabViews.find(
       (tab: SshTerminalTabView): boolean => tab.active && tab.hostId.trim() === currentHostId);
     return active !== undefined && active.state === 'connected' && active.sessionId > 0;
+  }
+
+  private sshSessionActive(): boolean {
+    return this.connecting || this.sessionId > 0 || this.sshConnectionIsConnected() ||
+      sshTerminalTabsHaveLiveSession(this.sshTabStore.views());
+  }
+
+  private restoreRemoteSessionQuickExitPreference(): void {
+    try {
+      const prefs: preferences.Preferences = preferences.getPreferencesSync(
+        getContext(this), { name: 'RemoteDesktopAppPrefs' });
+      const storedQuickExitDisabled: boolean = prefs.getSync(
+        REMOTE_SESSION_QUICK_EXIT_DISABLED_KEY, false) as boolean;
+      const restored: RemoteSessionQuickExitRestoreState =
+        resolveRemoteSessionQuickExitRestore({
+          rdpHidden: false,
+          rustDeskHidden: false,
+          vncHidden: false,
+          moonlightHidden: false
+        }, true, storedQuickExitDisabled, this.remoteSessionQuickExitDisabled);
+      this.remoteSessionQuickExitDisabled = restored.quickExitDisabled;
+    } catch (error) {
+      const fallback: RemoteSessionQuickExitRestoreState =
+        resolveRemoteSessionQuickExitRestore({
+          rdpHidden: false,
+          rustDeskHidden: false,
+          vncHidden: false,
+          moonlightHidden: false
+        }, false, false, this.remoteSessionQuickExitDisabled);
+      this.remoteSessionQuickExitDisabled = fallback.quickExitDisabled;
+      hilog.warn(0x0016, 'SshTerminal',
+        'restore quick exit preference fallback to AppStorage: ' + JSON.stringify(error));
+    }
+    AppStorage.setOrCreate(REMOTE_SESSION_QUICK_EXIT_DISABLED_KEY,
+      this.remoteSessionQuickExitDisabled);
   }
 
   /** The xterm/WebView ready bit is scoped to the currently visible host. */
@@ -7022,7 +7067,8 @@ struct SshTerminal {
   @Builder SshHeaderActionPopup() {
     Scroll() {
       Column() {
-        Text(this.isDesktopDevice ? '工作区与会话 · Ctrl+Shift+Q 退出' : '工作区与会话')
+        Text(this.isDesktopDevice ? (this.remoteSessionQuickExitDisabled ?
+          '工作区与会话 · 仅按钮退出' : '工作区与会话 · Ctrl+Shift+Q 退出') : '工作区与会话')
           .fontSize(12).fontColor(this.pal().text3)
           .margin({ left: 14, right: 14, top: 8, bottom: 6 })
 
@@ -10353,6 +10399,7 @@ struct SshTerminal {
     this.clearSshSecretPrompt();
     this.clearPreflightBinding();
     this.clearSshRouteSecretCapture();
+    this.restoreRemoteSessionQuickExitPreference();
     this.sftpPeerConnectPromise = null;
     this.sftpPeerConnectHostId = '';
     this.sshAuthPromptPageShown = false;
@@ -11088,6 +11135,11 @@ struct SshTerminal {
 
   onBackPress(): boolean {
     if (this.terminalClosing) { return true; }
+    if (shouldConsumeRemoteSessionBack(
+      this.remoteSessionQuickExitDisabled, this.sshSessionActive())) {
+      promptAction.showToast({ message: 'SSH 会话中，请使用返回按钮退出', duration: 1200 });
+      return true;
+    }
     this.closeSessionAndBack();
     return true;
   }
@@ -13657,6 +13709,11 @@ struct SshTerminal {
     if (routed !== null) { return routed; }
     // PC 退出快捷键: Ctrl+Shift+Q
     if (this.isDesktopDevice && code === KeyCode.KEYCODE_Q && ctrl && shift) {
+      if (!remoteSessionShortcutExitAllowed(
+        this.remoteSessionQuickExitDisabled, this.sshSessionActive())) {
+        promptAction.showToast({ message: '快捷退出已关闭，请使用返回按钮退出', duration: 1200 });
+        return true;
+      }
       this.closeSessionAndBack();
       return true;
     }
@@ -18521,7 +18578,7 @@ struct SshTerminal {
         }
         if (!this.sshHeaderActionPopupEnabled() &&
           this.isDesktopDevice && !this.sshCompactChrome()) {
-          Text('Ctrl+Shift+Q 退出')
+          Text(this.remoteSessionQuickExitDisabled ? '仅按钮退出' : 'Ctrl+Shift+Q 退出')
             .fontSize(11).fontColor('rgba(242,244,247,0.54)')
             .margin({ right: 12 })
         }
