@@ -79,7 +79,7 @@ export default function diagnosticCaptureExportServiceTest(): void {
       const summary: Record<string, Object> =
         JSON.parse(lines[lines.length - 1]) as Record<string, Object>;
       expect(manifest['kind'] as string).assertEqual('manifest');
-      expect(manifest['schemaVersion'] as number).assertEqual(3);
+      expect(manifest['schemaVersion'] as number).assertEqual(4);
       expect(manifest['appVersionCode'] as number).assertEqual(1001005);
       expect((manifest['buildId'] as string).startsWith('1.1.5+')).assertTrue();
       expect(summary['kind'] as string).assertEqual('summary');

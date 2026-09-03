@@ -531,7 +531,8 @@ GLRenderer::GLRenderer()
       viewportSnapshotVersion_(0), snapshotVpX_(0), snapshotVpY_(0),
       snapshotVpW_(0), snapshotVpH_(0), snapshotSourceWidth_(0),
       snapshotSourceHeight_(0), snapshotSurfaceWidth_(0), snapshotSurfaceHeight_(0),
-      snapshotTransformVersion_(0),
+      snapshotTransformVersion_(0), snapshotRotationQuarterTurns_(0),
+      snapshotFlipX_(false), snapshotFlipY_(false),
       rawFrameCount_(0), oesFrameCount_(0), rendererHandle_(0),
       explicitNativeWindow_(nullptr), usesProcessSurface_(true),
       initialized_(false), destroying_(false) {}
@@ -1667,6 +1668,26 @@ void GLRenderer::GetViewportSnapshot(int& vpX, int& vpY, int& vpW, int& vpH,
     }
 }
 
+RendererCanvasTransformSnapshot GLRenderer::GetCanvasTransformSnapshot() const {
+    RendererCanvasTransformSnapshot snapshot;
+    for (;;) {
+        const uint64_t before = viewportSnapshotVersion_.load(std::memory_order_acquire);
+        if ((before & 1U) != 0U) {
+            continue;
+        }
+        snapshot.version = snapshotTransformVersion_.load(std::memory_order_relaxed);
+        snapshot.rotationQuarterTurns =
+            snapshotRotationQuarterTurns_.load(std::memory_order_relaxed);
+        snapshot.flipX = snapshotFlipX_.load(std::memory_order_relaxed);
+        snapshot.flipY = snapshotFlipY_.load(std::memory_order_relaxed);
+        const uint64_t after = viewportSnapshotVersion_.load(std::memory_order_acquire);
+        if (before == after) {
+            snapshot.valid = snapshot.version != 0U;
+            return snapshot;
+        }
+    }
+}
+
 void GLRenderer::PublishViewportSnapshot(int vpX, int vpY, int vpW, int vpH) {
     viewportSnapshotVersion_.fetch_add(1, std::memory_order_acq_rel);
     snapshotVpX_.store(vpX, std::memory_order_relaxed);
@@ -1678,6 +1699,10 @@ void GLRenderer::PublishViewportSnapshot(int vpX, int vpY, int vpW, int vpH) {
     snapshotSurfaceWidth_.store(width_, std::memory_order_relaxed);
     snapshotSurfaceHeight_.store(height_, std::memory_order_relaxed);
     snapshotTransformVersion_.store(appliedCanvasTransformVersion_, std::memory_order_relaxed);
+    snapshotRotationQuarterTurns_.store(
+        canvasRotationQuarterTurns_, std::memory_order_relaxed);
+    snapshotFlipX_.store(canvasFlipX_, std::memory_order_relaxed);
+    snapshotFlipY_.store(canvasFlipY_, std::memory_order_relaxed);
     viewportSnapshotVersion_.fetch_add(1, std::memory_order_release);
 }
 
@@ -2543,6 +2568,25 @@ uint64_t RendererNapi::GetActiveRendererGenerationUnderOwnerLease(
     const auto context = FindRendererContextLocked(handle);
     return context && IsActiveRendererOwnerAndHandleLocked(handle, owner)
         ? context->generation : 0U;
+}
+
+RendererCanvasTransformSnapshot
+RendererNapi::GetRendererCanvasTransformUnderOwnerLease(
+    int64_t handle, const Render::DecoderSessionIdentity& owner) {
+    std::shared_ptr<GLRenderer> renderer;
+    uint64_t rendererGeneration = 0;
+    {
+        std::lock_guard<std::mutex> lock(g_activeRendererMutex);
+        renderer = AcquireRendererForOwnerLocked(
+            handle, owner, &rendererGeneration);
+    }
+    if (!renderer) {
+        return {};
+    }
+    RendererCanvasTransformSnapshot snapshot =
+        renderer->GetCanvasTransformSnapshot();
+    snapshot.rendererGeneration = rendererGeneration;
+    return snapshot;
 }
 
 uint64_t RendererNapi::GetActiveRendererGeneration(

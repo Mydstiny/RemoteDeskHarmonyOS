@@ -214,6 +214,25 @@ export interface MoonlightNativeStreamSnapshot {
   decoderQueueDepth?: number;
   decoderCodecLatencyMs?: number;
   decoderSurfaceUpdateFailures?: number;
+  desktopSurfaceCompatibility?: boolean;
+  nativeImagePresentation?: string;
+  producerTransform?: string;
+  appliedTransform?: string;
+  producerTransformSampled?: boolean;
+  producerTransformReadResult?: number;
+  producerTransformSamples?: number;
+  producerTransformChanges?: number;
+  producerTransformReadFailures?: number;
+  producerTransformClassMask?: number;
+  producerTransformMatrix?: number[];
+  appliedTextureTransform?: number[];
+  rendererTransformValid?: boolean;
+  rendererTransformVersion?: number;
+  rendererRotationQuarterTurns?: number;
+  rendererFlipX?: boolean;
+  rendererFlipY?: boolean;
+  decoderGeneration?: number;
+  rendererGeneration?: number;
 }
 
 export interface MoonlightNativePort {

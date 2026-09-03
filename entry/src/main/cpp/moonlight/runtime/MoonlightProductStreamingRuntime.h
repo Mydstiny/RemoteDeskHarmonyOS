@@ -4,6 +4,7 @@
 #include "moonlight/bridge/MoonlightNativeBridge.h"
 #include "moonlight/core/MoonlightHostApi.h"
 #include "moonlight/media/MoonlightCommonCAdapter.h"
+#include "moonlight/media/MoonlightVideoDecoderSink.h"
 #include "moonlight/input/MoonlightProductInputRuntime.h"
 
 #include <array>
@@ -216,6 +217,7 @@ struct MoonlightProductStreamSnapshot final {
     std::int64_t decoderCodecLatencyMs = 0;
     std::int64_t decoderCodecLatencyMaxMs = 0;
     bool decoderLowLatencyEnabled = false;
+    MoonlightPresentationDiagnostics presentation {};
     std::int32_t streamWidth = 0;
     std::int32_t streamHeight = 0;
     std::int32_t targetFps = 0;

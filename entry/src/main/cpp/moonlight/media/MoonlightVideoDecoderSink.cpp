@@ -464,6 +464,7 @@ struct MoonlightOwnedVideoDecoderSink::Impl final {
         result.decoderCodecLatencyMs = evidence.decoderCodecLatencyMs;
         result.decoderCodecLatencyMaxMs = evidence.decoderCodecLatencyMaxMs;
         result.decoderLowLatencyEnabled = evidence.decoderLowLatencyEnabled;
+        result.presentation = evidence.presentation;
         const bool hasExactFirstFrameEvidence =
             active && admissionOpen && !suspended && wasActive && wasOpen &&
             evidence.matched && evidence.running && evidence.binding == exact &&

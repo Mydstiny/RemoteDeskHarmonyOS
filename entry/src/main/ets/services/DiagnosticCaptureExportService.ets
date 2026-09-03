@@ -289,6 +289,19 @@ function jsonBoolean(source: Record<string, Object>, key: string): boolean | nul
   return typeof value === 'boolean' ? value as boolean : null;
 }
 
+function jsonNumberArray(source: Record<string, Object>, key: string): number[] | null {
+  const value: Object = source[key];
+  if (!Array.isArray(value)) { return null; }
+  const sourceValues: Object[] = value as Object[];
+  const result: number[] = [];
+  for (let index: number = 0; index < sourceValues.length; index++) {
+    if (typeof sourceValues[index] !== 'number' ||
+      !Number.isFinite(sourceValues[index] as number)) { return null; }
+    result.push(sourceValues[index] as number);
+  }
+  return result;
+}
+
 function jsonNetworkFacts(value: Object): DiagnosticNetworkFacts | null {
   if (typeof value !== 'object' || value === null) { return null; }
   const source: Record<string, Object> = value as Record<string, Object>;
@@ -322,8 +335,15 @@ function jsonRuntimeFacts(value: Object): DiagnosticRuntimeFacts | null {
   const source: Record<string, Object> = value as Record<string, Object>;
   if (!objectHasExactKeys(source, [
     'state', 'backend', 'codec', 'path', 'peerPlatform', 'presentation',
-    'producerTransform', 'width', 'height', 'frames', 'dropped', 'errors',
-    'queueDepth', 'latencyMs'
+    'producerTransform', 'appliedTransform', 'desktopSurfaceCompatibility',
+    'producerTransformSampled', 'producerTransformReadResult',
+    'producerTransformSamples', 'producerTransformChanges',
+    'producerTransformReadFailures', 'producerTransformClassMask',
+    'producerTransformMatrix', 'appliedTextureTransform',
+    'rendererTransformValid', 'rendererTransformVersion',
+    'rendererRotationQuarterTurns', 'rendererFlipX', 'rendererFlipY',
+    'decoderGeneration', 'rendererGeneration', 'width', 'height', 'frames',
+    'dropped', 'errors', 'queueDepth', 'latencyMs'
   ])) { return null; }
   const state: string | null = jsonString(source, 'state');
   const backend: string | null = jsonString(source, 'backend');
@@ -332,6 +352,35 @@ function jsonRuntimeFacts(value: Object): DiagnosticRuntimeFacts | null {
   const peerPlatform: string | null = jsonString(source, 'peerPlatform');
   const presentation: string | null = jsonString(source, 'presentation');
   const producerTransform: string | null = jsonString(source, 'producerTransform');
+  const appliedTransform: string | null = jsonString(source, 'appliedTransform');
+  const desktopSurfaceCompatibility: boolean | null =
+    jsonBoolean(source, 'desktopSurfaceCompatibility');
+  const producerTransformSampled: boolean | null =
+    jsonBoolean(source, 'producerTransformSampled');
+  const producerTransformReadResult: number | null =
+    jsonNumber(source, 'producerTransformReadResult');
+  const producerTransformSamples: number | null =
+    jsonNumber(source, 'producerTransformSamples');
+  const producerTransformChanges: number | null =
+    jsonNumber(source, 'producerTransformChanges');
+  const producerTransformReadFailures: number | null =
+    jsonNumber(source, 'producerTransformReadFailures');
+  const producerTransformClassMask: number | null =
+    jsonNumber(source, 'producerTransformClassMask');
+  const producerTransformMatrix: number[] | null =
+    jsonNumberArray(source, 'producerTransformMatrix');
+  const appliedTextureTransform: number[] | null =
+    jsonNumberArray(source, 'appliedTextureTransform');
+  const rendererTransformValid: boolean | null =
+    jsonBoolean(source, 'rendererTransformValid');
+  const rendererTransformVersion: number | null =
+    jsonNumber(source, 'rendererTransformVersion');
+  const rendererRotationQuarterTurns: number | null =
+    jsonNumber(source, 'rendererRotationQuarterTurns');
+  const rendererFlipX: boolean | null = jsonBoolean(source, 'rendererFlipX');
+  const rendererFlipY: boolean | null = jsonBoolean(source, 'rendererFlipY');
+  const decoderGeneration: number | null = jsonNumber(source, 'decoderGeneration');
+  const rendererGeneration: number | null = jsonNumber(source, 'rendererGeneration');
   const width: number | null = jsonNumber(source, 'width');
   const height: number | null = jsonNumber(source, 'height');
   const frames: number | null = jsonNumber(source, 'frames');
@@ -341,6 +390,14 @@ function jsonRuntimeFacts(value: Object): DiagnosticRuntimeFacts | null {
   const latencyMs: number | null = jsonNumber(source, 'latencyMs');
   if (state === null || backend === null || codec === null || path === null ||
     peerPlatform === null || presentation === null || producerTransform === null ||
+    appliedTransform === null || desktopSurfaceCompatibility === null ||
+    producerTransformSampled === null || producerTransformReadResult === null ||
+    producerTransformSamples === null || producerTransformChanges === null ||
+    producerTransformReadFailures === null || producerTransformClassMask === null ||
+    producerTransformMatrix === null || appliedTextureTransform === null ||
+    rendererTransformValid === null || rendererTransformVersion === null ||
+    rendererRotationQuarterTurns === null || rendererFlipX === null ||
+    rendererFlipY === null || decoderGeneration === null || rendererGeneration === null ||
     width === null || height === null || frames === null || dropped === null ||
     errors === null || queueDepth === null || latencyMs === null) { return null; }
   const facts: DiagnosticRuntimeFacts = {
@@ -351,6 +408,21 @@ function jsonRuntimeFacts(value: Object): DiagnosticRuntimeFacts | null {
     peerPlatform: peerPlatform as DiagnosticPeerPlatform,
     presentation: presentation as DiagnosticPresentation,
     producerTransform: producerTransform as DiagnosticProducerTransform,
+    appliedTransform: appliedTransform as DiagnosticProducerTransform,
+    desktopSurfaceCompatibility: desktopSurfaceCompatibility,
+    producerTransformSampled: producerTransformSampled,
+    producerTransformReadResult: producerTransformReadResult,
+    producerTransformSamples: producerTransformSamples,
+    producerTransformChanges: producerTransformChanges,
+    producerTransformReadFailures: producerTransformReadFailures,
+    producerTransformClassMask: producerTransformClassMask,
+    producerTransformMatrix: producerTransformMatrix,
+    appliedTextureTransform: appliedTextureTransform,
+    rendererTransformValid: rendererTransformValid,
+    rendererTransformVersion: rendererTransformVersion,
+    rendererRotationQuarterTurns: rendererRotationQuarterTurns,
+    rendererFlipX: rendererFlipX, rendererFlipY: rendererFlipY,
+    decoderGeneration: decoderGeneration, rendererGeneration: rendererGeneration,
     width: width, height: height, frames: frames, dropped: dropped,
     errors: errors, queueDepth: queueDepth, latencyMs: latencyMs
   };

@@ -41,6 +41,8 @@ import remoteSurfaceTransformPolicyTest from './RemoteSurfaceTransformPolicy.tes
 import remoteCanvasGesturePolicyTest from '../../../test/RemoteCanvasGesturePolicy.test';
 import remoteCanvasPointerFollowPolicyTest from '../../../test/RemoteCanvasPointerFollowPolicy.test';
 import rustDeskDesktopFlipPolicyTest from '../../../test/RustDeskDesktopFlipPolicy.test';
+import moonlightDesktopFlipPolicyTest from '../../../test/MoonlightDesktopFlipPolicy.test';
+import moonlightDesktopFlipStoreTest from '../../../test/MoonlightDesktopFlipStore.test';
 import remoteCursorStylePolicyTest from './RemoteCursorStylePolicy.test';
 import remoteHostSheetLifecyclePolicyTest from './RemoteHostSheetLifecyclePolicy.test';
 import vncSessionGeometryPolicyTest from './VncSessionGeometryPolicy.test';
@@ -378,6 +380,8 @@ export default function testsuite() {
   remoteCanvasGesturePolicyTest();
   remoteCanvasPointerFollowPolicyTest();
   rustDeskDesktopFlipPolicyTest();
+  moonlightDesktopFlipPolicyTest();
+  moonlightDesktopFlipStoreTest();
   remoteCursorStylePolicyTest();
   remoteHostSheetLifecyclePolicyTest();
   vncSessionGeometryPolicyTest();

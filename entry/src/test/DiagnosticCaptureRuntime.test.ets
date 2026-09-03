@@ -120,7 +120,16 @@ export default function diagnosticCaptureRuntimeTest(): void {
       const facts: DiagnosticRuntimeFacts = {
         state: 'connected', backend: 'hardware', codec: 'h264', path: 'relay',
         peerPlatform: 'windows', presentation: 'identity',
-        producerTransform: 'rotate_180', width: 1920, height: 1080,
+        producerTransform: 'rotate_180', appliedTransform: 'identity',
+        desktopSurfaceCompatibility: true, producerTransformSampled: true,
+        producerTransformReadResult: 0, producerTransformSamples: 10,
+        producerTransformChanges: 1, producerTransformReadFailures: 0,
+        producerTransformClassMask: 10,
+        producerTransformMatrix: [1, 0, 0, 0, 0, -1, 0, 0, 0, 0, 1, 0, 0, 1, 0, 1],
+        appliedTextureTransform: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
+        rendererTransformValid: true, rendererTransformVersion: 2,
+        rendererRotationQuarterTurns: 0, rendererFlipX: false, rendererFlipY: true,
+        decoderGeneration: 3, rendererGeneration: 4, width: 1920, height: 1080,
         frames: 30, dropped: 0, errors: 0, queueDepth: 1, latencyMs: 20
       };
       const network: DiagnosticNetworkFacts = diagnosticNetworkFactsForEndpoints(
@@ -135,7 +144,16 @@ export default function diagnosticCaptureRuntimeTest(): void {
         'state', 8, 1, 0, 20, 30, 4096, {
           state: 'connected', backend: 'hardware', codec: 'h264', path: 'relay',
           peerPlatform: 'windows', presentation: 'identity',
-          producerTransform: 'rotate_180', width: 1920, height: 1080,
+          producerTransform: 'rotate_180', appliedTransform: 'identity',
+          desktopSurfaceCompatibility: true, producerTransformSampled: true,
+          producerTransformReadResult: 0, producerTransformSamples: 10,
+          producerTransformChanges: 1, producerTransformReadFailures: 0,
+          producerTransformClassMask: 10,
+          producerTransformMatrix: [1, 0, 0, 0, 0, -1, 0, 0, 0, 0, 1, 0, 0, 1, 0, 1],
+          appliedTextureTransform: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
+          rendererTransformValid: true, rendererTransformVersion: 2,
+          rendererRotationQuarterTurns: 0, rendererFlipX: false, rendererFlipY: true,
+          decoderGeneration: 3, rendererGeneration: 4, width: 1920, height: 1080,
           frames: 30, dropped: 0, errors: 0, queueDepth: 1, latencyMs: 20
         }, network)).assertFalse();
       runtime.stop();

@@ -591,10 +591,21 @@ int HardwareDecoder::Init(int width, int height, CodecType codec, int64_t render
     codecType_ = codec;
     desktopSurfaceCompatibility_ = desktopSurfaceCompatibility;
     presentationMode_.store(presentationMode, std::memory_order_release);
-    producerTransformClass_.store(
-        Render::NativeImageTransformClass::NotSampled,
-        std::memory_order_release);
     textureTransform_ = Render::IdentityNativeImageTransform();
+    {
+        std::lock_guard<std::mutex> transformLock(transformTelemetryMutex_);
+        sampledPresentationMode_ = presentationMode;
+        producerTransformClass_ = Render::NativeImageTransformClass::NotSampled;
+        producerTransformSampled_ = false;
+        producerTransformReadResult_ = 0;
+        producerTransformSamples_ = 0;
+        producerTransformChanges_ = 0;
+        producerTransformReadFailures_ = 0;
+        producerTransformClassMask_ = 0;
+        producerTransformMatrix_ = Render::IdentityNativeImageTransform();
+        appliedTextureTransform_ = Render::IdentityNativeImageTransform();
+        appliedTransformClass_ = Render::NativeImageTransformClass::NotSampled;
+    }
     textureTransformLogged_.store(false, std::memory_order_release);
     {
         std::lock_guard<std::mutex> lk(mutex_);
@@ -808,8 +819,27 @@ int HardwareDecoder::Init(int width, int height, CodecType codec, int64_t render
 
 void HardwareDecoder::SetNativeImagePresentationMode(
     Render::NativeImagePresentationMode presentationMode) {
-    const Render::NativeImagePresentationMode previous =
-        presentationMode_.exchange(presentationMode, std::memory_order_acq_rel);
+    Render::NativeImagePresentationMode previous;
+    {
+        std::lock_guard<std::mutex> transformLock(transformTelemetryMutex_);
+        previous = presentationMode_.exchange(
+            presentationMode, std::memory_order_acq_rel);
+        if (previous != presentationMode) {
+            sampledPresentationMode_ = presentationMode;
+            producerTransformClass_ =
+                Render::NativeImageTransformClass::NotSampled;
+            producerTransformSampled_ = false;
+            producerTransformReadResult_ = 0;
+            producerTransformSamples_ = 0;
+            producerTransformChanges_ = 0;
+            producerTransformReadFailures_ = 0;
+            producerTransformClassMask_ = 0;
+            producerTransformMatrix_ = Render::IdentityNativeImageTransform();
+            appliedTextureTransform_ = Render::IdentityNativeImageTransform();
+            appliedTransformClass_ =
+                Render::NativeImageTransformClass::NotSampled;
+        }
+    }
     if (previous == presentationMode) {
         return;
     }
@@ -1507,17 +1537,51 @@ void HardwareDecoder::handleOutputBuffer(uint32_t /*index*/) {
             const Render::NativeImageTransformClass producerTransformClass =
                 Render::ClassifyNativeImageProducerTransform(
                     transformRet, producerTransform);
-            producerTransformClass_.store(
-                producerTransformClass, std::memory_order_release);
-            textureTransform_ =
+            const Render::NativeImageTransform resolvedTransform =
                 Render::ResolveNativeImagePresentationTransform(
                     presentationMode, transformRet, producerTransform,
                     textureTransform_);
-            if (!textureTransformLogged_.exchange(true, std::memory_order_acq_rel)) {
+            const Render::NativeImageTransformClass appliedTransformClass =
+                Render::ClassifyNativeImageProducerTransform(
+                    0, resolvedTransform.data());
+            bool transformChanged = false;
+            {
+                std::lock_guard<std::mutex> transformLock(transformTelemetryMutex_);
+                Render::NativeImageTransform sampledTransform {};
+                for (size_t index = 0; index < sampledTransform.size(); ++index) {
+                    sampledTransform[index] = producerTransform[index];
+                }
+                transformChanged = producerTransformSampled_ &&
+                    (producerTransformReadResult_ != transformRet ||
+                     producerTransformClass_ != producerTransformClass ||
+                     !Render::NativeImageTransformsNearlyEqual(
+                         producerTransformMatrix_, sampledTransform));
+                producerTransformClass_ = producerTransformClass;
+                sampledPresentationMode_ = presentationMode;
+                producerTransformSampled_ = true;
+                producerTransformReadResult_ = transformRet;
+                producerTransformSamples_ += 1U;
+                if (transformChanged) {
+                    producerTransformChanges_ += 1U;
+                }
+                if (transformRet != 0) {
+                    producerTransformReadFailures_ += 1U;
+                }
+                producerTransformClassMask_ |=
+                    1U << static_cast<uint32_t>(producerTransformClass);
+                producerTransformMatrix_ = sampledTransform;
+                appliedTextureTransform_ = resolvedTransform;
+                appliedTransformClass_ = appliedTransformClass;
+            }
+            textureTransform_ = resolvedTransform;
+            if (transformChanged ||
+                !textureTransformLogged_.exchange(true, std::memory_order_acq_rel)) {
                 OH_LOG_INFO(LOG_APP,
-                            "[Decoder] desktop NativeImage producer transform ret=%{public}d class=%{public}s row0=[%{public}f,%{public}f,%{public}f,%{public}f] row1=[%{public}f,%{public}f,%{public}f,%{public}f] row3=[%{public}f,%{public}f,%{public}f,%{public}f] presentation=%{public}s",
+                            "[Decoder] desktop NativeImage transform ret=%{public}d producer=%{public}s applied=%{public}s changed=%{public}d row0=[%{public}f,%{public}f,%{public}f,%{public}f] row1=[%{public}f,%{public}f,%{public}f,%{public}f] row3=[%{public}f,%{public}f,%{public}f,%{public}f] presentation=%{public}s",
                             transformRet,
                             Render::NativeImageTransformClassName(producerTransformClass),
+                            Render::NativeImageTransformClassName(appliedTransformClass),
+                            transformChanged ? 1 : 0,
                             producerTransform[0], producerTransform[4],
                             producerTransform[8], producerTransform[12],
                             producerTransform[1], producerTransform[5],
@@ -1830,9 +1894,22 @@ HardwareTelemetrySnapshot HardwareDecoder::GetTelemetrySnapshot() const {
     snapshot.initialized = initialized_;
     snapshot.lowLatencyEnabled = lowLatencyEnabled_;
     snapshot.desktopSurfaceCompatibility = desktopSurfaceCompatibility_;
-    snapshot.presentationMode = presentationMode_.load(std::memory_order_acquire);
-    snapshot.producerTransformClass =
-        producerTransformClass_.load(std::memory_order_acquire);
+    {
+        std::lock_guard<std::mutex> transformLock(transformTelemetryMutex_);
+        snapshot.presentationMode = producerTransformSampled_
+            ? sampledPresentationMode_
+            : presentationMode_.load(std::memory_order_acquire);
+        snapshot.producerTransformClass = producerTransformClass_;
+        snapshot.appliedTransformClass = appliedTransformClass_;
+        snapshot.producerTransformSampled = producerTransformSampled_;
+        snapshot.producerTransformReadResult = producerTransformReadResult_;
+        snapshot.producerTransformSamples = producerTransformSamples_;
+        snapshot.producerTransformChanges = producerTransformChanges_;
+        snapshot.producerTransformReadFailures = producerTransformReadFailures_;
+        snapshot.producerTransformClassMask = producerTransformClassMask_;
+        snapshot.producerTransformMatrix = producerTransformMatrix_;
+        snapshot.appliedTextureTransform = appliedTextureTransform_;
+    }
     return snapshot;
 }
 
@@ -1854,6 +1931,22 @@ void HardwareDecoder::ResetTelemetryCounters() {
     codecLatencySampleCount_ = 0;
     codecLatencyMs_ = 0;
     codecLatencyMaxMs_ = 0;
+    {
+        std::lock_guard<std::mutex> transformLock(transformTelemetryMutex_);
+        sampledPresentationMode_ =
+            presentationMode_.load(std::memory_order_acquire);
+        producerTransformClass_ = Render::NativeImageTransformClass::NotSampled;
+        producerTransformSampled_ = false;
+        producerTransformReadResult_ = 0;
+        producerTransformSamples_ = 0;
+        producerTransformChanges_ = 0;
+        producerTransformReadFailures_ = 0;
+        producerTransformClassMask_ = 0;
+        producerTransformMatrix_ = Render::IdentityNativeImageTransform();
+        appliedTextureTransform_ = Render::IdentityNativeImageTransform();
+        appliedTransformClass_ = Render::NativeImageTransformClass::NotSampled;
+    }
+    textureTransformLogged_.store(false, std::memory_order_release);
 }
 
 void HardwareDecoder::Destroy() {
@@ -3823,6 +3916,9 @@ DecoderTelemetrySnapshot DecoderNapi::GetActiveTelemetry(
     snapshot.dropCounterGeneration = decoderLease->dropCounterGeneration;
     snapshot.displayGeneration = g_activeDisplayGeneration.load(std::memory_order_acquire);
     snapshot.display = g_activeDisplay.load(std::memory_order_acquire);
+    snapshot.rendererHandle = decoderLease->rendererHandle;
+    snapshot.rendererGeneration =
+        decoderLease->rendererGeneration.load(std::memory_order_acquire);
     snapshot.software = decoderLease->useSoftware;
     snapshot.width = decoderLease->width;
     snapshot.height = decoderLease->height;
@@ -3849,8 +3945,32 @@ DecoderTelemetrySnapshot DecoderNapi::GetActiveTelemetry(
             hardware.desktopSurfaceCompatibility;
         snapshot.presentationMode = hardware.presentationMode;
         snapshot.producerTransformClass = hardware.producerTransformClass;
+        snapshot.appliedTransformClass = hardware.appliedTransformClass;
+        snapshot.producerTransformSampled = hardware.producerTransformSampled;
+        snapshot.producerTransformReadResult =
+            hardware.producerTransformReadResult;
+        snapshot.producerTransformSamples = hardware.producerTransformSamples;
+        snapshot.producerTransformChanges = hardware.producerTransformChanges;
+        snapshot.producerTransformReadFailures =
+            hardware.producerTransformReadFailures;
+        snapshot.producerTransformClassMask =
+            hardware.producerTransformClassMask;
+        snapshot.producerTransformMatrix = hardware.producerTransformMatrix;
+        snapshot.appliedTextureTransform = hardware.appliedTextureTransform;
         snapshot.codec = static_cast<int>(hardware.codec);
         snapshot.ready = hardware.initialized;
+    }
+    if (snapshot.rendererHandle > 0) {
+        const RendererCanvasTransformSnapshot renderer =
+            RendererNapi::GetRendererCanvasTransformUnderOwnerLease(
+                snapshot.rendererHandle, expectedOwner);
+        if (renderer.rendererGeneration == snapshot.rendererGeneration) {
+            snapshot.rendererTransformValid = renderer.valid;
+            snapshot.rendererTransformVersion = renderer.version;
+            snapshot.rendererRotationQuarterTurns = renderer.rotationQuarterTurns;
+            snapshot.rendererFlipX = renderer.flipX;
+            snapshot.rendererFlipY = renderer.flipY;
+        }
     }
     return snapshot;
 }
@@ -3938,6 +4058,34 @@ DecoderPresentationTelemetrySnapshot DecoderNapi::GetActivePresentationTelemetry
         snapshot.codecLatencyMs = hardware.codecLatencyMs;
         snapshot.codecLatencyMaxMs = hardware.codecLatencyMaxMs;
         snapshot.lowLatencyEnabled = hardware.lowLatencyEnabled;
+        snapshot.desktopSurfaceCompatibility =
+            hardware.desktopSurfaceCompatibility;
+        snapshot.presentationMode = hardware.presentationMode;
+        snapshot.producerTransformClass = hardware.producerTransformClass;
+        snapshot.appliedTransformClass = hardware.appliedTransformClass;
+        snapshot.producerTransformSampled = hardware.producerTransformSampled;
+        snapshot.producerTransformReadResult =
+            hardware.producerTransformReadResult;
+        snapshot.producerTransformSamples = hardware.producerTransformSamples;
+        snapshot.producerTransformChanges = hardware.producerTransformChanges;
+        snapshot.producerTransformReadFailures =
+            hardware.producerTransformReadFailures;
+        snapshot.producerTransformClassMask =
+            hardware.producerTransformClassMask;
+        snapshot.producerTransformMatrix = hardware.producerTransformMatrix;
+        snapshot.appliedTextureTransform = hardware.appliedTextureTransform;
+    }
+    if (snapshot.rendererHandle > 0) {
+        const RendererCanvasTransformSnapshot renderer =
+            RendererNapi::GetRendererCanvasTransformUnderOwnerLease(
+                snapshot.rendererHandle, expectedOwner);
+        if (renderer.rendererGeneration == snapshot.rendererGeneration) {
+            snapshot.rendererTransformValid = renderer.valid;
+            snapshot.rendererTransformVersion = renderer.version;
+            snapshot.rendererRotationQuarterTurns = renderer.rotationQuarterTurns;
+            snapshot.rendererFlipX = renderer.flipX;
+            snapshot.rendererFlipY = renderer.flipY;
+        }
     }
     return snapshot;
 }

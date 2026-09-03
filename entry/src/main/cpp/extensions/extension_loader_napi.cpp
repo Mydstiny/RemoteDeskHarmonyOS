@@ -1831,6 +1831,19 @@ static void SetObjectBool(napi_env env, napi_value object, const char* key, bool
     napi_set_named_property(env, object, key, item);
 }
 
+static void SetObjectTransformMatrix(
+    napi_env env, napi_value object, const char* key,
+    const Render::NativeImageTransform& matrix) {
+    napi_value array;
+    napi_create_array_with_length(env, matrix.size(), &array);
+    for (size_t index = 0; index < matrix.size(); ++index) {
+        napi_value item;
+        napi_create_double(env, static_cast<double>(matrix[index]), &item);
+        napi_set_element(env, array, index, item);
+    }
+    napi_set_named_property(env, object, key, array);
+}
+
 struct SshForwardingSessionAccess {
     std::shared_ptr<SessionContext> session;
     std::shared_ptr<SshAdapter> adapter;
@@ -4235,6 +4248,36 @@ napi_value NapiGetSessionDiagnostics(napi_env env, napi_callback_info info) {
         Render::NativeImagePresentationModeName(decoder.presentationMode));
     SetObjectString(env, result, "producerTransform",
         Render::NativeImageTransformClassName(decoder.producerTransformClass));
+    SetObjectString(env, result, "appliedTransform",
+        Render::NativeImageTransformClassName(decoder.appliedTransformClass));
+    SetObjectBool(env, result, "producerTransformSampled",
+        decoder.producerTransformSampled);
+    SetObjectInt32(env, result, "producerTransformReadResult",
+        decoder.producerTransformReadResult);
+    SetObjectInt64(env, result, "producerTransformSamples",
+        static_cast<int64_t>(decoder.producerTransformSamples));
+    SetObjectInt64(env, result, "producerTransformChanges",
+        static_cast<int64_t>(decoder.producerTransformChanges));
+    SetObjectInt64(env, result, "producerTransformReadFailures",
+        static_cast<int64_t>(decoder.producerTransformReadFailures));
+    SetObjectInt64(env, result, "producerTransformClassMask",
+        static_cast<int64_t>(decoder.producerTransformClassMask));
+    SetObjectTransformMatrix(env, result, "producerTransformMatrix",
+        decoder.producerTransformMatrix);
+    SetObjectTransformMatrix(env, result, "appliedTextureTransform",
+        decoder.appliedTextureTransform);
+    SetObjectBool(env, result, "rendererTransformValid",
+        decoder.rendererTransformValid);
+    SetObjectInt64(env, result, "rendererTransformVersion",
+        static_cast<int64_t>(decoder.rendererTransformVersion));
+    SetObjectInt32(env, result, "rendererRotationQuarterTurns",
+        decoder.rendererRotationQuarterTurns);
+    SetObjectBool(env, result, "rendererFlipX", decoder.rendererFlipX);
+    SetObjectBool(env, result, "rendererFlipY", decoder.rendererFlipY);
+    SetObjectInt64(env, result, "decoderGeneration",
+        static_cast<int64_t>(decoder.decoderGeneration));
+    SetObjectInt64(env, result, "rendererGeneration",
+        static_cast<int64_t>(decoder.rendererGeneration));
     SetObjectInt64(env, result, "lastFrameAtMs", static_cast<int64_t>(
         counters ? counters->lastFrameAtMs.load(std::memory_order_acquire) : nativeStats.lastFrameAtMs));
     SetObjectInt64(env, result, "lastFrameAgeMs", lastFrameAgeMs);

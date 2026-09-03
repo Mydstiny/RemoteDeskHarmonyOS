@@ -839,6 +839,22 @@ void setInt32(napi_env env, napi_value object, const char* name, std::int32_t va
     }
 }
 
+void setTransformMatrix(napi_env env, napi_value object, const char* name,
+                        const std::array<float, 16>& matrix) {
+    napi_value array = nullptr;
+    if (napi_create_array_with_length(env, matrix.size(), &array) != napi_ok) {
+        return;
+    }
+    for (std::size_t index = 0; index < matrix.size(); ++index) {
+        napi_value item = nullptr;
+        if (napi_create_double(env, static_cast<double>(matrix[index]), &item) ==
+            napi_ok) {
+            (void)napi_set_element(env, array, index, item);
+        }
+    }
+    (void)napi_set_named_property(env, object, name, array);
+}
+
 void setSize(napi_env env, napi_value object, const char* name, std::size_t value) {
     setSafeInteger(env, object, name, static_cast<std::uint64_t>(value));
 }
@@ -1491,6 +1507,42 @@ napi_value streamSnapshot(napi_env env, napi_callback_info info) {
                        std::max<std::int64_t>(0, result.decoderCodecLatencyMaxMs)));
     setBoolean(env, value, "decoderLowLatencyEnabled",
                result.decoderLowLatencyEnabled);
+    setBoolean(env, value, "desktopSurfaceCompatibility",
+               result.presentation.desktopSurfaceCompatibility);
+    setString(env, value, "nativeImagePresentation",
+              result.presentation.nativeImagePresentation);
+    setString(env, value, "producerTransform",
+              result.presentation.producerTransform);
+    setString(env, value, "appliedTransform",
+              result.presentation.appliedTransform);
+    setBoolean(env, value, "producerTransformSampled",
+               result.presentation.producerTransformSampled);
+    setInt32(env, value, "producerTransformReadResult",
+             result.presentation.producerTransformReadResult);
+    setSafeInteger(env, value, "producerTransformSamples",
+                   result.presentation.producerTransformSamples);
+    setSafeInteger(env, value, "producerTransformChanges",
+                   result.presentation.producerTransformChanges);
+    setSafeInteger(env, value, "producerTransformReadFailures",
+                   result.presentation.producerTransformReadFailures);
+    setSafeInteger(env, value, "producerTransformClassMask",
+                   result.presentation.producerTransformClassMask);
+    setTransformMatrix(env, value, "producerTransformMatrix",
+                       result.presentation.producerTransformMatrix);
+    setTransformMatrix(env, value, "appliedTextureTransform",
+                       result.presentation.appliedTextureTransform);
+    setBoolean(env, value, "rendererTransformValid",
+               result.presentation.rendererTransformValid);
+    setSafeInteger(env, value, "rendererTransformVersion",
+                   result.presentation.rendererTransformVersion);
+    setInt32(env, value, "rendererRotationQuarterTurns",
+             result.presentation.rendererRotationQuarterTurns);
+    setBoolean(env, value, "rendererFlipX", result.presentation.rendererFlipX);
+    setBoolean(env, value, "rendererFlipY", result.presentation.rendererFlipY);
+    setSafeInteger(env, value, "decoderGeneration",
+                   result.presentation.decoderGeneration);
+    setSafeInteger(env, value, "rendererGeneration",
+                   result.presentation.rendererGeneration);
     setInt32(env, value, "streamWidth", result.streamWidth);
     setInt32(env, value, "streamHeight", result.streamHeight);
     setInt32(env, value, "targetFps", result.targetFps);

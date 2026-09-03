@@ -32,6 +32,15 @@
 #define REMOTEDESK_RENDER_INTERNAL
 #endif
 
+struct RendererCanvasTransformSnapshot {
+    bool valid = false;
+    uint64_t rendererGeneration = 0;
+    uint64_t version = 0;
+    int rotationQuarterTurns = 0;
+    bool flipX = false;
+    bool flipY = false;
+};
+
 /**
  * GLRenderer — OpenGL ES 3.0 渲染器
  *
@@ -144,6 +153,7 @@ public:
                              int& sourceWidth, int& sourceHeight,
                              int& surfaceWidth, int& surfaceHeight,
                              uint64_t& transformVersion) const;
+    RendererCanvasTransformSnapshot GetCanvasTransformSnapshot() const;
 
     // R1: NapiTestRender 使用的 accessor
     bool MakeCurrent();
@@ -239,6 +249,9 @@ private:
     std::atomic<int> snapshotSurfaceWidth_;
     std::atomic<int> snapshotSurfaceHeight_;
     std::atomic<uint64_t> snapshotTransformVersion_;
+    std::atomic<int> snapshotRotationQuarterTurns_;
+    std::atomic<bool> snapshotFlipX_;
+    std::atomic<bool> snapshotFlipY_;
     int  rawFrameCount_;
     int  oesFrameCount_;
     int64_t rendererHandle_;
@@ -369,6 +382,9 @@ namespace RendererNapi {
         bool flipX, bool flipY);
     REMOTEDESK_RENDER_INTERNAL uint64_t GetActiveRendererGenerationUnderOwnerLease(
         int64_t handle, const Render::DecoderSessionIdentity& owner);
+    REMOTEDESK_RENDER_INTERNAL RendererCanvasTransformSnapshot
+        GetRendererCanvasTransformUnderOwnerLease(
+            int64_t handle, const Render::DecoderSessionIdentity& owner);
     REMOTEDESK_RENDER_INTERNAL uint64_t GetActiveRendererGeneration(
         int64_t handle, const Render::DecoderSessionIdentity& owner);
     /** Return the live renderer token for an exact session owner, or zero. */

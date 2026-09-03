@@ -58,6 +58,8 @@ struct DecoderTelemetrySnapshot {
     uint64_t decoderGeneration = 0;
     uint64_t displayGeneration = 0;
     int display = -1;
+    int64_t rendererHandle = 0;
+    uint64_t rendererGeneration = 0;
     uint64_t inputDroppedFrames = 0;
     uint64_t droppedFrames = 0;
     uint64_t waitKeyframeDrops = 0;
@@ -70,6 +72,23 @@ struct DecoderTelemetrySnapshot {
         Render::NativeImagePresentationMode::Identity;
     Render::NativeImageTransformClass producerTransformClass =
         Render::NativeImageTransformClass::NotSampled;
+    Render::NativeImageTransformClass appliedTransformClass =
+        Render::NativeImageTransformClass::NotSampled;
+    bool producerTransformSampled = false;
+    int32_t producerTransformReadResult = 0;
+    uint64_t producerTransformSamples = 0;
+    uint64_t producerTransformChanges = 0;
+    uint64_t producerTransformReadFailures = 0;
+    uint32_t producerTransformClassMask = 0;
+    Render::NativeImageTransform producerTransformMatrix =
+        Render::IdentityNativeImageTransform();
+    Render::NativeImageTransform appliedTextureTransform =
+        Render::IdentityNativeImageTransform();
+    bool rendererTransformValid = false;
+    uint64_t rendererTransformVersion = 0;
+    int rendererRotationQuarterTurns = 0;
+    bool rendererFlipX = false;
+    bool rendererFlipY = false;
 };
 
 // Private native presentation proof kept separate from the established
@@ -102,6 +121,28 @@ struct REMOTEDESK_DECODER_INTERNAL DecoderPresentationTelemetrySnapshot {
     int64_t codecLatencyMs = 0;
     int64_t codecLatencyMaxMs = 0;
     bool lowLatencyEnabled = false;
+    bool desktopSurfaceCompatibility = false;
+    Render::NativeImagePresentationMode presentationMode =
+        Render::NativeImagePresentationMode::Identity;
+    Render::NativeImageTransformClass producerTransformClass =
+        Render::NativeImageTransformClass::NotSampled;
+    Render::NativeImageTransformClass appliedTransformClass =
+        Render::NativeImageTransformClass::NotSampled;
+    bool producerTransformSampled = false;
+    int32_t producerTransformReadResult = 0;
+    uint64_t producerTransformSamples = 0;
+    uint64_t producerTransformChanges = 0;
+    uint64_t producerTransformReadFailures = 0;
+    uint32_t producerTransformClassMask = 0;
+    Render::NativeImageTransform producerTransformMatrix =
+        Render::IdentityNativeImageTransform();
+    Render::NativeImageTransform appliedTextureTransform =
+        Render::IdentityNativeImageTransform();
+    bool rendererTransformValid = false;
+    uint64_t rendererTransformVersion = 0;
+    int rendererRotationQuarterTurns = 0;
+    bool rendererFlipX = false;
+    bool rendererFlipY = false;
 };
 
 struct REMOTEDESK_DECODER_INTERNAL OwnedDecoderCreationResult {
@@ -133,6 +174,18 @@ struct HardwareTelemetrySnapshot {
         Render::NativeImagePresentationMode::Identity;
     Render::NativeImageTransformClass producerTransformClass =
         Render::NativeImageTransformClass::NotSampled;
+    Render::NativeImageTransformClass appliedTransformClass =
+        Render::NativeImageTransformClass::NotSampled;
+    bool producerTransformSampled = false;
+    int32_t producerTransformReadResult = 0;
+    uint64_t producerTransformSamples = 0;
+    uint64_t producerTransformChanges = 0;
+    uint64_t producerTransformReadFailures = 0;
+    uint32_t producerTransformClassMask = 0;
+    Render::NativeImageTransform producerTransformMatrix =
+        Render::IdentityNativeImageTransform();
+    Render::NativeImageTransform appliedTextureTransform =
+        Render::IdentityNativeImageTransform();
 };
 
 /**
@@ -341,8 +394,23 @@ private:
     bool            desktopSurfaceCompatibility_ = false;
     std::atomic<Render::NativeImagePresentationMode> presentationMode_ {
         Render::NativeImagePresentationMode::Identity};
-    std::atomic<Render::NativeImageTransformClass> producerTransformClass_ {
-        Render::NativeImageTransformClass::NotSampled};
+    mutable std::mutex transformTelemetryMutex_;
+    Render::NativeImagePresentationMode sampledPresentationMode_ =
+        Render::NativeImagePresentationMode::Identity;
+    Render::NativeImageTransformClass producerTransformClass_ =
+        Render::NativeImageTransformClass::NotSampled;
+    bool producerTransformSampled_ = false;
+    int32_t producerTransformReadResult_ = 0;
+    uint64_t producerTransformSamples_ = 0;
+    uint64_t producerTransformChanges_ = 0;
+    uint64_t producerTransformReadFailures_ = 0;
+    uint32_t producerTransformClassMask_ = 0;
+    Render::NativeImageTransform producerTransformMatrix_ =
+        Render::IdentityNativeImageTransform();
+    Render::NativeImageTransform appliedTextureTransform_ =
+        Render::IdentityNativeImageTransform();
+    Render::NativeImageTransformClass appliedTransformClass_ =
+        Render::NativeImageTransformClass::NotSampled;
     std::atomic<bool> textureTransformLogged_ {false};
     int             width_ = 0;
     int             height_ = 0;

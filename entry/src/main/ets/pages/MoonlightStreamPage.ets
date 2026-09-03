@@ -103,6 +103,19 @@ import {
   rebaseCanvasTransform
 } from '../services/RemoteCanvasTransformPolicy';
 import {
+  effectiveMoonlightDesktopFlipMode,
+  mirrorMoonlightDesktopInput,
+  MoonlightDesktopFlipMode,
+  MoonlightDesktopFlipPan,
+  MoonlightDesktopRelativeInput,
+  MoonlightDesktopFlipState,
+  moonlightDesktopFlipState,
+  normalizeMoonlightDesktopFlipMode,
+  projectMoonlightDesktopRelativeInput,
+  reprojectMoonlightDesktopFlipPan
+} from '../services/MoonlightDesktopFlipPolicy';
+import { MoonlightDesktopFlipStore } from '../services/MoonlightDesktopFlipStore';
+import {
   advanceCanvasTwoFingerMove,
   beginCanvasTwoFingerCandidate,
   CanvasTwoFingerState,
@@ -374,6 +387,7 @@ struct MoonlightStreamPage {
   @State keyboardText: string = '';
   @State diagnosticsVisible: boolean = false;
   @State diagnosticsExpanded: boolean = false;
+  @State private moonlightDesktopFlipMode: MoonlightDesktopFlipMode = 'reset';
   @State diagnosticsX: number = 18;
   @State diagnosticsY: number = 18;
   @State diagnosticsSnapshot: MoonlightDiagnosticsSnapshot = EMPTY_MOONLIGHT_DIAGNOSTICS;
@@ -404,6 +418,8 @@ struct MoonlightStreamPage {
     new MoonlightLocalViewService(CloudStore.getInstance());
   private readonly recoveryRuntime: MoonlightSessionRecoveryRuntime =
     MoonlightSessionRecoveryRuntime.getInstance();
+  private readonly desktopFlipStore: MoonlightDesktopFlipStore =
+    new MoonlightDesktopFlipStore();
   private accountScopeUnsubscribe: (() => void) | null = null;
   private snapshotUnsubscribe: (() => void) | null = null;
   private pageActive: boolean = false;
@@ -523,6 +539,10 @@ struct MoonlightStreamPage {
   private moonlightCanvasViewportSnapshot: CanvasViewport | null = null;
   private moonlightCanvasTransformInitialized: boolean = false;
   @State private moonlightCanvasTransformModified: boolean = false;
+  private moonlightVisualFlipX: boolean = false;
+  private moonlightVisualFlipY: boolean = false;
+  private moonlightControlFlipX: boolean = false;
+  private moonlightControlFlipY: boolean = false;
   private moonlightTwoFingerState: CanvasTwoFingerState = idleCanvasTwoFingerState();
   private moonlightTwoFingerSequence: number = 0;
   private moonlightTwoFingerSuppressedUntilRelease: boolean = false;
@@ -1068,6 +1088,10 @@ struct MoonlightStreamPage {
       ' effectiveKbps=' + this.configuredBitrateKbps.toString());
     this.routeOwnerScopeFingerprint = typeof params['launchOwnerScopeFingerprint'] === 'string'
       ? params['launchOwnerScopeFingerprint'] as string : '';
+    const storedFlipMode: MoonlightDesktopFlipMode = this.desktopFlipStore.load(
+      getContext(this) as common.Context, this.routeOwnerScopeFingerprint, this.hostId);
+    this.adoptMoonlightDesktopFlipMode(effectiveMoonlightDesktopFlipMode(
+      storedFlipMode, this.isDesktopDevice, this.sessionWindowId), 'restore', false);
     this.routeAccountGeneration = params['launchAccountGeneration'] as number;
     this.routeInstallationId = typeof params['launchInstallationId'] === 'string'
       ? params['launchInstallationId'] as string : '';
@@ -1456,22 +1480,105 @@ struct MoonlightStreamPage {
     };
   }
 
-  private submitMoonlightCanvasTransform(): void {
-    if (this.rendererHandle <= 0) { return; }
+  private adoptMoonlightDesktopFlipMode(mode: MoonlightDesktopFlipMode,
+    reason: string, preserveCanvasFocus: boolean): boolean {
+    const previousMode: MoonlightDesktopFlipMode = this.moonlightDesktopFlipMode;
+    const previousState: MoonlightDesktopFlipState = moonlightDesktopFlipState(previousMode);
+    const previousTransform: CanvasTransform = {
+      scale: this.moonlightCanvasTransform.scale,
+      panX: this.moonlightCanvasTransform.panX,
+      panY: this.moonlightCanvasTransform.panY,
+      rotation: this.moonlightCanvasTransform.rotation
+    };
+    const normalized: MoonlightDesktopFlipMode = normalizeMoonlightDesktopFlipMode(mode);
+    const state: MoonlightDesktopFlipState = moonlightDesktopFlipState(normalized);
+    const pan: MoonlightDesktopFlipPan = preserveCanvasFocus ?
+      reprojectMoonlightDesktopFlipPan(this.moonlightDesktopFlipMode, normalized,
+        this.moonlightCanvasTransform.panX, this.moonlightCanvasTransform.panY) :
+      { panX: 0, panY: 0 };
+    this.moonlightDesktopFlipMode = normalized;
+    this.moonlightVisualFlipX = state.visualFlipX;
+    this.moonlightVisualFlipY = state.visualFlipY;
+    this.moonlightControlFlipX = state.controlFlipX;
+    this.moonlightControlFlipY = state.controlFlipY;
+    this.moonlightCanvasTransform = {
+      scale: this.moonlightCanvasTransform.scale,
+      panX: pan.panX,
+      panY: pan.panY,
+      rotation: 0
+    };
+    if (this.rendererHandle > 0) {
+      if (!this.submitMoonlightCanvasTransform()) {
+        this.moonlightDesktopFlipMode = previousMode;
+        this.moonlightVisualFlipX = previousState.visualFlipX;
+        this.moonlightVisualFlipY = previousState.visualFlipY;
+        this.moonlightControlFlipX = previousState.controlFlipX;
+        this.moonlightControlFlipY = previousState.controlFlipY;
+        this.moonlightCanvasTransform = previousTransform;
+        return false;
+      }
+      this.syncMoonlightSystemPointer('desktop-flip-' + reason, true);
+    }
+    hilog.info(0x0014, 'MoonlightStreamUi',
+      'desktopFlipApplied reason=' + reason + ' mode=' + normalized +
+      ' visualX=' + (state.visualFlipX ? '1' : '0') +
+      ' visualY=' + (state.visualFlipY ? '1' : '0') +
+      ' controlX=' + (state.controlFlipX ? '1' : '0') +
+      ' controlY=' + (state.controlFlipY ? '1' : '0') +
+      ' renderer=' + this.rendererHandle.toString());
+    return true;
+  }
+
+  private setMoonlightDesktopFlipMode(mode: MoonlightDesktopFlipMode): void {
+    if (!this.isDesktopDevice && this.sessionWindowId.length === 0) {
+      promptAction.showToast({ message: '仅鸿蒙 PC Moonlight 会话支持画面翻转', duration: 1800 });
+      return;
+    }
+    const normalized: MoonlightDesktopFlipMode = normalizeMoonlightDesktopFlipMode(mode);
+    const previousMode: MoonlightDesktopFlipMode = this.moonlightDesktopFlipMode;
+    if (!this.desktopFlipStore.save(getContext(this) as common.Context,
+      this.routeOwnerScopeFingerprint, this.hostId, normalized)) {
+      promptAction.showToast({ message: '本机画面翻转设置保存失败，未应用更改', duration: 2200 });
+      return;
+    }
+    this.cancelActiveMoonlightTouches();
+    this.clearMoonlightPhysicalPointerFollow(true);
+    if (!this.adoptMoonlightDesktopFlipMode(normalized, 'user', true)) {
+      this.desktopFlipStore.save(getContext(this) as common.Context,
+        this.routeOwnerScopeFingerprint, this.hostId, previousMode);
+      promptAction.showToast({ message: '画面翻转提交失败，已保留原设置', duration: 2200 });
+      return;
+    }
+    promptAction.showToast({
+      message: normalized === 'reset' ? '画面与控制层已复位' : '翻转设置已保存',
+      duration: 1500
+    });
+  }
+
+  private submitMoonlightCanvasTransform(): boolean {
+    if (this.rendererHandle <= 0) { return false; }
     try {
       const transformVersion: number = rdpnapi.setRendererCanvasTransform(this.rendererHandle,
         this.moonlightCanvasTransform.scale,
         this.moonlightCanvasTransform.panX,
-        this.moonlightCanvasTransform.panY, 0);
+        this.moonlightCanvasTransform.panY, 0,
+        this.moonlightVisualFlipX, this.moonlightVisualFlipY);
+      if (!Number.isSafeInteger(transformVersion) || transformVersion <= 0) {
+        hilog.warn(0x0014, 'MoonlightStreamUi',
+          'canvas transform rejected renderer=' + this.rendererHandle.toString());
+        return false;
+      }
       this.geometryGeneration = Math.min(Number.MAX_SAFE_INTEGER,
         this.geometryGeneration + 1);
       this.invalidatePhysicalPointerGeometry();
       this.moonlightRendererCanvasTransformPendingVersion = transformVersion;
       this.updatePhysicalPointerGeometryForCanvasTransform(
         this.moonlightCanvasViewportSnapshot ?? this.moonlightCanvasViewport());
+      return true;
     } catch (error) {
       hilog.warn(0x0014, 'MoonlightStreamUi',
         'canvas transform submit failed: ' + JSON.stringify(error));
+      return false;
     }
   }
 
@@ -3724,8 +3831,12 @@ struct MoonlightStreamPage {
     x: number, y: number, button?: number, pressed?: boolean): MoonlightPointerInputRequest {
     const geometry: MoonlightPhysicalPointerGeometry =
       this.readPhysicalPointerGeometry() ?? this.fallbackPhysicalPointerGeometry();
+    const point = mirrorMoonlightDesktopInput(
+      x, y, geometry.contentLeft, geometry.contentTop,
+      geometry.contentWidth, geometry.contentHeight,
+      this.moonlightControlFlipX, this.moonlightControlFlipY);
     const request: MoonlightPointerInputRequest = {
-      launchKey: this.launchKey, action: action, x: x, y: y,
+      launchKey: this.launchKey, action: action, x: point.x, y: point.y,
       contentLeft: geometry.contentLeft, contentTop: geometry.contentTop,
       contentWidth: geometry.contentWidth,
       contentHeight: geometry.contentHeight,
@@ -4308,12 +4419,15 @@ struct MoonlightStreamPage {
           this.trackpadCurveState = curve.state;
           const gain: number = this.trackpadReferenceScale() *
             clampTouchpadEffectiveGain(curve.gain, 1);
-          const adjustedX: number = relativeX * gain;
-          const adjustedY: number = relativeY * gain;
-          this.trackpadCursorX += adjustedX;
-          this.trackpadCursorY += adjustedY;
+          const projected: MoonlightDesktopRelativeInput =
+            projectMoonlightDesktopRelativeInput(
+              relativeX, relativeY, gain,
+              this.moonlightControlFlipX, this.moonlightControlFlipY,
+              this.moonlightVisualFlipX, this.moonlightVisualFlipY);
+          this.trackpadCursorX += projected.visualX;
+          this.trackpadCursorY += projected.visualY;
           this.applyMoonlightTrackpadPointerFollow();
-          this.queueTrackpadPointer(adjustedX, adjustedY);
+          this.queueTrackpadPointer(projected.wireX, projected.wireY);
         }
         this.trackpadScrollCentroidValid = false;
       } else {
@@ -5518,6 +5632,8 @@ struct MoonlightStreamPage {
       keyboardAvailable: this.inputReady,
       diagnosticsVisible: this.diagnosticsVisible,
       canvasResetAvailable: this.moonlightCanvasTransformModified,
+      desktopFlipAvailable: this.isDesktopDevice || this.sessionWindowId.length > 0,
+      desktopFlipMode: this.moonlightDesktopFlipMode,
       viewportWidth: this.surfaceWidthVp,
       viewportHeight: this.surfaceHeightVp,
       onClose: (): void => { this.closeSheet(); },
@@ -5530,6 +5646,9 @@ struct MoonlightStreamPage {
       onEnterPip: (): void => { this.closeSheet(); void this.moveMoonlightToPip(); },
       onToggleDiagnostics: (): void => { this.toggleDiagnosticsHud(); },
       onResetCanvas: (): void => { this.resetMoonlightCanvasTransformFromMenu(); },
+      onSetDesktopFlipMode: (mode: MoonlightDesktopFlipMode): void => {
+        this.setMoonlightDesktopFlipMode(mode);
+      },
       onControlMode: (mode: MoonlightControlMode): void => {
         this.applyMoonlightControlMode(mode);
       },

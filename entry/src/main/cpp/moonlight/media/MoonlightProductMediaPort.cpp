@@ -385,6 +385,7 @@ MoonlightProductMediaPort::diagnostics() const noexcept {
         result.decoderCodecLatencyMs = decoder.decoderCodecLatencyMs;
         result.decoderCodecLatencyMaxMs = decoder.decoderCodecLatencyMaxMs;
         result.decoderLowLatencyEnabled = decoder.decoderLowLatencyEnabled;
+        result.presentation = decoder.presentation;
         if (audioIdentity.valid()) {
             const auto audio = impl_->audioBridge->snapshot(audioIdentity);
             result.acceptedAudioPackets = saturatingAdd(

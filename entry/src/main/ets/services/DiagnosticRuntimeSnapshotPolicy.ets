@@ -98,6 +98,24 @@ function safeSum(values: number[]): number {
   return total;
 }
 
+function safeSignedInteger(value: number | undefined): number {
+  if (value === undefined || !Number.isFinite(value) || !Number.isSafeInteger(value)) {
+    return 0;
+  }
+  return Math.max(-2147483648, Math.min(2147483647, value));
+}
+
+function safeTransformMatrix(value: number[] | undefined,
+  sampled: boolean): number[] {
+  if (!sampled || value === undefined || value.length !== 16) { return []; }
+  const result: number[] = [];
+  for (let index: number = 0; index < value.length; index++) {
+    if (!Number.isFinite(value[index]) || Math.abs(value[index]) > 16) { return []; }
+    result.push(Math.round(value[index] * 1000000) / 1000000);
+  }
+  return result;
+}
+
 function desktopBackend(value: string): DiagnosticRuntimeBackend {
   switch (value.trim().toLowerCase()) {
     case 'hardware': return 'hardware';
@@ -148,6 +166,7 @@ function presentation(value: string | undefined): DiagnosticPresentation {
   if (value === 'identity') { return 'identity'; }
   if (value === 'producer') { return 'producer'; }
   if (value === 'validated_producer') { return 'validated_producer'; }
+  if (value === 'vertical_flip_producer') { return 'vertical_flip_producer'; }
   return 'unknown';
 }
 
@@ -176,6 +195,7 @@ export function diagnosticDesktopRuntimeEventCode(moduleId: DiagnosticDesktopMod
 
 export function diagnosticDesktopRuntimeFacts(moduleId: DiagnosticDesktopModule,
   source: RustDeskDiagnosticsSnapshot): DiagnosticRuntimeFacts {
+  const sampled: boolean = source.producerTransformSampled === true;
   return {
     state: source.sessionActive ? 'connected' :
       (source.supported ? 'disconnected' : 'unknown'),
@@ -188,6 +208,25 @@ export function diagnosticDesktopRuntimeFacts(moduleId: DiagnosticDesktopModule,
       presentation(source.nativeImagePresentation) : 'unknown',
     producerTransform: moduleId === 'connection.rustdesk' ?
       producerTransform(source.producerTransform) : 'unknown',
+    appliedTransform: moduleId === 'connection.rustdesk' ?
+      producerTransform(source.appliedTransform) : 'unknown',
+    desktopSurfaceCompatibility: source.desktopSurfaceCompatibility === true,
+    producerTransformSampled: sampled,
+    producerTransformReadResult: safeSignedInteger(source.producerTransformReadResult),
+    producerTransformSamples: safeCounter(source.producerTransformSamples),
+    producerTransformChanges: safeCounter(source.producerTransformChanges),
+    producerTransformReadFailures: safeCounter(source.producerTransformReadFailures),
+    producerTransformClassMask: safeCounter(source.producerTransformClassMask),
+    producerTransformMatrix: safeTransformMatrix(source.producerTransformMatrix, sampled),
+    appliedTextureTransform: safeTransformMatrix(source.appliedTextureTransform, sampled),
+    rendererTransformValid: source.rendererTransformValid === true,
+    rendererTransformVersion: safeCounter(source.rendererTransformVersion),
+    rendererRotationQuarterTurns: Math.min(3,
+      safeCounter(source.rendererRotationQuarterTurns)),
+    rendererFlipX: source.rendererFlipX === true,
+    rendererFlipY: source.rendererFlipY === true,
+    decoderGeneration: safeCounter(source.decoderGeneration),
+    rendererGeneration: safeCounter(source.rendererGeneration),
     width: safeCounter(source.width),
     height: safeCounter(source.height),
     frames: safeCounter(source.receivedFrames),
@@ -207,6 +246,14 @@ export function diagnosticSshRuntimeFacts(
       (source.supported ? 'disconnected' : 'unknown'),
     backend: 'terminal', codec: 'unknown', path: 'unknown',
     peerPlatform: 'unknown', presentation: 'unknown', producerTransform: 'unknown',
+    appliedTransform: 'unknown', desktopSurfaceCompatibility: false,
+    producerTransformSampled: false, producerTransformReadResult: 0,
+    producerTransformSamples: 0, producerTransformChanges: 0,
+    producerTransformReadFailures: 0, producerTransformClassMask: 0,
+    producerTransformMatrix: [], appliedTextureTransform: [],
+    rendererTransformValid: false, rendererTransformVersion: 0,
+    rendererRotationQuarterTurns: 0, rendererFlipX: false, rendererFlipY: false,
+    decoderGeneration: 0, rendererGeneration: 0,
     width: 0, height: 0,
     frames: safeCounter(source.remoteReadEvents),
     dropped: safeSum([source.inputLoss, source.inputDuplicate, source.callbackQueueFull]),
@@ -225,11 +272,32 @@ function moonlightCodec(value: string | undefined): DiagnosticRuntimeCodec {
 
 export function diagnosticMoonlightRuntimeFacts(
   source: MoonlightNativeStreamSnapshot): DiagnosticRuntimeFacts {
+  const sampled: boolean = source.producerTransformSampled === true;
   return {
     state: source.terminal ? 'disconnected' :
       (source.transportReady ? 'connected' : 'connecting'),
-    backend: 'native', codec: moonlightCodec(source.codec), path: 'unknown',
-    peerPlatform: 'unknown', presentation: 'unknown', producerTransform: 'unknown',
+    backend: source.videoReady ? 'hardware' : 'native',
+    codec: moonlightCodec(source.codec), path: 'unknown',
+    peerPlatform: 'unknown', presentation: presentation(source.nativeImagePresentation),
+    producerTransform: producerTransform(source.producerTransform),
+    appliedTransform: producerTransform(source.appliedTransform),
+    desktopSurfaceCompatibility: source.desktopSurfaceCompatibility === true,
+    producerTransformSampled: sampled,
+    producerTransformReadResult: safeSignedInteger(source.producerTransformReadResult),
+    producerTransformSamples: safeCounter(source.producerTransformSamples),
+    producerTransformChanges: safeCounter(source.producerTransformChanges),
+    producerTransformReadFailures: safeCounter(source.producerTransformReadFailures),
+    producerTransformClassMask: safeCounter(source.producerTransformClassMask),
+    producerTransformMatrix: safeTransformMatrix(source.producerTransformMatrix, sampled),
+    appliedTextureTransform: safeTransformMatrix(source.appliedTextureTransform, sampled),
+    rendererTransformValid: source.rendererTransformValid === true,
+    rendererTransformVersion: safeCounter(source.rendererTransformVersion),
+    rendererRotationQuarterTurns: Math.min(3,
+      safeCounter(source.rendererRotationQuarterTurns)),
+    rendererFlipX: source.rendererFlipX === true,
+    rendererFlipY: source.rendererFlipY === true,
+    decoderGeneration: safeCounter(source.decoderGeneration),
+    rendererGeneration: safeCounter(source.rendererGeneration),
     width: safeCounter(source.streamWidth),
     height: safeCounter(source.streamHeight),
     frames: safeCounter(source.acceptedVideoFrames),
@@ -247,7 +315,14 @@ export function diagnosticMoonlightRuntimeFacts(
 export function diagnosticRuntimeFactsSignature(facts: DiagnosticRuntimeFacts): string {
   return [
     facts.state, facts.backend, facts.codec, facts.path, facts.peerPlatform,
-    facts.presentation, facts.producerTransform, facts.width, facts.height
+    facts.presentation, facts.producerTransform, facts.appliedTransform,
+    facts.desktopSurfaceCompatibility, facts.producerTransformSampled,
+    facts.producerTransformReadResult, facts.producerTransformChanges,
+    facts.producerTransformReadFailures, facts.producerTransformClassMask,
+    facts.producerTransformMatrix.join(','), facts.appliedTextureTransform.join(','),
+    facts.rendererTransformVersion, facts.rendererRotationQuarterTurns,
+    facts.rendererFlipX, facts.rendererFlipY, facts.decoderGeneration,
+    facts.rendererGeneration, facts.width, facts.height
   ].join('|');
 }
 

@@ -106,6 +106,17 @@ inline bool NativeImageTransformNearlyEqual(float left, float right) {
     return std::isfinite(left) && std::fabs(left - right) <= 0.01f;
 }
 
+inline bool NativeImageTransformsNearlyEqual(
+    const NativeImageTransform& left,
+    const NativeImageTransform& right) noexcept {
+    for (size_t index = 0; index < left.size(); ++index) {
+        if (!NativeImageTransformNearlyEqual(left[index], right[index])) {
+            return false;
+        }
+    }
+    return true;
+}
+
 inline NativeImageTransformClass ClassifyNativeImageProducerTransform(
     int32_t readResult, const float matrix[16]) {
     if (readResult != 0 || matrix == nullptr) {

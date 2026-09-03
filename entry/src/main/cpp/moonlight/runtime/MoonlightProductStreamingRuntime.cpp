@@ -643,6 +643,7 @@ MoonlightProductStreamSnapshot MoonlightProductStreamingRuntime::snapshot(
                 diagnostics.decoderCodecLatencyMaxMs;
             result.decoderLowLatencyEnabled =
                 diagnostics.decoderLowLatencyEnabled;
+            result.presentation = diagnostics.presentation;
         }
         result.presentationFrameReady = moonlightProductFirstFrameProven(
             source.firstFrameReady, diagnostics.matched,
