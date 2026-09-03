@@ -72,6 +72,29 @@ export function shouldUseRdpPcAdaptiveDisplay(isDesktopDevice: boolean,
   return isDesktopDevice && resolutionId === 'auto';
 }
 
+/** PC auto starts conservatively then upgrades through Display Control. Fixed
+ * layouts and mobile adaptive sessions have no later window-follow upgrade,
+ * so their connection handshake must carry the requested Windows DPI scale. */
+export function shouldUseRdpInitialDpiScale(isDesktopDevice: boolean,
+  resolutionId: string): boolean {
+  return !isDesktopDevice || resolutionId !== 'auto';
+}
+
+/** A display move can change either the auto desktop geometry or the auto DPI
+ * scale. Fixed geometry therefore still needs a refresh when UI scale is auto. */
+export function shouldRefreshRdpLayoutOnDisplayChange(resolutionId: string,
+  uiScalePreference: string): boolean {
+  return resolutionId === 'auto' ||
+    normalizeRdpRemoteUiScalePreference(uiScalePreference) === 'auto';
+}
+
+/** A window-follow event is a no-op for fixed resolution and must not replace
+ * an already scheduled explicit/DPI-only refresh. */
+export function shouldReplaceRdpDynamicLayoutTimer(resolutionId: string,
+  windowFollowingOnly: boolean): boolean {
+  return !windowFollowingOnly || resolutionId === 'auto';
+}
+
 export function rdpSessionOrientationPolicy(isDesktopDevice: boolean,
   resolutionId: string): 'unspecified' | 'landscape' {
   return shouldUseRdpPcAdaptiveDisplay(isDesktopDevice, resolutionId) ?

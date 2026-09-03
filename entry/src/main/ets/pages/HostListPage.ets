@@ -1188,8 +1188,8 @@ struct HostListPage {
   @StorageLink('rustdeskSwapMouseButtons') rustdeskSwapMouseButtons: boolean = false;
   @StorageLink('rustdeskTouchpadSpeed') rustdeskTouchpadSpeed: number = 1.0;
   @StorageLink('rustdeskControlMode') rustdeskControlMode: number = 0; // 0=触控板, 1=直接触控, 2=键鼠
-  @StorageLink('rdpDesktopPreset') rdpDesktopPreset: number = 1; // 0=自动, 1=1080p, 2=2K, 3=4K
-  @StorageLink('rdpDesktopResolutionId') rdpDesktopResolutionId: string = '1920x1080';
+  @StorageLink('rdpDesktopPreset') rdpDesktopPreset: number = 0; // 0=自动, 1=1080p, 2=2K, 3=4K
+  @StorageLink('rdpDesktopResolutionId') rdpDesktopResolutionId: string = 'auto';
   @StorageLink('rdpRemoteUiScale') rdpRemoteUiScale: string = 'auto';
   @StorageLink('remoteDisplayScaleMode') remoteDisplayScaleMode: string = 'fit';
   @StorageLink('remoteDisplayCustomScalePercent') remoteDisplayCustomScalePercent: number = 100;
@@ -2028,7 +2028,7 @@ struct HostListPage {
       const savedRustDeskTouchpadSpeed: number = prefs.getSync('rustdeskTouchpadSpeed', 1.0) as number;
       const savedControlMode: number =
         prefs.getSync('rustdeskControlMode', defaults.rustdeskControlMode) as number;
-      const savedRdpDesktopPreset: number = prefs.getSync('rdpDesktopPreset', 1) as number;
+      const savedRdpDesktopPreset: number = prefs.getSync('rdpDesktopPreset', 0) as number;
       const savedRdpDesktopResolutionId: string = prefs.getSync('rdpDesktopResolutionId', '') as string;
       const savedRdpRemoteUiScale: string = prefs.getSync('rdpRemoteUiScale', 'auto') as string;
       const savedRemoteDisplayScaleMode: string = prefs.getSync('remoteDisplayScaleMode', '') as string;
@@ -2131,7 +2131,7 @@ struct HostListPage {
       this.rustdeskTouchpadSpeed =
         Math.max(0.4, Math.min(2.2, savedRustDeskTouchpadSpeed > 0 ? savedRustDeskTouchpadSpeed : 1.0));
       this.rustdeskControlMode = this.clampRustDeskControlMode(savedControlMode);
-      this.rdpDesktopPreset = savedRdpDesktopPreset >= 0 && savedRdpDesktopPreset <= 3 ? savedRdpDesktopPreset : 1;
+      this.rdpDesktopPreset = savedRdpDesktopPreset >= 0 && savedRdpDesktopPreset <= 3 ? savedRdpDesktopPreset : 0;
       this.rdpDesktopResolutionId = normalizeRdpResolutionId(savedRdpDesktopResolutionId, this.rdpDesktopPreset);
       this.rdpDesktopPreset = legacyRdpPresetForResolutionId(this.rdpDesktopResolutionId);
       this.rdpRemoteUiScale = normalizeRdpRemoteUiScalePreference(savedRdpRemoteUiScale);
@@ -18218,7 +18218,10 @@ struct HostListPage {
   }
 
   private rdpDesktopPresetLabel(): string {
-    return rdpResolutionLabel(this.rdpDesktopResolutionId);
+    return rdpResolutionLabel(this.rdpDesktopResolutionId) +
+      (this.rdpDesktopResolutionId === 'auto' ?
+        (this.isDesktopDevice ? '（推荐，跟随会话窗口）' : '（推荐，连接时适应设备）') :
+        '（固定分辨率）');
   }
 
   @Builder rdpDesktopPresetRow() {
@@ -18226,7 +18229,7 @@ struct HostListPage {
       this.rdpDesktopPresetLabelBlock()
       Scroll() {
         Row({ space: 8 }) {
-          this.rdpResolutionPresetChip('自适应', 'auto')
+          this.rdpResolutionPresetChip('自适应（推荐）', 'auto')
           ForEach(rdpResolutionPresets(), (preset: RemoteResolutionPreset): void => {
             this.rdpResolutionPresetChip(preset.label, preset.id)
           }, (preset: RemoteResolutionPreset): string => preset.id)
@@ -18315,6 +18318,7 @@ struct HostListPage {
 
   private remoteDisplayScaleLabel(): string {
     const mode = normalizeLocalViewScaleMode(this.remoteDisplayScaleMode);
+    if (mode === 'fill') { return '填满窗口'; }
     const percent: number = localViewScalePercent(mode, this.remoteDisplayCustomScalePercent);
     return percent > 0 ? percent.toString() + '%' : '适应窗口';
   }
@@ -18334,6 +18338,7 @@ struct HostListPage {
       Scroll() {
         Row({ space: 8 }) {
           this.remoteDisplayScaleChip('适应', 'fit')
+          this.remoteDisplayScaleChip('填满', 'fill')
           this.remoteDisplayScaleChip('100%', '100')
           this.remoteDisplayScaleChip('125%', '125')
           this.remoteDisplayScaleChip('150%', '150')

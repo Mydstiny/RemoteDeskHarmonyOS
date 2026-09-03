@@ -424,6 +424,7 @@ import {
   CanvasViewport,
   CANVAS_TRANSFORM_MAX_SCALE,
   clampCanvasTransform,
+  localCanvasPanInteractionEnabled,
   LocalViewScaleMode,
   normalizeLocalViewScaleMode,
   panCanvasTransform,
@@ -453,7 +454,8 @@ import {
 import {
   legacyRdpPresetForResolutionId,
   normalizeRdpResolutionId,
-  rdpResolutionPresetForId
+  resolveRdpResolutionGeometry,
+  RdpResolutionGeometry
 } from '../services/RemoteResolutionPresetPolicy';
 import {
   normalizeRdpRemoteUiScalePreference,
@@ -473,6 +475,9 @@ import {
   resolveRdpDisplaySourceId,
   shouldAttemptInitialRdpDynamicUpgrade,
   shouldPreserveLiveRdpGeometry,
+  shouldRefreshRdpLayoutOnDisplayChange,
+  shouldReplaceRdpDynamicLayoutTimer,
+  shouldUseRdpInitialDpiScale,
   shouldUseRdpPcAdaptiveDisplay
 } from '../services/RdpAdaptiveDisplayPolicy';
 import {
@@ -501,6 +506,7 @@ import { RemoteProtocol } from '../services/RemoteSessionState';
 import {
   canUseRustDeskAdaptiveOrientation,
   isRustDeskPhoneSessionForPeer,
+  remoteOrientationRequestIsCurrent,
   rustDeskOrientationPolicy
 } from '../services/RemoteOrientationPolicy';
 import {
@@ -1147,6 +1153,8 @@ struct RemoteDesktop {
   private latestSurfaceId: string = '';
   private keepScreenOnActive: boolean = false;
   private orientationApplied: boolean = false;
+  private preferredOrientationRequestGeneration: number = 0;
+  private preferredOrientationUpdate: Promise<void> = Promise.resolve();
   private connectAttemptId: number = 0;
   private pendingHost: RemoteHost | null = null;
   // Staged synchronously from router params before aboutToAppear's first
@@ -3906,6 +3914,15 @@ struct RemoteDesktop {
     return false;
   }
 
+  private canvasPanInteractionEnabledForCurrentProtocol(): boolean {
+    let mode: LocalViewScaleMode = normalizeLocalViewScaleMode(this.remoteDisplayScaleMode);
+    if (this.isVncSession()) {
+      mode = normalizeLocalViewScaleMode(this.vncDisplayScaleMode);
+    }
+    return localCanvasPanInteractionEnabled(
+      this.canvasGestureZoomEnabledForCurrentProtocol(), mode);
+  }
+
   private onRemoteWheelPreferenceChange(): void {
     this.touchWheelRemainder = 0;
     this.lastTouchWheelMs = 0;
@@ -4762,7 +4779,8 @@ struct RemoteDesktop {
     this.persistSessionPref('rustdeskViewScaleMode', this.rustdeskViewScaleMode);
     this.resetCanvasToDisplayDefault();
     promptAction.showToast({ message: '显示缩放已切换为 ' +
-      (next === 'fit' ? '适应窗口' : (next === 'custom' ? '自定义' : next + '%')), duration: 1400 });
+      (next === 'fit' ? '完整适应' : (next === 'fill' ? '填满窗口' :
+        (next === 'custom' ? '自定义' : next + '%'))), duration: 1400 });
   }
 
   private setRdpControlModePreference(mode: number): void {
@@ -4802,8 +4820,13 @@ struct RemoteDesktop {
     this.rdpDesktopPreset = legacyRdpPresetForResolutionId(next);
     this.persistSessionPref('rdpDesktopResolutionId', next);
     this.persistSessionPref('rdpDesktopPreset', this.rdpDesktopPreset);
-    if (next === 'auto' && this.requestRdpDynamicLayoutNow('resolution-preference')) {
-      promptAction.showToast({ message: '已请求远端桌面适应当前窗口', duration: 1600 });
+    void this.applyRdpOrientationPolicy('RESOLUTION-PREFERENCE');
+    if (this.requestRdpDynamicLayoutNow('resolution-preference')) {
+      this.resetCanvasToDisplayDefault();
+      promptAction.showToast({
+        message: next === 'auto' ? '已请求远端桌面跟随当前窗口' :
+          '已请求实时切换 Windows 分辨率', duration: 1600
+      });
     } else {
       this.showRdpReconnectPreferenceToast('远端分辨率');
     }
@@ -5938,7 +5961,7 @@ struct RemoteDesktop {
   }
 
   private canUseCanvasTwoFingerGesture(): boolean {
-    return this.canvasGestureZoomEnabledForCurrentProtocol() ||
+    return this.canvasPanInteractionEnabledForCurrentProtocol() ||
       this.shouldUseRustDeskRemoteAppTouchScale();
   }
 
@@ -5951,7 +5974,7 @@ struct RemoteDesktop {
       // on the local renderer's overflow state.
       return true;
     }
-    if (!this.canvasGestureZoomEnabledForCurrentProtocol()) {
+    if (!this.canvasPanInteractionEnabledForCurrentProtocol()) {
       return false;
     }
     if (!this.canvasTransformInitialized) {
@@ -6035,7 +6058,7 @@ struct RemoteDesktop {
       return true;
     }
     if (this.canvasTwoFingerState.owner !== 'canvas-pan' ||
-      !this.canvasGestureZoomEnabledForCurrentProtocol()) {
+      !this.canvasPanInteractionEnabledForCurrentProtocol()) {
       return false;
     }
     if (!this.canvasTransformInitialized) {
@@ -6209,7 +6232,7 @@ struct RemoteDesktop {
       this.updateRustDeskRemoteAppTouchPan(event);
       return;
     }
-    if (this.canvasPinchActive || !this.canvasGestureZoomEnabledForCurrentProtocol()) {
+    if (this.canvasPinchActive || !this.canvasPanInteractionEnabledForCurrentProtocol()) {
       return;
     }
     const offsetX: number = Number.isFinite(event.offsetX) ? event.offsetX : this.canvasPanLastOffsetX;
@@ -7554,8 +7577,17 @@ struct RemoteDesktop {
           hilog.info(RD_DOMAIN, RD_TAG, 'session window display changed ' +
             previousDisplayId.toString() + ' -> ' + displayId.toString());
           if (this.isDesktopDevice && this.isRdpRemoteSession()) {
-            this.cancelRdpDynamicLayout('window-display-change');
-            this.scheduleRdpDynamicLayoutUpdate('window-display-change');
+            const resolutionId: string = normalizeRdpResolutionId(
+              this.rdpDesktopResolutionId, this.rdpDesktopPreset);
+            if (this.rdpResolutionFollowsWindow()) {
+              this.cancelRdpDynamicLayout('window-display-change');
+            }
+            if (shouldRefreshRdpLayoutOnDisplayChange(
+              resolutionId, this.rdpRemoteUiScale)) {
+              // Fixed geometry is preserved; when UI scale is Auto this sends
+              // the same width/height with the new display's DPI factor.
+              this.scheduleRdpDynamicLayoutUpdate('window-display-change', false);
+            }
           }
         };
         try {
@@ -7927,7 +7959,9 @@ struct RemoteDesktop {
 
   private resolveRdpDisplayLayout(widthPx: number = this.renderWidthPx,
     heightPx: number = this.renderHeightPx,
-    dpiScaleSupported: boolean = false): RdpAdaptiveDisplayResult | null {
+    dpiScaleSupported: boolean = false,
+    resolutionId: string = normalizeRdpResolutionId(
+      this.rdpDesktopResolutionId, this.rdpDesktopPreset)): RdpAdaptiveDisplayResult | null {
     let surfaceWidthPx: number = widthPx;
     let surfaceHeightPx: number = heightPx;
     let densityPixels: number = 1;
@@ -7945,7 +7979,7 @@ struct RemoteDesktop {
         return null;
       }
     }
-    return resolveRdpAdaptiveDisplay({
+    const adaptive: RdpAdaptiveDisplayResult = resolveRdpAdaptiveDisplay({
       surfaceWidthPx,
       surfaceHeightPx,
       densityPixels,
@@ -7954,6 +7988,26 @@ struct RemoteDesktop {
       dpiScaleSupported,
       maxEdgePx: 3840
     });
+    const geometry: RdpResolutionGeometry = resolveRdpResolutionGeometry(
+      resolutionId, adaptive.width, adaptive.height);
+    if (geometry.followsWindow) {
+      return adaptive;
+    }
+    return {
+      width: geometry.width,
+      height: geometry.height,
+      desktopScaleFactor: adaptive.desktopScaleFactor,
+      deviceScaleFactor: adaptive.deviceScaleFactor,
+      // A fixed virtual resolution can have a different aspect ratio than the
+      // physical HarmonyOS panel. Advertising that panel's millimetres would
+      // make Windows derive a contradictory effective DPI.
+      physicalWidthMm: 0,
+      physicalHeightMm: 0,
+      orientation: geometry.orientation,
+      requestedUiScale: adaptive.requestedUiScale,
+      usesDpiScale: adaptive.usesDpiScale,
+      fallbackReason: adaptive.fallbackReason
+    };
   }
 
   /**
@@ -8870,7 +8924,7 @@ struct RemoteDesktop {
       }
     }
     if (host.protocol === 'rdp') {
-      const legacyPreset: number = AppStorage.get<number>('rdpDesktopPreset') ?? 1;
+      const legacyPreset: number = AppStorage.get<number>('rdpDesktopPreset') ?? 0;
       const resolutionId: string = normalizeRdpResolutionId(
         AppStorage.get<string>('rdpDesktopResolutionId') ?? '', legacyPreset);
       const colorDepthPref: number = AppStorage.get<number>('rdpColorDepth') ?? 32;
@@ -8883,7 +8937,7 @@ struct RemoteDesktop {
         this.isDesktopDevice, resolutionId);
       const rdpDisplay: RdpAdaptiveDisplayResult | null = pcAdaptive || resolutionId !== 'auto' ?
         this.resolveRdpDisplayLayout(this.renderWidthPx, this.renderHeightPx,
-          resolutionId !== 'auto') : null;
+          shouldUseRdpInitialDpiScale(this.isDesktopDevice, resolutionId), resolutionId) : null;
       if (pcAdaptive) {
         if (rdpDisplay !== null) {
           hilog.info(RD_DOMAIN, RD_TAG, 'RDP density-aware adaptive size=' +
@@ -8904,14 +8958,26 @@ struct RemoteDesktop {
         const legacyAdaptive: DesktopSize | null = this.adaptiveSurfaceSize(3840, true);
         if (legacyAdaptive !== null) {
           legacyAdaptive.colorDepth = colorDepth;
+          const mobileDisplay: RdpAdaptiveDisplayResult | null = this.resolveRdpDisplayLayout(
+            legacyAdaptive.width, legacyAdaptive.height,
+            shouldUseRdpInitialDpiScale(false, resolutionId), resolutionId);
+          if (mobileDisplay !== null) {
+            // The forced-landscape virtual monitor may not match the panel's
+            // current physical orientation, so leave physical millimetres
+            // unknown while retaining the negotiated Windows DPI scale.
+            mobileDisplay.physicalWidthMm = 0;
+            mobileDisplay.physicalHeightMm = 0;
+            legacyAdaptive.rdpDisplay = mobileDisplay;
+          }
           hilog.info(RD_DOMAIN, RD_TAG, 'RDP Phone/Pad legacy adaptive size=' +
-            legacyAdaptive.width.toString() + 'x' + legacyAdaptive.height.toString());
+            legacyAdaptive.width.toString() + 'x' + legacyAdaptive.height.toString() +
+            ' scale=' + (mobileDisplay === null ? '100' :
+              mobileDisplay.desktopScaleFactor.toString()));
           return legacyAdaptive;
         }
       }
-      const preset = rdpResolutionPresetForId(resolutionId);
-      const width: number = preset !== null ? preset.width : 1920;
-      const height: number = preset !== null ? preset.height : 1080;
+      const width: number = rdpDisplay !== null ? rdpDisplay.width : 1920;
+      const height: number = rdpDisplay !== null ? rdpDisplay.height : 1080;
       hilog.info(RD_DOMAIN, RD_TAG, 'RDP preset size=' + width.toString() + 'x' +
         height.toString() + ' colorDepth=' + colorDepth.toString());
       if (display.multiMonitor) {
@@ -8925,18 +8991,7 @@ struct RemoteDesktop {
         colorDepth: colorDepth,
         multiMonitor: false,
         monitorCount: 1,
-        rdpDisplay: rdpDisplay === null ? undefined : {
-          width,
-          height,
-          desktopScaleFactor: rdpDisplay.desktopScaleFactor,
-          deviceScaleFactor: rdpDisplay.deviceScaleFactor,
-          physicalWidthMm: rdpDisplay.physicalWidthMm,
-          physicalHeightMm: rdpDisplay.physicalHeightMm,
-          orientation: rdpDisplay.orientation,
-          requestedUiScale: rdpDisplay.requestedUiScale,
-          usesDpiScale: rdpDisplay.usesDpiScale,
-          fallbackReason: rdpDisplay.fallbackReason
-        }
+        rdpDisplay: rdpDisplay === null ? undefined : rdpDisplay
       };
     }
     return {
@@ -9769,7 +9824,7 @@ struct RemoteDesktop {
     if (!this.canvasTransformInitialized || this.rendererHandle <= 0) { return; }
     const viewport: CanvasViewport = this.currentCanvasViewport();
     const result: CanvasPointerFollowResult = followCanvasForRemotePointer({
-      enabled: this.canvasGestureZoomEnabledForCurrentProtocol(),
+      enabled: this.canvasPanInteractionEnabledForCurrentProtocol(),
       transform: this.canvasTransform,
       viewport,
       surfaceTransform: this.currentRemoteSurfaceTransform(),
@@ -9800,7 +9855,7 @@ struct RemoteDesktop {
     }
     const viewport: CanvasViewport = this.currentCanvasViewport();
     const result: CanvasPhysicalPointerFollowResult = followCanvasForPhysicalPointer({
-      enabled: this.canvasGestureZoomEnabledForCurrentProtocol(),
+      enabled: this.canvasPanInteractionEnabledForCurrentProtocol(),
       transform: this.canvasTransform,
       viewport,
       surfaceWidthVp: this.surfaceWidth,
@@ -10426,12 +10481,16 @@ struct RemoteDesktop {
     this.clearVncSurfaceResizeRefresh();
   }
 
+  private rdpResolutionFollowsWindow(): boolean {
+    return normalizeRdpResolutionId(
+      this.rdpDesktopResolutionId, this.rdpDesktopPreset) === 'auto';
+  }
+
   private canRequestRdpDynamicLayout(): boolean {
     return this.isDesktopDevice && this.isRdpRemoteSession() && this.connected &&
       this.sessionId > 0 && !this.cleanupStarted && !this.remoteDesktopBgFlag &&
       !this.sessionWindowBackground && !this.renderPreservedInPip &&
-      !this.pipSurfaceTransferInProgress &&
-      normalizeRdpResolutionId(this.rdpDesktopResolutionId, this.rdpDesktopPreset) === 'auto';
+      !this.pipSurfaceTransferInProgress;
   }
 
   private requestRdpDynamicLayoutNow(reason: string): boolean {
@@ -10482,13 +10541,17 @@ struct RemoteDesktop {
     }
   }
 
-  private scheduleRdpDynamicLayoutUpdate(reason: string): void {
+  private scheduleRdpDynamicLayoutUpdate(reason: string,
+    windowFollowingOnly: boolean = true): void {
+    // Decide before clearing: a fixed-resolution surface settle must not eat a
+    // pending cross-display auto-DPI refresh queued with windowFollowingOnly=false.
+    if (!shouldReplaceRdpDynamicLayoutTimer(this.rdpDesktopResolutionId,
+      windowFollowingOnly) || !this.canRequestRdpDynamicLayout()) {
+      return;
+    }
     if (this.rdpDynamicLayoutTimer >= 0) {
       clearTimeout(this.rdpDynamicLayoutTimer);
       this.rdpDynamicLayoutTimer = -1;
-    }
-    if (!this.canRequestRdpDynamicLayout()) {
-      return;
     }
     this.rdpDynamicLayoutTimer = setTimeout((): void => {
       this.rdpDynamicLayoutTimer = -1;
@@ -10599,7 +10662,12 @@ struct RemoteDesktop {
     if (!observation.accepted || observation.geometry === null) {
       return;
     }
-    this.cancelRdpDynamicLayout('surface-resize-observed');
+    // Window tracking may replace an older adaptive request, but an explicit
+    // fixed-resolution/UI-scale request must survive unrelated surface events
+    // until FreeRDP sends or resolves it.
+    if (this.rdpResolutionFollowsWindow()) {
+      this.cancelRdpDynamicLayout('surface-resize-observed');
+    }
     if (this.surfaceResizeSettleTimer < 0) {
       this.surfaceResizeBatchStartWidth = this.surfaceWidth;
       this.surfaceResizeBatchStartHeight = this.surfaceHeight;
@@ -11928,7 +11996,7 @@ struct RemoteDesktop {
       const stats: RdpRenderStats = this.loader.getRdpRenderStats(sessionId);
       if (shouldAttemptInitialRdpDynamicUpgrade(stats.displayControlReady,
         stats.displayControlDisabled, stats.displayChannelRequestCount) &&
-        this.canRequestRdpDynamicLayout()) {
+        this.rdpResolutionFollowsWindow() && this.canRequestRdpDynamicLayout()) {
         // Upgrade the conservative connection-time geometry to physical-pixel
         // sharpness only after the server has advertised Display Control caps.
         this.requestRdpDynamicLayoutNow('display-control-ready');
@@ -14001,30 +14069,50 @@ struct RemoteDesktop {
   }
 
   private async setPreferredOrientation(orientation: window.Orientation, label: string): Promise<void> {
-    try {
-      const ctx = this.getUIContext().getHostContext();
-      if (!ctx) {
-        hilog.warn(RD_DOMAIN, RD_TAG, 'setPreferredOrientation skipped: host context is null');
+    const requestGeneration: number = ++this.preferredOrientationRequestGeneration;
+    const update: Promise<void> = this.preferredOrientationUpdate.then(async (): Promise<void> => {
+      if (!remoteOrientationRequestIsCurrent(
+        requestGeneration, this.preferredOrientationRequestGeneration)) {
         return;
       }
-      const win: window.Window = await window.getLastWindow(ctx);
-      await win.setPreferredOrientation(orientation);
-      this.orientationApplied = orientation !== window.Orientation.UNSPECIFIED;
-      this.isLandscape = orientation === window.Orientation.LANDSCAPE ||
-        orientation === window.Orientation.AUTO_ROTATION_LANDSCAPE ||
-        orientation === window.Orientation.USER_ROTATION_LANDSCAPE;
-      hilog.info(RD_DOMAIN, RD_TAG, 'setPreferredOrientation(' + label + ') OK');
-      if ((this.isVncSession() || this.isRdpRemoteSession()) && this.kbWin !== null) {
-        this.syncVncToolbarAvoidAreas(this.kbWin);
+      try {
+        const ctx = this.getUIContext().getHostContext();
+        if (!ctx) {
+          hilog.warn(RD_DOMAIN, RD_TAG, 'setPreferredOrientation skipped: host context is null');
+          return;
+        }
+        const win: window.Window = await window.getLastWindow(ctx);
+        if (!remoteOrientationRequestIsCurrent(
+          requestGeneration, this.preferredOrientationRequestGeneration)) {
+          return;
+        }
+        await win.setPreferredOrientation(orientation);
+        // Requests are serialized. If a newer preference arrived while the
+        // system call was in flight, it runs next and remains the final OS
+        // orientation; the stale completion must not publish page state.
+        if (!remoteOrientationRequestIsCurrent(
+          requestGeneration, this.preferredOrientationRequestGeneration)) {
+          return;
+        }
+        this.orientationApplied = orientation !== window.Orientation.UNSPECIFIED;
+        this.isLandscape = orientation === window.Orientation.LANDSCAPE ||
+          orientation === window.Orientation.AUTO_ROTATION_LANDSCAPE ||
+          orientation === window.Orientation.USER_ROTATION_LANDSCAPE;
+        hilog.info(RD_DOMAIN, RD_TAG, 'setPreferredOrientation(' + label + ') OK');
+        if ((this.isVncSession() || this.isRdpRemoteSession()) && this.kbWin !== null) {
+          this.syncVncToolbarAvoidAreas(this.kbWin);
+        }
+        if (orientation !== window.Orientation.UNSPECIFIED && this.connected) {
+          void this.setRemoteNavigationHidden(true, 'orientation-' + label);
+        }
+      } catch (err) {
+        const errObj: Error = err as Error;
+        hilog.warn(RD_DOMAIN, RD_TAG, 'setPreferredOrientation(' + label + ') failed: ' +
+          (errObj.message ? errObj.message : JSON.stringify(err)));
       }
-      if (orientation !== window.Orientation.UNSPECIFIED && this.connected) {
-        void this.setRemoteNavigationHidden(true, 'orientation-' + label);
-      }
-    } catch (err) {
-      const errObj: Error = err as Error;
-      hilog.warn(RD_DOMAIN, RD_TAG, 'setPreferredOrientation(' + label + ') failed: ' +
-        (errObj.message ? errObj.message : JSON.stringify(err)));
-    }
+    });
+    this.preferredOrientationUpdate = update;
+    await update;
   }
 
   // 底部边缘上滑的“唤起导航/返回主页”由系统仲裁；远程 XComponent 不注册自定义上滑，避免吞掉远程触控。
@@ -19276,6 +19364,8 @@ struct RemoteDesktop {
             canvasResetAvailable: this.canvasTransformGestureModified,
             reverseWheel: this.rdpReverseWheel,
             resolutionId: normalizeRdpResolutionId(this.rdpDesktopResolutionId, this.rdpDesktopPreset),
+            surfaceWidthPx: this.renderWidthPx,
+            surfaceHeightPx: this.renderHeightPx,
             remoteUiScale: normalizeRdpRemoteUiScalePreference(this.rdpRemoteUiScale),
             colorDepth: normalizeRdpSessionColorDepth(this.rdpColorDepth),
             audioEnabled: this.rdpAudioEnabled,

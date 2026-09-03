@@ -459,6 +459,7 @@ export struct RemoteSessionTopBar {
 
   private viewScaleLabel(): string {
     if (this.viewScaleMode === 'fit') { return '适应窗口'; }
+    if (this.viewScaleMode === 'fill') { return '填满窗口'; }
     if (this.viewScaleMode === 'custom') { return '自定义'; }
     return this.viewScaleMode + '%';
   }
@@ -814,6 +815,9 @@ export struct RemoteSessionTopBar {
     this.menuItem('适应窗口', 'displaySettings', (): void => {
       this.actions.onSetViewScaleMode('fit');
     }, this.viewScaleMode === 'fit')
+    this.menuItem('填满窗口（可能裁边）', 'displaySettings', (): void => {
+      this.actions.onSetViewScaleMode('fill');
+    }, this.viewScaleMode === 'fill')
     this.menuItem('100%', 'displaySettings', (): void => {
       this.actions.onSetViewScaleMode('100');
     }, this.viewScaleMode === '100')

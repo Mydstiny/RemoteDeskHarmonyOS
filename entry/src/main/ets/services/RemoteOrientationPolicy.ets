@@ -2,6 +2,12 @@ export type RemoteOrientationPolicy = 'auto-rotate' | 'landscape' | 'preserve-wi
 
 export type RustDeskTargetDevice = 'computer' | 'phone';
 
+export function remoteOrientationRequestIsCurrent(requestGeneration: number,
+  currentGeneration: number): boolean {
+  return Number.isSafeInteger(requestGeneration) && requestGeneration > 0 &&
+    requestGeneration === currentGeneration;
+}
+
 export function normalizeRustDeskTargetDevice(value: string): RustDeskTargetDevice {
   return value === 'phone' ? 'phone' : 'computer';
 }

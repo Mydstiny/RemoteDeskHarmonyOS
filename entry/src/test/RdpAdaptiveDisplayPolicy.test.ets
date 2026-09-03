@@ -15,6 +15,9 @@ import {
   resolveRdpRemoteUiScale,
   shouldAttemptInitialRdpDynamicUpgrade,
   shouldPreserveLiveRdpGeometry,
+  shouldRefreshRdpLayoutOnDisplayChange,
+  shouldReplaceRdpDynamicLayoutTimer,
+  shouldUseRdpInitialDpiScale,
   shouldUseRdpPcAdaptiveDisplay
 } from '../main/ets/services/RdpAdaptiveDisplayPolicy';
 import { RemoteModifierStateController } from '../main/ets/services/RemoteModifierStateController';
@@ -37,6 +40,23 @@ export default function rdpAdaptiveDisplayPolicyTest(): void {
       expect(rdpSessionOrientationPolicy(true, 'auto')).assertEqual('unspecified');
       expect(rdpSessionOrientationPolicy(false, 'auto')).assertEqual('landscape');
       expect(rdpSessionOrientationPolicy(true, '1920x1080')).assertEqual('landscape');
+      expect(shouldUseRdpInitialDpiScale(true, 'auto')).assertFalse();
+      expect(shouldUseRdpInitialDpiScale(true, '1920x1080')).assertTrue();
+      expect(shouldUseRdpInitialDpiScale(false, 'auto')).assertTrue();
+    });
+
+    it('refreshes display moves for window geometry or automatic dpi scale', 0, (): void => {
+      expect(shouldRefreshRdpLayoutOnDisplayChange('auto', '100')).assertTrue();
+      expect(shouldRefreshRdpLayoutOnDisplayChange('1920x1080', 'auto')).assertTrue();
+      expect(shouldRefreshRdpLayoutOnDisplayChange('1920x1080', '140')).assertFalse();
+    });
+
+    it('keeps a fixed auto-dpi refresh when a surface-follow event arrives', 0, (): void => {
+      // schedule(false) may replace the timer for an explicit fixed-layout DPI
+      // refresh; the later schedule(true) is ineligible and must leave it intact.
+      expect(shouldReplaceRdpDynamicLayoutTimer('1920x1080', false)).assertTrue();
+      expect(shouldReplaceRdpDynamicLayoutTimer('1920x1080', true)).assertFalse();
+      expect(shouldReplaceRdpDynamicLayoutTimer('auto', true)).assertTrue();
     });
 
     it('uses_the_window_display_and_attempts_initial_upgrade_once', 0, (): void => {
@@ -232,6 +252,21 @@ export default function rdpAdaptiveDisplayPolicyTest(): void {
       expect(result.height).assertEqual(1000);
       expect(result.desktopScaleFactor).assertEqual(100);
       expect(result.fallbackReason).assertEqual('dpi_scale_unavailable');
+    });
+
+    it('keeps_mobile_auto_geometry_and_windows_ui_scale_in_one_handshake', 0, (): void => {
+      const result = resolveRdpAdaptiveDisplay({
+        surfaceWidthPx: 2400,
+        surfaceHeightPx: 1600,
+        densityPixels: 2,
+        densityDpi: 320,
+        uiScalePreference: '180',
+        dpiScaleSupported: shouldUseRdpInitialDpiScale(false, 'auto')
+      });
+      expect(result.width).assertEqual(2400);
+      expect(result.height).assertEqual(1600);
+      expect(result.desktopScaleFactor).assertEqual(180);
+      expect(result.deviceScaleFactor).assertEqual(180);
     });
 
     it('preserves_common_window_ratios_without_padding', 0, (): void => {

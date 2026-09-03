@@ -109,6 +109,9 @@ export function claimCanvasTwoFingerPinch(state: CanvasTwoFingerState,
     next.owner === 'remote-touch-pan') {
     return next;
   }
+  if (!remote && !next.zoomEnabled) {
+    return next;
+  }
   // Scroll is provisional until the real span threshold is crossed. This is
   // what lets a slow pinch win even when its centroid moved first.
   next.owner = remote ? 'remote-touch-scale' : 'canvas-pinch';
@@ -118,7 +121,7 @@ export function claimCanvasTwoFingerPinch(state: CanvasTwoFingerState,
 export function claimCanvasTwoFingerPan(state: CanvasTwoFingerState,
   remote: boolean): CanvasTwoFingerState {
   const next: CanvasTwoFingerState = copyState(state);
-  if (next.owner !== 'candidate' || !next.zoomEnabled || !next.canPan) {
+  if (next.owner !== 'candidate' || !next.canPan) {
     return next;
   }
   next.owner = remote ? 'remote-touch-pan' : 'canvas-pan';
@@ -153,7 +156,7 @@ export function advanceCanvasTwoFingerMove(state: CanvasTwoFingerState,
       return { state: next, action: 'none', deltaX, deltaY };
     }
     if (distanceFromStart(next, currentX, currentY) >= CANVAS_TWO_FINGER_TRANSLATION_SLOP_VP) {
-      next.owner = next.zoomEnabled && next.canPan ?
+      next.owner = next.canPan ?
         (remote ? 'remote-touch-pan' : 'canvas-pan') : 'touchpad-scroll';
       next.moved = true;
       return {

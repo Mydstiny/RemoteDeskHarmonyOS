@@ -5,6 +5,7 @@ import {
   canvasTransformDiffersFromBaseline,
   clampCanvasTransform,
   CANVAS_TRANSFORM_MAX_SCALE,
+  localCanvasPanInteractionEnabled,
   normalizeLocalViewScaleMode,
   panCanvasTransform,
   pinchCanvasTransform,
@@ -20,8 +21,12 @@ export default function remoteCanvasTransformPolicyTest() {
 
     it('maps released scale values to stable settings values', 0, () => {
       expect(normalizeLocalViewScaleMode('original')).assertEqual('100');
+      expect(normalizeLocalViewScaleMode('fill')).assertEqual('fill');
       expect(normalizeLocalViewScaleMode('custom')).assertEqual('custom');
       expect(normalizeLocalViewScaleMode('unknown')).assertEqual('fit');
+      expect(localCanvasPanInteractionEnabled(false, 'fill')).assertTrue();
+      expect(localCanvasPanInteractionEnabled(false, 'fit')).assertFalse();
+      expect(localCanvasPanInteractionEnabled(true, 'fit')).assertTrue();
     });
 
     it('repairs unversioned derived display scale to the previous fit default', 0, () => {
@@ -47,6 +52,69 @@ export default function remoteCanvasTransformPolicyTest() {
       const original = baseCanvasTransform('100', 100, viewport);
       expect(original.scale).assertEqual(2);
       expect(original.panX).assertEqual(0);
+    });
+
+    it('fills the surface without distortion or ratio bars', 0, (): void => {
+      const letterboxed: CanvasViewport = {
+        surfaceWidth: 1600,
+        surfaceHeight: 1000,
+        sourceWidth: 1920,
+        sourceHeight: 1080,
+        freePanInsetRatio: RDP_CANVAS_FREE_PAN_INSET_RATIO
+      };
+      const filled: CanvasTransform = baseCanvasTransform('fill', 100, letterboxed);
+      const contain: number = Math.min(1600 / 1920, 1000 / 1080);
+      const physical: number = contain * filled.scale;
+      expect(Math.abs(1080 * physical - 1000) < 0.01).assertTrue();
+      expect(1920 * physical > 1600).assertTrue();
+      expect(canvasTransformCanPan(filled, letterboxed)).assertTrue();
+      const verticalAttempt: CanvasTransform = panCanvasTransform(
+        filled, letterboxed, 0, 999);
+      expect(Math.abs(verticalAttempt.panY) < 0.01).assertTrue();
+      expect(verticalAttempt.panX).assertEqual(0);
+
+      const pillarboxed: CanvasViewport = {
+        surfaceWidth: 1800,
+        surfaceHeight: 900,
+        sourceWidth: 1600,
+        sourceHeight: 1000,
+        freePanInsetRatio: RDP_CANVAS_FREE_PAN_INSET_RATIO
+      };
+      const wideFill: CanvasTransform = baseCanvasTransform('fill', 100, pillarboxed);
+      const wideContain: number = Math.min(1800 / 1600, 900 / 1000);
+      const widePhysical: number = wideContain * wideFill.scale;
+      expect(Math.abs(1600 * widePhysical - 1800) < 0.01).assertTrue();
+      expect(1000 * widePhysical > 900).assertTrue();
+      const horizontalAttempt: CanvasTransform = panCanvasTransform(
+        wideFill, pillarboxed, 999, 0);
+      expect(Math.abs(horizontalAttempt.panX) < 0.01).assertTrue();
+      expect(horizontalAttempt.panY).assertEqual(0);
+    });
+
+    it('keeps fill coverage after a panned canvas crosses window aspect ratios', 0, (): void => {
+      const beforeViewport: CanvasViewport = {
+        surfaceWidth: 1600,
+        surfaceHeight: 1000,
+        sourceWidth: 1920,
+        sourceHeight: 1080,
+        freePanInsetRatio: RDP_CANVAS_FREE_PAN_INSET_RATIO
+      };
+      const afterViewport: CanvasViewport = {
+        surfaceWidth: 2560,
+        surfaceHeight: 1080,
+        sourceWidth: 1920,
+        sourceHeight: 1080,
+        freePanInsetRatio: RDP_CANVAS_FREE_PAN_INSET_RATIO
+      };
+      const filled: CanvasTransform = baseCanvasTransform('fill', 100, beforeViewport);
+      const panned: CanvasTransform = panCanvasTransform(filled, beforeViewport, 100, 0);
+      const rebased: CanvasTransform = rebaseCanvasTransform(
+        panned, beforeViewport, afterViewport);
+      const nextContain: number = Math.min(2560 / 1920, 1080 / 1080);
+      const nextPhysical: number = nextContain * rebased.scale;
+      expect(1920 * nextPhysical >= 2560).assertTrue();
+      expect(1080 * nextPhysical >= 1080).assertTrue();
+      expect(rebased.strictContentBounds === true).assertTrue();
     });
 
     it('only reports a reset affordance for a visible baseline deviation', 0, (): void => {

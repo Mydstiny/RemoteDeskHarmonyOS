@@ -2,8 +2,10 @@ import { AppTheme, Palette, buildDark } from '../../common/Theme';
 import { RdpRenderStats } from '../../types/rdpnapi';
 import { EMPTY_RDP_RENDER_STATS } from '../RdpDiagnosticsHud';
 import {
+  rdpResolutionAspectAssessment,
   rdpResolutionLabel,
-  rdpResolutionPresets,
+  rdpResolutionPresetsForSurface,
+  RdpResolutionAspectAssessment,
   RemoteResolutionPreset
 } from '../../services/RemoteResolutionPresetPolicy';
 import {
@@ -37,6 +39,8 @@ export struct RdpControlCenter {
   @Prop canvasResetAvailable: boolean = false;
   @Prop reverseWheel: boolean = false;
   @Prop resolutionId: string = 'auto';
+  @Prop surfaceWidthPx: number = 0;
+  @Prop surfaceHeightPx: number = 0;
   @Prop remoteUiScale: string = 'auto';
   @Prop colorDepth: number = 32;
   @Prop audioEnabled: boolean = true;
@@ -84,6 +88,27 @@ export struct RdpControlCenter {
     if (this.controlMode === 1) { return '直接触控'; }
     if (this.controlMode === 2) { return '键盘鼠标'; }
     return '触控板';
+  }
+
+  private orderedResolutionPresets(): RemoteResolutionPreset[] {
+    return rdpResolutionPresetsForSurface(this.surfaceWidthPx, this.surfaceHeightPx);
+  }
+
+  private resolutionSelectionSummary(): string {
+    const assessment: RdpResolutionAspectAssessment = rdpResolutionAspectAssessment(
+      this.resolutionId, this.surfaceWidthPx, this.surfaceHeightPx);
+    if (assessment.followsWindow) {
+      return this.isDesktopDevice ? '跟随当前窗口，自动协商，完整适应时不产生比例黑边' :
+        '下次连接时适应设备画面；手机与平板不进行窗口实时重协商';
+    }
+    if (assessment.avoidsRatioBars) {
+      return rdpResolutionLabel(this.resolutionId) + ' · 与当前窗口比例匹配';
+    }
+    if (this.displayScaleMode === 'fill') {
+      return rdpResolutionLabel(this.resolutionId) + ' · 已填满窗口并居中裁边，可拖动查看';
+    }
+    return rdpResolutionLabel(this.resolutionId) + ' · 与当前窗口比例相差 ' +
+      assessment.aspectGapPercent.toFixed(1) + '%，可改用自适应或“填满”';
   }
 
   private onDriveNameChange(): void { this.driveNameDraft = this.driveName; }
@@ -205,10 +230,17 @@ export struct RdpControlCenter {
         }.width('100%').padding(10)
         Divider().color(this.pal().divider)
         Row({ space: 6 }) {
-          this.choice('适应', this.displayScaleMode === 'fit', (): void => { this.onDisplayScale('fit'); })
-          this.choice('100%', this.displayScaleMode === '100', (): void => { this.onDisplayScale('100'); })
+          this.choice('完整', this.displayScaleMode === 'fit', (): void => { this.onDisplayScale('fit'); })
+          this.choice('填满', this.displayScaleMode === 'fill', (): void => { this.onDisplayScale('fill'); })
+          this.choice('1:1', this.displayScaleMode === '100', (): void => { this.onDisplayScale('100'); })
           this.choice('125%', this.displayScaleMode === '125', (): void => { this.onDisplayScale('125'); })
-        }.width('100%').padding(10)
+        }.width('100%').padding({ left: 10, right: 10, top: 10, bottom: 4 })
+        Text(this.displayScaleMode === 'fill' ?
+          '填满窗口不拉伸画面；比例不同时会居中裁边，可拖动画面查看' :
+          (this.displayScaleMode === 'fit' ? '完整显示远端桌面；自适应分辨率可同时避免比例黑边' :
+            '1:1 与百分比只改变本地画布，不会伪装成远端分辨率'))
+          .fontSize(9).fontColor(this.pal().text3).width('100%')
+          .padding({ left: 12, right: 12, bottom: 8 })
         Divider().color(this.pal().divider)
         this.toggleRow('手势缩放与平移', '在远端画面上双指缩放并移动画布',
           this.canvasZoomEnabled, this.onCanvasZoom)
@@ -237,18 +269,18 @@ export struct RdpControlCenter {
 
   @Builder private reconnectCard() {
     Column() {
-        Text('远端桌面分辨率').fontSize(11).fontColor(this.pal().text2)
+        Text('Windows 远端分辨率').fontSize(11).fontColor(this.pal().text2)
           .width('100%').margin({ bottom: 6 })
         Scroll() {
           Row({ space: 6 }) {
-            this.choice('自适应', this.resolutionId === 'auto', (): void => { this.onResolution('auto'); })
-            ForEach(rdpResolutionPresets(), (preset: RemoteResolutionPreset): void => {
+            this.choice('自适应（推荐）', this.resolutionId === 'auto', (): void => { this.onResolution('auto'); })
+            ForEach(this.orderedResolutionPresets(), (preset: RemoteResolutionPreset): void => {
               this.choice(preset.label, this.resolutionId === preset.id,
                 (): void => { this.onResolution(preset.id); })
             }, (preset: RemoteResolutionPreset): string => preset.id)
           }
         }.width('100%').height(38).scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off)
-        Text('当前选择：' + rdpResolutionLabel(this.resolutionId)).fontSize(9)
+        Text(this.resolutionSelectionSummary()).fontSize(9)
           .fontColor(this.pal().text3).width('100%').margin({ top: 5, bottom: 10 })
         Divider().color(this.pal().divider)
         Text('远端界面大小').fontSize(11).fontColor(this.pal().text2)
@@ -334,7 +366,7 @@ export struct RdpControlCenter {
             '重连后生效' : '立即生效')
           this.channelCard()
           this.sectionTitle('远端会话参数',
-            this.stats.displayControlReady && this.resolutionId === 'auto' ? '窗口变化可实时生效' : '重连后生效')
+            this.isDesktopDevice && this.stats.displayControlReady ? '分辨率可实时生效' : '重连后生效')
           this.reconnectCard()
           this.sectionTitle('连接操作')
           Column() {

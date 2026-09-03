@@ -38,6 +38,14 @@ export default function remoteCanvasGesturePolicyTest(): void {
       expect(shouldApplyCanvasTwoFingerPan(result.state)).assertTrue();
     });
 
+    it('keeps fill overflow pannable when pinch zoom is disabled', 0, (): void => {
+      const candidate = beginCanvasTwoFingerCandidate(9, 100, 100, 0, false, true, 80);
+      const result = advanceCanvasTwoFingerMove(candidate, 108, 100, 1, false, 80);
+      expect(result.state.owner).assertEqual('canvas-pan');
+      expect(claimCanvasTwoFingerPan(candidate, false).owner).assertEqual('canvas-pan');
+      expect(claimCanvasTwoFingerPinch(candidate, false).owner).assertEqual('candidate');
+    });
+
     it('routes immediate RustDesk remote-app translation to touch pan', 0, (): void => {
       const candidate = beginCanvasTwoFingerCandidate(3, 100, 100, 0, true, true, 80);
       const result = advanceCanvasTwoFingerMove(candidate, 108, 100, 1, true, 80);
