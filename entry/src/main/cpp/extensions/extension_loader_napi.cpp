@@ -18,6 +18,7 @@
 #include "rdp/rdp_auth_mode_policy.h"
 #include "rdp/rdp_connection_identity_policy.h"
 #include "rdp/rdp_network_retry_policy.h"
+#include "rdp/rdp_preflight_operation_fence.h"
 #include "ssh/ssh_adapter.h"
 #include "ssh/ssh_auth_replay_policy.h"
 #include "ssh/ssh_terminal_resume_policy.h"
@@ -2997,11 +2998,18 @@ struct RdpPreflightRouteProbeAsyncData {
     napi_deferred deferred = nullptr;
     napi_async_work work = nullptr;
     bool workerFailed = false;
+    remotedesk::rdp::RdpPreflightOperationFence::Token operationToken = 0;
+    bool operationRegistered = false;
     std::unique_ptr<NativeNetworkObserverLease> observerLease;
 
     ~RdpPreflightRouteProbeAsyncData() {
-        secureClearString(request.password);
-        request.cancelled = {};
+        // Account transition drain must not report quiescence until the outer
+        // NAPI-owned identity/password copy has actually been overwritten.
+        request.clearCredentialMaterial();
+        if (operationRegistered) {
+            remotedesk::rdp::ProcessRdpPreflightOperationFence().end();
+            operationRegistered = false;
+        }
     }
 };
 
@@ -3024,7 +3032,8 @@ static RdpPreflightResult MakeRdpNetworkChangedPreflightResult(
 
 static RdpPreflightResult ProbeRdpRouteOnCurrentNetwork(
     const std::shared_ptr<ProtocolAdapter>& adapter,
-    RdpPreflightRequest& request) {
+    RdpPreflightRequest& request,
+    remotedesk::rdp::RdpPreflightOperationFence::Token operationToken) {
     if (!adapter) {
         RdpPreflightResult result;
         result.endpointMode = request.route.endpointMode;
@@ -3043,9 +3052,11 @@ static RdpPreflightResult ProbeRdpRouteOnCurrentNetwork(
             return remotedesk::net::ProcessNetworkGenerationFence().snapshot();
         },
         [&](const remotedesk::net::NetworkGenerationSnapshot& captured) {
-            request.cancelled = [captured]() {
+            request.cancelled = [captured, operationToken]() {
                 return remotedesk::net::ProcessNetworkGenerationFence().shouldCancel(
-                    captured);
+                    captured) ||
+                    remotedesk::rdp::ProcessRdpPreflightOperationFence().shouldCancel(
+                        operationToken);
             };
             struct CancellationReset final {
                 RdpPreflightRequest& request;
@@ -3071,7 +3082,7 @@ static void ExecuteRdpPreflightRouteProbeAsync(napi_env /*env*/, void* rawData) 
     }
     try {
         data->result = ProbeRdpRouteOnCurrentNetwork(
-            data->adapter, data->request);
+            data->adapter, data->request, data->operationToken);
     } catch (const std::exception& ex) {
         data->workerFailed = true;
         data->errorMessage = std::string("RDP route preflight failed: ") + ex.what();
@@ -3127,6 +3138,15 @@ napi_value NapiProbeRdpCertificateRouteAsync(napi_env env, napi_callback_info in
         napi_throw_error(env, nullptr, "RDP route preflight async allocation failed");
         return nullptr;
     }
+    data->operationToken =
+        remotedesk::rdp::ProcessRdpPreflightOperationFence().begin();
+    if (data->operationToken == 0) {
+        delete data;
+        napi_throw_error(env, "E-RDP-PREFLIGHT-ADMISSION-CLOSED",
+                         "RDP route preflight admission is closed for an account transition");
+        return nullptr;
+    }
+    data->operationRegistered = true;
     std::string parseError;
     if (!ReadRdpPreflightRequest(env, args[0], data->request, parseError)) {
         delete data;
@@ -3171,6 +3191,42 @@ napi_value NapiProbeRdpCertificateRouteAsync(napi_env env, napi_callback_info in
         return nullptr;
     }
     return promise;
+}
+
+napi_value NapiCancelAllRdpPreflightProbes(
+    napi_env env, napi_callback_info /*info*/) {
+    const uint64_t active =
+        remotedesk::rdp::ProcessRdpPreflightOperationFence().cancelAll();
+    napi_value result;
+    napi_create_int64(env, static_cast<int64_t>(active), &result);
+    return result;
+}
+
+napi_value NapiGetPendingRdpPreflightProbeCount(
+    napi_env env, napi_callback_info /*info*/) {
+    const uint64_t active =
+        remotedesk::rdp::ProcessRdpPreflightOperationFence().active();
+    napi_value result;
+    napi_create_int64(env, static_cast<int64_t>(active), &result);
+    return result;
+}
+
+napi_value NapiBeginRdpPreflightScopeTransition(
+    napi_env env, napi_callback_info /*info*/) {
+    const uint64_t active = remotedesk::rdp::ProcessRdpPreflightOperationFence()
+        .closeAndCancelAll();
+    napi_value result;
+    napi_create_int64(env, static_cast<int64_t>(active), &result);
+    return result;
+}
+
+napi_value NapiEndRdpPreflightScopeTransition(
+    napi_env env, napi_callback_info /*info*/) {
+    const bool open =
+        remotedesk::rdp::ProcessRdpPreflightOperationFence().reopen();
+    napi_value result;
+    napi_get_boolean(env, open, &result);
+    return result;
 }
 
 struct RustDeskPresenceProbeAsyncData {
@@ -12005,6 +12061,18 @@ napi_value ExtensionLoaderNapi::Init(napi_env env, napi_value exports) {
     napi_create_function(env, "probeRdpCertificateRouteAsync", NAPI_AUTO_LENGTH,
                          NapiProbeRdpCertificateRouteAsync, nullptr, &fn);
     napi_set_named_property(env, exports, "probeRdpCertificateRouteAsync", fn);
+    napi_create_function(env, "cancelAllRdpPreflightProbes", NAPI_AUTO_LENGTH,
+                         NapiCancelAllRdpPreflightProbes, nullptr, &fn);
+    napi_set_named_property(env, exports, "cancelAllRdpPreflightProbes", fn);
+    napi_create_function(env, "getPendingRdpPreflightProbeCount", NAPI_AUTO_LENGTH,
+                         NapiGetPendingRdpPreflightProbeCount, nullptr, &fn);
+    napi_set_named_property(env, exports, "getPendingRdpPreflightProbeCount", fn);
+    napi_create_function(env, "beginRdpPreflightScopeTransition", NAPI_AUTO_LENGTH,
+                         NapiBeginRdpPreflightScopeTransition, nullptr, &fn);
+    napi_set_named_property(env, exports, "beginRdpPreflightScopeTransition", fn);
+    napi_create_function(env, "endRdpPreflightScopeTransition", NAPI_AUTO_LENGTH,
+                         NapiEndRdpPreflightScopeTransition, nullptr, &fn);
+    napi_set_named_property(env, exports, "endRdpPreflightScopeTransition", fn);
 
     napi_create_function(env, "probeRustDeskPresenceAsync", NAPI_AUTO_LENGTH,
                          NapiProbeRustDeskPresenceAsync, nullptr, &fn);

@@ -104,6 +104,10 @@ declare module 'librdpnapi.so' {
     serverName: string): Promise<RdpCertificateInfo>;
   export function probeRdpCertificateRouteAsync(
     request: RdpPreflightRequest): Promise<RdpPreflightResult>;
+  export function cancelAllRdpPreflightProbes(): number;
+  export function getPendingRdpPreflightProbeCount(): number;
+  export function beginRdpPreflightScopeTransition(): number;
+  export function endRdpPreflightScopeTransition(): boolean;
   export function probeRustDeskPresenceAsync(host: string, port: number, serverKey: string,
     peerId: string, token: string, direct: boolean, keyMode: number,
     timeoutMs?: number): RustDeskPresenceProbePromise;

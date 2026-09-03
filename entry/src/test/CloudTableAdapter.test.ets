@@ -67,6 +67,7 @@ describe('CloudTableAdapter', (): void => {
       rustdesktargetdevice: 'phone',
       rustdeskadaptiveorientation: '1',
       rdpauthmode: 'restricted_admin',
+      rdpcredentialstoragemode: 'connect_time',
       rdprestrictedadminsecretsource: 'ntlm_hash',
       rdpendpointmode: 'microsoft_rd_gateway',
       rdpgatewaytransport: 'no-websockets',
@@ -98,6 +99,7 @@ describe('CloudTableAdapter', (): void => {
     expect(decoded.extension['rustdesktotpentryid']).assertUndefined();
     expect(decoded.extension['rustdesktotpautosubmit']).assertUndefined();
     expect(decoded.extension['rdpauthmode']).assertEqual('restricted_admin');
+    expect(decoded.extension['rdpcredentialstoragemode']).assertEqual('connect_time');
     expect(decoded.extension['rdprestrictedadminsecretsource']).assertEqual('ntlm_hash');
     expect(decoded.extension['rdpendpointmode']).assertEqual('microsoft_rd_gateway');
     expect(decoded.extension['rdpgatewaytransport']).assertEqual('no-websockets');

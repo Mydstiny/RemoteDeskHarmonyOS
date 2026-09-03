@@ -9,7 +9,12 @@
  */
 
 import { describe, beforeAll, beforeEach, afterEach, afterAll, it, expect } from '@ohos/hypium';
-import { CloudStore } from '../main/ets/services/CloudStore';
+import {
+  CloudStore,
+  dynamicLanHostCredentialStateIsPersistable,
+  remoteHostPersistentPasswordAllowed,
+  sanitizeDynamicLanHostCredentialPayload
+} from '../main/ets/services/CloudStore';
 import { RemoteHost, DisplayConfig, RemoteHostJSON } from '../main/ets/model/RemoteHost';
 import { SshKey, SshKeyType, SshKeyJSON } from '../main/ets/model/SshKey';
 import { TotpEntry, TotpAlgorithm, TotpEntryJSON } from '../main/ets/model/TotpEntry';
@@ -80,6 +85,47 @@ export default function cloudStoreTest() {
       expect(cs.moveSshHostToDeviceLocal(scopedSsh)).assertFalse();
       scopedSsh.host = '2001:db8::20';
       expect(cs.moveSshHostToCloud(scopedSsh)).assertFalse();
+    });
+
+    it('dynamic_RDP_connect_time_credentials_never_enter_local_storage', 0, () => {
+      const host = new RemoteHost();
+      host.protocol = 'rdp';
+      host.rdpAuthMode = 'password';
+      host.rdpCredentialStorageMode = 'connect_time';
+      host.username = 'must-not-persist';
+      host.password = 'must-not-persist';
+      host.passwordConfigured = true;
+      host.rdpCredentialId = 'must-not-persist';
+
+      expect(remoteHostPersistentPasswordAllowed(host)).assertFalse();
+      expect(dynamicLanHostCredentialStateIsPersistable(host)).assertFalse();
+      host.normalizeRdpAuthentication();
+      expect(dynamicLanHostCredentialStateIsPersistable(host)).assertTrue();
+      expect(host.username).assertEqual('');
+      expect(host.password).assertEqual('');
+      expect(host.rdpCredentialId).assertEqual('');
+    });
+
+    it('dynamic_RDP_address_refresh_scrubs_stale_connect_time_password', 0, () => {
+      const host = new RemoteHost();
+      host.protocol = 'rdp';
+      host.rdpAuthMode = 'password';
+      host.rdpCredentialStorageMode = 'connect_time';
+      const stale: Record<string, string> = {
+        'hostjson': '{}',
+        'password': 'encrypted-legacy-secret'
+      };
+
+      const sanitized = sanitizeDynamicLanHostCredentialPayload(host, stale);
+      expect(sanitized.changed).assertTrue();
+      expect(sanitized.values['password']).assertEqual('');
+      expect(stale['password']).assertEqual('encrypted-legacy-secret');
+
+      host.rdpCredentialStorageMode = 'saved';
+      const preserved = sanitizeDynamicLanHostCredentialPayload(host, stale);
+      expect(preserved.changed).assertFalse();
+      expect(preserved.values['password']).assertEqual(
+        'encrypted-legacy-secret');
     });
   });
 

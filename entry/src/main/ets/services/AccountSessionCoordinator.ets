@@ -347,7 +347,17 @@ export class AccountSessionCoordinator {
     };
     const previous: Promise<void> = this.transitionTail;
     const run: Promise<void> = previous.catch((_err: Error): void => {}).then(async (): Promise<void> => {
-      result = await action();
+      try {
+        result = await action();
+      } finally {
+        // SensitiveDataBarrier keeps RDP route-preflight admission closed for
+        // the entire serialized account transaction. Reopen only after the
+        // new scope is committed or the old scope is fully restored.
+        if (!ExtensionLoader.getInstance().endRdpPreflightScopeTransition()) {
+          hilog.error(0x0001, 'AccountSession',
+            'RDP preflight admission could not be reopened');
+        }
+      }
     });
     this.transitionTail = run.catch((_err: Error): void => {});
     await run;

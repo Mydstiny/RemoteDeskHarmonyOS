@@ -159,6 +159,30 @@ RDP_TEST_CASE(rdp_gateway_policy_maps_gateway_transport_without_guessing) {
     RDP_ASSERT(!RdpGatewayPolicy::parseGatewayTransport("probe_http_then_guess", transport));
 }
 
+RDP_TEST_CASE(rdp_preflight_request_explicitly_clears_every_identity_copy) {
+    RdpPreflightRequest request;
+    request.username = "DOMAIN\\session-user";
+    request.password = "session-password";
+    request.domain = "DOMAIN";
+    request.cancelled = []() { return false; };
+    RdpPreflightRequest copied = request;
+
+    request.clearCredentialMaterial();
+    RDP_ASSERT(request.username.empty());
+    RDP_ASSERT(request.password.empty());
+    RDP_ASSERT(request.domain.empty());
+    RDP_ASSERT(!request.cancelled);
+    RDP_ASSERT(copied.username == "DOMAIN\\session-user");
+    RDP_ASSERT(copied.password == "session-password");
+    RDP_ASSERT(copied.domain == "DOMAIN");
+
+    copied.clearCredentialMaterial();
+    RDP_ASSERT(copied.username.empty());
+    RDP_ASSERT(copied.password.empty());
+    RDP_ASSERT(copied.domain.empty());
+    RDP_ASSERT(!copied.cancelled);
+}
+
 RDP_TEST_CASE(rdp_gateway_policy_separates_requested_and_observed_transport) {
     RdpPreflightResult result;
     RdpGatewayPolicy::initializeGatewayTransportResult(

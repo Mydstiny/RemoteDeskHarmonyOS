@@ -12,6 +12,11 @@ import {
   filterMoonlightBackupRows,
   MoonlightBackupFilterResult
 } from './MoonlightBackupPolicy';
+import {
+  connectTimeRdpHostIdsFromRows,
+  sanitizeRemoteHostExtensionForRdpCredentialPolicy,
+  sanitizeRemoteHostRowForRdpCredentialPolicy
+} from './RdpSessionCredentialPolicy';
 
 export type BackupSectionKind = 'cloud_table' | 'local_extensions' |
   'local_table';
@@ -155,7 +160,7 @@ const REMOTE_HOST_EXTENSION_SAFE: string[] = [
   'rustdeskdirectenabled', 'rustdeskdirecthost',
   'rustdeskdirectport', 'sshproxytype', 'rdpcredentialid',
   'sshproxyauthmethod', 'sshproxykeyid',
-  'rdpauthmode', 'sourcetype', 'rustdesktargetdevice',
+  'rdpauthmode', 'rdpcredentialstoragemode', 'sourcetype', 'rustdesktargetdevice',
   'rustdeskadaptiveorientation', 'rdpendpointmode',
   'rdpgatewaytransport', 'rdpgatewayservername', 'rdpclienthostname',
   // Device-local host presentation remains portable only through an explicit
@@ -328,13 +333,17 @@ function redactVncRows(
 }
 
 function redactExtensionRows(
-  rows: Array<Record<string, string>>
+  rows: Array<Record<string, string>>,
+  connectTimeHostIds: string[]
 ): Array<Record<string, string>> {
   const result: Array<Record<string, string>> = [];
   for (let i = 0; i < rows.length; i++) {
-    const table: string = rows[i]['tablename'] || '';
+    const policyRow: Record<string, string> =
+      sanitizeRemoteHostExtensionForRdpCredentialPolicy(
+        rows[i], connectTimeHostIds).row;
+    const table: string = policyRow['tablename'] || '';
     if (table === 'rdprestrictedadminsecrets') { continue; }
-    const next: Record<string, string> = copyRowWithout(rows[i], []);
+    const next: Record<string, string> = copyRowWithout(policyRow, []);
     if (table === 'remotehosts') {
       try {
         const source: Record<string, string> =
@@ -373,6 +382,8 @@ export function redactPortableBackupData(
   let removedSecretFields: number = 0;
   let removedDeviceTrustFields: number = 0;
   let excludedRows: number = 0;
+  const connectTimeHostIds: string[] = connectTimeRdpHostIdsFromRows(
+    tables['remotehosts'] || []);
   const names: string[] = Object.keys(tables);
   for (let i = 0; i < names.length; i++) {
     const table: string = names[i];
@@ -417,20 +428,23 @@ export function redactPortableBackupData(
     const removed: string[] = secretColumns;
     const nextRows: Array<Record<string, string>> = [];
     for (let r = 0; r < sourceRows.length; r++) {
+      const sourceRow: Record<string, string> = table === 'remotehosts'
+        ? sanitizeRemoteHostRowForRdpCredentialPolicy(sourceRows[r]).row
+        : sourceRows[r];
       for (let c = 0; c < secretColumns.length; c++) {
-        if (sourceRows[r][secretColumns[c]] !== undefined) {
+        if (sourceRow[secretColumns[c]] !== undefined) {
           removedSecretFields++;
         }
       }
       const removedForRow: string[] = table === 'remotehosts'
         ? removed.concat(['displayconfig']) : removed;
       const next: Record<string, string> =
-        copyRowWithout(sourceRows[r], removedForRow);
+        copyRowWithout(sourceRow, removedForRow);
       if (table === 'remotehosts' &&
-        sourceRows[r]['displayconfig'] !== undefined) {
+        sourceRow['displayconfig'] !== undefined) {
         const display: RedactedDisplayConfig =
           redactRemoteHostDisplayConfig(
-            sourceRows[r]['displayconfig']);
+            sourceRow['displayconfig']);
         removedSecretFields += display.removedSecretFields;
         removedDeviceTrustFields +=
           display.removedDeviceTrustFields;
@@ -444,7 +458,7 @@ export function redactPortableBackupData(
   }
 
   const redactedExtensions: Array<Record<string, string>> =
-    redactExtensionRows(extensions);
+    redactExtensionRows(extensions, connectTimeHostIds);
   excludedRows += extensions.length - redactedExtensions.length;
 
   const redactedLocal: Record<string, Array<Record<string, string>>> = {};
@@ -495,6 +509,8 @@ export function fullPortableBackupData(
 ): PortableBackupRedactionResult {
   const fullTables: Record<string, Array<Record<string, string>>> = {};
   let excludedRows: number = 0;
+  const connectTimeHostIds: string[] = connectTimeRdpHostIdsFromRows(
+    tables['remotehosts'] || []);
   const names: string[] = Object.keys(tables);
   for (let i = 0; i < names.length; i++) {
     if (names[i] === MOONLIGHT_CLOUD_TABLE) {
@@ -503,12 +519,23 @@ export function fullPortableBackupData(
           tables[names[i]] || [], 'full', false);
       fullTables[names[i]] = portable.rows;
       excludedRows += portable.excludedRows;
+    } else if (names[i] === 'remotehosts') {
+      const sourceRows: Array<Record<string, string>> = tables[names[i]] || [];
+      const safeRows: Array<Record<string, string>> = [];
+      for (let r: number = 0; r < sourceRows.length; r++) {
+        safeRows.push(sanitizeRemoteHostRowForRdpCredentialPolicy(sourceRows[r]).row);
+      }
+      fullTables[names[i]] = safeRows;
     } else {
       fullTables[names[i]] = copyRows(tables[names[i]] || []);
     }
   }
-  const fullExtensions: Array<Record<string, string>> =
-    copyRows(extensions);
+  const fullExtensions: Array<Record<string, string>> = [];
+  for (let i: number = 0; i < extensions.length; i++) {
+    fullExtensions.push(
+      sanitizeRemoteHostExtensionForRdpCredentialPolicy(
+        extensions[i], connectTimeHostIds).row);
+  }
   const fullLocal: Record<string, Array<Record<string, string>>> = {};
   const localNames: string[] = Object.keys(localTables);
   for (let i = 0; i < localNames.length; i++) {

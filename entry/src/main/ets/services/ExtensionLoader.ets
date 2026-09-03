@@ -97,6 +97,10 @@ import {
   diagnosticSshRuntimeFacts
 } from './DiagnosticRuntimeSnapshotPolicy';
 import { sshDiagnosticErrorCode } from './ssh/observability/SshDiagnosticPolicy';
+import {
+  RDP_PREFLIGHT_DRAIN_POLL_INTERVAL_MS,
+  rdpPreflightDrainMaximumPolls
+} from './RdpPreflightScopeTransitionPolicy';
 
 const TAG = 'ExtensionLoader';
 
@@ -1348,6 +1352,65 @@ export class ExtensionLoader {
         targetCertificate: emptyCertificate
       } as RdpPreflightResult;
     }
+  }
+
+  cancelAllRdpPreflightProbes(): number {
+    try {
+      return rdpnapi.cancelAllRdpPreflightProbes() as number;
+    } catch (err) {
+      hilog.error(DOMAIN, TAG,
+        '[ExtensionLoader] cancelAllRdpPreflightProbes: ' + JSON.stringify(err));
+      return -1;
+    }
+  }
+
+  getPendingRdpPreflightProbeCount(): number {
+    try {
+      return rdpnapi.getPendingRdpPreflightProbeCount() as number;
+    } catch (err) {
+      hilog.error(DOMAIN, TAG,
+        '[ExtensionLoader] getPendingRdpPreflightProbeCount: ' + JSON.stringify(err));
+      return -1;
+    }
+  }
+
+  beginRdpPreflightScopeTransition(): number {
+    try {
+      return rdpnapi.beginRdpPreflightScopeTransition() as number;
+    } catch (err) {
+      hilog.error(DOMAIN, TAG,
+        '[ExtensionLoader] beginRdpPreflightScopeTransition: ' + JSON.stringify(err));
+      return -1;
+    }
+  }
+
+  endRdpPreflightScopeTransition(): boolean {
+    try {
+      return rdpnapi.endRdpPreflightScopeTransition() as boolean;
+    } catch (err) {
+      hilog.error(DOMAIN, TAG,
+        '[ExtensionLoader] endRdpPreflightScopeTransition: ' + JSON.stringify(err));
+      return false;
+    }
+  }
+
+  /** Close admission, cancel old-scope probes and wait for native secret destruction. */
+  async prepareRdpPreflightScopeTransition(timeoutMs: number = 10000): Promise<boolean> {
+    if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 ||
+      this.beginRdpPreflightScopeTransition() < 0) {
+      return false;
+    }
+    const maximumPolls: number = rdpPreflightDrainMaximumPolls(timeoutMs);
+    for (let poll: number = 0; poll < maximumPolls; poll++) {
+      const pending: number = this.getPendingRdpPreflightProbeCount();
+      if (pending === 0) { return true; }
+      if (pending < 0) { return false; }
+      if (poll + 1 >= maximumPolls) { return false; }
+      await new Promise<void>((resolve: () => void): void => {
+        setTimeout(resolve, RDP_PREFLIGHT_DRAIN_POLL_INTERVAL_MS);
+      });
+    }
+    return false;
   }
 
   probeRustDeskPresenceAsync(host: string, port: number, serverKey: string,

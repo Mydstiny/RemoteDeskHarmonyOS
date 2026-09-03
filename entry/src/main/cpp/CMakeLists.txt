@@ -343,6 +343,7 @@ if(RDP_BUILD_TESTS)
         test/rdp_gateway_policy_test.cpp
         test/rdp_network_recovery_policy_test.cpp
         test/rdp_network_retry_policy_test.cpp
+        test/rdp_preflight_operation_fence_test.cpp
         test/rdp_negotiation_parser_test.cpp
         test/rdp_auth_identity_policy_test.cpp
         test/rdp_auth_mode_policy_test.cpp

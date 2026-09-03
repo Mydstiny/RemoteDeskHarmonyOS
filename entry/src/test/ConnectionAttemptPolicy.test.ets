@@ -1,5 +1,6 @@
 import { describe, it, expect } from '@ohos/hypium';
 import {
+  allocateConnectionAttemptGeneration,
   nextConnectionAttemptGeneration,
   shouldBeginConnectionAttempt,
   shouldApplyConnectionAttempt
@@ -17,6 +18,14 @@ export default function connectionAttemptPolicyTest(): void {
       expect(shouldApplyConnectionAttempt(4, 4, 'host-a', 'host-a')).assertTrue();
       expect(shouldApplyConnectionAttempt(4, 3, 'host-a', 'host-a')).assertFalse();
       expect(shouldApplyConnectionAttempt(4, 4, 'host-a', 'host-b')).assertFalse();
+    });
+
+    it('does_not_reuse_attempt_tokens_across_component_instances', 0, (): void => {
+      const first: number = allocateConnectionAttemptGeneration();
+      const second: number = allocateConnectionAttemptGeneration();
+      expect(first > 0).assertTrue();
+      expect(second > 0).assertTrue();
+      expect(second === first).assertFalse();
     });
   });
 }

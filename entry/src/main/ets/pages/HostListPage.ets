@@ -68,10 +68,12 @@ import {
   ConnectionHealth,
   LockType,
   RdpAuthMode,
+  RdpCredentialStorageMode,
   RdpRestrictedAdminSecretSource,
   normalizeRdpCredentialParts,
   normalizeRdpNtlmHash,
   normalizeRdpAuthMode,
+  normalizeRdpCredentialStorageMode,
   normalizeRdpEndpointMode,
   rdpRouteIdentity
 } from '../model/RemoteHost';
@@ -196,6 +198,10 @@ import {
   RustDeskHostAddHandoff
 } from '../services/RustDeskHostAddHandoff';
 import { VncSessionCredentialHandoff } from '../services/VncSessionCredentialHandoff';
+import {
+  RdpSessionCredentialDecision,
+  RdpSessionCredentialHandoff
+} from '../services/RdpSessionCredentialHandoff';
 import {
   vncCredentialPreflightMessage,
   vncCredentialPreflightNeedsPrompt,
@@ -713,7 +719,7 @@ import {
   RustDeskConnectionContext
 } from '../services/RustDeskConnectionContextPolicy';
 import {
-  nextConnectionAttemptGeneration,
+  allocateConnectionAttemptGeneration,
   shouldBeginConnectionAttempt,
   shouldApplyConnectionAttempt
 } from '../services/ConnectionAttemptPolicy';
@@ -791,6 +797,7 @@ const REMOTE_HOST_SHEET_VNC_CREDENTIAL = 8;
 const REMOTE_HOST_SHEET_MOONLIGHT_DETAIL = 9;
 const REMOTE_HOST_SHEET_MOONLIGHT_CATALOG = 10;
 const REMOTE_HOST_SHEET_MOONLIGHT_EDIT = 11;
+const REMOTE_HOST_SHEET_RDP_CREDENTIAL = 12;
 const DESKTOP_MOONLIGHT_TAB = 7;
 
 @Entry
@@ -1034,8 +1041,22 @@ struct HostListPage {
   private rdpCertificateClosing: boolean = false;
   private rdpCertificateClosingHostId: string = '';
   private rdpCertificatePendingHostId: string = '';
+  private rdpCertificatePendingAttemptGeneration: number = 0;
+  private rdpCertificateOwnerScopeId: string = '';
   private rdpCertificateAttemptGeneration: number = 0;
   private rdpCertificateClosingAttemptGeneration: number = 0;
+  @State rdpSessionCredentialHostId: string = '';
+  @State rdpSessionCredentialHostLabel: string = '';
+  @State rdpSessionCredentialUsername: string = '';
+  @State rdpSessionCredentialPassword: string = '';
+  @State rdpSessionCredentialPasswordVisible: boolean = false;
+  @State rdpSessionCredentialError: string = '';
+  private rdpSessionCredentialRouteIdentity: string = '';
+  private rdpSessionCredentialOwnerScopeId: string = '';
+  private rdpSessionCredentialAccountGeneration: number = 0;
+  private rdpSessionCredentialAttemptGeneration: number = 0;
+  private rdpSessionCredentialRouteAfterClose: boolean = false;
+  private rdpSessionCredentialClosing: boolean = false;
   @State showVncCertificatePreflight: boolean = false;
   @State vncCertificateState: VncCertificatePreflightState = VncCertificatePreflightState.IDLE;
   @State vncCertificateHostId: string = '';
@@ -1227,6 +1248,7 @@ struct HostListPage {
   @State selectedAccountId: string = '';
   @State selectedRdpCredentialId: string = '';
   @State sheetRdpAuthMode: RdpAuthMode = 'password';
+  @State sheetRdpCredentialStorageMode: RdpCredentialStorageMode = 'saved';
   @State sheetRdpRestrictedAdminSecretSource: RdpRestrictedAdminSecretSource = 'ntlm_hash';
   // This field is write-only. Existing Restricted Admin hashes are never displayed in the editor.
   @State sheetRdpRestrictedAdminHash: string = '';
@@ -1450,6 +1472,12 @@ struct HostListPage {
   private onRemoteDesktopBgFlagChange(): void {
     if (this.appInBackground) {
       SshOperationRouteSecretService.getInstance().clearAll();
+      RdpSessionCredentialHandoff.getInstance().clearAll();
+      this.loader.cancelAllRdpPreflightProbes();
+      this.rdpCertificateProbeGeneration = nextRdpCertificateProbeGeneration(
+        this.rdpCertificateProbeGeneration);
+      this.rdpSessionCredentialUsername = '';
+      this.rdpSessionCredentialPassword = '';
       if (this.pendingVncConnectHostId !== '') {
         this.clearPendingVncHandoffsForRecordId(
           this.pendingVncConnectHostId, this.pendingVncConnectUserId);
@@ -6099,7 +6127,7 @@ struct HostListPage {
 
   private beginConnectionAttempt(hostId: string): number {
     if (!shouldBeginConnectionAttempt(this.connectionAttemptHostId)) { return 0; }
-    const generation: number = nextConnectionAttemptGeneration(this.connectionAttemptGeneration);
+    const generation: number = allocateConnectionAttemptGeneration();
     this.connectionAttemptGeneration = generation;
     this.connectionAttemptHostId = hostId;
     return generation;
@@ -6127,6 +6155,26 @@ struct HostListPage {
     this.releaseConnectionAttempt(hostId);
   }
 
+  private abortRdpSessionDestination(hostId: string,
+    credentialOwnerScopeId: string, connectionAttemptGeneration: number,
+    reason: string): void {
+    const id: string = hostId.trim();
+    if (id === '') { return; }
+    const host: RemoteHost | undefined = this.srv.getHost(id);
+    const scope = AccountSessionCoordinator.getInstance().currentScope();
+    const capturedOwnerId: string = credentialOwnerScopeId.trim();
+    const ownerId: string = capturedOwnerId !== '' ? capturedOwnerId :
+      (host === undefined ? scope.ownerScopeId.trim() : host.userId.trim());
+    if (ownerId !== '') {
+      RdpSessionCredentialHandoff.getInstance().clearIfMatches(
+        ownerId, id, connectionAttemptGeneration);
+    }
+    this.releaseConnectionAttemptIfCurrent(id, connectionAttemptGeneration);
+    hilog.info(0x0001, 'HostList',
+      'RDP session destination aborted reason=' + reason +
+      ' hostIdHash=' + hashForLog(id));
+  }
+
   /**
    * PC/2-in-1 sessions are independent multiton abilities. Phone and tablet
    * keep the existing in-app router flow. Desktop must never silently fall
@@ -6135,8 +6183,26 @@ struct HostListPage {
    */
   private openSessionDestination(url: string, params: Record<string, Object>,
     authorizationKind: RemoteSessionWindowAuthorizationKind): void {
+    const rawRdpAttemptGeneration: Object | undefined =
+      params['rdpConnectionAttemptGeneration'];
+    const rdpAttemptGeneration: number = typeof rawRdpAttemptGeneration === 'number' &&
+      Number.isSafeInteger(rawRdpAttemptGeneration) && rawRdpAttemptGeneration > 0
+      ? rawRdpAttemptGeneration : 0;
+    const rdpCredentialOwnerScopeId: string =
+      ((params['rdpCredentialOwnerScopeId'] as string) || '').trim();
     if (!this.isDesktopDevice) {
-      void router.pushUrl({ url, params });
+      const routeHostId: string = ((params['hostId'] as string) || '').trim();
+      void router.pushUrl({ url, params }).catch((_err: Error): void => {
+        if (url === 'pages/RemoteDesktop' && routeHostId !== '') {
+          const routeHost: RemoteHost | undefined = this.srv.getHost(routeHostId);
+          if (routeHost === undefined || routeHost.protocol === 'rdp') {
+            this.abortRdpSessionDestination(
+              routeHostId, rdpCredentialOwnerScopeId,
+              rdpAttemptGeneration, 'router-push-failed');
+          }
+        }
+        promptAction.showToast({ message: '无法打开远程会话', duration: 2200 });
+      });
       return;
     }
     let target: RemoteSessionWindowTarget;
@@ -6182,6 +6248,11 @@ struct HostListPage {
       routeParams['pcWindowAfterAuthentication'] = true;
       routeParams['pcWindowPreflightKind'] = authorizationKind;
       void router.pushUrl({ url, params: routeParams }).catch((_err: Error): void => {
+        if (protocol === 'rdp') {
+          this.abortRdpSessionDestination(
+            hostId, rdpCredentialOwnerScopeId,
+            rdpAttemptGeneration, 'pc-auth-route-push-failed');
+        }
         promptAction.showToast({ message: '无法打开原鉴权流程，未创建会话窗口', duration: 2200 });
       });
       return;
@@ -6443,7 +6514,7 @@ struct HostListPage {
       // T-210: SSH 前置校验 (指纹 + 私钥密码) → 通过后才路由
       this.openSshPreflight(host);
     } else if (host.protocol === 'rdp') {
-      this.openRdpCertificatePreflight(host);
+      this.prepareRdpCredentialOrCertificate(host, connectionGeneration);
     } else if (host.protocol === 'rustdesk') {
       const relay: RustDeskRelayConfig | undefined = host.rustdeskDirectEnabled ? undefined :
         this.srv.getAllRelays().find((item: RustDeskRelayConfig): boolean => item.id === host.rustdeskRelayId);
@@ -6497,22 +6568,200 @@ struct HostListPage {
     }
   }
 
-  private openRdpCertificatePreflight(host: RemoteHost): void {
+  private prepareRdpCredentialOrCertificate(host: RemoteHost,
+    attemptGeneration: number): void {
+    const storageMode: RdpCredentialStorageMode = normalizeRdpCredentialStorageMode(
+      host.rdpCredentialStorageMode);
+    if (normalizeRdpAuthMode(host.rdpAuthMode) !== 'password' ||
+      storageMode !== 'connect_time') {
+      this.openRdpCertificatePreflight(host, attemptGeneration);
+      return;
+    }
+    const scope = AccountSessionCoordinator.getInstance().currentScope();
+    const routeIdentity: string = rdpRouteIdentity(host);
+    if (!this.pageActive || this.appInBackground || host.userId.trim() === '' ||
+      scope.ownerScopeId.trim() !== host.userId.trim() || scope.generation <= 0 ||
+      routeIdentity.trim() === '' ||
+      !this.isCurrentConnectionAttempt(host.id, attemptGeneration)) {
+      RdpSessionCredentialHandoff.getInstance().clear(host.userId, host.id);
+      this.releaseConnectionAttemptIfCurrent(host.id, attemptGeneration);
+      promptAction.showToast({
+        message: 'RDP 主机或账号状态已变化，连接已停止', duration: 2200
+      });
+      return;
+    }
+    RdpSessionCredentialHandoff.getInstance().clear(host.userId, host.id);
+    this.rdpSessionCredentialHostId = host.id;
+    this.rdpSessionCredentialHostLabel = host.label;
+    this.rdpSessionCredentialUsername = '';
+    this.rdpSessionCredentialPassword = '';
+    this.rdpSessionCredentialPasswordVisible = false;
+    this.rdpSessionCredentialError = '';
+    this.rdpSessionCredentialRouteIdentity = routeIdentity;
+    this.rdpSessionCredentialOwnerScopeId = scope.ownerScopeId.trim();
+    this.rdpSessionCredentialAccountGeneration = scope.generation;
+    this.rdpSessionCredentialAttemptGeneration = attemptGeneration;
+    this.rdpSessionCredentialRouteAfterClose = false;
+    this.rdpSessionCredentialClosing = false;
+    this.openSheetSafely((): void => {
+      this.openRemoteHostSheet(REMOTE_HOST_SHEET_RDP_CREDENTIAL, (): void => {});
+    }, true);
+  }
+
+  private rdpSessionCredentialBindingIsCurrent(host: RemoteHost): boolean {
+    const scope = AccountSessionCoordinator.getInstance().currentScope();
+    const liveHost: RemoteHost | undefined = this.srv.getHost(host.id);
+    return liveHost !== undefined && liveHost.userId.trim() === host.userId.trim() &&
+      normalizeRdpAuthMode(liveHost.rdpAuthMode) === 'password' &&
+      normalizeRdpCredentialStorageMode(liveHost.rdpCredentialStorageMode) === 'connect_time' &&
+      rdpRouteIdentity(liveHost) === this.rdpSessionCredentialRouteIdentity &&
+      scope.ownerScopeId.trim() === this.rdpSessionCredentialOwnerScopeId &&
+      scope.ownerScopeId.trim() === liveHost.userId.trim() &&
+      scope.generation === this.rdpSessionCredentialAccountGeneration &&
+      this.isCurrentConnectionAttempt(host.id, this.rdpSessionCredentialAttemptGeneration);
+  }
+
+  private confirmRdpSessionCredential(): void {
+    const host: RemoteHost | undefined = this.srv.getHost(this.rdpSessionCredentialHostId);
+    if (host === undefined || !this.rdpSessionCredentialBindingIsCurrent(host)) {
+      this.rdpSessionCredentialError = 'RDP 路由或账号状态已变化，请取消后重新连接。';
+      return;
+    }
+    const username: string = this.rdpSessionCredentialUsername.trim();
+    if (username === '') {
+      this.rdpSessionCredentialError = '请输入 Windows 账号。';
+      return;
+    }
+    if (this.rdpSessionCredentialPassword === '') {
+      this.rdpSessionCredentialError = '请输入 Windows 密码；空密码账户请在主机中选择对应认证方式。';
+      return;
+    }
+    if (!RdpSessionCredentialHandoff.getInstance().put(
+      host.userId, host.id, username, this.rdpSessionCredentialPassword,
+      this.rdpSessionCredentialRouteIdentity, this.rdpSessionCredentialOwnerScopeId,
+      this.rdpSessionCredentialAccountGeneration,
+      this.rdpSessionCredentialAttemptGeneration)) {
+      this.rdpSessionCredentialError = 'RDP 一次性凭据交接失败，请重试。';
+      return;
+    }
+    this.rdpSessionCredentialUsername = '';
+    this.rdpSessionCredentialPassword = '';
+    this.rdpSessionCredentialRouteAfterClose = true;
+    this.rdpSessionCredentialClosing = true;
+    this.beginRemoteHostSheetClose(REMOTE_HOST_SHEET_RDP_CREDENTIAL);
+    this.showRemoteHostSheet = false;
+  }
+
+  private cancelRdpSessionCredential(closeSheet: boolean = true): void {
+    if (this.rdpSessionCredentialClosing) { return; }
+    const host: RemoteHost | undefined = this.srv.getHost(this.rdpSessionCredentialHostId);
+    const ownerScopeId: string = host === undefined ?
+      this.rdpSessionCredentialOwnerScopeId : host.userId;
+    if (ownerScopeId !== '' && this.rdpSessionCredentialHostId !== '') {
+      RdpSessionCredentialHandoff.getInstance().clearIfMatches(
+        ownerScopeId, this.rdpSessionCredentialHostId,
+        this.rdpSessionCredentialAttemptGeneration);
+    }
+    this.rdpSessionCredentialUsername = '';
+    this.rdpSessionCredentialPassword = '';
+    this.rdpSessionCredentialRouteAfterClose = false;
+    this.rdpSessionCredentialClosing = true;
+    this.beginRemoteHostSheetClose(REMOTE_HOST_SHEET_RDP_CREDENTIAL);
+    if (closeSheet) { this.showRemoteHostSheet = false; }
+  }
+
+  private handleRdpSessionCredentialDisappear(): void {
+    const hostId: string = this.rdpSessionCredentialHostId;
+    const attemptGeneration: number = this.rdpSessionCredentialAttemptGeneration;
+    const routeIdentity: string = this.rdpSessionCredentialRouteIdentity;
+    const ownerScopeId: string = this.rdpSessionCredentialOwnerScopeId;
+    const accountGeneration: number = this.rdpSessionCredentialAccountGeneration;
+    const shouldContinue: boolean = this.rdpSessionCredentialRouteAfterClose;
+    const host: RemoteHost | undefined = this.srv.getHost(hostId);
+    this.rdpSessionCredentialHostId = '';
+    this.rdpSessionCredentialHostLabel = '';
+    this.rdpSessionCredentialUsername = '';
+    this.rdpSessionCredentialPassword = '';
+    this.rdpSessionCredentialPasswordVisible = false;
+    this.rdpSessionCredentialError = '';
+    this.rdpSessionCredentialRouteIdentity = '';
+    this.rdpSessionCredentialOwnerScopeId = '';
+    this.rdpSessionCredentialAccountGeneration = 0;
+    this.rdpSessionCredentialAttemptGeneration = 0;
+    this.rdpSessionCredentialRouteAfterClose = false;
+    this.rdpSessionCredentialClosing = false;
+    this.noteSheetDismissed();
+    const scope = AccountSessionCoordinator.getInstance().currentScope();
+    const decisionAvailable: boolean = host !== undefined &&
+      RdpSessionCredentialHandoff.getInstance().hasDecision(
+        host.userId, host.id, routeIdentity, ownerScopeId, accountGeneration,
+        attemptGeneration);
+    const bindingCurrent: boolean = shouldContinue && host !== undefined && decisionAvailable &&
+      this.pageActive && !this.appInBackground &&
+      normalizeRdpAuthMode(host.rdpAuthMode) === 'password' &&
+      normalizeRdpCredentialStorageMode(host.rdpCredentialStorageMode) === 'connect_time' &&
+      rdpRouteIdentity(host) === routeIdentity &&
+      scope.ownerScopeId.trim() === ownerScopeId && scope.generation === accountGeneration &&
+      this.isCurrentConnectionAttempt(hostId, attemptGeneration);
+    if (!bindingCurrent) {
+      if (ownerScopeId !== '' && hostId !== '') {
+        RdpSessionCredentialHandoff.getInstance().clearIfMatches(
+          ownerScopeId, hostId, attemptGeneration);
+      }
+      this.releaseConnectionAttemptIfCurrent(hostId, attemptGeneration);
+      if (shouldContinue) {
+        promptAction.showToast({
+          message: 'RDP 一次性凭据已失效，请重新连接', duration: 2200
+        });
+      }
+      return;
+    }
+    setTimeout((): void => {
+      const liveHost: RemoteHost | undefined = this.srv.getHost(hostId);
+      if (liveHost === undefined || !this.pageActive || this.appInBackground ||
+        !this.isCurrentConnectionAttempt(hostId, attemptGeneration) ||
+        rdpRouteIdentity(liveHost) !== routeIdentity) {
+        RdpSessionCredentialHandoff.getInstance().clearIfMatches(
+          host?.userId || ownerScopeId, hostId, attemptGeneration);
+        this.releaseConnectionAttemptIfCurrent(hostId, attemptGeneration);
+        return;
+      }
+      this.openRdpCertificatePreflight(liveHost, attemptGeneration);
+    }, 0);
+  }
+
+  private openRdpCertificatePreflight(host: RemoteHost,
+    attemptGeneration: number): void {
+    if (!this.isCurrentConnectionAttempt(host.id, attemptGeneration)) {
+      RdpSessionCredentialHandoff.getInstance().clearIfMatches(
+        host.userId, host.id, attemptGeneration);
+      return;
+    }
     if (this.rdpCertificateClosing || this.showRdpCertificatePreflight ||
       this.remoteHostSheetClosing || this.showRemoteHostSheet) {
       // connectToHost 已经为该主机占住了连接尝试；等旧 Sheet 的 onDisappear
       // 完成后再打开，避免旧退出动画和新 builder 同时存在。
       this.rdpCertificatePendingHostId = host.id;
+      this.rdpCertificatePendingAttemptGeneration = attemptGeneration;
       hilog.info(0x0001, 'HostList', 'RDP certificate preflight queued until previous Sheet disappears host=' +
         host.id);
       return;
     }
+    if (!this.renewRdpSessionCredentialForHost(host, attemptGeneration)) {
+      this.releaseConnectionAttemptIfCurrent(host.id, attemptGeneration);
+      promptAction.showToast({
+        message: 'RDP 一次性凭据已失效，请重新连接', duration: 2200
+      });
+      return;
+    }
     const generation: number = nextRdpCertificateProbeGeneration(this.rdpCertificateProbeGeneration);
     this.rdpCertificateProbeGeneration = generation;
-    this.rdpCertificateAttemptGeneration = this.connectionAttemptGeneration;
+    this.rdpCertificateAttemptGeneration = attemptGeneration;
     this.rdpCertificatePendingHostId = '';
+    this.rdpCertificatePendingAttemptGeneration = 0;
     this.rdpCertificateOpenedAt = Date.now();
     this.rdpCertificateHostId = host.id;
+    this.rdpCertificateOwnerScopeId = host.userId;
     this.rdpCertificateHostLabel = host.host;
     this.rdpCertificateState = RdpCertificatePreflightState.PROBING;
     this.rdpCertificateWarning = '';
@@ -6567,7 +6816,21 @@ struct HostListPage {
     const authMode: RdpAuthMode = normalizeRdpAuthMode(host.rdpAuthMode);
     let username: string = host.username;
     let password: string = authMode === 'password' ? host.password : '';
-    if (authMode === 'password' && host.rdpCredentialId.trim() !== '') {
+    if (authMode === 'password' && normalizeRdpCredentialStorageMode(
+      host.rdpCredentialStorageMode) === 'connect_time') {
+      const scope = AccountSessionCoordinator.getInstance().currentScope();
+      const decision: RdpSessionCredentialDecision | null =
+        RdpSessionCredentialHandoff.getInstance().peekDecision(
+          host.userId, host.id, rdpRouteIdentity(host), scope.ownerScopeId,
+          scope.generation, this.rdpCertificateAttemptGeneration);
+      if (decision === null) {
+        username = '';
+        password = '';
+      } else {
+        username = decision.username;
+        password = decision.password;
+      }
+    } else if (authMode === 'password' && host.rdpCredentialId.trim() !== '') {
       const credential: RdpCredential | undefined = this.srv.getRdpCredential(
         host.rdpCredentialId.trim());
       if (credential === undefined) {
@@ -6778,6 +7041,16 @@ struct HostListPage {
       return;
     }
     const hostId: string = this.rdpCertificateHostId;
+    const host: RemoteHost | undefined = this.srv.getHost(hostId);
+    const ownerScopeId: string = host === undefined ?
+      this.rdpCertificateOwnerScopeId : host.userId;
+    if (ownerScopeId !== '' && hostId !== '' &&
+      (host === undefined || normalizeRdpCredentialStorageMode(
+        host.rdpCredentialStorageMode) === 'connect_time')) {
+      RdpSessionCredentialHandoff.getInstance().clearIfMatches(
+        ownerScopeId, hostId, this.rdpCertificateAttemptGeneration);
+    }
+    this.loader.cancelAllRdpPreflightProbes();
     this.rdpCertificateProbeGeneration = nextRdpCertificateProbeGeneration(
       this.rdpCertificateProbeGeneration
     );
@@ -6808,13 +7081,16 @@ struct HostListPage {
       ? this.rdpCertificateClosingAttemptGeneration : this.rdpCertificateAttemptGeneration;
     const params: Record<string, Object> | null = this.rdpCertificatePendingRouteParams;
     const nextHostId: string = this.rdpCertificatePendingHostId;
+    const nextAttemptGeneration: number = this.rdpCertificatePendingAttemptGeneration;
     this.rdpCertificatePendingRouteParams = null;
     this.rdpCertificatePendingHostId = '';
+    this.rdpCertificatePendingAttemptGeneration = 0;
     this.rdpCertificateClosingHostId = '';
     this.rdpCertificateClosingAttemptGeneration = 0;
     this.rdpCertificateClosing = false;
     this.showRdpCertificatePreflight = false;
     this.rdpCertificateHostId = '';
+    this.rdpCertificateOwnerScopeId = '';
     this.rdpCertificateHostLabel = '';
     this.rdpCertificateInfo = null;
     this.rdpGatewayCertificateInfo = null;
@@ -6850,7 +7126,7 @@ struct HostListPage {
       this.releaseConnectionAttempt(nextHostId);
       return;
     }
-    const queuedAttemptGeneration: number = this.connectionAttemptGeneration;
+    const queuedAttemptGeneration: number = nextAttemptGeneration;
     const reopen: () => void = (): void => {
       if (this.connectionAttemptGeneration !== queuedAttemptGeneration ||
         this.connectionAttemptHostId !== nextHostId) {
@@ -6858,7 +7134,7 @@ struct HostListPage {
       }
       const queuedHost: RemoteHost | undefined = this.srv.getHost(nextHostId);
       if (queuedHost) {
-        this.openRdpCertificatePreflight(queuedHost);
+        this.openRdpCertificatePreflight(queuedHost, queuedAttemptGeneration);
       } else {
         this.releaseConnectionAttempt(nextHostId);
       }
@@ -6905,6 +7181,16 @@ struct HostListPage {
     const liveHost: RemoteHost | undefined = this.srv.getHost(host.id);
     if (liveHost === undefined || rdpRouteIdentity(liveHost) !== rdpRouteIdentity(host)) {
       return false;
+    }
+    if (normalizeRdpAuthMode(liveHost.rdpAuthMode) === 'password' &&
+      normalizeRdpCredentialStorageMode(liveHost.rdpCredentialStorageMode) === 'connect_time') {
+      const scope = AccountSessionCoordinator.getInstance().currentScope();
+      if (!RdpSessionCredentialHandoff.getInstance().hasDecision(
+        liveHost.userId, liveHost.id, rdpRouteIdentity(liveHost),
+        scope.ownerScopeId, scope.generation,
+        this.rdpCertificateAttemptGeneration)) {
+        return false;
+      }
     }
     const resultRoute: string = resultRouteIdentity.trim();
     return resultRoute.length === 0 || rdpCertificateRouteIsCurrent(
@@ -6963,6 +7249,11 @@ struct HostListPage {
     )) {
       return;
     }
+    if (normalizeRdpCredentialStorageMode(
+      host.rdpCredentialStorageMode) === 'connect_time') {
+      RdpSessionCredentialHandoff.getInstance().clearIfMatches(
+        host.userId, host.id, this.rdpCertificateAttemptGeneration);
+    }
     if (this.srv.getHost(host.id) !== undefined) {
       this.rejectStaleRdpCertificateResult();
     }
@@ -6973,6 +7264,41 @@ struct HostListPage {
     this.rdpCertificateErrorStage = 'endpoint';
     this.rdpCertificateErrorCode = 'E-RDP-CERT-ROUTE-STALE';
     this.rdpCertificateError = 'RDP 路由在证书检查期间发生变化，请重新进行证书检查 [E-RDP-CERT-ROUTE-STALE]';
+    if (!this.showRdpCertificatePreflight) {
+      this.openSheetSafely((): void => {
+        this.openRemoteHostSheet(REMOTE_HOST_SHEET_RDP_CERTIFICATE, (): void => {
+          this.showRdpCertificatePreflight = true;
+        });
+      }, true);
+    }
+  }
+
+  private renewRdpSessionCredentialForHost(host: RemoteHost,
+    attemptGeneration: number = this.rdpCertificateAttemptGeneration): boolean {
+    if (normalizeRdpAuthMode(host.rdpAuthMode) !== 'password' ||
+      normalizeRdpCredentialStorageMode(host.rdpCredentialStorageMode) !== 'connect_time') {
+      return true;
+    }
+    const liveHost: RemoteHost | undefined = this.srv.getHost(host.id);
+    const scope = AccountSessionCoordinator.getInstance().currentScope();
+    if (liveHost === undefined || liveHost.userId.trim() !== host.userId.trim() ||
+      rdpRouteIdentity(liveHost) !== rdpRouteIdentity(host) ||
+      scope.ownerScopeId.trim() !== liveHost.userId.trim()) {
+      return false;
+    }
+    return RdpSessionCredentialHandoff.getInstance().renewDecision(
+      liveHost.userId, liveHost.id, rdpRouteIdentity(liveHost),
+      scope.ownerScopeId, scope.generation, attemptGeneration);
+  }
+
+  private rejectExpiredRdpSessionCredential(host: RemoteHost): void {
+    RdpSessionCredentialHandoff.getInstance().clearIfMatches(
+      host.userId, host.id, this.rdpCertificateAttemptGeneration);
+    this.rdpCertificateState = RdpCertificatePreflightState.ERROR;
+    this.rdpCertificateErrorStage = 'authentication';
+    this.rdpCertificateErrorCode = 'E-RDP-SESSION-CREDENTIAL';
+    this.rdpCertificateError = 'RDP 一次性凭据已失效，请取消后重新连接并输入账号密码。';
+    this.rdpCertificateWarning = this.rdpCertificateError;
     if (!this.showRdpCertificatePreflight) {
       this.openSheetSafely((): void => {
         this.openRemoteHostSheet(REMOTE_HOST_SHEET_RDP_CERTIFICATE, (): void => {
@@ -6996,11 +7322,27 @@ struct HostListPage {
           'RDP certificate probe skipped before native call [E-RDP-CERT-STALE-BEFORE]');
         return;
       }
+      if (!this.renewRdpSessionCredentialForHost(host)) {
+        this.rejectExpiredRdpSessionCredential(host);
+        return;
+      }
       let info: RdpCertificateInfo;
       let routeResult: RdpPreflightResult;
       if (this.rdpCertificateUsesRouteProbe(host)) {
-        routeResult = await this.loader.probeRdpCertificateRouteAsync(
-          this.rdpCertificateRouteRequest(host, generation));
+        const request: RdpPreflightRequest =
+          this.rdpCertificateRouteRequest(host, generation);
+        let routePromise: Promise<RdpPreflightResult>;
+        try {
+          // NAPI copies the request synchronously. Clear the ArkTS request
+          // before suspending so an account transition cannot leave another
+          // plaintext copy retained by this async frame.
+          routePromise = this.loader.probeRdpCertificateRouteAsync(request);
+        } finally {
+          request.username = '';
+          request.password = '';
+          request.domain = '';
+        }
+        routeResult = await routePromise;
         info = routeResult.targetCertificate.present
           ? this.rdpCertificateInfoFromRecord(routeResult.targetCertificate)
           : {
@@ -7021,6 +7363,10 @@ struct HostListPage {
           host.customHostname
         );
         routeResult = this.rdpCertificateResultFromDirectProbe(host, info, generation);
+      }
+      if (!this.renewRdpSessionCredentialForHost(host)) {
+        this.rejectExpiredRdpSessionCredential(host);
+        return;
       }
       if (!this.isCurrentRdpCertificateProbe(host, generation, routeResult.routeIdentity)) {
         this.handleStaleRdpCertificateProbe(host, generation);
@@ -7307,6 +7653,10 @@ struct HostListPage {
     result: RdpPreflightResult,
     decision: RdpCertificatePreflightDecision
   ): void {
+    if (!this.renewRdpSessionCredentialForHost(host)) {
+      this.rejectExpiredRdpSessionCredential(host);
+      return;
+    }
     if (!this.rdpGatewayConfirmationPending(result) ||
       !this.rdpCertificateResultMatchesLiveRoute(host, result)) {
       this.rejectStaleRdpCertificateResult();
@@ -7389,6 +7739,10 @@ struct HostListPage {
   }
 
   private doRdpCertificateContinueOnce(host: RemoteHost): void {
+    if (!this.renewRdpSessionCredentialForHost(host)) {
+      this.rejectExpiredRdpSessionCredential(host);
+      return;
+    }
     if (!this.rdpCertificateRouteResult) { return; }
     const result: RdpPreflightResult = this.rdpCertificateRouteResult;
     if (this.rdpGatewayConfirmationPending(result)) {
@@ -7416,6 +7770,10 @@ struct HostListPage {
   }
 
   private doRdpCertificateTrust(host: RemoteHost): void {
+    if (!this.renewRdpSessionCredentialForHost(host)) {
+      this.rejectExpiredRdpSessionCredential(host);
+      return;
+    }
     if (!this.rdpCertificateRouteResult) { return; }
     const result: RdpPreflightResult = this.rdpCertificateRouteResult;
     if (this.rdpGatewayConfirmationPending(result)) {
@@ -7456,6 +7814,10 @@ struct HostListPage {
     if (this.rdpCertificateClosing) {
       return;
     }
+    if (!this.renewRdpSessionCredentialForHost(host)) {
+      this.rejectExpiredRdpSessionCredential(host);
+      return;
+    }
     const diagnosticResult: RdpPreflightResult | null = oneTimeResult ||
       this.rdpCertificateRouteResult;
     if (diagnosticResult && !this.rdpCertificateResultMatchesLiveRoute(host, diagnosticResult)) {
@@ -7464,6 +7826,8 @@ struct HostListPage {
     }
     const params: Record<string, Object> = {};
     params['hostId'] = host.id;
+    params['rdpCredentialOwnerScopeId'] = host.userId;
+    params['rdpConnectionAttemptGeneration'] = this.rdpCertificateAttemptGeneration;
     if (diagnosticResult) {
       const target = diagnosticResult.targetCertificate;
       const gateway = diagnosticResult.gatewayCertificate;
@@ -7528,7 +7892,8 @@ struct HostListPage {
       return;
     }
     this.rdpCertificateHostId = '';
-    this.releaseConnectionAttempt(host.id);
+    this.releaseConnectionAttemptIfCurrent(
+      host.id, this.rdpCertificateAttemptGeneration);
     setTimeout((): void => {
       this.openSessionDestination('pages/RemoteDesktop', params, 'rdp_preflight_complete');
     }, rdpCertificateRouteDelayMsAfterSheetClose());
@@ -10272,6 +10637,8 @@ struct HostListPage {
     this.selectedAccountId = latestHost.rustdeskAccountId;
     this.selectedRdpCredentialId = latestHost.rdpCredentialId;
     this.sheetRdpAuthMode = latestHost.rdpAuthMode;
+    this.sheetRdpCredentialStorageMode = normalizeRdpCredentialStorageMode(
+      latestHost.rdpCredentialStorageMode);
     this.sheetRdpRestrictedAdminSecretSource = latestHost.rdpRestrictedAdminSecretSource;
     this.sheetRdpRestrictedAdminHash = '';
     // An existing blank-password host has already passed the explicit creation confirmation.
@@ -11749,6 +12116,8 @@ struct HostListPage {
       this.sshPreflightPanel();
     } else if (this.remoteHostSheetMode === REMOTE_HOST_SHEET_RDP_CERTIFICATE) {
       this.rdpCertificatePanel();
+    } else if (this.remoteHostSheetMode === REMOTE_HOST_SHEET_RDP_CREDENTIAL) {
+      this.rdpSessionCredentialPanel();
     } else if (this.remoteHostSheetMode === REMOTE_HOST_SHEET_VNC_CERTIFICATE) {
       this.vncCertificatePanel();
     } else if (this.remoteHostSheetMode === REMOTE_HOST_SHEET_VNC_CREDENTIAL) {
@@ -11782,6 +12151,9 @@ struct HostListPage {
         break;
       case REMOTE_HOST_SHEET_RDP_CERTIFICATE:
         this.doRdpCertificateCancel(false);
+        break;
+      case REMOTE_HOST_SHEET_RDP_CREDENTIAL:
+        this.cancelRdpSessionCredential(false);
         break;
       case REMOTE_HOST_SHEET_VNC_CERTIFICATE:
         this.cancelVncCertificatePreflight(false);
@@ -11834,6 +12206,8 @@ struct HostListPage {
         this.doSshPreflightCancel(false);
       } else if (mode === REMOTE_HOST_SHEET_RDP_CERTIFICATE) {
         this.doRdpCertificateCancel(false);
+      } else if (mode === REMOTE_HOST_SHEET_RDP_CREDENTIAL) {
+        this.cancelRdpSessionCredential(false);
       } else if (mode === REMOTE_HOST_SHEET_VNC_CERTIFICATE) {
         this.cancelVncCertificatePreflight(false);
       } else if (mode === REMOTE_HOST_SHEET_VNC_CREDENTIAL) {
@@ -11850,6 +12224,9 @@ struct HostListPage {
         break;
       case REMOTE_HOST_SHEET_RDP_CERTIFICATE:
         this.handleRdpCertificateSheetDisappear();
+        break;
+      case REMOTE_HOST_SHEET_RDP_CREDENTIAL:
+        this.handleRdpSessionCredentialDisappear();
         break;
       case REMOTE_HOST_SHEET_VNC_CERTIFICATE:
         this.handleVncCertificatePreflightDisappear();
@@ -11950,6 +12327,7 @@ struct HostListPage {
   private drainRemoteHostSheetQueue(dismissedMode: number): void {
     let nextMode: number = REMOTE_HOST_SHEET_NONE;
     let nextHostId: string = '';
+    let nextAttemptGeneration: number = 0;
     if (dismissedMode !== REMOTE_HOST_SHEET_SSH_PREFLIGHT && this.sshPreflightPendingHostId !== '') {
       nextMode = REMOTE_HOST_SHEET_SSH_PREFLIGHT;
       nextHostId = this.sshPreflightPendingHostId;
@@ -11958,7 +12336,9 @@ struct HostListPage {
       this.rdpCertificatePendingHostId !== '') {
       nextMode = REMOTE_HOST_SHEET_RDP_CERTIFICATE;
       nextHostId = this.rdpCertificatePendingHostId;
+      nextAttemptGeneration = this.rdpCertificatePendingAttemptGeneration;
       this.rdpCertificatePendingHostId = '';
+      this.rdpCertificatePendingAttemptGeneration = 0;
     } else if (dismissedMode !== REMOTE_HOST_SHEET_RUSTDESK_PREFLIGHT &&
       this.rustDeskProPreflightPendingHostId !== '') {
       nextMode = REMOTE_HOST_SHEET_RUSTDESK_PREFLIGHT;
@@ -11982,7 +12362,7 @@ struct HostListPage {
       if (nextMode === REMOTE_HOST_SHEET_SSH_PREFLIGHT) {
         this.openSshPreflight(nextHost);
       } else if (nextMode === REMOTE_HOST_SHEET_RDP_CERTIFICATE) {
-        this.openRdpCertificatePreflight(nextHost);
+        this.openRdpCertificatePreflight(nextHost, nextAttemptGeneration);
       } else if (nextMode === REMOTE_HOST_SHEET_VNC_CERTIFICATE) {
         const nextVncHostId: string = this.vncRecordIdForHost(nextHost);
         const nextVncHost: VncHostView | null = nextVncHostId === ''
@@ -16478,6 +16858,75 @@ struct HostListPage {
       .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.BOTTOM])
   }
 
+  @Builder rdpSessionCredentialPanel() {
+    Column() {
+      Row() {
+        SymbolGlyph($r('sys.symbol.key_fill')).fontSize(40).fontColor([this.accentColor])
+        Column() {
+          Text('RDP 连接认证').fontSize(17).fontWeight(FontWeight.Bold)
+            .fontColor(this.pal().text).fontFamily(this.font())
+          Text(this.rdpSessionCredentialHostLabel).fontSize(13)
+            .fontColor(this.pal().text3).margin({ top: 5 })
+        }.layoutWeight(1).margin({ left: 14 })
+      }.width('100%')
+
+      Text('账号和密码只保留在本次连接内存中，不保存到主机、凭据库、备份或云端。提交后才会进行 RDP 证书预检。')
+        .fontSize(13).fontColor(this.pal().text2).lineHeight(19)
+        .width('100%').margin({ top: 14 })
+
+      TextInput({
+        placeholder: '邮箱、DOMAIN\\user 或本地用户名',
+        text: this.rdpSessionCredentialUsername
+      }).height(42).fontSize(14).margin({ top: 14 })
+        .backgroundColor(this.pal().surface).fontColor(this.pal().text)
+        .placeholderColor(this.pal().text3).borderRadius(10)
+        .onChange((value: string): void => {
+          this.rdpSessionCredentialUsername = value;
+          this.rdpSessionCredentialError = '';
+        })
+
+      Row() {
+        TextInput({
+          placeholder: 'Windows 登录密码',
+          text: this.rdpSessionCredentialPassword
+        }).type(this.rdpSessionCredentialPasswordVisible ? InputType.Normal : InputType.Password)
+          .layoutWeight(1).height(42).backgroundColor(this.pal().surface)
+          .fontColor(this.pal().text).placeholderColor(this.pal().text3)
+          .onChange((value: string): void => {
+            this.rdpSessionCredentialPassword = value;
+            this.rdpSessionCredentialError = '';
+          })
+          .onSubmit((): void => { this.confirmRdpSessionCredential(); })
+        SymbolGlyph(this.rdpSessionCredentialPasswordVisible ?
+          $r('sys.symbol.eye_slash') : $r('sys.symbol.eye'))
+          .fontSize(20).fontColor([this.pal().text2]).margin({ left: 10 })
+          .onClick((): void => {
+            this.rdpSessionCredentialPasswordVisible =
+              !this.rdpSessionCredentialPasswordVisible;
+          })
+      }.width('100%').margin({ top: 10 })
+
+      if (this.rdpSessionCredentialError !== '') {
+        Text(this.rdpSessionCredentialError).fontSize(12).fontColor(this.pal().danger)
+          .lineHeight(18).width('100%').margin({ top: 10 })
+      }
+
+      Row() {
+        Button('取消').height(40).layoutWeight(1).fontSize(14)
+          .backgroundColor(this.pal().surface).fontColor(this.pal().text2).borderRadius(10)
+          .onClick((): void => { this.cancelRdpSessionCredential(); })
+        Button('继续').height(40).layoutWeight(1).fontSize(14)
+          .backgroundColor(this.accentColor).fontColor(Color.White).borderRadius(10)
+          .margin({ left: 12 }).onClick((): void => { this.confirmRdpSessionCredential(); })
+      }.width('100%').margin({ top: 18 })
+    }.width('100%').padding(20).backgroundColor(this.pal().sheetBg)
+      .backgroundBlurStyle(BlurStyle.Regular)
+      .borderRadius(this.breakpoint === 'sm' ?
+        { topLeft: 20, topRight: 20, bottomLeft: 0, bottomRight: 0 } : 20)
+      .constraintSize({ maxWidth: 620 })
+      .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.BOTTOM])
+  }
+
   @Builder vncCredentialPanel() {
     Column() {
       Row() {
@@ -18938,11 +19387,14 @@ struct HostListPage {
                 }.width('30%')
                 Column() {
                   this.fieldRow('用户名', this.proto === 'rdp' && this.sheetRdpAuthMode === 'password' &&
+                    this.sheetRdpCredentialStorageMode === 'connect_time' ? '连接时输入（不保存）' :
+                    (this.proto === 'rdp' && this.sheetRdpAuthMode === 'password' &&
                     this.selectedRdpCredentialId !== '' ? '已使用 Windows 凭据' :
-                    (this.proto === 'rdp' ? 'user 或 DOMAIN\\user' : 'root'),
+                    (this.proto === 'rdp' ? 'user 或 DOMAIN\\user' : 'root')),
                     this.username, (v: string): void => { this.username = v; },
                     !(this.proto === 'rdp' && this.sheetRdpAuthMode === 'password' &&
-                      this.selectedRdpCredentialId !== ''))
+                      (this.sheetRdpCredentialStorageMode === 'connect_time' ||
+                        this.selectedRdpCredentialId !== '')))
                 }.width('60%').margin({ left: 12 })
               }.width('100%')
             }
@@ -18950,7 +19402,8 @@ struct HostListPage {
 
           if (this.proto === 'rdp') {
             this.rdpAuthenticationModeSection()
-            if (this.sheetRdpAuthMode === 'password') {
+            if (this.sheetRdpAuthMode === 'password' &&
+              this.sheetRdpCredentialStorageMode === 'saved') {
               this.rdpCredentialSection()
             }
           }
@@ -18958,7 +19411,9 @@ struct HostListPage {
           // 密码：VNC 的密码/记住密码已由 vncClassicEditorFields 提供，
           // 通用密码行必须排除 VNC，避免 sheetRdpAuthMode 默认值造成双密码槽位。
           if (this.proto !== 'vnc' &&
-            ((this.proto !== 'rdp' && this.proto !== 'vnc') || this.sheetRdpAuthMode === 'password')) {
+            ((this.proto !== 'rdp' && this.proto !== 'vnc') ||
+              (this.sheetRdpAuthMode === 'password' &&
+                this.sheetRdpCredentialStorageMode === 'saved'))) {
             this.pwdRow(!(this.proto === 'rdp' && this.selectedRdpCredentialId !== ''))
           }
 
@@ -19314,6 +19769,7 @@ struct HostListPage {
         this.sheetRdpAuthMode = mode;
         this.sheetErr = '';
         if (mode !== 'password') {
+          this.sheetRdpCredentialStorageMode = 'saved';
           this.selectedRdpCredentialId = '';
           this.sheetPwd = '';
           this.sheetPasswordFromStoredProjection = false;
@@ -19342,6 +19798,43 @@ struct HostListPage {
         this.rdpAuthModeButton('空密码账户', 'blank_password', 6)
         this.rdpAuthModeButton('Restricted Admin', 'restricted_admin', 6)
       }.width('100%').margin({ bottom: 8 })
+
+      if (this.sheetRdpAuthMode === 'password') {
+        Text('账号和密码').fontSize(11).fontColor(this.pal().text2)
+          .fontFamily(this.font()).margin({ bottom: 4 })
+        Row() {
+          Button('保存到本地').layoutWeight(1).height(34).borderRadius(8)
+            .backgroundColor(this.sheetRdpCredentialStorageMode === 'saved' ?
+              this.accentColor : this.pal().surface)
+            .fontColor(this.sheetRdpCredentialStorageMode === 'saved' ?
+              Color.White : this.pal().text2)
+            .fontSize(11).onClick((): void => {
+              this.sheetRdpCredentialStorageMode = 'saved';
+              this.sheetErr = '';
+            })
+          Button('每次连接输入').layoutWeight(1).height(34).borderRadius(8)
+            .margin({ left: 6 })
+            .backgroundColor(this.sheetRdpCredentialStorageMode === 'connect_time' ?
+              this.accentColor : this.pal().surface)
+            .fontColor(this.sheetRdpCredentialStorageMode === 'connect_time' ?
+              Color.White : this.pal().text2)
+            .fontSize(11).onClick((): void => {
+              this.sheetRdpCredentialStorageMode = 'connect_time';
+              this.username = '';
+              this.sheetPwd = '';
+              this.sheetPasswordConfigured = false;
+              this.sheetPasswordChanged = true;
+              this.sheetPasswordFromStoredProjection = false;
+              this.selectedRdpCredentialId = '';
+              this.sheetErr = '';
+            })
+        }.width('100%').margin({ bottom: 6 })
+        if (this.sheetRdpCredentialStorageMode === 'connect_time') {
+          Text('此主机不保存也不引用账号和密码；每次连接时输入，已有 Windows 凭据不会被自动删除。')
+            .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
+            .lineHeight(17).margin({ bottom: 8 })
+        }
+      }
 
       if (this.sheetRdpAuthMode === 'blank_password') {
         Text('密码为空。目标 Windows 必须允许空密码本地账户通过远程桌面登录；应用不会修改目标机策略。')
@@ -20361,6 +20854,7 @@ struct HostListPage {
     this.selectedRelayId = ''; this.selectedAccountId = '';
     this.selectedRdpCredentialId = '';
     this.sheetRdpAuthMode = 'password';
+    this.sheetRdpCredentialStorageMode = 'saved';
     this.sheetRdpRestrictedAdminSecretSource = 'ntlm_hash';
     this.sheetRdpRestrictedAdminHash = '';
     this.sheetRdpBlankPasswordConfirmed = false;
@@ -20563,8 +21057,13 @@ struct HostListPage {
       if (this.proto === 'rdp') {
         h.rdpClientHostname = this.rdpClientHostname;
         h.rdpAuthMode = this.sheetRdpAuthMode;
+        h.rdpCredentialStorageMode = this.sheetRdpCredentialStorageMode;
         h.rdpRestrictedAdminSecretSource = this.sheetRdpRestrictedAdminSecretSource;
-        if (this.sheetRdpAuthMode === 'password' && this.selectedRdpCredentialId !== '') {
+        if (this.sheetRdpAuthMode === 'password' &&
+          this.sheetRdpCredentialStorageMode === 'connect_time') {
+          h.rdpCredentialId = '';
+          h.username = '';
+        } else if (this.sheetRdpAuthMode === 'password' && this.selectedRdpCredentialId !== '') {
           h.rdpCredentialId = this.selectedRdpCredentialId;
           h.username = '';
         } else {
@@ -20587,7 +21086,9 @@ struct HostListPage {
     if (this.proto === 'rdp') {
       const keepsSamePasswordBinding: boolean = existingHost !== undefined &&
         existingHost.protocol === 'rdp' && existingHost.rdpAuthMode === 'password' &&
+        normalizeRdpCredentialStorageMode(existingHost.rdpCredentialStorageMode) === 'saved' &&
         existingHost.rdpCredentialId === '' && this.sheetRdpAuthMode === 'password' &&
+        this.sheetRdpCredentialStorageMode === 'saved' &&
         this.selectedRdpCredentialId === '' && secretBindingUnchanged(
           [existingHost.host.trim(), existingHost.port.toString(), existingHost.username.trim()],
           [h.host.trim(), h.port.toString(), h.username.trim()]);
@@ -20596,9 +21097,10 @@ struct HostListPage {
         this.sheetErr = '密码仍在加密仓库中；请先解锁并重新打开主机再更新';
         return;
       }
-      h.password = resolveSecretEditValue(existingPassword,
-        this.sheetRdpAuthMode === 'password' && this.selectedRdpCredentialId === '' ? this.sheetPwd : '',
-        this.secretEditorHidden('rdp_host_password'), keepsSamePasswordBinding);
+      h.password = this.sheetRdpCredentialStorageMode === 'connect_time' ? '' :
+        resolveSecretEditValue(existingPassword,
+          this.sheetRdpAuthMode === 'password' && this.selectedRdpCredentialId === '' ? this.sheetPwd : '',
+          this.secretEditorHidden('rdp_host_password'), keepsSamePasswordBinding);
       h.normalizeRdpAuthentication();
       h.passwordConfigured = h.password.length > 0;
     } else if (this.proto === 'rustdesk') {

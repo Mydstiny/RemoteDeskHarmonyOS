@@ -3,6 +3,7 @@ import { RdpCredential } from '../../model/RdpCredential';
 import {
   RemoteHost,
   RdpAuthMode,
+  RdpCredentialStorageMode,
   RdpRestrictedAdminSecretSource,
   normalizeRdpNtlmHash
 } from '../../model/RemoteHost';
@@ -38,6 +39,7 @@ export struct RdpAddFlow {
   @State password: string = '';
   @State credentialId: string = '';
   @State authMode: RdpAuthMode = 'password';
+  @State credentialStorageMode: RdpCredentialStorageMode = 'saved';
   @State blankPasswordConfirmed: boolean = false;
   @State restrictedAdminSource: RdpRestrictedAdminSecretSource = 'ntlm_hash';
   @State restrictedAdminHash: string = '';
@@ -52,7 +54,8 @@ export struct RdpAddFlow {
 
   private onCredentialsChanged(): void {
     this.credentialsViewRevision += 1;
-    if (!this.awaitingNewCredential || this.authMode !== 'password') { return; }
+    if (!this.awaitingNewCredential || this.authMode !== 'password' ||
+      this.credentialStorageMode !== 'saved') { return; }
     const added: RdpCredential | undefined = this.credentials.find((credential: RdpCredential): boolean =>
       this.credentialIdsBeforeAdd.indexOf(credential.id) < 0);
     if (added === undefined) { return; }
@@ -87,11 +90,24 @@ export struct RdpAddFlow {
     this.authMode = mode;
     this.errorText = '';
     if (mode !== 'password') {
+      this.credentialStorageMode = 'saved';
       this.credentialId = '';
       this.password = '';
     }
     if (mode !== 'blank_password') { this.blankPasswordConfirmed = false; }
     if (mode !== 'restricted_admin') { this.restrictedAdminHash = ''; }
+  }
+
+  private selectCredentialStorageMode(mode: RdpCredentialStorageMode): void {
+    this.credentialStorageMode = mode;
+    this.errorText = '';
+    if (mode === 'connect_time') {
+      this.username = '';
+      this.password = '';
+      this.credentialId = '';
+      this.awaitingNewCredential = false;
+      this.credentialIdsBeforeAdd = [];
+    }
   }
 
   private buildHost(): RemoteHost | null {
@@ -116,7 +132,8 @@ export struct RdpAddFlow {
       this.errorText = '该主机没有可用于自动更新的稳定证书身份，请选择静态 IP'; return null;
     }
     if (this.authMode === 'password') {
-      if (this.credentialId === '' && (this.username.trim() === '' || this.password === '')) {
+      if (this.credentialStorageMode === 'saved' && this.credentialId === '' &&
+        (this.username.trim() === '' || this.password === '')) {
         this.errorText = '请输入账号和密码，或选择 Windows 凭据'; return null;
       }
     } else {
@@ -144,11 +161,18 @@ export struct RdpAddFlow {
       host.lanLastResolvedAt = Date.now();
     }
     host.rdpAuthMode = this.authMode;
+    host.rdpCredentialStorageMode = this.credentialStorageMode;
     host.rdpRestrictedAdminSecretSource = this.restrictedAdminSource;
     if (this.authMode === 'password') {
-      host.username = this.credentialId === '' ? this.username.trim() : '';
-      host.password = this.credentialId === '' ? this.password : '';
-      host.rdpCredentialId = this.credentialId;
+      if (this.credentialStorageMode === 'connect_time') {
+        host.username = '';
+        host.password = '';
+        host.rdpCredentialId = '';
+      } else {
+        host.username = this.credentialId === '' ? this.username.trim() : '';
+        host.password = this.credentialId === '' ? this.password : '';
+        host.rdpCredentialId = this.credentialId;
+      }
     } else {
       host.username = this.username.trim();
       host.password = '';
@@ -270,47 +294,69 @@ export struct RdpAddFlow {
   }
 
   @Builder private passwordAuthenticationFields() {
-    Text('普通密码/凭据').fontSize(12).fontColor(this.pal().text3).width('100%').margin({ bottom: 8 })
+    Text('账号和密码保存方式').fontSize(12).fontColor(this.pal().text3)
+      .width('100%').margin({ bottom: 8 })
     Row() {
-      Button('账号密码').layoutWeight(1).height(38).borderRadius(10)
-        .backgroundColor(this.credentialId === '' ? this.accentColor : this.pal().surface)
-        .fontColor(this.credentialId === '' ? Color.White : this.pal().text2)
-        .onClick((): void => { this.credentialId = ''; this.errorText = ''; })
-      Button('Windows 凭据').layoutWeight(1).height(38).borderRadius(10).margin({ left: 8 })
-        .backgroundColor(this.credentialId !== '' ? this.accentColor : this.pal().surface)
-        .fontColor(this.credentialId !== '' ? Color.White : this.pal().text2)
-        .onClick((): void => {
-          if (this.credentials.length > 0) { this.credentialId = this.credentials[0].id; }
-          this.errorText = '';
-        })
+      Button('保存到本地').layoutWeight(1).height(38).borderRadius(10)
+        .backgroundColor(this.credentialStorageMode === 'saved' ? this.accentColor : this.pal().surface)
+        .fontColor(this.credentialStorageMode === 'saved' ? Color.White : this.pal().text2)
+        .onClick((): void => { this.selectCredentialStorageMode('saved'); })
+      Button('每次连接输入').layoutWeight(1).height(38).borderRadius(10).margin({ left: 8 })
+        .backgroundColor(this.credentialStorageMode === 'connect_time' ?
+          this.accentColor : this.pal().surface)
+        .fontColor(this.credentialStorageMode === 'connect_time' ? Color.White : this.pal().text2)
+        .onClick((): void => { this.selectCredentialStorageMode('connect_time'); })
     }.width('100%').margin({ bottom: 14 })
-    if (this.credentialId === '') {
-      this.inputField('账号', this.username, '邮箱、DOMAIN\\user 或本地用户名',
-        (v: string): void => { this.username = v; })
-      this.inputField('密码', this.password, 'Windows 登录密码',
-        (v: string): void => { this.password = v; }, true)
+    if (this.credentialStorageMode === 'connect_time') {
+      Row() {
+        SymbolGlyph($r('sys.symbol.lock_fill')).fontSize(16).fontColor([this.accentColor])
+        Text('此主机不保存也不引用账号和密码；每次连接时在证书预检前输入，仅用于本次会话。')
+          .fontSize(11).fontColor(this.pal().text2).lineHeight(17).layoutWeight(1)
+          .margin({ left: 8 })
+      }.width('100%').padding(12).borderRadius(10).backgroundColor(this.pal().surface)
+        .margin({ bottom: 12 })
     } else {
-      ForEach(this.credentials, (credential: RdpCredential) => {
-        Row() {
-          Column() {
-            Text(credential.displayName()).fontSize(14).fontColor(this.pal().text)
-            Text(credential.username).fontSize(11).fontColor(this.pal().text3).margin({ top: 2 })
-          }.alignItems(HorizontalAlign.Start).layoutWeight(1)
-          if (this.credentialId === credential.id) {
-            SymbolGlyph($r('sys.symbol.checkmark')).fontSize(18).fontColor([this.accentColor])
-          }
-        }.width('100%').padding(12).borderRadius(10).margin({ bottom: 6 })
-        .backgroundColor(this.pal().surface)
-        .onClick((): void => { this.credentialId = credential.id; })
-      }, (credential: RdpCredential): string => credential.id + ':' + this.credentialsViewRevision.toString())
+      Row() {
+        Button('账号密码').layoutWeight(1).height(38).borderRadius(10)
+          .backgroundColor(this.credentialId === '' ? this.accentColor : this.pal().surface)
+          .fontColor(this.credentialId === '' ? Color.White : this.pal().text2)
+          .onClick((): void => { this.credentialId = ''; this.errorText = ''; })
+        Button('Windows 凭据').layoutWeight(1).height(38).borderRadius(10).margin({ left: 8 })
+          .backgroundColor(this.credentialId !== '' ? this.accentColor : this.pal().surface)
+          .fontColor(this.credentialId !== '' ? Color.White : this.pal().text2)
+          .onClick((): void => {
+            if (this.credentials.length > 0) { this.credentialId = this.credentials[0].id; }
+            this.errorText = '';
+          })
+      }.width('100%').margin({ bottom: 14 })
+      if (this.credentialId === '') {
+        this.inputField('账号', this.username, '邮箱、DOMAIN\\user 或本地用户名',
+          (v: string): void => { this.username = v; })
+        this.inputField('密码', this.password, 'Windows 登录密码',
+          (v: string): void => { this.password = v; }, true)
+      } else {
+        ForEach(this.credentials, (credential: RdpCredential) => {
+          Row() {
+            Column() {
+              Text(credential.displayName()).fontSize(14).fontColor(this.pal().text)
+              Text(credential.username).fontSize(11).fontColor(this.pal().text3).margin({ top: 2 })
+            }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+            if (this.credentialId === credential.id) {
+              SymbolGlyph($r('sys.symbol.checkmark')).fontSize(18).fontColor([this.accentColor])
+            }
+          }.width('100%').padding(12).borderRadius(10).margin({ bottom: 6 })
+          .backgroundColor(this.pal().surface)
+          .onClick((): void => { this.credentialId = credential.id; })
+        }, (credential: RdpCredential): string => credential.id + ':' + this.credentialsViewRevision.toString())
+      }
+      Button('添加 Windows 凭据').width('100%').height(38).borderRadius(10)
+        .backgroundColor(this.pal().surface).fontColor(this.accentColor).margin({ bottom: 12 })
+        .onClick((): void => {
+          this.credentialIdsBeforeAdd = this.credentials.map((credential: RdpCredential): string => credential.id);
+          this.awaitingNewCredential = true;
+          this.onAddCredential();
+        })
     }
-    Button('添加 Windows 凭据').width('100%').height(38).borderRadius(10)
-      .backgroundColor(this.pal().surface).fontColor(this.accentColor).margin({ bottom: 12 })
-      .onClick((): void => {
-        this.credentialIdsBeforeAdd = this.credentials.map((credential: RdpCredential): string => credential.id);
-        this.awaitingNewCredential = true;
-        this.onAddCredential();
-      })
   }
 
   @Builder private blankPasswordFields() {

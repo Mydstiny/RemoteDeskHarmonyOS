@@ -46,6 +46,9 @@ import moonlightDesktopFlipStoreTest from '../../../test/MoonlightDesktopFlipSto
 import remoteCursorStylePolicyTest from './RemoteCursorStylePolicy.test';
 import remoteHostSheetLifecyclePolicyTest from './RemoteHostSheetLifecyclePolicy.test';
 import vncSessionGeometryPolicyTest from './VncSessionGeometryPolicy.test';
+import rdpSessionCredentialHandoffTest from '../../../test/RdpSessionCredentialHandoff.test';
+import rdpSessionCredentialPolicyTest from '../../../test/RdpSessionCredentialPolicy.test';
+import rdpPreflightScopeTransitionPolicyTest from '../../../test/RdpPreflightScopeTransitionPolicy.test';
 import remoteFloatingPanelPlacementPolicyTest from './RemoteFloatingPanelPlacementPolicy.test';
 import vncSessionSettingsPolicyTest from './VncSessionSettingsPolicy.test';
 import vncSessionUiPolicyTest from '../../../test/VncSessionUiPolicy.test';
@@ -385,6 +388,9 @@ export default function testsuite() {
   remoteCursorStylePolicyTest();
   remoteHostSheetLifecyclePolicyTest();
   vncSessionGeometryPolicyTest();
+  rdpSessionCredentialHandoffTest();
+  rdpSessionCredentialPolicyTest();
+  rdpPreflightScopeTransitionPolicyTest();
   remoteFloatingPanelPlacementPolicyTest();
   vncSessionSettingsPolicyTest();
   vncSessionUiPolicyTest();

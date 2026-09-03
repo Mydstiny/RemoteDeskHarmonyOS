@@ -20,6 +20,7 @@ import {
   DisplayConfig,
   DisplayConfigJSON,
   normalizeRdpAuthMode,
+  normalizeRdpCredentialStorageMode,
   normalizeRdpCredentialParts,
   normalizeRdpNtlmHash,
   normalizeRdpRestrictedAdminSecretSource,
@@ -449,6 +450,54 @@ import {
   legacyVncRowMigrationDecision
 } from './LegacySharedStoreMigrationPolicy';
 import { AppCloneContext } from './AppCloneContext';
+import {
+  connectTimeRdpHostIdsFromRows,
+  RdpConnectTimeRowSanitization,
+  remoteHostMergeUsesConnectTimeRdpCredentials,
+  remoteHostRowUsesConnectTimeRdpCredentials,
+  sanitizeRemoteHostExtensionForRdpCredentialPolicy,
+  sanitizeRemoteHostRowForRdpCredentialPolicy
+} from './RdpSessionCredentialPolicy';
+
+export function remoteHostPersistentPasswordAllowed(host: RemoteHost): boolean {
+  return !(host.protocol === 'rdp' &&
+    normalizeRdpAuthMode(host.rdpAuthMode) === 'password' &&
+    normalizeRdpCredentialStorageMode(host.rdpCredentialStorageMode) ===
+      'connect_time');
+}
+
+/** Reject a caller that attempts to smuggle process-only RDP credentials into storage. */
+export function dynamicLanHostCredentialStateIsPersistable(host: RemoteHost): boolean {
+  return remoteHostPersistentPasswordAllowed(host) ||
+    (host.username === '' && host.password === '' &&
+      !host.passwordConfigured && host.rdpCredentialId === '');
+}
+
+export interface DynamicLanHostCredentialPayloadSanitization {
+  values: Record<string, string>;
+  changed: boolean;
+}
+
+/**
+ * Address-only discovery refreshes must not preserve an encrypted password
+ * from an older saved-mode row after the host policy becomes connect_time.
+ */
+export function sanitizeDynamicLanHostCredentialPayload(
+  host: RemoteHost,
+  source: Record<string, string>
+): DynamicLanHostCredentialPayloadSanitization {
+  const values: Record<string, string> = {};
+  const keys: string[] = Object.keys(source);
+  for (let i: number = 0; i < keys.length; i++) {
+    values[keys[i]] = source[keys[i]];
+  }
+  if (remoteHostPersistentPasswordAllowed(host)) {
+    return { values, changed: false };
+  }
+  const changed: boolean = (values['password'] || '') !== '';
+  values['password'] = '';
+  return { values, changed };
+}
 
 const CLOUD_REGISTRATION_PLAN: CloudDistributedRegistrationPlan =
   cloudDistributedRegistrationPlan();
@@ -1458,6 +1507,12 @@ export class CloudStore implements CryptoCloudStore, MoonlightRepositoryPort,
         hilog.warn(0x0001, 'CloudSync',
           '设备信任数据迁移已延后，主机数据继续可用且云传输暂停: ' +
           DataCrypto.errDetail(trustMigrationError));
+      }
+      const connectTimeCredentialCleanup: number =
+        this.stripRemoteHostConnectTimeCredentialsFromStorage();
+      if (connectTimeCredentialCleanup < 0) {
+        this.cloudRuntimeAdmissionReady = false;
+        throw new Error('连接时输入的 RDP 凭据残留无法安全清除');
       }
       try {
         await this.migrateLegacyVncRecords();
@@ -4565,6 +4620,48 @@ try { this.rollbackTrackedTransaction(); } catch (_ignored) {}
     }
   }
 
+  private portableRemoteHostMergeUsesConnectTimeCredentials(
+    hostId: string,
+    incoming: Record<string, string>
+  ): boolean {
+    if (!this.store || hostId === '') { return false; }
+    const existing: Record<string, string> = {};
+    const predicates = new relationalStore.RdbPredicates('remotehosts');
+    predicates.equalTo('id', hostId);
+    this.addCurrentOwnerPredicate(predicates);
+    const rows: relationalStore.ResultSet = this.store.querySync(predicates);
+    try {
+      if (rows.goToFirstRow()) {
+        existing['protocol'] = rows.getString(rows.getColumnIndex('protocol'));
+        existing['displayconfig'] = rows.getString(
+          rows.getColumnIndex('displayconfig'));
+      }
+    } finally {
+      rows.close();
+    }
+    return remoteHostMergeUsesConnectTimeRdpCredentials(existing, incoming);
+  }
+
+  /** Caller owns the portable-restore transaction. */
+  private scrubStoredRemoteHostExtensionCredentialReference(hostId: string): void {
+    const existing: Record<string, string> =
+      this.loadLocalExtension('remotehosts', hostId);
+    const extensionRow: Record<string, string> = {};
+    extensionRow['id'] = 'remotehosts:' + hostId;
+    extensionRow['tablename'] = 'remotehosts';
+    extensionRow['recordid'] = hostId;
+    extensionRow['payload'] = JSON.stringify(existing);
+    const sanitized: RdpConnectTimeRowSanitization =
+      sanitizeRemoteHostExtensionForRdpCredentialPolicy(
+        extensionRow, [hostId]);
+    const values: Record<string, string> =
+      JSON.parse(sanitized.row['payload'] || '{}') as Record<string, string>;
+    if (!this.saveLocalExtension('remotehosts', hostId, values)) {
+      throw new Error(
+        'portable restore connect_time extension scrub failed: ' + hostId);
+    }
+  }
+
   private mergePortableRows(
     table: string, rows: Array<Record<string, string>>
   ): number {
@@ -4577,7 +4674,9 @@ try { this.rollbackTrackedTransaction(); } catch (_ignored) {}
       : localBackupColumnsForTable(table);
     let changed: number = 0;
     for (let i = 0; i < rows.length; i++) {
-      let source: Record<string, string> = rows[i];
+      let source: Record<string, string> = table === 'remotehosts'
+        ? sanitizeRemoteHostRowForRdpCredentialPolicy(rows[i]).row
+        : rows[i];
       const id: string = source['id'] || '';
       if (id === '') {
         throw new Error('portable restore row identity missing: ' + table);
@@ -4586,6 +4685,8 @@ try { this.rollbackTrackedTransaction(); } catch (_ignored) {}
         source['userid'] !== this.currentOwnerScopeId()) {
         throw new Error('portable restore owner mismatch: ' + table);
       }
+      const connectTimeRemoteHost: boolean = table === 'remotehosts' &&
+        this.portableRemoteHostMergeUsesConnectTimeCredentials(id, source);
       if (table === MOONLIGHT_LOCAL_TABLE) {
         if (source['localonly'] !== '1' ||
             Object.keys(source).length !==
@@ -4674,6 +4775,15 @@ try { this.rollbackTrackedTransaction(); } catch (_ignored) {}
         }
         bucket[keys[k]] = source[keys[k]];
       }
+      if (connectTimeRemoteHost) {
+        // Partial/redacted restore omits secret columns by design. Explicitly
+        // overwrite any older saved-mode values left in the existing row once
+        // the effective merged policy becomes connect_time.
+        bucket['username'] = '';
+        bucket['password'] = '';
+        bucket['passward'] = '';
+        bucket['rdpcredentialid'] = '';
+      }
       if (table === VNC_CLOUD_TABLE || table === VNC_LOCAL_TABLE) {
         bucket['resetepoch'] = this.readVncResetEpoch();
         const validationRow: Record<string, string> = {};
@@ -4710,6 +4820,13 @@ try { this.rollbackTrackedTransaction(); } catch (_ignored) {}
         throw new Error(
           'portable restore insert failed: ' + table + '/' + id);
       }
+      if (connectTimeRemoteHost) {
+        // The extension section may be absent or omit this host. Clear an
+        // already-durable local reference in this same atomic transaction;
+        // startup cleanup is only a legacy fallback, never the correctness
+        // boundary for a successful restore.
+        this.scrubStoredRemoteHostExtensionCredentialReference(id);
+      }
       changed++;
     }
     return changed;
@@ -4740,8 +4857,28 @@ try { this.rollbackTrackedTransaction(); } catch (_ignored) {}
     }
   }
 
+  private storedRemoteHostUsesConnectTimeRdpCredentials(hostId: string): boolean {
+    if (!this.store || hostId === '') { return false; }
+    const predicates = new relationalStore.RdbPredicates('remotehosts');
+    predicates.equalTo('id', hostId);
+    this.addCurrentOwnerPredicate(predicates);
+    const rows: relationalStore.ResultSet = this.store.querySync(predicates);
+    try {
+      if (!rows.goToFirstRow()) { return false; }
+      const source: Record<string, string> = {};
+      source['id'] = hostId;
+      source['protocol'] = rows.getString(rows.getColumnIndex('protocol'));
+      source['displayconfig'] = rows.getString(
+        rows.getColumnIndex('displayconfig'));
+      return remoteHostRowUsesConnectTimeRdpCredentials(source);
+    } finally {
+      rows.close();
+    }
+  }
+
   private mergePortableExtensions(
-    rows: Array<Record<string, string>>
+    rows: Array<Record<string, string>>,
+    connectTimeHostIds: string[]
   ): number {
     if (!this.store) {
       throw new Error('portable extension restore store unavailable');
@@ -4749,7 +4886,17 @@ try { this.rollbackTrackedTransaction(); } catch (_ignored) {}
     const allowed: string[] = localBackupLocalExtensionColumns();
     let changed: number = 0;
     for (let i = 0; i < rows.length; i++) {
-      const source: Record<string, string> = rows[i];
+      const rawTable: string = rows[i]['tablename'] || '';
+      const rawRecordId: string = rows[i]['recordid'] || '';
+      const effectiveConnectTimeHostIds: string[] = connectTimeHostIds.slice();
+      if (rawTable === 'remotehosts' && rawRecordId !== '' &&
+        effectiveConnectTimeHostIds.indexOf(rawRecordId) < 0 &&
+        this.storedRemoteHostUsesConnectTimeRdpCredentials(rawRecordId)) {
+        effectiveConnectTimeHostIds.push(rawRecordId);
+      }
+      const source: Record<string, string> =
+        sanitizeRemoteHostExtensionForRdpCredentialPolicy(
+          rows[i], effectiveConnectTimeHostIds).row;
       const id: string = source['id'] || '';
       const table: string = source['tablename'] || '';
       const recordId: string = source['recordid'] || '';
@@ -4788,6 +4935,14 @@ try { this.rollbackTrackedTransaction(); } catch (_ignored) {}
       for (let k = 0; k < incomingKeys.length; k++) {
         merged[incomingKeys[k]] = incoming[incomingKeys[k]];
       }
+      const mergedRow: Record<string, string> = {};
+      mergedRow['id'] = id;
+      mergedRow['tablename'] = table;
+      mergedRow['recordid'] = recordId;
+      mergedRow['payload'] = JSON.stringify(merged);
+      const safeMerged: Record<string, string> =
+        sanitizeRemoteHostExtensionForRdpCredentialPolicy(
+          mergedRow, effectiveConnectTimeHostIds).row;
       const bucket: relationalStore.ValuesBucket = {};
       const keys: string[] = Object.keys(source);
       for (let k = 0; k < keys.length; k++) {
@@ -4797,7 +4952,7 @@ try { this.rollbackTrackedTransaction(); } catch (_ignored) {}
         }
         bucket[keys[k]] = source[keys[k]];
       }
-      bucket['payload'] = JSON.stringify(merged);
+      bucket['payload'] = safeMerged['payload'] || '{}';
       if (exists) {
         if (!rdbSingleRowAffected(
           this.store.updateSync(bucket, predicates))) {
@@ -4867,8 +5022,10 @@ try { this.rollbackTrackedTransaction(); } catch (_ignored) {}
         }
       }
       if (plan.extensionsPresent) {
+        const connectTimeHostIds: string[] = connectTimeRdpHostIdsFromRows(
+          plan.tables['remotehosts'] || []);
         const extensionChanged: number =
-          this.mergePortableExtensions(plan.extensions);
+          this.mergePortableExtensions(plan.extensions, connectTimeHostIds);
         changed += extensionChanged;
         cloudQuarantineChanged += extensionChanged;
         if (extensionChanged > 0) {
@@ -5976,7 +6133,15 @@ try { this.rollbackTrackedTransaction(); } catch (_ignored) {}
               'unknown');
             return;
           }
-          if (trustCleanup > 0) {
+          const credentialCleanup: number =
+            this.stripRemoteHostConnectTimeCredentialsFromStorage();
+          if (credentialCleanup < 0) {
+            recordFailure(
+              'CONNECT_TIME_CREDENTIAL_SANITIZE failed',
+              'unsafe_payload');
+            return;
+          }
+          if (trustCleanup > 0 || credentialCleanup > 0) {
             // The cloud-first row may have been written by an old client.
             // Queue one native-first scrub after this serialized pull; never
             // adopt its trust decision into the current device overlay.
@@ -8872,6 +9037,8 @@ try { this.rollbackTrackedTransaction(); } catch (_ignored) {}
       host.rustdeskAdaptiveOrientation ? '1' : '0') === '1';
     host.rdpCredentialId = get('rdpcredentialid', host.rdpCredentialId);
     host.rdpAuthMode = normalizeRdpAuthMode(get('rdpauthmode', host.rdpAuthMode));
+    host.rdpCredentialStorageMode = normalizeRdpCredentialStorageMode(
+      get('rdpcredentialstoragemode', host.rdpCredentialStorageMode));
     host.rdpRestrictedAdminSecretSource = normalizeRdpRestrictedAdminSecretSource(
       get('rdprestrictedadminsecretsource', host.rdpRestrictedAdminSecretSource));
     host.rdpEndpointMode = get('rdpendpointmode', host.rdpEndpointMode);
@@ -9009,6 +9176,7 @@ try { this.rollbackTrackedTransaction(); } catch (_ignored) {}
     values['rustdeskadaptiveorientation'] = host.rustdeskAdaptiveOrientation ? '1' : '0';
     values['rdpcredentialid'] = host.rdpCredentialId;
     values['rdpauthmode'] = host.rdpAuthMode;
+    values['rdpcredentialstoragemode'] = host.rdpCredentialStorageMode;
     values['rdprestrictedadminsecretsource'] = host.rdpRestrictedAdminSecretSource;
     values['rdpendpointmode'] = host.rdpEndpointMode;
     values['rdpgatewaytransport'] = host.rdpGatewayTransport;
@@ -9447,6 +9615,125 @@ try { this.rollbackTrackedTransaction(); } catch (_ignored) {}
       hilog.error(0x0001, 'CloudSync',
         '[CloudStore] pulled device trust cleanup failed: ' +
         safeError(err));
+      return -1;
+    }
+  }
+
+  /**
+   * Old or malformed cloud rows may combine connect_time policy with stored
+   * credentials. Scrub their raw columns before rowToHost can decrypt them.
+   */
+  private stripRemoteHostConnectTimeCredentialsFromStorage(): number {
+    if (!this.store) { return -1; }
+    try {
+      this.store.beginTransaction();
+      const predicates = new relationalStore.RdbPredicates('remotehosts');
+      this.addCurrentOwnerPredicate(predicates);
+      const rows: relationalStore.ResultSet = this.store.querySync(predicates);
+      const idIndex: number = rows.getColumnIndex('id');
+      const protocolIndex: number = rows.getColumnIndex('protocol');
+      const usernameIndex: number = rows.getColumnIndex('username');
+      const passwordIndex: number = rows.getColumnIndex('password');
+      const passwardIndex: number = rows.getColumnIndex('passward');
+      const credentialIdIndex: number = rows.getColumnIndex('rdpcredentialid');
+      const displayIndex: number = rows.getColumnIndex('displayconfig');
+      const deletedIndex: number = rows.getColumnIndex(
+        relationalStore.Field.DELETED_FLAG_FIELD);
+      let changedRows: number = 0;
+      const connectTimeHostIds: string[] = [];
+      while (rows.goToNextRow()) {
+        if (deletedIndex >= 0 && rows.getLong(deletedIndex) === 1) { continue; }
+        const id: string = idIndex >= 0 ? rows.getString(idIndex) : '';
+        if (id === '') { continue; }
+        const source: Record<string, string> = {};
+        source['id'] = id;
+        source['protocol'] = protocolIndex >= 0 ? rows.getString(protocolIndex) : '';
+        source['username'] = usernameIndex >= 0 ? rows.getString(usernameIndex) : '';
+        source['password'] = passwordIndex >= 0 ? rows.getString(passwordIndex) : '';
+        source['passward'] = passwardIndex >= 0 ? rows.getString(passwardIndex) : '';
+        source['rdpcredentialid'] = credentialIdIndex >= 0 ?
+          rows.getString(credentialIdIndex) : '';
+        source['displayconfig'] = displayIndex >= 0 ?
+          rows.getString(displayIndex) : '{}';
+        const sanitized: RdpConnectTimeRowSanitization =
+          sanitizeRemoteHostRowForRdpCredentialPolicy(source);
+        if (sanitized.connectTime && connectTimeHostIds.indexOf(id) < 0) {
+          connectTimeHostIds.push(id);
+        }
+        if (!sanitized.changed) { continue; }
+        const bucket: relationalStore.ValuesBucket = {
+          username: '', password: '', passward: '', rdpcredentialid: '',
+          displayconfig: sanitized.row['displayconfig'] || source['displayconfig'],
+          updatedat: Date.now()
+        };
+        const updatePredicates = new relationalStore.RdbPredicates('remotehosts');
+        updatePredicates.equalTo('id', id);
+        this.addCurrentOwnerPredicate(updatePredicates);
+        if (!rdbSingleRowAffected(this.store.updateSync(bucket, updatePredicates))) {
+          throw new Error('connect_time credential scrub failed id=' + id);
+        }
+        changedRows++;
+      }
+      rows.close();
+      if (connectTimeHostIds.length > 0) {
+        const extensionPredicates =
+          new relationalStore.RdbPredicates('localextensions');
+        extensionPredicates.equalTo('tablename', 'remotehosts');
+        const extensionRows: relationalStore.ResultSet =
+          this.store.querySync(extensionPredicates);
+        try {
+          const extensionIdIndex: number = extensionRows.getColumnIndex('id');
+          const extensionRecordIdIndex: number =
+            extensionRows.getColumnIndex('recordid');
+          const extensionPayloadIndex: number =
+            extensionRows.getColumnIndex('payload');
+          while (extensionRows.goToNextRow()) {
+            const extensionId: string = extensionIdIndex >= 0 ?
+              extensionRows.getString(extensionIdIndex) : '';
+            const recordId: string = extensionRecordIdIndex >= 0 ?
+              extensionRows.getString(extensionRecordIdIndex) : '';
+            if (extensionId === '' ||
+              connectTimeHostIds.indexOf(recordId) < 0) {
+              continue;
+            }
+            const extensionSource: Record<string, string> = {};
+            extensionSource['id'] = extensionId;
+            extensionSource['tablename'] = 'remotehosts';
+            extensionSource['recordid'] = recordId;
+            extensionSource['payload'] = extensionPayloadIndex >= 0 ?
+              extensionRows.getString(extensionPayloadIndex) : '{}';
+            const safeExtension: RdpConnectTimeRowSanitization =
+              sanitizeRemoteHostExtensionForRdpCredentialPolicy(
+                extensionSource, connectTimeHostIds);
+            if (!safeExtension.changed) { continue; }
+            const extensionBucket: relationalStore.ValuesBucket = {
+              payload: safeExtension.row['payload'] || '{}',
+              updatedat: Date.now()
+            };
+            const updateExtension =
+              new relationalStore.RdbPredicates('localextensions');
+            updateExtension.equalTo('id', extensionId);
+            if (!rdbSingleRowAffected(
+              this.store.updateSync(extensionBucket, updateExtension))) {
+              throw new Error(
+                'connect_time extension credential scrub failed id=' + recordId);
+            }
+            changedRows++;
+          }
+        } finally {
+          extensionRows.close();
+        }
+      }
+      if (changedRows > 0 && !this.recordTableMutation(
+        'remotehosts', 'strip_connect_time_credentials')) {
+        throw new Error('connect_time credential scrub journal failed');
+      }
+      this.commitTrackedTransaction();
+      return changedRows;
+    } catch (err) {
+      try { this.rollbackTrackedTransaction(); } catch (_ignored) {}
+      hilog.error(0x0001, 'CloudSync',
+        '[CloudStore] connect_time credential scrub failed: ' + safeError(err));
       return -1;
     }
   }
@@ -11267,10 +11554,13 @@ try { this.rollbackTrackedTransaction(); } catch (_ignored) {}
             continue;
           }
           const storedPassword: string = values['password'] ?? '';
-          host.passwordConfigured = storedPassword.length > 0;
-          host.password = this.decryptIfReady(
+          const persistentPasswordAllowed: boolean =
+            remoteHostPersistentPasswordAllowed(host);
+          host.passwordConfigured = persistentPasswordAllowed &&
+            storedPassword.length > 0;
+          host.password = persistentPasswordAllowed ? this.decryptIfReady(
             DataCrypto.getInstance(), DYNAMIC_LAN_HOST_AAD_TABLE, host.id,
-            'password', storedPassword);
+            'password', storedPassword) : '';
           const storedSshKeyData: string = values['sshkeydata'] ?? '';
           host.sshKeyDataConfigured = storedSshKeyData.length > 0;
           host.sshKeyData = this.decryptIfReady(
@@ -11324,9 +11614,10 @@ try { this.rollbackTrackedTransaction(); } catch (_ignored) {}
   /**
    * Persist only a discovery-authoritative DHCP address update.
    *
-   * This path deliberately preserves the existing encrypted password and is
-   * safe while the crypto key is locked. All non-address configuration comes
-   * from the already persisted record rather than from the caller.
+   * This path preserves the existing encrypted password only while the stored
+   * host policy permits persistence, and is safe while the crypto key is
+   * locked. All non-address configuration comes from the already persisted
+   * record rather than from the caller.
    */
   updateDynamicLanHostAddress(host: RemoteHost): boolean {
     if (!this.store) {
@@ -11366,8 +11657,11 @@ try { this.rollbackTrackedTransaction(); } catch (_ignored) {}
         current.rdpCertificateRouteIdentity = host.rdpCertificateRouteIdentity;
       }
       values['hostjson'] = JSON.stringify(this.dynamicLanHostJSON(current));
+      const safeValues: Record<string, string> =
+        sanitizeDynamicLanHostCredentialPayload(current, values).values;
       this.store.beginTransaction();
-      if (!this.saveLocalExtension(DYNAMIC_LAN_HOST_EXTENSION_TABLE, host.id, values)) {
+      if (!this.saveLocalExtension(
+        DYNAMIC_LAN_HOST_EXTENSION_TABLE, host.id, safeValues)) {
         throw new Error('dynamic LAN address extension update failed');
       }
       this.commitTrackedTransaction();
@@ -11538,7 +11832,8 @@ try { this.rollbackTrackedTransaction(); } catch (_ignored) {}
     values['ownerid'] = this.currentOwnerScopeId();
     values['hostjson'] = JSON.stringify(this.dynamicLanHostJSON(host));
     values['password'] = this.encryptIfReady(
-      crypto, DYNAMIC_LAN_HOST_AAD_TABLE, host.id, 'password', host.password);
+      crypto, DYNAMIC_LAN_HOST_AAD_TABLE, host.id, 'password',
+      remoteHostPersistentPasswordAllowed(host) ? host.password : '');
     values['sshkeydata'] = this.encryptIfReady(
       crypto, DYNAMIC_LAN_HOST_AAD_TABLE, host.id, 'sshkeydata', host.sshKeyData);
     values['sshkeypassphrase'] = this.encryptIfReady(
@@ -11564,7 +11859,8 @@ try { this.rollbackTrackedTransaction(); } catch (_ignored) {}
     }
     if (!this.recordOwnerWriteAllowed(host.userId) ||
       !lanHostUsesLocalOnlyStorage(host) ||
-      !lanHostLocalOnlyStorageIsValid(host)) {
+      !lanHostLocalOnlyStorageIsValid(host) ||
+      !dynamicLanHostCredentialStateIsPersistable(host)) {
       return this.setLastMutation(DataMutationResult.failure(
         host.id, 'invalid_data', '本机主机缺少可信的设备私有路由身份'));
     }
@@ -12604,10 +12900,17 @@ try { this.rollbackTrackedTransaction(); } catch (_ignored) {}
     h.protocol = getStr('protocol');
     h.host = getStr('host');
     h.port = rs.getLong(rs.getColumnIndex('port'));
-    h.username = getStr('username');
+    const dcJson: string = getStr('displayconfig') || '{}';
+    const displayPayload: RemoteHostDisplayPayload = decodeRemoteHostDisplayPayload(dcJson);
+    const credentialPolicyRow: Record<string, string> = {};
+    credentialPolicyRow['protocol'] = h.protocol;
+    credentialPolicyRow['displayconfig'] = dcJson;
+    const connectTimeRdp: boolean =
+      remoteHostRowUsesConnectTimeRdpCredentials(credentialPolicyRow);
+    h.username = connectTimeRdp ? '' : getStr('username');
     const storedPassword: string = getStr('passward') || getStr('password');
-    h.passwordConfigured = storedPassword.length > 0;
-    h.password = this.decryptIfReady(
+    h.passwordConfigured = !connectTimeRdp && storedPassword.length > 0;
+    h.password = connectTimeRdp ? '' : this.decryptIfReady(
       crypto, 'remotehosts', h.id, 'passward', storedPassword);
     h.customHostname = getStr('customhostname');
     h.sshUseKey = rs.getLong(rs.getColumnIndex('sshusekey')) !== 0;
@@ -12671,8 +12974,6 @@ try { this.rollbackTrackedTransaction(); } catch (_ignored) {}
     h.rdpEndpointMode = getStr('rdpendpointmode');
     h.rdpGatewayTransport = getStr('rdpgatewaytransport') || 'auto';
     h.rdpGatewayServerName = getStr('rdpgatewayservername');
-    const dcJson: string = rs.getString(rs.getColumnIndex('displayconfig'));
-    const displayPayload: RemoteHostDisplayPayload = decodeRemoteHostDisplayPayload(dcJson);
     if (displayPayload.displayConfigJson) {
       try {
         h.displayConfig = DisplayConfig.fromJSON(
@@ -12700,7 +13001,7 @@ try { this.rollbackTrackedTransaction(); } catch (_ignored) {}
     h.rustdeskDirectHost = getStr('rustdeskdirecthost');
     const rdDirectPortIdx: number = rs.getColumnIndex('rustdeskdirectport');
     h.rustdeskDirectPort = rdDirectPortIdx >= 0 ? rs.getLong(rdDirectPortIdx) : 21118;
-    h.rdpCredentialId = getStr('rdpcredentialid');
+    h.rdpCredentialId = connectTimeRdp ? '' : getStr('rdpcredentialid');
     h.sourceType = getStr('sourcetype') || 'manual';
     h.rustdeskProAccountId = getStr('rustdeskproaccountid');
     h.rustdeskProPeerId = getStr('rustdeskpropeerid');

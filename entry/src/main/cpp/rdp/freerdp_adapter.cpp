@@ -410,6 +410,35 @@ void secureClearFreeRdpPasswordHash(rdpSettings* settings) {
     // remains available to FreeRDP's own reconnect path.
     freerdp_settings_set_string(settings, FreeRDP_PasswordHash, "");
 }
+
+void secureClearFreeRdpSettingString(
+    rdpSettings* settings, FreeRDP_Settings_Keys_String key) {
+    if (!settings) {
+        return;
+    }
+    char* value = freerdp_settings_get_string_writable(settings, key);
+    if (value) {
+        volatile char* bytes = value;
+        const size_t length = std::strlen(value);
+        for (size_t index = 0; index < length; ++index) {
+            bytes[index] = '\0';
+        }
+    }
+    // Release the settings-owned allocation only after its visible bytes have
+    // been overwritten. Ignore a replacement allocation failure during final
+    // teardown: the original buffer has already been cleared.
+    (void)freerdp_settings_set_string(settings, key, "");
+}
+
+void secureClearFreeRdpCredentials(rdpSettings* settings) {
+    secureClearFreeRdpSettingString(settings, FreeRDP_Username);
+    secureClearFreeRdpSettingString(settings, FreeRDP_Password);
+    secureClearFreeRdpSettingString(settings, FreeRDP_Domain);
+    secureClearFreeRdpSettingString(settings, FreeRDP_GatewayUsername);
+    secureClearFreeRdpSettingString(settings, FreeRDP_GatewayPassword);
+    secureClearFreeRdpSettingString(settings, FreeRDP_GatewayDomain);
+    secureClearFreeRdpPasswordHash(settings);
+}
 #endif
 
 std::string sha256FingerprintFromCert(X509* cert) {
@@ -3385,6 +3414,25 @@ static std::shared_ptr<RdpPreflightCallbackState> findRdpPreflightState(freerdp*
     return it == g_rdpPreflightStates.end() ? nullptr : it->second;
 }
 
+static void releaseRdpPreflightInstance(freerdp* instance) {
+    if (!instance) {
+        return;
+    }
+    {
+        std::lock_guard<std::mutex> lock(g_rdpPreflightMutex);
+        g_rdpPreflightStates.erase(instance);
+    }
+    instance->VerifyCertificate = nullptr;
+    instance->VerifyX509Certificate = nullptr;
+    instance->VerifyCertificateEx = nullptr;
+    instance->VerifyChangedCertificateEx = nullptr;
+    secureClearFreeRdpCredentials(instance->settings);
+    if (instance->context) {
+        freerdp_context_free(instance);
+    }
+    freerdp_free(instance);
+}
+
 static bool preflightUsesGateway(const RdpPreflightCallbackState& /*state*/, DWORD flags) {
     return (flags & VERIFY_CERT_FLAG_GATEWAY) != 0;
 }
@@ -3753,6 +3801,11 @@ static RdpPreflightResult probeRdpCertificateRouteWithFreeRdp(
         result.gatewayRiskFlags = classification.riskFlags;
         return result;
     }
+    const auto instanceDeleter = [](freerdp* value) {
+        releaseRdpPreflightInstance(value);
+    };
+    std::unique_ptr<freerdp, decltype(instanceDeleter)> instanceOwner(
+        instance, instanceDeleter);
 
     auto state = std::make_shared<RdpPreflightCallbackState>(authenticatedRequest);
     {
@@ -3847,16 +3900,6 @@ static RdpPreflightResult probeRdpCertificateRouteWithFreeRdp(
                 }
             });
         } catch (...) {
-            {
-                std::lock_guard<std::mutex> lock(g_rdpPreflightMutex);
-                g_rdpPreflightStates.erase(instance);
-            }
-            instance->VerifyCertificate = nullptr;
-            instance->VerifyX509Certificate = nullptr;
-            instance->VerifyCertificateEx = nullptr;
-            instance->VerifyChangedCertificateEx = nullptr;
-            freerdp_context_free(instance);
-            freerdp_free(instance);
             return makeRdpPreflightError(
                 request, "network", "E-RDP-NETWORK-WATCHER",
                 "Unable to start the RDP preflight cancellation watcher");
@@ -4019,8 +4062,6 @@ static RdpPreflightResult probeRdpCertificateRouteWithFreeRdp(
     }
     RdpPreflightPolicy::mergeRiskFlags(result.riskFlags, result.gatewayRiskFlags);
     RdpPreflightPolicy::mergeRiskFlags(result.riskFlags, result.targetRiskFlags);
-    freerdp_context_free(instance);
-    freerdp_free(instance);
     return result;
 }
 
@@ -6417,7 +6458,7 @@ void FreeRdpAdapter::cleanupInstance(
             std::lock_guard<std::mutex> channelLock(retainedAdapter->impl_->cliprdrMutex);
             retainedAdapter->impl_->fileClipboard->detach();
         }
-        secureClearFreeRdpPasswordHash(doomedInstance->settings);
+        secureClearFreeRdpCredentials(doomedInstance->settings);
         if (releaseGdi && doomedContext && doomedContext->gdi) {
             gdi_free(doomedInstance);
         }

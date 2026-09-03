@@ -7,6 +7,18 @@ export function nextConnectionAttemptGeneration(current: number): number {
   return current >= Number.MAX_SAFE_INTEGER ? 1 : current + 1;
 }
 
+let processConnectionAttemptGeneration: number = 0;
+
+/**
+ * Allocate from process scope so rebuilding HostList cannot reuse an attempt
+ * token while a callback from the previous component instance is still queued.
+ */
+export function allocateConnectionAttemptGeneration(): number {
+  processConnectionAttemptGeneration = nextConnectionAttemptGeneration(
+    processConnectionAttemptGeneration);
+  return processConnectionAttemptGeneration;
+}
+
 export function shouldBeginConnectionAttempt(activeHostId: string): boolean {
   return activeHostId.trim().length === 0;
 }

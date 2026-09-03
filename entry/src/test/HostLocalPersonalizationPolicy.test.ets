@@ -94,6 +94,25 @@ export default function hostLocalPersonalizationPolicyTest(): void {
       expect(remoteHostCloudBaseChanged(before, local)).assertTrue();
     });
 
+    it('classifies_RDP_connect_time_credential_policy_as_cloud_base', 0, (): void => {
+      const before = new RemoteHost();
+      before.id = 'rdp-host-1';
+      before.label = 'RDP Desk';
+      before.protocol = 'rdp';
+      before.host = '192.0.2.21';
+      before.username = 'saved-user';
+      before.password = 'saved-password';
+
+      const connectTime = RemoteHost.fromJSON(before.toJSON());
+      connectTime.rdpCredentialStorageMode = 'connect_time';
+      connectTime.normalizeRdpAuthentication();
+
+      expect(remoteHostCloudBaseChanged(before, connectTime)).assertTrue();
+      expect(connectTime.username).assertEqual('');
+      expect(connectTime.password).assertEqual('');
+      expect(connectTime.rdpCredentialId).assertEqual('');
+    });
+
     it('keeps_vnc_cloud_legacy_values_while_local_override_wins', 0, (): void => {
       const legacy = vncHost();
       const phone = vncHost();

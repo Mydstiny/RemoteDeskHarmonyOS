@@ -179,6 +179,45 @@ export default function localUnitTest() {
       expect(restored.rdpRestrictedAdminSecretSource).assertEqual('ntlm_hash');
     });
 
+    it('RDP_connect_time_credentials_should_never_serialize', 0, () => {
+      const host = new RemoteHost();
+      host.label = 'PromptEveryTime';
+      host.protocol = 'rdp';
+      host.host = '192.0.2.20';
+      host.rdpAuthMode = 'password';
+      host.rdpCredentialStorageMode = 'connect_time';
+      host.username = 'must-not-persist';
+      host.password = 'must-not-persist';
+      host.passwordConfigured = true;
+      host.rdpCredentialId = 'must-not-persist';
+      expect(host.isValid()).assertFalse();
+      expect(host.getValidationErrors().length).assertEqual(1);
+
+      const serialized: Record<string, Object> = host.toJSON() as Record<string, Object>;
+      expect(serialized['username']).assertEqual('');
+      expect(serialized['password']).assertEqual('');
+      expect(serialized['rdpCredentialId']).assertEqual('');
+      expect(serialized['rdpCredentialStorageMode']).assertEqual('connect_time');
+
+      const restored: RemoteHost = RemoteHost.fromJSON(host.toJSON());
+      expect(restored.username).assertEqual('');
+      expect(restored.password).assertEqual('');
+      expect(restored.passwordConfigured).assertFalse();
+      expect(restored.rdpCredentialId).assertEqual('');
+      expect(restored.getValidationErrors().length).assertEqual(0);
+      expect(restored.isValid()).assertTrue();
+      expect(host.runtimeClone().passwordConfigured).assertFalse();
+    });
+
+    it('RDP_non_password_modes_should_force_saved_storage_policy', 0, () => {
+      const host = new RemoteHost();
+      host.protocol = 'rdp';
+      host.rdpAuthMode = 'restricted_admin';
+      host.rdpCredentialStorageMode = 'connect_time';
+      host.normalizeRdpAuthentication();
+      expect(host.rdpCredentialStorageMode).assertEqual('saved');
+    });
+
     it('RDP_legacy_empty_password_hash_should_require_a_real_hash', 0, () => {
       const host = new RemoteHost();
       host.protocol = 'rdp';

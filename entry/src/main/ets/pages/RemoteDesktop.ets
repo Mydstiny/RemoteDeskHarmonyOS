@@ -78,6 +78,17 @@ import {
   VncSessionCredentialHandoff
 } from '../services/VncSessionCredentialHandoff';
 import {
+  RdpSessionCredentialDecision,
+  RdpSessionCredentialHandoff
+} from '../services/RdpSessionCredentialHandoff';
+import {
+  rdpSessionCredentialBindingIsCurrent,
+  rdpSessionCredentialNativeAdmissionIsCurrent,
+  rdpSessionCredentialRequiredForNewConnection,
+  shouldInvalidatePendingRdpSessionCredentialOnBackground,
+  shouldInvalidatePendingRdpSessionCredentialRouteOnBackground
+} from '../services/RdpSessionCredentialPolicy';
+import {
   vncAuthFailureShouldReplaceSavedCredential,
   vncCredentialPasswordForConnect
 } from '../services/VncCredentialPreflightPolicy';
@@ -1123,6 +1134,13 @@ struct RemoteDesktop {
   private orientationApplied: boolean = false;
   private connectAttemptId: number = 0;
   private pendingHost: RemoteHost | null = null;
+  // Staged synchronously from router params before aboutToAppear's first
+  // await, so an immediate independent-window background event can still burn
+  // the exact one-shot credential without relying on pendingHost initialization.
+  private rdpCredentialRouteHostId: string = '';
+  private rdpCredentialRouteOwnerId: string = '';
+  private rdpCredentialRouteAttemptGeneration: number = 0;
+  private rdpConnectTimeCredentialRoutePending: boolean = false;
   // Transient RDP certificate decisions are handed from the preflight page
   // to the real FreeRDP callback path. They are never persisted in RemoteHost.
   private rdpCertificateAllowUnpinnedOnce: boolean = false;
@@ -7605,6 +7623,7 @@ struct RemoteDesktop {
   private applyAbilityBackgroundState(isBackground: boolean): void {
     if (isBackground) {
       this.cancelPendingDisappearDecision();
+      this.invalidatePendingRdpCredentialAttemptOnBackground();
     }
     const action: RemoteDesktopBackgroundAction = decideRemoteDesktopBackgroundAction(
       isBackground,
@@ -7629,6 +7648,103 @@ struct RemoteDesktop {
     if (action === RemoteDesktopBackgroundAction.alreadyPreserved) {
       hilog.info(RD_DOMAIN, RD_TAG, 'bgFlagChange: session already preserved');
     }
+  }
+
+  /**
+   * Burn a not-yet-consumed RDP credential when this exact window loses the
+   * foreground. Advancing connectAttemptId also fences an async doConnect that
+   * is still waiting for account/native teardown; established sessions keep
+   * their normal detach/restore lifecycle and never need another prompt.
+   */
+  private invalidatePendingRdpCredentialAttemptOnBackground(): void {
+    const host: RemoteHost | null = this.pendingHost;
+    const stagedPending: boolean =
+      this.rdpConnectTimeCredentialRoutePending;
+    if ((!this.connecting && !this.connectStarted) ||
+      (!shouldInvalidatePendingRdpSessionCredentialOnBackground(
+        host, true, this.connected, this.bgRestorePending) &&
+      !shouldInvalidatePendingRdpSessionCredentialRouteOnBackground(
+        stagedPending, true, this.connected, this.bgRestorePending))) {
+      return;
+    }
+    const ownerId: string = host === null ?
+      this.rdpCredentialRouteOwnerId : host.userId;
+    const hostId: string = host === null ?
+      this.rdpCredentialRouteHostId : host.id;
+    const routeAttemptGeneration: number =
+      this.rdpCredentialRouteAttemptGeneration;
+    if (ownerId !== '' && hostId !== '') {
+      RdpSessionCredentialHandoff.getInstance().clearIfMatches(
+        ownerId, hostId, routeAttemptGeneration);
+    }
+    this.clearRdpCredentialRouteBinding();
+    this.connectAttemptId += 1;
+    this.connectStarted = false;
+    this.connecting = false;
+    this.connectionError = 'RDP 连接已取消';
+    this.connectionErrorDetail = '窗口进入后台后一次性凭据已清除，请返回主机列表重新输入。';
+    hilog.info(RD_DOMAIN, RD_TAG,
+      'RDP pending one-shot credential cleared on background hostIdHash=' +
+      hashForLog(hostId));
+    if (this.sessionId > 0 || this.rendererHandle > 0 || this.decoderHandle > 0) {
+      // loader.connect has already copied the credential, but the protocol has
+      // not reached its established gate. Terminate that exact native owner so
+      // authentication cannot continue invisibly in the background.
+      this.disconnectAndCleanup('rdp-preconnect-background');
+    }
+  }
+
+  private stageRdpCredentialRouteBinding(routeParams: Object): void {
+    this.clearRdpCredentialRouteBinding();
+    if (!routeParams) { return; }
+    const params: Record<string, Object> = routeParams as Record<string, Object>;
+    const hostId: string = ((params['hostId'] as string) || '').trim();
+    if (hostId === '') { return; }
+    const ownerId: string =
+      ((params['rdpCredentialOwnerScopeId'] as string) || '').trim();
+    const rawAttemptGeneration: Object | undefined =
+      params['rdpConnectionAttemptGeneration'];
+    const attemptGeneration: number = typeof rawAttemptGeneration === 'number' &&
+      Number.isSafeInteger(rawAttemptGeneration) && rawAttemptGeneration > 0
+      ? rawAttemptGeneration : 0;
+    const host: RemoteHost | undefined = this.srv.getHost(hostId);
+    this.rdpCredentialRouteHostId = hostId;
+    this.rdpCredentialRouteOwnerId = ownerId;
+    this.rdpCredentialRouteAttemptGeneration = attemptGeneration;
+    if (host === undefined || ownerId === '' || host.userId.trim() !== ownerId ||
+      !rdpSessionCredentialRequiredForNewConnection(host, false)) {
+      return;
+    }
+    this.rdpConnectTimeCredentialRoutePending = true;
+  }
+
+  private clearRdpCredentialRouteBinding(): void {
+    this.rdpCredentialRouteHostId = '';
+    this.rdpCredentialRouteOwnerId = '';
+    this.rdpCredentialRouteAttemptGeneration = 0;
+    this.rdpConnectTimeCredentialRoutePending = false;
+  }
+
+  private abortPendingRdpCredentialAttempt(host: RemoteHost | undefined,
+    hostId: string, reason: string): void {
+    const id: string = host === undefined ?
+      (hostId.trim() || this.rdpCredentialRouteHostId) : host.id;
+    const scope = AccountSessionCoordinator.getInstance().currentScope();
+    const ownerId: string = host === undefined ?
+      (this.rdpCredentialRouteOwnerId || scope.ownerScopeId.trim()) : host.userId;
+    const routeAttemptGeneration: number =
+      this.rdpCredentialRouteAttemptGeneration;
+    if (id !== '' && ownerId !== '') {
+      RdpSessionCredentialHandoff.getInstance().clearIfMatches(
+        ownerId, id, routeAttemptGeneration);
+    }
+    this.clearRdpCredentialRouteBinding();
+    this.connectAttemptId += 1;
+    this.connectStarted = false;
+    this.connecting = false;
+    hilog.info(RD_DOMAIN, RD_TAG,
+      'RDP pending credential attempt aborted reason=' + reason +
+      ' hostIdHash=' + hashForLog(id));
   }
 
   private currentSessionDisplay(): display.Display {
@@ -8048,6 +8164,9 @@ struct RemoteDesktop {
 
   async aboutToAppear(): Promise<void> {
     const routeParams: Object = router.getParams();
+    // Must happen before AccountSessionCoordinator.init(): on PC the new
+    // window may background while that first await is still pending.
+    this.stageRdpCredentialRouteBinding(routeParams);
     this.registryPresentationRestorePending = false;
     this.registryRestoreAdoption = null;
     this.registryTermination = null;
@@ -8096,7 +8215,10 @@ struct RemoteDesktop {
     const accountScopeReady: boolean = await AccountSessionCoordinator.getInstance().init(
       getContext(this) as common.Context);
     if (!accountScopeReady) {
-      this.connecting = false;
+      const stagedHostId: string = this.rdpCredentialRouteHostId;
+      this.abortPendingRdpCredentialAttempt(
+        stagedHostId === '' ? undefined : this.srv.getHost(stagedHostId),
+        stagedHostId, 'account-scope-init-failed');
       this.connectionError = '账号数据域初始化失败';
       this.connectionErrorDetail = '远程会话未启动，避免后台恢复绑定到未确认的账号作用域 [E-ACCOUNT-SCOPE]';
       hilog.error(RD_DOMAIN, RD_TAG,
@@ -8205,16 +8327,40 @@ struct RemoteDesktop {
           if (host.locked && !authenticated) {
             const r = await showLockGate(host.label, 'biometric');
             if (!r.ok) {
-              this.connecting = false;
+              this.abortPendingRdpCredentialAttempt(
+                host, host.id, 'lock-gate-cancelled');
               const msg: string = lockGateErrorMessage(r);
               this.connectionError = msg || '身份验证未通过，已取消连接';
               return;
             }
           }
 
-          // 保存 host 配置, 等 XComponent SurfaceId 绑定后再连接
-          const resolvedHost: RemoteHost = this.hostWithResolvedCredential(host);
-          this.pendingHost = this.hostWithRdpOneTimeCertificate(resolvedHost, p);
+          // 保存脱敏 host 配置, 等 XComponent SurfaceId 绑定后再连接。
+          // connect_time 凭据留在独立的一次性 handoff 中，直到最后一个
+          // await 之后、紧邻 native connect 时才允许消费。
+          let resolvedHost: RemoteHost = this.hostWithResolvedCredential(host);
+          resolvedHost = this.hostWithRdpOneTimeCertificate(resolvedHost, p);
+          const restoring: boolean = this.prepareRegistryRestore(host);
+          if (rdpSessionCredentialRequiredForNewConnection(resolvedHost, restoring)) {
+            const scope = AccountSessionCoordinator.getInstance().currentScope();
+            if (!RdpSessionCredentialHandoff.getInstance().hasDecision(
+              resolvedHost.userId, resolvedHost.id, rdpRouteIdentity(resolvedHost),
+              scope.ownerScopeId, scope.generation,
+              this.rdpCredentialRouteAttemptGeneration)) {
+              this.abortPendingRdpCredentialAttempt(
+                resolvedHost, resolvedHost.id, 'handoff-initial-check-failed');
+              this.connectionError = 'RDP 一次性凭据已失效 [E-RDP-SESSION-CREDENTIAL]';
+              this.connectionErrorDetail = '请返回主机列表，重新输入账号和密码后连接。';
+              return;
+            }
+          }
+          this.pendingHost = resolvedHost;
+          if (restoring) {
+            RdpSessionCredentialHandoff.getInstance().clearIfMatches(
+              this.rdpCredentialRouteOwnerId, this.rdpCredentialRouteHostId,
+              this.rdpCredentialRouteAttemptGeneration);
+            this.clearRdpCredentialRouteBinding();
+          }
           if (this.pendingHost.protocol === 'rustdesk') {
             this.restoreRustDeskDesktopFlipMode(this.pendingHost, 'host-restore');
             // Apply the mobile default before the auth sheet and Surface
@@ -8222,7 +8368,6 @@ struct RemoteDesktop {
             // the native connection reaches its success callback.
             await this.applyRustDeskOrientationPolicy('page-appear', true);
           }
-          const restoring: boolean = this.prepareRegistryRestore(host);
           if (restoring) {
             this.restoreFromBackground();
           } else if (this.pendingHost.protocol === 'rustdesk') {
@@ -8231,7 +8376,8 @@ struct RemoteDesktop {
             this.tryStartConnect();
           }
         } else {
-          this.connecting = false;
+          this.abortPendingRdpCredentialAttempt(
+            undefined, this.hostId, 'host-not-found');
           this.connectionError = '主机不存在 [E-REMOTE-HOST-404]';
         }
       }
@@ -8474,6 +8620,7 @@ struct RemoteDesktop {
     // - 确认不是后台切换后 → 完全断连
     const isBg: boolean = this.currentAbilityBackgroundState();
     if (isBg) {
+      this.invalidatePendingRdpCredentialAttemptOnBackground();
       if (this.isVncSession()) {
         // VNC has no background session contract. Clear pending probe, pin and
         // password state before the protocol teardown runs.
@@ -12599,6 +12746,9 @@ struct RemoteDesktop {
     const vncHost: VncHostView | null = this.pendingVncHost;
     const isVnc: boolean = host.protocol === 'vnc' && vncHost !== null;
     let rdpRestrictedAdminHash: string = '';
+    let rdpSessionUsername: string = '';
+    let rdpSessionPassword: string = '';
+    let rdpSessionDecision: RdpSessionCredentialDecision | null = null;
     let rdAccessTokenFingerprint: string = '';
     let rdAccessTokenGeneration: number = 0;
     let rdAccountId: string = '';
@@ -13183,6 +13333,48 @@ struct RemoteDesktop {
         ' drive=' + (cfg.rdDrivePath && cfg.rdDrivePath.length > 0 ? cfg.rdDrivePath : 'off'));
       let sid: number = 0;
       try {
+        // This is intentionally the final credential admission boundary before
+        // the synchronous NAPI call. No await may be added here: a scope,
+        // host or route change must not race a copied credential into native.
+        if (rdpSessionCredentialRequiredForNewConnection(host, false)) {
+          if (!rdpSessionCredentialNativeAdmissionIsCurrent(
+            attemptId, this.connectAttemptId,
+            this.currentAbilityBackgroundState(), this.cleanupStarted)) {
+            RdpSessionCredentialHandoff.getInstance().clearIfMatches(
+              host.userId, host.id,
+              this.rdpCredentialRouteAttemptGeneration);
+            throw new Error('RDP 页面生命周期已变化，旧凭据已拒绝 [E-RDP-ATTEMPT-STALE]');
+          }
+          const liveScope = AccountSessionCoordinator.getInstance().currentScope();
+          const liveHost: RemoteHost | undefined = this.srv.getHost(host.id);
+          if (!rdpSessionCredentialBindingIsCurrent(
+            host, liveHost, connectionScope.ownerScopeId,
+            connectionScope.generation, liveScope.ownerScopeId,
+            liveScope.generation)) {
+            RdpSessionCredentialHandoff.getInstance().clearIfMatches(
+              host.userId, host.id,
+              this.rdpCredentialRouteAttemptGeneration);
+            throw new Error('RDP 账号或主机路由已变化，旧凭据已拒绝 [E-RDP-SCOPE-STALE]');
+          }
+          rdpSessionDecision = RdpSessionCredentialHandoff.getInstance().takeDecision(
+              host.userId, host.id, rdpRouteIdentity(host),
+              liveScope.ownerScopeId, liveScope.generation,
+              this.rdpCredentialRouteAttemptGeneration);
+          if (rdpSessionDecision === null) {
+            throw new Error('RDP 一次性凭据已失效 [E-RDP-SESSION-CREDENTIAL]');
+          }
+          this.clearRdpCredentialRouteBinding();
+          const sessionCredentials = normalizeRdpCredentialParts(
+            rdpSessionDecision.username,
+            AppStorage.get<number>('rdpAuthIdentityMode') ?? 1);
+          rdpSessionUsername = sessionCredentials.username;
+          rdpSessionPassword = rdpSessionDecision.password;
+          cfg.username = rdpSessionUsername;
+          cfg.domain = sessionCredentials.domain;
+          cfg.password = rdpSessionPassword;
+          hilog.info(RD_DOMAIN, RD_TAG,
+            'RDP one-shot credential admitted hostIdHash=' + hashForLog(host.id));
+        }
         sid = this.loader.connect(cfg);
       } finally {
         if (isVnc) {
@@ -13197,6 +13389,18 @@ struct RemoteDesktop {
         // never keep the local session-config reference alive on this side.
         cfg.rdpRestrictedAdminHash = '';
         rdpRestrictedAdminHash = '';
+        if (rdpSessionUsername !== '' || rdpSessionPassword !== '') {
+          cfg.username = '';
+          cfg.domain = '';
+          cfg.password = '';
+          rdpSessionUsername = '';
+          rdpSessionPassword = '';
+        }
+        if (rdpSessionDecision !== null) {
+          rdpSessionDecision.username = '';
+          rdpSessionDecision.password = '';
+          rdpSessionDecision = null;
+        }
       }
       hilog.info(RD_DOMAIN, RD_TAG, 'NAPI connect returned: ' + sid);
       if (sid <= 0) {
@@ -13667,6 +13871,22 @@ struct RemoteDesktop {
       this.connectionErrorDetail = '';
     }
     this.detachRustDeskMultiCanvasPreview('disconnect-' + reason);
+    // A page/session teardown is also a terminal boundary for any RDP secret
+    // that has not yet reached the synchronous native connect call.
+    const pendingRdpHostId: string =
+      this.pendingHost !== null && this.pendingHost.protocol === 'rdp' ?
+        this.pendingHost.id : this.rdpCredentialRouteHostId;
+    const pendingRdpOwnerId: string =
+      this.pendingHost !== null && this.pendingHost.protocol === 'rdp' ?
+        this.pendingHost.userId : this.rdpCredentialRouteOwnerId;
+    const pendingRdpAttemptGeneration: number =
+      this.rdpCredentialRouteAttemptGeneration;
+    if (pendingRdpHostId !== '' && pendingRdpOwnerId !== '') {
+      RdpSessionCredentialHandoff.getInstance().clearIfMatches(
+        pendingRdpOwnerId, pendingRdpHostId,
+        pendingRdpAttemptGeneration);
+    }
+    this.clearRdpCredentialRouteBinding();
     // VNC passwords are connection-scoped memory only. The native session has
     // already received its copy; never retain the transient value across a
     // page/session teardown.

@@ -72,6 +72,9 @@ import vncCloudSyncSelectionPolicyTest from './VncCloudSyncSelectionPolicy.test'
 import vncRecordPolicyTest from './VncRecordPolicy.test';
 import vncSecretStoragePolicyTest from './VncSecretStoragePolicy.test';
 import vncSessionCredentialHandoffTest from './VncSessionCredentialHandoff.test';
+import rdpSessionCredentialHandoffTest from './RdpSessionCredentialHandoff.test';
+import rdpSessionCredentialPolicyTest from './RdpSessionCredentialPolicy.test';
+import rdpPreflightScopeTransitionPolicyTest from './RdpPreflightScopeTransitionPolicy.test';
 import vncCredentialPreflightPolicyTest from './VncCredentialPreflightPolicy.test';
 import vncCertificateDecisionHandoffTest from './VncCertificateDecisionHandoff.test';
 import vncCertificateSheetPolicyTest from './VncCertificateSheetPolicy.test';
@@ -337,6 +340,9 @@ export default function testsuite() {
   vncRecordPolicyTest();
   vncSecretStoragePolicyTest();
   vncSessionCredentialHandoffTest();
+  rdpSessionCredentialHandoffTest();
+  rdpSessionCredentialPolicyTest();
+  rdpPreflightScopeTransitionPolicyTest();
   vncCredentialPreflightPolicyTest();
   vncCertificateDecisionHandoffTest();
   vncCertificateSheetPolicyTest();

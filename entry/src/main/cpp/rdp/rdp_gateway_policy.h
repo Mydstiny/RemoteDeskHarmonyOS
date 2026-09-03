@@ -15,6 +15,7 @@
 #include <cerrno>
 #include <functional>
 #include <string>
+#include <utility>
 #include <vector>
 
 enum class RdpEndpointMode {
@@ -70,6 +71,45 @@ struct RdpCertificateRecord {
 };
 
 struct RdpPreflightRequest {
+    RdpPreflightRequest() = default;
+    RdpPreflightRequest(const RdpPreflightRequest&) = default;
+    RdpPreflightRequest(RdpPreflightRequest&& other)
+        : route(std::move(other.route)),
+          username(other.username),
+          password(other.password),
+          domain(other.domain),
+          targetRestrictedAdmin(other.targetRestrictedAdmin),
+          expectedTargetFingerprintSha256(
+              std::move(other.expectedTargetFingerprintSha256)),
+          expectedGatewayFingerprintSha256(
+              std::move(other.expectedGatewayFingerprintSha256)),
+          targetAllowUntrustedRoot(other.targetAllowUntrustedRoot),
+          targetAllowHostMismatch(other.targetAllowHostMismatch),
+          targetAllowTimeAnomaly(other.targetAllowTimeAnomaly),
+          gatewayAllowUntrustedRoot(other.gatewayAllowUntrustedRoot),
+          gatewayAllowHostMismatch(other.gatewayAllowHostMismatch),
+          gatewayAllowTimeAnomaly(other.gatewayAllowTimeAnomaly),
+          generation(other.generation),
+          requestId(std::move(other.requestId)),
+          cancelled(std::move(other.cancelled)) {
+        // Copy credential strings first, then overwrite the moved-from SSO
+        // buffers while their original lengths are still observable.
+        other.clearCredentialMaterial();
+    }
+    RdpPreflightRequest& operator=(const RdpPreflightRequest&) = delete;
+    RdpPreflightRequest& operator=(RdpPreflightRequest&&) = delete;
+
+    ~RdpPreflightRequest() {
+        clearCredentialMaterial();
+    }
+
+    void clearCredentialMaterial() noexcept {
+        secureClear(username);
+        secureClear(password);
+        secureClear(domain);
+        cancelled = nullptr;
+    }
+
     RdpEndpointRoute route;
     std::string username;
     std::string password;
@@ -91,6 +131,17 @@ struct RdpPreflightRequest {
     // Runtime-only cancellation. It is never parsed from or serialized to
     // ArkTS and lets a network-generation change abort preflight I/O.
     std::function<bool()> cancelled;
+
+private:
+    static void secureClear(std::string& value) noexcept {
+        if (!value.empty()) {
+            volatile char* bytes = value.data();
+            for (std::size_t index = 0; index < value.size(); ++index) {
+                bytes[index] = '\0';
+            }
+        }
+        value.clear();
+    }
 };
 
 struct RdpPreflightResult {
