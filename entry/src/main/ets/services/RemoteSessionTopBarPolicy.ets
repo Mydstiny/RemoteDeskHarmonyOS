@@ -38,6 +38,16 @@ export type RemoteSessionPrimaryActionId = 'pin' | 'control' | 'display' |
   'desktopFlip' | 'keyboardMouse' | 'keyboard' | 'fileTransfer' |
   'diagnostics' | 'disconnect';
 
+export type RustDeskTopBarSubMenuId = 'viewScale' | 'remoteDisplay' |
+  'resolution' | 'imageQuality' | 'codec' | 'touchpadSpeed';
+
+export interface RustDeskTopBarSubMenuState {
+  active: RustDeskTopBarSubMenuId | '';
+  pinned: boolean;
+}
+
+export type RustDeskTopBarSubMenuEvent = 'hover-enter' | 'menu-leave' | 'click' | 'reset';
+
 export type RemoteKeyboardSidebarAction = 'choose' | 'close';
 
 const RUSTDESK_PRIMARY_ACTION_IDS: RemoteSessionPrimaryActionId[] = [
@@ -49,6 +59,51 @@ const RUSTDESK_PC_PRIMARY_ACTION_IDS: RemoteSessionPrimaryActionId[] = [
   'pin', 'control', 'display', 'desktopFlip', 'keyboardMouse', 'keyboard',
   'fileTransfer', 'diagnostics', 'disconnect'
 ];
+
+/** Every RustDesk toolbar row that represents a set of choices, rather than an action or toggle. */
+export function rustDeskTopBarSubMenuForItem(itemId: string): RustDeskTopBarSubMenuId | '' {
+  if (itemId === 'viewScale') { return 'viewScale'; }
+  if (itemId === 'remoteDisplay') { return 'remoteDisplay'; }
+  if (itemId === 'resolution') { return 'resolution'; }
+  if (itemId === 'imageQuality') { return 'imageQuality'; }
+  if (itemId === 'codec') { return 'codec'; }
+  if (itemId === 'touchpadSpeed') { return 'touchpadSpeed'; }
+  return '';
+}
+
+/** A mouse hover and an explicit click must expose the same secondary choice surface. */
+export function shouldOpenRustDeskTopBarSubMenu(
+  subMenu: RustDeskTopBarSubMenuId | '', hovered: boolean, clicked: boolean): boolean {
+  return subMenu.length > 0 && (hovered || clicked);
+}
+
+export function reduceRustDeskTopBarSubMenuState(
+  state: RustDeskTopBarSubMenuState,
+  itemId: string,
+  event: RustDeskTopBarSubMenuEvent
+): RustDeskTopBarSubMenuState {
+  if (event === 'reset' || (event === 'menu-leave' && !state.pinned)) {
+    return { active: '', pinned: false };
+  }
+  if (event === 'menu-leave') {
+    return state;
+  }
+  const subMenu: RustDeskTopBarSubMenuId | '' = rustDeskTopBarSubMenuForItem(itemId);
+  if (subMenu.length === 0) {
+    return state;
+  }
+  if (event === 'hover-enter') {
+    return state.pinned ? state : { active: subMenu, pinned: false };
+  }
+  if (state.active === subMenu && state.pinned) {
+    return { active: '', pinned: false };
+  }
+  return { active: subMenu, pinned: true };
+}
+
+export function rustDeskTouchpadSpeedOptions(): number[] {
+  return [0.4, 0.6, 0.8, 1.0, 1.2, 1.4, 1.6, 1.8, 2.0, 2.2];
+}
 
 export interface RemoteTopBarContext {
   protocol: string;

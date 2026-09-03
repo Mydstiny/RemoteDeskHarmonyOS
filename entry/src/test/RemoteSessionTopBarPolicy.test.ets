@@ -16,6 +16,10 @@ import {
   remoteSessionPrimaryActionIds,
   remoteSessionRailDragOffset,
   remoteSessionRailShouldCollapse,
+  rustDeskTopBarSubMenuForItem,
+  reduceRustDeskTopBarSubMenuState,
+  rustDeskTouchpadSpeedOptions,
+  shouldOpenRustDeskTopBarSubMenu,
   resolveRemoteSessionControlBarVisibility,
   remoteTopBarDeviceClass,
   remoteTopBarLayout,
@@ -199,6 +203,64 @@ export default function remoteSessionTopBarPolicyTest(): void {
   });
 
   describe('RemoteSessionTopBarPolicy_actions', (): void => {
+    it('every_multi_choice_toolbar_row_should_have_a_secondary_menu', 0, (): void => {
+      expect(rustDeskTopBarSubMenuForItem('viewScale')).assertEqual('viewScale');
+      expect(rustDeskTopBarSubMenuForItem('remoteDisplay')).assertEqual('remoteDisplay');
+      expect(rustDeskTopBarSubMenuForItem('resolution')).assertEqual('resolution');
+      expect(rustDeskTopBarSubMenuForItem('imageQuality')).assertEqual('imageQuality');
+      expect(rustDeskTopBarSubMenuForItem('codec')).assertEqual('codec');
+      expect(rustDeskTopBarSubMenuForItem('touchpadSpeed')).assertEqual('touchpadSpeed');
+      expect(rustDeskTopBarSubMenuForItem('togglePrivacyMode')).assertEqual('');
+      expect(rustDeskTopBarSubMenuForItem('refreshFrame')).assertEqual('');
+    });
+
+    it('secondary_choices_should_open_on_hover_or_click', 0, (): void => {
+      expect(shouldOpenRustDeskTopBarSubMenu('codec', true, false)).assertTrue();
+      expect(shouldOpenRustDeskTopBarSubMenu('codec', false, true)).assertTrue();
+      expect(shouldOpenRustDeskTopBarSubMenu('codec', false, false)).assertFalse();
+      expect(shouldOpenRustDeskTopBarSubMenu('', true, true)).assertFalse();
+    });
+
+    it('secondary_menu_state_should_separate_hover_preview_and_click_pin', 0, (): void => {
+      let state = reduceRustDeskTopBarSubMenuState(
+        { active: '', pinned: false }, 'codec', 'hover-enter');
+      expect(state.active).assertEqual('codec');
+      expect(state.pinned).assertFalse();
+      state = reduceRustDeskTopBarSubMenuState(state, '', 'menu-leave');
+      expect(state.active).assertEqual('');
+
+      state = reduceRustDeskTopBarSubMenuState(state, 'codec', 'hover-enter');
+      state = reduceRustDeskTopBarSubMenuState(state, 'codec', 'click');
+      expect(state.active).assertEqual('codec');
+      expect(state.pinned).assertTrue();
+      const pinnedAfterLeave = reduceRustDeskTopBarSubMenuState(state, '', 'menu-leave');
+      expect(pinnedAfterLeave.active).assertEqual('codec');
+      state = reduceRustDeskTopBarSubMenuState(pinnedAfterLeave, 'codec', 'click');
+      expect(state.active).assertEqual('');
+      expect(state.pinned).assertFalse();
+    });
+
+    it('secondary_menu_state_should_switch_on_click_and_reset_at_boundaries', 0, (): void => {
+      let state = reduceRustDeskTopBarSubMenuState(
+        { active: 'codec', pinned: true }, 'imageQuality', 'click');
+      expect(state.active).assertEqual('imageQuality');
+      expect(state.pinned).assertTrue();
+      state = reduceRustDeskTopBarSubMenuState(state, '', 'reset');
+      expect(state.active).assertEqual('');
+      expect(state.pinned).assertFalse();
+    });
+
+    it('touchpad_secondary_menu_should_cover_the_persisted_range', 0, (): void => {
+      const speeds: number[] = rustDeskTouchpadSpeedOptions();
+      expect(speeds.length).assertEqual(10);
+      expect(speeds[0]).assertEqual(0.4);
+      expect(speeds[3]).assertEqual(1.0);
+      expect(speeds[9]).assertEqual(2.2);
+      for (let index: number = 1; index < speeds.length; index++) {
+        expect(Math.abs(speeds[index] - speeds[index - 1] - 0.2) < 0.001).assertTrue();
+      }
+    });
+
     it('keyboard_affordance_should_close_every_active_keyboard_surface', 0, (): void => {
       expect(remoteKeyboardSurfaceOpen(false, false, false)).assertFalse();
       expect(remoteKeyboardSurfaceOpen(true, false, false)).assertTrue();
