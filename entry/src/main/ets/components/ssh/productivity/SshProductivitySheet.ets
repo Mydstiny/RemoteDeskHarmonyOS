@@ -1,4 +1,6 @@
+import { util } from '@kit.ArkTS';
 import {
+  buildSshQuickCommandSnippet,
   renderSshSnippet,
   snippetVisibleForScope,
   SshCommandHistoryV1,
@@ -6,7 +8,8 @@ import {
   SshProductivitySettingsV1,
   SshSnippetV1,
   SshSnippetVariableV1,
-  SshSnippetValue
+  SshSnippetValue,
+  sshSnippetEditableAsQuickCommand
 } from '../../../services/ssh/productivity/SshProductivityPolicy';
 
 /**
@@ -19,6 +22,8 @@ export struct SshProductivitySheet {
   @Prop sheetBackgroundColor: string = '#171D25';
   @Prop document: SshProductivityDocumentV1;
   @Prop ready: boolean = false;
+  @Prop connected: boolean = false;
+  @Prop advancedEnabled: boolean = false;
   @Prop hostId: string = '';
   @Prop hostLabel: string = '';
   @Prop groupId: string = '';
@@ -30,6 +35,8 @@ export struct SshProductivitySheet {
   onInsertSnippet: (snippet: SshSnippetV1, values: Array<SshSnippetValue>) => void =
     (_snippet: SshSnippetV1, _values: Array<SshSnippetValue>): void => {};
   onInsertHistory: (command: string) => void = (_command: string): void => {};
+  onUpsertSnippet: (snippet: SshSnippetV1) => boolean = (_snippet: SshSnippetV1): boolean => false;
+  onRemoveSnippet: (snippetId: string) => boolean = (_snippetId: string): boolean => false;
   onToggleHistory: (enabled: boolean) => void = (_enabled: boolean): void => {};
   onToggleCompletion: (enabled: boolean) => void = (_enabled: boolean): void => {};
   onToggleCompletionNotification: (enabled: boolean) => void =
@@ -44,9 +51,25 @@ export struct SshProductivitySheet {
   @State variableValues: Array<SshSnippetValue> = [];
   @State startupOverrideId: string = '';
   @State startupOverrideValue: boolean = false;
+  @State quickEditorVisible: boolean = false;
+  @State quickEditorId: string = '';
+  @State quickEditorTitle: string = '';
+  @State quickEditorCommand: string = '';
+  @State quickEditorHostOnly: boolean = false;
+  @State quickEditorError: string = '';
+  @State quickRemoveConfirmId: string = '';
+  private quickCommandSequence: number = 0;
 
   aboutToAppear(): void {
     this.selectFirstSnippet();
+  }
+
+  aboutToDisappear(): void {
+    this.clearQuickCommandDraft();
+    this.selectedSnippetId = '';
+    this.variableValues = [];
+    this.startupOverrideId = '';
+    this.startupOverrideValue = false;
   }
 
   private selectFirstSnippet(): void {
@@ -65,7 +88,8 @@ export struct SshProductivitySheet {
     for (let index: number = 0; index < this.document.snippets.length; index++) {
       const snippet: SshSnippetV1 = this.document.snippets[index];
       if (!snippetVisibleForScope(snippet, this.hostId, this.groupId)) { continue; }
-      const haystack: string = (snippet.title + ' ' + snippet.description).toLowerCase();
+      const haystack: string = (snippet.title + ' ' + snippet.description + ' ' +
+        snippet.template).toLowerCase();
       if (token.length === 0 || haystack.indexOf(token) >= 0) { result.push(snippet); }
     }
     return result;
@@ -96,11 +120,84 @@ export struct SshProductivitySheet {
 
   private selectSnippet(snippet: SshSnippetV1): void {
     this.selectedSnippetId = snippet.id;
+    this.quickRemoveConfirmId = '';
     this.variableValues = snippet.variables.map((variable): SshSnippetValue => ({
       name: variable.name,
       value: variable.defaultValue,
       secret: variable.secretRef.length > 0
     }));
+  }
+
+  private beginNewQuickCommand(): void {
+    this.clearQuickCommandDraft();
+    this.quickEditorVisible = true;
+  }
+
+  private beginEditQuickCommand(snippet: SshSnippetV1): void {
+    if (!sshSnippetEditableAsQuickCommand(snippet)) { return; }
+    this.quickEditorId = snippet.id;
+    this.quickEditorTitle = snippet.title;
+    this.quickEditorCommand = snippet.template;
+    this.quickEditorHostOnly = snippet.scope === 'host';
+    this.quickEditorError = '';
+    this.quickRemoveConfirmId = '';
+    this.quickEditorVisible = true;
+  }
+
+  private cancelQuickCommandEdit(): void {
+    this.clearQuickCommandDraft();
+  }
+
+  private clearQuickCommandDraft(): void {
+    this.quickEditorVisible = false;
+    this.quickEditorId = '';
+    this.quickEditorTitle = '';
+    this.quickEditorCommand = '';
+    this.quickEditorHostOnly = false;
+    this.quickEditorError = '';
+    this.quickRemoveConfirmId = '';
+  }
+
+  private saveQuickCommand(): void {
+    if (!this.ready) {
+      this.quickEditorError = '本地加密存储尚未就绪';
+      return;
+    }
+    const snippet: SshSnippetV1 | null = buildSshQuickCommandSnippet({
+      id: this.quickEditorId.length > 0 ? this.quickEditorId :
+        'quick-' + util.generateRandomUUID(true),
+      title: this.quickEditorTitle,
+      command: this.quickEditorCommand,
+      scope: this.quickEditorHostOnly ? 'host' : 'global',
+      hostId: this.hostId
+    }, Date.now(), ++this.quickCommandSequence);
+    if (snippet === null) {
+      this.quickEditorError = this.quickEditorHostOnly && this.hostId.trim().length === 0 ?
+        '当前没有可绑定的 SSH 主机' : '请填写名称和单行命令（不支持控制字符）';
+      return;
+    }
+    if (!this.onUpsertSnippet(snippet)) {
+      this.quickEditorError = this.document.snippets.length >= 200 ?
+        '常用命令已达到 200 条上限，请先删除不再使用的命令' :
+        '保存失败，请确认本地加密存储已解锁';
+      return;
+    }
+    this.selectedSnippetId = snippet.id;
+    this.variableValues = [];
+    this.clearQuickCommandDraft();
+  }
+
+  private requestRemoveQuickCommand(snippet: SshSnippetV1): void {
+    if (!sshSnippetEditableAsQuickCommand(snippet)) { return; }
+    if (this.quickRemoveConfirmId !== snippet.id) {
+      this.quickRemoveConfirmId = snippet.id;
+      return;
+    }
+    if (this.onRemoveSnippet(snippet.id)) {
+      this.selectedSnippetId = '';
+      this.variableValues = [];
+      this.clearQuickCommandDraft();
+    }
   }
 
   private updateVariable(name: string, value: string): void {
@@ -148,6 +245,61 @@ export struct SshProductivitySheet {
   }
 
   @Builder
+  private QuickCommandEditor() {
+    Column({ space: 10 }) {
+      Row() {
+        Text(this.quickEditorId.length > 0 ? '编辑常用命令' : '新建常用命令')
+          .fontSize(13).fontWeight(FontWeight.Medium).fontColor('#F2F4F7')
+          .layoutWeight(1)
+        Button('取消').height(32).fontSize(10).padding({ left: 10, right: 10 })
+          .backgroundColor('rgba(255,255,255,0.08)')
+          .onClick((): void => { this.cancelQuickCommandEdit(); })
+      }.width('100%')
+      TextInput({ text: this.quickEditorTitle, placeholder: '名称，例如：查看磁盘占用' })
+        .height(42).fontSize(12).fontColor('#F2F4F7')
+        .placeholderColor('rgba(242,244,247,0.40)')
+        .backgroundColor('rgba(255,255,255,0.07)').borderRadius(8)
+        .enableAutoFill(false)
+        .onChange((value: string): void => {
+          this.quickEditorTitle = value.slice(0, 120);
+          this.quickEditorError = '';
+        })
+      TextArea({ text: this.quickEditorCommand, placeholder: '输入一条常用命令' })
+        .height(86).fontSize(12).fontFamily('monospace').fontColor('#F2F4F7')
+        .placeholderColor('rgba(242,244,247,0.40)')
+        .backgroundColor('rgba(255,255,255,0.07)').borderRadius(8)
+        .enableAutoFill(false)
+        .onChange((value: string): void => {
+          this.quickEditorCommand = value.slice(0, 4096);
+          this.quickEditorError = '';
+        })
+      Text('使用范围').fontSize(10).fontColor('rgba(242,244,247,0.52)').width('100%')
+      Row({ space: 8 }) {
+        Button('全部 SSH 主机').height(36).fontSize(10).layoutWeight(1)
+          .backgroundColor(!this.quickEditorHostOnly ? this.accentColor :
+            'rgba(255,255,255,0.08)')
+          .onClick((): void => { this.quickEditorHostOnly = false; })
+        Button('仅当前主机').height(36).fontSize(10).layoutWeight(1)
+          .backgroundColor(this.quickEditorHostOnly ? this.accentColor :
+            'rgba(255,255,255,0.08)')
+          .enabled(this.hostId.trim().length > 0)
+          .onClick((): void => { this.quickEditorHostOnly = true; })
+      }.width('100%')
+      Text('调用时只插入到当前终端，不自动发送回车；你可以检查或补充参数后再执行。')
+        .fontSize(10).fontColor('rgba(242,244,247,0.52)').width('100%')
+      if (this.quickEditorError.length > 0) {
+        Text(this.quickEditorError).fontSize(10).fontColor('#FF8A80').width('100%')
+      }
+      Button('保存常用命令').height(42).fontSize(12).width('100%')
+        .backgroundColor(this.accentColor).fontColor('#FFFFFF')
+        .enabled(this.ready)
+        .onClick((): void => { this.saveQuickCommand(); })
+    }
+    .width('100%').padding(12).borderRadius(10)
+    .backgroundColor('rgba(255,255,255,0.055)')
+  }
+
+  @Builder
   private SnippetList() {
     Column({ space: 6 }) {
       ForEach(this.visibleSnippets(), (snippet: SshSnippetV1): void => {
@@ -170,7 +322,7 @@ export struct SshProductivitySheet {
         .accessibilityText('选择片段 ' + snippet.title)
       }, (snippet: SshSnippetV1): string => snippet.id)
       if (this.visibleSnippets().length === 0) {
-        Text(this.ready ? '暂无匹配的 Snippet' : '加密存储未解锁，生产力功能已禁用')
+        Text(this.ready ? '暂无匹配的常用命令，点击“新建”添加' : '加密存储未解锁，常用命令已禁用')
           .fontSize(11).fontColor('rgba(242,244,247,0.48)').padding(12)
       }
     }.width('100%')
@@ -202,23 +354,42 @@ export struct SshProductivitySheet {
       Row({ space: 8 }) {
         Button('插入到终端').height(44).layoutWeight(1).fontSize(12)
           .backgroundColor(this.accentColor).fontColor('#FFFFFF')
-          .enabled(this.snippetCanInsert() && this.ready)
+          .enabled(this.snippetCanInsert() && this.ready && this.connected)
           .onClick((): void => { this.onInsertSnippet(snippet, this.variableValues); })
-        Row() {
-          Text('连接后启动').fontSize(10).fontColor('#F2F4F7').layoutWeight(1)
-          Toggle({ type: ToggleType.Switch, isOn: this.startupEnabled(snippet) })
-            .selectedColor(this.accentColor)
-            .onChange((value: boolean): void => {
-              this.startupOverrideId = snippet.id;
-              this.startupOverrideValue = value;
-              if (!this.onSetStartup(snippet.id, value)) {
-                this.startupOverrideId = '';
-                this.startupOverrideValue = false;
-              }
-            })
-        }.width(118).height(44).padding({ left: 8, right: 5 })
-          .borderRadius(8).backgroundColor('rgba(255,255,255,0.07)')
+        if (this.advancedEnabled && !snippet.insertOnly) {
+          Row() {
+            Text('连接后启动').fontSize(10).fontColor('#F2F4F7').layoutWeight(1)
+            Toggle({ type: ToggleType.Switch, isOn: this.startupEnabled(snippet) })
+              .selectedColor(this.accentColor)
+              .onChange((value: boolean): void => {
+                this.startupOverrideId = snippet.id;
+                this.startupOverrideValue = value;
+                if (!this.onSetStartup(snippet.id, value)) {
+                  this.startupOverrideId = '';
+                  this.startupOverrideValue = false;
+                }
+              })
+          }.width(118).height(44).padding({ left: 8, right: 5 })
+            .borderRadius(8).backgroundColor('rgba(255,255,255,0.07)')
+        }
       }.width('100%')
+      if (!this.connected) {
+        Text('当前会话未连接，可继续编辑；连接后即可插入。')
+          .fontSize(10).fontColor('rgba(242,244,247,0.48)').width('100%')
+      }
+      if (sshSnippetEditableAsQuickCommand(snippet)) {
+        Row({ space: 8 }) {
+          Button('编辑').height(36).fontSize(10).layoutWeight(1)
+            .backgroundColor('rgba(255,255,255,0.08)')
+            .onClick((): void => { this.beginEditQuickCommand(snippet); })
+          Button(this.quickRemoveConfirmId === snippet.id ? '再次点击确认删除' : '删除')
+            .height(36).fontSize(10).layoutWeight(1)
+            .fontColor(this.quickRemoveConfirmId === snippet.id ? '#FFF3F0' : '#FFB4AB')
+            .backgroundColor(this.quickRemoveConfirmId === snippet.id ? '#7D2E2E' :
+              'rgba(255,255,255,0.08)')
+            .onClick((): void => { this.requestRemoveQuickCommand(snippet); })
+        }.width('100%')
+      }
     }.width('100%').padding(10).borderRadius(10)
       .backgroundColor('rgba(255,255,255,0.045)')
   }
@@ -260,15 +431,20 @@ export struct SshProductivitySheet {
     Column() {
       Row() {
         Column() {
-          Text('SSH Productivity').fontSize(18).fontWeight(FontWeight.Medium)
+          Text('SSH 常用命令').fontSize(18).fontWeight(FontWeight.Medium)
             .fontColor('#F2F4F7')
-          Text(this.hostLabel.length > 0 ? this.hostLabel : '当前会话 · 本地加密存储')
+          Text((this.hostLabel.length > 0 ? this.hostLabel : '当前 SSH 会话') + ' · 本地加密保存')
             .fontSize(10).fontColor('rgba(242,244,247,0.50)').margin({ top: 3 })
         }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+        Button('新建').height(36).fontSize(11).backgroundColor(this.accentColor)
+          .fontColor('#FFFFFF').margin({ right: 8 })
+          .enabled(this.ready)
+          .onClick((): void => { this.beginNewQuickCommand(); })
         Button('关闭').height(36).fontSize(11).backgroundColor('rgba(255,255,255,0.08)')
           .onClick((): void => { this.onClose(); })
       }.width('100%').padding({ left: 16, right: 16, top: 14, bottom: 10 })
-      TextInput({ text: this.query, placeholder: '搜索 Snippet 或当前主机历史' })
+      TextInput({ text: this.query, placeholder: this.advancedEnabled ?
+        '搜索常用命令或当前主机历史' : '搜索常用命令' })
         .height(42).fontSize(12).fontColor('#F2F4F7')
         .placeholderColor('rgba(242,244,247,0.40)').backgroundColor('rgba(255,255,255,0.07)')
         .borderRadius(9).margin({ left: 16, right: 16, bottom: 10 })
@@ -276,34 +452,39 @@ export struct SshProductivitySheet {
         .onChange((value: string): void => { this.onSearchChange(value.slice(0, 256)); })
       Scroll() {
         Column({ space: 10 }) {
-          Text('Snippets').fontSize(12).fontWeight(FontWeight.Medium).fontColor('#F2F4F7')
+          if (this.quickEditorVisible) {
+            this.QuickCommandEditor()
+          }
+          Text('常用命令').fontSize(12).fontWeight(FontWeight.Medium).fontColor('#F2F4F7')
             .width('100%')
           this.SnippetList()
           this.Editor()
-          Text('历史与补全').fontSize(12).fontWeight(FontWeight.Medium).fontColor('#F2F4F7')
-            .width('100%')
-          this.HistoryList()
-          Text('设置').fontSize(12).fontWeight(FontWeight.Medium).fontColor('#F2F4F7')
-            .width('100%')
-          if (this.sessionLogsEnabled) {
-            Button('打开会话日志').height(40).fontSize(11).width('100%')
-              .backgroundColor('rgba(255,255,255,0.08)')
-              .onClick((): void => { this.onOpenSessionLog(); })
+          if (this.advancedEnabled) {
+            Text('历史与补全').fontSize(12).fontWeight(FontWeight.Medium).fontColor('#F2F4F7')
+              .width('100%')
+            this.HistoryList()
+            Text('设置').fontSize(12).fontWeight(FontWeight.Medium).fontColor('#F2F4F7')
+              .width('100%')
+            if (this.sessionLogsEnabled) {
+              Button('打开会话日志').height(40).fontSize(11).width('100%')
+                .backgroundColor('rgba(255,255,255,0.08)')
+                .onClick((): void => { this.onOpenSessionLog(); })
+            }
+            if (this.broadcastEnabled) {
+              Button('安全广播输入').height(40).fontSize(11).width('100%')
+                .fontColor('#FFF3F0').backgroundColor('#7D2E2E')
+                .onClick((): void => { this.onOpenBroadcast(); })
+            }
+            this.SettingsRow('命令历史', '默认关闭；敏感模式和禁用主机始终不记录',
+              this.document.settings.historyEnabled, this.onToggleHistory)
+            this.SettingsRow('本地补全', '只使用本地 Snippet/历史，不猜测密码边界',
+              this.document.settings.completionEnabled, this.onToggleCompletion)
+            this.SettingsRow('命令完成提醒', '默认关闭；开启时请求系统通知权限，不显示命令或网络身份',
+              this.document.settings.completionNotificationEnabled,
+              this.onToggleCompletionNotification)
+            this.SettingsRow('Shell integration', '仅观察 OSC 133/633，不改变远端输出',
+              this.document.settings.shellIntegrationEnabled, this.onToggleShellIntegration)
           }
-          if (this.broadcastEnabled) {
-            Button('安全广播输入').height(40).fontSize(11).width('100%')
-              .fontColor('#FFF3F0').backgroundColor('#7D2E2E')
-              .onClick((): void => { this.onOpenBroadcast(); })
-          }
-          this.SettingsRow('命令历史', '默认关闭；敏感模式和禁用主机始终不记录',
-            this.document.settings.historyEnabled, this.onToggleHistory)
-          this.SettingsRow('本地补全', '只使用本地 Snippet/历史，不猜测密码边界',
-            this.document.settings.completionEnabled, this.onToggleCompletion)
-          this.SettingsRow('命令完成提醒', '默认关闭；开启时请求系统通知权限，不显示命令或网络身份',
-            this.document.settings.completionNotificationEnabled,
-            this.onToggleCompletionNotification)
-          this.SettingsRow('Shell integration', '仅观察 OSC 133/633，不改变远端输出',
-            this.document.settings.shellIntegrationEnabled, this.onToggleShellIntegration)
         }.width('100%').padding({ left: 16, right: 16, bottom: 18 })
       }.layoutWeight(1).width('100%').scrollBar(BarState.Auto)
     }

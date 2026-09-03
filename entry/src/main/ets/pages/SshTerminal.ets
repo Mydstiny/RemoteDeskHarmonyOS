@@ -73,6 +73,7 @@ import {
   remoteSessionLocalHandoffFailureOwnsSession
 } from '../services/RemoteSessionTerminationPolicy';
 import { AccountSessionCoordinator } from '../services/AccountSessionCoordinator';
+import { DataCrypto } from '../services/DataCrypto';
 import {
   formatEndpointFieldsHostPort,
   formatListenerHostPort,
@@ -402,18 +403,20 @@ import { SshTerminalProfileStore } from
   '../services/ssh/profile/SshTerminalProfileStore';
 import {
   captureSshHistory,
+  buildSshSnippetInsertSubmission,
   emptySshProductivityDocument,
   renderSshSnippet,
   SshCommandHistoryV1,
   SshLocalCommandSubmit,
   SshLocalCommandTracker,
   SshProductivityDocumentV1,
-  SshProductivitySettingsV1,
   SshShellEvent,
   SshShellIntegrationParser,
   SshSnippetV1,
   SshSnippetValue,
+  SshSnippetInsertSubmission,
   SshStartupFence,
+  sshSnippetAllowedAsStartup,
   startupCommandMayRun,
   sshStartupExecutionKey
 } from '../services/ssh/productivity/SshProductivityPolicy';
@@ -626,7 +629,7 @@ type SshProductivityShellPhase = 'idle' | 'prompt' | 'command' | 'executed';
 
 type SshHeaderAction = 'new-session' | 'tabs' | 'palette' | 'transfers' | 'restore' |
   'sidebar' | 'inspector' | 'profile' | 'reset-font' | 'search' | 'locale' | 'sftp' | 'forwarding' |
-  'orientation';
+  'orientation' | 'quick-commands';
 
 @Entry
 @Component
@@ -678,6 +681,8 @@ struct SshTerminal {
   private sshTabPickerExitRecoveryTimer: number = -1;
   private sshTabClosePromptInFlight: boolean = false;
   private sshProductivityStore: SshProductivityStore = new SshProductivityStore();
+  private sshProductivityCryptoUnsubscribe: (() => void) | null = null;
+  private sshProductivityScopeUnsubscribe: (() => void) | null = null;
   private sshSessionLogStore: SshSessionLogStore = new SshSessionLogStore();
   private sshSessionLogSequence: number = 0;
   private sshSessionLogInputBuffers: Map<string, string> = new Map<string, string>();
@@ -4246,14 +4251,69 @@ struct SshTerminal {
     }
   }
 
-  private refreshSshProductivityDocument(): void {
+  private refreshSshProductivityDocument(readLatest: boolean = false): void {
     if (!this.sshProductivityStore.isReady()) {
+      this.sshProductivityReady = false;
+      this.sshProductivityDocument = emptySshProductivityDocument();
+      return;
+    }
+    if (readLatest && !this.sshProductivityStore.refreshLatest()) {
       this.sshProductivityReady = false;
       this.sshProductivityDocument = emptySshProductivityDocument();
       return;
     }
     this.sshProductivityReady = true;
     this.sshProductivityDocument = this.sshProductivityStore.snapshot();
+    if (!this.sshProductivityStore.isReady()) {
+      this.sshProductivityReady = false;
+      this.sshProductivityDocument = emptySshProductivityDocument();
+    }
+  }
+
+  private scrubSshProductivitySecurityState(): void {
+    this.showSshProductivitySheet = false;
+    this.sshProductivityQuery = '';
+    this.sshProductivityReady = false;
+    this.sshProductivityDocument = emptySshProductivityDocument();
+    this.sshProductivityStore.clearSensitiveState();
+    this.resetSshProductivityRuntime();
+  }
+
+  private reloadSshProductivityAfterSecurityChange(): void {
+    this.scrubSshProductivitySecurityState();
+    if (this.terminalClosing || !DataCrypto.getInstance().isReady()) { return; }
+    try {
+      const context: common.Context = getContext(this) as common.Context;
+      this.sshProductivityReady = this.sshProductivityStore.init(context);
+      this.refreshSshProductivityDocument();
+    } catch (_err) {
+      this.scrubSshProductivitySecurityState();
+    }
+  }
+
+  private bindSshProductivitySecurityLifecycle(): void {
+    if (this.sshProductivityCryptoUnsubscribe === null) {
+      this.sshProductivityCryptoUnsubscribe = DataCrypto.getInstance().onStateChange(
+        (_ready: boolean, _configured: boolean): void => {
+          this.reloadSshProductivityAfterSecurityChange();
+        });
+    }
+    if (this.sshProductivityScopeUnsubscribe === null) {
+      this.sshProductivityScopeUnsubscribe = AccountSessionCoordinator.getInstance().onChange(
+        (): void => { this.reloadSshProductivityAfterSecurityChange(); });
+    }
+  }
+
+  private unbindSshProductivitySecurityLifecycle(): void {
+    if (this.sshProductivityCryptoUnsubscribe !== null) {
+      this.sshProductivityCryptoUnsubscribe();
+      this.sshProductivityCryptoUnsubscribe = null;
+    }
+    if (this.sshProductivityScopeUnsubscribe !== null) {
+      this.sshProductivityScopeUnsubscribe();
+      this.sshProductivityScopeUnsubscribe = null;
+    }
+    this.scrubSshProductivitySecurityState();
   }
 
   private refreshSshSessionLogDocument(): void {
@@ -4846,11 +4906,21 @@ struct SshTerminal {
   }
 
   private openSshProductivity(): void {
-    if (!this.sshWorkbenchEnabled || !this.sshProductivityReady || this.terminalClosing ||
+    if (!this.sshProductivityReady) {
+      promptAction.showToast({
+        message: '本地加密存储尚未解锁，暂时无法使用常用命令', duration: 2000
+      });
+      return;
+    }
+    if (this.terminalClosing ||
       this.showSshProductivitySheet || this.sshModalOwnsKeyboard()) { return; }
     this.closeTerminalSearch(false, true);
     this.sshProductivityQuery = '';
-    this.refreshSshProductivityDocument();
+    this.refreshSshProductivityDocument(true);
+    if (!this.sshProductivityReady) {
+      promptAction.showToast({ message: '常用命令刷新失败，请重新解锁后再试', duration: 1900 });
+      return;
+    }
     this.terminalFocusMode = false;
     this.showSshProductivitySheet = true;
   }
@@ -4867,18 +4937,49 @@ struct SshTerminal {
 
   private insertSshProductivitySnippet(snippet: SshSnippetV1,
     values: Array<SshSnippetValue>): void {
-    if (!this.sshWorkbenchEnabled || !this.sshProductivityReady || !this.connected || this.sessionId <= 0 ||
-      this.terminalClosing || this.hostId.trim().length === 0) { return; }
-    const rendered = renderSshSnippet(snippet, values);
-    if (!rendered.ok || rendered.insertion.length === 0) {
+    if (!this.sshProductivityInsertionAllowed()) { return; }
+    const submission: SshSnippetInsertSubmission | null =
+      buildSshSnippetInsertSubmission(snippet, values);
+    if (submission === null) {
       promptAction.showToast({ message: 'Snippet 变量尚未填写完整', duration: 1500 });
       return;
     }
-    const tracker: SshLocalCommandTracker = this.sshProductivityTrackerForHost(this.hostId);
-    tracker.reset();
-    this.sshProductivitySecretExpansionPending = rendered.containsSecret;
-    this.sendTerminalBytes(rendered.insertion, false);
+    if (this.sshWorkbenchEnabled) {
+      this.sshProductivityTrackerForHost(this.hostId).reset();
+    }
+    this.sshProductivitySecretExpansionPending = submission.containsSecret;
+    this.sendTerminalBytes(submission.data, submission.control);
     this.closeSshProductivity();
+  }
+
+  private sshProductivityInsertionAllowed(): boolean {
+    return this.sshProductivityReady && this.connected && this.sessionId > 0 &&
+      !this.terminalClosing && this.hostId.trim().length > 0;
+  }
+
+  private upsertSshProductivitySnippet(snippet: SshSnippetV1): boolean {
+    if (!this.sshProductivityReady || this.terminalClosing) { return false; }
+    const saved: boolean = this.sshProductivityStore.upsertSnippet(snippet);
+    this.refreshSshProductivityDocument();
+    if (!saved) {
+      promptAction.showToast({
+        message: this.sshProductivityDocument.snippets.length >= 200 ?
+          '常用命令已达到 200 条上限' : '常用命令保存失败', duration: 1800
+      });
+    }
+    return saved;
+  }
+
+  private removeSshProductivitySnippet(snippetId: string): boolean {
+    if (!this.sshProductivityReady || this.terminalClosing || snippetId.trim().length === 0) {
+      return false;
+    }
+    const saved: boolean = this.sshProductivityStore.removeSnippet(snippetId);
+    this.refreshSshProductivityDocument();
+    promptAction.showToast({
+      message: saved ? '常用命令已删除' : '常用命令删除失败', duration: 1600
+    });
+    return saved;
   }
 
   private insertSshProductivityHistory(command: string): void {
@@ -4937,16 +5038,7 @@ struct SshTerminal {
   private persistSshProductivitySetting(
     kind: 'history' | 'completion' | 'notification' | 'shell', enabled: boolean
   ): void {
-    const current = this.sshProductivityStore.snapshot().settings;
-    const next: SshProductivitySettingsV1 = {
-      historyEnabled: kind === 'history' ? enabled : current.historyEnabled,
-      completionEnabled: kind === 'completion' ? enabled : current.completionEnabled,
-      completionNotificationEnabled: kind === 'notification' ? enabled :
-        current.completionNotificationEnabled,
-      shellIntegrationEnabled: kind === 'shell' ? enabled : current.shellIntegrationEnabled,
-      disabledHistoryHostIds: current.disabledHistoryHostIds.slice()
-    };
-    if (!this.sshProductivityStore.setSettings(next)) {
+    if (!this.sshProductivityStore.setSetting(kind, enabled)) {
       promptAction.showToast({ message: 'SSH 生产力设置保存失败', duration: 1800 });
       return;
     }
@@ -4979,7 +5071,9 @@ struct SshTerminal {
       hostId: this.hostId.trim(), snippetId: snippetId.trim(), enabled
     });
     if (!saved) {
-      promptAction.showToast({ message: '启动命令不能包含 secretRef 或未找到片段', duration: 1900 });
+      promptAction.showToast({
+        message: '插入型常用命令或含 secretRef 的片段不能设为启动命令', duration: 1900
+      });
       this.refreshSshProductivityDocument();
       return false;
     }
@@ -5324,7 +5418,7 @@ struct SshTerminal {
     if (startup === undefined) { return; }
     const snippet: SshSnippetV1 | undefined = document.snippets.find(
       (item): boolean => item.id === startup.snippetId);
-    if (snippet === undefined) { return; }
+    if (snippet === undefined || !sshSnippetAllowedAsStartup(snippet)) { return; }
     const rendered = renderSshSnippet(snippet, []);
     if (!rendered.ok || rendered.containsSecret || rendered.insertion.length === 0) { return; }
     this.sshTabStore.markStartupExecutionKey(executionKey);
@@ -6833,7 +6927,7 @@ struct SshTerminal {
       }));
     };
     const labels: string[] = [
-      '工作区与会话', '显示全部标签', '命令面板', '传输中心',
+      '工作区与会话', '常用命令', '显示全部标签', '命令面板', '传输中心',
       '恢复未连接的工作区标签', '显示工作区侧栏', '收起工作区侧栏',
       '显示会话详情', '隐藏会话详情', '取消显示会话详情',
       '终端搜索', '终端外观', '恢复终端字号', '语言与地区',
@@ -6876,6 +6970,8 @@ struct SshTerminal {
         this.openSshTabPicker();
       } else if (action === 'palette') {
         this.openSshCommandPalette();
+      } else if (action === 'quick-commands') {
+        this.openSshProductivity();
       } else if (action === 'transfers') {
         this.openSftpTransferCenter();
       } else if (action === 'restore') {
@@ -6932,6 +7028,9 @@ struct SshTerminal {
 
         Divider().strokeWidth(0.5).color(this.pal().cardBorder).width('100%')
         this.SshHeaderActionRow('新建 SSH 会话', '选择主机并打开新标签', 'new-session')
+        this.SshHeaderActionRow('常用命令', this.sshProductivityReady
+          ? this.sshProductivityDocument.snippets.length.toString() + ' 条 · 可新增、编辑和插入'
+          : '本地加密存储未解锁', 'quick-commands')
 
         if (this.sshWorkbenchEnabled) {
           this.SshHeaderActionRow('显示全部标签',
@@ -10266,6 +10365,7 @@ struct SshTerminal {
     const pageGeneration: number = ++this.pageGeneration;
     const bindingGeneration: number = ++this.sshBindingGeneration;
     this.terminalClosing = false;
+    this.bindSshProductivitySecurityLifecycle();
     this.tabSwitchInFlight = false;
     this.sshNotificationAuthorizationPending = false;
     // A reused page instance must never carry task identities from the
@@ -10707,6 +10807,7 @@ struct SshTerminal {
     // teardown work can leave this page instance reachable.
     this.clearSshSecretPrompt();
     this.clearPreflightBinding();
+    this.unbindSshProductivitySecurityLifecycle();
     // The page-local signal owner ends with this lifecycle. The process-wide
     // service is stopped/restarted below using explicit session snapshots;
     // retaining this registry would let a future page stop a recycled id.
@@ -12999,6 +13100,8 @@ struct SshTerminal {
       sheetBackgroundColor: this.bindSheetBg('#171D25'),
       document: this.sshProductivityDocument,
       ready: this.sshProductivityReady,
+      connected: this.sshProductivityInsertionAllowed(),
+      advancedEnabled: this.sshWorkbenchEnabled,
       sessionLogsEnabled: this.sshSessionLogsEnabled(),
       broadcastEnabled: this.sshBroadcastInputEnabled(),
       hostId: this.hostId,
@@ -13014,6 +13117,12 @@ struct SshTerminal {
       },
       onInsertHistory: (command: string): void => {
         this.insertSshProductivityHistory(command);
+      },
+      onUpsertSnippet: (snippet: SshSnippetV1): boolean => {
+        return this.upsertSshProductivitySnippet(snippet);
+      },
+      onRemoveSnippet: (snippetId: string): boolean => {
+        return this.removeSshProductivitySnippet(snippetId);
       },
       onToggleHistory: (enabled: boolean): void => {
         this.setSshProductivitySetting('history', enabled);
