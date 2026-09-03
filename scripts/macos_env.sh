@@ -118,7 +118,11 @@ printf 'Mac toolchain environment: node=%s hvigorw=%s ohpm=%s\n' \
     "${REMOTE_DESKTOP_REAL_HVIGORW:-$(command -v hvigorw 2>/dev/null || printf '%s' unavailable)}" \
     "$(command -v ohpm 2>/dev/null || printf '%s' unavailable)"
 if [ -n "${REMOTE_DESKTOP_REAL_HVIGORW:-}" ]; then
-    printf '%s\n' 'Mac toolchain environment: Hvigor local-cache/incomplete-build guard=enabled'
+    if [ -n "${REMOTE_DESKTOP_BUILD_CACHE_ROOT:-}" ]; then
+        printf '%s\n' 'Mac toolchain environment: Hvigor external-cache guard=enabled'
+    else
+        printf '%s\n' 'Mac toolchain environment: Hvigor project-local default paths=enabled'
+    fi
 fi
 printf 'Mac toolchain environment: hdc=%s\n' \
     "$(command -v hdc 2>/dev/null || printf '%s' unavailable)"

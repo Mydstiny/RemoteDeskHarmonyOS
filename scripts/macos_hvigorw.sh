@@ -12,38 +12,15 @@ if [ ! -x "$real_hvigorw" ]; then
     exit 127
 fi
 
-project_key="$(printf '%s' "$project_root" | shasum -a 256 | awk '{print substr($1, 1, 16)}')"
-if [ -n "${REMOTE_DESKTOP_BUILD_CACHE_ROOT:-}" ]; then
-    local_root="$REMOTE_DESKTOP_BUILD_CACHE_ROOT"
-else
-    user_cache_dir="$(getconf DARWIN_USER_CACHE_DIR 2>/dev/null || true)"
-    if [ -z "$user_cache_dir" ]; then
-        user_cache_dir="$(getconf DARWIN_USER_TEMP_DIR 2>/dev/null || true)"
-    fi
-    if [ -z "$user_cache_dir" ] && [ -n "${TMPDIR:-}" ]; then
-        user_cache_dir="$TMPDIR"
-    fi
-    if [ -z "$user_cache_dir" ]; then
-        user_cache_dir="/private/tmp/RemoteDeskHarmonyOS-$(id -u)"
-    else
-        user_cache_dir="${user_cache_dir%/}/RemoteDeskHarmonyOS"
-    fi
-    if [ -L "$user_cache_dir" ]; then
-        printf 'RemoteDesk Hvigor guard: refusing symlink cache namespace: %s\n' \
-            "$user_cache_dir" >&2
-        exit 2
-    fi
-    mkdir -p "$user_cache_dir" || exit 1
-    user_cache_dir="$(CDPATH= cd -- "$user_cache_dir" && pwd -P)" || exit 1
-    cache_namespace_owner="$(stat -f '%u' "$user_cache_dir" 2>/dev/null || true)"
-    if [ "$cache_namespace_owner" != "$(id -u)" ]; then
-        printf 'RemoteDesk Hvigor guard: cache namespace is not owned by current user: %s\n' \
-            "$user_cache_dir" >&2
-        exit 2
-    fi
-    chmod 700 "$user_cache_dir" || exit 1
-    local_root="$user_cache_dir/$project_key"
+# The project is pinned for offline availability, so normal DevEco and shell
+# builds must use its native .hvigor, entry/.cxx, entry/build, and build paths.
+# External-cache isolation remains available only as an explicit opt-in for a
+# workspace that is still managed by a File Provider.
+if [ -z "${REMOTE_DESKTOP_BUILD_CACHE_ROOT:-}" ]; then
+    exec "$real_hvigorw" "$@"
 fi
+
+local_root="$REMOTE_DESKTOP_BUILD_CACHE_ROOT"
 
 case "$local_root" in
     /*) ;;
@@ -150,6 +127,50 @@ prepare_build_layout() {
     prepare_local_link "$project_root/.hvigor" "$official_project_cache/.hvigor" "hvigor" || return 1
     prepare_local_link "$project_root/entry/build" "$official_project_cache/entry/build" "entry-build" || return 1
     prepare_local_link "$project_root/entry/.cxx" "$local_root/entry-cxx" "entry-cxx" || return 1
+}
+
+publish_conventional_entry_outputs() {
+    # Hvigor may replace entry/build with a real directory even when its
+    # supported build-cache-dir is active. Keep compilation caches off the
+    # cloud-managed project volume, but publish the final output tree back to
+    # the conventional DevEco location so IDE actions and release tooling can
+    # always find entry/build/default/outputs after a successful package task.
+    output_source=""
+    project_output_root="$project_root/entry/build/default/outputs"
+    cached_output_root="$official_project_cache/entry/build/default/outputs"
+    if [ -d "$project_output_root" ]; then
+        output_source="$project_output_root"
+    elif [ -d "$cached_output_root" ]; then
+        output_source="$cached_output_root"
+    fi
+
+    publish_stage=""
+    if [ -n "$output_source" ]; then
+        publish_stage="$(mktemp -d "$local_root/published-entry-build.XXXXXX")" || return 1
+        mkdir -p "$publish_stage/default/outputs" || return 1
+        if ! cp -R "$output_source/." "$publish_stage/default/outputs/"; then
+            quarantine_local_path "$publish_stage" "failed-output-publication" || true
+            return 1
+        fi
+    fi
+
+    prepare_build_layout || return 1
+    if [ -z "$publish_stage" ]; then
+        return 0
+    fi
+
+    if [ ! -L "$project_root/entry/build" ]; then
+        printf 'RemoteDesk Hvigor guard: expected managed entry/build link before publication\n' >&2
+        quarantine_local_path "$publish_stage" "failed-output-publication" || true
+        return 1
+    fi
+    rm -f "$project_root/entry/build" || return 1
+    if ! mv "$publish_stage" "$project_root/entry/build"; then
+        prepare_build_layout || true
+        return 1
+    fi
+    printf 'RemoteDesk Hvigor guard: published build outputs at %s\n' \
+        "$project_root/entry/build/default/outputs"
 }
 
 materialize_project_inputs() {
@@ -480,6 +501,12 @@ build_capture_log=""
 if [ "$build_status" -eq 0 ]; then
     rm -f "$incomplete_marker"
     printf 'RemoteDesk Hvigor guard: build outputs at %s\n' "$official_build_cache"
+    if ! publish_conventional_entry_outputs; then
+        printf 'RemoteDesk Hvigor guard: failed to publish conventional build outputs\n' >&2
+        build_status=1
+        prepare_build_layout || true
+    fi
+else
+    prepare_build_layout || build_status=1
 fi
-prepare_build_layout || build_status=1
 exit "$build_status"
