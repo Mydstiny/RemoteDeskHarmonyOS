@@ -380,6 +380,9 @@ import {
   displayConnectionHealth,
   filterHostsByWorkspace,
   groupIdsForHosts,
+  hostListBottomSpacerVp,
+  hostListFabLiftVp,
+  hostListFabSizeVp,
   nextWorkspaceGroupId
 } from '../services/HostWorkspacePolicy';
 import {
@@ -12606,9 +12609,9 @@ struct HostListPage {
             .fontSize(28)
             .fontColor([Color.White])
         }
-        .width(this.breakpoint === 'xl' ? 64 : 56)
-        .height(this.breakpoint === 'xl' ? 64 : 56)
-        .borderRadius(this.breakpoint === 'xl' ? 32 : 28).padding(0)
+        .width(hostListFabSizeVp(this.breakpoint))
+        .height(hostListFabSizeVp(this.breakpoint))
+        .borderRadius(hostListFabSizeVp(this.breakpoint) / 2).padding(0)
         .backgroundColor(this.accentColor)
         .onClick(() => {
           if (this.isDesktopDevice && this.breakpoint === 'xl') {
@@ -12667,7 +12670,8 @@ struct HostListPage {
       .justifyContent(shouldUseGripFabAlignment(this.isDesktopDevice, this.breakpoint) ? this.getFabAlignment() : FlexAlign.Start)
       .position({ x: 0, y: '100%' })
       .markAnchor({ x: 0, y: '100%' })
-      .translate({ y: (!this.isDesktopDevice && this.curTab === 3 ? 120 : (this.breakpoint === 'sm' ? -120 : -100)) })
+      .translate({ y: (!this.isDesktopDevice && this.curTab === 3 ? 120 :
+        -hostListFabLiftVp(this.breakpoint)) })
       .opacity(!this.pageActive || (!this.isDesktopDevice && this.curTab === 3) ? 0 : 1)
       .animation({ curve: curves.interpolatingSpring(0, 1, 200, 17) })
 
@@ -13569,7 +13573,7 @@ struct HostListPage {
         this.moonlightGroupedDesktopRow()
       }
     }
-    .width('100%').padding({ top: 8, bottom: 140 })
+    .width('100%').padding({ top: 8 })
   }
 
   @Builder moonlightFlatHostCard(view: MoonlightHostLocalView) {
@@ -14499,8 +14503,8 @@ struct HostListPage {
             ref.key + ':' + this.hostViewRevision.toString())
         }
 
-        // 底部 FAB 占位
-        ListItem() { Column().height(140) }
+        // 底部 FAB 占位：包含按钮完整高度和操作余量，确保最后一张卡可滚出遮挡区。
+        ListItem() { Column().height(hostListBottomSpacerVp(this.breakpoint)) }
       }
         .width('100%').height('100%')
         .padding({ left: 16, right: 16, top: 0, bottom: 0 })
