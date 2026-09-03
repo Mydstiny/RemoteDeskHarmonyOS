@@ -488,8 +488,18 @@ import {
   RdpSessionPerformanceSummary
 } from '../services/RdpSessionSidebarPolicy';
 import {
+  mouseButtonForRemote,
+  physicalMousePressDisposition,
+  PhysicalMousePressDisposition,
+  remoteInputWindowActiveAfterEvent,
+  remoteMouseButtonsAfterEvent,
   remoteInputBlockedReason,
-  shouldBlockRemoteInputForBrowseMode
+  resolvePhysicalMouseReleaseButton,
+  shouldBlockRemoteInputForBrowseMode,
+  shouldBlockRemoteInputForLifecycle,
+  shouldReleaseAllMouseButtonsForAmbiguousUp,
+  shouldReleaseMouseButtonsBeforeSwapChange,
+  shouldRecoverPointerFocusAfterMouseRelease
 } from '../services/RemoteInputGuardPolicy';
 import {
   advanceCanvasPinchTouchState,
@@ -1532,6 +1542,10 @@ struct RemoteDesktop {
   private kbAvoidCb: ((data: window.AvoidAreaOptions) => void) | null = null;
   private kbWindowSizeCb: ((size: window.Size) => void) | null = null;
   private kbDisplayIdCb: ((displayId: number) => void) | null = null;
+  private kbWindowStatusCb: ((status: window.WindowStatusType) => void) | null = null;
+  private kbWindowEventCb: ((event: window.WindowEventType) => void) | null = null;
+  private sessionWindowMinimized: boolean = false;
+  private sessionWindowActive: boolean = true;
   private kbListenerGeneration: number = 0;
   private touchHoldDragTimer: number = -1;
   private touchDirectRightClickTimer: number = -1;
@@ -1574,6 +1588,9 @@ struct RemoteDesktop {
   private localMouseMoveGeneration: number = 0;
   private mouseMoveTimer: number = -1;
   private physicalMouseDownButton: number = -1;
+  private physicalMouseStagedButton: number = -1;
+  private physicalMouseButtonsDown: Array<number> = [];
+  private remoteMouseButtonsDown: Array<number> = [];
   private physicalMouseClickPending: boolean = false;
   private physicalMouseRemoteDownSent: boolean = false;
   private physicalMousePressStartedAtMs: number = 0;
@@ -6484,6 +6501,11 @@ struct RemoteDesktop {
   }
 
   private setRustDeskSwapMouseButtons(on: boolean): void {
+    if (shouldReleaseMouseButtonsBeforeSwapChange(this.rustdeskSwapMouseButtons,
+      on, this.remoteMouseButtonsDown)) {
+      this.discardPendingMouseMove();
+      this.releaseAllHeldKeys();
+    }
     this.rustdeskSwapMouseButtons = on;
     this.persistSessionPref('rustdeskSwapMouseButtons', on);
   }
@@ -7451,6 +7473,11 @@ struct RemoteDesktop {
       this.physicalRemoteKeyCodesDown = [];
       if (releaseMouseButtons) {
         this.physicalMouseDownButton = -1;
+        this.physicalMouseButtonsDown = [];
+        this.remoteMouseButtonsDown = [];
+        this.touchLeftDown = false;
+        this.touchDragActive = false;
+        this.gesturePanActive = false;
       }
       this.resetPhysicalModifiers();
       this.resetRemoteModDown();
@@ -7486,22 +7513,81 @@ struct RemoteDesktop {
     }
     this.keyDispatcher.releaseAllHeldKeys(this.loader, this.sessionId,
       (x: number, y: number): Record<string, number> => this.toSourceSpace(x, y),
-      this.remoteCursorX, this.remoteCursorY, releaseMouseButtons);
+      this.remoteCursorX, this.remoteCursorY, false);
     if (releaseMouseButtons) {
+      const heldButtons: Array<number> = this.remoteMouseButtonsDown.slice();
+      const src: Record<string, number> = this.toSourceSpace(
+        this.remoteCursorX, this.remoteCursorY);
+      for (let index = 0; index < heldButtons.length; index++) {
+        try {
+          this.loader.sendMouse(this.sessionId, src['x'], src['y'],
+            heldButtons[index], false);
+        } catch (err) {
+          hilog.warn(RD_DOMAIN, RD_TAG, 'release held mouse failed button=' +
+            heldButtons[index].toString() + ' error=' + JSON.stringify(err));
+        }
+      }
+      hilog.info(RD_DOMAIN, RD_TAG, 'release held mouse buttons=' +
+        (heldButtons.length > 0 ? heldButtons.join(',') : 'none'));
+      this.remoteMouseButtonsDown = [];
       this.physicalMouseDownButton = -1;
+      this.physicalMouseButtonsDown = [];
+      this.touchLeftDown = false;
+      this.touchDragActive = false;
+      this.gesturePanActive = false;
     }
     this.resetPhysicalModifiers();
     this.resetRemoteModDown();
   }
 
+  private releaseTrackedMouseButtons(reason: string): void {
+    this.cancelPhysicalMouseClickTransaction(reason);
+    const heldButtons: Array<number> = this.remoteMouseButtonsDown.slice();
+    if (this.sessionId > 0 && heldButtons.length > 0) {
+      const src: Record<string, number> = this.toSourceSpace(
+        this.remoteCursorX, this.remoteCursorY);
+      for (let index = 0; index < heldButtons.length; index++) {
+        try {
+          this.loader.sendMouse(this.sessionId, src['x'], src['y'],
+            heldButtons[index], false);
+        } catch (err) {
+          hilog.warn(RD_DOMAIN, RD_TAG, 'fail-safe mouse release failed button=' +
+            heldButtons[index].toString() + ' reason=' + reason +
+            ' error=' + JSON.stringify(err));
+        }
+      }
+    }
+    hilog.info(RD_DOMAIN, RD_TAG, 'fail-safe mouse release reason=' + reason +
+      ' buttons=' + (heldButtons.length > 0 ? heldButtons.join(',') : 'none'));
+    this.remoteMouseButtonsDown = [];
+    this.physicalMouseButtonsDown = [];
+    this.physicalMouseDownButton = -1;
+    this.touchLeftDown = false;
+    this.touchDragActive = false;
+    this.gesturePanActive = false;
+  }
+
+  private closeRemoteInputForWindowTransition(reason: string): void {
+    this.clearPhysicalPointerCanvasFollow(true);
+    this.discardPendingMouseMove();
+    this.releaseCanvasPinchInput(reason);
+    this.releaseAllHeldKeys();
+    this.resetTouchGesture();
+    this.physicalWheelRemainder = 0;
+    this.vncPhysicalWheelState = resetVncPhysicalWheelState();
+    this.resetRustDeskPhysicalTouchpadState();
+  }
+
   private registerKeyboardAvoidListener(): void {
-    if (this.kbWin !== null && this.kbAvoidCb !== null && this.kbWindowSizeCb !== null) {
+    if (this.kbWin !== null && this.kbAvoidCb !== null && this.kbWindowSizeCb !== null &&
+      this.kbWindowStatusCb !== null && this.kbWindowEventCb !== null) {
       if (this.isVncSession() || this.isRdpRemoteSession()) {
         this.syncVncToolbarAvoidAreas(this.kbWin);
       }
       return;
     }
-    if (this.kbWin !== null || this.kbAvoidCb !== null || this.kbWindowSizeCb !== null) {
+    if (this.kbWin !== null || this.kbAvoidCb !== null || this.kbWindowSizeCb !== null ||
+      this.kbWindowStatusCb !== null || this.kbWindowEventCb !== null) {
       this.unregisterKeyboardAvoidListener();
     }
     const generation: number = ++this.kbListenerGeneration;
@@ -7567,6 +7653,55 @@ struct RemoteDesktop {
           }
         };
         w.on('windowSizeChange', this.kbWindowSizeCb);
+        try {
+          this.sessionWindowMinimized =
+            w.getWindowStatus() === window.WindowStatusType.MINIMIZE;
+          this.kbWindowStatusCb = (status: window.WindowStatusType): void => {
+            const minimized: boolean = status === window.WindowStatusType.MINIMIZE;
+            if (minimized === this.sessionWindowMinimized) {
+              return;
+            }
+            this.sessionWindowMinimized = minimized;
+            hilog.info(RD_DOMAIN, RD_TAG, 'session window status=' + status.toString() +
+              ' inputMinimized=' + (minimized ? '1' : '0'));
+            if (minimized) {
+              // Window status is emitted directly by WMS and can precede the
+              // UIAbility background observer. Close every local transaction
+              // before a trailing Dock-originated event reaches XComponent.
+              this.closeRemoteInputForWindowTransition('window-minimized');
+            }
+          };
+          w.on('windowStatusChange', this.kbWindowStatusCb);
+        } catch (_e) {
+          this.kbWindowStatusCb = null;
+          this.sessionWindowMinimized = false;
+        }
+        try {
+          this.kbWindowEventCb = (event: window.WindowEventType): void => {
+            let eventName: string = 'shown';
+            if (event === window.WindowEventType.WINDOW_ACTIVE) {
+              eventName = 'active';
+            } else if (event === window.WindowEventType.WINDOW_INACTIVE) {
+              eventName = 'inactive';
+            } else if (event === window.WindowEventType.WINDOW_HIDDEN) {
+              eventName = 'hidden';
+            } else if (event === window.WindowEventType.WINDOW_DESTROYED) {
+              eventName = 'destroyed';
+            }
+            const wasActive: boolean = this.sessionWindowActive;
+            this.sessionWindowActive = remoteInputWindowActiveAfterEvent(
+              this.sessionWindowActive, eventName);
+            if (wasActive && !this.sessionWindowActive) {
+              hilog.info(RD_DOMAIN, RD_TAG, 'session window input inactive event=' +
+                event.toString());
+              this.closeRemoteInputForWindowTransition('window-inactive');
+            }
+          };
+          w.on('windowEvent', this.kbWindowEventCb);
+        } catch (_e) {
+          this.kbWindowEventCb = null;
+          this.sessionWindowActive = true;
+        }
         this.kbDisplayIdCb = (displayId: number): void => {
           if (!Number.isSafeInteger(displayId) || displayId < 0 ||
             displayId === this.rdpWindowDisplayId) {
@@ -7633,10 +7768,28 @@ struct RemoteDesktop {
     } catch (_e) {
       // Cross-display listener teardown is best effort during window transfer.
     }
+    try {
+      if (this.kbWin && this.kbWindowStatusCb) {
+        this.kbWin.off('windowStatusChange', this.kbWindowStatusCb);
+      }
+    } catch (_e) {
+      // Window-status listener teardown is best effort during window transfer.
+    }
+    try {
+      if (this.kbWin && this.kbWindowEventCb) {
+        this.kbWin.off('windowEvent', this.kbWindowEventCb);
+      }
+    } catch (_e) {
+      // Window lifecycle listener teardown is best effort during transfer.
+    }
     this.kbWin = null;
     this.kbAvoidCb = null;
     this.kbWindowSizeCb = null;
     this.kbDisplayIdCb = null;
+    this.kbWindowStatusCb = null;
+    this.kbWindowEventCb = null;
+    this.sessionWindowMinimized = false;
+    this.sessionWindowActive = true;
     this.rdpWindowDisplayId = -1;
     this.kbHeight = 0;
     this.vncToolbarSystemTop = 0;
@@ -7771,6 +7924,10 @@ struct RemoteDesktop {
     if (isBackground) {
       this.cancelPendingDisappearDecision();
       this.invalidatePendingRdpCredentialAttemptOnBackground();
+      // Close input synchronously. The preservation path awaits account scope
+      // initialization and may fail; held remote buttons must never depend on
+      // that asynchronous work completing.
+      this.closeRemoteInputForWindowTransition('ability-background');
     }
     const action: RemoteDesktopBackgroundAction = decideRemoteDesktopBackgroundAction(
       isBackground,
@@ -10899,6 +11056,22 @@ struct RemoteDesktop {
 
   private canForwardInput(source: string): boolean {
     const protocol: string = this.currentProtocolName();
+    const abilityBackground: boolean = this.currentAbilityBackgroundState();
+    const windowInactive: boolean = abilityBackground || this.sessionWindowMinimized ||
+      !this.sessionWindowActive;
+    if (shouldBlockRemoteInputForLifecycle(
+      windowInactive, this.cleanupStarted, this.bgRestorePending,
+      this.restoreInProgress, this.renderPreservedInPip,
+      this.pipSurfaceTransferInProgress)) {
+      hilog.info(RD_DOMAIN, RD_TAG, 'dropInput ' + source +
+        ' lifecycleGate=1 background=' + (abilityBackground ? '1' : '0') +
+        ' minimized=' + (this.sessionWindowMinimized ? '1' : '0') +
+        ' active=' + (this.sessionWindowActive ? '1' : '0') +
+        ' cleanup=' + (this.cleanupStarted ? '1' : '0') +
+        ' restorePending=' + (this.bgRestorePending ? '1' : '0') +
+        ' restoreInProgress=' + (this.restoreInProgress ? '1' : '0'));
+      return false;
+    }
     if (this.isVncViewOnlySession()) {
       const now: number = Date.now();
       if (source !== 'mouseMove' && now - this.lastVncViewOnlyBlockedToastMs > 2200) {
@@ -11443,21 +11616,18 @@ struct RemoteDesktop {
       return;
     }
     const src = this.toSourceSpace(x, y);
-    let sendButton: number = button;
-    if ((this.isRustDeskSession() && this.rustdeskSwapMouseButtons) ||
-      (this.isVncSession() && this.vncSwapMouseButtons)) {
-      if (sendButton === 0) {
-        sendButton = 2;
-      } else if (sendButton === 2) {
-        sendButton = 0;
-      }
-    }
+    const sendButton: number = mouseButtonForRemote(button,
+      (this.isRustDeskSession() && this.rustdeskSwapMouseButtons) ||
+      (this.isVncSession() && this.vncSwapMouseButtons));
     this.loader.sendMouse(this.sessionId, src['x'], src['y'], sendButton, pressed);
+    this.remoteMouseButtonsDown = remoteMouseButtonsAfterEvent(
+      this.remoteMouseButtonsDown, sendButton, pressed);
   }
 
   private clearPhysicalMouseClickTransaction(): void {
     this.physicalMouseClickPending = false;
     this.physicalMouseRemoteDownSent = false;
+    this.physicalMouseStagedButton = -1;
     this.physicalMousePressStartedAtMs = 0;
     this.physicalMousePressGeneration = -1;
     this.physicalMousePressX = 0;
@@ -11492,6 +11662,7 @@ struct RemoteDesktop {
     this.discardPendingMouseMove();
     this.rememberRemoteCursor(x, y);
     this.physicalMouseDownButton = button;
+    this.physicalMouseStagedButton = button;
     this.physicalMouseClickPending = true;
     this.physicalMouseRemoteDownSent = false;
     this.physicalMousePressStartedAtMs = Date.now();
@@ -11518,22 +11689,44 @@ struct RemoteDesktop {
       return false;
     }
     if (this.physicalMousePressGeneration !== this.connectAttemptId ||
-      this.physicalMouseDownButton < 0 ||
+      this.physicalMouseStagedButton < 0 ||
       !this.canForwardInput('physicalMouseDragStart')) {
       this.clearPhysicalMouseClickTransaction();
-      this.physicalMouseDownButton = -1;
+      this.physicalMouseDownButton = this.physicalMouseButtonsDown.length > 0 ?
+        this.physicalMouseButtonsDown[this.physicalMouseButtonsDown.length - 1] : -1;
       hilog.info(RD_DOMAIN, RD_TAG,
         'physical-mouse transaction dropped-stale-drag reason=' + reason);
       return false;
     }
     this.sendMouseNow(this.physicalMousePressX, this.physicalMousePressY,
-      this.physicalMouseDownButton, true);
+      this.physicalMouseStagedButton, true);
     this.physicalMouseRemoteDownSent = true;
     this.queueMouseMove(x, y, true);
     this.flushMouseMove();
     hilog.info(RD_DOMAIN, RD_TAG,
       'physical-mouse transaction promoted-drag reason=' + reason +
         ' remote=' + x.toString() + ',' + y.toString());
+    return true;
+  }
+
+  private commitStagedPhysicalMouseDown(reason: string): boolean {
+    if (!this.physicalMouseClickPending || this.physicalMouseRemoteDownSent) {
+      return true;
+    }
+    if (this.physicalMousePressGeneration !== this.connectAttemptId ||
+      this.physicalMouseStagedButton < 0 ||
+      !this.canForwardInput('physicalMouseChordStart')) {
+      this.clearPhysicalMouseClickTransaction();
+      this.physicalMouseDownButton = this.physicalMouseButtonsDown.length > 0 ?
+        this.physicalMouseButtonsDown[this.physicalMouseButtonsDown.length - 1] : -1;
+      return false;
+    }
+    this.sendMouseNow(this.physicalMousePressX, this.physicalMousePressY,
+      this.physicalMouseStagedButton, true);
+    this.physicalMouseRemoteDownSent = true;
+    hilog.info(RD_DOMAIN, RD_TAG,
+      'physical-mouse transaction committed-for-chord reason=' + reason +
+        ' button=' + this.physicalMouseStagedButton.toString());
     return true;
   }
 
@@ -13071,6 +13264,10 @@ struct RemoteDesktop {
     let vncUsedSavedCredential: boolean = false;
     this.connectionProgressMessage = host.protocol === 'rustdesk'
       ? 'RustDesk: 正在准备连接' : '';
+    this.clearPhysicalMouseClickTransaction();
+    this.physicalMouseDownButton = -1;
+    this.physicalMouseButtonsDown = [];
+    this.remoteMouseButtonsDown = [];
     try {
       const accountScopeReady: boolean = await AccountSessionCoordinator.getInstance().init(
         getContext(this) as common.Context);
@@ -18110,6 +18307,7 @@ struct RemoteDesktop {
     this.clearRemoteKeyboardFocusLoss();
     this.remotePointerFocusRecoveryNeeded = true;
     if (this.remotePointerFocusRecoveryArmed || this.physicalMouseDownButton >= 0 ||
+      this.physicalMouseClickPending ||
       this.touchFingerCount > 0) {
       hilog.info(RD_DOMAIN, RD_TAG,
         'remote-keyboard-focus-lost defer-pointer source=' + source +
@@ -18125,7 +18323,7 @@ struct RemoteDesktop {
     this.remoteKeyboardFocusLossTimer = setTimeout((): void => {
       this.remoteKeyboardFocusLossTimer = -1;
       if (!this.connected || this.sessionId <= 0 || this.remoteInputFocusTarget.length > 0 ||
-        this.physicalMouseDownButton >= 0) {
+        this.physicalMouseDownButton >= 0 || this.physicalMouseClickPending) {
         return;
       }
       this.releaseAllHeldKeys(false);
@@ -18832,8 +19030,13 @@ struct RemoteDesktop {
       }
       const rawButton: number = event.button as number;
       const mappedButton: number = this.mapArkMouseButton(rawButton);
-      const sendButton: number = event.action === MouseAction.Release && mappedButton < 0 ?
-        this.physicalMouseDownButton : mappedButton;
+      const locallyHeldButtons: Array<number> = this.physicalMouseClickPending &&
+        this.physicalMouseStagedButton >= 0 &&
+        this.physicalMouseButtonsDown.indexOf(this.physicalMouseStagedButton) < 0 ?
+        this.physicalMouseButtonsDown.concat([this.physicalMouseStagedButton]) :
+        this.physicalMouseButtonsDown;
+      const sendButton: number = event.action === MouseAction.Release ?
+        resolvePhysicalMouseReleaseButton(mappedButton, locallyHeldButtons) : mappedButton;
       if (event.action === MouseAction.Press || event.action === MouseAction.Release) {
         hilog.info(RD_DOMAIN, RD_TAG,
           'physical-mouse action=' + (event.action as number).toString() +
@@ -18843,16 +19046,49 @@ struct RemoteDesktop {
             ' sourceTool=' + event.sourceTool.toString() +
             ' remote=' + mapped.x.toString() + ',' + mapped.y.toString());
       }
+      if (event.action === MouseAction.Release &&
+        shouldReleaseAllMouseButtonsForAmbiguousUp(mappedButton, locallyHeldButtons)) {
+        this.discardPendingMouseMove();
+        this.releaseTrackedMouseButtons('ambiguous-button-up');
+        hilog.info(RD_DOMAIN, RD_TAG,
+          'physical-mouse released-all-for-ambiguous-up held=' +
+            locallyHeldButtons.join(','));
+        if (shouldRecoverPointerFocusAfterMouseRelease(
+          this.physicalMouseButtonsDown, this.physicalMouseClickPending)) {
+          this.recoverRemotePointerFocus('mouse-release-ambiguous');
+        }
+        return;
+      }
+      if (event.action === MouseAction.Release && sendButton < 0) {
+        this.discardPendingMouseMove();
+        hilog.info(RD_DOMAIN, RD_TAG,
+          'physical-mouse discarded-unpaired-release mappedButton=' +
+            mappedButton.toString() + ' held=' + locallyHeldButtons.join(','));
+        return;
+      }
       if (event.action === MouseAction.Press) {
         const proxyWasActive: boolean = this.armRemotePointerFocusRecovery('mouse-press');
         if (shouldResetRemoteImeOnPointerDown(this.keyboardOpen || proxyWasActive)) {
           this.resetRemoteImeSession('mouse-press');
         }
         if (sendButton >= 0) {
-          const stageMacClick: boolean = shouldStageRustDeskMacPhysicalMouseClick(
+          const stageEligible: boolean = shouldStageRustDeskMacPhysicalMouseClick(
             this.currentProtocolName(), this.physicalKeyboardLayout,
             event.sourceTool === SourceTool.MOUSE, sendButton);
-          if (stageMacClick) {
+          const disposition: PhysicalMousePressDisposition = physicalMousePressDisposition(
+            stageEligible, this.physicalMouseStagedButton,
+            this.physicalMouseButtonsDown, sendButton);
+          if (disposition === PhysicalMousePressDisposition.IGNORE_DUPLICATE) {
+            hilog.warn(RD_DOMAIN, RD_TAG,
+              'physical-mouse ordering ignored-duplicate-press button=' +
+                sendButton.toString());
+            return;
+          }
+          if (disposition === PhysicalMousePressDisposition.COMMIT_STAGED_THEN_SEND &&
+            !this.commitStagedPhysicalMouseDown('mouse-chord')) {
+            return;
+          }
+          if (disposition === PhysicalMousePressDisposition.STAGE) {
             if (this.physicalMouseDownButton >= 0 || this.physicalMouseClickPending) {
               hilog.warn(RD_DOMAIN, RD_TAG,
                 'physical-mouse ordering ignored-duplicate-press button=' +
@@ -18866,14 +19102,19 @@ struct RemoteDesktop {
             this.discardPendingMouseMove();
             this.physicalMouseDownButton = sendButton;
             this.sendMouseNow(mapped.x, mapped.y, sendButton, true);
+            this.physicalMouseButtonsDown = remoteMouseButtonsAfterEvent(
+              this.physicalMouseButtonsDown, sendButton, true);
           }
         }
       } else if (event.action === MouseAction.Release) {
         if (this.physicalMouseClickPending &&
-          sendButton === this.physicalMouseDownButton) {
+          sendButton === this.physicalMouseStagedButton) {
           this.promotePhysicalMouseClickToDrag(localX, localY, mapped.x, mapped.y, 'release');
           if (!this.physicalMouseClickPending) {
-            this.recoverRemotePointerFocus('mouse-release-stale');
+            if (shouldRecoverPointerFocusAfterMouseRelease(
+              this.physicalMouseButtonsDown, this.physicalMouseClickPending)) {
+              this.recoverRemotePointerFocus('mouse-release-stale');
+            }
             return;
           }
           const elapsedMs: number = Math.max(0, Date.now() - this.physicalMousePressStartedAtMs);
@@ -18902,19 +19143,16 @@ struct RemoteDesktop {
                 this.physicalMousePressX.toString() + ',' +
                 this.physicalMousePressY.toString());
           }
-          this.physicalMouseDownButton = -1;
+          this.physicalMouseButtonsDown = remoteMouseButtonsAfterEvent(
+            this.physicalMouseButtonsDown, sendButton, false);
+          this.physicalMouseDownButton = this.physicalMouseButtonsDown.length > 0 ?
+            this.physicalMouseButtonsDown[this.physicalMouseButtonsDown.length - 1] : -1;
           this.clearPhysicalMouseClickTransaction();
-          this.recoverRemotePointerFocus('mouse-release-verify');
+          if (shouldRecoverPointerFocusAfterMouseRelease(
+            this.physicalMouseButtonsDown, this.physicalMouseClickPending)) {
+            this.recoverRemotePointerFocus('mouse-release-verify');
+          }
           return;
-        }
-        if (this.physicalMouseClickPending) {
-          // A mismatched release must not leave a staged click alive for the
-          // next physical transaction.
-          this.cancelPhysicalMouseClickTransaction('mismatched-release');
-          this.physicalMouseDownButton = -1;
-          hilog.info(RD_DOMAIN, RD_TAG,
-            'physical-mouse transaction discarded-mismatched-release button=' +
-              sendButton.toString());
         }
         if (this.pendingMouseMoveValid) {
           // This pending coordinate was observed after DOWN, so it represents
@@ -18926,13 +19164,18 @@ struct RemoteDesktop {
         }
         if (sendButton >= 0) {
           this.sendMouseNow(mapped.x, mapped.y, sendButton, false);
+          this.physicalMouseButtonsDown = remoteMouseButtonsAfterEvent(
+            this.physicalMouseButtonsDown, sendButton, false);
         }
-        this.physicalMouseDownButton = -1;
-        this.clearPhysicalMouseClickTransaction();
+        this.physicalMouseDownButton = this.physicalMouseButtonsDown.length > 0 ?
+          this.physicalMouseButtonsDown[this.physicalMouseButtonsDown.length - 1] : -1;
         // ArkUI can keep the proxy flags set even when a pointer transaction
         // silently moved the native focus owner. Verify once after the remote
         // click has been delivered; do not steal focus on button-down.
-        this.recoverRemotePointerFocus('mouse-release-verify');
+        if (shouldRecoverPointerFocusAfterMouseRelease(
+          this.physicalMouseButtonsDown, this.physicalMouseClickPending)) {
+          this.recoverRemotePointerFocus('mouse-release-verify');
+        }
       } else if (event.action === MouseAction.Move || event.action === MouseAction.Hover) {
         if (this.physicalMouseClickPending && !this.physicalMouseRemoteDownSent) {
           const promoted: boolean = this.promotePhysicalMouseClickToDrag(
