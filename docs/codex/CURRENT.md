@@ -27,7 +27,7 @@
 
 - Each feedback item was committed only after its scoped implementation checks and reviewer follow-up were clean. `/root/review_item1` gave item 1 a final P0=0, P1=0, P2=0, P3=0 result; `/root/review_item2` iteratively reviewed items 2-12 and gave item 12/final cumulative state the same zero-finding result.
 - Latest full native suite PASS 997/997. Latest targeted RustDesk Harmony shortcut tests PASS 2/2, with 254 unrelated tests filtered; `cargo fmt --check` PASS.
-- Required `default@OhosTestCompileArkTS` and signed `assembleHap` PASS after the final code checkpoint and again after the coordination-state refresh. The post-refresh signed build reported `BUILD SUCCESSFUL in 5 s 303 ms`; `pack.info` remains `1.1.5` / `1001005`, and signed HAP SHA-256 is `33cf72776db53799ee38d6ec779d37297c56175efdf507991bd4727a47f78130`.
+- Required `default@OhosTestCompileArkTS` and signed `assembleHap` PASS after the final code checkpoint and again after the coordination-state refresh. A post-refresh signed build reported `BUILD SUCCESSFUL in 5 s 277 ms`; `pack.info` remains `1.1.5` / `1001005`. The development-signed HAP is intentionally not content-addressed here because its signing output changes between otherwise identical builds.
 - `git diff --check` and Light open-source compliance PASS. Existing ArkTS/generated-protobuf warnings are non-fatal and were not introduced as new errors.
 - The optional `ohosTest@OhosTestCompileArkTS` probe was attempted and returned `00306054` because this project exposes no such task; it did not replace either mandatory `default@OhosTestCompileArkTS` or `assembleHap` gate.
 - Real-device behavior is intentionally not claimed. The user will run one consolidated acceptance pass after all twelve local repairs are delivered.
