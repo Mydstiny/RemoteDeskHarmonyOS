@@ -45,7 +45,7 @@ use protobuf::{Message as ProtoMessage, ProtobufEnum};
 
 use std::ffi::{c_char, c_void, CString};
 use std::io;
-use std::io::ErrorKind;
+use std::io::{ErrorKind, Read};
 use std::net::{SocketAddr, TcpStream, UdpSocket};
 use std::os::raw::c_int;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -67,6 +67,13 @@ const VP9_BACKPRESSURE_FPS: [u32; 4] = [30, 26, 22, 18];
 const VP9_PRESSURE_RECOVERY_HOLD_WINDOWS: u32 = 12;
 const VP9_HIGH_RESOLUTION_PIXEL_THRESHOLD: u64 = 4_000_000;
 const VP9_HIGH_RESOLUTION_FPS: u32 = 30;
+const MAX_REMOTE_CLIPBOARD_TEXT_BYTES: usize = 65_536;
+const MAX_REMOTE_CLIPBOARD_COMPRESSED_BYTES: usize = 131_072;
+const MAX_REMOTE_CLIPBOARD_FORMATS: usize = 32;
+// zstd's normal streaming encoder advertises a 512 KiB history window even
+// for tiny payloads. Preserve interoperability while rejecting giant-window
+// frames before the decoder allocates their requested history.
+const MAX_REMOTE_CLIPBOARD_ZSTD_WINDOW_LOG: u32 = 19;
 
 #[derive(Default, Debug)]
 struct PhysicalModifierState {
@@ -423,6 +430,52 @@ enum RemoteKeyboardTransport {
 }
 
 impl RustDeskConnector {
+    /// Extract one bounded UTF-8 text payload from either RustDesk's legacy
+    /// single-format clipboard message or an entry inside MultiClipboards.
+    /// New desktop peers commonly advertise several clipboard formats at
+    /// once, so ignoring MultiClipboards makes remote-to-local text appear
+    /// completely broken even though local-to-remote legacy Clipboard works.
+    fn decode_remote_clipboard_text(clipboard: &Clipboard) -> Option<Vec<u8>> {
+        if clipboard.get_format() != ClipboardFormat::Text {
+            return None;
+        }
+        let content = clipboard.get_content();
+        let bytes = if clipboard.get_compress() {
+            if content.len() > MAX_REMOTE_CLIPBOARD_COMPRESSED_BYTES {
+                return None;
+            }
+            let mut decoder = zstd::stream::read::Decoder::new(content).ok()?;
+            decoder
+                .window_log_max(MAX_REMOTE_CLIPBOARD_ZSTD_WINDOW_LOG)
+                .ok()?;
+            let mut bounded = decoder.take((MAX_REMOTE_CLIPBOARD_TEXT_BYTES + 1) as u64);
+            let mut decoded = Vec::new();
+            bounded.read_to_end(&mut decoded).ok()?;
+            decoded
+        } else {
+            if content.len() > MAX_REMOTE_CLIPBOARD_TEXT_BYTES {
+                return None;
+            }
+            content.to_vec()
+        };
+        if bytes.is_empty()
+            || bytes.len() > MAX_REMOTE_CLIPBOARD_TEXT_BYTES
+            || std::str::from_utf8(&bytes).is_err()
+        {
+            return None;
+        }
+        Some(bytes)
+    }
+
+    fn decode_remote_clipboard_formats(clipboards: &[Clipboard]) -> Option<Vec<u8>> {
+        if clipboards.len() > MAX_REMOTE_CLIPBOARD_FORMATS {
+            return None;
+        }
+        clipboards
+            .iter()
+            .find_map(Self::decode_remote_clipboard_text)
+    }
+
     pub fn new() -> Self {
         let connect_epoch = crate::current_connect_epoch();
         Self::new_with_connection_id(0, connect_epoch)
@@ -2421,8 +2474,19 @@ impl RustDeskConnector {
                 Some(Message_oneof_union::clipboard(ref clipboard)) => {
                     last_msg_kind = "clipboard";
                     *msg_stats.entry("clipboard").or_default() += 1;
-                    if clipboard.get_format() == ClipboardFormat::Text {
-                        on_clipboard(clipboard.get_content());
+                    if let Some(text) =
+                        Self::decode_remote_clipboard_formats(std::slice::from_ref(clipboard))
+                    {
+                        on_clipboard(&text);
+                    }
+                }
+                Some(Message_oneof_union::multi_clipboards(ref clipboards)) => {
+                    last_msg_kind = "multi_clipboards";
+                    *msg_stats.entry("multi_clipboards").or_default() += 1;
+                    if let Some(text) =
+                        Self::decode_remote_clipboard_formats(clipboards.get_clipboards())
+                    {
+                        on_clipboard(&text);
                     }
                 }
                 // switch_display / message_query 等其他类型由 _ arm 统一处理
@@ -4548,8 +4612,8 @@ mod tests {
     use crate::peer_stream::{spawn_test_kcp_echo_server, KcpPeerStream, PeerStream};
     use crate::protocol::message_proto::KeyboardMode;
     use crate::protocol::message_proto::{
-        DisplayInfo, Hash, LoginResponse, Message, Misc_oneof_union, PeerInfo,
-        PointerDeviceEvent_oneof_union, Resolution, SupportedResolutions, SwitchDisplay,
+        Clipboard, ClipboardFormat, DisplayInfo, Hash, LoginResponse, Message, Misc_oneof_union,
+        PeerInfo, PointerDeviceEvent_oneof_union, Resolution, SupportedResolutions, SwitchDisplay,
         TouchEvent_oneof_union,
     };
     use crate::protocol::rendezvous::{
@@ -4573,6 +4637,122 @@ mod tests {
         value.set_width(width);
         value.set_height(height);
         value
+    }
+
+    fn clipboard(format: ClipboardFormat, content: Vec<u8>, compressed: bool) -> Clipboard {
+        let mut value = Clipboard::new();
+        value.set_format(format);
+        value.set_content(content);
+        value.set_compress(compressed);
+        value
+    }
+
+    #[test]
+    fn remote_clipboard_accepts_legacy_and_multiformat_utf8_text() {
+        let legacy = clipboard(
+            ClipboardFormat::Text,
+            "鸿蒙 clipboard".as_bytes().to_vec(),
+            false,
+        );
+        assert_eq!(
+            RustDeskConnector::decode_remote_clipboard_formats(std::slice::from_ref(&legacy)),
+            Some("鸿蒙 clipboard".as_bytes().to_vec())
+        );
+
+        let formats = vec![
+            clipboard(ClipboardFormat::Html, b"<b>ignored</b>".to_vec(), false),
+            clipboard(ClipboardFormat::Text, b"plain text wins".to_vec(), false),
+        ];
+        assert_eq!(
+            RustDeskConnector::decode_remote_clipboard_formats(&formats),
+            Some(b"plain text wins".to_vec())
+        );
+    }
+
+    #[test]
+    fn remote_clipboard_decodes_bounded_compressed_text() {
+        let encoded_frames = [
+            zstd::bulk::compress(b"compressed text", 3)
+                .expect("RustDesk-style bulk zstd encoding should succeed"),
+            zstd::stream::encode_all(&b"compressed text"[..], 1)
+                .expect("streaming zstd encoding should succeed"),
+        ];
+        for encoded in encoded_frames {
+            let value = clipboard(ClipboardFormat::Text, encoded, true);
+            assert_eq!(
+                RustDeskConnector::decode_remote_clipboard_formats(std::slice::from_ref(&value)),
+                Some(b"compressed text".to_vec())
+            );
+        }
+    }
+
+    #[test]
+    fn remote_clipboard_rejects_invalid_or_oversized_text() {
+        let invalid = clipboard(ClipboardFormat::Text, vec![0xff, 0xfe], false);
+        assert!(
+            RustDeskConnector::decode_remote_clipboard_formats(std::slice::from_ref(&invalid))
+                .is_none()
+        );
+
+        let oversized = clipboard(
+            ClipboardFormat::Text,
+            vec![b'x'; super::MAX_REMOTE_CLIPBOARD_TEXT_BYTES + 1],
+            false,
+        );
+        assert!(
+            RustDeskConnector::decode_remote_clipboard_formats(std::slice::from_ref(&oversized))
+                .is_none()
+        );
+
+        let compressed_oversized = zstd::stream::encode_all(
+            vec![b'x'; super::MAX_REMOTE_CLIPBOARD_TEXT_BYTES + 1].as_slice(),
+            1,
+        )
+        .expect("zstd encoding should succeed");
+        let compressed = clipboard(ClipboardFormat::Text, compressed_oversized, true);
+        assert!(
+            RustDeskConnector::decode_remote_clipboard_formats(std::slice::from_ref(&compressed))
+                .is_none()
+        );
+
+        let excessive_formats = vec![
+            clipboard(ClipboardFormat::Html, b"ignored".to_vec(), false);
+            super::MAX_REMOTE_CLIPBOARD_FORMATS + 1
+        ];
+        assert!(RustDeskConnector::decode_remote_clipboard_formats(&excessive_formats).is_none());
+
+        let excessive_compressed_input = clipboard(
+            ClipboardFormat::Text,
+            vec![0_u8; super::MAX_REMOTE_CLIPBOARD_COMPRESSED_BYTES + 1],
+            true,
+        );
+        assert!(
+            RustDeskConnector::decode_remote_clipboard_formats(std::slice::from_ref(
+                &excessive_compressed_input
+            ))
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn remote_clipboard_rejects_zstd_frames_with_oversized_windows() {
+        let mut encoder =
+            zstd::stream::Encoder::new(Vec::new(), 1).expect("zstd encoder should initialize");
+        encoder
+            .window_log(super::MAX_REMOTE_CLIPBOARD_ZSTD_WINDOW_LOG + 8)
+            .expect("large test window should be valid");
+        encoder
+            .include_contentsize(false)
+            .expect("content-size flag should be configurable");
+        encoder
+            .write_all(b"small payload with a deliberately oversized zstd window")
+            .expect("test frame should encode");
+        let encoded = encoder.finish().expect("test frame should finish");
+        let value = clipboard(ClipboardFormat::Text, encoded, true);
+        assert!(
+            RustDeskConnector::decode_remote_clipboard_formats(std::slice::from_ref(&value))
+                .is_none()
+        );
     }
 
     #[test]

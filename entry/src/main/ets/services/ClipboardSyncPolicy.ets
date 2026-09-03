@@ -20,6 +20,31 @@ export interface ClipboardBridgeActivationDecision {
   requestLocalRead: boolean;
   mode: ClipboardBridgeMode;
 }
+export interface RemoteClipboardDeliveryCheckpoint {
+  sessionId: number;
+  attemptId: number;
+  deliveredHash: number;
+}
+export interface ClipboardBridgeStartGuardInput {
+  requestedGeneration: number;
+  currentGeneration: number;
+  requestedSessionId: number;
+  currentSessionId: number;
+  requestedAttemptId: number;
+  currentAttemptId: number;
+  connected: boolean;
+  background: boolean;
+  stopping: boolean;
+  enabled: boolean;
+}
+export interface ClipboardBridgeRestartGuardInput {
+  connected: boolean;
+  sessionId: number;
+  bridgePresent: boolean;
+  background: boolean;
+  minimized: boolean;
+  enabled: boolean;
+}
 
 export function resolveClipboardReadAccess(alreadyGranted: boolean,
   requestResult: number | null, requestFailed: boolean = false): ClipboardReadAccessDecision {
@@ -87,4 +112,51 @@ export function validateClipboardText(text: string): ClipboardValidation {
     return { ok: false, diagnosticCode: 'clipboard_text_too_large' };
   }
   return { ok: true, diagnosticCode: '' };
+}
+
+export function shouldAttemptRemoteClipboard(lastDeliveredHash: number,
+  candidateHash: number, valid: boolean): boolean {
+  return valid && candidateHash !== 0 && candidateHash !== lastDeliveredHash;
+}
+
+/** Advance deduplication only after the system pasteboard confirms delivery. */
+export function remoteClipboardHashAfterDelivery(lastDeliveredHash: number,
+  candidateHash: number, delivered: boolean): number {
+  return delivered ? candidateHash : lastDeliveredHash;
+}
+
+/** Reuse deduplication only while the exact native session attempt is alive. */
+export function remoteClipboardHashForSession(checkpoint: RemoteClipboardDeliveryCheckpoint,
+  sessionId: number, attemptId: number): number {
+  return checkpoint.sessionId === sessionId && checkpoint.attemptId === attemptId
+    ? checkpoint.deliveredHash : 0;
+}
+
+/** Persist a successful delivery across foreground bridge reconstruction. */
+export function remoteClipboardCheckpointAfterDelivery(
+  checkpoint: RemoteClipboardDeliveryCheckpoint,
+  sessionId: number, attemptId: number, deliveredHash: number): RemoteClipboardDeliveryCheckpoint {
+  if (deliveredHash === 0) {
+    return checkpoint;
+  }
+  return { sessionId, attemptId, deliveredHash };
+}
+
+/** Fence delayed bridge startup against toggle, disconnect and background races. */
+export function shouldStartClipboardBridge(input: ClipboardBridgeStartGuardInput): boolean {
+  return input.requestedGeneration === input.currentGeneration &&
+    input.requestedSessionId > 0 && input.requestedSessionId === input.currentSessionId &&
+    input.requestedAttemptId === input.currentAttemptId && input.connected &&
+    !input.background && !input.stopping && input.enabled;
+}
+
+/** Clipboard access is closed at the synchronous lifecycle boundary. */
+export function shouldStopClipboardBridgeForBackground(isBackground: boolean): boolean {
+  return isBackground;
+}
+
+/** Restart after foreground return, including preserve/init failure paths. */
+export function shouldRestartClipboardBridge(input: ClipboardBridgeRestartGuardInput): boolean {
+  return input.connected && input.sessionId > 0 && !input.bridgePresent &&
+    !input.background && !input.minimized && input.enabled;
 }

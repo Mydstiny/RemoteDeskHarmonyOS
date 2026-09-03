@@ -16,7 +16,9 @@ import { hilog } from '@kit.PerformanceAnalysisKit';
 import {
   ClipboardReadAccessDecision,
   clipboardReadPermissionErrorCode,
+  remoteClipboardHashAfterDelivery,
   resolveClipboardReadAccess,
+  shouldAttemptRemoteClipboard,
   validateClipboardText
 } from './ClipboardSyncPolicy';
 
@@ -62,6 +64,7 @@ export class ClipboardBridgeService {
   private permissionStateCallback?: (info: abilityAccessCtrl.PermissionStateChangeInfo) => void;
   private readRemoteText?: () => string;
   private lastRemoteHash: number = 0;
+  private onRemoteTextDelivered?: (hash: number) => void;
 
   /** 读系统剪贴板纯文本 (异步) */
   getSystemText(): Promise<string> {
@@ -90,24 +93,31 @@ export class ClipboardBridgeService {
   }
 
   /** 写系统剪贴板纯文本 (来自远端) — 同时标记防回环窗口 */
-  setSystemText(text: string): void {
+  setSystemText(text: string): boolean {
     if (!validateClipboardText(text).ok) {
-      return;
+      return false;
     }
     try {
       const pd: pasteboard.PasteData = pasteboard.createData(pasteboard.MIMETYPE_TEXT_PLAIN, text);
-      pasteboard.getSystemPasteboard().setData(pd);
+      // The Promise overload can reject after this method returns; the old
+      // fire-and-forget call then marked the value as delivered even though
+      // HarmonyOS never changed the pasteboard.  The API 23 synchronous
+      // overload gives the bridge an atomic success/failure boundary.
+      pasteboard.getSystemPasteboard().setDataSync(pd);
       this.remoteSetAt = Date.now();
       this.remoteSetHash = this.hashText(text);
       hilog.info(0x0001, TAG, `setSystemText: ${text.length} chars, antiLoop=true`);
+      return true;
     } catch (err) {
       hilog.warn(0x0001, TAG, `setSystemText failed: ${JSON.stringify(err)}`);
+      return false;
     }
   }
 
   /** 启动监听 (定时轮询) */
   startMonitoring(callback: (text: string) => void, readRemoteText?: () => string,
-    localReadEnabled: boolean = true, localReadAllowed: boolean = true): boolean {
+    localReadEnabled: boolean = true, localReadAllowed: boolean = true,
+    initialRemoteHash: number = 0, onRemoteTextDelivered?: (hash: number) => void): boolean {
     if (this.enabled) {
       return this.localMonitoringEnabled;
     }
@@ -115,7 +125,9 @@ export class ClipboardBridgeService {
       this.enabled = true;
       this.onLocalTextChanged = callback;
       this.readRemoteText = readRemoteText;
+      this.onRemoteTextDelivered = onRemoteTextDelivered;
       this.lastHash = 0;
+      this.lastRemoteHash = initialRemoteHash;
       this.systemReadInFlight = false;
       this.systemReadPending = false;
 
@@ -139,6 +151,8 @@ export class ClipboardBridgeService {
     } catch (err) {
       this.enabled = false;
       this.onLocalTextChanged = undefined;
+      this.readRemoteText = undefined;
+      this.onRemoteTextDelivered = undefined;
       this.detachSystemUpdateListener();
       this.detachPermissionStateListener();
       hilog.warn(0x0001, TAG, `monitoring start failed: ${JSON.stringify(err)}`);
@@ -182,6 +196,7 @@ export class ClipboardBridgeService {
     this.enabled = false;
     this.onLocalTextChanged = undefined;
     this.readRemoteText = undefined;
+    this.onRemoteTextDelivered = undefined;
     if (this.pollingTimer >= 0) {
       clearInterval(this.pollingTimer);
       this.pollingTimer = -1;
@@ -193,6 +208,7 @@ export class ClipboardBridgeService {
     this.systemReadPending = false;
     this.remoteSetAt = 0;
     this.remoteSetHash = 0;
+    this.lastRemoteHash = 0;
     hilog.info(0x0001, TAG, 'monitoring stopped');
   }
 
@@ -204,9 +220,14 @@ export class ClipboardBridgeService {
     if (this.readRemoteText) {
       const remoteText: string = this.readRemoteText();
       const remoteHash: number = this.hashText(remoteText);
-      if (remoteHash !== 0 && remoteHash !== this.lastRemoteHash && validateClipboardText(remoteText).ok) {
-        this.lastRemoteHash = remoteHash;
-        this.setSystemText(remoteText);
+      if (shouldAttemptRemoteClipboard(this.lastRemoteHash, remoteHash,
+        validateClipboardText(remoteText).ok)) {
+        const delivered: boolean = this.setSystemText(remoteText);
+        this.lastRemoteHash = remoteClipboardHashAfterDelivery(
+          this.lastRemoteHash, remoteHash, delivered);
+        if (delivered && this.onRemoteTextDelivered) {
+          this.onRemoteTextDelivered(this.lastRemoteHash);
+        }
       }
     }
   }

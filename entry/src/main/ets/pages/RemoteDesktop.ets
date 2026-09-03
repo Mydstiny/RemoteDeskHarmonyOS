@@ -203,8 +203,14 @@ import {
 import {
   ClipboardBridgeActivationDecision,
   ClipboardReadAccessDecision,
+  RemoteClipboardDeliveryCheckpoint,
   clipboardSyncEnabledForProtocol,
-  resolveClipboardBridgeActivation
+  remoteClipboardCheckpointAfterDelivery,
+  remoteClipboardHashForSession,
+  resolveClipboardBridgeActivation,
+  shouldRestartClipboardBridge,
+  shouldStartClipboardBridge,
+  shouldStopClipboardBridgeForBackground
 } from '../services/ClipboardSyncPolicy';
 import { AppCloneContext } from '../services/AppCloneContext';
 import { FileTransferLiveTaskService } from '../services/FileTransferLiveTaskService';
@@ -1135,6 +1141,12 @@ struct RemoteDesktop {
   private nativeHandles: NativeSessionHandles =
     new NativeSessionHandles(new ProductionNativeHandleAdapter((): ExtensionLoader => this.loader));
   private clipboardBridge: ClipboardBridgeService | null = null;
+  private clipboardBridgeStartGeneration: number = 0;
+  private remoteClipboardCheckpoint: RemoteClipboardDeliveryCheckpoint = {
+    sessionId: -1,
+    attemptId: -1,
+    deliveredHash: 0
+  };
   private keyDispatcher: RemoteKeyDispatcher = new RemoteKeyDispatcher();
   private hostId: string = '';
   private xcId: string = 'rdpSurface';
@@ -4836,6 +4848,13 @@ struct RemoteDesktop {
   private setRustDeskClipboardEnabled(on: boolean): void {
     this.rustdeskClipboardEnabled = on;
     this.persistSessionPref('rustdeskClipboardEnabled', on);
+    if (this.isRustDeskSession() && this.connected && this.sessionId > 0) {
+      if (!on) {
+        this.stopClipboardBridge();
+      } else if (this.clipboardBridge === null) {
+        this.startClipboardBridgeBestEffort(this.sessionId, this.connectAttemptId, true);
+      }
+    }
     promptAction.showToast({ message: on ? 'RustDesk 剪贴板已允许' : 'RustDesk 剪贴板已禁用', duration: 1600 });
   }
 
@@ -7727,7 +7746,10 @@ struct RemoteDesktop {
               // Window status is emitted directly by WMS and can precede the
               // UIAbility background observer. Close every local transaction
               // before a trailing Dock-originated event reaches XComponent.
+              this.stopClipboardBridge();
               this.closeRemoteInputForWindowTransition('window-minimized');
+            } else {
+              this.restartClipboardBridgeIfActiveForeground();
             }
           };
           w.on('windowStatusChange', this.kbWindowStatusCb);
@@ -7983,6 +8005,12 @@ struct RemoteDesktop {
     if (isBackground) {
       this.cancelPendingDisappearDecision();
       this.invalidatePendingRdpCredentialAttemptOnBackground();
+      // Clipboard access is privacy-sensitive and must close before the
+      // asynchronous preserve path awaits account scope. That path may fail
+      // or return early while the native session remains alive.
+      if (shouldStopClipboardBridgeForBackground(isBackground)) {
+        this.stopClipboardBridge();
+      }
       // Close input synchronously. The preservation path awaits account scope
       // initialization and may fail; held remote buttons must never depend on
       // that asynchronous work completing.
@@ -8010,6 +8038,12 @@ struct RemoteDesktop {
     }
     if (action === RemoteDesktopBackgroundAction.alreadyPreserved) {
       hilog.info(RD_DOMAIN, RD_TAG, 'bgFlagChange: session already preserved');
+    }
+    if (!isBackground) {
+      // detachForBackground can intentionally preserve the native session but
+      // return before bgRestorePending is set (for example account init
+      // failure). Restore clipboard independently when the window is usable.
+      this.restartClipboardBridgeIfActiveForeground();
     }
   }
 
@@ -8812,10 +8846,7 @@ struct RemoteDesktop {
     }
     if (!this.rdpClipboardEnabled) {
       const nativeChanged: boolean = this.loader.setSessionClipboardEnabled(this.sessionId, false);
-      if (this.clipboardBridge !== null) {
-        this.clipboardBridge.stopMonitoring();
-        this.clipboardBridge = null;
-      }
+      this.stopClipboardBridge();
       hilog.info(RD_DOMAIN, RD_TAG, 'RDP clipboard bridge stopped by setting change native=' +
         (nativeChanged ? 'updated' : 'unavailable'));
       return;
@@ -14187,10 +14218,7 @@ struct RemoteDesktop {
       this.clearRdpNativeStateMonitor();
       this.clearRemoteCursorPolling(true, 'connect-error');
       // 停止剪贴板桥
-      if (this.clipboardBridge !== null) {
-        this.clipboardBridge.stopMonitoring();
-        this.clipboardBridge = null;
-      }
+      this.stopClipboardBridge();
       this.setRemoteKeepScreenOn(false);
       this.setRemoteNavigationHidden(false, 'connect-failed');
       if (this.sessionId > 0 || this.rendererHandle > 0 || this.decoderHandle > 0) {
@@ -14623,10 +14651,7 @@ struct RemoteDesktop {
     this.resetPhysicalModifiers();
     this.fnLayer = false;
     // 停止剪贴板桥
-    if (this.clipboardBridge !== null) {
-      this.clipboardBridge.stopMonitoring();
-      this.clipboardBridge = null;
-    }
+    this.stopClipboardBridge();
     this.unregisterKeyboardAvoidListener();
     try {
       const presentationLease: RemoteSessionServiceLease | null =
@@ -15231,10 +15256,7 @@ struct RemoteDesktop {
     this.fnLayer = false;
 
     // 停止剪贴板桥 (后台不接收新剪贴板)
-    if (this.clipboardBridge !== null) {
-      this.clipboardBridge.stopMonitoring();
-      this.clipboardBridge = null;
-    }
+    this.stopClipboardBridge();
 
     this.clearMouseMoveTimer();
     this.clearTouchIndicatorTimer();
@@ -15936,10 +15958,21 @@ struct RemoteDesktop {
     if (!enabled || !this.clipboardBridgeEnabledForSession()) {
       return;
     }
+    const startGeneration: number = ++this.clipboardBridgeStartGeneration;
     const deadlineMs: number = Date.now() + 10000;
     const tryStart = async (): Promise<void> => {
-      if (this.sessionId !== sessionId || this.connectAttemptId !== attemptId || !this.connected ||
-        !this.clipboardBridgeEnabledForSession()) {
+      if (!shouldStartClipboardBridge({
+        requestedGeneration: startGeneration,
+        currentGeneration: this.clipboardBridgeStartGeneration,
+        requestedSessionId: sessionId,
+        currentSessionId: this.sessionId,
+        requestedAttemptId: attemptId,
+        currentAttemptId: this.connectAttemptId,
+        connected: this.connected,
+        background: this.currentAbilityBackgroundState() || this.sessionWindowMinimized,
+        stopping: this.cleanupStarted,
+        enabled: this.clipboardBridgeEnabledForSession()
+      })) {
         return;
       }
       const capabilities: RemoteSessionCapabilities = this.currentSessionCapabilities();
@@ -15963,8 +15996,18 @@ struct RemoteDesktop {
             this.getUIContext().getHostContext() as common.UIAbilityContext;
           readAccess = await ensureSystemPasteboardReadAccess(context);
         }
-        if (this.sessionId !== sessionId || this.connectAttemptId !== attemptId || !this.connected ||
-          !this.clipboardBridgeEnabledForSession()) {
+        if (!shouldStartClipboardBridge({
+          requestedGeneration: startGeneration,
+          currentGeneration: this.clipboardBridgeStartGeneration,
+          requestedSessionId: sessionId,
+          currentSessionId: this.sessionId,
+          requestedAttemptId: attemptId,
+          currentAttemptId: this.connectAttemptId,
+          connected: this.connected,
+          background: this.currentAbilityBackgroundState() || this.sessionWindowMinimized,
+          stopping: this.cleanupStarted,
+          enabled: this.clipboardBridgeEnabledForSession()
+        })) {
           return;
         }
         if (this.clipboardBridge !== null) {
@@ -15972,6 +16015,8 @@ struct RemoteDesktop {
         }
         const bridge: ClipboardBridgeService = new ClipboardBridgeService();
         this.clipboardBridge = bridge;
+        const initialRemoteHash: number = remoteClipboardHashForSession(
+          this.remoteClipboardCheckpoint, sessionId, attemptId);
         const localMonitoringStarted: boolean = bridge.startMonitoring((text: string): void => {
           try {
             if (this.sessionId !== sessionId || this.connectAttemptId !== attemptId || !this.connected ||
@@ -15984,8 +16029,16 @@ struct RemoteDesktop {
           } catch (err) {
             hilog.warn(RD_DOMAIN, RD_TAG, 'clipboard bridge push skipped: ' + JSON.stringify(err));
           }
-        }, (): string => this.loader.getSessionClipboardText(sessionId),
-        readAccess?.granted === true, activation.requestLocalRead);
+        }, (): string => this.clipboardBridgeEnabledForSession()
+          ? this.loader.getSessionClipboardText(sessionId) : '',
+        readAccess?.granted === true, activation.requestLocalRead,
+        initialRemoteHash, (deliveredHash: number): void => {
+          if (this.sessionId !== sessionId || this.connectAttemptId !== attemptId) {
+            return;
+          }
+          this.remoteClipboardCheckpoint = remoteClipboardCheckpointAfterDelivery(
+            this.remoteClipboardCheckpoint, sessionId, attemptId, deliveredHash);
+        });
         if (!activation.requestLocalRead) {
           hilog.info(RD_DOMAIN, RD_TAG,
             'clipboard bridge started in receive-only mode: ' + capabilities.clipboardSend.reason);
@@ -16001,11 +16054,35 @@ struct RemoteDesktop {
           promptAction.showToast({ message: '无法监听本机剪贴板，请稍后重试', duration: 2600 });
         }
       } catch (err) {
-        this.clipboardBridge = null;
+        // startMonitoring installs an interval and pasteboard listeners before
+        // the informational toast/log calls below. Any later exception must
+        // release that live bridge instead of dropping its only handle.
+        this.stopClipboardBridge();
         hilog.warn(RD_DOMAIN, RD_TAG, 'clipboard bridge start skipped: ' + JSON.stringify(err));
       }
     };
     setTimeout((): void => { void tryStart(); }, 1500);
+  }
+
+  private stopClipboardBridge(): void {
+    this.clipboardBridgeStartGeneration++;
+    if (this.clipboardBridge !== null) {
+      this.clipboardBridge.stopMonitoring();
+      this.clipboardBridge = null;
+    }
+  }
+
+  private restartClipboardBridgeIfActiveForeground(): void {
+    if (shouldRestartClipboardBridge({
+      connected: this.connected,
+      sessionId: this.sessionId,
+      bridgePresent: this.clipboardBridge !== null,
+      background: this.currentAbilityBackgroundState(),
+      minimized: this.sessionWindowMinimized,
+      enabled: this.clipboardBridgeEnabledForSession()
+    })) {
+      this.startClipboardBridgeBestEffort(this.sessionId, this.connectAttemptId, true);
+    }
   }
 
   private goBack(): void {
