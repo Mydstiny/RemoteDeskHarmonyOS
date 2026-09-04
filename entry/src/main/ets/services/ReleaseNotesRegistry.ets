@@ -37,8 +37,8 @@ function currentReleasePages(): ReleaseNotePage[] {
     {
       id: 'release-rdp-ephemeral-auth',
       symbol: $rawfile('icons/shield-check.svg'),
-      title: '2. RDP 支持连接时输入凭据',
-      desc: 'RDP 可选择不在本机保存账户和密码，并在每次连接前输入，临时凭据仅交给当前连接流程，退出或失败后即清理。'
+      title: '2. RDP 连接凭据与断线归因',
+      desc: 'RDP 可选择每次连接时输入账户和密码，临时凭据退出后即清理；只有收到服务器 ErrorInfo 才显示对应 0x 错误，客户端或网络失败不再误报为 0x10。'
     },
     {
       id: 'release-rdp-pointer-mapping',

@@ -50,6 +50,7 @@ import remoteHostSheetLifecyclePolicyTest from './RemoteHostSheetLifecyclePolicy
 import vncSessionGeometryPolicyTest from './VncSessionGeometryPolicy.test';
 import rdpSessionCredentialHandoffTest from '../../../test/RdpSessionCredentialHandoff.test';
 import rdpSessionCredentialPolicyTest from '../../../test/RdpSessionCredentialPolicy.test';
+import rdpSessionErrorPolicyTest from '../../../test/RdpSessionErrorPolicy.test';
 import rdpPreflightScopeTransitionPolicyTest from '../../../test/RdpPreflightScopeTransitionPolicy.test';
 import remoteFloatingPanelPlacementPolicyTest from './RemoteFloatingPanelPlacementPolicy.test';
 import vncSessionSettingsPolicyTest from './VncSessionSettingsPolicy.test';
@@ -394,6 +395,7 @@ export default function testsuite() {
   vncSessionGeometryPolicyTest();
   rdpSessionCredentialHandoffTest();
   rdpSessionCredentialPolicyTest();
+  rdpSessionErrorPolicyTest();
   rdpPreflightScopeTransitionPolicyTest();
   remoteFloatingPanelPlacementPolicyTest();
   vncSessionSettingsPolicyTest();

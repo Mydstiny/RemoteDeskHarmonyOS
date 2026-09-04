@@ -593,9 +593,12 @@ import {
   resolveBackgroundVideoPrewarmMode
 } from '../services/BackgroundVideoPrewarmPolicy';
 import {
+  RDP_CONNECT_FAILURE_UNCLASSIFIED,
+  RDP_SESSION_END_UNCLASSIFIED,
   rdpSessionErrorSheetPrefersLandscapeCenter,
   rdpSessionErrorFromNativeMessage,
   RdpSessionErrorDialogModel,
+  RdpSessionErrorSource,
   shouldCleanupRdpSessionBeforeErrorDismiss,
   shouldShowRdpSessionErrorAfterControlPanelDismiss
 } from '../services/RdpSessionErrorPolicy';
@@ -12306,27 +12309,10 @@ struct RemoteDesktop {
     throw new Error('远程连接超时 [E-CONNECT-TIMEOUT]');
   }
 
-  private rdpErrorCodeFromDetail(detail: string, fallback: string): string {
-    const marker: string = '0x';
-    const idx: number = detail.indexOf(marker);
-    if (idx >= 0 && detail.length >= idx + 4) {
-      let code: string = marker;
-      for (let i = idx + 2; i < detail.length; i++) {
-        const ch: string = detail.charAt(i);
-        const isHex: boolean = (ch >= '0' && ch <= '9') ||
-          (ch >= 'a' && ch <= 'f') || (ch >= 'A' && ch <= 'F');
-        if (!isHex) { break; }
-        code += ch;
-      }
-      if (code.length > 2) { return code; }
-    }
-    return fallback;
-  }
-
-  private showRdpSessionError(message: string, code: string, cleanupReason: string): void {
-    this.rdpSessionErrorTitle = '你的会话已断开';
-    this.rdpSessionErrorMessage = message;
-    this.rdpSessionErrorCode = code;
+  private showRdpSessionErrorModel(model: RdpSessionErrorDialogModel, cleanupReason: string): void {
+    this.rdpSessionErrorTitle = model.title;
+    this.rdpSessionErrorMessage = model.message;
+    this.rdpSessionErrorCode = model.code;
     this.rdpSessionErrorBackPending = false;
     this.rdpSessionErrorPendingCleanupReason = cleanupReason;
     void this.applyRdpOrientationPolicy('ERROR');
@@ -12336,10 +12322,6 @@ struct RemoteDesktop {
       return;
     }
     this.showRdpSessionErrorSheet = true;
-  }
-
-  private showRdpSessionErrorModel(model: RdpSessionErrorDialogModel, cleanupReason: string): void {
-    this.showRdpSessionError(model.message, model.code, cleanupReason);
   }
 
   private closeRdpSessionErrorSheet(): void {
@@ -12468,12 +12450,18 @@ struct RemoteDesktop {
           ' message=' + safeError(nativeMessage));
         if (nativeMessage.indexOf('E-RDP-ERRINFO-0x') >= 0 || state === 4) {
           const model: RdpSessionErrorDialogModel =
-            rdpSessionErrorFromNativeMessage(nativeMessage, state === 4 ? '0x10' : '0x11');
+            rdpSessionErrorFromNativeMessage(
+              nativeMessage, RDP_SESSION_END_UNCLASSIFIED,
+              RdpSessionErrorSource.TRANSPORT_FAILURE);
+          hilog.error(RD_DOMAIN, RD_TAG, 'RDP terminal classified state=' + state.toString() +
+            ' source=' + model.source + ' code=' + model.code);
           this.connectionError = model.title;
-          this.connectionErrorDetail = model.message + '错误代码: ' + model.code;
-          this.showRdpSessionErrorModel(model, 'rdp-native-errorinfo');
+          this.connectionErrorDetail = model.message + ' 错误代码: ' + model.code;
+          const cleanupReason: string = model.source === RdpSessionErrorSource.SERVER_ERROR_INFO
+            ? 'rdp-native-errorinfo' : 'rdp-native-transport-error';
+          this.showRdpSessionErrorModel(model, cleanupReason);
           if (shouldCleanupRdpSessionBeforeErrorDismiss()) {
-            this.disconnectAndCleanup('rdp-native-errorinfo');
+            this.disconnectAndCleanup(cleanupReason);
           }
         }
         this.rdpNativeStateMonitorTimer = -1;
@@ -14508,7 +14496,10 @@ struct RemoteDesktop {
       }
       if (host.protocol === 'rdp') {
         const model: RdpSessionErrorDialogModel =
-          rdpSessionErrorFromNativeMessage(this.connectionErrorDetail, '0x10');
+          rdpSessionErrorFromNativeMessage(
+            this.connectionErrorDetail, RDP_CONNECT_FAILURE_UNCLASSIFIED);
+        hilog.error(RD_DOMAIN, RD_TAG, 'RDP connect failure classified source=' +
+          model.source + ' code=' + model.code);
         this.showRdpSessionErrorModel(model, 'rdp-connect-failure');
       }
       console.error('[RD-DIAG] Connection failed: ' + safeError(this.connectionErrorDetail));

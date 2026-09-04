@@ -1,8 +1,12 @@
 export enum RdpSessionErrorSource {
   SERVER_ERROR_INFO = 'server-error-info',
   LOCAL_RENDER_WATCHDOG = 'local-render-watchdog',
-  CONNECT_FAILURE = 'connect-failure'
+  CONNECT_FAILURE = 'connect-failure',
+  TRANSPORT_FAILURE = 'transport-failure'
 }
+
+export const RDP_CONNECT_FAILURE_UNCLASSIFIED: string = 'E-RDP-CONNECT-UNCLASSIFIED';
+export const RDP_SESSION_END_UNCLASSIFIED: string = 'E-RDP-SESSION-END-UNCLASSIFIED';
 
 export interface RdpSessionErrorDialogModel {
   title: string;
@@ -11,14 +15,24 @@ export interface RdpSessionErrorDialogModel {
   source: RdpSessionErrorSource;
 }
 
-function extractFirstHexCode(text: string): string {
-  const marker: string = '0x';
-  const idx: number = text.indexOf(marker);
-  if (idx < 0) {
+function extractHexCodeAfterMarker(text: string, marker: string): string {
+  const markerIndex: number = text.indexOf(marker);
+  if (markerIndex < 0) {
     return '';
   }
-  let code: string = marker;
-  for (let i = idx + 2; i < text.length; i++) {
+  const markerTail: string = text.substring(markerIndex + marker.length);
+  const relativeHexIndex: number = markerTail.indexOf('0x');
+  if (relativeHexIndex < 0) {
+    return '';
+  }
+  const idx: number = markerIndex + marker.length + relativeHexIndex;
+  const closeRelative: number = markerTail.indexOf(']');
+  if (closeRelative >= 0 && relativeHexIndex > closeRelative) {
+    return '';
+  }
+  const hexMarker: string = '0x';
+  let code: string = hexMarker;
+  for (let i = idx + hexMarker.length; i < text.length; i++) {
     const ch: string = text.charAt(i);
     const isHex: boolean = (ch >= '0' && ch <= '9') ||
       (ch >= 'a' && ch <= 'f') || (ch >= 'A' && ch <= 'F');
@@ -27,7 +41,54 @@ function extractFirstHexCode(text: string): string {
     }
     code += ch;
   }
-  return code.length > 2 ? code : '';
+  return code.length > hexMarker.length ? code : '';
+}
+
+function validDiagnosticCode(code: string): boolean {
+  if (!code.startsWith('E-') || code.length > 96) {
+    return false;
+  }
+  for (let i = 0; i < code.length; i++) {
+    const ch: string = code.charAt(i);
+    const valid: boolean = (ch >= 'A' && ch <= 'Z') ||
+      (ch >= '0' && ch <= '9') || ch === '-';
+    if (!valid) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function extractNativeDiagnosticCode(text: string): string {
+  const marker: string = '[E-';
+  let remainder: string = text;
+  while (remainder.length > 0) {
+    const idx: number = remainder.indexOf(marker);
+    if (idx < 0) {
+      return '';
+    }
+    const closeRelative: number = remainder.substring(idx + 1).indexOf(']');
+    if (closeRelative < 0) {
+      return '';
+    }
+    const closeIndex: number = idx + 1 + closeRelative;
+    const code: string = remainder.substring(idx + 1, closeIndex).toUpperCase();
+    if (validDiagnosticCode(code) && !code.startsWith('E-RDP-STATE-') &&
+      !code.startsWith('E-CONNECT-STATE-') && !code.startsWith('E-RDP-ERRINFO-') &&
+      !code.startsWith('E-CONN-0X')) {
+      return code;
+    }
+    remainder = remainder.substring(closeIndex + 1);
+  }
+  return '';
+}
+
+function extractServerErrorInfoCode(text: string): string {
+  return extractHexCodeAfterMarker(text, 'E-RDP-ERRINFO-');
+}
+
+function extractFreeRdpConnectionCode(text: string): string {
+  return extractHexCodeAfterMarker(text, 'E-CONN-');
 }
 
 export function normalizeRdpErrorCode(raw: string, fallback: string): string {
@@ -47,6 +108,35 @@ export function normalizeRdpErrorCode(raw: string, fallback: string): string {
     hex = '0' + hex;
   }
   return '0x' + hex;
+}
+
+function normalizedNativeCode(raw: string, fallback: string): string {
+  if (raw.length > 0) {
+    return normalizeRdpErrorCode(raw, fallback);
+  }
+  return fallback;
+}
+
+/*
+ * Do not scan arbitrary 0x values from the message. Certificate flags, selected
+ * protocols and other diagnostics also use hexadecimal notation; treating the
+ * first one as ErrorInfo is exactly how an unrelated failure can be mislabeled.
+ */
+function classifiedCode(message: string, fallback: string): string {
+  const serverCode: string = extractServerErrorInfoCode(message);
+  if (serverCode.length > 0) {
+    return normalizedNativeCode(serverCode, fallback);
+  }
+  const connectionCode: string = extractFreeRdpConnectionCode(message);
+  if (connectionCode.length > 0) {
+    return normalizedNativeCode(connectionCode, fallback);
+  }
+  const diagnosticCode: string = extractNativeDiagnosticCode(message);
+  return diagnosticCode.length > 0 ? diagnosticCode : fallback;
+}
+
+function hasServerErrorInfo(message: string): boolean {
+  return extractServerErrorInfoCode(message).length > 0;
 }
 
 function modelForCode(code: string, source: RdpSessionErrorSource): RdpSessionErrorDialogModel {
@@ -100,14 +190,28 @@ function modelForCode(code: string, source: RdpSessionErrorSource): RdpSessionEr
   if (source === RdpSessionErrorSource.CONNECT_FAILURE) {
     return {
       title: '你的会话已断开',
-      message: '远程会话连接失败。',
+      message: '远程会话连接失败；没有收到服务器 ErrorInfo。',
+      code,
+      source
+    };
+  }
+  if (source === RdpSessionErrorSource.TRANSPORT_FAILURE) {
+    return {
+      title: '你的会话已断开',
+      message: 'RDP 连接在客户端或网络侧异常结束；没有收到服务器 ErrorInfo。',
       code,
       source
     };
   }
   switch (code) {
-    case '0xF':
     case '0x10':
+      return {
+        title: '你的会话已断开',
+        message: '远端 Windows 会话中的桌面窗口管理器（DWM）意外终止。',
+        code,
+        source
+      };
+    case '0xF':
     case '0x11':
     case '0x12':
       return {
@@ -154,28 +258,12 @@ function modelForCode(code: string, source: RdpSessionErrorSource): RdpSessionEr
   }
 }
 
-function extractRdpAuthErrorCode(text: string): string {
-  const codes: string[] = [
-    'E-RDP-AUTH-CRYPTO-LOCKED',
-    'E-RDP-AUTH-IDENTITY-MISMATCH',
-    'E-RDP-AUTH-SECRET-REQUIRED',
-    'E-RDP-AUTH-HASH',
-    'E-RDP-AUTH-CONFIG'
-  ];
-  for (let i = 0; i < codes.length; i++) {
-    if (text.indexOf(codes[i]) >= 0) {
-      return codes[i];
-    }
-  }
-  return '';
-}
-
-export function rdpSessionErrorFromNativeMessage(message: string, fallbackCode: string): RdpSessionErrorDialogModel {
-  const authCode: string = extractRdpAuthErrorCode(message);
-  const code: string = authCode !== '' ? authCode : normalizeRdpErrorCode(extractFirstHexCode(message), fallbackCode);
-  const source: RdpSessionErrorSource = message.indexOf('E-RDP-ERRINFO-0x') >= 0
+export function rdpSessionErrorFromNativeMessage(message: string, fallbackCode: string,
+  fallbackSource: RdpSessionErrorSource = RdpSessionErrorSource.CONNECT_FAILURE): RdpSessionErrorDialogModel {
+  const code: string = classifiedCode(message, fallbackCode);
+  const source: RdpSessionErrorSource = hasServerErrorInfo(message)
     ? RdpSessionErrorSource.SERVER_ERROR_INFO
-    : RdpSessionErrorSource.CONNECT_FAILURE;
+    : fallbackSource;
   return modelForCode(code, source);
 }
 

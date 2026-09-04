@@ -1,6 +1,6 @@
 # RDP 当前状态
 
-更新时间：2026-08-30
+更新时间：2026-09-04
 
 ## 运行架构
 
@@ -45,6 +45,18 @@ FreeRDP 预编译已启用 `drdynvc`、`disp`、`rdpdr` 和 `drive` 客户端。
 - 发送失败只关闭本次会话的动态能力，不断开现有 RDP；用户可在重连后按新窗口适配。
 - `cbDesktopResize` 仍复用既有 GDI/GFX、frame pump、renderer source 和输入 viewport
   事务，诊断区分 requested、effective、applied、server_adjusted 与 fallback。
+
+## 断线错误归因
+
+- `0x00000010` 只有在 FreeRDP 收到服务器 `ErrorInfo` PDU，并保留
+  `E-RDP-ERRINFO-0x00000010` 原始标记时才成立；它表示远端 Windows 会话中的
+  DWM 进程意外终止。
+- 初始连接失败和已连接会话的客户端/网络侧异常结束分别使用
+  `E-RDP-CONNECT-UNCLASSIFIED` 与 `E-RDP-SESSION-END-UNCLASSIFIED`，不再用
+  `0x10` 作为 ArkTS 默认值。
+- FreeRDP 连接错误保留 `E-CONN-0x...` 中的真实代码；证书 flags、协商协议等普通
+  十六进制诊断值不会被误识别成 ErrorInfo。最终分类日志同时记录 native state、
+  `source` 和 `code`，用于区分服务器、客户端和网络路径。
 
 ## 共享盘与供应链
 

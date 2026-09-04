@@ -1,6 +1,8 @@
 import { describe, it, expect } from '@ohos/hypium';
 import {
   normalizeRdpErrorCode,
+  RDP_CONNECT_FAILURE_UNCLASSIFIED,
+  RDP_SESSION_END_UNCLASSIFIED,
   rdpNoFrameWatchdogError,
   rdpSessionErrorFromNativeMessage,
   rdpSessionErrorSheetPrefersLandscapeCenter,
@@ -19,6 +21,18 @@ export default function rdpSessionErrorPolicyTest() {
       expect(model.title).assertEqual('你的会话已断开');
       expect(model.message).assertEqual('远程会话中的图形显示组件启动失败。');
       expect(model.code).assertEqual('0x11');
+      expect(model.source).assertEqual(RdpSessionErrorSource.SERVER_ERROR_INFO);
+    });
+
+    it('server_errorinfo_0x10_should_identify_a_real_remote_dwm_crash', 0, (): void => {
+      const model = rdpSessionErrorFromNativeMessage(
+        'RDP server ErrorInfo: ERRINFO_SERVER_DWM_CRASH [E-RDP-ERRINFO-0x00000010] The DWM process running in the remote session terminated unexpectedly.',
+        RDP_SESSION_END_UNCLASSIFIED,
+        RdpSessionErrorSource.TRANSPORT_FAILURE
+      );
+      expect(model.title).assertEqual('你的会话已断开');
+      expect(model.message).assertEqual('远端 Windows 会话中的桌面窗口管理器（DWM）意外终止。');
+      expect(model.code).assertEqual('0x10');
       expect(model.source).assertEqual(RdpSessionErrorSource.SERVER_ERROR_INFO);
     });
 
@@ -55,11 +69,40 @@ export default function rdpSessionErrorPolicyTest() {
     it('connect_failure_without_server_errorinfo_should_not_claim_graphics_driver_failure', 0, (): void => {
       const model = rdpSessionErrorFromNativeMessage(
         'RDP 连接失败或被服务器拒绝：TCP connection failed [E-RDP-STATE-4]',
-        '0x10'
+        RDP_CONNECT_FAILURE_UNCLASSIFIED
       );
       expect(model.title).assertEqual('你的会话已断开');
-      expect(model.message).assertEqual('远程会话连接失败。');
-      expect(model.code).assertEqual('0x10');
+      expect(model.message).assertEqual('远程会话连接失败；没有收到服务器 ErrorInfo。');
+      expect(model.code).assertEqual(RDP_CONNECT_FAILURE_UNCLASSIFIED);
+      expect(model.source).assertEqual(RdpSessionErrorSource.CONNECT_FAILURE);
+    });
+
+    it('post_connect_transport_failure_should_never_invent_server_errorinfo_0x10', 0, (): void => {
+      const model = rdpSessionErrorFromNativeMessage(
+        'RDP transport ended after network change [E-RDP-STATE-4]',
+        RDP_SESSION_END_UNCLASSIFIED,
+        RdpSessionErrorSource.TRANSPORT_FAILURE
+      );
+      expect(model.message).assertEqual('RDP 连接在客户端或网络侧异常结束；没有收到服务器 ErrorInfo。');
+      expect(model.code).assertEqual(RDP_SESSION_END_UNCLASSIFIED);
+      expect(model.source).assertEqual(RdpSessionErrorSource.TRANSPORT_FAILURE);
+    });
+
+    it('preserves_native_symbolic_code_without_reading_unrelated_hex_flags', 0, (): void => {
+      const model = rdpSessionErrorFromNativeMessage(
+        'certificate callback flags=0x00000010 rejected [E-RDP-TARGET-CERT] [E-RDP-STATE-4]',
+        RDP_CONNECT_FAILURE_UNCLASSIFIED
+      );
+      expect(model.code).assertEqual('E-RDP-TARGET-CERT');
+      expect(model.source).assertEqual(RdpSessionErrorSource.CONNECT_FAILURE);
+    });
+
+    it('preserves_freerdp_connection_error_code_without_claiming_server_errorinfo', 0, (): void => {
+      const model = rdpSessionErrorFromNativeMessage(
+        'FreeRDP 连接错误: ERRCONNECT_CONNECT_FAILED [E-CONN-0x00020006]',
+        RDP_CONNECT_FAILURE_UNCLASSIFIED
+      );
+      expect(model.code).assertEqual('0x20006');
       expect(model.source).assertEqual(RdpSessionErrorSource.CONNECT_FAILURE);
     });
 
@@ -86,6 +129,8 @@ export default function rdpSessionErrorPolicyTest() {
       expect(normalizeRdpErrorCode('0x00000011', '0x10')).assertEqual('0x11');
       expect(normalizeRdpErrorCode('0x0000112F', '0x10')).assertEqual('0x112F');
       expect(normalizeRdpErrorCode('', '0x10')).assertEqual('0x10');
+      expect(normalizeRdpErrorCode('', RDP_CONNECT_FAILURE_UNCLASSIFIED))
+        .assertEqual(RDP_CONNECT_FAILURE_UNCLASSIFIED);
     });
 
     it('error_sheet_should_wait_for_user_disconnect_before_cleanup', 0, (): void => {
