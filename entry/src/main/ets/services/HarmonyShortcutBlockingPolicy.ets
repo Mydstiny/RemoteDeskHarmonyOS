@@ -52,6 +52,20 @@ function emptyProtocolSelection(): HarmonyShortcutProtocolSelection {
   return { rdp: false, rustdesk: false, ssh: false, vnc: false, moonlight: false };
 }
 
+function desktopDefaultProtocolSelection(): HarmonyShortcutProtocolSelection {
+  return { rdp: true, rustdesk: true, ssh: false, vnc: true, moonlight: true };
+}
+
+export function disabledHarmonyShortcutBlockingPreferences():
+  HarmonyShortcutBlockingPreferences {
+  return {
+    version: HARMONY_SHORTCUT_BLOCKING_VERSION,
+    phone: emptyProtocolSelection(),
+    pad: emptyProtocolSelection(),
+    pc: emptyProtocolSelection()
+  };
+}
+
 function normalizeProtocolSelection(
   value: Object | undefined
 ): HarmonyShortcutProtocolSelection {
@@ -73,7 +87,7 @@ export function defaultHarmonyShortcutBlockingPreferences():
     version: HARMONY_SHORTCUT_BLOCKING_VERSION,
     phone: emptyProtocolSelection(),
     pad: emptyProtocolSelection(),
-    pc: emptyProtocolSelection()
+    pc: desktopDefaultProtocolSelection()
   };
 }
 
@@ -82,7 +96,7 @@ export function normalizeHarmonyShortcutBlockingPreferences(
 ): HarmonyShortcutBlockingPreferences {
   if (value === null || value === undefined || Array.isArray(value) ||
     typeof value !== 'object') {
-    return defaultHarmonyShortcutBlockingPreferences();
+    return disabledHarmonyShortcutBlockingPreferences();
   }
   const record: Record<string, Object> = value as Record<string, Object>;
   return {
@@ -98,13 +112,29 @@ export function decodeHarmonyShortcutBlockingPreferences(
 ): HarmonyShortcutBlockingPreferences {
   const trimmed: string = encoded.trim();
   if (trimmed.length === 0 || trimmed.length > 4096) {
-    return defaultHarmonyShortcutBlockingPreferences();
+    return disabledHarmonyShortcutBlockingPreferences();
   }
   try {
     return normalizeHarmonyShortcutBlockingPreferences(
       JSON.parse(trimmed) as Object);
   } catch (_error) {
-    return defaultHarmonyShortcutBlockingPreferences();
+    return disabledHarmonyShortcutBlockingPreferences();
+  }
+}
+
+/** Product defaults apply only when the durable key is reliably absent.
+ * Existing but unreadable data must never be mistaken for first use. */
+export function readHarmonyShortcutBlockingPreferences(
+  port: HarmonyShortcutStorageTransactionPort
+): HarmonyShortcutBlockingPreferences | null {
+  try {
+    if (!port.has(HARMONY_SHORTCUT_BLOCKING_STORAGE_KEY)) {
+      return defaultHarmonyShortcutBlockingPreferences();
+    }
+    return decodeHarmonyShortcutBlockingPreferences(
+      port.get(HARMONY_SHORTCUT_BLOCKING_STORAGE_KEY, ''));
+  } catch (_error) {
+    return null;
   }
 }
 
@@ -364,10 +394,13 @@ export function mutateHarmonyShortcutBlockingPreferences(
   let snapshotCaptured: boolean = false;
   try {
     previousPresent = port.has(HARMONY_SHORTCUT_BLOCKING_STORAGE_KEY);
-    previousEncoded = port.get(HARMONY_SHORTCUT_BLOCKING_STORAGE_KEY, '');
+    if (previousPresent) {
+      previousEncoded = port.get(HARMONY_SHORTCUT_BLOCKING_STORAGE_KEY, '');
+    }
     snapshotCaptured = true;
     const current: HarmonyShortcutBlockingPreferences =
-      decodeHarmonyShortcutBlockingPreferences(previousEncoded);
+      previousPresent ? decodeHarmonyShortcutBlockingPreferences(previousEncoded) :
+        defaultHarmonyShortcutBlockingPreferences();
     const next: HarmonyShortcutBlockingPreferences = protocol === null ?
       withHarmonyShortcutDeviceSelection(current, deviceClass, enabled) :
       withHarmonyShortcutBlockingPreference(current, deviceClass, protocol, enabled);

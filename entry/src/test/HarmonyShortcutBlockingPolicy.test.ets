@@ -3,6 +3,7 @@ import {
   commitHarmonyShortcutBlockingPreferences,
   decodeHarmonyShortcutBlockingPreferences,
   defaultHarmonyShortcutBlockingPreferences,
+  disabledHarmonyShortcutBlockingPreferences,
   encodeHarmonyShortcutBlockingPreferences,
   harmonyShortcutCaptureEligible,
   harmonyShortcutCaptureKeyCodes,
@@ -18,6 +19,7 @@ import {
   HarmonyShortcutPressedKeyIdentity,
   HarmonyShortcutStorageTransactionPort,
   mutateHarmonyShortcutBlockingPreferences,
+  readHarmonyShortcutBlockingPreferences,
   withHarmonyShortcutBlockingPreference,
   withHarmonyShortcutDeviceSelection
 } from '../main/ets/services/HarmonyShortcutBlockingPolicy';
@@ -63,10 +65,17 @@ class FakeHarmonyShortcutStorage implements HarmonyShortcutStorageTransactionPor
 
 export default function harmonyShortcutBlockingPolicyTest(): void {
   describe('HarmonyShortcutBlockingPolicy', (): void => {
-    it('starts_disabled_and_resolves_physical_device_class', 0, (): void => {
+    it('defaults_pc_protocols_to_blocked_and_resolves_physical_device_class', 0, (): void => {
       const defaults = defaultHarmonyShortcutBlockingPreferences();
-      expect(harmonyShortcutBlockingSelectionCount(defaults)).assertEqual(0);
-      expect(harmonyShortcutBlockingSelectionSummary(defaults)).assertEqual('尚未启用');
+      expect(harmonyShortcutBlockingSelectionCount(defaults)).assertEqual(4);
+      expect(harmonyShortcutBlockingSelectionSummary(defaults)).assertEqual('已启用 4 项');
+      expect(harmonyShortcutBlockingEnabled(defaults, 'pc', 'rdp')).assertTrue();
+      expect(harmonyShortcutBlockingEnabled(defaults, 'pc', 'rustdesk')).assertTrue();
+      expect(harmonyShortcutBlockingEnabled(defaults, 'pc', 'vnc')).assertTrue();
+      expect(harmonyShortcutBlockingEnabled(defaults, 'pc', 'moonlight')).assertTrue();
+      expect(harmonyShortcutBlockingEnabled(defaults, 'pc', 'ssh')).assertFalse();
+      expect(harmonyShortcutBlockingEnabled(defaults, 'phone', 'rdp')).assertFalse();
+      expect(harmonyShortcutBlockingEnabled(defaults, 'pad', 'rdp')).assertFalse();
       expect(harmonyShortcutDeviceClass(false, false)).assertEqual('phone');
       expect(harmonyShortcutDeviceClass(false, true)).assertEqual('pad');
       expect(harmonyShortcutDeviceClass(true, true)).assertEqual('pc');
@@ -78,29 +87,78 @@ export default function harmonyShortcutBlockingPolicyTest(): void {
       expect(harmonyShortcutBlockingEnabled(updated, 'pad', 'rustdesk')).assertTrue();
       expect(harmonyShortcutBlockingEnabled(updated, 'phone', 'rustdesk')).assertFalse();
       expect(harmonyShortcutBlockingEnabled(updated, 'pad', 'rdp')).assertFalse();
-      expect(harmonyShortcutBlockingSelectionCount(updated)).assertEqual(1);
-      expect(harmonyShortcutBlockingSelectionSummary(updated)).assertEqual('已启用 1 项');
+      expect(harmonyShortcutBlockingEnabled(updated, 'pc', 'rustdesk')).assertTrue();
+      expect(harmonyShortcutBlockingSelectionCount(updated)).assertEqual(5);
+      expect(harmonyShortcutBlockingSelectionSummary(updated)).assertEqual('已启用 5 项');
     });
 
     it('round_trips_and_normalizes_the_persisted_matrix', 0, (): void => {
       let updated = withHarmonyShortcutDeviceSelection(
         defaultHarmonyShortcutBlockingPreferences(), 'phone', true);
-      updated = withHarmonyShortcutBlockingPreference(updated, 'pc', 'moonlight', true);
+      updated = withHarmonyShortcutBlockingPreference(updated, 'pc', 'moonlight', false);
       const restored = decodeHarmonyShortcutBlockingPreferences(
         encodeHarmonyShortcutBlockingPreferences(updated));
-      expect(harmonyShortcutBlockingSelectionCount(restored)).assertEqual(5);
+      expect(harmonyShortcutBlockingSelectionCount(restored)).assertEqual(7);
       expect(harmonyShortcutBlockingEnabled(restored, 'phone', 'ssh')).assertFalse();
       expect(harmonyShortcutBlockingEnabled(restored, 'pad', 'ssh')).assertFalse();
-      expect(harmonyShortcutBlockingEnabled(restored, 'pc', 'moonlight')).assertTrue();
+      expect(harmonyShortcutBlockingEnabled(restored, 'pc', 'moonlight')).assertFalse();
       expect(restored.version).assertEqual(1);
     });
 
-    it('fails_closed_for_malformed_or_oversized_storage', 0, (): void => {
-      const malformed = decodeHarmonyShortcutBlockingPreferences('{bad');
+    it('fails_closed_for_present_malformed_or_oversized_storage', 0, (): void => {
+      const malformedStorage = new FakeHarmonyShortcutStorage();
+      malformedStorage.values.set('remoteHarmonyShortcutBlockingV1', '{bad');
+      const malformed = readHarmonyShortcutBlockingPreferences(malformedStorage);
+      expect(malformed === null).assertFalse();
+      if (malformed === null) { return; }
       expect(harmonyShortcutBlockingSelectionCount(malformed)).assertEqual(0);
       const oversized = decodeHarmonyShortcutBlockingPreferences('x'.repeat(4097));
       expect(harmonyShortcutBlockingSelectionCount(oversized)).assertEqual(0);
+      expect(harmonyShortcutBlockingEnabled(malformed, 'pc', 'rdp')).assertFalse();
       expect(harmonyShortcutBlockingEnabled(malformed, 'phone', 'unknown')).assertFalse();
+    });
+
+    it('uses_pc_defaults_only_for_a_reliably_absent_storage_key', 0, (): void => {
+      const absentStorage = new FakeHarmonyShortcutStorage();
+      const absent = readHarmonyShortcutBlockingPreferences(absentStorage);
+      expect(absent === null).assertFalse();
+      if (absent !== null) {
+        expect(harmonyShortcutBlockingSelectionCount(absent)).assertEqual(4);
+        expect(harmonyShortcutBlockingEnabled(absent, 'pc', 'rdp')).assertTrue();
+      }
+
+      const existingStorage = new FakeHarmonyShortcutStorage();
+      existingStorage.values.set('remoteHarmonyShortcutBlockingV1',
+        encodeHarmonyShortcutBlockingPreferences(
+          disabledHarmonyShortcutBlockingPreferences()));
+      const existing = readHarmonyShortcutBlockingPreferences(existingStorage);
+      expect(existing === null).assertFalse();
+      if (existing !== null) {
+        expect(harmonyShortcutBlockingSelectionCount(existing)).assertEqual(0);
+      }
+    });
+
+    it('does_not_replace_an_existing_value_when_the_authoritative_read_fails', 0, (): void => {
+      const storage = new FakeHarmonyShortcutStorage();
+      storage.values.set('remoteHarmonyShortcutBlockingV1',
+        encodeHarmonyShortcutBlockingPreferences(
+          disabledHarmonyShortcutBlockingPreferences()));
+      storage.readFailures = 1;
+      expect(readHarmonyShortcutBlockingPreferences(storage) === null).assertTrue();
+      expect(storage.published.length).assertEqual(0);
+      expect(storage.mutationCount).assertEqual(0);
+    });
+
+    it('keeps_pc_defaults_when_the_first_mutation_creates_storage', 0, (): void => {
+      const storage = new FakeHarmonyShortcutStorage();
+      const updated = mutateHarmonyShortcutBlockingPreferences(
+        storage, 'phone', 'rdp', true);
+      expect(updated === null).assertFalse();
+      if (updated !== null) {
+        expect(harmonyShortcutBlockingSelectionCount(updated)).assertEqual(5);
+        expect(harmonyShortcutBlockingEnabled(updated, 'phone', 'rdp')).assertTrue();
+        expect(harmonyShortcutBlockingEnabled(updated, 'pc', 'moonlight')).assertTrue();
+      }
     });
 
     it('supports_all_twelve_mappable_device_protocol_cells', 0, (): void => {
@@ -147,7 +205,7 @@ export default function harmonyShortcutBlockingPolicyTest(): void {
       const storage = new FakeHarmonyShortcutStorage();
       storage.flushFailures = 1;
       const selected = withHarmonyShortcutBlockingPreference(
-        defaultHarmonyShortcutBlockingPreferences(), 'pc', 'moonlight', true);
+        defaultHarmonyShortcutBlockingPreferences(), 'pc', 'moonlight', false);
       expect(commitHarmonyShortcutBlockingPreferences(storage, selected)).assertFalse();
       expect(storage.values.has('remoteHarmonyShortcutBlockingV1')).assertFalse();
       expect(storage.published.length).assertEqual(0);
@@ -176,13 +234,13 @@ export default function harmonyShortcutBlockingPolicyTest(): void {
       storage.values.set('remoteHarmonyShortcutBlockingV1',
         encodeHarmonyShortcutBlockingPreferences(selected));
       const updated = mutateHarmonyShortcutBlockingPreferences(
-        storage, 'pc', 'moonlight', true);
+        storage, 'pc', 'moonlight', false);
       expect(updated === null).assertFalse();
       if (updated !== null) {
-        expect(harmonyShortcutBlockingSelectionCount(updated)).assertEqual(6);
+        expect(harmonyShortcutBlockingSelectionCount(updated)).assertEqual(8);
         expect(harmonyShortcutBlockingEnabled(updated, 'phone', 'rustdesk')).assertTrue();
         expect(harmonyShortcutBlockingEnabled(updated, 'pad', 'rdp')).assertTrue();
-        expect(harmonyShortcutBlockingEnabled(updated, 'pc', 'moonlight')).assertTrue();
+        expect(harmonyShortcutBlockingEnabled(updated, 'pc', 'moonlight')).assertFalse();
       }
     });
 

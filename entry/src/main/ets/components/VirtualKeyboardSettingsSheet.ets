@@ -126,7 +126,7 @@ export struct VirtualKeyboardSettingsSheet {
       return '创建可在所有远程连接中复用的快捷组合';
     }
     if (this.requestedSection === 'harmonyShortcuts') {
-      return '选择设备，再选择需要交给远端的协议';
+      return '打开后本机屏蔽并发送远端；关闭后由鸿蒙处理';
     }
     return '查看当前输入法，并进入 HarmonyOS 官方设置';
   }
@@ -188,8 +188,8 @@ export struct VirtualKeyboardSettingsSheet {
     if (selection.rustdesk) { count++; }
     if (selection.vnc) { count++; }
     if (selection.moonlight) { count++; }
-    return count === 0 ? '未开启' :
-      (count === 4 ? '全部协议已开启' : '已开启 ' + count.toString() + ' 个协议');
+    return count === 0 ? '未屏蔽任何协议' :
+      (count === 4 ? '4 个协议均已屏蔽' : '已屏蔽 ' + count.toString() + ' 个协议');
   }
 
   private harmonyShortcutDeviceOptions(): HarmonyShortcutDeviceClass[] {
@@ -202,6 +202,14 @@ export struct VirtualKeyboardSettingsSheet {
     if (protocol === 'ssh') { return 'SSH'; }
     if (protocol === 'vnc') { return 'VNC'; }
     return 'Moonlight';
+  }
+
+  private harmonyShortcutProtocolStatus(
+    deviceClass: HarmonyShortcutDeviceClass,
+    protocol: HarmonyShortcutProtocol
+  ): string {
+    return harmonyShortcutBlockingEnabled(this.harmonyShortcutBlocking, deviceClass, protocol) ?
+      '已屏蔽并发送远端' : '允许鸿蒙处理';
   }
 
   private refreshSystemInputMethods(): void {
@@ -753,8 +761,12 @@ export struct VirtualKeyboardSettingsSheet {
     Row() {
       SymbolGlyph(protocolIcon(protocol)).fontSize(18).fontColor([this.text2()])
         .margin({ right: 10 })
-      Text(this.harmonyShortcutProtocolLabel(protocol))
-        .fontSize(12).fontWeight(FontWeight.Medium).fontColor(this.text()).layoutWeight(1)
+      Column({ space: 2 }) {
+        Text(this.harmonyShortcutProtocolLabel(protocol))
+          .fontSize(12).fontWeight(FontWeight.Medium).fontColor(this.text())
+        Text(this.harmonyShortcutProtocolStatus(deviceClass, protocol))
+          .fontSize(9).fontColor(this.text2())
+      }.alignItems(HorizontalAlign.Start).layoutWeight(1)
       Toggle({
         type: ToggleType.Switch,
         isOn: harmonyShortcutBlockingEnabled(
@@ -764,8 +776,9 @@ export struct VirtualKeyboardSettingsSheet {
           this.setHarmonyShortcutBlocking(deviceClass, protocol, enabled);
         })
         .accessibilityText(this.harmonyShortcutDeviceLabel(deviceClass) + ' ' +
-          this.harmonyShortcutProtocolLabel(protocol) + ' 快捷键屏蔽')
-    }.width('100%').padding({ left: 13, right: 10, top: 8, bottom: 8 })
+          this.harmonyShortcutProtocolLabel(protocol) + '，' +
+          this.harmonyShortcutProtocolStatus(deviceClass, protocol))
+    }.width('100%').padding({ left: 13, right: 10, top: 9, bottom: 9 })
   }
 
   @Builder
@@ -809,12 +822,12 @@ export struct VirtualKeyboardSettingsSheet {
 
   @Builder
   private harmonyShortcutBlockingContent() {
-    this.pageHero('harmonyShortcuts', '快捷键保护')
-    this.sectionTitle('设备', '默认选中当前设备，也可以配置其他设备。')
+    this.pageHero('harmonyShortcuts', '打开即屏蔽并发送远端')
+    this.sectionTitle('设备', '默认选中当前设备；PC 默认打开，手机和 Pad 默认关闭。')
     this.harmonyShortcutDevicePicker()
-    this.sectionTitle('远程协议', '为当前设备选择需要交给远端的按键。')
+    this.sectionTitle('远程协议', '打开：本机屏蔽并发送远端；关闭：由鸿蒙处理。')
     this.harmonyShortcutDeviceCard()
-    Text('仅在远程会话位于前台时生效。RustDesk 支持音量键，其他协议支持音量和媒体键；' +
+    Text('屏蔽仅在远程会话位于前台时生效。RustDesk 支持音量键，其他协议支持音量和媒体键；' +
       'SSH 没有通用媒体按键通道，因此不显示。')
       .fontSize(9).fontColor(this.text2()).lineHeight(14).width('100%')
       .padding({ left: 4, right: 4, top: 2 })

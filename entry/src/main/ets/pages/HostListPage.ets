@@ -15861,7 +15861,7 @@ struct HostListPage {
                 (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_VIRTUAL_KEYBOARD_FUNCTIONS); })
               this.cardDivider()
               this.protocolActionRow($r('sys.symbol.lock_shield_fill'), '屏蔽鸿蒙快捷键',
-                '按设备与协议选择需要交给远端的按键',
+                'PC 默认打开；打开后屏蔽并发送远端，关闭后由鸿蒙处理',
                 (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_HARMONY_SHORTCUT_BLOCKING); })
               this.cardDivider()
               this.cardActionRow($r('app.media.icon_palette'), '自定义组合键',

@@ -22,13 +22,14 @@ import {
 } from './RemoteKeyboardSettingsPolicy';
 import {
   decodeHarmonyShortcutBlockingPreferences,
-  defaultHarmonyShortcutBlockingPreferences,
+  disabledHarmonyShortcutBlockingPreferences,
   encodeHarmonyShortcutBlockingPreferences,
   HarmonyShortcutBlockingPreferences,
   HarmonyShortcutDeviceClass,
   HarmonyShortcutProtocol,
   HarmonyShortcutStorageTransactionPort,
   mutateHarmonyShortcutBlockingPreferences,
+  readHarmonyShortcutBlockingPreferences,
   HARMONY_SHORTCUT_BLOCKING_STORAGE_KEY
 } from './HarmonyShortcutBlockingPolicy';
 
@@ -114,7 +115,11 @@ export class RemoteKeyboardSettingsService {
     this.appContext = context;
     const values: RemoteKeyboardPreferences = this.loadPreferences(context);
     this.publish(values);
-    this.publishHarmonyShortcutBlocking(this.loadHarmonyShortcutBlocking(context));
+    const harmonyShortcutBlocking: HarmonyShortcutBlockingPreferences | null =
+      this.tryLoadHarmonyShortcutBlocking(context);
+    if (harmonyShortcutBlocking !== null) {
+      this.publishHarmonyShortcutBlocking(harmonyShortcutBlocking);
+    }
     this.applySimpleKeyboardMode(values.simpleKeyboardEnabled);
     return values;
   }
@@ -122,17 +127,27 @@ export class RemoteKeyboardSettingsService {
   loadHarmonyShortcutBlocking(
     context?: common.Context
   ): HarmonyShortcutBlockingPreferences {
+    const loaded: HarmonyShortcutBlockingPreferences | null =
+      this.tryLoadHarmonyShortcutBlocking(context);
+    if (loaded !== null) { return loaded; }
+    const runtimeEncoded: string | undefined =
+      AppStorage.get<string>(HARMONY_SHORTCUT_BLOCKING_STORAGE_KEY);
+    return runtimeEncoded === undefined ? disabledHarmonyShortcutBlockingPreferences() :
+      decodeHarmonyShortcutBlockingPreferences(runtimeEncoded);
+  }
+
+  private tryLoadHarmonyShortcutBlocking(
+    context?: common.Context
+  ): HarmonyShortcutBlockingPreferences | null {
     const activeContext: common.Context | null = context ?? this.appContext;
-    if (activeContext === null) {
-      return defaultHarmonyShortcutBlockingPreferences();
-    }
+    if (activeContext === null) { return null; }
     try {
       const prefs: preferences.Preferences = preferences.getPreferencesSync(
         activeContext, { name: REMOTE_KEYBOARD_PREFERENCES_NAME });
-      return decodeHarmonyShortcutBlockingPreferences(
-        prefs.getSync(HARMONY_SHORTCUT_BLOCKING_STORAGE_KEY, '') as string);
+      return readHarmonyShortcutBlockingPreferences(
+        new HarmonyShortcutPreferencesPort(prefs));
     } catch (_error) {
-      return defaultHarmonyShortcutBlockingPreferences();
+      return null;
     }
   }
 
