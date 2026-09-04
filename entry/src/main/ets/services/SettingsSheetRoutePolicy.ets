@@ -177,7 +177,7 @@ export function virtualKeyboardSettingsRouteSpecs(): VirtualKeyboardSettingsRout
       mode: SETTINGS_SHEET_HARMONY_SHORTCUT_BLOCKING,
       section: 'harmonyShortcuts',
       title: '屏蔽鸿蒙快捷键',
-      height: 820
+      height: 560
     }
   ];
 }

@@ -133,7 +133,7 @@ export default function settingsSheetRoutePolicyTest() {
       expect(virtualKeyboardSettingsRouteSpec(SETTINGS_SHEET_HARMONY_SHORTCUT_BLOCKING)?.title)
         .assertEqual('屏蔽鸿蒙快捷键');
       expect(virtualKeyboardSettingsLeafSheetHeight(SETTINGS_SHEET_HARMONY_SHORTCUT_BLOCKING))
-        .assertEqual(820);
+        .assertEqual(560);
       expect(virtualKeyboardSettingsRouteSpec(SETTINGS_SHEET_ACCOUNT)).assertNull();
       expect(isVirtualKeyboardSettingsMode(SETTINGS_SHEET_ACCOUNT)).assertFalse();
       expect(virtualKeyboardSettingsLeafSheetHeight(SETTINGS_SHEET_ACCOUNT)).assertEqual(0);
@@ -155,9 +155,9 @@ export default function settingsSheetRoutePolicyTest() {
       expect(virtualKeyboardSettingsLeafSheetHeight(
         SETTINGS_SHEET_VIRTUAL_KEYBOARD_CUSTOM, 720, true)).assertEqual(680);
       expect(virtualKeyboardSettingsLeafSheetHeight(
-        SETTINGS_SHEET_HARMONY_SHORTCUT_BLOCKING, 900)).assertEqual(820);
+        SETTINGS_SHEET_HARMONY_SHORTCUT_BLOCKING, 900)).assertEqual(560);
       expect(virtualKeyboardSettingsLeafSheetHeight(
-        SETTINGS_SHEET_HARMONY_SHORTCUT_BLOCKING, 720)).assertEqual(680);
+        SETTINGS_SHEET_HARMONY_SHORTCUT_BLOCKING, 720)).assertEqual(560);
       expect(virtualKeyboardSettingsLeafUsesBottomSheet(
         SETTINGS_SHEET_VIRTUAL_KEYBOARD_CUSTOM, 800, 'sm')).assertTrue();
       expect(virtualKeyboardSettingsLeafUsesBottomSheet(
