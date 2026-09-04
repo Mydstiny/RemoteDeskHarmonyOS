@@ -55,8 +55,8 @@ function currentReleasePages(): ReleaseNotePage[] {
     {
       id: 'release-rustdesk-codec-telemetry',
       symbol: $rawfile('icons/computer-desktop.svg'),
-      title: '5. 性能监控跟随真实编解码器',
-      desc: '性能监控改为读取当前会话实际生效的编解码器和后端，切换 RustDesk 编解码器后会按运行状态更新。'
+      title: '5. RustDesk 编解码选择与监控对齐',
+      desc: '修复预鉴权连接遗漏编解码偏好的问题；选择 H.265 后会把请求完整传入协议协商，性能监控继续显示当前会话实际生效的编码与解码后端。'
     },
     {
       id: 'release-rdp-resolution-scaling',

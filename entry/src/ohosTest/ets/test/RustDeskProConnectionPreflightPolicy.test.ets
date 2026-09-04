@@ -7,6 +7,7 @@ import {
   shouldOpenRustDeskProPreflight
 } from '../../../main/ets/services/RustDeskProConnectionPreflightPolicy';
 import { RemoteHost } from '../../../main/ets/model/RemoteHost';
+import { rustDeskCodecConfigValue } from '../../../main/ets/services/RustDeskDiagnosticsPolicy';
 
 export default function rustDeskProConnectionPreflightPolicyTest(): void {
   describe('RustDeskProConnectionPreflightPolicy', (): void => {
@@ -30,6 +31,11 @@ export default function rustDeskProConnectionPreflightPolicyTest(): void {
       expect(shouldOpenRustDeskProPreflight('rustdesk', 'manual', false)).assertTrue();
       expect(shouldOpenRustDeskProPreflight('rustdesk', 'rustdesk_pro', true)).assertTrue();
       expect(shouldOpenRustDeskProPreflight('rdp', 'rustdesk_pro', true)).assertFalse();
+    });
+
+    it('preserves_h265_when_the_preflight_establishes_the_video_session', 0, (): void => {
+      expect(rustDeskCodecConfigValue(5)).assertEqual('H265');
+      expect(rustDeskCodecConfigValue(0)).assertEqual('');
     });
 
     it('allows_blank_non_direct_password_for_connect_time_prompt', 0, (): void => {

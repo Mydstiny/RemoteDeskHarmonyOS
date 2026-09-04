@@ -1070,4 +1070,21 @@ mod tests {
             other => panic!("unexpected Message variant: {:?}", other),
         }
     }
+
+    #[test]
+    fn h265_connection_preference_is_sent_as_h265() {
+        let decoding = Session::supported_decoding(5);
+
+        assert_eq!(decoding.get_prefer(), SupportedDecoding_PreferCodec::H265);
+        assert_eq!(decoding.get_ability_h265(), 1);
+    }
+
+    #[test]
+    fn automatic_connection_preference_remains_the_compatibility_default() {
+        let decoding = Session::supported_decoding(0);
+
+        assert_eq!(decoding.get_prefer(), SupportedDecoding_PreferCodec::H264);
+        assert_eq!(decoding.get_ability_h264(), 1);
+        assert_eq!(decoding.get_ability_h265(), 1);
+    }
 }

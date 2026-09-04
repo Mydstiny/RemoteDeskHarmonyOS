@@ -97,6 +97,7 @@ import {
   isRustDeskPeerTwoFactorManualCode,
   rustDeskPeerTwoFactorAutoSubmitError
 } from '../services/RustDeskPeerTwoFactorPolicy';
+import { rustDeskCodecConfigValue } from '../services/RustDeskDiagnosticsPolicy';
 import {
   RustDeskAuthDraft,
   RustDeskAuthDraftStore,
@@ -10090,7 +10091,8 @@ struct HostListPage {
         'request_approval' ? '' : host.password,
       width: 1920, height: 1080,
       customHostname: rustDeskProPeerIdForConnection(host.rustdeskProPeerId, host.customHostname),
-      gatewayHost: '', gatewayPort: 0, domain: '', codec: '',
+      gatewayHost: '', gatewayPort: 0, domain: '',
+      codec: rustDeskCodecConfigValue(this.rustdeskCodec),
       multiMonitor: false, monitorCount: 1, colorDepth: 32,
       authMethod: 'password', privateKeyPem: '', privateKeyPassphrase: '',
       rdImageQuality: this.rustdeskImageQuality, rdDirectIp: direct,
@@ -10438,6 +10440,9 @@ struct HostListPage {
           ? connectionAccount.tokenGeneration : 0;
       const sessionConfig: SessionConfig =
         this.rustDeskProConfig(host);
+      hilog.info(0x0001, 'HostList',
+        'RustDesk preflight codec preference=' + this.rustdeskCodec.toString() +
+        ' config=' + (sessionConfig.codec.length > 0 ? sessionConfig.codec : 'AUTO'));
       if (sessionConfig.rdAccessToken !==
         effectiveContext.accessToken) {
         throw new Error(

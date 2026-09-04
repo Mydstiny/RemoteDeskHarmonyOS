@@ -203,6 +203,8 @@ import { RdpControlCenter } from '../components/rdp/RdpControlCenter';
 import { RdpSessionToolbar, RdpToolbarAction } from '../components/rdp/RdpSessionToolbar';
 import { VncSessionToolbar, VncSessionToolbarActions } from '../components/VncSessionToolbar';
 import {
+  rustDeskCodecConfigValue,
+  rustDeskCodecForPreference,
   shouldEnableRustDeskPro,
   shouldShowSessionDiagnostics
 } from '../services/RustDeskDiagnosticsPolicy';
@@ -14095,11 +14097,8 @@ struct RemoteDesktop {
         vncFrameRateLimit: isVnc ? this.vncFrameRateLimit : 30,
         vncExpectedCertificateFingerprintSha256: isVnc ? vncExpectedFingerprint : ''
       };
-      // 编码偏好单独处理 (0=auto → 不强制)
-      if (rdCodecVal > 0) {
-        const codecMap: Record<number, string> = { 1: 'VP8', 2: 'VP9', 3: 'AV1', 4: 'H264', 5: 'H265' };
-        cfg['codec'] = codecMap[rdCodecVal] || '';
-      }
+      // 预鉴权与普通建连必须使用同一份编码偏好映射。
+      cfg['codec'] = rustDeskCodecConfigValue(rdCodecVal);
 
       // A CONTINUE_ONCE decision is held only in process memory and consumed
       // at the final native connect boundary. Persistent trust reaches this
@@ -15955,12 +15954,8 @@ struct RemoteDesktop {
         this.nativeHandles.markSurfaceAttached(renderer);
         this.resetCanvasToDisplayDefault();
         const codecPref: number = AppStorage.get<number>('rustdeskCodec') ?? 0;
-        let decoderCodec: number = 0;
-        if (codecPref === 1) { decoderCodec = 2; }
-        else if (codecPref === 2) { decoderCodec = 3; }
-        else if (codecPref === 3) { decoderCodec = 4; }
-        else if (codecPref === 4) { decoderCodec = 0; }
-        else if (codecPref === 5) { decoderCodec = 1; }
+        const preferredDecoderCodec: number = rustDeskCodecForPreference(codecPref);
+        const decoderCodec: number = preferredDecoderCodec >= 0 ? preferredDecoderCodec : 0;
         const desktopRustDeskSurfaceCompatibility: boolean =
           restoringRustDesk && this.isDesktopDevice;
         const decoder: number = this.loader.initDecoder(

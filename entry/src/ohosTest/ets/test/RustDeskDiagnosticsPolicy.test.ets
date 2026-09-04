@@ -9,6 +9,7 @@ import {
   resolveRustDeskProDiagnosticsToggle,
   rustDeskDiagnosticsStreamState,
   rustDeskCodecAlignment,
+  rustDeskCodecConfigValue,
   rustDeskCodecForPreference,
   rustDeskCodecLabel,
   rustDeskCodecPreferenceLabel,
@@ -93,6 +94,17 @@ export default function rustDeskDiagnosticsPolicyTest(): void {
       expect(rustDeskCodecForPreference(3)).assertEqual(4);
       expect(rustDeskCodecForPreference(4)).assertEqual(0);
       expect(rustDeskCodecForPreference(5)).assertEqual(1);
+    });
+
+    it('projects_every_codec_preference_into_the_native_connection_contract', 0, (): void => {
+      expect(rustDeskCodecConfigValue(0)).assertEqual('');
+      expect(rustDeskCodecConfigValue(1)).assertEqual('VP8');
+      expect(rustDeskCodecConfigValue(2)).assertEqual('VP9');
+      expect(rustDeskCodecConfigValue(3)).assertEqual('AV1');
+      expect(rustDeskCodecConfigValue(4)).assertEqual('H264');
+      expect(rustDeskCodecConfigValue(5)).assertEqual('H265');
+      expect(rustDeskCodecConfigValue(-1)).assertEqual('');
+      expect(rustDeskCodecConfigValue(6)).assertEqual('');
     });
 
     it('reports_preference_and_actual_codec_alignment_without_faking_live_apply', 0, (): void => {

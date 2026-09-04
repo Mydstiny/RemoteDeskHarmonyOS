@@ -122,6 +122,21 @@ export function rustDeskCodecPreferenceLabel(preference: number): string {
   return '自动';
 }
 
+/**
+ * Project the persisted UI preference into the exact connection value parsed by
+ * the native RustDesk bridge. Keep this mapping shared by normal connects and
+ * the host-list authentication preflight: both paths establish a real video
+ * session and therefore must negotiate the same codec.
+ */
+export function rustDeskCodecConfigValue(preference: number): string {
+  if (preference === 1) { return 'VP8'; }
+  if (preference === 2) { return 'VP9'; }
+  if (preference === 3) { return 'AV1'; }
+  if (preference === 4) { return 'H264'; }
+  if (preference === 5) { return 'H265'; }
+  return '';
+}
+
 export function rustDeskCodecForPreference(preference: number): number {
   if (preference === 1) { return 2; }
   if (preference === 2) { return 3; }
