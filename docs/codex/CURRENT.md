@@ -3,10 +3,10 @@
 ## Active task
 
 - Task: `all-protocol-ipv6-upgrade`, continued on the existing branch for the 2026-09-04 twelve-item user-feedback repair batch.
-- Branch: `codex/per-protocol-pinch-zoom-plan`; task baseline `5a0e05515`, reviewed feedback checkpoint `fd9289d5`, version checkpoint `a0d4f18d`, and SBOM checkpoint `23635f4a`, based on the user-authorized `main@b84224869`.
-- Relative state at `23635f4a`: ahead of `main` by 167 commits, behind by 0, one worktree, clean.
+- Branch: `codex/per-protocol-pinch-zoom-plan`; task baseline `5a0e05515`, reviewed feedback checkpoint `fd9289d5`, version/SBOM checkpoints `a0d4f18d`/`23635f4a`, and reviewed RustDesk H.265 checkpoint `15632691`, based on the user-authorized `main@b84224869`.
+- Relative state at `15632691`: ahead of `main` by 169 commits, behind by 0, one worktree, clean.
 - Plan: `docs/codex/plans/2026-08-29-all-protocol-ipv6-upgrade.md`.
-- Phase: IPv6 M0-M4 local code and the twelve-item feedback repair batch are code-complete and independently reviewed; user-managed consolidated real-device acceptance and fixed-server topology release acceptance remain pending.
+- Phase: IPv6 M0-M4 local code, the twelve-item feedback repair batch and the RustDesk explicit-H.265 follow-up are code-complete and independently reviewed; user-managed consolidated real-device acceptance and fixed-server topology release acceptance remain pending.
 
 ## Delivered feedback repair batch
 
@@ -14,7 +14,7 @@
 2. `69c1c7f1c` adds connection-time RDP account/password prompting with an ephemeral handoff; credentials are not written into host persistence, backups or logs.
 3. `58ac524ab` replays authoritative RDP desktop geometry into the input pipeline after resize/fullscreen changes so pointer mapping no longer remains on a stale quarter-size viewport.
 4. `91f29f02e` adds nested RustDesk toolbar choices for settings that have selectable sub-options and hover labels for toolbar buttons.
-5. `07af36880` separates RustDesk preferred and negotiated/active codec telemetry so the diagnostics HUD follows codec changes without misreporting an unconfirmed stream codec.
+5. `07af36880` separates RustDesk preferred and negotiated/active codec telemetry so the diagnostics HUD follows codec changes without misreporting an unconfirmed stream codec. Follow-up `15632691b` fixes the host-list preauthentication path dropping the saved codec: explicit H.265 now reaches the native bridge and RustDesk negotiation, while AUTO keeps its existing H.264-first compatibility behavior.
 6. `9e32e5c99` unifies RDP resolution presets, dynamic display negotiation, scaling and viewport fitting to avoid mismatched remote resolution and unnecessary black borders.
 7. `699d10184` fences pointer dispatch across window focus/visibility generations so minimizing from the HarmonyOS PC Dock cannot leak a synthetic right click to the remote session.
 8. `d83a85811` adds editable, encrypted SSH common commands under More, preserves their stored order and inserts a selected command into the terminal without automatically executing it.
@@ -31,17 +31,18 @@
 ## Verification and review
 
 - Each feedback item was committed only after its scoped implementation checks and reviewer follow-up were clean. `/root/review_item1` gave item 1 a final P0=0, P1=0, P2=0, P3=0 result; `/root/review_item2` iteratively reviewed items 2-12, found and closed the PC-default transient-read P1, and gave `fd9289d5` a final P0=0, P1=0, P2=0, P3=0 result.
-- Latest full native suite PASS 997/997. Latest targeted RustDesk Harmony shortcut tests PASS 2/2, with 254 unrelated tests filtered; `cargo fmt --check` PASS.
-- Required `default@OhosTestCompileArkTS` and signed `assembleHap` PASS after the final code checkpoint and again after the coordination-state refresh. The latest runs reported `BUILD SUCCESSFUL in 4 s 723 ms` and `BUILD SUCCESSFUL in 5 s 730 ms`; `pack.info` is `1.1.5.1` / `1001006`. The development-signed HAP is intentionally not content-addressed here because its signing output changes between otherwise identical builds.
+- Latest full native suite PASS 997/997. Latest targeted RustDesk H.265 negotiation tests PASS 6/6 with 252 unrelated tests filtered; the earlier Harmony shortcut tests PASS 2/2 with 254 filtered, and `cargo fmt --check` PASS.
+- Required `default@OhosTestCompileArkTS` and signed `assembleHap` PASS after `15632691`; the final production run reported `BUILD SUCCESSFUL in 5 s 883 ms`, and `pack.info` remains `1.1.5.1` / `1001006`. The development-signed HAP is intentionally not content-addressed here because its signing output changes between otherwise identical builds.
 - `git diff --check` and Light open-source compliance PASS. Existing ArkTS/generated-protobuf warnings are non-fatal and were not introduced as new errors.
 - The optional `ohosTest@OhosTestCompileArkTS` probe was attempted and returned `00306054` because this project exposes no such task; it did not replace either mandatory `default@OhosTestCompileArkTS` or `assembleHap` gate.
 - After the PC-default and explicit switch-semantics follow-up, required `default@OhosTestCompileArkTS` PASS and signed `assembleHap` PASS with `BUILD SUCCESSFUL in 16 s 495 ms`; `git diff --check` and Light compliance PASS. `/root/review_item2` re-reviewed the final code and test increment and reported P0=0, P1=0, P2=0 and P3=0.
 - `/root/review_item2` independently reviewed the `1.1.5.1` release increment, found one P2 overclaim that SSH common commands supported sorting, then verified the wording/test remediation and the refreshed SBOM with final P0=0, P1=0, P2=0 and P3=0.
+- `/root/review_rustdesk_h265` independently traced explicit H.265 through persisted preference, both ArkTS connection paths, native parsing, FFI and `SupportedDecoding`; it confirmed AUTO compatibility, decoder keyframe reconfiguration and log privacy with final P0=0, P1=0, P2=0 and P3=0.
 - Real-device behavior is intentionally not claimed. The user will run one consolidated acceptance pass after all twelve local repairs are delivered.
 
 ## Next and blockers
 
-- Next: run the consolidated HarmonyOS Phone/Pad/PC acceptance matrix in `QUEUE.md`. If flip still reproduces, export the new schema-v4 JSONL immediately after reproduction; the producer/decoder/renderer matrices and generation chain are designed to distinguish source-buffer inversion, decoder output transform, renderer application and stale-instance evidence in one capture.
+- Next: run the consolidated HarmonyOS Phone/Pad/PC acceptance matrix in `QUEUE.md`. For RustDesk explicit H.265, confirm `preflight ... config=H265`, `ffiCfg codec=5(H265)` and actual frame `codec=1` with the hardware decoder active. If flip still reproduces, export the schema-v4 JSONL immediately; its producer/decoder/renderer matrices and generation chain distinguish source-buffer inversion, decoder output transform, renderer application and stale-instance evidence.
 - Continue the existing M1-M3 IPv6 and fixed hbbs/hbbr RustDesk M4 topology matrices during the same release acceptance window.
 - Reproduce the intermittent RDP `0x10` report with Application state, RDP connection and routing/gateway diagnostics enabled plus matching HDC hilog. A genuine FreeRDP ErrorInfo `0x00000010` means the remote Windows session DWM terminated unexpectedly, but the current ArkTS error path also uses `0x10` as the fallback when no parseable native code exists. The supplied captures contain no RDP events and no device is currently connected, so the popup alone cannot distinguish a real server DWM crash from a client/network/resize failure mislabeled by the fallback.
 - Blocker for release acceptance only: no controlled device/topology result has been supplied yet. Code implementation, independent review and host-side gates are complete; product capability flags that were already release-gated remain disabled until their separate topology matrix passes.

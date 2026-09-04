@@ -3,10 +3,10 @@
   "task": "all-protocol-ipv6-upgrade",
   "branch": "codex/per-protocol-pinch-zoom-plan",
   "base": "5a0e055159402fcdf50aeea91760d99e3c017f39",
-  "head": "23635f4a17766a29387b8a442be5184d55c2995a",
+  "head": "15632691b9afceb28d4d72270332dfebb9f9ec60",
   "phase": "feedback-batch-code-complete-user-device-acceptance-pending",
   "status": "active",
-  "next": "Run the consolidated twelve-item HarmonyOS Phone/Pad/PC acceptance matrix; reproduce intermittent RDP 0x10 with RDP/routing diagnostics and matching HDC hilog; capture schema-v4 JSONL immediately if a hardware-decoder flip reproduces; then continue the existing IPv6 M1-M3 and fixed-server RustDesk M4 release matrices.",
+  "next": "Run the consolidated HarmonyOS Phone/Pad/PC acceptance matrix, including explicit RustDesk H.265 request, negotiated frame codec and hardware decode evidence; reproduce intermittent RDP 0x10 with RDP/routing diagnostics and matching HDC hilog; capture schema-v4 JSONL immediately if a hardware-decoder flip reproduces; then continue the existing IPv6 M1-M3 and fixed-server RustDesk M4 release matrices.",
   "blockers": [
     "Consolidated real-device acceptance is intentionally pending for the user; host-side implementation, review and validation of the committed twelve-item batch and version 1.1.5.1 are complete.",
     "The intermittent RDP 0x10 report is not final-confirmed: supplied captures omitted RDP events and no HDC target is connected. The next capture must distinguish raw E-RDP-ERRINFO-0x00000010 (remote DWM crash) from the ArkTS generic 0x10 fallback.",
@@ -24,9 +24,10 @@
       "/root/release_115_review",
       "/root/ipv6_blocker_review_retry",
       "/root/review_item1",
-      "/root/review_item2"
+      "/root/review_item2",
+      "/root/review_rustdesk_h265"
     ],
-    "reviewedHead": "23635f4a17766a29387b8a442be5184d55c2995a",
+    "reviewedHead": "15632691b9afceb28d4d72270332dfebb9f9ec60",
     "scope": [
       ".gitattributes",
       "AppScope/app.json5",
@@ -54,18 +55,18 @@
       "scripts/verify_open_source_release.ps1"
     ],
     "findings": [],
-    "reason": "/root/review_item1 independently verified the final Moonlight flip fallback and schema-v4 evidence with P0-P3 all zero. /root/review_item2 iteratively reviewed items 2-12 and their shortcut follow-ups, then reviewed the 1.1.5.1 release increment: it found and closed one P2 SSH sorting overclaim and verified version consistency, 14-page current notes, preserved 1.1.5 history and the refreshed SBOM with P0-P3 zero."
+    "reason": "/root/review_item1 independently verified the final Moonlight flip fallback and schema-v4 evidence with P0-P3 all zero. /root/review_item2 iteratively reviewed items 2-12 and their shortcut follow-ups, then reviewed the 1.1.5.1 release increment. /root/review_rustdesk_h265 traced the explicit H.265 preference through both ArkTS connection paths, native parsing, FFI negotiation and decoder initialization; AUTO compatibility and log privacy remained intact. All final reviews reported P0-P3 zero."
   },
   "lastVerification": {
-    "baseline": "IPv6 M0-M4 local code and the twelve-item user-feedback repair batch are complete through reviewed checkpoint fd9289d5; application version 1.1.5.1 / 1001006 is complete through reviewed SBOM checkpoint 23635f4a; existing release-gated IPv6 and RustDesk UDP/KCP/NAT capabilities remain disabled pending their separate topology acceptance.",
-    "feedbackBatch": "PASS: twelve independently committed repairs plus shortcut follow-ups cover Moonlight flip diagnostics, RDP credentials/pointer/resolution, RustDesk toolbar/codec/clipboard, Dock input fencing, SSH commands, protected exit, host-list safe area and a simplified Harmony shortcut UI whose PC first-use defaults block four supported protocols without overwriting saved choices.",
+    "baseline": "IPv6 M0-M4 local code, the twelve-item user-feedback repair batch, application version 1.1.5.1 / 1001006 and the explicit RustDesk H.265 follow-up are complete through reviewed checkpoint 15632691; existing release-gated IPv6 and RustDesk UDP/KCP/NAT capabilities remain disabled pending their separate topology acceptance.",
+    "feedbackBatch": "PASS: twelve independently committed repairs plus follow-ups cover Moonlight flip diagnostics, RDP credentials/pointer/resolution, RustDesk toolbar/codec/clipboard, Dock input fencing, SSH commands, protected exit, host-list safe area and a simplified Harmony shortcut UI. Explicit RustDesk H.265 now survives host-list preauthentication and reaches native negotiation, while AUTO retains its H.264-first compatibility behavior.",
     "flipDiagnostics": "PASS: schema v4 records bounded redacted producer class, raw/applied decoder matrices, presentation mode, renderer manual transform, renderer registry generation and decoder binding generation in a coherent snapshot; strict JSONL parsing and generation binding reject stale or malformed evidence.",
     "versionRelease": "PASS: app, native user agent, UI/version resources, diagnostics, documentation, SBOM generator and tests consistently use 1.1.5.1 / 1001006; current notes have 14 pages with twelve numbered repairs, while historical 1.1.5 notes and aho-corasick 1.1.5 are preserved.",
-    "testCompile": "PASS: required default@OhosTestCompileArkTS completed after the coordination-state review remediation with BUILD SUCCESSFUL in 4 s 723 ms.",
-    "assembleHap": "PASS: signed assembleHap after the coordination-state review remediation reported BUILD SUCCESSFUL in 5 s 730 ms; pack.info is 1.1.5.1 / 1001006. The development-signed HAP is not content-addressed because signing output changes between otherwise identical builds.",
-    "targetedTests": "PASS: native host suite 997/997; RustDesk Harmony shortcut tests 2/2 with 254 unrelated tests filtered; cargo fmt --check passed.",
+    "testCompile": "PASS: required default@OhosTestCompileArkTS completed with exit 0 after the reviewed RustDesk H.265 checkpoint.",
+    "assembleHap": "PASS: signed assembleHap after the reviewed RustDesk H.265 checkpoint reported BUILD SUCCESSFUL in 5 s 883 ms; pack.info is 1.1.5.1 / 1001006. The development-signed HAP is not content-addressed because signing output changes between otherwise identical builds.",
+    "targetedTests": "PASS: RustDesk H.265 negotiation tests 6/6 with 252 unrelated tests filtered; prior native host suite 997/997 and RustDesk Harmony shortcut tests 2/2 remain passed; cargo fmt --check passed.",
     "compliance": "PASS: git diff --check and Light open-source compliance after the final code checkpoint.",
-    "review": "PASS: /root/review_item2 reviewed version checkpoint a0d4f18d after one P2 release-copy remediation, then reviewed SBOM checkpoint 23635f4a; final P0=0, P1=0, P2=0 and P3=0. Prior feedback and IPv6 reviews remain valid.",
+    "review": "PASS: /root/review_rustdesk_h265 independently reviewed checkpoint 15632691 and confirmed the H.265 connection chain, AUTO compatibility, decoder reconfiguration and log privacy with P0=0, P1=0, P2=0 and P3=0. Prior feedback, version/SBOM and IPv6 reviews remain valid.",
     "optionalOhosTest": "NOT AVAILABLE: ohosTest@OhosTestCompileArkTS was attempted and returned 00306054 because the task is not defined; it did not replace either required DevEco gate.",
     "deviceAcceptance": "NOT RUN BY DESIGN: the user requested one consolidated real-device acceptance pass after all repairs are complete; no device behavior is claimed."
   },
