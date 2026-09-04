@@ -3,7 +3,7 @@
   "task": "all-protocol-ipv6-upgrade",
   "branch": "codex/per-protocol-pinch-zoom-plan",
   "base": "5a0e055159402fcdf50aeea91760d99e3c017f39",
-  "head": "95c4c5f1a331e0a90b6315cf4be89bc9fc5d57a2",
+  "head": "25a73122bb3aaea6ab520e760a16677732634fb5",
   "phase": "feedback-batch-code-complete-user-device-acceptance-pending",
   "status": "active",
   "next": "Run the consolidated twelve-item HarmonyOS Phone/Pad/PC acceptance matrix, capturing schema-v4 JSONL immediately if a hardware-decoder flip reproduces, then continue the existing IPv6 M1-M3 and fixed-server RustDesk M4 release matrices.",
@@ -25,7 +25,7 @@
       "/root/review_item1",
       "/root/review_item2"
     ],
-    "reviewedHead": "95c4c5f1a331e0a90b6315cf4be89bc9fc5d57a2",
+    "reviewedHead": "25a73122bb3aaea6ab520e760a16677732634fb5",
     "scope": [
       ".gitattributes",
       "AppScope/app.json5",
@@ -53,17 +53,17 @@
       "scripts/verify_open_source_release.ps1"
     ],
     "findings": [],
-    "reason": "/root/review_item1 independently verified the final Moonlight flip fallback, input mapping and schema-v4 producer/decoder/renderer generation evidence with P0-P3 all zero. /root/review_item2 iteratively reviewed items 2-12 and verified the final cumulative WMS lifecycle, focus gates, input subscription ABA defenses, protocol mappings, persistence transactions, UI matrices and tests with P0-P3 all zero."
+    "reason": "/root/review_item1 independently verified the final Moonlight flip fallback and schema-v4 evidence with P0-P3 all zero. /root/review_item2 iteratively reviewed items 2-12, then re-reviewed shortcut-settings follow-up 25a73122: system Symbol rendering, current-device default, four-protocol matrix isolation, 560-height Scroll fallback, ForEach keys and accessibility all passed with P0-P3 zero."
   },
   "lastVerification": {
-    "baseline": "IPv6 M0-M4 local code and the twelve-item user-feedback repair batch are complete through reviewed checkpoint 95c4c5f1; existing release-gated IPv6 and RustDesk UDP/KCP/NAT capabilities remain disabled pending their separate topology acceptance.",
-    "feedbackBatch": "PASS: twelve independently committed repairs cover Moonlight flip fallback/deep diagnostics, RDP credentials/pointer/resolution, RustDesk toolbar/codec/clipboard, Dock input fencing, SSH common commands, protected exit, classic host-list safe area and Harmony shortcut capture.",
+    "baseline": "IPv6 M0-M4 local code and the twelve-item user-feedback repair batch, including the simplified shortcut-settings follow-up, are complete through reviewed checkpoint 25a73122; existing release-gated IPv6 and RustDesk UDP/KCP/NAT capabilities remain disabled pending their separate topology acceptance.",
+    "feedbackBatch": "PASS: twelve independently committed repairs plus shortcut-settings follow-up 25a73122 cover Moonlight flip diagnostics, RDP credentials/pointer/resolution, RustDesk toolbar/codec/clipboard, Dock input fencing, SSH commands, protected exit, host-list safe area and a simplified Harmony shortcut UI with a working Symbol icon.",
     "flipDiagnostics": "PASS: schema v4 records bounded redacted producer class, raw/applied decoder matrices, presentation mode, renderer manual transform, renderer registry generation and decoder binding generation in a coherent snapshot; strict JSONL parsing and generation binding reject stale or malformed evidence.",
-    "testCompile": "PASS: required default@OhosTestCompileArkTS completed after the final code checkpoint and after the coordination-state refresh.",
-    "assembleHap": "PASS: signed assembleHap completed after the final code checkpoint and after the coordination-state refresh; a post-refresh run reported BUILD SUCCESSFUL in 5 s 277 ms and pack.info remains 1.1.5 / 1001005. The development-signed HAP is not content-addressed because signing output changes between otherwise identical builds.",
+    "testCompile": "PASS: required default@OhosTestCompileArkTS completed after shortcut-settings checkpoint 25a73122.",
+    "assembleHap": "PASS: signed assembleHap after shortcut-settings checkpoint 25a73122 reported BUILD SUCCESSFUL in 10 s 510 ms; pack.info remains 1.1.5 / 1001005. The development-signed HAP is not content-addressed because signing output changes between otherwise identical builds.",
     "targetedTests": "PASS: native host suite 997/997; RustDesk Harmony shortcut tests 2/2 with 254 unrelated tests filtered; cargo fmt --check passed.",
     "compliance": "PASS: git diff --check and Light open-source compliance after the final code checkpoint.",
-    "review": "PASS: /root/review_item1 and /root/review_item2 report no P0, P1, P2 or P3 findings across the final twelve-item batch; prior IPv6/release reviews remain valid.",
+    "review": "PASS: /root/review_item2 re-reviewed shortcut-settings checkpoint 25a73122 after its accessibility remediation and reported P0=0, P1=0, P2=0 and P3=0; prior feedback, IPv6 and release reviews remain valid.",
     "optionalOhosTest": "NOT AVAILABLE: ohosTest@OhosTestCompileArkTS was attempted and returned 00306054 because the task is not defined; it did not replace either required DevEco gate.",
     "deviceAcceptance": "NOT RUN BY DESIGN: the user requested one consolidated real-device acceptance pass after all repairs are complete; no device behavior is claimed."
   },
