@@ -593,6 +593,7 @@ import {
   resolveBackgroundVideoPrewarmMode
 } from '../services/BackgroundVideoPrewarmPolicy';
 import {
+  containsRdpServerErrorInfo,
   RDP_CONNECT_FAILURE_UNCLASSIFIED,
   RDP_SESSION_END_UNCLASSIFIED,
   rdpSessionErrorSheetPrefersLandscapeCenter,
@@ -12448,7 +12449,7 @@ struct RemoteDesktop {
         const nativeMessage: string = this.loader.getConnectionLastMessage(sessionId);
         hilog.error(RD_DOMAIN, RD_TAG, 'RDP native post-connect state=' + state.toString() +
           ' message=' + safeError(nativeMessage));
-        if (nativeMessage.indexOf('E-RDP-ERRINFO-0x') >= 0 || state === 4) {
+        if (containsRdpServerErrorInfo(nativeMessage) || state === 4) {
           const model: RdpSessionErrorDialogModel =
             rdpSessionErrorFromNativeMessage(
               nativeMessage, RDP_SESSION_END_UNCLASSIFIED,

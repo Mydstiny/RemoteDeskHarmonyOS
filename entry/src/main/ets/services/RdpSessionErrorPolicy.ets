@@ -15,33 +15,33 @@ export interface RdpSessionErrorDialogModel {
   source: RdpSessionErrorSource;
 }
 
-function extractHexCodeAfterMarker(text: string, marker: string): string {
-  const markerIndex: number = text.indexOf(marker);
-  if (markerIndex < 0) {
-    return '';
-  }
-  const markerTail: string = text.substring(markerIndex + marker.length);
-  const relativeHexIndex: number = markerTail.indexOf('0x');
-  if (relativeHexIndex < 0) {
-    return '';
-  }
-  const idx: number = markerIndex + marker.length + relativeHexIndex;
-  const closeRelative: number = markerTail.indexOf(']');
-  if (closeRelative >= 0 && relativeHexIndex > closeRelative) {
-    return '';
-  }
-  const hexMarker: string = '0x';
-  let code: string = hexMarker;
-  for (let i = idx + hexMarker.length; i < text.length; i++) {
-    const ch: string = text.charAt(i);
-    const isHex: boolean = (ch >= '0' && ch <= '9') ||
-      (ch >= 'a' && ch <= 'f') || (ch >= 'A' && ch <= 'F');
-    if (!isHex) {
-      break;
+function extractBracketedHexCode(text: string, marker: string): string {
+  const envelopeStart: string = '[' + marker + '0x';
+  let remainder: string = text;
+  while (remainder.length > 0) {
+    const envelopeIndex: number = remainder.indexOf(envelopeStart);
+    if (envelopeIndex < 0) {
+      return '';
     }
-    code += ch;
+    const hexStart: number = envelopeIndex + envelopeStart.length;
+    let hex: string = '';
+    let cursor: number = hexStart;
+    for (; cursor < remainder.length; cursor++) {
+      const ch: string = remainder.charAt(cursor);
+      const isHex: boolean = (ch >= '0' && ch <= '9') ||
+        (ch >= 'a' && ch <= 'f') || (ch >= 'A' && ch <= 'F');
+      if (!isHex) {
+        break;
+      }
+      hex += ch;
+    }
+    if (hex.length > 0 && hex.length <= 8 && cursor < remainder.length &&
+      remainder.charAt(cursor) === ']') {
+      return '0x' + hex;
+    }
+    remainder = remainder.substring(hexStart);
   }
-  return code.length > hexMarker.length ? code : '';
+  return '';
 }
 
 function validDiagnosticCode(code: string): boolean {
@@ -84,11 +84,11 @@ function extractNativeDiagnosticCode(text: string): string {
 }
 
 function extractServerErrorInfoCode(text: string): string {
-  return extractHexCodeAfterMarker(text, 'E-RDP-ERRINFO-');
+  return extractBracketedHexCode(text, 'E-RDP-ERRINFO-');
 }
 
 function extractFreeRdpConnectionCode(text: string): string {
-  return extractHexCodeAfterMarker(text, 'E-CONN-');
+  return extractBracketedHexCode(text, 'E-CONN-');
 }
 
 export function normalizeRdpErrorCode(raw: string, fallback: string): string {
@@ -135,7 +135,7 @@ function classifiedCode(message: string, fallback: string): string {
   return diagnosticCode.length > 0 ? diagnosticCode : fallback;
 }
 
-function hasServerErrorInfo(message: string): boolean {
+export function containsRdpServerErrorInfo(message: string): boolean {
   return extractServerErrorInfoCode(message).length > 0;
 }
 
@@ -261,7 +261,7 @@ function modelForCode(code: string, source: RdpSessionErrorSource): RdpSessionEr
 export function rdpSessionErrorFromNativeMessage(message: string, fallbackCode: string,
   fallbackSource: RdpSessionErrorSource = RdpSessionErrorSource.CONNECT_FAILURE): RdpSessionErrorDialogModel {
   const code: string = classifiedCode(message, fallbackCode);
-  const source: RdpSessionErrorSource = hasServerErrorInfo(message)
+  const source: RdpSessionErrorSource = containsRdpServerErrorInfo(message)
     ? RdpSessionErrorSource.SERVER_ERROR_INFO
     : fallbackSource;
   return modelForCode(code, source);

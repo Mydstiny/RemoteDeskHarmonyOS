@@ -38,7 +38,7 @@ function currentReleasePages(): ReleaseNotePage[] {
       id: 'release-rdp-ephemeral-auth',
       symbol: $rawfile('icons/shield-check.svg'),
       title: '2. RDP 连接凭据与断线归因',
-      desc: 'RDP 可选择每次连接时输入账户和密码，临时凭据退出后即清理；只有收到服务器 ErrorInfo 才显示对应 0x 错误，客户端或网络失败不再误报为 0x10。'
+      desc: 'RDP 可选择每次连接时输入账户和密码，临时凭据退出后即清理；只有服务器 ErrorInfo 才归因为服务器错误，客户端或网络失败不再默认误报为 0x10。'
     },
     {
       id: 'release-rdp-pointer-mapping',

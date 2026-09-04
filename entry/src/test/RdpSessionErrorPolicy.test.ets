@@ -1,5 +1,6 @@
 import { describe, it, expect } from '@ohos/hypium';
 import {
+  containsRdpServerErrorInfo,
   normalizeRdpErrorCode,
   RDP_CONNECT_FAILURE_UNCLASSIFIED,
   RDP_SESSION_END_UNCLASSIFIED,
@@ -95,6 +96,23 @@ export default function rdpSessionErrorPolicyTest() {
       );
       expect(model.code).assertEqual('E-RDP-TARGET-CERT');
       expect(model.source).assertEqual(RdpSessionErrorSource.CONNECT_FAILURE);
+    });
+
+    it('requires_the_complete_native_server_errorinfo_envelope', 0, (): void => {
+      const missingBrackets = rdpSessionErrorFromNativeMessage(
+        'foo E-RDP-ERRINFO-0x00000010', RDP_CONNECT_FAILURE_UNCLASSIFIED);
+      const separatedHex = rdpSessionErrorFromNativeMessage(
+        '[E-RDP-ERRINFO-flags=0x00000010]', RDP_CONNECT_FAILURE_UNCLASSIFIED);
+      const trailingJunk = rdpSessionErrorFromNativeMessage(
+        '[E-RDP-ERRINFO-0x00000010-junk]', RDP_CONNECT_FAILURE_UNCLASSIFIED);
+      expect(missingBrackets.source).assertEqual(RdpSessionErrorSource.CONNECT_FAILURE);
+      expect(separatedHex.source).assertEqual(RdpSessionErrorSource.CONNECT_FAILURE);
+      expect(trailingJunk.source).assertEqual(RdpSessionErrorSource.CONNECT_FAILURE);
+      expect(missingBrackets.code).assertEqual(RDP_CONNECT_FAILURE_UNCLASSIFIED);
+      expect(separatedHex.code).assertEqual(RDP_CONNECT_FAILURE_UNCLASSIFIED);
+      expect(trailingJunk.code).assertEqual(RDP_CONNECT_FAILURE_UNCLASSIFIED);
+      expect(containsRdpServerErrorInfo('[E-RDP-ERRINFO-0x00000010]')).assertTrue();
+      expect(containsRdpServerErrorInfo('E-RDP-ERRINFO-0x00000010')).assertFalse();
     });
 
     it('preserves_freerdp_connection_error_code_without_claiming_server_errorinfo', 0, (): void => {
