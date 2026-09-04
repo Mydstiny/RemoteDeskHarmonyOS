@@ -3,8 +3,8 @@
 ## Active task
 
 - Task: `all-protocol-ipv6-upgrade`, continued on the existing branch for the 2026-09-04 twelve-item user-feedback repair batch.
-- Branch: `codex/per-protocol-pinch-zoom-plan`; task baseline `5a0e05515`, reviewed IPv6/SBOM checkpoint `f59f31d9`, feedback-batch checkpoint `95c4c5f1`, and reviewed shortcut-settings UI checkpoint `25a73122`, based on the user-authorized `main@b84224869`.
-- Relative state at `25a73122`: ahead of `main` by 162 commits, behind by 0, one worktree, clean.
+- Branch: `codex/per-protocol-pinch-zoom-plan`; task baseline `5a0e05515`, reviewed IPv6/SBOM checkpoint `f59f31d9`, feedback-batch checkpoint `95c4c5f1`, shortcut-settings UI checkpoint `25a73122`, and reviewed PC-default checkpoint `fd9289d5`, based on the user-authorized `main@b84224869`.
+- Relative state at `fd9289d5`: ahead of `main` by 164 commits, behind by 0, one worktree, clean.
 - Plan: `docs/codex/plans/2026-08-29-all-protocol-ipv6-upgrade.md`.
 - Phase: IPv6 M0-M4 local code and the twelve-item feedback repair batch are code-complete and independently reviewed; user-managed consolidated real-device acceptance and fixed-server topology release acceptance remain pending.
 
@@ -21,16 +21,16 @@
 9. `12fb5d96c` adds button-only session exit protection. When enabled, shortcut exits are blocked and the top/side control surface cannot be hidden.
 10. `9d3e5f853` restores RustDesk remote-to-local text clipboard synchronization with loop suppression and lifecycle-safe listeners while preserving local-to-remote paste.
 11. `7a61eac49` increases the classic host-list bottom safe area so the final host card remains operable above the FAB.
-12. `95c4c5f1a` adds the persistent device/protocol Harmony shortcut capture matrix and guarded input service. Follow-up `25a73122b` fixes the missing settings icon by rendering the system Symbol correctly, defaults to the current device, reduces the UI from a simultaneous 12-switch matrix to three device tabs plus four protocol switches, removes the ambiguous partial-state master toggle, shortens the sheet from 820 to 560 and adds explicit accessibility names.
+12. `95c4c5f1a` adds the persistent device/protocol Harmony shortcut capture matrix and guarded input service. Follow-up `25a73122b` fixes the missing settings icon, defaults to the current-device tab, reduces the UI to three device tabs plus four protocol switches, removes the ambiguous master toggle, shortens the sheet to 560 and adds explicit accessibility names. Follow-up `fd9289d5c` makes PC first-use defaults block the four supported protocols while preserving saved choices, treats malformed saved data as all-off, preserves runtime state on read failure, and makes every label explicit that opening a switch blocks locally and sends to the remote while closing it leaves handling to HarmonyOS.
 
 ## Verification and review
 
-- Each feedback item was committed only after its scoped implementation checks and reviewer follow-up were clean. `/root/review_item1` gave item 1 a final P0=0, P1=0, P2=0, P3=0 result; `/root/review_item2` iteratively reviewed items 2-12 and gave item 12/final cumulative state the same zero-finding result.
+- Each feedback item was committed only after its scoped implementation checks and reviewer follow-up were clean. `/root/review_item1` gave item 1 a final P0=0, P1=0, P2=0, P3=0 result; `/root/review_item2` iteratively reviewed items 2-12, found and closed the PC-default transient-read P1, and gave `fd9289d5` a final P0=0, P1=0, P2=0, P3=0 result.
 - Latest full native suite PASS 997/997. Latest targeted RustDesk Harmony shortcut tests PASS 2/2, with 254 unrelated tests filtered; `cargo fmt --check` PASS.
 - Required `default@OhosTestCompileArkTS` and signed `assembleHap` PASS after the final code checkpoint and again after the coordination-state refresh. A post-refresh signed build reported `BUILD SUCCESSFUL in 5 s 277 ms`; `pack.info` remains `1.1.5` / `1001005`. The development-signed HAP is intentionally not content-addressed here because its signing output changes between otherwise identical builds.
 - `git diff --check` and Light open-source compliance PASS. Existing ArkTS/generated-protobuf warnings are non-fatal and were not introduced as new errors.
 - The optional `ohosTest@OhosTestCompileArkTS` probe was attempted and returned `00306054` because this project exposes no such task; it did not replace either mandatory `default@OhosTestCompileArkTS` or `assembleHap` gate.
-- After the shortcut-settings simplification, `default@OhosTestCompileArkTS` PASS, signed `assembleHap` PASS with `BUILD SUCCESSFUL in 10 s 510 ms`, `git diff --check` PASS and Light compliance PASS. `/root/review_item2` re-reviewed the final UI increment and reported P0=0, P1=0, P2=0 and P3=0.
+- After the PC-default and explicit switch-semantics follow-up, required `default@OhosTestCompileArkTS` PASS and signed `assembleHap` PASS with `BUILD SUCCESSFUL in 16 s 495 ms`; `git diff --check` and Light compliance PASS. `/root/review_item2` re-reviewed the final code and test increment and reported P0=0, P1=0, P2=0 and P3=0.
 - Real-device behavior is intentionally not claimed. The user will run one consolidated acceptance pass after all twelve local repairs are delivered.
 
 ## Next and blockers
