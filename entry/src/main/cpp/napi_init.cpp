@@ -104,7 +104,7 @@ static napi_value InitVersionInfo(napi_env env, napi_value exports) {
 #else
     SetStringProperty(env, versionObj, "buildType", "debug");
 #endif
-    SetStringProperty(env, versionObj, "appVersion", "1.1.5");
+    SetStringProperty(env, versionObj, "appVersion", "1.1.5.1");
     SetStringProperty(env, versionObj, "gitShortSha", REMOTEDESK_GIT_SHORT_SHA);
     SetStringProperty(env, versionObj, "buildTimeUtc", REMOTEDESK_BUILD_TIME_UTC);
     SetIntProperty(env, versionObj, "rustDeskFfiAbiVersion", 2);
@@ -113,7 +113,7 @@ static napi_value InitVersionInfo(napi_env env, napi_value exports) {
     napi_set_named_property(env, exports, "VERSION", versionObj);
 
     OH_LOG_INFO(LOG_APP,
-                "[NAPI] rdpnapi loaded version=1.0.1 api=21 app=1.1.5 build=%{public}s",
+                "[NAPI] rdpnapi loaded version=1.0.1 api=21 app=1.1.5.1 build=%{public}s",
                 REMOTEDESK_GIT_SHORT_SHA);
     return exports;
 }

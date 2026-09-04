@@ -1,7 +1,7 @@
 # RemoteDeskHarmonyOS
 
 面向 HarmonyOS NEXT 的原生多协议远程桌面客户端。当前版本为
-**1.1.5**（`versionCode 1001005`），在一个 ArkUI 工作台中提供 RDP、
+**1.1.5.1**（`versionCode 1001006`），在一个 ArkUI 工作台中提供 RDP、
 RustDesk、SSH/SFTP、VNC 和 Moonlight 连接；同时集成华为云数据同步、
 本地加密与备份、后台视频、画中画以及手机、Pad、PC 响应式体验。
 
@@ -21,7 +21,7 @@ RustDesk、SSH/SFTP、VNC 和 Moonlight 连接；同时集成华为云数据同�
 | 数据与安全 | RDB、本地 AES-256-GCM 数据保护、HUKS/生物认证集成、备份恢复与主机安全锁建设 |
 | 华为云同步 | 八张固定业务表与可选 Moonlight 数据的显式同步、选择控制、重试、下载回滚与本地恢复隔离 |
 | HarmonyOS 体验 | PC/Pad/Phone 响应式布局、沉浸式浮动导航、后台视频、画中画与前后台恢复 |
-| 1.1.5 更新 | 新增分协议画面控制、RustDesk 质量与实验多显示器、RDP 高 DPI 自适应，并强化连接恢复和脱敏双栈诊断 |
+| 1.1.5.1 更新 | 集中修复 PC 画面翻转、RDP 凭据/输入/缩放、RustDesk 工具栏/监控/剪贴板、SSH 常用命令、退出保护、列表避让和鸿蒙快捷键屏蔽 |
 | 1.1.2 更新 | 汇总 1.1.1 以来的 Moonlight、SSH 工作台、输入、安全校验与自适应引导改进 |
 | 反馈与社区 | 设置内支持邮箱反馈、获取远程更新的畅联群聊二维码以及保存到相册 |
 

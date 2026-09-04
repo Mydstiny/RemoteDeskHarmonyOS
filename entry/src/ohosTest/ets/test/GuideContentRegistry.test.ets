@@ -44,16 +44,19 @@ export default function guideContentRegistryTest(): void {
       expect(release.length).assertEqual(14);
       expect(currentReleasePageCount()).assertEqual(release.length);
       expect(release.length <= 14).assertTrue();
-      expect(containsReleasePage(release, 'release-1-1-5')).assertTrue();
-      expect(containsReleasePage(release, 'release-session-view-controls')).assertTrue();
-      expect(containsReleasePage(release, 'release-rustdesk-quality-displays')).assertTrue();
-      expect(containsReleasePage(release, 'release-rdp-adaptive-display')).assertTrue();
-      expect(containsReleasePage(release, 'release-network-diagnostics')).assertTrue();
+      expect(containsReleasePage(release, 'release-1-1-5-1')).assertTrue();
+      expect(containsReleasePage(release, 'release-flip-fallback-diagnostics')).assertTrue();
+      expect(containsReleasePage(release, 'release-rdp-ephemeral-auth')).assertTrue();
+      expect(containsReleasePage(release, 'release-rdp-pointer-mapping')).assertTrue();
+      expect(containsReleasePage(release, 'release-rdp-resolution-scaling')).assertTrue();
+      expect(containsReleasePage(release, 'release-rustdesk-clipboard')).assertTrue();
+      expect(containsReleasePage(release, 'release-harmony-shortcut-capture')).assertTrue();
+      expect(containsReleasePage(release, 'release-1-1-5')).assertFalse();
       expect(containsReleasePage(release, 'release-1-1-4')).assertFalse();
       expect(containsReleasePage(release, 'welcome-1-1-4')).assertFalse();
       expect(containsReleasePage(release, 'release-1-1-3')).assertFalse();
       expect(containsReleasePage(release, 'welcome-1-1-3')).assertFalse();
-      expect(release[release.length - 1].id).assertEqual('welcome-1-1-5');
+      expect(release[release.length - 1].id).assertEqual('welcome-1-1-5-1');
     });
   });
 }
