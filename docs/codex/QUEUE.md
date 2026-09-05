@@ -13,7 +13,7 @@ Updated: 2026-09-04 Asia/Shanghai
 ## Next
 
 1. Triage any consolidated device findings against the committed item boundary; use the schema-v4 generation/matrix chain for flip issues, verify RustDesk H.265 with `preflight config=H265`, `ffiCfg codec=5(H265)` and actual frame `codec=1`, and use the new RDP `source`/`code` classification to identify the original intermittent-disconnect source. Preserve the exact protocol, device type, window mode, decoder and reproduction sequence.
-2. After device evidence and required checks pass, push the task branch, open the PR, pass `open-source-compliance`, merge to `main` and clean the merged branch.
+2. The user authorized merging before device acceptance on 2026-09-05. Push the reviewed branch, open the PR, pass `open-source-compliance`, merge to `main` and clean the merged branch; retain the device/topology acceptance items above as follow-up work.
 
 ## Later
 

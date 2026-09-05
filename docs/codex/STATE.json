@@ -1,11 +1,11 @@
 {
   "schema": 1,
   "task": "all-protocol-ipv6-upgrade",
-  "branch": "codex/per-protocol-pinch-zoom-plan",
+  "branch": "",
   "base": "5a0e055159402fcdf50aeea91760d99e3c017f39",
   "head": "0a7559aa7c6bdb09df3f52a3ab062facc8375237",
-  "phase": "feedback-batch-code-complete-user-device-acceptance-pending",
-  "status": "active",
+  "phase": "reviewed-code-user-authorized-main-integration",
+  "status": "code-complete-device-acceptance-pending",
   "next": "Run the consolidated HarmonyOS Phone/Pad/PC acceptance matrix, including explicit RustDesk H.265 request, negotiated frame codec and hardware decode evidence; reproduce the intermittent RDP disconnect and retain the new source/code classification with RDP/routing diagnostics and matching HDC hilog; capture schema-v4 JSONL immediately if a hardware-decoder flip reproduces; then continue the existing IPv6 M1-M3 and fixed-server RustDesk M4 release matrices.",
   "blockers": [
     "Consolidated real-device acceptance is intentionally pending for the user; host-side implementation, review and validation of the committed twelve-item batch and version 1.1.5.1 are complete.",
@@ -71,5 +71,5 @@
     "optionalOhosTest": "NOT AVAILABLE: ohosTest@OhosTestCompileArkTS was attempted and returned 00306054 because the task is not defined; it did not replace either required DevEco gate.",
     "deviceAcceptance": "NOT RUN BY DESIGN: the user requested one consolidated real-device acceptance pass after all repairs are complete; no device behavior is claimed."
   },
-  "updated": "2026-09-04 Asia/Shanghai"
+  "updated": "2026-09-05 Asia/Shanghai"
 }
