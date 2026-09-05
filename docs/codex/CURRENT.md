@@ -2,55 +2,51 @@
 
 ## Active task
 
-- Task: `release-1-1-4-notes-and-version`
-- Branch: `codex/system-clipboard-activation-fix`; user authorized work on the current branch.
-- Increment: `c49f165f4..20811b14a` (tutorial release-log refresh follow-up).
-- Phase: implemented, locally verified and independently reviewed; update-popup device acceptance is pending.
-- Plan: `docs/codex/plans/2026-08-28-release-1-1-4-notes-and-version.md`
+- Task: `all-protocol-ipv6-upgrade`, continued on the existing branch for the 2026-09-04 twelve-item user-feedback repair batch.
+- Branch: `codex/per-protocol-pinch-zoom-plan`; task baseline `5a0e05515`, reviewed feedback checkpoint `fd9289d5`, version/SBOM checkpoints `a0d4f18d`/`23635f4a`, reviewed RustDesk H.265 checkpoint `15632691`, and reviewed RDP disconnect-attribution checkpoint `0a7559aa`, based on the user-authorized `main@b84224869`.
+- Relative state at `0a7559aa`: ahead of `main` by 172 commits, behind by 0, one worktree, clean.
+- Plan: `docs/codex/plans/2026-08-29-all-protocol-ipv6-upgrade.md`.
+- Phase: IPv6 M0-M4 local code, the twelve-item feedback repair batch, the RustDesk explicit-H.265 follow-up and RDP disconnect-attribution repair are code-complete and independently reviewed; user-managed consolidated real-device acceptance and fixed-server topology release acceptance remain pending.
 
-## 1.1.4 release result
+## Delivered feedback repair batch
 
-- The current app version is `1.1.4 / 1001004` across the app manifest, release registry, NAPI metadata, resources, diagnostics, documentation and SBOM.
-- The current 1.1.4 release popup contains only the 10 new 1.1.4 cards for committed changes since 1.1.3 and ends at `welcome-1-1-4`. The 12 existing 1.1.3 cards remain unchanged in the historical `1.1.3` registry, but are excluded from the current popup. The settings entry and unit/device assertions use the 10-card current count.
-- `设置 → 教程 → 本版本更新日志` now reloads the current 1.1.4 registry when the component appears and whenever that subpage is selected, and clamps any reused legacy page index to the current 10-page range.
-- SBOM provenance identifies source snapshot `fc514ce36` and creation time `2026-08-28T15:50:20Z`; the snapshot includes the version update and final shortcut-editor refinement.
-- Final verification: `default@OhosTestCompileArkTS` PASS (`BUILD SUCCESSFUL in 14 s 918 ms`); signed `assembleHap` PASS (`BUILD SUCCESSFUL in 38 s 510 ms`); signed HAP SHA-256 `45cd9c64b7c3a28c6a606594943d3ae79ba27c3e2216d87042edcc891267eada`; `git diff --check` and Light compliance PASS.
-- Independent review `/root/release_1_1_4_review`: tutorial release-log refresh PASS with zero findings; no P0/P1/P2/P3.
+1. `cec31d4a1` adds a PC-only Moonlight manual flip fallback equivalent to RustDesk and upgrades flip diagnostics to schema v4. Logs now preserve redacted producer class, raw/applied matrices, presentation mode, renderer/manual transform, renderer registry generation and decoder binding generation in one coherent snapshot, with strict import/export bounds. Absolute and relative input use the matching mirrored coordinate/delta model.
+2. `69c1c7f1c` adds connection-time RDP account/password prompting with an ephemeral handoff; credentials are not written into host persistence, backups or logs. Follow-ups `9a911bfa`/`0a7559aa` remove the generic `0x10` fallback and strictly classify only complete native `[E-RDP-ERRINFO-0x...]` envelopes as server ErrorInfo; client/network termination and FreeRDP connection codes retain distinct sources and diagnostic codes.
+3. `58ac524ab` replays authoritative RDP desktop geometry into the input pipeline after resize/fullscreen changes so pointer mapping no longer remains on a stale quarter-size viewport.
+4. `91f29f02e` adds nested RustDesk toolbar choices for settings that have selectable sub-options and hover labels for toolbar buttons.
+5. `07af36880` separates RustDesk preferred and negotiated/active codec telemetry so the diagnostics HUD follows codec changes without misreporting an unconfirmed stream codec. Follow-up `15632691b` fixes the host-list preauthentication path dropping the saved codec: explicit H.265 now reaches the native bridge and RustDesk negotiation, while AUTO keeps its existing H.264-first compatibility behavior.
+6. `9e32e5c99` unifies RDP resolution presets, dynamic display negotiation, scaling and viewport fitting to avoid mismatched remote resolution and unnecessary black borders.
+7. `699d10184` fences pointer dispatch across window focus/visibility generations so minimizing from the HarmonyOS PC Dock cannot leak a synthetic right click to the remote session.
+8. `d83a85811` adds editable, encrypted SSH common commands under More, preserves their stored order and inserts a selected command into the terminal without automatically executing it.
+9. `12fb5d96c` adds button-only session exit protection. When enabled, shortcut exits are blocked and the top/side control surface cannot be hidden.
+10. `9d3e5f853` restores RustDesk remote-to-local text clipboard synchronization with loop suppression and lifecycle-safe listeners while preserving local-to-remote paste.
+11. `7a61eac49` increases the classic host-list bottom safe area so the final host card remains operable above the FAB.
+12. `95c4c5f1a` adds the persistent device/protocol Harmony shortcut capture matrix and guarded input service. Follow-up `25a73122b` fixes the missing settings icon, defaults to the current-device tab, reduces the UI to three device tabs plus four protocol switches, removes the ambiguous master toggle, shortens the sheet to 560 and adds explicit accessibility names. Follow-up `fd9289d5c` makes PC first-use defaults block the four supported protocols while preserving saved choices, treats malformed saved data as all-off, preserves runtime state on read failure, and makes every label explicit that opening a switch blocks locally and sends to the remote while closing it leaves handling to HarmonyOS.
 
-## Existing cloud recovery result
+## Version 1.1.5.1 checkpoint
 
-- Device logs at `192.168.3.235:38451` showed Account Kit login and RDB creation succeeded, then optional historical account-store migration failed with `401 invalid parameters`; that optional failure was incorrectly surfaced as `账号物理数据域打开失败`.
-- Canonical failure now falls back to the exact same account's hashed local store. Login and local CRUD remain available while cloud recovery is deferred; stale canonical data is never reverse-imported into that authoritative fallback.
-- Local rows commit only when dirty intent is durable in the same RDB transaction. Broken checkpoints are quarantined before writes reopen, and startup/retry share the same durable cloud-admission state.
-- Account migration preserves clear/delete and empty-table semantics. VNC/Moonlight exact schema and public-data rules, higher source schemas, account ownership and crypto ownership remain integrity boundaries rather than arbitrary availability policies.
+- `a0d4f18d` updates the application, native user agent, UI/version resources, diagnostic metadata, release-note tests, README, user guide and SBOM generator to `1.1.5.1` / `1001006`. The current release contains 14 pages: introduction, the twelve numbered repairs above and a conclusion; the historical `1.1.5` notes and dependency `aho-corasick 1.1.5` remain unchanged.
+- `23635f4a` refreshes the SPDX document metadata against the version checkpoint without changing the dependency graph.
 
-## Verification
+## Verification and review
 
-- `default@OhosTestCompileArkTS`: PASS (`BUILD SUCCESSFUL in 6 s 201 ms`).
-- `assembleHap`: PASS, signed (`BUILD SUCCESSFUL in 50 s 090 ms`).
-- Signed HAP SHA-256: `b6bad805365e0af421336fbe796a25cb5baaa28d651a8e1e14e356df733a8ca3`.
-- `git diff --check` and Light open-source compliance: PASS.
-- `ohosTest@OhosTestCompileArkTS`: unavailable (`00306054`, task is not registered); focused policies compile through the mandatory test target.
-- Independent review `/root/cloud_sync_fix_review`: PASS; no remaining P0/P1/P2. Non-blocking P3 is deeper real-RDB fault-injection coverage.
+- Each feedback item was committed only after its scoped implementation checks and reviewer follow-up were clean. `/root/review_item1` gave item 1 a final P0=0, P1=0, P2=0, P3=0 result; `/root/review_item2` iteratively reviewed items 2-12, found and closed the PC-default transient-read P1, and gave `fd9289d5` a final P0=0, P1=0, P2=0, P3=0 result.
+- Latest full native suite PASS 997/997. Latest targeted RustDesk H.265 negotiation tests PASS 6/6 with 252 unrelated tests filtered; the earlier Harmony shortcut tests PASS 2/2 with 254 filtered, and `cargo fmt --check` PASS.
+- Required `default@OhosTestCompileArkTS` and signed `assembleHap` PASS after `0a7559aa`; the final coordination run reported `BUILD SUCCESSFUL in 5 s 408 ms`, and `pack.info` remains `1.1.5.1` / `1001006`. The development-signed HAP is intentionally not content-addressed here because its signing output changes between otherwise identical builds.
+- `git diff --check` and Light open-source compliance PASS. Existing ArkTS/generated-protobuf warnings are non-fatal and were not introduced as new errors.
+- The optional `ohosTest@OhosTestCompileArkTS` probe was attempted and returned `00306054` because this project exposes no such task; it did not replace either mandatory `default@OhosTestCompileArkTS` or `assembleHap` gate.
+- After the PC-default and explicit switch-semantics follow-up, required `default@OhosTestCompileArkTS` PASS and signed `assembleHap` PASS with `BUILD SUCCESSFUL in 16 s 495 ms`; `git diff --check` and Light compliance PASS. `/root/review_item2` re-reviewed the final code and test increment and reported P0=0, P1=0, P2=0 and P3=0.
+- `/root/review_item2` independently reviewed the `1.1.5.1` release increment, found one P2 overclaim that SSH common commands supported sorting, then verified the wording/test remediation and the refreshed SBOM with final P0=0, P1=0, P2=0 and P3=0.
+- `/root/review_rustdesk_h265` independently traced explicit H.265 through persisted preference, both ArkTS connection paths, native parsing, FFI and `SupportedDecoding`; it confirmed AUTO compatibility, decoder keyframe reconfiguration and log privacy with final P0=0, P1=0, P2=0 and P3=0.
+- `/root/review_rdp_0x10` found two P2 issues in the first RDP attribution checkpoint: a loose ErrorInfo envelope parser and release wording that did not account for real `E-CONN-0x...` codes. Follow-up `0a7559aa` strictly validates the full native envelope, reuses that parser in the UI precondition, adds near-miss tests and corrects the wording; final P0=0, P1=0, P2=0 and P3=0.
+- Real-device behavior is intentionally not claimed. The user will run one consolidated acceptance pass after all twelve local repairs are delivered.
 
-## Authorized RustDesk desktop-flip increment
+## Next and blockers
 
-- Commits `56db7e612`, `a77e28f3` and `10c149fce` add a PC-only RustDesk top-bar flip icon with a compact three-action popup: image only, image plus controls, and reset.
-- The selected mode is stored per host in device-local personalization, restored across sessions and excluded from cloud-base change detection. Visual and control rotations are independent; PIP and foreground renderer rebinds reapply the visual mode.
-- Authenticated peer platform wins over stale host metadata. Android/iOS peers drain input, reset only the live desktop-flip transform and close the popup; the saved computer preference remains available for a later desktop peer. Phone/Pad viewers and RustDesk phone targets do not expose the action.
-- Continuity reconnects retain the last authenticated peer platform across transient `unknown` diagnostics, preventing mobile sessions from briefly reapplying a stale computer flip during re-authentication.
-- Verification: `default@OhosTestCompileArkTS` PASS (`BUILD SUCCESSFUL in 18 s 232 ms`); signed `assembleHap` PASS (`BUILD SUCCESSFUL in 26 s 727 ms`); signed HAP SHA-256 `db785d6f17a1f8305b62bd1503c5717eb8cee7b324e467e5aba3b721cf3239a7`; `git diff --check` and Light compliance PASS. PC real-device UI/mapping acceptance is pending.
-- Independent review `/root/rustdesk_desktop_flip_review`: PASS after closing one P1 mobile-peer scope issue and one P2 continuity `unknown` transition; no remaining P0/P1/P2.
+- 2026-09-05: the user explicitly authorized pushing this reviewed branch and merging it into main before the consolidated device acceptance. Device/topology checks below remain follow-up acceptance work and do not assert device success. Required CI must pass before merge; return to synchronized main and delete the merged task branch afterward.
+- 2026-09-05 integration validation: `default@OhosTestCompileArkTS` PASS (`BUILD SUCCESSFUL in 4 s 502 ms`), signed `assembleHap` PASS (`BUILD SUCCESSFUL in 6 s 236 ms`), Light compliance, state validation and `git diff --check` PASS. The state branch field is unpinned for integration; Git/PR state is authoritative for the merge result. The code review receipt remains valid with unchanged scope and plan hashes.
 
-## Per-protocol wheel-direction increment
-
-- Commits `23ec26df1`, `6f1efab8a` and `701969cb1` replace the shared wheel switch with a `显示与交互` editor for RDP, RustDesk, SSH, VNC and Moonlight, including all-normal and all-reverse actions. SFTP is explicitly unaffected.
-- Each protocol now owns a device-local key and applies direction at its runtime boundary exactly once. Existing shared behavior migrates compatibly for RDP/RustDesk/VNC; SSH and Moonlight default to normal direction.
-- Editor saves use a touched-field patch merged with the latest live values, so changing one protocol cannot revert another protocol changed while the sheet was open. Multi-key persistence has best-effort rollback, and VNC keeps its old cloud payload field only as migration input.
-- Verification: `default@OhosTestCompileArkTS` PASS (`BUILD SUCCESSFUL in 12 s 339 ms`); signed `assembleHap` PASS (`BUILD SUCCESSFUL in 31 s 407 ms`); signed HAP SHA-256 `d7221652b6ba51f07e6f64752e096eb10f29d40548c92aa08b26eea5335d30d8`; `git diff --check` and Light compliance PASS. The separate `ohosTest@OhosTestCompileArkTS` task remains unregistered (`00306054`).
-- Independent review `/root/per_protocol_wheel_review`: PASS after closing the stale-editor P2 and tightening persistence/SSH ownership; no remaining P0/P1/P2. ArkWeb WheelEvent and five-protocol real-device input acceptance remain pending.
-
-## Device acceptance / blockers
-
-- The fixed HAP was installed successfully on `192.168.3.235:38451` with `install -r`, preserving app data, and `EntryAbility` started successfully. Acceptance must verify login remains usable after the historical migration `401`, exact-owner local data visibility, local save/restart/offline behavior, canonical recovery and no stale-row resurrection.
-- Prior remote keyboard/sidebar acceptance on `.235` remains queued. `.236:40123` still requires a release-provisioned HAP or explicit destructive-uninstall authorization; its existing data remains preserved.
+- Next: run the consolidated HarmonyOS Phone/Pad/PC acceptance matrix in `QUEUE.md`. For RustDesk explicit H.265, confirm `preflight ... config=H265`, `ffiCfg codec=5(H265)` and actual frame `codec=1` with the hardware decoder active. If flip still reproduces, export the schema-v4 JSONL immediately; its producer/decoder/renderer matrices and generation chain distinguish source-buffer inversion, decoder output transform, renderer application and stale-instance evidence.
+- Continue the existing M1-M3 IPv6 and fixed hbbs/hbbr RustDesk M4 topology matrices during the same release acceptance window.
+- Reproduce the intermittent RDP report with Application state, RDP connection and routing/gateway diagnostics enabled plus matching HDC hilog. A displayed server `0x10` now requires a strict native `[E-RDP-ERRINFO-0x00000010]` envelope and therefore means the remote Windows session DWM terminated unexpectedly; client/network termination instead uses `E-RDP-SESSION-END-UNCLASSIFIED`, while FreeRDP connection codes keep their real `E-CONN` value and non-server source. The supplied captures contain no RDP events and no device is currently connected, so the original incident's source remains unconfirmed.
+- Blocker for release acceptance only: no controlled device/topology result has been supplied yet. Code implementation, independent review and host-side gates are complete; product capability flags that were already release-gated remain disabled until their separate topology matrix passes.

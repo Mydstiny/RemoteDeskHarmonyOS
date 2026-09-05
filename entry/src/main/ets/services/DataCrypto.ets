@@ -200,6 +200,10 @@ export class DataCrypto {
     };
   }
 
+  /** Monotonic fence for decrypted local caches. A lock or account-scope
+   * transition invalidates every generation captured before it. */
+  stateGeneration(): number { return this.cryptoGeneration; }
+
   /**
    * 设置主密码 (首次使用)
    * 生成随机盐, PBKDF2 派生 DEK, 计算验证器, 存储到 cloudPrefs

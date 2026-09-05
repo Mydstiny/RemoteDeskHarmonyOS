@@ -9,7 +9,8 @@ import {
   MoonlightAddress,
   MoonlightAddressFamily,
   MoonlightHostType,
-  MOONLIGHT_DEFAULT_HTTPS_PORT
+  MOONLIGHT_DEFAULT_HTTPS_PORT,
+  moonlightAddressIsValid
 } from '../model/MoonlightModels';
 import {
   MoonlightHostAddVerification,
@@ -33,6 +34,7 @@ export class MoonlightHostOperationFence {
   addressHost: string = '';
   addressFamily: MoonlightAddressFamily = 'hostname';
   addressPort: number = 0;
+  addressScope: string = '';
 }
 
 function validRequestUuid(value: string): boolean {
@@ -47,7 +49,9 @@ export function moonlightServerInfoProbeEndpoint(
   if (!validAddress(address) || !validRequestUuid(requestUuid)) {
     return '';
   }
-  const host: string = address.family === 'ipv6' ? '[' + address.host + ']' : address.host;
+  const scope: string = address.scope === undefined ? '' : address.scope;
+  const scopedHost: string = address.host + (scope === '' ? '' : '%25' + scope);
+  const host: string = address.family === 'ipv6' ? '[' + scopedHost + ']' : scopedHost;
   const port: number = address.port > 0 ? address.port : MOONLIGHT_DEFAULT_CONTROL_PORT;
   return 'http://' + host + ':' + port.toString() + '/serverinfo?uniqueid=' +
     MOONLIGHT_PROTOCOL_UNIQUE_ID + '&uuid=' + encodeURIComponent(requestUuid);
@@ -131,7 +135,8 @@ function hostTypeFromServerInfo(gfeVersion: string, state: string): MoonlightHos
 function validAddress(address: MoonlightAddress): boolean {
   const host: string | null = strictBoundedText(address.host, MAX_SERVER_NAME_LENGTH, false);
   return host !== null && host === address.host &&
-    Number.isSafeInteger(address.port) && address.port >= 1 && address.port <= 65535;
+    Number.isSafeInteger(address.port) && address.port >= 1 && address.port <= 65535 &&
+    moonlightAddressIsValid(address);
 }
 
 /**
@@ -148,7 +153,9 @@ export function moonlightVerificationUuidHint(
   if (normalizedIdentity === null || !validAddress(address)) {
     return candidateIdentity;
   }
-  const host: string = address.family === 'ipv6' ? '[' + address.host + ']' : address.host;
+  const scope: string = address.scope === undefined ? '' : address.scope;
+  const scopedHost: string = address.host + (scope === '' ? '' : '%' + scope);
+  const host: string = address.family === 'ipv6' ? '[' + scopedHost + ']' : scopedHost;
   const addressFallback: string = host + ':' + address.port.toString();
   return normalizedIdentity === addressFallback ? '' : normalizedIdentity;
 }
@@ -181,6 +188,7 @@ export function createMoonlightHostOperationFence(
   fence.addressHost = address.host;
   fence.addressFamily = address.family;
   fence.addressPort = address.port;
+  fence.addressScope = address.scope === undefined ? '' : address.scope;
   return fence;
 }
 
@@ -196,6 +204,7 @@ export function cloneMoonlightHostOperationFence(
   clone.addressHost = source.addressHost;
   clone.addressFamily = source.addressFamily;
   clone.addressPort = source.addressPort;
+  clone.addressScope = source.addressScope;
   return clone;
 }
 
@@ -211,7 +220,8 @@ export function moonlightHostOperationFenceEquals(
     first.serverUuid === second.serverUuid &&
     first.addressHost === second.addressHost &&
     first.addressFamily === second.addressFamily &&
-    first.addressPort === second.addressPort;
+    first.addressPort === second.addressPort &&
+    first.addressScope === second.addressScope;
 }
 
 export function moonlightVerificationMatchesFence(
@@ -224,7 +234,9 @@ export function moonlightVerificationMatchesFence(
     (fence.serverUuid === '' || serverUuid === fence.serverUuid) &&
     verification.address.host === fence.addressHost &&
     verification.address.family === fence.addressFamily &&
-    verification.address.port === fence.addressPort;
+    verification.address.port === fence.addressPort &&
+    (verification.address.scope === undefined ? '' : verification.address.scope) ===
+      fence.addressScope;
 }
 
 /** Pure parser kept separate from the network request for bounded policy tests. */
@@ -276,7 +288,10 @@ export function parseMoonlightServerInfo(
     serverName: hostname || address.host,
     hostType: hostTypeFromServerInfo(gfeVersion, state),
     version: appVersion || gfeVersion || state || 'unknown',
-    address: { host: address.host, family: address.family, port: address.port },
+    address: {
+      host: address.host, family: address.family, port: address.port,
+      scope: address.scope
+    },
     httpsPort: httpsPort,
     paired: boolAttribute(pairedText),
     // The native pairing result fills this with the exact leaf SHA-256.

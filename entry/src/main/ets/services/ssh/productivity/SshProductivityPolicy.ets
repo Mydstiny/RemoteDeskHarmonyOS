@@ -21,6 +21,14 @@ export interface SshSnippetV1 {
   updatedAt: number;
 }
 
+export interface SshQuickCommandDraft {
+  id: string;
+  title: string;
+  command: string;
+  scope: 'global' | 'host';
+  hostId: string;
+}
+
 export interface SshStartupCommandV1 {
   hostId: string;
   snippetId: string;
@@ -64,6 +72,12 @@ export interface SshSnippetRenderResult {
   preview: string;
   containsSecret: boolean;
   missingVariables: Array<string>;
+}
+
+export interface SshSnippetInsertSubmission {
+  data: string;
+  control: boolean;
+  containsSecret: boolean;
 }
 
 export interface SshHistoryCaptureContext {
@@ -154,6 +168,43 @@ export function emptySshProductivityDocument(): SshProductivityDocumentV1 {
   };
 }
 
+/** Build the deliberately small editable subset used by the SSH “common
+ * commands” UI. Commands are inserted for review and never gain variables or
+ * automatic execution through this editor. */
+export function buildSshQuickCommandSnippet(draft: SshQuickCommandDraft,
+  nowMs: number, sequence: number): SshSnippetV1 | null {
+  const normalizedNow: number = Number.isFinite(nowMs) && nowMs >= 0 ?
+    Math.floor(nowMs) : 0;
+  const normalizedSequence: number = Number.isFinite(sequence) && sequence >= 0 ?
+    Math.floor(sequence) : 0;
+  const existingId: string = text(draft.id, 96);
+  const generatedId: string = 'quick-' + normalizedNow.toString(36) + '-' +
+    normalizedSequence.toString(36);
+  return normalizeSshSnippet({
+    id: existingId.length > 0 ? existingId : generatedId,
+    title: draft.title,
+    description: '常用命令 · 点击后插入终端，不自动执行',
+    template: draft.command.trim(),
+    scope: draft.scope,
+    scopeId: draft.scope === 'host' ? draft.hostId.trim() : '',
+    variables: [],
+    insertOnly: true,
+    updatedAt: normalizedNow
+  });
+}
+
+export function sshSnippetEditableAsQuickCommand(snippet: SshSnippetV1): boolean {
+  return snippet.insertOnly && snippet.variables.length === 0 &&
+    (snippet.scope === 'global' || snippet.scope === 'host');
+}
+
+/** Startup commands are an explicit execute-on-connect capability. Keep the
+ * insert-only common-command surface and secret-backed templates outside it. */
+export function sshSnippetAllowedAsStartup(snippet: SshSnippetV1 | undefined): boolean {
+  return snippet !== undefined && !snippet.insertOnly && !snippet.variables.some(
+    (item: SshSnippetVariableV1): boolean => item.secretRef.length > 0);
+}
+
 export function normalizeSshSnippet(source: SshSnippetV1): SshSnippetV1 | null {
   const id: string = text(source.id, 96);
   const title: string = text(source.title, 120);
@@ -231,6 +282,15 @@ export function renderSshSnippet(snippet: SshSnippetV1,
     containsSecret,
     missingVariables
   };
+}
+
+/** Build the exact terminal write used by manual invocation. No carriage
+ * return or newline is appended: execution remains an explicit user action. */
+export function buildSshSnippetInsertSubmission(snippet: SshSnippetV1,
+  values: Array<SshSnippetValue>): SshSnippetInsertSubmission | null {
+  const rendered: SshSnippetRenderResult = renderSshSnippet(snippet, values);
+  if (!rendered.ok || rendered.insertion.length === 0) { return null; }
+  return { data: rendered.insertion, control: false, containsSecret: rendered.containsSecret };
 }
 
 export function captureSshHistory(context: SshHistoryCaptureContext,
@@ -481,7 +541,9 @@ export function encodeSshProductivityDocument(document: SshProductivityDocumentV
       snippetId: text(item.snippetId, 96),
       enabled: item.enabled === true
     })).filter((item: SshStartupCommandV1): boolean => item.hostId.length > 0 &&
-      item.snippetId.length > 0);
+      item.snippetId.length > 0 && item.enabled && sshSnippetAllowedAsStartup(
+        normalized.snippets.find((snippet: SshSnippetV1): boolean =>
+          snippet.id === item.snippetId)));
   normalized.history = document.history.slice(-SSH_PRODUCTIVITY_MAX_HISTORY).map(
     (item: SshCommandHistoryV1): SshCommandHistoryV1 => ({
       id: text(item.id, 160), hostId: text(item.hostId, 96),

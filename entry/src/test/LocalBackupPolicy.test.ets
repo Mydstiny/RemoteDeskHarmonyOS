@@ -301,6 +301,7 @@ export default function localBackupPolicyTest(): void {
           '"rustdeskadaptiveorientation":"1","rdpendpointmode":"microsoft_rd_gateway",' +
           '"rdpgatewaytransport":"no-websockets",' +
           '"rdpgatewayservername":"gateway.example.test",' +
+          '"rdpclienthostname":"HARMONY-CLIENT",' +
           '"sshproxytype":"ssh_jump","sshproxyauthmethod":"publickey",' +
           '"sshproxykeyid":"jump-key",' +
           '"sshjumphostkeyalgorithm":"ssh-ed25519",' +
@@ -320,12 +321,65 @@ export default function localBackupPolicyTest(): void {
       expect(parsed !== null).assertTrue();
       expect(parsed?.extensions?.length).assertEqual(1);
       expect(parsed?.extensions?.[0]['payload'].indexOf('rdpendpointmode') >= 0).assertTrue();
+      expect(parsed?.extensions?.[0]['payload'].indexOf('rdpclienthostname') >= 0).assertTrue();
       expect(parsed?.extensions?.[0]['payload'].indexOf('sshproxytype') >= 0).assertTrue();
       expect(parsed?.extensions?.[0]['payload'].indexOf('sshjumphostkeyalgorithm') >= 0).assertTrue();
       expect(parsed?.extensions?.[0]['payload'].indexOf('localdisplayconfig') >= 0).assertTrue();
       expect(parsed?.extensions?.[0]['payload'].indexOf(
         'localrustdeskdesktopflipmode') >= 0).assertTrue();
     });
+
+    it('excludes_scoped_remote_hosts_from_export_and_quarantines_legacy_restore', 0,
+      (): void => {
+        const tables = emptyTables();
+        tables['remotehosts'].push({
+          id: 'ssh-global', userid: 'owner-test', protocol: 'ssh',
+          host: '2001:db8::20', port: '22'
+        }, {
+          id: 'ssh-scoped-proxy', userid: 'owner-test', protocol: 'ssh',
+          host: '2001:db8::30', port: '22',
+          proxyhost: 'fe80::30%wlan0', proxyport: '22'
+        }, {
+          id: 'ssh-scoped', userid: 'owner-test', protocol: 'ssh',
+          host: 'fe80::20%wlan0', port: '22'
+        });
+        const extensions: Array<Record<string, string>> = [{
+          id: 'remotehosts:ssh-global', tablename: 'remotehosts',
+          recordid: 'ssh-global',
+          payload: '{"sshhostkeyfingerprintsha256":"SHA256:global"}',
+          updatedat: '100'
+        }, {
+          id: 'remotehosts:ssh-scoped-proxy', tablename: 'remotehosts',
+          recordid: 'ssh-scoped-proxy',
+          payload: '{"sshhostkeyfingerprintsha256":"SHA256:scoped-proxy"}',
+          updatedat: '100'
+        }, {
+          id: 'remotehosts:ssh-scoped', tablename: 'remotehosts',
+          recordid: 'ssh-scoped',
+          payload: '{"sshhostkeyfingerprintsha256":"SHA256:scoped"}',
+          updatedat: '100'
+        }];
+
+        const exported: LocalBackupDocument = createLocalBackupDocument(
+          tables, 100, '1.0.10', extensions, {}, 'owner-test');
+        expect(exported.tables['remotehosts'].length).assertEqual(1);
+        expect(exported.tables['remotehosts'][0]['id']).assertEqual('ssh-global');
+        expect(exported.extensions?.length).assertEqual(1);
+        expect(exported.extensions?.[0]['recordid']).assertEqual('ssh-global');
+
+        const legacy: LocalBackupDocument = legacyDocument(2, tables, extensions);
+        const parsed: LocalBackupDocument | null = validateLocalBackupDocument(
+          JSON.stringify(legacy));
+        expect(parsed !== null).assertTrue();
+        if (parsed === null) { return; }
+        const plan = adaptLocalBackupDocumentForRestore(parsed, 'owner-target', true);
+        expect(plan !== null).assertTrue();
+        expect(plan?.tables['remotehosts'].length).assertEqual(1);
+        expect(plan?.tables['remotehosts'][0]['id']).assertEqual('ssh-global');
+        expect(plan?.extensions.length).assertEqual(1);
+        expect(plan?.extensions[0]['recordid']).assertEqual('ssh-global');
+        expect(plan?.quarantinedRows).assertEqual(4);
+      });
 
     it('rejects_duplicate_primary_keys', 0, (): void => {
       const document = createLocalBackupDocument(emptyTables(), 100, '1.0.7');

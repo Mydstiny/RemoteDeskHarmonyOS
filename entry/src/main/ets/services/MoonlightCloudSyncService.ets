@@ -25,7 +25,10 @@ import {
   MoonlightRepositoryPort,
   MoonlightRepositoryReadResult
 } from './MoonlightRepository';
-import { moonlightValidateRecord } from './MoonlightRecordPolicy';
+import {
+  moonlightRecordContainsDevicePrivateEndpoint,
+  moonlightValidateRecord
+} from './MoonlightRecordPolicy';
 import {
   MoonlightConflictDecision,
   MoonlightConflictMergeContext,
@@ -192,6 +195,15 @@ export class MoonlightCloudSyncService {
           recordId: safeQuarantineId(exact, i),
           reason: reason,
           payloadHashSha256: safePayloadHash(exact)
+        });
+        quarantined++;
+        continue;
+      }
+      if (moonlightRecordContainsDevicePrivateEndpoint(record)) {
+        quarantines.push({
+          recordId: record.id,
+          reason: 'cloud_device_private_endpoint',
+          payloadHashSha256: record.payloadHashSha256
         });
         quarantined++;
         continue;
@@ -370,6 +382,10 @@ export class MoonlightCloudSyncService {
       const record: MoonlightRecord = localState.record;
       if (!isMoonlightRecordTypeSelected(
         record.recordType, selected, gates.identityCapabilityReady)) {
+        skipped++;
+        continue;
+      }
+      if (moonlightRecordContainsDevicePrivateEndpoint(record)) {
         skipped++;
         continue;
       }

@@ -1003,7 +1003,7 @@ export struct KeyVaultPage {
     .padding({ left: 24, right: 24, top: 24, bottom: 40 }).width('100%')
     .constraintSize({ maxWidth: 760 })
     .borderRadius(this.breakpoint === 'sm' ? { topLeft: 20, topRight: 20, bottomLeft: 0, bottomRight: 0 } : 20)
-    .backgroundColor(this.pal().bg).backgroundBlurStyle(BlurStyle.Regular)
+    .backgroundColor(this.pal().sheetBg).backgroundBlurStyle(BlurStyle.Regular)
     .border(this.breakpoint === 'sm'
       ? { width: 0, color: Color.Transparent, style: BorderStyle.Solid }
       : { width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
@@ -1504,7 +1504,7 @@ export struct KeyVaultPage {
     .padding({ left: 24, right: 24, top: 24, bottom: 40 }).width('100%')
     .constraintSize({ maxWidth: 760 })
     .borderRadius(this.breakpoint === 'sm' ? { topLeft: 20, topRight: 20, bottomLeft: 0, bottomRight: 0 } : 20)
-    .backgroundColor(this.pal().bg).backgroundBlurStyle(BlurStyle.Regular)
+    .backgroundColor(this.pal().sheetBg).backgroundBlurStyle(BlurStyle.Regular)
     .border(this.breakpoint === 'sm'
       ? { width: 0, color: Color.Transparent, style: BorderStyle.Solid }
       : { width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
@@ -1530,7 +1530,7 @@ export struct KeyVaultPage {
     }
     .padding({ left: 24, right: 24, top: 24, bottom: 40 }).width('100%')
     .borderRadius(this.breakpoint === 'sm' ? { topLeft: 20, topRight: 20, bottomLeft: 0, bottomRight: 0 } : 20)
-    .backgroundColor(this.pal().bg).backgroundBlurStyle(BlurStyle.Regular)
+    .backgroundColor(this.pal().sheetBg).backgroundBlurStyle(BlurStyle.Regular)
     .border(this.breakpoint === 'sm'
       ? { width: 0, color: Color.Transparent, style: BorderStyle.Solid }
       : { width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })

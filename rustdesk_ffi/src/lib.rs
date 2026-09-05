@@ -11,48 +11,70 @@
 //!   cargo build --release --target aarch64-unknown-linux-ohos
 
 use std::cell::RefCell;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::{c_char, c_void, CStr, CString};
 use std::io;
-use std::net::{Shutdown, TcpStream};
+use std::net::Shutdown;
 use std::os::raw::c_int;
 use std::ptr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, LazyLock, Mutex};
 use std::time::{Duration, Instant};
-use std::collections::{HashMap, HashSet, VecDeque};
 
 pub mod connector;
+mod control_inbox;
 pub mod crypto;
 pub mod crypto_channel;
-mod control_inbox;
 mod cursor_state;
 mod net;
-mod safe_diagnostics;
 #[cfg(feature = "opus-audio")]
 pub mod opus_ffi;
+pub mod peer_stream;
 pub mod protocol;
+mod safe_diagnostics;
 pub mod terminal_core;
 
+use control_inbox::ControlInbox;
+use cursor_state::CursorStreamUpdate;
+use peer_stream::PeerStream;
 use protocol::message_proto::{
     AudioFormat, AudioFrame, EncodedVideoFrames, VideoFrame, VideoFrame_oneof_union,
 };
-use protocol::rendezvous::RendezvousClient;
+use protocol::rendezvous::{RendezvousClient, RendezvousRouteOptions};
 use protocol::session::AuthEventCallback;
-use control_inbox::ControlInbox;
-use cursor_state::CursorStreamUpdate;
 use std::sync::mpsc::Sender;
 
 static LAST_ERROR: Mutex<String> = Mutex::new(String::new());
 static RUSTDESK_MOUSE_ENQUEUE_COUNT: AtomicU64 = AtomicU64::new(0);
 // 每个连接尝试都有独立 epoch。取消一个 session 只标记它自己的 epoch，
-// 不会让另一个 RustDesk 连接的 2FA/批准等待线程退出。
+// 不会让另一个 RustDesk 连接的 2FA/批准等待线程退出。会话取消同时保持为
+// sticky，直到 native admission 明确 rearm；这封住“C++ 已取消、Rust 尚未
+// 登记 epoch”的窗口。
 static CONNECT_EPOCH: AtomicU64 = AtomicU64::new(0);
-static CANCELLED_EPOCHS: LazyLock<Mutex<HashSet<u64>>> =
-    LazyLock::new(|| Mutex::new(HashSet::new()));
-static ACTIVE_CONNECT_EPOCHS: LazyLock<Mutex<HashMap<u64, Vec<u64>>>> =
+#[derive(Default)]
+struct ConnectEpochState {
+    active: HashMap<u64, Vec<u64>>,
+    cancelled_epochs: HashSet<u64>,
+    cancelled_sessions: HashSet<u64>,
+}
+
+static CONNECT_EPOCH_STATE: LazyLock<Mutex<ConnectEpochState>> =
+    LazyLock::new(|| Mutex::new(ConnectEpochState::default()));
+static ACTIVE_PRESENCE_PROBES: LazyLock<Mutex<HashMap<u64, PresenceProbeRegistration>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
+static LEGACY_PRESENCE_REQUEST_ID: AtomicU64 = AtomicU64::new(0);
 static PENDING_2FA: LazyLock<Mutex<HashMap<u64, PendingTwoFactor>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
+
+const PRESENCE_PROBE_MAX_TIMEOUT: Duration = Duration::from_secs(5);
+const PRESENCE_PROBE_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
+const PRESENCE_PROBE_SESSION_ID: u64 = u64::MAX;
+
+#[derive(Debug, Clone, Copy)]
+enum PresenceProbeRegistration {
+    Registered { cancelled: bool },
+    Active { epoch: u64 },
+}
 
 struct PendingTwoFactor {
     epoch: u64,
@@ -62,8 +84,14 @@ struct PendingTwoFactor {
 
 pub(crate) fn begin_connect_epoch(session_id: u64) -> u64 {
     let epoch = CONNECT_EPOCH.fetch_add(1, Ordering::SeqCst).wrapping_add(1);
-    if let Ok(mut active) = ACTIVE_CONNECT_EPOCHS.lock() {
-        active.entry(session_id).or_default().push(epoch);
+    if let Ok(mut state) = CONNECT_EPOCH_STATE.lock() {
+        state.active.entry(session_id).or_default().push(epoch);
+        if session_id != 0 && state.cancelled_sessions.contains(&session_id) {
+            state.cancelled_epochs.insert(epoch);
+        }
+    } else {
+        // A poisoned admission registry cannot safely allow network I/O.
+        return 0;
     }
     epoch
 }
@@ -73,15 +101,30 @@ pub(crate) fn current_connect_epoch() -> u64 {
 }
 
 pub(crate) fn connect_cancelled(epoch: u64) -> bool {
-    CANCELLED_EPOCHS.lock().map(|cancelled| cancelled.contains(&epoch)).unwrap_or(true)
+    epoch == 0
+        || CONNECT_EPOCH_STATE
+            .lock()
+            .map(|state| state.cancelled_epochs.contains(&epoch))
+            .unwrap_or(true)
 }
 
-pub(crate) fn register_pending_2fa(epoch: u64, session_id: u64, sender: Sender<String>) -> io::Result<()> {
+pub(crate) fn register_pending_2fa(
+    epoch: u64,
+    session_id: u64,
+    sender: Sender<String>,
+) -> io::Result<()> {
     let mut pending = PENDING_2FA
         .lock()
         .map_err(|_| io::Error::new(io::ErrorKind::Other, "2FA pending state lock poisoned"))?;
     let key = if session_id == 0 { epoch } else { session_id };
-    pending.insert(key, PendingTwoFactor { epoch, session_id, sender });
+    pending.insert(
+        key,
+        PendingTwoFactor {
+            epoch,
+            session_id,
+            sender,
+        },
+    );
     Ok(())
 }
 
@@ -94,33 +137,124 @@ pub(crate) fn clear_pending_2fa(epoch: u64, session_id: u64) {
 }
 
 fn finish_connect_epoch(epoch: u64, session_id: u64) {
-    if let Ok(mut active) = ACTIVE_CONNECT_EPOCHS.lock() {
-        let remove_session = if let Some(epochs) = active.get_mut(&session_id) {
+    if let Ok(mut state) = CONNECT_EPOCH_STATE.lock() {
+        let remove_session = if let Some(epochs) = state.active.get_mut(&session_id) {
             epochs.retain(|active_epoch| *active_epoch != epoch);
             epochs.is_empty()
         } else {
             false
         };
         if remove_session {
-            active.remove(&session_id);
+            state.active.remove(&session_id);
+        }
+        state.cancelled_epochs.remove(&epoch);
+    }
+}
+
+/// Owns one connect epoch from synchronous admission until an asynchronous
+/// worker has fully stopped using it. Constructing this value before spawning
+/// is essential: a native cancel followed by rearm must still leave the
+/// already-admitted old worker's epoch cancelled when that worker starts late.
+struct ConnectEpochReservation {
+    epoch: u64,
+    session_id: u64,
+}
+
+impl ConnectEpochReservation {
+    fn new(session_id: u64) -> Self {
+        Self {
+            epoch: begin_connect_epoch(session_id),
+            session_id,
         }
     }
-    if let Ok(mut cancelled) = CANCELLED_EPOCHS.lock() { cancelled.remove(&epoch); }
+
+    fn epoch(&self) -> u64 {
+        self.epoch
+    }
+}
+
+impl Drop for ConnectEpochReservation {
+    fn drop(&mut self) {
+        finish_connect_epoch(self.epoch, self.session_id);
+    }
+}
+
+/// Build the exact closure handed to the file-transfer thread builder.
+///
+/// The reservation is constructed while preparing the closure, not when the
+/// closure eventually runs. Keeping this boundary separate makes the
+/// cancel-before-worker-start guarantee deterministic in tests and prevents a
+/// scheduling delay from moving admission to the wrong side of native rearm.
+fn reserve_file_transfer_worker<F, R>(
+    connection_id: u64,
+    worker: F,
+) -> impl FnOnce() -> R + Send + 'static
+where
+    F: FnOnce(u64) -> R + Send + 'static,
+    R: Send + 'static,
+{
+    let reservation = ConnectEpochReservation::new(connection_id);
+    move || worker(reservation.epoch())
+}
+
+fn spawn_reserved_file_transfer_worker<F>(
+    transfer_id: u64,
+    connection_id: u64,
+    worker: F,
+) -> io::Result<std::thread::JoinHandle<()>>
+where
+    F: FnOnce(u64) + Send + 'static,
+{
+    let reserved_worker = reserve_file_transfer_worker(connection_id, worker);
+    std::thread::Builder::new()
+        .name(format!("rustdesk-file-{transfer_id}"))
+        .spawn(reserved_worker)
 }
 
 fn cancel_connect_epoch(epoch: u64) {
-    if let Ok(mut cancelled) = CANCELLED_EPOCHS.lock() { cancelled.insert(epoch); }
+    if let Ok(mut state) = CONNECT_EPOCH_STATE.lock() {
+        state.cancelled_epochs.insert(epoch);
+    }
+}
+
+pub(crate) fn rearm_pending_connect_for_session(session_id: u64) -> bool {
+    if session_id == 0 {
+        return false;
+    }
+    CONNECT_EPOCH_STATE
+        .lock()
+        .map(|mut state| {
+            state.cancelled_sessions.remove(&session_id);
+            true
+        })
+        .unwrap_or(false)
+}
+
+fn forget_cancelled_connect_session(session_id: u64) -> bool {
+    if session_id == 0 {
+        return false;
+    }
+    CONNECT_EPOCH_STATE
+        .lock()
+        .map(|mut state| state.cancelled_sessions.remove(&session_id))
+        .unwrap_or(false)
 }
 
 pub(crate) fn cancel_pending_connect_for_session(session_id: u64) {
-    let epochs: Vec<u64> = if let Ok(active) = ACTIVE_CONNECT_EPOCHS.lock() {
+    if let Ok(mut state) = CONNECT_EPOCH_STATE.lock() {
         if session_id == 0 {
-            active.values().flat_map(|values| values.iter().copied()).collect()
+            let epochs: Vec<u64> = state
+                .active
+                .values()
+                .flat_map(|values| values.iter().copied())
+                .collect();
+            state.cancelled_epochs.extend(epochs);
         } else {
-            active.get(&session_id).cloned().unwrap_or_default()
+            state.cancelled_sessions.insert(session_id);
+            let epochs = state.active.get(&session_id).cloned().unwrap_or_default();
+            state.cancelled_epochs.extend(epochs);
         }
-    } else { Vec::new() };
-    for epoch in epochs { cancel_connect_epoch(epoch); }
+    }
     if let Ok(mut pending) = PENDING_2FA.lock() {
         if session_id == 0 {
             pending.clear();
@@ -130,13 +264,106 @@ pub(crate) fn cancel_pending_connect_for_session(session_id: u64) {
     }
 }
 
-fn structured_error(
-    stage: &str,
-    code: &str,
-    detail: impl Into<String>,
-    attempt: u64,
-) -> String {
-    let detail = detail.into().replace('|', "/").replace('\n', " ").replace('\r', " ");
+fn register_presence_probe(request_id: u64) -> bool {
+    if request_id == 0 {
+        return false;
+    }
+    let Ok(mut probes) = ACTIVE_PRESENCE_PROBES.lock() else {
+        return false;
+    };
+    if probes.contains_key(&request_id) {
+        return false;
+    }
+    probes.insert(
+        request_id,
+        PresenceProbeRegistration::Registered { cancelled: false },
+    );
+    true
+}
+
+fn begin_presence_probe(request_id: u64) -> io::Result<u64> {
+    let mut probes = ACTIVE_PRESENCE_PROBES.lock().map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::Other,
+            "RustDesk presence probe registry lock poisoned",
+        )
+    })?;
+    let Some(registration) = probes.get_mut(&request_id) else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "RustDesk presence probe was not registered",
+        ));
+    };
+    let cancelled = match *registration {
+        PresenceProbeRegistration::Registered { cancelled } => cancelled,
+        PresenceProbeRegistration::Active { .. } => {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "RustDesk presence probe is already active",
+            ));
+        }
+    };
+    let epoch = begin_connect_epoch(PRESENCE_PROBE_SESSION_ID);
+    *registration = PresenceProbeRegistration::Active { epoch };
+    drop(probes);
+    if cancelled {
+        cancel_connect_epoch(epoch);
+    }
+    Ok(epoch)
+}
+
+fn finish_presence_probe(request_id: u64, epoch: u64) {
+    if let Ok(mut probes) = ACTIVE_PRESENCE_PROBES.lock() {
+        // Keep the presence registry lock until the epoch is retired. A
+        // concurrent cancel must either mark this live epoch first or observe
+        // that the request no longer exists; it must never recreate a stale
+        // cancelled-epoch entry after completion.
+        finish_connect_epoch(epoch, PRESENCE_PROBE_SESSION_ID);
+        probes.remove(&request_id);
+        return;
+    }
+    finish_connect_epoch(epoch, PRESENCE_PROBE_SESSION_ID);
+}
+
+fn cancel_presence_probe(request_id: u64) -> bool {
+    let Ok(mut probes) = ACTIVE_PRESENCE_PROBES.lock() else {
+        return false;
+    };
+    let Some(registration) = probes.get_mut(&request_id) else {
+        return false;
+    };
+    match registration {
+        PresenceProbeRegistration::Registered { cancelled } => {
+            *cancelled = true;
+            true
+        }
+        PresenceProbeRegistration::Active { epoch } => {
+            cancel_connect_epoch(*epoch);
+            true
+        }
+    }
+}
+
+fn abandon_presence_probe(request_id: u64) -> bool {
+    let Ok(mut probes) = ACTIVE_PRESENCE_PROBES.lock() else {
+        return false;
+    };
+    if matches!(
+        probes.get(&request_id),
+        Some(PresenceProbeRegistration::Registered { .. })
+    ) {
+        probes.remove(&request_id);
+        return true;
+    }
+    false
+}
+
+fn structured_error(stage: &str, code: &str, detail: impl Into<String>, attempt: u64) -> String {
+    let detail = detail
+        .into()
+        .replace('|', "/")
+        .replace('\n', " ")
+        .replace('\r', " ");
     format!(
         "RDERR|stage={}|code={}|attempt={}|detail={}",
         stage, code, attempt, detail
@@ -147,6 +374,9 @@ fn pipeline_error_classification(
     base_code: &'static str,
     error: &io::Error,
 ) -> (&'static str, &'static str) {
+    if error.kind() == io::ErrorKind::Interrupted {
+        return ("cancelled", "connection attempt was cancelled");
+    }
     let value = error.to_string().to_lowercase();
     if value.contains("please login")
         || value.contains("not logged in")
@@ -162,11 +392,12 @@ fn pipeline_error_classification(
         || value.contains("invalid password")
         || value.contains("password is wrong")
     {
-        return ("peer_password_rejected", "remote device rejected the device password");
+        return (
+            "peer_password_rejected",
+            "remote device rejected the device password",
+        );
     }
-    if value.contains("approval timed out")
-        || value.contains("remote approval timed out")
-    {
+    if value.contains("approval timed out") || value.contains("remote approval timed out") {
         return ("approval_unavailable", "remote approval was not completed");
     }
     if value.contains("no password access") {
@@ -212,18 +443,31 @@ fn pipeline_error_classification(
 fn pipeline_error_message(
     state: &connector::ConnState,
     error: &io::Error,
-    direct_connection: bool,
+    strategy: connector::RustDeskConnectionStrategy,
     attempt: u64,
 ) -> String {
     let (stage, base_code) = match state {
         connector::ConnState::RendezvousConnecting => ("rendezvous", "rendezvous_failed"),
+        connector::ConnState::RequestingRelay
+            if strategy == connector::RustDeskConnectionStrategy::Auto =>
+        {
+            ("peer_route", "peer_route_failed")
+        }
         connector::ConnState::RequestingRelay => ("relay", "relay_request_failed"),
-        connector::ConnState::ConnectingToPeer if direct_connection =>
-            ("peer_channel", "direct_peer_connect_failed"),
+        connector::ConnState::ConnectingToPeer
+            if strategy == connector::RustDeskConnectionStrategy::DirectIp =>
+        {
+            ("peer_channel", "direct_peer_connect_failed")
+        }
+        connector::ConnState::ConnectingToPeer
+            if strategy == connector::RustDeskConnectionStrategy::Auto =>
+        {
+            ("peer_route", "peer_route_failed")
+        }
         connector::ConnState::ConnectingToPeer => ("relay", "relay_endpoint_failed"),
         connector::ConnState::KeyExchanging => ("peer_channel", "peer_channel_failed"),
         connector::ConnState::LoggingIn => ("peer_login", "peer_login_failed"),
-        _ => ("unknown", "connect_failed")
+        _ => ("unknown", "connect_failed"),
     };
     let (code, detail) = pipeline_error_classification(base_code, error);
     structured_error(stage, code, detail, attempt)
@@ -340,6 +584,78 @@ pub struct RustDeskConfig {
     pub relay_fallback_port: c_int,
 }
 
+/// Versioned RustDesk connection policy. The legacy config remains the first
+/// field byte-for-byte so v1-v5 callers keep their established 104-byte ABI.
+#[repr(C)]
+pub struct RustDeskConfigV6 {
+    pub legacy: RustDeskConfig,
+    /// 0=force relay, 1=direct IP, 2=AUTO NAT traversal.
+    pub connection_strategy: c_int,
+    /// See connector::RUSTDESK_NAT_FLAG_*; unknown bits fail closed.
+    pub nat_traversal_flags: u32,
+    pub nat_probe_serial: c_int,
+    pub reserved: u32,
+}
+
+pub const RUSTDESK_TRANSPORT_CAPABILITIES_ABI_V1: u32 = 1;
+pub const RUSTDESK_CONNECTION_STRATEGY_FORCE_RELAY: u32 = 1 << 0;
+pub const RUSTDESK_CONNECTION_STRATEGY_DIRECT_IP: u32 = 1 << 1;
+pub const RUSTDESK_CONNECTION_STRATEGY_AUTO: u32 = 1 << 2;
+pub const RUSTDESK_PEER_CANDIDATE_TRANSPORT_TCP: u32 = 1 << 0;
+pub const RUSTDESK_PEER_CANDIDATE_TRANSPORT_UDP_KCP: u32 = 1 << 1;
+
+/// Versioned release boundary shared with the native bridge. These are
+/// product capabilities, not merely code paths compiled into the Rust crate.
+/// AUTO and UDP/KCP stay absent until the fixed-server and device matrix has
+/// been accepted.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RustDeskTransportCapabilitiesV1 {
+    pub abi_version: u32,
+    pub struct_size: u32,
+    pub connection_strategy_mask: u32,
+    pub peer_candidate_transport_mask: u32,
+    pub nat_traversal_flags: u32,
+    pub reserved: [u32; 3],
+}
+
+const fn release_transport_capabilities_v1() -> RustDeskTransportCapabilitiesV1 {
+    RustDeskTransportCapabilitiesV1 {
+        abi_version: RUSTDESK_TRANSPORT_CAPABILITIES_ABI_V1,
+        struct_size: std::mem::size_of::<RustDeskTransportCapabilitiesV1>() as u32,
+        connection_strategy_mask: RUSTDESK_CONNECTION_STRATEGY_FORCE_RELAY
+            | RUSTDESK_CONNECTION_STRATEGY_DIRECT_IP,
+        peer_candidate_transport_mask: RUSTDESK_PEER_CANDIDATE_TRANSPORT_TCP,
+        nat_traversal_flags: 0,
+        reserved: [0; 3],
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct RustDeskConnectOptions {
+    connection_strategy: connector::RustDeskConnectionStrategy,
+    nat_config: connector::RustDeskNatTraversalConfig,
+}
+
+fn validate_release_connection_strategy(
+    strategy: connector::RustDeskConnectionStrategy,
+) -> io::Result<()> {
+    let strategy_bit = match strategy {
+        connector::RustDeskConnectionStrategy::ForceRelay => {
+            RUSTDESK_CONNECTION_STRATEGY_FORCE_RELAY
+        }
+        connector::RustDeskConnectionStrategy::DirectIp => RUSTDESK_CONNECTION_STRATEGY_DIRECT_IP,
+        connector::RustDeskConnectionStrategy::Auto => RUSTDESK_CONNECTION_STRATEGY_AUTO,
+    };
+    if release_transport_capabilities_v1().connection_strategy_mask & strategy_bit == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "RustDesk connection strategy remains release-gated",
+        ));
+    }
+    Ok(())
+}
+
 /// Result of a non-authenticating RustDesk liveness probe.
 /// state: 0=unknown, 1=online, 2=offline.
 #[repr(C)]
@@ -376,7 +692,7 @@ fn resolve_stream_params_for_config(config: &RustDeskConfig) -> ResolvedStreamPa
     } else {
         profile_params.codec
     };
-    let mut image_quality = if config.image_quality >= 0 {
+    let image_quality = if (0..=2).contains(&config.image_quality) {
         config.image_quality
     } else {
         profile_params.image_quality
@@ -396,13 +712,6 @@ fn resolve_stream_params_for_config(config: &RustDeskConfig) -> ResolvedStreamPa
     if matches!(config.profile, RustDeskProfile::Stable) && config.fps <= 0 {
         effective_fps = effective_fps.min(30);
     }
-    if matches!(
-        config.profile,
-        RustDeskProfile::Stable | RustDeskProfile::Balanced
-    ) {
-        image_quality = image_quality.min(profile_params.image_quality);
-    }
-
     ResolvedStreamParams {
         preferred_codec,
         image_quality,
@@ -497,6 +806,7 @@ pub enum FfiConnectionState {
 /// through `rustdesk_get_stream_stats`; it never reaches into the streaming
 /// thread or consumes the counters.
 pub const RUSTDESK_STREAM_STATS_VERSION: u32 = 1;
+pub const RUSTDESK_QUALITY_STATE_VERSION: u32 = 1;
 pub const RUSTDESK_PERMISSION_STATE_VERSION: u32 = 1;
 pub const RUSTDESK_DISPLAY_SNAPSHOT_VERSION: u32 = 1;
 pub const RUSTDESK_DISPLAY_LIST_VERSION: u32 = 1;
@@ -545,6 +855,43 @@ impl Default for RustDeskStreamStats {
             width: 0,
             height: 0,
             connection_path: 0,
+        }
+    }
+}
+
+/// Versioned image-quality state shared with the HarmonyOS bridge.
+///
+/// `raw_quality` is the latest user preference, `effective_quality` is the
+/// validated local value, and `sent_quality` changes only after the streaming
+/// writer successfully emits the corresponding RustDesk OptionMessage.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct RustDeskQualityState {
+    pub version: u32,
+    pub raw_quality: i32,
+    pub effective_quality: i32,
+    pub sent_quality: i32,
+    pub profile: i32,
+    pub fps: u32,
+    pub requested_generation: u64,
+    pub applied_generation: u64,
+    pub update_status: u32, // 0=idle, 1=pending, 2=applied, 3=failed
+    pub reserved: u32,
+}
+
+impl Default for RustDeskQualityState {
+    fn default() -> Self {
+        Self {
+            version: RUSTDESK_QUALITY_STATE_VERSION,
+            raw_quality: 1,
+            effective_quality: 1,
+            sent_quality: -1,
+            profile: RustDeskProfile::Balanced as i32,
+            fps: 0,
+            requested_generation: 0,
+            applied_generation: 0,
+            update_status: 0,
+            reserved: 0,
         }
     }
 }
@@ -691,8 +1038,7 @@ impl Default for RustDeskDisplayInfoSnapshot {
 pub type FrameCallback = extern "C" fn(frame: *const FfiVideoFrame, user_data: *mut c_void);
 
 /// V2 video frame callback with explicit display routing metadata.
-pub type FrameCallbackV2 =
-    extern "C" fn(frame: *const FfiVideoFrameV2, user_data: *mut c_void);
+pub type FrameCallbackV2 = extern "C" fn(frame: *const FfiVideoFrameV2, user_data: *mut c_void);
 
 /// 音频数据回调
 pub type AudioCallback = extern "C" fn(audio: *const FfiAudioData, user_data: *mut c_void);
@@ -957,7 +1303,13 @@ impl VideoCallbackWorker {
 pub(crate) enum ControlMsg {
     Shutdown,
     RefreshVideo,
-    VideoPressure { level: u32 },
+    VideoPressure {
+        level: u32,
+    },
+    SetImageQuality {
+        quality: i32,
+        generation: u64,
+    },
     KeyEvent {
         scancode: u32,
         pressed: bool,
@@ -1035,6 +1387,7 @@ pub(crate) enum ControlMsg {
 
 /// 客户端上下文 — 通过 FFI 不透明指针传递
 struct RustDeskClient {
+    connection_id: u64,
     #[allow(dead_code)]
     peer_id: String,
     host: String,
@@ -1046,13 +1399,16 @@ struct RustDeskClient {
     password: String,
     request_approval: bool,
     direct_connection: bool,
+    connection_strategy: connector::RustDeskConnectionStrategy,
+    nat_config: connector::RustDeskNatTraversalConfig,
     controls: Arc<ControlInbox>,
-    shutdown_stream: Option<TcpStream>,
+    shutdown_stream: Option<PeerStream>,
     stream_handle: Option<std::thread::JoinHandle<io::Result<()>>>,
     transfer_status: Arc<Mutex<RustDeskTransferStatus>>,
     transfer_error: Arc<Mutex<String>>,
     remote_clipboard: Arc<Mutex<Vec<u8>>>,
     stream_stats: Arc<Mutex<RustDeskStreamStats>>,
+    quality_state: Arc<Mutex<RustDeskQualityState>>,
     display_state: Arc<Mutex<RustDeskDisplayState>>,
 }
 
@@ -1068,7 +1424,13 @@ pub struct RustDeskTransferStatus {
 
 impl Default for RustDeskTransferStatus {
     fn default() -> Self {
-        Self { state: 0, transfer_id: 0, transferred_bytes: 0, total_bytes: 0, diagnostic_code: 0 }
+        Self {
+            state: 0,
+            transfer_id: 0,
+            transferred_bytes: 0,
+            total_bytes: 0,
+            diagnostic_code: 0,
+        }
     }
 }
 
@@ -1227,7 +1589,10 @@ fn dispatch_display_snapshot(
         original_height: state.original_height,
         scale_milli: state.scale_milli,
         geometry_epoch: state.geometry_epoch,
-        resolution_count: state.resolutions.len().min(RUSTDESK_MAX_DISPLAY_RESOLUTIONS) as u32,
+        resolution_count: state
+            .resolutions
+            .len()
+            .min(RUSTDESK_MAX_DISPLAY_RESOLUTIONS) as u32,
     };
     on_display(&snapshot, user_data);
 }
@@ -1258,57 +1623,57 @@ impl AudioWorker {
 
         #[cfg(feature = "opus-audio")]
         {
-        let mut decoder = match opus_ffi::OpusDecoderHandle::new(sample_rate, channels) {
-            Ok(d) => d,
-            Err(e) => {
-                eprintln!("[RustDesk-FFI] audio worker: decoder init failed err={}", e);
-                return None;
-            }
-        };
-        // Bounded channel: buffer up to 16 Opus frames (~320ms at 50fps).
-        let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(16);
-        // Cast raw pointer to usize for Send safety across thread boundary
-        let ud = user_data as usize;
-
-        let handle = std::thread::spawn(move || {
-            let mut decode_buf = vec![0.0_f32; (sample_rate * channels) as usize];
-            let mut pcm_buf = Vec::<u8>::with_capacity(4096);
-
-            for opus_data in rx {
-                if opus_data.is_empty() {
-                    continue;
+            let mut decoder = match opus_ffi::OpusDecoderHandle::new(sample_rate, channels) {
+                Ok(d) => d,
+                Err(e) => {
+                    eprintln!("[RustDesk-FFI] audio worker: decoder init failed err={}", e);
+                    return None;
                 }
-                match decoder.decode_float(&opus_data, &mut decode_buf, false) {
-                    Ok(sample_count) => {
-                        pcm_buf.clear();
-                        pcm_buf.reserve(sample_count * 2);
-                        for sample in decode_buf.iter().take(sample_count) {
-                            let clamped = sample.clamp(-1.0, 1.0);
-                            let pcm = (clamped * i16::MAX as f32) as i16;
-                            pcm_buf.extend_from_slice(&pcm.to_le_bytes());
+            };
+            // Bounded channel: buffer up to 16 Opus frames (~320ms at 50fps).
+            let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(16);
+            // Cast raw pointer to usize for Send safety across thread boundary
+            let ud = user_data as usize;
+
+            let handle = std::thread::spawn(move || {
+                let mut decode_buf = vec![0.0_f32; (sample_rate * channels) as usize];
+                let mut pcm_buf = Vec::<u8>::with_capacity(4096);
+
+                for opus_data in rx {
+                    if opus_data.is_empty() {
+                        continue;
+                    }
+                    match decoder.decode_float(&opus_data, &mut decode_buf, false) {
+                        Ok(sample_count) => {
+                            pcm_buf.clear();
+                            pcm_buf.reserve(sample_count * 2);
+                            for sample in decode_buf.iter().take(sample_count) {
+                                let clamped = sample.clamp(-1.0, 1.0);
+                                let pcm = (clamped * i16::MAX as f32) as i16;
+                                pcm_buf.extend_from_slice(&pcm.to_le_bytes());
+                            }
+                            if !pcm_buf.is_empty() {
+                                let ffi_audio = FfiAudioData {
+                                    data: pcm_buf.as_ptr(),
+                                    size: pcm_buf.len(),
+                                    sample_rate: sample_rate as c_int,
+                                    channels: channels as c_int,
+                                    timestamp: 0,
+                                };
+                                on_audio(&ffi_audio, ud as *mut c_void);
+                            }
                         }
-                        if !pcm_buf.is_empty() {
-                            let ffi_audio = FfiAudioData {
-                                data: pcm_buf.as_ptr(),
-                                size: pcm_buf.len(),
-                                sample_rate: sample_rate as c_int,
-                                channels: channels as c_int,
-                                timestamp: 0,
-                            };
-                            on_audio(&ffi_audio, ud as *mut c_void);
+                        Err(_e) => {
+                            // Decode errors are expected occasionally; skip silently
                         }
                     }
-                    Err(_e) => {
-                        // Decode errors are expected occasionally; skip silently
-                    }
                 }
-            }
-        });
+            });
 
-        Some(Self {
-            sender: Some(tx),
-            handle: Some(handle),
-        })
+            Some(Self {
+                sender: Some(tx),
+                handle: Some(handle),
+            })
         }
     }
 
@@ -1323,13 +1688,13 @@ impl AudioWorker {
 
         #[cfg(feature = "opus-audio")]
         {
-        if opus_data.is_empty() {
-            return false;
-        }
-        match &self.sender {
-            Some(tx) => tx.try_send(opus_data.to_vec()).is_ok(),
-            None => false,
-        }
+            if opus_data.is_empty() {
+                return false;
+            }
+            match &self.sender {
+                Some(tx) => tx.try_send(opus_data.to_vec()).is_ok(),
+                None => false,
+            }
         }
     }
 
@@ -1337,10 +1702,10 @@ impl AudioWorker {
     fn stop(&mut self) {
         #[cfg(feature = "opus-audio")]
         {
-        self.sender = None; // drop sender → close channel → worker thread exits
-        if let Some(h) = self.handle.take() {
-            let _ = h.join();
-        }
+            self.sender = None; // drop sender → close channel → worker thread exits
+            if let Some(h) = self.handle.take() {
+                let _ = h.join();
+            }
         }
     }
 }
@@ -1487,8 +1852,7 @@ fn notify_peer_platform(
         return true;
     };
     let safe_platform = platform.replace('\0', " ");
-    let c_platform =
-        CString::new(safe_platform).unwrap_or_else(|_| CString::new("").unwrap());
+    let c_platform = CString::new(safe_platform).unwrap_or_else(|_| CString::new("").unwrap());
     on_peer_platform(c_platform.as_ptr(), user_data)
 }
 
@@ -1560,6 +1924,7 @@ fn dispatch_cursor_update(
 /// 成功返回不透明句柄，失败返回 null。
 fn rustdesk_connect_impl(
     cfg: *const RustDeskConfig,
+    extended_options: Option<RustDeskConnectOptions>,
     on_frame: Option<FrameCallbackKind>,
     on_audio: Option<AudioCallback>,
     on_cursor: Option<CursorCallback>,
@@ -1577,6 +1942,14 @@ fn rustdesk_connect_impl(
     }
 
     let config = unsafe { &*cfg };
+    let connect_options = extended_options.unwrap_or(RustDeskConnectOptions {
+        connection_strategy: if config.direct_connection {
+            connector::RustDeskConnectionStrategy::DirectIp
+        } else {
+            connector::RustDeskConnectionStrategy::ForceRelay
+        },
+        nat_config: connector::RustDeskNatTraversalConfig::default(),
+    });
     let connection_id = config.connection_id;
     let connect_epoch = begin_connect_epoch(connection_id);
     let host = ffi_string(config.host);
@@ -1610,6 +1983,49 @@ fn rustdesk_connect_impl(
     let privacy_mode = config.privacy_mode;
     let audio_enabled = config.audio_enabled;
 
+    if (connect_options.connection_strategy == connector::RustDeskConnectionStrategy::DirectIp)
+        != config.direct_connection
+    {
+        set_last_error(structured_error(
+            "config",
+            "strategy_mode_mismatch",
+            "connection strategy and direct mode disagree",
+            connection_id,
+        ));
+        finish_connect_epoch(connect_epoch, connection_id);
+        return std::ptr::null_mut();
+    }
+    if let Err(error) = validate_release_connection_strategy(connect_options.connection_strategy) {
+        set_last_error(structured_error(
+            "config",
+            "auto_unavailable",
+            error.to_string(),
+            connection_id,
+        ));
+        finish_connect_epoch(connect_epoch, connection_id);
+        return std::ptr::null_mut();
+    }
+    if connect_options.nat_config.flags & !connector::RUSTDESK_NAT_SUPPORTED_FLAGS != 0 {
+        set_last_error(structured_error(
+            "config",
+            "nat_flags_unsupported",
+            "RustDesk NAT traversal flags contain unsupported bits",
+            connection_id,
+        ));
+        finish_connect_epoch(connect_epoch, connection_id);
+        return std::ptr::null_mut();
+    }
+    if connect_options.nat_config.flags != 0 {
+        set_last_error(structured_error(
+            "config",
+            "nat_transport_gated",
+            "UDP/KCP and IPv6 candidate advertisement remain release-gated",
+            connection_id,
+        ));
+        finish_connect_epoch(connect_epoch, connection_id);
+        return std::ptr::null_mut();
+    }
+
     let stream_params = resolve_stream_params_for_config(config);
     let preferred_codec = stream_params.preferred_codec;
     let image_quality = stream_params.image_quality;
@@ -1631,13 +2047,21 @@ fn rustdesk_connect_impl(
 
     if host.is_empty() {
         set_last_error(structured_error(
-            "config", "rendezvous_host_missing", "rendezvous endpoint is missing", connection_id));
+            "config",
+            "rendezvous_host_missing",
+            "rendezvous endpoint is missing",
+            connection_id,
+        ));
         finish_connect_epoch(connect_epoch, connection_id);
         return std::ptr::null_mut();
     }
     if peer_id.is_empty() {
         set_last_error(structured_error(
-            "config", "peer_id_missing", "remote peer identity is missing", connection_id));
+            "config",
+            "peer_id_missing",
+            "remote peer identity is missing",
+            connection_id,
+        ));
         finish_connect_epoch(connect_epoch, connection_id);
         return std::ptr::null_mut();
     }
@@ -1657,7 +2081,11 @@ fn rustdesk_connect_impl(
             "invalid rendezvous server public key; expected Base64-encoded 32-byte key"
         };
         set_last_error(structured_error(
-            "config", "server_key_invalid", message, connection_id));
+            "config",
+            "server_key_invalid",
+            message,
+            connection_id,
+        ));
         finish_connect_epoch(connect_epoch, connection_id);
         return std::ptr::null_mut();
     }
@@ -1699,6 +2127,8 @@ fn rustdesk_connect_impl(
             effective_fps,
             request_approval,
             shared_access_key,
+            connect_options.connection_strategy,
+            connect_options.nat_config,
         )
     };
 
@@ -1757,9 +2187,19 @@ fn rustdesk_connect_impl(
                 connection_path: if config.direct_connection { 1 } else { 0 },
                 ..RustDeskStreamStats::default()
             }));
+            let quality_state = Arc::new(Mutex::new(RustDeskQualityState {
+                raw_quality: config.image_quality,
+                effective_quality: image_quality,
+                sent_quality: -1,
+                profile: config.profile as i32,
+                fps: effective_fps,
+                update_status: 1,
+                ..RustDeskQualityState::default()
+            }));
             let transfer_status = Arc::new(Mutex::new(RustDeskTransferStatus::default()));
             let transfer_error = Arc::new(Mutex::new(String::new()));
             let stream_stats_for_thread = Arc::clone(&stream_stats);
+            let quality_state_for_thread = Arc::clone(&quality_state);
             let stream_display_state = Arc::clone(&display_state);
             let frame_display_state = Arc::clone(&display_state);
             let display_callback_state = Arc::clone(&display_state);
@@ -1770,7 +2210,11 @@ fn rustdesk_connect_impl(
             // The display callback runs before the streaming thread is
             // spawned, so the consumer can select the peer's current display
             // before the first interleaved video frame arrives.
-            dispatch_display_snapshot(&display_state, on_display, callback_user_data as *mut c_void);
+            dispatch_display_snapshot(
+                &display_state,
+                on_display,
+                callback_user_data as *mut c_void,
+            );
 
             let stream_handle = std::thread::spawn(move || {
                 let callback_user_data = callback_user_data as *mut c_void;
@@ -1788,14 +2232,9 @@ fn rustdesk_connect_impl(
                     effective_fps,
                     stream_controls,
                     stream_stats_for_thread,
+                    quality_state_for_thread,
                     stream_display_state,
-                    |frame| {
-                        dispatch_video_frame(
-                            frame,
-                            &frame_display_state,
-                            &mut video_worker,
-                        )
-                    },
+                    |frame| dispatch_video_frame(frame, &frame_display_state, &mut video_worker),
                     |format| {
                         if audio_enabled {
                             if let Some(on_audio_cb) = on_audio {
@@ -1865,6 +2304,7 @@ fn rustdesk_connect_impl(
             });
 
             let ctx = Box::new(RustDeskClient {
+                connection_id,
                 peer_id,
                 host,
                 port,
@@ -1875,6 +2315,8 @@ fn rustdesk_connect_impl(
                 password,
                 request_approval,
                 direct_connection: config.direct_connection,
+                connection_strategy: connect_options.connection_strategy,
+                nat_config: connect_options.nat_config,
                 controls,
                 shutdown_stream,
                 stream_handle: Some(stream_handle),
@@ -1882,6 +2324,7 @@ fn rustdesk_connect_impl(
                 transfer_error,
                 remote_clipboard,
                 stream_stats,
+                quality_state,
                 display_state,
             });
 
@@ -1889,7 +2332,11 @@ fn rustdesk_connect_impl(
         }
         Err(err) => {
             let message = pipeline_error_message(
-                &c.state(), &err, config.direct_connection, connection_id);
+                &c.state(),
+                &err,
+                connect_options.connection_strategy,
+                connection_id,
+            );
             set_last_error(message);
             finish_connect_epoch(connect_epoch, connection_id);
             std::ptr::null_mut()
@@ -1909,6 +2356,7 @@ pub extern "C" fn rustdesk_connect(
 ) -> *mut c_void {
     rustdesk_connect_impl(
         cfg,
+        None,
         on_frame.map(FrameCallbackKind::V1),
         on_audio,
         on_cursor,
@@ -1934,6 +2382,7 @@ pub extern "C" fn rustdesk_connect_v2(
 ) -> *mut c_void {
     rustdesk_connect_impl(
         cfg,
+        None,
         on_frame.map(FrameCallbackKind::V2),
         on_audio,
         on_cursor,
@@ -1960,6 +2409,7 @@ pub extern "C" fn rustdesk_connect_v3(
 ) -> *mut c_void {
     rustdesk_connect_impl(
         cfg,
+        None,
         on_frame.map(FrameCallbackKind::V2),
         on_audio,
         on_cursor,
@@ -1989,6 +2439,7 @@ pub extern "C" fn rustdesk_connect_v4(
 ) -> *mut c_void {
     rustdesk_connect_impl(
         cfg,
+        None,
         on_frame.map(FrameCallbackKind::V2),
         on_audio,
         on_cursor,
@@ -2019,6 +2470,85 @@ pub extern "C" fn rustdesk_connect_v5(
 ) -> *mut c_void {
     rustdesk_connect_impl(
         cfg,
+        None,
+        on_frame.map(FrameCallbackKind::V2),
+        on_audio,
+        on_cursor,
+        on_disconnect,
+        on_display,
+        on_auth,
+        on_progress,
+        on_peer_platform,
+        user_data,
+    )
+}
+
+/// Return the exact route transports enabled by this release. Native callers
+/// compare both the ABI metadata and masks before starting network work.
+#[no_mangle]
+pub extern "C" fn rustdesk_get_transport_capabilities_v1(
+    out_capabilities: *mut RustDeskTransportCapabilitiesV1,
+) -> bool {
+    if out_capabilities.is_null() {
+        return false;
+    }
+    unsafe {
+        *out_capabilities = release_transport_capabilities_v1();
+    }
+    true
+}
+
+/// Create a RustDesk connection with an explicit route/NAT policy while
+/// preserving the legacy config ABI as the leading field of RustDeskConfigV6.
+#[no_mangle]
+pub extern "C" fn rustdesk_connect_v6(
+    cfg: *const RustDeskConfigV6,
+    on_frame: Option<FrameCallbackV2>,
+    on_audio: Option<AudioCallback>,
+    on_cursor: Option<CursorCallback>,
+    on_disconnect: Option<DisconnectCallback>,
+    on_display: Option<DisplayCallback>,
+    on_auth: Option<AuthEventCallback>,
+    on_progress: Option<connector::ConnectProgressCallback>,
+    on_peer_platform: Option<PeerPlatformCallback>,
+    user_data: *mut c_void,
+) -> *mut c_void {
+    clear_last_error();
+    if cfg.is_null() {
+        set_last_error("config v6 pointer is null");
+        return std::ptr::null_mut();
+    }
+    let config = unsafe { &*cfg };
+    if config.reserved != 0 {
+        set_last_error("RustDeskConfigV6 reserved field must be zero");
+        return std::ptr::null_mut();
+    }
+    let connection_strategy =
+        match connector::RustDeskConnectionStrategy::from_raw(config.connection_strategy) {
+            Ok(strategy) => strategy,
+            Err(error) => {
+                set_last_error(error.to_string());
+                return std::ptr::null_mut();
+            }
+        };
+    if let Err(error) = validate_release_connection_strategy(connection_strategy) {
+        set_last_error(structured_error(
+            "config",
+            "auto_unavailable",
+            error.to_string(),
+            config.legacy.connection_id,
+        ));
+        return std::ptr::null_mut();
+    }
+    rustdesk_connect_impl(
+        &config.legacy,
+        Some(RustDeskConnectOptions {
+            connection_strategy,
+            nat_config: connector::RustDeskNatTraversalConfig {
+                flags: config.nat_traversal_flags,
+                probe_serial: config.nat_probe_serial,
+            },
+        }),
         on_frame.map(FrameCallbackKind::V2),
         on_audio,
         on_cursor,
@@ -2049,10 +2579,13 @@ fn submit_2fa_for_pending_session(session_id: Option<u64>, code: *const c_char) 
     }
     let pending_entry = match PENDING_2FA.lock() {
         Ok(pending) => match session_id {
-            Some(id) if id != 0 => pending.get(&id).map(|entry| (entry.epoch, entry.sender.clone())),
+            Some(id) if id != 0 => pending
+                .get(&id)
+                .map(|entry| (entry.epoch, entry.sender.clone())),
             _ => {
                 let epoch = current_connect_epoch();
-                pending.values()
+                pending
+                    .values()
                     .find(|entry| entry.epoch == epoch)
                     .map(|entry| (entry.epoch, entry.sender.clone()))
             }
@@ -2091,10 +2624,7 @@ pub extern "C" fn rustdesk_submit_2fa(code: *const c_char) -> bool {
 
 /// Submit one transient Peer TOTP code to a specific native session.
 #[no_mangle]
-pub extern "C" fn rustdesk_submit_2fa_for_session(
-    session_id: u64,
-    code: *const c_char,
-) -> bool {
+pub extern "C" fn rustdesk_submit_2fa_for_session(session_id: u64, code: *const c_char) -> bool {
     submit_2fa_for_pending_session(Some(session_id), code)
 }
 
@@ -2102,6 +2632,24 @@ pub extern "C" fn rustdesk_submit_2fa_for_session(
 #[no_mangle]
 pub extern "C" fn rustdesk_cancel_pending_connect_for_session(session_id: u64) {
     cancel_pending_connect_for_session(session_id);
+}
+
+/// Admit a fresh native-owned connection after a session-scoped cancellation.
+/// The native caller serializes this transition with its own disconnect fence;
+/// a later cancellation therefore either marks the new Rust epoch or remains
+/// sticky until that epoch is registered.
+#[no_mangle]
+pub extern "C" fn rustdesk_rearm_pending_connect_for_session(session_id: u64) -> bool {
+    rearm_pending_connect_for_session(session_id)
+}
+
+/// Drop the sticky cancellation tombstone after native has retired every
+/// possible not-yet-registered starter for this session. Already registered
+/// workers remain cancelled through `cancelled_epochs` until their reservation
+/// is dropped.
+#[no_mangle]
+pub extern "C" fn rustdesk_forget_cancelled_connect_session(session_id: u64) -> bool {
+    forget_cancelled_connect_session(session_id)
 }
 
 fn copy_string_to_c_buffer(value: &str, buffer: *mut c_char, buffer_len: usize) -> usize {
@@ -2126,19 +2674,81 @@ pub extern "C" fn rustdesk_last_error(buffer: *mut c_char, buffer_len: usize) ->
     copy_string_to_c_buffer(&message, buffer, buffer_len)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PresenceProbeStage {
+    Input,
+    DirectConnect,
+    RendezvousConnect,
+    RendezvousRoute,
+}
+
+struct PresenceProbeEpochGuard {
+    request_id: u64,
+    epoch: u64,
+}
+
+impl Drop for PresenceProbeEpochGuard {
+    fn drop(&mut self) {
+        finish_presence_probe(self.request_id, self.epoch);
+    }
+}
+
+fn presence_probe_remaining(deadline: Instant) -> io::Result<Duration> {
+    deadline
+        .checked_duration_since(Instant::now())
+        .filter(|remaining| !remaining.is_zero())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::TimedOut, "presence deadline expired"))
+}
+
+fn presence_probe_timeout(timeout_ms: u32) -> Duration {
+    Duration::from_millis(u64::from(timeout_ms.max(1))).min(PRESENCE_PROBE_MAX_TIMEOUT)
+}
+
+fn classify_presence_probe_failure(stage: PresenceProbeStage, error: &io::Error) -> (c_int, c_int) {
+    if stage == PresenceProbeStage::RendezvousRoute && error.kind() == io::ErrorKind::NotFound {
+        return (2, 1);
+    }
+    match error.kind() {
+        io::ErrorKind::TimedOut => (0, 2),
+        io::ErrorKind::InvalidInput | io::ErrorKind::InvalidData => (0, 3),
+        io::ErrorKind::Interrupted => (0, 6),
+        _ => (0, 4),
+    }
+}
+
+/// Register a cancellable presence request before its async worker is queued.
+#[no_mangle]
+pub extern "C" fn rustdesk_register_presence_probe(request_id: u64) -> bool {
+    register_presence_probe(request_id)
+}
+
+/// Remove a registered request whose async worker could not be queued.
+#[no_mangle]
+pub extern "C" fn rustdesk_abandon_presence_probe(request_id: u64) -> bool {
+    abandon_presence_probe(request_id)
+}
+
+/// Cancel a registered or active presence request without affecting sessions.
+#[no_mangle]
+pub extern "C" fn rustdesk_cancel_presence_probe(request_id: u64) -> bool {
+    cancel_presence_probe(request_id)
+}
+
 /// Probe a RustDesk peer without opening a desktop session.
 ///
-/// Rendezvous responses are authoritative for relay/ID mode: a route response
-/// means the peer is currently registered, while an explicit refusal means it
-/// is offline or unknown to the server. Network and protocol failures remain
-/// unknown so the homepage does not turn a broken client/server path into a
-/// false offline result. Direct mode only checks the configured peer listener.
+/// One absolute deadline covers endpoint resolution, the hbbs connection and
+/// the route transaction. Only a structured ID_NOT_EXIST/OFFLINE route response
+/// is authoritative evidence that the peer is offline. Transport, license,
+/// authentication and unstructured server refusals remain unknown.
 #[no_mangle]
-pub extern "C" fn rustdesk_probe_presence(
+pub extern "C" fn rustdesk_probe_presence_with_deadline(
     cfg: *const RustDeskConfig,
+    request_id: u64,
+    timeout_ms: u32,
     out_result: *mut RustDeskPresenceResult,
 ) -> bool {
     if out_result.is_null() {
+        abandon_presence_probe(request_id);
         return false;
     }
     let mut result = RustDeskPresenceResult {
@@ -2146,87 +2756,136 @@ pub extern "C" fn rustdesk_probe_presence(
         latency_ms: -1,
         error_code: 3,
     };
-    if cfg.is_null() {
-        unsafe { *out_result = result; }
-        return true;
-    }
-
-    let config = unsafe { &*cfg };
+    let epoch = match begin_presence_probe(request_id) {
+        Ok(epoch) => epoch,
+        Err(_) => {
+            unsafe {
+                *out_result = result;
+            }
+            return false;
+        }
+    };
+    let _guard = PresenceProbeEpochGuard { request_id, epoch };
     let started = Instant::now();
-    let host = ffi_string(config.host);
-    let peer_id = ffi_string(config.username);
-    let server_key = ffi_string(config.key);
-    let api_token = ffi_string(config.token);
-    let port = if config.port > 0 {
-        config.port as u16
-    } else if config.direct_connection {
-        21118
-    } else {
-        21116
-    };
+    let timeout = presence_probe_timeout(timeout_ms);
+    let deadline = started + timeout;
 
-    let probe = if host.trim().is_empty() || (!config.direct_connection && peer_id.trim().is_empty()) {
-        Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "RustDesk presence endpoint or peer identity is missing",
+    let probe: Result<(), (PresenceProbeStage, io::Error)> = if cfg.is_null() {
+        Err((
+            PresenceProbeStage::Input,
+            io::Error::new(io::ErrorKind::InvalidInput, "presence config is null"),
         ))
-    } else if config.direct_connection {
-        net::connect_tcp_host(
-            &host,
-            port,
-            "rustdesk_presence_direct",
-            Duration::from_secs(3),
-        )
-        .map(|_| ())
     } else {
-        let shared_access_key = config.key_mode == 2;
-        let rendezvous_secure = !shared_access_key &&
-            !server_key.trim().is_empty() && !api_token.trim().is_empty();
-        let mut rendezvous = RendezvousClient::new();
-        rendezvous
-            .connect_with_timeout(
-                &host,
-                port,
-                &server_key,
-                rendezvous_secure,
-                Duration::from_secs(3),
-            )
-            .and_then(|_| {
-                rendezvous.request_force_relay(
-                    &peer_id,
-                    &server_key,
-                    &api_token,
-                    protocol::rendezvous_proto::ConnType::DEFAULT_CONN,
-                )
-            })
-            .map(|_| ())
+        let config = unsafe { &*cfg };
+        let host = ffi_string(config.host);
+        let peer_id = ffi_string(config.username);
+        let server_key = ffi_string(config.key);
+        let api_token = ffi_string(config.token);
+        let port = if config.port > 0 {
+            config.port as u16
+        } else if config.direct_connection {
+            21118
+        } else {
+            21116
+        };
+        if host.trim().is_empty() || (!config.direct_connection && peer_id.trim().is_empty()) {
+            Err((
+                PresenceProbeStage::Input,
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "RustDesk presence endpoint or peer identity is missing",
+                ),
+            ))
+        } else if config.direct_connection {
+            presence_probe_remaining(deadline)
+                .map_err(|error| (PresenceProbeStage::DirectConnect, error))
+                .and_then(|remaining| {
+                    net::connect_tcp_host_cancellable(
+                        &host,
+                        port,
+                        "rustdesk_presence_direct",
+                        remaining.min(PRESENCE_PROBE_CONNECT_TIMEOUT),
+                        epoch,
+                    )
+                    .map(|_| ())
+                    .map_err(|error| (PresenceProbeStage::DirectConnect, error))
+                })
+        } else {
+            let shared_access_key = config.key_mode == 2;
+            let rendezvous_secure =
+                !shared_access_key && !server_key.trim().is_empty() && !api_token.trim().is_empty();
+            let mut rendezvous = RendezvousClient::new_with_connect_epoch(epoch);
+            presence_probe_remaining(deadline)
+                .map_err(|error| (PresenceProbeStage::RendezvousConnect, error))
+                .and_then(|remaining| {
+                    rendezvous
+                        .connect_with_timeout(
+                            &host,
+                            port,
+                            &server_key,
+                            rendezvous_secure,
+                            remaining.min(PRESENCE_PROBE_CONNECT_TIMEOUT),
+                        )
+                        .map_err(|error| (PresenceProbeStage::RendezvousConnect, error))
+                })
+                .and_then(|_| {
+                    presence_probe_remaining(deadline)
+                        .map_err(|error| (PresenceProbeStage::RendezvousRoute, error))
+                })
+                .and_then(|remaining| {
+                    let route = rendezvous
+                        .request_route_with_timeout(
+                            &peer_id,
+                            &server_key,
+                            &api_token,
+                            protocol::rendezvous_proto::ConnType::DEFAULT_CONN,
+                            RendezvousRouteOptions::force_relay(),
+                            remaining,
+                        )
+                        .map_err(|error| (PresenceProbeStage::RendezvousRoute, error))?;
+                    route
+                        .route_plan()
+                        .ensure_executable()
+                        .map_err(|error| (PresenceProbeStage::RendezvousRoute, error))
+                })
+        }
     };
 
-    result.latency_ms = started
-        .elapsed()
-        .as_millis()
-        .min(i32::MAX as u128) as c_int;
+    result.latency_ms = started.elapsed().as_millis().min(i32::MAX as u128) as c_int;
     match probe {
         Ok(()) => {
             result.state = 1;
             result.error_code = 0;
         }
-        Err(error) if error.kind() == io::ErrorKind::ConnectionRefused => {
-            result.state = 2;
-            result.error_code = 1;
-        }
-        Err(error) if error.kind() == io::ErrorKind::TimedOut => {
-            result.error_code = 2;
-        }
-        Err(error) if matches!(error.kind(), io::ErrorKind::InvalidInput | io::ErrorKind::InvalidData) => {
-            result.error_code = 3;
-        }
-        Err(_) => {
-            result.error_code = 4;
+        Err((stage, error)) => {
+            (result.state, result.error_code) = classify_presence_probe_failure(stage, &error);
         }
     }
-    unsafe { *out_result = result; }
+    unsafe {
+        *out_result = result;
+    }
     true
+}
+
+/// Compatibility entry point for callers that predate request-scoped probes.
+#[no_mangle]
+pub extern "C" fn rustdesk_probe_presence(
+    cfg: *const RustDeskConfig,
+    out_result: *mut RustDeskPresenceResult,
+) -> bool {
+    let request_id = (1u64 << 63)
+        | LEGACY_PRESENCE_REQUEST_ID
+            .fetch_add(1, Ordering::Relaxed)
+            .wrapping_add(1);
+    if !register_presence_probe(request_id) {
+        return false;
+    }
+    rustdesk_probe_presence_with_deadline(
+        cfg,
+        request_id,
+        PRESENCE_PROBE_MAX_TIMEOUT.as_millis() as u32,
+        out_result,
+    )
 }
 
 /// Copy a non-destructive stream telemetry snapshot for one FFI connection.
@@ -2244,6 +2903,59 @@ pub extern "C" fn rustdesk_get_stream_stats(
     };
     unsafe {
         ptr::write(out_stats, *stats);
+    }
+    true
+}
+
+/// Queue a live RustDesk image-quality update for the streaming writer.
+#[no_mangle]
+pub extern "C" fn rustdesk_set_image_quality(handle: *mut c_void, quality: c_int) -> bool {
+    if handle.is_null() || !(0..=2).contains(&quality) {
+        set_last_error("rustdesk_set_image_quality invalid arguments");
+        return false;
+    }
+    let ctx = unsafe { &*(handle as *const RustDeskClient) };
+    let generation = {
+        let Ok(mut state) = ctx.quality_state.lock() else {
+            set_last_error("rustdesk_set_image_quality state lock poisoned");
+            return false;
+        };
+        state.requested_generation = state.requested_generation.wrapping_add(1).max(1);
+        state.raw_quality = quality;
+        state.effective_quality = quality;
+        state.update_status = 1;
+        state.requested_generation
+    };
+    if ctx.controls.enqueue(ControlMsg::SetImageQuality {
+        quality,
+        generation,
+    }) {
+        true
+    } else {
+        if let Ok(mut state) = ctx.quality_state.lock() {
+            if state.requested_generation == generation {
+                state.update_status = 3;
+            }
+        }
+        false
+    }
+}
+
+/// Copy the latest quality preference/application state without consuming it.
+#[no_mangle]
+pub extern "C" fn rustdesk_get_quality_state(
+    handle: *mut c_void,
+    out_state: *mut RustDeskQualityState,
+) -> bool {
+    if handle.is_null() || out_state.is_null() {
+        return false;
+    }
+    let ctx = unsafe { &*(handle as *const RustDeskClient) };
+    let Ok(state) = ctx.quality_state.lock() else {
+        return false;
+    };
+    unsafe {
+        ptr::write(out_state, *state);
     }
     true
 }
@@ -2297,7 +3009,10 @@ pub extern "C" fn rustdesk_get_display_snapshot(
         original_height: state.original_height,
         scale_milli: state.scale_milli,
         geometry_epoch: state.geometry_epoch,
-        resolution_count: state.resolutions.len().min(RUSTDESK_MAX_DISPLAY_RESOLUTIONS) as u32,
+        resolution_count: state
+            .resolutions
+            .len()
+            .min(RUSTDESK_MAX_DISPLAY_RESOLUTIONS) as u32,
     };
     unsafe {
         ptr::write(out_snapshot, snapshot);
@@ -2310,10 +3025,13 @@ pub extern "C" fn rustdesk_get_display_snapshot(
             .enumerate()
         {
             unsafe {
-                ptr::write(out_resolutions.add(index), RustDeskResolution {
-                    width: *width,
-                    height: *height,
-                });
+                ptr::write(
+                    out_resolutions.add(index),
+                    RustDeskResolution {
+                        width: *width,
+                        height: *height,
+                    },
+                );
             }
         }
     }
@@ -2370,7 +3088,12 @@ pub extern "C" fn rustdesk_get_display_list(
     let displays = &displays[..displays.len().min(RUSTDESK_MAX_DISPLAYS)];
     let total_resolution_count: usize = displays
         .iter()
-        .map(|display| display.resolutions.len().min(RUSTDESK_MAX_DISPLAY_RESOLUTIONS))
+        .map(|display| {
+            display
+                .resolutions
+                .len()
+                .min(RUSTDESK_MAX_DISPLAY_RESOLUTIONS)
+        })
         .sum();
 
     unsafe {
@@ -2485,7 +3208,8 @@ pub extern "C" fn rustdesk_refresh_video_display(handle: *mut c_void, display: c
         return false;
     }
     let ctx = unsafe { &*(handle as *const RustDeskClient) };
-    ctx.controls.enqueue(ControlMsg::RefreshVideoDisplay { display });
+    ctx.controls
+        .enqueue(ControlMsg::RefreshVideoDisplay { display });
     true
 }
 
@@ -2506,7 +3230,11 @@ pub extern "C" fn rustdesk_change_display_resolution(
         return false;
     }
     let ctx = unsafe { &*(handle as *const RustDeskClient) };
-    ctx.controls.enqueue(ControlMsg::ChangeDisplayResolution { display, width, height });
+    ctx.controls.enqueue(ControlMsg::ChangeDisplayResolution {
+        display,
+        width,
+        height,
+    });
     true
 }
 
@@ -2580,7 +3308,8 @@ pub extern "C" fn rustdesk_report_video_pressure(handle: *mut c_void, level: c_i
     }
     let clamped = level.clamp(0, 3) as u32;
     let ctx = unsafe { &*(handle as *const RustDeskClient) };
-    ctx.controls.enqueue(ControlMsg::VideoPressure { level: clamped });
+    ctx.controls
+        .enqueue(ControlMsg::VideoPressure { level: clamped });
     true
 }
 
@@ -2591,7 +3320,8 @@ pub extern "C" fn rustdesk_send_key(handle: *mut c_void, scancode: u32, pressed:
         return;
     }
     let ctx = unsafe { &*(handle as *const RustDeskClient) };
-    ctx.controls.enqueue(ControlMsg::KeyEvent { scancode, pressed });
+    ctx.controls
+        .enqueue(ControlMsg::KeyEvent { scancode, pressed });
     set_last_error(format!(
         "rustdesk_send_key enqueue scancode={} pressed={}",
         scancode, pressed
@@ -2682,8 +3412,10 @@ pub extern "C" fn rustdesk_send_text(handle: *mut c_void, text: *const c_char) {
 fn should_retry_file_transfer_compat_route(
     conn_type: protocol::rendezvous_proto::ConnType,
     state: &connector::ConnState,
+    error_kind: std::io::ErrorKind,
 ) -> bool {
     conn_type == protocol::rendezvous_proto::ConnType::FILE_TRANSFER
+        && error_kind != std::io::ErrorKind::Interrupted
         && matches!(
             state,
             connector::ConnState::RequestingRelay | connector::ConnState::ConnectingToPeer
@@ -2707,8 +3439,13 @@ pub extern "C" fn rustdesk_send_file(
         .into_owned();
     let file_data = unsafe { std::slice::from_raw_parts(data, len as usize) }.to_vec();
     if let Ok(mut status) = ctx.transfer_status.lock() {
-        *status = RustDeskTransferStatus { state: 2, transfer_id, transferred_bytes: 0,
-            total_bytes: len as u64, diagnostic_code: 0 };
+        *status = RustDeskTransferStatus {
+            state: 2,
+            transfer_id,
+            transferred_bytes: 0,
+            total_bytes: len as u64,
+            diagnostic_code: 0,
+        };
     }
     if let Ok(mut error) = ctx.transfer_error.lock() {
         error.clear();
@@ -2723,15 +3460,28 @@ pub extern "C" fn rustdesk_send_file(
     let password = ctx.password.clone();
     let request_approval = ctx.request_approval;
     let direct_connection = ctx.direct_connection;
+    let connection_strategy = ctx.connection_strategy;
+    let nat_config = ctx.nat_config;
+    let connection_id = ctx.connection_id;
     let remote_path_owned = path.clone();
     let remote_dir = split_remote_file_path(&path).0.to_string();
     let transfer_status = Arc::clone(&ctx.transfer_status);
     let transfer_error = Arc::clone(&ctx.transfer_error);
-
-    std::thread::spawn(move || {
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    let spawn_failure_status = Arc::clone(&ctx.transfer_status);
+    let spawn_failure_error = Arc::clone(&ctx.transfer_error);
+    // The shared production launcher reserves synchronously while native
+    // still holds continuity admission and the client-handle lease.
+    let spawn_result = spawn_reserved_file_transfer_worker(
+        transfer_id,
+        connection_id,
+        move |connect_epoch| {
+            let route_deadline = connector::route_deadline_for_strategy(connection_strategy);
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let mut connector = if direct_connection {
-                let mut candidate = connector::RustDeskConnector::new();
+                let mut candidate = connector::RustDeskConnector::new_with_connection_id(
+                    connection_id,
+                    connect_epoch,
+                );
                 candidate.connect_file_transfer_direct(
                     &host,
                     port,
@@ -2753,7 +3503,10 @@ pub extern "C" fn rustdesk_send_file(
                 let mut route_errors = Vec::new();
                 let mut last_route_kind = std::io::ErrorKind::NotConnected;
                 for conn_type in route_types {
-                    let mut candidate = connector::RustDeskConnector::new();
+                    let mut candidate = connector::RustDeskConnector::new_with_connection_id(
+                        connection_id,
+                        connect_epoch,
+                    );
                     match candidate.connect_file_transfer(
                         &host,
                         port,
@@ -2766,6 +3519,9 @@ pub extern "C" fn rustdesk_send_file(
                         request_approval,
                         shared_access_key,
                         conn_type,
+                        connection_strategy,
+                        nat_config,
+                        route_deadline,
                     ) {
                         Ok(()) => {
                             eprintln!(
@@ -2780,16 +3536,16 @@ pub extern "C" fn rustdesk_send_file(
                             let fallback = should_retry_file_transfer_compat_route(
                                 conn_type,
                                 candidate.state(),
+                                err.kind(),
                             );
                             eprintln!(
-                                "[RustDesk-FFI] file-transfer route failed conn_type={:?} stage={:?} kind={:?} err={} fallback={}",
+                                "[RustDesk-FFI] file-transfer route failed conn_type={:?} stage={:?} kind={:?} fallback={}",
                                 conn_type,
                                 candidate.state(),
                                 err.kind(),
-                                err,
                                 fallback
                             );
-                            route_errors.push(format!("{:?}:{:?}:{}", conn_type, err.kind(), err));
+                            route_errors.push(format!("{:?}:{:?}", conn_type, err.kind()));
                             // Compatibility mode is only a rendezvous/relay
                             // fallback. Never retry an authentication, peer-key,
                             // permission, or upload failure as DEFAULT_CONN.
@@ -2821,46 +3577,89 @@ pub extern "C" fn rustdesk_send_file(
                 "file-transfer worker panic",
             ))
         });
-
-        match result {
-            Ok(()) => {
-                if let Ok(mut error) = transfer_error.lock() {
-                    error.clear();
+            match result {
+                Ok(()) => {
+                    if let Ok(mut error) = transfer_error.lock() {
+                        error.clear();
+                    }
+                    if let Ok(mut status) = transfer_status.lock() {
+                        *status = RustDeskTransferStatus {
+                            state: 3,
+                            transfer_id,
+                            transferred_bytes: len as u64,
+                            total_bytes: len as u64,
+                            diagnostic_code: 0,
+                        };
+                    }
                 }
-                if let Ok(mut status) = transfer_status.lock() {
-                    *status = RustDeskTransferStatus { state: 3, transfer_id,
-                        transferred_bytes: len as u64, total_bytes: len as u64, diagnostic_code: 0 };
+                Err(err) => {
+                    let (code, detail) =
+                        pipeline_error_classification("file_transfer_failed", &err);
+                    let message = structured_error("file_transfer", code, detail, transfer_id);
+                    set_last_error(message.clone());
+                    eprintln!(
+                        "[RustDesk-FFI] file-transfer failed transfer_id={} kind={:?} code={}",
+                        transfer_id,
+                        err.kind(),
+                        code
+                    );
+                    if let Ok(mut error) = transfer_error.lock() {
+                        *error = message;
+                    }
+                    if let Ok(mut status) = transfer_status.lock() {
+                        *status = RustDeskTransferStatus {
+                            state: 4,
+                            transfer_id,
+                            transferred_bytes: 0,
+                            total_bytes: len as u64,
+                            diagnostic_code: 1,
+                        };
+                    }
                 }
             }
-            Err(err) => {
-                let message = format!(
-                    "file-transfer failed transfer_id={} kind={:?} err={}",
-                    transfer_id,
-                    err.kind(),
-                    err
-                );
-                set_last_error(message.clone());
-                eprintln!("[RustDesk-FFI] {}", message);
-                if let Ok(mut error) = transfer_error.lock() {
-                    *error = message;
-                }
-                if let Ok(mut status) = transfer_status.lock() {
-                    *status = RustDeskTransferStatus { state: 4, transfer_id,
-                        transferred_bytes: 0, total_bytes: len as u64, diagnostic_code: 1 };
-                }
-            }
+        },
+    );
+    if let Err(error) = spawn_result {
+        let message = structured_error(
+            "file_transfer",
+            "worker_unavailable",
+            error.to_string(),
+            transfer_id,
+        );
+        set_last_error(message.clone());
+        if let Ok(mut transfer_error) = spawn_failure_error.lock() {
+            *transfer_error = message;
         }
-    });
+        if let Ok(mut status) = spawn_failure_status.lock() {
+            *status = RustDeskTransferStatus {
+                state: 4,
+                transfer_id,
+                transferred_bytes: 0,
+                total_bytes: len as u64,
+                diagnostic_code: 1,
+            };
+        }
+        return -2;
+    }
     0
 }
 
 #[no_mangle]
-pub extern "C" fn rustdesk_get_transfer_status(handle: *mut c_void,
-    out_status: *mut RustDeskTransferStatus) -> bool {
-    if handle.is_null() || out_status.is_null() { return false; }
+pub extern "C" fn rustdesk_get_transfer_status(
+    handle: *mut c_void,
+    out_status: *mut RustDeskTransferStatus,
+) -> bool {
+    if handle.is_null() || out_status.is_null() {
+        return false;
+    }
     let ctx = unsafe { &*(handle as *const RustDeskClient) };
-    let status = match ctx.transfer_status.lock() { Ok(value) => *value, Err(_) => return false };
-    unsafe { *out_status = status; }
+    let status = match ctx.transfer_status.lock() {
+        Ok(value) => *value,
+        Err(_) => return false,
+    };
+    unsafe {
+        *out_status = status;
+    }
     true
 }
 
@@ -2905,15 +3704,25 @@ pub extern "C" fn rustdesk_send_clipboard(handle: *mut c_void, data: *const u8, 
 }
 
 #[no_mangle]
-pub extern "C" fn rustdesk_get_clipboard(handle: *mut c_void, buffer: *mut u8,
-    buffer_len: usize) -> usize {
-    if handle.is_null() { return 0; }
+pub extern "C" fn rustdesk_get_clipboard(
+    handle: *mut c_void,
+    buffer: *mut u8,
+    buffer_len: usize,
+) -> usize {
+    if handle.is_null() {
+        return 0;
+    }
     let ctx = unsafe { &*(handle as *const RustDeskClient) };
-    let clipboard = match ctx.remote_clipboard.lock() { Ok(value) => value, Err(_) => return 0 };
+    let clipboard = match ctx.remote_clipboard.lock() {
+        Ok(value) => value,
+        Err(_) => return 0,
+    };
     let full_len = clipboard.len();
     if !buffer.is_null() && buffer_len > 0 {
         let copy_len = full_len.min(buffer_len);
-        unsafe { std::ptr::copy_nonoverlapping(clipboard.as_ptr(), buffer, copy_len); }
+        unsafe {
+            std::ptr::copy_nonoverlapping(clipboard.as_ptr(), buffer, copy_len);
+        }
     }
     full_len
 }
@@ -2932,10 +3741,337 @@ pub extern "C" fn rustdesk_version() -> *const c_char {
 mod tests {
     use super::*;
     use crate::protocol::message_proto::{EncodedVideoFrame, VideoFrame_oneof_union};
+    use crate::protocol::rendezvous::encode_socket_addr_v6;
+    use crate::protocol::rendezvous_proto::{
+        PunchHoleResponse, RendezvousMessage, RendezvousMessage_oneof_union,
+    };
+    use crate::protocol::wire;
+    use protobuf::Message as ProtoMessage;
     use std::ffi::CString;
+    use std::net::{SocketAddr, TcpListener};
+    use std::thread;
+
+    #[test]
+    fn rustdesk_config_v6_preserves_legacy_abi_prefix() {
+        assert_eq!(std::mem::size_of::<RustDeskConfig>(), 104);
+        assert_eq!(std::mem::offset_of!(RustDeskConfigV6, legacy), 0);
+        assert_eq!(
+            std::mem::offset_of!(RustDeskConfigV6, connection_strategy),
+            104
+        );
+        assert_eq!(std::mem::size_of::<RustDeskConfigV6>(), 120);
+    }
+
+    #[test]
+    fn transport_capabilities_v1_keep_auto_and_udp_kcp_release_gated() {
+        assert_eq!(std::mem::size_of::<RustDeskTransportCapabilitiesV1>(), 32);
+        assert_eq!(
+            std::mem::offset_of!(RustDeskTransportCapabilitiesV1, connection_strategy_mask),
+            8
+        );
+        assert_eq!(
+            std::mem::offset_of!(RustDeskTransportCapabilitiesV1, reserved),
+            20
+        );
+        assert!(!rustdesk_get_transport_capabilities_v1(std::ptr::null_mut()));
+
+        let mut capabilities = RustDeskTransportCapabilitiesV1::default();
+        assert!(rustdesk_get_transport_capabilities_v1(&mut capabilities));
+        assert_eq!(
+            capabilities.abi_version,
+            RUSTDESK_TRANSPORT_CAPABILITIES_ABI_V1
+        );
+        assert_eq!(capabilities.struct_size, 32);
+        assert_eq!(
+            capabilities.connection_strategy_mask,
+            RUSTDESK_CONNECTION_STRATEGY_FORCE_RELAY | RUSTDESK_CONNECTION_STRATEGY_DIRECT_IP
+        );
+        assert_eq!(
+            capabilities.connection_strategy_mask & RUSTDESK_CONNECTION_STRATEGY_AUTO,
+            0
+        );
+        assert_eq!(
+            capabilities.peer_candidate_transport_mask,
+            RUSTDESK_PEER_CANDIDATE_TRANSPORT_TCP
+        );
+        assert_eq!(
+            capabilities.peer_candidate_transport_mask & RUSTDESK_PEER_CANDIDATE_TRANSPORT_UDP_KCP,
+            0
+        );
+        assert_eq!(capabilities.nat_traversal_flags, 0);
+        assert_eq!(capabilities.reserved, [0; 3]);
+    }
+
+    #[test]
+    fn presence_udp_kcp_only_route_remains_unknown() {
+        let mut response = PunchHoleResponse::new();
+        response.set_socket_addr_v6(
+            encode_socket_addr_v6(
+                "[2001:db8::91]:21118"
+                    .parse::<SocketAddr>()
+                    .expect("parse IPv6 fixture"),
+            )
+            .expect("encode IPv6 fixture"),
+        );
+        let mut message = RendezvousMessage::new();
+        message.union = Some(RendezvousMessage_oneof_union::punch_hole_response(response));
+        let payload = message.write_to_bytes().expect("serialize route fixture");
+
+        let server = TcpListener::bind("127.0.0.1:0").expect("bind rendezvous fixture");
+        let server_port = server
+            .local_addr()
+            .expect("rendezvous fixture address")
+            .port();
+        let server_thread = thread::spawn(move || {
+            let (mut stream, _) = server.accept().expect("accept presence probe");
+            let _request = wire::read_frame(&mut stream).expect("read presence route request");
+            wire::write_frame(&mut stream, &payload).expect("write UDP-only route response");
+        });
+
+        let host = CString::new("127.0.0.1").unwrap();
+        let peer_id = CString::new("peer-presence").unwrap();
+        let empty = CString::new("").unwrap();
+        let config = RustDeskConfig {
+            host: host.as_ptr(),
+            port: i32::from(server_port),
+            key: empty.as_ptr(),
+            username: peer_id.as_ptr(),
+            password: empty.as_ptr(),
+            width: 0,
+            height: 0,
+            codec: 0,
+            image_quality: 0,
+            privacy_mode: false,
+            audio_enabled: false,
+            profile: RustDeskProfile::Stable,
+            fps: 0,
+            direct_connection: false,
+            auth_mode: 0,
+            key_mode: 0,
+            token: empty.as_ptr(),
+            connection_id: 92_101,
+            relay_fallback_port: 0,
+        };
+        let request_id = u64::MAX - 92_101;
+        assert!(register_presence_probe(request_id));
+        let mut result = RustDeskPresenceResult::default();
+        assert!(rustdesk_probe_presence_with_deadline(
+            &config,
+            request_id,
+            2_000,
+            &mut result,
+        ));
+        server_thread.join().expect("presence fixture thread");
+        assert_eq!(result.state, 0, "unsupported UDP/KCP is not online proof");
+        assert_eq!(result.error_code, 4);
+    }
+
+    #[test]
+    fn presence_only_structured_route_not_found_is_offline() {
+        let refused = io::Error::new(io::ErrorKind::ConnectionRefused, "refused");
+        let denied = io::Error::new(io::ErrorKind::PermissionDenied, "license denied");
+        let offline = io::Error::new(io::ErrorKind::NotFound, "offline");
+        assert_eq!(
+            classify_presence_probe_failure(PresenceProbeStage::RendezvousConnect, &refused),
+            (0, 4)
+        );
+        assert_eq!(
+            classify_presence_probe_failure(PresenceProbeStage::DirectConnect, &refused),
+            (0, 4)
+        );
+        assert_eq!(
+            classify_presence_probe_failure(PresenceProbeStage::RendezvousRoute, &refused),
+            (0, 4)
+        );
+        assert_eq!(
+            classify_presence_probe_failure(PresenceProbeStage::RendezvousRoute, &denied),
+            (0, 4)
+        );
+        assert_eq!(
+            classify_presence_probe_failure(PresenceProbeStage::RendezvousRoute, &offline),
+            (2, 1)
+        );
+    }
+
+    #[test]
+    fn presence_probe_deadline_is_hard_capped() {
+        assert_eq!(presence_probe_timeout(0), Duration::from_millis(1));
+        assert_eq!(presence_probe_timeout(2_500), Duration::from_millis(2_500));
+        assert_eq!(presence_probe_timeout(90_000), PRESENCE_PROBE_MAX_TIMEOUT);
+    }
+
+    #[test]
+    fn presence_probe_can_be_cancelled_before_worker_start() {
+        let request_id = u64::MAX - 50_001;
+        assert!(register_presence_probe(request_id));
+        assert!(cancel_presence_probe(request_id));
+        let epoch = begin_presence_probe(request_id).expect("begin cancelled probe");
+        assert!(connect_cancelled(epoch));
+        finish_presence_probe(request_id, epoch);
+        assert!(!cancel_presence_probe(request_id));
+    }
+
+    #[test]
+    fn presence_probe_registration_rejects_duplicate_and_abandons_unqueued_work() {
+        let request_id = u64::MAX - 50_002;
+        assert!(register_presence_probe(request_id));
+        assert!(!register_presence_probe(request_id));
+        assert!(abandon_presence_probe(request_id));
+        assert!(!abandon_presence_probe(request_id));
+    }
+
+    #[test]
+    fn session_cancel_is_sticky_until_native_rearms_connect() {
+        let session_id = u64::MAX - 60_001;
+        cancel_pending_connect_for_session(session_id);
+
+        // Cancellation wins even when Rust registers the epoch after the
+        // native cancel call returned.
+        let cancelled_epoch = begin_connect_epoch(session_id);
+        assert!(connect_cancelled(cancelled_epoch));
+        finish_connect_epoch(cancelled_epoch, session_id);
+
+        assert!(rearm_pending_connect_for_session(session_id));
+        let admitted_epoch = begin_connect_epoch(session_id);
+        assert!(!connect_cancelled(admitted_epoch));
+        finish_connect_epoch(admitted_epoch, session_id);
+    }
+
+    #[test]
+    fn sticky_session_cancel_does_not_cross_connection_identity() {
+        let cancelled_session = u64::MAX - 60_002;
+        let admitted_session = u64::MAX - 60_003;
+        cancel_pending_connect_for_session(cancelled_session);
+
+        let cancelled_epoch = begin_connect_epoch(cancelled_session);
+        let admitted_epoch = begin_connect_epoch(admitted_session);
+        assert!(connect_cancelled(cancelled_epoch));
+        assert!(!connect_cancelled(admitted_epoch));
+
+        finish_connect_epoch(cancelled_epoch, cancelled_session);
+        finish_connect_epoch(admitted_epoch, admitted_session);
+        assert!(rearm_pending_connect_for_session(cancelled_session));
+    }
+
+    #[test]
+    fn cancellation_after_rearm_is_sticky_for_a_late_epoch() {
+        use std::sync::Barrier;
+
+        let session_id = u64::MAX - 60_004;
+        cancel_pending_connect_for_session(session_id);
+        assert!(rearm_pending_connect_for_session(session_id));
+
+        let cancel_start = Arc::new(Barrier::new(2));
+        let cancel_done = Arc::new(Barrier::new(2));
+        let worker_start = Arc::clone(&cancel_start);
+        let worker_done = Arc::clone(&cancel_done);
+        let cancel_worker = std::thread::spawn(move || {
+            worker_start.wait();
+            cancel_pending_connect_for_session(session_id);
+            worker_done.wait();
+        });
+        cancel_start.wait();
+        cancel_done.wait();
+        cancel_worker.join().expect("cancel worker");
+
+        // Models native rearm winning first, followed by disconnect before
+        // rustdesk_connect_v6 has registered the Rust epoch.
+        let late_epoch = begin_connect_epoch(session_id);
+        assert!(connect_cancelled(late_epoch));
+        finish_connect_epoch(late_epoch, session_id);
+        assert!(rearm_pending_connect_for_session(session_id));
+    }
+
+    #[test]
+    fn file_transfer_reservation_stays_cancelled_after_rearm_before_late_worker_runs() {
+        let session_id = u64::MAX - 60_005;
+        assert!(rearm_pending_connect_for_session(session_id));
+        let reserved_worker =
+            reserve_file_transfer_worker(session_id, |epoch| connect_cancelled(epoch));
+
+        // Cancel and rearm before the prepared production worker closure is
+        // ever submitted. If reservation creation moves back inside that
+        // closure, the late worker will register only after rearm and this
+        // assertion will fail.
+        cancel_pending_connect_for_session(session_id);
+        assert!(rearm_pending_connect_for_session(session_id));
+        let late_worker = std::thread::spawn(reserved_worker);
+        assert!(late_worker.join().expect("late file-transfer worker"));
+    }
+
+    #[test]
+    fn final_session_retirement_forgets_sticky_tombstone_not_active_epoch() {
+        let session_id = u64::MAX - 60_006;
+        let reservation = ConnectEpochReservation::new(session_id);
+        cancel_pending_connect_for_session(session_id);
+        assert!(connect_cancelled(reservation.epoch()));
+
+        assert!(forget_cancelled_connect_session(session_id));
+        assert!(connect_cancelled(reservation.epoch()));
+        drop(reservation);
+
+        let fresh_epoch = begin_connect_epoch(session_id);
+        assert!(!connect_cancelled(fresh_epoch));
+        finish_connect_epoch(fresh_epoch, session_id);
+    }
+
+    #[test]
+    fn rustdesk_connect_v6_rejects_auto_before_any_network_work() {
+        assert_eq!(
+            validate_release_connection_strategy(connector::RustDeskConnectionStrategy::Auto)
+                .expect_err("AUTO must remain release-gated")
+                .kind(),
+            io::ErrorKind::Unsupported
+        );
+        let config = RustDeskConfigV6 {
+            legacy: RustDeskConfig {
+                host: std::ptr::null(),
+                port: 0,
+                key: std::ptr::null(),
+                username: std::ptr::null(),
+                password: std::ptr::null(),
+                width: 0,
+                height: 0,
+                codec: 0,
+                image_quality: 0,
+                privacy_mode: false,
+                audio_enabled: false,
+                profile: RustDeskProfile::Stable,
+                fps: 0,
+                direct_connection: false,
+                auth_mode: 0,
+                key_mode: 0,
+                token: std::ptr::null(),
+                connection_id: 92_001,
+                relay_fallback_port: 0,
+            },
+            connection_strategy: connector::RustDeskConnectionStrategy::Auto as c_int,
+            nat_traversal_flags: 0,
+            nat_probe_serial: 0,
+            reserved: 0,
+        };
+
+        let handle = rustdesk_connect_v6(
+            &config,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            std::ptr::null_mut(),
+        );
+        assert!(handle.is_null());
+        let error = LAST_ERROR.lock().expect("last error lock").clone();
+        assert!(error.contains("code=auto_unavailable"));
+        assert!(error.contains("attempt=92001"));
+    }
 
     fn test_client_with_display_state(display_state: RustDeskDisplayState) -> RustDeskClient {
         RustDeskClient {
+            connection_id: 0,
             peer_id: String::new(),
             host: String::new(),
             port: 0,
@@ -2946,6 +4082,8 @@ mod tests {
             password: String::new(),
             request_approval: false,
             direct_connection: false,
+            connection_strategy: connector::RustDeskConnectionStrategy::ForceRelay,
+            nat_config: connector::RustDeskNatTraversalConfig::default(),
             controls: Arc::new(ControlInbox::default()),
             shutdown_stream: None,
             stream_handle: None,
@@ -2953,6 +4091,7 @@ mod tests {
             transfer_error: Arc::new(Mutex::new(String::new())),
             remote_clipboard: Arc::new(Mutex::new(Vec::new())),
             stream_stats: Arc::new(Mutex::new(RustDeskStreamStats::default())),
+            quality_state: Arc::new(Mutex::new(RustDeskQualityState::default())),
             display_state: Arc::new(Mutex::new(display_state)),
         }
     }
@@ -2964,10 +4103,7 @@ mod tests {
             accept: bool,
         }
 
-        extern "C" fn capture_platform(
-            platform: *const c_char,
-            user_data: *mut c_void,
-        ) -> bool {
+        extern "C" fn capture_platform(platform: *const c_char, user_data: *mut c_void) -> bool {
             let probe = unsafe { &mut *(user_data as *mut CallbackProbe) };
             probe.platform = unsafe { CStr::from_ptr(platform) }
                 .to_string_lossy()
@@ -3006,22 +4142,32 @@ mod tests {
         assert!(should_retry_file_transfer_compat_route(
             ConnType::FILE_TRANSFER,
             &connector::ConnState::RequestingRelay,
+            io::ErrorKind::ConnectionRefused,
         ));
         assert!(should_retry_file_transfer_compat_route(
             ConnType::FILE_TRANSFER,
             &connector::ConnState::ConnectingToPeer,
+            io::ErrorKind::TimedOut,
         ));
         assert!(!should_retry_file_transfer_compat_route(
             ConnType::FILE_TRANSFER,
             &connector::ConnState::KeyExchanging,
+            io::ErrorKind::ConnectionRefused,
         ));
         assert!(!should_retry_file_transfer_compat_route(
             ConnType::FILE_TRANSFER,
             &connector::ConnState::LoggingIn,
+            io::ErrorKind::ConnectionRefused,
         ));
         assert!(!should_retry_file_transfer_compat_route(
             ConnType::DEFAULT_CONN,
             &connector::ConnState::RequestingRelay,
+            io::ErrorKind::ConnectionRefused,
+        ));
+        assert!(!should_retry_file_transfer_compat_route(
+            ConnType::FILE_TRANSFER,
+            &connector::ConnState::RequestingRelay,
+            io::ErrorKind::Interrupted,
         ));
     }
 
@@ -3052,7 +4198,10 @@ mod tests {
         assert_eq!(snapshot.version, RUSTDESK_DISPLAY_SNAPSHOT_VERSION);
         assert_eq!(snapshot.current_display, 2);
         assert_eq!((snapshot.width, snapshot.height), (1080, 1920));
-        assert_eq!((snapshot.original_width, snapshot.original_height), (1440, 2560));
+        assert_eq!(
+            (snapshot.original_width, snapshot.original_height),
+            (1440, 2560)
+        );
         assert_eq!(snapshot.scale_milli, 1250);
         assert_eq!(snapshot.geometry_epoch, 7);
         assert_eq!(snapshot.resolution_count, 3);
@@ -3075,7 +4224,10 @@ mod tests {
             snapshot.known_mask & control_inbox::PERMISSION_KEYBOARD,
             control_inbox::PERMISSION_KEYBOARD
         );
-        assert_eq!(snapshot.enabled_mask & control_inbox::PERMISSION_KEYBOARD, 0);
+        assert_eq!(
+            snapshot.enabled_mask & control_inbox::PERMISSION_KEYBOARD,
+            0
+        );
     }
 
     #[test]
@@ -3181,11 +4333,7 @@ mod tests {
             Arc::new(ControlInbox::default()),
         );
 
-        dispatch_video_frame(
-            &frame,
-            &display_state,
-            &mut video_worker,
-        );
+        dispatch_video_frame(&frame, &display_state, &mut video_worker);
         video_worker.stop();
 
         assert_eq!(received, vec![(2560, 1440)]);
@@ -3227,14 +4375,13 @@ mod tests {
             Arc::new(ControlInbox::default()),
         );
 
-        dispatch_video_frame(
-            &frame,
-            &display_state,
-            &mut video_worker,
-        );
+        dispatch_video_frame(&frame, &display_state, &mut video_worker);
         video_worker.stop();
 
-        assert_eq!(received, vec![(1, 2560, 1440, RUSTDESK_VIDEO_FRAME_ABI_VERSION)]);
+        assert_eq!(
+            received,
+            vec![(1, 2560, 1440, RUSTDESK_VIDEO_FRAME_ABI_VERSION)]
+        );
     }
 
     #[test]
@@ -3342,7 +4489,13 @@ mod tests {
 
         let state = queue.state.lock().expect("video queue state");
         assert_eq!(state.frames.len(), 1);
-        assert!(state.frames.front().expect("recovery keyframe").is_key_frame);
+        assert!(
+            state
+                .frames
+                .front()
+                .expect("recovery keyframe")
+                .is_key_frame
+        );
         assert!(!state.awaiting_key_frame);
     }
 
@@ -3391,7 +4544,11 @@ mod tests {
         let selected = [1 as c_int, 2 as c_int];
 
         assert!(rustdesk_switch_display(handle, 1));
-        assert!(rustdesk_capture_displays(handle, selected.as_ptr(), selected.len()));
+        assert!(rustdesk_capture_displays(
+            handle,
+            selected.as_ptr(),
+            selected.len()
+        ));
         assert!(rustdesk_refresh_video_display(handle, 1));
 
         let controls = client.controls.take_batch(3);
@@ -3430,13 +4587,20 @@ mod tests {
         assert!(!rustdesk_send_touch_pan(handle, 3, 0, 0));
 
         let controls = client.controls.take_batch(8);
-        assert!(matches!(controls.as_slice(), [
-            ControlMsg::ChangeDisplayResolution { display: 1, width: 1080, height: 1920 },
-            ControlMsg::TouchPanStart { x: 100, y: 200 },
-            ControlMsg::TouchScale { scale: 1250 },
-            ControlMsg::TouchPanUpdate { x: -10, y: 12 },
-            ControlMsg::TouchPanEnd { x: 90, y: 212 },
-        ]));
+        assert!(matches!(
+            controls.as_slice(),
+            [
+                ControlMsg::ChangeDisplayResolution {
+                    display: 1,
+                    width: 1080,
+                    height: 1920
+                },
+                ControlMsg::TouchPanStart { x: 100, y: 200 },
+                ControlMsg::TouchScale { scale: 1250 },
+                ControlMsg::TouchPanUpdate { x: -10, y: 12 },
+                ControlMsg::TouchPanEnd { x: 90, y: 212 },
+            ]
+        ));
     }
 
     #[test]
@@ -3603,12 +4767,18 @@ mod tests {
         register_pending_2fa(second_epoch, second_session, second_sender).unwrap();
 
         let first_code = CString::new("123456").unwrap();
-        assert!(rustdesk_submit_2fa_for_session(first_session, first_code.as_ptr()));
+        assert!(rustdesk_submit_2fa_for_session(
+            first_session,
+            first_code.as_ptr()
+        ));
         assert_eq!(first_receiver.try_recv().unwrap(), "123456");
         assert!(second_receiver.try_recv().is_err());
 
         let second_code = CString::new("654321").unwrap();
-        assert!(rustdesk_submit_2fa_for_session(second_session, second_code.as_ptr()));
+        assert!(rustdesk_submit_2fa_for_session(
+            second_session,
+            second_code.as_ptr()
+        ));
         assert_eq!(second_receiver.try_recv().unwrap(), "654321");
         clear_pending_2fa(first_epoch, first_session);
         clear_pending_2fa(second_epoch, second_session);
@@ -3624,30 +4794,50 @@ mod tests {
         let relay = pipeline_error_message(
             &connector::ConnState::RequestingRelay,
             &io::Error::new(io::ErrorKind::PermissionDenied, "relay denied"),
-            false,
+            connector::RustDeskConnectionStrategy::ForceRelay,
             43,
         );
-        assert!(relay.starts_with(
-            "RDERR|stage=relay|code=relay_request_failed|attempt=43|detail="));
+        assert!(relay.starts_with("RDERR|stage=relay|code=relay_request_failed|attempt=43|detail="));
         let direct = pipeline_error_message(
             &connector::ConnState::ConnectingToPeer,
             &io::Error::new(io::ErrorKind::ConnectionRefused, "peer refused"),
-            true,
+            connector::RustDeskConnectionStrategy::DirectIp,
             44,
         );
         assert!(direct.starts_with(
-            "RDERR|stage=peer_channel|code=direct_peer_connect_failed|attempt=44|detail="));
+            "RDERR|stage=peer_channel|code=direct_peer_connect_failed|attempt=44|detail="
+        ));
         let login = pipeline_error_message(
             &connector::ConnState::RequestingRelay,
             &io::Error::new(
                 io::ErrorKind::PermissionDenied,
-                "Connection failed, please login! peer_id=sensitive"),
-            false,
+                "Connection failed, please login! peer_id=sensitive",
+            ),
+            connector::RustDeskConnectionStrategy::ForceRelay,
             45,
         );
         assert!(login.contains("code=control_plane_login_required"));
         assert!(login.contains("attempt=45"));
         assert!(!login.contains("sensitive"));
+
+        let automatic = pipeline_error_message(
+            &connector::ConnState::ConnectingToPeer,
+            &io::Error::new(io::ErrorKind::ConnectionRefused, "direct candidate refused"),
+            connector::RustDeskConnectionStrategy::Auto,
+            46,
+        );
+        assert!(automatic.contains("stage=peer_route"));
+        assert!(automatic.contains("code=peer_route_failed"));
+
+        let cancelled = pipeline_error_message(
+            &connector::ConnState::RequestingRelay,
+            &io::Error::new(io::ErrorKind::Interrupted, "secret cancellation detail"),
+            connector::RustDeskConnectionStrategy::Auto,
+            47,
+        );
+        assert!(cancelled.contains("code=cancelled"));
+        assert!(cancelled.contains("detail=connection attempt was cancelled"));
+        assert!(!cancelled.contains("secret"));
     }
 
     #[test]
@@ -3672,7 +4862,10 @@ mod tests {
         assert_eq!(std::mem::size_of::<RustDeskStreamStats>(), 96);
         assert_eq!(std::mem::align_of::<RustDeskStreamStats>(), 8);
         assert_eq!(std::mem::size_of::<RustDeskStreamStats>() % 8, 0);
-        assert_eq!(RustDeskStreamStats::default().version, RUSTDESK_STREAM_STATS_VERSION);
+        assert_eq!(
+            RustDeskStreamStats::default().version,
+            RUSTDESK_STREAM_STATS_VERSION
+        );
         assert_eq!(RustDeskStreamStats::default().actual_codec, -1);
     }
 
@@ -3687,7 +4880,7 @@ mod tests {
     }
 
     #[test]
-    fn balanced_profile_keeps_60fps_and_clamps_best_quality() {
+    fn explicit_best_quality_overrides_balanced_profile_without_changing_fps() {
         let cfg = RustDeskConfig {
             host: std::ptr::null(),
             port: 21116,
@@ -3713,10 +4906,37 @@ mod tests {
         let params = resolve_stream_params_for_config(&cfg);
 
         assert_eq!(params.preferred_codec, 4);
-        assert_eq!(params.image_quality, 1);
+        assert_eq!(params.image_quality, 2);
         assert_eq!(params.effective_fps, 60);
         assert_eq!(params.req_width, 742);
         assert_eq!(params.req_height, 1600);
+    }
+
+    #[test]
+    fn live_image_quality_control_validates_and_tracks_pending_generation() {
+        let mut client = test_client_with_display_state(RustDeskDisplayState::default());
+        let handle = &mut client as *mut RustDeskClient as *mut c_void;
+
+        assert!(!rustdesk_set_image_quality(handle, -1));
+        assert!(!rustdesk_set_image_quality(handle, 3));
+        assert!(rustdesk_set_image_quality(handle, 2));
+
+        let controls = client.controls.take_batch(8);
+        assert!(matches!(
+            controls.as_slice(),
+            [ControlMsg::SetImageQuality {
+                quality: 2,
+                generation: 1
+            }]
+        ));
+        let mut snapshot = RustDeskQualityState::default();
+        assert!(rustdesk_get_quality_state(handle, &mut snapshot));
+        assert_eq!(snapshot.raw_quality, 2);
+        assert_eq!(snapshot.effective_quality, 2);
+        assert_eq!(snapshot.sent_quality, -1);
+        assert_eq!(snapshot.requested_generation, 1);
+        assert_eq!(snapshot.applied_generation, 0);
+        assert_eq!(snapshot.update_status, 1);
     }
 
     #[test]

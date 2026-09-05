@@ -1,0 +1,960 @@
+From 2e7ff82b3061ccf48e2d820b3f6da14f67349470 Mon Sep 17 00:00:00 2001
+From: Mydstiny <181178314+Mydstiny@users.noreply.github.com>
+Date: Sun, 30 Aug 2026 19:59:37 +0800
+Subject: [PATCH] Add deterministic IPv6 gateway and resolver tests
+
+---
+ libfreerdp/core/CMakeLists.txt                |   1 +
+ libfreerdp/core/credssp_auth.c                |  19 ++
+ libfreerdp/core/credssp_auth.h                |   6 +
+ libfreerdp/core/gateway/arm.c                 |  11 +-
+ libfreerdp/core/gateway/identity.h            |  45 +++++
+ libfreerdp/core/gateway/ncacn_http.c          |   3 +-
+ libfreerdp/core/gateway/rdg.c                 |  15 +-
+ libfreerdp/core/gateway/rpc.c                 |  10 +-
+ libfreerdp/core/gateway/rpc_bind.c            |   3 +-
+ libfreerdp/core/gateway/rpc_client.c          |   5 +-
+ libfreerdp/core/tcp.c                         | 105 +++++++++++-
+ libfreerdp/core/tcp.h                         |  27 +++
+ libfreerdp/core/test/CMakeLists.txt           |   2 +-
+ .../core/test/TestGatewayIpv6Identity.c       | 162 ++++++++++++++++++
+ libfreerdp/core/test/TestTcpHappyEyeballs.c   | 161 +++++++++++++++++
+ 15 files changed, 542 insertions(+), 33 deletions(-)
+ create mode 100644 libfreerdp/core/gateway/identity.h
+ create mode 100644 libfreerdp/core/test/TestGatewayIpv6Identity.c
+
+diff --git a/libfreerdp/core/CMakeLists.txt b/libfreerdp/core/CMakeLists.txt
+index a190e27e6..3a55ce48a 100644
+--- a/libfreerdp/core/CMakeLists.txt
++++ b/libfreerdp/core/CMakeLists.txt
+@@ -28,6 +28,7 @@ freerdp_include_directory_add(${OPENSSL_INCLUDE_DIR})
+ set(${MODULE_PREFIX}_GATEWAY_DIR "gateway")
+ 
+ set(${MODULE_PREFIX}_GATEWAY_SRCS
++    ${${MODULE_PREFIX}_GATEWAY_DIR}/identity.h
+     ${${MODULE_PREFIX}_GATEWAY_DIR}/tsg.c
+     ${${MODULE_PREFIX}_GATEWAY_DIR}/tsg.h
+     ${${MODULE_PREFIX}_GATEWAY_DIR}/rdg.c
+diff --git a/libfreerdp/core/credssp_auth.c b/libfreerdp/core/credssp_auth.c
+index c31a69d57..0bfb6b5ef 100644
+--- a/libfreerdp/core/credssp_auth.c
++++ b/libfreerdp/core/credssp_auth.c
+@@ -1075,6 +1075,25 @@ BOOL credssp_auth_set_spn(rdpCredsspAuth* auth, const char* service, const char*
+ 	return TRUE;
+ }
+ 
++#if defined(BUILD_TESTING_INTERNAL)
++BOOL credssp_auth_test_get_spn_utf8(const rdpCredsspAuth* auth, char* buffer, size_t size)
++{
++	if (!auth || !auth->spn || !buffer || (size == 0))
++		return FALSE;
++
++#if defined(UNICODE)
++	char* utf8 = ConvertWCharToUtf8Alloc(auth->spn, nullptr);
++	if (!utf8)
++		return FALSE;
++	const int written = snprintf(buffer, size, "%s", utf8);
++	free(utf8);
++#else
++	const int written = snprintf(buffer, size, "%s", auth->spn);
++#endif
++	return (written >= 0) && ((size_t)written < size);
++}
++#endif
++
+ static const char* parseInt(const char* v, INT32* r)
+ {
+ 	*r = 0;
+diff --git a/libfreerdp/core/credssp_auth.h b/libfreerdp/core/credssp_auth.h
+index 16a82bffd..1562e5a06 100644
+--- a/libfreerdp/core/credssp_auth.h
++++ b/libfreerdp/core/credssp_auth.h
+@@ -75,6 +75,12 @@ WINPR_ATTR_NODISCARD
+ FREERDP_LOCAL BOOL credssp_auth_set_spn(rdpCredsspAuth* auth, const char* service,
+                                         const char* hostname);
+ 
++#if defined(BUILD_TESTING_INTERNAL)
++WINPR_ATTR_NODISCARD
++FREERDP_LOCAL BOOL credssp_auth_test_get_spn_utf8(const rdpCredsspAuth* auth, char* buffer,
++                                                  size_t size);
++#endif
++
+ FREERDP_LOCAL void credssp_auth_take_input_buffer(rdpCredsspAuth* auth, SecBuffer* buffer);
+ 
+ WINPR_ATTR_NODISCARD
+diff --git a/libfreerdp/core/gateway/arm.c b/libfreerdp/core/gateway/arm.c
+index 6f84d83b6..a754ed175 100644
+--- a/libfreerdp/core/gateway/arm.c
++++ b/libfreerdp/core/gateway/arm.c
+@@ -41,6 +41,7 @@
+ #include <freerdp/utils/aad.h>
+ 
+ #include "arm.h"
++#include "identity.h"
+ #include "wst.h"
+ #include "websocket.h"
+ #include "http.h"
+@@ -86,9 +87,7 @@ static BOOL arm_tls_connect(rdpArm* arm, rdpTls* tls, UINT32 timeout)
+ 		return FALSE;
+ 
+ 	const char* gatewayConnectHostname =
+-	    freerdp_settings_get_string(settings, FreeRDP_GatewayConnectHostname);
+-	if (!gatewayConnectHostname || (gatewayConnectHostname[0] == '\0'))
+-		gatewayConnectHostname = freerdp_settings_get_string(settings, FreeRDP_GatewayHostname);
++	    freerdp_gateway_hostname_for(settings, FREERDP_GATEWAY_HOST_TRANSPORT);
+ 	const char* peerHostname = gatewayConnectHostname;
+ 	if (!peerHostname)
+ 		return FALSE;
+@@ -145,7 +144,7 @@ static BOOL arm_tls_connect(rdpArm* arm, rdpTls* tls, UINT32 timeout)
+ 		return FALSE;
+ 	}
+ 
+-	tls->hostname = freerdp_settings_get_string(settings, FreeRDP_GatewayHostname);
++	tls->hostname = freerdp_gateway_hostname_for(settings, FREERDP_GATEWAY_HOST_TLS);
+ 	tls->port = MIN(UINT16_MAX, WINPR_ASSERTING_INT_CAST(int32_t, settings->GatewayPort));
+ 	tls->isGatewayTransport = TRUE;
+ 	status = freerdp_tls_connect(tls, bufferedBio);
+@@ -1199,8 +1198,8 @@ static BOOL arm_handle_request(rdpArm* arm, BOOL* retry, DWORD timeout)
+ 	    !http_context_set_connection(arm->http, "Keep-Alive") ||
+ 	    !http_context_set_user_agent(arm->http, useragent) ||
+ 	    !http_context_set_x_ms_user_agent(arm->http, msuseragent) ||
+-	    !http_context_set_host(arm->http, freerdp_settings_get_string(arm->context->settings,
+-	                                                                  FreeRDP_GatewayHostname)))
++	    !http_context_set_host(arm->http, freerdp_gateway_hostname_for(arm->context->settings,
++	                                                                   FREERDP_GATEWAY_HOST_HTTP)))
+ 		goto arm_error;
+ 
+ 	if (!arm_tls_connect(arm, arm->tls, timeout))
+diff --git a/libfreerdp/core/gateway/identity.h b/libfreerdp/core/gateway/identity.h
+new file mode 100644
+index 000000000..0077019d9
+--- /dev/null
++++ b/libfreerdp/core/gateway/identity.h
+@@ -0,0 +1,45 @@
++/**
++ * FreeRDP: A Remote Desktop Protocol Implementation
++ * RD Gateway endpoint identity policy
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++#ifndef FREERDP_LIB_CORE_GATEWAY_IDENTITY_H
++#define FREERDP_LIB_CORE_GATEWAY_IDENTITY_H
++
++#include <freerdp/settings.h>
++
++typedef enum
++{
++	FREERDP_GATEWAY_HOST_TRANSPORT = 0,
++	FREERDP_GATEWAY_HOST_TLS,
++	FREERDP_GATEWAY_HOST_HTTP,
++	FREERDP_GATEWAY_HOST_SPN
++} FREERDP_GATEWAY_HOST_PURPOSE;
++
++static inline const char* freerdp_gateway_hostname_for(const rdpSettings* settings,
++                                                       FREERDP_GATEWAY_HOST_PURPOSE purpose)
++{
++	if (!settings)
++		return nullptr;
++
++	const char* identity = freerdp_settings_get_string(settings, FreeRDP_GatewayHostname);
++	if (purpose != FREERDP_GATEWAY_HOST_TRANSPORT)
++		return identity;
++
++	const char* transport = freerdp_settings_get_string(settings, FreeRDP_GatewayConnectHostname);
++	return (transport && (transport[0] != '\0')) ? transport : identity;
++}
++
++#endif /* FREERDP_LIB_CORE_GATEWAY_IDENTITY_H */
+diff --git a/libfreerdp/core/gateway/ncacn_http.c b/libfreerdp/core/gateway/ncacn_http.c
+index ca34dccfa..2bb9edc6c 100644
+--- a/libfreerdp/core/gateway/ncacn_http.c
++++ b/libfreerdp/core/gateway/ncacn_http.c
+@@ -20,6 +20,7 @@
+ #include <freerdp/config.h>
+ 
+ #include "../settings.h"
++#include "identity.h"
+ #include "ncacn_http.h"
+ 
+ #include <winpr/crt.h>
+@@ -181,7 +182,7 @@ BOOL rpc_ncacn_http_auth_init(rdpContext* context, RpcChannel* channel)
+ 	                                FreeRDP_GatewayDomain, FreeRDP_GatewayPassword))
+ 		return FALSE;
+ 
+-	const char* GatewayHostname = freerdp_settings_get_string(settings, FreeRDP_GatewayHostname);
++	const char* GatewayHostname = freerdp_gateway_hostname_for(settings, FREERDP_GATEWAY_HOST_SPN);
+ 	const char* GatewayUsername = freerdp_settings_get_string(settings, FreeRDP_GatewayUsername);
+ 	SEC_WINNT_AUTH_IDENTITY* identityArg = (GatewayUsername ? &identity : nullptr);
+ 	const BOOL res = credssp_auth_setup_client(auth, "HTTP", GatewayHostname, identityArg, nullptr);
+diff --git a/libfreerdp/core/gateway/rdg.c b/libfreerdp/core/gateway/rdg.c
+index 6fdcf5979..f917635a3 100644
+--- a/libfreerdp/core/gateway/rdg.c
++++ b/libfreerdp/core/gateway/rdg.c
+@@ -39,6 +39,7 @@
+ #include <freerdp/utils/smartcardlogon.h>
+ 
+ #include "rdg.h"
++#include "identity.h"
+ #include "websocket.h"
+ #include "../credssp_auth.h"
+ #include "../proxy.h"
+@@ -1285,8 +1286,9 @@ static BOOL rdg_auth_init(rdpRdg* rdg, rdpTls* tls, TCHAR* authPkg)
+ 			identityArg = nullptr;
+ 	}
+ 
+-	if (!credssp_auth_setup_client(rdg->auth, "HTTP", settings->GatewayHostname, identityArg,
+-	                               rdg->smartcard ? rdg->smartcard->pkinitArgs : nullptr))
++	if (!credssp_auth_setup_client(
++	        rdg->auth, "HTTP", freerdp_gateway_hostname_for(settings, FREERDP_GATEWAY_HOST_SPN),
++	        identityArg, rdg->smartcard ? rdg->smartcard->pkinitArgs : nullptr))
+ 	{
+ 		sspi_FreeAuthIdentity(&identity);
+ 		return FALSE;
+@@ -1324,9 +1326,7 @@ static BOOL rdg_tls_connect(rdpRdg* rdg, rdpTls* tls, const char* peerAddress, U
+ 	rdpSettings* settings = rdg->context->settings;
+ 	rdpTransport* transport = freerdp_get_transport(rdg->context);
+ 	const char* gatewayConnectHostname =
+-	    freerdp_settings_get_string(settings, FreeRDP_GatewayConnectHostname);
+-	if (!gatewayConnectHostname || (gatewayConnectHostname[0] == '\0'))
+-		gatewayConnectHostname = settings->GatewayHostname;
++	    freerdp_gateway_hostname_for(settings, FREERDP_GATEWAY_HOST_TRANSPORT);
+ 	const char* peerHostname = gatewayConnectHostname;
+ 	UINT16 peerPort = (UINT16)settings->GatewayPort;
+ 	const char* proxyUsername = nullptr;
+@@ -1379,7 +1379,7 @@ static BOOL rdg_tls_connect(rdpRdg* rdg, rdpTls* tls, const char* peerAddress, U
+ 		return FALSE;
+ 	}
+ 
+-	tls->hostname = settings->GatewayHostname;
++	tls->hostname = freerdp_gateway_hostname_for(settings, FREERDP_GATEWAY_HOST_TLS);
+ 	tls->port = WINPR_ASSERTING_INT_CAST(int32_t, MIN(UINT16_MAX, settings->GatewayPort));
+ 	tls->isGatewayTransport = TRUE;
+ 	status = freerdp_tls_connect(tls, bufferedBio);
+@@ -2267,7 +2267,8 @@ rdpRdg* rdg_new(rdpContext* context)
+ 	    !http_context_set_pragma(rdg->http, "no-cache") ||
+ 	    !http_context_set_connection(rdg->http, "Keep-Alive") ||
+ 	    !http_context_set_user_agent(rdg->http, "MS-RDGateway/1.0") ||
+-	    !http_context_set_host(rdg->http, rdg->context->settings->GatewayHostname) ||
++	    !http_context_set_host(rdg->http, freerdp_gateway_hostname_for(
++	                                          rdg->context->settings, FREERDP_GATEWAY_HOST_HTTP)) ||
+ 	    !http_context_set_rdg_connection_id(rdg->http, &rdg->guid) ||
+ 	    !http_context_set_rdg_correlation_id(rdg->http, &rdg->guid) ||
+ 	    !http_context_enable_websocket_upgrade(
+diff --git a/libfreerdp/core/gateway/rpc.c b/libfreerdp/core/gateway/rpc.c
+index dc4456d4a..3890b3aea 100644
+--- a/libfreerdp/core/gateway/rpc.c
++++ b/libfreerdp/core/gateway/rpc.c
+@@ -39,6 +39,7 @@
+ 
+ #include "../proxy.h"
+ #include "http.h"
++#include "identity.h"
+ #include "../credssp_auth.h"
+ #include "ncacn_http.h"
+ #include "rpc_bind.h"
+@@ -570,7 +571,8 @@ static int rpc_channel_rpch_init(RpcClient* client, RpcChannel* channel, const c
+ 	    !http_context_set_cache_control(http, "no-cache") ||
+ 	    !http_context_set_connection(http, "Keep-Alive") ||
+ 	    !http_context_set_user_agent(http, "MSRPC") ||
+-	    !http_context_set_host(http, settings->GatewayHostname))
++	    !http_context_set_host(http,
++	                           freerdp_gateway_hostname_for(settings, FREERDP_GATEWAY_HOST_HTTP)))
+ 		return -1;
+ 
+ 	return 1;
+@@ -764,9 +766,7 @@ static BOOL rpc_channel_tls_connect(RpcChannel* channel, UINT32 timeout)
+ 	{
+ 		WINPR_ASSERT(settings->GatewayPort <= UINT16_MAX);
+ 		const char* gatewayConnectHostname =
+-		    freerdp_settings_get_string(settings, FreeRDP_GatewayConnectHostname);
+-		if (!gatewayConnectHostname || (gatewayConnectHostname[0] == '\0'))
+-			gatewayConnectHostname = settings->GatewayHostname;
++		    freerdp_gateway_hostname_for(settings, FREERDP_GATEWAY_HOST_TRANSPORT);
+ 		if (!proxy_connect(context, bufferedBio, proxyUsername, proxyPassword,
+ 		                   gatewayConnectHostname, (UINT16)settings->GatewayPort))
+ 		{
+@@ -781,7 +781,7 @@ static BOOL rpc_channel_tls_connect(RpcChannel* channel, UINT32 timeout)
+ 	if (!tls)
+ 		return FALSE;
+ 
+-	tls->hostname = settings->GatewayHostname;
++	tls->hostname = freerdp_gateway_hostname_for(settings, FREERDP_GATEWAY_HOST_TLS);
+ 	tls->port = WINPR_ASSERTING_INT_CAST(int32_t, MIN(UINT16_MAX, settings->GatewayPort));
+ 	tls->isGatewayTransport = TRUE;
+ 	int tlsStatus = freerdp_tls_connect(tls, bufferedBio);
+diff --git a/libfreerdp/core/gateway/rpc_bind.c b/libfreerdp/core/gateway/rpc_bind.c
+index 3a055eb50..4be7d6af0 100644
+--- a/libfreerdp/core/gateway/rpc_bind.c
++++ b/libfreerdp/core/gateway/rpc_bind.c
+@@ -28,6 +28,7 @@
+ #include <freerdp/log.h>
+ 
+ #include "rpc_client.h"
++#include "identity.h"
+ 
+ #include "rts.h"
+ 
+@@ -153,7 +154,7 @@ static int rpc_bind_setup(rdpRpc* rpc)
+ 	                                FreeRDP_GatewayDomain, FreeRDP_GatewayPassword))
+ 		return -1;
+ 
+-	const char* GatewayHostname = freerdp_settings_get_string(settings, FreeRDP_GatewayHostname);
++	const char* GatewayHostname = freerdp_gateway_hostname_for(settings, FREERDP_GATEWAY_HOST_SPN);
+ 	const char* GatewayUsername = freerdp_settings_get_string(settings, FreeRDP_GatewayUsername);
+ 
+ 	SEC_WINNT_AUTH_IDENTITY* identityArg = (GatewayUsername ? &identity : nullptr);
+diff --git a/libfreerdp/core/gateway/rpc_client.c b/libfreerdp/core/gateway/rpc_client.c
+index b05bf34ca..655f90516 100644
+--- a/libfreerdp/core/gateway/rpc_client.c
++++ b/libfreerdp/core/gateway/rpc_client.c
+@@ -31,6 +31,7 @@
+ #include <winpr/stream.h>
+ 
+ #include "http.h"
++#include "identity.h"
+ #include "ncacn_http.h"
+ 
+ #include "rpc_bind.h"
+@@ -1180,9 +1181,7 @@ static BOOL rpc_client_prepare_gateway(rdpSettings* settings, char** host, UINT1
+ 	else
+ 	{
+ 		const char* peerHostname =
+-		    freerdp_settings_get_string(settings, FreeRDP_GatewayConnectHostname);
+-		if (!peerHostname || (peerHostname[0] == '\0'))
+-			peerHostname = freerdp_settings_get_string(settings, FreeRDP_GatewayHostname);
++		    freerdp_gateway_hostname_for(settings, FREERDP_GATEWAY_HOST_TRANSPORT);
+ 		const char* proxyUsername = freerdp_settings_get_string(settings, FreeRDP_GatewayUsername);
+ 		const char* proxyPassword = freerdp_settings_get_string(settings, FreeRDP_GatewayPassword);
+ 		*port = (UINT16)freerdp_settings_get_uint32(settings, FreeRDP_GatewayPort);
+diff --git a/libfreerdp/core/tcp.c b/libfreerdp/core/tcp.c
+index fd49df890..51cb2f7aa 100644
+--- a/libfreerdp/core/tcp.c
++++ b/libfreerdp/core/tcp.c
+@@ -797,6 +797,16 @@ struct addrinfo* freerdp_tcp_resolve_host(const char* hostname, int port, int ai
+ #define FREERDP_RESOLVE_MAX_WORKERS 8
+ #define FREERDP_RESOLVE_CANCEL_SLICE_MS 50
+ 
++typedef struct
++{
++	void* userData;
++	UINT64 (*now)(void* userData);
++	BOOL (*cancelled)(void* userData);
++	int (*resolve)(void* userData, const char* hostname, const char* service,
++	               const struct addrinfo* hints, struct addrinfo** result);
++	void (*freeResult)(void* userData, struct addrinfo* result);
++} FREERDP_RESOLVE_OPS;
++
+ typedef struct
+ {
+ 	volatile LONG references;
+@@ -805,6 +815,10 @@ typedef struct
+ 	int aiFlags;
+ 	int status;
+ 	struct addrinfo* result;
++	void* resolverUserData;
++	int (*resolve)(void* userData, const char* hostname, const char* service,
++	               const struct addrinfo* hints, struct addrinfo** result);
++	void (*freeResult)(void* userData, struct addrinfo* result);
+ } FREERDP_RESOLVE_STATE;
+ 
+ typedef enum
+@@ -818,6 +832,35 @@ typedef enum
+ 
+ static volatile LONG gFreerdpActiveResolvers = 0;
+ 
++static UINT64 freerdp_tcp_resolver_default_now(WINPR_ATTR_UNUSED void* userData)
++{
++	return GetTickCount64();
++}
++
++static BOOL freerdp_tcp_resolver_default_cancelled(void* userData)
++{
++	return freerdp_shall_disconnect_context((rdpContext*)userData);
++}
++
++static int freerdp_tcp_resolver_default_resolve(WINPR_ATTR_UNUSED void* userData,
++                                                const char* hostname, const char* service,
++                                                const struct addrinfo* hints,
++                                                struct addrinfo** result)
++{
++	return getaddrinfo(hostname, service, hints, result);
++}
++
++static void freerdp_tcp_resolver_default_free(WINPR_ATTR_UNUSED void* userData,
++                                              struct addrinfo* result)
++{
++	freeaddrinfo(result);
++}
++
++static BOOL freerdp_tcp_resolver_ops_valid(const FREERDP_RESOLVE_OPS* ops)
++{
++	return ops && ops->now && ops->cancelled && ops->resolve && ops->freeResult;
++}
++
+ static BOOL freerdp_tcp_resolver_try_acquire(void)
+ {
+ 	if (InterlockedIncrement(&gFreerdpActiveResolvers) <= FREERDP_RESOLVE_MAX_WORKERS)
+@@ -836,7 +879,7 @@ static void freerdp_tcp_resolve_state_release(FREERDP_RESOLVE_STATE* state)
+ 	if (!state || (InterlockedDecrement(&state->references) != 0))
+ 		return;
+ 	if (state->result)
+-		freeaddrinfo(state->result);
++		state->freeResult(state->resolverUserData, state->result);
+ 	free(state->hostname);
+ 	free(state);
+ }
+@@ -848,21 +891,23 @@ static DWORD freerdp_tcp_resolve_worker(LPVOID argument)
+ 	hints.ai_family = AF_UNSPEC;
+ 	hints.ai_socktype = SOCK_STREAM;
+ 	hints.ai_flags = state->aiFlags;
+-	state->status = getaddrinfo(state->hostname, state->service, &hints, &state->result);
++	state->status = state->resolve(state->resolverUserData, state->hostname, state->service, &hints,
++	                               &state->result);
+ 	freerdp_tcp_resolver_release();
+ 	freerdp_tcp_resolve_state_release(state);
+ 	return 0;
+ }
+ 
+-static FREERDP_RESOLVE_STATUS freerdp_tcp_resolve_host_bounded(rdpContext* context,
+-                                                               const char* hostname, int port,
+-                                                               int aiFlags, UINT64 deadline,
+-                                                               struct addrinfo** result)
++static FREERDP_RESOLVE_STATUS
++freerdp_tcp_resolve_host_bounded_with_ops(const char* hostname, int port, int aiFlags,
++                                          UINT64 deadline, struct addrinfo** result,
++                                          const FREERDP_RESOLVE_OPS* ops)
+ {
+-	WINPR_ASSERT(context);
+ 	WINPR_ASSERT(hostname);
+ 	WINPR_ASSERT(result);
+ 	*result = nullptr;
++	if (!freerdp_tcp_resolver_ops_valid(ops))
++		return FREERDP_RESOLVE_RESOURCE_EXHAUSTED;
+ 	if (!freerdp_tcp_resolver_try_acquire())
+ 	{
+ 		return FREERDP_RESOLVE_RESOURCE_EXHAUSTED;
+@@ -878,6 +923,9 @@ static FREERDP_RESOLVE_STATUS freerdp_tcp_resolve_host_bounded(rdpContext* conte
+ 	state->hostname = _strdup(hostname);
+ 	state->aiFlags = aiFlags;
+ 	state->status = EAI_FAIL;
++	state->resolverUserData = ops->userData;
++	state->resolve = ops->resolve;
++	state->freeResult = ops->freeResult;
+ 	if (!state->hostname || (sprintf_s(state->service, sizeof(state->service), "%d", port) < 0))
+ 	{
+ 		freerdp_tcp_resolver_release();
+@@ -898,12 +946,12 @@ static FREERDP_RESOLVE_STATUS freerdp_tcp_resolve_host_bounded(rdpContext* conte
+ 	FREERDP_RESOLVE_STATUS outcome = FREERDP_RESOLVE_FAILED;
+ 	for (;;)
+ 	{
+-		if (freerdp_shall_disconnect_context(context))
++		if (ops->cancelled(ops->userData))
+ 		{
+ 			outcome = FREERDP_RESOLVE_CANCELLED;
+ 			break;
+ 		}
+-		const UINT64 now = GetTickCount64();
++		const UINT64 now = ops->now(ops->userData);
+ 		if ((deadline != UINT64_MAX) && (now >= deadline))
+ 		{
+ 			outcome = FREERDP_RESOLVE_TIMED_OUT;
+@@ -931,6 +979,22 @@ static FREERDP_RESOLVE_STATUS freerdp_tcp_resolve_host_bounded(rdpContext* conte
+ 	return outcome;
+ }
+ 
++static FREERDP_RESOLVE_STATUS freerdp_tcp_resolve_host_bounded(rdpContext* context,
++                                                               const char* hostname, int port,
++                                                               int aiFlags, UINT64 deadline,
++                                                               struct addrinfo** result)
++{
++	WINPR_ASSERT(context);
++	FREERDP_RESOLVE_OPS ops = WINPR_C_ARRAY_INIT;
++	ops.userData = context;
++	ops.now = freerdp_tcp_resolver_default_now;
++	ops.cancelled = freerdp_tcp_resolver_default_cancelled;
++	ops.resolve = freerdp_tcp_resolver_default_resolve;
++	ops.freeResult = freerdp_tcp_resolver_default_free;
++	return freerdp_tcp_resolve_host_bounded_with_ops(hostname, port, aiFlags, deadline, result,
++	                                                 &ops);
++}
++
+ static BOOL freerdp_tcp_connect_timeout(rdpContext* context, int sockfd, struct sockaddr* addr,
+                                         size_t addrlen, UINT32 timeout)
+ {
+@@ -1703,6 +1767,24 @@ int freerdp_tcp_test_happy_eyeballs(struct addrinfo* result, UINT64 deadline,
+ 	return freerdp_host_connect_happy_eyeballs_with_ops(0, "test.invalid", result, deadline, ops);
+ }
+ 
++FREERDP_TCP_TEST_RESOLVE_STATUS
++freerdp_tcp_test_resolve_host_bounded(const char* hostname, int port, UINT64 deadline,
++                                      struct addrinfo** result,
++                                      const FREERDP_TCP_RESOLVE_TEST_OPS* testOps)
++{
++	if (!testOps)
++		return FREERDP_TCP_TEST_RESOLVE_RESOURCE_EXHAUSTED;
++
++	FREERDP_RESOLVE_OPS ops = WINPR_C_ARRAY_INIT;
++	ops.userData = testOps->userData;
++	ops.now = testOps->now;
++	ops.cancelled = testOps->cancelled;
++	ops.resolve = testOps->resolve;
++	ops.freeResult = testOps->freeResult;
++	return (FREERDP_TCP_TEST_RESOLVE_STATUS)freerdp_tcp_resolve_host_bounded_with_ops(
++	    hostname, port, 0, deadline, result, &ops);
++}
++
+ BOOL freerdp_tcp_test_resolver_try_acquire(void)
+ {
+ 	return freerdp_tcp_resolver_try_acquire();
+@@ -1712,6 +1794,11 @@ void freerdp_tcp_test_resolver_release(void)
+ {
+ 	freerdp_tcp_resolver_release();
+ }
++
++LONG freerdp_tcp_test_active_resolvers(void)
++{
++	return gFreerdpActiveResolvers;
++}
+ #endif
+ #endif
+ 
+diff --git a/libfreerdp/core/tcp.h b/libfreerdp/core/tcp.h
+index 424925c67..a344490e9 100644
+--- a/libfreerdp/core/tcp.h
++++ b/libfreerdp/core/tcp.h
+@@ -60,14 +60,41 @@ typedef struct
+ } FREERDP_TCP_CONNECT_OPS;
+ 
+ #if defined(BUILD_TESTING_INTERNAL)
++typedef struct
++{
++	void* userData;
++	UINT64 (*now)(void* userData);
++	BOOL (*cancelled)(void* userData);
++	int (*resolve)(void* userData, const char* hostname, const char* service,
++	               const struct addrinfo* hints, struct addrinfo** result);
++	void (*freeResult)(void* userData, struct addrinfo* result);
++} FREERDP_TCP_RESOLVE_TEST_OPS;
++
++typedef enum
++{
++	FREERDP_TCP_TEST_RESOLVE_READY = 0,
++	FREERDP_TCP_TEST_RESOLVE_FAILED,
++	FREERDP_TCP_TEST_RESOLVE_RESOURCE_EXHAUSTED,
++	FREERDP_TCP_TEST_RESOLVE_TIMED_OUT,
++	FREERDP_TCP_TEST_RESOLVE_CANCELLED
++} FREERDP_TCP_TEST_RESOLVE_STATUS;
++
+ WINPR_ATTR_NODISCARD
+ FREERDP_LOCAL int freerdp_tcp_test_happy_eyeballs(struct addrinfo* result, UINT64 deadline,
+                                                   const FREERDP_TCP_CONNECT_OPS* ops);
+ 
++WINPR_ATTR_NODISCARD
++FREERDP_LOCAL FREERDP_TCP_TEST_RESOLVE_STATUS freerdp_tcp_test_resolve_host_bounded(
++    const char* hostname, int port, UINT64 deadline, struct addrinfo** result,
++    const FREERDP_TCP_RESOLVE_TEST_OPS* ops);
++
+ WINPR_ATTR_NODISCARD
+ FREERDP_LOCAL BOOL freerdp_tcp_test_resolver_try_acquire(void);
+ 
+ FREERDP_LOCAL void freerdp_tcp_test_resolver_release(void);
++
++WINPR_ATTR_NODISCARD
++FREERDP_LOCAL LONG freerdp_tcp_test_active_resolvers(void);
+ #endif
+ #endif
+ 
+diff --git a/libfreerdp/core/test/CMakeLists.txt b/libfreerdp/core/test/CMakeLists.txt
+index db1564222..780ad7d09 100644
+--- a/libfreerdp/core/test/CMakeLists.txt
++++ b/libfreerdp/core/test/CMakeLists.txt
+@@ -12,7 +12,7 @@ set(TESTS TestVersion.c TestSettings.c TestUtils.c)
+ if(BUILD_TESTING_INTERNAL)
+   list(APPEND TESTS TestStreamDump.c)
+   if(NOT WIN32 AND WINPR_HAVE_POLL_H)
+-    list(APPEND TESTS TestTcpHappyEyeballs.c)
++    list(APPEND TESTS TestTcpHappyEyeballs.c TestGatewayIpv6Identity.c)
+   endif()
+ endif()
+ 
+diff --git a/libfreerdp/core/test/TestGatewayIpv6Identity.c b/libfreerdp/core/test/TestGatewayIpv6Identity.c
+new file mode 100644
+index 000000000..1b5062f7b
+--- /dev/null
++++ b/libfreerdp/core/test/TestGatewayIpv6Identity.c
+@@ -0,0 +1,162 @@
++#include <freerdp/config.h>
++
++#include "../credssp_auth.h"
++#include "../gateway/http.h"
++#include "../gateway/identity.h"
++#include "../gateway/rpc_client.h"
++
++#include <stdio.h>
++#include <string.h>
++
++#define TEST_CHECK(_condition)                                                                   \
++	do                                                                                           \
++	{                                                                                            \
++		if (!(_condition))                                                                       \
++		{                                                                                        \
++			(void)fprintf(stderr, "%s:%d: check failed: %s\n", __FILE__, __LINE__, #_condition); \
++			return FALSE;                                                                        \
++		}                                                                                        \
++	} while (0)
++
++static BOOL buffer_contains(const BYTE* buffer, size_t length, const char* expected)
++{
++	if (!buffer || !expected)
++		return FALSE;
++	const size_t expectedLength = strlen(expected);
++	if (expectedLength > length)
++		return FALSE;
++	for (size_t offset = 0; offset <= length - expectedLength; offset++)
++	{
++		if (memcmp(&buffer[offset], expected, expectedLength) == 0)
++			return TRUE;
++	}
++	return FALSE;
++}
++
++static BOOL serialized_host_equals(const char* hostname, const char* expected)
++{
++	BOOL result = FALSE;
++	HttpContext* http = http_context_new();
++	HttpRequest* request = http_request_new();
++	wStream* wire = nullptr;
++	if (!http || !request)
++		goto fail;
++	if (!http_context_set_host(http, hostname) || !http_context_set_pragma(http, "no-cache") ||
++	    !http_context_set_connection(http, "Keep-Alive") ||
++	    !http_request_set_method(request, "GET") || !http_request_set_uri(request, "/") ||
++	    !http_request_set_content_length(request, 0))
++		goto fail;
++	wire = http_request_write(http, request);
++	if (!wire)
++		goto fail;
++	result = buffer_contains(Stream_Buffer(wire), Stream_Length(wire), expected);
++
++fail:
++	Stream_Free(wire, TRUE);
++	http_request_free(request);
++	http_context_free(http);
++	return result;
++}
++
++static BOOL test_gateway_transport_is_separate_from_identity(void)
++{
++	BOOL result = FALSE;
++	rdpSettings* settings = freerdp_settings_new(0);
++	RpcClient* client = nullptr;
++	if (!settings)
++		return FALSE;
++	if (!freerdp_settings_set_string(settings, FreeRDP_GatewayHostname, "gateway.example.test") ||
++	    !freerdp_settings_set_string(settings, FreeRDP_GatewayConnectHostname, "fe80::42%en0") ||
++	    !freerdp_settings_set_uint32(settings, FreeRDP_GatewayPort, 443))
++		goto fail;
++
++	const char* transport = freerdp_gateway_hostname_for(settings, FREERDP_GATEWAY_HOST_TRANSPORT);
++	const char* tls = freerdp_gateway_hostname_for(settings, FREERDP_GATEWAY_HOST_TLS);
++	const char* http = freerdp_gateway_hostname_for(settings, FREERDP_GATEWAY_HOST_HTTP);
++	const char* spn = freerdp_gateway_hostname_for(settings, FREERDP_GATEWAY_HOST_SPN);
++	if (!transport || (strcmp(transport, "fe80::42%en0") != 0) || !tls ||
++	    (strcmp(tls, "gateway.example.test") != 0) || !http ||
++	    (strcmp(http, "gateway.example.test") != 0) || !spn ||
++	    (strcmp(spn, "gateway.example.test") != 0))
++		goto fail;
++
++	rdpContext context = WINPR_C_ARRAY_INIT;
++	context.settings = settings;
++	client = rpc_client_new(&context, 4096);
++	if (!client || !client->host || (strcmp(client->host, "fe80::42%en0") != 0) ||
++	    (client->port != 443))
++		goto fail;
++
++	if (!freerdp_settings_set_string(settings, FreeRDP_GatewayConnectHostname, ""))
++		goto fail;
++	transport = freerdp_gateway_hostname_for(settings, FREERDP_GATEWAY_HOST_TRANSPORT);
++	if (!transport || (strcmp(transport, "gateway.example.test") != 0))
++		goto fail;
++	result = TRUE;
++
++fail:
++	rpc_client_free(client);
++	freerdp_settings_free(settings);
++	return result;
++}
++
++static BOOL test_gateway_http_host_uses_identity_authority(void)
++{
++	BOOL identitySerialized = FALSE;
++	rdpSettings* settings = freerdp_settings_new(0);
++	if (!settings)
++		return FALSE;
++	if (freerdp_settings_set_string(settings, FreeRDP_GatewayHostname, "gateway.example.test") &&
++	    freerdp_settings_set_string(settings, FreeRDP_GatewayConnectHostname, "fe80::42%en0"))
++	{
++		const char* http = freerdp_gateway_hostname_for(settings, FREERDP_GATEWAY_HOST_HTTP);
++		identitySerialized = serialized_host_equals(http, "Host: gateway.example.test\r\n");
++	}
++	freerdp_settings_free(settings);
++	TEST_CHECK(identitySerialized);
++	TEST_CHECK(serialized_host_equals("2001:db8::42", "Host: [2001:db8::42]\r\n"));
++	TEST_CHECK(serialized_host_equals("fe80::42%en0", "Host: [fe80::42%en0]\r\n"));
++	return TRUE;
++}
++
++static BOOL test_gateway_spn_uses_unmodified_identity(void)
++{
++	BOOL result = FALSE;
++	char spn[128] = WINPR_C_ARRAY_INIT;
++	rdpSettings* settings = freerdp_settings_new(0);
++	rdpCredsspAuth* auth = nullptr;
++	if (!settings)
++		return FALSE;
++	if (!freerdp_settings_set_string(settings, FreeRDP_GatewayHostname, "gateway.example.test") ||
++	    !freerdp_settings_set_string(settings, FreeRDP_GatewayConnectHostname, "fe80::42%en0"))
++		goto fail;
++
++	rdpContext context = WINPR_C_ARRAY_INIT;
++	context.settings = settings;
++	auth = credssp_auth_new(&context);
++	if (!auth)
++		goto fail;
++	if (!credssp_auth_set_spn(auth, "HTTP",
++	                          freerdp_gateway_hostname_for(settings, FREERDP_GATEWAY_HOST_SPN)) ||
++	    !credssp_auth_test_get_spn_utf8(auth, spn, ARRAYSIZE(spn)))
++		goto fail;
++	result = strcmp(spn, "HTTP/gateway.example.test") == 0;
++
++fail:
++	credssp_auth_free(auth);
++	freerdp_settings_free(settings);
++	return result;
++}
++
++int TestGatewayIpv6Identity(int argc, char* argv[])
++{
++	WINPR_UNUSED(argc);
++	WINPR_UNUSED(argv);
++	if (!test_gateway_transport_is_separate_from_identity())
++		return -1;
++	if (!test_gateway_http_host_uses_identity_authority())
++		return -1;
++	if (!test_gateway_spn_uses_unmodified_identity())
++		return -1;
++	return 0;
++}
+diff --git a/libfreerdp/core/test/TestTcpHappyEyeballs.c b/libfreerdp/core/test/TestTcpHappyEyeballs.c
+index 3a966ad37..90b1eedd0 100644
+--- a/libfreerdp/core/test/TestTcpHappyEyeballs.c
++++ b/libfreerdp/core/test/TestTcpHappyEyeballs.c
+@@ -6,6 +6,8 @@
+ #include <stdio.h>
+ #include <string.h>
+ 
++#include <winpr/interlocked.h>
++
+ #define TEST_CHECK(_condition)                                                                   \
+ 	do                                                                                           \
+ 	{                                                                                            \
+@@ -39,6 +41,17 @@ typedef struct
+ 	size_t count;
+ } ADDRESS_CHAIN;
+ 
++typedef struct
++{
++	UINT64 now;
++	BOOL cancelled;
++	HANDLE releaseWorker;
++	HANDLE resultFreed;
++	volatile LONG resolveCalls;
++	volatile LONG freeCalls;
++	BOOL argumentsValid;
++} FAKE_RESOLVE_STATE;
++
+ static void address_chain_add(ADDRESS_CHAIN* chain, int family, BYTE suffix)
+ {
+ 	struct addrinfo* entry = &chain->entries[chain->count];
+@@ -173,6 +186,94 @@ static FREERDP_TCP_CONNECT_OPS fake_ops(FAKE_CONNECT_STATE* state)
+ 	return ops;
+ }
+ 
++static UINT64 fake_resolver_now(void* userData)
++{
++	return ((FAKE_RESOLVE_STATE*)userData)->now;
++}
++
++static BOOL fake_resolver_cancelled(void* userData)
++{
++	return ((FAKE_RESOLVE_STATE*)userData)->cancelled;
++}
++
++static int fake_resolve(void* userData, const char* hostname, const char* service,
++                        const struct addrinfo* hints, struct addrinfo** result)
++{
++	FAKE_RESOLVE_STATE* state = (FAKE_RESOLVE_STATE*)userData;
++	(void)InterlockedIncrement(&state->resolveCalls);
++	state->argumentsValid = hostname && (strcmp(hostname, "gateway.invalid") == 0) && service &&
++	                        (strcmp(service, "3389") == 0) && hints &&
++	                        (hints->ai_family == AF_UNSPEC) && (hints->ai_socktype == SOCK_STREAM);
++	if (WaitForSingleObject(state->releaseWorker, 5000) != WAIT_OBJECT_0)
++		return EAI_AGAIN;
++
++	struct addrinfo* entry = (struct addrinfo*)calloc(1, sizeof(*entry));
++	struct sockaddr_in6* address = (struct sockaddr_in6*)calloc(1, sizeof(*address));
++	if (!entry || !address)
++	{
++		free(entry);
++		free(address);
++		return EAI_MEMORY;
++	}
++	address->sin6_family = AF_INET6;
++	address->sin6_port = htons(3389);
++	address->sin6_addr.s6_addr[0] = 0x20;
++	address->sin6_addr.s6_addr[1] = 0x01;
++	address->sin6_addr.s6_addr[2] = 0x0d;
++	address->sin6_addr.s6_addr[3] = 0xb8;
++	address->sin6_addr.s6_addr[15] = 0x55;
++	entry->ai_family = AF_INET6;
++	entry->ai_socktype = SOCK_STREAM;
++	entry->ai_protocol = IPPROTO_TCP;
++	entry->ai_addr = (struct sockaddr*)address;
++	entry->ai_addrlen = sizeof(*address);
++	*result = entry;
++	return 0;
++}
++
++static void fake_free_result(void* userData, struct addrinfo* result)
++{
++	FAKE_RESOLVE_STATE* state = (FAKE_RESOLVE_STATE*)userData;
++	if (result)
++	{
++		free(result->ai_addr);
++		free(result);
++	}
++	(void)InterlockedIncrement(&state->freeCalls);
++	(void)SetEvent(state->resultFreed);
++}
++
++static FREERDP_TCP_RESOLVE_TEST_OPS fake_resolver_ops(FAKE_RESOLVE_STATE* state)
++{
++	FREERDP_TCP_RESOLVE_TEST_OPS ops = WINPR_C_ARRAY_INIT;
++	ops.userData = state;
++	ops.now = fake_resolver_now;
++	ops.cancelled = fake_resolver_cancelled;
++	ops.resolve = fake_resolve;
++	ops.freeResult = fake_free_result;
++	return ops;
++}
++
++static BOOL fake_resolver_state_init(FAKE_RESOLVE_STATE* state, BOOL releaseWorker)
++{
++	WINPR_ASSERT(state);
++	ZeroMemory(state, sizeof(*state));
++	state->now = 100;
++	state->releaseWorker = CreateEvent(nullptr, TRUE, releaseWorker, nullptr);
++	state->resultFreed = CreateEvent(nullptr, TRUE, FALSE, nullptr);
++	return state->releaseWorker && state->resultFreed;
++}
++
++static void fake_resolver_state_uninit(FAKE_RESOLVE_STATE* state)
++{
++	if (!state)
++		return;
++	if (state->releaseWorker)
++		(void)CloseHandle(state->releaseWorker);
++	if (state->resultFreed)
++		(void)CloseHandle(state->resultFreed);
++}
++
+ static BOOL test_late_alternate_and_loser_cleanup(void)
+ {
+ 	ADDRESS_CHAIN chain = WINPR_C_ARRAY_INIT;
+@@ -260,6 +361,60 @@ static BOOL test_resolver_gate_is_bounded(void)
+ 	return TRUE;
+ }
+ 
++static BOOL test_resolver_ready_transfers_result_ownership(void)
++{
++	FAKE_RESOLVE_STATE state = WINPR_C_ARRAY_INIT;
++	TEST_CHECK(fake_resolver_state_init(&state, TRUE));
++	FREERDP_TCP_RESOLVE_TEST_OPS ops = fake_resolver_ops(&state);
++	struct addrinfo* result = nullptr;
++	const FREERDP_TCP_TEST_RESOLVE_STATUS status =
++	    freerdp_tcp_test_resolve_host_bounded("gateway.invalid", 3389, 1000, &result, &ops);
++	TEST_CHECK(status == FREERDP_TCP_TEST_RESOLVE_READY);
++	TEST_CHECK(result != nullptr);
++	TEST_CHECK(state.argumentsValid);
++	TEST_CHECK(state.resolveCalls == 1);
++	TEST_CHECK(state.freeCalls == 0);
++	TEST_CHECK(freerdp_tcp_test_active_resolvers() == 0);
++	fake_free_result(&state, result);
++	TEST_CHECK(state.freeCalls == 1);
++	fake_resolver_state_uninit(&state);
++	return TRUE;
++}
++
++static BOOL test_resolver_late_result_is_freed_once(FREERDP_TCP_TEST_RESOLVE_STATUS expected,
++                                                    BOOL cancelled)
++{
++	FAKE_RESOLVE_STATE state = WINPR_C_ARRAY_INIT;
++	TEST_CHECK(fake_resolver_state_init(&state, FALSE));
++	state.cancelled = cancelled;
++	FREERDP_TCP_RESOLVE_TEST_OPS ops = fake_resolver_ops(&state);
++	struct addrinfo* result = nullptr;
++	const UINT64 deadline = cancelled ? UINT64_MAX : state.now;
++	const FREERDP_TCP_TEST_RESOLVE_STATUS status =
++	    freerdp_tcp_test_resolve_host_bounded("gateway.invalid", 3389, deadline, &result, &ops);
++	TEST_CHECK(status == expected);
++	TEST_CHECK(result == nullptr);
++	TEST_CHECK(freerdp_tcp_test_active_resolvers() == 1);
++	TEST_CHECK(SetEvent(state.releaseWorker));
++	TEST_CHECK(WaitForSingleObject(state.resultFreed, 5000) == WAIT_OBJECT_0);
++	TEST_CHECK(state.argumentsValid);
++	TEST_CHECK(state.resolveCalls == 1);
++	TEST_CHECK(state.freeCalls == 1);
++	TEST_CHECK(freerdp_tcp_test_active_resolvers() == 0);
++	fake_resolver_state_uninit(&state);
++	return TRUE;
++}
++
++static BOOL test_resolver_timeout_releases_late_worker_result(void)
++{
++	return test_resolver_late_result_is_freed_once(FREERDP_TCP_TEST_RESOLVE_TIMED_OUT, FALSE);
++}
++
++static BOOL test_resolver_cancel_releases_late_worker_result(void)
++{
++	return test_resolver_late_result_is_freed_once(FREERDP_TCP_TEST_RESOLVE_CANCELLED, TRUE);
++}
++
+ int TestTcpHappyEyeballs(int argc, char* argv[])
+ {
+ 	WINPR_UNUSED(argc);
+@@ -276,5 +431,11 @@ int TestTcpHappyEyeballs(int argc, char* argv[])
+ 		return -1;
+ 	if (!test_resolver_gate_is_bounded())
+ 		return -1;
++	if (!test_resolver_ready_transfers_result_ownership())
++		return -1;
++	if (!test_resolver_timeout_releases_late_worker_result())
++		return -1;
++	if (!test_resolver_cancel_releases_late_worker_result())
++		return -1;
+ 	return 0;
+ }
+-- 
+2.54.0 (Apple Git-157)
+

@@ -5,6 +5,8 @@
 #include "vnc_certificate_probe.h"
 #include "vnc_rfb_protocol.h"
 #include "vnc_transport_policy.h"
+#include "common/happy_eyeballs_connector.h"
+#include "common/network_generation_fence.h"
 
 #include <arpa/inet.h>
 #include <climits>
@@ -22,11 +24,9 @@
 #include <array>
 #include <chrono>
 #include <cctype>
-#include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
 #include <limits>
-#include <thread>
 #include <sstream>
 
 #include <openssl/rand.h>
@@ -41,7 +41,6 @@ namespace {
 constexpr size_t kMaxHttpHeaderBytes = 64 * 1024;
 constexpr size_t kMaxWebSocketFrameBytes = 8 * 1024 * 1024;
 constexpr size_t kMaxResolvedAddresses = 16;
-constexpr int kMaxConcurrentResolvers = 8;
 constexpr int kDefaultTimeoutMs = 10000;
 
 using Clock = std::chrono::steady_clock;
@@ -71,8 +70,15 @@ bool hasTimeRemaining(const TransportDeadline& deadline, int& remainingMs) {
     return true;
 }
 
-bool isCancelled(const std::shared_ptr<std::atomic_bool>& token) {
-    return token && token->load(std::memory_order_acquire);
+bool isCancelled(const std::shared_ptr<std::atomic_bool>& token,
+                 uint64_t networkGeneration = 0) {
+    if (token && token->load(std::memory_order_acquire)) {
+        return true;
+    }
+    return networkGeneration != 0 &&
+        remotedesk::net::ProcessNetworkGenerationFence().shouldCancel(
+            remotedesk::net::NetworkGenerationSnapshot {
+                networkGeneration, true});
 }
 
 bool tlsHandshakeErrorIsVersionFailure(unsigned long error) {
@@ -95,133 +101,32 @@ bool tlsHandshakeErrorIsVersionFailure(unsigned long error) {
     return false;
 }
 
-struct TransportResolvedAddress {
-    sockaddr_storage storage {};
-    socklen_t length = 0;
-    int family = AF_UNSPEC;
-    int socktype = SOCK_STREAM;
-    int protocol = 0;
-};
-
-struct TransportResolveState {
-    std::mutex mutex;
-    std::condition_variable condition;
-    bool done = false;
-    bool abandoned = false;
-    int lookupResult = EAI_FAIL;
-    std::vector<TransportResolvedAddress> addresses;
-};
-
-std::atomic<int> g_activeTransportResolvers {0};
-
 TransportWaitStatus resolveTransportAddresses(
     const std::string& host, const std::string& port,
     const TransportDeadline& deadline,
     const std::shared_ptr<std::atomic_bool>& cancelled,
-    std::vector<TransportResolvedAddress>& addresses, int& lookupResult) {
-    const int previousResolvers = g_activeTransportResolvers.fetch_add(
-        1, std::memory_order_acq_rel);
-    if (previousResolvers >= kMaxConcurrentResolvers) {
-        g_activeTransportResolvers.fetch_sub(1, std::memory_order_acq_rel);
-        lookupResult = EAI_AGAIN;
+    uint64_t networkGeneration,
+    std::vector<remotedesk::net::ResolvedAddress>& addresses, int& lookupResult) {
+    auto resolved = remotedesk::net::ResolveTcpAddresses(
+        host, port, deadline.value,
+        [cancelled, networkGeneration]() {
+            return isCancelled(cancelled, networkGeneration);
+        }, AF_UNSPEC,
+        kMaxResolvedAddresses);
+    lookupResult = resolved.gaiError;
+    addresses = std::move(resolved.addresses);
+    switch (resolved.status) {
+    case remotedesk::net::ResolveStatus::Ready:
+        return addresses.empty() ? TransportWaitStatus::Failed : TransportWaitStatus::Ready;
+    case remotedesk::net::ResolveStatus::Cancelled:
+        return TransportWaitStatus::Cancelled;
+    case remotedesk::net::ResolveStatus::TimedOut:
+        return TransportWaitStatus::TimedOut;
+    case remotedesk::net::ResolveStatus::Failed:
+    case remotedesk::net::ResolveStatus::ResourceExhausted:
         return TransportWaitStatus::Failed;
     }
-    auto state = std::make_shared<TransportResolveState>();
-    std::thread resolver;
-    try {
-        resolver = std::thread([state, host, port]() {
-            struct ResolverCounter {
-                ~ResolverCounter() {
-                    g_activeTransportResolvers.fetch_sub(1, std::memory_order_acq_rel);
-                }
-            } resolverCounter;
-            int result = EAI_FAIL;
-            addrinfo* resolved = nullptr;
-            std::vector<TransportResolvedAddress> copied;
-            try {
-                addrinfo hints {};
-                hints.ai_socktype = SOCK_STREAM;
-                hints.ai_family = AF_UNSPEC;
-                hints.ai_flags = AI_ADDRCONFIG;
-                result = ::getaddrinfo(host.c_str(), port.c_str(), &hints, &resolved);
-                if (result == 0 && resolved != nullptr) {
-                    for (addrinfo* item = resolved;
-                         item != nullptr && copied.size() < kMaxResolvedAddresses;
-                         item = item->ai_next) {
-                        if (item->ai_addr == nullptr || item->ai_addrlen <= 0 ||
-                            item->ai_addrlen > sizeof(sockaddr_storage)) {
-                            continue;
-                        }
-                        TransportResolvedAddress address;
-                        std::memcpy(&address.storage, item->ai_addr,
-                                    static_cast<size_t>(item->ai_addrlen));
-                        address.length = static_cast<socklen_t>(item->ai_addrlen);
-                        address.family = item->ai_family;
-                        address.socktype = item->ai_socktype;
-                        address.protocol = item->ai_protocol;
-                        copied.push_back(address);
-                    }
-                }
-            } catch (...) {
-                // A resolver worker must publish failure instead of allowing
-                // a vector allocation exception to terminate the process.
-                result = EAI_MEMORY;
-                copied.clear();
-            }
-            if (resolved != nullptr) {
-                ::freeaddrinfo(resolved);
-            }
-            {
-                std::lock_guard<std::mutex> lock(state->mutex);
-                state->lookupResult = result;
-                if (!state->abandoned) {
-                    state->addresses = std::move(copied);
-                }
-                state->done = true;
-            }
-            state->condition.notify_one();
-        });
-    } catch (...) {
-        g_activeTransportResolvers.fetch_sub(1, std::memory_order_acq_rel);
-        lookupResult = EAI_MEMORY;
-        return TransportWaitStatus::Failed;
-    }
-
-    TransportWaitStatus status = TransportWaitStatus::Ready;
-    bool resolverDone = false;
-    {
-        std::unique_lock<std::mutex> lock(state->mutex);
-        while (!state->done) {
-            if (isCancelled(cancelled)) {
-                state->abandoned = true;
-                status = TransportWaitStatus::Cancelled;
-                break;
-            }
-            int remainingMs = 0;
-            if (!hasTimeRemaining(deadline, remainingMs)) {
-                state->abandoned = true;
-                status = TransportWaitStatus::TimedOut;
-                break;
-            }
-            state->condition.wait_for(lock,
-                std::chrono::milliseconds(std::min(remainingMs, 50)));
-        }
-        const bool done = state->done;
-        resolverDone = done;
-        if (status == TransportWaitStatus::Ready) {
-            lookupResult = state->lookupResult;
-            addresses = std::move(state->addresses);
-            if (lookupResult != 0 || addresses.empty()) {
-                status = TransportWaitStatus::Failed;
-            }
-        }
-    }
-    if (status == TransportWaitStatus::Ready || resolverDone) {
-        resolver.join();
-    } else {
-        resolver.detach();
-    }
-    return status;
+    return TransportWaitStatus::Failed;
 }
 
 std::string errnoMessage(const char* operation) {
@@ -233,7 +138,8 @@ std::string errnoMessage(const char* operation) {
 
 bool waitForFd(int fd, short events, const TransportDeadline& deadline,
                std::string& error,
-               const std::shared_ptr<std::atomic_bool>& cancelled = nullptr) {
+               const std::shared_ptr<std::atomic_bool>& cancelled = nullptr,
+               uint64_t networkGeneration = 0) {
     if (fd < 0) {
         error = "socket is closed";
         return false;
@@ -243,7 +149,7 @@ bool waitForFd(int fd, short events, const TransportDeadline& deadline,
     pollFd.events = events;
     pollFd.revents = 0;
     while (true) {
-        if (isCancelled(cancelled)) {
+        if (isCancelled(cancelled, networkGeneration)) {
             error = "E-VNC-CERT-CANCELLED";
             return false;
         }
@@ -272,11 +178,13 @@ bool waitForFd(int fd, short events, const TransportDeadline& deadline,
 }
 
 bool waitForFd(int fd, short events, int timeoutMs, std::string& error,
-               const std::shared_ptr<std::atomic_bool>& cancelled = nullptr) {
+               const std::shared_ptr<std::atomic_bool>& cancelled = nullptr,
+               uint64_t networkGeneration = 0) {
     const int boundedTimeout = timeoutMs <= 0 ? kDefaultTimeoutMs : timeoutMs;
     const TransportDeadline deadline {
         Clock::now() + std::chrono::milliseconds(boundedTimeout)};
-    return waitForFd(fd, events, deadline, error, cancelled);
+    return waitForFd(fd, events, deadline, error, cancelled,
+                     networkGeneration);
 }
 
 std::string trimAscii(std::string value) {
@@ -289,13 +197,6 @@ std::string trimAscii(std::string value) {
         ++start;
     }
     return value.substr(start);
-}
-
-bool isIpLiteral(const std::string& value) {
-    in_addr ipv4 {};
-    in6_addr ipv6 {};
-    return inet_pton(AF_INET, value.c_str(), &ipv4) == 1 ||
-        inet_pton(AF_INET6, value.c_str(), &ipv6) == 1;
 }
 
 void setTlsIoError(std::string& error, bool writing, const std::string& waitError = "") {
@@ -321,7 +222,12 @@ VncTransport::~VncTransport() {
 bool VncTransport::connect(const VncTransportConfig& config, std::string& error) {
     close();
     cancelled_ = config.cancelled;
-    if (isCancelled(config.cancelled)) {
+    networkGeneration_ = config.networkGeneration;
+#if defined(RDP_TESTS_ONLY)
+    afterConnectRestoreForTesting_ =
+        config.afterConnectRestoreForTesting;
+#endif
+    if (isCancelled(config.cancelled, config.networkGeneration)) {
         error = "E-VNC-CERT-CANCELLED";
         return false;
     }
@@ -333,9 +239,26 @@ bool VncTransport::connect(const VncTransportConfig& config, std::string& error)
         error = "invalid VNC transport endpoint";
         return false;
     }
+    if (config.tls) {
+        std::string identity;
+        bool sendSni = false;
+        if (!vncResolveCertificateIdentity(
+                config.host, config.serverName, identity, sendSni)) {
+            error = "invalid VNC TLS identity";
+            return false;
+        }
+    }
+    if (config.transport == "websocket_gateway") {
+        std::string authority;
+        if (!vncFormatWebSocketAuthority(config.host, config.port, authority)) {
+            error = "invalid WebSocket gateway endpoint";
+            return false;
+        }
+    }
     const int timeoutMs = config.connectTimeoutMs <= 0 ? kDefaultTimeoutMs : config.connectTimeoutMs;
     const auto deadline = Clock::now() + std::chrono::milliseconds(timeoutMs);
-    if (!connectTcp(config.host, config.port, deadline, config.cancelled, error)) {
+    if (!connectTcp(config.host, config.port, deadline, config.cancelled,
+                    config.networkGeneration, error)) {
         close();
         return false;
     }
@@ -359,14 +282,17 @@ bool VncTransport::connect(const VncTransportConfig& config, std::string& error)
 bool VncTransport::connectTcp(const std::string& host, int port,
                               std::chrono::steady_clock::time_point deadlineValue,
                               const std::shared_ptr<std::atomic_bool>& cancelled,
+                              uint64_t networkGeneration,
                               std::string& error) {
     const TransportDeadline deadline {deadlineValue};
     const std::string portText = std::to_string(port);
-    std::vector<TransportResolvedAddress> addresses;
+    std::vector<remotedesk::net::ResolvedAddress> addresses;
     int lookup = EAI_FAIL;
     const TransportWaitStatus resolveStatus = resolveTransportAddresses(
-        host, portText, deadline, cancelled, addresses, lookup);
-    if (resolveStatus == TransportWaitStatus::Cancelled || isCancelled(cancelled)) {
+        host, portText, deadline, cancelled, networkGeneration,
+        addresses, lookup);
+    if (resolveStatus == TransportWaitStatus::Cancelled ||
+        isCancelled(cancelled, networkGeneration)) {
         error = "E-VNC-CERT-CANCELLED";
         return false;
     }
@@ -380,96 +306,32 @@ bool VncTransport::connectTcp(const std::string& host, int port,
         return false;
     }
 
-    error.clear();
-    for (const TransportResolvedAddress& address : addresses) {
-        if (isCancelled(cancelled)) {
-            error = "E-VNC-CERT-CANCELLED";
-            break;
-        }
-        int remainingMs = 0;
-        if (!hasTimeRemaining(deadline, remainingMs)) {
-            error = "E-VNC-CERT-CONNECT-TIMEOUT";
-            break;
-        }
-        const int fd = ::socket(address.family, address.socktype, address.protocol);
-        if (fd < 0) {
-            continue;
-        }
-        const int flags = ::fcntl(fd, F_GETFL, 0);
-        if (flags < 0 || ::fcntl(fd, F_SETFL, flags | O_NONBLOCK) != 0) {
-            ::close(fd);
-            continue;
-        }
-        const int result = ::connect(fd,
-                                     reinterpret_cast<const sockaddr*>(&address.storage),
-                                     address.length);
-        if (result == 0) {
-            if (isCancelled(cancelled) || !hasTimeRemaining(deadline, remainingMs)) {
-                ::close(fd);
-                error = isCancelled(cancelled) ? "E-VNC-CERT-CANCELLED" :
-                    "E-VNC-CERT-CONNECT-TIMEOUT";
-                break;
-            }
-            socketFd_ = fd;
-            break;
-        }
-        if (errno != EINPROGRESS) {
-            error = errnoMessage("connect");
-            ::close(fd);
-            continue;
-        }
-        if (!waitForFd(fd, POLLOUT, deadline, error, cancelled)) {
-            if (isCancelled(cancelled)) {
-                error = "E-VNC-CERT-CANCELLED";
-                ::close(fd);
-                break;
-            }
-            if (!hasTimeRemaining(deadline, remainingMs)) {
-                error = "E-VNC-CERT-CONNECT-TIMEOUT";
-                ::close(fd);
-                break;
-            }
-            ::close(fd);
-            continue;
-        }
-        if (isCancelled(cancelled)) {
-            error = "E-VNC-CERT-CANCELLED";
-            ::close(fd);
-            break;
-        }
-        int socketError = 0;
-        socklen_t socketErrorLength = sizeof(socketError);
-        if (::getsockopt(fd, SOL_SOCKET, SO_ERROR, &socketError, &socketErrorLength) != 0 ||
-            socketError != 0) {
-            if (socketError != 0) {
-                errno = socketError;
-            }
-            error = errnoMessage("connect");
-            ::close(fd);
-            continue;
-        }
-        if (!hasTimeRemaining(deadline, remainingMs)) {
-            error = "E-VNC-CERT-CONNECT-TIMEOUT";
-            ::close(fd);
-            break;
-        }
-        socketFd_ = fd;
-        break;
-    }
-    if (isCancelled(cancelled)) {
-        if (socketFd_ >= 0) {
-            ::close(socketFd_);
-            socketFd_ = -1;
-        }
+    remotedesk::net::ConnectOptions options;
+    options.deadline = deadlineValue;
+    options.cancelled = [cancelled, networkGeneration]() {
+        return isCancelled(cancelled, networkGeneration);
+    };
+    options.restoreBlocking = false;
+#if defined(RDP_TESTS_ONLY)
+    options.afterRestoreForTest = afterConnectRestoreForTesting_;
+#endif
+    const remotedesk::net::ConnectResult connection =
+        remotedesk::net::ConnectTcpCandidates(addresses, options);
+    if (connection.status == remotedesk::net::ConnectStatus::Cancelled) {
         error = "E-VNC-CERT-CANCELLED";
         return false;
     }
-    if (socketFd_ < 0) {
-        if (error.empty()) {
-            error = "unable to connect to VNC endpoint";
-        }
+    if (connection.status == remotedesk::net::ConnectStatus::TimedOut) {
+        error = "E-VNC-CERT-CONNECT-TIMEOUT";
         return false;
     }
+    if (connection.status != remotedesk::net::ConnectStatus::Connected ||
+        connection.descriptor < 0) {
+        error = "unable to connect to VNC endpoint";
+        return false;
+    }
+    socketFd_ = connection.descriptor;
+    error.clear();
     // FramebufferUpdateRequest is only ten bytes and gates the server's next
     // capture.  Avoid Nagle delay for those requests, and leave enough receive
     // window for one compressed frame to arrive while the prior frame decodes.
@@ -515,15 +377,23 @@ bool VncTransport::enableTls(const VncTransportConfig& config,
         error = "E-VNC-CERT-TLS-CONTEXT";
         return false;
     }
-    const std::string serverName = config.serverName.empty() ? config.host : config.serverName;
-    if (!isIpLiteral(serverName) && SSL_set_tlsext_host_name(ssl, serverName.c_str()) != 1) {
+    std::string serverName;
+    bool sendSni = false;
+    if (!vncResolveCertificateIdentity(config.host, config.serverName, serverName, sendSni)) {
+        SSL_free(ssl);
+        SSL_CTX_free(context);
+        error = "E-VNC-CERT-TLS-IDENTITY";
+        return false;
+    }
+    if (sendSni &&
+        SSL_set_tlsext_host_name(ssl, serverName.c_str()) != 1) {
         SSL_free(ssl);
         SSL_CTX_free(context);
         error = "E-VNC-CERT-TLS-SNI";
         return false;
     }
     while (true) {
-        if (isCancelled(config.cancelled)) {
+        if (isCancelled(config.cancelled, config.networkGeneration)) {
             error = "E-VNC-CERT-CANCELLED";
             SSL_free(ssl);
             SSL_CTX_free(context);
@@ -557,8 +427,9 @@ bool VncTransport::enableTls(const VncTransportConfig& config,
         const unsigned long handshakeError = ERR_peek_last_error();
         if (sslError == SSL_ERROR_WANT_READ) {
             if (!waitForFd(socketFd_, POLLIN, deadline, error,
-                           config.cancelled)) {
-                if (isCancelled(config.cancelled) || error == "E-VNC-CERT-CANCELLED") {
+                           config.cancelled, config.networkGeneration)) {
+                if (isCancelled(config.cancelled, config.networkGeneration) ||
+                    error == "E-VNC-CERT-CANCELLED") {
                     error = "E-VNC-CERT-CANCELLED";
                 } else {
                     error = error == "socket operation timed out" ?
@@ -572,8 +443,9 @@ bool VncTransport::enableTls(const VncTransportConfig& config,
         }
         if (sslError == SSL_ERROR_WANT_WRITE) {
             if (!waitForFd(socketFd_, POLLOUT, deadline, error,
-                           config.cancelled)) {
-                if (isCancelled(config.cancelled) || error == "E-VNC-CERT-CANCELLED") {
+                           config.cancelled, config.networkGeneration)) {
+                if (isCancelled(config.cancelled, config.networkGeneration) ||
+                    error == "E-VNC-CERT-CANCELLED") {
                     error = "E-VNC-CERT-CANCELLED";
                 } else {
                     error = error == "socket operation timed out" ?
@@ -588,7 +460,7 @@ bool VncTransport::enableTls(const VncTransportConfig& config,
         X509* partialCertificate = SSL_get_peer_certificate(ssl);
         const bool noPeerCertificate = partialCertificate == nullptr;
         if (partialCertificate != nullptr) X509_free(partialCertificate);
-        if (isCancelled(config.cancelled)) {
+        if (isCancelled(config.cancelled, config.networkGeneration)) {
             error = "E-VNC-CERT-CANCELLED";
         } else if (tlsHandshakeErrorIsVersionFailure(handshakeError)) {
             error = "E-VNC-CERT-TLS-VERSION";
@@ -664,6 +536,11 @@ bool VncTransport::validatePeerCertificate(const std::string& expectedFingerprin
 }
 
 bool VncTransport::websocketHandshake(const VncTransportConfig& config, std::string& error) {
+    std::string authority;
+    if (!vncFormatWebSocketAuthority(config.host, config.port, authority)) {
+        error = "invalid WebSocket gateway endpoint";
+        return false;
+    }
     std::array<uint8_t, 16> nonce = {0};
     if (RAND_bytes(nonce.data(), static_cast<int>(nonce.size())) != 1) {
         error = "unable to generate WebSocket handshake nonce";
@@ -675,7 +552,7 @@ bool VncTransport::websocketHandshake(const VncTransportConfig& config, std::str
         path = "/" + path;
     }
     std::string request = "GET " + path + " HTTP/1.1\r\n";
-    request += "Host: " + config.host + "\r\n";
+    request += "Host: " + authority + "\r\n";
     request += "Upgrade: websocket\r\nConnection: Upgrade\r\n";
     request += "Sec-WebSocket-Version: 13\r\nSec-WebSocket-Key: " + key + "\r\n\r\n";
     if (!writeRaw(reinterpret_cast<const uint8_t*>(request.data()), request.size(), error)) {
@@ -767,7 +644,7 @@ bool VncTransport::writeAll(const uint8_t* source, size_t size, std::string& err
 bool VncTransport::readRaw(uint8_t* destination, size_t size, int timeoutMs, std::string& error) {
     size_t offset = 0;
     while (offset < size) {
-        if (isCancelled(cancelled_)) {
+        if (isCancelled(cancelled_, networkGeneration_)) {
             error = "E-VNC-CERT-CANCELLED";
             return false;
         }
@@ -787,7 +664,8 @@ bool VncTransport::readRaw(uint8_t* destination, size_t size, int timeoutMs, std
             if (sslError == SSL_ERROR_WANT_READ || sslError == SSL_ERROR_WANT_WRITE) {
                 std::string waitError;
                 if (!waitForFd(socketFd_, sslError == SSL_ERROR_WANT_WRITE ? POLLOUT : POLLIN,
-                               timeoutMs, waitError, cancelled_)) {
+                               timeoutMs, waitError, cancelled_,
+                               networkGeneration_)) {
                     setTlsIoError(error, false, waitError);
                     return false;
                 }
@@ -809,12 +687,14 @@ bool VncTransport::readRaw(uint8_t* destination, size_t size, int timeoutMs, std
             continue;
         }
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
-            if (!waitForFd(socketFd_, POLLIN, timeoutMs, error, cancelled_)) {
+            if (!waitForFd(socketFd_, POLLIN, timeoutMs, error, cancelled_,
+                           networkGeneration_)) {
                 return false;
             }
             continue;
         }
-        error = isCancelled(cancelled_) ? "E-VNC-CERT-CANCELLED" : errnoMessage("recv");
+        error = isCancelled(cancelled_, networkGeneration_) ?
+            "E-VNC-CERT-CANCELLED" : errnoMessage("recv");
         return false;
     }
     return true;
@@ -823,7 +703,7 @@ bool VncTransport::readRaw(uint8_t* destination, size_t size, int timeoutMs, std
 bool VncTransport::writeRaw(const uint8_t* source, size_t size, std::string& error) {
     size_t offset = 0;
     while (offset < size) {
-        if (isCancelled(cancelled_)) {
+        if (isCancelled(cancelled_, networkGeneration_)) {
             error = "E-VNC-CERT-CANCELLED";
             return false;
         }
@@ -843,7 +723,8 @@ bool VncTransport::writeRaw(const uint8_t* source, size_t size, std::string& err
             if (sslError == SSL_ERROR_WANT_READ || sslError == SSL_ERROR_WANT_WRITE) {
                 std::string waitError;
                 if (!waitForFd(socketFd_, sslError == SSL_ERROR_WANT_READ ? POLLIN : POLLOUT,
-                               kDefaultTimeoutMs, waitError, cancelled_)) {
+                               kDefaultTimeoutMs, waitError, cancelled_,
+                               networkGeneration_)) {
                     setTlsIoError(error, true, waitError);
                     return false;
                 }
@@ -861,12 +742,14 @@ bool VncTransport::writeRaw(const uint8_t* source, size_t size, std::string& err
             continue;
         }
         if (result < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-            if (!waitForFd(socketFd_, POLLOUT, kDefaultTimeoutMs, error, cancelled_)) {
+            if (!waitForFd(socketFd_, POLLOUT, kDefaultTimeoutMs, error,
+                           cancelled_, networkGeneration_)) {
                 return false;
             }
             continue;
         }
-        error = isCancelled(cancelled_) ? "E-VNC-CERT-CANCELLED" : errnoMessage("send");
+        error = isCancelled(cancelled_, networkGeneration_) ?
+            "E-VNC-CERT-CANCELLED" : errnoMessage("send");
         return false;
     }
     return true;
@@ -1043,11 +926,25 @@ void VncTransport::close() {
         socketFd_ = -1;
     }
     cancelled_.reset();
+    networkGeneration_ = 0;
+#if defined(RDP_TESTS_ONLY)
+    afterConnectRestoreForTesting_ = nullptr;
+#endif
 }
 
 bool VncTransport::isOpen() const {
     return open_ && socketFd_ >= 0;
 }
+
+#if defined(RDP_NATIVE_CALLBACK_TESTING)
+void VncTransport::adoptConnectedSocketForTesting(
+    int socketFd, uint64_t networkGeneration) {
+    close();
+    socketFd_ = socketFd;
+    networkGeneration_ = networkGeneration;
+    open_ = socketFd_ >= 0;
+}
+#endif
 
 std::string VncTransport::base64(const uint8_t* data, size_t size) {
     static constexpr char alphabet[] =

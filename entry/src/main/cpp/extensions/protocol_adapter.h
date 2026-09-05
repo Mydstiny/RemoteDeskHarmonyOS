@@ -85,7 +85,9 @@ struct ConnectionConfig {
     int         width;           // 桌面宽度
     int         height;          // 桌面高度
     CodecType   codec;           // 首选视频编码
-    std::string customHostname;  // 🆕 自定义主机名 (RDP /client-hostname:)
+    std::string customHostname;  // Legacy: RustDesk peer ID; RDP targetServerName fallback
+    std::string targetServerName; // RDP TLS/NLA identity, independent from transport host
+    std::string clientHostname;  // RDP /client-hostname:, never a server identity
     std::string gatewayHost;     // 🆕 RDP 网关地址
     int         gatewayPort;     // 🆕 RDP 网关端口 (默认 443)
     // RDP route is explicit. An empty endpoint mode is a legacy handoff and
@@ -96,6 +98,11 @@ struct ConnectionConfig {
     bool        multiMonitor;    // 🆕 多显示器模式
     int         monitorCount;    // 🆕 显示器数量
     int         colorDepth;      // 🆕 色深 (BPP)
+    int         rdpDesktopScaleFactor = 100;
+    int         rdpDeviceScaleFactor = 100;
+    int         rdpDesktopPhysicalWidthMm = 0;
+    int         rdpDesktopPhysicalHeightMm = 0;
+    int         rdpDesktopOrientation = 0;
     int         rdpAuthIdentityMode; // RDP: 0=MicrosoftAccount\email, 1=domain+email, 2=bare email
     RdpAuthenticationMode rdpAuthMode; // RDP: password | blank_password | restricted_admin
     RdpRestrictedAdminSecretSource rdpRestrictedAdminSecretSource;
@@ -127,6 +134,7 @@ struct ConnectionConfig {
     // an unknown/changed key before any authentication material is sent.
     bool        sshHostKeyPromptEnabled;
     std::string sshTrustHostId;                 // durable RemoteHost/profile owner id
+    std::string sshHostKeyRouteIdentity;         // canonical route identity for prompt TOCTOU fencing
     // ProxyJump 的跳板机与目标机是两个独立的 SSH endpoint，必须分别绑定 key。
     std::string sshJumpHostKeyRawBase64;
     std::string sshJumpHostKeyFingerprintSha256;
@@ -340,13 +348,46 @@ struct RdpRenderStats {
     uint64_t graphicsEpoch = 0;
     uint64_t desktopResizeCount = 0;
     uint64_t desktopResizeFailures = 0;
+    bool desktopResizeInProgress = false;
     bool gfxChannelConnected = false;
+    bool displayControlReady = false;
+    bool displayControlDisabled = false;
+    int displayRequestedWidth = 0;
+    int displayRequestedHeight = 0;
+    int displayEffectiveWidth = 0;
+    int displayEffectiveHeight = 0;
+    int displayScaleFactor = 100;
+    uint64_t displayRequestCount = 0;
+    uint64_t displayChannelRequestCount = 0;
+    uint64_t displayFailureCount = 0;
+    bool displayLayoutPending = false;
+    bool displayLayoutInFlight = false;
+    std::string displayLastResult;
+    bool inputGeometryReady = true;
+    uint64_t inputGeometryAcknowledgedEpoch = 0;
+    uint64_t inputGeometryFenceDrops = 0;
     int inputQueueDepth = 0;
     int inputQueueMax = 0;
     int64_t inputTextUnits = 0;
     int64_t inputDroppedMouseMoves = 0;
     int64_t inputNonDisposableOverflow = 0;
     std::string graphicsMode;
+};
+
+struct RdpDisplayLayoutRequest {
+    int width = 0;
+    int height = 0;
+    int physicalWidthMm = 0;
+    int physicalHeightMm = 0;
+    int orientation = 0;
+    int desktopScaleFactor = 100;
+    int deviceScaleFactor = 100;
+};
+
+struct RdpDisplayLayoutResult {
+    bool accepted = false;
+    std::string code;
+    std::string message;
 };
 
 /** SFTP 远端文件条目 */
@@ -426,6 +467,9 @@ public:
 
     /** 获取当前连接状态 */
     virtual ConnectionState getState() = 0;
+
+    /** Default-network generation changed; adapters must reject stale I/O. */
+    virtual void onNetworkChanged(bool /*available*/, uint64_t /*networkGeneration*/) {}
 
     /** Inject the loader-owned identity before starting a new connection. */
     virtual void setSessionIdentity(uint64_t /*sessionId*/) {}
@@ -524,11 +568,13 @@ public:
 
     /** RDP 证书预检。非 RDP 协议返回 ok=false。 */
     virtual RdpCertificateInfo probeRdpCertificate(const std::string& host, int port,
-                                                   const std::string& serverName) {
+                                                   const std::string& serverName,
+                                                   const std::function<bool()>& cancelled = {}) {
         RdpCertificateInfo info;
         info.host = host;
         info.port = port;
         (void)serverName;
+        (void)cancelled;
         info.errorCode = -1;
         info.errorMessage = "RDP certificate probing is not supported by this protocol";
         return info;
@@ -551,6 +597,7 @@ public:
 
     /** RDP 渲染统计。非 RDP 协议返回全 0。 */
     virtual RdpRenderStats getRdpRenderStats() { return RdpRenderStats(); }
+    virtual bool acknowledgeRdpInputGeometry(uint64_t, int, int) { return false; }
 
     // ---- R5: 文件传输 ----
     /** 是否支持文件传输 */

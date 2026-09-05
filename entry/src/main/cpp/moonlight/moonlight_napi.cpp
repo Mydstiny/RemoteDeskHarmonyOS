@@ -3,6 +3,10 @@
 #include "moonlight/bridge/MoonlightNativeBridge.h"
 #include "moonlight/runtime/MoonlightProductRuntime.h"
 #include "moonlight/runtime/MoonlightProductStreamingRuntime.h"
+#include "common/endpoint_address_policy.h"
+#include "extensions/native_network_observer_lease.h"
+
+#include <hilog/log.h>
 
 #include <algorithm>
 #include <atomic>
@@ -20,6 +24,11 @@
 #include <vector>
 
 namespace {
+
+#undef LOG_DOMAIN
+#undef LOG_TAG
+#define LOG_DOMAIN 0x0042
+#define LOG_TAG "MOON_NAPI"
 
 using namespace remotedesk::moonlight;
 
@@ -57,12 +66,37 @@ struct AsyncRequestControl final {
 
 struct MoonlightEnvState final {
     explicit MoonlightEnvState(napi_env valueEnv)
-        : env(valueEnv), bridge(std::make_shared<MoonlightNativeBridge>(
-                             createMoonlightProductRuntimePort())) {}
+        : env(valueEnv) {
+        networkObserverLeaseActive.store(
+            remotedesk::net::AcquireProcessNetworkObserverLease(),
+            std::memory_order_release);
+        if (!networkObserverLeaseActive.load(std::memory_order_acquire)) {
+            OH_LOG_WARN(LOG_APP,
+                "network observer unavailable; continuing without network-change callbacks");
+        }
+        try {
+            bridge = std::make_shared<MoonlightNativeBridge>(
+                createMoonlightProductRuntimePort());
+        } catch (...) {
+            releaseNetworkObserverLease();
+            throw;
+        }
+    }
+
+    ~MoonlightEnvState() { releaseNetworkObserverLease(); }
+
+    void releaseNetworkObserverLease() noexcept {
+        bool expected = true;
+        if (networkObserverLeaseActive.compare_exchange_strong(
+                expected, false, std::memory_order_acq_rel)) {
+            remotedesk::net::ReleaseProcessNetworkObserverLease();
+        }
+    }
 
     napi_env env = nullptr;
     std::atomic<bool> closing {false};
     std::shared_ptr<MoonlightNativeBridge> bridge;
+    std::atomic<bool> networkObserverLeaseActive {false};
     std::mutex pendingMutex;
     std::unordered_map<MoonlightBridgeRequestKey,
                        std::shared_ptr<AsyncRequestControl>, NapiKeyHash> pending;
@@ -111,6 +145,7 @@ void cleanupEnvironment(void* rawData) noexcept {
             state->bridge->shutdown();
         }
         MoonlightProductStreamingRuntime::process().shutdown();
+        state->releaseNetworkObserverLease();
     } catch (...) {
         // The environment is already closing; no exception may cross NAPI.
     }
@@ -438,12 +473,13 @@ bool parseRequestKey(napi_env env, napi_value value,
 
 bool parseAddress(napi_env env, napi_value value, MoonlightHostAddress& address,
                   std::string& error) {
-    static const std::unordered_set<std::string> allowed {"value", "family"};
+    static const std::unordered_set<std::string> allowed {"value", "family", "scope"};
     std::string family;
     if (!readExactObject(env, value, allowed, error) ||
         !readRequiredString(env, value, "value", kMaxAddressBytes,
                             address.value, error) ||
-        !readRequiredString(env, value, "family", 16U, family, error)) {
+        !readRequiredString(env, value, "family", 16U, family, error) ||
+        !readOptionalString(env, value, "scope", 32U, address.scope, error)) {
         return false;
     }
     if (family == "ipv4") {
@@ -456,6 +492,25 @@ bool parseAddress(napi_env env, napi_value value, MoonlightHostAddress& address,
         error = "address family is not supported";
         return false;
     }
+    if (address.value.find('%') != std::string::npos ||
+        (!address.scope.empty() && address.family != MoonlightHostAddressFamily::Ipv6)) {
+        error = "address value or scope is not canonical";
+        return false;
+    }
+    const auto parsed = remotedesk::endpoint::ParseHost(
+        address.value + (address.scope.empty() ? std::string() : "%" + address.scope),
+        remotedesk::endpoint::ParseMode::Persisted);
+    if (!parsed.ok || parsed.endpoint.canonicalHost() != address.value ||
+        parsed.endpoint.scope() != address.scope ||
+        (address.family == MoonlightHostAddressFamily::Ipv4 &&
+         parsed.endpoint.family() != remotedesk::endpoint::AddressFamily::Ipv4) ||
+        (address.family == MoonlightHostAddressFamily::Ipv6 &&
+         parsed.endpoint.family() != remotedesk::endpoint::AddressFamily::Ipv6)) {
+        error = "address value does not match its canonical family";
+        return false;
+    }
+    address.value = parsed.endpoint.canonicalHost();
+    address.scope = parsed.endpoint.scope();
     return true;
 }
 
@@ -470,6 +525,14 @@ bool parseEndpoint(napi_env env, napi_value value, MoonlightHostEndpoint& endpoi
                             endpoint.serverName, error)) {
         return false;
     }
+    const auto serverIdentity =
+        remotedesk::endpoint::ParseServerIdentity(endpoint.serverName);
+    if (!serverIdentity.ok ||
+        serverIdentity.identity.kind() == remotedesk::endpoint::ServerIdentityKind::None) {
+        error = "endpoint server identity is invalid";
+        return false;
+    }
+    endpoint.serverName = serverIdentity.identity.canonicalName();
     bool present = false;
     napi_value addresses = nullptr;
     bool isArray = false;
@@ -774,6 +837,22 @@ void setInt32(napi_env env, napi_value object, const char* name, std::int32_t va
     if (napi_create_int32(env, value, &item) == napi_ok) {
         (void)napi_set_named_property(env, object, name, item);
     }
+}
+
+void setTransformMatrix(napi_env env, napi_value object, const char* name,
+                        const std::array<float, 16>& matrix) {
+    napi_value array = nullptr;
+    if (napi_create_array_with_length(env, matrix.size(), &array) != napi_ok) {
+        return;
+    }
+    for (std::size_t index = 0; index < matrix.size(); ++index) {
+        napi_value item = nullptr;
+        if (napi_create_double(env, static_cast<double>(matrix[index]), &item) ==
+            napi_ok) {
+            (void)napi_set_element(env, array, index, item);
+        }
+    }
+    (void)napi_set_named_property(env, object, name, array);
 }
 
 void setSize(napi_env env, napi_value object, const char* name, std::size_t value) {
@@ -1428,6 +1507,42 @@ napi_value streamSnapshot(napi_env env, napi_callback_info info) {
                        std::max<std::int64_t>(0, result.decoderCodecLatencyMaxMs)));
     setBoolean(env, value, "decoderLowLatencyEnabled",
                result.decoderLowLatencyEnabled);
+    setBoolean(env, value, "desktopSurfaceCompatibility",
+               result.presentation.desktopSurfaceCompatibility);
+    setString(env, value, "nativeImagePresentation",
+              result.presentation.nativeImagePresentation);
+    setString(env, value, "producerTransform",
+              result.presentation.producerTransform);
+    setString(env, value, "appliedTransform",
+              result.presentation.appliedTransform);
+    setBoolean(env, value, "producerTransformSampled",
+               result.presentation.producerTransformSampled);
+    setInt32(env, value, "producerTransformReadResult",
+             result.presentation.producerTransformReadResult);
+    setSafeInteger(env, value, "producerTransformSamples",
+                   result.presentation.producerTransformSamples);
+    setSafeInteger(env, value, "producerTransformChanges",
+                   result.presentation.producerTransformChanges);
+    setSafeInteger(env, value, "producerTransformReadFailures",
+                   result.presentation.producerTransformReadFailures);
+    setSafeInteger(env, value, "producerTransformClassMask",
+                   result.presentation.producerTransformClassMask);
+    setTransformMatrix(env, value, "producerTransformMatrix",
+                       result.presentation.producerTransformMatrix);
+    setTransformMatrix(env, value, "appliedTextureTransform",
+                       result.presentation.appliedTextureTransform);
+    setBoolean(env, value, "rendererTransformValid",
+               result.presentation.rendererTransformValid);
+    setSafeInteger(env, value, "rendererTransformVersion",
+                   result.presentation.rendererTransformVersion);
+    setInt32(env, value, "rendererRotationQuarterTurns",
+             result.presentation.rendererRotationQuarterTurns);
+    setBoolean(env, value, "rendererFlipX", result.presentation.rendererFlipX);
+    setBoolean(env, value, "rendererFlipY", result.presentation.rendererFlipY);
+    setSafeInteger(env, value, "decoderGeneration",
+                   result.presentation.decoderGeneration);
+    setSafeInteger(env, value, "rendererGeneration",
+                   result.presentation.rendererGeneration);
     setInt32(env, value, "streamWidth", result.streamWidth);
     setInt32(env, value, "streamHeight", result.streamHeight);
     setInt32(env, value, "targetFps", result.targetFps);
@@ -1963,7 +2078,10 @@ napi_value Init(napi_env env, napi_value exports) {
                 }
             }
             state->closing.store(true, std::memory_order_release);
-            state->bridge->shutdown();
+            if (state->bridge != nullptr) {
+                state->bridge->shutdown();
+            }
+            state->releaseNetworkObserverLease();
         }
     } catch (...) {
         // The exports below remain callable and fail closed without env state.

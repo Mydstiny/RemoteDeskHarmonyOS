@@ -13,7 +13,9 @@
 #include <chrono>
 #include <cstdint>
 #include <cerrno>
+#include <functional>
 #include <string>
+#include <utility>
 #include <vector>
 
 enum class RdpEndpointMode {
@@ -69,6 +71,45 @@ struct RdpCertificateRecord {
 };
 
 struct RdpPreflightRequest {
+    RdpPreflightRequest() = default;
+    RdpPreflightRequest(const RdpPreflightRequest&) = default;
+    RdpPreflightRequest(RdpPreflightRequest&& other)
+        : route(std::move(other.route)),
+          username(other.username),
+          password(other.password),
+          domain(other.domain),
+          targetRestrictedAdmin(other.targetRestrictedAdmin),
+          expectedTargetFingerprintSha256(
+              std::move(other.expectedTargetFingerprintSha256)),
+          expectedGatewayFingerprintSha256(
+              std::move(other.expectedGatewayFingerprintSha256)),
+          targetAllowUntrustedRoot(other.targetAllowUntrustedRoot),
+          targetAllowHostMismatch(other.targetAllowHostMismatch),
+          targetAllowTimeAnomaly(other.targetAllowTimeAnomaly),
+          gatewayAllowUntrustedRoot(other.gatewayAllowUntrustedRoot),
+          gatewayAllowHostMismatch(other.gatewayAllowHostMismatch),
+          gatewayAllowTimeAnomaly(other.gatewayAllowTimeAnomaly),
+          generation(other.generation),
+          requestId(std::move(other.requestId)),
+          cancelled(std::move(other.cancelled)) {
+        // Copy credential strings first, then overwrite the moved-from SSO
+        // buffers while their original lengths are still observable.
+        other.clearCredentialMaterial();
+    }
+    RdpPreflightRequest& operator=(const RdpPreflightRequest&) = delete;
+    RdpPreflightRequest& operator=(RdpPreflightRequest&&) = delete;
+
+    ~RdpPreflightRequest() {
+        clearCredentialMaterial();
+    }
+
+    void clearCredentialMaterial() noexcept {
+        secureClear(username);
+        secureClear(password);
+        secureClear(domain);
+        cancelled = nullptr;
+    }
+
     RdpEndpointRoute route;
     std::string username;
     std::string password;
@@ -87,6 +128,20 @@ struct RdpPreflightRequest {
     bool gatewayAllowTimeAnomaly = false;
     uint64_t generation = 0;
     std::string requestId;
+    // Runtime-only cancellation. It is never parsed from or serialized to
+    // ArkTS and lets a network-generation change abort preflight I/O.
+    std::function<bool()> cancelled;
+
+private:
+    static void secureClear(std::string& value) noexcept {
+        if (!value.empty()) {
+            volatile char* bytes = value.data();
+            for (std::size_t index = 0; index < value.size(); ++index) {
+                bytes[index] = '\0';
+            }
+        }
+        value.clear();
+    }
 };
 
 struct RdpPreflightResult {
@@ -502,10 +557,25 @@ inline std::string routeIdentity(const RdpEndpointRoute& route) {
         ? route.targetHost : route.targetServerName;
     const std::string gatewayName = route.gatewayServerName.empty()
         ? route.gatewayHost : route.gatewayServerName;
-    return std::string(endpointModeName(route.endpointMode)) + "|target=" +
-        route.targetHost + ":" + std::to_string(route.targetPort) + ":" + targetName +
-        "|gateway=" + route.gatewayHost + ":" + std::to_string(route.gatewayPort) + ":" +
-        gatewayName + "|transport=" + gatewayTransportName(route.gatewayTransport);
+    const auto field = [](const std::string& value) {
+        return std::to_string(value.size()) + ":" + value;
+    };
+    return std::string("rdp-route-v2|") + field(endpointModeName(route.endpointMode)) +
+        field(route.targetHost) + field(std::to_string(route.targetPort)) + field(targetName) +
+        field(route.gatewayHost) + field(std::to_string(route.gatewayPort)) +
+        field(gatewayName) + field(gatewayTransportName(route.gatewayTransport));
+}
+
+template <typename Config>
+inline void normalizeRouteConfig(Config& config, const RdpEndpointRoute& route) {
+    config.host = route.targetHost;
+    config.port = route.targetPort;
+    config.targetServerName = route.targetServerName;
+    config.gatewayHost = route.gatewayHost;
+    config.gatewayPort = route.gatewayPort;
+    config.rdpGatewayServerName = route.gatewayServerName;
+    config.rdpEndpointMode = endpointModeName(route.endpointMode);
+    config.rdpGatewayTransport = gatewayTransportName(route.gatewayTransport);
 }
 
 inline bool isGatewayRoute(RdpEndpointMode mode) {
@@ -518,6 +588,14 @@ inline bool isGatewayRoute(RdpEndpointMode mode) {
 inline bool restrictedAdminGatewayRouteIsSupported(
     RdpEndpointMode endpointMode, bool targetRestrictedAdmin) {
     return !targetRestrictedAdmin || endpointMode != RdpEndpointMode::MicrosoftRdGateway;
+}
+
+inline bool targetInterfaceScopeIsAllowed(
+    RdpEndpointMode endpointMode, bool targetHasInterfaceScope) {
+    // An interface scope belongs to this client.  It can select the egress
+    // interface for a direct connection, but it has no meaning in the remote
+    // namespace where an RD Gateway resolves and connects to the target.
+    return !targetHasInterfaceScope || endpointMode != RdpEndpointMode::MicrosoftRdGateway;
 }
 
 inline bool isSupportedRdpRoute(RdpEndpointMode mode) {

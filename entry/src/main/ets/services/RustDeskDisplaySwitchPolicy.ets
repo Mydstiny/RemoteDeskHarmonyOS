@@ -2,9 +2,9 @@
  * ArkTS-side projection of the native RustDesk display-switch barrier.
  *
  * Geometry is adopted only when the exact latest generation has received a
- * remote display acknowledgement and its target keyframe. A timeout may
- * notify the user, but never re-enables input into an unconfirmed coordinate
- * space.
+ * remote display acknowledgement and its target keyframe. A timeout requests
+ * a return to the last confirmed display, but never re-enables input into an
+ * unconfirmed coordinate space.
  */
 
 export interface RustDeskDisplaySwitchState {
@@ -19,6 +19,7 @@ export interface RustDeskDisplaySwitchSignal {
   currentDisplay: number
   readySwitchGeneration: number
   pendingDisplay: number
+  confirmedDisplay: number
   inputBlocked: boolean
 }
 
@@ -26,6 +27,7 @@ export interface RustDeskDisplaySwitchObservation {
   state: RustDeskDisplaySwitchState
   adoptCapabilities: boolean
   notifyTimeout: boolean
+  fallbackDisplay: number
 }
 
 export interface RustDeskDisplaySwitchNativeRequest {
@@ -145,7 +147,8 @@ export function observeRustDeskDisplaySwitch(
     return {
       state: idleRustDeskDisplaySwitchState(),
       adoptCapabilities: true,
-      notifyTimeout: false
+      notifyTimeout: false,
+      fallbackDisplay: -1
     };
   }
   const ready: boolean =
@@ -157,7 +160,8 @@ export function observeRustDeskDisplaySwitch(
     return {
       state: idleRustDeskDisplaySwitchState(),
       adoptCapabilities: true,
-      notifyTimeout: false
+      notifyTimeout: false,
+      fallbackDisplay: -1
     };
   }
   const timedOut: boolean = timeoutMs > 0 &&
@@ -172,6 +176,8 @@ export function observeRustDeskDisplaySwitch(
       timeoutNotified: true
     } : state,
     adoptCapabilities: false,
-    notifyTimeout: timedOut
+    notifyTimeout: timedOut,
+    fallbackDisplay: timedOut && signal.confirmedDisplay >= 0 &&
+      signal.confirmedDisplay !== state.pendingDisplay ? signal.confirmedDisplay : -1
   };
 }

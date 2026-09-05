@@ -8,6 +8,8 @@
 #include "ssh_key_tool.h"
 #include "ssh_algorithm_prefs.h"
 #include "ssh_auth_policy.h"
+#include "ssh_libssh2_session.h"
+#include "ssh_proxy_target_policy.h"
 #include "ssh_route_policy.h"
 
 #include <openssl/evp.h>
@@ -31,6 +33,9 @@
 #include <sys/select.h>
 
 #ifdef __OHOS__
+#include "common/happy_eyeballs_connector.h"
+#include "common/network_generation_fence.h"
+#include "ssh_network_generation_policy.h"
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -127,7 +132,11 @@ static void sshProxyKeyboardInteractiveCallback(
         *abstract == nullptr) {
         return;
     }
-    auto* context = static_cast<SshProxyKeyboardContext*>(*abstract);
+    auto* context = static_cast<SshProxyKeyboardContext*>(
+        sshLibssh2ApplicationContext(abstract));
+    if (context == nullptr) {
+        return;
+    }
     for (int index = 0; index < numPrompts; ++index) {
         std::string response;
         if (context->explicitResponses != nullptr && index >= 0 &&
@@ -142,7 +151,9 @@ static void sshProxyKeyboardInteractiveCallback(
             responses[index].length = 0;
             continue;
         }
-        char* allocated = static_cast<char*>(std::malloc(response.size()));
+        SshSensitiveBufferGuard<std::string> responseGuard(response);
+        char* allocated = static_cast<char*>(
+            sshAllocateLibssh2CallbackSensitive(response.size(), abstract));
         if (allocated == nullptr) {
             responses[index].text = nullptr;
             responses[index].length = 0;
@@ -936,6 +947,34 @@ bool validatePublicKeyForAuthorizedKeys(const std::string& publicKeyOpenSsh) {
 
 /** 内部: 建立 TCP 连接到 host:port (非阻塞, 带超时) */
 static int tcpConnectWithTimeout(const std::string& host, int port, int timeoutSec) {
+    if (port <= 0 || port > 65535) { return -1; }
+    const remotedesk::ssh::ProxyTargetResult endpoint =
+        remotedesk::ssh::PrepareProxyTarget(
+            "direct", host, static_cast<std::uint16_t>(port));
+    if (!endpoint.ok) { return -1; }
+    const std::string& transportHost = endpoint.transportHost;
+#ifdef __OHOS__
+    remotedesk::net::ConnectOptions options;
+    options.deadline = std::chrono::steady_clock::now() +
+        std::chrono::seconds(std::max(1, timeoutSec));
+    remotedesk::net::NetworkGenerationFence& networkFence =
+        remotedesk::net::ProcessNetworkGenerationFence();
+    const remotedesk::net::NetworkGenerationSnapshot networkSnapshot =
+        networkFence.snapshot();
+    options.cancelled = [&networkFence, networkSnapshot]() {
+        return SshNetworkGenerationPolicy::shouldCancel(
+            false, networkFence, networkSnapshot);
+    };
+    remotedesk::net::ConnectResult connection;
+    const remotedesk::net::ResolveResult resolution =
+        remotedesk::net::ResolveAndConnectTcp(
+            transportHost, std::to_string(port), options, connection);
+    if (resolution.status != remotedesk::net::ResolveStatus::Ready ||
+        connection.status != remotedesk::net::ConnectStatus::Connected) {
+        return -1;
+    }
+    return connection.descriptor;
+#else
     struct addrinfo hints;
     memset(&hints, 0, sizeof(hints));
     hints.ai_family = AF_UNSPEC;
@@ -945,7 +984,7 @@ static int tcpConnectWithTimeout(const std::string& host, int port, int timeoutS
     snprintf(portStr, sizeof(portStr), "%d", port);
 
     struct addrinfo* res = nullptr;
-    int ret = getaddrinfo(host.c_str(), portStr, &hints, &res);
+    int ret = getaddrinfo(transportHost.c_str(), portStr, &hints, &res);
     if (ret != 0 || !res) {
         return -1;
     }
@@ -1032,6 +1071,7 @@ static int tcpConnectWithTimeout(const std::string& host, int port, int timeoutS
 
     freeaddrinfo(res);
     return sock;
+#endif
 }
 
 static void closeSocketFd(int sock) {
@@ -1039,6 +1079,15 @@ static void closeSocketFd(int sock) {
     close(sock);
 #else
     closesocket(sock);
+#endif
+}
+
+static void shutdownSocketFd(int sock) {
+    if (sock < 0) { return; }
+#ifdef __OHOS__
+    (void)shutdown(sock, SHUT_RDWR);
+#else
+    (void)shutdown(sock, SD_BOTH);
 #endif
 }
 
@@ -1052,13 +1101,20 @@ struct SshJumpOperationState {
 };
 
 static void closeSshJumpOperationState(const std::shared_ptr<SshJumpOperationState>& state) {
+    // Retire both descriptors while their numeric values remain reserved.
+    // Any libssh2 cleanup below therefore fails locally instead of writing to
+    // an obsolete route or to a descriptor reused by another connection.
+    shutdownSocketFd(state->relayFd);
+    shutdownSocketFd(state->bastionSock);
+    if (state->session != nullptr) {
+        libssh2_session_set_blocking(state->session, 1);
+    }
     if (state->channel != nullptr) {
         libssh2_channel_free(state->channel);
         state->channel = nullptr;
     }
     if (state->session != nullptr) {
-        libssh2_session_free(state->session);
-        state->session = nullptr;
+        (void)sshRetireTrackedLibssh2Session(state->session);
     }
     if (state->relayFd >= 0) {
         closeSocketFd(state->relayFd);
@@ -1146,12 +1202,20 @@ static void runSshJumpOperationRelay(const std::shared_ptr<SshJumpOperationState
 static int connectThroughSshJumpOperation(
     const std::string& host, int port, const SshProxyOptions& proxy) {
     const std::string authMethod = proxy.authMethod.empty() ? "password" : proxy.authMethod;
-    if (proxy.host.empty() || proxy.port <= 0 || proxy.port > 65535 ||
+    if (port <= 0 || port > 65535 || proxy.host.empty() ||
+        proxy.port <= 0 || proxy.port > 65535 ||
         proxy.username.empty() ||
         (authMethod != "password" && authMethod != "publickey" &&
          authMethod != "kbd-interactive" && authMethod != "keyboard-interactive")) {
         return -2;
     }
+    // The final target is resolved by the bastion. Validate and canonicalize
+    // it before connecting to the bastion so a device-local "%interface"
+    // can never cross into that remote namespace.
+    const remotedesk::ssh::ProxyTargetResult target =
+        remotedesk::ssh::PrepareProxyTarget(
+            "ssh_jump", host, static_cast<std::uint16_t>(port));
+    if (!target.ok) { return -2; }
     const int bastionSock = tcpConnectWithTimeout(proxy.host, proxy.port, 10);
     if (bastionSock < 0) { return -1; }
     if (!setSocketIoTimeout(bastionSock, 10)) {
@@ -1162,7 +1226,7 @@ static int connectThroughSshJumpOperation(
     const std::shared_ptr<SshJumpOperationState> state =
         std::make_shared<SshJumpOperationState>();
     state->bastionSock = bastionSock;
-    state->session = libssh2_session_init();
+    state->session = sshCreateTrackedLibssh2Session();
     if (state->session == nullptr) {
         closeSshJumpOperationState(state);
         return -1;
@@ -1204,11 +1268,17 @@ static int connectThroughSshJumpOperation(
         SshProxyKeyboardContext context {
             &proxy.password, &proxy.keyboardInteractiveResponses
         };
-        void** abstract = libssh2_session_abstract(state->session);
-        if (abstract != nullptr) { *abstract = &context; }
-        rc = libssh2_userauth_keyboard_interactive(
-            state->session, proxy.username.c_str(),
-            &sshProxyKeyboardInteractiveCallback);
+        {
+            SshLibssh2ApplicationContextBinding applicationBinding(
+                state->session, &context);
+            if (!applicationBinding.valid()) {
+                closeSshJumpOperationState(state);
+                return -2;
+            }
+            rc = libssh2_userauth_keyboard_interactive(
+                state->session, proxy.username.c_str(),
+                &sshProxyKeyboardInteractiveCallback);
+        }
     } else {
         if (proxy.password.empty()) {
             closeSshJumpOperationState(state);
@@ -1220,7 +1290,8 @@ static int connectThroughSshJumpOperation(
         closeSshJumpOperationState(state);
         return -2;
     }
-    state->channel = libssh2_channel_direct_tcpip(state->session, host.c_str(), port);
+    state->channel = libssh2_channel_direct_tcpip(
+        state->session, target.transportHost.c_str(), port);
     if (state->channel == nullptr) {
         closeSshJumpOperationState(state);
         return -2;
@@ -1357,7 +1428,8 @@ static bool receiveProxyHeaders(int sock, std::string& headers, size_t maxLen) {
 }
 
 static bool connectThroughProxy(
-    int sock, const std::string& targetHost, int targetPort, const SshProxyOptions& proxy) {
+    int sock, const remotedesk::ssh::ProxyTargetResult& target,
+    const SshProxyOptions& proxy) {
     const std::string proxyType = proxy.type.empty() ? "direct" : proxy.type;
     if (proxyType == "direct") {
         return true;
@@ -1369,9 +1441,8 @@ static bool connectThroughProxy(
     }
     if ((proxyType != "http_connect" && proxyType != "socks5") ||
         proxy.host.empty() || proxy.port <= 0 || proxy.port > 65535 ||
-        targetHost.empty() || targetPort <= 0 || targetPort > 65535 ||
-        targetHost.size() > 255 ||
-        targetHost.find_first_of("\r\n") != std::string::npos ||
+        !target.ok || target.endpoint.port() == 0 ||
+        target.transportHost.empty() || target.transportHost.size() > 255 ||
         proxy.host.find_first_of("\r\n") != std::string::npos) {
         return false;
     }
@@ -1380,22 +1451,11 @@ static bool connectThroughProxy(
         return false;
     }
 
-    std::string normalizedTarget = targetHost;
-    if (normalizedTarget.size() >= 2 && normalizedTarget.front() == '[' &&
-        normalizedTarget.back() == ']') {
-        normalizedTarget = normalizedTarget.substr(1, normalizedTarget.size() - 2);
-    }
-    if (normalizedTarget.empty() || normalizedTarget.size() > 255) {
-        return false;
-    }
+    const std::string& normalizedTarget = target.transportHost;
+    const int targetPort = static_cast<int>(target.endpoint.port());
 
     if (proxyType == "http_connect") {
-        std::string hostHeader = normalizedTarget;
-        in6_addr ipv6 {};
-        if (inet_pton(AF_INET6, normalizedTarget.c_str(), &ipv6) == 1) {
-            hostHeader = "[" + normalizedTarget + "]";
-        }
-        hostHeader += ":" + std::to_string(targetPort);
+        const std::string& hostHeader = target.uriAuthority;
         if (proxy.username.find_first_of("\r\n") != std::string::npos ||
             proxy.password.find_first_of("\r\n") != std::string::npos) {
             return false;
@@ -1524,13 +1584,20 @@ static int connectForSshOperation(
         return connectThroughSshJumpOperation(host, port, proxy);
     }
     const bool direct = proxyType == "direct";
+    remotedesk::ssh::ProxyTargetResult target;
+    if (proxyType == "http_connect" || proxyType == "socks5") {
+        if (port <= 0 || port > 65535) { return -3; }
+        target = remotedesk::ssh::PrepareProxyTarget(
+            proxyType, host, static_cast<std::uint16_t>(port));
+        if (!target.ok) { return -3; }
+    }
     const std::string connectHost = direct ? host : proxy.host;
     const int connectPort = direct ? port : proxy.port;
     int sock = tcpConnectWithTimeout(connectHost, connectPort, 10);
     if (sock < 0) {
         return -1;
     }
-    if (!direct && !connectThroughProxy(sock, host, port, proxy)) {
+    if (!direct && !connectThroughProxy(sock, target, proxy)) {
         closeSocketFd(sock);
         return -2;
     }
@@ -1572,7 +1639,7 @@ SshPublicKeyInstallResult installSshPublicKey(
     }
 
     // 3. libssh2 会话
-    LIBSSH2_SESSION* session = libssh2_session_init();
+    LIBSSH2_SESSION* session = sshCreateTrackedLibssh2Session();
     if (!session) {
 #ifdef __OHOS__
         close(sock);
@@ -1593,7 +1660,7 @@ SshPublicKeyInstallResult installSshPublicKey(
         libssh2_session_last_error(session, &errMsg, nullptr, 0);
         result.code = -4;
         result.message = "handshake failed: " + (errMsg ? std::string(errMsg) : "unknown");
-        libssh2_session_free(session);
+        (void)sshRetireTrackedLibssh2Session(session);
 #ifdef __OHOS__
         close(sock);
 #else
@@ -1631,7 +1698,7 @@ SshPublicKeyInstallResult installSshPublicKey(
         result.code = -5;
         result.message = "authentication failed: " + (errMsg ? std::string(errMsg) : "unknown");
         libssh2_session_disconnect(session, "bye");
-        libssh2_session_free(session);
+        (void)sshRetireTrackedLibssh2Session(session);
 #ifdef __OHOS__
         close(sock);
 #else
@@ -1674,7 +1741,7 @@ SshPublicKeyInstallResult installSshPublicKey(
         result.code = -6;
         result.message = "channel open failed";
         libssh2_session_disconnect(session, "bye");
-        libssh2_session_free(session);
+        (void)sshRetireTrackedLibssh2Session(session);
 #ifdef __OHOS__
         close(sock);
 #else
@@ -1691,7 +1758,7 @@ SshPublicKeyInstallResult installSshPublicKey(
         result.message = "exec failed: " + (errMsg ? std::string(errMsg) : "unknown");
         libssh2_channel_free(channel);
         libssh2_session_disconnect(session, "bye");
-        libssh2_session_free(session);
+        (void)sshRetireTrackedLibssh2Session(session);
 #ifdef __OHOS__
         close(sock);
 #else
@@ -1715,7 +1782,7 @@ SshPublicKeyInstallResult installSshPublicKey(
         result.message = "install command exit=" + std::to_string(exitCode) +
                          (output.empty() ? "" : " output=" + output);
         libssh2_session_disconnect(session, "bye");
-        libssh2_session_free(session);
+        (void)sshRetireTrackedLibssh2Session(session);
 #ifdef __OHOS__
         close(sock);
 #else
@@ -1730,7 +1797,7 @@ SshPublicKeyInstallResult installSshPublicKey(
 
     // 8. 断开
     libssh2_session_disconnect(session, "bye");
-    libssh2_session_free(session);
+    (void)sshRetireTrackedLibssh2Session(session);
 #ifdef __OHOS__
     close(sock);
 #else
@@ -1775,7 +1842,7 @@ SshAuthTestResult testSshKeyAuth(
         return result;
     }
 
-    LIBSSH2_SESSION* session = libssh2_session_init();
+    LIBSSH2_SESSION* session = sshCreateTrackedLibssh2Session();
     if (!session) {
 #ifdef __OHOS__
         close(sock);
@@ -1795,7 +1862,7 @@ SshAuthTestResult testSshKeyAuth(
         libssh2_session_last_error(session, &errMsg, nullptr, 0);
         result.code = -3;
         result.message = "handshake failed: " + (errMsg ? std::string(errMsg) : "unknown");
-        libssh2_session_free(session);
+        (void)sshRetireTrackedLibssh2Session(session);
 #ifdef __OHOS__
         close(sock);
 #else
@@ -1822,7 +1889,7 @@ SshAuthTestResult testSshKeyAuth(
     }
 
     libssh2_session_disconnect(session, "bye");
-    libssh2_session_free(session);
+    (void)sshRetireTrackedLibssh2Session(session);
 #ifdef __OHOS__
     close(sock);
 #else
@@ -1857,7 +1924,7 @@ SshHostKeyInfo probeSshHostKey(
     }
 
     // Step 2: libssh2 session init
-    LIBSSH2_SESSION* session = libssh2_session_init();
+    LIBSSH2_SESSION* session = sshCreateTrackedLibssh2Session();
     if (!session) {
         result.errorCode = -2;
         result.errorMessage = "libssh2 session init failed";
@@ -1881,7 +1948,7 @@ SshHostKeyInfo probeSshHostKey(
         // 获取 server banner (握手低层可能已有)
         const char* banner = libssh2_session_banner_get(session);
         if (banner) { result.serverBanner = banner; }
-        libssh2_session_free(session);
+        (void)sshRetireTrackedLibssh2Session(session);
 #ifdef __OHOS__
         close(sock);
 #else
@@ -1904,7 +1971,7 @@ SshHostKeyInfo probeSshHostKey(
         result.errorCode = -4;
         result.errorMessage = "failed to get host key blob";
         libssh2_session_disconnect(session, "bye");
-        libssh2_session_free(session);
+        (void)sshRetireTrackedLibssh2Session(session);
 #ifdef __OHOS__
         close(sock);
 #else
@@ -1933,7 +2000,7 @@ SshHostKeyInfo probeSshHostKey(
 
     // Step 9: 断开并释放 libssh2 资源
     libssh2_session_disconnect(session, "bye");
-    libssh2_session_free(session);
+    (void)sshRetireTrackedLibssh2Session(session);
 #ifdef __OHOS__
     close(sock);
 #else

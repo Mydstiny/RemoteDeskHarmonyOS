@@ -57,9 +57,34 @@ if [ -n "${REMOTE_DESKTOP_FAKE_HVIGOR_HOLD:-}" ]; then
     trap 'printf signal > "$REMOTE_DESKTOP_FAKE_HVIGOR_SIGNAL_SEEN"; sleep 1; exit 143' TERM
     while :; do sleep 1; done
 fi
+if [ -n "${REMOTE_DESKTOP_FAKE_HVIGOR_OUTPUT:-}" ]; then
+    if [ -L "$REMOTE_DESKTOP_PROJECT_ROOT/entry/build" ]; then
+        rm -f "$REMOTE_DESKTOP_PROJECT_ROOT/entry/build"
+    fi
+    output_dir="$REMOTE_DESKTOP_PROJECT_ROOT/entry/build/default/outputs/default"
+    mkdir -p "$output_dir"
+    printf '%s\n' signed > "$output_dir/entry-default-signed.hap"
+fi
 exit "${REMOTE_DESKTOP_FAKE_HVIGOR_STATUS:-0}"
 EOF
 chmod +x "$fake_hvigor"
+
+# Project-local paths are the default once the workspace is pinned for offline
+# availability. The external-cache guard must only activate when its root is
+# supplied explicitly.
+REMOTE_DESKTOP_PROJECT_ROOT="$project_root" \
+REMOTE_DESKTOP_REAL_HVIGORW="$fake_hvigor" \
+REMOTE_DESKTOP_FAKE_HVIGOR_LOG="$fake_log" \
+REMOTE_DESKTOP_FAKE_HVIGOR_STATUS=0 \
+    "$guard" compileNative --incremental
+[ ! -L "$project_root/.hvigor" ]
+[ ! -L "$project_root/entry/build" ]
+[ ! -L "$project_root/entry/.cxx" ]
+tail -n 1 "$fake_log" | grep -F 'compileNative --incremental' >/dev/null
+if tail -n 1 "$fake_log" | grep -F 'build-cache-dir=' >/dev/null; then
+    printf '%s\n' 'project-local build unexpectedly enabled the external cache' >&2
+    exit 1
+fi
 
 cat > "$fake_find" <<'EOF'
 #!/usr/bin/env bash
@@ -81,6 +106,7 @@ run_guard() {
     REMOTE_DESKTOP_FAKE_HVIGOR_CACHE_CORRUPTION="${REMOTE_DESKTOP_FAKE_HVIGOR_CACHE_CORRUPTION:-}" \
     REMOTE_DESKTOP_FAKE_HVIGOR_CACHE_CORRUPTION_MESSAGE="${REMOTE_DESKTOP_FAKE_HVIGOR_CACHE_CORRUPTION_MESSAGE:-}" \
     REMOTE_DESKTOP_FAKE_HVIGOR_CACHE_CORRUPTION_SEEN="$fake_cache_corruption_seen" \
+    REMOTE_DESKTOP_FAKE_HVIGOR_OUTPUT="${REMOTE_DESKTOP_FAKE_HVIGOR_OUTPUT:-}" \
     REMOTE_DESKTOP_FIND_BIN="${REMOTE_DESKTOP_FIND_BIN:-/usr/bin/find}" \
     REMOTE_DESKTOP_GROUP_GRACE_CHECKS="${REMOTE_DESKTOP_GROUP_GRACE_CHECKS:-50}" \
     REMOTE_DESKTOP_GROUP_KILL_CHECKS="${REMOTE_DESKTOP_GROUP_KILL_CHECKS:-20}" \
@@ -100,6 +126,11 @@ grep -F 'assembleHap --no-daemon -p build-cache-dir=' "$fake_log" >/dev/null
 find "$project_root/.remotedesk-build-quarantine" -type f -name old-cache | grep . >/dev/null
 find "$project_root/.remotedesk-build-quarantine" -type f -name old-build | grep . >/dev/null
 find "$project_root/.remotedesk-build-quarantine" -type f -name old-cxx | grep . >/dev/null
+
+REMOTE_DESKTOP_FAKE_HVIGOR_OUTPUT=1 run_guard 0 assembleHap --no-daemon
+[ ! -L "$project_root/entry/build" ]
+[ -f "$project_root/entry/build/default/outputs/default/entry-default-signed.hap" ]
+[ "$(sed -n '1p' "$project_root/entry/build/default/outputs/default/entry-default-signed.hap")" = signed ]
 
 if run_guard 9 assembleHap --no-daemon; then
     printf '%s\n' 'expected failing fake build' >&2

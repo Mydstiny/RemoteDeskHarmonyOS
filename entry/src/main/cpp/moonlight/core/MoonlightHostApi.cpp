@@ -1,5 +1,8 @@
 #include "moonlight/core/MoonlightHostApi.h"
 
+#include "common/endpoint_address_policy.h"
+#include "common/network_generation_fence.h"
+
 #include <algorithm>
 #include <atomic>
 #include <charconv>
@@ -79,9 +82,14 @@ enum class RequestDisposition : std::uint8_t {
 };
 
 struct ActiveRequest final {
-    explicit ActiveRequest(MoonlightHostRequestKey valueKey) : key(valueKey) {}
+    ActiveRequest(MoonlightHostRequestKey valueKey,
+                  remotedesk::net::NetworkGenerationFence* valueNetworkFence,
+                  remotedesk::net::NetworkGenerationSnapshot valueNetwork)
+        : key(valueKey), networkFence(valueNetworkFence), network(valueNetwork) {}
 
     const MoonlightHostRequestKey key;
+    remotedesk::net::NetworkGenerationFence* const networkFence;
+    const remotedesk::net::NetworkGenerationSnapshot network;
     std::atomic<RequestDisposition> disposition{RequestDisposition::Active};
 };
 
@@ -132,6 +140,33 @@ bool isSafeAuthorityText(const std::string& value, MoonlightHostAddressFamily fa
         }
     }
     return true;
+}
+
+std::string transportHostFor(const MoonlightHostAddress& address) {
+    return address.scope.empty() ? address.value : address.value + "%" + address.scope;
+}
+
+std::optional<std::string> normalizedTransportWinner(
+    const MoonlightTransportOutcome& outcome) {
+    if (outcome.resolvedAddress.empty() ||
+        outcome.resolvedFamily == MoonlightHostAddressFamily::Unspecified) {
+        return std::nullopt;
+    }
+    const auto parsed = remotedesk::endpoint::ParseHost(
+        outcome.resolvedAddress, remotedesk::endpoint::ParseMode::Runtime);
+    if (!parsed.ok ||
+        parsed.endpoint.family() == remotedesk::endpoint::AddressFamily::Hostname) {
+        return std::nullopt;
+    }
+    const bool familyMatches =
+        (outcome.resolvedFamily == MoonlightHostAddressFamily::Ipv4 &&
+         parsed.endpoint.family() == remotedesk::endpoint::AddressFamily::Ipv4) ||
+        (outcome.resolvedFamily == MoonlightHostAddressFamily::Ipv6 &&
+         parsed.endpoint.family() == remotedesk::endpoint::AddressFamily::Ipv6);
+    if (!familyMatches) {
+        return std::nullopt;
+    }
+    return remotedesk::endpoint::TransportHost(parsed.endpoint);
 }
 
 bool isValidUuid(const std::string& value) noexcept {
@@ -652,17 +687,25 @@ MoonlightHostError validateCall(const MoonlightHostCall& call, const QueryShape&
     }
     std::unordered_set<std::string> addresses;
     for (const auto& address : call.endpoint.addresses) {
+        const auto parsed = remotedesk::endpoint::ParseHost(
+            transportHostFor(address), remotedesk::endpoint::ParseMode::Persisted);
         if (address.value.empty() || address.value.size() > 255U ||
             !isSafeAuthorityText(address.value, address.family) || address.value.front() == '[' ||
             address.value.back() == ']' ||
             (address.family == MoonlightHostAddressFamily::Ipv6 &&
              address.value.find(':') == std::string::npos) ||
             (address.family == MoonlightHostAddressFamily::Ipv4 &&
-             address.value.find(':') != std::string::npos)) {
+             address.value.find(':') != std::string::npos) || !parsed.ok ||
+            parsed.endpoint.canonicalHost() != address.value ||
+            parsed.endpoint.scope() != address.scope ||
+            (address.family == MoonlightHostAddressFamily::Ipv6 &&
+             parsed.endpoint.family() != remotedesk::endpoint::AddressFamily::Ipv6) ||
+            (address.family == MoonlightHostAddressFamily::Ipv4 &&
+             parsed.endpoint.family() != remotedesk::endpoint::AddressFamily::Ipv4)) {
             return MoonlightHostError::InvalidEndpoint;
         }
-        const auto identity =
-            std::to_string(static_cast<unsigned>(address.family)) + ":" + lowerAscii(address.value);
+        const auto identity = std::to_string(static_cast<unsigned>(address.family)) + ":" +
+            lowerAscii(address.value) + "%" + address.scope;
         if (!addresses.insert(identity).second) {
             return MoonlightHostError::InvalidEndpoint;
         }
@@ -693,7 +736,8 @@ MoonlightHostError validateCall(const MoonlightHostCall& call, const QueryShape&
 std::string authorityFor(const MoonlightHostAddress& address) {
     if (address.family == MoonlightHostAddressFamily::Ipv6 ||
         address.value.find(':') != std::string::npos) {
-        return "[" + address.value + "]";
+        return "[" + address.value +
+            (address.scope.empty() ? std::string() : "%25" + address.scope) + "]";
     }
     return address.value;
 }
@@ -1397,13 +1441,17 @@ MoonlightHostError mapTransportError(MoonlightTransportError error) noexcept {
 MoonlightHostError dispositionError(const std::shared_ptr<ActiveRequest>& state) noexcept {
     switch (state->disposition.load(std::memory_order_acquire)) {
     case RequestDisposition::Active:
-        return MoonlightHostError::None;
+        break;
     case RequestDisposition::Cancelled:
         return MoonlightHostError::Cancelled;
     case RequestDisposition::Stale:
         return MoonlightHostError::StaleRequest;
     }
-    return MoonlightHostError::StaleRequest;
+    if (state->networkFence == nullptr || !state->network.available ||
+        state->networkFence->shouldCancel(state->network)) {
+        return MoonlightHostError::StaleRequest;
+    }
+    return MoonlightHostError::None;
 }
 
 std::string endpointPortCacheKey(const MoonlightHostEndpoint& endpoint) {
@@ -1414,14 +1462,18 @@ std::string endpointPortCacheKey(const MoonlightHostEndpoint& endpoint) {
         key += std::to_string(static_cast<unsigned>(address.family));
         key.push_back(':');
         key += lowerAscii(address.value);
+        key.push_back('%');
+        key += address.scope;
     }
     return key;
 }
 
 struct HostApiState {
     HostApiState(std::shared_ptr<MoonlightHostTransport> valueTransport,
-                 MoonlightHostApi::UuidGenerator valueUuidGenerator)
-        : transport(std::move(valueTransport)), uuidGenerator(std::move(valueUuidGenerator)) {}
+                 MoonlightHostApi::UuidGenerator valueUuidGenerator,
+                 remotedesk::net::NetworkGenerationFence* valueNetworkFence)
+        : transport(std::move(valueTransport)), uuidGenerator(std::move(valueUuidGenerator)),
+          networkFence(valueNetworkFence) {}
 
     std::mutex mutex;
     std::condition_variable cv;
@@ -1430,6 +1482,7 @@ struct HostApiState {
     std::unordered_map<std::string, std::uint16_t> learnedHttpsPorts;
     std::shared_ptr<MoonlightHostTransport> transport;
     MoonlightHostApi::UuidGenerator uuidGenerator;
+    remotedesk::net::NetworkGenerationFence* networkFence = nullptr;
     bool shuttingDown = false;
 
     std::optional<std::uint16_t> learnedHttpsPort(
@@ -1522,8 +1575,13 @@ std::string MoonlightTransportRequest::redactedDebugString() const {
 }
 
 MoonlightHostApi::MoonlightHostApi(std::shared_ptr<MoonlightHostTransport> transport,
-                                   UuidGenerator uuidGenerator)
-    : impl_(std::make_shared<Impl>(std::move(transport), std::move(uuidGenerator))) {}
+                                   UuidGenerator uuidGenerator,
+                                   remotedesk::net::NetworkGenerationFence* networkFence)
+    : impl_(std::make_shared<Impl>(
+          std::move(transport), std::move(uuidGenerator),
+          networkFence == nullptr
+              ? &remotedesk::net::ProcessNetworkGenerationFence()
+              : networkFence)) {}
 
 MoonlightHostApi::~MoonlightHostApi() {
     auto impl =
@@ -1568,6 +1626,7 @@ MoonlightHostResult executeRegistered(const std::shared_ptr<HostApiState>& impl,
                                       const QueryShape& initialShape) {
     MoonlightHostResult invalid;
     invalid.key = call.key;
+    invalid.networkGeneration = state->network.generation;
     invalid.error = validateCall(call, initialShape);
     if (invalid.error != MoonlightHostError::None) {
         return invalid;
@@ -1580,8 +1639,23 @@ MoonlightHostResult executeRegistered(const std::shared_ptr<HostApiState>& impl,
                                std::optional<std::uint16_t> candidateHttpsPort) {
         MoonlightHostResult result;
         result.key = call.key;
+        result.networkGeneration = state->network.generation;
         result.error = MoonlightHostError::TransportFailure;
         shape.scheme = scheme;
+        const auto classifyPostSendInterruption =
+            [&](MoonlightHostError interruption,
+                MoonlightTransportSendState sendState) noexcept {
+                if (interruption == MoonlightHostError::StaleRequest &&
+                    !shape.readOnly &&
+                    sendState != MoonlightTransportSendState::NotSent) {
+                    MoonlightActionResult action;
+                    action.outcomeUnknown = true;
+                    result.action = action;
+                    result.mutationOutcomeUnknown = true;
+                    return MoonlightHostError::ActionUnknown;
+                }
+                return interruption;
+            };
         const std::uint16_t port = scheme == MoonlightHostScheme::Https ?
             candidateHttpsPort.value_or(
                 impl->learnedHttpsPort(call.endpoint).value_or(call.endpoint.httpsPort)) :
@@ -1635,7 +1709,8 @@ MoonlightHostResult executeRegistered(const std::shared_ptr<HostApiState>& impl,
 
             MoonlightTransportRequest request(
                 call.key, requestOperation, scheme, call.endpoint.addresses[attempt].family,
-                call.endpoint.addresses[attempt].value, call.endpoint.serverName, port, shape.path,
+                transportHostFor(call.endpoint.addresses[attempt]), call.endpoint.serverName,
+                port, shape.path,
                 std::move(url), shape.requiresClientIdentity, shape.requiresServerPin,
                 MoonlightHostLimits::kMaxBodyBytes);
             MoonlightTransportOutcome outcome;
@@ -1661,9 +1736,11 @@ MoonlightHostResult executeRegistered(const std::shared_ptr<HostApiState>& impl,
             stateError = dispositionError(state);
             if (stateError != MoonlightHostError::None ||
                 std::chrono::steady_clock::now() >= deadline) {
-                diagnostic.code = stateError != MoonlightHostError::None
-                                      ? stateError
-                                      : MoonlightHostError::DeadlineExceeded;
+                const auto interruption = stateError != MoonlightHostError::None
+                                              ? stateError
+                                              : MoonlightHostError::DeadlineExceeded;
+                diagnostic.code = classifyPostSendInterruption(
+                    interruption, outcome.sendState);
                 result.diagnostics.push_back(std::move(diagnostic));
                 result.error = result.diagnostics.back().code;
                 return result;
@@ -1713,20 +1790,36 @@ MoonlightHostResult executeRegistered(const std::shared_ptr<HostApiState>& impl,
                 return result;
             }
 
+            const auto resolvedWinner = normalizedTransportWinner(outcome);
+            if (!resolvedWinner.has_value()) {
+                // The control response is unusable for a family-stable media
+                // handoff unless the transport can name its numeric winner.
+                // Never silently re-resolve the logical hostname here.
+                diagnostic.code = MoonlightHostError::TransportFailure;
+                diagnostic.stage = MoonlightTransportStage::Commit;
+                result.diagnostics.push_back(std::move(diagnostic));
+                result.error = MoonlightHostError::TransportFailure;
+                result.mutationOutcomeUnknown = !shape.readOnly;
+                return result;
+            }
+
             if (!shape.xmlResponse) {
                 stateError = dispositionError(state);
                 if (stateError != MoonlightHostError::None ||
                     std::chrono::steady_clock::now() >= deadline) {
-                    diagnostic.code = stateError != MoonlightHostError::None
-                                          ? stateError
-                                          : MoonlightHostError::DeadlineExceeded;
+                    const auto interruption = stateError != MoonlightHostError::None
+                                                  ? stateError
+                                                  : MoonlightHostError::DeadlineExceeded;
+                    diagnostic.code = classifyPostSendInterruption(
+                        interruption, outcome.sendState);
                     diagnostic.stage = MoonlightTransportStage::Commit;
                     result.diagnostics.push_back(std::move(diagnostic));
                     result.error = result.diagnostics.back().code;
                     return result;
                 }
                 result.asset.assign(outcome.body.begin(), outcome.body.end());
-                result.resolvedAddress = call.endpoint.addresses[attempt].value;
+                result.resolvedAddress = *resolvedWinner;
+                result.resolvedFamily = outcome.resolvedFamily;
                 diagnostic.code = MoonlightHostError::None;
                 diagnostic.stage = MoonlightTransportStage::Complete;
                 result.diagnostics.push_back(std::move(diagnostic));
@@ -1797,14 +1890,18 @@ MoonlightHostResult executeRegistered(const std::shared_ptr<HostApiState>& impl,
             stateError = dispositionError(state);
             if (stateError != MoonlightHostError::None ||
                 std::chrono::steady_clock::now() >= deadline) {
-                diagnostic.code = stateError != MoonlightHostError::None
-                                      ? stateError
-                                      : MoonlightHostError::DeadlineExceeded;
+                const auto interruption = stateError != MoonlightHostError::None
+                                              ? stateError
+                                              : MoonlightHostError::DeadlineExceeded;
+                diagnostic.code = classifyPostSendInterruption(
+                    interruption, outcome.sendState);
                 diagnostic.stage = MoonlightTransportStage::Commit;
                 result.serverInfo.reset();
                 result.apps.clear();
                 result.pairing.reset();
-                result.action.reset();
+                if (diagnostic.code != MoonlightHostError::ActionUnknown) {
+                    result.action.reset();
+                }
                 result.diagnostics.push_back(std::move(diagnostic));
                 result.error = result.diagnostics.back().code;
                 return result;
@@ -1812,7 +1909,8 @@ MoonlightHostResult executeRegistered(const std::shared_ptr<HostApiState>& impl,
 
             diagnostic.code = MoonlightHostError::None;
             diagnostic.stage = MoonlightTransportStage::Complete;
-            result.resolvedAddress = call.endpoint.addresses[attempt].value;
+            result.resolvedAddress = *resolvedWinner;
+            result.resolvedFamily = outcome.resolvedFamily;
             result.diagnostics.push_back(std::move(diagnostic));
             result.error = MoonlightHostError::None;
             if (requestOperation == MoonlightHostOperation::ServerInfo &&
@@ -1860,6 +1958,7 @@ MoonlightHostResult executeRegistered(const std::shared_ptr<HostApiState>& impl,
                     secure.httpStatus = candidate.httpStatus;
                     secure.xmlStatus = candidate.xmlStatus;
                     secure.resolvedAddress = std::move(candidate.resolvedAddress);
+                    secure.resolvedFamily = candidate.resolvedFamily;
                     secure.candidateOnly = true;
                 }
                 return secure;
@@ -1893,6 +1992,7 @@ MoonlightHostResult executeRegistered(const std::shared_ptr<HostApiState>& impl,
             secure.httpStatus = candidate.httpStatus;
             secure.xmlStatus = candidate.xmlStatus;
             secure.resolvedAddress = std::move(candidate.resolvedAddress);
+            secure.resolvedFamily = candidate.resolvedFamily;
             secure.candidateOnly = true;
         }
         secure.error = MoonlightHostError::TrustConflict;
@@ -1984,7 +2084,20 @@ MoonlightHostResult MoonlightHostApi::execute(const MoonlightHostCall& call) noe
             result.error = MoonlightHostError::InvalidRequest;
             return result;
         }
-        auto state = std::make_shared<ActiveRequest>(call.key);
+        if (impl->networkFence == nullptr) {
+            result.error = MoonlightHostError::StaleRequest;
+            return result;
+        }
+        const auto network = impl->networkFence->snapshot();
+        result.networkGeneration = network.generation;
+        if (!network.available || network.generation == 0U ||
+            (call.expectedNetworkGeneration != 0U &&
+             call.expectedNetworkGeneration != network.generation)) {
+            result.error = MoonlightHostError::StaleRequest;
+            return result;
+        }
+        auto state = std::make_shared<ActiveRequest>(
+            call.key, impl->networkFence, network);
         {
             std::lock_guard<std::mutex> lock(impl->mutex);
             if (impl->shuttingDown) {

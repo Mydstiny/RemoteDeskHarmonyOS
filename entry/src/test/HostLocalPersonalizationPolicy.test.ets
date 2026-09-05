@@ -48,7 +48,7 @@ export default function hostLocalPersonalizationPolicyTest(): void {
       expect(cloud.lastHealth).assertEqual(3);
       expect(cloud.lastLatency).assertEqual(72);
       expect(cloud.rustdeskAdaptiveOrientation).assertTrue();
-      expect(cloud.rustdeskDesktopFlipMode).assertEqual('image_only');
+      expect(cloud.rustdeskDesktopFlipMode).assertEqual('axes_3');
       expect(cloud.rustdeskProLastSeenAt).assertEqual(202);
       expect(cloud.rustdeskProSyncError).assertEqual('not_seen');
     });
@@ -87,10 +87,30 @@ export default function hostLocalPersonalizationPolicyTest(): void {
       local.rustdeskProLastSeenAt = 456;
       local.rustdeskProSyncError = 'offline';
       local.sshHostKeyFingerprintSha256 = 'SHA256:local';
+      local.sshHostKeyRouteIdentity = 'ssh-hostkey-route-v1|local';
       expect(remoteHostCloudBaseChanged(before, local)).assertFalse();
 
       local.label = 'Desk renamed';
       expect(remoteHostCloudBaseChanged(before, local)).assertTrue();
+    });
+
+    it('classifies_RDP_connect_time_credential_policy_as_cloud_base', 0, (): void => {
+      const before = new RemoteHost();
+      before.id = 'rdp-host-1';
+      before.label = 'RDP Desk';
+      before.protocol = 'rdp';
+      before.host = '192.0.2.21';
+      before.username = 'saved-user';
+      before.password = 'saved-password';
+
+      const connectTime = RemoteHost.fromJSON(before.toJSON());
+      connectTime.rdpCredentialStorageMode = 'connect_time';
+      connectTime.normalizeRdpAuthentication();
+
+      expect(remoteHostCloudBaseChanged(before, connectTime)).assertTrue();
+      expect(connectTime.username).assertEqual('');
+      expect(connectTime.password).assertEqual('');
+      expect(connectTime.rdpCredentialId).assertEqual('');
     });
 
     it('keeps_vnc_cloud_legacy_values_while_local_override_wins', 0, (): void => {

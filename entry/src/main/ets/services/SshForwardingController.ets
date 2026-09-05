@@ -262,7 +262,9 @@ export class SshForwardingController {
       }
       this.runtimes.updateSnapshot(handle, snapshot.id, nativeState(snapshot.state),
         snapshot.activeConnections, snapshot.transferredBytes, snapshot.lastError,
-        snapshot.bindHost, snapshot.bindPort);
+        snapshot.actualBindHost.length > 0 ? snapshot.actualBindHost : snapshot.bindHost,
+        snapshot.actualBindPort > 0 ? snapshot.actualBindPort : snapshot.bindPort,
+        snapshot.actualBindFamily);
     }
     return { code: SSH_FORWARDING_OK, accepted: true, stale: false,
       runtimes: this.runtimes.list(handle) };

@@ -16,7 +16,9 @@
 #include <functional>
 #include <mutex>
 #include <memory>
+#include <stdexcept>
 #include <thread>
+#include <vector>
 
 #if defined(RDP_NATIVE_CALLBACK_TESTING)
 extern "C" bool RdpTestProductionDisconnectRegistryRoundTrip(
@@ -1112,9 +1114,10 @@ void RunRustDeskPreparedTicketTransitionBarriers() {
 
     // Disconnect at each source/prepared/network boundary must invalidate the
     // source and prepared ticket before the bridge increments its connect
-    // count. Each case uses a fresh bridge to keep the generation transition
-    // independent and deterministic.
-    for (const int disconnectStage : {0, 1, 2, 3}) {
+    // count. Stage 4 is the final window after the external generation
+    // callback but before cursor/quiesce publication. Each case uses a fresh
+    // bridge to keep the generation transition independent and deterministic.
+    for (const int disconnectStage : {0, 1, 2, 3, 4}) {
         RustDeskBridge bridge(RustDeskMode::FFI);
         bridge.setSessionIdentity(static_cast<uint64_t>(8130 + disconnectStage));
         Render::DecoderSessionIdentity owner {
@@ -1159,9 +1162,403 @@ void RunRustDeskPreparedTicketTransitionBarriers() {
         bridge.SetContinuityAttemptStageHookForTesting(nullptr);
         const uint32_t expectedCalls = disconnectStage == 3 ? before + 1 : before;
         RDP_ASSERT_EQ(bridge.continuityConnectCallCountForTesting(), expectedCalls);
+        if (disconnectStage == 4) {
+            const auto quiesce = bridge.continuityQuiesceSnapshot();
+            RDP_ASSERT(!quiesce.audioProducer);
+            RDP_ASSERT(!quiesce.decoderAdmission);
+            RDP_ASSERT(!quiesce.oldSink);
+            RDP_ASSERT(!bridge.getRemoteCursorSnapshot(false).visible);
+        }
         bridge.SetContinuityConnectResultHookForTesting(nullptr);
         DeactivateOwner(owner);
     }
+}
+
+RDP_TEST_CASE(rustdesk_bridge_control_and_2fa_routes_fail_closed_after_retirement) {
+    RustDeskBridge bridge(RustDeskMode::FFI);
+    bridge.setSessionIdentity(8139);
+    int fakeHandle = 8139;
+    std::atomic<int> displayCalls {0};
+    std::atomic<int> twoFactorCalls {0};
+    bridge.SetDisplaySwitchFfiHookForTesting(
+        [&](void* handle, int display) {
+            RDP_ASSERT_EQ(handle, static_cast<void*>(&fakeHandle));
+            RDP_ASSERT_EQ(display, 2);
+            displayCalls.fetch_add(1, std::memory_order_acq_rel);
+            return true;
+        });
+    bridge.SetTwoFactorFfiHookForTesting(
+        [&](uint64_t sessionId, const std::string& code) {
+            RDP_ASSERT_EQ(sessionId, 8139ULL);
+            RDP_ASSERT(code == "123456");
+            twoFactorCalls.fetch_add(1, std::memory_order_acq_rel);
+            return true;
+        });
+    RDP_ASSERT(bridge.AttachFfiOutboundHandleForTesting(&fakeHandle));
+
+    const auto admittedSwitch = bridge.beginDisplaySwitch(2);
+    RDP_ASSERT(admittedSwitch.accepted);
+    RDP_ASSERT(admittedSwitch.generation != 0);
+    RDP_ASSERT(bridge.submitTwoFactorCode("123456"));
+    RDP_ASSERT_EQ(displayCalls.load(std::memory_order_acquire), 1);
+    RDP_ASSERT_EQ(twoFactorCalls.load(std::memory_order_acquire), 1);
+
+    // Test retirement uses the same admission -> display/handle ordering as a
+    // network action, but does not pass the fake handle to the real Rust
+    // destructor. Both production bridge entry points must now reject before
+    // invoking their injected FFI boundary.
+    RDP_ASSERT(bridge.RetireFfiOutboundHandleForTesting(&fakeHandle));
+    RDP_ASSERT(!bridge.beginDisplaySwitch(2).accepted);
+    RDP_ASSERT(!bridge.submitTwoFactorCode("123456"));
+    RDP_ASSERT_EQ(displayCalls.load(std::memory_order_acquire), 1);
+    RDP_ASSERT_EQ(twoFactorCalls.load(std::memory_order_acquire), 1);
+    bridge.SetDisplaySwitchFfiHookForTesting(nullptr);
+    bridge.SetTwoFactorFfiHookForTesting(nullptr);
+}
+
+RDP_TEST_CASE(rustdesk_display_capabilities_fail_closed_when_retired_before_snapshot) {
+    RustDeskBridge bridge(RustDeskMode::FFI);
+    bridge.setSessionIdentity(8146);
+    int fakeHandle = 8146;
+    std::atomic<int> queryCalls {0};
+    std::atomic<int> retirementCalls {0};
+    bridge.SetDisplayCapabilitiesFfiHookForTesting(
+        [&](void* handle, RustDeskDisplayCapabilities& candidate) {
+            RDP_ASSERT_EQ(handle, static_cast<void*>(&fakeHandle));
+            candidate.supported = true;
+            candidate.currentDisplay = 3;
+            candidate.width = 1920;
+            candidate.height = 1080;
+            candidate.resolutions.push_back({1920, 1080});
+            RustDeskDisplayInfo display;
+            display.display = 3;
+            display.width = 1920;
+            display.height = 1080;
+            display.online = true;
+            candidate.displays.push_back(std::move(display));
+            queryCalls.fetch_add(1, std::memory_order_acq_rel);
+            return true;
+        });
+    bridge.SetDisplayCapabilitiesBeforeSnapshotHookForTesting([&]() {
+        RDP_ASSERT(bridge.RetireFfiOutboundHandleForTesting(&fakeHandle));
+        retirementCalls.fetch_add(1, std::memory_order_acq_rel);
+    });
+    RDP_ASSERT(bridge.AttachFfiOutboundHandleForTesting(&fakeHandle));
+
+    // The injected query populates a seemingly valid result, then exact
+    // production retirement runs after the handle lease is released and
+    // before the display snapshot is committed. The post-query validity
+    // check must discard every field populated by the retired stream.
+    const auto capabilities = bridge.getDisplayCapabilities();
+    RDP_ASSERT_EQ(queryCalls.load(std::memory_order_acquire), 1);
+    RDP_ASSERT_EQ(retirementCalls.load(std::memory_order_acquire), 1);
+    RDP_ASSERT(!capabilities.supported);
+    RDP_ASSERT_EQ(capabilities.currentDisplay, 0);
+    RDP_ASSERT_EQ(capabilities.width, 0);
+    RDP_ASSERT_EQ(capabilities.height, 0);
+    RDP_ASSERT(capabilities.resolutions.empty());
+    RDP_ASSERT(capabilities.displays.empty());
+    bridge.SetDisplayCapabilitiesFfiHookForTesting(nullptr);
+    bridge.SetDisplayCapabilitiesBeforeSnapshotHookForTesting(nullptr);
+}
+
+RDP_TEST_CASE(rustdesk_deferred_old_session_tombstone_survives_identity_switch) {
+    RustDeskBridge bridge(RustDeskMode::FFI);
+    constexpr uint64_t oldSession = 8144;
+    constexpr uint64_t newSession = 8145;
+    bridge.setSessionIdentity(oldSession);
+
+    // Model the exact lifetime owned by a callback-thread disconnect: final
+    // cancellation is sticky while its join remains with the process-wide
+    // deferred owner. Identity rotation must not discard that old marker.
+    RDP_ASSERT(bridge.QueueDeferredCancelledSessionRetirementForTesting(
+        oldSession));
+    RDP_ASSERT_EQ(bridge.pendingCancelledSessionRetirementsForTesting(), 1U);
+    bridge.setSessionIdentity(newSession);
+    RDP_ASSERT_EQ(bridge.pendingCancelledSessionRetirementsForTesting(), 1U);
+
+    // This uses the same decrement -> production forget helper ordering as
+    // the deferred owner's afterJoin callback. With no old native starter or
+    // handle left, the old Rust tombstone and its C++ marker are both retired.
+    bridge.CompleteDeferredCancelledSessionRetirementForTesting();
+    RDP_ASSERT_EQ(bridge.pendingCancelledSessionRetirementsForTesting(), 0U);
+}
+
+RDP_TEST_CASE(rustdesk_state_notifications_drain_after_reentrant_callback_throws) {
+    auto bridge = std::make_shared<RustDeskBridge>(RustDeskMode::FFI);
+    bridge->setSessionIdentity(8140);
+    Render::DecoderSessionIdentity owner {
+        8140, bridge->sessionGeneration(), 814001,
+    };
+    bridge->setSessionOwnerToken(owner.ownerToken);
+    ActivateOwner(owner);
+    OwnerCleanupGuard ownerGuard(owner);
+
+    std::atomic<int> callbackCount {0};
+    std::atomic<bool> disconnectedDelivered {false};
+    bridge->setConnectionStateCallback(
+        [bridge, &callbackCount, &disconnectedDelivered](
+            ConnectionState state, const std::string&) {
+            const int ordinal = callbackCount.fetch_add(1, std::memory_order_acq_rel);
+            if (state == ConnectionState::DISCONNECTED) {
+                disconnectedDelivered.store(true, std::memory_order_release);
+            }
+            if (ordinal == 0) {
+                bridge->disconnect();
+                throw std::runtime_error("expected state callback failure");
+            }
+        });
+
+    RDP_ASSERT(bridge->InvokeTransportCallbackForTesting(
+        1, "auth", 120, false, owner.generation, owner.ownerToken));
+    RDP_ASSERT(callbackCount.load(std::memory_order_acquire) >= 2);
+    RDP_ASSERT(disconnectedDelivered.load(std::memory_order_acquire));
+    RDP_ASSERT_EQ(bridge->getState(), ConnectionState::DISCONNECTED);
+    bridge->setConnectionStateCallback(nullptr);
+}
+
+RDP_TEST_CASE(rustdesk_newer_network_observation_overtakes_blocked_same_generation_action) {
+    auto bridge = std::make_shared<RustDeskBridge>(RustDeskMode::FFI);
+    bridge->setSessionIdentity(8141);
+    Render::DecoderSessionIdentity owner {
+        8141, bridge->sessionGeneration(), 814101,
+    };
+    bridge->setSessionOwnerToken(owner.ownerToken);
+    ActivateOwner(owner);
+    OwnerCleanupGuard ownerGuard(owner);
+    ConnectionConfig config;
+    config.host = "same-generation-continuity-peer";
+    config.port = 21118;
+    config.rdDirectIp = true;
+    config.rdConnectionStrategy = "direct_ip";
+    bridge->SetContinuityConfigForTesting(config);
+    bridge->SetContinuityConnectResultHookForTesting(
+        [](uint64_t, uint64_t) { return 0; });
+    bridge->onNetworkChanged(true, 200);
+
+    auto barrier = std::make_shared<SharedCallbackBarrier>();
+    auto hookEntries = std::make_shared<std::atomic<int>>(0);
+    bridge->SetNetworkActionReadyHookForTesting([barrier, hookEntries](uint64_t generation) {
+        if (generation != 200 ||
+            hookEntries->fetch_add(1, std::memory_order_acq_rel) != 0) {
+            return;
+        }
+        std::unique_lock<std::mutex> lock(barrier->mutex);
+        barrier->entered = true;
+        barrier->cv.notify_all();
+        barrier->cv.wait(lock, [&]() { return barrier->release; });
+    });
+    const uint32_t connectCallsBefore =
+        bridge->continuityConnectCallCountForTesting();
+    RdpTestThreadScope threads(barrier, [barrier]() {
+        {
+            std::lock_guard<std::mutex> lock(barrier->mutex);
+            barrier->release = true;
+        }
+        barrier->cv.notify_all();
+    });
+    // Keep both observations on the same network generation. The continuity
+    // owner cannot reject the older value by generation alone, so only the
+    // bridge action token and the executor's owner-boundary recheck can stop
+    // the delayed unavailable observation from overwriting the newer value.
+    threads.start([bridge]() { bridge->onNetworkChanged(false, 200); });
+    {
+        std::unique_lock<std::mutex> lock(barrier->mutex);
+        RDP_ASSERT(barrier->cv.wait_for(
+            lock, 1s, [&]() { return barrier->entered; }));
+    }
+
+    // The newer observation must queue behind the bridge admission
+    // transaction. Once the unavailable owner commit completes, this latest
+    // available observation is required to schedule the replacement stream.
+    threads.start([bridge]() { bridge->onNetworkChanged(true, 200); });
+    {
+        std::lock_guard<std::mutex> lock(barrier->mutex);
+        barrier->release = true;
+    }
+    barrier->cv.notify_all();
+    threads.cancelAndJoin();
+    bridge->SetNetworkActionReadyHookForTesting(nullptr);
+
+    const auto reconnectDeadline = std::chrono::steady_clock::now() + 1s;
+    while (bridge->continuityConnectCallCountForTesting() == connectCallsBefore &&
+           std::chrono::steady_clock::now() < reconnectDeadline) {
+        std::this_thread::yield();
+    }
+    RDP_ASSERT_EQ(bridge->continuityConnectCallCountForTesting(),
+                  connectCallsBefore + 1);
+    RDP_ASSERT(bridge->continuityNetworkAvailableForTesting());
+    bridge->SetContinuityConnectResultHookForTesting(nullptr);
+    bridge->disconnect();
+}
+
+RDP_TEST_CASE(rustdesk_old_ffi_progress_cannot_overtake_new_network_state) {
+    auto bridge = std::make_shared<RustDeskBridge>(RustDeskMode::FFI);
+    bridge->setSessionIdentity(8143);
+    Render::DecoderSessionIdentity owner {
+        8143, bridge->sessionGeneration(), 814301,
+    };
+    bridge->setSessionOwnerToken(owner.ownerToken);
+    ActivateOwner(owner);
+    OwnerCleanupGuard ownerGuard(owner);
+    bridge->onNetworkChanged(true, 400);
+
+    auto barrier = std::make_shared<SharedCallbackBarrier>();
+    bridge->SetFfiStateCommitHookForTesting([barrier]() {
+        std::unique_lock<std::mutex> lock(barrier->mutex);
+        barrier->entered = true;
+        barrier->cv.notify_all();
+        barrier->cv.wait(lock, [&]() { return barrier->release; });
+    });
+    std::atomic<int> staleProgressPublications {0};
+    std::atomic<int> waitingNetworkPublications {0};
+    bridge->setConnectionStateCallback(
+        [&staleProgressPublications, &waitingNetworkPublications](
+            ConnectionState, const std::string& message) {
+            if (message == "stale-progress") {
+                staleProgressPublications.fetch_add(1, std::memory_order_relaxed);
+            }
+            if (message.find("WAITING_NETWORK") != std::string::npos) {
+                waitingNetworkPublications.fetch_add(1, std::memory_order_relaxed);
+            }
+        });
+
+    std::atomic<bool> invoked {false};
+    RdpTestThreadScope progressThread(barrier, [barrier]() {
+        {
+            std::lock_guard<std::mutex> lock(barrier->mutex);
+            barrier->release = true;
+        }
+        barrier->cv.notify_all();
+    });
+    progressThread.start([bridge, &invoked, owner]() {
+        invoked.store(bridge->InvokeProgressCallbackForTesting(
+            1, "stale-progress", owner.generation, owner.ownerToken),
+            std::memory_order_release);
+    });
+    {
+        std::unique_lock<std::mutex> lock(barrier->mutex);
+        RDP_ASSERT(barrier->cv.wait_for(
+            lock, 1s, [&]() { return barrier->entered; }));
+    }
+
+    bridge->onNetworkChanged(false, 401);
+    {
+        std::lock_guard<std::mutex> lock(barrier->mutex);
+        barrier->release = true;
+    }
+    barrier->cv.notify_all();
+    progressThread.cancelAndJoin();
+    bridge->SetFfiStateCommitHookForTesting(nullptr);
+
+    RDP_ASSERT(invoked.load(std::memory_order_acquire));
+    RDP_ASSERT_EQ(staleProgressPublications.load(std::memory_order_acquire), 0);
+    RDP_ASSERT_EQ(waitingNetworkPublications.load(std::memory_order_acquire), 1);
+    RDP_ASSERT_EQ(bridge->getState(), ConnectionState::DISCONNECTED);
+    bridge->setConnectionStateCallback(nullptr);
+    bridge->disconnect();
+}
+
+RDP_TEST_CASE(rustdesk_old_attempt_result_cannot_cross_new_network_action_token) {
+    auto bridge = std::make_shared<RustDeskBridge>(RustDeskMode::FFI);
+    bridge->setSessionIdentity(8142);
+    Render::DecoderSessionIdentity owner {
+        8142, bridge->sessionGeneration(), 814201,
+    };
+    bridge->setSessionOwnerToken(owner.ownerToken);
+    ActivateOwner(owner);
+    OwnerCleanupGuard ownerGuard(owner);
+    ConnectionConfig config;
+    config.host = "continuity-result-peer";
+    config.port = 21118;
+    config.rdDirectIp = true;
+    config.rdConnectionStrategy = "direct_ip";
+    bridge->SetContinuityConfigForTesting(config);
+
+    auto resultBarrier = std::make_shared<SharedCallbackBarrier>();
+    auto networkBarrier = std::make_shared<SharedCallbackBarrier>();
+    bridge->SetContinuityConnectResultHookForTesting(
+        [resultBarrier](uint64_t, uint64_t) {
+            std::unique_lock<std::mutex> lock(resultBarrier->mutex);
+            resultBarrier->entered = true;
+            resultBarrier->cv.notify_all();
+            resultBarrier->cv.wait(lock, [&]() { return resultBarrier->release; });
+            return -1;
+        });
+    bridge->SetNetworkActionReadyHookForTesting(
+        [networkBarrier](uint64_t generation) {
+            if (generation != 301) {
+                return;
+            }
+            std::unique_lock<std::mutex> lock(networkBarrier->mutex);
+            networkBarrier->entered = true;
+            networkBarrier->cv.notify_all();
+            networkBarrier->cv.wait(lock, [&]() { return networkBarrier->release; });
+        });
+    std::atomic<int> staleResultPublications {0};
+    std::atomic<int> waitingNetworkPublications {0};
+    bridge->setConnectionStateCallback(
+        [&staleResultPublications, &waitingNetworkPublications](
+            ConnectionState, const std::string& message) {
+            if (message.find("RETRY_SCHEDULED") != std::string::npos ||
+                message.find("FAILED") != std::string::npos ||
+                message.find("CONNECTED_WAITING_FOR_FIRST_FRAME") !=
+                    std::string::npos) {
+                staleResultPublications.fetch_add(1, std::memory_order_relaxed);
+            }
+            if (message.find("WAITING_NETWORK") != std::string::npos) {
+                waitingNetworkPublications.fetch_add(1, std::memory_order_relaxed);
+            }
+        });
+
+    RDP_ASSERT(bridge->InvokeTransportCallbackForTesting(
+        1, "reset", 300, false, owner.generation, owner.ownerToken));
+    {
+        std::unique_lock<std::mutex> lock(resultBarrier->mutex);
+        RDP_ASSERT(resultBarrier->cv.wait_for(
+            lock, 1s, [&]() { return resultBarrier->entered; }));
+    }
+
+    RdpTestThreadScope networkThread(networkBarrier, [networkBarrier]() {
+        {
+            std::lock_guard<std::mutex> lock(networkBarrier->mutex);
+            networkBarrier->release = true;
+        }
+        networkBarrier->cv.notify_all();
+    });
+    networkThread.start([bridge]() { bridge->onNetworkChanged(false, 301); });
+    {
+        std::unique_lock<std::mutex> lock(networkBarrier->mutex);
+        RDP_ASSERT(networkBarrier->cv.wait_for(
+            lock, 1s, [&]() { return networkBarrier->entered; }));
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(resultBarrier->mutex);
+        resultBarrier->release = true;
+    }
+    resultBarrier->cv.notify_all();
+    const auto resultDeadline = std::chrono::steady_clock::now() + 1s;
+    while (bridge->continuityRemainingCountForTesting() != 0 &&
+           std::chrono::steady_clock::now() < resultDeadline) {
+        std::this_thread::yield();
+    }
+    RDP_ASSERT_EQ(bridge->continuityRemainingCountForTesting(),
+                  static_cast<std::size_t>(0));
+    RDP_ASSERT_EQ(staleResultPublications.load(std::memory_order_acquire), 0);
+
+    {
+        std::lock_guard<std::mutex> lock(networkBarrier->mutex);
+        networkBarrier->release = true;
+    }
+    networkBarrier->cv.notify_all();
+    networkThread.cancelAndJoin();
+    bridge->SetNetworkActionReadyHookForTesting(nullptr);
+    bridge->SetContinuityConnectResultHookForTesting(nullptr);
+    RDP_ASSERT_EQ(waitingNetworkPublications.load(std::memory_order_acquire), 1);
+    RDP_ASSERT_EQ(bridge->getState(), ConnectionState::DISCONNECTED);
+    bridge->setConnectionStateCallback(nullptr);
+    bridge->disconnect();
 }
 
 RDP_TEST_CASE(vnc_production_callback_dispatch_respects_callback_lifecycle) {
@@ -1660,14 +2057,47 @@ RDP_TEST_CASE(freerdp_rdpsnd_production_entry_holds_owner_lease) {
     FreeRdpAdapter::ClearRdpsndCallbackForTesting(nextOwner);
     DeactivateOwner(nextOwner);
 
-    // Exercise the production FreeRDP deferred-owner path with a worker that
-    // cannot finish inside the first two budgets.  The API must return with a
-    // visible remaining item, never detach it, and join only after release.
-    auto blockedRelease = FreeRdpAdapter::QueueBlockedWorkerForTesting();
+    // Every critical teardown role receives its own carrier before transport
+    // admission. A blocked SDK disconnect must not head-of-line block the
+    // sibling platform-retire carrier or the global non-blocking join owner.
+    RDP_ASSERT(FreeRdpAdapter::VerifyTeardownCarrierIsolationForTesting());
+
+    // The deferred owner is process-scoped. Destroying an unrelated idle
+    // adapter while another session has deferred work must not stop that
+    // global owner or reject the next session's reservation.
+    auto crossSessionRelease =
+        FreeRdpAdapter::QueueBlockedWorkerForTesting();
+    RDP_ASSERT(crossSessionRelease != nullptr);
+    {
+        auto idleAdapter = std::make_shared<FreeRdpAdapter>();
+        idleAdapter.reset();
+    }
+    auto postDestructionRelease =
+        FreeRdpAdapter::QueueBlockedWorkerForTesting();
+    RDP_ASSERT(postDestructionRelease != nullptr);
+    crossSessionRelease->store(true, std::memory_order_release);
+    postDestructionRelease->store(true, std::memory_order_release);
+    RDP_ASSERT(FreeRdpAdapter::DrainDeferredWorkersWithinForTesting(1000));
+
+    // Fill every production deferred-owner slot with workers that cannot
+    // complete. The next admission must fail before it starts a thread; no
+    // callback-boundary fallback may synchronously join or detach it.
+    constexpr size_t kDeferredWorkerCapacity = 64;
+    std::vector<std::shared_ptr<std::atomic<bool>>> blockedReleases;
+    blockedReleases.reserve(kDeferredWorkerCapacity);
+    for (size_t index = 0; index < kDeferredWorkerCapacity; ++index) {
+        auto release = FreeRdpAdapter::QueueBlockedWorkerForTesting();
+        RDP_ASSERT(release != nullptr);
+        blockedReleases.push_back(std::move(release));
+    }
+    RDP_ASSERT(FreeRdpAdapter::QueueBlockedWorkerForTesting() == nullptr);
     RDP_ASSERT(!FreeRdpAdapter::DrainDeferredWorkersWithinForTesting(20));
-    RDP_ASSERT(FreeRdpAdapter::DeferredWorkerRemainingForTesting() >= 1);
+    RDP_ASSERT_EQ(FreeRdpAdapter::DeferredWorkerRemainingForTesting(),
+                  kDeferredWorkerCapacity);
     RDP_ASSERT(!FreeRdpAdapter::ShutdownDeferredWorkersWithinForTesting(50));
-    blockedRelease->store(true, std::memory_order_release);
+    for (const auto& release : blockedReleases) {
+        release->store(true, std::memory_order_release);
+    }
     RDP_ASSERT(FreeRdpAdapter::DrainDeferredWorkersWithinForTesting(1000));
     RDP_ASSERT_EQ(FreeRdpAdapter::DeferredWorkerRemainingForTesting(),
                   static_cast<size_t>(0));

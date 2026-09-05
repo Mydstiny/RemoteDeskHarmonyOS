@@ -119,6 +119,7 @@ export interface VncTrustEndpoint {
   userId: string;
   storeIdentityFingerprint: string;
   endpointBindingFingerprint: string;
+  localOnly: boolean;
 }
 
 export interface VncTrustSaveResult {
@@ -171,7 +172,8 @@ export function vncTrustEndpointIsValid(endpoint: VncTrustEndpoint,
     ownerId !== '' && userId !== '' && scope !== '' && userId === scope &&
     /^[0-9a-f]{64}$/.test(currentStore) &&
     endpoint.storeIdentityFingerprint.trim().toLowerCase() === currentStore &&
-    /^[0-9a-f]{64}$/.test(endpoint.endpointBindingFingerprint.trim().toLowerCase());
+    /^[0-9a-f]{64}$/.test(endpoint.endpointBindingFingerprint.trim().toLowerCase()) &&
+    typeof endpoint.localOnly === 'boolean';
 }
 
 export function vncTrustV2ReadBackMatches(record: VncRecord | null, ownerType: 'host' | 'gateway',
@@ -391,10 +393,12 @@ export class VncTrustService {
       result.message = 'VNC trust 需要完整 endpoint owner 和有效指纹';
       return result;
     }
-    result.id = 'vnctrust_' + ownerType + '_' + ownerId + '_' + normalized;
+    result.id = (endpoint.localOnly ? 'vnctrust_local_' : 'vnctrust_') +
+      ownerType + '_' + ownerId + '_' + normalized;
     const previousV2: VncRecord | null = this.findRecord(result.id);
-    const legacyRecord: VncRecord | null = this.findLegacyCandidateRecord(ownerType, ownerId,
-      resolvedUserId, normalized, result.id);
+    const legacyRecord: VncRecord | null = endpoint.localOnly ? null :
+      this.findLegacyCandidateRecord(ownerType, ownerId,
+        resolvedUserId, normalized, result.id);
     const current: VncTrustView | null = this.find(result.id) ||
       this.findLegacyCandidate(ownerType, ownerId, resolvedUserId, normalized);
     const record: VncRecord = new VncRecord();
@@ -411,14 +415,14 @@ export class VncTrustService {
     record.updatedAt = now;
     record.syncVersion = current === null ? 1 : current.syncVersion + 1;
     finalizeVncRecord(record);
-    if (!this.cloud.upsertVncRecord(record)) {
+    if (!this.cloud.upsertVncRecord(record, endpoint.localOnly)) {
       result.message = this.cloud.getLastMutationResult().message || 'VNC trust 保存失败';
       return result;
     }
     const readBack: VncRecord | null = this.findRecord(result.id);
     if (!vncTrustV2ReadBackMatches(readBack, ownerType, ownerId, resolvedUserId, normalized,
       storeIdentityFingerprint, endpointBindingFingerprint)) {
-      this.rollbackV2Mutation(resolvedUserId, result.id, previousV2);
+      this.rollbackV2Mutation(resolvedUserId, result.id, previousV2, endpoint.localOnly);
       result.message = 'VNC trust 保存后校验失败';
       return result;
     }
@@ -426,7 +430,7 @@ export class VncTrustService {
       const removedLegacy: boolean = this.cloud.deleteVncRecord(resolvedUserId, legacyRecord.id);
       const legacyReadBack: VncRecord[] = this.cloud.loadVncRecords(resolvedUserId, true);
       if (!removedLegacy || !vncTrustLegacyRowIsCleaned(legacyReadBack, legacyRecord.id)) {
-        this.rollbackV2Mutation(resolvedUserId, result.id, previousV2);
+        this.rollbackV2Mutation(resolvedUserId, result.id, previousV2, endpoint.localOnly);
         result.message = 'VNC trust 旧记录迁移未完成';
         return result;
       }
@@ -438,7 +442,7 @@ export class VncTrustService {
     this.rememberLocalConfirmation(ownerType, record.ownerId, normalized, endpointBindingFingerprint);
     if (!this.persistLocalConfirmations()) {
       this.locallyConfirmed = previousMarkers;
-      this.rollbackV2Mutation(resolvedUserId, result.id, previousV2);
+      this.rollbackV2Mutation(resolvedUserId, result.id, previousV2, endpoint.localOnly);
       result.message = 'VNC trust 本地确认写入失败，已回滚';
       return result;
     }
@@ -448,9 +452,10 @@ export class VncTrustService {
   }
 
   remove(id: string): boolean {
+    const localOnly: boolean = id.startsWith('vnctrust_local_');
     const previousRecord: VncRecord | null = this.findRecord(id);
     const trust: VncTrustView | null = this.find(id);
-    const ok: boolean = this.cloud.deleteVncRecord(this.currentUserId(), id);
+    const ok: boolean = this.cloud.deleteVncRecord(this.currentUserId(), id, localOnly);
     if (ok) {
       if (trust !== null) {
         const previousMarkers: string[] = this.locallyConfirmed.slice();
@@ -460,7 +465,7 @@ export class VncTrustService {
           trust.fingerprintSha256);
         if (!this.persistLocalConfirmations()) {
           this.locallyConfirmed = previousMarkers;
-          if (previousRecord !== null) { this.cloud.upsertVncRecord(previousRecord); }
+          if (previousRecord !== null) { this.cloud.upsertVncRecord(previousRecord, localOnly); }
           return false;
         }
       }
@@ -526,12 +531,13 @@ export class VncTrustService {
     return null;
   }
 
-  private rollbackV2Mutation(userId: string, id: string, previous: VncRecord | null): void {
+  private rollbackV2Mutation(userId: string, id: string, previous: VncRecord | null,
+    localOnly: boolean): void {
     if (previous !== null) {
-      this.cloud.upsertVncRecord(previous);
+      this.cloud.upsertVncRecord(previous, localOnly);
       return;
     }
-    this.cloud.deleteVncRecord(userId, id);
+    this.cloud.deleteVncRecord(userId, id, localOnly);
   }
 
   private findLegacyCandidateRecord(ownerType: 'host' | 'gateway', ownerId: string,

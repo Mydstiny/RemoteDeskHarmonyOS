@@ -37,7 +37,10 @@ import {
   rustDeskRelayCapabilityIdentityChanged
 } from './RustDeskControlPlaneCapabilityPolicy';
 import { remoteHostCloudBaseChanged } from './HostLocalPersonalizationPolicy';
-import { lanHostUsesLocalOnlyStorage } from './LanHostAddressPolicy';
+import {
+  lanHostUsesDynamicAddressStorage,
+  lanHostUsesLocalOnlyStorage
+} from './LanHostAddressPolicy';
 import { KeyVaultService } from './KeyVaultService';
 import { AccountSessionCoordinator } from './AccountSessionCoordinator';
 import {
@@ -55,6 +58,14 @@ import {
   RustDeskPeerTwoFactorLegacySource
 } from './RustDeskPeerTwoFactorLegacyMigration';
 import { RustDeskAuthDraftStore } from './RustDeskAuthDraftStore';
+import {
+  EndpointAddressResult,
+  EndpointServerIdentityResult,
+  endpointTransportHost,
+  parseEndpointFields,
+  parseEndpointServerIdentity
+} from './EndpointAddressPolicy';
+import { normalizeRdpClientHostname } from './RdpConnectionIdentityPolicy';
 
 export class HostSyncService {
   private static instance: HostSyncService;
@@ -78,6 +89,102 @@ export class HostSyncService {
   private readonly peerTwoFactorBindings: RustDeskPeerTwoFactorBindingStore =
     RustDeskPeerTwoFactorBindingStore.getInstance();
   private keyVaultListenerBound: boolean = false;
+
+  /** Canonicalizes every persisted endpoint before any endpoint-bound secret is written. */
+  prepareHostNetworkEndpoints(host: RemoteHost): boolean {
+    if (host.protocol !== 'rdp' && host.protocol !== 'ssh' && host.protocol !== 'rustdesk') {
+      return true;
+    }
+    let sourceHost: string = host.host;
+    let sourcePort: number = host.port;
+    if (host.protocol === 'rustdesk' && host.rustdeskDirectEnabled) {
+      sourceHost = host.rustdeskDirectHost === '' ? host.host : host.rustdeskDirectHost;
+      sourcePort = host.rustdeskDirectPort;
+    }
+    const endpoint: EndpointAddressResult = parseEndpointFields(sourceHost, sourcePort);
+    const sshInterfaceScope: boolean = endpoint.ok && host.protocol === 'ssh' &&
+      endpoint.endpoint.scopeKind === 'interface' && endpoint.endpoint.scope !== '';
+    if (!endpoint.ok || (endpoint.endpoint.scope !== '' && !sshInterfaceScope)) {
+      hilog.warn(0x0001, 'CloudSync',
+        'HostSyncService: 已拒绝无效或不可持久化的端点 hostId=' +
+        rustDeskRelayIdFingerprint(host.id));
+      return false;
+    }
+    const canonicalHost: string = endpointTransportHost(endpoint.endpoint);
+    const canonicalPort: number = endpoint.endpoint.port;
+    let canonicalGatewayHost: string = host.gatewayHost;
+    let canonicalGatewayPort: number = host.gatewayPort;
+    let canonicalTargetServerName: string = host.customHostname;
+    let canonicalGatewayServerName: string = host.rdpGatewayServerName;
+    let canonicalClientHostname: string = host.rdpClientHostname;
+    let canonicalProxyHost: string = host.proxyHost;
+    let canonicalProxyPort: number = host.proxyPort;
+    if (host.protocol === 'rdp' && host.gatewayHost !== '') {
+      const gateway: EndpointAddressResult = parseEndpointFields(host.gatewayHost, host.gatewayPort);
+      if (!gateway.ok || gateway.endpoint.scope !== '') {
+        hilog.warn(0x0001, 'CloudSync',
+          'HostSyncService: 已拒绝无效或尚未支持作用域的 RDP Gateway hostId=' +
+          rustDeskRelayIdFingerprint(host.id));
+        return false;
+      }
+      canonicalGatewayHost = endpointTransportHost(gateway.endpoint);
+      canonicalGatewayPort = gateway.endpoint.port;
+    }
+    if (host.protocol === 'ssh' && host.proxyHost !== '') {
+      const proxy: EndpointAddressResult = parseEndpointFields(
+        host.proxyHost, host.proxyPort);
+      const proxyInterfaceScope: boolean = proxy.ok &&
+        proxy.endpoint.scopeKind === 'interface' &&
+        proxy.endpoint.scope !== '';
+      if (!proxy.ok || (proxy.endpoint.scope !== '' && !proxyInterfaceScope)) {
+        hilog.warn(0x0001, 'CloudSync',
+          'HostSyncService: 已拒绝无效或不可持久化的 SSH 代理端点 hostId=' +
+          rustDeskRelayIdFingerprint(host.id));
+        return false;
+      }
+      canonicalProxyHost = endpointTransportHost(proxy.endpoint);
+      canonicalProxyPort = proxy.endpoint.port;
+    }
+    if (host.protocol === 'rdp') {
+      const targetIdentity: EndpointServerIdentityResult =
+        parseEndpointServerIdentity(host.customHostname);
+      const gatewayIdentity: EndpointServerIdentityResult =
+        parseEndpointServerIdentity(host.rdpGatewayServerName);
+      const clientHostname: string | null =
+        normalizeRdpClientHostname(host.rdpClientHostname);
+      if (!targetIdentity.ok || !gatewayIdentity.ok || clientHostname === null) {
+        hilog.warn(0x0001, 'CloudSync',
+          'HostSyncService: 已拒绝无效的 RDP 目标或客户端身份 hostId=' +
+          rustDeskRelayIdFingerprint(host.id));
+        return false;
+      }
+      canonicalTargetServerName = targetIdentity.identity.canonicalName;
+      canonicalGatewayServerName = gatewayIdentity.identity.canonicalName;
+      canonicalClientHostname = clientHostname;
+    }
+    // Commit canonical values only after every endpoint in the record passed;
+    // callers must not observe a partially rewritten host when validation fails.
+    host.host = canonicalHost;
+    host.port = canonicalPort;
+    if (host.protocol === 'rustdesk' && host.rustdeskDirectEnabled) {
+      host.rustdeskDirectHost = canonicalHost;
+      host.rustdeskDirectPort = canonicalPort;
+    }
+    if (host.protocol === 'rdp' && host.gatewayHost !== '') {
+      host.gatewayHost = canonicalGatewayHost;
+      host.gatewayPort = canonicalGatewayPort;
+    }
+    if (host.protocol === 'rdp') {
+      host.customHostname = canonicalTargetServerName;
+      host.rdpGatewayServerName = canonicalGatewayServerName;
+      host.rdpClientHostname = canonicalClientHostname;
+    }
+    if (host.protocol === 'ssh' && host.proxyHost !== '') {
+      host.proxyHost = canonicalProxyHost;
+      host.proxyPort = canonicalProxyPort;
+    }
+    return true;
+  }
   private pendingPeerTwoFactorLegacyCandidates:
     Map<string, RustDeskPeerTwoFactorLegacyCandidate> = new Map();
 
@@ -610,6 +717,7 @@ export class HostSyncService {
 
   addHost(host: RemoteHost): boolean {
     if (!host.id) { host.id = RemoteHost.generateId(); }
+    if (!this.prepareHostNetworkEndpoints(host)) { return false; }
     host.createdAt = Date.now();
     const observedAt: number = Date.now();
     this.localHostConfigObservationAt.set(host.id, observedAt);
@@ -647,15 +755,18 @@ export class HostSyncService {
   updateHost(host: RemoteHost): boolean {
     const current: RemoteHost | undefined = this.hosts.get(host.id);
     if (!current) { return false; }
+    if (!this.prepareHostNetworkEndpoints(host)) { return false; }
     const previousPeerEndpoint: string =
       current.protocol === 'rustdesk' ? rustDeskPeerTwoFactorEndpointIdentity(current) : '';
     const nextPeerEndpoint: string =
       host.protocol === 'rustdesk' ? rustDeskPeerTwoFactorEndpointIdentity(host) : '';
     const currentLocalOnly: boolean = lanHostUsesLocalOnlyStorage(current);
     const nextLocalOnly: boolean = lanHostUsesLocalOnlyStorage(host);
-    if (currentLocalOnly !== nextLocalOnly) {
+    const storageScopeChanged: boolean = currentLocalOnly !== nextLocalOnly;
+    if (storageScopeChanged &&
+      (current.protocol !== 'ssh' || host.protocol !== 'ssh')) {
       hilog.warn(0x0001, 'CloudSync',
-        'HostSyncService.updateHost: 已拒绝隐式切换云/本机存储策略 hostId=' +
+        'HostSyncService.updateHost: 已拒绝非 SSH 主机切换云/本机存储策略 hostId=' +
         rustDeskRelayIdFingerprint(host.id));
       return false;
     }
@@ -697,9 +808,12 @@ export class HostSyncService {
     const cloudBaseChanged: boolean = remoteHostCloudBaseChanged(current, host) ||
       current.runtimeSecretStateSignature() !== host.runtimeSecretStateSignature();
     if (this.ready) {
-      const ok: boolean = nextLocalOnly ? this.cloud.updateDynamicLanHost(host) :
-        (cloudBaseChanged ? this.cloud.updateHost(host) :
-          this.cloud.updateHostLocalPersonalization(host));
+      const ok: boolean = storageScopeChanged
+        ? (nextLocalOnly ? this.cloud.moveSshHostToDeviceLocal(host) :
+          this.cloud.moveSshHostToCloud(host))
+        : (nextLocalOnly ? this.cloud.updateDynamicLanHost(host) :
+          (cloudBaseChanged ? this.cloud.updateHost(host) :
+            this.cloud.updateHostLocalPersonalization(host)));
       if (!ok) {
         if (removedPeerBinding !== null &&
           !this.peerTwoFactorBindings.save(removedPeerBinding)) {
@@ -717,7 +831,9 @@ export class HostSyncService {
           rustDeskRelayIdFingerprint(host.id));
         return false;
       }
-      if (!nextLocalOnly && cloudBaseChanged) { this.cloud.pushTable('remotehosts'); }
+      if (storageScopeChanged || (!nextLocalOnly && cloudBaseChanged)) {
+        this.cloud.pushTable('remotehosts');
+      }
     }
     scrubRustDeskPeerTwoFactorRuntime(host);
     if (nextPeerEndpoint !== '' && this.peerTwoFactorBindings.isLoaded()) {
@@ -735,8 +851,8 @@ export class HostSyncService {
   /** Accept only the fields an exact LAN discovery match is allowed to refresh. */
   updateDynamicLanAddress(host: RemoteHost): boolean {
     const current: RemoteHost | undefined = this.hosts.get(host.id);
-    if (current === undefined || !lanHostUsesLocalOnlyStorage(current) ||
-      !lanHostUsesLocalOnlyStorage(host) || current.protocol !== host.protocol ||
+    if (current === undefined || !lanHostUsesDynamicAddressStorage(current) ||
+      !lanHostUsesDynamicAddressStorage(host) || current.protocol !== host.protocol ||
       current.lanDiscoveryIdentity !== host.lanDiscoveryIdentity) {
       return false;
     }

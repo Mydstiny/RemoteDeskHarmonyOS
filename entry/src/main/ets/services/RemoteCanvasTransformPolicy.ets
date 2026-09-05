@@ -1,4 +1,4 @@
-export type LocalViewScaleMode = 'fit' | '100' | '125' | '150' | '175' | '200' | 'custom';
+export type LocalViewScaleMode = 'fit' | 'fill' | '100' | '125' | '150' | '175' | '200' | 'custom';
 
 // Keep the ArkTS geometry mirror aligned with GLRenderer::SetCanvasTransform.
 export const CANVAS_TRANSFORM_MAX_SCALE: number = 12;
@@ -37,6 +37,9 @@ export interface CanvasTransform {
   // Clockwise quarter turns applied to the remote canvas.  Keep this optional
   // so persisted/legacy transform literals continue to be valid.
   rotation?: number;
+  // Fill must never reveal ratio bars while the user pans. Keep its bounds
+  // strict even when the protocol normally enables a free-pan reserve.
+  strictContentBounds?: boolean;
 }
 
 interface CanvasScaleLimits {
@@ -74,7 +77,7 @@ function displayedSourceHeight(transform: CanvasTransform, viewport: CanvasViewp
 }
 
 export function normalizeLocalViewScaleMode(value: string): LocalViewScaleMode {
-  if (value === '100' || value === '125' || value === '150' || value === '175' ||
+  if (value === 'fill' || value === '100' || value === '125' || value === '150' || value === '175' ||
     value === '200' || value === 'custom') {
     return value;
   }
@@ -107,6 +110,13 @@ export function localViewScalePercent(mode: LocalViewScaleMode, customPercent: n
   return 0;
 }
 
+/** Fill has intentional overflow, so panning stays available even when pinch
+ * zoom itself is disabled. */
+export function localCanvasPanInteractionEnabled(zoomEnabled: boolean,
+  mode: LocalViewScaleMode): boolean {
+  return zoomEnabled || mode === 'fill';
+}
+
 export function containScale(viewport: CanvasViewport): number {
   const surfaceWidth: number = positive(viewport.surfaceWidth, 1);
   const surfaceHeight: number = positive(viewport.surfaceHeight, 1);
@@ -123,6 +133,19 @@ function containScaleForRotation(viewport: CanvasViewport, rotation: number): nu
   const displayWidth: number = rotation % 2 === 1 ? sourceHeight : sourceWidth;
   const displayHeight: number = rotation % 2 === 1 ? sourceWidth : sourceHeight;
   return Math.min(surfaceWidth / displayWidth, surfaceHeight / displayHeight);
+}
+
+/** Scale until both surface axes are covered. The excess axis is centred and
+ * can be reached with the existing pan gesture, so this mode never stretches
+ * the remote desktop and never leaves ratio bars. */
+function coverScaleForRotation(viewport: CanvasViewport, rotation: number): number {
+  const surfaceWidth: number = positive(viewport.surfaceWidth, 1);
+  const surfaceHeight: number = positive(viewport.surfaceHeight, 1);
+  const sourceWidth: number = positive(viewport.sourceWidth, 1);
+  const sourceHeight: number = positive(viewport.sourceHeight, 1);
+  const displayWidth: number = rotation % 2 === 1 ? sourceHeight : sourceWidth;
+  const displayHeight: number = rotation % 2 === 1 ? sourceWidth : sourceHeight;
+  return Math.max(surfaceWidth / displayWidth, surfaceHeight / displayHeight);
 }
 
 function scaleLimits(viewport: CanvasViewport, rotation: number): CanvasScaleLimits {
@@ -147,8 +170,8 @@ function absoluteScale(transform: CanvasTransform, viewport: CanvasViewport): nu
     Math.max(0.01, transform.scale);
 }
 
-function freePanInsetRatio(transformScale: number, viewport: CanvasViewport): number {
-  if (transformScale <= 1.0005) {
+function freePanInsetRatio(transform: CanvasTransform, viewport: CanvasViewport): number {
+  if (transform.strictContentBounds === true || transform.scale <= 1.0005) {
     return 0;
   }
   let ratio: number = 0;
@@ -170,7 +193,13 @@ export function clampCanvasTransform(transform: CanvasTransform, viewport: Canva
     positive(viewport.sourceWidth, 1) : positive(viewport.sourceHeight, 1)) * physicalScale;
   const surfaceWidth: number = positive(viewport.surfaceWidth, 1);
   const surfaceHeight: number = positive(viewport.surfaceHeight, 1);
-  const insetRatio: number = freePanInsetRatio(scale, viewport);
+  const insetRatio: number = freePanInsetRatio({
+    scale,
+    panX: transform.panX,
+    panY: transform.panY,
+    rotation,
+    strictContentBounds: transform.strictContentBounds
+  }, viewport);
   const maxPanX: number = Math.max(0, (contentWidth - surfaceWidth) / 2,
     surfaceWidth * insetRatio);
   const maxPanY: number = Math.max(0, (contentHeight - surfaceHeight) / 2,
@@ -179,14 +208,15 @@ export function clampCanvasTransform(transform: CanvasTransform, viewport: Canva
     scale,
     panX: clamp(Number.isFinite(transform.panX) ? transform.panX : 0, -maxPanX, maxPanX),
     panY: clamp(Number.isFinite(transform.panY) ? transform.panY : 0, -maxPanY, maxPanY),
-    rotation
+    rotation,
+    strictContentBounds: transform.strictContentBounds
   };
 }
 
 /** Whether the current canvas has content outside the surface that can be panned. */
 export function canvasTransformCanPan(transform: CanvasTransform, viewport: CanvasViewport): boolean {
   const clamped: CanvasTransform = clampCanvasTransform(transform, viewport);
-  if (freePanInsetRatio(clamped.scale, viewport) > 0) {
+  if (freePanInsetRatio(clamped, viewport) > 0) {
     return true;
   }
   const physicalScale: number = absoluteScale(clamped, viewport);
@@ -208,7 +238,8 @@ export function panCanvasTransform(current: CanvasTransform, viewport: CanvasVie
     scale: old.scale,
     panX: old.panX + deltaX,
     panY: old.panY + deltaY,
-    rotation: old.rotation
+    rotation: old.rotation,
+    strictContentBounds: old.strictContentBounds
   }, viewport);
 }
 
@@ -233,7 +264,11 @@ export function rebaseCanvasTransform(current: CanvasTransform,
   const focusRatioY: number = clamp(
     (oldSurfaceHeight / 2 - oldTop) / Math.max(0.01, oldSourceHeight * oldScale), 0, 1);
 
-  const nextScale: number = containScaleForRotation(nextViewport, rotation) * old.scale;
+  const nextContainScale: number = containScaleForRotation(nextViewport, rotation);
+  const retainedNextScale: number = nextContainScale * old.scale;
+  const nextScale: number = old.strictContentBounds === true ?
+    Math.max(retainedNextScale, coverScaleForRotation(nextViewport, rotation)) :
+    retainedNextScale;
   const nextSourceWidth: number = rotation % 2 === 1 ?
     positive(nextViewport.sourceHeight, 1) : positive(nextViewport.sourceWidth, 1);
   const nextSourceHeight: number = rotation % 2 === 1 ?
@@ -243,10 +278,11 @@ export function rebaseCanvasTransform(current: CanvasTransform,
   const nextBaseLeft: number = (nextSurfaceWidth - nextSourceWidth * nextScale) / 2;
   const nextBaseTop: number = (nextSurfaceHeight - nextSourceHeight * nextScale) / 2;
   return clampCanvasTransform({
-    scale: old.scale,
+    scale: nextScale / nextContainScale,
     panX: nextSurfaceWidth / 2 - nextBaseLeft - focusRatioX * nextSourceWidth * nextScale,
     panY: nextSurfaceHeight / 2 - nextBaseTop - focusRatioY * nextSourceHeight * nextScale,
-    rotation
+    rotation,
+    strictContentBounds: old.strictContentBounds
   }, nextViewport);
 }
 
@@ -255,13 +291,30 @@ export function baseCanvasTransform(mode: LocalViewScaleMode, customPercent: num
   const normalizedRotation: number = normalizeCanvasRotation(rotation);
   const fit: number = containScaleForRotation(viewport, normalizedRotation);
   const percent: number = localViewScalePercent(mode, customPercent);
-  const physicalScale: number = percent > 0 ? percent / 100 : fit;
+  const physicalScale: number = mode === 'fill' ?
+    coverScaleForRotation(viewport, normalizedRotation) :
+    (percent > 0 ? percent / 100 : fit);
   return clampCanvasTransform({
     scale: physicalScale / fit,
     panX: 0,
     panY: 0,
-    rotation: normalizedRotation
+    rotation: normalizedRotation,
+    strictContentBounds: mode === 'fill'
   }, viewport);
+}
+
+/** Whether a transform is visibly away from its current display-mode baseline. */
+export function canvasTransformDiffersFromBaseline(current: CanvasTransform,
+  baseline: CanvasTransform, scaleEpsilon: number = 0.0005,
+  panEpsilonPx: number = 0.5): boolean {
+  const safeScaleEpsilon: number = Number.isFinite(scaleEpsilon) ?
+    Math.max(0, scaleEpsilon) : 0.0005;
+  const safePanEpsilon: number = Number.isFinite(panEpsilonPx) ?
+    Math.max(0, panEpsilonPx) : 0.5;
+  return Math.abs(current.scale - baseline.scale) > safeScaleEpsilon ||
+    Math.abs(current.panX - baseline.panX) > safePanEpsilon ||
+    Math.abs(current.panY - baseline.panY) > safePanEpsilon ||
+    normalizeCanvasRotation(current.rotation) !== normalizeCanvasRotation(baseline.rotation);
 }
 
 /** Apply a RustDesk-mobile-style relative pinch plus focal-point pan. */
@@ -285,6 +338,7 @@ export function pinchCanvasTransform(current: CanvasTransform, viewport: CanvasV
     scale: nextScale / containScaleForRotation(viewport, normalizeCanvasRotation(old.rotation)),
     panX: focalX - newLeft - remoteAtFocalX * nextScale + panDeltaX,
     panY: focalY - newTop - remoteAtFocalY * nextScale + panDeltaY,
-    rotation: old.rotation
+    rotation: old.rotation,
+    strictContentBounds: old.strictContentBounds
   }, viewport);
 }

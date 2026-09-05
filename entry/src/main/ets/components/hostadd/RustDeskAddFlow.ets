@@ -7,6 +7,12 @@ import {
   cloneRustDeskHostAddDraft,
   RustDeskHostAddDraft
 } from '../../services/RustDeskHostAddHandoff';
+import {
+  EndpointAddressResult,
+  endpointTransportHost,
+  parseEndpointFields,
+  parseEndpointPortText
+} from '../../services/EndpointAddressPolicy';
 
 @Component
 export struct RustDeskAddFlow {
@@ -112,12 +118,23 @@ export struct RustDeskAddFlow {
     return this.relays.find((relay: RustDeskRelayConfig): boolean => relay.id === this.relayId);
   }
 
+  private parsedDirectEndpoint(): EndpointAddressResult {
+    return parseEndpointFields(this.directHost, parseEndpointPortText(this.directPortText));
+  }
+
   private buildHost(): RemoteHost | null {
-    const port: number = parseInt(this.directPortText);
+    const directEndpoint: EndpointAddressResult = this.parsedDirectEndpoint();
     if (this.label.trim() === '') { this.errorText = '请输入主机名称'; return null; }
     if (this.controlId.trim() === '') { this.errorText = '请输入 RustDesk 控制 ID'; return null; }
-    if (this.direct && this.directHost.trim() === '') { this.errorText = '请输入直连 IP，或先进行局域网搜索'; return null; }
-    if (this.direct && (isNaN(port) || port <= 0 || port > 65535)) { this.errorText = '端口必须在 1-65535 之间'; return null; }
+    if (this.direct && !directEndpoint.ok) {
+      this.errorText = directEndpoint.error === 'invalid_port' ? '端口必须在 1-65535 之间' :
+        '请输入有效的直连域名、IPv4 或 IPv6 地址';
+      return null;
+    }
+    if (this.direct && directEndpoint.endpoint.scope !== '') {
+      this.errorText = 'RustDesk 链路本地 IPv6 尚未完成网卡作用域验证，请先使用全局 IPv6 地址';
+      return null;
+    }
     if (this.direct && this.password === '') { this.errorText = '直连只支持设备密码，请输入密码'; return null; }
     if (this.direct && this.useLan && this.lanAddressMode !== 'static' &&
       this.lanAddressMode !== 'dynamic') {
@@ -139,8 +156,10 @@ export struct RustDeskAddFlow {
     host.rustdeskTargetDevice = this.targetDevice;
     host.rustdeskAdaptiveOrientation = this.targetDevice === 'phone' && this.adaptiveOrientation;
     if (this.direct) {
-      host.host = this.directHost.trim(); host.port = port;
-      host.rustdeskDirectHost = host.host; host.rustdeskDirectPort = port; host.rustdeskRelayId = '';
+      const canonicalHost: string = endpointTransportHost(directEndpoint.endpoint);
+      const port: number = directEndpoint.endpoint.port;
+      host.host = canonicalHost; host.port = port;
+      host.rustdeskDirectHost = canonicalHost; host.rustdeskDirectPort = port; host.rustdeskRelayId = '';
       if (this.useLan) {
         host.lanAddressMode = this.lanAddressMode === 'dynamic' ? 'dynamic' : 'static';
         host.lanDiscoveryIdentity = this.selectedLanPeerId.trim();
@@ -249,7 +268,8 @@ export struct RustDeskAddFlow {
               Row() {
                 Column() {
                   Text(relay.displayName()).fontSize(14).fontColor(this.pal().text)
-                  Text(relay.relayServer + ':' + relay.relayPort.toString()).fontSize(11).fontColor(this.pal().text3)
+                  Text((relay.relayServer.indexOf(':') >= 0 ? '[' + relay.relayServer + ']' : relay.relayServer) +
+                    ':' + relay.relayPort.toString()).fontSize(11).fontColor(this.pal().text3)
                 }.alignItems(HorizontalAlign.Start).layoutWeight(1)
                 if (this.relayId === relay.id) { SymbolGlyph($r('sys.symbol.checkmark')).fontColor([this.accentColor]) }
               }.width('100%').padding(12).borderRadius(10).backgroundColor(this.pal().surface).margin({ bottom: 7 })
@@ -399,6 +419,7 @@ export struct RustDeskAddFlow {
         Text(this.errorText).fontSize(12).fontColor(this.pal().danger)
           .width('100%').margin({ top: 10 })
       }
-    }.width('100%').padding({ left: 20, right: 20, top: 20, bottom: 22 }).backgroundColor(this.pal().card)
+    }.width('100%').padding({ left: 20, right: 20, top: 20, bottom: 22 })
+      .backgroundColor(this.pal().sheetBg)
   }
 }

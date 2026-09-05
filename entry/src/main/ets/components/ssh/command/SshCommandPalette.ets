@@ -8,6 +8,7 @@ import {
 @Component
 export struct SshCommandPalette {
   @StorageProp('accentColor') accentColor: string = '#007DFF';
+  @Prop sheetBackgroundColor: string = '#171D25';
   @Prop commands: Array<SshCommandDescriptor> = [];
   @Prop compact: boolean = false;
   onExecute: (commandId: string) => void = (_commandId: string): void => {};
@@ -196,6 +197,6 @@ export struct SshCommandPalette {
     }
     .width('100%').height('100%')
     .padding({ left: 14, right: 14, top: 14, bottom: 12 })
-    .backgroundColor('#171D25')
+    .backgroundColor(this.sheetBackgroundColor)
   }
 }

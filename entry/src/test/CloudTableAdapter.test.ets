@@ -67,14 +67,17 @@ describe('CloudTableAdapter', (): void => {
       rustdesktargetdevice: 'phone',
       rustdeskadaptiveorientation: '1',
       rdpauthmode: 'restricted_admin',
+      rdpcredentialstoragemode: 'connect_time',
       rdprestrictedadminsecretsource: 'ntlm_hash',
       rdpendpointmode: 'microsoft_rd_gateway',
       rdpgatewaytransport: 'no-websockets',
       rdpgatewayservername: 'gateway.example.test',
+      rdpclienthostname: 'HARMONY-CLIENT',
       lanaddressmode: 'static',
       landiscoveryidentity: 'peer-stable-id',
       lanlastresolvedat: '1234',
       sshhostkeyfingerprintsha256: 'must-stay-local',
+      sshhostkeyrouteidentity: 'must-stay-local-route',
       rdpcertificateallowhostmismatch: '1',
       rdprestrictedadminhash: '0123456789ABCDEF0123456789ABCDEF',
       password: 'must-not-leak',
@@ -96,15 +99,18 @@ describe('CloudTableAdapter', (): void => {
     expect(decoded.extension['rustdesktotpentryid']).assertUndefined();
     expect(decoded.extension['rustdesktotpautosubmit']).assertUndefined();
     expect(decoded.extension['rdpauthmode']).assertEqual('restricted_admin');
+    expect(decoded.extension['rdpcredentialstoragemode']).assertEqual('connect_time');
     expect(decoded.extension['rdprestrictedadminsecretsource']).assertEqual('ntlm_hash');
     expect(decoded.extension['rdpendpointmode']).assertEqual('microsoft_rd_gateway');
     expect(decoded.extension['rdpgatewaytransport']).assertEqual('no-websockets');
     expect(decoded.extension['rdpgatewayservername']).assertEqual('gateway.example.test');
+    expect(decoded.extension['rdpclienthostname']).assertEqual('HARMONY-CLIENT');
     expect(decoded.extension['rdprestrictedadminhash']).assertUndefined();
     expect(decoded.extension['password']).assertUndefined();
     expect(decoded.extension['sshkeypassphrase']).assertUndefined();
     expect(decoded.extension['sshhostkeyfingerprintsha256'])
       .assertUndefined();
+    expect(decoded.extension['sshhostkeyrouteidentity']).assertUndefined();
     expect(decoded.extension['rdpcertificateallowhostmismatch'])
       .assertUndefined();
     expect(decoded.displayConfigJson.indexOf('"width":1920') >= 0).assertTrue();
@@ -115,6 +121,7 @@ describe('CloudTableAdapter', (): void => {
     expect(columns.indexOf('rdpendpointmode')).assertEqual(-1);
     expect(columns.indexOf('rdpgatewaytransport')).assertEqual(-1);
     expect(columns.indexOf('rdpgatewayservername')).assertEqual(-1);
+    expect(columns.indexOf('rdpclienthostname')).assertEqual(-1);
   });
 
   it('extracts_legacy_device_trust_only_for_local_migration', (): void => {

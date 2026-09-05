@@ -6,16 +6,54 @@
  * passphrase 不通过 router params 明文传递.
  */
 
+import { SshJumpHopHandoff } from '../types/rdpnapi';
+
 // Token 数据结构 (仅内存)
-interface SshPreflightTokenData {
+export interface SshPreflightTokenData {
   hostId: string;
   expectedHostKeyRawBase64: string;
   expectedHostKeyFingerprintSha256: string;
+  targetRouteIdentity?: string;
   expectedJumpHostKeyRawBase64: string;
   expectedJumpHostKeyFingerprintSha256: string;
   privateKeyPassphrase: string;
   proxyPrivateKeyPassphrase?: string;
+  /** Canonical route identity that owns the following one-shot credentials. */
+  routeSecretsRouteIdentity?: string;
+  proxyPassword?: string;
+  jumpHandoffs?: SshJumpHopHandoff[];
   createdAt?: number; // 由服务内部设置
+}
+
+function cloneStringArray(values: string[] | undefined): string[] {
+  return values === undefined ? [] : values.map((value: string): string => value);
+}
+
+function cloneJumpHandoff(value: SshJumpHopHandoff): SshJumpHopHandoff {
+  return {
+    password: value.password || '',
+    privateKeyPem: value.privateKeyPem || '',
+    privateKeyPassphrase: value.privateKeyPassphrase || '',
+    keyboardInteractiveResponses: cloneStringArray(value.keyboardInteractiveResponses)
+  };
+}
+
+function cloneTokenData(data: SshPreflightTokenData): SshPreflightTokenData {
+  return {
+    hostId: data.hostId,
+    expectedHostKeyRawBase64: data.expectedHostKeyRawBase64,
+    expectedHostKeyFingerprintSha256: data.expectedHostKeyFingerprintSha256,
+    targetRouteIdentity: data.targetRouteIdentity,
+    expectedJumpHostKeyRawBase64: data.expectedJumpHostKeyRawBase64,
+    expectedJumpHostKeyFingerprintSha256: data.expectedJumpHostKeyFingerprintSha256,
+    privateKeyPassphrase: data.privateKeyPassphrase,
+    proxyPrivateKeyPassphrase: data.proxyPrivateKeyPassphrase,
+    routeSecretsRouteIdentity: data.routeSecretsRouteIdentity,
+    proxyPassword: data.proxyPassword,
+    jumpHandoffs: data.jumpHandoffs === undefined ? undefined :
+      data.jumpHandoffs.map((value: SshJumpHopHandoff): SshJumpHopHandoff => cloneJumpHandoff(value)),
+    createdAt: data.createdAt
+  };
 }
 
 export class SshPreflightService {
@@ -39,8 +77,9 @@ export class SshPreflightService {
     this.cleanup();
     const tokenId = 'spt_' + Date.now().toString(36) + '_' +
       Math.random().toString(36).substring(2, 10);
-    data.createdAt = Date.now();
-    this.tokens.set(tokenId, data);
+    const stored: SshPreflightTokenData = cloneTokenData(data);
+    stored.createdAt = Date.now();
+    this.tokens.set(tokenId, stored);
     return tokenId;
   }
 
@@ -59,7 +98,7 @@ export class SshPreflightService {
     }
     // 立即删除 (一次性消费)
     this.tokens.delete(tokenId);
-    return data;
+    return cloneTokenData(data);
   }
 
   /**

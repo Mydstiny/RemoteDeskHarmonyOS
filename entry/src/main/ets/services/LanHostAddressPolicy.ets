@@ -1,4 +1,6 @@
-/** Address provenance and refresh rules shared by RDP and RustDesk LAN add flows. */
+/** Address provenance, device-local routing and refresh rules for saved hosts. */
+import { EndpointAddressResult, parseEndpointHost } from './EndpointAddressPolicy';
+
 export type LanHostAddressMode = 'manual' | 'static' | 'dynamic';
 
 /** Device-local namespace for complete dynamic LAN host records. */
@@ -6,6 +8,8 @@ export const DYNAMIC_LAN_HOST_EXTENSION_TABLE: string = 'dynamiclanhosts';
 
 export interface LanHostAddressView {
   protocol: string;
+  host?: string;
+  proxyHost?: string;
   lanAddressMode: string;
   lanDiscoveryIdentity: string;
   lanLastResolvedAt: number;
@@ -28,6 +32,35 @@ export function normalizeLanDiscoveryIdentity(value: string): string {
   return value.trim().toLowerCase();
 }
 
+/** Interface names are device routing state and cannot leave this device. */
+export function sshEndpointUsesDeviceLocalScope(protocol: string,
+  host: string | undefined): boolean {
+  if (protocol !== 'ssh' || host === undefined || host.trim() === '') { return false; }
+  const endpoint: EndpointAddressResult = parseEndpointHost(host.trim());
+  return endpoint.ok && endpoint.endpoint.family === 'ipv6' &&
+    endpoint.endpoint.scopeKind === 'interface' && endpoint.endpoint.scope !== '';
+}
+
+/** Fail closed when inspecting an untrusted cloud/backup row before parsing. */
+export function remoteHostEndpointIsDevicePrivateForTransfer(protocol: string,
+  host: string | undefined, proxyHost?: string): boolean {
+  if (protocol !== 'rdp' && protocol !== 'ssh' && protocol !== 'rustdesk') {
+    return false;
+  }
+  if (host !== undefined && host.indexOf('%') >= 0) { return true; }
+  // proxyHost is the compatibility mirror of an HTTP/SOCKS/FRP endpoint or
+  // the first ProxyJump hop. Interface names are meaningful only on the
+  // source device, so one scoped route component makes the complete SSH row
+  // non-transferable even when the final target itself is global.
+  return protocol === 'ssh' && proxyHost !== undefined &&
+    proxyHost.indexOf('%') >= 0;
+}
+
+function sshRouteUsesDeviceLocalScope(host: LanHostAddressView): boolean {
+  return sshEndpointUsesDeviceLocalScope(host.protocol, host.host) ||
+    sshEndpointUsesDeviceLocalScope(host.protocol, host.proxyHost);
+}
+
 function lanDiscoveryIdentityKey(protocol: string, value: string): string {
   const trimmed: string = value.trim();
   // RDP SHA-256 fingerprints are hexadecimal and case-insensitive. RustDesk
@@ -36,8 +69,20 @@ function lanDiscoveryIdentityKey(protocol: string, value: string): string {
   return protocol === 'rdp' ? trimmed.toLowerCase() : trimmed;
 }
 
-export function lanHostUsesLocalOnlyStorage(host: LanHostAddressView): boolean {
+export function lanHostUsesDynamicAddressStorage(host: LanHostAddressView): boolean {
   return normalizeLanHostAddressMode(host.lanAddressMode) === 'dynamic';
+}
+
+export function lanHostUsesLocalOnlyStorage(host: LanHostAddressView): boolean {
+  return lanHostUsesDynamicAddressStorage(host) ||
+    sshRouteUsesDeviceLocalScope(host);
+}
+
+export function lanHostLocalOnlyStorageIsValid(host: LanHostAddressView): boolean {
+  if (lanHostUsesDynamicAddressStorage(host)) {
+    return lanHostCanSelectDynamic(host.protocol, host.lanDiscoveryIdentity);
+  }
+  return sshRouteUsesDeviceLocalScope(host);
 }
 
 export function lanHostCanSelectDynamic(protocol: string, identity: string): boolean {
@@ -50,7 +95,7 @@ export function lanHostNeedsAddressRefresh(
   nowMs: number,
   freshnessMs: number
 ): boolean {
-  if (!lanHostUsesLocalOnlyStorage(host) ||
+  if (!lanHostUsesDynamicAddressStorage(host) ||
     !lanHostCanSelectDynamic(host.protocol, host.lanDiscoveryIdentity)) {
     return false;
   }
@@ -66,7 +111,7 @@ export function lanHostRefreshCandidateMatches(
   host: LanHostAddressView,
   candidate: LanHostRefreshCandidate
 ): boolean {
-  return lanHostUsesLocalOnlyStorage(host) &&
+  return lanHostUsesDynamicAddressStorage(host) &&
     host.protocol === candidate.protocol &&
     lanHostCanSelectDynamic(candidate.protocol, candidate.identity) &&
     lanDiscoveryIdentityKey(host.protocol, host.lanDiscoveryIdentity) ===

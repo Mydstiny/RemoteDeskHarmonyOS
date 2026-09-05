@@ -163,7 +163,7 @@ export struct SecretVisibilitySettingsSheet {
           Blank().height(24)
         }.width('100%').padding({ left: 22, right: 22 })
       }.layoutWeight(1).scrollBar(BarState.Auto).edgeEffect(EdgeEffect.Spring)
-    }.width('100%').height('100%').backgroundColor(this.pal().bg)
+    }.width('100%').height('100%').backgroundColor(this.pal().sheetBg)
       .borderRadius(this.breakpointRadius())
   }
 

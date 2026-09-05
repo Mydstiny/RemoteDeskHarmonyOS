@@ -1,5 +1,5 @@
-export const CURRENT_RELEASE_VERSION: string = '1.1.4';
-export const CURRENT_RELEASE_VERSION_CODE: number = 1001004;
+export const CURRENT_RELEASE_VERSION: string = '1.1.5.1';
+export const CURRENT_RELEASE_VERSION_CODE: number = 1001006;
 
 export interface ReleaseNotePage {
   id: string;
@@ -10,18 +10,151 @@ export interface ReleaseNotePage {
 
 export function pagesForReleasedVersion(version: string): ReleaseNotePage[] {
   if (version === CURRENT_RELEASE_VERSION) { return currentReleasePages(); }
-  if (version === '1.1.3') { return previousReleasePages(); }
+  if (version === '1.1.5') { return release115Pages(); }
+  if (version === '1.1.4') { return release114Pages(); }
+  if (version === '1.1.3') { return release113Pages(); }
   return [];
+}
+
+export function currentReleasePageCount(): number {
+  return currentReleasePages().length;
 }
 
 function currentReleasePages(): ReleaseNotePage[] {
   return [
     {
-      id: 'release-1-1-4',
+      id: 'release-1-1-5-1',
       symbol: $rawfile('icons/computer-desktop.svg'),
-      title: '1.1.4：连接、输入与数据恢复更稳',
-      desc: '在保留 1.1.3 全部五协议能力的基础上，集中完善敏感信息保护、剪贴板、会话操控、应用分身和云数据恢复。'
+      title: '1.1.5.1：集中修复十二项用户反馈',
+      desc: '本次更新集中完善鸿蒙 PC 画面、RDP 操控与缩放、RustDesk 工具栏和剪贴板、SSH 常用命令，以及键盘和退出保护。'
     },
+    {
+      id: 'release-flip-fallback-diagnostics',
+      symbol: $rawfile('icons/computer-desktop.svg'),
+      title: '1. PC 画面翻转与诊断',
+      desc: 'Moonlight 增加与 RustDesk 一致的手动画面翻转兜底；硬件解码诊断同步记录生产者矩阵、渲染矩阵、代际和应用后的变换，便于复现时直接收敛根因。'
+    },
+    {
+      id: 'release-rdp-ephemeral-auth',
+      symbol: $rawfile('icons/shield-check.svg'),
+      title: '2. RDP 连接凭据与断线归因',
+      desc: 'RDP 可选择每次连接时输入账户和密码，临时凭据退出后即清理；只有服务器 ErrorInfo 才归因为服务器错误，客户端或网络失败不再默认误报为 0x10。'
+    },
+    {
+      id: 'release-rdp-pointer-mapping',
+      symbol: $rawfile('icons/cog-6-tooth.svg'),
+      title: '3. 修正 RDP 全屏鼠标映射',
+      desc: '统一画面布局、真实远端尺寸和输入坐标的代际校验，修复 PC 全屏模式下鼠标只能映射到左上角区域的问题。'
+    },
+    {
+      id: 'release-rustdesk-toolbar',
+      symbol: $rawfile('icons/cog-6-tooth.svg'),
+      title: '4. RustDesk 工具栏更直观',
+      desc: '可继续选择的工具项会展开二级菜单，画质和编解码等状态不再只读；鼠标悬停按钮时会直接显示名称。'
+    },
+    {
+      id: 'release-rustdesk-codec-telemetry',
+      symbol: $rawfile('icons/computer-desktop.svg'),
+      title: '5. RustDesk 编解码选择与监控对齐',
+      desc: '修复预鉴权连接遗漏编解码偏好的问题；选择 H.265 后会把请求完整传入协议协商，性能监控继续显示当前会话实际生效的编码与解码后端。'
+    },
+    {
+      id: 'release-rdp-resolution-scaling',
+      symbol: $rawfile('icons/computer-desktop.svg'),
+      title: '6. 优化 RDP 分辨率与缩放',
+      desc: '重新对齐控制端窗口、远端桌面尺寸、动态布局和显示缩放，自动模式优先填满可用区域，并减少比例不匹配造成的大黑边。'
+    },
+    {
+      id: 'release-dock-input-fence',
+      symbol: $rawfile('icons/cog-6-tooth.svg'),
+      title: '7. Dock 最小化不再误触远端',
+      desc: '鸿蒙 PC 窗口失焦、最小化和恢复期间会封锁并释放残留指针事务，避免点击 Dock 应用图标被转成远端右键。'
+    },
+    {
+      id: 'release-ssh-common-commands',
+      symbol: $rawfile('icons/command-line.svg'),
+      title: '8. SSH 常用命令可编辑调用',
+      desc: 'SSH“更多”中新增可维护的常用命令列表，可添加、修改和删除，并在终端中随时选择调用。'
+    },
+    {
+      id: 'release-protected-exit',
+      symbol: $rawfile('icons/shield-check.svg'),
+      title: '9. 可关闭远程会话快捷退出',
+      desc: '设置可要求只能通过明确按钮退出远程会话；启用后会保留顶栏或侧栏，避免误操作后失去安全退出入口。'
+    },
+    {
+      id: 'release-rustdesk-clipboard',
+      symbol: $rawfile('icons/command-line.svg'),
+      title: '10. 修复 RustDesk 双向文本剪贴板',
+      desc: '补全远端到本机的文本剪贴板接收、权限和防回环路径，本机与远端之间均可复制粘贴文本。'
+    },
+    {
+      id: 'release-host-list-safe-area',
+      symbol: $rawfile('icons/computer-desktop.svg'),
+      title: '11. 主机列表避让悬浮按钮',
+      desc: '经典主机模式增加底部滚动安全区，主机较多时最后一张卡片也能滑出悬浮按钮覆盖范围。'
+    },
+    {
+      id: 'release-harmony-shortcut-capture',
+      symbol: $rawfile('icons/key.svg'),
+      title: '12. 按设备屏蔽鸿蒙快捷键',
+      desc: '键盘设置新增简化后的设备分类开关和图标，明确说明打开即屏蔽鸿蒙快捷键；PC 默认屏蔽，选择会持久化保存。'
+    },
+    {
+      id: 'welcome-1-1-5-1',
+      symbol: $rawfile('icons/globe-alt.svg'),
+      title: '更新完成，等待实机验收',
+      desc: '以上能力已完成代码修复与构建复核；不同设备、协议和远端系统的最终效果仍以你的统一实机验收为准。'
+    }
+  ];
+}
+
+function release115Pages(): ReleaseNotePage[] {
+  const introduction: ReleaseNotePage[] = [
+    {
+      id: 'release-1-1-5',
+      symbol: $rawfile('icons/computer-desktop.svg'),
+      title: '1.1.5：连接、显示与网络适配再升级',
+      desc: '本次更新在五协议工作台现有能力上，继续完善会话画面控制、PC 显示适配、RustDesk 多显示器、连接恢复与脱敏诊断。'
+    }
+  ];
+  const additions: ReleaseNotePage[] = [
+    {
+      id: 'release-session-view-controls',
+      symbol: $rawfile('icons/cog-6-tooth.svg'),
+      title: '远程画面操作可按协议调整',
+      desc: 'RDP、RustDesk、VNC 与 Moonlight 可分别保存双指缩放偏好，并从会话控制区恢复画面状态；选择项、隐藏项和恢复入口都按协议保持一致。'
+    },
+    {
+      id: 'release-rustdesk-quality-displays',
+      symbol: $rawfile('icons/computer-desktop.svg'),
+      title: 'RustDesk 质量与多显示器更完整',
+      desc: '会话可选择低延迟、均衡或最佳质量；HarmonyOS PC 的实验多画布模式最多同时查看两块远端显示器，异常时会安全回退到单画布。'
+    },
+    {
+      id: 'release-rdp-adaptive-display',
+      symbol: $rawfile('icons/computer-desktop.svg'),
+      title: 'RDP 更好适配高 DPI 与多屏 PC',
+      desc: 'PC 端会结合活动显示器密度、窗口尺寸和方向请求合适的远端画面；跨屏或服务端不支持动态调整时，会保留可用会话并采用兼容回退。'
+    },
+    {
+      id: 'release-network-diagnostics',
+      symbol: $rawfile('icons/globe-alt.svg'),
+      title: '连接恢复与双栈诊断更清晰',
+      desc: '网络切换会淘汰过期的连接和重连任务，Moonlight 添加入口不再被可选探测临时置灰；抓日志可按连接记录脱敏 IPv4/IPv6 地址族与作用域，不导出原始地址。'
+    },
+    {
+      id: 'welcome-1-1-5',
+      symbol: $rawfile('icons/globe-alt.svg'),
+      title: '准备就绪，开始连接',
+      desc: '五协议工作台会继续按真实运行能力开放入口；需要回看本次变化时，可随时打开“设置 → 教程 → 本版本更新日志”。'
+    }
+  ];
+  return introduction.concat(release114FeaturePages()).concat(additions);
+}
+
+function release114FeaturePages(): ReleaseNotePage[] {
+  return [
     {
       id: 'release-secret-visibility',
       symbol: $rawfile('icons/shield-check.svg'),
@@ -62,24 +195,38 @@ function currentReleasePages(): ReleaseNotePage[] {
       id: 'release-rustdesk-desktop-flip',
       symbol: $rawfile('icons/cog-6-tooth.svg'),
       title: 'PC 端新增 RustDesk 桌面翻转',
-      desc: 'HarmonyOS PC 控制电脑时，可从顶部工具栏选择“仅翻转画面”“画面与控制一起翻转”或重置；选择按主机保存在本机，重连、画中画和窗口恢复后继续生效。'
+      desc: 'HarmonyOS PC 控制电脑时，可从顶部工具栏分别切换画面与控制层的上下、左右翻转或一键复位；选择按主机保存在本机，重连、画中画和窗口恢复后继续生效。'
     },
     {
       id: 'release-wheel-direction',
       symbol: $rawfile('icons/cog-6-tooth.svg'),
       title: '五种协议可分别设置滚轮方向',
       desc: '“显示与交互”现在可独立设置 RDP、RustDesk、SSH、VNC 与 Moonlight 的正常或反向滚动，并提供全部正常、全部反向操作；SFTP 文件列表不受影响。'
-    },
+    }
+  ];
+}
+
+function release114Pages(): ReleaseNotePage[] {
+  const introduction: ReleaseNotePage[] = [
+    {
+      id: 'release-1-1-4',
+      symbol: $rawfile('icons/computer-desktop.svg'),
+      title: '1.1.4：连接、输入与数据恢复更稳',
+      desc: '在保留 1.1.3 全部五协议能力的基础上，集中完善敏感信息保护、剪贴板、会话操控、应用分身和云数据恢复。'
+    }
+  ];
+  const conclusion: ReleaseNotePage[] = [
     {
       id: 'welcome-1-1-4',
       symbol: $rawfile('icons/globe-alt.svg'),
       title: '欢迎使用 1.1.4',
       desc: '本次更新延续五协议工作台，并把会话操控、敏感数据和异常恢复做得更稳。需要回看全部变化时，可随时打开“设置 → 教程 → 本版本更新日志”。'
-    },
+    }
   ];
+  return introduction.concat(release114FeaturePages()).concat(conclusion);
 }
 
-function previousReleasePages(): ReleaseNotePage[] {
+function release113Pages(): ReleaseNotePage[] {
   return [
     {
       id: 'release-1-1-3',

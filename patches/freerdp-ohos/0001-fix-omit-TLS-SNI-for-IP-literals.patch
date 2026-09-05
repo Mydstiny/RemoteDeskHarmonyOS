@@ -1,0 +1,154 @@
+From 471527962a9341dd8cf0105c8a8acc4861e4867b Mon Sep 17 00:00:00 2001
+From: Mydstiny <181178314+Mydstiny@users.noreply.github.com>
+Date: Sun, 30 Aug 2026 02:10:08 +0800
+Subject: [PATCH 1/4] fix: omit TLS SNI for IP literals
+
+---
+ libfreerdp/crypto/test/CMakeLists.txt      |  2 +-
+ libfreerdp/crypto/test/TestTlsServerName.c | 23 ++++++++++++++
+ libfreerdp/crypto/tls.c                    |  9 ++++--
+ libfreerdp/crypto/tls_server_name.h        | 35 ++++++++++++++++++++++
+ libfreerdp/utils/http.c                    |  4 ++-
+ 5 files changed, 68 insertions(+), 5 deletions(-)
+ create mode 100644 libfreerdp/crypto/test/TestTlsServerName.c
+ create mode 100644 libfreerdp/crypto/tls_server_name.h
+
+diff --git a/libfreerdp/crypto/test/CMakeLists.txt b/libfreerdp/crypto/test/CMakeLists.txt
+index 351f978fb0f772d27748b530f2b83583201d19c8..169e789028b8aeb0279ba1268d078a65ea003280 100644
+--- a/libfreerdp/crypto/test/CMakeLists.txt
++++ b/libfreerdp/crypto/test/CMakeLists.txt
+@@ -5,7 +5,7 @@ disable_warnings_for_directory(${CMAKE_CURRENT_BINARY_DIR})
+ 
+ set(DRIVER ${MODULE_NAME}.c)
+ 
+-set(TESTS TestKnownHosts.c TestBase64.c)
++set(TESTS TestKnownHosts.c TestBase64.c TestTlsServerName.c)
+ 
+ if(BUILD_TESTING_INTERNAL)
+   list(APPEND TESTS Test_x509_utils.c)
+diff --git a/libfreerdp/crypto/test/TestTlsServerName.c b/libfreerdp/crypto/test/TestTlsServerName.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..74261204c6a41353f5514a6820a505dc05813853
+--- /dev/null
++++ b/libfreerdp/crypto/test/TestTlsServerName.c
+@@ -0,0 +1,23 @@
++#include <winpr/crt.h>
++
++#include "../tls_server_name.h"
++
++int TestTlsServerName(int argc, char* argv[])
++{
++	WINPR_UNUSED(argc);
++	WINPR_UNUSED(argv);
++
++	if (!freerdp_tls_server_name_is_dns("rdp.example.test"))
++		return -1;
++	if (freerdp_tls_server_name_is_dns("192.0.2.10"))
++		return -1;
++	if (freerdp_tls_server_name_is_dns("2001:db8::10"))
++		return -1;
++	if (freerdp_tls_server_name_is_dns("::1"))
++		return -1;
++	if (freerdp_tls_server_name_is_dns(""))
++		return -1;
++	if (freerdp_tls_server_name_is_dns(NULL))
++		return -1;
++	return 0;
++}
+diff --git a/libfreerdp/crypto/tls.c b/libfreerdp/crypto/tls.c
+index 72722e2dac8db7880fe30cf02ad0080bf14f999f..323cd016bf4ffd080c097172d2a7c33485217150 100644
+--- a/libfreerdp/crypto/tls.c
++++ b/libfreerdp/crypto/tls.c
+@@ -33,7 +33,6 @@
+ #include <winpr/sspi.h>
+ #include <winpr/ssl.h>
+ #include <winpr/json.h>
+-
+ #include <winpr/stream.h>
+ #include <freerdp/utils/ringbuffer.h>
+ 
+@@ -48,6 +47,7 @@
+ #include "opensslcompat.h"
+ #include "certificate.h"
+ #include "privatekey.h"
++#include "tls_server_name.h"
+ 
+ #ifdef WINPR_HAVE_POLL_H
+ #include <poll.h>
+@@ -924,8 +924,11 @@ TlsHandshakeResult freerdp_tls_connect_ex(rdpTls* tls, BIO* underlying, const SS
+ 
+ #if !defined(OPENSSL_NO_TLSEXT)
+ 	const char* str = tls_get_server_name(tls);
+-	void* ptr = WINPR_CAST_CONST_PTR_AWAY(str, void*);
+-	SSL_set_tlsext_host_name(tls->ssl, ptr);
++	if (freerdp_tls_server_name_is_dns(str))
++	{
++		void* ptr = WINPR_CAST_CONST_PTR_AWAY(str, void*);
++		SSL_set_tlsext_host_name(tls->ssl, ptr);
++	}
+ #endif
+ 
+ 	return freerdp_tls_handshake(tls);
+diff --git a/libfreerdp/crypto/tls_server_name.h b/libfreerdp/crypto/tls_server_name.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..0e19b3a2e8d0efe25d97760d6b99b940349f1f27
+--- /dev/null
++++ b/libfreerdp/crypto/tls_server_name.h
+@@ -0,0 +1,35 @@
++/**
++ * FreeRDP: A Remote Desktop Protocol Implementation
++ * TLS server-name helpers
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++#ifndef FREERDP_LIB_CRYPTO_TLS_SERVER_NAME_H
++#define FREERDP_LIB_CRYPTO_TLS_SERVER_NAME_H
++
++#include <winpr/crt.h>
++#include <winpr/winsock.h>
++
++/** TLS SNI is a DNS-name extension. IPv4/IPv6 literals still use IP SAN verification. */
++static inline BOOL freerdp_tls_server_name_is_dns(const char* serverName)
++{
++	BYTE ipv4[4] = WINPR_C_ARRAY_INIT;
++	BYTE ipv6[16] = WINPR_C_ARRAY_INIT;
++	if (!serverName || (serverName[0] == '\0'))
++		return FALSE;
++	return (inet_pton(AF_INET, serverName, &ipv4) != 1) &&
++	       (inet_pton(AF_INET6, serverName, &ipv6) != 1);
++}
++
++#endif /* FREERDP_LIB_CRYPTO_TLS_SERVER_NAME_H */
+diff --git a/libfreerdp/utils/http.c b/libfreerdp/utils/http.c
+index 17886d6d76f02e0c3ee8becca4989674a7b9baa3..be72b59e98e0364701052ad183e788ba9498bbe5 100644
+--- a/libfreerdp/utils/http.c
++++ b/libfreerdp/utils/http.c
+@@ -28,6 +28,7 @@
+ #include <openssl/err.h>
+ 
+ #include <freerdp/log.h>
++#include "../crypto/tls_server_name.h"
+ #define TAG FREERDP_TAG("utils.http")
+ 
+ static const char get_header_fmt[] = "GET %s HTTP/1.1\r\n"
+@@ -186,7 +187,8 @@ BOOL freerdp_http_request(const char* url, const char* body, long* status_code,
+ 			goto out;
+ 		}
+ 
+-		if (!SSL_set_tlsext_host_name(ssl, hostname))
++		if (freerdp_tls_server_name_is_dns(hostname) &&
++		    !SSL_set_tlsext_host_name(ssl, hostname))
+ 		{
+ 			log_errors(log, "could not set sni hostname");
+ 			goto out;

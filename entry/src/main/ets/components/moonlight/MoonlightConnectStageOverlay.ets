@@ -8,6 +8,7 @@ import { MoonlightBrandIcon } from './MoonlightBrandIcon';
 @Component
 export struct MoonlightConnectStageOverlay {
   @StorageLink('accentColor') accentColor: string = '#007DFF';
+  @Prop sheetBackgroundColor: string = 'rgba(14,18,28,0.90)';
   @Prop phase: MoonlightSessionPhase = 'negotiating';
   @Prop elapsedMs: number = 0;
   @Prop firstFrameSeen: boolean = false;
@@ -81,7 +82,7 @@ export struct MoonlightConnectStageOverlay {
         }.width('100%').margin({ top: 16 })
       }
       .width(this.inSheet ? '100%' : '88%').constraintSize({ maxWidth: 560 })
-      .padding(20).backgroundColor('rgba(14,18,28,0.90)').borderRadius(20)
+      .padding(20).backgroundColor(this.sheetBackgroundColor).borderRadius(20)
       .border({ width: 1, color: 'rgba(255,255,255,0.14)' })
       .shadow({ radius: 24, color: 'rgba(0,0,0,0.40)', offsetY: 8 })
       .accessibilityGroup(true)

@@ -32,6 +32,15 @@
 #define REMOTEDESK_RENDER_INTERNAL
 #endif
 
+struct RendererCanvasTransformSnapshot {
+    bool valid = false;
+    uint64_t rendererGeneration = 0;
+    uint64_t version = 0;
+    int rotationQuarterTurns = 0;
+    bool flipX = false;
+    bool flipY = false;
+};
+
 /**
  * GLRenderer — OpenGL ES 3.0 渲染器
  *
@@ -99,7 +108,8 @@ public:
     /** Apply a local canvas transform. Pan uses a top-left surface origin.
      *  Returns the published transform version, or zero for invalid input. */
     uint64_t SetCanvasTransform(double scale, double panX, double panY,
-                                int rotationQuarterTurns = 0);
+                                int rotationQuarterTurns = 0,
+                                bool flipX = false, bool flipY = false);
     /** Register the decoder-owner wake callback; it must not touch EGL/GL. */
     void SetRedrawCallback(std::function<void()> callback);
     /** Register the active RDP session wake callback independently of decoder ownership. */
@@ -143,6 +153,7 @@ public:
                              int& sourceWidth, int& sourceHeight,
                              int& surfaceWidth, int& surfaceHeight,
                              uint64_t& transformVersion) const;
+    RendererCanvasTransformSnapshot GetCanvasTransformSnapshot() const;
 
     // R1: NapiTestRender 使用的 accessor
     bool MakeCurrent();
@@ -156,18 +167,23 @@ private:
     EGLContext eglContext_;
     EGLSurface eglSurface_;
     EGLConfig  eglConfig_;
+    bool eglDisplayLeaseHeld_;
 
     // GL 资源 (外部 OES 纹理路径)
     GLuint shaderProgram_;   // NV12→RGB 着色器程序
     GLint  samplerLocation_; // uniform samplerExternalOES 位置
     GLint  oesTransformLocation_; // NativeImage presentation transform
     GLint  canvasRotationLocation_; // uniform uCanvasRotation 位置
+    GLint  canvasFlipXLocation_; // uniform uCanvasFlipX 位置
+    GLint  canvasFlipYLocation_; // uniform uCanvasFlipY 位置
 
     // GL 资源 (原始 BGRA 像素路径 — RDP GDI)
     GLuint rawShaderProgram_;   // BGRA→RGB 着色器程序
     GLuint rawTexture_;         // BGRA 像素纹理 (GL_TEXTURE_2D)
     GLint  rawSamplerLocation_; // uniform sampler2D 位置
     GLint  rawCanvasRotationLocation_; // uniform uCanvasRotation 位置
+    GLint  rawCanvasFlipXLocation_; // uniform uCanvasFlipX 位置
+    GLint  rawCanvasFlipYLocation_; // uniform uCanvasFlipY 位置
     GLuint uploadPbo_[2];        // double-buffered pixel-unpack staging
     size_t uploadPboCapacity_[2];
     int uploadPboIndex_;
@@ -209,12 +225,16 @@ private:
     double canvasPanX_;
     double canvasPanY_;
     int canvasRotationQuarterTurns_;
+    bool canvasFlipX_;
+    bool canvasFlipY_;
     std::mutex transformPublishMutex_;
     std::atomic<uint64_t> canvasTransformVersion_;
     std::atomic<double> pendingCanvasScale_;
     std::atomic<double> pendingCanvasPanX_;
     std::atomic<double> pendingCanvasPanY_;
     std::atomic<int> pendingCanvasRotationQuarterTurns_;
+    std::atomic<bool> pendingCanvasFlipX_;
+    std::atomic<bool> pendingCanvasFlipY_;
     uint64_t appliedCanvasTransformVersion_;
     // Lock-free viewport snapshot for ArkTS/NAPI coordinate mapping. The
     // render lifecycle mutex may be held across eglSwapBuffers(), so readers
@@ -229,9 +249,14 @@ private:
     std::atomic<int> snapshotSurfaceWidth_;
     std::atomic<int> snapshotSurfaceHeight_;
     std::atomic<uint64_t> snapshotTransformVersion_;
+    std::atomic<int> snapshotRotationQuarterTurns_;
+    std::atomic<bool> snapshotFlipX_;
+    std::atomic<bool> snapshotFlipY_;
     int  rawFrameCount_;
     int  oesFrameCount_;
     int64_t rendererHandle_;
+    void* explicitNativeWindow_;
+    bool usesProcessSurface_;
     bool initialized_;
     bool destroying_;
     std::mutex lifecycleMutex_;
@@ -270,6 +295,11 @@ private:
 // ============================================================
 
 namespace RendererNapi {
+    struct OwnedRendererCreationResult {
+        bool ok = false;
+        int64_t rendererHandle = 0;
+        uint64_t rendererGeneration = 0;
+    };
     napi_value Init(napi_env env, napi_value exports);
     void MakeCurrent(int64_t handle);
     void MakeCurrent(int64_t handle, const Render::DecoderSessionIdentity& owner);
@@ -335,8 +365,26 @@ namespace RendererNapi {
     // reacquire the non-reentrant shared lease.
     bool IsActiveRendererForOwnerUnderLease(
         int64_t handle, const Render::DecoderSessionIdentity& owner);
+    /** Exact-owner renderer lookup that also admits auxiliary RustDesk canvases. */
+    REMOTEDESK_RENDER_INTERNAL bool IsRendererForOwnerUnderLease(
+        int64_t handle, const Render::DecoderSessionIdentity& owner);
+    REMOTEDESK_RENDER_INTERNAL uint64_t GetRendererGenerationUnderOwnerLease(
+        int64_t handle, const Render::DecoderSessionIdentity& owner);
+    REMOTEDESK_RENDER_INTERNAL uint64_t GetRendererGeneration(
+        int64_t handle, const Render::DecoderSessionIdentity& owner);
+    REMOTEDESK_RENDER_INTERNAL OwnedRendererCreationResult CreateOwnedAuxRenderer(
+        const std::string& surfaceId, int width, int height,
+        const Render::DecoderSessionIdentity& owner);
+    /** Publish a transform to an exact-owner renderer, including auxiliary canvases. */
+    REMOTEDESK_RENDER_INTERNAL uint64_t SetRendererCanvasTransform(
+        int64_t handle, const Render::DecoderSessionIdentity& owner,
+        double scale, double panX, double panY, int rotationQuarterTurns,
+        bool flipX, bool flipY);
     REMOTEDESK_RENDER_INTERNAL uint64_t GetActiveRendererGenerationUnderOwnerLease(
         int64_t handle, const Render::DecoderSessionIdentity& owner);
+    REMOTEDESK_RENDER_INTERNAL RendererCanvasTransformSnapshot
+        GetRendererCanvasTransformUnderOwnerLease(
+            int64_t handle, const Render::DecoderSessionIdentity& owner);
     REMOTEDESK_RENDER_INTERNAL uint64_t GetActiveRendererGeneration(
         int64_t handle, const Render::DecoderSessionIdentity& owner);
     /** Return the live renderer token for an exact session owner, or zero. */

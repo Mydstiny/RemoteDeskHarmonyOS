@@ -18,6 +18,11 @@ import {
   RustDeskRelaySaveResult
 } from './RustDeskRelaySavePolicy';
 import { recordDiagnosticEvent } from './DiagnosticCaptureRuntime';
+import {
+  EndpointAddressResult,
+  endpointTransportHost,
+  parseEndpointFields
+} from './EndpointAddressPolicy';
 
 export type RustDeskRelaySaveOperation =
   'create' | 'update';
@@ -112,18 +117,36 @@ export class RustDeskRelaySetupCoordinator {
     }
 
     const relayId: string = draft.relayId;
-    const idServer: string = draft.idServer.trim();
-    if (idServer.length === 0) {
+    const idEndpoint: EndpointAddressResult =
+      parseEndpointFields(draft.idServer, draft.idServerPort);
+    if (!idEndpoint.ok) {
       prepared.failure = this.validationFailure(
         resolvedAttemptId, relayId,
-        'ID 服务器地址不能为空');
+        idEndpoint.error === 'invalid_port' ? '服务器端口必须在 1–65535 之间' :
+          'ID 服务器必须是有效的域名、IPv4 或 IPv6 地址');
       return prepared;
     }
-    if (!this.validPort(draft.idServerPort) ||
-      !this.validPort(draft.relayPort)) {
+    if (idEndpoint.endpoint.scope !== '') {
       prepared.failure = this.validationFailure(
         resolvedAttemptId, relayId,
-        '服务器端口必须在 1–65535 之间');
+        'RustDesk 链路本地 IPv6 尚未完成网卡作用域验证，请先使用全局 IPv6 地址');
+      return prepared;
+    }
+    const relayInput: string = draft.relayServer === '' ?
+      endpointTransportHost(idEndpoint.endpoint) : draft.relayServer;
+    const relayEndpoint: EndpointAddressResult =
+      parseEndpointFields(relayInput, draft.relayPort);
+    if (!relayEndpoint.ok) {
+      prepared.failure = this.validationFailure(
+        resolvedAttemptId, relayId,
+        relayEndpoint.error === 'invalid_port' ? '服务器端口必须在 1–65535 之间' :
+          'Relay 服务器必须是有效的域名、IPv4 或 IPv6 地址');
+      return prepared;
+    }
+    if (relayEndpoint.endpoint.scope !== '') {
+      prepared.failure = this.validationFailure(
+        resolvedAttemptId, relayId,
+        'RustDesk 链路本地 IPv6 尚未完成网卡作用域验证，请先使用全局 IPv6 地址');
       return prepared;
     }
     if (draft.controlPlaneProfile ===
@@ -154,11 +177,9 @@ export class RustDeskRelaySetupCoordinator {
 
     const relay = new RustDeskRelayConfig();
     relay.id = relayId;
-    relay.idServer = idServer;
+    relay.idServer = endpointTransportHost(idEndpoint.endpoint);
     relay.idServerPort = draft.idServerPort;
-    relay.relayServer =
-      draft.relayServer.trim().length === 0
-        ? idServer : draft.relayServer.trim();
+    relay.relayServer = endpointTransportHost(relayEndpoint.endpoint);
     relay.relayPort = draft.relayPort;
     relay.apiServer = draft.apiServer.trim();
     relay.key = key.value;
@@ -250,10 +271,5 @@ export class RustDeskRelaySetupCoordinator {
       onStage(result.stage);
     }
     return this.diagnosticResult(result);
-  }
-
-  private validPort(port: number): boolean {
-    return Number.isInteger(port) &&
-      port > 0 && port <= 65535;
   }
 }

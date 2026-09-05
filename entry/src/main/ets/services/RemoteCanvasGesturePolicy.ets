@@ -3,16 +3,11 @@ export interface CanvasGestureOwnership {
   panActive: boolean;
 }
 
-/**
- * A two-finger sequence has one semantic owner at a time.  The candidate
- * state deliberately exists outside ArkUI's recognizers so the XComponent
- * onTouch path and the transparent Gesture overlay can make the same choice.
- */
+/** One two-finger stream has exactly one owner until it is released. */
 export type CanvasTwoFingerOwner =
   'idle' |
   'candidate' |
   'canvas-pinch' |
-  'canvas-pan-armed' |
   'canvas-pan' |
   'remote-touch-scale' |
   'remote-touch-pan' |
@@ -26,8 +21,8 @@ export interface CanvasTwoFingerState {
   startY: number;
   lastX: number;
   lastY: number;
-  holdDeadlineMs: number;
-  holdTimerPending: boolean;
+  startSpan: number;
+  lastSpan: number;
   moved: boolean;
   canPan: boolean;
   zoomEnabled: boolean;
@@ -42,9 +37,9 @@ export interface CanvasTwoFingerMoveResult {
   deltaY: number;
 }
 
-/** The initial UX target; tune only with API 23 device evidence. */
-export const CANVAS_TWO_FINGER_HOLD_MS: number = 400;
-export const CANVAS_TWO_FINGER_HOLD_SLOP_VP: number = 12;
+/** ArkUI's PinchGesture uses the same five-vp recognition distance. */
+export const CANVAS_TWO_FINGER_PINCH_SLOP_VP: number = 5;
+export const CANVAS_TWO_FINGER_TRANSLATION_SLOP_VP: number = 5;
 
 function finite(value: number, fallback: number): number {
   return Number.isFinite(value) ? value : fallback;
@@ -64,8 +59,8 @@ function copyState(state: CanvasTwoFingerState): CanvasTwoFingerState {
     startY: state.startY,
     lastX: state.lastX,
     lastY: state.lastY,
-    holdDeadlineMs: state.holdDeadlineMs,
-    holdTimerPending: state.holdTimerPending,
+    startSpan: state.startSpan,
+    lastSpan: state.lastSpan,
     moved: state.moved,
     canPan: state.canPan,
     zoomEnabled: state.zoomEnabled
@@ -80,8 +75,8 @@ export function idleCanvasTwoFingerState(): CanvasTwoFingerState {
     startY: 0,
     lastX: 0,
     lastY: 0,
-    holdDeadlineMs: 0,
-    holdTimerPending: false,
+    startSpan: 0,
+    lastSpan: 0,
     moved: false,
     canPan: false,
     zoomEnabled: false
@@ -89,8 +84,9 @@ export function idleCanvasTwoFingerState(): CanvasTwoFingerState {
 }
 
 export function beginCanvasTwoFingerCandidate(sequenceId: number,
-  startX: number, startY: number, nowMs: number,
-  zoomEnabled: boolean, canPan: boolean): CanvasTwoFingerState {
+  startX: number, startY: number, _nowMs: number,
+  zoomEnabled: boolean, canPan: boolean, startSpan: number = 0): CanvasTwoFingerState {
+  const normalizedSpan: number = Math.max(0, finite(startSpan, 0));
   return {
     owner: 'candidate',
     sequenceId: Math.max(1, Math.floor(finite(sequenceId, 1))),
@@ -98,91 +94,80 @@ export function beginCanvasTwoFingerCandidate(sequenceId: number,
     startY: finite(startY, 0),
     lastX: finite(startX, 0),
     lastY: finite(startY, 0),
-    holdDeadlineMs: finite(nowMs, 0) + CANVAS_TWO_FINGER_HOLD_MS,
-    holdTimerPending: zoomEnabled && canPan,
+    startSpan: normalizedSpan,
+    lastSpan: normalizedSpan,
     moved: false,
     canPan,
     zoomEnabled
   };
 }
 
-/** Timer expiry only arms pan; it does not consume the stream or send input. */
-export function expireCanvasTwoFingerHold(state: CanvasTwoFingerState,
-  nowMs: number): CanvasTwoFingerState {
-  const next: CanvasTwoFingerState = copyState(state);
-  if (next.owner !== 'candidate' || !next.zoomEnabled || !next.canPan ||
-    finite(nowMs, 0) < next.holdDeadlineMs) {
-    return next;
-  }
-  next.owner = 'canvas-pan-armed';
-  next.holdTimerPending = false;
-  return next;
-}
-
 export function claimCanvasTwoFingerPinch(state: CanvasTwoFingerState,
   remote: boolean): CanvasTwoFingerState {
   const next: CanvasTwoFingerState = copyState(state);
-  if (next.owner === 'touchpad-scroll' || next.owner === 'touchpad-right-click' ||
-    // A completed long press has reserved this sequence for pan. Pinch and
-    // long press are parallel ArkUI recognizers, so a tiny distance jitter
-    // after the hold must not turn the first drag into a local/remote scale.
-    next.owner === 'canvas-pan-armed' || next.owner === 'canvas-pan' ||
+  if (next.owner === 'touchpad-right-click' || next.owner === 'canvas-pan' ||
     next.owner === 'remote-touch-pan') {
     return next;
   }
+  if (!remote && !next.zoomEnabled) {
+    return next;
+  }
+  // Scroll is provisional until the real span threshold is crossed. This is
+  // what lets a slow pinch win even when its centroid moved first.
   next.owner = remote ? 'remote-touch-scale' : 'canvas-pinch';
-  next.holdTimerPending = false;
   return next;
 }
 
 export function claimCanvasTwoFingerPan(state: CanvasTwoFingerState,
   remote: boolean): CanvasTwoFingerState {
   const next: CanvasTwoFingerState = copyState(state);
-  if (next.owner !== 'canvas-pan-armed') {
+  if (next.owner !== 'candidate' || !next.canPan) {
     return next;
   }
   next.owner = remote ? 'remote-touch-pan' : 'canvas-pan';
-  next.holdTimerPending = false;
   next.moved = true;
   return next;
 }
 
 /**
- * Classify a centroid move.  Before the hold deadline, any meaningful move
- * belongs to the touchpad; after arming, the first meaningful move claims pan.
+ * Span wins before translation. An overflowing canvas pans immediately;
+ * otherwise a centroid translation keeps the established remote-wheel path.
  */
 export function advanceCanvasTwoFingerMove(state: CanvasTwoFingerState,
-  x: number, y: number, nowMs: number, remote: boolean = false): CanvasTwoFingerMoveResult {
+  x: number, y: number, _nowMs: number, remote: boolean = false,
+  span: number = -1): CanvasTwoFingerMoveResult {
   const next: CanvasTwoFingerState = copyState(state);
   const currentX: number = finite(x, next.lastX);
   const currentY: number = finite(y, next.lastY);
+  const currentSpan: number = span >= 0 ? finite(span, next.lastSpan) : next.lastSpan;
   const deltaX: number = currentX - next.lastX;
   const deltaY: number = currentY - next.lastY;
   next.lastX = currentX;
   next.lastY = currentY;
+  next.lastSpan = currentSpan;
   const moved: boolean = Math.abs(deltaX) > 0.01 || Math.abs(deltaY) > 0.01;
 
   if (next.owner === 'candidate') {
-    const distance: number = distanceFromStart(next, currentX, currentY);
-    // The timer normally arms the state, but input delivery can run before a
-    // delayed timer callback. Once the deadline has passed, honor the hold
-    // before classifying this move so a valid long-press cannot become scroll.
-    if (finite(nowMs, 0) >= next.holdDeadlineMs && next.canPan && next.zoomEnabled) {
-      next.owner = 'canvas-pan-armed';
-      next.holdTimerPending = false;
-    } else if (distance > CANVAS_TWO_FINGER_HOLD_SLOP_VP) {
-      next.owner = 'touchpad-scroll';
-      next.holdTimerPending = false;
+    const spanMoved: boolean = next.zoomEnabled && next.startSpan > 0 && currentSpan > 0 &&
+      Math.abs(currentSpan - next.startSpan) >= CANVAS_TWO_FINGER_PINCH_SLOP_VP;
+    if (spanMoved) {
+      next.owner = remote ? 'remote-touch-scale' : 'canvas-pinch';
       next.moved = true;
-      return { state: next, action: 'scroll', deltaX, deltaY };
+      return { state: next, action: 'none', deltaX, deltaY };
+    }
+    if (distanceFromStart(next, currentX, currentY) >= CANVAS_TWO_FINGER_TRANSLATION_SLOP_VP) {
+      next.owner = next.canPan ?
+        (remote ? 'remote-touch-pan' : 'canvas-pan') : 'touchpad-scroll';
+      next.moved = true;
+      return {
+        state: next,
+        action: next.owner === 'touchpad-scroll' ? 'scroll' : 'pan',
+        deltaX,
+        deltaY
+      };
     }
   }
 
-  if (next.owner === 'canvas-pan-armed' && moved) {
-    next.owner = remote ? 'remote-touch-pan' : 'canvas-pan';
-    next.moved = true;
-    return { state: next, action: 'pan', deltaX, deltaY };
-  }
   if (next.owner === 'canvas-pan' || next.owner === 'remote-touch-pan') {
     next.moved = next.moved || moved;
     return { state: next, action: moved ? 'pan' : 'none', deltaX, deltaY };
@@ -197,9 +182,7 @@ export function advanceCanvasTwoFingerMove(state: CanvasTwoFingerState,
 export function finishCanvasTwoFingerCandidate(state: CanvasTwoFingerState,
   wasMoved: boolean): CanvasTwoFingerState {
   const next: CanvasTwoFingerState = copyState(state);
-  next.holdTimerPending = false;
-  if ((next.owner === 'candidate' || next.owner === 'canvas-pan-armed') &&
-    !wasMoved && !next.moved) {
+  if (next.owner === 'candidate' && !wasMoved && !next.moved) {
     next.owner = 'touchpad-right-click';
   }
   return next;

@@ -205,7 +205,8 @@ function canTransition(from: SshSessionLifecycleState, to: SshSessionLifecycleSt
       to === 'NetworkLost' || to === 'ReconnectScheduled' || to === 'Failed';
     case 'Authenticating': return to === 'Ready' || to === 'NeedsAuthentication' ||
       to === 'NetworkLost' || to === 'Failed';
-    case 'Ready': return to === 'NetworkLost' || to === 'Reconnecting' || to === 'Failed';
+    case 'Ready': return to === 'NetworkLost' || to === 'Reconnecting' ||
+      to === 'NeedsAuthentication' || to === 'Failed';
     case 'NetworkLost': return to === 'ReconnectScheduled' || to === 'Reconnecting' || to === 'Failed';
     case 'ReconnectScheduled': return to === 'Reconnecting' || to === 'Failed';
     case 'Reconnecting': return to === 'Authenticating' || to === 'Ready' ||

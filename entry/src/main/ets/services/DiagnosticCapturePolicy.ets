@@ -1,3 +1,9 @@
+import {
+  EndpointAddressResult,
+  parseEndpointAuthority,
+  parseEndpointFields
+} from './EndpointAddressPolicy';
+
 export type DiagnosticModuleId =
   'core.app' |
   'connection.rdp' |
@@ -42,12 +48,26 @@ export type DiagnosticPeerPlatform =
   'unknown' | 'windows' | 'macos' | 'linux' | 'android' | 'ios' | 'other';
 
 export type DiagnosticPresentation =
-  'unknown' | 'identity' | 'producer' | 'validated_producer';
+  'unknown' | 'identity' | 'producer' | 'validated_producer' |
+  'vertical_flip_producer';
 
 export type DiagnosticProducerTransform =
   'unknown' | 'not_sampled' | 'identity' | 'flip_x' | 'flip_y' |
   'rotate_90' | 'rotate_180' | 'rotate_270' | 'transpose' | 'transverse' |
   'other' | 'read_failed';
+
+export type DiagnosticAddressFamily =
+  'unknown' | 'hostname' | 'ipv4' | 'ipv6' | 'mixed';
+
+/** Closed, address-free network metadata safe for exported diagnostics. */
+export interface DiagnosticNetworkFacts {
+  configuredEndpointFamily: DiagnosticAddressFamily;
+  configuredRouteFamily: DiagnosticAddressFamily;
+  hostnameCandidate: boolean;
+  ipv4Candidate: boolean;
+  ipv6Candidate: boolean;
+  scopedIpv6: boolean;
+}
 
 export interface DiagnosticRuntimeFacts {
   state: DiagnosticRuntimeState;
@@ -57,6 +77,23 @@ export interface DiagnosticRuntimeFacts {
   peerPlatform: DiagnosticPeerPlatform;
   presentation: DiagnosticPresentation;
   producerTransform: DiagnosticProducerTransform;
+  appliedTransform: DiagnosticProducerTransform;
+  desktopSurfaceCompatibility: boolean;
+  producerTransformSampled: boolean;
+  producerTransformReadResult: number;
+  producerTransformSamples: number;
+  producerTransformChanges: number;
+  producerTransformReadFailures: number;
+  producerTransformClassMask: number;
+  producerTransformMatrix: number[];
+  appliedTextureTransform: number[];
+  rendererTransformValid: boolean;
+  rendererTransformVersion: number;
+  rendererRotationQuarterTurns: number;
+  rendererFlipX: boolean;
+  rendererFlipY: boolean;
+  decoderGeneration: number;
+  rendererGeneration: number;
   width: number;
   height: number;
   frames: number;
@@ -77,11 +114,11 @@ export interface DiagnosticEventSpec {
   eventCode: string;
 }
 
-export const DIAGNOSTIC_CAPTURE_SCHEMA_VERSION: number = 2;
-export const DIAGNOSTIC_REDACTION_POLICY_VERSION: number = 2;
+export const DIAGNOSTIC_CAPTURE_SCHEMA_VERSION: number = 4;
+export const DIAGNOSTIC_REDACTION_POLICY_VERSION: number = 3;
 export const DIAGNOSTIC_DEFAULT_DURATION_MINUTES: number = 10;
 export const DIAGNOSTIC_MAX_EVENTS: number = 10000;
-export const DIAGNOSTIC_MAX_EVENT_BYTES: number = 1024;
+export const DIAGNOSTIC_MAX_EVENT_BYTES: number = 2048;
 export const DIAGNOSTIC_MAX_CAPTURE_BYTES: number = 8 * 1024 * 1024;
 export const DIAGNOSTIC_MAX_EXPORT_BYTES: number = 12 * 1024 * 1024;
 export const DIAGNOSTIC_MAX_SESSION_REFS: number = 512;
@@ -252,7 +289,8 @@ const DIAGNOSTIC_PEER_PLATFORMS: DiagnosticPeerPlatform[] = [
   'unknown', 'windows', 'macos', 'linux', 'android', 'ios', 'other'
 ];
 const DIAGNOSTIC_PRESENTATIONS: DiagnosticPresentation[] = [
-  'unknown', 'identity', 'producer', 'validated_producer'
+  'unknown', 'identity', 'producer', 'validated_producer',
+  'vertical_flip_producer'
 ];
 const DIAGNOSTIC_PRODUCER_TRANSFORMS: DiagnosticProducerTransform[] = [
   'unknown', 'not_sampled', 'identity', 'flip_x', 'flip_y',
@@ -264,6 +302,14 @@ export function emptyDiagnosticRuntimeFacts(): DiagnosticRuntimeFacts {
   return {
     state: 'unknown', backend: 'unknown', codec: 'unknown', path: 'unknown',
     peerPlatform: 'unknown', presentation: 'unknown', producerTransform: 'unknown',
+    appliedTransform: 'unknown', desktopSurfaceCompatibility: false,
+    producerTransformSampled: false, producerTransformReadResult: 0,
+    producerTransformSamples: 0, producerTransformChanges: 0,
+    producerTransformReadFailures: 0, producerTransformClassMask: 0,
+    producerTransformMatrix: [], appliedTextureTransform: [],
+    rendererTransformValid: false, rendererTransformVersion: 0,
+    rendererRotationQuarterTurns: 0, rendererFlipX: false, rendererFlipY: false,
+    decoderGeneration: 0, rendererGeneration: 0,
     width: 0, height: 0, frames: 0, dropped: 0, errors: 0,
     queueDepth: 0, latencyMs: 0
   };
@@ -276,16 +322,41 @@ export function diagnosticRuntimeFactsAreValid(facts: DiagnosticRuntimeFacts): b
     DIAGNOSTIC_RUNTIME_PATHS.indexOf(facts.path) < 0 ||
     DIAGNOSTIC_PEER_PLATFORMS.indexOf(facts.peerPlatform) < 0 ||
     DIAGNOSTIC_PRESENTATIONS.indexOf(facts.presentation) < 0 ||
-    DIAGNOSTIC_PRODUCER_TRANSFORMS.indexOf(facts.producerTransform) < 0) {
+    DIAGNOSTIC_PRODUCER_TRANSFORMS.indexOf(facts.producerTransform) < 0 ||
+    DIAGNOSTIC_PRODUCER_TRANSFORMS.indexOf(facts.appliedTransform) < 0 ||
+    typeof facts.desktopSurfaceCompatibility !== 'boolean' ||
+    typeof facts.producerTransformSampled !== 'boolean' ||
+    typeof facts.rendererTransformValid !== 'boolean' ||
+    typeof facts.rendererFlipX !== 'boolean' ||
+    typeof facts.rendererFlipY !== 'boolean') {
     return false;
   }
   const numbers: number[] = [
     facts.width, facts.height, facts.frames, facts.dropped, facts.errors,
-    facts.queueDepth, facts.latencyMs
+    facts.queueDepth, facts.latencyMs, facts.producerTransformSamples,
+    facts.producerTransformChanges, facts.producerTransformReadFailures,
+    facts.producerTransformClassMask, facts.rendererTransformVersion,
+    facts.decoderGeneration, facts.rendererGeneration
   ];
   for (let index: number = 0; index < numbers.length; index++) {
     if (diagnosticSafeInteger(numbers[index]) === null || numbers[index] < 0) {
       return false;
+    }
+  }
+  if (diagnosticSafeInteger(facts.producerTransformReadResult) === null ||
+    diagnosticSafeInteger(facts.rendererRotationQuarterTurns) === null ||
+    facts.rendererRotationQuarterTurns < 0 || facts.rendererRotationQuarterTurns > 3 ||
+    (facts.producerTransformMatrix.length !== 0 &&
+      facts.producerTransformMatrix.length !== 16) ||
+    (facts.appliedTextureTransform.length !== 0 &&
+      facts.appliedTextureTransform.length !== 16)) { return false; }
+  const matrices: number[][] = [
+    facts.producerTransformMatrix, facts.appliedTextureTransform
+  ];
+  for (let matrixIndex: number = 0; matrixIndex < matrices.length; matrixIndex++) {
+    for (let valueIndex: number = 0; valueIndex < matrices[matrixIndex].length; valueIndex++) {
+      const value: number = matrices[matrixIndex][valueIndex];
+      if (!Number.isFinite(value) || Math.abs(value) > 16) { return false; }
     }
   }
   return true;
@@ -296,8 +367,164 @@ export function copyDiagnosticRuntimeFacts(
   return {
     state: facts.state, backend: facts.backend, codec: facts.codec, path: facts.path,
     peerPlatform: facts.peerPlatform, presentation: facts.presentation,
-    producerTransform: facts.producerTransform, width: facts.width,
+    producerTransform: facts.producerTransform,
+    appliedTransform: facts.appliedTransform,
+    desktopSurfaceCompatibility: facts.desktopSurfaceCompatibility,
+    producerTransformSampled: facts.producerTransformSampled,
+    producerTransformReadResult: facts.producerTransformReadResult,
+    producerTransformSamples: facts.producerTransformSamples,
+    producerTransformChanges: facts.producerTransformChanges,
+    producerTransformReadFailures: facts.producerTransformReadFailures,
+    producerTransformClassMask: facts.producerTransformClassMask,
+    producerTransformMatrix: facts.producerTransformMatrix.slice(),
+    appliedTextureTransform: facts.appliedTextureTransform.slice(),
+    rendererTransformValid: facts.rendererTransformValid,
+    rendererTransformVersion: facts.rendererTransformVersion,
+    rendererRotationQuarterTurns: facts.rendererRotationQuarterTurns,
+    rendererFlipX: facts.rendererFlipX, rendererFlipY: facts.rendererFlipY,
+    decoderGeneration: facts.decoderGeneration,
+    rendererGeneration: facts.rendererGeneration, width: facts.width,
     height: facts.height, frames: facts.frames, dropped: facts.dropped,
     errors: facts.errors, queueDepth: facts.queueDepth, latencyMs: facts.latencyMs
   };
+}
+
+const DIAGNOSTIC_ADDRESS_FAMILIES: DiagnosticAddressFamily[] = [
+  'unknown', 'hostname', 'ipv4', 'ipv6', 'mixed'
+];
+
+export function emptyDiagnosticNetworkFacts(): DiagnosticNetworkFacts {
+  return {
+    configuredEndpointFamily: 'unknown',
+    configuredRouteFamily: 'unknown',
+    hostnameCandidate: false,
+    ipv4Candidate: false,
+    ipv6Candidate: false,
+    scopedIpv6: false
+  };
+}
+
+export function diagnosticNetworkFactsAreValid(facts: DiagnosticNetworkFacts): boolean {
+  if (DIAGNOSTIC_ADDRESS_FAMILIES.indexOf(facts.configuredEndpointFamily) < 0 ||
+    DIAGNOSTIC_ADDRESS_FAMILIES.indexOf(facts.configuredRouteFamily) < 0 ||
+    typeof facts.hostnameCandidate !== 'boolean' ||
+    typeof facts.ipv4Candidate !== 'boolean' ||
+    typeof facts.ipv6Candidate !== 'boolean' ||
+    typeof facts.scopedIpv6 !== 'boolean') {
+    return false;
+  }
+  if (facts.scopedIpv6 && !facts.ipv6Candidate) { return false; }
+  if (facts.configuredEndpointFamily === 'hostname' && !facts.hostnameCandidate) {
+    return false;
+  }
+  if (facts.configuredEndpointFamily === 'ipv4' && !facts.ipv4Candidate) {
+    return false;
+  }
+  if (facts.configuredEndpointFamily === 'ipv6' && !facts.ipv6Candidate) {
+    return false;
+  }
+  if (facts.configuredRouteFamily === 'hostname' && !facts.hostnameCandidate) {
+    return false;
+  }
+  if (facts.configuredRouteFamily === 'ipv4' && !facts.ipv4Candidate) {
+    return false;
+  }
+  if (facts.configuredRouteFamily === 'ipv6' && !facts.ipv6Candidate) {
+    return false;
+  }
+  return true;
+}
+
+export function copyDiagnosticNetworkFacts(
+  facts: DiagnosticNetworkFacts): DiagnosticNetworkFacts {
+  return {
+    configuredEndpointFamily: facts.configuredEndpointFamily,
+    configuredRouteFamily: facts.configuredRouteFamily,
+    hostnameCandidate: facts.hostnameCandidate,
+    ipv4Candidate: facts.ipv4Candidate,
+    ipv6Candidate: facts.ipv6Candidate,
+    scopedIpv6: facts.scopedIpv6
+  };
+}
+
+export function diagnosticNetworkFactsForEndpoints(endpointHost: string,
+  endpointPort: number, routeHost: string = '', routePort: number = 0): DiagnosticNetworkFacts {
+  try {
+    const endpoint: EndpointAddressResult = parseEndpointFields(
+      endpointHost, endpointPort > 0 ? endpointPort : 1, 'runtime');
+    const endpointFamily: DiagnosticAddressFamily = endpoint.ok ?
+      endpoint.endpoint.family : 'unknown';
+    let routeFamily: DiagnosticAddressFamily = 'unknown';
+    let routeScopedIpv6: boolean = false;
+    if (routeHost.trim().length > 0) {
+      const route: EndpointAddressResult = parseEndpointFields(
+        routeHost, routePort > 0 ? routePort : 1, 'runtime');
+      routeFamily = route.ok ? route.endpoint.family : 'unknown';
+      routeScopedIpv6 = route.ok && route.endpoint.family === 'ipv6' &&
+        route.endpoint.scope.length > 0;
+    }
+    return {
+      configuredEndpointFamily: endpointFamily,
+      configuredRouteFamily: routeFamily,
+      hostnameCandidate: endpointFamily === 'hostname' || routeFamily === 'hostname',
+      ipv4Candidate: endpointFamily === 'ipv4' || routeFamily === 'ipv4',
+      ipv6Candidate: endpointFamily === 'ipv6' || routeFamily === 'ipv6',
+      scopedIpv6: routeScopedIpv6 || (endpoint.ok &&
+        endpoint.endpoint.family === 'ipv6' && endpoint.endpoint.scope.length > 0)
+    };
+  } catch (_err) {
+    return emptyDiagnosticNetworkFacts();
+  }
+}
+
+export function diagnosticNetworkFactsForAuthority(authority: string,
+  defaultPort: number = 1): DiagnosticNetworkFacts {
+  try {
+    const parsed: EndpointAddressResult = parseEndpointAuthority(
+      authority, defaultPort > 0 ? defaultPort : 1, 'runtime');
+    if (!parsed.ok) { return emptyDiagnosticNetworkFacts(); }
+    return {
+      configuredEndpointFamily: parsed.endpoint.family,
+      configuredRouteFamily: 'unknown',
+      hostnameCandidate: parsed.endpoint.family === 'hostname',
+      ipv4Candidate: parsed.endpoint.family === 'ipv4',
+      ipv6Candidate: parsed.endpoint.family === 'ipv6',
+      scopedIpv6: parsed.endpoint.family === 'ipv6' && parsed.endpoint.scope.length > 0
+    };
+  } catch (_err) {
+    return emptyDiagnosticNetworkFacts();
+  }
+}
+
+/** Build facts for ordered Moonlight-style candidate lists without retaining addresses. */
+export function diagnosticNetworkFactsForCandidates(families: string[],
+  scopedIpv6: boolean = false): DiagnosticNetworkFacts {
+  try {
+    let hostnameCandidate: boolean = false;
+    let ipv4Candidate: boolean = false;
+    let ipv6Candidate: boolean = false;
+    for (let index: number = 0; index < families.length; index++) {
+      const family: string = families[index].trim().toLowerCase();
+      if (family === 'ipv4') { ipv4Candidate = true; }
+      else if (family === 'ipv6') { ipv6Candidate = true; }
+      else if (family === 'hostname' || family === 'unspecified') {
+        hostnameCandidate = true;
+      }
+    }
+    const familyCount: number = (hostnameCandidate ? 1 : 0) +
+      (ipv4Candidate ? 1 : 0) + (ipv6Candidate ? 1 : 0);
+    const configuredEndpointFamily: DiagnosticAddressFamily = familyCount === 0 ? 'unknown' :
+      (familyCount > 1 ? 'mixed' :
+        (ipv6Candidate ? 'ipv6' : (ipv4Candidate ? 'ipv4' : 'hostname')));
+    return {
+      configuredEndpointFamily: configuredEndpointFamily,
+      configuredRouteFamily: 'unknown',
+      hostnameCandidate: hostnameCandidate,
+      ipv4Candidate: ipv4Candidate,
+      ipv6Candidate: ipv6Candidate,
+      scopedIpv6: scopedIpv6 && ipv6Candidate
+    };
+  } catch (_err) {
+    return emptyDiagnosticNetworkFacts();
+  }
 }

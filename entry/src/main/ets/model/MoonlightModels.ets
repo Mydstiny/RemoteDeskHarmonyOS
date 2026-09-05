@@ -5,6 +5,10 @@
  * Runtime reachability, PINs, session keys, rikey/rikeyid, decoder state and
  * controller device handles deliberately live outside this file.
  */
+import {
+  EndpointAddressResult,
+  parseEndpointFields
+} from '../services/EndpointAddressPolicy';
 
 export type MoonlightAddressFamily = 'ipv4' | 'ipv6' | 'hostname';
 export type MoonlightHostType = 'sunshine' | 'gamestream';
@@ -37,6 +41,8 @@ export interface MoonlightAddress {
   host: string;
   family: MoonlightAddressFamily;
   port: number;
+  /** Device-local IPv6 interface scope; never encoded into host itself. */
+  scope?: string;
 }
 
 export interface MoonlightWakeOnLan {
@@ -350,15 +356,62 @@ export function moonlightKeyboardTarget(
 }
 
 export function moonlightAddressKey(address: MoonlightAddress): string {
-  const host: string = address.host.trim().toLowerCase();
+  const normalized: MoonlightAddress = canonicalMoonlightAddress(address);
+  const scope: string = normalized.scope === undefined ? '' : normalized.scope;
+  const host: string = normalized.host.toLowerCase() + (scope === '' ? '' : '%' + scope);
   return address.family + '|' + host + '|' + address.port.toString();
 }
 
+/** Accepts one legacy raw-text key while every new write uses the canonical key. */
+export function moonlightAddressMatchesKey(address: MoonlightAddress, key: string): boolean {
+  if (key === '') { return false; }
+  const scope: string = address.scope === undefined ? '' : address.scope.trim();
+  const legacyKey: string = address.family + '|' +
+    address.host.trim().toLowerCase() + (scope === '' ? '' : '%' + scope) +
+    '|' + address.port.toString();
+  return moonlightAddressKey(address) === key || legacyKey === key;
+}
+
+/** Canonical form used for every new durable Moonlight address write. */
+export function canonicalMoonlightAddress(address: MoonlightAddress): MoonlightAddress {
+  const scope: string = address.scope === undefined ? '' : address.scope.trim();
+  const transportHost: string = address.host + (scope === '' ? '' : '%' + scope);
+  const parsed: EndpointAddressResult = parseEndpointFields(transportHost, address.port);
+  if (!parsed.ok || parsed.endpoint.family !== address.family ||
+      parsed.endpoint.scopeKind === 'numeric') {
+    return {
+      host: address.host.trim(), family: address.family, port: address.port,
+      scope: scope === '' ? undefined : scope
+    };
+  }
+  return {
+    host: parsed.endpoint.canonicalHost,
+    family: address.family,
+    port: parsed.endpoint.port,
+    scope: parsed.endpoint.scope === '' ? undefined : parsed.endpoint.scope
+  };
+}
+
 export function moonlightAddressIsValid(address: MoonlightAddress): boolean {
-  return address !== undefined && address !== null && typeof address === 'object' &&
-    typeof address.host === 'string' && isBoundedText(address.host.trim(), 1, ADDRESS_MAX_LENGTH) &&
-    isOneOf(address.family, ['ipv4', 'ipv6', 'hostname']) &&
-    isIntegerInRange(address.port, 1, 65535);
+  if (address === undefined || address === null || typeof address !== 'object' ||
+    typeof address.host !== 'string' || !isBoundedText(address.host, 1, ADDRESS_MAX_LENGTH) ||
+    !isOneOf(address.family, ['ipv4', 'ipv6', 'hostname']) ||
+    !isIntegerInRange(address.port, 1, 65535)) {
+    return false;
+  }
+  if (address.scope !== undefined && typeof address.scope !== 'string') { return false; }
+  const scope: string = address.scope === undefined ? '' : address.scope;
+  // Durable Moonlight addresses keep the zone in the typed scope field. An
+  // embedded "%zone" is ambiguous during cloud filtering and must never be
+  // accepted as an alternate spelling of the same value object.
+  if (address.host.indexOf('%') >= 0) { return false; }
+  const parsed: EndpointAddressResult = parseEndpointFields(
+    address.host + (scope === '' ? '' : '%' + scope), address.port);
+  return parsed.ok && parsed.endpoint.family === address.family &&
+    parsed.endpoint.scopeKind !== 'numeric' &&
+    (parsed.endpoint.scope === '' || address.family === 'ipv6') &&
+    parsed.endpoint.canonicalHost === address.host &&
+    parsed.endpoint.scope === scope;
 }
 
 export function moonlightHostIsValid(host: MoonlightHost): boolean {
@@ -375,13 +428,17 @@ export function moonlightHostIsValid(host: MoonlightHost): boolean {
     return false;
   }
   const keys: string[] = [];
+  const compatiblePreferredKeys: string[] = [];
   for (let i = 0; i < host.addresses.length; i++) {
     if (!moonlightAddressIsValid(host.addresses[i])) { return false; }
     const key: string = moonlightAddressKey(host.addresses[i]);
     if (keys.indexOf(key) >= 0) { return false; }
     keys.push(key);
+    compatiblePreferredKeys.push(host.addresses[i].family + '|' +
+      host.addresses[i].host.trim().toLowerCase() + '|' + host.addresses[i].port.toString());
   }
-  if (host.preferredAddressKey !== '' && keys.indexOf(host.preferredAddressKey) < 0) {
+  if (host.preferredAddressKey !== '' && keys.indexOf(host.preferredAddressKey) < 0 &&
+    compatiblePreferredKeys.indexOf(host.preferredAddressKey) < 0) {
     return false;
   }
   return moonlightWakeOnLanIsValid(host.wakeOnLan);

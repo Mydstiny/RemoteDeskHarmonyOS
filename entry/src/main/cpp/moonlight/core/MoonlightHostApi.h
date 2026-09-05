@@ -11,6 +11,10 @@
 #include <string>
 #include <vector>
 
+namespace remotedesk::net {
+class NetworkGenerationFence;
+}
+
 #if defined(__GNUC__)
 #define REMOTEDESK_MOONLIGHT_HOST_HIDDEN __attribute__((visibility("hidden")))
 #else
@@ -149,6 +153,9 @@ struct REMOTEDESK_MOONLIGHT_HOST_HIDDEN MoonlightHostLimits final {
 struct REMOTEDESK_MOONLIGHT_HOST_HIDDEN MoonlightHostAddress final {
     std::string value;
     MoonlightHostAddressFamily family = MoonlightHostAddressFamily::Unspecified;
+    // Device-local interface scope for a link-local IPv6 address. Keep it
+    // separate so socket and URI formatting cannot be confused.
+    std::string scope;
 };
 
 struct REMOTEDESK_MOONLIGHT_HOST_HIDDEN MoonlightHostEndpoint final {
@@ -173,6 +180,10 @@ struct REMOTEDESK_MOONLIGHT_HOST_HIDDEN MoonlightHostCall final {
     MoonlightHostEndpoint endpoint;
     std::vector<MoonlightHostQueryParameter> query;
     std::chrono::milliseconds timeout = MoonlightHostLimits::kDefaultTimeout;
+    // Zero captures the current default-network generation at admission.
+    // A non-zero value requires the call to remain on an already captured
+    // generation and fails stale before transport when it no longer matches.
+    std::uint64_t expectedNetworkGeneration = 0U;
 };
 
 class REMOTEDESK_MOONLIGHT_HOST_HIDDEN MoonlightTransportRequest final {
@@ -232,6 +243,10 @@ struct REMOTEDESK_MOONLIGHT_HOST_HIDDEN MoonlightTransportOutcome final {
     int httpStatus = 0;
     std::string body;
     std::size_t receivedBodyBytes = 0;
+    // Numeric winner selected by the transport race. Scoped IPv6 retains its
+    // zone suffix so the media handoff cannot silently re-resolve the host.
+    std::string resolvedAddress;
+    MoonlightHostAddressFamily resolvedFamily = MoonlightHostAddressFamily::Unspecified;
 };
 
 class REMOTEDESK_MOONLIGHT_HOST_HIDDEN MoonlightHostTransport {
@@ -322,6 +337,9 @@ struct REMOTEDESK_MOONLIGHT_HOST_HIDDEN MoonlightHostResult final {
     // streaming must reuse the successful control-plane address instead of
     // silently falling back to endpoint.addresses.front().
     std::optional<std::string> resolvedAddress;
+    MoonlightHostAddressFamily resolvedFamily = MoonlightHostAddressFamily::Unspecified;
+    // Generation under which DNS, connect, TLS, and response commit ran.
+    std::uint64_t networkGeneration = 0U;
     std::vector<std::uint8_t> asset;
     std::vector<MoonlightHostDiagnostic> diagnostics;
 
@@ -333,7 +351,8 @@ public:
     using UuidGenerator = std::function<std::string()>;
 
     MoonlightHostApi(std::shared_ptr<MoonlightHostTransport> transport,
-                     UuidGenerator uuidGenerator);
+                     UuidGenerator uuidGenerator,
+                     remotedesk::net::NetworkGenerationFence* networkFence = nullptr);
     ~MoonlightHostApi();
 
     MoonlightHostApi(const MoonlightHostApi&) = delete;

@@ -5,6 +5,7 @@
 #include "rustdesk_ffi_handle_gate.h"
 
 #include <cstdint>
+#include <mutex>
 #include <utility>
 
 struct RustDeskDisplayControlRequest {
@@ -21,6 +22,29 @@ struct RustDeskDisplayControlRequest {
  */
 class RustDeskDisplayControlPlane {
 public:
+    /**
+     * Serialize a non-reentrant outbound FFI send with continuity admission.
+     *
+     * Network retirement takes the same admission mutex before detaching the
+     * handle. The fixed admission -> shared handle lease order therefore
+     * prevents an old input/file/clipboard operation from entering after the
+     * stream token has been retired.
+     */
+    template<typename IsAllowed, typename Operation>
+    bool dispatchOutbound(
+        std::mutex& admissionMutex, IsAllowed&& isAllowed,
+        Operation&& operation) {
+        std::lock_guard<std::mutex> admissionLock(admissionMutex);
+        if (!isAllowed()) {
+            return false;
+        }
+        auto handleLease = handleGate_.acquire();
+        if (!handleLease || !isAllowed()) {
+            return false;
+        }
+        return std::forward<Operation>(operation)(handleLease.get());
+    }
+
     template<typename IsValid, typename Dispatch>
     bool dispatchFrame(int display, bool keyFrame, IsValid&& isValid, Dispatch&& dispatch) {
         if (!isValid()) {
@@ -73,6 +97,26 @@ public:
         if (!isValid()) {
             return result;
         }
+        return beginDisplaySwitchWithHandle(
+            display, handleLease.get(), std::forward<SwitchDisplay>(switchDisplay));
+    }
+
+    /**
+     * Begin one display-switch transaction with an already pinned handle.
+     *
+     * The bridge uses this variant from dispatchOutbound(), where continuity
+     * admission and the shared handle lease already span the complete FFI
+     * enqueue. Keeping handle acquisition out of this helper avoids nesting
+     * the non-recursive handle gate while preserving the display-generation
+     * rollback used by the standalone path above.
+     */
+    template<typename SwitchDisplay>
+    RustDeskDisplayControlRequest beginDisplaySwitchWithHandle(
+        int display, void* handle, SwitchDisplay&& switchDisplay) {
+        RustDeskDisplayControlRequest result;
+        if (display < 0 || handle == nullptr) {
+            return result;
+        }
         {
             auto displayLease = displayCoordinator_.acquire();
             result.generation = displayLease.begin(display);
@@ -81,7 +125,7 @@ public:
         // non-reentrant display coordinator before crossing the external
         // callback boundary. A synchronous pressure/disconnect callback may
         // therefore reacquire the display boundary safely.
-        result.accepted = switchDisplay(handleLease.get(), display);
+        result.accepted = std::forward<SwitchDisplay>(switchDisplay)(handle, display);
         if (!result.accepted) {
             auto displayLease = displayCoordinator_.acquire();
             displayLease.reject(result.generation);
@@ -89,23 +133,43 @@ public:
         return result;
     }
 
+    template<typename IsValid, typename Query, typename BeforeSnapshot>
+    bool queryDisplayState(
+        IsValid&& isValid,
+        Query&& query,
+        BeforeSnapshot&& beforeSnapshot,
+        RustDeskDisplaySwitchGateSnapshot& gateSnapshot) {
+        if (!isValid()) {
+            return false;
+        }
+        {
+            auto handleLease = handleGate_.acquire();
+            if (!handleLease || !isValid() || !query(handleLease.get())) {
+                return false;
+            }
+        }
+        // Release the handle before taking the display snapshot. Network and
+        // explicit retirement hold the display boundary while detaching the
+        // handle, so retaining both here would invert that production order.
+        std::forward<BeforeSnapshot>(beforeSnapshot)();
+        auto displayLease = displayCoordinator_.acquire();
+        if (!isValid()) {
+            return false;
+        }
+        gateSnapshot = displayLease.snapshot();
+        return true;
+    }
+
     template<typename IsValid, typename Query>
     bool queryDisplayState(
         IsValid&& isValid,
         Query&& query,
-    RustDeskDisplaySwitchGateSnapshot& gateSnapshot) {
-        if (!isValid()) {
-            return false;
-        }
-        auto handleLease = handleGate_.acquire();
-        if (!handleLease || !isValid() || !query(handleLease.get())) {
-            return false;
-        }
-        // The handle lease pins the Rust client through the external query;
-        // take only a short display snapshot lease after the query returns.
-        auto displayLease = displayCoordinator_.acquire();
-        gateSnapshot = displayLease.snapshot();
-        return true;
+        RustDeskDisplaySwitchGateSnapshot& gateSnapshot) {
+        return queryDisplayState(
+            std::forward<IsValid>(isValid),
+            std::forward<Query>(query),
+            []() {},
+            gateSnapshot);
     }
 
     RustDeskDisplaySwitchCoordinator::Lease acquireDisplayLease() {

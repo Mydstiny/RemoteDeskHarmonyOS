@@ -18,6 +18,7 @@ const PROFILE_SCROLLBACKS: number[] = [5000, 10000, 30000, 100000];
 @Component
 export struct SshTerminalProfileSheet {
   @StorageProp('accentColor') accentColor: string = '#007DFF';
+  @Prop sheetBackgroundColor: string = '#171D25';
   @Prop profiles: SshTerminalProfileV1[] = [];
   @Prop resolvedProfile: SshTerminalResolvedProfile;
   @Prop globalProfileId: string = '';
@@ -286,6 +287,6 @@ export struct SshTerminalProfileSheet {
           if (this.editing) { this.Editor() }
         }.width('100%').padding({ left: 18, right: 18, bottom: 28 })
       }.width('100%').layoutWeight(1)
-    }.width('100%').height('100%').backgroundColor('#171D25')
+    }.width('100%').height('100%').backgroundColor(this.sheetBackgroundColor)
   }
 }

@@ -2,6 +2,7 @@ import { describe, it, expect } from '@ohos/hypium';
 import {
   canUseRustDeskAdaptiveOrientation,
   isRustDeskPhoneSessionForPeer,
+  remoteOrientationRequestIsCurrent,
   rustDeskOrientationPolicy
 } from '../main/ets/services/RemoteOrientationPolicy';
 
@@ -39,6 +40,12 @@ export default function remoteOrientationPolicyTest(): void {
       expect(isRustDeskPhoneSessionForPeer('phone', 'windows')).assertFalse();
       expect(isRustDeskPhoneSessionForPeer('phone', 'unknown')).assertTrue();
       expect(isRustDeskPhoneSessionForPeer('computer', 'other')).assertFalse();
+    });
+
+    it('lets only the newest asynchronous orientation request publish state', 0, (): void => {
+      expect(remoteOrientationRequestIsCurrent(7, 8)).assertFalse();
+      expect(remoteOrientationRequestIsCurrent(8, 8)).assertTrue();
+      expect(remoteOrientationRequestIsCurrent(0, 0)).assertFalse();
     });
   });
 }

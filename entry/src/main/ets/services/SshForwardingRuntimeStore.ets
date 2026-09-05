@@ -17,6 +17,7 @@ export interface SshForwardingRuntimeRecord {
   lastError: number;
   actualBindHost: string;
   actualBindPort: number;
+  actualBindFamily: number;
   updatedAtMs: number;
 }
 
@@ -40,7 +41,8 @@ function cloneRuntime(runtime: SshForwardingRuntimeRecord): SshForwardingRuntime
     profile: cloneProfile(runtime.profile), state: runtime.state,
     activeConnections: runtime.activeConnections, transferredBytes: runtime.transferredBytes,
     lastError: runtime.lastError, actualBindHost: runtime.actualBindHost,
-    actualBindPort: runtime.actualBindPort, updatedAtMs: runtime.updatedAtMs
+    actualBindPort: runtime.actualBindPort, actualBindFamily: runtime.actualBindFamily,
+    updatedAtMs: runtime.updatedAtMs
   };
 }
 
@@ -86,6 +88,7 @@ export class SshForwardingRuntimeStore {
       lastError: error,
       actualBindHost: profile.bindHost,
       actualBindPort: profile.bindPort,
+      actualBindFamily: 0,
       updatedAtMs: Date.now()
     } : cloneRuntime(existing);
     if (existing !== undefined) {
@@ -100,7 +103,7 @@ export class SshForwardingRuntimeStore {
 
   updateSnapshot(handle: SshSessionHandle, profileId: string, state: SshForwardingRuntimeState,
     activeConnections: number, transferredBytes: number, lastError: number,
-    actualBindHost: string, actualBindPort: number): boolean {
+    actualBindHost: string, actualBindPort: number, actualBindFamily: number): boolean {
     const key: string = runtimeKey(handle, profileId);
     const runtime: SshForwardingRuntimeRecord | undefined = this.records.get(key);
     if (runtime === undefined) { return false; }
@@ -110,6 +113,7 @@ export class SshForwardingRuntimeStore {
     runtime.lastError = lastError;
     runtime.actualBindHost = actualBindHost;
     runtime.actualBindPort = actualBindPort;
+    runtime.actualBindFamily = actualBindFamily;
     runtime.updatedAtMs = Date.now();
     return true;
   }

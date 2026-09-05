@@ -110,6 +110,7 @@ export function remoteHostCloudBaseSnapshot(host: RemoteHost): string {
   projected.sshHostKeyRawBase64 = '';
   projected.sshHostKeyTrustedAt = 0;
   projected.sshHostKeyTrustMode = 0;
+  projected.sshHostKeyRouteIdentity = '';
   projected.sshJumpHostKeyAlgorithm = '';
   projected.sshJumpHostKeyFingerprintSha256 = '';
   projected.sshJumpHostKeyRawBase64 = '';

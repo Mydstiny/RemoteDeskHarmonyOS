@@ -9,10 +9,12 @@ import {
   RemoteHost,
   LockType,
   normalizeRdpCredentialParts,
-  normalizeRdpNtlmHash
+  normalizeRdpNtlmHash,
+  rdpRouteIdentityForValues
 } from '../main/ets/model/RemoteHost';
 import { UserAccount } from '../main/ets/model/UserAccount';
 import { RdpCredential } from '../main/ets/model/RdpCredential';
+import { normalizeRdpClientHostname } from '../main/ets/services/RdpConnectionIdentityPolicy';
 
 export default function localUnitTest() {
   describe('RemoteHost_Data_Model', () => {
@@ -23,6 +25,8 @@ export default function localUnitTest() {
       host.host = '192.168.1.100';
       host.port = 3389;
       host.username = 'admin';
+      host.customHostname = 'server.example.test';
+      host.rdpClientHostname = 'HARMONY-CLIENT';
 
       expect(host.isValid()).assertTrue();
     });
@@ -68,8 +72,20 @@ export default function localUnitTest() {
       expect(restored.host).assertEqual(host.host);
       expect(restored.port).assertEqual(host.port);
       expect(restored.username).assertEqual(host.username);
+      expect(restored.customHostname).assertEqual(host.customHostname);
+      expect(restored.rdpClientHostname).assertEqual(host.rdpClientHostname);
       expect(restored.locked).assertEqual(host.locked);
       expect(restored.lockType).assertEqual(host.lockType);
+    });
+
+    it('keeps_rdp_client_hostname_separate_from_server_identity', 0, () => {
+      expect(normalizeRdpClientHostname('')).assertEqual('');
+      expect(normalizeRdpClientHostname('HARMONY-CLIENT')).assertEqual('HARMONY-CLIENT');
+      expect(normalizeRdpClientHostname('client.example.test')).assertEqual('client.example.test');
+      expect(normalizeRdpClientHostname('2001:db8::10')).assertNull();
+      expect(normalizeRdpClientHostname('client name')).assertNull();
+      expect(normalizeRdpClientHostname('-client')).assertNull();
+      expect(normalizeRdpClientHostname('client.example.')).assertNull();
     });
 
     it('runtime_clone_should_keep_secret_presence_out_of_serialized_json', 0, () => {
@@ -163,6 +179,45 @@ export default function localUnitTest() {
       expect(restored.rdpRestrictedAdminSecretSource).assertEqual('ntlm_hash');
     });
 
+    it('RDP_connect_time_credentials_should_never_serialize', 0, () => {
+      const host = new RemoteHost();
+      host.label = 'PromptEveryTime';
+      host.protocol = 'rdp';
+      host.host = '192.0.2.20';
+      host.rdpAuthMode = 'password';
+      host.rdpCredentialStorageMode = 'connect_time';
+      host.username = 'must-not-persist';
+      host.password = 'must-not-persist';
+      host.passwordConfigured = true;
+      host.rdpCredentialId = 'must-not-persist';
+      expect(host.isValid()).assertFalse();
+      expect(host.getValidationErrors().length).assertEqual(1);
+
+      const serialized: Record<string, Object> = host.toJSON() as Record<string, Object>;
+      expect(serialized['username']).assertEqual('');
+      expect(serialized['password']).assertEqual('');
+      expect(serialized['rdpCredentialId']).assertEqual('');
+      expect(serialized['rdpCredentialStorageMode']).assertEqual('connect_time');
+
+      const restored: RemoteHost = RemoteHost.fromJSON(host.toJSON());
+      expect(restored.username).assertEqual('');
+      expect(restored.password).assertEqual('');
+      expect(restored.passwordConfigured).assertFalse();
+      expect(restored.rdpCredentialId).assertEqual('');
+      expect(restored.getValidationErrors().length).assertEqual(0);
+      expect(restored.isValid()).assertTrue();
+      expect(host.runtimeClone().passwordConfigured).assertFalse();
+    });
+
+    it('RDP_non_password_modes_should_force_saved_storage_policy', 0, () => {
+      const host = new RemoteHost();
+      host.protocol = 'rdp';
+      host.rdpAuthMode = 'restricted_admin';
+      host.rdpCredentialStorageMode = 'connect_time';
+      host.normalizeRdpAuthentication();
+      expect(host.rdpCredentialStorageMode).assertEqual('saved');
+    });
+
     it('RDP_legacy_empty_password_hash_should_require_a_real_hash', 0, () => {
       const host = new RemoteHost();
       host.protocol = 'rdp';
@@ -190,6 +245,17 @@ export default function localUnitTest() {
       expect(normalizeRdpNtlmHash(' 0123456789abcdef0123456789abcdef '))
         .assertEqual('0123456789ABCDEF0123456789ABCDEF');
       expect(normalizeRdpNtlmHash('not-a-hash')).assertEqual('');
+    });
+
+    it('RDP_route_identity_should_not_collide_on_IPv6_delimiters', 0, () => {
+      const first: string = rdpRouteIdentityForValues(
+        'direct_rdp', '2001:db8::1', 3389, '443:1::2', '', 0, '', 'auto');
+      const second: string = rdpRouteIdentityForValues(
+        'direct_rdp', '2001:db8::1:3389', 443, '1::2', '', 0, '', 'auto');
+
+      expect(first).assertEqual(
+        'rdp-route-v2|10:direct_rdp11:2001:db8::14:33898:443:1::20:1:00:4:auto');
+      expect(first === second).assertFalse();
     });
 
     it('RustDesk_default_port_should_be_21116', 0, () => {

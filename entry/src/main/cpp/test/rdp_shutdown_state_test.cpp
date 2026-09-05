@@ -49,3 +49,8 @@ RDP_TEST_CASE(rdp_shutdown_sequence_quiesces_workers_before_transport) {
     RDP_ASSERT_EQ(sequence[6], Action::DisconnectTransport);
     RDP_ASSERT_EQ(sequence[7], Action::ReleaseInstance);
 }
+
+RDP_TEST_CASE(rdp_shutdown_transport_waits_for_event_worker_fence) {
+    RDP_ASSERT(!RdpShutdown::CanStartTransportDisconnect(false));
+    RDP_ASSERT(RdpShutdown::CanStartTransportDisconnect(true));
+}

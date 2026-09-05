@@ -14,17 +14,16 @@
 //
 // 所有通信在 rendezvous 阶段是明文，peer 阶段是加密的。
 
-use crate::crypto::{self, KeyPair};
-use crate::crypto_channel::CryptoChannel;
 use crate::control_inbox::{
-    CONTROL_BATCH_LIMIT, ControlInbox, PERMISSION_AUDIO, PERMISSION_BLOCK_INPUT,
+    ControlInbox, CONTROL_BATCH_LIMIT, PERMISSION_AUDIO, PERMISSION_BLOCK_INPUT,
     PERMISSION_CLIPBOARD, PERMISSION_FILE, PERMISSION_KEYBOARD, PERMISSION_PRIVACY_MODE,
     PERMISSION_RECORDING, PERMISSION_RESTART,
 };
-use crate::cursor_state::{
-    CursorCacheMissReason, CursorIdResult, CursorState, CursorStreamUpdate,
-};
+use crate::crypto::{self, KeyPair};
+use crate::crypto_channel::CryptoChannel;
+use crate::cursor_state::{CursorCacheMissReason, CursorIdResult, CursorState, CursorStreamUpdate};
 use crate::net;
+use crate::peer_stream::{KcpPeerStream, PeerStream};
 use crate::protocol::message_proto::{
     AudioFormat, AudioFrame, CaptureDisplays, Clipboard, ClipboardFormat, ControlKey, DisplayInfo,
     DisplayResolution, EncodedVideoFrames, FileAction, FileAction_oneof_union, FileEntry,
@@ -35,17 +34,21 @@ use crate::protocol::message_proto::{
     SupportedResolutions, SwitchDisplay, TouchEvent, TouchPanEnd, TouchPanStart, TouchPanUpdate,
     TouchScaleUpdate, VideoFrame, VideoFrame_oneof_union,
 };
-use crate::protocol::rendezvous::RendezvousClient;
-use crate::protocol::rendezvous_proto::ConnType as RendezvousConnType;
+use crate::protocol::rendezvous::{
+    encode_socket_addr_v6, PeerCandidate, PunchHoleInfo, RendezvousClient, RendezvousRouteOptions,
+    UdpNatLease,
+};
+use crate::protocol::rendezvous_proto::{ConnType as RendezvousConnType, NatType};
 use crate::protocol::session::{AuthEventCallback, Session, VIDEO_ACK_REQUIRED};
 use crate::protocol::wire;
 use protobuf::{Message as ProtoMessage, ProtobufEnum};
 
 use std::ffi::{c_char, c_void, CString};
 use std::io;
-use std::io::ErrorKind;
-use std::net::TcpStream;
+use std::io::{ErrorKind, Read};
+use std::net::{SocketAddr, TcpStream, UdpSocket};
 use std::os::raw::c_int;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -64,6 +67,13 @@ const VP9_BACKPRESSURE_FPS: [u32; 4] = [30, 26, 22, 18];
 const VP9_PRESSURE_RECOVERY_HOLD_WINDOWS: u32 = 12;
 const VP9_HIGH_RESOLUTION_PIXEL_THRESHOLD: u64 = 4_000_000;
 const VP9_HIGH_RESOLUTION_FPS: u32 = 30;
+const MAX_REMOTE_CLIPBOARD_TEXT_BYTES: usize = 65_536;
+const MAX_REMOTE_CLIPBOARD_COMPRESSED_BYTES: usize = 131_072;
+const MAX_REMOTE_CLIPBOARD_FORMATS: usize = 32;
+// zstd's normal streaming encoder advertises a 512 KiB history window even
+// for tiny payloads. Preserve interoperability while rejecting giant-window
+// frames before the decoder allocates their requested history.
+const MAX_REMOTE_CLIPBOARD_ZSTD_WINDOW_LOG: u32 = 19;
 
 #[derive(Default, Debug)]
 struct PhysicalModifierState {
@@ -280,6 +290,72 @@ pub enum ConnState {
     Error(String),
 }
 
+#[repr(i32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RustDeskConnectionStrategy {
+    ForceRelay = 0,
+    DirectIp = 1,
+    Auto = 2,
+}
+
+impl RustDeskConnectionStrategy {
+    pub fn from_raw(value: c_int) -> io::Result<Self> {
+        match value {
+            0 => Ok(Self::ForceRelay),
+            1 => Ok(Self::DirectIp),
+            2 => Ok(Self::Auto),
+            _ => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "invalid RustDesk connection strategy",
+            )),
+        }
+    }
+}
+
+const AUTO_ROUTE_TIMEOUT: Duration = Duration::from_secs(20);
+
+pub(crate) fn route_deadline_for_strategy(strategy: RustDeskConnectionStrategy) -> Option<Instant> {
+    (strategy == RustDeskConnectionStrategy::Auto).then(|| Instant::now() + AUTO_ROUTE_TIMEOUT)
+}
+
+fn route_stage_timeout(
+    deadline: Option<Instant>,
+    maximum: Duration,
+    connect_epoch: u64,
+    stage: &str,
+) -> io::Result<Duration> {
+    if crate::connect_cancelled(connect_epoch) {
+        return Err(io::Error::new(
+            io::ErrorKind::Interrupted,
+            format!("{} cancelled", stage),
+        ));
+    }
+    let Some(deadline) = deadline else {
+        return Ok(maximum);
+    };
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    if remaining.is_zero() {
+        return Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            format!("{} exceeded the shared AUTO route deadline", stage),
+        ));
+    }
+    Ok(remaining.min(maximum))
+}
+
+/// Opt-in wire features for the versioned FFI. Product code intentionally
+/// supplies zero until UDP/KCP and global IPv6 have completed device testing.
+pub const RUSTDESK_NAT_FLAG_UDP_MAPPING: u32 = 1 << 0;
+pub const RUSTDESK_NAT_FLAG_IPV6_CANDIDATE: u32 = 1 << 1;
+pub const RUSTDESK_NAT_SUPPORTED_FLAGS: u32 =
+    RUSTDESK_NAT_FLAG_UDP_MAPPING | RUSTDESK_NAT_FLAG_IPV6_CANDIDATE;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct RustDeskNatTraversalConfig {
+    pub flags: u32,
+    pub probe_serial: i32,
+}
+
 /// Progress emitted while the synchronous RustDesk handshake is running.
 /// The FFI entry point executes this work on a native worker thread, so the
 /// callback is deliberately small and carries only a short, owned C string
@@ -295,11 +371,20 @@ struct RendezvousCredentials<'a> {
     server_public_key: Option<&'a str>,
 }
 
+enum DirectRouteAttempt {
+    Tcp(io::Result<TcpStream>),
+    UdpKcp(io::Result<KcpPeerStream>),
+}
+
 impl<'a> RendezvousCredentials<'a> {
     fn new(access_key: &'a str, shared_access_key: bool) -> Self {
         Self {
             access_key,
-            server_public_key: if shared_access_key { None } else { Some(access_key) },
+            server_public_key: if shared_access_key {
+                None
+            } else {
+                Some(access_key)
+            },
         }
     }
 }
@@ -314,6 +399,7 @@ pub struct RustDeskConnector {
     progress_callback: Option<(ConnectProgressCallback, usize)>,
     /// streaming 消息统计 — 诊断对端停止发送前的行为
     pub stream_stats: String,
+    connect_epoch: u64,
 }
 
 struct PendingFileUpload {
@@ -344,6 +430,52 @@ enum RemoteKeyboardTransport {
 }
 
 impl RustDeskConnector {
+    /// Extract one bounded UTF-8 text payload from either RustDesk's legacy
+    /// single-format clipboard message or an entry inside MultiClipboards.
+    /// New desktop peers commonly advertise several clipboard formats at
+    /// once, so ignoring MultiClipboards makes remote-to-local text appear
+    /// completely broken even though local-to-remote legacy Clipboard works.
+    fn decode_remote_clipboard_text(clipboard: &Clipboard) -> Option<Vec<u8>> {
+        if clipboard.get_format() != ClipboardFormat::Text {
+            return None;
+        }
+        let content = clipboard.get_content();
+        let bytes = if clipboard.get_compress() {
+            if content.len() > MAX_REMOTE_CLIPBOARD_COMPRESSED_BYTES {
+                return None;
+            }
+            let mut decoder = zstd::stream::read::Decoder::new(content).ok()?;
+            decoder
+                .window_log_max(MAX_REMOTE_CLIPBOARD_ZSTD_WINDOW_LOG)
+                .ok()?;
+            let mut bounded = decoder.take((MAX_REMOTE_CLIPBOARD_TEXT_BYTES + 1) as u64);
+            let mut decoded = Vec::new();
+            bounded.read_to_end(&mut decoded).ok()?;
+            decoded
+        } else {
+            if content.len() > MAX_REMOTE_CLIPBOARD_TEXT_BYTES {
+                return None;
+            }
+            content.to_vec()
+        };
+        if bytes.is_empty()
+            || bytes.len() > MAX_REMOTE_CLIPBOARD_TEXT_BYTES
+            || std::str::from_utf8(&bytes).is_err()
+        {
+            return None;
+        }
+        Some(bytes)
+    }
+
+    fn decode_remote_clipboard_formats(clipboards: &[Clipboard]) -> Option<Vec<u8>> {
+        if clipboards.len() > MAX_REMOTE_CLIPBOARD_FORMATS {
+            return None;
+        }
+        clipboards
+            .iter()
+            .find_map(Self::decode_remote_clipboard_text)
+    }
+
     pub fn new() -> Self {
         let connect_epoch = crate::current_connect_epoch();
         Self::new_with_connection_id(0, connect_epoch)
@@ -358,6 +490,7 @@ impl RustDeskConnector {
             session: Session::new_with_connection_id(connection_id, connect_epoch),
             progress_callback: None,
             stream_stats: String::new(),
+            connect_epoch,
         }
     }
 
@@ -387,7 +520,11 @@ impl RustDeskConnector {
         }
         if let Some((callback, user_data)) = self.progress_callback {
             let c_message = CString::new(message).unwrap_or_else(|_| CString::new("").unwrap());
-            callback(stage, c_message.as_ptr(), user_data as *mut std::ffi::c_void);
+            callback(
+                stage,
+                c_message.as_ptr(),
+                user_data as *mut std::ffi::c_void,
+            );
         }
     }
 
@@ -397,6 +534,539 @@ impl RustDeskConnector {
         user_data: *mut std::ffi::c_void,
     ) {
         self.session.set_auth_callback(callback, user_data);
+    }
+
+    fn prepare_rendezvous_route(
+        &self,
+        rendezvous_host: &str,
+        rendezvous_port: u16,
+        rendezvous: &RendezvousClient,
+        strategy: RustDeskConnectionStrategy,
+        nat_config: RustDeskNatTraversalConfig,
+        route_deadline: Option<Instant>,
+    ) -> io::Result<(
+        RendezvousRouteOptions,
+        Option<crate::protocol::rendezvous::UdpNatLease>,
+    )> {
+        if strategy != RustDeskConnectionStrategy::Auto {
+            return Ok((RendezvousRouteOptions::force_relay(), None));
+        }
+
+        let nat_type = match RendezvousClient::probe_tcp_nat(
+            rendezvous_host,
+            rendezvous_port,
+            nat_config.probe_serial,
+            self.connect_epoch,
+            route_stage_timeout(
+                route_deadline,
+                Duration::from_secs(4),
+                self.connect_epoch,
+                "AUTO NAT probe",
+            )?,
+        ) {
+            Ok(result) => {
+                eprintln!(
+                    "[RustDesk-FFI] NAT test complete type={:?} mapped_port_stability={}",
+                    result.nat_type,
+                    if result.first_mapped_port == result.second_mapped_port {
+                        "stable"
+                    } else {
+                        "changed"
+                    }
+                );
+                result.nat_type
+            }
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => return Err(error),
+            Err(error) => {
+                route_stage_timeout(
+                    route_deadline,
+                    Duration::from_secs(4),
+                    self.connect_epoch,
+                    "AUTO NAT probe fallback",
+                )?;
+                eprintln!(
+                    "[RustDesk-FFI] NAT test unavailable kind={:?}; continuing with UNKNOWN_NAT",
+                    error.kind()
+                );
+                NatType::UNKNOWN_NAT
+            }
+        };
+
+        let mut udp_lease = None;
+        if nat_config.flags & RUSTDESK_NAT_FLAG_UDP_MAPPING != 0 {
+            match rendezvous.peer_address() {
+                Ok(server_address) => match RendezvousClient::register_udp_mapping(
+                    server_address,
+                    nat_config.probe_serial,
+                    route_stage_timeout(
+                        route_deadline,
+                        Duration::from_millis(800),
+                        self.connect_epoch,
+                        "AUTO UDP mapping",
+                    )?,
+                    Some(self.connect_epoch),
+                ) {
+                    Ok(lease) => udp_lease = Some(lease),
+                    Err(error) if error.kind() == io::ErrorKind::Interrupted => return Err(error),
+                    Err(error) => {
+                        route_stage_timeout(
+                            route_deadline,
+                            Duration::from_millis(800),
+                            self.connect_epoch,
+                            "AUTO UDP mapping fallback",
+                        )?;
+                        eprintln!(
+                            "[RustDesk-FFI] UDP mapping unavailable family={} kind={:?}",
+                            if server_address.is_ipv6() {
+                                "ipv6"
+                            } else {
+                                "ipv4"
+                            },
+                            error.kind()
+                        );
+                    }
+                },
+                Err(error) => {
+                    eprintln!(
+                        "[RustDesk-FFI] UDP mapping endpoint unavailable kind={:?}",
+                        error.kind()
+                    );
+                }
+            }
+        }
+
+        if let Some(lease) = udp_lease.as_mut() {
+            // One explicit refresh proves the registration remains live while
+            // TCP NAT classification and route preparation complete. Derive
+            // the advertised wire fields only after this refresh because a
+            // NAT can remap the public UDP port between exchanges.
+            if let Err(error) = lease.heartbeat(
+                nat_config.probe_serial,
+                route_stage_timeout(
+                    route_deadline,
+                    Duration::from_millis(300),
+                    self.connect_epoch,
+                    "AUTO UDP mapping refresh",
+                )?,
+                Some(self.connect_epoch),
+            ) {
+                if error.kind() == io::ErrorKind::Interrupted {
+                    return Err(error);
+                }
+                route_stage_timeout(
+                    route_deadline,
+                    Duration::from_millis(300),
+                    self.connect_epoch,
+                    "AUTO UDP mapping refresh fallback",
+                )?;
+                eprintln!(
+                    "[RustDesk-FFI] UDP mapping refresh unavailable kind={:?}",
+                    error.kind()
+                );
+            }
+        }
+        let udp_port = udp_lease
+            .as_ref()
+            .map(|lease| lease.mapped_port())
+            .unwrap_or(0);
+        let socket_addr_v6 = if nat_config.flags & RUSTDESK_NAT_FLAG_IPV6_CANDIDATE != 0 {
+            match udp_lease
+                .as_ref()
+                .and_then(|lease| lease.local_address().ok())
+                .filter(SocketAddr::is_ipv6)
+            {
+                Some(mut address) => {
+                    address.set_port(udp_port);
+                    encode_socket_addr_v6(address)?
+                }
+                None => Vec::new(),
+            }
+        } else {
+            Vec::new()
+        };
+        Ok((
+            RendezvousRouteOptions::automatic(nat_type, udp_port, socket_addr_v6),
+            udp_lease,
+        ))
+    }
+
+    fn direct_candidate_timeout(punch: &PunchHoleInfo) -> Duration {
+        if punch.is_local || punch.peer_nat_type == NatType::SYMMETRIC {
+            Duration::from_secs(1)
+        } else {
+            Duration::from_secs(5)
+        }
+    }
+
+    fn open_auto_direct_peer_stream(
+        &self,
+        rendezvous: &RendezvousClient,
+        peer_candidates: &[PeerCandidate],
+        local_address: Option<SocketAddr>,
+        udp_peer: Option<(UdpSocket, SocketAddr)>,
+        timeout: Duration,
+    ) -> io::Result<PeerStream> {
+        let has_tcp = peer_candidates.iter().any(|candidate| {
+            candidate.transport == crate::protocol::rendezvous::PeerCandidateTransport::Tcp
+        });
+        match (has_tcp, udp_peer) {
+            (true, None) => rendezvous
+                .connect_to_peer_candidates(peer_candidates, local_address, timeout)
+                .map(PeerStream::from),
+            (false, Some((socket, peer_address))) => {
+                KcpPeerStream::connect(socket, peer_address, timeout, Some(self.connect_epoch))
+                    .map(PeerStream::from)
+            }
+            (true, Some((socket, peer_address))) => self.race_direct_peer_streams(
+                peer_candidates.to_vec(),
+                local_address,
+                socket,
+                peer_address,
+                timeout,
+            ),
+            (false, None) => Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "AUTO route has no executable direct peer transport",
+            )),
+        }
+    }
+
+    fn race_direct_peer_streams(
+        &self,
+        peer_candidates: Vec<PeerCandidate>,
+        local_address: Option<SocketAddr>,
+        udp_socket: UdpSocket,
+        udp_peer_address: SocketAddr,
+        timeout: Duration,
+    ) -> io::Result<PeerStream> {
+        let deadline = Instant::now()
+            .checked_add(timeout)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "route timeout overflow"))?;
+        let race_cancel = Arc::new(AtomicBool::new(false));
+        let (sender, receiver) = std::sync::mpsc::channel::<DirectRouteAttempt>();
+        let mut started = 0usize;
+        let mut last_error = None;
+
+        let tcp_sender = sender.clone();
+        let tcp_cancel = Arc::clone(&race_cancel);
+        let connect_epoch = self.connect_epoch;
+        match std::thread::Builder::new()
+            .name("rustdesk-direct-tcp".to_string())
+            .spawn(move || {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                let result = if remaining.is_zero() {
+                    Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "direct TCP race deadline exceeded before start",
+                    ))
+                } else {
+                    RendezvousClient::connect_to_peer_candidates_racing(
+                        &peer_candidates,
+                        local_address,
+                        remaining,
+                        connect_epoch,
+                        &tcp_cancel,
+                    )
+                };
+                let _ = tcp_sender.send(DirectRouteAttempt::Tcp(result));
+            }) {
+            Ok(_) => started += 1,
+            Err(error) => {
+                last_error = Some(io::Error::new(
+                    error.kind(),
+                    format!("start direct TCP transport worker: {error}"),
+                ));
+            }
+        }
+
+        let udp_sender = sender.clone();
+        let udp_cancel = Arc::clone(&race_cancel);
+        match std::thread::Builder::new()
+            .name("rustdesk-direct-kcp".to_string())
+            .spawn(move || {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                let result = if remaining.is_zero() {
+                    Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "direct UDP/KCP race deadline exceeded before start",
+                    ))
+                } else {
+                    KcpPeerStream::connect_with_race_cancel(
+                        udp_socket,
+                        udp_peer_address,
+                        remaining,
+                        Some(connect_epoch),
+                        udp_cancel,
+                    )
+                };
+                let _ = udp_sender.send(DirectRouteAttempt::UdpKcp(result));
+            }) {
+            Ok(_) => started += 1,
+            Err(error) => {
+                last_error = Some(io::Error::new(
+                    error.kind(),
+                    format!("start direct UDP/KCP transport worker: {error}"),
+                ));
+            }
+        }
+        drop(sender);
+
+        let mut completed = 0usize;
+        while completed < started {
+            if crate::connect_cancelled(self.connect_epoch) {
+                race_cancel.store(true, Ordering::Release);
+                return Err(io::Error::new(
+                    io::ErrorKind::Interrupted,
+                    "direct peer transport race cancelled",
+                ));
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                race_cancel.store(true, Ordering::Release);
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "direct peer transport race deadline exceeded",
+                ));
+            }
+            match receiver.recv_timeout(remaining.min(Duration::from_millis(50))) {
+                Ok(DirectRouteAttempt::Tcp(Ok(stream))) => {
+                    race_cancel.store(true, Ordering::Release);
+                    eprintln!("[RustDesk-FFI] AUTO selected direct TCP candidate");
+                    return Ok(stream.into());
+                }
+                Ok(DirectRouteAttempt::UdpKcp(Ok(stream))) => {
+                    race_cancel.store(true, Ordering::Release);
+                    eprintln!(
+                        "[RustDesk-FFI] AUTO selected direct UDP/KCP candidate family={}",
+                        if udp_peer_address.is_ipv6() {
+                            "ipv6"
+                        } else {
+                            "ipv4"
+                        }
+                    );
+                    return Ok(stream.into());
+                }
+                Ok(DirectRouteAttempt::Tcp(Err(error)))
+                | Ok(DirectRouteAttempt::UdpKcp(Err(error))) => {
+                    completed += 1;
+                    if error.kind() == io::ErrorKind::Interrupted
+                        && crate::connect_cancelled(self.connect_epoch)
+                    {
+                        race_cancel.store(true, Ordering::Release);
+                        return Err(error);
+                    }
+                    last_error = Some(error);
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+            }
+        }
+        race_cancel.store(true, Ordering::Release);
+        Err(last_error.unwrap_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "direct peer transport workers stopped without a result",
+            )
+        }))
+    }
+
+    fn request_and_create_relay(
+        &mut self,
+        rendezvous_host: &str,
+        rendezvous_port: u16,
+        relay_fallback_port: u16,
+        server_key: &str,
+        api_token: &str,
+        peer_id: &str,
+        credentials: &RendezvousCredentials<'_>,
+        rendezvous_secure: bool,
+        conn_type: RendezvousConnType,
+        relay_server: &str,
+        signed_pk_present: bool,
+        route_deadline: Option<Instant>,
+    ) -> io::Result<TcpStream> {
+        self.set_connect_state(ConnState::RequestingRelay);
+        let mut relay_rendezvous = RendezvousClient::new_with_connect_epoch(self.connect_epoch);
+        relay_rendezvous.connect_with_timeout(
+            rendezvous_host,
+            rendezvous_port,
+            server_key,
+            rendezvous_secure,
+            route_stage_timeout(
+                route_deadline,
+                Duration::from_secs(10),
+                self.connect_epoch,
+                "AUTO relay rendezvous connect",
+            )?,
+        )?;
+        let relay_uuid = relay_rendezvous.request_relay_uuid_with_timeout(
+            peer_id,
+            relay_server,
+            signed_pk_present,
+            api_token,
+            route_stage_timeout(
+                route_deadline,
+                Duration::from_secs(10),
+                self.connect_epoch,
+                "AUTO relay request",
+            )?,
+        )?;
+        self.set_connect_state(ConnState::ConnectingToPeer);
+        relay_rendezvous.create_relay_with_timeout(
+            peer_id,
+            &relay_uuid,
+            relay_server,
+            relay_fallback_port,
+            credentials.access_key,
+            conn_type,
+            route_stage_timeout(
+                route_deadline,
+                Duration::from_secs(10),
+                self.connect_epoch,
+                "AUTO relay connect",
+            )?,
+        )
+    }
+
+    fn open_rendezvous_peer_stream(
+        &mut self,
+        mut rendezvous: RendezvousClient,
+        punch: &PunchHoleInfo,
+        local_address: Option<SocketAddr>,
+        udp_lease: Option<UdpNatLease>,
+        strategy: RustDeskConnectionStrategy,
+        rendezvous_host: &str,
+        rendezvous_port: u16,
+        relay_fallback_port: u16,
+        server_key: &str,
+        api_token: &str,
+        peer_id: &str,
+        credentials: &RendezvousCredentials<'_>,
+        rendezvous_secure: bool,
+        conn_type: RendezvousConnType,
+        route_deadline: Option<Instant>,
+    ) -> io::Result<PeerStream> {
+        let route_plan = punch.route_plan();
+        let udp_peer = if strategy == RustDeskConnectionStrategy::Auto {
+            match udp_lease {
+                Some(lease) => lease.into_peer_socket(&punch.peer_candidates)?,
+                None => None,
+            }
+        } else {
+            None
+        };
+        route_plan.ensure_executable_with_udp(udp_peer.is_some())?;
+        if route_plan.has_udp_kcp() && udp_peer.is_none() {
+            eprintln!(
+                "[RustDesk-FFI] UDP/KCP route candidate unavailable without a same-family active lease"
+            );
+        }
+
+        if strategy == RustDeskConnectionStrategy::Auto
+            && (route_plan.has_direct_tcp() || udp_peer.is_some())
+        {
+            self.set_connect_state(ConnState::ConnectingToPeer);
+            rendezvous.disconnect();
+            match self.open_auto_direct_peer_stream(
+                &rendezvous,
+                &punch.peer_candidates,
+                local_address,
+                udp_peer,
+                route_stage_timeout(
+                    route_deadline,
+                    Self::direct_candidate_timeout(punch),
+                    self.connect_epoch,
+                    "AUTO direct transport race",
+                )?,
+            ) {
+                Ok(stream) => return Ok(stream),
+                Err(error) => {
+                    eprintln!(
+                        "[RustDesk-FFI] AUTO direct transports failed kind={:?}; relay_fallback={}",
+                        error.kind(),
+                        if route_plan.has_relay_fallback() {
+                            "available"
+                        } else {
+                            "absent"
+                        }
+                    );
+                    if error.kind() == io::ErrorKind::Interrupted {
+                        return Err(error);
+                    }
+                    if !route_plan.has_relay_fallback() {
+                        return Err(error);
+                    }
+                }
+            }
+        }
+
+        if route_plan.has_relay_ticket() {
+            let relay_uuid = punch
+                .relay_uuid
+                .as_deref()
+                .filter(|uuid| !uuid.trim().is_empty())
+                .ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "rendezvous route planner lost its relay ticket",
+                    )
+                })?;
+            self.set_connect_state(ConnState::ConnectingToPeer);
+            return rendezvous
+                .create_relay_with_timeout(
+                    peer_id,
+                    relay_uuid,
+                    &punch.relay_server,
+                    relay_fallback_port,
+                    credentials.access_key,
+                    conn_type,
+                    route_stage_timeout(
+                        route_deadline,
+                        Duration::from_secs(10),
+                        self.connect_epoch,
+                        "AUTO relay connect",
+                    )?,
+                )
+                .map(PeerStream::from);
+        }
+        if route_plan.has_relay_request() {
+            return self
+                .request_and_create_relay(
+                    rendezvous_host,
+                    rendezvous_port,
+                    relay_fallback_port,
+                    server_key,
+                    api_token,
+                    peer_id,
+                    credentials,
+                    rendezvous_secure,
+                    conn_type,
+                    &punch.relay_server,
+                    !punch.signed_pk.is_empty(),
+                    route_deadline,
+                )
+                .map(PeerStream::from);
+        }
+        if route_plan.has_direct_tcp() {
+            self.set_connect_state(ConnState::ConnectingToPeer);
+            rendezvous.disconnect();
+            return rendezvous
+                .connect_to_peer_candidates(
+                    &punch.peer_candidates,
+                    local_address,
+                    route_stage_timeout(
+                        route_deadline,
+                        Self::direct_candidate_timeout(punch),
+                        self.connect_epoch,
+                        "direct candidate connect",
+                    )?,
+                )
+                .map(PeerStream::from);
+        }
+        Err(io::Error::new(
+            io::ErrorKind::Other,
+            "rendezvous route planner admitted a route without a matching selector",
+        ))
     }
 
     /// 完整连接流程 (阻塞)
@@ -420,84 +1090,90 @@ impl RustDeskConnector {
         fps: u32,
         request_approval: bool,
         shared_access_key: bool,
+        connection_strategy: RustDeskConnectionStrategy,
+        nat_config: RustDeskNatTraversalConfig,
     ) -> io::Result<()> {
+        if connection_strategy == RustDeskConnectionStrategy::DirectIp {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "direct-IP strategy must use connect_direct",
+            ));
+        }
         let credentials = RendezvousCredentials::new(server_key, shared_access_key);
-        let rendezvous_secure = !shared_access_key && !server_key.trim().is_empty() &&
-            !api_token.trim().is_empty();
+        let rendezvous_secure =
+            !shared_access_key && !server_key.trim().is_empty() && !api_token.trim().is_empty();
+        let route_deadline = route_deadline_for_strategy(connection_strategy);
         // === Phase 1: Rendezvous 握手 ===
         self.set_connect_state(ConnState::RendezvousConnecting);
-        let mut rd = RendezvousClient::new();
+        let mut rd = RendezvousClient::new_with_connect_epoch(self.connect_epoch);
         // 客户端连接远端 ID 时不要 RegisterPeer；RegisterPeer 是被控端注册自己的 ID。
         // Server Pro 的控制端会话 token 必须进入 PunchHoleRequest/RequestRelay。
         // 只有同时拥有真实公钥和 token 时才启用 upstream 的 rendezvous secure_tcp。
-        rd.connect(rendezvous_host, rendezvous_port, server_key, rendezvous_secure)?;
+        rd.connect_with_timeout(
+            rendezvous_host,
+            rendezvous_port,
+            server_key,
+            rendezvous_secure,
+            route_stage_timeout(
+                route_deadline,
+                Duration::from_secs(10),
+                self.connect_epoch,
+                "rendezvous connect",
+            )?,
+        )?;
+
+        let local_address = rd.local_address().ok();
+        let (route_options, udp_lease) = self.prepare_rendezvous_route(
+            rendezvous_host,
+            rendezvous_port,
+            &rd,
+            connection_strategy,
+            nat_config,
+            route_deadline,
+        )?;
 
         self.set_connect_state(ConnState::RequestingRelay);
-        let punch = rd.request_force_relay(
+        let punch = rd.request_route_with_timeout(
             peer_id,
             credentials.access_key,
             api_token,
             RendezvousConnType::DEFAULT_CONN,
+            route_options,
+            route_stage_timeout(
+                route_deadline,
+                Duration::from_secs(9),
+                self.connect_epoch,
+                "rendezvous route request",
+            )?,
         )?;
 
         // === Phase 2: Peer TCP + 加密通道 ===
         eprintln!(
-            "[RustDesk-FFI] force-relay response peer_endpoint={} relay_endpoint={} relay_ticket={} signed_pk_len={}",
-            if punch.peer_addr.is_some() { "present" } else { "absent" },
+            "[RustDesk-FFI] route response strategy={:?} peer_candidates={} relay_endpoint={} relay_ticket={} signed_pk_len={}",
+            connection_strategy,
+            punch.peer_candidates.len(),
             if punch.relay_server.is_empty() { "absent" } else { "present" },
             if punch.relay_uuid.is_some() { "present" } else { "absent" },
             punch.signed_pk.len()
         );
 
-        let mut peer_stream = if let Some(relay_uuid) = punch.relay_uuid {
-            self.set_connect_state(ConnState::ConnectingToPeer);
-            eprintln!(
-                "[RustDesk-FFI] force-relay ticket accepted relay_endpoint=present"
-            );
-            rd.create_relay(
-                peer_id,
-                &relay_uuid,
-                &punch.relay_server,
-                relay_fallback_port,
-                credentials.access_key,
-                RendezvousConnType::DEFAULT_CONN,
-            )?
-        } else if !punch.relay_server.trim().is_empty() {
-            self.set_connect_state(ConnState::RequestingRelay);
-            let mut relay_rd = RendezvousClient::new();
-            relay_rd.connect(rendezvous_host, rendezvous_port, server_key, rendezvous_secure)?;
-            let relay_uuid = relay_rd.request_relay_uuid(
-                peer_id,
-                &punch.relay_server,
-                !punch.signed_pk.is_empty(),
-                api_token,
-            )?;
-            self.set_connect_state(ConnState::ConnectingToPeer);
-            eprintln!(
-                "[RustDesk-FFI] force-relay request approved relay_endpoint=present"
-            );
-            relay_rd.create_relay(
-                peer_id,
-                &relay_uuid,
-                &punch.relay_server,
-                relay_fallback_port,
-                credentials.access_key,
-                RendezvousConnType::DEFAULT_CONN,
-            )?
-        } else if let Some(peer_addr) = punch.peer_addr {
-            // OSS hbbs answered a direct peer address and no relay endpoint.
-            // Connect it directly instead of failing the whole pipeline.
-            self.set_connect_state(ConnState::ConnectingToPeer);
-            eprintln!(
-                "[RustDesk-FFI] punch response direct peer endpoint present"
-            );
-            rd.connect_to_peer(peer_addr)?
-        } else {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "force-relay response did not include a relay endpoint",
-            ));
-        };
+        let mut peer_stream = self.open_rendezvous_peer_stream(
+            rd,
+            &punch,
+            local_address,
+            udp_lease,
+            connection_strategy,
+            rendezvous_host,
+            rendezvous_port,
+            relay_fallback_port,
+            server_key,
+            api_token,
+            peer_id,
+            &credentials,
+            rendezvous_secure,
+            RendezvousConnType::DEFAULT_CONN,
+            route_deadline,
+        )?;
 
         // KeyExchange: 发送自己的公钥，接收对端公钥
         self.set_connect_state(ConnState::KeyExchanging);
@@ -569,11 +1245,13 @@ impl RustDeskConnector {
             "[RustDesk-FFI] direct connect endpoint=provided port={}",
             peer_port
         );
-        let stream = net::connect_tcp_host(
-            peer_host,
+        let canonical_peer_host = net::canonicalize_tcp_host(peer_host, "direct")?;
+        let stream = net::connect_tcp_host_cancellable(
+            &canonical_peer_host,
             peer_port,
             "direct",
             Duration::from_secs(10),
+            self.connect_epoch,
         )?;
         stream.set_read_timeout(Some(Duration::from_secs(30)))?;
         stream.set_write_timeout(Some(Duration::from_secs(10)))?;
@@ -592,7 +1270,7 @@ impl RustDeskConnector {
         // 被控端判定为错误的 direct login username。
         self.session.login_encrypted(
             crypto,
-            peer_host,
+            &canonical_peer_host,
             password,
             preferred_codec,
             image_quality,
@@ -623,11 +1301,13 @@ impl RustDeskConnector {
             peer_port
         ));
         self.set_connect_state(ConnState::ConnectingToPeer);
-        let peer_stream = net::connect_tcp_host(
-            peer_host,
+        let canonical_peer_host = net::canonicalize_tcp_host(peer_host, "direct file transfer")?;
+        let peer_stream = net::connect_tcp_host_cancellable(
+            &canonical_peer_host,
             peer_port,
             "direct file transfer",
             Duration::from_secs(10),
+            self.connect_epoch,
         )?;
         peer_stream.set_read_timeout(Some(Duration::from_secs(30)))?;
         peer_stream.set_write_timeout(Some(Duration::from_secs(10)))?;
@@ -643,8 +1323,13 @@ impl RustDeskConnector {
         })?;
         // RustDesk's direct listener expects its address as LoginRequest.username,
         // matching the main direct desktop connection.
-        self.session
-            .login_file_transfer_encrypted(crypto, peer_host, password, remote_dir, false)?;
+        self.session.login_file_transfer_encrypted(
+            crypto,
+            &canonical_peer_host,
+            password,
+            remote_dir,
+            false,
+        )?;
         crate::set_last_error("file-transfer direct peer login complete".to_string());
         self.set_connect_state(ConnState::Connected);
         eprintln!("[RustDesk-FFI] direct file-transfer session established");
@@ -664,83 +1349,107 @@ impl RustDeskConnector {
         request_approval: bool,
         shared_access_key: bool,
         rendezvous_conn_type: RendezvousConnType,
+        connection_strategy: RustDeskConnectionStrategy,
+        nat_config: RustDeskNatTraversalConfig,
+        route_deadline: Option<Instant>,
     ) -> io::Result<()> {
+        if connection_strategy == RustDeskConnectionStrategy::DirectIp {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "direct-IP strategy must use connect_file_transfer_direct",
+            ));
+        }
         let credentials = RendezvousCredentials::new(server_key, shared_access_key);
-        let rendezvous_secure = !shared_access_key && !server_key.trim().is_empty() &&
-            !api_token.trim().is_empty();
+        let rendezvous_secure =
+            !shared_access_key && !server_key.trim().is_empty() && !api_token.trim().is_empty();
         crate::set_last_error(format!(
-            "file-transfer rendezvous connecting port={} strategy=force_relay conn_type={:?}",
-            rendezvous_port, rendezvous_conn_type
+            "file-transfer rendezvous connecting port={} strategy={:?} conn_type={:?}",
+            rendezvous_port, connection_strategy, rendezvous_conn_type
         ));
         self.set_connect_state(ConnState::RendezvousConnecting);
-        let mut rd = RendezvousClient::new();
-        rd.connect(rendezvous_host, rendezvous_port, server_key, rendezvous_secure)?;
+        let mut rd = RendezvousClient::new_with_connect_epoch(self.connect_epoch);
+        rd.connect_with_timeout(
+            rendezvous_host,
+            rendezvous_port,
+            server_key,
+            rendezvous_secure,
+            route_stage_timeout(
+                route_deadline,
+                Duration::from_secs(10),
+                self.connect_epoch,
+                "file-transfer rendezvous connect",
+            )?,
+        )?;
 
-        crate::set_last_error("file-transfer requesting force relay".to_string());
+        let local_address = rd.local_address().ok();
+        let (route_options, udp_lease) = self.prepare_rendezvous_route(
+            rendezvous_host,
+            rendezvous_port,
+            &rd,
+            connection_strategy,
+            nat_config,
+            route_deadline,
+        )?;
+
+        crate::set_last_error(format!(
+            "file-transfer requesting route strategy={:?}",
+            connection_strategy
+        ));
         self.set_connect_state(ConnState::RequestingRelay);
-        let punch = rd.request_force_relay(
+        let punch = rd.request_route_with_timeout(
             peer_id,
             credentials.access_key,
             api_token,
             rendezvous_conn_type,
+            route_options,
+            route_stage_timeout(
+                route_deadline,
+                Duration::from_secs(9),
+                self.connect_epoch,
+                "file-transfer rendezvous route request",
+            )?,
         )?;
         crate::set_last_error(format!(
-            "file-transfer force-relay response relay_endpoint={} relay_ticket={} signed_pk_len={}",
-            if punch.relay_server.is_empty() { "absent" } else { "present" },
-            if punch.relay_uuid.is_some() { "present" } else { "absent" },
+            "file-transfer route response candidates={} relay_endpoint={} relay_ticket={} signed_pk_len={}",
+            punch.peer_candidates.len(),
+            if punch.relay_server.is_empty() {
+                "absent"
+            } else {
+                "present"
+            },
+            if punch.relay_uuid.is_some() {
+                "present"
+            } else {
+                "absent"
+            },
             punch.signed_pk.len()
         ));
         eprintln!(
-            "[RustDesk-FFI] file-transfer force-relay response relay_endpoint={} relay_ticket={} signed_pk_len={}",
+            "[RustDesk-FFI] file-transfer route response strategy={:?} candidates={} relay_endpoint={} relay_ticket={} signed_pk_len={}",
+            connection_strategy,
+            punch.peer_candidates.len(),
             if punch.relay_server.is_empty() { "absent" } else { "present" },
             if punch.relay_uuid.is_some() { "present" } else { "absent" },
             punch.signed_pk.len()
         );
 
-        let mut peer_stream = if let Some(relay_uuid) = punch.relay_uuid {
-            crate::set_last_error("file-transfer connecting approved relay".to_string());
-            self.set_connect_state(ConnState::ConnectingToPeer);
-            rd.create_relay(
-                peer_id,
-                &relay_uuid,
-                &punch.relay_server,
-                relay_fallback_port,
-                credentials.access_key,
-                rendezvous_conn_type,
-            )?
-        } else if !punch.relay_server.trim().is_empty() {
-            self.set_connect_state(ConnState::RequestingRelay);
-            let mut relay_rd = RendezvousClient::new();
-            crate::set_last_error("file-transfer requesting relay ticket".to_string());
-            relay_rd.connect(rendezvous_host, rendezvous_port, server_key, rendezvous_secure)?;
-            let relay_uuid = relay_rd.request_relay_uuid(
-                peer_id,
-                &punch.relay_server,
-                !punch.signed_pk.is_empty(),
-                api_token,
-            )?;
-            crate::set_last_error("file-transfer connecting approved relay".to_string());
-            self.set_connect_state(ConnState::ConnectingToPeer);
-            relay_rd.create_relay(
-                peer_id,
-                &relay_uuid,
-                &punch.relay_server,
-                relay_fallback_port,
-                credentials.access_key,
-                rendezvous_conn_type,
-            )?
-        } else if let Some(peer_addr) = punch.peer_addr {
-            self.set_connect_state(ConnState::ConnectingToPeer);
-            eprintln!(
-                "[RustDesk-FFI] file-transfer punch response direct peer endpoint present"
-            );
-            rd.connect_to_peer(peer_addr)?
-        } else {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "file-transfer force-relay response did not include a relay endpoint",
-            ));
-        };
+        let mut peer_stream = self.open_rendezvous_peer_stream(
+            rd,
+            &punch,
+            local_address,
+            udp_lease,
+            connection_strategy,
+            rendezvous_host,
+            rendezvous_port,
+            relay_fallback_port,
+            server_key,
+            api_token,
+            peer_id,
+            &credentials,
+            rendezvous_secure,
+            rendezvous_conn_type,
+            route_deadline,
+        )?;
 
         crate::set_last_error("file-transfer key exchanging".to_string());
         self.set_connect_state(ConnState::KeyExchanging);
@@ -760,8 +1469,13 @@ impl RustDeskConnector {
         crate::set_last_error("file-transfer peer login".to_string());
         self.set_connect_state(ConnState::LoggingIn);
         let crypto = self.crypto_channel.as_mut().unwrap();
-        self.session
-            .login_file_transfer_encrypted(crypto, peer_id, password, remote_dir, request_approval)?;
+        self.session.login_file_transfer_encrypted(
+            crypto,
+            peer_id,
+            password,
+            remote_dir,
+            request_approval,
+        )?;
         crate::set_last_error("file-transfer peer login complete".to_string());
         self.set_connect_state(ConnState::Connected);
         Ok(())
@@ -773,6 +1487,18 @@ impl RustDeskConnector {
         data: Vec<u8>,
         timeout: Duration,
     ) -> io::Result<()> {
+        if timeout.is_zero() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "file transfer timeout must be positive",
+            ));
+        }
+        if crate::connect_cancelled(self.connect_epoch) {
+            return Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "file transfer cancelled",
+            ));
+        }
         if self.state != ConnState::Connected {
             return Err(io::Error::new(
                 io::ErrorKind::NotConnected,
@@ -787,7 +1513,18 @@ impl RustDeskConnector {
         })?;
 
         crypto.set_read_timeout(Some(Duration::from_millis(250)))?;
-        let upload = Self::request_file_upload(crypto, remote_path, data)?;
+        if let Err(error) = crypto.set_write_timeout(Some(timeout.min(Duration::from_secs(10)))) {
+            let _ = crypto.set_read_timeout(None);
+            return Err(error);
+        }
+        let upload = match Self::request_file_upload(crypto, remote_path, data) {
+            Ok(upload) => upload,
+            Err(error) => {
+                let _ = crypto.set_read_timeout(None);
+                let _ = crypto.set_write_timeout(None);
+                return Err(error);
+            }
+        };
         let mut pending = vec![upload];
         let mut awaiting_done: Vec<AwaitingFileDone> = Vec::new();
         let started = Instant::now();
@@ -800,83 +1537,105 @@ impl RustDeskConnector {
         // does not echo another Done frame back to the sender. Waiting for
         // `awaiting_done` to become empty therefore turns every otherwise
         // successful upload into a 30-second timeout.
-        while !file_upload_sender_complete(pending.len()) && started.elapsed() < timeout {
-            match crypto.recv() {
-                Ok(plaintext) => {
-                    let msg: Message = protobuf::parse_from_bytes(&plaintext)
-                        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-                    match msg.union {
-                        Some(Message_oneof_union::file_response(ref resp)) => {
-                            Self::handle_file_response(
-                                crypto,
-                                resp,
-                                &mut pending,
-                                &mut awaiting_done,
-                            )?;
-                        }
-                        Some(Message_oneof_union::file_action(ref action)) => {
-                            Self::handle_file_action(
-                                crypto,
-                                action,
-                                &mut pending,
-                                &mut awaiting_done,
-                            )?;
-                        }
-                        Some(Message_oneof_union::misc(ref misc)) => {
-                            eprintln!(
-                                "[RustDesk-FFI] file-transfer misc={}",
-                                Self::misc_kind(misc)
-                            );
-                        }
-                        other => {
-                            eprintln!(
-                                "[RustDesk-FFI] file-transfer waiting confirm, ignored msg={}",
-                                Self::message_kind(&other)
-                            );
+        let result = (|| -> io::Result<()> {
+            while !file_upload_sender_complete(pending.len()) && started.elapsed() < timeout {
+                if crate::connect_cancelled(self.connect_epoch) {
+                    return Err(io::Error::new(
+                        io::ErrorKind::Interrupted,
+                        "file transfer cancelled",
+                    ));
+                }
+                match crypto.recv() {
+                    Ok(plaintext) => {
+                        let msg: Message = protobuf::parse_from_bytes(&plaintext)
+                            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+                        match msg.union {
+                            Some(Message_oneof_union::file_response(ref resp)) => {
+                                Self::handle_file_response(
+                                    crypto,
+                                    resp,
+                                    &mut pending,
+                                    &mut awaiting_done,
+                                )?;
+                            }
+                            Some(Message_oneof_union::file_action(ref action)) => {
+                                Self::handle_file_action(
+                                    crypto,
+                                    action,
+                                    &mut pending,
+                                    &mut awaiting_done,
+                                )?;
+                            }
+                            Some(Message_oneof_union::misc(ref misc)) => {
+                                eprintln!(
+                                    "[RustDesk-FFI] file-transfer misc={}",
+                                    Self::misc_kind(misc)
+                                );
+                            }
+                            other => {
+                                eprintln!(
+                                    "[RustDesk-FFI] file-transfer waiting confirm, ignored msg={}",
+                                    Self::message_kind(&other)
+                                );
+                            }
                         }
                     }
-                }
-                Err(err)
-                    if err.kind() == ErrorKind::WouldBlock || err.kind() == ErrorKind::TimedOut =>
-                {
-                    Self::flush_stale_file_uploads(crypto, &mut pending, &mut awaiting_done)?;
-                    let elapsed = started.elapsed().as_secs();
-                    if elapsed > last_wait_report {
-                        last_wait_report = elapsed;
-                        crate::set_last_error(format!(
-                            "file-transfer waiting peer confirm path_id={} elapsed={}s pending={}",
-                            path_id,
-                            elapsed,
-                            pending.len()
-                        ));
+                    Err(err)
+                        if err.kind() == ErrorKind::WouldBlock
+                            || err.kind() == ErrorKind::TimedOut =>
+                    {
+                        Self::flush_stale_file_uploads(crypto, &mut pending, &mut awaiting_done)?;
+                        let elapsed = started.elapsed().as_secs();
+                        if elapsed > last_wait_report {
+                            last_wait_report = elapsed;
+                            crate::set_last_error(format!(
+                                "file-transfer waiting peer confirm path_id={} elapsed={}s pending={}",
+                                path_id,
+                                elapsed,
+                                pending.len()
+                            ));
+                        }
                     }
-                    continue;
+                    Err(err) => return Err(err),
                 }
-                Err(err) => return Err(err),
             }
-        }
-        crypto.set_read_timeout(None).ok();
 
-        if file_upload_sender_complete(pending.len()) {
-            crate::set_last_error(format!(
-                "file transfer sent path_id={} final_done_frames={}",
-                path_id,
-                awaiting_done.len()
-            ));
-            Ok(())
-        } else {
-            Err(io::Error::new(
-                io::ErrorKind::TimedOut,
-                format!(
-                    "file-transfer peer did not confirm upload pending={}",
-                    pending.len()
-                ),
-            ))
-        }
+            if file_upload_sender_complete(pending.len()) {
+                crate::set_last_error(format!(
+                    "file transfer sent path_id={} final_done_frames={}",
+                    path_id,
+                    awaiting_done.len()
+                ));
+                Ok(())
+            } else {
+                Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    format!(
+                        "file-transfer peer did not confirm upload pending={}",
+                        pending.len()
+                    ),
+                ))
+            }
+        })();
+        let result = match result {
+            Err(error)
+                if error.kind() == io::ErrorKind::ConnectionAborted
+                    && crate::connect_cancelled(self.connect_epoch) =>
+            {
+                Err(io::Error::new(
+                    io::ErrorKind::Interrupted,
+                    "file transfer cancelled during KCP write",
+                ))
+            }
+            other => other,
+        };
+        let _ = crypto.set_read_timeout(None);
+        let _ = crypto.set_write_timeout(None);
+        result
     }
 
     /// KeyExchange: 交换 Curve25519 公钥
-    fn key_exchange(&mut self, stream: &mut TcpStream) -> io::Result<()> {
+    fn key_exchange(&mut self, stream: &mut PeerStream) -> io::Result<()> {
         // 发送自己的公钥 (32 bytes, raw)
         use std::io::{Read, Write};
         stream.write_all(&self.keypair.public_key)?;
@@ -891,16 +1650,20 @@ impl RustDeskConnector {
 
     fn secure_peer_connection(
         &mut self,
-        stream: &mut TcpStream,
+        stream: &mut PeerStream,
         peer_id: &str,
         signed_id_pk: &[u8],
         server_public_key: Option<&str>,
     ) -> io::Result<Option<[u8; 32]>> {
-        let Some(sign_pk) = self.decode_signed_peer_pk(peer_id, signed_id_pk, server_public_key)? else {
+        let Some(sign_pk) = self.decode_signed_peer_pk(peer_id, signed_id_pk, server_public_key)?
+        else {
             self.send_empty_message(stream)?;
             return Ok(None);
         };
-        let payload = wire::read_frame(stream)?;
+        let payload =
+            wire::read_frame_cancellable(stream, Instant::now() + Duration::from_secs(30), || {
+                crate::connect_cancelled(self.connect_epoch)
+            })?;
         let msg: Message = protobuf::parse_from_bytes(&payload)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
@@ -1013,7 +1776,7 @@ impl RustDeskConnector {
         Ok(Some(pk))
     }
 
-    fn send_empty_message(&self, stream: &mut TcpStream) -> io::Result<()> {
+    fn send_empty_message(&self, stream: &mut PeerStream) -> io::Result<()> {
         let msg = Message::new();
         let bytes = msg
             .write_to_bytes()
@@ -1045,6 +1808,8 @@ impl RustDeskConnector {
         remote_upload_dir: Option<&str>,
         pending_file_uploads: &mut Vec<PendingFileUpload>,
         requested_pressure_level: &mut u32,
+        current_image_quality: &mut i32,
+        quality_state: &Arc<Mutex<crate::RustDeskQualityState>>,
         physical_modifiers: &mut PhysicalModifierState,
         remote_keyboard_transport: RemoteKeyboardTransport,
         stream_started: Instant,
@@ -1079,11 +1844,43 @@ impl RustDeskConnector {
                 crate::ControlMsg::VideoPressure { level } => {
                     *requested_pressure_level = level.min(3);
                 }
+                crate::ControlMsg::SetImageQuality {
+                    quality,
+                    generation,
+                } => {
+                    let send_result = Session::send_image_quality(crypto, quality);
+                    if let Ok(mut state) = quality_state.lock() {
+                        if send_result.is_ok() {
+                            // Quality controls are reliable FIFO messages. A
+                            // superseded request can still reach the peer
+                            // before the latest request fails, so always
+                            // publish the last value actually sent. Only the
+                            // current request is allowed to leave pending.
+                            *current_image_quality = quality;
+                            state.sent_quality = quality;
+                            state.applied_generation = generation;
+                            if state.requested_generation == generation {
+                                state.effective_quality = quality;
+                                state.update_status = 2;
+                            }
+                        } else if state.requested_generation == generation {
+                            state.update_status = 3;
+                        }
+                    }
+                    match send_result {
+                        Ok(()) => eprintln!(
+                            "[RustDesk-FFI] live image quality applied generation={} quality={}",
+                            generation, quality
+                        ),
+                        Err(err) => eprintln!(
+                            "[RustDesk-FFI] live image quality failed generation={} quality={} error={}",
+                            generation, quality, err
+                        ),
+                    }
+                }
                 crate::ControlMsg::SendFile { remote_path, data } => {
-                    let upload_path = Self::normalize_remote_upload_path(
-                        &remote_path,
-                        remote_upload_dir,
-                    );
+                    let upload_path =
+                        Self::normalize_remote_upload_path(&remote_path, remote_upload_dir);
                     let upload_path_id = crate::safe_diagnostics::sensitive_id(&upload_path);
                     let original_path_id = crate::safe_diagnostics::sensitive_id(&remote_path);
                     crate::set_last_error(format!(
@@ -1187,6 +1984,7 @@ impl RustDeskConnector {
         fps: u32,
         controls: Arc<ControlInbox>,
         stream_stats: Arc<Mutex<crate::RustDeskStreamStats>>,
+        quality_state: Arc<Mutex<crate::RustDeskQualityState>>,
         display_state: Arc<Mutex<crate::RustDeskDisplayState>>,
         mut on_video: VF,
         mut on_audio_format: AFF,
@@ -1206,9 +2004,7 @@ impl RustDeskConnector {
         let remote_keyboard_transport = self
             .session
             .peer_info()
-            .map(|info| {
-                Self::keyboard_transport_for_peer(info.get_platform(), info.get_version())
-            })
+            .map(|info| Self::keyboard_transport_for_peer(info.get_platform(), info.get_version()))
             .unwrap_or(RemoteKeyboardTransport::Legacy);
         eprintln!(
             "[RustDesk-FFI] keyboard transport={:?}",
@@ -1222,6 +2018,7 @@ impl RustDeskConnector {
         crypto.set_read_timeout(Some(Duration::from_millis(20)))?;
 
         let mut stream_options_reasserted = false;
+        let mut image_quality = image_quality.clamp(0, 2);
         let mut empty_reads: u32 = 0; // 连续空读计数
                                       // 消息类型统计 — 用于诊断对端停止发送前的行为
         let mut msg_stats: std::collections::HashMap<&'static str, u64> =
@@ -1279,8 +2076,15 @@ impl RustDeskConnector {
                 "[RustDesk-FFI] streaming: initial stream options failed: {}, exiting",
                 err
             );
+            if let Ok(mut state) = quality_state.lock() {
+                state.update_status = 3;
+            }
             return Err(err);
         } else {
+            if let Ok(mut state) = quality_state.lock() {
+                state.sent_quality = image_quality;
+                state.update_status = 0;
+            }
             stream_options_sent_count += 1;
             stream_options_reasserted = true;
             eprintln!("[RustDesk-FFI] streaming: initial stream options reasserted");
@@ -1329,6 +2133,8 @@ impl RustDeskConnector {
                 remote_upload_dir.as_deref(),
                 &mut pending_file_uploads,
                 &mut requested_pressure_level,
+                &mut image_quality,
+                &quality_state,
                 &mut physical_modifiers,
                 remote_keyboard_transport,
                 stream_started,
@@ -1358,6 +2164,8 @@ impl RustDeskConnector {
                     remote_upload_dir.as_deref(),
                     &mut pending_file_uploads,
                     &mut requested_pressure_level,
+                    &mut image_quality,
+                    &quality_state,
                     &mut physical_modifiers,
                     remote_keyboard_transport,
                     stream_started,
@@ -1501,10 +2309,8 @@ impl RustDeskConnector {
                                 audio_enabled,
                                 Some(target_fps),
                             )?;
-                            if pressure_change_requires_refresh(
-                                preferred_codec,
-                                active_video_codec,
-                            ) {
+                            if pressure_change_requires_refresh(preferred_codec, active_video_codec)
+                            {
                                 Session::send_refresh_video(crypto)?;
                             }
                             stream_options_fps = target_fps;
@@ -1650,11 +2456,7 @@ impl RustDeskConnector {
                         );
                     }
                     if let Some(Misc_oneof_union::follow_current_display(display)) = misc.union {
-                        Self::apply_follow_current_display(
-                            &display_state,
-                            display,
-                            &stream_stats,
-                        );
+                        Self::apply_follow_current_display(&display_state, display, &stream_stats);
                         on_display_state();
                     }
                 }
@@ -1672,8 +2474,19 @@ impl RustDeskConnector {
                 Some(Message_oneof_union::clipboard(ref clipboard)) => {
                     last_msg_kind = "clipboard";
                     *msg_stats.entry("clipboard").or_default() += 1;
-                    if clipboard.get_format() == ClipboardFormat::Text {
-                        on_clipboard(clipboard.get_content());
+                    if let Some(text) =
+                        Self::decode_remote_clipboard_formats(std::slice::from_ref(clipboard))
+                    {
+                        on_clipboard(&text);
+                    }
+                }
+                Some(Message_oneof_union::multi_clipboards(ref clipboards)) => {
+                    last_msg_kind = "multi_clipboards";
+                    *msg_stats.entry("multi_clipboards").or_default() += 1;
+                    if let Some(text) =
+                        Self::decode_remote_clipboard_formats(clipboards.get_clipboards())
+                    {
+                        on_clipboard(&text);
                     }
                 }
                 // switch_display / message_query 等其他类型由 _ arm 统一处理
@@ -1713,11 +2526,7 @@ impl RustDeskConnector {
                     } else {
                         eprintln!(
                             "[RustDesk-FFI] cursor data rejected id={} size={}x{} hot={},{}",
-                            cursor_id,
-                            cursor_width,
-                            cursor_height,
-                            cursor_hot_x,
-                            cursor_hot_y,
+                            cursor_id, cursor_width, cursor_height, cursor_hot_x, cursor_hot_y,
                         );
                     }
                 }
@@ -1931,10 +2740,9 @@ impl RustDeskConnector {
                         }
                     }
                 }
-                let last_video_age_ms =
-                    last_video_at.map(|at| now.duration_since(at).as_millis());
-                let last_refresh_age_ms = last_video_starvation_refresh_at
-                    .map(|at| now.duration_since(at).as_millis());
+                let last_video_age_ms = last_video_at.map(|at| now.duration_since(at).as_millis());
+                let last_refresh_age_ms =
+                    last_video_starvation_refresh_at.map(|at| now.duration_since(at).as_millis());
                 if should_refresh_for_video_starvation(
                     video_count,
                     window_video,
@@ -2123,15 +2931,16 @@ impl RustDeskConnector {
                 Self::send_message_encrypted(crypto, &message)
             }
             crate::ControlMsg::VideoPressure { .. } => Ok(()),
-            crate::ControlMsg::KeyEvent { scancode, pressed } => {
-                Self::send_key_event_encrypted(
-                    crypto,
-                    scancode,
-                    pressed,
-                    physical_modifiers,
-                    remote_keyboard_transport,
-                )
+            crate::ControlMsg::SetImageQuality { quality, .. } => {
+                Session::send_image_quality(crypto, quality)
             }
+            crate::ControlMsg::KeyEvent { scancode, pressed } => Self::send_key_event_encrypted(
+                crypto,
+                scancode,
+                pressed,
+                physical_modifiers,
+                remote_keyboard_transport,
+            ),
             crate::ControlMsg::MouseEvent {
                 x,
                 y,
@@ -2169,7 +2978,11 @@ impl RustDeskConnector {
                 Self::send_mouse_event_encrypted(crypto, x, y, 3, physical_modifiers)
             }
             crate::ControlMsg::Text { text } => Self::send_text_event_encrypted(crypto, &text),
-            crate::ControlMsg::ChangeDisplayResolution { display, width, height } => {
+            crate::ControlMsg::ChangeDisplayResolution {
+                display,
+                width,
+                height,
+            } => {
                 let message = Self::build_display_resolution_message(display, width, height);
                 Self::send_message_encrypted(crypto, &message)
             }
@@ -2209,6 +3022,7 @@ impl RustDeskConnector {
             crate::ControlMsg::CaptureDisplays { .. } => "capture_displays",
             crate::ControlMsg::RefreshVideoDisplay { .. } => "refresh_video_display",
             crate::ControlMsg::VideoPressure { .. } => "video_pressure",
+            crate::ControlMsg::SetImageQuality { .. } => "image_quality",
             crate::ControlMsg::KeyEvent { .. } => "key",
             crate::ControlMsg::MouseEvent { .. } => "mouse",
             crate::ControlMsg::MouseMove { .. } => "mouse_move",
@@ -2378,10 +3192,8 @@ impl RustDeskConnector {
             Self::send_message_encrypted(crypto, &msg)?;
         }
 
-        let remote_dir_id =
-            crate::safe_diagnostics::sensitive_id(&upload.remote_dir);
-        let file_id =
-            crate::safe_diagnostics::sensitive_id(&upload.file_name);
+        let remote_dir_id = crate::safe_diagnostics::sensitive_id(&upload.remote_dir);
+        let file_id = crate::safe_diagnostics::sensitive_id(&upload.file_name);
         eprintln!(
             "[RustDesk-FFI] file upload data: reason={} dir_id={} file_id={} size={} chunks_sent={} chunks_total={} start_blk={} id={}",
             reason,
@@ -2546,10 +3358,8 @@ impl RustDeskConnector {
             {
                 let upload = pending_uploads.remove(pos);
                 if confirm.get_skip() {
-                    let dir_id = crate::safe_diagnostics::sensitive_id(
-                        &upload.remote_dir);
-                    let file_id = crate::safe_diagnostics::sensitive_id(
-                        &upload.file_name);
+                    let dir_id = crate::safe_diagnostics::sensitive_id(&upload.remote_dir);
+                    let file_id = crate::safe_diagnostics::sensitive_id(&upload.file_name);
                     eprintln!(
                         "[RustDesk-FFI] file upload skipped by peer: dir_id={} file_id={} id={}",
                         dir_id, file_id, upload.id
@@ -2597,8 +3407,7 @@ impl RustDeskConnector {
     ) -> io::Result<()> {
         match &resp.union {
             Some(FileResponse_oneof_union::error(err)) => {
-                let error_id =
-                    crate::safe_diagnostics::sensitive_id(err.get_error());
+                let error_id = crate::safe_diagnostics::sensitive_id(err.get_error());
                 crate::set_last_error(format!(
                     "file transfer error id={} file_num={} error_id={}",
                     err.get_id(),
@@ -2777,35 +3586,109 @@ impl RustDeskConnector {
     /// source receives and composes the keystrokes exactly like a local keyboard.
     fn harmony_keycode_to_macos_keycode(scancode: u32) -> Option<u32> {
         Some(match scancode {
+            // Carbon kVK_VolumeUp / kVK_VolumeDown. Media transport keys use
+            // NX_SYSDEFINED events rather than stable CGKeyCode values and
+            // are therefore not intercepted for RustDesk macOS sessions.
+            16 => 0x48,
+            17 => 0x49,
             // Number row.
-            2000 => 0x1D, 2001 => 0x12, 2002 => 0x13, 2003 => 0x14, 2004 => 0x15,
-            2005 => 0x17, 2006 => 0x16, 2007 => 0x1A, 2008 => 0x1C, 2009 => 0x19,
+            2000 => 0x1D,
+            2001 => 0x12,
+            2002 => 0x13,
+            2003 => 0x14,
+            2004 => 0x15,
+            2005 => 0x17,
+            2006 => 0x16,
+            2007 => 0x1A,
+            2008 => 0x1C,
+            2009 => 0x19,
             // Letters A-Z.
-            2017 => 0x00, 2018 => 0x0B, 2019 => 0x08, 2020 => 0x02, 2021 => 0x0E,
-            2022 => 0x03, 2023 => 0x05, 2024 => 0x04, 2025 => 0x22, 2026 => 0x26,
-            2027 => 0x28, 2028 => 0x25, 2029 => 0x2E, 2030 => 0x2D, 2031 => 0x1F,
-            2032 => 0x23, 2033 => 0x0C, 2034 => 0x0F, 2035 => 0x01, 2036 => 0x11,
-            2037 => 0x20, 2038 => 0x09, 2039 => 0x0D, 2040 => 0x07, 2041 => 0x10,
+            2017 => 0x00,
+            2018 => 0x0B,
+            2019 => 0x08,
+            2020 => 0x02,
+            2021 => 0x0E,
+            2022 => 0x03,
+            2023 => 0x05,
+            2024 => 0x04,
+            2025 => 0x22,
+            2026 => 0x26,
+            2027 => 0x28,
+            2028 => 0x25,
+            2029 => 0x2E,
+            2030 => 0x2D,
+            2031 => 0x1F,
+            2032 => 0x23,
+            2033 => 0x0C,
+            2034 => 0x0F,
+            2035 => 0x01,
+            2036 => 0x11,
+            2037 => 0x20,
+            2038 => 0x09,
+            2039 => 0x0D,
+            2040 => 0x07,
+            2041 => 0x10,
             2042 => 0x06,
             // Punctuation and editing keys.
-            2043 => 0x2B, 2044 => 0x2F, 2056 => 0x32, 2057 => 0x1B, 2058 => 0x18,
-            2059 => 0x21, 2060 => 0x1E, 2061 => 0x2A, 2062 => 0x29, 2063 => 0x27,
-            2064 => 0x2C, 2049 => 0x30, 2050 => 0x31, 2054 => 0x24,
-            42 | 2055 => 0x33, 2070 => 0x35, 2071 => 0x75,
+            2043 => 0x2B,
+            2044 => 0x2F,
+            2056 => 0x32,
+            2057 => 0x1B,
+            2058 => 0x18,
+            2059 => 0x21,
+            2060 => 0x1E,
+            2061 => 0x2A,
+            2062 => 0x29,
+            2063 => 0x27,
+            2064 => 0x2C,
+            2049 => 0x30,
+            2050 => 0x31,
+            2054 => 0x24,
+            42 | 2055 => 0x33,
+            2070 => 0x35,
+            2071 => 0x75,
             // Modifiers. ArkTS swaps Ctrl/Meta for the selected macOS layout before FFI.
-            2045 => 0x3A, 2046 => 0x3D, 2047 => 0x38, 2048 => 0x3C,
-            2072 => 0x3B, 2073 => 0x3E, 2074 => 0x39, 2076 => 0x37, 2077 => 0x36,
+            2045 => 0x3A,
+            2046 => 0x3D,
+            2047 => 0x38,
+            2048 => 0x3C,
+            2072 => 0x3B,
+            2073 => 0x3E,
+            2074 => 0x39,
+            2076 => 0x37,
+            2077 => 0x36,
             // Navigation and function keys.
-            2012 => 0x7E, 2013 => 0x7D, 2014 => 0x7B, 2015 => 0x7C,
-            2068 => 0x74, 2069 => 0x79, 2081 => 0x73, 2082 => 0x77,
-            2090 => 0x7A, 2091 => 0x78, 2092 => 0x63, 2093 => 0x76,
-            2094 => 0x60, 2095 => 0x61, 2096 => 0x62, 2097 => 0x64,
-            2098 => 0x65, 2099 => 0x6D, 2100 => 0x67, 2101 => 0x6F,
+            2012 => 0x7E,
+            2013 => 0x7D,
+            2014 => 0x7B,
+            2015 => 0x7C,
+            2068 => 0x74,
+            2069 => 0x79,
+            2081 => 0x73,
+            2082 => 0x77,
+            2090 => 0x7A,
+            2091 => 0x78,
+            2092 => 0x63,
+            2093 => 0x76,
+            2094 => 0x60,
+            2095 => 0x61,
+            2096 => 0x62,
+            2097 => 0x64,
+            2098 => 0x65,
+            2099 => 0x6D,
+            2100 => 0x67,
+            2101 => 0x6F,
             // Carbon defines physical virtual-key codes through F20. macOS
             // has no stable CGKeyCode constants for F21-F24, so the UI only
             // offers those four keys for Windows targets.
-            2816 => 0x69, 2817 => 0x6B, 2818 => 0x71, 2819 => 0x6A,
-            2820 => 0x40, 2821 => 0x4F, 2822 => 0x50, 2823 => 0x5A,
+            2816 => 0x69,
+            2817 => 0x6B,
+            2818 => 0x71,
+            2819 => 0x6A,
+            2820 => 0x40,
+            2821 => 0x4F,
+            2822 => 0x50,
+            2823 => 0x5A,
             _ => return None,
         })
     }
@@ -2814,13 +3697,14 @@ impl RustDeskConnector {
     /// extended keys. This is position based; shifted characters reuse the
     /// underlying physical key and let the remote Windows layout/IME decide text.
     fn harmony_keycode_to_windows_scancode(scancode: u32) -> Option<u32> {
-        const NUMBER_ROW: [u32; 10] = [0x0B, 0x02, 0x03, 0x04, 0x05,
-            0x06, 0x07, 0x08, 0x09, 0x0A];
-        const LETTERS_A_TO_Z: [u32; 26] = [0x1E, 0x30, 0x2E, 0x20, 0x12, 0x21,
-            0x22, 0x23, 0x17, 0x24, 0x25, 0x26, 0x32, 0x31, 0x18, 0x19,
-            0x10, 0x13, 0x1F, 0x14, 0x16, 0x2F, 0x11, 0x2D, 0x15, 0x2C];
-        const F1_TO_F12: [u32; 12] = [0x3B, 0x3C, 0x3D, 0x3E, 0x3F, 0x40,
-            0x41, 0x42, 0x43, 0x44, 0x57, 0x58];
+        const NUMBER_ROW: [u32; 10] = [0x0B, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A];
+        const LETTERS_A_TO_Z: [u32; 26] = [
+            0x1E, 0x30, 0x2E, 0x20, 0x12, 0x21, 0x22, 0x23, 0x17, 0x24, 0x25, 0x26, 0x32, 0x31,
+            0x18, 0x19, 0x10, 0x13, 0x1F, 0x14, 0x16, 0x2F, 0x11, 0x2D, 0x15, 0x2C,
+        ];
+        const F1_TO_F12: [u32; 12] = [
+            0x3B, 0x3C, 0x3D, 0x3E, 0x3F, 0x40, 0x41, 0x42, 0x43, 0x44, 0x57, 0x58,
+        ];
 
         if (2000..=2009).contains(&scancode) {
             return Some(NUMBER_ROW[(scancode - 2000) as usize]);
@@ -2841,67 +3725,73 @@ impl RustDeskConnector {
             48..=57 => NUMBER_ROW[(scancode - 48) as usize],
             65..=90 => LETTERS_A_TO_Z[(scancode - 65) as usize],
 
-            42 | 2055 => 0x0E,       // Backspace
-            2012 => 0xE048,          // Up
-            2013 => 0xE050,          // Down
-            2014 => 0xE04B,          // Left
-            2015 => 0xE04D,          // Right
-            2045 => 0x38,            // Left Alt
-            2046 => 0xE038,          // Right Alt / AltGr
-            2047 => 0x2A,            // Left Shift
-            2048 => 0x36,            // Right Shift
-            2049 => 0x0F,            // Tab
-            2050 => 0x39,            // Space
-            2054 => 0x1C,            // Enter
-            2067 => 0xE05D,          // Apps/Menu
-            2068 => 0xE049,          // Page Up
-            2069 => 0xE051,          // Page Down
-            2070 => 0x01,            // Escape
-            2071 => 0xE053,          // Delete
-            2072 => 0x1D,            // Left Ctrl
-            2073 => 0xE01D,          // Right Ctrl
-            2074 => 0x3A,            // Caps Lock
-            2075 => 0x46,            // Scroll Lock
-            2076 => 0xE05B,          // Left Win
-            2077 => 0xE05C,          // Right Win
-            2079 => 0xE037,          // Print Screen / SysRq
+            10 => 0xE022, // Media play / pause
+            12 => 0xE019, // Media next track
+            13 => 0xE010, // Media previous track
+            16 => 0xE030, // Volume up
+            17 => 0xE02E, // Volume down
+
+            42 | 2055 => 0x0E, // Backspace
+            2012 => 0xE048,    // Up
+            2013 => 0xE050,    // Down
+            2014 => 0xE04B,    // Left
+            2015 => 0xE04D,    // Right
+            2045 => 0x38,      // Left Alt
+            2046 => 0xE038,    // Right Alt / AltGr
+            2047 => 0x2A,      // Left Shift
+            2048 => 0x36,      // Right Shift
+            2049 => 0x0F,      // Tab
+            2050 => 0x39,      // Space
+            2054 => 0x1C,      // Enter
+            2067 => 0xE05D,    // Apps/Menu
+            2068 => 0xE049,    // Page Up
+            2069 => 0xE051,    // Page Down
+            2070 => 0x01,      // Escape
+            2071 => 0xE053,    // Delete
+            2072 => 0x1D,      // Left Ctrl
+            2073 => 0xE01D,    // Right Ctrl
+            2074 => 0x3A,      // Caps Lock
+            2075 => 0x46,      // Scroll Lock
+            2076 => 0xE05B,    // Left Win
+            2077 => 0xE05C,    // Right Win
+            2079 => 0xE037,    // Print Screen / SysRq
             // Pause/Break is not a normal scan-code down/up sequence on Windows.
             // It intentionally falls back to RustDesk's ControlKey::Pause path.
-            2081 => 0xE047,          // Home
-            2082 => 0xE04F,          // End
-            2083 => 0xE052,          // Insert
-            2102 => 0x45,            // Num Lock
-            2103 => 0x52,            // Numpad 0
-            2104 => 0x4F,            // Numpad 1
-            2105 => 0x50,            // Numpad 2
-            2106 => 0x51,            // Numpad 3
-            2107 => 0x4B,            // Numpad 4
-            2108 => 0x4C,            // Numpad 5
-            2109 => 0x4D,            // Numpad 6
-            2110 => 0x47,            // Numpad 7
-            2111 => 0x48,            // Numpad 8
-            2112 => 0x49,            // Numpad 9
-            2113 => 0xE035,          // Numpad divide
-            2114 => 0x37,            // Numpad multiply
-            2115 => 0x4A,            // Numpad subtract
-            2116 => 0x4E,            // Numpad add
-            2117 => 0x53,            // Numpad decimal
-            2119 => 0xE01C,          // Numpad enter
-            2120 => 0x0D,            // Numpad equals
+            2081 => 0xE047, // Home
+            2082 => 0xE04F, // End
+            2083 => 0xE052, // Insert
+            2102 => 0x45,   // Num Lock
+            2103 => 0x52,   // Numpad 0
+            2104 => 0x4F,   // Numpad 1
+            2105 => 0x50,   // Numpad 2
+            2106 => 0x51,   // Numpad 3
+            2107 => 0x4B,   // Numpad 4
+            2108 => 0x4C,   // Numpad 5
+            2109 => 0x4D,   // Numpad 6
+            2110 => 0x47,   // Numpad 7
+            2111 => 0x48,   // Numpad 8
+            2112 => 0x49,   // Numpad 9
+            2113 => 0xE035, // Numpad divide
+            2114 => 0x37,   // Numpad multiply
+            2115 => 0x4A,   // Numpad subtract
+            2116 => 0x4E,   // Numpad add
+            2117 => 0x53,   // Numpad decimal
+            2119 => 0xE01C, // Numpad enter
+            2120 => 0x0D,   // Numpad equals
 
-            2043 | 188 => 0x33,      // Comma
-            2044 | 190 => 0x34,      // Period
-            2056 | 192 => 0x29,      // Backtick
-            2057 | 189 => 0x0C,      // Minus
-            2058 | 187 => 0x0D,      // Equals
-            2059 | 219 => 0x1A,      // Left bracket
-            2060 | 221 => 0x1B,      // Right bracket
-            2061 | 220 => 0x2B,      // Backslash
-            2062 | 186 => 0x27,      // Semicolon
-            2063 | 222 => 0x28,      // Apostrophe
-            2064 | 191 => 0x35,      // Slash
-            2065 => 0x03,            // @ shares the physical 2 key
-            2066 => 0x0D,            // + shares the physical equals key
+            2043 | 188 => 0x33, // Comma
+            2044 | 190 => 0x34, // Period
+            2056 | 192 => 0x29, // Backtick
+            2057 | 189 => 0x0C, // Minus
+            2058 | 187 => 0x0D, // Equals
+            2059 | 219 => 0x1A, // Left bracket
+            2060 | 221 => 0x1B, // Right bracket
+            2061 | 220 => 0x2B, // Backslash
+            2062 | 186 => 0x27, // Semicolon
+            2063 | 222 => 0x28, // Apostrophe
+            2064 | 191 => 0x35, // Slash
+            2065 => 0x03,       // @ shares the physical 2 key
+            2066 => 0x0D,       // + shares the physical equals key
             _ => return None,
         })
     }
@@ -2944,19 +3834,15 @@ impl RustDeskConnector {
         scancode: u32,
         remote_keyboard_transport: RemoteKeyboardTransport,
     ) -> bool {
-        scancode == Self::MACOS_CAPS_LOCK_RAW_SCANCODE ||
-            (remote_keyboard_transport == RemoteKeyboardTransport::MacosMap && scancode == 2074)
+        scancode == Self::MACOS_CAPS_LOCK_RAW_SCANCODE
+            || (remote_keyboard_transport == RemoteKeyboardTransport::MacosMap && scancode == 2074)
     }
 
     pub(crate) fn next_control_batch(controls: &ControlInbox) -> Vec<crate::ControlMsg> {
         controls.take_batch(CONTROL_BATCH_LIMIT)
     }
 
-    fn log_key_message(
-        scancode: u32,
-        pressed: bool,
-        physical_modifiers: &PhysicalModifierState,
-    ) {
+    fn log_key_message(scancode: u32, pressed: bool, physical_modifiers: &PhysicalModifierState) {
         let modifiers = format!("{:?}", physical_modifiers.active_groups());
         let message = if let Some(control_key) = Self::harmony_keycode_to_control_key(scancode) {
             format!(
@@ -3062,6 +3948,8 @@ impl RustDeskConnector {
 
     fn harmony_keycode_to_control_key(scancode: u32) -> Option<ControlKey> {
         match scancode {
+            16 => Some(ControlKey::VolumeUp),
+            17 => Some(ControlKey::VolumeDown),
             42 | 2055 => Some(ControlKey::Backspace),
             2071 => Some(ControlKey::Delete),
             2012 => Some(ControlKey::UpArrow),
@@ -3203,12 +4091,7 @@ impl RustDeskConnector {
         let event_type = if pressed { 1 } else { 2 };
         let mut messages = Vec::with_capacity(if pressed { 2 } else { 1 });
         if pressed {
-            messages.push(Self::build_mouse_message(
-                x,
-                y,
-                0,
-                physical_modifiers,
-            ));
+            messages.push(Self::build_mouse_message(x, y, 0, physical_modifiers));
         }
         messages.push(Self::build_mouse_message(
             0,
@@ -3324,7 +4207,7 @@ impl RustDeskConnector {
         &self.state
     }
 
-    pub fn try_clone_stream(&self) -> io::Result<TcpStream> {
+    pub fn try_clone_stream(&self) -> io::Result<PeerStream> {
         let crypto = self
             .crypto_channel
             .as_ref()
@@ -3381,7 +4264,11 @@ impl RustDeskConnector {
             .filter_map(|resolution| {
                 let width = resolution.get_width();
                 let height = resolution.get_height();
-                if width > 0 && height > 0 { Some((width, height)) } else { None }
+                if width > 0 && height > 0 {
+                    Some((width, height))
+                } else {
+                    None
+                }
             })
             .take(crate::RUSTDESK_MAX_DISPLAY_RESOLUTIONS)
             .collect()
@@ -3410,10 +4297,7 @@ impl RustDeskConnector {
         }
     }
 
-    fn populate_display_state(
-        state: &mut crate::RustDeskDisplayState,
-        info: &PeerInfo,
-    ) -> bool {
+    fn populate_display_state(state: &mut crate::RustDeskDisplayState, info: &PeerInfo) -> bool {
         let previous_displays = state.displays.clone();
         let previous_geometry = (
             state.current_display,
@@ -3732,29 +4616,525 @@ mod tests {
     use super::{
         advance_applied_pressure_level, changed_pressure_target_fps,
         pressure_change_requires_refresh, pressure_target_fps, resolution_aware_fps_ceiling,
-        should_refresh_for_video_starvation, ControlKey, KeyEvent_oneof_union,
-        Message_oneof_union, PhysicalModifierState, RemoteKeyboardTransport,
-        RendezvousCredentials, RustDeskConnector, VP9_PRESSURE_RECOVERY_HOLD_WINDOWS,
-        uses_bounded_vp9_pressure_targets,
+        route_deadline_for_strategy, route_stage_timeout, should_refresh_for_video_starvation,
+        uses_bounded_vp9_pressure_targets, ControlKey, KeyEvent_oneof_union, Message_oneof_union,
+        PendingFileUpload, PhysicalModifierState, RemoteKeyboardTransport, RendezvousCredentials,
+        RustDeskConnectionStrategy, RustDeskConnector, VP9_PRESSURE_RECOVERY_HOLD_WINDOWS,
     };
+    use crate::crypto_channel::CryptoChannel;
+    use crate::peer_stream::{spawn_test_kcp_echo_server, KcpPeerStream, PeerStream};
+    use crate::protocol::message_proto::KeyboardMode;
     use crate::protocol::message_proto::{
-        DisplayInfo, Hash, LoginResponse, Message, Misc_oneof_union, PeerInfo,
-        PointerDeviceEvent_oneof_union, Resolution, SupportedResolutions, SwitchDisplay,
+        Clipboard, ClipboardFormat, DisplayInfo, Hash, LoginResponse, Message, Misc_oneof_union,
+        PeerInfo, PointerDeviceEvent_oneof_union, Resolution, SupportedResolutions, SwitchDisplay,
         TouchEvent_oneof_union,
     };
-    use crate::{RustDeskDisplayInfoState, RustDeskDisplayState};
-    use crate::protocol::message_proto::KeyboardMode;
+    use crate::protocol::rendezvous::{
+        PeerCandidate, PeerCandidateSource, PeerCandidateTransport, PunchHoleInfo,
+        RendezvousClient, UdpNatLease,
+    };
+    use crate::protocol::rendezvous_proto::{
+        ConnType as RendezvousConnType, NatType, RendezvousMessage, RendezvousMessage_oneof_union,
+    };
     use crate::protocol::wire;
+    use crate::{RustDeskDisplayInfoState, RustDeskDisplayState};
     use protobuf::Message as ProtoMessage;
-    use std::net::TcpListener;
+    use std::io::{Read, Write};
+    use std::net::{IpAddr, Ipv4Addr, Shutdown, SocketAddr, TcpListener, TcpStream, UdpSocket};
     use std::sync::{Arc, Mutex};
     use std::thread;
+    use std::time::{Duration, Instant};
 
     fn resolution(width: i32, height: i32) -> Resolution {
         let mut value = Resolution::new();
         value.set_width(width);
         value.set_height(height);
         value
+    }
+
+    fn clipboard(format: ClipboardFormat, content: Vec<u8>, compressed: bool) -> Clipboard {
+        let mut value = Clipboard::new();
+        value.set_format(format);
+        value.set_content(content);
+        value.set_compress(compressed);
+        value
+    }
+
+    #[test]
+    fn remote_clipboard_accepts_legacy_and_multiformat_utf8_text() {
+        let legacy = clipboard(
+            ClipboardFormat::Text,
+            "鸿蒙 clipboard".as_bytes().to_vec(),
+            false,
+        );
+        assert_eq!(
+            RustDeskConnector::decode_remote_clipboard_formats(std::slice::from_ref(&legacy)),
+            Some("鸿蒙 clipboard".as_bytes().to_vec())
+        );
+
+        let formats = vec![
+            clipboard(ClipboardFormat::Html, b"<b>ignored</b>".to_vec(), false),
+            clipboard(ClipboardFormat::Text, b"plain text wins".to_vec(), false),
+        ];
+        assert_eq!(
+            RustDeskConnector::decode_remote_clipboard_formats(&formats),
+            Some(b"plain text wins".to_vec())
+        );
+    }
+
+    #[test]
+    fn remote_clipboard_decodes_bounded_compressed_text() {
+        let encoded_frames = [
+            zstd::bulk::compress(b"compressed text", 3)
+                .expect("RustDesk-style bulk zstd encoding should succeed"),
+            zstd::stream::encode_all(&b"compressed text"[..], 1)
+                .expect("streaming zstd encoding should succeed"),
+        ];
+        for encoded in encoded_frames {
+            let value = clipboard(ClipboardFormat::Text, encoded, true);
+            assert_eq!(
+                RustDeskConnector::decode_remote_clipboard_formats(std::slice::from_ref(&value)),
+                Some(b"compressed text".to_vec())
+            );
+        }
+    }
+
+    #[test]
+    fn remote_clipboard_rejects_invalid_or_oversized_text() {
+        let invalid = clipboard(ClipboardFormat::Text, vec![0xff, 0xfe], false);
+        assert!(
+            RustDeskConnector::decode_remote_clipboard_formats(std::slice::from_ref(&invalid))
+                .is_none()
+        );
+
+        let oversized = clipboard(
+            ClipboardFormat::Text,
+            vec![b'x'; super::MAX_REMOTE_CLIPBOARD_TEXT_BYTES + 1],
+            false,
+        );
+        assert!(
+            RustDeskConnector::decode_remote_clipboard_formats(std::slice::from_ref(&oversized))
+                .is_none()
+        );
+
+        let compressed_oversized = zstd::stream::encode_all(
+            vec![b'x'; super::MAX_REMOTE_CLIPBOARD_TEXT_BYTES + 1].as_slice(),
+            1,
+        )
+        .expect("zstd encoding should succeed");
+        let compressed = clipboard(ClipboardFormat::Text, compressed_oversized, true);
+        assert!(
+            RustDeskConnector::decode_remote_clipboard_formats(std::slice::from_ref(&compressed))
+                .is_none()
+        );
+
+        let excessive_formats = vec![
+            clipboard(ClipboardFormat::Html, b"ignored".to_vec(), false);
+            super::MAX_REMOTE_CLIPBOARD_FORMATS + 1
+        ];
+        assert!(RustDeskConnector::decode_remote_clipboard_formats(&excessive_formats).is_none());
+
+        let excessive_compressed_input = clipboard(
+            ClipboardFormat::Text,
+            vec![0_u8; super::MAX_REMOTE_CLIPBOARD_COMPRESSED_BYTES + 1],
+            true,
+        );
+        assert!(
+            RustDeskConnector::decode_remote_clipboard_formats(std::slice::from_ref(
+                &excessive_compressed_input
+            ))
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn remote_clipboard_rejects_zstd_frames_with_oversized_windows() {
+        let mut encoder =
+            zstd::stream::Encoder::new(Vec::new(), 1).expect("zstd encoder should initialize");
+        encoder
+            .window_log(super::MAX_REMOTE_CLIPBOARD_ZSTD_WINDOW_LOG + 8)
+            .expect("large test window should be valid");
+        encoder
+            .include_contentsize(false)
+            .expect("content-size flag should be configurable");
+        encoder
+            .write_all(b"small payload with a deliberately oversized zstd window")
+            .expect("test frame should encode");
+        let encoded = encoder.finish().expect("test frame should finish");
+        let value = clipboard(ClipboardFormat::Text, encoded, true);
+        assert!(
+            RustDeskConnector::decode_remote_clipboard_formats(std::slice::from_ref(&value))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn auto_route_deadline_is_shared_and_cancellation_preempts_it() {
+        let session_id = 90_041;
+        let epoch = crate::begin_connect_epoch(session_id);
+        let deadline = route_deadline_for_strategy(RustDeskConnectionStrategy::Auto)
+            .expect("AUTO must create a deadline");
+        let timeout = route_stage_timeout(
+            Some(deadline),
+            Duration::from_secs(30),
+            epoch,
+            "test AUTO route",
+        )
+        .expect("active route budget");
+        assert!(timeout <= super::AUTO_ROUTE_TIMEOUT);
+        assert_eq!(
+            route_stage_timeout(
+                Some(Instant::now() - Duration::from_millis(1)),
+                Duration::from_secs(1),
+                epoch,
+                "expired AUTO route",
+            )
+            .expect_err("expired budget must fail")
+            .kind(),
+            std::io::ErrorKind::TimedOut
+        );
+        crate::cancel_connect_epoch(epoch);
+        assert_eq!(
+            route_stage_timeout(
+                Some(deadline),
+                Duration::from_secs(1),
+                epoch,
+                "cancelled AUTO route",
+            )
+            .expect_err("cancellation must preempt the budget")
+            .kind(),
+            std::io::ErrorKind::Interrupted
+        );
+        crate::finish_connect_epoch(epoch, session_id);
+    }
+
+    #[test]
+    fn auto_route_executes_udp_kcp_with_a_matching_nat_lease() {
+        let payload = b"connector-kcp-route".to_vec();
+        let bind = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
+        let (peer_address, peer) =
+            spawn_test_kcp_echo_server(bind, payload.clone()).expect("bind KCP peer fixture");
+        let udp_socket = UdpSocket::bind(bind).expect("bind mapped UDP socket");
+        udp_socket
+            .connect(peer_address)
+            .expect("connect mapped UDP fixture");
+        let udp_lease = UdpNatLease::from_connected_socket_for_test(udp_socket)
+            .expect("create mapped UDP lease fixture");
+
+        let session_id = 90_045;
+        let epoch = crate::begin_connect_epoch(session_id);
+        let mut connector = RustDeskConnector::new_with_connection_id(session_id, epoch);
+        let punch = PunchHoleInfo {
+            relay_server: String::new(),
+            signed_pk: Vec::new(),
+            peer_candidates: vec![PeerCandidate {
+                address: peer_address,
+                source: PeerCandidateSource::SocketAddr,
+                transport: PeerCandidateTransport::Udp,
+            }],
+            relay_uuid: None,
+            peer_nat_type: NatType::ASYMMETRIC,
+            is_local: true,
+        };
+        let credentials = RendezvousCredentials::new("", false);
+        let mut stream = connector
+            .open_rendezvous_peer_stream(
+                RendezvousClient::new_with_connect_epoch(epoch),
+                &punch,
+                None,
+                Some(udp_lease),
+                RustDeskConnectionStrategy::Auto,
+                "127.0.0.1",
+                21116,
+                21117,
+                "",
+                "",
+                "peer-kcp",
+                &credentials,
+                false,
+                RendezvousConnType::DEFAULT_CONN,
+                route_deadline_for_strategy(RustDeskConnectionStrategy::Auto),
+            )
+            .expect("UDP/KCP-only AUTO route must execute with its lease");
+        assert!(matches!(&stream, PeerStream::Kcp(_)));
+        stream.write_all(&payload).expect("write KCP route payload");
+        let mut echoed = vec![0u8; payload.len()];
+        stream
+            .read_exact(&mut echoed)
+            .expect("read KCP route payload");
+        assert_eq!(echoed, payload);
+        stream.shutdown(Shutdown::Both).expect("shutdown KCP route");
+        drop(stream);
+        peer.join().expect("join KCP peer fixture").unwrap();
+        crate::finish_connect_epoch(epoch, session_id);
+    }
+
+    #[test]
+    fn auto_route_kcp_winner_survives_sibling_race_cancellation() {
+        let payload = b"connector-kcp-race-winner".to_vec();
+        let bind = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
+        let (peer_address, peer) =
+            spawn_test_kcp_echo_server(bind, payload.clone()).expect("bind KCP peer fixture");
+        let unavailable_tcp = TcpListener::bind(bind).expect("bind unavailable TCP fixture");
+        let tcp_address = unavailable_tcp.local_addr().unwrap();
+        drop(unavailable_tcp);
+        let udp_socket = UdpSocket::bind(bind).expect("bind mapped UDP socket");
+        udp_socket
+            .connect(peer_address)
+            .expect("connect mapped UDP fixture");
+        let udp_lease = UdpNatLease::from_connected_socket_for_test(udp_socket)
+            .expect("create mapped UDP lease fixture");
+
+        let session_id = 90_047;
+        let epoch = crate::begin_connect_epoch(session_id);
+        let mut connector = RustDeskConnector::new_with_connection_id(session_id, epoch);
+        let punch = PunchHoleInfo {
+            relay_server: String::new(),
+            signed_pk: Vec::new(),
+            peer_candidates: vec![
+                PeerCandidate {
+                    address: tcp_address,
+                    source: PeerCandidateSource::SocketAddr,
+                    transport: PeerCandidateTransport::Tcp,
+                },
+                PeerCandidate {
+                    address: peer_address,
+                    source: PeerCandidateSource::SocketAddr,
+                    transport: PeerCandidateTransport::Udp,
+                },
+            ],
+            relay_uuid: None,
+            peer_nat_type: NatType::ASYMMETRIC,
+            is_local: true,
+        };
+        let credentials = RendezvousCredentials::new("", false);
+        let mut stream = connector
+            .open_rendezvous_peer_stream(
+                RendezvousClient::new_with_connect_epoch(epoch),
+                &punch,
+                None,
+                Some(udp_lease),
+                RustDeskConnectionStrategy::Auto,
+                "127.0.0.1",
+                21116,
+                21117,
+                "",
+                "",
+                "peer-kcp-race",
+                &credentials,
+                false,
+                RendezvousConnType::DEFAULT_CONN,
+                route_deadline_for_strategy(RustDeskConnectionStrategy::Auto),
+            )
+            .expect("KCP must win after the TCP sibling fails");
+        assert!(matches!(&stream, PeerStream::Kcp(_)));
+        stream
+            .write_all(&payload)
+            .expect("write through winning KCP route");
+        stream.flush().expect("flush winning KCP route");
+        let mut echoed = vec![0u8; payload.len()];
+        stream
+            .read_exact(&mut echoed)
+            .expect("winning KCP route must survive sibling token cancellation");
+        assert_eq!(echoed, payload);
+        stream.shutdown(Shutdown::Both).unwrap();
+        drop(stream);
+        peer.join().expect("join KCP peer fixture").unwrap();
+        crate::finish_connect_epoch(epoch, session_id);
+    }
+
+    #[test]
+    fn file_kcp_flush_delivers_block_and_done_before_connector_drop() {
+        let upload = PendingFileUpload {
+            id: 731,
+            remote_dir: "/fixture".to_string(),
+            file_name: "drain.bin".to_string(),
+            data: b"file-kcp-drain-fixture".to_vec(),
+            requested_at: Instant::now(),
+        };
+
+        let tcp_listener = TcpListener::bind("127.0.0.1:0").expect("bind TCP capture fixture");
+        let tcp_address = tcp_listener.local_addr().unwrap();
+        let capture = thread::spawn(move || {
+            let (mut stream, _) = tcp_listener.accept().expect("accept TCP capture");
+            let mut bytes = Vec::new();
+            stream
+                .read_to_end(&mut bytes)
+                .expect("capture file wire bytes");
+            bytes
+        });
+        let tcp_stream = TcpStream::connect(tcp_address).expect("connect TCP capture");
+        let mut tcp_crypto = CryptoChannel::new_plain(tcp_stream);
+        RustDeskConnector::send_file_upload_data(&mut tcp_crypto, &upload, "fixture", 0)
+            .expect("serialize production file block and Done over TCP");
+        drop(tcp_crypto);
+        let expected = capture.join().expect("join TCP capture fixture");
+        assert!(!expected.is_empty());
+
+        let bind = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
+        let (server_address, server) =
+            spawn_test_kcp_echo_server(bind, expected).expect("bind KCP file fixture");
+        let socket = UdpSocket::bind(bind).expect("bind KCP file client");
+        let kcp = KcpPeerStream::connect(socket, server_address, Duration::from_secs(3), None)
+            .expect("connect KCP file client");
+        let mut kcp_crypto = CryptoChannel::new_plain(kcp);
+        kcp_crypto
+            .set_write_timeout(Some(Duration::from_secs(3)))
+            .expect("bound KCP file writes");
+        RustDeskConnector::send_file_upload_data(&mut kcp_crypto, &upload, "fixture", 0)
+            .expect("send production file block and Done over KCP");
+        drop(kcp_crypto);
+
+        server
+            .join()
+            .expect("join KCP file fixture")
+            .expect("KCP peer must receive block and Done before connector drop");
+    }
+
+    #[test]
+    fn auto_route_tcp_winner_cancels_the_kcp_sibling() {
+        let tcp = TcpListener::bind("127.0.0.1:0").expect("bind TCP peer fixture");
+        let tcp_address = tcp.local_addr().expect("TCP peer address");
+        let tcp_peer = thread::spawn(move || {
+            let (stream, _) = tcp.accept().expect("accept TCP peer route");
+            thread::sleep(Duration::from_millis(100));
+            drop(stream);
+        });
+        let udp_blackhole = UdpSocket::bind("127.0.0.1:0").expect("bind UDP blackhole");
+        let udp_address = udp_blackhole.local_addr().expect("UDP blackhole address");
+        let udp_socket = UdpSocket::bind("127.0.0.1:0").expect("bind mapped UDP socket");
+        udp_socket
+            .connect(udp_address)
+            .expect("connect mapped UDP fixture");
+        let udp_lease = UdpNatLease::from_connected_socket_for_test(udp_socket)
+            .expect("create mapped UDP lease fixture");
+
+        let session_id = 90_046;
+        let epoch = crate::begin_connect_epoch(session_id);
+        let mut connector = RustDeskConnector::new_with_connection_id(session_id, epoch);
+        let punch = PunchHoleInfo {
+            relay_server: String::new(),
+            signed_pk: Vec::new(),
+            peer_candidates: vec![
+                PeerCandidate {
+                    address: udp_address,
+                    source: PeerCandidateSource::SocketAddr,
+                    transport: PeerCandidateTransport::Udp,
+                },
+                PeerCandidate {
+                    address: tcp_address,
+                    source: PeerCandidateSource::SocketAddr,
+                    transport: PeerCandidateTransport::Tcp,
+                },
+            ],
+            relay_uuid: None,
+            peer_nat_type: NatType::ASYMMETRIC,
+            is_local: true,
+        };
+        let credentials = RendezvousCredentials::new("", false);
+        let stream = connector
+            .open_rendezvous_peer_stream(
+                RendezvousClient::new_with_connect_epoch(epoch),
+                &punch,
+                None,
+                Some(udp_lease),
+                RustDeskConnectionStrategy::Auto,
+                "127.0.0.1",
+                21116,
+                21117,
+                "",
+                "",
+                "peer-race",
+                &credentials,
+                false,
+                RendezvousConnType::DEFAULT_CONN,
+                route_deadline_for_strategy(RustDeskConnectionStrategy::Auto),
+            )
+            .expect("TCP must win against an unresponsive KCP peer");
+        assert!(matches!(&stream, PeerStream::Tcp(_)));
+        drop(stream);
+        tcp_peer.join().expect("join TCP peer fixture");
+        thread::sleep(Duration::from_millis(80));
+        drop(udp_blackhole);
+        crate::finish_connect_epoch(epoch, session_id);
+    }
+
+    fn assert_direct_failure_falls_back_to_relay(conn_type: RendezvousConnType) {
+        let unavailable = TcpListener::bind("127.0.0.1:0").expect("bind unavailable fixture");
+        let direct_address = unavailable
+            .local_addr()
+            .expect("unavailable fixture address");
+        drop(unavailable);
+
+        let relay = TcpListener::bind("127.0.0.1:0").expect("bind relay fixture");
+        let relay_address = relay.local_addr().expect("relay fixture address");
+        let relay_thread = thread::spawn(move || {
+            let (mut stream, _) = relay.accept().expect("accept relay connection");
+            let payload = wire::read_frame(&mut stream).expect("read relay request");
+            let message =
+                RendezvousMessage::parse_from_bytes(&payload).expect("parse relay request");
+            match message.union {
+                Some(RendezvousMessage_oneof_union::request_relay(request)) => {
+                    assert_eq!(request.get_conn_type(), conn_type);
+                    assert_eq!(request.get_uuid(), "relay-ticket");
+                }
+                other => panic!("expected RequestRelay, got: {other:?}"),
+            }
+        });
+
+        let session_id = match conn_type {
+            RendezvousConnType::DEFAULT_CONN => 90_042,
+            RendezvousConnType::FILE_TRANSFER => 90_043,
+            _ => 90_044,
+        };
+        let epoch = crate::begin_connect_epoch(session_id);
+        let mut connector = RustDeskConnector::new_with_connection_id(session_id, epoch);
+        let punch = PunchHoleInfo {
+            relay_server: relay_address.to_string(),
+            signed_pk: Vec::new(),
+            peer_candidates: vec![PeerCandidate {
+                address: direct_address,
+                source: PeerCandidateSource::SocketAddr,
+                transport: PeerCandidateTransport::Tcp,
+            }],
+            relay_uuid: Some("relay-ticket".to_string()),
+            peer_nat_type: NatType::SYMMETRIC,
+            is_local: true,
+        };
+        let credentials = RendezvousCredentials::new("", false);
+        let stream = connector
+            .open_rendezvous_peer_stream(
+                RendezvousClient::new_with_connect_epoch(epoch),
+                &punch,
+                None,
+                None,
+                RustDeskConnectionStrategy::Auto,
+                "127.0.0.1",
+                21116,
+                relay_address.port(),
+                "",
+                "",
+                "peer-123",
+                &credentials,
+                false,
+                conn_type,
+                route_deadline_for_strategy(RustDeskConnectionStrategy::Auto),
+            )
+            .expect("direct failure must fall back to relay");
+        assert_eq!(stream.peer_addr().unwrap(), relay_address);
+        drop(stream);
+        relay_thread.join().expect("relay fixture thread");
+        crate::finish_connect_epoch(epoch, session_id);
+    }
+
+    #[test]
+    fn screen_route_direct_failure_falls_back_to_relay() {
+        assert_direct_failure_falls_back_to_relay(RendezvousConnType::DEFAULT_CONN);
+    }
+
+    #[test]
+    fn file_transfer_route_direct_failure_falls_back_to_relay() {
+        assert_direct_failure_falls_back_to_relay(RendezvousConnType::FILE_TRANSFER);
     }
 
     #[test]
@@ -3790,7 +5170,9 @@ mod tests {
         match scale_message.union {
             Some(Message_oneof_union::pointer_device_event(pointer)) => match pointer.union {
                 Some(PointerDeviceEvent_oneof_union::touch_event(touch)) => match touch.union {
-                    Some(TouchEvent_oneof_union::scale_update(update)) => assert_eq!(update.get_scale(), 1250),
+                    Some(TouchEvent_oneof_union::scale_update(update)) => {
+                        assert_eq!(update.get_scale(), 1250)
+                    }
                     _ => panic!("touch scale must use TouchEvent.scale_update"),
                 },
                 _ => panic!("touch scale must use PointerDeviceEvent.touch_event"),
@@ -3804,18 +5186,20 @@ mod tests {
         for (message, expected) in [(pan_start, 0), (pan_update, 1), (pan_end, 2)] {
             match message.union {
                 Some(Message_oneof_union::pointer_device_event(pointer)) => match pointer.union {
-                    Some(PointerDeviceEvent_oneof_union::touch_event(touch)) => match (expected, touch.union) {
-                        (0, Some(TouchEvent_oneof_union::pan_start(pan))) => {
-                            assert_eq!((pan.get_x(), pan.get_y()), (100, 200));
+                    Some(PointerDeviceEvent_oneof_union::touch_event(touch)) => {
+                        match (expected, touch.union) {
+                            (0, Some(TouchEvent_oneof_union::pan_start(pan))) => {
+                                assert_eq!((pan.get_x(), pan.get_y()), (100, 200));
+                            }
+                            (1, Some(TouchEvent_oneof_union::pan_update(pan))) => {
+                                assert_eq!((pan.get_x(), pan.get_y()), (-10, 12));
+                            }
+                            (2, Some(TouchEvent_oneof_union::pan_end(pan))) => {
+                                assert_eq!((pan.get_x(), pan.get_y()), (90, 212));
+                            }
+                            _ => panic!("touch pan phase must use its matching TouchEvent variant"),
                         }
-                        (1, Some(TouchEvent_oneof_union::pan_update(pan))) => {
-                            assert_eq!((pan.get_x(), pan.get_y()), (-10, 12));
-                        }
-                        (2, Some(TouchEvent_oneof_union::pan_end(pan))) => {
-                            assert_eq!((pan.get_x(), pan.get_y()), (90, 212));
-                        }
-                        _ => panic!("touch pan phase must use its matching TouchEvent variant"),
-                    },
+                    }
                     _ => panic!("touch pan must use PointerDeviceEvent.touch_event"),
                 },
                 _ => panic!("touch pan must use a pointer device event"),
@@ -3833,11 +5217,8 @@ mod tests {
             _ => panic!("display switch must use a Misc message"),
         }
 
-        let capture_message = RustDeskConnector::build_capture_displays_message(
-            vec![2],
-            vec![0],
-            vec![1, 2],
-        );
+        let capture_message =
+            RustDeskConnector::build_capture_displays_message(vec![2], vec![0], vec![1, 2]);
         match capture_message.union {
             Some(Message_oneof_union::misc(misc)) => match misc.union {
                 Some(Misc_oneof_union::capture_displays(capture)) => {
@@ -3972,7 +5353,10 @@ mod tests {
             ..RustDeskDisplayState::default()
         };
 
-        assert!(RustDeskConnector::populate_display_state(&mut state, &PeerInfo::new()));
+        assert!(RustDeskConnector::populate_display_state(
+            &mut state,
+            &PeerInfo::new()
+        ));
         assert_eq!(state.current_display, 0);
         assert_eq!((state.width, state.height), (0, 0));
         assert_eq!((state.original_width, state.original_height), (0, 0));
@@ -4048,8 +5432,14 @@ mod tests {
         RustDeskConnector::apply_switch_display_geometry(&display_state, &switch, &stream_stats);
 
         let state = display_state.lock().expect("display state lock");
-        assert_eq!((state.current_display, state.width, state.height), (1, 1920, 1200));
-        assert_eq!((state.displays[0].width, state.displays[0].height), (1920, 1080));
+        assert_eq!(
+            (state.current_display, state.width, state.height),
+            (1, 1920, 1200)
+        );
+        assert_eq!(
+            (state.displays[0].width, state.displays[0].height),
+            (1920, 1080)
+        );
         assert_eq!(state.displays[1].resolutions, vec![(1920, 1200)]);
         assert_eq!(state.displays[1].name, "Secondary");
     }
@@ -4203,12 +5593,7 @@ mod tests {
 
     #[test]
     fn video_starvation_refreshes_silent_stream_after_initial_frames() {
-        assert!(should_refresh_for_video_starvation(
-            2,
-            0,
-            Some(3_000),
-            None,
-        ));
+        assert!(should_refresh_for_video_starvation(2, 0, Some(3_000), None,));
     }
 
     #[test]
@@ -4233,12 +5618,7 @@ mod tests {
 
     #[test]
     fn video_starvation_waits_for_the_first_video_frame() {
-        assert!(!should_refresh_for_video_starvation(
-            0,
-            0,
-            None,
-            None,
-        ));
+        assert!(!should_refresh_for_video_starvation(0, 0, None, None,));
     }
 
     #[test]
@@ -4280,8 +5660,14 @@ mod tests {
         assert_eq!(changed_pressure_target_fps(2, 2, 30, 30, 3, true), Some(18));
         assert_eq!(changed_pressure_target_fps(2, 2, 30, 18, 3, true), None);
         assert_eq!(changed_pressure_target_fps(4, 4, 30, 30, 1, false), None);
-        assert_eq!(changed_pressure_target_fps(4, 4, 60, 60, 2, false), Some(30));
-        assert_eq!(changed_pressure_target_fps(4, 4, 60, 15, 0, false), Some(60));
+        assert_eq!(
+            changed_pressure_target_fps(4, 4, 60, 60, 2, false),
+            Some(30)
+        );
+        assert_eq!(
+            changed_pressure_target_fps(4, 4, 60, 15, 0, false),
+            Some(60)
+        );
     }
 
     #[test]
@@ -4346,7 +5732,10 @@ mod tests {
         match c_down.union {
             Some(Message_oneof_union::key_event(key)) => {
                 assert!(key.down);
-                assert!(key.modifiers.iter().any(|modifier| *modifier == ControlKey::Meta));
+                assert!(key
+                    .modifiers
+                    .iter()
+                    .any(|modifier| *modifier == ControlKey::Meta));
             }
             _ => panic!("command-c down must be a key event"),
         }
@@ -4354,7 +5743,10 @@ mod tests {
         match c_up.union {
             Some(Message_oneof_union::key_event(key)) => {
                 assert!(!key.down);
-                assert!(key.modifiers.iter().any(|modifier| *modifier == ControlKey::Meta));
+                assert!(key
+                    .modifiers
+                    .iter()
+                    .any(|modifier| *modifier == ControlKey::Meta));
             }
             _ => panic!("command-c up must be a key event"),
         }
@@ -4367,13 +5759,8 @@ mod tests {
         let mut modifiers = PhysicalModifierState::default();
         modifiers.update(2076, true);
 
-        let down = RustDeskConnector::build_mouse_button_messages(
-            2184,
-            1806,
-            0x01,
-            true,
-            &modifiers,
-        );
+        let down =
+            RustDeskConnector::build_mouse_button_messages(2184, 1806, 0x01, true, &modifiers);
         assert_eq!(down.len(), 2);
         let down_move = match &down[0].union {
             Some(Message_oneof_union::mouse_event(mouse)) => mouse,
@@ -4395,13 +5782,8 @@ mod tests {
             .iter()
             .any(|modifier| *modifier == ControlKey::Meta));
 
-        let up = RustDeskConnector::build_mouse_button_messages(
-            2184,
-            1806,
-            0x01,
-            false,
-            &modifiers,
-        );
+        let up =
+            RustDeskConnector::build_mouse_button_messages(2184, 1806, 0x01, false, &modifiers);
         assert_eq!(up.len(), 1);
         let up_button = match &up[0].union {
             Some(Message_oneof_union::mouse_event(mouse)) => mouse,
@@ -4445,11 +5827,11 @@ mod tests {
     #[test]
     fn windows_map_uses_physical_scan_codes_instead_of_unicode_characters() {
         for (harmony_keycode, expected_scancode) in [
-            (2017, 0x1E), // A
-            (2038, 0x2F), // V
-            (2001, 0x02), // 1
-            (2057, 0x0C), // minus
-            (2072, 0x1D), // left Ctrl
+            (2017, 0x1E),   // A
+            (2038, 0x2F),   // V
+            (2001, 0x02),   // 1
+            (2057, 0x0C),   // minus
+            (2072, 0x1D),   // left Ctrl
             (2073, 0xE01D), // right Ctrl
             (2076, 0xE05B), // left Win
             (2119, 0xE01C), // numpad Enter
@@ -4493,6 +5875,30 @@ mod tests {
         assert_eq!(
             RustDeskConnector::harmony_keycode_to_windows_scancode(2080),
             None
+        );
+    }
+
+    #[test]
+    fn windows_map_covers_harmony_consumer_media_and_volume_keys() {
+        for (harmony_keycode, expected_scancode) in [
+            (10, 0xE022),
+            (12, 0xE019),
+            (13, 0xE010),
+            (16, 0xE030),
+            (17, 0xE02E),
+        ] {
+            assert_eq!(
+                RustDeskConnector::harmony_keycode_to_windows_scancode(harmony_keycode),
+                Some(expected_scancode)
+            );
+        }
+        assert_eq!(
+            RustDeskConnector::harmony_keycode_to_control_key(16),
+            Some(ControlKey::VolumeUp)
+        );
+        assert_eq!(
+            RustDeskConnector::harmony_keycode_to_control_key(17),
+            Some(ControlKey::VolumeDown)
         );
     }
 
@@ -4551,9 +5957,8 @@ mod tests {
         for (harmony_keycode, expected_macos_keycode) in [(2076, 0x37), (2019, 0x08)] {
             let marked = RustDeskConnector::EXPLICIT_MACOS_MAP_FLAG | harmony_keycode;
             let (message, decoded, mapped) =
-                RustDeskConnector::build_explicit_macos_map_message(
-                    marked, true, &mut modifiers,
-                ).expect("marked macOS shortcut key must map");
+                RustDeskConnector::build_explicit_macos_map_message(marked, true, &mut modifiers)
+                    .expect("marked macOS shortcut key must map");
             assert_eq!(decoded, harmony_keycode);
             assert_eq!(mapped, expected_macos_keycode);
             match message.union {
@@ -4571,16 +5976,62 @@ mod tests {
 
     #[test]
     fn macos_physical_letters_and_controls_use_carbon_virtual_keycodes() {
-        assert_eq!(RustDeskConnector::harmony_keycode_to_macos_keycode(2017), Some(0x00));
-        assert_eq!(RustDeskConnector::harmony_keycode_to_macos_keycode(2035), Some(0x01));
-        assert_eq!(RustDeskConnector::harmony_keycode_to_macos_keycode(2020), Some(0x02));
-        assert_eq!(RustDeskConnector::harmony_keycode_to_macos_keycode(2050), Some(0x31));
-        assert_eq!(RustDeskConnector::harmony_keycode_to_macos_keycode(2072), Some(0x3B));
-        assert_eq!(RustDeskConnector::harmony_keycode_to_macos_keycode(2076), Some(0x37));
-        assert_eq!(RustDeskConnector::harmony_keycode_to_macos_keycode(2014), Some(0x7B));
-        assert_eq!(RustDeskConnector::harmony_keycode_to_macos_keycode(2816), Some(0x69));
-        assert_eq!(RustDeskConnector::harmony_keycode_to_macos_keycode(2823), Some(0x5A));
-        assert_eq!(RustDeskConnector::harmony_keycode_to_macos_keycode(2824), None);
+        assert_eq!(
+            RustDeskConnector::harmony_keycode_to_macos_keycode(2017),
+            Some(0x00)
+        );
+        assert_eq!(
+            RustDeskConnector::harmony_keycode_to_macos_keycode(2035),
+            Some(0x01)
+        );
+        assert_eq!(
+            RustDeskConnector::harmony_keycode_to_macos_keycode(2020),
+            Some(0x02)
+        );
+        assert_eq!(
+            RustDeskConnector::harmony_keycode_to_macos_keycode(2050),
+            Some(0x31)
+        );
+        assert_eq!(
+            RustDeskConnector::harmony_keycode_to_macos_keycode(2072),
+            Some(0x3B)
+        );
+        assert_eq!(
+            RustDeskConnector::harmony_keycode_to_macos_keycode(2076),
+            Some(0x37)
+        );
+        assert_eq!(
+            RustDeskConnector::harmony_keycode_to_macos_keycode(2014),
+            Some(0x7B)
+        );
+        assert_eq!(
+            RustDeskConnector::harmony_keycode_to_macos_keycode(2816),
+            Some(0x69)
+        );
+        assert_eq!(
+            RustDeskConnector::harmony_keycode_to_macos_keycode(2823),
+            Some(0x5A)
+        );
+        assert_eq!(
+            RustDeskConnector::harmony_keycode_to_macos_keycode(2824),
+            None
+        );
+    }
+
+    #[test]
+    fn macos_map_covers_harmony_consumer_volume_keys_only() {
+        assert_eq!(
+            RustDeskConnector::harmony_keycode_to_macos_keycode(16),
+            Some(0x48)
+        );
+        assert_eq!(
+            RustDeskConnector::harmony_keycode_to_macos_keycode(17),
+            Some(0x49)
+        );
+        assert_eq!(
+            RustDeskConnector::harmony_keycode_to_macos_keycode(10),
+            None
+        );
     }
 
     #[test]
@@ -4782,12 +6233,7 @@ mod tests {
         });
 
         RustDeskConnector::new()
-            .connect_file_transfer_direct(
-                "127.0.0.1",
-                port,
-                "",
-                r"C:\Users\Public\Documents",
-            )
+            .connect_file_transfer_direct("127.0.0.1", port, "", r"C:\Users\Public\Documents")
             .expect("direct file transfer should use the peer login protocol");
         accept_thread.join().expect("accept thread panicked");
     }

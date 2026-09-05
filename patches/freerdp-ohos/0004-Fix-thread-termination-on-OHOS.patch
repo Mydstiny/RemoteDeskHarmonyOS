@@ -1,0 +1,22 @@
+From 4d645c86e1fdcc6159b2b3a4c4f652e46985f8ba Mon Sep 17 00:00:00 2001
+From: Mydstiny <181178314+Mydstiny@users.noreply.github.com>
+Date: Sun, 30 Aug 2026 15:07:40 +0800
+Subject: [PATCH 4/4] Fix thread termination on OHOS
+
+---
+ winpr/libwinpr/thread/thread.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/winpr/libwinpr/thread/thread.c b/winpr/libwinpr/thread/thread.c
+index a0c5e7d2b829d478eade7cee3e0c424d5649496b..ce03dd385224a0477b0ac6aaa7c30fcefe0acd3e 100644
+--- a/winpr/libwinpr/thread/thread.c
++++ b/winpr/libwinpr/thread/thread.c
+@@ -1040,7 +1040,7 @@ BOOL TerminateThread(HANDLE hThread, DWORD dwExitCode)
+ 	if (!run_mutex_fkt(pthread_mutex_lock, &thread->mutex))
+ 		return FALSE;
+ 
+-#ifndef ANDROID
++#if !defined(ANDROID) && !defined(__OHOS__) && !defined(__MUSL__)
+ 	pthread_cancel(thread->thread);
+ #else
+ 	WLog_ERR(TAG, "Function not supported on this platform!");

@@ -15,6 +15,7 @@ import {
   moonlightCatalogSheetHeight,
   moonlightCatalogGridColumnCount,
   moonlightConnectStagePresentation,
+  moonlightConnectSheetExitPlan,
   moonlightConnectSheetMountReady,
   moonlightCanResizeRendererInPlace,
   moonlightAdaptiveControlModeForSource,
@@ -278,6 +279,21 @@ export default function moonlightUiPolicyTest(): void {
         expect(moonlightConnectSheetMountReady(true, false)).assertFalse();
         expect(moonlightConnectSheetMountReady(true, true)).assertTrue();
         expect(moonlightConnectSheetMountReady(false, true)).assertFalse();
+      });
+
+    it('blocks_protected_connect_sheet_gestures_but_keeps_explicit_cancel_ordered', 0,
+      (): void => {
+        const blocked = moonlightConnectSheetExitPlan('interactive', true, true, true);
+        expect(blocked.blocked).assertTrue();
+        expect(blocked.disconnect).assertFalse();
+        expect(blocked.waitForDisappear).assertFalse();
+        const explicit = moonlightConnectSheetExitPlan('explicit', true, true, true);
+        expect(explicit.blocked).assertFalse();
+        expect(explicit.disconnect).assertTrue();
+        expect(explicit.waitForDisappear).assertTrue();
+        const unprotected = moonlightConnectSheetExitPlan('interactive', false, true, true);
+        expect(unprotected.blocked).assertFalse();
+        expect(unprotected.disconnect).assertTrue();
       });
 
     it('keeps_pad_and_pc_physical_keyboard_enabled_and_separates_immersive_owners', 0,

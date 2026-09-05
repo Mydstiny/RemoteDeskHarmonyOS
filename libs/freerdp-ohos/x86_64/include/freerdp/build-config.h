@@ -1,11 +1,11 @@
 #ifndef FREERDP_BUILD_CONFIG_H
 #define FREERDP_BUILD_CONFIG_H
 
-#define FREERDP_DATA_PATH "C:/Users/14288/DevEcoStudioProjects/RemoteDesktop/build/freerdp-ohos/install-x86_64/share/freerdp3"
+#define FREERDP_DATA_PATH "/opt/freerdp-ohos/x86_64/share/freerdp3"
 #define FREERDP_KEYMAP_PATH ""
 #define FREERDP_PLUGIN_PATH "lib/freerdp3"
 
-#define FREERDP_INSTALL_PREFIX "C:/Users/14288/DevEcoStudioProjects/RemoteDesktop/build/freerdp-ohos/install-x86_64"
+#define FREERDP_INSTALL_PREFIX "/opt/freerdp-ohos/x86_64"
 
 #define FREERDP_LIBRARY_PATH "lib"
 

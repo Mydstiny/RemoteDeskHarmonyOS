@@ -1,4 +1,5 @@
 #include "moonlight/media/MoonlightCommonCAdapter.h"
+#include "common/network_generation_fence.h"
 #include "test/test_runner.h"
 
 #include <algorithm>
@@ -295,6 +296,8 @@ MoonlightCommonCRequest makeRequest(
     request.sessionId = sessionId;
     request.generation = generation;
     request.accountOwnerToken = accountOwnerToken;
+    request.networkGeneration =
+        remotedesk::net::ProcessNetworkGenerationFence().snapshot().generation;
     request.streamConfig.status = MoonlightStreamResultStatus::OfferReady;
     request.streamConfig.code = MoonlightStreamResultCode::None;
     request.streamConfig.identity.ownerToken = accountOwnerToken;
@@ -1245,6 +1248,47 @@ RDP_TEST_CASE(moonlight_common_c_adapter_external_termination_drains_and_rejects
     const auto staleBefore = MoonlightCommonCTestHarness::staleCallbackCount();
     RDP_ASSERT(!MoonlightCommonCTestHarness::connectionTerminated(-1));
     RDP_ASSERT(MoonlightCommonCTestHarness::staleCallbackCount() > staleBefore);
+}
+
+RDP_TEST_CASE(moonlight_common_c_adapter_network_generation_retires_running_media) {
+    auto& fence = remotedesk::net::ProcessNetworkGenerationFence();
+    const auto captured = fence.snapshot();
+    RDP_ASSERT(captured.available);
+    auto owner = MoonlightSessionOwner::createForTesting();
+    auto media = std::make_shared<FakeMediaPort>();
+    auto clock = std::make_shared<std::atomic<std::uint64_t>>(10500U);
+    std::atomic<bool> driven {false};
+    std::atomic<int> interrupts {0};
+    std::atomic<int> stops {0};
+    MoonlightCommonCTestDriver driver {
+        [&]() {
+            driven.store(driveStagesWithNegotiation());
+            return driven.load() ? 0 : -1;
+        },
+        [&]() { ++interrupts; },
+        [&]() { ++stops; }};
+    auto adapter = makeAdapter(*owner, std::move(driver), media, clock);
+    const auto accepted = adapter->start(makeRequest(clock->load(), 798U));
+    RDP_ASSERT_EQ(accepted.status, MoonlightCommonCStartStatus::Accepted);
+    RDP_ASSERT(owner->waitForPhase(
+        accepted.key, MoonlightSessionPhase::Running, 1s));
+
+    RDP_ASSERT(fence.update(true, captured.generation + 1U));
+    adapter->notifyClockForTesting();
+
+    RDP_ASSERT(owner->waitForPhase(
+        accepted.key, MoonlightSessionPhase::Stopped, 1s));
+    RDP_ASSERT_EQ(interrupts.load(), 0);
+    RDP_ASSERT_EQ(stops.load(), 1);
+    const auto snapshot = adapter->snapshot(accepted.key);
+    RDP_ASSERT(snapshot.terminal);
+    RDP_ASSERT(snapshot.secretsCleared);
+    RDP_ASSERT_EQ(snapshot.terminalCode,
+                  MoonlightCommonCCode::NetworkChanged);
+    const auto events = adapter->drainEvents(accepted.key);
+    RDP_ASSERT(!events.empty());
+    RDP_ASSERT_EQ(events.back().type, MoonlightCommonCEventType::Terminated);
+    RDP_ASSERT_EQ(events.back().code, MoonlightCommonCCode::NetworkChanged);
 }
 
 RDP_TEST_CASE(moonlight_common_c_adapter_fake_clock_stage_deadline_only_requests_owner_stop) {

@@ -42,6 +42,7 @@ enum class MoonlightCommonCStartStatus : std::uint8_t {
     Accepted,
     InvalidRequest,
     Busy,
+    NetworkChanged,
     RuntimeProofRequired,
     InternalFailure,
 };
@@ -58,6 +59,7 @@ enum class MoonlightCommonCCode : std::uint8_t {
     AudioNegotiationRejected,
     MediaPortRejected,
     Cancelled,
+    NetworkChanged,
     DeadlineExceeded,
     ConnectionTerminated,
     DriverException,
@@ -204,6 +206,10 @@ struct REMOTEDESK_MOONLIGHT_COMMON_C_HIDDEN MoonlightCommonCRequest final {
     std::uint64_t sessionId = 0U;
     std::uint64_t generation = 0U;
     std::uint64_t accountOwnerToken = 0U;
+    // Exact process default-network generation that produced the authenticated
+    // control-plane winner. Common-c may not start or remain active after it
+    // changes.
+    std::uint64_t networkGeneration = 0U;
     // Product sessions may defer platform/display proof to bindSession() and
     // network classification to common-c's resolved-address STREAM_CFG_AUTO
     // path. In this mode the corresponding capability generations must remain

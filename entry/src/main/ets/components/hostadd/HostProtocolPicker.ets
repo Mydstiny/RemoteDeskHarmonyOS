@@ -30,14 +30,14 @@ export struct HostProtocolPicker {
   }
 
   @Builder private protocolOption(protocol: string, title: string, subtitle: string,
-    enabled: boolean, runtimeAvailable: boolean, entryAvailable: boolean) {
+    state: HostProtocolPickerOptionState) {
     Row() {
       if (protocol === 'moonlight' &&
         resolveMoonlightPickerIconMode(this.moonlightIconFailed) === 'brand') {
         Image(protocolIconDescriptor('moonlight').resource)
           .width(24).height(24)
           .fillColor(resolveHostProtocolPickerIconTint(
-            enabled, this.accentColor, this.pal().text3))
+            state.enabled, this.accentColor, this.pal().text3))
           .margin({ right: 14 })
           .onError((): void => { this.moonlightIconFailed = true; })
       } else {
@@ -45,26 +45,30 @@ export struct HostProtocolPicker {
           protocolIconDescriptor('moonlight').fallback :
           protocolIcon(protocol as ProtocolIconKey)).fontSize(24)
           .fontColor([resolveHostProtocolPickerIconTint(
-            enabled, this.accentColor, this.pal().text3)]).margin({ right: 14 })
+            state.enabled, this.accentColor, this.pal().text3)]).margin({ right: 14 })
       }
       Column() {
         Text(title).fontSize(16).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
         Text(subtitle).fontSize(12).fontColor(this.pal().text3).margin({ top: 3 })
       }.alignItems(HorizontalAlign.Start).layoutWeight(1)
-      if (enabled) {
+      if (state.enabled) {
+        if (state.shellOnly) {
+          Text(state.statusLabel)
+            .fontSize(11).fontColor(this.pal().text2)
+            .padding({ left: 8, right: 8, top: 3, bottom: 3 }).borderRadius(8)
+            .backgroundColor(this.pal().card).margin({ right: 6 })
+        }
         SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(18).fontColor([this.pal().text3])
       } else {
-        Text(resolveHostProtocolPickerOption(protocol, runtimeAvailable, entryAvailable).statusLabel)
+        Text(state.statusLabel)
           .fontSize(11).fontColor(this.pal().text3)
           .padding({ left: 8, right: 8, top: 3, bottom: 3 }).borderRadius(8)
           .backgroundColor(this.pal().surface)
       }
     }.width('100%').height(68).padding({ left: 18, right: 18 })
     .borderRadius(16).backgroundColor(this.pal().surface).margin({ bottom: 10 })
-    .opacity(resolveHostProtocolPickerOption(protocol, runtimeAvailable, entryAvailable).opacity)
+    .opacity(state.opacity)
     .onClick((): void => {
-      const state: HostProtocolPickerOptionState =
-        resolveHostProtocolPickerOption(protocol, runtimeAvailable, entryAvailable);
       dispatchSelectedHostProtocol(state, this.onSelect);
     })
   }
@@ -80,13 +84,17 @@ export struct HostProtocolPicker {
           .width(36).height(36).borderRadius(18).padding(0).backgroundColor(this.pal().surface)
           .onClick((): void => { this.onClose(); })
       }.width('100%').margin({ bottom: 18 })
-      this.protocolOption('rdp', 'RDP', '连接 Windows 远程桌面', true, true, false)
-      this.protocolOption('rustdesk', 'RustDesk', '中继、直连与局域网发现', true, true, false)
-      this.protocolOption('ssh', 'SSH', '密码或密钥登录服务器', true, true, false)
-      this.protocolOption('vnc', 'VNC', '跨平台屏幕控制、直连与 UltraVNC Repeater', true, true, false)
+      this.protocolOption('rdp', 'RDP', '连接 Windows 远程桌面',
+        resolveHostProtocolPickerOption('rdp', true))
+      this.protocolOption('rustdesk', 'RustDesk', '中继、直连与局域网发现',
+        resolveHostProtocolPickerOption('rustdesk', true))
+      this.protocolOption('ssh', 'SSH', '密码或密钥登录服务器',
+        resolveHostProtocolPickerOption('ssh', true))
+      this.protocolOption('vnc', 'VNC', '跨平台屏幕控制、直连与 UltraVNC Repeater',
+        resolveHostProtocolPickerOption('vnc', true))
       this.protocolOption('moonlight', 'Moonlight', '低延迟游戏与桌面串流',
-        this.moonlightProtocolAvailable || this.moonlightFabEntryAvailable,
-        this.moonlightProtocolAvailable, this.moonlightFabEntryAvailable)
+        resolveHostProtocolPickerOption('moonlight',
+          this.moonlightProtocolAvailable, this.moonlightFabEntryAvailable))
       Row() {
         SymbolGlyph($r('sys.symbol.info_circle')).fontSize(16)
           .fontColor([this.accentColor]).margin({ top: 1 })
@@ -96,6 +104,6 @@ export struct HostProtocolPicker {
       }
       .width('100%').padding({ left: 12, right: 12, top: 8, bottom: 2 })
     }.width('100%').padding({ left: 20, right: 20, top: 20, bottom: 18 })
-    .backgroundColor(this.pal().card)
+    .backgroundColor(this.pal().sheetBg)
   }
 }

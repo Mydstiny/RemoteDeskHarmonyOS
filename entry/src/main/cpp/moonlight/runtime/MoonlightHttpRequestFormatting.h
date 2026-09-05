@@ -16,11 +16,18 @@ bool buildMoonlightHttp11GetRequest(std::string_view authorityHost,
                                     std::string_view target,
                                     std::string& output);
 
-// Returns a DNS transport address suitable for TLS SNI. IP literals (including
-// IPv6) intentionally produce no SNI, matching official Moonlight URL
-// construction. A Sunshine display name is never a transport authority.
+// Selects the validated HTTP authority identity independently of the socket
+// candidate. When an IP identity matches a scoped connection candidate, the
+// zone is restored for URI/Host formatting without becoming part of TLS
+// identity.
+std::string moonlightHttpAuthorityHost(std::string_view serverName,
+                                       std::string_view connectAddress);
+
+// Returns a validated DNS server identity suitable for TLS SNI. IP literals
+// (including IPv6) intentionally produce no SNI. A Sunshine display name is
+// never a transport identity.
 std::optional<std::string> moonlightTlsServerName(
-    std::string_view connectAddress);
+    std::string_view serverName);
 
 } // namespace remotedesk::moonlight
 

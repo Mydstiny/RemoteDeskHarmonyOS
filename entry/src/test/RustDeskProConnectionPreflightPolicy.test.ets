@@ -13,9 +13,11 @@ import {
 import { rustDeskProTokenMatchesConnection } from '../main/ets/model/RustDeskProModels';
 import { RemoteHost } from '../main/ets/model/RemoteHost';
 import {
+  rustDeskCardEndpoint,
   rustDeskConnectionError,
   shouldBindLegacyRustDeskHostToRelay
 } from '../main/ets/services/RustDeskHostConfigPolicy';
+import { rustDeskCodecConfigValue } from '../main/ets/services/RustDeskDiagnosticsPolicy';
 
 export default function rustDeskProConnectionPreflightPolicyTest(): void {
   describe('RustDeskProConnectionPreflightPolicy', (): void => {
@@ -41,6 +43,11 @@ export default function rustDeskProConnectionPreflightPolicyTest(): void {
       expect(shouldOpenRustDeskProPreflight('rustdesk', 'manual', false)).assertTrue();
       expect(shouldOpenRustDeskProPreflight('rustdesk', 'rustdesk_pro', true)).assertTrue();
       expect(shouldOpenRustDeskProPreflight('rdp', 'rustdesk_pro', true)).assertFalse();
+    });
+
+    it('preserves_h265_when_the_preflight_establishes_the_video_session', 0, (): void => {
+      expect(rustDeskCodecConfigValue(5)).assertEqual('H265');
+      expect(rustDeskCodecConfigValue(0)).assertEqual('');
     });
 
     it('allows_blank_non_direct_password_for_connect_time_prompt', 0, (): void => {
@@ -112,6 +119,26 @@ export default function rustDeskProConnectionPreflightPolicyTest(): void {
         relayKey: '',
         proManaged: false
       })).assertEqual('');
+    });
+
+    it('accepts_global_ipv6_but_rejects_noncanonical_or_scoped_direct_endpoints', 0, (): void => {
+      expect(rustDeskConnectionError({
+        directEnabled: true, directHost: '2001:db8::20', directPort: 21118,
+        relayId: '', relayExists: false, relayHost: '', relayPort: 0,
+        relayKey: '', proManaged: false
+      })).assertEqual('');
+      expect(rustDeskCardEndpoint(true, '2001:db8::20', 21118, '', 0))
+        .assertEqual('[2001:db8::20]:21118');
+      expect(rustDeskConnectionError({
+        directEnabled: true, directHost: 'fe80::20%wlan0', directPort: 21118,
+        relayId: '', relayExists: false, relayHost: '', relayPort: 0,
+        relayKey: '', proManaged: false
+      })).assertEqual('RustDesk 直连链路本地 IPv6 尚未支持');
+      expect(rustDeskConnectionError({
+        directEnabled: true, directHost: '2001:db8::20:21118junk', directPort: 21118,
+        relayId: '', relayExists: false, relayHost: '', relayPort: 0,
+        relayKey: '', proManaged: false
+      })).assertEqual('RustDesk 直连地址无效');
     });
 
     it('binds_only_a_unique_legacy_endpoint_to_a_relay', 0, (): void => {

@@ -157,7 +157,7 @@ export struct ColorPickerSheet {
       }
       Blank().height(24)
     }.width('100%')
-    .backgroundColor(this.pal().bg).borderRadius(20)
+    .backgroundColor(this.pal().sheetBg).borderRadius(20)
   }
 
   @Builder tabBtn(label: string, idx: number) {

@@ -3,7 +3,8 @@ import {
   MoonlightHost,
   MoonlightSettings,
   MOONLIGHT_DEFAULT_HTTPS_PORT,
-  moonlightAddressKey,
+  canonicalMoonlightAddress,
+  moonlightAddressMatchesKey,
   moonlightHostIsValid,
   moonlightSettingsAreValid
 } from '../model/MoonlightModels';
@@ -12,6 +13,9 @@ import {
   MoonlightHostContext,
   MoonlightNativeLaunchConfiguration
 } from './MoonlightHostService';
+import {
+  moonlightHostAddNativeAddresses
+} from './MoonlightHostAddFlowPolicy';
 import {
   moonlightInstallationId,
   moonlightOwnerScopeFingerprint
@@ -56,23 +60,27 @@ export function moonlightSelectedAddress(host: MoonlightHost,
   const family: string = settings.network.preferredAddressFamily;
   if (family === 'ipv4' || family === 'ipv6') {
     for (let index: number = 0; index < host.addresses.length; index++) {
-      if (host.addresses[index].family === family) { return host.addresses[index]; }
+      if (host.addresses[index].family === family) {
+        return canonicalMoonlightAddress(host.addresses[index]);
+      }
     }
   }
   for (let index: number = 0; index < host.addresses.length; index++) {
-    if (moonlightAddressKey(host.addresses[index]) === host.preferredAddressKey) {
-      return host.addresses[index];
+    if (moonlightAddressMatchesKey(host.addresses[index], host.preferredAddressKey)) {
+      return canonicalMoonlightAddress(host.addresses[index]);
     }
   }
-  return host.addresses[0];
+  return canonicalMoonlightAddress(host.addresses[0]);
 }
 
 export function moonlightSelectedHostAddress(host: MoonlightHost,
   settings: MoonlightSettings): string {
   const selected: MoonlightAddress | null = moonlightSelectedAddress(host, settings);
   if (selected === null) { return ''; }
+  const scope: string = selected.scope === undefined ? '' : selected.scope;
+  const scopedHost: string = selected.host + (scope === '' ? '' : '%' + scope);
   const address: string = selected.family === 'ipv6'
-    ? '[' + selected.host + ']' : selected.host;
+    ? '[' + scopedHost + ']' : scopedHost;
   return address + ':' + selected.port.toString();
 }
 
@@ -97,12 +105,11 @@ export function moonlightRuntimeContext(host: MoonlightHost, lease: AccountSessi
     installationId: moonlightInstallationId(lease.storeIdentity),
     pinnedCertificateSha256: certificateSha256,
     endpoint: {
-      serverName: selected.family === 'hostname' ? selected.host : host.displayName,
-      addresses: [{
-        value: selected.host,
-        family: selected.family === 'ipv4' ? 'ipv4' :
-          selected.family === 'ipv6' ? 'ipv6' : 'unspecified'
-      }],
+      // Display labels are not TLS identities. Bind certificate verification
+      // to the selected canonical DNS/IP endpoint until a separately verified
+      // advertised server name is persisted.
+      serverName: selected.host,
+      addresses: moonlightHostAddNativeAddresses(selected, host.addresses),
       httpPort: selected.port,
       httpsPort: host.httpsPort === undefined ? MOONLIGHT_DEFAULT_HTTPS_PORT :
         host.httpsPort,

@@ -364,6 +364,42 @@ public:
         result.decoderCodecLatencyMs = telemetry.codecLatencyMs;
         result.decoderCodecLatencyMaxMs = telemetry.codecLatencyMaxMs;
         result.decoderLowLatencyEnabled = telemetry.lowLatencyEnabled;
+        result.presentation.decoderGeneration = telemetry.decoderGeneration;
+        result.presentation.rendererGeneration = telemetry.rendererGeneration;
+        result.presentation.desktopSurfaceCompatibility =
+            telemetry.desktopSurfaceCompatibility;
+        result.presentation.nativeImagePresentation =
+            Render::NativeImagePresentationModeName(telemetry.presentationMode);
+        result.presentation.producerTransform =
+            Render::NativeImageTransformClassName(
+                telemetry.producerTransformClass);
+        result.presentation.appliedTransform =
+            Render::NativeImageTransformClassName(
+                telemetry.appliedTransformClass);
+        result.presentation.producerTransformSampled =
+            telemetry.producerTransformSampled;
+        result.presentation.producerTransformReadResult =
+            telemetry.producerTransformReadResult;
+        result.presentation.producerTransformSamples =
+            telemetry.producerTransformSamples;
+        result.presentation.producerTransformChanges =
+            telemetry.producerTransformChanges;
+        result.presentation.producerTransformReadFailures =
+            telemetry.producerTransformReadFailures;
+        result.presentation.producerTransformClassMask =
+            telemetry.producerTransformClassMask;
+        result.presentation.producerTransformMatrix =
+            telemetry.producerTransformMatrix;
+        result.presentation.appliedTextureTransform =
+            telemetry.appliedTextureTransform;
+        result.presentation.rendererTransformValid =
+            telemetry.rendererTransformValid;
+        result.presentation.rendererTransformVersion =
+            telemetry.rendererTransformVersion;
+        result.presentation.rendererRotationQuarterTurns =
+            telemetry.rendererRotationQuarterTurns;
+        result.presentation.rendererFlipX = telemetry.rendererFlipX;
+        result.presentation.rendererFlipY = telemetry.rendererFlipY;
         return result;
     }
 

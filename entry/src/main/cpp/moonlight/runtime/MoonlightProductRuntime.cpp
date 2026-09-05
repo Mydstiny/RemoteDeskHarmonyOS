@@ -8,6 +8,7 @@
 #include "moonlight/runtime/MoonlightHttpResponseFraming.h"
 #include "moonlight/runtime/MoonlightProductStreamingRuntime.h"
 #include "moonlight/runtime/MoonlightRequestUuid.h"
+#include "common/happy_eyeballs_connector.h"
 
 #include <openssl/crypto.h>
 #include <openssl/evp.h>
@@ -17,10 +18,8 @@
 
 #include <algorithm>
 #include <array>
-#include <atomic>
 #include <cerrno>
 #include <chrono>
-#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -35,7 +34,6 @@
 #include <signal.h>
 #include <string>
 #include <sys/socket.h>
-#include <thread>
 #include <unistd.h>
 #include <unordered_map>
 #include <unordered_set>
@@ -47,7 +45,6 @@ namespace {
 
 constexpr std::size_t kMaxHeaderBytes = 64U * 1024U;
 constexpr std::chrono::milliseconds kPollSlice{100};
-constexpr int kMaxConcurrentResolvers = 4;
 
 std::uint64_t monotonicMilliseconds() noexcept {
     return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -230,11 +227,6 @@ WaitResult waitForSocket(int descriptor, short events,
     return WaitResult::Timeout;
 }
 
-bool setNonBlocking(int descriptor) noexcept {
-    const int flags = ::fcntl(descriptor, F_GETFL, 0);
-    return flags >= 0 && ::fcntl(descriptor, F_SETFL, flags | O_NONBLOCK) == 0;
-}
-
 class ScopedSigpipeBlocker final {
 public:
     ScopedSigpipeBlocker() noexcept {
@@ -275,164 +267,30 @@ private:
     bool signalWasPending_ = false;
 };
 
-struct ResolvedAddress final {
-    sockaddr_storage storage{};
-    socklen_t length = 0;
-    int family = AF_UNSPEC;
-    int socktype = SOCK_STREAM;
-    int protocol = 0;
-};
-
-struct ResolveState final {
-    std::mutex mutex;
-    std::condition_variable condition;
-    std::vector<ResolvedAddress> addresses;
-    int lookupResult = EAI_FAIL;
-    bool done = false;
-    bool abandoned = false;
-};
-
-std::atomic<int> gActiveResolvers{0};
-
-void copyResolvedAddresses(addrinfo* source,
-                           std::vector<ResolvedAddress>& destination) {
-    for (addrinfo* item = source;
-         item != nullptr && destination.size() < MoonlightHostLimits::kMaxAddresses;
-         item = item->ai_next) {
-        if (item->ai_addr == nullptr || item->ai_addrlen <= 0 ||
-            static_cast<std::size_t>(item->ai_addrlen) > sizeof(sockaddr_storage)) {
-            continue;
-        }
-        ResolvedAddress address;
-        std::memcpy(&address.storage, item->ai_addr,
-                    static_cast<std::size_t>(item->ai_addrlen));
-        address.length = static_cast<socklen_t>(item->ai_addrlen);
-        address.family = item->ai_family;
-        address.socktype = item->ai_socktype;
-        address.protocol = item->ai_protocol;
-        destination.push_back(address);
-    }
-}
-
 WaitResult resolveAddresses(
     const std::string& host, const std::string& port,
     MoonlightHostAddressFamily family,
     std::chrono::steady_clock::time_point deadline,
     const MoonlightHostTransport::CancellationProbe& cancellationProbe,
-    std::vector<ResolvedAddress>& addresses) {
-    if (cancelled(cancellationProbe)) {
-        return WaitResult::Cancelled;
-    }
-    if (deadlineExpired(deadline)) {
-        return WaitResult::Timeout;
-    }
-
-    addrinfo hints{};
-    hints.ai_socktype = SOCK_STREAM;
-    hints.ai_family = family == MoonlightHostAddressFamily::Ipv4 ? AF_INET :
+    std::vector<remotedesk::net::ResolvedAddress>& addresses) {
+    const int requestedFamily = family == MoonlightHostAddressFamily::Ipv4 ? AF_INET :
         family == MoonlightHostAddressFamily::Ipv6 ? AF_INET6 : AF_UNSPEC;
-
-    // Numeric discovery results are the overwhelmingly common path and can
-    // be parsed synchronously without consulting DNS or exceeding a deadline.
-    hints.ai_flags = AI_NUMERICHOST | AI_NUMERICSERV;
-    addrinfo* numeric = nullptr;
-    const int numericResult = ::getaddrinfo(host.c_str(), port.c_str(), &hints, &numeric);
-    if (numericResult == 0 && numeric != nullptr) {
-        std::unique_ptr<addrinfo, decltype(&freeaddrinfo)> guard(numeric, freeaddrinfo);
-        copyResolvedAddresses(guard.get(), addresses);
+    auto resolved = remotedesk::net::ResolveTcpAddresses(
+        host, port, deadline, cancellationProbe, requestedFamily,
+        MoonlightHostLimits::kMaxAddresses);
+    addresses = std::move(resolved.addresses);
+    switch (resolved.status) {
+    case remotedesk::net::ResolveStatus::Ready:
         return addresses.empty() ? WaitResult::Error : WaitResult::Ready;
-    }
-    if (numeric != nullptr) {
-        ::freeaddrinfo(numeric);
-    }
-
-    const int previousResolvers = gActiveResolvers.fetch_add(1, std::memory_order_acq_rel);
-    if (previousResolvers >= kMaxConcurrentResolvers) {
-        gActiveResolvers.fetch_sub(1, std::memory_order_acq_rel);
+    case remotedesk::net::ResolveStatus::Cancelled:
+        return WaitResult::Cancelled;
+    case remotedesk::net::ResolveStatus::TimedOut:
+        return WaitResult::Timeout;
+    case remotedesk::net::ResolveStatus::Failed:
+    case remotedesk::net::ResolveStatus::ResourceExhausted:
         return WaitResult::Error;
     }
-
-    auto state = std::make_shared<ResolveState>();
-    std::thread resolver;
-    try {
-        resolver = std::thread([state, host, port, family]() {
-            struct ResolverCounter final {
-                ~ResolverCounter() {
-                    gActiveResolvers.fetch_sub(1, std::memory_order_acq_rel);
-                }
-            } counter;
-            addrinfo workerHints{};
-            workerHints.ai_socktype = SOCK_STREAM;
-            workerHints.ai_family = family == MoonlightHostAddressFamily::Ipv4 ? AF_INET :
-                family == MoonlightHostAddressFamily::Ipv6 ? AF_INET6 : AF_UNSPEC;
-            addrinfo* raw = nullptr;
-            int result = EAI_FAIL;
-            std::vector<ResolvedAddress> copied;
-            try {
-                result = ::getaddrinfo(host.c_str(), port.c_str(), &workerHints, &raw);
-                if (result == 0 && raw != nullptr) {
-                    copyResolvedAddresses(raw, copied);
-                }
-            } catch (...) {
-                result = EAI_MEMORY;
-                copied.clear();
-            }
-            if (raw != nullptr) {
-                ::freeaddrinfo(raw);
-            }
-            {
-                std::lock_guard<std::mutex> lock(state->mutex);
-                state->lookupResult = result;
-                if (!state->abandoned) {
-                    state->addresses = std::move(copied);
-                }
-                state->done = true;
-            }
-            state->condition.notify_one();
-        });
-    } catch (...) {
-        gActiveResolvers.fetch_sub(1, std::memory_order_acq_rel);
-        return WaitResult::Error;
-    }
-
-    WaitResult result = WaitResult::Ready;
-    bool resolverDone = false;
-    {
-        std::unique_lock<std::mutex> lock(state->mutex);
-        while (!state->done) {
-            if (cancelled(cancellationProbe)) {
-                state->abandoned = true;
-                result = WaitResult::Cancelled;
-                break;
-            }
-            if (deadlineExpired(deadline)) {
-                state->abandoned = true;
-                result = WaitResult::Timeout;
-                break;
-            }
-            const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
-                deadline - std::chrono::steady_clock::now());
-            state->condition.wait_for(lock, std::max(
-                std::chrono::milliseconds(1), std::min(remaining, kPollSlice)));
-        }
-        resolverDone = state->done;
-        if (result == WaitResult::Ready) {
-            if (state->lookupResult != 0 || state->addresses.empty()) {
-                result = WaitResult::Error;
-            } else {
-                addresses = std::move(state->addresses);
-            }
-        }
-    }
-    if (resolverDone) {
-        resolver.join();
-    } else {
-        // libc does not expose portable resolver cancellation. The detached
-        // worker owns its copied state and the bounded gate prevents runaway
-        // threads when a resolver remains stuck after the caller's deadline.
-        resolver.detach();
-    }
-    return result;
+    return WaitResult::Error;
 }
 
 class SocketGuard final {
@@ -526,7 +384,7 @@ public:
         }
 
         const std::string port = std::to_string(request.port());
-        std::vector<ResolvedAddress> addresses;
+        std::vector<remotedesk::net::ResolvedAddress> addresses;
         const WaitResult resolve = resolveAddresses(
             request.connectAddress(), port, request.family(), deadline,
             cancellationProbe, addresses);
@@ -542,44 +400,33 @@ public:
             outcome.error = MoonlightTransportError::DnsFailure;
             return outcome;
         }
-        SocketGuard socket;
         outcome.stage = MoonlightTransportStage::Connect;
-        for (const ResolvedAddress& address : addresses) {
-            SocketGuard candidate(::socket(address.family, address.socktype,
-                                            address.protocol));
-            if (candidate.get() < 0 || !setNonBlocking(candidate.get())) { continue; }
-            const int connectResult = ::connect(
-                candidate.get(), reinterpret_cast<const sockaddr*>(&address.storage),
-                address.length);
-            if (connectResult == 0) {
-                socket = std::move(candidate);
-                break;
-            }
-            if (errno != EINPROGRESS) { continue; }
-            const WaitResult wait = waitForSocket(candidate.get(), POLLOUT, deadline,
-                                                   cancellationProbe);
-            if (wait == WaitResult::Cancelled) {
-                outcome.error = MoonlightTransportError::Cancelled;
-                return outcome;
-            }
-            if (wait == WaitResult::Timeout) {
-                outcome.error = MoonlightTransportError::Timeout;
-                return outcome;
-            }
-            if (wait != WaitResult::Ready) { continue; }
-            int socketError = 0;
-            socklen_t socketErrorLength = sizeof(socketError);
-            if (::getsockopt(candidate.get(), SOL_SOCKET, SO_ERROR, &socketError,
-                             &socketErrorLength) != 0 || socketError != 0) {
-                continue;
-            }
-            socket = std::move(candidate);
-            break;
+        remotedesk::net::ConnectOptions connectOptions;
+        connectOptions.deadline = deadline;
+        connectOptions.cancelled = cancellationProbe;
+        // Product HTTP/TLS helpers already operate on non-blocking sockets.
+        connectOptions.restoreBlocking = false;
+        const remotedesk::net::ConnectResult connection =
+            remotedesk::net::ConnectTcpCandidates(addresses, connectOptions);
+        if (connection.status == remotedesk::net::ConnectStatus::Cancelled) {
+            outcome.error = MoonlightTransportError::Cancelled;
+            return outcome;
         }
-        if (socket.get() < 0) {
+        if (connection.status == remotedesk::net::ConnectStatus::TimedOut) {
+            outcome.error = MoonlightTransportError::Timeout;
+            return outcome;
+        }
+        if (connection.status != remotedesk::net::ConnectStatus::Connected ||
+            connection.descriptor < 0) {
             outcome.error = MoonlightTransportError::ConnectFailure;
             return outcome;
         }
+        SocketGuard socket(connection.descriptor);
+        outcome.resolvedAddress = connection.numericAddress;
+        outcome.resolvedFamily = connection.family == AF_INET6
+            ? MoonlightHostAddressFamily::Ipv6
+            : connection.family == AF_INET ? MoonlightHostAddressFamily::Ipv4
+                                            : MoonlightHostAddressFamily::Unspecified;
 
         std::optional<Binding> binding;
         if (request.scheme() == MoonlightHostScheme::Https) {
@@ -627,7 +474,7 @@ public:
                 return outcome;
             }
             const auto tlsServerName =
-                moonlightTlsServerName(request.connectAddress());
+                moonlightTlsServerName(request.serverName());
             if (tlsServerName.has_value() &&
                 SSL_set_tlsext_host_name(
                     ssl.get(), tlsServerName->c_str()) != 1) {
@@ -670,7 +517,9 @@ public:
 
         outcome.stage = MoonlightTransportStage::Http;
         std::string requestText;
-        if (!buildMoonlightHttp11GetRequest(request.connectAddress(), request.port(),
+        const std::string authorityHost = moonlightHttpAuthorityHost(
+            request.serverName(), request.connectAddress());
+        if (!buildMoonlightHttp11GetRequest(authorityHost, request.port(),
                                             requestTarget(request), requestText)) {
             outcome.error = MoonlightTransportError::ProtocolFailure;
             return outcome;
@@ -1808,6 +1657,8 @@ private:
             pairingRequest.serverUuid = request.serverUuid;
             pairingRequest.hostLabel = request.hostId;
             pairingRequest.serverMajorVersion = serverMajorVersion;
+            pairingRequest.expectedNetworkGeneration =
+                serverInfo.networkGeneration;
             pairingRequest.timeout = request.timeout;
             pairingRequest.allowLegacySha1 = request.allowLegacySha1;
             pairingRequest.pin = MoonlightSecureBuffer(std::move(request.pin));
@@ -1825,6 +1676,7 @@ private:
             cleanup.key = hostKey(request.key);
             cleanup.operation = MoonlightHostOperation::Unpair;
             cleanup.endpoint = request.endpoint;
+            cleanup.expectedNetworkGeneration = serverInfo.networkGeneration;
             cleanup.timeout = std::min(
                 request.timeout, MoonlightHostLimits::kDefaultTimeout);
             const MoonlightHostResult cleanupResult =
@@ -2103,6 +1955,7 @@ private:
             stage.hostId = request.hostId;
             stage.serverUuid = request.serverUuid;
             stage.address = *source.sessionAddress;
+            stage.networkGeneration = source.sessionNetworkGeneration;
             stage.appId = request.appId;
             stage.configuration = effectiveLaunchConfiguration;
             stage.serverInfo = std::move(*source.sessionServerInfo);

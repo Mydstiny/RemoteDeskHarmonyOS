@@ -22,6 +22,19 @@ export interface SshTerminalTabView {
   active: boolean;
 }
 
+/** Page exit tears down every tab, so a background tab must protect the page
+ * from shortcut exit even when the currently selected tab is disconnected. */
+export function sshTerminalTabsHaveLiveSession(tabs: SshTerminalTabView[]): boolean {
+  for (let index: number = 0; index < tabs.length; index++) {
+    const tab: SshTerminalTabView = tabs[index];
+    if (tab.sessionId > 0 || tab.state === 'connecting' ||
+      tab.state === 'connected' || tab.state === 'reconnecting') {
+      return true;
+    }
+  }
+  return false;
+}
+
 /**
  * ArkUI ForEach preserves an item while its key is stable. Tab chrome must be
  * rebuilt when any visible tab metadata changes, while terminal surfaces keep

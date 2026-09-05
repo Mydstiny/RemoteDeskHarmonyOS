@@ -13,6 +13,7 @@ enum class NativeImagePresentationMode : uint8_t {
     Identity = 0,
     ProducerTransform = 1,
     ValidatedProducerTransform = 2,
+    VerticalFlipProducerTransform = 3,
 };
 
 enum class NativeImageTransformClass : uint8_t {
@@ -52,9 +53,10 @@ inline NativeImageTransformClass ClassifyNativeImageProducerTransform(
  * Return the texture transform for an encoded remote-desktop frame.
  *
  * The transform source is an explicit protocol decision. A protocol may use
- * identity, trust every finite producer matrix, or accept only the eight
- * axis-aligned transforms understood by this renderer. Peer platform labels
- * never select or reinterpret a matrix.
+ * identity, trust every finite producer matrix, accept the eight axis-aligned
+ * transforms understood by this renderer, or restrict the producer metadata
+ * to the vertical origin correction used by PC remote-desktop decoders. Peer
+ * platform labels never select or reinterpret a matrix.
  */
 inline NativeImageTransform ResolveNativeImagePresentationTransform(
     NativeImagePresentationMode mode,
@@ -63,6 +65,20 @@ inline NativeImageTransform ResolveNativeImagePresentationTransform(
     const NativeImageTransform& previous) {
     if (mode == NativeImagePresentationMode::Identity) {
         return IdentityNativeImageTransform();
+    }
+    if (mode == NativeImagePresentationMode::VerticalFlipProducerTransform) {
+        const NativeImageTransformClass transformClass =
+            ClassifyNativeImageProducerTransform(readResult, matrix);
+        if (transformClass == NativeImageTransformClass::Identity) {
+            return IdentityNativeImageTransform();
+        }
+        // A decoded computer desktop has no sensor orientation. The producer
+        // matrix may still correct the OES top/bottom texture origin, but a
+        // rotation, horizontal mirror, axis swap, or failed read is unsafe on
+        // PC NativeImage implementations and must not retain an older matrix.
+        if (transformClass != NativeImageTransformClass::FlipY) {
+            return IdentityNativeImageTransform();
+        }
     }
     if (readResult != 0 || matrix == nullptr) {
         return previous;
@@ -88,6 +104,17 @@ inline NativeImageTransform ResolveNativeImagePresentationTransform(
 
 inline bool NativeImageTransformNearlyEqual(float left, float right) {
     return std::isfinite(left) && std::fabs(left - right) <= 0.01f;
+}
+
+inline bool NativeImageTransformsNearlyEqual(
+    const NativeImageTransform& left,
+    const NativeImageTransform& right) noexcept {
+    for (size_t index = 0; index < left.size(); ++index) {
+        if (!NativeImageTransformNearlyEqual(left[index], right[index])) {
+            return false;
+        }
+    }
+    return true;
 }
 
 inline NativeImageTransformClass ClassifyNativeImageProducerTransform(
@@ -194,6 +221,8 @@ inline const char* NativeImagePresentationModeName(
             return "producer";
         case NativeImagePresentationMode::ValidatedProducerTransform:
             return "validated_producer";
+        case NativeImagePresentationMode::VerticalFlipProducerTransform:
+            return "vertical_flip_producer";
         case NativeImagePresentationMode::Identity:
         default:
             return "identity";

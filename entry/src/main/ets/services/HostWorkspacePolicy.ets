@@ -1,5 +1,21 @@
 import { ConnectionHealth, RemoteHost } from '../model/RemoteHost';
 
+const HOST_LIST_FAB_CLEARANCE_GAP_VP: number = 20;
+
+export function hostListFabSizeVp(breakpoint: string): number {
+  return breakpoint === 'xl' ? 64 : 56;
+}
+
+export function hostListFabLiftVp(breakpoint: string): number {
+  return breakpoint === 'sm' ? 120 : 100;
+}
+
+/** Keep the final host card completely above the floating add button. */
+export function hostListBottomSpacerVp(breakpoint: string): number {
+  return hostListFabLiftVp(breakpoint) + hostListFabSizeVp(breakpoint) +
+    HOST_LIST_FAB_CLEARANCE_GAP_VP;
+}
+
 export function normalizeGroupId(value: string): string {
   return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
 }

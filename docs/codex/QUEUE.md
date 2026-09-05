@@ -1,18 +1,22 @@
 # RemoteDesk Queue
 
-Updated: 2026-08-29 Asia/Shanghai
+Updated: 2026-09-04 Asia/Shanghai
 
 ## Now
 
-1. Upgrade a preserved 1.1.3 install to 1.1.4 and verify the update popup appears once, contains only the 10 current 1.1.4 pages, starts with the 1.1.4 summary, contains no 1.1.3 page and ends with `welcome-1-1-4`; reopen it from Settings and verify a reused high legacy page index cannot restore pages 10–21 or flash a stale count.
-2. Validate the per-protocol wheel editor and direction matrix on device: change one protocol without affecting the other four; exercise all-normal/all-reverse; cover RDP/RustDesk/VNC physical mouse, physical touchpad and virtual touchpad; Moonlight physical and virtual input; SSH scrollback, alternate buffer and mouse tracking; confirm SFTP is unaffected.
-3. On a HarmonyOS PC viewer, validate the new RustDesk per-host flip popup against affected Windows peers: all three modes, absolute/relative mouse mapping, remote cursor, PIP/foreground restore, reconnect persistence and stale computer metadata resolving to a mobile peer.
-4. On the fixed HAP now installed at `192.168.3.235:38451`, verify login survives the historical migration `401`, exact-owner hashed data remains visible, local CRUD survives restart/offline use, and canonical/cloud recovery does not resurrect stale rows.
-5. On `.235`, complete the already-queued RustDesk/RDP/VNC/Moonlight sidebar keyboard-close, scrolling, drag/bounds, touch isolation and phone immersive-bar acceptance.
-6. Decide whether `192.168.3.236:40123` may be destructively uninstalled for the debug HAP or requires a matching release-provisioned acceptance HAP; preserve its existing data until explicitly authorized.
+1. Run one consolidated feedback-batch device acceptance on HarmonyOS PC: Moonlight/RustDesk hardware-decoder flip and four visual/control combinations; RDP transient credentials, fullscreen pointer mapping, resolution negotiation/scaling and black-border behavior; Dock minimize input fencing; RustDesk nested toolbar, explicit H.265 negotiation/hardware decode, codec telemetry and bidirectional clipboard; SSH common commands; button-only exit; long classic host list; and the simplified Harmony shortcut settings, including the icon, current-device tab, explicit open/close wording, PC first-use four-protocol default and persistence after manual changes.
+2. When a flip reproduces, export the schema-v4 diagnostic JSONL before reconnecting. Verify it contains one coherent redacted producer class, raw producer matrix, decoder-applied matrix, presentation mode, renderer manual transform, renderer registry generation and decoder binding generation; attach the capture for root-cause classification.
+3. Reproduce the intermittent RDP disconnect with Application state, RDP connection and routing/gateway diagnostics selected and matching HDC hilog. Preserve the exact native ErrorInfo or symbolic fallback, transport-end reason, network generation/availability and reconnect timeline. A server `0x10` now requires strict `[E-RDP-ERRINFO-0x00000010]` evidence and means remote Windows DWM crashed; client/network termination displays `E-RDP-SESSION-END-UNCLASSIFIED` instead of fabricating `0x10`.
+4. Run per-protocol M1-M3 device acceptance on HarmonyOS Phone/Pad/PC: IPv6 literal, AAAA-only, A/AAAA fallback, scope, save/restart, trust/preflight, real control/data traffic, same-network reconnect and route-generation change. Include RDP direct/Gateway, RustDesk ID/relay/direct/presence/file transfer, SSH direct/proxy/1-3 jump/forwarding/SFTP, VNC direct/repeater/TLS and Moonlight discovery/control/media.
+5. Validate the completed RustDesk M4 UDP/KCP state machine against fixed-version hbbs/hbbr and controlled peers across symmetric NAT, CGNAT, UDP-blocked, TCP-only, global/IPv6-only, NAT64 and relay fallback before enabling AUTO, UDP/KCP or `nat_traversal_ipv6`.
 
 ## Next
 
-1. Add real-RDB fault-injection coverage for empty-table clear, unsafe VNC/Moonlight rows and higher-version account sources.
-2. Complete app-clone acceptance on release-provisioned phone and tablet without clearing existing data.
-3. Run Android RustDesk portrait/landscape display, touch and settings-accordion acceptance for the prior increment.
+1. Triage any consolidated device findings against the committed item boundary; use the schema-v4 generation/matrix chain for flip issues, verify RustDesk H.265 with `preflight config=H265`, `ffiCfg codec=5(H265)` and actual frame `codec=1`, and use the new RDP `source`/`code` classification to identify the original intermittent-disconnect source. Preserve the exact protocol, device type, window mode, decoder and reproduction sequence.
+2. The user authorized merging before device acceptance on 2026-09-05. Push the reviewed branch, open the PR, pass `open-source-compliance`, merge to `main` and clean the merged branch; retain the device/topology acceptance items above as follow-up work.
+
+## Later
+
+1. Add a controllable Moonlight ProductStreaming accepted-to-active synchronous terminal barrier regression.
+2. Extend network diagnostics from configured/candidate IP family facts to the resolver's actual winning family, owner and sanitized fallback stage.
+3. Add real-RDB fault injection, app-clone acceptance and the remaining Android RustDesk orientation/settings acceptance.

@@ -4,9 +4,11 @@
 #include "moonlight/media/MoonlightVideoBridge.h"
 
 #include <chrono>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <string>
 
 #if defined(__GNUC__) || defined(__clang__)
 #define REMOTEDESK_MOONLIGHT_DECODER_HIDDEN __attribute__((visibility("hidden")))
@@ -133,6 +135,29 @@ enum class MoonlightDecoderPortStopStatus : std::uint8_t {
     Failed,
 };
 
+struct REMOTEDESK_MOONLIGHT_DECODER_HIDDEN
+MoonlightPresentationDiagnostics final {
+    std::uint64_t decoderGeneration = 0U;
+    std::uint64_t rendererGeneration = 0U;
+    bool desktopSurfaceCompatibility = false;
+    std::string nativeImagePresentation = "identity";
+    std::string producerTransform = "not_sampled";
+    std::string appliedTransform = "not_sampled";
+    bool producerTransformSampled = false;
+    std::int32_t producerTransformReadResult = 0;
+    std::uint64_t producerTransformSamples = 0U;
+    std::uint64_t producerTransformChanges = 0U;
+    std::uint64_t producerTransformReadFailures = 0U;
+    std::uint32_t producerTransformClassMask = 0U;
+    std::array<float, 16> producerTransformMatrix {};
+    std::array<float, 16> appliedTextureTransform {};
+    bool rendererTransformValid = false;
+    std::uint64_t rendererTransformVersion = 0U;
+    std::int32_t rendererRotationQuarterTurns = 0;
+    bool rendererFlipX = false;
+    bool rendererFlipY = false;
+};
+
 struct REMOTEDESK_MOONLIGHT_DECODER_HIDDEN MoonlightDecoderPresentationSnapshot final {
     bool matched = false;
     bool running = false;
@@ -152,6 +177,7 @@ struct REMOTEDESK_MOONLIGHT_DECODER_HIDDEN MoonlightDecoderPresentationSnapshot 
     std::int64_t decoderCodecLatencyMs = 0;
     std::int64_t decoderCodecLatencyMaxMs = 0;
     bool decoderLowLatencyEnabled = false;
+    MoonlightPresentationDiagnostics presentation {};
 };
 
 class REMOTEDESK_MOONLIGHT_DECODER_HIDDEN MoonlightOwnedDecoderPort {
@@ -241,6 +267,7 @@ struct REMOTEDESK_MOONLIGHT_DECODER_HIDDEN MoonlightVideoDecoderSnapshot final {
     std::int64_t decoderCodecLatencyMs = 0;
     std::int64_t decoderCodecLatencyMaxMs = 0;
     bool decoderLowLatencyEnabled = false;
+    MoonlightPresentationDiagnostics presentation {};
 };
 
 class REMOTEDESK_MOONLIGHT_DECODER_HIDDEN MoonlightOwnedVideoDecoderSink final

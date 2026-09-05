@@ -10,6 +10,7 @@ import {
 @Component
 export struct SshSessionLogSheet {
   @StorageProp('accentColor') accentColor: string = '#007DFF';
+  @Prop sheetBackgroundColor: string = '#171D25';
   @Prop document: SshSessionLogDocumentV1;
   @Prop results: Array<SshSessionLogSearchHitV1>;
   @Prop ready: boolean = false;
@@ -107,6 +108,6 @@ export struct SshSessionLogSheet {
           this.ResultList()
         }.width('100%').padding({ left: 16, right: 16, bottom: 18 })
       }.layoutWeight(1).width('100%').scrollBar(BarState.Auto)
-    }.width('100%').height('100%').backgroundColor('#171D25')
+    }.width('100%').height('100%').backgroundColor(this.sheetBackgroundColor)
   }
 }

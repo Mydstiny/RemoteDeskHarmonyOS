@@ -12,6 +12,14 @@ RDP_TEST_CASE(vnc_keymap_covers_extended_function_keys_and_system_controls) {
     RDP_ASSERT_EQ(VncRfbEngine::keySymForHarmonyCodeForTesting(2074), 0xFFE5U);
 }
 
+RDP_TEST_CASE(vnc_keymap_maps_harmony_consumer_keys_to_xf86_keysyms) {
+    RDP_ASSERT_EQ(VncRfbEngine::keySymForHarmonyCodeForTesting(10), 0x1008FF14U);
+    RDP_ASSERT_EQ(VncRfbEngine::keySymForHarmonyCodeForTesting(12), 0x1008FF17U);
+    RDP_ASSERT_EQ(VncRfbEngine::keySymForHarmonyCodeForTesting(13), 0x1008FF16U);
+    RDP_ASSERT_EQ(VncRfbEngine::keySymForHarmonyCodeForTesting(16), 0x1008FF13U);
+    RDP_ASSERT_EQ(VncRfbEngine::keySymForHarmonyCodeForTesting(17), 0x1008FF11U);
+}
+
 RDP_TEST_CASE(vnc_keymap_covers_numeric_keypad_controls) {
     RDP_ASSERT_EQ(VncRfbEngine::keySymForHarmonyCodeForTesting(2103), 0xFFB0U);
     RDP_ASSERT_EQ(VncRfbEngine::keySymForHarmonyCodeForTesting(2112), 0xFFB9U);

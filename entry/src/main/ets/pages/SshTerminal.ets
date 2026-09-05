@@ -27,7 +27,7 @@
 import { KeyboardAvoidMode, promptAction, router, window } from '@kit.ArkUI';
 import { common } from '@kit.AbilityKit';
 import { util } from '@kit.ArkTS';
-import { unifiedDataChannel, uniformTypeDescriptor } from '@kit.ArkData';
+import { preferences, unifiedDataChannel, uniformTypeDescriptor } from '@kit.ArkData';
 import { pasteboard, BusinessError } from '@kit.BasicServicesKit';
 import { fileIo, picker } from '@kit.CoreFileKit';
 import { inputDevice, KeyCode } from '@kit.InputKit';
@@ -73,6 +73,12 @@ import {
   remoteSessionLocalHandoffFailureOwnsSession
 } from '../services/RemoteSessionTerminationPolicy';
 import { AccountSessionCoordinator } from '../services/AccountSessionCoordinator';
+import { DataCrypto } from '../services/DataCrypto';
+import {
+  formatEndpointFieldsHostPort,
+  formatListenerHostPort,
+  formatUserAtHost
+} from '../services/EndpointAddressPolicy';
 import { RemoteProtocol } from '../services/RemoteSessionState';
 import { KeyVaultService } from '../services/KeyVaultService';
 import { RemoteHost } from '../model/RemoteHost';
@@ -87,6 +93,14 @@ import {
 import { GUIDE_ALWAYS_VISIBLE_STORAGE_KEY } from '../services/GuideVisibilityPolicy';
 import { GuideVisibilityService } from '../services/GuideVisibilityService';
 import { SSH_REVERSE_WHEEL_KEY } from '../services/RemoteWheelPreferencePolicy';
+import { SSH_PINCH_ZOOM_ENABLED_KEY } from '../services/RemotePinchZoomPreferencePolicy';
+import {
+  REMOTE_SESSION_QUICK_EXIT_DISABLED_KEY,
+  RemoteSessionQuickExitRestoreState,
+  remoteSessionShortcutExitAllowed,
+  resolveRemoteSessionQuickExitRestore,
+  shouldConsumeRemoteSessionBack
+} from '../services/RemoteSessionTopBarPolicy';
 import { showLockGate, lockGateErrorMessage } from '../components/LockGate';
 import { SshXtermSurface, XtermOutputBuffer } from '../components/SshXtermSurface';
 import { SshTerminalSearchBar } from '../components/ssh/search/SshTerminalSearchBar';
@@ -118,8 +132,6 @@ import {
   SshJumpHop,
   SshJumpHopHandoff,
   SshPrivateKeyInfo,
-  SshRoute,
-  SshRouteType,
   SshAuthPrompt,
   SshAuthPromptRequest,
   SshAuthPromptResponse,
@@ -127,6 +139,12 @@ import {
   TerminalCoreMode
 } from '../types/rdpnapi';
 import { SshPreflightService } from '../services/SshPreflightService';
+import {
+  sshOperationRouteHasNonReplayableAuthentication,
+  sshOperationRouteSecretPublishAllowed,
+  SshOperationRouteSecretScope,
+  SshOperationRouteSecretService
+} from '../services/SshOperationRouteSecretService';
 import {
   decideSshBackgroundSignalAction,
   SshBackgroundSignalTaskRegistry,
@@ -189,6 +207,7 @@ import {
 } from '../services/SshTerminalOrientationPolicy';
 import {
   sshTerminalTabChromeRenderKey,
+  sshTerminalTabsHaveLiveSession,
   SshTerminalTabStore,
   SshTerminalTabCloseResult,
   SshTerminalTabView,
@@ -209,6 +228,7 @@ import {
 } from '../services/SshXtermTabSurfacePolicy';
 import { VirtualKeyBar } from '../components/VirtualKeyBar';
 import {
+  SSH_DEFAULT_TERMINAL_FONT_SIZE,
   SSH_SESSION_LOCALE_KEY,
   normalizeSshTerminalLineSpacing,
   normalizeSshSessionLocale,
@@ -226,6 +246,12 @@ import {
   resolveSshProxyRuntimePlan,
   sshProxyRuntimeHasStrictJumpBindings
 } from '../services/SshProxyRuntimePolicy';
+import {
+  SshHostKeyPins,
+  SshHostKeyRouteBinding,
+  sshHostKeyPinsForRoute,
+  sshHostKeyRouteBinding
+} from '../services/SshHostKeyTrustPolicy';
 import { shouldPollSshNativeConnectionState } from '../services/SshTransportPolicy';
 import { SshForwardingSheet } from '../components/ssh/SshForwardingSheet';
 import {
@@ -385,18 +411,20 @@ import { SshTerminalProfileStore } from
   '../services/ssh/profile/SshTerminalProfileStore';
 import {
   captureSshHistory,
+  buildSshSnippetInsertSubmission,
   emptySshProductivityDocument,
   renderSshSnippet,
   SshCommandHistoryV1,
   SshLocalCommandSubmit,
   SshLocalCommandTracker,
   SshProductivityDocumentV1,
-  SshProductivitySettingsV1,
   SshShellEvent,
   SshShellIntegrationParser,
   SshSnippetV1,
   SshSnippetValue,
+  SshSnippetInsertSubmission,
   SshStartupFence,
+  sshSnippetAllowedAsStartup,
   startupCommandMayRun,
   sshStartupExecutionKey
 } from '../services/ssh/productivity/SshProductivityPolicy';
@@ -608,14 +636,16 @@ interface SshTerminalSafetyModeSnapshot {
 type SshProductivityShellPhase = 'idle' | 'prompt' | 'command' | 'executed';
 
 type SshHeaderAction = 'new-session' | 'tabs' | 'palette' | 'transfers' | 'restore' |
-  'sidebar' | 'inspector' | 'profile' | 'search' | 'locale' | 'sftp' | 'forwarding' |
-  'orientation';
+  'sidebar' | 'inspector' | 'profile' | 'reset-font' | 'search' | 'locale' | 'sftp' | 'forwarding' |
+  'orientation' | 'quick-commands';
 
 @Entry
 @Component
 struct SshTerminal {
   @StorageLink('currentTheme') theme: string = 'light';
   @StorageProp('accentColor') accentColor: string = '#007DFF';
+  @StorageLink(REMOTE_SESSION_QUICK_EXIT_DISABLED_KEY)
+  remoteSessionQuickExitDisabled: boolean = false;
   @State connected: boolean = false;
   @State connecting: boolean = true;
   @State connectionError: string = '';
@@ -661,6 +691,8 @@ struct SshTerminal {
   private sshTabPickerExitRecoveryTimer: number = -1;
   private sshTabClosePromptInFlight: boolean = false;
   private sshProductivityStore: SshProductivityStore = new SshProductivityStore();
+  private sshProductivityCryptoUnsubscribe: (() => void) | null = null;
+  private sshProductivityScopeUnsubscribe: (() => void) | null = null;
   private sshSessionLogStore: SshSessionLogStore = new SshSessionLogStore();
   private sshSessionLogSequence: number = 0;
   private sshSessionLogInputBuffers: Map<string, string> = new Map<string, string>();
@@ -722,6 +754,8 @@ struct SshTerminal {
   @StorageProp('remoteDesktopBgFlag') @Watch('onSshAbilityBackgroundChange')
   appBackgroundSignal: boolean = false;
   @StorageLink(SSH_REVERSE_WHEEL_KEY) sshReverseWheel: boolean = false;
+  @StorageLink(SSH_PINCH_ZOOM_ENABLED_KEY) @Watch('onSshPinchZoomSettingChange')
+  sshPinchZoomEnabled: boolean = true;
   @LocalStorageLink('sessionWindowBackground') @Watch('onSshAbilityBackgroundChange')
   sessionWindowBackground: boolean = false;
   @LocalStorageLink('sessionWindowFullscreen') sessionWindowFullscreen: boolean = false;
@@ -848,6 +882,8 @@ struct SshTerminal {
   private sshWorkspacePtyResizeTimers: Map<string, number> = new Map<string, number>();
   private sshWorkspacePtyResizePendingSizes: Map<string, string> = new Map<string, string>();
   private terminalSessionProfileIds: Map<string, string> = new Map<string, string>();
+  /** Live font zoom belongs to one SSH transport generation, never to its named Profile. */
+  private terminalSessionFontSizeOverrides: Map<string, number> = new Map<string, number>();
   private resolvedTerminalProfileSessionKey: string = '';
   /** SSH 协议级 keepalive 延迟 */
   @State latencyMs: number = -1;
@@ -1026,9 +1062,13 @@ struct SshTerminal {
   @State cellHvp: number = 20;
   @State cellWvp: number = 9;
   @State renderFontVp: number = 18;
+  /** Page-local effective font; Profile zoom must not leak through shared AppStorage. */
+  @State @Watch('onEffectiveFontSizeChange') terminalEffectiveFontSize: number = 18;
+  @State terminalFontOverrideRevision: number = 0;
   /** Live pinch feedback; durable persistence happens only when the gesture ends. */
   @State terminalZoomIndicatorVisible: boolean = false;
   private terminalPinchStartFontSize: number = 18;
+  private terminalPinchActive: boolean = false;
   private terminalZoomIndicatorTimer: number = -1;
   private kbCtrl: TextInputController = new TextInputController();
   private srv: HostSyncService = HostSyncService.getInstance();
@@ -1118,6 +1158,16 @@ struct SshTerminal {
   /** Page-owned identity for a detached desktop pre-authentication connect. */
   private sshAuthPromptPendingSessionId: number = 0;
   private sshAuthPromptPendingGeneration: number = 0;
+  /**
+   * Authentication material collected for the current profile route. It is
+   * published only after native authentication succeeds, then scrubbed.
+   */
+  private sshRouteSecretCaptureHostId: string = '';
+  private sshRouteSecretCaptureIdentity: string = '';
+  private sshRouteSecretCaptureProxyPassword: string = '';
+  private sshRouteSecretCaptureJumpHandoffs: SshJumpHopHandoff[] = [];
+  private sshRouteSecretCaptureSessionId: number = 0;
+  private sshRouteSecretCaptureGeneration: number = 0;
   private sshAuthPromptRequestId: number = 0;
   private sshAuthPromptSubmitting: boolean = false;
   // Native snapshot() can briefly outlive respond()/cancel() while the owner
@@ -1555,6 +1605,84 @@ struct SshTerminal {
     this.sshAuthPromptPendingGeneration = 0;
   }
 
+  private clearSshRouteSecretCapture(): void {
+    this.sshRouteSecretCaptureHostId = '';
+    this.sshRouteSecretCaptureIdentity = '';
+    this.sshRouteSecretCaptureProxyPassword = '';
+    for (let index: number = 0; index < this.sshRouteSecretCaptureJumpHandoffs.length; index++) {
+      const handoff: SshJumpHopHandoff = this.sshRouteSecretCaptureJumpHandoffs[index];
+      handoff.password = '';
+      handoff.privateKeyPem = '';
+      handoff.privateKeyPassphrase = '';
+      const responses: string[] = handoff.keyboardInteractiveResponses || [];
+      for (let responseIndex: number = 0; responseIndex < responses.length; responseIndex++) {
+        responses[responseIndex] = '';
+      }
+      handoff.keyboardInteractiveResponses = [];
+    }
+    this.sshRouteSecretCaptureJumpHandoffs = [];
+    this.sshRouteSecretCaptureSessionId = 0;
+    this.sshRouteSecretCaptureGeneration = 0;
+  }
+
+  private prepareSshRouteSecretCapture(host: RemoteHost, plan: SshProxyRuntimePlan,
+    routeIdentity: string, proxyPassword: string,
+    jumpHandoffs: SshJumpHopHandoff[]): void {
+    this.clearSshRouteSecretCapture();
+    if (plan.source !== 'profile' ||
+      sshOperationRouteHasNonReplayableAuthentication(plan)) { return; }
+    this.sshRouteSecretCaptureHostId = host.id.trim();
+    this.sshRouteSecretCaptureIdentity = routeIdentity.trim();
+    this.sshRouteSecretCaptureProxyPassword = proxyPassword;
+    this.sshRouteSecretCaptureJumpHandoffs = jumpHandoffs.map(
+      (handoff: SshJumpHopHandoff): SshJumpHopHandoff => ({
+        password: handoff.password || '',
+        privateKeyPem: '',
+        privateKeyPassphrase: handoff.privateKeyPassphrase || '',
+        keyboardInteractiveResponses: []
+      }));
+  }
+
+  private bindSshRouteSecretCapture(sessionId: number, generation: number): void {
+    if (this.sshRouteSecretCaptureHostId.length === 0 || sessionId <= 0 || generation <= 0) {
+      this.clearSshRouteSecretCapture();
+      return;
+    }
+    this.sshRouteSecretCaptureSessionId = sessionId;
+    this.sshRouteSecretCaptureGeneration = generation;
+  }
+
+  private publishSshRouteSecretCapture(host: RemoteHost, plan: SshProxyRuntimePlan,
+    routeIdentity: string, sessionId: number, generation: number): void {
+    const currentScope = AccountSessionCoordinator.getInstance().currentScope();
+    if (!sshOperationRouteSecretPublishAllowed({
+      authenticated: sessionId > 0,
+      expectedHostId: this.sshRouteSecretCaptureHostId,
+      actualHostId: host.id,
+      expectedRouteIdentity: this.sshRouteSecretCaptureIdentity,
+      actualRouteIdentity: routeIdentity,
+      expectedSessionId: this.sshRouteSecretCaptureSessionId,
+      actualSessionId: sessionId,
+      expectedGeneration: this.sshRouteSecretCaptureGeneration,
+      actualGeneration: generation,
+      hostOwnerScopeId: host.userId,
+      currentOwnerScopeId: currentScope.ownerScopeId
+    })) {
+      this.clearSshRouteSecretCapture();
+      return;
+    }
+    const scope: SshOperationRouteSecretScope = {
+      ownerScopeId: currentScope.ownerScopeId,
+      storeIdentity: currentScope.storeIdentity,
+      accountGeneration: currentScope.generation
+    };
+    SshOperationRouteSecretService.getInstance().stage(host, plan, scope, {
+      proxyPassword: this.sshRouteSecretCaptureProxyPassword,
+      jumpHandoffs: this.sshRouteSecretCaptureJumpHandoffs
+    });
+    this.clearSshRouteSecretCapture();
+  }
+
   private clearSshAuthPromptState(): void {
     if (this.sshAuthPromptShowTimer !== -1) {
       clearTimeout(this.sshAuthPromptShowTimer);
@@ -1688,15 +1816,21 @@ struct SshTerminal {
     }
     const current: RemoteHost | undefined = this.srv.getHost(ownerId);
     if (current === undefined || current.protocol !== 'ssh') { return false; }
+    if (!this.sshProxyProfilesReady) { return false; }
+    const plan: SshProxyRuntimePlan = this.terminalSshProxyPlan(current);
+    const binding: SshHostKeyRouteBinding = sshHostKeyRouteBinding(current, plan);
+    if (!binding.ok || prompt.routeIdentity !== binding.identity) { return false; }
     const trustedAt: number = Date.now();
     if (prompt.hostKeyHopIndex < 0) {
-      if (current.host.trim() !== endpointHost || current.port !== prompt.endpointPort) { return false; }
+      if (plan.route.endpointHost.trim() !== endpointHost ||
+        plan.route.endpointPort !== prompt.endpointPort) { return false; }
       const updated: RemoteHost = current.runtimeClone();
       updated.sshHostKeyAlgorithm = prompt.hostKeyAlgorithm.trim();
       updated.sshHostKeyFingerprintSha256 = fingerprint;
       updated.sshHostKeyRawBase64 = rawBase64;
       updated.sshHostKeyTrustedAt = trustedAt;
       updated.sshHostKeyTrustMode = 1;
+      updated.sshHostKeyRouteIdentity = binding.identity;
       return this.srv.updateHost(updated);
     }
 
@@ -1791,7 +1925,8 @@ struct SshTerminal {
               : 'SSH 需要额外认证')
               .fontSize(18).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
             Text(this.sshAuthPrompt!.kind === 'host_key'
-              ? this.sshAuthPrompt!.endpointHost + ':' + this.sshAuthPrompt!.endpointPort.toString()
+              ? formatEndpointFieldsHostPort(this.sshAuthPrompt!.endpointHost,
+                this.sshAuthPrompt!.endpointPort, 'runtime')
               : this.sshAuthPrompt!.targetHost)
               .fontSize(12).fontColor(this.pal().text2).margin({ top: 4 })
               .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
@@ -1978,6 +2113,41 @@ struct SshTerminal {
     const active: SshTerminalTabView | undefined = this.sshTabViews.find(
       (tab: SshTerminalTabView): boolean => tab.active && tab.hostId.trim() === currentHostId);
     return active !== undefined && active.state === 'connected' && active.sessionId > 0;
+  }
+
+  private sshSessionActive(): boolean {
+    return this.connecting || this.sessionId > 0 || this.sshConnectionIsConnected() ||
+      sshTerminalTabsHaveLiveSession(this.sshTabStore.views());
+  }
+
+  private restoreRemoteSessionQuickExitPreference(): void {
+    try {
+      const prefs: preferences.Preferences = preferences.getPreferencesSync(
+        getContext(this), { name: 'RemoteDesktopAppPrefs' });
+      const storedQuickExitDisabled: boolean = prefs.getSync(
+        REMOTE_SESSION_QUICK_EXIT_DISABLED_KEY, false) as boolean;
+      const restored: RemoteSessionQuickExitRestoreState =
+        resolveRemoteSessionQuickExitRestore({
+          rdpHidden: false,
+          rustDeskHidden: false,
+          vncHidden: false,
+          moonlightHidden: false
+        }, true, storedQuickExitDisabled, this.remoteSessionQuickExitDisabled);
+      this.remoteSessionQuickExitDisabled = restored.quickExitDisabled;
+    } catch (error) {
+      const fallback: RemoteSessionQuickExitRestoreState =
+        resolveRemoteSessionQuickExitRestore({
+          rdpHidden: false,
+          rustDeskHidden: false,
+          vncHidden: false,
+          moonlightHidden: false
+        }, false, false, this.remoteSessionQuickExitDisabled);
+      this.remoteSessionQuickExitDisabled = fallback.quickExitDisabled;
+      hilog.warn(0x0016, 'SshTerminal',
+        'restore quick exit preference fallback to AppStorage: ' + JSON.stringify(error));
+    }
+    AppStorage.setOrCreate(REMOTE_SESSION_QUICK_EXIT_DISABLED_KEY,
+      this.remoteSessionQuickExitDisabled);
   }
 
   /** The xterm/WebView ready bit is scoped to the currently visible host. */
@@ -2341,7 +2511,7 @@ struct SshTerminal {
       tabId: tab.tabId,
       hostId: tab.hostId,
       label: this.sshWorkspaceTabTitle(tab),
-      address: host === undefined ? '' : host.username + '@' + host.host + ':' + host.port.toString(),
+      address: host === undefined ? '' : formatUserAtHost(host.username, host.host, host.port),
       state: 'disconnected',
       sessionId: -1,
       generation: 0,
@@ -3442,7 +3612,7 @@ struct SshTerminal {
     this.refreshForwardingProfiles(targetHostId);
     this.visibleSshHostId = targetHostId;
     this.hostLabel = host.label;
-    this.userAtHost = host.username + '@' + host.host + ':' + host.port.toString();
+    this.userAtHost = formatUserAtHost(host.username, host.host, host.port);
     this.sshHost = host.host;
     this.sshPort = host.port;
 
@@ -4126,14 +4296,69 @@ struct SshTerminal {
     }
   }
 
-  private refreshSshProductivityDocument(): void {
+  private refreshSshProductivityDocument(readLatest: boolean = false): void {
     if (!this.sshProductivityStore.isReady()) {
+      this.sshProductivityReady = false;
+      this.sshProductivityDocument = emptySshProductivityDocument();
+      return;
+    }
+    if (readLatest && !this.sshProductivityStore.refreshLatest()) {
       this.sshProductivityReady = false;
       this.sshProductivityDocument = emptySshProductivityDocument();
       return;
     }
     this.sshProductivityReady = true;
     this.sshProductivityDocument = this.sshProductivityStore.snapshot();
+    if (!this.sshProductivityStore.isReady()) {
+      this.sshProductivityReady = false;
+      this.sshProductivityDocument = emptySshProductivityDocument();
+    }
+  }
+
+  private scrubSshProductivitySecurityState(): void {
+    this.showSshProductivitySheet = false;
+    this.sshProductivityQuery = '';
+    this.sshProductivityReady = false;
+    this.sshProductivityDocument = emptySshProductivityDocument();
+    this.sshProductivityStore.clearSensitiveState();
+    this.resetSshProductivityRuntime();
+  }
+
+  private reloadSshProductivityAfterSecurityChange(): void {
+    this.scrubSshProductivitySecurityState();
+    if (this.terminalClosing || !DataCrypto.getInstance().isReady()) { return; }
+    try {
+      const context: common.Context = getContext(this) as common.Context;
+      this.sshProductivityReady = this.sshProductivityStore.init(context);
+      this.refreshSshProductivityDocument();
+    } catch (_err) {
+      this.scrubSshProductivitySecurityState();
+    }
+  }
+
+  private bindSshProductivitySecurityLifecycle(): void {
+    if (this.sshProductivityCryptoUnsubscribe === null) {
+      this.sshProductivityCryptoUnsubscribe = DataCrypto.getInstance().onStateChange(
+        (_ready: boolean, _configured: boolean): void => {
+          this.reloadSshProductivityAfterSecurityChange();
+        });
+    }
+    if (this.sshProductivityScopeUnsubscribe === null) {
+      this.sshProductivityScopeUnsubscribe = AccountSessionCoordinator.getInstance().onChange(
+        (): void => { this.reloadSshProductivityAfterSecurityChange(); });
+    }
+  }
+
+  private unbindSshProductivitySecurityLifecycle(): void {
+    if (this.sshProductivityCryptoUnsubscribe !== null) {
+      this.sshProductivityCryptoUnsubscribe();
+      this.sshProductivityCryptoUnsubscribe = null;
+    }
+    if (this.sshProductivityScopeUnsubscribe !== null) {
+      this.sshProductivityScopeUnsubscribe();
+      this.sshProductivityScopeUnsubscribe = null;
+    }
+    this.scrubSshProductivitySecurityState();
   }
 
   private refreshSshSessionLogDocument(): void {
@@ -4726,11 +4951,21 @@ struct SshTerminal {
   }
 
   private openSshProductivity(): void {
-    if (!this.sshWorkbenchEnabled || !this.sshProductivityReady || this.terminalClosing ||
+    if (!this.sshProductivityReady) {
+      promptAction.showToast({
+        message: '本地加密存储尚未解锁，暂时无法使用常用命令', duration: 2000
+      });
+      return;
+    }
+    if (this.terminalClosing ||
       this.showSshProductivitySheet || this.sshModalOwnsKeyboard()) { return; }
     this.closeTerminalSearch(false, true);
     this.sshProductivityQuery = '';
-    this.refreshSshProductivityDocument();
+    this.refreshSshProductivityDocument(true);
+    if (!this.sshProductivityReady) {
+      promptAction.showToast({ message: '常用命令刷新失败，请重新解锁后再试', duration: 1900 });
+      return;
+    }
     this.terminalFocusMode = false;
     this.showSshProductivitySheet = true;
   }
@@ -4747,18 +4982,49 @@ struct SshTerminal {
 
   private insertSshProductivitySnippet(snippet: SshSnippetV1,
     values: Array<SshSnippetValue>): void {
-    if (!this.sshWorkbenchEnabled || !this.sshProductivityReady || !this.connected || this.sessionId <= 0 ||
-      this.terminalClosing || this.hostId.trim().length === 0) { return; }
-    const rendered = renderSshSnippet(snippet, values);
-    if (!rendered.ok || rendered.insertion.length === 0) {
+    if (!this.sshProductivityInsertionAllowed()) { return; }
+    const submission: SshSnippetInsertSubmission | null =
+      buildSshSnippetInsertSubmission(snippet, values);
+    if (submission === null) {
       promptAction.showToast({ message: 'Snippet 变量尚未填写完整', duration: 1500 });
       return;
     }
-    const tracker: SshLocalCommandTracker = this.sshProductivityTrackerForHost(this.hostId);
-    tracker.reset();
-    this.sshProductivitySecretExpansionPending = rendered.containsSecret;
-    this.sendTerminalBytes(rendered.insertion, false);
+    if (this.sshWorkbenchEnabled) {
+      this.sshProductivityTrackerForHost(this.hostId).reset();
+    }
+    this.sshProductivitySecretExpansionPending = submission.containsSecret;
+    this.sendTerminalBytes(submission.data, submission.control);
     this.closeSshProductivity();
+  }
+
+  private sshProductivityInsertionAllowed(): boolean {
+    return this.sshProductivityReady && this.connected && this.sessionId > 0 &&
+      !this.terminalClosing && this.hostId.trim().length > 0;
+  }
+
+  private upsertSshProductivitySnippet(snippet: SshSnippetV1): boolean {
+    if (!this.sshProductivityReady || this.terminalClosing) { return false; }
+    const saved: boolean = this.sshProductivityStore.upsertSnippet(snippet);
+    this.refreshSshProductivityDocument();
+    if (!saved) {
+      promptAction.showToast({
+        message: this.sshProductivityDocument.snippets.length >= 200 ?
+          '常用命令已达到 200 条上限' : '常用命令保存失败', duration: 1800
+      });
+    }
+    return saved;
+  }
+
+  private removeSshProductivitySnippet(snippetId: string): boolean {
+    if (!this.sshProductivityReady || this.terminalClosing || snippetId.trim().length === 0) {
+      return false;
+    }
+    const saved: boolean = this.sshProductivityStore.removeSnippet(snippetId);
+    this.refreshSshProductivityDocument();
+    promptAction.showToast({
+      message: saved ? '常用命令已删除' : '常用命令删除失败', duration: 1600
+    });
+    return saved;
   }
 
   private insertSshProductivityHistory(command: string): void {
@@ -4817,16 +5083,7 @@ struct SshTerminal {
   private persistSshProductivitySetting(
     kind: 'history' | 'completion' | 'notification' | 'shell', enabled: boolean
   ): void {
-    const current = this.sshProductivityStore.snapshot().settings;
-    const next: SshProductivitySettingsV1 = {
-      historyEnabled: kind === 'history' ? enabled : current.historyEnabled,
-      completionEnabled: kind === 'completion' ? enabled : current.completionEnabled,
-      completionNotificationEnabled: kind === 'notification' ? enabled :
-        current.completionNotificationEnabled,
-      shellIntegrationEnabled: kind === 'shell' ? enabled : current.shellIntegrationEnabled,
-      disabledHistoryHostIds: current.disabledHistoryHostIds.slice()
-    };
-    if (!this.sshProductivityStore.setSettings(next)) {
+    if (!this.sshProductivityStore.setSetting(kind, enabled)) {
       promptAction.showToast({ message: 'SSH 生产力设置保存失败', duration: 1800 });
       return;
     }
@@ -4859,7 +5116,9 @@ struct SshTerminal {
       hostId: this.hostId.trim(), snippetId: snippetId.trim(), enabled
     });
     if (!saved) {
-      promptAction.showToast({ message: '启动命令不能包含 secretRef 或未找到片段', duration: 1900 });
+      promptAction.showToast({
+        message: '插入型常用命令或含 secretRef 的片段不能设为启动命令', duration: 1900
+      });
       this.refreshSshProductivityDocument();
       return false;
     }
@@ -5204,7 +5463,7 @@ struct SshTerminal {
     if (startup === undefined) { return; }
     const snippet: SshSnippetV1 | undefined = document.snippets.find(
       (item): boolean => item.id === startup.snippetId);
-    if (snippet === undefined) { return; }
+    if (snippet === undefined || !sshSnippetAllowedAsStartup(snippet)) { return; }
     const rendered = renderSshSnippet(snippet, []);
     if (!rendered.ok || rendered.containsSecret || rendered.insertion.length === 0) { return; }
     this.sshTabStore.markStartupExecutionKey(executionKey);
@@ -5454,6 +5713,7 @@ struct SshTerminal {
   @Builder
   private SftpTransferCenterContent() {
     SshTransferCenter({
+      sheetBackgroundColor: this.bindSheetBg('#111820'),
       tasks: this.sftpTransferCenterTasks(),
       summary: this.sftpTransferCenterSummary(),
       compact: this.sshCompactChrome(),
@@ -5478,7 +5738,7 @@ struct SshTerminal {
       cols: this.termCols,
       rows: this.termRows,
       viewportWidth: this.sshWorkspaceViewportWidthForTab(tab.tabId, viewportWidth),
-      fontSize: profile.fontSize,
+      fontSize: this.sshTerminalFontSizeForSurface(tab.hostId, profile),
       lineSpacing: normalizeSshTerminalLineSpacing(profile.lineSpacing),
       bottomAlignSparseContent: !this.isDesktopDevice,
       bottomAlignSafeRows: this.terminalBottomSafeRows(),
@@ -5827,7 +6087,7 @@ struct SshTerminal {
               Column() {
                 Text(host.label).fontSize(14).fontColor('#F4F7FA')
                   .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-                Text(host.username + '@' + host.host + ':' + host.port.toString())
+                Text(formatUserAtHost(host.username, host.host, host.port))
                   .fontSize(11).fontColor('rgba(242,244,247,0.56)')
                   .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
               }.alignItems(HorizontalAlign.Start).layoutWeight(1)
@@ -5846,7 +6106,7 @@ struct SshTerminal {
     }
     .width('100%').height('100%')
     .padding({ left: 16, right: 16, top: 20, bottom: 14 })
-    .backgroundColor('#171D25')
+    .backgroundColor(this.bindSheetBg('#171D25'))
     .borderRadius(this.sshTabPickerSheetLayout().bottomAnchored
       ? { topLeft: 20, topRight: 20, bottomLeft: 0, bottomRight: 0 } : 20)
   }
@@ -5865,6 +6125,7 @@ struct SshTerminal {
   @Builder
   private sshCommandPaletteSheet() {
     SshCommandPalette({
+      sheetBackgroundColor: this.bindSheetBg('#171D25'),
       commands: this.sshCommandRegistry,
       compact: this.breakpoint === 'sm',
       onExecute: (commandId: string): void => { this.queueSshCommand(commandId); },
@@ -5909,7 +6170,7 @@ struct SshTerminal {
       }.width('100%')
     }
     .width('100%').padding({ left: 20, right: 20, top: 20, bottom: 18 })
-    .backgroundColor('#171D25')
+    .backgroundColor(this.bindSheetBg('#171D25'))
     .onAppear((): void => {
       setTimeout((): void => {
         try { focusControl.requestFocus('sshTabRenameInput'); } catch (_err) {}
@@ -6360,7 +6621,7 @@ struct SshTerminal {
   }
 
   private updateCellSize(): void {
-    const normalized: number = Math.max(12, Math.min(32, this.fontSize));
+    const normalized: number = this.activeSshTerminalFontSize();
     this.renderFontVp = normalized;
     const rowRatio: number = normalizeSshTerminalLineSpacing(this.lineSpacing);
     const widthRatio: number =
@@ -6372,6 +6633,11 @@ struct SshTerminal {
   }
 
   private onFontSizeChange(): void {
+    this.updateCellSize();
+    this.recalcGrid();
+  }
+
+  private onEffectiveFontSizeChange(): void {
     this.updateCellSize();
     this.recalcGrid();
   }
@@ -6388,25 +6654,39 @@ struct SshTerminal {
   }
 
   private startTerminalPinchZoom(): void {
+    if (!this.sshPinchZoomEnabled) {
+      this.terminalPinchActive = false;
+      return;
+    }
     this.clearTerminalZoomIndicatorTimer();
-    this.terminalPinchStartFontSize = sshTerminalFontSizeForPinch(this.fontSize, 1);
+    this.terminalPinchActive = true;
+    this.terminalPinchStartFontSize = this.activeSshTerminalFontSize();
     this.terminalZoomIndicatorVisible = true;
   }
 
   private updateTerminalPinchZoom(event: GestureEvent): void {
+    if (!this.terminalPinchActive || !this.sshPinchZoomEnabled) { return; }
     const nextFontSize: number = sshTerminalFontSizeForPinch(
       this.terminalPinchStartFontSize, event.scale);
-    if (nextFontSize !== this.fontSize) {
+    if (this.terminalProfileEnabled()) {
+      if (nextFontSize === this.terminalEffectiveFontSize) { return; }
+      this.terminalEffectiveFontSize = nextFontSize;
+      this.setCurrentSshTerminalFontOverride(nextFontSize);
+    } else if (nextFontSize !== this.fontSize) {
       this.fontSize = nextFontSize;
     }
   }
 
   private finishTerminalPinchZoom(): void {
+    if (!this.terminalPinchActive) { return; }
+    this.terminalPinchActive = false;
     if (this.terminalProfileEnabled()) {
       // Profile mode treats pinch as a live session zoom. Mutating the named
       // profile or legacy cloud appearance would make a viewport gesture
       // silently affect other hosts and future sessions.
-      this.fontSize = sshTerminalFontSizeForPinch(this.fontSize, 1);
+      this.terminalEffectiveFontSize = sshTerminalFontSizeForPinch(
+        this.terminalEffectiveFontSize, 1);
+      this.setCurrentSshTerminalFontOverride(this.terminalEffectiveFontSize);
     } else {
       this.fontSize = this.sshSettings.saveFontSize(this.fontSize);
     }
@@ -6415,6 +6695,40 @@ struct SshTerminal {
       this.terminalZoomIndicatorTimer = -1;
       this.terminalZoomIndicatorVisible = false;
     }, 700);
+  }
+
+  private sshTerminalFontResetTarget(): number {
+    return this.terminalProfileEnabled() ?
+      sshTerminalFontSizeForPinch(this.resolvedTerminalProfile.fontSize, 1) :
+      SSH_DEFAULT_TERMINAL_FONT_SIZE;
+  }
+
+  private resetSshTerminalFontSizeFromMore(): void {
+    this.terminalPinchActive = false;
+    this.clearTerminalZoomIndicatorTimer();
+    const target: number = this.sshTerminalFontResetTarget();
+    if (this.terminalProfileEnabled()) {
+      const sessionScopeKey: string = sshTerminalSessionProfileScopeKey(
+        this.hostId.trim(), this.sshTabStore.sessionGeneration(this.hostId.trim()));
+      if (sessionScopeKey.length > 0) {
+        this.terminalSessionFontSizeOverrides.delete(sessionScopeKey);
+        this.terminalFontOverrideRevision = this.terminalFontOverrideRevision + 1;
+      }
+      this.terminalEffectiveFontSize = target;
+    } else {
+      this.fontSize = this.sshSettings.saveFontSize(target);
+    }
+    this.terminalZoomIndicatorVisible = false;
+    promptAction.showToast({
+      message: this.terminalProfileEnabled() ? '已恢复当前终端配置字号' : '已恢复默认终端字号',
+      duration: 1200
+    });
+  }
+
+  private onSshPinchZoomSettingChange(): void {
+    if (!this.sshPinchZoomEnabled && this.terminalPinchActive) {
+      this.finishTerminalPinchZoom();
+    }
   }
 
   /** 根据 termAreaW/H + 字号反推 cols/rows, 同步到 PTY */
@@ -6658,10 +6972,10 @@ struct SshTerminal {
       }));
     };
     const labels: string[] = [
-      '工作区与会话', '显示全部标签', '命令面板', '传输中心',
+      '工作区与会话', '常用命令', '显示全部标签', '命令面板', '传输中心',
       '恢复未连接的工作区标签', '显示工作区侧栏', '收起工作区侧栏',
       '显示会话详情', '隐藏会话详情', '取消显示会话详情',
-      '终端搜索', '终端外观', '语言与地区',
+      '终端搜索', '终端外观', '恢复终端字号', '语言与地区',
       sshSessionLocaleLabel(this.sshSessionLocale, true), 'SFTP 文件',
       '浏览与传输远端文件', '隧道转发', '切换横竖屏'
     ];
@@ -6701,6 +7015,8 @@ struct SshTerminal {
         this.openSshTabPicker();
       } else if (action === 'palette') {
         this.openSshCommandPalette();
+      } else if (action === 'quick-commands') {
+        this.openSshProductivity();
       } else if (action === 'transfers') {
         this.openSftpTransferCenter();
       } else if (action === 'restore') {
@@ -6711,6 +7027,8 @@ struct SshTerminal {
         this.setSshWorkspaceInspectorVisible(!this.sshWorkspaceSnapshot.inspectorVisible);
       } else if (action === 'profile') {
         this.openTerminalProfileSheet();
+      } else if (action === 'reset-font') {
+        this.resetSshTerminalFontSizeFromMore();
       } else if (action === 'search') {
         if (this.terminalSearchVisible) { this.focusTerminalSearch(); }
         else { this.openTerminalSearch(); }
@@ -6749,12 +7067,16 @@ struct SshTerminal {
   @Builder SshHeaderActionPopup() {
     Scroll() {
       Column() {
-        Text(this.isDesktopDevice ? '工作区与会话 · Ctrl+Shift+Q 退出' : '工作区与会话')
+        Text(this.isDesktopDevice ? (this.remoteSessionQuickExitDisabled ?
+          '工作区与会话 · 仅按钮退出' : '工作区与会话 · Ctrl+Shift+Q 退出') : '工作区与会话')
           .fontSize(12).fontColor(this.pal().text3)
           .margin({ left: 14, right: 14, top: 8, bottom: 6 })
 
         Divider().strokeWidth(0.5).color(this.pal().cardBorder).width('100%')
         this.SshHeaderActionRow('新建 SSH 会话', '选择主机并打开新标签', 'new-session')
+        this.SshHeaderActionRow('常用命令', this.sshProductivityReady
+          ? this.sshProductivityDocument.snippets.length.toString() + ' 条 · 可新增、编辑和插入'
+          : '本地加密存储未解锁', 'quick-commands')
 
         if (this.sshWorkbenchEnabled) {
           this.SshHeaderActionRow('显示全部标签',
@@ -6783,16 +7105,16 @@ struct SshTerminal {
           }
         }
 
-        if (this.terminalSearchAvailable() || this.terminalProfileEnabled()) {
-          Divider().strokeWidth(0.5).color(this.pal().cardBorder).width('100%')
-          if (this.terminalSearchAvailable()) {
-            this.SshHeaderActionRow('终端搜索', this.terminalSearchVisible
-              ? '搜索栏已打开' : '在当前终端输出中查找', 'search')
-          }
-          if (this.terminalProfileEnabled()) {
-            this.SshHeaderActionRow('终端外观', '字体、配色与光标', 'profile')
-          }
+        Divider().strokeWidth(0.5).color(this.pal().cardBorder).width('100%')
+        if (this.terminalSearchAvailable()) {
+          this.SshHeaderActionRow('终端搜索', this.terminalSearchVisible
+            ? '搜索栏已打开' : '在当前终端输出中查找', 'search')
         }
+        if (this.terminalProfileEnabled()) {
+          this.SshHeaderActionRow('终端外观', '字体、配色与光标', 'profile')
+        }
+        this.SshHeaderActionRow('恢复终端字号',
+          '回到 ' + this.sshTerminalFontResetTarget().toString() + ' 号字', 'reset-font')
 
         Divider().strokeWidth(0.5).color(this.pal().cardBorder).width('100%')
         this.SshHeaderActionRow('语言与地区',
@@ -7393,54 +7715,10 @@ struct SshTerminal {
 
   private sftpPeerHostAddress(): string {
     const host: RemoteHost | undefined = this.sftpPeerHost();
-    return host === undefined ? '' : host.username + '@' + host.host + ':' + host.port.toString();
+    return host === undefined ? '' : formatUserAtHost(host.username, host.host, host.port);
   }
 
-  private sshRouteTypeForHost(host: RemoteHost): SshRouteType {
-    const configuredType: string = host.proxyHost.trim().length > 0 ? host.sshProxyType : 'direct';
-    // legacy_gateway remains an invalid native route. Keeping the value in
-    // this explicit object makes the policy reject it instead of mapping it
-    // to a direct socket.
-    return configuredType as SshRouteType;
-  }
-
-  private sshRouteForHost(host: RemoteHost): SshRoute {
-    const routeType: SshRouteType = this.sshRouteTypeForHost(host);
-    const hops: SshJumpHop[] = [];
-    if (routeType === 'ssh_jump') {
-      hops.push({
-        host: host.proxyHost,
-        port: host.proxyPort,
-        username: host.proxyUsername,
-        authMethod: host.sshProxyAuthMethod,
-        expectedHostKeyRawBase64: host.sshJumpHostKeyRawBase64,
-        expectedHostKeyFingerprintSha256: host.sshJumpHostKeyFingerprintSha256,
-        connectTimeoutMs: 10000
-      });
-    }
-    return {
-      schemaVersion: 1,
-      type: routeType,
-      endpointHost: host.host,
-      endpointPort: host.port,
-      hops: hops,
-      connectTimeoutMs: 10000
-    };
-  }
-
-  private sshJumpHopHandoffsForHost(host: RemoteHost, privateKeyPem: string,
-    privateKeyPassphrase: string): SshJumpHopHandoff[] {
-    if (this.sshRouteTypeForHost(host) !== 'ssh_jump') { return []; }
-    const publicKey: boolean = host.sshProxyAuthMethod === 'publickey';
-    return [{
-      password: publicKey ? '' : host.sshProxyPassword,
-      privateKeyPem: publicKey ? privateKeyPem : '',
-      privateKeyPassphrase: publicKey ? privateKeyPassphrase : '',
-      keyboardInteractiveResponses: []
-    }];
-  }
-
-  /** Terminal connections use the canonical profile; SFTP keeps its accepted legacy path. */
+  /** Every SSH consumer resolves the same canonical, fail-closed route profile. */
   private terminalSshProxyPlan(host: RemoteHost): SshProxyRuntimePlan {
     return resolveSshProxyRuntimePlan(host, this.sshProxyProfiles.load(host.id));
   }
@@ -7467,7 +7745,8 @@ struct SshTerminal {
     const handoffs: SshJumpHopHandoff[] = [];
     for (let index: number = 0; index < plan.route.hops.length; index++) {
       const hop: SshJumpHop = plan.route.hops[index];
-      const label: string = '第 ' + (index + 1).toString() + ' 跳 ' + hop.username + '@' + hop.host;
+      const label: string = '第 ' + (index + 1).toString() + ' 跳 ' +
+        formatUserAtHost(hop.username, hop.host, hop.port);
       if (hop.authMethod === 'kbd-interactive') {
         handoffs.push({ password: '', privateKeyPem: '', privateKeyPassphrase: '',
           keyboardInteractiveResponses: [] });
@@ -7501,6 +7780,91 @@ struct SshTerminal {
       } else if (!info.ok || passphrase.length === 0) {
         passphrase = await this.promptSshSecret('ProxyJump 私钥', label + ' 的私钥密码', '私钥密码');
         if (!this.isSshBindingActive(pageGeneration, bindingGeneration, host.id)) { return []; }
+        info = this.loader.inspectSshPrivateKey(key.privateKey, passphrase);
+        if (!info.ok) {
+          throw new Error('第 ' + (index + 1).toString() +
+            ' 跳私钥密码错误或密钥不可用 [E-SSH-JUMP-PASSPHRASE]');
+        }
+      }
+      handoffs.push({ password: '', privateKeyPem: key.privateKey,
+        privateKeyPassphrase: passphrase, keyboardInteractiveResponses: [] });
+    }
+    return handoffs;
+  }
+
+  private isSftpPeerConnectRequestActive(pageGeneration: number, selectionEpoch: number,
+    hostId: string): boolean {
+    return this.isPageGenerationActive(pageGeneration) &&
+      selectionEpoch === this.sftpPeerSelectionEpoch &&
+      this.sftpPeerHostId.trim() === hostId.trim();
+  }
+
+  private async sftpPeerProxyPassword(host: RemoteHost, plan: SshProxyRuntimePlan,
+    pageGeneration: number, selectionEpoch: number): Promise<string> {
+    if (!plan.proxyAuthRequired ||
+      (plan.route.type !== 'http_connect' && plan.route.type !== 'socks5')) { return ''; }
+    const password: string = await this.promptSshSecret(
+      plan.route.type === 'http_connect' ? 'SFTP HTTP 代理认证' : 'SFTP SOCKS5 代理认证',
+      plan.proxyUsername.length > 0 ? '请输入 ' + plan.proxyUsername + ' 的代理密码' : '请输入代理密码',
+      '代理密码');
+    if (!this.isSftpPeerConnectRequestActive(pageGeneration, selectionEpoch, host.id)) {
+      throw new Error('SFTP 会话请求已过期');
+    }
+    if (password.length === 0) { throw new Error('已取消代理认证 [E-SSH-PROXY-AUTH-CANCELLED]'); }
+    return password;
+  }
+
+  private async sftpPeerJumpHandoffs(host: RemoteHost, plan: SshProxyRuntimePlan,
+    pageGeneration: number, selectionEpoch: number): Promise<SshJumpHopHandoff[]> {
+    if (plan.route.type !== 'ssh_jump') { return []; }
+    if (!sshProxyRuntimeHasStrictJumpBindings(plan)) {
+      throw new Error('ProxyJump 每一跳都必须配置 SHA256 host-key 指纹 [E-SSH-JUMP-HOSTKEY]');
+    }
+    const handoffs: SshJumpHopHandoff[] = [];
+    for (let index: number = 0; index < plan.route.hops.length; index++) {
+      const hop: SshJumpHop = plan.route.hops[index];
+      const label: string = '第 ' + (index + 1).toString() + ' 跳 ' +
+        formatUserAtHost(hop.username, hop.host, hop.port);
+      if (hop.authMethod === 'kbd-interactive') {
+        handoffs.push({ password: '', privateKeyPem: '', privateKeyPassphrase: '',
+          keyboardInteractiveResponses: [] });
+        continue;
+      }
+      if (hop.authMethod === 'password') {
+        let password: string = plan.source === 'legacy' && index === 0 ? host.sshProxyPassword : '';
+        if (password.length === 0) {
+          password = await this.promptSshSecret('SFTP ProxyJump 认证',
+            label + ' 的 SSH 密码', 'SSH 密码');
+          if (!this.isSftpPeerConnectRequestActive(pageGeneration, selectionEpoch, host.id)) {
+            throw new Error('SFTP 会话请求已过期');
+          }
+        }
+        if (password.length === 0) {
+          throw new Error('已取消第 ' + (index + 1).toString() +
+            ' 跳认证 [E-SSH-JUMP-AUTH-CANCELLED]');
+        }
+        handoffs.push({ password, privateKeyPem: '', privateKeyPassphrase: '',
+          keyboardInteractiveResponses: [] });
+        continue;
+      }
+      const keyId: string = index < plan.hopKeyIds.length ? plan.hopKeyIds[index] :
+        (plan.source === 'legacy' && index === 0 ? host.sshProxyKeyId : '');
+      const key = KeyVaultService.getInstance().getSshKey(keyId);
+      if (key === undefined || key.privateKey.length === 0) {
+        throw new Error('第 ' + (index + 1).toString() +
+          ' 跳私钥不存在或已从密钥保险库移除 [E-SSH-JUMP-KEY-MISSING]');
+      }
+      let passphrase: string = plan.source === 'legacy' && index === 0
+        ? host.sshProxyKeyPassphrase : '';
+      let info: SshPrivateKeyInfo = this.loader.inspectSshPrivateKey(key.privateKey, passphrase);
+      if (info.ok && !info.encrypted) {
+        passphrase = '';
+      } else if (!info.ok || passphrase.length === 0) {
+        passphrase = await this.promptSshSecret('SFTP ProxyJump 私钥',
+          label + ' 的私钥密码', '私钥密码');
+        if (!this.isSftpPeerConnectRequestActive(pageGeneration, selectionEpoch, host.id)) {
+          throw new Error('SFTP 会话请求已过期');
+        }
         info = this.loader.inspectSshPrivateKey(key.privateKey, passphrase);
         if (!info.ok) {
           throw new Error('第 ' + (index + 1).toString() +
@@ -7610,6 +7974,18 @@ struct SshTerminal {
       selectionEpoch !== this.sftpPeerSelectionEpoch) {
       throw new Error('SFTP 会话请求已过期');
     }
+    if (!this.sshProxyProfilesReady) {
+      throw new Error('SSH 连接方式存储不可读 [E-SSH-PROXY-STORE]');
+    }
+    const proxyPlan: SshProxyRuntimePlan = this.terminalSshProxyPlan(host);
+    if (!proxyPlan.valid) {
+      throw new Error(proxyPlan.message + ' [' + proxyPlan.code + ']');
+    }
+    const targetPins: SshHostKeyPins = sshHostKeyPinsForRoute(host, proxyPlan);
+    if (!targetPins.trusted) {
+      throw new Error('SSH 主机指纹尚未绑定当前连接路径，请先从主机列表完成安全预检 ' +
+        '[E-SSH-SFTP-TRUST-BINDING]');
+    }
     let keyData: string = host.sshKeyData;
     let keyEncryptedHint: boolean = false;
     if (host.sshKeyId.length > 0) {
@@ -7640,35 +8016,12 @@ struct SshTerminal {
       }
     }
 
-    let proxyKeyData: string = '';
-    let proxyKeyPassphrase: string = host.sshProxyKeyPassphrase;
-    let proxyKeyEncryptedHint: boolean = false;
-    if (host.sshProxyKeyId.length > 0) {
-      const proxyKey = KeyVaultService.getInstance().getSshKey(host.sshProxyKeyId);
-      if (proxyKey !== undefined) {
-        proxyKeyData = proxyKey.privateKey;
-        proxyKeyEncryptedHint = proxyKey.privateKeyEncrypted;
-      }
-    }
-    if (host.sshProxyType === 'ssh_jump' && host.sshProxyAuthMethod === 'publickey') {
-      if (proxyKeyData.length === 0) { throw new Error('跳板机私钥不存在'); }
-      let proxyInfo: SshPrivateKeyInfo = this.loader.inspectSshPrivateKey(
-        proxyKeyData, proxyKeyPassphrase);
-      if (proxyInfo.ok && !proxyInfo.encrypted) {
-        proxyKeyPassphrase = '';
-      } else if (proxyKeyPassphrase.length === 0 || proxyKeyEncryptedHint || !proxyInfo.ok) {
-        if (!this.isPageGenerationActive(requestPageGeneration) ||
-          selectionEpoch !== this.sftpPeerSelectionEpoch) {
-          throw new Error('SFTP 会话请求已过期');
-        }
-        proxyKeyPassphrase = await this.promptPassphrase();
-        if (!this.isPageGenerationActive(requestPageGeneration) ||
-          selectionEpoch !== this.sftpPeerSelectionEpoch) {
-          throw new Error('SFTP 会话请求已过期');
-        }
-        proxyInfo = this.loader.inspectSshPrivateKey(proxyKeyData, proxyKeyPassphrase);
-        if (!proxyInfo.ok) { throw new Error('跳板机私钥密码错误'); }
-      }
+    const proxyPassword: string = await this.sftpPeerProxyPassword(
+      host, proxyPlan, requestPageGeneration, selectionEpoch);
+    const jumpHandoffs: SshJumpHopHandoff[] = await this.sftpPeerJumpHandoffs(
+      host, proxyPlan, requestPageGeneration, selectionEpoch);
+    if (!this.isSftpPeerConnectRequestActive(requestPageGeneration, selectionEpoch, host.id)) {
+      throw new Error('SFTP 会话请求已过期');
     }
     return {
       protocol: 'ssh',
@@ -7681,14 +8034,15 @@ struct SshTerminal {
       customHostname: host.customHostname,
       gatewayHost: '',
       gatewayPort: 0,
-      sshRoute: this.sshRouteForHost(host),
-      sshJumpHopHandoffs: this.sshJumpHopHandoffsForHost(host, proxyKeyData, proxyKeyPassphrase),
-      sshProxyType: host.proxyHost.length > 0 ? host.sshProxyType : 'direct',
-      sshProxyHost: host.proxyHost,
-      sshProxyPort: host.proxyPort,
-      sshProxyUsername: host.proxyUsername,
-      sshProxyPassword: '',
-      sshProxyAuthMethod: host.sshProxyType === 'ssh_jump' ? host.sshProxyAuthMethod : undefined,
+      sshRoute: proxyPlan.route,
+      sshJumpHopHandoffs: jumpHandoffs,
+      sshProxyType: proxyPlan.route.type,
+      sshProxyHost: proxyPlan.proxyHost,
+      sshProxyPort: proxyPlan.proxyPort,
+      sshProxyUsername: proxyPlan.proxyUsername,
+      sshProxyPassword: proxyPassword,
+      sshProxyAuthMethod: proxyPlan.route.type === 'ssh_jump' && proxyPlan.route.hops.length > 0
+        ? proxyPlan.route.hops[0].authMethod : undefined,
       sshProxyPrivateKeyPem: '',
       sshProxyPrivateKeyPassphrase: '',
       domain: '',
@@ -7699,12 +8053,13 @@ struct SshTerminal {
       authMethod: useKey ? 'publickey' : 'password',
       privateKeyPem: useKey ? keyData : '',
       privateKeyPassphrase: keyPassphrase,
-      expectedHostKeyRawBase64: host.sshHostKeyRawBase64,
-      expectedHostKeyFingerprintSha256: host.sshHostKeyFingerprintSha256,
+      expectedHostKeyRawBase64: targetPins.rawBase64,
+      expectedHostKeyFingerprintSha256: targetPins.fingerprintSha256,
       sshJumpHostKeyRawBase64: host.sshJumpHostKeyRawBase64,
       sshJumpHostKeyFingerprintSha256: host.sshJumpHostKeyFingerprintSha256,
       sshHostKeyPromptEnabled: true,
-      sshTrustHostId: host.id
+      sshTrustHostId: host.id,
+      sshHostKeyRouteIdentity: targetPins.routeIdentity
     };
   }
 
@@ -7830,7 +8185,7 @@ struct SshTerminal {
           return -1;
         }
         this.sshTabStore.open(owner, host.label,
-          host.username + '@' + host.host + ':' + host.port.toString());
+          formatUserAtHost(host.username, host.host, host.port));
         this.sshTabStore.update(owner, 'connected', connectedSessionId, '', generation);
         if (this.sftpRightEndpoint === 'ssh' && this.sftpPeerHostId === owner) {
           this.sftpPeerSessionId = connectedSessionId;
@@ -10043,6 +10398,8 @@ struct SshTerminal {
     // retain its resolver while the new SSH binding is being established.
     this.clearSshSecretPrompt();
     this.clearPreflightBinding();
+    this.clearSshRouteSecretCapture();
+    this.restoreRemoteSessionQuickExitPreference();
     this.sftpPeerConnectPromise = null;
     this.sftpPeerConnectHostId = '';
     this.sshAuthPromptPageShown = false;
@@ -10055,6 +10412,7 @@ struct SshTerminal {
     const pageGeneration: number = ++this.pageGeneration;
     const bindingGeneration: number = ++this.sshBindingGeneration;
     this.terminalClosing = false;
+    this.bindSshProductivitySecurityLifecycle();
     this.tabSwitchInFlight = false;
     this.sshNotificationAuthorizationPending = false;
     // A reused page instance must never carry task identities from the
@@ -10117,6 +10475,7 @@ struct SshTerminal {
     this.sshTabRenameHostId = '';
     this.sshTabRenameDraft = '';
     this.terminalSessionProfileIds.clear();
+    this.terminalSessionFontSizeOverrides.clear();
     this.resolvedTerminalProfileSessionKey = '';
     this.sshProxyProfilesReady = false;
     this.sshForwardingProfilesReady = false;
@@ -10337,7 +10696,7 @@ struct SshTerminal {
       this.refreshForwardingProfiles();
       this.visibleSshHostId = initialHostId;
       this.hostLabel = initialHost.label;
-      this.userAtHost = initialHost.username + '@' + initialHost.host + ':' + initialHost.port;
+      this.userAtHost = formatUserAtHost(initialHost.username, initialHost.host, initialHost.port);
       this.sshTabStore.openAndActivate(initialHostId, this.hostLabel, this.userAtHost);
       this.reconcileRetainedSshTabStates();
       this.refreshSshTabViews();
@@ -10419,8 +10778,19 @@ struct SshTerminal {
             this.preflightProxyPassphrase = tokenData.proxyPrivateKeyPassphrase || '';
             this.preflightExpectedHostKeyRaw = tokenData.expectedHostKeyRawBase64;
             this.preflightExpectedHostKeyFp = tokenData.expectedHostKeyFingerprintSha256;
+            this.preflightTargetRouteIdentity = tokenData.targetRouteIdentity || '';
             this.preflightExpectedJumpHostKeyRaw = tokenData.expectedJumpHostKeyRawBase64;
             this.preflightExpectedJumpHostKeyFp = tokenData.expectedJumpHostKeyFingerprintSha256;
+            this.preflightRouteSecretsIdentity = tokenData.routeSecretsRouteIdentity || '';
+            this.preflightProxyPassword = tokenData.proxyPassword || '';
+            this.preflightJumpHandoffs = (tokenData.jumpHandoffs || []).map(
+              (handoff: SshJumpHopHandoff): SshJumpHopHandoff => ({
+                password: handoff.password || '',
+                privateKeyPem: handoff.privateKeyPem || '',
+                privateKeyPassphrase: handoff.privateKeyPassphrase || '',
+                keyboardInteractiveResponses: (handoff.keyboardInteractiveResponses || []).map(
+                  (response: string): string => response)
+              }));
             hilog.info(0x0001, 'SshTerminal', 'preflight token consumed ok');
           } else {
             hilog.warn(0x0001, 'SshTerminal', 'preflight token expired or missing');
@@ -10433,7 +10803,7 @@ struct SshTerminal {
         const host: RemoteHost | undefined = this.srv.getHost(this.hostId);
         if (host) {
           this.hostLabel = host.label;
-          this.userAtHost = host.username + '@' + host.host + ':' + host.port;
+          this.userAtHost = formatUserAtHost(host.username, host.host, host.port);
           // The tab was published before the orientation await so the xterm
           // document can already be warming up. These assignments keep the
           // route-owned metadata authoritative after the await.
@@ -10484,6 +10854,7 @@ struct SshTerminal {
     // teardown work can leave this page instance reachable.
     this.clearSshSecretPrompt();
     this.clearPreflightBinding();
+    this.unbindSshProductivitySecurityLifecycle();
     // The page-local signal owner ends with this lifecycle. The process-wide
     // service is stopped/restarted below using explicit session snapshots;
     // retaining this registry would let a future page stop a recycled id.
@@ -10764,6 +11135,11 @@ struct SshTerminal {
 
   onBackPress(): boolean {
     if (this.terminalClosing) { return true; }
+    if (shouldConsumeRemoteSessionBack(
+      this.remoteSessionQuickExitDisabled, this.sshSessionActive())) {
+      promptAction.showToast({ message: 'SSH 会话中，请使用返回按钮退出', duration: 1200 });
+      return true;
+    }
     this.closeSessionAndBack();
     return true;
   }
@@ -11173,6 +11549,10 @@ struct SshTerminal {
   }
 
   private onSshAbilityBackgroundChange(): void {
+    if (this.sshContextualGuideInBackground()) {
+      this.clearSshRouteSecretCapture();
+      SshOperationRouteSecretService.getInstance().clearAll();
+    }
     if (!this.sshContextualGuideInBackground()) {
       this.scheduleSshContextualGuide();
     }
@@ -11284,6 +11664,10 @@ struct SshTerminal {
 
   private sshPal(): Palette {
     return buildDark(this.accentColor);
+  }
+
+  private bindSheetBg(originalBackground: string): string {
+    return this.theme === 'dark' ? this.pal().sheetBg : originalBackground;
   }
 
   // SSH 终端始终深色模式 — 顶栏和底栏不跟随系统主题, 固定深色背景+亮色文字
@@ -11531,8 +11915,12 @@ struct SshTerminal {
   private preflightProxyPassphrase: string = '';
   private preflightExpectedHostKeyRaw: string = '';
   private preflightExpectedHostKeyFp: string = '';
+  private preflightTargetRouteIdentity: string = '';
   private preflightExpectedJumpHostKeyRaw: string = '';
   private preflightExpectedJumpHostKeyFp: string = '';
+  private preflightRouteSecretsIdentity: string = '';
+  private preflightProxyPassword: string = '';
+  private preflightJumpHandoffs: SshJumpHopHandoff[] = [];
 
   private clearPreflightBinding(): void {
     this.preflightHostId = '';
@@ -11540,8 +11928,12 @@ struct SshTerminal {
     this.preflightProxyPassphrase = '';
     this.preflightExpectedHostKeyRaw = '';
     this.preflightExpectedHostKeyFp = '';
+    this.preflightTargetRouteIdentity = '';
     this.preflightExpectedJumpHostKeyRaw = '';
     this.preflightExpectedJumpHostKeyFp = '';
+    this.preflightRouteSecretsIdentity = '';
+    this.preflightProxyPassword = '';
+    this.preflightJumpHandoffs = [];
   }
 
   private resolveSshSecretPrompt(value: string): void {
@@ -11616,7 +12008,7 @@ struct SshTerminal {
     // any UTF-8 suffix from the previous identity must not cross into it.
     this.resetTerminalDecodeState(bindingHostId);
     this.sshTabStore.openAndActivate(bindingHostId, host.label,
-      host.username + '@' + host.host + ':' + host.port.toString());
+      formatUserAtHost(host.username, host.host, host.port));
     this.sshTabStore.beginConnection(bindingHostId);
     this.markXtermSurfaceNotReady(bindingHostId);
     this.refreshSshTabViews();
@@ -11661,11 +12053,33 @@ struct SshTerminal {
       if (!proxyPlan.valid) {
         throw new Error(proxyPlan.message + ' [' + proxyPlan.code + ']');
       }
-      const proxyPassword: string = await this.terminalProxyPassword(
-        proxyPlan, pageGeneration, bindingGeneration, bindingHostId);
+      const targetBinding: SshHostKeyRouteBinding = sshHostKeyRouteBinding(host, proxyPlan);
+      if (!targetBinding.ok) {
+        throw new Error('SSH 连接路径无法建立安全身份 [E-SSH-HOSTKEY-ROUTE]');
+      }
+      const targetPins: SshHostKeyPins = sshHostKeyPinsForRoute(host, proxyPlan);
+      if (preflightMatchesHost && (!targetBinding.ok || !targetPins.trusted ||
+        this.preflightTargetRouteIdentity !== targetBinding.identity ||
+        this.preflightExpectedHostKeyRaw !== targetPins.rawBase64 ||
+        this.preflightExpectedHostKeyFp !== targetPins.fingerprintSha256)) {
+        this.clearPreflightBinding();
+        throw new Error('SSH 安全预检与当前连接路径不一致，请从主机列表重新连接 ' +
+          '[E-SSH-PREFLIGHT-ROUTE-STALE]');
+      }
+      const preflightRouteSecretsCurrent: boolean = preflightMatchesHost &&
+        this.preflightRouteSecretsIdentity.length > 0 &&
+        this.preflightRouteSecretsIdentity === targetBinding.identity;
+      const proxyPassword: string = preflightRouteSecretsCurrent ? this.preflightProxyPassword :
+        await this.terminalProxyPassword(proxyPlan, pageGeneration, bindingGeneration, bindingHostId);
       if (!this.isSshBindingActive(pageGeneration, bindingGeneration, bindingHostId)) { return; }
-      const jumpHandoffs: SshJumpHopHandoff[] = await this.terminalJumpHandoffs(
-        host, proxyPlan, pageGeneration, bindingGeneration);
+      const jumpHandoffs: SshJumpHopHandoff[] = preflightRouteSecretsCurrent ?
+        this.preflightJumpHandoffs.map((handoff: SshJumpHopHandoff): SshJumpHopHandoff => ({
+          password: handoff.password || '',
+          privateKeyPem: handoff.privateKeyPem || '',
+          privateKeyPassphrase: handoff.privateKeyPassphrase || '',
+          keyboardInteractiveResponses: (handoff.keyboardInteractiveResponses || []).map(
+            (response: string): string => response)
+        })) : await this.terminalJumpHandoffs(host, proxyPlan, pageGeneration, bindingGeneration);
       if (!this.isSshBindingActive(pageGeneration, bindingGeneration, bindingHostId)) { return; }
 
       const cfg: SessionConfig = {
@@ -11701,17 +12115,18 @@ struct SshTerminal {
         privateKeyPem: useKey ? keyData : '',
         privateKeyPassphrase: keyPassphrase,
         sshLocale: normalizeSshSessionLocale(this.sshSessionLocale),
-        expectedHostKeyRawBase64: (preflightMatchesHost ? this.preflightExpectedHostKeyRaw : '') ||
-          host.sshHostKeyRawBase64,
-        expectedHostKeyFingerprintSha256: (preflightMatchesHost ? this.preflightExpectedHostKeyFp : '') ||
-          host.sshHostKeyFingerprintSha256,
+        expectedHostKeyRawBase64: targetPins.rawBase64,
+        expectedHostKeyFingerprintSha256: targetPins.fingerprintSha256,
         sshHostKeyPromptEnabled: true,
         sshTrustHostId: host.id,
+        sshHostKeyRouteIdentity: targetBinding.identity,
         sshJumpHostKeyRawBase64: (preflightMatchesHost ? this.preflightExpectedJumpHostKeyRaw : '') ||
           host.sshJumpHostKeyRawBase64,
         sshJumpHostKeyFingerprintSha256: (preflightMatchesHost ? this.preflightExpectedJumpHostKeyFp : '') ||
           host.sshJumpHostKeyFingerprintSha256
       };
+      this.prepareSshRouteSecretCapture(
+        host, proxyPlan, targetBinding.identity, proxyPassword, jumpHandoffs);
       // The native config now owns the one-shot authentication inputs for
       // this connect attempt; do not keep the preflight passphrase or raw
       // host-key material in the page after constructing it.
@@ -11726,12 +12141,15 @@ struct SshTerminal {
         connectPromise.sessionId : 0;
       this.sshAuthPromptPendingGeneration = connectPromise.generation > 0 ?
         connectPromise.generation : 0;
+      this.bindSshRouteSecretCapture(
+        this.sshAuthPromptPendingSessionId, this.sshAuthPromptPendingGeneration);
       const connectedSessionId: number = await connectPromise;
       this.clearSshAuthPromptPendingIdentity(connectPromise.sessionId);
       if (!this.isSshBindingActive(pageGeneration, bindingGeneration, bindingHostId)) {
         // ExtensionLoader cancels an in-flight connect during page teardown;
         // only disconnect a resolved session if it is still the current one.
         if (connectedSessionId > 0) { this.loader.disconnectSshSession(connectedSessionId); }
+        this.clearSshRouteSecretCapture();
         return;
       }
       hilog.info(0x0001, 'SshTerminal',
@@ -11739,6 +12157,8 @@ struct SshTerminal {
       if (connectedSessionId <= 0) {
         throw new Error('连接失败 (code=' + connectedSessionId.toString() + ')');
       }
+      this.publishSshRouteSecretCapture(host, proxyPlan, targetBinding.identity,
+        connectedSessionId, connectPromise.generation);
       if (!await this.attachSshSession(
         pageGeneration, bindingGeneration, connectedSessionId, bindingHostId)) {
         if (this.isSshBindingActive(pageGeneration, bindingGeneration, bindingHostId)) {
@@ -11747,6 +12167,7 @@ struct SshTerminal {
         return;
       }
     } catch (err) {
+      this.clearSshRouteSecretCapture();
       const msg: string = (err as Error).message || 'SSH 连接失败';
       if (!this.isSshBindingActive(pageGeneration, bindingGeneration, bindingHostId)) { return; }
       this.connecting = false;
@@ -12509,6 +12930,47 @@ struct SshTerminal {
     for (let index = 0; index < staleKeys.length; index++) {
       this.terminalSessionProfileIds.delete(staleKeys[index]);
     }
+    const staleFontKeys: Array<string> = [];
+    this.terminalSessionFontSizeOverrides.forEach((_value: number, key: string): void => {
+      if (key.startsWith(prefix) && key !== keepKey) { staleFontKeys.push(key); }
+    });
+    for (let index = 0; index < staleFontKeys.length; index++) {
+      this.terminalSessionFontSizeOverrides.delete(staleFontKeys[index]);
+    }
+    if (staleFontKeys.length > 0) {
+      this.terminalFontOverrideRevision = this.terminalFontOverrideRevision + 1;
+    }
+  }
+
+  private activeSshTerminalFontSize(): number {
+    return this.terminalProfileEnabled() ?
+      sshTerminalFontSizeForPinch(this.terminalEffectiveFontSize, 1) :
+      sshTerminalFontSizeForPinch(this.fontSize, 1);
+  }
+
+  private setCurrentSshTerminalFontOverride(value: number): void {
+    const normalizedHostId: string = this.hostId.trim();
+    const sessionScopeKey: string = sshTerminalSessionProfileScopeKey(
+      normalizedHostId, this.sshTabStore.sessionGeneration(normalizedHostId));
+    if (sessionScopeKey.length === 0) { return; }
+    this.terminalSessionFontSizeOverrides.set(
+      sessionScopeKey, sshTerminalFontSizeForPinch(value, 1));
+    this.terminalFontOverrideRevision = this.terminalFontOverrideRevision + 1;
+  }
+
+  private sshTerminalFontSizeForSurface(hostId: string,
+    profile: SshTerminalResolvedProfile): number {
+    if (!this.terminalProfileEnabled()) {
+      return sshTerminalFontSizeForPinch(this.fontSize, 1);
+    }
+    const revision: number = this.terminalFontOverrideRevision;
+    const normalizedHostId: string = hostId.trim();
+    const sessionScopeKey: string = sshTerminalSessionProfileScopeKey(
+      normalizedHostId, this.sshTabStore.sessionGeneration(normalizedHostId));
+    const override: number | undefined = sessionScopeKey.length > 0 ?
+      this.terminalSessionFontSizeOverrides.get(sessionScopeKey) : undefined;
+    return override === undefined || revision < 0 ?
+      profile.fontSize : sshTerminalFontSizeForPinch(override, 1);
   }
 
   private resolvedTerminalProfileForHost(hostId: string): SshTerminalResolvedProfile {
@@ -12555,7 +13017,10 @@ struct SshTerminal {
     this.resolvedTerminalProfile = this.terminalProfileStore.resolve(
       normalizedHostId, sessionProfile);
     if (this.sshWorkbenchEnabled) {
-      this.fontSize = this.resolvedTerminalProfile.fontSize;
+      const override: number | undefined = sessionScopeKey.length > 0 ?
+        this.terminalSessionFontSizeOverrides.get(sessionScopeKey) : undefined;
+      this.terminalEffectiveFontSize = override === undefined ?
+        this.resolvedTerminalProfile.fontSize : sshTerminalFontSizeForPinch(override, 1);
       this.lineSpacing = this.resolvedTerminalProfile.lineSpacing;
     } else {
       this.restoreLegacyTerminalAppearance();
@@ -12655,6 +13120,7 @@ struct SshTerminal {
   @Builder
   private TerminalProfileSheetContent() {
     SshTerminalProfileSheet({
+      sheetBackgroundColor: this.bindSheetBg('#171D25'),
       profiles: this.terminalProfiles,
       resolvedProfile: this.resolvedTerminalProfile,
       globalProfileId: this.terminalGlobalProfileId,
@@ -12683,8 +13149,11 @@ struct SshTerminal {
   @Builder
   private SshProductivitySheetContent() {
     SshProductivitySheet({
+      sheetBackgroundColor: this.bindSheetBg('#171D25'),
       document: this.sshProductivityDocument,
       ready: this.sshProductivityReady,
+      connected: this.sshProductivityInsertionAllowed(),
+      advancedEnabled: this.sshWorkbenchEnabled,
       sessionLogsEnabled: this.sshSessionLogsEnabled(),
       broadcastEnabled: this.sshBroadcastInputEnabled(),
       hostId: this.hostId,
@@ -12700,6 +13169,12 @@ struct SshTerminal {
       },
       onInsertHistory: (command: string): void => {
         this.insertSshProductivityHistory(command);
+      },
+      onUpsertSnippet: (snippet: SshSnippetV1): boolean => {
+        return this.upsertSshProductivitySnippet(snippet);
+      },
+      onRemoveSnippet: (snippetId: string): boolean => {
+        return this.removeSshProductivitySnippet(snippetId);
       },
       onToggleHistory: (enabled: boolean): void => {
         this.setSshProductivitySetting('history', enabled);
@@ -12734,6 +13209,7 @@ struct SshTerminal {
   @Builder
   private SshSessionLogSheetContent() {
     SshSessionLogSheet({
+      sheetBackgroundColor: this.bindSheetBg('#171D25'),
       document: this.sshSessionLogDocument,
       results: this.sshSessionLogResults,
       ready: this.sshSessionLogReady,
@@ -12753,6 +13229,7 @@ struct SshTerminal {
   @Builder
   private SshBroadcastSheetContent() {
     SshBroadcastSheet({
+      sheetBackgroundColor: this.bindSheetBg('#341A1A'),
       targets: this.sshBroadcastTargets,
       selectedHostIds: this.sshBroadcastSelectedHostIds,
       text: this.sshBroadcastText,
@@ -13232,6 +13709,11 @@ struct SshTerminal {
     if (routed !== null) { return routed; }
     // PC 退出快捷键: Ctrl+Shift+Q
     if (this.isDesktopDevice && code === KeyCode.KEYCODE_Q && ctrl && shift) {
+      if (!remoteSessionShortcutExitAllowed(
+        this.remoteSessionQuickExitDisabled, this.sshSessionActive())) {
+        promptAction.showToast({ message: '快捷退出已关闭，请使用返回按钮退出', duration: 1200 });
+        return true;
+      }
       this.closeSessionAndBack();
       return true;
     }
@@ -13589,6 +14071,7 @@ struct SshTerminal {
           state: 'needsRebind', activeConnections: runtime.activeConnections,
           transferredBytes: runtime.transferredBytes, lastError: runtime.lastError,
           actualBindHost: runtime.actualBindHost, actualBindPort: runtime.actualBindPort,
+          actualBindFamily: runtime.actualBindFamily,
           updatedAtMs: runtime.updatedAtMs
         };
       });
@@ -13714,7 +14197,7 @@ struct SshTerminal {
       }
       const confirmed: boolean = await this.promptForwardingConfirmation(
         '确认开放监听地址',
-        profile.bindHost + ':' + profile.bindPort.toString() +
+        formatListenerHostPort(profile.bindHost, profile.bindPort) +
           ' 可能被局域网或公网设备访问。仅在你信任当前网络和目标服务时继续。',
         '确认保存', true);
       if (!confirmed || this.terminalClosing || pageGeneration !== this.pageGeneration ||
@@ -13774,7 +14257,7 @@ struct SshTerminal {
     const confirmed: boolean = await this.promptForwardingConfirmation(
       '删除隧道规则',
       '删除 ' + sshForwardingModeLabel(profile.mode) + ' ' +
-        profile.bindHost + ':' + profile.bindPort.toString() + '？正在运行时会先安全停止。',
+        formatListenerHostPort(profile.bindHost, profile.bindPort) + '？正在运行时会先安全停止。',
       '删除', true);
     if (!confirmed || this.terminalClosing || pageGeneration !== this.pageGeneration ||
       owner !== this.hostId.trim()) { return; }
@@ -13869,7 +14352,7 @@ struct SshTerminal {
           .onClick((): void => { this.finishForwardingConfirmation(true); })
       }.width('100%')
     }.width('100%').padding({ left: 20, right: 20, top: 18, bottom: 18 })
-      .alignItems(HorizontalAlign.Start).backgroundColor('#171D25')
+      .alignItems(HorizontalAlign.Start).backgroundColor(this.bindSheetBg('#171D25'))
   }
 
   @Builder
@@ -16934,7 +17417,7 @@ struct SshTerminal {
                 Column() {
                   Text(host.label).fontSize(14).fontWeight(FontWeight.Medium).fontColor('#F4F7FA')
                     .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-                  Text(host.username + '@' + host.host + ':' + host.port.toString())
+                  Text(formatUserAtHost(host.username, host.host, host.port))
                     .fontSize(11).fontColor('rgba(242,244,247,0.56)')
                     .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
                 }.alignItems(HorizontalAlign.Start).layoutWeight(1)
@@ -16963,7 +17446,7 @@ struct SshTerminal {
     }
     .width('100%').height('100%')
     .padding({ left: 20, right: 20, top: 20, bottom: 18 })
-    .backgroundColor('#171D25')
+    .backgroundColor(this.bindSheetBg('#171D25'))
     .borderRadius(18)
   }
 
@@ -17935,7 +18418,8 @@ struct SshTerminal {
     }
     .width('100%').constraintSize({ maxWidth: 620 })
     .padding({ left: 22, right: 22, top: 20, bottom: 22 })
-    .borderRadius(18).backgroundColor(this.sshPal().bg)
+    .borderRadius(18).backgroundColor(rootSheetMountToken > 0 ?
+      this.bindSheetBg(this.sshPal().bg) : this.sshPal().bg)
     .onAppear(this.sftpRootSheetAppearHandler(rootSheetMountToken))
   }
 
@@ -17953,7 +18437,7 @@ struct SshTerminal {
         .width('100%').height('100%')
         .constraintSize({ maxWidth: 2000, minHeight: 0 })
         .padding({ left: 20, right: 20, top: 18, bottom: 16 })
-        .backgroundColor(this.sshPal().bg)
+        .backgroundColor(rootSheetMountToken > 0 ? this.bindSheetBg(this.sshPal().bg) : this.sshPal().bg)
       } else {
         this.SftpPhoneLegacySheet(rootSheetMountToken)
       }
@@ -17961,7 +18445,7 @@ struct SshTerminal {
     .width('100%')
     .height(this.sftpPadPcLayout() ? '100%' : 'auto')
     .constraintSize({ minHeight: 0 })
-    .backgroundColor(this.sshPal().bg)
+    .backgroundColor(rootSheetMountToken > 0 ? this.bindSheetBg(this.sshPal().bg) : this.sshPal().bg)
     .onAppear((): void => {
       if (this.sftpPadPcLayout()) { this.handleSftpRootSheetAppear(rootSheetMountToken); }
     })
@@ -18094,7 +18578,7 @@ struct SshTerminal {
         }
         if (!this.sshHeaderActionPopupEnabled() &&
           this.isDesktopDevice && !this.sshCompactChrome()) {
-          Text('Ctrl+Shift+Q 退出')
+          Text(this.remoteSessionQuickExitDisabled ? '仅按钮退出' : 'Ctrl+Shift+Q 退出')
             .fontSize(11).fontColor('rgba(242,244,247,0.54)')
             .margin({ right: 12 })
         }
@@ -18505,7 +18989,7 @@ struct SshTerminal {
             }
 
             if (this.terminalZoomIndicatorVisible) {
-              Text('字号 ' + this.fontSize.toString() + ' vp')
+              Text('字号 ' + this.activeSshTerminalFontSize().toString() + ' vp')
                 .fontSize(13)
                 .fontColor('#FFFFFF')
                 .fontWeight(FontWeight.Medium)
@@ -18744,7 +19228,7 @@ struct SshTerminal {
           preferType: SheetType.CENTER,
           width: this.sftpPeerPickerSheetWidth(),
           dragBar: false,
-          backgroundColor: '#171D25',
+          backgroundColor: this.bindSheetBg('#171D25'),
           blurStyle: BlurStyle.NONE,
           showClose: false,
           maskColor: 'rgba(0,0,0,0.30)',
@@ -18768,7 +19252,7 @@ struct SshTerminal {
             ? SheetType.BOTTOM : SheetType.CENTER,
           width: this.forwardingSheetWidth(),
           dragBar: this.forwardingSheetLayout().bottomAnchored,
-          backgroundColor: '#171D25',
+          backgroundColor: this.bindSheetBg('#171D25'),
           blurStyle: BlurStyle.NONE,
           showClose: false,
           maskColor: 'rgba(0,0,0,0.42)',
@@ -18795,7 +19279,7 @@ struct SshTerminal {
           preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
           width: this.forwardingConfirmSheetWidth(),
           dragBar: false,
-          backgroundColor: '#171D25',
+          backgroundColor: this.bindSheetBg('#171D25'),
           blurStyle: BlurStyle.NONE,
           showClose: false,
           maskColor: 'rgba(0,0,0,0.48)',
@@ -18861,7 +19345,7 @@ struct SshTerminal {
           preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
           width: this.breakpoint === 'sm' ? '100%' : '700vp',
           dragBar: this.breakpoint === 'sm',
-          backgroundColor: '#171D25',
+          backgroundColor: this.bindSheetBg('#171D25'),
           blurStyle: BlurStyle.NONE,
           showClose: false,
           maskColor: 'rgba(0,0,0,0.48)',
@@ -18884,7 +19368,7 @@ struct SshTerminal {
           preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
           width: this.breakpoint === 'sm' ? '100%' : '760vp',
           dragBar: this.breakpoint === 'sm',
-          backgroundColor: '#111820',
+          backgroundColor: this.bindSheetBg('#111820'),
           blurStyle: BlurStyle.NONE,
           showClose: false,
           maskColor: 'rgba(0,0,0,0.42)',
@@ -18912,7 +19396,7 @@ struct SshTerminal {
           preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
           width: this.breakpoint === 'sm' ? '100%' : '620vp',
           dragBar: this.breakpoint === 'sm',
-          backgroundColor: '#171D25',
+          backgroundColor: this.bindSheetBg('#171D25'),
           blurStyle: BlurStyle.NONE,
           showClose: false,
           maskColor: 'rgba(0,0,0,0.42)',
@@ -18938,7 +19422,7 @@ struct SshTerminal {
           preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
           width: this.breakpoint === 'sm' ? '100%' : '760vp',
           dragBar: this.breakpoint === 'sm',
-          backgroundColor: '#171D25',
+          backgroundColor: this.bindSheetBg('#171D25'),
           blurStyle: BlurStyle.NONE,
           showClose: false,
           maskColor: 'rgba(0,0,0,0.48)',
@@ -18966,7 +19450,7 @@ struct SshTerminal {
           preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
           width: this.breakpoint === 'sm' ? '100%' : '760vp',
           dragBar: this.breakpoint === 'sm',
-          backgroundColor: '#171D25',
+          backgroundColor: this.bindSheetBg('#171D25'),
           blurStyle: BlurStyle.NONE,
           showClose: false,
           maskColor: 'rgba(0,0,0,0.48)',
@@ -18994,7 +19478,7 @@ struct SshTerminal {
           preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
           width: this.breakpoint === 'sm' ? '100%' : '760vp',
           dragBar: this.breakpoint === 'sm',
-          backgroundColor: '#341A1A',
+          backgroundColor: this.bindSheetBg('#341A1A'),
           blurStyle: BlurStyle.NONE,
           showClose: false,
           maskColor: 'rgba(42,0,0,0.56)',
@@ -19019,7 +19503,7 @@ struct SshTerminal {
           preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
           width: this.breakpoint === 'sm' ? '100%' : '480vp',
           dragBar: this.breakpoint === 'sm',
-          backgroundColor: '#171D25',
+          backgroundColor: this.bindSheetBg('#171D25'),
           blurStyle: BlurStyle.NONE,
           showClose: false,
           maskColor: 'rgba(0,0,0,0.44)',
@@ -19044,7 +19528,7 @@ struct SshTerminal {
             ? SheetType.BOTTOM : SheetType.CENTER,
           width: this.sshTabPickerSheetWidth(),
           dragBar: this.sshTabPickerSheetLayout().bottomAnchored,
-          backgroundColor: '#171D25',
+          backgroundColor: this.bindSheetBg('#171D25'),
           blurStyle: BlurStyle.NONE,
           showClose: false,
           onWillDismiss: (action: DismissSheetAction): void => {

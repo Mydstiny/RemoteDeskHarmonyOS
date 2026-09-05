@@ -48,12 +48,24 @@ function desktopSnapshot(): RustDeskDiagnosticsSnapshot {
     remoteClipboardPermissionKnown: true, remoteClipboardAllowed: true,
     remoteFilePermissionKnown: true, remoteFileAllowed: true,
     sessionId: 7, latencyMs: 22, targetBitrateKbps: 8000,
+    requestedImageQuality: 2, effectiveImageQuality: 2, sentImageQuality: 2,
+    qualityProfile: 1, qualityFps: 60,
+    qualityRequestedGeneration: 1, qualityAppliedGeneration: 1, qualityUpdateStatus: 2,
     videoMessages: 120, receivedFrames: 118, keyframes: 3, receivedBytes: 65536,
     audioFrames: 30, cadenceGaps: 0, maxCadenceGapMs: 0, testDelayCount: 1,
     receivedFps: 30, displayFps: 30, decodeFps: 30, bitrateKbps: 7000,
     codec: 0, width: 1920, height: 1080, connectionPath: 'relay',
     peerPlatform: 'windows', desktopSurfaceCompatibility: true,
     nativeImagePresentation: 'validated_producer', producerTransform: 'rotate_180',
+    appliedTransform: 'identity', producerTransformSampled: true,
+    producerTransformReadResult: 0, producerTransformSamples: 118,
+    producerTransformChanges: 2, producerTransformReadFailures: 0,
+    producerTransformClassMask: 18,
+    producerTransformMatrix: [-1, 0, 0, 0, 0, -1, 0, 0, 0, 0, 1, 0, 1, 1, 0, 1],
+    appliedTextureTransform: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
+    rendererTransformValid: true, rendererTransformVersion: 4,
+    rendererRotationQuarterTurns: 0, rendererFlipX: false, rendererFlipY: true,
+    decoderGeneration: 11, rendererGeneration: 12,
     lastFrameAtMs: 1000, lastFrameAgeMs: 10,
     lastPresentedAtMs: 1000, lastPresentedFrameAgeMs: 10,
     decodeOk: 118, decodeErrors: 2, decodeP50Us: 1000, decodeP95Us: 2000,
@@ -93,7 +105,18 @@ function moonlightSnapshot(): MoonlightNativeStreamSnapshot {
     acceptedVideoFrames: 100, droppedVideoFrames: 4, acceptedVideoBytes: 9000,
     rejectedAudioPackets: 2, rejectedInputEvents: 1, streamWidth: 2560,
     streamHeight: 1440, codec: 'hevc', decoderQueueDepth: 3,
-    decoderCodecLatencyMs: 18, decoderSurfaceUpdateFailures: 1
+    decoderCodecLatencyMs: 18, decoderSurfaceUpdateFailures: 1,
+    desktopSurfaceCompatibility: true,
+    nativeImagePresentation: 'producer', producerTransform: 'flip_y',
+    appliedTransform: 'flip_y', producerTransformSampled: true,
+    producerTransformReadResult: 0, producerTransformSamples: 100,
+    producerTransformChanges: 0, producerTransformReadFailures: 0,
+    producerTransformClassMask: 8,
+    producerTransformMatrix: [1, 0, 0, 0, 0, -1, 0, 0, 0, 0, 1, 0, 0, 1, 0, 1],
+    appliedTextureTransform: [1, 0, 0, 0, 0, -1, 0, 0, 0, 0, 1, 0, 0, 1, 0, 1],
+    rendererTransformValid: true, rendererTransformVersion: 6,
+    rendererRotationQuarterTurns: 0, rendererFlipX: false, rendererFlipY: true,
+    decoderGeneration: 13, rendererGeneration: 14
   };
 }
 
@@ -108,6 +131,8 @@ export default function diagnosticRuntimeSnapshotPolicyTest(): void {
         expect(facts.peerPlatform).assertEqual('windows');
         expect(facts.presentation).assertEqual('validated_producer');
         expect(facts.producerTransform).assertEqual('rotate_180');
+        expect(facts.appliedTransform).assertEqual('identity');
+        expect(facts.rendererFlipY).assertTrue();
         const rotated = desktopSnapshot();
         rotated.producerTransform = 'rotate_270';
         expect(diagnosticDesktopRuntimeFacts(
@@ -128,8 +153,12 @@ export default function diagnosticRuntimeSnapshotPolicyTest(): void {
       expect(sshFacts.frames).assertEqual(20);
       expect(sshFacts.latencyMs).assertEqual(3);
       const moonlightFacts = diagnosticMoonlightRuntimeFacts(moonlightSnapshot());
-      expect(moonlightFacts.backend).assertEqual('native');
+      expect(moonlightFacts.backend).assertEqual('hardware');
       expect(moonlightFacts.codec).assertEqual('h265');
+      expect(moonlightFacts.presentation).assertEqual('producer');
+      expect(moonlightFacts.producerTransform).assertEqual('flip_y');
+      expect(moonlightFacts.appliedTransform).assertEqual('flip_y');
+      expect(moonlightFacts.rendererFlipY).assertTrue();
       expect(moonlightFacts.dropped).assertEqual(7);
     });
 

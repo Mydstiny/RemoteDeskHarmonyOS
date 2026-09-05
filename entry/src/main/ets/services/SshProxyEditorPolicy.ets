@@ -6,6 +6,7 @@ import {
   SshProxyProfileValidationResult,
   validateSshProxyProfile
 } from './SshProxyProfilePolicy';
+import { parseEndpointPortText } from './EndpointAddressPolicy';
 
 export type SshProxyEditorKind = 'direct' | 'http_connect' | 'socks5' | 'ssh_jump' | 'frp_tcp';
 export type SshProxyEditorAuthMethod = 'password' | 'publickey' | 'kbd-interactive';
@@ -83,21 +84,20 @@ export function sshProxyEditorValueFromProfile(profile: SshProxyProfileV1): SshP
 }
 
 function validPortText(value: string): number {
-  const port: number = parseInt(value.trim());
-  return Number.isFinite(port) && Number.isInteger(port) && port >= 1 && port <= 65535 ? port : 0;
+  return parseEndpointPortText(value);
 }
 
 export function buildSshProxyProfile(hostId: string, targetHost: string, targetPort: number,
   value: SshProxyEditorValue): SshProxyEditorBuildResult {
   const route: SshRoute = {
-    schemaVersion: 1, type: value.kind, endpointHost: targetHost.trim(), endpointPort: targetPort,
+    schemaVersion: 1, type: value.kind, endpointHost: targetHost, endpointPort: targetPort,
     hops: [], connectTimeoutMs: 10000
   };
   const profile: SshProxyProfileV1 = {
     schemaVersion: 1, hostId: hostId.trim(), route, updatedAtMs: Date.now()
   };
   if (value.kind === 'http_connect' || value.kind === 'socks5' || value.kind === 'frp_tcp') {
-    profile.proxyHost = value.proxyHost.trim();
+    profile.proxyHost = value.proxyHost;
     profile.proxyPort = validPortText(value.proxyPortText);
   }
   if ((value.kind === 'http_connect' || value.kind === 'socks5') &&
@@ -115,7 +115,7 @@ export function buildSshProxyProfile(hostId: string, targetHost: string, targetP
     for (let index: number = 0; index < value.hops.length; index++) {
       const draft: SshProxyHopDraft = value.hops[index];
       const hop: SshJumpHop = {
-        host: draft.host.trim(), port: validPortText(draft.portText), username: draft.username.trim(),
+        host: draft.host, port: validPortText(draft.portText), username: draft.username.trim(),
         authMethod: draft.authMethod, connectTimeoutMs: draft.connectTimeoutMs
       };
       const fingerprint: string = draft.expectedHostKeyFingerprintSha256.trim();

@@ -37,6 +37,7 @@ MoonlightProductMediaDiagnostics final {
     std::int64_t decoderCodecLatencyMs = 0;
     std::int64_t decoderCodecLatencyMaxMs = 0;
     bool decoderLowLatencyEnabled = false;
+    MoonlightPresentationDiagnostics presentation {};
     std::uint64_t acceptedAudioPackets = 0U;
     std::uint64_t rejectedAudioPackets = 0U;
     std::uint64_t acceptedAudioBytes = 0U;

@@ -3,6 +3,9 @@ import { ConnectionHealth, RemoteHost } from '../main/ets/model/RemoteHost';
 import {
   displayConnectionHealth,
   filterHostsByWorkspace,
+  hostListBottomSpacerVp,
+  hostListFabLiftVp,
+  hostListFabSizeVp,
   nextWorkspaceGroupId,
   searchHosts
 } from '../main/ets/services/HostWorkspacePolicy';
@@ -58,6 +61,17 @@ export default function hostWorkspacePolicyTest(): void {
       expect(nextWorkspaceGroupId('ops', 'ops')).assertEqual('');
       expect(nextWorkspaceGroupId('ops-team', 'Ops Team')).assertEqual('');
       expect(nextWorkspaceGroupId('ops', 'design')).assertEqual('design');
+    });
+
+    it('keeps_the_last_host_card_above_the_floating_add_button', 0, (): void => {
+      expect(hostListBottomSpacerVp('sm')).assertEqual(196);
+      expect(hostListBottomSpacerVp('md')).assertEqual(176);
+      expect(hostListBottomSpacerVp('lg')).assertEqual(176);
+      expect(hostListBottomSpacerVp('xl')).assertEqual(184);
+      ['sm', 'md', 'lg', 'xl'].forEach((breakpoint: string): void => {
+        expect(hostListBottomSpacerVp(breakpoint) >=
+          hostListFabLiftVp(breakpoint) + hostListFabSizeVp(breakpoint) + 16).assertTrue();
+      });
     });
   });
 }

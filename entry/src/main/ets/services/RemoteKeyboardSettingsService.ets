@@ -20,6 +20,18 @@ import {
   REMOTE_KEYBOARD_SHORTCUT_PLATFORM_KEY,
   REMOTE_KEYBOARD_SIMPLE_MODE_KEY
 } from './RemoteKeyboardSettingsPolicy';
+import {
+  decodeHarmonyShortcutBlockingPreferences,
+  disabledHarmonyShortcutBlockingPreferences,
+  encodeHarmonyShortcutBlockingPreferences,
+  HarmonyShortcutBlockingPreferences,
+  HarmonyShortcutDeviceClass,
+  HarmonyShortcutProtocol,
+  HarmonyShortcutStorageTransactionPort,
+  mutateHarmonyShortcutBlockingPreferences,
+  readHarmonyShortcutBlockingPreferences,
+  HARMONY_SHORTCUT_BLOCKING_STORAGE_KEY
+} from './HarmonyShortcutBlockingPolicy';
 
 export interface RemoteSystemInputMethodInfo {
   bundleName: string;
@@ -64,6 +76,30 @@ function emptySystemSnapshot(error: string = ''): RemoteSystemInputMethodSnapsho
   };
 }
 
+class HarmonyShortcutPreferencesPort implements HarmonyShortcutStorageTransactionPort {
+  private readonly values: preferences.Preferences;
+
+  constructor(values: preferences.Preferences) {
+    this.values = values;
+  }
+
+  has(key: string): boolean { return this.values.hasSync(key); }
+
+  get(key: string, fallback: string): string {
+    return this.values.getSync(key, fallback) as string;
+  }
+
+  put(key: string, value: string): void { this.values.putSync(key, value); }
+
+  delete(key: string): void { this.values.deleteSync(key); }
+
+  flush(): void { this.values.flushSync(); }
+
+  publish(key: string, value: string): void {
+    AppStorage.setOrCreate<string>(key, value);
+  }
+}
+
 export class RemoteKeyboardSettingsService {
   private static instance: RemoteKeyboardSettingsService | null = null;
   private appContext: common.Context | null = null;
@@ -79,8 +115,75 @@ export class RemoteKeyboardSettingsService {
     this.appContext = context;
     const values: RemoteKeyboardPreferences = this.loadPreferences(context);
     this.publish(values);
+    const harmonyShortcutBlocking: HarmonyShortcutBlockingPreferences | null =
+      this.tryLoadHarmonyShortcutBlocking(context);
+    if (harmonyShortcutBlocking !== null) {
+      this.publishHarmonyShortcutBlocking(harmonyShortcutBlocking);
+    }
     this.applySimpleKeyboardMode(values.simpleKeyboardEnabled);
     return values;
+  }
+
+  loadHarmonyShortcutBlocking(
+    context?: common.Context
+  ): HarmonyShortcutBlockingPreferences {
+    const loaded: HarmonyShortcutBlockingPreferences | null =
+      this.tryLoadHarmonyShortcutBlocking(context);
+    if (loaded !== null) { return loaded; }
+    const runtimeEncoded: string | undefined =
+      AppStorage.get<string>(HARMONY_SHORTCUT_BLOCKING_STORAGE_KEY);
+    return runtimeEncoded === undefined ? disabledHarmonyShortcutBlockingPreferences() :
+      decodeHarmonyShortcutBlockingPreferences(runtimeEncoded);
+  }
+
+  private tryLoadHarmonyShortcutBlocking(
+    context?: common.Context
+  ): HarmonyShortcutBlockingPreferences | null {
+    const activeContext: common.Context | null = context ?? this.appContext;
+    if (activeContext === null) { return null; }
+    try {
+      const prefs: preferences.Preferences = preferences.getPreferencesSync(
+        activeContext, { name: REMOTE_KEYBOARD_PREFERENCES_NAME });
+      return readHarmonyShortcutBlockingPreferences(
+        new HarmonyShortcutPreferencesPort(prefs));
+    } catch (_error) {
+      return null;
+    }
+  }
+
+  setHarmonyShortcutBlockingPreference(
+    deviceClass: HarmonyShortcutDeviceClass,
+    protocol: HarmonyShortcutProtocol,
+    enabled: boolean,
+    context?: common.Context
+  ): HarmonyShortcutBlockingPreferences | null {
+    const activeContext: common.Context | null = context ?? this.appContext;
+    if (activeContext === null) { return null; }
+    try {
+      const prefs: preferences.Preferences = preferences.getPreferencesSync(
+        activeContext, { name: REMOTE_KEYBOARD_PREFERENCES_NAME });
+      return mutateHarmonyShortcutBlockingPreferences(
+        new HarmonyShortcutPreferencesPort(prefs), deviceClass, protocol, enabled);
+    } catch (_error) {
+      return null;
+    }
+  }
+
+  setHarmonyShortcutDeviceBlocking(
+    deviceClass: HarmonyShortcutDeviceClass,
+    enabled: boolean,
+    context?: common.Context
+  ): HarmonyShortcutBlockingPreferences | null {
+    const activeContext: common.Context | null = context ?? this.appContext;
+    if (activeContext === null) { return null; }
+    try {
+      const prefs: preferences.Preferences = preferences.getPreferencesSync(
+        activeContext, { name: REMOTE_KEYBOARD_PREFERENCES_NAME });
+      return mutateHarmonyShortcutBlockingPreferences(
+        new HarmonyShortcutPreferencesPort(prefs), deviceClass, null, enabled);
+    } catch (_error) {
+      return null;
+    }
   }
 
   loadPreferences(context?: common.Context): RemoteKeyboardPreferences {
@@ -176,6 +279,13 @@ export class RemoteKeyboardSettingsService {
       values.functionKeysVisible);
     AppStorage.setOrCreate<boolean>(REMOTE_KEYBOARD_CLOSE_AFTER_SHORTCUT_KEY,
       values.closePanelAfterShortcut);
+  }
+
+  private publishHarmonyShortcutBlocking(
+    values: HarmonyShortcutBlockingPreferences
+  ): void {
+    AppStorage.setOrCreate<string>(HARMONY_SHORTCUT_BLOCKING_STORAGE_KEY,
+      encodeHarmonyShortcutBlockingPreferences(values));
   }
 
   private applySimpleKeyboardMode(enabled: boolean): void {

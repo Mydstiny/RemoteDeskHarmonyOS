@@ -3,11 +3,18 @@ import { RdpCredential } from '../../model/RdpCredential';
 import {
   RemoteHost,
   RdpAuthMode,
+  RdpCredentialStorageMode,
   RdpRestrictedAdminSecretSource,
   normalizeRdpNtlmHash
 } from '../../model/RemoteHost';
 import { Palette, buildDark, buildLight } from '../../common/Theme';
 import { DiscoveredRdpHost } from '../../services/RdpLanDiscoveryService';
+import {
+  EndpointAddressResult,
+  endpointTransportHost,
+  parseEndpointFields,
+  parseEndpointPortText
+} from '../../services/EndpointAddressPolicy';
 
 @Component
 export struct RdpAddFlow {
@@ -26,10 +33,13 @@ export struct RdpAddFlow {
   @State label: string = '';
   @State hostAddress: string = '';
   @State portText: string = '3389';
+  @State targetServerName: string = '';
+  @State clientHostname: string = '';
   @State username: string = '';
   @State password: string = '';
   @State credentialId: string = '';
   @State authMode: RdpAuthMode = 'password';
+  @State credentialStorageMode: RdpCredentialStorageMode = 'saved';
   @State blankPasswordConfirmed: boolean = false;
   @State restrictedAdminSource: RdpRestrictedAdminSecretSource = 'ntlm_hash';
   @State restrictedAdminHash: string = '';
@@ -44,7 +54,8 @@ export struct RdpAddFlow {
 
   private onCredentialsChanged(): void {
     this.credentialsViewRevision += 1;
-    if (!this.awaitingNewCredential || this.authMode !== 'password') { return; }
+    if (!this.awaitingNewCredential || this.authMode !== 'password' ||
+      this.credentialStorageMode !== 'saved') { return; }
     const added: RdpCredential | undefined = this.credentials.find((credential: RdpCredential): boolean =>
       this.credentialIdsBeforeAdd.indexOf(credential.id) < 0);
     if (added === undefined) { return; }
@@ -58,10 +69,28 @@ export struct RdpAddFlow {
     return this.theme === 'light' ? buildLight(this.accentColor) : buildDark(this.accentColor);
   }
 
+  private parsedEndpoint(): EndpointAddressResult {
+    return parseEndpointFields(this.hostAddress, parseEndpointPortText(this.portText));
+  }
+
+  private endpointIsAccepted(parsed: EndpointAddressResult): boolean {
+    if (!parsed.ok) {
+      this.errorText = parsed.error === 'invalid_port' ? '端口必须在 1-65535 之间' :
+        '请输入有效的域名、IPv4 或 IPv6 地址';
+      return false;
+    }
+    if (parsed.endpoint.scope !== '') {
+      this.errorText = 'RDP 链路本地 IPv6 尚未完成网卡作用域验证，请先使用全局 IPv6 地址';
+      return false;
+    }
+    return true;
+  }
+
   private selectAuthMode(mode: RdpAuthMode): void {
     this.authMode = mode;
     this.errorText = '';
     if (mode !== 'password') {
+      this.credentialStorageMode = 'saved';
       this.credentialId = '';
       this.password = '';
     }
@@ -69,18 +98,31 @@ export struct RdpAddFlow {
     if (mode !== 'restricted_admin') { this.restrictedAdminHash = ''; }
   }
 
+  private selectCredentialStorageMode(mode: RdpCredentialStorageMode): void {
+    this.credentialStorageMode = mode;
+    this.errorText = '';
+    if (mode === 'connect_time') {
+      this.username = '';
+      this.password = '';
+      this.credentialId = '';
+      this.awaitingNewCredential = false;
+      this.credentialIdsBeforeAdd = [];
+    }
+  }
+
   private buildHost(): RemoteHost | null {
-    const port: number = parseInt(this.portText);
+    const parsed: EndpointAddressResult = this.parsedEndpoint();
     if (this.label.trim() === '') { this.errorText = '请输入主机名称'; return null; }
-    if (this.hostAddress.trim() === '') { this.errorText = '请输入主机地址'; return null; }
-    if (isNaN(port) || port <= 0 || port > 65535) { this.errorText = '端口必须在 1-65535 之间'; return null; }
+    if (!this.endpointIsAccepted(parsed)) { return null; }
+    const port: number = parsed.endpoint.port;
+    const canonicalHost: string = endpointTransportHost(parsed.endpoint);
     if (this.useLanSearch && this.selectedLanStableId === '') {
       this.errorText = '请先选择局域网搜索结果'; return null;
     }
     const selectedLanHost: DiscoveredRdpHost | undefined = this.lanHosts.find(
       (item: DiscoveredRdpHost): boolean => item.stableId === this.selectedLanStableId);
     if (this.useLanSearch && (selectedLanHost === undefined ||
-      selectedLanHost.host !== this.hostAddress.trim() || selectedLanHost.port !== port)) {
+      selectedLanHost.host !== this.hostAddress || selectedLanHost.port !== port)) {
       this.errorText = '局域网搜索结果已变化，请返回并重新选择'; return null;
     }
     if (this.useLanSearch && this.lanAddressMode !== 'static' && this.lanAddressMode !== 'dynamic') {
@@ -90,7 +132,8 @@ export struct RdpAddFlow {
       this.errorText = '该主机没有可用于自动更新的稳定证书身份，请选择静态 IP'; return null;
     }
     if (this.authMode === 'password') {
-      if (this.credentialId === '' && (this.username.trim() === '' || this.password === '')) {
+      if (this.credentialStorageMode === 'saved' && this.credentialId === '' &&
+        (this.username.trim() === '' || this.password === '')) {
         this.errorText = '请输入账号和密码，或选择 Windows 凭据'; return null;
       }
     } else {
@@ -108,19 +151,28 @@ export struct RdpAddFlow {
     host.id = RemoteHost.generateId();
     host.protocol = 'rdp';
     host.label = this.label.trim();
-    host.host = this.hostAddress.trim();
+    host.host = canonicalHost;
     host.port = port;
+    host.customHostname = this.targetServerName;
+    host.rdpClientHostname = this.clientHostname;
     if (this.useLanSearch) {
       host.lanAddressMode = this.lanAddressMode === 'dynamic' ? 'dynamic' : 'static';
       host.lanDiscoveryIdentity = this.selectedLanDynamicCapable ? this.selectedLanStableId : '';
       host.lanLastResolvedAt = Date.now();
     }
     host.rdpAuthMode = this.authMode;
+    host.rdpCredentialStorageMode = this.credentialStorageMode;
     host.rdpRestrictedAdminSecretSource = this.restrictedAdminSource;
     if (this.authMode === 'password') {
-      host.username = this.credentialId === '' ? this.username.trim() : '';
-      host.password = this.credentialId === '' ? this.password : '';
-      host.rdpCredentialId = this.credentialId;
+      if (this.credentialStorageMode === 'connect_time') {
+        host.username = '';
+        host.password = '';
+        host.rdpCredentialId = '';
+      } else {
+        host.username = this.credentialId === '' ? this.username.trim() : '';
+        host.password = this.credentialId === '' ? this.password : '';
+        host.rdpCredentialId = this.credentialId;
+      }
     } else {
       host.username = this.username.trim();
       host.password = '';
@@ -206,8 +258,8 @@ export struct RdpAddFlow {
       .width('100%').height(40).borderRadius(10).enabled(!this.lanScanning)
       .backgroundColor(this.pal().surface).fontColor(this.accentColor).margin({ bottom: 10 })
       .onClick((): void => {
-        const port: number = parseInt(this.portText);
-        if (isNaN(port) || port <= 0 || port > 65535) {
+        const port: number = parseEndpointPortText(this.portText);
+        if (port === 0) {
           this.errorText = '请先填写 1-65535 之间的扫描端口'; return;
         }
         this.onStartLanScan(port);
@@ -220,7 +272,7 @@ export struct RdpAddFlow {
       Row() {
         Column() {
           Text(item.deviceName).fontSize(14).fontColor(this.pal().text)
-          Text(item.host + ':' + item.port.toString() +
+          Text((item.host.indexOf(':') >= 0 ? '[' + item.host + ']' : item.host) + ':' + item.port.toString() +
             (item.dynamicCapable ? ' · 支持动态 IP' : ' · 仅静态 IP'))
             .fontSize(11).fontColor(this.pal().text3).margin({ top: 3 })
         }.alignItems(HorizontalAlign.Start).layoutWeight(1)
@@ -242,47 +294,69 @@ export struct RdpAddFlow {
   }
 
   @Builder private passwordAuthenticationFields() {
-    Text('普通密码/凭据').fontSize(12).fontColor(this.pal().text3).width('100%').margin({ bottom: 8 })
+    Text('账号和密码保存方式').fontSize(12).fontColor(this.pal().text3)
+      .width('100%').margin({ bottom: 8 })
     Row() {
-      Button('账号密码').layoutWeight(1).height(38).borderRadius(10)
-        .backgroundColor(this.credentialId === '' ? this.accentColor : this.pal().surface)
-        .fontColor(this.credentialId === '' ? Color.White : this.pal().text2)
-        .onClick((): void => { this.credentialId = ''; this.errorText = ''; })
-      Button('Windows 凭据').layoutWeight(1).height(38).borderRadius(10).margin({ left: 8 })
-        .backgroundColor(this.credentialId !== '' ? this.accentColor : this.pal().surface)
-        .fontColor(this.credentialId !== '' ? Color.White : this.pal().text2)
-        .onClick((): void => {
-          if (this.credentials.length > 0) { this.credentialId = this.credentials[0].id; }
-          this.errorText = '';
-        })
+      Button('保存到本地').layoutWeight(1).height(38).borderRadius(10)
+        .backgroundColor(this.credentialStorageMode === 'saved' ? this.accentColor : this.pal().surface)
+        .fontColor(this.credentialStorageMode === 'saved' ? Color.White : this.pal().text2)
+        .onClick((): void => { this.selectCredentialStorageMode('saved'); })
+      Button('每次连接输入').layoutWeight(1).height(38).borderRadius(10).margin({ left: 8 })
+        .backgroundColor(this.credentialStorageMode === 'connect_time' ?
+          this.accentColor : this.pal().surface)
+        .fontColor(this.credentialStorageMode === 'connect_time' ? Color.White : this.pal().text2)
+        .onClick((): void => { this.selectCredentialStorageMode('connect_time'); })
     }.width('100%').margin({ bottom: 14 })
-    if (this.credentialId === '') {
-      this.inputField('账号', this.username, '邮箱、DOMAIN\\user 或本地用户名',
-        (v: string): void => { this.username = v; })
-      this.inputField('密码', this.password, 'Windows 登录密码',
-        (v: string): void => { this.password = v; }, true)
+    if (this.credentialStorageMode === 'connect_time') {
+      Row() {
+        SymbolGlyph($r('sys.symbol.lock_fill')).fontSize(16).fontColor([this.accentColor])
+        Text('此主机不保存也不引用账号和密码；每次连接时在证书预检前输入，仅用于本次会话。')
+          .fontSize(11).fontColor(this.pal().text2).lineHeight(17).layoutWeight(1)
+          .margin({ left: 8 })
+      }.width('100%').padding(12).borderRadius(10).backgroundColor(this.pal().surface)
+        .margin({ bottom: 12 })
     } else {
-      ForEach(this.credentials, (credential: RdpCredential) => {
-        Row() {
-          Column() {
-            Text(credential.displayName()).fontSize(14).fontColor(this.pal().text)
-            Text(credential.username).fontSize(11).fontColor(this.pal().text3).margin({ top: 2 })
-          }.alignItems(HorizontalAlign.Start).layoutWeight(1)
-          if (this.credentialId === credential.id) {
-            SymbolGlyph($r('sys.symbol.checkmark')).fontSize(18).fontColor([this.accentColor])
-          }
-        }.width('100%').padding(12).borderRadius(10).margin({ bottom: 6 })
-        .backgroundColor(this.pal().surface)
-        .onClick((): void => { this.credentialId = credential.id; })
-      }, (credential: RdpCredential): string => credential.id + ':' + this.credentialsViewRevision.toString())
+      Row() {
+        Button('账号密码').layoutWeight(1).height(38).borderRadius(10)
+          .backgroundColor(this.credentialId === '' ? this.accentColor : this.pal().surface)
+          .fontColor(this.credentialId === '' ? Color.White : this.pal().text2)
+          .onClick((): void => { this.credentialId = ''; this.errorText = ''; })
+        Button('Windows 凭据').layoutWeight(1).height(38).borderRadius(10).margin({ left: 8 })
+          .backgroundColor(this.credentialId !== '' ? this.accentColor : this.pal().surface)
+          .fontColor(this.credentialId !== '' ? Color.White : this.pal().text2)
+          .onClick((): void => {
+            if (this.credentials.length > 0) { this.credentialId = this.credentials[0].id; }
+            this.errorText = '';
+          })
+      }.width('100%').margin({ bottom: 14 })
+      if (this.credentialId === '') {
+        this.inputField('账号', this.username, '邮箱、DOMAIN\\user 或本地用户名',
+          (v: string): void => { this.username = v; })
+        this.inputField('密码', this.password, 'Windows 登录密码',
+          (v: string): void => { this.password = v; }, true)
+      } else {
+        ForEach(this.credentials, (credential: RdpCredential) => {
+          Row() {
+            Column() {
+              Text(credential.displayName()).fontSize(14).fontColor(this.pal().text)
+              Text(credential.username).fontSize(11).fontColor(this.pal().text3).margin({ top: 2 })
+            }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+            if (this.credentialId === credential.id) {
+              SymbolGlyph($r('sys.symbol.checkmark')).fontSize(18).fontColor([this.accentColor])
+            }
+          }.width('100%').padding(12).borderRadius(10).margin({ bottom: 6 })
+          .backgroundColor(this.pal().surface)
+          .onClick((): void => { this.credentialId = credential.id; })
+        }, (credential: RdpCredential): string => credential.id + ':' + this.credentialsViewRevision.toString())
+      }
+      Button('添加 Windows 凭据').width('100%').height(38).borderRadius(10)
+        .backgroundColor(this.pal().surface).fontColor(this.accentColor).margin({ bottom: 12 })
+        .onClick((): void => {
+          this.credentialIdsBeforeAdd = this.credentials.map((credential: RdpCredential): string => credential.id);
+          this.awaitingNewCredential = true;
+          this.onAddCredential();
+        })
     }
-    Button('添加 Windows 凭据').width('100%').height(38).borderRadius(10)
-      .backgroundColor(this.pal().surface).fontColor(this.accentColor).margin({ bottom: 12 })
-      .onClick((): void => {
-        this.credentialIdsBeforeAdd = this.credentials.map((credential: RdpCredential): string => credential.id);
-        this.awaitingNewCredential = true;
-        this.onAddCredential();
-      })
   }
 
   @Builder private blankPasswordFields() {
@@ -336,14 +410,17 @@ export struct RdpAddFlow {
         this.inputField('端口', this.portText, '3389',
           (v: string): void => { this.portText = v; }, false,
           !this.useLanSearch || this.selectedLanStableId === '')
+        this.inputField('目标服务器名（可选）', this.targetServerName, '证书或 DNS 名称',
+          (v: string): void => { this.targetServerName = v; })
+        this.inputField('客户端主机名（可选）', this.clientHostname, '发送给 Windows 的客户端名称',
+          (v: string): void => { this.clientHostname = v; })
         if (this.useLanSearch) { this.lanSearchResults() }
         Button('下一步').width('100%').height(44).borderRadius(12)
           .backgroundColor(this.accentColor).fontColor(Color.White)
           .onClick((): void => {
-            const port: number = parseInt(this.portText);
-            if (this.label.trim() === '' || this.hostAddress.trim() === '' || isNaN(port) || port <= 0 || port > 65535) {
-              this.errorText = '请完整填写名称、地址和有效端口'; return;
-            }
+            const parsed: EndpointAddressResult = this.parsedEndpoint();
+            if (this.label.trim() === '') { this.errorText = '请输入主机名称'; return; }
+            if (!this.endpointIsAccepted(parsed)) { return; }
             if (this.useLanSearch && this.selectedLanStableId === '') {
               this.errorText = '请从局域网搜索结果中选择一台主机'; return;
             }
@@ -381,6 +458,6 @@ export struct RdpAddFlow {
         Text(this.errorText).fontSize(12).fontColor(this.pal().danger).margin({ top: 10 })
       }
     }.width('100%').padding({ left: 20, right: 20, top: 20, bottom: 22 })
-    .backgroundColor(this.pal().card)
+    .backgroundColor(this.pal().sheetBg)
   }
 }

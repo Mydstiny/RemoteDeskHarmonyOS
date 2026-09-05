@@ -157,7 +157,9 @@ export function moonlightSessionTransitionIsAllowed(
   if (from === 'verifying') { return to === 'pairing' || to === 'catalog'; }
   if (from === 'pairing') { return to === 'verifying' || to === 'catalog'; }
   if (from === 'catalog') { return to === 'launching'; }
-  if (from === 'launching') { return to === 'negotiating'; }
+  if (from === 'launching') {
+    return to === 'negotiating' || to === 'reconnecting';
+  }
   if (from === 'negotiating') {
     return to === 'video' || to === 'audio' || to === 'input' || to === 'reconnecting';
   }

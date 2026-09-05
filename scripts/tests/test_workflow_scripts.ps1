@@ -46,6 +46,8 @@ if (-not (Test-Path -LiteralPath (Join-Path $repo 'scripts\tests\test_codex_stat
   throw 'test_codex_state.sh is missing.'
 }
 
+& (Join-Path $PSScriptRoot 'test_create_migration_bundle.ps1')
+
 $history = Get-Content -Raw -LiteralPath (Join-Path $repo 'scripts\history_tool.ps1')
 foreach ($required in @('refs/archive', 'Restore must start from main', 'main must match origin/main', 'git bundle verify')) {
   if ($history -notmatch [regex]::Escape($required)) {

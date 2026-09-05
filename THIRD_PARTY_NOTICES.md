@@ -7,7 +7,7 @@ source and license files before redistribution.
 | Component | Source / locked version | License | Local role |
 |---|---|---|---|
 | RustDesk protocol definitions | rustdesk/rustdesk commit `93d064a9b0eb58ab94db88ff727a877ef773c0d8`, hbb_common gitlink `387603f47cbb15c0d3dc3d67ae3396d3eb707daf`; trailing whitespace removed locally | AGPL-3.0 | `rustdesk_vendor/.../protos` code generation |
-| FreeRDP / WinPR | `freerdp-ohos` branch, gitlink `dae8276ac7361b8d14f7b87d41163fe03dbb944e`; upstream FreeRDP | Apache-2.0 | RDP protocol/static libraries |
+| FreeRDP / WinPR | `freerdp-ohos` public-base gitlink `dae8276ac7361b8d14f7b87d41163fe03dbb944e` plus the ordered local patch series in `patches/freerdp-ohos/`; effective tree `24a880d801892e3d6f1b8c78534e51eaeca8b0d8`; upstream FreeRDP | Apache-2.0 | RDP protocol/static libraries |
 | OpenSSL | bundled build inputs/artifacts under `libs/openssl` | Apache-2.0 | TLS and cryptography |
 | FFmpeg | 8.1.2 source archive and bundled OHOS artifacts; see `docs/compliance/FFMPEG_OHOS_PROVENANCE.md` | LGPL-2.1-or-later; GPL/non-free components disabled | VP8/VP9/AV1 software decode fallback |
 | libssh2 | bundled source/artifacts; upstream COPYING retained | BSD-3-Clause | SSH/SFTP |
@@ -15,6 +15,7 @@ source and license files before redistribution.
 | Opus | built by `scripts/build_opus_ohos.sh` | BSD-3-Clause | RustDesk audio decode |
 | zlib | platform/API 23 system library; see `docs/compliance/ZLIB_SYSTEM_PROVENANCE.md` | Zlib | VNC ZRLE and FreeRDP compression |
 | Rust crates | versions locked in `rustdesk_ffi/Cargo.lock` | per-crate, recorded in SBOM | RustDesk bridge and terminal support |
+| RustDesk KCP transport | `rustdesk-org/kcp-sys` commit `32a6c09fc6223f54aea83981a6aa8995931d29be`; bundled `skywind3000/kcp` gitlink `7f9805887b0909c52c825925f123e7a84da37167`; see `docs/compliance/RUSTDESK_KCP_PROVENANCE.md` | MIT | Official-compatible RustDesk UDP/KCP peer byte stream; product capability remains release-gated |
 | Alacritty terminal | `alacritty_terminal` `0.26.0`; crates.io registry; transitive crates are listed individually in the SBOM | Apache-2.0; per-crate licenses for transitives | Rust VT/ANSI terminal state machine |
 | `@hw-agconnect/auth` | `entry/oh-package.json5` / lockfile | Huawei package terms | authentication/cloud integration |
 | Hypium / Hamock | root package lock | OpenHarmony package terms | tests only |

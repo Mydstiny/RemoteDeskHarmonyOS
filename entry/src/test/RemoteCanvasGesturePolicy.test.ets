@@ -4,118 +4,86 @@ import {
   beginCanvasTwoFingerCandidate,
   claimCanvasTwoFingerPan,
   claimCanvasTwoFingerPinch,
-  expireCanvasTwoFingerHold,
   endCanvasPanOwnership,
   endCanvasPinchOwnership,
   finishCanvasTwoFingerCandidate,
   shouldApplyCanvasTwoFingerPan,
   shouldPreserveCanvasTwoFingerRightClick,
-  shouldSendCanvasTwoFingerScroll,
-  shouldReleaseCanvasGestureOwnership
+  shouldReleaseCanvasGestureOwnership,
+  shouldSendCanvasTwoFingerScroll
 } from '../main/ets/services/RemoteCanvasGesturePolicy';
 
 export default function remoteCanvasGesturePolicyTest(): void {
   describe('RemoteCanvasGesturePolicy', (): void => {
-    it('keeps pan ownership when pinch ends first', 0, (): void => {
+    it('releases the shared drain only after pinch and pan finish', 0, (): void => {
       const afterPinch = endCanvasPinchOwnership({ pinchActive: true, panActive: true });
-      expect(afterPinch.pinchActive).assertFalse();
       expect(afterPinch.panActive).assertTrue();
       expect(shouldReleaseCanvasGestureOwnership(afterPinch)).assertFalse();
-      const final = endCanvasPanOwnership(afterPinch);
-      expect(shouldReleaseCanvasGestureOwnership(final)).assertTrue();
+      expect(shouldReleaseCanvasGestureOwnership(endCanvasPanOwnership(afterPinch))).assertTrue();
     });
 
-    it('keeps pinch ownership when pan ends first', 0, (): void => {
-      const afterPan = endCanvasPanOwnership({ pinchActive: true, panActive: true });
-      expect(afterPan.pinchActive).assertTrue();
-      expect(afterPan.panActive).assertFalse();
-      expect(shouldReleaseCanvasGestureOwnership(afterPan)).assertFalse();
-      const final = endCanvasPinchOwnership(afterPan);
-      expect(shouldReleaseCanvasGestureOwnership(final)).assertTrue();
-    });
-
-    it('keeps fast two-finger movement on the touchpad scroll path', 0, (): void => {
-      const candidate = beginCanvasTwoFingerCandidate(1, 100, 100, 0, true, true);
-      const result = advanceCanvasTwoFingerMove(candidate, 100, 120, 100);
+    it('keeps fit-canvas two-finger translation on remote scroll', 0, (): void => {
+      const candidate = beginCanvasTwoFingerCandidate(1, 100, 100, 0, true, false, 80);
+      const result = advanceCanvasTwoFingerMove(candidate, 100, 108, 10, false, 81);
       expect(result.state.owner).assertEqual('touchpad-scroll');
       expect(result.action).assertEqual('scroll');
       expect(shouldSendCanvasTwoFingerScroll(result.state)).assertTrue();
+    });
+
+    it('pans an overflowing canvas without a hold delay', 0, (): void => {
+      const candidate = beginCanvasTwoFingerCandidate(2, 100, 100, 0, true, true, 80);
+      const result = advanceCanvasTwoFingerMove(candidate, 108, 100, 1, false, 80);
+      expect(result.state.owner).assertEqual('canvas-pan');
+      expect(result.action).assertEqual('pan');
+      expect(shouldApplyCanvasTwoFingerPan(result.state)).assertTrue();
+    });
+
+    it('keeps fill overflow pannable when pinch zoom is disabled', 0, (): void => {
+      const candidate = beginCanvasTwoFingerCandidate(9, 100, 100, 0, false, true, 80);
+      const result = advanceCanvasTwoFingerMove(candidate, 108, 100, 1, false, 80);
+      expect(result.state.owner).assertEqual('canvas-pan');
+      expect(claimCanvasTwoFingerPan(candidate, false).owner).assertEqual('canvas-pan');
+      expect(claimCanvasTwoFingerPinch(candidate, false).owner).assertEqual('candidate');
+    });
+
+    it('routes immediate RustDesk remote-app translation to touch pan', 0, (): void => {
+      const candidate = beginCanvasTwoFingerCandidate(3, 100, 100, 0, true, true, 80);
+      const result = advanceCanvasTwoFingerMove(candidate, 108, 100, 1, true, 80);
+      expect(result.state.owner).assertEqual('remote-touch-pan');
+      expect(claimCanvasTwoFingerPan(candidate, true).owner).assertEqual('remote-touch-pan');
+    });
+
+    it('lets span change claim pinch before centroid translation', 0, (): void => {
+      const candidate = beginCanvasTwoFingerCandidate(4, 100, 100, 0, true, true, 80);
+      const result = advanceCanvasTwoFingerMove(candidate, 110, 100, 1, false, 86);
+      expect(result.state.owner).assertEqual('canvas-pinch');
+      expect(result.action).assertEqual('none');
       expect(shouldApplyCanvasTwoFingerPan(result.state)).assertFalse();
     });
 
-    it('arms then claims canvas pan only after the hold', 0, (): void => {
-      const candidate = beginCanvasTwoFingerCandidate(2, 100, 100, 0, true, true);
-      const armed = expireCanvasTwoFingerHold(candidate, 400);
-      expect(armed.owner).assertEqual('canvas-pan-armed');
-      const moved = advanceCanvasTwoFingerMove(armed, 110, 100, 401);
-      expect(moved.state.owner).assertEqual('canvas-pan');
-      expect(moved.action).assertEqual('pan');
-      expect(shouldApplyCanvasTwoFingerPan(moved.state)).assertTrue();
-      expect(shouldSendCanvasTwoFingerScroll(moved.state)).assertFalse();
-      expect(claimCanvasTwoFingerPan(armed, false).owner).assertEqual('canvas-pan');
+    it('lets a recognized slow pinch replace provisional fit scroll', 0, (): void => {
+      const candidate = beginCanvasTwoFingerCandidate(5, 100, 100, 0, true, false, 80);
+      const scroll = advanceCanvasTwoFingerMove(candidate, 100, 106, 1, false, 82);
+      expect(scroll.state.owner).assertEqual('touchpad-scroll');
+      expect(claimCanvasTwoFingerPinch(scroll.state, false).owner).assertEqual('canvas-pinch');
     });
 
-    it('routes held RustDesk remote-app touch through remote pan', 0, (): void => {
-      const candidate = beginCanvasTwoFingerCandidate(9, 100, 100, 0, true, true);
-      const armed = expireCanvasTwoFingerHold(candidate, 400);
-      const moved = advanceCanvasTwoFingerMove(armed, 110, 100, 401, true);
-      expect(moved.state.owner).assertEqual('remote-touch-pan');
-      expect(moved.action).assertEqual('pan');
-      expect(shouldApplyCanvasTwoFingerPan(moved.state)).assertTrue();
-      expect(claimCanvasTwoFingerPan(armed, true).owner).assertEqual('remote-touch-pan');
+    it('does not let pinch steal a committed pan', 0, (): void => {
+      const candidate = beginCanvasTwoFingerCandidate(6, 100, 100, 0, true, true, 80);
+      const pan = claimCanvasTwoFingerPan(candidate, false);
+      expect(claimCanvasTwoFingerPinch(pan, false).owner).assertEqual('canvas-pan');
     });
 
-    it('does not let a parallel pinch steal an armed long-press pan', 0, (): void => {
-      const candidate = beginCanvasTwoFingerCandidate(8, 100, 100, 0, true, true);
-      const armed = expireCanvasTwoFingerHold(candidate, 400);
-      expect(claimCanvasTwoFingerPinch(armed, false).owner).assertEqual('canvas-pan-armed');
-      expect(claimCanvasTwoFingerPinch(armed, true).owner).assertEqual('canvas-pan-armed');
-      const moved = advanceCanvasTwoFingerMove(armed, 110, 100, 401);
-      expect(moved.state.owner).assertEqual('canvas-pan');
-      expect(moved.action).assertEqual('pan');
-    });
-
-    it('honors a late hold deadline before classifying the first move', 0, (): void => {
-      const candidate = beginCanvasTwoFingerCandidate(7, 100, 100, 0, true, true);
-      const moved = advanceCanvasTwoFingerMove(candidate, 140, 100, 500);
-      expect(moved.state.owner).assertEqual('canvas-pan');
-      expect(moved.action).assertEqual('pan');
-    });
-
-    it('does not arm pan when the canvas cannot overflow', 0, (): void => {
-      const candidate = beginCanvasTwoFingerCandidate(3, 100, 100, 0, true, false);
-      const expired = expireCanvasTwoFingerHold(candidate, 500);
-      expect(expired.owner).assertEqual('candidate');
-      expect(expired.holdTimerPending).assertFalse();
-      const moved = advanceCanvasTwoFingerMove(expired, 100, 120, 501);
-      expect(moved.state.owner).assertEqual('touchpad-scroll');
-    });
-
-    it('lets pinch win before the hold and cancels the timer', 0, (): void => {
-      const candidate = beginCanvasTwoFingerCandidate(4, 100, 100, 0, true, true);
-      const pinch = claimCanvasTwoFingerPinch(candidate, false);
-      expect(pinch.owner).assertEqual('canvas-pinch');
-      expect(pinch.holdTimerPending).assertFalse();
-      const afterTimer = expireCanvasTwoFingerHold(pinch, 1000);
-      expect(afterTimer.owner).assertEqual('canvas-pinch');
-    });
-
-    it('preserves a two-finger right click when hold ends without movement', 0, (): void => {
-      const candidate = beginCanvasTwoFingerCandidate(5, 100, 100, 0, true, true);
-      const armed = expireCanvasTwoFingerHold(candidate, 400);
-      const finished = finishCanvasTwoFingerCandidate(armed, false);
+    it('preserves a stationary two-finger release as right click', 0, (): void => {
+      const candidate = beginCanvasTwoFingerCandidate(7, 100, 100, 0, true, true, 80);
+      const finished = finishCanvasTwoFingerCandidate(candidate, false);
       expect(finished.owner).assertEqual('touchpad-right-click');
       expect(shouldPreserveCanvasTwoFingerRightClick(finished)).assertTrue();
-      const untouched = finishCanvasTwoFingerCandidate(candidate, false);
-      expect(untouched.owner).assertEqual('touchpad-right-click');
-      expect(shouldPreserveCanvasTwoFingerRightClick(untouched)).assertTrue();
     });
 
-    it('keeps remote touch scale as a separate target', 0, (): void => {
-      const candidate = beginCanvasTwoFingerCandidate(6, 100, 100, 0, true, true);
-      const remote = claimCanvasTwoFingerPinch(candidate, true);
-      expect(remote.owner).assertEqual('remote-touch-scale');
-      expect(shouldApplyCanvasTwoFingerPan(remote)).assertFalse();
+    it('keeps remote touch scale as a distinct owner', 0, (): void => {
+      const candidate = beginCanvasTwoFingerCandidate(8, 100, 100, 0, true, true, 80);
+      expect(claimCanvasTwoFingerPinch(candidate, true).owner).assertEqual('remote-touch-scale');
       const ended = endCanvasPinchOwnership({ pinchActive: true, panActive: false });
       expect(ended.pinchActive).assertFalse();
       expect(shouldReleaseCanvasGestureOwnership(ended)).assertTrue();

@@ -987,7 +987,8 @@ export struct RustDeskRelayPage {
       ownerId: endpoint.trustOwner.ownerId,
       userId: endpoint.trustOwner.userId,
       storeIdentityFingerprint: endpoint.trustOwner.storeIdentityFingerprint,
-      endpointBindingFingerprint: endpoint.trustOwner.endpointBindingFingerprint
+      endpointBindingFingerprint: endpoint.trustOwner.endpointBindingFingerprint,
+      localOnly: endpoint.trustOwner.localOnly
     };
     const expectedFingerprint: string = gateway.tls
       ? this.vncTrustService.trustedFingerprintForEndpoint(trustEndpoint) : '';
@@ -1106,7 +1107,8 @@ export struct RustDeskRelayPage {
       ownerId: owner.ownerId,
       userId: owner.userId,
       storeIdentityFingerprint: owner.storeIdentityFingerprint,
-      endpointBindingFingerprint: owner.endpointBindingFingerprint
+      endpointBindingFingerprint: owner.endpointBindingFingerprint,
+      localOnly: owner.localOnly
     };
     return true;
   }

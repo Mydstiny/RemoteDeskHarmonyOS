@@ -41,6 +41,14 @@ struct RustDeskDiagnosticsStats {
     int width = 0;
     int height = 0;
     int connectionPath = 0; // 0=rendezvous/relay, 1=direct
+    int requestedImageQuality = -1;
+    int effectiveImageQuality = -1;
+    int sentImageQuality = -1;
+    int qualityProfile = -1;
+    int qualityFps = 0;
+    uint64_t qualityRequestedGeneration = 0;
+    uint64_t qualityAppliedGeneration = 0;
+    int qualityUpdateStatus = 0;
     std::string peerPlatform = "unknown";
     bool remoteInputPermissionKnown = false;
     bool remoteInputAllowed = true;
@@ -82,6 +90,7 @@ struct RustDeskDisplayCapabilities {
     uint64_t switchGeneration = 0;
     uint64_t readySwitchGeneration = 0;
     int pendingDisplay = -1;
+    int confirmedDisplay = -1;
     bool inputBlocked = false;
     int width = 0;
     int height = 0;
@@ -126,6 +135,28 @@ struct RustDeskFfiConfig {
     int         relay_fallback_port;
 };
 
+// Versioned route policy. The legacy 104-byte config remains the leading
+// field so older ABI entry points and the presence probe stay unchanged.
+struct RustDeskFfiConfigV6 {
+    RustDeskFfiConfig legacy;
+    int      connection_strategy; // 0=force relay, 1=direct IP, 2=AUTO
+    uint32_t nat_traversal_flags;  // product remains zero until device acceptance
+    int      nat_probe_serial;
+    uint32_t reserved;
+};
+
+// Versioned release capability boundary returned by the Rust core. Compiled
+// code paths are not automatically product capabilities: both sides must
+// explicitly agree before any route/network work starts.
+struct RustDeskFfiTransportCapabilitiesV1 {
+    uint32_t abiVersion;
+    uint32_t structSize;
+    uint32_t connectionStrategyMask;
+    uint32_t peerCandidateTransportMask;
+    uint32_t natTraversalFlags;
+    uint32_t reserved[3];
+};
+
 /** Result of a non-authenticating RustDesk peer presence probe. */
 struct RustDeskPresenceResult {
     int state = 0;      // 0=unknown, 1=online, 2=offline
@@ -137,6 +168,20 @@ static_assert(offsetof(RustDeskFfiConfig, relay_fallback_port) == 96,
               "RustDeskConfig ABI tail offset changed; update Rust and C++ together");
 static_assert(sizeof(RustDeskFfiConfig) == 104,
               "RustDeskConfig ABI size changed; update Rust and C++ together");
+static_assert(offsetof(RustDeskFfiConfigV6, legacy) == 0,
+              "RustDeskConfigV6 must preserve the legacy leading layout");
+static_assert(offsetof(RustDeskFfiConfigV6, connection_strategy) == 104,
+              "RustDeskConfigV6 policy offset changed; update Rust and C++ together");
+static_assert(sizeof(RustDeskFfiConfigV6) == 120,
+              "RustDeskConfigV6 ABI size changed; update Rust and C++ together");
+static_assert(sizeof(RustDeskFfiTransportCapabilitiesV1) == 32,
+              "RustDesk transport capability ABI size changed");
+static_assert(alignof(RustDeskFfiTransportCapabilitiesV1) == 4,
+              "RustDesk transport capability ABI alignment changed");
+static_assert(offsetof(RustDeskFfiTransportCapabilitiesV1, connectionStrategyMask) == 8,
+              "RustDesk transport capability strategy offset changed");
+static_assert(offsetof(RustDeskFfiTransportCapabilitiesV1, reserved) == 20,
+              "RustDesk transport capability reserved offset changed");
 
 enum class RustDeskMode {
     IPC = 0,           // IPC 转发 → rustdesk_helper
@@ -174,13 +219,14 @@ public:
     void            setSessionIdentity(uint64_t sessionId) override;
     void            setSessionOwnerToken(uint64_t ownerToken);
     void            setContinuityGenerationCallback(ContinuityGenerationCallback callback);
-    void            onNetworkChanged(bool available, uint64_t networkGeneration);
+    void            onNetworkChanged(bool available, uint64_t networkGeneration) override;
     uint64_t        sessionGeneration() const;
     bool            submitTwoFactorCode(const std::string& code);
     RustDeskDiagnosticsStats getDiagnostics() const;
     RemoteCursorSnapshot getRemoteCursorSnapshot(bool includePixels) override;
     void            requestFrameRefresh() override;
     void            reportVideoPressure(int level) override;
+    bool            setImageQuality(int quality);
     bool            reportVideoPressureForSession(uint64_t sessionId,
                                                   uint64_t generation,
                                                   uint64_t ownerToken,
@@ -228,14 +274,34 @@ public:
                                            uint64_t networkGeneration,
                                            bool userInitiated, uint64_t generation,
                                            uint64_t ownerToken);
+    bool InvokeProgressCallbackForTesting(int stage, const char* message,
+                                          uint64_t generation,
+                                          uint64_t ownerToken);
     void SetAttemptDequeuedHookForTesting(std::function<void()> hook);
+    void SetNetworkActionReadyHookForTesting(std::function<void(uint64_t)> hook);
     void SetFirstFrameClaimHookForTesting(std::function<void()> hook);
+    void SetFfiStateCommitHookForTesting(std::function<void()> hook);
     void SetContinuityAttemptStageHookForTesting(std::function<void(int)> hook);
     void SetContinuityConnectResultHookForTesting(
         std::function<int(uint64_t, uint64_t)> hook);
+    void SetDisplaySwitchFfiHookForTesting(
+        std::function<bool(void*, int)> hook);
+    void SetDisplayCapabilitiesFfiHookForTesting(
+        std::function<bool(void*, RustDeskDisplayCapabilities&)> hook);
+    void SetDisplayCapabilitiesBeforeSnapshotHookForTesting(
+        std::function<void()> hook);
+    void SetTwoFactorFfiHookForTesting(
+        std::function<bool(uint64_t, const std::string&)> hook);
+    bool AttachFfiOutboundHandleForTesting(void* handle);
+    bool RetireFfiOutboundHandleForTesting(void* expectedHandle);
     void SetContinuityConfigForTesting(const ConnectionConfig& config);
     uint32_t continuityConnectCallCountForTesting() const;
+    std::size_t continuityRemainingCountForTesting() const;
+    bool continuityNetworkAvailableForTesting() const;
     void ArmFirstGenerationFrameForTesting();
+    bool QueueDeferredCancelledSessionRetirementForTesting(uint64_t sessionId);
+    void CompleteDeferredCancelledSessionRetirementForTesting();
+    std::size_t pendingCancelledSessionRetirementsForTesting() const;
 #endif
 
     // ---- 扩展功能 ----
@@ -254,7 +320,8 @@ private:
     int connectInternal(
         const ConnectionConfig& cfg,
         const RustDeskConnectionContinuityExecutor::PreparedAttemptTicket* continuityTicket);
-    void applyContinuityFastQuiesce();
+    void applyContinuityFastQuiesce(
+        const RustDeskConnectionContinuityExecutor::ActionAdmission& admission = {});
     void onContinuityMaintenance(uint64_t nowMs);
     void disconnectImpl(bool cancelContinuity);
 

@@ -9,7 +9,9 @@ import { RemoteSessionPipService } from './RemoteSessionPipService';
 import { RustDeskProSyncService } from './RustDeskProSyncService';
 import { RustDeskHostAddHandoff } from './RustDeskHostAddHandoff';
 import { SshPreflightService } from './SshPreflightService';
+import { SshOperationRouteSecretService } from './SshOperationRouteSecretService';
 import { VncSessionCredentialHandoff } from './VncSessionCredentialHandoff';
+import { RdpSessionCredentialHandoff } from './RdpSessionCredentialHandoff';
 import { VncPlaintextDecisionHandoff } from './VncPlaintextDecisionHandoff';
 import { MoonlightDataLifecycleBarrier } from './MoonlightDataLifecycleBarrier';
 
@@ -34,6 +36,16 @@ export class SensitiveDataBarrier {
   }
 
   async drain(reason: string): Promise<boolean> {
+    // Invalidate the ArkTS handoff before the first await. Native route probes
+    // may already own a synchronous copy, so cancel and drain those workers
+    // before the account/store scope is allowed to change.
+    RdpSessionCredentialHandoff.getInstance().clearAll();
+    if (!(await ExtensionLoader.getInstance()
+      .prepareRdpPreflightScopeTransition(10000))) {
+      hilog.error(0x0001, 'AccountSession',
+        'RDP preflight operations did not reach a terminal state');
+      return false;
+    }
     if (this.context === null) {
       hilog.error(0x0001, 'AccountSession',
         'sensitive data barrier has no UIAbilityContext');
@@ -86,6 +98,7 @@ export class SensitiveDataBarrier {
     VncSessionCredentialHandoff.getInstance().clearAll();
     VncPlaintextDecisionHandoff.getInstance().clearAll();
     SshPreflightService.getInstance().clearAll();
+    SshOperationRouteSecretService.getInstance().clearAll();
     if (!(await DataCrypto.getInstance().prepareScopeTransition(10000))) {
       hilog.error(0x0001, 'AccountSession',
         'crypto tasks did not reach a terminal state; account transition blocked');

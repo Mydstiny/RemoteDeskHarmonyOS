@@ -27,6 +27,14 @@ RDP_TEST_CASE(ssh_forwarding_manager_validates_modes_and_bindings) {
     config.allowPublicBind = true;
     RDP_ASSERT(SshForwardingManager::validateAndNormalize(config) == SshForwardingResult::Ok);
 
+    config = localConfig();
+    config.bindHost = "127.example.com";
+    RDP_ASSERT(SshForwardingManager::validateAndNormalize(config) ==
+               SshForwardingResult::PublicBindNotAllowed);
+    config.bindHost = "127.0.0.2";
+    RDP_ASSERT(SshForwardingManager::validateAndNormalize(config) ==
+               SshForwardingResult::Ok);
+
     config = {};
     config.id = "dynamic";
     config.mode = SshForwardingMode::Dynamic;
@@ -56,6 +64,55 @@ RDP_TEST_CASE(ssh_forwarding_manager_rejects_invalid_limits_and_profiles) {
     RDP_ASSERT_EQ(manager.size(), static_cast<size_t>(2));
 }
 
+RDP_TEST_CASE(ssh_forwarding_manager_enforces_endpoint_v2_without_truncation) {
+    SshForwardingConfig config = localConfig();
+    config.bindHost = "[::1]";
+    config.targetHost = "[2001:0DB8:0:0::20]";
+    RDP_ASSERT(SshForwardingManager::validateAndNormalize(config) ==
+               SshForwardingResult::Ok);
+    RDP_ASSERT(config.bindHost == "::1");
+    RDP_ASSERT(config.targetHost == "2001:db8::20");
+
+    config = localConfig();
+    config.targetHost = "fe80::20%wlan0";
+    RDP_ASSERT(SshForwardingManager::validateAndNormalize(config) ==
+               SshForwardingResult::InvalidTargetHost);
+
+    config = localConfig();
+    config.mode = SshForwardingMode::Remote;
+    config.targetHost = "fe80::20%wlan0";
+    RDP_ASSERT(SshForwardingManager::validateAndNormalize(config) ==
+               SshForwardingResult::Ok);
+    RDP_ASSERT(config.targetHost == "fe80::20%wlan0");
+    config.bindHost = "fe80::10%wlan0";
+    config.allowPublicBind = true;
+    RDP_ASSERT(SshForwardingManager::validateAndNormalize(config) ==
+               SshForwardingResult::InvalidBindHost);
+
+    config = localConfig();
+    config.targetHost = "fe80::20%12";
+    RDP_ASSERT(SshForwardingManager::validateAndNormalize(config) ==
+               SshForwardingResult::InvalidTargetHost);
+    config = localConfig();
+    config.targetHost = "target.example:22";
+    RDP_ASSERT(SshForwardingManager::validateAndNormalize(config) ==
+               SshForwardingResult::InvalidTargetHost);
+    config = localConfig();
+    config.id.assign(97U, 'i');
+    RDP_ASSERT(SshForwardingManager::validateAndNormalize(config) ==
+               SshForwardingResult::InvalidId);
+    config = localConfig();
+    config.targetHost.assign(256U, 'a');
+    RDP_ASSERT(SshForwardingManager::validateAndNormalize(config) ==
+               SshForwardingResult::InvalidTargetHost);
+
+    std::string runtimeHost = "Runtime.Example.";
+    RDP_ASSERT(SshForwardingManager::normalizeRuntimeTargetHost(runtimeHost));
+    RDP_ASSERT(runtimeHost == "runtime.example");
+    runtimeHost = "runtime.example:22";
+    RDP_ASSERT(!SshForwardingManager::normalizeRuntimeTargetHost(runtimeHost));
+}
+
 RDP_TEST_CASE(ssh_forwarding_manager_enforces_generation_and_connection_limit) {
     SshForwardingManager manager;
     SshForwardingConfig config = localConfig();
@@ -63,7 +120,13 @@ RDP_TEST_CASE(ssh_forwarding_manager_enforces_generation_and_connection_limit) {
     RDP_ASSERT(manager.start(config.id, 0) == SshForwardingResult::MissingGeneration);
     RDP_ASSERT(manager.start(config.id, 10) == SshForwardingResult::Ok);
     RDP_ASSERT(manager.markListening(config.id, 9) == SshForwardingResult::StaleSession);
-    RDP_ASSERT(manager.markListening(config.id, 10) == SshForwardingResult::Ok);
+    RDP_ASSERT(manager.markListening(config.id, 10, "::1", 8022, 10) ==
+               SshForwardingResult::Ok);
+    SshForwardingSnapshot listeningSnapshot;
+    RDP_ASSERT(manager.snapshot(config.id, listeningSnapshot));
+    RDP_ASSERT(listeningSnapshot.actualBindHost == "::1");
+    RDP_ASSERT_EQ(listeningSnapshot.actualBindPort, 8022);
+    RDP_ASSERT_EQ(listeningSnapshot.actualBindFamily, 10);
     RDP_ASSERT(manager.acquireConnection(config.id, 10) == SshForwardingResult::Ok);
     RDP_ASSERT(manager.acquireConnection(config.id, 10) == SshForwardingResult::Ok);
     RDP_ASSERT(manager.acquireConnection(config.id, 10) == SshForwardingResult::ConnectionLimit);
@@ -80,6 +143,9 @@ RDP_TEST_CASE(ssh_forwarding_manager_enforces_generation_and_connection_limit) {
     RDP_ASSERT(snapshot.state == SshForwardingState::Stopped);
     RDP_ASSERT_EQ(snapshot.sessionGeneration, 0U);
     RDP_ASSERT_EQ(snapshot.activeConnections, 0U);
+    RDP_ASSERT(snapshot.actualBindHost.empty());
+    RDP_ASSERT_EQ(snapshot.actualBindPort, 0);
+    RDP_ASSERT_EQ(snapshot.actualBindFamily, 0);
 }
 
 RDP_TEST_CASE(ssh_forwarding_manager_supports_remote_and_dynamic_runtime_profiles) {

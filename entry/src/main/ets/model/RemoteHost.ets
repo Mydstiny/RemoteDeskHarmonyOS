@@ -34,6 +34,8 @@ export enum SortOrder {
 export interface PresetItem { label: string; width: number; height: number }
 
 export type RdpAuthMode = 'password' | 'blank_password' | 'restricted_admin';
+/** Whether a password-auth RDP host persists or prompts for its credentials. */
+export type RdpCredentialStorageMode = 'saved' | 'connect_time';
 /** Restricted Admin always requires the user's real NTLM password hash. */
 export type RdpRestrictedAdminSecretSource = 'ntlm_hash';
 export type RdpEndpointMode = 'direct_rdp' | 'transparent_tcp_rdp' |
@@ -46,6 +48,12 @@ export type SshProxyAuthMethod = 'password' | 'publickey' | 'kbd-interactive';
 export function normalizeRdpAuthMode(value: string | undefined): RdpAuthMode {
   if (value === 'blank_password' || value === 'restricted_admin') { return value; }
   return 'password';
+}
+
+export function normalizeRdpCredentialStorageMode(
+  value: string | undefined
+): RdpCredentialStorageMode {
+  return value === 'connect_time' ? 'connect_time' : 'saved';
 }
 
 export function normalizeRdpRestrictedAdminSecretSource(
@@ -160,9 +168,10 @@ export function rdpRouteIdentityForValues(
   const targetName: string = targetServerName.trim() !== '' ? targetServerName : targetHost;
   const gatewayName: string = gatewayServerName.trim() !== '' ? gatewayServerName : gatewayHost;
   const transport: RdpGatewayTransport = normalizeRdpGatewayTransport(gatewayTransport);
-  return mode + '|target=' + targetHost + ':' + targetPort.toString() + ':' + targetName +
-    '|gateway=' + gatewayHost + ':' + gatewayPort.toString() + ':' + gatewayName +
-    '|transport=' + transport;
+  const field = (value: string): string => value.length.toString() + ':' + value;
+  return 'rdp-route-v2|' + field(mode) + field(targetHost) + field(targetPort.toString()) +
+    field(targetName) + field(gatewayHost) + field(gatewayPort.toString()) +
+    field(gatewayName) + field(transport);
 }
 
 export interface DisplayConfigJSON {
@@ -179,6 +188,7 @@ export interface RemoteHostJSON {
   userId: string
   label: string
   customHostname: string
+  rdpClientHostname?: string
   protocol: string
   host: string
   port: number
@@ -210,6 +220,7 @@ export interface RemoteHostJSON {
   sshHostKeyRawBase64: string
   sshHostKeyTrustedAt: number
   sshHostKeyTrustMode: number
+  sshHostKeyRouteIdentity?: string
   sshJumpHostKeyAlgorithm: string
   sshJumpHostKeyFingerprintSha256: string
   sshJumpHostKeyRawBase64: string
@@ -261,6 +272,7 @@ export interface RemoteHostJSON {
   rustdeskTotpDeviceId?: string
   rdpCredentialId: string
   rdpAuthMode?: string
+  rdpCredentialStorageMode?: string
   rdpRestrictedAdminSecretSource?: string
   sourceType: string
   rustdeskProAccountId: string
@@ -332,7 +344,9 @@ export class RemoteHost implements LanHostAddressView {
   id: string = '';             // 主机唯一 ID (UUID)
   userId: string = '';         // 关联的华为账号 UnionID
   label: string = '';          // 主机显示名
-  customHostname: string = ''; // 自定义主机名 (RDP /client-hostname:)
+  // Legacy shared column: RDP target TLS/NLA server identity; RustDesk peer ID.
+  customHostname: string = '';
+  rdpClientHostname: string = ''; // RDP /client-hostname:, independent from target identity
   protocol: string = 'rdp';    // 协议类型 ("rdp" | "rustdesk")
   host: string = '';           // IP 或域名
   port: number = 3389;         // 端口号
@@ -356,6 +370,7 @@ export class RemoteHost implements LanHostAddressView {
   sshHostKeyRawBase64: string = '';          // raw key blob base64 (精确比对)
   sshHostKeyTrustedAt: number = 0;           // 信任时间戳 ms
   sshHostKeyTrustMode: number = 0;           // 0=unknown, 1=trusted
+  sshHostKeyRouteIdentity: string = '';       // Endpoint V2 + 完整代理/跳板路径绑定
   // ProxyJump 跳板机 host key 信任，独立于目标 SSH 主机。
   sshJumpHostKeyAlgorithm: string = '';
   sshJumpHostKeyFingerprintSha256: string = '';
@@ -418,6 +433,8 @@ export class RemoteHost implements LanHostAddressView {
   rdpCredentialId: string = ''; // RDP 绑定的 Windows 凭据 ID
   // Restricted Admin 的 NTLM Hash 保存在本机加密扩展中，不进入 RemoteHost/JSON。
   rdpAuthMode: RdpAuthMode = 'password';
+  // connect_time 只保存该非敏感策略；账号、密码和凭据引用均不持久化。
+  rdpCredentialStorageMode: RdpCredentialStorageMode = 'saved';
   rdpRestrictedAdminSecretSource: RdpRestrictedAdminSecretSource = 'ntlm_hash';
   sourceType: string = 'manual'; // manual | rustdesk_pro
   rustdeskProAccountId: string = ''; // Pro 账号设备端绑定 ID
@@ -464,9 +481,15 @@ export class RemoteHost implements LanHostAddressView {
     }
     if (this.protocol === 'rdp') {
       const mode: RdpAuthMode = normalizeRdpAuthMode(this.rdpAuthMode);
+      const storageMode: RdpCredentialStorageMode = normalizeRdpCredentialStorageMode(
+        this.rdpCredentialStorageMode);
       const hasIdentity: boolean = mode === 'password' ?
-        this.username.length > 0 || this.rdpCredentialId.length > 0 : this.username.length > 0;
-      return basic && this.host.length > 0 && hasIdentity && this.port > 0 && this.port <= 65535;
+        storageMode === 'connect_time' || this.username.length > 0 ||
+          this.rdpCredentialId.length > 0 : this.username.length > 0;
+      const credentialStateValid: boolean = storageMode !== 'connect_time' ||
+        (this.username === '' && this.password === '' && this.rdpCredentialId === '');
+      return basic && this.host.length > 0 && hasIdentity && credentialStateValid &&
+        this.port > 0 && this.port <= 65535;
     }
     return basic && this.host.length > 0 && this.username.length > 0 &&
       this.port > 0 && this.port <= 65535;
@@ -480,11 +503,17 @@ export class RemoteHost implements LanHostAddressView {
     if (!this.label) { errors.push('主机名称不能为空'); }
     if (this.protocol === 'rdp') {
       const mode: RdpAuthMode = normalizeRdpAuthMode(this.rdpAuthMode);
+      const storageMode: RdpCredentialStorageMode = normalizeRdpCredentialStorageMode(
+        this.rdpCredentialStorageMode);
       if (!this.host) { errors.push('主机地址不能为空'); }
       if (this.port <= 0 || this.port > 65535) { errors.push('端口号必须在 1-65535 之间'); }
       if (mode === 'password') {
-        if (!this.username && !this.rdpCredentialId) { errors.push('用户名或 Windows 凭据不能为空'); }
-        if (!this.password && this.rdpCredentialId === '') { errors.push('密码不能为空 (或选择 Windows 凭据)'); }
+        if (storageMode === 'saved') {
+          if (!this.username && !this.rdpCredentialId) { errors.push('用户名或 Windows 凭据不能为空'); }
+          if (!this.password && this.rdpCredentialId === '') { errors.push('密码不能为空 (或选择 Windows 凭据)'); }
+        } else if (this.username !== '' || this.password !== '' || this.rdpCredentialId !== '') {
+          errors.push('连接时输入模式不能保存账号、密码或 Windows 凭据引用');
+        }
       } else {
         if (!this.username) { errors.push('用户名不能为空'); }
         if (this.rdpCredentialId !== '') { errors.push('此认证方式不能使用 Windows 凭据'); }
@@ -541,16 +570,20 @@ export class RemoteHost implements LanHostAddressView {
    * 序列化为 JSON
    */
   toJSON(): RemoteHostJSON {
+    const redactConnectTimeCredential: boolean = this.protocol === 'rdp' &&
+      normalizeRdpAuthMode(this.rdpAuthMode) === 'password' &&
+      normalizeRdpCredentialStorageMode(this.rdpCredentialStorageMode) === 'connect_time';
     return {
       id: this.id,
       userId: this.userId,
       label: this.label,
       customHostname: this.customHostname,
+      rdpClientHostname: this.rdpClientHostname,
       protocol: this.protocol,
       host: this.host,
       port: this.port,
-      username: this.username,
-      password: this.password,
+      username: redactConnectTimeCredential ? '' : this.username,
+      password: redactConnectTimeCredential ? '' : this.password,
       locked: this.locked,
       lockType: this.lockType,
       syncVersion: this.syncVersion,
@@ -577,6 +610,7 @@ export class RemoteHost implements LanHostAddressView {
       sshHostKeyRawBase64: this.sshHostKeyRawBase64,
       sshHostKeyTrustedAt: this.sshHostKeyTrustedAt,
       sshHostKeyTrustMode: this.sshHostKeyTrustMode,
+      sshHostKeyRouteIdentity: this.sshHostKeyRouteIdentity,
       sshJumpHostKeyAlgorithm: this.sshJumpHostKeyAlgorithm,
       sshJumpHostKeyFingerprintSha256: this.sshJumpHostKeyFingerprintSha256,
       sshJumpHostKeyRawBase64: this.sshJumpHostKeyRawBase64,
@@ -622,8 +656,9 @@ export class RemoteHost implements LanHostAddressView {
       rustdeskTargetDevice: this.rustdeskTargetDevice,
       rustdeskAdaptiveOrientation: this.rustdeskAdaptiveOrientation,
       rustdeskDesktopFlipMode: this.rustdeskDesktopFlipMode,
-      rdpCredentialId: this.rdpCredentialId,
+      rdpCredentialId: redactConnectTimeCredential ? '' : this.rdpCredentialId,
       rdpAuthMode: this.rdpAuthMode,
+      rdpCredentialStorageMode: this.rdpCredentialStorageMode,
       rdpRestrictedAdminSecretSource: this.rdpRestrictedAdminSecretSource,
       sourceType: this.sourceType,
       rustdeskProAccountId: this.rustdeskProAccountId,
@@ -647,6 +682,9 @@ export class RemoteHost implements LanHostAddressView {
     if (json.userId) { host.userId = json.userId; }
     if (json.label) { host.label = json.label; }
     if (json.customHostname) { host.customHostname = json.customHostname; }
+    if (json.rdpClientHostname !== undefined) {
+      host.rdpClientHostname = json.rdpClientHostname || '';
+    }
     if (json.protocol) { host.protocol = json.protocol; }
     if (json.host) { host.host = json.host; }
     if (json.port) { host.port = json.port; }
@@ -684,6 +722,9 @@ export class RemoteHost implements LanHostAddressView {
     if (json.sshHostKeyRawBase64) { host.sshHostKeyRawBase64 = json.sshHostKeyRawBase64; }
     if (json.sshHostKeyTrustedAt !== undefined) { host.sshHostKeyTrustedAt = json.sshHostKeyTrustedAt; }
     if (json.sshHostKeyTrustMode !== undefined) { host.sshHostKeyTrustMode = json.sshHostKeyTrustMode; }
+    if (json.sshHostKeyRouteIdentity !== undefined) {
+      host.sshHostKeyRouteIdentity = json.sshHostKeyRouteIdentity || '';
+    }
     if (json.sshJumpHostKeyAlgorithm) { host.sshJumpHostKeyAlgorithm = json.sshJumpHostKeyAlgorithm; }
     if (json.sshJumpHostKeyFingerprintSha256) {
       host.sshJumpHostKeyFingerprintSha256 = json.sshJumpHostKeyFingerprintSha256;
@@ -798,6 +839,8 @@ export class RemoteHost implements LanHostAddressView {
     }
     if (json.rdpCredentialId) { host.rdpCredentialId = json.rdpCredentialId; }
     host.rdpAuthMode = normalizeRdpAuthMode(json.rdpAuthMode);
+    host.rdpCredentialStorageMode = normalizeRdpCredentialStorageMode(
+      json.rdpCredentialStorageMode);
     host.rdpRestrictedAdminSecretSource = normalizeRdpRestrictedAdminSecretSource(
       json.rdpRestrictedAdminSecretSource);
     if (json.sourceType) { host.sourceType = json.sourceType; }
@@ -822,7 +865,11 @@ export class RemoteHost implements LanHostAddressView {
   /** Clone serialized fields while retaining process-only secret presence. */
   runtimeClone(): RemoteHost {
     const host: RemoteHost = RemoteHost.fromJSON(this.toJSON());
-    host.passwordConfigured = this.passwordConfigured || this.password.length > 0;
+    const redactsRdpSessionCredential: boolean = this.protocol === 'rdp' &&
+      normalizeRdpAuthMode(this.rdpAuthMode) === 'password' &&
+      normalizeRdpCredentialStorageMode(this.rdpCredentialStorageMode) === 'connect_time';
+    host.passwordConfigured = !redactsRdpSessionCredential &&
+      (this.passwordConfigured || this.password.length > 0);
     host.sshKeyDataConfigured = this.sshKeyDataConfigured || this.sshKeyData.length > 0;
     host.sshKeyPassphraseConfigured = this.sshKeyPassphraseConfigured ||
       this.sshKeyPassphrase.length > 0;
@@ -845,14 +892,26 @@ export class RemoteHost implements LanHostAddressView {
   /** Enforces the mutually exclusive credential fields for the selected RDP mode. */
   normalizeRdpAuthentication(): void {
     this.rdpAuthMode = normalizeRdpAuthMode(this.rdpAuthMode);
+    this.rdpCredentialStorageMode = normalizeRdpCredentialStorageMode(
+      this.rdpCredentialStorageMode);
     this.rdpRestrictedAdminSecretSource = normalizeRdpRestrictedAdminSecretSource(
       this.rdpRestrictedAdminSecretSource);
     if (this.protocol !== 'rdp') {
       this.rdpAuthMode = 'password';
+      this.rdpCredentialStorageMode = 'saved';
       this.rdpRestrictedAdminSecretSource = 'ntlm_hash';
       return;
     }
-    if (this.rdpAuthMode === 'password') { return; }
+    if (this.rdpAuthMode === 'password') {
+      if (this.rdpCredentialStorageMode === 'connect_time') {
+        this.username = '';
+        this.password = '';
+        this.passwordConfigured = false;
+        this.rdpCredentialId = '';
+      }
+      return;
+    }
+    this.rdpCredentialStorageMode = 'saved';
     this.password = '';
     this.passwordConfigured = false;
     this.rdpCredentialId = '';

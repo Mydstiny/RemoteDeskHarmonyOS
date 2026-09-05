@@ -4,10 +4,11 @@
 //   [BytesCodec length] [secretbox encrypted protobuf payload]
 
 use super::crypto;
+use super::peer_stream::PeerStream;
 use super::protocol::wire;
 use std::collections::VecDeque;
 use std::io::{self, Read};
-use std::net::{Shutdown, TcpStream};
+use std::net::Shutdown;
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
@@ -21,7 +22,7 @@ const STREAMING_ACK_AFTER_CONTROLS: usize = 8;
 
 /// 加密 peer 通道。
 pub struct CryptoChannel {
-    stream: TcpStream,
+    stream: PeerStream,
     encrypted: bool,
     tx_key: [u8; 32],
     rx_key: [u8; 32],
@@ -32,9 +33,12 @@ pub struct CryptoChannel {
 }
 
 impl CryptoChannel {
-    pub fn new(stream: TcpStream, tx_key: &[u8; 32], rx_key: &[u8; 32]) -> Self {
+    pub fn new<S>(stream: S, tx_key: &[u8; 32], rx_key: &[u8; 32]) -> Self
+    where
+        S: Into<PeerStream>,
+    {
         Self {
-            stream,
+            stream: stream.into(),
             encrypted: true,
             tx_key: *tx_key,
             rx_key: *rx_key,
@@ -49,9 +53,12 @@ impl CryptoChannel {
     /// listener.  A direct listener is not the rendezvous secure channel: it
     /// sends the login Hash immediately and then exchanges framed protobuf
     /// messages without the SignedId/PublicKey negotiation.
-    pub fn new_plain(stream: TcpStream) -> Self {
+    pub fn new_plain<S>(stream: S) -> Self
+    where
+        S: Into<PeerStream>,
+    {
         Self {
-            stream,
+            stream: stream.into(),
             encrypted: false,
             tx_key: [0u8; 32],
             rx_key: [0u8; 32],
@@ -293,17 +300,21 @@ impl CryptoChannel {
     }
 
     #[allow(dead_code)]
-    pub fn stream(&self) -> &TcpStream {
+    pub fn stream(&self) -> &PeerStream {
         &self.stream
     }
 
     pub fn set_read_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {
         self.stream.set_read_timeout(timeout)
     }
+
+    pub fn set_write_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {
+        self.stream.set_write_timeout(timeout)
+    }
 }
 
 struct CryptoWriter {
-    stream: TcpStream,
+    stream: PeerStream,
     encrypted: bool,
     tx_key: [u8; 32],
     tx_nonce: u64,
@@ -429,13 +440,13 @@ fn take_ack(state: &mut StreamingWriterState) -> Option<Vec<u8>> {
 
 struct StreamingWriter {
     shared: Arc<StreamingWriterShared>,
-    stop_stream: Option<TcpStream>,
+    stop_stream: Option<PeerStream>,
     join: Option<JoinHandle<()>>,
 }
 
 impl StreamingWriter {
     fn start(
-        stream: TcpStream,
+        stream: PeerStream,
         encrypted: bool,
         tx_key: [u8; 32],
         tx_nonce: u64,
@@ -625,7 +636,7 @@ fn bytes_ascii(bytes: &[u8], limit: usize) -> String {
 mod tests {
     use super::*;
     use std::io::Write;
-    use std::net::TcpListener;
+    use std::net::{TcpListener, TcpStream};
     use std::thread;
     use std::time::Duration;
 

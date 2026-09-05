@@ -4,12 +4,14 @@
 #include "moonlight/bridge/MoonlightNativeBridge.h"
 #include "moonlight/core/MoonlightHostApi.h"
 #include "moonlight/media/MoonlightCommonCAdapter.h"
+#include "moonlight/media/MoonlightVideoDecoderSink.h"
 #include "moonlight/input/MoonlightProductInputRuntime.h"
 
 #include <array>
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace remotedesk::moonlight {
@@ -19,6 +21,7 @@ struct MoonlightProductLaunchStage final {
     std::string hostId;
     std::string serverUuid;
     std::string address;
+    std::uint64_t networkGeneration = 0U;
     std::uint32_t appId = 0U;
     MoonlightBridgeLaunchConfiguration configuration {};
     MoonlightServerInfo serverInfo {};
@@ -55,6 +58,34 @@ struct MoonlightProductStreamStartRequest final {
     MoonlightStreamEncryptionPolicy encryptionPolicy =
         MoonlightStreamEncryptionPolicy::Auto;
 };
+
+// Single production mapping boundary from the authenticated launch result to
+// the common-c request. Keeping it explicit makes the winning dual-stack
+// address independently testable before common-c opens media sockets.
+inline bool moonlightProductPopulateCommonCServer(
+    MoonlightCommonCServerEvidence& destination,
+    const MoonlightProductLaunchStage& stage,
+    const MoonlightStreamCodecProfile& codecProfile) noexcept {
+    try {
+        MoonlightCommonCServerEvidence evidence;
+        evidence.address = stage.address;
+        evidence.appVersion = stage.serverInfo.appVersion;
+        evidence.gfeVersion = stage.serverInfo.gfeVersion;
+        evidence.authenticated = true;
+        evidence.hostCapabilityGeneration = stage.key.generation;
+        evidence.codecProfiles = {codecProfile};
+        destination = std::move(evidence);
+        return true;
+    } catch (...) {
+        destination.address.clear();
+        destination.appVersion.clear();
+        destination.gfeVersion.reset();
+        destination.authenticated = false;
+        destination.hostCapabilityGeneration = 0U;
+        destination.codecProfiles.clear();
+        return false;
+    }
+}
 
 constexpr std::uint32_t kMoonlightProductStereoAudioInfo = 196610U;
 
@@ -186,6 +217,7 @@ struct MoonlightProductStreamSnapshot final {
     std::int64_t decoderCodecLatencyMs = 0;
     std::int64_t decoderCodecLatencyMaxMs = 0;
     bool decoderLowLatencyEnabled = false;
+    MoonlightPresentationDiagnostics presentation {};
     std::int32_t streamWidth = 0;
     std::int32_t streamHeight = 0;
     std::int32_t targetFps = 0;

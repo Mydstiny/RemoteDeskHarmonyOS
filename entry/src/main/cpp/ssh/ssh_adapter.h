@@ -8,6 +8,8 @@
 #define SSH_ADAPTER_H
 
 #include "protocol_adapter.h"
+#include "ssh_error.h"
+#include "ssh_forward_target_connector.h"
 #include "ssh_terminal_diagnostics.h"
 #include <libssh2.h>
 #include <libssh2_sftp.h>
@@ -19,6 +21,7 @@
 #include <deque>
 #include <future>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <utility>
 #include <type_traits>
@@ -31,61 +34,13 @@
 #include "ssh_forwarding_manager.h"
 #include "ssh_route_policy.h"
 #include "ssh_auth_prompt_broker.h"
+#include "ssh_keyboard_interactive_route_admission.h"
 #include "ssh_reconnect_policy.h"
 #include "ssh_session_types.h"
+#include "common/network_generation_fence.h"
 
 #define SSH_ADAPTER_VERSION "2.0.0"
 #define SSH_BUFFER_SIZE 65536
-
-// ============================================================
-// SSH 适配器错误码 (可追溯报错, 对照 hilog)
-// ============================================================
-
-enum SshError {
-    ERR_SSH_SUCCESS             =  0,
-
-    // TCP 层 (-1x)
-    ERR_SSH_SOCKET_CREATE       = -11,
-    ERR_SSH_SOCKET_CONNECT      = -12,
-    ERR_SSH_CONNECT_TIMEOUT     = -13,
-    ERR_SSH_DNS_RESOLVE         = -14,
-    ERR_SSH_BANNER_INVALID      = -15,
-    ERR_SSH_PROXY_INVALID       = -16,
-    ERR_SSH_PROXY_AUTH          = -17,
-    ERR_SSH_PROXY_FAILED        = -18,
-    ERR_SSH_PROXY_UNSUPPORTED   = kSshProxyUnsupportedError,
-
-    // SSH 协议层 (-2x)
-    ERR_SSH_SESSION_INIT        = -21,
-    ERR_SSH_KEX_FAILED          = -22,
-    ERR_SSH_KEX_TIMEOUT         = -23,
-    ERR_SSH_HOSTKEY_MISMATCH    = -24,
-
-    // 认证层 (-3x)
-    ERR_SSH_AUTH_FAILED         = -31,
-    ERR_SSH_AUTH_TIMEOUT        = -32,
-    ERR_SSH_AUTH_METHODS        = -33,
-    ERR_SSH_AUTH_PARTIAL        = -34,
-    ERR_SSH_AUTH_CANCELLED      = -35,
-
-    // 通道层 (-4x)
-    ERR_SSH_CHANNEL_OPEN        = -41,
-    ERR_SSH_CHANNEL_CLOSED      = -42,
-    ERR_SSH_PTY_FAILED          = -43,
-    ERR_SSH_COMMAND_TIMEOUT     = -45,
-    ERR_SSH_SUBSYSTEM_FAILED    = -46,
-    ERR_SSH_SHELL_FAILED        = -44,
-
-    // 数据传输层 (-5x)
-    ERR_SSH_READ_FAILED         = -51,
-    ERR_SSH_WRITE_FAILED        = -52,
-    ERR_SSH_SESSION_CLOSED      = -53,
-    ERR_SSH_OUTPUT_LIMIT        = -54,
-    ERR_SSH_REACTOR_QUEUE_FULL  = -55,
-    ERR_SSH_SFTP_DURABILITY_UNSUPPORTED = -56,
-    // SFTP request was queued for a previous session generation.
-    ERR_SSH_SESSION_STALE       = -57,
-};
 
 struct SftpOperationResult {
     int errorCode = ERR_SSH_REACTOR_QUEUE_FULL;
@@ -98,6 +53,24 @@ struct SshCommandResult {
     std::string signal;
     std::vector<uint8_t> stdoutBytes;
     std::vector<uint8_t> stderrBytes;
+};
+
+/**
+ * Host-key material captured by an auxiliary SSH operation after KEX.
+ * The snapshot never contains credentials and is valid only for the exact
+ * production route used by connectForOperation().
+ */
+struct SshOperationHostKeySnapshot {
+    bool ok = false;
+    std::string algorithm;
+    std::string fingerprintSha256;
+    std::string rawBase64;
+    std::string serverBanner;
+};
+
+enum class SshOperationSessionMode {
+    ProbeOnly,
+    Authenticated,
 };
 
 enum class SshTerminalInputStatus {
@@ -131,6 +104,16 @@ public:
     std::string protocolVersion() override;
 
     int connect(const ConnectionConfig& cfg) override;
+    /**
+     * Establish the production SSH transport without allocating a PTY/shell.
+     * ProbeOnly stops after KEX; Authenticated verifies the target host key and
+     * authenticates before returning. The caller must disconnect the adapter.
+     */
+    int connectForOperation(const ConnectionConfig& cfg,
+                            SshOperationSessionMode mode,
+                            remotedesk::net::NetworkGenerationSnapshot networkSnapshot,
+                            SshOperationHostKeySnapshot& hostKey,
+                            std::chrono::steady_clock::time_point deadline);
     void disconnect() override;
     ConnectionState getState() override;
 
@@ -156,7 +139,7 @@ public:
     void setSessionGeneration(uint64_t generation);
 
     /** Platform network availability event, fenced by its monotonic generation. */
-    void onNetworkChanged(bool available, uint64_t networkGeneration);
+    void onNetworkChanged(bool available, uint64_t networkGeneration) override;
 
     // Forwarding profiles are owned by this SSH adapter. Runtime transitions
     // are serialized through the same session-owner reactor as libssh2.
@@ -227,7 +210,7 @@ public:
 
     /** Read the current one-shot keyboard-interactive prompt, if any. */
     bool getAuthPrompt(SshAuthPromptRequest& out) const;
-    bool respondAuthPrompt(const SshAuthPromptResponse& response);
+    bool respondAuthPrompt(SshAuthPromptResponse response);
     bool cancelAuthPrompt(uint64_t requestId, uint64_t expectedGeneration);
 
     /** Internal libssh2 callback bridge shared by target and jump auth. */
@@ -235,7 +218,9 @@ public:
         const char* name, int nameLen, const char* instruction, int instructionLen,
         int numPrompts, const LIBSSH2_USERAUTH_KBDINT_PROMPT* prompts,
         LIBSSH2_USERAUTH_KBDINT_RESPONSE* responses,
-        const std::vector<std::string>* explicitResponses,
+        void** allocatorAbstract,
+        int transportFd,
+        std::vector<std::string>* explicitResponses,
         const std::string* password, bool allowPasswordFallback,
         const std::string& targetHost, const std::string& hop,
         size_t& presetIndex, bool& passwordFallbackUsed);
@@ -250,6 +235,15 @@ public:
     /** 在独立 SSH channel 上执行命令，不影响交互式 Shell。 */
     int executeCommand(const std::string& command, SshCommandResult& result,
                        int timeoutMs = 30000);
+
+    /**
+     * Execute the idempotent auxiliary-operation command only if its exact
+     * admission generation still owns this transport.
+     */
+    int executeCommandForOperation(
+        const std::string& command, SshCommandResult& result,
+        remotedesk::net::NetworkGenerationSnapshot networkSnapshot,
+        int timeoutMs = 30000);
 
     /** 在独立 SSH channel 上启动 subsystem 并收集其输出。 */
     int executeSubsystem(const std::string& subsystem, SshCommandResult& result,
@@ -293,13 +287,18 @@ public:
     bool classifySftpTransportFailure(int operationError);
 
 private:
+#ifdef RDP_NATIVE_CALLBACK_TESTING
+    friend class SshAdapterRuntimeTestAccess;
+#endif
     struct LocalForwardListener {
         std::string profileId;
         uint64_t sessionGeneration = 0;
         SshForwardingMode mode = SshForwardingMode::Local;
         int fd = -1;
         LIBSSH2_LISTENER* remoteListener = nullptr;
+        std::string boundHost;
         int boundPort = 0;
+        int boundFamily = 0;
     };
 
     struct LocalForwardConnection {
@@ -309,6 +308,7 @@ private:
         int localFd = -1;
         LIBSSH2_CHANNEL* channel = nullptr;
         bool localConnecting = false;
+        SshForwardTargetConnectTask targetConnectTask;
         bool localEof = false;
         bool channelEof = false;
         bool channelEofSent = false;
@@ -325,6 +325,12 @@ private:
     };
 
     int connectInternal(const ConnectionConfig& cfg, bool preserveOwner = false);
+    int connectForOperationInternal(const ConnectionConfig& cfg,
+                                    SshOperationSessionMode mode,
+                                    remotedesk::net::NetworkGenerationSnapshot networkSnapshot,
+                                    SshOperationHostKeySnapshot& hostKey,
+                                    std::chrono::steady_clock::time_point deadline);
+    int authenticateConfiguredUser(const ConnectionConfig& cfg);
     void resetTransportForRecovery();
     bool reconnectAfterTransportFailure();
     bool assertSessionOwner(const char* operation) const noexcept;
@@ -333,7 +339,8 @@ private:
     int keyboardInteractiveResponseRound(
         const char* name, int nameLen, const char* instruction, int instructionLen,
         int numPrompts, const LIBSSH2_USERAUTH_KBDINT_PROMPT* prompts,
-        LIBSSH2_USERAUTH_KBDINT_RESPONSE* responses);
+        LIBSSH2_USERAUTH_KBDINT_RESPONSE* responses,
+        void** allocatorAbstract);
 
     int sockFd_;
     // Incremented whenever the socket/channel ownership changes. Reader
@@ -356,6 +363,13 @@ private:
     bool authPromptAllowPasswordFallback_ = false;
     size_t authPromptPresetIndex_ = 0;
     bool authPromptPasswordFallbackUsed_ = false;
+    // Set only when an explicit KBI/OTP answer is handed to libssh2. The bit
+    // survives route and transport failures so no automatic path can submit
+    // that answer to a second SSH session; a user-initiated connect resets it.
+    std::atomic<bool> explicitAuthResponseConsumed_{false};
+    // The initial request and callback response are separate admission
+    // phases so a blocking MFA prompt never pins the process network fence.
+    SshKeyboardInteractiveRouteAdmission authRouteAdmission_;
 
     // ---- libssh2 会话和通道 ----
     LIBSSH2_SESSION* session_;
@@ -383,10 +397,16 @@ private:
     SshForwardingManager forwardingManager_;
     std::map<std::string, LocalForwardListener> localForwardListeners_;
     std::vector<LocalForwardConnection> localForwardConnections_;
+    // Accepted remote-forward channels that could not finish an admitted
+    // non-blocking free are retained here and retried by the reactor. A raw
+    // pointer must never be dropped on EAGAIN because libssh2 still owns it.
+    std::vector<LIBSSH2_CHANNEL*> deferredForwardChannelCloses_;
     int lastPtyLibssh2Error_ = 0;
     SshPtyFailureClass lastPtyFailureClass_ = SshPtyFailureClass::NONE;
 
     void setState(ConnectionState s, const std::string& message = "");
+    /** Publish the legacy connection state without replacing a richer SSH lifecycle state. */
+    void setConnectionStateOnly(ConnectionState s, const std::string& message);
 
     // exchangeBanner() 已移除 — libssh2 内部处理 banner
 
@@ -394,8 +414,8 @@ private:
     int tcpConnect(const std::string& host, int port);
 
     /** 在已连接的代理 socket 上完成 HTTP CONNECT/SOCKS5 握手。 */
-    int connectThroughProxy(const ConnectionConfig& cfg);
-    int connectThroughSshJump(const ConnectionConfig& cfg);
+    int connectThroughProxy(ConnectionConfig& cfg);
+    int connectThroughSshJump(ConnectionConfig& cfg);
     void sshJumpRelayLoop();
     void stopSshJumpRelay();
     int waitSocketOnFd(int fd, int direction, int timeoutSec);
@@ -406,11 +426,11 @@ private:
     // All forwarding modes are owned by the same reactor as the terminal
     // session. Local/dynamic use a local listener; remote uses a libssh2
     // remote listener and relays its accepted channels to a local target.
-    int createLocalForwardListener(const SshForwardingConfig& config, int& errorCode);
+    int createLocalForwardListener(const SshForwardingConfig& config,
+                                   std::string& boundHost, int& boundPort,
+                                   int& boundFamily, int& errorCode);
     LIBSSH2_LISTENER* createRemoteForwardListener(const SshForwardingConfig& config,
                                                   int& boundPort, int& errorCode);
-    int createForwardTargetSocket(const std::string& host, int port,
-                                  bool& connecting, int& errorCode);
     int pumpDynamicSocksHandshakeLocked(LocalForwardConnection& connection);
     bool queueDynamicSocksFailureLocked(LocalForwardConnection& connection,
                                         uint8_t replyCode);
@@ -419,14 +439,31 @@ private:
     bool pumpLocalForwardConnectionLocked(LocalForwardConnection& connection,
                                            const SshForwardingConfig& config);
     void serviceForwardingOnReactor();
-    void closeLocalForwardConnectionLocked(LocalForwardConnection& connection);
+    bool tryFreeConnectedForwardChannelLocked(LIBSSH2_CHANNEL*& channel);
+    void deferForwardChannelCloseLocked(LIBSSH2_CHANNEL* channel);
+    bool closeLocalForwardConnectionLocked(LocalForwardConnection& connection);
     void closeLocalForwardRuntimeLocked(const std::string& id);
-    void closeAllForwardingRuntimeLocked();
+
+    struct TransportTeardownContext {
+        std::chrono::steady_clock::time_point deadline;
+        bool transportRetired = false;
+    };
+    void retirePrimaryTransportNoWireLocked(
+        TransportTeardownContext& context) noexcept;
+    int runTransportTeardownPrimitiveLocked(
+        TransportTeardownContext& context,
+        const std::function<int()>& primitive);
+    void teardownAllForwardingRuntimeLocked(
+        TransportTeardownContext& context);
+    void teardownSessionHandlesLocked(const char* description);
 
     // ---- SSH 协议方法 (libssh2 集成) ----
 
     /** KEX 密钥交换 + 主机密钥验证 */
     int sshHandshake();
+    /** Run one non-blocking libssh2 KEX under the captured route admission. */
+    int handshakeSessionOnRoute(LIBSSH2_SESSION* session, int transportFd,
+                                int timeoutSeconds);
 
     /** 验证指定 SSH endpoint 的 host key；ProxyJump 跳板机要求必须有预期 key。 */
     int verifyHostKey(LIBSSH2_SESSION* session, const std::string& expectedRawBase64,
@@ -442,6 +479,9 @@ private:
         const char* name, int nameLen, const char* instruction, int instructionLen,
         int numPrompts, const LIBSSH2_USERAUTH_KBDINT_PROMPT* prompts,
         LIBSSH2_USERAUTH_KBDINT_RESPONSE* responses, void** abstract);
+    bool beginKeyboardInteractiveCallAdmission();
+    bool holdKeyboardInteractiveResponseAdmission();
+    void abortKeyboardInteractiveCallbackNoWire(int transportFd) noexcept;
 
     /** 打开 SSH 会话通道 */
     int openChannel();
@@ -456,6 +496,24 @@ private:
     int startShell();
 
     /** 非阻塞等待并重试 libssh2 操作 (0=读 1=写) */
+    bool connectRouteCancelled() const;
+    std::chrono::steady_clock::time_point connectRouteDeadline() const noexcept;
+    void setConnectRouteDeadline(
+        std::chrono::steady_clock::time_point deadline) noexcept;
+    bool connectRouteDeadlineExpired() const noexcept;
+    std::chrono::steady_clock::time_point boundedConnectStageDeadline(
+        std::chrono::milliseconds stageBudget) const noexcept;
+    int routeWriteFailure(int deadlineError) const noexcept;
+    bool admitRouteWrite(
+        const remotedesk::net::NetworkGenerationSnapshot& networkSnapshot,
+        const std::function<void()>& write) const;
+    bool admitConnectedRouteWrite(const std::function<void()>& write) const;
+    /**
+     * libssh2 channel reads can synchronously emit SSH window-adjust packets.
+     * Keep those apparently inbound calls behind the same route fence as an
+     * explicit write so a generation update cannot leave an old-route send.
+     */
+    bool admitConnectedRouteRead(const std::function<void()>& read) const;
     int waitSocket(int direction, int timeoutSec);
     int waitSocketMilliseconds(int direction, int timeoutMs);
 
@@ -491,6 +549,24 @@ private:
     std::atomic<bool> recoveryAttemptInProgress_{false};
     std::atomic<uint64_t> lastNetworkGeneration_{0};
     std::atomic<bool> networkAvailable_{true};
+    // One route attempt (direct/proxy/jump) owns one process-network snapshot.
+    // Reconnect captures a fresh snapshot before resolving again.
+    remotedesk::net::NetworkGenerationSnapshot connectNetworkSnapshot_ {};
+#ifdef RDP_NATIVE_CALLBACK_TESTING
+    std::function<void()> handshakeEagainHookForTesting_;
+    std::function<void()> keyboardInteractiveRoundHookForTesting_;
+    std::function<void(ssize_t)> channelReadHookForTesting_;
+    std::function<void()> transportShutdownHookForTesting_;
+    std::function<void()> transportCloseHookForTesting_;
+#endif
+    // Connection establishment and auxiliary operations share one immutable
+    // absolute deadline across DNS, proxy/jump, KEX, auth and channel work.
+    // Store clock ticks atomically because the ProxyJump relay also consults
+    // the admission boundary while the owner activates or retires a route.
+    std::atomic<std::chrono::steady_clock::duration::rep>
+        connectRouteDeadlineTicks_ {
+            std::chrono::steady_clock::time_point::max()
+                .time_since_epoch().count()};
 
     static constexpr size_t kDetachedTerminalMaxChunks = 512;
     static constexpr size_t kDetachedTerminalMaxBytes = 8 * 1024 * 1024;
@@ -670,6 +746,7 @@ private:
     static constexpr int kReactorWaitSliceMs = 5;
     static constexpr size_t kForwardBufferLimit = 512 * 1024;
     static constexpr size_t kForwardAcceptBatch = 8;
+    static constexpr size_t kMaxForwardTargetConnectWorkers = 8;
     std::chrono::steady_clock::time_point keepaliveNextDue_ =
         std::chrono::steady_clock::time_point::max();
     uint32_t keepaliveConsecutiveFailures_ = 0;
@@ -684,14 +761,22 @@ private:
     /** Cooperative wait/yield for an SFTP slice while retaining handle ownership. */
     bool yieldSftpSlice(std::unique_lock<std::mutex>& sessionLock,
                         int direction, int timeoutSec);
+    /** Close a remote SFTP handle without emitting on a retired route. */
+    int closeSftpHandleLocked(
+        LIBSSH2_SFTP_HANDLE* handle,
+        std::unique_lock<std::mutex>& sessionLock,
+        bool directory = false);
 
     // Keep each SFTP ownership slice below the terminal input latency budget.
     // The session mutex is released between slices; the outer SFTP mutex keeps
     // the libssh2 SFTP handle alive while the terminal writer/reader run.
     static constexpr size_t kSftpSliceBytes = 32 * 1024;
 
-    int executeChannelRequest(const std::string& request, bool subsystem,
-                              SshCommandResult& result, int timeoutMs);
+    int executeChannelRequest(
+        const std::string& request, bool subsystem,
+        SshCommandResult& result, int timeoutMs,
+        const remotedesk::net::NetworkGenerationSnapshot*
+            requiredNetworkSnapshot = nullptr);
 };
 
 /** 注册到 ExtensionSystem */

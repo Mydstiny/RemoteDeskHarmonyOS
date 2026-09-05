@@ -9,12 +9,15 @@
 #ifndef SSH_AUTH_PROMPT_BROKER_H
 #define SSH_AUTH_PROMPT_BROKER_H
 
+#include "ssh_sensitive_buffer.h"
+
 #include <algorithm>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <mutex>
 #include <string>
+#include <utility>
 #include <vector>
 
 struct SshAuthPrompt {
@@ -36,6 +39,7 @@ struct SshAuthPromptRequest {
     uint64_t expiresAtMs = 0;
     std::string kind = "keyboard_interactive";
     std::string trustHostId;
+    std::string routeIdentity;
     std::string endpointHost;
     int endpointPort = 0;
     int hostKeyHopIndex = -1;
@@ -53,6 +57,64 @@ struct SshAuthPromptResponse {
     uint64_t generation = 0;
     std::vector<std::string> responses;
     bool cancelled = false;
+
+    SshAuthPromptResponse() = default;
+    SshAuthPromptResponse(
+        uint32_t responseSchemaVersion, uint64_t responseRequestId,
+        uint64_t responseSessionId, uint64_t responseGeneration,
+        std::vector<std::string> responseValues, bool responseCancelled)
+        : schemaVersion(responseSchemaVersion),
+          requestId(responseRequestId),
+          sessionId(responseSessionId),
+          generation(responseGeneration),
+          responses(std::move(responseValues)),
+          cancelled(responseCancelled) {}
+
+    SshAuthPromptResponse(const SshAuthPromptResponse& other)
+        : schemaVersion(other.schemaVersion),
+          requestId(other.requestId),
+          sessionId(other.sessionId),
+          generation(other.generation),
+          responses(other.responses),
+          cancelled(other.cancelled) {}
+
+    SshAuthPromptResponse(SshAuthPromptResponse&& other) noexcept
+        : schemaVersion(other.schemaVersion),
+          requestId(other.requestId),
+          sessionId(other.sessionId),
+          generation(other.generation),
+          responses(std::move(other.responses)),
+          cancelled(other.cancelled) {}
+
+    SshAuthPromptResponse& operator=(const SshAuthPromptResponse& other) {
+        if (this == &other) { return *this; }
+        wipeResponses();
+        schemaVersion = other.schemaVersion;
+        requestId = other.requestId;
+        sessionId = other.sessionId;
+        generation = other.generation;
+        responses = other.responses;
+        cancelled = other.cancelled;
+        return *this;
+    }
+
+    SshAuthPromptResponse& operator=(SshAuthPromptResponse&& other) noexcept {
+        if (this == &other) { return *this; }
+        wipeResponses();
+        schemaVersion = other.schemaVersion;
+        requestId = other.requestId;
+        sessionId = other.sessionId;
+        generation = other.generation;
+        responses = std::move(other.responses);
+        cancelled = other.cancelled;
+        return *this;
+    }
+
+    ~SshAuthPromptResponse() noexcept { wipeResponses(); }
+
+    void wipeResponses() noexcept {
+        sshWipeSensitiveStrings(responses);
+    }
 };
 
 enum class SshAuthPromptWaitResult : uint8_t {
@@ -77,11 +139,22 @@ public:
         const std::string& hop, const char* name, int nameLen,
         const char* instruction, int instructionLen,
         const std::vector<SshAuthPrompt>& prompts,
-        std::vector<std::string>& responses) {
+        std::vector<std::string>& responses,
+        std::chrono::steady_clock::time_point absoluteDeadline =
+            std::chrono::steady_clock::time_point::max()) {
+        sshWipeSensitiveStrings(responses);
         responses.clear();
         if (prompts.empty()) {
             return SshAuthPromptWaitResult::Responded;
         }
+        const auto startedAt = std::chrono::steady_clock::now();
+        const auto deadline = std::min(startedAt + kTimeout, absoluteDeadline);
+        if (deadline <= startedAt) {
+            return SshAuthPromptWaitResult::TimedOut;
+        }
+        const auto remainingMilliseconds =
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                deadline - startedAt).count();
 
         SshAuthPromptRequest request;
         {
@@ -103,7 +176,8 @@ public:
                 request.prompts.resize(kMaxPrompts);
             }
             request.expiresAtMs = nowMs() +
-                static_cast<uint64_t>(kTimeout.count()) * 1000ULL;
+                static_cast<uint64_t>(
+                    std::max<int64_t>(0, remainingMilliseconds));
             pendingRequest_ = request;
             pending_ = true;
             responseReady_ = false;
@@ -113,7 +187,6 @@ public:
         cv_.notify_all();
 
         std::unique_lock<std::mutex> lock(mutex_);
-        const auto deadline = std::chrono::steady_clock::now() + kTimeout;
         while (!responseReady_ && !cancelled_ && !closed_) {
             if (cv_.wait_until(lock, deadline) == std::cv_status::timeout) {
                 break;
@@ -136,10 +209,21 @@ public:
     SshAuthPromptWaitResult waitForHostKeyDecision(
         uint64_t sessionId, uint64_t generation, const std::string& targetHost,
         const std::string& hop, const std::string& trustHostId,
+        const std::string& routeIdentity,
         const std::string& endpointHost, int endpointPort, int hopIndex,
         const std::string& algorithm, const std::string& fingerprintSha256,
         const std::string& rawBase64, const std::string& expectedFingerprintSha256,
-        bool changed) {
+        bool changed,
+        std::chrono::steady_clock::time_point absoluteDeadline =
+            std::chrono::steady_clock::time_point::max()) {
+        const auto startedAt = std::chrono::steady_clock::now();
+        const auto deadline = std::min(startedAt + kTimeout, absoluteDeadline);
+        if (deadline <= startedAt) {
+            return SshAuthPromptWaitResult::TimedOut;
+        }
+        const auto remainingMilliseconds =
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                deadline - startedAt).count();
         SshAuthPromptRequest request;
         {
             std::lock_guard<std::mutex> lock(mutex_);
@@ -155,6 +239,7 @@ public:
             request.round = ++round_;
             request.kind = "host_key";
             request.trustHostId = bounded(trustHostId, 128);
+            request.routeIdentity = bounded(routeIdentity, 4096);
             request.endpointHost = bounded(endpointHost, 255);
             request.endpointPort = endpointPort;
             request.hostKeyHopIndex = hopIndex;
@@ -164,7 +249,8 @@ public:
             request.expectedHostKeyFingerprintSha256 = bounded(expectedFingerprintSha256, 255);
             request.hostKeyChanged = changed;
             request.expiresAtMs = nowMs() +
-                static_cast<uint64_t>(kTimeout.count()) * 1000ULL;
+                static_cast<uint64_t>(
+                    std::max<int64_t>(0, remainingMilliseconds));
             pendingRequest_ = request;
             pending_ = true;
             responseReady_ = false;
@@ -174,7 +260,6 @@ public:
         cv_.notify_all();
 
         std::unique_lock<std::mutex> lock(mutex_);
-        const auto deadline = std::chrono::steady_clock::now() + kTimeout;
         while (!responseReady_ && !cancelled_ && !closed_) {
             if (cv_.wait_until(lock, deadline) == std::cv_status::timeout) {
                 break;
@@ -199,18 +284,20 @@ public:
         return true;
     }
 
-    bool respond(const SshAuthPromptResponse& response) {
+    bool respond(SshAuthPromptResponse response) {
         std::lock_guard<std::mutex> lock(mutex_);
         if (!pending_ || closed_ || response.requestId != pendingRequest_.requestId ||
             response.sessionId != pendingRequest_.sessionId ||
             response.generation != pendingRequest_.generation || response.cancelled ||
+            responseReady_ ||
             response.responses.size() != pendingRequest_.prompts.size()) {
             return false;
         }
         for (const std::string& value : response.responses) {
             if (value.size() > kMaxPromptBytes) { return false; }
         }
-        responseValues_ = response.responses;
+        sshWipeSensitiveStrings(responseValues_);
+        responseValues_ = std::move(response.responses);
         responseReady_ = true;
         cv_.notify_all();
         return true;
@@ -268,10 +355,7 @@ private:
     void clearPendingLocked() {
         pending_ = false;
         responseReady_ = false;
-        for (std::string& value : responseValues_) {
-            volatile char* bytes = value.data();
-            for (size_t index = 0; index < value.size(); ++index) { bytes[index] = '\0'; }
-        }
+        sshWipeSensitiveStrings(responseValues_);
         responseValues_.clear();
         pendingRequest_ = {};
     }

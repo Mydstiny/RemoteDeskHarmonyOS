@@ -12,6 +12,12 @@ import { abilityAccessCtrl, common, ConfigurationConstant, Want } from '@kit.Abi
 import { authentication } from '@kit.AccountKit';
 import { inputDevice } from '@kit.InputKit';
 import { HostSyncService } from '../services/HostSyncService';
+import {
+  EndpointAddressResult,
+  formatEndpointFieldsHostPort,
+  formatUserAtHost,
+  parseEndpointFields
+} from '../services/EndpointAddressPolicy';
 import { AuthService } from '../services/AuthService';
 import { KeyVaultService } from '../services/KeyVaultService';
 import {
@@ -62,10 +68,12 @@ import {
   ConnectionHealth,
   LockType,
   RdpAuthMode,
+  RdpCredentialStorageMode,
   RdpRestrictedAdminSecretSource,
   normalizeRdpCredentialParts,
   normalizeRdpNtlmHash,
   normalizeRdpAuthMode,
+  normalizeRdpCredentialStorageMode,
   normalizeRdpEndpointMode,
   rdpRouteIdentity
 } from '../model/RemoteHost';
@@ -74,7 +82,6 @@ import { RustDeskAccount } from '../model/RustDeskAccount';
 import { TotpEntry } from '../model/TotpEntry';
 import {
   MoonlightAddress,
-  MoonlightAddressFamily,
   MoonlightHost,
   MoonlightHostType,
   MOONLIGHT_DEFAULT_HTTPS_PORT,
@@ -90,6 +97,7 @@ import {
   isRustDeskPeerTwoFactorManualCode,
   rustDeskPeerTwoFactorAutoSubmitError
 } from '../services/RustDeskPeerTwoFactorPolicy';
+import { rustDeskCodecConfigValue } from '../services/RustDeskDiagnosticsPolicy';
 import {
   RustDeskAuthDraft,
   RustDeskAuthDraftStore,
@@ -134,8 +142,14 @@ import {
   MoonlightHostAddState,
   MoonlightHostAddCandidate,
   MoonlightHostAddDiscoveryKey,
+  MoonlightHostAddLanCandidate,
   MoonlightHostAddVerification,
   MoonlightHostAddCatalogSummary,
+  cloneMoonlightHostAddVerification,
+  mergeMoonlightHostAddLanCandidate,
+  moonlightHostAddNativeAddresses,
+  moonlightMergeCandidateAddresses,
+  moonlightHostAddServerIdentity,
   parseMoonlightHostAddAddress
 } from '../services/MoonlightHostAddFlowPolicy';
 import {
@@ -186,6 +200,10 @@ import {
 } from '../services/RustDeskHostAddHandoff';
 import { VncSessionCredentialHandoff } from '../services/VncSessionCredentialHandoff';
 import {
+  RdpSessionCredentialDecision,
+  RdpSessionCredentialHandoff
+} from '../services/RdpSessionCredentialHandoff';
+import {
   vncCredentialPreflightMessage,
   vncCredentialPreflightNeedsPrompt,
   VncCredentialPreflightState
@@ -194,6 +212,9 @@ import { VncSettingsService } from '../services/VncSettingsService';
 import { VncSettingsSheet } from '../components/VncSettingsSheet';
 import { SecretVisibilitySettingsSheet } from '../components/SecretVisibilitySettingsSheet';
 import { RemoteWheelDirectionSettingsSheet } from '../components/RemoteWheelDirectionSettingsSheet';
+import { RemotePinchZoomSettingsSheet } from '../components/RemotePinchZoomSettingsSheet';
+import { RemoteSessionControlBarSettingsSheet } from
+  '../components/RemoteSessionControlBarSettingsSheet';
 import { VncCertificateTrustManagerSheet } from '../components/VncCertificateTrustManagerSheet';
 import {
   EditableSecretKind,
@@ -243,7 +264,8 @@ import {
 import {
   ExtensionLoader,
   NativeDisconnectIdentity,
-  NativeDisconnectSubmission
+  NativeDisconnectSubmission,
+  SshNativeOperationPromise
 } from '../services/ExtensionLoader';
 import { RemoteSessionWindowLauncher } from '../services/RemoteSessionWindowLauncher';
 import {
@@ -290,6 +312,26 @@ import {
   sshProxyRuntimeNeedsTerminalSecrets
 } from '../services/SshProxyRuntimePolicy';
 import {
+  buildDirectSshHostKeyProbeConfig,
+  buildSshOperationSessionConfig,
+  classifySshJumpHostKeyProbeTrust,
+  SshOperationConfigResult,
+  SshJumpHostKeyProbeTrust,
+  SshOperationRouteSecrets,
+  SshOperationTargetAuth
+} from '../services/SshOperationConfigPolicy';
+import {
+  sshOperationRouteSecretConsumeAllowed,
+  SshOperationRouteSecretResult,
+  SshOperationRouteSecretScope,
+  SshOperationRouteSecretService
+} from '../services/SshOperationRouteSecretService';
+import {
+  SshHostKeyRouteBinding,
+  sshHostKeyRouteBinding,
+  sshHostKeyTrustIsCurrent
+} from '../services/SshHostKeyTrustPolicy';
+import {
   nextRdpCertificateProbeGeneration,
   shouldApplyRdpCertificateProbeResult
 } from '../services/RdpCertificateProbeLifecyclePolicy';
@@ -307,9 +349,10 @@ import {
   VncCertificateProbeIdentity
 } from '../services/VncCertificateProbeLifecyclePolicy';
 import {
+  dispatchVncCertificateProbeIfAdmitted,
   VncTlsGatewayInput,
   VncTlsEndpointResolution,
-  resolveVncTlsEndpoint,
+  resolveVncTlsEndpointForAccount,
   vncTlsGatewayInput,
   vncTlsHostInput
 } from '../services/VncTlsEndpointPolicy';
@@ -327,7 +370,7 @@ import {
   lanHostNeedsAddressRefresh,
   lanHostRefreshCandidateMatches,
   LanHostRefreshCandidate,
-  lanHostUsesLocalOnlyStorage
+  lanHostUsesDynamicAddressStorage
 } from '../services/LanHostAddressPolicy';
 import {
   hostListProtocolForTab,
@@ -338,6 +381,9 @@ import {
   displayConnectionHealth,
   filterHostsByWorkspace,
   groupIdsForHosts,
+  hostListBottomSpacerVp,
+  hostListFabLiftVp,
+  hostListFabSizeVp,
   nextWorkspaceGroupId
 } from '../services/HostWorkspacePolicy';
 import {
@@ -413,7 +459,10 @@ import {
   SETTINGS_SHEET_ACCOUNT,
   SETTINGS_SHEET_ACCENT_COLOR,
   SETTINGS_SHEET_DIAGNOSTIC_LOG,
+  SETTINGS_SHEET_REMOTE_PINCH_ZOOM,
   SETTINGS_SHEET_REMOTE_WHEEL_DIRECTION,
+  SETTINGS_SHEET_SESSION_CONTROL_BAR,
+  SETTINGS_SHEET_HARMONY_SHORTCUT_BLOCKING,
   SETTINGS_SHEET_SECRET_VISIBILITY,
   SETTINGS_SHEET_FEEDBACK,
   SETTINGS_SHEET_HALO_COLOR,
@@ -453,7 +502,9 @@ import {
   VirtualKeyboardSettingsSection,
   VirtualKeyboardSettingsRouteSpec,
   diagnosticLogSettingsLeafSheetHeight,
+  remotePinchZoomSettingsLeafSheetHeight,
   remoteWheelDirectionSettingsLeafSheetHeight,
+  sessionControlBarSettingsLeafSheetHeight,
   secretVisibilitySettingsLeafSheetHeight,
   isVirtualKeyboardSettingsMode,
   moonlightSettingsLeafSheetHeight,
@@ -483,6 +534,23 @@ import {
   remoteWheelSelectionSummary,
   withRemoteWheelPreference
 } from '../services/RemoteWheelPreferencePolicy';
+import {
+  MOONLIGHT_PINCH_ZOOM_ENABLED_KEY,
+  RDP_PINCH_ZOOM_ENABLED_KEY,
+  REMOTE_PINCH_ZOOM_PREFERENCE_VERSION,
+  REMOTE_PINCH_ZOOM_PREFERENCE_VERSION_KEY,
+  RUSTDESK_PINCH_ZOOM_ENABLED_KEY,
+  SSH_PINCH_ZOOM_ENABLED_KEY,
+  VNC_PINCH_ZOOM_ENABLED_KEY,
+  RemotePinchZoomPreferenceMigration,
+  RemotePinchZoomPreferencePresence,
+  RemotePinchZoomPreferenceUpdate,
+  RemotePinchZoomPreferences,
+  applyRemotePinchZoomPreferenceUpdate,
+  migrateRemotePinchZoomPreferences,
+  remotePinchZoomSelectionSummary,
+  withRemotePinchZoomPreference
+} from '../services/RemotePinchZoomPreferencePolicy';
 import {
   SETTINGS_APP_BUNDLE_NAME,
   SETTINGS_BROWSER_VIEW_ACTION,
@@ -526,6 +594,10 @@ import {
   rdpResolutionPresets
 } from '../services/RemoteResolutionPresetPolicy';
 import {
+  normalizeRdpRemoteUiScalePreference,
+  rdpRemoteUiScaleLabel
+} from '../services/RdpAdaptiveDisplayPolicy';
+import {
   localViewScalePercent,
   normalizeLocalViewScaleMode,
   REMOTE_DISPLAY_SCALE_PREFERENCE_VERSION,
@@ -538,8 +610,13 @@ import {
   REMOTE_SESSION_CONTROL_BAR_HIDDEN_RDP_KEY,
   REMOTE_SESSION_CONTROL_BAR_HIDDEN_RUSTDESK_KEY,
   REMOTE_SESSION_CONTROL_BAR_HIDDEN_VNC_KEY,
+  REMOTE_SESSION_QUICK_EXIT_DISABLED_KEY,
+  RemoteSessionControlBarPreferenceUpdate,
   RemoteSessionControlBarVisibility,
-  remoteSessionControlBarHidden,
+  RemoteSessionBooleanPreferencePort,
+  applyRemoteSessionControlBarPreferenceUpdate,
+  commitRemoteSessionQuickExitPreference,
+  protectRemoteSessionControlBarVisibility,
   remoteSessionControlBarSelectionSummary,
   resolveRemoteSessionControlBarVisibility
 } from '../services/RemoteSessionTopBarPolicy';
@@ -590,22 +667,28 @@ import {
   resolveStoredHaloColorForTheme,
   shouldMigrateLegacyHaloColorToTheme
 } from '../services/HaloColorPolicy';
-import { CURRENT_RELEASE_VERSION } from '../services/ReleaseNotesRegistry';
+import {
+  CURRENT_RELEASE_VERSION,
+  currentReleasePageCount
+} from '../services/ReleaseNotesRegistry';
 import { AboutSettingsSheet } from '../components/AboutSettingsSheet';
 import { DiagnosticCaptureSettingsSheet } from '../components/DiagnosticCaptureSettingsSheet';
 import { FeedbackSettingsSheet } from '../components/FeedbackSettingsSheet';
 import { VirtualKeyboardSettingsSheet } from '../components/VirtualKeyboardSettingsSheet';
 import {
   VncCertificateInfo,
+  VncCertificateProbePromise,
   RdpCertificateInfo,
   RdpCertificateRecord,
   RdpPreflightRequest,
   RdpPreflightResult,
   RustDeskPresenceResult,
+  RustDeskPresenceProbePromise,
+  SshAuthTestResult,
   SshHostKeyInfo,
+  SshJumpHop,
   SshPrivateKeyInfo,
-  SshPublicKeyInstallResult,
-  SshProxyConfig
+  SshPublicKeyInstallResult
 } from '../types/rdpnapi';
 import { SessionConfig } from '../types/rdpnapi';
 import {
@@ -645,7 +728,7 @@ import {
   RustDeskConnectionContext
 } from '../services/RustDeskConnectionContextPolicy';
 import {
-  nextConnectionAttemptGeneration,
+  allocateConnectionAttemptGeneration,
   shouldBeginConnectionAttempt,
   shouldApplyConnectionAttempt
 } from '../services/ConnectionAttemptPolicy';
@@ -723,6 +806,7 @@ const REMOTE_HOST_SHEET_VNC_CREDENTIAL = 8;
 const REMOTE_HOST_SHEET_MOONLIGHT_DETAIL = 9;
 const REMOTE_HOST_SHEET_MOONLIGHT_CATALOG = 10;
 const REMOTE_HOST_SHEET_MOONLIGHT_EDIT = 11;
+const REMOTE_HOST_SHEET_RDP_CREDENTIAL = 12;
 const DESKTOP_MOONLIGHT_TAB = 7;
 
 @Entry
@@ -787,6 +871,8 @@ struct HostListPage {
   // result before the card can consume it.
   private hostPresencePageGeneration: number = 0;
   private hostPresenceProbeGenerations: Map<string, number> = new Map();
+  private hostPresenceProbeRequestIds: Map<string, number> = new Map();
+  private sshPresenceOperationIds: Map<string, number> = new Map();
   private hostPresenceRefreshRunning: boolean = false;
   // HostSyncService emits synchronously for local presence observations. Keep
   // that callback from starting a second list snapshot while the probe owns
@@ -840,6 +926,7 @@ struct HostListPage {
   @State sshPortVal: number = 22;
   @State username: string = '';
   @State chn: string = '';
+  @State rdpClientHostname: string = '';
   @State sheetErr: string = '';
   @State editingHostId: string = '';
   @State wallpaperIdx: number = 0;
@@ -930,6 +1017,7 @@ struct HostListPage {
   @State sshPreflightHostKeyInfo: SshHostKeyInfo | null = null;
   @State sshPreflightJumpHostLabel: string = '';
   @State sshPreflightJumpHostKeyInfo: SshHostKeyInfo | null = null;
+  @State sshPreflightAwaitingJumpTrust: boolean = false;
   @State sshPreflightError: string = '';
   @State sshPreflightPassphraseInput: string = '';
   @State sshPreflightProxyPassphraseInput: string = '';
@@ -937,6 +1025,7 @@ struct HostListPage {
   @State sshPreflightPassphraseSaveToHost: boolean = false;
   @State sshPreflightProxyPassphraseSaveToHost: boolean = false;
   @State sshPreflightPassphraseScope: string = 'target'; // target | proxy
+  private sshPreflightOperationId: number = 0;
   @State showRdpCertificatePreflight: boolean = false;
   @State rdpCertificateState: number = RdpCertificatePreflightState.PROBING;
   private rdpCertificateOpenedAt: number = 0;
@@ -961,8 +1050,22 @@ struct HostListPage {
   private rdpCertificateClosing: boolean = false;
   private rdpCertificateClosingHostId: string = '';
   private rdpCertificatePendingHostId: string = '';
+  private rdpCertificatePendingAttemptGeneration: number = 0;
+  private rdpCertificateOwnerScopeId: string = '';
   private rdpCertificateAttemptGeneration: number = 0;
   private rdpCertificateClosingAttemptGeneration: number = 0;
+  @State rdpSessionCredentialHostId: string = '';
+  @State rdpSessionCredentialHostLabel: string = '';
+  @State rdpSessionCredentialUsername: string = '';
+  @State rdpSessionCredentialPassword: string = '';
+  @State rdpSessionCredentialPasswordVisible: boolean = false;
+  @State rdpSessionCredentialError: string = '';
+  private rdpSessionCredentialRouteIdentity: string = '';
+  private rdpSessionCredentialOwnerScopeId: string = '';
+  private rdpSessionCredentialAccountGeneration: number = 0;
+  private rdpSessionCredentialAttemptGeneration: number = 0;
+  private rdpSessionCredentialRouteAfterClose: boolean = false;
+  private rdpSessionCredentialClosing: boolean = false;
   @State showVncCertificatePreflight: boolean = false;
   @State vncCertificateState: VncCertificatePreflightState = VncCertificatePreflightState.IDLE;
   @State vncCertificateHostId: string = '';
@@ -1094,8 +1197,9 @@ struct HostListPage {
   @StorageLink('rustdeskSwapMouseButtons') rustdeskSwapMouseButtons: boolean = false;
   @StorageLink('rustdeskTouchpadSpeed') rustdeskTouchpadSpeed: number = 1.0;
   @StorageLink('rustdeskControlMode') rustdeskControlMode: number = 0; // 0=触控板, 1=直接触控, 2=键鼠
-  @StorageLink('rdpDesktopPreset') rdpDesktopPreset: number = 1; // 0=自动, 1=1080p, 2=2K, 3=4K
-  @StorageLink('rdpDesktopResolutionId') rdpDesktopResolutionId: string = '1920x1080';
+  @StorageLink('rdpDesktopPreset') rdpDesktopPreset: number = 0; // 0=自动, 1=1080p, 2=2K, 3=4K
+  @StorageLink('rdpDesktopResolutionId') rdpDesktopResolutionId: string = 'auto';
+  @StorageLink('rdpRemoteUiScale') rdpRemoteUiScale: string = 'auto';
   @StorageLink('remoteDisplayScaleMode') remoteDisplayScaleMode: string = 'fit';
   @StorageLink('remoteDisplayCustomScalePercent') remoteDisplayCustomScalePercent: number = 100;
   @StorageLink(REMOTE_SESSION_CONTROL_BAR_HIDDEN_RDP_KEY)
@@ -1106,8 +1210,13 @@ struct HostListPage {
   sessionControlBarHiddenVnc: boolean = false;
   @StorageLink(REMOTE_SESSION_CONTROL_BAR_HIDDEN_MOONLIGHT_KEY)
   sessionControlBarHiddenMoonlight: boolean = false;
-  @State sessionControlBarProtocolPickerExpanded: boolean = false;
-  @StorageLink('canvasGestureZoomEnabled') canvasGestureZoomEnabled: boolean = false;
+  @StorageLink(REMOTE_SESSION_QUICK_EXIT_DISABLED_KEY)
+  remoteSessionQuickExitDisabled: boolean = false;
+  @StorageLink(RDP_PINCH_ZOOM_ENABLED_KEY) rdpPinchZoomEnabled: boolean = false;
+  @StorageLink(RUSTDESK_PINCH_ZOOM_ENABLED_KEY) rustdeskPinchZoomEnabled: boolean = false;
+  @StorageLink(SSH_PINCH_ZOOM_ENABLED_KEY) sshPinchZoomEnabled: boolean = true;
+  @StorageLink(VNC_PINCH_ZOOM_ENABLED_KEY) vncPinchZoomEnabled: boolean = false;
+  @StorageLink(MOONLIGHT_PINCH_ZOOM_ENABLED_KEY) moonlightPinchZoomEnabled: boolean = false;
   @StorageLink('rdpColorDepth') rdpColorDepth: number = 32;
   @StorageLink('rdpAudioEnabled') rdpAudioEnabled: boolean = true;
   @StorageLink('rdpClipboardEnabled') rdpClipboardEnabled: boolean = true;
@@ -1150,6 +1259,7 @@ struct HostListPage {
   @State selectedAccountId: string = '';
   @State selectedRdpCredentialId: string = '';
   @State sheetRdpAuthMode: RdpAuthMode = 'password';
+  @State sheetRdpCredentialStorageMode: RdpCredentialStorageMode = 'saved';
   @State sheetRdpRestrictedAdminSecretSource: RdpRestrictedAdminSecretSource = 'ntlm_hash';
   // This field is write-only. Existing Restricted Admin hashes are never displayed in the editor.
   @State sheetRdpRestrictedAdminHash: string = '';
@@ -1209,6 +1319,7 @@ struct HostListPage {
   @State cryptoResetCountdown: number = 0;
   @State secretPresentationPolicyJson: string = '';
   @State sshHostKeyBusyId: string = '';
+  private sshHostKeyOperationId: number = 0;
   @State sshTrustedHostsView: RemoteHost[] = [];
   @State rdpCertificateBusyId: string = '';
   @State rdpTrustedHostsView: RemoteHost[] = [];
@@ -1273,6 +1384,7 @@ struct HostListPage {
   private readonly sshWorkspaceCapabilityStore: SshWorkspaceCapabilityStore =
     new SshWorkspaceCapabilityStore();
   private readonly sshProxyProfiles: SshProxyProfileStore = new SshProxyProfileStore();
+  private sshProxyProfilesReady: boolean = false;
   private lightSensing: LightSensingService = LightSensingService.getInstance();
   @State showPassphraseSheet: boolean = false;
   private hlPassphraseResolve: ((v: string) => void) | null = null;
@@ -1291,6 +1403,7 @@ struct HostListPage {
   private sshPublicKeyInstallBindingInvalidated: boolean = false;
   @State sshPublicKeyInstallBusy: boolean = false;
   @State sshPublicKeyInstallError: string = '';
+  private sshPublicKeyInstallOperationId: number = 0;
 
   private finishHostPassphrasePrompt(value: string): void {
     if (this.hlPassphraseResolve) {
@@ -1369,6 +1482,13 @@ struct HostListPage {
 
   private onRemoteDesktopBgFlagChange(): void {
     if (this.appInBackground) {
+      SshOperationRouteSecretService.getInstance().clearAll();
+      RdpSessionCredentialHandoff.getInstance().clearAll();
+      this.loader.cancelAllRdpPreflightProbes();
+      this.rdpCertificateProbeGeneration = nextRdpCertificateProbeGeneration(
+        this.rdpCertificateProbeGeneration);
+      this.rdpSessionCredentialUsername = '';
+      this.rdpSessionCredentialPassword = '';
       if (this.pendingVncConnectHostId !== '') {
         this.clearPendingVncHandoffsForRecordId(
           this.pendingVncConnectHostId, this.pendingVncConnectUserId);
@@ -1786,7 +1906,7 @@ struct HostListPage {
     this.sshWorkbenchEnabled = this.sshWorkspaceCapabilityStore.load(
       getContext(this) as common.Context);
     this.refreshSshNotificationAuthorization();
-    this.sshProxyProfiles.init(getContext(this) as common.Context);
+    this.sshProxyProfilesReady = this.sshProxyProfiles.init(getContext(this) as common.Context);
     this.proSync.init(getContext(this) as common.Context);
     // 恢复 TOTP 隐私保护状态 (Preferences 持久化)
     try {
@@ -1813,7 +1933,9 @@ struct HostListPage {
         prefs.getSync('groupedHostCards', defaults.groupedHostCards) as boolean;
       const savedHostCardSensitiveInfoHidden: boolean =
         prefs.getSync(HOST_CARD_SENSITIVE_INFO_HIDDEN_KEY, false) as boolean;
-      const sessionControlBarVisibility: RemoteSessionControlBarVisibility =
+      const savedRemoteSessionQuickExitDisabled: boolean =
+        prefs.getSync(REMOTE_SESSION_QUICK_EXIT_DISABLED_KEY, false) as boolean;
+      const storedSessionControlBarVisibility: RemoteSessionControlBarVisibility =
         resolveRemoteSessionControlBarVisibility({
           rdpHidden: prefs.getSync(REMOTE_SESSION_CONTROL_BAR_HIDDEN_RDP_KEY, false) as boolean,
           rustDeskHidden:
@@ -1825,6 +1947,9 @@ struct HostListPage {
           rustDeskPresent: prefs.hasSync(REMOTE_SESSION_CONTROL_BAR_HIDDEN_RUSTDESK_KEY),
           vncPresent: prefs.hasSync(REMOTE_SESSION_CONTROL_BAR_HIDDEN_VNC_KEY)
         }, prefs.getSync(PC_SESSION_TOP_BAR_HIDDEN_KEY, false) as boolean);
+      const sessionControlBarVisibility: RemoteSessionControlBarVisibility =
+        protectRemoteSessionControlBarVisibility(
+          storedSessionControlBarVisibility, savedRemoteSessionQuickExitDisabled);
       const savedRustDeskPresenceDetection: boolean =
         prefs.getSync('rustdeskPresenceDetectionEnabled',
           defaults.rustdeskPresenceDetectionEnabled) as boolean;
@@ -1879,6 +2004,7 @@ struct HostListPage {
       this.sessionControlBarHiddenRustDesk = sessionControlBarVisibility.rustDeskHidden;
       this.sessionControlBarHiddenVnc = sessionControlBarVisibility.vncHidden;
       this.sessionControlBarHiddenMoonlight = sessionControlBarVisibility.moonlightHidden;
+      this.remoteSessionQuickExitDisabled = savedRemoteSessionQuickExitDisabled;
       AppStorage.setOrCreate(REMOTE_SESSION_CONTROL_BAR_HIDDEN_RDP_KEY,
         this.sessionControlBarHiddenRdp);
       AppStorage.setOrCreate(REMOTE_SESSION_CONTROL_BAR_HIDDEN_RUSTDESK_KEY,
@@ -1887,6 +2013,17 @@ struct HostListPage {
         this.sessionControlBarHiddenVnc);
       AppStorage.setOrCreate(REMOTE_SESSION_CONTROL_BAR_HIDDEN_MOONLIGHT_KEY,
         this.sessionControlBarHiddenMoonlight);
+      AppStorage.setOrCreate(REMOTE_SESSION_QUICK_EXIT_DISABLED_KEY,
+        this.remoteSessionQuickExitDisabled);
+      if (!prefs.hasSync(REMOTE_SESSION_QUICK_EXIT_DISABLED_KEY)) {
+        prefs.putSync(REMOTE_SESSION_QUICK_EXIT_DISABLED_KEY, false);
+      }
+      if (this.remoteSessionQuickExitDisabled) {
+        prefs.putSync(REMOTE_SESSION_CONTROL_BAR_HIDDEN_RDP_KEY, false);
+        prefs.putSync(REMOTE_SESSION_CONTROL_BAR_HIDDEN_RUSTDESK_KEY, false);
+        prefs.putSync(REMOTE_SESSION_CONTROL_BAR_HIDDEN_VNC_KEY, false);
+        prefs.putSync(REMOTE_SESSION_CONTROL_BAR_HIDDEN_MOONLIGHT_KEY, false);
+      }
       this.rustdeskPresenceDetectionEnabled = savedRustDeskPresenceDetection;
       AppStorage.setOrCreate('rustdeskPresenceDetectionEnabled', this.rustdeskPresenceDetectionEnabled);
       if (savedWallpaper !== '') { AppStorage.setOrCreate('wallpaperColor', savedWallpaper); }
@@ -1919,8 +2056,9 @@ struct HostListPage {
       const savedRustDeskTouchpadSpeed: number = prefs.getSync('rustdeskTouchpadSpeed', 1.0) as number;
       const savedControlMode: number =
         prefs.getSync('rustdeskControlMode', defaults.rustdeskControlMode) as number;
-      const savedRdpDesktopPreset: number = prefs.getSync('rdpDesktopPreset', 1) as number;
+      const savedRdpDesktopPreset: number = prefs.getSync('rdpDesktopPreset', 0) as number;
       const savedRdpDesktopResolutionId: string = prefs.getSync('rdpDesktopResolutionId', '') as string;
+      const savedRdpRemoteUiScale: string = prefs.getSync('rdpRemoteUiScale', 'auto') as string;
       const savedRemoteDisplayScaleMode: string = prefs.getSync('remoteDisplayScaleMode', '') as string;
       const remoteDisplayScalePreferenceVersion: number =
         prefs.getSync(REMOTE_DISPLAY_SCALE_PREFERENCE_VERSION_KEY, 0) as number;
@@ -1935,6 +2073,9 @@ struct HostListPage {
         prefs.hasSync('canvasGestureZoomEnabled'),
         defaults.canvasGestureZoomEnabled);
       const savedCanvasGestureZoomEnabled: boolean = canvasZoomPreference.enabled;
+      const savedRemotePinchZoomPreferences: RemotePinchZoomPreferences =
+        this.restoreRemotePinchZoomPreferences(prefs, savedCanvasGestureZoomEnabled,
+          savedRustDeskRemoteAppTouchScaleEnabled);
       const savedRdpColorDepth: number = prefs.getSync('rdpColorDepth', 32) as number;
       const savedRdpAudioEnabled: boolean = prefs.getSync('rdpAudioEnabled', true) as boolean;
       const savedRdpClipboardEnabled: boolean = prefs.getSync('rdpClipboardEnabled', true) as boolean;
@@ -2009,19 +2150,25 @@ struct HostListPage {
       this.sshReverseWheel = savedRemoteWheelPreferences.ssh;
       this.vncReverseWheel = savedRemoteWheelPreferences.vnc;
       this.moonlightReverseWheel = savedRemoteWheelPreferences.moonlight;
+      this.rdpPinchZoomEnabled = savedRemotePinchZoomPreferences.rdp;
+      this.rustdeskPinchZoomEnabled = savedRemotePinchZoomPreferences.rustdesk;
+      this.sshPinchZoomEnabled = savedRemotePinchZoomPreferences.ssh;
+      this.vncPinchZoomEnabled = savedRemotePinchZoomPreferences.vnc;
+      this.moonlightPinchZoomEnabled = savedRemotePinchZoomPreferences.moonlight;
       this.rustdeskSwapMouseButtons = savedRustDeskSwapMouseButtons;
       this.rustdeskTouchpadSpeed =
         Math.max(0.4, Math.min(2.2, savedRustDeskTouchpadSpeed > 0 ? savedRustDeskTouchpadSpeed : 1.0));
       this.rustdeskControlMode = this.clampRustDeskControlMode(savedControlMode);
-      this.rdpDesktopPreset = savedRdpDesktopPreset >= 0 && savedRdpDesktopPreset <= 3 ? savedRdpDesktopPreset : 1;
+      this.rdpDesktopPreset = savedRdpDesktopPreset >= 0 && savedRdpDesktopPreset <= 3 ? savedRdpDesktopPreset : 0;
       this.rdpDesktopResolutionId = normalizeRdpResolutionId(savedRdpDesktopResolutionId, this.rdpDesktopPreset);
       this.rdpDesktopPreset = legacyRdpPresetForResolutionId(this.rdpDesktopResolutionId);
+      this.rdpRemoteUiScale = normalizeRdpRemoteUiScalePreference(savedRdpRemoteUiScale);
       this.remoteDisplayScaleMode = resolveInitialRemoteDisplayScaleMode(savedRemoteDisplayScaleMode,
         remoteDisplayScalePreferenceVersion, prefs.hasSync('remoteDisplayScaleMode'));
       this.remoteDisplayCustomScalePercent = Math.max(50, Math.min(300,
         Number.isFinite(savedRemoteDisplayCustomScalePercent) ? savedRemoteDisplayCustomScalePercent : 100));
-      this.canvasGestureZoomEnabled = savedCanvasGestureZoomEnabled;
       prefs.putSync('rdpDesktopResolutionId', this.rdpDesktopResolutionId);
+      prefs.putSync('rdpRemoteUiScale', this.rdpRemoteUiScale);
       prefs.putSync('remoteDisplayScaleMode', this.remoteDisplayScaleMode);
       prefs.putSync(REMOTE_DISPLAY_SCALE_PREFERENCE_VERSION_KEY,
         REMOTE_DISPLAY_SCALE_PREFERENCE_VERSION);
@@ -2059,14 +2206,19 @@ struct HostListPage {
       AppStorage.setOrCreate(SSH_REVERSE_WHEEL_KEY, this.sshReverseWheel);
       AppStorage.setOrCreate(VNC_REVERSE_WHEEL_KEY, this.vncReverseWheel);
       AppStorage.setOrCreate(MOONLIGHT_REVERSE_WHEEL_KEY, this.moonlightReverseWheel);
+      AppStorage.setOrCreate(RDP_PINCH_ZOOM_ENABLED_KEY, this.rdpPinchZoomEnabled);
+      AppStorage.setOrCreate(RUSTDESK_PINCH_ZOOM_ENABLED_KEY, this.rustdeskPinchZoomEnabled);
+      AppStorage.setOrCreate(SSH_PINCH_ZOOM_ENABLED_KEY, this.sshPinchZoomEnabled);
+      AppStorage.setOrCreate(VNC_PINCH_ZOOM_ENABLED_KEY, this.vncPinchZoomEnabled);
+      AppStorage.setOrCreate(MOONLIGHT_PINCH_ZOOM_ENABLED_KEY, this.moonlightPinchZoomEnabled);
       AppStorage.setOrCreate('rustdeskSwapMouseButtons', this.rustdeskSwapMouseButtons);
       AppStorage.setOrCreate('rustdeskTouchpadSpeed', this.rustdeskTouchpadSpeed);
       AppStorage.setOrCreate('rustdeskControlMode', this.rustdeskControlMode);
       AppStorage.setOrCreate('rdpDesktopPreset', this.rdpDesktopPreset);
       AppStorage.setOrCreate('rdpDesktopResolutionId', this.rdpDesktopResolutionId);
+      AppStorage.setOrCreate('rdpRemoteUiScale', this.rdpRemoteUiScale);
       AppStorage.setOrCreate('remoteDisplayScaleMode', this.remoteDisplayScaleMode);
       AppStorage.setOrCreate('remoteDisplayCustomScalePercent', this.remoteDisplayCustomScalePercent);
-      AppStorage.setOrCreate('canvasGestureZoomEnabled', this.canvasGestureZoomEnabled);
       AppStorage.setOrCreate('rdpColorDepth', this.rdpColorDepth);
       AppStorage.setOrCreate('rdpAudioEnabled', this.rdpAudioEnabled);
       AppStorage.setOrCreate('rdpClipboardEnabled', this.rdpClipboardEnabled);
@@ -2431,6 +2583,10 @@ struct HostListPage {
     const requiresLocalRestrictedAdminHash: boolean = host.protocol === 'rdp' &&
       host.rdpAuthMode === 'restricted_admin' &&
       host.rdpRestrictedAdminSecretSource === 'ntlm_hash';
+    if (!this.srv.prepareHostNetworkEndpoints(host)) {
+      promptAction.showToast({ message: '主机地址无效，未保存凭据', duration: 2200 });
+      return;
+    }
     const rustDeskTotpEntryId: string = host.protocol === 'rustdesk' ?
       host.rustdeskTotpEntryId.trim() : '';
     const rustDeskTotpAutoSubmit: boolean = host.protocol === 'rustdesk' &&
@@ -2694,7 +2850,11 @@ struct HostListPage {
 
   private moonlightAddressLabel(host: MoonlightHost): string {
     const selected: MoonlightAddress | null = this.moonlightPreferredAddress(host);
-    return selected === null ? '未保存地址' : selected.host + ':' + selected.port.toString();
+    if (selected === null) { return '未保存地址'; }
+    const scope: string = selected.scope === undefined ? '' : selected.scope;
+    const scopedHost: string = selected.host + (scope === '' ? '' : '%' + scope);
+    return (selected.family === 'ipv6' ? '[' + scopedHost + ']' : scopedHost) +
+      ':' + selected.port.toString();
   }
 
   private moonlightPreferredAddress(host: MoonlightHost): MoonlightAddress | null {
@@ -2708,12 +2868,6 @@ struct HostListPage {
       }
     }
     return selected;
-  }
-
-  private moonlightAddressFamily(value: string): MoonlightAddressFamily {
-    const host: string = value.trim();
-    if (host.indexOf(':') >= 0) { return 'ipv6'; }
-    return /^\d{1,3}(\.\d{1,3}){3}$/.test(host) ? 'ipv4' : 'hostname';
   }
 
   private protectedMoonlightCardValue(host: MoonlightHost, visibleValue: string): string {
@@ -2786,7 +2940,8 @@ struct HostListPage {
     const preferred: MoonlightAddress | null = this.moonlightPreferredAddress(current.host);
     this.moonlightSheetHostId = hostId;
     this.moonlightEditName = current.host.displayName;
-    this.moonlightEditAddress = preferred === null ? '' : preferred.host;
+    this.moonlightEditAddress = preferred === null ? '' : preferred.host +
+      (preferred.scope === undefined ? '' : '%' + preferred.scope);
     this.moonlightEditPortText = preferred === null ? '47989' : preferred.port.toString();
     this.moonlightEditHttpsPortText = (current.host.httpsPort === undefined
       ? MOONLIGHT_DEFAULT_HTTPS_PORT : current.host.httpsPort).toString();
@@ -2835,11 +2990,13 @@ struct HostListPage {
     }
     const current: MoonlightHost = view.host;
     const previousPreferred: MoonlightAddress | null = this.moonlightPreferredAddress(current);
-    const preferred: MoonlightAddress = {
-      host: this.moonlightEditAddress.trim(),
-      family: this.moonlightAddressFamily(this.moonlightEditAddress),
-      port: port
-    };
+    const parsedAddress = parseMoonlightHostAddAddress(
+      this.moonlightEditAddress.trim(), port.toString());
+    if (!parsedAddress.ok) {
+      this.moonlightEditError = parsedAddress.errorText;
+      return;
+    }
+    const preferred: MoonlightAddress = parsedAddress.address;
     const addresses: MoonlightAddress[] = [];
     let replaced: boolean = false;
     for (let index: number = 0; index < current.addresses.length; index++) {
@@ -2849,7 +3006,10 @@ struct HostListPage {
         addresses.push(preferred);
         replaced = true;
       } else {
-        addresses.push({ host: address.host, family: address.family, port: address.port });
+        addresses.push({
+          host: address.host, family: address.family, port: address.port,
+          scope: address.scope
+        });
       }
     }
     if (!replaced) { addresses.push(preferred); }
@@ -3167,36 +3327,17 @@ struct HostListPage {
         !this.moonlightDiscoveryRunning) {
       return;
     }
-    const hostText: string = candidate.family === 'ipv6' ?
-      '[' + candidate.host + ']' : candidate.host;
-    const parsed = parseMoonlightHostAddAddress(hostText, candidate.port.toString());
-    if (!parsed.ok) { return; }
-    const serverUuid: string = candidate.serverUuid.trim() !== '' ?
-      candidate.serverUuid.trim() : parsed.canonical;
-    const nextCandidate: MoonlightHostAddCandidate = {
-      serverUuid: serverUuid,
-      displayName: candidate.serviceName.trim() || parsed.address.host,
-      address: parsed.address,
-      paired: false,
-      reachable: true,
-      lastSeenAt: Date.now()
+    const route: MoonlightHostAddLanCandidate = {
+      serviceKey: candidate.serviceKey,
+      serviceName: candidate.serviceName,
+      serverUuid: candidate.serverUuid,
+      host: candidate.host,
+      family: candidate.family,
+      scope: candidate.scope,
+      port: candidate.port
     };
-    const next: MoonlightHostAddCandidate[] = this.moonlightLanCandidates.slice();
-    let replaceIndex: number = -1;
-    for (let index = 0; index < next.length; index++) {
-      if (next[index].serverUuid === serverUuid ||
-          next[index].address.host === parsed.address.host &&
-          next[index].address.port === parsed.address.port) {
-        replaceIndex = index;
-        break;
-      }
-    }
-    if (replaceIndex >= 0) {
-      next[replaceIndex] = nextCandidate;
-    } else if (next.length < 32) {
-      next.push(nextCandidate);
-    }
-    this.moonlightLanCandidates = next;
+    this.moonlightLanCandidates = mergeMoonlightHostAddLanCandidate(
+      this.moonlightLanCandidates, route, Date.now());
   }
 
   private startMoonlightLanDiscovery(key: MoonlightHostAddDiscoveryKey): void {
@@ -3365,8 +3506,6 @@ struct HostListPage {
         pinnedTrustAvailable && !/^[0-9a-f]{64}$/.test(fingerprint)) {
       return null;
     }
-    const family: 'unspecified' | 'ipv4' | 'ipv6' = verification.address.family === 'ipv4' ?
-      'ipv4' : verification.address.family === 'ipv6' ? 'ipv6' : 'unspecified';
     const context: MoonlightHostContext = {
       lease: lease,
       ownerScopeFingerprint: moonlightOwnerScopeFingerprint(lease.ownerScopeId),
@@ -3376,8 +3515,9 @@ struct HostListPage {
       serverUuid: verification.serverUuid,
       installationId: moonlightInstallationId(lease.storeIdentity),
       endpoint: {
-        serverName: verification.serverName.trim() || verification.address.host,
-        addresses: [{ value: verification.address.host, family: family }],
+        serverName: moonlightHostAddServerIdentity(verification.address),
+        addresses: moonlightHostAddNativeAddresses(
+          verification.address, verification.candidateAddresses),
         httpPort: verification.address.port,
         httpsPort: verification.httpsPort === undefined ? MOONLIGHT_DEFAULT_HTTPS_PORT :
           verification.httpsPort,
@@ -3482,23 +3622,12 @@ struct HostListPage {
         errorText: '主机未完成配对（' + result.code + '）'
       };
     }
-    this.moonlightActiveVerification = {
-      serverUuid: verification.serverUuid,
-      serverName: verification.serverName,
-      hostType: verification.hostType,
-      version: verification.version,
-      address: {
-        host: verification.address.host,
-        family: verification.address.family,
-        port: verification.address.port
-      },
-      httpsPort: verification.httpsPort,
-      paired: true,
-      fingerprintSha256: fingerprint,
-      certificateChanged: false,
-      udpVerified: verification.udpVerified,
-      duplicateHostId: verification.duplicateHostId
-    };
+    const pairedVerification: MoonlightHostAddVerification =
+      cloneMoonlightHostAddVerification(verification);
+    pairedVerification.paired = true;
+    pairedVerification.fingerprintSha256 = fingerprint;
+    pairedVerification.certificateChanged = false;
+    this.moonlightActiveVerification = pairedVerification;
     return {
       paired: true,
       certificateSha256: fingerprint,
@@ -3509,6 +3638,7 @@ struct HostListPage {
   private async moonlightVerifyHost(
     address: MoonlightAddress,
     selectedServerUuid: string,
+    candidateAddresses: MoonlightAddress[],
     key: MoonlightHostAddOperationKey
   ): Promise<MoonlightHostAddVerification | null> {
     if (!this.pageActive || key.ownerToken !== this.moonlightAddOwnerToken ||
@@ -3543,20 +3673,24 @@ struct HostListPage {
     if (requestedFence === null) { return null; }
     this.clearMoonlightVerificationState();
     this.moonlightPendingVerificationFence = requestedFence;
-    const verification: MoonlightHostAddVerification | null =
+    const probedVerification: MoonlightHostAddVerification | null =
       await this.moonlightLanProbeService.verify(address, verificationUuidHint);
-    if (verification === null || !this.pageActive ||
+    if (probedVerification === null || !this.pageActive ||
         !store.isLeaseCurrent(capturedLease) ||
         key.ownerToken !== this.moonlightAddOwnerToken ||
         !moonlightHostOperationFenceEquals(
           this.moonlightPendingVerificationFence, requestedFence) ||
-        !moonlightVerificationMatchesFence(verification, requestedFence)) {
+        !moonlightVerificationMatchesFence(probedVerification, requestedFence)) {
       if (moonlightHostOperationFenceEquals(
         this.moonlightPendingVerificationFence, requestedFence)) {
         this.moonlightPendingVerificationFence = null;
       }
       return null;
     }
+    const verification: MoonlightHostAddVerification =
+      cloneMoonlightHostAddVerification(probedVerification);
+    verification.candidateAddresses = moonlightMergeCandidateAddresses(
+      verification.address, candidateAddresses);
     const activeFence: MoonlightHostOperationFence | null =
       createMoonlightHostOperationFence(
         key.ownerToken, key.generation,
@@ -4732,10 +4866,10 @@ struct HostListPage {
       return 520;
     }
     if (section === SETTINGS_SECTION_DISPLAY_INTERACTION) {
-      return 1040;
+      return 1110;
     }
     if (section === SETTINGS_SECTION_VIRTUAL_KEYBOARD) {
-      return 390;
+      return 470;
     }
     if (section === SETTINGS_SECTION_RDP) {
       return settingsRdpExpandedMaxHeight(this.breakpoint, SETTINGS_RDP_SWITCH_ROW_COUNT);
@@ -5022,6 +5156,17 @@ struct HostListPage {
     this.moonlightLanCandidates = [];
     this.moonlightAddOwnerToken += 1;
     this.invalidateMoonlightCatalogHandoff();
+    this.cancelRustDeskPresenceProbes();
+    this.cancelSshPresenceOperations();
+    this.cancelSshPreflightOperation();
+    if (this.sshHostKeyOperationId > 0) {
+      this.loader.cancelSshOperation(this.sshHostKeyOperationId);
+      this.sshHostKeyOperationId = 0;
+    }
+    if (this.sshPublicKeyInstallOperationId > 0) {
+      this.loader.cancelSshOperation(this.sshPublicKeyInstallOperationId);
+      this.sshPublicKeyInstallOperationId = 0;
+    }
     this.hostPresencePageGeneration += 1;
     this.hostLoadRefreshPresence = false;
     if (this.hostLoadRefreshTimer !== -1) {
@@ -6010,7 +6155,7 @@ struct HostListPage {
 
   private beginConnectionAttempt(hostId: string): number {
     if (!shouldBeginConnectionAttempt(this.connectionAttemptHostId)) { return 0; }
-    const generation: number = nextConnectionAttemptGeneration(this.connectionAttemptGeneration);
+    const generation: number = allocateConnectionAttemptGeneration();
     this.connectionAttemptGeneration = generation;
     this.connectionAttemptHostId = hostId;
     return generation;
@@ -6038,6 +6183,26 @@ struct HostListPage {
     this.releaseConnectionAttempt(hostId);
   }
 
+  private abortRdpSessionDestination(hostId: string,
+    credentialOwnerScopeId: string, connectionAttemptGeneration: number,
+    reason: string): void {
+    const id: string = hostId.trim();
+    if (id === '') { return; }
+    const host: RemoteHost | undefined = this.srv.getHost(id);
+    const scope = AccountSessionCoordinator.getInstance().currentScope();
+    const capturedOwnerId: string = credentialOwnerScopeId.trim();
+    const ownerId: string = capturedOwnerId !== '' ? capturedOwnerId :
+      (host === undefined ? scope.ownerScopeId.trim() : host.userId.trim());
+    if (ownerId !== '') {
+      RdpSessionCredentialHandoff.getInstance().clearIfMatches(
+        ownerId, id, connectionAttemptGeneration);
+    }
+    this.releaseConnectionAttemptIfCurrent(id, connectionAttemptGeneration);
+    hilog.info(0x0001, 'HostList',
+      'RDP session destination aborted reason=' + reason +
+      ' hostIdHash=' + hashForLog(id));
+  }
+
   /**
    * PC/2-in-1 sessions are independent multiton abilities. Phone and tablet
    * keep the existing in-app router flow. Desktop must never silently fall
@@ -6046,8 +6211,26 @@ struct HostListPage {
    */
   private openSessionDestination(url: string, params: Record<string, Object>,
     authorizationKind: RemoteSessionWindowAuthorizationKind): void {
+    const rawRdpAttemptGeneration: Object | undefined =
+      params['rdpConnectionAttemptGeneration'];
+    const rdpAttemptGeneration: number = typeof rawRdpAttemptGeneration === 'number' &&
+      Number.isSafeInteger(rawRdpAttemptGeneration) && rawRdpAttemptGeneration > 0
+      ? rawRdpAttemptGeneration : 0;
+    const rdpCredentialOwnerScopeId: string =
+      ((params['rdpCredentialOwnerScopeId'] as string) || '').trim();
     if (!this.isDesktopDevice) {
-      void router.pushUrl({ url, params });
+      const routeHostId: string = ((params['hostId'] as string) || '').trim();
+      void router.pushUrl({ url, params }).catch((_err: Error): void => {
+        if (url === 'pages/RemoteDesktop' && routeHostId !== '') {
+          const routeHost: RemoteHost | undefined = this.srv.getHost(routeHostId);
+          if (routeHost === undefined || routeHost.protocol === 'rdp') {
+            this.abortRdpSessionDestination(
+              routeHostId, rdpCredentialOwnerScopeId,
+              rdpAttemptGeneration, 'router-push-failed');
+          }
+        }
+        promptAction.showToast({ message: '无法打开远程会话', duration: 2200 });
+      });
       return;
     }
     let target: RemoteSessionWindowTarget;
@@ -6093,6 +6276,11 @@ struct HostListPage {
       routeParams['pcWindowAfterAuthentication'] = true;
       routeParams['pcWindowPreflightKind'] = authorizationKind;
       void router.pushUrl({ url, params: routeParams }).catch((_err: Error): void => {
+        if (protocol === 'rdp') {
+          this.abortRdpSessionDestination(
+            hostId, rdpCredentialOwnerScopeId,
+            rdpAttemptGeneration, 'pc-auth-route-push-failed');
+        }
         promptAction.showToast({ message: '无法打开原鉴权流程，未创建会话窗口', duration: 2200 });
       });
       return;
@@ -6284,11 +6472,11 @@ struct HostListPage {
       promptAction.showToast({ message: '已有连接请求正在处理，请等待当前弹窗结束', duration: 1800 });
       return;
     }
-    if (lanHostUsesLocalOnlyStorage(host)) {
+    if (lanHostUsesDynamicAddressStorage(host)) {
       promptAction.showToast({ message: '正在刷新局域网动态地址…', duration: 1200 });
       await this.refreshDynamicLanHosts(true, host.id);
       const refreshed: RemoteHost | undefined = this.srv.getHost(host.id);
-      if (refreshed !== undefined && lanHostUsesLocalOnlyStorage(refreshed)) {
+      if (refreshed !== undefined && lanHostUsesDynamicAddressStorage(refreshed)) {
         host = refreshed.runtimeClone();
       }
       if (protocolNeedsArbitration &&
@@ -6342,22 +6530,19 @@ struct HostListPage {
           });
           return;
         }
-        // The legacy preflight API can only authenticate a single flat hop.
-        // Credential-bearing profiles are handed to the terminal's one-shot
-        // broker, where all ordered hops and dynamic MFA prompts are retained.
-        if (proxyPlan.route.type === 'ssh_jump' ||
-          sshProxyRuntimeNeedsTerminalSecrets(proxyPlan)) {
-          const sshParams: Record<string, Object> = {};
-          sshParams['hostId'] = host.id;
-          sshParams['authenticated'] = true;
-          this.openSessionDestination('pages/SshTerminal', sshParams, 'ssh_broker_handoff');
-          return;
-        }
+        // A durable profile is authoritative for every route kind. The
+        // terminal owns the native pre-auth host-key broker and can therefore
+        // verify the exact canonical path without falling back to flat fields.
+        const sshParams: Record<string, Object> = {};
+        sshParams['hostId'] = host.id;
+        sshParams['authenticated'] = true;
+        this.openSessionDestination('pages/SshTerminal', sshParams, 'ssh_broker_handoff');
+        return;
       }
       // T-210: SSH 前置校验 (指纹 + 私钥密码) → 通过后才路由
       this.openSshPreflight(host);
     } else if (host.protocol === 'rdp') {
-      this.openRdpCertificatePreflight(host);
+      this.prepareRdpCredentialOrCertificate(host, connectionGeneration);
     } else if (host.protocol === 'rustdesk') {
       const relay: RustDeskRelayConfig | undefined = host.rustdeskDirectEnabled ? undefined :
         this.srv.getAllRelays().find((item: RustDeskRelayConfig): boolean => item.id === host.rustdeskRelayId);
@@ -6411,22 +6596,200 @@ struct HostListPage {
     }
   }
 
-  private openRdpCertificatePreflight(host: RemoteHost): void {
+  private prepareRdpCredentialOrCertificate(host: RemoteHost,
+    attemptGeneration: number): void {
+    const storageMode: RdpCredentialStorageMode = normalizeRdpCredentialStorageMode(
+      host.rdpCredentialStorageMode);
+    if (normalizeRdpAuthMode(host.rdpAuthMode) !== 'password' ||
+      storageMode !== 'connect_time') {
+      this.openRdpCertificatePreflight(host, attemptGeneration);
+      return;
+    }
+    const scope = AccountSessionCoordinator.getInstance().currentScope();
+    const routeIdentity: string = rdpRouteIdentity(host);
+    if (!this.pageActive || this.appInBackground || host.userId.trim() === '' ||
+      scope.ownerScopeId.trim() !== host.userId.trim() || scope.generation <= 0 ||
+      routeIdentity.trim() === '' ||
+      !this.isCurrentConnectionAttempt(host.id, attemptGeneration)) {
+      RdpSessionCredentialHandoff.getInstance().clear(host.userId, host.id);
+      this.releaseConnectionAttemptIfCurrent(host.id, attemptGeneration);
+      promptAction.showToast({
+        message: 'RDP 主机或账号状态已变化，连接已停止', duration: 2200
+      });
+      return;
+    }
+    RdpSessionCredentialHandoff.getInstance().clear(host.userId, host.id);
+    this.rdpSessionCredentialHostId = host.id;
+    this.rdpSessionCredentialHostLabel = host.label;
+    this.rdpSessionCredentialUsername = '';
+    this.rdpSessionCredentialPassword = '';
+    this.rdpSessionCredentialPasswordVisible = false;
+    this.rdpSessionCredentialError = '';
+    this.rdpSessionCredentialRouteIdentity = routeIdentity;
+    this.rdpSessionCredentialOwnerScopeId = scope.ownerScopeId.trim();
+    this.rdpSessionCredentialAccountGeneration = scope.generation;
+    this.rdpSessionCredentialAttemptGeneration = attemptGeneration;
+    this.rdpSessionCredentialRouteAfterClose = false;
+    this.rdpSessionCredentialClosing = false;
+    this.openSheetSafely((): void => {
+      this.openRemoteHostSheet(REMOTE_HOST_SHEET_RDP_CREDENTIAL, (): void => {});
+    }, true);
+  }
+
+  private rdpSessionCredentialBindingIsCurrent(host: RemoteHost): boolean {
+    const scope = AccountSessionCoordinator.getInstance().currentScope();
+    const liveHost: RemoteHost | undefined = this.srv.getHost(host.id);
+    return liveHost !== undefined && liveHost.userId.trim() === host.userId.trim() &&
+      normalizeRdpAuthMode(liveHost.rdpAuthMode) === 'password' &&
+      normalizeRdpCredentialStorageMode(liveHost.rdpCredentialStorageMode) === 'connect_time' &&
+      rdpRouteIdentity(liveHost) === this.rdpSessionCredentialRouteIdentity &&
+      scope.ownerScopeId.trim() === this.rdpSessionCredentialOwnerScopeId &&
+      scope.ownerScopeId.trim() === liveHost.userId.trim() &&
+      scope.generation === this.rdpSessionCredentialAccountGeneration &&
+      this.isCurrentConnectionAttempt(host.id, this.rdpSessionCredentialAttemptGeneration);
+  }
+
+  private confirmRdpSessionCredential(): void {
+    const host: RemoteHost | undefined = this.srv.getHost(this.rdpSessionCredentialHostId);
+    if (host === undefined || !this.rdpSessionCredentialBindingIsCurrent(host)) {
+      this.rdpSessionCredentialError = 'RDP 路由或账号状态已变化，请取消后重新连接。';
+      return;
+    }
+    const username: string = this.rdpSessionCredentialUsername.trim();
+    if (username === '') {
+      this.rdpSessionCredentialError = '请输入 Windows 账号。';
+      return;
+    }
+    if (this.rdpSessionCredentialPassword === '') {
+      this.rdpSessionCredentialError = '请输入 Windows 密码；空密码账户请在主机中选择对应认证方式。';
+      return;
+    }
+    if (!RdpSessionCredentialHandoff.getInstance().put(
+      host.userId, host.id, username, this.rdpSessionCredentialPassword,
+      this.rdpSessionCredentialRouteIdentity, this.rdpSessionCredentialOwnerScopeId,
+      this.rdpSessionCredentialAccountGeneration,
+      this.rdpSessionCredentialAttemptGeneration)) {
+      this.rdpSessionCredentialError = 'RDP 一次性凭据交接失败，请重试。';
+      return;
+    }
+    this.rdpSessionCredentialUsername = '';
+    this.rdpSessionCredentialPassword = '';
+    this.rdpSessionCredentialRouteAfterClose = true;
+    this.rdpSessionCredentialClosing = true;
+    this.beginRemoteHostSheetClose(REMOTE_HOST_SHEET_RDP_CREDENTIAL);
+    this.showRemoteHostSheet = false;
+  }
+
+  private cancelRdpSessionCredential(closeSheet: boolean = true): void {
+    if (this.rdpSessionCredentialClosing) { return; }
+    const host: RemoteHost | undefined = this.srv.getHost(this.rdpSessionCredentialHostId);
+    const ownerScopeId: string = host === undefined ?
+      this.rdpSessionCredentialOwnerScopeId : host.userId;
+    if (ownerScopeId !== '' && this.rdpSessionCredentialHostId !== '') {
+      RdpSessionCredentialHandoff.getInstance().clearIfMatches(
+        ownerScopeId, this.rdpSessionCredentialHostId,
+        this.rdpSessionCredentialAttemptGeneration);
+    }
+    this.rdpSessionCredentialUsername = '';
+    this.rdpSessionCredentialPassword = '';
+    this.rdpSessionCredentialRouteAfterClose = false;
+    this.rdpSessionCredentialClosing = true;
+    this.beginRemoteHostSheetClose(REMOTE_HOST_SHEET_RDP_CREDENTIAL);
+    if (closeSheet) { this.showRemoteHostSheet = false; }
+  }
+
+  private handleRdpSessionCredentialDisappear(): void {
+    const hostId: string = this.rdpSessionCredentialHostId;
+    const attemptGeneration: number = this.rdpSessionCredentialAttemptGeneration;
+    const routeIdentity: string = this.rdpSessionCredentialRouteIdentity;
+    const ownerScopeId: string = this.rdpSessionCredentialOwnerScopeId;
+    const accountGeneration: number = this.rdpSessionCredentialAccountGeneration;
+    const shouldContinue: boolean = this.rdpSessionCredentialRouteAfterClose;
+    const host: RemoteHost | undefined = this.srv.getHost(hostId);
+    this.rdpSessionCredentialHostId = '';
+    this.rdpSessionCredentialHostLabel = '';
+    this.rdpSessionCredentialUsername = '';
+    this.rdpSessionCredentialPassword = '';
+    this.rdpSessionCredentialPasswordVisible = false;
+    this.rdpSessionCredentialError = '';
+    this.rdpSessionCredentialRouteIdentity = '';
+    this.rdpSessionCredentialOwnerScopeId = '';
+    this.rdpSessionCredentialAccountGeneration = 0;
+    this.rdpSessionCredentialAttemptGeneration = 0;
+    this.rdpSessionCredentialRouteAfterClose = false;
+    this.rdpSessionCredentialClosing = false;
+    this.noteSheetDismissed();
+    const scope = AccountSessionCoordinator.getInstance().currentScope();
+    const decisionAvailable: boolean = host !== undefined &&
+      RdpSessionCredentialHandoff.getInstance().hasDecision(
+        host.userId, host.id, routeIdentity, ownerScopeId, accountGeneration,
+        attemptGeneration);
+    const bindingCurrent: boolean = shouldContinue && host !== undefined && decisionAvailable &&
+      this.pageActive && !this.appInBackground &&
+      normalizeRdpAuthMode(host.rdpAuthMode) === 'password' &&
+      normalizeRdpCredentialStorageMode(host.rdpCredentialStorageMode) === 'connect_time' &&
+      rdpRouteIdentity(host) === routeIdentity &&
+      scope.ownerScopeId.trim() === ownerScopeId && scope.generation === accountGeneration &&
+      this.isCurrentConnectionAttempt(hostId, attemptGeneration);
+    if (!bindingCurrent) {
+      if (ownerScopeId !== '' && hostId !== '') {
+        RdpSessionCredentialHandoff.getInstance().clearIfMatches(
+          ownerScopeId, hostId, attemptGeneration);
+      }
+      this.releaseConnectionAttemptIfCurrent(hostId, attemptGeneration);
+      if (shouldContinue) {
+        promptAction.showToast({
+          message: 'RDP 一次性凭据已失效，请重新连接', duration: 2200
+        });
+      }
+      return;
+    }
+    setTimeout((): void => {
+      const liveHost: RemoteHost | undefined = this.srv.getHost(hostId);
+      if (liveHost === undefined || !this.pageActive || this.appInBackground ||
+        !this.isCurrentConnectionAttempt(hostId, attemptGeneration) ||
+        rdpRouteIdentity(liveHost) !== routeIdentity) {
+        RdpSessionCredentialHandoff.getInstance().clearIfMatches(
+          host?.userId || ownerScopeId, hostId, attemptGeneration);
+        this.releaseConnectionAttemptIfCurrent(hostId, attemptGeneration);
+        return;
+      }
+      this.openRdpCertificatePreflight(liveHost, attemptGeneration);
+    }, 0);
+  }
+
+  private openRdpCertificatePreflight(host: RemoteHost,
+    attemptGeneration: number): void {
+    if (!this.isCurrentConnectionAttempt(host.id, attemptGeneration)) {
+      RdpSessionCredentialHandoff.getInstance().clearIfMatches(
+        host.userId, host.id, attemptGeneration);
+      return;
+    }
     if (this.rdpCertificateClosing || this.showRdpCertificatePreflight ||
       this.remoteHostSheetClosing || this.showRemoteHostSheet) {
       // connectToHost 已经为该主机占住了连接尝试；等旧 Sheet 的 onDisappear
       // 完成后再打开，避免旧退出动画和新 builder 同时存在。
       this.rdpCertificatePendingHostId = host.id;
+      this.rdpCertificatePendingAttemptGeneration = attemptGeneration;
       hilog.info(0x0001, 'HostList', 'RDP certificate preflight queued until previous Sheet disappears host=' +
         host.id);
       return;
     }
+    if (!this.renewRdpSessionCredentialForHost(host, attemptGeneration)) {
+      this.releaseConnectionAttemptIfCurrent(host.id, attemptGeneration);
+      promptAction.showToast({
+        message: 'RDP 一次性凭据已失效，请重新连接', duration: 2200
+      });
+      return;
+    }
     const generation: number = nextRdpCertificateProbeGeneration(this.rdpCertificateProbeGeneration);
     this.rdpCertificateProbeGeneration = generation;
-    this.rdpCertificateAttemptGeneration = this.connectionAttemptGeneration;
+    this.rdpCertificateAttemptGeneration = attemptGeneration;
     this.rdpCertificatePendingHostId = '';
+    this.rdpCertificatePendingAttemptGeneration = 0;
     this.rdpCertificateOpenedAt = Date.now();
     this.rdpCertificateHostId = host.id;
+    this.rdpCertificateOwnerScopeId = host.userId;
     this.rdpCertificateHostLabel = host.host;
     this.rdpCertificateState = RdpCertificatePreflightState.PROBING;
     this.rdpCertificateWarning = '';
@@ -6481,7 +6844,21 @@ struct HostListPage {
     const authMode: RdpAuthMode = normalizeRdpAuthMode(host.rdpAuthMode);
     let username: string = host.username;
     let password: string = authMode === 'password' ? host.password : '';
-    if (authMode === 'password' && host.rdpCredentialId.trim() !== '') {
+    if (authMode === 'password' && normalizeRdpCredentialStorageMode(
+      host.rdpCredentialStorageMode) === 'connect_time') {
+      const scope = AccountSessionCoordinator.getInstance().currentScope();
+      const decision: RdpSessionCredentialDecision | null =
+        RdpSessionCredentialHandoff.getInstance().peekDecision(
+          host.userId, host.id, rdpRouteIdentity(host), scope.ownerScopeId,
+          scope.generation, this.rdpCertificateAttemptGeneration);
+      if (decision === null) {
+        username = '';
+        password = '';
+      } else {
+        username = decision.username;
+        password = decision.password;
+      }
+    } else if (authMode === 'password' && host.rdpCredentialId.trim() !== '') {
       const credential: RdpCredential | undefined = this.srv.getRdpCredential(
         host.rdpCredentialId.trim());
       if (credential === undefined) {
@@ -6523,15 +6900,23 @@ struct HostListPage {
       this.rdpGatewayPreflightOneTimeFingerprint.length > 0 &&
       rdpCertificateRouteIsCurrent(
         this.rdpGatewayPreflightOneTimeRouteIdentity, routeIdentity);
+    const targetEndpoint: EndpointAddressResult =
+      parseEndpointFields(host.host, host.port, 'persisted');
+    const gatewayEndpoint: EndpointAddressResult | null = host.gatewayHost === '' ? null :
+      parseEndpointFields(host.gatewayHost, host.gatewayPort > 0 ? host.gatewayPort : 443, 'persisted');
+    const targetDefaultIdentity: string = targetEndpoint.ok ?
+      targetEndpoint.endpoint.canonicalHost : host.host;
+    const gatewayDefaultIdentity: string = gatewayEndpoint !== null && gatewayEndpoint.ok ?
+      gatewayEndpoint.endpoint.canonicalHost : host.gatewayHost;
     return {
       route: {
         endpointMode: mode,
         targetHost: host.host,
         targetPort: host.port,
-        targetServerName: host.customHostname || host.host,
+        targetServerName: host.customHostname || targetDefaultIdentity,
         gatewayHost: host.gatewayHost,
         gatewayPort: host.gatewayPort > 0 ? host.gatewayPort : 443,
-        gatewayServerName: host.rdpGatewayServerName || host.gatewayHost,
+        gatewayServerName: host.rdpGatewayServerName || gatewayDefaultIdentity,
         gatewayTransport: (host.rdpGatewayTransport || 'auto') as
           'auto' | 'http' | 'rpc' | 'websocket' | 'no-websockets'
       },
@@ -6684,6 +7069,16 @@ struct HostListPage {
       return;
     }
     const hostId: string = this.rdpCertificateHostId;
+    const host: RemoteHost | undefined = this.srv.getHost(hostId);
+    const ownerScopeId: string = host === undefined ?
+      this.rdpCertificateOwnerScopeId : host.userId;
+    if (ownerScopeId !== '' && hostId !== '' &&
+      (host === undefined || normalizeRdpCredentialStorageMode(
+        host.rdpCredentialStorageMode) === 'connect_time')) {
+      RdpSessionCredentialHandoff.getInstance().clearIfMatches(
+        ownerScopeId, hostId, this.rdpCertificateAttemptGeneration);
+    }
+    this.loader.cancelAllRdpPreflightProbes();
     this.rdpCertificateProbeGeneration = nextRdpCertificateProbeGeneration(
       this.rdpCertificateProbeGeneration
     );
@@ -6714,13 +7109,16 @@ struct HostListPage {
       ? this.rdpCertificateClosingAttemptGeneration : this.rdpCertificateAttemptGeneration;
     const params: Record<string, Object> | null = this.rdpCertificatePendingRouteParams;
     const nextHostId: string = this.rdpCertificatePendingHostId;
+    const nextAttemptGeneration: number = this.rdpCertificatePendingAttemptGeneration;
     this.rdpCertificatePendingRouteParams = null;
     this.rdpCertificatePendingHostId = '';
+    this.rdpCertificatePendingAttemptGeneration = 0;
     this.rdpCertificateClosingHostId = '';
     this.rdpCertificateClosingAttemptGeneration = 0;
     this.rdpCertificateClosing = false;
     this.showRdpCertificatePreflight = false;
     this.rdpCertificateHostId = '';
+    this.rdpCertificateOwnerScopeId = '';
     this.rdpCertificateHostLabel = '';
     this.rdpCertificateInfo = null;
     this.rdpGatewayCertificateInfo = null;
@@ -6756,7 +7154,7 @@ struct HostListPage {
       this.releaseConnectionAttempt(nextHostId);
       return;
     }
-    const queuedAttemptGeneration: number = this.connectionAttemptGeneration;
+    const queuedAttemptGeneration: number = nextAttemptGeneration;
     const reopen: () => void = (): void => {
       if (this.connectionAttemptGeneration !== queuedAttemptGeneration ||
         this.connectionAttemptHostId !== nextHostId) {
@@ -6764,7 +7162,7 @@ struct HostListPage {
       }
       const queuedHost: RemoteHost | undefined = this.srv.getHost(nextHostId);
       if (queuedHost) {
-        this.openRdpCertificatePreflight(queuedHost);
+        this.openRdpCertificatePreflight(queuedHost, queuedAttemptGeneration);
       } else {
         this.releaseConnectionAttempt(nextHostId);
       }
@@ -6811,6 +7209,16 @@ struct HostListPage {
     const liveHost: RemoteHost | undefined = this.srv.getHost(host.id);
     if (liveHost === undefined || rdpRouteIdentity(liveHost) !== rdpRouteIdentity(host)) {
       return false;
+    }
+    if (normalizeRdpAuthMode(liveHost.rdpAuthMode) === 'password' &&
+      normalizeRdpCredentialStorageMode(liveHost.rdpCredentialStorageMode) === 'connect_time') {
+      const scope = AccountSessionCoordinator.getInstance().currentScope();
+      if (!RdpSessionCredentialHandoff.getInstance().hasDecision(
+        liveHost.userId, liveHost.id, rdpRouteIdentity(liveHost),
+        scope.ownerScopeId, scope.generation,
+        this.rdpCertificateAttemptGeneration)) {
+        return false;
+      }
     }
     const resultRoute: string = resultRouteIdentity.trim();
     return resultRoute.length === 0 || rdpCertificateRouteIsCurrent(
@@ -6869,6 +7277,11 @@ struct HostListPage {
     )) {
       return;
     }
+    if (normalizeRdpCredentialStorageMode(
+      host.rdpCredentialStorageMode) === 'connect_time') {
+      RdpSessionCredentialHandoff.getInstance().clearIfMatches(
+        host.userId, host.id, this.rdpCertificateAttemptGeneration);
+    }
     if (this.srv.getHost(host.id) !== undefined) {
       this.rejectStaleRdpCertificateResult();
     }
@@ -6879,6 +7292,41 @@ struct HostListPage {
     this.rdpCertificateErrorStage = 'endpoint';
     this.rdpCertificateErrorCode = 'E-RDP-CERT-ROUTE-STALE';
     this.rdpCertificateError = 'RDP 路由在证书检查期间发生变化，请重新进行证书检查 [E-RDP-CERT-ROUTE-STALE]';
+    if (!this.showRdpCertificatePreflight) {
+      this.openSheetSafely((): void => {
+        this.openRemoteHostSheet(REMOTE_HOST_SHEET_RDP_CERTIFICATE, (): void => {
+          this.showRdpCertificatePreflight = true;
+        });
+      }, true);
+    }
+  }
+
+  private renewRdpSessionCredentialForHost(host: RemoteHost,
+    attemptGeneration: number = this.rdpCertificateAttemptGeneration): boolean {
+    if (normalizeRdpAuthMode(host.rdpAuthMode) !== 'password' ||
+      normalizeRdpCredentialStorageMode(host.rdpCredentialStorageMode) !== 'connect_time') {
+      return true;
+    }
+    const liveHost: RemoteHost | undefined = this.srv.getHost(host.id);
+    const scope = AccountSessionCoordinator.getInstance().currentScope();
+    if (liveHost === undefined || liveHost.userId.trim() !== host.userId.trim() ||
+      rdpRouteIdentity(liveHost) !== rdpRouteIdentity(host) ||
+      scope.ownerScopeId.trim() !== liveHost.userId.trim()) {
+      return false;
+    }
+    return RdpSessionCredentialHandoff.getInstance().renewDecision(
+      liveHost.userId, liveHost.id, rdpRouteIdentity(liveHost),
+      scope.ownerScopeId, scope.generation, attemptGeneration);
+  }
+
+  private rejectExpiredRdpSessionCredential(host: RemoteHost): void {
+    RdpSessionCredentialHandoff.getInstance().clearIfMatches(
+      host.userId, host.id, this.rdpCertificateAttemptGeneration);
+    this.rdpCertificateState = RdpCertificatePreflightState.ERROR;
+    this.rdpCertificateErrorStage = 'authentication';
+    this.rdpCertificateErrorCode = 'E-RDP-SESSION-CREDENTIAL';
+    this.rdpCertificateError = 'RDP 一次性凭据已失效，请取消后重新连接并输入账号密码。';
+    this.rdpCertificateWarning = this.rdpCertificateError;
     if (!this.showRdpCertificatePreflight) {
       this.openSheetSafely((): void => {
         this.openRemoteHostSheet(REMOTE_HOST_SHEET_RDP_CERTIFICATE, (): void => {
@@ -6902,11 +7350,27 @@ struct HostListPage {
           'RDP certificate probe skipped before native call [E-RDP-CERT-STALE-BEFORE]');
         return;
       }
+      if (!this.renewRdpSessionCredentialForHost(host)) {
+        this.rejectExpiredRdpSessionCredential(host);
+        return;
+      }
       let info: RdpCertificateInfo;
       let routeResult: RdpPreflightResult;
       if (this.rdpCertificateUsesRouteProbe(host)) {
-        routeResult = await this.loader.probeRdpCertificateRouteAsync(
-          this.rdpCertificateRouteRequest(host, generation));
+        const request: RdpPreflightRequest =
+          this.rdpCertificateRouteRequest(host, generation);
+        let routePromise: Promise<RdpPreflightResult>;
+        try {
+          // NAPI copies the request synchronously. Clear the ArkTS request
+          // before suspending so an account transition cannot leave another
+          // plaintext copy retained by this async frame.
+          routePromise = this.loader.probeRdpCertificateRouteAsync(request);
+        } finally {
+          request.username = '';
+          request.password = '';
+          request.domain = '';
+        }
+        routeResult = await routePromise;
         info = routeResult.targetCertificate.present
           ? this.rdpCertificateInfoFromRecord(routeResult.targetCertificate)
           : {
@@ -6927,6 +7391,10 @@ struct HostListPage {
           host.customHostname
         );
         routeResult = this.rdpCertificateResultFromDirectProbe(host, info, generation);
+      }
+      if (!this.renewRdpSessionCredentialForHost(host)) {
+        this.rejectExpiredRdpSessionCredential(host);
+        return;
       }
       if (!this.isCurrentRdpCertificateProbe(host, generation, routeResult.routeIdentity)) {
         this.handleStaleRdpCertificateProbe(host, generation);
@@ -7213,6 +7681,10 @@ struct HostListPage {
     result: RdpPreflightResult,
     decision: RdpCertificatePreflightDecision
   ): void {
+    if (!this.renewRdpSessionCredentialForHost(host)) {
+      this.rejectExpiredRdpSessionCredential(host);
+      return;
+    }
     if (!this.rdpGatewayConfirmationPending(result) ||
       !this.rdpCertificateResultMatchesLiveRoute(host, result)) {
       this.rejectStaleRdpCertificateResult();
@@ -7295,6 +7767,10 @@ struct HostListPage {
   }
 
   private doRdpCertificateContinueOnce(host: RemoteHost): void {
+    if (!this.renewRdpSessionCredentialForHost(host)) {
+      this.rejectExpiredRdpSessionCredential(host);
+      return;
+    }
     if (!this.rdpCertificateRouteResult) { return; }
     const result: RdpPreflightResult = this.rdpCertificateRouteResult;
     if (this.rdpGatewayConfirmationPending(result)) {
@@ -7322,6 +7798,10 @@ struct HostListPage {
   }
 
   private doRdpCertificateTrust(host: RemoteHost): void {
+    if (!this.renewRdpSessionCredentialForHost(host)) {
+      this.rejectExpiredRdpSessionCredential(host);
+      return;
+    }
     if (!this.rdpCertificateRouteResult) { return; }
     const result: RdpPreflightResult = this.rdpCertificateRouteResult;
     if (this.rdpGatewayConfirmationPending(result)) {
@@ -7362,6 +7842,10 @@ struct HostListPage {
     if (this.rdpCertificateClosing) {
       return;
     }
+    if (!this.renewRdpSessionCredentialForHost(host)) {
+      this.rejectExpiredRdpSessionCredential(host);
+      return;
+    }
     const diagnosticResult: RdpPreflightResult | null = oneTimeResult ||
       this.rdpCertificateRouteResult;
     if (diagnosticResult && !this.rdpCertificateResultMatchesLiveRoute(host, diagnosticResult)) {
@@ -7370,6 +7854,8 @@ struct HostListPage {
     }
     const params: Record<string, Object> = {};
     params['hostId'] = host.id;
+    params['rdpCredentialOwnerScopeId'] = host.userId;
+    params['rdpConnectionAttemptGeneration'] = this.rdpCertificateAttemptGeneration;
     if (diagnosticResult) {
       const target = diagnosticResult.targetCertificate;
       const gateway = diagnosticResult.gatewayCertificate;
@@ -7434,7 +7920,8 @@ struct HostListPage {
       return;
     }
     this.rdpCertificateHostId = '';
-    this.releaseConnectionAttempt(host.id);
+    this.releaseConnectionAttemptIfCurrent(
+      host.id, this.rdpCertificateAttemptGeneration);
     setTimeout((): void => {
       this.openSessionDestination('pages/RemoteDesktop', params, 'rdp_preflight_complete');
     }, rdpCertificateRouteDelayMsAfterSheetClose());
@@ -7446,7 +7933,7 @@ struct HostListPage {
 
   private resolveVncCertificateEndpoint(host: VncHostView): VncTlsEndpointResolution {
     const scope = AccountSessionCoordinator.getInstance().currentScope();
-    const store: string = this.vncCertificateStoreFingerprint();
+    const store: string = vncStoreIdentityFingerprint(scope.storeIdentity);
     const hostInput = vncTlsHostInput(host.id, host.userId, host, host.host, store);
     let gatewayInput: VncTlsGatewayInput | null = null;
     if (host.gatewayId.trim() !== '') {
@@ -7455,13 +7942,12 @@ struct HostListPage {
         gatewayInput = vncTlsGatewayInput(gateway.id, gateway.userId, gateway, store);
       }
     }
-    // Account scope and physical store are part of the resolver input. A
-    // stale account therefore produces an endpoint error instead of a route.
-    if (scope.ownerScopeId.trim() === '' || scope.generation <= 0 ||
-      host.userId.trim() !== scope.ownerScopeId.trim()) {
-      return resolveVncTlsEndpoint(hostInput, gatewayInput);
-    }
-    return resolveVncTlsEndpoint(hostInput, gatewayInput);
+    return resolveVncTlsEndpointForAccount(hostInput, gatewayInput, {
+      ownerScopeId: scope.ownerScopeId,
+      storeIdentity: scope.storeIdentity,
+      storeIdentityFingerprint: store,
+      generation: scope.generation
+    });
   }
 
   private vncCertificateTrustEndpoint(endpoint: VncTlsEndpointResolution): VncTrustEndpoint | null {
@@ -7471,7 +7957,8 @@ struct HostListPage {
       ownerId: endpoint.trustOwner.ownerId,
       userId: endpoint.trustOwner.userId,
       storeIdentityFingerprint: endpoint.trustOwner.storeIdentityFingerprint,
-      endpointBindingFingerprint: endpoint.trustOwner.endpointBindingFingerprint
+      endpointBindingFingerprint: endpoint.trustOwner.endpointBindingFingerprint,
+      localOnly: endpoint.trustOwner.localOnly
     };
   }
 
@@ -7618,8 +8105,16 @@ struct HostListPage {
     const endpoint: VncTlsEndpointResolution | null = this.vncCertificateEndpoint;
     if (endpoint === null || !endpoint.ok) { return; }
     try {
-      const probe = this.loader.probeVncCertificateAsync(
-        endpoint.connectHost, endpoint.connectPort, endpoint.serverName, 10000);
+      const probe: VncCertificateProbePromise | null =
+        dispatchVncCertificateProbeIfAdmitted(
+          endpoint, 10000,
+          (connectHost: string, connectPort: number, serverName: string,
+            timeoutMs: number): VncCertificateProbePromise =>
+            this.loader.probeVncCertificateAsync(
+              connectHost, connectPort, serverName, timeoutMs));
+      if (probe === null) {
+        throw new Error('E-VNC-PROBE-ADMISSION');
+      }
       this.vncCertificateProbeRequestId = probe.requestId;
       const info: VncCertificateInfo = await probe;
       if (this.vncCertificateProbeGeneration !== generation ||
@@ -8149,16 +8644,18 @@ struct HostListPage {
       return;
     }
     const generation: number = nextRemoteHostSheetGeneration(this.sshPreflightGeneration);
+    this.cancelSshPreflightOperation();
     this.sshPreflightGeneration = generation;
     this.sshPreflightOpenedAt = Date.now();
     this.sshPreflightHostId = host.id;
-    this.sshPreflightHostLabel = host.username + '@' + host.host + ':' + host.port.toString();
+    this.sshPreflightHostLabel = formatUserAtHost(host.username, host.host, host.port);
     this.sshPreflightSavedAlgorithm = host.sshHostKeyAlgorithm;
     this.sshPreflightJumpHostLabel = host.sshProxyType === 'ssh_jump' && host.proxyHost.trim() !== ''
-      ? host.proxyHost + ':' + host.proxyPort.toString() : '';
+      ? formatEndpointFieldsHostPort(host.proxyHost, host.proxyPort) : '';
     this.sshPreflightState = SshPreflightState.PROBING;
     this.sshPreflightHostKeyInfo = null;
     this.sshPreflightJumpHostKeyInfo = null;
+    this.sshPreflightAwaitingJumpTrust = false;
     this.sshPreflightError = '';
     this.sshPreflightPassphraseInput = '';
     this.sshPreflightProxyPassphraseInput = '';
@@ -8177,6 +8674,7 @@ struct HostListPage {
   /** T-210: 关闭 preflight */
   private doSshPreflightCancel(closeSheet: boolean = true): void {
     const hostId: string = this.sshPreflightHostId;
+    this.cancelSshPreflightOperation();
     this.sshPreflightGeneration = nextRemoteHostSheetGeneration(this.sshPreflightGeneration);
     this.sshPreflightClosingHostId = hostId;
     this.sshPreflightClosing = true;
@@ -8197,6 +8695,7 @@ struct HostListPage {
   }
 
   private handleSshPreflightSheetDisappear(): void {
+    this.cancelSshPreflightOperation();
     this.noteSheetDismissed();
     const routeParams: Record<string, Object> | null = this.sshPreflightPendingRouteParams;
     const nextHostId: string = this.sshPreflightPendingHostId;
@@ -8210,6 +8709,7 @@ struct HostListPage {
     this.sshPreflightHostKeyInfo = null;
     this.sshPreflightJumpHostLabel = '';
     this.sshPreflightJumpHostKeyInfo = null;
+    this.sshPreflightAwaitingJumpTrust = false;
     this.sshPreflightError = '';
     if (routeParams !== null) {
       setTimeout((): void => {
@@ -8232,30 +8732,59 @@ struct HostListPage {
     return this.srv.getHost(this.sshPreflightHostId);
   }
 
-  /**
-   * 主机指纹/密钥预检必须使用与最终 SSH 会话相同的传输路径。
-   * 指纹探测本身不带 expected key, 否则 native 会在变化时只返回失败，
-   * UI 无法展示新指纹供用户比较；认证预检和最终连接再带上绑定值。
-   */
-  private sshPreflightProxy(host: RemoteHost, includeExpectedJumpKey: boolean = false): SshProxyConfig {
-    const isJump: boolean = host.sshProxyType === 'ssh_jump';
-    const proxyKeyMaterial: SshKeyMaterial = this.resolveSshProxyKeyMaterial(host);
-    const proxyAuthMethod = host.sshProxyAuthMethod;
-    const proxyPassphrase: string = this.sshPreflightProxyPassphraseInput || host.sshProxyKeyPassphrase;
+  private emptySshOperationTargetAuth(): SshOperationTargetAuth {
     return {
-      type: host.proxyHost.length > 0 ? host.sshProxyType : 'direct',
-      host: host.proxyHost,
-      port: host.proxyPort,
-      username: host.proxyUsername,
-      password: isJump && proxyAuthMethod !== 'publickey' ? host.sshProxyPassword : '',
-      privateKeyPem: isJump && proxyAuthMethod === 'publickey' ? proxyKeyMaterial.privateKey : '',
-      privateKeyPassphrase: isJump && proxyAuthMethod === 'publickey'
-        ? proxyPassphrase : '',
-      authMethod: isJump ? proxyAuthMethod : undefined,
-      expectedHostKeyRawBase64: includeExpectedJumpKey && isJump ? host.sshJumpHostKeyRawBase64 : '',
-      expectedHostKeyFingerprintSha256: includeExpectedJumpKey && isJump
-        ? host.sshJumpHostKeyFingerprintSha256 : ''
+      authMethod: 'password', password: '', privateKeyPem: '',
+      privateKeyPassphrase: '', keyboardInteractiveResponses: []
     };
+  }
+
+  /** Resolve only account/route-bound credentials already available in memory. */
+  private sshOperationRouteSecrets(host: RemoteHost, plan: SshProxyRuntimePlan,
+    legacyProxyPassphrase: string = '',
+    allowTransient: boolean = true): SshOperationRouteSecrets | null {
+    let scope: SshOperationRouteSecretScope | undefined = undefined;
+    if (sshOperationRouteSecretConsumeAllowed({
+      explicitUserAction: allowTransient,
+      appInBackground: this.appInBackground
+    })) {
+      const current = AccountSessionCoordinator.getInstance().currentScope();
+      scope = {
+        ownerScopeId: current.ownerScopeId,
+        storeIdentity: current.storeIdentity,
+        accountGeneration: current.generation
+      };
+    }
+    const result: SshOperationRouteSecretResult =
+      SshOperationRouteSecretService.getInstance().resolve(
+        host, plan, legacyProxyPassphrase, scope);
+    return result.ok ? result.secrets : null;
+  }
+
+  private sshPlanWithPendingLegacyJumpTrust(host: RemoteHost): SshProxyRuntimePlan {
+    const stored: SshProxyProfileV1 | null = this.sshProxyProfiles.load(host.id);
+    if (stored !== null || this.sshPreflightJumpHostKeyInfo === null) {
+      return resolveSshProxyRuntimePlan(host, stored);
+    }
+    const pending: RemoteHost = host.runtimeClone();
+    pending.sshJumpHostKeyRawBase64 = this.sshPreflightJumpHostKeyInfo.rawBase64;
+    pending.sshJumpHostKeyFingerprintSha256 =
+      this.sshPreflightJumpHostKeyInfo.fingerprintSha256;
+    return resolveSshProxyRuntimePlan(pending, null);
+  }
+
+  private cancelSshPreflightOperation(): void {
+    if (this.sshPreflightOperationId > 0) {
+      this.loader.cancelSshOperation(this.sshPreflightOperationId);
+      this.sshPreflightOperationId = 0;
+    }
+  }
+
+  private cancelSshPresenceOperations(): void {
+    this.sshPresenceOperationIds.forEach((operationId: number): void => {
+      if (operationId > 0) { this.loader.cancelSshOperation(operationId); }
+    });
+    this.sshPresenceOperationIds.clear();
   }
 
   private resolveSshProxyKeyMaterial(host: RemoteHost): SshKeyMaterial {
@@ -8294,6 +8823,7 @@ struct HostListPage {
   private doSshPreflightRetryWrap(): void {
     const host = this.getSshPreflightHost();
     if (host) {
+      this.cancelSshPreflightOperation();
       this.sshPreflightState = SshPreflightState.PROBING;
       this.doSshPreflightProbe(host, this.sshPreflightGeneration);
     }
@@ -8324,17 +8854,30 @@ struct HostListPage {
     try {
       await new Promise<void>((r) => setTimeout(r, 80));
       if (!this.isCurrentSshPreflight(host, generation)) { return; }
-      const info = await this.loader.probeSshHostKeyAsync(
-        host.host, host.port, this.sshPreflightProxy(host));
-      if (!this.isCurrentSshPreflight(host, generation)) { return; }
-      if (!info.ok) {
+      if (!this.sshProxyProfilesReady) {
         this.sshPreflightState = SshPreflightState.ERROR;
-        this.sshPreflightError = info.errorMessage || '无法读取 SSH 主机指纹';
+        this.sshPreflightError = 'SSH 连接方式存储不可读，请重新打开应用后重试。';
+        return;
+      }
+      let trustPlan: SshProxyRuntimePlan = resolveSshProxyRuntimePlan(
+        host, this.sshProxyProfiles.load(host.id));
+      if (!trustPlan.valid) {
+        this.sshPreflightState = SshPreflightState.ERROR;
+        this.sshPreflightError = trustPlan.message || 'SSH 连接路径无效';
         return;
       }
       let jumpInfo: SshHostKeyInfo | null = null;
-      if (this.sshPreflightUsesJump(host)) {
-        jumpInfo = await this.loader.probeSshHostKeyAsync(host.proxyHost, host.proxyPort);
+      if (trustPlan.route.type === 'ssh_jump' && trustPlan.source === 'legacy' &&
+        trustPlan.route.hops.length === 1) {
+        const hop: SshJumpHop = trustPlan.route.hops[0];
+        const jumpProbe: SshNativeOperationPromise<SshHostKeyInfo> =
+          this.loader.probeSshHostKeyOperationAsync(
+            buildDirectSshHostKeyProbeConfig(hop.host, hop.port), 15000);
+        this.sshPreflightOperationId = jumpProbe.operationId;
+        jumpInfo = await jumpProbe;
+        if (this.sshPreflightOperationId === jumpProbe.operationId) {
+          this.sshPreflightOperationId = 0;
+        }
         if (!this.isCurrentSshPreflight(host, generation)) { return; }
         if (!jumpInfo.ok) {
           this.sshPreflightState = SshPreflightState.ERROR;
@@ -8342,14 +8885,69 @@ struct HostListPage {
             (jumpInfo.errorMessage || '跳板机 KEX 握手失败');
           return;
         }
+        this.sshPreflightJumpHostKeyInfo = jumpInfo;
+        this.sshPreflightJumpHostLabel = formatEndpointFieldsHostPort(hop.host, hop.port);
+        const jumpTrust: SshJumpHostKeyProbeTrust =
+          classifySshJumpHostKeyProbeTrust(host, jumpInfo.rawBase64);
+        if (jumpTrust !== 'trusted') {
+          this.sshPreflightAwaitingJumpTrust = true;
+          this.sshPreflightSavedAlgorithm = host.sshJumpHostKeyAlgorithm;
+          this.sshPreflightState = jumpTrust === 'changed' ?
+            SshPreflightState.HOST_KEY_CHANGED : SshPreflightState.TRUST_FIRST_TIME;
+          return;
+        }
+        this.sshPreflightAwaitingJumpTrust = false;
+        this.sshPreflightSavedAlgorithm = host.sshHostKeyAlgorithm;
+        trustPlan = this.sshPlanWithPendingLegacyJumpTrust(host);
+      } else if (trustPlan.route.type === 'ssh_jump' &&
+        !sshProxyRuntimeHasStrictJumpBindings(trustPlan)) {
+        this.sshPreflightState = SshPreflightState.ERROR;
+        this.sshPreflightError = 'ProxyJump 每一跳都必须先绑定 SHA256 主机指纹';
+        return;
+      }
+      const routeSecrets: SshOperationRouteSecrets | null = this.sshOperationRouteSecrets(
+        host, trustPlan, this.sshPreflightProxyPassphraseInput);
+      if (routeSecrets === null) {
+        if (trustPlan.route.type === 'ssh_jump' && trustPlan.route.hops.length === 1 &&
+          trustPlan.route.hops[0].authMethod === 'publickey') {
+          this.showSshPreflightPassphrase(
+            '需要跳板机私钥密码才能按当前连接路径读取目标指纹', false, 'proxy');
+        } else {
+          this.sshPreflightState = SshPreflightState.ERROR;
+          this.sshPreflightError = sshProxyRuntimeNeedsTerminalSecrets(trustPlan) ?
+            '当前连接路径需要一次性代理或逐跳凭据，请从连接方式发起原生预认证' :
+            '当前 SSH 连接路径的本机凭据不可用';
+        }
+        return;
+      }
+      const configResult: SshOperationConfigResult = buildSshOperationSessionConfig(
+        host, trustPlan, 'probe', this.emptySshOperationTargetAuth(), routeSecrets);
+      if (!configResult.ok || configResult.config === null) {
+        this.sshPreflightState = SshPreflightState.ERROR;
+        this.sshPreflightError = configResult.message;
+        return;
+      }
+      const targetProbe: SshNativeOperationPromise<SshHostKeyInfo> =
+        this.loader.probeSshHostKeyOperationAsync(configResult.config, 45000);
+      this.sshPreflightOperationId = targetProbe.operationId;
+      const info: SshHostKeyInfo = await targetProbe;
+      if (this.sshPreflightOperationId === targetProbe.operationId) {
+        this.sshPreflightOperationId = 0;
+      }
+      if (!this.isCurrentSshPreflight(host, generation)) { return; }
+      if (!info.ok) {
+        this.sshPreflightState = SshPreflightState.ERROR;
+        this.sshPreflightError = info.errorMessage || '无法读取 SSH 主机指纹';
+        return;
       }
       this.sshPreflightHostKeyInfo = info;
-      this.sshPreflightJumpHostKeyInfo = jumpInfo;
-      const targetChanged = host.sshHostKeyTrustMode === 1 && host.sshHostKeyRawBase64 !== '' &&
+      if (jumpInfo !== null) { this.sshPreflightJumpHostKeyInfo = jumpInfo; }
+      const targetTrustCurrent: boolean = sshHostKeyTrustIsCurrent(host, trustPlan);
+      const targetChanged = targetTrustCurrent && host.sshHostKeyRawBase64 !== '' &&
         host.sshHostKeyRawBase64 !== info.rawBase64;
       const jumpChanged = jumpInfo !== null && host.sshJumpHostKeyTrustMode === 1 &&
         host.sshJumpHostKeyRawBase64 !== '' && host.sshJumpHostKeyRawBase64 !== jumpInfo.rawBase64;
-      const targetNeedsTrust = host.sshHostKeyTrustMode !== 1 || host.sshHostKeyRawBase64 === '' ||
+      const targetNeedsTrust = !targetTrustCurrent || host.sshHostKeyRawBase64 === '' ||
         host.sshHostKeyRawBase64 !== info.rawBase64;
       const jumpNeedsTrust = jumpInfo !== null &&
         (host.sshJumpHostKeyTrustMode !== 1 || host.sshJumpHostKeyRawBase64 === '' ||
@@ -8368,13 +8966,44 @@ struct HostListPage {
     }
   }
 
+  private trustPendingSshJumpAndContinue(host: RemoteHost, generation: number): void {
+    if (!this.isCurrentSshPreflight(host, generation) ||
+      !this.sshPreflightAwaitingJumpTrust || this.sshPreflightJumpHostKeyInfo === null) {
+      return;
+    }
+    const jumpInfo: SshHostKeyInfo = this.sshPreflightJumpHostKeyInfo;
+    const updated: RemoteHost = host.runtimeClone();
+    updated.sshJumpHostKeyAlgorithm = jumpInfo.algorithm;
+    updated.sshJumpHostKeyFingerprintSha256 = jumpInfo.fingerprintSha256;
+    updated.sshJumpHostKeyRawBase64 = jumpInfo.rawBase64;
+    updated.sshJumpHostKeyTrustedAt = Date.now();
+    updated.sshJumpHostKeyTrustMode = 1;
+    if (!this.srv.updateHost(updated)) {
+      this.sshPreflightState = SshPreflightState.ERROR;
+      this.sshPreflightError = '跳板机指纹确认成功，但信任记录保存失败；连接已停止。';
+      return;
+    }
+    this.sshPreflightAwaitingJumpTrust = false;
+    this.sshPreflightHostKeyInfo = null;
+    this.sshPreflightState = SshPreflightState.PROBING;
+    void this.doSshPreflightProbe(updated, generation);
+  }
+
   /** T-210: 用户确认信任 (首次) */
   private doSshPreflightTrustFirst(host: RemoteHost, generation: number): void {
+    if (this.sshPreflightAwaitingJumpTrust) {
+      this.trustPendingSshJumpAndContinue(host, generation);
+      return;
+    }
     if (!this.isCurrentSshPreflight(host, generation) || !this.sshPreflightHostKeyInfo) { return; }
     const info = this.sshPreflightHostKeyInfo;
     if (this.sshPreflightUsesJump(host) && !this.sshPreflightJumpHostKeyInfo) { return; }
     const updated: RemoteHost = host.runtimeClone();
-    this.applySshPreflightTrust(updated, info, this.sshPreflightJumpHostKeyInfo);
+    if (!this.applySshPreflightTrust(updated, info, this.sshPreflightJumpHostKeyInfo)) {
+      this.sshPreflightState = SshPreflightState.ERROR;
+      this.sshPreflightError = 'SSH 连接路径已变化，请取消后重新预检。';
+      return;
+    }
     if (!this.srv.updateHost(updated)) {
       this.sshPreflightState = SshPreflightState.ERROR;
       this.sshPreflightError = 'SSH 指纹验证成功，但信任记录保存失败；连接已停止。';
@@ -8385,11 +9014,19 @@ struct HostListPage {
 
   /** T-210: 指纹变更 → 更新信任 */
   private doSshPreflightUpdateTrust(host: RemoteHost, generation: number): void {
+    if (this.sshPreflightAwaitingJumpTrust) {
+      this.trustPendingSshJumpAndContinue(host, generation);
+      return;
+    }
     if (!this.isCurrentSshPreflight(host, generation) || !this.sshPreflightHostKeyInfo) { return; }
     const info = this.sshPreflightHostKeyInfo;
     if (this.sshPreflightUsesJump(host) && !this.sshPreflightJumpHostKeyInfo) { return; }
     const updated: RemoteHost = host.runtimeClone();
-    this.applySshPreflightTrust(updated, info, this.sshPreflightJumpHostKeyInfo);
+    if (!this.applySshPreflightTrust(updated, info, this.sshPreflightJumpHostKeyInfo)) {
+      this.sshPreflightState = SshPreflightState.ERROR;
+      this.sshPreflightError = 'SSH 连接路径已变化，请取消后重新预检。';
+      return;
+    }
     if (!this.srv.updateHost(updated)) {
       this.sshPreflightState = SshPreflightState.ERROR;
       this.sshPreflightError = 'SSH 新指纹验证成功，但信任记录保存失败；连接已停止。';
@@ -8399,13 +9036,18 @@ struct HostListPage {
   }
 
   private applySshPreflightTrust(host: RemoteHost, targetInfo: SshHostKeyInfo,
-    jumpInfo: SshHostKeyInfo | null): void {
+    jumpInfo: SshHostKeyInfo | null): boolean {
+    const plan: SshProxyRuntimePlan = resolveSshProxyRuntimePlan(
+      host, this.sshProxyProfiles.load(host.id));
+    const binding: SshHostKeyRouteBinding = sshHostKeyRouteBinding(host, plan);
+    if (!binding.ok) { return false; }
     const trustedAt: number = Date.now();
     host.sshHostKeyAlgorithm = targetInfo.algorithm;
     host.sshHostKeyFingerprintSha256 = targetInfo.fingerprintSha256;
     host.sshHostKeyRawBase64 = targetInfo.rawBase64;
     host.sshHostKeyTrustedAt = trustedAt;
     host.sshHostKeyTrustMode = 1;
+    host.sshHostKeyRouteIdentity = binding.identity;
     if (jumpInfo !== null) {
       host.sshJumpHostKeyAlgorithm = jumpInfo.algorithm;
       host.sshJumpHostKeyFingerprintSha256 = jumpInfo.fingerprintSha256;
@@ -8413,6 +9055,7 @@ struct HostListPage {
       host.sshJumpHostKeyTrustedAt = trustedAt;
       host.sshJumpHostKeyTrustMode = 1;
     }
+    return true;
   }
 
   /** T-210: 检查私钥密码 */
@@ -8425,15 +9068,17 @@ struct HostListPage {
         this.sshPreflightError = '跳板机私钥不存在或已从密钥保险库移除';
         return;
       }
+      const proxyPassphrase: string = this.sshPreflightProxyPassphraseInput ||
+        host.sshProxyKeyPassphrase;
       const proxyKeyInfo: SshPrivateKeyInfo = this.loader.inspectSshPrivateKey(
-        proxyMaterial.privateKey, host.sshProxyKeyPassphrase);
+        proxyMaterial.privateKey, proxyPassphrase);
       if (proxyKeyInfo.ok && !proxyKeyInfo.encrypted) {
         this.sshPreflightProxyPassphraseInput = '';
-      } else if (host.sshProxyKeyPassphrase === '' &&
+      } else if (proxyPassphrase === '' &&
         (proxyMaterial.encryptedHint || proxyKeyInfo.encrypted)) {
         this.showSshPreflightPassphrase('', false, 'proxy');
         return;
-      } else if (host.sshProxyKeyPassphrase !== '' && !proxyKeyInfo.ok) {
+      } else if (proxyPassphrase !== '' && !proxyKeyInfo.ok) {
         this.showSshPreflightPassphrase('已保存的跳板机私钥密码不可用，请重新输入', true, 'proxy');
         return;
       } else if (!proxyKeyInfo.ok) {
@@ -8442,7 +9087,7 @@ struct HostListPage {
           (proxyKeyInfo.error || '无法解析私钥');
         return;
       } else {
-        this.sshPreflightProxyPassphraseInput = host.sshProxyKeyPassphrase;
+        this.sshPreflightProxyPassphraseInput = proxyPassphrase;
       }
     }
     if (!host.sshUseKey) { this.doSshPreflightReady(host, generation); return; }
@@ -8485,11 +9130,30 @@ struct HostListPage {
     try {
       await new Promise<void>((r) => setTimeout(r, 60));
       if (!this.isCurrentSshPreflight(host, generation)) { return; }
-      const keyData = this.resolveSshKeyMaterial(host).privateKey;
-      const result = await this.loader.testSshKeyAuthAsync(
-        host.host, host.port, host.username, keyData, passphrase,
-        this.sshPreflightProxy(host, true)
-      );
+      const keyData: string = this.resolveSshKeyMaterial(host).privateKey;
+      const plan: SshProxyRuntimePlan = resolveSshProxyRuntimePlan(
+        host, this.sshProxyProfiles.load(host.id));
+      const routeSecrets: SshOperationRouteSecrets | null = this.sshOperationRouteSecrets(
+        host, plan, this.sshPreflightProxyPassphraseInput);
+      const auth: SshOperationTargetAuth = {
+        authMethod: 'publickey', password: '', privateKeyPem: keyData,
+        privateKeyPassphrase: passphrase, keyboardInteractiveResponses: []
+      };
+      const configResult: SshOperationConfigResult = routeSecrets === null ?
+        new SshOperationConfigResult() :
+        buildSshOperationSessionConfig(host, plan, 'key_auth', auth, routeSecrets);
+      if (!configResult.ok || configResult.config === null) {
+        this.sshPreflightState = SshPreflightState.ERROR;
+        this.sshPreflightError = configResult.message || 'SSH 连接路径凭据不可用';
+        return;
+      }
+      const operation: SshNativeOperationPromise<SshAuthTestResult> =
+        this.loader.testSshKeyAuthOperationAsync(configResult.config, 45000);
+      this.sshPreflightOperationId = operation.operationId;
+      const result: SshAuthTestResult = await operation;
+      if (this.sshPreflightOperationId === operation.operationId) {
+        this.sshPreflightOperationId = 0;
+      }
       if (!this.isCurrentSshPreflight(host, generation)) { return; }
       if (result.ok) {
         this.doSshPreflightReady(host, generation);
@@ -8548,7 +9212,12 @@ struct HostListPage {
       this.sshPreflightPassphraseScope = 'target';
       this.sshPreflightPassphraseInput = '';
       this.sshPreflightError = '';
-      this.doSshPreflightCheckPassphrase(host, generation);
+      if (this.sshPreflightHostKeyInfo === null) {
+        this.sshPreflightState = SshPreflightState.PROBING;
+        await this.doSshPreflightProbe(host, generation);
+      } else {
+        this.doSshPreflightCheckPassphrase(host, generation);
+      }
     } catch (_e) {
       if (!this.isCurrentSshPreflight(host, generation)) { return; }
       this.showSshPreflightPassphrase('跳板机私钥验证异常', false, 'proxy');
@@ -8572,10 +9241,29 @@ struct HostListPage {
         this.showSshPreflightPassphrase('此私钥实际未设置密码，请在密钥管理中重新设置密码');
         return;
       }
-      const result = await this.loader.testSshKeyAuthAsync(
-        host.host, host.port, host.username, keyData, this.sshPreflightPassphraseInput,
-        this.sshPreflightProxy(host, true)
-      );
+      const plan: SshProxyRuntimePlan = resolveSshProxyRuntimePlan(
+        host, this.sshProxyProfiles.load(host.id));
+      const routeSecrets: SshOperationRouteSecrets | null = this.sshOperationRouteSecrets(
+        host, plan, this.sshPreflightProxyPassphraseInput);
+      const auth: SshOperationTargetAuth = {
+        authMethod: 'publickey', password: '', privateKeyPem: keyData,
+        privateKeyPassphrase: this.sshPreflightPassphraseInput,
+        keyboardInteractiveResponses: []
+      };
+      const configResult: SshOperationConfigResult = routeSecrets === null ?
+        new SshOperationConfigResult() :
+        buildSshOperationSessionConfig(host, plan, 'key_auth', auth, routeSecrets);
+      if (!configResult.ok || configResult.config === null) {
+        this.showSshPreflightPassphrase(configResult.message || 'SSH 连接路径凭据不可用');
+        return;
+      }
+      const operation: SshNativeOperationPromise<SshAuthTestResult> =
+        this.loader.testSshKeyAuthOperationAsync(configResult.config, 45000);
+      this.sshPreflightOperationId = operation.operationId;
+      const result: SshAuthTestResult = await operation;
+      if (this.sshPreflightOperationId === operation.operationId) {
+        this.sshPreflightOperationId = 0;
+      }
       if (!this.isCurrentSshPreflight(host, generation)) { return; }
       if (result.ok) {
         if (this.sshPreflightPassphraseSaveToHost) {
@@ -8601,11 +9289,26 @@ struct HostListPage {
   /** T-210: 一切就绪 — 创建 token 并路由 */
   private doSshPreflightReady(host: RemoteHost, generation: number): void {
     if (!this.isCurrentSshPreflight(host, generation)) { return; }
+    const plan: SshProxyRuntimePlan = resolveSshProxyRuntimePlan(
+      host, this.sshProxyProfiles.load(host.id));
+    const binding: SshHostKeyRouteBinding = sshHostKeyRouteBinding(host, plan);
+    if (!binding.ok || !sshHostKeyTrustIsCurrent(host, plan)) {
+      this.sshPreflightState = SshPreflightState.ERROR;
+      this.sshPreflightError = 'SSH 指纹尚未绑定当前连接路径，请重新确认。';
+      return;
+    }
+    const routeSecrets: SshOperationRouteSecrets | null = this.sshOperationRouteSecrets(
+      host, plan, this.sshPreflightProxyPassphraseInput);
+    if (routeSecrets === null) {
+      this.sshPreflightState = SshPreflightState.ERROR;
+      this.sshPreflightError = 'SSH 连接路径的一次性凭据已失效，请重新预检。';
+      return;
+    }
     const svc = SshPreflightService.getInstance();
     const passphrase = this.sshPreflightPassphraseInput || host.sshKeyPassphrase;
     const proxyPassphrase = this.sshPreflightProxyPassphraseInput || host.sshProxyKeyPassphrase;
-    const rawBase64 = this.sshPreflightHostKeyInfo?.rawBase64 || host.sshHostKeyRawBase64;
-    const fp = this.sshPreflightHostKeyInfo?.fingerprintSha256 || host.sshHostKeyFingerprintSha256;
+    const rawBase64 = host.sshHostKeyRawBase64;
+    const fp = host.sshHostKeyFingerprintSha256;
     const jumpRawBase64 = this.sshPreflightJumpHostKeyInfo?.rawBase64 || host.sshJumpHostKeyRawBase64;
     const jumpFp = this.sshPreflightJumpHostKeyInfo?.fingerprintSha256 ||
       host.sshJumpHostKeyFingerprintSha256;
@@ -8613,10 +9316,14 @@ struct HostListPage {
       hostId: host.id,
       expectedHostKeyRawBase64: rawBase64,
       expectedHostKeyFingerprintSha256: fp,
+      targetRouteIdentity: binding.identity,
       expectedJumpHostKeyRawBase64: jumpRawBase64,
       expectedJumpHostKeyFingerprintSha256: jumpFp,
       privateKeyPassphrase: passphrase,
-      proxyPrivateKeyPassphrase: proxyPassphrase
+      proxyPrivateKeyPassphrase: proxyPassphrase,
+      routeSecretsRouteIdentity: binding.identity,
+      proxyPassword: routeSecrets.proxyPassword,
+      jumpHandoffs: routeSecrets.jumpHandoffs
     });
     const params: Record<string, Object> = {};
     params['hostId'] = host.id;
@@ -8677,7 +9384,17 @@ struct HostListPage {
     return ConnectionHealth.BAD;
   }
 
+  private cancelRustDeskPresenceProbes(): void {
+    this.hostPresenceProbeRequestIds.forEach((requestId: number): void => {
+      if (requestId > 0) {
+        this.loader.cancelRustDeskPresenceProbe(requestId);
+      }
+    });
+    this.hostPresenceProbeRequestIds.clear();
+  }
+
   private async probeRustDeskPresenceWithTimeout(
+    hostId: string,
     endpointHost: string,
     endpointPort: number,
     serverKey: string,
@@ -8686,19 +9403,21 @@ struct HostListPage {
     direct: boolean,
     keyMode: number
   ): Promise<RustDeskPresenceResult> {
-    const timeoutResult: Promise<RustDeskPresenceResult> = new Promise<RustDeskPresenceResult>((resolve): void => {
-      setTimeout((): void => {
-        resolve({ state: 0, latencyMs: -1, errorCode: 6 });
-      }, 5000);
-    });
-    // The native probe has transport-level timeouts, but the UI also needs a
-    // bounded completion when a native async request is delayed during device
-    // sleep, relay startup, or an interrupted network transition.
-    return await Promise.race([
-      this.loader.probeRustDeskPresenceAsync(
-        endpointHost, endpointPort, serverKey, peerId, token, direct, keyMode),
-      timeoutResult
-    ]);
+    // The native request owns one absolute five-second deadline. Retaining its
+    // request id lets lifecycle cancellation stop the worker instead of merely
+    // ignoring a Promise that continues in the background.
+    const probe: RustDeskPresenceProbePromise = this.loader.probeRustDeskPresenceAsync(
+      endpointHost, endpointPort, serverKey, peerId, token, direct, keyMode, 5000);
+    if (probe.requestId > 0) {
+      this.hostPresenceProbeRequestIds.set(hostId, probe.requestId);
+    }
+    try {
+      return await probe;
+    } finally {
+      if ((this.hostPresenceProbeRequestIds.get(hostId) ?? 0) === probe.requestId) {
+        this.hostPresenceProbeRequestIds.delete(hostId);
+      }
+    }
   }
 
   private async probeHostConnectivity(host: RemoteHost, showToast: boolean = true): Promise<void> {
@@ -8715,6 +9434,8 @@ struct HostListPage {
     }
 
     this.setHostPresenceProbeBusy(host.id, true);
+    const pageGeneration: number = this.hostPresencePageGeneration;
+    const probeGeneration: number = this.nextHostPresenceProbeGeneration(host.id);
     const startedAt: number = Date.now();
     try {
       let ok: boolean = false;
@@ -8731,14 +9452,53 @@ struct HostListPage {
           ok = info.ok;
         }
       } else if (host.protocol === 'vnc') {
-        const probe = this.loader.probeVncCertificateAsync(host.host, host.port, host.host, 3000);
+        const vncHostId: string = this.vncRecordIdForHost(host);
+        const vncHost: VncHostView | null = vncHostId === '' ? null : this.vncHosts.find(vncHostId);
+        if (vncHost === null) {
+          throw new Error('VNC 主机记录不存在');
+        }
+        const endpoint: VncTlsEndpointResolution = this.resolveVncCertificateEndpoint(vncHost);
+        if (!endpoint.ok) {
+          throw new Error(endpoint.errorCode || 'E-VNC-ENDPOINT-INVALID');
+        }
+        const probe: VncCertificateProbePromise | null =
+          dispatchVncCertificateProbeIfAdmitted(
+            endpoint, 3000,
+            (connectHost: string, connectPort: number, serverName: string,
+              timeoutMs: number): VncCertificateProbePromise =>
+              this.loader.probeVncCertificateAsync(
+                connectHost, connectPort, serverName, timeoutMs));
+        if (probe === null) {
+          throw new Error('E-VNC-PROBE-ADMISSION');
+        }
         const info: VncCertificateInfo = await probe;
         ok = info.ok;
       } else if (host.protocol === 'ssh') {
-        const info: SshHostKeyInfo = await this.loader.probeSshHostKeyAsync(
-          host.host, host.port, this.sshPreflightProxy(host));
+        if (!this.sshProxyProfilesReady) {
+          throw new Error('SSH 连接方式存储不可读');
+        }
+        const plan: SshProxyRuntimePlan = resolveSshProxyRuntimePlan(
+          host, this.sshProxyProfiles.load(host.id));
+        const routeSecrets: SshOperationRouteSecrets | null =
+          this.sshOperationRouteSecrets(host, plan, '', showToast);
+        if (routeSecrets === null) {
+          throw new Error('SSH 在线探测需要一次性路由凭据');
+        }
+        const configResult: SshOperationConfigResult = buildSshOperationSessionConfig(
+          host, plan, 'probe', this.emptySshOperationTargetAuth(), routeSecrets);
+        if (!configResult.ok || configResult.config === null) {
+          throw new Error(configResult.message);
+        }
+        const operation: SshNativeOperationPromise<SshHostKeyInfo> =
+          this.loader.probeSshHostKeyOperationAsync(configResult.config, 15000);
+        this.sshPresenceOperationIds.set(host.id, operation.operationId);
+        const info: SshHostKeyInfo = await operation;
+        if ((this.sshPresenceOperationIds.get(host.id) ?? 0) === operation.operationId) {
+          this.sshPresenceOperationIds.delete(host.id);
+        }
         ok = info.ok;
       }
+      if (!this.isCurrentHostPresenceProbe(host.id, pageGeneration, probeGeneration)) { return; }
       const latencyMs: number = Date.now() - startedAt;
       if (host.protocol !== 'vnc') {
         // Use the observation path so the local card updates even when a
@@ -8758,11 +9518,13 @@ struct HostListPage {
         });
       }
     } catch (_err) {
+      if (!this.isCurrentHostPresenceProbe(host.id, pageGeneration, probeGeneration)) { return; }
       this.setHostPresenceOverride(host.id, 'unknown');
       if (showToast) {
         promptAction.showToast({ message: host.protocol.toUpperCase() + ' 检测失败', duration: 1800 });
       }
     } finally {
+      this.sshPresenceOperationIds.delete(host.id);
       this.setHostPresenceProbeBusy(host.id, false);
     }
   }
@@ -8825,8 +9587,10 @@ struct HostListPage {
         endpointPort = endpoint.port;
       } else if (relay !== undefined) {
         const context: RustDeskConnectionContext = this.rustDeskConnectionContext(host, relay);
-        endpointHost = relay.idServer;
-        endpointPort = relay.idServerPort;
+        const endpoint: RustDeskHostEndpoint = resolveRustDeskHostEndpoint(
+          relay, host.host, false, host.rustdeskDirectHost, host.rustdeskDirectPort);
+        endpointHost = endpoint.host;
+        endpointPort = endpoint.port;
         serverKey = relay.key;
         token = context.accessToken;
         keyMode = rustDeskRelayKeyModeForFfi(relay.key, relay.keyMode);
@@ -8852,7 +9616,7 @@ struct HostListPage {
         return;
       }
       const result: RustDeskPresenceResult = await this.probeRustDeskPresenceWithTimeout(
-        endpointHost, endpointPort, serverKey, peerId, token, direct, keyMode);
+        host.id, endpointHost, endpointPort, serverKey, peerId, token, direct, keyMode);
       markResult(result.state, result.latencyMs);
       if (showToast) {
         const text: string = result.state === 1 ?
@@ -9327,7 +10091,8 @@ struct HostListPage {
         'request_approval' ? '' : host.password,
       width: 1920, height: 1080,
       customHostname: rustDeskProPeerIdForConnection(host.rustdeskProPeerId, host.customHostname),
-      gatewayHost: '', gatewayPort: 0, domain: '', codec: '',
+      gatewayHost: '', gatewayPort: 0, domain: '',
+      codec: rustDeskCodecConfigValue(this.rustdeskCodec),
       multiMonitor: false, monitorCount: 1, colorDepth: 32,
       authMethod: 'password', privateKeyPem: '', privateKeyPassphrase: '',
       rdImageQuality: this.rustdeskImageQuality, rdDirectIp: direct,
@@ -9675,6 +10440,9 @@ struct HostListPage {
           ? connectionAccount.tokenGeneration : 0;
       const sessionConfig: SessionConfig =
         this.rustDeskProConfig(host);
+      hilog.info(0x0001, 'HostList',
+        'RustDesk preflight codec preference=' + this.rustdeskCodec.toString() +
+        ' config=' + (sessionConfig.codec.length > 0 ? sessionConfig.codec : 'AUTO'));
       if (sessionConfig.rdAccessToken !==
         effectiveContext.accessToken) {
         throw new Error(
@@ -9896,10 +10664,13 @@ struct HostListPage {
     this.sheetPasswordProjectionBinding = this.hostPasswordBindingParts(latestHost);
     this.sheetSecretProjectionInvalidated = false;
     this.chn = latestHost.customHostname;
+    this.rdpClientHostname = latestHost.rdpClientHostname;
     this.selectedRelayId = latestHost.rustdeskRelayId;
     this.selectedAccountId = latestHost.rustdeskAccountId;
     this.selectedRdpCredentialId = latestHost.rdpCredentialId;
     this.sheetRdpAuthMode = latestHost.rdpAuthMode;
+    this.sheetRdpCredentialStorageMode = normalizeRdpCredentialStorageMode(
+      latestHost.rdpCredentialStorageMode);
     this.sheetRdpRestrictedAdminSecretSource = latestHost.rdpRestrictedAdminSecretSource;
     this.sheetRdpRestrictedAdminHash = '';
     // An existing blank-password host has already passed the explicit creation confirmation.
@@ -10246,6 +11017,154 @@ struct HostListPage {
     }
   }
 
+  private restoreRemotePinchZoomPreferences(
+    prefs: preferences.Preferences,
+    legacyCanvasEnabled: boolean,
+    rustDeskRemoteAppTouchScaleEnabled: boolean
+  ): RemotePinchZoomPreferences {
+    const current: RemotePinchZoomPreferences = {
+      rdp: prefs.getSync(RDP_PINCH_ZOOM_ENABLED_KEY, legacyCanvasEnabled) as boolean,
+      rustdesk: prefs.getSync(RUSTDESK_PINCH_ZOOM_ENABLED_KEY, legacyCanvasEnabled) as boolean,
+      ssh: prefs.getSync(SSH_PINCH_ZOOM_ENABLED_KEY, true) as boolean,
+      vnc: prefs.getSync(VNC_PINCH_ZOOM_ENABLED_KEY, legacyCanvasEnabled) as boolean,
+      moonlight: prefs.getSync(MOONLIGHT_PINCH_ZOOM_ENABLED_KEY, false) as boolean
+    };
+    const present: RemotePinchZoomPreferencePresence = {
+      rdp: prefs.hasSync(RDP_PINCH_ZOOM_ENABLED_KEY),
+      rustdesk: prefs.hasSync(RUSTDESK_PINCH_ZOOM_ENABLED_KEY),
+      ssh: prefs.hasSync(SSH_PINCH_ZOOM_ENABLED_KEY),
+      vnc: prefs.hasSync(VNC_PINCH_ZOOM_ENABLED_KEY),
+      moonlight: prefs.hasSync(MOONLIGHT_PINCH_ZOOM_ENABLED_KEY)
+    };
+    const migration: RemotePinchZoomPreferenceMigration =
+      migrateRemotePinchZoomPreferences(current, present,
+        prefs.getSync(REMOTE_PINCH_ZOOM_PREFERENCE_VERSION_KEY, 0) as number,
+        legacyCanvasEnabled, rustDeskRemoteAppTouchScaleEnabled);
+    if (migration.shouldPersist) {
+      try {
+        prefs.putSync(RDP_PINCH_ZOOM_ENABLED_KEY, migration.values.rdp);
+        prefs.putSync(RUSTDESK_PINCH_ZOOM_ENABLED_KEY, migration.values.rustdesk);
+        prefs.putSync(SSH_PINCH_ZOOM_ENABLED_KEY, migration.values.ssh);
+        prefs.putSync(VNC_PINCH_ZOOM_ENABLED_KEY, migration.values.vnc);
+        prefs.putSync(MOONLIGHT_PINCH_ZOOM_ENABLED_KEY, migration.values.moonlight);
+        prefs.putSync(REMOTE_PINCH_ZOOM_PREFERENCE_VERSION_KEY, migration.version);
+        prefs.flushSync();
+      } catch (_error) { /* Runtime values still preserve the released behavior. */ }
+    }
+    return migration.values;
+  }
+
+  private remotePinchZoomPreferences(): RemotePinchZoomPreferences {
+    return {
+      rdp: this.rdpPinchZoomEnabled,
+      rustdesk: this.rustdeskPinchZoomEnabled,
+      ssh: this.sshPinchZoomEnabled,
+      vnc: this.vncPinchZoomEnabled,
+      moonlight: this.moonlightPinchZoomEnabled
+    };
+  }
+
+  private restoreRemotePinchZoomPreferenceValue(
+    prefs: preferences.Preferences,
+    key: string,
+    present: boolean,
+    value: string | number | boolean
+  ): void {
+    if (present) {
+      prefs.putSync(key, value);
+    } else {
+      prefs.deleteSync(key);
+    }
+  }
+
+  private saveRemotePinchZoomPreferences(
+    values: RemotePinchZoomPreferences,
+    rustDeskRemoteAppTouchScaleOverride?: boolean
+  ): boolean {
+    const nextRemoteAppTouchScale: boolean =
+      rustDeskRemoteAppTouchScaleOverride !== undefined ?
+        rustDeskRemoteAppTouchScaleOverride :
+        (values.rustdesk ? false : this.rustdeskRemoteAppTouchScaleEnabled);
+    const nextValues: RemotePinchZoomPreferences = {
+      rdp: values.rdp,
+      rustdesk: nextRemoteAppTouchScale ? false : values.rustdesk,
+      ssh: values.ssh,
+      vnc: values.vnc,
+      moonlight: values.moonlight
+    };
+    try {
+      const prefs: preferences.Preferences = preferences.getPreferencesSync(
+        getContext(this), { name: 'RemoteDesktopAppPrefs' });
+      const previous: RemotePinchZoomPreferences = {
+        rdp: prefs.getSync(RDP_PINCH_ZOOM_ENABLED_KEY, false) as boolean,
+        rustdesk: prefs.getSync(RUSTDESK_PINCH_ZOOM_ENABLED_KEY, false) as boolean,
+        ssh: prefs.getSync(SSH_PINCH_ZOOM_ENABLED_KEY, true) as boolean,
+        vnc: prefs.getSync(VNC_PINCH_ZOOM_ENABLED_KEY, false) as boolean,
+        moonlight: prefs.getSync(MOONLIGHT_PINCH_ZOOM_ENABLED_KEY, false) as boolean
+      };
+      const present: RemotePinchZoomPreferencePresence = {
+        rdp: prefs.hasSync(RDP_PINCH_ZOOM_ENABLED_KEY),
+        rustdesk: prefs.hasSync(RUSTDESK_PINCH_ZOOM_ENABLED_KEY),
+        ssh: prefs.hasSync(SSH_PINCH_ZOOM_ENABLED_KEY),
+        vnc: prefs.hasSync(VNC_PINCH_ZOOM_ENABLED_KEY),
+        moonlight: prefs.hasSync(MOONLIGHT_PINCH_ZOOM_ENABLED_KEY)
+      };
+      const versionPresent: boolean = prefs.hasSync(REMOTE_PINCH_ZOOM_PREFERENCE_VERSION_KEY);
+      const previousVersion: number = prefs.getSync(
+        REMOTE_PINCH_ZOOM_PREFERENCE_VERSION_KEY, 0) as number;
+      const remoteAppPresent: boolean = prefs.hasSync('rustdeskRemoteAppTouchScaleEnabled');
+      const previousRemoteApp: boolean = prefs.getSync(
+        'rustdeskRemoteAppTouchScaleEnabled', false) as boolean;
+      try {
+        prefs.putSync(RDP_PINCH_ZOOM_ENABLED_KEY, nextValues.rdp);
+        prefs.putSync(RUSTDESK_PINCH_ZOOM_ENABLED_KEY, nextValues.rustdesk);
+        prefs.putSync(SSH_PINCH_ZOOM_ENABLED_KEY, nextValues.ssh);
+        prefs.putSync(VNC_PINCH_ZOOM_ENABLED_KEY, nextValues.vnc);
+        prefs.putSync(MOONLIGHT_PINCH_ZOOM_ENABLED_KEY, nextValues.moonlight);
+        prefs.putSync(REMOTE_PINCH_ZOOM_PREFERENCE_VERSION_KEY,
+          REMOTE_PINCH_ZOOM_PREFERENCE_VERSION);
+        prefs.putSync('rustdeskRemoteAppTouchScaleEnabled', nextRemoteAppTouchScale);
+        prefs.flushSync();
+      } catch (_writeError) {
+        try {
+          this.restoreRemotePinchZoomPreferenceValue(
+            prefs, RDP_PINCH_ZOOM_ENABLED_KEY, present.rdp, previous.rdp);
+          this.restoreRemotePinchZoomPreferenceValue(
+            prefs, RUSTDESK_PINCH_ZOOM_ENABLED_KEY, present.rustdesk, previous.rustdesk);
+          this.restoreRemotePinchZoomPreferenceValue(
+            prefs, SSH_PINCH_ZOOM_ENABLED_KEY, present.ssh, previous.ssh);
+          this.restoreRemotePinchZoomPreferenceValue(
+            prefs, VNC_PINCH_ZOOM_ENABLED_KEY, present.vnc, previous.vnc);
+          this.restoreRemotePinchZoomPreferenceValue(
+            prefs, MOONLIGHT_PINCH_ZOOM_ENABLED_KEY, present.moonlight, previous.moonlight);
+          this.restoreRemotePinchZoomPreferenceValue(
+            prefs, REMOTE_PINCH_ZOOM_PREFERENCE_VERSION_KEY,
+            versionPresent, previousVersion);
+          this.restoreRemotePinchZoomPreferenceValue(
+            prefs, 'rustdeskRemoteAppTouchScaleEnabled', remoteAppPresent, previousRemoteApp);
+          prefs.flushSync();
+        } catch (_rollbackError) { /* UI retains the last fully confirmed values. */ }
+        return false;
+      }
+    } catch (_error) {
+      return false;
+    }
+    this.rdpPinchZoomEnabled = nextValues.rdp;
+    this.rustdeskPinchZoomEnabled = nextValues.rustdesk;
+    this.sshPinchZoomEnabled = nextValues.ssh;
+    this.vncPinchZoomEnabled = nextValues.vnc;
+    this.moonlightPinchZoomEnabled = nextValues.moonlight;
+    this.rustdeskRemoteAppTouchScaleEnabled = nextRemoteAppTouchScale;
+    return true;
+  }
+
+  private saveRemotePinchZoomPreferenceUpdate(
+    update: RemotePinchZoomPreferenceUpdate
+  ): boolean {
+    return this.saveRemotePinchZoomPreferences(applyRemotePinchZoomPreferenceUpdate(
+      this.remotePinchZoomPreferences(), update));
+  }
+
   private restoreRemoteWheelPreferences(
     prefs: preferences.Preferences
   ): RemoteWheelPreferences {
@@ -10535,40 +11454,118 @@ struct HostListPage {
     };
   }
 
-  private sessionControlBarHidden(protocol: string): boolean {
-    return remoteSessionControlBarHidden(protocol, this.sessionControlBarVisibility());
-  }
-
-  private sessionControlBarProtocolLabel(protocol: string): string {
-    if (protocol === 'rdp') { return 'RDP'; }
-    if (protocol === 'rustdesk') { return 'RustDesk'; }
-    if (protocol === 'vnc') { return 'VNC'; }
-    return 'Moonlight';
-  }
-
-  private setSessionControlBarHidden(protocol: string, hidden: boolean): void {
-    if (protocol === 'rdp') {
-      this.sessionControlBarHiddenRdp = hidden;
-      this.persistLocalBooleanPref(REMOTE_SESSION_CONTROL_BAR_HIDDEN_RDP_KEY, hidden);
-    } else if (protocol === 'rustdesk') {
-      this.sessionControlBarHiddenRustDesk = hidden;
-      this.persistLocalBooleanPref(REMOTE_SESSION_CONTROL_BAR_HIDDEN_RUSTDESK_KEY, hidden);
-    } else if (protocol === 'vnc') {
-      this.sessionControlBarHiddenVnc = hidden;
-      this.persistLocalBooleanPref(REMOTE_SESSION_CONTROL_BAR_HIDDEN_VNC_KEY, hidden);
-    } else if (protocol === 'moonlight') {
-      this.sessionControlBarHiddenMoonlight = hidden;
-      this.persistLocalBooleanPref(REMOTE_SESSION_CONTROL_BAR_HIDDEN_MOONLIGHT_KEY, hidden);
+  private restoreSessionControlBarPreferenceValue(
+    prefs: preferences.Preferences,
+    key: string,
+    present: boolean,
+    value: boolean
+  ): void {
+    if (present) {
+      prefs.putSync(key, value);
+    } else {
+      prefs.deleteSync(key);
     }
   }
 
-  private saveSessionControlBarHidden(protocol: string, on: boolean): void {
-    const label: string = this.sessionControlBarProtocolLabel(protocol);
-    this.setSessionControlBarHidden(protocol, on);
-    promptAction.showToast({
-      message: label + (on ? ' 会话控制栏已隐藏' : ' 会话控制栏已恢复'),
-      duration: 1400
-    });
+  private saveSessionControlBarVisibility(
+    values: RemoteSessionControlBarVisibility
+  ): boolean {
+    let quickExitDisabled: boolean = this.remoteSessionQuickExitDisabled;
+    let effective: RemoteSessionControlBarVisibility =
+      protectRemoteSessionControlBarVisibility(values, quickExitDisabled);
+    try {
+      const prefs: preferences.Preferences = preferences.getPreferencesSync(
+        getContext(this), { name: 'RemoteDesktopAppPrefs' });
+      quickExitDisabled = prefs.getSync(
+        REMOTE_SESSION_QUICK_EXIT_DISABLED_KEY,
+        this.remoteSessionQuickExitDisabled) as boolean;
+      effective = protectRemoteSessionControlBarVisibility(values, quickExitDisabled);
+      const previous: RemoteSessionControlBarVisibility = {
+        rdpHidden: prefs.getSync(REMOTE_SESSION_CONTROL_BAR_HIDDEN_RDP_KEY, false) as boolean,
+        rustDeskHidden: prefs.getSync(
+          REMOTE_SESSION_CONTROL_BAR_HIDDEN_RUSTDESK_KEY, false) as boolean,
+        vncHidden: prefs.getSync(REMOTE_SESSION_CONTROL_BAR_HIDDEN_VNC_KEY, false) as boolean,
+        moonlightHidden: prefs.getSync(
+          REMOTE_SESSION_CONTROL_BAR_HIDDEN_MOONLIGHT_KEY, false) as boolean
+      };
+      const present: RemoteSessionControlBarVisibility = {
+        rdpHidden: prefs.hasSync(REMOTE_SESSION_CONTROL_BAR_HIDDEN_RDP_KEY),
+        rustDeskHidden: prefs.hasSync(REMOTE_SESSION_CONTROL_BAR_HIDDEN_RUSTDESK_KEY),
+        vncHidden: prefs.hasSync(REMOTE_SESSION_CONTROL_BAR_HIDDEN_VNC_KEY),
+        moonlightHidden: prefs.hasSync(REMOTE_SESSION_CONTROL_BAR_HIDDEN_MOONLIGHT_KEY)
+      };
+      try {
+        prefs.putSync(REMOTE_SESSION_CONTROL_BAR_HIDDEN_RDP_KEY, effective.rdpHidden);
+        prefs.putSync(REMOTE_SESSION_CONTROL_BAR_HIDDEN_RUSTDESK_KEY, effective.rustDeskHidden);
+        prefs.putSync(REMOTE_SESSION_CONTROL_BAR_HIDDEN_VNC_KEY, effective.vncHidden);
+        prefs.putSync(REMOTE_SESSION_CONTROL_BAR_HIDDEN_MOONLIGHT_KEY, effective.moonlightHidden);
+        prefs.flushSync();
+      } catch (_writeError) {
+        try {
+          this.restoreSessionControlBarPreferenceValue(prefs,
+            REMOTE_SESSION_CONTROL_BAR_HIDDEN_RDP_KEY, present.rdpHidden, previous.rdpHidden);
+          this.restoreSessionControlBarPreferenceValue(prefs,
+            REMOTE_SESSION_CONTROL_BAR_HIDDEN_RUSTDESK_KEY,
+            present.rustDeskHidden, previous.rustDeskHidden);
+          this.restoreSessionControlBarPreferenceValue(prefs,
+            REMOTE_SESSION_CONTROL_BAR_HIDDEN_VNC_KEY, present.vncHidden, previous.vncHidden);
+          this.restoreSessionControlBarPreferenceValue(prefs,
+            REMOTE_SESSION_CONTROL_BAR_HIDDEN_MOONLIGHT_KEY,
+            present.moonlightHidden, previous.moonlightHidden);
+          prefs.flushSync();
+        } catch (_rollbackError) { /* UI retains the last confirmed values. */ }
+        return false;
+      }
+    } catch (_error) {
+      return false;
+    }
+    this.remoteSessionQuickExitDisabled = quickExitDisabled;
+    AppStorage.setOrCreate(REMOTE_SESSION_QUICK_EXIT_DISABLED_KEY, quickExitDisabled);
+    this.sessionControlBarHiddenRdp = effective.rdpHidden;
+    this.sessionControlBarHiddenRustDesk = effective.rustDeskHidden;
+    this.sessionControlBarHiddenVnc = effective.vncHidden;
+    this.sessionControlBarHiddenMoonlight = effective.moonlightHidden;
+    return true;
+  }
+
+  private saveRemoteSessionQuickExitDisabled(on: boolean): boolean {
+    try {
+      const prefs: preferences.Preferences = preferences.getPreferencesSync(
+        getContext(this), { name: 'RemoteDesktopAppPrefs' });
+      const port: RemoteSessionBooleanPreferencePort = {
+        has: (key: string): boolean => prefs.hasSync(key),
+        read: (key: string, fallback: boolean): boolean =>
+          prefs.getSync(key, fallback) as boolean,
+        put: (key: string, value: boolean): void => { prefs.putSync(key, value); },
+        remove: (key: string): void => { prefs.deleteSync(key); },
+        flush: (): void => { prefs.flushSync(); }
+      };
+      if (!commitRemoteSessionQuickExitPreference(port, on)) {
+        return false;
+      }
+    } catch (_error) {
+      return false;
+    }
+    this.remoteSessionQuickExitDisabled = on;
+    AppStorage.setOrCreate(REMOTE_SESSION_QUICK_EXIT_DISABLED_KEY, on);
+    if (on) {
+      this.sessionControlBarHiddenRdp = false;
+      this.sessionControlBarHiddenRustDesk = false;
+      this.sessionControlBarHiddenVnc = false;
+      this.sessionControlBarHiddenMoonlight = false;
+      AppStorage.setOrCreate(REMOTE_SESSION_CONTROL_BAR_HIDDEN_RDP_KEY, false);
+      AppStorage.setOrCreate(REMOTE_SESSION_CONTROL_BAR_HIDDEN_RUSTDESK_KEY, false);
+      AppStorage.setOrCreate(REMOTE_SESSION_CONTROL_BAR_HIDDEN_VNC_KEY, false);
+      AppStorage.setOrCreate(REMOTE_SESSION_CONTROL_BAR_HIDDEN_MOONLIGHT_KEY, false);
+    }
+    return true;
+  }
+
+  private saveSessionControlBarPreferenceUpdate(
+    update: RemoteSessionControlBarPreferenceUpdate
+  ): boolean {
+    return this.saveSessionControlBarVisibility(applyRemoteSessionControlBarPreferenceUpdate(
+      this.sessionControlBarVisibility(), update));
   }
 
   private saveRustDeskPresenceDetection(on: boolean): void {
@@ -10576,6 +11573,7 @@ struct HostListPage {
     this.persistLocalBooleanPref('rustdeskPresenceDetectionEnabled', on);
     // Invalidate an in-flight probe and remove page-local results. Turning the
     // feature back on starts a fresh sweep against the current host snapshot.
+    this.cancelRustDeskPresenceProbes();
     this.hostPresencePageGeneration += 1;
     this.hostPresenceOverrides.clear();
     this.hostPresenceProbeGenerations.clear();
@@ -10670,7 +11668,7 @@ struct HostListPage {
     const scope = CloudStore.getInstance().currentScope();
     const now: number = Date.now();
     const targets: RemoteHost[] = this.srv.getAllHosts().filter((host: RemoteHost): boolean => {
-      if (!lanHostUsesLocalOnlyStorage(host)) { return false; }
+      if (!lanHostUsesDynamicAddressStorage(host)) { return false; }
       if (targetHostId !== '' && host.id !== targetHostId) { return false; }
       return force || lanHostNeedsAddressRefresh(
         host, now, DYNAMIC_LAN_ADDRESS_FRESHNESS_MS);
@@ -10952,11 +11950,11 @@ struct HostListPage {
   }
 
   private saveRustDeskRemoteAppTouchScaleEnabled(on: boolean): void {
-    this.rustdeskRemoteAppTouchScaleEnabled = on;
-    this.persistPref('rustdeskRemoteAppTouchScaleEnabled', on);
-    if (on && this.canvasGestureZoomEnabled) {
-      this.canvasGestureZoomEnabled = false;
-      this.persistPref('canvasGestureZoomEnabled', false);
+    const values: RemotePinchZoomPreferences = on ?
+      withRemotePinchZoomPreference(this.remotePinchZoomPreferences(), 'rustdesk', false) :
+      this.remotePinchZoomPreferences();
+    if (!this.saveRemotePinchZoomPreferences(values, on)) {
+      promptAction.showToast({ message: 'RustDesk 触控缩放设置保存失败，请重试', duration: 2200 });
     }
   }
 
@@ -10965,6 +11963,11 @@ struct HostListPage {
     this.rdpDesktopPreset = legacyRdpPresetForResolutionId(this.rdpDesktopResolutionId);
     this.persistPref('rdpDesktopResolutionId', this.rdpDesktopResolutionId);
     this.persistPref('rdpDesktopPreset', this.rdpDesktopPreset);
+  }
+
+  private saveRdpRemoteUiScale(value: string): void {
+    this.rdpRemoteUiScale = normalizeRdpRemoteUiScalePreference(value);
+    this.persistPref('rdpRemoteUiScale', this.rdpRemoteUiScale);
   }
 
   private saveRemoteDisplayScaleMode(mode: string): void {
@@ -10983,16 +11986,6 @@ struct HostListPage {
     this.persistPref('remoteDisplayCustomScalePercent', this.remoteDisplayCustomScalePercent);
     this.persistPref(REMOTE_DISPLAY_SCALE_PREFERENCE_VERSION_KEY,
       REMOTE_DISPLAY_SCALE_PREFERENCE_VERSION);
-  }
-
-  private saveCanvasGestureZoomEnabled(on: boolean): void {
-    this.canvasGestureZoomEnabled = on;
-    this.persistPref('canvasGestureZoomEnabled', on);
-    this.persistPref('canvasGestureZoomUserConfigured', true);
-    if (on && this.rustdeskRemoteAppTouchScaleEnabled) {
-      this.rustdeskRemoteAppTouchScaleEnabled = false;
-      this.persistPref('rustdeskRemoteAppTouchScaleEnabled', false);
-    }
   }
 
   private saveRdpColorDepth(depth: number): void {
@@ -11197,6 +12190,8 @@ struct HostListPage {
       this.sshPreflightPanel();
     } else if (this.remoteHostSheetMode === REMOTE_HOST_SHEET_RDP_CERTIFICATE) {
       this.rdpCertificatePanel();
+    } else if (this.remoteHostSheetMode === REMOTE_HOST_SHEET_RDP_CREDENTIAL) {
+      this.rdpSessionCredentialPanel();
     } else if (this.remoteHostSheetMode === REMOTE_HOST_SHEET_VNC_CERTIFICATE) {
       this.vncCertificatePanel();
     } else if (this.remoteHostSheetMode === REMOTE_HOST_SHEET_VNC_CREDENTIAL) {
@@ -11230,6 +12225,9 @@ struct HostListPage {
         break;
       case REMOTE_HOST_SHEET_RDP_CERTIFICATE:
         this.doRdpCertificateCancel(false);
+        break;
+      case REMOTE_HOST_SHEET_RDP_CREDENTIAL:
+        this.cancelRdpSessionCredential(false);
         break;
       case REMOTE_HOST_SHEET_VNC_CERTIFICATE:
         this.cancelVncCertificatePreflight(false);
@@ -11282,6 +12280,8 @@ struct HostListPage {
         this.doSshPreflightCancel(false);
       } else if (mode === REMOTE_HOST_SHEET_RDP_CERTIFICATE) {
         this.doRdpCertificateCancel(false);
+      } else if (mode === REMOTE_HOST_SHEET_RDP_CREDENTIAL) {
+        this.cancelRdpSessionCredential(false);
       } else if (mode === REMOTE_HOST_SHEET_VNC_CERTIFICATE) {
         this.cancelVncCertificatePreflight(false);
       } else if (mode === REMOTE_HOST_SHEET_VNC_CREDENTIAL) {
@@ -11298,6 +12298,9 @@ struct HostListPage {
         break;
       case REMOTE_HOST_SHEET_RDP_CERTIFICATE:
         this.handleRdpCertificateSheetDisappear();
+        break;
+      case REMOTE_HOST_SHEET_RDP_CREDENTIAL:
+        this.handleRdpSessionCredentialDisappear();
         break;
       case REMOTE_HOST_SHEET_VNC_CERTIFICATE:
         this.handleVncCertificatePreflightDisappear();
@@ -11398,6 +12401,7 @@ struct HostListPage {
   private drainRemoteHostSheetQueue(dismissedMode: number): void {
     let nextMode: number = REMOTE_HOST_SHEET_NONE;
     let nextHostId: string = '';
+    let nextAttemptGeneration: number = 0;
     if (dismissedMode !== REMOTE_HOST_SHEET_SSH_PREFLIGHT && this.sshPreflightPendingHostId !== '') {
       nextMode = REMOTE_HOST_SHEET_SSH_PREFLIGHT;
       nextHostId = this.sshPreflightPendingHostId;
@@ -11406,7 +12410,9 @@ struct HostListPage {
       this.rdpCertificatePendingHostId !== '') {
       nextMode = REMOTE_HOST_SHEET_RDP_CERTIFICATE;
       nextHostId = this.rdpCertificatePendingHostId;
+      nextAttemptGeneration = this.rdpCertificatePendingAttemptGeneration;
       this.rdpCertificatePendingHostId = '';
+      this.rdpCertificatePendingAttemptGeneration = 0;
     } else if (dismissedMode !== REMOTE_HOST_SHEET_RUSTDESK_PREFLIGHT &&
       this.rustDeskProPreflightPendingHostId !== '') {
       nextMode = REMOTE_HOST_SHEET_RUSTDESK_PREFLIGHT;
@@ -11430,7 +12436,7 @@ struct HostListPage {
       if (nextMode === REMOTE_HOST_SHEET_SSH_PREFLIGHT) {
         this.openSshPreflight(nextHost);
       } else if (nextMode === REMOTE_HOST_SHEET_RDP_CERTIFICATE) {
-        this.openRdpCertificatePreflight(nextHost);
+        this.openRdpCertificatePreflight(nextHost, nextAttemptGeneration);
       } else if (nextMode === REMOTE_HOST_SHEET_VNC_CERTIFICATE) {
         const nextVncHostId: string = this.vncRecordIdForHost(nextHost);
         const nextVncHost: VncHostView | null = nextVncHostId === ''
@@ -11609,9 +12615,9 @@ struct HostListPage {
             .fontSize(28)
             .fontColor([Color.White])
         }
-        .width(this.breakpoint === 'xl' ? 64 : 56)
-        .height(this.breakpoint === 'xl' ? 64 : 56)
-        .borderRadius(this.breakpoint === 'xl' ? 32 : 28).padding(0)
+        .width(hostListFabSizeVp(this.breakpoint))
+        .height(hostListFabSizeVp(this.breakpoint))
+        .borderRadius(hostListFabSizeVp(this.breakpoint) / 2).padding(0)
         .backgroundColor(this.accentColor)
         .onClick(() => {
           if (this.isDesktopDevice && this.breakpoint === 'xl') {
@@ -11670,7 +12676,8 @@ struct HostListPage {
       .justifyContent(shouldUseGripFabAlignment(this.isDesktopDevice, this.breakpoint) ? this.getFabAlignment() : FlexAlign.Start)
       .position({ x: 0, y: '100%' })
       .markAnchor({ x: 0, y: '100%' })
-      .translate({ y: (!this.isDesktopDevice && this.curTab === 3 ? 120 : (this.breakpoint === 'sm' ? -120 : -100)) })
+      .translate({ y: (!this.isDesktopDevice && this.curTab === 3 ? 120 :
+        -hostListFabLiftVp(this.breakpoint)) })
       .opacity(!this.pageActive || (!this.isDesktopDevice && this.curTab === 3) ? 0 : 1)
       .animation({ curve: curves.interpolatingSpring(0, 1, 200, 17) })
 
@@ -12194,22 +13201,23 @@ struct HostListPage {
       } else if (host.protocol === 'ssh') {
         Text('SSH').fontSize(11).fontColor(this.pal().text3).width(30)
         Text(this.protectedHostCardValue(host,
-          (host.username.trim() === '' ? '' : host.username + '@') +
-            host.host + ':' + host.port.toString()))
+          formatUserAtHost(host.username, host.host, host.port)))
           .fontSize(this.breakpoint === 'sm' ? 12 : 13).fontColor(this.pal().text2)
           .fontFamily(this.font()).layoutWeight(1)
           .textOverflow({ overflow: TextOverflow.Ellipsis }).maxLines(1)
       } else if (host.protocol === 'vnc') {
         Text('VNC').fontSize(11).fontColor(this.pal().text3).width(30)
         Text(this.protectedHostCardValue(host, host.gatewayHost.trim() === '' ?
-          host.host + ':' + host.port.toString() :
-          host.host + ':' + host.port.toString() + ' · 网关 ' + host.gatewayHost))
+          formatEndpointFieldsHostPort(host.host, host.port) :
+          formatEndpointFieldsHostPort(host.host, host.port) + ' · 网关 ' +
+            formatEndpointFieldsHostPort(host.gatewayHost, host.gatewayPort)))
           .fontSize(this.breakpoint === 'sm' ? 12 : 13).fontColor(this.pal().text2)
           .fontFamily(this.font()).layoutWeight(1)
           .textOverflow({ overflow: TextOverflow.Ellipsis }).maxLines(1)
       } else {
         Text('RDP').fontSize(11).fontColor(this.pal().text3).width(30)
-        Text(this.protectedHostCardValue(host, host.host + ':' + host.port.toString()))
+        Text(this.protectedHostCardValue(host,
+          formatEndpointFieldsHostPort(host.host, host.port)))
           .fontSize(this.breakpoint === 'sm' ? 12 : 13)
           .fontColor(this.pal().text2).fontFamily(this.font()).layoutWeight(1)
           .textOverflow({ overflow: TextOverflow.Ellipsis }).maxLines(1)
@@ -12571,7 +13579,7 @@ struct HostListPage {
         this.moonlightGroupedDesktopRow()
       }
     }
-    .width('100%').padding({ top: 8, bottom: 140 })
+    .width('100%').padding({ top: 8 })
   }
 
   @Builder moonlightFlatHostCard(view: MoonlightHostLocalView) {
@@ -13208,7 +14216,8 @@ struct HostListPage {
             Text(this.hostPlatformText(host) + '  ·  ' + this.protectedHostCardValue(host,
               host.protocol === 'rustdesk' ? rustDeskCardEndpoint(host.rustdeskDirectEnabled,
                 host.rustdeskDirectHost, host.rustdeskDirectPort, host.host, host.port) :
-                host.host + ':' + host.port))
+              host.protocol === 'ssh' ? formatUserAtHost(host.username, host.host, host.port) :
+                formatEndpointFieldsHostPort(host.host, host.port)))
               .fontSize(this.breakpoint === 'sm' ? 12 : 14).fontColor(this.pal().text2)
               .margin({ top: this.breakpoint === 'sm' ? 3 : 4 }).fontFamily(this.font())
               .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
@@ -13500,8 +14509,8 @@ struct HostListPage {
             ref.key + ':' + this.hostViewRevision.toString())
         }
 
-        // 底部 FAB 占位
-        ListItem() { Column().height(140) }
+        // 底部 FAB 占位：包含按钮完整高度和操作余量，确保最后一张卡可滚出遮挡区。
+        ListItem() { Column().height(hostListBottomSpacerVp(this.breakpoint)) }
       }
         .width('100%').height('100%')
         .padding({ left: 16, right: 16, top: 0, bottom: 0 })
@@ -13639,12 +14648,20 @@ struct HostListPage {
   }
 
   private closeSshPublicKeyInstallSheet(): void {
+    if (this.sshPublicKeyInstallOperationId > 0) {
+      this.loader.cancelSshOperation(this.sshPublicKeyInstallOperationId);
+      this.sshPublicKeyInstallOperationId = 0;
+    }
     this.beginRemoteHostSheetClose(REMOTE_HOST_SHEET_PUBLIC_KEY);
     this.showSshPublicKeyInstallSheet = false;
     this.showRemoteHostSheet = false;
   }
 
   private resetSshPublicKeyInstallSheetState(): void {
+    if (this.sshPublicKeyInstallOperationId > 0) {
+      this.loader.cancelSshOperation(this.sshPublicKeyInstallOperationId);
+      this.sshPublicKeyInstallOperationId = 0;
+    }
     this.sshPublicKeyInstallHost = null;
     this.sshPublicKeyInstallKeyId = '';
     this.sshPublicKeyInstallPassword = '';
@@ -13712,19 +14729,54 @@ struct HostListPage {
     }
     let authPrivateKey = '';
     if (host.sshUseKey) {
-      const authKey = this.keyVault.getSshKey(host.sshKeyId);
-      if (authKey === undefined) { this.sshPublicKeyInstallError = '当前主机的认证私钥不在密钥保险库中'; return; }
-      authPrivateKey = authKey.privateKey;
+      authPrivateKey = this.resolveSshKeyMaterial(host).privateKey;
+      if (authPrivateKey.length === 0) {
+        this.sshPublicKeyInstallError = '当前主机的认证私钥不在密钥保险库中'; return;
+      }
+    }
+    if (!this.sshProxyProfilesReady) {
+      this.sshPublicKeyInstallError = 'SSH 连接方式存储不可读，请重新打开应用后重试';
+      return;
+    }
+    const plan: SshProxyRuntimePlan = resolveSshProxyRuntimePlan(
+      host, this.sshProxyProfiles.load(host.id));
+    const currentScope = AccountSessionCoordinator.getInstance().currentScope();
+    const routeSecretsResult: SshOperationRouteSecretResult =
+      SshOperationRouteSecretService.getInstance().resolve(host, plan, '', {
+        ownerScopeId: currentScope.ownerScopeId,
+        storeIdentity: currentScope.storeIdentity,
+        accountGeneration: currentScope.generation
+    });
+    if (!routeSecretsResult.ok) {
+      const retryHint: string =
+        routeSecretsResult.code === 'E-SSH-OPERATION-HOP-INTERACTIVE-NONREPLAYABLE' ? '' :
+          '；请先连接该主机完成一次性预认证，并在 60 秒内重试';
+      this.sshPublicKeyInstallError = routeSecretsResult.message + retryHint;
+      return;
+    }
+    const auth: SshOperationTargetAuth = {
+      authMethod: host.sshUseKey ? 'publickey' : 'password',
+      password: host.sshUseKey ? '' : password,
+      privateKeyPem: authPrivateKey,
+      privateKeyPassphrase: host.sshUseKey ? passphrase : '',
+      keyboardInteractiveResponses: []
+    };
+    const configResult: SshOperationConfigResult = buildSshOperationSessionConfig(
+      host, plan, 'install', auth, routeSecretsResult.secrets);
+    if (!configResult.ok || configResult.config === null) {
+      this.sshPublicKeyInstallError = configResult.message;
+      return;
     }
     this.sshPublicKeyInstallBusy = true;
     this.sshPublicKeyInstallError = '';
     try {
-      const result: SshPublicKeyInstallResult = await new Promise<SshPublicKeyInstallResult>((resolve) => {
-        setTimeout((): void => {
-          resolve(this.loader.installSshPublicKey(host.host, host.port, host.username,
-            host.sshUseKey ? '' : password, authPrivateKey, passphrase, publicKey));
-        }, 0);
-      });
+      const operation: SshNativeOperationPromise<SshPublicKeyInstallResult> =
+        this.loader.installSshPublicKeyOperationAsync(configResult.config, publicKey, 60000);
+      this.sshPublicKeyInstallOperationId = operation.operationId;
+      const result: SshPublicKeyInstallResult = await operation;
+      if (this.sshPublicKeyInstallOperationId === operation.operationId) {
+        this.sshPublicKeyInstallOperationId = 0;
+      }
       if (!result.ok) {
         this.sshPublicKeyInstallError = result.message || '公钥部署失败，请检查认证信息和服务器权限';
         return;
@@ -13736,6 +14788,10 @@ struct HostListPage {
     } catch (_err) {
       this.sshPublicKeyInstallError = '公钥部署失败，请稍后重试';
     } finally {
+      if (this.sshPublicKeyInstallOperationId > 0) {
+        this.loader.cancelSshOperation(this.sshPublicKeyInstallOperationId);
+        this.sshPublicKeyInstallOperationId = 0;
+      }
       this.sshPublicKeyInstallBusy = false;
     }
   }
@@ -13746,8 +14802,9 @@ struct HostListPage {
         Column() {
           Text('部署 SSH 公钥').fontSize(20).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
           if (this.sshPublicKeyInstallHost !== null) {
-            Text(this.sshPublicKeyInstallHost.username + '@' + this.sshPublicKeyInstallHost.host + ':' +
-              this.sshPublicKeyInstallHost.port.toString()).fontSize(12).fontColor(this.pal().text3).margin({ top: 4 })
+            Text(formatUserAtHost(this.sshPublicKeyInstallHost.username,
+              this.sshPublicKeyInstallHost.host, this.sshPublicKeyInstallHost.port))
+              .fontSize(12).fontColor(this.pal().text3).margin({ top: 4 })
           }
         }.alignItems(HorizontalAlign.Start).layoutWeight(1)
         Button() { SymbolGlyph($r('sys.symbol.xmark')).fontSize(17).fontColor([this.pal().text2]) }
@@ -14045,6 +15102,12 @@ struct HostListPage {
     const wheelDirectionHeight: number =
       remoteWheelDirectionSettingsLeafSheetHeight(this.settingsLeafSheetMode);
     if (wheelDirectionHeight > 0) { return wheelDirectionHeight; }
+    const pinchZoomHeight: number =
+      remotePinchZoomSettingsLeafSheetHeight(this.settingsLeafSheetMode);
+    if (pinchZoomHeight > 0) { return pinchZoomHeight; }
+    const controlBarHeight: number =
+      sessionControlBarSettingsLeafSheetHeight(this.settingsLeafSheetMode);
+    if (controlBarHeight > 0) { return controlBarHeight; }
     const moonlightHeight: number = moonlightSettingsLeafSheetHeight(this.settingsLeafSheetMode);
     if (moonlightHeight > 0) { return moonlightHeight; }
     const vncHeight: number = vncSettingsLeafSheetHeight(this.settingsLeafSheetMode);
@@ -14105,6 +15168,28 @@ struct HostListPage {
         onClose: (): void => { this.closeSettingsLeafSheet(); },
         onSave: (update: RemoteWheelPreferenceUpdate): boolean =>
           this.saveRemoteWheelPreferenceUpdate(update)
+      })
+    } else if (this.settingsLeafSheetMode === SETTINGS_SHEET_REMOTE_PINCH_ZOOM) {
+      RemotePinchZoomSettingsSheet({
+        initialRdp: this.rdpPinchZoomEnabled,
+        initialRustDesk: this.rustdeskPinchZoomEnabled,
+        initialSsh: this.sshPinchZoomEnabled,
+        initialVnc: this.vncPinchZoomEnabled,
+        initialMoonlight: this.moonlightPinchZoomEnabled,
+        onClose: (): void => { this.closeSettingsLeafSheet(); },
+        onSave: (update: RemotePinchZoomPreferenceUpdate): boolean =>
+          this.saveRemotePinchZoomPreferenceUpdate(update)
+      })
+    } else if (this.settingsLeafSheetMode === SETTINGS_SHEET_SESSION_CONTROL_BAR) {
+      RemoteSessionControlBarSettingsSheet({
+        initialRdpHidden: this.sessionControlBarHiddenRdp,
+        initialRustDeskHidden: this.sessionControlBarHiddenRustDesk,
+        initialVncHidden: this.sessionControlBarHiddenVnc,
+        initialMoonlightHidden: this.sessionControlBarHiddenMoonlight,
+        quickExitDisabled: this.remoteSessionQuickExitDisabled,
+        onClose: (): void => { this.closeSettingsLeafSheet(); },
+        onSave: (update: RemoteSessionControlBarPreferenceUpdate): boolean =>
+          this.saveSessionControlBarPreferenceUpdate(update)
       })
     } else if (this.settingsLeafSheetMode === SETTINGS_SHEET_DIAGNOSTIC_LOG) {
       DiagnosticCaptureSettingsSheet({
@@ -14685,7 +15770,7 @@ struct HostListPage {
 
         ListItem() {
           this.settingsAccordionHeader(SETTINGS_SECTION_DISPLAY_INTERACTION, $r('sys.symbol.desktop_fill'),
-            '显示与交互', '本地缩放、滚轮方向与会话控制栏')
+            '显示与交互', '本地缩放、滚轮方向、退出保护与会话控制栏')
         }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 10 })
 
         ListItem() {
@@ -14697,10 +15782,12 @@ struct HostListPage {
               this.cardDivider()
               this.remoteWheelDirectionRow()
               this.cardDivider()
+              this.remotePinchZoomRow()
+              this.cardDivider()
+              this.remoteSessionQuickExitRow()
+              this.cardDivider()
               this.sessionControlBarVisibilityRow()
               if (!this.isDesktopDevice) {
-                this.cardDivider()
-                this.canvasGestureZoomRow()
                 this.cardDivider()
                 Column() {
                   Row() {
@@ -14753,13 +15840,13 @@ struct HostListPage {
 
         ListItem() {
           this.settingsAccordionHeader(SETTINGS_SECTION_VIRTUAL_KEYBOARD,
-            $r('sys.symbol.keyboard'), '虚拟键盘',
-            'HarmonyOS 输入法、Windows/macOS 组合键、功能键与自定义')
+            $r('sys.symbol.keyboard'), '键盘',
+            '输入法、实体键盘、HarmonyOS 快捷键与远端组合键')
         }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 10 })
 
         ListItem() {
           Column() {
-            Text('虚拟键盘').fontSize(13).fontWeight(FontWeight.Medium)
+            Text('键盘').fontSize(13).fontWeight(FontWeight.Medium)
               .fontColor(this.pal().text3).fontFamily(this.font()).padding({ left: 8, bottom: 8 })
             Column() {
               this.cardActionRow($r('app.media.icon_phone'), '系统输入法',
@@ -14777,6 +15864,10 @@ struct HostListPage {
               this.cardActionRow($r('app.media.icon_info'), '功能键与面板',
                 'F1–F12、导航键、连续发送与面板触控',
                 (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_VIRTUAL_KEYBOARD_FUNCTIONS); })
+              this.cardDivider()
+              this.protocolActionRow($r('sys.symbol.lock_shield_fill'), '屏蔽鸿蒙快捷键',
+                'PC 默认打开；打开后屏蔽并发送远端，关闭后由鸿蒙处理',
+                (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_HARMONY_SHORTCUT_BLOCKING); })
               this.cardDivider()
               this.cardActionRow($r('app.media.icon_palette'), '自定义组合键',
                 '创建、编辑与删除跨连接复用的快捷键',
@@ -14807,6 +15898,8 @@ struct HostListPage {
               .fontFamily(this.font()).padding({ left: 8, bottom: 8 })
             Column() {
               this.rdpDesktopPresetRow()
+              this.cardDivider()
+              this.rdpRemoteUiScaleRow()
               this.cardDivider()
               this.rdpColorDepthRow()
               this.cardDivider()
@@ -15147,11 +16240,10 @@ struct HostListPage {
         }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 10 })
 
         ListItem() {
-          if (this.settingsSectionExpanded(SETTINGS_SECTION_MOONLIGHT)) {
+          Column() {
+            Text('Moonlight').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text3)
+              .fontFamily(this.font()).padding({ left: 8, bottom: 8 })
             Column() {
-              Text('Moonlight').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text3)
-                .fontFamily(this.font()).padding({ left: 8, bottom: 8 })
-              Column() {
               this.protocolActionRow($r('sys.symbol.display'), '画面',
                 '预设、H.264、分辨率、帧率、码率与无画面策略',
                 (): void => { this.openMoonlightSettingsFromSettings(SETTINGS_SHEET_MOONLIGHT_VIDEO); })
@@ -15181,11 +16273,10 @@ struct HostListPage {
               this.protocolActionRow($r('sys.symbol.cloud_fill'), '数据管理',
                 '停止同步、分别删除云端或本机 Moonlight 数据',
                 (): void => { this.openMoonlightSettingsFromSettings(SETTINGS_SHEET_MOONLIGHT_DATA); })
-              }.borderRadius(24).backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
-                .shadow({ radius: 16, color: 'rgba(0,0,0,0.04)', offsetY: 4 })
-                .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
-            }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 20 })
-          }
+            }.borderRadius(24).backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
+              .shadow({ radius: 16, color: 'rgba(0,0,0,0.04)', offsetY: 4 })
+              .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
+          }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 20 })
         }
         .constraintSize({ maxHeight: this.settingsSectionExpanded(SETTINGS_SECTION_MOONLIGHT) ?
           this.settingsSectionExpandedMaxHeight(SETTINGS_SECTION_MOONLIGHT) : 0 })
@@ -15389,7 +16480,8 @@ struct HostListPage {
               .fontFamily(this.font()).padding({ left: 8, bottom: 8 })
             Column() {
               this.cardActionRow($r('app.media.icon_info'), '本版本更新日志',
-                CURRENT_RELEASE_VERSION + ' · 查看全部 10 项功能与修复',
+                CURRENT_RELEASE_VERSION + ' · 查看全部 ' +
+                  currentReleasePageCount().toString() + ' 项功能与修复',
                 (): void => {
                   this.openSettingsLeafSheet(SETTINGS_SHEET_POPUP, (): void => {
                     this.aboutSheetMode = 4;
@@ -15559,7 +16651,7 @@ struct HostListPage {
     }
     .width('100%')
     .padding(20)
-    .backgroundColor(this.pal().bg)
+    .backgroundColor(this.pal().sheetBg)
     .backgroundBlurStyle(BlurStyle.Regular)
     .borderRadius(this.breakpoint === 'sm' ? { topLeft: 20, topRight: 20, bottomLeft: 0, bottomRight: 0 } : 20)
     .constraintSize({ maxWidth: 760 })
@@ -15840,11 +16932,80 @@ struct HostListPage {
             })
         }.width('100%').margin({ top: 12 })
       }
-    }.width('100%').padding(20).backgroundColor(this.pal().bg)
+    }.width('100%').padding(20).backgroundColor(this.pal().sheetBg)
       .backgroundBlurStyle(BlurStyle.Regular)
       .borderRadius(this.breakpoint === 'sm' ?
         { topLeft: 20, topRight: 20, bottomLeft: 0, bottomRight: 0 } : 20)
       .constraintSize({ maxWidth: 760 })
+      .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.BOTTOM])
+  }
+
+  @Builder rdpSessionCredentialPanel() {
+    Column() {
+      Row() {
+        SymbolGlyph($r('sys.symbol.key_fill')).fontSize(40).fontColor([this.accentColor])
+        Column() {
+          Text('RDP 连接认证').fontSize(17).fontWeight(FontWeight.Bold)
+            .fontColor(this.pal().text).fontFamily(this.font())
+          Text(this.rdpSessionCredentialHostLabel).fontSize(13)
+            .fontColor(this.pal().text3).margin({ top: 5 })
+        }.layoutWeight(1).margin({ left: 14 })
+      }.width('100%')
+
+      Text('账号和密码只保留在本次连接内存中，不保存到主机、凭据库、备份或云端。提交后才会进行 RDP 证书预检。')
+        .fontSize(13).fontColor(this.pal().text2).lineHeight(19)
+        .width('100%').margin({ top: 14 })
+
+      TextInput({
+        placeholder: '邮箱、DOMAIN\\user 或本地用户名',
+        text: this.rdpSessionCredentialUsername
+      }).height(42).fontSize(14).margin({ top: 14 })
+        .backgroundColor(this.pal().surface).fontColor(this.pal().text)
+        .placeholderColor(this.pal().text3).borderRadius(10)
+        .onChange((value: string): void => {
+          this.rdpSessionCredentialUsername = value;
+          this.rdpSessionCredentialError = '';
+        })
+
+      Row() {
+        TextInput({
+          placeholder: 'Windows 登录密码',
+          text: this.rdpSessionCredentialPassword
+        }).type(this.rdpSessionCredentialPasswordVisible ? InputType.Normal : InputType.Password)
+          .layoutWeight(1).height(42).backgroundColor(this.pal().surface)
+          .fontColor(this.pal().text).placeholderColor(this.pal().text3)
+          .onChange((value: string): void => {
+            this.rdpSessionCredentialPassword = value;
+            this.rdpSessionCredentialError = '';
+          })
+          .onSubmit((): void => { this.confirmRdpSessionCredential(); })
+        SymbolGlyph(this.rdpSessionCredentialPasswordVisible ?
+          $r('sys.symbol.eye_slash') : $r('sys.symbol.eye'))
+          .fontSize(20).fontColor([this.pal().text2]).margin({ left: 10 })
+          .onClick((): void => {
+            this.rdpSessionCredentialPasswordVisible =
+              !this.rdpSessionCredentialPasswordVisible;
+          })
+      }.width('100%').margin({ top: 10 })
+
+      if (this.rdpSessionCredentialError !== '') {
+        Text(this.rdpSessionCredentialError).fontSize(12).fontColor(this.pal().danger)
+          .lineHeight(18).width('100%').margin({ top: 10 })
+      }
+
+      Row() {
+        Button('取消').height(40).layoutWeight(1).fontSize(14)
+          .backgroundColor(this.pal().surface).fontColor(this.pal().text2).borderRadius(10)
+          .onClick((): void => { this.cancelRdpSessionCredential(); })
+        Button('继续').height(40).layoutWeight(1).fontSize(14)
+          .backgroundColor(this.accentColor).fontColor(Color.White).borderRadius(10)
+          .margin({ left: 12 }).onClick((): void => { this.confirmRdpSessionCredential(); })
+      }.width('100%').margin({ top: 18 })
+    }.width('100%').padding(20).backgroundColor(this.pal().sheetBg)
+      .backgroundBlurStyle(BlurStyle.Regular)
+      .borderRadius(this.breakpoint === 'sm' ?
+        { topLeft: 20, topRight: 20, bottomLeft: 0, bottomRight: 0 } : 20)
+      .constraintSize({ maxWidth: 620 })
       .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.BOTTOM])
   }
 
@@ -15930,7 +17091,7 @@ struct HostListPage {
           .backgroundColor(this.accentColor).fontColor(Color.White).borderRadius(10)
           .margin({ left: 12 }).onClick((): void => { this.confirmVncCredentialPreflight(); })
       }.width('100%').margin({ top: 18 })
-    }.width('100%').padding(20).backgroundColor(this.pal().bg)
+    }.width('100%').padding(20).backgroundColor(this.pal().sheetBg)
       .backgroundBlurStyle(BlurStyle.Regular)
       .borderRadius(this.breakpoint === 'sm' ?
         { topLeft: 20, topRight: 20, bottomLeft: 0, bottomRight: 0 } : 20)
@@ -15963,7 +17124,7 @@ struct HostListPage {
     }
     .width('100%')
     .padding(20)
-    .backgroundColor(this.pal().bg)
+    .backgroundColor(this.pal().sheetBg)
     .backgroundBlurStyle(BlurStyle.Regular)
     .borderRadius(this.breakpoint === 'sm' ? { topLeft: 20, topRight: 20, bottomLeft: 0, bottomRight: 0 } : 20)
     .constraintSize({ maxWidth: 560 })
@@ -16009,9 +17170,11 @@ struct HostListPage {
   @Builder sshPreflightTrustFirstContent() {
     Column() {
       this.sshHostKeyInfoCard()
-      Text(this.sshPreflightJumpHostKeyInfo ?
+      Text(this.sshPreflightAwaitingJumpTrust ?
+        '连接目标前，请先确认跳板机指纹与服务器管理员提供的一致；确认前不会发送跳板认证凭据。' :
+        (this.sshPreflightJumpHostKeyInfo ?
         '这是首次连接该 SSH 主机或跳板机。请分别确认指纹与服务器管理员提供的一致。' :
-        '这是首次连接该 SSH 主机。请确认此指纹与服务器管理员提供的一致。')
+        '这是首次连接该 SSH 主机。请确认此指纹与服务器管理员提供的一致。'))
         .fontSize(13).fontColor(this.pal().text2).margin({ top: 16 }).fontFamily(this.font())
       Text('确认后, RemoteDesktop 会分别保存 endpoint 指纹, 后续连接会自动校验。')
         .fontSize(12).fontColor(this.pal().text3).margin({ top: 8 }).fontFamily(this.font())
@@ -16042,7 +17205,9 @@ struct HostListPage {
       Divider().margin({ top: 12, bottom: 12 }).color(this.pal().divider)
       Text('当前指纹').fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text2).fontFamily(this.font()).margin({ bottom: 8 })
       this.sshHostKeyInfoCard()
-      Text('这可能表示服务器重装或密钥轮换, 也可能是中间人攻击。')
+      Text(this.sshPreflightAwaitingJumpTrust ?
+        '跳板机指纹已改变；确认前不会向该跳板发送任何认证凭据。' :
+        '这可能表示服务器重装或密钥轮换, 也可能是中间人攻击。')
         .fontSize(13).fontColor('#FF5252').margin({ top: 16 }).fontFamily(this.font())
     }.width('100%')
   }
@@ -16520,7 +17685,7 @@ struct HostListPage {
           }.width('100%').margin({ top: 22 })
         }.width('100%').padding({ left: 24, right: 24, top: 24, bottom: 32 }).alignItems(HorizontalAlign.Start)
       }
-    }.width('100%').backgroundColor(this.pal().bg).borderRadius(24)
+    }.width('100%').backgroundColor(this.pal().sheetBg).borderRadius(24)
       .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.BOTTOM])
   }
 
@@ -16553,7 +17718,7 @@ struct HostListPage {
                   Column() {
                     Text(host.label).fontSize(15).fontWeight(FontWeight.Medium)
                       .fontColor(this.pal().text).fontFamily(this.font()).maxLines(1)
-                    Text(host.username + '@' + host.host + ':' + host.port.toString())
+                    Text(formatUserAtHost(host.username, host.host, host.port))
                       .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
                       .maxLines(1).margin({ top: 2 })
                   }.alignItems(HorizontalAlign.Start).layoutWeight(1)
@@ -16597,7 +17762,7 @@ struct HostListPage {
     }
     .width('100%')
     .constraintSize({ maxWidth: 620 })
-    .backgroundColor(this.pal().bg)
+    .backgroundColor(this.pal().sheetBg)
     .backgroundBlurStyle(BlurStyle.Regular)
     .borderRadius(this.breakpoint === 'sm' ? { topLeft: 22, topRight: 22, bottomLeft: 0, bottomRight: 0 } : 24)
   }
@@ -16631,7 +17796,7 @@ struct HostListPage {
                   Column() {
                     Text(host.label).fontSize(15).fontWeight(FontWeight.Medium)
                       .fontColor(this.pal().text).fontFamily(this.font()).maxLines(1)
-                    Text(host.host + ':' + host.port.toString())
+                    Text(formatEndpointFieldsHostPort(host.host, host.port))
                       .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
                       .maxLines(1).margin({ top: 2 })
                   }.alignItems(HorizontalAlign.Start).layoutWeight(1)
@@ -16694,7 +17859,7 @@ struct HostListPage {
     }
     .width('100%')
     .constraintSize({ maxWidth: 620 })
-    .backgroundColor(this.pal().bg)
+    .backgroundColor(this.pal().sheetBg)
     .backgroundBlurStyle(BlurStyle.Regular)
     .borderRadius(this.breakpoint === 'sm' ? { topLeft: 22, topRight: 22, bottomLeft: 0, bottomRight: 0 } : 24)
   }
@@ -16819,7 +17984,7 @@ struct HostListPage {
     }.width('100%')
     .padding({ left: 24, right: 24, top: 8, bottom: 40 })
     .borderRadius(this.breakpoint === 'sm' ? { topLeft: 20, topRight: 20, bottomLeft: 0, bottomRight: 0 } : 20)
-    .backgroundColor(this.pal().bg).backgroundBlurStyle(BlurStyle.Regular)
+    .backgroundColor(this.pal().sheetBg).backgroundBlurStyle(BlurStyle.Regular)
     .shadow({ radius: this.breakpoint === 'sm' ? 0 : 24, color: this.breakpoint === 'sm' ? 'rgba(0,0,0,0)' : 'rgba(0,0,0,0.12)', offsetY: this.breakpoint === 'sm' ? 0 : 6 })
     .border(this.breakpoint === 'sm'
       ? { width: 0, color: Color.Transparent, style: BorderStyle.Solid }
@@ -17135,7 +18300,10 @@ struct HostListPage {
   }
 
   private rdpDesktopPresetLabel(): string {
-    return rdpResolutionLabel(this.rdpDesktopResolutionId);
+    return rdpResolutionLabel(this.rdpDesktopResolutionId) +
+      (this.rdpDesktopResolutionId === 'auto' ?
+        (this.isDesktopDevice ? '（推荐，跟随会话窗口）' : '（推荐，连接时适应设备）') :
+        '（固定分辨率）');
   }
 
   @Builder rdpDesktopPresetRow() {
@@ -17143,7 +18311,7 @@ struct HostListPage {
       this.rdpDesktopPresetLabelBlock()
       Scroll() {
         Row({ space: 8 }) {
-          this.rdpResolutionPresetChip('自适应', 'auto')
+          this.rdpResolutionPresetChip('自适应（推荐）', 'auto')
           ForEach(rdpResolutionPresets(), (preset: RemoteResolutionPreset): void => {
             this.rdpResolutionPresetChip(preset.label, preset.id)
           }, (preset: RemoteResolutionPreset): string => preset.id)
@@ -17181,8 +18349,58 @@ struct HostListPage {
       .onClick((): void => { this.saveRdpDesktopResolutionId(id); })
   }
 
+  @Builder rdpRemoteUiScaleRow() {
+    if (this.breakpoint === 'md' || this.breakpoint === 'lg') {
+      Row() {
+        this.rdpRemoteUiScaleLabelBlock()
+        this.rdpRemoteUiScaleSelector()
+      }.width('100%').height(64).padding({ left: 16, right: 16 })
+    } else {
+      Column() {
+        Row() { this.rdpRemoteUiScaleLabelBlock() }.width('100%')
+        Row() { this.rdpRemoteUiScaleSelector() }
+          .width('100%').justifyContent(FlexAlign.Center).margin({ top: 10 })
+      }.width('100%').height(92).padding({ left: 16, right: 16, top: 14, bottom: 12 })
+    }
+  }
+
+  @Builder rdpRemoteUiScaleLabelBlock() {
+    Row() {
+      Row() { Image($r('app.media.icon_laptop')).width(22).height(22).fillColor(this.pal().text3) }
+        .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
+      Column() {
+        Text('远端界面大小').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
+          .fontColor(this.pal().text).fontFamily(this.font())
+        Text(rdpRemoteUiScaleLabel(this.rdpRemoteUiScale) + '，调整 Windows 字体与控件')
+          .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
+          .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+      }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
+    }.layoutWeight(1)
+  }
+
+  @Builder rdpRemoteUiScaleSelector() {
+    Row({ space: 4 }) {
+      this.rdpRemoteUiScaleChip('自动', 'auto')
+      this.rdpRemoteUiScaleChip('标准', '100')
+      this.rdpRemoteUiScaleChip('大', '140')
+      this.rdpRemoteUiScaleChip('特大', '180')
+    }.padding(3).borderRadius(11).backgroundColor(this.pal().surface)
+  }
+
+  @Builder rdpRemoteUiScaleChip(label: string, value: string) {
+    Text(label).fontSize(11)
+      .fontColor(this.rdpRemoteUiScale === value ? '#FFFFFF' : this.pal().text2)
+      .fontWeight(this.rdpRemoteUiScale === value ? FontWeight.Medium : FontWeight.Normal)
+      .textAlign(TextAlign.Center).maxLines(1)
+      .padding({ left: 9, right: 9, top: 7, bottom: 7 })
+      .backgroundColor(this.rdpRemoteUiScale === value ? this.accentColor : Color.Transparent)
+      .borderRadius(8)
+      .onClick((): void => { this.saveRdpRemoteUiScale(value); })
+  }
+
   private remoteDisplayScaleLabel(): string {
     const mode = normalizeLocalViewScaleMode(this.remoteDisplayScaleMode);
+    if (mode === 'fill') { return '填满窗口'; }
     const percent: number = localViewScalePercent(mode, this.remoteDisplayCustomScalePercent);
     return percent > 0 ? percent.toString() + '%' : '适应窗口';
   }
@@ -17202,6 +18420,7 @@ struct HostListPage {
       Scroll() {
         Row({ space: 8 }) {
           this.remoteDisplayScaleChip('适应', 'fit')
+          this.remoteDisplayScaleChip('填满', 'fill')
           this.remoteDisplayScaleChip('100%', '100')
           this.remoteDisplayScaleChip('125%', '125')
           this.remoteDisplayScaleChip('150%', '150')
@@ -17255,61 +18474,74 @@ struct HostListPage {
   }
 
   @Builder sessionControlBarVisibilityRow() {
-    Column() {
-      Row() {
-        Row() {
-          Image($r('app.media.icon_desktop')).width(22).height(22).fillColor(this.pal().text3)
-        }.width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
-        Column() {
-          Text('会话侧栏与顶栏').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
-            .fontColor(this.pal().text).fontFamily(this.font())
-          Text(remoteSessionControlBarSelectionSummary(this.sessionControlBarVisibility()))
-            .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
-            .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-        }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
-        Button(this.sessionControlBarProtocolPickerExpanded ? '收起' : '选择协议')
-          .height(34).padding({ left: 12, right: 12 }).fontSize(12)
-          .fontColor(this.accentColor).backgroundColor(this.pal().surface).borderRadius(8)
-          .onClick((): void => {
-            this.sessionControlBarProtocolPickerExpanded =
-              !this.sessionControlBarProtocolPickerExpanded;
-          })
-      }.width('100%').height(64).padding({ left: 16, right: 16 })
-      if (this.sessionControlBarProtocolPickerExpanded) {
-        Text('选中的协议会同时隐藏手机/平板侧栏和 PC 顶栏；可在此随时恢复。')
-          .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
-          .width('100%').padding({ left: 20, right: 20, bottom: 6 })
-        this.sessionControlBarProtocolSwitchRow('rdp', 'RDP')
-        this.sessionControlBarProtocolSwitchRow('rustdesk', 'RustDesk')
-        this.sessionControlBarProtocolSwitchRow('vnc', 'VNC')
-        this.sessionControlBarProtocolSwitchRow('moonlight', 'Moonlight')
-      }
-    }.width('100%')
-  }
-
-  @Builder sessionControlBarProtocolSwitchRow(protocol: string, label: string) {
     Row() {
+      Row() {
+        Image($r('app.media.icon_desktop')).width(22).height(22).fillColor(this.pal().text3)
+      }.width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
       Column() {
-        Text(label).fontSize(13).fontWeight(FontWeight.Medium)
+        Text('会话侧栏与顶栏').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
           .fontColor(this.pal().text).fontFamily(this.font())
-        Text(this.sessionControlBarHidden(protocol) ? '侧栏和顶栏均已隐藏' : '显示会话控制栏')
+        Text(remoteSessionControlBarSelectionSummary(
+          this.sessionControlBarVisibility(), this.remoteSessionQuickExitDisabled))
           .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
-      }.alignItems(HorizontalAlign.Start).layoutWeight(1)
-      Toggle({ type: ToggleType.Switch, isOn: this.sessionControlBarHidden(protocol) })
-        .selectedColor(this.accentColor).scale({ x: 0.88, y: 0.88 })
-        .accessibilityText((this.sessionControlBarHidden(protocol) ? '显示 ' : '隐藏 ') +
-          label + ' 会话控制栏')
-        .onChange((on: boolean): void => { this.saveSessionControlBarHidden(protocol, on); })
-    }.width('100%').height(58).padding({ left: 52, right: 16 })
+          .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).margin({ top: 2 })
+      }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
+      Button('选择协议').height(34).padding({ left: 12, right: 12 }).fontSize(12)
+        .fontColor(this.accentColor).backgroundColor(this.pal().surface).borderRadius(8)
+        .onClick((): void => {
+          this.openSettingsLeafSheet(SETTINGS_SHEET_SESSION_CONTROL_BAR);
+        })
+    }.width('100%').height(62).padding({ left: 16, right: 16 })
+      .onClick((): void => {
+        this.openSettingsLeafSheet(SETTINGS_SHEET_SESSION_CONTROL_BAR);
+      })
   }
 
-  @Builder canvasGestureZoomRow() {
-    if (!this.isDesktopDevice) {
-      this.rustdeskSwitchRow($r('app.media.icon_desktop'), '双指画布缩放',
-        '缩放后抬手，再双指长按约0.4秒拖动画布；关闭后保留双指右键和滚轮',
-        this.canvasGestureZoomEnabled,
-        (on: boolean): void => { this.saveCanvasGestureZoomEnabled(on); }, true)
-    }
+  @Builder remoteSessionQuickExitRow() {
+    Row() {
+      Row() {
+        SymbolGlyph($r('sys.symbol.lock_shield_fill')).fontSize(22).fontColor([this.pal().text3])
+      }.width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
+      Column() {
+        Text('关闭快捷退出').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
+          .fontColor(this.pal().text).fontFamily(this.font())
+        Text(this.remoteSessionQuickExitDisabled ?
+          '已开启：只能使用会话控制栏或顶栏按钮退出' :
+          '允许系统返回和 SSH Ctrl+Shift+Q 退出会话')
+          .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
+          .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis }).margin({ top: 2 })
+      }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
+      Toggle({ type: ToggleType.Switch, isOn: this.remoteSessionQuickExitDisabled })
+        .selectedColor(this.accentColor).scale({ x: 0.88, y: 0.88 })
+        .accessibilityText('关闭快捷退出')
+        .onChange((on: boolean): void => {
+          if (!this.saveRemoteSessionQuickExitDisabled(on)) {
+            promptAction.showToast({ message: '快捷退出设置保存失败，已保留原状态', duration: 2200 });
+          }
+        })
+    }.width('100%').height(68).padding({ left: 16, right: 16 })
+  }
+
+  @Builder remotePinchZoomRow() {
+    Row() {
+      Row() { Image($r('app.media.icon_desktop')).width(22).height(22).fillColor(this.pal().text3) }
+        .width(22).height(22).justifyContent(FlexAlign.Center).margin({ left: 9, right: 9 })
+      Column() {
+        Text('双指缩放').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
+          .fontColor(this.pal().text).fontFamily(this.font())
+        Text(remotePinchZoomSelectionSummary(this.remotePinchZoomPreferences()))
+          .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
+          .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).margin({ top: 2 })
+      }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
+      Button('选择协议').height(34).padding({ left: 12, right: 12 }).fontSize(12)
+        .fontColor(this.accentColor).backgroundColor(this.pal().surface).borderRadius(8)
+        .onClick((): void => {
+          this.openSettingsLeafSheet(SETTINGS_SHEET_REMOTE_PINCH_ZOOM);
+        })
+    }.width('100%').height(62).padding({ left: 16, right: 16 })
+      .onClick((): void => {
+        this.openSettingsLeafSheet(SETTINGS_SHEET_REMOTE_PINCH_ZOOM);
+      })
   }
 
   @Builder rdpColorDepthRow() {
@@ -17801,7 +19033,9 @@ struct HostListPage {
   @Builder hostAddSheetContent() {
     if (this.addSheetShowsModernPicker) {
       HostAddWizardSheet({
-        moonlightFabEntryAvailable: false,
+        // Opening the local add flow must not depend on an optional native
+        // network-observer lease. Pairing and streaming remain capability-gated.
+        moonlightFabEntryAvailable: true,
         moonlightProtocolAvailable: this.moonlightProtocolAvailable,
         onSelectProtocol: (protocol: string): void => {
           this.modernAddProtocol = protocol;
@@ -17896,9 +19130,11 @@ struct HostListPage {
         onVerify: (
           address: MoonlightAddress,
           selectedServerUuid: string,
+          candidateAddresses: MoonlightAddress[],
           key: MoonlightHostAddOperationKey
         ): Promise<MoonlightHostAddVerification | null> =>
-          this.moonlightVerifyHost(address, selectedServerUuid, key),
+          this.moonlightVerifyHost(
+            address, selectedServerUuid, candidateAddresses, key),
         onPreparePairing: (key: MoonlightHostAddOperationKey):
           Promise<MoonlightPairingPreparation> => this.moonlightPairingPreparation(key),
         onAwaitPairing: (
@@ -18021,7 +19257,7 @@ struct HostListPage {
         .height(this.rustDeskHosts().length > 4 ? 420 : (this.rustDeskHosts().length * 112 + 12))
         .padding({ left: 20, right: 20 }).margin({ bottom: 22 })
       }
-    }.width('100%').backgroundColor(this.pal().bg).constraintSize({ maxWidth: 620, maxHeight: 620 })
+    }.width('100%').backgroundColor(this.pal().sheetBg).constraintSize({ maxWidth: 620, maxHeight: 620 })
     .borderRadius(this.breakpoint === 'sm' ? { topLeft: 20, topRight: 20, bottomLeft: 0, bottomRight: 0 } : 20)
   }
 
@@ -18264,11 +19500,14 @@ struct HostListPage {
                 }.width('30%')
                 Column() {
                   this.fieldRow('用户名', this.proto === 'rdp' && this.sheetRdpAuthMode === 'password' &&
+                    this.sheetRdpCredentialStorageMode === 'connect_time' ? '连接时输入（不保存）' :
+                    (this.proto === 'rdp' && this.sheetRdpAuthMode === 'password' &&
                     this.selectedRdpCredentialId !== '' ? '已使用 Windows 凭据' :
-                    (this.proto === 'rdp' ? 'user 或 DOMAIN\\user' : 'root'),
+                    (this.proto === 'rdp' ? 'user 或 DOMAIN\\user' : 'root')),
                     this.username, (v: string): void => { this.username = v; },
                     !(this.proto === 'rdp' && this.sheetRdpAuthMode === 'password' &&
-                      this.selectedRdpCredentialId !== ''))
+                      (this.sheetRdpCredentialStorageMode === 'connect_time' ||
+                        this.selectedRdpCredentialId !== '')))
                 }.width('60%').margin({ left: 12 })
               }.width('100%')
             }
@@ -18276,7 +19515,8 @@ struct HostListPage {
 
           if (this.proto === 'rdp') {
             this.rdpAuthenticationModeSection()
-            if (this.sheetRdpAuthMode === 'password') {
+            if (this.sheetRdpAuthMode === 'password' &&
+              this.sheetRdpCredentialStorageMode === 'saved') {
               this.rdpCredentialSection()
             }
           }
@@ -18284,12 +19524,17 @@ struct HostListPage {
           // 密码：VNC 的密码/记住密码已由 vncClassicEditorFields 提供，
           // 通用密码行必须排除 VNC，避免 sheetRdpAuthMode 默认值造成双密码槽位。
           if (this.proto !== 'vnc' &&
-            ((this.proto !== 'rdp' && this.proto !== 'vnc') || this.sheetRdpAuthMode === 'password')) {
+            ((this.proto !== 'rdp' && this.proto !== 'vnc') ||
+              (this.sheetRdpAuthMode === 'password' &&
+                this.sheetRdpCredentialStorageMode === 'saved'))) {
             this.pwdRow(!(this.proto === 'rdp' && this.selectedRdpCredentialId !== ''))
           }
 
           if (this.proto === 'rdp') {
-            this.fieldRow('主机名(可选)', '标识', this.chn, (v: string): void => { this.chn = v; })
+            this.fieldRow('目标服务器名(可选)', '证书或 DNS 名称', this.chn,
+              (v: string): void => { this.chn = v; })
+            this.fieldRow('客户端主机名(可选)', '发送给 Windows 的客户端名称',
+              this.rdpClientHostname, (v: string): void => { this.rdpClientHostname = v; })
           }
 
           if (this.proto === 'rustdesk') {
@@ -18563,7 +19808,7 @@ struct HostListPage {
     .padding({ left: 24, right: 24, top: 24, bottom: 24 })
     .safeAreaPadding({ bottom: 20 })
     .borderRadius(this.breakpoint === 'sm' ? 0 : 20)
-    .backgroundColor(this.pal().bg)
+    .backgroundColor(this.pal().sheetBg)
     .backgroundBlurStyle(BlurStyle.Regular)
     .shadow({ radius: this.breakpoint === 'sm' ? 0 : 24, color: this.breakpoint === 'sm' ? 'rgba(0,0,0,0)' : 'rgba(0,0,0,0.12)', offsetY: this.breakpoint === 'sm' ? 0 : 6 })
     .border(this.breakpoint === 'sm'
@@ -18637,6 +19882,7 @@ struct HostListPage {
         this.sheetRdpAuthMode = mode;
         this.sheetErr = '';
         if (mode !== 'password') {
+          this.sheetRdpCredentialStorageMode = 'saved';
           this.selectedRdpCredentialId = '';
           this.sheetPwd = '';
           this.sheetPasswordFromStoredProjection = false;
@@ -18665,6 +19911,43 @@ struct HostListPage {
         this.rdpAuthModeButton('空密码账户', 'blank_password', 6)
         this.rdpAuthModeButton('Restricted Admin', 'restricted_admin', 6)
       }.width('100%').margin({ bottom: 8 })
+
+      if (this.sheetRdpAuthMode === 'password') {
+        Text('账号和密码').fontSize(11).fontColor(this.pal().text2)
+          .fontFamily(this.font()).margin({ bottom: 4 })
+        Row() {
+          Button('保存到本地').layoutWeight(1).height(34).borderRadius(8)
+            .backgroundColor(this.sheetRdpCredentialStorageMode === 'saved' ?
+              this.accentColor : this.pal().surface)
+            .fontColor(this.sheetRdpCredentialStorageMode === 'saved' ?
+              Color.White : this.pal().text2)
+            .fontSize(11).onClick((): void => {
+              this.sheetRdpCredentialStorageMode = 'saved';
+              this.sheetErr = '';
+            })
+          Button('每次连接输入').layoutWeight(1).height(34).borderRadius(8)
+            .margin({ left: 6 })
+            .backgroundColor(this.sheetRdpCredentialStorageMode === 'connect_time' ?
+              this.accentColor : this.pal().surface)
+            .fontColor(this.sheetRdpCredentialStorageMode === 'connect_time' ?
+              Color.White : this.pal().text2)
+            .fontSize(11).onClick((): void => {
+              this.sheetRdpCredentialStorageMode = 'connect_time';
+              this.username = '';
+              this.sheetPwd = '';
+              this.sheetPasswordConfigured = false;
+              this.sheetPasswordChanged = true;
+              this.sheetPasswordFromStoredProjection = false;
+              this.selectedRdpCredentialId = '';
+              this.sheetErr = '';
+            })
+        }.width('100%').margin({ bottom: 6 })
+        if (this.sheetRdpCredentialStorageMode === 'connect_time') {
+          Text('此主机不保存也不引用账号和密码；每次连接时输入，已有 Windows 凭据不会被自动删除。')
+            .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
+            .lineHeight(17).margin({ bottom: 8 })
+        }
+      }
 
       if (this.sheetRdpAuthMode === 'blank_password') {
         Text('密码为空。目标 Windows 必须允许空密码本地账户通过远程桌面登录；应用不会修改目标机策略。')
@@ -18803,7 +20086,7 @@ struct HostListPage {
       }.width('100%').padding({ left: 24, right: 24, bottom: 28 })
     }
     .width('100%')
-    .backgroundColor(this.pal().bg)
+    .backgroundColor(this.pal().sheetBg)
     .backgroundBlurStyle(BlurStyle.Regular)
     .shadow(this.breakpoint === 'sm'
       ? { radius: 0, color: 'rgba(0,0,0,0)', offsetY: 0 } as ShadowOptions
@@ -18865,7 +20148,7 @@ struct HostListPage {
     }
     .id('rdpCredentialEditor-' + this.rdpCredEditorKey.toString())
     .width('100%')
-    .backgroundColor(this.pal().bg)
+    .backgroundColor(this.pal().sheetBg)
     .backgroundBlurStyle(BlurStyle.Regular)
     .shadow(this.breakpoint === 'sm'
       ? { radius: 0, color: 'rgba(0,0,0,0)', offsetY: 0 } as ShadowOptions
@@ -19418,7 +20701,7 @@ struct HostListPage {
     }
     .padding({ left: 24, right: 24, top: 24, bottom: 40 })
     .width('100%')
-    .backgroundColor(this.pal().bg)
+    .backgroundColor(this.pal().sheetBg)
     .backgroundBlurStyle(BlurStyle.Regular)
     .shadow(this.breakpoint === 'sm'
       ? { radius: 0, color: 'rgba(0,0,0,0)', offsetY: 0 } as ShadowOptions
@@ -19458,7 +20741,7 @@ struct HostListPage {
       .width('100%').padding({ left: 24, right: 24 })
       Blank().height(24)
     }
-    .width('100%').backgroundColor(this.pal().bg).borderRadius(20).constraintSize({ maxWidth: 720 })
+    .width('100%').backgroundColor(this.pal().sheetBg).borderRadius(20).constraintSize({ maxWidth: 720 })
   }
 
   // ==================== 终端字体颜色选择 Sheet ====================
@@ -19489,7 +20772,7 @@ struct HostListPage {
       .width('100%').padding({ left: 24, right: 24 })
       Blank().height(24)
     }
-    .width('100%').backgroundColor(this.pal().bg).borderRadius(20).constraintSize({ maxWidth: 720 })
+    .width('100%').backgroundColor(this.pal().sheetBg).borderRadius(20).constraintSize({ maxWidth: 720 })
   }
 
   // ==================== 终端字体大小选择 Sheet ====================
@@ -19524,7 +20807,7 @@ struct HostListPage {
       .width('100%').padding({ left: 24, right: 24 })
       Blank().height(24)
     }
-    .width('100%').backgroundColor(this.pal().bg).borderRadius(20).constraintSize({ maxWidth: 720 })
+    .width('100%').backgroundColor(this.pal().sheetBg).borderRadius(20).constraintSize({ maxWidth: 720 })
   }
 
   // ==================== 终端行距选择 Sheet ====================
@@ -19560,7 +20843,7 @@ struct HostListPage {
       .width('100%').padding({ left: 24, right: 24 })
       Blank().height(24)
     }
-    .width('100%').backgroundColor(this.pal().bg).borderRadius(20).constraintSize({ maxWidth: 720 })
+    .width('100%').backgroundColor(this.pal().sheetBg).borderRadius(20).constraintSize({ maxWidth: 720 })
   }
 
   @Builder wallPicker() {
@@ -19577,7 +20860,7 @@ struct HostListPage {
         })
       }.columnsTemplate('1fr 1fr 1fr').rowsGap(12).columnsGap(12).width('100%').height(200)
     }.padding({ left: 24, right: 24, top: 24, bottom: 40 }).width('100%')
-      .backgroundColor(this.pal().bg).borderRadius(this.breakpoint === 'sm' ? { topLeft: 20, topRight: 20, bottomLeft: 0, bottomRight: 0 } : 20)
+      .backgroundColor(this.pal().sheetBg).borderRadius(this.breakpoint === 'sm' ? { topLeft: 20, topRight: 20, bottomLeft: 0, bottomRight: 0 } : 20)
   }
 
   @Builder statItem(label: string, count: number, color: string) {
@@ -19638,7 +20921,7 @@ struct HostListPage {
       }
       Blank().height(32)
     }.width('100%')
-    .backgroundColor(this.pal().bg).borderRadius(this.breakpoint === 'sm' ? { topLeft: 20, topRight: 20, bottomLeft: 0, bottomRight: 0 } : 20)
+    .backgroundColor(this.pal().sheetBg).borderRadius(this.breakpoint === 'sm' ? { topLeft: 20, topRight: 20, bottomLeft: 0, bottomRight: 0 } : 20)
   }
 
   // ==================== Private ====================
@@ -19668,6 +20951,7 @@ struct HostListPage {
     this.label = ''; this.proto = 'rdp'; this.hostAddr = ''; this.portVal = 3389;
     this.rdpPortVal = 3389; this.sshPortVal = 22;
     this.username = ''; this.sheetPwd = ''; this.chn = ''; this.sheetErr = '';
+    this.rdpClientHostname = '';
     this.sheetPasswordFromStoredProjection = false;
     this.sheetPasswordProjectionBinding = [];
     this.sheetSecretProjectionInvalidated = false;
@@ -19683,6 +20967,7 @@ struct HostListPage {
     this.selectedRelayId = ''; this.selectedAccountId = '';
     this.selectedRdpCredentialId = '';
     this.sheetRdpAuthMode = 'password';
+    this.sheetRdpCredentialStorageMode = 'saved';
     this.sheetRdpRestrictedAdminSecretSource = 'ntlm_hash';
     this.sheetRdpRestrictedAdminHash = '';
     this.sheetRdpBlankPasswordConfirmed = false;
@@ -19838,6 +21123,7 @@ struct HostListPage {
       h.port = endpoint.port;
       h.username = '';  // RustDesk 不使用用户名
       h.customHostname = this.chn;  // 远程设备ID
+      h.rdpClientHostname = '';
       h.rustdeskRelayId = this.sheetRustdeskDirectEnabled ? '' : this.selectedRelayId;
       h.rustdeskAccountId = this.sheetRustdeskDirectEnabled ? '' : this.selectedAccountId;
       h.rustdeskPasswordMode = this.sheetPwdMode;
@@ -19882,9 +21168,15 @@ struct HostListPage {
       this.portVal = h.port;
       h.customHostname = this.chn;
       if (this.proto === 'rdp') {
+        h.rdpClientHostname = this.rdpClientHostname;
         h.rdpAuthMode = this.sheetRdpAuthMode;
+        h.rdpCredentialStorageMode = this.sheetRdpCredentialStorageMode;
         h.rdpRestrictedAdminSecretSource = this.sheetRdpRestrictedAdminSecretSource;
-        if (this.sheetRdpAuthMode === 'password' && this.selectedRdpCredentialId !== '') {
+        if (this.sheetRdpAuthMode === 'password' &&
+          this.sheetRdpCredentialStorageMode === 'connect_time') {
+          h.rdpCredentialId = '';
+          h.username = '';
+        } else if (this.sheetRdpAuthMode === 'password' && this.selectedRdpCredentialId !== '') {
           h.rdpCredentialId = this.selectedRdpCredentialId;
           h.username = '';
         } else {
@@ -19892,9 +21184,14 @@ struct HostListPage {
           h.username = this.username.trim();
         }
       } else {
+        h.rdpClientHostname = '';
         h.rdpCredentialId = '';
         h.username = this.username;
       }
+    }
+    if (!this.srv.prepareHostNetworkEndpoints(h)) {
+      this.sheetErr = '请输入有效的域名、IPv4 或 IPv6 地址';
+      return;
     }
     const existingPassword: string = existingHost === undefined ? '' : existingHost.password;
     const existingPasswordConfigured: boolean = existingHost !== undefined &&
@@ -19902,7 +21199,9 @@ struct HostListPage {
     if (this.proto === 'rdp') {
       const keepsSamePasswordBinding: boolean = existingHost !== undefined &&
         existingHost.protocol === 'rdp' && existingHost.rdpAuthMode === 'password' &&
+        normalizeRdpCredentialStorageMode(existingHost.rdpCredentialStorageMode) === 'saved' &&
         existingHost.rdpCredentialId === '' && this.sheetRdpAuthMode === 'password' &&
+        this.sheetRdpCredentialStorageMode === 'saved' &&
         this.selectedRdpCredentialId === '' && secretBindingUnchanged(
           [existingHost.host.trim(), existingHost.port.toString(), existingHost.username.trim()],
           [h.host.trim(), h.port.toString(), h.username.trim()]);
@@ -19911,9 +21210,10 @@ struct HostListPage {
         this.sheetErr = '密码仍在加密仓库中；请先解锁并重新打开主机再更新';
         return;
       }
-      h.password = resolveSecretEditValue(existingPassword,
-        this.sheetRdpAuthMode === 'password' && this.selectedRdpCredentialId === '' ? this.sheetPwd : '',
-        this.secretEditorHidden('rdp_host_password'), keepsSamePasswordBinding);
+      h.password = this.sheetRdpCredentialStorageMode === 'connect_time' ? '' :
+        resolveSecretEditValue(existingPassword,
+          this.sheetRdpAuthMode === 'password' && this.selectedRdpCredentialId === '' ? this.sheetPwd : '',
+          this.secretEditorHidden('rdp_host_password'), keepsSamePasswordBinding);
       h.normalizeRdpAuthentication();
       h.passwordConfigured = h.password.length > 0;
     } else if (this.proto === 'rustdesk') {
@@ -20288,9 +21588,12 @@ struct HostListPage {
   }
 
   private collectSshTrustedHosts(): RemoteHost[] {
+    if (!this.sshProxyProfilesReady) { return []; }
     return this.srv.getAllHosts().filter((h: RemoteHost): boolean => {
-      return h.protocol === 'ssh' &&
-        (h.sshHostKeyTrustMode === 1 || h.sshHostKeyFingerprintSha256 !== '' || h.sshHostKeyRawBase64 !== '');
+      if (h.protocol !== 'ssh') { return false; }
+      const plan: SshProxyRuntimePlan = resolveSshProxyRuntimePlan(
+        h, this.sshProxyProfiles.load(h.id));
+      return sshHostKeyTrustIsCurrent(h, plan);
     });
   }
 
@@ -20394,6 +21697,7 @@ struct HostListPage {
       updated.sshHostKeyRawBase64 = '';
       updated.sshHostKeyTrustedAt = 0;
       updated.sshHostKeyTrustMode = 0;
+      updated.sshHostKeyRouteIdentity = '';
       updated.sshJumpHostKeyAlgorithm = '';
       updated.sshJumpHostKeyFingerprintSha256 = '';
       updated.sshJumpHostKeyRawBase64 = '';
@@ -20411,6 +21715,12 @@ struct HostListPage {
 
   private async refreshSshHostKey(host: RemoteHost): Promise<void> {
     if (this.sshHostKeyBusyId !== '') { return; }
+    if (!this.sshProxyProfilesReady) {
+      promptAction.showToast({
+        message: 'SSH 连接方式存储不可读，请重新打开应用后重试', duration: 2600
+      });
+      return;
+    }
     if (host.locked) {
       const r = await showLockGate(host.label, 'biometric');
       if (!r.ok) {
@@ -20421,8 +21731,68 @@ struct HostListPage {
     }
     this.sshHostKeyBusyId = host.id;
     try {
-      const info: SshHostKeyInfo = await this.loader.probeSshHostKeyAsync(
-        host.host, host.port, this.sshPreflightProxy(host));
+      let routeHost: RemoteHost = host;
+      let plan: SshProxyRuntimePlan = resolveSshProxyRuntimePlan(
+        host, this.sshProxyProfiles.load(host.id));
+      if (!plan.valid) {
+        promptAction.showToast({ message: plan.message, duration: 2600 });
+        return;
+      }
+      let jumpInfo: SshHostKeyInfo | null = null;
+      if (plan.route.type === 'ssh_jump' && plan.source === 'legacy' &&
+        plan.route.hops.length === 1) {
+        const hop: SshJumpHop = plan.route.hops[0];
+        const jumpProbe: SshNativeOperationPromise<SshHostKeyInfo> =
+          this.loader.probeSshHostKeyOperationAsync(
+            buildDirectSshHostKeyProbeConfig(hop.host, hop.port), 15000);
+        this.sshHostKeyOperationId = jumpProbe.operationId;
+        jumpInfo = await jumpProbe;
+        if (this.sshHostKeyOperationId === jumpProbe.operationId) {
+          this.sshHostKeyOperationId = 0;
+        }
+        if (!this.pageActive) { return; }
+        if (!jumpInfo.ok) {
+          promptAction.showToast({
+            message: '跳板机指纹获取失败: ' +
+              (jumpInfo.errorMessage || '无法读取 SSH 主机指纹'), duration: 2500
+          });
+          return;
+        }
+        if (classifySshJumpHostKeyProbeTrust(host, jumpInfo.rawBase64) !== 'trusted') {
+          promptAction.showToast({
+            message: '跳板机指纹尚未信任或已变化，请从主机列表发起连接并确认',
+            duration: 3000
+          });
+          return;
+        }
+        routeHost = host.runtimeClone();
+        routeHost.sshJumpHostKeyRawBase64 = jumpInfo.rawBase64;
+        routeHost.sshJumpHostKeyFingerprintSha256 = jumpInfo.fingerprintSha256;
+        plan = resolveSshProxyRuntimePlan(routeHost, null);
+      }
+      const routeSecrets: SshOperationRouteSecrets | null =
+        this.sshOperationRouteSecrets(host, plan);
+      if (routeSecrets === null) {
+        promptAction.showToast({
+          message: '该连接路径需要一次性凭据，请发起连接并在原生预认证中确认指纹',
+          duration: 3000
+        });
+        return;
+      }
+      const configResult: SshOperationConfigResult = buildSshOperationSessionConfig(
+        routeHost, plan, 'probe', this.emptySshOperationTargetAuth(), routeSecrets);
+      if (!configResult.ok || configResult.config === null) {
+        promptAction.showToast({ message: configResult.message, duration: 2600 });
+        return;
+      }
+      const operation: SshNativeOperationPromise<SshHostKeyInfo> =
+        this.loader.probeSshHostKeyOperationAsync(configResult.config, 45000);
+      this.sshHostKeyOperationId = operation.operationId;
+      const info: SshHostKeyInfo = await operation;
+      if (this.sshHostKeyOperationId === operation.operationId) {
+        this.sshHostKeyOperationId = 0;
+      }
+      if (!this.pageActive) { return; }
       if (!info.ok) {
         promptAction.showToast({
           message: '重新获取失败: ' + (info.errorMessage || '无法读取 SSH 主机指纹'),
@@ -20430,19 +21800,13 @@ struct HostListPage {
         });
         return;
       }
-      let jumpInfo: SshHostKeyInfo | null = null;
-      if (this.sshPreflightUsesJump(host)) {
-        jumpInfo = await this.loader.probeSshHostKeyAsync(host.proxyHost, host.proxyPort);
-        if (!jumpInfo.ok) {
-          promptAction.showToast({
-            message: '跳板机指纹获取失败: ' + (jumpInfo.errorMessage || '无法读取 SSH 主机指纹'),
-            duration: 2500
-          });
-          return;
-        }
-      }
       const updated: RemoteHost = host.runtimeClone();
-      this.applySshPreflightTrust(updated, info, jumpInfo);
+      if (!this.applySshPreflightTrust(updated, info, jumpInfo)) {
+        promptAction.showToast({
+          message: 'SSH 连接路径已变化，请从主机列表重新预检', duration: 2400
+        });
+        return;
+      }
       if (this.srv.updateHost(updated)) {
         promptAction.showToast({ message: 'SSH 指纹已更新', duration: 1500 });
       } else {
@@ -20453,6 +21817,10 @@ struct HostListPage {
     } catch (err) {
       promptAction.showToast({ message: '重新获取异常: ' + JSON.stringify(err), duration: 2500 });
     } finally {
+      if (this.sshHostKeyOperationId > 0) {
+        this.loader.cancelSshOperation(this.sshHostKeyOperationId);
+        this.sshHostKeyOperationId = 0;
+      }
       this.sshHostKeyBusyId = '';
     }
   }

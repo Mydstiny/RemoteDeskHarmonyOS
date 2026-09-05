@@ -10,6 +10,8 @@ import {
   REMOTE_SESSION_COLLAPSED_TOP_TOUCH_HEIGHT,
   REMOTE_SESSION_COLLAPSED_TOP_WIDTH,
   RemoteSessionPrimaryActionId,
+  RustDeskTopBarSubMenuId,
+  RustDeskTopBarSubMenuState,
   RemoteTopBarLayout,
   remoteKeyboardSidebarAction,
   remoteKeyboardSurfaceOpen,
@@ -17,6 +19,9 @@ import {
   remoteSessionRailDragOffset,
   remoteSessionRailShouldCollapse,
   rustDeskTopBarAutoCollapseDelayMs,
+  rustDeskTopBarSubMenuForItem,
+  reduceRustDeskTopBarSubMenuState,
+  rustDeskTouchpadSpeedOptions,
   remoteSessionActionAvailability
 } from '../services/RemoteSessionTopBarPolicy';
 import { RemoteSessionCapabilities } from '../services/RemoteSessionCapabilityPolicy';
@@ -26,7 +31,13 @@ import {
   RustDeskDisplayResolution
 } from '../types/rdpnapi';
 import { RustDeskDisplaySwitchState } from '../services/RustDeskDisplaySwitchPolicy';
-import { RustDeskDesktopFlipMode } from '../services/RustDeskDesktopFlipPolicy';
+import {
+  rustDeskDesktopFlipState,
+  toggleRustDeskDesktopFlipAxis,
+  RustDeskDesktopFlipAxis,
+  RustDeskDesktopFlipMode,
+  RustDeskDesktopFlipState
+} from '../services/RustDeskDesktopFlipPolicy';
 import {
   remoteSessionSidebarAnchoredMenuTop,
   remoteSessionSidebarCanvasHeight,
@@ -41,7 +52,12 @@ const EMPTY_RUSTDESK_DISPLAY_CAPABILITIES: RustDeskDisplayCapabilities = {
   switchGeneration: 0,
   readySwitchGeneration: 0,
   pendingDisplay: -1,
-  inputBlocked: false,
+    confirmedDisplay: -1,
+    inputBlocked: false,
+    multiCanvasPreviewSupported: false,
+    multiCanvasPreviewMaxDisplays: 2,
+    multiCanvasPreviewActive: false,
+    multiCanvasPreviewDisplay: -1,
   width: 0,
   height: 0,
   originalWidth: 0,
@@ -128,6 +144,7 @@ export struct RemoteSessionTopBar {
   @Prop @Watch('onKeyboardSurfaceChange') keyboardOpen: boolean = false;
   @Prop @Watch('onKeyboardSurfaceChange') shortcutsOpen: boolean = false;
   @Prop diagnosticsEnabled: boolean = false;
+  @Prop canvasResetAvailable: boolean = false;
   @Prop rustDeskDisplayCapabilities: RustDeskDisplayCapabilities = EMPTY_RUSTDESK_DISPLAY_CAPABILITIES;
   @Prop rustDeskDisplaySwitchState: RustDeskDisplaySwitchState = EMPTY_RUSTDESK_DISPLAY_SWITCH_STATE;
   @Prop pendingDisplayResolution: RustDeskDisplayResolution = EMPTY_RUSTDESK_DISPLAY_RESOLUTION;
@@ -143,6 +160,8 @@ export struct RemoteSessionTopBar {
   @State private collapsed: boolean = false;
   @State private pinned: boolean = false;
   @State private activeMenu: string = '';
+  @State private activeSubMenu: string = '';
+  @State private subMenuPinned: boolean = false;
   @State private railSwipeX: number = 0;
   @State private viewportWidth: number = 360;
   @State private viewportHeight: number = 640;
@@ -193,12 +212,23 @@ export struct RemoteSessionTopBar {
   }
 
   private toggleMenu(menu: string): void {
+    this.resetSubMenu();
     this.activeMenu = this.activeMenu === menu ? '' : menu;
     this.scheduleAutoCollapse();
   }
 
+  private desktopFlipState(): RustDeskDesktopFlipState {
+    return rustDeskDesktopFlipState(this.rustDeskDesktopFlipMode);
+  }
+
+  private toggleDesktopFlipAxis(axis: RustDeskDesktopFlipAxis): void {
+    this.actions.onSetRustDeskDesktopFlipMode(toggleRustDeskDesktopFlipAxis(
+      this.rustDeskDesktopFlipMode, axis));
+  }
+
   private closeMenus(): void {
     this.activeMenu = '';
+    this.resetSubMenu();
     this.scheduleAutoCollapse();
   }
 
@@ -281,6 +311,7 @@ export struct RemoteSessionTopBar {
   private onEdgeRailChanged(): void {
     this.clearAutoCollapseTimer();
     this.activeMenu = '';
+    this.resetSubMenu();
     this.collapsed = false;
     this.pinned = false;
     this.scheduleAutoCollapse();
@@ -289,6 +320,7 @@ export struct RemoteSessionTopBar {
   aboutToAppear(): void {
     this.collapsed = false;
     this.activeMenu = '';
+    this.resetSubMenu();
     this.scheduleAutoCollapse();
   }
 
@@ -425,6 +457,13 @@ export struct RemoteSessionTopBar {
     return '平衡';
   }
 
+  private viewScaleLabel(): string {
+    if (this.viewScaleMode === 'fit') { return '适应窗口'; }
+    if (this.viewScaleMode === 'fill') { return '填满窗口'; }
+    if (this.viewScaleMode === 'custom') { return '自定义'; }
+    return this.viewScaleMode + '%';
+  }
+
   private codecLabel(value: number): string {
     if (value === 1) { return 'VP8'; }
     if (value === 2) { return 'VP9'; }
@@ -548,10 +587,81 @@ export struct RemoteSessionTopBar {
       .focusable(false)
       .focusOnTouch(false)
       .accessibilityText(accessibilityLabel)
+      .bindTips(accessibilityLabel, {
+        appearingTime: 300,
+        disappearingTime: 0,
+        appearingTimeWithContinuousOperation: 100,
+        disappearingTimeWithContinuousOperation: 0,
+        enableArrow: true
+      })
       .onClick((): void => {
         this.noteUserActivity();
         action();
       })
+  }
+
+  private openSubMenu(itemId: string, hovered: boolean, clicked: boolean): void {
+    if (!hovered && !clicked) {
+      return;
+    }
+    const next: RustDeskTopBarSubMenuState = reduceRustDeskTopBarSubMenuState(
+      { active: this.activeSubMenu as RustDeskTopBarSubMenuId | '', pinned: this.subMenuPinned },
+      itemId, clicked ? 'click' : 'hover-enter');
+    this.activeSubMenu = next.active;
+    this.subMenuPinned = next.pinned;
+    this.noteUserActivity();
+  }
+
+  private onExpandableMenuHover(isHover: boolean): void {
+    if (isHover) { return; }
+    const next: RustDeskTopBarSubMenuState = reduceRustDeskTopBarSubMenuState(
+      { active: this.activeSubMenu as RustDeskTopBarSubMenuId | '', pinned: this.subMenuPinned },
+      '', 'menu-leave');
+    this.activeSubMenu = next.active;
+    this.subMenuPinned = next.pinned;
+  }
+
+  private resetSubMenu(): void {
+    const next: RustDeskTopBarSubMenuState = reduceRustDeskTopBarSubMenuState(
+      { active: this.activeSubMenu as RustDeskTopBarSubMenuId | '', pinned: this.subMenuPinned },
+      '', 'reset');
+    this.activeSubMenu = next.active;
+    this.subMenuPinned = next.pinned;
+  }
+
+  @Builder
+  private subMenuItem(label: string, status: string, actionId: string, itemId: string) {
+    Row() {
+      Blank().width(30)
+      Column() {
+        Text(label)
+          .fontSize(this.menuFontSize())
+          .fontColor(remoteSessionActionAvailability(
+            actionId, this.protocol, this.capabilities).enabled ? '#111111' : '#777777')
+          .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+        if (status.length > 0) {
+          Text(status).fontSize(11).fontColor('#6B7280').margin({ top: 2 })
+            .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+        }
+      }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+      SymbolGlyph(this.activeSubMenu === rustDeskTopBarSubMenuForItem(itemId) ?
+        $r('sys.symbol.chevron_down') : $r('sys.symbol.chevron_right'))
+        .fontSize(14).fontColor(['#6B7280'])
+    }
+    .width('100%')
+    .height(status.length > 0 ? this.menuItemHeight() + 8 : this.menuItemHeight())
+    .padding({ left: 8, right: 8 })
+    .borderRadius(6)
+    .focusable(false)
+    .focusOnTouch(false)
+    .onHover((isHover: boolean): void => {
+      if (remoteSessionActionAvailability(actionId, this.protocol, this.capabilities).enabled) {
+        this.openSubMenu(itemId, isHover, false);
+      }
+    })
+    .onClick((): void => {
+      this.runAction(actionId, (): void => { this.openSubMenu(itemId, false, true); });
+    })
   }
 
   @Builder
@@ -641,172 +751,196 @@ export struct RemoteSessionTopBar {
   }
 
   @Builder
+  private displayRootMenuContent() {
+    this.subMenuItem('缩放', this.viewScaleLabel(), 'displaySettings', 'viewScale')
+    if (this.activeSubMenu === 'viewScale') {
+      this.viewScaleSubMenuContent()
+    }
+    this.menuItem(this.canvasResetAvailable ? '复位画面（已缩放）' : '复位画面',
+      'displaySettings', (): void => { this.actions.onResetCanvasTransform(); })
+    if (this.protocol === 'rustdesk') {
+      if (this.rustDeskPhoneTarget) {
+        this.menuItem('旋转远端画面（顺时针 90°）', 'rotateDisplay', (): void => {
+          this.actions.onRotateRemoteDisplay();
+        })
+      }
+      if (this.hasRustDeskDisplayData()) {
+        if (this.rustDeskDisplayCapabilities.displays.length > 0) {
+          this.subMenuItem('远端显示器', this.displaySwitchStatusLabel(),
+            'displaySettings', 'remoteDisplay')
+          if (this.activeSubMenu === 'remoteDisplay') {
+            this.remoteDisplaySubMenuContent()
+          }
+        }
+        if (this.rustDeskDisplayCapabilities.resolutions.length > 0) {
+          this.subMenuItem('分辨率', this.displayResolutionStatusLabel(),
+            'displaySettings', 'resolution')
+          if (this.activeSubMenu === 'resolution') {
+            this.resolutionSubMenuContent()
+          }
+        }
+        this.menuItem('打开完整显示器与分辨率面板', 'resolutionSettings', (): void => {
+          this.actions.onOpenRustDeskResolution();
+        })
+      } else {
+        this.menuItem('显示器与分辨率', 'resolutionSettings', (): void => {
+          this.actions.onOpenRustDeskResolution();
+        })
+      }
+      this.subMenuItem('画质', this.qualityLabel(this.imageQuality),
+        'displaySettings', 'imageQuality')
+      if (this.activeSubMenu === 'imageQuality') {
+        this.imageQualitySubMenuContent()
+      }
+      this.subMenuItem('编解码', this.codecLabel(this.codec),
+        'displaySettings', 'codec')
+      if (this.activeSubMenu === 'codec') {
+        this.codecSubMenuContent()
+      }
+      this.menuItem('虚拟显示器', 'virtualDisplay', (): void => {})
+      this.menuItem('隐私模式', 'togglePrivacyMode', (): void => {
+        this.actions.onTogglePrivacy(!this.privacyMode);
+      }, this.privacyMode)
+      this.menuItem('静音', 'toggleAudio', (): void => {
+        this.actions.onToggleAudio(!this.audioEnabled);
+      }, !this.audioEnabled)
+      this.menuItem('允许复制粘贴文件', 'toggleFilePaste', (): void => {
+        this.actions.onToggleFilePaste(!this.filePasteEnabled);
+      }, this.filePasteEnabled)
+    }
+  }
+
+  @Builder
+  private viewScaleSubMenuContent() {
+    this.menuItem('适应窗口', 'displaySettings', (): void => {
+      this.actions.onSetViewScaleMode('fit');
+    }, this.viewScaleMode === 'fit')
+    this.menuItem('填满窗口（可能裁边）', 'displaySettings', (): void => {
+      this.actions.onSetViewScaleMode('fill');
+    }, this.viewScaleMode === 'fill')
+    this.menuItem('100%', 'displaySettings', (): void => {
+      this.actions.onSetViewScaleMode('100');
+    }, this.viewScaleMode === '100')
+    this.menuItem('125%', 'displaySettings', (): void => {
+      this.actions.onSetViewScaleMode('125');
+    }, this.viewScaleMode === '125')
+    this.menuItem('150%', 'displaySettings', (): void => {
+      this.actions.onSetViewScaleMode('150');
+    }, this.viewScaleMode === '150')
+    this.menuItem('175%', 'displaySettings', (): void => {
+      this.actions.onSetViewScaleMode('175');
+    }, this.viewScaleMode === '175')
+    this.menuItem('200%', 'displaySettings', (): void => {
+      this.actions.onSetViewScaleMode('200');
+    }, this.viewScaleMode === '200')
+    this.menuItem('自定义缩放', 'displaySettings', (): void => {
+      this.actions.onSetViewScaleMode('custom');
+    }, this.viewScaleMode === 'custom')
+  }
+
+  @Builder
+  private remoteDisplaySubMenuContent() {
+    ForEach(this.rustDeskDisplayCapabilities.displays,
+      (display: RustDeskDisplayInfo): void => {
+        Row() {
+          if (this.isRustDeskDisplaySelected(display.display)) {
+            SymbolGlyph($r('sys.symbol.checkmark')).width(30).fontSize(16)
+              .fontColor([this.accentColor])
+          } else {
+            Blank().width(30)
+          }
+          Column() {
+            Text(this.rustDeskDisplayLabel(display, display.display)).fontSize(this.menuFontSize())
+              .fontColor(display.online ? '#111111' : '#777777').maxLines(1)
+              .textOverflow({ overflow: TextOverflow.Ellipsis })
+            Text(this.rustDeskDisplaySizeLabel(display)).fontSize(11).fontColor('#6B7280')
+              .margin({ top: 2 })
+          }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+          if (this.isRustDeskDisplayPending(display.display)) {
+            Text('切换中').fontSize(11).fontColor(this.accentColor)
+          }
+        }
+        .width('100%').height(this.menuItemHeight() + 8).padding({ left: 8, right: 8 })
+        .borderRadius(6).opacity(display.online ? 1 : 0.55)
+        .onClick((): void => {
+          this.noteUserActivity();
+          if (!display.online) {
+            this.actions.onUnsupported('displaySettings', '该远端显示器当前离线');
+            return;
+          }
+          this.actions.onSelectRustDeskDisplay(display.display);
+        })
+      }, (display: RustDeskDisplayInfo): string => display.display.toString())
+  }
+
+  @Builder
+  private resolutionSubMenuContent() {
+    ForEach(this.rustDeskDisplayCapabilities.resolutions,
+      (resolution: RustDeskDisplayResolution): void => {
+        this.menuItem(this.rustDeskDisplayResolutionLabel(resolution), 'displaySettings', (): void => {
+          if (!this.rustDeskDisplaySwitchPending()) {
+            this.actions.onSetRustDeskDisplayResolution(resolution.width, resolution.height);
+          }
+        }, this.isRustDeskDisplayResolutionSelected(resolution))
+      }, (resolution: RustDeskDisplayResolution): string =>
+        resolution.width.toString() + 'x' + resolution.height.toString())
+  }
+
+  @Builder
+  private imageQualitySubMenuContent() {
+    this.menuItem('速度优先', 'displaySettings', (): void => {
+      this.actions.onSetRustDeskImageQuality(0);
+    }, this.imageQuality === 0)
+    this.menuItem('平衡', 'displaySettings', (): void => {
+      this.actions.onSetRustDeskImageQuality(1);
+    }, this.imageQuality === 1)
+    this.menuItem('画质优先', 'displaySettings', (): void => {
+      this.actions.onSetRustDeskImageQuality(2);
+    }, this.imageQuality === 2)
+  }
+
+  @Builder
+  private codecSubMenuContent() {
+    this.menuItem('自动', 'displaySettings', (): void => {
+      this.actions.onSetRustDeskCodec(0);
+    }, this.codec === 0)
+    this.menuItem('VP8', 'displaySettings', (): void => {
+      this.actions.onSetRustDeskCodec(1);
+    }, this.codec === 1)
+    this.menuItem('VP9', 'displaySettings', (): void => {
+      this.actions.onSetRustDeskCodec(2);
+    }, this.codec === 2)
+    this.menuItem('AV1', 'displaySettings', (): void => {
+      this.actions.onSetRustDeskCodec(3);
+    }, this.codec === 3)
+    this.menuItem('H264', 'displaySettings', (): void => {
+      this.actions.onSetRustDeskCodec(4);
+    }, this.codec === 4)
+    this.menuItem('H265', 'displaySettings', (): void => {
+      this.actions.onSetRustDeskCodec(5);
+    }, this.codec === 5)
+  }
+
+  @Builder
   private displayMenu() {
     Column() {
       this.menuHeader('显示与画质', $r('sys.symbol.display'))
       Scroll() {
         Column() {
-          this.menuItem('适应窗口', 'displaySettings', (): void => {
-            this.actions.onSetViewScaleMode('fit');
-          }, this.viewScaleMode === 'fit')
-          this.menuItem('100%', 'displaySettings', (): void => {
-            this.actions.onSetViewScaleMode('100');
-          }, this.viewScaleMode === '100')
-          this.menuItem('125%', 'displaySettings', (): void => {
-            this.actions.onSetViewScaleMode('125');
-          }, this.viewScaleMode === '125')
-          this.menuItem('150%', 'displaySettings', (): void => {
-            this.actions.onSetViewScaleMode('150');
-          }, this.viewScaleMode === '150')
-          this.menuItem('175%', 'displaySettings', (): void => {
-            this.actions.onSetViewScaleMode('175');
-          }, this.viewScaleMode === '175')
-          this.menuItem('200%', 'displaySettings', (): void => {
-            this.actions.onSetViewScaleMode('200');
-          }, this.viewScaleMode === '200')
-          this.menuItem('自定义缩放', 'displaySettings', (): void => {
-            this.actions.onSetViewScaleMode('custom');
-          }, this.viewScaleMode === 'custom')
-          this.menuItem('重新居中画面', 'displaySettings', (): void => {
-            this.actions.onResetCanvasTransform();
-          })
-          if (this.protocol === 'rustdesk') {
-            if (this.rustDeskPhoneTarget) {
-              this.menuItem('旋转远端画面（顺时针 90°）', 'rotateDisplay', (): void => {
-                this.actions.onRotateRemoteDisplay();
-              })
-            }
-
-            if (this.hasRustDeskDisplayData()) {
-            Column({ space: 6 }) {
-              Text('远端显示器').fontSize(12).fontColor('#6B7280')
-                .margin({ left: 8, top: 4 }).alignSelf(ItemAlign.Start)
-              Row() {
-                Column() {
-                  Text(this.displaySwitchStatusLabel()).fontSize(14).fontWeight(FontWeight.Medium)
-                    .fontColor('#111111').maxLines(1)
-                    .textOverflow({ overflow: TextOverflow.Ellipsis })
-                  Text(this.displayResolutionStatusLabel()).fontSize(11).fontColor('#6B7280')
-                    .margin({ top: 2 })
-                }.alignItems(HorizontalAlign.Start).layoutWeight(1)
-                if (this.rustDeskDisplaySwitchPending()) {
-                  Text('切换中').fontSize(11).fontColor(this.accentColor)
-                } else {
-                  SymbolGlyph($r('sys.symbol.checkmark')).fontSize(15).fontColor([this.accentColor])
-                }
-              }
-              .width('100%').padding({ left: 12, right: 12, top: 8, bottom: 8 })
-              .backgroundColor('rgba(0,125,255,0.08)').borderRadius(6)
-
-              if (this.rustDeskDisplayCapabilities.displays.length > 0) {
-                Text('选择显示器').fontSize(12).fontColor('#6B7280')
-                  .margin({ left: 8, top: 4 }).alignSelf(ItemAlign.Start)
-                ForEach(this.rustDeskDisplayCapabilities.displays,
-                  (display: RustDeskDisplayInfo): void => {
-                    Row() {
-                      Column() {
-                        Text(this.rustDeskDisplayLabel(display, display.display)).fontSize(13)
-                          .fontColor(this.isRustDeskDisplaySelected(display.display) ? '#FFFFFF' : '#374151').maxLines(1)
-                          .textOverflow({ overflow: TextOverflow.Ellipsis })
-                        Text(this.rustDeskDisplaySizeLabel(display)).fontSize(10)
-                          .fontColor(this.isRustDeskDisplaySelected(display.display) ?
-                            'rgba(255,255,255,0.78)' : '#6B7280')
-                          .margin({ top: 2 })
-                      }.alignItems(HorizontalAlign.Start).layoutWeight(1)
-                      if (this.isRustDeskDisplayPending(display.display)) {
-                        Text('切换中').fontSize(10).fontColor('#FFFFFF')
-                      } else if (this.isRustDeskDisplayCurrent(display.display) &&
-                        !this.rustDeskDisplaySwitchPending()) {
-                        SymbolGlyph($r('sys.symbol.checkmark')).fontSize(15).fontColor(['#FFFFFF'])
-                      }
-                    }
-                    .width('100%').height(48).padding({ left: 12, right: 12, top: 6, bottom: 6 })
-                    .backgroundColor(this.isRustDeskDisplaySelected(display.display) ?
-                      this.accentColor : '#F3F4F6').borderRadius(6)
-                    .opacity(display.online ? 1 : 0.55)
-                    .onClick((): void => {
-                      this.noteUserActivity();
-                      if (!display.online) {
-                        this.actions.onUnsupported('resolutionSettings', '该远端显示器当前离线');
-                        return;
-                      }
-                      this.actions.onSelectRustDeskDisplay(display.display);
-                    })
-                  }, (display: RustDeskDisplayInfo): string => display.display.toString())
-              }
-
-              Divider().strokeWidth(1).color('#E5E7EB').margin({ top: 4, bottom: 2 })
-              Text('当前显示器分辨率').fontSize(12).fontColor('#6B7280')
-                .margin({ left: 8, top: 4 }).alignSelf(ItemAlign.Start)
-              ForEach(this.rustDeskDisplayCapabilities.resolutions,
-                (resolution: RustDeskDisplayResolution): void => {
-                  Row() {
-                    Text(this.rustDeskDisplayResolutionLabel(resolution)).fontSize(13)
-                      .fontColor(this.isRustDeskDisplayResolutionSelected(resolution) ?
-                        '#FFFFFF' : '#374151').layoutWeight(1)
-                    if (this.isRustDeskDisplayResolutionSelected(resolution)) {
-                      SymbolGlyph($r('sys.symbol.checkmark')).fontSize(15).fontColor(['#FFFFFF'])
-                    }
-                  }
-                  .width('100%').height(40).padding({ left: 12, right: 12 })
-                  .backgroundColor(this.isRustDeskDisplayResolutionSelected(resolution) ?
-                    this.accentColor : '#F3F4F6').borderRadius(6)
-                  .opacity(this.rustDeskDisplaySwitchPending() ? 0.55 : 1)
-                  .onClick((): void => {
-                    this.noteUserActivity();
-                    if (!this.rustDeskDisplaySwitchPending()) {
-                      this.actions.onSetRustDeskDisplayResolution(resolution.width, resolution.height);
-                    }
-                  })
-                }, (resolution: RustDeskDisplayResolution): string =>
-                  resolution.width.toString() + 'x' + resolution.height.toString())
-              if (this.rustDeskDisplayCapabilities.resolutions.length === 0) {
-                Text('当前显示器暂无可选分辨率').fontSize(12).fontColor('#6B7280')
-                  .width('100%').textAlign(TextAlign.Center).padding({ top: 8, bottom: 4 })
-              }
-              this.menuItem('打开完整显示器与分辨率面板', 'resolutionSettings', (): void => {
-                this.actions.onOpenRustDeskResolution();
-              })
-            }.width('100%')
-            } else {
-              this.menuItem('显示器与分辨率', 'resolutionSettings', (): void => {
-                this.actions.onOpenRustDeskResolution();
-              })
-            }
-
-          this.menuItem('画质: ' + this.qualityLabel(this.imageQuality), 'displaySettings', (): void => {
-            const next: number = this.imageQuality >= 2 ? 0 : this.imageQuality + 1;
-            this.actions.onSetRustDeskImageQuality(next);
-          })
-          this.menuItem('编解码: ' + this.codecLabel(this.codec), 'displaySettings', (): void => {
-            const next: number = this.codec >= 5 ? 0 : this.codec + 1;
-            this.actions.onSetRustDeskCodec(next);
-          })
-          this.menuItem('虚拟显示器', 'virtualDisplay', (): void => {})
-          this.menuItem('隐私模式', 'togglePrivacyMode', (): void => {
-            this.actions.onTogglePrivacy(!this.privacyMode);
-          }, this.privacyMode)
-          this.menuItem('静音', 'toggleAudio', (): void => {
-            this.actions.onToggleAudio(!this.audioEnabled);
-          }, !this.audioEnabled)
-            this.menuItem('允许复制粘贴文件', 'toggleFilePaste', (): void => {
-              this.actions.onToggleFilePaste(!this.filePasteEnabled);
-            }, this.filePasteEnabled)
-          }
-        }
+          this.displayRootMenuContent()
+        }.width('100%').padding(this.menuPadding())
       }
-      .width('100%')
-      .constraintSize({ maxHeight: this.menuScrollMaxHeight() })
-      .scrollBar(BarState.Auto)
+      .width('100%').constraintSize({ maxHeight: this.menuScrollMaxHeight() })
+      .scrollable(ScrollDirection.Vertical).scrollBar(BarState.Auto)
     }
     .width(this.effectiveMenuWidth())
     .constraintSize({ maxHeight: this.sidebarMenuMaxHeight() })
-    .padding({ left: this.menuPadding(), right: this.menuPadding(), bottom: this.menuPadding() })
     .backgroundColor('rgba(255,255,255,0.96)')
     .borderRadius(16).clip(true)
     .shadow({ radius: 10, color: 'rgba(0,0,0,0.22)', offsetY: 2 })
     .position({ x: this.menuLeft(), y: this.menuTop() })
     .hitTestBehavior(HitTestMode.BLOCK_HIERARCHY)
+    .onHover((isHover: boolean): void => { this.onExpandableMenuHover(isHover); })
   }
 
   @Builder
@@ -814,12 +948,18 @@ export struct RemoteSessionTopBar {
     Column() {
       this.menuHeader('画面翻转', $r('sys.symbol.rectangle_rotate'))
       Column() {
-        this.menuItem('仅翻转画面', 'desktopFlip', (): void => {
-          this.actions.onSetRustDeskDesktopFlipMode('image_only');
-        }, this.rustDeskDesktopFlipMode === 'image_only')
-        this.menuItem('翻转控制层和画面', 'desktopFlip', (): void => {
-          this.actions.onSetRustDeskDesktopFlipMode('image_and_controls');
-        }, this.rustDeskDesktopFlipMode === 'image_and_controls')
+        this.menuItem('画面上下翻转', 'desktopFlip', (): void => {
+          this.toggleDesktopFlipAxis('visual_y');
+        }, this.desktopFlipState().visualFlipY)
+        this.menuItem('画面左右翻转', 'desktopFlip', (): void => {
+          this.toggleDesktopFlipAxis('visual_x');
+        }, this.desktopFlipState().visualFlipX)
+        this.menuItem('控制层上下翻转', 'desktopFlip', (): void => {
+          this.toggleDesktopFlipAxis('control_y');
+        }, this.desktopFlipState().controlFlipY)
+        this.menuItem('控制层左右翻转', 'desktopFlip', (): void => {
+          this.toggleDesktopFlipAxis('control_x');
+        }, this.desktopFlipState().controlFlipX)
         this.menuItem('复位', 'desktopFlip', (): void => {
           this.actions.onSetRustDeskDesktopFlipMode('reset');
         }, this.rustDeskDesktopFlipMode === 'reset')
@@ -862,36 +1002,51 @@ export struct RemoteSessionTopBar {
   }
 
   @Builder
+  private keyboardMouseRootMenuContent() {
+    if (this.protocol === 'rustdesk') {
+      this.menuItem('浏览模式', 'browseMode', (): void => {
+        this.actions.onToggleBrowseMode(!this.browseMode);
+      }, this.browseMode)
+      this.menuItem('显示我的光标', 'keyboardMouseSettings', (): void => {
+        this.actions.onToggleShowLocalCursor(!this.showLocalCursor);
+      }, this.showLocalCursor)
+      this.menuItem('相对鼠标模式', 'keyboardMouseSettings', (): void => {
+        this.actions.onToggleRelativeMouse(!this.relativeMouseMode);
+      }, this.relativeMouseMode)
+    }
+    this.menuItem('远程滚轮反向', 'keyboardMouseSettings', (): void => {
+      this.actions.onToggleReverseWheel(!this.reverseWheel);
+    }, this.reverseWheel)
+    if (this.protocol === 'rustdesk') {
+      this.menuItem('交换鼠标左右键', 'keyboardMouseSettings', (): void => {
+        this.actions.onToggleSwapMouseButtons(!this.swapMouseButtons);
+      }, this.swapMouseButtons)
+      this.subMenuItem('触控板速度', this.touchpadSpeed.toFixed(1) + 'x',
+        'keyboardMouseSettings', 'touchpadSpeed')
+      if (this.activeSubMenu === 'touchpadSpeed') {
+        this.touchpadSpeedSubMenuContent()
+      }
+    }
+  }
+
+  @Builder
+  private touchpadSpeedSubMenuContent() {
+    ForEach(rustDeskTouchpadSpeedOptions(), (speed: number): void => {
+      this.menuItem((Math.abs(speed - 1.0) < 0.05 ? '标准 ' : '') +
+        speed.toFixed(1) + 'x', 'keyboardMouseSettings', (): void => {
+        this.actions.onSetTouchpadSpeed(speed);
+      }, Math.abs(this.touchpadSpeed - speed) < 0.05)
+    }, (speed: number): string => speed.toFixed(1))
+  }
+
+  @Builder
   private keyboardMouseMenu() {
     Column() {
       this.menuHeader('鼠标与触控', $r('sys.symbol.mouse'))
       Scroll() {
         Column() {
-          if (this.protocol === 'rustdesk') {
-            this.menuItem('浏览模式', 'browseMode', (): void => {
-              this.actions.onToggleBrowseMode(!this.browseMode);
-            }, this.browseMode)
-            this.menuItem('显示我的光标', 'keyboardMouseSettings', (): void => {
-              this.actions.onToggleShowLocalCursor(!this.showLocalCursor);
-            }, this.showLocalCursor)
-            this.menuItem('相对鼠标模式', 'keyboardMouseSettings', (): void => {
-              this.actions.onToggleRelativeMouse(!this.relativeMouseMode);
-            }, this.relativeMouseMode)
-          }
-          this.menuItem('远程滚轮反向', 'keyboardMouseSettings', (): void => {
-            this.actions.onToggleReverseWheel(!this.reverseWheel);
-          }, this.reverseWheel)
-          if (this.protocol === 'rustdesk') {
-            this.menuItem('交换鼠标左右键', 'keyboardMouseSettings', (): void => {
-              this.actions.onToggleSwapMouseButtons(!this.swapMouseButtons);
-            }, this.swapMouseButtons)
-            this.menuItem('触控板速度 ' + this.touchpadSpeed.toFixed(1) + 'x', 'keyboardMouseSettings', (): void => {
-              const next: number = this.touchpadSpeed >= 1.6 ? 0.8 : this.touchpadSpeed + 0.4;
-              this.actions.onSetTouchpadSpeed(next);
-            })
-          }
-        }
-        .width('100%').padding(this.menuPadding())
+          this.keyboardMouseRootMenuContent()
+        }.width('100%').padding(this.menuPadding())
       }
       .width('100%').constraintSize({ maxHeight: this.menuScrollMaxHeight() })
       .scrollable(ScrollDirection.Vertical).scrollBar(BarState.Auto)
@@ -903,6 +1058,7 @@ export struct RemoteSessionTopBar {
     .shadow({ radius: 10, color: 'rgba(0,0,0,0.22)', offsetY: 2 })
     .position({ x: this.menuLeft(), y: this.menuTop() })
     .hitTestBehavior(HitTestMode.BLOCK_HIERARCHY)
+    .onHover((isHover: boolean): void => { this.onExpandableMenuHover(isHover); })
   }
 
   @Builder
@@ -931,8 +1087,10 @@ export struct RemoteSessionTopBar {
       this.iconButton($r('sys.symbol.gearshape_fill'), this.accentColor,
         (): void => { this.toggleMenu('control'); }, 18, '打开会话控制')
     } else if (actionId === 'display') {
-      this.iconButton($r('sys.symbol.display'), this.accentColor,
-        (): void => { this.toggleMenu('display'); }, 18, '打开显示与画质')
+      this.iconButton($r('sys.symbol.display'),
+        this.canvasResetAvailable ? '#2A9D8F' : this.accentColor,
+        (): void => { this.toggleMenu('display'); }, 18,
+        this.canvasResetAvailable ? '打开显示与画质，画面可复位' : '打开显示与画质')
     } else if (actionId === 'desktopFlip') {
       this.iconButton($r('sys.symbol.rectangle_rotate'),
         this.rustDeskDesktopFlipMode === 'reset' ? this.accentColor : '#2A9D8F',

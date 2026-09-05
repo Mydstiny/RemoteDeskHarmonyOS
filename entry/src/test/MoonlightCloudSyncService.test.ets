@@ -72,6 +72,51 @@ function hostRecord(id: string, mutationId: string,
   return record;
 }
 
+function scopedHostRecord(id: string, mutationId: string): MoonlightRecord {
+  const meta: MoonlightRecordMeta = {
+    mutationId: mutationId, originId: 'owner-a-origin',
+    baseSyncVersion: 0, fieldVersions: { 'addresses': 1 }
+  };
+  const payload = moonlightPayloadWithMeta({
+    schemaVersion: 1, serverUuid: 'server-' + id,
+    displayName: 'Scoped PC ' + id,
+    addresses: [{
+      host: 'fe80::20', family: 'ipv6', port: 47989, scope: 'wlan0'
+    }],
+    preferredAddressKey: 'ipv6|fe80::20%wlan0|47989',
+    hostType: 'sunshine',
+    wakeOnLan: { enabled: false, mac: '', broadcast: '' },
+    userOrder: 0
+  }, meta, 'host');
+  const record = new MoonlightRecord();
+  record.id = id;
+  record.userId = 'owner-a';
+  record.recordType = 'host';
+  record.ownerId = 'owner-a';
+  record.ownerType = 'account';
+  record.payload = payload.canonical;
+  record.syncVersion = 1;
+  record.createdAt = 100;
+  record.updatedAt = 101;
+  record.payloadHashSha256 = moonlightRecordPayloadHashSha256(record);
+  return record;
+}
+
+function embeddedScopedHostRecord(id: string, mutationId: string): MoonlightRecord {
+  const record: MoonlightRecord = scopedHostRecord(id, mutationId);
+  const payload: Record<string, Object> = JSON.parse(record.payload) as Record<string, Object>;
+  const addresses: Array<Record<string, Object>> =
+    payload['addresses'] as Array<Record<string, Object>>;
+  addresses[0]['host'] = 'fe80::20%wlan0';
+  delete addresses[0]['scope'];
+  const meta: MoonlightRecordMeta = payload['_meta'] as MoonlightRecordMeta;
+  delete payload['_meta'];
+  record.payload = moonlightPayloadWithMeta(
+    payload, meta, 'host').canonical;
+  record.payloadHashSha256 = moonlightRecordPayloadHashSha256(record);
+  return record;
+}
+
 function identityRecord(): MoonlightRecord {
   const meta: MoonlightRecordMeta = {
     mutationId: 'identity-1', originId: 'owner-a-origin',
@@ -567,6 +612,34 @@ export default function moonlightCloudSyncServiceTest(): void {
         expect(port.quarantineReasons[0]).assertEqual('cloud_row_shape_invalid');
       });
 
+    it('quarantines_downloaded_link_local_scope_as_device_private', 0,
+      (): void => {
+        const port = new MemoryCloudSyncPort();
+        const service = new MoonlightCloudSyncService(port, encryptedIdentity);
+        const result = service.materializeDownloadedRows(
+          lease(), [moonlightRecordToCloudRow(scopedHostRecord('scoped', 'm1'))],
+          gates(['hosts']));
+        expect(result.code).assertEqual('partial');
+        expect(result.accepted).assertEqual(0);
+        expect(result.quarantined).assertEqual(1);
+        expect(port.quarantineReasons[0])
+          .assertEqual('cloud_device_private_endpoint');
+        expect(port.rows.has('scoped')).assertFalse();
+      });
+
+    it('quarantines_downloaded_embedded_scope_instead_of_materializing_it', 0,
+      (): void => {
+        const port = new MemoryCloudSyncPort();
+        const service = new MoonlightCloudSyncService(port, encryptedIdentity);
+        const result = service.materializeDownloadedRows(
+          lease(), [moonlightRecordToCloudRow(
+            embeddedScopedHostRecord('embedded-scoped', 'm1'))], gates(['hosts']));
+        expect(result.code).assertEqual('partial');
+        expect(result.accepted).assertEqual(0);
+        expect(result.quarantined).assertEqual(1);
+        expect(port.rows.has('embedded-scoped')).assertFalse();
+      });
+
     it('rolls_back_the_whole_materialization_when_one_write_fails', 0,
       (): void => {
         const port = new MemoryCloudSyncPort();
@@ -596,6 +669,35 @@ export default function moonlightCloudSyncServiceTest(): void {
         expect(result.promoted).assertEqual(1);
         expect(port.promotedIds.join(',')).assertEqual('h1');
         expect(port.localOnly.get('identity-1') as number).assertEqual(1);
+      });
+
+    it('never_promotes_a_link_local_interface_scope_to_cloud', 0,
+      (): void => {
+        const port = new MemoryCloudSyncPort();
+        port.rows.set('scoped', scopedHostRecord('scoped', 'm1'));
+        port.localOnly.set('scoped', 1);
+        const service = new MoonlightCloudSyncService(port, encryptedIdentity);
+        const result = service.promoteSelectedLocalRecords(
+          lease(), gates(['hosts']));
+        expect(result.ok).assertTrue();
+        expect(result.promoted).assertEqual(0);
+        expect(port.promotedIds.length).assertEqual(0);
+        expect(port.localOnly.get('scoped') as number).assertEqual(1);
+      });
+
+    it('never_promotes_an_embedded_scope_bypass_to_cloud', 0,
+      (): void => {
+        const port = new MemoryCloudSyncPort();
+        port.rows.set('embedded-scoped',
+          embeddedScopedHostRecord('embedded-scoped', 'm1'));
+        port.localOnly.set('embedded-scoped', 1);
+        const service = new MoonlightCloudSyncService(port, encryptedIdentity);
+        const result = service.promoteSelectedLocalRecords(
+          lease(), gates(['hosts']));
+        expect(result.ok).assertTrue();
+        expect(result.promoted).assertEqual(0);
+        expect(port.promotedIds.length).assertEqual(0);
+        expect(port.localOnly.get('embedded-scoped') as number).assertEqual(1);
       });
 
     it('fails_closed_when_atomic_projection_fails', 0, (): void => {

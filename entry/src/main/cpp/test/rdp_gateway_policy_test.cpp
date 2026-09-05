@@ -4,6 +4,7 @@
 
 #include "test_runner.h"
 #include "rdp/rdp_certificate_validation.h"
+#include "rdp/rdp_connection_identity_policy.h"
 #include "rdp/rdp_gateway_policy.h"
 
 #include <openssl/evp.h>
@@ -158,6 +159,30 @@ RDP_TEST_CASE(rdp_gateway_policy_maps_gateway_transport_without_guessing) {
     RDP_ASSERT(!RdpGatewayPolicy::parseGatewayTransport("probe_http_then_guess", transport));
 }
 
+RDP_TEST_CASE(rdp_preflight_request_explicitly_clears_every_identity_copy) {
+    RdpPreflightRequest request;
+    request.username = "DOMAIN\\session-user";
+    request.password = "session-password";
+    request.domain = "DOMAIN";
+    request.cancelled = []() { return false; };
+    RdpPreflightRequest copied = request;
+
+    request.clearCredentialMaterial();
+    RDP_ASSERT(request.username.empty());
+    RDP_ASSERT(request.password.empty());
+    RDP_ASSERT(request.domain.empty());
+    RDP_ASSERT(!request.cancelled);
+    RDP_ASSERT(copied.username == "DOMAIN\\session-user");
+    RDP_ASSERT(copied.password == "session-password");
+    RDP_ASSERT(copied.domain == "DOMAIN");
+
+    copied.clearCredentialMaterial();
+    RDP_ASSERT(copied.username.empty());
+    RDP_ASSERT(copied.password.empty());
+    RDP_ASSERT(copied.domain.empty());
+    RDP_ASSERT(!copied.cancelled);
+}
+
 RDP_TEST_CASE(rdp_gateway_policy_separates_requested_and_observed_transport) {
     RdpPreflightResult result;
     RdpGatewayPolicy::initializeGatewayTransportResult(
@@ -229,13 +254,30 @@ RDP_TEST_CASE(rdp_gateway_policy_route_identity_binds_all_route_fields) {
     route.gatewayTransport = RdpGatewayTransport::NoWebsockets;
 
     const std::string identity = RdpGatewayPolicy::routeIdentity(route);
-    RDP_ASSERT(identity.find("microsoft_rd_gateway") != std::string::npos);
-    RDP_ASSERT(identity.find("target.internal:3389") != std::string::npos);
-    RDP_ASSERT(identity.find("gateway.internal:443") != std::string::npos);
-    RDP_ASSERT(identity.find("no-websockets") != std::string::npos);
+    RDP_ASSERT(identity.rfind("rdp-route-v2|", 0U) == 0U);
 
     route.gatewayPort = 8443;
     RDP_ASSERT(identity != RdpGatewayPolicy::routeIdentity(route));
+}
+
+RDP_TEST_CASE(rdp_gateway_policy_route_identity_has_no_ipv6_delimiter_collision) {
+    RdpEndpointRoute first;
+    first.endpointMode = RdpEndpointMode::DirectRdp;
+    first.targetHost = "2001:db8::1";
+    first.targetPort = 3389;
+    first.targetServerName = "443:1::2";
+    first.gatewayPort = 0;
+
+    RDP_ASSERT(RdpGatewayPolicy::routeIdentity(first) ==
+        "rdp-route-v2|10:direct_rdp11:2001:db8::14:33898:443:1::20:1:00:4:auto");
+
+    RdpEndpointRoute second = first;
+    second.targetHost = "2001:db8::1:3389";
+    second.targetPort = 443;
+    second.targetServerName = "1::2";
+
+    RDP_ASSERT(RdpGatewayPolicy::routeIdentity(first) !=
+        RdpGatewayPolicy::routeIdentity(second));
 }
 
 RDP_TEST_CASE(rdp_gateway_policy_rejects_unsupported_routes_as_not_supported) {
@@ -254,6 +296,43 @@ RDP_TEST_CASE(rdp_gateway_policy_rejects_restricted_admin_without_gateway_creden
         RdpEndpointMode::MicrosoftRdGateway, true));
     RDP_ASSERT(RdpGatewayPolicy::restrictedAdminGatewayRouteIsSupported(
         RdpEndpointMode::MicrosoftRdGateway, false));
+}
+
+RDP_TEST_CASE(rdp_gateway_policy_keeps_interface_scopes_in_the_client_namespace) {
+    RDP_ASSERT(RdpGatewayPolicy::targetInterfaceScopeIsAllowed(
+        RdpEndpointMode::DirectRdp, true));
+    RDP_ASSERT(RdpGatewayPolicy::targetInterfaceScopeIsAllowed(
+        RdpEndpointMode::TransparentTcpRdp, true));
+    RDP_ASSERT(RdpGatewayPolicy::targetInterfaceScopeIsAllowed(
+        RdpEndpointMode::MicrosoftRdGateway, false));
+    RDP_ASSERT(!RdpGatewayPolicy::targetInterfaceScopeIsAllowed(
+        RdpEndpointMode::MicrosoftRdGateway, true));
+}
+
+RDP_TEST_CASE(rdp_route_normalization_publishes_scope_free_certificate_identities) {
+    struct RouteConfig {
+        std::string host;
+        int port = 0;
+        std::string targetServerName;
+        std::string gatewayHost;
+        int gatewayPort = 0;
+        std::string rdpGatewayServerName;
+        std::string rdpEndpointMode;
+        std::string rdpGatewayTransport;
+    } config;
+    RdpEndpointRoute route;
+    route.endpointMode = RdpEndpointMode::DirectRdp;
+    route.targetHost = "fe80::1%en0";
+    route.targetPort = 3389;
+    route.targetServerName = "fe80::1";
+    route.gatewayPort = 443;
+
+    RdpGatewayPolicy::normalizeRouteConfig(config, route);
+
+    RDP_ASSERT(config.host == "fe80::1%en0");
+    RDP_ASSERT(config.targetServerName == "fe80::1");
+    RDP_ASSERT(config.rdpEndpointMode == "direct_rdp");
+    RDP_ASSERT(config.rdpGatewayTransport == "auto");
 }
 
 RDP_TEST_CASE(rdp_gateway_policy_does_not_cross_match_gateway_and_target_pins) {
@@ -501,6 +580,19 @@ RDP_TEST_CASE(rdp_gateway_policy_requires_both_stage_pins_and_isolates_rotation)
     target.fingerprintSha256 = rotatedTargetFingerprint;
     request.expectedTargetFingerprintSha256 = rotatedTargetFingerprint;
     RDP_ASSERT(RdpGatewayPolicy::gatewayTrustAllowsRoute(request, gateway, target));
+}
+
+RDP_TEST_CASE(rdp_client_hostname_is_not_an_endpoint_or_server_identity) {
+    RDP_ASSERT(RdpConnectionIdentityPolicy::clientHostnameIsValid(""));
+    RDP_ASSERT(RdpConnectionIdentityPolicy::clientHostnameIsValid("HARMONY-CLIENT"));
+    RDP_ASSERT(RdpConnectionIdentityPolicy::clientHostnameIsValid("client.example.test"));
+    RDP_ASSERT(!RdpConnectionIdentityPolicy::clientHostnameIsValid("2001:db8::10"));
+    RDP_ASSERT(!RdpConnectionIdentityPolicy::clientHostnameIsValid("client name"));
+    RDP_ASSERT(!RdpConnectionIdentityPolicy::clientHostnameIsValid("-client"));
+    RDP_ASSERT(!RdpConnectionIdentityPolicy::clientHostnameIsValid("client-.example"));
+    RDP_ASSERT(!RdpConnectionIdentityPolicy::clientHostnameIsValid("client.example."));
+    RDP_ASSERT(!RdpConnectionIdentityPolicy::clientHostnameIsValid(
+        std::string(254, 'a')));
 }
 
 RDP_TEST_CASE(rdp_certificate_validation_distinguishes_ip_san_from_dns_san) {

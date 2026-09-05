@@ -1,5 +1,7 @@
 #include "moonlight/media/MoonlightCommonCAdapter.h"
 
+#include "common/network_generation_fence.h"
+
 // This is the only project translation unit allowed to see common-c's public C
 // structs, callback signatures, numeric masks, and Li* entry points.
 #include "moonlight/upstream/moonlight-common-c/src/Limelight.h"
@@ -807,6 +809,7 @@ public:
     void runInterrupt();
     void runStop();
     void noteUserCancel() noexcept;
+    void noteNetworkChange() noexcept;
     void acceptKey(const MoonlightSessionKey& key) noexcept;
     void finalizeBeforeDriverStart() noexcept;
 
@@ -834,6 +837,7 @@ public:
                         std::size_t byteCount) noexcept;
 
     MoonlightSessionKey key() const noexcept;
+    std::uint64_t networkGeneration() const noexcept;
     MoonlightCommonCSnapshot snapshot() const noexcept;
     std::vector<MoonlightCommonCEvent> drainEvents() noexcept;
 #if defined(RDP_NATIVE_CALLBACK_TESTING)
@@ -1251,6 +1255,7 @@ public:
     bool bindActiveKey(const std::shared_ptr<Invocation>& invocation,
                        const MoonlightSessionKey& key) noexcept;
     void clearDeadline(const MoonlightSessionKey& key) noexcept;
+    void clearNetworkFence(const MoonlightSessionKey& key) noexcept;
     bool deadlineFired(const MoonlightSessionKey& key) const noexcept;
     void complete(const std::shared_ptr<Invocation>& invocation) noexcept;
     void notifyClock() noexcept { schedulerCv_.notify_all(); }
@@ -1275,8 +1280,10 @@ private:
     MoonlightSessionKey lastKey_ {};
     MoonlightSessionKey deadlineKey_ {};
     MoonlightSessionKey deadlineFiredKey_ {};
+    MoonlightSessionKey networkKey_ {};
     std::uint64_t overallDeadline_ = 0U;
     std::uint64_t stageDeadline_ = 0U;
+    std::uint64_t networkGeneration_ = 0U;
     std::thread scheduler_;
 };
 
@@ -1450,6 +1457,11 @@ MoonlightSessionKey Invocation::key() const noexcept {
     return key_;
 }
 
+std::uint64_t Invocation::networkGeneration() const noexcept {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return request_.networkGeneration;
+}
+
 bool Invocation::installRouter() noexcept {
     MoonlightSessionKey installKey;
     {
@@ -1550,6 +1562,12 @@ int Invocation::runStart(MoonlightSessionOwner::StartContext& context) {
             std::lock_guard<std::mutex> lock(mutex_);
             pendingCode_ = MoonlightCommonCCode::Busy;
         }
+        finalize();
+        return -1;
+    }
+    if (remotedesk::net::ProcessNetworkGenerationFence().shouldCancel(
+            {request_.networkGeneration, true})) {
+        noteNetworkChange();
         finalize();
         return -1;
     }
@@ -1775,6 +1793,15 @@ void Invocation::noteUserCancel() noexcept {
         // the generic start-failure terminal reason, while specific protocol,
         // negotiation, media, deadline, and driver failures remain intact.
         pendingCode_ = MoonlightCommonCCode::Cancelled;
+    }
+}
+
+void Invocation::noteNetworkChange() noexcept {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!terminalEmitted_ &&
+        (pendingCode_ == MoonlightCommonCCode::None ||
+         pendingCode_ == MoonlightCommonCCode::CommonCStartFailed)) {
+        pendingCode_ = MoonlightCommonCCode::NetworkChanged;
     }
 }
 
@@ -2442,6 +2469,7 @@ void Invocation::cleanseLocked() noexcept {
 
 void Invocation::finalize(bool driverException) noexcept {
     runtime_->clearDeadline(key());
+    runtime_->clearNetworkFence(key());
     runTerminalInputTeardown();
     {
         std::unique_lock<std::mutex> lock(mutex_);
@@ -2496,6 +2524,8 @@ void Invocation::finalize(bool driverException) noexcept {
         event.boundedRawError = pendingRawError_;
         if (code == MoonlightCommonCCode::DeadlineExceeded) {
             event.type = MoonlightCommonCEventType::Timeout;
+        } else if (code == MoonlightCommonCCode::NetworkChanged) {
+            event.type = MoonlightCommonCEventType::Terminated;
         } else if (code == MoonlightCommonCCode::ConnectionTerminated) {
             event.type = MoonlightCommonCEventType::Terminated;
         } else if (code == MoonlightCommonCCode::Cancelled) {
@@ -2602,6 +2632,15 @@ MoonlightCommonCStartResult AdapterRuntime::start(
         if (media == nullptr) {
             return {MoonlightCommonCStartStatus::RuntimeProofRequired,
                     MoonlightCommonCCode::RuntimeProofRequired, {}};
+        }
+        if (request.networkGeneration == 0U) {
+            return {MoonlightCommonCStartStatus::InvalidRequest,
+                    MoonlightCommonCCode::InvalidRequest, {}};
+        }
+        if (remotedesk::net::ProcessNetworkGenerationFence().shouldCancel(
+                {request.networkGeneration, true})) {
+            return {MoonlightCommonCStartStatus::NetworkChanged,
+                    MoonlightCommonCCode::NetworkChanged, {}};
         }
         const auto now = clock_();
         const auto& identity = request.streamConfig.identity;
@@ -2772,13 +2811,24 @@ bool AdapterRuntime::bindActiveKey(
     if (invocation == nullptr || !key.valid()) {
         return false;
     }
-    std::lock_guard<std::mutex> lock(mutex_);
-    if (active_ == invocation &&
-        (!activeKey_.valid() || activeKey_ == key)) {
-        activeKey_ = key;
-        return true;
+    const auto networkGeneration = invocation->networkGeneration();
+    bool bound = false;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (active_ == invocation &&
+            (!activeKey_.valid() || activeKey_ == key)) {
+            activeKey_ = key;
+            networkKey_ = key;
+            networkGeneration_ = networkGeneration;
+            bound = true;
+        } else {
+            bound = last_ == invocation && lastKey_ == key;
+        }
     }
-    return last_ == invocation && lastKey_ == key;
+    if (bound) {
+        schedulerCv_.notify_all();
+    }
+    return bound;
 }
 
 void AdapterRuntime::armDeadline(const MoonlightSessionKey& key,
@@ -2809,6 +2859,18 @@ void AdapterRuntime::clearDeadline(const MoonlightSessionKey& key) noexcept {
     schedulerCv_.notify_all();
 }
 
+void AdapterRuntime::clearNetworkFence(
+    const MoonlightSessionKey& key) noexcept {
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (networkKey_ == key) {
+            networkKey_ = {};
+            networkGeneration_ = 0U;
+        }
+    }
+    schedulerCv_.notify_all();
+}
+
 bool AdapterRuntime::deadlineFired(const MoonlightSessionKey& key) const noexcept {
     std::lock_guard<std::mutex> lock(mutex_);
     return deadlineFiredKey_ == key;
@@ -2829,6 +2891,10 @@ void AdapterRuntime::complete(const std::shared_ptr<Invocation>& invocation) noe
             overallDeadline_ = 0U;
             stageDeadline_ = 0U;
         }
+        if (networkKey_ == invocationKey) {
+            networkKey_ = {};
+            networkGeneration_ = 0U;
+        }
     }
     schedulerCv_.notify_all();
 }
@@ -2836,26 +2902,62 @@ void AdapterRuntime::complete(const std::shared_ptr<Invocation>& invocation) noe
 void AdapterRuntime::schedulerLoop() noexcept {
     for (;;) {
         MoonlightSessionKey fireKey;
+        MoonlightSessionKey networkFireKey;
+        std::shared_ptr<Invocation> networkInvocation;
         {
             std::unique_lock<std::mutex> lock(mutex_);
             schedulerCv_.wait(lock, [&]() {
-                return shuttingDown_ || deadlineKey_.valid();
+                return shuttingDown_ || deadlineKey_.valid() ||
+                    networkKey_.valid();
             });
             if (shuttingDown_) { return; }
-            const auto now = clock_();
-            const auto target = stageDeadline_ == 0U
-                                    ? overallDeadline_
-                                    : std::min(overallDeadline_, stageDeadline_);
-            if (target <= now) {
-                fireKey = deadlineKey_;
-                deadlineFiredKey_ = fireKey;
-                deadlineKey_ = {};
-                overallDeadline_ = 0U;
-                stageDeadline_ = 0U;
-            } else if (manualClock_) {
-                schedulerCv_.wait(lock);
+            if (networkKey_.valid() &&
+                remotedesk::net::ProcessNetworkGenerationFence().shouldCancel(
+                    {networkGeneration_, true})) {
+                networkFireKey = networkKey_;
+                networkInvocation = findInvocationLocked(networkFireKey);
+                networkKey_ = {};
+                networkGeneration_ = 0U;
             } else {
-                schedulerCv_.wait_for(lock, std::chrono::milliseconds(target - now));
+                const auto now = clock_();
+                if (deadlineKey_.valid()) {
+                    const auto target = stageDeadline_ == 0U
+                                            ? overallDeadline_
+                                            : std::min(overallDeadline_, stageDeadline_);
+                    if (target <= now) {
+                        fireKey = deadlineKey_;
+                        deadlineFiredKey_ = fireKey;
+                        deadlineKey_ = {};
+                        overallDeadline_ = 0U;
+                        stageDeadline_ = 0U;
+                    } else if (manualClock_) {
+                        schedulerCv_.wait(lock);
+                    } else {
+                        const auto waitMs = std::min<std::uint64_t>(
+                            target - now, 50U);
+                        schedulerCv_.wait_for(
+                            lock, std::chrono::milliseconds(waitMs));
+                    }
+                } else if (manualClock_) {
+                    schedulerCv_.wait(lock);
+                } else {
+                    schedulerCv_.wait_for(lock, std::chrono::milliseconds(50));
+                }
+            }
+        }
+        if (networkFireKey.valid()) {
+            if (networkInvocation != nullptr) {
+                networkInvocation->noteNetworkChange();
+            }
+            const auto status = owner_->requestStop(networkFireKey);
+            if (status == MoonlightStopStatus::StopRequested &&
+                networkInvocation != nullptr) {
+                const auto ownerSnapshot = owner_->snapshot(networkFireKey);
+                if (ownerSnapshot.matched && !ownerSnapshot.startInvoked &&
+                    (ownerSnapshot.phase == MoonlightSessionPhase::Stopping ||
+                     ownerSnapshot.phase == MoonlightSessionPhase::Stopped)) {
+                    networkInvocation->finalizeBeforeDriverStart();
+                }
             }
         }
         if (fireKey.valid()) {
@@ -2885,6 +2987,8 @@ void AdapterRuntime::shutdown() noexcept {
         std::lock_guard<std::mutex> lock(mutex_);
         shuttingDown_ = true;
         deadlineKey_ = {};
+        networkKey_ = {};
+        networkGeneration_ = 0U;
     }
     schedulerCv_.notify_all();
     if (scheduler_.joinable()) { scheduler_.join(); }

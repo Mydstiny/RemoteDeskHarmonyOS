@@ -98,3 +98,23 @@ RDP_TEST_CASE(ssh_session_manager_recovery_and_mfa_state_sequence) {
     assert(events[3].type == "lifecycle");
     assert(events[4].sequence == 5);
 }
+
+RDP_TEST_CASE(ssh_session_manager_ready_session_can_require_fresh_authentication) {
+    SshSessionManager manager;
+    SshNativeFacade facade(manager);
+    const SshSessionHandle handle {78, "shell", 10};
+    assert(facade.registerSession(handle, "reauth.test", 22) ==
+        SshSessionManagerResult::Ok);
+    assert(facade.transition(handle, SshSessionLifecycleState::Connecting,
+        "connecting") == SshSessionManagerResult::Ok);
+    assert(facade.transition(handle, SshSessionLifecycleState::Authenticating,
+        "authenticating") == SshSessionManagerResult::Ok);
+    assert(facade.transition(handle, SshSessionLifecycleState::Ready,
+        "ready") == SshSessionManagerResult::Ok);
+    assert(facade.transition(handle, SshSessionLifecycleState::NeedsAuthentication,
+        "reauthentication_required") == SshSessionManagerResult::Ok);
+
+    SshSessionSnapshot snapshot;
+    assert(facade.snapshot(handle, snapshot));
+    assert(snapshot.state == SshSessionLifecycleState::NeedsAuthentication);
+}

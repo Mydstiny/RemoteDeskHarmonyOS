@@ -1,40 +1,75 @@
 {
   "schema": 1,
-  "task": "release-1-1-4-notes-and-version",
-  "branch": "codex/system-clipboard-activation-fix",
-  "base": "c49f165f489fc42848fe7a7f480a425a5a6dc7fc",
-  "head": "20811b14ac1face72dd42dad4d31823a84874097",
-  "phase": "ready-for-device-validation",
-  "status": "active",
-  "next": "Upgrade a preserved 1.1.3 install to 1.1.4 and verify the current-only 10-page update popup, absence of 1.1.3 pages, once-only marker, page ordering and Settings reopen path.",
+  "task": "all-protocol-ipv6-upgrade",
+  "branch": "",
+  "base": "5a0e055159402fcdf50aeea91760d99e3c017f39",
+  "head": "0a7559aa7c6bdb09df3f52a3ab062facc8375237",
+  "phase": "reviewed-code-user-authorized-main-integration",
+  "status": "code-complete-device-acceptance-pending",
+  "next": "Run the consolidated HarmonyOS Phone/Pad/PC acceptance matrix, including explicit RustDesk H.265 request, negotiated frame codec and hardware decode evidence; reproduce the intermittent RDP disconnect and retain the new source/code classification with RDP/routing diagnostics and matching HDC hilog; capture schema-v4 JSONL immediately if a hardware-decoder flip reproduces; then continue the existing IPv6 M1-M3 and fixed-server RustDesk M4 release matrices.",
   "blockers": [
-    "Real-device upgrade acceptance for the 1.1.4 popup is pending; this task did not install or uninstall any HAP.",
-    "The project does not register ohosTest@OhosTestCompileArkTS (00306054); mandatory default@OhosTestCompileArkTS and assembleHap pass."
+    "Consolidated real-device acceptance is intentionally pending for the user; host-side implementation, review and validation of the committed twelve-item batch and version 1.1.5.1 are complete.",
+    "The original intermittent RDP incident is not final-confirmed because supplied captures omitted RDP events and no HDC target is connected. The generic ArkTS 0x10 fallback is removed; the next capture must distinguish strict E-RDP-ERRINFO-0x00000010 (remote DWM crash) from the new client/network symbolic classification.",
+    "RustDesk M4 release acceptance still requires fixed-version hbbs/hbbr and controlled peers across the NAT/IPv6 topology matrix; AUTO, UDP/KCP and NAT capability bits remain disabled."
   ],
   "planPaths": [
-    "docs/codex/plans/2026-08-28-release-1-1-4-notes-and-version.md"
+    "docs/codex/plans/2026-08-29-all-protocol-ipv6-upgrade.md"
   ],
   "review": {
     "status": "PASS",
     "taskIds": [
-      "/root/release_1_1_4_review"
+      "/root/ipv6_shared_rdp_review",
+      "/root/ipv6_ssh_review",
+      "/root/ipv6_rustdesk_review",
+      "/root/release_115_review",
+      "/root/ipv6_blocker_review_retry",
+      "/root/review_item1",
+      "/root/review_item2",
+      "/root/review_rustdesk_h265",
+      "/root/review_rdp_0x10"
     ],
-    "reviewedHead": "20811b14ac1face72dd42dad4d31823a84874097",
+    "reviewedHead": "0a7559aa7c6bdb09df3f52a3ab062facc8375237",
     "scope": [
-      "entry/src/main/ets/components/AboutSettingsSheet.ets"
+      ".gitattributes",
+      "AppScope/app.json5",
+      "README.md",
+      "REUSE.toml",
+      "THIRD_PARTY_NOTICES.md",
+      "docs/RDP_STATUS.md",
+      "docs/app-store",
+      "docs/compliance",
+      "entry/src/main",
+      "entry/src/ohosTest",
+      "entry/src/test",
+      "freerdp",
+      "libs/freerdp-ohos",
+      "patches/freerdp-ohos",
+      "rustdesk_ffi/src",
+      "scripts/build_freerdp_ohos.sh",
+      "scripts/build_rustdesk_ffi_ohos.sh",
+      "scripts/create_migration_bundle.ps1",
+      "scripts/generate_sbom.ps1",
+      "scripts/tests/test_create_migration_bundle.ps1",
+      "scripts/tests/test_freerdp_provenance.ps1",
+      "scripts/tests/test_open_source_compliance.ps1",
+      "scripts/tests/test_workflow_scripts.ps1",
+      "scripts/verify_open_source_release.ps1"
     ],
     "findings": [],
-    "reason": "The same independent reviewer verified that the tutorial release-log component reloads the current 1.1.4 registry on appearance and when mode 4 is selected, clamps a reused legacy index to the current range, and does not accumulate or recurse. Final P0/P1/P2/P3 are zero."
+    "reason": "/root/review_item1 independently verified the final Moonlight flip fallback and schema-v4 evidence with P0-P3 all zero. /root/review_item2 iteratively reviewed items 2-12 and their shortcut follow-ups, then reviewed the 1.1.5.1 release increment. /root/review_rustdesk_h265 traced the explicit H.265 preference through both ArkTS connection paths, native parsing, FFI negotiation and decoder initialization. /root/review_rdp_0x10 found and verified remediation of two P2 attribution/parser issues; its final review reported P0-P3 zero."
   },
   "lastVerification": {
-    "baseline": "The tutorial release-log refresh starts after c49f165f4 on the user-authorized existing task branch.",
-    "testCompile": "PASS: default@OhosTestCompileArkTS, BUILD SUCCESSFUL in 14 s 918 ms",
-    "assembleHap": "PASS: signed HAP, BUILD SUCCESSFUL in 38 s 510 ms, SHA-256 45cd9c64b7c3a28c6a606594943d3ae79ba27c3e2216d87042edcc891267eada",
-    "targetedTests": "PASS compile: current 1.1.4 registry has 10 pages and excludes 1.1.3 IDs; explicit historical 1.1.3 registry retains 12 unchanged pages; final current page is welcome-1-1-4.",
-    "arktsTests": "PASS through mandatory default@OhosTestCompileArkTS; separate ohosTest module task is unregistered (00306054).",
-    "compliance": "PASS: Light open-source compliance and git diff --check",
-    "review": "PASS: /root/release_1_1_4_review found zero P0/P1/P2/P3 in the tutorial release-log refresh.",
-    "deviceAcceptance": "PENDING: no HDC target is connected and no HAP was installed or uninstalled; the 1.1.3-to-1.1.4 current-only popup, reused high-index transition, once-only marker and phone/Pad/PC layout require preserved-data device acceptance."
+    "baseline": "IPv6 M0-M4 local code, the twelve-item user-feedback repair batch, application version 1.1.5.1 / 1001006, the explicit RustDesk H.265 follow-up and RDP disconnect attribution repair are complete through reviewed checkpoint 0a7559aa; existing release-gated IPv6 and RustDesk UDP/KCP/NAT capabilities remain disabled pending their separate topology acceptance.",
+    "feedbackBatch": "PASS: twelve independently committed repairs plus follow-ups cover Moonlight flip diagnostics, RDP credentials/pointer/resolution/disconnect attribution, RustDesk toolbar/codec/clipboard, Dock input fencing, SSH commands, protected exit, host-list safe area and a simplified Harmony shortcut UI. Explicit RustDesk H.265 reaches native negotiation; RDP unknown failures no longer fabricate server 0x10 and strict native ErrorInfo envelopes retain server attribution.",
+    "flipDiagnostics": "PASS: schema v4 records bounded redacted producer class, raw/applied decoder matrices, presentation mode, renderer manual transform, renderer registry generation and decoder binding generation in a coherent snapshot; strict JSONL parsing and generation binding reject stale or malformed evidence.",
+    "versionRelease": "PASS: app, native user agent, UI/version resources, diagnostics, documentation, SBOM generator and tests consistently use 1.1.5.1 / 1001006; current notes have 14 pages with twelve numbered repairs, while historical 1.1.5 notes and aho-corasick 1.1.5 are preserved.",
+    "testCompile": "PASS: required default@OhosTestCompileArkTS completed with exit 0 after the reviewed RDP disconnect-attribution checkpoint.",
+    "assembleHap": "PASS: final coordination assembleHap after the reviewed RDP disconnect-attribution checkpoint reported BUILD SUCCESSFUL in 5 s 408 ms; pack.info is 1.1.5.1 / 1001006. The development-signed HAP is not content-addressed because signing output changes between otherwise identical builds.",
+    "targetedTests": "PASS: RustDesk H.265 negotiation tests 6/6 with 252 unrelated tests filtered; prior native host suite 997/997 and RustDesk Harmony shortcut tests 2/2 remain passed; cargo fmt --check passed.",
+    "compliance": "PASS: git diff --check and Light open-source compliance after the final RDP code checkpoint.",
+    "review": "PASS: /root/review_rdp_0x10 independently reviewed 9a911bfa, found two P2 issues, and verified their complete remediation in 0a7559aa with P0=0, P1=0, P2=0 and P3=0. Prior feedback, version/SBOM, H.265 and IPv6 reviews remain valid.",
+    "optionalOhosTest": "NOT AVAILABLE: ohosTest@OhosTestCompileArkTS was attempted and returned 00306054 because the task is not defined; it did not replace either required DevEco gate.",
+    "deviceAcceptance": "NOT RUN BY DESIGN: the user requested one consolidated real-device acceptance pass after all repairs are complete; no device behavior is claimed."
   },
-  "updated": "2026-08-29 Asia/Shanghai"
+  "updated": "2026-09-05 Asia/Shanghai"
 }

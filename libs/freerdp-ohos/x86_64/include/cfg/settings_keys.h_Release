@@ -528,6 +528,7 @@ typedef enum
 	FreeRDP_GatewayHttpReferer = 2024,
 	FreeRDP_GatewayHttpUserAgent = 2025,
 	FreeRDP_GatewayHttpMsUserAgent = 2026,
+	FreeRDP_GatewayConnectHostname = 2027,
 	FreeRDP_RemoteApplicationName = 2113,
 	FreeRDP_RemoteApplicationIcon = 2114,
 	FreeRDP_RemoteApplicationProgram = 2115,

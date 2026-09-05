@@ -1,8 +1,17 @@
 import {
   MoonlightAddress,
   MoonlightAddressFamily,
-  MoonlightHostType
+  MoonlightHostType,
+  canonicalMoonlightAddress,
+  moonlightAddressIsValid,
+  moonlightAddressKey
 } from '../model/MoonlightModels';
+import {
+  EndpointAddressResult,
+  formatEndpointHostPort,
+  parseEndpointAuthority,
+  parseEndpointPortText
+} from './EndpointAddressPolicy';
 
 export type MoonlightHostAddStep = 1 | 2 | 3 | 4;
 export type MoonlightHostAddMode = 'automatic' | 'manual';
@@ -16,11 +25,25 @@ export const MOONLIGHT_DEFAULT_CONTROL_PORT: number = 47989;
 
 export interface MoonlightHostAddCandidate {
   serverUuid: string;
+  /** DNS-SD instance key; never treated as an authoritative server UUID. */
+  discoveryServiceKey?: string;
   displayName: string;
   address: MoonlightAddress;
+  addresses?: MoonlightAddress[];
   paired: boolean;
   reachable: boolean;
   lastSeenAt: number;
+}
+
+/** Platform-neutral view of one resolved mDNS route. */
+export interface MoonlightHostAddLanCandidate {
+  serviceKey: string;
+  serviceName: string;
+  serverUuid: string;
+  host: string;
+  family: MoonlightAddressFamily;
+  scope: string;
+  port: number;
 }
 
 export interface MoonlightHostAddVerification {
@@ -29,6 +52,7 @@ export interface MoonlightHostAddVerification {
   hostType: MoonlightHostType;
   version: string;
   address: MoonlightAddress;
+  candidateAddresses?: MoonlightAddress[];
   /** serverinfo/HttpsPort; absent only for legacy in-memory test/state data. */
   httpsPort?: number;
   paired: boolean;
@@ -52,6 +76,111 @@ export interface MoonlightHostAddAddressResult {
   errorText: string;
 }
 
+export interface MoonlightHostAddNativeAddress {
+  value: string;
+  family: 'unspecified' | 'ipv4' | 'ipv6';
+  scope?: string;
+}
+
+const MOONLIGHT_MAX_NATIVE_ADDRESSES: number = 8;
+const MOONLIGHT_MAX_PERSISTED_ADDRESSES: number = 16;
+
+export function moonlightHostAddNativeAddress(
+  address: MoonlightAddress
+): MoonlightHostAddNativeAddress {
+  const result: MoonlightHostAddNativeAddress = {
+    value: address.host,
+    family: address.family === 'ipv4' ? 'ipv4' :
+      address.family === 'ipv6' ? 'ipv6' : 'unspecified'
+  };
+  if (address.scope !== undefined && address.scope !== '') {
+    result.scope = address.scope;
+  }
+  return result;
+}
+
+/**
+ * Native serverName is a TLS/HTTP identity, not Sunshine's display hostname.
+ * The latter may contain spaces or non-DNS text and remains UI-only.
+ */
+export function moonlightHostAddServerIdentity(address: MoonlightAddress): string {
+  return canonicalMoonlightAddress(address).host;
+}
+
+export function moonlightMergeCandidateAddresses(
+  selected: MoonlightAddress,
+  candidates: MoonlightAddress[] | undefined,
+  maximum: number = MOONLIGHT_MAX_PERSISTED_ADDRESSES
+): MoonlightAddress[] {
+  if (!moonlightAddressIsValid(selected)) { return []; }
+  const limit: number = Number.isInteger(maximum) && maximum > 0 ?
+    Math.min(maximum, MOONLIGHT_MAX_PERSISTED_ADDRESSES) :
+    MOONLIGHT_MAX_PERSISTED_ADDRESSES;
+  const selectedAddress: MoonlightAddress = canonicalMoonlightAddress(selected);
+  const keys: string[] = [moonlightAddressKey(selectedAddress)];
+  const ipv4: MoonlightAddress[] = [];
+  const ipv6: MoonlightAddress[] = [];
+  const hostnames: MoonlightAddress[] = [];
+  const source: MoonlightAddress[] = candidates === undefined ? [] : candidates;
+  // Candidate arrays can originate from discovery callbacks or legacy rows.
+  // Bound normalization work even when an in-memory caller bypasses model
+  // validation; four full persisted sets still leave room to find both
+  // families after a long same-family prefix.
+  const scanLimit: number = Math.min(
+    source.length, MOONLIGHT_MAX_PERSISTED_ADDRESSES * 4);
+  for (let index: number = 0; index < scanLimit; index++) {
+    if (!moonlightAddressIsValid(source[index]) || source[index].port !== selected.port) {
+      continue;
+    }
+    const normalized: MoonlightAddress = canonicalMoonlightAddress(source[index]);
+    const key: string = moonlightAddressKey(normalized);
+    if (keys.indexOf(key) >= 0) { continue; }
+    if (normalized.family === 'ipv4' && ipv4.length < limit) {
+      ipv4.push(normalized);
+    } else if (normalized.family === 'ipv6' &&
+      ipv6.length < limit) {
+      ipv6.push(normalized);
+    } else if (normalized.family === 'hostname' &&
+      hostnames.length < limit) {
+      hostnames.push(normalized);
+    } else {
+      continue;
+    }
+    keys.push(key);
+  }
+  const buckets: MoonlightAddress[][] = selectedAddress.family === 'ipv6'
+    ? [ipv4, ipv6, hostnames]
+    : selectedAddress.family === 'ipv4' ? [ipv6, ipv4, hostnames] :
+      [ipv6, ipv4, hostnames];
+  const ordered: MoonlightAddress[] = [selectedAddress];
+  let added: boolean = true;
+  while (ordered.length < limit && added) {
+    added = false;
+    for (let bucket: number = 0;
+      bucket < buckets.length && ordered.length < limit;
+      bucket++) {
+      if (buckets[bucket].length > 0) {
+        ordered.push(buckets[bucket].shift() as MoonlightAddress);
+        added = true;
+      }
+    }
+  }
+  return ordered;
+}
+
+export function moonlightHostAddNativeAddresses(
+  selected: MoonlightAddress,
+  candidates: MoonlightAddress[] | undefined
+): MoonlightHostAddNativeAddress[] {
+  const ordered: MoonlightAddress[] = moonlightMergeCandidateAddresses(
+    selected, candidates, MOONLIGHT_MAX_NATIVE_ADDRESSES);
+  const result: MoonlightHostAddNativeAddress[] = [];
+  for (let index: number = 0; index < ordered.length; index++) {
+    result.push(moonlightHostAddNativeAddress(ordered[index]));
+  }
+  return result;
+}
+
 export class MoonlightHostAddOperationKey {
   ownerToken: number = 0;
   generation: number = 0;
@@ -73,6 +202,7 @@ export class MoonlightHostAddState {
   activeOperation: MoonlightHostAddOperation = 'none';
   selectedServerUuid: string = '';
   selectedAddress: MoonlightAddress = emptyMoonlightAddress();
+  candidateAddresses: MoonlightAddress[] = [];
   manualAddressText: string = '';
   manualPortText: string = MOONLIGHT_DEFAULT_CONTROL_PORT.toString();
   verification: MoonlightHostAddVerification | null = null;
@@ -110,19 +240,28 @@ function emptyMoonlightAddress(): MoonlightAddress {
 }
 
 function cloneAddress(value: MoonlightAddress): MoonlightAddress {
-  return { host: value.host, family: value.family, port: value.port };
+  return {
+    host: value.host, family: value.family, port: value.port,
+    scope: value.scope
+  };
 }
 
-function cloneVerification(
-  value: MoonlightHostAddVerification | null
-): MoonlightHostAddVerification | null {
-  if (value === null) { return null; }
+function cloneAddresses(values: MoonlightAddress[] | undefined): MoonlightAddress[] {
+  if (values === undefined) { return []; }
+  return values.slice(0, 16).map(
+    (value: MoonlightAddress): MoonlightAddress => cloneAddress(value));
+}
+
+export function cloneMoonlightHostAddVerification(
+  value: MoonlightHostAddVerification
+): MoonlightHostAddVerification {
   return {
     serverUuid: value.serverUuid,
     serverName: value.serverName,
     hostType: value.hostType,
     version: value.version,
     address: cloneAddress(value.address),
+    candidateAddresses: cloneAddresses(value.candidateAddresses),
     httpsPort: value.httpsPort,
     paired: value.paired,
     fingerprintSha256: value.fingerprintSha256,
@@ -130,6 +269,12 @@ function cloneVerification(
     udpVerified: value.udpVerified,
     duplicateHostId: value.duplicateHostId
   };
+}
+
+function cloneVerification(
+  value: MoonlightHostAddVerification | null
+): MoonlightHostAddVerification | null {
+  return value === null ? null : cloneMoonlightHostAddVerification(value);
 }
 
 function cloneCatalog(
@@ -157,6 +302,7 @@ export function cloneMoonlightHostAddState(
   result.activeOperation = value.activeOperation;
   result.selectedServerUuid = value.selectedServerUuid;
   result.selectedAddress = cloneAddress(value.selectedAddress);
+  result.candidateAddresses = cloneAddresses(value.candidateAddresses);
   result.manualAddressText = value.manualAddressText;
   result.manualPortText = value.manualPortText;
   result.verification = cloneVerification(value.verification);
@@ -188,62 +334,6 @@ function fingerprintIsValid(value: string): boolean {
   return /^[0-9a-fA-F]{64}$/.test(value);
 }
 
-function parsePort(value: string): number {
-  if (!/^[0-9]{1,5}$/.test(value)) { return 0; }
-  const parsed: number = Number(value);
-  return validPort(parsed) ? parsed : 0;
-}
-
-function ipv4IsValid(value: string): boolean {
-  const parts: string[] = value.split('.');
-  if (parts.length !== 4) { return false; }
-  for (let index = 0; index < parts.length; index++) {
-    if (!/^(0|[1-9][0-9]{0,2})$/.test(parts[index])) { return false; }
-    const part: number = Number(parts[index]);
-    if (part < 0 || part > 255) { return false; }
-  }
-  return true;
-}
-
-function ipv6IsValid(value: string): boolean {
-  if (value.length < 2 || value.length > 45 || value.indexOf(':') < 0 ||
-      value.indexOf(':::') >= 0 || !/^[0-9a-fA-F:.]+$/.test(value)) {
-    return false;
-  }
-  const doubleColon: number = value.indexOf('::');
-  if (doubleColon >= 0 && value.indexOf('::', doubleColon + 2) >= 0) { return false; }
-  const parts: string[] = value.split(':');
-  let groups: number = 0;
-  for (let index = 0; index < parts.length; index++) {
-    const part: string = parts[index];
-    if (part === '') { continue; }
-    if (part.indexOf('.') >= 0) {
-      if (index !== parts.length - 1 || !ipv4IsValid(part)) { return false; }
-      groups += 2;
-    } else {
-      if (!/^[0-9a-fA-F]{1,4}$/.test(part)) { return false; }
-      groups += 1;
-    }
-  }
-  return doubleColon >= 0 ? groups < 8 : groups === 8;
-}
-
-function hostnameIsValid(value: string): boolean {
-  if (value.length < 1 || value.length > 253 || value.startsWith('.') ||
-      value.endsWith('.') || value.indexOf('..') >= 0) {
-    return false;
-  }
-  const labels: string[] = value.split('.');
-  for (let index = 0; index < labels.length; index++) {
-    const label: string = labels[index];
-    if (label.length < 1 || label.length > 63 || label.startsWith('-') ||
-        label.endsWith('-') || !/^[A-Za-z0-9-]+$/.test(label)) {
-      return false;
-    }
-  }
-  return true;
-}
-
 function addressResult(errorText: string): MoonlightHostAddAddressResult {
   return { ok: false, address: emptyMoonlightAddress(), canonical: '', errorText: errorText };
 }
@@ -252,60 +342,93 @@ export function parseMoonlightHostAddAddress(
   input: string,
   customPortText: string = MOONLIGHT_DEFAULT_CONTROL_PORT.toString()
 ): MoonlightHostAddAddressResult {
-  const source: string = input.trim();
-  if (source === '') { return addressResult('请输入主机地址'); }
-  if (source.indexOf('://') >= 0 || source.indexOf('/') >= 0 ||
-      source.indexOf('@') >= 0 || /\s/.test(source)) {
-    return addressResult('请输入域名、IPv4 或带方括号的 IPv6 地址');
+  if (input === '') { return addressResult('请输入主机地址'); }
+  const defaultPort: number = parseEndpointPortText(customPortText);
+  if (defaultPort === 0) { return addressResult('端口必须在 1-65535 之间'); }
+  const parsed: EndpointAddressResult = parseEndpointAuthority(input, defaultPort);
+  if (!parsed.ok) {
+    if (parsed.error === 'invalid_port') { return addressResult('端口必须在 1-65535 之间'); }
+    if (parsed.error === 'invalid_ipv4') { return addressResult('IPv4 地址格式不正确'); }
+    if (parsed.error === 'invalid_ipv6') { return addressResult('IPv6 地址格式不正确'); }
+    return addressResult('请输入有效的域名、IPv4 或带方括号的 IPv6 地址');
   }
-  let host: string = source;
-  let port: number = parsePort(customPortText.trim());
-  if (port === 0) { return addressResult('端口必须在 1-65535 之间'); }
-  let family: MoonlightAddressFamily = 'hostname';
-  if (source.startsWith('[')) {
-    const close: number = source.indexOf(']');
-    if (close <= 1) { return addressResult('IPv6 地址格式不正确'); }
-    host = source.substring(1, close);
-    const suffix: string = source.substring(close + 1);
-    if (suffix !== '') {
-      if (!suffix.startsWith(':')) { return addressResult('IPv6 地址格式不正确'); }
-      port = parsePort(suffix.substring(1));
-      if (port === 0) { return addressResult('端口必须在 1-65535 之间'); }
-    }
-    if (!ipv6IsValid(host)) { return addressResult('IPv6 地址格式不正确'); }
-    family = 'ipv6';
-  } else if (ipv4IsValid(source)) {
-    family = 'ipv4';
-  } else {
-    const colon: number = source.lastIndexOf(':');
-    if (colon > 0 && source.indexOf(':') === colon) {
-      const suffixPort: number = parsePort(source.substring(colon + 1));
-      if (suffixPort === 0) { return addressResult('端口必须在 1-65535 之间'); }
-      host = source.substring(0, colon);
-      port = suffixPort;
-    }
-    if (ipv4IsValid(host)) {
-      family = 'ipv4';
-    } else if (ipv6IsValid(host)) {
-      family = 'ipv6';
-    } else if (/^[0-9.]+$/.test(host) && host.indexOf('.') >= 0) {
-      return addressResult('IPv4 地址格式不正确');
-    } else if (hostnameIsValid(host)) {
-      family = 'hostname';
-    } else {
-      return addressResult('主机地址格式不正确');
-    }
-  }
-  const normalizedHost: string = host.toLowerCase();
-  const canonical: string = family === 'ipv6' ?
-    '[' + normalizedHost + ']:' + port.toString() :
-    normalizedHost + ':' + port.toString();
+  const family: MoonlightAddressFamily = parsed.endpoint.family;
   return {
     ok: true,
-    address: { host: normalizedHost, family: family, port: port },
-    canonical: canonical,
+    address: {
+      host: parsed.endpoint.canonicalHost,
+      family: family,
+      port: parsed.endpoint.port,
+      scope: parsed.endpoint.scope === '' ? undefined : parsed.endpoint.scope
+    },
+    canonical: formatEndpointHostPort(parsed.endpoint),
     errorText: ''
   };
+}
+
+/**
+ * Adds one resolved LAN route while retaining a single host card per DNS-SD
+ * service instance. The service key is scan-local aggregation metadata only;
+ * the endpoint fallback remains a non-authoritative UUID hint until
+ * serverinfo returns the real UUID.
+ */
+export function mergeMoonlightHostAddLanCandidate(
+  current: MoonlightHostAddCandidate[],
+  candidate: MoonlightHostAddLanCandidate,
+  observedAt: number,
+  maximum: number = 32
+): MoonlightHostAddCandidate[] {
+  const limit: number = Number.isSafeInteger(maximum) && maximum > 0 ?
+    Math.min(maximum, 32) : 32;
+  const next: MoonlightHostAddCandidate[] = current.slice(0, limit);
+  const serviceKey: string = candidate.serviceKey.trim();
+  if (serviceKey === '') { return next; }
+  const scopedHost: string = candidate.host +
+    (candidate.scope === '' ? '' : '%' + candidate.scope);
+  const hostText: string = candidate.family === 'ipv6' ?
+    '[' + scopedHost + ']' : scopedHost;
+  const parsed: MoonlightHostAddAddressResult = parseMoonlightHostAddAddress(
+    hostText, candidate.port.toString());
+  if (!parsed.ok || parsed.address.family !== candidate.family) { return next; }
+
+  const advertisedUuid: string = candidate.serverUuid.trim();
+  const discovered: MoonlightHostAddCandidate = {
+    serverUuid: advertisedUuid !== '' ? advertisedUuid : parsed.canonical,
+    discoveryServiceKey: serviceKey,
+    displayName: candidate.serviceName.trim() || parsed.address.host,
+    address: parsed.address,
+    addresses: [parsed.address],
+    paired: false,
+    reachable: true,
+    lastSeenAt: Number.isSafeInteger(observedAt) && observedAt >= 0 ? observedAt : 0
+  };
+
+  let replaceIndex: number = -1;
+  for (let index: number = 0; index < next.length; index++) {
+    const existingServiceKey: string = next[index].discoveryServiceKey === undefined ? '' :
+      (next[index].discoveryServiceKey as string);
+    if (existingServiceKey === serviceKey ||
+        (advertisedUuid !== '' && next[index].serverUuid === advertisedUuid) ||
+        moonlightAddressKey(next[index].address) === moonlightAddressKey(parsed.address)) {
+      replaceIndex = index;
+      break;
+    }
+  }
+  if (replaceIndex < 0) {
+    if (next.length < limit) { next.push(discovered); }
+    return next;
+  }
+
+  const existing: MoonlightHostAddCandidate = next[replaceIndex];
+  const routes: MoonlightAddress[] = existing.addresses === undefined ?
+    [existing.address, parsed.address] : existing.addresses.concat([parsed.address]);
+  discovered.serverUuid = advertisedUuid !== '' ? advertisedUuid : existing.serverUuid;
+  discovered.discoveryServiceKey = existing.discoveryServiceKey === undefined ?
+    serviceKey : existing.discoveryServiceKey;
+  discovered.address = existing.address;
+  discovered.addresses = moonlightMergeCandidateAddresses(existing.address, routes);
+  next[replaceIndex] = discovered;
+  return next;
 }
 
 export function selectMoonlightHostAddCandidate(
@@ -316,6 +439,10 @@ export function selectMoonlightHostAddCandidate(
   next.mode = 'automatic';
   next.selectedServerUuid = candidate.serverUuid;
   next.selectedAddress = cloneAddress(candidate.address);
+  next.candidateAddresses = cloneAddresses(candidate.addresses);
+  if (next.candidateAddresses.length === 0) {
+    next.candidateAddresses = [cloneAddress(candidate.address)];
+  }
   next.errorText = '';
   return next;
 }
@@ -329,6 +456,7 @@ export function updateMoonlightHostAddManualAddress(
   next.mode = 'manual';
   next.manualAddressText = addressText;
   next.manualPortText = portText;
+  next.candidateAddresses = [];
   next.errorText = '';
   return next;
 }
@@ -409,6 +537,11 @@ export function applyMoonlightHostAddVerification(
   const next: MoonlightHostAddState = cloneMoonlightHostAddState(state);
   next.activeOperation = 'none';
   next.verification = cloneVerification(verification);
+  if (next.verification !== null &&
+      (next.verification.candidateAddresses === undefined ||
+       next.verification.candidateAddresses.length === 0)) {
+    next.verification.candidateAddresses = cloneAddresses(next.candidateAddresses);
+  }
   next.selectedServerUuid = verification.serverUuid;
   next.selectedAddress = cloneAddress(verification.address);
   next.paired = verification.paired;
@@ -610,6 +743,7 @@ export function advanceMoonlightHostAddStep(
         state.manualAddressText, state.manualPortText);
       if (!parsed.ok) { return transitionError(state, parsed.errorText); }
       next.selectedAddress = cloneAddress(parsed.address);
+      next.candidateAddresses = [cloneAddress(parsed.address)];
       next.selectedServerUuid = '';
     }
     next.errorText = '';

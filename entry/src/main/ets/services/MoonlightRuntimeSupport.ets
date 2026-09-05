@@ -38,6 +38,14 @@ export function moonlightOwnerScopeShortId(ownerScopeId: string): string {
     moonlightOwnerScopeFingerprint(normalized).slice(0, 16);
 }
 
+/** Opaque key component for device-local, per-host Moonlight preferences. */
+export function moonlightLocalHostSettingFingerprint(hostId: string): string {
+  const normalized: string = hostId.trim();
+  return normalized.length === 0 ? '' : sha256Hex(
+    'RemoteDeskHarmonyOS:moonlight-local-host-setting:v1:' + normalized);
+}
+
+
 /** Opaque local correlation id. It is not a native session id or credential. */
 export function moonlightSessionRecoveryId(): string {
   const bytes: Uint8Array = cryptoFramework.createRandom().generateRandomSync(16).data;

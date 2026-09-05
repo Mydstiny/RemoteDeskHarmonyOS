@@ -1,7 +1,7 @@
 # RemoteDeskHarmonyOS
 
 面向 HarmonyOS NEXT 的原生多协议远程桌面客户端。当前版本为
-**1.1.4**（`versionCode 1001004`），在一个 ArkUI 工作台中提供 RDP、
+**1.1.5.1**（`versionCode 1001006`），在一个 ArkUI 工作台中提供 RDP、
 RustDesk、SSH/SFTP、VNC 和 Moonlight 连接；同时集成华为云数据同步、
 本地加密与备份、后台视频、画中画以及手机、Pad、PC 响应式体验。
 
@@ -21,7 +21,7 @@ RustDesk、SSH/SFTP、VNC 和 Moonlight 连接；同时集成华为云数据同�
 | 数据与安全 | RDB、本地 AES-256-GCM 数据保护、HUKS/生物认证集成、备份恢复与主机安全锁建设 |
 | 华为云同步 | 八张固定业务表与可选 Moonlight 数据的显式同步、选择控制、重试、下载回滚与本地恢复隔离 |
 | HarmonyOS 体验 | PC/Pad/Phone 响应式布局、沉浸式浮动导航、后台视频、画中画与前后台恢复 |
-| 1.1.4 更新 | 新增敏感信息显示策略与应用分身，修复剪贴板、云数据恢复和移动会话操控，并提供 RustDesk 桌面翻转与五协议独立滚轮方向 |
+| 1.1.5.1 更新 | 集中修复 PC 画面翻转、RDP 凭据/输入/缩放/断线归因、RustDesk 工具栏/监控/剪贴板、SSH 常用命令、退出保护、列表避让和鸿蒙快捷键屏蔽 |
 | 1.1.2 更新 | 汇总 1.1.1 以来的 Moonlight、SSH 工作台、输入、安全校验与自适应引导改进 |
 | 反馈与社区 | 设置内支持邮箱反馈、获取远程更新的畅联群聊二维码以及保存到相册 |
 
@@ -65,7 +65,7 @@ ArkUI pages/components
 | `entry/src/main/ets/` | ArkTS 页面、组件、模型、服务和策略 |
 | `entry/src/main/cpp/` | NAPI、协议适配、渲染、音视频与原生测试 |
 | `rustdesk_ffi/` | RustDesk Rust FFI、协议会话与 Rust 测试 |
-| `freerdp/` | 指向本仓库公开 `freerdp-ohos` 分支的 FreeRDP 子模块 |
+| `freerdp/` | 指向本仓库公开 `freerdp-ohos` 基线的 FreeRDP 子模块；OHOS 差异位于 `patches/freerdp-ohos/` |
 | `scripts/` | 依赖构建、SBOM、合规、clean-clone 和 Git hook 脚本 |
 | `docs/compliance/` | SPDX SBOM、来源、发布门禁、回滚和开源合规记录 |
 | `LICENSES/` | 项目与第三方许可证文本 |
@@ -78,8 +78,8 @@ Set-Location RemoteDeskHarmonyOS
 ```
 
 如果已普通 clone，执行 `git submodule update --init --recursive`。FreeRDP
-OHOS 修改历史位于同一 GitHub 仓库的 `freerdp-ohos` 分支；主分支通过
-gitlink 固定到可复现修订。
+公开基线位于同一 GitHub 仓库的 `freerdp-ohos` 分支；主分支以 gitlink
+固定基线，并通过仓库内有序 patch 系列重建经过复核的 OHOS 源码 tree。
 
 ## Windows/macOS 双端协作
 

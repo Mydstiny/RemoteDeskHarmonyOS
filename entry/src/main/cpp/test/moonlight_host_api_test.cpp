@@ -1,4 +1,5 @@
 #include "moonlight/core/MoonlightHostApi.h"
+#include "common/network_generation_fence.h"
 #include "test_runner.h"
 
 #include <atomic>
@@ -79,6 +80,14 @@ public:
         if (handler) {
             return handler(request, absoluteDeadline, cancellationProbe);
         }
+        if (outcome.error == MoonlightTransportError::None &&
+            outcome.resolvedAddress.empty()) {
+            // The production transport always returns the numeric socket
+            // winner. Scripted success fixtures mirror that invariant unless
+            // a dedicated malformed-transport fixture is used.
+            outcome.resolvedAddress = request.connectAddress();
+            outcome.resolvedFamily = request.family();
+        }
         return outcome;
     }
 
@@ -112,7 +121,10 @@ public:
         sawSensitiveRequest_ = containsRaw(request.url(), "A1B2C3D4") &&
                                containsRaw(request.url(), "0011223344556677");
         redacted_ = request.redactedDebugString();
-        return xmlResponseBody();
+        auto outcome = xmlResponseBody();
+        outcome.resolvedAddress = request.connectAddress();
+        outcome.resolvedFamily = request.family();
+        return outcome;
     }
 
     bool sawSensitiveRequest() const noexcept { return sawSensitiveRequest_; }
@@ -136,6 +148,31 @@ private:
 
     bool sawSensitiveRequest_ = false;
     std::string redacted_;
+};
+
+class MissingWinnerTransport final : public MoonlightHostTransport {
+public:
+    MoonlightTransportOutcome execute(
+        const MoonlightTransportRequest&,
+        std::chrono::steady_clock::time_point,
+        const CancellationProbe&) override {
+        return xmlResponseBody();
+    }
+
+private:
+    static MoonlightTransportOutcome xmlResponseBody() {
+        MoonlightTransportOutcome outcome;
+        outcome.stage = MoonlightTransportStage::Body;
+        outcome.sendState = MoonlightTransportSendState::ConfirmedResponse;
+        outcome.httpStatus = 200;
+        outcome.body =
+            "<root status_code=\"200\"><hostname>Gaming PC</hostname>"
+            "<uniqueid>host-001</uniqueid><appversion>7.1.431.-1</appversion>"
+            "<state>SUNSHINE_SERVER_READY</state><PairStatus>1</PairStatus>"
+            "<currentgame>0</currentgame></root>";
+        outcome.receivedBodyBytes = outcome.body.size();
+        return outcome;
+    }
 };
 
 class BlockingGate final {
@@ -635,6 +672,38 @@ RDP_TEST_CASE(moonlight_host_api_formats_ipv6_and_uses_one_absolute_deadline_acr
     RDP_ASSERT(captures[0].url != captures[1].url);
 }
 
+RDP_TEST_CASE(moonlight_host_api_keeps_link_local_scope_typed_across_control_request) {
+    std::vector<CapturedRequest> captures;
+    auto call = callFor(MoonlightHostOperation::ServerInfo);
+    call.endpoint.serverName = "fe80::20";
+    call.endpoint.addresses = {
+        {"fe80::20", MoonlightHostAddressFamily::Ipv6, "wlan0"},
+    };
+
+    const auto result = executeOnce(call, xmlResponse(serverInfoXml()), &captures);
+    RDP_ASSERT(result.ok());
+    RDP_ASSERT_EQ(captures.size(), static_cast<std::size_t>(1));
+    RDP_ASSERT(captures[0].connectAddress == "fe80::20%wlan0");
+    RDP_ASSERT(contains(captures[0].url,
+                        "http://[fe80::20%25wlan0]:47989/serverinfo"));
+    RDP_ASSERT(result.resolvedAddress.has_value());
+    RDP_ASSERT(*result.resolvedAddress == "fe80::20%wlan0");
+    RDP_ASSERT_EQ(result.resolvedFamily, MoonlightHostAddressFamily::Ipv6);
+}
+
+RDP_TEST_CASE(moonlight_host_api_rejects_success_without_numeric_transport_winner) {
+    auto transport = std::make_shared<MissingWinnerTransport>();
+    MoonlightHostApi api(transport, uuidGenerator());
+
+    const auto result = api.execute(callFor(MoonlightHostOperation::ServerInfo));
+
+    RDP_ASSERT_EQ(result.error, MoonlightHostError::TransportFailure);
+    RDP_ASSERT(!result.resolvedAddress.has_value());
+    RDP_ASSERT(!result.serverInfo.has_value());
+    RDP_ASSERT(!result.diagnostics.empty());
+    RDP_ASSERT_EQ(result.diagnostics.back().stage, MoonlightTransportStage::Commit);
+}
+
 RDP_TEST_CASE(moonlight_host_api_returns_http_tls_body_and_xml_failures_without_collapsing_codes) {
     auto httpCall = callFor(MoonlightHostOperation::ServerInfo);
     RDP_ASSERT_EQ(executeOnce(httpCall, xmlResponse("not used", 401)).error,
@@ -770,6 +839,7 @@ RDP_TEST_CASE(moonlight_host_api_allows_read_only_fallback_but_never_replays_unk
         RDP_ASSERT_EQ(transport->captures().size(), static_cast<std::size_t>(2));
         RDP_ASSERT(result.resolvedAddress.has_value());
         RDP_ASSERT(*result.resolvedAddress == "192.0.2.11");
+        RDP_ASSERT_EQ(result.resolvedFamily, MoonlightHostAddressFamily::Ipv4);
     }
     {
         auto transport = std::make_shared<ScriptedTransport>();
@@ -906,6 +976,61 @@ RDP_TEST_CASE(moonlight_host_api_exact_cancel_stale_and_duplicate_request_fences
                       stale ? MoonlightHostError::StaleRequest : MoonlightHostError::Cancelled);
         RDP_ASSERT(!result.serverInfo.has_value());
     }
+}
+
+RDP_TEST_CASE(moonlight_host_api_retires_inflight_and_expected_generation_before_transport) {
+    remotedesk::net::NetworkGenerationFence fence(41U, true);
+    auto transport = std::make_shared<ScriptedTransport>();
+    std::atomic<bool> cancellationObserved {false};
+    transport->setHandler(
+        [&](const MoonlightTransportRequest&,
+            std::chrono::steady_clock::time_point,
+            const MoonlightHostTransport::CancellationProbe& probe) {
+            RDP_ASSERT(fence.update(true, 42U));
+            cancellationObserved.store(probe(), std::memory_order_release);
+            return transportFailure(
+                MoonlightTransportError::Cancelled,
+                MoonlightTransportStage::Connect,
+                MoonlightTransportSendState::NotSent);
+        });
+    MoonlightHostApi api(transport, uuidGenerator(), &fence);
+    auto call = callFor(MoonlightHostOperation::ServerInfo, false,
+                        {191U, 8U, 7U});
+
+    const auto retired = api.execute(call);
+    RDP_ASSERT(cancellationObserved.load(std::memory_order_acquire));
+    RDP_ASSERT_EQ(retired.error, MoonlightHostError::StaleRequest);
+    RDP_ASSERT_EQ(retired.networkGeneration, static_cast<std::uint64_t>(41U));
+
+    call.key.requestId = 192U;
+    call.expectedNetworkGeneration = 41U;
+    const auto rejected = api.execute(call);
+    RDP_ASSERT_EQ(rejected.error, MoonlightHostError::StaleRequest);
+    RDP_ASSERT_EQ(rejected.networkGeneration, static_cast<std::uint64_t>(42U));
+    RDP_ASSERT_EQ(transport->captures().size(), static_cast<std::size_t>(1U));
+
+    transport->setHandler(
+        [&](const MoonlightTransportRequest& request,
+            std::chrono::steady_clock::time_point,
+            const MoonlightHostTransport::CancellationProbe&) {
+            RDP_ASSERT(fence.update(true, 43U));
+            auto outcome = xmlResponse(
+                "<root status_code=\"200\"><gamesession>1</gamesession></root>");
+            outcome.resolvedAddress = request.connectAddress();
+            outcome.resolvedFamily = request.family();
+            return outcome;
+        });
+    call = callFor(MoonlightHostOperation::Launch, true,
+                   {193U, 8U, 7U});
+    call.query = launchQuery();
+    call.expectedNetworkGeneration = 42U;
+    const auto mutation = api.execute(call);
+    RDP_ASSERT_EQ(mutation.error, MoonlightHostError::ActionUnknown);
+    RDP_ASSERT(mutation.action.has_value());
+    RDP_ASSERT(mutation.action->outcomeUnknown);
+    RDP_ASSERT(mutation.mutationOutcomeUnknown);
+    RDP_ASSERT_EQ(mutation.networkGeneration, static_cast<std::uint64_t>(42U));
+    RDP_ASSERT_EQ(transport->captures().size(), static_cast<std::size_t>(2U));
 }
 
 RDP_TEST_CASE(moonlight_host_api_destructor_cancels_and_drains_inflight_transport) {

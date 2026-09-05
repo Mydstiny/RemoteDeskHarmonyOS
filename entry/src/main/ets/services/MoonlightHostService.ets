@@ -16,7 +16,12 @@ import {
   MoonlightRuntimeOwnerAdmissionPort,
   MoonlightRuntimeOwnerRegistry
 } from './MoonlightRuntimeOwnerRegistry';
-import { DiagnosticOutcome } from './DiagnosticCapturePolicy';
+import {
+  DiagnosticNetworkFacts,
+  DiagnosticOutcome,
+  diagnosticNetworkFactsForCandidates,
+  emptyDiagnosticNetworkFacts
+} from './DiagnosticCapturePolicy';
 import { recordDiagnosticEvent } from './DiagnosticCaptureRuntime';
 
 export type MoonlightNativeOperation =
@@ -40,6 +45,7 @@ export interface MoonlightNativeRequestKey {
 export interface MoonlightNativeAddress {
   value: string;
   family: 'unspecified' | 'ipv4' | 'ipv6';
+  scope?: string;
 }
 
 export interface MoonlightNativeEndpoint {
@@ -208,6 +214,25 @@ export interface MoonlightNativeStreamSnapshot {
   decoderQueueDepth?: number;
   decoderCodecLatencyMs?: number;
   decoderSurfaceUpdateFailures?: number;
+  desktopSurfaceCompatibility?: boolean;
+  nativeImagePresentation?: string;
+  producerTransform?: string;
+  appliedTransform?: string;
+  producerTransformSampled?: boolean;
+  producerTransformReadResult?: number;
+  producerTransformSamples?: number;
+  producerTransformChanges?: number;
+  producerTransformReadFailures?: number;
+  producerTransformClassMask?: number;
+  producerTransformMatrix?: number[];
+  appliedTextureTransform?: number[];
+  rendererTransformValid?: boolean;
+  rendererTransformVersion?: number;
+  rendererRotationQuarterTurns?: number;
+  rendererFlipX?: boolean;
+  rendererFlipY?: boolean;
+  decoderGeneration?: number;
+  rendererGeneration?: number;
 }
 
 export interface MoonlightNativePort {
@@ -335,13 +360,15 @@ function serviceResult(code: MoonlightHostServiceCode,
   key: MoonlightNativeRequestKey = emptyKey(),
   nativeResult: MoonlightNativeResult | null = null,
   cacheCode: MoonlightAppCacheCode | '' = '',
-  visibleApps: MoonlightAppCacheEntry[] = []): MoonlightHostServiceResult {
+  visibleApps: MoonlightAppCacheEntry[] = [],
+  network: DiagnosticNetworkFacts = emptyDiagnosticNetworkFacts()): MoonlightHostServiceResult {
   if (nativeResult !== null) {
     recordDiagnosticEvent('connection.moonlight',
       diagnosticMoonlightHostEvent(nativeResult.operation),
       diagnosticMoonlightHostOutcome(code), key.requestId, key.generation,
       diagnosticMoonlightHostCode(code), 0,
-      nativeResult.partialAppCount > 0 ? nativeResult.partialAppCount : 0);
+      nativeResult.partialAppCount > 0 ? nativeResult.partialAppCount : 0,
+      0, undefined, network);
   }
   return {
     ok: code === 'ok',
@@ -353,6 +380,24 @@ function serviceResult(code: MoonlightHostServiceCode,
     visibleApps: visibleApps,
     nativeResult: nativeResult
   };
+}
+
+function diagnosticMoonlightRequestNetwork(
+  request: MoonlightNativeRequest): DiagnosticNetworkFacts {
+  try {
+    const families: string[] = [];
+    let scopedIpv6: boolean = false;
+    for (let index: number = 0; index < request.endpoint.addresses.length; index++) {
+      const address: MoonlightNativeAddress = request.endpoint.addresses[index];
+      families.push(address.family);
+      if (address.family === 'ipv6' && (address.scope ?? '').trim().length > 0) {
+        scopedIpv6 = true;
+      }
+    }
+    return diagnosticNetworkFactsForCandidates(families, scopedIpv6);
+  } catch (_err) {
+    return emptyDiagnosticNetworkFacts();
+  }
 }
 
 function safePositiveInteger(value: number): boolean {
@@ -676,6 +721,8 @@ export class MoonlightHostService {
       this.releaseSafely(release);
       return serviceResult('lifecycle_closed', request.key);
     }
+    const diagnosticNetwork: DiagnosticNetworkFacts =
+      diagnosticMoonlightRequestNetwork(request);
     const identity: string = this.requestIdentity(request.key);
     this.pending.set(identity, { key: request.key, lease: captured });
     let nativePromise: Promise<MoonlightNativeResult>;
@@ -700,18 +747,21 @@ export class MoonlightHostService {
     this.pending.delete(identity);
     this.finishOwnerRequest(context.ownerToken, captured);
     if (!nativeResultShapeMatches(nativeResult, request)) {
-      return serviceResult('protocol_failure', request.key, nativeResult);
+      return serviceResult('protocol_failure', request.key, nativeResult,
+        '', [], diagnosticNetwork);
     }
     if (!this.contextCurrent(context, captured) ||
         this.disposedOwners.has(context.ownerToken)) {
       this.staleCompletionCount++;
       return serviceResult(this.disposedOwners.has(context.ownerToken) ?
-        'disposed' : 'stale_lease', request.key, nativeResult);
+        'disposed' : 'stale_lease', request.key, nativeResult,
+        '', [], diagnosticNetwork);
     }
     if (commitCatalog && nativeResult.code === 'ok') {
-      return this.commitCatalog(context, captured, nativeResult);
+      return this.commitCatalog(context, captured, nativeResult, diagnosticNetwork);
     }
-    return serviceResult(nativeResult.code, request.key, nativeResult);
+    return serviceResult(nativeResult.code, request.key, nativeResult,
+      '', [], diagnosticNetwork);
   }
 
   private finishOwnerRequest(ownerToken: number, lease: AccountSessionLease): void {
@@ -720,14 +770,17 @@ export class MoonlightHostService {
   }
 
   private commitCatalog(context: MoonlightHostContext, captured: AccountSessionLease,
-    nativeResult: MoonlightNativeResult): MoonlightHostServiceResult {
+    nativeResult: MoonlightNativeResult,
+    diagnosticNetwork: DiagnosticNetworkFacts): MoonlightHostServiceResult {
     if (nativeResult.terminalStage !== 'complete' ||
         nativeResult.preflightTruth !== 'confirmed' ||
         nativeResult.partialAppCount !== 0) {
-      return serviceResult('invalid_catalog', nativeResult.key, nativeResult);
+      return serviceResult('invalid_catalog', nativeResult.key, nativeResult,
+        '', [], diagnosticNetwork);
     }
     if (context.localHostId === undefined || context.localHostId.trim().length === 0) {
-      return serviceResult('invalid_context', nativeResult.key, nativeResult);
+      return serviceResult('invalid_context', nativeResult.key, nativeResult,
+        '', [], diagnosticNetwork);
     }
     const cacheHostId: string = context.localHostId.trim();
     const nowMs: number = nativeResult.observedAtMs > 0 ?
@@ -740,7 +793,8 @@ export class MoonlightHostService {
       const appId: string = app.id.toString();
       if (!safePositiveInteger(app.id) || app.title.trim().length === 0 ||
           app.title.length > 256 || appIds.indexOf(appId) >= 0) {
-        return serviceResult('invalid_catalog', nativeResult.key, nativeResult);
+        return serviceResult('invalid_catalog', nativeResult.key, nativeResult,
+          '', [], diagnosticNetwork);
       }
       appIds.push(appId);
       const row = new MoonlightAppCacheEntry();
@@ -759,25 +813,27 @@ export class MoonlightHostService {
     }
     if (!this.contextCurrent(context, captured)) {
       this.staleCompletionCount++;
-      return serviceResult('stale_lease', nativeResult.key, nativeResult);
+      return serviceResult('stale_lease', nativeResult.key, nativeResult,
+        '', [], diagnosticNetwork);
     }
     let cacheResult: MoonlightAppCacheResult;
     try {
       cacheResult = this.cache.refreshCatalog(captured, cacheHostId, rows, true, nowMs);
     } catch (_) {
-      return serviceResult('cache_failed', nativeResult.key, nativeResult);
+      return serviceResult('cache_failed', nativeResult.key, nativeResult,
+        '', [], diagnosticNetwork);
     }
     if (!this.contextCurrent(context, captured)) {
       this.staleCompletionCount++;
       return serviceResult('stale_lease', nativeResult.key, nativeResult,
-        cacheResult.code);
+        cacheResult.code, [], diagnosticNetwork);
     }
     if (!cacheResult.ok) {
       return serviceResult(cacheResult.code === 'stale_lease' ?
         'stale_lease' : 'cache_failed', nativeResult.key, nativeResult,
-        cacheResult.code);
+        cacheResult.code, [], diagnosticNetwork);
     }
     return serviceResult('ok', nativeResult.key, nativeResult, cacheResult.code,
-      cacheResult.visibleEntries);
+      cacheResult.visibleEntries, diagnosticNetwork);
   }
 }

@@ -18,6 +18,7 @@ export default function rustDeskDisplaySwitchPolicyTest(): void {
         currentDisplay: 2,
         readySwitchGeneration: 3,
         pendingDisplay: -1,
+        confirmedDisplay: 0,
         inputBlocked: false
       }, 1100, 5000);
       expect(stale.adoptCapabilities).assertFalse();
@@ -27,6 +28,7 @@ export default function rustDeskDisplaySwitchPolicyTest(): void {
         currentDisplay: 2,
         readySwitchGeneration: 4,
         pendingDisplay: -1,
+        confirmedDisplay: 2,
         inputBlocked: false
       }, 1200, 5000);
       expect(ready.adoptCapabilities).assertTrue();
@@ -40,6 +42,7 @@ export default function rustDeskDisplaySwitchPolicyTest(): void {
         currentDisplay: first.pendingDisplay,
         readySwitchGeneration: first.generation,
         pendingDisplay: -1,
+        confirmedDisplay: 0,
         inputBlocked: false
       }, 1100, 5000);
       expect(oldReady.adoptCapabilities).assertFalse();
@@ -47,24 +50,28 @@ export default function rustDeskDisplaySwitchPolicyTest(): void {
       expect(oldReady.state.pendingDisplay).assertEqual(3);
     });
 
-    it('reports_timeout_once_without_unblocking_input', 0, (): void => {
+    it('reports_timeout_once_and_requests_the_confirmed_display_fallback', 0, (): void => {
       const pending = beginRustDeskDisplaySwitchState(true, 2, 1, 1000);
       const timeout = observeRustDeskDisplaySwitch(pending, {
         currentDisplay: 0,
         readySwitchGeneration: 0,
         pendingDisplay: 1,
+        confirmedDisplay: 0,
         inputBlocked: true
       }, 7000, 5000);
       expect(timeout.notifyTimeout).assertTrue();
       expect(timeout.state.inputBlocked).assertTrue();
+      expect(timeout.fallbackDisplay).assertEqual(0);
 
       const repeated = observeRustDeskDisplaySwitch(timeout.state, {
         currentDisplay: 0,
         readySwitchGeneration: 0,
         pendingDisplay: 1,
+        confirmedDisplay: 0,
         inputBlocked: true
       }, 8000, 5000);
       expect(repeated.notifyTimeout).assertFalse();
+      expect(repeated.fallbackDisplay).assertEqual(-1);
       expect(repeated.state.inputBlocked).assertTrue();
     });
 
@@ -76,6 +83,7 @@ export default function rustDeskDisplaySwitchPolicyTest(): void {
         currentDisplay: 0,
         readySwitchGeneration: 0,
         pendingDisplay: 1,
+        confirmedDisplay: 0,
         inputBlocked: true
       }, 7000, 5000);
       expect(timeout.state.timeoutNotified).assertTrue();
@@ -86,6 +94,20 @@ export default function rustDeskDisplaySwitchPolicyTest(): void {
       expect(retried.startedAtMs).assertEqual(7001);
       expect(retried.timeoutNotified).assertFalse();
       expect(retried.inputBlocked).assertTrue();
+    });
+
+    it('keeps_input_blocked_when_no_confirmed_display_exists_for_fallback', 0, (): void => {
+      const pending = beginRustDeskDisplaySwitchState(true, 3, 2, 1000);
+      const timeout = observeRustDeskDisplaySwitch(pending, {
+        currentDisplay: 2,
+        readySwitchGeneration: 0,
+        pendingDisplay: 2,
+        confirmedDisplay: -1,
+        inputBlocked: true
+      }, 7000, 5000);
+      expect(timeout.notifyTimeout).assertTrue();
+      expect(timeout.fallbackDisplay).assertEqual(-1);
+      expect(timeout.state.inputBlocked).assertTrue();
     });
 
     it('releases_all_old_input_before_requesting_a_new_generation', 0, (): void => {

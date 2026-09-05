@@ -9,8 +9,10 @@ import { Palette, buildDark, buildLight } from '../../common/Theme';
 import { promptAction } from '@kit.ArkUI';
 import { DataCrypto } from '../../services/DataCrypto';
 import {
-  VncGatewayValues, VncTransport, VncRepeaterMode
+  VncGatewayValues, VncTransport, VncRepeaterMode,
+  canonicalVncNetworkHost, validateVncGateway
 } from '../../services/VncModelPolicy';
+import { parseEndpointPortText } from '../../services/EndpointAddressPolicy';
 import { VncGatewayView } from '../../services/VncGatewayService';
 import { VncGatewayAvailability, vncGatewayAvailability } from '../../services/VncGatewayProtocolPolicy';
 import {
@@ -81,8 +83,7 @@ export struct VncGatewayAddFlow {
   }
 
   private portValue(): number {
-    const value: number = Number(this.portText);
-    return Number.isFinite(value) ? value : 0;
+    return parseEndpointPortText(this.portText);
   }
 
   private redactedTargetId(value: string): string {
@@ -96,11 +97,8 @@ export struct VncGatewayAddFlow {
       this.errorText = '该旧 Gateway 类型尚未实现连接契约；当前只能新增 UltraVNC Repeater mode12';
       return false;
     }
-    if (this.label.trim() === '') { this.errorText = '请填写 Gateway 名称'; return false; }
-    if (this.host.trim() === '') { this.errorText = '请填写 Gateway 地址'; return false; }
-    if (this.portValue() < 1 || this.portValue() > 65535) {
-      this.errorText = 'Gateway 端口必须在 1-65535 之间'; return false;
-    }
+    const errors: string[] = validateVncGateway(this.values());
+    if (errors.length > 0) { this.errorText = errors[0]; return false; }
     if (this.transport === 'ultravnc_repeater' && this.targetId.trim() === '') {
       this.errorText = 'UltraVNC Repeater mode12 必须填写目标 ID'; return false;
     }
@@ -112,9 +110,11 @@ export struct VncGatewayAddFlow {
   }
 
   private values(): VncGatewayValues {
+    const port: number = this.portValue();
     return {
-      label: this.label.trim(), transport: this.transport, host: this.host.trim(),
-      port: this.portValue(), path: this.path.trim(), repeaterMode: this.repeaterMode,
+      label: this.label.trim(), transport: this.transport,
+      host: canonicalVncNetworkHost(this.host, port),
+      port, path: this.path.trim(), repeaterMode: this.repeaterMode,
       targetId: this.targetId.trim(), tls: this.tls, enabled: this.gatewayEnabled
     };
   }

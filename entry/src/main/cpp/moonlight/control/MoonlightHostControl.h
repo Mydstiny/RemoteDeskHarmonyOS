@@ -213,6 +213,10 @@ struct REMOTEDESK_MOONLIGHT_CONTROL_HIDDEN MoonlightHostControlResult final {
     // Native-only address selected by the successful launch action. It is
     // consumed by ProductRuntime and never projected through ArkTS.
     std::optional<std::string> sessionAddress;
+    // Default-network generation that produced sessionAddress and the launch
+    // receipt. Product streaming must reject this lease after any route,
+    // prefix, DNS, bearer, or VPN transition.
+    std::uint64_t sessionNetworkGeneration = 0U;
     // Native-only authenticated launch snapshot used to build the subsequent
     // common-c lease. For Sunshine, /serverinfo can block while the RTSP
     // session is waiting for the client; the snapshot therefore comes from

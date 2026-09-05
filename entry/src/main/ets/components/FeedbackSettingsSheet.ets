@@ -233,7 +233,7 @@ export struct FeedbackSettingsSheet {
     .width('100%')
     .constraintSize({ maxWidth: 620 })
     .height(this.breakpoint === 'sm' ? 560 : 600)
-    .backgroundColor(this.pal().bg)
+    .backgroundColor(this.pal().sheetBg)
     .backgroundBlurStyle(BlurStyle.Regular)
     .borderRadius(this.breakpoint === 'sm' ?
       { topLeft: 22, topRight: 22, bottomLeft: 0, bottomRight: 0 } : 24)

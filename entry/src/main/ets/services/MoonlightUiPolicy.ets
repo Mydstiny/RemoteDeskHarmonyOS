@@ -19,7 +19,7 @@ export type MoonlightLaunchBlocker =
 export type MoonlightConnectionQuality = 'good' | 'unstable' | 'poor' | 'reconnecting';
 export type MoonlightToolbarAction =
   'control' | 'keyboard' | 'modifiers' | 'controller' | 'audio' | 'display' |
-  'diagnostics' | 'more' | 'disconnect';
+  'resetCanvas' | 'diagnostics' | 'more' | 'disconnect';
 export type MoonlightSettingsSection =
   'video' | 'audio' | 'input' | 'networkSecurity' | 'diagnostics' | 'trust' |
   'data';
@@ -355,6 +355,33 @@ export function moonlightConnectSheetMountReady(
   gateNeeded: boolean, surfaceLayoutReady: boolean
 ): boolean {
   return gateNeeded && surfaceLayoutReady;
+}
+
+export type MoonlightConnectSheetExitOrigin = 'interactive' | 'explicit';
+
+export interface MoonlightConnectSheetExitPlan {
+  blocked: boolean;
+  disconnect: boolean;
+  waitForDisappear: boolean;
+}
+
+/** ArkUI sends Back/mask/swipe to the native connect Sheet before page Back.
+ * Explicit Cancel remains authoritative and waits for Sheet disappearance so
+ * navigation cannot be consumed by the native Sheet's own exit transition. */
+export function moonlightConnectSheetExitPlan(
+  origin: MoonlightConnectSheetExitOrigin,
+  quickExitDisabled: boolean,
+  sessionActive: boolean,
+  sheetVisible: boolean
+): MoonlightConnectSheetExitPlan {
+  if (origin === 'interactive' && quickExitDisabled && sessionActive) {
+    return { blocked: true, disconnect: false, waitForDisappear: false };
+  }
+  return {
+    blocked: false,
+    disconnect: true,
+    waitForDisappear: sheetVisible
+  };
 }
 
 function boundedId(value: string): boolean {

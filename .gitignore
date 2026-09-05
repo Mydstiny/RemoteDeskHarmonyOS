@@ -56,6 +56,7 @@ rustdesk_vendor/libs/hbb_common/protos/*
 .worktrees/
 
 # Local agent/session artifacts (never publish)
+.firecrawl/
 .planning/
 .superpowers/
 logs/

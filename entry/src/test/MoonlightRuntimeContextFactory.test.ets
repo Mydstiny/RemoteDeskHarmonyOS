@@ -43,6 +43,39 @@ export default function moonlightRuntimeContextFactoryTest(): void {
       settings.network.preferredAddressFamily = 'ipv6';
       expect(moonlightSelectedHostAddress(host(), settings))
         .assertEqual('[2001:db8::1]:47989');
+      const context = moonlightRuntimeContext(host(), lease(), 11, 2,
+        'a'.repeat(64), settings, 5000) as MoonlightHostContext;
+      expect(context.endpoint.serverName).assertEqual('2001:db8::1');
+      expect(context.endpoint.addresses.length).assertEqual(2);
+      expect(context.endpoint.addresses[0].value).assertEqual('2001:db8::1');
+      expect(context.endpoint.addresses[1].value).assertEqual('sunshine.local');
+    });
+
+    it('selects_a_legacy_expanded_IPv6_preferred_key_without_falling_back', 0,
+      (): void => {
+        const legacy: MoonlightHost = host();
+        legacy.addresses[1].host = '2001:0DB8:0000:0000:0000:0000:0000:0001';
+        legacy.preferredAddressKey = 'ipv6|2001:0db8:0000:0000:0000:0000:0000:0001|47989';
+
+        expect(moonlightSelectedHostAddress(legacy, defaultMoonlightSettings()))
+          .assertEqual('[2001:db8::1]:47989');
+      });
+
+    it('keeps_link_local_scope_separate_at_the_native_boundary', 0, (): void => {
+      const scoped: MoonlightHost = host();
+      scoped.addresses = [{
+        host: 'fe80::20', family: 'ipv6', port: 47989, scope: 'wlan0'
+      }];
+      scoped.preferredAddressKey = 'ipv6|fe80::20%wlan0|47989';
+      const settings = defaultMoonlightSettings();
+      settings.network.preferredAddressFamily = 'ipv6';
+
+      expect(moonlightSelectedHostAddress(scoped, settings))
+        .assertEqual('[fe80::20%wlan0]:47989');
+      const context = moonlightRuntimeContext(scoped, lease(), 11, 2,
+        'a'.repeat(64), settings, 5000) as MoonlightHostContext;
+      expect(context.endpoint.addresses[0].value).assertEqual('fe80::20');
+      expect(context.endpoint.addresses[0].scope).assertEqual('wlan0');
     });
 
     it('builds_one_safe_host_context_and_slot_zero_launch_contract', 0, (): void => {

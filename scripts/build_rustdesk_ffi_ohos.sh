@@ -60,6 +60,7 @@ for ABI_TARGET in "${ABIS[@]}"; do
         CLANG_TARGET="x86_64-linux-ohos"
     fi
     TARGET_CFLAGS="--target=$CLANG_TARGET '--sysroot=$OHOS_SYSROOT' -D__MUSL__ -fPIC"
+    KCP_SYS_INCLUDE_PATH="$OHOS_SYSROOT/usr/include:$OHOS_SYSROOT/usr/include/$CLANG_TARGET"
 
     if [ ! -f "$TARGET_CC" ] || [ ! -f "$TARGET_CXX" ] || [ ! -f "$TARGET_AR" ]; then
         echo "ERROR: OHOS target toolchain is incomplete for $TARGET under $OHOS_LLVM"
@@ -75,10 +76,11 @@ for ABI_TARGET in "${ABIS[@]}"; do
             "CFLAGS_${TARGET_ENV}=$TARGET_CFLAGS" \
             "CXXFLAGS_${TARGET_ENV}=$TARGET_CFLAGS" \
             CC_SHELL_ESCAPED_FLAGS=1 \
+            KCP_SYS_EXTRA_HEADER_PATH="$KCP_SYS_INCLUDE_PATH" \
             "CARGO_TARGET_${TARGET_ENV_UPPER}_LINKER=$TARGET_CXX" \
             "CARGO_TARGET_${TARGET_ENV_UPPER}_RUSTFLAGS=-C link-arg=--target=$CLANG_TARGET -C link-arg=--sysroot=$OHOS_SYSROOT" \
             OPUS_LIB_DIR="$OPUS_LIB_DIR" \
-            "$CARGO_BIN" build --release --target "$TARGET"
+            "$CARGO_BIN" build --locked --release --target "$TARGET"
     )
     # Do not use grep -q here: with pipefail, grep can close the pipe after
     # the first match and make nm exit with SIGPIPE (141) on large archives.
@@ -95,6 +97,10 @@ for ABI_TARGET in "${ABIS[@]}"; do
     require_symbol rustdesk_change_display_resolution
     require_symbol rustdesk_send_touch_scale
     require_symbol rustdesk_send_touch_pan
+    require_symbol rustdesk_connect_v6
+    require_symbol rustdesk_get_transport_capabilities_v1
+    require_symbol rustdesk_rearm_pending_connect_for_session
+    require_symbol rustdesk_forget_cancelled_connect_session
 done
 
 echo "RustDesk FFI build complete for $TARGET_ARCH"

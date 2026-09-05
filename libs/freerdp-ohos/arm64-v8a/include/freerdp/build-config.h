@@ -1,11 +1,11 @@
 #ifndef FREERDP_BUILD_CONFIG_H
 #define FREERDP_BUILD_CONFIG_H
 
-#define FREERDP_DATA_PATH "C:/Users/14288/DevEcoStudioProjects/RemoteDesktop/build/freerdp-ohos/install-arm64-v8a/share/freerdp3"
+#define FREERDP_DATA_PATH "/opt/freerdp-ohos/arm64-v8a/share/freerdp3"
 #define FREERDP_KEYMAP_PATH ""
 #define FREERDP_PLUGIN_PATH "lib/freerdp3"
 
-#define FREERDP_INSTALL_PREFIX "C:/Users/14288/DevEcoStudioProjects/RemoteDesktop/build/freerdp-ohos/install-arm64-v8a"
+#define FREERDP_INSTALL_PREFIX "/opt/freerdp-ohos/arm64-v8a"
 
 #define FREERDP_LIBRARY_PATH "lib"
 

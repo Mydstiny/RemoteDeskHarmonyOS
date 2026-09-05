@@ -33,6 +33,7 @@ export struct MoonlightSessionToolbar {
   @Prop pipAvailable: boolean = false;
   @Prop keyboardAvailable: boolean = false;
   @Prop diagnosticsVisible: boolean = false;
+  @Prop canvasResetAvailable: boolean = false;
   @Prop keyboardOpen: boolean = false;
   @Prop modifiersOpen: boolean = false;
   @Prop controlModeLabel: string = '触控板';
@@ -40,6 +41,7 @@ export struct MoonlightSessionToolbar {
   @Prop @Watch('onMenuOpenChange') menuOpen: boolean = false;
   @Prop qualityColor: string = '#66DD7A';
   @Prop qualityLabel: string = '良好';
+  @Prop viewportWidth: number = 0;
   @Prop @Watch('onAvailableHeightChange') availableHeight: number = 640;
   @State private expanded: boolean = false;
   @State private pinned: boolean = false;
@@ -62,9 +64,27 @@ export struct MoonlightSessionToolbar {
 
   private items(): MoonlightToolbarItem[] {
     const layout: MoonlightToolbarLayout = this.layout();
-    return moonlightToolbarItems(
+    const items: MoonlightToolbarItem[] = moonlightToolbarItems(
       this.breakpoint, this.audioAvailable, this.controllerAvailable, this.pipAvailable,
       layout.maxVisibleItems, this.keyboardAvailable, this.controlModeLabel);
+    if (!this.canvasResetAvailable) { return items; }
+    const resetItem: MoonlightToolbarItem = {
+      action: 'resetCanvas', label: '复位', dangerous: false,
+      enabled: true, disabledReason: ''
+    };
+    // Keep the fixed PC top rail within its proven width. Performance remains
+    // reachable from More/Control Center while the transient reset is needed.
+    const diagnosticsIndex: number = items.findIndex(
+      (item: MoonlightToolbarItem): boolean => item.action === 'diagnostics');
+    if (diagnosticsIndex >= 0) {
+      items.splice(diagnosticsIndex, 1, resetItem);
+      return items;
+    }
+    const disconnectIndex: number = items.findIndex(
+      (item: MoonlightToolbarItem): boolean => item.action === 'disconnect');
+    if (disconnectIndex < 0) { items.push(resetItem); }
+    else { items.splice(disconnectIndex, 0, resetItem); }
+    return items;
   }
 
   private railItems(): MoonlightToolbarItem[] {
@@ -94,6 +114,7 @@ export struct MoonlightSessionToolbar {
     if (action === 'controller') { return $r('sys.symbol.gamecontroller_fill'); }
     if (action === 'audio') { return $r('sys.symbol.speaker_slash_fill'); }
     if (action === 'display') { return $r('sys.symbol.display'); }
+    if (action === 'resetCanvas') { return $r('sys.symbol.display'); }
     if (action === 'diagnostics') { return $r('sys.symbol.info_circle'); }
     if (action === 'more') { return $r('sys.symbol.ellipsis_bubble'); }
     return $r('sys.symbol.xmark_circle_fill');
@@ -180,6 +201,7 @@ export struct MoonlightSessionToolbar {
   private itemActive(item: MoonlightToolbarItem): boolean {
     if (item.action === 'keyboard') { return this.keyboardOpen; }
     if (item.action === 'modifiers') { return this.modifiersOpen; }
+    if (item.action === 'resetCanvas') { return this.canvasResetAvailable; }
     return item.action === 'diagnostics' && this.diagnosticsVisible;
   }
 
@@ -259,6 +281,12 @@ export struct MoonlightSessionToolbar {
       Math.max(0, this.railItems().length - 1) * layout.itemGap;
     return Math.max(1, Math.min(contentHeight, Math.max(1, layout.maxHeight - 92),
       Math.max(1, this.availableHeight - 102)));
+  }
+
+  private pcExpandedToolbarWidth(): number {
+    const available: number = Number.isFinite(this.viewportWidth) && this.viewportWidth > 0 ?
+      Math.max(1, this.viewportWidth - 24) : 560;
+    return Math.min(560, available);
   }
 
   @Builder private toolItem(item: MoonlightToolbarItem, layout: MoonlightToolbarLayout) {
@@ -420,15 +448,22 @@ export struct MoonlightSessionToolbar {
         this.handlePointerRegionHover(hover, true);
       })
     } else {
-      Row({ space: layout.itemGap }) {
-        ForEach(this.items(), (item: MoonlightToolbarItem): void => {
-          this.toolItem(item, layout);
-        }, (item: MoonlightToolbarItem): string => item.action)
-        this.trailingItem(layout)
+      Scroll() {
+        Row({ space: layout.itemGap }) {
+          ForEach(this.items(), (item: MoonlightToolbarItem): void => {
+            this.toolItem(item, layout);
+          }, (item: MoonlightToolbarItem): string => item.action)
+          this.trailingItem(layout)
+        }
+        .padding(8).backgroundColor(this.pal().floatBg).backdropBlur(18).borderRadius(18)
+        .border({ width: 1, color: this.pal().floatBorder })
+        .shadow({ radius: 18, color: this.pal().fabShadow, offsetY: 5 })
       }
-      .padding(8).backgroundColor(this.pal().floatBg).backdropBlur(18).borderRadius(18)
-      .border({ width: 1, color: this.pal().floatBorder })
-      .shadow({ radius: 18, color: this.pal().fabShadow, offsetY: 5 })
+      .width(this.pcExpandedToolbarWidth())
+      .height(68)
+      .scrollable(ScrollDirection.Horizontal)
+      .scrollBar(BarState.Auto)
+      .edgeEffect(EdgeEffect.Spring)
       .onHover((hover: boolean): void => {
         this.handlePointerRegionHover(hover, true);
       })

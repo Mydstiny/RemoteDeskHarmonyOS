@@ -79,6 +79,9 @@ struct SshForwardingSnapshot {
     int lastError = 0;
     uint64_t transferredBytes = 0;
     uint64_t expiresAtMs = 0;
+    std::string actualBindHost;
+    int actualBindPort = 0;
+    int actualBindFamily = 0; // AF_UNSPEC/AF_INET/AF_INET6 numeric value
 };
 
 struct SshForwardingRuntime {
@@ -101,6 +104,8 @@ public:
     static constexpr const char* kDefaultBindHost = "127.0.0.1";
 
     static SshForwardingResult validateAndNormalize(SshForwardingConfig& config);
+    // SOCKS destinations are wire input, not persisted profile fields.
+    static bool normalizeRuntimeTargetHost(std::string& host);
 
     SshForwardingResult upsert(const SshForwardingConfig& config);
     SshForwardingResult remove(const std::string& id);
@@ -108,7 +113,10 @@ public:
     // Start and stop only update ownership state. Socket/channel work is
     // performed by the SSH session owner reactor in a later integration step.
     SshForwardingResult start(const std::string& id, uint64_t sessionGeneration);
-    SshForwardingResult markListening(const std::string& id, uint64_t sessionGeneration);
+    SshForwardingResult markListening(const std::string& id, uint64_t sessionGeneration,
+                                      const std::string& actualBindHost = "",
+                                      int actualBindPort = 0,
+                                      int actualBindFamily = 0);
     SshForwardingResult fail(const std::string& id, uint64_t sessionGeneration, int error);
     SshForwardingResult requestStop(const std::string& id, uint64_t sessionGeneration);
     SshForwardingResult completeStop(const std::string& id);
@@ -141,12 +149,13 @@ private:
         uint32_t activeConnections = 0;
         int lastError = 0;
         uint64_t transferredBytes = 0;
+        std::string actualBindHost;
+        int actualBindPort = 0;
+        int actualBindFamily = 0;
     };
 
     static bool isValidMode(SshForwardingMode mode);
     static bool isLoopbackHost(const std::string& host);
-    static std::string trimAndBound(const std::string& value, size_t maxLength,
-                                    const std::string& fallback = "");
     static bool isValidPort(int port);
     static SshForwardingSnapshot toSnapshot(const Entry& entry);
     static bool generationMatches(const Entry& entry, uint64_t sessionGeneration);

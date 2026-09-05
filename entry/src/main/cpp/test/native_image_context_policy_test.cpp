@@ -176,6 +176,65 @@ RDP_TEST_CASE(native_image_policy_validated_producer_rejects_unclassified_matrix
         0, other, previous) == previous);
 }
 
+RDP_TEST_CASE(native_image_policy_vertical_flip_mode_rejects_pc_rotation_and_stale_matrix) {
+    const float identityMatrix[16] = {
+        1.0f, 0.0f, 0.0f, 0.0f,
+        0.0f, 1.0f, 0.0f, 0.0f,
+        0.0f, 0.0f, 1.0f, 0.0f,
+        0.0f, 0.0f, 0.0f, 1.0f
+    };
+    const float flipY[16] = {
+        1.0f, 0.0f, 0.0f, 0.0f,
+        0.0f, -1.0f, 0.0f, 0.0f,
+        0.0f, 0.0f, 1.0f, 0.0f,
+        0.0f, 1.0f, 0.0f, 1.0f
+    };
+    const float rotate180[16] = {
+        -1.0f, 0.0f, 0.0f, 0.0f,
+        0.0f, -1.0f, 0.0f, 0.0f,
+        0.0f, 0.0f, 1.0f, 0.0f,
+        1.0f, 1.0f, 0.0f, 1.0f
+    };
+    const float flipX[16] = {
+        -1.0f, 0.0f, 0.0f, 0.0f,
+        0.0f, 1.0f, 0.0f, 0.0f,
+        0.0f, 0.0f, 1.0f, 0.0f,
+        1.0f, 0.0f, 0.0f, 1.0f
+    };
+    const float rotate90[16] = {
+        0.0f, -1.0f, 0.0f, 0.0f,
+        1.0f, 0.0f, 0.0f, 0.0f,
+        0.0f, 0.0f, 1.0f, 0.0f,
+        0.0f, 1.0f, 0.0f, 1.0f
+    };
+    const Render::NativeImageTransform identity =
+        Render::IdentityNativeImageTransform();
+    const Render::NativeImageTransform acceptedFlip =
+        Render::ResolveNativeImagePresentationTransform(
+            Render::NativeImagePresentationMode::VerticalFlipProducerTransform,
+            0, flipY, identity);
+    RDP_ASSERT(acceptedFlip[5] == -1.0f);
+    RDP_ASSERT(acceptedFlip[13] == 1.0f);
+    RDP_ASSERT(Render::ResolveNativeImagePresentationTransform(
+        Render::NativeImagePresentationMode::VerticalFlipProducerTransform,
+        0, identityMatrix, acceptedFlip) == identity);
+    RDP_ASSERT(Render::ResolveNativeImagePresentationTransform(
+        Render::NativeImagePresentationMode::VerticalFlipProducerTransform,
+        0, rotate180, acceptedFlip) == identity);
+    RDP_ASSERT(Render::ResolveNativeImagePresentationTransform(
+        Render::NativeImagePresentationMode::VerticalFlipProducerTransform,
+        0, flipX, acceptedFlip) == identity);
+    RDP_ASSERT(Render::ResolveNativeImagePresentationTransform(
+        Render::NativeImagePresentationMode::VerticalFlipProducerTransform,
+        0, rotate90, acceptedFlip) == identity);
+    RDP_ASSERT(Render::ResolveNativeImagePresentationTransform(
+        Render::NativeImagePresentationMode::VerticalFlipProducerTransform,
+        40001000, rotate180, acceptedFlip) == identity);
+    RDP_ASSERT(Render::ResolveNativeImagePresentationTransform(
+        Render::NativeImagePresentationMode::VerticalFlipProducerTransform,
+        40001000, nullptr, acceptedFlip) == identity);
+}
+
 RDP_TEST_CASE(native_image_policy_retains_last_valid_transform_after_failed_read) {
     float invalid[16] = {
         1.0f, 0.0f, 0.0f, 0.0f,
@@ -247,15 +306,15 @@ RDP_TEST_CASE(native_image_policy_classifies_producer_transform_without_applying
 RDP_TEST_CASE(rustdesk_peer_presentation_policy_is_platform_invariant) {
     using Render::NativeImagePresentationMode;
     RDP_ASSERT(RustDeskPresentation::NativeImageModeForPeerPlatform(
-        "Windows") == NativeImagePresentationMode::ValidatedProducerTransform);
+        "Windows") == NativeImagePresentationMode::VerticalFlipProducerTransform);
     RDP_ASSERT(RustDeskPresentation::NativeImageModeForPeerPlatform(
-        "Windows 11") == NativeImagePresentationMode::ValidatedProducerTransform);
+        "Windows 11") == NativeImagePresentationMode::VerticalFlipProducerTransform);
     RDP_ASSERT(RustDeskPresentation::NativeImageModeForPeerPlatform(
-        "macOS") == NativeImagePresentationMode::ValidatedProducerTransform);
+        "macOS") == NativeImagePresentationMode::VerticalFlipProducerTransform);
     RDP_ASSERT(RustDeskPresentation::NativeImageModeForPeerPlatform(
-        "Linux") == NativeImagePresentationMode::ValidatedProducerTransform);
+        "Linux") == NativeImagePresentationMode::VerticalFlipProducerTransform);
     RDP_ASSERT(RustDeskPresentation::NativeImageModeForPeerPlatform(
-        "") == NativeImagePresentationMode::ValidatedProducerTransform);
+        "") == NativeImagePresentationMode::VerticalFlipProducerTransform);
     RDP_ASSERT(RustDeskPresentation::ClassifyPeerPlatform("Windows 11") ==
         RustDeskPresentation::PeerPlatformCategory::Windows);
     RDP_ASSERT(RustDeskPresentation::ClassifyPeerPlatform("Darwin") ==

@@ -32,6 +32,7 @@ export interface MoonlightNativeRequestKey {
 export interface MoonlightNativeAddress {
   value: string;
   family: 'unspecified' | 'ipv4' | 'ipv6';
+  scope?: string;
 }
 
 export interface MoonlightNativeEndpoint {
@@ -125,6 +126,25 @@ export interface MoonlightNativeStreamSnapshot {
   decoderCodecLatencyMs?: number;
   decoderCodecLatencyMaxMs?: number;
   decoderLowLatencyEnabled?: boolean;
+  desktopSurfaceCompatibility?: boolean;
+  nativeImagePresentation?: string;
+  producerTransform?: string;
+  appliedTransform?: string;
+  producerTransformSampled?: boolean;
+  producerTransformReadResult?: number;
+  producerTransformSamples?: number;
+  producerTransformChanges?: number;
+  producerTransformReadFailures?: number;
+  producerTransformClassMask?: number;
+  producerTransformMatrix?: number[];
+  appliedTextureTransform?: number[];
+  rendererTransformValid?: boolean;
+  rendererTransformVersion?: number;
+  rendererRotationQuarterTurns?: number;
+  rendererFlipX?: boolean;
+  rendererFlipY?: boolean;
+  decoderGeneration?: number;
+  rendererGeneration?: number;
   streamWidth?: number;
   streamHeight?: number;
   targetFps?: number;
@@ -360,6 +380,7 @@ export const VERSION: SessionVersionInfo;
   export function sendMouse(sessionId: number, x: number, y: number, button: number, pressed: boolean): void;
   export function sendMouseWheel(sessionId: number, x: number, y: number, delta: number): void;
   export function sendRustDeskTouchpadWheel(sessionId: number, x: number, y: number): boolean;
+  export function setRustDeskImageQuality(sessionId: number, quality: number): boolean;
   export function sendText(sessionId: number, text: string): void;
   export function enqueueSshTerminalInput(sessionId: number, text: string,
     expectedGeneration?: number, control?: boolean, ordered?: boolean,
@@ -432,8 +453,14 @@ export const VERSION: SessionVersionInfo;
     serverName: string): Promise<RdpCertificateInfo>;
   export function probeRdpCertificateRouteAsync(
     request: RdpPreflightRequest): Promise<RdpPreflightResult>;
+  export function cancelAllRdpPreflightProbes(): number;
+  export function getPendingRdpPreflightProbeCount(): number;
+  export function beginRdpPreflightScopeTransition(): number;
+  export function endRdpPreflightScopeTransition(): boolean;
   export function probeRustDeskPresenceAsync(host: string, port: number, serverKey: string,
-    peerId: string, token: string, direct: boolean, keyMode: number): Promise<RustDeskPresenceResult>;
+    peerId: string, token: string, direct: boolean, keyMode: number,
+    timeoutMs?: number): RustDeskPresenceProbePromise;
+  export function cancelRustDeskPresenceProbe(requestId: number): boolean;
   export function probeVncCertificateAsync(host: string, port: number,
     serverName: string, timeoutMs?: number): VncCertificateProbePromise;
   export function cancelVncCertificateProbe(requestId: number): boolean;
@@ -444,10 +471,25 @@ export const VERSION: SessionVersionInfo;
     accountGeneration: number, enabled: boolean): VncGatewayDeepHealthPromise;
   export function cancelVncGatewayDeep(requestId: number): boolean;
   export function getRdpRenderStats(sessionId: number): RdpRenderStats;
+  export function acknowledgeRdpInputGeometry(sessionId: number, epoch: number,
+    width: number, height: number): boolean;
+  export function synchronizeRdpRendererGeometry(sessionId: number): boolean;
+  export function requestRdpDisplayLayout(sessionId: number,
+    request: RdpDisplayLayoutRequest): RdpDisplayLayoutResult;
+  export function cancelRdpDisplayLayout(sessionId: number): boolean;
   export function getSessionDiagnostics(sessionId: number): RustDeskDiagnosticsSnapshot;
   export function getRustDeskDiagnostics(sessionId: number): RustDeskDiagnosticsSnapshot;
   export function replayPendingRustDeskFrame(sessionId: number): boolean;
   export function getRustDeskDisplayCapabilities(sessionId: number): RustDeskDisplayCapabilities;
+  export function attachRustDeskMultiCanvasPreview(sessionId: number, display: number,
+    surfaceId: string, surfaceWidth: number, surfaceHeight: number, sourceWidth: number,
+    sourceHeight: number, codec: number, visualFlipX?: boolean,
+    visualFlipY?: boolean): RustDeskMultiCanvasPreviewSnapshot;
+  export function setRustDeskMultiCanvasPreviewTransform(sessionId: number, display: number,
+    visualFlipX: boolean, visualFlipY: boolean): boolean;
+  export function detachRustDeskMultiCanvasPreview(sessionId: number, display: number): boolean;
+  export function getRustDeskMultiCanvasPreview(sessionId: number,
+    display: number): RustDeskMultiCanvasPreviewSnapshot;
   export function beginRustDeskDisplaySwitch(sessionId: number,
     display: number): RustDeskDisplaySwitchRequest;
   export function switchRustDeskDisplay(sessionId: number, display: number): boolean;
@@ -493,14 +535,13 @@ export const VERSION: SessionVersionInfo;
   export function inspectSshPrivateKey(privateKeyPem: string, passphrase: string): SshPrivateKeyInfo;
   export function changeSshPrivateKeyPassphrase(privateKeyPem: string, oldPassphrase: string, newPassphrase: string): string;
   export function validatePublicKeyForAuthorizedKeys(publicKeyOpenSsh: string): boolean;
-  export function installSshPublicKey(host: string, port: number, username: string, password: string, privateKeyPem: string, passphrase: string, publicKey: string): SshPublicKeyInstallResult;
-  export function testSshKeyAuth(host: string, port: number, username: string, privateKeyPem: string,
-    passphrase: string, proxy?: SshProxyConfig): SshAuthTestResult;
-  export function testSshKeyAuthAsync(host: string, port: number, username: string, privateKeyPem: string,
-    passphrase: string, proxy?: SshProxyConfig): Promise<SshAuthTestResult>;
-  export function probeSshHostKey(host: string, port: number, proxy?: SshProxyConfig): SshHostKeyInfo;
-  export function probeSshHostKeyAsync(host: string, port: number,
-    proxy?: SshProxyConfig): Promise<SshHostKeyInfo>;
+  export function probeSshHostKeyOperationAsync(config: SessionConfig, operationId: number,
+    timeoutMs: number): Promise<SshHostKeyInfo> & { operationId: number };
+  export function testSshKeyAuthOperationAsync(config: SessionConfig, operationId: number,
+    timeoutMs: number): Promise<SshAuthTestResult> & { operationId: number };
+  export function installSshPublicKeyOperationAsync(config: SessionConfig, publicKey: string,
+    operationId: number, timeoutMs: number): Promise<SshPublicKeyInstallResult> & { operationId: number };
+  export function cancelSshOperation(operationId: number): boolean;
 
   export function initRenderer(xcId: string, width: number, height: number): number;
   export function destroyRenderer(handle: number): void;
@@ -508,7 +549,7 @@ export const VERSION: SessionVersionInfo;
   export function renderRawBGRA(handle: number, data: ArrayBuffer, width: number, height: number, stride: number): void;
   export function resizeRenderer(handle: number, width: number, height: number): void;
   export function setRendererCanvasTransform(handle: number, scale: number, panX: number, panY: number,
-    rotationQuarterTurns?: number): number;
+    rotationQuarterTurns?: number, flipX?: boolean, flipY?: boolean): number;
   export function testRender(handle: number): void;
   export function registerNativeXComponent(): boolean;
   export function setXComponentSurfaceId(surfaceId: string, width: number, height: number): boolean;
@@ -727,6 +768,10 @@ export interface RustDeskPresenceResult {
   errorCode: number;
 }
 
+export interface RustDeskPresenceProbePromise extends Promise<RustDeskPresenceResult> {
+  requestId: number;
+}
+
 export interface VncCertificateInfo {
   ok: boolean;
   host: string;
@@ -811,13 +856,46 @@ export interface RdpRenderStats {
   graphicsEpoch: number;
   desktopResizeCount: number;
   desktopResizeFailures: number;
+  desktopResizeInProgress: boolean;
   gfxChannelConnected: boolean;
+  displayControlReady: boolean;
+  displayControlDisabled: boolean;
+  displayRequestedWidth: number;
+  displayRequestedHeight: number;
+  displayEffectiveWidth: number;
+  displayEffectiveHeight: number;
+  displayScaleFactor: number;
+  displayRequestCount: number;
+  displayChannelRequestCount: number;
+  displayFailureCount: number;
+  displayLayoutPending: boolean;
+  displayLayoutInFlight: boolean;
+  displayLastResult: string;
+  inputGeometryReady: boolean;
+  inputGeometryAcknowledgedEpoch: number;
+  inputGeometryFenceDrops: number;
   inputQueueDepth: number;
   inputQueueMax: number;
   inputTextUnits: number;
   inputDroppedMouseMoves: number;
   inputNonDisposableOverflow: number;
   graphicsMode: string;
+}
+
+export interface RdpDisplayLayoutRequest {
+  width: number;
+  height: number;
+  physicalWidthMm: number;
+  physicalHeightMm: number;
+  orientation: number;
+  desktopScaleFactor: number;
+  deviceScaleFactor: number;
+}
+
+export interface RdpDisplayLayoutResult {
+  accepted: boolean;
+  code: string;
+  message: string;
 }
 
 export interface RustDeskDiagnosticsSnapshot {
@@ -837,6 +915,14 @@ export interface RustDeskDiagnosticsSnapshot {
   sessionId: number;
   latencyMs: number;
   targetBitrateKbps: number;
+  requestedImageQuality: number;
+  effectiveImageQuality: number;
+  sentImageQuality: number;
+  qualityProfile: number;
+  qualityFps: number;
+  qualityRequestedGeneration: number;
+  qualityAppliedGeneration: number;
+  qualityUpdateStatus: number;
   videoMessages: number;
   receivedFrames: number;
   keyframes: number;
@@ -857,6 +943,22 @@ export interface RustDeskDiagnosticsSnapshot {
   desktopSurfaceCompatibility?: boolean;
   nativeImagePresentation?: string;
   producerTransform?: string;
+  appliedTransform?: string;
+  producerTransformSampled?: boolean;
+  producerTransformReadResult?: number;
+  producerTransformSamples?: number;
+  producerTransformChanges?: number;
+  producerTransformReadFailures?: number;
+  producerTransformClassMask?: number;
+  producerTransformMatrix?: number[];
+  appliedTextureTransform?: number[];
+  rendererTransformValid?: boolean;
+  rendererTransformVersion?: number;
+  rendererRotationQuarterTurns?: number;
+  rendererFlipX?: boolean;
+  rendererFlipY?: boolean;
+  decoderGeneration?: number;
+  rendererGeneration?: number;
   lastFrameAtMs: number;
   lastFrameAgeMs: number;
   lastPresentedAtMs: number;
@@ -913,7 +1015,12 @@ export interface RustDeskDisplayCapabilities {
   switchGeneration: number;
   readySwitchGeneration: number;
   pendingDisplay: number;
+  confirmedDisplay: number;
   inputBlocked: boolean;
+  multiCanvasPreviewSupported: boolean;
+  multiCanvasPreviewMaxDisplays: number;
+  multiCanvasPreviewActive: boolean;
+  multiCanvasPreviewDisplay: number;
   width: number;
   height: number;
   originalWidth: number;
@@ -927,6 +1034,25 @@ export interface RustDeskDisplayCapabilities {
 export interface RustDeskDisplaySwitchRequest {
   accepted: boolean;
   generation: number;
+}
+
+export interface RustDeskMultiCanvasPreviewSnapshot {
+  supported: boolean;
+  active: boolean;
+  display: number;
+  status: string;
+  reason: string;
+  decoderBackend: string;
+  sourceWidth: number;
+  sourceHeight: number;
+  codec: number;
+  lastDecodeResult: number;
+  receivedFrames: number;
+  acceptedFrames: number;
+  droppedFrames: number;
+  presentedFrames: number;
+  queueDepth: number;
+  inputDroppedFrames: number;
 }
 
 export interface LocalResourceStats {
@@ -992,6 +1118,15 @@ export interface SessionConfig {
   multiMonitor: boolean;
   monitorCount: number;
   colorDepth: number;
+  /** RDP TLS/NLA identity; legacy customHostname remains a migration fallback. */
+  targetServerName?: string;
+  /** RDP /client-hostname:, never used as a transport or certificate identity. */
+  clientHostname?: string;
+  rdpDesktopScaleFactor?: number;
+  rdpDeviceScaleFactor?: number;
+  rdpDesktopPhysicalWidthMm?: number;
+  rdpDesktopPhysicalHeightMm?: number;
+  rdpDesktopOrientation?: number;
   rdpAuthIdentityMode?: number; // 0=MicrosoftAccount\email, 1=domain MicrosoftAccount, 2=bare email, 3=.\AzureAD\email, 4=domain AzureAD
   rdpAuthMode?: 'password' | 'blank_password' | 'restricted_admin';
   rdpRestrictedAdminSecretSource?: 'ntlm_hash';
@@ -1017,6 +1152,9 @@ export interface SessionConfig {
   sshJumpHopHandoffs?: SshJumpHopHandoff[];
   expectedHostKeyRawBase64?: string;
   expectedHostKeyFingerprintSha256?: string;
+  sshHostKeyPromptEnabled?: boolean;
+  sshTrustHostId?: string;
+  sshHostKeyRouteIdentity?: string;
   sshJumpHostKeyRawBase64?: string;
   sshJumpHostKeyFingerprintSha256?: string;
   expectedRdpCertificateFingerprintSha256?: string;
@@ -1160,6 +1298,18 @@ export interface SshAuthPromptRequest {
   instruction: string;
   prompts: SshAuthPrompt[];
   expiresAtMs: number;
+  kind: 'keyboard_interactive' | 'host_key';
+  trustHostId: string;
+  routeIdentity: string;
+  endpointHost: string;
+  endpointPort: number;
+  hostKeyHopIndex: number;
+  hostKeyAlgorithm: string;
+  hostKeyFingerprintSha256: string;
+  /** Internal persistence payload; never display or log this raw key blob. */
+  hostKeyRawBase64: string;
+  expectedHostKeyFingerprintSha256: string;
+  hostKeyChanged: boolean;
 }
 
 export interface SshAuthPromptResponse {
@@ -1233,6 +1383,9 @@ export interface SshForwardingSnapshot {
   ownerGeneration: number;
   transferredBytes: number;
   expiresAtMs: number;
+  actualBindHost: string;
+  actualBindPort: number;
+  actualBindFamily: number; // 0=unknown, 2=IPv4, 10=IPv6 on OHOS/POSIX
 }
 
 export interface SshForwardingProfile {

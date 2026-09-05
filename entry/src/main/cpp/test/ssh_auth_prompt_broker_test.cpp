@@ -2,7 +2,20 @@
 #include "ssh/ssh_auth_prompt_broker.h"
 
 #include <chrono>
+#include <algorithm>
 #include <thread>
+
+RDP_TEST_CASE(ssh_auth_prompt_response_wipes_every_owned_copy) {
+    SshAuthPromptResponse response {
+        1, 1, 2, 3, {"password-copy", "654321"}, false};
+    response.wipeResponses();
+    RDP_ASSERT(std::all_of(
+        response.responses[0].begin(), response.responses[0].end(),
+        [](char byte) { return byte == '\0'; }));
+    RDP_ASSERT(std::all_of(
+        response.responses[1].begin(), response.responses[1].end(),
+        [](char byte) { return byte == '\0'; }));
+}
 
 RDP_TEST_CASE(ssh_auth_prompt_broker_round_trip_preserves_prompt_metadata) {
     SshAuthPromptBroker broker;
@@ -103,6 +116,7 @@ RDP_TEST_CASE(ssh_auth_prompt_broker_host_key_decision_is_bound_and_has_no_secre
     std::thread worker([&]() {
         waitResult = broker.waitForHostKeyDecision(
             61, 9201, "target.example", "hop-2", "host-record-1",
+            "ssh-hostkey-route-v1|target=example",
             "jump-2.example", 2222, 1, "ssh-ed25519", "SHA256:new",
             "AAAAC3NzaC1lZDI1NTE5AAAA", "SHA256:old", true);
     });
@@ -115,6 +129,7 @@ RDP_TEST_CASE(ssh_auth_prompt_broker_host_key_decision_is_bound_and_has_no_secre
     RDP_ASSERT(request.sessionId == 61);
     RDP_ASSERT(request.generation == 9201);
     RDP_ASSERT(request.trustHostId == "host-record-1");
+    RDP_ASSERT(request.routeIdentity == "ssh-hostkey-route-v1|target=example");
     RDP_ASSERT(request.endpointHost == "jump-2.example");
     RDP_ASSERT(request.endpointPort == 2222);
     RDP_ASSERT(request.hostKeyHopIndex == 1);
@@ -127,4 +142,17 @@ RDP_TEST_CASE(ssh_auth_prompt_broker_host_key_decision_is_bound_and_has_no_secre
         1, request.requestId, 61, 9201, {}, false}));
     worker.join();
     RDP_ASSERT(waitResult == SshAuthPromptWaitResult::Responded);
+}
+
+RDP_TEST_CASE(ssh_auth_prompt_broker_never_extends_an_expired_route_deadline) {
+    SshAuthPromptBroker broker;
+    std::vector<std::string> responses;
+    const SshAuthPromptWaitResult result = broker.waitForResponse(
+        71, 9301, "target.example", "target", "", 0, "", 0,
+        std::vector<SshAuthPrompt> {{"OTP:", false}}, responses,
+        std::chrono::steady_clock::now() - std::chrono::milliseconds(1));
+    RDP_ASSERT(result == SshAuthPromptWaitResult::TimedOut);
+    SshAuthPromptRequest request;
+    RDP_ASSERT(!broker.snapshot(request));
+    RDP_ASSERT(responses.empty());
 }

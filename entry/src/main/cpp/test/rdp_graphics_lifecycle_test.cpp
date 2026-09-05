@@ -36,6 +36,61 @@ RDP_TEST_CASE(rdp_graphics_lifecycle_rejects_invalid_or_overlapping_resize) {
     RDP_ASSERT_EQ(snapshot.resizeFailures, 1ULL);
 }
 
+RDP_TEST_CASE(rdp_graphics_lifecycle_reconciles_server_adjusted_initial_geometry) {
+    RdpGraphicsLifecycle lifecycle;
+    lifecycle.reset(1600, 1000, true);
+
+    RDP_ASSERT(lifecycle.reconcileInitialDesktopSize(2880, 1800));
+    const RdpGraphicsLifecycleSnapshot reconciled = lifecycle.snapshot();
+    RDP_ASSERT_EQ(reconciled.epoch, 0ULL);
+    RDP_ASSERT_EQ(reconciled.desktopWidth, 2880);
+    RDP_ASSERT_EQ(reconciled.desktopHeight, 1800);
+    RDP_ASSERT(reconciled.presentationAllowed);
+
+    const RdpResizeTicket resize = lifecycle.beginResize(2560, 1600);
+    RDP_ASSERT(resize.accepted);
+    RDP_ASSERT(!lifecycle.reconcileInitialDesktopSize(1920, 1080));
+    lifecycle.completeResize(resize.epoch, true);
+    RDP_ASSERT(!lifecycle.reconcileInitialDesktopSize(1920, 1080));
+}
+
+RDP_TEST_CASE(rdp_renderer_geometry_replay_wins_after_late_decoder_bind) {
+    RdpGraphicsLifecycle lifecycle;
+    lifecycle.reset(1600, 1000, true);
+    RDP_ASSERT(lifecycle.reconcileInitialDesktopSize(2880, 1800));
+
+    // PostConnect may publish 2880x1800 first and a later decoder bind may
+    // temporarily overwrite the renderer with its cold-start 1600x1000.
+    int rendererWidth = 2880;
+    int rendererHeight = 1800;
+    rendererWidth = 1600;
+    rendererHeight = 1000;
+    const RdpRendererGeometryReplay initialReplay =
+        ResolveRdpRendererGeometryReplay(lifecycle.snapshot());
+    RDP_ASSERT(initialReplay.ready);
+    rendererWidth = initialReplay.width;
+    rendererHeight = initialReplay.height;
+    RDP_ASSERT_EQ(rendererWidth, 2880);
+    RDP_ASSERT_EQ(rendererHeight, 1800);
+
+    const RdpResizeTicket resize = lifecycle.beginResize(2560, 1600);
+    RDP_ASSERT(resize.accepted);
+    RDP_ASSERT(!ResolveRdpRendererGeometryReplay(lifecycle.snapshot()).ready);
+    lifecycle.completeResize(resize.epoch, true);
+
+    // Foreground rebind repeats the decoder's original dimensions; replaying
+    // the live adapter geometry restores the completed Display Control size.
+    rendererWidth = 1600;
+    rendererHeight = 1000;
+    const RdpRendererGeometryReplay restoreReplay =
+        ResolveRdpRendererGeometryReplay(lifecycle.snapshot());
+    RDP_ASSERT(restoreReplay.ready);
+    rendererWidth = restoreReplay.width;
+    rendererHeight = restoreReplay.height;
+    RDP_ASSERT_EQ(rendererWidth, 2560);
+    RDP_ASSERT_EQ(rendererHeight, 1600);
+}
+
 RDP_TEST_CASE(rdp_graphics_lifecycle_ignores_duplicate_and_stale_channel_events) {
     RdpGraphicsLifecycle lifecycle;
     lifecycle.reset(1920, 1080, true);

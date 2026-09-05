@@ -4,6 +4,13 @@ import {
   MoonlightControlCenterLayout,
   moonlightControlCenterLayout
 } from '../../services/MoonlightUiPolicy';
+import {
+  MoonlightDesktopFlipAxis,
+  MoonlightDesktopFlipMode,
+  MoonlightDesktopFlipState,
+  moonlightDesktopFlipState,
+  toggleMoonlightDesktopFlipAxis
+} from '../../services/MoonlightDesktopFlipPolicy';
 
 export type MoonlightControlMode = MoonlightInputControlMode;
 
@@ -28,6 +35,9 @@ export struct MoonlightControlCenter {
   @Prop physicalControllerPathReady: boolean = false;
   @Prop keyboardAvailable: boolean = false;
   @Prop diagnosticsVisible: boolean = false;
+  @Prop canvasResetAvailable: boolean = false;
+  @Prop desktopFlipAvailable: boolean = false;
+  @Prop desktopFlipMode: MoonlightDesktopFlipMode = 'reset';
   onClose: () => void = (): void => {};
   onOpenKeyboard: () => void = (): void => {};
   onOpenModifiers: () => void = (): void => {};
@@ -35,6 +45,9 @@ export struct MoonlightControlCenter {
   onControlMode: (mode: MoonlightControlMode) => void = (_mode: MoonlightControlMode): void => {};
   onEnterPip: () => void = (): void => {};
   onToggleDiagnostics: () => void = (): void => {};
+  onResetCanvas: () => void = (): void => {};
+  onSetDesktopFlipMode: (mode: MoonlightDesktopFlipMode) => void =
+    (_mode: MoonlightDesktopFlipMode): void => {};
   onDisconnect: () => void = (): void => {};
 
   private pal(): Palette {
@@ -44,6 +57,15 @@ export struct MoonlightControlCenter {
   private layout(): MoonlightControlCenterLayout {
     return moonlightControlCenterLayout(this.isDesktopDevice, this.breakpoint,
       this.isPadDevice, this.viewportWidth, this.viewportHeight);
+  }
+
+  private desktopFlipState(): MoonlightDesktopFlipState {
+    return moonlightDesktopFlipState(this.desktopFlipMode);
+  }
+
+  private toggleDesktopFlipAxis(axis: MoonlightDesktopFlipAxis): void {
+    this.onSetDesktopFlipMode(toggleMoonlightDesktopFlipAxis(
+      this.desktopFlipMode, axis));
   }
 
   @Builder private sectionTitle(title: string, subtitle: string = '') {
@@ -135,8 +157,44 @@ export struct MoonlightControlCenter {
             this.actionRow($r('sys.symbol.rectangle_on_rectangle'), '画中画',
               this.pipAvailable ? '保持串流并进入系统 PIP' : '当前窗口或系统能力不支持',
               (): void => { this.onEnterPip(); }, this.pipAvailable)
+            Divider().color(this.pal().divider).margin({ left: 58 })
+            this.actionRow($r('sys.symbol.display'), '复位画面',
+              this.canvasResetAvailable ? '恢复适应窗口的基线缩放与居中位置' : '画面已处于适应窗口的基线位置',
+              (): void => { this.onResetCanvas(); })
           }.width('100%').backgroundColor(this.pal().card).borderRadius(16)
             .border({ width: 0.5, color: this.pal().cardBorder })
+
+          if (this.desktopFlipAvailable) {
+            this.sectionTitle('PC 画面翻转', '本机按主机保存 · 故障兜底')
+            Column() {
+              this.toggleRow($r('sys.symbol.rectangle_rotate'), '画面上下翻转',
+                '只调整显示方向，不改变远端输入坐标',
+                this.desktopFlipState().visualFlipY,
+                (): void => { this.toggleDesktopFlipAxis('visual_y'); })
+              Divider().color(this.pal().divider).margin({ left: 58 })
+              this.toggleRow($r('sys.symbol.rectangle_rotate'), '画面左右翻转',
+                '只调整显示方向，不改变远端输入坐标',
+                this.desktopFlipState().visualFlipX,
+                (): void => { this.toggleDesktopFlipAxis('visual_x'); })
+              Divider().color(this.pal().divider).margin({ left: 58 })
+              this.toggleRow($r('sys.symbol.rectangle_rotate'), '控制层上下翻转',
+                '当画面上下颠倒时同步校正鼠标与触控板方向',
+                this.desktopFlipState().controlFlipY,
+                (): void => { this.toggleDesktopFlipAxis('control_y'); })
+              Divider().color(this.pal().divider).margin({ left: 58 })
+              this.toggleRow($r('sys.symbol.rectangle_rotate'), '控制层左右翻转',
+                '当画面左右镜像时同步校正鼠标与触控板方向',
+                this.desktopFlipState().controlFlipX,
+                (): void => { this.toggleDesktopFlipAxis('control_x'); })
+              if (this.desktopFlipMode !== 'reset') {
+                Divider().color(this.pal().divider).margin({ left: 58 })
+                this.actionRow($r('sys.symbol.rectangle_rotate'), '复位翻转',
+                  '恢复画面和控制层的默认方向',
+                  (): void => { this.onSetDesktopFlipMode('reset'); })
+              }
+            }.width('100%').backgroundColor(this.pal().card).borderRadius(16)
+              .border({ width: 0.5, color: this.pal().cardBorder })
+          }
 
           this.sectionTitle('控制', '仅本次 · ' +
             (this.controlMode === 'adaptive' ? '自适应' :

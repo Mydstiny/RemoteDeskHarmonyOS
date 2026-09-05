@@ -5,7 +5,11 @@ import {
   FrozenDiagnosticCapture
 } from '../main/ets/services/DiagnosticCaptureRuntime';
 import { DIAGNOSTIC_MAX_EVENTS } from '../main/ets/services/DiagnosticCapturePolicy';
-import { DiagnosticRuntimeFacts } from '../main/ets/services/DiagnosticCapturePolicy';
+import {
+  DiagnosticNetworkFacts,
+  DiagnosticRuntimeFacts,
+  diagnosticNetworkFactsForEndpoints
+} from '../main/ets/services/DiagnosticCapturePolicy';
 
 class FakeDiagnosticClock implements DiagnosticClock {
   uptime: number = 1000;
@@ -116,19 +120,50 @@ export default function diagnosticCaptureRuntimeTest(): void {
       const facts: DiagnosticRuntimeFacts = {
         state: 'connected', backend: 'hardware', codec: 'h264', path: 'relay',
         peerPlatform: 'windows', presentation: 'identity',
-        producerTransform: 'rotate_180', width: 1920, height: 1080,
+        producerTransform: 'rotate_180', appliedTransform: 'identity',
+        desktopSurfaceCompatibility: true, producerTransformSampled: true,
+        producerTransformReadResult: 0, producerTransformSamples: 10,
+        producerTransformChanges: 1, producerTransformReadFailures: 0,
+        producerTransformClassMask: 10,
+        producerTransformMatrix: [1, 0, 0, 0, 0, -1, 0, 0, 0, 0, 1, 0, 0, 1, 0, 1],
+        appliedTextureTransform: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
+        rendererTransformValid: true, rendererTransformVersion: 2,
+        rendererRotationQuarterTurns: 0, rendererFlipX: false, rendererFlipY: true,
+        decoderGeneration: 3, rendererGeneration: 4, width: 1920, height: 1080,
         frames: 30, dropped: 0, errors: 0, queueDepth: 1, latencyMs: 20
       };
+      const network: DiagnosticNetworkFacts = diagnosticNetworkFactsForEndpoints(
+        '2001:db8::8', 21115, 'relay.example.invalid', 21116);
       expect(runtime.record('connection.rustdesk', 'rustdesk_runtime_snapshot',
-        'state', 8, 1, 0, 20, 30, 4096, facts)).assertTrue();
+        'state', 8, 1, 0, 20, 30, 4096, facts, network)).assertTrue();
       facts.peerPlatform = 'peer-id-canary' as 'windows';
       expect(runtime.record('connection.rustdesk', 'rustdesk_runtime_snapshot',
         'state', 8, 1, 0, 20, 30, 4096, facts)).assertFalse();
+      network.configuredEndpointFamily = 'raw-address-canary' as 'ipv6';
+      expect(runtime.record('connection.rustdesk', 'rustdesk_runtime_snapshot',
+        'state', 8, 1, 0, 20, 30, 4096, {
+          state: 'connected', backend: 'hardware', codec: 'h264', path: 'relay',
+          peerPlatform: 'windows', presentation: 'identity',
+          producerTransform: 'rotate_180', appliedTransform: 'identity',
+          desktopSurfaceCompatibility: true, producerTransformSampled: true,
+          producerTransformReadResult: 0, producerTransformSamples: 10,
+          producerTransformChanges: 1, producerTransformReadFailures: 0,
+          producerTransformClassMask: 10,
+          producerTransformMatrix: [1, 0, 0, 0, 0, -1, 0, 0, 0, 0, 1, 0, 0, 1, 0, 1],
+          appliedTextureTransform: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
+          rendererTransformValid: true, rendererTransformVersion: 2,
+          rendererRotationQuarterTurns: 0, rendererFlipX: false, rendererFlipY: true,
+          decoderGeneration: 3, rendererGeneration: 4, width: 1920, height: 1080,
+          frames: 30, dropped: 0, errors: 0, queueDepth: 1, latencyMs: 20
+        }, network)).assertFalse();
       runtime.stop();
       const frozen: FrozenDiagnosticCapture = runtime.frozenCapture() as FrozenDiagnosticCapture;
       expect(frozen.events[1].runtime.presentation).assertEqual('identity');
       expect(frozen.events[1].runtime.producerTransform).assertEqual('rotate_180');
+      expect(frozen.events[1].network.configuredEndpointFamily).assertEqual('ipv6');
+      expect(frozen.events[1].network.configuredRouteFamily).assertEqual('hostname');
       expect(JSON.stringify(frozen).indexOf('peer-id-canary')).assertEqual(-1);
+      expect(JSON.stringify(frozen).indexOf('raw-address-canary')).assertEqual(-1);
     });
 
     it('caps_high_frequency_events_without_interrupting_the_capture', 0, (): void => {

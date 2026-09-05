@@ -61,7 +61,24 @@ export const EMPTY_RDP_RENDER_STATS: RdpRenderStats = {
   graphicsEpoch: 0,
   desktopResizeCount: 0,
   desktopResizeFailures: 0,
+  desktopResizeInProgress: false,
   gfxChannelConnected: false,
+  displayControlReady: false,
+  displayControlDisabled: false,
+  displayRequestedWidth: 0,
+  displayRequestedHeight: 0,
+  displayEffectiveWidth: 0,
+  displayEffectiveHeight: 0,
+  displayScaleFactor: 100,
+  displayRequestCount: 0,
+  displayChannelRequestCount: 0,
+  displayFailureCount: 0,
+  displayLayoutPending: false,
+  displayLayoutInFlight: false,
+  displayLastResult: 'not_negotiated',
+  inputGeometryReady: true,
+  inputGeometryAcknowledgedEpoch: 0,
+  inputGeometryFenceDrops: 0,
   inputQueueDepth: 0,
   inputQueueMax: 0,
   inputTextUnits: 0,
@@ -210,8 +227,10 @@ export struct RdpDiagnosticsHud {
           value: this.stats.desktopWidth.toString() + ' x ' + this.stats.desktopHeight.toString()
         })
         this.metric({
-          label: 'GFX 通道',
-          value: this.stats.gfxChannelConnected ? 'connected' : 'gdi'
+          label: 'GFX / 动态布局',
+          value: (this.stats.gfxChannelConnected ? 'connected' : 'gdi') + ' / ' +
+            (this.stats.displayControlDisabled ? 'fallback' :
+              (this.stats.displayControlReady ? this.stats.displayLastResult : 'unavailable'))
         })
         this.metric({
           label: '停滞/拒绝',

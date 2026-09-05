@@ -6,6 +6,7 @@ import {
 } from '../../../main/ets/services/GuideContentRegistry';
 import {
   CURRENT_RELEASE_VERSION,
+  currentReleasePageCount,
   pagesForReleasedVersion,
   ReleaseNotePage
 } from '../../../main/ets/services/ReleaseNotesRegistry';
@@ -40,11 +41,22 @@ export default function guideContentRegistryTest(): void {
       expect(containsGuidePage(guide, 'welcome-five-protocols')).assertTrue();
       expect(containsGuidePage(guide, 'session-toolkit')).assertTrue();
       expect(containsGuidePage(guide, 'data-recovery-and-help')).assertTrue();
-      expect(release.length).assertEqual(10);
-      expect(containsReleasePage(release, 'release-1-1-4')).assertTrue();
+      expect(release.length).assertEqual(14);
+      expect(currentReleasePageCount()).assertEqual(release.length);
+      expect(release.length <= 14).assertTrue();
+      expect(containsReleasePage(release, 'release-1-1-5-1')).assertTrue();
+      expect(containsReleasePage(release, 'release-flip-fallback-diagnostics')).assertTrue();
+      expect(containsReleasePage(release, 'release-rdp-ephemeral-auth')).assertTrue();
+      expect(containsReleasePage(release, 'release-rdp-pointer-mapping')).assertTrue();
+      expect(containsReleasePage(release, 'release-rdp-resolution-scaling')).assertTrue();
+      expect(containsReleasePage(release, 'release-rustdesk-clipboard')).assertTrue();
+      expect(containsReleasePage(release, 'release-harmony-shortcut-capture')).assertTrue();
+      expect(containsReleasePage(release, 'release-1-1-5')).assertFalse();
+      expect(containsReleasePage(release, 'release-1-1-4')).assertFalse();
+      expect(containsReleasePage(release, 'welcome-1-1-4')).assertFalse();
       expect(containsReleasePage(release, 'release-1-1-3')).assertFalse();
       expect(containsReleasePage(release, 'welcome-1-1-3')).assertFalse();
-      expect(release[release.length - 1].id).assertEqual('welcome-1-1-4');
+      expect(release[release.length - 1].id).assertEqual('welcome-1-1-5-1');
     });
   });
 }

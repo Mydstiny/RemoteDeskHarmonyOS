@@ -3,6 +3,7 @@
 import { describe, it, expect } from '@ohos/hypium';
 import {
   sshTerminalTabChromeRenderKey,
+  sshTerminalTabsHaveLiveSession,
   SshTerminalTabStore
 } from '../main/ets/services/SshTerminalTabStore';
 
@@ -53,6 +54,25 @@ export default function sshTerminalTabStoreTest(): void {
       expect(sessionIds[0]).assertEqual(101);
       expect(sessionIds[1]).assertEqual(202);
       expect(store.views().length).assertEqual(0);
+    });
+
+    it('should_protect_page_exit_when_only_a_background_tab_is_live', 0, (): void => {
+      const store: SshTerminalTabStore = new SshTerminalTabStore();
+      store.openAndActivate('host-a', 'A', 'root@a:22');
+      store.invalidateSession('host-a', 'error', 'offline');
+      store.open('host-b', 'B', 'root@b:22');
+      store.update('host-b', 'connected', 202);
+      store.activate('host-a');
+
+      expect(store.views()[0].active).assertTrue();
+      expect(store.views()[0].state).assertEqual('error');
+      expect(store.views()[1].active).assertFalse();
+      expect(sshTerminalTabsHaveLiveSession(store.views())).assertTrue();
+
+      store.invalidateSession('host-b', 'error', 'closed');
+      expect(sshTerminalTabsHaveLiveSession(store.views())).assertFalse();
+      store.beginConnection('host-b');
+      expect(sshTerminalTabsHaveLiveSession(store.views())).assertTrue();
     });
 
     it('should_clear_old_session_identity_when_a_tab_reconnects', 0, (): void => {

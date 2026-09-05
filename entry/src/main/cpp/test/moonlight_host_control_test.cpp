@@ -103,7 +103,12 @@ public:
             }
         }
         if (handler) {
-            return handler(request, absoluteDeadline, cancellationProbe);
+            outcome = handler(request, absoluteDeadline, cancellationProbe);
+        }
+        if (outcome.error == MoonlightTransportError::None &&
+            outcome.resolvedAddress.empty()) {
+            outcome.resolvedAddress = request.connectAddress();
+            outcome.resolvedFamily = request.family();
         }
         return outcome;
     }
@@ -658,21 +663,28 @@ RDP_TEST_CASE(moonlight_host_control_maybe_sent_action_is_never_replayed) {
                   static_cast<std::size_t>(1));
 }
 
-RDP_TEST_CASE(moonlight_host_control_host_api_may_retry_only_a_not_sent_address) {
+RDP_TEST_CASE(moonlight_host_control_dual_stack_fallback_reaches_media_handoff) {
     Fixture fixture;
     RDP_ASSERT(fixture.primeCatalog().ok());
     auto request = launchRequest(2U);
-    request.context.endpoint.addresses.push_back(
-        {"192.0.2.11", MoonlightHostAddressFamily::Ipv4});
+    request.context.endpoint.addresses = {
+        {"2001:db8::10", MoonlightHostAddressFamily::Ipv6},
+        {"sunshine.local", MoonlightHostAddressFamily::Unspecified},
+    };
     fixture.transport->push(xmlResponse(serverInfoXml(0U)));
     fixture.transport->push(transportFailure(MoonlightTransportError::ConnectFailure,
                                              MoonlightTransportSendState::NotSent));
-    fixture.transport->push(xmlResponse(
+    auto fallback = xmlResponse(
         "<root status_code=\"200\"><gamesession>1</gamesession>"
-        "<sessionUrl0>rtsp://fallback</sessionUrl0></root>"));
+        "<sessionUrl0>rtsp://fallback</sessionUrl0></root>");
+    fallback.resolvedAddress = "192.0.2.11";
+    fallback.resolvedFamily = MoonlightHostAddressFamily::Ipv4;
+    fixture.transport->push(std::move(fallback));
     fixture.transport->push(xmlResponse(serverInfoXml(42U)));
     const auto result = fixture.control->launch(std::move(request));
     RDP_ASSERT(result.ok());
+    RDP_ASSERT(result.sessionAddress.has_value());
+    RDP_ASSERT(*result.sessionAddress == "192.0.2.11");
     RDP_ASSERT_EQ(fixture.transport->count(MoonlightHostOperation::Launch),
                   static_cast<std::size_t>(2));
 }

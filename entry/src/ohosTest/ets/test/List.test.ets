@@ -35,18 +35,29 @@ import hostAddDraftTest from './HostAddDraft.test';
 import rustDeskCardBadgePolicyTest from './RustDeskCardBadgePolicy.test';
 import rustDeskDiagnosticsPolicyTest from './RustDeskDiagnosticsPolicy.test';
 import remotePhysicalKeyboardPolicyTest from './RemotePhysicalKeyboardPolicy.test';
+import harmonyShortcutBlockingPolicyTest from '../../../test/HarmonyShortcutBlockingPolicy.test';
+import harmonyShortcutCaptureServiceTest from '../../../test/HarmonyShortcutCaptureService.test';
 import touchpadPointerCurvePolicyTest from './TouchpadPointerCurvePolicy.test';
 import remotePhysicalTouchpadPolicyTest from '../../../test/RemotePhysicalTouchpadPolicy.test';
 import remoteSurfaceTransformPolicyTest from './RemoteSurfaceTransformPolicy.test';
+import remoteCanvasGesturePolicyTest from '../../../test/RemoteCanvasGesturePolicy.test';
+import remoteCanvasPointerFollowPolicyTest from '../../../test/RemoteCanvasPointerFollowPolicy.test';
 import rustDeskDesktopFlipPolicyTest from '../../../test/RustDeskDesktopFlipPolicy.test';
+import moonlightDesktopFlipPolicyTest from '../../../test/MoonlightDesktopFlipPolicy.test';
+import moonlightDesktopFlipStoreTest from '../../../test/MoonlightDesktopFlipStore.test';
 import remoteCursorStylePolicyTest from './RemoteCursorStylePolicy.test';
 import remoteHostSheetLifecyclePolicyTest from './RemoteHostSheetLifecyclePolicy.test';
 import vncSessionGeometryPolicyTest from './VncSessionGeometryPolicy.test';
+import rdpSessionCredentialHandoffTest from '../../../test/RdpSessionCredentialHandoff.test';
+import rdpSessionCredentialPolicyTest from '../../../test/RdpSessionCredentialPolicy.test';
+import rdpSessionErrorPolicyTest from '../../../test/RdpSessionErrorPolicy.test';
+import rdpPreflightScopeTransitionPolicyTest from '../../../test/RdpPreflightScopeTransitionPolicy.test';
 import remoteFloatingPanelPlacementPolicyTest from './RemoteFloatingPanelPlacementPolicy.test';
 import vncSessionSettingsPolicyTest from './VncSessionSettingsPolicy.test';
 import vncSessionUiPolicyTest from '../../../test/VncSessionUiPolicy.test';
 import remoteWheelPolicyTest from '../../../test/RemoteWheelPolicy.test';
 import remoteWheelPreferencePolicyTest from '../../../test/RemoteWheelPreferencePolicy.test';
+import remotePinchZoomPreferencePolicyTest from '../../../test/RemotePinchZoomPreferencePolicy.test';
 import vncCertificateDecisionHandoffTest from '../../../test/VncCertificateDecisionHandoff.test';
 import vncCertificateSheetPolicyTest from '../../../test/VncCertificateSheetPolicy.test';
 import vncCertificatePreflightPolicyTest from '../../../test/VncCertificatePreflightPolicy.test';
@@ -108,6 +119,7 @@ import moonlightRuntimeContextFactoryTest from '../../../test/MoonlightRuntimeCo
 import remoteSessionWindowPolicyTest from '../../../test/RemoteSessionWindowPolicy.test';
 import remoteSessionServiceLeasePolicyTest from '../../../test/RemoteSessionServiceLeasePolicy.test';
 import moonlightNetworkHandlePolicyTest from '../../../test/MoonlightNetworkHandlePolicy.test';
+import moonlightLanDiscoveryServiceTest from '../../../test/MoonlightLanDiscoveryService.test';
 import { FOCUSED_TEST_REGISTRATION_AUDIT } from '../../../main/ets/services/FocusedTestRegistrationAudit';
 
 function requestedClassScope(): string {
@@ -184,6 +196,7 @@ function registerFocusedRepairSuite(scope: string): number {
     moonlightRuntimeContextFactoryTest();
     remoteSessionServiceLeasePolicyTest();
     moonlightNetworkHandlePolicyTest();
+    moonlightLanDiscoveryServiceTest();
   } else {
     return 0;
   }
@@ -215,7 +228,7 @@ function focusedDescribeNames(scope: string): string[] {
       'MoonlightCloudStatusPolicy',
       'MoonlightBackupPolicy', 'MoonlightReconnectPolicy',
       'MoonlightRuntimeContextFactory', 'RemoteSessionServiceLeasePolicy',
-      'MoonlightNetworkHandlePolicy'];
+      'MoonlightNetworkHandlePolicy', 'MoonlightLanDiscoveryService'];
   }
   if (scope === 'RustDeskProAddressBookPolicy') {
     return ['RustDeskProAddressBookPolicy'];
@@ -281,7 +294,7 @@ function focusedDescribeNames(scope: string): string[] {
 }
 
 function expectedFocusedCount(scope: string): number {
-  if (scope === 'MoonlightDomainPolicy') { return 257; }
+  if (scope === 'MoonlightDomainPolicy') { return 270; }
   if (scope === 'RustDeskProAddressBookPolicy') { return 8; }
   if (scope === 'RustDeskProAddressBookApiService') { return 4; }
   if (scope === 'RustDeskProAddressBookSyncService') { return 7; }
@@ -364,21 +377,32 @@ export default function testsuite() {
   rustDeskCardBadgePolicyTest();
   rustDeskDiagnosticsPolicyTest();
   remotePhysicalKeyboardPolicyTest();
+  harmonyShortcutBlockingPolicyTest();
+  harmonyShortcutCaptureServiceTest();
   vncPhysicalKeyboardPolicyTest();
   vncPhysicalWheelPolicyTest();
   hostAddSheetLayoutPolicyTest();
   touchpadPointerCurvePolicyTest();
   remotePhysicalTouchpadPolicyTest();
   remoteSurfaceTransformPolicyTest();
+  remoteCanvasGesturePolicyTest();
+  remoteCanvasPointerFollowPolicyTest();
   rustDeskDesktopFlipPolicyTest();
+  moonlightDesktopFlipPolicyTest();
+  moonlightDesktopFlipStoreTest();
   remoteCursorStylePolicyTest();
   remoteHostSheetLifecyclePolicyTest();
   vncSessionGeometryPolicyTest();
+  rdpSessionCredentialHandoffTest();
+  rdpSessionCredentialPolicyTest();
+  rdpSessionErrorPolicyTest();
+  rdpPreflightScopeTransitionPolicyTest();
   remoteFloatingPanelPlacementPolicyTest();
   vncSessionSettingsPolicyTest();
   vncSessionUiPolicyTest();
   remoteWheelPolicyTest();
   remoteWheelPreferencePolicyTest();
+  remotePinchZoomPreferencePolicyTest();
   vncCertificateDecisionHandoffTest();
   vncCertificateSheetPolicyTest();
   vncCertificatePreflightPolicyTest();
@@ -434,4 +458,5 @@ export default function testsuite() {
   remoteSessionWindowPolicyTest();
   remoteSessionServiceLeasePolicyTest();
   moonlightNetworkHandlePolicyTest();
+  moonlightLanDiscoveryServiceTest();
 }

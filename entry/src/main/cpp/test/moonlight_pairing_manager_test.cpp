@@ -1,4 +1,5 @@
 #include "moonlight/pairing/MoonlightPairingManager.h"
+#include "common/network_generation_fence.h"
 #include "test_runner.h"
 
 #include <openssl/bio.h>
@@ -12,6 +13,8 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <functional>
+#include <limits>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -441,6 +444,9 @@ public:
             barrier_->enter();
             barrier_->waitReleased();
         }
+        if (onReview_) {
+            onReview_();
+        }
         if (cancellationProbe()) {
             return {MoonlightTrustDecision::Cancelled, MoonlightTrustChange::Unknown};
         }
@@ -456,6 +462,7 @@ public:
     bool available_ = true;
     MoonlightTrustReview review_{MoonlightTrustDecision::Accept, MoonlightTrustChange::FirstUse};
     Barrier* barrier_ = nullptr;
+    std::function<void()> onReview_;
     std::atomic<std::size_t> reviewCount_{0U};
     std::atomic<std::size_t> cancelCount_{0U};
     MoonlightTrustCandidate lastCandidate_;
@@ -540,6 +547,8 @@ public:
     MoonlightTransportOutcome execute(const MoonlightTransportRequest& request,
                                       std::chrono::steady_clock::time_point,
                                       const CancellationProbe& cancellationProbe) override {
+        currentResolvedAddress_ = request.connectAddress();
+        currentResolvedFamily_ = request.family();
         CapturedPairStep capture;
         capture.operation = request.operation();
         capture.scheme = request.scheme();
@@ -597,17 +606,19 @@ public:
     bool transcriptVerified() const noexcept { return transcriptVerified_; }
 
 private:
-    static MoonlightTransportOutcome response(const std::string& body) {
+    MoonlightTransportOutcome response(const std::string& body) const {
         MoonlightTransportOutcome result;
         result.stage = MoonlightTransportStage::Body;
         result.sendState = MoonlightTransportSendState::ConfirmedResponse;
         result.httpStatus = 200;
         result.body = body;
         result.receivedBodyBytes = body.size();
+        result.resolvedAddress = currentResolvedAddress_;
+        result.resolvedFamily = currentResolvedFamily_;
         return result;
     }
 
-    static MoonlightTransportOutcome pairedResponse() {
+    MoonlightTransportOutcome pairedResponse() const {
         return response("<root status_code=\"200\"><paired>1</paired></root>");
     }
 
@@ -755,6 +766,9 @@ private:
     std::vector<std::uint8_t> clientChallengeHash_;
     std::vector<std::uint8_t> key_;
     std::vector<CapturedPairStep> captures_;
+    std::string currentResolvedAddress_;
+    MoonlightHostAddressFamily currentResolvedFamily_ =
+        MoonlightHostAddressFamily::Unspecified;
     ServerFault fault_ = ServerFault::None;
     std::size_t unpairCount_ = 0U;
     bool transcriptVerified_ = false;
@@ -894,6 +908,39 @@ RDP_TEST_CASE(moonlight_pairing_fails_closed_before_network_for_legacy_ports_ide
         RDP_ASSERT_EQ(result.code, MoonlightPairingCode::CryptoFailure);
         RDP_ASSERT(fixture.transport->captures().empty());
     }
+}
+
+RDP_TEST_CASE(moonlight_pairing_fences_serverinfo_generation_and_cross_generation_cleanup) {
+    auto& fence = remotedesk::net::ProcessNetworkGenerationFence();
+    const auto beforeAdmission = fence.snapshot();
+    RDP_ASSERT(beforeAdmission.available);
+    RDP_ASSERT(beforeAdmission.generation <
+               std::numeric_limits<std::uint64_t>::max());
+    {
+        PairingFixture fixture;
+        auto request = requestFor(14U);
+        request.expectedNetworkGeneration = beforeAdmission.generation;
+        RDP_ASSERT(fence.update(true, beforeAdmission.generation + 1U));
+        const auto result = fixture.manager->execute(std::move(request));
+        RDP_ASSERT_EQ(result.code, MoonlightPairingCode::Stale);
+        RDP_ASSERT(fixture.transport->captures().empty());
+    }
+
+    const auto duringPairing = fence.snapshot();
+    RDP_ASSERT(duringPairing.available);
+    RDP_ASSERT(duringPairing.generation <
+               std::numeric_limits<std::uint64_t>::max());
+    PairingFixture fixture;
+    fixture.trust->onReview_ = [&fence, duringPairing]() {
+        RDP_ASSERT(fence.update(true, duringPairing.generation + 1U));
+    };
+    auto request = requestFor(19U);
+    request.expectedNetworkGeneration = duringPairing.generation;
+    const auto result = fixture.manager->execute(std::move(request));
+    RDP_ASSERT_EQ(result.code, MoonlightPairingCode::Stale);
+    RDP_ASSERT_EQ(result.remoteCleanup, MoonlightRemoteCleanup::Failed);
+    RDP_ASSERT_EQ(fixture.transport->unpairCount(), static_cast<std::size_t>(0));
+    RDP_ASSERT_EQ(fixture.transport->captures().size(), static_cast<std::size_t>(1));
 }
 
 RDP_TEST_CASE(moonlight_pairing_legacy_sha1_requires_explicit_policy_and_keeps_official_shape) {

@@ -1,5 +1,6 @@
 /** Native VNC certificate probe error-category tests. */
 #include "test_runner.h"
+#include "common/network_generation_fence.h"
 #include "vnc/vnc_certificate_probe.h"
 #include "vnc/vnc_rfb_engine.h"
 #include "vnc/vnc_rfb_protocol.h"
@@ -710,6 +711,35 @@ RDP_TEST_CASE(vnc_transport_tls_cancel_returns_a_stable_code) {
     std::this_thread::sleep_for(std::chrono::milliseconds(30));
     config.cancelled->store(true, std::memory_order_release);
     worker.join();
+    RDP_ASSERT(!connected);
+    RDP_ASSERT(error == "E-VNC-CERT-CANCELLED");
+    transport.close();
+}
+
+RDP_TEST_CASE(vnc_transport_tls_handshake_observes_network_generation) {
+    LocalTlsFixture fixture("localhost", 500);
+    RDP_ASSERT(fixture.start());
+    remotedesk::net::NetworkGenerationFence& fence =
+        remotedesk::net::ProcessNetworkGenerationFence();
+    const remotedesk::net::NetworkGenerationSnapshot captured =
+        fence.snapshot();
+
+    VncTransportConfig config;
+    config.transport = "direct_tcp";
+    config.host = "127.0.0.1";
+    config.serverName = "localhost";
+    config.port = fixture.port();
+    config.tls = true;
+    config.connectTimeoutMs = 2000;
+    config.networkGeneration = captured.generation;
+    VncTransport transport;
+    std::string error;
+    bool connected = true;
+    std::thread worker([&]() { connected = transport.connect(config, error); });
+    std::this_thread::sleep_for(std::chrono::milliseconds(30));
+    RDP_ASSERT(fence.update(true, captured.generation + 1));
+    worker.join();
+
     RDP_ASSERT(!connected);
     RDP_ASSERT(error == "E-VNC-CERT-CANCELLED");
     transport.close();

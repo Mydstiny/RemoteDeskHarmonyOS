@@ -13,6 +13,7 @@ import {
   MoonlightKeyboardTarget,
   MoonlightProfile,
   MoonlightTrustCandidate,
+  canonicalMoonlightAddress,
   moonlightAddressKey,
   moonlightHostIsValid,
   moonlightIdentityMetadataIsValid,
@@ -56,6 +57,38 @@ export default function moonlightModelsTest(): void {
       expect(settings.security.blockCertificateChanges).assertTrue();
       expect(settings.security.identityStorage).assertEqual('localSecure');
       expect(moonlightSettingsAreValid(settings)).assertTrue();
+    });
+
+    it('validates_address_family_and_uses_one_canonical_ipv6_key', 0, (): void => {
+      const compact: MoonlightAddress = { host: '2001:db8::20', family: 'ipv6', port: 47989 };
+      const expanded: MoonlightAddress = {
+        host: '2001:0DB8:0000:0000:0000:0000:0000:0020', family: 'ipv6', port: 47989
+      };
+      expect(moonlightAddressKey(compact)).assertEqual(moonlightAddressKey(expanded));
+      expect(canonicalMoonlightAddress(expanded).host).assertEqual('2001:db8::20');
+      const host: MoonlightHost = validHost();
+      host.addresses = [expanded];
+      host.preferredAddressKey = expanded.family + '|' +
+        expanded.host.toLowerCase() + '|' + expanded.port.toString();
+      expect(moonlightHostIsValid(host)).assertFalse();
+      host.addresses = [compact];
+      host.preferredAddressKey = moonlightAddressKey(compact);
+      expect(moonlightHostIsValid(host)).assertTrue();
+      compact.family = 'hostname';
+      expect(moonlightHostIsValid(host)).assertFalse();
+      compact.family = 'ipv6';
+      compact.host = 'fe80::20%wlan0';
+      expect(moonlightHostIsValid(host)).assertFalse();
+      compact.host = 'fe80::20';
+      compact.scope = 'wlan0';
+      host.preferredAddressKey = moonlightAddressKey(compact);
+      expect(moonlightHostIsValid(host)).assertTrue();
+      expect(canonicalMoonlightAddress(compact).scope).assertEqual('wlan0');
+      const differentlyCasedScope: MoonlightAddress = {
+        host: 'fe80::20', family: 'ipv6', port: 47989, scope: 'WLAN0'
+      };
+      expect(moonlightAddressKey(compact) ===
+        moonlightAddressKey(differentlyCasedScope)).assertFalse();
     });
 
     it('maps_legacy_input_records_without_rejecting_old_local_or_cloud_data', 0,

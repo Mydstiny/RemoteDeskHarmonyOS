@@ -1,91 +1,75 @@
-# RDP Status — FreeRDP 真实链路核验
+# RDP 当前状态
 
-> 建立时间: 2026-06-25 by Claude (T-235)
-> 基于 commit `40a7ef8`
+更新时间：2026-09-04
 
-## 当前 RDP 架构
+## 运行架构
 
-```
-ArkTS UI (RemoteDesktop.ets ~3345行)
-  │
-  ├── ExtensionLoader.ets (单例门面)
-  │     └── librdpnapi.so → extension_loader_napi.cpp
-  │           ├── USE_REAL_FREERDP=ON  → freerdp_adapter.cpp (真实 FreeRDP 3.x)
-  │           └── USE_REAL_FREERDP=OFF → freerdp_adapter.cpp (手写 TCP/X.224/MCS skeleton)
-  │
-  └── 共享渲染管线
-        ├── gl_renderer.cpp     (EGL/GLES3 → XComponent Surface)
-        ├── hw_decoder.cpp      (OH_AVCodec 硬解)
-        └── audio_player.cpp    (OHAudio 播放)
+生产构建默认启用真实 FreeRDP 3.x：
+
+```text
+RemoteDesktop.ets
+  → ExtensionLoader.ets
+  → extension_loader_napi.cpp
+  → FreeRdpAdapter
+  → FreeRDP / WinPR 双 ABI静态依赖
+  → GDI/GFX → 共享 EGL/XComponent 渲染器
 ```
 
-## 核心文件
+`USE_REAL_FREERDP=OFF` 只保留为不含真实协议能力的编译骨架，不是发布路径。
+arm64-v8a 与 x86_64 的发布预编译位于 `libs/freerdp-ohos/`，由
+`scripts/build_freerdp_ohos.sh all` 可复现生成。
+FreeRDP 输入固定为公开 gitlink `dae8276ac7361b8d14f7b87d41163fe03dbb944e`
+加仓库内五个有序 OHOS 补丁；构建前必须得到 tree
+`24a880d801892e3d6f1b8c78534e51eaeca8b0d8`。
 
-| 文件 | 行数 | 状态 |
-|------|------|------|
-| `entry/src/main/cpp/rdp/freerdp_adapter.cpp` | ~1500 | ✅ 双路径 (USE_REAL_FREERDP) |
-| `entry/src/main/cpp/rdp/freerdp_adapter.h` | ~150 | ✅ |
-| `entry/src/main/cpp/rdp/rdp_keymap.h` | ~200 | ✅ 80+ Harmony→RDP scancode 映射 |
-| `entry/src/main/cpp/extensions/extension_loader_napi.cpp` | ~1650 | ✅ 协议调度 |
-| `entry/src/main/ets/services/ExtensionLoader.ets` | ~200 | ✅ NAPI 门面 |
-| `entry/src/main/ets/pages/RemoteDesktop.ets` | ~3345 | ✅ (待拆分) |
+## 高 DPI 与窗口适配契约
 
-## 当前默认构建
+- `自动匹配窗口` 使用 XComponent 实际内容区比例，不再把 PC 会话强制为横屏。
+- 连接前尚未协商 Display Control 时，自动模式按 100/140/180 目标界面倍率等比降低
+  远端逻辑分辨率，优先保证旧 Windows Server 和不支持动态布局的主机字体可读。
+- 收到 `DisplayControlCaps` 后，客户端升级为物理像素分辨率，并通过 RDP monitor layout
+  同时发送物理尺寸、方向、DesktopScaleFactor 和 DeviceScaleFactor。
+- `远端界面大小` 分为自动、标准、大、特大；它与 Fit/100%/125%/手势缩放等本地查看
+  变换相互独立，且作为 device-local 偏好保存。
+- 自动模式保持完整画面和等比例，不用裁切、拉伸掩盖黑边；固定预设比例不匹配时仍可能
+  留边，并明确属于用户选择的远端桌面尺寸。
 
-- **`USE_REAL_FREERDP=OFF`** (默认)
-- 默认 HAP 使用手写 RDP skeleton (TCP/X.224/MCS 握手层面)
-- 手写 skeleton 不支持完整 RDP 会话 (NLA / GFX / 剪贴板 / 音频 / 驱动重定向)
-- 这是为了保持双 ABI 默认包稳定，不增大 HAP 体积 (~8MB FreeRDP 静态库)
+## 动态分辨率
 
-## 开启真实 FreeRDP
+FreeRDP 预编译已启用 `drdynvc`、`disp`、`rdpdr` 和 `drive` 客户端。动态布局只在
+桌面设备、前台 RDP、自动分辨率、非 PIP 且服务端 caps 就绪时开放：
 
-```powershell
-# 1. 编译 FreeRDP (如果产物不存在)
-bash scripts/build_freerdp_ohos.sh arm64
+- ArkTS 稳定窗口防抖 500 ms；native 再执行 500 ms 最小发送间隔。
+- 单请求在途，拖窗期间保留最新请求；5 秒没有桌面 resize 回包才允许超时恢复。
+- 后台、PIP、surface 转移、偏好变化、断线和重连都会取消尚未发送的旧请求。
+- 发送失败只关闭本次会话的动态能力，不断开现有 RDP；用户可在重连后按新窗口适配。
+- `cbDesktopResize` 仍复用既有 GDI/GFX、frame pump、renderer source 和输入 viewport
+  事务，诊断区分 requested、effective、applied、server_adjusted 与 fallback。
 
-# 2. 构建时启用
-# 方法 A: 修改 entry/build-profile.json5 → USE_REAL_FREERDP=ON
-# 方法 B: hvigor 参数 (如果支持 CMake option 传递)
-```
+## 断线错误归因
 
-**前置条件**:
-- `build/freerdp-ohos/libs/arm64-v8a/libfreerdp3.a` (~5.5MB)
-- `build/freerdp-ohos/libs/arm64-v8a/libwinpr3.a` (~2.7MB)
-- 当前本机: **build 产物不存在** (需要重建)
+- `0x00000010` 只有在 FreeRDP 收到服务器 `ErrorInfo` PDU，并保留
+  `E-RDP-ERRINFO-0x00000010` 原始标记时才成立；它表示远端 Windows 会话中的
+  DWM 进程意外终止。
+- 初始连接失败和已连接会话的客户端/网络侧异常结束分别使用
+  `E-RDP-CONNECT-UNCLASSIFIED` 与 `E-RDP-SESSION-END-UNCLASSIFIED`，不再用
+  `0x10` 作为 ArkTS 默认值。
+- FreeRDP 连接错误保留 `E-CONN-0x...` 中的真实代码；证书 flags、协商协议等普通
+  十六进制诊断值不会被误识别成 ErrorInfo。最终分类日志同时记录 native state、
+  `source` 和 `code`，用于区分服务器、客户端和网络路径。
 
-## 稳定规则 (来自 CODEWALK.md)
+## 共享盘与供应链
 
-1. **RDP session size ≠ local surface size** — 远端桌面分辨率与 XComponent surface 尺寸分开设置
-2. **No ArkTS TCP preflight** — 保持 FreeRDP native 作为唯一连接判定路径
-3. **Cleanup must call `markXComponentSurfaceDestroyed()` before renderer destroy** — 防止 GPU vendor double free
-4. **Drive/Clipboard must not block readiness** — 可选能力失败不阻断连接完成
-5. **RDP connect thread is async** — `freerdp_connect()` 在独立 pthread 执行；取消时只能 `freerdp_abort_connect_context()` + join
+后连接共享盘使用 FreeRDP 公开的 `RdpdrClientContext::RdpdrRegisterDevice`，不再依赖
+未落入源码基线的私有桥接符号。构建脚本会强制检查 `drive_DeviceServiceEntry`、
+`disp_DVCPluginEntry` 和 `rdpdr_VirtualChannelEntryEx`，并在任一缺失时失败。
 
-## 当前已闭环功能 (真机验证)
+来源、构建选项和归档策略见 `docs/compliance/FREERDP_OHOS_PROVENANCE.md`；精确 SHA-256
+见 `docs/compliance/THIRD_PARTY_ARTIFACTS.sha256`。
 
-| 功能 | 状态 | 备注 |
-|------|------|------|
-| RDP 连接 | ✅ | FreeRDP 3.x 完整 NLA/TLS 握手 |
-| GDI 上屏 | ✅ | BGRA32 → EGL texture → XComponent |
-| 鼠标输入 | ✅ | 绝对/相对坐标 + 滚轮 |
-| 键盘输入 | ✅ | Harmony keyCode → RDP scancode (80+ 映射) |
-| 文本输入 | ✅ | Unicode 输入 (含中文) |
-| 音频播放 | ✅ | OHAudio renderer → PCM |
-| 文件传输 | ✅ | rdpdr → `\\tsclient\<drive>` + 实况窗进度 |
-| 剪贴板 | ✅ | ClipboardBridgeService (arkTS pasteboard → native sendClipboard) |
-| 自适应渲染节流 | ✅ | 根据 GPU render cost 自动 60/30/20fps (video_backpressure_controller) |
+## 当前验证边界
 
-## 后台连续性影响分析 (T-251~T-255)
-
-**当前阻塞点**:
-1. `RemoteDesktop.aboutToDisappear()` → `cleanup()` → `loader.disconnect()` → 无条件断连协议
-2. `EntryAbility.onBackground()` → `disconnectRemoteSessions('background')` → `disconnectAll()` → 销毁所有会话+音频
-3. `extension_loader_napi.cpp` `NapiDisconnect()` 同时调用 `adapter->disconnect()` + `AudioPlayerNapi::DestroyActiveNative()`
-
-**需要的变更** (由后续任务实施):
-- 拆分 `cleanup()` 为 `detachForBackground()` (仅释放 UI/Surface) 和 `disconnectAndCleanup()` (完全释放)
-- `onBackground()` 区分 preserved session vs final destroy
-- Native 层支持: renderer detach 不销毁协议连接和音频
-- 新增 `multiDeviceConnection` 后台长时任务
-
-**注意**: 当前架构在协议连接存活期间释放 renderer 是安全的 — `gl_renderer.cpp` 已有 `g_surfaceDetached` 守卫和 `MarkXComponentSurfaceDestroyed()` 。
+策略、ArkTS/NAPI 契约、native 状态机、双 ABI真链接、预编译哈希和 Light 合规均有自动化
+门禁。仍需在真实 HarmonyOS PC + Windows 10/11/Server 环境完成全屏、分屏、自由窗口、
+100/140/180 字体、连续拖窗、PIP、后台恢复、重连及输入映射验收；没有该外部矩阵证据前，
+不得把“用户现场问题已完全关闭”写成事实。

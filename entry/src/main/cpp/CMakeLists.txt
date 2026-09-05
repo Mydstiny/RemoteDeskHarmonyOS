@@ -36,6 +36,9 @@ add_custom_target(remotedesk_build_identity ALL
 
 # -- 通用工具 --
 set(COMMON_SOURCES
+    common/endpoint_address_policy.cpp
+    common/happy_eyeballs_connector.cpp
+    common/network_generation_fence.cpp
     common/safe_log.cpp
     input/remote_cursor_snapshot.cpp
 )
@@ -87,9 +90,14 @@ set(AUDIO_SOURCES
 # -- SSH 适配器 --
 set(SSH_SOURCES
     ssh/ssh_adapter.cpp
+    ssh/ssh_libssh2_session.cpp
+    ssh/ssh_proxy_target_policy.cpp
+    ssh/ssh_forward_target_connector.cpp
     ssh/ssh_forwarding_manager.cpp
     ssh/ssh_session_manager.cpp
     ssh/ssh_key_tool.cpp
+    ssh/ssh_operation_executor.cpp
+    ssh/ssh_operation_client.cpp
 )
 
 # -- VNC 适配器 --
@@ -299,9 +307,19 @@ if(RDP_BUILD_TESTS)
         test/ssh_pty_recovery_policy_test.cpp
         test/ssh_reconnect_policy_test.cpp
         test/ssh_network_lifecycle_policy_test.cpp
+        test/ssh_route_call_surface_contract_test.cpp
+        test/ssh_connect_error_policy_test.cpp
+        test/ssh_sensitive_buffer_test.cpp
+        ssh/ssh_adapter.cpp
+        ssh/ssh_libssh2_session.cpp
+        test/ssh_adapter_runtime_test.cpp
         test/ssh_session_manager_test.cpp
         test/ssh_pending_connect_registry_test.cpp
+        test/ssh_operation_control_test.cpp
+        test/ssh_operation_executor_test.cpp
         test/ssh_route_policy_test.cpp
+        test/ssh_proxy_target_policy_test.cpp
+        test/ssh_forward_target_connector_test.cpp
         test/ssh_forwarding_manager_test.cpp
         test/ssh_sftp_operation_policy_test.cpp
         test/video_activity_state_test.cpp
@@ -323,10 +341,14 @@ if(RDP_BUILD_TESTS)
         test/rdp_graphics_lifecycle_test.cpp
         test/rdp_certificate_policy_test.cpp
         test/rdp_gateway_policy_test.cpp
+        test/rdp_network_recovery_policy_test.cpp
+        test/rdp_network_retry_policy_test.cpp
+        test/rdp_preflight_operation_fence_test.cpp
         test/rdp_negotiation_parser_test.cpp
         test/rdp_auth_identity_policy_test.cpp
         test/rdp_auth_mode_policy_test.cpp
         test/rdp_performance_policy_test.cpp
+        test/rdp_display_layout_policy_test.cpp
         test/transfer_runtime_status_test.cpp
         test/rdp_input_queue_test.cpp
         test/rdp_file_clipboard_offer_test.cpp
@@ -344,6 +366,11 @@ if(RDP_BUILD_TESTS)
         test/rustdesk_connection_continuity_executor_test.cpp
         test/decoder_pipeline_lifecycle_policy_test.cpp
         test/safe_log_test.cpp
+        test/endpoint_address_policy_test.cpp
+        test/connection_port_policy_test.cpp
+        test/happy_eyeballs_connector_test.cpp
+        test/network_generation_fence_test.cpp
+        test/native_network_observer_state_test.cpp
         test/moonlight_host_api_test.cpp
         test/moonlight_http_request_formatting_test.cpp
         test/moonlight_http_response_framing_test.cpp
@@ -375,10 +402,18 @@ if(RDP_BUILD_TESTS)
         test/vnc_cursor_protocol_test.cpp
         test/vnc_transport_policy_test.cpp
         test/vnc_certificate_probe_test.cpp
+        test/vnc_network_recovery_policy_test.cpp
+        test/vnc_adapter_network_recovery_test.cpp
         common/safe_log.cpp
+        common/endpoint_address_policy.cpp
+        common/happy_eyeballs_connector.cpp
+        common/network_generation_fence.cpp
         input/remote_cursor_snapshot.cpp
+        ssh/ssh_forward_target_connector.cpp
+        ssh/ssh_proxy_target_policy.cpp
         ssh/ssh_forwarding_manager.cpp
         ssh/ssh_session_manager.cpp
+        ssh/ssh_operation_executor.cpp
         rdp/rdp_audio_policy.cpp
         rdp/rdp_auth_identity_policy.cpp
         rdp/rdp_auth_mode_policy.cpp
@@ -429,6 +464,7 @@ if(RDP_BUILD_TESTS)
         vnc/vnc_certificate_probe.cpp
         vnc/vnc_transport.cpp
         vnc/vnc_rfb_engine.cpp
+        vnc/vnc_adapter.cpp
         test/vnc_keymap_test.cpp
         test/vnc_rfb_protocol_test.cpp
     )
@@ -441,6 +477,7 @@ if(RDP_BUILD_TESTS)
         RDP_NATIVE_CALLBACK_TESTING=1
         RDP_TESTS_ONLY=1
         RDP_MOONLIGHT_HOST_OPUS_TEST=1
+        REMOTEDESK_NATIVE_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
     )
     # RDP_TESTS_ONLY returns before the production-wide C++ standard block
     # below. Keep the standalone host test target explicit so headers using
@@ -448,9 +485,11 @@ if(RDP_BUILD_TESTS)
     target_compile_features(rdp_native_tests PRIVATE cxx_std_17)
     target_include_directories(rdp_native_tests PRIVATE ${OPENSSL_INCLUDE_DIR})
     find_library(REMOTEDESK_HOST_OPUS_LIBRARY NAMES opus REQUIRED)
+    find_library(REMOTEDESK_HOST_LIBSSH2_LIBRARY NAMES ssh2 REQUIRED)
     target_link_libraries(rdp_native_tests PRIVATE
         OpenSSL::SSL OpenSSL::Crypto ZLIB::ZLIB
         ${REMOTEDESK_HOST_OPUS_LIBRARY}
+        ${REMOTEDESK_HOST_LIBSSH2_LIBRARY}
     )
 endif()
 
@@ -1340,6 +1379,16 @@ string(ASCII 31 RUSTDESK_CARGO_RUSTFLAG_SEPARATOR)
 set(RUSTDESK_CARGO_ENCODED_RUSTFLAGS
     "-Clink-arg=--target=${RUSTDESK_FFI_CLANG_TARGET}${RUSTDESK_CARGO_RUSTFLAG_SEPARATOR}-Clink-arg=--sysroot=${RUSTDESK_OHOS_SYSROOT}")
 
+# kcp-sys@32a6c09 uses libclang at build time. On a macOS host libclang must
+# receive both the OHOS generic and target-specific libc include directories.
+# Other hosts keep their native libclang discovery; in particular this avoids
+# corrupting Windows drive-letter paths in the upstream colon-delimited option.
+set(RUSTDESK_KCP_CARGO_ENV)
+if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Darwin")
+    set(RUSTDESK_KCP_CARGO_ENV
+        "KCP_SYS_EXTRA_HEADER_PATH=${RUSTDESK_OHOS_SYSROOT}/usr/include:${RUSTDESK_OHOS_SYSROOT}/usr/include/${RUSTDESK_FFI_CLANG_TARGET}")
+endif()
+
 if(NOT EXISTS ${RUSTDESK_PROTO_DIR}/message.proto OR NOT EXISTS ${RUSTDESK_PROTO_DIR}/rendezvous.proto)
     message(FATAL_ERROR
         "RustDesk: missing protocol definitions in ${RUSTDESK_PROTO_DIR}. "
@@ -1389,6 +1438,7 @@ target_link_libraries(moonlight_audio_bridge_link_probe PRIVATE
 add_custom_command(
     OUTPUT ${RUSTDESK_FFI_LIB}
     COMMAND ${CMAKE_COMMAND} -E env
+        ${RUSTDESK_KCP_CARGO_ENV}
         "OPUS_LIB_DIR=${RUSTDESK_OPUS_LIB_DIR}"
         "CC_${RUSTDESK_FFI_TARGET}=${CMAKE_C_COMPILER}"
         "CXX_${RUSTDESK_FFI_TARGET}=${CMAKE_CXX_COMPILER}"
@@ -1396,7 +1446,7 @@ add_custom_command(
         "RUSTC=${RUSTDESK_RUSTC_EXECUTABLE}"
         "CARGO_TARGET_${RUSTDESK_FFI_TARGET_ENV_UPPER}_LINKER=${CMAKE_CXX_COMPILER}"
         "CARGO_ENCODED_RUSTFLAGS=${RUSTDESK_CARGO_ENCODED_RUSTFLAGS}"
-        ${RUSTDESK_CARGO_EXECUTABLE} build --release --target ${RUSTDESK_FFI_TARGET}
+        ${RUSTDESK_CARGO_EXECUTABLE} build --locked --release --target ${RUSTDESK_FFI_TARGET}
     WORKING_DIRECTORY ${RUSTDESK_FFI_DIR}
     DEPENDS
         ${RUSTDESK_FFI_DIR}/Cargo.toml

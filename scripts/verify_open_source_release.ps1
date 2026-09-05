@@ -37,12 +37,15 @@ $required = @(
   'docs/compliance/OWNERSHIP_AND_RELICENSING.md',
   'docs/compliance/LICENSE_DECISION_RECORD.md',
   'docs/compliance/SOURCE_OFFER.md',
+  'docs/compliance/FREERDP_OHOS_PROVENANCE.md',
+  'docs/compliance/RUSTDESK_KCP_PROVENANCE.md',
   'docs/compliance/MOONLIGHT_COMMON_C_PROVENANCE.md',
   'docs/compliance/MOONLIGHT_ICON_PROVENANCE.md',
   'entry/src/main/cpp/moonlight/upstream/UPSTREAM.lock.json',
   'scripts/build_moonlight_common_vendor.sh',
   'scripts/build_moonlight_common_vendor.ps1',
   'scripts/verify_moonlight_vendor.py',
+  'scripts/tests/test_freerdp_provenance.ps1',
   'rustdesk_vendor/libs/hbb_common/protos/UPSTREAM.yml',
   'rustdesk_vendor/libs/hbb_common/protos/NOTICE'
 )
@@ -214,6 +217,27 @@ $cargoToml = Get-Content -Raw (Join-Path $root 'rustdesk_ffi/Cargo.toml')
 if ($cargoToml -notmatch 'license\s*=\s*"AGPL-3.0-or-later"') {
   Add-Failure 'rustdesk_ffi Cargo license must be AGPL-3.0-or-later.'
 }
+$kcpSysRevision = '32a6c09fc6223f54aea83981a6aa8995931d29be'
+$bundledKcpRevision = '7f9805887b0909c52c825925f123e7a84da37167'
+if ($cargoToml -notmatch 'github\.com/rustdesk-org/kcp-sys' -or
+    $cargoToml -notmatch $kcpSysRevision) {
+  Add-Failure 'RustDesk KCP Cargo dependency is not pinned to the audited revision.'
+}
+$rustDeskBuildScript = Get-Content -Raw (Join-Path $root 'scripts/build_rustdesk_ffi_ohos.sh')
+$nativeBuildScript = Get-Content -Raw (Join-Path $root 'entry/src/main/cpp/CMakeLists.txt')
+if ($rustDeskBuildScript -notmatch 'build --locked --release' -or
+    $nativeBuildScript -notmatch 'build --locked --release') {
+  Add-Failure 'RustDesk OHOS Cargo build edges must enforce the lockfile.'
+}
+$kcpProvenancePath = Join-Path $root 'docs/compliance/RUSTDESK_KCP_PROVENANCE.md'
+if (Test-Path $kcpProvenancePath -PathType Leaf) {
+  $kcpProvenance = Get-Content -Raw $kcpProvenancePath
+  if ($kcpProvenance -notmatch $kcpSysRevision -or
+      $kcpProvenance -notmatch $bundledKcpRevision -or
+      $kcpProvenance -notmatch 'MIT') {
+    Add-Failure 'RustDesk KCP provenance is incomplete or stale.'
+  }
+}
 $entryPackage = Get-Content -Raw (Join-Path $root 'entry/oh-package.json5')
 if ($entryPackage -notmatch '"license"\s*:\s*"AGPL-3.0-or-later"') {
   Add-Failure 'entry package license metadata is missing.'
@@ -222,6 +246,48 @@ $gitmodules = Get-Content -Raw (Join-Path $root '.gitmodules')
 if ($gitmodules -notmatch 'https://github.com/Mydstiny/RemoteDeskHarmonyOS.git' -or
     $gitmodules -notmatch 'branch\s*=\s*freerdp-ohos') {
   Add-Failure 'FreeRDP OHOS submodule does not have a public reproducible source.'
+}
+$freerdpBaseRevision = 'dae8276ac7361b8d14f7b87d41163fe03dbb944e'
+$freerdpPatchedTree = '24a880d801892e3d6f1b8c78534e51eaeca8b0d8'
+$freerdpGitlink = (& git -C $root ls-files --stage -- freerdp).Trim()
+if (-not $freerdpGitlink.StartsWith("160000 $freerdpBaseRevision ")) {
+  Add-Failure 'FreeRDP gitlink is not locked to the public patch base.'
+}
+$freerdpPatchExpectations = @{
+  'patches/freerdp-ohos/0001-fix-omit-TLS-SNI-for-IP-literals.patch' = '31b34d9da81d30faf223a9e919264ab2638e2c0f102a92fc976263d0a0fb6812'
+  'patches/freerdp-ohos/0002-Add-bounded-dual-stack-TCP-racing.patch' = '577df010d9c75307f79fe7055b97ee41c8f91a25b42dbc3fdd0b97cb21a8948e'
+  'patches/freerdp-ohos/0003-Add-gateway-safe-dual-stack-routing.patch' = '0b232174a4ff599bc0d5feff81d56c776ee9a2a1752c64b7badd64c272fa2c86'
+  'patches/freerdp-ohos/0004-Fix-thread-termination-on-OHOS.patch' = '4f082d9358e0c11599977f24eacf092d2305f11825006061b13411213277c157'
+  'patches/freerdp-ohos/0005-Add-deterministic-IPv6-gateway-and-resolver-tests.patch' = '17c5a149ac1feed76f0ae26fb09248472fdc9b2ab2d543ddb69e7d23d1ddc23c'
+}
+foreach ($relative in $freerdpPatchExpectations.Keys) {
+  $path = Join-Path $root $relative
+  if (-not (Test-Path $path -PathType Leaf) -or
+      (Get-NormalizedTextSha256 $path) -ne $freerdpPatchExpectations[$relative]) {
+    Add-Failure "FreeRDP patch is missing or changed without provenance review: $relative"
+  }
+}
+$freerdpProvenancePath = Join-Path $root 'docs/compliance/FREERDP_OHOS_PROVENANCE.md'
+if (-not (Test-Path $freerdpProvenancePath -PathType Leaf)) {
+  Add-Failure 'FreeRDP OHOS provenance document is missing.'
+} else {
+  $freerdpProvenance = Get-Content -Raw $freerdpProvenancePath
+  if ($freerdpProvenance -notmatch $freerdpBaseRevision -or
+      $freerdpProvenance -notmatch $freerdpPatchedTree -or
+      $freerdpProvenance -notmatch 'patches/freerdp-ohos') {
+    Add-Failure 'FreeRDP OHOS base and patch provenance is incomplete or stale.'
+  }
+}
+$thirdPartyNotices = Get-Content -Raw (Join-Path $root 'THIRD_PARTY_NOTICES.md')
+if ($thirdPartyNotices -notmatch $freerdpBaseRevision -or
+    $thirdPartyNotices -notmatch $freerdpPatchedTree -or
+    $thirdPartyNotices -notmatch 'patches/freerdp-ohos/') {
+  Add-Failure 'Third-party notices do not identify the effective FreeRDP patch inputs.'
+}
+if ($thirdPartyNotices -notmatch $kcpSysRevision -or
+    $thirdPartyNotices -notmatch $bundledKcpRevision -or
+    $thirdPartyNotices -notmatch 'RustDesk KCP transport') {
+  Add-Failure 'Third-party notices do not identify the locked RustDesk KCP inputs.'
 }
 $about = Get-Content -Raw (Join-Path $root 'entry/src/main/ets/components/AboutSettingsSheet.ets')
 if ($about -notmatch 'AGPL-3.0-or-later' -or
@@ -238,6 +304,38 @@ if (Test-Path $sbomPath) {
     }
     if (@($sbom.packages | Where-Object { $_.licenseDeclared -eq 'NOASSERTION' }).Count -gt 0) {
       Add-Failure 'SPDX SBOM contains packages with NOASSERTION license.'
+    }
+    $kcpSysPackage = @($sbom.packages | Where-Object {
+      $_.SPDXID -eq 'SPDXRef-Cargo-kcp-sys-0.1.0'
+    })
+    if ($kcpSysPackage.Count -ne 1 -or
+        $kcpSysPackage[0].versionInfo -ne '0.1.0' -or
+        $kcpSysPackage[0].downloadLocation -notmatch $kcpSysRevision -or
+        $kcpSysPackage[0].licenseDeclared -ne 'MIT') {
+      Add-Failure 'SPDX kcp-sys package metadata is missing or inconsistent.'
+    }
+    $bundledKcpPackage = @($sbom.packages | Where-Object {
+      $_.SPDXID -eq 'SPDXRef-Native-skywind3000-KCP'
+    })
+    if ($bundledKcpPackage.Count -ne 1 -or
+        $bundledKcpPackage[0].versionInfo -ne $bundledKcpRevision -or
+        $bundledKcpPackage[0].downloadLocation -ne 'https://github.com/skywind3000/kcp' -or
+        $bundledKcpPackage[0].licenseDeclared -ne 'MIT' -or
+        $bundledKcpPackage[0].licenseConcluded -ne 'MIT') {
+      Add-Failure 'SPDX bundled skywind3000/KCP package metadata is missing or inconsistent.'
+    }
+    $kcpRootDepends = @($sbom.relationships | Where-Object {
+      $_.spdxElementId -eq 'SPDXRef-Package-RemoteDeskHarmonyOS' -and
+      $_.relationshipType -eq 'DEPENDS_ON' -and
+      $_.relatedSpdxElement -eq 'SPDXRef-Cargo-kcp-sys-0.1.0'
+    })
+    $kcpSysContains = @($sbom.relationships | Where-Object {
+      $_.spdxElementId -eq 'SPDXRef-Cargo-kcp-sys-0.1.0' -and
+      $_.relationshipType -eq 'CONTAINS' -and
+      $_.relatedSpdxElement -eq 'SPDXRef-Native-skywind3000-KCP'
+    })
+    if ($kcpRootDepends.Count -ne 1 -or $kcpSysContains.Count -ne 1) {
+      Add-Failure 'SPDX RustDesk KCP relationships are missing or duplicated.'
     }
     $moonlightIconPackage = @($sbom.packages | Where-Object {
       $_.SPDXID -eq 'SPDXRef-Package-Moonlight-Qt-Icon'
@@ -316,6 +414,16 @@ if ($diffExitCode -ne 0) {
 }
 
 if ($Mode -eq 'Release') {
+  $freerdpProvenanceGate = Join-Path $root 'scripts/tests/test_freerdp_provenance.ps1'
+  try {
+    $freerdpProvenanceOutput = @(& $freerdpProvenanceGate 2>&1)
+    if ($LASTEXITCODE -ne 0) {
+      Add-Failure ('Release blocked: FreeRDP provenance gate failed: ' +
+        ($freerdpProvenanceOutput -join '; '))
+    }
+  } catch {
+    Add-Failure ('Release blocked: FreeRDP provenance gate failed: ' + $_.Exception.Message)
+  }
   $moonlightBuildScript = Join-Path $root 'scripts/build_moonlight_common_vendor.ps1'
   try {
     $moonlightBuildOutput = @(& $moonlightBuildScript -RepositoryRoot $root 2>&1)

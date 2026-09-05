@@ -6,6 +6,7 @@ import {
   vncSecretStorageModeFromPayload,
   VncSecretStorageMode
 } from './VncSecretStoragePolicy';
+import { EndpointAddressResult, parseEndpointFields } from './EndpointAddressPolicy';
 
 export const VNC_CLOUD_TABLE: string = 'vncrecordv2';
 export const VNC_LOCAL_TABLE: string = 'vnclocalrecords';
@@ -340,6 +341,29 @@ export function vncRecordPayloadHashMatches(record: VncRecord): boolean {
 
 export function vncRecordIsScopeTombstone(record: VncRecord): boolean {
   return record.deletedAt > 0 && record.payload === VNC_SCOPE_TOMBSTONE_PAYLOAD;
+}
+
+/**
+ * Interface-scoped endpoints belong to one device and must never enter the
+ * distributed VNC table. Treat any percent-bearing endpoint payload as
+ * device-private even when malformed so a parser mismatch cannot turn it
+ * into a portable hostname.
+ */
+export function vncRecordContainsDevicePrivateEndpoint(record: VncRecord): boolean {
+  if (record.deletedAt > 0 || (record.recordType !== 'host' && record.recordType !== 'gateway')) {
+    return false;
+  }
+  const values: Record<string, Object> | null = vncPayloadObject(record.payload);
+  if (values === null || typeof values['host'] !== 'string' || typeof values['port'] !== 'number') {
+    return false;
+  }
+  if (record.recordType === 'host' && values['transport'] !== 'direct_tcp') {
+    return false;
+  }
+  const host: string = values['host'] as string;
+  if (host.indexOf('%') >= 0) { return true; }
+  const endpoint: EndpointAddressResult = parseEndpointFields(host, values['port'] as number);
+  return endpoint.ok && endpoint.endpoint.scopeKind === 'interface';
 }
 
 export function vncRecordIsValid(record: VncRecord): boolean {

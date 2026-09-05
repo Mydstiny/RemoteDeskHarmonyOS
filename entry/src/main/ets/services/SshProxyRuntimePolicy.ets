@@ -135,7 +135,8 @@ export function sshProxyRuntimeNeedsTerminalSecrets(plan: SshProxyRuntimePlan): 
   if (plan.route.type !== 'ssh_jump') { return false; }
   for (let index: number = 0; index < plan.route.hops.length; index++) {
     if (plan.route.hops[index].authMethod === 'password' ||
-      plan.route.hops[index].authMethod === 'publickey') { return true; }
+      plan.route.hops[index].authMethod === 'publickey' ||
+      plan.route.hops[index].authMethod === 'kbd-interactive') { return true; }
   }
   return false;
 }

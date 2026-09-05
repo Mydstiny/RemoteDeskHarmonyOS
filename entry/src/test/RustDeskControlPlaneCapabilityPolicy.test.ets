@@ -91,9 +91,27 @@ export default function rustDeskControlPlaneCapabilityPolicyTest():
           .assertEqual('identity_invalid');
         source.configuredApiServer = source.accountApiServer;
         source.idServerPort = 0;
-        expect(rustDeskControlPlaneBindingIdentity(source).code)
+      expect(rustDeskControlPlaneBindingIdentity(source).code)
           .assertEqual('endpoint_invalid');
-      });
+    });
+
+    it('canonicalizes_ipv6_binding_identity_without_accepting_embedded_authorities', 0, (): void => {
+      const compact: RustDeskControlPlaneCapabilityBinding = binding();
+      compact.idServer = '2001:db8::10';
+      const compactIdentity = rustDeskControlPlaneBindingIdentity(compact);
+      expect(compactIdentity.ok).assertTrue();
+
+      const expanded: RustDeskControlPlaneCapabilityBinding = binding();
+      expanded.idServer = '2001:0DB8:0:0:0:0:0:10';
+      const expandedIdentity = rustDeskControlPlaneBindingIdentity(expanded);
+      expect(expandedIdentity.ok).assertTrue();
+      expect(expandedIdentity.rendezvousEndpointFingerprint)
+        .assertEqual(compactIdentity.rendezvousEndpointFingerprint);
+
+      expanded.idServer = '[2001:db8::10]:21116';
+      expect(rustDeskControlPlaneBindingIdentity(expanded).code)
+        .assertEqual('endpoint_invalid');
+    });
 
     it('rejects_fabricated_schema_v2_and_legacy_local_proofs',
       0, (): void => {

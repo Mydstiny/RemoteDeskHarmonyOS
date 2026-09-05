@@ -18,6 +18,9 @@ export interface RemoteSurfaceTransform {
   surfaceHeightVp: number;
   // Clockwise quarter turns applied to the displayed remote canvas.
   rotation?: number;
+  // Independent mirrors applied in displayed-canvas coordinates after rotation.
+  flipX?: boolean;
+  flipY?: boolean;
 }
 
 export interface RemoteSurfacePoint {
@@ -67,30 +70,47 @@ function displayedRemoteHeight(remoteW: number, remoteH: number, rotation: numbe
 }
 
 function rawPointToDisplayed(remoteW: number, remoteH: number, rotation: number,
-  rawX: number, rawY: number): RemoteSurfacePoint {
+  flipX: boolean, flipY: boolean, rawX: number, rawY: number): RemoteSurfacePoint {
+  let rotated: RemoteSurfacePoint;
   switch (rotation) {
     case 1:
-      return { x: remoteH - rawY, y: rawX, inside: true };
+      rotated = { x: remoteH - rawY, y: rawX, inside: true };
+      break;
     case 2:
-      return { x: remoteW - rawX, y: remoteH - rawY, inside: true };
+      rotated = { x: remoteW - rawX, y: remoteH - rawY, inside: true };
+      break;
     case 3:
-      return { x: rawY, y: remoteW - rawX, inside: true };
+      rotated = { x: rawY, y: remoteW - rawX, inside: true };
+      break;
     default:
-      return { x: rawX, y: rawY, inside: true };
+      rotated = { x: rawX, y: rawY, inside: true };
+      break;
   }
+  const displayW: number = displayedRemoteWidth(remoteW, remoteH, rotation);
+  const displayH: number = displayedRemoteHeight(remoteW, remoteH, rotation);
+  return {
+    x: flipX ? displayW - rotated.x : rotated.x,
+    y: flipY ? displayH - rotated.y : rotated.y,
+    inside: true
+  };
 }
 
 function displayedPointToRaw(remoteW: number, remoteH: number, rotation: number,
+  flipX: boolean, flipY: boolean,
   displayedX: number, displayedY: number): RemoteSurfacePoint {
+  const displayW: number = displayedRemoteWidth(remoteW, remoteH, rotation);
+  const displayH: number = displayedRemoteHeight(remoteW, remoteH, rotation);
+  const unflippedX: number = flipX ? displayW - displayedX : displayedX;
+  const unflippedY: number = flipY ? displayH - displayedY : displayedY;
   switch (rotation) {
     case 1:
-      return { x: displayedY, y: remoteH - displayedX, inside: true };
+      return { x: unflippedY, y: remoteH - unflippedX, inside: true };
     case 2:
-      return { x: remoteW - displayedX, y: remoteH - displayedY, inside: true };
+      return { x: remoteW - unflippedX, y: remoteH - unflippedY, inside: true };
     case 3:
-      return { x: remoteW - displayedY, y: displayedX, inside: true };
+      return { x: remoteW - unflippedY, y: unflippedX, inside: true };
     default:
-      return { x: displayedX, y: displayedY, inside: true };
+      return { x: unflippedX, y: unflippedY, inside: true };
   }
 }
 
@@ -126,6 +146,8 @@ export function remotePointToSurface(transform: RemoteSurfaceTransform,
   const remoteW: number = positive(transform.remoteWidth, 1);
   const remoteH: number = positive(transform.remoteHeight, 1);
   const rotation: number = normalizeRotation(transform.rotation);
+  const flipX: boolean = transform.flipX === true;
+  const flipY: boolean = transform.flipY === true;
   const displayW: number = displayedRemoteWidth(remoteW, remoteH, rotation);
   const displayH: number = displayedRemoteHeight(remoteW, remoteH, rotation);
   const viewportW: number = positive(transform.viewportW, displayW);
@@ -137,7 +159,8 @@ export function remotePointToSurface(transform: RemoteSurfaceTransform,
   const validInput: boolean = Number.isFinite(remoteX) && Number.isFinite(remoteY);
   const x: number = finite(remoteX, 0);
   const y: number = finite(remoteY, 0);
-  const displayed: RemoteSurfacePoint = rawPointToDisplayed(remoteW, remoteH, rotation, x, y);
+  const displayed: RemoteSurfacePoint = rawPointToDisplayed(
+    remoteW, remoteH, rotation, flipX, flipY, x, y);
   const xPx: number = transform.viewportX + displayed.x * viewportW / displayW;
   const yPx: number = transform.viewportY + displayed.y * viewportH / displayH;
   return {
@@ -153,6 +176,8 @@ export function surfacePointToRemote(transform: RemoteSurfaceTransform,
   const remoteW: number = positive(transform.remoteWidth, 1);
   const remoteH: number = positive(transform.remoteHeight, 1);
   const rotation: number = normalizeRotation(transform.rotation);
+  const flipX: boolean = transform.flipX === true;
+  const flipY: boolean = transform.flipY === true;
   const displayW: number = displayedRemoteWidth(remoteW, remoteH, rotation);
   const displayH: number = displayedRemoteHeight(remoteW, remoteH, rotation);
   const viewportW: number = positive(transform.viewportW, displayW);
@@ -167,13 +192,17 @@ export function surfacePointToRemote(transform: RemoteSurfaceTransform,
   const displayedX: number = (localPxX - transform.viewportX) * displayW / viewportW;
   const displayedY: number = (localPxY - transform.viewportY) * displayH / viewportH;
   const raw: RemoteSurfacePoint = displayedPointToRaw(
-    remoteW, remoteH, rotation, displayedX, displayedY);
+    remoteW, remoteH, rotation, flipX, flipY, displayedX, displayedY);
   const rawX: number = raw.x;
   const rawY: number = raw.y;
   return {
     x: clamp(rawX, 0, Math.max(0, remoteW - 1)),
     y: clamp(rawY, 0, Math.max(0, remoteH - 1)),
-    inside: validInput && rawX >= 0 && rawY >= 0 && rawX < remoteW && rawY < remoteH
+    // Membership belongs to the unmirrored displayed viewport. A mirrored
+    // start edge is represented by rawW/rawH before the final pixel clamp;
+    // judging the reflected raw value would incorrectly discard that edge.
+    inside: validInput && displayedX >= 0 && displayedY >= 0 &&
+      displayedX < displayW && displayedY < displayH
   };
 }
 
@@ -183,6 +212,8 @@ export function surfaceDeltaToRemote(transform: RemoteSurfaceTransform,
   const remoteW: number = positive(transform.remoteWidth, 1);
   const remoteH: number = positive(transform.remoteHeight, 1);
   const rotation: number = normalizeRotation(transform.rotation);
+  const flipX: boolean = transform.flipX === true;
+  const flipY: boolean = transform.flipY === true;
   const displayW: number = displayedRemoteWidth(remoteW, remoteH, rotation);
   const displayH: number = displayedRemoteHeight(remoteW, remoteH, rotation);
   const viewportW: number = positive(transform.viewportW, displayW);
@@ -195,17 +226,19 @@ export function surfaceDeltaToRemote(transform: RemoteSurfaceTransform,
   const dy: number = finite(deltaY, 0);
   const displayedDx: number = dx * vpToPxX * displayW / viewportW;
   const displayedDy: number = dy * vpToPxY * displayH / viewportH;
+  const unflippedDx: number = flipX ? -displayedDx : displayedDx;
+  const unflippedDy: number = flipY ? -displayedDy : displayedDy;
   switch (rotation) {
     case 1:
-      return { x: displayedDy, y: -displayedDx };
+      return { x: unflippedDy, y: -unflippedDx };
     case 2:
-      return { x: -displayedDx, y: -displayedDy };
+      return { x: -unflippedDx, y: -unflippedDy };
     case 3:
-      return { x: -displayedDy, y: displayedDx };
+      return { x: -unflippedDy, y: unflippedDx };
     default:
       return {
-        x: displayedDx,
-        y: displayedDy
+        x: unflippedDx,
+        y: unflippedDy
       };
   }
 }
