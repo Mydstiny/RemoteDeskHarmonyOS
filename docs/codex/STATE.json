@@ -6,15 +6,15 @@
   "head": "ac83ccec769cbd3ecaca089da5439ab4cfcd3f1a",
   "phase": "sandbox-demo-reviewed-awaiting-device",
   "status": "demo-code-complete-external-integration-pending",
-  "next": "Configure an AGC sandbox non-consumable SKU and debug device; use Settings > RemoteDesk Pro > developer sandbox test. Complete trusted verification backend, shipped paid features and device acceptance before production.",
+  "next": "Use prefilled RemoteDesktop_Pro_Test sandbox SKU; confirm AGC price and sandbox account on debug device. Validate revised Pro row and checkout.",
   "blockers": [
-    "AGC sandbox product ID and device verification pending; verified order backend not configured."
+    "Sandbox device configuration and trusted verification backend remain pending."
   ],
   "planPaths": [
     "docs/codex/plans/2026-09-06-pro-purchase-foundation.md"
   ],
   "review": {
-    "status": "PASS",
+    "status": "REVIEW_REQUIRED",
     "taskIds": [
       "/root/review_pro_demo"
     ],
@@ -24,7 +24,8 @@
       "entry/src/main/ets/pages/HostListPage.ets",
       "entry/src/main/ets/services/SettingsSheetRoutePolicy.ets",
       "entry/src/test/ProAccessPolicy.test.ets",
-      "entry/src/test/List.test.ets"
+      "entry/src/test/List.test.ets",
+      "entry/src/main/resources/base/media/icon_pro.svg"
     ],
     "findings": [],
     "reviewedHead": "ac83ccec769cbd3ecaca089da5439ab4cfcd3f1a",

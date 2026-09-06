@@ -15,7 +15,7 @@ export struct ProPurchaseSheet {
   @State entered: boolean = false;
   @State busy: boolean = false;
   @State testing: boolean = false;
-  @State productId: string = '';
+  @State productId: string = 'RemoteDesktop_Pro_Test';
   @State storePrice: string = '';
   @State storeName: string = '';
   @State message: string = 'Pro 正在准备中，当前版本的功能继续免费使用。';

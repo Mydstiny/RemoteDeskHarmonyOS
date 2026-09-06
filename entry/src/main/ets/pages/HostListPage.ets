@@ -15334,10 +15334,14 @@ struct HostListPage {
     .onClick((): void => { this.toggleSettingsSection(section); })
   }
 
-  @Builder settingsActionHeader(icon: Resource, title: string, subtitle: string, action: () => void) {
+  @Builder settingsActionHeader(icon: Resource, title: string, subtitle: string, action: () => void, imageIcon: boolean = false) {
     Row() {
       Row() {
-        SymbolGlyph(icon).fontSize(21).fontColor([this.pal().text])
+        if (imageIcon) {
+          Image(icon).width(21).height(21).fillColor(this.pal().text)
+        } else {
+          SymbolGlyph(icon).fontSize(21).fontColor([this.pal().text])
+        }
       }
       .width(34).height(34).borderRadius(10)
       .justifyContent(FlexAlign.Center)
@@ -16591,16 +16595,12 @@ struct HostListPage {
           this.settingsActionHeader($r('sys.symbol.star_fill'), '评价',
             SETTINGS_RATING_SUBTITLE,
             (): void => { this.openAppRatingPage(); })
-        }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 20 })
+        }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 10 })
 
         ListItem() {
-          Column() {
-            this.settingsActionHeader($r('sys.symbol.star_fill'), 'RemoteDesk Pro',
-              '全部协议免费连接，专业工具提升效率',
-              (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_PRO); })
-          }.borderRadius(24).border({ width: 1, color: this.accentColor })
-          .backgroundColor(this.pal().card)
-          .shadow({ radius: 12, color: this.pal().cardBorder, offsetY: 4 })
+          this.settingsActionHeader($r('app.media.icon_pro'), 'RemoteDesk Pro',
+            '全部协议免费连接，专业工具提升效率',
+            (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_PRO); }, true)
         }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 20 })
 
         ListItem() { Column().height(120) }

@@ -14,5 +14,6 @@
 - Review: /root/review_pro_demo found one P2 (checkout after sheet dismissal during sandbox check), then verified ac83ccec remediation with final PASS and no remaining actionable findings.
 - Prior task state preserved in archive/2026-09/2026-09-06-pre-pro-current.md and matching state JSON; device acceptance queue retained.
 - Test package: entry/build/default/outputs/default/entry-default-signed.hap (development signed).
-- Blockers: AGC product ID, sandbox device configuration and trusted verification backend not yet supplied. No HDC target connected; no real-device visual or checkout success claimed.
+- Blockers: AGC SKU confirmed as RemoteDesktop_Pro_Test (non-consumable, saved draft); sandbox device configuration and trusted verification backend pending. No HDC target connected; no real-device visual or checkout success claimed.
 - Next: configure sandbox SKU and debug device, test sheet/checkout/cancel/reopen/order query; integrate verified fulfillment, account lifecycle, persistent verified offline grants and refunds before production. Stay on this local branch while those items remain open.
+- UI follow-up: remove extra Pro wrapper border/shadow, normalize preceding row gap to 10, add original monochrome gem icon using the shared 21-size icon slot; prefill exact user-provided sandbox SKU. Incremental review pending.
