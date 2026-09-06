@@ -4,6 +4,8 @@ Updated: 2026-09-04 Asia/Shanghai
 
 ## Now
 
+0. Pro demo: finish local validation and independent review; configure AGC sandbox non-consumable product and debug device, then validate checkout. Production verification backend and shipped paid benefits remain pending.
+
 1. Run one consolidated feedback-batch device acceptance on HarmonyOS PC: Moonlight/RustDesk hardware-decoder flip and four visual/control combinations; RDP transient credentials, fullscreen pointer mapping, resolution negotiation/scaling and black-border behavior; Dock minimize input fencing; RustDesk nested toolbar, explicit H.265 negotiation/hardware decode, codec telemetry and bidirectional clipboard; SSH common commands; button-only exit; long classic host list; and the simplified Harmony shortcut settings, including the icon, current-device tab, explicit open/close wording, PC first-use four-protocol default and persistence after manual changes.
 2. When a flip reproduces, export the schema-v4 diagnostic JSONL before reconnecting. Verify it contains one coherent redacted producer class, raw producer matrix, decoder-applied matrix, presentation mode, renderer manual transform, renderer registry generation and decoder binding generation; attach the capture for root-cause classification.
 3. Reproduce the intermittent RDP disconnect with Application state, RDP connection and routing/gateway diagnostics selected and matching HDC hilog. Preserve the exact native ErrorInfo or symbolic fallback, transport-end reason, network generation/availability and reconnect timeline. A server `0x10` now requires strict `[E-RDP-ERRINFO-0x00000010]` evidence and means remote Windows DWM crashed; client/network termination displays `E-RDP-SESSION-END-UNCLASSIFIED` instead of fabricating `0x10`.
@@ -13,7 +15,7 @@ Updated: 2026-09-04 Asia/Shanghai
 ## Next
 
 1. Triage any consolidated device findings against the committed item boundary; use the schema-v4 generation/matrix chain for flip issues, verify RustDesk H.265 with `preflight config=H265`, `ffiCfg codec=5(H265)` and actual frame `codec=1`, and use the new RDP `source`/`code` classification to identify the original intermittent-disconnect source. Preserve the exact protocol, device type, window mode, decoder and reproduction sequence.
-2. The user authorized merging before device acceptance on 2026-09-05. Push the reviewed branch, open the PR, pass `open-source-compliance`, merge to `main` and clean the merged branch; retain the device/topology acceptance items above as follow-up work.
+2. Previous code integration is on main@8edc18786; retain the device/topology acceptance items above as follow-up work.
 
 ## Later
 

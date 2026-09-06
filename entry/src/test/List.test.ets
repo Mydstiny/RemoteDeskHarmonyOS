@@ -1,3 +1,4 @@
+import proAccessPolicyTest from './ProAccessPolicy.test';
 import localUnitTest from './LocalUnit.test';
 import endpointAddressPolicyTest from './EndpointAddressPolicy.test';
 import cloudStoreTest from './CloudStore.test';
@@ -269,6 +270,7 @@ import diagnosticRuntimeSnapshotPolicyTest from './DiagnosticRuntimeSnapshotPoli
 import appCloneContextTest from './AppCloneContext.test';
 
 export default function testsuite() {
+  proAccessPolicyTest();
   endpointAddressPolicyTest();
   localUnitTest();
   cloudStoreTest();

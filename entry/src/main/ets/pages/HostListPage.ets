@@ -1,3 +1,5 @@
+import { ProPurchaseSheet } from '../components/ProPurchaseSheet';
+import { SETTINGS_SHEET_PRO } from '../services/SettingsSheetRoutePolicy';
 /**
  * HostListPage v9 — 多端响应式 + 悬浮卡片 sheet + 滑动删除 + 官方图标按钮
  */
@@ -15079,6 +15081,7 @@ struct HostListPage {
   }
 
   private settingsLeafSheetHeight(): SheetSize | number {
+    if (this.settingsLeafSheetMode === SETTINGS_SHEET_PRO) { return Math.min(820, Math.max(320, this.pageViewportHeight - 48)); }
     if (this.settingsLeafSheetMode === SETTINGS_SHEET_POPUP && this.popupSheetMode === 1 &&
       this.aboutSheetMode === 3) {
       return SheetSize.LARGE;
@@ -15129,7 +15132,9 @@ struct HostListPage {
   }
 
   @Builder settingsLeafSheet() {
-    if (this.settingsLeafSheetMode === SETTINGS_SHEET_ACCOUNT) {
+    if (this.settingsLeafSheetMode === SETTINGS_SHEET_PRO) {
+      ProPurchaseSheet({ onClose: (): void => { this.closeSettingsLeafSheet(); } })
+    } else if (this.settingsLeafSheetMode === SETTINGS_SHEET_ACCOUNT) {
       this.accountSheet()
     } else if (this.settingsLeafSheetMode === SETTINGS_SHEET_ACCENT_COLOR) {
       this.colorPickerSheet()
@@ -16583,6 +16588,16 @@ struct HostListPage {
           this.settingsActionHeader($r('sys.symbol.star_fill'), '评价',
             SETTINGS_RATING_SUBTITLE,
             (): void => { this.openAppRatingPage(); })
+        }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 20 })
+
+        ListItem() {
+          Column() {
+            this.settingsActionHeader($r('sys.symbol.star_fill'), 'RemoteDesk Pro',
+              '全部协议免费连接，专业工具提升效率',
+              (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_PRO); })
+          }.borderRadius(24).border({ width: 1, color: this.accentColor })
+          .backgroundColor(this.pal().card)
+          .shadow({ radius: 12, color: this.pal().cardBorder, offsetY: 4 })
         }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 20 })
 
         ListItem() { Column().height(120) }

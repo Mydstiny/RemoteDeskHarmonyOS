@@ -1,3 +1,4 @@
+export const SETTINGS_SHEET_PRO: number = 42;
 export const SETTINGS_SHEET_NONE: number = 0;
 export const SETTINGS_SHEET_ACCOUNT: number = 1;
 export const SETTINGS_SHEET_ACCENT_COLOR: number = 2;
