@@ -3,7 +3,7 @@
   "task": "pro-purchase-foundation",
   "branch": "codex/pro-purchase-foundation",
   "base": "8edc187868e94ed41634e8a6c4c4c072e3a48679",
-  "head": "ac83ccec769cbd3ecaca089da5439ab4cfcd3f1a",
+  "head": "6690cdbf4ea671b0bc318d259bc35f0479911063",
   "phase": "sandbox-demo-reviewed-awaiting-device",
   "status": "demo-code-complete-external-integration-pending",
   "next": "Use prefilled RemoteDesktop_Pro_Test sandbox SKU; confirm AGC price and sandbox account on debug device. Validate revised Pro row and checkout.",
@@ -14,7 +14,7 @@
     "docs/codex/plans/2026-09-06-pro-purchase-foundation.md"
   ],
   "review": {
-    "status": "REVIEW_REQUIRED",
+    "status": "PASS",
     "taskIds": [
       "/root/review_pro_demo"
     ],
@@ -28,12 +28,12 @@
       "entry/src/main/resources/base/media/icon_pro.svg"
     ],
     "findings": [],
-    "reviewedHead": "ac83ccec769cbd3ecaca089da5439ab4cfcd3f1a",
-    "reason": "Independent reviewer verified ac83ccec, including closure of delayed-checkout P2; sandbox-only demo PASS."
+    "reviewedHead": "6690cdbf4ea671b0bc318d259bc35f0479911063",
+    "reason": "Same reviewer independently passed 6690cdbf style/icon/SKU increment with no actionable findings."
   },
   "lastVerification": {
-    "testCompile": "PASS BUILD SUCCESSFUL in 9 s 429 ms",
-    "assembleHap": "PASS BUILD SUCCESSFUL in 10 s 559 ms",
+    "testCompile": "PASS BUILD SUCCESSFUL in 10 s 495 ms",
+    "assembleHap": "PASS BUILD SUCCESSFUL in 11 s 292 ms",
     "policyChecks": "PASS 8 host policy/lifecycle checks including cancelled checkout and stale account result",
     "compliance": "PASS Light staged files and git diff --check",
     "device": "NOT RUN: no HDC target connected",

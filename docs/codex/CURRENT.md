@@ -1,7 +1,7 @@
 # Shared Current State
 
 - Task: pro-purchase-foundation.
-- Branch: codex/pro-purchase-foundation; baseline main@8edc18786; reviewed code ac83ccec.
+- Branch: codex/pro-purchase-foundation; baseline main@8edc18786; reviewed code 6690cdbf.
 - Phase: sandbox demo code independently reviewed; external integration and device acceptance pending.
 - User authorized removal of 91 byte-identical untracked duplicate files and a new local branch. Originals retained.
 - Price: CNY 19.99 launch / 28.88 regular, one-time non-consumable purchase; checkout uses AGC price.
@@ -16,4 +16,4 @@
 - Test package: entry/build/default/outputs/default/entry-default-signed.hap (development signed).
 - Blockers: AGC SKU confirmed as RemoteDesktop_Pro_Test (non-consumable, saved draft); sandbox device configuration and trusted verification backend pending. No HDC target connected; no real-device visual or checkout success claimed.
 - Next: configure sandbox SKU and debug device, test sheet/checkout/cancel/reopen/order query; integrate verified fulfillment, account lifecycle, persistent verified offline grants and refunds before production. Stay on this local branch while those items remain open.
-- UI follow-up: remove extra Pro wrapper border/shadow, normalize preceding row gap to 10, add original monochrome gem icon using the shared 21-size icon slot; prefill exact user-provided sandbox SKU. Incremental review pending.
+- UI follow-up: remove extra Pro wrapper border/shadow, normalize preceding row gap to 10, add original monochrome gem icon using the shared 21-size icon slot; prefill exact user-provided sandbox SKU. Same reviewer passed 6690cdbf; both Hvigor gates PASS (10 s 495 ms / 11 s 292 ms), Light PASS; visual device acceptance pending.
