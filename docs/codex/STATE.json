@@ -3,10 +3,10 @@
   "task": "pro-purchase-foundation",
   "branch": "codex/pro-purchase-foundation",
   "base": "8edc187868e94ed41634e8a6c4c4c072e3a48679",
-  "head": "8edc187868e94ed41634e8a6c4c4c072e3a48679",
-  "phase": "demo-checkpoint-review-pending",
-  "status": "in-progress",
-  "next": "Implement sandbox-only Pro sheet and extensible entitlement foundation; build and independent review.",
+  "head": "ac83ccec769cbd3ecaca089da5439ab4cfcd3f1a",
+  "phase": "sandbox-demo-reviewed-awaiting-device",
+  "status": "demo-code-complete-external-integration-pending",
+  "next": "Configure an AGC sandbox non-consumable SKU and debug device; use Settings > RemoteDesk Pro > developer sandbox test. Complete trusted verification backend, shipped paid features and device acceptance before production.",
   "blockers": [
     "AGC sandbox product ID and device verification pending; verified order backend not configured."
   ],
@@ -14,8 +14,10 @@
     "docs/codex/plans/2026-09-06-pro-purchase-foundation.md"
   ],
   "review": {
-    "status": "REVIEW_REQUIRED",
-    "taskIds": [],
+    "status": "PASS",
+    "taskIds": [
+      "/root/review_pro_demo"
+    ],
     "scope": [
       "entry/src/main/ets/services/pro",
       "entry/src/main/ets/components/ProPurchaseSheet.ets",
@@ -24,14 +26,17 @@
       "entry/src/test/ProAccessPolicy.test.ets",
       "entry/src/test/List.test.ets"
     ],
-    "findings": []
+    "findings": [],
+    "reviewedHead": "ac83ccec769cbd3ecaca089da5439ab4cfcd3f1a",
+    "reason": "Independent reviewer verified ac83ccec, including closure of delayed-checkout P2; sandbox-only demo PASS."
   },
   "lastVerification": {
-    "testCompile": "PASS: BUILD SUCCESSFUL in 7 s 792 ms",
-    "assembleHap": "PASS: BUILD SUCCESSFUL in 1 min 13 s 209 ms",
-    "policyChecks": "PASS 6 host policy/lifecycle checks",
-    "compliance": "PASS Light before staging; rerun staged gate before commit",
-    "device": "No HDC target connected; not tested"
+    "testCompile": "PASS BUILD SUCCESSFUL in 9 s 429 ms",
+    "assembleHap": "PASS BUILD SUCCESSFUL in 10 s 559 ms",
+    "policyChecks": "PASS 8 host policy/lifecycle checks including cancelled checkout and stale account result",
+    "compliance": "PASS Light staged files and git diff --check",
+    "device": "NOT RUN: no HDC target connected",
+    "production": "NOT READY: no configured SKU/trusted verifier or shipped paid benefits"
   },
   "updated": "2026-09-06 Asia/Shanghai"
 }

@@ -4,7 +4,7 @@ Updated: 2026-09-04 Asia/Shanghai
 
 ## Now
 
-0. Pro demo: finish local validation and independent review; configure AGC sandbox non-consumable product and debug device, then validate checkout. Production verification backend and shipped paid benefits remain pending.
+0. Pro demo: local validation and independent review PASS; configure AGC sandbox non-consumable product and debug device, then validate checkout. Production verification backend and shipped paid benefits remain pending.
 
 1. Run one consolidated feedback-batch device acceptance on HarmonyOS PC: Moonlight/RustDesk hardware-decoder flip and four visual/control combinations; RDP transient credentials, fullscreen pointer mapping, resolution negotiation/scaling and black-border behavior; Dock minimize input fencing; RustDesk nested toolbar, explicit H.265 negotiation/hardware decode, codec telemetry and bidirectional clipboard; SSH common commands; button-only exit; long classic host list; and the simplified Harmony shortcut settings, including the icon, current-device tab, explicit open/close wording, PC first-use four-protocol default and persistence after manual changes.
 2. When a flip reproduces, export the schema-v4 diagnostic JSONL before reconnecting. Verify it contains one coherent redacted producer class, raw producer matrix, decoder-applied matrix, presentation mode, renderer manual transform, renderer registry generation and decoder binding generation; attach the capture for root-cause classification.
