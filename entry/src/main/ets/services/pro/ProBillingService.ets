@@ -1,3 +1,4 @@
+import { runCurrentProPurchase } from './ProPurchaseLifecycle';
 import { common } from '@kit.AbilityKit';
 import { iap } from '@kit.IAPKit';
 import { BusinessError } from '@kit.BasicServicesKit';
@@ -7,7 +8,7 @@ export const PRO_REGULAR_PRICE: string = '¥28.88';
 export interface ProStoreProduct { id: string; name: string; price: string; }
 export interface ProBillingProvider {
   product(context: common.UIAbilityContext, id: string): Promise<ProStoreProduct>;
-  purchase(context: common.UIAbilityContext, id: string): Promise<void>;
+  purchase(context: common.UIAbilityContext, id: string, isCurrent: () => boolean): Promise<void>;
   restore(context: common.UIAbilityContext): Promise<number>;
 }
 
@@ -33,10 +34,11 @@ export class HuaweiProBillingProvider implements ProBillingProvider {
     if (!product || !product.localPrice) { throw new Error('Product unavailable'); }
     return { id: product.id, name: product.name, price: product.localPrice };
   }
-  async purchase(context: common.UIAbilityContext, id: string): Promise<void> {
-    await this.sandbox(context);
-    // Demo deliberately does not grant entitlements or acknowledge delivery without a trusted verifier.
-    await iap.createPurchase(context, { productType: iap.ProductType.NONCONSUMABLE, productId: id });
+  async purchase(context: common.UIAbilityContext, id: string, isCurrent: () => boolean): Promise<void> {
+    await runCurrentProPurchase((): Promise<void> => this.sandbox(context), isCurrent, async (): Promise<void> => {
+      // No grant or delivery acknowledgement without a trusted verifier.
+      await iap.createPurchase(context, { productType: iap.ProductType.NONCONSUMABLE, productId: id });
+    });
   }
   async restore(context: common.UIAbilityContext): Promise<number> {
     await this.sandbox(context);

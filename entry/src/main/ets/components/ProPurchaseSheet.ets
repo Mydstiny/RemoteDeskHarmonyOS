@@ -1,3 +1,4 @@
+import { ProPurchaseLifecycle } from '../services/pro/ProPurchaseLifecycle';
 import { common } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { Palette, buildDark, buildLight } from '../common/Theme';
@@ -33,26 +34,28 @@ export struct ProPurchaseSheet {
     if (this.busy) { return; }
     if (!ProPurchaseCoordinator.enter()) { this.message = '上一项操作仍在处理中，请稍后再试。'; return; }
     const generation: number = ++this.generation;
+    const epoch: number = ProPurchaseLifecycle.capture();
     this.busy = true;
     try {
       if (action === 'load') {
         this.product = null;
         this.storePrice = '';
         const product = await this.provider.product(this.context(), this.productId.trim());
-        if (!this.live || generation !== this.generation) { return; }
+        if (!this.live || generation !== this.generation || !ProPurchaseLifecycle.current(epoch)) { return; }
         this.product = product;
         this.storePrice = product.price;
         this.storeName = product.name;
         this.message = '沙盒已确认。购买仅验证支付链路，不授予正式 Pro 权益。';
       } else if (action === 'buy' && this.product !== null && this.testing) {
-        await this.provider.purchase(this.context(), this.product.id);
-        if (!this.live || generation !== this.generation) { return; }
+        await this.provider.purchase(this.context(), this.product.id, (): boolean =>
+          this.live && generation === this.generation && ProPurchaseLifecycle.current(epoch));
+        if (!this.live || generation !== this.generation || !ProPurchaseLifecycle.current(epoch)) { return; }
         this.message = '已收到购买回调。订单验签与发货尚未接入，权益未开通；可查询待处理订单。';
         this.product = null;
         this.storePrice = '';
       } else if (action === 'restore') {
         const count = await this.provider.restore(this.context());
-        if (!this.live || generation !== this.generation) { return; }
+        if (!this.live || generation !== this.generation || !ProPurchaseLifecycle.current(epoch)) { return; }
         this.message = count > 0 ? '已查询到购买记录。验签服务尚未接入，本次未恢复正式权益。' :
           '当前查询未返回购买记录；沙盒记录行为不等同于正式购买恢复。';
       }
@@ -77,7 +80,7 @@ export struct ProPurchaseSheet {
       Column({ space: 6 }) {
         Row({ space: 8 }) {
           Text(feature.title).fontSize(16).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
-          Text('规划中').fontSize(10).fontColor(this.pal().text2)
+          Text(feature.availability === 'planned' ? '规划中' : 'Pro').fontSize(10).fontColor(this.pal().text2)
             .padding({ left: 7, right: 7, top: 3, bottom: 3 }).backgroundColor(this.pal().surface).borderRadius(6)
         }.width('100%')
         Text(feature.description).fontSize(13).fontColor(this.pal().text2).lineHeight(20).width('100%')
@@ -92,7 +95,7 @@ export struct ProPurchaseSheet {
         Text('RemoteDesk Pro').fontSize(18).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
         Blank()
         Button('完成').fontSize(14).fontColor(this.accent).backgroundColor(Color.Transparent)
-          .onClick((): void => { this.onClose(); })
+          .onClick((): void => { this.live = false; this.generation++; ProPurchaseLifecycle.dismiss(); this.onClose(); })
       }.width('100%').padding({ left: 24, right: 16, top: 12, bottom: 8 })
       Scroll() {
         Column({ space: 14 }) {

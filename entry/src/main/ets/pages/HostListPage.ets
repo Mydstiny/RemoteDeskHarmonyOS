@@ -1,3 +1,4 @@
+import { ProPurchaseLifecycle } from '../services/pro/ProPurchaseLifecycle';
 import { ProPurchaseSheet } from '../components/ProPurchaseSheet';
 import { SETTINGS_SHEET_PRO } from '../services/SettingsSheetRoutePolicy';
 /**
@@ -4167,6 +4168,7 @@ struct HostListPage {
   }
 
   private closeSettingsLeafSheet(): void {
+    if (this.settingsLeafSheetMode === SETTINGS_SHEET_PRO) { ProPurchaseLifecycle.dismiss(); }
     const sheetWasVisible: boolean = this.showSettingsLeafSheet;
     this.clearPendingSettingsLeafOpen();
     if (sheetWasVisible) {
@@ -4216,6 +4218,7 @@ struct HostListPage {
   }
 
   private handleSettingsLeafWillDismiss(action: DismissSheetAction): void {
+    if (this.settingsLeafSheetMode === SETTINGS_SHEET_PRO) { ProPurchaseLifecycle.dismiss(); }
     if (!this.settingsLeafHasUnsavedChanges()) {
       action.dismiss();
       return;
