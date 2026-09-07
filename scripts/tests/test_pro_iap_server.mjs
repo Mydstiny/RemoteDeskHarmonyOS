@@ -33,6 +33,7 @@ issue('leaf', 'intermediate', leafExtensions + '1.3.6.1.4.1.2011.2.415.1.1=ASN1:
 issue('ordinary', 'intermediate', leafExtensions);
 issue('critical', 'intermediate', leafExtensions + '1.3.6.1.4.1.2011.2.415.1.1=critical,ASN1:NULL\n');
 issue('unknown', 'intermediate', leafExtensions + '1.3.6.1.4.1.2011.2.415.1.1=ASN1:NULL\n1.2.3.4=critical,ASN1:NULL\n');
+issue('noSign', 'intermediate', leafExtensions.replace('digitalSignature', 'keyAgreement') + '1.3.6.1.4.1.2011.2.415.1.1=ASN1:NULL\n');
 for (const ca of ['root', 'intermediate']) {
   put(ca + '.db', ''); put(ca + '.serial', '1000\n'); put(ca + '.crlnumber', '1000\n');
   put(ca + '.cnf', `[ca]\ndefault_ca=authority\n[authority]\ndatabase=${ca}.db\nserial=${ca}.serial\ncrlnumber=${ca}.crlnumber\ncertificate=${ca}.pem\nprivate_key=${ca}.key\ndefault_md=sha256\ndefault_crl_days=1\n`);
@@ -44,7 +45,7 @@ const crls = read('root.crl') + read('intermediate.crl');
 const now = Date.now();
 const reference = { purchaseOrderId: 'test-order', purchaseToken: 'test-purchase-token' };
 const merchant = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
-const configuration = { applicationId: 'test-application', productId: 'test.pro.lifetime', environment: 'NORMAL',
+const configuration = { applicationId: 'test-application', packageName: 'test.example.remotedesk', productId: 'test.pro.lifetime', environment: 'NORMAL',
   issuerId: 'test-issuer', keyId: 'test-key', privateKey: merchant.privateKey.export({ type: 'pkcs8', format: 'pem' }) };
 const order = { ...reference, applicationId: configuration.applicationId, productId: configuration.productId,
   productType: '1', environment: 'NORMAL', purchaseTime: now - 1000, signedTime: now,
@@ -72,6 +73,9 @@ test('ordinary and critical-OID certificates are rejected even with a valid CA s
   await assert.rejects(() => verifier().verify(jwt(order, 'ordinary')));
   await assert.rejects(() => verifier().verify(jwt(order, 'critical')));
   await assert.rejects(() => verifier().verify(jwt(order, 'unknown')));
+});
+test('IAP leaf must explicitly permit digitalSignature even when PKIX purpose is any', async () => {
+  await assert.rejects(() => verifier().verify(jwt(order, 'noSign')));
 });
 test('algorithm confusion, missing chain, unsupported critical header and forged signature cannot grant', async () => {
   for (const header of [{ alg: 'HS256' }, { typ: 'JWS' }, { x5c: [] }, { crit: ['foo'] }, { b64: false }]) {
@@ -146,8 +150,13 @@ test('IAP query validates signed current state and never acknowledges delivery o
 });
 test('signed notifications bind the environment and return a query reference instead of a grant', async () => {
   const client = new HuaweiIapClient(configuration, verifier(), undefined, () => now);
-  const notification = { notificationRequestId: 'test-notification', signedTime: now, notificationMetaData: {
-    ...reference, applicationId: configuration.applicationId, currentProductId: configuration.productId, environment: 'NORMAL', type: 1 } };
+  const notification = { notificationRequestId: 'test-notification', notificationVersion: 'v3', notificationType: 'REVOKE', signedTime: now,
+    notificationMetaData: { ...reference, applicationId: configuration.applicationId, packageName: configuration.packageName, environment: 'NORMAL', type: 1 } };
   assert.deepEqual(await client.notification(jwt(notification)), { id: 'test-notification', reference });
   await assert.rejects(() => client.notification(jwt({ ...notification, notificationMetaData: { ...notification.notificationMetaData, environment: 'SANDBOX' } })));
+  await assert.rejects(() => client.notification(jwt({ ...notification, notificationVersion: 'v2' })));
+  await assert.rejects(() => client.notification(jwt({ ...notification, notificationMetaData: { ...notification.notificationMetaData, packageName: 'other.app' } })));
+  assert.deepEqual(await client.notification(jwt({ ...notification, notificationType: 'TEST', notificationMetaData: {
+    applicationId: configuration.applicationId, packageName: configuration.packageName, environment: 'NORMAL' } })),
+  { id: 'test-notification', reference: null });
 });

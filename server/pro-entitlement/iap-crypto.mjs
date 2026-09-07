@@ -62,7 +62,7 @@ function derChildren(bytes, start = 0, end = bytes.length) {
   }
   return children;
 }
-function hasIapLeafExtension(raw) {
+function hasIapSigningExtensions(raw) {
   const root = derChildren(raw);
   if (root.length !== 1 || root[0].tag !== 48) return false;
   const certificate = derChildren(raw, root[0].start, root[0].end);
@@ -73,17 +73,26 @@ function hasIapLeafExtension(raw) {
   const wrapper = derChildren(raw, extensions[0].start, extensions[0].end);
   if (wrapper.length !== 1 || wrapper[0].tag !== 48) return false;
   let matches = 0;
+  let signingUsages = 0;
   for (const extension of derChildren(raw, wrapper[0].start, wrapper[0].end)) {
     if (extension.tag !== 48) return false;
     const fields = derChildren(raw, extension.start, extension.end);
     if (fields.length < 2 || fields.length > 3 || fields[0].tag !== 6 || fields.at(-1).tag !== 4) return false;
-    if (!raw.subarray(fields[0].start, fields[0].end).equals(IAP_LEAF_OID)) continue;
+    const oid = raw.subarray(fields[0].start, fields[0].end);
+    if (oid.equals(Buffer.from('551d0f', 'hex'))) {
+      const value = fields.at(-1);
+      const bits = derChildren(raw, value.start, value.end);
+      if (bits.length !== 1 || bits[0].tag !== 3 || bits[0].end - bits[0].start < 2 ||
+          raw[bits[0].start] > 7 || (raw[bits[0].start + 1] & 128) === 0) return false;
+      signingUsages++;
+    }
+    if (!oid.equals(IAP_LEAF_OID)) continue;
     // Huawei defines this as a non-critical extension.
     if (fields.length === 3 && (fields[1].tag !== 1 || fields[1].end - fields[1].start !== 1 ||
         raw[fields[1].start] !== 0)) return false;
     matches++;
   }
-  return matches === 1;
+  return matches === 1 && signingUsages === 1;
 }
 
 export class HuaweiIapJwsVerifier {
@@ -114,7 +123,7 @@ export class HuaweiIapJwsVerifier {
     const [leaf, intermediate, suppliedRoot] = certificates;
     if (!suppliedRoot.raw.equals(this.#root.raw) || leaf.ca || !intermediate.ca ||
         leaf.publicKey.asymmetricKeyType !== 'ec' || leaf.publicKey.asymmetricKeyDetails?.namedCurve !== 'prime256v1' ||
-        !hasIapLeafExtension(leaf.raw)) fail('invalid_iap_certificate');
+        !hasIapSigningExtensions(leaf.raw)) fail('invalid_iap_certificate');
     const now = this.#now();
     if (!Number.isSafeInteger(now) || now <= 0) fail('invalid_clock');
     if (this.#busy >= 4) fail('verification_busy');

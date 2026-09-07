@@ -74,7 +74,7 @@ export function validateCurrentOrder(payload, reference, configuration, now) {
 export class HuaweiIapClient {
   constructor(configuration, verifier, fetcher = fetch, now = Date.now) {
     if (!['NORMAL', 'SANDBOX'].includes(configuration.environment)) fail('invalid_iap_environment');
-    boundedString(configuration.applicationId); boundedString(configuration.productId, 128);
+    boundedString(configuration.applicationId); boundedString(configuration.productId, 128); boundedString(configuration.packageName);
     this.configuration = Object.freeze({ ...configuration });
     this.verifier = verifier; this.fetcher = fetcher; this.now = now;
   }
@@ -99,11 +99,16 @@ export class HuaweiIapClient {
   async notification(jws) {
     const payload = await this.verifier.verify(jws);
     const meta = object(payload.notificationMetaData);
-    if (meta.environment !== this.configuration.environment || meta.applicationId !== this.configuration.applicationId ||
-        meta.type !== 1 || meta.currentProductId !== this.configuration.productId ||
+    if (payload.notificationVersion !== 'v3' || meta.packageName !== this.configuration.packageName ||
+        meta.environment !== this.configuration.environment || meta.applicationId !== this.configuration.applicationId ||
         !Number.isSafeInteger(payload.signedTime) || payload.signedTime > this.now() + 60000 ||
         payload.signedTime <= 0 || payload.signedTime < this.now() - 7 * 86400000) fail('invalid_notification');
-    return { id: boundedString(payload.notificationRequestId), reference: {
+    const id = boundedString(payload.notificationRequestId);
+    // TEST carries no purchase. Other product types belong to their own
+    // handlers. currentProductId exists only for subscriptions; the subsequent
+    // signed current order, never the notification, supplies our product check.
+    if (payload.notificationType === 'TEST' || meta.type !== 1) return { id, reference: null };
+    return { id, reference: {
       purchaseOrderId: boundedString(meta.purchaseOrderId), purchaseToken: boundedString(meta.purchaseToken) } };
   }
 }
