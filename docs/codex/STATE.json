@@ -3,19 +3,20 @@
   "task": "pro-purchase-foundation",
   "branch": "codex/pro-purchase-foundation",
   "base": "8edc187868e94ed41634e8a6c4c4c072e3a48679",
-  "head": "01fd6894af628fb5e1bcfe7edc54ee5379f5ffd4",
-  "phase": "pro-m1-m2-code-reviewed-device-pending",
+  "head": "fea42b9b0b2d4e5166c9194d2ae58d7674c813ce",
+  "phase": "pro-m3-code-reviewed-device-pending",
   "status": "in-progress",
-  "next": "Validate M2 device UI and implement B3/M3 real Pro integration; independently continue free API26 UI U0/U1. Commit every completed stage separately.",
+  "next": "Run M3 preset/restore/three-state and public UI device acceptance when permitted. M4 trusted production backend remains pending; preserve per-stage commits and current branch.",
   "blockers": [
-    "Trusted production verifier, persistent verified cache, fulfillment/refund and shipped paid benefits remain pending.",
-    "M2 UI/multiwindow/API23/Pad/PC device matrix and free UI U0/U1 acceptance remain pending."
+    "Trusted production verifier, persistent verified cache and fulfillment/refund flow remain pending.",
+    "M3 icon/UI and U0/U1 API23/26 Phone/Pad/PC/clone/multiwindow device matrix remains unverified; device operation permission pending."
   ],
   "planPaths": [
     "docs/codex/plans/2026-09-06-pro-purchase-foundation.md",
     "docs/codex/plans/2026-09-06-pro-product-roadmap.md",
     "docs/codex/plans/2026-09-07-pro-m1-m2-implementation.md",
-    "docs/codex/plans/2026-09-07-api26-base-ui-upgrade.md"
+    "docs/codex/plans/2026-09-07-api26-base-ui-upgrade.md",
+    "docs/codex/plans/2026-09-07-pro-m3-app-icons.md"
   ],
   "review": {
     "status": "REVIEW_REQUIRED",
@@ -32,25 +33,32 @@
       "entry/src/test/ProAccessPolicy.test.ets",
       "hvigorfile.ts",
       "scripts/tests/test_pro_runtime.cjs",
-      "scripts/tests/check_pro_release.py"
+      "scripts/tests/check_pro_release.py",
+      "AppScope/app.json5",
+      "AppScope/resources/base/media/rd_logo_white.png",
+      "AppScope/resources/base/media/rd_logo_transparent.png",
+      "entry/src/main/ets/common/AppIconPolicy.ets",
+      "entry/src/main/ets/common/AppIconAdapter.ets",
+      "entry/src/main/ets/components/AppSheetHeader.ets",
+      "entry/src/main/ets/components/FeedbackSettingsSheet.ets",
+      "entry/src/main/ets/components/ProAppIconPanel.ets"
     ],
     "findings": [],
     "reviewedHead": "6690cdbf4ea671b0bc318d259bc35f0479911063",
-    "reason": "Exact M1/M2 increments passed independent review. Aggregate task has concurrent shared-file changes and unfinished acceptance; phase receipt must not skip aggregate review."
+    "reason": "Exact M1/M2, free U1 and M3 committed increments independently passed; aggregate shared-task/device/backend work remains unfinished."
   },
   "lastVerification": {
-    "testCompile": "PASS BUILD SUCCESSFUL in 56 s 813 ms",
-    "assembleHap": "PASS signed Debug BUILD SUCCESSFUL in 44 s 105 ms",
-    "policyChecks": "PASS 16 host checks, independently rerun by reviewer",
+    "testCompile": "PASS final M3 code BUILD SUCCESSFUL in 12 s 476 ms",
+    "assembleHap": "PASS signed Debug BUILD SUCCESSFUL in 23 s 672 ms",
+    "policyChecks": "PASS 25 host checks, independently rerun by reviewer",
     "compliance": "PASS Light and git diff --check",
-    "device": "API26 phone: Release installed and launched; active SSH session, Pro UI matrix NOT RUN",
-    "production": "NOT READY: real verifier/cache/fulfillment/refund and paid benefits pending",
-    "release": "PASS BUILD SUCCESSFUL in 2 min 10 s 755 ms; actual HAP simulation pruning inspected independently",
+    "device": "NOT RUN: permission to operate active API26 phone not received; other device matrix unavailable",
+    "production": "NOT READY: trusted verifier/cache/fulfillment/refund pending",
+    "release": "PASS final-fix BUILD SUCCESSFUL in 50 s 755 ms; actual Release pruning independently passed, ABC475414b946df74a29e421ad637e60c3dde54714297765aecd70208679cab4b53",
     "optionalTestTarget": "NOT AVAILABLE: ohosTest@OhosTestCompileArkTS 00306054 task not found; no ohosTest source changed by this phase",
-    "debugArtifact": "PASS actual Debug HAP retains setter/labels/overlay; modules.abc SHA256 ebdd0094025cd186331f1c91a50b53bf0db91bbebede1627a3e16f3b0914afbc",
     "metadataClosure": {
-      "testCompile": "PASS BUILD SUCCESSFUL in 11 s 13 ms",
-      "assembleHap": "PASS signed BUILD SUCCESSFUL in 17 s 96 ms",
+      "testCompile": "PASS BUILD SUCCESSFUL in 10 s 613 ms",
+      "assembleHap": "PASS signed BUILD SUCCESSFUL in 13 s 396 ms",
       "compliance": "PASS Light, diff and state validation",
       "proCodeChangedSinceReview": false
     }
@@ -71,10 +79,11 @@
   "baseUiPreparation": {
     "planPath": "docs/codex/plans/2026-09-07-api26-base-ui-upgrade.md",
     "entitlement": "free",
-    "status": "u0-inventory-started-u1-pending",
-    "codeImplemented": false,
+    "status": "u1-header-code-reviewed-device-pending",
+    "codeImplemented": true,
     "reviewerTaskId": "/root/review_pro_plan",
-    "reviewResult": "First SDK/Theme/page inventory recorded; UI, API23 startup and performance matrix pending"
+    "reviewResult": "PASS exact ca929ceb code only; API23/26 layout/keyboard/performance device acceptance pending",
+    "stageCommit": "ca929ceb3c419ef0336818074c19637f96137e7b"
   },
   "remoteAiPreparation": {
     "planPath": "docs/codex/plans/2026-09-07-pro-remote-ai-workspace.md",
@@ -188,14 +197,33 @@
   "proImplementation": {
     "stageCommits": {
       "M1": "eaca0300dbb75c1785348b1bdabda4961e873c3a",
-      "M2": "2db4ef2d79ceb6771b97e14b0edd56a12334e038"
+      "M2": "2db4ef2d79ceb6771b97e14b0edd56a12334e038",
+      "U1": "ca929ceb3c419ef0336818074c19637f96137e7b",
+      "M3": "62baa0183151e149a7b01a51a1367690008216ca",
+      "M3ReviewFix": "fea42b9b0b2d4e5166c9194d2ae58d7674c813ce"
     },
     "commitPolicy": "One separate commit after each completed stage; checkpoint incomplete work explicitly.",
     "reviewerTaskId": "/root/review_pro_plan",
     "reviewStatus": "PASS",
     "reviewScope": "Only exact M1 and M2 commit deltas; excludes concurrent changes, backend fulfillment and device matrix.",
     "releaseAbcSha256": "4eee962092bec62f7fe2ccf902fd46dd066dc9c6a5a0929227a8a41d1f4121a7",
-    "deviceAcceptance": "pending"
+    "deviceAcceptance": "pending",
+    "m3": {
+      "status": "code-and-artifact-reviewed-device-pending",
+      "planPath": "docs/codex/plans/2026-09-07-pro-m3-app-icons.md",
+      "presetNames": [
+        "default",
+        "rd_white",
+        "rd_transparent"
+      ],
+      "userCustomUpload": false,
+      "reviewerTaskId": "/root/review_pro_plan",
+      "reviewStatus": "PASS",
+      "deviceAcceptance": "pending",
+      "productionSaleEnabled": false,
+      "reviewResult": "Independent exact 62baa018+fea42b9b code and final Release artifact PASS; 25 host checks rerun; no remaining finding",
+      "releaseAbcSha256": "475414b946df74a29e421ad637e60c3dde54714297765aecd70208679cab4b53"
+    }
   },
   "videoRepair": {
     "task": "pc-video-orientation-codec-evidence",

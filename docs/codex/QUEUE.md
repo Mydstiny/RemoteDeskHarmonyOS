@@ -6,7 +6,7 @@ Updated: 2026-09-07 Asia/Shanghai
 
 - Remote AI: [AI0 evidence](plans/2026-09-07-pro-remote-ai-ai0-evidence.md) records merged independent GitHub Codex/DSH probe repositories. Continue actual execution isolation, model-turn/approval/resume and HarmonyOS TLS/key tests; then AI1 authenticated LAN. No app AI UI or relay feature is available yet.
 
-0. Pro M1/M2 code independently reviewed and committed as eaca0300 / 2db4ef2d. Validate the Debug three-state Pro sheet, focus/multiwindow and API23/Pad/PC behavior when the device is available. Production verifier/cache/fulfillment/refunds and real paid benefits remain pending. Commit every completed stage separately.
+0. Pro M3: three built-in icons committed in 62baa018 plus dismissal/retry fix fea42b9b; final independent code/Release review PASS. User explicitly cancelled custom upload. Validate Debug real/free/Pro, preset/restore and API23/26 shell behavior when device operation is permitted. Keep production checkout disabled; each increment has its own commit.
 
 1. Run one consolidated feedback-batch device acceptance on HarmonyOS PC: Moonlight/RustDesk hardware-decoder flip and four visual/control combinations; RDP transient credentials, fullscreen pointer mapping, resolution negotiation/scaling and black-border behavior; Dock minimize input fencing; RustDesk nested toolbar, explicit H.265 negotiation/hardware decode, codec telemetry and bidirectional clipboard; SSH common commands; button-only exit; long classic host list; and the simplified Harmony shortcut settings, including the icon, current-device tab, explicit open/close wording, PC first-use four-protocol default and persistence after manual changes.
 2. If a user later reports a flip, export the schema-v5 diagnostic JSONL before reconnecting and use the PC flip menu to mark normal/upside-down/horizontal-mirror orientation. Real-device acceptance is unavailable and does not block the committed repair. Verify it contains one coherent redacted producer class, raw producer matrix, decoder-applied matrix, presentation mode, renderer manual transform, renderer registry generation and decoder binding generation; attach the capture for root-cause classification.
@@ -17,9 +17,9 @@ Updated: 2026-09-07 Asia/Shanghai
 ## Next
 
 
-- Base UI: finish U0 device/performance baseline after the first SDK/Theme/page inventory from [API 26 free UI plan](plans/2026-09-07-api26-base-ui-upgrade.md), then U1 compatibility/sample. Coordinate shared-page edits with Pro M1/M2; do not gate public UI on Pro.
+- Base UI: ca929ceb free header sample implemented and independently reviewed. Complete U0 performance/device baseline and U1 API23/26 visual/keyboard acceptance before broader migration; public UI never requires Pro.
 
-0. Pro: after M2 device checks, implement B3/M3 with one actual released feature through catalog/UI/operation gates; keep unfinished features planned. Follow [M1/M2 boundaries](plans/2026-09-07-pro-m1-m2-implementation.md) and the [overall roadmap](plans/2026-09-06-pro-product-roadmap.md).
+0. Pro M4: trusted production verification, persistent cache, purchase restoration/fulfillment/refunds remain unimplemented. Finish M3 applicable-device acceptance, then proceed with the [overall roadmap](plans/2026-09-06-pro-product-roadmap.md); later feature previews stay planned.
 
 1. Triage any consolidated device findings against the committed item boundary; use the schema-v5 generation/matrix chain for flip issues, verify RustDesk H.265 with `preflight config=H265`, `ffiCfg codec=5(H265)` and actual frame `codec=1`, and use the new RDP `source`/`code` classification to identify the original intermittent-disconnect source. Preserve the exact protocol, device type, window mode, decoder and reproduction sequence.
 2. Previous code integration is on main@8edc18786; retain the device/topology acceptance items above as follow-up work.

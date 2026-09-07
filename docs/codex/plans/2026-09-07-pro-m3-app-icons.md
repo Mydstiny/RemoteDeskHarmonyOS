@@ -2,7 +2,7 @@
 
 - 分支：codex/pro-purchase-foundation；沿用当前任务，不创建工作区。
 - 范围：默认图标、用户提供的白底版与透明底版。2026-09-07 用户明确不做自定义上传。
-- 状态：代码与本轮构建/host/Release 产物验证已完成；待提交后独立复核与设备验收。正式购买仍禁用。
+- 状态：62baa018 与修正 fea42b9b 已通过独立代码/最终 Release 产物复核；设备验收待完成。正式购买仍禁用。
 
 ## 行为与边界
 
@@ -44,3 +44,5 @@ ProAppIconController 在业务入口复查权益，异步查询之后再次核�
 复核修正：图标选择现在捕获 ProPurchaseLifecycle epoch，并检查父面板的即时 isOpen；关闭动画尚未结束或快速关闭/重开时，旧预检无法触发系统调用。系统回读不匹配时标记暂未确认，显示重读按钮。25 项 host 检查 PASS；修正后 default@OhosTestCompileArkTS `BUILD SUCCESSFUL in 12 s 476 ms`、signed assembleHap `BUILD SUCCESSFUL in 23 s 672 ms`，Light/diff PASS。
 
 本轮结果：24 项 host 检查 PASS；default@OhosTestCompileArkTS `BUILD SUCCESSFUL in 16 s 823 ms`；signed Debug assembleHap `BUILD SUCCESSFUL in 29 s 338 ms`；Release assembleHap `BUILD SUCCESSFUL in 1 min 7 s 693 ms`；实际 Release setter/snapshot/decision 模拟分支裁剪检查 PASS，modules.abc SHA256 为 `54c2d339df12f7ce02373c83414dc02aa113113d919bd9d9b6df316b11156df9`。Light 与 git diff --check PASS。曾出现的 ArkTS 不允许任意类型异常重抛已改为固定 Error 并重跑成功。设备操作确认尚未收到，未安装本轮图标包或操作当前 SSH 页面。
+
+最终复核：/root/review_pro_plan 对 62baa018+fea42b9b 给出代码与产物 PASS，无剩余 finding，独立重跑 25 项 host 检查。最终 Release `BUILD SUCCESSFUL in 50 s 755 ms`；实际 HAP 裁剪通过，ABC SHA256 `475414b946df74a29e421ad637e60c3dde54714297765aecd70208679cab4b53`。此结论不包含任何未执行的设备或正式购买验收。
