@@ -1,4 +1,5 @@
 import { DEBUG } from 'BuildProfile';
+import { AppSheetHeader } from './AppSheetHeader';
 import { ProAppRuntime } from '../services/pro/ProAppRuntime';
 import { ProDebugMode } from '../services/pro/ProRuntime';
 import { ProPurchaseLifecycle } from '../services/pro/ProPurchaseLifecycle';
@@ -105,12 +106,11 @@ export struct ProPurchaseSheet {
 
   build() {
     Column() {
-      Row() {
-        Text('RemoteDesk Pro').fontSize(18).fontWeight(FontWeight.Bold).fontColor(this.pal().text)
-        Blank()
-        Button('完成').fontSize(14).fontColor(this.accent).backgroundColor(Color.Transparent)
-          .onClick((): void => { this.live = false; this.generation++; ProPurchaseLifecycle.dismiss(); this.onClose(); })
-      }.width('100%').padding({ left: 24, right: 16, top: 12, bottom: 8 })
+      AppSheetHeader({ title: 'RemoteDesk Pro', closeLabel: '完成',
+        onClose: (): void => {
+          this.live = false; this.generation++; ProPurchaseLifecycle.dismiss(); this.onClose();
+        }
+      })
       Scroll() {
         Column({ space: 14 }) {
           Column({ space: 12 }) {
