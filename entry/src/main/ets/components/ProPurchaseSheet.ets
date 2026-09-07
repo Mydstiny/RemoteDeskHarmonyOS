@@ -1,3 +1,6 @@
+import { DEBUG } from 'BuildProfile';
+import { ProAppRuntime } from '../services/pro/ProAppRuntime';
+import { ProDebugMode } from '../services/pro/ProRuntime';
 import { ProPurchaseLifecycle } from '../services/pro/ProPurchaseLifecycle';
 import { common } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
@@ -15,6 +18,9 @@ export struct ProPurchaseSheet {
   @State entered: boolean = false;
   @State busy: boolean = false;
   @State testing: boolean = false;
+  @State proLabel: string = '免费版';
+  @State debugMode: ProDebugMode = 'real';
+  private unsubscribe: (() => void) | null = null;
   @State productId: string = 'RemoteDesktop_Pro_Test';
   @State storePrice: string = '';
   @State storeName: string = '';
@@ -25,12 +31,20 @@ export struct ProPurchaseSheet {
   private live: boolean = false;
   onClose: () => void = (): void => {};
 
-  aboutToAppear(): void { this.live = true; }
-  aboutToDisappear(): void { this.live = false; this.generation++; }
+  aboutToAppear(): void {
+    this.live = true;
+    this.unsubscribe = ProAppRuntime.getInstance().runtime.subscribe((): void => {
+      const snapshot = ProAppRuntime.getInstance().runtime.snapshot();
+      this.proLabel = snapshot.label;
+      this.debugMode = snapshot.mode;
+    });
+  }
+  aboutToDisappear(): void { this.live = false; this.generation++; this.unsubscribe?.(); this.unsubscribe = null; }
   private pal(): Palette { return this.theme === 'light' ? buildLight(this.accent) : buildDark(this.accent); }
   private context(): common.UIAbilityContext { return getContext(this) as common.UIAbilityContext; }
 
   private async operate(action: string): Promise<void> {
+    if (!DEBUG) { return; }
     if (this.busy) { return; }
     if (!ProPurchaseCoordinator.enter()) { this.message = '上一项操作仍在处理中，请稍后再试。'; return; }
     const generation: number = ++this.generation;
@@ -107,6 +121,7 @@ export struct ProPurchaseSheet {
               .fontColor(this.pal().text).textAlign(TextAlign.Center).lineHeight(39)
             Text('全部协议免费连接，专业工具提升效率。')
               .fontSize(14).fontColor(this.pal().text2).textAlign(TextAlign.Center)
+            Text(this.proLabel).fontSize(13).fontColor(this.accent)
             Text('一次购买 · 不自动续费').fontSize(12).fontColor(this.accent)
           }.width('100%').padding({ top: 16, bottom: 18 })
           ForEach(proFeatures().filter((item: ProFeature): boolean => item.requiredEntitlementId.length > 0),
@@ -116,6 +131,20 @@ export struct ProPurchaseSheet {
             .width('100%').margin({ top: 8 })
           Text('协议连接、正常画质、键鼠操作、基础文件传输和安全更新保持免费。以上 Pro 能力尚在规划，当前不销售未交付功能。')
             .fontSize(13).fontColor(this.pal().text2).lineHeight(21).width('100%')
+          if (DEBUG) {
+            Column({ space: 8 }) {
+              Text('开发者调试 · 权益模拟').fontSize(14).fontColor(this.pal().text)
+              ForEach(['real', 'free', 'pro'], (mode: string): void => {
+                Button((this.debugMode === mode ? '✓ ' : '') +
+                  (mode === 'real' ? '跟随真实权益' : mode === 'free' ? '模拟免费用户' : '模拟 Pro 用户'))
+                  .fontSize(13).fontColor(this.accent).backgroundColor(this.pal().surface)
+                  .enabled(!this.busy).onClick((): void => {
+                    ProAppRuntime.getInstance().runtime.setDebugMode(mode as ProDebugMode);
+                  })
+              })
+              Text('仅当前运行有效，重启恢复真实权益。模拟不购买、不退款，也不解锁规划中的功能。')
+                .fontSize(12).fontColor(this.pal().text2).lineHeight(19)
+            }.width('100%').padding(16).backgroundColor(this.pal().card).borderRadius(16)
           Button(this.testing ? '收起沙盒测试' : '开发者沙盒测试')
             .fontSize(12).fontColor(this.pal().text2).backgroundColor(Color.Transparent)
             .enabled(!this.busy).onClick((): void => {
@@ -137,6 +166,7 @@ export struct ProPurchaseSheet {
                 Text(this.storeName).fontSize(13).fontColor(this.pal().text)
               }
             }.padding(16).width('100%').backgroundColor(this.pal().surface).borderRadius(16)
+          }
           }
         }.width('100%').constraintSize({ maxWidth: 640 }).padding({ left: 24, right: 24, bottom: 20 })
         .opacity(this.entered ? 1 : 0).translate({ y: this.entered ? 0 : 12 })

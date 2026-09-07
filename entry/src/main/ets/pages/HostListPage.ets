@@ -1,5 +1,6 @@
 import { SshConnectionPreflightSheet } from '../components/SshConnectionPreflightSheet';
 import { SshAuthenticatedHandoff } from '../services/ssh/auth/SshAuthenticatedHandoff';
+import { ProAppRuntime } from '../services/pro/ProAppRuntime';
 import { ProPurchaseLifecycle } from '../services/pro/ProPurchaseLifecycle';
 import { ProPurchaseSheet } from '../components/ProPurchaseSheet';
 import { SETTINGS_SHEET_PRO } from '../services/SettingsSheetRoutePolicy';
@@ -817,6 +818,8 @@ const DESKTOP_MOONLIGHT_TAB = 7;
 @Entry
 @Component
 struct HostListPage {
+  @State proStatusLabel: string = '免费版';
+  private proUnsubscribe: (() => void) | null = null;
   @State hosts: RemoteHost[] = [];
   @State filteredHosts: RemoteHost[] = [];
   @State rdpCredentials: RdpCredential[] = [];
@@ -1887,6 +1890,10 @@ struct HostListPage {
 
   async aboutToAppear(): Promise<void> {
     this.pageActive = true;
+    this.proUnsubscribe?.();
+    this.proUnsubscribe = ProAppRuntime.getInstance().runtime.subscribe((): void => {
+      this.proStatusLabel = ProAppRuntime.getInstance().runtime.snapshot().label;
+    });
     const appClone: AppCloneContext = AppCloneContext.getInstance();
     appClone.init(getContext(this) as common.Context);
     this.appCloneLocalOnly = appClone.isLocalOnly();
@@ -5139,6 +5146,7 @@ struct HostListPage {
   }
 
   aboutToDisappear(): void {
+    this.proUnsubscribe?.(); this.proUnsubscribe = null;
     this.pageActive = false;
     this.sheetReleaseFenceGeneration += 1;
     this.sheetReleaseFenceActive = false;
@@ -16617,7 +16625,7 @@ struct HostListPage {
 
         ListItem() {
           this.settingsActionHeader($r('app.media.icon_pro'), 'RemoteDesk Pro',
-            '全部协议免费连接，专业工具提升效率',
+            this.proStatusLabel + ' · 全部协议免费连接',
             (): void => { this.openSettingsLeafSheet(SETTINGS_SHEET_PRO); }, true)
         }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 20 })
 

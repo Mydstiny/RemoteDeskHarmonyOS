@@ -2,7 +2,7 @@
 
 - 日期：2026-09-07。
 - 来源：[Pro 总体路线图](2026-09-06-pro-product-roadmap.md)。
-- 状态：实施中；M1 权益规则与缓存生命周期已实现，M2 运行时/Debug 与设备验证继续收口。按阶段单独 commit，不合并多个阶段为一个不可分辨的提交。
+- 状态：M1/M2 代码已实现并通过本轮构建/host/Release 产物检查；独立代码复核与完整设备矩阵分别记录。每个阶段单独 commit，保留纠错边界。
 - 基线：活动分支 `codex/pro-purchase-foundation`，准备时 HEAD `0000d4ca4666d2717c06fd38d00eb05fe977fee5`，相对 main 领先 5 个提交。
 - 独立计划复核：`/root/review_pro_plan`；六项约束已纳入，实施准备文档复核通过，未发现阻止 M1/M2 开工的遗漏或冲突。该结论不是代码审查 PASS。
 
@@ -130,6 +130,11 @@ M1/M2 是基础设施与开发调试交付，不是正式 Pro 商品或真实付
 - 外部验单服务和真实设备仍是后续生产/设备验收条件，不阻塞 M1 类型与策略开发。
 - M1 已实现功能目录、lifetime 权益策略、类型化验单结果、受控内存缓存与过期/时钟回拨保护；现有免费能力不变。
 - 本次验证：16 项 host 策略/运行时检查 PASS；default@OhosTestCompileArkTS BUILD SUCCESSFUL in 56 s 813 ms；assembleHap BUILD SUCCESSFUL in 44 s 105 ms；Light 与 diff check PASS。
-- M2 的账号转换、全局订阅、三态与 Release 分支裁剪代码已有实现，按下一阶段独立提交和复核；不将真实验单后端或设备矩阵记为完成。
+- M1 阶段提交：`eaca0300dbb75c1785348b1bdabda4961e873c3a`。
+- M2 已实现账号转换开始同步隔离、重叠转换保护、统一运行时/无占位显示组件、订阅刷新、时间边界通知、Debug 三态与正式包裁剪；作为独立阶段提交。模拟不修改真实 grant，不解除未发布/API/设备/协议/系统权限/服务端边界。
+- Release assembleHap：BUILD SUCCESSFUL in 2 min 10 s 755 ms；`check_pro_release.py` 对实际 HAP 中 ProRuntime setter/snapshot/decision 反汇编检查 PASS，setter 无模拟写入，decision 保留真实策略调用。modules.abc SHA256：`4eee962092bec62f7fe2ccf902fd46dd066dc9c6a5a0929227a8a41d1f4121a7`。
+- 附加 `ohosTest@OhosTestCompileArkTS` 探测返回 00306054 task not found，与既有任务注册限制一致；本阶段未改 `entry/src/ohosTest`，默认强制两门均已通过。
+- Release 包已保留数据覆盖安装并启动于 API 26 phone；设备正用于 SSH 会话，未完成 Pro 弹层三态、深浅色/焦点、多窗口和 API 23 实机验收。此处不把 host 测试或安装成功当作界面验收。
+- 正式服务器验单、持久可信缓存、购买发货/退款仍属于 B4/M4；所有 Pro 功能预告保持 planned，正式收费关闭。
 
 官方构建参考：[branchElimination 与 BuildProfile.DEBUG](https://developer.huawei.com/consumer/cn/doc/doccenter-deveco-studio/ide-hvigor-build-profile-app)。
