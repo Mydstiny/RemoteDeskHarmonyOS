@@ -16,6 +16,8 @@ Updated: 2026-09-07 Asia/Shanghai
 
 ## Next
 
+- E2EE: [fault isolation, recovery and legacy compatibility](plans/2026-09-07-e2ee-resilience-legacy-compatibility.md) saved and independently reviewed; implementation awaits user authorization. Preserve healthy functions under partial failure and old enabled-App data; complete E0–E7 without widening to independent protocol encryption or treating the optional off state as a defect.
+
 - File transfer / clipboard: [F01-F17 / T0-T9 remediation plan](plans/2026-09-07-file-transfer-clipboard-remediation.md) saved and independently reviewed. Await explicit implementation authorization; first refresh the baseline, then session/clipboard isolation, RDP safety and shared task lifecycle before bidirectional transfer and conditional move. No implementation item is closed.
 
 

@@ -1,5 +1,7 @@
 # Shared Current State
 
+- E2EE planning only: [resilience and legacy compatibility plan](plans/2026-09-07-e2ee-resilience-legacy-compatibility.md) has 8 stages and 24 acceptance scenarios; independent /root/review_e2ee_plan PLAN-ONLY PASS. Prioritize local fault isolation, healthy-module availability and old enabled-App data. No application code changed; implementation awaits user authorization and the existing Pro task remains active. Current documentation gates: testCompile BUILD SUCCESSFUL in 11 s 295 ms; signed assembleHap BUILD SUCCESSFUL in 16 s 858 ms, both exit 0; Light/diff PASS. Initial sandbox cache EPERM was resolved by an authorized retry; device/data compatibility tests NOT RUN.
+
 - Task: pro-purchase-foundation; branch codex/pro-purchase-foundation; baseline main@8edc18786.
 - Phase: full M1-M7/U0-U4 roadmap active. M1/M2/U1 sample/M3/M4 code and first M5 direct SSH continuation increment independently reviewed; no aggregate completion/merge claim.
 - Pro stages: M1 eaca0300; M2 2db4ef2d; free U1 ca929ceb; M3 62baa018+fea42b9b; M4 02a8cab6+ee45030b; M5 ed537821+27716d2d+c64efc8e. Each implementation/fix increment is separately committed.
