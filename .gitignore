@@ -71,3 +71,6 @@ ssh_log.txt
 !docs/codex/*.md
 # Optional user-local tools (for example an unpacked PowerShell runtime).
 .tools/
+
+# Independently managed private development skill (ordinary nested checkout).
+/.agents/skills/remotedesk-harmonyos-dev/

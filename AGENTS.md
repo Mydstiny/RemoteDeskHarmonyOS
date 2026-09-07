@@ -7,6 +7,7 @@
   `C:\Users\14288\DevEcoStudioProjects\RemoteDesktop`，macOS 使用当前本地工作区。
 - 禁止创建或使用持久 Git worktree。合规 hook 创建并立即销毁的临时校验目录不属于开发工作区。
 - 不依赖第三方 skills、Superpowers 或 Claude 中转流程；使用 Codex 原生能力、Git、项目脚本和本地 API 26 文档。当前开发基准为 API 26；应用 target/compatible 与 native ABI 工具链分别核对，API 23 资料用于历史和兼容验证。
+- 本项目自己的开发 skill 由独立私有仓库管理，安装与维护见 `docs/codex/SKILLS.md`。应用 Git 不跟踪其目录，也不以 submodule 引入；skill 内容只在其自己的 Git 仓库提交。
 
 ## 每个 session 的启动流程（强制门禁）
 
@@ -59,6 +60,8 @@
 ## 每次改动完成后的强制 DevEco 验证
 
 任何代码、ArkTS、native、Rust、测试、配置或流程文件改动，在提交、复核、合并或交付前都必须执行以下两项 Hvigor 门禁；它们是所有风险级别的共同最低要求，不能用旧日志或上一 session 的结果代替：
+
+用户于 2026-09-07 明确的例外：开发 skill 本体，以及将其迁往独立仓库所必需的安装/跟踪说明，只执行 skill 自身校验和适用的独立使用测试，不执行 App 的 Hvigor/签名门禁。若同时修改应用实现、配置或构建流程，则应用变更仍执行本节门禁。
 
 ```sh
 source scripts/macos_env.sh

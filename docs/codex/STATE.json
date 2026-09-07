@@ -154,7 +154,7 @@
       "skillAndReferences": "PASS",
       "light": "PASS"
     },
-    "scopeBoundary": "Repository skill and API baseline documentation only; active business task, configuration and device blockers are separate.",
+    "scopeBoundary": "Skill body is managed only by its independent private repository. App keeps installation metadata; application code review/device blockers remain separate.",
     "metadataVerification": {
       "testCompile": "BUILD SUCCESSFUL in 20 s 912 ms",
       "assembleHap": "BUILD SUCCESSFUL in 12 s 450 ms",
@@ -163,6 +163,26 @@
         0
       ],
       "buildWindow": "Overlapped video task; prior exclusive skill gates remain the delivery baseline."
+    },
+    "repository": {
+      "url": "https://github.com/Mydstiny/remotedesk-harmonyos-dev-skill",
+      "private": true,
+      "branch": "main",
+      "reviewedHead": "c9a69f465f07a560b392de889d3061d49c7ad314",
+      "mergeCommit": "84a00ad226b7227f16d39bbca53a31fd10345488",
+      "pullRequest": "https://github.com/Mydstiny/remotedesk-harmonyos-dev-skill/pull/1",
+      "localPath": ".agents/skills/remotedesk-harmonyos-dev",
+      "management": "Independent nested Git checkout; ignored and untracked by App; no gitlink",
+      "verification": {
+        "package": "PASS standalone checker",
+        "tests": "PASS 7 positive/negative checks",
+        "format": "PASS quick_validate",
+        "appReferences": "PASS 298 links, 64 commit IDs, 51 public milestones, 187 indexed documents",
+        "githubCI": "PASS skill-checks for exact reviewed source",
+        "diff": "PASS",
+        "appGates": "NOT RUN: user explicitly exempted skill body development and this migration",
+        "device": "NOT RUN: no App behavior change"
+      }
     }
   },
   "proImplementation": {

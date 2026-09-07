@@ -1,7 +1,7 @@
 version = 1
 
 [[annotations]]
-path = ["AppScope/**", "entry/src/**", "rustdesk_ffi/src/**", "scripts/**", "docs/**", ".agents/skills/remotedesk-harmonyos-dev/**", "*.json5", "*.ts", "*.md"]
+path = ["AppScope/**", "entry/src/**", "rustdesk_ffi/src/**", "scripts/**", "docs/**", "*.json5", "*.ts", "*.md"]
 precedence = "aggregate"
 SPDX-FileCopyrightText = "2026 Li Jiong and contributors"
 SPDX-License-Identifier = "AGPL-3.0-or-later"
