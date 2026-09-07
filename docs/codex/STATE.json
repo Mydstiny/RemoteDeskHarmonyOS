@@ -3,14 +3,14 @@
   "task": "pro-purchase-foundation",
   "branch": "codex/pro-purchase-foundation",
   "base": "8edc187868e94ed41634e8a6c4c4c072e3a48679",
-  "head": "bbc7fb535275e4db465111df8ed44d2aeb808fb3",
-  "phase": "pro-m7-http-client-and-agc-sandbox-integration",
+  "head": "5fb6f8d7d590cfd7d2e688ee0d892cf3f05ee71c",
+  "phase": "pro-m7-signed-app-client-and-agc-deployment",
   "status": "in-progress",
-  "next": "Integrate HTTP/App signed-cache purchase and restore; adapt/deploy an appropriate durable backend after AGC runtime/database verification; continue remaining roadmap and free UI.",
+  "next": "Integrate the signed App client, scoped cache and purchase/restore; deploy complete AGC sandbox functions after credentials/runtime packaging, then remaining M5/M6 and free UI.",
   "blockers": [
     "M3/U0-U4 device matrix and M4 PC real Share Kit/SFTP file-integrity acceptance remain unverified.",
     "M5 KNOCK_COLLABORATION provision and App Linking setup unconfirmed; M6 USBManager path still needs authenticator/native proof, DDK-specific ACL is not assumed mandatory.",
-    "M7 HTTP/App integration and live backend deployment remain pending. AGC sandbox product, existing IAP key and user-specified tester verified; production merchant activation, event callback and device purchase/refund acceptance remain open."
+    "M7 App integration and complete backend deployment remain pending. AGC runtime probe and ProSandbox CloudDB zone exist; managed SDK credential, PKIX binary/CRLs, callback and device purchase/refund acceptance remain open."
   ],
   "planPaths": [
     "docs/codex/plans/2026-09-06-pro-purchase-foundation.md",
@@ -407,6 +407,52 @@
         "compliance": "Light/diff PASS",
         "device": "NOT RUN",
         "scopeBoundary": "M7 protocol/ledger code only; no real IAP order, HTTP/App integration or deployment acceptance."
+      },
+      "http": {
+        "head": "c76b85737ab10635cd2499099405e4557e10a7fd",
+        "status": "code-reviewed",
+        "reviewReceiptId": "pro-m7-http-c76b8573-2026-09-07",
+        "verification": {
+          "testCompile": "PASS BUILD SUCCESSFUL in 1 s 144 ms",
+          "assembleHap": "PASS signed BUILD SUCCESSFUL in 15 s 64 ms",
+          "hostChecks": "PASS 9 HTTP checks, 27 HTTP/ledger independently rerun",
+          "compliance": "PASS Light/diff",
+          "scopeBoundary": "HTTP code and actual local TCP only; no AGC or device acceptance"
+        }
+      },
+      "cloudLedger": {
+        "head": "5fb6f8d7d590cfd7d2e688ee0d892cf3f05ee71c",
+        "status": "code-reviewed",
+        "reviewReceiptId": "pro-m7-cloud-ledger-5fb6f8d7-2026-09-07",
+        "verification": {
+          "testCompile": "PASS BUILD SUCCESSFUL in 8 s 391 ms",
+          "assembleHap": "PASS signed BUILD SUCCESSFUL in 12 s 15 ms",
+          "hostChecks": "PASS 14 CloudDB policy/concurrency checks and 1 actual SDK serialization test with mocked transport",
+          "compliance": "PASS Light/diff; 31 locked packages, npm audit 0 findings",
+          "scopeBoundary": "No actual AGC transaction, deployment, App cache or real IAP acceptance"
+        }
+      },
+      "sandboxInfrastructure": {
+        "function": "remotedesk-pro-sandbox",
+        "runtime": "Node 22.23.2 Linux x64",
+        "deployedCode": "runtime probe only; purchase disabled",
+        "cloudDatabase": {
+          "zone": "ProSandbox",
+          "model": "ProLedgerRecord",
+          "modelVersion": 1,
+          "fields": 7,
+          "indexes": 2,
+          "permission": "Administrator only",
+          "controlRecord": "not seeded"
+        },
+        "managedSdkCredentialAvailable": false,
+        "completeDeployment": false
+      },
+      "metadataVerification": {
+        "testCompile": "PASS BUILD SUCCESSFUL in 8 s 898 ms",
+        "assembleHap": "PASS signed BUILD SUCCESSFUL in 12 s 540 ms",
+        "compliance": "PASS Light/diff/state",
+        "scope": "HTTP/cloud reviewed state documentation; no App acceptance"
       }
     }
   },
