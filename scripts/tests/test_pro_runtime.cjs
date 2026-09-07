@@ -215,6 +215,19 @@ test('expired icon entitlement is rechecked after asynchronous system query', as
   f.clock.now = 2000; // no timer callback: decision must re-evaluate the clock itself
   resolve(f.icons()); assert.equal(await action, false); assert.equal(f.applied.length, 0); f.dispose();
 });
+test('icon dismiss epoch rejects the old action while the child still lives, including rapid reopen', async () => {
+  const f = iconFixture(); f.runtime.setDebugMode('pro'); let resolve;
+  const { ProPurchaseLifecycle } = f.load('entry/src/main/ets/services/pro/ProPurchaseLifecycle.ets');
+  const epoch = ProPurchaseLifecycle.capture();
+  f.provider.query = () => new Promise(done => { resolve = done; });
+  const action = f.controller.select('rd_white', () => ProPurchaseLifecycle.current(epoch));
+  ProPurchaseLifecycle.dismiss(); // the child has not reached aboutToDisappear yet
+  resolve(f.icons()); assert.equal(await action, false); assert.equal(f.applied.length, 0);
+  const reopened = ProPurchaseLifecycle.capture();
+  f.provider.query = async () => f.icons();
+  assert.equal(await f.controller.select('rd_transparent', () => ProPurchaseLifecycle.current(reopened)), true);
+  f.dispose();
+});
 test('icon controller rejects unsupported systems, unknown and absent preset names without a mutation', async () => {
   const f = iconFixture(); f.runtime.setDebugMode('pro');
   f.provider.supported = () => false;
@@ -235,6 +248,7 @@ test('icon read failure and unconfirmed mutation never report a default or succe
   f.provider.query = async () => f.icons(); f.provider.apply = async () => {};
   assert.equal(await f.controller.select('rd_white', () => true), false);
   assert.equal(f.controller.snapshot().currentName, '');
+  assert.equal(f.controller.snapshot().loaded, false); // the UI must expose its reread action
   assert.match(f.controller.snapshot().message, /尚未确认/);
   let reads = 0;
   f.provider.query = async () => { if (++reads > 1) throw new Error('after mutation'); return f.icons(); };

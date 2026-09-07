@@ -2,6 +2,7 @@ import { Palette, buildDark, buildLight } from '../common/Theme';
 import { ProAppRuntime } from '../services/pro/ProAppRuntime';
 import { ProAppIcons } from '../services/pro/ProAppIcons';
 import { ProAppIconSnapshot } from '../services/pro/ProAppIconController';
+import { ProPurchaseLifecycle } from '../services/pro/ProPurchaseLifecycle';
 import { ProFeatureGate } from './ProFeatureGate';
 
 @Component
@@ -11,6 +12,7 @@ export struct ProAppIconPanel {
   @State state: ProAppIconSnapshot = ProAppIcons.getInstance().snapshot();
   @State proLabel: string = '';
   private live: boolean = false;
+  isOpen: () => boolean = (): boolean => true;
   private stopIcons: (() => void) | null = null;
   private stopRuntime: (() => void) | null = null;
 
@@ -28,8 +30,13 @@ export struct ProAppIconPanel {
     this.live = false; this.stopIcons?.(); this.stopRuntime?.(); this.stopIcons = null; this.stopRuntime = null;
   }
   private pal(): Palette { return this.theme === 'light' ? buildLight(this.accent) : buildDark(this.accent); }
+  private select(name: string): void {
+    const epoch = ProPurchaseLifecycle.capture();
+    ProAppIcons.getInstance().select(name, (): boolean =>
+      this.live && this.isOpen() && ProPurchaseLifecycle.current(epoch));
+  }
   private name(): string {
-    if (!this.state.loaded) { return '正在确认'; }
+    if (!this.state.loaded) { return '暂未确认'; }
     if (this.state.currentName === '') { return '默认图标'; }
     if (this.state.currentName === 'rd_white') { return '白底版'; }
     if (this.state.currentName === 'rd_transparent') { return '透明底版'; }
@@ -50,7 +57,7 @@ export struct ProAppIconPanel {
       color: this.state.loaded && this.state.currentName === name ? this.accent : this.pal().cardBorder })
     .enabled(!this.state.busy).accessibilityText(label +
       (this.state.loaded && this.state.currentName === name ? '，使用中' : '，应用此图标'))
-    .onClick((): void => { ProAppIcons.getInstance().select(name, (): boolean => this.live); })
+    .onClick((): void => { this.select(name); })
   }
   @Builder private presets() {
     Column({ space: 10 }) {
@@ -71,7 +78,7 @@ export struct ProAppIconPanel {
         if (!this.state.loaded || this.state.currentName !== '') {
           Button('恢复默认图标').fontSize(13).fontColor(this.accent).backgroundColor(this.pal().surface)
             .constraintSize({ minHeight: 44 }).enabled(!this.state.busy)
-            .onClick((): void => { ProAppIcons.getInstance().select('', (): boolean => this.live); })
+            .onClick((): void => { this.select(''); })
         }
         if (!this.state.loaded) {
           Button('重新读取图标状态').fontSize(13).constraintSize({ minHeight: 44 }).enabled(!this.state.busy)

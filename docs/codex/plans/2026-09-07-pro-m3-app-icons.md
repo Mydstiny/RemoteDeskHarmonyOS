@@ -41,4 +41,6 @@ ProAppIconController 在业务入口复查权益，异步查询之后再次核�
 
 未取得设备证据时保留未验收状态，不声称系统外壳所有位置同步。
 
+复核修正：图标选择现在捕获 ProPurchaseLifecycle epoch，并检查父面板的即时 isOpen；关闭动画尚未结束或快速关闭/重开时，旧预检无法触发系统调用。系统回读不匹配时标记暂未确认，显示重读按钮。25 项 host 检查 PASS；修正后 default@OhosTestCompileArkTS `BUILD SUCCESSFUL in 12 s 476 ms`、signed assembleHap `BUILD SUCCESSFUL in 23 s 672 ms`，Light/diff PASS。
+
 本轮结果：24 项 host 检查 PASS；default@OhosTestCompileArkTS `BUILD SUCCESSFUL in 16 s 823 ms`；signed Debug assembleHap `BUILD SUCCESSFUL in 29 s 338 ms`；Release assembleHap `BUILD SUCCESSFUL in 1 min 7 s 693 ms`；实际 Release setter/snapshot/decision 模拟分支裁剪检查 PASS，modules.abc SHA256 为 `54c2d339df12f7ce02373c83414dc02aa113113d919bd9d9b6df316b11156df9`。Light 与 git diff --check PASS。曾出现的 ArkTS 不允许任意类型异常重抛已改为固定 Error 并重跑成功。设备操作确认尚未收到，未安装本轮图标包或操作当前 SSH 页面。

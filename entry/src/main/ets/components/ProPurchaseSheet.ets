@@ -125,7 +125,7 @@ export struct ProPurchaseSheet {
             Text(this.proLabel).fontSize(13).fontColor(this.accent)
             Text('一次购买 · 不自动续费').fontSize(12).fontColor(this.accent)
           }.width('100%').padding({ top: 16, bottom: 18 })
-          ProAppIconPanel()
+          ProAppIconPanel({ isOpen: (): boolean => this.live })
           ForEach(proFeatures().filter((item: ProFeature): boolean => item.requiredEntitlementId.length > 0),
             (feature: ProFeature, index: number): void => { this.featureCard(feature, index) },
             (feature: ProFeature): string => feature.id)

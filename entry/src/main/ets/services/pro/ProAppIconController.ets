@@ -81,6 +81,7 @@ export class ProAppIconController {
       await this.provider.apply(name);
       this.update(await this.provider.query());
       if (this.currentName !== name) {
+        this.loaded = false;
         this.message = '系统尚未确认图标切换，请重试读取。'; return false;
       }
       this.message = name === '' ? '已恢复默认图标。' : '已应用图标。';
