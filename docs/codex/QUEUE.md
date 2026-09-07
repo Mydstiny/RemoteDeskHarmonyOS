@@ -1,20 +1,27 @@
 # RemoteDesk Queue
 
-Updated: 2026-09-04 Asia/Shanghai
+Updated: 2026-09-07 Asia/Shanghai
 
 ## Now
 
-0. Pro demo: local validation and independent review PASS; configure AGC sandbox non-consumable product and debug device, then validate checkout. Production verification backend and shipped paid benefits remain pending.
+- Remote AI: [AI0 evidence](plans/2026-09-07-pro-remote-ai-ai0-evidence.md) records merged independent GitHub Codex/DSH probe repositories. Continue actual execution isolation, model-turn/approval/resume and HarmonyOS TLS/key tests; then AI1 authenticated LAN. No app AI UI or relay feature is available yet.
+
+0. Pro M1/M2 code independently reviewed and committed as eaca0300 / 2db4ef2d. Validate the Debug three-state Pro sheet, focus/multiwindow and API23/Pad/PC behavior when the device is available. Production verifier/cache/fulfillment/refunds and real paid benefits remain pending. Commit every completed stage separately.
 
 1. Run one consolidated feedback-batch device acceptance on HarmonyOS PC: Moonlight/RustDesk hardware-decoder flip and four visual/control combinations; RDP transient credentials, fullscreen pointer mapping, resolution negotiation/scaling and black-border behavior; Dock minimize input fencing; RustDesk nested toolbar, explicit H.265 negotiation/hardware decode, codec telemetry and bidirectional clipboard; SSH common commands; button-only exit; long classic host list; and the simplified Harmony shortcut settings, including the icon, current-device tab, explicit open/close wording, PC first-use four-protocol default and persistence after manual changes.
-2. When a flip reproduces, export the schema-v4 diagnostic JSONL before reconnecting. Verify it contains one coherent redacted producer class, raw producer matrix, decoder-applied matrix, presentation mode, renderer manual transform, renderer registry generation and decoder binding generation; attach the capture for root-cause classification.
+2. If a user later reports a flip, export the schema-v5 diagnostic JSONL before reconnecting and use the PC flip menu to mark normal/upside-down/horizontal-mirror orientation. Real-device acceptance is unavailable and does not block the committed repair. Verify it contains one coherent redacted producer class, raw producer matrix, decoder-applied matrix, presentation mode, renderer manual transform, renderer registry generation and decoder binding generation; attach the capture for root-cause classification.
 3. Reproduce the intermittent RDP disconnect with Application state, RDP connection and routing/gateway diagnostics selected and matching HDC hilog. Preserve the exact native ErrorInfo or symbolic fallback, transport-end reason, network generation/availability and reconnect timeline. A server `0x10` now requires strict `[E-RDP-ERRINFO-0x00000010]` evidence and means remote Windows DWM crashed; client/network termination displays `E-RDP-SESSION-END-UNCLASSIFIED` instead of fabricating `0x10`.
 4. Run per-protocol M1-M3 device acceptance on HarmonyOS Phone/Pad/PC: IPv6 literal, AAAA-only, A/AAAA fallback, scope, save/restart, trust/preflight, real control/data traffic, same-network reconnect and route-generation change. Include RDP direct/Gateway, RustDesk ID/relay/direct/presence/file transfer, SSH direct/proxy/1-3 jump/forwarding/SFTP, VNC direct/repeater/TLS and Moonlight discovery/control/media.
 5. Validate the completed RustDesk M4 UDP/KCP state machine against fixed-version hbbs/hbbr and controlled peers across symmetric NAT, CGNAT, UDP-blocked, TCP-only, global/IPv6-only, NAT64 and relay fallback before enabling AUTO, UDP/KCP or `nat_traversal_ipv6`.
 
 ## Next
 
-1. Triage any consolidated device findings against the committed item boundary; use the schema-v4 generation/matrix chain for flip issues, verify RustDesk H.265 with `preflight config=H265`, `ffiCfg codec=5(H265)` and actual frame `codec=1`, and use the new RDP `source`/`code` classification to identify the original intermittent-disconnect source. Preserve the exact protocol, device type, window mode, decoder and reproduction sequence.
+
+- Base UI: finish U0 device/performance baseline after the first SDK/Theme/page inventory from [API 26 free UI plan](plans/2026-09-07-api26-base-ui-upgrade.md), then U1 compatibility/sample. Coordinate shared-page edits with Pro M1/M2; do not gate public UI on Pro.
+
+0. Pro: after M2 device checks, implement B3/M3 with one actual released feature through catalog/UI/operation gates; keep unfinished features planned. Follow [M1/M2 boundaries](plans/2026-09-07-pro-m1-m2-implementation.md) and the [overall roadmap](plans/2026-09-06-pro-product-roadmap.md).
+
+1. Triage any consolidated device findings against the committed item boundary; use the schema-v5 generation/matrix chain for flip issues, verify RustDesk H.265 with `preflight config=H265`, `ffiCfg codec=5(H265)` and actual frame `codec=1`, and use the new RDP `source`/`code` classification to identify the original intermittent-disconnect source. Preserve the exact protocol, device type, window mode, decoder and reproduction sequence.
 2. Previous code integration is on main@8edc18786; retain the device/topology acceptance items above as follow-up work.
 
 ## Later
