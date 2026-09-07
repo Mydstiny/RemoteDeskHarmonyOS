@@ -39,5 +39,33 @@
     "device": "NOT RUN: no HDC target connected",
     "production": "NOT READY: no configured SKU/trusted verifier or shipped paid benefits"
   },
-  "updated": "2026-09-06 Asia/Shanghai"
+  "updated": "2026-09-06 Asia/Shanghai",
+  "skillDelivery": {
+    "status": "complete",
+    "path": ".agents/skills/remotedesk-harmonyos-dev/SKILL.md",
+    "developmentBaseline": "API26",
+    "implementationCommit": "b6f15687830adc85725fe9fb6ef30b7cacf0b61e",
+    "reportPath": "docs/codex/archive/2026-09/2026-09-07-project-development-skill.md",
+    "reviewReceiptId": "project-skill-api26-b6f156878-2026-09-07",
+    "reviewTaskIds": [
+      "/root/skill_source_review",
+      "/root/skill_forward_test"
+    ],
+    "verification": {
+      "testCompile": "BUILD SUCCESSFUL in 14 s 568 ms",
+      "assembleHap": "BUILD SUCCESSFUL in 14 s 22 ms",
+      "skillAndReferences": "PASS",
+      "light": "PASS"
+    },
+    "scopeBoundary": "Repository skill and API baseline documentation only; active business task, configuration and device blockers are separate.",
+    "metadataVerification": {
+      "testCompile": "BUILD SUCCESSFUL in 20 s 912 ms",
+      "assembleHap": "BUILD SUCCESSFUL in 12 s 450 ms",
+      "exitCodes": [
+        0,
+        0
+      ],
+      "buildWindow": "Overlapped video task; prior exclusive skill gates remain the delivery baseline."
+    }
+  }
 }
