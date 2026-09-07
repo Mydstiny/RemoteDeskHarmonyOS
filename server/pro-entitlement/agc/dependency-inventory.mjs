@@ -50,6 +50,6 @@ const sbom = { spdxVersion: 'SPDX-2.3', dataLicense: 'CC0-1.0', SPDXID: 'SPDXRef
   documentNamespace: 'https://github.com/Mydstiny/RemoteDeskHarmonyOS/spdx/pro-agc-' + createHash('sha256').update(lockBytes).digest('hex'),
   creationInfo: { created: '2026-09-07T00:00:00Z', creators: ['Organization: RemoteDeskHarmonyOS'] }, packages, relationships };
 writeFileSync(join(root, 'SBOM.spdx.json'), JSON.stringify(sbom, null, 2) + '\n');
-writeFileSync(join(root, 'THIRD_PARTY_NOTICES.md'), notices);
+writeFileSync(join(root, 'THIRD_PARTY_NOTICES.md'), notices.replace(/\r\n?/g, '\n').trimEnd() + '\n');
 writeFileSync(join(root, 'ProLedgerRecord.json'), JSON.stringify(cloudLedgerSchema, null, 2) + '\n');
 console.log('Generated pinned AGC dependency inventory and schema for ' + packages.length + ' packages.');
