@@ -12,6 +12,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("hap", type=Path)
     parser.add_argument("--disassembler", type=Path, required=True)
+    parser.add_argument("--usb-probe", action="store_true", help="Also require the Debug USB probe gate to return false")
     args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix="pro-release-") as directory:
         abc = Path(directory) / "modules.abc"
@@ -29,6 +30,11 @@ def main():
             for line in source:
                 if line.startswith(".function"):
                     method = None
+                    if args.usb_probe and "services.pro.ProUsbFidoProbe&." in line and "#debugAllowed(" in line:
+                        if "usbDebugAllowed" in methods:
+                            raise AssertionError("Duplicate USB probe gate")
+                        method = "usbDebugAllowed"
+                        methods[method] = []
                     for name in ("setDebugMode", "snapshot", "decision"):
                         if "services.pro.ProRuntime&." in line and f"#{name}(" in line:
                             if name in methods:
@@ -39,7 +45,10 @@ def main():
                     methods[method].append(line.strip())
                     if line.strip() == "}":
                         method = None
-        if set(methods) != {"setDebugMode", "snapshot", "decision"}:
+        expected = {"setDebugMode", "snapshot", "decision"}
+        if args.usb_probe:
+            expected.add("usbDebugAllowed")
+        if set(methods) != expected:
             raise AssertionError("Missing runtime methods; pruning cannot be certified")
         for name, lines in methods.items():
             body = "\n".join(lines)
@@ -55,6 +64,15 @@ def main():
         decision = "\n".join(methods["decision"])
         if '"entitlementIds"' not in decision or '"proFeatureAccess"' not in decision:
             raise AssertionError("Real entitlement policy call is missing")
+        if args.usb_probe:
+            body = methods["usbDebugAllowed"]
+            if "ldfalse" not in body or "return" not in body:
+                raise AssertionError("Release USB probe gate does not return false")
+            for line in body:
+                if line and line != "}" and not line.startswith(("ldexternalmodulevar ",
+                        'throw.undefinedifholewithname "DEBUG"', "ldfalse", "return")):
+                    raise AssertionError(f"Release USB gate retains executable granting logic: {line}")
+            print("PASS Release USB probe gate always returns false")
         print("PASS Release setter, snapshot and decision contain no simulation override")
         print("modules.abc SHA256=" + hashlib.sha256(abc.read_bytes()).hexdigest())
 
