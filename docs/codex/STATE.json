@@ -3,14 +3,14 @@
   "task": "pro-purchase-foundation",
   "branch": "codex/pro-purchase-foundation",
   "base": "8edc187868e94ed41634e8a6c4c4c072e3a48679",
-  "head": "ff31ef7d6a15d23c5b95ae55711fbb98f66adfb9",
-  "phase": "pro-m7-trusted-server-implementation",
+  "head": "bbc7fb535275e4db465111df8ed44d2aeb808fb3",
+  "phase": "pro-m7-http-client-and-agc-sandbox-integration",
   "status": "in-progress",
-  "next": "Commit/review M7 trusted vendor protocol, then implement durable fulfillment/client cache and free U0-U4; M5/M6 hardware/config-dependent paths remain open.",
+  "next": "Integrate HTTP/App signed-cache purchase and restore; adapt/deploy an appropriate durable backend after AGC runtime/database verification; continue remaining roadmap and free UI.",
   "blockers": [
     "M3/U0-U4 device matrix and M4 PC real Share Kit/SFTP file-integrity acceptance remain unverified.",
     "M5 KNOCK_COLLABORATION provision and App Linking setup unconfirmed; M6 USBManager path still needs authenticator/native proof, DDK-specific ACL is not assumed mandatory.",
-    "M7 trusted production verifier, persistent verified cache and fulfillment/refund flow remain pending; backend and production product configuration requested."
+    "M7 HTTP/App integration and live backend deployment remain pending. AGC sandbox product, existing IAP key and user-specified tester verified; production merchant activation, event callback and device purchase/refund acceptance remain open."
   ],
   "planPaths": [
     "docs/codex/plans/2026-09-06-pro-purchase-foundation.md",
@@ -57,21 +57,20 @@
       "scripts/tests/test_pro_connection.cjs",
       "scripts/tests/test_pro_usb.cjs",
       "server/pro-entitlement",
-      "scripts/tests/test_pro_iap_server.mjs"
+      "scripts/tests/test_pro_iap_server.mjs",
+      "scripts/tests/test_pro_fulfillment.mjs"
     ],
     "findings": [],
     "reviewedHead": "6690cdbf4ea671b0bc318d259bc35f0479911063",
-    "reason": "M1-M6 implemented increments independently passed; new M7 server protocol and remaining roadmap require review/implementation/acceptance."
+    "reason": "Exact M7 vendor protocol and ledger increments independently PASS. Aggregate roadmap and HTTP/App/deployment/device acceptance remain incomplete."
   },
   "lastVerification": {
-    "testCompile": "PASS BUILD SUCCESSFUL in 24 s 782 ms",
-    "assembleHap": "PASS signed Debug BUILD SUCCESSFUL in 36 s 942 ms",
-    "release": "PASS BUILD SUCCESSFUL in 49 s 746 ms; Runtime pruning independently verified in shared snapshot",
-    "releaseAbcSha256": "1211b5ab54a2090731ee37b3836aa89a14d7a2221e054ed11a1c6e1267d6a9db",
-    "hostChecks": "34 connection including actual page methods; 49 SSH passed on preceding route/account fixes; last change adds transaction guard",
+    "testCompile": "PASS BUILD SUCCESSFUL in 18 s 896 ms",
+    "assembleHap": "PASS signed BUILD SUCCESSFUL in 20 s 393 ms",
+    "hostChecks": "30 server checks PASS; 17 ledger checks independently rerun",
     "compliance": "Light/diff PASS",
     "device": "NOT RUN",
-    "scopeBoundary": "Shared HAP includes uncommitted M6 probe; M5 review covers only exact continuation code and Runtime pruning, not M6."
+    "scopeBoundary": "M7 protocol/ledger code only; no real IAP order, HTTP/App integration or deployment acceptance."
   },
   "updated": "2026-09-07 Asia/Shanghai",
   "roadmapPaths": [
@@ -98,7 +97,7 @@
   "remoteAiPreparation": {
     "planPath": "docs/codex/plans/2026-09-07-pro-remote-ai-workspace.md",
     "entitlement": "pro.lifetime",
-    "status": "ai0-first-source-increment-merged-core-probes-pending",
+    "status": "host-v1-released-public-install-prompts-prepared",
     "scope": [
       "harmonyos-client",
       "codex-plugin",
@@ -111,21 +110,23 @@
     "codeImplemented": true,
     "repositoriesCreated": true,
     "reviewerTaskId": "/root/review_remote_ai_plan",
-    "reviewKind": "independent-first-ai0-plugin-code-review",
-    "reviewResult": "PASS after process-cleanup and exact-agent-disposal fixes; does not certify full AI0 or App code",
-    "next": "Complete AI0 execution sandbox, real model-turn/approval/resume, DSH question coexistence and HarmonyOS TLS/key device tests; then AI1 authenticated LAN protocol.",
+    "reviewKind": "independent-host-v1-code-review",
+    "reviewResult": "PASS final host code and canonical core packaging; separate independent PASS for public-release installation prompts and settings documentation",
+    "next": "When client work is authorized, implement AI4 TLS/key handling and settings copy/pairing flow from the prepared prompts, then real devices and dual-machine LAN; RustDesk remains later.",
     "validation": {
       "recordedAt": "2026-09-07 Asia/Shanghai",
-      "testCompile": "PASS BUILD SUCCESSFUL in 47 s 616 ms",
-      "assembleHap": "PASS BUILD SUCCESSFUL in 8 s 88 ms (retry after SignHap 11110001 input-stream failure; initial 2 min 18 s 972 ms build failed)",
-      "compliance": "PASS Light and git diff --check",
-      "codex": "PASS 16 source tests, manifest, real App Server handshake and ephemeral read-only thread; no model turn",
-      "dsh": "PASS 6 source tests and native Cordis/session/registry/approval/userQuestions fixture checks; no model loop",
-      "githubCI": "PASS Node 22/24/26 for exact reviewed source; both PR #1 merged",
-      "device": "Phone reports API 26; AI TLS/key/UI tests NOT RUN",
+      "codex": "PASS 26 unit tests; real pinned App Server and Windows/macOS/Linux runtime/service CI",
+      "dsh": "PASS 7 unit tests; real native engine and package installation on Windows/macOS/Linux, including paths with spaces and ampersands",
+      "local": "PASS real macOS Docker+mTLS for both final packages; DSH dedicated/web native profiles, remote turns and archive/resume",
+      "model": "Deterministic local model fixtures; user provider account acceptance NOT RUN",
+      "githubCI": "PASS exact reviewed sources: Codex 34094447263/34094454219; DSH 34094517599/34094523027",
+      "release": "PASS downloaded bytes, SHA256SUMS and source/core provenance; both PR #2 merged and v0.2.0 released",
+      "browser": "Page clicks NOT RUN: Chrome and explicitly authorized in-app browser both returned ERR_BLOCKED_BY_CLIENT",
+      "device": "HarmonyOS TLS/key/UI and dual-machine LAN NOT RUN",
+      "windowsDockerDesktop": "Actual Windows Docker Desktop project sharing NOT RUN",
       "relay": "NOT RUN",
       "applicationCodeChangedByThisTask": false,
-      "planSha256": "db2b17aa7671e55b3b67d32469b808549d7afbb52dc78a2226e198a31732c64b"
+      "planSha256": "8b3f553dd2095ae4122e69956e879b6024bc34662c197af21c382382b4880d08"
     },
     "pluginCodeImplemented": true,
     "applicationCodeImplemented": false,
@@ -135,26 +136,56 @@
       {
         "name": "remotedesk-codex-plugin",
         "url": "https://github.com/Mydstiny/remotedesk-codex-plugin",
-        "private": true,
-        "mergeCommit": "ad3590d9629c41094b7752e35b30142b6dbe88a7",
-        "reviewedTree": "6b5cd214d2fba50b96cdb2129334732c9856e868",
-        "pullRequest": "https://github.com/Mydstiny/remotedesk-codex-plugin/pull/1",
-        "merged": true
+        "private": false,
+        "mergeCommit": "ea56d52b38187b3451f82b57d18433bacaa7f42e",
+        "reviewedCommit": "623801b4b2f45db9187bb8f467fbcfeea4197789",
+        "reviewedTree": "49b48f8ef2d9419a11a973449005c0686f256a65",
+        "pullRequest": "https://github.com/Mydstiny/remotedesk-codex-plugin/pull/2",
+        "merged": true,
+        "release": "https://github.com/Mydstiny/remotedesk-codex-plugin/releases/tag/v0.2.0",
+        "version": "0.2.0",
+        "sha256": "c31fe76fb906fb098eb4d4b5c20852179ad40862962c14e4ae5cdf0bc49f83b4"
       },
       {
         "name": "remotedesk-dsh-plugin",
         "url": "https://github.com/Mydstiny/remotedesk-dsh-plugin",
-        "private": true,
-        "mergeCommit": "9b2a541c68a540c598ae902a9f5a0993dff1bcb8",
-        "reviewedTree": "528433eade8a8cbae975d70c59493eed1accae28",
-        "pullRequest": "https://github.com/Mydstiny/remotedesk-dsh-plugin/pull/1",
-        "merged": true
+        "private": false,
+        "mergeCommit": "5fae39d71aa3cd1f9a64217ca8cfa0f7730fd7f3",
+        "reviewedCommit": "58dda3c2b83d1f79f76e63b2ac5028583b66469e",
+        "reviewedTree": "d139cfbcfa0fb3148f1cb72875b2ce5902fb068c",
+        "pullRequest": "https://github.com/Mydstiny/remotedesk-dsh-plugin/pull/2",
+        "merged": true,
+        "release": "https://github.com/Mydstiny/remotedesk-dsh-plugin/releases/tag/v0.2.0",
+        "version": "0.2.0",
+        "sha256": "280b9bc96b1da2e3c47e7aae384193abebefe4c2ac5cc554472fa5bf052fc7a0"
       }
     ],
     "evidencePath": "docs/codex/plans/2026-09-07-pro-remote-ai-ai0-evidence.md",
     "appEvidenceCommit": "ed5ece35a",
     "appBranch": "codex/pro-purchase-foundation",
-    "appReviewReceiptCommit": "01fd6894af628fb5e1bcfe7edc54ee5379f5ffd4"
+    "appReviewReceiptCommit": "01fd6894af628fb5e1bcfe7edc54ee5379f5ffd4",
+    "deploymentPrompt": {
+      "status": "prepared-settings-ui-not-implemented",
+      "planPath": "docs/codex/plans/2026-09-07-remote-ai-agent-install.md",
+      "backends": [
+        "codex",
+        "dsh"
+      ],
+      "version": "0.2.0",
+      "protocolMajor": 1,
+      "sourceAccess": "public GitHub; anonymous download verified separately",
+      "dshDefault": "dedicated owned profile; do not restart the DSH process hosting the deployment conversation",
+      "appValidation": {
+        "testCompile": "PASS exit 0; BUILD SUCCESSFUL in 9 s 161 ms",
+        "assembleHap": "PASS exit 0; signed BUILD SUCCESSFUL in 14 s 808 ms",
+        "compliance": "PASS Light and git diff --check",
+        "publicDownload": "PASS anonymous repo metadata, fixed docs and downloaded release SHA256; independently repeated by reviewer",
+        "scope": "Documentation only; no App AI implementation or device acceptance"
+      },
+      "reviewStatus": "PASS",
+      "reviewTaskId": "/root/review_remote_ai_plan",
+      "reviewReceiptId": "remote-ai-install-prompts-v020-public-2026-09-07"
+    }
   },
   "skillDelivery": {
     "status": "complete",
@@ -217,7 +248,11 @@
       "M5ReviewFix": "27716d2dc7cc9c9e707a26186e477ce7620d4bc4",
       "M5TransactionFix": "c64efc8e0ad709fb130637569b69fb135a6f02ae",
       "M6UsbProbe": "3ea2859e7bf4ac11ad22bd75884164a8f9eae798",
-      "M6HidUsageFix": "ff31ef7d6a15d23c5b95ae55711fbb98f66adfb9"
+      "M6HidUsageFix": "ff31ef7d6a15d23c5b95ae55711fbb98f66adfb9",
+      "M7Protocol": "5109d5837891a43cb76b4a8d4483a6053cb39f01",
+      "M7ProtocolFix": "552604327010e4358dc459fd85784adfa8ca4cb0",
+      "M7Ledger": "ab3a60ac19cc891bcfa8a7554d939c053ebbfd64",
+      "M7LedgerFix": "bbc7fb535275e4db465111df8ed44d2aeb808fb3"
     },
     "commitPolicy": "One separate commit after each completed stage; checkpoint incomplete work explicitly.",
     "reviewerTaskId": "/root/review_pro_plan",
@@ -312,13 +347,39 @@
       "findings": []
     },
     "m7": {
-      "status": "trusted-vendor-protocol-implemented-validation-in-progress",
-      "scope": "Server identity and current-order verification; ledger/client integration still pending",
+      "status": "vendor-protocol-and-ledger-code-reviewed-integration-pending",
+      "scope": "Trusted Huawei protocol, immutable owner binding, persistent order ledger, atomic signed-state snapshot and delivery outbox",
       "planPath": "docs/codex/plans/2026-09-07-pro-m7-trusted-purchase.md",
-      "reviewStatus": "REVIEW_REQUIRED",
-      "hostChecks": "12 real-crypto/vendor-contract checks PASS",
+      "reviewStatus": "PASS",
+      "reviewerTaskId": "/root/review_pro_plan",
+      "reviewedCommits": [
+        "5109d5837891a43cb76b4a8d4483a6053cb39f01",
+        "552604327010e4358dc459fd85784adfa8ca4cb0",
+        "ab3a60ac19cc891bcfa8a7554d939c053ebbfd64",
+        "bbc7fb535275e4db465111df8ed44d2aeb808fb3"
+      ],
+      "hostChecks": "30 PASS; 17 ledger checks independently PASS",
       "productionSaleEnabled": false,
-      "deployment": "not configured"
+      "deployment": "not deployed; AGC cloud functions enabled without creating a function, runtime and persistent database compatibility under investigation",
+      "agcSandbox": {
+        "productId": "RemoteDesktop_Pro_Test",
+        "productType": "nonconsumable",
+        "productState": "draft",
+        "testAccountConfigured": true,
+        "testAccountCount": 1,
+        "testAccountName": "RemoteDesk device acceptance",
+        "iapKey": "existing Pro key, no new key generated",
+        "eventNotification": "disabled pending deployed callback"
+      },
+      "findings": [],
+      "verification": {
+        "testCompile": "PASS BUILD SUCCESSFUL in 18 s 896 ms",
+        "assembleHap": "PASS signed BUILD SUCCESSFUL in 20 s 393 ms",
+        "hostChecks": "30 server checks PASS; 17 ledger checks independently rerun",
+        "compliance": "Light/diff PASS",
+        "device": "NOT RUN",
+        "scopeBoundary": "M7 protocol/ledger code only; no real IAP order, HTTP/App integration or deployment acceptance."
+      }
     }
   },
   "videoRepair": {
@@ -373,6 +434,28 @@
       "assembleHap": "PASS exit 0; signed BUILD SUCCESSFUL in 15 s 857 ms",
       "compliance": "PASS Light, git diff --check and state validation",
       "sourceSnapshot": "ee45030b; SSH reviewed source unchanged; concurrent Pro fixes remain under their own review"
+    }
+  },
+  "fileTransferPreparation": {
+    "planPath": "docs/codex/plans/2026-09-07-file-transfer-clipboard-remediation.md",
+    "status": "plan-only-awaiting-implementation-authorization",
+    "entitlement": "free-file-and-clipboard-reliability",
+    "codeImplemented": false,
+    "implementationAuthorized": false,
+    "baselineHead": "ab3a60ac19cc891bcfa8a7554d939c053ebbfd64",
+    "reviewerTaskId": "/root/review_transfer_plan",
+    "reviewKind": "plan-only",
+    "reviewReceiptId": "file-transfer-clipboard-plan-2026-09-07",
+    "reviewResult": "PLAN-ONLY PASS; no application implementation or device acceptance claim",
+    "next": "Await implementation authorization, then refresh F01-F17 baseline and execute T0-T9; keep the active Pro task and its review metadata unchanged.",
+    "validation": {
+      "recordedAt": "2026-09-07 Asia/Shanghai",
+      "workspaceHead": "bbc7fb535275e4db465111df8ed44d2aeb808fb3",
+      "structure": "F01-F17 and T0-T9 fully mapped; all 24 local source links exist",
+      "testCompile": "PASS exit 0; BUILD SUCCESSFUL in 933 ms; sandbox EPERM before compile resolved by authorized access to existing cache",
+      "assembleHap": "PASS exit 0; SignHap 1 s 942 ms; BUILD SUCCESSFUL in 14 s 290 ms",
+      "compliance": "PASS exit 0; Open-source compliance gate passed (Light).",
+      "device": "NOT RUN; T0-T9 implementation pending"
     }
   }
 }

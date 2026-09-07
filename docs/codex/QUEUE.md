@@ -4,9 +4,9 @@ Updated: 2026-09-07 Asia/Shanghai
 
 ## Now
 
-- Remote AI: [AI0 evidence](plans/2026-09-07-pro-remote-ai-ai0-evidence.md) records merged independent GitHub Codex/DSH probe repositories. Continue actual execution isolation, model-turn/approval/resume and HarmonyOS TLS/key tests; then AI1 authenticated LAN. No app AI UI or relay feature is available yet.
+- Remote AI: computer plugins v0.2.0 are released and public. [Agent installation prompts](plans/2026-09-07-remote-ai-agent-install.md) and future settings copy/pairing behavior are prepared. Client implementation awaits authorization: TLS/key handling, App UI/Pro, real-device pairing and dual-machine LAN; RustDesk transport remains later. No App AI UI is available yet.
 
-0. Pro M7: validate/review trusted server vendor protocol, then durable ledger, client signed cache/restore/refunds and free UI. M6 USB INIT 3ea2859e+ff31ef7d scoped code/Release review PASS; actual authentication still pending. First M5 direct SSH continuation ed537821+27716d2d+c64efc8e code review PASS; full sharing/PC/RDP and actual cross-device/PC knock/icon/UI acceptance remain open.
+0. Pro M7: trusted vendor protocol and durable ledger independently reviewed; integrate HTTP/App signed cache, purchase/restore/refunds and a deployed sandbox backend. AGC test product/key verified and user-specified tester saved; actual IAP device acceptance pending. Continue free UI. M6 USB INIT 3ea2859e+ff31ef7d scoped code/Release review PASS; actual authentication still pending. First M5 direct SSH continuation ed537821+27716d2d+c64efc8e code review PASS; full sharing/PC/RDP and actual cross-device/PC knock/icon/UI acceptance remain open.
 
 1. Run one consolidated feedback-batch device acceptance on HarmonyOS PC: Moonlight/RustDesk hardware-decoder flip and four visual/control combinations; RDP transient credentials, fullscreen pointer mapping, resolution negotiation/scaling and black-border behavior; Dock minimize input fencing; RustDesk nested toolbar, explicit H.265 negotiation/hardware decode, codec telemetry and bidirectional clipboard; SSH authentication-before-navigation, compact phone More menu and common commands; button-only exit; long classic host list; and the simplified Harmony shortcut settings, including the icon, current-device tab, explicit open/close wording, PC first-use four-protocol default and persistence after manual changes.
 2. If a user later reports a flip, export the schema-v5 diagnostic JSONL before reconnecting and use the PC flip menu to mark normal/upside-down/horizontal-mirror orientation. Real-device acceptance is unavailable and does not block the committed repair. Verify it contains one coherent redacted producer class, raw producer matrix, decoder-applied matrix, presentation mode, renderer manual transform, renderer registry generation and decoder binding generation; attach the capture for root-cause classification.
@@ -15,6 +15,8 @@ Updated: 2026-09-07 Asia/Shanghai
 5. Validate the completed RustDesk M4 UDP/KCP state machine against fixed-version hbbs/hbbr and controlled peers across symmetric NAT, CGNAT, UDP-blocked, TCP-only, global/IPv6-only, NAT64 and relay fallback before enabling AUTO, UDP/KCP or `nat_traversal_ipv6`.
 
 ## Next
+
+- File transfer / clipboard: [F01-F17 / T0-T9 remediation plan](plans/2026-09-07-file-transfer-clipboard-remediation.md) saved and independently reviewed. Await explicit implementation authorization; first refresh the baseline, then session/clipboard isolation, RDP safety and shared task lifecycle before bidirectional transfer and conditional move. No implementation item is closed.
 
 
 - Base UI: ca929ceb free header sample implemented and independently reviewed. Complete U0 performance/device baseline and U1 API23/26 visual/keyboard acceptance before broader migration; public UI never requires Pro.
