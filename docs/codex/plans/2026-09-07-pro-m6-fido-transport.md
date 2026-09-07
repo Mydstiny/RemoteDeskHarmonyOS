@@ -24,3 +24,5 @@
 - [FIDO CTAP 2.3 USB HID 定义与初始化](https://fidoalliance.org/specs/fido-v2.3-ps-20260226/fido-client-to-authenticator-protocol-v2.3-ps-20260226.html#usb-hid-init)。本实现按规范独立编写，不引入第三方 HID 库。
 - 主机测试覆盖实际解析器与 USB 控制器，包括复合键盘拒绝、畸形报告、分片/顺序/nonce、授权拒绝和迟到、取消、断连、超时与释放。不以平台 mock 代替硬件证据。
 - 本增量完成后执行当次 Hvigor 两门、Release 实包授权剪枝、Light/diff、独立复核并单独 commit。USB 硬件、PC 以及 RDP 端到端验证仍待实际执行。
+
+首个实现提交 `3ea2859e`：13 项主机检查、本次 testCompile 15 s 695 ms、签名构建 18 s 891 ms、Release 38 s 395 ms、Light/diff 与实际 ABC 探测门剪枝均通过。独立复核发现 HID Local Usage 列表被覆盖的问题，已改为拒绝同一 Main item 前混合或重复 Usage，并拒绝尾部悬空 Usage；14 项检查覆盖 Collection/Input/Output 三处注入及实际控制器零 claim/零 INIT。修复后重新执行构建和复核，不沿用修复前产物。

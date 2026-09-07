@@ -129,6 +129,21 @@ test('FIDO discovery requires the whole supported collection and rejects keyboar
     assert.equal(codec.isProFidoReportDescriptor(data), false);
   }
 });
+test('local Usage lists cannot conceal mixed or duplicate fields before any FIDO Main item', async () => {
+  for (const [offset, expected] of [[3, 1], [7, 0x20], [20, 0x21]]) {
+    for (const extra of [[0x0b, 0x04, 0x00, 0x07, 0x00], [0x09, expected]]) {
+      const f = fixture();
+      f.state.descriptors = Uint8Array.from([...descriptor.subarray(0, offset), ...extra, ...descriptor.subarray(offset)]);
+      assert.equal(f.codec.isProFidoReportDescriptor(f.state.descriptors), false);
+      await assert.rejects(() => f.probe.probe(f.select(), f.owner));
+      assert.equal(f.state.claims.length, 0); assert.equal(f.state.transfers.length, 0);
+      assert.equal(f.state.closes.length, 1);
+    }
+  }
+  const { codec } = fixture();
+  assert.equal(codec.isProFidoReportDescriptor(Uint8Array.from([...descriptor, 0x09, 0x20])), false);
+  assert.equal(codec.isProFidoReportDescriptor(Uint8Array.from([...descriptor.subarray(0, 33), 0x09, 0x20, 0xc0])), false);
+});
 test('CTAPHID framing preserves payload at first/continuation boundaries and maximum size', () => {
   const { codec } = fixture();
   for (const size of [0, 8, 17, 57, 58, 116, 117, 7609]) {

@@ -30,14 +30,16 @@ export function isProFidoReportDescriptor(bytes: Uint8Array): boolean {
       else if (tag === 9) { count = value; }
       else if (tag === 8 || tag === 10 || tag === 11) { return false; } // report IDs / push / pop
     } else if (type === 2) {
-      if (tag !== 0) { return false; } // usage ranges and delimiters are outside this probe layout
+      // Local usages accumulate until the next Main item. Overwriting one
+      // would conceal a keyboard or another usage in the same report.
+      if (tag !== 0 || width === 0 || usage !== -1) { return false; }
       usage = width === 4 ? value : page * 65536 + value;
     } else if (type === 0) {
       if (tag === 10) {
         if (depth !== 0 || ++collections !== 1 || value !== 1 || usage !== 0xf1d00001) { return false; }
         depth = 1;
       } else if (tag === 12) {
-        if (depth !== 1 || width !== 0) { return false; }
+        if (depth !== 1 || width !== 0 || usage !== -1) { return false; }
         depth = 0;
       } else if (tag === 8 || tag === 9) {
         if (depth !== 1 || page !== 0xf1d0 || size !== 8 || count !== PRO_FIDO_PACKET_SIZE ||
@@ -48,7 +50,7 @@ export function isProFidoReportDescriptor(bytes: Uint8Array): boolean {
       usage = -1;
     } else { return false; }
   }
-  return collections === 1 && depth === 0 && inputs === 1 && outputs === 1;
+  return collections === 1 && depth === 0 && inputs === 1 && outputs === 1 && usage === -1;
 }
 
 function readChannel(bytes: Uint8Array): number {
