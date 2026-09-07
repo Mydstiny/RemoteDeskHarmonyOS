@@ -284,7 +284,8 @@ export class ProContinuationService {
     if (receipt === undefined || receipt === null || !this.targetChannel.send(JSON.stringify(receipt))) { return false; }
     this.targetMessage = '本端已恢复接续状态，已发送就绪回执'; this.publish(); return true;
   }
-  cancelIncoming(): void {
+  cancelIncoming(expectedId: string = ''): void {
+    if (expectedId !== '' && this.incomingId() !== expectedId) { return; }
     this.targetGeneration++; this.target?.cancel(); this.target = null; this.targetChannel.close();
     this.targetContext = null;
     if (this.targetTimer !== -1) { clearTimeout(this.targetTimer); this.targetTimer = -1; }

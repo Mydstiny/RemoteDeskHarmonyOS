@@ -8757,14 +8757,14 @@ struct SshTerminal {
       if (view.sshPane === 'files') { this.openSftpPanel(); restored = this.showSftpPanel; }
       const paneEpoch = this.proContinuationPaneEpoch;
       if (view.sshDirectory !== '') { restored = (await this.refreshSftp(view.sshDirectory)) && restored; }
-      if (this.proConnectionTransferId !== id) { return; }
+      if (this.proConnectionTransferId !== id || service.incomingId() !== id) { return; }
       restored = restored && this.proContinuationSessionCurrent(page, binding, session, sessionGeneration, host.id) &&
         paneEpoch === this.proContinuationPaneEpoch &&
         (view.sshPane === 'files' ? (this.showSftpPanel && !this.sftpRootSheetClosing &&
           !this.sftpCloseRootAfterPeerPicker) : !this.showSftpPanel) &&
         (view.sshDirectory === '' || this.sftpPath === this.normalizeRemoteDir(view.sshDirectory));
       if (!restored || !service.complete(id, host)) {
-        service.cancelIncoming();
+        service.cancelIncoming(id);
         promptAction.showToast({ message: 'SSH 已连接，目录恢复或接续回执未完成；源端仍保留', duration: 2400 });
       }
       this.proConnectionTransferId = '';

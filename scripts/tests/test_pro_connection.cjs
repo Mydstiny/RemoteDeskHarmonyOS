@@ -436,6 +436,17 @@ test('transition start fences simulation before scope generation changes and fai
   f.state.transitionListeners.forEach(fn => fn(false));
   assert.equal(await f.service.onContinue(9, {}), 1); assert.equal(f.service.closeConfirmedSource(9), false);
 });
+test('old target page failure cannot cancel a replacement incoming transaction', async () => {
+  const f = fixture(); const e = f.envelope(); f.service.ingest(JSON.stringify(e)); await f.service.accept(f.context);
+  const page = f.terminal(); page.proConnectionTransferId = e.transferId;
+  const wait = deferred(); f.state.directoryWait = wait; const restoring = page.restoreProContinuation(); await settle();
+  page.pageGeneration++; f.service.cancelIncoming(e.transferId);
+  const replacement = f.envelope(); replacement.transferId = 'd'.repeat(32); replacement.channelId = 'rd_' + 'e'.repeat(32);
+  assert.equal(f.service.ingest(JSON.stringify(replacement)), true); assert.ok(await f.service.accept(f.context));
+  wait.resolve(); await restoring;
+  assert.equal(f.service.incomingId(), replacement.transferId); assert.notEqual(f.state.objects[1].calls.at(-1), '');
+  f.service.cancelIncoming(e.transferId); assert.equal(f.service.incomingId(), replacement.transferId);
+});
 test('transition cancels pending target acceptance and ready channels before account mutation', async () => {
   for (const phase of ['offered', 'permission', 'ready']) {
     const f = fixture(); const e = f.envelope(); f.service.ingest(JSON.stringify(e));
