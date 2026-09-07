@@ -30,3 +30,17 @@
 官方复核：[应用接续](https://developer.huawei.com/consumer/en/doc/best-practices/bpta-continue-cast)（2026-09-04 更新）确认默认 ACTIVE、冷/热回调、同步 restoreWindowStage、按需关闭页面栈和源端退出。DataObject 回执仍按本机 SDK 要求校验 DISTRIBUTED_DATASYNC；接续本身自 API12 免该权限，不把两者混同。
 
 本次代码门禁：default 测试编译 BUILD SUCCESSFUL in 11 s 898 ms ；signed Debug BUILD SUCCESSFUL in 14 s 927 ms ；Release BUILD SUCCESSFUL in 53 s 363 ms 。25 项 connection、26 项 runtime、14 项 knock 和 49 项 SSH host 检查通过；Light/diff PASS。Release ABC SHA-256 9c782c92bbd29d11e0a839da5bc58959782686f73c786f3d694d9ba075dfbeba，实包模拟与实验授权路径审计 PASS。代码独立复核待进行；不代表跨设备验收。
+
+
+## 首轮独立复核修正
+
+首轮复核发现四项 P2，修正后重新执行门禁并复核：
+
+1. 每次业务检查重新读取可读、有效的持久代理 profile 并复用 canonical runtime plan，只接受真实 direct；不以旧平面字段推断连接路由。目标 restore/complete 重读当前 HostSync 主机，旧对象不能证明新配置。
+2. 源端与目标恢复同时绑定 native session generation 和实际 CONNECTED 状态。相同 sessionId 的恢复换代不能继承旧接续事务的关闭授权。
+3. SFTP 读取之后重新核对声明的页面、目录及关闭状态；文件页关闭再打开也使原恢复失效。
+4. 直接监听账号 transition activity，在 currentScope 更换之前就拒绝业务执行并清理活跃事务。Debug 模拟 Pro 不能越过该边界。冷启动、尚未确认且未绑定账号的官方数据可以等待账号初始化；此时没有通道或执行租约，必须在转换结束后由用户确认最终账号，旧接受请求失效。
+
+新增回归执行实际 profile store/runtime policy 和生产 SshTerminal 的准备/恢复方法，当前共 33 项 connection checks PASS。独立复核与最终构建结果另记；真机矩阵仍未执行。
+
+修正后当次门禁：default 测试编译 BUILD SUCCESSFUL in 11 s 201 ms；signed Debug BUILD SUCCESSFUL in 30 s 278 ms；Release BUILD SUCCESSFUL in 55 s 966 ms，全部 exit 0。33 项 connection（含真实页面方法）、49 项 SSH、Light/diff 与 Release 审计 PASS；ABC SHA-256 e617e8f253a95b570e0a892f6fc6207d08d7533dd355cec8963c8597a4e9d328。修正独立复核待进行。

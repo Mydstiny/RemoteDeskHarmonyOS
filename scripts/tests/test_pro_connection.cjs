@@ -13,7 +13,8 @@ function deferred() { let resolve; const promise = new Promise(r => { resolve = 
 async function settle() { for (let i = 0; i < 15; i++) await Promise.resolve(); }
 function fixture() {
   const state = { now: 1000000, allowed: true, permission: true, hostReady: true,
-    objects: [], timers: new Map(), listeners: [], missions: [], nextTimer: 0,
+    objects: [], timers: new Map(), listeners: [], transitionListeners: [], missions: [], nextTimer: 0,
+    profileRaw: '', profileReadable: true, nativeGeneration: 5, nativeState: 2, directoryWait: null,
     joinWait: null, permissionWait: null, createError: false,
     scope: { kind: 'huawei_account', ownerScopeId: 'owner-' + 'a'.repeat(64), generation: 1, sessionState: 'ready' } };
   state.host = { id: 'host-1', userId: state.scope.ownerScopeId, protocol: 'ssh', label: 'Work server',
@@ -36,7 +37,9 @@ function fixture() {
     '@kit.CryptoArchitectureKit': { cryptoFramework: { createRandom: () => ({
       generateRandomSync: n => ({ data: new Uint8Array(crypto.randomBytes(n)) })
     }) } },
-    '@kit.ArkData': { distributedDataObject: { create: (_context, fields) => {
+    '@kit.ArkData': { preferences: { getPreferencesSync: () => ({ getSync() {
+      if (!state.profileReadable) throw new Error('unreadable'); return state.profileRaw;
+    } }) }, distributedDataObject: { create: (_context, fields) => {
       if (state.createError) throw new Error('platform create failed');
       const object = { ...fields, calls: [], callback: null,
         on(event, callback) { assert.equal(event, 'change'); this.callback = callback; },
@@ -66,7 +69,11 @@ function fixture() {
       }, clearTimeout: id => state.timers.delete(id),
       require(id) {
         if (mocks[id]) return mocks[id];
-        if (id.endsWith('/AccountSessionCoordinator')) return { AccountSessionCoordinator: { getInstance: () => ({ currentScope: () => state.scope }) } };
+        if (id.endsWith('/AccountSessionCoordinator')) return { AccountSessionCoordinator: { getInstance: () => ({
+          currentScope: () => state.scope, onTransitionActivity(callback) {
+            state.transitionListeners.push(callback); callback(false); return () => {};
+          }
+        }) } };
         if (id.endsWith('/HostSyncService')) return { HostSyncService: { getInstance: () => ({
           isReady: () => state.hostReady, getHost: id => state.host?.id === id ? state.host : undefined
         }) } };
@@ -87,9 +94,53 @@ function fixture() {
   const service = ProContinuationService.getInstance();
   const envelope = () => ({ version: 1, purpose: 'continuation', transferId: 'b'.repeat(32),
     channelId: 'rd_' + 'c'.repeat(32), owner: state.scope.ownerScopeId, createdAt: state.now,
-    expiresAt: state.now + 120000, connection: adapter.describeProSshConnection(state.host, 'files', '/home/alice/work') });
+    expiresAt: state.now + 120000, connection: adapter.describeProSshConnection(state.host, 'files', '/home/alice/work', context) });
   const offer = () => ({ windowId: 9, isCurrent: () => true,
-    describe: () => adapter.describeProSshConnection(state.host, 'files', '/home/alice/work'), close() { state.closed = true; } });
+    describe: () => adapter.describeProSshConnection(state.host, 'files', '/home/alice/work', context), close() { state.closed = true; } });
+  function proxyProfile(type = 'socks5') {
+    return { schemaVersion: 1, hostId: state.host.id, route: { schemaVersion: 1, type,
+      endpointHost: state.host.host, endpointPort: state.host.port, hops: [], connectTimeoutMs: 10000 },
+      ...(type === 'direct' ? {} : { proxyHost: 'proxy.example.test', proxyPort: 1080, proxyAuthRequired: false }) };
+  }
+  function terminal() {
+    const file = path.join(root, 'entry/src/main/ets/pages/SshTerminal.ets');
+    const original = fs.readFileSync(file, 'utf8');
+    const names = ['proContinuationSessionCurrent', 'prepareProContinuation', 'restoreProContinuation', 'onProContinuationPaneChange'];
+    const methods = names.map(name => {
+      const start = original.search(new RegExp(`  private (?:async )?${name}\\(`));
+      assert.ok(start >= 0, 'actual page method exists: ' + name);
+      let cursor = original.indexOf('{', start), depth = 1;
+      for (cursor++; depth > 0 && cursor < original.length; cursor++) {
+        if (original[cursor] === '{') depth++;
+        if (original[cursor] === '}') depth--;
+      }
+      return original.slice(start, cursor);
+    }).join('\n');
+    const compiled = ts.transpileModule('class Terminal {\n' + methods + '\n}\nmodule.exports = Terminal;', {
+      compilerOptions: { target: ts.ScriptTarget.ES2021, module: ts.ModuleKind.CommonJS }
+    }).outputText;
+    const module = { exports: {} };
+    vm.runInNewContext(compiled, { module, SSH_STATE_CONNECTED: 2,
+      ProContinuationService: { getInstance: () => service },
+      HostSyncService: { getInstance: () => ({ getHost: id => state.host?.id === id ? state.host : undefined }) },
+      describeProSshConnection: adapter.describeProSshConnection, getContext: () => context,
+      promptAction: { showToast() {} }, window: { findWindow: () => ({ getWindowProperties: () => ({ id: 9 }) }) }
+    }, { filename: file });
+    const page = new module.exports();
+    Object.assign(page, { hostId: state.host.id, connected: true, isDesktopDevice: false, terminalClosing: false,
+      pageGeneration: 3, sshBindingGeneration: 4, sessionId: 17, sshSessionGeneration: state.nativeGeneration,
+      showSftpPanel: true, sftpPath: '/home/alice/work', proContinuationPaneEpoch: 0,
+      sftpRootSheetClosing: false, sftpCloseRootAfterPeerPicker: false, proContinuationRestoreRunning: false,
+      proConnectionTransferId: '', getUIContext: () => ({ getWindowName: () => 'window' }),
+      loader: { getConnectionState: () => state.nativeState,
+        getSshTerminalDiagnostics: () => ({ sessionGeneration: state.nativeGeneration }) },
+      closeSessionAndBack() { state.closed = true; }, stopSftpKnock() {},
+      openSftpPanel() { if (!this.showSftpPanel) { this.showSftpPanel = true; this.onProContinuationPaneChange(); } },
+      normalizeRemoteDir: value => value,
+      async refreshSftp(directory) { if (state.directoryWait) await state.directoryWait.promise; this.sftpPath = directory; return true; }
+    });
+    return page;
+  }
   function entryAbility() {
     const file = path.join(root, 'entry/src/main/ets/entryability/EntryAbility.ets');
     const source = ts.transpileModule(fs.readFileSync(file, 'utf8'), {
@@ -116,7 +167,7 @@ function fixture() {
     return { ability: new module.exports.default(), events };
   }
   return { state, context, policy, adapter, service, envelope, offer, ProConnectionTransaction,
-    ProContinuationReceiptChannel, entryAbility, key: PRO_CONTINUATION_PARAM };
+    ProContinuationReceiptChannel, entryAbility, proxyProfile, terminal, key: PRO_CONTINUATION_PARAM };
 }
 
 test('wire serialization reads only whitelist fields and detaches mutable view', () => {
@@ -154,9 +205,9 @@ test('sharing cannot carry account ownership or a local host reference', () => {
 });
 test('proxy source cannot silently export as a direct connection', () => {
   const f = fixture(); f.state.host.sshProxyType = 'ssh_jump';
-  assert.equal(f.adapter.describeProSshConnection(f.state.host, 'terminal', ''), null);
-  f.state.host.sshProxyType = 'direct'; f.state.host.proxyHost = 'old-proxy';
-  assert.equal(f.adapter.describeProSshConnection(f.state.host, 'terminal', ''), null);
+  assert.equal(f.adapter.describeProSshConnection(f.state.host, 'terminal', '', f.context), null);
+  f.state.host.sshProxyType = 'direct'; f.state.profileRaw = JSON.stringify([f.proxyProfile()]);
+  assert.equal(f.adapter.describeProSshConnection(f.state.host, 'terminal', '', f.context), null);
 });
 test('destination needs confirmation, own entitlement and account before native readiness', () => {
   const f = fixture(); const tx = new f.ProConnectionTransaction(f.envelope());
@@ -311,6 +362,104 @@ test('bounded old join expiry cannot close a newly prepared source channel', asy
   f.service.cancelSource(); f.state.joinWait = null; await f.service.prepare(f.context, f.offer());
   assert.equal(await f.service.onContinue(9, {}), 0); oldTimeout(); assert.equal(await old, 1);
   assert.notEqual(f.state.objects[1].calls.at(-1), ''); wait.resolve(); await settle();
+});
+
+test('canonical direct profiles override legacy fields; corrupt or unreadable profiles never imply direct', () => {
+  const f = fixture(); f.state.host.sshProxyType = 'socks5'; f.state.host.proxyHost = 'old-proxy';
+  f.state.profileRaw = JSON.stringify([f.proxyProfile('direct')]);
+  assert.ok(f.adapter.describeProSshConnection(f.state.host, 'terminal', '', f.context));
+  f.state.profileReadable = false;
+  assert.equal(f.adapter.describeProSshConnection(f.state.host, 'terminal', '', f.context), null);
+  f.state.profileReadable = true; f.state.profileRaw = '{';
+  assert.equal(f.adapter.describeProSshConnection(f.state.host, 'terminal', '', f.context), null);
+});
+test('source and target re-read canonical routes after permission and channel awaits', async () => {
+  for (const side of ['source', 'target']) {
+    for (const phase of ['permission', 'join']) {
+      const f = fixture(); const envelope = f.envelope(); const description = envelope.connection;
+      const offer = { ...f.offer(), describe: () => description };
+      const wait = deferred();
+      if (phase === 'permission') { f.state.permission = false; f.state.permissionWait = wait; }
+      else { f.state.joinWait = wait; }
+      let action;
+      if (side === 'target') { f.service.ingest(JSON.stringify(envelope)); action = f.service.accept(f.context); }
+      else if (phase === 'permission') { action = f.service.prepare(f.context, offer); }
+      else { await f.service.prepare(f.context, offer); action = f.service.onContinue(9, {}); }
+      await settle(); f.state.profileRaw = JSON.stringify([f.proxyProfile()]); f.state.permission = true; wait.resolve();
+      assert.equal(await action, side === 'target' ? null : phase === 'permission' ? false : 1);
+      assert.equal(f.state.closed, undefined);
+    }
+  }
+});
+test('target completion re-reads current hosts and profiles instead of trusting a captured object', async () => {
+  for (const mutation of [f => { f.state.profileRaw = JSON.stringify([f.proxyProfile()]); },
+    f => { f.state.host = { ...f.state.host, host: 'changed.example.test' }; },
+    f => { f.state.hostReady = false; }, f => { f.state.profileReadable = false; }]) {
+    const f = fixture(); const e = f.envelope(); f.service.ingest(JSON.stringify(e));
+    const captured = await f.service.accept(f.context); assert.ok(captured); mutation(f);
+    assert.equal(f.service.restoreView(e.transferId, captured), null);
+    assert.equal(f.service.complete(e.transferId, captured), false); assert.equal(f.state.objects[0].receipt, '');
+  }
+});
+test('actual source page binds native generation and CONNECTED before accepting an old close receipt', async () => {
+  for (const mutation of [f => { f.state.nativeGeneration++; }, f => { f.state.nativeState = 1; }]) {
+    const f = fixture(); const page = f.terminal(); await page.prepareProContinuation();
+    const params = {}; assert.equal(await f.service.onContinue(9, params), 0);
+    const e = JSON.parse(params[f.key]); const object = f.state.objects[0];
+    object.receipt = JSON.stringify({ version: 1, transferId: e.transferId, owner: e.owner, result: 'ready' });
+    object.emit(e.channelId); assert.equal(f.service.snapshot().sourceCloseAllowed, true);
+    mutation(f);
+    assert.equal(f.service.snapshot().sourceCloseAllowed, false);
+    assert.equal(f.service.closeConfirmedSource(9), false); assert.equal(f.state.closed, undefined);
+  }
+});
+test('actual target page requires declared pane, directory and native generation after slow SFTP restore', async () => {
+  for (const change of ['none', 'close', 'close-reopen', 'closing', 'generation', 'host', 'route']) {
+    const f = fixture(); const e = f.envelope(); f.service.ingest(JSON.stringify(e)); await f.service.accept(f.context);
+    const page = f.terminal(); page.proConnectionTransferId = e.transferId;
+    const wait = deferred(); f.state.directoryWait = wait; const restoring = page.restoreProContinuation(); await settle();
+    if (change === 'close' || change === 'close-reopen') { page.showSftpPanel = false; page.onProContinuationPaneChange(); }
+    if (change === 'close-reopen') { page.openSftpPanel(); }
+    if (change === 'closing') { page.sftpRootSheetClosing = true; }
+    if (change === 'generation') { f.state.nativeGeneration++; page.sshSessionGeneration = f.state.nativeGeneration; }
+    if (change === 'host') { f.state.host = { ...f.state.host, host: 'changed.example.test' }; }
+    if (change === 'route') { f.state.profileRaw = JSON.stringify([f.proxyProfile()]); }
+    wait.resolve(); await restoring;
+    assert.equal(f.state.objects[0].receipt !== '', change === 'none', change);
+  }
+});
+test('transition start fences simulation before scope generation changes and failed transition never revives source', async () => {
+  const f = fixture(); await f.service.prepare(f.context, f.offer()); const scope = f.state.scope;
+  f.state.transitionListeners.forEach(fn => fn(true)); assert.equal(f.state.allowed, true);
+  assert.equal(f.state.scope, scope); assert.equal(await f.service.onContinue(9, {}), 1);
+  assert.equal(await f.service.prepare(f.context, f.offer()), false);
+  f.state.transitionListeners.forEach(fn => fn(false));
+  assert.equal(await f.service.onContinue(9, {}), 1); assert.equal(f.service.closeConfirmedSource(9), false);
+});
+test('transition cancels pending target acceptance and ready channels before account mutation', async () => {
+  for (const phase of ['offered', 'permission', 'ready']) {
+    const f = fixture(); const e = f.envelope(); f.service.ingest(JSON.stringify(e));
+    let accepting; let wait;
+    if (phase === 'permission') {
+      wait = deferred(); f.state.permission = false; f.state.permissionWait = wait;
+      accepting = f.service.accept(f.context); await settle();
+    }
+    if (phase === 'ready') { await f.service.accept(f.context); f.service.complete(e.transferId, f.state.host); }
+    f.state.transitionListeners.forEach(fn => fn(true));
+    assert.equal(f.service.snapshot().incoming, false); assert.equal(f.service.complete(e.transferId, f.state.host), false);
+    if (phase === 'permission') { f.state.permission = true; wait.resolve(); assert.equal(await accepting, null); }
+    f.state.transitionListeners.forEach(fn => fn(false)); assert.equal(await f.service.accept(f.context), null);
+  }
+});
+test('unconfirmed cold Want survives account bootstrap only as data and cannot execute during transition', async () => {
+  const f = fixture(); const e = f.envelope(); const bound = f.state.scope;
+  f.state.scope = { ...bound, kind: 'device_local', ownerScopeId: '', generation: 0 };
+  assert.equal(f.service.ingest(JSON.stringify(e)), true);
+  f.state.transitionListeners.forEach(fn => fn(true));
+  assert.equal(f.service.snapshot().incoming, true); assert.equal(await f.service.accept(f.context), null);
+  assert.equal(f.state.objects.length, 0);
+  f.state.scope = bound; f.state.transitionListeners.forEach(fn => fn(false));
+  assert.equal(await f.service.accept(f.context), f.state.host);
 });
 
 (async () => {

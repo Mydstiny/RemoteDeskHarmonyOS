@@ -917,7 +917,7 @@ struct SshTerminal {
   @State forwardingConfirmDanger: boolean = false;
   private forwardingConfirmResolve: ((confirmed: boolean) => void) | null = null;
   /** SFTP 文件传输面板 */
-  @State @Watch('stopSftpKnock') showSftpPanel: boolean = false;
+  @State @Watch('onProContinuationPaneChange') showSftpPanel: boolean = false;
   @State showSftpSheet: boolean = false;
   /** Internal gate only; changing it must not rebuild a Sheet during entrance. */
   private sftpRootSheetSurfaceReady: boolean = false;
@@ -8692,30 +8692,47 @@ struct SshTerminal {
     }
   }
 
+  private proContinuationPaneEpoch: number = 0;
+  private onProContinuationPaneChange(): void {
+    this.proContinuationPaneEpoch++;
+    this.stopSftpKnock();
+  }
+
+  private proContinuationSessionCurrent(page: number, binding: number, session: number,
+    generation: number, hostId: string): boolean {
+    return !this.terminalClosing && this.connected && this.pageGeneration === page &&
+      this.sshBindingGeneration === binding && this.sessionId === session && this.hostId === hostId &&
+      generation > 0 && this.sshSessionGeneration === generation &&
+      this.loader.getConnectionState(session) === SSH_STATE_CONNECTED &&
+      this.loader.getSshTerminalDiagnostics(session).sessionGeneration === generation;
+  }
+
   private async prepareProContinuation(): Promise<void> {
     this.showSshHeaderActionPopup = false;
     const host = HostSyncService.getInstance().getHost(this.hostId);
     if (host === undefined || !this.connected || this.isDesktopDevice || this.terminalClosing) { return; }
     const page = this.pageGeneration; const binding = this.sshBindingGeneration;
     const session = this.sessionId; const hostId = this.hostId;
+    const sessionGeneration = this.sshSessionGeneration;
+    if (!this.proContinuationSessionCurrent(page, binding, session, sessionGeneration, hostId)) { return; }
     const pane = this.showSftpPanel ? 'files' : 'terminal';
     const directory = this.sftpPath.startsWith('/') ? this.sftpPath : '';
     if (pane === 'files' && directory === '') {
       promptAction.showToast({ message: '请先在 SFTP 中选择绝对目录，再准备接续', duration: 2200 }); return;
     }
-    const description = describeProSshConnection(host, pane, directory);
+    const context = getContext(this) as common.UIAbilityContext;
+    const description = describeProSshConnection(host, pane, directory, context);
     if (description === null) {
       promptAction.showToast({ message: '本轮接续仅支持直连 SSH；代理配置暂未开放', duration: 2200 }); return;
     }
     try {
       const win = window.findWindow(this.getUIContext().getWindowName());
       this.proContinuationWindowId = win.getWindowProperties().id;
-      const prepared = await ProContinuationService.getInstance().prepare(getContext(this) as common.UIAbilityContext, {
+      const prepared = await ProContinuationService.getInstance().prepare(context, {
         windowId: this.proContinuationWindowId,
         describe: (): ProConnectionDescription | null => description,
-        isCurrent: (): boolean => !this.terminalClosing && this.connected && this.pageGeneration === page &&
-          this.sshBindingGeneration === binding && this.sessionId === session && this.hostId === hostId &&
-          (pane !== 'files' || (this.showSftpPanel && this.sftpPath === directory)),
+        isCurrent: (): boolean => this.proContinuationSessionCurrent(page, binding, session, sessionGeneration, hostId) &&
+          (pane === 'files' ? (this.showSftpPanel && !this.sftpRootSheetClosing && this.sftpPath === directory) : !this.showSftpPanel),
         close: (): void => { this.closeSessionAndBack(); }
       });
       promptAction.showToast({ message: prepared ? '接续已准备，本端会话保持连接' :
@@ -8734,12 +8751,18 @@ struct SshTerminal {
     if (view === null) { this.proConnectionTransferId = ''; return; }
     this.proContinuationRestoreRunning = true;
     const page = this.pageGeneration; const binding = this.sshBindingGeneration; const session = this.sessionId;
+    const sessionGeneration = this.sshSessionGeneration;
     try {
       let restored: boolean = true;
       if (view.sshPane === 'files') { this.openSftpPanel(); restored = this.showSftpPanel; }
+      const paneEpoch = this.proContinuationPaneEpoch;
       if (view.sshDirectory !== '') { restored = (await this.refreshSftp(view.sshDirectory)) && restored; }
-      if (this.pageGeneration !== page || this.sshBindingGeneration !== binding || this.sessionId !== session ||
-          !this.connected || this.terminalClosing || this.proConnectionTransferId !== id) { return; }
+      if (this.proConnectionTransferId !== id) { return; }
+      restored = restored && this.proContinuationSessionCurrent(page, binding, session, sessionGeneration, host.id) &&
+        paneEpoch === this.proContinuationPaneEpoch &&
+        (view.sshPane === 'files' ? (this.showSftpPanel && !this.sftpRootSheetClosing &&
+          !this.sftpCloseRootAfterPeerPicker) : !this.showSftpPanel) &&
+        (view.sshDirectory === '' || this.sftpPath === this.normalizeRemoteDir(view.sshDirectory));
       if (!restored || !service.complete(id, host)) {
         service.cancelIncoming();
         promptAction.showToast({ message: 'SSH 已连接，目录恢复或接续回执未完成；源端仍保留', duration: 2400 });

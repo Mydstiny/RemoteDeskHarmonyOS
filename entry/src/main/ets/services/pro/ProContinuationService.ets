@@ -59,17 +59,35 @@ export class ProContinuationService {
   private sourceDeadline: number = 0;
   private missionOperation: Promise<void> = Promise.resolve();
   private target: ProConnectionTransaction | null = null;
+  private targetContext: common.UIAbilityContext | null = null;
   private targetChannel: ProContinuationReceiptChannel = new ProContinuationReceiptChannel();
   private targetAccountGeneration: number = 0;
   private targetGeneration: number = 0;
   private targetTimer: number = -1;
   private targetMessage: string = '';
   private seen: Map<string, number> = new Map<string, number>();
+  private transitionActive: boolean = true;
   static getInstance(): ProContinuationService {
     if (!ProContinuationService.instance) { ProContinuationService.instance = new ProContinuationService(); }
     return ProContinuationService.instance;
   }
   private constructor() {
+    AccountSessionCoordinator.getInstance().onTransitionActivity((active: boolean): void => {
+      this.transitionActive = active;
+      if (active) {
+        this.cancelSource();
+        const scope = AccountSessionCoordinator.getInstance().currentScope();
+        if (this.target?.state() !== 'offered' || scope.kind === 'huawei_account') {
+          this.cancelIncoming();
+        } else {
+          // A cold official Want can precede account bootstrap. This is only
+          // unconfirmed data: invalidate pending acceptance, retain no channel
+          // or account lease, and validate the final account on explicit accept.
+          this.targetGeneration++; this.targetContext = null;
+        }
+      }
+      this.publish();
+    });
     ProAppRuntime.getInstance().runtime.subscribe((): void => {
       if (this.source !== null && !this.sourceCurrent()) { this.cancelSource(); }
       const scope = AccountSessionCoordinator.getInstance().currentScope();
@@ -79,6 +97,7 @@ export class ProContinuationService {
     });
   }
   private allowed(): boolean {
+    if (this.transitionActive) { return false; }
     // Permission is separately checked against the platform before joining.
     const context = proContinuationContext(); context.grantedPermissions = [SYNC_PERMISSION];
     return ProAppRuntime.getInstance().runtime.decision(PRO_CONTINUATION_FEATURE, context).executable;
@@ -96,17 +115,17 @@ export class ProContinuationService {
   }
   private sourceCurrent(): boolean {
     const scope = AccountSessionCoordinator.getInstance().currentScope();
-    return this.source !== null && Date.now() < this.sourceDeadline && this.source.isCurrent() &&
-      this.descriptionAllowed(this.source.describe()) && this.allowed() &&
+    return this.source !== null && this.sourceContext !== null && Date.now() < this.sourceDeadline && this.source.isCurrent() &&
+      this.descriptionAllowed(this.source.describe(), this.sourceContext) && this.allowed() &&
       scope.kind === 'huawei_account' && scope.ownerScopeId === this.sourceOwner &&
       scope.generation === this.sourceAccountGeneration &&
       ['bound', 'ready', 'offline'].indexOf(scope.sessionState) >= 0;
   }
-  private descriptionAllowed(description: ProConnectionDescription | null): boolean {
+  private descriptionAllowed(description: ProConnectionDescription | null, context: common.Context): boolean {
     if (description === null || description.protocol !== 'ssh' || !HostSyncService.getInstance().isReady()) { return false; }
     const host = HostSyncService.getInstance().getHost(description.hostReference);
     const scope = AccountSessionCoordinator.getInstance().currentScope();
-    const local = host === undefined ? null : describeProSshConnection(host, 'terminal', '');
+    const local = host === undefined ? null : describeProSshConnection(host, 'terminal', '', context);
     return host !== undefined && host.userId === scope.ownerScopeId && local !== null &&
       sameProConnectionEndpoint(local, description);
   }
@@ -139,12 +158,13 @@ export class ProContinuationService {
   async prepare(context: common.UIAbilityContext, source: ProContinuationSource): Promise<boolean> {
     this.cancelSource();
     if (context.abilityInfo.name !== 'EntryAbility' || !this.allowed() || !source.isCurrent() ||
-        !this.descriptionAllowed(source.describe()) || !Number.isInteger(source.windowId) || source.windowId <= 0) { return false; }
+        !this.descriptionAllowed(source.describe(), context) || !Number.isInteger(source.windowId) || source.windowId <= 0) { return false; }
     const scope = AccountSessionCoordinator.getInstance().currentScope();
     if (scope.kind !== 'huawei_account' || !/^owner-[a-f0-9]{64}$/.test(scope.ownerScopeId)) { return false; }
     const generation = this.sourceGeneration;
     if (!await this.permission(context) || generation !== this.sourceGeneration || !this.allowed() ||
-        !source.isCurrent() || AccountSessionCoordinator.getInstance().currentScope().generation !== scope.generation) {
+        !source.isCurrent() || !this.descriptionAllowed(source.describe(), context) ||
+        AccountSessionCoordinator.getInstance().currentScope().generation !== scope.generation) {
       return false;
     }
     this.source = source; this.sourceContext = context; this.sourceOwner = scope.ownerScopeId;
@@ -215,7 +235,7 @@ export class ProContinuationService {
       this.targetMessage = '请使用同一华为账号，并在本设备独立激活可用的 Pro 接续能力'; this.publish(); return null;
     }
     const host = HostSyncService.getInstance().getHost(envelope.connection.hostReference);
-    const local = host === undefined ? null : describeProSshConnection(host, 'terminal', '');
+    const local = host === undefined ? null : describeProSshConnection(host, 'terminal', '', context);
     if (!HostSyncService.getInstance().isReady() || host === undefined || local === null || host.userId !== scope.ownerScopeId ||
         !sameProConnectionEndpoint(local, envelope.connection)) {
       this.targetMessage = '本设备还没有对应的同账号主机配置，或端点已变化；请先同步并核对'; this.publish(); return null;
@@ -223,8 +243,9 @@ export class ProContinuationService {
     const generation = this.targetGeneration;
     if (!await this.permission(context) || generation !== this.targetGeneration || this.target !== target ||
         AccountSessionCoordinator.getInstance().currentScope().generation !== scope.generation ||
+        !this.descriptionAllowed(envelope.connection, context) ||
         !target.begin(scope.ownerScopeId, this.allowed(), true)) { return null; }
-    this.targetAccountGeneration = scope.generation;
+    this.targetAccountGeneration = scope.generation; this.targetContext = context;
     const channel = new ProContinuationReceiptChannel(); this.targetChannel = channel;
     const joined = await this.boundedJoin(channel, context, envelope,
       (_receipt: string): boolean => false, (): void => {
@@ -244,10 +265,14 @@ export class ProContinuationService {
   incomingId(): string { return this.target?.envelope()?.transferId ?? ''; }
   restoreView(id: string, host: RemoteHost): ProConnectionView | null {
     const envelope = this.target?.envelope(); const scope = AccountSessionCoordinator.getInstance().currentScope();
-    const local = describeProSshConnection(host, 'terminal', '');
+    const currentHost = HostSyncService.getInstance().getHost(host.id);
+    const local = currentHost === undefined || this.targetContext === null ? null :
+      describeProSshConnection(currentHost, 'terminal', '', this.targetContext);
     if (envelope === undefined || envelope === null || this.target?.state() !== 'connecting' ||
         id !== envelope.transferId || scope.ownerScopeId !== envelope.owner ||
         scope.generation !== this.targetAccountGeneration || host.userId !== scope.ownerScopeId ||
+        !HostSyncService.getInstance().isReady() || currentHost?.userId !== scope.ownerScopeId ||
+        host.id !== envelope.connection.hostReference ||
         ['bound', 'ready', 'offline'].indexOf(scope.sessionState) < 0 || !this.allowed() || local === null ||
         !sameProConnectionEndpoint(local, envelope.connection)) { return null; }
     return envelope.connection.view;
@@ -261,6 +286,7 @@ export class ProContinuationService {
   }
   cancelIncoming(): void {
     this.targetGeneration++; this.target?.cancel(); this.target = null; this.targetChannel.close();
+    this.targetContext = null;
     if (this.targetTimer !== -1) { clearTimeout(this.targetTimer); this.targetTimer = -1; }
     this.targetMessage = ''; this.publish();
   }
