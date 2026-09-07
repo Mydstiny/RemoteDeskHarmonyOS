@@ -1,3 +1,4 @@
+import { ProContinuationService, PRO_CONTINUATION_PARAM } from '../services/pro/ProContinuationService';
 import { ProAppRuntime } from '../services/pro/ProAppRuntime';
 /**
  * EntryAbility.ets — 应用入口 UIAbility
@@ -12,6 +13,7 @@ import {
   ConfigurationConstant,
   UIAbility,
   Want,
+  wantConstant,
   Configuration
 } from '@kit.AbilityKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
@@ -214,6 +216,8 @@ export default class EntryAbility extends UIAbility {
 
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
     ProAppRuntime.getInstance();
+    ProContinuationService.getInstance().initializeMission(this.context);
+    if (!this.acceptProContinuationWant(want, launchParam)) { return; }
     try {
       const appClone: AppCloneContext = AppCloneContext.getInstance();
       appClone.init(this.context);
@@ -332,6 +336,54 @@ export default class EntryAbility extends UIAbility {
     hilog.info(DOMAIN, TAG, 'Ability onCreate');
   }
 
+  private acceptProContinuationWant(want: Want, launch: AbilityConstant.LaunchParam): boolean {
+    // Public Wants and deep links cannot impersonate a platform continuation.
+    if (launch.launchReason !== AbilityConstant.LaunchReason.CONTINUATION) { return true; }
+    const value: Object | undefined = want.parameters?.[PRO_CONTINUATION_PARAM];
+    const stack: Object | undefined = want.parameters?.[wantConstant.Params.SUPPORT_CONTINUE_PAGE_STACK_KEY];
+    const sourceExit: Object | undefined = want.parameters?.[wantConstant.Params.SUPPORT_CONTINUE_SOURCE_EXIT_KEY];
+    if (stack !== false || sourceExit !== false || typeof value !== 'string' ||
+        !ProContinuationService.getInstance().ingest(value)) {
+      // A rejected cold migration must not instantiate a foreign Router stack.
+      // An already open target retains its existing UI and free connections.
+      if (this.windowStage === null) { void this.context.terminateSelf().catch((): void => {}); }
+      return false;
+    }
+    if (this.windowStage === null) {
+      try {
+        // The official API requires this call synchronously inside onCreate / onNewWant.
+        this.context.restoreWindowStage(new LocalStorage());
+      } catch (_error) {
+        ProContinuationService.getInstance().cancelIncoming();
+        void this.context.terminateSelf().catch((): void => {});
+        return false;
+      }
+    } else {
+      try {
+        this.windowStage?.getMainWindowSync().getUIContext().getPromptAction().showToast({
+          message: '收到同账号接续请求，请在主机列表确认', duration: 3000
+        });
+      } catch (_error) { /* The incoming card remains available in the host library. */ }
+    }
+    return true;
+  }
+
+  onNewWant(want: Want, launch: AbilityConstant.LaunchParam): void {
+    this.acceptProContinuationWant(want, launch);
+  }
+
+  async onContinue(parameters: Record<string, Object>): Promise<AbilityConstant.OnContinueResult> {
+    try {
+      const id: number = this.windowStage?.getMainWindowSync().getWindowProperties().id ?? 0;
+      return await ProContinuationService.getInstance().onContinue(id, parameters);
+    } catch (_error) { return AbilityConstant.OnContinueResult.REJECT; }
+  }
+
+  onWindowStageRestore(stage: window.WindowStage): void {
+    // A warm target keeps its existing session/UI; the host library offers explicit acceptance.
+    if (this.windowStage === null) { void this.onWindowStageCreate(stage); }
+  }
+
   private migrateTerminalFontUnit(): void {
     const version: number = AppStorage.get<number>('terminalFontUnitVersion') ?? 0;
     if (version >= 2) { return; }
@@ -363,6 +415,8 @@ export default class EntryAbility extends UIAbility {
   }
 
   onDestroy(): void {
+    ProContinuationService.getInstance().cancelSource();
+    ProContinuationService.getInstance().cancelIncoming();
     // 最终销毁 — 必须完全断连所有远程会话 + 移除灵动岛
     this.requestShutdown('ability-destroy');
     hilog.info(DOMAIN, TAG, 'Ability onDestroy');
@@ -408,6 +462,7 @@ export default class EntryAbility extends UIAbility {
       }
     } catch (_e) { /* ignore */ }
     this.avoidAreaCallback = null;
+    this.windowStage = null;
     hilog.info(DOMAIN, TAG, 'Ability onWindowStageDestroy');
   }
 

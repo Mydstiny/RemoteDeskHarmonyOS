@@ -1,3 +1,7 @@
+import { ProContinuationControls } from '../components/ProContinuationControls';
+import { ProContinuationService } from '../services/pro/ProContinuationService';
+import { ProConnectionDescription } from '../services/pro/ProConnectionEnvelope';
+import { describeProSshConnection } from '../services/pro/ProConnectionHostAdapter';
 import { SshAuthenticatedHandoff } from '../services/ssh/auth/SshAuthenticatedHandoff';
 import { persistSshHostKeyTrust } from '../services/ssh/auth/SshHostKeyTrustWriter';
 import { ProFeatureGate } from '../components/ProFeatureGate';
@@ -654,7 +658,7 @@ struct SshTerminal {
   @StorageProp('accentColor') accentColor: string = '#007DFF';
   @StorageLink(REMOTE_SESSION_QUICK_EXIT_DISABLED_KEY)
   remoteSessionQuickExitDisabled: boolean = false;
-  @State @Watch('stopSftpKnock') connected: boolean = false;
+  @State @Watch('onSshContinuationConnectionChange') connected: boolean = false;
   @State connecting: boolean = true;
   @State connectionError: string = '';
   @State hostLabel: string = '';
@@ -987,6 +991,9 @@ struct SshTerminal {
     new Map<string, SshSftpTrackedSession>();
   private sftpLocalProvider: SshLocalFileProvider = SshLocalFileProvider.getInstance();
   private sftpDropAdapter: SshSftpDropAdapter = new SshSftpDropAdapter();
+  private proConnectionTransferId: string = '';
+  private proContinuationWindowId: number = 0;
+  private proContinuationRestoreRunning: boolean = false;
   private sftpKnockReceiver: ProKnockReceiver = new ProKnockReceiver();
   private sftpShareStager: SshSftpShareStager = new SshSftpShareStager();
   private sftpKnockStopPro: (() => void) | null = null;
@@ -7027,6 +7034,9 @@ struct SshTerminal {
 
         Divider().strokeWidth(0.5).color(this.pal().cardBorder).width('100%')
         this.SshHeaderActionRow('新建 SSH 会话', '选择主机并打开新标签', 'new-session')
+        if (this.connected && !this.isDesktopDevice) {
+          ProContinuationControls({ onPrepare: (): void => { void this.prepareProContinuation(); } })
+        }
         this.SshHeaderActionRow('常用命令', this.sshProductivityReady
           ? this.sshProductivityDocument.snippets.length.toString() + ' 条 · 可新增、编辑和插入'
           : '本地存储不可用；若已启用加密，请先解锁', 'quick-commands')
@@ -8673,6 +8683,69 @@ struct SshTerminal {
     this.sftpLocalSelectedSize = entry.size;
     this.sftpStatus = entry.isDirectory ? '已选择本机目录 ' + entry.name :
       '已选择本机文件 ' + entry.name + ' (' + this.formatFileSize(entry.size) + ')';
+  }
+
+  private onSshContinuationConnectionChange(): void {
+    this.stopSftpKnock();
+    if (!this.connected && this.proContinuationWindowId > 0) {
+      ProContinuationService.getInstance().cancelSource(this.proContinuationWindowId);
+    }
+  }
+
+  private async prepareProContinuation(): Promise<void> {
+    this.showSshHeaderActionPopup = false;
+    const host = HostSyncService.getInstance().getHost(this.hostId);
+    if (host === undefined || !this.connected || this.isDesktopDevice || this.terminalClosing) { return; }
+    const page = this.pageGeneration; const binding = this.sshBindingGeneration;
+    const session = this.sessionId; const hostId = this.hostId;
+    const pane = this.showSftpPanel ? 'files' : 'terminal';
+    const directory = this.sftpPath.startsWith('/') ? this.sftpPath : '';
+    if (pane === 'files' && directory === '') {
+      promptAction.showToast({ message: '请先在 SFTP 中选择绝对目录，再准备接续', duration: 2200 }); return;
+    }
+    const description = describeProSshConnection(host, pane, directory);
+    if (description === null) {
+      promptAction.showToast({ message: '本轮接续仅支持直连 SSH；代理配置暂未开放', duration: 2200 }); return;
+    }
+    try {
+      const win = window.findWindow(this.getUIContext().getWindowName());
+      this.proContinuationWindowId = win.getWindowProperties().id;
+      const prepared = await ProContinuationService.getInstance().prepare(getContext(this) as common.UIAbilityContext, {
+        windowId: this.proContinuationWindowId,
+        describe: (): ProConnectionDescription | null => description,
+        isCurrent: (): boolean => !this.terminalClosing && this.connected && this.pageGeneration === page &&
+          this.sshBindingGeneration === binding && this.sessionId === session && this.hostId === hostId &&
+          (pane !== 'files' || (this.showSftpPanel && this.sftpPath === directory)),
+        close: (): void => { this.closeSessionAndBack(); }
+      });
+      promptAction.showToast({ message: prepared ? '接续已准备，本端会话保持连接' :
+        '无法准备接续，请检查同账号、Pro 和协同权限', duration: 2400 });
+    } catch (_error) { promptAction.showToast({ message: '系统接续暂不可用', duration: 2200 }); }
+  }
+
+  private async restoreProContinuation(): Promise<void> {
+    if (this.proContinuationRestoreRunning || this.proConnectionTransferId === '' || !this.connected ||
+        this.sessionId <= 0 || this.terminalClosing) { return; }
+    const host = HostSyncService.getInstance().getHost(this.hostId);
+    if (host === undefined) { return; }
+    const service = ProContinuationService.getInstance();
+    const id = this.proConnectionTransferId;
+    const view = service.restoreView(id, host);
+    if (view === null) { this.proConnectionTransferId = ''; return; }
+    this.proContinuationRestoreRunning = true;
+    const page = this.pageGeneration; const binding = this.sshBindingGeneration; const session = this.sessionId;
+    try {
+      let restored: boolean = true;
+      if (view.sshPane === 'files') { this.openSftpPanel(); restored = this.showSftpPanel; }
+      if (view.sshDirectory !== '') { restored = (await this.refreshSftp(view.sshDirectory)) && restored; }
+      if (this.pageGeneration !== page || this.sshBindingGeneration !== binding || this.sessionId !== session ||
+          !this.connected || this.terminalClosing || this.proConnectionTransferId !== id) { return; }
+      if (!restored || !service.complete(id, host)) {
+        service.cancelIncoming();
+        promptAction.showToast({ message: 'SSH 已连接，目录恢复或接续回执未完成；源端仍保留', duration: 2400 });
+      }
+      this.proConnectionTransferId = '';
+    } finally { this.proContinuationRestoreRunning = false; }
   }
 
   private sftpKnockContext(): ProAccessContext {
@@ -10460,6 +10533,9 @@ struct SshTerminal {
     this.sshAuthPromptPageReadyAtMs = 0;
     this.clearSshAuthPromptPendingIdentity();
     const routeParams: Object = router.getParams();
+    const continuationValue: Object | undefined = (routeParams as Record<string, Object>)?.['proConnectionTransferId'];
+    this.proConnectionTransferId = typeof continuationValue === 'string' ? continuationValue : '';
+    this.proContinuationRestoreRunning = false;
     this.bindIndependentSessionWindow(routeParams);
     this.stageIndependentWindowAfterAuthentication(routeParams);
     this.stopSshAuthPromptPolling(true);
@@ -10913,6 +10989,10 @@ struct SshTerminal {
   }
 
   aboutToDisappear(): void {
+    if (this.proContinuationWindowId > 0) {
+      ProContinuationService.getInstance().cancelSource(this.proContinuationWindowId);
+      this.proContinuationWindowId = 0;
+    }
     this.stopSftpKnock();
     this.sftpKnockStopPro?.();
     this.sftpKnockStopPro = null;
@@ -12379,6 +12459,9 @@ struct SshTerminal {
     this.scheduleTerminalSurfaceMount(pageGeneration, bindingGeneration, bindingHostId,
       connectedSessionId);
     this.publishIndependentWindowReady('ssh-session-attached');
+    // Receipt restoration starts only after callback, SFTP generation and the
+    // authenticated page binding are committed, never from a raw CONNECTED poll.
+    void this.restoreProContinuation();
     this.startLatencyProbe();
     void this.prepareSshPip(pageGeneration, bindingGeneration, bindingHostId);
 
@@ -14449,8 +14532,8 @@ struct SshTerminal {
     }).onAppear((): void => { this.onForwardingSheetAppear(token); })
   }
 
-  private async refreshSftp(path?: string): Promise<void> {
-    if (this.terminalClosing || this.sessionId <= 0 || this.sftpBusy) { return; }
+  private async refreshSftp(path?: string): Promise<boolean> {
+    if (this.terminalClosing || this.sessionId <= 0 || this.sftpBusy) { return false; }
     this.clearSftpRefreshTimer();
     this.invalidateSftpRefreshRequest();
     const target: string = this.normalizeRemoteDir(path || this.sftpPath);
@@ -14475,10 +14558,10 @@ struct SshTerminal {
       const result = await this.loader.listRemoteDirAsync(
         requestSessionId, target, requestSessionGeneration);
       if (!this.isSftpRefreshRequestActive(requestPageGeneration, requestSessionId,
-        requestSessionGeneration, requestToken)) { return; }
+        requestSessionGeneration, requestToken)) { return false; }
       if (result.errorCode < 0) {
         this.sftpStatus = '[SFTP-LIST] 读取目录失败 ret=' + result.errorCode.toString();
-        return;
+        return false;
       }
       const entries: SftpFileEntry[] = result.entries;
       this.sftpEntries = this.sortSftpEntries(entries);
@@ -14491,6 +14574,7 @@ struct SshTerminal {
       this.sftpSelectedMtime = -1;
       this.sftpNameInput = '';
       this.sftpStatus = '已加载 ' + entries.length.toString() + ' 项';
+      return true;
     } catch (err) {
       if (this.isSftpRefreshRequestActive(requestPageGeneration, requestSessionId,
         requestSessionGeneration, requestToken)) {
@@ -14498,11 +14582,12 @@ struct SshTerminal {
       }
     } finally {
       if (!this.isSftpRefreshRequestActive(requestPageGeneration, requestSessionId,
-        requestSessionGeneration, requestToken)) { return; }
+        requestSessionGeneration, requestToken)) { return false; }
       this.clearSftpRefreshTimeout();
       this.sftpRefreshOwnerToken = 0;
       this.sftpBusy = false;
     }
+    return false;
   }
 
   private openSftpPanel(): void {

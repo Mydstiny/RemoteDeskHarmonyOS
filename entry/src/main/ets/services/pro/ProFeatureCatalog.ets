@@ -35,6 +35,15 @@ function knockTransfer(): ProFeature {
   feature.capabilities = ['SystemCapability.Collaboration.HarmonyShare'];
   return feature;
 }
+function continuation(): ProFeature {
+  const feature = planned('pro.connection.continuation', '同账号接续',
+    '在手机和平板间重新连接同账号的直连 SSH 主机，并恢复文件目录。', 23);
+  feature.availability = 'experimental';
+  feature.devices = ['phone', 'tablet']; feature.protocols = ['ssh'];
+  feature.capabilities = ['SystemCapability.DistributedDataManager.DataObject.DistributedObject'];
+  feature.permissions = ['ohos.permission.DISTRIBUTED_DATASYNC'];
+  return feature;
+}
 // Returned declarations are owned by the caller; UI cannot mutate the authority catalog.
 export function proFeatures(): ProFeature[] {
   return [
@@ -47,7 +56,7 @@ export function proFeatures(): ProFeature[] {
     appIcon(),
     knockTransfer(),
     planned('pro.connection.knockShare', '碰一碰分享连接', '分享连接并恢复支持的操作状态。'),
-    planned('pro.connection.continuation', '跨设备接续', '通过官方接续继续同账号的远程工作。'),
+    continuation(),
     planned('pro.security.webauthnRedirect', '安全密钥重定向', '在支持的 RDP 会话中使用本地安全密钥。'),
     planned('pro.security.phonePasskey', '手机通行密钥', '探索使用华为手机完成远端支持的认证。')
   ];

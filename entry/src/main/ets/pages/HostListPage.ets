@@ -1,3 +1,5 @@
+import { ProIncomingContinuationCard } from '../components/ProContinuationControls';
+import { ProContinuationService } from '../services/pro/ProContinuationService';
 import { SshConnectionPreflightSheet } from '../components/SshConnectionPreflightSheet';
 import { SshAuthenticatedHandoff } from '../services/ssh/auth/SshAuthenticatedHandoff';
 import { ProAppRuntime } from '../services/pro/ProAppRuntime';
@@ -1888,8 +1890,16 @@ struct HostListPage {
     return false;
   }
 
+  @State proIncomingContinuationVisible: boolean = false;
+  private proContinuationStop: (() => void) | null = null;
+  private proContinuationAttemptId: string = '';
+
   async aboutToAppear(): Promise<void> {
     this.pageActive = true;
+    this.proContinuationStop?.();
+    this.proContinuationStop = ProContinuationService.getInstance().subscribe((): void => {
+      this.proIncomingContinuationVisible = ProContinuationService.getInstance().snapshot().incoming;
+    });
     this.proUnsubscribe?.();
     this.proUnsubscribe = ProAppRuntime.getInstance().runtime.subscribe((): void => {
       this.proStatusLabel = ProAppRuntime.getInstance().runtime.snapshot().label;
@@ -5146,6 +5156,7 @@ struct HostListPage {
   }
 
   aboutToDisappear(): void {
+    this.proContinuationStop?.(); this.proContinuationStop = null;
     this.proUnsubscribe?.(); this.proUnsubscribe = null;
     this.pageActive = false;
     this.sheetReleaseFenceGeneration += 1;
@@ -6226,6 +6237,11 @@ struct HostListPage {
    */
   private openSessionDestination(url: string, params: Record<string, Object>,
     authorizationKind: RemoteSessionWindowAuthorizationKind): void {
+    if (this.proContinuationAttemptId !== '' && url === 'pages/SshTerminal' &&
+        this.proContinuationAttemptId === ProContinuationService.getInstance().incomingId()) {
+      params['proConnectionTransferId'] = this.proContinuationAttemptId;
+    }
+    this.proContinuationAttemptId = '';
     const rawRdpAttemptGeneration: Object | undefined =
       params['rdpConnectionAttemptGeneration'];
     const rdpAttemptGeneration: number = typeof rawRdpAttemptGeneration === 'number' &&
@@ -6459,7 +6475,11 @@ struct HostListPage {
     });
   }
 
-  private async connectToHost(host: RemoteHost): Promise<void> {
+  private async connectToHost(host: RemoteHost, continuationId: string = ''): Promise<void> {
+    // Every explicit new attempt replaces the previous local continuation route token.
+    this.proContinuationAttemptId = continuationId;
+    if (continuationId === '') { ProContinuationService.getInstance().cancelIncoming(); }
+
     if (!this.pageActive || this.appInBackground) {
       this.clearPendingVncCredentialForRemoteHost(host);
       return;
@@ -14416,6 +14436,16 @@ struct HostListPage {
         List({ space: 8 }) {
           // 顶栏占位: 跟随真实系统避让区, 与渐变玻璃层高度一致
           ListItem() { Column().height(this.hostTopBarHeight() + 8) }
+          if (this.proIncomingContinuationVisible) {
+            ListItem() {
+              ProIncomingContinuationCard({
+                onConnect: (host: RemoteHost, transferId: string): void => {
+                  if (this.pageActive && !this.appInBackground) { void this.connectToHost(host, transferId); }
+                  else { ProContinuationService.getInstance().cancelIncoming(); }
+                }
+              })
+            }
+          }
           if (!this.groupedHostCardsActive()) {
             ListItem() { this.HostWorkspaceFilterBar() }
           }

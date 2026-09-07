@@ -15,6 +15,7 @@
     "abilities": [
       {
         "name": "EntryAbility",
+        "continuable": true,
         "srcEntry": "./ets/entryability/EntryAbility.ets",
         "description": "$string:EntryAbility_desc",
         "icon": "$media:layered_image",
