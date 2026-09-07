@@ -90,12 +90,14 @@ export class ProHttpApi {
         onlyKeys(body, []);
         return response(200, await this.#service.createIntent(owner));
       }
-      onlyKeys(body, ['purchaseDataList']);
-      if (!Array.isArray(body.purchaseDataList) || body.purchaseDataList.length > 32 ||
+      onlyKeys(body, ['purchaseDataList', 'challenge']);
+      if (typeof body.challenge !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(body.challenge) ||
+          Buffer.from(body.challenge, 'base64url').toString('base64url') !== body.challenge ||
+          !Array.isArray(body.purchaseDataList) || body.purchaseDataList.length > 32 ||
           body.purchaseDataList.some(record => typeof record !== 'string' || record.length > MAX_JWS_BYTES + 1024)) {
         throw new HttpFailure(400, 'invalid_request');
       }
-      return response(200, await this.#service.reconcile(owner, body.purchaseDataList, request.signal));
+      return response(200, await this.#service.reconcile(owner, body.purchaseDataList, request.signal, body.challenge));
     } catch (error) { return failure(error); }
     finally { this.#active--; }
   }

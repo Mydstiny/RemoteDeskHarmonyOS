@@ -4,11 +4,12 @@ import { once } from 'node:events';
 import { ProHttpApi, startProReconciliationWorker } from '../../server/pro-entitlement/http-api.mjs';
 import { createProNodeListener } from '../../server/pro-entitlement/node-listener.mjs';
 
+const challenge = Buffer.alloc(32, 7).toString('base64url');
 function fixture(maximum = 4) {
   const calls = [];
   const service = {
     async createIntent(owner) { calls.push(['intent', owner]); return { developerPayload: 'test-intent' }; },
-    async reconcile(owner, records, signal) { calls.push(['reconcile', owner, records, signal]); return { signedEntitlement: 'test-only-http-contract' }; },
+    async reconcile(owner, records, signal, nonce) { calls.push(['reconcile', owner, records, signal, nonce]); return { signedEntitlement: 'test-only-http-contract' }; },
     async notification(jws) { calls.push(['notification', jws]); },
     async reconcileDue() { calls.push(['worker']); }
   };
@@ -42,10 +43,11 @@ test('missing, wrong and comma-joined credentials never reach fulfillment', asyn
 });
 test('restoration forwards raw references and cancellation only to the trusted service', async () => {
   const f = fixture(); const controller = new AbortController();
-  const response = await f.api.handle(request('/v1/pro/reconcile', { purchaseDataList: ['untrusted-reference'] }, {}, { signal: controller.signal }));
+  const response = await f.api.handle(request('/v1/pro/reconcile', { purchaseDataList: ['untrusted-reference'], challenge }, {}, { signal: controller.signal }));
   assert.equal(response.status, 200); assert.deepEqual(f.calls.at(-1).slice(0, 3), ['reconcile', 'verified-account', ['untrusted-reference']]);
-  assert.equal(f.calls.at(-1)[3].aborted, false);
-  for (const body of [{}, { purchaseDataList: 'wrong' }, { purchaseDataList: [7] }, { purchaseDataList: Array(33).fill('r') }]) {
+  assert.equal(f.calls.at(-1)[3].aborted, false); assert.equal(f.calls.at(-1)[4], challenge);
+  for (const body of [{}, { purchaseDataList: [], challenge: '' }, { purchaseDataList: [], challenge: 'x'.repeat(43) },
+    { purchaseDataList: [], challenge: challenge + '=' }, { purchaseDataList: [], challenge, owner: 'injected' }, { purchaseDataList: 'wrong', challenge }, { purchaseDataList: [7] }, { purchaseDataList: Array(33).fill('r') }]) {
     assert.equal((await f.api.handle(request('/v1/pro/reconcile', body))).status, 400);
   }
 });
@@ -113,6 +115,6 @@ test('real loopback HTTP listener enforces routes and returns no grant for cross
   assert.equal((await fetch(base + '/v1/pro/intents', options)).status, 200);
   assert.equal((await fetch(base + '/v1/pro/intents', { ...options, headers: { ...options.headers, Origin: 'https://untrusted.example' } })).status, 403);
   f.service.reconcile = async () => { throw new Error('order_belongs_to_another_account'); };
-  const conflict = await fetch(base + '/v1/pro/reconcile', { ...options, body: '{"purchaseDataList":[]}' });
+  const conflict = await fetch(base + '/v1/pro/reconcile', { ...options, body: JSON.stringify({ purchaseDataList: [], challenge }) });
   assert.equal(conflict.status, 409); assert.deepEqual(await conflict.json(), { error: 'purchase_binding_rejected' });
 });

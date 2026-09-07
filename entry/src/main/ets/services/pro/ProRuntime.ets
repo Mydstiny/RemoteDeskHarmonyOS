@@ -33,6 +33,7 @@ export class ProRuntime {
     let label = effectiveState === 'active' ? 'Pro 已激活' : effectiveState === 'verificationRequired' ?
       '权益待验证' : effectiveState === 'revoked' ? 'Pro 权益已撤销' : '免费版';
     if (DEBUG) {
+      if (mode === 'real' && real.environment === 'sandbox') { label = '沙盒 · ' + label; }
       if (mode === 'pro') { label = '模拟 Pro'; }
       if (mode === 'free') { label = '模拟免费'; }
     }
@@ -88,10 +89,10 @@ export class ProRuntime {
   }
   private scheduleBoundary(): void {
     if (this.timer !== -1) { clearTimeout(this.timer); this.timer = -1; }
-    const next = this.entitlement.nextChangeAt();
-    if (next <= 0 || this.listeners.length === 0) { return; }
+    const delay = this.entitlement.nextChangeDelay();
+    if (delay <= 0 || this.listeners.length === 0) { return; }
     this.timer = setTimeout((): void => { this.timer = -1; this.publish(); },
-      Math.max(1, Math.min(next - Date.now(), 2147483647)));
+      Math.min(delay, 2147483647));
   }
   private publish(): void {
     this.listeners.slice().forEach((listener: () => void): void => {

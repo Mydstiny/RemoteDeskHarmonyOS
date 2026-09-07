@@ -12,12 +12,14 @@ export class ProGrantSigner {
     if (!['NORMAL', 'SANDBOX'].includes(configuration.environment)) fail('grant_environment_required');
     this.#configuration = Object.freeze({ ...configuration });
   }
-  sign(snapshot, owner, now) {
+  sign(snapshot, owner, now, challenge) {
     if (!/^owner-[a-f0-9]{64}$/.test(owner) || !['verified', 'revoked', 'noEntitlement'].includes(snapshot.status) ||
-        !Number.isSafeInteger(snapshot.revision) || snapshot.revision < 0 || !Number.isSafeInteger(now) || now <= 0) fail('invalid_grant');
+        !Number.isSafeInteger(snapshot.revision) || snapshot.revision < 0 || !Number.isSafeInteger(now) || now <= 0 ||
+        typeof challenge !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(challenge) ||
+        Buffer.from(challenge, 'base64url').toString('base64url') !== challenge) fail('invalid_grant');
     const payload = { version: 1, issuer: this.#configuration.issuer, applicationId: this.#configuration.applicationId,
       owner, environment: this.#configuration.environment === 'NORMAL' ? 'production' : 'sandbox',
-      productId: this.#configuration.productId, status: snapshot.status, revision: snapshot.revision,
+      productId: this.#configuration.productId, status: snapshot.status, revision: snapshot.revision, challenge,
       entitlementIds: snapshot.status === 'verified' ? ['pro.lifetime'] : [],
       verifiedAt: now, revalidateAfter: now + 86400000, usableUntil: now + 7 * 86400000 };
     const input = Buffer.from(JSON.stringify({ alg: 'RS256', typ: 'JWT', kid: this.#configuration.keyId })).toString('base64url') + '.' +
@@ -61,7 +63,9 @@ export class ProFulfillmentService {
       return applied.owner;
     });
   }
-  async reconcile(owner, records = [], signal) {
+  async reconcile(owner, records = [], signal, challenge) {
+    if (typeof challenge !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(challenge) ||
+        Buffer.from(challenge, 'base64url').toString('base64url') !== challenge) fail('invalid_challenge');
     if (!Array.isArray(records) || records.length > 32 || records.some(record => typeof record !== 'string') ||
         records.reduce((size, record) => size + Buffer.byteLength(record), 0) > 1024 * 1024) fail('restore_batch_invalid');
     const references = new Map((await this.#ledger.references(owner, true)).map(reference => [reference.purchaseOrderId, reference]));
@@ -84,7 +88,7 @@ export class ProFulfillmentService {
     if (signal?.aborted) fail('reconciliation_cancelled');
     const snapshot = await this.#ledger.snapshot(owner);
     if (signal?.aborted) fail('reconciliation_cancelled');
-    return { signedEntitlement: this.#signer.sign(snapshot, owner, this.#now()), pendingDelivery: snapshot.pending };
+    return { signedEntitlement: this.#signer.sign(snapshot, owner, this.#now(), challenge), pendingDelivery: snapshot.pending };
   }
   async notification(jws) {
     const notification = await this.#iap.notification(jws);

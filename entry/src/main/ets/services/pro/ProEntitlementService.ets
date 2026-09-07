@@ -5,15 +5,20 @@ export interface ProVerificationResult {
   owner: string;
   environment: ProEnvironment;
   grant?: ProVerifiedGrant;
+  fromCache?: boolean;
+  needsRevalidation?: boolean;
 }
 export interface ProOrderVerifier {
   verify(records: string[], owner: string, environment: ProEnvironment): Promise<ProVerificationResult>;
+  loadCached?(owner: string, environment: ProEnvironment): Promise<ProVerificationResult>;
 }
 export interface ProEntitlementSnapshot {
   state: ProEntitlementState;
   entitlementIds: string[];
   needsRevalidation: boolean;
+  environment: ProEnvironment;
 }
+export interface ProReconciliationOutcome { current: boolean; online: boolean; active: boolean; }
 export class ProEntitlementService {
   private owner: string = '';
   private environment: ProEnvironment = 'production';
@@ -58,7 +63,8 @@ export class ProEntitlementService {
     if (this.grant === null) {
       state = this.revoked ? 'revoked' : this.verificationUnavailable ? 'verificationRequired' : 'free';
     }
-    return { state, entitlementIds: state === 'active' && this.grant !== null ? this.grant.entitlementIds.slice() : [],
+    return { state, environment: this.environment,
+      entitlementIds: state === 'active' && this.grant !== null ? this.grant.entitlementIds.slice() : [],
       needsRevalidation: this.verificationUnavailable || state === 'verificationRequired' ||
         (this.grant !== null && now >= this.grant.revalidateAfter) };
   }
@@ -68,14 +74,42 @@ export class ProEntitlementService {
     if (now < this.grant.revalidateAfter) { return this.grant.revalidateAfter; }
     return now < this.grant.usableUntil ? this.grant.usableUntil : 0;
   }
-  async reconcile(records: string[]): Promise<boolean> {
-    if (this.owner.length === 0) { return false; }
+  nextChangeDelay(): number {
+    const next = this.nextChangeAt();
+    const now = this.now();
+    return next > 0 && Number.isFinite(now) ? Math.max(1, next - now) : 0;
+  }
+  async restoreCached(): Promise<boolean> {
+    if (this.owner.length === 0 || !this.verifier.loadCached) { return false; }
+    const generation = ++this.generation;
+    const owner = this.owner;
+    const environment = this.environment;
+    let result: ProVerificationResult;
+    try { result = await this.verifier.loadCached(owner, environment); }
+    catch (_error) { result = { status: 'unavailable', owner, environment, fromCache: true }; }
+    return this.acceptResult(result, generation, owner, environment);
+  }
+  async reconcile(records: string[], requireOnline: boolean = false): Promise<boolean> {
+    const result = await this.reconcileResult(records);
+    return result.active && (!requireOnline || result.online);
+  }
+  async reconcileResult(records: string[]): Promise<ProReconciliationOutcome> {
+    if (this.owner.length === 0) { return { current: false, online: false, active: false }; }
     const generation = ++this.generation;
     const owner = this.owner;
     const environment = this.environment;
     let result: ProVerificationResult;
     try { result = await this.verifier.verify(records.slice(), owner, environment); }
     catch (_error) { result = { status: 'unavailable', owner, environment }; }
+    const active = this.acceptResult(result, generation, owner, environment);
+    const current = !!result && generation === this.generation && result.owner === owner && result.environment === environment;
+    const valid = !!result && (result.status === 'noEntitlement' || result.status === 'revoked' ||
+      (result.status === 'verified' && result.grant !== undefined &&
+        proGrantMatches(result.grant, owner, environment, this.now()) && result.grant.usableUntil > this.now()));
+    return { current, active, online: current && valid && result.fromCache !== true };
+  }
+  private acceptResult(result: ProVerificationResult, generation: number,
+    owner: string, environment: ProEnvironment): boolean {
     if (generation !== this.generation || !result || result.owner !== owner || result.environment !== environment) { return false; }
     if (result.status === 'verified') {
       const grant = result.grant;
@@ -85,15 +119,15 @@ export class ProEntitlementService {
         this.grant = { owner: grant.owner, environment: grant.environment, productId: grant.productId,
           verifiedAt: grant.verifiedAt, revalidateAfter: grant.revalidateAfter, usableUntil: grant.usableUntil,
           entitlementIds: grant.entitlementIds.slice() };
-        this.clockInvalidated = false;
-        this.lastObservedTime = this.now();
+        if (result.fromCache !== true) { this.clockInvalidated = false; }
+        this.lastObservedTime = result.fromCache === true ? Math.max(this.now(), this.lastObservedTime) : this.now();
         this.revoked = false;
-        this.verificationUnavailable = false;
+        this.verificationUnavailable = result.needsRevalidation === true;
       }
     } else if (result.status === 'noEntitlement' || result.status === 'revoked') {
       this.grant = null;
       this.revoked = result.status === 'revoked';
-      this.verificationUnavailable = false;
+      this.verificationUnavailable = result.needsRevalidation === true;
     } else {
       this.verificationUnavailable = true;
     }

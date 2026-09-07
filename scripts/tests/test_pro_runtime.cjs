@@ -130,7 +130,11 @@ test('verifier throws or malformed result preserves only a still-usable trusted 
 });
 test('real account transitions isolate Pro before their first await and through overlapping failures', async () => {
   const env = environment(false, { now: 1000 }, {
-    '@kit.BasicServicesKit': { deviceInfo: { sdkApiVersion: 26, deviceType: '2in1' } }
+    '@kit.BasicServicesKit': { deviceInfo: { sdkApiVersion: 26, deviceType: '2in1' },
+      systemDateTime: { TimeType: { STARTUP: 0 }, getUptime: () => 0 } },
+    '@kit.ArkTS': { util: {} }, '@kit.ArkData': { relationalStore: {} },
+    '@kit.CryptoArchitectureKit': { cryptoFramework: {} }, '@kit.NetworkKit': { http: {} },
+    [path.resolve(root, 'entry/src/main/ets/services/AccountKitService.ets')]: { AccountKitService: {} }
   });
   const { AccountSessionCoordinator } = env.load('entry/src/main/ets/services/AccountSessionCoordinator.ets');
   const account = AccountSessionCoordinator.getInstance();

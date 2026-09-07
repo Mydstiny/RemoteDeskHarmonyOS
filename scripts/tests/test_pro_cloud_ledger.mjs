@@ -85,7 +85,8 @@ function fixture(t, seeded = true) {
     state.orders.set(id, value); return value;
   };
   t.after(() => ledger.close());
-  return { collection, key, ledger, another, state, service, order };
+  return { collection, key, ledger, another, state, service, order,
+    reconcile: (account, records = [], signal) => service.reconcile(account, records, signal, randomBytes(32).toString('base64url')) };
 }
 test('cloud schema denies every client role and requires an existing configuration control record', async t => {
   for (const permission of cloudLedgerSchema.permissions[0].permissions) {
@@ -97,7 +98,7 @@ test('cloud schema denies every client role and requires an existing configurati
 });
 test('async cloud reconciliation signs only after durable account binding, then worker delivers', async t => {
   const f = fixture(t); const order = await f.order();
-  const grant = await f.service.reconcile(owner, [receipt(order)]);
+  const grant = await f.reconcile(owner, [receipt(order)]);
   assert.equal(jwsParts(grant.signedEntitlement).payload.status, 'verified');
   assert.equal(grant.pendingDelivery, true); assert.equal(f.state.confirms, 0);
   await f.service.reconcileDue();
@@ -132,10 +133,10 @@ test('range phantoms cannot exceed the per-account pending purchase limit', asyn
 });
 test('failed cloud commit cannot consume an intent, publish a grant or confirm delivery', async t => {
   const f = fixture(t); const order = await f.order(); f.collection.rejectCommits = true;
-  await assert.rejects(() => f.service.reconcile(owner, [receipt(order)]), /transaction_conflict/);
+  await assert.rejects(() => f.reconcile(owner, [receipt(order)]), /transaction_conflict/);
   assert.equal(f.state.confirms, 0);
   f.collection.rejectCommits = false; assert.equal((await f.ledger.snapshot(owner)).status, 'noEntitlement');
-  await f.service.reconcile(owner, [receipt(order)]); assert.equal((await f.ledger.snapshot(owner)).status, 'verified');
+  await f.reconcile(owner, [receipt(order)]); assert.equal((await f.ledger.snapshot(owner)).status, 'verified');
 });
 test('a refund committed during snapshot forces reread of both state and revision', async t => {
   const f = fixture(t); const order = await f.order(); await f.ledger.applyCurrentOrder(order, owner, f.state.now);
@@ -151,37 +152,37 @@ test('a refund committed during snapshot forces reread of both state and revisio
   instance.close();
 });
 test('duplicate restoration and competing instances claim only one durable finish lease', async t => {
-  const f = fixture(t); const order = await f.order(); await f.service.reconcile(owner, [receipt(order), receipt(order)]);
+  const f = fixture(t); const order = await f.order(); await f.reconcile(owner, [receipt(order), receipt(order)]);
   const instance = f.another();
   const leases = await Promise.all([f.ledger.claimFinish(order, f.state.now), instance.claimFinish(order, f.state.now)]);
   assert.equal(leases.filter(Boolean).length, 1);
   await f.ledger.finishSucceeded(order.purchaseOrderId, 'wrong-lease'); assert.equal((await f.ledger.snapshot(owner)).pending, true);
   await instance.finishSucceeded(order.purchaseOrderId, leases.find(Boolean));
-  await f.service.reconcile(owner, [receipt(order)]);
+  await f.reconcile(owner, [receipt(order)]);
   assert.equal((await f.ledger.snapshot(owner)).revision, 1); assert.equal((await f.ledger.snapshot(owner)).pending, false);
   instance.close();
 });
 test('refund remains terminal while another purchase survives unavailable old vendor history', async t => {
   const f = fixture(t); const first = await f.order(); const second = await f.order('order-2');
-  await f.service.reconcile(owner, [receipt(first), receipt(second)]);
+  await f.reconcile(owner, [receipt(first), receipt(second)]);
   first.revoked = true; f.state.now++; await f.service.notification('signed notification'); first.unavailable = true;
-  const grant = await f.service.reconcile(owner, [receipt(first), receipt(second)]);
+  const grant = await f.reconcile(owner, [receipt(first), receipt(second)]);
   assert.equal(jwsParts(grant.signedEntitlement).payload.status, 'verified');
-  second.revoked = true; f.state.now++; await f.service.reconcile(owner, [receipt(second)]);
+  second.revoked = true; f.state.now++; await f.reconcile(owner, [receipt(second)]);
   assert.equal((await f.ledger.snapshot(owner)).status, 'revoked');
   await f.ledger.applyCurrentOrder({ ...first, revoked: false, signedTime: ++f.state.now }, owner, f.state.now);
   assert.equal((await f.ledger.snapshot(owner)).status, 'revoked');
 });
 test('late purchase recovers from retained intent; copying owner or changing token fails', async t => {
   const f = fixture(t); const order = await f.order(); f.state.now += 30 * 86400000;
-  await assert.rejects(() => f.service.reconcile(other, [receipt(order)]), /another_account/);
-  await f.service.reconcile(owner, [receipt(order)]);
+  await assert.rejects(() => f.reconcile(other, [receipt(order)]), /another_account/);
+  await f.reconcile(owner, [receipt(order)]);
   await assert.rejects(() => f.ledger.terminalReference(owner, { ...order, purchaseToken: 'tampered' }), /binding_mismatch/);
   const invalid = await f.order('order-2'); invalid.purchaseTime += 3660001;
-  await assert.rejects(() => f.service.reconcile(owner, [receipt(invalid)]), /intent_not_found/);
+  await assert.rejects(() => f.reconcile(owner, [receipt(invalid)]), /intent_not_found/);
 });
 test('outbox timeout and process restart preserve pending state and backoff', async t => {
-  const f = fixture(t); const order = await f.order(); await f.service.reconcile(owner, [receipt(order)]);
+  const f = fixture(t); const order = await f.order(); await f.reconcile(owner, [receipt(order)]);
   f.state.failConfirm = true; await f.service.reconcileDue(); assert.equal(f.state.confirms, 1);
   const instance = f.another(); assert.equal((await instance.snapshot(owner)).pending, true);
   assert.deepEqual(await instance.dueOrders(f.state.now), []);
@@ -191,7 +192,7 @@ test('outbox timeout and process restart preserve pending state and backoff', as
 test('persistent scan ordering prevents failed first twenty orders from starving a later order', async t => {
   const f = fixture(t);
   for (let i = 0; i < 21; i++) {
-    const order = await f.order('order-' + i); await f.service.reconcile(owner, [receipt(order)]);
+    const order = await f.order('order-' + i); await f.reconcile(owner, [receipt(order)]);
   }
   let index = 0; for (const order of f.state.orders.values()) order.unavailable = index++ < 20;
   const first = await f.service.reconcileDue(); assert.equal(first.checked, 20); assert.equal(first.successful, 0);
@@ -199,9 +200,9 @@ test('persistent scan ordering prevents failed first twenty orders from starving
   assert.equal(second.successful, 1); assert.equal(f.state.confirms, 1);
 });
 test('network failure cannot renew a signed grant; cloud tokens are encrypted and scoped', async t => {
-  const f = fixture(t); const order = await f.order(); await f.service.reconcile(owner, [receipt(order)]);
+  const f = fixture(t); const order = await f.order(); await f.reconcile(owner, [receipt(order)]);
   const stored = JSON.stringify([...f.collection.rows.values()]); assert.equal(stored.includes(order.purchaseToken), false);
-  f.state.offline = true; await assert.rejects(() => f.service.reconcile(owner));
+  f.state.offline = true; await assert.rejects(() => f.reconcile(owner));
   assert.equal((await f.ledger.snapshot(owner)).status, 'verified');
   const wrongKey = new ProCloudOrderLedger(f.collection, config, randomBytes(32));
   await assert.rejects(() => wrongKey.snapshot(owner), /ledger_integrity/); wrongKey.close();
@@ -214,7 +215,7 @@ test('disconnect during the awaited cloud snapshot never signs a new grant', asy
   f.ledger.snapshot = async account => {
     const value = await snapshot(account); controller.abort(); return value;
   };
-  await assert.rejects(() => f.service.reconcile(owner, [receipt(order)], controller.signal), /reconciliation_cancelled/);
+  await assert.rejects(() => f.reconcile(owner, [receipt(order)], controller.signal), /reconciliation_cancelled/);
   assert.equal((await snapshot(owner)).status, 'verified');
   assert.equal(f.state.confirms, 0);
 });

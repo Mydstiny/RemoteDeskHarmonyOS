@@ -221,6 +221,7 @@ export default class EntryAbility extends UIAbility {
     try {
       const appClone: AppCloneContext = AppCloneContext.getInstance();
       appClone.init(this.context);
+      void ProAppRuntime.getInstance().initialize(this.context).catch((): void => {});
       // 读取系统颜色模式 (必须在 setColorMode 前 + AppStorage 初始化在前)
       const sysColorMode: number = this.context.config.colorMode ?? 0;
       const sysDark: boolean = sysColorMode === ConfigurationConstant.ColorMode.COLOR_MODE_DARK;
@@ -467,6 +468,7 @@ export default class EntryAbility extends UIAbility {
   }
 
   onForeground(): void {
+    void ProAppRuntime.getInstance().refreshOnline();
     ProAppRuntime.getInstance().runtime.refresh();
     // 前台恢复 — 清除后台标志, 停止后台保活任务
     // 注意: 实况窗由 RemoteDesktop.restoreFromBackground() 控制, 不在此处提前关闭

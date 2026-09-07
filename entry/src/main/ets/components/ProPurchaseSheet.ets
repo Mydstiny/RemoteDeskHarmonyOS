@@ -28,7 +28,7 @@ export struct ProPurchaseSheet {
   @State storePrice: string = '';
   @State storeName: string = '';
   @State message: string = 'Pro 正在准备中，当前版本的功能继续免费使用。';
-  private provider: HuaweiProBillingProvider = new HuaweiProBillingProvider();
+  private provider: HuaweiProBillingProvider = new HuaweiProBillingProvider(ProAppRuntime.getInstance());
   private product: ProStoreProduct | null = null;
   private generation: number = 0;
   private live: boolean = false;
@@ -36,6 +36,7 @@ export struct ProPurchaseSheet {
 
   aboutToAppear(): void {
     this.live = true;
+    this.testing = ProAppRuntime.getInstance().sandboxSelected();
     this.unsubscribe = ProAppRuntime.getInstance().runtime.subscribe((): void => {
       const snapshot = ProAppRuntime.getInstance().runtime.snapshot();
       this.proLabel = snapshot.label;
@@ -62,19 +63,21 @@ export struct ProPurchaseSheet {
         this.product = product;
         this.storePrice = product.price;
         this.storeName = product.name;
-        this.message = '沙盒已确认。购买仅验证支付链路，不授予正式 Pro 权益。';
+        this.message = '沙盒商品已确认，购买后将验证订单并开通沙盒 Pro。';
       } else if (action === 'buy' && this.product !== null && this.testing) {
-        await this.provider.purchase(this.context(), this.product.id, (): boolean =>
+        const outcome = await this.provider.purchase(this.context(), this.product.id, (): boolean =>
           this.live && generation === this.generation && ProPurchaseLifecycle.current(epoch));
         if (!this.live || generation !== this.generation || !ProPurchaseLifecycle.current(epoch)) { return; }
-        this.message = '已收到购买回调。订单验签与发货尚未接入，权益未开通；可查询待处理订单。';
+        this.message = outcome.verified ? '沙盒订单验证通过，沙盒 Pro 已开通。' :
+          '本次尚未开通沙盒 Pro，请使用恢复购买继续核验。';
         this.product = null;
         this.storePrice = '';
       } else if (action === 'restore') {
-        const count = await this.provider.restore(this.context());
+        const outcome = await this.provider.restore(this.context(), this.productId, (): boolean =>
+          this.live && generation === this.generation && ProPurchaseLifecycle.current(epoch));
         if (!this.live || generation !== this.generation || !ProPurchaseLifecycle.current(epoch)) { return; }
-        this.message = count > 0 ? '已查询到购买记录。验签服务尚未接入，本次未恢复正式权益。' :
-          '当前查询未返回购买记录；沙盒记录行为不等同于正式购买恢复。';
+        this.message = outcome.verified ? '沙盒权益已验证并恢复。' : outcome.records > 0 ?
+          '已查询到订单，本次尚未恢复有效沙盒权益，请稍后重试。' : '当前未恢复到有效的沙盒 Pro 权益。';
       }
     } catch (error) {
       if (this.live && generation === this.generation) {
@@ -154,17 +157,14 @@ export struct ProPurchaseSheet {
             .fontSize(12).fontColor(this.pal().text2).backgroundColor(Color.Transparent)
             .enabled(!this.busy).onClick((): void => {
               this.testing = !this.testing;
+              ProAppRuntime.getInstance().setSandbox(this.testing);
               this.product = null; this.storePrice = ''; this.storeName = '';
             })
           if (this.testing) {
             Column({ space: 10 }) {
-              Text('仅测试购买链路，不会开通正式权益。请使用 AGC 非消耗型测试商品及沙盒账号。')
+              Text('沙盒订单只开通沙盒权益。请使用已加入测试名单的华为账号。')
                 .fontSize(12).fontColor(this.pal().text2).lineHeight(19)
-              TextInput({ text: this.productId, placeholder: 'AGC 测试商品 ID' })
-                .enabled(!this.busy).maxLength(128).fontSize(14)
-                .onChange((value: string): void => {
-                  this.productId = value; this.product = null; this.storePrice = ''; this.storeName = '';
-                })
+              Text('测试商品：' + this.productId).fontSize(12).fontColor(this.pal().text2)
               Button('检查沙盒并读取商品').fontSize(13).enabled(!this.busy && this.productId.trim().length > 0)
                 .onClick((): void => { this.operate('load'); })
               if (this.storeName.length > 0) {
