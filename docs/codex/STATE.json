@@ -245,5 +245,24 @@
     },
     "next": "No implementation work remains. Preserve runtime uncertainty; investigate a later annotated user capture if a problem is reported.",
     "reviewedHead": "5a877e67db5851b2b7b2c11576fe87edb975cc0c"
+  },
+  "sshRepair": {
+    "task": "ssh-auth-phone-commands-repair",
+    "planPath": "docs/codex/plans/2026-09-07-ssh-auth-phone-commands-repair.md",
+    "checkpointHead": "15f27269e",
+    "status": "code-validated-final-review-pending",
+    "reviewTaskId": "/root/review_ssh_repair",
+    "reviewStatus": "REVIEW_REQUIRED",
+    "scope": "Host-list SSH authentication and exact session handoff, phone tabs with one More menu, optional encryption for account-scoped common commands",
+    "validation": {
+      "hostChecks": "PASS 49 current checks",
+      "testCompile": "PASS exit 0; BUILD SUCCESSFUL in 17 s 681 ms",
+      "assembleHap": "PASS exit 0; signed BUILD SUCCESSFUL in 22 s 636 ms",
+      "compliance": "PASS Light and git diff --check",
+      "ohosTest": "UNAVAILABLE exit 1: 00306054 ohosTest@OhosTestCompileArkTS task not found; mandatory default test compile succeeded",
+      "device": "NOT RUN: real SSH endpoint, phone portrait/landscape and PC window acceptance remain pending"
+    },
+    "next": "Commit this validated phone-menu correction, then reuse /root/review_ssh_repair for the exact checkpoint and correction commits.",
+    "blockers": []
   }
 }

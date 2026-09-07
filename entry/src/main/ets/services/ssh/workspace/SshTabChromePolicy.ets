@@ -53,7 +53,7 @@ export function resolveSshHostPickerSheetLayout(viewportWidthVp: number,
   };
 }
 
-/** The real header owns the safe inset; a standalone strip follows it. */
+/** The first visible chrome row owns the safe inset exactly once. */
 export function resolveSshTopChromeLayout(topInsetVp: number,
   standaloneTabsVisible: boolean, phone: boolean = false,
   tabStripHeightVp: number = SSH_TAB_STRIP_HEIGHT_VP): SshTopChromeLayout {
@@ -98,10 +98,10 @@ export function sshTabStripShowsStandaloneNewSessionAction(
   return !headerActionPopupEnabled;
 }
 
-/** Phone keeps its direct toolbar actions and a compact overflow in the tab strip. */
+/** Every device shape uses one header menu; rollout flags only change menu contents. */
 export function sshHeaderUsesSingleActionMenu(_workbenchEnabled: boolean,
-  desktop: boolean, pad: boolean): boolean {
-  return desktop || pad;
+  _desktop: boolean, _pad: boolean): boolean {
+  return true;
 }
 
 /** Compact chrome is an M2 feature and must disappear with its rollout flag. */

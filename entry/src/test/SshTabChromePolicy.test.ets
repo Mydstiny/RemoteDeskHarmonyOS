@@ -100,11 +100,11 @@ export default function sshTabChromePolicyTest(): void {
       expect(sshTabStripShowsStandaloneNewSessionAction(false)).assertTrue();
     });
 
-    it('keeps_phone_direct_actions_without_changing_pad_or_pc', 0, (): void => {
+    it('keeps_phone_pad_and_pc_actions_in_one_menu_with_or_without_workbench', 0, (): void => {
       expect(sshHeaderUsesSingleActionMenu(false, true, false)).assertTrue();
       expect(sshHeaderUsesSingleActionMenu(false, false, true)).assertTrue();
-      expect(sshHeaderUsesSingleActionMenu(false, false, false)).assertFalse();
-      expect(sshHeaderUsesSingleActionMenu(true, false, false)).assertFalse();
+      expect(sshHeaderUsesSingleActionMenu(false, false, false)).assertTrue();
+      expect(sshHeaderUsesSingleActionMenu(true, false, false)).assertTrue();
       expect(sshHeaderUsesSingleActionMenu(true, true, false)).assertTrue();
     });
   });

@@ -5992,9 +5992,6 @@ struct SshTerminal {
   private sshTabStrip() {
     Row() {
       Column() { this.sshTabStripItems() }.layoutWeight(1)
-      if (!this.isDesktopDevice && !this.isPadDevice) {
-        this.SshHeaderMenuButton(true)
-      }
     }
     .width('100%').height(this.sshTabStripHeight() + this.sshTopChromeLayout().standaloneTabTopInsetVp)
     .padding({ top: this.sshTopChromeLayout().standaloneTabTopInsetVp })
@@ -6892,8 +6889,8 @@ struct SshTerminal {
   }
 
   private sshTabsInline(): boolean {
-    // Phone retains its dedicated tab row in both orientations, including
-    // the overflow entry for commands when the main toolbar uses direct actions.
+    // Phone keeps a dedicated tab row in both orientations. Session actions
+    // remain in the header's More menu regardless of the window breakpoint.
     if (!this.isDesktopDevice && !this.isPadDevice) { return false; }
     if (!this.sshWorkbenchEnabled) {
       // Exact pre-M2 behavior while the rollout flag is disabled.
@@ -7116,8 +7113,7 @@ struct SshTerminal {
   }
 
   private headerTopOffset(): number {
-    // The real session toolbar is always the first app-owned row. It owns the
-    // system top inset even when a compact tab strip follows underneath.
+    // Phone tabs own the top inset when present; otherwise the header owns it.
     return this.sshTopChromeLayout().headerTopInsetVp;
   }
 
@@ -18575,12 +18571,12 @@ struct SshTerminal {
   }
 
   @Builder
-  private SshHeaderMenuButton(compact: boolean = false) {
+  private SshHeaderMenuButton() {
           Button() {
-            Text(compact ? '⋯' : '更多').fontSize(11).fontWeight(FontWeight.Medium)
+            Text('更多').fontSize(11).fontWeight(FontWeight.Medium)
               .fontColor('rgba(242,244,247,0.88)')
           }
-          .width(compact ? 34 : 60).height(40).padding(0)
+          .width(60).height(40).padding(0)
           .borderRadius(20)
           .backgroundColor(this.chromeChipBg())
           .margin({ right: 8 })
@@ -18843,8 +18839,8 @@ struct SshTerminal {
       .onFocus((): void => { this.sshWorkspaceFocusRegion = 'title_actions'; })
       .onKeyEvent((event: KeyEvent): boolean => { return this.handleSshKeyEvent(event); })
 
-      // Phone and compact Pad/free-form windows keep a full-width tab strip,
-      // but it belongs below the real session toolbar and its safe-area inset.
+      // Compact Pad/free-form PC windows keep the full-width tabs below the
+      // toolbar; phone tabs were rendered above it.
       if (this.sshTopChromeLayout().tabStripBelowHeader) {
         this.sshTabStrip()
       }

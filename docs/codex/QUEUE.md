@@ -4,6 +4,8 @@ Updated: 2026-09-07 Asia/Shanghai
 
 ## Now
 
+- SSH: finish independent review after current-run builds passed for authentication-before-navigation, compact phone More menu and optional encryption for common commands. [Scope](plans/2026-09-07-ssh-auth-phone-commands-repair.md).
+
 - Remote AI: [AI0 evidence](plans/2026-09-07-pro-remote-ai-ai0-evidence.md) records merged independent GitHub Codex/DSH probe repositories. Continue actual execution isolation, model-turn/approval/resume and HarmonyOS TLS/key tests; then AI1 authenticated LAN. No app AI UI or relay feature is available yet.
 
 0. Pro M3: three built-in icons committed in 62baa018 plus dismissal/retry fix fea42b9b; final independent code/Release review PASS. User explicitly cancelled custom upload. Validate Debug real/free/Pro, preset/restore and API23/26 shell behavior when device operation is permitted. Keep production checkout disabled; each increment has its own commit.
