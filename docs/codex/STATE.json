@@ -3,13 +3,13 @@
   "task": "pro-purchase-foundation",
   "branch": "codex/pro-purchase-foundation",
   "base": "8edc187868e94ed41634e8a6c4c4c072e3a48679",
-  "head": "35585c80a3bb7dede7c75e5fd1740ba510c26081",
-  "phase": "pro-m4-review-fixes",
+  "head": "4d765fd8e427d90e458f5ffadcdba2d5af34c30b",
+  "phase": "pro-m5-implementation",
   "status": "in-progress",
-  "next": "Complete M4 fix gates and independent recheck, then continue M5 sharing/continuation, M6 platform feasibility, M7 trusted purchase and free U0-U4 on the current branch.",
+  "next": "Implement M5 versioned sharing and official continuation, then M6 feasibility, M7 trusted purchase and free U0-U4; preserve experimental/device boundaries.",
   "blockers": [
     "M3/U0-U4 device matrix and M4 PC real Share Kit/SFTP file-integrity acceptance remain unverified.",
-    "M5 KNOCK_COLLABORATION and M6 USB/HID DDK require system_basic provision grants; ACL and App Linking setup unconfirmed.",
+    "M5 KNOCK_COLLABORATION provision and App Linking setup unconfirmed; M6 USBManager path still needs authenticator/native proof, DDK-specific ACL is not assumed mandatory.",
     "M7 trusted production verifier, persistent verified cache and fulfillment/refund flow remain pending; backend and production product configuration requested."
   ],
   "planPaths": [
@@ -51,15 +51,15 @@
     ],
     "findings": [],
     "reviewedHead": "6690cdbf4ea671b0bc318d259bc35f0479911063",
-    "reason": "Exact prior Pro increments passed; M4 two review findings being fixed and rechecked; overall roadmap remains unfinished."
+    "reason": "Exact M1/M2/U1/M3 and M4 increments independently passed; aggregate roadmap remains unfinished."
   },
   "lastVerification": {
-    "testCompile": "PASS M4 initial BUILD SUCCESSFUL in 11 s 865 ms",
-    "assembleHap": "PASS M4 initial signed Debug BUILD SUCCESSFUL in 25 s 732 ms",
-    "policyChecks": "PASS initial 12 knock +26 runtime checks independently rerun; 14 knock checks pass after review fixes",
-    "compliance": "PASS initial Light/diff; final fix gates pending",
-    "release": "PASS initial 54 s 44 ms; ABC bbd411a54b7963f8727ed7c11affd79b2c08ff445ebd7e1802f54755c829e546; predates review fixes",
-    "device": "NOT RUN: API26 PC intake and SFTP real integrity, M3/API23/UI matrices pending",
+    "testCompile": "PASS final M4 BUILD SUCCESSFUL in 10 s 505 ms",
+    "assembleHap": "PASS final M4 signed Debug BUILD SUCCESSFUL in 23 s 776 ms",
+    "policyChecks": "PASS 14 knock + 26 runtime independently rerun",
+    "compliance": "PASS Light and diff",
+    "release": "PASS BUILD SUCCESSFUL in 53 s 378 ms; ABC 6ce24744096c344e00fe0548237452c3ad456673d94b1700651b02f01f3fc8b3 independently audited",
+    "device": "NOT RUN: API26 PC intake/SFTP integrity, M3/API23/UI matrices pending",
     "production": "DISABLED pending trusted verifier/fulfillment and acceptance"
   },
   "updated": "2026-09-07 Asia/Shanghai",
@@ -200,7 +200,8 @@
       "U1": "ca929ceb3c419ef0336818074c19637f96137e7b",
       "M3": "62baa0183151e149a7b01a51a1367690008216ca",
       "M3ReviewFix": "fea42b9b0b2d4e5166c9194d2ae58d7674c813ce",
-      "M4": "02a8cab660b44b569771b64670de024e49ce5b1e"
+      "M4": "02a8cab660b44b569771b64670de024e49ce5b1e",
+      "M4ReviewFix": "ee45030bedb7bfb55df6afa78491cd846c2413f3"
     },
     "commitPolicy": "One separate commit after each completed stage; checkpoint incomplete work explicitly.",
     "reviewerTaskId": "/root/review_pro_plan",
@@ -225,17 +226,24 @@
       "releaseAbcSha256": "475414b946df74a29e421ad637e60c3dde54714297765aecd70208679cab4b53"
     },
     "m4": {
-      "status": "review-fixes-in-progress",
+      "status": "code-and-artifact-reviewed-device-pending",
       "planPath": "docs/codex/plans/2026-09-07-pro-m4-knock-sftp.md",
       "availability": "experimental",
       "scope": "API26 PC/2in1 SSH SFTP; Debug Pro only until real acceptance",
       "reviewerTaskId": "/root/review_pro_plan",
-      "reviewStatus": "REVIEW_REQUIRED",
-      "findings": [
-        "P2 source basename whitespace mismatch",
-        "P2 persistent incoming source orphan ownership"
+      "reviewStatus": "PASS",
+      "findings": [],
+      "deviceAcceptance": "pending",
+      "reviewedCommits": [
+        "02a8cab660b44b569771b64670de024e49ce5b1e",
+        "ee45030bedb7bfb55df6afa78491cd846c2413f3"
       ],
-      "deviceAcceptance": "pending"
+      "reviewResult": "Both P2 findings closed; 14 knock + 26 runtime and final Release artifact independently PASS",
+      "releaseAbcSha256": "6ce24744096c344e00fe0548237452c3ad456673d94b1700651b02f01f3fc8b3",
+      "metadataVerification": {
+        "testCompile": "PASS exit 0; BUILD SUCCESSFUL in 7 s 643 ms",
+        "assembleHap": "PASS exit 0; signed BUILD SUCCESSFUL in 9 s 998 ms"
+      }
     }
   },
   "videoRepair": {
