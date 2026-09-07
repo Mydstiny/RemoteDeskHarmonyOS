@@ -4,5 +4,5 @@
   "type": "module",
   "license": "AGPL-3.0-or-later",
   "engines": { "node": ">=24" },
-  "scripts": { "test": "node --test ../../scripts/tests/test_pro_iap_server.mjs ../../scripts/tests/test_pro_fulfillment.mjs ../../scripts/tests/test_pro_http.mjs" }
+  "scripts": { "test": "node --test ../../scripts/tests/test_pro_iap_server.mjs ../../scripts/tests/test_pro_fulfillment.mjs ../../scripts/tests/test_pro_http.mjs ../../scripts/tests/test_pro_cloud_ledger.mjs" }
 }

@@ -42,3 +42,9 @@ host runtimes without redistributing them. Its runtime verification snapshot,
 upstream licenses and deployment boundaries are tracked separately in
 `server/pro-entitlement/SBOM.spdx.json` and `server/pro-entitlement/PROVENANCE.md`;
 these are not additional HAP components.
+
+The AGC server adapter separately locks Huawei Cloud Server SDK 1.0.5 (ISC)
+and its npm dependencies. Per-package versions, archive SHA-512 hashes and
+license notices are in `server/pro-entitlement/agc/SBOM.spdx.json` and
+`server/pro-entitlement/agc/THIRD_PARTY_NOTICES.md`. Installation scripts are
+disabled; the HAP dependency set is unchanged.

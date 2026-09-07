@@ -15,3 +15,7 @@ The separately deployable Pro entitlement server sources use external Node.js
 and OpenSSL host runtimes. They are not bundled in the HAP or redistributed in
 the server source directory. Runtime scope, validation versions and upstream
 notices are recorded in server/pro-entitlement/PROVENANCE.md and its SBOM.
+
+The optional AGC deployment uses the Huawei Cloud Server SDK and locked npm
+dependencies. Their separate SBOM and full notices are in
+server/pro-entitlement/agc/. These dependencies are not included in the HAP.

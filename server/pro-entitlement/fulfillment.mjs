@@ -46,16 +46,16 @@ export class ProFulfillmentService {
   async #refresh(reference, expectedOwner, notificationId = '', deliver = false) {
     return this.#exclusive(reference, async () => {
       const order = await this.#iap.query(reference);
-      const applied = this.#ledger.applyCurrentOrder(order, expectedOwner, this.#now(), notificationId);
+      const applied = await this.#ledger.applyCurrentOrder(order, expectedOwner, this.#now(), notificationId);
       // Only the independent outbox worker confirms delivery. Checkout/restore
       // first return the signed grant backed by this durable account binding.
       if (deliver && applied.finishPending) {
-        const lease = this.#ledger.claimFinish(reference, this.#now());
+        const lease = await this.#ledger.claimFinish(reference, this.#now());
         if (lease) {
           try {
             await this.#iap.confirm(reference);
-            this.#ledger.finishSucceeded(reference.purchaseOrderId, lease);
-          } catch { this.#ledger.finishFailed(reference.purchaseOrderId, lease, this.#now()); }
+            await this.#ledger.finishSucceeded(reference.purchaseOrderId, lease);
+          } catch { await this.#ledger.finishFailed(reference.purchaseOrderId, lease, this.#now()); }
         }
       }
       return applied.owner;
@@ -64,12 +64,12 @@ export class ProFulfillmentService {
   async reconcile(owner, records = [], signal) {
     if (!Array.isArray(records) || records.length > 32 || records.some(record => typeof record !== 'string') ||
         records.reduce((size, record) => size + Buffer.byteLength(record), 0) > 1024 * 1024) fail('restore_batch_invalid');
-    const references = new Map(this.#ledger.references(owner, true).map(reference => [reference.purchaseOrderId, reference]));
+    const references = new Map((await this.#ledger.references(owner, true)).map(reference => [reference.purchaseOrderId, reference]));
     for (const record of records) {
       const reference = orderReferenceFromPurchaseData(record);
       // A verified terminal refund remains an immutable local tombstone. Its
       // vendor record becoming unavailable cannot block a different purchase.
-      if (this.#ledger.terminalReference(owner, reference)) continue;
+      if (await this.#ledger.terminalReference(owner, reference)) continue;
       const existing = references.get(reference.purchaseOrderId);
       if (existing && existing.purchaseToken !== reference.purchaseToken) fail('conflicting_order_reference');
       references.set(reference.purchaseOrderId, reference);
@@ -82,7 +82,7 @@ export class ProFulfillmentService {
       await this.#refresh(reference, owner);
     }
     if (signal?.aborted) fail('reconciliation_cancelled');
-    const snapshot = this.#ledger.snapshot(owner);
+    const snapshot = await this.#ledger.snapshot(owner);
     return { signedEntitlement: this.#signer.sign(snapshot, owner, this.#now()), pendingDelivery: snapshot.pending };
   }
   async notification(jws) {
@@ -92,7 +92,7 @@ export class ProFulfillmentService {
     // The HTTP adapter acknowledges only after the durable transaction above.
   }
   async reconcileDue() {
-    const due = this.#ledger.dueOrders(this.#now());
+    const due = await this.#ledger.dueOrders(this.#now());
     let successful = 0;
     for (const item of due) {
       try { await this.#refresh(item.reference, item.owner, '', true); successful++; }

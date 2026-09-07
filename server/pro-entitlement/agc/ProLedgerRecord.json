@@ -1,0 +1,104 @@
+{
+  "permissions": [
+    {
+      "objectTypeName": "ProLedgerRecord",
+      "permissions": [
+        {
+          "role": "World",
+          "rights": []
+        },
+        {
+          "role": "Authenticated",
+          "rights": []
+        },
+        {
+          "role": "Creator",
+          "rights": []
+        },
+        {
+          "role": "Administrator",
+          "rights": [
+            "Read",
+            "Upsert",
+            "Delete"
+          ]
+        }
+      ]
+    }
+  ],
+  "objectTypes": [
+    {
+      "objectTypeName": "ProLedgerRecord",
+      "indexes": [
+        {
+          "indexName": "proIndex0",
+          "indexList": [
+            "kind",
+            "owner",
+            "state",
+            "dueAt"
+          ]
+        },
+        {
+          "indexName": "proIndex1",
+          "indexList": [
+            "kind",
+            "dueAt",
+            "sortAt"
+          ]
+        }
+      ],
+      "fields": [
+        {
+          "fieldName": "id",
+          "fieldType": "String",
+          "notNull": true,
+          "isNeedEncrypt": false,
+          "belongPrimaryKey": true
+        },
+        {
+          "fieldName": "kind",
+          "fieldType": "String",
+          "notNull": false,
+          "isNeedEncrypt": false,
+          "belongPrimaryKey": false
+        },
+        {
+          "fieldName": "owner",
+          "fieldType": "String",
+          "notNull": false,
+          "isNeedEncrypt": false,
+          "belongPrimaryKey": false
+        },
+        {
+          "fieldName": "state",
+          "fieldType": "String",
+          "notNull": false,
+          "isNeedEncrypt": false,
+          "belongPrimaryKey": false
+        },
+        {
+          "fieldName": "dueAt",
+          "fieldType": "Double",
+          "notNull": false,
+          "isNeedEncrypt": false,
+          "belongPrimaryKey": false
+        },
+        {
+          "fieldName": "sortAt",
+          "fieldType": "Double",
+          "notNull": false,
+          "isNeedEncrypt": false,
+          "belongPrimaryKey": false
+        },
+        {
+          "fieldName": "payload",
+          "fieldType": "Text",
+          "notNull": false,
+          "isNeedEncrypt": false,
+          "belongPrimaryKey": false
+        }
+      ]
+    }
+  ]
+}

@@ -1,6 +1,6 @@
 # Pro 服务端协议与运行时来源
 
-本目录为项目独立实现，没有复制、分发或执行华为示例项目源码，没有引入 npm 依赖。阅读示例仅用于核对官方协议常量及格式。
+本目录业务代码为项目独立实现，没有复制、分发或执行华为示例项目源码。SQLite/HTTP 核心不依赖 npm 包；AGC 部署子目录单独锁定华为官方云数据库 SDK 及传递依赖。阅读示例仅用于核对官方协议常量及格式。
 
 已于 2026-09-07 核验：
 
@@ -15,3 +15,12 @@
 
 - Node.js：[来源与 MIT 及捆绑组件通知](https://github.com/nodejs/node/blob/v26.4.0/LICENSE)。
 - OpenSSL：[来源与 Apache-2.0 许可证](https://github.com/openssl/openssl/blob/openssl-3.6.3/LICENSE.txt)。
+
+## AGC 云数据库适配
+
+- 官方 [Node.js Server SDK 集成](https://developer.huawei.com/consumer/cn/doc/AppGallery-connect-Guides/agc-clouddb-sdk-integrationsdk-0000001982503202) 和 [云函数访问数据库](https://developer.huawei.com/consumer/cn/doc/AppGallery-connect-Guides/agc-clouddb-sdk-use-clouddb-0000001982662914)。
+- 2026-09-07 从官方 npm 发布读取 `@hw-agconnect/cloud-server@1.0.5`，并校验包 SHA-512。声明和实际实现均核对：`CloudDBCollection.runTransaction`、`Transaction.executeQuery/executeUpsert`、`naturalbase_version`、最多五次事务尝试，以及先读后写约束。
+- SDK 仅校验查询返回的对象；空查询和范围不自动防止并发插入。每笔业务事务必须读写已存在的 `control-v1`，包含只读权益快照；控制记录缺失时不自动初始化、不签发权益。独立存储区首次配置期间预置控制记录，随后不得覆盖。
+- SDK 对未设置凭据的环境不自动初始化：它读取 `AGC_CONFIG` 或 `PROJECT_CREDENTIAL`，或由部署显式配置。AGC 实际运行验证为 Node 22.23.2 / Linux x64，当前探针未收到这两项托管凭据。不能把文档中的推荐路径当成实际已就绪。
+- `agc/package-lock.json` 固定全部 31 个 npm 包；Axios 显式固定 1.20.0。使用 `npm ci --ignore-scripts`。本次 `npm audit` 返回 0 项漏洞，这是当前检查结果而非永久安全保证。
+- `agc/SBOM.spdx.json` 保存每个发布归档 SHA-512，完整许可说明见同目录 `THIRD_PARTY_NOTICES.md`，可用 `npm run inventory` 重建。SDK 未附独立 LICENSE 文件，其 README 和 package.json 声明 ISC；通知保留该声明、源码版权以及 ISC 许可文本。所有依赖均只用于独立服务端部署。

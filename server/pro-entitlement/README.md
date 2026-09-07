@@ -1,6 +1,6 @@
 # Pro 权益服务
 
-当前实现可信验证、持久台账与签名权益；HTTP/App 接入和部署仍在推进。
+当前实现可信验证、HTTP 接口、持久台账与签名权益；App 接入和实际部署仍在推进。
 
 - `iap-crypto.mjs`：固定华为 Root CA G2 指纹，OpenSSL 3 完整证书路径/CRL 检查，IAP 非 critical OID，ES256/P1363 签名，以及服务端请求 JWT。
 - `huawei-api.mjs`：固定华为 HTTPS 站点、禁用重定向、超时/长度限制、Account Kit 用户凭证与 OAuth Client ID 校验、订单最新状态/通知验证和独立发货确认调用。
@@ -15,5 +15,9 @@
 - 离线缓存默认每日重验、七天可用；永久购买记录与缓存新鲜度独立。失败不续签，退款只影响对应订单。所有未终结订单需要最新查询后才签发新权益。
 
 部署必须使用真正的持久数据库。此 SQLite 实现不能直接放入 AGC 云函数临时文件系统；AGC 适配需要核对运行时和云数据库事务。用户已授权完善 AGC 沙盒，现有测试商品、IAP key 和指定沙盒测试帐号已核对；没有实际服务器部署或真实验单结果。私钥与其他凭据只由私有部署配置提供，不写入客户端或代码仓库。
+
+`cloud-ledger.mjs` 提供独立 CloudDB 事务台账，保留与 SQLite 一致的订单绑定、退款墓碑、发货租约及公平扫描规则。数据库使用仅 Administrator 可读写的独立存储区，模型见 `agc/ProLedgerRecord.json`。每个事务通过已存在的控制记录保护新键与范围并发；状态和修订号同事务返回。控制记录需在服务关闭时向全新空存储区预置一次，运行时绝不覆盖或自动重建。
+
+云函数部署使用 Node 22+ 并且不加载 `node:sqlite`。在 `agc` 目录执行 `npm ci --ignore-scripts` 后运行 `npm test` 验证真实 SDK 的查询、版本前置条件和序列化接口；远程传输由测试替代，不能当成已通过云端验收。该测试使用 Node 的 `--test-force-exit`，因为 SDK 的配置轮询没有公开停止 API；所有测试完成后才退出。根目录 `npm test` 另覆盖 53 项协议/台账/HTTP 检查。
 
 协议依据、运行时许可证与当前测试版本见 [PROVENANCE.md](PROVENANCE.md) 和 [SBOM.spdx.json](SBOM.spdx.json)。未复制华为服务端示例源码；项目自有实现适用仓库 AGPL-3.0-or-later。
