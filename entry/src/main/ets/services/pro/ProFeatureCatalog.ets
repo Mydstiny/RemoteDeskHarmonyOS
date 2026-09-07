@@ -20,6 +20,12 @@ function planned(id: string, title: string, description: string, api: number = 2
     minAppVersionCode: 0, minApiVersion: api, devices: ['phone', 'tablet', 'pc'],
     protocols: [], capabilities: [], permissions: [], serverAuthorized: false };
 }
+function appIcon(): ProFeature {
+  const feature = planned('pro.personalization.appIcon', '预设应用图标',
+    '选择随应用提供的白底版或透明底版图标，随时恢复默认。', 26);
+  feature.availability = 'available';
+  return feature;
+}
 // Returned declarations are owned by the caller; UI cannot mutate the authority catalog.
 export function proFeatures(): ProFeature[] {
   return [
@@ -29,7 +35,7 @@ export function proFeatures(): ProFeature[] {
     planned('pro.workspaces', '工作区与布局', '保存常用会话组合，让每次开工更从容。'),
     planned('pro.hostManagement', '高级主机管理', '智能分组与批量配置，减少重复操作。'),
     planned('pro.personalization', '个性化方案', '多套工具栏、快捷键与外观方案。'),
-    planned('pro.personalization.appIcon', '应用图标', '选择预设应用图标；自定义图片的系统支持另行验证。', 26),
+    appIcon(),
     planned('pro.file.knockTransfer', '碰一碰传文件', '将手机文件发送到支持的远程会话位置。'),
     planned('pro.connection.knockShare', '碰一碰分享连接', '分享连接并恢复支持的操作状态。'),
     planned('pro.connection.continuation', '跨设备接续', '通过官方接续继续同账号的远程工作。'),

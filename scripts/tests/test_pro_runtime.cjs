@@ -81,7 +81,8 @@ test('debug synchronizes subscribers without changing real entitlement or planne
   assert.equal(f.runtime.decision('test.shipped', f.context).executable, true);
   assert.equal(f.runtime.snapshot().label, '模拟 Pro'); assert.equal(a, 2); assert.equal(b, 2);
   assert.equal(JSON.stringify(f.service.snapshot()), before);
-  assert.equal(f.runtime.decision('pro.personalization.appIcon', f.context).visible, false);
+  assert.equal(f.runtime.decision('pro.personalization.appIcon', f.context).visible, true);
+  assert.equal(f.runtime.decision('pro.personalization.appIcon', { ...f.context, apiVersion: 23 }).visible, false);
   let calls = 0; f.runtime.run('pro.workspaces', f.context, () => calls++); assert.equal(calls, 0);
   f.runtime.run('core.connection', f.context, () => calls++); assert.equal(calls, 1);
   stopB(); f.runtime.setDebugMode('free'); assert.equal(b, 2); assert.equal(a, 3);
@@ -155,6 +156,118 @@ test('real account transitions isolate Pro before their first await and through 
   assert.equal(app.runtime.snapshot().realState, 'free'); // A failed transition cannot resurrect the old grant.
   assert.equal(app.context().device, 'pc');
   app.runtime.dispose();
+});
+function iconFixture(debug = true) {
+  const f = fixture(debug); let selected = ''; let queries = 0; const applied = [];
+  const { ProAppIconController } = f.load('entry/src/main/ets/services/pro/ProAppIconController.ets');
+  const icons = () => ['rd_white', 'rd_transparent'].map(name => ({ name, enabled: selected === name }));
+  const provider = { supported: () => true, query: async () => { queries++; return icons(); },
+    apply: async name => { applied.push(name); selected = name; } };
+  const controller = new ProAppIconController(provider, f.runtime, () => f.context);
+  return { ...f, controller, provider, applied, icons, queries: () => queries,
+    dispose: () => { controller.dispose(); f.runtime.dispose(); } };
+}
+test('real icon feature hides for free users and rejects direct calls; default restore stays free', async () => {
+  const f = iconFixture();
+  assert.equal(f.runtime.decision('pro.personalization.appIcon', f.context).visible, false);
+  assert.equal(await f.controller.select('rd_white', () => true), false);
+  assert.equal(f.queries(), 0); assert.equal(f.applied.length, 0);
+  assert.equal(await f.controller.select('', () => true), true);
+  assert.deepEqual(f.applied, ['']);
+  f.runtime.setDebugMode('pro');
+  assert.equal(await f.controller.select('rd_white', () => true), true);
+  assert.equal(f.controller.snapshot().currentName, 'rd_white');
+  f.runtime.setDebugMode('free');
+  assert.equal(f.controller.snapshot().currentName, 'rd_white'); // mode changes never mutate the real system icon
+  assert.equal(await f.controller.select('rd_transparent', () => true), false);
+  assert.equal(await f.controller.select('', () => true), true);
+  assert.equal(f.controller.snapshot().currentName, ''); f.dispose();
+});
+test('release icon action needs a real grant and cannot be enabled by simulated state', async () => {
+  const f = iconFixture(false); f.runtime.setDebugMode('pro'); f.runtime.debugMode = 'pro';
+  assert.equal(await f.controller.select('rd_white', () => true), false);
+  f.verifier.result = { status: 'verified', owner: 'a', environment: 'production', grant: f.grant };
+  await f.service.reconcile([]);
+  assert.equal(await f.controller.select('rd_transparent', () => true), true);
+  f.verifier.result = { status: 'revoked', owner: 'a', environment: 'production' }; await f.service.reconcile([]);
+  assert.equal(await f.controller.select('rd_white', () => true), false);
+  assert.equal(await f.controller.select('', () => true), true); f.dispose();
+});
+test('icon preflight rejects stale account, changed simulation, closed UI and duplicate window actions', async () => {
+  for (const change of ['account', 'mode', 'close']) {
+    const f = iconFixture(); f.runtime.setDebugMode('pro'); let live = true; let resolve;
+    f.provider.query = () => new Promise(done => { resolve = done; });
+    const first = f.controller.select('rd_white', () => live);
+    assert.equal(await f.controller.select('rd_transparent', () => true), false);
+    if (change === 'account') f.service.bindAccount('b', 'production', 2);
+    if (change === 'mode') f.runtime.setDebugMode('free');
+    if (change === 'close') live = false;
+    resolve(f.icons()); assert.equal(await first, false);
+    assert.equal(f.applied.length, 0); assert.equal(f.controller.snapshot().busy, false); f.dispose();
+  }
+});
+test('expired icon entitlement is rechecked after asynchronous system query', async () => {
+  const f = iconFixture(false); let resolve;
+  f.verifier.result = { status: 'verified', owner: 'a', environment: 'production', grant: f.grant };
+  await f.service.reconcile([]);
+  f.provider.query = () => new Promise(done => { resolve = done; });
+  const action = f.controller.select('rd_white', () => true);
+  f.clock.now = 2000; // no timer callback: decision must re-evaluate the clock itself
+  resolve(f.icons()); assert.equal(await action, false); assert.equal(f.applied.length, 0); f.dispose();
+});
+test('icon controller rejects unsupported systems, unknown and absent preset names without a mutation', async () => {
+  const f = iconFixture(); f.runtime.setDebugMode('pro');
+  f.provider.supported = () => false;
+  await f.controller.refresh(); assert.equal(await f.controller.select('', () => true), false);
+  assert.equal(f.queries(), 0);
+  f.provider.supported = () => true;
+  assert.equal(await f.controller.select('../../custom.png', () => true), false);
+  f.provider.query = async () => [];
+  assert.equal(await f.controller.select('rd_white', () => true), false);
+  assert.equal(f.applied.length, 0); f.dispose();
+});
+test('icon read failure and unconfirmed mutation never report a default or successful selection', async () => {
+  const f = iconFixture(); f.runtime.setDebugMode('pro');
+  f.provider.query = async () => { throw new Error('read unavailable'); };
+  await f.controller.refresh(); assert.equal(f.controller.snapshot().loaded, false);
+  assert.equal(await f.controller.select('rd_white', () => true), false);
+  assert.equal(f.applied.length, 0);
+  f.provider.query = async () => f.icons(); f.provider.apply = async () => {};
+  assert.equal(await f.controller.select('rd_white', () => true), false);
+  assert.equal(f.controller.snapshot().currentName, '');
+  assert.match(f.controller.snapshot().message, /尚未确认/);
+  let reads = 0;
+  f.provider.query = async () => { if (++reads > 1) throw new Error('after mutation'); return f.icons(); };
+  assert.equal(await f.controller.select('rd_white', () => true), false);
+  assert.equal(f.controller.snapshot().loaded, false);
+  assert.match(f.controller.snapshot().message, /无法确认/); f.dispose();
+});
+test('stale icon refresh cannot overwrite a newer confirmed mutation and subscribers stay synchronized', async () => {
+  const f = iconFixture(); f.runtime.setDebugMode('pro'); let resolve;
+  let a = '', b = ''; const stopA = f.controller.subscribe(() => a = f.controller.snapshot().currentName);
+  const stopB = f.controller.subscribe(() => b = f.controller.snapshot().currentName);
+  f.provider.query = () => new Promise(done => resolve = done);
+  const stale = f.controller.refresh();
+  f.provider.query = async () => f.icons();
+  assert.equal(await f.controller.select('rd_white', () => true), true);
+  resolve([{ name: 'rd_transparent', enabled: true }]); await stale;
+  assert.equal(a, 'rd_white'); assert.equal(b, 'rd_white'); stopB();
+  await f.controller.select('', () => true); assert.equal(a, ''); assert.equal(b, 'rd_white');
+  stopA(); f.dispose();
+});
+test('actual API23 icon adapter cold import and calls never access API26 members', async () => {
+  let accesses = 0;
+  const bundleManager = {};
+  for (const name of ['getAlternateIcons', 'setAlternateIcon']) Object.defineProperty(bundleManager, name,
+    { get() { accesses++; throw new Error('API26 member unavailable'); } });
+  const env = environment(false, { now: 1000 }, {
+    '@kit.AbilityKit': { bundleManager }, '@kit.BasicServicesKit': { deviceInfo: { sdkApiVersion: 23 } }
+  });
+  const { AppIconAdapter } = env.load('entry/src/main/ets/common/AppIconAdapter.ets');
+  const adapter = new AppIconAdapter(); assert.equal(adapter.supported(), false);
+  assert.equal((await adapter.query()).length, 0);
+  await assert.rejects(() => adapter.apply('rd_white'), /iconUnsupported/);
+  assert.equal(accesses, 0);
 });
 (async () => {
   for (const test of tests) { await test.body(); process.stdout.write('PASS ' + test.name + '\n'); }

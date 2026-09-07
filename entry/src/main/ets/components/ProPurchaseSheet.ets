@@ -1,5 +1,6 @@
 import { DEBUG } from 'BuildProfile';
 import { AppSheetHeader } from './AppSheetHeader';
+import { ProAppIconPanel } from './ProAppIconPanel';
 import { ProAppRuntime } from '../services/pro/ProAppRuntime';
 import { ProDebugMode } from '../services/pro/ProRuntime';
 import { ProPurchaseLifecycle } from '../services/pro/ProPurchaseLifecycle';
@@ -124,12 +125,13 @@ export struct ProPurchaseSheet {
             Text(this.proLabel).fontSize(13).fontColor(this.accent)
             Text('一次购买 · 不自动续费').fontSize(12).fontColor(this.accent)
           }.width('100%').padding({ top: 16, bottom: 18 })
+          ProAppIconPanel()
           ForEach(proFeatures().filter((item: ProFeature): boolean => item.requiredEntitlementId.length > 0),
             (feature: ProFeature, index: number): void => { this.featureCard(feature, index) },
             (feature: ProFeature): string => feature.id)
           Text('核心功能一直免费').fontSize(15).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
             .width('100%').margin({ top: 8 })
-          Text('协议连接、正常画质、键鼠操作、基础文件传输和安全更新保持免费。以上 Pro 能力尚在规划，当前不销售未交付功能。')
+          Text('协议连接、正常画质、键鼠操作、基础文件传输和安全更新保持免费。标注“规划中”的能力尚未交付，Pro 正式购买仍在准备中。')
             .fontSize(13).fontColor(this.pal().text2).lineHeight(21).width('100%')
           if (DEBUG) {
             Column({ space: 8 }) {
