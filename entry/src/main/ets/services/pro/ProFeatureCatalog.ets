@@ -26,6 +26,15 @@ function appIcon(): ProFeature {
   feature.availability = 'available';
   return feature;
 }
+function knockTransfer(): ProFeature {
+  const feature = planned('pro.file.knockTransfer', '碰一碰传文件',
+    '在鸿蒙 PC 的 SFTP 窗口接收手机文件，确认后上传到选定目录。', 26);
+  feature.availability = 'experimental';
+  feature.devices = ['pc'];
+  feature.protocols = ['ssh'];
+  feature.capabilities = ['SystemCapability.Collaboration.HarmonyShare'];
+  return feature;
+}
 // Returned declarations are owned by the caller; UI cannot mutate the authority catalog.
 export function proFeatures(): ProFeature[] {
   return [
@@ -36,7 +45,7 @@ export function proFeatures(): ProFeature[] {
     planned('pro.hostManagement', '高级主机管理', '智能分组与批量配置，减少重复操作。'),
     planned('pro.personalization', '个性化方案', '多套工具栏、快捷键与外观方案。'),
     appIcon(),
-    planned('pro.file.knockTransfer', '碰一碰传文件', '将手机文件发送到支持的远程会话位置。'),
+    knockTransfer(),
     planned('pro.connection.knockShare', '碰一碰分享连接', '分享连接并恢复支持的操作状态。'),
     planned('pro.connection.continuation', '跨设备接续', '通过官方接续继续同账号的远程工作。'),
     planned('pro.security.webauthnRedirect', '安全密钥重定向', '在支持的 RDP 会话中使用本地安全密钥。'),

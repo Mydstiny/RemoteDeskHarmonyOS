@@ -124,6 +124,8 @@ export function probeSshLocalProviderCapabilities(): SshLocalProviderCapabilityP
  * asynchronous so callers can keep them outside ArkUI event callbacks.
  */
 export class SshLocalFileProvider {
+  private readonly managedTransferRoots: Set<string> = new Set<string>();
+  private static transferSequence: number = 0;
   private static instance: SshLocalFileProvider | null = null;
   private context: common.UIAbilityContext | null = null;
   private plan: SshLocalProviderPlan = resolveSshLocalProviderPlan({
@@ -303,6 +305,32 @@ export class SshLocalFileProvider {
     return root;
   }
 
+  /** A batch-owned sandbox source does not expand the user's folder grant. */
+  async createTransferStagingRoot(): Promise<string> {
+    const base: string = await this.transferBoxRoot();
+    if (base.length === 0) { return ''; }
+    const root: string = base + '/incoming-' + Date.now().toString(36) + '-' +
+      (++SshLocalFileProvider.transferSequence).toString(36);
+    try {
+      await fileIo.mkdir(root);
+      this.managedTransferRoots.add(root);
+      return root;
+    } catch (_err) { return ''; }
+  }
+
+  private async accessRoot(target: string): Promise<string> {
+    const roots: string[] = Array.from(this.managedTransferRoots);
+    for (let index: number = 0; index < roots.length; index++) {
+      if (target === roots[index]) { return roots[index]; }
+      if (target.startsWith(roots[index] + '/')) {
+        const parts: string[] = target.substring(roots[index].length + 1).split('/');
+        return parts.every((part: string): boolean => part.length > 0 && part !== '.' &&
+          part !== '..' && !/[\\\x00-\x1f]/.test(part)) ? roots[index] : '';
+      }
+    }
+    return await this.currentRoot();
+  }
+
   async currentRoot(): Promise<string> {
     if (this.plan.kind === 'directory' && this.state !== 'ready') { return ''; }
     if (this.plan.kind === 'directory') { return this.rootPath; }
@@ -326,7 +354,7 @@ export class SshLocalFileProvider {
     const requested: string = root.trim().length > 0 ? root.trim() : await this.currentRoot();
     const base: string = this.pathFromUri(requested);
     if (base.length === 0) { return []; }
-    const currentRoot: string = await this.currentRoot();
+    const currentRoot: string = await this.accessRoot(base);
     if (currentRoot.length === 0 || !this.isWithinRoot(currentRoot, base)) { return []; }
     const names: Array<string> = await fileIo.listFile(base, { recursion: false });
     const result: SshLocalFileEntry[] = [];
@@ -345,7 +373,7 @@ export class SshLocalFileProvider {
 
   async stat(uri: string): Promise<SshLocalFileEntry | null> {
     const target: string = this.pathFromUri(uri);
-    const root: string = await this.currentRoot();
+    const root: string = await this.accessRoot(target);
     if (target.length === 0 || root.length === 0 || !this.isWithinRoot(root, target)) { return null; }
     try {
       const info = await fileIo.stat(target);
@@ -357,8 +385,8 @@ export class SshLocalFileProvider {
 
   /** Resolve a relative file path without leaving an authorized provider root. */
   async resolveRelative(root: string, relativePath: string): Promise<string | null> {
-    const providerRoot: string = await this.currentRoot();
     const base: string = this.pathFromUri(root);
+    const providerRoot: string = await this.accessRoot(base);
     if (providerRoot.length === 0 || base.length === 0 || !this.isWithinRoot(providerRoot, base)) {
       return null;
     }
@@ -411,9 +439,10 @@ export class SshLocalFileProvider {
   }
 
   async remove(uri: string, recursive: boolean = false): Promise<boolean> {
-    const root: string = await this.currentRoot();
     const target: string = this.pathFromUri(uri);
-    if (root.length === 0 || target.length === 0 || target === root ||
+    const root: string = await this.accessRoot(target);
+    if (root.length === 0 || target.length === 0 ||
+      (target === root && !this.managedTransferRoots.has(target)) ||
       !this.isWithinRoot(root, target)) { return false; }
     const entry: SshLocalFileEntry | null = await this.stat(target);
     if (entry === null || entry.isSpecialFile) { return false; }
@@ -431,6 +460,7 @@ export class SshLocalFileProvider {
         if (!await this.remove(children[index].uri, true)) { return false; }
       }
       await fileIo.rmdir(target);
+      this.managedTransferRoots.delete(target);
       return true;
     } catch (_err) {
       return false;

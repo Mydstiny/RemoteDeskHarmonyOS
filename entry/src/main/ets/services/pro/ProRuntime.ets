@@ -1,6 +1,7 @@
 import { DEBUG } from 'BuildProfile';
-import { ProAccessContext, ProAccessDecision, ProEntitlementState, proFeatureAccess } from './ProAccessPolicy';
-import { PRO_LIFETIME } from './ProFeatureCatalog';
+import { ProAccessContext, ProAccessDecision, ProEntitlementState, proFeatureAccess,
+  resolveProFeatureAccess } from './ProAccessPolicy';
+import { ProFeature, proFeatures, PRO_LIFETIME } from './ProFeatureCatalog';
 import { ProEntitlementService, ProEntitlementSnapshot } from './ProEntitlementService';
 export type ProDebugMode = 'real' | 'free' | 'pro';
 export interface ProRuntimeSnapshot {
@@ -51,7 +52,16 @@ export class ProRuntime {
     let state = real.state;
     let ids = real.entitlementIds;
     if (DEBUG) {
-      if (this.debugMode === 'pro') { state = 'active'; ids = [PRO_LIFETIME]; }
+      if (this.debugMode === 'pro') {
+        state = 'active'; ids = [PRO_LIFETIME];
+        const feature: ProFeature | undefined = proFeatures().find((item: ProFeature): boolean => item.id === id);
+        // Implemented experiments are reachable only in an explicit Debug Pro
+        // view; all device, protocol and capability checks still apply.
+        if (feature !== undefined && feature.availability === 'experimental') {
+          feature.availability = 'available';
+          return resolveProFeatureAccess(feature, context, state, ids);
+        }
+      }
       if (this.debugMode === 'free') { state = 'free'; ids = []; }
     }
     return proFeatureAccess(id, context, state, ids);

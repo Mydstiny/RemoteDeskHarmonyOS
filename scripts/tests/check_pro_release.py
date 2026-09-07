@@ -43,7 +43,8 @@ def main():
             raise AssertionError("Missing runtime methods; pruning cannot be certified")
         for name, lines in methods.items():
             body = "\n".join(lines)
-            for forbidden in ('"debugMode"', '"PRO_LIFETIME"', '"pro.lifetime"', '"模拟 Pro"', '"模拟免费"'):
+            for forbidden in ('"debugMode"', '"PRO_LIFETIME"', '"pro.lifetime"', '"模拟 Pro"', '"模拟免费"',
+                              '"experimental"', '"resolveProFeatureAccess"'):
                 if forbidden in body:
                     raise AssertionError(f"Simulation remains in {name}: {forbidden}")
         # Release setter is a no-op (a retained module-initialization check is harmless).

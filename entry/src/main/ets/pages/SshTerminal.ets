@@ -1,5 +1,11 @@
 import { SshAuthenticatedHandoff } from '../services/ssh/auth/SshAuthenticatedHandoff';
 import { persistSshHostKeyTrust } from '../services/ssh/auth/SshHostKeyTrustWriter';
+import { ProFeatureGate } from '../components/ProFeatureGate';
+import { ProAccessContext } from '../services/pro/ProAccessPolicy';
+import { ProAppRuntime } from '../services/pro/ProAppRuntime';
+import { ProKnockReceiver, proKnockSupported, KNOCK_SHARE_CAPABILITY } from '../services/pro/ProKnockReceiver';
+import { KnockPoint, matchKnockWindow } from '../services/pro/ProKnockPolicy';
+import { SshSftpShareStager } from '../services/ssh/sftp/SshSftpShareStager';
 /**
  * SshTerminal.ets v5 — 推送式 SSH 终端页 (Phase 4 统一输入模型)
  *
@@ -648,7 +654,7 @@ struct SshTerminal {
   @StorageProp('accentColor') accentColor: string = '#007DFF';
   @StorageLink(REMOTE_SESSION_QUICK_EXIT_DISABLED_KEY)
   remoteSessionQuickExitDisabled: boolean = false;
-  @State connected: boolean = false;
+  @State @Watch('stopSftpKnock') connected: boolean = false;
   @State connecting: boolean = true;
   @State connectionError: string = '';
   @State hostLabel: string = '';
@@ -656,7 +662,7 @@ struct SshTerminal {
   /** 顶栏低频 SSH 操作统一收进官方 bindPopup 文字菜单。 */
   @State showSshHeaderActionPopup: boolean = false;
   /** Observable identity of the host currently rendered by this page. */
-  @State visibleSshHostId: string = '';
+  @State @Watch('stopSftpKnock') visibleSshHostId: string = '';
   @State sshTabViews: SshTerminalTabView[] = [];
   @State showSshTabPicker: boolean = false;
   @State showSshCommandPalette: boolean = false;
@@ -678,7 +684,7 @@ struct SshTerminal {
   @State sshBroadcastActive: boolean = false;
   @State showSftpTransferCenter: boolean = false;
   @State sftpTransferCenterRevision: number = 0;
-  @State sftpWorkspaceTabState: SshSftpWorkspaceTabState =
+  @State @Watch('stopSftpKnock') sftpWorkspaceTabState: SshSftpWorkspaceTabState =
     createSshSftpWorkspaceTabState();
   @State sshCommandRegistry: Array<SshCommandDescriptor> = [];
   @State showSshTabRenameSheet: boolean = false;
@@ -907,11 +913,11 @@ struct SshTerminal {
   @State forwardingConfirmDanger: boolean = false;
   private forwardingConfirmResolve: ((confirmed: boolean) => void) | null = null;
   /** SFTP 文件传输面板 */
-  @State showSftpPanel: boolean = false;
+  @State @Watch('stopSftpKnock') showSftpPanel: boolean = false;
   @State showSftpSheet: boolean = false;
   /** Internal gate only; changing it must not rebuild a Sheet during entrance. */
   private sftpRootSheetSurfaceReady: boolean = false;
-  @State sftpPath: string = '.';
+  @State @Watch('stopSftpKnock') sftpPath: string = '.';
   @State sftpEntries: SftpFileEntry[] = [];
   @State sftpSelectedPath: string = '';
   @State sftpSelectedName: string = '';
@@ -981,6 +987,12 @@ struct SshTerminal {
     new Map<string, SshSftpTrackedSession>();
   private sftpLocalProvider: SshLocalFileProvider = SshLocalFileProvider.getInstance();
   private sftpDropAdapter: SshSftpDropAdapter = new SshSftpDropAdapter();
+  private sftpKnockReceiver: ProKnockReceiver = new ProKnockReceiver();
+  private sftpShareStager: SshSftpShareStager = new SshSftpShareStager();
+  private sftpKnockStopPro: (() => void) | null = null;
+  private sftpKnockEpoch: number = 0;
+  @State sftpKnockActive: boolean = false;
+  @State sftpKnockStatus: string = '';
   private sftpDropBatches: Set<string> = new Set<string>();
   private sftpBatchLocalRoots: Map<string, string> = new Map<string, string>();
   private sftpBatchRemoteRoots: Map<string, string> = new Map<string, string>();
@@ -5464,6 +5476,7 @@ struct SshTerminal {
   }
 
   private activateSshTerminalWorkspace(): void {
+    this.stopSftpKnock();
     this.sftpWorkspaceTabState = activateSshTerminalSurface(this.sftpWorkspaceTabState);
   }
 
@@ -5485,6 +5498,7 @@ struct SshTerminal {
   }
 
   private closeSftpWorkbenchTab(): void {
+    this.stopSftpKnock();
     this.sftpWorkspaceTabState = closeSshSftpWorkspaceTab(this.sftpWorkspaceTabState);
     this.sftpRootSheetReopenRequested = false;
     this.sftpPeerHostPickerReopenRequested = false;
@@ -8665,6 +8679,104 @@ struct SshTerminal {
       '已选择本机文件 ' + entry.name + ' (' + this.formatFileSize(entry.size) + ')';
   }
 
+  private sftpKnockContext(): ProAccessContext {
+    const context: ProAccessContext = ProAppRuntime.getInstance().context('ssh');
+    if (proKnockSupported()) { context.capabilities = [KNOCK_SHARE_CAPABILITY]; }
+    return context;
+  }
+
+  private stopSftpKnock(): void {
+    this.sftpKnockEpoch++;
+    this.sftpKnockReceiver.stop();
+    if (this.sftpKnockActive) { this.sftpKnockStatus = '已停止接收投递，未入队文件会在本机接收结束后清理'; }
+    this.sftpKnockActive = false;
+  }
+
+  private armSftpKnock(): void {
+    if (this.sftpKnockActive) { this.stopSftpKnock(); return; }
+    const runtime = ProAppRuntime.getInstance().runtime;
+    if (!runtime.decision('pro.file.knockTransfer', this.sftpKnockContext()).executable ||
+      this.sftpBusy || !this.sftpWorkbenchSurfaceActive()) { return; }
+    const page: number = this.pageGeneration;
+    const binding: number = this.sshBindingGeneration;
+    const session: number = this.sessionId;
+    const generation: number = this.sshSessionGeneration;
+    const owner: string = this.hostId;
+    const remoteRoot: string = this.sftpPath;
+    const epoch: number = ++this.sftpKnockEpoch;
+    const current = (): boolean => epoch === this.sftpKnockEpoch &&
+      this.hostId === owner && this.sshBindingGeneration === binding && this.sftpPath === remoteRoot &&
+      this.sftpWorkbenchSurfaceActive() && !this.sshContextualGuideInBackground() &&
+      this.isSftpRequestActive(page, session, generation) &&
+      runtime.decision('pro.file.knockTransfer', this.sftpKnockContext()).executable;
+    if (!current()) { return; }
+    try {
+      // Resolve this UI instance's window; the last focused window could belong
+      // to another SSH session in the same process.
+      const name: string = this.getUIContext().getWindowName() || '';
+      const ownWindow: window.Window = window.findWindow(name);
+      const windowId: number = ownWindow.getWindowProperties().id;
+      const context = this.getUIContext().getHostContext() as common.UIAbilityContext;
+      const armed: boolean = this.sftpKnockReceiver.arm({
+        windowId, cacheDir: context.cacheDir, isCurrent: current,
+        confirm: async (point: KnockPoint | null): Promise<boolean> => {
+          if (!current() || this.sftpBusy) { return false; }
+          const rect: window.Rect = ownWindow.getWindowProperties().windowRect;
+          const match = matchKnockWindow(point, { left: rect.left, top: rect.top,
+            width: rect.width, height: rect.height });
+          if (match === 'outside') {
+            this.sftpKnockStatus = '碰点不在当前窗口内，请重新准备接收';
+            return false;
+          }
+          const answer = await this.getUIContext().getPromptAction().showDialog({
+            title: '上传手机文件到远端',
+            message: (match === 'unknown' ? '未取得有效碰点，请确认目标。\n' : '') +
+              '主机：' + this.hostLabel + '\n目录：' + remoteRoot +
+              '\n最多 16 个文件，合计不超过 512 MB；同名文件会单独询问。',
+            buttons: [{ text: '取消', color: this.pal().text2 }, { text: '接收并上传', color: this.accentColor }]
+          });
+          return answer.index === 1 && current() && !this.sftpBusy;
+        },
+        deliver: async (uris: string[], root: string, live: () => boolean): Promise<boolean> => {
+          if (!live() || this.sftpBusy) { return false; }
+          this.sftpBusy = true;
+          let staging: string = '';
+          let batchId: string = '';
+          try {
+            staging = await this.sftpLocalProvider.createTransferStagingRoot();
+            if (staging.length === 0 || !live()) { return false; }
+            const items: SshSftpTreeItem[] = await this.sftpShareStager.stage(uris, root, staging, live);
+            if (!live()) { return false; }
+            const plan = planSshSftpBatch(items, SFTP_BATCH_LIMITS);
+            if (!plan.accepted) { throw new Error('接收文件无法组成上传批次'); }
+            const result = this.sftpTaskStore.enqueueBatch(owner, 'upload', remoteRoot, plan);
+            if (!result.accepted) { throw new Error('无法创建上传任务'); }
+            batchId = result.batchId;
+            this.sftpBatchLocalRoots.set(batchId, staging);
+            this.sftpBatchRemoteRoots.set(batchId, remoteRoot);
+            this.sftpDropBatches.add(batchId);
+            this.refreshRecoveredSftpTasks();
+            return true;
+          } finally {
+            if (batchId.length === 0 && staging.length > 0) {
+              await this.sftpLocalProvider.remove(staging, true);
+            }
+            if (this.isSftpRequestActive(page, session, generation)) {
+              this.sftpBusy = false;
+              if (batchId.length > 0) { this.startSftpEngineBatch(batchId); }
+            }
+          }
+        },
+        status: (message: string, active: boolean): void => {
+          if (epoch !== this.sftpKnockEpoch || !this.isPageGenerationActive(page)) { return; }
+          this.sftpKnockStatus = message;
+          this.sftpKnockActive = active;
+        }
+      });
+      if (!armed) { this.sftpKnockStatus = '无法准备碰一碰接收，请等待上次接收结束或检查系统分享能力'; }
+    } catch (_err) { this.sftpKnockStatus = '当前窗口暂不能接收碰一碰文件'; }
+  }
+
   private async handleSftpExternalDrop(event: DragEvent): Promise<void> {
     this.sftpDropHoverActive = false;
     if (!this.sftpWorkbenchSurfaceActive() || this.sftpBusy ||
@@ -10337,6 +10449,9 @@ struct SshTerminal {
   }
 
   async aboutToAppear(): Promise<void> {
+    this.stopSftpKnock();
+    this.sftpKnockStopPro?.();
+    this.sftpKnockStopPro = ProAppRuntime.getInstance().runtime.subscribe((): void => { this.stopSftpKnock(); });
     // A reused route must not expose a previous page's passphrase prompt or
     // retain its resolver while the new SSH binding is being established.
     this.clearSshSecretPrompt();
@@ -10802,6 +10917,9 @@ struct SshTerminal {
   }
 
   aboutToDisappear(): void {
+    this.stopSftpKnock();
+    this.sftpKnockStopPro?.();
+    this.sftpKnockStopPro = null;
     // Scrub page-local authentication material before any asynchronous
     // teardown work can leave this page instance reachable.
     this.clearSshSecretPrompt();
@@ -11102,6 +11220,8 @@ struct SshTerminal {
     void this.forceStatusBarDark();
     this.scheduleSshContextualGuide(760);
   }
+
+  onPageHide(): void { this.stopSftpKnock(); }
 
   private backgroundSshInfos(): SshTerminalBackgroundInfo[] {
     const result: SshTerminalBackgroundInfo[] = [];
@@ -11502,6 +11622,7 @@ struct SshTerminal {
 
   private onSshAbilityBackgroundChange(): void {
     if (this.sshContextualGuideInBackground()) {
+      this.stopSftpKnock();
       this.clearSshRouteSecretCapture();
       SshOperationRouteSecretService.getInstance().clearAll();
     }
@@ -18386,6 +18507,8 @@ struct SshTerminal {
       if (this.sftpPadPcLayout()) {
         Column() {
           this.SftpTransferHeader()
+          ProFeatureGate({ featureId: 'pro.file.knockTransfer', context: this.sftpKnockContext(),
+            content: (): void => { this.SftpKnockControl(); } })
           this.SftpRecoveredTasks()
           this.SftpTransferWorkspace()
           this.SftpWideRemoteActions()
@@ -18406,6 +18529,19 @@ struct SshTerminal {
     .onAppear((): void => {
       if (this.sftpPadPcLayout()) { this.handleSftpRootSheetAppear(rootSheetMountToken); }
     })
+  }
+
+  @Builder
+  SftpKnockControl() {
+    Column({ space: 6 }) {
+      Button(this.sftpKnockActive ? '停止接收手机文件' : '准备碰一碰接收')
+        .height(44).fontSize(13).enabled(this.sftpKnockActive || !this.sftpBusy)
+        .onClick((): void => { this.armSftpKnock(); })
+        .accessibilityText(this.sftpKnockActive ? '停止本次碰一碰文件投递' : '准备向当前 SSH 目录接收手机文件')
+      if (this.sftpKnockStatus.length > 0) {
+        Text(this.sftpKnockStatus).fontSize(12).fontColor(this.sshPal().text2).width('100%')
+      }
+    }.width('100%').alignItems(HorizontalAlign.Start).margin({ bottom: 10 })
   }
 
   @Builder

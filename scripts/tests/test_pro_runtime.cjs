@@ -283,6 +283,19 @@ test('actual API23 icon adapter cold import and calls never access API26 members
   await assert.rejects(() => adapter.apply('rd_white'), /iconUnsupported/);
   assert.equal(accesses, 0);
 });
+test('experimental SFTP receiver is limited to Debug Pro on supported PC and protocol', () => {
+  const f = fixture(); const id = 'pro.file.knockTransfer';
+  const context = { ...f.context, protocol: 'ssh', capabilities: ['SystemCapability.Collaboration.HarmonyShare'] };
+  assert.equal(f.runtime.decision(id, context).executable, false);
+  f.runtime.setDebugMode('pro'); assert.equal(f.runtime.decision(id, context).executable, true);
+  for (const patch of [{ device: 'phone' }, { apiVersion: 23 }, { protocol: 'rdp' }, { capabilities: [] }]) {
+    assert.equal(f.runtime.decision(id, { ...context, ...patch }).executable, false);
+  }
+  f.runtime.setDebugMode('free'); assert.equal(f.runtime.decision(id, context).visible, false);
+  const release = fixture(false); release.runtime.setDebugMode('pro');
+  assert.equal(release.runtime.decision(id, context).visible, false);
+  f.runtime.dispose(); release.runtime.dispose();
+});
 (async () => {
   for (const test of tests) { await test.body(); process.stdout.write('PASS ' + test.name + '\n'); }
   process.stdout.write('PASS ' + tests.length + ' Pro policy/runtime checks\n');
