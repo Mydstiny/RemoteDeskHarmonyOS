@@ -1,0 +1,61 @@
+{
+  "spdxVersion": "SPDX-2.3",
+  "dataLicense": "CC0-1.0",
+  "SPDXID": "SPDXRef-DOCUMENT",
+  "name": "RemoteDesk-Pro-entitlement-host-test-runtimes",
+  "documentNamespace": "https://github.com/Mydstiny/RemoteDeskHarmonyOS/spdx/pro-server-runtime-2026-09-07",
+  "creationInfo": {
+    "created": "2026-09-07T00:00:00Z",
+    "creators": [
+      "Organization: RemoteDeskHarmonyOS"
+    ]
+  },
+  "packages": [
+    {
+      "SPDXID": "SPDXRef-node",
+      "name": "Node.js",
+      "versionInfo": "26.4.0",
+      "downloadLocation": "https://github.com/nodejs/node/tree/v26.4.0",
+      "filesAnalyzed": false,
+      "licenseDeclared": "MIT",
+      "licenseConcluded": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "sourceInfo": "External host runtime used for current tests; not redistributed. Binary checksum is local verification evidence, not a portable deployment lock.",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "59cd4fb59cf5bc239f43d5db8c0cd8c23c22db79419612b92da3b7cf34de8553"
+        }
+      ]
+    },
+    {
+      "SPDXID": "SPDXRef-openssl",
+      "name": "OpenSSL",
+      "versionInfo": "3.6.3",
+      "downloadLocation": "https://github.com/openssl/openssl/tree/openssl-3.6.3",
+      "filesAnalyzed": false,
+      "licenseDeclared": "Apache-2.0",
+      "licenseConcluded": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "sourceInfo": "External host runtime used for current tests; not redistributed. Binary checksum is local verification evidence, not a portable deployment lock.",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "103fc7706cf6646f226d96f29242d81890363499afc730e7ef1fadd64b3a123c"
+        }
+      ]
+    }
+  ],
+  "relationships": [
+    {
+      "spdxElementId": "SPDXRef-DOCUMENT",
+      "relationshipType": "DESCRIBES",
+      "relatedSpdxElement": "SPDXRef-node"
+    },
+    {
+      "spdxElementId": "SPDXRef-DOCUMENT",
+      "relationshipType": "DESCRIBES",
+      "relatedSpdxElement": "SPDXRef-openssl"
+    }
+  ]
+}

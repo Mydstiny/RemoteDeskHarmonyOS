@@ -36,3 +36,9 @@ source and license files before redistribution.
 
 Artifact hashes are generated in `docs/compliance/THIRD_PARTY_ARTIFACTS.sha256`.
 A component with an unknown source, license, or hash is a release blocker.
+
+The independent Pro entitlement server source uses external Node.js/OpenSSL
+host runtimes without redistributing them. Its runtime verification snapshot,
+upstream licenses and deployment boundaries are tracked separately in
+`server/pro-entitlement/SBOM.spdx.json` and `server/pro-entitlement/PROVENANCE.md`;
+these are not additional HAP components.
