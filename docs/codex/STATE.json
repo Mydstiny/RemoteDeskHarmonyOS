@@ -462,6 +462,22 @@
       "assembleHap": "PASS exit 0; signed BUILD SUCCESSFUL in 15 s 857 ms",
       "compliance": "PASS Light, git diff --check and state validation",
       "sourceSnapshot": "ee45030b; SSH reviewed source unchanged; concurrent Pro fixes remain under their own review"
+    },
+    "commandEditor": {
+      "head": "d508f8866dce3228b478220019b1f857a523cfbe",
+      "status": "code-complete-reviewed-device-pending",
+      "planPath": "docs/codex/plans/2026-09-07-ssh-command-editor-adaptive.md",
+      "reviewTaskId": "/root/review_ssh_repair",
+      "reviewStatus": "PASS",
+      "validation": {
+        "testCompile": "PASS exit 0; BUILD SUCCESSFUL in 23 s 596 ms",
+        "assembleHap": "PASS exit 0; signed BUILD SUCCESSFUL in 30 s 485 ms",
+        "hostChecks": "PASS 49 existing SSH checks",
+        "compliance": "PASS Light/diff",
+        "device": "NOT RUN"
+      },
+      "next": "Accept content fit, narrow/rotated windows and keyboard behavior on devices when available; preserve the active Pro branch.",
+      "reviewReceiptId": "ssh-command-editor-adaptive-d508f886-2026-09-07"
     }
   },
   "fileTransferPreparation": {
