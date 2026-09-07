@@ -24,9 +24,21 @@ The PR description and `docs/codex/HANDOFF.md` record completed work, verificati
 
 Only durable engineering conclusions are rewritten into `docs/codex`. Do not commit raw Codex memory, chat transcripts, session logs or private investigation evidence. Every extracted fact must be repository-backed, command-verified, or explicitly marked historical/unverified.
 
-## D-007 - HarmonyOS API 23 is the compatibility ceiling
+## D-007 - API 26 is the development baseline; compatibility is explicit
 
-Before changing ArkTS or HarmonyOS APIs, search the local API 23 reference documentation. Do not import `@kit.uiMaterial` or other API 26-only facilities; use API 23-compatible UIDesignKit/HDS or native alternatives. ArkTS strict mode requires declared interfaces/types, avoids `any`/`unknown` in the affected patterns, and uses bracket indexing for dynamic object keys.
+The user advanced the development baseline to HarmonyOS API 26 on 2026-09-07.
+Use local API 26 documentation and actual SDK declarations for new API work.
+Installed/compile SDK, application target/compatible SDK and native ABI/toolchain
+are separate dimensions: do not silently raise the minimum installation API or
+replace native build inputs while documenting the new baseline. Where API 23
+compatibility is retained, verify imports, initialization, runtime availability
+and fallback on those devices. UIDesignKit/HDS support is symbol-specific, not a
+blanket API 26-only classification. The earlier API 23 development ceiling is
+historical and no longer blocks API 26 work. New component, UI and device
+acceptance remains separate from the baseline decision.
+
+ArkTS strict mode still requires declared interfaces/types, avoids `any`/`unknown`
+in the affected patterns, and uses bracket indexing for dynamic object keys.
 
 ## D-008 - RDB cloud sync binds to the AGC store id, not the app account
 
@@ -75,11 +87,11 @@ Windows and macOS each configure their own DevEco SDK, native SDK, LLVM/CMake/Ni
 
 ## D-009 - Keep HarmonyOS and OpenHarmony SDK roles separate on macOS
 
-The full DevEco/HarmonyOS SDK is used by Hvigor for a product whose `runtimeOS` is HarmonyOS. The standalone API 23 OpenHarmony SDK is used by native clang/CMake/Rust tooling. `local.properties` and `scripts/macos_env.sh` keep these roots separate; silently selecting one for both roles produces misleading SDK or native-link failures.
+The full DevEco/HarmonyOS SDK is used by Hvigor for a product whose `runtimeOS` is HarmonyOS. The explicitly selected OpenHarmony/native SDK is used by native clang/CMake/Rust tooling; verify the resolved version per machine and ABI instead of fixing it to an older API baseline. `local.properties` and `scripts/macos_env.sh` keep these roots separate; silently selecting one for both roles produces misleading SDK or native-link failures.
 
 ## D-010 - macOS `hdc` comes from SDK toolchains
 
-DevEco's `hdc` executable is shipped under the SDK `toolchains` directory. Source `scripts/macos_env.sh` before using `hdc`; it prefers the full HarmonyOS SDK toolchain and keeps the standalone API 23 toolchain as fallback. `hdc start` succeeding with an empty target list means the toolchain works but no authorized device is connected.
+DevEco's `hdc` executable is shipped under the SDK `toolchains` directory. Source `scripts/macos_env.sh` before using `hdc`; it prefers the full HarmonyOS SDK toolchain and keeps the locally resolved standalone toolchain as fallback. `hdc start` succeeding with an empty target list means the toolchain works but no authorized device is connected.
 
 ## D-011 - Verification names are part of the contract
 

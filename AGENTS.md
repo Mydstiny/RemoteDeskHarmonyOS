@@ -6,7 +6,7 @@
 - 每台设备使用自己的本地 checkout；Windows 的默认路径是
   `C:\Users\14288\DevEcoStudioProjects\RemoteDesktop`，macOS 使用当前本地工作区。
 - 禁止创建或使用持久 Git worktree。合规 hook 创建并立即销毁的临时校验目录不属于开发工作区。
-- 不依赖第三方 skills、Superpowers 或 Claude 中转流程；使用 Codex 原生能力、Git、项目脚本和本地 API 23 文档。
+- 不依赖第三方 skills、Superpowers 或 Claude 中转流程；使用 Codex 原生能力、Git、项目脚本和本地 API 26 文档。当前开发基准为 API 26；应用 target/compatible 与 native ABI 工具链分别核对，API 23 资料用于历史和兼容验证。
 
 ## 每个 session 的启动流程（强制门禁）
 
@@ -53,7 +53,7 @@
 - 开始前检查 `git status --short --branch` 和用户已有修改。只暂存本任务明确文件。
 - 禁止 `git add -A`、`git push --all`、`git push --mirror`、直接 push `main`、force-push、恢复旧公开 tag，或推送 `refs/archive/*`。
 - 不提交真实 `build-profile.json5`、`local.properties`、`agconnect-services.json`、签名材料、口令、token、本机路径、用户数据或 session 临时文件。
-- 修改 HarmonyOS API 前先查本地 API 23 文档；依赖/proto/license/gitlink 变化必须同步更新 SBOM、NOTICE、provenance 和哈希。
+- 修改 HarmonyOS API 前先查本地 API 26 文档与实际 SDK 声明，并核对 API 23 等保留兼容目标的回退；依赖/proto/license/gitlink 变化必须同步更新 SBOM、NOTICE、provenance 和哈希。
 - 仓库功能变更必须 commit；纯调查且没有文件修改时不制造空 commit。
 
 ## 每次改动完成后的强制 DevEco 验证
@@ -100,6 +100,7 @@ Windows 使用 DevEco 自带的 `hvigorw.js`/`hvigorw.bat` 执行相同的 `modu
 
 ## 本地参考
 
-- API 23：`C:\Users\14288\harmonyos_support\openharmony-docs-api23\zh-cn\application-dev\reference\`
+- API 26：按本机已安装 SDK/文档实际位置解析，不硬编码另一设备路径。
+- API 23 历史/兼容参考：`C:\Users\14288\harmonyos_support\openharmony-docs-api23\zh-cn\application-dev\reference\`
 - 跨设备共享状态：`docs/codex/`
 - 历史 bundle：`C:\Users\14288\DevEcoStudioProjects\RemoteDesktopHistory\`

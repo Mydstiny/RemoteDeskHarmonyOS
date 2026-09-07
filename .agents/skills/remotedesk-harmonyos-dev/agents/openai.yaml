@@ -1,0 +1,4 @@
+interface:
+  display_name: "RemoteDesk 鸿蒙开发"
+  short_description: "RemoteDesk 项目架构、协议排障、鸿蒙经验与开发历史检索"
+  default_prompt: "使用 $remotedesk-harmonyos-dev 分析当前 RemoteDeskHarmonyOS 任务，核对实现与历史证据并完成授权范围内的工作。"
