@@ -3,13 +3,16 @@ import { boundedString, fail, iapAuthorization, jsonBytes, jwsParts, object, MAX
 
 const IAP_ROOT = 'https://iap.cloud.huawei.com';
 const ACCOUNT_URL = 'https://oauth-api.cloud.huawei.com/rest.php?nsp_fmt=JSON&nsp_svc=huawei.oauth2.user.getTokenInfo';
+const AUTHORIZATION_URL = 'https://oauth-login.cloud.huawei.com/oauth2/v3/token';
 const MAX_RESPONSE = 128 * 1024;
 export function ownerForUnionId(unionId) {
   return 'owner-' + createHash('sha256').update('RemoteDeskHarmonyOS:owner:v1:' + boundedString(unionId).trim()).digest('hex');
 }
 // Fixed vendor destinations, no redirects, no response/error body logging.
-export async function vendorPost(url, body, headers, fetcher = fetch) {
-  const result = await fetcher(url, { method: 'POST', body, headers, redirect: 'error', signal: AbortSignal.timeout(10000) });
+export async function vendorPost(url, body, headers, fetcher = fetch, signal) {
+  const deadline = AbortSignal.timeout(10000);
+  const result = await fetcher(url, { method: 'POST', body, headers, redirect: 'error',
+    signal: signal ? AbortSignal.any([signal, deadline]) : deadline });
   if (result.status !== 200 || result.headers.get('nsp_status') !== null) fail('vendor_request_failed');
   if (Number(result.headers.get('content-length') || 0) > MAX_RESPONSE || !result.body) fail('vendor_response_invalid');
   const reader = result.body.getReader();
@@ -28,16 +31,45 @@ export async function vendorPost(url, body, headers, fetcher = fetch) {
 }
 export class HuaweiAccountVerifier {
   constructor(clientId, fetcher = fetch) { this.clientId = boundedString(clientId); this.fetcher = fetcher; }
-  async owner(accessToken) {
+  async owner(accessToken, signal) {
     boundedString(accessToken, 16384);
     const body = new URLSearchParams({ access_token: accessToken, open_id: 'OPENID' }).toString();
-    const result = await vendorPost(ACCOUNT_URL, body, { 'Content-Type': 'application/x-www-form-urlencoded' }, this.fetcher);
+    const result = await vendorPost(ACCOUNT_URL, body, { 'Content-Type': 'application/x-www-form-urlencoded' }, this.fetcher, signal);
     if (result.error !== undefined || result.client_id !== this.clientId || result.type !== 0 ||
         !Number.isSafeInteger(result.expire_in) || result.expire_in <= 0 || typeof result.union_id !== 'string' ||
         result.union_id.trim().length === 0 || typeof result.open_id !== 'string' || result.open_id.length === 0) {
       fail('account_verification_failed');
     }
     return ownerForUnionId(result.union_id);
+  }
+}
+// A native Account Kit authorization code is single use. Vendor tokens and
+// refresh tokens stay within this exchange and are never returned to the App.
+export class HuaweiAuthorizationCodeVerifier {
+  #clientId;
+  #clientSecret;
+  #fetcher;
+  #accounts;
+  constructor(clientId, clientSecret, fetcher = fetch) {
+    this.#clientId = boundedString(clientId);
+    this.#clientSecret = boundedString(clientSecret, 2048);
+    this.#fetcher = fetcher;
+    this.#accounts = new HuaweiAccountVerifier(this.#clientId, fetcher);
+  }
+  async exchange(code, signal) {
+    boundedString(code, 8192);
+    if (signal?.aborted) fail('account_verification_failed');
+    const body = new URLSearchParams({ grant_type: 'authorization_code', code,
+      client_id: this.#clientId, client_secret: this.#clientSecret }).toString();
+    const result = await vendorPost(AUTHORIZATION_URL, body,
+      { 'Content-Type': 'application/x-www-form-urlencoded' }, this.#fetcher, signal);
+    if (result.error !== undefined || result.token_type !== 'Bearer' ||
+      !Number.isSafeInteger(result.expires_in) || result.expires_in <= 0 ||
+      typeof result.access_token !== 'string' || result.access_token.length === 0 || result.access_token.length > 16384 ||
+      signal?.aborted) fail('account_verification_failed');
+    const owner = await this.#accounts.owner(result.access_token, signal);
+    if (signal?.aborted) fail('account_verification_failed');
+    return owner;
   }
 }
 // Input is deliberately UNVERIFIED. Only the bounded order reference is used

@@ -9,6 +9,7 @@
 - [JWT 请求签名](https://developer.huawei.com/consumer/cn/doc/doccenter-capabilities/api/iap-jwt-description)：ES256、aud iap-v1、aid、iss、kid 与请求原始 JSON SHA-256 digest。
 - [IAP 公共说明](https://developer.huawei.com/consumer/cn/doc/doccenter-capabilities/api/iap-rest-common-statement)、[订单状态](https://developer.huawei.com/consumer/cn/doc/doccenter-capabilities/api/iap-query-order-status)、[发货确认](https://developer.huawei.com/consumer/cn/doc/doccenter-capabilities/api/iap-confirm-purchase-for-order)、[订单模型](https://developer.huawei.com/consumer/cn/doc/doccenter-capabilities/api/iap-server-data-model)。
 - [Account Kit 解析凭证](https://developer.huawei.com/consumer/cn/doc/doccenter-capabilities/api/account-api-get-token-info)：服务端 POST access_token；验证无 NSP_STATUS 错误、type=0、client_id、expire_in、union_id/open_id，不能相信 App 发送的 X-Union-ID。
+- [Account Kit 获取用户级凭证](https://developer.huawei.com/consumer/cn/doc/harmonyos-references/account-api-obtain-user-token)：当前 HarmonyOS 接口 POST `grant_type=authorization_code`、`code`、`client_id`、`client_secret` 至官方 `/oauth2/v3/token`，授权码五分钟内一次使用。SDK 26 的实际 `@hms.core.authentication.d.ts` 同时核对授权请求/响应 state、`serviceauthcode`、`forceAuthorization=false`；所用声明自 API10/12 提供，保留 API23 兼容。客户端不执行带密钥的交换。
 - [官方服务端示例](https://gitcode.com/HarmonyOS_Samples/iapkit-sample-serverdemo)，只读参考 commit `c64d71bf7b0af8eff41a63e0f5f52c5a91736925`，上游 Apache-2.0。
 
 本地实际测试运行时为 Node.js 26.4.0 和 OpenSSL 3.6.3。它们作为外部宿主运行时使用，不随 HAP 或本目录源码再分发；补充 SBOM 记录这一验证快照。未来部署的镜像必须固定实际版本、生成镜像完整 SBOM、记录摘要及保留相应通知，不能用此本地快照替代生产依赖锁定。

@@ -2,7 +2,7 @@ const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
 const path = require('node:path');
 const { test } = require('node:test');
-const { proClientHost, base } = require('./helpers/pro_client_host.cjs');
+const { proClientHost, base, sessionReply } = require('./helpers/pro_client_host.cjs');
 const owner = 'owner-' + 'a'.repeat(64);
 const other = 'owner-' + 'b'.repeat(64);
 const keys = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 });
@@ -179,27 +179,30 @@ test('UTF-8 receipt and encoded HTTP limits are bounded without truncating recov
   await assert.rejects(() => f.client.pending(f.lease));
 });
 test('HTTP transport pins HTTPS, system validation, no redirects and the current Huawei identity', async t => {
-  let scope; const auth = { isLoggedIn: () => true, getUnionID: () => 'test-union', getAccessToken: () => 'fixture-token' };
+  let scope; const auth = { isAuthorized: () => true, getUnionID: () => 'test-union',
+    getAccessToken: () => assert.fail('legacy token field must never be used as the Pro credential') };
   const f = await fixture(t, { mocks: {
     [path.resolve(base, '../AccountKitService.ets')]: { AccountKitService: { getInstance: () => auth } },
     [path.resolve(base, '../AccountSessionCoordinator.ets')]: { AccountSessionCoordinator: { getInstance: () => ({ currentScope: () => scope }) } }
   } });
   const { ownerScopeIdForUnionId } = f.load(path.resolve(base, '../AccountScopePolicy.ets'));
-  scope = { kind: 'huawei_account', ownerScopeId: ownerScopeIdForUnionId('test-union') };
+  scope = { kind: 'huawei_account', ownerScopeId: ownerScopeIdForUnionId('test-union'), generation: 1 };
   const { ProHttpTransport } = f.load('ProHttpTransport');
-  const configuration = { trust: config, intentsUrl: 'https://test.example/intents', reconcileUrl: 'https://test.example/reconcile' };
-  const transport = new ProHttpTransport(configuration); configuration.intentsUrl = 'https://evil.invalid/changed';
-  f.state.onHttp = async () => ({ responseCode: 200, result: '{}' });
+  const configuration = { trust: config, sessionUrl: 'https://test.example/session',
+    intentsUrl: 'https://test.example/intents', reconcileUrl: 'https://test.example/reconcile' };
+  const transport = new ProHttpTransport(configuration, {}); configuration.intentsUrl = 'https://evil.invalid/changed';
+  f.state.onHttp = async call => ({ responseCode: 200, result: call.url.endsWith('/session') ?
+    JSON.stringify(sessionReply(JSON.parse(call.configuration.extraData), scope.ownerScopeId, f.state.now)) : '{}' });
   assert.equal(await transport.post('intents', '{}', () => true), '{}');
-  const request = f.state.requests[0]; assert.equal(request.url, 'https://test.example/intents');
+  const request = f.state.requests[1]; assert.equal(request.url, 'https://test.example/intents');
   assert.equal(request.configuration.maxRedirects, 0); assert.equal(request.configuration.remoteValidation, 'system');
   assert.equal(request.configuration.usingCache, false); assert.equal(request.configuration.maxLimit, 32768);
   assert.equal(request.request.destroyed, 1);
   scope.ownerScopeId = other; await assert.rejects(() => transport.post('intents', '{}', () => true));
-  assert.equal(f.state.requests.length, 1);
-  scope.ownerScopeId = ownerScopeIdForUnionId('test-union'); auth.getAccessToken = () => '';
-  await assert.rejects(() => transport.post('intents', '{}', () => true)); assert.equal(f.state.requests.length, 1);
-  assert.throws(() => new ProHttpTransport({ ...configuration, intentsUrl: 'http://test.example/intents' }));
+  assert.equal(f.state.requests.length, 2);
+  scope.ownerScopeId = ownerScopeIdForUnionId('test-union'); auth.isAuthorized = () => false;
+  await assert.rejects(() => transport.post('intents', '{}', () => true)); assert.equal(f.state.requests.length, 2);
+  assert.throws(() => new ProHttpTransport({ ...configuration, intentsUrl: 'http://test.example/intents' }, {}));
 });
 test('billing retains a late payment under its captured account and never finishes it locally', async t => {
   let calls = 0; let complete; let start;
@@ -284,16 +287,19 @@ test('actual App runtime renews daily, retries an offline boundary and keeps Rel
     const account = { currentScope: () => scope,
       onChange(callback) { onScope = callback; return () => {}; },
       onTransitionActivity(callback) { onTransition = callback; return () => {}; } };
-    const auth = { isLoggedIn: () => true, getUnionID: () => 'test-union', getAccessToken: () => 'fixture-token' };
+    const auth = { isAuthorized: () => true, getUnionID: () => 'test-union' };
     const f = await fixture(t, { debug, mocks: {
       [path.resolve(base, '../AccountSessionCoordinator.ets')]: { AccountSessionCoordinator: { getInstance: () => account } },
       [path.resolve(base, '../AccountKitService.ets')]: { AccountKitService: { getInstance: () => auth } },
       [path.resolve(base, 'ProBackendConfiguration.ets')]: { proBackendConfiguration: () => ({ trust: config,
+        sessionUrl: 'https://test.example/session',
         intentsUrl: 'https://test.example/intents', reconcileUrl: 'https://test.example/reconcile' }) }
     } });
     let offline = false; let status = 'verified'; let revision = 1;
     f.state.onHttp = async call => {
       if (offline) throw new Error('offline');
+      if (call.url.endsWith('/session')) return { responseCode: 200,
+        result: JSON.stringify(sessionReply(JSON.parse(call.configuration.extraData), liveOwner, f.state.now)) };
       return { responseCode: 200, result: JSON.stringify({ pendingDelivery: false,
         signedEntitlement: f.signer.sign({ status, revision }, liveOwner, f.state.now,
           JSON.parse(call.configuration.extraData).challenge) }) };
@@ -316,7 +322,7 @@ test('actual App runtime renews daily, retries an offline boundary and keeps Rel
         for (let i = 0; i < 30 && (f.state.requests.length === requests || app.refreshing); i++) {
           await new Promise(resolve => setImmediate(resolve));
         }
-        assert.equal(f.state.requests.length, requests + 1);
+        assert.equal(f.state.requests.length, requests + (offline ? 1 : 2));
         if (offline) {
           assert.equal(app.runtime.snapshot().needsRevalidation, true);
           assert.equal(f.database.prepare('SELECT verified_at FROM pro_cache').get().verified_at, cached);

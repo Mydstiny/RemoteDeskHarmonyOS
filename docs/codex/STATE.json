@@ -3,14 +3,14 @@
   "task": "pro-purchase-foundation",
   "branch": "codex/pro-purchase-foundation",
   "base": "8edc187868e94ed41634e8a6c4c4c072e3a48679",
-  "head": "5fb6f8d7d590cfd7d2e688ee0d892cf3f05ee71c",
-  "phase": "pro-m7-signed-app-client-and-agc-deployment",
+  "head": "c5b647ff46bff91749d3bfc9d31e15fa11ba9cca",
+  "phase": "pro-m7-short-session-integration-and-agc-deployment",
   "status": "in-progress",
-  "next": "Integrate the signed App client, scoped cache and purchase/restore; deploy complete AGC sandbox functions after credentials/runtime packaging, then remaining M5/M6 and free UI.",
+  "next": "Complete short-session code gates and independent review, deploy full AGC sandbox functions, then remaining M5/M6 and free UI.",
   "blockers": [
     "M3/U0-U4 device matrix and M4 PC real Share Kit/SFTP file-integrity acceptance remain unverified.",
     "M5 KNOCK_COLLABORATION provision and App Linking setup unconfirmed; M6 USBManager path still needs authenticator/native proof, DDK-specific ACL is not assumed mandatory.",
-    "M7 App integration and complete backend deployment remain pending. AGC runtime probe and ProSandbox CloudDB zone exist; managed SDK credential, PKIX binary/CRLs, callback and device purchase/refund acceptance remain open."
+    "M7 signed App client independently reviewed. Short-session integration under validation; complete AGC deployment, PKIX runtime/CRLs, control initialization, callback and device purchase/refund acceptance remain open."
   ],
   "planPaths": [
     "docs/codex/plans/2026-09-06-pro-purchase-foundation.md",
@@ -58,19 +58,27 @@
       "scripts/tests/test_pro_usb.cjs",
       "server/pro-entitlement",
       "scripts/tests/test_pro_iap_server.mjs",
-      "scripts/tests/test_pro_fulfillment.mjs"
+      "scripts/tests/test_pro_fulfillment.mjs",
+      "scripts/tests/test_pro_http.mjs",
+      "scripts/tests/test_pro_cloud_ledger.mjs",
+      "scripts/tests/test_pro_signed_client.cjs",
+      "scripts/tests/test_pro_trusted_client.cjs",
+      "scripts/tests/test_pro_account_session.cjs",
+      "scripts/tests/test_pro_session.mjs",
+      "scripts/tests/helpers/pro_client_host.cjs"
     ],
     "findings": [],
     "reviewedHead": "6690cdbf4ea671b0bc318d259bc35f0479911063",
-    "reason": "Exact M7 vendor protocol and ledger increments independently PASS. Aggregate roadmap and HTTP/App/deployment/device acceptance remain incomplete."
+    "reason": "M7 HTTP, CloudDB and signed App client increments independently PASS. New OAuth session code and overall roadmap/deployment/device acceptance remain incomplete."
   },
   "lastVerification": {
-    "testCompile": "PASS BUILD SUCCESSFUL in 18 s 896 ms",
-    "assembleHap": "PASS signed BUILD SUCCESSFUL in 20 s 393 ms",
-    "hostChecks": "30 server checks PASS; 17 ledger checks independently rerun",
-    "compliance": "Light/diff PASS",
-    "device": "NOT RUN",
-    "scopeBoundary": "M7 protocol/ledger code only; no real IAP order, HTTP/App integration or deployment acceptance."
+    "testCompile": "PASS exit 0; BUILD SUCCESSFUL in 24 s 582 ms",
+    "assembleHap": "PASS exit 0; signed BUILD SUCCESSFUL in 26 s 253 ms",
+    "release": "PASS exit 0; BUILD SUCCESSFUL in 53 s 562 ms; simulation/sandbox/USB gates pruned",
+    "hostChecks": "PASS 60 server, 38 signed/client/session and 26 runtime checks",
+    "releaseAbcSha256": "e9c61e2961106ae60abc862ca2dd1c407fef8df32baee00c086d7622cb023001",
+    "compliance": "PASS Light/diff",
+    "scopeBoundary": "Short-session code and host adapters; no real native code exchange, complete AGC deployment or device IAP acceptance"
   },
   "updated": "2026-09-07 Asia/Shanghai",
   "roadmapPaths": [
@@ -280,7 +288,9 @@
       "M7Protocol": "5109d5837891a43cb76b4a8d4483a6053cb39f01",
       "M7ProtocolFix": "552604327010e4358dc459fd85784adfa8ca4cb0",
       "M7Ledger": "ab3a60ac19cc891bcfa8a7554d939c053ebbfd64",
-      "M7LedgerFix": "bbc7fb535275e4db465111df8ed44d2aeb808fb3"
+      "M7LedgerFix": "bbc7fb535275e4db465111df8ed44d2aeb808fb3",
+      "M7AppClient": "e3f47078a8ccc5039ec4fe4955a1a56a27bcec3f",
+      "M7AppClientReviewFix": "c5b647ff46bff91749d3bfc9d31e15fa11ba9cca"
     },
     "commitPolicy": "One separate commit after each completed stage; checkpoint incomplete work explicitly.",
     "reviewerTaskId": "/root/review_pro_plan",
@@ -375,7 +385,7 @@
       "findings": []
     },
     "m7": {
-      "status": "vendor-protocol-and-ledger-code-reviewed-integration-pending",
+      "status": "app-client-reviewed-short-session-in-progress",
       "scope": "Trusted Huawei protocol, immutable owner binding, persistent order ledger, atomic signed-state snapshot and delivery outbox",
       "planPath": "docs/codex/plans/2026-09-07-pro-m7-trusted-purchase.md",
       "reviewStatus": "PASS",
@@ -388,7 +398,7 @@
       ],
       "hostChecks": "30 PASS; 17 ledger checks independently PASS",
       "productionSaleEnabled": false,
-      "deployment": "not deployed; AGC cloud functions enabled without creating a function, runtime and persistent database compatibility under investigation",
+      "deployment": "Runtime probe only; complete Pro functions and device IAP acceptance pending",
       "agcSandbox": {
         "productId": "RemoteDesktop_Pro_Test",
         "productType": "nonconsumable",
@@ -446,13 +456,47 @@
           "controlRecord": "not seeded"
         },
         "managedSdkCredentialAvailable": false,
-        "completeDeployment": false
+        "completeDeployment": false,
+        "projectSdkCredential": "Project-only Development API client; private deployment configuration; actual SDK empty-zone read PASS",
+        "oauthClient": "Existing application OAuth credential privately retained and official client-credentials endpoint returned HTTP 200; actual native user-code exchange pending"
       },
       "metadataVerification": {
         "testCompile": "PASS BUILD SUCCESSFUL in 8 s 898 ms",
         "assembleHap": "PASS signed BUILD SUCCESSFUL in 12 s 540 ms",
         "compliance": "PASS Light/diff/state",
         "scope": "HTTP/cloud reviewed state documentation; no App acceptance"
+      },
+      "appClient": {
+        "status": "code-reviewed",
+        "head": "c5b647ff46bff91749d3bfc9d31e15fa11ba9cca",
+        "reviewedCommits": [
+          "e3f47078a8ccc5039ec4fe4955a1a56a27bcec3f",
+          "c5b647ff46bff91749d3bfc9d31e15fa11ba9cca"
+        ],
+        "reviewReceiptId": "pro-m7-app-client-c5b647ff-2026-09-07",
+        "verification": {
+          "testCompile": "PASS exit 0; BUILD SUCCESSFUL in 16 s 406 ms",
+          "assembleHap": "PASS exit 0; signed BUILD SUCCESSFUL in 19 s 356 ms",
+          "release": "PASS exit 0; BUILD SUCCESSFUL in 1 min 1 s 442 ms; simulation/sandbox/USB gates independently pruned",
+          "hostChecks": "PASS 29 signed/client checks and 26 runtime checks independently rerun",
+          "releaseAbcSha256": "854a248df9f32e10c76f2ed899dbbcc6dadebefd520ecf590059efd847356a75",
+          "compliance": "PASS Light/diff",
+          "scopeBoundary": "Exact signed App client and review fixes; excludes subsequent OAuth sessions, deployment and real devices"
+        }
+      },
+      "shortSession": {
+        "status": "code-gated-awaiting-independent-review",
+        "base": "c5b647ff46bff91749d3bfc9d31e15fa11ba9cca",
+        "reviewTaskId": "/root/review_pro_plan",
+        "verification": {
+          "testCompile": "PASS exit 0; BUILD SUCCESSFUL in 24 s 582 ms",
+          "assembleHap": "PASS exit 0; signed BUILD SUCCESSFUL in 26 s 253 ms",
+          "release": "PASS exit 0; BUILD SUCCESSFUL in 53 s 562 ms; simulation/sandbox/USB gates pruned",
+          "hostChecks": "PASS 60 server, 38 signed/client/session and 26 runtime checks",
+          "releaseAbcSha256": "e9c61e2961106ae60abc862ca2dd1c407fef8df32baee00c086d7622cb023001",
+          "compliance": "PASS Light/diff",
+          "scopeBoundary": "Short-session code and host adapters; no real native code exchange, complete AGC deployment or device IAP acceptance"
+        }
       }
     }
   },

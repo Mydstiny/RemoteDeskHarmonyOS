@@ -54,7 +54,7 @@ export class ProAppRuntime implements ProBillingBackend {
         const configuration = proBackendConfiguration('sandbox');
         if (configuration !== null) {
           this.sandboxClient = new ProTrustedEntitlementClient(configuration.trust, this.store,
-            new ProHttpTransport(configuration), this.clock);
+            new ProHttpTransport(configuration, context), this.clock);
         }
       }
       this.initialized = true;

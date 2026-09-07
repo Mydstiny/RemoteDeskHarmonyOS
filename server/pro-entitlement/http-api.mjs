@@ -11,12 +11,12 @@ function response(status, value) {
     'X-Content-Type-Options': 'nosniff', ...(status === 503 ? { 'Retry-After': '30' } : {})
   } });
 }
-async function requestBody(request) {
+async function requestBody(request, maximum = MAX_BODY) {
   if (!JSON_TYPE.test(request.headers.get('content-type') || '') || request.headers.has('content-encoding')) {
     throw new HttpFailure(415, 'json_required');
   }
   const length = request.headers.get('content-length');
-  if (length !== null && (!/^\d+$/.test(length) || Number(length) > MAX_BODY)) throw new HttpFailure(413, 'request_too_large');
+  if (length !== null && (!/^\d+$/.test(length) || Number(length) > maximum)) throw new HttpFailure(413, 'request_too_large');
   if (!request.body) throw new HttpFailure(400, 'invalid_request');
   const reader = request.body.getReader(); const chunks = []; let size = 0;
   const abort = () => { void reader.cancel().catch(() => {}); };
@@ -26,7 +26,7 @@ async function requestBody(request) {
       if (request.signal.aborted) throw new HttpFailure(503, 'request_cancelled');
       const part = await reader.read(); if (part.done) break;
       size += part.value.byteLength;
-      if (size > MAX_BODY) throw new HttpFailure(413, 'request_too_large');
+      if (size > maximum) throw new HttpFailure(413, 'request_too_large');
       chunks.push(Buffer.from(part.value));
     }
     if (request.signal.aborted) throw new HttpFailure(503, 'request_cancelled');
@@ -65,7 +65,7 @@ export class ProHttpApi {
     const url = new URL(request.url);
     if (url.search || url.hash) return response(404, { error: 'not_found' });
     if (request.method === 'GET' && url.pathname === '/healthz') return response(200, { status: 'running' });
-    if (!['/v1/pro/intents', '/v1/pro/reconcile', '/v1/iap/notifications'].includes(url.pathname)) {
+    if (!['/v1/pro/session', '/v1/pro/intents', '/v1/pro/reconcile', '/v1/iap/notifications'].includes(url.pathname)) {
       return response(404, { error: 'not_found' });
     }
     if (request.method !== 'POST') return response(405, { error: 'post_required' });
@@ -73,7 +73,18 @@ export class ProHttpApi {
     if (this.#active >= this.#maximum) return response(503, { error: 'service_busy' });
     this.#active++;
     try {
-      const body = await requestBody(request);
+      const body = await requestBody(request, url.pathname === '/v1/pro/session' ? 16384 : MAX_BODY);
+      if (url.pathname === '/v1/pro/session') {
+        onlyKeys(body, ['authorizationCode', 'challenge']);
+        try { boundedString(body.authorizationCode, 8192); }
+        catch { throw new HttpFailure(400, 'invalid_request'); }
+        if (typeof body.challenge !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(body.challenge) ||
+          Buffer.from(body.challenge, 'base64url').toString('base64url') !== body.challenge) {
+          throw new HttpFailure(400, 'invalid_request');
+        }
+        if (typeof this.#accounts.issue !== 'function') throw new HttpFailure(503, 'verification_unavailable');
+        return response(200, await this.#accounts.issue(body.authorizationCode, body.challenge, request.signal));
+      }
       if (url.pathname === '/v1/iap/notifications') {
         onlyKeys(body, ['jwsNotification']);
         try { boundedString(body.jwsNotification, MAX_JWS_BYTES); }

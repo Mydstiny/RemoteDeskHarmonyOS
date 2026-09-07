@@ -11,7 +11,7 @@ const root = path.resolve(__dirname, '../../..');
 const base = path.join(root, 'entry/src/main/ets/services/pro');
 
 function proClientHost(options = {}) {
-  const state = { now: 1788753534000, uptime: 100000, verifies: 0, opens: 0, requests: [], timers: new Map(),
+  const state = { now: 1788753534000, uptime: 100000, verifies: 0, opens: 0, requests: [], nativeRequests: [], timers: new Map(),
     beforeSql: () => {}, onHttp: async () => { throw new Error('offline'); }, ...options.state };
   const database = new DatabaseSync(':memory:');
   const rdb = {
@@ -70,12 +70,21 @@ function proClientHost(options = {}) {
       } }; return request;
     }
   };
+  state.onAuthorization = async request => ({ state: request.state,
+    data: { unionID: 'test-union', authorizationCode: 'fixture-code-' + state.nativeRequests.length } });
+  const authentication = {
+    HuaweiIDProvider: class { createAuthorizationWithHuaweiIDRequest() { return {}; } },
+    AuthenticationController: class {
+      constructor(context) { assert.ok(context); }
+      async executeRequest(request) { state.nativeRequests.push(request); return state.onAuthorization(request); }
+    }
+  };
   const defaults = {
     'BuildProfile': { DEBUG: options.debug !== false, VERSION_CODE: 100 },
     '@kit.ArkTS': { util }, '@kit.CryptoArchitectureKit': { cryptoFramework },
     '@kit.BasicServicesKit': { deviceInfo: { sdkApiVersion: 26, deviceType: '2in1' },
       systemDateTime: { TimeType: { STARTUP: 0 }, getUptime: () => state.uptime } },
-    '@kit.NetworkKit': { http }, '@kit.AbilityKit': {},
+    '@kit.NetworkKit': { http }, '@kit.AbilityKit': {}, '@kit.AccountKit': { authentication },
     '@kit.ArkData': { relationalStore: { SecurityLevel: { S3: 3 }, async getRdbStore(_context, config) {
       assert.equal(config.name, 'remotedesk_pro_private_v1.db'); assert.equal(config.encrypt, true);
       assert.equal(config.securityLevel, 3); state.opens++; return rdb;
@@ -105,4 +114,9 @@ function proClientHost(options = {}) {
   }
   return { load, state, database, rdb, close: () => database.close() };
 }
-module.exports = { proClientHost, base };
+function sessionReply(input, owner, now) {
+  const body = Buffer.from(JSON.stringify({ challenge: input.challenge, owner })).toString('base64url');
+  return { sessionToken: 'eyJhbGciOiJIUzI1NiJ9.' + body + '.' + crypto.randomBytes(32).toString('base64url'),
+    owner, challenge: input.challenge, expiresAt: now + 600000 };
+}
+module.exports = { proClientHost, base, sessionReply };
