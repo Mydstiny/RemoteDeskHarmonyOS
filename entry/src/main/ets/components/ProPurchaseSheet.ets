@@ -2,7 +2,7 @@ import { ProPurchaseLifecycle } from '../services/pro/ProPurchaseLifecycle';
 import { common } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { Palette, buildDark, buildLight } from '../common/Theme';
-import { ProFeature, proFeatures } from '../services/pro/ProAccessPolicy';
+import { ProFeature, proFeatures } from '../services/pro/ProFeatureCatalog';
 import {
   HuaweiProBillingProvider, ProStoreProduct, ProPurchaseCoordinator,
   PRO_LAUNCH_PRICE, PRO_REGULAR_PRICE, proBillingError
@@ -73,7 +73,7 @@ export struct ProPurchaseSheet {
 
   @Builder private featureCard(feature: ProFeature, index: number) {
     Row({ space: 14 }) {
-      Text(index === 0 ? '01' : index === 1 ? '02' : '03')
+      Text((index + 1).toString().padStart(2, '0'))
         .fontSize(16).fontWeight(FontWeight.Bold).fontColor(this.accent)
         .width(44).height(44).textAlign(TextAlign.Center)
         .backgroundColor(this.pal().surface).borderRadius(14)
@@ -109,7 +109,7 @@ export struct ProPurchaseSheet {
               .fontSize(14).fontColor(this.pal().text2).textAlign(TextAlign.Center)
             Text('一次购买 · 不自动续费').fontSize(12).fontColor(this.accent)
           }.width('100%').padding({ top: 16, bottom: 18 })
-          ForEach(proFeatures().filter((item: ProFeature): boolean => item.requiresPro),
+          ForEach(proFeatures().filter((item: ProFeature): boolean => item.requiredEntitlementId.length > 0),
             (feature: ProFeature, index: number): void => { this.featureCard(feature, index) },
             (feature: ProFeature): string => feature.id)
           Text('核心功能一直免费').fontSize(15).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
