@@ -172,3 +172,83 @@ test('an unknown schema fails without downgrading the database', t => {
   assert.throws(() => new ProOrderLedger(f.database, configuration, f.key), /schema_unsupported/);
   assert.equal(db.prepare('PRAGMA user_version').get().user_version, 27); db.close();
 });
+test('failing first batch cannot starve later healthy orders, including after restart', async t => {
+  const f = fixture(t);
+  const requests = new Map();
+  for (let index = 1; index <= 21; index++) {
+    const order = f.makeOrder('order-' + index.toString().padStart(2, '0'));
+    f.ledger.applyCurrentOrder(order, owner, f.state.now);
+  }
+  const checkedAt = f.ledger.snapshot(owner).checkedAt;
+  const query = f.iap.query;
+  f.iap.query = async reference => {
+    requests.set(reference.purchaseOrderId, (requests.get(reference.purchaseOrderId) || 0) + 1);
+    if (reference.purchaseOrderId !== 'order-21') throw new Error('vendor rejected this order');
+    return query(reference);
+  };
+  await f.service.reconcileDue(); assert.equal(f.state.confirms, 0);
+  f.restart(); f.state.now += 180000;
+  await f.service.reconcileDue();
+  assert.equal(requests.get('order-21'), 1); assert.equal(f.state.confirms, 1);
+  assert.equal(f.ledger.snapshot(owner).checkedAt, checkedAt);
+  const noImmediateRetry = await f.service.reconcileDue();
+  assert.ok(noImmediateRetry.checked <= 1);
+});
+test('version-one ledger migrates in place without losing a pending purchase', t => {
+  const f = fixture(t); const order = f.makeOrder(); f.ledger.applyCurrentOrder(order, owner, f.state.now);
+  const db = new DatabaseSync(f.database);
+  db.exec('ALTER TABLE orders DROP COLUMN query_attempted_at; ALTER TABLE orders DROP COLUMN query_next_attempt; PRAGMA user_version=1');
+  db.close(); f.restart();
+  assert.equal(f.ledger.snapshot(owner).status, 'verified'); assert.equal(f.ledger.snapshot(owner).pending, true);
+  assert.equal(f.ledger.dueOrders(f.state.now).length, 1);
+});
+test('terminal refund lookup failures do not block another purchase or the signed revocation tombstone', async t => {
+  const f = fixture(t); const first = f.makeOrder(); const second = f.makeOrder('order-2');
+  await f.service.reconcile(owner, [receipt(first), receipt(second)]);
+  first.revoked = true; f.state.now++;
+  await f.service.reconcile(owner);
+  const query = f.iap.query; const calls = [];
+  f.iap.query = async reference => {
+    calls.push(reference.purchaseOrderId);
+    if (reference.purchaseOrderId === first.purchaseOrderId) throw new Error('old refunded record unavailable');
+    return query(reference);
+  };
+  const active = await f.service.reconcile(owner, [receipt(first)]);
+  assert.equal(jwsParts(active.signedEntitlement).payload.status, 'verified');
+  assert.deepEqual(calls, [second.purchaseOrderId]);
+  await assert.rejects(() => f.service.reconcile(otherOwner, [receipt(first)]), /another_account/);
+  second.revoked = true; f.state.now++;
+  await f.service.reconcile(owner);
+  calls.length = 0; f.restart(); f.state.now++;
+  const revoked = await f.service.reconcile(owner, [receipt(first), receipt(second)]);
+  assert.equal(jwsParts(revoked.signedEntitlement).payload.status, 'revoked');
+  assert.deepEqual(calls, []); assert.equal(f.ledger.references(owner).length, 2);
+});
+test('a concurrent refund cannot pair an old entitlement state with the new revocation revision', t => {
+  const f = fixture(t); const order = f.makeOrder(); f.ledger.applyCurrentOrder(order, owner, f.state.now);
+  const second = new ProOrderLedger(f.database, configuration, f.key);
+  const prepare = DatabaseSync.prototype.prepare; let inserted = false;
+  // Inject the other real connection's transaction immediately after the first
+  // read of orders. The returned snapshot must be wholly before or after it.
+  DatabaseSync.prototype.prepare = function(sql) {
+    const statement = prepare.call(this, sql);
+    if (!/^SELECT/.test(sql) || !sql.includes('orders')) return statement;
+    return new Proxy(statement, { get(target, property) {
+      const value = target[property];
+      if (typeof value !== 'function') return value;
+      return (...args) => {
+        const result = value.apply(target, args);
+        if (!inserted && (property === 'get' || property === 'all')) {
+          inserted = true;
+          second.applyCurrentOrder({ ...order, revoked: true, signedTime: f.state.now + 1 }, owner, f.state.now + 1);
+        }
+        return result;
+      };
+    } });
+  };
+  try {
+    const snapshot = f.ledger.snapshot(owner);
+    assert.equal(inserted, true); assert.equal(snapshot.status, 'verified'); assert.equal(snapshot.revision, 1);
+    const after = second.snapshot(owner); assert.equal(after.status, 'revoked'); assert.equal(after.revision, 2);
+  } finally { DatabaseSync.prototype.prepare = prepare; second.close(); }
+});

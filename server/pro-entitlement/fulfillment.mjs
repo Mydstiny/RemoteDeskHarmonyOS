@@ -64,15 +64,18 @@ export class ProFulfillmentService {
   async reconcile(owner, records = []) {
     if (!Array.isArray(records) || records.length > 32 || records.some(record => typeof record !== 'string') ||
         records.reduce((size, record) => size + Buffer.byteLength(record), 0) > 1024 * 1024) fail('restore_batch_invalid');
-    const references = new Map(this.#ledger.references(owner).map(reference => [reference.purchaseOrderId, reference]));
+    const references = new Map(this.#ledger.references(owner, true).map(reference => [reference.purchaseOrderId, reference]));
     for (const record of records) {
       const reference = orderReferenceFromPurchaseData(record);
+      // A verified terminal refund remains an immutable local tombstone. Its
+      // vendor record becoming unavailable cannot block a different purchase.
+      if (this.#ledger.terminalReference(owner, reference)) continue;
       const existing = references.get(reference.purchaseOrderId);
       if (existing && existing.purchaseToken !== reference.purchaseToken) fail('conflicting_order_reference');
       references.set(reference.purchaseOrderId, reference);
     }
     if (references.size > 100) fail('restore_order_limit');
-    // Do not issue a new signed cache lifetime until every known order was
+    // Do not issue a new signed cache lifetime until every nonterminal order was
     // checked. Network/identity errors preserve the client's prior valid cache.
     for (const reference of references.values()) await this.#refresh(reference, owner);
     const snapshot = this.#ledger.snapshot(owner);

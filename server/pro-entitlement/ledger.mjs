@@ -36,7 +36,7 @@ export class ProOrderLedger {
       this.#db = new DatabaseSync(path);
       if (path !== ':memory:') chmodSync(path, 0o600);
       const version = this.#db.prepare('PRAGMA user_version').get().user_version;
-      if (version !== 0 && version !== 1) fail('ledger_schema_unsupported');
+      if (![0, 1, 2].includes(version)) fail('ledger_schema_unsupported');
       this.#db.exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;
       CREATE TABLE IF NOT EXISTS configuration (id INTEGER PRIMARY KEY CHECK(id=1), identity TEXT NOT NULL, key_check TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS intents (id TEXT PRIMARY KEY, owner TEXT NOT NULL, created_at INTEGER NOT NULL,
@@ -49,8 +49,14 @@ export class ProOrderLedger {
         finish_lease TEXT NOT NULL DEFAULT '', lease_until INTEGER NOT NULL DEFAULT 0, next_attempt INTEGER NOT NULL DEFAULT 0,
         attempts INTEGER NOT NULL DEFAULT 0);
       CREATE INDEX IF NOT EXISTS orders_owner ON orders(owner);
-      CREATE TABLE IF NOT EXISTS notifications (id TEXT PRIMARY KEY, order_id TEXT NOT NULL, received_at INTEGER NOT NULL);
-      PRAGMA user_version=1;`);
+      CREATE TABLE IF NOT EXISTS notifications (id TEXT PRIMARY KEY, order_id TEXT NOT NULL, received_at INTEGER NOT NULL);`);
+      if (version < 2) {
+        this.#transaction(() => {
+          this.#db.exec(`ALTER TABLE orders ADD COLUMN query_attempted_at INTEGER NOT NULL DEFAULT 0;
+            ALTER TABLE orders ADD COLUMN query_next_attempt INTEGER NOT NULL DEFAULT 0;
+            PRAGMA user_version=2;`);
+        });
+      }
       const identity = JSON.stringify(this.#configuration);
       const existing = this.#db.prepare('SELECT identity, key_check FROM configuration WHERE id=1').get();
       if (existing) {
@@ -152,20 +158,32 @@ export class ProOrderLedger {
       return { owner, revoked, finishPending: pending };
     });
   }
-  references(owner) {
+  references(owner, activeOnly = false) {
     ownerId(owner);
-    const rows = this.#db.prepare('SELECT order_id,token_cipher FROM orders WHERE owner=? ORDER BY order_id LIMIT 101').all(owner);
+    const rows = this.#db.prepare('SELECT order_id,token_cipher FROM orders WHERE owner=? AND (?=0 OR revoked=0) ORDER BY order_id LIMIT 101')
+      .all(owner, Number(activeOnly));
     if (rows.length > 100) fail('account_order_limit');
     return rows.map(row => ({ purchaseOrderId: row.order_id, purchaseToken: this.#decrypt(row.token_cipher, row.order_id) }));
   }
+  terminalReference(owner, reference) {
+    ownerId(owner); boundedString(reference.purchaseOrderId);
+    const row = this.#db.prepare('SELECT owner,token_hash,token_cipher,revoked FROM orders WHERE order_id=?').get(reference.purchaseOrderId);
+    if (!row) return false;
+    if (row.owner !== owner) fail('order_belongs_to_another_account');
+    if (row.token_hash !== tokenHash(reference.purchaseToken) ||
+        this.#decrypt(row.token_cipher, reference.purchaseOrderId) !== reference.purchaseToken) fail('order_binding_mismatch');
+    return row.revoked === 1;
+  }
   snapshot(owner) {
     ownerId(owner);
-    const rows = this.#db.prepare('SELECT revoked,finish_pending,checked_at FROM orders WHERE owner=?').all(owner);
-    const active = rows.filter(row => row.revoked === 0);
-    return { status: active.length ? 'verified' : rows.length ? 'revoked' : 'noEntitlement',
-      revision: this.#db.prepare('SELECT revision FROM accounts WHERE owner=?').get(owner)?.revision || 0,
-      pending: rows.some(row => row.finish_pending === 1),
-      checkedAt: rows.length ? Math.min(...rows.map(row => row.checked_at)) : 0 };
+    // A single SQL statement binds state and revision to one SQLite snapshot,
+    // including when another process commits a refund during this read.
+    const row = this.#db.prepare(`SELECT (SELECT revision FROM accounts WHERE owner=?) AS revision,
+      COUNT(*) AS total, COALESCE(SUM(CASE WHEN revoked=0 THEN 1 ELSE 0 END),0) AS active,
+      COALESCE(MAX(finish_pending),0) AS pending, COALESCE(MIN(checked_at),0) AS checked_at
+      FROM orders WHERE owner=?`).get(owner, owner);
+    return { status: row.active > 0 ? 'verified' : row.total > 0 ? 'revoked' : 'noEntitlement',
+      revision: row.revision || 0, pending: row.pending === 1, checkedAt: row.checked_at };
   }
   claimFinish(reference, now) {
     boundedString(reference.purchaseOrderId); time(now);
@@ -193,10 +211,17 @@ export class ProOrderLedger {
     if (!Number.isInteger(limit) || limit < 1 || limit > 100) fail('invalid_batch_limit');
     // Active orders are periodically rechecked even when delivery was already
     // acknowledged, so a missed refund notification is eventually reconciled.
-    return this.#db.prepare(`SELECT order_id,token_cipher,owner FROM orders WHERE
-      (finish_pending=1 AND next_attempt<=? AND lease_until<=?) OR (revoked=0 AND checked_at<=?)
-      ORDER BY checked_at LIMIT ?`).all(now, now, now - 6 * 3600000, limit).map(row => ({ owner: row.owner,
-      reference: { purchaseOrderId: row.order_id, purchaseToken: this.#decrypt(row.token_cipher, row.order_id) } }));
+    // Reserve a bounded batch and persist independent scan progress. A vendor
+    // failure must neither renew checked_at nor monopolize the next batch.
+    return this.#transaction(() => {
+      const rows = this.#db.prepare(`SELECT order_id,token_cipher,owner FROM orders WHERE query_next_attempt<=? AND
+        ((finish_pending=1 AND next_attempt<=? AND lease_until<=?) OR (revoked=0 AND checked_at<=?))
+        ORDER BY query_attempted_at,checked_at,order_id LIMIT ?`).all(now, now, now, now - 6 * 3600000, limit);
+      for (const row of rows) this.#db.prepare('UPDATE orders SET query_attempted_at=?,query_next_attempt=? WHERE order_id=?')
+        .run(now, now + 120000, row.order_id);
+      return rows.map(row => ({ owner: row.owner,
+        reference: { purchaseOrderId: row.order_id, purchaseToken: this.#decrypt(row.token_cipher, row.order_id) } }));
+    });
   }
   close() { this.#db?.close(); this.#db = undefined; this.#key.fill(0); }
 }
