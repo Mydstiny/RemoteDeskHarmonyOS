@@ -44,3 +44,5 @@
 新增回归执行实际 profile store/runtime policy 和生产 SshTerminal 的准备/恢复方法，当前共 33 项 connection checks PASS。独立复核与最终构建结果另记；真机矩阵仍未执行。
 
 修正后当次门禁：default 测试编译 BUILD SUCCESSFUL in 11 s 201 ms；signed Debug BUILD SUCCESSFUL in 30 s 278 ms；Release BUILD SUCCESSFUL in 55 s 966 ms，全部 exit 0。33 项 connection（含真实页面方法）、49 项 SSH、Light/diff 与 Release 审计 PASS；ABC SHA-256 e617e8f253a95b570e0a892f6fc6207d08d7533dd355cec8963c8597a4e9d328。修正独立复核待进行。
+
+最终独立复核 PASS：精确 ed537821 + 27716d2d + c64efc8e；最后补充按事务 ID 条件取消，旧页面迟到不能取消新目标。34 项 connection（含真实页面方法）独立通过；最终 compile24s782、signedDebug36s942、Release49s746，Light/diff/Runtime 实包剪枝 PASS。ABC 1211b5ab54a2090731ee37b3836aa89a14d7a2221e054ed11a1c6e1267d6a9db。共享构建当时包含正在开发的 M6 Debug USB 探针，不把该代码计入 M5 审查；全 M5 与真机跨设备仍未完成。
