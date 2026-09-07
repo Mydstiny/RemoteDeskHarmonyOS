@@ -3,10 +3,10 @@
   "task": "pro-purchase-foundation",
   "branch": "codex/pro-purchase-foundation",
   "base": "8edc187868e94ed41634e8a6c4c4c072e3a48679",
-  "head": "c64efc8e0ad709fb130637569b69fb135a6f02ae",
-  "phase": "pro-m6-usb-probe-implementation",
+  "head": "ff31ef7d6a15d23c5b95ae55711fbb98f66adfb9",
+  "phase": "pro-m7-trusted-server-implementation",
   "status": "in-progress",
-  "next": "Finish and independently review the M6 Debug USB transport probe, then advance trusted purchase and free UI. M5 sharing/PC/RDP and real device acceptance remain open.",
+  "next": "Commit/review M7 trusted vendor protocol, then implement durable fulfillment/client cache and free U0-U4; M5/M6 hardware/config-dependent paths remain open.",
   "blockers": [
     "M3/U0-U4 device matrix and M4 PC real Share Kit/SFTP file-integrity acceptance remain unverified.",
     "M5 KNOCK_COLLABORATION provision and App Linking setup unconfirmed; M6 USBManager path still needs authenticator/native proof, DDK-specific ACL is not assumed mandatory.",
@@ -20,7 +20,8 @@
     "docs/codex/plans/2026-09-07-pro-m3-app-icons.md",
     "docs/codex/plans/2026-09-07-pro-m4-knock-sftp.md",
     "docs/codex/plans/2026-09-07-pro-m5-connection-continuation.md",
-    "docs/codex/plans/2026-09-07-pro-m6-fido-transport.md"
+    "docs/codex/plans/2026-09-07-pro-m6-fido-transport.md",
+    "docs/codex/plans/2026-09-07-pro-m7-trusted-purchase.md"
   ],
   "review": {
     "status": "REVIEW_REQUIRED",
@@ -54,11 +55,13 @@
       "entry/src/main/ets/components/ProUsbFidoProbePanel.ets",
       "entry/src/main/module.json5",
       "scripts/tests/test_pro_connection.cjs",
-      "scripts/tests/test_pro_usb.cjs"
+      "scripts/tests/test_pro_usb.cjs",
+      "server/pro-entitlement",
+      "scripts/tests/test_pro_iap_server.mjs"
     ],
     "findings": [],
     "reviewedHead": "6690cdbf4ea671b0bc318d259bc35f0479911063",
-    "reason": "M1/M2/U1/M3/M4 and the exact first M5 direct SSH continuation increment independently passed; M6 and aggregate roadmap remain unfinished."
+    "reason": "M1-M6 implemented increments independently passed; new M7 server protocol and remaining roadmap require review/implementation/acceptance."
   },
   "lastVerification": {
     "testCompile": "PASS BUILD SUCCESSFUL in 24 s 782 ms",
@@ -212,7 +215,9 @@
       "M4ReviewFix": "ee45030bedb7bfb55df6afa78491cd846c2413f3",
       "M5Ssh": "ed537821ea1b1a07ba23b42a831b4fd393d89298",
       "M5ReviewFix": "27716d2dc7cc9c9e707a26186e477ce7620d4bc4",
-      "M5TransactionFix": "c64efc8e0ad709fb130637569b69fb135a6f02ae"
+      "M5TransactionFix": "c64efc8e0ad709fb130637569b69fb135a6f02ae",
+      "M6UsbProbe": "3ea2859e7bf4ac11ad22bd75884164a8f9eae798",
+      "M6HidUsageFix": "ff31ef7d6a15d23c5b95ae55711fbb98f66adfb9"
     },
     "commitPolicy": "One separate commit after each completed stage; checkpoint incomplete work explicitly.",
     "reviewerTaskId": "/root/review_pro_plan",
@@ -282,14 +287,38 @@
       }
     },
     "m6": {
-      "status": "usb-transport-probe-implemented-checks-in-progress",
+      "status": "usb-init-code-reviewed-hardware-and-rdp-pending",
       "planPath": "docs/codex/plans/2026-09-07-pro-m6-fido-transport.md",
       "scope": "Debug simulated Pro only; USB INIT feasibility, no RDP authentication",
-      "reviewStatus": "REVIEW_REQUIRED",
-      "hostChecks": "13 PASS",
+      "reviewStatus": "PASS",
+      "hostChecks": "14 independently PASS",
       "deviceAcceptance": "pending",
       "rdpewaEnabled": false,
-      "phonePasskey": "planned; official RP/origin integration not proven"
+      "phonePasskey": "planned; official RP/origin integration not proven",
+      "reviewerTaskId": "/root/review_pro_plan",
+      "reviewedCommits": [
+        "3ea2859e7bf4ac11ad22bd75884164a8f9eae798",
+        "ff31ef7d6a15d23c5b95ae55711fbb98f66adfb9"
+      ],
+      "verification": {
+        "testCompile": "PASS BUILD SUCCESSFUL in 7 s 876 ms",
+        "assembleHap": "PASS signed BUILD SUCCESSFUL in 10 s 927 ms",
+        "release": "PASS BUILD SUCCESSFUL in 35 s 455 ms; independent USB gate and Runtime pruning PASS",
+        "releaseAbcSha256": "3511f23fca3443df1e075435846a6cd24bb9e93221cc34746cdf685b272597b5",
+        "hostChecks": "14 production USB/FIDO checks independently PASS",
+        "compliance": "Light/diff PASS",
+        "device": "NOT RUN; initialization probe does not prove RDP authentication"
+      },
+      "findings": []
+    },
+    "m7": {
+      "status": "trusted-vendor-protocol-implemented-validation-in-progress",
+      "scope": "Server identity and current-order verification; ledger/client integration still pending",
+      "planPath": "docs/codex/plans/2026-09-07-pro-m7-trusted-purchase.md",
+      "reviewStatus": "REVIEW_REQUIRED",
+      "hostChecks": "12 real-crypto/vendor-contract checks PASS",
+      "productionSaleEnabled": false,
+      "deployment": "not configured"
     }
   },
   "videoRepair": {

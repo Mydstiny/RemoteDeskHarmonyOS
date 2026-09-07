@@ -26,3 +26,5 @@
 - 本增量完成后执行当次 Hvigor 两门、Release 实包授权剪枝、Light/diff、独立复核并单独 commit。USB 硬件、PC 以及 RDP 端到端验证仍待实际执行。
 
 首个实现提交 `3ea2859e`：13 项主机检查、本次 testCompile 15 s 695 ms、签名构建 18 s 891 ms、Release 38 s 395 ms、Light/diff 与实际 ABC 探测门剪枝均通过。独立复核发现 HID Local Usage 列表被覆盖的问题，已改为拒绝同一 Main item 前混合或重复 Usage，并拒绝尾部悬空 Usage；14 项检查覆盖 Collection/Input/Output 三处注入及实际控制器零 claim/零 INIT。修复后重新执行构建和复核，不沿用修复前产物。
+
+修复 `ff31ef7d` 独立复核 PASS，无剩余 finding。14 项主机检查、本次 testCompile 7 s 876 ms、签名构建 10 s 927 ms、Release 35 s 455 ms、Light/diff 及 Release USB/模拟剪枝均通过；ABC `3511f23fca3443df1e075435846a6cd24bb9e93221cc34746cdf685b272597b5`。此 PASS 仅覆盖 Debug 初始化探测，USB/PC/RDP/手机认证验收仍待执行。
