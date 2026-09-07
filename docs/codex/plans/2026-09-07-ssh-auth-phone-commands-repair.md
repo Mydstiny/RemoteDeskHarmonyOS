@@ -1,6 +1,6 @@
 # SSH authentication, phone layout and command storage repair
 
-Status: resumed by the user's explicit instruction on 2026-09-07. Phone menu correction and 49 host checks pass; current-run mandatory Hvigor gates and Light passed; committed-code review and device acceptance remain pending.
+Status: code complete and independently reviewed in `15f27269e` + `35585c80a`. Current-run mandatory builds, 49 host checks and Light passed. Device acceptance remains unrun; the shared Pro branch is still active.
 
 ## User correction and resume
 
@@ -26,9 +26,9 @@ Status: resumed by the user's explicit instruction on 2026-09-07. Phone menu cor
 
 ## Review and integration
 
-- Reviewer: `/root/review_ssh_repair` (reuse this reviewer for final commit).
-- Pre-commit review found success dismissal cancelling its token, missing phone-landscape overflow, invisible PC handoff errors and unbounded MFA instructions; all four corrected and rechecked. Final commit review pending.
-- Continue `codex/pro-purchase-foundation` while parallel Pro and video evidence work remains active. Preserve unrelated staged files and HostListPage Pro hunks.
+- Reviewer: `/root/review_ssh_repair`; final independent review PASS for exact SSH checkpoint `15f27269e` and correction `35585c80a`, plus their current SSH integration. The reviewer independently reran all 49 host checks and verified both current build logs; no reproducible blocking finding remains.
+- Pre-commit review found success dismissal cancelling its token, missing phone-landscape overflow, invisible PC handoff errors and unbounded MFA instructions; all four corrected and rechecked. The user-directed consolidated phone More menu is now included in the final review.
+- Continue `codex/pro-purchase-foundation` while parallel Pro work remains active. Preserve unrelated staged files and Pro SFTP hooks. No aggregate merge or device-acceptance claim is made.
 - Own files: SshConnectionPreflightSheet, SshConnectionPreflight, SshAuthenticatedHandoff, SshHostKeyTrustWriter, SshProductivityStore/Sheet, SshTabChromePolicy, SSH hunks in HostListPage/SshTerminal/ExtensionLoader, focused tests and this plan.
 
 ## Device acceptance
