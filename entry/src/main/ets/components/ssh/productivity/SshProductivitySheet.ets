@@ -20,6 +20,7 @@ import {
 export struct SshProductivitySheet {
   @StorageProp('accentColor') accentColor: string = '#007DFF';
   @Prop sheetBackgroundColor: string = '#171D25';
+  @Prop maxBodyHeightVp: number = 600;
   @Prop document: SshProductivityDocumentV1;
   @Prop ready: boolean = false;
   @Prop connected: boolean = false;
@@ -436,13 +437,16 @@ export struct SshProductivitySheet {
           Text((this.hostLabel.length > 0 ? this.hostLabel : '当前 SSH 会话') + ' · 本地保存')
             .fontSize(10).fontColor('rgba(242,244,247,0.50)').margin({ top: 3 })
         }.alignItems(HorizontalAlign.Start).layoutWeight(1)
-        Button('新建').height(36).fontSize(11).backgroundColor(this.accentColor)
-          .fontColor('#FFFFFF').margin({ right: 8 })
-          .enabled(this.ready)
-          .onClick((): void => { this.beginNewQuickCommand(); })
+        if (!this.quickEditorVisible) {
+          Button('新建').height(36).fontSize(11).backgroundColor(this.accentColor)
+            .fontColor('#FFFFFF').margin({ right: 8 })
+            .enabled(this.ready)
+            .onClick((): void => { this.beginNewQuickCommand(); })
+        }
         Button('关闭').height(36).fontSize(11).backgroundColor('rgba(255,255,255,0.08)')
           .onClick((): void => { this.onClose(); })
       }.width('100%').padding({ left: 16, right: 16, top: 14, bottom: 10 })
+      if (!this.quickEditorVisible) {
       TextInput({ text: this.query, placeholder: this.advancedEnabled ?
         '搜索常用命令或当前主机历史' : '搜索常用命令' })
         .height(42).fontSize(12).fontColor('#F2F4F7')
@@ -450,11 +454,12 @@ export struct SshProductivitySheet {
         .borderRadius(9).margin({ left: 16, right: 16, bottom: 10 })
         .enableAutoFill(false)
         .onChange((value: string): void => { this.onSearchChange(value.slice(0, 256)); })
+      }
       Scroll() {
         Column({ space: 10 }) {
           if (this.quickEditorVisible) {
             this.QuickCommandEditor()
-          }
+          } else {
           Text('常用命令').fontSize(12).fontWeight(FontWeight.Medium).fontColor('#F2F4F7')
             .width('100%')
           this.SnippetList()
@@ -485,9 +490,11 @@ export struct SshProductivitySheet {
             this.SettingsRow('Shell integration', '仅观察 OSC 133/633，不改变远端输出',
               this.document.settings.shellIntegrationEnabled, this.onToggleShellIntegration)
           }
+          }
         }.width('100%').padding({ left: 16, right: 16, bottom: 18 })
-      }.layoutWeight(1).width('100%').scrollBar(BarState.Auto)
+      }.width('100%').constraintSize({ maxHeight: this.maxBodyHeightVp })
+        .scrollBar(BarState.Auto)
     }
-    .width('100%').height('100%').backgroundColor(this.sheetBackgroundColor)
+    .width('100%').backgroundColor(this.sheetBackgroundColor)
   }
 }

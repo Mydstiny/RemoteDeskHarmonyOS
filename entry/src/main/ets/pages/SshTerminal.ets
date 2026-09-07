@@ -13330,6 +13330,10 @@ struct SshTerminal {
   private SshProductivitySheetContent() {
     SshProductivitySheet({
       sheetBackgroundColor: this.bindSheetBg('#171D25'),
+      // Content determines the sheet height; only long forms/lists scroll.
+      // The SSH page owns keyboard avoidance, so use its live keyboard inset.
+      maxBodyHeightVp: Math.max(48, Math.min(600,
+        (this.shellAreaH > 0 ? this.shellAreaH : 720) - this.kbHeight - 128)),
       document: this.sshProductivityDocument,
       ready: this.sshProductivityReady,
       connected: this.sshProductivityInsertionAllowed(),
@@ -19625,9 +19629,10 @@ struct SshTerminal {
         .height(1)
         .hitTestBehavior(HitTestMode.None)
         .bindSheet($$this.showSshProductivitySheet, this.SshProductivitySheetContent(), {
-          height: this.breakpoint === 'sm' ? SheetSize.LARGE : '720vp',
+          height: SheetSize.FIT_CONTENT,
           preferType: this.breakpoint === 'sm' ? SheetType.BOTTOM : SheetType.CENTER,
-          width: this.breakpoint === 'sm' ? '100%' : '760vp',
+          width: this.breakpoint === 'sm' ? '100%' : Math.max(1, Math.min(760,
+            (this.sshWorkspaceAreaW > 0 ? this.sshWorkspaceAreaW : 800) - 32)),
           dragBar: this.breakpoint === 'sm',
           backgroundColor: this.bindSheetBg('#171D25'),
           blurStyle: BlurStyle.NONE,
