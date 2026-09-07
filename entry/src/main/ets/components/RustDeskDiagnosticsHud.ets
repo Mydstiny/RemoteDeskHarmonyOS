@@ -195,7 +195,7 @@ export struct RustDeskDiagnosticsHud {
 
   private codecAlignment(): RustDeskCodecAlignment {
     return rustDeskCodecAlignment(
-      this.requestedCodecPreference, this.diagnostics.codec, this.diagnostics.videoSeen);
+      this.requestedCodecPreference, this.diagnostics.codec, this.diagnostics.videoSeen, this.diagnostics);
   }
 
   private vncRequestedColorDepth(): string {

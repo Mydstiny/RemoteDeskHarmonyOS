@@ -46,6 +46,7 @@ export struct MoonlightControlCenter {
   onEnterPip: () => void = (): void => {};
   onToggleDiagnostics: () => void = (): void => {};
   onResetCanvas: () => void = (): void => {};
+  onObserveVideoOrientation: (orientation: number) => void = (_orientation: number): void => {};
   onSetDesktopFlipMode: (mode: MoonlightDesktopFlipMode) => void =
     (_mode: MoonlightDesktopFlipMode): void => {};
   onDisconnect: () => void = (): void => {};
@@ -186,6 +187,12 @@ export struct MoonlightControlCenter {
                 '当画面左右镜像时同步校正鼠标与触控板方向',
                 this.desktopFlipState().controlFlipX,
                 (): void => { this.toggleDesktopFlipAxis('control_x'); })
+              this.actionRow($r('sys.symbol.info_circle'), '日志标记：画面正常',
+                '将当前画面状态写入抓取日志', (): void => { this.onObserveVideoOrientation(1); })
+              this.actionRow($r('sys.symbol.info_circle'), '日志标记：上下倒置',
+                '将当前画面状态写入抓取日志', (): void => { this.onObserveVideoOrientation(2); })
+              this.actionRow($r('sys.symbol.info_circle'), '日志标记：左右镜像',
+                '将当前画面状态写入抓取日志', (): void => { this.onObserveVideoOrientation(3); })
               if (this.desktopFlipMode !== 'reset') {
                 Divider().color(this.pal().divider).margin({ left: 58 })
                 this.actionRow($r('sys.symbol.rectangle_rotate'), '复位翻转',

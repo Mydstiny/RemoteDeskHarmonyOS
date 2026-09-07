@@ -1,3 +1,4 @@
+import { videoDiagnosticEvidence, finalVideoSamplingCorners } from './VideoDiagnosticEvidence';
 import {
   RustDeskDiagnosticsSnapshot,
   SshTerminalDiagnosticsSnapshot
@@ -163,6 +164,7 @@ function peerPlatform(value: string | undefined): DiagnosticPeerPlatform {
 }
 
 function presentation(value: string | undefined): DiagnosticPresentation {
+  if (value === 'top_left_producer') { return 'top_left_producer'; }
   if (value === 'identity') { return 'identity'; }
   if (value === 'producer') { return 'producer'; }
   if (value === 'validated_producer') { return 'validated_producer'; }
@@ -194,9 +196,15 @@ export function diagnosticDesktopRuntimeEventCode(moduleId: DiagnosticDesktopMod
 }
 
 export function diagnosticDesktopRuntimeFacts(moduleId: DiagnosticDesktopModule,
-  source: RustDeskDiagnosticsSnapshot): DiagnosticRuntimeFacts {
+  source: RustDeskDiagnosticsSnapshot, currentPreference: number = -1): DiagnosticRuntimeFacts {
   const sampled: boolean = source.producerTransformSampled === true;
+  const video = videoDiagnosticEvidence(source);
+  video.currentCodecPreference = currentPreference;
+  video.finalSamplingCorners = source.rendererTransformValid === true ? finalVideoSamplingCorners(
+    safeTransformMatrix(source.appliedTextureTransform, sampled),
+    source.rendererRotationQuarterTurns ?? 0, source.rendererFlipX === true, source.rendererFlipY === true) : [];
   return {
+    video: moduleId === 'connection.rustdesk' ? video : undefined,
     state: source.sessionActive ? 'connected' :
       (source.supported ? 'disconnected' : 'unknown'),
     backend: desktopBackend(source.decoderBackend),
@@ -273,7 +281,16 @@ function moonlightCodec(value: string | undefined): DiagnosticRuntimeCodec {
 export function diagnosticMoonlightRuntimeFacts(
   source: MoonlightNativeStreamSnapshot): DiagnosticRuntimeFacts {
   const sampled: boolean = source.producerTransformSampled === true;
+  const video = videoDiagnosticEvidence(source);
+  video.decodedFrames = -1;
+  video.presentedFrames = safeCounter(source.rendererPresentedFrames);
+  // Moonlight's codec field is the launch configuration, not an observed frame type.
+  video.firstFrameCodec = -1;
+  video.finalSamplingCorners = source.rendererTransformValid === true ? finalVideoSamplingCorners(
+    safeTransformMatrix(source.appliedTextureTransform, sampled),
+    source.rendererRotationQuarterTurns ?? 0, source.rendererFlipX === true, source.rendererFlipY === true) : [];
   return {
+    video: video,
     state: source.terminal ? 'disconnected' :
       (source.transportReady ? 'connected' : 'connecting'),
     backend: source.videoReady ? 'hardware' : 'native',
@@ -322,7 +339,10 @@ export function diagnosticRuntimeFactsSignature(facts: DiagnosticRuntimeFacts): 
     facts.producerTransformMatrix.join(','), facts.appliedTextureTransform.join(','),
     facts.rendererTransformVersion, facts.rendererRotationQuarterTurns,
     facts.rendererFlipX, facts.rendererFlipY, facts.decoderGeneration,
-    facts.rendererGeneration, facts.width, facts.height
+    facts.rendererGeneration, facts.width, facts.height,
+    facts.video?.sentCodecPreference, facts.video?.codecOptionSendFailures,
+    facts.video?.firstFrameCodec, facts.video?.codecChanges,
+    JSON.stringify(facts.video?.decoderAttempts)
   ].join('|');
 }
 

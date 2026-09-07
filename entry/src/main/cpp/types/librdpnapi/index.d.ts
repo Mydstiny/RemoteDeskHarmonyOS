@@ -1,3 +1,4 @@
+import { NativeVideoDiagnosticEvidence } from '../../../ets/types/VideoDiagnosticEvidence';
 export type MoonlightNativeOperation =
   'pair' | 'catalog' | 'asset' | 'launch' | 'resume' | 'quit' | 'unpair' |
   'delete_identity';
@@ -89,7 +90,7 @@ export interface MoonlightNativeStreamStartResult {
   ownerToken: number;
 }
 
-export interface MoonlightNativeStreamSnapshot {
+export interface MoonlightNativeStreamSnapshot extends NativeVideoDiagnosticEvidence {
   matched: boolean;
   code: string;
   sessionId: number;

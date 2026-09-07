@@ -1,3 +1,6 @@
+import { MoonlightNativeStreamSnapshot } from '../services/MoonlightHostService';
+import { diagnosticMoonlightRuntimeFacts } from '../services/DiagnosticRuntimeSnapshotPolicy';
+import { recordVideoOrientation } from '../services/VideoOrientationCapture';
 import { display, promptAction, router, window } from '@kit.ArkUI';
 import { common } from '@kit.AbilityKit';
 import { preferences } from '@kit.ArkData';
@@ -1618,7 +1621,24 @@ struct MoonlightStreamPage {
       ' controlX=' + (state.controlFlipX ? '1' : '0') +
       ' controlY=' + (state.controlFlipY ? '1' : '0') +
       ' renderer=' + this.rendererHandle.toString());
+    this.captureMoonlightOrientation(0, reason === 'user' ? (normalized === 'reset' ? 3 : 2) : 1);
     return true;
+  }
+
+  private captureMoonlightOrientation(observation: number = 0, source: number = 0): void {
+    try {
+      const snapshot = rdpnapi.moonlightGetStreamSnapshot({
+        requestId: this.launchKey.requestId, generation: this.launchKey.generation,
+        ownerToken: this.launchKey.ownerToken
+      });
+      const recorded: boolean = recordVideoOrientation('moonlight', snapshot.sessionId,
+        diagnosticMoonlightRuntimeFacts(snapshot as MoonlightNativeStreamSnapshot), this.moonlightControlFlipX,
+        this.moonlightControlFlipY, source, observation,
+        this.moonlightVisualFlipX ? 1 : 0, this.moonlightVisualFlipY ? 1 : 0);
+      if (observation > 0) {
+        promptAction.showToast({ message: recorded ? '画面状态已写入抓取日志' : '请先开启 Moonlight 日志抓取' });
+      }
+    } catch (_err) {}
   }
 
   private setMoonlightDesktopFlipMode(mode: MoonlightDesktopFlipMode): void {
@@ -5933,6 +5953,9 @@ struct MoonlightStreamPage {
       onEnterPip: (): void => { this.closeSheet(); void this.moveMoonlightToPip(); },
       onToggleDiagnostics: (): void => { this.toggleDiagnosticsHud(); },
       onResetCanvas: (): void => { this.resetMoonlightCanvasTransformFromMenu(); },
+      onObserveVideoOrientation: (orientation: number): void => {
+        this.captureMoonlightOrientation(orientation);
+      },
       onSetDesktopFlipMode: (mode: MoonlightDesktopFlipMode): void => {
         this.setMoonlightDesktopFlipMode(mode);
       },

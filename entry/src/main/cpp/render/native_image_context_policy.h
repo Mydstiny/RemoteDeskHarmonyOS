@@ -14,6 +14,7 @@ enum class NativeImagePresentationMode : uint8_t {
     ProducerTransform = 1,
     ValidatedProducerTransform = 2,
     VerticalFlipProducerTransform = 3,
+    TopLeftProducerTransform = 4,
 };
 
 enum class NativeImageTransformClass : uint8_t {
@@ -33,7 +34,7 @@ enum class NativeImageTransformClass : uint8_t {
 inline NativeImagePresentationMode NativeImageModeForDesktopSurface(
     bool desktopSurfaceCompatibility) noexcept {
     return desktopSurfaceCompatibility
-        ? NativeImagePresentationMode::ProducerTransform
+        ? NativeImagePresentationMode::TopLeftProducerTransform
         : NativeImagePresentationMode::Identity;
 }
 
@@ -48,6 +49,37 @@ inline NativeImageTransform IdentityNativeImageTransform() {
 
 inline NativeImageTransformClass ClassifyNativeImageProducerTransform(
     int32_t readResult, const float matrix[16]);
+
+// NativeImage V2 describes GL texture coordinates, whereas our quad and manual
+// canvas controls use top-left coordinates. Convert the INPUT basis: M * FlipY,
+// not FlipY * M (the latter changes a crop's origin). Keep the raw matrix intact
+// in telemetry. This contract is deliberately limited to PC OES consumers.
+inline NativeImageTransform NativeImageTopLeftInputTransform(const float matrix[16]) {
+    NativeImageTransform result {};
+    for (size_t row = 0; row < 4; ++row) {
+        result[row] = matrix[row];
+        result[4 + row] = -matrix[4 + row];
+        result[8 + row] = matrix[8 + row];
+        result[12 + row] = matrix[12 + row] + matrix[4 + row];
+    }
+    return result;
+}
+
+inline bool IsFiniteNativeImageAffineTransform(const float matrix[16]) {
+    if (!matrix) return false;
+    for (size_t i = 0; i < 16; ++i) {
+        if (!std::isfinite(matrix[i]) || std::fabs(matrix[i]) > 16.0f) return false;
+    }
+    // Texture transforms may contain crop/rotation/mirror but not perspective,
+    // depth, or a degenerate image. Do not whitelist only unit-scale matrices.
+    const auto near = [](float a, float b) { return std::fabs(a - b) <= 0.0001f; };
+    return near(matrix[2], 0) && near(matrix[3], 0) &&
+        near(matrix[6], 0) && near(matrix[7], 0) &&
+        near(matrix[8], 0) && near(matrix[9], 0) &&
+        near(matrix[10], 1) && near(matrix[11], 0) &&
+        near(matrix[14], 0) && near(matrix[15], 1) &&
+        std::fabs(matrix[0] * matrix[5] - matrix[4] * matrix[1]) > 0.000001f;
+}
 
 /**
  * Return the texture transform for an encoded remote-desktop frame.
@@ -65,6 +97,10 @@ inline NativeImageTransform ResolveNativeImagePresentationTransform(
     const NativeImageTransform& previous) {
     if (mode == NativeImagePresentationMode::Identity) {
         return IdentityNativeImageTransform();
+    }
+    if (mode == NativeImagePresentationMode::TopLeftProducerTransform) {
+        return readResult == 0 && IsFiniteNativeImageAffineTransform(matrix)
+            ? NativeImageTopLeftInputTransform(matrix) : previous;
     }
     if (mode == NativeImagePresentationMode::VerticalFlipProducerTransform) {
         const NativeImageTransformClass transformClass =
@@ -223,6 +259,8 @@ inline const char* NativeImagePresentationModeName(
             return "validated_producer";
         case NativeImagePresentationMode::VerticalFlipProducerTransform:
             return "vertical_flip_producer";
+        case NativeImagePresentationMode::TopLeftProducerTransform:
+            return "top_left_producer";
         case NativeImagePresentationMode::Identity:
         default:
             return "identity";

@@ -98,6 +98,7 @@ export interface RemoteSessionTopBarActions {
   onSetViewScaleMode: (mode: string) => void;
   onResetCanvasTransform: () => void;
   onRotateRemoteDisplay: () => void;
+  onObserveVideoOrientation: (orientation: number) => void;
   onSetRustDeskDesktopFlipMode: (mode: RustDeskDesktopFlipMode) => void;
   onOpenRustDeskResolution: () => void;
   onSelectRustDeskDisplay: (display: number) => void;
@@ -184,6 +185,7 @@ export struct RemoteSessionTopBar {
     onSetViewScaleMode: (_mode: string): void => {},
     onResetCanvasTransform: (): void => {},
     onRotateRemoteDisplay: (): void => {},
+    onObserveVideoOrientation: (_orientation: number): void => {},
     onSetRustDeskDesktopFlipMode: (_mode: RustDeskDesktopFlipMode): void => {},
     onOpenRustDeskResolution: (): void => {},
     onSelectRustDeskDisplay: (_display: number): void => {},
@@ -963,6 +965,15 @@ export struct RemoteSessionTopBar {
         this.menuItem('复位', 'desktopFlip', (): void => {
           this.actions.onSetRustDeskDesktopFlipMode('reset');
         }, this.rustDeskDesktopFlipMode === 'reset')
+        this.menuItem('日志标记：画面正常', 'desktopFlip', (): void => {
+          this.actions.onObserveVideoOrientation(1);
+        })
+        this.menuItem('日志标记：上下倒置', 'desktopFlip', (): void => {
+          this.actions.onObserveVideoOrientation(2);
+        })
+        this.menuItem('日志标记：左右镜像', 'desktopFlip', (): void => {
+          this.actions.onObserveVideoOrientation(3);
+        })
       }
       .width('100%').padding(this.menuPadding())
     }

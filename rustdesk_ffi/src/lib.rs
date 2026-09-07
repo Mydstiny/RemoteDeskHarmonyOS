@@ -23,6 +23,8 @@ use std::time::{Duration, Instant};
 
 pub mod connector;
 mod control_inbox;
+mod codec_evidence;
+use codec_evidence::RustDeskCodecEvidence;
 pub mod crypto;
 pub mod crypto_channel;
 mod cursor_state;
@@ -1409,6 +1411,7 @@ struct RustDeskClient {
     remote_clipboard: Arc<Mutex<Vec<u8>>>,
     stream_stats: Arc<Mutex<RustDeskStreamStats>>,
     quality_state: Arc<Mutex<RustDeskQualityState>>,
+    codec_evidence: Arc<Mutex<RustDeskCodecEvidence>>,
     display_state: Arc<Mutex<RustDeskDisplayState>>,
 }
 
@@ -2216,6 +2219,7 @@ fn rustdesk_connect_impl(
                 callback_user_data as *mut c_void,
             );
 
+            let codec_evidence = c.codec_evidence();
             let stream_handle = std::thread::spawn(move || {
                 let callback_user_data = callback_user_data as *mut c_void;
                 let audio_pipeline = RefCell::new(AudioPipeline::new());
@@ -2325,6 +2329,7 @@ fn rustdesk_connect_impl(
                 remote_clipboard,
                 stream_stats,
                 quality_state,
+                codec_evidence,
                 display_state,
             });
 
@@ -2886,6 +2891,17 @@ pub extern "C" fn rustdesk_probe_presence(
         PRESENCE_PROBE_MAX_TIMEOUT.as_millis() as u32,
         out_result,
     )
+}
+
+/// Snapshot the codec values observed at successful writer boundaries.
+#[no_mangle]
+pub extern "C" fn rustdesk_get_codec_evidence(handle: *mut c_void,
+    out: *mut RustDeskCodecEvidence) -> bool {
+    if handle.is_null() || out.is_null() { return false; }
+    let client = unsafe { &*(handle as *const RustDeskClient) };
+    let Ok(evidence) = client.codec_evidence.lock() else { return false; };
+    unsafe { *out = *evidence; }
+    true
 }
 
 /// Copy a non-destructive stream telemetry snapshot for one FFI connection.
@@ -4091,6 +4107,7 @@ mod tests {
             transfer_error: Arc::new(Mutex::new(String::new())),
             remote_clipboard: Arc::new(Mutex::new(Vec::new())),
             stream_stats: Arc::new(Mutex::new(RustDeskStreamStats::default())),
+            codec_evidence: Arc::new(Mutex::new(RustDeskCodecEvidence::default())),
             quality_state: Arc::new(Mutex::new(RustDeskQualityState::default())),
             display_state: Arc::new(Mutex::new(display_state)),
         }

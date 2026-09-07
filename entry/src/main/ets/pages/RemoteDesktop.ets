@@ -1,3 +1,5 @@
+import { diagnosticDesktopRuntimeFacts } from '../services/DiagnosticRuntimeSnapshotPolicy';
+import { recordVideoOrientation } from '../services/VideoOrientationCapture';
 /**
  * RemoteDesktop.ets v4 — 全屏远程桌面 + XComponent 生命周期 + 输入转发 + 错误诊断
  */
@@ -5887,6 +5889,22 @@ struct RemoteDesktop {
     this.updateRendererViewportCacheForCanvasTransform(viewport);
   }
 
+  private captureRustDeskOrientation(observation: number = 0, source: number = 0): void {
+    if (this.currentProtocolName() !== 'rustdesk' || this.sessionId <= 0) { return; }
+    try {
+      const snapshot = this.loader.getRustDeskDiagnostics(this.sessionId);
+      const recorded: boolean = recordVideoOrientation('rustdesk', this.sessionId,
+        diagnosticDesktopRuntimeFacts('connection.rustdesk', snapshot,
+          AppStorage.get<number>('rustdeskCodec') ?? 0),
+        this.canvasControlFlipX, this.canvasControlFlipY, source, observation,
+        this.canvasVisualFlipX ? 1 : 0, this.canvasVisualFlipY ? 1 : 0,
+        this.rendererCanvasTransformPendingVersion);
+      if (observation > 0) {
+        promptAction.showToast({ message: recorded ? '画面状态已写入抓取日志' : '请先开启 RustDesk 日志抓取' });
+      }
+    } catch (_err) {}
+  }
+
   private adoptRustDeskDesktopFlipMode(mode: RustDeskDesktopFlipMode,
     reason: string, preserveCanvasFocus: boolean): void {
     const normalized: RustDeskDesktopFlipMode = normalizeRustDeskDesktopFlipMode(mode);
@@ -5915,6 +5933,7 @@ struct RemoteDesktop {
       this.syncRemoteSystemPointer('rustdesk-desktop-flip-' + reason,
         this.remoteSurfaceHovered !== false, true);
     }
+    this.captureRustDeskOrientation(0, reason === 'user' ? (normalized === 'reset' ? 3 : 2) : 1);
     hilog.info(RD_DOMAIN, RD_TAG, 'rustdeskFlipApplied reason=' + reason +
       ' mode=' + normalized +
       ' visualX=' + (state.visualFlipX ? '1' : '0') +
@@ -6801,6 +6820,9 @@ struct RemoteDesktop {
       },
       onRotateRemoteDisplay: (): void => {
         this.rotateRustDeskRemoteCanvas();
+      },
+      onObserveVideoOrientation: (orientation: number): void => {
+        this.captureRustDeskOrientation(orientation);
       },
       onSetRustDeskDesktopFlipMode: (mode: RustDeskDesktopFlipMode): void => {
         this.setRustDeskDesktopFlipMode(mode);

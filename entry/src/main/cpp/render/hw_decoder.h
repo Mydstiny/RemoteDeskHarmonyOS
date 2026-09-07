@@ -15,6 +15,7 @@
 #include "callback_admission_context.h"
 #include "extensions/protocol_adapter.h"
 #include "native_image_context_policy.h"
+#include "decoder_attempt_diagnostics.h"
 #include "video_perf_counters.h"
 #include "video_backpressure_controller.h"
 #include <GLES3/gl3.h>
@@ -476,6 +477,10 @@ private:
     // Stable callback context. Platform userData never points at this object.
     std::shared_ptr<Render::CallbackAdmissionContext> callbackContext_;
     DecoderSessionIdentity callbackOwner_;
+    uint64_t diagnosticAttemptSerial_ = 0;
+    uint64_t diagnosticDecoderGeneration_ = 0;
+    std::atomic<bool> diagnosticFirstOutput_ {false};
+    void recordAttempt(Render::DecoderAttemptStage stage, int result = 0, int32_t code = 0);
     std::shared_ptr<std::atomic<int>> callbackResourceDestroyCount_ =
         std::make_shared<std::atomic<int>>(0);
     std::shared_ptr<std::atomic<int>> callbackResourceStopCount_ =

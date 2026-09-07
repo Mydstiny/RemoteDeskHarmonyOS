@@ -139,6 +139,7 @@ extern "C" {
         int32_t height;
         int32_t connection_path;
     };
+    bool rustdesk_get_codec_evidence(void* handle, RustDeskFfiCodecEvidence* out);
     bool  rustdesk_get_stream_stats(void* handle, RustDeskFfiStreamStats* out_stats);
     struct RustDeskFfiQualityState {
         uint32_t version;
@@ -2829,6 +2830,11 @@ RustDeskDiagnosticsStats RustDeskBridge::getDiagnostics() const {
             OH_LOG_WARN(LOG_APP,
                 "[RustDesk-FFI] stream diagnostics snapshot rejected: unsupported ABI version=%{public}u",
                 ffiStats.version);
+        }
+        RustDeskFfiCodecEvidence codecEvidence {};
+        if (rustdesk_get_codec_evidence(handleLease.get(), &codecEvidence) &&
+            codecEvidence.version == 1) {
+            result.codecEvidence = codecEvidence;
         }
         RustDeskFfiQualityState qualityState {};
         if (rustdesk_get_quality_state(handleLease.get(), &qualityState) &&

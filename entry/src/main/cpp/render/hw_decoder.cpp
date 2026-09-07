@@ -331,12 +331,17 @@ void HardwareDecoder::OnError(OH_AVCodec* codec, int32_t errorCode, void* userDa
 #if defined(RDP_NATIVE_CALLBACK_TESTING)
     context->invokeAfterAcquireHookForTesting();
 #endif
+    Render::DecoderAttemptDiagnostics::Instance().update(target.decoder->callbackOwner_,
+        target.decoder->diagnosticAttemptSerial_, [=](Render::DecoderAttemptDiagnostic& value) {
+            ++value.asyncErrors;
+            value.lastAsyncError = errorCode;
+        });
     OH_LOG_ERROR(LOG_APP, "[Decoder] 解码器错误: code=%{public}d", errorCode);
     target.decoder->errorCallbackGate_.Invoke(DecoderError::OUTPUT_FAILED,
         "OH_AVCodec error " + std::to_string(errorCode));
 }
 
-void HardwareDecoder::OnStreamChanged(OH_AVCodec* codec, OH_AVFormat* /*format*/, void* userData) {
+void HardwareDecoder::OnStreamChanged(OH_AVCodec* codec, OH_AVFormat* format, void* userData) {
     auto* context = static_cast<Render::CallbackAdmissionContext*>(userData);
     if (!context) {
         return;
@@ -353,6 +358,18 @@ void HardwareDecoder::OnStreamChanged(OH_AVCodec* codec, OH_AVFormat* /*format*/
 #if defined(RDP_NATIVE_CALLBACK_TESTING)
     context->invokeAfterAcquireHookForTesting();
 #endif
+    if (format) {
+        int32_t width = 0, height = 0, pixelFormat = -1;
+        OH_AVFormat_GetIntValue(format, OH_MD_KEY_WIDTH, &width);
+        OH_AVFormat_GetIntValue(format, OH_MD_KEY_HEIGHT, &height);
+        OH_AVFormat_GetIntValue(format, OH_MD_KEY_PIXEL_FORMAT, &pixelFormat);
+        Render::DecoderAttemptDiagnostics::Instance().update(target.decoder->callbackOwner_,
+            target.decoder->diagnosticAttemptSerial_, [=](Render::DecoderAttemptDiagnostic& value) {
+                value.outputWidth = width;
+                value.outputHeight = height;
+                value.outputPixelFormat = pixelFormat;
+            });
+    }
     OH_LOG_INFO(LOG_APP, "[Decoder] 码流格式变更");
 }
 
@@ -402,6 +419,9 @@ void HardwareDecoder::OnNewOutputBuffer(OH_AVCodec* codec, uint32_t index,
 #endif
     if (codec == nullptr) {
         return;
+    }
+    if (!target.decoder->diagnosticFirstOutput_.exchange(true, std::memory_order_acq_rel)) {
+        target.decoder->recordAttempt(Render::DecoderAttemptStage::FirstOutput, 1);
     }
     OH_AVCodecBufferAttr attr {};
     if (buffer != nullptr && OH_AVBuffer_GetBufferAttr(buffer, &attr) == AV_ERR_OK) {
@@ -539,6 +559,7 @@ bool HardwareDecoder::SetCallbackIdentity(
     const bool bound = callbackContext_->bind(token, owner, generation);
     if (bound) {
         callbackOwner_ = owner;
+        diagnosticDecoderGeneration_ = generation;
     }
     return bound;
 }
@@ -569,6 +590,16 @@ const char* HardwareDecoder::GetMimeType(CodecType codec) {
     }
 }
 
+void HardwareDecoder::recordAttempt(Render::DecoderAttemptStage stage, int result, int32_t code) {
+    Render::DecoderAttemptDiagnostics::Instance().update(callbackOwner_, diagnosticAttemptSerial_,
+        [=](Render::DecoderAttemptDiagnostic& value) {
+            if (value.result < 0) return;
+            value.stage = std::max(value.stage, static_cast<int32_t>(stage));
+            value.result = result;
+            value.platformCode = code;
+        });
+}
+
 int HardwareDecoder::Init(int width, int height, CodecType codec, int64_t rendererHandle,
                           bool desktopSurfaceCompatibility,
                           Render::NativeImagePresentationMode presentationMode) {
@@ -577,6 +608,19 @@ int HardwareDecoder::Init(int width, int height, CodecType codec, int64_t render
                 width, height, GetMimeType(codec),
                 desktopSurfaceCompatibility ? "yes" : "no",
                 Render::NativeImagePresentationModeName(presentationMode));
+
+    diagnosticAttemptSerial_ = Render::DecoderAttemptDiagnostics::Instance().begin(
+        callbackOwner_, static_cast<int>(codec), width, height, diagnosticDecoderGeneration_);
+    diagnosticFirstOutput_.store(false, std::memory_order_release);
+    OH_AVCapability* diagnosticCapability = OH_AVCodec_GetCapability(GetMimeType(codec), false);
+    Render::DecoderAttemptDiagnostics::Instance().update(callbackOwner_, diagnosticAttemptSerial_,
+        [=](Render::DecoderAttemptDiagnostic& value) {
+            if (diagnosticCapability) {
+                value.capabilityHardware = OH_AVCapability_IsHardware(diagnosticCapability) ? 1 : 0;
+                value.capabilitySizeSupported =
+                    OH_AVCapability_IsVideoSizeSupported(diagnosticCapability, width, height) ? 1 : 0;
+            }
+        });
 
     // A failed init retires the callback context together with any platform
     // objects that had already registered a callback.  A later reconnect must
@@ -636,7 +680,8 @@ int HardwareDecoder::Init(int width, int height, CodecType codec, int64_t render
     // been registered, every platform object is owned by the same admission
     // context as the normal Destroy path.  In particular, do not call
     // OH_*Destroy directly while a late callback can still hold a lease.
-    auto retireInitResources = [this, &releaseTexture, &releaseInitContext](int result) {
+    auto retireInitResources = [this, &releaseTexture, &releaseInitContext](int result, int32_t platformCode = 0) {
+        recordAttempt(Render::DecoderAttemptStage::None, -1, platformCode != 0 ? platformCode : result);
         OH_AVCodec* decoder = decoder_;
         OH_NativeImage* nativeImage = nativeImage_;
         decoder_ = nullptr;
@@ -675,7 +720,7 @@ int HardwareDecoder::Init(int width, int height, CodecType codec, int64_t render
     decoder_ = OH_VideoDecoder_CreateByMime(GetMimeType(codec));
     if (!decoder_) {
         OH_LOG_ERROR(LOG_APP, "[Decoder] OH_VideoDecoder_CreateByMime 失败");
-        return -1;
+        return retireInitResources(-1);
     }
 
     // 2. 注册回调 (必须在 Configure 之前)
@@ -684,10 +729,11 @@ int HardwareDecoder::Init(int width, int height, CodecType codec, int64_t render
     cb.onStreamChanged = OnStreamChanged;
     cb.onNeedInputBuffer = OnNeedInputBuffer;
     cb.onNewOutputBuffer = OnNewOutputBuffer;
+    recordAttempt(Render::DecoderAttemptStage::Callback);
     OH_AVErrCode ret = OH_VideoDecoder_RegisterCallback(decoder_, cb, callbackContext_.get());
     if (ret != AV_ERR_OK) {
         OH_LOG_ERROR(LOG_APP, "[Decoder] RegisterCallback 失败: %{public}d", ret);
-        return retireInitResources(-2);
+        return retireInitResources(-2, ret);
     }
 #if defined(RDP_NATIVE_CALLBACK_TESTING)
     if (const int injected = failAtStage(1, -101); injected != 0) return injected;
@@ -705,6 +751,7 @@ int HardwareDecoder::Init(int width, int height, CodecType codec, int64_t render
         RendererNapi::MakeCurrent(rendererHandle, callbackOwner_);
         initContextCurrent = true;
     }
+    recordAttempt(Render::DecoderAttemptStage::Texture);
     glGenTextures(1, &textureId_);
     glBindTexture(GL_TEXTURE_EXTERNAL_OES, textureId_);
     glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
@@ -715,12 +762,13 @@ int HardwareDecoder::Init(int width, int height, CodecType codec, int64_t render
     if (textureId_ == 0 || glErr != GL_NO_ERROR) {
         OH_LOG_ERROR(LOG_APP, "[Decoder] 创建 GL 外部纹理失败: texture=%{public}u err=%{public}x",
                      textureId_, glErr);
-        return retireInitResources(-3);
+        return retireInitResources(-3, glErr);
     }
 #if defined(RDP_NATIVE_CALLBACK_TESTING)
     if (const int injected = failAtStage(2, -102); injected != 0) return injected;
 #endif
 
+    recordAttempt(Render::DecoderAttemptStage::NativeImage);
     nativeImage_ = OH_NativeImage_Create(textureId_, GL_TEXTURE_EXTERNAL_OES);
     if (!nativeImage_) {
         OH_LOG_ERROR(LOG_APP, "[Decoder] OH_NativeImage_Create 失败");
@@ -735,11 +783,13 @@ int HardwareDecoder::Init(int width, int height, CodecType codec, int64_t render
     int32_t imageRet = OH_NativeImage_SetOnFrameAvailableListener(nativeImage_, listener);
     if (imageRet != 0) {
         OH_LOG_WARN(LOG_APP, "[Decoder] SetOnFrameAvailableListener failed: %{public}d", imageRet);
+        return retireInitResources(-3, imageRet);
     }
     imageRet = OH_NativeImage_SetDropBufferMode(nativeImage_, true);
     if (imageRet != 0) {
         OH_LOG_WARN(LOG_APP, "[Decoder] SetDropBufferMode failed: %{public}d", imageRet);
     }
+    recordAttempt(Render::DecoderAttemptStage::NativeWindow);
     nativeWindow_ = OH_NativeImage_AcquireNativeWindow(nativeImage_);
     if (!nativeWindow_) {
         OH_LOG_ERROR(LOG_APP, "[Decoder] AcquireNativeWindow 失败");
@@ -750,7 +800,9 @@ int HardwareDecoder::Init(int width, int height, CodecType codec, int64_t render
 #endif
 
     // 4. 配置解码器参数
+    recordAttempt(Render::DecoderAttemptStage::Configure);
     OH_AVFormat* format = OH_AVFormat_Create();
+    if (!format) return retireInitResources(-6);
     OH_AVFormat_SetIntValue(format, OH_MD_KEY_WIDTH, width);
     OH_AVFormat_SetIntValue(format, OH_MD_KEY_HEIGHT, height);
     lowLatencyEnabled_ = false;
@@ -774,43 +826,47 @@ int HardwareDecoder::Init(int width, int height, CodecType codec, int64_t render
     OH_AVFormat_Destroy(format);
     if (ret != AV_ERR_OK) {
         OH_LOG_ERROR(LOG_APP, "[Decoder] Configure 失败: %{public}d", ret);
-        return retireInitResources(-6);
+        return retireInitResources(-6, ret);
     }
 #if defined(RDP_NATIVE_CALLBACK_TESTING)
     if (const int injected = failAtStage(5, -105); injected != 0) return injected;
 #endif
 
     // 5. 设置解码输出 surface。必须在 Prepare 前，且部分设备要求 Configure 后调用。
+    recordAttempt(Render::DecoderAttemptStage::Surface);
     ret = OH_VideoDecoder_SetSurface(decoder_, static_cast<OHNativeWindow*>(nativeWindow_));
     if (ret != AV_ERR_OK) {
         OH_LOG_ERROR(LOG_APP, "[Decoder] SetSurface 失败: %{public}d", ret);
-        return retireInitResources(-5);
+        return retireInitResources(-5, ret);
     }
 #if defined(RDP_NATIVE_CALLBACK_TESTING)
     if (const int injected = failAtStage(6, -106); injected != 0) return injected;
 #endif
 
     // 6. Prepare
+    recordAttempt(Render::DecoderAttemptStage::Prepare);
     ret = OH_VideoDecoder_Prepare(decoder_);
     if (ret != AV_ERR_OK) {
         OH_LOG_ERROR(LOG_APP, "[Decoder] Prepare 失败: %{public}d", ret);
-        return retireInitResources(-7);
+        return retireInitResources(-7, ret);
     }
 #if defined(RDP_NATIVE_CALLBACK_TESTING)
     if (const int injected = failAtStage(7, -107); injected != 0) return injected;
 #endif
 
     // 7. Start
+    recordAttempt(Render::DecoderAttemptStage::Start);
     ret = OH_VideoDecoder_Start(decoder_);
     if (ret != AV_ERR_OK) {
         OH_LOG_ERROR(LOG_APP, "[Decoder] Start 失败: %{public}d", ret);
-        return retireInitResources(-8);
+        return retireInitResources(-8, ret);
     }
 #if defined(RDP_NATIVE_CALLBACK_TESTING)
     if (const int injected = failAtStage(8, -108); injected != 0) return injected;
 #endif
 
     initialized_ = true;
+    recordAttempt(Render::DecoderAttemptStage::Started, 1);
     releaseInitContext();
     OH_LOG_INFO(LOG_APP, "[Decoder] ✓ 解码器启动成功 (Surface模式, %{public}dx%{public}d texture=%{public}u)",
                 width, height, textureId_);

@@ -1,3 +1,5 @@
+import { deviceInfo } from '@kit.BasicServicesKit';
+import { VideoDiagnosticEvidence, parseVideoDiagnosticEvidence } from './VideoDiagnosticEvidence';
 import { fileIo, picker } from '@kit.CoreFileKit';
 import { util } from '@kit.ArkTS';
 import { common } from '@kit.AbilityKit';
@@ -70,6 +72,9 @@ export interface DiagnosticDocumentPort {
 }
 
 interface DiagnosticManifestLine {
+  deviceCategory: string;
+  sdkApiVersion: number;
+  deviceAbi: string;
   kind: string;
   schemaVersion: number;
   app: string;
@@ -333,7 +338,7 @@ function jsonNetworkFacts(value: Object): DiagnosticNetworkFacts | null {
 function jsonRuntimeFacts(value: Object): DiagnosticRuntimeFacts | null {
   if (typeof value !== 'object' || value === null) { return null; }
   const source: Record<string, Object> = value as Record<string, Object>;
-  if (!objectHasExactKeys(source, [
+  const fields: string[] = [
     'state', 'backend', 'codec', 'path', 'peerPlatform', 'presentation',
     'producerTransform', 'appliedTransform', 'desktopSurfaceCompatibility',
     'producerTransformSampled', 'producerTransformReadResult',
@@ -344,7 +349,12 @@ function jsonRuntimeFacts(value: Object): DiagnosticRuntimeFacts | null {
     'rendererRotationQuarterTurns', 'rendererFlipX', 'rendererFlipY',
     'decoderGeneration', 'rendererGeneration', 'width', 'height', 'frames',
     'dropped', 'errors', 'queueDepth', 'latencyMs'
-  ])) { return null; }
+  ];
+  if (source['video'] !== undefined) { fields.push('video'); }
+  if (!objectHasExactKeys(source, fields)) { return null; }
+  const video: VideoDiagnosticEvidence | null = source['video'] === undefined ? null :
+    parseVideoDiagnosticEvidence(source['video']);
+  if (source['video'] !== undefined && video === null) { return null; }
   const state: string | null = jsonString(source, 'state');
   const backend: string | null = jsonString(source, 'backend');
   const codec: string | null = jsonString(source, 'codec');
@@ -401,6 +411,7 @@ function jsonRuntimeFacts(value: Object): DiagnosticRuntimeFacts | null {
     width === null || height === null || frames === null || dropped === null ||
     errors === null || queueDepth === null || latencyMs === null) { return null; }
   const facts: DiagnosticRuntimeFacts = {
+    video: video === null ? undefined : video,
     state: state as DiagnosticRuntimeState,
     backend: backend as DiagnosticRuntimeBackend,
     codec: codec as DiagnosticRuntimeCodec,
@@ -429,6 +440,28 @@ function jsonRuntimeFacts(value: Object): DiagnosticRuntimeFacts | null {
   return diagnosticRuntimeFactsAreValid(facts) ? facts : null;
 }
 
+function diagnosticDeviceCategory(): string {
+  try {
+    const value: string = deviceInfo.deviceType;
+    if (value === '2in1' || value === 'pc') { return 'pc'; }
+    if (value === 'phone' || value === 'tablet') { return value; }
+    return value.length > 0 ? 'other' : 'unknown';
+  } catch (_err) { return 'unknown'; }
+}
+function diagnosticDeviceApi(): number {
+  try {
+    const value: number = deviceInfo.sdkApiVersion;
+    return Number.isSafeInteger(value) && value >= 0 && value <= 999 ? value : 0;
+  } catch (_err) { return 0; }
+}
+function diagnosticDeviceAbi(): string {
+  try {
+    const value: string = deviceInfo.abiList;
+    if (value.indexOf('arm64') >= 0 || value.indexOf('aarch64') >= 0) { return 'arm64'; }
+    if (value.indexOf('x86_64') >= 0) { return 'x86_64'; }
+    return value.length > 0 ? 'other' : 'unknown';
+  } catch (_err) { return 'unknown'; }
+}
 function currentDiagnosticBuildId(): string {
   try {
     const nativeRevision: string = rdpnapi.VERSION.gitShortSha;
@@ -449,7 +482,7 @@ export function validateDiagnosticJsonl(text: string): boolean {
       JSON.parse(lines[lines.length - 1]) as Record<string, Object>;
     if (!objectHasExactKeys(first, [
       'kind', 'schemaVersion', 'app', 'appVersion', 'captureId', 'durationMinutes',
-      'appVersionCode', 'buildId',
+      'appVersionCode', 'buildId', 'deviceCategory', 'sdkApiVersion', 'deviceAbi',
       'selectedModules', 'startedWallTimeMs', 'endedWallTimeMs', 'stopReason',
       'redactionPolicyVersion'
     ]) || !objectHasExactKeys(last, [
@@ -460,6 +493,12 @@ export function validateDiagnosticJsonl(text: string): boolean {
       jsonNumber(first, 'schemaVersion') !== DIAGNOSTIC_CAPTURE_SCHEMA_VERSION ||
       jsonNumber(last, 'schemaVersion') !== DIAGNOSTIC_CAPTURE_SCHEMA_VERSION ||
       jsonString(first, 'app') !== 'RemoteDesktop') { return false; }
+    const category: string | null = jsonString(first, 'deviceCategory');
+    const api: number | null = jsonNumber(first, 'sdkApiVersion');
+    const abi: string | null = jsonString(first, 'deviceAbi');
+    if (category === null || ['pc', 'phone', 'tablet', 'other', 'unknown'].indexOf(category) < 0 ||
+      api === null || !Number.isSafeInteger(api) || api < 0 || api > 999 ||
+      abi === null || ['arm64', 'x86_64', 'other', 'unknown'].indexOf(abi) < 0) { return false; }
     const appVersion: string | null = jsonString(first, 'appVersion');
     const appVersionCode: number | null = jsonNumber(first, 'appVersionCode');
     const buildId: string | null = jsonString(first, 'buildId');
@@ -563,6 +602,8 @@ export function serializeDiagnosticCapture(
   const validCapture: FrozenDiagnosticCapture = capture as FrozenDiagnosticCapture;
   try {
     const manifest: DiagnosticManifestLine = {
+      deviceCategory: diagnosticDeviceCategory(), sdkApiVersion: diagnosticDeviceApi(),
+      deviceAbi: diagnosticDeviceAbi(),
       kind: 'manifest',
       schemaVersion: DIAGNOSTIC_CAPTURE_SCHEMA_VERSION,
       app: 'RemoteDesktop',

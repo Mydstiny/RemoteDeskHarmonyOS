@@ -2064,7 +2064,7 @@ impl RustDeskConnector {
         const DEGRADE_AFTER_OVERLOAD_WINDOWS: u32 = 5; // need 5s of overload before degrade
         const RECOVER_AFTER_CLEAN_WINDOWS: u32 = 30; // 30s of clean before recover
         const OVERLOAD_VIDEO_THRESHOLD: u64 = 3; // <3 fps sustained = genuine decoder overload
-        if let Err(err) = Session::send_stream_options(
+        if let Err(err) = self.session.send_stream_options(
             crypto,
             preferred_codec,
             image_quality,
@@ -2301,7 +2301,7 @@ impl RustDeskConnector {
                             target_fps,
                         );
                         if target_fps != stream_options_fps {
-                            Session::send_runtime_options(
+                            self.session.send_runtime_options(
                                 crypto,
                                 preferred_codec,
                                 image_quality,
@@ -2336,7 +2336,7 @@ impl RustDeskConnector {
                         && actual_codec != preferred_codec
                     {
                         stream_options_sent_count += 1;
-                        let _ = Session::send_stream_options(
+                        let _ = self.session.send_stream_options(
                             crypto,
                             preferred_codec,
                             image_quality,
@@ -2419,6 +2419,11 @@ impl RustDeskConnector {
                     Self::send_message_encrypted(crypto, &out)?;
                 }
                 Some(Message_oneof_union::misc(ref misc)) => {
+                    if let Some(Misc_oneof_union::supported_encoding(ref encoding)) = misc.union {
+                        if let Ok(mut evidence) = self.session.codec_evidence.lock() {
+                            evidence.record_peer_encoding(encoding);
+                        }
+                    }
                     // 记录 misc 子类型
                     let misc_key = match &misc.union {
                         Some(Misc_oneof_union::audio_format(_)) => "misc/audio_format",
@@ -2629,7 +2634,7 @@ impl RustDeskConnector {
                         applied_pressure_level,
                         bounded_vp9_pressure,
                     ) {
-                        Session::send_runtime_options(
+                        self.session.send_runtime_options(
                             crypto,
                             preferred_codec,
                             image_quality,
@@ -2683,7 +2688,7 @@ impl RustDeskConnector {
                             current_backpressure_level,
                             bounded_vp9_pressure,
                         ) {
-                            Session::send_runtime_options(
+                            self.session.send_runtime_options(
                                 crypto,
                                 preferred_codec,
                                 quality,
@@ -2727,7 +2732,7 @@ impl RustDeskConnector {
                             current_backpressure_level,
                             bounded_vp9_pressure,
                         ) {
-                            Session::send_runtime_options(
+                            self.session.send_runtime_options(
                                 crypto,
                                 preferred_codec,
                                 quality,
@@ -4250,6 +4255,10 @@ impl RustDeskConnector {
     }
 
     /** Platform reported by the authenticated RustDesk PeerInfo handshake. */
+    pub(crate) fn codec_evidence(&self) -> Arc<Mutex<crate::codec_evidence::RustDeskCodecEvidence>> {
+        Arc::clone(&self.session.codec_evidence)
+    }
+
     pub fn peer_platform(&self) -> String {
         self.session
             .peer_info()

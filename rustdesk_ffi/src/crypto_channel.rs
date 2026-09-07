@@ -69,6 +69,11 @@ impl CryptoChannel {
         }
     }
 
+    /// Streaming send() confirms queue admission, not a completed socket write.
+    pub(crate) fn sends_are_queued(&self) -> bool {
+        self.streaming_writer.is_some()
+    }
+
     /// 发送加密帧。nonce 仅在 TCP 写入成功后递增。
     pub fn send(&mut self, plaintext: &[u8]) -> io::Result<()> {
         if let Some(writer) = self.streaming_writer.as_ref() {

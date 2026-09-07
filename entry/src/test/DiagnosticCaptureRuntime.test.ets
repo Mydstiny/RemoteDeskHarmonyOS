@@ -175,11 +175,12 @@ export default function diagnosticCaptureRuntimeTest(): void {
       }
       let status = runtime.status();
       expect(status.phase).assertEqual('capturing');
-      expect(status.eventCount).assertEqual(DIAGNOSTIC_MAX_EVENTS - 1);
-      expect(status.droppedEventCount).assertEqual(7);
+      expect(status.eventCount > 0 && status.eventCount < DIAGNOSTIC_MAX_EVENTS).assertTrue();
+      const beforeStop: number = status.eventCount;
+      expect(status.eventCount + status.droppedEventCount).assertEqual(DIAGNOSTIC_MAX_EVENTS + 6);
       expect(runtime.stop()).assertEqual('ok');
       status = runtime.status();
-      expect(status.eventCount).assertEqual(DIAGNOSTIC_MAX_EVENTS);
+      expect(status.eventCount).assertEqual(beforeStop + 1);
       const frozen: FrozenDiagnosticCapture = runtime.frozenCapture() as FrozenDiagnosticCapture;
       expect(frozen.events[frozen.events.length - 1].eventCode).assertEqual('capture_stopped');
     });

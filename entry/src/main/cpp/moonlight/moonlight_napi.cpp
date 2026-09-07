@@ -1,3 +1,4 @@
+#include "render/decoder_attempt_napi.h"
 #include "moonlight/moonlight_napi.h"
 
 #include "moonlight/bridge/MoonlightNativeBridge.h"
@@ -1447,6 +1448,22 @@ napi_value streamSnapshot(napi_env env, napi_callback_info info) {
     const auto result = MoonlightProductStreamingRuntime::process().snapshot(key);
     napi_value value = nullptr;
     (void)napi_create_object(env, &value);
+    // The attempt journal survives a failed media bind / decoder destruction.
+    // Resolve the launch request to its admitted media-session key.
+    Render::SetDecoderAttemptEvidence(env, value,
+        {result.key.sessionId, result.key.generation, result.key.ownerToken});
+    const auto negotiation = MoonlightCommonCAdapter::process().snapshot(result.key);
+    const auto& selected = negotiation.video;
+    const int selectedCodec = !selected.has_value() ? -1 :
+        (selected->profile.codec == MoonlightStreamCodec::H264 ? 0 :
+        (selected->profile.codec == MoonlightStreamCodec::Hevc ? 1 : 4));
+    setInt32(env, value, "moonlightNegotiatedCodec", selectedCodec);
+    setInt32(env, value, "moonlightNegotiatedBitDepth", !selected.has_value() ? -1 :
+        (selected->profile.bitDepth == MoonlightStreamBitDepth::Bit10 ? 10 : 8));
+    setInt32(env, value, "moonlightActiveStage", negotiation.matched ?
+        static_cast<int>(negotiation.activeStage) : -1);
+    setInt32(env, value, "moonlightTerminalCode", negotiation.matched ?
+        static_cast<int>(negotiation.terminalCode) : -1);
     setBoolean(env, value, "matched", result.matched);
     setString(env, value, "code", result.code);
     setSafeInteger(env, value, "sessionId", result.key.sessionId);

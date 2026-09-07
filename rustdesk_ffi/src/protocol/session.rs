@@ -19,6 +19,8 @@ use std::ffi::{c_char, c_void, CString};
 use std::io;
 use std::net::TcpStream;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::sync::{Arc, Mutex};
+use crate::codec_evidence::RustDeskCodecEvidence;
 use std::time::{Duration, Instant};
 
 /// FFI callback for an interactive Peer authentication event.
@@ -54,6 +56,7 @@ pub struct Session {
     connect_epoch: u64,
     connection_id: u64,
     auth_callback: Option<(AuthEventCallback, usize)>,
+    pub(crate) codec_evidence: Arc<Mutex<RustDeskCodecEvidence>>,
 }
 
 impl Session {
@@ -69,6 +72,15 @@ impl Session {
             connect_epoch,
             connection_id,
             auth_callback: None,
+            codec_evidence: Arc::new(Mutex::new(RustDeskCodecEvidence::default())),
+        }
+    }
+
+    fn record_peer_encoding(&self, info: &PeerInfo) {
+        if info.has_encoding() {
+            if let Ok(mut evidence) = self.codec_evidence.lock() {
+                evidence.record_peer_encoding(info.get_encoding());
+            }
         }
     }
 
@@ -116,7 +128,7 @@ impl Session {
             None,
         )?;
         eprintln!("[RustDesk-FFI] login_encrypted response ok, sending stream options");
-        Self::send_stream_options(
+        self.send_stream_options(
             channel,
             preferred_codec,
             image_quality,
@@ -189,7 +201,7 @@ impl Session {
             }
         };
 
-        Self::send_login_request(
+        self.send_login_request(
             channel,
             peer_id,
             password,
@@ -220,6 +232,7 @@ impl Session {
     }
 
     fn send_login_request(
+        &self,
         channel: &mut crate::crypto_channel::CryptoChannel,
         peer_id: &str,
         password: &str,
@@ -264,7 +277,8 @@ impl Session {
 
         let mut opt = OptionMessage::new();
         opt.set_image_quality(Self::image_quality_from_pref(image_quality));
-        opt.set_supported_decoding(Self::supported_decoding(preferred_codec));
+        let decoding = Self::supported_decoding(preferred_codec);
+        opt.set_supported_decoding(decoding.clone());
         opt.set_custom_fps(fps as i32);
         opt.set_disable_audio(if audio_enabled {
             OptionMessage_BoolOption::No
@@ -283,7 +297,11 @@ impl Session {
         let payload = msg
             .write_to_bytes()
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
-        channel.send(&payload)
+        let result = channel.send(&payload);
+        if let Ok(mut evidence) = self.codec_evidence.lock() {
+            evidence.record_send(preferred_codec, &decoding, 1, result.is_ok());
+        }
+        result
     }
 
     fn image_quality_from_pref(image_quality: i32) -> ImageQuality {
@@ -320,6 +338,9 @@ impl Session {
             5 => {
                 decoding.set_ability_vp8(1);
                 decoding.set_ability_vp9(1);
+                // Preference is not an exclusive capability. Preserve the
+                // working AVC hardware fallback when the peer cannot encode HEVC.
+                decoding.set_ability_h264(1);
                 decoding.set_ability_h265(1);
                 decoding.set_prefer(SupportedDecoding_PreferCodec::H265);
             }
@@ -362,6 +383,7 @@ impl Session {
     }
 
     pub fn send_stream_options(
+        &self,
         channel: &mut crate::crypto_channel::CryptoChannel,
         preferred_codec: i32,
         image_quality: i32,
@@ -378,7 +400,7 @@ impl Session {
             privacy_mode,
             audio_enabled
         );
-        if let Err(err) = Self::send_runtime_options(
+        if let Err(err) = self.send_runtime_options(
             channel,
             preferred_codec,
             image_quality,
@@ -405,6 +427,7 @@ impl Session {
     }
 
     pub fn send_runtime_options(
+        &self,
         channel: &mut crate::crypto_channel::CryptoChannel,
         preferred_codec: i32,
         image_quality: i32,
@@ -415,7 +438,8 @@ impl Session {
         let custom_fps = fps.unwrap_or_else(|| Self::default_fps_for_codec(preferred_codec));
         let mut opt = OptionMessage::new();
         opt.set_image_quality(Self::image_quality_from_pref(image_quality));
-        opt.set_supported_decoding(Self::supported_decoding(preferred_codec));
+        let decoding = Self::supported_decoding(preferred_codec);
+        opt.set_supported_decoding(decoding.clone());
         opt.set_custom_fps(custom_fps as i32);
         opt.set_disable_audio(if audio_enabled {
             OptionMessage_BoolOption::No
@@ -437,9 +461,14 @@ impl Session {
         let payload = msg
             .write_to_bytes()
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
-        channel.send(&payload)?;
+        let result = channel.send(&payload);
+        if let Ok(mut evidence) = self.codec_evidence.lock() {
+            evidence.record_send(preferred_codec, &decoding,
+                if channel.sends_are_queued() { 3 } else { 2 }, result.is_ok());
+        }
+        result?;
         eprintln!(
-            "[RustDesk-FFI] sent runtime OptionMessage supported_decoding={} quality={}({}) fps={} audio={}",
+            "[RustDesk-FFI] submitted runtime OptionMessage supported_decoding={} quality={}({}) fps={} audio={}",
             Self::codec_name(preferred_codec),
             image_quality,
             Self::image_quality_name(image_quality),
@@ -678,6 +707,7 @@ impl Session {
                         break Err(io::Error::new(io::ErrorKind::PermissionDenied, err));
                     }
                     if let Some(LoginResponse_oneof_union::peer_info(info)) = resp.union {
+                        self.record_peer_encoding(&info);
                         self.peer_info = Some(info);
                     }
                     if auth_receiver.is_some() {
@@ -696,7 +726,7 @@ impl Session {
                         "approval_hash".to_string()
                     };
                     self.state = SessionState::WaitingRemoteApproval;
-                    Self::send_login_request(
+                    self.send_login_request(
                         channel,
                         peer_id,
                         password,
@@ -722,6 +752,7 @@ impl Session {
                 }
                 Some(Message_oneof_union::peer_info(info)) => {
                     last_variant = "peer_info".to_string();
+                    self.record_peer_encoding(&info);
                     self.peer_info = Some(info);
                 }
                 other => {
@@ -873,6 +904,7 @@ impl Session {
 
                 // 提取 PeerInfo
                 if let Some(LoginResponse_oneof_union::peer_info(info)) = resp.union {
+                    self.record_peer_encoding(&info);
                     self.peer_info = Some(info);
                 }
 
@@ -1072,11 +1104,51 @@ mod tests {
     }
 
     #[test]
+    fn codec_evidence_matches_serialized_login_and_runtime_messages() {
+        use std::net::{TcpListener, TcpStream};
+        use std::time::Duration;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let peer = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+            for preference in 0..=5 {
+                for login in [true, false] {
+                    let bytes = wire::read_frame(&mut stream).unwrap();
+                    let message: Message = protobuf::parse_from_bytes(&bytes).unwrap();
+                    let decoding = if login {
+                        message.get_login_request().get_option().get_supported_decoding()
+                    } else {
+                        message.get_misc().get_option().get_supported_decoding()
+                    };
+                    assert_eq!(decoding, &Session::supported_decoding(preference));
+                }
+            }
+        });
+        let stream = TcpStream::connect(address).unwrap();
+        stream.set_write_timeout(Some(Duration::from_secs(3))).unwrap();
+        let mut channel = crate::crypto_channel::CryptoChannel::new_plain(stream);
+        let session = Session::new_with_connection_id(0, 0);
+        for preference in 0..=5 {
+            session.send_login_request(&mut channel, "test-peer", "", &super::super::message_proto::Hash::new(),
+                preference, 1, false, false, 30, None, false).unwrap();
+            session.send_runtime_options(&mut channel, preference, 1, false, false, Some(30)).unwrap();
+            let evidence = *session.codec_evidence.lock().unwrap();
+            assert_eq!(evidence.requested_preference, preference);
+            assert_eq!(evidence.sent_preference, if preference == 0 { 4 } else { preference });
+            assert_eq!(evidence.login_sends, preference as u64 + 1);
+            assert_eq!(evidence.option_sends, preference as u64 + 1);
+        }
+        peer.join().unwrap();
+    }
+
+    #[test]
     fn h265_connection_preference_is_sent_as_h265() {
         let decoding = Session::supported_decoding(5);
 
         assert_eq!(decoding.get_prefer(), SupportedDecoding_PreferCodec::H265);
         assert_eq!(decoding.get_ability_h265(), 1);
+        assert_eq!(decoding.get_ability_h264(), 1);
     }
 
     #[test]

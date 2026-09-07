@@ -1,3 +1,4 @@
+#include "render/decoder_attempt_napi.h"
 /**
  * extension_loader_napi.cpp — 扩展加载器 NAPI 桥接
  *
@@ -226,6 +227,10 @@ struct SessionDiagnosticsCounters {
     std::atomic<uint64_t> presentationRejected {0};
     std::atomic<uint64_t> decodeOk {0};
     std::atomic<uint64_t> decodeErrors {0};
+    std::atomic<int32_t> lastDecodeResult {0};
+    std::atomic<int32_t> firstFrameCodec {-1};
+    std::atomic<int32_t> observedFrameCodec {-1};
+    std::atomic<uint64_t> codecChanges {0};
     std::atomic<uint64_t> decodeRetNotReady {0};
     std::atomic<uint64_t> decodeRetBadCodec {0};
     std::atomic<uint64_t> decodeRetMismatch {0};
@@ -266,6 +271,10 @@ struct SessionDiagnosticsCounters {
         presentationRejected.store(0, std::memory_order_release);
         decodeOk.store(0, std::memory_order_release);
         decodeErrors.store(0, std::memory_order_release);
+        lastDecodeResult.store(0, std::memory_order_release);
+        firstFrameCodec.store(-1, std::memory_order_release);
+        observedFrameCodec.store(-1, std::memory_order_release);
+        codecChanges.store(0, std::memory_order_release);
         decodeRetNotReady.store(0, std::memory_order_release);
         decodeRetBadCodec.store(0, std::memory_order_release);
         decodeRetMismatch.store(0, std::memory_order_release);
@@ -4380,6 +4389,20 @@ napi_value NapiGetSessionDiagnostics(napi_env env, napi_callback_info info) {
     SetObjectDouble(env, result, "displayFps", displayFps);
     SetObjectDouble(env, result, "decodeFps", decodedFps);
     SetObjectDouble(env, result, "bitrateKbps", bitrateKbps);
+    if (session && session->protocolName == "rustdesk") {
+        const auto& c = nativeStats.codecEvidence;
+        SetObjectInt32(env, result, "connectionCodecPreference", c.requestedPreference);
+        SetObjectInt32(env, result, "sentCodecPreference", c.sentPreference);
+        SetObjectInt32(env, result, "wireCodecPreference", c.wirePreference);
+        SetObjectInt32(env, result, "queuedCodecPreference", static_cast<int32_t>(c.reserved) - 1);
+        SetObjectInt32(env, result, "advertisedDecoderMask", static_cast<int32_t>(c.advertisedMask));
+        SetObjectInt32(env, result, "peerEncoderMask", c.peerEncodingMask);
+        SetObjectInt32(env, result, "codecOptionStage", static_cast<int32_t>(c.lastSendStage));
+        SetObjectInt64(env, result, "loginOptionSends", static_cast<int64_t>(c.loginSends));
+        SetObjectInt64(env, result, "runtimeOptionSubmissions", static_cast<int64_t>(c.optionSends));
+        SetObjectInt64(env, result, "codecOptionSendFailures", static_cast<int64_t>(c.sendFailures));
+        Render::SetDecoderAttemptEvidence(env, result, session->identity());
+    }
     SetObjectInt32(env, result, "codec", counters ?
         counters->lastCodec.load(std::memory_order_acquire) : nativeStats.codec);
     SetObjectInt32(env, result, "width", counters ?
@@ -4435,6 +4458,9 @@ napi_value NapiGetSessionDiagnostics(napi_env env, napi_callback_info info) {
     SetObjectInt64(env, result, "lastPresentedFrameAgeMs", lastPresentedFrameAgeMs);
     SetObjectInt64(env, result, "decodeOk", static_cast<int64_t>(
         counters ? counters->decodeOk.load(std::memory_order_acquire) : 0));
+    SetObjectInt32(env, result, "lastDecodeResult", counters ? counters->lastDecodeResult.load() : 0);
+    SetObjectInt32(env, result, "firstFrameCodec", counters ? counters->firstFrameCodec.load() : -1);
+    SetObjectInt64(env, result, "codecChanges", counters ? static_cast<int64_t>(counters->codecChanges.load()) : 0);
     SetObjectInt64(env, result, "decodeErrors", static_cast<int64_t>(
         counters ? counters->decodeErrors.load(std::memory_order_acquire) : 0));
     SetObjectInt64(env, result, "decodeP50Us", decodeP50Us);
@@ -5763,7 +5789,15 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
         session->videoPerf.recordIngressFrame("rustdesk", frame.width, frame.height,
                                               frame.size, frame.isKeyFrame);
         const auto decodeStartedAt = std::chrono::steady_clock::now();
+        int32_t unseenCodec = -1;
+        const int32_t observedCodec = static_cast<int32_t>(frame.codec);
+        session->diagnostics.firstFrameCodec.compare_exchange_strong(unseenCodec, observedCodec);
+        const int32_t previousCodec = session->diagnostics.observedFrameCodec.exchange(observedCodec);
+        if (previousCodec >= 0 && previousCodec != observedCodec) {
+            session->diagnostics.codecChanges.fetch_add(1, std::memory_order_relaxed);
+        }
         int ret = DecoderNapi::DecodeActiveNative(session->identity(), frame);
+        session->diagnostics.lastDecodeResult.store(ret, std::memory_order_release);
         const int64_t decodeElapsedUs = std::chrono::duration_cast<std::chrono::microseconds>(
             std::chrono::steady_clock::now() - decodeStartedAt).count();
         if (ret < 0 || ret == DecoderNapi::kDecodeInactiveSession) {

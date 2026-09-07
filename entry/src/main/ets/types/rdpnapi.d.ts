@@ -1,3 +1,4 @@
+import { NativeVideoDiagnosticEvidence } from './VideoDiagnosticEvidence';
 declare module 'librdpnapi.so' {
   export const VERSION: SessionVersionInfo;
 
@@ -572,7 +573,7 @@ export interface RdpDisplayLayoutResult {
   message: string;
 }
 
-export interface RustDeskDiagnosticsSnapshot {
+export interface RustDeskDiagnosticsSnapshot extends NativeVideoDiagnosticEvidence {
   supported: boolean;
   sessionActive: boolean;
   protocolSnapshotAvailable: boolean;

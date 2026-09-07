@@ -23,8 +23,27 @@
 #include <optional>
 #include <vector>
 
+// Separate fixed-width ABI: codec preference observed after serialization/write.
+struct RustDeskFfiCodecEvidence {
+    uint32_t version = 1;
+    int32_t requestedPreference = -1;
+    int32_t sentPreference = -1;
+    int32_t wirePreference = -1;
+    uint32_t advertisedMask = 0;
+    int32_t peerEncodingMask = -1;
+    uint32_t lastSendStage = 0;
+    uint32_t reserved = 0;
+    uint64_t loginSends = 0;
+    uint64_t optionSends = 0;
+    uint64_t sendFailures = 0;
+};
+static_assert(sizeof(RustDeskFfiCodecEvidence) == 56);
+static_assert(alignof(RustDeskFfiCodecEvidence) == 8);
+static_assert(offsetof(RustDeskFfiCodecEvidence, loginSends) == 32);
+
 /** Non-destructive RustDesk stream diagnostics returned to the NAPI layer. */
 struct RustDeskDiagnosticsStats {
+    RustDeskFfiCodecEvidence codecEvidence;
     bool supported = false;
     uint64_t sessionId = 0;
     int latencyMs = -1;

@@ -1,3 +1,4 @@
+import { VideoDiagnosticEvidence, copyVideoDiagnosticEvidence, parseVideoDiagnosticEvidence } from './VideoDiagnosticEvidence';
 import {
   EndpointAddressResult,
   parseEndpointAuthority,
@@ -49,7 +50,7 @@ export type DiagnosticPeerPlatform =
 
 export type DiagnosticPresentation =
   'unknown' | 'identity' | 'producer' | 'validated_producer' |
-  'vertical_flip_producer';
+  'vertical_flip_producer' | 'top_left_producer';
 
 export type DiagnosticProducerTransform =
   'unknown' | 'not_sampled' | 'identity' | 'flip_x' | 'flip_y' |
@@ -70,6 +71,7 @@ export interface DiagnosticNetworkFacts {
 }
 
 export interface DiagnosticRuntimeFacts {
+  video?: VideoDiagnosticEvidence;
   state: DiagnosticRuntimeState;
   backend: DiagnosticRuntimeBackend;
   codec: DiagnosticRuntimeCodec;
@@ -114,11 +116,11 @@ export interface DiagnosticEventSpec {
   eventCode: string;
 }
 
-export const DIAGNOSTIC_CAPTURE_SCHEMA_VERSION: number = 4;
+export const DIAGNOSTIC_CAPTURE_SCHEMA_VERSION: number = 5;
 export const DIAGNOSTIC_REDACTION_POLICY_VERSION: number = 3;
 export const DIAGNOSTIC_DEFAULT_DURATION_MINUTES: number = 10;
 export const DIAGNOSTIC_MAX_EVENTS: number = 10000;
-export const DIAGNOSTIC_MAX_EVENT_BYTES: number = 2048;
+export const DIAGNOSTIC_MAX_EVENT_BYTES: number = 8192;
 export const DIAGNOSTIC_MAX_CAPTURE_BYTES: number = 8 * 1024 * 1024;
 export const DIAGNOSTIC_MAX_EXPORT_BYTES: number = 12 * 1024 * 1024;
 export const DIAGNOSTIC_MAX_SESSION_REFS: number = 512;
@@ -159,6 +161,7 @@ const DIAGNOSTIC_EVENTS: DiagnosticEventSpec[] = [
   { moduleId: 'connection.rustdesk', eventCode: 'rustdesk_state_changed' },
   { moduleId: 'connection.rustdesk', eventCode: 'rustdesk_two_factor' },
   { moduleId: 'connection.rustdesk', eventCode: 'rustdesk_runtime_snapshot' },
+  { moduleId: 'connection.rustdesk', eventCode: 'rustdesk_orientation_observation' },
   { moduleId: 'connection.rustdesk', eventCode: 'rustdesk_disconnect' },
 
   { moduleId: 'connection.ssh_sftp', eventCode: 'ssh_session_event' },
@@ -179,6 +182,7 @@ const DIAGNOSTIC_EVENTS: DiagnosticEventSpec[] = [
   { moduleId: 'connection.moonlight', eventCode: 'moonlight_launch' },
   { moduleId: 'connection.moonlight', eventCode: 'moonlight_state_changed' },
   { moduleId: 'connection.moonlight', eventCode: 'moonlight_runtime_snapshot' },
+  { moduleId: 'connection.moonlight', eventCode: 'moonlight_orientation_observation' },
 
   { moduleId: 'data.cloud_sync', eventCode: 'cloud_sync_requested' },
   { moduleId: 'data.cloud_sync', eventCode: 'cloud_sync_started' },
@@ -290,7 +294,7 @@ const DIAGNOSTIC_PEER_PLATFORMS: DiagnosticPeerPlatform[] = [
 ];
 const DIAGNOSTIC_PRESENTATIONS: DiagnosticPresentation[] = [
   'unknown', 'identity', 'producer', 'validated_producer',
-  'vertical_flip_producer'
+  'vertical_flip_producer', 'top_left_producer'
 ];
 const DIAGNOSTIC_PRODUCER_TRANSFORMS: DiagnosticProducerTransform[] = [
   'unknown', 'not_sampled', 'identity', 'flip_x', 'flip_y',
@@ -316,6 +320,7 @@ export function emptyDiagnosticRuntimeFacts(): DiagnosticRuntimeFacts {
 }
 
 export function diagnosticRuntimeFactsAreValid(facts: DiagnosticRuntimeFacts): boolean {
+  if (facts.video !== undefined && parseVideoDiagnosticEvidence(facts.video) === null) { return false; }
   if (DIAGNOSTIC_RUNTIME_STATES.indexOf(facts.state) < 0 ||
     DIAGNOSTIC_RUNTIME_BACKENDS.indexOf(facts.backend) < 0 ||
     DIAGNOSTIC_RUNTIME_CODECS.indexOf(facts.codec) < 0 ||
@@ -365,6 +370,7 @@ export function diagnosticRuntimeFactsAreValid(facts: DiagnosticRuntimeFacts): b
 export function copyDiagnosticRuntimeFacts(
   facts: DiagnosticRuntimeFacts): DiagnosticRuntimeFacts {
   return {
+    video: facts.video === undefined ? undefined : copyVideoDiagnosticEvidence(facts.video),
     state: facts.state, backend: facts.backend, codec: facts.codec, path: facts.path,
     peerPlatform: facts.peerPlatform, presentation: facts.presentation,
     producerTransform: facts.producerTransform,

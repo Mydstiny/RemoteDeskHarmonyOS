@@ -278,7 +278,7 @@ export class ExtensionLoader {
       const desktopModule: DiagnosticDesktopModule = moduleId as DiagnosticDesktopModule;
       const captureId: string = diagnosticCaptureIdForModule(desktopModule);
       const facts: DiagnosticRuntimeFacts =
-        diagnosticDesktopRuntimeFacts(desktopModule, source);
+        diagnosticDesktopRuntimeFacts(desktopModule, source, AppStorage.get<number>('rustdeskCodec') ?? 0);
       if (!this.diagnosticRuntimeSnapshots.shouldRecord(
         desktopModule, sessionId, captureId, facts, Date.now())) { return; }
       recordDiagnosticEvent(desktopModule,
