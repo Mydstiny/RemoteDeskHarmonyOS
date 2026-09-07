@@ -61,7 +61,7 @@ export class ProFulfillmentService {
       return applied.owner;
     });
   }
-  async reconcile(owner, records = []) {
+  async reconcile(owner, records = [], signal) {
     if (!Array.isArray(records) || records.length > 32 || records.some(record => typeof record !== 'string') ||
         records.reduce((size, record) => size + Buffer.byteLength(record), 0) > 1024 * 1024) fail('restore_batch_invalid');
     const references = new Map(this.#ledger.references(owner, true).map(reference => [reference.purchaseOrderId, reference]));
@@ -77,7 +77,11 @@ export class ProFulfillmentService {
     if (references.size > 100) fail('restore_order_limit');
     // Do not issue a new signed cache lifetime until every nonterminal order was
     // checked. Network/identity errors preserve the client's prior valid cache.
-    for (const reference of references.values()) await this.#refresh(reference, owner);
+    for (const reference of references.values()) {
+      if (signal?.aborted) fail('reconciliation_cancelled');
+      await this.#refresh(reference, owner);
+    }
+    if (signal?.aborted) fail('reconciliation_cancelled');
     const snapshot = this.#ledger.snapshot(owner);
     return { signedEntitlement: this.#signer.sign(snapshot, owner, this.#now()), pendingDelivery: snapshot.pending };
   }

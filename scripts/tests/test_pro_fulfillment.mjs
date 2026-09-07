@@ -252,3 +252,13 @@ test('a concurrent refund cannot pair an old entitlement state with the new revo
     const after = second.snapshot(owner); assert.equal(after.status, 'revoked'); assert.equal(after.revision, 2);
   } finally { DatabaseSync.prototype.prepare = prepare; second.close(); }
 });
+test('a disconnected caller cannot receive a new grant but an already verified purchase remains recoverable', async t => {
+  const f = fixture(t); const order = f.makeOrder(); const controller = new AbortController();
+  const query = f.iap.query;
+  f.iap.query = async reference => { const result = await query(reference); controller.abort(); return result; };
+  await assert.rejects(() => f.service.reconcile(owner, [receipt(order)], controller.signal), /cancelled/);
+  assert.equal(f.ledger.snapshot(owner).status, 'verified'); assert.equal(f.state.confirms, 0);
+  f.iap.query = query; f.restart();
+  const recovered = await f.service.reconcile(owner);
+  assert.equal(jwsParts(recovered.signedEntitlement).payload.status, 'verified');
+});
