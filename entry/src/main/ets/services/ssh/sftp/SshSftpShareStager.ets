@@ -30,7 +30,10 @@ export class SshSftpShareStager {
     return { path, name: parts[parts.length - 1], size: info.size, mtime: info.mtime, mode: info.mode };
   }
   private uniqueName(name: string, used: string[]): string {
-    const base: string = name.replace(/[\\/:*?"<>|\x00-\x1f]/g, '_').substring(0, 180);
+    // SFTP's local provider normalizes each path segment with trim(). Use the
+    // same normalized name before both writing and enqueuing the file.
+    const normalized: string = name.replace(/[\\/:*?"<>|\x00-\x1f]/g, '_').trim().substring(0, 180).trim();
+    const base: string = normalized.length > 0 ? normalized : 'received-file';
     let candidate: string = base;
     let sequence: number = 1;
     while (used.indexOf(candidate) >= 0) { candidate = base + ' (' + (sequence++).toString() + ')'; }

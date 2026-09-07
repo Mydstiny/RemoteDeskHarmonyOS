@@ -22,6 +22,7 @@ function fixture() {
   const state = { root, registrations: [], removed: [], free: 2 ** 40, afterRead: null,
     readSizes: [], writtenSizes: [], timers: new Map(), maxWrite: Infinity };
   const deviceInfo = { sdkApiVersion: 26, deviceType: 'pc' };
+  const preferences = new Map();
   function stat(info) { info.mtime = Math.trunc(info.mtimeMs); return info; }
   const fileIo = {
     OpenMode: { READ_ONLY: fs.constants.O_RDONLY, WRITE_ONLY: fs.constants.O_WRONLY,
@@ -55,7 +56,10 @@ function fixture() {
   };
   const mocks = {
     '@kit.BasicServicesKit': { deviceInfo }, '@kit.ShareKit': { harmonyShare },
-    '@kit.AbilityKit': {}, '@kit.ArkData': { preferences: {} },
+    '@kit.AbilityKit': {}, '@kit.ArkData': { preferences: { getPreferencesSync: () => ({
+      getSync: (key, fallback) => preferences.has(key) ? preferences.get(key) : fallback,
+      putSync: (key, value) => preferences.set(key, value), flushSync() {}
+    }) } },
     '@kit.PerformanceAnalysisKit': { hilog: { info() {}, error() {}, warn() {} } },
     '@kit.CoreFileKit': { fileIo, statfs: { getFreeSize: async () => state.free },
       fileUri: { getUriFromPath: p => 'file://app' + p,
@@ -166,6 +170,41 @@ test('API23 and unsupported devices never register native receive capability', (
   assert.equal(f.receiver.arm(f.options), false);
   f.deviceInfo.sdkApiVersion = 26; f.deviceInfo.deviceType = 'phone';
   assert.equal(f.receiver.arm(f.options), false); assert.equal(f.state.registrations.length, 0);
+});
+test('received names resolve to the actual staged file through the SFTP batch planner and provider', async () => {
+  const f = fixture(); const { SshLocalFileProvider } = f.load('entry/src/main/ets/services/SshLocalFileProvider.ets');
+  const { planSshSftpBatch } = f.load('entry/src/main/ets/services/SshSftpBatchPolicy.ets');
+  const provider = new SshLocalFileProvider(); provider.init({ filesDir: f.root });
+  const source = path.join(f.root, 'source'); fs.mkdirSync(source);
+  const names = ['report.txt', ' report.txt ', '    '];
+  names.forEach((name, index) => fs.writeFileSync(path.join(source, name), 'data-' + index));
+  const dest = await provider.createTransferStagingRoot();
+  const items = await f.stage.stage(names.map(name => path.join(source, name)), source, dest, () => true);
+  const plan = planSshSftpBatch(items); assert.equal(plan.accepted, true);
+  for (const [index, item] of items.entries()) {
+    const resolved = await provider.resolveRelative(dest, item.relativePath);
+    assert.ok(resolved); assert.equal(fs.readFileSync(resolved, 'utf8'), 'data-' + index);
+  }
+  assert.equal(new Set(items.map(item => item.name)).size, 3);
+});
+test('cold provider initialization removes only orphaned incoming directories and preserves ordinary files', async () => {
+  const f = fixture(); const { SshLocalFileProvider } = f.load('entry/src/main/ets/services/SshLocalFileProvider.ets');
+  const previous = new SshLocalFileProvider(); previous.init({ filesDir: f.root });
+  const orphan = await previous.createTransferStagingRoot(); fs.writeFileSync(orphan + '/f', 'old');
+  const box = path.dirname(orphan); const ordinary = box + '/my-directory'; fs.mkdirSync(ordinary);
+  fs.writeFileSync(ordinary + '/important', 'keep');
+  const ownedLink = await previous.createTransferStagingRoot(); fs.rmdirSync(ownedLink); fs.symlinkSync(ordinary, ownedLink);
+  const lookalike = box + '/incoming-custom-user'; fs.mkdirSync(lookalike); fs.writeFileSync(lookalike + '/keep', 'mine');
+  const restored = new SshLocalFileProvider(); restored.init({ filesDir: f.root });
+  const current = await restored.createTransferStagingRoot();
+  assert.equal(fs.existsSync(orphan), false); assert.equal(fs.existsSync(ownedLink), false);
+  assert.equal(fs.readFileSync(ordinary + '/important', 'utf8'), 'keep');
+  assert.equal(fs.readFileSync(lookalike + '/keep', 'utf8'), 'mine');
+  fs.writeFileSync(current + '/live', 'current');
+  restored.init({ filesDir: f.root }); // Another UIAbility context must preserve this process's active source.
+  assert.equal(await restored.resolveRelative(current, 'live'), current + '/live');
+  assert.equal(fs.readFileSync(current + '/live', 'utf8'), 'current');
+  await restored.remove(current, true);
 });
 test('cancelled and stale confirmation cannot open an incoming directory or start receive', async () => {
   const f = fixture(); let resolve; f.options.confirm = () => new Promise(done => { resolve = done; });
