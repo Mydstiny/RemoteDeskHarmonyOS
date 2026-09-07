@@ -1,3 +1,5 @@
+import { SshConnectionPreflightSheet } from '../components/SshConnectionPreflightSheet';
+import { SshAuthenticatedHandoff } from '../services/ssh/auth/SshAuthenticatedHandoff';
 import { ProPurchaseLifecycle } from '../services/pro/ProPurchaseLifecycle';
 import { ProPurchaseSheet } from '../components/ProPurchaseSheet';
 import { SETTINGS_SHEET_PRO } from '../services/SettingsSheetRoutePolicy';
@@ -6226,6 +6228,7 @@ struct HostListPage {
     if (!this.isDesktopDevice) {
       const routeHostId: string = ((params['hostId'] as string) || '').trim();
       void router.pushUrl({ url, params }).catch((_err: Error): void => {
+        SshAuthenticatedHandoff.getInstance().discard((params['sshAuthenticatedHandoff'] as string) || '');
         if (url === 'pages/RemoteDesktop' && routeHostId !== '') {
           const routeHost: RemoteHost | undefined = this.srv.getHost(routeHostId);
           if (routeHost === undefined || routeHost.protocol === 'rdp') {
@@ -6281,6 +6284,7 @@ struct HostListPage {
       routeParams['pcWindowAfterAuthentication'] = true;
       routeParams['pcWindowPreflightKind'] = authorizationKind;
       void router.pushUrl({ url, params: routeParams }).catch((_err: Error): void => {
+        SshAuthenticatedHandoff.getInstance().discard((routeParams['sshAuthenticatedHandoff'] as string) || '');
         if (protocol === 'rdp') {
           this.abortRdpSessionDestination(
             hostId, rdpCredentialOwnerScopeId,
@@ -6521,30 +6525,8 @@ struct HostListPage {
       return;
     }
     if (host.protocol === 'ssh') {
-      const storedProxyProfile: SshProxyProfileV1 | null = this.sshProxyProfiles.load(host.id);
-      if (storedProxyProfile !== null) {
-        const proxyPlan: SshProxyRuntimePlan = resolveSshProxyRuntimePlan(host, storedProxyProfile);
-        if (!proxyPlan.valid) {
-          promptAction.showToast({ message: proxyPlan.message, duration: 2400 });
-          return;
-        }
-        if (proxyPlan.route.type === 'ssh_jump' &&
-          !sshProxyRuntimeHasStrictJumpBindings(proxyPlan)) {
-          promptAction.showToast({
-            message: 'ProxyJump 每一跳都必须填写 SHA256 host-key 指纹', duration: 2600
-          });
-          return;
-        }
-        // A durable profile is authoritative for every route kind. The
-        // terminal owns the native pre-auth host-key broker and can therefore
-        // verify the exact canonical path without falling back to flat fields.
-        const sshParams: Record<string, Object> = {};
-        sshParams['hostId'] = host.id;
-        sshParams['authenticated'] = true;
-        this.openSessionDestination('pages/SshTerminal', sshParams, 'ssh_broker_handoff');
-        return;
-      }
-      // T-210: SSH 前置校验 (指纹 + 私钥密码) → 通过后才路由
+      // Preserve canonical routes and dynamic authentication while keeping
+      // the host list visible until the native login has actually succeeded.
       this.openSshPreflight(host);
     } else if (host.protocol === 'rdp') {
       this.prepareRdpCredentialOrCertificate(host, connectionGeneration);
@@ -8673,11 +8655,18 @@ struct HostListPage {
         this.showSshPreflight = true;
       });
     }, true);
-    this.doSshPreflightProbe(host, generation);
   }
 
   /** T-210: 关闭 preflight */
   private doSshPreflightCancel(closeSheet: boolean = true): void {
+    // Programmatic success dismissal also invokes onWillDismiss. Its receipt
+    // must survive until onDisappear routes the already-authenticated session.
+    if (this.sshPreflightClosing) { return; }
+    if (this.sshPreflightPendingRouteParams !== null) {
+      SshAuthenticatedHandoff.getInstance().discard(
+        (this.sshPreflightPendingRouteParams['sshAuthenticatedHandoff'] as string) || '');
+      this.sshPreflightPendingRouteParams = null;
+    }
     const hostId: string = this.sshPreflightHostId;
     this.cancelSshPreflightOperation();
     this.sshPreflightGeneration = nextRemoteHostSheetGeneration(this.sshPreflightGeneration);
@@ -8718,6 +8707,11 @@ struct HostListPage {
     this.sshPreflightError = '';
     if (routeParams !== null) {
       setTimeout((): void => {
+        if (!this.pageActive || this.appInBackground) {
+          SshAuthenticatedHandoff.getInstance().discard(
+            (routeParams['sshAuthenticatedHandoff'] as string) || '');
+          return;
+        }
         this.openSessionDestination('pages/SshTerminal', routeParams, 'ssh_preflight_complete');
       }, 0);
       return;
@@ -12192,7 +12186,31 @@ struct HostListPage {
   @Builder
   remoteHostSheetBuilder() {
     if (this.remoteHostSheetMode === REMOTE_HOST_SHEET_SSH_PREFLIGHT) {
-      this.sshPreflightPanel();
+      SshConnectionPreflightSheet({
+        hostId: this.sshPreflightHostId,
+        hostLabel: this.sshPreflightHostLabel,
+        viewportHeight: this.pageViewportHeight,
+        theme: this.theme,
+        accent: this.accentColor,
+        isActive: (): boolean => this.pageActive && !this.appInBackground &&
+          this.showSshPreflight && !this.sshPreflightClosing,
+        onCancel: (): void => { this.doSshPreflightCancel(); },
+        onAuthenticated: (token: string): void => {
+          if (!this.pageActive || this.appInBackground || this.sshPreflightClosing) {
+            SshAuthenticatedHandoff.getInstance().discard(token);
+            return;
+          }
+          const routeParams: Record<string, Object> = {};
+          routeParams['hostId'] = this.sshPreflightHostId;
+          routeParams['authenticated'] = true;
+          routeParams['sshAuthenticatedHandoff'] = token;
+          this.sshPreflightPendingRouteParams = routeParams;
+          this.sshPreflightClosingHostId = this.sshPreflightHostId;
+          this.sshPreflightClosing = true;
+          this.beginRemoteHostSheetClose(REMOTE_HOST_SHEET_SSH_PREFLIGHT);
+          this.showRemoteHostSheet = false;
+        }
+      })
     } else if (this.remoteHostSheetMode === REMOTE_HOST_SHEET_RDP_CERTIFICATE) {
       this.rdpCertificatePanel();
     } else if (this.remoteHostSheetMode === REMOTE_HOST_SHEET_RDP_CREDENTIAL) {

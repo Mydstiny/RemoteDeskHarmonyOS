@@ -11,6 +11,7 @@ export interface SshTopChromeLayout {
   headerTopInsetVp: number;
   standaloneTabTopInsetVp: number;
   tabStripBelowHeader: boolean;
+  tabStripAboveHeader: boolean;
   totalHeightVp: number;
 }
 
@@ -54,14 +55,17 @@ export function resolveSshHostPickerSheetLayout(viewportWidthVp: number,
 
 /** The real header owns the safe inset; a standalone strip follows it. */
 export function resolveSshTopChromeLayout(topInsetVp: number,
-  standaloneTabsVisible: boolean): SshTopChromeLayout {
+  standaloneTabsVisible: boolean, phone: boolean = false,
+  tabStripHeightVp: number = SSH_TAB_STRIP_HEIGHT_VP): SshTopChromeLayout {
   const topInset: number = Number.isFinite(topInsetVp) ? Math.max(0, topInsetVp) : 0;
+  const tabsFirst: boolean = phone && standaloneTabsVisible;
   return {
-    headerTopInsetVp: topInset,
-    standaloneTabTopInsetVp: 0,
-    tabStripBelowHeader: standaloneTabsVisible,
+    headerTopInsetVp: tabsFirst ? 0 : topInset,
+    standaloneTabTopInsetVp: tabsFirst ? topInset : 0,
+    tabStripBelowHeader: standaloneTabsVisible && !tabsFirst,
+    tabStripAboveHeader: tabsFirst,
     totalHeightVp: SSH_SESSION_HEADER_BASE_HEIGHT_VP + topInset +
-      (standaloneTabsVisible ? SSH_TAB_STRIP_HEIGHT_VP : 0)
+      (standaloneTabsVisible ? tabStripHeightVp : 0)
   };
 }
 
@@ -94,10 +98,10 @@ export function sshTabStripShowsStandaloneNewSessionAction(
   return !headerActionPopupEnabled;
 }
 
-/** Every device shape uses one header menu; rollout flags only change menu contents. */
+/** Phone keeps its direct toolbar actions and a compact overflow in the tab strip. */
 export function sshHeaderUsesSingleActionMenu(_workbenchEnabled: boolean,
-  _desktop: boolean, _pad: boolean): boolean {
-  return true;
+  desktop: boolean, pad: boolean): boolean {
+  return desktop || pad;
 }
 
 /** Compact chrome is an M2 feature and must disappear with its rollout flag. */

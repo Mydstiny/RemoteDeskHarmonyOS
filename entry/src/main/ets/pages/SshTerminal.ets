@@ -1,3 +1,5 @@
+import { SshAuthenticatedHandoff } from '../services/ssh/auth/SshAuthenticatedHandoff';
+import { persistSshHostKeyTrust } from '../services/ssh/auth/SshHostKeyTrustWriter';
 /**
  * SshTerminal.ets v5 — 推送式 SSH 终端页 (Phase 4 统一输入模型)
  *
@@ -1805,75 +1807,8 @@ struct SshTerminal {
   }
 
   private persistSshHostKeyTrust(prompt: SshAuthPromptRequest): boolean {
-    const ownerId: string = prompt.trustHostId.trim();
-    const endpointHost: string = prompt.endpointHost.trim();
-    const fingerprint: string = prompt.hostKeyFingerprintSha256.trim();
-    const rawBase64: string = prompt.hostKeyRawBase64.trim();
-    if (prompt.kind !== 'host_key' || ownerId.length === 0 || endpointHost.length === 0 ||
-      prompt.endpointPort <= 0 || prompt.endpointPort > 65535 ||
-      fingerprint.indexOf('SHA256:') !== 0 || rawBase64.length === 0) {
-      return false;
-    }
-    const current: RemoteHost | undefined = this.srv.getHost(ownerId);
-    if (current === undefined || current.protocol !== 'ssh') { return false; }
-    if (!this.sshProxyProfilesReady) { return false; }
-    const plan: SshProxyRuntimePlan = this.terminalSshProxyPlan(current);
-    const binding: SshHostKeyRouteBinding = sshHostKeyRouteBinding(current, plan);
-    if (!binding.ok || prompt.routeIdentity !== binding.identity) { return false; }
-    const trustedAt: number = Date.now();
-    if (prompt.hostKeyHopIndex < 0) {
-      if (plan.route.endpointHost.trim() !== endpointHost ||
-        plan.route.endpointPort !== prompt.endpointPort) { return false; }
-      const updated: RemoteHost = current.runtimeClone();
-      updated.sshHostKeyAlgorithm = prompt.hostKeyAlgorithm.trim();
-      updated.sshHostKeyFingerprintSha256 = fingerprint;
-      updated.sshHostKeyRawBase64 = rawBase64;
-      updated.sshHostKeyTrustedAt = trustedAt;
-      updated.sshHostKeyTrustMode = 1;
-      updated.sshHostKeyRouteIdentity = binding.identity;
-      return this.srv.updateHost(updated);
-    }
-
-    const hopIndex: number = prompt.hostKeyHopIndex;
-    const previousProfile: SshProxyProfileV1 | null = this.sshProxyProfiles.load(ownerId);
-    let profileUpdated: boolean = false;
-    if (previousProfile !== null) {
-      if (previousProfile.route.type !== 'ssh_jump' || hopIndex >= previousProfile.route.hops.length) {
-        return false;
-      }
-      const hop: SshJumpHop = previousProfile.route.hops[hopIndex];
-      if (hop.host.trim() !== endpointHost || hop.port !== prompt.endpointPort) { return false; }
-      const nextProfile: SshProxyProfileV1 | null = this.sshProxyProfiles.load(ownerId);
-      if (nextProfile === null) { return false; }
-      nextProfile.route.hops[hopIndex].expectedHostKeyRawBase64 = rawBase64;
-      nextProfile.route.hops[hopIndex].expectedHostKeyFingerprintSha256 = fingerprint;
-      nextProfile.updatedAtMs = trustedAt;
-      if (!this.sshProxyProfiles.upsert(nextProfile)) { return false; }
-      profileUpdated = true;
-    } else if (hopIndex !== 0 || current.proxyHost.trim() !== endpointHost ||
-      current.proxyPort !== prompt.endpointPort) {
-      return false;
-    }
-
-    // The canonical profile is authoritative. Mirror the first hop into the
-    // legacy fields only when both routes name the same endpoint, so SFTP and
-    // older entry points keep the same strict binding without cross-endpoint trust.
-    if (hopIndex === 0 && current.proxyHost.trim() === endpointHost &&
-      current.proxyPort === prompt.endpointPort) {
-      const updated: RemoteHost = current.runtimeClone();
-      updated.sshJumpHostKeyAlgorithm = prompt.hostKeyAlgorithm.trim();
-      updated.sshJumpHostKeyFingerprintSha256 = fingerprint;
-      updated.sshJumpHostKeyRawBase64 = rawBase64;
-      updated.sshJumpHostKeyTrustedAt = trustedAt;
-      updated.sshJumpHostKeyTrustMode = 1;
-      if (!this.srv.updateHost(updated)) {
-        if (profileUpdated && previousProfile !== null) {
-          this.sshProxyProfiles.upsert(previousProfile);
-        }
-        return false;
-      }
-    }
-    return true;
+    return this.sshProxyProfilesReady &&
+      persistSshHostKeyTrust(prompt, this.srv, this.sshProxyProfiles);
   }
 
   private submitSshAuthPrompt(): void {
@@ -4326,7 +4261,7 @@ struct SshTerminal {
 
   private reloadSshProductivityAfterSecurityChange(): void {
     this.scrubSshProductivitySecurityState();
-    if (this.terminalClosing || !DataCrypto.getInstance().isReady()) { return; }
+    if (this.terminalClosing) { return; }
     try {
       const context: common.Context = getContext(this) as common.Context;
       this.sshProductivityReady = this.sshProductivityStore.init(context);
@@ -4953,7 +4888,7 @@ struct SshTerminal {
   private openSshProductivity(): void {
     if (!this.sshProductivityReady) {
       promptAction.showToast({
-        message: '本地加密存储尚未解锁，暂时无法使用常用命令', duration: 2000
+        message: '常用命令存储不可用；若已启用加密，请先解锁', duration: 2000
       });
       return;
     }
@@ -4963,7 +4898,7 @@ struct SshTerminal {
     this.sshProductivityQuery = '';
     this.refreshSshProductivityDocument(true);
     if (!this.sshProductivityReady) {
-      promptAction.showToast({ message: '常用命令刷新失败，请重新解锁后再试', duration: 1900 });
+      promptAction.showToast({ message: '常用命令读取失败，请重试', duration: 1900 });
       return;
     }
     this.terminalFocusMode = false;
@@ -6041,10 +5976,14 @@ struct SshTerminal {
 
   @Builder
   private sshTabStrip() {
-    Column() {
-      this.sshTabStripItems()
+    Row() {
+      Column() { this.sshTabStripItems() }.layoutWeight(1)
+      if (!this.isDesktopDevice && !this.isPadDevice) {
+        this.SshHeaderMenuButton(true)
+      }
     }
-    .width('100%').height(this.sshTabStripHeight())
+    .width('100%').height(this.sshTabStripHeight() + this.sshTopChromeLayout().standaloneTabTopInsetVp)
+    .padding({ top: this.sshTopChromeLayout().standaloneTabTopInsetVp })
     .backgroundColor(this.chromeBg())
     .border({ width: { bottom: 0.5 }, color: 'rgba(255,255,255,0.08)' })
     .id('ssh-workspace-focus-tab-strip-standalone')
@@ -6939,6 +6878,9 @@ struct SshTerminal {
   }
 
   private sshTabsInline(): boolean {
+    // Phone retains its dedicated tab row in both orientations, including
+    // the overflow entry for commands when the main toolbar uses direct actions.
+    if (!this.isDesktopDevice && !this.isPadDevice) { return false; }
     if (!this.sshWorkbenchEnabled) {
       // Exact pre-M2 behavior while the rollout flag is disabled.
       return this.sshTabViews.length > 0 &&
@@ -7076,7 +7018,7 @@ struct SshTerminal {
         this.SshHeaderActionRow('新建 SSH 会话', '选择主机并打开新标签', 'new-session')
         this.SshHeaderActionRow('常用命令', this.sshProductivityReady
           ? this.sshProductivityDocument.snippets.length.toString() + ' 条 · 可新增、编辑和插入'
-          : '本地加密存储未解锁', 'quick-commands')
+          : '本地存储不可用；若已启用加密，请先解锁', 'quick-commands')
 
         if (this.sshWorkbenchEnabled) {
           this.SshHeaderActionRow('显示全部标签',
@@ -7177,7 +7119,8 @@ struct SshTerminal {
 
   private sshTopChromeLayout(): SshTopChromeLayout {
     return resolveSshTopChromeLayout(
-      this.topChromeOffset(), this.sshStandaloneTabStripVisible());
+      this.topChromeOffset(), this.sshStandaloneTabStripVisible(),
+      !this.isDesktopDevice && !this.isPadDevice, this.sshTabStripHeight());
   }
 
   private shellViewportHeight(): number {
@@ -10823,7 +10766,16 @@ struct SshTerminal {
             if (!r.ok) { this.connecting = false; this.connectionError = lockGateErrorMessage(r) || '验证未通过'; return; }
           }
           if (!this.isSshBindingActive(pageGeneration, bindingGeneration, this.hostId)) { return; }
-          if (windowPreauthenticated) {
+          const authenticatedHandoff: string = (p['sshAuthenticatedHandoff'] as string) || '';
+          if (authenticatedHandoff.length > 0) {
+            const handedSessionId: number = SshAuthenticatedHandoff.getInstance().consume(
+              authenticatedHandoff, host, this.terminalSshProxyPlan(host));
+            if (handedSessionId <= 0 || !await this.attachSshSession(
+              pageGeneration, bindingGeneration, handedSessionId, this.hostId)) {
+              this.connecting = false;
+              this.connectionError = '已鉴权 SSH 会话交接失败，请返回主机列表重试';
+            }
+          } else if (windowPreauthenticated) {
             const handedSessionId: number = this.loader.getSessionId();
             if (handedSessionId <= 0 || !await this.attachSshSession(
               pageGeneration, bindingGeneration, handedSessionId, this.hostId)) {
@@ -12279,6 +12231,11 @@ struct SshTerminal {
     // that was never fully rebound to the page.
     this.connected = true;
     this.connecting = false;
+    const authenticatedHost: RemoteHost | undefined = this.srv.getHost(bindingHostId);
+    if (authenticatedHost !== undefined) {
+      SshAuthenticatedHandoff.getInstance().remember(authenticatedHost,
+        this.terminalSshProxyPlan(authenticatedHost), connectedSessionId, sessionGeneration);
+    }
     // Publish the tab state only after the callback and resume gate succeed.
     // This is the same commit boundary as the page-owned connected state and
     // prevents the toolbar from oscillating between stale connecting/connected.
@@ -18481,6 +18438,35 @@ struct SshTerminal {
     .onDrop((event: DragEvent): void => { void this.handleSftpExternalDrop(event); })
   }
 
+  @Builder
+  private SshHeaderMenuButton(compact: boolean = false) {
+          Button() {
+            Text(compact ? '⋯' : '更多').fontSize(11).fontWeight(FontWeight.Medium)
+              .fontColor('rgba(242,244,247,0.88)')
+          }
+          .width(compact ? 34 : 60).height(40).padding(0)
+          .borderRadius(20)
+          .backgroundColor(this.chromeChipBg())
+          .margin({ right: 8 })
+          .bindPopup(this.showSshHeaderActionPopup, {
+            builder: this.SshHeaderActionPopup(),
+            placement: Placement.BottomRight,
+            enableArrow: true,
+            popupColor: this.pal().card,
+            width: this.sshHeaderActionPopupWidth(),
+            onStateChange: (e: Object) => {
+              const ev: Record<string, boolean> = e as Record<string, boolean>;
+              if (!ev['isVisible']) { this.showSshHeaderActionPopup = false; }
+            }
+          })
+          .onClick((): void => {
+            animateTo({ duration: 180, curve: Curve.FastOutSlowIn }, () => {
+              this.showSshHeaderActionPopup = !this.showSshHeaderActionPopup;
+            });
+          })
+          .accessibilityText('打开 SSH 工作区与会话选项')
+  }
+
   @Builder PcWindowAuthenticationCarrier() {
     Stack({ alignContent: Alignment.TopStart }) {
       Column()
@@ -18491,7 +18477,7 @@ struct SshTerminal {
       Row() {
         Row() {
           Text('←').fontSize(18).fontColor(this.pal().text).margin({ right: 6 })
-          Text('取消').fontSize(14).fontColor(this.pal().text)
+          Text(this.connectionError.length > 0 ? '返回' : '取消').fontSize(14).fontColor(this.pal().text)
         }
         .height(36)
         .padding({ left: 12, right: 14 })
@@ -18506,7 +18492,7 @@ struct SshTerminal {
         SymbolGlyph($r('sys.symbol.lock_shield_fill'))
           .fontSize(38)
           .fontColor([this.accentColor])
-        Text('正在完成 SSH 鉴权')
+        Text(this.connectionError.length > 0 ? 'SSH 会话交接失败' : '正在打开 SSH 会话')
           .fontSize(18)
           .fontWeight(FontWeight.Medium)
           .fontColor(this.pal().text)
@@ -18517,8 +18503,10 @@ struct SshTerminal {
             .maxLines(1)
             .textOverflow({ overflow: TextOverflow.Ellipsis })
         }
-        LoadingProgress().width(28).height(28).color(this.accentColor).margin({ top: 6 })
-        Text('鉴权成功后将在独立窗口中打开，不会在主窗口创建终端画面')
+        if (this.connectionError.length === 0) {
+          LoadingProgress().width(28).height(28).color(this.accentColor).margin({ top: 6 })
+        }
+        Text(this.connectionError || '正在将已鉴权会话移交到独立窗口')
           .fontSize(12)
           .fontColor(this.pal().text3)
           .textAlign(TextAlign.Center)
@@ -18545,6 +18533,9 @@ struct SshTerminal {
         this.PcWindowAuthenticationCarrier()
       } else {
       Column() {
+      if (this.sshTopChromeLayout().tabStripAboveHeader) {
+        this.sshTabStrip()
+      }
       // 顶栏 — SSH 终端始终深色模式, 固定深色背景+亮色文字, 不跟随系统主题
       Row() {
         if (this.isDesktopDevice) {
@@ -18616,31 +18607,7 @@ struct SshTerminal {
           .accessibilityText(this.terminalSearchVisible ? '聚焦终端搜索' : '打开终端搜索')
         }
         if (this.sshHeaderActionPopupEnabled()) {
-          Button() {
-            Text('更多').fontSize(11).fontWeight(FontWeight.Medium)
-              .fontColor('rgba(242,244,247,0.88)')
-          }
-          .width(60).height(40).padding(0)
-          .borderRadius(20)
-          .backgroundColor(this.chromeChipBg())
-          .margin({ right: 8 })
-          .bindPopup(this.showSshHeaderActionPopup, {
-            builder: this.SshHeaderActionPopup(),
-            placement: Placement.BottomRight,
-            enableArrow: true,
-            popupColor: this.pal().card,
-            width: this.sshHeaderActionPopupWidth(),
-            onStateChange: (e: Object) => {
-              const ev: Record<string, boolean> = e as Record<string, boolean>;
-              if (!ev['isVisible']) { this.showSshHeaderActionPopup = false; }
-            }
-          })
-          .onClick((): void => {
-            animateTo({ duration: 180, curve: Curve.FastOutSlowIn }, () => {
-              this.showSshHeaderActionPopup = !this.showSshHeaderActionPopup;
-            });
-          })
-          .accessibilityText('打开 SSH 工作区与会话选项')
+          this.SshHeaderMenuButton()
         } else {
           Row({ space: 4 }) {
             Text(this.sshCompactChrome() ? '语' : 'LANG').fontSize(10).fontWeight(FontWeight.Medium)

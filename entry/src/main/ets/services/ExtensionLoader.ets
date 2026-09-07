@@ -703,12 +703,17 @@ export class ExtensionLoader {
   }
 
   /** Find a live detached SSH session for the host and make it the facade target. */
-  adoptDetachedSshSession(hostId: string): number {
+  adoptDetachedSshSession(hostId: string, expectedSessionId: number = 0,
+    expectedGeneration: number = 0): number {
     const normalizedHostId: string = hostId.trim();
     if (normalizedHostId.length === 0) { return -1; }
     for (let index = this.detachedSshSessions.length - 1; index >= 0; index--) {
       const candidate: DetachedSshSession = this.detachedSshSessions[index];
       if (candidate.hostId !== normalizedHostId) { continue; }
+      if (expectedSessionId > 0 && (candidate.sessionId !== expectedSessionId ||
+        this.getSshTerminalDiagnostics(candidate.sessionId).sessionGeneration !== expectedGeneration)) {
+        continue;
+      }
       let state: number = 0;
       try { state = rdpnapi.getConnectionState(candidate.sessionId) as number; } catch (_err) { state = 0; }
       if (state !== 2 && state !== 3) {

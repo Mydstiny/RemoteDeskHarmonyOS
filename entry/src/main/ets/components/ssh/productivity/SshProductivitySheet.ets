@@ -160,7 +160,7 @@ export struct SshProductivitySheet {
 
   private saveQuickCommand(): void {
     if (!this.ready) {
-      this.quickEditorError = '本地加密存储尚未就绪';
+      this.quickEditorError = '本地存储尚未就绪';
       return;
     }
     const snippet: SshSnippetV1 | null = buildSshQuickCommandSnippet({
@@ -179,7 +179,7 @@ export struct SshProductivitySheet {
     if (!this.onUpsertSnippet(snippet)) {
       this.quickEditorError = this.document.snippets.length >= 200 ?
         '常用命令已达到 200 条上限，请先删除不再使用的命令' :
-        '保存失败，请确认本地加密存储已解锁';
+        '保存失败，请检查本地存储；若已启用加密，请先解锁';
       return;
     }
     this.selectedSnippetId = snippet.id;
@@ -322,7 +322,7 @@ export struct SshProductivitySheet {
         .accessibilityText('选择片段 ' + snippet.title)
       }, (snippet: SshSnippetV1): string => snippet.id)
       if (this.visibleSnippets().length === 0) {
-        Text(this.ready ? '暂无匹配的常用命令，点击“新建”添加' : '加密存储未解锁，常用命令已禁用')
+        Text(this.ready ? '暂无匹配的常用命令，点击“新建”添加' : '本地存储不可用；若已启用加密，请先解锁')
           .fontSize(11).fontColor('rgba(242,244,247,0.48)').padding(12)
       }
     }.width('100%')
@@ -433,7 +433,7 @@ export struct SshProductivitySheet {
         Column() {
           Text('SSH 常用命令').fontSize(18).fontWeight(FontWeight.Medium)
             .fontColor('#F2F4F7')
-          Text((this.hostLabel.length > 0 ? this.hostLabel : '当前 SSH 会话') + ' · 本地加密保存')
+          Text((this.hostLabel.length > 0 ? this.hostLabel : '当前 SSH 会话') + ' · 本地保存')
             .fontSize(10).fontColor('rgba(242,244,247,0.50)').margin({ top: 3 })
         }.alignItems(HorizontalAlign.Start).layoutWeight(1)
         Button('新建').height(36).fontSize(11).backgroundColor(this.accentColor)

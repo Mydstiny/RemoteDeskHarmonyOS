@@ -40,6 +40,19 @@ export default function sshTabChromePolicyTest(): void {
       expect(inline.totalHeightVp).assertEqual(SSH_SESSION_HEADER_BASE_HEIGHT_VP + 24);
     });
 
+    it('restores_phone_tabs_above_header_without_double_counting_safe_area', 0, (): void => {
+      const phone = resolveSshTopChromeLayout(24, true, true, 40);
+      expect(phone.tabStripAboveHeader).assertTrue();
+      expect(phone.tabStripBelowHeader).assertFalse();
+      expect(phone.headerTopInsetVp).assertEqual(0);
+      expect(phone.standaloneTabTopInsetVp).assertEqual(24);
+      expect(phone.totalHeightVp).assertEqual(120);
+      const noTabs = resolveSshTopChromeLayout(24, false, true, 40);
+      expect(noTabs.headerTopInsetVp).assertEqual(24);
+      expect(noTabs.standaloneTabTopInsetVp).assertEqual(0);
+      expect(noTabs.totalHeightVp).assertEqual(80);
+    });
+
     it('sizes_phone_and_pad_host_picker_from_content_and_live_viewport', 0, (): void => {
       const phone = resolveSshHostPickerSheetLayout(360, 780, 4, true);
       expect(phone.bottomAnchored).assertTrue();
@@ -87,10 +100,11 @@ export default function sshTabChromePolicyTest(): void {
       expect(sshTabStripShowsStandaloneNewSessionAction(false)).assertTrue();
     });
 
-    it('uses_one_header_menu_on_every_device_shape_and_rollout_state', 0, (): void => {
+    it('keeps_phone_direct_actions_without_changing_pad_or_pc', 0, (): void => {
       expect(sshHeaderUsesSingleActionMenu(false, true, false)).assertTrue();
       expect(sshHeaderUsesSingleActionMenu(false, false, true)).assertTrue();
-      expect(sshHeaderUsesSingleActionMenu(false, false, false)).assertTrue();
+      expect(sshHeaderUsesSingleActionMenu(false, false, false)).assertFalse();
+      expect(sshHeaderUsesSingleActionMenu(true, false, false)).assertFalse();
       expect(sshHeaderUsesSingleActionMenu(true, true, false)).assertTrue();
     });
   });

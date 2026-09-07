@@ -60,11 +60,13 @@ class MemoryProductivityPersistence implements SshProductivityPersistencePort {
 
 class FakeProductivityCrypto implements SshProductivityCryptoPort {
   available: boolean = true;
+  setupComplete: boolean = true;
   failEncrypt: boolean = false;
   failDecrypt: boolean = false;
   emptyEncrypt: boolean = false;
   generationValue: number = 1;
   ready(): boolean { return this.available; }
+  configured(): boolean { return this.setupComplete; }
   generation(): number { return this.generationValue; }
   isProtected(value: string): boolean {
     return value.startsWith('cipher<') && value.endsWith('>');
@@ -110,6 +112,75 @@ function executableSnippet(id: string = 'startup-one'): SshSnippetV1 {
 
 export default function sshProductivityPolicyTest(): void {
   describe('SshProductivityPolicy', (): void => {
+    it('unencrypted_commands_should_survive_restart_edits_and_account_switch', 0, (): void => {
+      const persistence = new MemoryProductivityPersistence();
+      const crypto = new FakeProductivityCrypto();
+      crypto.available = false; crypto.setupComplete = false;
+      const scope = new FakeProductivityScope();
+      const context: common.Context = undefined as common.Context;
+      const store = new SshProductivityStore(persistence, crypto, scope);
+      expect(store.init(context)).assertTrue();
+      expect(store.upsertSnippet(executableSnippet('plain-command'))).assertTrue();
+      const restored = new SshProductivityStore(persistence, crypto, scope);
+      expect(restored.init(context)).assertTrue();
+      expect(restored.snapshot().snippets[0].id).assertEqual('plain-command');
+      expect((persistence.value as string).startsWith('plain:v1:')).assertTrue();
+      scope.fence = { ownerScopeId: 'other-owner', generation: 2 };
+      expect(restored.isReady()).assertFalse();
+      expect(restored.init(context)).assertTrue();
+      expect(restored.snapshot().snippets.length).assertEqual(0);
+      scope.fence = { ownerScopeId: 'device-local', generation: 3 };
+      expect(restored.init(context)).assertTrue();
+      expect(restored.removeSnippet('plain-command')).assertTrue();
+      expect(restored.snapshot().snippets.length).assertEqual(0);
+    });
+
+    it('enabling_encryption_should_preserve_commands_and_lock_the_existing_slot', 0, (): void => {
+      const persistence = new MemoryProductivityPersistence();
+      const crypto = new FakeProductivityCrypto();
+      crypto.available = false; crypto.setupComplete = false;
+      const scope = new FakeProductivityScope();
+      const context: common.Context = undefined as common.Context;
+      const store = new SshProductivityStore(persistence, crypto, scope);
+      expect(store.init(context)).assertTrue();
+      expect(store.upsertSnippet(executableSnippet('upgrade-command'))).assertTrue();
+      const plaintext: string = persistence.value as string;
+      crypto.setupComplete = true;
+      expect(store.isReady()).assertFalse();
+      expect(store.init(context)).assertFalse();
+      expect(persistence.value).assertEqual(plaintext);
+      crypto.available = true; crypto.generationValue++;
+      persistence.failWrite = true;
+      expect(store.init(context)).assertFalse();
+      expect(persistence.value).assertEqual(plaintext);
+      persistence.failWrite = false;
+      expect(store.init(context)).assertTrue();
+      expect(crypto.isProtected(persistence.value as string)).assertTrue();
+      expect(store.snapshot().snippets[0].id).assertEqual('upgrade-command');
+      const ciphertext: string = persistence.value as string;
+      crypto.available = false; crypto.generationValue++;
+      expect(store.isReady()).assertFalse();
+      expect(store.init(context)).assertFalse();
+      expect(persistence.value).assertEqual(ciphertext);
+      crypto.setupComplete = false;
+      expect(store.init(context)).assertFalse();
+      expect(persistence.value).assertEqual(ciphertext);
+    });
+
+    it('unencrypted_write_failure_should_preserve_existing_commands', 0, (): void => {
+      const persistence = new MemoryProductivityPersistence();
+      const crypto = new FakeProductivityCrypto();
+      crypto.available = false; crypto.setupComplete = false;
+      const store = new SshProductivityStore(persistence, crypto, new FakeProductivityScope());
+      expect(store.init(undefined as common.Context)).assertTrue();
+      expect(store.upsertSnippet(executableSnippet('kept'))).assertTrue();
+      const before: string = persistence.value as string;
+      persistence.failWrite = true;
+      expect(store.removeSnippet('kept')).assertFalse();
+      expect(persistence.value).assertEqual(before);
+      expect(store.snapshot().snippets[0].id).assertEqual('kept');
+    });
+
     it('snippet_preview_should_mask_secret_and_default_to_insert_only', 0, (): void => {
       const rendered = renderSshSnippet(snippet(), [
         { name: 'ENV', value: 'staging', secret: false },
