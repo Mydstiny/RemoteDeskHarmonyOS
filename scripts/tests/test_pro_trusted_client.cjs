@@ -85,6 +85,22 @@ test('a verified refund takes effect immediately when cache persistence fails an
   const result = await f.service.reconcileResult([]); assert.equal(result.online, true);
   assert.equal(f.database.prepare('SELECT revision FROM pro_cache').get().revision, 2);
 });
+test('a verified refund applies while a second same-account reconciliation is still waiting', async t => {
+  const f = await fixture(t); await f.service.reconcile([], true);
+  let calls = 0; let release; let entered;
+  const secondStarted = new Promise(resolve => { entered = resolve; });
+  f.protocol.override = call => {
+    if (++calls === 1) return JSON.stringify({ signedEntitlement: f.signer.sign({ status: 'revoked', revision: 2 },
+      owner, f.state.now, call.input.challenge), pendingDelivery: false });
+    return new Promise((_resolve, reject) => { release = () => reject(new Error('offline')); entered(); });
+  };
+  const first = f.service.reconcileResult([]); const second = f.service.reconcileResult([]);
+  const revoked = await first; await secondStarted;
+  assert.equal(revoked.current, true); assert.equal(revoked.online, true); assert.equal(revoked.active, false);
+  assert.equal(f.database.prepare('SELECT revision FROM pro_cache').get().revision, 2);
+  assert.equal(f.service.snapshot().state, 'revoked');
+  release(); await second; assert.equal(f.service.snapshot().state, 'revoked');
+});
 test('offline restart loads only the original signed account and product cache', async t => {
   const f = await fixture(t); await f.service.reconcile([], true);
   const { ProEntitlementStore } = f.load('ProEntitlementStore'); const reopened = new ProEntitlementStore();
@@ -255,11 +271,12 @@ test('runtime boundary timers use the same elapsed clock as the entitlement chec
   t.after(() => runtime.dispose()); runtime.subscribe(() => {});
   assert.equal([...f.state.timers.values()][0].delay, 86400000);
   f.state.uptime += 86400000; runtime.refresh();
-  assert.equal([...f.state.timers.values()][0].delay, 6 * 86400000);
+  assert.equal([...f.state.timers.values()][0].delay, 300000);
   f.state.uptime += 6 * 86400000; runtime.refresh();
-  assert.equal(runtime.snapshot().realState, 'verificationRequired'); assert.equal(f.state.timers.size, 0);
+  assert.equal(runtime.snapshot().realState, 'verificationRequired');
+  assert.equal([...f.state.timers.values()][0].delay, 300000);
 });
-test('actual App runtime wires sandbox online/cache state while Release cannot select the sandbox', async t => {
+test('actual App runtime renews daily, retries an offline boundary and keeps Release sandbox inaccessible', async t => {
   for (const debug of [true, false]) {
     const liveOwner = 'owner-' + crypto.createHash('sha256').update('RemoteDeskHarmonyOS:owner:v1:test-union').digest('hex');
     let scope = { kind: 'huawei_account', ownerScopeId: liveOwner, generation: 1, sessionState: 'ready' };
@@ -274,15 +291,41 @@ test('actual App runtime wires sandbox online/cache state while Release cannot s
       [path.resolve(base, 'ProBackendConfiguration.ets')]: { proBackendConfiguration: () => ({ trust: config,
         intentsUrl: 'https://test.example/intents', reconcileUrl: 'https://test.example/reconcile' }) }
     } });
-    f.state.onHttp = async call => ({ responseCode: 200, result: JSON.stringify({ pendingDelivery: false,
-      signedEntitlement: f.signer.sign({ status: 'verified', revision: 1 }, liveOwner, f.state.now,
-        JSON.parse(call.configuration.extraData).challenge) }) });
+    let offline = false; let status = 'verified'; let revision = 1;
+    f.state.onHttp = async call => {
+      if (offline) throw new Error('offline');
+      return { responseCode: 200, result: JSON.stringify({ pendingDelivery: false,
+        signedEntitlement: f.signer.sign({ status, revision }, liveOwner, f.state.now,
+          JSON.parse(call.configuration.extraData).challenge) }) };
+    };
     const { ProAppRuntime } = f.load('ProAppRuntime'); const app = ProAppRuntime.getInstance();
+    app.runtime.subscribe(() => app.runtime.snapshot());
     t.after(() => app.runtime.dispose()); await app.initialize({}); app.setSandbox(true);
     for (let i = 0; i < 20 && app.runtime.snapshot().realState !== 'active'; i++) await new Promise(resolve => setImmediate(resolve));
     if (debug) {
       assert.equal(app.runtime.snapshot().label, '沙盒 · Pro 已激活');
       assert.ok(app.lease(config.productId));
+      for (const delay of [86400000, 86400000, 300000]) {
+        if (delay === 300000) { offline = false; status = 'revoked'; revision = 2; }
+        const timer = [...f.state.timers.entries()].find(([_id, value]) => value.delay === delay);
+        assert.ok(timer, 'the actual runtime must schedule the next refresh');
+        const requests = f.state.requests.length;
+        const cached = f.database.prepare('SELECT verified_at FROM pro_cache').get().verified_at;
+        f.state.now += delay; f.state.uptime += delay;
+        f.state.timers.delete(timer[0]); timer[1].callback();
+        for (let i = 0; i < 30 && (f.state.requests.length === requests || app.refreshing); i++) {
+          await new Promise(resolve => setImmediate(resolve));
+        }
+        assert.equal(f.state.requests.length, requests + 1);
+        if (offline) {
+          assert.equal(app.runtime.snapshot().needsRevalidation, true);
+          assert.equal(f.database.prepare('SELECT verified_at FROM pro_cache').get().verified_at, cached);
+        } else if (status === 'verified') {
+          assert.equal(app.runtime.snapshot().needsRevalidation, false);
+          assert.equal(f.database.prepare('SELECT verified_at FROM pro_cache').get().verified_at, f.state.now);
+          offline = true;
+        } else { assert.equal(app.runtime.snapshot().realState, 'revoked'); }
+      }
       onTransition(true); assert.equal(app.runtime.snapshot().realState, 'free');
       scope = { ...scope, generation: 2, ownerScopeId: other }; onScope(scope); onTransition(false);
       assert.notEqual(app.runtime.snapshot().realState, 'active');

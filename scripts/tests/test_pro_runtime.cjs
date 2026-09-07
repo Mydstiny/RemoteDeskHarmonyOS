@@ -108,7 +108,7 @@ test('cache boundaries notify and return revalidation, not repurchase', async ()
   f.advance(1500); assert.ok(notifications > activated); assert.equal(f.runtime.snapshot().needsRevalidation, true);
   assert.equal(f.runtime.snapshot().effectiveState, 'active');
   f.advance(2000); assert.equal(f.runtime.snapshot().effectiveState, 'verificationRequired');
-  assert.equal(f.timers.size, 0); f.runtime.dispose();
+  assert.equal(f.timers.size, 1); f.runtime.dispose(); assert.equal(f.timers.size, 0);
 });
 test('late account and out-of-order verification cannot resurrect grants', async () => {
   const f = fixture(); const replies = [];

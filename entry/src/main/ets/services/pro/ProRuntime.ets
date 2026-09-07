@@ -89,9 +89,12 @@ export class ProRuntime {
   }
   private scheduleBoundary(): void {
     if (this.timer !== -1) { clearTimeout(this.timer); this.timer = -1; }
-    const delay = this.entitlement.nextChangeDelay();
+    let delay = this.entitlement.nextChangeDelay();
+    if (this.entitlement.snapshot().needsRevalidation) {
+      delay = delay > 0 ? Math.min(delay, 300000) : 300000;
+    }
     if (delay <= 0 || this.listeners.length === 0) { return; }
-    this.timer = setTimeout((): void => { this.timer = -1; this.publish(); },
+    this.timer = setTimeout((): void => { this.timer = -1; this.entitlement.refresh(); },
       Math.min(delay, 2147483647));
   }
   private publish(): void {

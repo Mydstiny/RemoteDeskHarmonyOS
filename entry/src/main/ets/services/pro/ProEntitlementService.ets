@@ -24,6 +24,7 @@ export class ProEntitlementService {
   private environment: ProEnvironment = 'production';
   private accountRevision: number = -1;
   private generation: number = 0;
+  private acceptedGeneration: number = 0;
   private grant: ProVerifiedGrant | null = null;
   private revoked: boolean = false;
   private clockInvalidated: boolean = false;
@@ -40,6 +41,7 @@ export class ProEntitlementService {
   bindAccount(owner: string, environment: ProEnvironment, revision: number = 0): void {
     if (owner === this.owner && environment === this.environment && revision === this.accountRevision) { return; }
     this.generation++;
+    this.acceptedGeneration = this.generation;
     this.owner = owner;
     this.environment = environment;
     this.accountRevision = revision;
@@ -102,7 +104,8 @@ export class ProEntitlementService {
     try { result = await this.verifier.verify(records.slice(), owner, environment); }
     catch (_error) { result = { status: 'unavailable', owner, environment }; }
     const active = this.acceptResult(result, generation, owner, environment);
-    const current = !!result && generation === this.generation && result.owner === owner && result.environment === environment;
+    const current = !!result && generation === this.acceptedGeneration && this.owner === owner &&
+      this.environment === environment && result.owner === owner && result.environment === environment;
     const valid = !!result && (result.status === 'noEntitlement' || result.status === 'revoked' ||
       (result.status === 'verified' && result.grant !== undefined &&
         proGrantMatches(result.grant, owner, environment, this.now()) && result.grant.usableUntil > this.now()));
@@ -110,7 +113,11 @@ export class ProEntitlementService {
   }
   private acceptResult(result: ProVerificationResult, generation: number,
     owner: string, environment: ProEnvironment): boolean {
-    if (generation !== this.generation || !result || result.owner !== owner || result.environment !== environment) { return false; }
+    if (generation <= this.acceptedGeneration || this.owner !== owner || this.environment !== environment ||
+      !result || result.owner !== owner || result.environment !== environment) { return false; }
+    // A later request still waiting for the server must not hide an observed
+    // refund. Only an already accepted newer result supersedes this result.
+    this.acceptedGeneration = generation;
     if (result.status === 'verified') {
       const grant = result.grant;
       if (!grant || !proGrantMatches(grant, owner, environment, this.now()) || grant.usableUntil <= this.now()) {
