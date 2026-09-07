@@ -83,6 +83,7 @@ export class ProFulfillmentService {
     }
     if (signal?.aborted) fail('reconciliation_cancelled');
     const snapshot = await this.#ledger.snapshot(owner);
+    if (signal?.aborted) fail('reconciliation_cancelled');
     return { signedEntitlement: this.#signer.sign(snapshot, owner, this.#now()), pendingDelivery: snapshot.pending };
   }
   async notification(jws) {

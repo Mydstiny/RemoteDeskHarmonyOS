@@ -208,3 +208,13 @@ test('network failure cannot renew a signed grant; cloud tokens are encrypted an
   const wrongEnvironment = new ProCloudOrderLedger(f.collection, { ...config, environment: 'NORMAL' }, f.key);
   await assert.rejects(() => wrongEnvironment.snapshot(owner), /configuration_mismatch/); wrongEnvironment.close();
 });
+test('disconnect during the awaited cloud snapshot never signs a new grant', async t => {
+  const f = fixture(t); const order = await f.order(); const controller = new AbortController();
+  const snapshot = f.ledger.snapshot.bind(f.ledger);
+  f.ledger.snapshot = async account => {
+    const value = await snapshot(account); controller.abort(); return value;
+  };
+  await assert.rejects(() => f.service.reconcile(owner, [receipt(order)], controller.signal), /reconciliation_cancelled/);
+  assert.equal((await snapshot(owner)).status, 'verified');
+  assert.equal(f.state.confirms, 0);
+});
