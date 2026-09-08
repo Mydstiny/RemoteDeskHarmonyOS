@@ -85,6 +85,7 @@ function safeProgress(progress: (copied: number, total: number) => void, copied:
   try { progress(copied, total); } catch (_error) { /* Observers cannot undo a committed copy. */ }
 }
 function partialName(name: string): string { return name === 'content.partial' ? '_content.partial' : 'content.partial'; }
+function artifactNameKey(name: string): string { return name.normalize('NFC').toLowerCase(); }
 
 /** Short, non-secret namespace; never use a display/drive name as an owner. */
 export function transferScopeKey(accountScope: string, hostIdentity: string): string {
@@ -214,9 +215,9 @@ function readManifest(filesDir: string, scopeKey: string, purpose: ArtifactPurpo
       (state === 'complete' && !directory && !/^[a-f0-9]{64}$/.test(item.sha256)) ||
       (state !== 'complete' && item.sha256 !== '' && !/^[a-f0-9]{64}$/.test(item.sha256)) ||
       artifacts.some((existing: ArtifactManifestEntry): boolean => existing.id === item.id) ||
-      names.indexOf(relativePath.normalize('NFC').toLowerCase()) >= 0) { throw new Error('transfer_manifest_invalid'); }
+      names.indexOf(artifactNameKey(relativePath)) >= 0) { throw new Error('transfer_manifest_invalid'); }
     artifacts.push({ id: item.id, name: item.name, size: item.size, mtime: item.mtime, sha256: item.sha256, state, storageRelativePath, relativePath, directory });
-    names.push(relativePath.normalize('NFC').toLowerCase());
+    names.push(artifactNameKey(relativePath));
   }
   return { schemaVersion: 2, id: batchId, createdAt: parsed.createdAt,
     updatedAt: legacy ? parsed.createdAt : parsed.updatedAt, scopeKey, purpose,
@@ -361,8 +362,8 @@ export class TransferArtifactBatch {
     }
     let candidate: string = name;
     let suffix: number = 2;
-    const names: string[] = this.manifest.artifacts.map((item: ArtifactManifestEntry): string => item.name.toLowerCase());
-    while (names.indexOf(candidate.toLowerCase()) >= 0) {
+    const names: string[] = this.manifest.artifacts.map((item: ArtifactManifestEntry): string => artifactNameKey(item.relativePath));
+    while (names.indexOf(artifactNameKey(candidate)) >= 0) {
       const tail: string = ' (' + (suffix++).toString() + ')' + extension;
       let prefix: string = stem;
       while (encoder.encode(prefix + tail).byteLength > 180) {
@@ -414,8 +415,12 @@ export class TransferArtifactBatch {
       if (ownsDirectory) {
         try { assertDirectory(directory); await fileIo.unlink(directory + '/' + partialName(entry.name)); } catch (_unlinkError) {}
       }
-      this.manifest.artifacts = this.manifest.artifacts.filter((item: ArtifactManifestEntry): boolean => item.id !== id);
-      try { this.saveManifest(); } catch (_manifestError) { /* Preserve interrupted manifest for recovery. */ }
+      // The platform rmdir APIs are recursive. Keep this attempt's recorded partial
+      // entry so its owned empty directory remains valid for later manifest recovery/TTL.
+      if (!ownsDirectory) {
+        this.manifest.artifacts = this.manifest.artifacts.filter((item: ArtifactManifestEntry): boolean => item.id !== id);
+      }
+      try { this.saveManifest(); } catch (_manifestError) { /* The next successful save keeps the ownership entry. */ }
       TransferArtifactBatch.reservedBytes -= reserved;
       throw new Error('transfer_artifact_operation_failed');
     }
@@ -477,7 +482,7 @@ export class TransferArtifactBatch {
       throw new Error('transfer_received_tree_invalid');
     }
     const expected: string[] = []; const normalizedNames: string[] = this.manifest.artifacts.map(
-      (item: ArtifactManifestEntry): string => item.relativePath.normalize('NFC').toLowerCase());
+      (item: ArtifactManifestEntry): string => artifactNameKey(item.relativePath));
     const indices: number[] = []; let total: number = 0; let receiveRoot: string = '';
     for (let i: number = 0; i < expectedEntries.length; i++) {
       const item: TransferNativeReceivedEntry = expectedEntries[i];
@@ -487,7 +492,7 @@ export class TransferArtifactBatch {
       const parts: string[] = item.relativeName.split('/');
       if (parts.length < 3 || !/^receive-[0-9]+$/.test(parts[0]) || parts[1] !== 'files' ||
         (receiveRoot.length > 0 && receiveRoot !== parts[0])) { throw new Error('transfer_received_tree_invalid'); }
-      const normalized: string = parts.slice(2).join('/').normalize('NFC').toLowerCase();
+      const normalized: string = artifactNameKey(parts.slice(2).join('/'));
       if (normalizedNames.indexOf(normalized) >= 0) { throw new Error('transfer_received_tree_name_collision'); }
       normalizedNames.push(normalized); receiveRoot = parts[0]; indices.push(item.index); total += item.size;
       if (expected.indexOf(item.relativeName) >= 0 || total > reservedBytes) { throw new Error('transfer_received_tree_invalid'); }

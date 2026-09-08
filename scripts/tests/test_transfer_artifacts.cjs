@@ -275,6 +275,39 @@ test('native tree rejects case or Unicode normalization collisions before public
   expected.push({ index: 1, relativeName: 'receive-42/files/file', directory: false, size: 3 });
   await assert.rejects(slot.commit(expected)); assert.equal(batch.getArtifacts().length, 0);
 }));
+test('NFC-equivalent display names receive distinct names and recover from disk', () => using(async env => {
+  const batch = env.batch(), source = env.source('source', Buffer.from('abc'));
+  const first = await batch.stage(source, '\u00e9.txt', 3, () => true, () => {});
+  const second = await batch.stage(source, 'e\u0301.txt', 3, () => true, () => {});
+  assert.notEqual(first.name.normalize('NFC').toLowerCase(), second.name.normalize('NFC').toLowerCase());
+  env.api.TransferArtifactBatch.batches.clear();
+  const recovered = env.api.recoverTransferArtifactBatches(env.filesDir, env.scope, 'clipboard');
+  assert.equal(recovered.length, 1); assert.equal(recovered[0].getArtifacts().length, 2);
+  recovered[0].release(); env.advance(10000);
+  const cleanup = await recovered[0].cleanupExpired(0);
+  assert.equal(cleanup.invalidBatches, 0); assert.equal(cleanup.removedFiles, 2); assert.ok(fs.existsSync(source));
+}));
+test('manifest failure preserves empty attempt directory ownership for later successful-stage recovery and TTL', () => using(async env => {
+  const batch = env.batch(), source = env.source('source', Buffer.from('abc'));
+  env.failManifest(true); await assert.rejects(batch.stage(source, 'file', 3, () => true, () => {}));
+  env.failManifest(false); const artifact = await batch.stage(source, 'file', 3, () => true, () => {});
+  env.api.TransferArtifactBatch.batches.clear();
+  const recovered = env.api.recoverTransferArtifactBatches(env.filesDir, env.scope, 'clipboard');
+  assert.equal(recovered.length, 1); assert.equal(recovered[0].getArtifacts().length, 1);
+  recovered[0].release(); env.advance(10000);
+  const cleanup = await recovered[0].cleanupExpired(0);
+  assert.equal(cleanup.invalidBatches, 0); assert.equal(cleanup.removedFiles, 1);
+  assert.equal(fs.existsSync(artifact.path), false); assert.equal(fs.readFileSync(source, 'utf8'), 'abc');
+}));
+test('guard failure after attempt manifest retains cleanup ownership without publishing an artifact', () => using(async env => {
+  const batch = env.batch(), source = env.source('source', Buffer.from('abc')); let active = true;
+  env.onWrite(name => { if (name.endsWith('manifest.pending')) active = false; });
+  await assert.rejects(batch.stage(source, 'file', 3, () => active, () => {}));
+  env.onWrite(null); const artifact = await batch.stage(source, 'file', 3, () => true, () => {});
+  batch.release(); env.advance(10000); const cleanup = await batch.cleanupExpired(0);
+  assert.equal(cleanup.invalidBatches, 0); assert.equal(cleanup.removedFiles, 1);
+  assert.equal(fs.existsSync(artifact.path), false); assert.ok(fs.existsSync(source));
+}));
 (async () => { for (const { name, run } of tests) { await run(); console.log('PASS ' + name); }
   console.log(`PASS ${tests.length} real-filesystem artifact regressions`);
 })().catch(error => { console.error(error); process.exitCode = 1; });
