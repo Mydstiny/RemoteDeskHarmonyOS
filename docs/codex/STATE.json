@@ -3,14 +3,14 @@
   "task": "pro-purchase-foundation",
   "branch": "codex/pro-purchase-foundation",
   "base": "8edc187868e94ed41634e8a6c4c4c072e3a48679",
-  "head": "78fc9fce5f2711767086cb503130c7436449e91e",
-  "phase": "pro-m7-native-cloud-entry-and-deployment",
+  "head": "42a0258bb1868c7c32749429503534535c2c3298",
+  "phase": "pro-m7-package-reviewed-awaiting-deployment",
   "status": "in-progress",
-  "next": "Review the gated native Cloud Foundation entry, package and deploy full sandbox backend, then native authorization/IAP and remaining roadmap.",
+  "next": "Upload the reviewed private sandbox package after explicit transfer consent and browser file-access enablement; configure the protected API and timer-only worker, verify native authorization/IAP, then continue the remaining roadmap.",
   "blockers": [
     "M3/U0-U4 device matrix and M4 PC real Share Kit/SFTP file-integrity acceptance remain unverified.",
     "M5 KNOCK_COLLABORATION provision and App Linking setup unconfirmed; M6 USBManager path still needs authenticator/native proof, DDK-specific ACL is not assumed mandatory.",
-    "M7 dynamic CRL independently PASS; native cloud entry, complete AGC deployment, callback and real device purchase/refund remain open. Browser login restored."
+    "M7 native cloud entry and AGC package independently PASS. Upload consent/browser file access, full AGC deployment, notification endpoint and real device purchase/refund remain open."
   ],
   "planPaths": [
     "docs/codex/plans/2026-09-06-pro-purchase-foundation.md",
@@ -66,20 +66,25 @@
       "scripts/tests/test_pro_account_session.cjs",
       "scripts/tests/test_pro_session.mjs",
       "scripts/tests/helpers/pro_client_host.cjs",
-      "scripts/tests/test_pro_cloud_api.mjs"
+      "scripts/tests/test_pro_cloud_api.mjs",
+      "scripts/tests/test_pro_agc_runtime.mjs",
+      ".gitattributes",
+      "NOTICE",
+      "REUSE.toml",
+      "THIRD_PARTY_NOTICES.md"
     ],
     "findings": [],
-    "reviewedHead": "6690cdbf4ea671b0bc318d259bc35f0479911063",
-    "reason": "Prior M7 increments through dynamic CRL independently PASS. Native cloud entry and aggregate roadmap/deployment/device acceptance remain incomplete."
+    "reviewedHead": "42a0258bb1868c7c32749429503534535c2c3298",
+    "reason": "M7 native entry and package increments independently PASS through 42a0258b. Aggregate roadmap, deployment and device acceptance remain incomplete; scoped receipts do not imply aggregate PASS."
   },
   "lastVerification": {
-    "testCompile": "PASS exit 0; BUILD SUCCESSFUL in 5 s 96 ms",
-    "assembleHap": "PASS exit 0; signed BUILD SUCCESSFUL in 7 s 75 ms",
-    "release": "PASS exit 0; BUILD SUCCESSFUL in 24 s 860 ms; sandbox/simulation/USB gates pruned",
-    "releaseAbcSha256": "263c439a1b2ba29f2d6fdec4899496802ecf0b9c7b898f3b520e6543604394b5",
-    "hostChecks": "PASS 70 server, 40 signed/client/session and 26 runtime checks",
-    "compliance": "PASS Light/diff/state",
-    "scopeBoundary": "Native cloud entry code and host SDK adapter; no actual AGC/native device or vendor IAP acceptance"
+    "testCompile": "PASS exit 0; BUILD SUCCESSFUL in 6 s 68 ms",
+    "assembleHap": "PASS exit 0; signed BUILD SUCCESSFUL in 9 s 287 ms",
+    "hostChecks": "PASS 78 public server checks independently rerun; additional close/cleanup failure checks PASS",
+    "linuxRuntime": "Actual Linux Node22 cold start/control-only snapshot, protected API rejection, worker callback and zero-order reconciliation PASS",
+    "compliance": "PASS Light/diff; OpenSSL and linked runtime licenses/provenance verified",
+    "gateCoordination": "Package fix sources frozen before the current shared Remote-AI documentation build and matched afterward; final logs independently verified",
+    "scopeBoundary": "Deployment packaging and local Linux/control-only checks; no actual full AGC deployment, native user-code exchange or real IAP acceptance"
   },
   "updated": "2026-09-08 Asia/Shanghai",
   "roadmapPaths": [
@@ -401,7 +406,7 @@
       "findings": []
     },
     "m7": {
-      "status": "native-cloud-entry-awaiting-review",
+      "status": "package-independently-reviewed-awaiting-deployment",
       "scope": "Trusted Huawei protocol, immutable owner binding, persistent order ledger, atomic signed-state snapshot and delivery outbox",
       "planPath": "docs/codex/plans/2026-09-07-pro-m7-trusted-purchase.md",
       "reviewStatus": "PASS",
@@ -414,7 +419,7 @@
       ],
       "hostChecks": "30 PASS; 17 ledger checks independently PASS",
       "productionSaleEnabled": false,
-      "deployment": "Runtime probe only; complete Pro functions and device IAP acceptance pending",
+      "deployment": "Runtime probe live; complete reviewed API/worker package ready but not uploaded; private-data transfer consent and browser file access pending",
       "agcSandbox": {
         "productId": "RemoteDesktop_Pro_Test",
         "productType": "nonconsumable",
@@ -475,13 +480,14 @@
         "completeDeployment": false,
         "projectSdkCredential": "Project-only Development API client; private deployment configuration; actual SDK empty-zone read PASS",
         "oauthClient": "Existing application OAuth credential privately retained and official client-credentials endpoint returned HTTP 200; actual native user-code exchange pending",
-        "cloudEntry": "Native Cloud Foundation SDK with protected client gateway; fixed function identity still blank pending deployment"
+        "cloudEntry": "Native Cloud Foundation SDK with protected client gateway; implementation independently reviewed, fixed function identity still blank pending deployment"
       },
       "metadataVerification": {
-        "testCompile": "PASS BUILD SUCCESSFUL in 8 s 898 ms",
-        "assembleHap": "PASS signed BUILD SUCCESSFUL in 12 s 540 ms",
-        "compliance": "PASS Light/diff/state",
-        "scope": "HTTP/cloud reviewed state documentation; no App acceptance"
+        "testCompile": "PASS exit 0; BUILD SUCCESSFUL in 7 s 112 ms",
+        "assembleHap": "PASS exit 0; signed BUILD SUCCESSFUL in 8 s 578 ms; SignHap 909 ms",
+        "compliance": "PASS Light, git diff --check and state validation",
+        "scope": "M7 native-entry/package review documentation; five document hashes verified unchanged after the current shared transfer-task build",
+        "scopeBoundary": "Shared HAP includes unreviewed transfer work; no aggregate application, AGC deployment or device acceptance"
       },
       "appClient": {
         "status": "code-reviewed",
@@ -533,7 +539,7 @@
         "scopeBoundary": "No real vendor order/CRL distribution point or AGC package acceptance"
       },
       "nativeCloudEntry": {
-        "status": "gated-awaiting-independent-review",
+        "status": "code-independently-reviewed",
         "base": "78fc9fce5f2711767086cb503130c7436449e91e",
         "verification": {
           "testCompile": "PASS exit 0; BUILD SUCCESSFUL in 5 s 96 ms",
@@ -543,7 +549,35 @@
           "hostChecks": "PASS 70 server, 40 signed/client/session and 26 runtime checks",
           "compliance": "PASS Light/diff/state",
           "scopeBoundary": "Native cloud entry code and host SDK adapter; no actual AGC/native device or vendor IAP acceptance"
-        }
+        },
+        "head": "cdc193958f59d09c762fc9461cb5b98e2281cb4b",
+        "reviewReceiptId": "pro-m7-native-cloud-cdc193958-2026-09-08",
+        "reviewResult": "PASS no remaining findings; exact 17-file scope, tests, Release artifact and gate logs independently verified"
+      },
+      "agcPackage": {
+        "status": "code-independently-reviewed-awaiting-upload",
+        "head": "42a0258bb1868c7c32749429503534535c2c3298",
+        "reviewedCommits": [
+          "2e0e7da8fc5a585e62559504421a94a638cc0247",
+          "42a0258bb1868c7c32749429503534535c2c3298"
+        ],
+        "reviewReceiptId": "pro-m7-agc-package-42a0258b-2026-09-08",
+        "functions": {
+          "api": "remotedesk-pro-sandbox-api",
+          "worker": "remotedesk-pro-sandbox-worker"
+        },
+        "workerAccess": "Timer only; not exposed through the client API",
+        "privateConfiguration": "External private deployment directory only; eight entries retained with mode 0600; no values or credential hashes in Git/logs",
+        "verification": {
+          "testCompile": "PASS exit 0; BUILD SUCCESSFUL in 6 s 68 ms",
+          "assembleHap": "PASS exit 0; signed BUILD SUCCESSFUL in 9 s 287 ms",
+          "hostChecks": "PASS 78 public server checks independently rerun; additional close/cleanup failure checks PASS",
+          "linuxRuntime": "Actual Linux Node22 cold start/control-only snapshot, protected API rejection, worker callback and zero-order reconciliation PASS",
+          "compliance": "PASS Light/diff; OpenSSL and linked runtime licenses/provenance verified",
+          "gateCoordination": "Package fix sources frozen before the current shared Remote-AI documentation build and matched afterward; final logs independently verified",
+          "scopeBoundary": "Deployment packaging and local Linux/control-only checks; no actual full AGC deployment, native user-code exchange or real IAP acceptance"
+        },
+        "findings": []
       }
     }
   },
