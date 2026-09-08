@@ -21,7 +21,7 @@ Updated: 2026-09-08 Asia/Shanghai
 - File transfer / clipboard: [F01-F17 / T0-T9 remediation plan](plans/2026-09-07-file-transfer-clipboard-remediation.md) saved and independently reviewed. Await explicit implementation authorization; first refresh the baseline, then session/clipboard isolation, RDP safety and shared task lifecycle before bidirectional transfer and conditional move. No implementation item is closed.
 
 
-- Base UI: ca929ceb free header sample implemented and independently reviewed. Complete U0 performance/device baseline and U1 API23/26 visual/keyboard acceptance before broader migration; public UI never requires Pro.
+- Base UI: first public controls/five settings increment has current compile/signed/Light and behavior checks; checkpoint and independent review next. Continue homepage, remaining settings/navigation, U3/U4 and device/performance matrix; all public UI remains free.
 
 - M5 SSH Share Kit eca8f8aa independently PASS (code and Pro Release checks). Configure and verify the real App Link/fragment path; PC continuation, RDP and cross-device acceptance remain open. Continue free public UI in parallel with these external prerequisites.
 

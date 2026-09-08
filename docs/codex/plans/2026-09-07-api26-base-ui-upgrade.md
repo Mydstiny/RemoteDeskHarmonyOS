@@ -1,7 +1,7 @@
 # API 26 基础版本 UI 升级与优化计划
 
 - 日期：2026-09-07。
-- 状态：U0 清点与 U1 公共标题栏代码样例已推进；API23/26 视觉、键盘及性能矩阵仍待验收，不能标记 U1 完成。
+- 状态：U0 清点与 U1 公共标题栏样例已推进；正在将公共标题/操作/开关规范用于五类免费设置。API23/26 视觉、键盘及性能矩阵仍待验收，不能标记 U1/U2 完成。
 - 权益归属：基础版本免费升级，所有用户可用，不属于 Pro，不要求购买、登录、联网验单或开启模拟 Pro。
 - 关联：[总体路线图](2026-09-06-pro-product-roadmap.md)、[Pro M1/M2 实施准备](2026-09-07-pro-m1-m2-implementation.md)。
 
@@ -101,3 +101,13 @@ U1 首个代码增量：新增免费 `AppSheetHeader`，接入反馈页和 Pro �
 暂不采用 ComposeTitleBarV2：当前样例是 V1 弹层，其关闭语义和既有主题可通过稳定组件直接满足；强制迁移 V2 没有经过验证的收益。这里不宣称使用了 API26 专属标题栏；新系统增强与 API23 冷启动验证仍需后续增量。
 
 本轮门禁：default@OhosTestCompileArkTS `BUILD SUCCESSFUL in 26 s 998 ms`；signed assembleHap `BUILD SUCCESSFUL in 30 s 540 ms`。当前尚未取得 API23 真机冷启动、Pad/PC、字体/无障碍和量化性能基线，不宣称 U0/U1 已完成。公共 UI 单独提交和验收，不随 Pro 的权益状态改变。
+
+## U1/U2 公共控件第一批（2026-09-08）
+
+- 免费公共 `AppUiMetrics`、`AppUiColorPolicy`、`AppSettingsSwitchRow` 与扩展 `AppSheetHeader`。本批迁移滚轮方向、双指缩放、会话侧栏/顶栏、密码回显和日志五类设置；原 draft/touched/save、快捷退出保护、即时持久化、日志抓取/导出及协议回调保持原逻辑。
+- 将标题里的裸文本点击改为原生 Button，取消/保存及批量按钮最小高度 44 vp；开关取消视觉缩小，保留原生焦点、状态与单一 onChange。会话控制栏读屏标签明确为“隐藏”，与 isOn 含义一致。
+- 标题支持副标题和独立主操作，文字自然换行；设置说明改用现有 text2，避免原 text3 的低对比度。保持卡片/滚动布局和当前主题偏好。
+- 填色操作保留规范的自选六位 RGB 主题色，并在黑/白文字中选择对比更高的一项，覆盖纯白等浅色预设；不重写用户已保存的主题。计算依据为 [W3C 相对亮度与对比度定义](https://www.w3.org/WAI/WCAG22/Understanding/contrast-minimum.html)。此计算不等于整页无障碍实机验收。
+- 本地 SDK 中 ComposeTitleBarV2/ComposeListItemV2 自 API26 提供。当前公共控件继续使用 API23 已有的 Row/Text/Button/Toggle；不引入 API26-only 冷导入，V2 候选保留到跨版本加载与设备行为验证后再决定。装饰图标的 accessibilityLevel('no') 已核对 SDK since12。
+- 本轮代码门禁：default@OhosTestCompileArkTS `BUILD SUCCESSFUL in 9 s 469 ms`；signed assembleHap `BUILD SUCCESSFUL in 1 min 3 s 511 ms`、SignHap 982 ms；两项 exit 0。Light/diff PASS；五页全部状态块及 40 个原业务/辅助方法逐字不变，实际颜色策略 4352 个 RGB 样本及无效输入边界 PASS。九个本批代码文件在最终代码门禁前后哈希一致。当前待 checkpoint 后独立代码复核；共享 HAP 中并行 AI/文件传输源不在本批复核范围。
+- 未改变免费/Pro/离线权限，也未完成小窗口、字体缩放、读屏、键鼠、性能和真实 API23/26 设备矩阵。首页、其他设置、导航和 U3/U4 继续推进。
