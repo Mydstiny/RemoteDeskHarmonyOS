@@ -8,6 +8,7 @@ import { common } from '@kit.AbilityKit';
 import { AppConfig, Palette, buildDark, buildLight } from '../common/Theme';
 import { AppSheetHeader } from '../components/AppSheetHeader';
 import { AiHostEditor } from '../components/ai/AiHostEditor';
+import { AiHostInstallPanel } from '../components/ai/AiHostInstallPanel';
 import { AiHostService } from '../services/ai/AiHostService';
 import { AiHost, AiSettings, defaultAiSettings } from '../services/ai/AiModels';
 import { AiAccess, AiAccountLease } from '../services/ai/AiAccess';
@@ -159,12 +160,8 @@ export struct AiSettingsPage {
                 promptAction.showToast({ message: '已清理确认完成的记录，待确认操作已保留' });
               });
             } })
-          this.sectionTitle('电脑端准备', '长按复制以下内容，发送给电脑端 Agent，按提示获取配对邀请。')
-          Column({ space: 12 }) {
-            Text('请安装 RemoteDesk AI 宿主插件（Codex：Mydstiny/remotedesk-codex-plugin；DSH：Mydstiny/remotedesk-dsh-plugin），按照仓库安装说明配置本地授权项目与局域网 TLS 服务，生成此 HarmonyOS 设备的配对邀请。不要把账户密钥或模型凭据发给远程客户端。')
-              .fontSize(13).fontFamily(AppConfig.fontFamily).fontColor(this.pal().text).copyOption(CopyOptions.InApp).width('100%')
-            Text('模型账号和项目权限由电脑管理。').fontSize(12).fontFamily(AppConfig.fontFamily).fontColor(this.pal().text2).width('100%')
-          }.width('100%').padding(18).backgroundColor(this.pal().card).borderRadius(20).border({ width: 0.5, color: this.pal().cardBorder })
+          this.sectionTitle('电脑端安装', '生成固定版本安装说明，复制后交给电脑端 Agent。')
+          AiHostInstallPanel()
           if (this.error !== '') { Text(this.error).fontSize(13).fontFamily(AppConfig.fontFamily).fontColor(this.pal().danger).width('100%') }
         }.padding(AppUiMetrics.sheetPadding).width('100%').constraintSize({ maxWidth: 900 })
       }.layoutWeight(1).width('100%').scrollBar(BarState.Auto)
