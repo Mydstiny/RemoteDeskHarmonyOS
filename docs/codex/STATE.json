@@ -228,7 +228,7 @@
     "reviewerTaskId": "/root/review_remote_ai_plan",
     "reviewKind": "independent-native-host-v030-review",
     "reviewResult": "PASS Codex/core and DSH native code; final lifecycle regressions independently repeated",
-    "next": "Checkpoint reviewed AI4 client and perform actual HarmonyOS pairing, model and LAN/Phone/Pad/PC acceptance; RustDesk transport remains later.",
+    "next": "Perform actual HarmonyOS pairing, model and LAN/Phone/Pad/PC acceptance from reviewed AI4 checkpoint; RustDesk transport remains later.",
     "validation": {
       "recordedAt": "2026-09-08 Asia/Shanghai",
       "codex": "PASS 28 unit tests; pinned native App Server, native file previews across reconnect, Windows/macOS/Linux runtime/service CI",
@@ -321,7 +321,7 @@
       "planPath": "docs/codex/plans/2026-09-08-remote-ai-client-integration.md",
       "authorizedAt": "2026-09-08 Asia/Shanghai",
       "baseline": "c8bf7c30811bd312a8dfecf39c9eb7a72a59ccd8",
-      "status": "code-reviewed-checkpoint-pending",
+      "status": "code-committed-independently-reviewed-device-pending",
       "reviewTaskId": "/root/review_remote_ai_plan",
       "nativeReviewerTaskId": "/root/review_native_dsh",
       "validation": {
@@ -331,7 +331,10 @@
         "assembleHap": "PASS exit 0; signed BUILD SUCCESSFUL in 1 min 7 s 352 ms",
         "compliance": "PASS Light/diff",
         "device": "NOT RUN; actual HarmonyOS pairing/model/LAN and Phone/Pad/PC matrix pending",
-        "entries": "PASS 3 actual callback/policy groups, including AI tab to modern RDP"
+        "entries": "PASS 3 actual callback/policy groups, including AI tab to modern RDP",
+        "closureTestCompile": "PASS exit 0; BUILD SUCCESSFUL in 20 s 27 ms",
+        "closureAssembleHap": "PASS exit 0; signed BUILD SUCCESSFUL in 24 s 809 ms; SignHap 1 s 509 ms",
+        "initialClosureFailure": "Concurrent clipboard type/import errors were fixed by owning task, then both gates reran successfully"
       },
       "scope": [
         "entry/src/main/ets/services/ai",
@@ -339,7 +342,12 @@
         "entry/src/main/cpp/ai",
         "unified-host-settings-pro-integration"
       ],
-      "reviewStatus": "PASS native, service/data, UI lifecycle and host-entry increment; no remaining findings"
+      "reviewStatus": "PASS native, service/data, UI lifecycle and host-entry increment; no remaining findings",
+      "head": "7bdf00f6d4f7765f7f490389d19b07c1c04b0454",
+      "reviewReceiptIds": [
+        "remote-ai4-native-ui-7bdf00f6-2026-09-08",
+        "remote-ai4-services-integration-7bdf00f6-2026-09-08"
+      ]
     }
   },
   "skillDelivery": {

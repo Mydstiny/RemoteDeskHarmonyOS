@@ -21,7 +21,7 @@
 
 ## 当前状态
 
-实现已接入应用，保留当前 Pro 活动分支。Native、服务/数据、页面生命周期均已分别复核；主列表分派增量复核亦 PASS。AI 分类中改选 RDP 的路由问题已修复并加实际回调回归。代码构建通过不代表真机验收。
+实现已提交为 `7bdf00f6`，保留当前 Pro 活动分支。Native、服务/数据、页面生命周期均已分别复核；主列表分派增量复核亦 PASS。AI 分类中改选 RDP 的路由问题已修复并加实际回调回归。代码构建通过不代表真机验收。
 
 - 安全通道使用已有 OpenSSL 的独立上下文：私有 CA、严格 SAN、TLS 1.3、客户端证书与密钥匹配；异步 NAPI 请求有取消、超时、环境退出清理。DNS 解析后只拨号数字地址；发出请求后的失败不自动重试写操作。
 - AI 主机、配对身份、偏好和操作回执置于独立加密 RDB。账号/恢复 epoch、主机 revision、受限撤权清理和单写者租约已接入。配置导出仅含白名单元数据，导入新增未配对主机；秘密与会话正文不进入配置备份。
@@ -36,6 +36,8 @@
 - UI：实际页面方法 6 项 PASS；现有主机分组测试 8 项、实际入口回调/策略 3 组 PASS。未模拟 ArkUI 渲染。
 - 当次门禁：default@OhosTestCompileArkTS BUILD SUCCESSFUL in 9 s 708 ms；签名 assembleHap BUILD SUCCESSFUL in 1 min 7 s 352 ms，含 SignHap，均 exit 0；Light 和 diff PASS。
 - 可重复脚本：scripts/tests/test_ai_native_tls.mjs；test_ai_races.cjs、test_ai_restore.cjs、test_ai_workspace.cjs、test_ai_import.cjs、test_ai_final_boundaries.cjs、test_ai_ui_lifecycle.cjs、test_ai_host_groups.cjs、test_ai_entries.cjs。ArkTS 脚本使用 AI_TYPESCRIPT_PATH 指向安装的 TypeScript；最后边界脚本需支持 node:sqlite 的 Node。
+
+- 元数据闭环重跑：testCompile 20 s 27 ms、签名 assembleHap 24 s 809 ms（SignHap 1 s 509 ms），均 exit 0；初次闭环遇到并行 clipboard 类型/导入错误，所属任务修复后重跑成功。41 个提交源码/测试文件 SHA-256 与已冻结 index 一致。
 
 ## 尚需验收
 
