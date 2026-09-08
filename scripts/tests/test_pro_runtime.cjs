@@ -133,7 +133,7 @@ test('real account transitions isolate Pro before their first await and through 
     '@kit.BasicServicesKit': { deviceInfo: { sdkApiVersion: 26, deviceType: '2in1' },
       systemDateTime: { TimeType: { STARTUP: 0 }, getUptime: () => 0 } },
     '@kit.ArkTS': { util: {} }, '@kit.ArkData': { relationalStore: {} },
-    '@kit.CryptoArchitectureKit': { cryptoFramework: {} }, '@kit.NetworkKit': { http: {} },
+    '@kit.CryptoArchitectureKit': { cryptoFramework: {} }, '@kit.NetworkKit': { http: {} }, '@kit.CloudFoundationKit': {},
     '@kit.AccountKit': { authentication: {} },
     [path.resolve(root, 'entry/src/main/ets/services/AccountKitService.ets')]: { AccountKitService: {} }
   });

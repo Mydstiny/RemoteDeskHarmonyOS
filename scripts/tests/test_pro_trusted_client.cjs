@@ -178,7 +178,7 @@ test('UTF-8 receipt and encoded HTTP limits are bounded without truncating recov
   f.database.prepare('UPDATE pro_pending SET data=?').run('x'.repeat(66561));
   await assert.rejects(() => f.client.pending(f.lease));
 });
-test('HTTP transport pins HTTPS, system validation, no redirects and the current Huawei identity', async t => {
+test('cloud transport pins function identity, normal loading and the current Huawei identity', async t => {
   let scope; const auth = { isAuthorized: () => true, getUnionID: () => 'test-union',
     getAccessToken: () => assert.fail('legacy token field must never be used as the Pro credential') };
   const f = await fixture(t, { mocks: {
@@ -187,22 +187,22 @@ test('HTTP transport pins HTTPS, system validation, no redirects and the current
   } });
   const { ownerScopeIdForUnionId } = f.load(path.resolve(base, '../AccountScopePolicy.ets'));
   scope = { kind: 'huawei_account', ownerScopeId: ownerScopeIdForUnionId('test-union'), generation: 1 };
-  const { ProHttpTransport } = f.load('ProHttpTransport');
-  const configuration = { trust: config, sessionUrl: 'https://test.example/session',
-    intentsUrl: 'https://test.example/intents', reconcileUrl: 'https://test.example/reconcile' };
-  const transport = new ProHttpTransport(configuration, {}); configuration.intentsUrl = 'https://evil.invalid/changed';
-  f.state.onHttp = async call => ({ responseCode: 200, result: call.url.endsWith('/session') ?
-    JSON.stringify(sessionReply(JSON.parse(call.configuration.extraData), scope.ownerScopeId, f.state.now)) : '{}' });
+  const { ProCloudTransport } = f.load('ProCloudTransport');
+  const configuration = { trust: config, functionName: 'pro-sandbox', functionVersion: '$latest' };
+  const transport = new ProCloudTransport(configuration, {}); configuration.functionName = 'changed';
+  f.state.onCloud = async call => ({ result: { version: 1, status: 200, body: call.data.operation === 'session' ?
+    JSON.stringify(sessionReply(JSON.parse(call.data.body), scope.ownerScopeId, f.state.now)) : '{}' } });
   assert.equal(await transport.post('intents', '{}', () => true), '{}');
-  const request = f.state.requests[1]; assert.equal(request.url, 'https://test.example/intents');
-  assert.equal(request.configuration.maxRedirects, 0); assert.equal(request.configuration.remoteValidation, 'system');
-  assert.equal(request.configuration.usingCache, false); assert.equal(request.configuration.maxLimit, 32768);
-  assert.equal(request.request.destroyed, 1);
+  const request = f.state.requests[1]; assert.equal(request.name, 'pro-sandbox');
+  assert.equal(request.version, '$latest'); assert.equal(request.loadMode, 0);
+  assert.equal(request.localUrl, undefined); assert.equal(request.data.operation, 'intents');
+  assert.equal(f.state.cloudInitializations.length, 1); assert.equal(f.state.cloudInitializations[0].region, 0);
   scope.ownerScopeId = other; await assert.rejects(() => transport.post('intents', '{}', () => true));
   assert.equal(f.state.requests.length, 2);
   scope.ownerScopeId = ownerScopeIdForUnionId('test-union'); auth.isAuthorized = () => false;
   await assert.rejects(() => transport.post('intents', '{}', () => true)); assert.equal(f.state.requests.length, 2);
-  assert.throws(() => new ProHttpTransport({ ...configuration, intentsUrl: 'http://test.example/intents' }, {}));
+  assert.throws(() => new ProCloudTransport({ ...configuration, functionName: 'https://invalid' }, {}));
+  assert.throws(() => new ProCloudTransport({ ...configuration, functionVersion: '../invalid' }, {}));
 });
 test('billing retains a late payment under its captured account and never finishes it locally', async t => {
   let calls = 0; let complete; let start;
@@ -292,17 +292,16 @@ test('actual App runtime renews daily, retries an offline boundary and keeps Rel
       [path.resolve(base, '../AccountSessionCoordinator.ets')]: { AccountSessionCoordinator: { getInstance: () => account } },
       [path.resolve(base, '../AccountKitService.ets')]: { AccountKitService: { getInstance: () => auth } },
       [path.resolve(base, 'ProBackendConfiguration.ets')]: { proBackendConfiguration: () => ({ trust: config,
-        sessionUrl: 'https://test.example/session',
-        intentsUrl: 'https://test.example/intents', reconcileUrl: 'https://test.example/reconcile' }) }
+        functionName: 'pro-sandbox', functionVersion: '$latest' }) }
     } });
     let offline = false; let status = 'verified'; let revision = 1;
-    f.state.onHttp = async call => {
+    f.state.onCloud = async call => {
       if (offline) throw new Error('offline');
-      if (call.url.endsWith('/session')) return { responseCode: 200,
-        result: JSON.stringify(sessionReply(JSON.parse(call.configuration.extraData), liveOwner, f.state.now)) };
-      return { responseCode: 200, result: JSON.stringify({ pendingDelivery: false,
+      if (call.data.operation === 'session') return { result: { version: 1, status: 200,
+        body: JSON.stringify(sessionReply(JSON.parse(call.data.body), liveOwner, f.state.now)) } };
+      return { result: { version: 1, status: 200, body: JSON.stringify({ pendingDelivery: false,
         signedEntitlement: f.signer.sign({ status, revision }, liveOwner, f.state.now,
-          JSON.parse(call.configuration.extraData).challenge) }) };
+          JSON.parse(call.data.body).challenge) }) } };
     };
     const { ProAppRuntime } = f.load('ProAppRuntime'); const app = ProAppRuntime.getInstance();
     app.runtime.subscribe(() => app.runtime.snapshot());

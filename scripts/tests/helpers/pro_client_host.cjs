@@ -12,7 +12,7 @@ const base = path.join(root, 'entry/src/main/ets/services/pro');
 
 function proClientHost(options = {}) {
   const state = { now: 1788753534000, uptime: 100000, verifies: 0, opens: 0, requests: [], nativeRequests: [], timers: new Map(),
-    beforeSql: () => {}, onHttp: async () => { throw new Error('offline'); }, ...options.state };
+    cloudInitializations: [], beforeSql: () => {}, onCloud: async () => { throw new Error('offline'); }, ...options.state };
   const database = new DatabaseSync(':memory:');
   const rdb = {
     get version() { return database.prepare('PRAGMA user_version').get().user_version; },
@@ -63,13 +63,10 @@ function proClientHost(options = {}) {
       return { updateSync: value => hash.update(Buffer.from(value.data)), digestSync: () => ({ data: new Uint8Array(hash.digest()) }) };
     }
   };
-  const http = { RequestMethod: { POST: 'POST' }, HttpDataType: { STRING: 'string' },
-    createHttp() {
-      const request = { destroyed: 0, destroy() { request.destroyed++; }, async request(url, configuration) {
-        const call = { url, configuration, request }; state.requests.push(call); return state.onHttp(call);
-      } }; return request;
-    }
-  };
+  const cloudFunction = { LoadMode: { NORMAL: 0 }, async call(parameters) {
+    const call = JSON.parse(JSON.stringify(parameters)); state.requests.push(call); return state.onCloud(call);
+  } };
+  const cloudCommon = { CloudRegion: { CHINA: 0 }, init(options) { state.cloudInitializations.push(options); } };
   state.onAuthorization = async request => ({ state: request.state,
     data: { unionID: 'test-union', authorizationCode: 'fixture-code-' + state.nativeRequests.length } });
   const authentication = {
@@ -84,7 +81,7 @@ function proClientHost(options = {}) {
     '@kit.ArkTS': { util }, '@kit.CryptoArchitectureKit': { cryptoFramework },
     '@kit.BasicServicesKit': { deviceInfo: { sdkApiVersion: 26, deviceType: '2in1' },
       systemDateTime: { TimeType: { STARTUP: 0 }, getUptime: () => state.uptime } },
-    '@kit.NetworkKit': { http }, '@kit.AbilityKit': {}, '@kit.AccountKit': { authentication },
+    '@kit.CloudFoundationKit': { cloudFunction, cloudCommon }, '@kit.AbilityKit': {}, '@kit.AccountKit': { authentication },
     '@kit.ArkData': { relationalStore: { SecurityLevel: { S3: 3 }, async getRdbStore(_context, config) {
       assert.equal(config.name, 'remotedesk_pro_private_v1.db'); assert.equal(config.encrypt, true);
       assert.equal(config.securityLevel, 3); state.opens++; return rdb;

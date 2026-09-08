@@ -33,3 +33,5 @@ App 的 `services/pro/ProTrustedEntitlementClient.ets` 验证固定 RS256 公钥
 设置 `PRO_TYPESCRIPT_PATH` 指向已安装 DevEco 的 TypeScript 模块，再用 Node 24+ 执行 `node --test scripts/tests/test_pro_signed_client.cjs scripts/tests/test_pro_trusted_client.cjs scripts/tests/test_pro_account_session.cjs`（仓库根）可复现 38 项 App 协议、真实 RSA、SQLite 事务和短期会话适配测试；`scripts/tests/test_pro_runtime.cjs` 覆盖现有权益/账号/图标策略。主机适配不等于原生 Account Kit、CryptoFramework、加密 RDB 或 IAP 实机验收。
 
 请求会话只保留在进程内；按墙上时钟与包含休眠的运行时间双重到期，提前 30 秒更新，时钟回拨也触发重建。账号/环境转换清空会话并取消请求；401 最多重新授权一次。每日权益边界由真实运行时定时器触发在线重验，暂时失败后最多五分钟重试，原签名离线期限保持不变。
+
+AGC App 入口使用原生 Cloud Foundation Kit 的 `cloudFunction.call` 和固定函数名/版本。HTTP 触发器保持客户端网关鉴权；`cloud-api.mjs` 接收版本化请求，仅映射 `session`、`intents`、`reconcile` 到原有可信 HTTP 业务。业务状态包含在 `{version,status,body}` 回包中，SDK 网关成功不代表购买或验权成功。通知和发货 worker 不属于这三个公开操作。SDK 没有请求取消 API；App 在账号切换或本地 20 秒期限后立即拒绝回包，四个原生并发名额直到底层 Promise 结束才释放。函数身份和验签公钥在完整部署验收前继续留空。

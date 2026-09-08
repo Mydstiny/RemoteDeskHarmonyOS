@@ -26,3 +26,8 @@
 - SDK 对未设置凭据的环境不自动初始化：它读取 `AGC_CONFIG` 或 `PROJECT_CREDENTIAL`，或由部署显式配置。AGC 实际运行验证为 Node 22.23.2 / Linux x64，当前探针未收到这两项托管凭据。不能把文档中的推荐路径当成实际已就绪。
 - `agc/package-lock.json` 固定全部 31 个 npm 包；Axios 显式固定 1.20.0。使用 `npm ci --ignore-scripts`。本次 `npm audit` 返回 0 项漏洞，这是当前检查结果而非永久安全保证。
 - `agc/SBOM.spdx.json` 保存每个发布归档 SHA-512，完整许可说明见同目录 `THIRD_PARTY_NOTICES.md`，可用 `npm run inventory` 重建。SDK 未附独立 LICENSE 文件，其 README 和 package.json 声明 ISC；通知保留该声明、源码版权以及 ISC 许可文本。所有依赖均只用于独立服务端部署。
+
+2026-09-08 核对原生 Cloud Foundation 入口：
+
+- 官方 [调用函数](https://developer.huawei.com/consumer/cn/doc/harmonyos-guides/cloudfoundation-call-function)、[公共模块](https://developer.huawei.com/consumer/cn/doc/harmonyos-references/cloudfoundation-cloudcommon) 和 [Node.js 入口](https://developer.huawei.com/consumer/cn/doc/harmonyos-guides/cloudfoundation-develop-function-nodejs)：函数调用不需要用户级 AuthProvider；用户账号归属仍由独立 Pro 短会话验证。HTTP 触发器需要应用侧网关鉴权，函数通过 callback 返回 JSON 兼容对象。
+- 当前 API26 `@hms.core.deviceCloudGateway.cloudFunction.d.ts`、`cloudCommon.d.ts` 证实 `call`、`init` 自 API12 提供；官方设备约束说明 PC/2in1 从 API23 支持。保留的最低 API23 覆盖所有目标设备；不使用本地 `localUrl`、安装预加载或不存在的取消接口。

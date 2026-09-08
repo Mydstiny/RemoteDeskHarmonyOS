@@ -10,7 +10,7 @@ import { ProRuntime } from './ProRuntime';
 import { proBackendConfiguration } from './ProBackendConfiguration';
 import { ProEntitlementClock } from './ProEntitlementClock';
 import { ProEntitlementStore } from './ProEntitlementStore';
-import { ProHttpTransport } from './ProHttpTransport';
+import { ProCloudTransport } from './ProCloudTransport';
 import { ProClientLease, ProPurchaseIntent, ProTrustedEntitlementClient, proPurchaseBatches } from './ProTrustedEntitlementClient';
 import { ProBillingBackend } from './ProBillingService';
 class ProVerifierBridge implements ProOrderVerifier {
@@ -54,7 +54,7 @@ export class ProAppRuntime implements ProBillingBackend {
         const configuration = proBackendConfiguration('sandbox');
         if (configuration !== null) {
           this.sandboxClient = new ProTrustedEntitlementClient(configuration.trust, this.store,
-            new ProHttpTransport(configuration, context), this.clock);
+            new ProCloudTransport(configuration, context), this.clock);
         }
       }
       this.initialized = true;
