@@ -74,6 +74,13 @@ impl CryptoChannel {
         self.streaming_writer.is_some()
     }
 
+    /// A timed-out receive may have consumed only part of a wire frame. File
+    /// uploads must drain that frame before sending more data or claiming the
+    /// sender has completed; the next bytes may be a revocation/error.
+    pub(crate) fn buffered_receive_bytes(&self) -> usize {
+        self.rx_buffer.len()
+    }
+
     /// 发送加密帧。nonce 仅在 TCP 写入成功后递增。
     pub fn send(&mut self, plaintext: &[u8]) -> io::Result<()> {
         if let Some(writer) = self.streaming_writer.as_ref() {
