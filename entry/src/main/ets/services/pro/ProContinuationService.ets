@@ -12,6 +12,7 @@ import { ProConnectionTransaction } from './ProConnectionTransaction';
 import { ProContinuationReceiptChannel } from './ProContinuationReceiptChannel';
 
 export const PRO_CONTINUATION_PARAM: string = 'remotedesk.pro.connection.v1';
+export const PRO_CONTINUATION_LIBRARY_PARAM: string = 'remotedesk.pro.connection.library';
 export const PRO_CONTINUATION_FEATURE: string = 'pro.connection.continuation';
 const SYNC_PERMISSION: Permissions = 'ohos.permission.DISTRIBUTED_DATASYNC';
 const DATA_OBJECT_CAPABILITY: string = 'SystemCapability.DistributedDataManager.DataObject.DistributedObject';
@@ -43,7 +44,7 @@ export function proContinuationContext(): ProAccessContext {
   context.requestablePermissions = [SYNC_PERMISSION];
   return context;
 }
-/** One main-ability continuation per process; PC session abilities remain outside this first adapter. */
+/** One explicitly prepared source per process, bound to its main or independent session window. */
 export class ProContinuationService {
   private static instance: ProContinuationService;
   private listeners: Array<() => void> = [];
@@ -157,7 +158,8 @@ export class ProContinuationService {
   }
   async prepare(context: common.UIAbilityContext, source: ProContinuationSource): Promise<boolean> {
     this.cancelSource();
-    if (context.abilityInfo.name !== 'EntryAbility' || !this.allowed() || !source.isCurrent() ||
+    if (['EntryAbility', 'RemoteSessionAbility'].indexOf(context.abilityInfo.name) < 0 ||
+        !this.allowed() || !source.isCurrent() ||
         !this.descriptionAllowed(source.describe(), context) || !Number.isInteger(source.windowId) || source.windowId <= 0) { return false; }
     const scope = AccountSessionCoordinator.getInstance().currentScope();
     if (scope.kind !== 'huawei_account' || !/^owner-[a-f0-9]{64}$/.test(scope.ownerScopeId)) { return false; }

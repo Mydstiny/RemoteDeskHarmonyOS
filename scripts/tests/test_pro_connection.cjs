@@ -90,7 +90,8 @@ function fixture() {
   const adapter = load(dir + 'ProConnectionHostAdapter.ets');
   const { ProConnectionTransaction } = load(dir + 'ProConnectionTransaction.ets');
   const { ProContinuationReceiptChannel } = load(dir + 'ProContinuationReceiptChannel.ets');
-  const { ProContinuationService, PRO_CONTINUATION_PARAM } = load(dir + 'ProContinuationService.ets');
+  const { ProContinuationService, PRO_CONTINUATION_PARAM, PRO_CONTINUATION_LIBRARY_PARAM } =
+    load(dir + 'ProContinuationService.ets');
   const service = ProContinuationService.getInstance();
   const envelope = () => ({ version: 1, purpose: 'continuation', transferId: 'b'.repeat(32),
     channelId: 'rd_' + 'c'.repeat(32), owner: state.scope.ownerScopeId, createdAt: state.now,
@@ -159,15 +160,109 @@ function fixture() {
         if (id === '@kit.AbilityKit') return { ...mocks[id], UIAbility,
           AbilityConstant: { ...constants, LaunchReason: { CONTINUATION: 3 } } };
         if (id === '../services/pro/ProContinuationService') return {
-          ProContinuationService: { getInstance: () => service }, PRO_CONTINUATION_PARAM
+          ProContinuationService: { getInstance: () => service }, PRO_CONTINUATION_PARAM,
+          PRO_CONTINUATION_LIBRARY_PARAM
         };
         return {}; // These dependencies are not used by the actual Want-receiving method.
       }
     }, { filename: file });
     return { ability: new module.exports.default(), events };
   }
+  function sessionAbility() {
+    const file = path.join(root, 'entry/src/main/ets/entryability/RemoteSessionAbility.ets');
+    const events = [];
+    class Storage {
+      constructor(values = {}) { this.values = { ...values }; }
+      get(key) { return this.values[key]; }
+      set(key, value) { this.values[key] = value; return true; }
+    }
+    class UIAbility {
+      constructor() {
+        this.context = { ...context,
+          abilityInfo: { name: 'RemoteSessionAbility', bundleName: 'test.remotedesk' },
+          restoreWindowStage() {
+            events.push(['restore']); if (state.restoreError) throw new Error('restore failed');
+          },
+          async terminateSelf() { events.push(['terminate']); },
+          async startAbility(want) {
+            events.push(['start', want]);
+            if (state.libraryWait) await state.libraryWait.promise;
+            if (state.libraryError) throw new Error('start failed');
+          }
+        };
+      }
+    }
+    const coordinator = {
+      activate(id) { events.push(['activate', id]); return state.windowRecord ?? null; },
+      resolve() { return state.windowRecord ?? null; },
+      registerTargetCloser() {}, release(id) { events.push(['release', id]); },
+      promoteTargetWindow: async () => true,
+      failBeforeReady(id, reason) { events.push(['failed', id, reason]); }
+    };
+    const module = { exports: {} };
+    vm.runInNewContext(ts.transpileModule(fs.readFileSync(file, 'utf8'), {
+      compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2021 }
+    }).outputText, { module, exports: module.exports, LocalStorage: Storage,
+      require(id) {
+        if (id === '@kit.AbilityKit') return { ...mocks[id], UIAbility,
+          AbilityConstant: { ...constants, LaunchReason: { CONTINUATION: 3 } },
+          bundleManager: { SupportWindowMode: { FULL_SCREEN: 1, SPLIT: 2, FLOATING: 3 } } };
+        if (id === '@kit.PerformanceAnalysisKit') return { hilog: { info() {}, warn() {}, error() {} } };
+        if (id === '../services/RemoteSessionWindowCoordinator') return {
+          RemoteSessionWindowCoordinator: { getInstance: () => coordinator }
+        };
+        if (id === '../services/pro/ProContinuationService') return {
+          ProContinuationService: { getInstance: () => service }, PRO_CONTINUATION_PARAM
+        };
+        return {};
+      }
+    }, { filename: file });
+    const ability = new module.exports.default();
+    const stage = {
+      storage: null,
+      async loadContent(page, storage) {
+        events.push(['load', page]); this.storage = storage;
+        if (state.loadWait) await state.loadWait.promise;
+        if (state.loadError) throw new Error('load failed');
+      },
+      getMainWindowSync() { return { getWindowProperties: () => ({ id: 9 }) }; }
+    };
+    function bootstrap() {
+      const file = path.join(root, 'entry/src/main/ets/pages/RemoteSessionWindowBootstrap.ets');
+      const original = fs.readFileSync(file, 'utf8');
+      const methods = ['aboutToAppear', 'aboutToDisappear', 'openContinuationLibrary', 'closeWindow'].map(name => {
+        const start = original.search(new RegExp(`^  (?:private )?(?:async )?${name}\\(`, 'm'));
+        assert(start >= 0, name);
+        const open = original.indexOf('{', start);
+        const scanner = ts.createScanner(ts.ScriptTarget.Latest, true, ts.LanguageVariant.Standard, original.slice(open));
+        let depth = 0, token;
+        do {
+          token = scanner.scan();
+          if (token === ts.SyntaxKind.OpenBraceToken) depth++;
+          if (token === ts.SyntaxKind.CloseBraceToken) depth--;
+        } while (depth > 0 && token !== ts.SyntaxKind.EndOfFileToken);
+        assert.equal(depth, 0);
+        return original.slice(start, open + scanner.getTextPos());
+      });
+      const module = { exports: {} };
+      vm.runInNewContext(ts.transpileModule('class Bootstrap {\n' + methods.join('\n') +
+        '\n}\nmodule.exports = Bootstrap;', {
+        compilerOptions: { target: ts.ScriptTarget.ES2021, module: ts.ModuleKind.CommonJS }
+      }).outputText, { module,
+        ProContinuationService: { getInstance: () => service }, PRO_CONTINUATION_LIBRARY_PARAM,
+        RemoteSessionWindowCoordinator: { getInstance: () => coordinator },
+        promptAction: { showToast() {} }
+      }, { filename: file });
+      const page = new module.exports();
+      Object.assign(page, { routing: false, live: false, errorMessage: '', openingContinuation: false,
+        getUIContext: () => ({ getSharedLocalStorage: () => stage.storage, getHostContext: () => ability.context }) });
+      return page;
+    }
+    return { ability, events, stage, bootstrap };
+  }
   return { state, context, policy, adapter, service, envelope, offer, ProConnectionTransaction,
-    ProContinuationReceiptChannel, entryAbility, proxyProfile, terminal, key: PRO_CONTINUATION_PARAM };
+    ProContinuationReceiptChannel, entryAbility, sessionAbility, proxyProfile, terminal,
+    key: PRO_CONTINUATION_PARAM, libraryKey: PRO_CONTINUATION_LIBRARY_PARAM };
 }
 
 test('wire serialization reads only whitelist fields and detaches mutable view', () => {
@@ -276,8 +371,8 @@ test('permission resolution after account switch cannot arm the previous account
   f.state.scope = { ...f.state.scope, generation: 2, ownerScopeId: 'owner-' + 'd'.repeat(64) };
   f.state.permission = true; wait.resolve(); assert.equal(await prepare, false); assert.equal(f.state.missions.length, 0);
 });
-test('wrong window, revoked feature and desktop ability cannot initiate continuation', async () => {
-  const f = fixture(); assert.equal(await f.service.prepare({ ...f.context, abilityInfo: { name: 'RemoteSessionAbility' } }, f.offer()), false);
+test('wrong window, revoked feature and unrelated ability cannot initiate continuation', async () => {
+  const f = fixture(); assert.equal(await f.service.prepare({ ...f.context, abilityInfo: { name: 'UnrelatedAbility' } }, f.offer()), false);
   await f.service.prepare(f.context, f.offer()); assert.equal(await f.service.onContinue(10, {}), 1);
   f.state.allowed = false; f.state.listeners.forEach(fn => fn());
   assert.equal(await f.service.onContinue(9, {}), 1); assert.equal(f.state.closed, undefined);
@@ -471,6 +566,173 @@ test('unconfirmed cold Want survives account bootstrap only as data and cannot e
   assert.equal(f.state.objects.length, 0);
   f.state.scope = bound; f.state.transitionListeners.forEach(fn => fn(false));
   assert.equal(await f.service.accept(f.context), f.state.host);
+});
+
+test('actual PC SSH preparation uses its independent mission and still requires a target receipt', async () => {
+  const f = fixture(); f.context.abilityInfo.name = 'RemoteSessionAbility';
+  const terminal = f.terminal(); terminal.isDesktopDevice = true;
+  await terminal.prepareProContinuation();
+  assert.equal(f.service.snapshot().sourceWindow, 9);
+  const remote = f.sessionAbility(); remote.ability.windowStage = remote.stage;
+  const parameters = {};
+  assert.equal(await remote.ability.onContinue(parameters), 0);
+  const wire = JSON.parse(parameters[f.key]);
+  assert.equal(wire.connection.protocol, 'ssh');
+  assert.equal(wire.connection.view.sshDirectory, '/home/alice/work');
+  assert.equal(parameters.pageStack, false); assert.equal(parameters.sourceExit, false);
+  assert.equal(f.service.closeConfirmedSource(9), false); assert.equal(f.state.closed, undefined);
+  f.state.nativeGeneration++; assert.equal(await remote.ability.onContinue({}), 1);
+});
+test('normal independent-window Wants cannot ingest continuation data or activate a foreign record', () => {
+  const f = fixture(); const remote = f.sessionAbility();
+  remote.ability.onCreate({ parameters: { [f.key]: JSON.stringify(f.envelope()),
+    pageStack: false, sourceExit: false, sessionWindowId: 'foreign-record' } }, { launchReason: 0 });
+  assert.equal(f.service.snapshot().incoming, false);
+  assert.deepEqual(remote.events, [['activate', 'foreign-record'], ['terminate']]);
+});
+test('multiton continuation synchronously restores only a validated offer and bypasses local record activation', async () => {
+  const f = fixture(); const remote = f.sessionAbility(), envelope = f.envelope();
+  remote.ability.onCreate({ parameters: { [f.key]: JSON.stringify(envelope),
+    pageStack: false, sourceExit: false, sessionWindowId: 'NEVER_ACTIVATE' } }, { launchReason: 3 });
+  assert.deepEqual(remote.events, [['restore']]);
+  assert.equal(f.service.incomingId(), envelope.transferId);
+  await remote.ability.onWindowStageRestore(remote.stage);
+  assert.equal(remote.stage.storage.get('proContinuationBootstrapId'), envelope.transferId);
+  assert.equal(remote.stage.storage.get('sessionWindowId'), undefined);
+  assert.equal(f.state.objects.length, 0); assert.equal(f.state.closed, undefined);
+});
+test('multiton malformed flags, replay and synchronous restore failure reject only the arriving offer', async () => {
+  for (const patch of [{ pageStack: true }, { sourceExit: true }, { pageStack: undefined }, { sourceExit: undefined }]) {
+    const f = fixture(), remote = f.sessionAbility();
+    remote.ability.onCreate({ parameters: { [f.key]: JSON.stringify(f.envelope()),
+      pageStack: false, sourceExit: false, ...patch } }, { launchReason: 3 });
+    assert.deepEqual(remote.events, [['terminate']]); assert.equal(f.service.snapshot().incoming, false);
+  }
+  const f = fixture(), envelope = f.envelope();
+  f.service.ingest(JSON.stringify(envelope));
+  const duplicate = f.sessionAbility();
+  duplicate.ability.onCreate({ parameters: { [f.key]: JSON.stringify(envelope), pageStack: false, sourceExit: false } },
+    { launchReason: 3 });
+  assert.deepEqual(duplicate.events, [['terminate']]); assert.equal(f.service.incomingId(), envelope.transferId);
+  f.service.cancelIncoming(); f.state.restoreError = true;
+  const next = { ...envelope, transferId: 'e'.repeat(32) }, remote = f.sessionAbility();
+  remote.ability.onCreate({ parameters: { [f.key]: JSON.stringify(next), pageStack: false, sourceExit: false } },
+    { launchReason: 3 });
+  assert.deepEqual(remote.events, [['restore'], ['terminate']]); assert.equal(f.service.snapshot().incoming, false);
+});
+test('cold PC receiver opens EntryAbility for initialization without any connection or readiness receipt', async () => {
+  const f = fixture(), remote = f.sessionAbility(), envelope = f.envelope();
+  remote.ability.onCreate({ parameters: { [f.key]: JSON.stringify(envelope), pageStack: false, sourceExit: false } },
+    { launchReason: 3 });
+  await remote.ability.onWindowStageRestore(remote.stage);
+  const page = remote.bootstrap(); page.aboutToAppear(); await settle();
+  const start = remote.events.find(event => event[0] === 'start');
+  assert.equal(start[1].abilityName, 'EntryAbility'); assert.equal(start[1].bundleName, 'test.remotedesk');
+  assert.deepEqual(Object.keys(start[1].parameters), [f.libraryKey]);
+  assert.equal(start[1].parameters[f.libraryKey], envelope.transferId);
+  assert.equal(remote.stage.storage.get('proContinuationForwarded'), true);
+  assert.equal(remote.events.at(-1)[0], 'terminate'); assert.equal(f.state.objects.length, 0);
+  remote.ability.onWindowStageDestroy(); remote.ability.onDestroy();
+  assert.equal(f.service.incomingId(), envelope.transferId);
+  assert.equal(f.service.snapshot().incomingCanAccept, true); assert.equal(f.state.closed, undefined);
+});
+test('failed PC library launch keeps the offer unconfirmed and closing its window cancels only that offer', async () => {
+  const f = fixture(), remote = f.sessionAbility(), envelope = f.envelope(); f.state.libraryError = true;
+  remote.ability.onCreate({ parameters: { [f.key]: JSON.stringify(envelope), pageStack: false, sourceExit: false } },
+    { launchReason: 3 });
+  await remote.ability.onWindowStageRestore(remote.stage);
+  const page = remote.bootstrap(); page.aboutToAppear(); await settle();
+  assert.ok(page.errorMessage.includes('无法打开主机列表'));
+  assert.equal(remote.stage.storage.get('proContinuationForwarded'), false);
+  assert.equal(f.service.snapshot().incomingCanAccept, true); assert.equal(f.state.objects.length, 0);
+  remote.ability.onWindowStageDestroy(); assert.equal(f.service.snapshot().incoming, false);
+});
+test('expired, replaced and destroyed PC handoffs cannot mark a newer offer forwarded', async () => {
+  for (const change of ['expired', 'replaced', 'destroyed']) {
+    const f = fixture(), remote = f.sessionAbility(), envelope = f.envelope();
+    f.state.libraryWait = deferred();
+    remote.ability.onCreate({ parameters: { [f.key]: JSON.stringify(envelope), pageStack: false, sourceExit: false } },
+      { launchReason: 3 });
+    await remote.ability.onWindowStageRestore(remote.stage);
+    const storage = remote.stage.storage, page = remote.bootstrap(); page.aboutToAppear(); await settle();
+    assert.equal(storage.get('proContinuationForwarded'), false);
+    const next = { ...envelope, transferId: 'e'.repeat(32) };
+    if (change === 'expired') f.state.now += 120000;
+    if (change === 'replaced') { f.service.cancelIncoming(); f.service.ingest(JSON.stringify(next)); }
+    if (change === 'destroyed') { page.aboutToDisappear(); remote.ability.onWindowStageDestroy(); }
+    f.state.libraryWait.resolve(); await settle();
+    assert.equal(storage.get('proContinuationForwarded'), false);
+    assert.equal(f.state.objects.length, 0); assert.equal(f.state.closed, undefined);
+    remote.ability.onDestroy();
+    if (change === 'replaced') assert.equal(f.service.incomingId(), next.transferId);
+  }
+});
+test('late PC bootstrap-load failure cannot cancel a later request', async () => {
+  const f = fixture(), remote = f.sessionAbility(), envelope = f.envelope();
+  f.state.loadWait = deferred(); f.state.loadError = true;
+  remote.ability.onCreate({ parameters: { [f.key]: JSON.stringify(envelope), pageStack: false, sourceExit: false } },
+    { launchReason: 3 });
+  const loading = remote.ability.onWindowStageRestore(remote.stage); await settle();
+  const next = { ...envelope, transferId: 'e'.repeat(32) };
+  f.service.cancelIncoming(); f.service.ingest(JSON.stringify(next));
+  f.state.loadWait.resolve(); await loading; remote.ability.onWindowStageDestroy();
+  assert.equal(f.service.incomingId(), next.transferId);
+});
+test('destroying an independent window disarms its own preparation without closing a remote session', async () => {
+  const f = fixture(); f.context.abilityInfo.name = 'RemoteSessionAbility';
+  await f.service.prepare(f.context, f.offer());
+  const unrelated = f.sessionAbility(); unrelated.ability.nativeWindowId = 8; unrelated.ability.onDestroy();
+  assert.equal(f.service.snapshot().sourceWindow, 9);
+  const owner = f.sessionAbility(); owner.ability.nativeWindowId = 9; owner.ability.onDestroy(); await settle();
+  assert.equal(f.service.snapshot().sourceWindow, 0); assert.equal(f.state.missions.at(-1), 1);
+  assert.equal(f.state.closed, undefined);
+});
+test('warm main-window handoff is only a notice for an already ingested matching offer', () => {
+  const f = fixture(), envelope = f.envelope(), main = f.entryAbility();
+  const notices = []; main.ability.windowStage = { getMainWindowSync: () => ({
+    getUIContext: () => ({ getPromptAction: () => ({ showToast: value => notices.push(value.message) }) })
+  }) };
+  main.ability.onNewWant({ parameters: { [f.libraryKey]: envelope.transferId } }, { launchReason: 0 });
+  assert.equal(notices.length, 0); assert.equal(f.service.snapshot().incoming, false);
+  f.service.ingest(JSON.stringify(envelope));
+  main.ability.onNewWant({ parameters: { [f.libraryKey]: 'd'.repeat(32) } }, { launchReason: 0 });
+  assert.equal(notices.length, 0);
+  main.ability.onNewWant({ parameters: { [f.libraryKey]: envelope.transferId } }, { launchReason: 0 });
+  assert.equal(notices.length, 1); assert.equal(f.state.objects.length, 0);
+  assert.equal(f.service.snapshot().incomingCanAccept, true);
+});
+test('a receiver-card continuation queued after acceptance cannot cancel a newer offer', async () => {
+  const file = path.join(root, 'entry/src/main/ets/components/ProContinuationControls.ets');
+  const source = fs.readFileSync(file, 'utf8'), start = source.indexOf('  private async accept()');
+  assert(start >= 0);
+  const open = source.indexOf('{', start);
+  const scanner = ts.createScanner(ts.ScriptTarget.Latest, true, ts.LanguageVariant.Standard, source.slice(open));
+  let depth = 0, token;
+  do {
+    token = scanner.scan();
+    if (token === ts.SyntaxKind.OpenBraceToken) depth++;
+    if (token === ts.SyntaxKind.CloseBraceToken) depth--;
+  } while (depth > 0 && token !== ts.SyntaxKind.EndOfFileToken);
+  assert.equal(depth, 0);
+  const method = source.slice(start, open + scanner.getTextPos());
+  for (const change of ['replaced', 'closed']) {
+    const f = fixture(), original = f.envelope(); f.service.ingest(JSON.stringify(original));
+    // The service has returned an authenticated host, but the UI's await
+    // continuation has not run yet. The actual card must recheck its captured id.
+    f.service.accept = async () => f.state.host;
+    const module = { exports: {} };
+    vm.runInNewContext(ts.transpileModule('class Card {\n' + method + '\n}\nmodule.exports = Card;', {
+      compilerOptions: { target: ts.ScriptTarget.ES2021, module: ts.ModuleKind.CommonJS }
+    }).outputText, { module, ProContinuationService: { getInstance: () => f.service }, getContext: () => f.context });
+    let connected = 0;
+    const card = new module.exports(); Object.assign(card, { busy: false, live: true, onConnect() { connected++; } });
+    const accepting = card.accept();
+    const next = { ...original, transferId: 'e'.repeat(32) };
+    if (change === 'replaced') { f.service.cancelIncoming(); f.service.ingest(JSON.stringify(next)); }
+    else card.live = false;
+    await accepting; assert.equal(connected, 0);
+    assert.equal(f.service.incomingId(), change === 'replaced' ? next.transferId : '');
+  }
 });
 
 (async () => {

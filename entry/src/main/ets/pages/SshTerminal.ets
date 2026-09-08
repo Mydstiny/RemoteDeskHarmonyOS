@@ -7042,7 +7042,7 @@ struct SshTerminal {
 
         Divider().strokeWidth(0.5).color(this.pal().cardBorder).width('100%')
         this.SshHeaderActionRow('新建 SSH 会话', '选择主机并打开新标签', 'new-session')
-        if (this.connected && !this.isDesktopDevice) {
+        if (this.connected) {
           ProContinuationControls({ onPrepare: (): void => { void this.prepareProContinuation(); } })
         }
         if (this.connected) {
@@ -8721,7 +8721,7 @@ struct SshTerminal {
   private async prepareProContinuation(): Promise<void> {
     this.showSshHeaderActionPopup = false;
     const host = HostSyncService.getInstance().getHost(this.hostId);
-    if (host === undefined || !this.connected || this.isDesktopDevice || this.terminalClosing) { return; }
+    if (host === undefined || !this.connected || this.terminalClosing) { return; }
     const page = this.pageGeneration; const binding = this.sshBindingGeneration;
     const session = this.sessionId; const hostId = this.hostId;
     const sessionGeneration = this.sshSessionGeneration;

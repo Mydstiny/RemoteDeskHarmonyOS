@@ -3,10 +3,10 @@
   "task": "pro-purchase-foundation",
   "branch": "codex/pro-purchase-foundation",
   "base": "8edc187868e94ed41634e8a6c4c4c072e3a48679",
-  "head": "089c9415dd7eeb67f920799ac0c4e05b9cf8415c",
-  "phase": "free-ui-primary-settings-checkpoint-pending",
+  "head": "4719e6dcd9974413d9323767f5de53b157d5abfe",
+  "phase": "pro-m5-pc-continuation-checkpoint-pending",
   "status": "in-progress",
-  "next": "Checkpoint/review primary settings, then continue M5 PC/RDP and M6; finish remaining forms and U0-U4/M7 runtime work when external prerequisites are supplied.",
+  "next": "Checkpoint/review PC independent SSH continuation, then RDP view/identity adapter and M6; finish free forms and authorized U0-U4/M7 device/deployment work.",
   "blockers": [
     "M3/U0-U4 device matrix and M4 PC real Share Kit/SFTP file-integrity acceptance remain unverified.",
     "M5 Share Kit App Linking domain, association and actual fragment delivery remain unverified; ServiceInteraction ACL is a separate path. M6 USB/RDP authenticator and phone-passkey RP/origin proof remain pending.",
@@ -92,21 +92,25 @@
       "entry/src/main/ets/components/moonlight/MoonlightSessionToolbar.ets",
       "entry/src/main/ets/services/RemoteSessionTopBarPolicy.ets",
       "entry/src/main/ets/components/ColorPickerSheet.ets",
-      "entry/src/main/ets/components/AppSettingsChoiceButton.ets"
+      "entry/src/main/ets/components/AppSettingsChoiceButton.ets",
+      "entry/src/main/ets/entryability/RemoteSessionAbility.ets",
+      "entry/src/main/ets/pages/RemoteSessionWindowBootstrap.ets"
     ],
     "findings": [],
-    "reviewedHead": "089c9415dd7eeb67f920799ac0c4e05b9cf8415c",
-    "reason": "Color panel two-commit scope independently PASS; primary settings checkpoint/review next. Full roadmap/device/release acceptance remains incomplete."
+    "reviewedHead": "4719e6dcd9974413d9323767f5de53b157d5abfe",
+    "reason": "Primary settings checkpoint independently PASS; PC continuation checkpoint/review next. Full roadmap and device/release acceptance incomplete."
   },
   "lastVerification": {
-    "testCompile": "PASS exit 0; BUILD SUCCESSFUL in 9 s 690 ms",
-    "assembleHap": "PASS exit 0; signed BUILD SUCCESSFUL in 11 s 32 ms; SignHap 928 ms",
+    "hostChecks": "PASS 45 connection, 27 runtime, 27 share and 49 SSH; actual production methods with platform mocks",
+    "testCompile": "PASS exit 0; BUILD SUCCESSFUL in 19 s 518 ms",
+    "assembleHap": "PASS exit 0; signed BUILD SUCCESSFUL in 24 s 154 ms",
+    "release": "PASS exit 0; BUILD SUCCESSFUL in 36 s 906 ms; actual Runtime/simulation/USB/sandbox pruning PASS",
+    "releaseAbcSha256": "05f4687700cf203ae6e212e1cf8bebadfd2d1cee7a816af279930ceb885c3449",
     "compliance": "PASS Light and git diff --check",
-    "behavior": "PASS 46 scoped builders and 55 original callback token sequences; two identical nested leaf actions consolidated. Six selector value sequences unchanged; all other source and every business/persistence/auth/protocol method byte-identical. 15 fold containers use native visibility.",
-    "sourceIntegrity": "Two complete source SHA256 hashes frozen before both successful code gates; compilation cache EPERM resolved by authorized retry",
-    "apiCompatibility": "Existing native Button/Toggle/Scroll/visibility and Flex spacing since12; no new API26-only import, global font or target change",
-    "device": "NOT RUN; actual fonts/keyboard/reader/window/performance and entire U0-U4 remain open; emulator license unanswered",
-    "scopeBoundary": "Free primary settings only; concurrent RDP/AI/transfer source is excluded."
+    "recovery": "Initial two ArkTS literal errors fixed. Shared native build first saw an in-progress missing android_phone module, then in-progress RustDesk ArkTS errors; owner completed its files and this final signed build passed. No RustDesk change included in PC review.",
+    "sourceIntegrity": "Ten owned source/test SHA256 hashes frozen before successful code gates",
+    "device": "NOT RUN; real Phone/Pad/PC source/target, cold/warm mission, account bootstrap, authentication and distributed receipts pending. Official continuation does not support the emulator.",
+    "scopeBoundary": "Ten PC continuation paths only; parallel RustDesk/AI/transfer implementation excluded."
   },
   "updated": "2026-09-08 Asia/Shanghai",
   "roadmapPaths": [
@@ -329,12 +333,12 @@
       "findings": []
     },
     "primarySettings": {
-      "status": "code-gates-passed-review-pending",
+      "status": "code-independently-reviewed-device-pending",
       "scope": [
         "entry/src/main/ets/pages/HostListPage.ets",
         "entry/src/main/ets/components/AppSettingsChoiceButton.ets"
       ],
-      "reviewStatus": "REVIEW_REQUIRED",
+      "reviewStatus": "PASS",
       "verification": {
         "testCompile": "PASS exit 0; BUILD SUCCESSFUL in 9 s 690 ms",
         "assembleHap": "PASS exit 0; signed BUILD SUCCESSFUL in 11 s 32 ms; SignHap 928 ms",
@@ -342,8 +346,19 @@
         "behavior": "PASS 46 scoped builders and 55 original callback token sequences; two identical nested leaf actions consolidated. Six selector value sequences unchanged; all other source and every business/persistence/auth/protocol method byte-identical. 15 fold containers use native visibility.",
         "sourceIntegrity": "Two complete source SHA256 hashes frozen before both successful code gates; compilation cache EPERM resolved by authorized retry",
         "apiCompatibility": "Existing native Button/Toggle/Scroll/visibility and Flex spacing since12; no new API26-only import, global font or target change",
-        "device": "NOT RUN; actual fonts/keyboard/reader/window/performance and entire U0-U4 remain open; emulator license unanswered"
-      }
+        "device": "NOT RUN; actual fonts/keyboard/reader/window/performance and entire U0-U4 remain open; emulator license unanswered",
+        "independentReview": {
+          "independentChecks": "Ten actual choice builders: twenty selected/unselected renders and ten one-call parameter checks. Ten actual inline callback cases for disabled/same-value theme, TOTP authentication allow/deny, Quick Exit failure toast and Live View auto-enable/save order. Platform stores/auth mocked.",
+          "testCompile": "PASS exit 0; code 9 s 690 ms; metadata 4 s 619 ms",
+          "assembleHap": "PASS exit 0; code signed 11 s 32 ms with SignHap 928 ms; metadata signed 5 s 713 ms with SignHap 901 ms",
+          "compliance": "Light/exact diff PASS; five parallel STATE subtrees and previous receipt hashes independently matched",
+          "device": "NOT RUN; API23/26 fonts, layout, keyboard, reader, performance and full U0-U4 remain open"
+        }
+      },
+      "reviewedCommit": "4719e6dcd9974413d9323767f5de53b157d5abfe",
+      "reviewerTaskId": "/root/review_pro_plan",
+      "reviewReceiptId": "base-ui-settings-4719e6dc-2026-09-08",
+      "findings": []
     }
   },
   "remoteAiPreparation": {
@@ -599,10 +614,10 @@
       }
     },
     "m5": {
-      "status": "continuation-and-sharing-code-reviewed-device-pending",
+      "status": "pc-continuation-code-gates-passed-review-pending",
       "planPath": "docs/codex/plans/2026-09-07-pro-m5-connection-continuation.md",
       "availability": "experimental",
-      "scope": "Reviewed Phone/Pad direct SSH continuation; new Share Kit SSH sender/free receiver and authenticated PC window view handoff under validation. App Link configuration, PC continuation and RDP remain open.",
+      "scope": "Prior direct SSH Phone/Pad and Share Kit code reviewed; third increment extends official continuation to independent PC SSH windows. RDP, real App Link and device matrix remain open.",
       "reviewerTaskId": "/root/review_pro_plan",
       "reviewStatus": "PASS",
       "findings": [],
@@ -641,6 +656,35 @@
           "releaseAbcSha256": "87648ef2ddb21f6ecd3d515c8ae96cba673d090c38b083b36798edb05488b519",
           "compliance": "PASS Light/diff",
           "boundary": "Unconfigured direct SSH code increment only; shared HAP includes other unreviewed work. Domain/manifest/fragment/cross-device/PC acceptance, PC continuation and RDP remain open."
+        }
+      },
+      "pcContinuation": {
+        "status": "code-gates-passed-review-pending",
+        "availability": "experimental",
+        "scope": [
+          "entry/src/main/ets/services/pro/ProContinuationService.ets",
+          "entry/src/main/ets/services/pro/ProFeatureCatalog.ets",
+          "entry/src/main/ets/components/ProContinuationControls.ets",
+          "entry/src/main/ets/entryability/EntryAbility.ets",
+          "entry/src/main/ets/entryability/RemoteSessionAbility.ets",
+          "entry/src/main/ets/pages/RemoteSessionWindowBootstrap.ets",
+          "entry/src/main/ets/pages/SshTerminal.ets",
+          "entry/src/main/module.json5",
+          "scripts/tests/test_pro_connection.cjs",
+          "scripts/tests/test_pro_runtime.cjs"
+        ],
+        "reviewStatus": "REVIEW_REQUIRED",
+        "reviewerTaskId": "/root/review_pro_plan",
+        "verification": {
+          "hostChecks": "PASS 45 connection, 27 runtime, 27 share and 49 SSH; actual production methods with platform mocks",
+          "testCompile": "PASS exit 0; BUILD SUCCESSFUL in 19 s 518 ms",
+          "assembleHap": "PASS exit 0; signed BUILD SUCCESSFUL in 24 s 154 ms",
+          "release": "PASS exit 0; BUILD SUCCESSFUL in 36 s 906 ms; actual Runtime/simulation/USB/sandbox pruning PASS",
+          "releaseAbcSha256": "05f4687700cf203ae6e212e1cf8bebadfd2d1cee7a816af279930ceb885c3449",
+          "compliance": "PASS Light and git diff --check",
+          "recovery": "Initial two ArkTS literal errors fixed. Shared native build first saw an in-progress missing android_phone module, then in-progress RustDesk ArkTS errors; owner completed its files and this final signed build passed. No RustDesk change included in PC review.",
+          "sourceIntegrity": "Ten owned source/test SHA256 hashes frozen before successful code gates",
+          "device": "NOT RUN; real Phone/Pad/PC source/target, cold/warm mission, account bootstrap, authentication and distributed receipts pending. Official continuation does not support the emulator."
         }
       }
     },

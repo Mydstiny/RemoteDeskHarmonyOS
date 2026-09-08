@@ -158,3 +158,5 @@ U1 首个代码增量：新增免费 `AppSheetHeader`，接入反馈页和 Pro �
 - 15 个设置折叠内容容器使用原生 Visibility.None，展开时按实际内容排版，避免旧 maxHeight 裁掉换行控件；原分区状态、折叠动画、List 滚动和偏好存储方法保留。主要行取消固定内容高度，七个内联开关和快捷退出开关取消视觉缩小，读屏名称明确；跟随系统禁用手动主题及 TOTP 身份验证回调保持。
 - 通用操作行、11 个内联行、Windows 凭据和实况模式使用可聚焦原生按钮；四个加密文本操作补为 44 vp 按钮。滚轮、控制栏和缩放入口复用通用行，合并两个原有的父子重复点击。实况模式选中时自动启用、退出设置保存失败提示、账号/备份/认证路径保持原行为。
 - 当前代码门禁 testCompile `BUILD SUCCESSFUL in 9 s 690 ms`；signed assembleHap `BUILD SUCCESSFUL in 11 s 32 ms`、SignHap 928 ms，均 exit 0；Light/diff PASS。首次默认沙箱编译在 DevEco 缓存 open 返回 EPERM，按授权权限重跑成功。源码检查覆盖 46 个声明 builder、55 个保持顺序与内容的事件回调，另两处相同父子动作合并；六组 selector 值序列不变，所有范围外源码（含全部业务、存储、账号和协议方法）逐字相同。两份源码 SHA256 冻结；提交后的独立复核及 API23/26 设备字体、输入、读屏和性能仍待完成。
+
+- 第七批 `4719e6dc` 已由原 reviewer 独立复核 PASS，无待修问题。独立检查 46 个 builder 范围、55 个回调、全部 enabled 条件、八组选项序列和 15 个原生折叠容器；十个实际 choice builder 的 20 个渲染及十个回调参数/单次调用通过。另十组实际内联回调覆盖主题禁用、TOTP 认证拒绝/成功、快捷退出保存失败及实况自动启用顺序，平台认证/存储使用 mock。元数据门禁 testCompile 4 s 619 ms、signed assembleHap 5 s 713 ms、SignHap 901 ms，Light/diff PASS；API23/26 真机和整体 U0–U4 未验收。

@@ -63,3 +63,17 @@
 最终独立复核 PASS：精确 ed537821 + 27716d2d + c64efc8e；最后补充按事务 ID 条件取消，旧页面迟到不能取消新目标。34 项 connection（含真实页面方法）独立通过；最终 compile24s782、signedDebug36s942、Release49s746，Light/diff/Runtime 实包剪枝 PASS。ABC 1211b5ab54a2090731ee37b3836aa89a14d7a2221e054ed11a1c6e1267d6a9db。共享构建当时包含正在开发的 M6 Debug USB 探针，不把该代码计入 M5 审查；全 M5 与真机跨设备仍未完成。
 
 本增量最终门禁：testCompile BUILD SUCCESSFUL in 21 s 270 ms；signed Debug BUILD SUCCESSFUL in 1 min 13 s 939 ms；Release BUILD SUCCESSFUL in 1 min 18 s 655 ms，全部 exit 0。Light/diff PASS。独立 Release 模拟/USB/sandbox 剪枝与空 App Link getter 审计 PASS，ABC 87648ef2ddb21f6ecd3d515c8ae96cba673d090c38b083b36798edb05488b519。产物包含并行 AI/文件传输开发代码，审查只覆盖上述增量与 Pro 剪枝。
+
+
+## 第三增量：PC 独立 SSH 窗口官方接续
+
+- `RemoteSessionAbility` 增加 continuable；保持原 multiton、exported=false 和普通会话授权入口。每个新 mission 先置 INACTIVE，仅当前实际窗口、native SSH generation、账号和 Pro 租约有效且用户明确准备后置 ACTIVE。进程同时只准备一个源窗口，关闭其他窗口不会取消它。
+- 接收只处理系统 CONTINUATION launchReason，同时要求 pageStack/sourceExit 均为 false。合法报文同步 restoreWindowStage；不激活跨设备传来的本机会话记录，不复制 native handle。重放、过期和无效报文拒绝并结束新建临时窗口，不取消原有有效收件。
+- onWindowStageRestore 使用既有独立窗口引导页，只向本机 EntryAbility 传已有短时事务 ID。冷主窗口执行原账号/数据库初始化；热主窗口仅提示已有收件，不改当前页面。回到主机页仍需明确确认，再执行原锁定、指纹、密码/密钥/MFA 流程。临时窗口启动和转交成功均不发送就绪回执。
+- 临时窗口使用本机 LocalStorage 标记转交成功；启动失败、页面关闭、账号变化、过期与迟到回调都按事务 ID 隔离。尚未转交时销毁会清理本事务；成功转交后销毁不清理主窗口收件。收件卡片迟到完成也只能取消自身事务。
+- 删除 SSH 页中两处 PC 排除条件，目录恢复和真实 native generation 检查复用已审查路径。功能仍为 API23+ Debug Pro 实验项，协议仍仅 SSH；Free/Release、缺协同能力或权限、未发布 RDP 路径均拒绝。
+- 45 项接续检查覆盖实际 ability、引导页及收件卡片的方法，包括普通 Want、冷/热 multiton restore、重复/过期、主窗口启动失败、旧页面迟到、按窗口取消和主窗口既有收件提示。另 27 项 runtime、27 项 share 和 49 项 SSH 检查 PASS。此处平台 API mock 不能证明实际设备系统回调顺序或跨设备成功。
+
+官方核对：[应用接续](https://developer.huawei.com/consumer/cn/doc/best-practices/bpta-continue-cast) 明确默认同 UIAbility 接续、multiton 接收走 onCreate、onWindowStageRestore 和同步 restoreWindowStage，且不支持模拟器。实际不同设备、同账号协同条件及 exported=false 的系统接续准入需要真机验收。
+
+本次代码门禁：testCompile `BUILD SUCCESSFUL in 19 s 518 ms`；signed Debug `BUILD SUCCESSFUL in 24 s 154 ms`；Release `BUILD SUCCESSFUL in 36 s 906 ms`，全部 exit 0；Light/diff 和实际 ABC 模拟/USB/sandbox 剪枝 PASS。ABC SHA256 `05f4687700cf203ae6e212e1cf8bebadfd2d1cee7a816af279930ceb885c3449`。初始 ArkTS 显式类型问题已修正；共享 native/ArkTS 构建遇到并行手机控制模块尚未落盘/未完成，待对应任务完成后成功重跑。十份本增量源码 hash 保持，其他任务代码不计入本范围。提交和独立复核待进行；全 M5、RDP 与真实跨设备验收仍未完成。

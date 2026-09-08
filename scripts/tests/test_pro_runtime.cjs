@@ -288,6 +288,23 @@ test('actual API23 icon adapter cold import and calls never access API26 members
   await assert.rejects(() => adapter.apply('rd_white'), /iconUnsupported/);
   assert.equal(accesses, 0);
 });
+test('continuation includes PC while retaining Debug, protocol, version and platform boundaries', () => {
+  const f = fixture(); f.runtime.setDebugMode('pro');
+  const context = { ...f.context, apiVersion: 23, protocol: 'ssh',
+    capabilities: ['SystemCapability.DistributedDataManager.DataObject.DistributedObject'],
+    grantedPermissions: ['ohos.permission.DISTRIBUTED_DATASYNC'] };
+  for (const device of ['phone', 'tablet', 'pc']) {
+    assert.equal(f.runtime.decision('pro.connection.continuation', { ...context, device }).executable, true);
+  }
+  for (const patch of [{ apiVersion: 22 }, { protocol: 'rdp' }, { capabilities: [] }, { grantedPermissions: [] }]) {
+    assert.equal(f.runtime.decision('pro.connection.continuation', { ...context, ...patch }).executable, false);
+  }
+  f.runtime.setDebugMode('free');
+  assert.equal(f.runtime.decision('pro.connection.continuation', context).executable, false);
+  const release = fixture(false); release.runtime.setDebugMode('pro');
+  assert.equal(release.runtime.decision('pro.connection.continuation', context).executable, false);
+  f.runtime.dispose(); release.runtime.dispose();
+});
 test('experimental SFTP receiver is limited to Debug Pro on supported PC and protocol', () => {
   const f = fixture(); const id = 'pro.file.knockTransfer';
   const context = { ...f.context, protocol: 'ssh', capabilities: ['SystemCapability.Collaboration.HarmonyShare'] };

@@ -1,10 +1,11 @@
-import { AbilityConstant, bundleManager, UIAbility, Want } from '@kit.AbilityKit';
+import { AbilityConstant, bundleManager, UIAbility, Want, wantConstant } from '@kit.AbilityKit';
 import { window } from '@kit.ArkUI';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import {
   RemoteSessionWindowCoordinator,
   RemoteSessionWindowRecord
 } from '../services/RemoteSessionWindowCoordinator';
+import { ProContinuationService, PRO_CONTINUATION_PARAM } from '../services/pro/ProContinuationService';
 
 const DOMAIN: number = 0x0025;
 const TAG: string = 'RemoteSessionAbility';
@@ -15,13 +16,25 @@ interface RemoteSessionWindowStorageState {
   sessionWindowFullscreen: boolean;
 }
 
+interface ProContinuationWindowStorageState {
+  proContinuationBootstrapId: string;
+  proContinuationForwarded: boolean;
+}
+
 export default class RemoteSessionAbility extends UIAbility {
   private sessionWindowId: string = '';
   private windowStage: window.WindowStage | null = null;
   private uiStorage: LocalStorage | null = null;
   private released: boolean = false;
+  private nativeWindowId: number = 0;
+  private continuationTransferId: string = '';
 
-  onCreate(want: Want, _launchParam: AbilityConstant.LaunchParam): void {
+  onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
+    ProContinuationService.getInstance().initializeMission(this.context);
+    if (launchParam.launchReason === AbilityConstant.LaunchReason.CONTINUATION) {
+      this.acceptContinuationWant(want);
+      return;
+    }
     const raw: Object | undefined = want.parameters?.['sessionWindowId'];
     const id: string = typeof raw === 'string' ? raw.trim() : '';
     const record: RemoteSessionWindowRecord | null =
@@ -41,6 +54,57 @@ export default class RemoteSessionAbility extends UIAbility {
       record.request.target, record.request.protocol);
   }
 
+  private acceptContinuationWant(want: Want): void {
+    const value: Object | undefined = want.parameters?.[PRO_CONTINUATION_PARAM];
+    const stack: Object | undefined = want.parameters?.[wantConstant.Params.SUPPORT_CONTINUE_PAGE_STACK_KEY];
+    const sourceExit: Object | undefined = want.parameters?.[wantConstant.Params.SUPPORT_CONTINUE_SOURCE_EXIT_KEY];
+    const service = ProContinuationService.getInstance();
+    if (stack !== false || sourceExit !== false || typeof value !== 'string' || !service.ingest(value)) {
+      void this.context.terminateSelf().catch((): void => {});
+      return;
+    }
+    this.continuationTransferId = service.incomingId();
+    try {
+      // Official continuation must restore synchronously. The only restored
+      // state is an unconfirmed offer; a foreign sessionWindowId is never activated.
+      this.context.restoreWindowStage(new LocalStorage());
+    } catch (_error) {
+      service.cancelIncoming(this.continuationTransferId);
+      this.continuationTransferId = '';
+      void this.context.terminateSelf().catch((): void => {});
+    }
+  }
+
+  async onContinue(parameters: Record<string, Object>): Promise<AbilityConstant.OnContinueResult> {
+    try {
+      const id: number = this.windowStage?.getMainWindowSync().getWindowProperties().id ?? 0;
+      return await ProContinuationService.getInstance().onContinue(id, parameters);
+    } catch (_error) { return AbilityConstant.OnContinueResult.REJECT; }
+  }
+
+  async onWindowStageRestore(stage: window.WindowStage): Promise<void> {
+    const id = this.continuationTransferId;
+    if (id === '' || this.windowStage !== null) { return; }
+    if (ProContinuationService.getInstance().incomingId() !== id) {
+      void this.context.terminateSelf().catch((): void => {});
+      return;
+    }
+    this.windowStage = stage;
+    const initial: ProContinuationWindowStorageState = {
+      proContinuationBootstrapId: id, proContinuationForwarded: false
+    };
+    const storage = new LocalStorage(initial);
+    this.uiStorage = storage;
+    try {
+      // A multiton target can start a cold process. EntryAbility owns account,
+      // database and authentication initialization; this temporary window only opens it.
+      await stage.loadContent('pages/RemoteSessionWindowBootstrap', storage);
+    } catch (_error) {
+      ProContinuationService.getInstance().cancelIncoming(id);
+      void this.context.terminateSelf().catch((): void => {});
+    }
+  }
+
   async onWindowStageCreate(windowStage: window.WindowStage): Promise<void> {
     this.windowStage = windowStage;
     const record: RemoteSessionWindowRecord | null =
@@ -58,6 +122,7 @@ export default class RemoteSessionAbility extends UIAbility {
     const storage: LocalStorage = new LocalStorage(initialStorage);
     this.uiStorage = storage;
     const mainWindow: window.Window = windowStage.getMainWindowSync();
+    this.nativeWindowId = mainWindow.getWindowProperties().id;
     try {
       await windowStage.loadContent('pages/RemoteSessionWindowBootstrap', storage);
     } catch (err) {
@@ -111,6 +176,7 @@ export default class RemoteSessionAbility extends UIAbility {
   }
 
   onWindowStageDestroy(): void {
+    this.releaseContinuation();
     RemoteSessionWindowCoordinator.getInstance().resolve(
       this.sessionWindowId)?.frameController.detach();
     this.windowStage = null;
@@ -140,7 +206,20 @@ export default class RemoteSessionAbility extends UIAbility {
     this.uiStorage?.set<boolean>('sessionWindowBackground', true);
   }
 
-  onDestroy(): void { this.releaseRuntime(); }
+  onDestroy(): void { this.releaseContinuation(); this.releaseRuntime(); }
+
+  private releaseContinuation(): void {
+    if (this.nativeWindowId > 0) {
+      ProContinuationService.getInstance().cancelSource(this.nativeWindowId);
+      this.nativeWindowId = 0;
+    }
+    if (this.continuationTransferId !== '') {
+      if (this.uiStorage?.get<boolean>('proContinuationForwarded') !== true) {
+        ProContinuationService.getInstance().cancelIncoming(this.continuationTransferId);
+      }
+      this.continuationTransferId = '';
+    }
+  }
 
   private releaseRuntime(): void {
     if (this.released || this.sessionWindowId.length === 0) { return; }

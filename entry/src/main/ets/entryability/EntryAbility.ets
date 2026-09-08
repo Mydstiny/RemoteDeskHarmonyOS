@@ -1,4 +1,5 @@
-import { ProContinuationService, PRO_CONTINUATION_PARAM } from '../services/pro/ProContinuationService';
+import { ProContinuationService, PRO_CONTINUATION_PARAM,
+  PRO_CONTINUATION_LIBRARY_PARAM } from '../services/pro/ProContinuationService';
 import { ProConnectionShareReceiver } from '../services/pro/ProConnectionShareReceiver';
 import { ProConnectionShareSender } from '../services/pro/ProConnectionShareSender';
 import { ProAppRuntime } from '../services/pro/ProAppRuntime';
@@ -375,6 +376,15 @@ export default class EntryAbility extends UIAbility {
   onNewWant(want: Want, launch: AbilityConstant.LaunchParam): void {
     this.acceptProContinuationWant(want, launch);
     this.acceptProConnectionShareWant(want, launch);
+    const libraryId: Object | undefined = want.parameters?.[PRO_CONTINUATION_LIBRARY_PARAM];
+    if (typeof libraryId === 'string' && libraryId !== '' &&
+        ProContinuationService.getInstance().incomingId() === libraryId) {
+      try {
+        this.windowStage?.getMainWindowSync().getUIContext().getPromptAction().showToast({
+          message: '收到同账号接续请求，请在主机列表确认', duration: 3000
+        });
+      } catch (_error) {}
+    }
   }
 
   private acceptProConnectionShareWant(want: Want, launch: AbilityConstant.LaunchParam): void {

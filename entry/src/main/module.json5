@@ -52,6 +52,7 @@
       },
       {
         "name": "RemoteSessionAbility",
+        "continuable": true,
         "srcEntry": "./ets/entryability/RemoteSessionAbility.ets",
         "description": "$string:EntryAbility_desc",
         "icon": "$media:layered_image",

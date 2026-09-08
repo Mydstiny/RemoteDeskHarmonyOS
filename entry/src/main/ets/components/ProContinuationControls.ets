@@ -71,7 +71,7 @@ export struct ProIncomingContinuationCard {
     try {
       const host = await service.accept(getContext(this) as common.UIAbilityContext);
       if (host !== null && this.live && id === service.incomingId()) { this.onConnect(host, id); }
-      else if (host !== null) { service.cancelIncoming(); }
+      else if (host !== null) { service.cancelIncoming(id); }
     } finally { if (this.live) { this.busy = false; } }
   }
   build() {
