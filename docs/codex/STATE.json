@@ -813,24 +813,68 @@
   },
   "fileTransferPreparation": {
     "planPath": "docs/codex/plans/2026-09-07-file-transfer-clipboard-remediation.md",
-    "status": "plan-only-awaiting-implementation-authorization",
+    "status": "implemented-scoped-code-reviewed-device-performance-pending",
     "entitlement": "free-file-and-clipboard-reliability",
-    "codeImplemented": false,
-    "implementationAuthorized": false,
+    "codeImplemented": true,
+    "implementationAuthorized": true,
     "baselineHead": "ab3a60ac19cc891bcfa8a7554d939c053ebbfd64",
-    "reviewerTaskId": "/root/review_transfer_plan",
-    "reviewKind": "plan-only",
-    "reviewReceiptId": "file-transfer-clipboard-plan-2026-09-07",
-    "reviewResult": "PLAN-ONLY PASS; no application implementation or device acceptance claim",
-    "next": "Await implementation authorization, then refresh F01-F17 baseline and execute T0-T9; keep the active Pro task and its review metadata unchanged.",
+    "reviewerTaskId": "/root/clipboard_core",
+    "reviewKind": "independent-incremental-code-review",
+    "reviewReceiptId": "transfer-second-final-page-services-42718408-2026-09-08",
+    "reviewResult": "PASS all implemented scopes through 42718408; original findings and adjacent RDP/RustDesk parent-alias cases closed; no aggregate device or release acceptance",
+    "next": "Obtain device/peer/target authorization, run API23/26 and real-peer content/performance/background matrix; preserve copy-only and no-blind-resume fallbacks; close the shared active branch only after parallel tasks are ready.",
     "validation": {
-      "recordedAt": "2026-09-07 Asia/Shanghai",
-      "workspaceHead": "bbc7fb535275e4db465111df8ed44d2aeb808fb3",
-      "structure": "F01-F17 and T0-T9 fully mapped; all 24 local source links exist",
-      "testCompile": "PASS exit 0; BUILD SUCCESSFUL in 933 ms; sandbox EPERM before compile resolved by authorized access to existing cache",
-      "assembleHap": "PASS exit 0; SignHap 1 s 942 ms; BUILD SUCCESSFUL in 14 s 290 ms",
-      "compliance": "PASS exit 0; Open-source compliance gate passed (Light).",
-      "device": "NOT RUN; T0-T9 implementation pending"
+      "recordedAt": "2026-09-08 Asia/Shanghai",
+      "testCompile": "PASS exit 0; BUILD SUCCESSFUL in 7 s 471 ms",
+      "assembleHap": "PASS exit 0; signed BUILD SUCCESSFUL in 8 s 665 ms; SignHap 894 ms",
+      "hostTests": "Final independent: page 34, clipboard client 13, system file provider 15, diagnostic 7, RDP descriptor 9 PASS. Retained same-run scope checks: ManagedTask 18, ArtifactStore 51, DirectoryProvider 17, Legacy 10, rich service 21, ClipboardBridge 30; native rich/lane/export 40 and sanitizer export 14 PASS.",
+      "rustAbi": "Rust author 318 PASS; independent --no-default-features 308 PASS (ten alacritty tests differ; not additive). arm64-v8a/x86_64 source builds and seven Cliprdr public exports PASS; final RDP native two-ABI syntax PASS.",
+      "sourceIntegrity": "11 final code/test SHA-256 values match after gates and at commit; 59 post-first-increment paths covered by four bounded non-author receipts. Mixed Pro/AI/UI changes excluded.",
+      "device": "NOT RUN; HDC target listed read-only, no installation/control/real-peer synthetic-file operation authorized; no device/performance acceptance",
+      "compliance": "PASS exit 0; Open-source compliance gate passed (Light), git diff --check"
+    },
+    "authorizedAt": "2026-09-08 Asia/Shanghai",
+    "implementationBase": "78fc9fce5",
+    "parallelAllowed": true,
+    "stageCommit": "427184081764e095ecf57dd35663140e3821832b",
+    "implementationReviewerTasks": [
+      "/root/clipboard_core",
+      "/root/rdp_native_transfer",
+      "/root/rustdesk_transfer_engine"
+    ],
+    "implementationReviewReceipts": [
+      "file-transfer-first-page-c8bf7c30-2026-09-08",
+      "file-transfer-first-rdp-storage-c8bf7c30-2026-09-08",
+      "file-transfer-first-rustdesk-clipboard-c8bf7c30-2026-09-08",
+      "transfer-second-rdp-rich-e85a4e63-2026-09-08",
+      "file-transfer-second-store-rust-e94e5fea-2026-09-08",
+      "transfer-second-final-page-services-42718408-2026-09-08",
+      "transfer-final-rdp-prefix-42718408-2026-09-08"
+    ],
+    "workPackages": {
+      "T0": "production-host-regression-baseline-ready; device-performance-baseline-missing",
+      "T1": "code-reviewed; multiwindow-and-system-runtime-pending",
+      "T2": "code-reviewed; peer-lock-storage-fault-matrix-pending",
+      "T3": "code-reviewed; device-background-notification-and-IO-deadline-matrix-pending",
+      "T4": "code-reviewed; Windows-device-reply-shared-drive-matrix-pending",
+      "T5": "code-reviewed; real-Windows-to-HarmonyOS-content-matrix-pending",
+      "T6": "code-reviewed; real-peer-auth-direct-relay-crossplatform-matrix-pending; no blind resume",
+      "T7": "code-reviewed; system-file-and-RustDesk-Cliprdr-plus-RDP-rich; provider-and-cross-app-matrix-pending",
+      "T8": "copy-only-fallback; full move unavailable, originals retained",
+      "T9": "scoped-code-reviews-and-host-gates-pass; device-performance-content-hash-release-pending"
+    },
+    "blockers": [
+      "No explicit authorization for Debug installation/control and synthetic-file peer/target operations; API23/26 Phone/Pad/PC and real peer/network matrix NOT RUN.",
+      "Memory peak, normal cancellation <=2s, global notification rate and actual background behavior unmeasured; proposed 8/32 MiB budgets not certified.",
+      "Conditional source deletion and trustworthy move receipt unavailable; full move remains unimplemented and source is preserved.",
+      "Shared codex/pro-purchase-foundation still includes unfinished parallel Pro/AI/UI work; no whole-branch push/PR/merge."
+    ],
+    "planReviewerTaskId": "/root/review_transfer_plan",
+    "planReviewReceiptId": "file-transfer-clipboard-plan-2026-09-07",
+    "metadataValidation": {
+      "testCompile": "PASS exit 0; BUILD SUCCESSFUL in 4 s 93 ms",
+      "assembleHap": "PASS exit 0; signed BUILD SUCCESSFUL in 5 s 390 ms; SignHap 875 ms",
+      "compliance": "Light/diff/state validation PASS; five document hashes unchanged through gates before recording these results"
     }
   }
 }

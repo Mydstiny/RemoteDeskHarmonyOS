@@ -337,17 +337,17 @@ ArkTS 测试模块受影响时另加 `ohosTest@OhosTestCompileArkTS`；若任务
 
 | 工作包 | 当前状态 | 已关闭诊断项 | 剩余条件 |
 |---|---|---|---|
-| 计划实体文件 | 已交付并复核，实施已授权 | 无实现项关闭 | 按 T0–T9 执行 |
-| T0 | in_progress | 无 | 已授权；基线刷新、生产回归与性能测量 |
-| T1 | first_increment_in_progress | 尚无代码审查收据 | T0 |
-| T2 | first_increment_in_progress | 尚无代码审查收据 | T1 |
-| T3 | first_increment_in_progress | 尚无代码审查收据 | T1/T2 |
-| T4 | first_increment_in_progress | 尚无代码审查收据 | T1–T3 |
-| T5 | first_increment_in_progress | 尚无代码审查收据 | T1–T3 |
-| T6 | first_increment_in_progress | 尚无代码审查收据 | T1–T3 |
-| T7 | pending | 无 | 所开放协议对应的 T5/T6 |
-| T8 | pending | 无 | 相应方向具备验证与条件删除能力 |
-| T9 | pending | 无 | 已实施增量与对应设备/网络验收 |
+| 计划实体文件 | 已交付并复核，实施已授权 | 无实现项关闭 | 保留设备与性能验收边界 |
+| T0 | code_regression_baseline_ready | F01–F17 均有生产实现/回归路径 | 未获取设备性能基线；见第 13 节 |
+| T1 | code_implemented_reviewed | F01/F02/F06/F07/F08/F09 的代码边界 | API23/26 多窗口/前后台/真实系统剪贴板 |
+| T2 | code_implemented_reviewed | F03/F04/F05/F12 的代码边界 | 真实对端锁/撤销、存储/授权故障设备验收 |
+| T3 | code_implemented_reviewed | F11/F14/F15/F16 的任务证据边界 | 真实后台存活、通知回收、故障 I/O 时延 |
+| T4 | code_implemented_reviewed | F04/F11/F17 共享盘隔离及设备回复事实 | Windows 服务器拒绝/卸载/持续写入/导出矩阵 |
+| T5 | code_implemented_reviewed | F10 直接 native partial 接收器 | Windows 文件管理器到 API23/26 接收/另存矩阵 |
+| T6 | code_implemented_reviewed | F13/F14/F15/F16/F17 文件会话路径 | 固定 peer、二次认证、跨平台目录/冲突/网络；未开放盲续传 |
+| T7 | code_implemented_reviewed | 真正 RustDesk Cliprdr、RDP PNG/HTML/RTF、有界系统文件读取 | 跨应用格式/URI 授权和延迟能力设备验收 |
+| T8 | copy_only_fallback | 没有基于发送完成、剪切标记或 Ctrl+X 自动删除源文件 | 完整移动未实现/不可用，条件删除/权限/目标提交证据不足 |
+| T9 | host_checks_ready_device_pending | 独立增量复核、1/2 受管并发、64 KiB 块、250 ms 进度节流 | 真机性能/内容 SHA-256/网络/后台矩阵和分支发布收口 |
 
 计划交付完成指：实体文件可读、F01–F17 全部映射、范围/依赖/源码入口/验收/回滚明确、共享队列可找到、文档适用门禁与审查如实记录。不得把这一状态改写为“文件传输修复完成”。
 
@@ -370,14 +370,14 @@ ArkTS 测试模块受影响时另加 `ohosTest@OhosTestCompileArkTS`；若任务
 
 **12. 本次文档交付记录**
 
-- 应用实现、测试、构建配置、依赖和运行时开关：本轮不修改。
+- 2026-09-07 计划交付阶段：应用实现、测试、构建配置、依赖和运行时开关未修改；不适用于后续已授权的实现增量。
 - 文档结构与链接检查：F01–F17、T0–T9 完整映射，24 个本地源码链接均有效；无本机用户目录路径。
 - 当次 `default@OhosTestCompileArkTS`：exit 0，`BUILD SUCCESSFUL in 933 ms`。首次沙箱启动因构建缓存写入 EPERM 未进入编译；授权访问现有缓存后成功，未改变构建路径或设置。
 - 当次签名 `assembleHap`：exit 0，`Finished :entry:default@SignHap... after 1 s 942 ms`，`BUILD SUCCESSFUL in 14 s 290 ms`。
 - 当次 Light：exit 0，`Open-source compliance gate passed (Light).`；`git diff --check` 和共享状态检查在提交前复核。
 - 独立计划 reviewer：`/root/review_transfer_plan`；结论及最终文件 hash 记录在 `REVIEW_RECEIPTS.jsonl` 的 `file-transfer-clipboard/plan` 范围。该审查不覆盖并发 Pro 实现。
 - 验证时共享工作区 HEAD 为 `bbc7fb535`；原诊断重点源码相对计划编写基线无变化。构建结果仅说明当次共享源码可编译/签名，不表示本计划的功能已经实现。
-- 设备、协议网络传输、功能修复验收：NOT RUN，所有 T0–T9 保持 pending。
+- 2026-09-07 计划交付时设备、协议网络传输、功能修复验收 NOT RUN；该时点 T0–T9 为 pending，后续状态见第 10/13 节。
 
 ### 2026-09-08 首批实现验证记录（未关闭工作包）
 
@@ -386,3 +386,27 @@ ArkTS 测试模块受影响时另加 `ohosTest@OhosTestCompileArkTS`；若任务
 定向验证：RDP native 50 项及双 ABI 10 项语法检查；Rust 289 项与 arm64-v8a/x86_64 源码构建；剪贴板 18、任务 16、真实文件系统 19、生产页面所有者/ACK/取消 12 项通过。首轮 testCompile 18 s 833 ms、签名 assembleHap 21 s 137 ms，均 exit 0；最后取消/释放修复后的 testCompile 7 s 112 ms、签名 assembleHap 8 s 578 ms（SignHap 909 ms）均 exit 0；Light/diff PASS。
 
 本记录不是整体完成或独立代码审查通过。缓存恢复/发布租约回收、目录批次与冲突策略、RustDesk Cliprdr、图片/富文本、复制意图策略及真机/性能验收继续实施。没有安装/操作在用设备或对用户文件进行网络传输。
+
+
+**13. 2026-09-08 实施增量与待验收边界**
+
+代码提交：首批 `4039c311` 与 `a307a8af/31b1051e/fabdb8db/c8bf7c30` 修复；第二批 `e85a4e63`；RustDesk 文件剪贴板公开接线与四项复核修复 `e94e5fea`。系统文件读取/双协议目录别名/统一诊断最后增量 `42718408`。均留在同一活动分支，不包含其他 Pro/AI/UI 工作的审查结论。
+
+- 首批三位非作者 reviewer 分工 PASS，关闭七项复核问题；对应收据保存在 REVIEW_RECEIPTS。第二批 RDP/rich/原生导出非作者复核 PASS；页面发现的两项 P2、Store 的 P2、Rust 文件剪贴板的 P1 已在 e94e5fea 修复。第三批 Store/Rust/FFI 非作者复核 PASS；页面/client 复核发现的大小写/NFC 父路径别名 P2 已在 42718408 修复并由原 reviewer 复核 PASS；邻接检查同步补 RDP native/整清单父路径一致性，避免选目录接收时漏掉别名子目录；两 native 文件由非作者独立 9 项回归 PASS。
+- 第二批新增 manifest 恢复与受管发布租约、历史目录显式恢复、文件/空目录逻辑树、目录另存、RustDesk 目录/二次认证与明确冲突策略、RDP 图片/HTML/RTF、原生授权 FD 导出。RustDesk Cliprdr 在第三批接入公开 FFI/业务/UI；已发布 FD 保持到真实撤销 drain，晚请求不接到新 offer。
+- 第二批门禁：testCompile `BUILD SUCCESSFUL in 9 s 374 ms`；签名 assembleHap `BUILD SUCCESSFUL in 1 min 216 ms`；Light/diff PASS，均 exit 0。第三批门禁：testCompile `BUILD SUCCESSFUL in 4 s 923 ms`；签名 assembleHap `BUILD SUCCESSFUL in 7 s 499 ms`；Light/diff PASS，均 exit 0。最后增量 `42718408` 的当次 testCompile `BUILD SUCCESSFUL in 7 s 471 ms`；签名 assembleHap `BUILD SUCCESSFUL in 8 s 665 ms`（SignHap 894 ms）；Light/diff PASS，均 exit 0，11 个源码/测试文件的 SHA-256 在门禁后及提交前匹配。
+- 最近覆盖证据：RDP rich/lane/FD export 40 项、原生 FD sanitizer 14 项；RichContent 21、ClipboardBridge 30、ManagedTask 18（含 100 次回放）、ArtifactStore 51、DirectoryProvider 17、LegacyRecovery 10；Rust 318 项及 arm64-v8a/x86_64 源码构建、7 个新增 Cliprdr FFI 导出验证 PASS。非作者另以无默认特性独立运行 Rust 308 项 PASS；两条命令配置不同，不将其相加。最后增量页面 34、RustDeskClipboardClient 13、SystemClipboardFileProvider 15、诊断投影/服务接线 7、RDP descriptor 9 项 PASS；诊断接线后的原 ManagedTask 18 项 PASS，RDP 修改执行了真实 compile_commands 双 ABI 语法检查。
+
+移动保持关闭：产品明确“跨端剪切按复制处理，源文件保留”。Picker/剪贴板 FD 为只读授权；源删除事务与逐项对账未实现，没有注入 Delete 替代协议移动。共享盘内由 Windows 执行的 move 是对端文件系统行为，不能作为应用移动验收。
+
+性能边界：受管任务默认 Phone/Pad 1 个、2in1 2 个；本地复制及 RDP 接收块为 64 KiB。Rust 下载解压块限制 128 KiB，Cliprdr 请求 4 MiB，待写队列 8 MiB/64 条。它们不覆盖所有序列化副本或系统缓存，不能推导单任务 ≤8 MiB/总量 ≤32 MiB。普通进度按每任务 250 ms 节流，终态即时发布，不代表整机全局通知 ≤4 次/秒。默认无进展 300 秒、取消 drain 5 秒、RDP 请求 15 秒/总体 30 分钟、Rust 写入 10 秒；正常取消 ≤2 秒尚无设备实测。没有证据的 native drain 保留 paused/commitUnknown 及 partial。
+
+持久记录包含 task/attempt、hostId、protocol、direction、sourceKind、leaseId、阶段/字节/证据与受限错误码，不存凭据、临时 URI 授权或正文。最后增量补入统一 15 字段诊断投影：task 与 account+host 仅输出有界诊断关联散列，所有枚举/错误码白名单，13 处入口填 native generation；按已有 250 ms 发布点输出，不序列化原记录，异常不影响任务。FNV 仅用于诊断关联，不是密码学匿名化或授权身份。跨通道热缓冲峰值与设备端诊断关联仍待实测。
+
+设备/对端 blocker：尚未取得本次 Debug 安装/操作及合成文件对端目标的明确授权；不干扰用户在用设备。API23/26 Phone/Pad/PC、固定 Windows RDP、RustDesk Windows/Linux/macOS/Android、LAN/直连/relay、500 ms RTT/限速/丢包、后台与低内存、目标端独立 SHA-256、外部文件管理器 URI 读取/富文本粘贴均 NOT RUN。无锁对端/未可靠标识来源保持暂停重收，未开放自动盲续传。OHOS 虚拟远端文件的延迟系统 getter 保持实验未开放；使用先完整接收再发布真实 URI 的回退。
+
+分支 blocker：同一 Pro/AI/UI 分支仍有并发未完成工作。完整任务尚未满足设备矩阵与发布条件，不 push/PR/merge 整个未完成分支，不宣称 T0–T9 全部完成。
+
+最后收据覆盖：首批三份 PASS 保留；后续四份分别覆盖 RDP/rich/原生导出、Store/Rust/FFI、页面/服务/系统读取/诊断、RDP 父路径。后三个代码增量的 59 个不同路径均有对应非作者范围，混合文件内的 Pro/AI/UI 变化明确排除。当前未遗留代码复核 finding；整体状态仍为设备/性能/发布待验收。
+
+文档收口当次门禁：testCompile `BUILD SUCCESSFUL in 4 s 93 ms`；签名 assembleHap `BUILD SUCCESSFUL in 5 s 390 ms`（SignHap 875 ms），均 exit 0；Light/diff/state PASS。五个状态/计划/收据文件在门禁前后 SHA-256 一致，随后仅记录本段真实结果。

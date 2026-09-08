@@ -4,6 +4,8 @@ Updated: 2026-09-08 Asia/Shanghai
 
 ## Now
 
+- File transfer / clipboard: [T0-T9 evidence and matrix](plans/2026-09-07-file-transfer-clipboard-remediation.md), implemented scopes independently reviewed through `42718408`. Next authorized device/peer/target acceptance, real content SHA-256, network/background/performance matrix. Copy-only/no-blind-resume boundaries remain; same branch awaits parallel Pro/AI/UI closure.
+
 - Remote AI: [AI4 client integration](plans/2026-09-08-remote-ai-client-integration.md) implemented with passing code gates; checkpoint `7bdf00f6` independently reviewed; next actual HarmonyOS pairing/model/LAN and Phone/Pad/PC acceptance. Native v0.3.0 hosts remain released/deployed; RustDesk transport later.
 
 0. Pro M7: vendor protocol, HTTP, CloudDB and signed App client independently reviewed (e3f47078+c5b647ff). Short-session 0b237613 independently PASS; dynamic CRL 78fc9fce independently PASS; native cloud entry cdc193958 and complete AGC package 2e0e7da8+42a0258b independently PASS. Upload consent/browser file access pending; next deploy protected sandbox API and timer-only worker, pin App configuration and accept native authorization/IAP. Real SDK control-only snapshots, four concurrent transactions and packaged Linux PKIX/API/worker checks PASS; actual full AGC deployment and notification endpoint pending. AGC test product/key verified and user-specified tester saved; actual IAP device acceptance pending. Continue free UI. M6 USB INIT 3ea2859e+ff31ef7d scoped code/Release review PASS; actual authentication still pending. First M5 direct SSH continuation ed537821+27716d2d+c64efc8e code review PASS; full sharing/PC/RDP and actual cross-device/PC knock/icon/UI acceptance remain open.
@@ -18,7 +20,6 @@ Updated: 2026-09-08 Asia/Shanghai
 
 - E2EE: [fault isolation, recovery and legacy compatibility](plans/2026-09-07-e2ee-resilience-legacy-compatibility.md) saved and independently reviewed; implementation awaits user authorization. Preserve healthy functions under partial failure and old enabled-App data; complete E0–E7 without widening to independent protocol encryption or treating the optional off state as a defect.
 
-- File transfer / clipboard: [F01-F17 / T0-T9 remediation plan](plans/2026-09-07-file-transfer-clipboard-remediation.md) saved and independently reviewed. Await explicit implementation authorization; first refresh the baseline, then session/clipboard isolation, RDP safety and shared task lifecycle before bidirectional transfer and conditional move. No implementation item is closed.
 
 
 - Base UI: c8240fd9 controls and d6e0f11c navigation independently PASS. Toolbar contrast/44vp targets and height budget have current compile/signed/Light/behavior gates; checkpoint/review next. Continue homepage/forms and U0-U4 device/performance matrix; emulator license confirmation pending. Public UI remains free.
