@@ -1,3 +1,4 @@
+import { appUiButtonFill, appUiButtonText } from '../common/AppUiColorPolicy';
 import { AppSettingsActionRow } from '../components/AppSettingsActionRow';
 import { AppUiMetrics } from '../common/AppUiMetrics';
 import { AiHostEditor } from '../components/ai/AiHostEditor';
@@ -1488,6 +1489,7 @@ struct HostListPage {
   private presetColors: string[] = ['#FFFFFF','#F0F0F0','#F0F5FA','#FFF8F0','#F5F0F8','#1A1A2E','#1E4377','#2D1B4E'];
   @State wallpaperItems: WallpaperItem[] = [];
   @State pageViewportHeight: number = 720;
+  @State private hostHeaderMeasuredHeight: number = 0;
   private inputDeviceListenerRegistered: boolean = false;
   private inputDevicePromptVisible: boolean = false;
   private externalInputPromptedThisSession: boolean = false;
@@ -5959,7 +5961,8 @@ struct HostListPage {
   private hostTopBarHeight(): number {
     // On xl the title and search field share one compact header row. Keep the
     // list spacer in sync so the first host card starts below that row.
-    return this.topSafeHeightVp() + (this.breakpoint === 'xl' ? 72 : 96);
+    return Math.max(this.hostHeaderMeasuredHeight,
+      this.topSafeHeightVp() + (this.breakpoint === 'xl' ? 72 : 96));
   }
 
   private titleTopBarHeight(): number {
@@ -12708,21 +12711,24 @@ struct HostListPage {
           Row() {
             Column() {
               Row().width('100%').height(44)
-              Column() {
-                if (this.groupedHostCardsActive()) {
-                  this.sidebarTab('远程主机', protocolIcon('rdp'), 0)
-                } else {
-                  this.sidebarTab('RDP 远程桌面', protocolIcon('rdp'), 0)
-                  this.sidebarTab('RustDesk', protocolIcon('rustdesk'), 1)
-                  this.sidebarTab('SSH 终端', protocolIcon('ssh'), 2)
-                  this.sidebarTab('VNC 主机', protocolIcon('vnc'), 3)
-                }
-                this.sidebarTab('远程 AI · Pro', protocolIcon('ai'), 8)
-                this.sidebarMoonlightTab()
-                this.sidebarTab('密钥保险库', protocolIcon('key_vault'), 4)
-                this.sidebarTab('2FA 验证器', protocolIcon('totp'), 5)
-                this.sidebarRelayTab('中继服务器', 6)
-              }.layoutWeight(1).padding({ top: 24 })
+              Scroll() {
+                Column() {
+                  if (this.groupedHostCardsActive()) {
+                    this.sidebarTab('远程主机', protocolIcon('rdp'), 0)
+                  } else {
+                    this.sidebarTab('RDP 远程桌面', protocolIcon('rdp'), 0)
+                    this.sidebarTab('RustDesk', protocolIcon('rustdesk'), 1)
+                    this.sidebarTab('SSH 终端', protocolIcon('ssh'), 2)
+                    this.sidebarTab('VNC 主机', protocolIcon('vnc'), 3)
+                  }
+                  this.sidebarTab('远程 AI · Pro', protocolIcon('ai'), 8)
+                  this.sidebarMoonlightTab()
+                  this.sidebarTab('密钥保险库', protocolIcon('key_vault'), 4)
+                  this.sidebarTab('2FA 验证器', protocolIcon('totp'), 5)
+                  this.sidebarRelayTab('中继服务器', 6)
+                }.width('100%').padding({ top: 24 })
+              }.width('100%').layoutWeight(1).scrollBar(BarState.Auto)
+                .edgeEffect(EdgeEffect.Spring)
               // 设置
               this.sidebarSettingsBtn()
             }
@@ -12800,12 +12806,13 @@ struct HostListPage {
         Button() {
           SymbolGlyph($r('sys.symbol.plus'))
             .fontSize(28)
-            .fontColor([Color.White])
+            .fontColor([appUiButtonText(this.accentColor)])
         }
         .width(hostListFabSizeVp(this.breakpoint))
         .height(hostListFabSizeVp(this.breakpoint))
         .borderRadius(hostListFabSizeVp(this.breakpoint) / 2).padding(0)
-        .backgroundColor(this.accentColor)
+        .backgroundColor(appUiButtonFill(this.accentColor))
+        .accessibilityText('添加')
         .onClick(() => {
           if (this.isDesktopDevice && this.breakpoint === 'xl') {
             // PC 全屏侧边栏: 所有主机协议共用同一添加 Sheet 宿主。
@@ -12950,89 +12957,112 @@ struct HostListPage {
   // ==================== 主机列表 ====================
   // PC 侧边栏 Tab 按钮
   @Builder sidebarTab(label: string, icon: Resource, index: number) {
-    Row() {
-      SymbolGlyph(icon).fontSize(28)
-        .fontColor([this.curTab === index ? this.accentColor : this.pal().text3])
-      Text(label)
-        .fontSize(16).fontWeight(FontWeight.Medium)
-        .fontColor(this.curTab === index ? this.accentColor : this.pal().text3)
-        .fontFamily(this.font()).margin({ left: 14 })
-    }
-    .width('100%').height(56).padding({ left: 24, right: 24 })
-    .borderRadius(12).margin({ left: 12, right: 12, bottom: 4 })
-    .backgroundColor(this.curTab === index ? this.pal().surface : Color.Transparent)
-    .onClick(() => {
-      this.curTab = index;
-      if (this.isDesktopDevice) {
-        const titles: string[] = ['RDP 远程主机', 'RustDesk 远程主机', 'SSH 终端', 'VNC 主机', '', '', '中继服务器'];
-        this.hostPageTitle = index === 8 ? '远程 AI · Pro' : titles[index] || '';
-        if (index === 4) { this.keyVaultInnerTab = 0; }
-        if (index === 5) { this.keyVaultInnerTab = 1; }
-      }
-      this.updateHostFilter();
-    })
+    Column() {
+      Button({ type: ButtonType.Normal }) {
+        Row() {
+          SymbolGlyph(icon).fontSize(28)
+            .fontColor([this.curTab === index ? appUiButtonText(this.accentColor) : this.pal().text2])
+          Text(label)
+            .fontSize(16).fontWeight(FontWeight.Medium)
+            .fontColor(this.curTab === index ? appUiButtonText(this.accentColor) : this.pal().text2)
+            .fontFamily(this.font()).margin({ left: 14 }).layoutWeight(1)
+        }
+        .width('100%').constraintSize({ minHeight: AppUiMetrics.settingsRowMinHeight })
+        .padding({ left: 24, right: 24, top: 12, bottom: 12 })
+      }.width('100%').padding(0).borderRadius(12)
+      .backgroundColor(this.curTab === index ? appUiButtonFill(this.accentColor) : Color.Transparent)
+      .focusable(true).accessibilityText(label)
+      .accessibilitySelected(this.curTab === index)
+      .onClick(() => {
+        this.curTab = index;
+        if (this.isDesktopDevice) {
+          const titles: string[] = ['RDP 远程主机', 'RustDesk 远程主机', 'SSH 终端', 'VNC 主机', '', '', '中继服务器'];
+          this.hostPageTitle = index === 8 ? '远程 AI · Pro' : titles[index] || '';
+          if (index === 4) { this.keyVaultInnerTab = 0; }
+          if (index === 5) { this.keyVaultInnerTab = 1; }
+        }
+        this.updateHostFilter();
+      })
+    }.width('100%').padding({ left: 12, right: 12, bottom: 4 })
   }
 
   @Builder sidebarRelayTab(label: string, index: number) {
-    Row() {
-      SymbolGlyph($r('sys.symbol.cloud_fill'))
-        .fontSize(28)
-        .fontColor([this.curTab === index ? this.accentColor : this.pal().text3])
-      Text(label)
-        .fontSize(16).fontWeight(FontWeight.Medium)
-        .fontColor(this.curTab === index ? this.accentColor : this.pal().text3)
-        .fontFamily(this.font()).margin({ left: 14 })
-    }
-    .width('100%').height(56).padding({ left: 24, right: 24 })
-    .borderRadius(12).margin({ left: 12, right: 12, bottom: 4 })
-    .backgroundColor(this.curTab === index ? this.pal().surface : Color.Transparent)
-    .onClick(() => {
-      this.curTab = index;
-      if (this.isDesktopDevice) {
-        const titles: string[] = ['RDP 远程主机', 'RustDesk 远程主机', 'SSH 终端', 'VNC 主机', '', '', '中继服务器'];
-        this.hostPageTitle = titles[index] || '';
-      }
-      this.updateHostFilter();
-    })
+    Column() {
+      Button({ type: ButtonType.Normal }) {
+        Row() {
+          SymbolGlyph($r('sys.symbol.cloud_fill'))
+            .fontSize(28)
+            .fontColor([this.curTab === index ? appUiButtonText(this.accentColor) : this.pal().text2])
+          Text(label)
+            .fontSize(16).fontWeight(FontWeight.Medium)
+            .fontColor(this.curTab === index ? appUiButtonText(this.accentColor) : this.pal().text2)
+            .fontFamily(this.font()).margin({ left: 14 }).layoutWeight(1)
+        }
+        .width('100%').constraintSize({ minHeight: AppUiMetrics.settingsRowMinHeight })
+        .padding({ left: 24, right: 24, top: 12, bottom: 12 })
+      }.width('100%').padding(0).borderRadius(12)
+      .backgroundColor(this.curTab === index ? appUiButtonFill(this.accentColor) : Color.Transparent)
+      .focusable(true).accessibilityText(label)
+      .accessibilitySelected(this.curTab === index)
+      .onClick(() => {
+        this.curTab = index;
+        if (this.isDesktopDevice) {
+          const titles: string[] = ['RDP 远程主机', 'RustDesk 远程主机', 'SSH 终端', 'VNC 主机', '', '', '中继服务器'];
+          this.hostPageTitle = titles[index] || '';
+        }
+        this.updateHostFilter();
+      })
+    }.width('100%').padding({ left: 12, right: 12, bottom: 4 })
   }
 
   @Builder sidebarMoonlightTab() {
-    Row() {
-      MoonlightBrandIcon({
-        iconSize: 28,
-        tint: this.curTab === DESKTOP_MOONLIGHT_TAB ? this.accentColor : this.pal().text3,
-        accessibilityLabel: 'Moonlight 主机'
+    Column() {
+      Button({ type: ButtonType.Normal }) {
+        Row() {
+          MoonlightBrandIcon({
+            iconSize: 28,
+            tint: this.curTab === DESKTOP_MOONLIGHT_TAB ? appUiButtonText(this.accentColor) : this.pal().text2,
+            accessibilityLabel: 'Moonlight 主机'
+          })
+          Text('Moonlight').fontSize(16).fontWeight(FontWeight.Medium)
+            .fontColor(this.curTab === DESKTOP_MOONLIGHT_TAB ? appUiButtonText(this.accentColor) : this.pal().text2)
+            .fontFamily(this.font()).margin({ left: 14 }).layoutWeight(1)
+        }
+        .width('100%').constraintSize({ minHeight: AppUiMetrics.settingsRowMinHeight })
+        .padding({ left: 24, right: 24, top: 12, bottom: 12 })
+      }.width('100%').padding(0).borderRadius(12)
+      .backgroundColor(this.curTab === DESKTOP_MOONLIGHT_TAB ? appUiButtonFill(this.accentColor) : Color.Transparent)
+      .focusable(true).accessibilityText('Moonlight 主机')
+      .accessibilitySelected(this.curTab === DESKTOP_MOONLIGHT_TAB)
+      .onClick((): void => {
+        this.curTab = DESKTOP_MOONLIGHT_TAB;
+        this.hostPageTitle = 'Moonlight 主机';
+        this.searchText = '';
+        this.refreshMoonlightDirectory();
       })
-      Text('Moonlight').fontSize(16).fontWeight(FontWeight.Medium)
-        .fontColor(this.curTab === DESKTOP_MOONLIGHT_TAB ? this.accentColor : this.pal().text3)
-        .fontFamily(this.font()).margin({ left: 14 })
-    }
-    .width('100%').height(56).padding({ left: 24, right: 24 })
-    .borderRadius(12).margin({ left: 12, right: 12, bottom: 4 })
-    .backgroundColor(this.curTab === DESKTOP_MOONLIGHT_TAB ? this.pal().surface : Color.Transparent)
-    .accessibilityText('Moonlight 主机')
-    .onClick((): void => {
-      this.curTab = DESKTOP_MOONLIGHT_TAB;
-      this.hostPageTitle = 'Moonlight 主机';
-      this.searchText = '';
-      this.refreshMoonlightDirectory();
-    })
+    }.width('100%').padding({ left: 12, right: 12, bottom: 4 })
   }
 
   @Builder sidebarSettingsBtn() {
-    Row() {
-      SymbolGlyph(protocolIcon('settings')).fontSize(28).fontColor([this.pal().text3])
-      Text('设置')
-        .fontSize(16).fontWeight(FontWeight.Medium)
-        .fontColor(this.pal().text3)
-        .fontFamily(this.font()).margin({ left: 14 })
-    }
-    .width('100%').height(56).padding({ left: 24, right: 24 })
-    .borderRadius(12).margin({ left: 12, right: 12, bottom: 16 })
-    .onClick(() => {
-      this.showSettingsPanel = false;
-      this.openSheetSafely((): void => { this.showSettingsPanel = true; });
-    })
+    Column() {
+      Button({ type: ButtonType.Normal }) {
+        Row() {
+          SymbolGlyph(protocolIcon('settings')).fontSize(28).fontColor([this.pal().text2])
+          Text('设置')
+            .fontSize(16).fontWeight(FontWeight.Medium)
+            .fontColor(this.pal().text2)
+            .fontFamily(this.font()).margin({ left: 14 }).layoutWeight(1)
+        }
+        .width('100%').constraintSize({ minHeight: AppUiMetrics.settingsRowMinHeight })
+        .padding({ left: 24, right: 24, top: 12, bottom: 12 })
+      }.width('100%').padding(0).borderRadius(12)
+      .backgroundColor(Color.Transparent)
+      .focusable(true).accessibilityText('设置')
+      .onClick(() => {
+        this.showSettingsPanel = false;
+        this.openSheetSafely((): void => { this.showSettingsPanel = true; });
+      })
+    }.width('100%').padding({ left: 12, right: 12, bottom: 16 })
   }
 
   private activeFilterProto: string = '';
@@ -13052,21 +13082,27 @@ struct HostListPage {
   }
 
   @Builder HostWorkspaceFilterBar() {
-    Column() {
-      Row() {
+    Scroll() {
+      Row({ space: 8 }) {
         ForEach(groupIdsForHosts(this.hosts), (groupId: string): void => {
-          Text(groupId).fontSize(12)
-            .fontColor(this.workspaceGroupId === groupId ? this.accentColor : this.pal().text2)
-            .margin({ right: 12 })
+          Button({ type: ButtonType.Normal }) {
+            Text(groupId).fontSize(12).fontFamily(this.font())
+              .fontColor(this.workspaceGroupId === groupId ? appUiButtonText(this.accentColor) : this.pal().text2)
+              .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+          }.constraintSize({ minHeight: AppUiMetrics.minTouchTarget, maxWidth: 200 })
+            .padding({ left: 14, right: 14, top: 8, bottom: 8 }).borderRadius(12)
+            .backgroundColor(this.workspaceGroupId === groupId ? appUiButtonFill(this.accentColor) : this.pal().surface)
+            .focusable(true).accessibilityText('分组：' + groupId)
+            .accessibilitySelected(this.workspaceGroupId === groupId)
             .onClick((): void => {
               this.workspaceGroupId = nextWorkspaceGroupId(this.workspaceGroupId, groupId);
               this.refreshWorkspaceView();
             })
         }, (groupId: string): string => groupId)
-      }
-      .width('100%').padding({ left: 4, right: 4 })
-    }
-    .width('100%').padding({ left: 16, right: 16, top: 4, bottom: 6 })
+      }.padding({ left: 4, right: 4 })
+    }.width('100%').scrollable(ScrollDirection.Horizontal)
+      .scrollBar(BarState.Auto).edgeEffect(EdgeEffect.Spring)
+      .padding({ left: 16, right: 16, top: 4, bottom: 6 })
   }
 
   @Builder HostGroupChip(host: RemoteHost) {
@@ -13786,12 +13822,12 @@ struct HostListPage {
         }
         Column() {
           MoonlightBrandIcon({ iconSize: this.breakpoint === 'sm' ? 24 : 26,
-            tint: '#FFFFFF', accessibilityLabel: 'Moonlight 主机' })
+            tint: appUiButtonText(this.accentColor), accessibilityLabel: 'Moonlight 主机' })
         }
-        .width(this.breakpoint === 'sm' ? 42 : 46)
-        .height(this.breakpoint === 'sm' ? 42 : 46)
+        .width(this.breakpoint === 'sm' ? AppUiMetrics.minTouchTarget : 46)
+        .height(this.breakpoint === 'sm' ? AppUiMetrics.minTouchTarget : 46)
         .borderRadius(this.breakpoint === 'sm' ? 21 : 14)
-        .backgroundColor(this.accentColor)
+        .backgroundColor(appUiButtonFill(this.accentColor))
         .justifyContent(FlexAlign.Center)
         .margin({ right: this.breakpoint === 'sm' ? 10 : 12 })
         .onClick((): void => {
@@ -13811,7 +13847,7 @@ struct HostListPage {
           }.width('100%')
           if (view.host.locked === true) {
             Text('已锁定 · 需验证')
-              .fontSize(this.breakpoint === 'sm' ? 12 : 13).fontColor(this.pal().text3)
+              .fontSize(this.breakpoint === 'sm' ? 12 : 13).fontColor(this.pal().text2)
               .fontFamily(this.font()).margin({ top: this.breakpoint === 'sm' ? 3 : 4 })
           } else {
             Text('MOONLIGHT  ·  ' + this.protectedMoonlightCardValue(
@@ -13835,7 +13871,9 @@ struct HostListPage {
             Button() {
               Text('⋯').fontSize(18).fontColor(this.pal().text)
             }
-            .width(36).height(36).borderRadius(18).backgroundColor(this.pal().surface)
+            .width(AppUiMetrics.minTouchTarget).height(AppUiMetrics.minTouchTarget)
+            .borderRadius(18).padding(0).backgroundColor(this.pal().surface)
+            .accessibilityText('Moonlight 主机操作')
             .bindPopup(this.hostActionPopupId === unifiedMoonlightHostCardKey(view.host.id), {
               builder: this.moonlightActionMenuBuilder(view),
               placement: Placement.BottomRight,
@@ -14359,6 +14397,11 @@ struct HostListPage {
     }.width('100%').height('100%')
   }
 
+  private flatHostIconFill(host: RemoteHost): string {
+    return appUiButtonFill(host.protocol === 'ssh' ? this.pal().editColor :
+      (host.protocol === 'rdp' ? this.accentColor : this.pal().success));
+  }
+
   @Builder flatRemoteHostListItem(host: RemoteHost) {
     ListItem() {
       Row() {
@@ -14374,12 +14417,12 @@ struct HostListPage {
           Image(host.protocol === 'ssh' ? $r('app.media.icon_terminal') :
             (host.protocol === 'rdp' ? $r('app.media.icon_desktop') : $r('app.media.icon_laptop')))
             .width(this.breakpoint === 'sm' ? 24 : 26)
-            .height(this.breakpoint === 'sm' ? 24 : 26).fillColor(Color.White)
+            .height(this.breakpoint === 'sm' ? 24 : 26).fillColor(appUiButtonText(this.flatHostIconFill(host)))
         }
-        .width(this.breakpoint === 'sm' ? 42 : 46).height(this.breakpoint === 'sm' ? 42 : 46)
+        .width(this.breakpoint === 'sm' ? AppUiMetrics.minTouchTarget : 46)
+        .height(this.breakpoint === 'sm' ? AppUiMetrics.minTouchTarget : 46)
         .borderRadius(this.breakpoint === 'sm' ? 21 : 14)
-        .backgroundColor(host.protocol === 'ssh' ? this.pal().editColor :
-          (host.protocol === 'rdp' ? this.accentColor : this.pal().success))
+        .backgroundColor(this.flatHostIconFill(host))
         .justifyContent(FlexAlign.Center).margin({ right: this.breakpoint === 'sm' ? 10 : 12 })
         .onClick((): void => { this.handleHostCardClick(host); })
 
@@ -14414,7 +14457,7 @@ struct HostListPage {
               .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
           } else {
             Text('已锁定 · 需验证').fontSize(this.breakpoint === 'sm' ? 12 : 13)
-              .fontColor(this.pal().text3).margin({ top: this.breakpoint === 'sm' ? 3 : 4 })
+              .fontColor(this.pal().text2).margin({ top: this.breakpoint === 'sm' ? 3 : 4 })
               .fontFamily(this.font())
           }
           Row() {
@@ -14459,14 +14502,14 @@ struct HostListPage {
                   } else {
                     SymbolGlyph($r('sys.symbol.bolt_fill')).fontSize(17).fontColor([this.accentColor])
                   }
-                }.width(36).height(36).borderRadius(18).padding(0).backgroundColor(this.pal().surface)
+                }.width(AppUiMetrics.minTouchTarget).height(AppUiMetrics.minTouchTarget).borderRadius(18).padding(0).backgroundColor(this.pal().surface)
                   .accessibilityText('检测 RustDesk 在线状态')
                   .enabled(!this.hostPresenceProbeBusyIds.has(host.id))
                   .onClick((): void => { void this.probeHostConnectivity(host); })
               }
               Button() { Text('⋯').fontSize(18).fontColor(this.pal().text) }
-                .width(36).height(36).borderRadius(18).backgroundColor(this.pal().surface)
-                .margin({ left: 4 })
+                .width(AppUiMetrics.minTouchTarget).height(AppUiMetrics.minTouchTarget).borderRadius(18).backgroundColor(this.pal().surface).padding(0)
+                .accessibilityText('主机操作').margin({ left: 4 })
                 .bindPopup(this.hostActionPopupId === remoteHostCardKey(host.id), {
                   builder: this.hostActionMenuBuilder(host), placement: Placement.BottomRight,
                   enableArrow: true, popupColor: this.pal().card, width: this.hostActionPopupWidth(host),
@@ -14570,6 +14613,36 @@ struct HostListPage {
     }
   }
 
+  @Builder hostSearchField() {
+    Row() {
+      SymbolGlyph($r('sys.symbol.magnifyingglass')).fontSize(18).fontColor([this.pal().text2])
+        .margin({ left: 14, right: 8 }).accessibilityLevel('no')
+      TextInput({ placeholder: '搜索主机...', text: this.searchText })
+        .id('host-search-input').accessibilityText('搜索主机')
+        .backgroundColor(Color.Transparent).height(AppUiMetrics.minTouchTarget)
+        .fontColor(this.pal().text).placeholderColor(this.pal().text2)
+        .fontFamily(this.font()).layoutWeight(1)
+        .onChange((v: string) => { this.onSearchChange(v); })
+      if (this.searchText !== '') {
+        Button({ type: ButtonType.Normal }) {
+          SymbolGlyph($r('sys.symbol.xmark')).fontSize(16).fontColor([this.pal().text2])
+        }.width(AppUiMetrics.minTouchTarget).height(AppUiMetrics.minTouchTarget)
+          .padding(0).borderRadius(22).backgroundColor(Color.Transparent)
+          .focusable(true).focusOnTouch(false).accessibilityText('清除主机搜索')
+          .onClick(() => {
+            this.searchText = '';
+            this.refreshFilteredHostView();
+            try { this.getUIContext().getFocusController().requestFocus('host-search-input'); }
+            catch (_error) { /* The owning tab may have left the tree during the click. */ }
+          })
+      }
+    }.width('100%').height(AppUiMetrics.minTouchTarget).borderRadius(22)
+      .backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
+      .alignItems(VerticalAlign.Center)
+      .shadow({ radius: 12, color: 'rgba(0,0,0,0.06)', offsetY: 2 })
+      .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
+  }
+
   @Builder hostContent() {
     Column() {
       Stack() {
@@ -14598,34 +14671,37 @@ struct HostListPage {
         // 批量选择工具栏 (带出入动画)
         if (this.hostSelectionMode) {
           ListItem() {
-            // desktop: 按钮全部左移 (侧边栏右侧); 手机/平板: 两端分布
+            // 保留桌面/手机计数差异；窄窗口与大字体允许操作按钮换行。
             if (this.isDesktopDevice) {
-              Row() {
+              Flex({ wrap: FlexWrap.Wrap, alignItems: ItemAlign.Center }) {
                 Button(this.hostSelectedIds.size === this.selectionKeysForCurrentView().length ? '取消全选' : '全选').fontSize(12)
-                  .height(32).borderRadius(8)
-                  .backgroundColor(this.pal().surface).fontColor(this.accentColor)
+                  .constraintSize({ minHeight: AppUiMetrics.minTouchTarget }).borderRadius(8)
+                  .margin({ bottom: 6 })
+                  .backgroundColor(this.pal().surface).fontColor(this.pal().text)
                   .onClick(() => {
                     if (this.hostSelectedIds.size === this.selectionKeysForCurrentView().length) {
                       this.hostSelectedIds = new Set();
                     } else { this.hostSelectedIds = new Set(this.selectionKeysForCurrentView()); }
                   })
                 Text('已选 ' + this.hostSelectedIds.size).fontSize(13).fontColor(this.pal().text2)
-                  .margin({ left: 12, right: 12 })
+                  .margin({ left: 12, right: 12, bottom: 6 })
                 if (this.hostSelectedIds.size > 0) {
                   Button('删除(' + this.hostSelectedIds.size + ')').fontSize(12)
-                    .height(32).borderRadius(8)
-                    .backgroundColor(this.pal().danger).fontColor('#FFFFFF')
-                    .margin({ right: 6 })
+                    .constraintSize({ minHeight: AppUiMetrics.minTouchTarget }).borderRadius(8)
+                    .backgroundColor(appUiButtonFill(this.pal().danger)).fontColor(appUiButtonText(this.pal().danger))
+                    .margin({ right: 6, bottom: 6 })
                     .onClick(() => { void this.doHostBatchDelete(); })
                 }
                 if (this.hostReorderEnabled) {
-                  Button('完成').fontSize(12).height(32).borderRadius(8)
-                    .backgroundColor(this.accentColor).fontColor('#FFFFFF')
-                    .margin({ right: 6 })
+                  Button('完成').fontSize(12)
+                    .constraintSize({ minHeight: AppUiMetrics.minTouchTarget }).borderRadius(8)
+                    .backgroundColor(appUiButtonFill(this.accentColor)).fontColor(appUiButtonText(this.accentColor))
+                    .margin({ right: 6, bottom: 6 })
                     .onClick(() => { this.commitHostReorder(); })
                 }
                 Button('取消').fontSize(12)
-                  .height(32).borderRadius(8)
+                  .constraintSize({ minHeight: AppUiMetrics.minTouchTarget }).borderRadius(8)
+                  .margin({ bottom: 6 })
                   .backgroundColor(this.pal().surface).fontColor(this.pal().text2)
                   .onClick(() => { this.cancelHostEdit(); })
               }.width('100%').padding({ left: 20, right: 20, bottom: 6 })
@@ -14638,35 +14714,37 @@ struct HostListPage {
                   )
                 )
             } else {
-              Row() {
+              Flex({ wrap: FlexWrap.Wrap, alignItems: ItemAlign.Center }) {
                 Button(this.hostSelectedIds.size === this.selectionKeysForCurrentView().length ? '取消全选' : '全选').fontSize(12)
-                  .height(32).borderRadius(8)
-                  .backgroundColor(this.pal().surface).fontColor(this.accentColor)
+                  .constraintSize({ minHeight: AppUiMetrics.minTouchTarget }).borderRadius(8)
+                  .margin({ bottom: 6 })
+                  .backgroundColor(this.pal().surface).fontColor(this.pal().text)
                   .onClick(() => {
                     if (this.hostSelectedIds.size === this.selectionKeysForCurrentView().length) {
                       this.hostSelectedIds = new Set();
                     } else { this.hostSelectedIds = new Set(this.selectionKeysForCurrentView()); }
                   })
-                Blank()
                 if (!this.hostReorderEnabled) {
                   Text('已选 ' + this.hostSelectedIds.size).fontSize(13).fontColor(this.pal().text2)
+                    .margin({ left: 12, right: 12, bottom: 6 })
                 }
-                Blank()
                 if (this.hostSelectedIds.size > 0) {
                   Button('删除(' + this.hostSelectedIds.size + ')').fontSize(12)
-                    .height(32).borderRadius(8)
-                    .backgroundColor(this.pal().danger).fontColor('#FFFFFF')
-                    .margin({ right: 6 })
+                    .constraintSize({ minHeight: AppUiMetrics.minTouchTarget }).borderRadius(8)
+                    .backgroundColor(appUiButtonFill(this.pal().danger)).fontColor(appUiButtonText(this.pal().danger))
+                    .margin({ right: 6, bottom: 6 })
                     .onClick(() => { void this.doHostBatchDelete(); })
                 }
                 if (this.hostReorderEnabled) {
-                  Button('完成').fontSize(12).height(32).borderRadius(8)
-                    .backgroundColor(this.accentColor).fontColor('#FFFFFF')
-                    .margin({ right: 6 })
+                  Button('完成').fontSize(12)
+                    .constraintSize({ minHeight: AppUiMetrics.minTouchTarget }).borderRadius(8)
+                    .backgroundColor(appUiButtonFill(this.accentColor)).fontColor(appUiButtonText(this.accentColor))
+                    .margin({ right: 6, bottom: 6 })
                     .onClick(() => { this.commitHostReorder(); })
                 }
                 Button('取消').fontSize(12)
-                  .height(32).borderRadius(8)
+                  .constraintSize({ minHeight: AppUiMetrics.minTouchTarget }).borderRadius(8)
+                  .margin({ bottom: 6 })
                   .backgroundColor(this.pal().surface).fontColor(this.pal().text2)
                   .onClick(() => { this.cancelHostEdit(); })
               }.width('100%').padding({ left: 20, right: 20, bottom: 6 })
@@ -14699,11 +14777,13 @@ struct HostListPage {
             Column() {
               SymbolGlyph($r('sys.symbol.desktop_fill'))
                 .fontSize(48).fontColor([this.pal().text3])
-              Text('还没有远程主机')
+              Text(this.searchText.trim().length > 0 || this.workspaceGroupId.length > 0 ?
+                '没有匹配的远程主机' : '当前列表暂无远程主机')
                 .fontSize(17).fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())
                 .margin({ top: 16 })
-              Text('点击底部 + 添加远程主机')
-                .fontSize(13).fontColor(this.pal().text3).fontFamily(this.font())
+              Text(this.searchText.trim().length > 0 || this.workspaceGroupId.length > 0 ?
+                '请调整搜索词或分组筛选' : '点击底部 + 添加远程主机')
+                .fontSize(13).fontColor(this.pal().text2).fontFamily(this.font())
                 .margin({ top: 6 }).lineHeight(20)
             }.width('100%').constraintSize({ minHeight: 400 }).justifyContent(FlexAlign.Center)
               .alignItems(HorizontalAlign.Center)
@@ -14750,55 +14830,19 @@ struct HostListPage {
               Row() {
                 Text(this.hostPageTitle).fontSize(27).fontWeight(FontWeight.Bold)
                   .fontColor(this.pal().text).fontFamily(this.font()).layoutWeight(1)
-              Row() {
-                Text('⌕').fontSize(18).fontColor(this.pal().text3).margin({ left: 14, right: 8 })
-                TextInput({ placeholder: '搜索主机...', text: this.searchText })
-                  .backgroundColor(Color.Transparent).height(40)
-                  .fontColor(this.pal().text).placeholderColor(this.pal().text3)
-                  .fontFamily(this.font()).layoutWeight(1)
-                  .onChange((v: string) => { this.onSearchChange(v); })
-                if (this.searchText !== '') {
-                  Text('✕').fontSize(14).fontColor(this.pal().text3).margin({ right: 14 })
-                    .onClick(() => {
-                      this.searchText = '';
-                      this.refreshFilteredHostView();
-                    })
-                }
-              }.width('50%').constraintSize({ maxWidth: 480 })
-                .height(44).borderRadius(22)
-                .backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
-                .alignItems(VerticalAlign.Center)
-                .shadow({ radius: 12, color: 'rgba(0,0,0,0.06)', offsetY: 2 })
-                .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
-              }.width('100%').height(52).padding({ left: 8, right: 8, bottom: 8 })
+                  .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+                Row() { this.hostSearchField() }.width('50%').constraintSize({ maxWidth: 480 })
+              }.width('100%').constraintSize({ minHeight: 52 }).padding({ left: 8, right: 8, bottom: 8 })
             }.width('100%').backgroundColor(Color.Transparent)
           } else {
             Column() {
               Row().width('100%').height(this.topSafeHeightVp() + this.titleOffsetY())
               Row() {
                 Text(this.hostPageTitle).fontSize(27).fontWeight(FontWeight.Bold)
-                  .fontColor(this.pal().text).fontFamily(this.font())
+                  .fontColor(this.pal().text).fontFamily(this.font()).width('100%')
+                  .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
               }.width('100%').padding({ left: 24, right: 24, bottom: 8 })
-              Row() {
-                Text('⌕').fontSize(18).fontColor(this.pal().text3).margin({ left: 14, right: 8 })
-                TextInput({ placeholder: '搜索主机...', text: this.searchText })
-                  .backgroundColor(Color.Transparent).height(40)
-                  .fontColor(this.pal().text).placeholderColor(this.pal().text3)
-                  .fontFamily(this.font()).layoutWeight(1)
-                  .onChange((v: string) => { this.onSearchChange(v); })
-                if (this.searchText !== '') {
-                  Text('✕').fontSize(14).fontColor(this.pal().text3).margin({ right: 14 })
-                    .onClick(() => {
-                      this.searchText = '';
-                      this.refreshFilteredHostView();
-                    })
-                }
-              }.width('92%')
-                .height(44).borderRadius(22)
-                .backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
-                .alignItems(VerticalAlign.Center)
-                .shadow({ radius: 12, color: 'rgba(0,0,0,0.06)', offsetY: 2 })
-                .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
+              Row() { this.hostSearchField() }.width('92%')
             }.width('100%').backgroundColor(Color.Transparent)
           }
         }
@@ -14806,6 +14850,12 @@ struct HostListPage {
         .padding({ left: 16, right: 16 })
         .position({ x: 0, y: 0 })
         .hitTestBehavior(HitTestMode.Transparent)
+        .onAreaChange((_old: Area, next: Area): void => {
+          const height: number = next.height as number;
+          if (Number.isFinite(height) && height > 0 && Math.abs(height - this.hostHeaderMeasuredHeight) >= 1) {
+            this.hostHeaderMeasuredHeight = height;
+          }
+        })
       }
       .width('100%').height('100%')
 

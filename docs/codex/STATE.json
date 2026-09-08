@@ -3,10 +3,10 @@
   "task": "pro-purchase-foundation",
   "branch": "codex/pro-purchase-foundation",
   "base": "8edc187868e94ed41634e8a6c4c4c072e3a48679",
-  "head": "d6e0f11cf1430822d8605348a5e7c4fea107692d",
-  "phase": "free-ui-session-toolbar-checkpoint-pending",
+  "head": "6e8de5b373e839f4e2e799b54ca9011e00bdf988",
+  "phase": "free-ui-homepage-navigation-checkpoint-pending",
   "status": "in-progress",
-  "next": "Commit and independently review the toolbar increment, then continue homepage/remaining forms and U0-U4 device/performance acceptance plus M5/M6/M7 external prerequisites.",
+  "next": "Commit/review homepage navigation and classic-list increment; continue grouped cards and remaining forms, U0-U4 device/performance acceptance and M5/M6/M7 prerequisites.",
   "blockers": [
     "M3/U0-U4 device matrix and M4 PC real Share Kit/SFTP file-integrity acceptance remain unverified.",
     "M5 Share Kit App Linking domain, association and actual fragment delivery remain unverified; ServiceInteraction ACL is a separate path. M6 USB/RDP authenticator and phone-passkey RP/origin proof remain pending.",
@@ -93,18 +93,18 @@
       "entry/src/main/ets/services/RemoteSessionTopBarPolicy.ets"
     ],
     "findings": [],
-    "reviewedHead": "d6e0f11cf1430822d8605348a5e7c4fea107692d",
-    "reason": "Exact d6e0f11c navigation and earlier public UI increments independently PASS; toolbar checkpoint/review next. Aggregate roadmap and device/deployment acceptance remain incomplete."
+    "reviewedHead": "6e8de5b373e839f4e2e799b54ca9011e00bdf988",
+    "reason": "Toolbar 6e8de5b3 and earlier UI scopes independently PASS; homepage checkpoint/review next. Entire roadmap and device/release acceptance remain incomplete."
   },
   "lastVerification": {
-    "testCompile": "PASS exit 0; BUILD SUCCESSFUL in 9 s 412 ms",
-    "assembleHap": "PASS exit 0; signed BUILD SUCCESSFUL in 11 s 276 ms; SignHap 912 ms",
+    "testCompile": "PASS exit 0; BUILD SUCCESSFUL in 10 s 203 ms",
+    "assembleHap": "PASS exit 0; signed BUILD SUCCESSFUL in 11 s 413 ms; SignHap 917 ms",
     "compliance": "PASS Light and git diff --check",
-    "behavior": "PASS 34 original ordinary methods, both component state blocks and event/focus/hit-test lines unchanged; shared policy changes only two touch constants and common import",
-    "geometry": "PASS 24600 actual scroll-function layouts across 176..1200vp and 1..24 actions; fixed buttons fit viewport and rail maximum",
-    "sourceIntegrity": "Three exact source hashes captured after successful code gates; retained for metadata gate and checkpoint comparison",
-    "device": "NOT RUN; temporary API24 emulator created, startup requires user acceptance of Huawei license. API23/26/real remote-input/fonts/keyboard/reader/performance remain pending",
-    "scopeBoundary": "Free UI toolbar increment only; other shared task changes are outside this review and device acceptance."
+    "behavior": "PASS full-source exclusion check: only seven declared UI ranges, two UI helpers, one measured-height state and one import; 317 original event calls audited, only duplicate search presentation merged with focus restoration and header measurement added. All other callbacks including drag/drop/select and account/protocol/storage/privacy code unchanged",
+    "sourceIntegrity": "One owned HostList source SHA-256 retained for metadata gates and exact checkpoint comparison",
+    "apiCompatibility": "SDK FocusController since12 and accessibilitySelected since13; no new API26-only import or app target change",
+    "device": "NOT RUN; actual API23/26 fonts/layout/keyboard/reader/performance and emulator license acceptance remain open",
+    "scopeBoundary": "This public UI increment only; other shared task source is outside this review and runtime acceptance."
   },
   "updated": "2026-09-08 Asia/Shanghai",
   "roadmapPaths": [
@@ -150,10 +150,10 @@
   "baseUiPreparation": {
     "planPath": "docs/codex/plans/2026-09-07-api26-base-ui-upgrade.md",
     "entitlement": "free",
-    "status": "u1-u2-controls-navigation-reviewed-u3-toolbar-in-progress",
+    "status": "u1-u3-three-increments-reviewed-homepage-navigation-in-progress",
     "codeImplemented": true,
     "reviewerTaskId": "/root/review_pro_plan",
-    "reviewResult": "PASS ca929ceb, c8240fd9 and d6e0f11c scoped public UI increments; toolbar and device/performance acceptance remain open",
+    "reviewResult": "PASS ca929ceb/c8240fd9/d6e0f11c/6e8de5b3 public UI code scopes; homepage, remaining grouped cards/forms and U0-U4 device/performance still open",
     "stageCommit": "ca929ceb3c419ef0336818074c19637f96137e7b",
     "publicControls": {
       "status": "code-independently-reviewed-device-pending",
@@ -219,13 +219,13 @@
       "findings": []
     },
     "sessionToolbar": {
-      "status": "code-gates-passed-review-pending",
+      "status": "code-independently-reviewed-device-pending",
       "scope": [
         "entry/src/main/ets/components/VncSessionToolbar.ets",
         "entry/src/main/ets/components/moonlight/MoonlightSessionToolbar.ets",
         "entry/src/main/ets/services/RemoteSessionTopBarPolicy.ets"
       ],
-      "reviewStatus": "REVIEW_REQUIRED",
+      "reviewStatus": "PASS",
       "verification": {
         "testCompile": "PASS exit 0; BUILD SUCCESSFUL in 9 s 412 ms",
         "assembleHap": "PASS exit 0; signed BUILD SUCCESSFUL in 11 s 276 ms; SignHap 912 ms",
@@ -233,13 +233,34 @@
         "behavior": "PASS 34 original ordinary methods, both component state blocks and event/focus/hit-test lines unchanged; shared policy changes only two touch constants and common import",
         "geometry": "PASS 24600 actual scroll-function layouts across 176..1200vp and 1..24 actions; fixed buttons fit viewport and rail maximum",
         "sourceIntegrity": "Three exact source hashes captured after successful code gates; retained for metadata gate and checkpoint comparison",
-        "device": "NOT RUN; temporary API24 emulator created, startup requires user acceptance of Huawei license. API23/26/real remote-input/fonts/keyboard/reader/performance remain pending"
-      }
+        "device": "NOT RUN; temporary API24 emulator created, startup requires user acceptance of Huawei license. API23/26/real remote-input/fonts/keyboard/reader/performance remain pending",
+        "independentReview": "Independent exact eight-file increment PASS. Three code hashes match checkpoint and original baselines match parent. All 34 ordinary methods, two state blocks and callbacks/focus/hit-test/gestures retained. Independent 196800 actual Moonlight layout/scroll combinations fit fixed controls in the parent and max-height. VNC 44vp collapsed target matches existing layout policy; four protocol handle positions follow the common constants. Five parallel task STATE subtrees unchanged."
+      },
+      "reviewedCommit": "6e8de5b373e839f4e2e799b54ca9011e00bdf988",
+      "reviewerTaskId": "/root/review_pro_plan",
+      "reviewReceiptId": "base-ui-toolbar-6e8de5b3-2026-09-08",
+      "findings": []
     },
     "deviceBaseline": {
       "physicalDevice": "API26 phone in active SSH use; no installation/control consent received",
       "temporaryEmulator": "API24 Phone instance created in task temporary directory; no app installed or runtime acceptance. Huawei license acceptance awaits user approval",
       "requiredMatrix": "API23/26 Phone/Pad/PC startup, layout, fonts, input, accessibility and quantitative performance remain open"
+    },
+    "homepageNavigation": {
+      "status": "code-gates-passed-review-pending",
+      "scope": [
+        "entry/src/main/ets/pages/HostListPage.ets"
+      ],
+      "reviewStatus": "REVIEW_REQUIRED",
+      "verification": {
+        "testCompile": "PASS exit 0; BUILD SUCCESSFUL in 10 s 203 ms",
+        "assembleHap": "PASS exit 0; signed BUILD SUCCESSFUL in 11 s 413 ms; SignHap 917 ms",
+        "compliance": "PASS Light and git diff --check",
+        "behavior": "PASS full-source exclusion check: only seven declared UI ranges, two UI helpers, one measured-height state and one import; 317 original event calls audited, only duplicate search presentation merged with focus restoration and header measurement added. All other callbacks including drag/drop/select and account/protocol/storage/privacy code unchanged",
+        "sourceIntegrity": "One owned HostList source SHA-256 retained for metadata gates and exact checkpoint comparison",
+        "apiCompatibility": "SDK FocusController since12 and accessibilitySelected since13; no new API26-only import or app target change",
+        "device": "NOT RUN; actual API23/26 fonts/layout/keyboard/reader/performance and emulator license acceptance remain open"
+      }
     }
   },
   "remoteAiPreparation": {

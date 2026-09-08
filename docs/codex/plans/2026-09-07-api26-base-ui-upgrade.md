@@ -124,5 +124,13 @@ U1 首个代码增量：新增免费 `AppSheetHeader`，接入反馈页和 Pro �
 - VNC 填色按钮共用主题色与黑白前景策略，修正白色等浅主题下不可读的图标/文字；手机浅色侧栏的“只读”提示改为深色。手机/PC 收起动作使用原生 Button，PC 收起最小高度补到 44 vp。
 - Moonlight 侧栏操作/固定/收起按钮从 40 vp 补到公共 44 vp；滚动预算同步扣除两个固定按钮、两处间隔、外侧 padding 与 border，避免小窗口退出/收起被推出边界。现有 176 vp 展开阈值、菜单、自动收起和所有业务回调保留。
 - 四协议复用的收起手柄点击范围由 40 vp 统一为公共 44 vp；22 vp 可见手柄不变，现有位置计算随常量更新。维持原 focusable(false)、focusOnTouch(false)、远程输入平面及现有 hit-test 约定，不用普通设置页焦点规则替换会话输入。
-- 当前代码门禁 testCompile `BUILD SUCCESSFUL in 9 s 412 ms`，signed assembleHap `BUILD SUCCESSFUL in 11 s 276 ms`、SignHap 912 ms，均 exit 0；Light/diff PASS。34 个原普通方法、两组件状态块和事件/焦点/命中调用行未改；实际滚动函数 24600 个布局组合（176–1200 vp、1–24 操作）通过固定操作区边界验证。三代码 hash 留存用于后续元数据门禁与 checkpoint 核对；独立复核待提交。
+- 当前代码门禁 testCompile `BUILD SUCCESSFUL in 9 s 412 ms`，signed assembleHap `BUILD SUCCESSFUL in 11 s 276 ms`、SignHap 912 ms，均 exit 0；Light/diff PASS。34 个原普通方法、两组件状态块和事件/焦点/命中调用行未改；实际滚动函数 24600 个布局组合（176–1200 vp、1–24 操作）通过固定操作区边界验证。三源码 hash 与 checkpoint `6e8de5b3` 一致，精确增量独立复核 PASS；复核额外运行 Phone/Pad × 四断点的 196800 个布局组合。记录后两门 PASS：testCompile 8 s 543 ms；signed assembleHap 10 s 508 ms、SignHap 980 ms。
 - U0 模拟器进展：在任务临时目录创建独立 API24 Phone 实例，未使用用户现有模拟器数据。启动被华为许可确认阻止，已向用户申请，尚未接受、安装 App 或取得布局证据。API24 可补充兼容布局证据，不能代替要求的 API23/26、真实设备或协议输入验收。
+
+## U2 首页导航与经典列表第四批（2026-09-08）
+
+- 桌面侧栏保留原协议/分组/AI 路由，四类导航改原生 Button 与已选读屏语义；自然行高和独立滚动适应较矮窗口，底部设置仍单独可达。已选项及添加按钮采用现有主题色与公共黑白前景，保留所有添加模式/弹层/权限回调。
+- 两种断点复用同一搜索 builder：清除按钮 44 vp，原立即清除与 debounce 输入保持不变，清除后尝试归还输入焦点；字段已离开组件树时安全忽略焦点异常。标题自然测高只用于列表顶部避让，原系统安全区下限保留。无匹配文案区分搜索/分组筛选，避免宣称用户没有任何主机。
+- 分组筛选使用原数据/切换函数并支持横向滚动，长标签截断且读屏保留完整名称；批量工具栏只改允许换行、44 vp 与填色前景，原选择/删除/排序/取消回调不变。经典远程与 Moonlight 行仅调整图标前景、44 vp 菜单/探测命中、读屏名称和锁定提示对比度，保留隐私遮蔽、长按/拖放/滑动与缓存边界。分组卡片的整体布局另行推进。
+- 本地 API26 SDK 确认 FocusController/getFocusController 自 API12，accessibilitySelected 自 API13，均早于保留的 API23 安装目标；没有新 API26-only 冷导入。
+- 当前代码两门：testCompile `BUILD SUCCESSFUL in 10 s 203 ms`；signed assembleHap `BUILD SUCCESSFUL in 11 s 413 ms`、SignHap 917 ms，均 exit 0；Light/diff PASS。完整源码范围核对仅七处 UI 区块、两个 UI helper、一处测量状态与一个 import；317 个原事件调用核对，差异限于合并重复搜索、清除焦点与新增标题测量，其他回调及账号/协议/存储/隐私投影代码未改。源码 hash 冻结供元数据门禁和提交核对；checkpoint 后独立复核待执行，真实字体/键盘/窗口/长列表性能仍待验收。
