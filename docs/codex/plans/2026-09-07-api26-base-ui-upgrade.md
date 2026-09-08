@@ -160,3 +160,15 @@ U1 首个代码增量：新增免费 `AppSheetHeader`，接入反馈页和 Pro �
 - 当前代码门禁 testCompile `BUILD SUCCESSFUL in 9 s 690 ms`；signed assembleHap `BUILD SUCCESSFUL in 11 s 32 ms`、SignHap 928 ms，均 exit 0；Light/diff PASS。首次默认沙箱编译在 DevEco 缓存 open 返回 EPERM，按授权权限重跑成功。源码检查覆盖 46 个声明 builder、55 个保持顺序与内容的事件回调，另两处相同父子动作合并；六组 selector 值序列不变，所有范围外源码（含全部业务、存储、账号和协议方法）逐字相同。两份源码 SHA256 冻结；提交后的独立复核及 API23/26 设备字体、输入、读屏和性能仍待完成。
 
 - 第七批 `4719e6dc` 已由原 reviewer 独立复核 PASS，无待修问题。独立检查 46 个 builder 范围、55 个回调、全部 enabled 条件、八组选项序列和 15 个原生折叠容器；十个实际 choice builder 的 20 个渲染及十个回调参数/单次调用通过。另十组实际内联回调覆盖主题禁用、TOTP 认证拒绝/成功、快捷退出保存失败及实况自动启用顺序，平台认证/存储使用 mock。元数据门禁 testCompile 4 s 619 ms、signed assembleHap 5 s 713 ms、SignHap 901 ms，Light/diff PASS；API23/26 真机和整体 U0–U4 未验收。
+
+
+## U2/U3 Pro 面板第八批（2026-09-08）
+
+- 按用户当前“继续本地推进、暂缓网络风险操作”的范围，只改 `ProPurchaseSheet` 与 `ProAppIconPanel` 展示；没有部署、真实购买、联网配对或安全检查绕过。现有 M6 未提交源码和既有审查记录不属于本增量。
+- 购买状态说明、价格说明、购买和恢复按钮并入同一可滚动内容区；关闭标题栏仍固定在外。操作按钮改为原生 Button 内自然高度 Text，至少 44 vp，长文本不再被固定 48 vp 高度限制。
+- 功能标题/发布状态使用可换行 Flex；移除固定行高，所有文字使用公共字体。标题徽标与主要按钮复用已有主题前景对比策略，说明和操作权限没有变更。
+- 图标选项采用宽度不超过 120 vp 的可换行卡片，标签不再限制两行；恢复默认和重新读取仍为原有独立操作，免费/已购/未加载/忙状态的边界保持。
+- 两组件的状态、订阅及全部非 Builder 业务方法与基线 `7277a86d3` 逐字一致；8 个 onClick 与 8 个 enabled 参数逐项一致，关闭回调、ProFeatureGate 和商品/图标参数保留。单 Scroll 内的状态、购买和恢复按钮位置已核对。
+- 本地 API23/API26 SDK 均支持所用 Flex wrap/space（space since12）、LengthMetrics 和公共尺寸属性；没有新增权限、协议或依赖。
+- 定向 27 项 Pro runtime/policy 检查 PASS，平台调用为 mock。testCompile `BUILD SUCCESSFUL in 9 s 785 ms`；signed assembleHap `BUILD SUCCESSFUL in 8 s 865 ms`、SignHap 890 ms，均 exit 0；Light/diff PASS。
+- 代码 checkpoint `dc19ebcf`；Release `BUILD SUCCESSFUL in 23 s 437 ms`、SignHap 890 ms，exit 0；冻结实包的 Pro runtime、USB Debug 与 sandbox 门剪枝 PASS，ABC `321c5bed296f91fff81120bc0793ff88ece658ff2996fcb2a129de9e5f0500a4`。独立 `/root/review_pro_ui8` 对精确两文件 PASS，无待修 finding：35 个状态/普通方法声明、8 个点击回调、8 个 enabled 条件保持；独立执行全部点击回调与 busy/product/testing 边界，27 runtime 通过，冻结 Release ABC 哈希与日志一致。实际 API23/26 Phone/Pad/PC 大字体、窄窗/矮窗、触控/键盘/读屏和图标状态未验收；本批不代表 U0–U4 全量完成。

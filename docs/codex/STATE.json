@@ -3,7 +3,7 @@
   "task": "pro-purchase-foundation",
   "branch": "codex/pro-purchase-foundation",
   "base": "8edc187868e94ed41634e8a6c4c4c072e3a48679",
-  "head": "21da46aae6e6c8a97fd9a03dd49f224222ee4e29",
+  "head": "dc19ebcf7aeb23ccba2b34de11990e0e0180cdf3",
   "phase": "Full roadmap active; M6 real-library USB capability probe implemented, checkpoint review and hardware/RDPEWA acceptance pending",
   "status": "in-progress",
   "next": "Independently review the M6 library probe, then implement authenticated RDPEWA/session/PIN transport and remaining free forms; complete available device and M7 deployment acceptance.",
@@ -272,10 +272,10 @@
   "baseUiPreparation": {
     "planPath": "docs/codex/plans/2026-09-07-api26-base-ui-upgrade.md",
     "entitlement": "free",
-    "status": "u1-u3-five-increments-reviewed-color-panel-in-progress",
+    "status": "u1-u3-eight-increments-code-reviewed-device-pending",
     "codeImplemented": true,
     "reviewerTaskId": "/root/review_pro_plan",
-    "reviewResult": "PASS public UI scopes through 87e384cc; color panel, primary settings/forms and U0-U4 device/performance remain open",
+    "reviewResult": "Eight public UI batches independently PASS through dc19ebcf Pro panels; remaining forms and U0-U4 device/performance acceptance remain open.",
     "stageCommit": "ca929ceb3c419ef0336818074c19637f96137e7b",
     "publicControls": {
       "status": "code-independently-reviewed-device-pending",
@@ -475,6 +475,29 @@
       "reviewerTaskId": "/root/review_pro_plan",
       "reviewReceiptId": "base-ui-settings-4719e6dc-2026-09-08",
       "findings": []
+    },
+    "proPanels": {
+      "status": "code-independently-reviewed-device-pending",
+      "base": "7277a86d3597939c68909e11c844c9d19160d8d5",
+      "head": "dc19ebcf7aeb23ccba2b34de11990e0e0180cdf3",
+      "scope": [
+        "entry/src/main/ets/components/ProPurchaseSheet.ets",
+        "entry/src/main/ets/components/ProAppIconPanel.ets"
+      ],
+      "reviewTaskId": "/root/review_pro_ui8",
+      "reviewStatus": "PASS",
+      "validation": {
+        "testCompile": "PASS exit 0; BUILD SUCCESSFUL in 9 s 785 ms",
+        "assembleHap": "PASS exit 0; signed BUILD SUCCESSFUL in 8 s 865 ms; SignHap 890 ms",
+        "hostChecks": "PASS 27 Pro runtime/policy checks; two component state/business blocks and 8 click/8 enabled expressions unchanged",
+        "compliance": "PASS Light and git diff --check",
+        "device": "NOT RUN; Phone/Pad/PC typography, window sizes, input, reader and icon states remain pending",
+        "boundary": "Public presentation only; no network deployment, live payment, pairing or security relaxation",
+        "release": "PASS exit 0; signed Release BUILD SUCCESSFUL in 23 s 437 ms; SignHap 890 ms; actual Pro runtime, USB Debug and sandbox gates pruned",
+        "releaseAbcSha256": "321c5bed296f91fff81120bc0793ff88ece658ff2996fcb2a129de9e5f0500a4"
+      },
+      "reviewReceiptId": "base-ui-pro-panels-dc19ebcf-20260908",
+      "reviewResult": "PASS exact two-file delta; 35 state/method declarations, 8 click and 8 enabled expressions preserved; independent callback/boundary execution, 27 runtime checks and actual Release evidence PASS. Device and shared M6 work excluded."
     }
   },
   "remoteAiPreparation": {

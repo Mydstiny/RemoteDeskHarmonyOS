@@ -32,7 +32,7 @@ Updated: 2026-09-08 Asia/Shanghai
 
 
 
-- Base UI: seven public batches independently PASS through primary settings 4719e6dc. Continue remaining forms and API23/26 Phone/Pad/PC fonts, keyboard, reader and performance. Native emulator awaits Huawei agreement acceptance.
+- Base UI: eight public batches independently PASS through Pro panels dc19ebcf; this batch awaits device typography/window/input/reader acceptance. Continue remaining forms and API23/26 Phone/Pad/PC fonts, keyboard, reader and performance. Native emulator awaits Huawei agreement acceptance.
 
 - M5 SSH Share Kit eca8f8aa, PC SSH 3fc4a578 and RDP 35e38224 + 13413239 independently PASS. RDP paired-fence finding closed. Real App Link/fragment, Windows and Phone/Pad/PC cross-device acceptance remain open.
 
