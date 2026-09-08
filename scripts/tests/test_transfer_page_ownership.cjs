@@ -27,7 +27,8 @@ function fixture() {
   const scope = {ownerScopeId:'scope-a',generation:1};
   const owner = {sessionId:7,generation:11,ownerToken:19,facadeGeneration:2};
   const state = { sent:[], closes:[], releases:[], updates:[], control:true, status:6,
-    context:{}, nextPicker:null, fileSize:0, afterOpen:null, openPanel:0, artifactSequence:0, offers:[], batchReleases:0, publicationState:2 };
+    context:{}, nextPicker:null, fileSize:0, afterOpen:null, openPanel:0, artifactSequence:0, offers:[], batchReleases:0,
+    publicationState:2, localCount:1, remoteSequence:0, nextUnified:null, permission:Promise.resolve(true) };
   const control = { taskId:'test-task', attemptId:1, isCurrent:()=>state.control,
     isCancellationRequested:()=>!state.control, update:value=>{state.updates.push(value);return true;},
     onCancel:callback=>{state.cancel=callback;} };
@@ -37,7 +38,8 @@ function fixture() {
     return { accepted:true,taskId:'test-task',attemptId:1,result:runner(control) };
   }};
   const methods=['transferRouteIdentity','captureTransferLease','transferLeaseIsCurrent','clipboardLeaseIsCurrent',
-    'waitClipboardPublication','publishClipboardForLease','cancelAndDrainNativeTransfer','submitFileToRustDesk','pickAndSendFile','prepareAndOfferRdpFiles'];
+    'waitClipboardPublication','publishClipboardForLease','cancelAndDrainNativeTransfer','submitFileToRustDesk','pickAndSendFile','prepareAndOfferRdpFiles',
+    'handleRdpSystemFilePaste','transferClipboardSourceIsCurrent'];
   const module={exports:{}};
   const code=ts.transpileModule('export class Harness {\n'+methods.map(extract).join('\n')+'\n}',{
     compilerOptions:{target:ts.ScriptTarget.ES2021,module:ts.ModuleKind.CommonJS}
@@ -51,7 +53,7 @@ function fixture() {
     fileIo,joinRemoteTransferPath:paths.joinRemoteTransferPath,remoteTransferPathIsAbsolute:paths.remoteTransferPathIsAbsolute,
     promptAction:{showToast(){}},hilog:{info(){},warn(){},error(){}},RD_DOMAIN:0,RD_TAG:'test',
     FILE_TRANSFER_DIAG_PICK:'pick',FILE_TRANSFER_DIAG_RUSTDESK_SEND:'send',KEYCODE_CTRL_LEFT:2072,KEY_V:2038,
-    pasteboard:{getSystemPasteboard:()=>({getChangeCount:()=>1})},Date,
+    pasteboard:{getSystemPasteboard:()=>({getChangeCount:()=>state.localCount,getUnifiedData:()=>state.nextUnified})},Date,
     ArrayBuffer:class extends ArrayBuffer{constructor(length){assert.ok(length<=65536,'no whole-file allocation');super(length);}}
   });
   const page=new module.exports.Harness();
@@ -59,12 +61,13 @@ function fixture() {
     sessionWindowId:'window-a',harmonyShortcutCaptureOwner:'capture-a',sessionWindowActive:true,sessionWindowMinimized:false,
     pendingHost:{id:'host-a',protocol:'rustdesk',host:'relay.invalid',port:21116,customHostname:'peer',
       rustdeskDirectEnabled:false,rustdeskDirectHost:'',rustdeskDirectPort:21118,rustdeskRelayId:'relay-a'},
-    physicalModifierKeyCodesDown:[],rustdeskFilePasteEnabled:true,fileTransferBusy:false,remoteTransferDirectory:'/home/test',
+    physicalModifierKeyCodesDown:[],rustdeskFilePasteEnabled:true,fileTransferBusy:false,remoteTransferDirectory:'/home/test',clipboardBridge:null,
+    ensurePasteboardReadPermission:()=>state.permission,transferSourcesFromUnifiedData:data=>data.sources,
     currentProtocolName(){return this.pendingHost.protocol;},currentAbilityBackgroundState:()=>false,
     clipboardBridgeEnabledForSession:()=>true,currentSessionCapabilities:()=>({clipboardSend:{enabled:true},fileUpload:{enabled:true}}),
     getFileTransferContext:()=>state.context,setFileTransferStatus:()=>{},formatTransferSize:String,yieldUi:async()=>{},
     openFileTransferPanel:()=>state.openPanel++,fileBaseName:()=> 'test.bin',
-    rdpFileTransferEnabledForSession:(sid,attempt)=>page.currentProtocolName()==='rdp' && sid===page.sessionId&&attempt===page.connectAttemptId,
+    rdpFileTransferEnabledForSession:(sid=page.sessionId,attempt=page.connectAttemptId)=>page.currentProtocolName()==='rdp' && sid===page.sessionId&&attempt===page.connectAttemptId,
     createRdpClipboardBatchDir:()=>'/private/batch',transferArtifactBatches:new Map([['/private/batch',{
       id:'batch-test',setPublished(){},release(){state.batchReleases++;},stage:async(uri,name,size,current,progress)=>{assert.ok(current()); progress(size,size);return {path:'/private/file-'+(++state.artifactSequence),size};}
     }]]),keyDispatcher:{sendShortcutSequence:(_loader,sid)=>state.sent.push({paste:sid})},
@@ -72,7 +75,7 @@ function fixture() {
       sendSessionFileFromFd:(sid,generation,remotePath,fd,conflict)=>{state.sent.push({sid,generation,remotePath,fd,conflict});return 29;},
       getSessionFileTransfer:()=>({transferId:29,rustdeskTransferState:state.status,transferredBytes:state.fileSize,totalBytes:state.fileSize}),
       cancelSessionFileTransfer:()=>true,releaseSessionFileTransfer:(sid,generation,id)=>state.releases.push({sid,generation,id}),
-      getSessionClipboardSnapshot:()=>({sequence:0}),publishSessionClipboardFiles:(sid,_gen,files)=>{state.offers.push({sid,files});return {publicationId:1,state:state.publicationState};},
+      getSessionClipboardSnapshot:()=>({sequence:state.remoteSequence}),publishSessionClipboardFiles:(sid,_gen,files)=>{state.offers.push({sid,files});return {publicationId:1,state:state.publicationState};},
       getSessionClipboardPublicationState:()=>state.publicationState,
       publishSessionClipboard:()=>({state:2,publicationId:1})}});
   return {page,state,scope,owner};
@@ -149,5 +152,33 @@ test('cancellation waits for native terminal state before reporting drain',async
   f.page.yieldUi=async()=>{if(++polls===3)f.state.status=5;};
   const terminal=await f.page.cancelAndDrainNativeTransfer(f.page.captureTransferLease(),29);
   assert.equal(terminal.rustdeskTransferState,5);assert.equal(polls,3);
+});
+test('file clipboard event changes during UnifiedData read invalidate the old payload',async()=>{
+  for(const mutate of [f=>f.state.localCount++,f=>f.state.remoteSequence++]){
+    const f=fixture();f.page.pendingHost.protocol='rdp';let resolve;
+    f.state.nextUnified=new Promise(r=>resolve=r);
+    const pending=f.page.handleRdpSystemFilePaste();await Promise.resolve();
+    mutate(f);resolve({sources:[{uri:'old://file',name:'old',size:4}]});await pending;
+    assert.equal(f.state.offers.length,0);assert.equal(f.state.artifactSequence,0);
+  }
+});
+test('permission wait cannot replace the triggering clipboard event',async()=>{
+  const f=fixture();f.page.pendingHost.protocol='rdp';let resolve;
+  f.state.permission=new Promise(r=>resolve=r);f.state.nextUnified=Promise.resolve({sources:[{uri:'new://file',name:'new',size:4}]});
+  const pending=f.page.handleRdpSystemFilePaste();f.state.localCount++;resolve(true);await pending;
+  assert.equal(f.state.offers.length,0);assert.equal(f.state.artifactSequence,0);
+});
+test('foreground loss while staging a file clipboard blocks offer as well as paste',async()=>{
+  for(const mutate of [f=>f.page.sessionWindowActive=false,f=>f.page.sessionWindowMinimized=true,
+    f=>f.page.currentAbilityBackgroundState=()=>true]){
+    const f=fixture();f.page.pendingHost.protocol='rdp';
+    f.page.transferArtifactBatches.get('/private/batch').stage=async()=>{mutate(f);return {path:'/private/staged',size:4};};
+    assert.equal(await f.page.prepareAndOfferRdpFiles([{uri:'a',name:'a',size:4}],f.page.captureTransferLease(),'system-clipboard'),false);
+    assert.equal(f.state.offers.length,0);assert.equal(f.state.sent.length,0);assert.equal(f.state.batchReleases,1);
+  }
+});
+test('current local file clipboard event is offered after permission and bounded staging',async()=>{
+  const f=fixture();f.page.pendingHost.protocol='rdp';f.state.nextUnified=Promise.resolve({sources:[{uri:'current://file',name:'current',size:4}]});
+  await f.page.handleRdpSystemFilePaste();assert.equal(f.state.offers.length,1);assert.deepEqual(f.state.sent,[{paste:7}]);
 });
 (async()=>{for(const {name,run} of tests){await run();console.log('PASS '+name);}console.log(`${tests.length} page ownership tests passed`);})().catch(error=>{console.error(error);process.exitCode=1;});

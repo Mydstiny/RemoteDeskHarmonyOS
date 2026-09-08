@@ -9659,6 +9659,17 @@ napi_value NapiSetSessionClipboardFiles(napi_env env, napi_callback_info info) {
     return result;
 }
 
+// Registry access stays on the NAPI thread; adapter teardown may run on its
+// worker. Capture the exact live adapter under the same mutex used by reset.
+static std::shared_ptr<ProtocolAdapter> ClipboardAdapterForSession(int32_t sessionId) {
+    auto it = g_sessionRegistry.find(sessionId);
+    if (it == g_sessionRegistry.end() || !it->second) return {};
+    const auto session = it->second;
+    std::lock_guard<std::mutex> lock(session->adapterMutex);
+    if (session->lifecycle.load(std::memory_order_acquire) != SessionContext::Lifecycle::Active) return {};
+    return session->adapter;
+}
+
 napi_value NapiGetSessionClipboardText(napi_env env, napi_callback_info info) {
     size_t argc = 1;
     napi_value args[1];
@@ -9666,8 +9677,8 @@ napi_value NapiGetSessionClipboardText(napi_env env, napi_callback_info info) {
     int32_t sessionId = 0;
     if (argc > 0) napi_get_value_int32(env, args[0], &sessionId);
     std::string text;
-    auto it = g_sessionRegistry.find(sessionId);
-    if (it != g_sessionRegistry.end() && it->second->adapter) text = it->second->adapter->getClipboardText();
+    const auto adapter = ClipboardAdapterForSession(sessionId);
+    if (adapter) text = adapter->getClipboardText();
     napi_value result;
     napi_create_string_utf8(env, text.c_str(), text.size(), &result);
     return result;
@@ -9680,10 +9691,8 @@ napi_value NapiGetSessionClipboardSnapshot(napi_env env, napi_callback_info info
     int32_t sessionId = 0;
     ClipboardSnapshot snapshot;
     if (argc == 1 && napi_get_value_int32(env, args[0], &sessionId) == napi_ok) {
-        auto it = g_sessionRegistry.find(sessionId);
-        if (it != g_sessionRegistry.end() && it->second && it->second->adapter) {
-            snapshot = it->second->adapter->getClipboardSnapshot();
-        }
+        const auto adapter = ClipboardAdapterForSession(sessionId);
+        if (adapter) snapshot = adapter->getClipboardSnapshot();
     }
     napi_value result;
     napi_create_object(env, &result);
@@ -9701,8 +9710,8 @@ napi_value NapiIsSessionClipboardReady(napi_env env, napi_callback_info info) {
     int32_t sessionId = 0;
     if (argc > 0) napi_get_value_int32(env, args[0], &sessionId);
     bool ready = false;
-    auto it = g_sessionRegistry.find(sessionId);
-    if (it != g_sessionRegistry.end() && it->second->adapter) ready = it->second->adapter->isClipboardReceiveReady();
+    const auto adapter = ClipboardAdapterForSession(sessionId);
+    if (adapter) ready = adapter->isClipboardReceiveReady();
     napi_value result;
     napi_get_boolean(env, ready, &result);
     return result;
@@ -9725,10 +9734,8 @@ napi_value NapiSetSessionClipboardEnabled(napi_env env, napi_callback_info info)
         napi_get_value_bool(env, args[1], &enabled);
     }
     bool changed = false;
-    auto it = g_sessionRegistry.find(sessionId);
-    if (it != g_sessionRegistry.end() && it->second->adapter) {
-        changed = it->second->adapter->setSessionClipboardEnabled(enabled);
-    }
+    const auto adapter = ClipboardAdapterForSession(sessionId);
+    if (adapter) changed = adapter->setSessionClipboardEnabled(enabled);
     napi_value result;
     napi_get_boolean(env, changed, &result);
     return result;

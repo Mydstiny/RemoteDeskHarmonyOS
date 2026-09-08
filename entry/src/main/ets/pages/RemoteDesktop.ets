@@ -840,6 +840,11 @@ interface TransferFileSource {
   size: number;
 }
 
+interface TransferClipboardSourceIdentity {
+  localChangeCount: number;
+  remoteSequence: number;
+}
+
 interface RemoteTransferLease extends ClipboardLease {
   accountGeneration: number;
   nativeOwner: NativeDisconnectIdentity;
@@ -16832,7 +16837,7 @@ struct RemoteDesktop {
   }
 
   private async prepareAndOfferRdpFiles(sources: TransferFileSource[], lease: RemoteTransferLease,
-    origin: string): Promise<boolean> {
+    origin: string, expectedSource?: TransferClipboardSourceIdentity): Promise<boolean> {
     if (!this.transferLeaseIsCurrent(lease) || sources.length === 0 || sources.length > 15 ||
       !this.rdpFileTransferEnabledForSession(lease.sessionId, lease.attemptId)) { return false; }
     const context: common.UIAbilityContext | null = this.getFileTransferContext();
@@ -16845,12 +16850,13 @@ struct RemoteDesktop {
       total += source.size;
     }
     if (total > RDP_FILE_MAX_BYTES) { return false; }
-    const initialRemoteSequence: number = this.loader.getSessionClipboardSnapshot(lease.sessionId).sequence;
-    const localChangeCount: number = origin === 'system-clipboard' ?
-      pasteboard.getSystemPasteboard().getChangeCount() : 0;
+    const clipboardSource: TransferClipboardSourceIdentity = expectedSource ?? {
+      remoteSequence: this.loader.getSessionClipboardSnapshot(lease.sessionId).sequence,
+      localChangeCount: origin === 'system-clipboard' ? pasteboard.getSystemPasteboard().getChangeCount() : 0
+    };
     const sourceCurrent = (): boolean => origin !== 'system-clipboard' ||
-      (this.loader.getSessionClipboardSnapshot(lease.sessionId).sequence === initialRemoteSequence &&
-        pasteboard.getSystemPasteboard().getChangeCount() === localChangeCount);
+      this.transferClipboardSourceIsCurrent(lease, clipboardSource);
+    if (!sourceCurrent()) { return false; }
     const directory: string = this.createRdpClipboardBatchDir();
     const batch: TransferArtifactBatch | undefined = this.transferArtifactBatches.get(directory);
     if (batch === undefined) { return false; }
@@ -17516,17 +17522,34 @@ struct RemoteDesktop {
 
   private async handleRdpSystemFilePaste(): Promise<void> {
     const lease: RemoteTransferLease | null = this.captureTransferLease();
-    if (lease === null || this.fileTransferBusy || !this.rdpFileTransferEnabledForSession()) { return; }
-    if (!await this.ensurePasteboardReadPermission() || !this.transferLeaseIsCurrent(lease)) { return; }
+    if (lease === null || this.fileTransferBusy || !this.rdpFileTransferEnabledForSession() ||
+      !this.clipboardLeaseIsCurrent(lease)) { return; }
     try {
+      // Freeze the triggering event before permission or data retrieval can yield.
+      const source: TransferClipboardSourceIdentity = {
+        localChangeCount: pasteboard.getSystemPasteboard().getChangeCount(),
+        remoteSequence: this.loader.getSessionClipboardSnapshot(lease.sessionId).sequence
+      };
+      if (!this.transferClipboardSourceIsCurrent(lease, source) ||
+        !await this.ensurePasteboardReadPermission() || !this.transferClipboardSourceIsCurrent(lease, source)) { return; }
       const data: unifiedDataChannel.UnifiedData = await pasteboard.getSystemPasteboard().getUnifiedData();
-      if (!this.transferLeaseIsCurrent(lease)) { return; }
+      if (!this.transferClipboardSourceIsCurrent(lease, source)) { return; }
       const sources: TransferFileSource[] = this.transferSourcesFromUnifiedData(data);
       if (sources.length === 0) { promptAction.showToast({ message: '剪贴板中没有可传输的普通文件', duration: 2200 }); return; }
-      await this.prepareAndOfferRdpFiles(sources, lease, 'system-clipboard');
+      await this.prepareAndOfferRdpFiles(sources, lease, 'system-clipboard', source);
     } catch (_err) {
       if (this.transferLeaseIsCurrent(lease)) { this.setFileTransferStatus('无法读取本机文件剪贴板', -1, false); }
     }
+  }
+
+  private transferClipboardSourceIsCurrent(lease: RemoteTransferLease,
+    source: TransferClipboardSourceIdentity): boolean {
+    if (!this.clipboardLeaseIsCurrent(lease)) { return false; }
+    try {
+      return this.loader.getSessionClipboardSnapshot(lease.sessionId).sequence === source.remoteSequence &&
+        pasteboard.getSystemPasteboard().getChangeCount() === source.localChangeCount &&
+        (this.clipboardBridge === null || !this.clipboardBridge.hasRemoteClipboardSource());
+    } catch (_error) { return false; }
   }
 
   private transferSourcesFromUnifiedData(data: unifiedDataChannel.UnifiedData,
