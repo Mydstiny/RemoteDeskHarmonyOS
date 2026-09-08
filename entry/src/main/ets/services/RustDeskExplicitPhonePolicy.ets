@@ -16,3 +16,8 @@ export function explicitPhoneControlMode(selected: boolean, savedMode: number): 
 export function explicitPhonePanDelta(previous: number, next: number): number {
   return Math.round(previous - next);
 }
+
+/** Fail closed until source provenance and decoded-frame identity pass review. */
+export function explicitPhoneImplementationReady(): boolean {
+  return false;
+}

@@ -16,7 +16,7 @@ import {
   NativeDisconnectIdentity,
   NativeDisconnectSubmission
 } from '../services/ExtensionLoader';
-import { hasExplicitRustDeskPhoneChoice, explicitPhoneControlMode, explicitPhonePanDelta } from '../services/RustDeskExplicitPhonePolicy';
+import { hasExplicitRustDeskPhoneChoice, explicitPhoneControlMode, explicitPhonePanDelta, explicitPhoneImplementationReady } from '../services/RustDeskExplicitPhonePolicy';
 import { RustDeskPhoneActions, RustDeskPhoneOwner } from '../services/RustDeskPhoneActions';
 import { RustDeskProSyncService } from '../services/RustDeskProSyncService';
 import { KeyVaultService } from '../services/KeyVaultService';
@@ -14258,7 +14258,7 @@ struct RemoteDesktop {
           host.sshJumpHostKeyFingerprintSha256 : '',
         // RustDesk fields are deliberately neutral for VNC.  VNC settings do
         // not read or inherit RustDesk/RDP preferences.
-        rdExplicitPhone: hasExplicitRustDeskPhoneChoice(host),
+        rdExplicitPhone: explicitPhoneImplementationReady() && hasExplicitRustDeskPhoneChoice(host),
         rdImageQuality: host.protocol === 'rustdesk' ? (AppStorage.get<number>('rustdeskImageQuality') ?? 1) : 1,
         rdDirectIp: rustDeskDirect,
         rdConnectionStrategy: host.protocol === 'rustdesk' ? rustDeskStrategy : 'force_relay',

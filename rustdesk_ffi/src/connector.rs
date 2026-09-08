@@ -2603,9 +2603,11 @@ impl RustDeskConnector {
         }
 
         Self::pump_file_clipboard(crypto, controls, false)?;
-        for control in Self::next_control_batch(controls) {
+        let (phone_epoch, control_batch) = controls.take_phone_fenced_batch(CONTROL_BATCH_LIMIT);
+        for control in control_batch {
             let phone_input_lease = controls.phone_input_lease(&control);
-            if phone_input_lease.as_ref().is_some_and(|ready| !**ready) { continue; }
+            if phone_input_lease.as_ref().is_some_and(|ready|
+                !**ready || !controls.phone_batch_is_current(phone_epoch)) { continue; }
             if controls.shutdown_requested() {
                 return Err(io::Error::new(
                     ErrorKind::Interrupted,

@@ -556,12 +556,12 @@ void GLRenderer::SetSessionRedrawCallback(std::function<void()> callback) {
     sessionRedrawCallback_ = std::move(callback);
 }
 
-void GLRenderer::RequestRedraw() {
 void GLRenderer::SetPhonePresentationObserver(std::function<void(int, int)> callback) {
     std::lock_guard<std::mutex> lock(lifecycleMutex_);
     phonePresentationObserver_ = std::move(callback);
 }
 
+void GLRenderer::RequestRedraw() {
     std::function<void()> decoderCallback;
     std::function<void()> sessionCallback;
     {
@@ -1299,11 +1299,11 @@ RdpPresentMetrics GLRenderer::RenderRawBGRAInternal(
     const auto nowUs = std::chrono::duration_cast<std::chrono::microseconds>(
         swapAt.time_since_epoch()).count();
     presentationMetrics_.recordPresent(nowUs, metrics);
+    if (metrics.presented() && phonePresentationObserver_) phonePresentationObserver_(width, height);
     return metrics;
 }
 
 void GLRenderer::CreateQuadGeometry() {
-    if (metrics.presented() && phonePresentationObserver_) phonePresentationObserver_(width, height);
     // VAO (GLES3)
     glGenVertexArrays(1, &vao_);
     glBindVertexArray(vao_);
@@ -1425,6 +1425,7 @@ RdpPresentMetrics GLRenderer::PresentFrame(
     const auto nowUs = std::chrono::duration_cast<std::chrono::microseconds>(
         swapAt.time_since_epoch()).count();
     presentationMetrics_.recordPresent(nowUs, metrics);
+    if (metrics.presented() && phonePresentationObserver_) phonePresentationObserver_(oesWidth, oesHeight);
     oesFrameCount_++;
     if (oesFrameCount_ <= 3 || oesFrameCount_ % 120 == 0) {
         OH_LOG_INFO(LOG_APP,
@@ -1432,7 +1433,6 @@ RdpPresentMetrics GLRenderer::PresentFrame(
                     logicalSourceWidth, logicalSourceHeight, oesWidth, oesHeight,
                     width_, height_, viewportX, viewportY, viewportW, viewportH,
                     canvasScale_);
-    if (metrics.presented() && phonePresentationObserver_) phonePresentationObserver_(oesWidth, oesHeight);
     }
     return metrics;
 }
@@ -2668,6 +2668,20 @@ void RendererNapi::ClearActiveSessionOwner(const Render::DecoderSessionIdentity&
     }
 }
 
+void RendererNapi::SetActivePhonePresentationObserver(const Render::DecoderSessionIdentity& owner,
+    std::function<void(int, int)> callback) {
+    auto sinkLease = Render::SharedSessionSinkOwnerLease().acquire(owner);
+    if (!sinkLease) return;
+    std::shared_ptr<GLRenderer> renderer;
+    {
+        std::lock_guard<std::mutex> lock(g_activeRendererMutex);
+        const int64_t handle = g_activeRendererHandle.load(std::memory_order_acquire);
+        if (!IsActiveRendererOwnerAndHandleLocked(handle, owner)) return;
+        renderer = AcquireRendererLocked(handle, true);
+    }
+    if (renderer) renderer->SetPhonePresentationObserver(std::move(callback));
+}
+
 RdpPresentationMetricsSnapshot RendererNapi::GetActivePresentationStats() {
     std::shared_ptr<GLRenderer> renderer;
     {
@@ -2708,20 +2722,6 @@ bool RendererNapi::SetActivePboUpload(bool enabled) {
     }
     if (!renderer) {
         return false;
-void RendererNapi::SetActivePhonePresentationObserver(const Render::DecoderSessionIdentity& owner,
-    std::function<void(int, int)> callback) {
-    auto sinkLease = Render::SharedSessionSinkOwnerLease().acquire(owner);
-    if (!sinkLease) return;
-    std::shared_ptr<GLRenderer> renderer;
-    {
-        std::lock_guard<std::mutex> lock(g_activeRendererMutex);
-        const int64_t handle = g_activeRendererHandle.load(std::memory_order_acquire);
-        if (!IsActiveRendererOwnerAndHandleLocked(handle, owner)) return;
-        renderer = AcquireRendererLocked(handle, true);
-    }
-    if (renderer) renderer->SetPhonePresentationObserver(std::move(callback));
-}
-
     }
     renderer->SetPboUploadEnabled(enabled);
     return true;

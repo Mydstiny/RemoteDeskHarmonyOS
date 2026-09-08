@@ -37,6 +37,11 @@ test('only saved manual phone choice enters; peer Android and controller type ne
     {rustdeskProPeerId: 'peer'}, {rustdeskProPlatform: 'Android'}])
     assert(!policy.hasExplicitRustDeskPhoneChoice(host(overrides)));
 });
+test('unresolved review blockers keep the entire new phone path disabled at connection admission', () => {
+  assert.equal(policy.explicitPhoneImplementationReady(), false);
+  const pageSource = fs.readFileSync(path.join(root, 'entry/src/main/ets/pages/RemoteDesktop.ets'), 'utf8');
+  assert(pageSource.includes('rdExplicitPhone: explicitPhoneImplementationReady() && hasExplicitRustDeskPhoneChoice(host),'));
+});
 test('temporary phone mode preserves every saved mode and host field', () => {
   const selected = host(); const before = JSON.stringify(selected);
   for (const mode of [0, 1, 2]) {
