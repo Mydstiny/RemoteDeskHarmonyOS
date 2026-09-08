@@ -4,6 +4,8 @@ Updated: 2026-09-08 Asia/Shanghai
 
 ## Now
 
+- VNC LastRect: `e67724ac` + `21da46aa` code and independent review PASS; next original failing peer first/repeated updates and reconnect acceptance. [Repair scope](plans/2026-09-08-vnc-lastrect-update-repair.md).
+
 - Pro execution boundary: continue local implementation/verification; defer cloud deployment/secret uploads, public endpoints/App Linking rollout, real payment and live pairing/relay/network changes per 2026-09-08 user direction. Deferred items below remain open; do not weaken authentication or encryption. AI host-install help `e7a6f3e4` independently PASS; device UI acceptance remains open. Continue remaining free forms locally.
 
 - RustDesk explicit phone S5: code `f37ecffe` + `b97808f5` independently PASS; next actual Android/HarmonyOS official-client A/B and non-target isolation matrix. [Plan section 10](plans/2026-09-08-rustdesk-explicit-phone-control-parity.md); device details pending, no full-plan completion claim.

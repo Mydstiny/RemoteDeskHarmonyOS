@@ -3,7 +3,7 @@
   "task": "pro-purchase-foundation",
   "branch": "codex/pro-purchase-foundation",
   "base": "8edc187868e94ed41634e8a6c4c4c072e3a48679",
-  "head": "e7a6f3e441d9278f5687208e0083b6fcf464012d",
+  "head": "21da46aae6e6c8a97fd9a03dd49f224222ee4e29",
   "phase": "Full roadmap active; M6 real-library USB capability probe implemented, checkpoint review and hardware/RDPEWA acceptance pending",
   "status": "in-progress",
   "next": "Independently review the M6 library probe, then implement authenticated RDPEWA/session/PIN transport and remaining free forms; complete available device and M7 deployment acceptance.",
@@ -1561,5 +1561,46 @@
       "Real purchase/refund and production enablement",
       "Live LAN/cross-network pairing, relay deployment and network configuration changes"
     ]
+  },
+  "vncUpdateRepair": {
+    "status": "code-complete-reviewed-peer-acceptance-pending",
+    "commits": [
+      "e67724ac",
+      "21da46aa"
+    ],
+    "plan": "docs/codex/plans/2026-09-08-vnc-lastrect-update-repair.md",
+    "reviewerTaskId": "/root/review_vnc_update",
+    "reviewStatus": "PASS",
+    "scope": [
+      "entry/src/main/cpp/extensions/extension_loader_napi.cpp",
+      "entry/src/main/cpp/vnc/vnc_adapter.cpp",
+      "entry/src/main/cpp/vnc/vnc_adapter.h",
+      "entry/src/main/cpp/vnc/vnc_rfb_engine.cpp",
+      "entry/src/main/cpp/vnc/vnc_rfb_engine.h",
+      "entry/src/main/ets/services/DiagnosticCapturePolicy.ets",
+      "entry/src/main/ets/services/ExtensionLoader.ets",
+      "entry/src/main/ets/services/VncUpdateDiagnostics.ets",
+      "scripts/tests/test_vnc_framebuffer_update.py",
+      "scripts/tests/test_vnc_update_diagnostics.cjs",
+      "scripts/tests/vnc_framebuffer_update_test.cpp"
+    ],
+    "validation": {
+      "native": "PASS 22 production engine/socketpair cases with ASan/UBSan",
+      "diagnostics": "PASS 8 production ArkTS capture/JSONL/facade checks; delayed message retry included",
+      "negativeControl": "PASS original reported-build FBU parser fails new LastRect acceptance case",
+      "nativeAbi": "PASS engine/adapter/NAPI syntax with actual arm64-v8a and x86_64 compile flags",
+      "testCompile": "PASS exit 0; BUILD SUCCESSFUL in 5 s 147 ms",
+      "assembleHap": "PASS exit 0; signed BUILD SUCCESSFUL in 6 s 951 ms; SignHap 915 ms",
+      "compliance": "PASS Light and git diff --check",
+      "device": "NOT RUN; original peer software/version and actual advertised rectangle count unavailable"
+    },
+    "next": "Original failing peer first/repeated updates and disconnect/reconnect acceptance. Preserve shared active branch.",
+    "reviewReceiptId": "vnc-lastrect-21da46aa-20260908",
+    "reviewResult": "PASS same independent reviewer; original P2 message-publication/deduplication race closed; 22 native and 8 host checks independently rerun.",
+    "metadataVerification": {
+      "testCompile": "PASS exit 0; BUILD SUCCESSFUL in 4 s 865 ms",
+      "assembleHap": "PASS exit 0; signed BUILD SUCCESSFUL in 5 s 937 ms; SignHap 951 ms",
+      "compliance": "PASS Light/diff/state; all 11 reviewed source files unchanged"
+    }
   }
 }
