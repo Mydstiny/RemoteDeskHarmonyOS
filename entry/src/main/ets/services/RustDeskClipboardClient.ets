@@ -49,6 +49,7 @@ export class RustDeskClipboardClient {
     let total: number = 0;
     const names: Map<string, boolean> = new Map<string, boolean>();
     const allPaths: Set<string> = new Set<string>();
+    const pathSpellings: Map<string, string> = new Map<string, string>();
     for (let i: number = 0; i < entries.length; i++) {
       const entry: RustDeskClipboardEntry = entries[i];
       const parts: string[] = entry.name.split('/');
@@ -60,7 +61,16 @@ export class RustDeskClipboardClient {
       const key: string = entry.name.normalize('NFC').toLowerCase();
       if (names.has(key)) { return []; }
       names.set(key, entry.isDirectory); total += entry.size;
-      for (let depth: number = 1; depth <= parts.length; depth++) { allPaths.add(parts.slice(0, depth).join('/').normalize('NFC').toLowerCase()); }
+      for (let depth: number = 1; depth <= parts.length; depth++) {
+        const spelling: string = parts.slice(0, depth).join('/');
+        const pathKey: string = spelling.normalize('NFC').toLowerCase();
+        const previous: string | undefined = pathSpellings.get(pathKey);
+        // Artifact hierarchy and export retain the exact logical spelling. Reject aliases
+        // before creating a directory so a later export cannot silently omit its children.
+        if (previous !== undefined && previous !== spelling) { return []; }
+        pathSpellings.set(pathKey, spelling);
+        allPaths.add(pathKey);
+      }
       if (allPaths.size > 1024) { return []; }
       if (total > 2 * 1024 * 1024 * 1024) { return []; }
     }

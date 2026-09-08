@@ -23,6 +23,23 @@ test('publication timeout plus revoke deadline is bounded and retains unknown da
 test('mismatched publication cannot authorize paste or cleanup',async()=>{const f=fixture();f.s.pubid=99;f.s.publication=2;f.s.drained=true;const result=await f.client.publish([]);assert.equal(result.ready,false);assert.equal(result.drained,false);});
 test('descriptor acquisition cannot return an old revision',()=>{const f=fixture();f.native.getSessionRustDeskClipboardEntries=()=>{f.s.revision++;return [f.entry];};assert.equal(f.client.entries(9).length,0);});
 test('untrusted descriptors reject paths, collisions and over-budget data',()=>{for(const name of ['../a','a/../b','/a','a\\b','a/','a.']){const f=fixture();f.entry.name=name;assert.equal(f.client.entries(9).length,0,name);}const f=fixture();f.entry.size=2147483649;assert.equal(f.client.entries(9).length,0);});
+test('directory parent spelling must be consistent for case and NFC aliases',()=>{
+ for(const [parent,child] of [['Root','root/a.txt'],['é','e\u0301/a.txt'],['Root','root/sub/a.txt']]){
+  for(const reverse of [false,true]){
+   const f=fixture();let entries=[{...f.entry,name:parent,isDirectory:true,size:0},{...f.entry,name:child}];
+   if(reverse)entries.reverse();entries=entries.map((entry,index)=>({...entry,index}));
+   f.native.getSessionRustDeskFileClipboard=()=>({revision:9,state:3,capable:true,enabled:true,entryCount:2});
+   f.native.getSessionRustDeskClipboardEntries=()=>entries;
+   assert.equal(f.client.entries(9).length,0,parent+' / '+child);
+  }
+ }
+});
+test('consistent implicit and explicit directory parents remain exportable',()=>{
+ const f=fixture();const entries=[{...f.entry,index:0,name:'Root/sub/a.txt'},{...f.entry,index:1,name:'Root',isDirectory:true,size:0}];
+ f.native.getSessionRustDeskFileClipboard=()=>({revision:9,state:3,capable:true,enabled:true,entryCount:2});
+ f.native.getSessionRustDeskClipboardEntries=()=>entries;
+ assert.equal(f.client.entries(9).length,2);
+});
 test('receive requires exact terminal byte count and releases captured transfer',async()=>{const f=fixture();f.s.transfer=6;f.s.bytes=3;const result=await f.client.receive(9,f.entry,10,f.control,8);assert.equal(result.outcome.stage,'completed');assert.equal(f.s.progress.writtenBytes,11);assert.deepEqual(f.s.releases,[[7,11,31]]);});
 test('short terminal file is failed and never called verified',async()=>{const f=fixture();f.s.transfer=6;f.s.bytes=2;const result=await f.client.receive(9,f.entry,10,f.control,0);assert.equal(result.outcome.stage,'failed');assert.equal(result.outcome.evidence,'none');});
 test('stale transfer slot cannot confirm completion or drain',async()=>{const f=fixture();f.s.transferid=99;f.s.transfer=6;f.s.bytes=3;const result=await f.client.receive(9,f.entry,10,f.control,0);assert.equal(result.outcome.stage,'paused');assert.equal(result.drained,false);assert.equal(f.s.releases.length,0);});

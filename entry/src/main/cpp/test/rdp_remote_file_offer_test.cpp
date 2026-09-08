@@ -43,3 +43,52 @@ RDP_TEST_CASE(rdp_remote_offer_literal_percent_is_not_uri_decoded) {
     auto b=descriptors({"dir\\literal%2F😀.txt"}); auto result=RdpRemoteFileOffer::parse(b.data(),b.size(),1,4);
     RDP_ASSERT(result.state=="ready"); RDP_ASSERT(result.entries[0].relativeName=="dir/literal%2F😀.txt");
 }
+RDP_TEST_CASE(rdp_remote_offer_rejects_parent_case_alias_in_both_descriptor_orders) {
+    for (bool parentFirst : {false, true}) {
+        auto b = descriptors(parentFirst ? std::vector<std::string>{"Root", "root/a.txt"} :
+            std::vector<std::string>{"root/a.txt", "Root"});
+        set32(b, 4 + (parentFirst ? 0 : 592) + 36, 0x10);
+        const auto result = RdpRemoteFileOffer::parse(b.data(), b.size(), 1, 4);
+        RDP_ASSERT(result.state == "failed");
+        RDP_ASSERT(result.diagnosticCode == "ambiguous_file_path");
+    }
+}
+RDP_TEST_CASE(rdp_remote_offer_rejects_inconsistent_implicit_parent_spellings) {
+    for (const auto& names : std::vector<std::vector<std::string>>{
+        {"Root/a.txt", "root/b.txt"}, {"root/b.txt", "Root/a.txt"},
+        {"Root/Sub/a.txt", "Root/sub/b.txt"}, {"Root/sub/b.txt", "Root/Sub/a.txt"}}) {
+        const auto b = descriptors(names);
+        const auto result = RdpRemoteFileOffer::parse(b.data(), b.size(), 1, 4);
+        RDP_ASSERT(result.state == "failed");
+        RDP_ASSERT(result.diagnosticCode == "ambiguous_file_path");
+    }
+}
+RDP_TEST_CASE(rdp_remote_offer_accepts_consistent_explicit_and_implicit_parent_spellings) {
+    for (bool parentFirst : {false, true}) {
+        auto b = descriptors(parentFirst ? std::vector<std::string>{"Root", "Root/Sub/a.txt", "Root/Sub/b.txt"} :
+            std::vector<std::string>{"Root/Sub/a.txt", "Root/Sub/b.txt", "Root"});
+        set32(b, 4 + (parentFirst ? 0 : 2 * 592) + 36, 0x10);
+        const auto result = RdpRemoteFileOffer::parse(b.data(), b.size(), 1, 4);
+        RDP_ASSERT(result.state == "ready");
+        RDP_ASSERT_EQ(result.entries.size(), 3U);
+        RDP_ASSERT(result.entries[parentFirst ? 1 : 0].relativeName == "Root/Sub/a.txt");
+    }
+    const auto b = descriptors({"Root/Sub/a.txt", "Root/Sub/b.txt"});
+    RDP_ASSERT(RdpRemoteFileOffer::parse(b.data(), b.size(), 1, 4).state == "ready");
+}
+RDP_TEST_CASE(rdp_remote_offer_prefix_validation_preserves_entry_and_depth_limits) {
+    std::string deep = "Root";
+    for (size_t i = 1; i < 32; ++i) deep += "/x";
+    auto b = descriptors({deep});
+    RDP_ASSERT(RdpRemoteFileOffer::parse(b.data(), b.size(), 1, 4).state == "ready");
+    b = descriptors({deep + "/x"});
+    RDP_ASSERT(RdpRemoteFileOffer::parse(b.data(), b.size(), 1, 4).state == "failed");
+    std::vector<std::string> names;
+    for (size_t i = 0; i < RdpRemoteFileOffer::kMaxEntries; ++i) names.push_back("Root/f" + std::to_string(i));
+    b = descriptors(names);
+    const auto result = RdpRemoteFileOffer::parse(b.data(), b.size(), 1, 4);
+    RDP_ASSERT(result.state == "ready");
+    RDP_ASSERT_EQ(result.entries.size(), RdpRemoteFileOffer::kMaxEntries);
+    names.push_back("Root/overflow"); b = descriptors(names);
+    RDP_ASSERT(RdpRemoteFileOffer::parse(b.data(), b.size(), 1, 4).state == "failed");
+}

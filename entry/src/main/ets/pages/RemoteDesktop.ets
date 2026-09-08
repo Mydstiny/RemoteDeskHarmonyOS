@@ -230,6 +230,7 @@ import {
 } from '../services/ClipboardSyncPolicy';
 import { ClipboardCoordinator, ClipboardLease, RemoteClipboardSnapshot } from '../services/ClipboardCoordinator';
 import { RustDeskClipboardClient, RustDeskClipboardOfferResult, RustDeskClipboardReceiveResult } from '../services/RustDeskClipboardClient';
+import { SystemClipboardFileProvider } from '../services/SystemClipboardFileProvider';
 import { RustDeskClipboardEntry, RustDeskClipboardSource } from '../types/rdpnapi';
 import { RdpClipboardContentService } from '../services/RdpClipboardContentService';
 import { listLegacyTransferCaches, importLegacyTransferCache, LegacyTransferCacheSummary } from '../services/LegacyTransferCacheRecovery';
@@ -1232,6 +1233,7 @@ struct RemoteDesktop {
   private rustdeskClipboardRevision: number = 0;
   private rustdeskLocalPublicationId: number = 0;
   private rustdeskLocalPublicationCount: number = -1;
+  private systemClipboardReadPending: boolean = false;
   private rustdeskLocalPublicationLease: RemoteTransferLease | null = null;
   @State private rdpReceiveMessage: string = '';
   private rdpOfferRequestGeneration: number = 0;
@@ -16915,6 +16917,7 @@ struct RemoteDesktop {
       if (!Number.isSafeInteger(total) || total > RDP_FILE_MAX_BYTES) { return false; }
     }
     const handle = service.enqueue({ accountScopeId: lease.accountScopeId, hostId: lease.hostId,
+      leaseId: lease.nativeGeneration.toString(),
       onFinalize: (): void => { batch.release(); },
       protocol: 'rdp', direction: 'upload', batchId: batch.id, fileName: sources.length === 1 ? sources[0].name :
         sources.length.toString() + ' 个文件', totalBytes: total, sourceKind: origin,
@@ -17158,6 +17161,7 @@ struct RemoteDesktop {
     const batch: TransferArtifactBatch | null = this.createTransferArtifactBatch(context, lease, 'clipboard');
     if (batch === null) { return; }
     const handle = service.enqueue({ accountScopeId: lease.accountScopeId, hostId: lease.hostId,
+      leaseId: lease.nativeGeneration.toString(),
       onFinalize: (): void => { batch.release(); },
       protocol: 'rdp', direction: 'upload', fileName: tree.rootName, totalBytes: tree.totalBytes, batchId: batch.id,
       sourceKind: 'authorized-directory-tree', isCurrent: (): boolean => this.transferLeaseIsCurrent(lease) &&
@@ -17216,6 +17220,7 @@ struct RemoteDesktop {
       const service: ManagedTransferTaskService = ManagedTransferTaskService.getInstance();
       if (!service.init(context)) { return; }
       const handle = service.enqueue({ accountScopeId: lease.accountScopeId, hostId: lease.hostId,
+        leaseId: lease.nativeGeneration.toString(),
         protocol: 'rustdesk', direction: 'upload', fileName: tree.rootName, totalBytes: tree.totalBytes,
         sourceKind: 'authorized-directory-tree', isCurrent: current },
         async (control: ManagedTransferControl): Promise<ManagedTransferOutcome> => {
@@ -17297,8 +17302,9 @@ struct RemoteDesktop {
     const service: ManagedTransferTaskService = ManagedTransferTaskService.getInstance();
     if (!service.init(context)) { return 'failed'; }
     const handle = service.enqueue({ accountScopeId: lease.accountScopeId, hostId: lease.hostId,
+      leaseId: lease.nativeGeneration.toString(),
       protocol: 'rustdesk', direction: 'upload', fileName, totalBytes: fileSize,
-      sourceKind: 'authorized-file', leaseId: lease.nativeGeneration.toString(),
+      sourceKind: 'authorized-file',
       isCurrent: (): boolean => this.transferLeaseIsCurrent(lease) && this.rustdeskFilePasteEnabled &&
         this.currentSessionCapabilities().fileUpload.enabled },
       async (control: ManagedTransferControl): Promise<ManagedTransferOutcome> => {
@@ -17330,6 +17336,7 @@ struct RemoteDesktop {
       const offer: SessionRdpClipboardFiles = this.loader.getSessionRdpClipboardFiles(lease.sessionId, lease.nativeGeneration);
       if (offer.sequence !== sequence) { this.rdpReceiveMessage = '远端剪贴板已变化，请重新读取'; return; }
       if (offer.state === 'ready') {
+        if (!this.rdpClipboardHierarchyIsSafe(offer)) { this.rdpReceiveMessage = '远端目录名称存在大小写或 Unicode 冲突，无法接收'; return; }
         this.rdpReceiveOffer = offer;
         this.rdpReceiveMessage = '选择接收后可另存到本机。跨设备剪切按复制处理，源文件保留。'; return;
       }
@@ -17337,6 +17344,28 @@ struct RemoteDesktop {
       await this.yieldUi(100);
     }
     if (this.transferLeaseIsCurrent(lease)) { this.rdpReceiveMessage = '文件清单读取超时'; }
+  }
+
+  private rdpClipboardHierarchyIsSafe(offer: SessionRdpClipboardFiles): boolean {
+    if (offer.entries.length === 0 || offer.entries.length > 1024) { return false; }
+    const spellings: Map<string, string> = new Map<string, string>();
+    const explicit: Set<string> = new Set<string>();
+    for (const entry of offer.entries) {
+      const parts: string[] = entry.relativeName.split('/');
+      if (parts.length > 32 || parts.some((part: string): boolean => part.length === 0 || part === '.' || part === '..')) { return false; }
+      const fullKey: string = entry.relativeName.normalize('NFC').toLowerCase();
+      if (explicit.has(fullKey)) { return false; }
+      explicit.add(fullKey);
+      for (let depth: number = 1; depth <= parts.length; depth++) {
+        const spelling: string = parts.slice(0, depth).join('/');
+        const key: string = spelling.normalize('NFC').toLowerCase();
+        const previous: string | undefined = spellings.get(key);
+        if (previous !== undefined && previous !== spelling) { return false; }
+        spellings.set(key, spelling);
+        if (spellings.size > 1024) { return false; }
+      }
+    }
+    return true;
   }
 
   private async cancelAndDrainRdpReceive(lease: RemoteTransferLease, id: number): Promise<boolean> {
@@ -17355,7 +17384,7 @@ struct RemoteDesktop {
     const lease: RemoteTransferLease | null = this.transferPanelLease;
     const offer: SessionRdpClipboardFiles = this.rdpReceiveOffer;
     if (lease === null || !this.transferLeaseIsCurrent(lease) || lease.protocol !== 'rdp' ||
-      offer.state !== 'ready' || entries.length === 0 || entries.length > 1024 ||
+      offer.state !== 'ready' || !this.rdpClipboardHierarchyIsSafe(offer) || entries.length === 0 || entries.length > 1024 ||
       (offer.totalKnown && offer.totalBytes > RDP_FILE_MAX_BYTES)) {
       this.rdpReceiveMessage = '接收清单无效或单批超过 2GB'; return;
     }
@@ -17367,6 +17396,7 @@ struct RemoteDesktop {
     if (batch === null) { return; }
     this.transferArtifactBatches.set(batch.directory, batch);
     const handle = service.enqueue({ accountScopeId: lease.accountScopeId, hostId: lease.hostId,
+      leaseId: lease.nativeGeneration.toString(),
       onFinalize: (): void => { batch.release(); }, protocol: 'rdp',
       direction: 'download', fileName: entries.length === 1 ? safeTransferFileName(entries[0].relativeName.split('/').pop() || '文件') :
         entries.length.toString() + ' 个远端条目', batchId: batch.id, totalBytes: offer.totalKnown ? offer.totalBytes : 0,
@@ -17458,6 +17488,7 @@ struct RemoteDesktop {
         transferScopeKey(lease.accountScopeId, lease.hostId + ':' + lease.routeIdentity), 'received');
       this.transferArtifactBatches.set(batch.directory, batch);
       const handle = service.enqueue({ accountScopeId: lease.accountScopeId, hostId: lease.hostId,
+        leaseId: lease.nativeGeneration.toString(),
         protocol: 'rdp', direction: 'download', fileName: safeTransferFileName(this.fileBaseName(path)),
         totalBytes: info.size, batchId: batch.id, sourceKind: 'shared-drive', isCurrent: stillClosed,
         onFinalize: (): void => { batch.release(); } },
@@ -17544,6 +17575,7 @@ struct RemoteDesktop {
     const batch: TransferArtifactBatch | null = this.createTransferArtifactBatch(context, lease, 'received');
     if (batch === null) { return; }
     const handle = service.enqueue({ accountScopeId: lease.accountScopeId, hostId: lease.hostId,
+      leaseId: lease.nativeGeneration.toString(),
       onFinalize: (): void => { batch.release(); },
       protocol: 'rustdesk', direction: 'download', fileName: entry.name, batchId: batch.id,
       totalBytes: 0, sourceKind: 'remote-directory-tree', isCurrent: (): boolean =>
@@ -17597,6 +17629,7 @@ struct RemoteDesktop {
     if (batch === null) { return; }
     this.transferArtifactBatches.set(batch.directory, batch);
     const handle = service.enqueue({ accountScopeId: lease.accountScopeId, hostId: lease.hostId,
+      leaseId: lease.nativeGeneration.toString(),
       onFinalize: (): void => { batch.release(); },
       protocol: 'rustdesk', direction: 'download', fileName: safeTransferFileName(entry.name),
       batchId: batch.id, totalBytes: entry.size, sourceKind: 'remote-directory',
@@ -17627,6 +17660,7 @@ struct RemoteDesktop {
       if (!service.init(context)) { return; }
       const protocol: TransferProtocol = lease.protocol === 'rdp' ? 'rdp' : 'rustdesk';
       const handle = service.enqueue({ accountScopeId: lease.accountScopeId, hostId: lease.hostId,
+        leaseId: lease.nativeGeneration.toString(),
         protocol, direction: 'download', fileName: artifact.name, totalBytes: artifact.size, sourceKind: 'local-export',
         isCurrent: (): boolean => this.transferLeaseIsCurrent(lease) },
         async (control: ManagedTransferControl): Promise<ManagedTransferOutcome> => {
@@ -17662,6 +17696,7 @@ struct RemoteDesktop {
       if (!service.init(context)) { return; }
       const total: number = artifacts.reduce((sum: number, artifact: TransferArtifact): number => sum + artifact.size, 0);
       const handle = service.enqueue({ accountScopeId: lease.accountScopeId, hostId: lease.hostId,
+        leaseId: lease.nativeGeneration.toString(),
         protocol: lease.protocol === 'rdp' ? 'rdp' : 'rustdesk', direction: 'download', fileName: root.name,
         batchId: batch.id, totalBytes: total, sourceKind: 'local-directory-export',
         isCurrent: (): boolean => this.transferLeaseIsCurrent(lease) },
@@ -17729,6 +17764,7 @@ struct RemoteDesktop {
     const batch: TransferArtifactBatch | null = this.createTransferArtifactBatch(context, lease, 'received');
     if (batch === null) { return; }
     const handle = service.enqueue({ accountScopeId: lease.accountScopeId, hostId: lease.hostId,
+      leaseId: lease.nativeGeneration.toString(),
       onFinalize: (): void => { batch.release(); },
       protocol: lease.protocol === 'rdp' ? 'rdp' : 'rustdesk', direction: 'download', fileName: item.name,
       batchId: batch.id, totalBytes: item.totalBytes, sourceKind: 'explicit-legacy-recovery',
@@ -18039,6 +18075,7 @@ struct RemoteDesktop {
     const batch: TransferArtifactBatch | null = this.createTransferArtifactBatch(context, lease, 'clipboard');
     if (batch === null) { return false; }
     const handle = service.enqueue({ accountScopeId: lease.accountScopeId, hostId: lease.hostId,
+      leaseId: lease.nativeGeneration.toString(),
       protocol: 'rustdesk', direction: 'upload', fileName: sources.length === 1 ? sources[0].name : sources.length.toString() + ' 个文件',
       batchId: batch.id, totalBytes: total, sourceKind: origin, isCurrent: current,
       onFinalize: (): void => { batch.release(); } },
@@ -18127,7 +18164,8 @@ struct RemoteDesktop {
     const batch: TransferArtifactBatch | null = this.createTransferArtifactBatch(context, lease, 'received');
     if (batch === null) { return; }
     const total: number = entries.reduce((bytes: number, entry: RustDeskClipboardEntry): number => bytes + entry.size, 0);
-    const handle = service.enqueue({ accountScopeId: lease.accountScopeId, hostId: lease.hostId, protocol: 'rustdesk',
+    const handle = service.enqueue({ accountScopeId: lease.accountScopeId, hostId: lease.hostId,
+      leaseId: lease.nativeGeneration.toString(), protocol: 'rustdesk',
       direction: 'download', fileName: entries.length.toString() + ' 个剪贴板条目', batchId: batch.id, totalBytes: total,
       sourceKind: 'remote-clipboard', isCurrent: current, onFinalize: (): void => { batch.release(); } },
       async (control: ManagedTransferControl): Promise<ManagedTransferOutcome> => {
@@ -18169,8 +18207,9 @@ struct RemoteDesktop {
 
   private async handleRdpSystemFilePaste(): Promise<void> {
     const lease: RemoteTransferLease | null = this.captureTransferLease();
-    if (lease === null || this.fileTransferBusy || !this.clipboardLeaseIsCurrent(lease) ||
+    if (lease === null || this.fileTransferBusy || this.systemClipboardReadPending || !this.clipboardLeaseIsCurrent(lease) ||
       (lease.protocol === 'rdp' ? !this.rdpFileTransferEnabledForSession() : !this.rustDeskClipboardFilesAllowed(lease, true))) { return; }
+    this.systemClipboardReadPending = true;
     try {
       // Freeze the triggering event before permission or data retrieval can yield.
       const source: TransferClipboardSourceIdentity = {
@@ -18179,15 +18218,33 @@ struct RemoteDesktop {
       };
       if (!this.transferClipboardSourceIsCurrent(lease, source) ||
         !await this.ensurePasteboardReadPermission() || !this.transferClipboardSourceIsCurrent(lease, source)) { return; }
-      const data: unifiedDataChannel.UnifiedData = await pasteboard.getSystemPasteboard().getUnifiedData();
-      if (!this.transferClipboardSourceIsCurrent(lease, source)) { return; }
-      const sources: TransferFileSource[] = this.transferSourcesFromUnifiedData(data);
+      const current = (): boolean => this.transferClipboardSourceIsCurrent(lease, source) &&
+        (lease.protocol === 'rdp' ? this.rdpFileTransferEnabledForSession(lease.sessionId, lease.attemptId) :
+          this.rustDeskClipboardFilesAllowed(lease, true));
+      const uris: string[] = await new SystemClipboardFileProvider().read(current, (percent: number): void => {
+        if (current()) { this.setFileTransferStatus(`正在读取本机文件剪贴板 ${percent}%`, -1, false); }
+      });
+      if (!current()) { return; }
+      const sources: TransferFileSource[] = this.transferSourcesFromUris(uris);
       if (sources.length === 0) { promptAction.showToast({ message: '剪贴板中没有可传输的普通文件', duration: 2200 }); return; }
       if (lease.protocol === 'rdp') { await this.prepareAndOfferRdpFiles(sources, lease, 'system-clipboard', source); }
       else { await this.offerRustDeskClipboardFiles(sources, lease, 'system-clipboard', source); }
-    } catch (_err) {
-      if (this.transferLeaseIsCurrent(lease)) { this.setFileTransferStatus('无法读取本机文件剪贴板', -1, false); }
-    }
+    } catch (error) {
+      if (this.transferLeaseIsCurrent(lease)) {
+        const code: string = (error as Error).message ?? '';
+        let message: string = '无法读取本机文件剪贴板';
+        if (code === 'system_clipboard_files_directory_unsupported' || code === 'unsupported_file_type') {
+          message = '系统文件剪贴板暂不支持目录，请使用选择目录发送';
+        } else if (code === 'system_clipboard_files_timeout') {
+          message = '读取本机文件剪贴板超时，请重新复制后重试';
+        } else if (code === 'system_clipboard_files_cancelled' || code === 'system_clipboard_files_source_changed') {
+          message = '剪贴板来源或会话已变化，本次读取已取消';
+        } else if (code === 'system_clipboard_files_item_limit' || code === 'file_count_limit') {
+          message = '每次最多粘贴 15 个文件';
+        } else if (code === 'system_clipboard_files_no_files') { message = '剪贴板中没有可传输的普通文件'; }
+        this.setFileTransferStatus(message, -1, false);
+      }
+    } finally { this.systemClipboardReadPending = false; }
   }
 
   private transferClipboardSourceIsCurrent(lease: RemoteTransferLease,
@@ -18203,11 +18260,18 @@ struct RemoteDesktop {
   private transferSourcesFromUnifiedData(data: unifiedDataChannel.UnifiedData): TransferFileSource[] {
     const records: unifiedDataChannel.UnifiedRecord[] = data.getRecords();
     if (records.length === 0 || records.length > 15) { throw new Error('file_count_limit'); }
-    const result: TransferFileSource[] = [];
+    const uris: string[] = [];
     for (const record of records) {
       const entry = record.getEntry(uniformTypeDescriptor.UniformDataType.FILE_URI) as uniformDataStruct.FileUri;
-      if (!entry || !entry.oriUri) { continue; }
-      const uri: string = entry.oriUri;
+      if (entry?.oriUri) { uris.push(entry.oriUri); }
+    }
+    return this.transferSourcesFromUris(uris);
+  }
+
+  private transferSourcesFromUris(uris: string[]): TransferFileSource[] {
+    if (uris.length > 15) { throw new Error('file_count_limit'); }
+    const result: TransferFileSource[] = [];
+    for (const uri of uris) {
       const file: fileIo.File = fileIo.openSync(uri, fileIo.OpenMode.READ_ONLY | fileIo.OpenMode.NOFOLLOW);
       try {
         const stat: fileIo.Stat = fileIo.statSync(file.fd);

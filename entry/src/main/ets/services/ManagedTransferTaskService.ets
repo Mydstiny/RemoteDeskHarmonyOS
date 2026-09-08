@@ -1,6 +1,8 @@
 import { common } from '@kit.AbilityKit';
 import { deviceInfo } from '@kit.BasicServicesKit';
 import { util } from '@kit.ArkTS';
+import { hilog } from '@kit.PerformanceAnalysisKit';
+import { transferDiagnosticLine } from './TransferDiagnosticPolicy';
 import { FileTransferLiveTaskService } from './FileTransferLiveTaskService';
 import { createTransferSnapshot, FileTransferProgressSnapshot, TransferProtocol } from './FileTransferProgressModel';
 import { ManagedTransferTaskStore } from './ManagedTransferTaskStore';
@@ -320,6 +322,11 @@ export class ManagedTransferTaskService {
     const now: number = Date.now();
     if (!immediate && now - runtime.lastPublishedAt < 250) { return; }
     runtime.lastPublishedAt = now;
+    try {
+      const diagnostic: string = transferDiagnosticLine(runtime.record);
+      if (immediate) { hilog.info(0x0001, 'TransferTask', '%{public}s', diagnostic); }
+      else { hilog.debug(0x0001, 'TransferTask', '%{public}s', diagnostic); }
+    } catch (_error) { /* Diagnostics must never change task or notification outcomes. */ }
     for (let i: number = 0; i < this.listeners.length; i++) {
       const entry: ManagedTransferSubscription = this.listeners[i];
       if (entry.accountScopeId === runtime.record.accountScopeId) {

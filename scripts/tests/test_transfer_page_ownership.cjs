@@ -35,12 +35,13 @@ function fixture() {
     onCancel:callback=>{state.cancel=callback;} };
   const service = {init:()=>true, enqueue(options,runner) {
     state.options=options;
+    assert.match(options.leaseId,/^[0-9]+$/);assert.equal(Number(options.leaseId),owner.generation);
     control.isCurrent=()=>state.control && options.isCurrent();
     return { accepted:true,taskId:'test-task',attemptId:1,result:state.skipRunner ? Promise.resolve({stage:'cancelled',evidence:'none',diagnosticCode:'cancelled_before_start'}).then(async outcome=>{await options.onFinalize?.(outcome);return outcome;}) : runner(control) };
   }};
   const methods=['transferRouteIdentity','captureTransferLease','transferLeaseIsCurrent','clipboardLeaseIsCurrent',
     'releaseNativeTransfer','observeTransferAuthentication','clearTransferAuthentication','submitTransferAuthentication','waitClipboardPublication','publishClipboardForLease','cancelAndDrainNativeTransfer','sendRustDeskFile','submitFileToRustDesk','pickAndSendFile','prepareAndOfferRdpFiles',
-    'rustDeskClipboardFilesAllowed','offerRustDeskClipboardFiles','observeRustDeskLocalClipboardChange','prepareAndOfferRdpDirectory','pickAndSendDirectory','handleRdpSystemFilePaste','transferClipboardSourceIsCurrent','startDeferredRdpFileDrop','createTransferArtifactBatch'];
+    'rdpClipboardHierarchyIsSafe','receiveRdpClipboardEntries','rustDeskClipboardFilesAllowed','offerRustDeskClipboardFiles','observeRustDeskLocalClipboardChange','prepareAndOfferRdpDirectory','pickAndSendDirectory','handleRdpSystemFilePaste','transferClipboardSourceIsCurrent','startDeferredRdpFileDrop','createTransferArtifactBatch'];
   const module={exports:{}};
   const code=ts.transpileModule('export class Harness {\n'+methods.map(extract).join('\n')+'\n}',{
     compilerOptions:{target:ts.ScriptTarget.ES2021,module:ts.ModuleKind.CommonJS}
@@ -61,6 +62,7 @@ function fixture() {
     DragResult:{DRAG_FAILED:0,DRAG_SUCCESSFUL:1},uniformTypeDescriptor:{UniformDataType:{FILE_URI:'file'}},
     unifiedDataChannel:{FileConflictOptions:{OVERWRITE:1},ProgressIndicator:{DEFAULT:0}},
     TransferArtifactPublicationService:{getInstance:()=>({registerNativeOffer:(_batch,native)=>state.nativePublications.push(native)})},
+    SystemClipboardFileProvider:class{async read(current,progress){state.platformReads=(state.platformReads||0)+1;state.platformCurrent=current;progress(25);const data=await state.nextUnified;return data.sources.map(source=>source.uri);}},
     RustDeskClipboardClient:class{
       configure(){return true;}
       async publish(sources){state.clipboardSources=sources;await state.clipboardPublishWait?.();return {publicationId:73,ready:true,drained:false};}
@@ -81,7 +83,7 @@ function fixture() {
       rustdeskDirectEnabled:false,rustdeskDirectHost:'',rustdeskDirectPort:21118,rustdeskRelayId:'relay-a'},
     nativeDisconnectIdentity:owner,transferAuth:{transferId:0},transferAuthLease:null,transferAuthSecret:'',
     transferControlClient:()=>({list:async()=>state.remoteDirectory}),physicalKeyboardLayout:'windows',rustdeskClipboardEnabled:true,physicalModifierKeyCodesDown:[],rustdeskFilePasteEnabled:true,fileTransferBusy:false,remoteTransferDirectory:'/home/test',clipboardBridge:null,
-    ensurePasteboardReadPermission:()=>state.permission,transferSourcesFromUnifiedData:data=>data.sources,
+    ensurePasteboardReadPermission:()=>state.permission,transferSourcesFromUnifiedData:data=>data.sources,transferSourcesFromUris:uris=>uris.map(uri=>({uri,name:'current',size:4})),
     currentProtocolName(){return this.pendingHost.protocol;},currentAbilityBackgroundState:()=>false,
     clipboardBridgeEnabledForSession:()=>true,currentSessionCapabilities:()=>({clipboardSend:{enabled:true},clipboardReceive:{enabled:true},fileUpload:{enabled:true},fileDownload:{enabled:true}}),
     getFileTransferContext:()=>state.context,setFileTransferStatus:()=>{},formatTransferSize:String,yieldUi:async()=>{},
@@ -232,7 +234,7 @@ test('cancellation waits for native terminal state before reporting drain',async
   const terminal=await f.page.cancelAndDrainNativeTransfer(f.page.captureTransferLease(),29);
   assert.equal(terminal.rustdeskTransferState,5);assert.equal(polls,3);
 });
-test('file clipboard event changes during UnifiedData read invalidate the old payload',async()=>{
+test('file clipboard event changes during cancellable platform read invalidate the old payload',async()=>{
   for(const mutate of [f=>f.state.localCount++,f=>f.state.remoteSequence++]){
     const f=fixture();f.page.pendingHost.protocol='rdp';let resolve;
     f.state.nextUnified=new Promise(r=>resolve=r);
@@ -259,6 +261,35 @@ test('foreground loss while staging a file clipboard blocks offer as well as pas
 test('current local file clipboard event is offered after permission and bounded staging',async()=>{
   const f=fixture();f.page.pendingHost.protocol='rdp';f.state.nextUnified=Promise.resolve({sources:[{uri:'current://file',name:'current',size:4}]});
   await f.page.handleRdpSystemFilePaste();assert.equal(f.state.offers.length,1);assert.deepEqual(f.state.sent,[{paste:7}]);
+});
+test('system file read guard rejects permission revocation and reports local-only progress',async()=>{
+ const f=fixture();let resolve;f.state.nextUnified=new Promise(r=>resolve=r);let label='';
+ f.page.setFileTransferStatus=value=>{label=value;};const pending=f.page.handleRdpSystemFilePaste();await new Promise(setImmediate);
+ assert.match(label,/正在读取本机文件剪贴板 25%/);assert.equal(f.state.platformCurrent(),true);
+ f.page.rustdeskFilePasteEnabled=false;assert.equal(f.state.platformCurrent(),false);
+ resolve({sources:[{uri:'old://file'}]});await pending;assert.equal(f.state.sent.length,0);
+});
+test('duplicate system paste during acquisition starts one read and releases pending guard',async()=>{
+ const f=fixture();let resolve;f.state.nextUnified=new Promise(r=>resolve=r);
+ const pending=f.page.handleRdpSystemFilePaste();await new Promise(setImmediate);
+ await f.page.handleRdpSystemFilePaste();assert.equal(f.state.platformReads,1);
+ f.state.localCount++;resolve({sources:[]});await pending;assert.equal(f.page.systemClipboardReadPending,false);
+});
+test('RDP directory acquisition rejects case and NFC parent aliases before any task',async()=>{
+ for(const names of [['Root','root/a'],['é','e\u0301/a'],['Root/a','root/b'],['Root/É/a','Root/E\u0301/b']]){
+  for(const order of [names,[...names].reverse()]){
+   const f=fixture();f.page.pendingHost.protocol='rdp';f.page.transferPanelLease=f.page.captureTransferLease();
+   const offer={state:'ready',entries:order.map((relativeName,index)=>({relativeName,index}))};
+   assert.equal(f.page.rdpClipboardHierarchyIsSafe(offer),false);
+   f.page.rdpReceiveOffer=offer;await f.page.receiveRdpClipboardEntries(offer.entries);
+   assert.equal(f.state.options,undefined);
+  }
+ }
+});
+test('RDP hierarchy preserves consistent implicit parents and rejects normalized full duplicates',()=>{
+ const f=fixture();
+ assert.equal(f.page.rdpClipboardHierarchyIsSafe({entries:[{relativeName:'Root/a'},{relativeName:'Root'},{relativeName:'Root/sub/b'}]}),true);
+ assert.equal(f.page.rdpClipboardHierarchyIsSafe({entries:[{relativeName:'É.txt'},{relativeName:'E\u0301.txt'}]}),false);
 });
 test('queued RDP directory cancellation releases creator without running preparation',async()=>{
  const f=fixture();f.page.pendingHost.protocol='rdp';f.state.skipRunner=true;

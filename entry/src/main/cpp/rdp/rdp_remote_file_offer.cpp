@@ -48,6 +48,7 @@ RemoteClipboardFileOffer RdpRemoteFileOffer::parse(
     const uint32_t count = u32(data);
     if (count == 0 || count > kMaxEntries || size != 4 + size_t(count) * kDescriptorBytes) return offer;
     std::map<std::string, bool> paths;
+    std::map<std::string, std::string> prefixSpellings;
     offer.totalKnown = true;
     for (uint32_t index = 0; index < count; ++index) {
         const uint8_t* p = data + 4 + size_t(index) * kDescriptorBytes;
@@ -60,6 +61,20 @@ RemoteClipboardFileOffer RdpRemoteFileOffer::parse(
         if (!RdpClipboardCodec::decode(p + 72, (units + 1) * 2, name) || !safeRelativeName(name, normalized)) return offer;
         const auto key = folded(normalized);
         if (paths.count(key)) { offer.diagnosticCode = "duplicate_file_name"; return offer; }
+        // Selection and destination paths preserve descriptor spelling. A folded
+        // parent shared by multiple entries must therefore have one exact spelling,
+        // even when its directory descriptor is absent or arrives after children.
+        size_t prefixEnd = 0;
+        for (;;) {
+            prefixEnd = normalized.find('/', prefixEnd);
+            const auto prefix = normalized.substr(0, prefixEnd);
+            const auto inserted = prefixSpellings.emplace(folded(prefix), prefix);
+            if (!inserted.second && inserted.first->second != prefix) {
+                offer.diagnosticCode = "ambiguous_file_path"; return offer;
+            }
+            if (prefixEnd == std::string::npos) break;
+            ++prefixEnd;
+        }
         RemoteClipboardFileEntry entry;
         entry.index = index; entry.relativeName = normalized;
         entry.directory = (descriptorFlags & 4) && (attributes & 0x10);
