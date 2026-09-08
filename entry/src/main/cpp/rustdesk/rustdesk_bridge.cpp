@@ -113,6 +113,9 @@ extern "C" {
     bool  rustdesk_change_display_resolution(void* handle, int display, int width, int height);
     bool  rustdesk_send_touch_scale(void* handle, int scale);
     bool rustdesk_set_phone_geometry_ready(void* handle, bool ready);
+    // Optional phone-only side channel; older cores keep ordinary callbacks usable.
+    uint32_t rustdesk_current_phone_frame_geometry_epoch_v1(const void* frame, void* userData)
+        __attribute__((weak));
     uint32_t rustdesk_android_capabilities(void* handle);
     bool rustdesk_send_android_action(void* handle, int action);
     bool  rustdesk_send_touch_pan(void* handle, int phase, int x, int y);
@@ -1414,6 +1417,10 @@ void RustDeskBridge::onFfiFrame(const void* framePtr, void* userData) {
                             &impl->ffiCallbackCv);
     }
     auto* ffiFrame = static_cast<const RustDeskFfiVideoFrameV2*>(framePtr);
+    const uint32_t phoneFrameGeometryEpoch = impl &&
+        impl->explicitPhone.load(std::memory_order_acquire) &&
+        rustdesk_current_phone_frame_geometry_epoch_v1 ?
+        rustdesk_current_phone_frame_geometry_epoch_v1(framePtr, userData) : 0;
     const char* rejectReason = nullptr;
     if (!context) {
         rejectReason = "missing_context";
@@ -1642,8 +1649,7 @@ void RustDeskBridge::onFfiFrame(const void* framePtr, void* userData) {
         frame.display = ffiFrame->display;
         if (impl->explicitPhone.load(std::memory_order_acquire)) {
             frame.phoneStreamEpoch = context->admissionEpoch;
-            frame.phoneGeometryEpoch = impl->phoneGeometry.epochForFrame(
-                frame.display, frame.width, frame.height);
+            frame.phoneGeometryEpoch = phoneFrameGeometryEpoch;
         }
         cb(frame);
     }

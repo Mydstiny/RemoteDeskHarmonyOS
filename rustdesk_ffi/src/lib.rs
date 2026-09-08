@@ -10,7 +10,7 @@
 //!   rustup target add aarch64-unknown-linux-ohos
 //!   cargo build --release --target aarch64-unknown-linux-ohos
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::{c_char, c_void, CStr, CString};
 use std::io;
@@ -771,6 +771,33 @@ pub struct FfiVideoFrameV2 {
     pub struct_size: u32,
 }
 
+// Callback-scoped side channel: no field is appended to the public V1/V2 ABI.
+// Only the explicit-phone native consumer queries it, synchronously in V2.
+thread_local! {
+    static PHONE_FRAME_GEOMETRY: Cell<(usize, usize, u32)> = const { Cell::new((0, 0, 0)) };
+}
+struct PhoneFrameGeometryScope((usize, usize, u32));
+impl PhoneFrameGeometryScope {
+    fn enter(frame: *const FfiVideoFrameV2, user_data: *mut c_void, epoch: u32) -> Self {
+        Self(PHONE_FRAME_GEOMETRY.with(|current| current.replace((frame as usize, user_data as usize, epoch))))
+    }
+}
+impl Drop for PhoneFrameGeometryScope {
+    fn drop(&mut self) { PHONE_FRAME_GEOMETRY.with(|current| current.set(self.0)); }
+}
+
+/// Exact enqueue-time geometry for this callback only; never a latest-state query.
+#[no_mangle]
+pub extern "C" fn rustdesk_current_phone_frame_geometry_epoch_v1(
+    frame: *const FfiVideoFrameV2, user_data: *mut c_void,
+) -> u32 {
+    if frame.is_null() { return 0; }
+    PHONE_FRAME_GEOMETRY.with(|current| {
+        let (active_frame, active_user, epoch) = current.get();
+        if active_frame == frame as usize && active_user == user_data as usize { epoch } else { 0 }
+    })
+}
+
 /// 音频数据
 #[repr(C)]
 pub struct FfiAudioData {
@@ -1101,6 +1128,7 @@ struct QueuedVideoFrame {
     timestamp: u64,
     is_key_frame: bool,
     display: c_int,
+    geometry_epoch: u32,
 }
 
 struct VideoCallbackQueueState {
@@ -1503,6 +1531,7 @@ fn dispatch_queued_video_frame(
                 abi_version: RUSTDESK_VIDEO_FRAME_ABI_VERSION,
                 struct_size: std::mem::size_of::<FfiVideoFrameV2>() as u32,
             };
+            let _phone_geometry = PhoneFrameGeometryScope::enter(&ffi_frame, user_data, frame.geometry_epoch);
             callback(&ffi_frame, user_data);
         }
     }
@@ -1527,6 +1556,7 @@ fn dispatch_encoded_frames(
     width: c_int,
     height: c_int,
     display: c_int,
+    geometry_epoch: u32,
     video_worker: &mut VideoCallbackWorker,
 ) {
     for frame in frames.get_frames() {
@@ -1542,6 +1572,7 @@ fn dispatch_encoded_frames(
             timestamp: frame.get_pts().max(0) as u64,
             is_key_frame: frame.get_key(),
             display,
+            geometry_epoch,
         });
     }
 }
@@ -1552,33 +1583,34 @@ fn dispatch_video_frame(
     video_worker: &mut VideoCallbackWorker,
 ) {
     let display = frame.get_display();
-    let (width, height) = display_state
+    let (width, height, geometry_epoch) = display_state
         .lock()
         .map(|state| {
-            state
+            let (width, height) = state
                 .displays
                 .iter()
                 .find(|info| info.display == display)
                 .map(|info| (info.width.max(1), info.height.max(1)))
-                .unwrap_or((state.width.max(1), state.height.max(1)))
+                .unwrap_or((state.width.max(1), state.height.max(1)));
+            (width, height, state.geometry_epoch)
         })
-        .unwrap_or((1, 1));
+        .unwrap_or((1, 1, 0));
 
     match frame.union {
         Some(VideoFrame_oneof_union::h264s(ref frames)) => {
-            dispatch_encoded_frames(frames, 0, width, height, display, video_worker);
+            dispatch_encoded_frames(frames, 0, width, height, display, geometry_epoch, video_worker);
         }
         Some(VideoFrame_oneof_union::h265s(ref frames)) => {
-            dispatch_encoded_frames(frames, 1, width, height, display, video_worker);
+            dispatch_encoded_frames(frames, 1, width, height, display, geometry_epoch, video_worker);
         }
         Some(VideoFrame_oneof_union::vp8s(ref frames)) => {
-            dispatch_encoded_frames(frames, 2, width, height, display, video_worker);
+            dispatch_encoded_frames(frames, 2, width, height, display, geometry_epoch, video_worker);
         }
         Some(VideoFrame_oneof_union::vp9s(ref frames)) => {
-            dispatch_encoded_frames(frames, 3, width, height, display, video_worker);
+            dispatch_encoded_frames(frames, 3, width, height, display, geometry_epoch, video_worker);
         }
         Some(VideoFrame_oneof_union::av1s(ref frames)) => {
-            dispatch_encoded_frames(frames, 4, width, height, display, video_worker);
+            dispatch_encoded_frames(frames, 4, width, height, display, geometry_epoch, video_worker);
         }
         Some(VideoFrame_oneof_union::rgb(_)) | Some(VideoFrame_oneof_union::yuv(_)) | None => {}
     }
@@ -5223,6 +5255,79 @@ mod tests {
         }
     }
 
+    extern "C" fn collect_phone_frame_epoch(frame: *const FfiVideoFrameV2, user_data: *mut c_void) {
+        let epoch = rustdesk_current_phone_frame_geometry_epoch_v1(frame, user_data);
+        unsafe {
+            let output = &mut *(user_data as *mut Vec<(u32, i32, i32)>);
+            output.push((epoch, (*frame).width, (*frame).height));
+        }
+    }
+
+    #[test]
+    fn phone_geometry_is_captured_before_video_worker_queue_and_survives_aba() {
+        let state = Arc::new(Mutex::new(RustDeskDisplayState {
+            width: 1080, height: 2400, geometry_epoch: 1,
+            ..RustDeskDisplayState::default()
+        }));
+        // No thread drains this production worker until all notifications pass.
+        let mut worker = VideoCallbackWorker::start(None, 0, Arc::new(ControlInbox::default()));
+        let mut frame = VideoFrame::new();
+        frame.set_display(0);
+        let mut encoded = EncodedVideoFrames::new();
+        let mut bytes = EncodedVideoFrame::new();
+        bytes.set_data(vec![0x01]);
+        encoded.mut_frames().push(bytes);
+        frame.union = Some(VideoFrame_oneof_union::h264s(encoded));
+        dispatch_video_frame(&frame, &state, &mut worker);
+        {
+            let mut geometry = state.lock().unwrap();
+            geometry.width = 2400; geometry.height = 1080; geometry.geometry_epoch = 2;
+        }
+        dispatch_video_frame(&frame, &state, &mut worker);
+        {
+            let mut geometry = state.lock().unwrap();
+            geometry.width = 1080; geometry.height = 2400; geometry.geometry_epoch = 3;
+        }
+        dispatch_video_frame(&frame, &state, &mut worker);
+        let mut received: Vec<(u32, i32, i32)> = Vec::new();
+        for _ in 0..3 {
+            let queued = worker.queue.pop().unwrap();
+            dispatch_queued_video_frame(&queued, FrameCallbackKind::V2(collect_phone_frame_epoch),
+                &mut received as *mut _ as *mut c_void);
+        }
+        worker.stop();
+        assert_eq!(received, vec![(1,1080,2400), (2,2400,1080), (3,1080,2400)]);
+    }
+
+    #[test]
+    fn phone_geometry_side_channel_is_callback_thread_pointer_and_user_scoped() {
+        let frame = FfiVideoFrameV2 {
+            data: ptr::null(), size: 0, width: 1, height: 1, codec: 0,
+            timestamp: 0, is_key_frame: false, display: 0,
+            abi_version: RUSTDESK_VIDEO_FRAME_ABI_VERSION,
+            struct_size: std::mem::size_of::<FfiVideoFrameV2>() as u32,
+        };
+        let owner = 123usize as *mut c_void;
+        let pointer = &frame as *const FfiVideoFrameV2;
+        assert_eq!(rustdesk_current_phone_frame_geometry_epoch_v1(pointer, owner), 0);
+        {
+            let _scope = PhoneFrameGeometryScope::enter(pointer, owner, 17);
+            assert_eq!(rustdesk_current_phone_frame_geometry_epoch_v1(pointer, owner), 17);
+            assert_eq!(rustdesk_current_phone_frame_geometry_epoch_v1(pointer, ptr::null_mut()), 0);
+            assert_eq!(rustdesk_current_phone_frame_geometry_epoch_v1(ptr::null(), owner), 0);
+            assert_eq!(rustdesk_current_phone_frame_geometry_epoch_v1(1usize as *const _, owner), 0);
+            let address = pointer as usize;
+            assert_eq!(std::thread::spawn(move || rustdesk_current_phone_frame_geometry_epoch_v1(
+                address as *const _, 123usize as *mut c_void)).join().unwrap(), 0);
+            {
+                let _nested = PhoneFrameGeometryScope::enter(pointer, owner, 18);
+                assert_eq!(rustdesk_current_phone_frame_geometry_epoch_v1(pointer, owner), 18);
+            }
+            assert_eq!(rustdesk_current_phone_frame_geometry_epoch_v1(pointer, owner), 17);
+        }
+        assert_eq!(rustdesk_current_phone_frame_geometry_epoch_v1(pointer, owner), 0);
+    }
+
     #[test]
     fn video_frame_abis_keep_separate_stable_layouts() {
         assert_eq!(std::mem::size_of::<FfiVideoFrame>(), 48);
@@ -5312,6 +5417,7 @@ mod tests {
         let queue = VideoCallbackQueue::new();
         for timestamp in 0..VIDEO_CALLBACK_QUEUE_CAPACITY as u64 {
             let outcome = queue.enqueue(QueuedVideoFrame {
+                geometry_epoch: 0,
                 data: vec![timestamp as u8],
                 width: 1280,
                 height: 720,
@@ -5324,6 +5430,7 @@ mod tests {
         }
 
         let outcome = queue.enqueue(QueuedVideoFrame {
+            geometry_epoch: 0,
             data: vec![0xff],
             width: 1280,
             height: 720,
@@ -5350,6 +5457,7 @@ mod tests {
         let queue = VideoCallbackQueue::new();
         for timestamp in 0..VIDEO_CALLBACK_QUEUE_CAPACITY as u64 {
             let outcome = queue.enqueue(QueuedVideoFrame {
+                geometry_epoch: 0,
                 data: vec![timestamp as u8],
                 width: 1280,
                 height: 720,
@@ -5362,6 +5470,7 @@ mod tests {
         }
 
         let outcome = queue.enqueue(QueuedVideoFrame {
+            geometry_epoch: 0,
             data: vec![0xee],
             width: 1280,
             height: 720,
@@ -5378,6 +5487,7 @@ mod tests {
         ));
 
         let repeated_delta = queue.enqueue(QueuedVideoFrame {
+            geometry_epoch: 0,
             data: vec![0xef],
             width: 1280,
             height: 720,
@@ -5394,6 +5504,7 @@ mod tests {
         ));
 
         let recovery_keyframe = queue.enqueue(QueuedVideoFrame {
+            geometry_epoch: 0,
             data: vec![0xff],
             width: 1280,
             height: 720,
@@ -5427,6 +5538,7 @@ mod tests {
         let queue = VideoCallbackQueue::new();
         for timestamp in 0..VP9_VIDEO_CALLBACK_QUEUE_CAPACITY as u64 {
             let outcome = queue.enqueue(QueuedVideoFrame {
+                geometry_epoch: 0,
                 data: vec![timestamp as u8],
                 width: 2940,
                 height: 1912,
@@ -5444,6 +5556,7 @@ mod tests {
         drop(state);
 
         let overflow = queue.enqueue(QueuedVideoFrame {
+            geometry_epoch: 0,
             data: vec![0xff],
             width: 2940,
             height: 1912,

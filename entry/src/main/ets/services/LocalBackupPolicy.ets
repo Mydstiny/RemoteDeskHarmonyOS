@@ -201,7 +201,8 @@ function scrubDeviceLocalRustDeskPeerTwoFactorExport(
         const payloadKeys: string[] = Object.keys(source);
         for (let k = 0; k < payloadKeys.length; k++) {
           const key: string = payloadKeys[k];
-          if (isDeviceLocalRustDeskPeerTwoFactorKey(key)) { continue; }
+          // This device's phone opt-in is not portable user intent.
+          if (key === 'localrustdeskphonechoice' || isDeviceLocalRustDeskPeerTwoFactorKey(key)) { continue; }
           payload[key] = key === 'localdisplayconfig' ?
             scrubDeviceLocalRustDeskPeerTwoFactorDisplayConfig(source[key]) : source[key];
         }
@@ -1206,7 +1207,7 @@ export function validateLocalBackupSnapshot(
   localTables?: Record<string, Array<Record<string, string>>>
 ): boolean {
   return validateSnapshotTables(tables, CLOUD_SYNC_TABLES) &&
-    validateLocalExtensions(extensions, tables) &&
+    validateLocalExtensions(extensions, tables, true) &&
     (localTables === undefined ||
       validateCompleteSnapshotLocalTables(localTables));
 }
@@ -1228,7 +1229,7 @@ export function validateCloudDownloadRollbackSnapshot(
     LOCAL_BACKUP_PORTABLE_TABLES.length
     ? LOCAL_BACKUP_PORTABLE_TABLES : CLOUD_SYNC_TABLES;
   if (!validateSnapshotTables(tables, inventory) ||
-    !validateLocalExtensions(extensions, tables)) {
+    !validateLocalExtensions(extensions, tables, true)) {
     return false;
   }
   return localTables === undefined ||
@@ -1315,7 +1316,8 @@ function validateLocalTables(
 }
 
 function validateLocalExtensions(rows: Array<Record<string, string>>,
-  tables: Record<string, Array<Record<string, string>>>): boolean {
+  tables: Record<string, Array<Record<string, string>>>,
+  allowLocalPhoneChoice: boolean = false): boolean {
   const allowed: string[] = localBackupLocalExtensionColumns();
   const extensionIds: Set<string> = new Set<string>();
   const extensionBindings: Set<string> = new Set<string>();
@@ -1369,6 +1371,10 @@ function validateLocalExtensions(rows: Array<Record<string, string>>,
       const payloadColumns: string[] = localExtensionPayloadColumns(rows[i]['tablename']);
       for (let k = 0; k < payloadKeys.length; k++) {
         const key: string = payloadKeys[k];
+        // Same-device transaction before-images must retain existing intent.
+        // Portable documents use the default false and cannot import it.
+        if (allowLocalPhoneChoice && rows[i]['tablename'] === 'remotehosts' &&
+          key === 'localrustdeskphonechoice' && values[key] === '1') { continue; }
         if (payloadColumns.indexOf(key) < 0 || typeof values[key] !== 'string') {
           hilog.error(0x0001, 'LocalBackupPolicy',
             'extension invalid payload id=' + rows[i]['id'] + ' key=' + key);

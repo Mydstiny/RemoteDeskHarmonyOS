@@ -17,8 +17,14 @@ function evaluate(source, bindings = {}) {
 function load(file) {
   file = path.resolve(root, file);
   if (cache.has(file)) return cache.get(file);
-  const result = evaluate(fs.readFileSync(file, 'utf8'), { require(id) {
-    if (id === '@kit.CryptoArchitectureKit') return { cryptoFramework: {} };
+  const exposePrivateBackupValidator = file.endsWith('/LocalBackupPolicy.ets') ? '\nexport { validateLocalExtensions };' : '';
+  const result = evaluate(fs.readFileSync(file, 'utf8') + exposePrivateBackupValidator, { require(id) {
+    if (id === '@kit.CryptoArchitectureKit') return { cryptoFramework: { createMd() {
+      const hash = require('node:crypto').createHash('sha256');
+      return { updateSync(blob) { hash.update(blob.data); }, digestSync() { return {data: hash.digest()}; } };
+    } } };
+    if (id === '@kit.ArkTS') return { util: { TextEncoder, TextDecoder } };
+    if (id === '@kit.PerformanceAnalysisKit') return { hilog: {error() {}, warn() {}, info() {}} };
     if (id.startsWith('.')) return load(path.resolve(path.dirname(file), id) + '.ets');
     throw new Error(id);
   } });
@@ -145,5 +151,36 @@ test('dynamic local payload persists the choice outside portable JSON', () => {
   policy.restoreLocalRustDeskPhoneChoice(loaded, values.localrustdeskphonechoice);
   assert(policy.hasExplicitRustDeskPhoneChoice(loaded));
   assert(!Object.hasOwn(store.deviceLocalHostValues(host()), 'localrustdeskphonechoice'));
+});
+test('full and redacted backups export without local choice, while local rollback preserves it', () => {
+  const backup = load('entry/src/main/ets/services/LocalBackupPolicy.ets');
+  const {CLOUD_SYNC_TABLES} = load('entry/src/main/ets/services/CloudSyncPolicy.ets');
+  const tables = Object.fromEntries(CLOUD_SYNC_TABLES.map(name => [name, []]));
+  tables.remotehosts.push({id: 'phone', userid: 'owner', protocol: 'rustdesk', host: '123456789'});
+  const extensions = [{id: 'remotehosts:phone', tablename: 'remotehosts', recordid: 'phone',
+    payload: JSON.stringify(local.remoteHostLocalPersonalizationValues(host(true))), updatedat: '1'}];
+  const before = JSON.stringify(extensions);
+  assert(backup.validateLocalBackupSnapshot(tables, extensions));
+  assert(backup.validateCloudDownloadRollbackSnapshot(tables, extensions));
+  assert(!backup.validateLocalExtensions(extensions, tables), 'portable validator must reject local evidence');
+  for (const mode of ['full', 'redacted']) {
+    const doc = backup.createLocalBackupDocument(tables, 100, 'test', extensions, {}, 'owner', 3, false, mode);
+    assert(backup.validateLocalBackupDocument(JSON.stringify(doc)), mode + ' backup must remain usable');
+    assert(!Object.hasOwn(JSON.parse(doc.extensions[0].payload), 'localrustdeskphonechoice'));
+    const loaded = RemoteHost.fromJSON(host().toJSON());
+    local.applyRemoteHostLocalPersonalization(loaded, JSON.parse(doc.extensions[0].payload));
+    assert(!policy.hasExplicitRustDeskPhoneChoice(loaded));
+    const payload = JSON.parse(doc.extensions[0].payload); payload.localrustdeskphonechoice = '1';
+    doc.extensions[0].payload = JSON.stringify(payload);
+    doc.sha256 = backup.localBackupSha256(backup.localBackupCanonicalPayload(
+      doc.createdAt, doc.appVersion, doc.tables, doc.extensions, doc.version, doc.localTables, doc.manifest));
+    assert.equal(backup.validateLocalBackupDocument(JSON.stringify(doc)), null);
+  }
+  assert.equal(JSON.stringify(extensions), before, 'export must not clear local intent');
+  for (const value of ['', '0', '2', 1]) {
+    const invalid = [{...extensions[0], payload: JSON.stringify({localrustdeskphonechoice: value})}];
+    assert(!backup.validateLocalBackupSnapshot(tables, invalid));
+    assert(!backup.validateCloudDownloadRollbackSnapshot(tables, invalid));
+  }
 });
 console.log(count + ' phone choice checks passed');
