@@ -1,7 +1,7 @@
 # API 26 基础版本 UI 升级与优化计划
 
 - 日期：2026-09-07。
-- 状态：U1/U2 公共控件与导航两批代码已提交并独立复核；继续 U3 工具栏和其余首页/表单。U0 基线及 API23/26 视觉、键盘、性能矩阵仍待验收，不能标记 U0-U4 完成。
+- 状态：公共控件、导航、工具栏及首页四批代码已提交并独立复核；分组卡片已有当前代码门禁，继续其余表单。U0 基线及 API23/26 视觉、键盘、性能矩阵仍待验收，不能标记 U0-U4 完成。
 - 权益归属：基础版本免费升级，所有用户可用，不属于 Pro，不要求购买、登录、联网验单或开启模拟 Pro。
 - 关联：[总体路线图](2026-09-06-pro-product-roadmap.md)、[Pro M1/M2 实施准备](2026-09-07-pro-m1-m2-implementation.md)。
 
@@ -133,4 +133,11 @@ U1 首个代码增量：新增免费 `AppSheetHeader`，接入反馈页和 Pro �
 - 两种断点复用同一搜索 builder：清除按钮 44 vp，原立即清除与 debounce 输入保持不变，清除后尝试归还输入焦点；字段已离开组件树时安全忽略焦点异常。标题自然测高只用于列表顶部避让，原系统安全区下限保留。无匹配文案区分搜索/分组筛选，避免宣称用户没有任何主机。
 - 分组筛选使用原数据/切换函数并支持横向滚动，长标签截断且读屏保留完整名称；批量工具栏只改允许换行、44 vp 与填色前景，原选择/删除/排序/取消回调不变。经典远程与 Moonlight 行仅调整图标前景、44 vp 菜单/探测命中、读屏名称和锁定提示对比度，保留隐私遮蔽、长按/拖放/滑动与缓存边界。分组卡片的整体布局另行推进。
 - 本地 API26 SDK 确认 FocusController/getFocusController 自 API12，accessibilitySelected 自 API13，均早于保留的 API23 安装目标；没有新 API26-only 冷导入。
-- 当前代码两门：testCompile `BUILD SUCCESSFUL in 10 s 203 ms`；signed assembleHap `BUILD SUCCESSFUL in 11 s 413 ms`、SignHap 917 ms，均 exit 0；Light/diff PASS。完整源码范围核对仅七处 UI 区块、两个 UI helper、一处测量状态与一个 import；317 个原事件调用核对，差异限于合并重复搜索、清除焦点与新增标题测量，其他回调及账号/协议/存储/隐私投影代码未改。源码 hash 冻结供元数据门禁和提交核对；checkpoint 后独立复核待执行，真实字体/键盘/窗口/长列表性能仍待验收。
+- 当前代码两门：testCompile `BUILD SUCCESSFUL in 10 s 203 ms`；signed assembleHap `BUILD SUCCESSFUL in 11 s 413 ms`、SignHap 917 ms，均 exit 0；Light/diff PASS。完整源码范围核对仅七处 UI 区块、两个 UI helper、一处测量状态与一个 import；317 个原事件调用核对，差异限于合并重复搜索、清除焦点与新增标题测量，其他回调及账号/协议/存储/隐私投影代码未改。精确 checkpoint `84d80efe` 与后续 `e37c5efc` 独立复核 PASS；原 P2 横向手势冲突已关闭：HdsTabs 使用自 API20 支持的 scrollable(false)，保留禁止滑动切页并让子筛选条滚动。修复后两门 testCompile 9 s 160 ms、signed assembleHap 10 s 251 ms、SignHap 883 ms，Light/diff PASS。独立复核覆盖 333 个 on* 调用、38424 个实际标题测量组合和清除焦点异常边界；真实字体/键盘/窗口/长列表性能仍待验收。
+
+## U2 自然高度分组卡片第五批（2026-09-08）
+
+- 协议和 Moonlight 分组标题采用原生 Button，保留原展开状态/控制器，标题、副标题、统计与父行只设最小高度。展开详情移除卡片、Grid 与面板的层层固定高度，使用自然高度的 Flex 单/双列；列数仍由既有断点策略决定，数据、顺序与 ForEach key 不变。
+- 探测/应用目录、编辑、锁定、删除放到可换行的独立操作行，各按钮 44 vp，内容区可读宽度增加。主机图标改为可聚焦原生按钮并应用公共黑白前景；原隐私投影、协议显示、连接/选择回调、长按和 AI 不支持锁定的规则保持。详情文字与空态使用 text2，标签宽度可随文字扩展。
+- 收起详情使用 Visibility.None，避免零高度内残留可聚焦操作；仍直接读取展开状态，保留原状态动画与外观配置。Flex spacing/LengthMetrics 自 API12 提供，本批未引入 API26-only 加载路径。全应用字体策略、实际动态字体与触控/读屏/性能验收仍待后续验证。
+- 当前代码门禁：testCompile `BUILD SUCCESSFUL in 9 s 263 ms`，signed assembleHap `BUILD SUCCESSFUL in 10 s 447 ms`、SignHap 916 ms，均 exit 0；共享首页手势修复后另两门 9 s 160 ms / 10 s 251 ms、SignHap 883 ms。源码冻结核对、318 个原事件顺序/回调逐字核对、既有主机分组策略 8 项与 Light/diff PASS。仅五处 UI 范围及现有 kit 导入变化；独立复核待 checkpoint，不把源码检查视为设备视觉或性能证明。

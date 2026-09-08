@@ -20,7 +20,7 @@ import { SETTINGS_SHEET_PRO } from '../services/SettingsSheetRoutePolicy';
 /**
  * HostListPage v9 — 多端响应式 + 悬浮卡片 sheet + 滑动删除 + 官方图标按钮
  */
-import { router, promptAction, curves } from '@kit.ArkUI';
+import { router, promptAction, curves, LengthMetrics } from '@kit.ArkUI';
 import { display, window } from '@kit.ArkUI';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { preferences } from '@kit.ArkData';
@@ -13192,22 +13192,9 @@ struct HostListPage {
   }
 
   private hostGroupCardHeight(): number {
-    // Keep grouped cards close to the compact settings-card rhythm. The xl
-    // desktop layout is excluded from this grouped view and keeps its existing
-    // categorized cards.
+    // Minimum only: labels and native action rows may grow with their content.
+    // The xl desktop layout keeps its existing categorized cards.
     return this.breakpoint === 'sm' ? 88 : 96;
-  }
-
-  private hostGroupHostCardHeight(): number {
-    // The card stays compact, while the larger touch targets get one shared
-    // vertical rhythm on phone, Pad, and small-screen PC layouts.
-    return this.breakpoint === 'sm' ? 102 : 98;
-  }
-
-  private hostGroupHostGridHeight(count: number): number {
-    const columns: number = hostGroupColumnsForBreakpoint(this.breakpoint);
-    const rows: number = Math.max(1, Math.ceil(count / columns));
-    return rows * this.hostGroupHostCardHeight() + Math.max(0, rows - 1) * 10;
   }
 
   private hostGroupStatusColor(state: HostPresenceState): string {
@@ -13349,48 +13336,52 @@ struct HostListPage {
   }
 
   @Builder hostGroupTypeCard(card: HostGroupCardModel) {
-    Column() {
-      Row() {
-        Column() {
-          SymbolGlyph(protocolIcon(card.type)).fontSize(this.breakpoint === 'sm' ? 20 : 24)
-            .fontColor([this.accentColor])
-        }
-        .width(this.breakpoint === 'sm' ? 38 : 44)
-        .height(this.breakpoint === 'sm' ? 38 : 44)
-        .borderRadius(this.breakpoint === 'sm' ? 19 : 14)
-        .backgroundColor(this.pal().surface)
-        .justifyContent(FlexAlign.Center)
-        Column() {
-          Text(card.title).fontSize(this.breakpoint === 'sm' ? 16 : 18)
-            .fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())
-            .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-          Text(card.subtitle).fontSize(this.breakpoint === 'sm' ? 10 : 11)
-            .fontColor(this.pal().text3).fontFamily(this.font()).margin({ top: 3 })
-            .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-        }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: this.breakpoint === 'sm' ? 8 : 10 })
+    Button({ type: ButtonType.Normal }) {
+      Column() {
+        Row() {
+          Column() {
+            SymbolGlyph(protocolIcon(card.type)).fontSize(this.breakpoint === 'sm' ? 20 : 24)
+              .fontColor([this.accentColor])
+          }
+          .width(this.breakpoint === 'sm' ? 38 : 44)
+          .height(this.breakpoint === 'sm' ? 38 : 44)
+          .borderRadius(this.breakpoint === 'sm' ? 19 : 14)
+          .backgroundColor(this.pal().surface)
+          .justifyContent(FlexAlign.Center)
+          Column() {
+            Text(card.title).fontSize(this.breakpoint === 'sm' ? 16 : 18)
+              .fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())
+              .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
+            Text(card.subtitle).fontSize(12)
+              .fontColor(this.pal().text2).fontFamily(this.font()).margin({ top: 3 })
+              .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
+          }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: this.breakpoint === 'sm' ? 8 : 10 })
           SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(this.breakpoint === 'sm' ? 16 : 18)
-          .fontColor([this.pal().text3])
-          .rotate({ angle: this.expandedHostGroup === card.type ? 90 : 0 })
-          .animation({ duration: 220, curve: Curve.FastOutSlowIn })
-      }.width('100%')
-      Row() {
-        Text(card.hosts.length.toString() + ' 台主机').fontSize(this.breakpoint === 'sm' ? 10 : 11)
-          .fontColor(this.pal().text2).fontFamily(this.font())
-        Blank()
-        if (this.hostGroupSummaryText(card) !== '') {
-          Text(this.hostGroupSummaryText(card)).fontSize(this.breakpoint === 'sm' ? 9 : 10)
-            .fontColor(this.pal().text3).fontFamily(this.font()).maxLines(1)
-            .textOverflow({ overflow: TextOverflow.Ellipsis })
-        }
-      }.width('100%').margin({ top: this.breakpoint === 'sm' ? 8 : 10 })
+            .fontColor([this.pal().text2])
+            .rotate({ angle: this.expandedHostGroup === card.type ? 90 : 0 })
+            .animation({ duration: 220, curve: Curve.FastOutSlowIn })
+        }.width('100%')
+        Flex({ wrap: FlexWrap.Wrap, alignItems: ItemAlign.Center,
+          space: { main: LengthMetrics.vp(8), cross: LengthMetrics.vp(4) } }) {
+          Text(card.hosts.length.toString() + ' 台主机').fontSize(12)
+            .fontColor(this.pal().text2).fontFamily(this.font())
+          if (this.hostGroupSummaryText(card) !== '') {
+            Text(this.hostGroupSummaryText(card)).fontSize(12)
+              .fontColor(this.pal().text2).fontFamily(this.font()).maxLines(1)
+              .textOverflow({ overflow: TextOverflow.Ellipsis })
+          }
+        }.width('100%').margin({ top: this.breakpoint === 'sm' ? 8 : 10 })
+      }
+      .width('100%').padding(this.breakpoint === 'sm' ? 10 : 12)
     }
-    .layoutWeight(1).height(this.hostGroupCardHeight())
-    .padding(this.breakpoint === 'sm' ? 10 : 12)
+    .layoutWeight(1).constraintSize({ minHeight: this.hostGroupCardHeight() }).padding(0)
     .borderRadius(this.breakpoint === 'sm' ? 16 : 14)
     .backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
     .border({ width: this.expandedHostGroup === card.type ? 1.5 : 0.5,
       color: this.expandedHostGroup === card.type ? this.accentColor : this.pal().cardBorder,
       style: BorderStyle.Solid })
+    .focusable(true)
+    .accessibilityText(card.title + '主机分组' + (this.expandedHostGroup === card.type ? '，已展开' : '，已收起'))
     .onClick((): void => { this.toggleHostGroup(card.type); })
   }
 
@@ -13416,21 +13407,21 @@ struct HostListPage {
   @Builder hostGroupedProtocolDetails(host: RemoteHost) {
     Row() {
       if (host.protocol === 'rustdesk') {
-        Text('ID').fontSize(this.breakpoint === 'sm' ? 12 : 13).fontColor(this.pal().text3).width(30)
+        Text('ID').fontSize(this.breakpoint === 'sm' ? 12 : 13).fontColor(this.pal().text2).constraintSize({ minWidth: 30 })
         Text(this.protectedHostCardValue(host, hostIdentifier(host)))
           .fontSize(this.breakpoint === 'sm' ? 15 : 16)
           .fontWeight(FontWeight.Medium).fontColor(this.pal().text2).fontFamily(this.font()).layoutWeight(1)
           .textOverflow({ overflow: TextOverflow.Ellipsis }).maxLines(1)
           .accessibilityText(this.protectedHostCardValue(host, hostIdentifier(host)))
       } else if (host.protocol === 'ssh') {
-        Text('SSH').fontSize(11).fontColor(this.pal().text3).width(30)
+        Text('SSH').fontSize(11).fontColor(this.pal().text2).constraintSize({ minWidth: 30 })
         Text(this.protectedHostCardValue(host,
           formatUserAtHost(host.username, host.host, host.port)))
           .fontSize(this.breakpoint === 'sm' ? 12 : 13).fontColor(this.pal().text2)
           .fontFamily(this.font()).layoutWeight(1)
           .textOverflow({ overflow: TextOverflow.Ellipsis }).maxLines(1)
       } else if (host.protocol === 'vnc') {
-        Text('VNC').fontSize(11).fontColor(this.pal().text3).width(30)
+        Text('VNC').fontSize(11).fontColor(this.pal().text2).constraintSize({ minWidth: 30 })
         Text(this.protectedHostCardValue(host, host.gatewayHost.trim() === '' ?
           formatEndpointFieldsHostPort(host.host, host.port) :
           formatEndpointFieldsHostPort(host.host, host.port) + ' · 网关 ' +
@@ -13439,7 +13430,7 @@ struct HostListPage {
           .fontFamily(this.font()).layoutWeight(1)
           .textOverflow({ overflow: TextOverflow.Ellipsis }).maxLines(1)
       } else {
-        Text('RDP').fontSize(11).fontColor(this.pal().text3).width(30)
+        Text('RDP').fontSize(11).fontColor(this.pal().text2).constraintSize({ minWidth: 30 })
         Text(this.protectedHostCardValue(host,
           formatEndpointFieldsHostPort(host.host, host.port)))
           .fontSize(this.breakpoint === 'sm' ? 12 : 13)
@@ -13450,101 +13441,97 @@ struct HostListPage {
   }
 
   @Builder hostGroupedHostCard(host: RemoteHost) {
-    Row() {
-      if (this.hostSelectionMode) {
-        Checkbox()
-          .select(this.hostSelectedIds.has(remoteHostCardKey(host.id))).selectedColor(this.accentColor)
-          .margin({ right: 7 })
-          .monopolizeEvents(true)
-          .onChange((checked: boolean): void => {
-            this.toggleHostSelect(remoteHostCardKey(host.id), checked);
-          })
-      }
-      Column() {
-        SymbolGlyph(this.hostGroupIconForHost(host)).fontSize(this.breakpoint === 'sm' ? 21 : 23)
-          .fontColor([Color.White])
-      }
-      .width(this.breakpoint === 'sm' ? 40 : 42)
-      .height(this.breakpoint === 'sm' ? 40 : 42)
-      .borderRadius(this.breakpoint === 'sm' ? 12 : 13)
-      .backgroundColor(this.accentColor)
-      .justifyContent(FlexAlign.Center)
-      .margin({ right: this.breakpoint === 'sm' ? 9 : 10 })
-      .onClick((): void => { this.handleHostCardClick(host); })
-      Column() {
-        Row() {
-          Text(hostCardDisplayLabel(
-            shouldHideHostCardSensitiveInfo(this.hostCardSensitiveInfoHidden, host.locked),
-            host.protocol, host.label, host.rustdeskProPeerId, host.customHostname))
-            .fontSize(this.breakpoint === 'sm' ? 15 : 16)
-            .fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())
-            .layoutWeight(1).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-        }.width('100%')
-        if (this.hostGroupStatusLine(host) !== '') {
-          Text(this.hostGroupStatusLine(host))
-            .fontSize(this.breakpoint === 'sm' ? 12 : 13)
-            .fontColor(this.hostGroupStatusColorForHost(host))
-            .fontFamily(this.font()).margin({ top: 2 })
-            .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+    Column({ space: 8 }) {
+      Row() {
+        if (this.hostSelectionMode) {
+          Checkbox()
+            .select(this.hostSelectedIds.has(remoteHostCardKey(host.id))).selectedColor(this.accentColor)
+            .margin({ right: 7 })
+            .monopolizeEvents(true)
+            .onChange((checked: boolean): void => {
+              this.toggleHostSelect(remoteHostCardKey(host.id), checked);
+            })
         }
-        this.hostGroupedProtocolDetails(host)
-      }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+        Button({ type: ButtonType.Normal }) {
+          SymbolGlyph(this.hostGroupIconForHost(host)).fontSize(this.breakpoint === 'sm' ? 21 : 23)
+            .fontColor([appUiButtonText(this.accentColor)])
+        }
+        .width(AppUiMetrics.minTouchTarget).padding(0).focusable(true)
+        .accessibilityText('打开主机')
+        .height(AppUiMetrics.minTouchTarget)
+        .borderRadius(this.breakpoint === 'sm' ? 12 : 13)
+        .backgroundColor(appUiButtonFill(this.accentColor))
+        .margin({ right: this.breakpoint === 'sm' ? 9 : 10 })
         .onClick((): void => { this.handleHostCardClick(host); })
-      Column() {
-        // Keep the top action row for direct hosts as well. Direct hosts do
-        // not probe, but the reserved probe slot keeps every action row aligned.
-        Row() {
-          if (this.hostGroupHostModeLabel(host) !== '') {
-            Text(this.hostGroupHostModeLabel(host))
-              .fontSize(this.breakpoint === 'sm' ? 10 : 11)
-              .fontColor(this.hostGroupHostModeColor(host)).fontFamily(this.font())
-              .padding({ left: 7, right: 7, top: 3, bottom: 3 })
-              .borderRadius(7).backgroundColor(this.pal().surface).margin({ right: 6 })
+        Column() {
+          Row() {
+            Text(hostCardDisplayLabel(
+              shouldHideHostCardSensitiveInfo(this.hostCardSensitiveInfoHidden, host.locked),
+              host.protocol, host.label, host.rustdeskProPeerId, host.customHostname))
+              .fontSize(this.breakpoint === 'sm' ? 15 : 16)
+              .fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())
+              .layoutWeight(1).maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
+          }.width('100%')
+          if (this.hostGroupStatusLine(host) !== '') {
+            Text(this.hostGroupStatusLine(host))
+              .fontSize(this.breakpoint === 'sm' ? 12 : 13)
+              .fontColor(this.hostGroupStatusColorForHost(host))
+              .fontFamily(this.font()).margin({ top: 2 })
               .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
           }
-          if (this.hostGroupCanProbe(host)) {
-            Button() {
-              if (this.hostPresenceProbeBusyIds.has(host.id)) {
-                LoadingProgress().width(21).height(21).color(this.accentColor)
-              } else {
-                SymbolGlyph($r('sys.symbol.bolt_fill')).fontSize(19).fontColor([this.accentColor])
-              }
-            }
-            .width(this.breakpoint === 'sm' ? 38 : 40)
-            .height(this.breakpoint === 'sm' ? 38 : 40).borderRadius(19).padding(0)
-            .backgroundColor(this.pal().surface).accessibilityText('检测在线状态')
-            .enabled(!this.hostPresenceProbeBusyIds.has(host.id))
-            .onClick((): void => { void this.probeHostConnectivity(host); })
-          } else {
-            Blank()
-              .width(this.breakpoint === 'sm' ? 38 : 40)
-              .height(this.breakpoint === 'sm' ? 38 : 40)
-          }
+          this.hostGroupedProtocolDetails(host)
+        }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+          .onClick((): void => { this.handleHostCardClick(host); })
+      }.width('100%')
+      Flex({ wrap: FlexWrap.Wrap, alignItems: ItemAlign.Center,
+        space: { main: LengthMetrics.vp(8), cross: LengthMetrics.vp(8) } }) {
+        if (this.hostGroupHostModeLabel(host) !== '') {
+          Text(this.hostGroupHostModeLabel(host))
+            .fontSize(12)
+            .fontColor(this.hostGroupHostModeColor(host)).fontFamily(this.font())
+            .padding({ left: 7, right: 7, top: 3, bottom: 3 })
+            .borderRadius(7).backgroundColor(this.pal().surface)
+            .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
         }
-        Row() {
+        if (this.hostGroupCanProbe(host)) {
           Button() {
-            SymbolGlyph($r('sys.symbol.square_and_pencil')).fontSize(16).fontColor([this.pal().text2])
+            if (this.hostPresenceProbeBusyIds.has(host.id)) {
+              LoadingProgress().width(21).height(21).color(this.accentColor)
+            } else {
+              SymbolGlyph($r('sys.symbol.bolt_fill')).fontSize(19).fontColor([this.accentColor])
+            }
           }
-          .width(36).height(36).borderRadius(18).padding(0).backgroundColor(this.pal().surface)
-          .accessibilityText('编辑').onClick((): void => { void this.editHost(host); })
-          Button() {
-            SymbolGlyph(host.locked ? $r('sys.symbol.lock_open') : $r('sys.symbol.ohos_lock'))
-              .fontSize(16).fontColor([this.pal().text2])
-          }
-          .width(36).height(36).borderRadius(18).padding(0).backgroundColor(this.pal().surface)
-          .margin({ left: 8 }).accessibilityText(host.locked ? '解锁' : '上锁')
-          .visibility(host.protocol === 'ai' ? Visibility.None : Visibility.Visible)
-          .onClick((): void => { void this.toggleLock(host); })
-          Button() {
-            SymbolGlyph($r('sys.symbol.ohos_trash')).fontSize(16).fontColor([this.pal().danger])
-          }
-          .width(36).height(36).borderRadius(18).padding(0).backgroundColor(this.pal().surface)
-          .margin({ left: 8 }).accessibilityText('删除')
-          .onClick((): void => { void this.doDeleteHost(host); })
-        }.margin({ top: 7 })
-      }.alignItems(HorizontalAlign.End).margin({ left: 10 })
+          .width(AppUiMetrics.minTouchTarget)
+          .height(AppUiMetrics.minTouchTarget).borderRadius(19).padding(0)
+          .backgroundColor(this.pal().surface).accessibilityText('检测在线状态')
+          .enabled(!this.hostPresenceProbeBusyIds.has(host.id))
+          .onClick((): void => { void this.probeHostConnectivity(host); })
+        }
+        Button() {
+          SymbolGlyph($r('sys.symbol.square_and_pencil')).fontSize(16).fontColor([this.pal().text2])
+        }
+        .width(AppUiMetrics.minTouchTarget).height(AppUiMetrics.minTouchTarget)
+        .borderRadius(18).padding(0).backgroundColor(this.pal().surface)
+        .accessibilityText('编辑').onClick((): void => { void this.editHost(host); })
+        Button() {
+          SymbolGlyph(host.locked ? $r('sys.symbol.lock_open') : $r('sys.symbol.ohos_lock'))
+            .fontSize(16).fontColor([this.pal().text2])
+        }
+        .width(AppUiMetrics.minTouchTarget).height(AppUiMetrics.minTouchTarget)
+        .borderRadius(18).padding(0).backgroundColor(this.pal().surface)
+        .accessibilityText(host.locked ? '解锁' : '上锁')
+        .visibility(host.protocol === 'ai' ? Visibility.None : Visibility.Visible)
+        .onClick((): void => { void this.toggleLock(host); })
+        Button() {
+          SymbolGlyph($r('sys.symbol.ohos_trash')).fontSize(16).fontColor([this.pal().danger])
+        }
+        .width(AppUiMetrics.minTouchTarget).height(AppUiMetrics.minTouchTarget)
+        .borderRadius(18).padding(0).backgroundColor(this.pal().surface)
+        .accessibilityText('删除')
+        .onClick((): void => { void this.doDeleteHost(host); })
+      }.width('100%')
     }
-    .width('100%').height(this.hostGroupHostCardHeight()).padding(6)
+    .width('100%').padding(10)
     .borderRadius(12).backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
     .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
     // Grouped cards intentionally have no swipe actions. Long press remains
@@ -13554,15 +13541,6 @@ struct HostListPage {
         this.beginHostSelection(remoteHostCardKey(host.id), false);
       }
     }))
-  }
-
-  private hostGroupDetailPanelHeight(card: HostGroupCardModel): number {
-    const padding: number = this.breakpoint === 'sm' ? 12 : 14;
-    const header: number = this.breakpoint === 'sm' ? 34 : 38;
-    const content: number = card.hosts.length === 0
-      ? header + (this.breakpoint === 'sm' ? 92 : 100)
-      : header + 10 + this.hostGroupHostGridHeight(card.hosts.length);
-    return padding * 2 + content;
   }
 
   @Builder hostGroupedDetailPanel(card: HostGroupCardModel) {
@@ -13576,7 +13554,7 @@ struct HostListPage {
             .fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())
           Text(card.hosts.length.toString() + ' 台' +
             (this.hostGroupSummaryText(card) === '' ? '' : ' · ' + this.hostGroupSummaryText(card)))
-            .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font()).margin({ top: 4 })
+            .fontSize(12).fontColor(this.pal().text2).fontFamily(this.font()).margin({ top: 4 })
         }.alignItems(HorizontalAlign.Start).layoutWeight(1)
         Button() {
           if (this.hostGroupProbeBusyType === card.type) {
@@ -13585,7 +13563,7 @@ struct HostListPage {
             SymbolGlyph($r('sys.symbol.bolt_fill')).fontSize(15).fontColor([this.accentColor])
           }
         }
-        .width(28).height(28).borderRadius(14).padding(0).backgroundColor(this.pal().surface)
+        .width(AppUiMetrics.minTouchTarget).height(AppUiMetrics.minTouchTarget).borderRadius(14).padding(0).backgroundColor(this.pal().surface)
         .accessibilityText('检测全部' + card.title + '主机')
         .enabled(this.hostGroupProbeBusyType === '' && card.hosts.length > 0)
         .onClick((): void => { void this.probeHostGroup(card); })
@@ -13595,22 +13573,23 @@ struct HostListPage {
           SymbolGlyph(protocolIcon(card.type)).fontSize(32).fontColor([this.pal().text3])
           Text('暂无 ' + hostGroupTitle(card.type) + ' 主机').fontSize(13).fontColor(this.pal().text2)
             .fontFamily(this.font()).margin({ top: 10 })
-          Text('点击底部按钮添加主机').fontSize(11).fontColor(this.pal().text3)
+          Text('点击底部按钮添加主机').fontSize(12).fontColor(this.pal().text2)
             .fontFamily(this.font()).margin({ top: 4 })
-        }.width('100%').height(this.breakpoint === 'sm' ? 92 : 100)
+        }.width('100%').constraintSize({ minHeight: this.breakpoint === 'sm' ? 92 : 100 }).padding({ top: 12, bottom: 12 })
           .justifyContent(FlexAlign.Center).alignItems(HorizontalAlign.Center)
       } else {
-        Grid() {
+        Flex({ wrap: FlexWrap.Wrap, alignItems: ItemAlign.Start,
+          space: { main: LengthMetrics.vp(10), cross: LengthMetrics.vp(10) } }) {
           ForEach(card.hosts, (host: RemoteHost): void => {
-            GridItem() { this.hostGroupedHostCard(host) }
+            Column() { this.hostGroupedHostCard(host) }
+              .width(hostGroupColumnsForBreakpoint(this.breakpoint) === 1 ? '100%' : 'calc(50% - 5vp)')
+              .flexShrink(0)
           }, (host: RemoteHost): string => host.id + ':' + this.hostViewRevision.toString())
         }
-        .columnsTemplate(hostGroupColumnsForBreakpoint(this.breakpoint) === 1 ? '1fr' : '1fr 1fr')
-        .rowsGap(10).columnsGap(10).width('100%')
-        .height(this.hostGroupHostGridHeight(card.hosts.length)).margin({ top: 10 })
+        .width('100%').margin({ top: 10 })
       }
     }
-    .width('100%').height(this.expandedHostGroup === card.type ? this.hostGroupDetailPanelHeight(card) : 0)
+    .width('100%').visibility(this.expandedHostGroup === card.type ? Visibility.Visible : Visibility.None)
     .padding(this.expandedHostGroup === card.type ? (this.breakpoint === 'sm' ? 12 : 14) : 0)
     .opacity(this.expandedHostGroup === card.type ? 1 : 0).clip(true)
     .borderRadius(this.breakpoint === 'sm' ? 16 : 15)
@@ -13625,7 +13604,7 @@ struct HostListPage {
     Column() {
       Row() {
         this.hostGroupTypeCard(this.hostGroupCardForType(type))
-      }.width('100%').height(this.hostGroupCardHeight())
+      }.width('100%').constraintSize({ minHeight: this.hostGroupCardHeight() })
       this.hostGroupedDetailPanel(this.hostGroupCardForType(type))
     }
     .width('100%').margin({ bottom: 10 })
@@ -13637,7 +13616,7 @@ struct HostListPage {
         this.hostGroupTypeCard(this.hostGroupCardForType(first))
         Blank().width(10)
         this.hostGroupTypeCard(this.hostGroupCardForType(second))
-      }.width('100%').height(this.hostGroupCardHeight()).alignItems(VerticalAlign.Top)
+      }.width('100%').constraintSize({ minHeight: this.hostGroupCardHeight() }).alignItems(VerticalAlign.Top)
       this.hostGroupedDetailPanel(this.hostGroupCardForType(first))
       this.hostGroupedDetailPanel(this.hostGroupCardForType(second))
     }
@@ -13660,59 +13639,53 @@ struct HostListPage {
   }
 
   @Builder moonlightGroupTypeCard() {
-    Column() {
-      Row() {
-        Column() {
-          MoonlightBrandIcon({ iconSize: this.breakpoint === 'sm' ? 20 : 24,
-            tint: this.accentColor, accessibilityLabel: 'Moonlight' })
-        }
-        .width(this.breakpoint === 'sm' ? 38 : 44)
-        .height(this.breakpoint === 'sm' ? 38 : 44)
-        .borderRadius(this.breakpoint === 'sm' ? 19 : 14)
-        .backgroundColor(this.pal().surface)
-        .justifyContent(FlexAlign.Center)
-        Column() {
-          Text('Moonlight').fontSize(this.breakpoint === 'sm' ? 16 : 18)
-            .fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())
-            .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-          Text('Sunshine / GameStream').fontSize(this.breakpoint === 'sm' ? 10 : 11)
-            .fontColor(this.pal().text3).fontFamily(this.font()).margin({ top: 3 })
-            .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-        }.alignItems(HorizontalAlign.Start).layoutWeight(1)
-          .margin({ left: this.breakpoint === 'sm' ? 8 : 10 })
-        SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(this.breakpoint === 'sm' ? 16 : 18)
-          .fontColor([this.pal().text3])
-          .rotate({ angle: this.expandedHostGroup === 'moonlight' ? 90 : 0 })
-          .animation({ duration: 220, curve: Curve.FastOutSlowIn })
-      }.width('100%')
-      Row() {
-        Text(this.visibleMoonlightHosts().length.toString() + ' 台主机')
-          .fontSize(this.breakpoint === 'sm' ? 10 : 11)
-          .fontColor(this.pal().text2).fontFamily(this.font())
-        Blank()
-        Text(this.moonlightGroupCatalogCount().toString() + ' 个应用')
-          .fontSize(this.breakpoint === 'sm' ? 9 : 10)
-          .fontColor(this.pal().text3).fontFamily(this.font()).maxLines(1)
-      }.width('100%').margin({ top: this.breakpoint === 'sm' ? 8 : 10 })
+    Button({ type: ButtonType.Normal }) {
+      Column() {
+        Row() {
+          Column() {
+            MoonlightBrandIcon({ iconSize: this.breakpoint === 'sm' ? 20 : 24,
+              tint: this.accentColor, accessibilityLabel: 'Moonlight' })
+          }
+          .width(this.breakpoint === 'sm' ? 38 : 44)
+          .height(this.breakpoint === 'sm' ? 38 : 44)
+          .borderRadius(this.breakpoint === 'sm' ? 19 : 14)
+          .backgroundColor(this.pal().surface)
+          .justifyContent(FlexAlign.Center)
+          Column() {
+            Text('Moonlight').fontSize(this.breakpoint === 'sm' ? 16 : 18)
+              .fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())
+              .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
+            Text('Sunshine / GameStream').fontSize(12)
+              .fontColor(this.pal().text2).fontFamily(this.font()).margin({ top: 3 })
+              .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
+          }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+            .margin({ left: this.breakpoint === 'sm' ? 8 : 10 })
+          SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(this.breakpoint === 'sm' ? 16 : 18)
+            .fontColor([this.pal().text2])
+            .rotate({ angle: this.expandedHostGroup === 'moonlight' ? 90 : 0 })
+            .animation({ duration: 220, curve: Curve.FastOutSlowIn })
+        }.width('100%')
+        Flex({ wrap: FlexWrap.Wrap, alignItems: ItemAlign.Center,
+          space: { main: LengthMetrics.vp(8), cross: LengthMetrics.vp(4) } }) {
+          Text(this.visibleMoonlightHosts().length.toString() + ' 台主机')
+            .fontSize(12)
+            .fontColor(this.pal().text2).fontFamily(this.font())
+          Text(this.moonlightGroupCatalogCount().toString() + ' 个应用')
+            .fontSize(12)
+            .fontColor(this.pal().text2).fontFamily(this.font()).maxLines(1)
+        }.width('100%').margin({ top: this.breakpoint === 'sm' ? 8 : 10 })
+      }
+      .width('100%').padding(this.breakpoint === 'sm' ? 10 : 12)
     }
-    .layoutWeight(1).height(this.hostGroupCardHeight())
-    .padding(this.breakpoint === 'sm' ? 10 : 12)
+    .layoutWeight(1).constraintSize({ minHeight: this.hostGroupCardHeight() }).padding(0)
     .borderRadius(this.breakpoint === 'sm' ? 16 : 14)
     .backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
     .border({ width: this.expandedHostGroup === 'moonlight' ? 1.5 : 0.5,
       color: this.expandedHostGroup === 'moonlight' ? this.accentColor : this.pal().cardBorder,
       style: BorderStyle.Solid })
+    .focusable(true)
+    .accessibilityText('Moonlight 主机分组' + (this.expandedHostGroup === 'moonlight' ? '，已展开' : '，已收起'))
     .onClick((): void => { this.toggleMoonlightGroup(); })
-  }
-
-  private moonlightGroupDetailPanelHeight(): number {
-    const count: number = this.visibleMoonlightHosts().length;
-    const padding: number = this.breakpoint === 'sm' ? 12 : 14;
-    const header: number = this.breakpoint === 'sm' ? 34 : 38;
-    const content: number = count === 0
-      ? header + (this.breakpoint === 'sm' ? 92 : 100)
-      : header + 10 + this.hostGroupHostGridHeight(count);
-    return padding * 2 + content;
   }
 
   @Builder moonlightGroupedDetailPanel() {
@@ -13723,12 +13696,12 @@ struct HostListPage {
             .fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())
           Text(this.visibleMoonlightHosts().length.toString() + ' 台 · ' +
             this.moonlightGroupCatalogCount().toString() + ' 个应用')
-            .fontSize(11).fontColor(this.pal().text3).fontFamily(this.font()).margin({ top: 4 })
+            .fontSize(12).fontColor(this.pal().text2).fontFamily(this.font()).margin({ top: 4 })
         }.alignItems(HorizontalAlign.Start).layoutWeight(1)
         Button() {
           MoonlightBrandIcon({ iconSize: 15, tint: this.accentColor, accessibilityLabel: '应用目录' })
         }
-        .width(28).height(28).borderRadius(14).padding(0).backgroundColor(this.pal().surface)
+        .width(AppUiMetrics.minTouchTarget).height(AppUiMetrics.minTouchTarget).borderRadius(14).padding(0).backgroundColor(this.pal().surface)
         .accessibilityText('打开 Moonlight 应用目录')
         .enabled(this.visibleMoonlightHosts().length > 0)
         .onClick((): void => {
@@ -13743,24 +13716,24 @@ struct HostListPage {
           MoonlightBrandIcon({ iconSize: 32, tint: this.pal().text3 })
           Text('暂无 Moonlight 主机').fontSize(13).fontColor(this.pal().text2)
             .fontFamily(this.font()).margin({ top: 10 })
-          Text('点击底部按钮添加主机').fontSize(11).fontColor(this.pal().text3)
+          Text('点击底部按钮添加主机').fontSize(12).fontColor(this.pal().text2)
             .fontFamily(this.font()).margin({ top: 4 })
-        }.width('100%').height(this.breakpoint === 'sm' ? 92 : 100)
+        }.width('100%').constraintSize({ minHeight: this.breakpoint === 'sm' ? 92 : 100 }).padding({ top: 12, bottom: 12 })
           .justifyContent(FlexAlign.Center).alignItems(HorizontalAlign.Center)
       } else {
-        Grid() {
+        Flex({ wrap: FlexWrap.Wrap, alignItems: ItemAlign.Start,
+          space: { main: LengthMetrics.vp(10), cross: LengthMetrics.vp(10) } }) {
           ForEach(this.visibleMoonlightHosts(), (view: MoonlightHostLocalView): void => {
-            GridItem() { this.moonlightGroupedHostCard(view) }
+            Column() { this.moonlightGroupedHostCard(view) }
+              .width(hostGroupColumnsForBreakpoint(this.breakpoint) === 1 ? '100%' : 'calc(50% - 5vp)')
+              .flexShrink(0)
           }, (view: MoonlightHostLocalView): string =>
             this.moonlightHostCardKey(view) + ':' + this.hostViewRevision.toString())
         }
-        .columnsTemplate(hostGroupColumnsForBreakpoint(this.breakpoint) === 1 ? '1fr' : '1fr 1fr')
-        .rowsGap(10).columnsGap(10).width('100%')
-        .height(this.hostGroupHostGridHeight(this.visibleMoonlightHosts().length)).margin({ top: 10 })
+        .width('100%').margin({ top: 10 })
       }
     }
-    .width('100%').height(this.expandedHostGroup === 'moonlight' ?
-      this.moonlightGroupDetailPanelHeight() : 0)
+    .width('100%').visibility(this.expandedHostGroup === 'moonlight' ? Visibility.Visible : Visibility.None)
     .padding(this.expandedHostGroup === 'moonlight' ? (this.breakpoint === 'sm' ? 12 : 14) : 0)
     .opacity(this.expandedHostGroup === 'moonlight' ? 1 : 0).clip(true)
     .borderRadius(this.breakpoint === 'sm' ? 16 : 15)
@@ -13774,7 +13747,7 @@ struct HostListPage {
   @Builder moonlightGroupedPhoneGroup() {
     Column() {
       Row() { this.moonlightGroupTypeCard() }
-        .width('100%').height(this.hostGroupCardHeight())
+        .width('100%').constraintSize({ minHeight: this.hostGroupCardHeight() })
       this.moonlightGroupedDetailPanel()
     }.width('100%').margin({ bottom: 10 })
   }
@@ -13785,7 +13758,7 @@ struct HostListPage {
         this.moonlightGroupTypeCard()
         Blank().width(10)
         Blank().layoutWeight(1)
-      }.width('100%').height(this.hostGroupCardHeight()).alignItems(VerticalAlign.Top)
+      }.width('100%').constraintSize({ minHeight: this.hostGroupCardHeight() }).alignItems(VerticalAlign.Top)
       this.moonlightGroupedDetailPanel()
     }.width('100%').margin({ bottom: 10 })
   }
@@ -13901,93 +13874,95 @@ struct HostListPage {
 
   @Builder moonlightGroupedHostCard(view: MoonlightHostLocalView) {
     if (view.host !== null) {
-      Row() {
-        if (this.hostSelectionMode) {
-          Checkbox()
-            .select(this.hostSelectedIds.has(unifiedMoonlightHostCardKey(view.host.id)))
-            .selectedColor(this.accentColor).margin({ right: 7 }).monopolizeEvents(true)
-            .onChange((checked: boolean): void => {
-              this.toggleHostSelect(unifiedMoonlightHostCardKey(view.host?.id || ''), checked);
-            })
-        }
-        Column() {
-          MoonlightBrandIcon({ iconSize: this.breakpoint === 'sm' ? 21 : 23,
-            tint: '#FFFFFF', accessibilityLabel: 'Moonlight 主机' })
-        }
-        .width(this.breakpoint === 'sm' ? 40 : 42)
-        .height(this.breakpoint === 'sm' ? 40 : 42)
-        .borderRadius(this.breakpoint === 'sm' ? 12 : 13)
-        .backgroundColor(this.accentColor)
-        .justifyContent(FlexAlign.Center)
-        .margin({ right: this.breakpoint === 'sm' ? 9 : 10 })
-        .onClick((): void => {
-          this.handleMoonlightHostCardClick(view.host?.id || '');
-        })
-        Column() {
-          Text(view.host.displayName)
-            .fontSize(this.breakpoint === 'sm' ? 15 : 16)
-            .fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())
-            .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-          Text(view.catalogItems.length.toString() + ' 个应用')
-            .fontSize(this.breakpoint === 'sm' ? 12 : 13)
-            .fontColor(this.pal().text2).fontFamily(this.font())
-            .margin({ top: 2 }).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-          Row() {
-            Text('端点').fontSize(11).fontColor(this.pal().text3).width(30)
-            Text(this.protectedMoonlightCardValue(view.host, this.moonlightAddressLabel(view.host)))
-              .fontSize(this.breakpoint === 'sm' ? 12 : 13)
-              .fontColor(this.pal().text2).fontFamily(this.font()).layoutWeight(1)
-              .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-          }.width('100%').margin({ top: 3 })
-        }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+      Column({ space: 8 }) {
+        Row() {
+          if (this.hostSelectionMode) {
+            Checkbox()
+              .select(this.hostSelectedIds.has(unifiedMoonlightHostCardKey(view.host.id)))
+              .selectedColor(this.accentColor).margin({ right: 7 }).monopolizeEvents(true)
+              .onChange((checked: boolean): void => {
+                this.toggleHostSelect(unifiedMoonlightHostCardKey(view.host?.id || ''), checked);
+              })
+          }
+          Button({ type: ButtonType.Normal }) {
+            MoonlightBrandIcon({ iconSize: this.breakpoint === 'sm' ? 21 : 23,
+              tint: appUiButtonText(this.accentColor), accessibilityLabel: 'Moonlight 主机' })
+          }
+          .width(AppUiMetrics.minTouchTarget).padding(0).focusable(true)
+          .accessibilityText('打开主机')
+          .height(AppUiMetrics.minTouchTarget)
+          .borderRadius(this.breakpoint === 'sm' ? 12 : 13)
+          .backgroundColor(appUiButtonFill(this.accentColor))
+          .margin({ right: this.breakpoint === 'sm' ? 9 : 10 })
           .onClick((): void => {
             this.handleMoonlightHostCardClick(view.host?.id || '');
           })
-        Column() {
-          Row() {
-            Button() {
-              MoonlightBrandIcon({ iconSize: 18, tint: this.accentColor,
-                accessibilityLabel: '应用目录' })
-            }
-            .width(this.breakpoint === 'sm' ? 38 : 40)
-            .height(this.breakpoint === 'sm' ? 38 : 40).borderRadius(19).padding(0)
-            .backgroundColor(this.pal().surface).accessibilityText('打开 Moonlight 应用目录')
+          Column() {
+            Text(view.host.displayName)
+              .fontSize(this.breakpoint === 'sm' ? 15 : 16)
+              .fontWeight(FontWeight.Medium).fontColor(this.pal().text).fontFamily(this.font())
+              .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
+            Text(view.catalogItems.length.toString() + ' 个应用')
+              .fontSize(this.breakpoint === 'sm' ? 12 : 13)
+              .fontColor(this.pal().text2).fontFamily(this.font())
+              .margin({ top: 2 }).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+            Row() {
+              Text('端点').fontSize(11).fontColor(this.pal().text2).constraintSize({ minWidth: 30 })
+              Text(this.protectedMoonlightCardValue(view.host, this.moonlightAddressLabel(view.host)))
+                .fontSize(this.breakpoint === 'sm' ? 12 : 13)
+                .fontColor(this.pal().text2).fontFamily(this.font()).layoutWeight(1)
+                .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+            }.width('100%').margin({ top: 3 })
+          }.alignItems(HorizontalAlign.Start).layoutWeight(1)
             .onClick((): void => {
-              if (!this.hostSelectionMode) {
-                void this.openMoonlightHost(view.host?.id || '', true);
-              }
+              this.handleMoonlightHostCardClick(view.host?.id || '');
             })
+        }.width('100%')
+        Flex({ wrap: FlexWrap.Wrap, alignItems: ItemAlign.Center,
+          space: { main: LengthMetrics.vp(8), cross: LengthMetrics.vp(8) } }) {
+          Button() {
+            MoonlightBrandIcon({ iconSize: 18, tint: this.accentColor,
+              accessibilityLabel: '应用目录' })
           }
-          Row() {
-            Button() {
-              SymbolGlyph($r('sys.symbol.square_and_pencil')).fontSize(16).fontColor([this.pal().text2])
+          .width(AppUiMetrics.minTouchTarget)
+          .height(AppUiMetrics.minTouchTarget).borderRadius(19).padding(0)
+          .backgroundColor(this.pal().surface).accessibilityText('打开 Moonlight 应用目录')
+          .onClick((): void => {
+            if (!this.hostSelectionMode) {
+              void this.openMoonlightHost(view.host?.id || '', true);
             }
-            .width(36).height(36).borderRadius(18).padding(0).backgroundColor(this.pal().surface)
-            .accessibilityText('编辑')
-            .onClick((): void => {
-              if (!this.hostSelectionMode) { void this.openMoonlightEditSheet(view); }
-            })
-            Button() {
-              SymbolGlyph(view.host.locked === true ? $r('sys.symbol.lock_open') :
-                $r('sys.symbol.ohos_lock')).fontSize(16).fontColor([this.pal().text2])
-            }
-            .width(36).height(36).borderRadius(18).padding(0).backgroundColor(this.pal().surface)
-            .margin({ left: 8 }).accessibilityText(view.host.locked === true ? '解锁' : '上锁')
-            .onClick((): void => {
-              if (!this.hostSelectionMode) { void this.toggleMoonlightLock(view); }
-            })
-            Button() {
-              SymbolGlyph($r('sys.symbol.ohos_trash')).fontSize(16).fontColor([this.pal().danger])
-            }
-            .width(36).height(36).borderRadius(18).padding(0).backgroundColor(this.pal().surface)
-            .margin({ left: 8 }).accessibilityText('删除')
-            .onClick((): void => {
-              if (!this.hostSelectionMode) { void this.doDeleteMoonlightHost(view); }
-            })
-          }.margin({ top: 7 })
-        }.alignItems(HorizontalAlign.End).margin({ left: 10 })
+          })
+          Button() {
+            SymbolGlyph($r('sys.symbol.square_and_pencil')).fontSize(16).fontColor([this.pal().text2])
+          }
+          .width(AppUiMetrics.minTouchTarget).height(AppUiMetrics.minTouchTarget)
+          .borderRadius(18).padding(0).backgroundColor(this.pal().surface)
+          .accessibilityText('编辑')
+          .onClick((): void => {
+            if (!this.hostSelectionMode) { void this.openMoonlightEditSheet(view); }
+          })
+          Button() {
+            SymbolGlyph(view.host.locked === true ? $r('sys.symbol.lock_open') :
+              $r('sys.symbol.ohos_lock')).fontSize(16).fontColor([this.pal().text2])
+          }
+          .width(AppUiMetrics.minTouchTarget).height(AppUiMetrics.minTouchTarget)
+          .borderRadius(18).padding(0).backgroundColor(this.pal().surface)
+          .accessibilityText(view.host.locked === true ? '解锁' : '上锁')
+          .onClick((): void => {
+            if (!this.hostSelectionMode) { void this.toggleMoonlightLock(view); }
+          })
+          Button() {
+            SymbolGlyph($r('sys.symbol.ohos_trash')).fontSize(16).fontColor([this.pal().danger])
+          }
+          .width(AppUiMetrics.minTouchTarget).height(AppUiMetrics.minTouchTarget)
+          .borderRadius(18).padding(0).backgroundColor(this.pal().surface)
+          .accessibilityText('删除')
+          .onClick((): void => {
+            if (!this.hostSelectionMode) { void this.doDeleteMoonlightHost(view); }
+          })
+        }.width('100%')
       }
-      .width('100%').height(this.hostGroupHostCardHeight()).padding(6)
+      .width('100%').padding(10)
       .borderRadius(12).backgroundColor(this.pal().card).backgroundBlurStyle(BlurStyle.Regular)
       .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
       .priorityGesture(LongPressGesture({ duration: 450 }).onAction((): void => {
