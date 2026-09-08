@@ -410,3 +410,31 @@ ArkTS 测试模块受影响时另加 `ohosTest@OhosTestCompileArkTS`；若任务
 最后收据覆盖：首批三份 PASS 保留；后续四份分别覆盖 RDP/rich/原生导出、Store/Rust/FFI、页面/服务/系统读取/诊断、RDP 父路径。后三个代码增量的 59 个不同路径均有对应非作者范围，混合文件内的 Pro/AI/UI 变化明确排除。当前未遗留代码复核 finding；整体状态仍为设备/性能/发布待验收。
 
 文档收口当次门禁：testCompile `BUILD SUCCESSFUL in 4 s 93 ms`；签名 assembleHap `BUILD SUCCESSFUL in 5 s 390 ms`（SignHap 875 ms），均 exit 0；Light/diff/state PASS。五个状态/计划/收据文件在门禁前后 SHA-256 一致，随后仅记录本段真实结果。
+
+**14. 2026-09-08 持续同步与 PC 系统文件粘贴增量**
+
+本次用户追加要求：手机/Pad 保留选择、接收、另存的触控流程；PC 从远端复制文件后直接在本机粘贴；剪贴板开关开启后，不因失焦、最小化或保留连接进入后台而停止双向同步。
+
+已实现代码范围：
+
+- 显式授权连接与渲染/输入生命周期分离。完整账号代次、窗口、主机、路由、会话尝试及 native generation 保持核验；关闭、断线、换账号或授权切换使旧回调失效。初次连接仅在无人持有时取得同步权，恢复窗口不能抢占，显式开关可以切换同步连接。
+- native 进程级所有权协调多个 ArkTS runtime；同步写入/发布通过 `withSessionClipboardAuthority` 与切换操作串行。只在最后同步提交时持锁，网络接收、图片处理、私有文件准备不在锁内。该接口不承诺撤回已经由对端接受的旧数据。
+- 本机读取权限撤销/重新授予持续监听；后台不弹出授权申请。`getData` 有 30 秒期限，停止后晚到回调不读数据。500 ms 补查仅比较 change count，遗漏通知或重试未完成事件时才读内容；重建保留未完成的本机事件。`usedScene.when=always` 仅声明真实使用场景，不授予系统权限，也不保证系统不会挂起进程。
+- PC 远端复制普通文件后，RDP/RustDesk 自动读取当前清单，使用受管任务完整接收并校验，再一次发布真实本机文件 URI；完成后用户可以在系统文件管理器粘贴。准备期间的新复制、换账号/连接或关闭开关会使旧操作失效。部分文件不发布；未知 native drain 保留副本。文件下载发生在复制后，尚未实现按系统 Ctrl+V 才启动下载。
+- PC 本机复制普通文件后自动准备并提供给远端，自动同步不发送 Ctrl+V。每次本机复制最多三次准备尝试，成功后才更新去重记录；耗尽明确结束自动重试，不回退成文件名/路径纯文本。自动进度不占用手动文件选择器的 busy 状态。
+- Phone 使用底部文件弹层、Pad/PC 使用居中弹层；两组多按钮操作可换行。Phone/Pad 的文件仍通过明确的读取/接收/另存操作；文本及协议已支持的内容遵循同一持续同步授权。
+
+明确未完成的能力：
+
+1. 真实“从远端桌面拖出文件到本机桌面”没有可用的 stock RDP/RustDesk 源文件对象及拖放生命周期，需要远端辅助组件/协议扩展。没有通过注入复制快捷键、推测远端路径或把本机传输列表拖动冒充远端桌面拖出。
+2. RustDesk 当前文件剪贴板 carrier 缺少把迟到读取可靠绑定到旧 publication 的 Lock/Unlock 握手。现有 `file_clipboard.rs` 在撤销一次本机 offer 后禁止 successor FD，不能安全地直接解除。因而本机再次更换所复制的文件仍需重连；文字持续同步及远端文件自动接收不据此关闭。PC RustDesk 面板明确提示该限制。本次不能宣称所有协议/类型均已连续同步。
+3. 目录完整接收后保持缓存，仍通过整目录另存；没有把目录 URI 当成系统粘贴已支持。系统剪贴板的 `GetDelayData` / native record provider 是同步返回，不使用 Promise 或尚未下载的虚拟文件 URI 等待网络。ArkUI 的异步拖放供数接口不能弥补远端协议缺少拖放源事件。
+4. HarmonyOS PC 外部文件管理器 URI 授权/粘贴、API23/26 Phone/Pad/PC 后台调度与权限变化、多窗口独立 runtime、Windows/Linux 实际对端、目录和剪切行为仍未真机验收。系统暂停应用、撤销权限或断开连接后，不承诺“永远在线”。
+
+独立非作者代码复核均 PASS：核心服务/授权 native/公开接线与页面/富文本/PC 文件服务分别审查；关闭首次临时文件读取失败被错误去重的 P2，及主任务自检发现的自动进度占用手动 busy。定向证据：核心 46、页面 37、持续页面 11、RDP rich 23、RustDesk client 13、PC 文件服务 23、真实文件系统 54、native authority 15、生产 NAPI 参数/异常 8 组 PASS。非作者分工不覆盖并行 Pro/RustDesk Phone/renderer 修改。
+
+冻结增量门禁：`default@OhosTestCompileArkTS` exit 0，`BUILD SUCCESSFUL in 8 s 123 ms`；签名 `assembleHap` exit 0，`BUILD SUCCESSFUL in 15 s 644 ms`（SignHap 1 s 359 ms）；Light/diff PASS。真实 compile_commands 的 arm64-v8a/x86_64 NAPI 语法检查 PASS。22 个声明路径中 21 个整文件 hash 在门禁期间一致；共享 NAPI 的四个本任务 hunk 内容一致，另一个任务的 decodeFrame hunk 不属于本次提交/审查。
+
+代码 checkpoint `d3a4500d`，两份非作者收据在状态短卡记录；保留同一共享活动分支。上述两个协议/系统边界及设备验收没有完成，因此不把本次追加要求标为全部实现，不 push/PR/merge 尚有并行未完成任务的整个分支。
+
+本增量文档收口当次门禁：`default@OhosTestCompileArkTS` exit 0，`BUILD SUCCESSFUL in 4 s 809 ms`；签名 `assembleHap` exit 0，`BUILD SUCCESSFUL in 6 s 841 ms`（SignHap 1 s 92 ms）；Light/diff/state PASS。仅提交本任务五个文档范围；共享工作区同时存在的 Phone/renderer 变化由其所属任务独立提交与审查。
