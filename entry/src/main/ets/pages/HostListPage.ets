@@ -12761,7 +12761,7 @@ struct HostListPage {
               .tabBar(this.tabSettingsIcon)
           }
           .barOverlap(true)
-          .priorityGesture(PanGesture({ direction: PanDirection.Horizontal, distance: 10 }))
+          .scrollable(false)
           .barPosition(BarPosition.End).vertical(false).barHeight(64)
           .barFloatingStyle({
             // 交给 HDS 根据 Tab 数量、容器宽度和断点计算官方宽度/侧距。
