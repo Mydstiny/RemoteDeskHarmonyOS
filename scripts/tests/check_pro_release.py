@@ -13,6 +13,8 @@ def main():
     parser.add_argument("hap", type=Path)
     parser.add_argument("--disassembler", type=Path, required=True)
     parser.add_argument("--usb-probe", action="store_true", help="Also require the Debug USB probe gate to return false")
+    parser.add_argument("--fido-library", action="store_true", help="Check library availability pruning and both native ABI binaries")
+    parser.add_argument("--debug-hap", type=Path, help="Debug positive control for --fido-library")
     parser.add_argument("--sandbox-purchase", action="store_true", help="Also require sandbox selection and backend configuration to be disabled")
     args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix="pro-release-") as directory:
@@ -23,6 +25,18 @@ def main():
             if len(names) != 1:
                 raise AssertionError("Expected exactly one entry modules.abc")
             abc.write_bytes(hap.read(names[0]))
+            if args.fido_library:
+                if args.debug_hap is None:
+                    parser.error('--fido-library requires --debug-hap as a positive control')
+                with zipfile.ZipFile(args.debug_hap) as debug:
+                    for abi in ('arm64-v8a', 'x86_64'):
+                        name = f'libs/{abi}/librdpnapi.so'
+                        release_bytes, debug_bytes = hap.read(name), debug.read(name)
+                        for marker in (b'fido_dev_open', b'fido_dev_get_cbor_info', b'cbor_load',
+                                       b'remotedesk-debug-usb-capability-probe'):
+                            if marker not in debug_bytes or marker in release_bytes:
+                                raise AssertionError(f'FIDO native pruning/positive control failed: {abi}: {marker!r}')
+                        print(f'PASS {abi} Release ELF excludes FIDO/CBOR worker markers present in Debug')
         subprocess.run([str(args.disassembler), str(abc), str(assembly)], check=True,
                        stdout=subprocess.DEVNULL)
         methods = {}
@@ -44,6 +58,11 @@ def main():
                             raise AssertionError("Duplicate USB probe gate")
                         method = "usbDebugAllowed"
                         methods[method] = []
+                    if args.fido_library and "services.pro.ProUsbFidoProbe&." in line and "#libraryAvailable(" in line:
+                        if "usbLibraryAvailable" in methods:
+                            raise AssertionError("Duplicate FIDO library gate")
+                        method = "usbLibraryAvailable"
+                        methods[method] = []
                     for name in ("setDebugMode", "snapshot", "decision"):
                         if "services.pro.ProRuntime&." in line and f"#{name}(" in line:
                             if name in methods:
@@ -57,6 +76,8 @@ def main():
         expected = {"setDebugMode", "snapshot", "decision"}
         if args.usb_probe:
             expected.add("usbDebugAllowed")
+        if args.fido_library:
+            expected.add("usbLibraryAvailable")
         if args.sandbox_purchase:
             expected.update(("setSandbox", "sandboxSelected", "proBackendConfiguration"))
         if set(methods) != expected:
@@ -75,15 +96,15 @@ def main():
         decision = "\n".join(methods["decision"])
         if '"entitlementIds"' not in decision or '"proFeatureAccess"' not in decision:
             raise AssertionError("Real entitlement policy call is missing")
-        if args.usb_probe:
-            body = methods["usbDebugAllowed"]
+        for gate in (["usbDebugAllowed"] if args.usb_probe else []) + (["usbLibraryAvailable"] if args.fido_library else []):
+            body = methods[gate]
             if "ldfalse" not in body or "return" not in body:
                 raise AssertionError("Release USB probe gate does not return false")
             for line in body:
                 if line and line != "}" and not line.startswith(("ldexternalmodulevar ",
                         'throw.undefinedifholewithname "DEBUG"', "ldfalse", "return")):
                     raise AssertionError(f"Release USB gate retains executable granting logic: {line}")
-            print("PASS Release USB probe gate always returns false")
+            print(f"PASS Release {gate} always returns false")
         if args.sandbox_purchase:
             for name, required, allowed in (("setSandbox", "returnundefined", ("returnundefined",)),
                     ("sandboxSelected", "ldfalse", ("ldfalse", "return")),

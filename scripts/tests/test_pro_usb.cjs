@@ -19,7 +19,10 @@ function fixture(debug = true) {
     timers: new Map(), intervals: new Map(), listeners: [], transitions: [], nextTimer: 0, now: 100000,
     operations: [], descriptors: descriptor, input: [], grants: [], pipes: [], transfers: [],
     claims: [], releases: [], closes: [], cancels: [], pending: null, hold: '', permissionWait: null,
-    currentConfig: 1, claimResult: 0, transferStatus: 0, short: false, wrongNonce: false, cbor: true, extension: 0 };
+    currentConfig: 1, claimResult: 0, transferStatus: 0, short: false, wrongNonce: false, cbor: true, extension: 0,
+    nativeAvailable: false, nativeStarts: [], nativeCancels: [], nativeReplies: [], nativeId: 0, nativeStep: 0,
+    nativeBusy: false, nativeRejectReply: false, nativeStatus: 0, nativeRequest: null, nativeOnPoll: null,
+    delayCancelCallback: false };
   const output = { address: 1, attributes: 3, interval: 5, maxPacketSize: 64, direction: 0, number: 1, type: 3, interfaceId: 2 };
   const input = { ...output, address: 0x81, direction: 0x80 };
   const iface = { id: 2, protocol: 0, clazz: 3, subClass: 0, alternateSetting: 0, name: 'FIDO', endpoints: [output, input] };
@@ -57,16 +60,24 @@ function fixture(debug = true) {
     releaseInterface(pipe, target) { assert.equal(target.id, 2); state.releases.push(pipe); return 0; },
     closePipe(pipe) { state.closes.push(pipe); return 0; },
     usbSubmitTransfer(request) {
-      assert.equal(request.type, 3); assert.equal(request.timeout, 1500);
+      assert.equal(request.type, 3);
+      if (state.nativeAvailable) assert.equal(request.timeout, 421);
+      else assert.equal(request.timeout, 1500);
       assert.equal(request.length, 64); state.transfers.push(request);
       const direction = (request.endpoint & 0x80) ? 'in' : 'out';
       if (direction === 'out') {
-        assert.equal(request.buffer[4], 0x86, 'probe must only issue INIT');
-        assert.equal(request.buffer[5] * 256 + request.buffer[6], 8);
-        const data = new Uint8Array(17 + state.extension); data.set(request.buffer.subarray(7, 15));
-        if (state.wrongNonce) data[0] ^= 1;
-        data.set([0x10, 0x20, 0x30, 0x40, 2, 1, 0, 0, state.cbor ? 4 : 0], 8);
-        state.input.push(...codec.proFidoPackets(0xffffffff, 6, data));
+        if (request.buffer[4] === 0x90 && state.nativeAvailable) {
+          assert.equal(request.buffer[5] * 256 + request.buffer[6], 1);
+          assert.equal(request.buffer[7], 4);
+          state.input.push(...codec.proFidoPackets(0x10203040, 0x10, Uint8Array.from([0, 0xa0])));
+        } else {
+          assert.equal(request.buffer[4], 0x86, 'probe may issue only INIT or library GetInfo');
+          assert.equal(request.buffer[5] * 256 + request.buffer[6], 8);
+          const data = new Uint8Array(17 + state.extension); data.set(request.buffer.subarray(7, 15));
+          if (state.wrongNonce) data[0] ^= 1;
+          data.set([0x10, 0x20, 0x30, 0x40, 2, 1, 0, 0, state.cbor ? 4 : 0], 8);
+          state.input.push(...codec.proFidoPackets(0xffffffff, 6, data));
+        }
       }
       if (state.hold === direction) { state.pending = request; return; }
       if (direction === 'in') request.buffer.set(state.input.shift() || new Uint8Array(64));
@@ -74,13 +85,42 @@ function fixture(debug = true) {
     },
     usbCancelTransfer(request) {
       assert.ok(state.transfers.includes(request)); state.cancels.push(request);
+      if (state.delayCancelCallback) return;
       queueMicrotask(() => request.callback(undefined, { status: 3, isoPacketDescs: [], actualLength: 0 }));
     }
   };
   const runtime = { snapshot: () => ({ mode: state.mode }), subscribe(callback) {
     state.listeners.push(callback); callback(); return () => { state.listeners = state.listeners.filter(f => f !== callback); };
   } };
-  const mocks = { BuildProfile: { DEBUG: debug }, '@kit.BasicServicesKit': { usbManager,
+  const native = {
+    proFidoProbeAvailable: () => state.nativeAvailable,
+    proFidoProbeStart() {
+      assert.equal(state.claims.length, state.releases.length + 1, 'native start must follow the owned claim');
+      assert.equal(state.operations.at(-1), 'descriptor');
+      state.nativeStarts.push(state.nativeId + 1);
+      if (state.nativeBusy) return 0;
+      state.nativeStep = 0; return ++state.nativeId;
+    },
+    proFidoProbePoll(id) {
+      assert.equal(id, state.nativeId);
+      if (state.nativeOnPoll) state.nativeOnPoll();
+      if (state.nativeRequest) return state.nativeRequest;
+      if (state.nativeStatus || state.nativeStep === 6) return { status: state.nativeStatus || 1, requestId: 0 };
+      const write = state.nativeStep % 2 === 0;
+      const data = !write ? new Uint8Array(64) : state.nativeStep === 0 ?
+        codec.proFidoPackets(0xffffffff, 6, new Uint8Array(8))[0] :
+        codec.proFidoPackets(0x10203040, 0x10, Uint8Array.from([4]))[0];
+      return { status: 0, requestId: state.nativeStep + 1, timeoutMs: 421, write, data };
+    },
+    proFidoProbeReply(id, request, data, success) {
+      assert.equal(id, state.nativeId); assert.equal(request, state.nativeStep + 1);
+      assert.equal(data.length, 64); assert.equal(success, true);
+      state.nativeReplies.push({ id, request }); state.nativeStep++;
+      return !state.nativeRejectReply;
+    },
+    proFidoProbeCancel(id) { state.nativeCancels.push(id); }
+  };
+  const mocks = { BuildProfile: { DEBUG: debug }, 'librdpnapi.so': { default: native }, '@kit.BasicServicesKit': { usbManager,
     deviceInfo: { get sdkApiVersion() { return state.api; }, get deviceType() { return state.deviceType; } } },
     '@kit.CryptoArchitectureKit': { cryptoFramework: { createRandom: () => ({ generateRandomSync: n => ({ data: new Uint8Array(crypto.randomBytes(n)) }) }) } },
     './ProAppRuntime': { ProAppRuntime: { getInstance: () => ({ runtime }) } }
@@ -264,6 +304,77 @@ test('in-flight cancel/timeout/disconnect release only the owned interface and i
     assert.equal(f.state.releases[0], f.state.pipes[0]); assert.equal(f.probe.busy(), false);
     if (issue === 'cancel' || issue === 'timeout') assert.equal(f.state.cancels.length, 1);
   }
+});
+
+test('library mode is gated before permission, then forwards only bounded requests after a validated claim', async () => {
+  const denied = fixture(); const key = denied.select();
+  await assert.rejects(() => denied.probe.probe(key, denied.owner, true));
+  assert.equal(denied.state.grants.length, 0); assert.equal(denied.state.nativeStarts.length, 0);
+  const release = fixture(false); release.state.nativeAvailable = true;
+  assert.equal(release.probe.libraryAvailable(), false);
+  const f = fixture(); f.state.nativeAvailable = true;
+  const result = await f.probe.probe(f.select(), f.owner, true);
+  assert.ok(result.includes('库通信与能力读取成功'));
+  assert.equal(f.state.nativeStarts.length, 1); assert.equal(f.state.nativeReplies.length, 6);
+  assert.deepEqual(f.state.nativeCancels, [1]); assert.equal(f.state.transfers.length, 6);
+  assert.equal(f.state.releases.length, 1); assert.equal(f.state.closes.length, 1);
+  assert.equal(f.state.timers.size, 0); assert.equal(f.state.intervals.size, 0);
+});
+test('library mode cannot bypass denied permission, descriptor/configuration validation or an occupied interface', async () => {
+  for (const issue of ['permission', 'descriptor', 'configuration', 'claim']) {
+    const f = fixture(); f.state.nativeAvailable = true;
+    if (issue === 'permission') f.state.allowed = false;
+    if (issue === 'descriptor') f.state.descriptors = new Uint8Array(32);
+    if (issue === 'configuration') f.state.currentConfig = 2;
+    if (issue === 'claim') f.state.claimResult = -1;
+    await assert.rejects(() => f.probe.probe(f.select(), f.owner, true));
+    assert.equal(f.state.nativeStarts.length, 0); assert.equal(f.state.transfers.length, 0);
+  }
+});
+test('busy native worker, malformed native requests, failure and rejected replies release the selected pipe', async () => {
+  for (const issue of ['busy', 'request', 'timeout', 'length', 'failed', 'reply', 'short', 'usb']) {
+    const f = fixture(); f.state.nativeAvailable = true;
+    if (issue === 'busy') f.state.nativeBusy = true;
+    if (['request', 'timeout', 'length'].includes(issue)) {
+      f.state.nativeRequest = { status: 0, requestId: issue === 'request' ? 305 : 1,
+        timeoutMs: issue === 'timeout' ? 1501 : 421, data: new Uint8Array(issue === 'length' ? 65 : 64), write: true };
+    }
+    if (issue === 'failed') f.state.nativeStatus = 2;
+    if (issue === 'reply') f.state.nativeRejectReply = true;
+    if (issue === 'short') f.state.short = true;
+    if (issue === 'usb') f.state.transferStatus = 5;
+    await assert.rejects(() => f.probe.probe(f.select(), f.owner, true));
+    assert.equal(f.state.closes.length, 1); assert.equal(f.state.releases.length, 1);
+    assert.deepEqual(f.state.nativeCancels, issue === 'busy' ? [] : [1]);
+    assert.equal(f.state.nativeReplies.length, issue === 'reply' ? 1 : 0);
+  }
+});
+test('account transition, owner departure and USB timeout cancel the exact native generation before late callbacks', async () => {
+  for (const issue of ['transition', 'owner', 'cancel', 'timeout']) {
+    const f = fixture(); f.state.nativeAvailable = true; f.state.hold = 'in'; f.state.delayCancelCallback = true;
+    let live = true; const owner = () => live;
+    const pending = f.probe.probe(f.select(), owner, true); await settle();
+    const oldTransfer = f.state.pending; assert.ok(oldTransfer);
+    if (issue === 'transition') f.state.transitions.forEach(fn => fn(true));
+    if (issue === 'owner') { live = false; [...f.state.intervals.values()][0].callback(); }
+    if (issue === 'cancel') f.probe.cancel(owner);
+    if (issue === 'timeout') [...f.state.timers.values()].find(t => t.delay === 1121).callback();
+    await assert.rejects(() => pending);
+    assert.deepEqual(f.state.nativeCancels, [1]); assert.equal(f.state.nativeReplies.length, 1);
+    f.state.transitions.forEach(fn => fn(false)); f.state.hold = ''; f.state.input = [];
+    const result = await f.probe.probe(f.select(), () => true, true); assert.ok(result.includes('成功'));
+    const replyCount = f.state.nativeReplies.length;
+    oldTransfer.callback(undefined, { status: 0, isoPacketDescs: [], actualLength: 64 }); await settle();
+    assert.equal(f.state.nativeReplies.length, replyCount); assert.deepEqual(f.state.nativeCancels, [1, 2]);
+    assert.equal(f.state.closes.length, 2); assert.equal(f.state.releases.length, 2);
+  }
+});
+test('synchronous native completion cannot escape a transition triggered while polling', async () => {
+  const f = fixture(); f.state.nativeAvailable = true; f.state.nativeStatus = 1;
+  f.state.nativeOnPoll = () => f.state.transitions.forEach(fn => fn(true));
+  await assert.rejects(() => f.probe.probe(f.select(), f.owner, true));
+  assert.deepEqual(f.state.nativeCancels, [1]); assert.equal(f.state.transfers.length, 0);
+  assert.equal(f.state.closes.length, 1);
 });
 
 (async () => {

@@ -1,6 +1,7 @@
 import { DEBUG } from 'BuildProfile';
 import { usbManager, deviceInfo, BusinessError } from '@kit.BasicServicesKit';
 import { cryptoFramework } from '@kit.CryptoArchitectureKit';
+import rdpnapi from 'librdpnapi.so';
 import { ProAppRuntime } from './ProAppRuntime';
 import { AccountSessionCoordinator } from '../AccountSessionCoordinator';
 import { isProFidoReportDescriptor, parseProFidoInit, proFidoPackets, ProFidoHidResponse,
@@ -23,6 +24,7 @@ class ProUsbProbeOperation {
   pipe: usbManager.USBDevicePipe | null = null;
   iface: usbManager.USBInterface | null = null;
   transfer: usbManager.UsbDataTransferParams | null = null;
+  nativeProbe: number = 0;
   waits: Array<() => void> = [];
   constructor(current: () => boolean) { this.current = current; }
 }
@@ -53,6 +55,13 @@ export class ProUsbFidoProbe {
     return false;
   }
   busy(): boolean { return this.active !== null; }
+  libraryAvailable(): boolean {
+    if (DEBUG) {
+      try { return this.debugAllowed() && rdpnapi.proFidoProbeAvailable(); }
+      catch (_error) { return false; }
+    }
+    return false;
+  }
   private label(device: usbManager.USBDevice, iface: usbManager.USBInterface): string {
     const text = (device.manufacturerName + ' ' + device.productName)
       .replace(/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g, '').trim().slice(0, 80);
@@ -97,6 +106,9 @@ export class ProUsbFidoProbe {
   private stop(operation: ProUsbProbeOperation, message: string): void {
     if (operation.cancelled) { return; }
     operation.cancelled = true; operation.failure = message;
+    if (operation.nativeProbe !== 0) {
+      try { rdpnapi.proFidoProbeCancel(operation.nativeProbe); } catch (_error) {}
+    }
     const transfer = operation.transfer;
     if (transfer !== null) { try { usbManager.usbCancelTransfer(transfer); } catch (_error) {} }
     operation.waits.slice().forEach((cancel: () => void): void => { cancel(); });
@@ -134,7 +146,8 @@ export class ProUsbFidoProbe {
       if (operation.cancelled) { cancel(); }
     });
   }
-  private async transfer(operation: ProUsbProbeOperation, endpoint: number, data: Uint8Array): Promise<Uint8Array> {
+  private async transfer(operation: ProUsbProbeOperation, endpoint: number, data: Uint8Array,
+    timeout: number = 1500): Promise<Uint8Array> {
     this.requireCurrent(operation);
     const pipe = operation.pipe;
     if (pipe === null) { throw new Error('USB 设备未连接'); }
@@ -142,7 +155,7 @@ export class ProUsbFidoProbe {
       const request: usbManager.UsbDataTransferParams = { devPipe: pipe,
         flags: usbManager.UsbTransferFlags.USB_TRANSFER_SHORT_NOT_OK,
         endpoint, type: usbManager.UsbEndpointTransferType.TRANSFER_TYPE_INTERRUPT,
-        timeout: 1500, length: data.length, userData: new Uint8Array(0), buffer: data, isoPacketCount: 0,
+        timeout, length: data.length, userData: new Uint8Array(0), buffer: data, isoPacketCount: 0,
         callback: (error: BusinessError, result: usbManager.SubmitTransferCallback): void => {
           if (operation.transfer === request) { operation.transfer = null; }
           if (error || !result || result.status !== usbManager.UsbTransferStatus.TRANSFER_COMPLETED ||
@@ -154,12 +167,52 @@ export class ProUsbFidoProbe {
       try { usbManager.usbSubmitTransfer(request); }
       catch (_error) { operation.transfer = null; reject(new Error('无法提交 USB 中断传输')); }
     });
-    const result = await this.wait(operation, pending, 2200);
+    const result = await this.wait(operation, pending, timeout + 700);
     this.requireCurrent(operation);
     return result;
   }
-  async probe(key: string, isCurrent: () => boolean): Promise<string> {
+  private async probeLibrary(operation: ProUsbProbeOperation, selected: ProUsbFidoEndpoint): Promise<string> {
+    this.requireCurrent(operation);
+    if (!this.libraryAvailable()) { throw new Error('FIDO2 库验证当前不可用'); }
+    const id = rdpnapi.proFidoProbeStart();
+    if (!Number.isInteger(id) || id < 1 || id > 0xffffffff) {
+      operation.failure = '另一窗口的库验证尚未退出，请稍后重试';
+      throw new Error(operation.failure);
+    }
+    operation.nativeProbe = id;
+    for (;;) {
+      this.requireCurrent(operation);
+      const snapshot = rdpnapi.proFidoProbePoll(id);
+      this.requireCurrent(operation);
+      if (snapshot.status === 1) {
+        return 'FIDO2 库通信与能力读取成功。RDP 注册与认证仍待接入及真机验收。';
+      }
+      if (snapshot.status !== 0) {
+        operation.failure = 'FIDO2 库验证未通过或已超时；未执行注册、PIN 或认证操作';
+        throw new Error(operation.failure);
+      }
+      if (snapshot.requestId !== 0) {
+        if (!Number.isInteger(snapshot.requestId) || snapshot.requestId < 1 || snapshot.requestId > 304 ||
+            !Number.isInteger(snapshot.timeoutMs) || snapshot.timeoutMs < 1 || snapshot.timeoutMs > 1500 ||
+            snapshot.data.length !== PRO_FIDO_PACKET_SIZE) {
+          throw new Error('FIDO2 库传输请求无效');
+        }
+        const data = await this.transfer(operation, snapshot.write ? selected.output : selected.input,
+          snapshot.data, snapshot.timeoutMs);
+        this.requireCurrent(operation);
+        if (!rdpnapi.proFidoProbeReply(id, snapshot.requestId, data, true)) {
+          throw new Error('FIDO2 库传输已失效');
+        }
+      } else {
+        await this.wait(operation, new Promise<void>((resolve: () => void): void => {
+          setTimeout((): void => { resolve(); }, 5);
+        }), 1000);
+      }
+    }
+  }
+  async probe(key: string, isCurrent: () => boolean, useLibrary: boolean = false): Promise<string> {
     if (!this.debugAllowed() || this.busy() || !isCurrent()) { throw new Error('USB 检测当前不可用'); }
+    if (useLibrary && !this.libraryAvailable()) { throw new Error('FIDO2 库验证当前不可用'); }
     const selected = this.candidates.find((item: ProUsbFidoEndpoint): boolean => item.candidate.key === key);
     if (selected === undefined) { throw new Error('请重新读取 USB 设备'); }
     const operation = new ProUsbProbeOperation(isCurrent); this.active = operation;
@@ -217,6 +270,7 @@ export class ProUsbFidoProbe {
         operation.failure = '安全密钥接口正被占用或不可访问'; throw new Error(operation.failure);
       }
       operation.iface = selected.iface;
+      if (useLibrary) { return await this.probeLibrary(operation, selected); }
       const nonce = cryptoFramework.createRandom().generateRandomSync(8).data;
       const request = proFidoPackets(PRO_FIDO_BROADCAST, PRO_FIDO_INIT, nonce);
       await this.transfer(operation, selected.output, request[0]);

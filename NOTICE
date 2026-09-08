@@ -11,6 +11,12 @@ binary/source components from FreeRDP, OpenSSL, FFmpeg, libssh2, Mbed TLS,
 Opus, the platform zlib library, Huawei/OpenHarmony SDK packages, and Rust crates including the Apache-2.0 Alacritty terminal core. No project license
 statement removes or replaces their upstream notices.
 
+Debug builds additionally include libfido2 1.17.0 and libcbor 0.14.0 for the
+explicitly authorized USB capability probe. Their source archives, local
+custom-I/O patch, per-ABI manifests and full upstream notices are identified
+in docs/compliance/FIDO2_OHOS_PROVENANCE.md and libs/fido2-ohos/. They are
+excluded from Release native linking.
+
 The separately deployable Pro entitlement server sources use external Node.js
 and OpenSSL host runtimes. They are not bundled in the HAP or redistributed in
 the server source directory. Runtime scope, validation versions and upstream

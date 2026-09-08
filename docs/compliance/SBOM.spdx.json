@@ -1496,6 +1496,36 @@
         }
       ],
       "comment": "Official app/res/moonlight.svg originalSha256=6fd0ee4fe5b4aad5abaa5d5c9acb9f7d1bda0abadfe9d1582115de9b4ba16aa2; packaged deterministic monochrome tintable transform; geometry and trademark boundary documented in docs/compliance/MOONLIGHT_ICON_PROVENANCE.md"
+    },
+    {
+      "name": "libfido2-ohos-custom-io",
+      "SPDXID": "SPDXRef-Package-ProFido-libfido2",
+      "versionInfo": "1.17.0",
+      "downloadLocation": "https://developers.yubico.com/libfido2/Releases/libfido2-1.17.0.tar.gz",
+      "filesAnalyzed": true,
+      "packageVerificationCode": {
+        "packageVerificationCodeValue": "8280f4d392a5933b8f4b35fd00ee165e4a8656b7"
+      },
+      "licenseConcluded": "BSD-2-Clause AND ISC AND LicenseRef-Public-Domain",
+      "licenseDeclared": "BSD-2-Clause AND ISC AND LicenseRef-Public-Domain",
+      "copyrightText": "See libs/fido2-ohos/*/licenses/",
+      "sourceInfo": "Pinned source archive SHA256=c1012c8871d71b65872fd5ff1a9d6b0838a55683a03e85ba97479ce57129c736; complete patch identities in docs/compliance/FIDO2_DEPENDENCIES.lock.json",
+      "comment": "Analyzed files are the shipped OHOS headers, static archives and notices for both ABIs. Debug capability probe only; excluded from Release linking. Per-ABI build/input hashes in libs/fido2-ohos/*/manifest.json."
+    },
+    {
+      "name": "libcbor-ohos-custom-io",
+      "SPDXID": "SPDXRef-Package-ProFido-libcbor",
+      "versionInfo": "0.14.0",
+      "downloadLocation": "https://github.com/PJK/libcbor/archive/refs/tags/v0.14.0.tar.gz",
+      "filesAnalyzed": true,
+      "packageVerificationCode": {
+        "packageVerificationCodeValue": "613a4bb6c1ba900289a265624c91a0856c768b78"
+      },
+      "licenseConcluded": "MIT",
+      "licenseDeclared": "MIT",
+      "copyrightText": "See libs/fido2-ohos/*/licenses/",
+      "sourceInfo": "Pinned source archive SHA256=a8c1516e741562cf95aa4479c64916c3d4d2623e24fdc35e414e2320e7300aae; complete patch identities in docs/compliance/FIDO2_DEPENDENCIES.lock.json",
+      "comment": "Analyzed files are the shipped OHOS headers, static archives and notices for both ABIs. Debug capability probe only; excluded from Release linking. Per-ABI build/input hashes in libs/fido2-ohos/*/manifest.json."
     }
   ],
   "files": [
@@ -7866,6 +7896,1678 @@
       ],
       "copyrightText": "See vendored source and license",
       "comment": "repository=https://github.com/moonlight-stream/moonlight-common-c; revision=e41355ea01670fd4c830b384009d31dd0339a705; tree=405b39fdc543dceb7644bdcda65e1bb4c7a28ab2"
+    },
+    {
+      "fileName": "./libs/fido2-ohos/arm64-v8a/include/fido/bio.h",
+      "SPDXID": "SPDXRef-File-ProFido-cd75c840c265ad10bdf2893c",
+      "fileTypes": [
+        "SOURCE"
+      ],
+      "checksums": [
+        {
+          "algorithm": "SHA1",
+          "checksumValue": "4ab6c815e2919dd836e0cc42d2a8d50475cf7631"
+        },
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "20ec9369248f978f9274b07bde446e8b1bcbeb552de038dfe2a68d01fdaabf53"
+        }
+      ],
+      "licenseConcluded": "BSD-2-Clause AND ISC AND LicenseRef-Public-Domain",
+      "licenseInfoInFiles": [
+        "BSD-2-Clause AND ISC AND LicenseRef-Public-Domain"
+      ],
+      "copyrightText": "See adjacent full upstream licenses and libfido2 source notices"
+    },
+    {
+      "fileName": "./libs/fido2-ohos/arm64-v8a/include/fido/config.h",
+      "SPDXID": "SPDXRef-File-ProFido-a39ef2c76a69a8327ad94f82",
+      "fileTypes": [
+        "SOURCE"
+      ],
+      "checksums": [
+        {
+          "algorithm": "SHA1",
+          "checksumValue": "e1400ec7b2d4b106a33cc8dc9910ca4f597135ec"
+        },
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "0511e06d95bc53d72f3b6d75b4e84e93a0d0e02571c77b3d184972625ad038b3"
+        }
+      ],
+      "licenseConcluded": "BSD-2-Clause AND ISC AND LicenseRef-Public-Domain",
+      "licenseInfoInFiles": [
+        "BSD-2-Clause AND ISC AND LicenseRef-Public-Domain"
+      ],
+      "copyrightText": "See adjacent full upstream licenses and libfido2 source notices"
+    },
+    {
+      "fileName": "./libs/fido2-ohos/arm64-v8a/include/fido/credman.h",
+      "SPDXID": "SPDXRef-File-ProFido-ab132d1d342edee803442ded",
+      "fileTypes": [
+        "SOURCE"
+      ],
+      "checksums": [
+        {
+          "algorithm": "SHA1",
+          "checksumValue": "caf6bd7a3115b39d44ad1c6557d48cbd294bb489"
+        },
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "77914744f7ecc67dd3cebe55b833526cc5ca3cd33d2edde3950508ab3bf0823b"
+        }
+      ],
+      "licenseConcluded": "BSD-2-Clause AND ISC AND LicenseRef-Public-Domain",
+      "licenseInfoInFiles": [
+        "BSD-2-Clause AND ISC AND LicenseRef-Public-Domain"
+      ],
+      "copyrightText": "See adjacent full upstream licenses and libfido2 source notices"
+    },
+    {
+      "fileName": "./libs/fido2-ohos/arm64-v8a/include/fido/eddsa.h",
+      "SPDXID": "SPDXRef-File-ProFido-a7ae84710386b8df6d2f61f9",
+      "fileTypes": [
+        "SOURCE"
+      ],
+      "checksums": [
+        {
+          "algorithm": "SHA1",
+          "checksumValue": "fe721c08569f1e9826acd6a72fa987522dcb2f54"
+        },
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "010a3105ee147fdb85525875f3c6e2aa4b4f8bd9b91fa8728df691ef38f4cbd2"
+        }
+      ],
+      "licenseConcluded": "BSD-2-Clause AND ISC AND LicenseRef-Public-Domain",
+      "licenseInfoInFiles": [
+        "BSD-2-Clause AND ISC AND LicenseRef-Public-Domain"
+      ],
+      "copyrightText": "See adjacent full upstream licenses and libfido2 source notices"
+    },
+    {
+      "fileName": "./libs/fido2-ohos/arm64-v8a/include/fido/err.h",
+      "SPDXID": "SPDXRef-File-ProFido-fd3a1bd4813d8d8d12937873",
+      "fileTypes": [
+        "SOURCE"
+      ],
+      "checksums": [
+        {
+          "algorithm": "SHA1",
+          "checksumValue": "6d16258f01094f2725fe0275c3a3f9d2fd568802"
+        },
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "a9c2353fe8b8d17105b4964eea4bc163d60847ca71508850aa049c5220d6152d"
+        }
+      ],
+      "licenseConcluded": "BSD-2-Clause AND ISC AND LicenseRef-Public-Domain",
+      "licenseInfoInFiles": [
+        "BSD-2-Clause AND ISC AND LicenseRef-Public-Domain"
+      ],
+      "copyrightText": "See adjacent full upstream licenses and libfido2 source notices"
+    },
+    {
+      "fileName": "./libs/fido2-ohos/arm64-v8a/include/fido/es256.h",
+      "SPDXID": "SPDXRef-File-ProFido-6e1eea213db22fc9549e0bcb",
+      "fileTypes": [
+        "SOURCE"
+      ],
+      "checksums": [
+        {
+          "algorithm": "SHA1",
+          "checksumValue": "7e531072312b1c1a1c4329397f02cc8d9d0a4163"
+        },
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "6b4f54c37206fc7361f5431f05bad36434d89e62687129095a791805898ea15c"
+        }
+      ],
+      "licenseConcluded": "BSD-2-Clause AND ISC AND LicenseRef-Public-Domain",
+      "licenseInfoInFiles": [
+        "BSD-2-Clause AND ISC AND LicenseRef-Public-Domain"
+      ],
+      "copyrightText": "See adjacent full upstream licenses and libfido2 source notices"
+    },
+    {
+      "fileName": "./libs/fido2-ohos/arm64-v8a/include/fido/es384.h",
+      "SPDXID": "SPDXRef-File-ProFido-842fb7ef44d3db2b482172c2",
+      "fileTypes": [
+        "SOURCE"
+      ],
+      "checksums": [
+        {
+          "algorithm": "SHA1",
+          "checksumValue": "af7a3e334b43395f9e7691c805525b33d37b72e9"
+        },
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "0f8680029819af12f22626c927fc611e46cf9534dc883df8945e631d71d9d7b4"
+        }
+      ],
+      "licenseConcluded": "BSD-2-Clause AND ISC AND LicenseRef-Public-Domain",
+      "licenseInfoInFiles": [
+        "BSD-2-Clause AND ISC AND LicenseRef-Public-Domain"
+      ],
+      "copyrightText": "See adjacent full upstream licenses and libfido2 source notices"
+    },
+    {
+      "fileName": "./libs/fido2-ohos/arm64-v8a/include/fido/param.h",
+      "SPDXID": "SPDXRef-File-ProFido-0d62c2d5eefe37ec98515cb8",
+      "fileTypes": [
+        "SOURCE"
+      ],
+      "checksums": [
+        {
+          "algorithm": "SHA1",
+          "checksumValue": "c1ac720f9b3cb686df9b41301042915ffafcaf09"
+        },
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "54ac262627c8524877eeee6b4c99230a6bb30a548d3a4aa16e3cb08f94c05085"
+        }
+      ],
+      "licenseConcluded": "BSD-2-Clause AND ISC AND LicenseRef-Public-Domain",
+      "licenseInfoInFiles": [
+        "BSD-2-Clause AND ISC AND LicenseRef-Public-Domain"
+      ],
+      "copyrightText": "See adjacent full upstream licenses and libfido2 source notices"
+    },
+    {
+      "fileName": "./libs/fido2-ohos/arm64-v8a/include/fido/rs256.h",
+      "SPDXID": "SPDXRef-File-ProFido-8969373aadbfb0ac86a1645e",
+      "fileTypes": [
+        "SOURCE"
+      ],
+      "checksums": [
+        {
+          "algorithm": "SHA1",
+          "checksumValue": "70d124ab01c4ff9a6dcf34fb5b8ce8424081cec5"
+        },
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "a18c5a715548f3d0d7374d8dcc87b95c5f2d1b9a92a55bbfe53e729da0219256"
+        }
+      ],
+      "licenseConcluded": "BSD-2-Clause AND ISC AND LicenseRef-Public-Domain",
+      "licenseInfoInFiles": [
+        "BSD-2-Clause AND ISC AND LicenseRef-Public-Domain"
+      ],
+      "copyrightText": "See adjacent full upstream licenses and libfido2 source notices"
+    },
+    {
+      "fileName": "./libs/fido2-ohos/arm64-v8a/include/fido/types.h",
+      "SPDXID": "SPDXRef-File-ProFido-d0f19f9a957da931e58388c9",
+      "fileTypes": [
+        "SOURCE"
+      ],
+      "checksums": [
+        {
+          "algorithm": "SHA1",
+          "checksumValue": "5b096f11693c3086a7545ef59957b169bd8c1472"
+        },
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "698e43bcd39bd22cbb3b11bf112256183f0575ebf36871ec403f461bba72cc6a"
+        }
+      ],
+      "licenseConcluded": "BSD-2-Clause AND ISC AND LicenseRef-Public-Domain",
+      "licenseInfoInFiles": [
+        "BSD-2-Clause AND ISC AND LicenseRef-Public-Domain"
+      ],
+      "copyrightText": "See adjacent full upstream licenses and libfido2 source notices"
+    },
+    {
+      "fileName": "./libs/fido2-ohos/arm64-v8a/include/fido.h",
+      "SPDXID": "SPDXRef-File-ProFido-58f589c3d6b3b768edbcad19",
+      "fileTypes": [
+        "SOURCE"
+      ],
+      "checksums": [
+        {
+          "algorithm": "SHA1",
+          "checksumValue": "31315319f6f2242c3a75e7444b2c465e9fd3fb22"
+        },
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "38b3b53dae4b0c0dc612b2490e0de86100037e4b84ec4da8eb23ea0d10469936"
+        }
+      ],
+      "licenseConcluded": "BSD-2-Clause AND ISC AND LicenseRef-Public-Domain",
+      "licenseInfoInFiles": [
+        "BSD-2-Clause AND ISC AND LicenseRef-Public-Domain"
+      ],
+      "copyrightText": "See adjacent full upstream licenses and libfido2 source notices"
+    },
+    {
+      "fileName": "./libs/fido2-ohos/arm64-v8a/lib/libfido2.a",
+      "SPDXID": "SPDXRef-File-ProFido-33578ef610b81a21e28724f7",
+      "fileTypes": [
+        "BINARY"
+      ],
+      "checksums": [
+        {
+          "algorithm": "SHA1",
+          "checksumValue": "2d147abd1a4eed6e17cfe0aa77b289f83f4a1da4"
+        },
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "97e4a07f8b4bec26aca25290df654dadc2c9b4ec7520e80f7bd893003a8db194"
+        }
+      ],
+      "licenseConcluded": "BSD-2-Clause AND ISC AND LicenseRef-Public-Domain",
+      "licenseInfoInFiles": [
+        "BSD-2-Clause AND ISC AND LicenseRef-Public-Domain"
+      ],
+      "copyrightText": "See adjacent full upstream licenses and libfido2 source notices"
+    },
+    {
+      "fileName": "./libs/fido2-ohos/arm64-v8a/licenses/libfido2-LICENSE.txt",
+      "SPDXID": "SPDXRef-File-ProFido-519476fde3745ea49a3d5144",
+      "fileTypes": [
+        "TEXT"
+      ],
+      "checksums": [
+        {
+          "algorithm": "SHA1",
+          "checksumValue": "e2821b088dcbb0ce611ab64b540620474f658d1d"
+        },
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "4aad6cad5e570c10cccd1a6124bf2690eedb548b709fede991ed41326122ee2a"
+        }
+      ],
+      "licenseConcluded": "BSD-2-Clause AND ISC AND LicenseRef-Public-Domain",
+      "licenseInfoInFiles": [
+        "BSD-2-Clause AND ISC AND LicenseRef-Public-Domain"
+      ],
+      "copyrightText": "See adjacent full upstream licenses and libfido2 source notices"
+    },
+    {
+      "fileName": "./libs/fido2-ohos/arm64-v8a/licenses/libfido2-source-notices.txt",
+      "SPDXID": "SPDXRef-File-ProFido-e82d3d97a1de99cb7cc45fb9",
+      "fileTypes": [
+        "TEXT"
+      ],
+      "checksums": [
+        {
+          "algorithm": "SHA1",
+          "checksumValue": "593b8b00d89cccf4cf69ad863d0e2ca413648661"
+        },
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "457ee470e92f24085725c2ab1553a102c8413e311e61ec84171e76661964d416"
+        }
+      ],
+      "licenseConcluded": "BSD-2-Clause AND ISC AND LicenseRef-Public-Domain",
+      "licenseInfoInFiles": [
+        "BSD-2-Clause AND ISC AND LicenseRef-Public-Domain"
+      ],
+      "copyrightText": "See adjacent full upstream licenses and libfido2 source notices"
+    },
+    {
+      "fileName": "./libs/fido2-ohos/x86_64/include/fido/bio.h",
+      "SPDXID": "SPDXRef-File-ProFido-691ef8af093c0a4d6f820cb6",
+      "fileTypes": [
+        "SOURCE"
+      ],
+      "checksums": [
+        {
+          "algorithm": "SHA1",
+          "checksumValue": "4ab6c815e2919dd836e0cc42d2a8d50475cf7631"
+        },
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "20ec9369248f978f9274b07bde446e8b1bcbeb552de038dfe2a68d01fdaabf53"
+        }
+      ],
+      "licenseConcluded": "BSD-2-Clause AND ISC AND LicenseRef-Public-Domain",
+      "licenseInfoInFiles": [
+        "BSD-2-Clause AND ISC AND LicenseRef-Public-Domain"
+      ],
+      "copyrightText": "See adjacent full upstream licenses and libfido2 source notices"
+    },
+    {
+      "fileName": "./libs/fido2-ohos/x86_64/include/fido/config.h",
+      "SPDXID": "SPDXRef-File-ProFido-25172ffa23009d6a6a1b81c7",
+      "fileTypes": [
+        "SOURCE"
+      ],
+      "checksums": [
+        {
+          "algorithm": "SHA1",
+          "checksumValue": "e1400ec7b2d4b106a33cc8dc9910ca4f597135ec"
+        },
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "0511e06d95bc53d72f3b6d75b4e84e93a0d0e02571c77b3d184972625ad038b3"
+        }
+      ],
+      "licenseConcluded": "BSD-2-Clause AND ISC AND LicenseRef-Public-Domain",
+      "licenseInfoInFiles": [
+        "BSD-2-Clause AND ISC AND LicenseRef-Public-Domain"
+      ],
+      "copyrightText": "See adjacent full upstream licenses and libfido2 source notices"
+    },
+    {
+      "fileName": "./libs/fido2-ohos/x86_64/include/fido/credman.h",
+      "SPDXID": "SPDXRef-File-ProFido-65e23f50b6c5ca9d56d406ff",
+      "fileTypes": [
+        "SOURCE"
+      ],
+      "checksums": [
+        {
+          "algorithm": "SHA1",
+          "checksumValue": "caf6bd7a3115b39d44ad1c6557d48cbd294bb489"
+        },
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "77914744f7ecc67dd3cebe55b833526cc5ca3cd33d2edde3950508ab3bf0823b"
+        }
+      ],
+      "licenseConcluded": "BSD-2-Clause AND ISC AND LicenseRef-Public-Domain",
+      "licenseInfoInFiles": [
+        "BSD-2-Clause AND ISC AND LicenseRef-Public-Domain"
+      ],
+      "copyrightText": "See adjacent full upstream licenses and libfido2 source notices"
+    },
+    {
+      "fileName": "./libs/fido2-ohos/x86_64/include/fido/eddsa.h",
+      "SPDXID": "SPDXRef-File-ProFido-7a509a5f41e380097d41ec6e",
+      "fileTypes": [
+        "SOURCE"
+      ],
+      "checksums": [
+        {
+          "algorithm": "SHA1",
+          "checksumValue": "fe721c08569f1e9826acd6a72fa987522dcb2f54"
+        },
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "010a3105ee147fdb85525875f3c6e2aa4b4f8bd9b91fa8728df691ef38f4cbd2"
+        }
+      ],
+      "licenseConcluded": "BSD-2-Clause AND ISC AND LicenseRef-Public-Domain",
+      "licenseInfoInFiles": [
+        "BSD-2-Clause AND ISC AND LicenseRef-Public-Domain"
+      ],
+      "copyrightText": "See adjacent full upstream licenses and libfido2 source notices"
+    },
+    {
+      "fileName": "./libs/fido2-ohos/x86_64/include/fido/err.h",
+      "SPDXID": "SPDXRef-File-ProFido-ea3dcc59adcbaf4e95d078f4",
+      "fileTypes": [
+        "SOURCE"
+      ],
+      "checksums": [
+        {
+          "algorithm": "SHA1",
+          "checksumValue": "6d16258f01094f2725fe0275c3a3f9d2fd568802"
+        },
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "a9c2353fe8b8d17105b4964eea4bc163d60847ca71508850aa049c5220d6152d"
+        }
+      ],
+      "licenseConcluded": "BSD-2-Clause AND ISC AND LicenseRef-Public-Domain",
+      "licenseInfoInFiles": [
+        "BSD-2-Clause AND ISC AND LicenseRef-Public-Domain"
+      ],
+      "copyrightText": "See adjacent full upstream licenses and libfido2 source notices"
+    },
+    {
+      "fileName": "./libs/fido2-ohos/x86_64/include/fido/es256.h",
+      "SPDXID": "SPDXRef-File-ProFido-b3e09094c25274ac3fa2b399",
+      "fileTypes": [
+        "SOURCE"
+      ],
+      "checksums": [
+        {
+          "algorithm": "SHA1",
+          "checksumValue": "7e531072312b1c1a1c4329397f02cc8d9d0a4163"
+        },
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "6b4f54c37206fc7361f5431f05bad36434d89e62687129095a791805898ea15c"
+        }
+      ],
+      "licenseConcluded": "BSD-2-Clause AND ISC AND LicenseRef-Public-Domain",
+      "licenseInfoInFiles": [
+        "BSD-2-Clause AND ISC AND LicenseRef-Public-Domain"
+      ],
+      "copyrightText": "See adjacent full upstream licenses and libfido2 source notices"
+    },
+    {
+      "fileName": "./libs/fido2-ohos/x86_64/include/fido/es384.h",
+      "SPDXID": "SPDXRef-File-ProFido-90d8fe7634dc31a7169700cf",
+      "fileTypes": [
+        "SOURCE"
+      ],
+      "checksums": [
+        {
+          "algorithm": "SHA1",
+          "checksumValue": "af7a3e334b43395f9e7691c805525b33d37b72e9"
+        },
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "0f8680029819af12f22626c927fc611e46cf9534dc883df8945e631d71d9d7b4"
+        }
+      ],
+      "licenseConcluded": "BSD-2-Clause AND ISC AND LicenseRef-Public-Domain",
+      "licenseInfoInFiles": [
+        "BSD-2-Clause AND ISC AND LicenseRef-Public-Domain"
+      ],
+      "copyrightText": "See adjacent full upstream licenses and libfido2 source notices"
+    },
+    {
+      "fileName": "./libs/fido2-ohos/x86_64/include/fido/param.h",
+      "SPDXID": "SPDXRef-File-ProFido-1000d5079bf8fea62e44dedf",
+      "fileTypes": [
+        "SOURCE"
+      ],
+      "checksums": [
+        {
+          "algorithm": "SHA1",
+          "checksumValue": "c1ac720f9b3cb686df9b41301042915ffafcaf09"
+        },
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "54ac262627c8524877eeee6b4c99230a6bb30a548d3a4aa16e3cb08f94c05085"
+        }
+      ],
+      "licenseConcluded": "BSD-2-Clause AND ISC AND LicenseRef-Public-Domain",
+      "licenseInfoInFiles": [
+        "BSD-2-Clause AND ISC AND LicenseRef-Public-Domain"
+      ],
+      "copyrightText": "See adjacent full upstream licenses and libfido2 source notices"
+    },
+    {
+      "fileName": "./libs/fido2-ohos/x86_64/include/fido/rs256.h",
+      "SPDXID": "SPDXRef-File-ProFido-4f5d83b5ef9d1769c01cda17",
+      "fileTypes": [
+        "SOURCE"
+      ],
+      "checksums": [
+        {
+          "algorithm": "SHA1",
+          "checksumValue": "70d124ab01c4ff9a6dcf34fb5b8ce8424081cec5"
+        },
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "a18c5a715548f3d0d7374d8dcc87b95c5f2d1b9a92a55bbfe53e729da0219256"
+        }
+      ],
+      "licenseConcluded": "BSD-2-Clause AND ISC AND LicenseRef-Public-Domain",
+      "licenseInfoInFiles": [
+        "BSD-2-Clause AND ISC AND LicenseRef-Public-Domain"
+      ],
+      "copyrightText": "See adjacent full upstream licenses and libfido2 source notices"
+    },
+    {
+      "fileName": "./libs/fido2-ohos/x86_64/include/fido/types.h",
+      "SPDXID": "SPDXRef-File-ProFido-a6b038abde685199d58ddb82",
+      "fileTypes": [
+        "SOURCE"
+      ],
+      "checksums": [
+        {
+          "algorithm": "SHA1",
+          "checksumValue": "5b096f11693c3086a7545ef59957b169bd8c1472"
+        },
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "698e43bcd39bd22cbb3b11bf112256183f0575ebf36871ec403f461bba72cc6a"
+        }
+      ],
+      "licenseConcluded": "BSD-2-Clause AND ISC AND LicenseRef-Public-Domain",
+      "licenseInfoInFiles": [
+        "BSD-2-Clause AND ISC AND LicenseRef-Public-Domain"
+      ],
+      "copyrightText": "See adjacent full upstream licenses and libfido2 source notices"
+    },
+    {
+      "fileName": "./libs/fido2-ohos/x86_64/include/fido.h",
+      "SPDXID": "SPDXRef-File-ProFido-0dcca7d314502bb92233fee5",
+      "fileTypes": [
+        "SOURCE"
+      ],
+      "checksums": [
+        {
+          "algorithm": "SHA1",
+          "checksumValue": "31315319f6f2242c3a75e7444b2c465e9fd3fb22"
+        },
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "38b3b53dae4b0c0dc612b2490e0de86100037e4b84ec4da8eb23ea0d10469936"
+        }
+      ],
+      "licenseConcluded": "BSD-2-Clause AND ISC AND LicenseRef-Public-Domain",
+      "licenseInfoInFiles": [
+        "BSD-2-Clause AND ISC AND LicenseRef-Public-Domain"
+      ],
+      "copyrightText": "See adjacent full upstream licenses and libfido2 source notices"
+    },
+    {
+      "fileName": "./libs/fido2-ohos/x86_64/lib/libfido2.a",
+      "SPDXID": "SPDXRef-File-ProFido-5ae86d033ecbdff87afc0557",
+      "fileTypes": [
+        "BINARY"
+      ],
+      "checksums": [
+        {
+          "algorithm": "SHA1",
+          "checksumValue": "c8944b8d3700c9c566d799d03ddbf8ee56173aef"
+        },
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "3d6631f8bcf28917c675d589b04f745b98115e6b04a6b13472de24b82bcc4303"
+        }
+      ],
+      "licenseConcluded": "BSD-2-Clause AND ISC AND LicenseRef-Public-Domain",
+      "licenseInfoInFiles": [
+        "BSD-2-Clause AND ISC AND LicenseRef-Public-Domain"
+      ],
+      "copyrightText": "See adjacent full upstream licenses and libfido2 source notices"
+    },
+    {
+      "fileName": "./libs/fido2-ohos/x86_64/licenses/libfido2-LICENSE.txt",
+      "SPDXID": "SPDXRef-File-ProFido-7c46fb7b18bfbeb260e904c7",
+      "fileTypes": [
+        "TEXT"
+      ],
+      "checksums": [
+        {
+          "algorithm": "SHA1",
+          "checksumValue": "e2821b088dcbb0ce611ab64b540620474f658d1d"
+        },
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "4aad6cad5e570c10cccd1a6124bf2690eedb548b709fede991ed41326122ee2a"
+        }
+      ],
+      "licenseConcluded": "BSD-2-Clause AND ISC AND LicenseRef-Public-Domain",
+      "licenseInfoInFiles": [
+        "BSD-2-Clause AND ISC AND LicenseRef-Public-Domain"
+      ],
+      "copyrightText": "See adjacent full upstream licenses and libfido2 source notices"
+    },
+    {
+      "fileName": "./libs/fido2-ohos/x86_64/licenses/libfido2-source-notices.txt",
+      "SPDXID": "SPDXRef-File-ProFido-3a43a3b4abe5aed7767eb9db",
+      "fileTypes": [
+        "TEXT"
+      ],
+      "checksums": [
+        {
+          "algorithm": "SHA1",
+          "checksumValue": "593b8b00d89cccf4cf69ad863d0e2ca413648661"
+        },
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "457ee470e92f24085725c2ab1553a102c8413e311e61ec84171e76661964d416"
+        }
+      ],
+      "licenseConcluded": "BSD-2-Clause AND ISC AND LicenseRef-Public-Domain",
+      "licenseInfoInFiles": [
+        "BSD-2-Clause AND ISC AND LicenseRef-Public-Domain"
+      ],
+      "copyrightText": "See adjacent full upstream licenses and libfido2 source notices"
+    },
+    {
+      "fileName": "./libs/fido2-ohos/arm64-v8a/include/cbor/arrays.h",
+      "SPDXID": "SPDXRef-File-ProFido-e296e7467ae474c0da56b72d",
+      "fileTypes": [
+        "SOURCE"
+      ],
+      "checksums": [
+        {
+          "algorithm": "SHA1",
+          "checksumValue": "8a2006d90966db6f43d55564850681e7b03eb775"
+        },
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "c0231518656735d1f80b8509c06bd581b02c0b022c1586b8024a1924b13a41e3"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See adjacent full upstream licenses and libfido2 source notices"
+    },
+    {
+      "fileName": "./libs/fido2-ohos/arm64-v8a/include/cbor/bytestrings.h",
+      "SPDXID": "SPDXRef-File-ProFido-b93b9e23743062041f64206b",
+      "fileTypes": [
+        "SOURCE"
+      ],
+      "checksums": [
+        {
+          "algorithm": "SHA1",
+          "checksumValue": "af6255f48c88f397f10177f6163afb0a5877e2d0"
+        },
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "70f5b6eecbea6645b5218c566cd8fe524a89e6ec46e9dc0d73928d2b2620736a"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See adjacent full upstream licenses and libfido2 source notices"
+    },
+    {
+      "fileName": "./libs/fido2-ohos/arm64-v8a/include/cbor/callbacks.h",
+      "SPDXID": "SPDXRef-File-ProFido-45724118da4316bd96874598",
+      "fileTypes": [
+        "SOURCE"
+      ],
+      "checksums": [
+        {
+          "algorithm": "SHA1",
+          "checksumValue": "fa0d030b52e7e56182fd197a29dc01489cb531e8"
+        },
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "c11f87194bc96852934cb50b198bebe987d29b6faa7bf8e587c4ca1e0cb12cf1"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See adjacent full upstream licenses and libfido2 source notices"
+    },
+    {
+      "fileName": "./libs/fido2-ohos/arm64-v8a/include/cbor/cbor_export.h",
+      "SPDXID": "SPDXRef-File-ProFido-54d103b55b55d31e99008ce7",
+      "fileTypes": [
+        "SOURCE"
+      ],
+      "checksums": [
+        {
+          "algorithm": "SHA1",
+          "checksumValue": "a3f6e169e1a7d7a4c15c86147fc761eb1ea1dc10"
+        },
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "2b0eec9b198f887beb5c3ed9a8f7447c3c232f064ddecbc614616dfe945a2bc5"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See adjacent full upstream licenses and libfido2 source notices"
+    },
+    {
+      "fileName": "./libs/fido2-ohos/arm64-v8a/include/cbor/common.h",
+      "SPDXID": "SPDXRef-File-ProFido-206491cbf9d08782928bd5de",
+      "fileTypes": [
+        "SOURCE"
+      ],
+      "checksums": [
+        {
+          "algorithm": "SHA1",
+          "checksumValue": "ed410be8cadd8e464fdfaabe7736b0ff6b3ca814"
+        },
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "db50d5bf0a03f91587a5f784e932bac739563f90383c7831d642e6106c363a09"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See adjacent full upstream licenses and libfido2 source notices"
+    },
+    {
+      "fileName": "./libs/fido2-ohos/arm64-v8a/include/cbor/configuration.h",
+      "SPDXID": "SPDXRef-File-ProFido-b8ce8409cf3acc4216d10e03",
+      "fileTypes": [
+        "SOURCE"
+      ],
+      "checksums": [
+        {
+          "algorithm": "SHA1",
+          "checksumValue": "5852e493cb1807c5c2f2cfafe5a9ad35a027268f"
+        },
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "72bcf905423fcf752932b99261dfab857c533813785838c07c0c08fcd47a8b5a"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See adjacent full upstream licenses and libfido2 source notices"
+    },
+    {
+      "fileName": "./libs/fido2-ohos/arm64-v8a/include/cbor/data.h",
+      "SPDXID": "SPDXRef-File-ProFido-f97d108fc9620178bc4779ec",
+      "fileTypes": [
+        "SOURCE"
+      ],
+      "checksums": [
+        {
+          "algorithm": "SHA1",
+          "checksumValue": "ff1703b0da55b783e07caa65490f1633da4503bb"
+        },
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "9d5bd7ae00acc18e7860bb299853461733e0961520d9e6cbcf386ac88bc75056"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See adjacent full upstream licenses and libfido2 source notices"
+    },
+    {
+      "fileName": "./libs/fido2-ohos/arm64-v8a/include/cbor/encoding.h",
+      "SPDXID": "SPDXRef-File-ProFido-8625da929023e415e2498ad7",
+      "fileTypes": [
+        "SOURCE"
+      ],
+      "checksums": [
+        {
+          "algorithm": "SHA1",
+          "checksumValue": "9c9c70208650ba3c49cd380516bfaa0a8556a57b"
+        },
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "4295721a09491018f8dd770a5af636c47dedc1103e4f0caf9c293dfb1bdbb693"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See adjacent full upstream licenses and libfido2 source notices"
+    },
+    {
+      "fileName": "./libs/fido2-ohos/arm64-v8a/include/cbor/floats_ctrls.h",
+      "SPDXID": "SPDXRef-File-ProFido-b52e10324d44161ce239a64d",
+      "fileTypes": [
+        "SOURCE"
+      ],
+      "checksums": [
+        {
+          "algorithm": "SHA1",
+          "checksumValue": "b687cae20c16dcfc2e084fd762ffce5f44234bdd"
+        },
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "c73a8f4e1981596a86565879107fbd2b553c65efcdd6bda72bf9c016af8e35b9"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See adjacent full upstream licenses and libfido2 source notices"
+    },
+    {
+      "fileName": "./libs/fido2-ohos/arm64-v8a/include/cbor/internal/builder_callbacks.h",
+      "SPDXID": "SPDXRef-File-ProFido-b391c60fbdf23905e0834116",
+      "fileTypes": [
+        "SOURCE"
+      ],
+      "checksums": [
+        {
+          "algorithm": "SHA1",
+          "checksumValue": "583272dfec340d045ab5ed86da56a0b5198c9920"
+        },
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "08e43aab2577bfb3a31694b78f6e9dfc6802b17749c37e8f234b2b0ad6cdb406"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See adjacent full upstream licenses and libfido2 source notices"
+    },
+    {
+      "fileName": "./libs/fido2-ohos/arm64-v8a/include/cbor/internal/encoders.h",
+      "SPDXID": "SPDXRef-File-ProFido-65935d032eb22a07c23de48d",
+      "fileTypes": [
+        "SOURCE"
+      ],
+      "checksums": [
+        {
+          "algorithm": "SHA1",
+          "checksumValue": "49ec1e93b27a6fcebca4d3835d6b2e328ca363d4"
+        },
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "39ffbf43a937d7cbe17dcaf1c61f3d2edf2f649928da0d318b5a306b98440043"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See adjacent full upstream licenses and libfido2 source notices"
+    },
+    {
+      "fileName": "./libs/fido2-ohos/arm64-v8a/include/cbor/internal/loaders.h",
+      "SPDXID": "SPDXRef-File-ProFido-c990a89fc96bd916fcdce6c6",
+      "fileTypes": [
+        "SOURCE"
+      ],
+      "checksums": [
+        {
+          "algorithm": "SHA1",
+          "checksumValue": "fbdbf7177148a1dbd36a426d2e6b69d53d929e1a"
+        },
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "34e2bdbe84f9892b8b8604a063c2652cf18aed5858a7b1d1ed9a62251cf7553c"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See adjacent full upstream licenses and libfido2 source notices"
+    },
+    {
+      "fileName": "./libs/fido2-ohos/arm64-v8a/include/cbor/internal/memory_utils.h",
+      "SPDXID": "SPDXRef-File-ProFido-07f408cd35ee18edf9a159e2",
+      "fileTypes": [
+        "SOURCE"
+      ],
+      "checksums": [
+        {
+          "algorithm": "SHA1",
+          "checksumValue": "44c15638bd466de77ad3a1e3c9bcb8634198fd6d"
+        },
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "3c8a6f06d1de3b501c5c6f0ad2acd59a307cd199381a7c3d42fdef1ee88147ed"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See adjacent full upstream licenses and libfido2 source notices"
+    },
+    {
+      "fileName": "./libs/fido2-ohos/arm64-v8a/include/cbor/internal/stack.h",
+      "SPDXID": "SPDXRef-File-ProFido-f9509eb56f64d70e5aea57e9",
+      "fileTypes": [
+        "SOURCE"
+      ],
+      "checksums": [
+        {
+          "algorithm": "SHA1",
+          "checksumValue": "6217816e88cd0a73a4376c4c5796c9a41db4e54a"
+        },
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "f962a7d3427da8e152e27c5a956272325cfe1763c7e3db3e587172730d6a6931"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See adjacent full upstream licenses and libfido2 source notices"
+    },
+    {
+      "fileName": "./libs/fido2-ohos/arm64-v8a/include/cbor/internal/unicode.h",
+      "SPDXID": "SPDXRef-File-ProFido-1f256f2c9859b0916ce029b6",
+      "fileTypes": [
+        "SOURCE"
+      ],
+      "checksums": [
+        {
+          "algorithm": "SHA1",
+          "checksumValue": "4c0804dd7b9cc76b5417f006e3205f323d720e1a"
+        },
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "3b961d100fb83b140c71b5ef84952adb66ae886df8a7d56456d36f9b031ed7ee"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See adjacent full upstream licenses and libfido2 source notices"
+    },
+    {
+      "fileName": "./libs/fido2-ohos/arm64-v8a/include/cbor/ints.h",
+      "SPDXID": "SPDXRef-File-ProFido-6adf14767ff726fe11b3f67c",
+      "fileTypes": [
+        "SOURCE"
+      ],
+      "checksums": [
+        {
+          "algorithm": "SHA1",
+          "checksumValue": "c2484c70ffa70b86d8bc58b1cfaabc13ee5a3f0d"
+        },
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "7e92b07eababef3ba90f7a355bd4a284d02ae168184525036a66f68f51e1cd35"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See adjacent full upstream licenses and libfido2 source notices"
+    },
+    {
+      "fileName": "./libs/fido2-ohos/arm64-v8a/include/cbor/maps.h",
+      "SPDXID": "SPDXRef-File-ProFido-5b9a9908e8b01ebe4854417e",
+      "fileTypes": [
+        "SOURCE"
+      ],
+      "checksums": [
+        {
+          "algorithm": "SHA1",
+          "checksumValue": "c87df7d0316dd46f62b9bb019ddb20a2a7ae5b17"
+        },
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "00eb3e81ce25986d55dec30a95c909ebe3a79e62301ff1ff96e6859be67e400e"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See adjacent full upstream licenses and libfido2 source notices"
+    },
+    {
+      "fileName": "./libs/fido2-ohos/arm64-v8a/include/cbor/serialization.h",
+      "SPDXID": "SPDXRef-File-ProFido-5e7d6fa01d9982c6fc194ec2",
+      "fileTypes": [
+        "SOURCE"
+      ],
+      "checksums": [
+        {
+          "algorithm": "SHA1",
+          "checksumValue": "ff181af9f186ca6220eae8c6260d50e5611c38eb"
+        },
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "a7c2f4ac128f8e7a5dec4098ad6bc635f66b4c751df5f4c931ca0ec2d217cb50"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See adjacent full upstream licenses and libfido2 source notices"
+    },
+    {
+      "fileName": "./libs/fido2-ohos/arm64-v8a/include/cbor/streaming.h",
+      "SPDXID": "SPDXRef-File-ProFido-a082b7be1d984615fccefa58",
+      "fileTypes": [
+        "SOURCE"
+      ],
+      "checksums": [
+        {
+          "algorithm": "SHA1",
+          "checksumValue": "97f52712ce0ed0960b706480e3d4ff412ed25f27"
+        },
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "38816c04debc1ddaae11234695f572799a153135bad44f4bf68847133facfe3a"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See adjacent full upstream licenses and libfido2 source notices"
+    },
+    {
+      "fileName": "./libs/fido2-ohos/arm64-v8a/include/cbor/strings.h",
+      "SPDXID": "SPDXRef-File-ProFido-6ca4b479ac371260083d4f06",
+      "fileTypes": [
+        "SOURCE"
+      ],
+      "checksums": [
+        {
+          "algorithm": "SHA1",
+          "checksumValue": "980b4b90b7001a1347501683bbe5b81d70124f16"
+        },
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "8a21db080e677d37dd494bd0386b7669fe84388069b8f9a2c26f669952e395c8"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See adjacent full upstream licenses and libfido2 source notices"
+    },
+    {
+      "fileName": "./libs/fido2-ohos/arm64-v8a/include/cbor/tags.h",
+      "SPDXID": "SPDXRef-File-ProFido-ebc0d927f7b7ae2689394076",
+      "fileTypes": [
+        "SOURCE"
+      ],
+      "checksums": [
+        {
+          "algorithm": "SHA1",
+          "checksumValue": "e408df77350281b81cca9cda12db1bea70e5f9ee"
+        },
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "2cc775fa7ca9b952a553bb834f5552ddfe0adca61f76a663f0bbe5dc3db01bff"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See adjacent full upstream licenses and libfido2 source notices"
+    },
+    {
+      "fileName": "./libs/fido2-ohos/arm64-v8a/include/cbor.h",
+      "SPDXID": "SPDXRef-File-ProFido-fdd489bf10964d4b173f33bc",
+      "fileTypes": [
+        "SOURCE"
+      ],
+      "checksums": [
+        {
+          "algorithm": "SHA1",
+          "checksumValue": "4b2363199e25679bdd944df579d017897a909e9e"
+        },
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "afd1cbead7c877ad320f61df96aa03f5ed4cd385d8de785959d05f124d2a600d"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See adjacent full upstream licenses and libfido2 source notices"
+    },
+    {
+      "fileName": "./libs/fido2-ohos/arm64-v8a/lib/libcbor.a",
+      "SPDXID": "SPDXRef-File-ProFido-7fff3a65474a6531e0043586",
+      "fileTypes": [
+        "BINARY"
+      ],
+      "checksums": [
+        {
+          "algorithm": "SHA1",
+          "checksumValue": "028e4bc4f3e9089d2f743e8b796ace8d2289a467"
+        },
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "aa052467bc785e35bfcb637c0f8b406f5a770661627e81eb8926d37f6d9dd6a3"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See adjacent full upstream licenses and libfido2 source notices"
+    },
+    {
+      "fileName": "./libs/fido2-ohos/arm64-v8a/licenses/libcbor-LICENSE.txt",
+      "SPDXID": "SPDXRef-File-ProFido-a495e9bd69b079b806ffcbae",
+      "fileTypes": [
+        "TEXT"
+      ],
+      "checksums": [
+        {
+          "algorithm": "SHA1",
+          "checksumValue": "6d7043cf5c99126e691b25b52b7327ca407978c0"
+        },
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "6a5e182d758db66ecad6e6fa304dc637d4d2585bafceb5003c86e8dc9f6344ff"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See adjacent full upstream licenses and libfido2 source notices"
+    },
+    {
+      "fileName": "./libs/fido2-ohos/x86_64/include/cbor/arrays.h",
+      "SPDXID": "SPDXRef-File-ProFido-bde5280541b6d1ea507cfc88",
+      "fileTypes": [
+        "SOURCE"
+      ],
+      "checksums": [
+        {
+          "algorithm": "SHA1",
+          "checksumValue": "8a2006d90966db6f43d55564850681e7b03eb775"
+        },
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "c0231518656735d1f80b8509c06bd581b02c0b022c1586b8024a1924b13a41e3"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See adjacent full upstream licenses and libfido2 source notices"
+    },
+    {
+      "fileName": "./libs/fido2-ohos/x86_64/include/cbor/bytestrings.h",
+      "SPDXID": "SPDXRef-File-ProFido-6b9fafad4878cf4994aacc8e",
+      "fileTypes": [
+        "SOURCE"
+      ],
+      "checksums": [
+        {
+          "algorithm": "SHA1",
+          "checksumValue": "af6255f48c88f397f10177f6163afb0a5877e2d0"
+        },
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "70f5b6eecbea6645b5218c566cd8fe524a89e6ec46e9dc0d73928d2b2620736a"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See adjacent full upstream licenses and libfido2 source notices"
+    },
+    {
+      "fileName": "./libs/fido2-ohos/x86_64/include/cbor/callbacks.h",
+      "SPDXID": "SPDXRef-File-ProFido-f5eddda6940523196a9e27d2",
+      "fileTypes": [
+        "SOURCE"
+      ],
+      "checksums": [
+        {
+          "algorithm": "SHA1",
+          "checksumValue": "fa0d030b52e7e56182fd197a29dc01489cb531e8"
+        },
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "c11f87194bc96852934cb50b198bebe987d29b6faa7bf8e587c4ca1e0cb12cf1"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See adjacent full upstream licenses and libfido2 source notices"
+    },
+    {
+      "fileName": "./libs/fido2-ohos/x86_64/include/cbor/cbor_export.h",
+      "SPDXID": "SPDXRef-File-ProFido-a1d3b48653c322b86230f9d1",
+      "fileTypes": [
+        "SOURCE"
+      ],
+      "checksums": [
+        {
+          "algorithm": "SHA1",
+          "checksumValue": "a3f6e169e1a7d7a4c15c86147fc761eb1ea1dc10"
+        },
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "2b0eec9b198f887beb5c3ed9a8f7447c3c232f064ddecbc614616dfe945a2bc5"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See adjacent full upstream licenses and libfido2 source notices"
+    },
+    {
+      "fileName": "./libs/fido2-ohos/x86_64/include/cbor/common.h",
+      "SPDXID": "SPDXRef-File-ProFido-4eaf74e81286b81493d71de1",
+      "fileTypes": [
+        "SOURCE"
+      ],
+      "checksums": [
+        {
+          "algorithm": "SHA1",
+          "checksumValue": "ed410be8cadd8e464fdfaabe7736b0ff6b3ca814"
+        },
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "db50d5bf0a03f91587a5f784e932bac739563f90383c7831d642e6106c363a09"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See adjacent full upstream licenses and libfido2 source notices"
+    },
+    {
+      "fileName": "./libs/fido2-ohos/x86_64/include/cbor/configuration.h",
+      "SPDXID": "SPDXRef-File-ProFido-e6522e803d9948731797d0d1",
+      "fileTypes": [
+        "SOURCE"
+      ],
+      "checksums": [
+        {
+          "algorithm": "SHA1",
+          "checksumValue": "5852e493cb1807c5c2f2cfafe5a9ad35a027268f"
+        },
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "72bcf905423fcf752932b99261dfab857c533813785838c07c0c08fcd47a8b5a"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See adjacent full upstream licenses and libfido2 source notices"
+    },
+    {
+      "fileName": "./libs/fido2-ohos/x86_64/include/cbor/data.h",
+      "SPDXID": "SPDXRef-File-ProFido-8c0a0177a51a0782d8731d52",
+      "fileTypes": [
+        "SOURCE"
+      ],
+      "checksums": [
+        {
+          "algorithm": "SHA1",
+          "checksumValue": "ff1703b0da55b783e07caa65490f1633da4503bb"
+        },
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "9d5bd7ae00acc18e7860bb299853461733e0961520d9e6cbcf386ac88bc75056"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See adjacent full upstream licenses and libfido2 source notices"
+    },
+    {
+      "fileName": "./libs/fido2-ohos/x86_64/include/cbor/encoding.h",
+      "SPDXID": "SPDXRef-File-ProFido-bc5c57baad61e0f08d786a7c",
+      "fileTypes": [
+        "SOURCE"
+      ],
+      "checksums": [
+        {
+          "algorithm": "SHA1",
+          "checksumValue": "9c9c70208650ba3c49cd380516bfaa0a8556a57b"
+        },
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "4295721a09491018f8dd770a5af636c47dedc1103e4f0caf9c293dfb1bdbb693"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See adjacent full upstream licenses and libfido2 source notices"
+    },
+    {
+      "fileName": "./libs/fido2-ohos/x86_64/include/cbor/floats_ctrls.h",
+      "SPDXID": "SPDXRef-File-ProFido-e017821f03b675edd8728add",
+      "fileTypes": [
+        "SOURCE"
+      ],
+      "checksums": [
+        {
+          "algorithm": "SHA1",
+          "checksumValue": "b687cae20c16dcfc2e084fd762ffce5f44234bdd"
+        },
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "c73a8f4e1981596a86565879107fbd2b553c65efcdd6bda72bf9c016af8e35b9"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See adjacent full upstream licenses and libfido2 source notices"
+    },
+    {
+      "fileName": "./libs/fido2-ohos/x86_64/include/cbor/internal/builder_callbacks.h",
+      "SPDXID": "SPDXRef-File-ProFido-9fa1e6b2b2607763231d7e20",
+      "fileTypes": [
+        "SOURCE"
+      ],
+      "checksums": [
+        {
+          "algorithm": "SHA1",
+          "checksumValue": "583272dfec340d045ab5ed86da56a0b5198c9920"
+        },
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "08e43aab2577bfb3a31694b78f6e9dfc6802b17749c37e8f234b2b0ad6cdb406"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See adjacent full upstream licenses and libfido2 source notices"
+    },
+    {
+      "fileName": "./libs/fido2-ohos/x86_64/include/cbor/internal/encoders.h",
+      "SPDXID": "SPDXRef-File-ProFido-0d36f6011cf56134568a73a4",
+      "fileTypes": [
+        "SOURCE"
+      ],
+      "checksums": [
+        {
+          "algorithm": "SHA1",
+          "checksumValue": "49ec1e93b27a6fcebca4d3835d6b2e328ca363d4"
+        },
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "39ffbf43a937d7cbe17dcaf1c61f3d2edf2f649928da0d318b5a306b98440043"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See adjacent full upstream licenses and libfido2 source notices"
+    },
+    {
+      "fileName": "./libs/fido2-ohos/x86_64/include/cbor/internal/loaders.h",
+      "SPDXID": "SPDXRef-File-ProFido-91dcbe958a9b035d85914199",
+      "fileTypes": [
+        "SOURCE"
+      ],
+      "checksums": [
+        {
+          "algorithm": "SHA1",
+          "checksumValue": "fbdbf7177148a1dbd36a426d2e6b69d53d929e1a"
+        },
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "34e2bdbe84f9892b8b8604a063c2652cf18aed5858a7b1d1ed9a62251cf7553c"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See adjacent full upstream licenses and libfido2 source notices"
+    },
+    {
+      "fileName": "./libs/fido2-ohos/x86_64/include/cbor/internal/memory_utils.h",
+      "SPDXID": "SPDXRef-File-ProFido-d8dd2e4e9b727af282c124a7",
+      "fileTypes": [
+        "SOURCE"
+      ],
+      "checksums": [
+        {
+          "algorithm": "SHA1",
+          "checksumValue": "44c15638bd466de77ad3a1e3c9bcb8634198fd6d"
+        },
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "3c8a6f06d1de3b501c5c6f0ad2acd59a307cd199381a7c3d42fdef1ee88147ed"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See adjacent full upstream licenses and libfido2 source notices"
+    },
+    {
+      "fileName": "./libs/fido2-ohos/x86_64/include/cbor/internal/stack.h",
+      "SPDXID": "SPDXRef-File-ProFido-5f33fa6503494ebed408f3b6",
+      "fileTypes": [
+        "SOURCE"
+      ],
+      "checksums": [
+        {
+          "algorithm": "SHA1",
+          "checksumValue": "6217816e88cd0a73a4376c4c5796c9a41db4e54a"
+        },
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "f962a7d3427da8e152e27c5a956272325cfe1763c7e3db3e587172730d6a6931"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See adjacent full upstream licenses and libfido2 source notices"
+    },
+    {
+      "fileName": "./libs/fido2-ohos/x86_64/include/cbor/internal/unicode.h",
+      "SPDXID": "SPDXRef-File-ProFido-37abab80b6a2932ff359e2d7",
+      "fileTypes": [
+        "SOURCE"
+      ],
+      "checksums": [
+        {
+          "algorithm": "SHA1",
+          "checksumValue": "4c0804dd7b9cc76b5417f006e3205f323d720e1a"
+        },
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "3b961d100fb83b140c71b5ef84952adb66ae886df8a7d56456d36f9b031ed7ee"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See adjacent full upstream licenses and libfido2 source notices"
+    },
+    {
+      "fileName": "./libs/fido2-ohos/x86_64/include/cbor/ints.h",
+      "SPDXID": "SPDXRef-File-ProFido-11434c004ba69ce5b090c415",
+      "fileTypes": [
+        "SOURCE"
+      ],
+      "checksums": [
+        {
+          "algorithm": "SHA1",
+          "checksumValue": "c2484c70ffa70b86d8bc58b1cfaabc13ee5a3f0d"
+        },
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "7e92b07eababef3ba90f7a355bd4a284d02ae168184525036a66f68f51e1cd35"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See adjacent full upstream licenses and libfido2 source notices"
+    },
+    {
+      "fileName": "./libs/fido2-ohos/x86_64/include/cbor/maps.h",
+      "SPDXID": "SPDXRef-File-ProFido-5e11ed0e6b5215cf79fc3fb0",
+      "fileTypes": [
+        "SOURCE"
+      ],
+      "checksums": [
+        {
+          "algorithm": "SHA1",
+          "checksumValue": "c87df7d0316dd46f62b9bb019ddb20a2a7ae5b17"
+        },
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "00eb3e81ce25986d55dec30a95c909ebe3a79e62301ff1ff96e6859be67e400e"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See adjacent full upstream licenses and libfido2 source notices"
+    },
+    {
+      "fileName": "./libs/fido2-ohos/x86_64/include/cbor/serialization.h",
+      "SPDXID": "SPDXRef-File-ProFido-5c55ec46069360e51479dffd",
+      "fileTypes": [
+        "SOURCE"
+      ],
+      "checksums": [
+        {
+          "algorithm": "SHA1",
+          "checksumValue": "ff181af9f186ca6220eae8c6260d50e5611c38eb"
+        },
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "a7c2f4ac128f8e7a5dec4098ad6bc635f66b4c751df5f4c931ca0ec2d217cb50"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See adjacent full upstream licenses and libfido2 source notices"
+    },
+    {
+      "fileName": "./libs/fido2-ohos/x86_64/include/cbor/streaming.h",
+      "SPDXID": "SPDXRef-File-ProFido-723a4373c4bd0e50dd343606",
+      "fileTypes": [
+        "SOURCE"
+      ],
+      "checksums": [
+        {
+          "algorithm": "SHA1",
+          "checksumValue": "97f52712ce0ed0960b706480e3d4ff412ed25f27"
+        },
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "38816c04debc1ddaae11234695f572799a153135bad44f4bf68847133facfe3a"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See adjacent full upstream licenses and libfido2 source notices"
+    },
+    {
+      "fileName": "./libs/fido2-ohos/x86_64/include/cbor/strings.h",
+      "SPDXID": "SPDXRef-File-ProFido-9213919d97126d2b6cf0b961",
+      "fileTypes": [
+        "SOURCE"
+      ],
+      "checksums": [
+        {
+          "algorithm": "SHA1",
+          "checksumValue": "980b4b90b7001a1347501683bbe5b81d70124f16"
+        },
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "8a21db080e677d37dd494bd0386b7669fe84388069b8f9a2c26f669952e395c8"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See adjacent full upstream licenses and libfido2 source notices"
+    },
+    {
+      "fileName": "./libs/fido2-ohos/x86_64/include/cbor/tags.h",
+      "SPDXID": "SPDXRef-File-ProFido-bd249ac830627a52b3572d3a",
+      "fileTypes": [
+        "SOURCE"
+      ],
+      "checksums": [
+        {
+          "algorithm": "SHA1",
+          "checksumValue": "e408df77350281b81cca9cda12db1bea70e5f9ee"
+        },
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "2cc775fa7ca9b952a553bb834f5552ddfe0adca61f76a663f0bbe5dc3db01bff"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See adjacent full upstream licenses and libfido2 source notices"
+    },
+    {
+      "fileName": "./libs/fido2-ohos/x86_64/include/cbor.h",
+      "SPDXID": "SPDXRef-File-ProFido-9b634296025f9be2fac47a2b",
+      "fileTypes": [
+        "SOURCE"
+      ],
+      "checksums": [
+        {
+          "algorithm": "SHA1",
+          "checksumValue": "4b2363199e25679bdd944df579d017897a909e9e"
+        },
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "afd1cbead7c877ad320f61df96aa03f5ed4cd385d8de785959d05f124d2a600d"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See adjacent full upstream licenses and libfido2 source notices"
+    },
+    {
+      "fileName": "./libs/fido2-ohos/x86_64/lib/libcbor.a",
+      "SPDXID": "SPDXRef-File-ProFido-46e01cd969eaf8845f7340cf",
+      "fileTypes": [
+        "BINARY"
+      ],
+      "checksums": [
+        {
+          "algorithm": "SHA1",
+          "checksumValue": "9c12a2544b9c64dc97cd6b1f9ec4b8e6129e94c2"
+        },
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "6c30e99c846951cc8e211a20a124d7a9d8a7e06a3f762eef494d8301fadf20d1"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See adjacent full upstream licenses and libfido2 source notices"
+    },
+    {
+      "fileName": "./libs/fido2-ohos/x86_64/licenses/libcbor-LICENSE.txt",
+      "SPDXID": "SPDXRef-File-ProFido-a86f73070a56d4abcd25f283",
+      "fileTypes": [
+        "TEXT"
+      ],
+      "checksums": [
+        {
+          "algorithm": "SHA1",
+          "checksumValue": "6d7043cf5c99126e691b25b52b7327ca407978c0"
+        },
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "6a5e182d758db66ecad6e6fa304dc637d4d2585bafceb5003c86e8dc9f6344ff"
+        }
+      ],
+      "licenseConcluded": "MIT",
+      "licenseInfoInFiles": [
+        "MIT"
+      ],
+      "copyrightText": "See adjacent full upstream licenses and libfido2 source notices"
     }
   ],
   "relationships": [
@@ -9898,6 +11600,421 @@
       "spdxElementId": "SPDXRef-Cargo-kcp-sys-0.1.0",
       "relationshipType": "CONTAINS",
       "relatedSpdxElement": "SPDXRef-Native-skywind3000-KCP"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-ProFido-libfido2",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-ProFido-cd75c840c265ad10bdf2893c"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-ProFido-libfido2",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-ProFido-a39ef2c76a69a8327ad94f82"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-ProFido-libfido2",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-ProFido-ab132d1d342edee803442ded"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-ProFido-libfido2",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-ProFido-a7ae84710386b8df6d2f61f9"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-ProFido-libfido2",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-ProFido-fd3a1bd4813d8d8d12937873"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-ProFido-libfido2",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-ProFido-6e1eea213db22fc9549e0bcb"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-ProFido-libfido2",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-ProFido-842fb7ef44d3db2b482172c2"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-ProFido-libfido2",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-ProFido-0d62c2d5eefe37ec98515cb8"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-ProFido-libfido2",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-ProFido-8969373aadbfb0ac86a1645e"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-ProFido-libfido2",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-ProFido-d0f19f9a957da931e58388c9"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-ProFido-libfido2",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-ProFido-58f589c3d6b3b768edbcad19"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-ProFido-libfido2",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-ProFido-33578ef610b81a21e28724f7"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-ProFido-libfido2",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-ProFido-519476fde3745ea49a3d5144"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-ProFido-libfido2",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-ProFido-e82d3d97a1de99cb7cc45fb9"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-ProFido-libfido2",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-ProFido-691ef8af093c0a4d6f820cb6"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-ProFido-libfido2",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-ProFido-25172ffa23009d6a6a1b81c7"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-ProFido-libfido2",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-ProFido-65e23f50b6c5ca9d56d406ff"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-ProFido-libfido2",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-ProFido-7a509a5f41e380097d41ec6e"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-ProFido-libfido2",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-ProFido-ea3dcc59adcbaf4e95d078f4"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-ProFido-libfido2",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-ProFido-b3e09094c25274ac3fa2b399"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-ProFido-libfido2",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-ProFido-90d8fe7634dc31a7169700cf"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-ProFido-libfido2",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-ProFido-1000d5079bf8fea62e44dedf"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-ProFido-libfido2",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-ProFido-4f5d83b5ef9d1769c01cda17"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-ProFido-libfido2",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-ProFido-a6b038abde685199d58ddb82"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-ProFido-libfido2",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-ProFido-0dcca7d314502bb92233fee5"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-ProFido-libfido2",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-ProFido-5ae86d033ecbdff87afc0557"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-ProFido-libfido2",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-ProFido-7c46fb7b18bfbeb260e904c7"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-ProFido-libfido2",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-ProFido-3a43a3b4abe5aed7767eb9db"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-RemoteDeskHarmonyOS",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Package-ProFido-libfido2",
+      "comment": "Debug USB capability probe only"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-ProFido-libcbor",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-ProFido-e296e7467ae474c0da56b72d"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-ProFido-libcbor",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-ProFido-b93b9e23743062041f64206b"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-ProFido-libcbor",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-ProFido-45724118da4316bd96874598"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-ProFido-libcbor",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-ProFido-54d103b55b55d31e99008ce7"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-ProFido-libcbor",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-ProFido-206491cbf9d08782928bd5de"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-ProFido-libcbor",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-ProFido-b8ce8409cf3acc4216d10e03"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-ProFido-libcbor",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-ProFido-f97d108fc9620178bc4779ec"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-ProFido-libcbor",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-ProFido-8625da929023e415e2498ad7"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-ProFido-libcbor",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-ProFido-b52e10324d44161ce239a64d"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-ProFido-libcbor",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-ProFido-b391c60fbdf23905e0834116"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-ProFido-libcbor",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-ProFido-65935d032eb22a07c23de48d"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-ProFido-libcbor",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-ProFido-c990a89fc96bd916fcdce6c6"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-ProFido-libcbor",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-ProFido-07f408cd35ee18edf9a159e2"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-ProFido-libcbor",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-ProFido-f9509eb56f64d70e5aea57e9"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-ProFido-libcbor",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-ProFido-1f256f2c9859b0916ce029b6"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-ProFido-libcbor",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-ProFido-6adf14767ff726fe11b3f67c"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-ProFido-libcbor",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-ProFido-5b9a9908e8b01ebe4854417e"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-ProFido-libcbor",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-ProFido-5e7d6fa01d9982c6fc194ec2"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-ProFido-libcbor",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-ProFido-a082b7be1d984615fccefa58"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-ProFido-libcbor",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-ProFido-6ca4b479ac371260083d4f06"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-ProFido-libcbor",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-ProFido-ebc0d927f7b7ae2689394076"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-ProFido-libcbor",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-ProFido-fdd489bf10964d4b173f33bc"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-ProFido-libcbor",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-ProFido-7fff3a65474a6531e0043586"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-ProFido-libcbor",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-ProFido-a495e9bd69b079b806ffcbae"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-ProFido-libcbor",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-ProFido-bde5280541b6d1ea507cfc88"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-ProFido-libcbor",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-ProFido-6b9fafad4878cf4994aacc8e"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-ProFido-libcbor",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-ProFido-f5eddda6940523196a9e27d2"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-ProFido-libcbor",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-ProFido-a1d3b48653c322b86230f9d1"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-ProFido-libcbor",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-ProFido-4eaf74e81286b81493d71de1"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-ProFido-libcbor",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-ProFido-e6522e803d9948731797d0d1"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-ProFido-libcbor",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-ProFido-8c0a0177a51a0782d8731d52"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-ProFido-libcbor",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-ProFido-bc5c57baad61e0f08d786a7c"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-ProFido-libcbor",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-ProFido-e017821f03b675edd8728add"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-ProFido-libcbor",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-ProFido-9fa1e6b2b2607763231d7e20"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-ProFido-libcbor",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-ProFido-0d36f6011cf56134568a73a4"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-ProFido-libcbor",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-ProFido-91dcbe958a9b035d85914199"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-ProFido-libcbor",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-ProFido-d8dd2e4e9b727af282c124a7"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-ProFido-libcbor",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-ProFido-5f33fa6503494ebed408f3b6"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-ProFido-libcbor",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-ProFido-37abab80b6a2932ff359e2d7"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-ProFido-libcbor",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-ProFido-11434c004ba69ce5b090c415"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-ProFido-libcbor",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-ProFido-5e11ed0e6b5215cf79fc3fb0"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-ProFido-libcbor",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-ProFido-5c55ec46069360e51479dffd"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-ProFido-libcbor",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-ProFido-723a4373c4bd0e50dd343606"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-ProFido-libcbor",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-ProFido-9213919d97126d2b6cf0b961"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-ProFido-libcbor",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-ProFido-bd249ac830627a52b3572d3a"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-ProFido-libcbor",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-ProFido-9b634296025f9be2fac47a2b"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-ProFido-libcbor",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-ProFido-46e01cd969eaf8845f7340cf"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-ProFido-libcbor",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-File-ProFido-a86f73070a56d4abcd25f283"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-RemoteDeskHarmonyOS",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Package-ProFido-libcbor",
+      "comment": "Debug USB capability probe only"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-ProFido-libfido2",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Package-ProFido-libcbor"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-ProFido-libfido2",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Native-OpenSSL"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-ProFido-libfido2",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Native-zlib"
+    }
+  ],
+  "hasExtractedLicensingInfos": [
+    {
+      "licenseId": "LicenseRef-Public-Domain",
+      "name": "Upstream public-domain compatibility declarations",
+      "extractedText": "openbsd-compat/bsd-getpagesize.c\n/* Placed in the public domain */\n\nopenbsd-compat/err.h\n/*\n * Public domain\n * err.h compatibility shim\n */\n\nopenbsd-compat/explicit_bzero.c\n/* OPENBSD ORIGINAL: lib/libc/string/explicit_bzero.c */\n/*\t$OpenBSD: explicit_bzero.c,v 1.1 2014/01/22 21:06:45 tedu Exp $ */\n/*\n * Public domain.\n * Written by Ted Unangst\n */\n\nopenbsd-compat/explicit_bzero_win32.c\n/*\n * Public domain.\n * Win32 explicit_bzero compatibility shim.\n */\n\nopenbsd-compat/posix_win.c\n/*\n * Public domain\n *\n * File IO compatibility shims\n * Brent Cook <bcook@openbsd.org>\n */\n\nopenbsd-compat/posix_win.h\n/*\n * Public domain\n *\n * BSD socket emulation code for Winsock2\n * Brent Cook <bcook@openbsd.org>\n */\n\nopenbsd-compat/time.h\n/*\n * Public domain\n * sys/time.h compatibility shim\n */\n\nopenbsd-compat/types.h\n/*\n * Public domain\n * sys/types.h compatibility shim\n */\n",
+      "comment": "Exact upstream declarations retained in libfido2 source notices; not a relicensing of other library code."
     }
   ]
 }

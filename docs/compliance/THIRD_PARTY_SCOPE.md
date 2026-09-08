@@ -6,6 +6,11 @@ Every shipped source or static artifact must appear in
 missing protocol provenance, tracked private configuration, and unapproved
 license identifiers.
 
+The Debug USB capability probe adds libfido2/libcbor. Locked upstream archives,
+the explicit custom-I/O patch and both ABI output manifests are verified by
+`scripts/verify_fido2_dependencies.py`; full notices ship beside the archives.
+These libraries are excluded from Release linking and do not enable RDPEWA.
+
 Current high-risk boundaries are RustDesk protocol definitions, prebuilt
 FreeRDP/WinPR, OpenSSL, FFmpeg, libssh2, Mbed TLS, Opus and Huawei packages.
 The Moonlight boundary additionally includes the exact GPL-3.0-only

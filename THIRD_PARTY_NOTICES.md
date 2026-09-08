@@ -9,6 +9,8 @@ source and license files before redistribution.
 | RustDesk protocol definitions | rustdesk/rustdesk commit `93d064a9b0eb58ab94db88ff727a877ef773c0d8`, hbb_common gitlink `387603f47cbb15c0d3dc3d67ae3396d3eb707daf`; trailing whitespace removed locally | AGPL-3.0 | `rustdesk_vendor/.../protos` code generation |
 | FreeRDP / WinPR | `freerdp-ohos` public-base gitlink `dae8276ac7361b8d14f7b87d41163fe03dbb944e` plus the ordered local patch series in `patches/freerdp-ohos/`; effective tree `24a880d801892e3d6f1b8c78534e51eaeca8b0d8`; upstream FreeRDP | Apache-2.0 | RDP protocol/static libraries |
 | OpenSSL | bundled build inputs/artifacts under `libs/openssl` | Apache-2.0 | TLS and cryptography |
+| libfido2 | Yubico 1.17.0, pinned archive and custom-I/O patch in `docs/compliance/FIDO2_DEPENDENCIES.lock.json` | BSD-2-Clause, ISC, and upstream public-domain compatibility routines; full notices in `libs/fido2-ohos/*/licenses/` | Debug-only USB INIT/GetInfo capability probe; no default HID, NFC, PCSC or Windows Hello access; see `docs/compliance/FIDO2_OHOS_PROVENANCE.md` |
+| libcbor | PJK 0.14.0, pinned archive in `docs/compliance/FIDO2_DEPENDENCIES.lock.json` | MIT; full upstream notice in `libs/fido2-ohos/*/licenses/libcbor-LICENSE.txt` | Debug-only libfido2 CBOR parsing |
 | FFmpeg | 8.1.2 source archive and bundled OHOS artifacts; see `docs/compliance/FFMPEG_OHOS_PROVENANCE.md` | LGPL-2.1-or-later; GPL/non-free components disabled | VP8/VP9/AV1 software decode fallback |
 | libssh2 | bundled source/artifacts; upstream COPYING retained | BSD-3-Clause | SSH/SFTP |
 | Mbed TLS | bundled artifacts under `libs/mbedtls` | Apache-2.0 | cryptography support |

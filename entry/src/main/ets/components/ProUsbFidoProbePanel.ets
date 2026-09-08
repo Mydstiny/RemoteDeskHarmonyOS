@@ -11,6 +11,8 @@ export struct ProUsbFidoProbePanel {
   @StorageProp('accentColor') accent: string = '#007DFF';
   @State supported: boolean = false;
   @State busy: boolean = false;
+  @State librarySupported: boolean = false;
+  @State useLibrary: boolean = true;
   @State candidates: ProUsbFidoCandidate[] = [];
   @State message: string = '连接 USB 安全密钥后读取设备，再选择对应接口进行检测。';
   isOpen: () => boolean = (): boolean => true;
@@ -33,6 +35,8 @@ export struct ProUsbFidoProbePanel {
     } catch (_error) { this.application = null; this.supported = false; }
     this.unsubscribe = ProAppRuntime.getInstance().runtime.subscribe((): void => {
       this.supported = this.application !== null && ProUsbFidoProbe.getInstance().debugAllowed();
+      this.librarySupported = this.supported && ProUsbFidoProbe.getInstance().libraryAvailable();
+      if (!this.librarySupported) { this.useLibrary = false; }
       this.candidates = [];
     });
   }
@@ -62,7 +66,7 @@ export struct ProUsbFidoProbePanel {
     const lease = (): boolean => this.live && this.isOpen() && this.foreground && ProPurchaseLifecycle.current(epoch);
     this.lease = lease; this.busy = true; this.message = '正在请求授权并检测 USB 安全密钥…';
     try {
-      const message = await ProUsbFidoProbe.getInstance().probe(candidate.key, lease);
+      const message = await ProUsbFidoProbe.getInstance().probe(candidate.key, lease, this.useLibrary);
       if (lease()) { this.message = message; }
     } catch (error) {
       if (lease()) { this.message = (error as Error).message; }
@@ -74,8 +78,18 @@ export struct ProUsbFidoProbePanel {
     if (DEBUG && this.supported) {
       Column({ space: 10 }) {
         Text('开发者验证 · USB 安全密钥').fontSize(14).fontColor(this.pal().text).width('100%')
-        Text('仅验证本机 USB 初始化。不会读取 PIN、注册通行密钥或执行远端认证。')
+        Text(this.useLibrary ? '验证初始化并读取 FIDO2 协议能力。不会读取 PIN、注册通行密钥或执行远端认证。' :
+          '仅验证本机 USB 初始化。不会读取 PIN、注册通行密钥或执行远端认证。')
           .fontSize(12).fontColor(this.pal().text2).width('100%')
+        Row({ space: 12 }) {
+          Text('同时验证 FIDO2 库').fontSize(13).fontColor(this.pal().text).layoutWeight(1)
+          Toggle({ type: ToggleType.Switch, isOn: this.useLibrary })
+            .enabled(this.librarySupported && !this.busy)
+            .accessibilityText('同时验证 FIDO2 库')
+            .onChange((value: boolean): void => {
+              if (!this.busy && this.librarySupported) { this.useLibrary = value; }
+            })
+        }.width('100%')
         Button('读取 USB 候选接口').enabled(!this.busy).onClick((): void => { this.refresh(); })
         ForEach(this.candidates, (candidate: ProUsbFidoCandidate): void => {
           Button(candidate.label).fontSize(13).width('100%').enabled(!this.busy)

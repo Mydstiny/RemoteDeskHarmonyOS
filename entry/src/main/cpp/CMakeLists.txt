@@ -130,6 +130,7 @@ set(SECURITY_SOURCES
     security/crypto_utils.cpp
     security/host_locker.cpp
     security/security_napi.cpp
+    pro/fido_probe_napi.cpp
 )
 
 # -- Moonlight native ownership and bounded Host API protocol core --
@@ -1233,6 +1234,26 @@ target_link_libraries(rdpnapi PUBLIC
     ssl
     crypto
 )
+
+# Debug-only USB capability verification. Release retains inert NAPI stubs and
+# links neither the worker nor either FIDO dependency. Device access is supplied
+# solely by the explicitly authorized USBManager owner, never by a HID backend.
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    set(PRO_FIDO_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../../../libs/fido2-ohos/${OHOS_ARCH}")
+    foreach(PRO_FIDO_ARCHIVE libfido2.a libcbor.a)
+        if(NOT EXISTS "${PRO_FIDO_DIR}/lib/${PRO_FIDO_ARCHIVE}")
+            message(FATAL_ERROR "Missing pinned FIDO probe archive; run scripts/build_fido2_ohos.py")
+        endif()
+    endforeach()
+    add_library(pro_fido2 STATIC IMPORTED)
+    set_target_properties(pro_fido2 PROPERTIES IMPORTED_LOCATION "${PRO_FIDO_DIR}/lib/libfido2.a")
+    add_library(pro_cbor STATIC IMPORTED)
+    set_target_properties(pro_cbor PROPERTIES IMPORTED_LOCATION "${PRO_FIDO_DIR}/lib/libcbor.a")
+    target_sources(rdpnapi PRIVATE pro/fido_probe_transport.cpp)
+    target_include_directories(rdpnapi PRIVATE "${PRO_FIDO_DIR}/include")
+    target_compile_definitions(rdpnapi PRIVATE REMOTEDESK_DEBUG_FIDO_PROBE=1)
+    target_link_libraries(rdpnapi PRIVATE pro_fido2 pro_cbor crypto libz.so)
+endif()
 
 # N1-02 build-only Moonlight boundary. The pinned common-c/ENet archives are
 # linked privately and expose no NAPI or runtime registration. Product sources

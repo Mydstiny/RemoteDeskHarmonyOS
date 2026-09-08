@@ -1,0 +1,86 @@
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -42,6 +42,8 @@
+ option(BUILD_STATIC_LIBS "Build a static library"                  ON)
+ option(BUILD_TOOLS       "Build tool programs"                     ON)
+ option(FUZZ              "Enable fuzzing instrumentation"          OFF)
++option(USE_CUSTOM_IO     "Require application-supplied I/O handlers" OFF)
++option(USE_EXPLICIT_DEPENDENCIES "Use explicit cross-build dependency paths" OFF)
+ option(USE_HIDAPI        "Use hidapi as the HID backend"           OFF)
+ option(USE_PCSC          "Enable experimental PCSC support"        OFF)
+ option(USE_WINHELLO      "Abstract Windows Hello as a FIDO device" ON)
+@@ -222,10 +224,21 @@
+ 	endif()
+ 	set(NFC_LINUX OFF)
+ else()
+-	include(FindPkgConfig)
+-	pkg_search_module(CBOR libcbor)
+-	pkg_search_module(CRYPTO libcrypto)
+-	pkg_search_module(ZLIB zlib)
++	if(USE_EXPLICIT_DEPENDENCIES)
++		if(NOT CBOR_LIBRARIES OR NOT CBOR_INCLUDE_DIRS OR
++		    NOT CRYPTO_LIBRARIES OR NOT CRYPTO_INCLUDE_DIRS OR NOT CRYPTO_VERSION OR
++		    NOT ZLIB_LIBRARIES OR NOT ZLIB_INCLUDE_DIRS)
++			message(FATAL_ERROR "Explicit dependency libraries, headers and crypto version required")
++		endif()
++		set(CBOR_FOUND TRUE)
++		set(CRYPTO_FOUND TRUE)
++		set(ZLIB_FOUND TRUE)
++	else()
++		include(FindPkgConfig)
++		pkg_search_module(CBOR libcbor)
++		pkg_search_module(CRYPTO libcrypto)
++		pkg_search_module(ZLIB zlib)
++	endif()
+ 
+ 	if(NOT CBOR_FOUND AND NOT HAVE_CBOR_H)
+ 		message(FATAL_ERROR "could not find libcbor")
+@@ -244,7 +257,7 @@
+ 		set(CRYPTO_LIBRARIES "crypto")
+ 	endif()
+ 
+-	if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
++	if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT USE_CUSTOM_IO)
+ 		pkg_search_module(UDEV libudev REQUIRED)
+ 		set(UDEV_NAME "udev")
+ 		# If using hidapi, use hidapi-hidraw.
+--- a/src/CMakeLists.txt
++++ b/src/CMakeLists.txt
+@@ -59,7 +59,9 @@
+ 	list(APPEND FIDO_SOURCES nfc.c pcsc.c)
+ endif()
+ 
+-if(USE_HIDAPI)
++if(USE_CUSTOM_IO)
++	list(APPEND FIDO_SOURCES hid_custom.c)
++elseif(USE_HIDAPI)
+ 	list(APPEND FIDO_SOURCES hid_hidapi.c)
+ 	if(NOT WIN32 AND NOT APPLE)
+ 		list(APPEND FIDO_SOURCES hid_unix.c)
+--- /dev/null
++++ b/src/hid_custom.c
+@@ -0,0 +1,24 @@
++/* Copyright 2026 Li Jiong and contributors.
++ * RemoteDesk custom I/O: device access is supplied explicitly by the authorized
++ * application through fido_dev_set_io_functions. No implicit device access.
++ * SPDX-License-Identifier: BSD-2-Clause
++ */
++#include "fido.h"
++int fido_hid_manifest(fido_dev_info_t *list, size_t capacity, size_t *count) {
++    (void)list; (void)capacity;
++    if (count == NULL) return FIDO_ERR_INVALID_ARGUMENT;
++    *count = 0; return FIDO_OK;
++}
++void *fido_hid_open(const char *path) { (void)path; return NULL; }
++void fido_hid_close(void *handle) { (void)handle; }
++int fido_hid_read(void *handle, unsigned char *buf, size_t length, int timeout) {
++    (void)handle; (void)buf; (void)length; (void)timeout; return -1;
++}
++int fido_hid_write(void *handle, const unsigned char *buf, size_t length) {
++    (void)handle; (void)buf; (void)length; return -1;
++}
++int fido_hid_set_sigmask(void *handle, const fido_sigset_t *mask) {
++    (void)handle; (void)mask; return FIDO_ERR_UNSUPPORTED_OPTION;
++}
++size_t fido_hid_report_in_len(void *handle) { (void)handle; return 0; }
++size_t fido_hid_report_out_len(void *handle) { (void)handle; return 0; }

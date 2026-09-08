@@ -1,4 +1,18 @@
 import { NativeVideoDiagnosticEvidence } from '../../../ets/types/VideoDiagnosticEvidence';
+
+export interface ProFidoNativePoll {
+  status: number;
+  requestId: number;
+  timeoutMs: number;
+  write: boolean;
+  data: Uint8Array;
+}
+/** Debug-only capability probe. Release returns false/zero/invalid and has no worker. */
+export function proFidoProbeAvailable(): boolean;
+export function proFidoProbeStart(): number;
+export function proFidoProbePoll(operationId: number): ProFidoNativePoll;
+export function proFidoProbeReply(operationId: number, requestId: number, data: Uint8Array, success: boolean): boolean;
+export function proFidoProbeCancel(operationId: number): void;
 export type MoonlightNativeOperation =
   'pair' | 'catalog' | 'asset' | 'launch' | 'resume' | 'quit' | 'unpair' |
   'delete_identity';

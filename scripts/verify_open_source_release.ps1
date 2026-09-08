@@ -404,6 +404,16 @@ if (-not $pythonCommand) {
   Add-Failure 'Moonlight vendored-source verifier is missing.'
 }
 
+$fidoVerifier = Join-Path $root 'scripts/verify_fido2_dependencies.py'
+if (-not $pythonCommand -or -not (Test-Path $fidoVerifier)) {
+  Add-Failure 'Python and the FIDO dependency verifier are required.'
+} else {
+  $fidoOutput = @(& $pythonCommand.Source $fidoVerifier --repository-root $root 2>&1)
+  if ($LASTEXITCODE -ne 0) {
+    Add-Failure ('FIDO dependency gate failed: ' + ($fidoOutput -join '; '))
+  }
+}
+
 $previousErrorAction = $ErrorActionPreference
 $ErrorActionPreference = 'Continue'
 $diffCheck = @(& git -C $root diff --check 2>&1)
