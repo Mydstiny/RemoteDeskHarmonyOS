@@ -8,6 +8,7 @@ from pathlib import Path
 import re
 import subprocess
 import tempfile
+import os
 
 root = Path(__file__).resolve().parents[2]
 source = (root / 'entry/src/main/cpp/render/gl_renderer.cpp').read_text()
@@ -39,21 +40,44 @@ fields = re.findall(r'^    (std::atomic<[^>]+> (?:viewportSnapshotVersion_|snaps
 assert len(fields) >= 14
 declarations = '\n'.join('    ' + field + '{0};' for field in fields)
 program = '''#include <atomic>
+#include <algorithm>
+#include <cmath>
+#include <mutex>
 #include <cassert>
 #include <cstdint>
 #include <thread>
 #include <iostream>
+#define OH_LOG_WARN(...) ((void)0)
+static constexpr double kMaxCanvasScale = 12.0;
+struct RendererCanvasTransformSnapshot {
+    uint64_t version = 0;
+    int rotationQuarterTurns = 0;
+    bool flipX = false, flipY = false, valid = false;
+};
 class GLRenderer {
 public:
     int sourceWidth_ = 1920, sourceHeight_ = 1080, width_ = 1280, height_ = 720;
     uint64_t appliedCanvasTransformVersion_ = 4;
     int canvasRotationQuarterTurns_ = 0;
     bool canvasFlipX_ = false, canvasFlipY_ = false;
+    double canvasScale_ = 1.0, canvasPanX_ = 0, canvasPanY_ = 0;
+    std::mutex transformPublishMutex_;
+    std::atomic<uint64_t> canvasTransformVersion_{0};
+    std::atomic<double> pendingCanvasScale_{1}, pendingCanvasPanX_{0}, pendingCanvasPanY_{0};
+    std::atomic<int> pendingCanvasRotationQuarterTurns_{0};
+    std::atomic<bool> pendingCanvasFlipX_{false}, pendingCanvasFlipY_{false};
+    void RequestRedraw() {}
+    uint64_t SetCanvasTransform(double, double, double, int, bool, bool);
+    void ApplyPendingCanvasTransformLocked();
+    RendererCanvasTransformSnapshot GetCanvasTransformSnapshot() const;
     void GetViewportSnapshot(int&, int&, int&, int&, int&, int&, int&, int&, uint64_t&, uint64_t* = nullptr) const;
     void PublishViewportSnapshot(int, int, int, int, bool = false);
 ''' + declarations + '\n};\n'
 program += method('void GLRenderer::GetViewportSnapshot(') + '\n'
 program += method('void GLRenderer::PublishViewportSnapshot(') + '\n'
+program += method('uint64_t GLRenderer::SetCanvasTransform(') + '\n'
+program += method('void GLRenderer::ApplyPendingCanvasTransformLocked(') + '\n'
+program += method('RendererCanvasTransformSnapshot GLRenderer::GetCanvasTransformSnapshot(') + '\n'
 program += r'''
 struct Snapshot { int x=0,y=0,w=0,h=0,srcw=0,srch=0,surfw=0,surfh=0; uint64_t version=0,presented=0; };
 Snapshot read(const GLRenderer& r) {
@@ -123,6 +147,51 @@ int main() {
         }
     } while (!done.load(std::memory_order_acquire));
     writer.join(); assert(read(concurrent).presented==200000);
+    // Exercise both production publication stages: UI pending tuple -> EGL
+    // owner -> lock-free viewport/canvas readers. Host stress supplements the
+    // C++ memory-order review; passing it does not prove weak-memory safety.
+    GLRenderer pipeline;
+    pipeline.appliedCanvasTransformVersion_ = 0;
+    std::atomic<bool> submitted{false}, rendered{false};
+    std::thread submitter([&] {
+        for (uint64_t n=1; n<=200000; n++) {
+            assert(pipeline.SetCanvasTransform(1+double(n%10), double(n), -double(n),
+                int(n%4), (n&1)!=0, (n&2)!=0)==2*n);
+        }
+        submitted.store(true,std::memory_order_release);
+    });
+    std::thread presenter([&] {
+        do {
+            pipeline.ApplyPendingCanvasTransformLocked();
+            const uint64_t version=pipeline.appliedCanvasTransformVersion_;
+            if (version==0) continue;
+            const uint64_t n=version/2;
+            assert(version%2==0);
+            assert(pipeline.canvasScale_==1+double(n%10));
+            assert(pipeline.canvasPanX_==double(n) && pipeline.canvasPanY_==-double(n));
+            assert(pipeline.canvasRotationQuarterTurns_==int(n%4));
+            assert(pipeline.canvasFlipX_==((n&1)!=0) && pipeline.canvasFlipY_==((n&2)!=0));
+            pipeline.PublishViewportSnapshot(0,0,1280,720,true);
+        } while (!submitted.load(std::memory_order_acquire) ||
+                 pipeline.appliedCanvasTransformVersion_!=400000);
+        rendered.store(true,std::memory_order_release);
+    });
+    uint64_t pipelineObservations=0;
+    do {
+        const auto transform=pipeline.GetCanvasTransformSnapshot();
+        if (transform.valid) {
+            const uint64_t n=transform.version/2;
+            assert(transform.version%2==0);
+            assert(transform.rotationQuarterTurns==int(n%4));
+            assert(transform.flipX==((n&1)!=0) && transform.flipY==((n&2)!=0));
+            pipelineObservations++;
+        }
+        const auto viewport=read(pipeline);
+        assert(viewport.version==viewport.presented);
+    } while (!rendered.load(std::memory_order_acquire));
+    submitter.join(); presenter.join();
+    assert(read(pipeline).presented==400000);
+    std::cout << "PASS production pending/apply/presented/canvas pipeline; observations=" << pipelineObservations << '\n';
     std::cout << "PASS production snapshot success/failed swap, geometry invalidation, legacy reader and coherent concurrent reads; observations=" << observations << '\n';
 }
 '''
@@ -130,6 +199,8 @@ with tempfile.TemporaryDirectory(prefix='pro-presented-transform-') as directory
     cpp = Path(directory) / 'snapshot.cpp'
     binary = Path(directory) / 'snapshot'
     cpp.write_text(program)
+    if os.environ.get('PRO_RENDERER_HARNESS_OUTPUT'):
+        Path(os.environ['PRO_RENDERER_HARNESS_OUTPUT']).write_text(program)
     subprocess.run(['c++', '-std=c++17', '-O2', '-pthread', str(cpp), '-o', str(binary)], check=True)
     subprocess.run([str(binary)], check=True)
 print('PASS actual RAW/OES/retained swap-success publication boundaries')

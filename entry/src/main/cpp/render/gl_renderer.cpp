@@ -585,6 +585,9 @@ void GLRenderer::ApplyPendingCanvasTransformLocked() {
         const int rotation = pendingCanvasRotationQuarterTurns_.load(std::memory_order_relaxed);
         const bool flipX = pendingCanvasFlipX_.load(std::memory_order_relaxed);
         const bool flipY = pendingCanvasFlipY_.load(std::memory_order_relaxed);
+        // Pair with the publisher's release fence through the payload atomics.
+        // Seeing any newer payload must make the final sequence check retry.
+        std::atomic_thread_fence(std::memory_order_acquire);
         const uint64_t after = canvasTransformVersion_.load(std::memory_order_acquire);
         if (before != after || (after & 1U) != 0U) {
             continue;
@@ -1518,6 +1521,9 @@ uint64_t GLRenderer::SetCanvasTransform(double scale, double panX, double panY,
     {
         std::lock_guard<std::mutex> publishLock(transformPublishMutex_);
         canvasTransformVersion_.fetch_add(1, std::memory_order_acq_rel);
+        // Release on the sequence RMW alone does not publish its odd value
+        // through subsequent relaxed payload stores to a reader's fence.
+        std::atomic_thread_fence(std::memory_order_release);
         pendingCanvasScale_.store(clampedScale, std::memory_order_relaxed);
         pendingCanvasPanX_.store(panX, std::memory_order_relaxed);
         pendingCanvasPanY_.store(panY, std::memory_order_relaxed);
@@ -1708,6 +1714,9 @@ RendererCanvasTransformSnapshot GLRenderer::GetCanvasTransformSnapshot() const {
 
 void GLRenderer::PublishViewportSnapshot(int vpX, int vpY, int vpW, int vpH, bool presented) {
     viewportSnapshotVersion_.fetch_add(1, std::memory_order_acq_rel);
+    // Pair through the payload with both snapshot readers' acquire fences;
+    // a reader of newer geometry cannot retain the preceding even sequence.
+    std::atomic_thread_fence(std::memory_order_release);
     // Logical resize/transform publication is useful to input mapping but is
     // not a presentation receipt. Any changed geometry invalidates the old
     // receipt until the matching draw has actually swapped successfully.
