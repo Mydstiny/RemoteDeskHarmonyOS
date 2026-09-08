@@ -1529,6 +1529,8 @@ struct RemoteDesktop {
   private lastTouchWheelMs: number = 0;
   private touchWheelSendCount: number = 0;
   private touchLeftDown: boolean = false; // 直接模式用: 左键是否按下
+  private rdpTouchPressX: number = 0;
+  private rdpTouchPressY: number = 0;
   private touchGestureDone: boolean = false; // 双指手势已完成, 抑制剩余手指的多余点击
   private touchMaxFingers: number = 0;       // 本次手势最高手指数 (用于三指检测)
   private activeTouchPoints: Map<number, LocalPoint> = new Map<number, LocalPoint>();
@@ -16714,10 +16716,12 @@ struct RemoteDesktop {
         this.isRustDeskPhoneSession()) {
         return;
       }
-      this.sendMouseNow(this.remoteCursorX, this.remoteCursorY, 0, false);
+      const clickX: number = this.isRdpRemoteSession() ? this.rdpTouchPressX : this.remoteCursorX;
+      const clickY: number = this.isRdpRemoteSession() ? this.rdpTouchPressY : this.remoteCursorY;
+      this.sendMouseNow(clickX, clickY, 0, false);
       this.touchLeftDown = false;
-      this.sendMouseNow(this.remoteCursorX, this.remoteCursorY, 2, true);
-      this.sendMouseNow(this.remoteCursorX, this.remoteCursorY, 2, false);
+      this.sendMouseNow(clickX, clickY, 2, true);
+      this.sendMouseNow(clickX, clickY, 2, false);
       this.touchGestureDone = true;
       this.showRemoteCursorIndicator(2, true);
       hilog.info(RD_DOMAIN, RD_TAG, 'direct-touch long-press right-click remote=' +
@@ -18806,6 +18810,13 @@ struct RemoteDesktop {
     this.clearTouchRightClickTimer();
     this.clearTouchDirectRightClickTimer();
     const wasDragging: boolean = this.touchDragActive;
+    if (this.isRdpRemoteSession() && this.touchLeftDown) {
+      this.discardPendingMouseMove();
+      if (!this.touchMoved) {
+        this.sendMouseNow(this.rdpTouchPressX, this.rdpTouchPressY, 0, false);
+        this.touchLeftDown = false;
+      }
+    }
     if (this.touchDragActive || this.touchLeftDown) {
       // Every terminal path releases the direct/touchpad left button once.
       this.sendMouseNow(this.remoteCursorX, this.remoteCursorY, 0, false);
@@ -19364,6 +19375,10 @@ struct RemoteDesktop {
         this.touchLastLocalX = point.x;
         this.touchLastLocalY = point.y;
         this.touchLeftDown = true;
+        if (this.isRdpRemoteSession()) {
+          this.rdpTouchPressX = mapped.x;
+          this.rdpTouchPressY = mapped.y;
+        }
         this.lastTouchMs = Date.now();
         // A direct-touch DOWN must be anchored at the current local point;
         // otherwise a quiet remote cursor leaves the click at its old position.
@@ -19416,6 +19431,11 @@ struct RemoteDesktop {
             this.clearTouchDirectRightClickTimer();
           }
         }
+        // Keep RDP text placement a click until the finger actually drags.
+        // Remote scale can amplify even sub-slop local jitter into selection.
+        if (this.isRdpRemoteSession() && (!this.touchLeftDown || !this.touchMoved)) {
+          return;
+        }
         this.queueMouseMove(mapped.x, mapped.y);
       } else if (event.type === TouchType.Up || event.type === TouchType.Cancel) {
         this.clearTouchDirectRightClickTimer();
@@ -19460,15 +19480,33 @@ struct RemoteDesktop {
         const mapped: MappedPoint = this.mapInputPoint(point.x, point.y);
         this.logMappedInput('touch', point.x, point.y, mapped);
         if (this.touchLeftDown) {
-          if (event.type === TouchType.Cancel) {
+          if (this.isRdpRemoteSession()) {
+            const dx: number = point.x - this.touchStartLocalX;
+            const dy: number = point.y - this.touchStartLocalY;
+            const dragged: boolean = this.touchMoved ||
+              Math.sqrt(dx * dx + dy * dy) > TOUCH_CLICK_SLOP_PX;
+            // UP may be the only sample beyond slop. Conversely, RDP inserts
+            // a MOVE before UP, so a tap must release at its original target.
+            const releaseX: number = event.type === TouchType.Cancel ?
+              (this.touchMoved ? this.remoteCursorX : this.rdpTouchPressX) :
+              (dragged ? mapped.x : this.rdpTouchPressX);
+            const releaseY: number = event.type === TouchType.Cancel ?
+              (this.touchMoved ? this.remoteCursorY : this.rdpTouchPressY) :
+              (dragged ? mapped.y : this.rdpTouchPressY);
             this.discardPendingMouseMove();
-          } else if (this.touchMoved || this.pendingMouseMoveValid) {
-            // Android direct touch must finish MOVE* before LEFT_UP. A queued
-            // post-Up move can otherwise start the next gesture at a stale point.
-            this.queueMouseMove(mapped.x, mapped.y, false);
-            this.flushMouseMove();
+            this.sendMouseNow(releaseX, releaseY, 0, false);
+            this.touchLeftDown = false;
+          } else {
+            if (event.type === TouchType.Cancel) {
+              this.discardPendingMouseMove();
+            } else if (this.touchMoved || this.pendingMouseMoveValid) {
+              // Android direct touch must finish MOVE* before LEFT_UP. A queued
+              // post-Up move can otherwise start the next gesture at a stale point.
+              this.queueMouseMove(mapped.x, mapped.y, false);
+              this.flushMouseMove();
+            }
+            this.sendMouseNow(mapped.x, mapped.y, 0, false);
           }
-          this.sendMouseNow(mapped.x, mapped.y, 0, false);
         }
         this.touchLeftDown = false;
         this.resetTouchGesture();
@@ -19480,6 +19518,9 @@ struct RemoteDesktop {
   }
 
   private handleConfiguredTouchInput = (event: TouchEvent): void => {
+    // A physical mouse owns onMouse; its synthesized touch must not mutate
+    // finger tracking or emit a second RDP click.
+    if (this.isRdpRemoteSession() && event.sourceTool === SourceTool.MOUSE) { return; }
     // RustDesk geometry is synchronized by its low-frequency stream timer;
     // input events must not perform renderer/NAPI reads.
     this.syncActiveTouchPoints(event);
@@ -20488,6 +20529,7 @@ struct RemoteDesktop {
   }
 
   private handleXComponentMouse = (event: MouseEvent): void => {
+    if (this.isRdpRemoteSession() && event.sourceTool === SourceTool.Finger) { return; }
     // ArkUI may synthesize mouse-shaped events from touch input.  Only a real
     // mouse source is evidence for the automatic keyboard/mouse mode switch.
     if (event.sourceTool === SourceTool.MOUSE) {
