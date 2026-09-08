@@ -94,3 +94,11 @@
 - 23 组新增检查执行生产 identity/envelope/view/store 和实际 RemoteDesktop 准备/恢复方法，50 组共享接续检查包含 RDP 服务重新认证、fresh route、错误身份及 ACTIVE 等待取消。另 27 share、27 runtime、18 RDP direct-touch PASS；实际 renderer 方法编译并发观察 222127 次、两条 OHOS ABI 编译参数下 syntax PASS。平台/native 模拟不等于真实 EGL、Windows 或跨设备验收。
 
 第四增量当前代码门禁：testCompile `BUILD SUCCESSFUL in 7 s 699 ms`；signed Debug `BUILD SUCCESSFUL in 9 s 464 ms`（SignHap 907 ms）；Release `BUILD SUCCESSFUL in 32 s 568 ms`，全部 exit 0。Light/diff 与实际 Release 模拟/USB/sandbox 剪枝 PASS；ABC `e3dbffa03ce3faddefe4b3ccebc99f07b9612eeaa1b96e9886e037403c1f1c8b`。初始 CanvasViewport 显式类型问题已修正，缓存访问及并行剪贴板未完成导入在成功重跑前处理；没有把并行文件纳入本增量。独立复核和真实 Phone/Pad/PC RDP 接续仍待完成。
+
+第四增量独立复核 PASS：精确 `35e38224` 与修复 `13413239`。唯一 P2 是 pending transform / viewport snapshot 两条 seqlock 缺少成对屏障；两个 publisher 在 odd 标记后增加 release fence，ApplyPending 在 payload 读取后增加 acquire fence。真实 OHOS ARM64 编译的两个 writer 出现 `dmb ish`，三个 reader 出现 `dmb ishld`；该证据与 C++ 内存模型共同支撑修复，不以宿主压力通过代替弱内存或真机证明。[标准依据](https://eel.is/c++draft/atomics.fences)。
+
+同一独立 reviewer 确认无剩余 finding：原始 145 项检查、十组真实路由/窗口交接、100 组 SSH V1 与父版本对照通过；扩展的实际 SetCanvas→ApplyPending→Publish/GetViewport/GetCanvas 三线程测试 2,084,838 次观察及快照 9,632 次观察、三条 swap 成功边界、双 ABI syntax 通过。17 份初始身份/页面/服务/声明/测试与最终两份 renderer/harness 用两个有限范围 receipt 分别记录，明确排除中间 phone/clipboard 提交。
+
+修复当次门禁：testCompile `BUILD SUCCESSFUL in 4 s 909 ms`；signed Debug `BUILD SUCCESSFUL in 1 min 3 s 383 ms`（SignHap 877 ms）；Release `BUILD SUCCESSFUL in 32 s 723 ms`（SignHap 949 ms），均 exit 0；Light/diff 与独立 Release 实包授权剪枝 PASS；ABC `54043c4f4eb725ea4a0f38c3de5e9af7cb1eaf005482c2b0cb6830cb87f3df31`。初始缓存 EPERM 获准重试；首次签名构建遇到并行 Rust 声明编辑，由其 owner 修正后成功重跑。真实 EGL/Windows/Phone/Pad/PC 系统流转、DDO 与全部 M5 验收仍未完成。
+
+复核记录门禁：testCompile 5 s 349 ms、signed assembleHap 6 s 198 ms（SignHap 942 ms），exit 0；Light/diff/state PASS。初始资源打包在四个 locale 的生成目录遇到内容完全相同的 `string 2.json`；保留证据后仅清理这些生成副本，应用源资源没有修改。

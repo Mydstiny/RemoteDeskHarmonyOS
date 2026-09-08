@@ -3,10 +3,10 @@
   "task": "pro-purchase-foundation",
   "branch": "codex/pro-purchase-foundation",
   "base": "8edc187868e94ed41634e8a6c4c4c072e3a48679",
-  "head": "8dfd73acd05d064dece198b20ea1825cad9ef63a",
-  "phase": "Full roadmap active; M5 RDP identity/view increment code gates passed, checkpoint and independent review pending",
+  "head": "4193bcf1a8a450936fe8a61bc5e6ac4c073e08b9",
+  "phase": "Full roadmap active; M5 RDP identity/view continuation independently reviewed, M6 transport and remaining free forms next",
   "status": "in-progress",
-  "next": "Checkpoint/review RDP continuation; continue M6 authentication transport and remaining free forms, then authorized U0-U4/M7 deployment/device acceptance.",
+  "next": "Continue M6 USB authentication transport and remaining free forms; complete authorized U0-U4/M5 device and M7 deployment acceptance.",
   "blockers": [
     "M3/U0-U4 device matrix and M4 PC real Share Kit/SFTP file-integrity acceptance remain unverified.",
     "M5 Share Kit App Linking domain, association and actual fragment delivery remain unverified; ServiceInteraction ACL is a separate path. M6 USB/RDP authenticator and phone-passkey RP/origin proof remain pending.",
@@ -112,21 +112,22 @@
       "scripts/tests/test_renderer_presented_transform.py"
     ],
     "findings": [],
-    "reviewedHead": "3fc4a578826b6161121fc91119776375272e6b49",
-    "reason": "PC SSH continuation independently PASS; RDP identity/view checkpoint and independent review pending. Full roadmap and device/deployment/release acceptance incomplete."
+    "reviewedHead": "13413239bd7475539ade4deaae522a3d6a2e753e",
+    "reason": "Independent exact 35e38224 increment plus 13413239 two-file correction PASS. The only P2 was paired release/acquire fences for pending transforms and coherent viewport snapshots; same reviewer verified closure. No remaining finding. Intermediate phone/clipboard commits and whole-branch/device acceptance excluded. Aggregate roadmap/review remains open."
   },
   "lastVerification": {
-    "testCompile": "PASS exit 0; BUILD SUCCESSFUL in 7 s 699 ms",
-    "assembleHap": "PASS exit 0; signed BUILD SUCCESSFUL in 9 s 464 ms; SignHap 907 ms",
-    "release": "PASS exit 0; BUILD SUCCESSFUL in 32 s 568 ms; actual Runtime/simulation/USB/sandbox pruning PASS",
-    "releaseAbcSha256": "e3dbffa03ce3faddefe4b3ccebc99f07b9612eeaa1b96e9886e037403c1f1c8b",
-    "hostChecks": "PASS 23 RDP identity/view/store/actual-page groups; 50 actual connection service/page groups; 27 share, 27 Pro runtime and 18 direct-touch checks. Platform/native callbacks mocked.",
-    "native": "PASS production RAW/OES/retained successful-swap boundaries and compiled coherent snapshot harness with 222127 concurrent observations; actual arm64-v8a/x86_64 renderer compiler configurations pass syntax checks.",
-    "compliance": "PASS Light and git diff --check",
-    "recovery": "Initial cache sandbox denial retried with approved cache access. Initial nominal CanvasViewport error fixed; concurrent clipboard service import completed by its owner before successful retry.",
-    "sourceIntegrity": "Thirteen exclusive code/test paths frozen; six shared files stage only the audited HEAD-relative Pro delta. Concurrent clipboard and phone changes are excluded.",
-    "device": "NOT RUN; real API23/26 Phone/Pad/PC system admission, local Windows authentication, resize/clamp/input, EGL presentation, DDO receipts and server desktop policy still require device acceptance.",
-    "scope": "M5 RDP continuation increment only; shared build includes concurrent work outside this review"
+    "testCompile": "PASS exit 0; BUILD SUCCESSFUL in 4 s 909 ms",
+    "assembleHap": "PASS exit 0; signed BUILD SUCCESSFUL in 1 min 3 s 383 ms; SignHap 877 ms",
+    "release": "PASS exit 0; BUILD SUCCESSFUL in 32 s 723 ms; SignHap 949 ms; independent actual Runtime/simulation/USB/sandbox pruning PASS",
+    "releaseAbcSha256": "54043c4f4eb725ea4a0f38c3de5e9af7cb1eaf005482c2b0cb6830cb87f3df31",
+    "hostChecks": "Independent 145 original checks, ten actual routing/handoff groups and 100 SSH V1 parent/current comparisons PASS; platform calls mocked.",
+    "native": "Independent production pending/apply/presented/canvas three-thread pipeline 2084838 observations, coherent viewport snapshot 9632 observations and three swap boundaries PASS; actual OHOS dual ABI syntax and ARM64 five-function dmb checks PASS. Host stress is not weak-memory or device proof.",
+    "compliance": "PASS independent Light and exact diff",
+    "recovery": "Initial cache EPERM resolved with approved access; first signed build encountered concurrent Rust declaration edit, owner corrected it before successful rerun.",
+    "reviewRecordGates": "PASS testCompile 5 s 349 ms; signed assembleHap 6 s 198 ms, SignHap 942 ms; Light/diff/state PASS. Byte-identical generated string 2.json copies in four resource locales were removed after resource-conflict failures; application resources were unchanged.",
+    "sourceIntegrity": "Exact original 35e38224 Pro increment plus 13413239 two-file correction reviewed; all intervening phone/clipboard changes excluded.",
+    "device": "NOT RUN; actual Phone/Pad/PC system flow, EGL presentation, Windows authentication/resume and DDO receipt acceptance remain open.",
+    "scope": "M5 RDP continuation increment and its fence correction only"
   },
   "updated": "2026-09-08 Asia/Shanghai",
   "roadmapPaths": [
@@ -630,17 +631,21 @@
       }
     },
     "m5": {
-      "status": "rdp-code-gates-passed-review-pending",
+      "status": "ssh-sharing-pc-rdp-code-reviewed-device-pending",
       "planPath": "docs/codex/plans/2026-09-07-pro-m5-connection-continuation.md",
       "availability": "experimental",
-      "scope": "Direct SSH continuation, SSH sharing and independent PC SSH code independently reviewed; new RDP native identity/presented-view increment awaits review. Real App Link and device acceptance remain open.",
+      "scope": "Direct SSH continuation, sharing, independent PC SSH and single-monitor RDP identity/view code independently reviewed. Actual App Link and cross-device system acceptance remain open.",
       "reviewerTaskId": "/root/review_pro_plan",
-      "reviewStatus": "REVIEW_REQUIRED",
+      "reviewStatus": "PASS",
       "findings": [],
       "reviewedCommits": [
         "ed537821ea1b1a07ba23b42a831b4fd393d89298",
         "27716d2dc7cc9c9e707a26186e477ce7620d4bc4",
-        "c64efc8e0ad709fb130637569b69fb135a6f02ae"
+        "c64efc8e0ad709fb130637569b69fb135a6f02ae",
+        "eca8f8aaafa9a9659d7eb6cf3ded89e08cef7d57",
+        "3fc4a578826b6161121fc91119776375272e6b49",
+        "35e38224ca11bfe00d2cf448f14cd6262842f4fb",
+        "13413239bd7475539ade4deaae522a3d6a2e753e"
       ],
       "deviceAcceptance": "pending",
       "verification": {
@@ -708,7 +713,7 @@
         "findings": []
       },
       "rdpContinuation": {
-        "status": "code-gates-passed-review-pending",
+        "status": "code-reviewed-device-pending",
         "availability": "experimental",
         "scope": [
           "entry/src/main/ets/pages/RemoteDesktop.ets",
@@ -731,23 +736,34 @@
           "scripts/tests/test_pro_rdp_continuation.cjs",
           "scripts/tests/test_renderer_presented_transform.py"
         ],
-        "reviewStatus": "REVIEW_REQUIRED",
+        "reviewStatus": "PASS",
         "reviewerTaskId": "/root/review_pro_plan",
         "verification": {
-          "testCompile": "PASS exit 0; BUILD SUCCESSFUL in 7 s 699 ms",
-          "assembleHap": "PASS exit 0; signed BUILD SUCCESSFUL in 9 s 464 ms; SignHap 907 ms",
-          "release": "PASS exit 0; BUILD SUCCESSFUL in 32 s 568 ms; actual Runtime/simulation/USB/sandbox pruning PASS",
-          "releaseAbcSha256": "e3dbffa03ce3faddefe4b3ccebc99f07b9612eeaa1b96e9886e037403c1f1c8b",
-          "hostChecks": "PASS 23 RDP identity/view/store/actual-page groups; 50 actual connection service/page groups; 27 share, 27 Pro runtime and 18 direct-touch checks. Platform/native callbacks mocked.",
-          "native": "PASS production RAW/OES/retained successful-swap boundaries and compiled coherent snapshot harness with 222127 concurrent observations; actual arm64-v8a/x86_64 renderer compiler configurations pass syntax checks.",
-          "compliance": "PASS Light and git diff --check",
-          "recovery": "Initial cache sandbox denial retried with approved cache access. Initial nominal CanvasViewport error fixed; concurrent clipboard service import completed by its owner before successful retry.",
-          "sourceIntegrity": "Thirteen exclusive code/test paths frozen; six shared files stage only the audited HEAD-relative Pro delta. Concurrent clipboard and phone changes are excluded.",
-          "device": "NOT RUN; real API23/26 Phone/Pad/PC system admission, local Windows authentication, resize/clamp/input, EGL presentation, DDO receipts and server desktop policy still require device acceptance."
+          "testCompile": "PASS exit 0; BUILD SUCCESSFUL in 4 s 909 ms",
+          "assembleHap": "PASS exit 0; signed BUILD SUCCESSFUL in 1 min 3 s 383 ms; SignHap 877 ms",
+          "release": "PASS exit 0; BUILD SUCCESSFUL in 32 s 723 ms; SignHap 949 ms; independent actual Runtime/simulation/USB/sandbox pruning PASS",
+          "releaseAbcSha256": "54043c4f4eb725ea4a0f38c3de5e9af7cb1eaf005482c2b0cb6830cb87f3df31",
+          "hostChecks": "Independent 145 original checks, ten actual routing/handoff groups and 100 SSH V1 parent/current comparisons PASS; platform calls mocked.",
+          "native": "Independent production pending/apply/presented/canvas three-thread pipeline 2084838 observations, coherent viewport snapshot 9632 observations and three swap boundaries PASS; actual OHOS dual ABI syntax and ARM64 five-function dmb checks PASS. Host stress is not weak-memory or device proof.",
+          "compliance": "PASS independent Light and exact diff",
+          "recovery": "Initial cache EPERM resolved with approved access; first signed build encountered concurrent Rust declaration edit, owner corrected it before successful rerun.",
+          "reviewRecordGates": "PASS testCompile 5 s 349 ms; signed assembleHap 6 s 198 ms, SignHap 942 ms; Light/diff/state PASS. Byte-identical generated string 2.json copies in four resource locales were removed after resource-conflict failures; application resources were unchanged.",
+          "sourceIntegrity": "Exact original 35e38224 Pro increment plus 13413239 two-file correction reviewed; all intervening phone/clipboard changes excluded.",
+          "device": "NOT RUN; actual Phone/Pad/PC system flow, EGL presentation, Windows authentication/resume and DDO receipt acceptance remain open."
         },
         "deviceAcceptance": "NOT RUN",
-        "findings": []
-      }
+        "findings": [],
+        "reviewedCommits": [
+          "35e38224ca11bfe00d2cf448f14cd6262842f4fb",
+          "13413239bd7475539ade4deaae522a3d6a2e753e"
+        ],
+        "reviewReceiptIds": [
+          "pro-m5-rdp-identity-view-2026-09-08",
+          "pro-m5-rdp-fences-2026-09-08"
+        ],
+        "reviewResult": "Independent exact 35e38224 increment plus 13413239 two-file correction PASS. The only P2 was paired release/acquire fences for pending transforms and coherent viewport snapshots; same reviewer verified closure. No remaining finding. Intermediate phone/clipboard commits and whole-branch/device acceptance excluded."
+      },
+      "reviewResult": "Scoped SSH/sharing/PC/RDP increments independently PASS; full M5 system/device acceptance remains pending."
     },
     "m6": {
       "status": "usb-init-code-reviewed-hardware-and-rdp-pending",
