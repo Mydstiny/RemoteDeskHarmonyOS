@@ -74,6 +74,9 @@ public:
     void emitStateForTesting(ConnectionState state,
                              const std::string& message);
     static uint32_t keySymForHarmonyCodeForTesting(uint32_t keyCode);
+    // Own a connected test stream and exercise the production FBU decoder.
+    bool initializeUpdateStreamForTesting(int socketFd, int width, int height);
+    bool receiveUpdateForTesting(bool& requestPipelined, std::string& error);
 #endif
 
 private:

@@ -174,6 +174,8 @@ const DIAGNOSTIC_EVENTS: DiagnosticEventSpec[] = [
   { moduleId: 'connection.vnc', eventCode: 'vnc_connection_request' },
   { moduleId: 'connection.vnc', eventCode: 'vnc_preflight' },
   { moduleId: 'connection.vnc', eventCode: 'vnc_state_changed' },
+  { moduleId: 'connection.vnc', eventCode: 'vnc_update_rejected' },
+  { moduleId: 'connection.vnc', eventCode: 'vnc_update_progress' },
   { moduleId: 'connection.vnc', eventCode: 'vnc_runtime_snapshot' },
   { moduleId: 'connection.vnc', eventCode: 'vnc_disconnect' },
 

@@ -105,6 +105,7 @@ import {
   isDiagnosticModuleCapturing,
   recordDiagnosticEvent
 } from './DiagnosticCaptureRuntime';
+import { recordVncUpdateFailure } from './VncUpdateDiagnostics';
 import {
   DiagnosticDesktopModule,
   DiagnosticRuntimeSamplingLoop,
@@ -421,6 +422,10 @@ export class ExtensionLoader implements RustDeskClipboardNative {
         previous.state === state) { return; }
       this.diagnosticConnectionStates.set(sessionId, { captureId, state });
       this.recordDiagnosticConnection(moduleId, 'state', 'state', sessionId, 0, state);
+      if (moduleId === 'connection.vnc' && state === 4) {
+        recordVncUpdateFailure(sessionId,
+          rdpnapi.getConnectionLastMessage(sessionId) as string);
+      }
     } catch (_err) {
       // A failed diagnostic update must not replace the native state result.
     }

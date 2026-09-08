@@ -60,6 +60,7 @@ constexpr size_t kMaxZrleCompressedBytes = 64 * 1024 * 1024;
 constexpr size_t kMaxClipboardBytes = 1024 * 1024;
 constexpr int kMaxFramebufferEdge = 8192;
 constexpr int kMaxSecurityTypes = 64;
+constexpr uint32_t kMaxUpdateRectangles = 4096;
 
 uint64_t nowMs() {
     return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -839,12 +840,9 @@ bool VncRfbEngine::receiveFramebufferUpdate(bool& requestPipelined,
     // FBU 头部是小读取，跟随空闲超时；实际矩形负载仍受 ioTimeoutMs_ 保护。
     if (!readBytes(padding, sizeof(padding), idleTimeoutMs_, error) ||
         !readU16(count, idleTimeoutMs_, error)) return false;
-    if (count > 4096) {
-        error = "VNC update contains too many rectangles";
-        return false;
-    }
     ++diagFramebufferUpdates_;
-    if (diagFramebufferUpdates_ <= 8 || diagFramebufferUpdates_ % 60 == 0 || count == 0) {
+    if (diagFramebufferUpdates_ <= 8 || diagFramebufferUpdates_ % 60 == 0 ||
+        count == 0 || count > kMaxUpdateRectangles) {
         VNC_DIAG_INFO(
                     "[VNC-DIAG] framebuffer update count=%{public}llu rectangles=%{public}u",
                     static_cast<unsigned long long>(diagFramebufferUpdates_), count);
@@ -856,6 +854,19 @@ bool VncRfbEngine::receiveFramebufferUpdate(bool& requestPipelined,
     int dirtyRight = 0;
     int dirtyBottom = 0;
     int frameEncoding = -1;
+    uint32_t processed = 0;
+    // This numeric-only suffix is also consumed by the redacted JSONL exporter.
+    // Reasons: 1=actual limit, 2=rectangle header, 3=payload, 4=encoding.
+    const auto rejectUpdate = [&](int reason, int32_t encoding) -> bool {
+        error += " [VNC-FBU reason=" + std::to_string(reason) +
+            " advertised=" + std::to_string(count) +
+            " processed=" + std::to_string(processed) +
+            " encoding=" + std::to_string(encoding) + "]";
+        VNC_DIAG_WARN("[VNC-DIAG] framebuffer update rejected update=%{public}llu reason=%{public}d advertised=%{public}u processed=%{public}u encoding=%{public}d",
+            static_cast<unsigned long long>(diagFramebufferUpdates_), reason,
+            count, processed, encoding);
+        return false;
+    };
     const auto markDirty = [&](int x, int y, int width, int height, bool full) -> void {
         if (full) {
             fullFrame = true;
@@ -869,26 +880,34 @@ bool VncRfbEngine::receiveFramebufferUpdate(bool& requestPipelined,
         dirtyRight = std::max(dirtyRight, x + width);
         dirtyBottom = std::max(dirtyBottom, y + height);
     };
-    for (uint16_t index = 0; index < count; ++index) {
+    for (uint32_t index = 0; index < count; ++index) {
         uint16_t x = 0, y = 0, width = 0, height = 0;
         int32_t encoding = 0;
         if (!readU16(x, ioTimeoutMs_, error) || !readU16(y, ioTimeoutMs_, error) ||
             !readU16(width, ioTimeoutMs_, error) || !readU16(height, ioTimeoutMs_, error) ||
-            !readI32(encoding, ioTimeoutMs_, error)) return false;
+            !readI32(encoding, ioTimeoutMs_, error)) return rejectUpdate(2, 0);
         if (diagFramebufferUpdates_ <= 8 || diagFramebufferUpdates_ % 60 == 0) {
             VNC_DIAG_INFO(
                         "[VNC-DIAG] rectangle update=%{public}llu index=%{public}u x=%{public}u y=%{public}u width=%{public}u height=%{public}u encoding=%{public}d",
                         static_cast<unsigned long long>(diagFramebufferUpdates_), index,
                         x, y, width, height, encoding);
         }
+        // LastRect makes the advertised count an upper bound (often 65535).
+        // Count actual work instead, and allow the terminator after exactly
+        // 4096 rectangles without reading another rectangle's pixel payload.
+        if (encoding == VncRfbProtocol::kLastRectEncoding) break;
+        if (processed >= kMaxUpdateRectangles) {
+            error = "VNC update contains too many rectangles";
+            return rejectUpdate(1, encoding);
+        }
         if (encoding == VncRfbProtocol::kRawEncoding) {
-            if (!receiveRawRectangle(x, y, width, height, error)) return false;
+            if (!receiveRawRectangle(x, y, width, height, error)) return rejectUpdate(3, encoding);
             markDirty(x, y, width, height, false);
             if (frameEncoding != VncRfbProtocol::kZrleEncoding) {
                 frameEncoding = VncRfbProtocol::kRawEncoding;
             }
         } else if (encoding == VncRfbProtocol::kCopyRectEncoding) {
-            if (!receiveCopyRectangle(x, y, width, height, error)) return false;
+            if (!receiveCopyRectangle(x, y, width, height, error)) return rejectUpdate(3, encoding);
             markDirty(x, y, width, height, false);
             if (frameEncoding < 0) {
                 frameEncoding = VncRfbProtocol::kCopyRectEncoding;
@@ -896,20 +915,19 @@ bool VncRfbEngine::receiveFramebufferUpdate(bool& requestPipelined,
         } else if (encoding == VncRfbProtocol::kZrleEncoding) {
             if (!receiveZrleRectangle(x, y, width, height,
                                       count == 1 && index == 0,
-                                      requestPipelined, error)) return false;
+                                      requestPipelined, error)) return rejectUpdate(3, encoding);
             markDirty(x, y, width, height, false);
             frameEncoding = VncRfbProtocol::kZrleEncoding;
         } else if (encoding == VncCursorProtocol::kEncoding) {
-            if (!receiveCursorRectangle(x, y, width, height, error)) return false;
+            if (!receiveCursorRectangle(x, y, width, height, error)) return rejectUpdate(3, encoding);
         } else if (encoding == VncRfbProtocol::kDesktopSizeEncoding) {
-            if (!receiveDesktopSize(width, height, error)) return false;
+            if (!receiveDesktopSize(width, height, error)) return rejectUpdate(3, encoding);
             markDirty(0, 0, framebufferWidth_, framebufferHeight_, true);
-        } else if (encoding == VncRfbProtocol::kLastRectEncoding) {
-            break;
         } else {
             error = "VNC server selected an unsupported framebuffer encoding";
-            return false;
+            return rejectUpdate(4, encoding);
         }
+        ++processed;
     }
     // RFC 6143 groups all rectangles belonging to one server update.  Decode
     // the complete group first and present once so a multi-rectangle Mac
@@ -1407,6 +1425,18 @@ void VncRfbEngine::requestFrameRefresh() {
 }
 
 #if defined(RDP_NATIVE_CALLBACK_TESTING)
+bool VncRfbEngine::initializeUpdateStreamForTesting(int socketFd, int width, int height) {
+    transport_.adoptConnectedSocketForTesting(socketFd, networkGeneration_);
+    ioTimeoutMs_ = 100;
+    idleTimeoutMs_ = 100;
+    std::string error;
+    return resizeFramebuffer(width, height, error);
+}
+
+bool VncRfbEngine::receiveUpdateForTesting(bool& requestPipelined, std::string& error) {
+    return receiveFramebufferUpdate(requestPipelined, error);
+}
+
 bool VncRfbEngine::invokeFrameCallbackForTesting(const VideoFrame& frame) {
     if (frame.data == nullptr || frame.size == 0 || frame.width <= 0 ||
         frame.height <= 0) {
