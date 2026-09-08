@@ -3,7 +3,7 @@
   "task": "pro-purchase-foundation",
   "branch": "codex/pro-purchase-foundation",
   "base": "8edc187868e94ed41634e8a6c4c4c072e3a48679",
-  "head": "c3c4738e704bf6d26a2d472f262b26973b34ce48",
+  "head": "e7a6f3e441d9278f5687208e0083b6fcf464012d",
   "phase": "Full roadmap active; M6 real-library USB capability probe implemented, checkpoint review and hardware/RDPEWA acceptance pending",
   "status": "in-progress",
   "next": "Independently review the M6 library probe, then implement authenticated RDPEWA/session/PIN transport and remaining free forms; complete available device and M7 deployment acceptance.",
@@ -547,7 +547,7 @@
     "appBranch": "codex/pro-purchase-foundation",
     "appReviewReceiptCommit": "01fd6894af628fb5e1bcfe7edc54ee5379f5ffd4",
     "deploymentPrompt": {
-      "status": "prepared-settings-ui-not-implemented",
+      "status": "app-code-independently-reviewed-device-pending",
       "planPath": "docs/codex/plans/2026-09-07-remote-ai-agent-install.md",
       "backends": [
         "codex",
@@ -558,15 +558,25 @@
       "sourceAccess": "public GitHub; anonymous download verified separately",
       "dshDefault": "dedicated owned profile; do not restart the DSH process hosting the deployment conversation",
       "appValidation": {
-        "testCompile": "PASS exit 0; BUILD SUCCESSFUL in 6 s 68 ms",
-        "assembleHap": "PASS exit 0; signed BUILD SUCCESSFUL in 9 s 287 ms; SignHap 980 ms",
+        "testCompile": "PASS exit 0; BUILD SUCCESSFUL in 5 s 200 ms",
+        "assembleHap": "PASS exit 0; signed BUILD SUCCESSFUL in 7 s 54 ms; SignHap 936 ms",
+        "hostChecks": "PASS 9 installation policy/lifecycle groups and 15 existing AI UI regressions",
         "compliance": "PASS Light and git diff --check",
-        "scope": "Remote AI documentation only; no App implementation or device acceptance",
-        "initialFailure": "Concurrent TransferArtifactStore.ets throw errors fixed by its owning task; final rerun succeeded"
+        "device": "NOT RUN; long text/font/window/clipboard/browser acceptance pending",
+        "network": "NOT RUN; no download, deployment, pairing, model, purchase or account operation",
+        "initialFailure": "Default sandbox cache write EPERM; normal approved local build retry passed"
       },
       "reviewStatus": "PASS",
-      "reviewTaskId": "/root/review_remote_ai_plan",
-      "reviewReceiptId": "remote-ai-native-handoff-v030-2026-09-08"
+      "reviewTaskId": "/root/review_safe_install",
+      "reviewReceiptId": "pro-ai-host-install-e7a6f3e4-20260908",
+      "appCodeCommit": "e7a6f3e441d9278f5687208e0083b6fcf464012d",
+      "scope": [
+        "entry/src/main/ets/services/ai/AiHostInstallPolicy.ets",
+        "entry/src/main/ets/components/ai/AiHostInstallPanel.ets",
+        "entry/src/main/ets/pages/AiSettingsPage.ets",
+        "scripts/tests/test_ai_host_install.cjs"
+      ],
+      "reviewResult": "PASS exact four-file increment; independent 9 install groups, 15 UI groups, SDK compatibility and build-log checks. Device/network/deployment acceptance NOT RUN."
     },
     "nativeHandoffPath": "docs/codex/plans/2026-09-08-remote-ai-native-host-handoff.md",
     "localDeployment": {
@@ -1540,5 +1550,16 @@
     "device": "NOT RUN; USB transport, RDPEWA, PIN, Windows RP registration/authentication and phone passkey remain unaccepted.",
     "scope": "M6 Debug INIT/GetInfo library capability probe only; independent checkpoint review pending",
     "metadataGates": "PASS testCompile BUILD SUCCESSFUL in 4 s 940 ms; signed assembleHap BUILD SUCCESSFUL in 5 s 928 ms; SignHap 881 ms; both exit 0."
+  },
+  "executionBoundary": {
+    "updated": "2026-09-08 Asia/Shanghai",
+    "request": "Continue the Pro plan while skipping work with network security risk.",
+    "currentScope": "Local development, builds, regression tests and independent review. Preserve authentication, encryption and all security gates.",
+    "deferred": [
+      "Cloud deployment and secret-bearing package upload",
+      "Public notification endpoints and App Linking rollout",
+      "Real purchase/refund and production enablement",
+      "Live LAN/cross-network pairing, relay deployment and network configuration changes"
+    ]
   }
 }
