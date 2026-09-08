@@ -531,7 +531,8 @@ GLRenderer::GLRenderer()
       viewportSnapshotVersion_(0), snapshotVpX_(0), snapshotVpY_(0),
       snapshotVpW_(0), snapshotVpH_(0), snapshotSourceWidth_(0),
       snapshotSourceHeight_(0), snapshotSurfaceWidth_(0), snapshotSurfaceHeight_(0),
-      snapshotTransformVersion_(0), snapshotRotationQuarterTurns_(0),
+      snapshotTransformVersion_(0), snapshotPresentedTransformVersion_(0),
+      snapshotRotationQuarterTurns_(0),
       snapshotFlipX_(false), snapshotFlipY_(false),
       rawFrameCount_(0), oesFrameCount_(0), rendererHandle_(0),
       explicitNativeWindow_(nullptr), usesProcessSurface_(true),
@@ -1275,6 +1276,9 @@ RdpPresentMetrics GLRenderer::RenderRawBGRAInternal(
     const auto drawAt = clock::now();
 
     const bool swapped = eglSwapBuffers(eglDisplay_, eglSurface_) == EGL_TRUE;
+    if (swapped) {
+        PublishViewportSnapshot(lastVpX_, lastVpY_, lastVpW_, lastVpH_, true);
+    }
     const auto swapAt = clock::now();
 
     GLenum err = glGetError();
@@ -1410,6 +1414,9 @@ RdpPresentMetrics GLRenderer::PresentFrame(
     const auto drawAt = clock::now();
     // 交换缓冲区
     const bool swapped = eglSwapBuffers(eglDisplay_, eglSurface_) == EGL_TRUE;
+    if (swapped) {
+        PublishViewportSnapshot(lastVpX_, lastVpY_, lastVpW_, lastVpH_, true);
+    }
     const auto swapAt = clock::now();
 
     GLenum err = glGetError();
@@ -1601,6 +1608,9 @@ RdpPresentMetrics GLRenderer::RenderRetainedFrameLocked(uint64_t expectedGenerat
     glBindVertexArray(0);
     const auto drawAt = clock::now();
     const bool swapped = eglSwapBuffers(eglDisplay_, eglSurface_) == EGL_TRUE;
+    if (swapped) {
+        PublishViewportSnapshot(lastVpX_, lastVpY_, lastVpW_, lastVpH_, true);
+    }
     const auto swapAt = clock::now();
     ReleaseCurrent();
     metrics.result = swapped ? RdpPresentResult::Presented : RdpPresentResult::SwapFailed;
@@ -1653,7 +1663,8 @@ void GLRenderer::CalculateActiveViewport(int& vpX, int& vpY, int& vpW, int& vpH)
 void GLRenderer::GetViewportSnapshot(int& vpX, int& vpY, int& vpW, int& vpH,
                                      int& sourceWidth, int& sourceHeight,
                                      int& surfaceWidth, int& surfaceHeight,
-                                     uint64_t& transformVersion) const {
+                                     uint64_t& transformVersion,
+                                     uint64_t* presentedTransformVersion) const {
     for (;;) {
         const uint64_t before = viewportSnapshotVersion_.load(std::memory_order_acquire);
         if ((before & 1U) != 0U) {
@@ -1668,6 +1679,11 @@ void GLRenderer::GetViewportSnapshot(int& vpX, int& vpY, int& vpW, int& vpH,
         surfaceWidth = snapshotSurfaceWidth_.load(std::memory_order_relaxed);
         surfaceHeight = snapshotSurfaceHeight_.load(std::memory_order_relaxed);
         transformVersion = snapshotTransformVersion_.load(std::memory_order_relaxed);
+        if (presentedTransformVersion != nullptr) {
+            *presentedTransformVersion = snapshotPresentedTransformVersion_.load(std::memory_order_relaxed);
+        }
+        // Keep every relaxed payload read before the final sequence check.
+        std::atomic_thread_fence(std::memory_order_acquire);
         const uint64_t after = viewportSnapshotVersion_.load(std::memory_order_acquire);
         if (before == after) {
             return;
@@ -1687,6 +1703,8 @@ RendererCanvasTransformSnapshot GLRenderer::GetCanvasTransformSnapshot() const {
             snapshotRotationQuarterTurns_.load(std::memory_order_relaxed);
         snapshot.flipX = snapshotFlipX_.load(std::memory_order_relaxed);
         snapshot.flipY = snapshotFlipY_.load(std::memory_order_relaxed);
+        // Keep every relaxed payload read before the final sequence check.
+        std::atomic_thread_fence(std::memory_order_acquire);
         const uint64_t after = viewportSnapshotVersion_.load(std::memory_order_acquire);
         if (before == after) {
             snapshot.valid = snapshot.version != 0U;
@@ -1695,8 +1713,27 @@ RendererCanvasTransformSnapshot GLRenderer::GetCanvasTransformSnapshot() const {
     }
 }
 
-void GLRenderer::PublishViewportSnapshot(int vpX, int vpY, int vpW, int vpH) {
+void GLRenderer::PublishViewportSnapshot(int vpX, int vpY, int vpW, int vpH, bool presented) {
     viewportSnapshotVersion_.fetch_add(1, std::memory_order_acq_rel);
+    // Logical resize/transform publication is useful to input mapping but is
+    // not a presentation receipt. Any changed geometry invalidates the old
+    // receipt until the matching draw has actually swapped successfully.
+    const bool geometryChanged = snapshotVpX_.load(std::memory_order_relaxed) != vpX ||
+        snapshotVpY_.load(std::memory_order_relaxed) != vpY ||
+        snapshotVpW_.load(std::memory_order_relaxed) != vpW ||
+        snapshotVpH_.load(std::memory_order_relaxed) != vpH ||
+        snapshotSourceWidth_.load(std::memory_order_relaxed) != sourceWidth_ ||
+        snapshotSourceHeight_.load(std::memory_order_relaxed) != sourceHeight_ ||
+        snapshotSurfaceWidth_.load(std::memory_order_relaxed) != width_ ||
+        snapshotSurfaceHeight_.load(std::memory_order_relaxed) != height_ ||
+        snapshotTransformVersion_.load(std::memory_order_relaxed) != appliedCanvasTransformVersion_ ||
+        snapshotRotationQuarterTurns_.load(std::memory_order_relaxed) != canvasRotationQuarterTurns_ ||
+        snapshotFlipX_.load(std::memory_order_relaxed) != canvasFlipX_ ||
+        snapshotFlipY_.load(std::memory_order_relaxed) != canvasFlipY_;
+    if (presented || geometryChanged) {
+        snapshotPresentedTransformVersion_.store(
+            presented ? appliedCanvasTransformVersion_ : 0, std::memory_order_relaxed);
+    }
     snapshotVpX_.store(vpX, std::memory_order_relaxed);
     snapshotVpY_.store(vpY, std::memory_order_relaxed);
     snapshotVpW_.store(vpW, std::memory_order_relaxed);
@@ -2347,8 +2384,9 @@ napi_value NapiGetRendererViewport(napi_env env, napi_callback_info info) {
     int vpX = 0, vpY = 0, vpW = 0, vpH = 0;
     int srcW = 0, srcH = 0, surfW = 0, surfH = 0;
     uint64_t transformVersion = 0;
+    uint64_t presentedTransformVersion = 0;
     access.renderer->GetViewportSnapshot(vpX, vpY, vpW, vpH, srcW, srcH, surfW, surfH,
-                                         transformVersion);
+                                         transformVersion, &presentedTransformVersion);
 
     napi_value result;
     napi_create_object(env, &result);
@@ -2372,6 +2410,8 @@ napi_value NapiGetRendererViewport(napi_env env, napi_callback_info info) {
     napi_set_named_property(env, result, "viewportH", val);
     napi_create_double(env, static_cast<double>(transformVersion), &val);
     napi_set_named_property(env, result, "transformVersion", val);
+    napi_create_double(env, static_cast<double>(presentedTransformVersion), &val);
+    napi_set_named_property(env, result, "presentedTransformVersion", val);
 
     return result;
 }

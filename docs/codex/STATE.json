@@ -3,10 +3,10 @@
   "task": "pro-purchase-foundation",
   "branch": "codex/pro-purchase-foundation",
   "base": "8edc187868e94ed41634e8a6c4c4c072e3a48679",
-  "head": "4719e6dcd9974413d9323767f5de53b157d5abfe",
-  "phase": "pro-m5-pc-continuation-checkpoint-pending",
+  "head": "8dfd73acd05d064dece198b20ea1825cad9ef63a",
+  "phase": "Full roadmap active; M5 RDP identity/view increment code gates passed, checkpoint and independent review pending",
   "status": "in-progress",
-  "next": "Checkpoint/review PC independent SSH continuation, then RDP view/identity adapter and M6; finish free forms and authorized U0-U4/M7 device/deployment work.",
+  "next": "Checkpoint/review RDP continuation; continue M6 authentication transport and remaining free forms, then authorized U0-U4/M7 deployment/device acceptance.",
   "blockers": [
     "M3/U0-U4 device matrix and M4 PC real Share Kit/SFTP file-integrity acceptance remain unverified.",
     "M5 Share Kit App Linking domain, association and actual fragment delivery remain unverified; ServiceInteraction ACL is a separate path. M6 USB/RDP authenticator and phone-passkey RP/origin proof remain pending.",
@@ -94,23 +94,39 @@
       "entry/src/main/ets/components/ColorPickerSheet.ets",
       "entry/src/main/ets/components/AppSettingsChoiceButton.ets",
       "entry/src/main/ets/entryability/RemoteSessionAbility.ets",
-      "entry/src/main/ets/pages/RemoteSessionWindowBootstrap.ets"
+      "entry/src/main/ets/pages/RemoteSessionWindowBootstrap.ets",
+      "entry/src/main/ets/pages/RemoteDesktop.ets",
+      "entry/src/main/cpp/render/gl_renderer.h",
+      "entry/src/main/cpp/render/gl_renderer.cpp",
+      "entry/src/main/ets/types/rdpnapi.d.ts",
+      "entry/src/main/cpp/types/librdpnapi/index.d.ts",
+      "entry/src/main/ets/components/rdp/RdpControlCenter.ets",
+      "entry/src/main/ets/services/pro/ProConnectionEnvelope.ets",
+      "entry/src/main/ets/services/pro/ProConnectionHostAdapter.ets",
+      "entry/src/main/ets/services/pro/ProContinuationService.ets",
+      "entry/src/main/ets/services/pro/ProFeatureCatalog.ets",
+      "entry/src/main/ets/services/pro/ProRdpConnectionIdentity.ets",
+      "entry/src/main/ets/services/pro/ProRdpContinuationView.ets",
+      "entry/src/main/ets/services/pro/ProRdpSessionIdentityStore.ets",
+      "scripts/tests/test_pro_rdp_continuation.cjs",
+      "scripts/tests/test_renderer_presented_transform.py"
     ],
     "findings": [],
-    "reviewedHead": "4719e6dcd9974413d9323767f5de53b157d5abfe",
-    "reason": "Primary settings checkpoint independently PASS; PC continuation checkpoint/review next. Full roadmap and device/release acceptance incomplete."
+    "reviewedHead": "3fc4a578826b6161121fc91119776375272e6b49",
+    "reason": "PC SSH continuation independently PASS; RDP identity/view checkpoint and independent review pending. Full roadmap and device/deployment/release acceptance incomplete."
   },
   "lastVerification": {
-    "hostChecks": "PASS 45 connection, 27 runtime, 27 share and 49 SSH; actual production methods with platform mocks",
-    "testCompile": "PASS exit 0; BUILD SUCCESSFUL in 19 s 518 ms",
-    "assembleHap": "PASS exit 0; signed BUILD SUCCESSFUL in 24 s 154 ms",
-    "release": "PASS exit 0; BUILD SUCCESSFUL in 36 s 906 ms; actual Runtime/simulation/USB/sandbox pruning PASS",
-    "releaseAbcSha256": "05f4687700cf203ae6e212e1cf8bebadfd2d1cee7a816af279930ceb885c3449",
+    "testCompile": "PASS exit 0; BUILD SUCCESSFUL in 7 s 699 ms",
+    "assembleHap": "PASS exit 0; signed BUILD SUCCESSFUL in 9 s 464 ms; SignHap 907 ms",
+    "release": "PASS exit 0; BUILD SUCCESSFUL in 32 s 568 ms; actual Runtime/simulation/USB/sandbox pruning PASS",
+    "releaseAbcSha256": "e3dbffa03ce3faddefe4b3ccebc99f07b9612eeaa1b96e9886e037403c1f1c8b",
+    "hostChecks": "PASS 23 RDP identity/view/store/actual-page groups; 50 actual connection service/page groups; 27 share, 27 Pro runtime and 18 direct-touch checks. Platform/native callbacks mocked.",
+    "native": "PASS production RAW/OES/retained successful-swap boundaries and compiled coherent snapshot harness with 222127 concurrent observations; actual arm64-v8a/x86_64 renderer compiler configurations pass syntax checks.",
     "compliance": "PASS Light and git diff --check",
-    "recovery": "Initial two ArkTS literal errors fixed. Shared native build first saw an in-progress missing android_phone module, then in-progress RustDesk ArkTS errors; owner completed its files and this final signed build passed. No RustDesk change included in PC review.",
-    "sourceIntegrity": "Ten owned source/test SHA256 hashes frozen before successful code gates",
-    "device": "NOT RUN; real Phone/Pad/PC source/target, cold/warm mission, account bootstrap, authentication and distributed receipts pending. Official continuation does not support the emulator.",
-    "scopeBoundary": "Ten PC continuation paths only; parallel RustDesk/AI/transfer implementation excluded."
+    "recovery": "Initial cache sandbox denial retried with approved cache access. Initial nominal CanvasViewport error fixed; concurrent clipboard service import completed by its owner before successful retry.",
+    "sourceIntegrity": "Thirteen exclusive code/test paths frozen; six shared files stage only the audited HEAD-relative Pro delta. Concurrent clipboard and phone changes are excluded.",
+    "device": "NOT RUN; real API23/26 Phone/Pad/PC system admission, local Windows authentication, resize/clamp/input, EGL presentation, DDO receipts and server desktop policy still require device acceptance.",
+    "scope": "M5 RDP continuation increment only; shared build includes concurrent work outside this review"
   },
   "updated": "2026-09-08 Asia/Shanghai",
   "roadmapPaths": [
@@ -573,7 +589,7 @@
     },
     "commitPolicy": "One separate commit after each completed stage; checkpoint incomplete work explicitly.",
     "reviewerTaskId": "/root/review_pro_plan",
-    "reviewStatus": "PASS",
+    "reviewStatus": "REVIEW_REQUIRED",
     "reviewScope": "Only exact M1 and M2 commit deltas; excludes concurrent changes, backend fulfillment and device matrix.",
     "releaseAbcSha256": "4eee962092bec62f7fe2ccf902fd46dd066dc9c6a5a0929227a8a41d1f4121a7",
     "deviceAcceptance": "pending",
@@ -614,12 +630,12 @@
       }
     },
     "m5": {
-      "status": "pc-continuation-code-gates-passed-review-pending",
+      "status": "rdp-code-gates-passed-review-pending",
       "planPath": "docs/codex/plans/2026-09-07-pro-m5-connection-continuation.md",
       "availability": "experimental",
-      "scope": "Prior direct SSH Phone/Pad and Share Kit code reviewed; third increment extends official continuation to independent PC SSH windows. RDP, real App Link and device matrix remain open.",
+      "scope": "Direct SSH continuation, SSH sharing and independent PC SSH code independently reviewed; new RDP native identity/presented-view increment awaits review. Real App Link and device acceptance remain open.",
       "reviewerTaskId": "/root/review_pro_plan",
-      "reviewStatus": "PASS",
+      "reviewStatus": "REVIEW_REQUIRED",
       "findings": [],
       "reviewedCommits": [
         "ed537821ea1b1a07ba23b42a831b4fd393d89298",
@@ -659,7 +675,7 @@
         }
       },
       "pcContinuation": {
-        "status": "code-gates-passed-review-pending",
+        "status": "code-independently-reviewed-device-pending",
         "availability": "experimental",
         "scope": [
           "entry/src/main/ets/services/pro/ProContinuationService.ets",
@@ -673,7 +689,7 @@
           "scripts/tests/test_pro_connection.cjs",
           "scripts/tests/test_pro_runtime.cjs"
         ],
-        "reviewStatus": "REVIEW_REQUIRED",
+        "reviewStatus": "PASS",
         "reviewerTaskId": "/root/review_pro_plan",
         "verification": {
           "hostChecks": "PASS 45 connection, 27 runtime, 27 share and 49 SSH; actual production methods with platform mocks",
@@ -684,8 +700,53 @@
           "compliance": "PASS Light and git diff --check",
           "recovery": "Initial two ArkTS literal errors fixed. Shared native build first saw an in-progress missing android_phone module, then in-progress RustDesk ArkTS errors; owner completed its files and this final signed build passed. No RustDesk change included in PC review.",
           "sourceIntegrity": "Ten owned source/test SHA256 hashes frozen before successful code gates",
-          "device": "NOT RUN; real Phone/Pad/PC source/target, cold/warm mission, account bootstrap, authentication and distributed receipts pending. Official continuation does not support the emulator."
-        }
+          "device": "NOT RUN; real Phone/Pad/PC source/target, cold/warm mission, account bootstrap, authentication and distributed receipts pending. Official continuation does not support the emulator.",
+          "independentReview": "Independent exact PC SSH continuation checkpoint PASS, ten source/test paths and six documents only. Reviewer reran 148 existing checks and thirteen additional lifecycle/authorization/old-request groups, verified frozen source, five parallel STATE subtrees, previous UI receipt hashes and actual Release pruning. Excludes subsequent RDP, clipboard and RustDesk changes."
+        },
+        "reviewedCommit": "3fc4a578826b6161121fc91119776375272e6b49",
+        "reviewReceiptId": "pro-m5-pc-3fc4a578-2026-09-08",
+        "findings": []
+      },
+      "rdpContinuation": {
+        "status": "code-gates-passed-review-pending",
+        "availability": "experimental",
+        "scope": [
+          "entry/src/main/ets/pages/RemoteDesktop.ets",
+          "entry/src/main/ets/pages/HostListPage.ets",
+          "entry/src/main/cpp/render/gl_renderer.h",
+          "entry/src/main/cpp/render/gl_renderer.cpp",
+          "entry/src/main/ets/types/rdpnapi.d.ts",
+          "entry/src/main/cpp/types/librdpnapi/index.d.ts",
+          "entry/src/main/ets/components/ProContinuationControls.ets",
+          "entry/src/main/ets/components/rdp/RdpControlCenter.ets",
+          "entry/src/main/ets/services/pro/ProConnectionEnvelope.ets",
+          "entry/src/main/ets/services/pro/ProConnectionHostAdapter.ets",
+          "entry/src/main/ets/services/pro/ProContinuationService.ets",
+          "entry/src/main/ets/services/pro/ProFeatureCatalog.ets",
+          "entry/src/main/ets/services/pro/ProRdpConnectionIdentity.ets",
+          "entry/src/main/ets/services/pro/ProRdpContinuationView.ets",
+          "entry/src/main/ets/services/pro/ProRdpSessionIdentityStore.ets",
+          "scripts/tests/test_pro_connection.cjs",
+          "scripts/tests/test_pro_runtime.cjs",
+          "scripts/tests/test_pro_rdp_continuation.cjs",
+          "scripts/tests/test_renderer_presented_transform.py"
+        ],
+        "reviewStatus": "REVIEW_REQUIRED",
+        "reviewerTaskId": "/root/review_pro_plan",
+        "verification": {
+          "testCompile": "PASS exit 0; BUILD SUCCESSFUL in 7 s 699 ms",
+          "assembleHap": "PASS exit 0; signed BUILD SUCCESSFUL in 9 s 464 ms; SignHap 907 ms",
+          "release": "PASS exit 0; BUILD SUCCESSFUL in 32 s 568 ms; actual Runtime/simulation/USB/sandbox pruning PASS",
+          "releaseAbcSha256": "e3dbffa03ce3faddefe4b3ccebc99f07b9612eeaa1b96e9886e037403c1f1c8b",
+          "hostChecks": "PASS 23 RDP identity/view/store/actual-page groups; 50 actual connection service/page groups; 27 share, 27 Pro runtime and 18 direct-touch checks. Platform/native callbacks mocked.",
+          "native": "PASS production RAW/OES/retained successful-swap boundaries and compiled coherent snapshot harness with 222127 concurrent observations; actual arm64-v8a/x86_64 renderer compiler configurations pass syntax checks.",
+          "compliance": "PASS Light and git diff --check",
+          "recovery": "Initial cache sandbox denial retried with approved cache access. Initial nominal CanvasViewport error fixed; concurrent clipboard service import completed by its owner before successful retry.",
+          "sourceIntegrity": "Thirteen exclusive code/test paths frozen; six shared files stage only the audited HEAD-relative Pro delta. Concurrent clipboard and phone changes are excluded.",
+          "device": "NOT RUN; real API23/26 Phone/Pad/PC system admission, local Windows authentication, resize/clamp/input, EGL presentation, DDO receipts and server desktop policy still require device acceptance."
+        },
+        "deviceAcceptance": "NOT RUN",
+        "findings": []
       }
     },
     "m6": {

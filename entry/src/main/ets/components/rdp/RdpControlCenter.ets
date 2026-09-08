@@ -1,4 +1,5 @@
 import { AppTheme, Palette, buildDark } from '../../common/Theme';
+import { ProContinuationControls } from '../ProContinuationControls';
 import { RdpRenderStats } from '../../types/rdpnapi';
 import { EMPTY_RDP_RENDER_STATS } from '../RdpDiagnosticsHud';
 import {
@@ -54,6 +55,7 @@ export struct RdpControlCenter {
   onOpenShortcuts: () => void = (): void => {};
   onCtrlAltDel: () => void = (): void => {};
   onRefresh: () => void = (): void => {};
+  onPrepareContinuation: () => void = (): void => {};
   onControlMode: (mode: number) => void = (_mode: number): void => {};
   onClipboard: (enabled: boolean) => void = (_enabled: boolean): void => {};
   onDiagnostics: (enabled: boolean) => void = (_enabled: boolean): void => {};
@@ -368,6 +370,7 @@ export struct RdpControlCenter {
           this.sectionTitle('远端会话参数',
             this.isDesktopDevice && this.stats.displayControlReady ? '分辨率可实时生效' : '重连后生效')
           this.reconnectCard()
+          ProContinuationControls({ protocol: 'rdp', onPrepare: this.onPrepareContinuation })
           this.sectionTitle('连接操作')
           Column() {
             this.actionRow($r('sys.symbol.xmark_circle_fill'), '断开 RDP 会话',

@@ -10,6 +10,14 @@ import { pasteboard } from '@kit.BasicServicesKit';
 import { image } from '@kit.ImageKit';
 import { HostSyncService } from '../services/HostSyncService';
 import { CloudStore } from '../services/CloudStore';
+import { ProContinuationService } from '../services/pro/ProContinuationService';
+import { ProConnectionDescription } from '../services/pro/ProConnectionEnvelope';
+import { describeProRdpConnection } from '../services/pro/ProConnectionHostAdapter';
+import { ProRdpConnectionIdentity, describeProRdpConnectionIdentity,
+  sameProRdpConnectionIdentity } from '../services/pro/ProRdpConnectionIdentity';
+import { ProRdpSessionIdentityStore } from '../services/pro/ProRdpSessionIdentityStore';
+import { describeProRdpView, restoreProRdpView, proRdpInputModeValue,
+  proRdpPresentedViewReady } from '../services/pro/ProRdpContinuationView';
 import { DataCrypto } from '../services/DataCrypto';
 import {
   ExtensionLoader,
@@ -1114,6 +1122,7 @@ struct RemoteDesktop {
   @StorageLink('virtualMouseStyle') virtualMouseStyle: string = 'arrow';
   @StorageLink('rdpControlMode') @Watch('onRemoteControlModeChange')
   rdpControlMode: number = 0; // 0=touchpad, 1=direct touch, 2=keyboard/mouse
+  @State @Watch('onRemoteControlModeChange') private proRdpControlModeOverride: number = -1;
   @StorageLink('rdpClipboardEnabled') @Watch('onRdpClipboardSettingChange')
   rdpClipboardEnabled: boolean = true;
   @StorageLink('rdpShowDiagnostics') @Watch('onRdpDiagnosticsSettingChange')
@@ -1291,6 +1300,11 @@ struct RemoteDesktop {
   private preferredOrientationUpdate: Promise<void> = Promise.resolve();
   private connectAttemptId: number = 0;
   private pendingHost: RemoteHost | null = null;
+  private proRdpIncomingId: string = '';
+  private proRdpPageLive: boolean = false;
+  private proRdpContinuationEpoch: number = 0;
+  private proRdpRestoreRunning: boolean = false;
+  private proRdpSourceWindowId: number = 0;
   // Staged synchronously from router params before aboutToAppear's first
   // await, so an immediate independent-window background event can still burn
   // the exact one-shot credential without relying on pendingHost initialization.
@@ -1885,7 +1899,7 @@ struct RemoteDesktop {
     }
     const host: RemoteHost | null = this.pendingHost;
     if (!host) { return; }
-    if (host.protocol === 'rdp' && this.rdpControlMode === 2) { return; }
+    if (host.protocol === 'rdp' && this.currentRdpControlMode() === 2) { return; }
     if (host.protocol === 'rustdesk' && this.rustdeskControlMode === 2) { return; }
     if (host.protocol === 'vnc' && this.vncControlMode === 2) { return; }
     if (host.protocol !== 'rdp' && host.protocol !== 'rustdesk' && host.protocol !== 'vnc') { return; }
@@ -1908,8 +1922,7 @@ struct RemoteDesktop {
       const r: Record<string, number> = result as Record<string, number>;
       if (r['index'] === 1) {
         if (host.protocol === 'rdp') {
-          this.rdpControlMode = 2;
-          AppStorage.setOrCreate('rdpControlMode', 2);
+          this.setRdpControlModePreference(2);
         } else if (host.protocol === 'rustdesk') {
           this.rustdeskControlMode = 2;
           AppStorage.setOrCreate('rustdeskControlMode', 2);
@@ -1939,7 +1952,7 @@ struct RemoteDesktop {
   private isKeyboardMouseControlMode(): boolean {
     const host: RemoteHost | null = this.pendingHost;
     if (!host) { return false; }
-    if (host.protocol === 'rdp') { return this.rdpControlMode === 2; }
+    if (host.protocol === 'rdp') { return this.currentRdpControlMode() === 2; }
     if (host.protocol === 'rustdesk') { return this.rustdeskControlMode === 2; }
     if (host.protocol === 'vnc') {
       return this.vncControlMode === 2 && this.pendingVncHost !== null && !this.pendingVncHost.viewOnly;
@@ -1950,7 +1963,7 @@ struct RemoteDesktop {
   private currentControlMode(): number {
     const host: RemoteHost | null = this.pendingHost;
     if (host === null) { return 0; }
-    if (host.protocol === 'rdp') { return this.rdpControlMode; }
+    if (host.protocol === 'rdp') { return this.currentRdpControlMode(); }
     if (host.protocol === 'rustdesk') {
       return explicitPhoneControlMode(this.isExplicitPhoneSession(), this.rustdeskControlMode);
     }
@@ -2635,7 +2648,7 @@ struct RemoteDesktop {
   private isTouchpadControlMode(): boolean {
     const host: RemoteHost | null = this.pendingHost;
     if (!host || !this.connected) { return false; }
-    if (host.protocol === 'rdp') { return this.rdpControlMode === 0; }
+    if (host.protocol === 'rdp') { return this.currentRdpControlMode() === 0; }
     if (host.protocol === 'rustdesk') { return this.currentControlMode() === 0; }
     if (host.protocol === 'vnc') { return this.vncControlMode === 0; }
     return false;
@@ -5187,6 +5200,7 @@ struct RemoteDesktop {
   }
 
   private setRemoteDisplayScaleMode(mode: string): void {
+    if (this.proRdpIncomingId) { this.cancelProRdpIncoming(); }
     const next: LocalViewScaleMode = normalizeLocalViewScaleMode(mode);
     this.remoteDisplayScaleMode = next;
     this.persistSessionPref('remoteDisplayScaleMode', next);
@@ -5200,7 +5214,13 @@ struct RemoteDesktop {
         (next === 'custom' ? '自定义' : next + '%'))), duration: 1400 });
   }
 
+  private currentRdpControlMode(): number {
+    return this.proRdpControlModeOverride >= 0 ? this.proRdpControlModeOverride : this.rdpControlMode;
+  }
+
   private setRdpControlModePreference(mode: number): void {
+    if (this.proRdpIncomingId) { this.cancelProRdpIncoming(); }
+    this.proRdpControlModeOverride = -1;
     const next: number = normalizeRdpSessionControlMode(mode);
     this.rdpControlMode = next;
     this.persistSessionPref('rdpControlMode', next);
@@ -5401,6 +5421,7 @@ struct RemoteDesktop {
   }
 
   private resetCanvasTransformFromMenu(): void {
+    if (this.proRdpIncomingId) { this.cancelProRdpIncoming(); }
     this.releaseCanvasPinchInput('canvas-reset-menu');
     this.clearPhysicalPointerCanvasFollow(true);
     this.resetCanvasToDisplayDefault();
@@ -6548,6 +6569,7 @@ struct RemoteDesktop {
     if (deltaX === 0 && deltaY === 0) {
       return;
     }
+    if (this.proRdpIncomingId) { this.cancelProRdpIncoming(); }
     this.canvasTransform = panCanvasTransform(this.canvasTransform, viewport, deltaX, deltaY);
     this.refreshCanvasTransformModified(viewport);
     this.applyCanvasTransform();
@@ -6759,6 +6781,7 @@ struct RemoteDesktop {
     const nextScale: number = Number.isFinite(event.scale) && event.scale > 0 ? event.scale : this.canvasPinchLastScale;
     const centerX: number = this.canvasGestureVpToPx(event.pinchCenterX);
     const centerY: number = this.canvasGestureVpToPx(event.pinchCenterY);
+    if (this.proRdpIncomingId) { this.cancelProRdpIncoming(); }
     this.canvasTransform = pinchCanvasTransform(this.canvasTransform, viewport,
       centerX, centerY, nextScale / this.canvasPinchLastScale,
       centerX - this.canvasPinchLastCenterX, centerY - this.canvasPinchLastCenterY);
@@ -8417,6 +8440,10 @@ struct RemoteDesktop {
 
   private applyAbilityBackgroundState(isBackground: boolean): void {
     if (isBackground) {
+      this.proRdpContinuationEpoch++;
+      if (!this.pcWindowHandoffStarted) { this.cancelProRdpIncoming(); }
+    }
+    if (isBackground) {
       this.harmonyShortcutCapture.deactivate(this.harmonyShortcutCaptureOwner);
     } else {
       this.syncHarmonyShortcutCapture('ability-foreground');
@@ -9007,6 +9034,7 @@ struct RemoteDesktop {
 
   async aboutToAppear(): Promise<void> {
     const routeParams: Object = router.getParams();
+    this.stageProRdpIncoming(routeParams);
     // Must happen before AccountSessionCoordinator.init(): on PC the new
     // window may background while that first await is still pending.
     this.stageRdpCredentialRouteBinding(routeParams);
@@ -9434,6 +9462,10 @@ struct RemoteDesktop {
   }
 
   aboutToDisappear(): void {
+    this.proRdpPageLive = false;
+    this.proRdpContinuationEpoch++;
+    // Existing PC authentication moves this same transaction to its new page.
+    if (!this.pcWindowHandoffStarted) { this.cancelProRdpIncoming(); }
     this.harmonyShortcutCapture.deactivate(this.harmonyShortcutCaptureOwner);
     this.clearRdpInputStabilityTimer();
     if (this.cryptoStateUnsubscribe !== null) {
@@ -13767,6 +13799,169 @@ struct RemoteDesktop {
   }
 
   // XComponent 就绪后初始化渲染管线并连接
+  private stageProRdpIncoming(params: Object): void {
+    this.proRdpPageLive = true;
+    this.proRdpContinuationEpoch++;
+    const raw = (params as Record<string, Object>)?.['proConnectionTransferId'];
+    const id = typeof raw === 'string' && /^[a-f0-9]{32}$/.test(raw) ? raw : '';
+    if (this.proRdpIncomingId !== '' && this.proRdpIncomingId !== id) { this.cancelProRdpIncoming(); }
+    this.proRdpIncomingId = id !== '' && id === ProContinuationService.getInstance().incomingId() ? id : '';
+  }
+
+  private cancelProRdpIncoming(): void {
+    const id = this.proRdpIncomingId;
+    this.proRdpIncomingId = '';
+    this.proRdpContinuationEpoch++;
+    if (id !== '') { ProContinuationService.getInstance().cancelIncoming(id); }
+  }
+
+  private proRdpNativeCurrent(hostId: string, owner: NativeDisconnectIdentity): boolean {
+    return this.pendingHost?.protocol === 'rdp' && this.pendingHost.id === hostId &&
+      this.sessionId === owner.sessionId && this.loader.ownsDisconnectIdentity(owner) &&
+      this.loader.getConnectionState(owner.sessionId) === 2;
+  }
+
+  private proRdpViewKey(): string {
+    if (this.canvasVisualFlipX || this.canvasVisualFlipY) { return ''; }
+    const view = describeProRdpView(this.canvasTransform, this.currentRdpControlMode());
+    return view === null ? '' : JSON.stringify(view);
+  }
+
+  private proRdpPresentationCurrent(hostId: string, owner: NativeDisconnectIdentity,
+    epoch: number, renderer: number): boolean {
+    return this.proRdpPageLive && epoch === this.proRdpContinuationEpoch && this.connected &&
+      !this.cleanupStarted && !this.currentAbilityBackgroundState() && !this.sessionWindowMinimized &&
+      this.surfaceReady && renderer > 0 && renderer === this.rendererHandle &&
+      this.proRdpNativeCurrent(hostId, owner);
+  }
+
+  private submitProRdpView(): number {
+    const previous = this.rendererCanvasTransformPendingVersion;
+    this.applyCanvasTransform();
+    const submitted = this.rendererCanvasTransformPendingVersion;
+    // Native SetCanvasTransform always advances its seqlock version. A zero
+    // return/failure must not reuse the last successfully presented transform.
+    return Number.isSafeInteger(submitted) && submitted > Math.max(0, previous) ? submitted : 0;
+  }
+
+  private async waitProRdpPresentedView(hostId: string, owner: NativeDisconnectIdentity,
+    epoch: number, renderer: number, version: number, viewKey: string): Promise<boolean> {
+    if (version <= 0 || viewKey === '') { return false; }
+    for (let retry = 0; retry < 40; retry++) {
+      if (!this.proRdpPresentationCurrent(hostId, owner, epoch, renderer) ||
+          this.rendererCanvasTransformPendingVersion !== version || this.proRdpViewKey() !== viewKey) { return false; }
+      const viewport = this.loader.getRendererViewport(renderer);
+      const stats = this.loader.getRdpRenderStats(owner.sessionId);
+      if (proRdpPresentedViewReady(stats, viewport, version)) { return true; }
+      await new Promise<void>((resolve: () => void): void => { setTimeout(resolve, 100); });
+    }
+    return false;
+  }
+
+  private async prepareProRdpContinuation(): Promise<void> {
+    this.rdpControlCenterVisible = false;
+    const host = this.pendingHost;
+    const owner = this.loader.captureDisconnectIdentity(this.sessionId);
+    const epoch = ++this.proRdpContinuationEpoch;
+    const renderer = this.rendererHandle;
+    if (host === null || owner === null || !this.proRdpPresentationCurrent(host.id, owner, epoch, renderer)) { return; }
+    const identity = ProRdpSessionIdentityStore.getInstance().get(host.id, owner);
+    if (identity === null) {
+      promptAction.showToast({ message: '本次连接缺少可核验的身份，请重新连接后准备接续', duration: 2400 }); return;
+    }
+    this.currentCanvasViewport(true);
+    const version = this.submitProRdpView();
+    const key = this.proRdpViewKey();
+    try {
+      if (!await this.waitProRdpPresentedView(host.id, owner, epoch, renderer, version, key)) {
+        promptAction.showToast({ message: '画面仍在变化，请稳定后重试接续', duration: 2200 }); return;
+      }
+      const view = describeProRdpView(this.canvasTransform, this.currentRdpControlMode());
+      const description = view === null ? null : describeProRdpConnection(host, identity, view);
+      if (description === null) { return; }
+      const win = window.findWindow(this.getUIContext().getWindowName());
+      this.proRdpSourceWindowId = win.getWindowProperties().id;
+      let preparing = true;
+      const prepared = await ProContinuationService.getInstance().prepare(getContext(this) as common.UIAbilityContext, {
+        windowId: this.proRdpSourceWindowId,
+        describe: (): ProConnectionDescription | null => description,
+        // Native ownership survives normal background preservation. Source
+        // closing remains a manual action after the target's exact receipt.
+        isCurrent: (): boolean => (!preparing ||
+          this.proRdpPresentationCurrent(host.id, owner, epoch, renderer)) &&
+          this.proRdpNativeCurrent(host.id, owner) && this.proRdpViewKey() === key &&
+          ProRdpSessionIdentityStore.getInstance().get(host.id, owner) !== null,
+        close: (): void => { this.disconnectAndCleanup('pro-rdp-continuation'); this.goBack(); }
+      });
+      preparing = !prepared;
+      promptAction.showToast({ message: prepared ? 'RDP 接续已准备，本端会话保持连接' :
+        '无法准备接续，请检查同账号、Pro 和协同权限', duration: 2400 });
+    } catch (_error) { promptAction.showToast({ message: '系统接续暂不可用', duration: 2200 }); }
+  }
+
+  private async restoreProRdpContinuation(): Promise<void> {
+    if (this.proRdpRestoreRunning || this.proRdpIncomingId === '' || !this.connected ||
+        this.pcWindowAfterAuthentication || !this.proRdpPageLive || this.cleanupStarted ||
+        this.currentAbilityBackgroundState()) { return; }
+    const host = this.pendingHost;
+    const owner = this.loader.captureDisconnectIdentity(this.sessionId);
+    const id = this.proRdpIncomingId;
+    const epoch = this.proRdpContinuationEpoch;
+    const renderer = this.rendererHandle;
+    const service = ProContinuationService.getInstance();
+    if (host === null || owner === null || !this.proRdpPresentationCurrent(host.id, owner, epoch, renderer)) { return; }
+    const expected = service.incomingRdpIdentity(id, host);
+    const identity = ProRdpSessionIdentityStore.getInstance().get(host.id, owner);
+    if (expected === null || identity === null || !sameProRdpConnectionIdentity(identity, expected)) {
+      this.cancelProRdpIncoming(); return;
+    }
+    this.proRdpRestoreRunning = true;
+    let restored = false;
+    try {
+      // Wait for actual RDP geometry, then apply once. User input, a different
+      // native owner, backgrounding or a new surface invalidates the attempt.
+      for (let retry = 0; retry < 80; retry++) {
+        if (this.proRdpIncomingId !== id || !this.proRdpPresentationCurrent(host.id, owner, epoch, renderer)) { return; }
+        const view = service.restoreView(id, host);
+        if (view === null) { return; }
+        const viewport = this.loader.getRendererViewport(renderer);
+        const stats = this.loader.getRdpRenderStats(owner.sessionId);
+        if (viewport !== null && proRdpPresentedViewReady(stats, viewport, viewport.transformVersion)) {
+          const canvasViewport: CanvasViewport = { sourceWidth: viewport.sourceWidth, sourceHeight: viewport.sourceHeight,
+            surfaceWidth: viewport.surfaceWidth, surfaceHeight: viewport.surfaceHeight,
+            freePanInsetRatio: RDP_CANVAS_FREE_PAN_INSET_RATIO };
+          const target = restoreProRdpView(view, canvasViewport);
+          if (target === null) { return; }
+          this.canvasViewportSnapshot = canvasViewport;
+          this.canvasViewportSnapshotHandle = renderer;
+          this.canvasTransform = target;
+          this.canvasTransformInitialized = true;
+          this.refreshCanvasTransformModified(this.canvasViewportSnapshot);
+          this.proRdpControlModeOverride = proRdpInputModeValue(view.inputMode);
+          const version = this.submitProRdpView();
+          const key = this.proRdpViewKey();
+          const presented = await this.waitProRdpPresentedView(host.id, owner, epoch, renderer, version, key);
+          if (presented && this.proRdpIncomingId === id && service.incomingId() === id &&
+              this.proRdpPresentationCurrent(host.id, owner, epoch, renderer) &&
+              this.proRdpViewKey() === key && ProRdpSessionIdentityStore.getInstance().get(host.id, owner) !== null) {
+            restored = service.complete(id, host, identity);
+          }
+          return;
+        }
+        await new Promise<void>((resolve: () => void): void => { setTimeout(resolve, 100); });
+      }
+    } finally {
+      this.proRdpRestoreRunning = false;
+      if (this.proRdpIncomingId === id) {
+        this.proRdpIncomingId = '';
+        if (!restored) {
+          service.cancelIncoming(id);
+          promptAction.showToast({ message: 'RDP 已连接，画面恢复或接续回执未完成；源端仍保留', duration: 2400 });
+        }
+      }
+    }
+  }
+
   private async doConnect(host: RemoteHost): Promise<void> {
     const attemptId: number = ++this.connectAttemptId;
     let connectionScope = AccountSessionCoordinator.getInstance().currentScope();
@@ -13776,6 +13971,8 @@ struct RemoteDesktop {
     let rdpSessionUsername: string = '';
     let rdpSessionPassword: string = '';
     let rdpSessionDecision: RdpSessionCredentialDecision | null = null;
+    let proRdpAttemptIdentity: ProRdpConnectionIdentity | null = null;
+    this.proRdpControlModeOverride = -1;
     let rdAccessTokenFingerprint: string = '';
     let rdAccessTokenGeneration: number = 0;
     let rdAccountId: string = '';
@@ -14405,6 +14602,20 @@ struct RemoteDesktop {
           hilog.info(RD_DOMAIN, RD_TAG,
             'RDP one-shot credential admitted hostIdHash=' + hashForLog(host.id));
         }
+        if (host.protocol === 'rdp') {
+          // Capture only the actual native identity before the one-shot config
+          // is scrubbed below. A different local login cannot confirm a transfer.
+          proRdpAttemptIdentity = describeProRdpConnectionIdentity(host,
+            { username: cfg.username, domain: cfg.domain });
+          if (this.proRdpIncomingId !== '') {
+            const expected = ProContinuationService.getInstance().incomingRdpIdentity(this.proRdpIncomingId, host);
+            if (proRdpAttemptIdentity === null || expected === null ||
+                !sameProRdpConnectionIdentity(proRdpAttemptIdentity, expected)) {
+              this.cancelProRdpIncoming();
+              throw new Error('接续主机身份已变化，请核对 Windows 用户名和域后重试 [E-PRO-RDP-IDENTITY]');
+            }
+          }
+        }
         sid = this.loader.connect(cfg);
       } finally {
         if (isVnc) {
@@ -14551,6 +14762,10 @@ struct RemoteDesktop {
       if (!this.recordActiveSession(host, sid, true)) {
         throw new Error('远程会话账号作用域未登记，已拒绝启动后台接续 [E-SESSION-REGISTRY]');
       }
+      if (host.protocol === 'rdp' && proRdpAttemptIdentity !== null &&
+          this.loader.ownsDisconnectIdentity(this.nativeDisconnectIdentity) && this.loader.getConnectionState(sid) === 2) {
+        ProRdpSessionIdentityStore.getInstance().remember(host.id, this.nativeDisconnectIdentity, proRdpAttemptIdentity);
+      }
       if (this.pcWindowAfterAuthentication) {
         await this.handoffAuthenticatedSessionToIndependentWindow(host, sid);
         return;
@@ -14613,6 +14828,7 @@ struct RemoteDesktop {
       }
       this.startClipboardBridgeBestEffort(sid, attemptId,
         this.clipboardBridgeEnabledForSession());
+      void this.restoreProRdpContinuation();
     } catch (err) {
       rdpRestrictedAdminHash = '';
       if (attemptId !== this.connectAttemptId ||
@@ -15018,6 +15234,12 @@ struct RemoteDesktop {
       this.registryTermination = termination;
       this.registryRestoreAdoption = null;
     }
+    this.cancelProRdpIncoming();
+    if (this.proRdpSourceWindowId > 0) {
+      ProContinuationService.getInstance().cancelSource(this.proRdpSourceWindowId);
+      this.proRdpSourceWindowId = 0;
+    }
+    ProRdpSessionIdentityStore.getInstance().forget(disconnectIdentity);
     this.stopRustDeskDiagnosticsPolling(true);
     this.stopRdpDiagnosticsPolling(true);
     this.cleanupStarted = true;
@@ -16384,6 +16606,7 @@ struct RemoteDesktop {
     }
     // 清除后台标志
     this.clearCurrentAbilityBackgroundState();
+    void this.restoreProRdpContinuation();
   }
 
   private transferRouteIdentity(): string {
@@ -16607,6 +16830,7 @@ struct RemoteDesktop {
           'onSurfaceCreated: ignored by transferred source page');
         return;
       }
+      this.proRdpContinuationEpoch++;
       hilog.info(RD_DOMAIN, RD_TAG, 'XComponentController.onSurfaceCreated: surfaceId=' + surfaceId);
       this.latestSurfaceId = surfaceId;
       if (this.restoreInProgress) {
@@ -16651,6 +16875,7 @@ struct RemoteDesktop {
   }
 
   onSurfaceDestroyed(_surfaceId: string): void {
+    this.proRdpContinuationEpoch++;
     this.clearRemoteSurfaceResizeWork();
     this.releaseCanvasPinchInput('surface-destroyed');
     hilog.info(RD_DOMAIN, RD_TAG, 'XComponentController.onSurfaceDestroyed');
@@ -16708,6 +16933,7 @@ struct RemoteDesktop {
   }
 
   private onXComponentDestroy = (): void => {
+    this.proRdpContinuationEpoch++;
     this.clearRemoteSurfaceResizeWork();
     this.releaseCanvasPinchInput('xcomponent-destroy');
     this.restoreRemoteSystemPointer('xcomponent-destroy');
@@ -21333,7 +21559,7 @@ struct RemoteDesktop {
               this.rdpRenderStats.desktopWidth.toString() + '×' +
                 this.rdpRenderStats.desktopHeight.toString() : '已连接',
             stats: this.rdpRenderStats,
-            controlMode: this.rdpControlMode,
+            controlMode: this.currentRdpControlMode(),
             clipboardEnabled: this.rdpClipboardEnabled,
             clipboardReady: this.loader.isSessionClipboardReady(this.sessionId),
             diagnosticsEnabled: this.rdpShowDiagnostics,
@@ -21352,6 +21578,7 @@ struct RemoteDesktop {
             authIdentityMode: this.rdpAuthIdentityMode,
             tlsWithoutNla: this.rdpTlsWithoutNla,
             onClose: (): void => { this.toggleRdpControlCenter(); },
+            onPrepareContinuation: (): void => { void this.prepareProRdpContinuation(); },
             onOpenKeyboard: (): void => { this.openRdpKeyboard(); },
             onOpenShortcuts: (): void => { this.openRdpShortcutPanel(); },
             onCtrlAltDel: (): void => { this.sendCtrlAltDel(); },

@@ -6,8 +6,9 @@ import { RemoteHost } from '../../model/RemoteHost';
 import { ProAccessContext } from './ProAccessPolicy';
 import { ProAppRuntime } from './ProAppRuntime';
 import { ProConnectionDescription, ProConnectionEnvelope, ProConnectionView, parseProConnectionEnvelope,
-  sameProConnectionEndpoint, PRO_CONNECTION_TTL_MS } from './ProConnectionEnvelope';
-import { describeProSshConnection } from './ProConnectionHostAdapter';
+  PRO_CONNECTION_TTL_MS } from './ProConnectionEnvelope';
+import { matchesProConnectionHost } from './ProConnectionHostAdapter';
+import { ProRdpConnectionIdentity, sameProRdpConnectionIdentity } from './ProRdpConnectionIdentity';
 import { ProConnectionTransaction } from './ProConnectionTransaction';
 import { ProContinuationReceiptChannel } from './ProContinuationReceiptChannel';
 
@@ -26,6 +27,7 @@ export interface ProContinuationSnapshot {
   incoming: boolean;
   incomingCanAccept: boolean;
   incomingLabel: string;
+  incomingProtocol: string;
   incomingEndpoint: string;
   incomingMessage: string;
   sourceWindow: number;
@@ -38,8 +40,8 @@ function randomHex(): string {
   bytes.forEach((byte: number): void => { value += byte.toString(16).padStart(2, '0'); });
   return value;
 }
-export function proContinuationContext(): ProAccessContext {
-  const context = ProAppRuntime.getInstance().context('ssh');
+export function proContinuationContext(protocol: string = 'ssh'): ProAccessContext {
+  const context = ProAppRuntime.getInstance().context(protocol);
   if (canIUse(DATA_OBJECT_CAPABILITY)) { context.capabilities.push(DATA_OBJECT_CAPABILITY); }
   context.requestablePermissions = [SYNC_PERMISSION];
   return context;
@@ -93,14 +95,15 @@ export class ProContinuationService {
       if (this.source !== null && !this.sourceCurrent()) { this.cancelSource(); }
       const scope = AccountSessionCoordinator.getInstance().currentScope();
       if ((this.target?.state() === 'connecting' || this.target?.state() === 'ready') &&
-          (scope.generation !== this.targetAccountGeneration || !this.allowed())) { this.cancelIncoming(); }
+          (scope.generation !== this.targetAccountGeneration ||
+            !this.allowed(this.target?.envelope()?.connection.protocol ?? ''))) { this.cancelIncoming(); }
       this.publish();
     });
   }
-  private allowed(): boolean {
+  private allowed(protocol: string): boolean {
     if (this.transitionActive) { return false; }
     // Permission is separately checked against the platform before joining.
-    const context = proContinuationContext(); context.grantedPermissions = [SYNC_PERMISSION];
+    const context = proContinuationContext(protocol); context.grantedPermissions = [SYNC_PERMISSION];
     return ProAppRuntime.getInstance().runtime.decision(PRO_CONTINUATION_FEATURE, context).executable;
   }
   private async permission(context: common.UIAbilityContext): Promise<boolean> {
@@ -116,19 +119,19 @@ export class ProContinuationService {
   }
   private sourceCurrent(): boolean {
     const scope = AccountSessionCoordinator.getInstance().currentScope();
+    const description = this.source?.describe() ?? null;
     return this.source !== null && this.sourceContext !== null && Date.now() < this.sourceDeadline && this.source.isCurrent() &&
-      this.descriptionAllowed(this.source.describe(), this.sourceContext) && this.allowed() &&
+      this.descriptionAllowed(description, this.sourceContext) && this.allowed(description?.protocol ?? '') &&
       scope.kind === 'huawei_account' && scope.ownerScopeId === this.sourceOwner &&
       scope.generation === this.sourceAccountGeneration &&
       ['bound', 'ready', 'offline'].indexOf(scope.sessionState) >= 0;
   }
   private descriptionAllowed(description: ProConnectionDescription | null, context: common.Context): boolean {
-    if (description === null || description.protocol !== 'ssh' || !HostSyncService.getInstance().isReady()) { return false; }
+    if (description === null || !HostSyncService.getInstance().isReady()) { return false; }
     const host = HostSyncService.getInstance().getHost(description.hostReference);
     const scope = AccountSessionCoordinator.getInstance().currentScope();
-    const local = host === undefined ? null : describeProSshConnection(host, 'terminal', '', context);
-    return host !== undefined && host.userId === scope.ownerScopeId && local !== null &&
-      sameProConnectionEndpoint(local, description);
+    return host !== undefined && host.userId === scope.ownerScopeId &&
+      matchesProConnectionHost(description, host, context);
   }
   private setMission(context: common.UIAbilityContext, state: AbilityConstant.ContinueState): Promise<void> {
     // Serialize ACTIVE/INACTIVE so an old cancellation cannot hide a later preparation.
@@ -159,12 +162,13 @@ export class ProContinuationService {
   async prepare(context: common.UIAbilityContext, source: ProContinuationSource): Promise<boolean> {
     this.cancelSource();
     if (['EntryAbility', 'RemoteSessionAbility'].indexOf(context.abilityInfo.name) < 0 ||
-        !this.allowed() || !source.isCurrent() ||
+        !this.allowed(source.describe()?.protocol ?? '') || !source.isCurrent() ||
         !this.descriptionAllowed(source.describe(), context) || !Number.isInteger(source.windowId) || source.windowId <= 0) { return false; }
     const scope = AccountSessionCoordinator.getInstance().currentScope();
     if (scope.kind !== 'huawei_account' || !/^owner-[a-f0-9]{64}$/.test(scope.ownerScopeId)) { return false; }
     const generation = this.sourceGeneration;
-    if (!await this.permission(context) || generation !== this.sourceGeneration || !this.allowed() ||
+    if (!await this.permission(context) || generation !== this.sourceGeneration ||
+        !this.allowed(source.describe()?.protocol ?? '') ||
         !source.isCurrent() || !this.descriptionAllowed(source.describe(), context) ||
         AccountSessionCoordinator.getInstance().currentScope().generation !== scope.generation) {
       return false;
@@ -175,7 +179,10 @@ export class ProContinuationService {
     this.sourceTimer = setTimeout((): void => { if (generation === this.sourceGeneration) { this.cancelSource(); } }, PRO_CONNECTION_TTL_MS);
     try {
       await this.setMission(context, AbilityConstant.ContinueState.ACTIVE);
-      if (generation !== this.sourceGeneration || !this.sourceCurrent()) { return false; }
+      if (generation !== this.sourceGeneration || !this.sourceCurrent()) {
+        if (generation === this.sourceGeneration) { this.cancelSource(source.windowId); }
+        return false;
+      }
       this.sourceMessage = '已准备接续，请在 2 分钟内从另一台同账号设备的系统入口继续';
       this.publish(); return true;
     } catch (_error) { if (generation === this.sourceGeneration) { this.cancelSource(); } return false; }
@@ -185,10 +192,11 @@ export class ProContinuationService {
     if (source === null || context === null || source.windowId !== windowId || !this.sourceCurrent() ||
         this.sourceTransaction !== null) { return AbilityConstant.OnContinueResult.REJECT; }
     const description = source.describe();
-    if (description === null || description.protocol !== 'ssh') { return AbilityConstant.OnContinueResult.REJECT; }
+    if (description === null) { return AbilityConstant.OnContinueResult.REJECT; }
     const generation = this.sourceGeneration;
     const now = Date.now();
-    const envelope: ProConnectionEnvelope = { version: 1, purpose: 'continuation', transferId: randomHex(),
+    const envelope: ProConnectionEnvelope = { version: description.protocol === 'rdp' ? 2 : 1,
+      purpose: 'continuation', transferId: randomHex(),
       channelId: 'rd_' + randomHex(), owner: this.sourceOwner, createdAt: now,
       expiresAt: now + PRO_CONNECTION_TTL_MS, connection: description };
     const serialized = JSON.stringify(envelope);
@@ -198,12 +206,14 @@ export class ProContinuationService {
     this.sourceDeadline = envelope.expiresAt;
     if (this.sourceTimer !== -1) { clearTimeout(this.sourceTimer); }
     this.sourceTimer = setTimeout((): void => { if (generation === this.sourceGeneration) { this.cancelSource(); } }, PRO_CONNECTION_TTL_MS);
-    if (!transaction.begin(this.sourceOwner, this.allowed(), true)) { this.cancelSource(); return AbilityConstant.OnContinueResult.REJECT; }
+    if (!transaction.begin(this.sourceOwner, this.allowed(description.protocol), true)) {
+      this.cancelSource(); return AbilityConstant.OnContinueResult.REJECT;
+    }
     const channel = new ProContinuationReceiptChannel(); this.sourceChannel = channel;
     const joined = await this.boundedJoin(channel, context, envelope,
       (receipt: string): boolean => {
         if (generation !== this.sourceGeneration || !this.sourceCurrent() || this.sourceTransaction !== transaction ||
-            !transaction.acceptReceipt(receipt, this.sourceOwner, this.allowed())) { return false; }
+            !transaction.acceptReceipt(receipt, this.sourceOwner, this.allowed(description.protocol))) { return false; }
         this.sourceMessage = '目标已连接并恢复接续状态；可以保留本端，或手动结束本端会话';
         this.publish(); return true;
       }, (): void => {});
@@ -221,11 +231,13 @@ export class ProContinuationService {
     const envelope = parseProConnectionEnvelope(serialized);
     const now = Date.now();
     this.seen.forEach((expires: number, id: string): void => { if (expires <= now) { this.seen.delete(id); } });
-    if (envelope === null || envelope.purpose !== 'continuation' || envelope.connection.protocol !== 'ssh' ||
+    if (envelope === null || envelope.purpose !== 'continuation' ||
         this.target !== null || this.seen.has(envelope.transferId) || this.seen.size >= 64) { return false; }
     this.seen.set(envelope.transferId, envelope.expiresAt);
     this.target = new ProConnectionTransaction(envelope);
-    this.targetMessage = '将重新进行主机认证。普通终端进程和未完成传输不会迁移。';
+    this.targetMessage = envelope.connection.protocol === 'rdp'
+      ? '将重新进行 Windows 主机认证，恢复缩放、平移和输入模式；远端桌面是否保留取决于服务器策略。'
+      : '将重新进行主机认证。普通终端进程和未完成传输不会迁移。';
     this.targetTimer = setTimeout((): void => { this.cancelIncoming(); }, envelope.expiresAt - now);
     this.publish(); return true;
   }
@@ -233,20 +245,19 @@ export class ProContinuationService {
     const target = this.target; const envelope = target?.envelope();
     if (target === null || envelope === undefined || envelope === null || target.state() !== 'offered') { return null; }
     const scope = AccountSessionCoordinator.getInstance().currentScope();
-    if (!this.allowed() || scope.kind !== 'huawei_account' || scope.ownerScopeId !== envelope.owner) {
+    if (!this.allowed(envelope.connection.protocol) || scope.kind !== 'huawei_account' || scope.ownerScopeId !== envelope.owner) {
       this.targetMessage = '请使用同一华为账号，并在本设备独立激活可用的 Pro 接续能力'; this.publish(); return null;
     }
     const host = HostSyncService.getInstance().getHost(envelope.connection.hostReference);
-    const local = host === undefined ? null : describeProSshConnection(host, 'terminal', '', context);
-    if (!HostSyncService.getInstance().isReady() || host === undefined || local === null || host.userId !== scope.ownerScopeId ||
-        !sameProConnectionEndpoint(local, envelope.connection)) {
+    if (!HostSyncService.getInstance().isReady() || host === undefined || host.userId !== scope.ownerScopeId ||
+        !matchesProConnectionHost(envelope.connection, host, context)) {
       this.targetMessage = '本设备还没有对应的同账号主机配置，或端点已变化；请先同步并核对'; this.publish(); return null;
     }
     const generation = this.targetGeneration;
     if (!await this.permission(context) || generation !== this.targetGeneration || this.target !== target ||
         AccountSessionCoordinator.getInstance().currentScope().generation !== scope.generation ||
         !this.descriptionAllowed(envelope.connection, context) ||
-        !target.begin(scope.ownerScopeId, this.allowed(), true)) { return null; }
+        !target.begin(scope.ownerScopeId, this.allowed(envelope.connection.protocol), true)) { return null; }
     this.targetAccountGeneration = scope.generation; this.targetContext = context;
     const channel = new ProContinuationReceiptChannel(); this.targetChannel = channel;
     const joined = await this.boundedJoin(channel, context, envelope,
@@ -256,7 +267,8 @@ export class ProContinuationService {
         }
       });
     if (!joined || generation !== this.targetGeneration || this.target !== target ||
-        AccountSessionCoordinator.getInstance().currentScope().generation !== scope.generation || !this.allowed()) {
+        AccountSessionCoordinator.getInstance().currentScope().generation !== scope.generation ||
+        !this.allowed(envelope.connection.protocol)) {
       if (generation === this.targetGeneration) { this.cancelIncoming(); } return null;
     }
     const currentHost = HostSyncService.getInstance().getHost(envelope.connection.hostReference);
@@ -268,21 +280,28 @@ export class ProContinuationService {
   restoreView(id: string, host: RemoteHost): ProConnectionView | null {
     const envelope = this.target?.envelope(); const scope = AccountSessionCoordinator.getInstance().currentScope();
     const currentHost = HostSyncService.getInstance().getHost(host.id);
-    const local = currentHost === undefined || this.targetContext === null ? null :
-      describeProSshConnection(currentHost, 'terminal', '', this.targetContext);
     if (envelope === undefined || envelope === null || this.target?.state() !== 'connecting' ||
         id !== envelope.transferId || scope.ownerScopeId !== envelope.owner ||
         scope.generation !== this.targetAccountGeneration || host.userId !== scope.ownerScopeId ||
         !HostSyncService.getInstance().isReady() || currentHost?.userId !== scope.ownerScopeId ||
         host.id !== envelope.connection.hostReference ||
-        ['bound', 'ready', 'offline'].indexOf(scope.sessionState) < 0 || !this.allowed() || local === null ||
-        !sameProConnectionEndpoint(local, envelope.connection)) { return null; }
+        ['bound', 'ready', 'offline'].indexOf(scope.sessionState) < 0 ||
+        !this.allowed(envelope.connection.protocol) || currentHost === undefined || this.targetContext === null ||
+        !matchesProConnectionHost(envelope.connection, currentHost, this.targetContext)) { return null; }
     return envelope.connection.view;
   }
-  complete(id: string, host: RemoteHost): boolean {
+  incomingRdpIdentity(id: string, host: RemoteHost): ProRdpConnectionIdentity | null {
+    if (this.restoreView(id, host) === null) { return null; }
+    return this.target?.envelope()?.connection.rdpIdentity ?? null;
+  }
+  complete(id: string, host: RemoteHost, nativeRdpIdentity: ProRdpConnectionIdentity | null = null): boolean {
     if (this.restoreView(id, host) === null) { return false; }
+    const description = this.target?.envelope()?.connection;
+    if (description === undefined || (description.protocol === 'rdp' &&
+      (nativeRdpIdentity === null || description.rdpIdentity === undefined ||
+        !sameProRdpConnectionIdentity(nativeRdpIdentity, description.rdpIdentity)))) { return false; }
     const scope = AccountSessionCoordinator.getInstance().currentScope();
-    const receipt = this.target?.ready(scope.ownerScopeId, this.allowed());
+    const receipt = this.target?.ready(scope.ownerScopeId, this.allowed(description.protocol));
     if (receipt === undefined || receipt === null || !this.targetChannel.send(JSON.stringify(receipt))) { return false; }
     this.targetMessage = '本端已恢复接续状态，已发送就绪回执'; this.publish(); return true;
   }
@@ -312,8 +331,10 @@ export class ProContinuationService {
     const envelope = this.target?.envelope();
     return { incoming: envelope !== undefined && envelope !== null, incomingCanAccept: this.target?.state() === 'offered',
       incomingLabel: envelope?.connection.label ?? '',
+      incomingProtocol: envelope?.connection.protocol ?? '',
       incomingEndpoint: envelope === undefined || envelope === null ? '' :
-        envelope.connection.username + '@' + envelope.connection.host + ':' + envelope.connection.port.toString(),
+        (envelope.connection.rdpIdentity?.domain ? envelope.connection.rdpIdentity.domain + '\\' : '') +
+          envelope.connection.username + '@' + envelope.connection.host + ':' + envelope.connection.port.toString(),
       incomingMessage: this.targetMessage, sourceWindow: this.source?.windowId ?? 0,
       sourceMessage: this.sourceMessage, sourceCloseAllowed: this.sourceCurrent() &&
         this.sourceTransaction?.mayOfferSourceClose() === true };

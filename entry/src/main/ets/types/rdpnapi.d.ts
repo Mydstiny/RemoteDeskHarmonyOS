@@ -325,6 +325,8 @@ interface ProtocolInfo {
 
 export interface RendererViewport {
   transformVersion: number;
+  /** EGL swap succeeded for this exact geometry/version; zero while pending. */
+  presentedTransformVersion: number;
   sourceWidth: number;
   sourceHeight: number;
   surfaceWidth: number;

@@ -77,3 +77,20 @@
 官方核对：[应用接续](https://developer.huawei.com/consumer/cn/doc/best-practices/bpta-continue-cast) 明确默认同 UIAbility 接续、multiton 接收走 onCreate、onWindowStageRestore 和同步 restoreWindowStage，且不支持模拟器。实际不同设备、同账号协同条件及 exported=false 的系统接续准入需要真机验收。
 
 本次代码门禁：testCompile `BUILD SUCCESSFUL in 19 s 518 ms`；signed Debug `BUILD SUCCESSFUL in 24 s 154 ms`；Release `BUILD SUCCESSFUL in 36 s 906 ms`，全部 exit 0；Light/diff 和实际 ABC 模拟/USB/sandbox 剪枝 PASS。ABC SHA256 `05f4687700cf203ae6e212e1cf8bebadfd2d1cee7a816af279930ceb885c3449`。初始 ArkTS 显式类型问题已修正；共享 native/ArkTS 构建遇到并行手机控制模块尚未落盘/未完成，待对应任务完成后成功重跑。十份本增量源码 hash 保持，其他任务代码不计入本范围。提交和独立复核待进行；全 M5、RDP 与真实跨设备验收仍未完成。
+
+
+第三增量独立复核 PASS：精确 `4719e6dc` → `3fc4a578` 的十份源码/测试及六份文档；148 项原检查和 13 组新增生产方法生命周期、授权与旧请求边界通过。冻结代码、五个并行状态子树、第七批 UI receipt 和实际 Release 剪枝已独立核对；无待修问题。元数据门禁 testCompile 19 s 836 ms、signed assembleHap 38 s 286 ms（SignHap 984 ms）均 exit 0，Light/diff PASS。真实 PC/跨设备矩阵仍未执行。
+
+## 第四增量：RDP 身份与视图接续
+
+- API23+ Phone/Pad/PC 复用已审查的系统接续入口、同账号及双方独立 Pro 授权，只在 Debug 实验模式执行。新增 RDP 源控制栏入口和收件说明；Release/Free 不获得实验授权，普通连接仍走原流程。
+- SSH V1 白名单保持兼容；RDP 使用 V2、continuation-only，新增严格四字段非秘密 identity（canonical route、authMode、username、domain）。只允许当前实现的单显示器 monitor=0、缩放/平移、三种输入模式和严格边界标志；未知字段、非有限数、保留旋转/显示器及 V1 RDP 拒绝。
+- 路线按既有 `rdpRouteIdentity` 绑定直连/透明 TCP/Microsoft Gateway，包括目标/网关端口、TLS server name 和 Gateway transport；不支持的堡垒机路线拒绝。每次业务检查重读当前配置和已保存用户名，不读取密码/hash/证书信任。连接时询问的凭据必须在原生 connect 前与目标声明的实际 username/domain 匹配。
+- 只在真实 native CONNECTED 和账号 generation 仍一致后，按 native sessionId/generation/ownerToken 保存内存身份回执。回执随既有 PC 已认证窗口交接复用，不进入 Want；账号 transition 和准确 teardown 删除。源端描述绑定这次原生连接的身份，页面字段或凭据引用不能冒充认证回执。
+- 目标沿用原锁定、证书、凭据与原生连接流程；进入真实会话后按目标窗口像素尺寸调用现有 RDP canvas clamp 恢复视图。输入模式使用当前会话 override，不改其他窗口偏好。不同尺寸下平移可能被现有边界规则收敛；不宣称像素布局跨屏完全相同。
+- 原 renderer 的 transformVersion 只是布局发布，不能证明显示。新增同一 seqlock 下的 presentedTransformVersion，仅 RAW/OES/retained 三条 `eglSwapBuffers` 成功分支发布；失败、几何或变换改变清零。两个读取器补充 acquire fence，主机并发测试覆盖一致性。
+- 目标只有本次提交产生新版本、该版本已成功呈现、RDP desktop/source 尺寸一致且无 Display Control/resize pending，再结合当前原生/账号/窗口/页面/输入视图后才发送就绪回执。原生提交失败不得复用旧成功版本。视图等待有界；页面/Surface 重建、后台、用户调整、过期、替换与迟到请求均隔离，失败保留两端普通会话。
+- 来源正常后台保活可等待回执；断开/换代使旧来源失效。仍需匹配回执后由用户手动结束来源；Windows 桌面是否复用及普通进程保留取决于服务器策略，不迁移密码、Windows 进程或未完成传输。
+- 23 组新增检查执行生产 identity/envelope/view/store 和实际 RemoteDesktop 准备/恢复方法，50 组共享接续检查包含 RDP 服务重新认证、fresh route、错误身份及 ACTIVE 等待取消。另 27 share、27 runtime、18 RDP direct-touch PASS；实际 renderer 方法编译并发观察 222127 次、两条 OHOS ABI 编译参数下 syntax PASS。平台/native 模拟不等于真实 EGL、Windows 或跨设备验收。
+
+第四增量当前代码门禁：testCompile `BUILD SUCCESSFUL in 7 s 699 ms`；signed Debug `BUILD SUCCESSFUL in 9 s 464 ms`（SignHap 907 ms）；Release `BUILD SUCCESSFUL in 32 s 568 ms`，全部 exit 0。Light/diff 与实际 Release 模拟/USB/sandbox 剪枝 PASS；ABC `e3dbffa03ce3faddefe4b3ccebc99f07b9612eeaa1b96e9886e037403c1f1c8b`。初始 CanvasViewport 显式类型问题已修正，缓存访问及并行剪贴板未完成导入在成功重跑前处理；没有把并行文件纳入本增量。独立复核和真实 Phone/Pad/PC RDP 接续仍待完成。

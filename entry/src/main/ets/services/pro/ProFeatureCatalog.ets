@@ -37,9 +37,9 @@ function knockTransfer(): ProFeature {
 }
 function continuation(): ProFeature {
   const feature = planned('pro.connection.continuation', '同账号接续',
-    '在手机、平板和 PC 间重新认证并连接同账号的直连 SSH 主机，恢复文件目录。', 23);
+    '在手机、平板和 PC 间重新认证同账号的 SSH 或 RDP 主机，恢复支持的目录或桌面视图。', 23);
   feature.availability = 'experimental';
-  feature.devices = ['phone', 'tablet', 'pc']; feature.protocols = ['ssh'];
+  feature.devices = ['phone', 'tablet', 'pc']; feature.protocols = ['ssh', 'rdp'];
   feature.capabilities = ['SystemCapability.DistributedDataManager.DataObject.DistributedObject'];
   feature.permissions = ['ohos.permission.DISTRIBUTED_DATASYNC'];
   return feature;

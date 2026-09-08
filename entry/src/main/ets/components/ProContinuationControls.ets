@@ -9,6 +9,7 @@ import { RemoteHost } from '../model/RemoteHost';
 export struct ProContinuationControls {
   @StorageProp('currentTheme') theme: string = 'light';
   @StorageProp('accentColor') accent: string = '#007DFF';
+  @Prop protocol: string = 'ssh';
   onPrepare: () => void = (): void => {};
   @State status: string = '';
   @State canClose: boolean = false;
@@ -42,7 +43,7 @@ export struct ProContinuationControls {
     }.width('100%').padding(12)
   }
   build() {
-    ProFeatureGate({ featureId: 'pro.connection.continuation', context: proContinuationContext(), content: this.controls })
+    ProFeatureGate({ featureId: 'pro.connection.continuation', context: proContinuationContext(this.protocol), content: this.controls })
   }
 }
 
@@ -77,7 +78,8 @@ export struct ProIncomingContinuationCard {
   build() {
     if (this.state.incoming) {
       Column({ space: 8 }) {
-        Text('继续另一台设备的 SSH 会话').fontSize(16).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
+        Text(this.state.incomingProtocol === 'rdp' ? '继续另一台设备的 RDP 会话' : '继续另一台设备的 SSH 会话')
+          .fontSize(16).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
         Text(this.state.incomingLabel).fontSize(14).fontColor(this.pal().text).maxLines(2)
         Text(this.state.incomingEndpoint).fontSize(12).fontColor(this.pal().text2).maxLines(3)
         Text(this.state.incomingMessage).fontSize(12).fontColor(this.pal().text2)

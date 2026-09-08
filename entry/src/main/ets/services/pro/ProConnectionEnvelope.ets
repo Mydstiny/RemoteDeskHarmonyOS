@@ -1,3 +1,5 @@
+import { ProRdpConnectionIdentity, validProRdpConnectionIdentity,
+  copyProRdpConnectionIdentity, sameProRdpConnectionIdentity } from './ProRdpConnectionIdentity';
 // A deliberately separate wire model. Never serialize a RemoteHost and strip secrets afterwards.
 export type ProConnectionProtocol = 'ssh' | 'rdp';
 export type ProConnectionPurpose = 'share' | 'continuation';
@@ -9,6 +11,7 @@ export interface ProConnectionView {
   panX: number;
   panY: number;
   inputMode: string;
+  strictBounds?: boolean;
 }
 export interface ProConnectionDescription {
   protocol: ProConnectionProtocol;
@@ -18,6 +21,7 @@ export interface ProConnectionDescription {
   username: string;
   hostReference: string;
   view: ProConnectionView;
+  rdpIdentity?: ProRdpConnectionIdentity;
 }
 export interface ProConnectionEnvelope {
   version: number;
@@ -45,26 +49,34 @@ function finite(value: Object, min: number, max: number): boolean {
   return typeof value === 'number' && Number.isFinite(value) && value >= min && value <= max;
 }
 function viewValid(value: Object, protocol: string): boolean {
-  if (!fields(value, ['sshPane', 'sshDirectory', 'monitor', 'scale', 'panX', 'panY', 'inputMode'])) { return false; }
+  const keys: string[] = ['sshPane', 'sshDirectory', 'monitor', 'scale', 'panX', 'panY', 'inputMode'];
+  if (protocol === 'rdp') { keys.push('strictBounds'); }
+  if (!fields(value, keys)) { return false; }
   const view = value as ProConnectionView;
   if (!text(view.sshDirectory, 4096, true) ||
       (view.sshDirectory !== '' && !view.sshDirectory.startsWith('/')) ||
       (view.sshPane !== 'terminal' && view.sshPane !== 'files') ||
       !finite(view.monitor, 0, 15) || !Number.isInteger(view.monitor) ||
-      !finite(view.scale, 0.1, 8) || !finite(view.panX, -100000, 100000) ||
+      !finite(view.scale, 0.1, protocol === 'rdp' ? 12 : 8) || !finite(view.panX, -100000, 100000) ||
       !finite(view.panY, -100000, 100000) ||
       ['direct', 'touchpad', 'keyboardMouse'].indexOf(view.inputMode) < 0) { return false; }
   // Unused protocol fields have one canonical value; no hidden command or route payload.
   return protocol === 'ssh'
     ? view.monitor === 0 && view.scale === 1 && view.panX === 0 && view.panY === 0 && view.inputMode === 'direct'
-    : view.sshPane === 'terminal' && view.sshDirectory === '';
+    : view.sshPane === 'terminal' && view.sshDirectory === '' && view.monitor === 0 &&
+      typeof view.strictBounds === 'boolean';
 }
 export function copyProConnectionDescription(value: ProConnectionDescription): ProConnectionDescription {
-  return { protocol: value.protocol, label: value.label, host: value.host, port: value.port,
+  const result: ProConnectionDescription = { protocol: value.protocol, label: value.label, host: value.host, port: value.port,
     username: value.username, hostReference: value.hostReference,
     view: { sshPane: value.view.sshPane, sshDirectory: value.view.sshDirectory,
       monitor: value.view.monitor, scale: value.view.scale, panX: value.view.panX,
       panY: value.view.panY, inputMode: value.view.inputMode } };
+  if (value.protocol === 'rdp' && value.rdpIdentity !== undefined) {
+    result.rdpIdentity = copyProRdpConnectionIdentity(value.rdpIdentity);
+    result.view.strictBounds = value.view.strictBounds;
+  }
+  return result;
 }
 export function parseProConnectionEnvelope(serialized: string, now: number = Date.now()): ProConnectionEnvelope | null {
   if (typeof serialized !== 'string' || serialized.length === 0 ||
@@ -75,7 +87,7 @@ export function parseProConnectionEnvelope(serialized: string, now: number = Dat
       return null;
     }
     const value = raw as ProConnectionEnvelope;
-    if (value.version !== 1 || (value.purpose !== 'share' && value.purpose !== 'continuation') ||
+    if ((value.version !== 1 && value.version !== 2) || (value.purpose !== 'share' && value.purpose !== 'continuation') ||
         typeof value.transferId !== 'string' || !/^[a-f0-9]{32}$/.test(value.transferId) ||
         typeof value.channelId !== 'string' || !/^rd_[a-f0-9]{32}$/.test(value.channelId) ||
         !Number.isSafeInteger(value.createdAt) || !Number.isSafeInteger(value.expiresAt) ||
@@ -84,7 +96,9 @@ export function parseProConnectionEnvelope(serialized: string, now: number = Dat
     if (value.purpose === 'continuation'
       ? typeof value.owner !== 'string' || !/^owner-[a-f0-9]{64}$/.test(value.owner)
       : value.owner !== '') { return null; }
-    if (!fields(value.connection, ['protocol', 'label', 'host', 'port', 'username', 'hostReference', 'view'])) { return null; }
+    const keys: string[] = ['protocol', 'label', 'host', 'port', 'username', 'hostReference', 'view'];
+    if (value.version === 2) { keys.push('rdpIdentity'); }
+    if (!fields(value.connection, keys)) { return null; }
     const connection = value.connection;
     if ((connection.protocol !== 'ssh' && connection.protocol !== 'rdp') ||
         !text(connection.label, 120) || !text(connection.host, 253) ||
@@ -93,12 +107,20 @@ export function parseProConnectionEnvelope(serialized: string, now: number = Dat
         !text(connection.hostReference, 128, value.purpose === 'share') ||
         (value.purpose === 'share' && connection.hostReference !== '') ||
         !viewValid(connection.view, connection.protocol)) { return null; }
-    return { version: 1, purpose: value.purpose, transferId: value.transferId, channelId: value.channelId,
+    // V1 SSH stays byte-compatible with existing sharing/continuation clients.
+    // RDP requires V2 and a bound identity; reserved V1 RDP data is not executable.
+    if (connection.protocol === 'ssh' ? value.version !== 1 :
+      value.version !== 2 || value.purpose !== 'continuation' || connection.rdpIdentity === undefined ||
+      !validProRdpConnectionIdentity(connection.rdpIdentity) ||
+      connection.username !== connection.rdpIdentity.username) { return null; }
+    return { version: value.version, purpose: value.purpose, transferId: value.transferId, channelId: value.channelId,
       owner: value.owner, createdAt: value.createdAt, expiresAt: value.expiresAt,
       connection: copyProConnectionDescription(connection) };
   } catch (_error) { return null; }
 }
 export function sameProConnectionEndpoint(a: ProConnectionDescription, b: ProConnectionDescription): boolean {
   return a.protocol === b.protocol && a.host === b.host && a.port === b.port && a.username === b.username &&
-    a.hostReference === b.hostReference;
+    a.hostReference === b.hostReference && (a.protocol !== 'rdp' ||
+      (a.rdpIdentity !== undefined && b.rdpIdentity !== undefined &&
+        sameProRdpConnectionIdentity(a.rdpIdentity, b.rdpIdentity)));
 }

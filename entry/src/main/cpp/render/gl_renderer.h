@@ -153,7 +153,8 @@ public:
     void GetViewportSnapshot(int& vpX, int& vpY, int& vpW, int& vpH,
                              int& sourceWidth, int& sourceHeight,
                              int& surfaceWidth, int& surfaceHeight,
-                             uint64_t& transformVersion) const;
+                             uint64_t& transformVersion,
+                             uint64_t* presentedTransformVersion = nullptr) const;
     RendererCanvasTransformSnapshot GetCanvasTransformSnapshot() const;
 
     // R1: NapiTestRender 使用的 accessor
@@ -250,6 +251,8 @@ private:
     std::atomic<int> snapshotSurfaceWidth_;
     std::atomic<int> snapshotSurfaceHeight_;
     std::atomic<uint64_t> snapshotTransformVersion_;
+    // Success receipt for this exact coherent geometry, published after EGL swap.
+    std::atomic<uint64_t> snapshotPresentedTransformVersion_;
     std::atomic<int> snapshotRotationQuarterTurns_;
     std::atomic<bool> snapshotFlipX_;
     std::atomic<bool> snapshotFlipY_;
@@ -283,7 +286,7 @@ private:
     void   CalculateViewport(int sourceWidth, int sourceHeight,
                              int& vpX, int& vpY, int& vpW, int& vpH) const;
     void   CalculateActiveViewport(int& vpX, int& vpY, int& vpW, int& vpH) const;
-    void   PublishViewportSnapshot(int vpX, int vpY, int vpW, int vpH);
+    void   PublishViewportSnapshot(int vpX, int vpY, int vpW, int vpH, bool presented = false);
     RdpPresentMetrics RenderRawBGRAInternal(const uint8_t* bgraData, int width, int height,
                                             int stride, bool useDirtyRect, int dirtyX,
                                             int dirtyY, int dirtyWidth, int dirtyHeight,

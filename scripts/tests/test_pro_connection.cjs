@@ -22,7 +22,8 @@ function fixture() {
     password: 'NEVER_EXPORT', sshKeyData: 'NEVER_EXPORT', sshKeyPassphrase: 'NEVER_EXPORT',
     sshHostKeyRawBase64: 'NEVER_EXPORT', toJSON() { throw new Error('must not serialize host'); } };
   const context = { abilityInfo: { name: 'EntryAbility' }, applicationInfo: { accessTokenId: 42 },
-    async setMissionContinueState(value) { state.missions.push(value); } };
+    async setMissionContinueState(value) { state.missions.push(value);
+      if(value===0 && state.missionWait) await state.missionWait.promise; } };
   const constants = { ContinueState: { ACTIVE: 0, INACTIVE: 1 }, OnContinueResult: { AGREE: 0, REJECT: 1 } };
   const mocks = {
     '@kit.AbilityKit': { AbilityConstant: constants,
@@ -64,6 +65,7 @@ function fixture() {
     }).outputText;
     const Clock = class extends Date { static now() { return state.now; } };
     vm.runInNewContext(source, { module, exports: module.exports, Date: Clock,
+      AppStorage: { get: () => state.rdpIdentityMode ?? 1 },
       canIUse: () => true, setTimeout(callback, delay) {
         const id = ++state.nextTimer; state.timers.set(id, { callback, delay }); return id;
       }, clearTimeout: id => state.timers.delete(id),
@@ -75,10 +77,11 @@ function fixture() {
           }
         }) } };
         if (id.endsWith('/HostSyncService')) return { HostSyncService: { getInstance: () => ({
-          isReady: () => state.hostReady, getHost: id => state.host?.id === id ? state.host : undefined
+          isReady: () => state.hostReady, getHost: id => state.host?.id === id ? state.host : undefined,
+          getRdpCredential: () => state.credential
         }) } };
         if (id === './ProAppRuntime') return { ProAppRuntime: { getInstance: () => ({ runtime,
-          context: () => ({ protocol: 'ssh', capabilities: [], grantedPermissions: [], requestablePermissions: [] }) }) } };
+          context: protocol => ({ protocol, capabilities: [], grantedPermissions: [], requestablePermissions: [] }) }) } };
         if (id.startsWith('.')) return load(path.resolve(path.dirname(file), id + '.ets'));
         throw new Error('unexpected import ' + id);
       }
@@ -262,6 +265,7 @@ function fixture() {
   }
   return { state, context, policy, adapter, service, envelope, offer, ProConnectionTransaction,
     ProContinuationReceiptChannel, entryAbility, sessionAbility, proxyProfile, terminal,
+    rdpPolicy: load(dir + 'ProRdpConnectionIdentity.ets'),
     key: PRO_CONTINUATION_PARAM, libraryKey: PRO_CONTINUATION_LIBRARY_PARAM };
 }
 
@@ -733,6 +737,79 @@ test('a receiver-card continuation queued after acceptance cannot cancel a newer
     await accepting; assert.equal(connected, 0);
     assert.equal(f.service.incomingId(), change === 'replaced' ? next.transferId : '');
   }
+});
+
+function rdpFixture() {
+  const f=fixture();
+  f.state.host={...f.state.host,protocol:'rdp',host:'desktop.example.test',port:3389,username:'WORK\\alice',
+    customHostname:'',gatewayHost:'',gatewayPort:443,rdpGatewayServerName:'',rdpGatewayTransport:'auto',
+    rdpEndpointMode:'direct_rdp',rdpAuthMode:'password',rdpCredentialId:'',rdpCredentialStorageMode:'saved'};
+  f.identity=f.rdpPolicy.describeProRdpConnectionIdentity(f.state.host,{username:'alice',domain:'WORK'});
+  f.rdpView={sshPane:'terminal',sshDirectory:'',monitor:0,scale:2,panX:50,panY:-10,inputMode:'keyboardMouse',strictBounds:false};
+  f.envelope=()=>({version:2,purpose:'continuation',transferId:'b'.repeat(32),channelId:'rd_'+'c'.repeat(32),
+    owner:f.state.scope.ownerScopeId,createdAt:f.state.now,expiresAt:f.state.now+120000,
+    connection:f.adapter.describeProRdpConnection(f.state.host,f.identity,f.rdpView)});
+  f.offer=()=>({windowId:9,isCurrent:()=>true,describe:()=>f.envelope().connection,close(){f.state.closed=true;}});
+  return f;
+}
+test('RDP source uses V2 identity and separate ready receipt with explicit manual source exit',async()=>{
+  const f=rdpFixture();assert.equal(await f.service.prepare(f.context,f.offer()),true);
+  const params={};assert.equal(await f.service.onContinue(9,params),0);
+  const envelope=JSON.parse(params[f.key]);assert.equal(envelope.version,2);
+  assert.equal(envelope.connection.rdpIdentity.domain,'WORK');assert.equal(params.pageStack,false);assert.equal(params.sourceExit,false);
+  assert.equal(f.state.closed,undefined);const object=f.state.objects[0];
+  object.receipt=JSON.stringify({version:1,transferId:envelope.transferId,owner:envelope.owner,result:'ready'});
+  object.emit(envelope.channelId);assert.equal(f.service.snapshot().sourceCloseAllowed,true);
+  assert.equal(f.state.closed,undefined);assert.equal(f.service.closeConfirmedSource(9),true);assert.equal(f.state.closed,true);
+});
+test('RDP target never confirms a missing or different actual native identity',async()=>{
+  for(const change of [null,{username:'bob'},{domain:'OTHER'},{authMode:'blank_password'},{route:'rdp-route-v2|other'}]){
+    const f=rdpFixture(),e=f.envelope();assert.equal(f.service.ingest(JSON.stringify(e)),true);
+    const host=await f.service.accept(f.context);assert.ok(host);
+    assert.equal(f.service.complete(e.transferId,host,change===null?null:{...f.identity,...change}),false);
+    assert.equal(f.state.objects[0].receipt,'');assert.equal(f.state.closed,undefined);
+    assert.equal(f.service.complete(e.transferId,host,f.identity),true);
+    assert.equal(JSON.parse(f.state.objects[0].receipt).transferId,e.transferId);
+  }
+});
+test('RDP connection-time identity is reobtained locally while saved credentials are re-read without secrets',async()=>{
+  for(const mode of ['connect_time','saved']){
+    const f=rdpFixture(),e=f.envelope();f.state.host.rdpCredentialStorageMode=mode;
+    if(mode==='connect_time')f.state.host.username='';
+    else {
+      f.state.host.rdpCredentialId='credential-1';
+      f.state.credential={username:'WORK\\alice'};
+      Object.defineProperty(f.state.credential,'password',{get(){throw new Error('must not read password');}});
+    }
+    assert.equal(f.service.ingest(JSON.stringify(e)),true);const host=await f.service.accept(f.context);assert.ok(host);
+    if(mode==='saved'){
+      f.state.credential.username='WORK\\bob';assert.equal(f.service.restoreView(e.transferId,host),null);
+      assert.equal(f.service.complete(e.transferId,host,f.identity),false);f.state.credential.username='WORK\\alice';
+    }else assert.equal(f.service.complete(e.transferId,host,{...f.identity,username:'bob'}),false);
+    assert.equal(f.service.complete(e.transferId,host,f.identity),true);
+  }
+});
+test('RDP source and target reject fresh gateway, username, auth mode and account changes',async()=>{
+  const changes=[f=>{f.state.host.customHostname='other-name.example.test';},f=>{f.state.host.username='OTHER\\alice';},
+    f=>{f.state.host.rdpAuthMode='restricted_admin';},f=>{f.state.host.rdpEndpointMode='microsoft_rd_gateway';f.state.host.gatewayHost='gw.example.test';},
+    f=>{f.state.scope={...f.state.scope,generation:2};},f=>{f.state.allowed=false;}];
+  for(const mutate of changes)for(const side of ['source','target']){
+    const f=rdpFixture(),e=f.envelope();
+    if(side==='source'){
+      const description=e.connection;await f.service.prepare(f.context,{...f.offer(),describe:()=>description});
+      mutate(f);assert.equal(await f.service.onContinue(9,{}),1);
+    }else{
+      f.service.ingest(JSON.stringify(e));const host=await f.service.accept(f.context);assert.ok(host);
+      mutate(f);assert.equal(f.service.complete(e.transferId,host,f.identity),false);assert.equal(f.state.objects[0].receipt,'');
+    }
+    assert.equal(f.state.closed,undefined);
+  }
+});
+test('RDP inactive mission is restored if a native/page fence fails while ACTIVE is pending',async()=>{
+  const f=rdpFixture(),wait=deferred();f.state.missionWait=wait;let current=true;
+  const pending=f.service.prepare(f.context,{...f.offer(),isCurrent:()=>current});await settle();
+  assert.ok(f.state.missions.includes(0));current=false;wait.resolve();assert.equal(await pending,false);await settle();
+  assert.equal(f.service.snapshot().sourceWindow,0);assert.equal(f.state.missions.at(-1),1);
 });
 
 (async () => {

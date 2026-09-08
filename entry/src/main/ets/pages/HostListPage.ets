@@ -6354,9 +6354,16 @@ struct HostListPage {
    */
   private openSessionDestination(url: string, params: Record<string, Object>,
     authorizationKind: RemoteSessionWindowAuthorizationKind): void {
-    if (this.proContinuationAttemptId !== '' && url === 'pages/SshTerminal' &&
+    if (this.proContinuationAttemptId !== '' &&
+        (url === 'pages/SshTerminal' || url === 'pages/RemoteDesktop') &&
         this.proContinuationAttemptId === ProContinuationService.getInstance().incomingId()) {
-      params['proConnectionTransferId'] = this.proContinuationAttemptId;
+      const continuedHost = this.srv.getHost((params['hostId'] as string) || '');
+      if (continuedHost !== undefined &&
+          ((url === 'pages/SshTerminal' && continuedHost.protocol === 'ssh') ||
+            (url === 'pages/RemoteDesktop' && continuedHost.protocol === 'rdp')) &&
+          ProContinuationService.getInstance().restoreView(this.proContinuationAttemptId, continuedHost) !== null) {
+        params['proConnectionTransferId'] = this.proContinuationAttemptId;
+      }
     }
     this.proContinuationAttemptId = '';
     if (this.proConnectionShareAttemptId !== '' && url === 'pages/SshTerminal') {

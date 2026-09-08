@@ -28,7 +28,7 @@ Updated: 2026-09-08 Asia/Shanghai
 
 - Base UI: seven public batches independently PASS through primary settings 4719e6dc. Continue remaining forms and API23/26 Phone/Pad/PC fonts, keyboard, reader and performance. Native emulator awaits Huawei agreement acceptance.
 
-- M5 SSH Share Kit eca8f8aa independently PASS. PC independent SSH continuation code gates PASS; checkpoint/review next, then RDP identity/view adapter. Real App Link/fragment and cross-device acceptance remain open.
+- M5 SSH Share Kit eca8f8aa and PC independent SSH continuation 3fc4a578 independently PASS. RDP identity/view code gates PASS; checkpoint and independent review next. Real App Link/fragment and Phone/Pad/PC cross-device acceptance remain open.
 
 0. Pro M5/M6/M7: proceed with connection sharing/official continuation, USB FIDO2 and phone-passkey feasibility, then trusted production purchase/restore/offline/refunds. ACL/App Linking and backend configuration are not confirmed; production checkout and unaccepted features remain disabled.
 
