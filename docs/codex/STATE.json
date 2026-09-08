@@ -3,10 +3,10 @@
   "task": "pro-purchase-foundation",
   "branch": "codex/pro-purchase-foundation",
   "base": "8edc187868e94ed41634e8a6c4c4c072e3a48679",
-  "head": "da9ad9585344516e2ff6e1b34453ae37e3059126",
-  "phase": "free-ui-color-panel-checkpoint-pending",
+  "head": "089c9415dd7eeb67f920799ac0c4e05b9cf8415c",
+  "phase": "free-ui-primary-settings-checkpoint-pending",
   "status": "in-progress",
-  "next": "Commit/review color panel, then primary setting controls/forms and M5 PC/RDP/M6; complete U0-U4/M7 runtime work when external prerequisites are supplied.",
+  "next": "Checkpoint/review primary settings, then continue M5 PC/RDP and M6; finish remaining forms and U0-U4/M7 runtime work when external prerequisites are supplied.",
   "blockers": [
     "M3/U0-U4 device matrix and M4 PC real Share Kit/SFTP file-integrity acceptance remain unverified.",
     "M5 Share Kit App Linking domain, association and actual fragment delivery remain unverified; ServiceInteraction ACL is a separate path. M6 USB/RDP authenticator and phone-passkey RP/origin proof remain pending.",
@@ -90,19 +90,23 @@
       "entry/src/main/ets/components/vnc/VncSheetScaffold.ets",
       "entry/src/main/ets/components/VncSessionToolbar.ets",
       "entry/src/main/ets/components/moonlight/MoonlightSessionToolbar.ets",
-      "entry/src/main/ets/services/RemoteSessionTopBarPolicy.ets"
+      "entry/src/main/ets/services/RemoteSessionTopBarPolicy.ets",
+      "entry/src/main/ets/components/ColorPickerSheet.ets",
+      "entry/src/main/ets/components/AppSettingsChoiceButton.ets"
     ],
     "findings": [],
-    "reviewedHead": "87e384cc0915a7babc6f7e03cb4f22f5d13841b3",
-    "reason": "Grouped cards 87e384cc and previous UI scopes independently PASS; color checkpoint/review next. Entire roadmap and device/release acceptance incomplete."
+    "reviewedHead": "089c9415dd7eeb67f920799ac0c4e05b9cf8415c",
+    "reason": "Color panel two-commit scope independently PASS; primary settings checkpoint/review next. Full roadmap/device/release acceptance remains incomplete."
   },
   "lastVerification": {
-    "testCompile": "PASS exit 0; BUILD SUCCESSFUL in 9 s 200 ms",
-    "assembleHap": "PASS exit 0; signed BUILD SUCCESSFUL in 10 s 441 ms; SignHap 876 ms",
-    "behavior": "PASS 6 production-method behavioral cases: normalized pointer coordinates across widths, edges, invalid/unmeasured/empty inputs and existing HSV/gray persistence dispatch. 11 original lifecycle/conversion/persistence methods byte-identical; coordinate method adds only invalid-geometry rejection. HostList only passes live height and close callback. Disk/cloud writes mocked.",
-    "apiCompatibility": "Existing API23 native Slider/Button/Scroll/Area and Flex spacing since12; no new API26-only import",
-    "device": "NOT RUN; real native slider keyboard/reader, small-window/fonts and actual preference/cloud writes remain open",
-    "scopeBoundary": "Free color panel only; complete prior grouped HostList implementation is unchanged."
+    "testCompile": "PASS exit 0; BUILD SUCCESSFUL in 9 s 690 ms",
+    "assembleHap": "PASS exit 0; signed BUILD SUCCESSFUL in 11 s 32 ms; SignHap 928 ms",
+    "compliance": "PASS Light and git diff --check",
+    "behavior": "PASS 46 scoped builders and 55 original callback token sequences; two identical nested leaf actions consolidated. Six selector value sequences unchanged; all other source and every business/persistence/auth/protocol method byte-identical. 15 fold containers use native visibility.",
+    "sourceIntegrity": "Two complete source SHA256 hashes frozen before both successful code gates; compilation cache EPERM resolved by authorized retry",
+    "apiCompatibility": "Existing native Button/Toggle/Scroll/visibility and Flex spacing since12; no new API26-only import, global font or target change",
+    "device": "NOT RUN; actual fonts/keyboard/reader/window/performance and entire U0-U4 remain open; emulator license unanswered",
+    "scopeBoundary": "Free primary settings only; concurrent RDP/AI/transfer source is excluded."
   },
   "updated": "2026-09-08 Asia/Shanghai",
   "roadmapPaths": [
@@ -294,18 +298,51 @@
       "findings": []
     },
     "colorPanel": {
-      "status": "code-gates-passed-review-pending",
+      "status": "code-independently-reviewed-device-pending",
       "scope": [
         "entry/src/main/ets/components/ColorPickerSheet.ets",
         "entry/src/main/ets/pages/HostListPage.ets"
       ],
-      "reviewStatus": "REVIEW_REQUIRED",
+      "reviewStatus": "PASS",
       "verification": {
         "testCompile": "PASS exit 0; BUILD SUCCESSFUL in 9 s 200 ms",
         "assembleHap": "PASS exit 0; signed BUILD SUCCESSFUL in 10 s 441 ms; SignHap 876 ms",
         "behavior": "PASS 6 production-method behavioral cases: normalized pointer coordinates across widths, edges, invalid/unmeasured/empty inputs and existing HSV/gray persistence dispatch. 11 original lifecycle/conversion/persistence methods byte-identical; coordinate method adds only invalid-geometry rejection. HostList only passes live height and close callback. Disk/cloud writes mocked.",
         "apiCompatibility": "Existing API23 native Slider/Button/Scroll/Area and Flex spacing since12; no new API26-only import",
-        "device": "NOT RUN; real native slider keyboard/reader, small-window/fonts and actual preference/cloud writes remain open"
+        "device": "NOT RUN; real native slider keyboard/reader, small-window/fonts and actual preference/cloud writes remain open",
+        "finalTouchFixGates": {
+          "testCompile": "PASS exit 0; final sparse-touch fix BUILD SUCCESSFUL in 7 s 245 ms",
+          "assembleHap": "PASS exit 0; final sparse-touch fix signed BUILD SUCCESSFUL in 8 s 379 ms; SignHap 993 ms",
+          "independentChecks": "875 coordinate and 33 invalid cases, 2377 preset widths, 10230 header/viewport combinations, four actual Slider callbacks, and eleven sparse/multiple/empty touch cases with actual persistence method and mocked platform stores; disk-failure fallback verified",
+          "compliance": "PASS Light and exact diff; five parallel STATE subtrees and previous receipt hashes preserved",
+          "device": "NOT RUN; actual keyboard/reader/native persistence/cloud and U0-U4 device matrix remain open"
+        },
+        "independentReview": "Independent exact two-commit color-panel scope PASS. Excludes intervening RDP commits da9ad9585 and 52b335239 (the actual parent of 089c9415), and excludes settings batch seven. Eleven original lifecycle/conversion/persistence methods retained. Reviewer verified final two source hashes, measured layout, slider/persistence dispatch, invalid input and sparse touch slots; no remaining finding."
+      },
+      "reviewedCommit": "089c9415dd7eeb67f920799ac0c4e05b9cf8415c",
+      "reviewedCommits": [
+        "5ce6e5f79706ca9096e70a01fed1b1220d635413",
+        "089c9415dd7eeb67f920799ac0c4e05b9cf8415c"
+      ],
+      "reviewerTaskId": "/root/review_pro_plan",
+      "reviewReceiptId": "base-ui-color-089c9415-2026-09-08",
+      "findings": []
+    },
+    "primarySettings": {
+      "status": "code-gates-passed-review-pending",
+      "scope": [
+        "entry/src/main/ets/pages/HostListPage.ets",
+        "entry/src/main/ets/components/AppSettingsChoiceButton.ets"
+      ],
+      "reviewStatus": "REVIEW_REQUIRED",
+      "verification": {
+        "testCompile": "PASS exit 0; BUILD SUCCESSFUL in 9 s 690 ms",
+        "assembleHap": "PASS exit 0; signed BUILD SUCCESSFUL in 11 s 32 ms; SignHap 928 ms",
+        "compliance": "PASS Light and git diff --check",
+        "behavior": "PASS 46 scoped builders and 55 original callback token sequences; two identical nested leaf actions consolidated. Six selector value sequences unchanged; all other source and every business/persistence/auth/protocol method byte-identical. 15 fold containers use native visibility.",
+        "sourceIntegrity": "Two complete source SHA256 hashes frozen before both successful code gates; compilation cache EPERM resolved by authorized retry",
+        "apiCompatibility": "Existing native Button/Toggle/Scroll/visibility and Flex spacing since12; no new API26-only import, global font or target change",
+        "device": "NOT RUN; actual fonts/keyboard/reader/window/performance and entire U0-U4 remain open; emulator license unanswered"
       }
     }
   },

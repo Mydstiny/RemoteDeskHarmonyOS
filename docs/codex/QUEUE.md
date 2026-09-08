@@ -24,7 +24,7 @@ Updated: 2026-09-08 Asia/Shanghai
 
 
 
-- Base UI: five controls/navigation/toolbar/homepage/grouped-card increments independently PASS. Theme color has current compile/signed and actual-method coordinate/invalid-input checks; checkpoint/review next, then primary settings/forms and U0-U4 device/performance. Emulator license confirmation pending; public UI free.
+- Base UI: primary settings code gates PASS; checkpoint/review next, then remaining forms and actual API23/26 Phone/Pad/PC fonts, keyboard, reader and performance. Previous six public UI batches independently PASS, including color sparse-touch correction 089c9415. Native emulator startup awaits Huawei agreement acceptance; M5 PC/RDP and M6 remain active.
 
 - M5 SSH Share Kit eca8f8aa independently PASS (code and Pro Release checks). Configure and verify the real App Link/fragment path; PC continuation, RDP and cross-device acceptance remain open. Continue free public UI in parallel with these external prerequisites.
 
