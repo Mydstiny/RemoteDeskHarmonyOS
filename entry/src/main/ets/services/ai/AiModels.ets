@@ -1,0 +1,122 @@
+import { parseEndpointHost, parseEndpointServerIdentity } from '../EndpointAddressPolicy';
+/** Local AI configuration. No credential is projected into RemoteHost/CloudStore. */
+export type AiBackend = 'codex' | 'dsh';
+export type AiTransportKind = 'lan' | 'rustdesk';
+export interface AiHost {
+  id: string;
+  owner: string;
+  revision: number;
+  label: string;
+  backend: AiBackend;
+  address: string;
+  port: number;
+  serverName: string;
+  groupId: string;
+  sortOrder: number;
+  lastConnected: number;
+  createdAt: number;
+  transport: AiTransportKind;
+  relayHostId: string;
+  projectId: string;
+}
+export interface AiIdentity {
+  ca: string;
+  certificate: string;
+  privateKey: string;
+  deviceId: string;
+  instance: string;
+}
+export interface AiInvite { code: string; expires: number; ca: string; serverInstance: string; }
+export interface AiSettings {
+  showExecution: boolean;
+  textSize: number;
+  reconnectOnForeground: boolean;
+  defaultBackend: AiBackend;
+}
+export interface AiPendingOperation {
+  id: string;
+  hostId: string;
+  sessionId: string;
+  createdAt: number;
+  body: string;
+  receipt: string;
+}
+export interface AiProject { id: string; title: string; }
+export interface AiSession { id: string; project: string; title: string; archived: boolean; }
+export interface AiCapabilities {
+  methods: string[];
+  permissionModes: string[];
+  collaborationModes: string[];
+}
+export interface AiEpoch { id: string; device: string; expires: number; }
+export interface AiHandshake {
+  version: number;
+  engine: string;
+  instance: string;
+  deviceId: string;
+  runtime: string;
+  role: string;
+  epoch: AiEpoch;
+  capabilities: Record<string, Object>;
+}
+export interface AiOperationReceipt {
+  operationId: string;
+  status: string;
+  epoch: string;
+  result?: Object;
+  error?: string;
+}
+export interface AiEnvelope { result?: Object; operation?: AiOperationReceipt; error?: string; }
+export interface AiEvent {
+  cursor: number;
+  session: string;
+  project: string;
+  runtime: string;
+  event: Record<string, Object>;
+}
+export interface AiApproval { id: string; request: Record<string, Object>; expires: number; }
+export interface AiTranscriptItem {
+  id: string;
+  role: string;
+  title: string;
+  text: string;
+  state: string;
+  turnId: string;
+}
+export function defaultAiSettings(): AiSettings {
+  return { showExecution: true, textSize: 15, reconnectOnForeground: true, defaultBackend: 'codex' };
+}
+export function emptyAiHost(owner: string, id: string, backend: AiBackend = 'codex'): AiHost {
+  return { id, owner, revision: 0, label: '', backend, address: '', port: backend === 'codex' ? 9443 : 9444,
+    serverName: '', groupId: '', sortOrder: 0, lastConnected: 0, createdAt: Date.now(),
+    transport: 'lan', relayHostId: '', projectId: '' };
+}
+export function aiIdValid(id: string): boolean { return /^[A-Za-z0-9_-]{1,100}$/.test(id); }
+export function aiOwnerValid(owner: string): boolean { return /^owner-[a-f0-9]{64}$/.test(owner); }
+export function aiHostError(host: AiHost): string {
+  if (!aiIdValid(host.id) || !aiOwnerValid(host.owner)) { return '请先登录当前华为账号'; }
+  if (host.label.trim().length === 0 || host.label.length > 100) { return '请输入 1–100 字的主机名称'; }
+  if (host.backend !== 'codex' && host.backend !== 'dsh') { return '请选择 Codex 或 DSH'; }
+  if (host.transport !== 'lan') { return 'RustDesk 中继尚未开放'; }
+  if (!parseEndpointHost(host.address, 'runtime').ok) { return '请输入有效的电脑 IP 或域名，不含协议和端口'; }
+  if (!Number.isInteger(host.port) || host.port < 1 || host.port > 65535) { return '端口应为 1–65535'; }
+  if (host.serverName !== '' && (!parseEndpointServerIdentity(host.serverName).ok ||
+    host.serverName.startsWith('.') || host.serverName.endsWith('.') || host.serverName.includes('*'))) {
+    return '证书服务器名称无效';
+  }
+  if (host.groupId.length > 100 || host.projectId.length > 100 ||
+    !Number.isSafeInteger(host.revision) || host.revision < 0 ||
+    !Number.isSafeInteger(host.sortOrder) || !Number.isSafeInteger(host.createdAt) ||
+    !Number.isSafeInteger(host.lastConnected)) { return '主机信息无效'; }
+  return '';
+}
+export function aiSameEndpoint(a: AiHost, b: AiHost): boolean {
+  return a.owner === b.owner && a.backend === b.backend && a.address === b.address &&
+    a.port === b.port && a.serverName === b.serverName && a.transport === b.transport &&
+    a.relayHostId === b.relayHostId;
+}
+export function aiSettingsValid(settings: AiSettings): boolean {
+  return typeof settings.showExecution === 'boolean' && typeof settings.reconnectOnForeground === 'boolean' &&
+    Number.isInteger(settings.textSize) && settings.textSize >= 12 && settings.textSize <= 22 &&
+    (settings.defaultBackend === 'codex' || settings.defaultBackend === 'dsh');
+}

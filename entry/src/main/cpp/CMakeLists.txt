@@ -125,6 +125,8 @@ set(TERMINAL_SOURCES
 
 # -- 安全管理 --
 set(SECURITY_SOURCES
+    ai/ai_tls.cpp
+    ai/ai_napi.cpp
     security/crypto_utils.cpp
     security/host_locker.cpp
     security/security_napi.cpp

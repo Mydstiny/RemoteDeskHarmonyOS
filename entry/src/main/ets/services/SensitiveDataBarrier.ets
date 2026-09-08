@@ -14,6 +14,8 @@ import { VncSessionCredentialHandoff } from './VncSessionCredentialHandoff';
 import { RdpSessionCredentialHandoff } from './RdpSessionCredentialHandoff';
 import { VncPlaintextDecisionHandoff } from './VncPlaintextDecisionHandoff';
 import { MoonlightDataLifecycleBarrier } from './MoonlightDataLifecycleBarrier';
+import { AiLifecycle } from './ai/AiLifecycle';
+import { AiTransport } from './ai/AiTransport';
 
 /**
  * One transition boundary shared by login, logout, account switch and restore.
@@ -36,10 +38,13 @@ export class SensitiveDataBarrier {
   }
 
   async drain(reason: string): Promise<boolean> {
+    AiLifecycle.invalidateAll();
+    AiTransport.cancelAll();
     // Invalidate the ArkTS handoff before the first await. Native route probes
     // may already own a synchronous copy, so cancel and drain those workers
     // before the account/store scope is allowed to change.
     RdpSessionCredentialHandoff.getInstance().clearAll();
+    if (!(await AiTransport.drain(10000))) { return false; }
     if (!(await ExtensionLoader.getInstance()
       .prepareRdpPreflightScopeTransition(10000))) {
       hilog.error(0x0001, 'AccountSession',

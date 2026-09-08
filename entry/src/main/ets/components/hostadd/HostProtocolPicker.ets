@@ -92,6 +92,8 @@ export struct HostProtocolPicker {
         resolveHostProtocolPickerOption('ssh', true))
       this.protocolOption('vnc', 'VNC', '跨平台屏幕控制、直连与 UltraVNC Repeater',
         resolveHostProtocolPickerOption('vnc', true))
+      this.protocolOption('ai', '远程 AI · Pro', 'Codex 与 DSH 会话、审批和代码差异',
+        resolveHostProtocolPickerOption('ai', true))
       this.protocolOption('moonlight', 'Moonlight', '低延迟游戏与桌面串流',
         resolveHostProtocolPickerOption('moonlight',
           this.moonlightProtocolAvailable, this.moonlightFabEntryAvailable))

@@ -1,3 +1,5 @@
+import { AiLifecycle } from './ai/AiLifecycle';
+import { AiTransport } from './ai/AiTransport';
 import { picker, fileIo } from '@kit.CoreFileKit';
 import { util } from '@kit.ArkTS';
 import { hilog } from '@kit.PerformanceAnalysisKit';
@@ -308,10 +310,14 @@ export class LocalBackupService {
       this.lastErrorCode = 'owner_mismatch';
       return false;
     }
-    const restored: boolean =
-      await CloudSyncCoordinator.getInstance().runExclusiveRestore(
-        (): Promise<boolean> =>
-          this.cloud.mergePortableBackup(plan));
+    const finishAiRestore = AiLifecycle.beginRestore();
+    let restored = false;
+    try {
+      AiTransport.cancelAll();
+      if (!(await AiTransport.drain())) { this.lastErrorCode = 'restore_failed'; return false; }
+      restored = await CloudSyncCoordinator.getInstance().runExclusiveRestore(
+        (): Promise<boolean> => this.cloud.mergePortableBackup(plan));
+    } finally { finishAiRestore(); }
     this.lastErrorCode = restored ? 'cancelled' : 'restore_failed';
     if (restored) {
       this.selectedPreview = null;

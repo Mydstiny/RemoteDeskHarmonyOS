@@ -1,5 +1,23 @@
 import { NativeVideoDiagnosticEvidence } from './VideoDiagnosticEvidence';
 declare module 'librdpnapi.so' {
+
+  export interface AiTlsRequestOptions {
+    id: string;
+    address: string;
+    serverName: string;
+    port: number;
+    ca: string;
+    certificate?: string;
+    privateKey?: string;
+    path: string;
+    body?: string;
+    timeoutMs: number;
+  }
+  export interface AiTlsResponse { status: number; body: ArrayBuffer; }
+  export interface AiGeneratedIdentity { csr: string; privateKey: string; }
+  export function aiTlsRequest(options: AiTlsRequestOptions, onChunk?: (data: ArrayBuffer) => void): Promise<AiTlsResponse>;
+  export function aiGenerateIdentity(request: { id: string }): Promise<AiGeneratedIdentity>;
+  export function aiCancelRequest(request: { id: string }): void;
   export const VERSION: SessionVersionInfo;
 
   export function listProtocols(): ProtocolInfo[];

@@ -1,3 +1,8 @@
+import { AiHostEditor } from '../components/ai/AiHostEditor';
+import { AiHostService, projectAiHost, aiHostId } from '../services/ai/AiHostService';
+import { AiHost } from '../services/ai/AiModels';
+import { AiAccess, AiAccountLease } from '../services/ai/AiAccess';
+import { AiLocalStore } from '../services/ai/AiLocalStore';
 import { ProIncomingContinuationCard } from '../components/ProContinuationControls';
 import { ProIncomingConnectionShareCard } from '../components/ProConnectionShareControls';
 import { ProConnectionShareReceiver } from '../services/pro/ProConnectionShareReceiver';
@@ -1903,7 +1908,35 @@ struct HostListPage {
   private proConnectionShareDraftId: string = '';
   private proConnectionShareAttemptId: string = '';
 
+  @State private aiEditingHost: AiHost | null = null;
+  private aiSheetGeneration: number = 0;
+  private aiSheetAccount: AiAccountLease | null = null;
+  private pendingAiAccount: AiAccountLease | null = null;
+  private pendingAiConnectId: string = '';
+  private aiStopStore: () => void = (): void => {};
+  private aiStopAccess: () => void = (): void => {};
+  private async refreshAiHosts(): Promise<void> {
+    await AiHostService.getInstance().refresh(getContext(this) as common.UIAbilityContext);
+    if (this.pageActive) { this.refreshHostListView(true); }
+  }
+  private async openAiHost(id: string): Promise<void> {
+    const host = AiHostService.getInstance().find(id);
+    if (host === null || !this.pageActive || this.appInBackground) { return; }
+    try {
+      AiAccess.getInstance().assertExecute(AiAccess.getInstance().capture(), host.backend);
+      await router.pushUrl({ url: 'pages/RemoteAiWorkspace', params: { hostId: id } });
+    } catch (_error) { promptAction.showToast({ message: '请确认当前账号的 Pro 远程 AI 功能已开放', duration: 2200 }); }
+  }
+  private async removeAiHost(host: RemoteHost): Promise<void> {
+    try {
+      await AiLocalStore.getInstance().removeHost(AiAccess.getInstance().capture(), aiHostId(host));
+      await this.refreshAiHosts();
+    } catch (_error) { promptAction.showToast({ message: '删除 AI 主机失败，请重试', duration: 2200 }); }
+  }
+
   async aboutToAppear(): Promise<void> {
+    this.aiStopStore = AiLocalStore.getInstance().subscribe((): void => { void this.refreshAiHosts(); });
+    this.aiStopAccess = AiAccess.getInstance().subscribe((): void => { AiHostService.getInstance().clear(); void this.refreshAiHosts(); });
     this.pageActive = true;
     this.proContinuationStop?.();
     this.proContinuationStop = ProContinuationService.getInstance().subscribe((): void => {
@@ -3929,6 +3962,16 @@ struct HostListPage {
   }
 
   private handleAddSheetDisappear(): void {
+    const pendingAiId = this.pendingAiConnectId, pendingAiAccount = this.pendingAiAccount;
+    this.pendingAiConnectId = ''; this.pendingAiAccount = null; this.aiEditingHost = null;
+    const aiGeneration = ++this.aiSheetGeneration;
+    if (pendingAiId !== '' && pendingAiAccount !== null) {
+      setTimeout((): void => {
+        if (aiGeneration === this.aiSheetGeneration && !this.showAddSheet && AiAccess.getInstance().current(pendingAiAccount)) {
+          void this.openAiHost(pendingAiId);
+        }
+      }, 100);
+    }
     const moonlightDraftWasOpen: boolean = this.modernAddProtocol === 'moonlight';
     const moonlightDraftWasCommitted: boolean = this.moonlightAddCommitted;
     if (moonlightDraftWasOpen && !moonlightDraftWasCommitted) {
@@ -5208,6 +5251,7 @@ struct HostListPage {
   }
 
   aboutToDisappear(): void {
+    this.aiStopStore(); this.aiStopAccess();
     this.proContinuationStop?.(); this.proContinuationStop = null;
     this.proConnectionShareStop?.(); this.proConnectionShareStop = null;
     this.clearProConnectionShareDraft();
@@ -5505,6 +5549,7 @@ struct HostListPage {
       // account lease. Reload it on the same lifecycle/data-change cadence as
       // the RDP/RustDesk/SSH/VNC cards.
       this.refreshMoonlightDirectory();
+      await AiHostService.getInstance().refresh(getContext(this) as common.UIAbilityContext);
       this.refreshHostListView();
       this.rdpCredentials = this.srv.getAllRdpCredentials();
       this.rdpCount = this.srv.getRdpCount();
@@ -5638,6 +5683,7 @@ struct HostListPage {
     for (let i = 0; i < vncViews.length; i++) {
       nextHosts.push(projectVncHost(vncViews[i]));
     }
+    AiHostService.getInstance().list().forEach((host: AiHost): void => { nextHosts.push(projectAiHost(host)); });
     this.hostCount = nextHosts.length;
     this.lockedCount = 0;
     for (let i = 0; i < nextHosts.length; i++) {
@@ -5989,6 +6035,8 @@ struct HostListPage {
   private async doHostBatchDelete(): Promise<void> {
     const selectedKeys: string[] = Array.from(this.hostSelectedIds);
     if (selectedKeys.length === 0) { return; }
+    let aiLease: AiAccountLease | null = null;
+    try { aiLease = AiAccess.getInstance().capture(); } catch (_error) {}
     const remoteHosts: RemoteHost[] = [];
     const moonlightViews: MoonlightHostLocalView[] = [];
     for (let index: number = 0; index < selectedKeys.length; index++) {
@@ -6090,7 +6138,12 @@ struct HostListPage {
     for (let index: number = 0; index < remoteHosts.length; index++) {
       const host: RemoteHost = remoteHosts[index];
       const vncId: string = this.vncRecordIdForHost(host);
-      if (vncId !== '') {
+      if (host.protocol === 'ai') {
+        try {
+          if (aiLease === null) { throw new Error('AI_ACCOUNT_CHANGED'); }
+          await AiLocalStore.getInstance().removeHost(aiLease, aiHostId(host));
+        } catch (_error) { failedKeys.add(remoteHostCardKey(host.id)); }
+      } else if (vncId !== '') {
         if (!this.vncHosts.remove(vncId)) { failedKeys.add(remoteHostCardKey(host.id)); }
       } else {
         regularIds.push(host.id);
@@ -6542,6 +6595,7 @@ struct HostListPage {
   }
 
   private async connectToHost(host: RemoteHost, continuationId: string = '', shareId: string = ''): Promise<void> {
+    if (host.protocol === 'ai') { await this.openAiHost(aiHostId(host)); return; }
     // Every explicit new attempt replaces the previous local continuation route token.
     this.proContinuationAttemptId = continuationId;
     if (continuationId === '') { ProContinuationService.getInstance().cancelIncoming(); }
@@ -9811,6 +9865,7 @@ struct HostListPage {
   }
 
   private async toggleLock(host: RemoteHost): Promise<void> {
+    if (host.protocol === 'ai') { return; }
     const r = await showLockGate(host.label, 'biometric');
     if (!r.ok) {
       const msg: string = lockGateErrorMessage(r);
@@ -10701,6 +10756,14 @@ struct HostListPage {
 
   // 编辑主机 (锁定状态需先鉴权)
   private async editHost(host: RemoteHost): Promise<void> {
+    if (host.protocol === 'ai') {
+      if (!this.pageActive || this.appInBackground) { return; }
+      this.aiEditingHost = AiHostService.getInstance().find(aiHostId(host));
+      if (this.aiEditingHost === null) { return; }
+      this.aiSheetGeneration++; this.aiSheetAccount = AiAccess.getInstance().capture();
+      this.proto = 'ai'; this.modernAddProtocol = 'ai'; this.addSheetShowsModernPicker = false;
+      this.openSheetSafely((): void => { this.showAddSheet = true; }); return;
+    }
     if (!this.pageActive || this.appInBackground) { return; }
     const vncHostId: string = this.vncRecordIdForHost(host);
     if (vncHostId !== '') {
@@ -10923,6 +10986,7 @@ struct HostListPage {
 
   // 直接删除主机 (滑动触发)
   private deleteHost(host: RemoteHost): void {
+    if (host.protocol === 'ai') { void this.removeAiHost(host); return; }
     const vncHostId: string = this.vncRecordIdForHost(host);
     let removed: boolean = false;
     if (vncHostId !== '') {
@@ -10963,6 +11027,7 @@ struct HostListPage {
     }).then((result: Object): void => {
       const r: Record<string, number> = result as Record<string, number>;
       if (r['index'] === 1) {
+        if (host.protocol === 'ai') { void this.removeAiHost(host); return; }
         const vncHostId: string = this.vncRecordIdForHost(host);
         const removed: boolean = vncHostId !== ''
           ? this.vncHosts.remove(vncHostId)
@@ -12650,6 +12715,7 @@ struct HostListPage {
                   this.sidebarTab('SSH 终端', protocolIcon('ssh'), 2)
                   this.sidebarTab('VNC 主机', protocolIcon('vnc'), 3)
                 }
+                this.sidebarTab('远程 AI · Pro', protocolIcon('ai'), 8)
                 this.sidebarMoonlightTab()
                 this.sidebarTab('密钥保险库', protocolIcon('key_vault'), 4)
                 this.sidebarTab('2FA 验证器', protocolIcon('totp'), 5)
@@ -12664,7 +12730,7 @@ struct HostListPage {
 
             // 主内容区 (hostContent 使用 updateHostFilter 预过滤的数据源)
             Column() {
-              if (this.curTab <= 3 || this.curTab === DESKTOP_MOONLIGHT_TAB) { this.hostContent() }
+              if (this.curTab <= 3 || this.curTab === DESKTOP_MOONLIGHT_TAB || this.curTab === 8) { this.hostContent() }
               else if (this.curTab === 6) { this.relayContent() }
               else { this.keyVaultContent() }
             }.layoutWeight(1).height('100%')
@@ -12741,9 +12807,9 @@ struct HostListPage {
         .onClick(() => {
           if (this.isDesktopDevice && this.breakpoint === 'xl') {
             // PC 全屏侧边栏: 所有主机协议共用同一添加 Sheet 宿主。
-            if (this.curTab <= 3 || this.curTab === DESKTOP_MOONLIGHT_TAB) {
+            if (this.curTab <= 3 || this.curTab === DESKTOP_MOONLIGHT_TAB || this.curTab === 8) {
               this.resetForm();
-              const nextProto: string = this.activeFilterProto !== '' ? this.activeFilterProto : 'rdp';
+              const nextProto: string = this.curTab === 8 ? 'ai' : this.activeFilterProto !== '' ? this.activeFilterProto : 'rdp';
               this.switchHostProtocol(nextProto, RemoteHost.getDefaultPort(nextProto));
               const modernPicker: boolean =
                 this.curTab === DESKTOP_MOONLIGHT_TAB ||
@@ -12897,7 +12963,7 @@ struct HostListPage {
       this.curTab = index;
       if (this.isDesktopDevice) {
         const titles: string[] = ['RDP 远程主机', 'RustDesk 远程主机', 'SSH 终端', 'VNC 主机', '', '', '中继服务器'];
-        this.hostPageTitle = titles[index] || '';
+        this.hostPageTitle = index === 8 ? '远程 AI · Pro' : titles[index] || '';
         if (index === 4) { this.keyVaultInnerTab = 0; }
         if (index === 5) { this.keyVaultInnerTab = 1; }
       }
@@ -13186,6 +13252,7 @@ struct HostListPage {
 
   private hostGroupIconForHost(host: RemoteHost): Resource {
     const type: HostGroupType | null = hostGroupTypeForHost(host);
+    if (type === 'ai') { return protocolIcon('ai'); }
     if (type === 'rustdesk') { return protocolIcon('rustdesk'); }
     if (type === 'ssh') { return protocolIcon('ssh'); }
     if (type === 'vnc') { return protocolIcon('vnc'); }
@@ -13234,7 +13301,7 @@ struct HostListPage {
   }
 
   private hostGroupCanProbe(host: RemoteHost): boolean {
-    return !(host.protocol === 'rustdesk' && host.rustdeskDirectEnabled);
+    return host.protocol !== 'ai' && !(host.protocol === 'rustdesk' && host.rustdeskDirectEnabled);
   }
 
   private toggleHostGroup(type: HostGroupType): void {
@@ -13428,6 +13495,7 @@ struct HostListPage {
           }
           .width(36).height(36).borderRadius(18).padding(0).backgroundColor(this.pal().surface)
           .margin({ left: 8 }).accessibilityText(host.locked ? '解锁' : '上锁')
+          .visibility(host.protocol === 'ai' ? Visibility.None : Visibility.Visible)
           .onClick((): void => { void this.toggleLock(host); })
           Button() {
             SymbolGlyph($r('sys.symbol.ohos_trash')).fontSize(16).fontColor([this.pal().danger])
@@ -13691,10 +13759,12 @@ struct HostListPage {
         this.hostGroupedPhoneGroup('rustdesk')
         this.hostGroupedPhoneGroup('ssh')
         this.hostGroupedPhoneGroup('vnc')
+        this.hostGroupedPhoneGroup('ai')
         this.moonlightGroupedPhoneGroup()
       } else {
         this.hostGroupedDesktopRow('rdp', 'rustdesk')
         this.hostGroupedDesktopRow('ssh', 'vnc')
+        this.hostGroupedPhoneGroup('ai')
         this.moonlightGroupedDesktopRow()
       }
     }
@@ -15007,7 +15077,7 @@ struct HostListPage {
   private hostActionPopupWidth(host: RemoteHost): number {
     const labels: string[] = ['编辑', host.locked ? '解锁' : '上锁', '多选 / 排序', '删除'];
     if (host.protocol === 'ssh') { labels.push('部署公钥'); }
-    if (!isVncHostProjection(host)) {
+    if (!isVncHostProjection(host) && host.protocol !== 'ai') {
       labels.push(host.groupId === 'ops' ? '移出工作组' : '加入 ops 工作组');
     }
     let longestTextVp: number = 0;
@@ -15056,6 +15126,7 @@ struct HostListPage {
         Text(host.locked ? '解锁' : '上锁').fontSize(13).fontColor(this.pal().text).fontFamily(this.font()).margin({ left: 8 })
       }
       .width('100%').padding({ left: 12, right: 12, top: 8, bottom: 8 })
+      .visibility(host.protocol === 'ai' ? Visibility.None : Visibility.Visible)
       .onClick(() => { animateTo({ duration: 150 }, () => { this.hostActionPopupId = ''; }); this.toggleLock(host); })
 
       Divider().strokeWidth(0.5).color(this.pal().cardBorder).width('100%')
@@ -15073,7 +15144,7 @@ struct HostListPage {
 
       Divider().strokeWidth(0.5).color(this.pal().cardBorder).width('100%')
 
-      if (!isVncHostProjection(host)) {
+      if (!isVncHostProjection(host) && host.protocol !== 'ai') {
         Row() {
           SymbolGlyph($r('sys.symbol.folder_badge_plus'))
             .fontSize(16).fontColor([this.pal().text])
@@ -15129,6 +15200,7 @@ struct HostListPage {
       .width(48).height(48).borderRadius(12)
       .backgroundColor(host.locked ? this.pal().success : this.accentColor)
       .margin({ left: 4 })
+      .visibility(host.protocol === 'ai' ? Visibility.None : Visibility.Visible)
       .onClick(() => { this.toggleLock(host); })
 
       if (host.protocol === 'rustdesk' && !host.rustdeskDirectEnabled) {
@@ -16315,6 +16387,11 @@ struct HostListPage {
         ListItem() {
           this.settingsAccordionHeader(SETTINGS_SECTION_VNC, protocolIcon('vnc'),
             'VNC', '连接、画面、输入、性能监视和证书信任')
+        }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 10 })
+
+        ListItem() {
+          this.protocolActionRow(protocolIcon('ai'), '远程 AI · Pro', '电脑配对、显示偏好与本机数据管理',
+            (): void => { router.pushUrl({ url: 'pages/AiSettingsPage' }); })
         }.width('100%').padding({ left: 20, right: 20 }).margin({ bottom: 10 })
 
         // --- VNC protocol settings: leaf bindSheets, not a cloud-data card ---
@@ -19203,6 +19280,18 @@ struct HostListPage {
         },
         onClose: (): void => { this.requestAddSheetClose(); }
       })
+    } else if (this.activeHostAddProtocol() === 'ai') {
+      AiHostEditor({ host: this.aiEditingHost, modern: resolveFabAddStyle(this.fabAddStyle, this.isDesktopDevice) === 'modern',
+        onClose: (): void => { this.requestAddSheetClose(); },
+        onSaved: (id: string, connect: boolean): void => {
+          const generation = this.aiSheetGeneration, account = this.aiSheetAccount;
+          void this.refreshAiHosts().then((): void => {
+            if (generation !== this.aiSheetGeneration || !this.showAddSheet || !this.pageActive ||
+              account === null || !AiAccess.getInstance().current(account)) { return; }
+            this.pendingAiConnectId = connect ? id : ''; this.pendingAiAccount = account; this.requestAddSheetClose();
+          });
+        }
+      })
     } else if (this.modernAddProtocol === 'rdp') {
       RdpAddFlow({
         credentials: this.rdpCredentials,
@@ -19618,6 +19707,7 @@ struct HostListPage {
             this.protoBtn('RustDesk', 'rustdesk', 21116)
             this.protoBtn('VNC', 'vnc', 5900)
             this.protoBtn('SSH', 'ssh', 22)
+            this.protoBtn('AI · Pro', 'ai', 9443)
           }.width('100%').margin({ bottom: 12 })
 
           // 名称
@@ -21099,6 +21189,8 @@ struct HostListPage {
   private resetForm(): void {
     this.clearProConnectionShareDraft();
     this.editingHostId = '';
+    this.aiSheetGeneration++; this.aiEditingHost = null;
+    try { this.aiSheetAccount = AiAccess.getInstance().capture(); } catch (_error) { this.aiSheetAccount = null; }
     this.label = ''; this.proto = 'rdp'; this.hostAddr = ''; this.portVal = 3389;
     this.rdpPortVal = 3389; this.sshPortVal = 22;
     this.username = ''; this.sheetPwd = ''; this.chn = ''; this.sheetErr = '';

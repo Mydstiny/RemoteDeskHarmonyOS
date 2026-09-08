@@ -61,6 +61,9 @@ namespace ClipboardBridgeNapi {
 namespace ExtensionLoaderNapi {
     napi_value Init(napi_env env, napi_value exports);
 }
+namespace RemoteAiNapi {
+    napi_value Init(napi_env env, napi_value exports);
+}
 namespace SecurityNapi {
     napi_value Init(napi_env env, napi_value exports);
 }
@@ -162,6 +165,7 @@ static napi_value Init(napi_env env, napi_value exports) {
 
     // 安全管理
     SecurityNapi::Init(env, exports);
+    RemoteAiNapi::Init(env, exports);
     OH_LOG_INFO(LOG_APP, "[NAPI] Security 已注册");
 
     // 终端核心 (Rust terminal_core bridge)

@@ -1,6 +1,6 @@
 import { ConnectionHealth, RemoteHost } from '../model/RemoteHost';
 
-export type HostGroupType = 'rdp' | 'rustdesk' | 'ssh' | 'vnc';
+export type HostGroupType = 'rdp' | 'rustdesk' | 'ssh' | 'vnc' | 'ai';
 export type HostPresenceState = 'online' | 'recently_online' | 'offline' | 'unknown' | 'checking';
 
 export interface HostPresenceSummary {
@@ -25,7 +25,7 @@ export const HOST_PRESENCE_PROBE_PENDING: string = 'probe_pending';
 export const HOST_PRESENCE_PROBE_OFFLINE: string = 'probe_offline';
 export const HOST_PRESENCE_PROBE_UNKNOWN: string = 'probe_unknown';
 
-const HOST_GROUP_TYPES: HostGroupType[] = ['rdp', 'rustdesk', 'ssh', 'vnc'];
+const HOST_GROUP_TYPES: HostGroupType[] = ['rdp', 'rustdesk', 'ssh', 'vnc', 'ai'];
 
 export function hostGroupTypes(): HostGroupType[] {
   return HOST_GROUP_TYPES.slice();
@@ -33,6 +33,7 @@ export function hostGroupTypes(): HostGroupType[] {
 
 export function hostGroupTitle(type: HostGroupType): string {
   switch (type) {
+    case 'ai': return '远程 AI · Pro';
     case 'rdp': return 'RDP';
     case 'rustdesk': return 'RustDesk';
     case 'ssh': return 'SSH';
@@ -43,6 +44,7 @@ export function hostGroupTitle(type: HostGroupType): string {
 
 export function hostGroupSubtitle(type: HostGroupType): string {
   switch (type) {
+    case 'ai': return 'Codex 与 DSH 工作区';
     case 'rdp': return 'Windows 远程桌面';
     case 'rustdesk': return '跨平台远程控制';
     case 'ssh': return '终端与服务器';
@@ -53,7 +55,7 @@ export function hostGroupSubtitle(type: HostGroupType): string {
 
 export function hostGroupTypeForHost(host: RemoteHost): HostGroupType | null {
   if (host.protocol === 'rdp' || host.protocol === 'rustdesk' ||
-    host.protocol === 'ssh' || host.protocol === 'vnc') {
+    host.protocol === 'ssh' || host.protocol === 'vnc' || host.protocol === 'ai') {
     return host.protocol as HostGroupType;
   }
   return null;

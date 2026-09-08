@@ -52,6 +52,12 @@ function connectionShare(): ProFeature {
   feature.capabilities = ['SystemCapability.Collaboration.HarmonyShare'];
   return feature;
 }
+function remoteAi(id: string, title: string, description: string): ProFeature {
+  const feature = planned(id, title, description);
+  feature.availability = 'experimental';
+  feature.protocols = ['ai'];
+  return feature;
+}
 // Returned declarations are owned by the caller; UI cannot mutate the authority catalog.
 export function proFeatures(): ProFeature[] {
   return [
@@ -61,6 +67,10 @@ export function proFeatures(): ProFeature[] {
     planned('pro.workspaces', '工作区与布局', '保存常用会话组合，让每次开工更从容。'),
     planned('pro.hostManagement', '高级主机管理', '智能分组与批量配置，减少重复操作。'),
     planned('pro.personalization', '个性化方案', '多套工具栏、快捷键与外观方案。'),
+    remoteAi('pro.ai.workspace', '远程 AI 工作台', '在自己的电脑上运行 AI，查看执行过程、批准操作并恢复会话。'),
+    remoteAi('pro.ai.codex', 'Codex 远程控制', '连接电脑端 Codex 插件，使用原生会话、审批与文件差异。'),
+    remoteAi('pro.ai.dsh', 'DSH 远程控制', '连接电脑端 DSH 插件，使用已配置的模型与原生工具。'),
+    planned('pro.ai.rustdeskTransport', 'AI 跨网连接', '后续通过自建 RustDesk 服务连接电脑上的 AI 工作台。'),
     appIcon(),
     knockTransfer(),
     connectionShare(),

@@ -4,7 +4,7 @@ Updated: 2026-09-08 Asia/Shanghai
 
 ## Now
 
-- Remote AI: native Codex/DSH v0.3.0 released and permanently deployed locally; no Docker. [Pinned installation prompts](plans/2026-09-07-remote-ai-agent-install.md) and [AI4 handoff](plans/2026-09-08-remote-ai-native-host-handoff.md) ready. Next client stage: strict TLS/key handling, RPC/SSE, settings/Pro and real-device pairing; two-device LAN and RustDesk later. No App AI UI implemented.
+- Remote AI: [AI4 client integration](plans/2026-09-08-remote-ai-client-integration.md) implemented with passing code gates; checkpoint reviewed implementation, then actual HarmonyOS pairing/model/LAN and Phone/Pad/PC acceptance. Native v0.3.0 hosts remain released/deployed; RustDesk transport later.
 
 0. Pro M7: vendor protocol, HTTP, CloudDB and signed App client independently reviewed (e3f47078+c5b647ff). Short-session 0b237613 independently PASS; dynamic CRL 78fc9fce independently PASS; native cloud entry cdc193958 and complete AGC package 2e0e7da8+42a0258b independently PASS. Upload consent/browser file access pending; next deploy protected sandbox API and timer-only worker, pin App configuration and accept native authorization/IAP. Real SDK control-only snapshots, four concurrent transactions and packaged Linux PKIX/API/worker checks PASS; actual full AGC deployment and notification endpoint pending. AGC test product/key verified and user-specified tester saved; actual IAP device acceptance pending. Continue free UI. M6 USB INIT 3ea2859e+ff31ef7d scoped code/Release review PASS; actual authentication still pending. First M5 direct SSH continuation ed537821+27716d2d+c64efc8e code review PASS; full sharing/PC/RDP and actual cross-device/PC knock/icon/UI acceptance remain open.
 
