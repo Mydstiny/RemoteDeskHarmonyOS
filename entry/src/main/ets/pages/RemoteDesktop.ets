@@ -5,7 +5,7 @@ import { recordVideoOrientation } from '../services/VideoOrientationCapture';
  */
 import { display, promptAction, router, window } from '@kit.ArkUI';
 import { inputDevice, pointer, KeyCode } from '@kit.InputKit';
-import { common } from '@kit.AbilityKit';
+import { common, abilityAccessCtrl, Permissions } from '@kit.AbilityKit';
 import { pasteboard } from '@kit.BasicServicesKit';
 import { image } from '@kit.ImageKit';
 import { HostSyncService } from '../services/HostSyncService';
@@ -234,14 +234,13 @@ import {
   remoteClipboardCheckpointAfterDelivery,
   remoteClipboardHashForSession,
   resolveClipboardBridgeActivation,
-  shouldRestartClipboardBridge,
-  shouldStartClipboardBridge,
-  shouldStopClipboardBridgeForBackground
+  resolveClipboardReadAccess
 } from '../services/ClipboardSyncPolicy';
-import { ClipboardCoordinator, ClipboardLease, RemoteClipboardSnapshot } from '../services/ClipboardCoordinator';
+import { ClipboardCoordinator, ClipboardAuthorization, ClipboardLease, RemoteClipboardSnapshot } from '../services/ClipboardCoordinator';
 import { RustDeskClipboardClient, RustDeskClipboardOfferResult, RustDeskClipboardReceiveResult } from '../services/RustDeskClipboardClient';
 import { SystemClipboardFileProvider } from '../services/SystemClipboardFileProvider';
 import { RustDeskClipboardEntry, RustDeskClipboardSource } from '../types/rdpnapi';
+import { PcRemoteClipboardFileService, PcRemoteClipboardFileStatus } from '../services/PcRemoteClipboardFileService';
 import { RdpClipboardContentService } from '../services/RdpClipboardContentService';
 import { listLegacyTransferCaches, importLegacyTransferCache, LegacyTransferCacheSummary } from '../services/LegacyTransferCacheRecovery';
 import { scanAuthorizedTransferDirectory, exportTransferArtifactTree, TransferDirectorySourceTree, TransferDirectoryExportResult } from '../services/TransferDirectoryProvider';
@@ -1218,6 +1217,14 @@ struct RemoteDesktop {
   private nativeHandles: NativeSessionHandles =
     new NativeSessionHandles(new ProductionNativeHandleAdapter((): ExtensionLoader => this.loader));
   private clipboardBridge: ClipboardBridgeService | null = null;
+  private clipboardAuthorization: ClipboardAuthorization | null = null;
+  private clipboardAuthorityToken: number = 0;
+  private clipboardAuthorityLease: RemoteTransferLease | null = null;
+  private pcClipboardFiles: PcRemoteClipboardFileService | null = null;
+  private continuousLocalFileCount: number = -1;
+  private continuousLocalAttemptCount: number = -1;
+  private continuousLocalAttempts: number = 0;
+  @State private continuousClipboardMessage: string = '';
   @State private showFileTransferPanel: boolean = false;
   @State private remoteTransferDirectory: string = '';
   @State private remoteTransferPathInput: string = '';
@@ -5186,8 +5193,8 @@ struct RemoteDesktop {
     if (this.isRustDeskSession() && this.connected && this.sessionId > 0) {
       if (!on) {
         this.stopClipboardBridge();
-      } else if (this.clipboardBridge === null) {
-        this.startClipboardBridgeBestEffort(this.sessionId, this.connectAttemptId, true);
+      } else {
+        this.startClipboardBridgeBestEffort(this.sessionId, this.connectAttemptId, true, true);
       }
     }
     promptAction.showToast({ message: on ? 'RustDesk 剪贴板已允许' : 'RustDesk 剪贴板已禁用', duration: 1600 });
@@ -5229,6 +5236,10 @@ struct RemoteDesktop {
   private setRdpClipboardPreference(enabled: boolean): void {
     this.rdpClipboardEnabled = enabled;
     this.persistSessionPref('rdpClipboardEnabled', enabled);
+    this.onRdpClipboardSettingChange();
+    if (enabled && this.loader.isSessionClipboardReady(this.sessionId)) {
+      this.startClipboardBridgeBestEffort(this.sessionId, this.connectAttemptId, true, true);
+    }
   }
 
   private setRdpDiagnosticsPreference(enabled: boolean): void {
@@ -7023,8 +7034,7 @@ struct RemoteDesktop {
       },
       onToggleClipboard: (on: boolean): void => {
         if (this.isRdpRemoteSession()) {
-          this.rdpClipboardEnabled = on;
-          AppStorage.setOrCreate('rdpClipboardEnabled', on);
+          this.setRdpClipboardPreference(on);
         } else {
           this.setRustDeskClipboardEnabled(on);
         }
@@ -8136,7 +8146,6 @@ struct RemoteDesktop {
               // Window status is emitted directly by WMS and can precede the
               // UIAbility background observer. Close every local transaction
               // before a trailing Dock-originated event reaches XComponent.
-              this.stopClipboardBridge();
               this.closeRemoteInputForWindowTransition('window-minimized');
             } else {
               this.restartClipboardBridgeIfActiveForeground();
@@ -8187,7 +8196,6 @@ struct RemoteDesktop {
             hilog.info(RD_DOMAIN, RD_TAG, 'session window input inactive event=' +
               event.toString());
             this.closeRemoteInputForWindowTransition('window-inactive');
-            this.stopClipboardBridge();
           } else if (!wasActive && this.sessionWindowActive) {
             this.restartClipboardBridgeIfActiveForeground();
           }
@@ -8212,7 +8220,7 @@ struct RemoteDesktop {
             this.harmonyShortcutWindowFocusKnown = false;
           }
           this.syncHarmonyShortcutCapture('window-focus-initial');
-          if (!this.sessionWindowActive) { this.stopClipboardBridge(); }
+          // Clipboard authorization survives window focus changes.
         }
         this.kbDisplayIdCb = (displayId: number): void => {
           if (!remoteInputWindowListenerIsCurrent(generation, this.kbListenerGeneration)) {
@@ -8451,12 +8459,8 @@ struct RemoteDesktop {
     if (isBackground) {
       this.cancelPendingDisappearDecision();
       this.invalidatePendingRdpCredentialAttemptOnBackground();
-      // Clipboard access is privacy-sensitive and must close before the
-      // asynchronous preserve path awaits account scope. That path may fail
-      // or return early while the native session remains alive.
-      if (shouldStopClipboardBridgeForBackground(isBackground)) {
-        this.stopClipboardBridge();
-      }
+      // The explicitly authorized clipboard connection survives backgrounding.
+      // Input and rendering retain their separate foreground lifecycle.
       // Close input synchronously. The preservation path awaits account scope
       // initialization and may fail; held remote buttons must never depend on
       // that asynchronous work completing.
@@ -15911,8 +15915,7 @@ struct RemoteDesktop {
     this.resetPhysicalModifiers();
     this.fnLayer = false;
 
-    // 停止剪贴板桥 (后台不接收新剪贴板)
-    this.stopClipboardBridge();
+    // Preserve the authorized clipboard bridge while the protocol stays connected.
 
     this.clearMouseMoveTimer();
     this.clearTouchIndicatorTimer();
@@ -16648,6 +16651,84 @@ struct RemoteDesktop {
       !this.currentAbilityBackgroundState() && this.clipboardBridgeEnabledForSession();
   }
 
+  private clipboardSessionLeaseIsCurrent(lease: RemoteTransferLease): boolean {
+    const authorization: ClipboardAuthorization | null = this.clipboardAuthorization;
+    if (authorization === null || this.clipboardAuthorityLease !== lease ||
+      !ClipboardCoordinator.getInstance().isAuthorized(authorization) ||
+      !this.connected || !this.clipboardBridgeEnabledForSession() ||
+      this.sessionId !== lease.sessionId || this.connectAttemptId !== lease.attemptId ||
+      this.hostId !== lease.hostId || this.currentProtocolName() !== lease.protocol ||
+      this.transferRouteIdentity() !== lease.routeIdentity ||
+      (this.sessionWindowId || this.harmonyShortcutCaptureOwner) !== lease.windowId) { return false; }
+    const scope = AccountSessionCoordinator.getInstance().currentScope();
+    return scope.ownerScopeId === lease.accountScopeId && scope.generation === lease.accountGeneration &&
+      this.loader.ownsSessionClipboardAuthority(lease.sessionId, lease.nativeGeneration, this.clipboardAuthorityToken);
+  }
+
+  private withClipboardAuthority(lease: RemoteTransferLease, operation: () => boolean): boolean {
+    if (!this.clipboardSessionLeaseIsCurrent(lease)) { return false; }
+    const token: number = this.clipboardAuthorityToken;
+    return this.loader.withSessionClipboardAuthority(lease.sessionId, lease.nativeGeneration, token,
+      (): boolean => this.clipboardSessionLeaseIsCurrent(lease) && operation());
+  }
+
+  private continuousClipboardFilesAllowed(lease: RemoteTransferLease, sending: boolean): boolean {
+    if (!this.clipboardSessionLeaseIsCurrent(lease)) { return false; }
+    const caps: RemoteSessionCapabilities = this.currentSessionCapabilities();
+    return lease.protocol === 'rdp' ? this.rdpFileTransferEnabledForSession(lease.sessionId, lease.attemptId) :
+      lease.protocol === 'rustdesk' && this.rustdeskFilePasteEnabled &&
+      (sending ? caps.clipboardSend.enabled && caps.fileUpload.enabled : caps.clipboardReceive.enabled && caps.fileDownload.enabled);
+  }
+
+  private async publishContinuousLocalContent(lease: RemoteTransferLease, content: RdpClipboardContentService,
+    guard: () => boolean, data: pasteboard.PasteData): Promise<boolean | null | 'unavailable'> {
+    if (!guard()) { return false; }
+    await this.observeRustDeskLocalClipboardChange(guard);
+    if (!guard()) { return false; }
+    let hasFiles: boolean = false;
+    for (let i: number = 0; i < data.getRecordCount(); i++) {
+      if (data.getRecord(i).mimeType === pasteboard.MIMETYPE_TEXT_URI) { hasFiles = true; break; }
+    }
+    // Mobile devices retain the explicit file selection/receive workflow.
+    if (!hasFiles || !this.isDesktopDevice) {
+      this.continuousClipboardMessage = '剪贴板持续同步已开启';
+      return lease.protocol === 'rdp' ? content.publishLocal(guard, data) : null;
+    }
+    const current = (): boolean => guard() && this.continuousClipboardFilesAllowed(lease, true);
+    if (!current()) { return false; }
+    const count: number = pasteboard.getSystemPasteboard().getChangeCount();
+    if (count === this.continuousLocalFileCount) { return true; }
+    if (count !== this.continuousLocalAttemptCount) { this.continuousLocalAttemptCount = count; this.continuousLocalAttempts = 0; }
+    if (this.continuousLocalAttempts >= 3) {
+      this.continuousClipboardMessage = '文件自动同步未完成，请重新复制或通过文件传输重试';
+      return 'unavailable';
+    }
+    this.continuousLocalAttempts++;
+    let offered: boolean = false;
+    try {
+      const uris: string[] = await new SystemClipboardFileProvider().read(current);
+      if (!current()) { return false; }
+      const sources: TransferFileSource[] = this.transferSourcesFromUris(uris);
+      if (lease.protocol === 'rdp') {
+        const context: common.UIAbilityContext | null = this.getFileTransferContext();
+        if (context === null) { return false; }
+        const batch: TransferArtifactBatch | null = this.createTransferArtifactBatch(context, lease, 'clipboard');
+        if (batch === null) { return false; }
+        try { offered = await this.prepareAndOfferRdpFiles(sources, lease, 'continuous-clipboard', undefined, batch, undefined, current); }
+        finally { batch.release(); }
+      } else {
+        offered = await this.offerRustDeskClipboardFiles(sources, lease, 'continuous-clipboard', undefined, current);
+      }
+      if (offered && current()) {
+        this.continuousLocalFileCount = count; this.continuousClipboardMessage = '文件已同步，可在远端粘贴'; return true;
+      }
+      return false;
+    } catch (_error) {
+      if (current()) { this.continuousClipboardMessage = '文件未能同步，可通过文件传输重新选择'; }
+      return false;
+    }
+  }
+
   private async waitClipboardPublication(lease: RemoteTransferLease, receipt: ClipboardPublicationResult,
     isCurrent: () => boolean): Promise<boolean> {
     if (receipt.publicationId <= 0 || !isCurrent()) { return false; }
@@ -16666,118 +16747,107 @@ struct RemoteDesktop {
   }
 
   private async publishClipboardForLease(lease: RemoteTransferLease, text: string): Promise<boolean> {
-    if (!this.clipboardLeaseIsCurrent(lease) || !this.currentSessionCapabilities().clipboardSend.enabled) {
-      return false;
-    }
+    if (!this.clipboardSessionLeaseIsCurrent(lease) || !this.currentSessionCapabilities().clipboardSend.enabled) { return false; }
     const bytes: Uint8Array = new util.TextEncoder().encode(text);
     if (bytes.byteLength > 65536) { return false; }
-    const receipt = this.loader.publishSessionClipboard(lease.sessionId, lease.nativeGeneration,
-      bytes.buffer as ArrayBuffer);
+    let receipt: ClipboardPublicationResult = { publicationId: 0, state: 0 };
+    if (!this.withClipboardAuthority(lease, (): boolean => {
+      receipt = this.loader.publishSessionClipboard(lease.sessionId, lease.nativeGeneration, bytes.buffer as ArrayBuffer);
+      return receipt.publicationId > 0;
+    })) { return false; }
     return await this.waitClipboardPublication(lease, receipt,
-      (): boolean => this.clipboardLeaseIsCurrent(lease) && this.currentSessionCapabilities().clipboardSend.enabled);
+      (): boolean => this.clipboardSessionLeaseIsCurrent(lease) && this.currentSessionCapabilities().clipboardSend.enabled);
   }
 
-  private startClipboardBridgeBestEffort(sessionId: number, attemptId: number, enabled: boolean): void {
-    if (!enabled || !this.clipboardBridgeEnabledForSession()) {
-      return;
-    }
-    const lease: RemoteTransferLease | null = this.captureTransferLease();
-    if (lease === null || lease.sessionId !== sessionId || lease.attemptId !== attemptId) { return; }
-    const startGeneration: number = ++this.clipboardBridgeStartGeneration;
-    const deadlineMs: number = Date.now() + 10000;
-    const tryStart = async (): Promise<void> => {
-      if (!this.clipboardLeaseIsCurrent(lease) || !shouldStartClipboardBridge({
-        requestedGeneration: startGeneration,
-        currentGeneration: this.clipboardBridgeStartGeneration,
-        requestedSessionId: sessionId,
-        currentSessionId: this.sessionId,
-        requestedAttemptId: attemptId,
-        currentAttemptId: this.connectAttemptId,
-        connected: this.connected,
-        background: this.currentAbilityBackgroundState() || this.sessionWindowMinimized,
-        stopping: this.cleanupStarted,
-        enabled: this.clipboardBridgeEnabledForSession()
-      })) {
+  private startClipboardBridgeBestEffort(sessionId: number, attemptId: number, enabled: boolean,
+    explicitClaim: boolean = false): void {
+    if (!enabled || !this.clipboardBridgeEnabledForSession()) { return; }
+    if (explicitClaim) { this.stopClipboardBridge(); }
+    if (this.clipboardAuthorityLease === null) {
+      const candidate: RemoteTransferLease | null = this.captureTransferLease();
+      if (candidate === null || candidate.sessionId !== sessionId || candidate.attemptId !== attemptId) { return; }
+      const token: number = this.loader.claimSessionClipboardAuthority(sessionId, candidate.nativeGeneration, explicitClaim);
+      if (token <= 0) {
+        this.continuousClipboardMessage = '另一连接正在同步剪贴板，重新开启此连接的同步开关可切换';
         return;
       }
+      this.continuousLocalFileCount = -1;
+      this.continuousLocalAttemptCount = -1; this.continuousLocalAttempts = 0;
+      this.clipboardAuthorityToken = token;
+      this.clipboardAuthorityLease = candidate;
+      this.clipboardAuthorization = ClipboardCoordinator.getInstance().claimExplicit(candidate);
+    }
+    const lease: RemoteTransferLease = this.clipboardAuthorityLease;
+    const authorization: ClipboardAuthorization | null = this.clipboardAuthorization;
+    if (authorization === null || lease.sessionId !== sessionId || lease.attemptId !== attemptId ||
+      !this.clipboardSessionLeaseIsCurrent(lease) || this.clipboardBridge !== null) { return; }
+    const startGeneration: number = ++this.clipboardBridgeStartGeneration;
+    const deadlineMs: number = Date.now() + 10000;
+    const current = (): boolean => startGeneration === this.clipboardBridgeStartGeneration &&
+      this.clipboardSessionLeaseIsCurrent(lease);
+    const tryStart = async (): Promise<void> => {
+      if (!current()) { return; }
       const capabilities: RemoteSessionCapabilities = this.currentSessionCapabilities();
       const activation: ClipboardBridgeActivationDecision = resolveClipboardBridgeActivation(
-        this.currentProtocolName(), this.clipboardBridgeEnabledForSession(),
-        capabilities.clipboardSend.enabled, capabilities.clipboardReceive.enabled);
+        this.currentProtocolName(), true, capabilities.clipboardSend.enabled, capabilities.clipboardReceive.enabled);
       if (!activation.start) {
-        if (Date.now() < deadlineMs) {
-          setTimeout((): void => { void tryStart(); }, 500);
-        } else {
-          hilog.info(RD_DOMAIN, RD_TAG,
-            'clipboard bridge not started after bounded capability wait: ' +
-              capabilities.clipboardSend.reason);
-        }
+        if (Date.now() < deadlineMs) { setTimeout((): void => { void tryStart(); }, 500); }
         return;
       }
       try {
+        const context: common.UIAbilityContext = this.getUIContext().getHostContext() as common.UIAbilityContext;
         let readAccess: ClipboardReadAccessDecision | null = null;
         if (activation.requestLocalRead) {
-          const context: common.UIAbilityContext =
-            this.getUIContext().getHostContext() as common.UIAbilityContext;
-          readAccess = await ensureSystemPasteboardReadAccess(context);
+          const manager = abilityAccessCtrl.createAtManager();
+          const granted: boolean = manager.checkAccessTokenSync(context.applicationInfo.accessTokenId,
+            'ohos.permission.READ_PASTEBOARD' as Permissions) === abilityAccessCtrl.GrantStatus.PERMISSION_GRANTED;
+          readAccess = resolveClipboardReadAccess(granted, -1);
+          if (!granted && this.sessionWindowActive && !this.sessionWindowMinimized && !this.currentAbilityBackgroundState()) {
+            readAccess = await ensureSystemPasteboardReadAccess(context);
+          }
         }
-        if (!this.clipboardLeaseIsCurrent(lease) || !shouldStartClipboardBridge({
-          requestedGeneration: startGeneration,
-          currentGeneration: this.clipboardBridgeStartGeneration,
-          requestedSessionId: sessionId,
-          currentSessionId: this.sessionId,
-          requestedAttemptId: attemptId,
-          currentAttemptId: this.connectAttemptId,
-          connected: this.connected,
-          background: this.currentAbilityBackgroundState() || this.sessionWindowMinimized,
-          stopping: this.cleanupStarted,
-          enabled: this.clipboardBridgeEnabledForSession()
-        })) {
-          return;
+        if (!current()) { return; }
+        if (lease.protocol === 'rustdesk') {
+          this.loader.configureSessionRustDeskFileClipboard(lease.sessionId, lease.nativeGeneration, this.rustdeskFilePasteEnabled);
         }
-        if (this.clipboardBridge !== null) {
-          this.clipboardBridge.stopMonitoring();
-        }
-        if (lease.protocol === 'rustdesk') { this.onRustDeskClipboardSettingsChange(); }
-        const richContent: RdpClipboardContentService = new RdpClipboardContentService(this.loader, lease);
-        const bridge: ClipboardBridgeService = new ClipboardBridgeService();
+        const authorityWriter = (operation: () => boolean): boolean => this.withClipboardAuthority(lease, operation);
+        const richContent = new RdpClipboardContentService(this.loader, lease, authorityWriter);
+        const files = new PcRemoteClipboardFileService(this.loader, lease, context);
+        this.pcClipboardFiles = files;
+        files.setAuthorityWriter(authorityWriter);
+        files.setStatusListener((state: PcRemoteClipboardFileStatus): void => {
+          if (!this.clipboardSessionLeaseIsCurrent(lease)) { return; }
+          this.continuousClipboardMessage = state.phase === 'ready' ? '文件已同步，可在本机文件管理器粘贴' :
+            state.phase === 'cached' ? '目录已接收，请在文件传输中整目录另存' :
+            state.phase === 'failed' || state.phase === 'cancelled' ? '文件同步未完成，可通过文件传输重试' :
+            '正在同步远端文件，完成后可在本机粘贴';
+        });
+        const bridge = new ClipboardBridgeService();
         this.clipboardBridge = bridge;
-        const localMonitoringStarted: boolean = bridge.startMonitoring(
+        const localStarted: boolean = bridge.startMonitoring(
           (text: string): Promise<boolean> => this.publishClipboardForLease(lease, text),
           (): string => '', readAccess?.granted === true, activation.requestLocalRead, 0, undefined,
-          { lease, isCurrent: (): boolean => this.clipboardLeaseIsCurrent(lease),
+          { lease, authorization, withAuthority: authorityWriter,
+            isAuthorized: (): boolean => this.clipboardSessionLeaseIsCurrent(lease),
+            isCurrent: (): boolean => this.clipboardSessionLeaseIsCurrent(lease),
             readRemoteSnapshot: (): RemoteClipboardSnapshot | null => {
-              if (!this.clipboardLeaseIsCurrent(lease)) { return null; }
+              if (!this.clipboardSessionLeaseIsCurrent(lease)) { return null; }
               const value = this.loader.getSessionClipboardSnapshot(lease.sessionId);
               const kind: 'none' | 'text' | 'files' | 'rich' | 'unsupported' = value.kind === 'none' ||
                 value.kind === 'text' || value.kind === 'files' || value.kind === 'rich' ? value.kind : 'unsupported';
               return { sequence: value.sequence, kind, text: value.text, ready: value.ready };
             },
-            onLocalContent: (guard: () => boolean, data: pasteboard.PasteData): Promise<boolean | null> =>
-              lease.protocol === 'rdp' ? richContent.publishLocal(guard, data) : this.observeRustDeskLocalClipboardChange(guard),
+            onLocalContent: (guard: () => boolean, data: pasteboard.PasteData): Promise<boolean | null | 'unavailable'> =>
+              this.publishContinuousLocalContent(lease, richContent, guard, data),
             onRemoteContent: (snapshot: RemoteClipboardSnapshot, guard: () => boolean, tag: string): Promise<boolean> =>
-              lease.protocol === 'rdp' ? richContent.receiveRemote(snapshot, guard, tag) : Promise.resolve(false)
+              snapshot.kind === 'files' && this.isDesktopDevice ? files.receiveRemote(snapshot,
+                (): boolean => guard() && this.continuousClipboardFilesAllowed(lease, false), tag) :
+                lease.protocol === 'rdp' ? richContent.receiveRemote(snapshot, guard, tag) : Promise.resolve(false)
           });
-        if (!activation.requestLocalRead) {
-          hilog.info(RD_DOMAIN, RD_TAG,
-            'clipboard bridge started in receive-only mode: ' + capabilities.clipboardSend.reason);
-        } else if (readAccess?.granted === true && localMonitoringStarted) {
-          hilog.info(RD_DOMAIN, RD_TAG, 'clipboard bridge started with local read access');
-        } else if (readAccess !== null && !readAccess.granted) {
-          hilog.warn(RD_DOMAIN, RD_TAG, 'clipboard bridge local send unavailable reason=' +
-            readAccess.diagnosticCode);
-          promptAction.showToast({ message: readAccess.userMessage, duration: 2600 });
-        } else {
-          hilog.warn(RD_DOMAIN, RD_TAG,
-            'clipboard bridge local send unavailable reason=listener_start_failed');
-          promptAction.showToast({ message: '无法监听本机剪贴板，请稍后重试', duration: 2600 });
-        }
-      } catch (err) {
-        // startMonitoring installs an interval and pasteboard listeners before
-        // the informational toast/log calls below. Any later exception must
-        // release that live bridge instead of dropping its only handle.
-        this.stopClipboardBridge();
-        hilog.warn(RD_DOMAIN, RD_TAG, 'clipboard bridge start skipped: ' + JSON.stringify(err));
+        this.continuousClipboardMessage = localStarted ? '剪贴板持续同步已开启' : '远端复制可接收；本机同步需要剪贴板读取权限';
+      } catch (_error) {
+        if (current()) { this.stopClipboardBridge(); }
+        hilog.warn(RD_DOMAIN, RD_TAG, 'clipboard bridge start unavailable');
       }
     };
     setTimeout((): void => { void tryStart(); }, 0);
@@ -16785,22 +16855,19 @@ struct RemoteDesktop {
 
   private stopClipboardBridge(): void {
     this.clipboardBridgeStartGeneration++;
-    if (this.clipboardBridge !== null) {
-      this.clipboardBridge.stopMonitoring();
-      this.clipboardBridge = null;
-    }
+    const authorization: ClipboardAuthorization | null = this.clipboardAuthorization;
+    const lease: RemoteTransferLease | null = this.clipboardAuthorityLease;
+    const token: number = this.clipboardAuthorityToken;
+    this.clipboardAuthorization = null; this.clipboardAuthorityLease = null; this.clipboardAuthorityToken = 0;
+    if (authorization !== null) { ClipboardCoordinator.getInstance().revoke(authorization); }
+    if (lease !== null && token > 0) { this.loader.revokeSessionClipboardAuthority(lease.sessionId, lease.nativeGeneration, token); }
+    this.pcClipboardFiles?.dispose(); this.pcClipboardFiles = null;
+    this.clipboardBridge?.stopMonitoring(); this.clipboardBridge = null;
   }
 
   private restartClipboardBridgeIfActiveForeground(): void {
-    if (!this.sessionWindowActive) { return; }
-    if (shouldRestartClipboardBridge({
-      connected: this.connected,
-      sessionId: this.sessionId,
-      bridgePresent: this.clipboardBridge !== null,
-      background: this.currentAbilityBackgroundState(),
-      minimized: this.sessionWindowMinimized,
-      enabled: this.clipboardBridgeEnabledForSession()
-    })) {
+    // Reattachment cannot claim or replace another explicitly selected connection.
+    if (this.clipboardAuthorityLease !== null && this.clipboardBridge === null) {
       this.startClipboardBridgeBestEffort(this.sessionId, this.connectAttemptId, true);
     }
   }
@@ -17241,8 +17308,9 @@ struct RemoteDesktop {
 
   private async prepareAndOfferRdpFiles(sources: TransferFileSource[], lease: RemoteTransferLease,
     origin: string, expectedSource?: TransferClipboardSourceIdentity,
-    preparedBatch?: TransferArtifactBatch, preparedArtifacts?: TransferArtifact[]): Promise<boolean> {
-    if (!this.transferLeaseIsCurrent(lease) || sources.length === 0 || sources.length > 15 ||
+    preparedBatch?: TransferArtifactBatch, preparedArtifacts?: TransferArtifact[], automaticCurrent?: () => boolean): Promise<boolean> {
+    const sessionCurrent = (): boolean => automaticCurrent !== undefined ? automaticCurrent() : this.transferLeaseIsCurrent(lease);
+    if (!sessionCurrent() || sources.length === 0 || sources.length > 15 ||
       !this.rdpFileTransferEnabledForSession(lease.sessionId, lease.attemptId)) { return false; }
     const context: common.UIAbilityContext | null = this.getFileTransferContext();
     if (context === null) { return false; }
@@ -17274,7 +17342,7 @@ struct RemoteDesktop {
       onFinalize: (): void => { batch.release(); },
       protocol: 'rdp', direction: 'upload', batchId: batch.id, fileName: sources.length === 1 ? sources[0].name :
         sources.length.toString() + ' 个文件', totalBytes: total, sourceKind: origin,
-      isCurrent: (): boolean => this.transferLeaseIsCurrent(lease) && sourceCurrent() &&
+      isCurrent: (): boolean => sessionCurrent() && sourceCurrent() &&
         this.rdpFileTransferEnabledForSession(lease.sessionId, lease.attemptId) },
       async (control: ManagedTransferControl): Promise<ManagedTransferOutcome> => {
         const paths: string[] = [];
@@ -17288,7 +17356,9 @@ struct RemoteDesktop {
               (copied: number, _total: number): void => {
                 control.update({ readBytes: prepared + copied, writtenBytes: prepared + copied });
                 if (control.isCurrent()) {
-                  this.setFileTransferStatus('正在准备本机文件副本', total > 0 ? (prepared + copied) / total : 0, true);
+                  if (automaticCurrent === undefined) {
+                    this.setFileTransferStatus('正在准备本机文件副本', total > 0 ? (prepared + copied) / total : 0, true);
+                  } else { this.continuousClipboardMessage = '正在准备本机文件，完成后可在远端粘贴'; }
                 }
               });
             paths.push(artifact.path); prepared += artifact.size;
@@ -17298,17 +17368,24 @@ struct RemoteDesktop {
           if (nativeOwner === null || nativeOwner.sessionId !== lease.sessionId ||
             nativeOwner.generation !== lease.nativeGeneration) { return { stage: 'cancelled', evidence: 'none' }; }
           TransferArtifactPublicationService.getInstance().registerNativeOffer(batch, nativeOwner);
-          const receipt: ClipboardPublicationResult = this.loader.publishSessionClipboardFiles(
-            lease.sessionId, lease.nativeGeneration, paths);
+          let receipt: ClipboardPublicationResult = { publicationId: 0, state: 0 };
+          const publish = (): boolean => {
+            if (!control.isCurrent()) { return false; }
+            receipt = this.loader.publishSessionClipboardFiles(lease.sessionId, lease.nativeGeneration, paths);
+            return receipt.publicationId > 0;
+          };
+          if (!(automaticCurrent !== undefined ? this.withClipboardAuthority(lease, publish) : publish())) {
+            return { stage: 'cancelled', evidence: 'none' };
+          }
           if (!await this.waitClipboardPublication(lease, receipt, control.isCurrent)) {
             return { stage: 'paused', evidence: 'none', diagnosticCode: 'offer_ack_unconfirmed' };
           }
           control.update({ stage: 'offered', readBytes: total, writtenBytes: total });
-          if (this.clipboardLeaseIsCurrent(lease)) {
+          if (automaticCurrent === undefined && this.clipboardLeaseIsCurrent(lease)) {
             this.keyDispatcher.sendShortcutSequence(this.loader, lease.sessionId,
               [KEYCODE_CTRL_LEFT, KEY_V], 'RDP file paste');
           }
-          if (this.clipboardLeaseIsCurrent(lease)) {
+          if (automaticCurrent === undefined && this.clipboardLeaseIsCurrent(lease)) {
             for (const key of this.physicalModifierKeyCodesDown) {
               this.loader.sendKey(lease.sessionId, this.mapPhysicalKeyCode(key), true);
             }
@@ -17326,7 +17403,7 @@ struct RemoteDesktop {
     if (!handle.accepted) { try { batch.release(); } catch (_err) {} }
     const outcome: ManagedTransferOutcome = await handle.result;
     const offered: boolean = outcome.evidence === 'offered';
-    if (this.transferLeaseIsCurrent(lease)) {
+    if (sessionCurrent() && automaticCurrent === undefined) {
       this.setFileTransferStatus(offered ? '已提供给远端读取，尚未确认目标写入' : '文件准备已停止或失败',
         offered ? 1 : -1, false);
     }
@@ -18376,7 +18453,7 @@ struct RemoteDesktop {
       const readAccess: ClipboardReadAccessDecision =
         await ensureSystemPasteboardReadAccess(ctx);
       if (readAccess.granted && this.clipboardBridge !== null) {
-        this.clipboardBridge.enableLocalMonitoring();
+        this.clipboardBridge.setLocalReadAccess(true);
       }
       return readAccess.granted;
     } catch (error) {
@@ -18405,23 +18482,24 @@ struct RemoteDesktop {
   }
 
   private onRustDeskClipboardSettingsChange(): void {
-    const lease: RemoteTransferLease | null = this.captureTransferLease();
+    const lease: RemoteTransferLease | null = this.clipboardAuthorityLease ?? this.captureTransferLease();
+    if (!this.rustdeskClipboardEnabled) { this.stopClipboardBridge(); }
     if (lease === null || lease.protocol !== 'rustdesk') { return; }
     this.loader.configureSessionRustDeskFileClipboard(lease.sessionId, lease.nativeGeneration,
       this.rustdeskClipboardEnabled && this.rustdeskFilePasteEnabled && this.clipboardBridgeEnabledForSession());
-    if (!this.rustdeskClipboardEnabled) { this.stopClipboardBridge(); }
   }
 
   private async offerRustDeskClipboardFiles(sources: TransferFileSource[], lease: RemoteTransferLease,
-    origin: string, expectedSource?: TransferClipboardSourceIdentity): Promise<boolean> {
+    origin: string, expectedSource?: TransferClipboardSourceIdentity, automaticCurrent?: () => boolean): Promise<boolean> {
     const context: common.UIAbilityContext | null = this.getFileTransferContext();
-    const current = (): boolean => this.rustDeskClipboardFilesAllowed(lease, true) &&
+    const current = (): boolean => (automaticCurrent !== undefined ? automaticCurrent() : this.rustDeskClipboardFilesAllowed(lease, true)) &&
       (expectedSource === undefined || this.transferClipboardSourceIsCurrent(lease, expectedSource));
     if (context === null || !current() || sources.length === 0 || sources.length > 15) { return false; }
     const total: number = sources.reduce((bytes: number, source: TransferFileSource): number => bytes + source.size, 0);
     if (sources.some((source: TransferFileSource): boolean => !Number.isSafeInteger(source.size) || source.size < 0) ||
       !Number.isSafeInteger(total) || total > RDP_FILE_MAX_BYTES) { return false; }
-    const client: RustDeskClipboardClient = new RustDeskClipboardClient(this.loader, lease.sessionId, lease.nativeGeneration, current);
+    const client: RustDeskClipboardClient = new RustDeskClipboardClient(this.loader, lease.sessionId, lease.nativeGeneration, current,
+      automaticCurrent !== undefined ? (operation: () => boolean): boolean => this.withClipboardAuthority(lease, operation) : undefined);
     if (!client.configure(true)) { this.rustdeskClipboardMessage = '远端文件剪贴板尚不可用'; return false; }
     const service: ManagedTransferTaskService = ManagedTransferTaskService.getInstance();
     if (!service.init(context)) { return false; }
@@ -18460,7 +18538,9 @@ struct RemoteDesktop {
           this.rustdeskLocalPublicationCount = pasteboard.getSystemPasteboard().getChangeCount();
           control.update({ stage: 'offered', readBytes: total, writtenBytes: total });
           const modifier: number = this.physicalKeyboardLayout === RemoteKeyboardLayout.MACOS ? KEYCODE_META_LEFT : KEYCODE_CTRL_LEFT;
-          this.keyDispatcher.sendShortcutSequence(this.loader, lease.sessionId, [modifier, KEY_V], 'RustDesk file paste');
+          if (automaticCurrent === undefined && this.clipboardLeaseIsCurrent(lease)) {
+            this.keyDispatcher.sendShortcutSequence(this.loader, lease.sessionId, [modifier, KEY_V], 'RustDesk file paste');
+          }
           return { stage: 'paused', evidence: 'offered', diagnosticCode: 'target_write_unconfirmed' };
         } catch (_error) { return { stage: 'failed', evidence: 'none', diagnosticCode: 'clipboard_staging_failed' }; }
         finally { for (const file of opened) { try { await fileIo.close(file); } catch (_error) {} } }
@@ -18471,7 +18551,7 @@ struct RemoteDesktop {
     if (this.transferLeaseIsCurrent(lease)) {
       this.rustdeskClipboardMessage = offered ? '已提供给远端粘贴，目标写入未确认，源文件保留' :
         '文件剪贴板未就绪或当前连接已撤销过文件发布。可重新连接，或使用文件发送。';
-      this.setFileTransferStatus(this.rustdeskClipboardMessage, offered ? 1 : -1, false);
+      if (automaticCurrent === undefined) { this.setFileTransferStatus(this.rustdeskClipboardMessage, offered ? 1 : -1, false); }
     }
     return offered;
   }
@@ -22089,7 +22169,9 @@ struct RemoteDesktop {
     .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
     .overlay(this.passphraseOverlay(), { align: Alignment.Top })
     .bindSheet($$this.showFileTransferPanel, this.fileTransferPanelBuilder(), {
-      preferType: SheetType.CENTER, backgroundColor: this.pal().sheetBg,
+      preferType: this.isDesktopDevice || this.isPadDevice ? SheetType.CENTER : SheetType.BOTTOM,
+      width: this.isDesktopDevice || this.isPadDevice ? '85%' : '100%',
+      backgroundColor: this.pal().sheetBg,
       onDisappear: (): void => {
         this.transferDirectoryRequestGeneration++;
         this.rdpOfferRequestGeneration++;
@@ -22107,6 +22189,13 @@ struct RemoteDesktop {
     Scroll() {
       Column({ space: 14 }) {
         Text('文件传输').fontSize(22).fontWeight(FontWeight.Bold).width('100%')
+        if (this.continuousClipboardMessage.length > 0) {
+          Text(this.continuousClipboardMessage).fontSize(13).fontColor(this.pal().text2).width('100%')
+        }
+        if (this.isDesktopDevice) {
+          Text('远端复制文件后会自动接收，完成后可直接在本机粘贴。复制期间再次复制其他内容会停止旧文件同步。')
+            .fontSize(13).fontColor(this.pal().text2).width('100%')
+        }
         if (this.currentProtocolName() === 'rustdesk') {
           if (this.transferAuth.transferId > 0) {
             Text(this.transferAuth.kind === 2 ? '文件会话需要动态验证码' :
@@ -22141,7 +22230,7 @@ struct RemoteDesktop {
             })
           }.width('100%')
           Text(this.remoteTransferBrowserMessage).fontSize(12).fontColor(this.pal().text2).width('100%')
-          Row({ space: 8 }) {
+          Flex({ wrap: FlexWrap.Wrap }) {
             Button('上一级').enabled(!this.remoteTransferBrowserBusy && this.remoteTransferDirectory.length > 0)
               .onClick((): void => { void this.browseRemoteTransferDirectory(parentRemoteTransferPath(this.remoteTransferDirectory)); })
             Button('发送本机文件到此处').enabled(!this.remoteTransferBrowserBusy && this.remoteTransferDirectory.length > 0)
@@ -22230,6 +22319,10 @@ struct RemoteDesktop {
           }, (fact: SessionRdpReceivedFileFact): string => fact.relativePath)
 
         }
+        if (this.isDesktopDevice && this.currentProtocolName() === 'rustdesk') {
+          Text('RustDesk 本机文件已提供后，更换所复制的文件需要重新连接；文字仍持续同步。')
+            .fontSize(13).fontColor(this.pal().text2).width('100%')
+        }
         Text('本机传输副本').fontSize(16).fontWeight(FontWeight.Medium).width('100%')
         Text(this.transferCacheMessage).fontSize(12).fontColor(this.pal().text2).width('100%')
         Button('刷新与恢复本机副本').onClick((): void => { this.refreshTransferCache(); })
@@ -22257,7 +22350,7 @@ struct RemoteDesktop {
             Column({ space: 6 }) {
               Text(artifact.relativePath || artifact.name).fontSize(14).width('100%').maxLines(2)
               if (artifact.directory !== true) {
-                Row({ space: 8 }) {
+                Flex({ wrap: FlexWrap.Wrap }) {
                 Button('另存').fontSize(12).onClick((): void => { void this.saveReceivedTransferArtifact(artifact); })
                 Button('复制到本机剪贴板').fontSize(12).onClick((): void => { this.publishReceivedTransferArtifact(artifact); })
                 }.width('100%')
@@ -22271,7 +22364,7 @@ struct RemoteDesktop {
           FileTransferTaskList({ accountScopeId: this.transferPanelLease.accountScopeId,
             hostId: this.transferPanelLease.hostId })
         }
-      }.width('100%').padding(20)
+      }.width('100%').padding(this.isDesktopDevice || this.isPadDevice ? 20 : 12)
     }.width('100%').height('85%')
   }
 

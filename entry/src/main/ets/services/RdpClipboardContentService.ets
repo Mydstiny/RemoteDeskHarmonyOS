@@ -28,6 +28,7 @@ interface ClipboardImageContent { png: ArrayBuffer; rgbaStraight: ArrayBuffer; w
 
 /** Image/rich representations stay within one captured RDP session and one copy event. */
 export class RdpClipboardContentService {
+  private authorityWriter: ((operation: () => boolean) => boolean) | undefined;
   private loader: ExtensionLoader;
   private sessionId: number;
   private generation: number;
@@ -36,7 +37,9 @@ export class RdpClipboardContentService {
   private remoteInFlight: boolean = false;
   private diagnosticCode: string = '';
 
-  constructor(loader: ExtensionLoader, lease: ClipboardLease) {
+  constructor(loader: ExtensionLoader, lease: ClipboardLease,
+    authorityWriter?: (operation: () => boolean) => boolean) {
+    this.authorityWriter = authorityWriter;
     this.loader = loader;
     // Copy scalar identity now. Never follow ExtensionLoader's current session
     // or a caller mutating its lease while ImageKit/native requests await.
@@ -267,7 +270,13 @@ export class RdpClipboardContentService {
       if (content.png === undefined && content.htmlUtf8 === undefined && content.rtfBytes === undefined &&
         content.textUtf8 === undefined) { return false; }
       if (!guard()) { return false; }
-      const publication: ClipboardPublicationResult = this.loader.publishSessionRdpClipboardContent(this.sessionId, this.generation, content);
+      let publication: ClipboardPublicationResult = { publicationId: 0, state: 0 };
+      const publish = (): boolean => {
+        if (!guard()) { return false; }
+        publication = this.loader.publishSessionRdpClipboardContent(this.sessionId, this.generation, content);
+        return publication.publicationId > 0;
+      };
+      if (!(this.authorityWriter !== undefined ? this.authorityWriter(publish) : publish())) { return false; }
       if (!guard() || publication.publicationId <= 0) { return false; }
       const started: number = Date.now();
       let state: number = publication.state;
@@ -383,8 +392,12 @@ export class RdpClipboardContentService {
       const data: pasteboard.PasteData = pasteboard.createData(values);
       const property: pasteboard.PasteDataProperty = data.getProperty(); property.tag = remoteTag; data.setProperty(property);
       if (!this.current(isCurrent)) { return false; }
-      pasteboard.getSystemPasteboard().setDataSync(data);
-      return this.current(isCurrent);
+      const write = (): boolean => {
+        if (!this.current(isCurrent)) { return false; }
+        pasteboard.getSystemPasteboard().setDataSync(data);
+        return this.current(isCurrent);
+      };
+      return this.authorityWriter !== undefined ? this.authorityWriter(write) : write();
     } catch (_error) {
       this.diagnosticCode = 'clipboard_content_delivery_failed';
       return false;

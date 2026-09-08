@@ -81,6 +81,14 @@ declare module 'librdpnapi.so' {
   export function getSessionClipboardText(sessionId: number): string;
   export function isSessionClipboardReady(sessionId: number): boolean;
   export function setSessionClipboardEnabled(sessionId: number, enabled: boolean): boolean;
+  /** Returns a fresh positive safe-integer token, or 0. Automatic claims never replace a live owner. */
+  export function claimSessionClipboardAuthority(sessionId: number, nativeGeneration: number,
+    replaceExisting?: boolean): number;
+  export function ownsSessionClipboardAuthority(sessionId: number, nativeGeneration: number, token: number): boolean;
+  export function revokeSessionClipboardAuthority(sessionId: number, nativeGeneration: number, token: number): boolean;
+  /** Final synchronous write only; Promise/async callbacks are not supported. */
+  export function withSessionClipboardAuthority(sessionId: number, nativeGeneration: number,
+    token: number, commit: () => boolean): boolean;
 
   export function getConnectionState(sessionId: number): number;
   export function getSshAuthPrompt(sessionId: number, sessionGeneration: number): SshAuthPromptRequest | null;

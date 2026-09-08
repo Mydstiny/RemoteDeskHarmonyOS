@@ -12,6 +12,7 @@
 #include "connection_port_policy.h"
 #include "session_teardown_executor.h"
 #include "session_registry.h"
+#include "session_clipboard_authority.h"
 #include "native_network_observer_state.h"
 #include "native_network_observer_lease.h"
 #include "key_sequence_dispatch.h"
@@ -759,6 +760,7 @@ static bool RequestFrameRefreshForSession(
 }
 
 static SessionRegistry<SessionContext> g_sessionRegistry;
+static SessionClipboardAuthority g_sessionClipboardAuthority;
 static DisconnectRequestRegistry g_disconnectRequests;
 static SessionTeardown::Executor g_teardownExecutor;
 static uint64_t g_disconnectAllRequestId = 0;
@@ -9947,6 +9949,131 @@ napi_value NapiRenameRemotePath(napi_env env, napi_callback_info info) {
     return result;
 }
 
+// Clipboard authority deliberately does not use the shared renderer owner:
+// separate ArkTS runtimes/windows arbitrate here against native session life.
+static bool IsClipboardAuthoritySessionAlive(int32_t sessionId, uint64_t generation) {
+    const auto found = g_sessionRegistry.find(sessionId);
+    if (found == g_sessionRegistry.end() || !found->second) return false;
+    const auto session = found->second;
+    if (session->sessionId != static_cast<uint64_t>(sessionId) ||
+        session->generation.load(std::memory_order_acquire) != generation ||
+        session->lifecycle.load(std::memory_order_acquire) != SessionContext::Lifecycle::Active) return false;
+    std::shared_ptr<ProtocolAdapter> adapter;
+    {
+        std::lock_guard<std::mutex> lock(session->adapterMutex);
+        adapter = session->adapter;
+    }
+    if (!adapter) return false;
+    const ConnectionState state = adapter->getState();
+    if (state == ConnectionState::DISCONNECTED || state == ConnectionState::ERROR) return false;
+    // Recheck after adapter access so a replaced registry entry cannot inherit
+    // an old generation merely because its shared_ptr was retained above.
+    const auto current = g_sessionRegistry.find(sessionId);
+    return current != g_sessionRegistry.end() && current->second == session &&
+        session->generation.load(std::memory_order_acquire) == generation &&
+        session->lifecycle.load(std::memory_order_acquire) == SessionContext::Lifecycle::Active;
+}
+
+static bool ReadClipboardAuthorityIdentity(napi_env env, const napi_value* args,
+                                           int32_t& sessionId, uint64_t& generation) {
+    int64_t value = 0;
+    if (!ReadStrictNapiInt32Value(env, args[0], sessionId) || sessionId <= 0 ||
+        !ReadStrictNapiInt64Value(env, args[1], value) || value <= 0) return false;
+    generation = static_cast<uint64_t>(value);
+    return true;
+}
+
+napi_value NapiClaimSessionClipboardAuthority(napi_env env, napi_callback_info info) {
+    size_t argc = 4;
+    napi_value args[4] = {nullptr, nullptr, nullptr, nullptr};
+    int32_t sessionId = 0;
+    uint64_t generation = 0;
+    uint64_t token = 0;
+    bool replaceExisting = false;
+    if (napi_get_cb_info(env, info, &argc, args, nullptr, nullptr) == napi_ok &&
+        (argc == 2 || argc == 3) &&
+        ReadClipboardAuthorityIdentity(env, args, sessionId, generation)) {
+        napi_valuetype type = napi_undefined;
+        const bool validReplace = argc == 2 ||
+            (napi_typeof(env, args[2], &type) == napi_ok &&
+             (type == napi_undefined ||
+              (type == napi_boolean && napi_get_value_bool(env, args[2], &replaceExisting) == napi_ok)));
+        if (validReplace) {
+            token = g_sessionClipboardAuthority.claim(sessionId, generation, replaceExisting,
+                IsClipboardAuthoritySessionAlive);
+        }
+    }
+    napi_value result;
+    napi_create_int64(env, static_cast<int64_t>(token), &result);
+    return result;
+}
+
+static napi_value SessionClipboardAuthorityTokenOperation(
+    napi_env env, napi_callback_info info, bool revoke) {
+    napi_value args[4] = {nullptr, nullptr, nullptr, nullptr};
+    int32_t sessionId = 0;
+    uint64_t generation = 0;
+    int64_t token = 0;
+    bool accepted = false;
+    if (ReadExactNapiCallbackArgs(env, info, 3, args, 4) &&
+        ReadClipboardAuthorityIdentity(env, args, sessionId, generation) &&
+        ReadStrictNapiInt64Value(env, args[2], token) && token > 0) {
+        accepted = revoke ? g_sessionClipboardAuthority.revoke(sessionId, generation,
+            static_cast<uint64_t>(token), IsClipboardAuthoritySessionAlive) :
+            g_sessionClipboardAuthority.owns(sessionId, generation,
+            static_cast<uint64_t>(token), IsClipboardAuthoritySessionAlive);
+    }
+    napi_value result;
+    napi_get_boolean(env, accepted, &result);
+    return result;
+}
+
+napi_value NapiOwnsSessionClipboardAuthority(napi_env env, napi_callback_info info) {
+    return SessionClipboardAuthorityTokenOperation(env, info, false);
+}
+
+napi_value NapiRevokeSessionClipboardAuthority(napi_env env, napi_callback_info info) {
+    return SessionClipboardAuthorityTokenOperation(env, info, true);
+}
+
+// The callback is strictly synchronous: metadata reads/decodes and staging must
+// finish before entry. No JS reference or lock survives this call.
+napi_value NapiWithSessionClipboardAuthority(napi_env env, napi_callback_info info) {
+    napi_value args[5] = {nullptr, nullptr, nullptr, nullptr, nullptr};
+    int32_t sessionId = 0;
+    uint64_t generation = 0;
+    int64_t token = 0;
+    napi_valuetype callbackType = napi_undefined;
+    bool accepted = false;
+    if (ReadExactNapiCallbackArgs(env, info, 4, args, 5) &&
+        ReadClipboardAuthorityIdentity(env, args, sessionId, generation) &&
+        ReadStrictNapiInt64Value(env, args[2], token) && token > 0 &&
+        napi_typeof(env, args[3], &callbackType) == napi_ok && callbackType == napi_function) {
+        accepted = g_sessionClipboardAuthority.withAuthority(sessionId, generation,
+            static_cast<uint64_t>(token), IsClipboardAuthoritySessionAlive, [&]() -> bool {
+                napi_value receiver = nullptr;
+                napi_value returned = nullptr;
+                if (napi_get_undefined(env, &receiver) != napi_ok ||
+                    napi_call_function(env, receiver, args[3], 0, nullptr, &returned) != napi_ok) {
+                    bool pending = false;
+                    if (napi_is_exception_pending(env, &pending) == napi_ok && pending) {
+                        napi_value exception = nullptr;
+                        (void)napi_get_and_clear_last_exception(env, &exception);
+                    }
+                    return false;
+                }
+                napi_valuetype type = napi_undefined;
+                bool result = false;
+                // Promises, undefined, boxed booleans and truthy objects are rejected.
+                return napi_typeof(env, returned, &type) == napi_ok && type == napi_boolean &&
+                    napi_get_value_bool(env, returned, &result) == napi_ok && result;
+            });
+    }
+    napi_value result;
+    napi_get_boolean(env, accepted, &result);
+    return result;
+}
+
 /**
  * NAPI: sendClipboard(sessionId: number, data: ArrayBuffer): void
  */
@@ -13189,6 +13316,18 @@ napi_value ExtensionLoaderNapi::Init(napi_env env, napi_value exports) {
                          NapiRenameRemotePathAsync, nullptr, &fn);
     napi_set_named_property(env, exports, "renameRemotePathAsync", fn);
 
+    napi_create_function(env, "claimSessionClipboardAuthority", NAPI_AUTO_LENGTH,
+                         NapiClaimSessionClipboardAuthority, nullptr, &fn);
+    napi_set_named_property(env, exports, "claimSessionClipboardAuthority", fn);
+    napi_create_function(env, "ownsSessionClipboardAuthority", NAPI_AUTO_LENGTH,
+                         NapiOwnsSessionClipboardAuthority, nullptr, &fn);
+    napi_set_named_property(env, exports, "ownsSessionClipboardAuthority", fn);
+    napi_create_function(env, "revokeSessionClipboardAuthority", NAPI_AUTO_LENGTH,
+                         NapiRevokeSessionClipboardAuthority, nullptr, &fn);
+    napi_set_named_property(env, exports, "revokeSessionClipboardAuthority", fn);
+    napi_create_function(env, "withSessionClipboardAuthority", NAPI_AUTO_LENGTH,
+                         NapiWithSessionClipboardAuthority, nullptr, &fn);
+    napi_set_named_property(env, exports, "withSessionClipboardAuthority", fn);
     napi_create_function(env, "sendClipboard", NAPI_AUTO_LENGTH,
                          NapiSendClipboard, nullptr, &fn);
     napi_set_named_property(env, exports, "sendClipboard", fn);

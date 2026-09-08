@@ -2684,6 +2684,36 @@ export class ExtensionLoader implements RustDeskClipboardNative {
     }
   }
 
+  // Initial enabled settings may claim an idle authority. Only an explicit
+  // user choice passes replaceExisting=true; resume must retain its old token.
+  claimSessionClipboardAuthority(sessionId: number, nativeGeneration: number,
+    replaceExisting: boolean = false): number {
+    try {
+      const token = rdpnapi.claimSessionClipboardAuthority(sessionId, nativeGeneration, replaceExisting);
+      return Number.isSafeInteger(token) && token > 0 ? token : 0;
+    } catch (_error) { return 0; }
+  }
+
+  ownsSessionClipboardAuthority(sessionId: number, nativeGeneration: number, token: number): boolean {
+    try {
+      return rdpnapi.ownsSessionClipboardAuthority(sessionId, nativeGeneration, token) === true;
+    } catch (_error) { return false; }
+  }
+
+  revokeSessionClipboardAuthority(sessionId: number, nativeGeneration: number, token: number): boolean {
+    try {
+      return rdpnapi.revokeSessionClipboardAuthority(sessionId, nativeGeneration, token) === true;
+    } catch (_error) { return false; }
+  }
+
+  /** Executes only a prepared synchronous publication under the native owner lock. */
+  withSessionClipboardAuthority(sessionId: number, nativeGeneration: number, token: number,
+    commit: () => boolean): boolean {
+    try {
+      return rdpnapi.withSessionClipboardAuthority(sessionId, nativeGeneration, token, commit) === true;
+    } catch (_error) { return false; }
+  }
+
   setSessionClipboardEnabled(sessionId: number, enabled: boolean): boolean {
     try {
       return rdpnapi.setSessionClipboardEnabled(sessionId, enabled) as boolean;

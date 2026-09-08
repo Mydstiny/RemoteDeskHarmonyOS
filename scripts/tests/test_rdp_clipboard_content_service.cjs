@@ -15,7 +15,7 @@ function png(width = 1, height = 1, size = 33) {
   const view = new DataView(buffer); view.setUint32(16, width); view.setUint32(20, height); return buffer;
 }
 function rtf(size = 13) { const value = new Uint8Array(size); value.fill(32); value.set([123,92,114,116,102,49,32]); value[value.length - 1] = 125; return value.buffer; }
-const lease = () => ({ accountScopeId: 'account', windowId: 'window', hostId: 'host', protocol: 'rdp',
+const lease = () => ({ accountScopeId: 'account', accountGeneration: 1, windowId: 'window', hostId: 'host', protocol: 'rdp',
   routeIdentity: 'route', sessionId: 7, attemptId: 3, nativeGeneration: 11 });
 const remote = sequence => ({ sequence, text: '', kind: 'rich', ready: true });
 const tag = 'remotedesk:remote-text:v1:test:1';
@@ -111,7 +111,8 @@ function environment() {
   }
   const { RdpClipboardContentService: Service } = load('entry/src/main/ets/services/RdpClipboardContentService.ets');
   const { ClipboardBridgeService: Bridge } = load('entry/src/main/ets/services/ClipboardBridgeService.ets');
-  return { Service, Bridge, loader, board, pixels, sources, packers, published, requests, released, writes, events, reads,
+  const coordinator = load('entry/src/main/ets/services/ClipboardCoordinator.ets').ClipboardCoordinator.getInstance();
+  return { authorize: value => ({ lease: value, authorization: coordinator.claimExplicit(value), isAuthorized: () => true }), Service, Bridge, loader, board, pixels, sources, packers, published, requests, released, writes, events, reads,
     service(value = lease()) { return new Service(loader, value); }, pixel(options) { return new PixelMap(options); }, pasteData,
     local(values) { data = pasteData(values); count++; for (const callback of listeners) callback(); return data; },
     setOffer(formats, sequence = 1) { offered = { sequence, formats }; }, result(format, content, state = 'ready') { results.set(format, { content, state }); },
@@ -232,7 +233,7 @@ test('Bridge and service cooperate on the exact tagged write without replay or e
   const env = environment(), service = env.service(), bridge = new env.Bridge(), sent = [];
   env.setOffer([2,4]); env.result(2, { png: png() }); env.result(4, { htmlUtf8: '<b>same event</b>' });
   bridge.startMonitoring(text => { sent.push(text); return true; }, undefined, true, true, 0, undefined,
-    { lease: lease(), readRemoteSnapshot: () => remote(1), onRemoteContent: (snapshot, guard, marker) => service.receiveRemote(snapshot, guard, marker) });
+    { ...env.authorize(lease()), readRemoteSnapshot: () => remote(1), onRemoteContent: (snapshot, guard, marker) => service.receiveRemote(snapshot, guard, marker) });
   await drain(); env.advance(500); await drain(); env.advance(500); await drain();
   assert.equal(env.writes.length, 1); assert.deepEqual(sent, []); assert.equal(env.allReleased(), true); bridge.stopMonitoring();
 });
@@ -240,12 +241,24 @@ test('Bridge and service cooperate on the exact tagged write without replay or e
 test('Bridge local rich callback reuses one PasteData and publishes all formats once', async () => {
   const env = environment(), service = env.service(), bridge = new env.Bridge(), sent = [];
   bridge.startMonitoring(text => { sent.push(text); return true; }, undefined, true, true, 0, undefined,
-    { lease: lease(), onLocalContent: (guard, data) => service.publishLocal(guard, data) });
+    { ...env.authorize(lease()), onLocalContent: (guard, data) => service.publishLocal(guard, data) });
   await drain(); const initialReads = env.reads.filter(value => value === 'PasteData').length;
   env.local({ 'image/png': png(), 'text/html': '<b>local</b>', 'text/plain': 'fallback' }); await drain();
   assert.equal(env.published.length, 1); assert.deepEqual(sent, []);
   assert.equal(env.reads.filter(value => value === 'PasteData').length, initialReads + 1);
   assert.equal(env.allReleased(), true); bridge.stopMonitoring();
+});
+
+test('atomic authority denial suppresses rich native publication after asynchronous decoding', async () => {
+  const env = environment(), service = new env.Service(env.loader, lease(), () => false);
+  assert.equal(await service.publishLocal(() => true, env.local({'text/html':'<b>blocked</b>'})), false);
+  assert.equal(env.published.length, 0);
+});
+test('atomic authority denial suppresses system rich write and releases decoded resources', async () => {
+  const env = environment(), service = new env.Service(env.loader, lease(), () => false);
+  env.setOffer([2]); env.result(2, {png: png()});
+  assert.equal(await service.receiveRemote(remote(1), () => true, tag), false);
+  assert.equal(env.writes.length, 0); assert.equal(env.allReleased(), true);
 });
 
 (async () => { for (const { name, run } of tests) { await run(); console.log('PASS ' + name); }

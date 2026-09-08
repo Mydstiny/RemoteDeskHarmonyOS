@@ -28,6 +28,7 @@ export interface RemoteClipboardDeliveryCheckpoint {
   deliveredHash: number;
 }
 export interface ClipboardBridgeStartGuardInput {
+  continuousAuthorized?: boolean;
   requestedGeneration: number;
   currentGeneration: number;
   requestedSessionId: number;
@@ -40,6 +41,7 @@ export interface ClipboardBridgeStartGuardInput {
   enabled: boolean;
 }
 export interface ClipboardBridgeRestartGuardInput {
+  continuousAuthorized?: boolean;
   connected: boolean;
   sessionId: number;
   bridgePresent: boolean;
@@ -171,16 +173,16 @@ export function shouldStartClipboardBridge(input: ClipboardBridgeStartGuardInput
   return input.requestedGeneration === input.currentGeneration &&
     input.requestedSessionId > 0 && input.requestedSessionId === input.currentSessionId &&
     input.requestedAttemptId === input.currentAttemptId && input.connected &&
-    !input.background && !input.stopping && input.enabled;
+    (!input.background || input.continuousAuthorized === true) && !input.stopping && input.enabled;
 }
 
-/** Clipboard access is closed at the synchronous lifecycle boundary. */
-export function shouldStopClipboardBridgeForBackground(isBackground: boolean): boolean {
-  return isBackground;
+/** A presentation transition cannot revoke an explicitly authorized continuous owner. */
+export function shouldStopClipboardBridgeForBackground(isBackground: boolean, continuousAuthorized: boolean = false): boolean {
+  return isBackground && !continuousAuthorized;
 }
 
 /** Restart after foreground return, including preserve/init failure paths. */
 export function shouldRestartClipboardBridge(input: ClipboardBridgeRestartGuardInput): boolean {
   return input.connected && input.sessionId > 0 && !input.bridgePresent &&
-    !input.background && !input.minimized && input.enabled;
+    ((!input.background && !input.minimized) || input.continuousAuthorized === true) && input.enabled;
 }

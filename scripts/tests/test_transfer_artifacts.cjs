@@ -372,6 +372,35 @@ test('system clipboard leases survive native teardown and retire only after obse
   assert.equal(publisher.releaseSystemClipboard(system, false), false);
   assert.equal(publisher.observeSystemClipboard('other', 11), 1); assert.equal(batch.getInfo().published, false);
 }));
+test('bridge source tag retains real system clipboard artifacts until exact replacement', () => using(async env => {
+  const batch = env.batch('received'), publisher = env.publisher();
+  const source = env.source('tagged-source', Buffer.from('abc'));
+  const artifact = await batch.stage(source, 'file', 3, () => true, () => {});
+  const tag = 'remotedesk:remote-text:v1:42:9', id = publisher.registerSystemClipboard(batch, tag);
+  assert.equal(publisher.systemClipboardTag(id), tag); batch.release();
+  assert.equal(publisher.confirmSystemClipboard(id, tag, 17), true);
+  assert.equal((await batch.cleanupExpired(0)).removedFiles, 0); assert.ok(fs.existsSync(artifact.path));
+  assert.equal(publisher.observeSystemClipboard(tag, 18), 0);
+  assert.equal(publisher.observeSystemClipboard('local-copy', 18), 1);
+  assert.equal((await batch.cleanupExpired(0)).removedFiles, 1);
+}));
+test('bridge tags cannot be rebound after their publication was retired in this runtime', () => using(async env => {
+  const first = env.batch(), second = env.batch(), publisher = env.publisher();
+  const tag = 'remotedesk:remote-text:v1:42:10', id = publisher.registerSystemClipboard(first, tag);
+  assert.throws(() => publisher.registerSystemClipboard(second, tag), /tag_invalid/);
+  assert.equal(publisher.releaseSystemClipboard(id, true), true);
+  assert.throws(() => publisher.registerSystemClipboard(second, tag), /tag_invalid/);
+  assert.equal(second.getInfo().published, false);
+}));
+test('malformed remote tags are refused before durable publication registration', () => using(async env => {
+  const batch = env.batch(), publisher = env.publisher();
+  for (const tag of ['', 'local-tag', 'remotedesk:remote-text:v1:', 'remotedesk:remote-text:v1:a/b',
+    'remotedesk:remote-text:v1:' + 'x'.repeat(129), 'remotedesk:remote-text:v1:a\n']) {
+    assert.throws(() => publisher.registerSystemClipboard(batch, tag), /tag_invalid/);
+    assert.equal(batch.getInfo().published, false);
+  }
+  assert.ok(publisher.systemClipboardTag(publisher.registerSystemClipboard(batch)).startsWith('remotedesk:remote-text:v1:artifact:'));
+}));
 test('unknown runtime publications and failed durable release never become cleanable', () => using(async env => {
   const batch = env.batch(), publisher = env.publisher(), owner = publicationOwner();
   publisher.registerNativeOffer(batch, owner); batch.release();

@@ -26,7 +26,10 @@ export class RustDeskClipboardClient {
   private sid: number;
   private generation: number;
   private current: () => boolean;
-  constructor(native: RustDeskClipboardNative, sid: number, generation: number, current: () => boolean) {
+  private authorityWriter: ((operation: () => boolean) => boolean) | undefined;
+  constructor(native: RustDeskClipboardNative, sid: number, generation: number, current: () => boolean,
+    authorityWriter?: (operation: () => boolean) => boolean) {
+    this.authorityWriter = authorityWriter;
     this.native = native; this.sid = sid; this.generation = generation; this.current = current;
   }
   private alive(): boolean { try { return this.current(); } catch (_error) { return false; } }
@@ -100,7 +103,13 @@ export class RustDeskClipboardClient {
     if (!this.alive()) { return failed; }
     const snapshot: RustDeskClipboardSnapshot = this.snapshot();
     if (!snapshot.enabled || !snapshot.capable) { return failed; }
-    const id: number = this.native.publishSessionRustDeskClipboardFiles(this.sid, this.generation, sources);
+    let id: number = 0;
+    const publish = (): boolean => {
+      if (!this.alive()) { return false; }
+      id = this.native.publishSessionRustDeskClipboardFiles(this.sid, this.generation, sources);
+      return id > 0;
+    };
+    if (!(this.authorityWriter !== undefined ? this.authorityWriter(publish) : publish())) { return failed; }
     if (id <= 0) { return failed; }
     const deadline: number = Date.now() + 10000;
     while (this.alive() && Date.now() < deadline) {

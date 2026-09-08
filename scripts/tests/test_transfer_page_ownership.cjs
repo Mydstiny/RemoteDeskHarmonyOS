@@ -86,7 +86,7 @@ function fixture() {
     ensurePasteboardReadPermission:()=>state.permission,transferSourcesFromUnifiedData:data=>data.sources,transferSourcesFromUris:uris=>uris.map(uri=>({uri,name:'current',size:4})),
     currentProtocolName(){return this.pendingHost.protocol;},currentAbilityBackgroundState:()=>false,
     clipboardBridgeEnabledForSession:()=>true,currentSessionCapabilities:()=>({clipboardSend:{enabled:true},clipboardReceive:{enabled:true},fileUpload:{enabled:true},fileDownload:{enabled:true}}),
-    getFileTransferContext:()=>state.context,setFileTransferStatus:()=>{},formatTransferSize:String,yieldUi:async()=>{},
+    getFileTransferContext:()=>state.context,setFileTransferStatus:(_status,_progress,busy)=>{state.busyStates??=[];state.busyStates.push(busy);},formatTransferSize:String,yieldUi:async()=>{},
     openFileTransferPanel:()=>state.openPanel++,fileBaseName:()=> 'test.bin',
     rdpFileTransferEnabledForSession:(sid=page.sessionId,attempt=page.connectAttemptId)=>page.currentProtocolName()==='rdp' && sid===page.sessionId&&attempt===page.connectAttemptId,
     createRdpClipboardBatchDir:()=>'/private/batch',transferArtifactBatches:new Map([['/private/batch',{
@@ -324,5 +324,27 @@ test('a new local clipboard event revokes only the captured file publication',as
  const f=fixture();f.page.rustdeskLocalPublicationId=73;f.page.rustdeskLocalPublicationLease=f.page.captureTransferLease();
  f.page.rustdeskLocalPublicationCount=1;await f.page.observeRustDeskLocalClipboardChange(()=>true);assert.equal(f.state.revokedClipboard,undefined);
  f.state.localCount=2;await f.page.observeRustDeskLocalClipboardChange(()=>true);assert.deepEqual(f.state.revokedClipboard,{sid:7,gen:11,id:73});assert.equal(f.page.rustdeskLocalPublicationId,0);
+});
+test('automatic RDP file synchronization offers once in background without injecting paste',async()=>{
+ const f=fixture();f.page.pendingHost.protocol='rdp';const lease=f.page.captureTransferLease();
+ f.page.cleanupStarted=true;f.page.sessionWindowActive=false;
+ f.page.withClipboardAuthority=(_lease,operation)=>operation();
+ assert.equal(await f.page.prepareAndOfferRdpFiles([{uri:'authorized://file',name:'file',size:4}],lease,
+  'continuous-clipboard',undefined,undefined,undefined,()=>true),true);
+ assert.equal(f.state.offers.length,1);assert.equal(f.state.sent.length,0);assert.equal((f.state.busyStates??[]).includes(true),false);
+});
+test('automatic RDP authority handoff rejects final offer after file staging',async()=>{
+ const f=fixture();f.page.pendingHost.protocol='rdp';const lease=f.page.captureTransferLease();
+ f.page.withClipboardAuthority=()=>false;
+ assert.equal(await f.page.prepareAndOfferRdpFiles([{uri:'authorized://file',name:'file',size:4}],lease,
+  'continuous-clipboard',undefined,undefined,undefined,()=>true),false);
+ assert.equal(f.state.offers.length,0);assert.equal(f.state.sent.length,0);
+});
+test('automatic RustDesk file synchronization publishes in background without injecting paste',async()=>{
+ const f=fixture(),lease=f.page.captureTransferLease();f.page.cleanupStarted=true;f.page.sessionWindowActive=false;
+ f.page.withClipboardAuthority=(_lease,operation)=>operation();
+ assert.equal(await f.page.offerRustDeskClipboardFiles([{uri:'authorized://file',name:'file',size:4}],lease,
+  'continuous-clipboard',undefined,()=>true),true);
+ assert.equal(f.state.clipboardSources.length,1);assert.equal(f.state.sent.length,0);
 });
 (async()=>{for(const {name,run} of tests){await run();console.log('PASS '+name);}console.log(`${tests.length} page ownership tests passed`);})().catch(error=>{console.error(error);process.exitCode=1;});

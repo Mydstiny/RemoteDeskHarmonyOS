@@ -12,19 +12,22 @@ const tests = [];
 function test(name, run) { tests.push({ name, run }); }
 async function drain() { for (let i = 0; i < 12; i++) await Promise.resolve(); }
 function environment() {
-  const cache = new Map(), listeners = new Set(), timers = new Map(), held = [];
+  const cache = new Map(), listeners = new Set(), timers = new Map(), timeouts = new Map(), held = [], permissionListeners = new Set();
+  let now = 1000, bridgeNumber = 0, fullReads = 0, inspectData = 0;
+  class FakeDate extends Date { static now() { return now; } }
   let count = 1, timer = 0, value = 'existing', tag = '', hasText = true, hasData = true;
   let writeFail = false, readFail = false, hold = false;
   const writes = [];
   function data(text, marker = '', textType = true) {
     let property = { tag: marker };
-    return { getPrimaryText: () => text, getTag: () => property.tag, hasType: () => textType,
+    return { getPrimaryText: () => { inspectData++; return text; }, getTag: () => property.tag, hasType: () => textType,
       getProperty: () => ({ ...property }), setProperty: p => { property = { ...p }; } };
   }
   const pb = {
     getChangeCount: () => count, hasDataSync: () => hasData,
     getDataSync() { if (readFail) throw { code: 201 }; return data(value, tag, hasText); },
     getData(callback) {
+      fullReads++;
       const result = data(value, tag, hasText);
       const invoke = () => callback(readFail ? { code: 201 } : null, result);
       if (hold) held.push(invoke); else queueMicrotask(invoke);
@@ -47,18 +50,35 @@ function environment() {
       if (id === '@kit.BasicServicesKit') return { pasteboard: { getSystemPasteboard: () => pb,
         createData: (_type, text) => data(text), MIMETYPE_TEXT_PLAIN: 'text/plain' } };
       if (id === '@kit.PerformanceAnalysisKit') return { hilog: { info() {}, warn() {} } };
-      if (id === '@kit.AbilityKit') return { abilityAccessCtrl: { createAtManager: () => ({ on() {}, off() {} }) } };
+      if (id === '@kit.AbilityKit') return { abilityAccessCtrl: { PermissionStateChangeType:{PERMISSION_GRANTED_OPER:1,PERMISSION_REVOKED_OPER:0}, createAtManager: () => ({ on(_type,_permissions,cb) { permissionListeners.add(cb); }, off(_type,_permissions,cb) { permissionListeners.delete(cb); } }) } };
       if (!id.startsWith('.')) throw Error('Unexpected dependency ' + id);
       return load(path.resolve(path.dirname(file), id + '.ets'));
     }
-    vm.runInNewContext(code, { module, exports: module.exports, require: requireEts, Date,
-      setInterval(callback) { timers.set(++timer, callback); return timer; }, clearInterval(id) { timers.delete(id); }
+    vm.runInNewContext(code, { module, exports: module.exports, require: requireEts, Date:FakeDate,
+      setInterval(callback) { timers.set(++timer, callback); return timer; }, clearInterval(id) { timers.delete(id); },
+      setTimeout(callback,delay) { timeouts.set(++timer,{callback,at:now+delay}); return timer; }, clearTimeout(id) { timeouts.delete(id); }
     }, { filename: file });
     return module.exports;
   }
   const { ClipboardBridgeService } = load('entry/src/main/ets/services/ClipboardBridgeService.ets');
   const policy = load('entry/src/main/ets/services/ClipboardSyncPolicy.ets');
-  return { policy, writes, bridge: () => new ClipboardBridgeService(),
+  const coordinator = load('entry/src/main/ets/services/ClipboardCoordinator.ets').ClipboardCoordinator.getInstance();
+  function explicitBridge() {
+    const bridge = new ClipboardBridgeService(), captured = lease(++bridgeNumber), start = bridge.startMonitoring.bind(bridge);
+    bridge.startMonitoring = (...args) => {
+      const options = args[6] ?? {}, target = options.lease ?? captured;
+      args[6] = { ...options, lease:target, authorization:options.authorization ?? coordinator.claimExplicit(target),
+        isAuthorized:options.isAuthorized ?? (()=>true) };
+      return start(...args);
+    };
+    return bridge;
+  }
+  return { policy, writes, coordinator, rawBridge:()=>new ClipboardBridgeService(), bridge: explicitBridge,
+    authorize(bridge) { bridge.options.authorization=coordinator.claimExplicit(bridge.options.lease); bridge.setActive(true); },
+    permission(granted) { for(const cb of permissionListeners) cb({permissionName:'ohos.permission.READ_PASTEBOARD',change:granted?1:0}); },
+    metrics() { return {fullReads,inspectData,listeners:listeners.size,permissionListeners:permissionListeners.size,timeouts:timeouts.size,timers:timers.size}; },
+    advance(ms) { now+=ms; for(const [id,item] of Array.from(timeouts)) if(item.at<=now){timeouts.delete(id);item.callback();} },
+    silentLocal(text) { value=text;tag='';hasData=true;hasText=true;count++; },
     deliver(text, marker) { pb.setDataSync(data(text, marker)); },
     local(text, textType = true) { value = text; tag = ''; hasData = text !== null;
       if (!hasData) value = ''; hasText = textType; count++; for (const callback of listeners) callback(); },
@@ -68,7 +88,7 @@ function environment() {
   };
 }
 const snapshot = (sequence, text, kind = 'text', ready = true) => ({ sequence, text, kind, ready });
-const lease = (attemptId = 1) => ({ accountScopeId: 'test-account', windowId: 'window-a', hostId: 'host-a',
+const lease = (attemptId = 1) => ({ accountScopeId: 'test-account', accountGeneration:1, windowId: 'window-a', hostId: 'host-a',
   protocol: 'rdp', routeIdentity: 'fixture-route', sessionId: 3, attemptId, nativeGeneration: attemptId });
 
 test('UTF-8 budget rejects malformed UTF-16, NUL and over-budget data without truncating', () => {
@@ -114,7 +134,7 @@ test('only active owner sends/receives; provenance prevents another bridge forwa
   a.readLocalClipboard(false); b.readLocalClipboard(false); await drain();
   env.local('local'); await drain();
   assert.deepEqual(sentA, []); assert.deepEqual(sentB, ['local']);
-  a.setActive(true); env.local('local2'); await drain();
+  env.authorize(a); env.local('local2'); await drain();
   assert.deepEqual(sentA, ['local2']); assert.deepEqual(sentB, ['local']);
 });
 test('late async reads cannot send into restarted bridge or overwrite its in-flight flag', async () => {
@@ -124,13 +144,13 @@ test('late async reads cannot send into restarted bridge or overwrite its in-fli
   bridge.stopMonitoring();
   bridge.startMonitoring(t => { current.push(t); return true; });
   env.flush(); await drain(); env.hold(false); env.local('new'); await drain();
-  assert.deepEqual(old, []); assert.deepEqual(current, ['new']);
+  assert.deepEqual(old, []); assert.deepEqual(current, ['old', 'new']);
 });
 test('focus away and back invalidates delayed explicit paste even on same bridge generation', async () => {
   const env = environment(), a = env.bridge(), b = env.bridge(), sent = [];
   a.startMonitoring(t => { sent.push(t); return true; }); await drain();
   env.hold(true); const pending = a.readAndSendCurrentText();
-  b.startMonitoring(() => true); a.setActive(true); env.flush(); await drain();
+  b.startMonitoring(() => true); env.authorize(a); env.flush(); await drain();
   assert.equal(await pending, false); assert.deepEqual(sent, []);
 });
 test('failed remote delivery and local admission retry without advancing success checkpoint', async () => {
@@ -325,6 +345,129 @@ test('local rich asynchronous publication receives a guard revoked by newer loca
     } }); await drain(); env.local('old'); await drain(); env.local('new'); finish(); await drain();
   assert.deepEqual(checked, [['old', false], ['new', true]]);
 });
+test('startup without explicit token or external authorization is silent and cannot steal ownership', async () => {
+  const env=environment(), a=env.bridge(), raw=env.rawBridge(), sent=[];
+  a.startMonitoring(text=>{sent.push(text);return true;});await drain();
+  const before=env.metrics();assert.equal(raw.startMonitoring(()=>true),false);
+  assert.deepEqual(env.metrics(),before);
+  assert.equal(raw.startMonitoring(()=>true,undefined,true,true,0,undefined,{lease:lease(10),authorization:env.coordinator.claimExplicit(lease(10))}),false);
+  assert.equal(env.metrics().listeners,before.listeners);
+  env.local('retired');await drain();assert.deepEqual(sent,[]);
+});
+test('a second bridge with the same authorization cannot replace an attached bridge', async () => {
+  const env=environment(), token=env.coordinator.claimExplicit(lease()), a=env.rawBridge(), b=env.rawBridge(), sent=[];
+  const options={lease:lease(),authorization:token,isAuthorized:()=>true};
+  assert.equal(a.startMonitoring(t=>{sent.push(t);return true;},undefined,true,true,0,undefined,options),true);await drain();
+  assert.equal(b.startMonitoring(()=>true,undefined,true,true,0,undefined,options),false);
+  a.stopMonitoring();env.silentLocal('while detached');
+  assert.equal(b.startMonitoring(t=>{sent.push(t);return true;},undefined,true,true,0,undefined,options),true);await drain();
+  assert.deepEqual(sent,['while detached']);env.tick();await drain();assert.deepEqual(sent,['while detached']);
+  assert.equal(env.coordinator.isAuthorized(token),true);
+});
+test('authorization captures immutable identity and fences account rollover forged token and old revocation',()=>{
+  const env=environment(), original=lease(), token=env.coordinator.claimExplicit(original);
+  original.accountGeneration++;assert.equal(token.lease.accountGeneration,1);
+  assert.equal(env.coordinator.isAuthorized(token,original),false);
+  assert.equal(env.coordinator.isAuthorized({...token}),false);
+  const next=env.coordinator.claimExplicit(original);assert.equal(env.coordinator.isAuthorized(token),false);
+  env.coordinator.revoke(token);assert.equal(env.coordinator.isAuthorized(next),true);
+  next.lease.routeIdentity='mutated';assert.equal(env.coordinator.isAuthorized(next),false);
+});
+test('unchanged counter never causes full local reads; a missed event is recovered once',async()=>{
+  const env=environment(), bridge=env.bridge(), sent=[];bridge.startMonitoring(t=>{sent.push(t);return true;});await drain();
+  const reads=env.metrics().fullReads;for(let i=0;i<20;i++){env.tick();await drain();}assert.equal(env.metrics().fullReads,reads);
+  env.silentLocal('copied in another app');env.tick();await drain();env.tick();await drain();
+  assert.deepEqual(sent,['copied in another app']);assert.equal(env.metrics().fullReads,reads+1);
+});
+test('missed local notification supersedes an older unpolled remote event without a loop',async()=>{
+  const env=environment(), bridge=env.bridge(), sent=[];let remote=null;
+  bridge.startMonitoring(t=>{sent.push(t);return true;},undefined,true,true,0,undefined,{readRemoteSnapshot:()=>remote});await drain();
+  remote=snapshot(1,'older remote');env.silentLocal('new local');env.tick();await drain();
+  assert.deepEqual(env.writes,[]);assert.deepEqual(sent,['new local']);
+});
+test('read timeout releases in-flight state and late callbacks never inspect or publish stale data',async()=>{
+  const env=environment(), bridge=env.bridge(), sent=[];bridge.startMonitoring(t=>{sent.push(t);return true;});await drain();
+  env.hold(true);env.local('stuck');await drain();assert.equal(bridge.systemReadInFlight,true);
+  env.advance(29999);await drain();assert.equal(bridge.systemReadInFlight,true);
+  env.advance(1);await drain();assert.equal(bridge.systemReadInFlight,false);assert.equal(env.metrics().timeouts,0);
+  const inspected=env.metrics().inspectData;env.flush();await drain();assert.equal(env.metrics().inspectData,inspected);assert.deepEqual(sent,[]);
+  env.hold(false);env.tick();await drain();assert.deepEqual(sent,['stuck']);
+});
+test('stop immediately settles outstanding explicit reads and the old callback cannot clear a replacement read',async()=>{
+  const env=environment(), bridge=env.bridge();bridge.startMonitoring(()=>true);await drain();env.hold(true);
+  const pending=bridge.readAndSendCurrentText();bridge.stopMonitoring();assert.equal(await pending,false);assert.equal(env.metrics().timeouts,0);
+  bridge.startMonitoring(()=>true);env.local('new');assert.equal(bridge.systemReadInFlight,true);
+  env.flush();await drain();assert.equal(bridge.systemReadInFlight,false);
+});
+test('external authorization loss blocks both directions even while the local token still exists',async()=>{
+  const env=environment(), bridge=env.bridge(), sent=[];let allowed=true,remote=null;
+  bridge.startMonitoring(t=>{sent.push(t);return true;},undefined,true,true,0,undefined,{isAuthorized:()=>allowed,readRemoteSnapshot:()=>remote});await drain();
+  env.hold(true);const pending=bridge.readAndSendCurrentText();allowed=false;remote=snapshot(1,'blocked');env.tick();await drain();
+  assert.equal(await pending,false);env.local('also blocked');env.flush();await drain();assert.deepEqual(sent,[]);assert.deepEqual(env.writes,[]);
+});
+test('permission revoke cancels reads while remote receive and the grant listener remain alive',async()=>{
+  const env=environment(), bridge=env.bridge(), sent=[];let remote=null;
+  bridge.startMonitoring(t=>{sent.push(t);return true;},undefined,true,true,0,undefined,{readRemoteSnapshot:()=>remote});await drain();
+  assert.equal(env.metrics().permissionListeners,1);env.hold(true);const pending=bridge.readAndSendCurrentText();env.permission(false);
+  assert.equal(await pending,false);assert.equal(env.metrics().listeners,0);assert.equal(env.metrics().permissionListeners,1);
+  env.hold(false);remote=snapshot(1,'receive allowed');env.tick();await drain();assert.deepEqual(env.writes,['receive allowed']);
+  env.local('copied during read denial');env.permission(true);await drain();assert.deepEqual(sent,['copied during read denial']);
+  assert.equal(env.metrics().permissionListeners,1);bridge.stopMonitoring();assert.equal(env.metrics().permissionListeners,0);
+});
+test('initial permission denial can be explicitly granted without a background permission request',async()=>{
+  const env=environment(), bridge=env.bridge(),sent=[];bridge.startMonitoring(t=>{sent.push(t);return true;},undefined,false,true);await drain();
+  env.permission(true);await drain();env.local('after grant');await drain();assert.deepEqual(sent,['after grant']);
+});
+test('files use the rich delivery fence with exact kind and tagged commit, without repeated materialization',async()=>{
+  const env=environment(),bridge=env.bridge();let remote=snapshot(1,'','files'),calls=0;
+  bridge.startMonitoring(()=>true,undefined,true,true,0,undefined,{readRemoteSnapshot:()=>remote,onRemoteContent:async(s,current,tag)=>{
+    assert.equal(s.kind,'files');calls++;if(current())env.deliver('owned URI record fixture',tag);return true;
+  }});await drain();env.tick();await drain();env.tick();await drain();assert.equal(calls,1);
+});
+test('file materialization is fenced when the same sequence changes kind before completion',async()=>{
+  const env=environment(),bridge=env.bridge();let remote=snapshot(1,'','files'),guard,done;
+  bridge.startMonitoring(()=>true,undefined,true,true,0,undefined,{readRemoteSnapshot:()=>remote,onRemoteContent:async(s,current)=>{
+    guard=current;return await new Promise(resolve=>{done=resolve;});
+  }});await drain();env.tick();await drain();remote=snapshot(1,'','rich');assert.equal(guard(),false);done(false);await drain();assert.deepEqual(env.writes,[]);
+});
+
+test('continuous lifecycle policy ignores presentation only while exact authorization remains present',()=>{
+  const {policy:p}=environment();
+  const start={requestedGeneration:2,currentGeneration:2,requestedSessionId:3,currentSessionId:3,
+    requestedAttemptId:4,currentAttemptId:4,connected:true,background:true,stopping:false,enabled:true};
+  assert.equal(p.shouldStartClipboardBridge(start),false);assert.equal(p.shouldStartClipboardBridge({...start,continuousAuthorized:true}),true);
+  for(const change of [{stopping:true},{enabled:false},{connected:false},{currentGeneration:3},{currentSessionId:4},{currentAttemptId:5}])
+    assert.equal(p.shouldStartClipboardBridge({...start,continuousAuthorized:true,...change}),false);
+  assert.equal(p.shouldStopClipboardBridgeForBackground(true,true),false);assert.equal(p.shouldStopClipboardBridgeForBackground(true,false),true);
+  const restart={connected:true,sessionId:3,bridgePresent:false,background:true,minimized:true,enabled:true};
+  assert.equal(p.shouldRestartClipboardBridge(restart),false);assert.equal(p.shouldRestartClipboardBridge({...restart,continuousAuthorized:true}),true);
+  assert.equal(p.shouldRestartClipboardBridge({...restart,continuousAuthorized:true,bridgePresent:true}),false);
+});
+
+test('same-authorization reconstruction retries an observed local event whose read never completed',async()=>{
+  const env=environment(), target=lease(), token=env.coordinator.claimExplicit(target),sent=[];
+  const options={lease:target,authorization:token,isAuthorized:()=>true};let bridge=env.rawBridge();
+  bridge.startMonitoring(t=>{sent.push(t);return true;},undefined,true,true,0,undefined,options);await drain();
+  env.hold(true);env.local('observed but undelivered');bridge.stopMonitoring();await drain();
+  env.hold(false);bridge=env.rawBridge();bridge.startMonitoring(t=>{sent.push(t);return true;},undefined,true,true,0,undefined,options);await drain();
+  assert.deepEqual(sent,['observed but undelivered']);env.flush();await drain();env.tick();await drain();assert.equal(sent.length,1);
+});
+
+test('explicit unavailable content stops automatic retries without forwarding a plaintext fallback',async()=>{
+ const env=environment(),bridge=env.bridge(),sent=[];let attempts=0;
+ bridge.startMonitoring(text=>{sent.push(text);return true;},undefined,true,true,0,undefined,
+  {onLocalContent:async()=>{attempts++;return 'unavailable'}});
+ await drain();env.local('file label with plaintext representation');await drain();
+ const reads=env.metrics().fullReads;for(let i=0;i<10;i++){env.tick();await drain()}
+ assert.equal(attempts,1);assert.equal(env.metrics().fullReads,reads);assert.deepEqual(sent,[]);
+ env.local('a new explicit copy');await drain();assert.equal(attempts,2);bridge.stopMonitoring();
+});
+test('atomic authority denial prevents text publication after the preliminary owner check',async()=>{
+ const env=environment(),bridge=env.bridge();bridge.startMonitoring(()=>true,undefined,true,true,0,undefined,
+  {withAuthority:()=>false,readRemoteSnapshot:()=>({sequence:1,text:'remote',kind:'text',ready:true})});
+ await drain();env.tick();await drain();assert.deepEqual(env.writes,[]);bridge.stopMonitoring();
+});
+
 (async () => {
   for (const { name, run } of tests) { await run(); console.log('PASS ' + name); }
   console.log(`PASS ${tests.length} transfer clipboard core regressions`);

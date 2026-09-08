@@ -18,6 +18,7 @@ interface ArtifactPublicationLease {
 export class TransferArtifactPublicationService {
   private static instance: TransferArtifactPublicationService = new TransferArtifactPublicationService();
   private leases: Map<string, ArtifactPublicationLease> = new Map<string, ArtifactPublicationLease>();
+  private systemTags: Set<string> = new Set<string>();
   static getInstance(): TransferArtifactPublicationService { return TransferArtifactPublicationService.instance; }
 
   private nativeKey(owner: RemoteSessionExactDisconnectIdentity): string {
@@ -55,7 +56,21 @@ export class TransferArtifactPublicationService {
     return released;
   }
   /** Separate namespace: native teardown can never retire a system clipboard lease. */
-  registerSystemClipboard(batch: TransferArtifactBatch): string { return this.register(batch, 'system', ''); }
+  registerSystemClipboard(batch: TransferArtifactBatch, tag?: string): string {
+    if (tag !== undefined && (tag.length > 128 ||
+      !/^remotedesk:remote-text:v1:[a-zA-Z0-9_.:@-]+$/.test(tag) || this.systemTags.has(tag))) {
+      throw new Error('transfer_publication_tag_invalid');
+    }
+    // Never rebind an old bridge tag to different files during this runtime.
+    if (this.systemTags.size >= 16384) { throw new Error('transfer_publication_tag_capacity'); }
+    const id: string = this.register(batch, 'system', '');
+    const lease: ArtifactPublicationLease | undefined = this.leases.get(id);
+    if (lease !== undefined) {
+      if (tag !== undefined) { lease.systemTag = tag; }
+      this.systemTags.add(lease.systemTag);
+    }
+    return id;
+  }
   systemClipboardTag(id: string): string {
     const lease: ArtifactPublicationLease | undefined = this.leases.get(id);
     return lease !== undefined && lease.kind === 'system' ? lease.systemTag : '';

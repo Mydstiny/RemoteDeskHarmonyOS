@@ -103,7 +103,7 @@
         "reason": "$string:pasteboard_permission_reason",
         "usedScene": {
           "abilities": ["EntryAbility", "RemoteSessionAbility"],
-          "when": "inuse"
+          "when": "always"
         }
       },
       {
