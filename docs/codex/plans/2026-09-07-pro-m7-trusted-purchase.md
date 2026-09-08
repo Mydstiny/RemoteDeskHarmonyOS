@@ -17,7 +17,7 @@
 
 订单数据按当前官方模型使用 productType 字符串 `1`、environment `NORMAL`/`SANDBOX`、purchaseTime/finishStatus/needFinish/revocationTime；不使用旧 HMS Android 的 RSA 订单协议。证据与可信根哈希详见服务端 PROVENANCE。
 
-用户已授权直接检查和完善 AGC 收费准备与沙盒。当前项目已有非消耗型草稿 `RemoteDesktop_Pro_Test`（CNY 28.88）、Pro IAP 密钥；用户指定的实机帐号已成功加入沙盒名单。已创建受保护的运行时探针 `remotedesk-pro-sandbox`，实际 Node 22.23.2/Linux x64；CloudDB 模型和 Administrator 专用 `ProSandbox` 已建立。经单独授权创建了仅限 RemoteDesktop 项目开发角色的 API 客户端，凭据仅存于本机私有部署目录；真实 SDK 读取空存储区成功。控制记录、完整后端、正式商户激活、通知回调及实机购买/退款尚未完成。配置凭据不写入仓库或日志。
+用户已授权直接检查和完善 AGC 收费准备与沙盒。当前项目已有非消耗型草稿 `RemoteDesktop_Pro_Test`（CNY 28.88）、Pro IAP 密钥；用户指定的实机帐号已成功加入沙盒名单。已创建受保护的运行时探针 `remotedesk-pro-sandbox`，实际 Node 22.23.2/Linux x64；CloudDB 模型和 Administrator 专用 `ProSandbox` 已建立。经单独授权创建了仅限 RemoteDesktop 项目开发角色的 API 客户端，凭据仅存于本机私有部署目录。2026-09-08 已真实验证控制记录、空权益快照及四个并发事务；库内只有控制记录，未创建业务订单。完整后端、正式商户激活、通知回调及实机购买/退款尚未完成。配置凭据不写入仓库或日志。
 
 ## 台账增量
 

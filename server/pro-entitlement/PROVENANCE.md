@@ -6,6 +6,7 @@
 
 - [IAP JWS 验签](https://developer.huawei.com/consumer/cn/doc/doccenter-capabilities/api/iap-verifying-signature)：ES256，typ JWT，x5c 叶/中间/根三张证书，专用非 critical OID `1.3.6.1.4.1.2011.2.415.1.1`。
 - [Huawei CBG Root CA G2](https://pki.consumer.huawei.com/ca/cer/RootCaG2Ecdsa.cer)：实际 DER SHA-256 `df21a3c09f7954579305f85c64f80cad86f79853ee3a887c1dec95d218df3a37`。仅保存信任指纹，未将证书文件加入仓库。
+- 动态 CRL 使用 X.509 `2.5.29.31` 分发点，固定允许上述华为 PKI 主机。只有完整证书路径和 ES256 验证通过后才下载；缓存不能跳过 OpenSSL `-crl_check_all`。其他主机或分发点格式需要实际官方证据与独立复核后才可支持，不能临时关闭吊销检查。
 - [JWT 请求签名](https://developer.huawei.com/consumer/cn/doc/doccenter-capabilities/api/iap-jwt-description)：ES256、aud iap-v1、aid、iss、kid 与请求原始 JSON SHA-256 digest。
 - [IAP 公共说明](https://developer.huawei.com/consumer/cn/doc/doccenter-capabilities/api/iap-rest-common-statement)、[订单状态](https://developer.huawei.com/consumer/cn/doc/doccenter-capabilities/api/iap-query-order-status)、[发货确认](https://developer.huawei.com/consumer/cn/doc/doccenter-capabilities/api/iap-confirm-purchase-for-order)、[订单模型](https://developer.huawei.com/consumer/cn/doc/doccenter-capabilities/api/iap-server-data-model)。
 - [Account Kit 解析凭证](https://developer.huawei.com/consumer/cn/doc/doccenter-capabilities/api/account-api-get-token-info)：服务端 POST access_token；验证无 NSP_STATUS 错误、type=0、client_id、expire_in、union_id/open_id，不能相信 App 发送的 X-Union-ID。

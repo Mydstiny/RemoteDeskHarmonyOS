@@ -5,7 +5,8 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { HuaweiIapJwsVerifier, HUAWEI_IAP_ROOT_SHA256, iapAuthorization, jwsParts } from '../../server/pro-entitlement/iap-crypto.mjs';
+import { HuaweiIapJwsVerifier, HUAWEI_IAP_ROOT_SHA256, certificateCrlUrls, iapAuthorization, jwsParts } from '../../server/pro-entitlement/iap-crypto.mjs';
+import { HuaweiIapCrlSource } from '../../server/pro-entitlement/iap-crl.mjs';
 import { HuaweiAccountVerifier, HuaweiIapClient, orderReferenceFromPurchaseData, ownerForUnionId,
   validateCurrentOrder, vendorPost } from '../../server/pro-entitlement/huawei-api.mjs';
 
@@ -27,13 +28,18 @@ function issue(name, parent, extensions) {
 put('root.ext', '[req]\ndistinguished_name=dn\nx509_extensions=ext\n[dn]\n[ext]\n' + caExtensions);
 openssl('req', '-x509', '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:prime256v1', '-noenc',
   '-keyout', 'root.key', '-out', 'root.pem', '-days', '2', '-subj', '/CN=Pro Test Root', '-config', 'root.ext');
-issue('intermediate', 'root', caExtensions);
-const leafExtensions = 'basicConstraints=critical,CA:false\nkeyUsage=critical,digitalSignature\nsubjectKeyIdentifier=hash\nauthorityKeyIdentifier=keyid:always\n';
+issue('intermediate', 'root', caExtensions + 'crlDistributionPoints=URI:https://pki.consumer.huawei.com/ca/crl/root.crl\n');
+const leafExtensions = 'basicConstraints=critical,CA:false\nkeyUsage=critical,digitalSignature\nsubjectKeyIdentifier=hash\nauthorityKeyIdentifier=keyid:always\n' +
+  'crlDistributionPoints=URI:http://pki.consumer.huawei.com/ca/crl/intermediate.crl\n';
 issue('leaf', 'intermediate', leafExtensions + '1.3.6.1.4.1.2011.2.415.1.1=ASN1:NULL\n');
 issue('ordinary', 'intermediate', leafExtensions);
 issue('critical', 'intermediate', leafExtensions + '1.3.6.1.4.1.2011.2.415.1.1=critical,ASN1:NULL\n');
 issue('unknown', 'intermediate', leafExtensions + '1.3.6.1.4.1.2011.2.415.1.1=ASN1:NULL\n1.2.3.4=critical,ASN1:NULL\n');
 issue('noSign', 'intermediate', leafExtensions.replace('digitalSignature', 'keyAgreement') + '1.3.6.1.4.1.2011.2.415.1.1=ASN1:NULL\n');
+issue('foreignCrl', 'intermediate', leafExtensions.replace('pki.consumer.huawei.com/ca/crl/intermediate.crl', '127.0.0.1/private.crl') +
+  '1.3.6.1.4.1.2011.2.415.1.1=ASN1:NULL\n');
+issue('credentialsCrl', 'intermediate', leafExtensions.replace('http://pki.consumer.huawei.com', 'http://user@pki.consumer.huawei.com') +
+  '1.3.6.1.4.1.2011.2.415.1.1=ASN1:NULL\n');
 for (const ca of ['root', 'intermediate']) {
   put(ca + '.db', ''); put(ca + '.serial', '1000\n'); put(ca + '.crlnumber', '1000\n');
   put(ca + '.cnf', `[ca]\ndefault_ca=authority\n[authority]\ndatabase=${ca}.db\nserial=${ca}.serial\ncrlnumber=${ca}.crlnumber\ncertificate=${ca}.pem\nprivate_key=${ca}.key\ndefault_md=sha256\ndefault_crl_days=1\n`);
@@ -42,6 +48,7 @@ for (const ca of ['root', 'intermediate']) {
 const root = new X509Certificate(read('root.pem'));
 const rootFingerprint = createHash('sha256').update(root.raw).digest('hex');
 const crls = read('root.crl') + read('intermediate.crl');
+const crlDer = new Map(['root', 'intermediate'].map(name => [name, openssl('crl', '-in', name + '.crl', '-outform', 'DER')]));
 const now = Date.now();
 const reference = { purchaseOrderId: 'test-order', purchaseToken: 'test-purchase-token' };
 const merchant = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
@@ -91,6 +98,68 @@ test('expired path and revoked leaf fail with real CRL verification', async () =
   openssl('ca', '-config', 'intermediate.cnf', '-revoke', 'leaf.pem');
   openssl('ca', '-gencrl', '-config', 'intermediate.cnf', '-out', 'revoked.crl');
   await assert.rejects(() => verifier({ crls: read('root.crl') + read('revoked.crl'), now: Date.now }).verify(jwt()));
+});
+function liveCrlFixture(fetcher, clock = () => now) {
+  const calls = [];
+  const source = new HuaweiIapCrlSource(async (url, request) => {
+    calls.push({ url, request });
+    if (fetcher) return fetcher(url, request);
+    return new Response(crlDer.get(url.includes('intermediate.crl') ? 'intermediate' : 'root'));
+  }, clock);
+  return { calls, source, verifier: verifier({ crls: undefined, crlSource: source, now: clock }) };
+}
+test('dynamic CRLs are fetched from signed distribution points and cached only after full revocation verification', async () => {
+  const f = liveCrlFixture();
+  assert.deepEqual(certificateCrlUrls(new X509Certificate(read('leaf.pem')).raw),
+    ['http://pki.consumer.huawei.com/ca/crl/intermediate.crl']);
+  assert.deepEqual(await f.verifier.verify(jwt()), order); assert.equal(f.calls.length, 2);
+  assert.deepEqual(await f.verifier.verify(jwt()), order); assert.equal(f.calls.length, 2);
+  for (const call of f.calls) {
+    assert.equal(call.request.method, 'GET'); assert.equal(call.request.redirect, 'error');
+    assert.deepEqual(Object.keys(call.request.headers), ['Accept']);
+    assert.ok(call.request.signal instanceof AbortSignal);
+  }
+});
+test('untrusted certificate paths and forged JWS never trigger a CRL download', async () => {
+  const f = liveCrlFixture(); const forged = jwt().split('.'); forged[2] = Buffer.alloc(64).toString('base64url');
+  for (const value of [forged.join('.'), jwt(order, 'unknown'), jwt(order, 'ordinary')]) {
+    await assert.rejects(() => f.verifier.verify(value));
+  }
+  const expired = liveCrlFixture(undefined, () => now + 3 * 86400000);
+  await assert.rejects(() => expired.verifier.verify(jwt()));
+  assert.equal(f.calls.length, 0); assert.equal(expired.calls.length, 0);
+});
+test('valid signatures cannot use foreign or credential-bearing CRL destinations', async () => {
+  const f = liveCrlFixture();
+  for (const name of ['foreignCrl', 'credentialsCrl']) await assert.rejects(() => f.verifier.verify(jwt(order, name)));
+  assert.equal(f.calls.length, 0);
+  assert.throws(() => certificateCrlUrls(Buffer.from([48, 128, 0, 0])));
+});
+test('dynamic revoked or malformed CRLs fail and cannot poison a later valid download', async () => {
+  let bad = true;
+  const f = liveCrlFixture(async url => new Response(bad ? Buffer.from('not a CRL') :
+    crlDer.get(url.includes('intermediate.crl') ? 'intermediate' : 'root')));
+  await assert.rejects(() => f.verifier.verify(jwt())); bad = false;
+  assert.deepEqual(await f.verifier.verify(jwt()), order); assert.equal(f.calls.length, 4);
+  const revoked = liveCrlFixture(async url => new Response(url.includes('intermediate.crl') ?
+    openssl('crl', '-in', 'revoked.crl', '-outform', 'DER') : crlDer.get('root')));
+  await assert.rejects(() => revoked.verifier.verify(jwt()));
+});
+test('CRL cache refresh is bounded to five minutes and expired cached CRLs are never accepted', async () => {
+  let instant = now; const f = liveCrlFixture(undefined, () => instant);
+  await f.verifier.verify(jwt()); instant += 299999; await f.verifier.verify(jwt()); assert.equal(f.calls.length, 2);
+  instant++; await f.verifier.verify(jwt()); assert.equal(f.calls.length, 4);
+  instant = now + 86400000 + 1000;
+  await assert.rejects(() => f.verifier.verify(jwt())); assert.equal(f.calls.length, 6);
+  await assert.rejects(() => f.verifier.verify(jwt())); assert.equal(f.calls.length, 8);
+});
+test('CRL transport rejects redirects, oversized streams and empty responses without caching them', async () => {
+  for (const fetcher of [async () => new Response(null, { status: 302, headers: { location: 'https://example.test' } }),
+    async () => new Response('x', { headers: { 'content-length': String(2 * 1024 * 1024 + 1) } }),
+    async () => new Response(Buffer.alloc(2 * 1024 * 1024 + 1)), async () => new Response('')]) {
+    const f = liveCrlFixture(fetcher); await assert.rejects(() => f.verifier.verify(jwt()));
+    await assert.rejects(() => f.verifier.verify(jwt())); assert.equal(f.calls.length, 4);
+  }
 });
 test('merchant authorization signs exact request bytes, correct audience and bounded lifetime', () => {
   const body = JSON.stringify(reference); const parts = jwsParts(iapAuthorization(body, configuration, now));
