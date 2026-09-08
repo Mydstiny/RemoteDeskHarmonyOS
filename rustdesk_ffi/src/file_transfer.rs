@@ -96,6 +96,8 @@ pub(crate) struct TransferJob {
     started: Instant,
     last_progress: Mutex<Instant>,
     pub directory: Mutex<Option<RemoteDirectory>>,
+    pub auth: Arc<crate::file_auth::FileAuthExchange>,
+    pub result: Mutex<FileOperationResult>,
 }
 impl TransferJob {
     fn new(id: u64, size: u64) -> Self {
@@ -117,6 +119,8 @@ impl TransferJob {
             started: Instant::now(),
             last_progress: Mutex::new(Instant::now()),
             directory: Mutex::new(None),
+            auth: Arc::new(crate::file_auth::FileAuthExchange::new(id)),
+            result: Mutex::new(FileOperationResult::default()),
         }
     }
     pub fn mark_remote_write_started(&self) {
@@ -139,6 +143,7 @@ impl TransferJob {
         }
     }
     pub fn cancel(&self) {
+        self.auth.finish(false);
         self.cancelled.store(true, Ordering::SeqCst);
         if let Ok(epoch) = self.epoch.lock() {
             if *epoch != 0 {
@@ -199,6 +204,7 @@ impl TransferJob {
         }
     }
     pub fn finish(&self, result: io::Result<()>) {
+        self.auth.finish(false);
         if let Ok(mut status) = self.status.lock() {
             if status.0.state != 2 {
                 return;
@@ -428,12 +434,23 @@ impl DownloadSink {
     }
 }
 
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct FileOperationResult {
+    pub operation_kind: u32,
+    pub source_metadata_available: u32,
+    pub source_size: u64,
+    pub source_modified_time: u64,
+    pub remote_operation_acknowledged: u32,
+}
+
 pub(crate) enum FileOperation {
     Upload {
         source: UploadSource,
         overwrite: bool,
     },
     List,
+    CreateDirectory,
     Download(DownloadSink),
 }
 impl FileOperation {
@@ -441,7 +458,7 @@ impl FileOperation {
         match self {
             Self::Upload { source, .. } => source.size(),
             Self::Download(sink) => sink.expected_size,
-            Self::List => 0,
+            Self::List | Self::CreateDirectory => 0,
         }
     }
 }

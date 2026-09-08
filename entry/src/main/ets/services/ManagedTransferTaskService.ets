@@ -1,4 +1,5 @@
 import { common } from '@kit.AbilityKit';
+import { deviceInfo } from '@kit.BasicServicesKit';
 import { util } from '@kit.ArkTS';
 import { FileTransferLiveTaskService } from './FileTransferLiveTaskService';
 import { createTransferSnapshot, FileTransferProgressSnapshot, TransferProtocol } from './FileTransferProgressModel';
@@ -88,7 +89,7 @@ export class ManagedTransferTaskService {
   private listeners: ManagedTransferSubscription[] = [];
   private queue: ManagedTransferQueued[] = [];
   private running: number = 0;
-  private concurrency: number = 2;
+  private concurrency: number = deviceInfo.deviceType === '2in1' ? 2 : 1;
 
   static getInstance(): ManagedTransferTaskService {
     if (ManagedTransferTaskService.instance === null) { ManagedTransferTaskService.instance = new ManagedTransferTaskService(); }

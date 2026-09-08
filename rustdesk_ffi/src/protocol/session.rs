@@ -56,6 +56,7 @@ pub struct Session {
     connect_epoch: u64,
     connection_id: u64,
     auth_callback: Option<(AuthEventCallback, usize)>,
+    file_auth: Option<Arc<crate::file_auth::FileAuthExchange>>,
     pub(crate) codec_evidence: Arc<Mutex<RustDeskCodecEvidence>>,
 }
 
@@ -72,9 +73,12 @@ impl Session {
             connect_epoch,
             connection_id,
             auth_callback: None,
+            file_auth: None,
             codec_evidence: Arc::new(Mutex::new(RustDeskCodecEvidence::default())),
         }
     }
+
+    pub(crate) fn set_file_auth(&mut self, auth: Arc<crate::file_auth::FileAuthExchange>) { self.file_auth = Some(auth); }
 
     fn record_peer_encoding(&self, info: &PeerInfo) {
         if info.has_encoding() {
@@ -180,18 +184,28 @@ impl Session {
     ) -> io::Result<()> {
         self.state = SessionState::LoggingIn;
 
-        let challenge_payload = channel.recv().map_err(|e| {
-            io::Error::new(
-                e.kind(),
-                format!("login hash read failed before LoginRequest: {e}"),
-            )
+        let hash_deadline = Instant::now() + Duration::from_secs(30);
+        let challenge_payload = channel.recv_with_pump(|ch| {
+            if self.file_auth.is_some() {
+                if crate::connect_cancelled(self.connect_epoch) { return Err(io::Error::new(io::ErrorKind::Interrupted, "file authentication cancelled")); }
+                if Instant::now() >= hash_deadline { return Err(io::Error::new(io::ErrorKind::TimedOut, "file hash deadline")); }
+                if ch.buffered_receive_bytes() > 1024 * 1024 { return Err(io::Error::new(io::ErrorKind::InvalidData, "file hash too large")); }
+            }
+            Ok(())
+        }).map_err(|e| {
+            io::Error::new(e.kind(), "login hash read failed before LoginRequest")
         })?;
+        if self.file_auth.is_some() && challenge_payload.len() > 1024 * 1024 {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "file hash too large"));
+        }
         let challenge_msg: Message = protobuf::parse_from_bytes(&challenge_payload)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
         let hash = match challenge_msg.union {
             Some(Message_oneof_union::hash(hash)) => hash,
             Some(Message_oneof_union::login_response(resp)) => {
-                return self.handle_login_response(resp);
+                let result = self.handle_login_response(resp);
+                if let Some(auth) = self.file_auth.as_ref() { auth.finish(result.is_ok()); }
+                return result;
             }
             other => {
                 return Err(io::Error::new(
@@ -215,6 +229,9 @@ impl Session {
             request_approval,
         )?;
 
+        if self.file_auth.is_some() {
+            return self.wait_file_login_response(channel, peer_id, password, preferred_codec, image_quality, privacy_mode, audio_enabled, fps, file_transfer_dir, request_approval, &hash);
+        }
         self.wait_login_response(
             channel,
             peer_id,
@@ -542,6 +559,215 @@ impl Session {
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
         channel.send_low_priority(&payload)?;
         Ok(())
+    }
+
+    /// Dedicated file jobs own their challenge mailbox; desktop authentication is untouched.
+    fn wait_file_login_response(
+        &mut self,
+        channel: &mut crate::crypto_channel::CryptoChannel,
+        peer_id: &str,
+        password: &str,
+        preferred_codec: i32,
+        image_quality: i32,
+        privacy_mode: bool,
+        audio_enabled: bool,
+        fps: u32,
+        file_transfer_dir: Option<&str>,
+        request_approval: bool,
+        initial_hash: &super::message_proto::Hash,
+    ) -> io::Result<()> {
+        let auth = Arc::clone(self.file_auth.as_ref().unwrap());
+        auth.begin();
+        let mut hash = initial_hash.clone();
+        let mut approval = request_approval;
+        let mut current_password = crate::file_auth::Secret::new(password);
+        let deadline = Instant::now() + Duration::from_secs(90);
+        let mut totp = false;
+        if approval {
+            auth.challenge(4)?;
+        } else if password.is_empty() {
+            auth.challenge(1)?;
+        }
+        channel.set_read_timeout(Some(Duration::from_millis(100)))?;
+        let result = (|| -> io::Result<()> {
+            loop {
+                if crate::connect_cancelled(self.connect_epoch) {
+                    return Err(io::Error::new(
+                        io::ErrorKind::Interrupted,
+                        "file authentication cancelled",
+                    ));
+                }
+                if Instant::now() >= deadline {
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "file authentication deadline",
+                    ));
+                }
+                if let Some(response) = auth.take()? {
+                    match response.kind {
+                        1 => {
+                            current_password = response.secret;
+                            approval = false;
+                            self.send_login_request(
+                                channel,
+                                peer_id,
+                                current_password.as_str(),
+                                &hash,
+                                preferred_codec,
+                                image_quality,
+                                privacy_mode,
+                                audio_enabled,
+                                fps,
+                                file_transfer_dir,
+                                false,
+                            )?;
+                        }
+                        2 => Self::send_auth_2fa(channel, response.secret.as_str())?,
+                        3 => {
+                            current_password = crate::file_auth::Secret::new("");
+                            approval = true;
+                            auth.challenge(4)?;
+                            self.send_login_request(
+                                channel,
+                                peer_id,
+                                "",
+                                &hash,
+                                preferred_codec,
+                                image_quality,
+                                privacy_mode,
+                                audio_enabled,
+                                fps,
+                                file_transfer_dir,
+                                true,
+                            )?;
+                        }
+                        _ => {
+                            return Err(io::Error::new(
+                                io::ErrorKind::InvalidInput,
+                                "file authentication response",
+                            ))
+                        }
+                    }
+                }
+                let payload = match channel.recv_with_pump(|ch| {
+                    if crate::connect_cancelled(self.connect_epoch) {
+                        return Err(io::Error::new(
+                            io::ErrorKind::Interrupted,
+                            "file authentication cancelled",
+                        ));
+                    }
+                    if Instant::now() >= deadline {
+                        return Err(io::Error::new(
+                            io::ErrorKind::TimedOut,
+                            "file authentication deadline",
+                        ));
+                    }
+                    if ch.buffered_receive_bytes() > 1024 * 1024 {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "file authentication frame too large",
+                        ));
+                    }
+                    Ok(())
+                }) {
+                    Ok(v) => v,
+                    Err(e)
+                        if matches!(
+                            e.kind(),
+                            io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
+                        ) && Instant::now() < deadline =>
+                    {
+                        continue
+                    }
+                    Err(e) => return Err(e),
+                };
+                if payload.len() > 1024 * 1024 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "file authentication frame too large",
+                    ));
+                }
+                let message: Message = protobuf::parse_from_bytes(&payload).map_err(|_| {
+                    io::Error::new(io::ErrorKind::InvalidData, "file authentication message")
+                })?;
+                match message.union {
+                    Some(Message_oneof_union::login_response(response)) => {
+                        if response.has_error() {
+                            match response.get_error() {
+                                "2FA Required" | "Wrong 2FA Code" => {
+                                    totp = true;
+                                    auth.challenge(2)?;
+                                }
+                                "Empty Password" | "Wrong Password" if !totp => {
+                                    auth.challenge(1)?;
+                                }
+                                "No Password Access" if approval => {}
+                                "No Password Access" if !totp => {
+                                    auth.challenge(3)?;
+                                }
+                                _ => {
+                                    return Err(io::Error::new(
+                                        io::ErrorKind::PermissionDenied,
+                                        "file authentication rejected",
+                                    ))
+                                }
+                            }
+                            continue;
+                        }
+                        if let Some(LoginResponse_oneof_union::peer_info(info)) = response.union {
+                            self.record_peer_encoding(&info);
+                            self.peer_info = Some(info);
+                        }
+                        self.state = SessionState::Connected;
+                        auth.finish(true);
+                        return Ok(());
+                    }
+                    Some(Message_oneof_union::hash(next)) => {
+                        hash = next;
+                        if approval {
+                            self.send_login_request(
+                                channel,
+                                peer_id,
+                                "",
+                                &hash,
+                                preferred_codec,
+                                image_quality,
+                                privacy_mode,
+                                audio_enabled,
+                                fps,
+                                file_transfer_dir,
+                                true,
+                            )?;
+                        } else if !totp {
+                            auth.challenge(1)?;
+                        }
+                    }
+                    Some(Message_oneof_union::test_delay(delay)) => {
+                        let mut echo = Message::new();
+                        echo.union = Some(Message_oneof_union::test_delay(delay));
+                        channel.send(
+                            &echo
+                                .write_to_bytes()
+                                .map_err(|_| io::Error::other("file auth keepalive"))?,
+                        )?;
+                    }
+                    Some(Message_oneof_union::misc(misc)) => {
+                        if matches!(misc.union, Some(Misc_oneof_union::close_reason(_))) {
+                            return Err(io::Error::new(
+                                io::ErrorKind::PermissionDenied,
+                                "file authentication closed by peer",
+                            ));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        })();
+        channel.set_read_timeout(None).ok();
+        if result.is_err() {
+            auth.finish(false);
+        }
+        result
     }
 
     fn wait_login_response(
@@ -1042,6 +1268,136 @@ impl Drop for PendingTwoFactorGuard {
 mod tests {
     use super::*;
     use protobuf::Message as ProtoMessage;
+
+    #[test]
+    fn file_auth_wire_interleaves_password_totp_and_explicit_approval_on_same_desktop_id() {
+        use std::net::{TcpListener, TcpStream};
+        use std::thread;
+        let mut clients = Vec::new();
+        let mut peers = Vec::new();
+        let mut auths = Vec::new();
+        for approval in [false, true] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = listener.local_addr().unwrap();
+            peers.push(thread::spawn(move || {
+                let (mut socket, _) = listener.accept().unwrap();
+                socket
+                    .set_read_timeout(Some(Duration::from_secs(4)))
+                    .unwrap();
+                let send = |socket: &mut TcpStream, message: Message| {
+                    wire::write_frame(socket, &message.write_to_bytes().unwrap()).unwrap()
+                };
+                let error = |socket: &mut TcpStream, text: &str| {
+                    let mut response = LoginResponse::new();
+                    response.set_error(text.to_owned());
+                    let mut message = Message::new();
+                    message.set_login_response(response);
+                    send(socket, message);
+                };
+                let read = |socket: &mut TcpStream| -> Message {
+                    protobuf::parse_from_bytes(&wire::read_frame(socket).unwrap()).unwrap()
+                };
+                let mut hash = super::super::message_proto::Hash::new();
+                hash.set_salt("salt".into());
+                hash.set_challenge("challenge".into());
+                let mut challenge = Message::new();
+                challenge.set_hash(hash);
+                send(&mut socket, challenge.clone());
+                let first = read(&mut socket);
+                assert!(first.get_login_request().has_file_transfer());
+                if approval {
+                    error(&mut socket, "No Password Access");
+                    let request = read(&mut socket);
+                    assert!(request.get_login_request().get_password().is_empty());
+                    error(&mut socket, "No Password Access");
+                    send(&mut socket, challenge);
+                    let retry = read(&mut socket);
+                    assert!(retry.get_login_request().has_file_transfer());
+                    assert!(retry.get_login_request().get_password().is_empty());
+                } else {
+                    error(&mut socket, "Wrong Password");
+                    let retry = read(&mut socket);
+                    assert!(!retry.get_login_request().get_password().is_empty());
+                    assert_ne!(
+                        retry.get_login_request().get_password(),
+                        first.get_login_request().get_password()
+                    );
+                    error(&mut socket, "2FA Required");
+                    assert_eq!(read(&mut socket).get_auth_2fa().get_code(), "123456");
+                    error(&mut socket, "Wrong 2FA Code");
+                    assert_eq!(read(&mut socket).get_auth_2fa().get_code(), "654321");
+                }
+                let mut response = LoginResponse::new();
+                response.set_peer_info(PeerInfo::new());
+                let mut message = Message::new();
+                message.set_login_response(response);
+                send(&mut socket, message);
+            }));
+            let auth = Arc::new(crate::file_auth::FileAuthExchange::new(if approval {
+                202
+            } else {
+                201
+            }));
+            auths.push(auth.clone());
+            clients.push(thread::spawn(move || {
+                let socket = TcpStream::connect(address).unwrap();
+                socket
+                    .set_read_timeout(Some(Duration::from_secs(3)))
+                    .unwrap();
+                let mut channel = crate::crypto_channel::CryptoChannel::new_plain(socket);
+                let reservation = crate::ConnectEpochReservation::new(7700201);
+                let mut session = Session::new_with_connection_id(7700201, reservation.epoch());
+                session.set_file_auth(auth.clone());
+                session
+                    .login_file_transfer_encrypted(&mut channel, "peer", "original", "/home", false)
+                    .unwrap();
+                assert_eq!(session.state(), &SessionState::Connected);
+                assert_eq!(auth.snapshot().state, 3);
+            }));
+        }
+        let deadline = Instant::now() + Duration::from_secs(4);
+        let mut seen = [0u64; 2];
+        let mut totp_attempt = 0;
+        loop {
+            let mut complete = 0;
+            for (index, auth) in auths.iter().enumerate() {
+                let snapshot = auth.snapshot();
+                if snapshot.state == 3 {
+                    complete += 1;
+                }
+                if snapshot.state == 1 && snapshot.kind != 4 && snapshot.challenge_id != seen[index]
+                {
+                    seen[index] = snapshot.challenge_id;
+                    let secret = match snapshot.kind {
+                        1 => "temporary-password",
+                        2 => {
+                            totp_attempt += 1;
+                            if totp_attempt == 1 {
+                                "123456"
+                            } else {
+                                "654321"
+                            }
+                        }
+                        3 => "",
+                        _ => panic!("unexpected challenge"),
+                    };
+                    assert!(!auths[1 - index].submit(snapshot.challenge_id, snapshot.kind, secret));
+                    assert!(auth.submit(snapshot.challenge_id, snapshot.kind, secret));
+                }
+            }
+            if complete == 2 {
+                break;
+            }
+            assert!(Instant::now() < deadline, "file authentication timed out");
+            thread::sleep(Duration::from_millis(1));
+        }
+        for client in clients {
+            client.join().unwrap();
+        }
+        for peer in peers {
+            peer.join().unwrap();
+        }
+    }
 
     #[test]
     fn native_login_contract_does_not_request_per_frame_video_ack() {

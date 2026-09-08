@@ -2,6 +2,7 @@
 #define RDP_FILE_CLIPBOARD_BRIDGE_H
 
 #include "rdp_file_clipboard_offer.h"
+#include "rdp_clipboard_content.h"
 
 #ifdef USE_REAL_FREERDP
 
@@ -38,6 +39,8 @@ public:
     UINT notifyServerFormatList();
     UINT sendClientCapabilities();
     UINT sendCurrentFormatList(bool includeText);
+    UINT32 registerContentFormat(const std::string& name);
+    UINT sendContentFormatList(const RdpClipboardWireContent& content);
     bool isFileFormat(UINT32 formatId) const;
     UINT32 remoteFlags() const;
     UINT respondToFileFormatRequest(const CLIPRDR_FORMAT_DATA_REQUEST* request);

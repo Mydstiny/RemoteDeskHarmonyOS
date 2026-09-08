@@ -11,7 +11,8 @@ export function joinRemoteTransferPath(directory: string, name: string): string 
   if (!remoteTransferPathIsAbsolute(directory) || name.length === 0 || name === '.' || name === '..' ||
     /[\\/\x00-\x1f\x7f]/.test(name)) { return ''; }
   const windows: boolean = /^[A-Za-z]:[\\/]/.test(directory) || directory.startsWith('\\\\');
-  if (windows && /[:*?"<>|]/.test(name)) { return ''; }
+  if (windows && (/[:*?"<>|]/.test(name) || /[. ]$/.test(name) ||
+    /^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\.|$)/i.test(name))) { return ''; }
   const separator: string = windows ? '\\' : '/';
   return directory.replace(/[\\/]+$/g, '') + separator + name;
 }
@@ -32,4 +33,18 @@ export function parentRemoteTransferPath(directory: string): string {
 export function remoteTransferEntryPath(directory: string, name: string, type: number): string {
   if (type === 3) { return /^[A-Za-z]:$/.test(name) ? name + '\\' : ''; }
   return joinRemoteTransferPath(directory, name);
+}
+
+/** A preflight name choice still uses no-overwrite on the wire to close races. */
+export function renamedRemoteTransferFileName(name: string, occupied: string[]): string {
+  const keys: Set<string> = new Set<string>(occupied.map((value: string): string => value.normalize('NFC').toLowerCase()));
+  if (!keys.has(name.normalize('NFC').toLowerCase())) { return name; }
+  const dot: number = name.lastIndexOf('.');
+  const stem: string = dot > 0 ? name.substring(0, dot) : name;
+  const extension: string = dot > 0 ? name.substring(dot) : '';
+  for (let index: number = 1; index <= 1024; index++) {
+    const candidate: string = stem + ' (' + index.toString() + ')' + extension;
+    if (candidate.length <= 255 && !keys.has(candidate.normalize('NFC').toLowerCase())) { return candidate; }
+  }
+  return '';
 }

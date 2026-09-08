@@ -59,6 +59,7 @@ function environment() {
   const { ClipboardBridgeService } = load('entry/src/main/ets/services/ClipboardBridgeService.ets');
   const policy = load('entry/src/main/ets/services/ClipboardSyncPolicy.ets');
   return { policy, writes, bridge: () => new ClipboardBridgeService(),
+    deliver(text, marker) { pb.setDataSync(data(text, marker)); },
     local(text, textType = true) { value = text; tag = ''; hasData = text !== null;
       if (!hasData) value = ''; hasText = textType; count++; for (const callback of listeners) callback(); },
     tick() { for (const callback of timers.values()) callback(); },
@@ -252,6 +253,77 @@ test('local classification failure retries without letting an older unpolled nat
   remote = snapshot(1, 'older remote'); env.failReads(true); env.local('newer local'); await drain();
   env.tick(); await drain(); assert.deepEqual(env.writes, []);
   env.failReads(false); env.tick(); await drain(); assert.deepEqual(sent, ['newer local']);
+});
+test('rich local hook receives the captured PasteData and only null falls back to text', async () => {
+  const env = environment(), bridge = env.bridge(), sent = [], rich = []; let result = null;
+  bridge.startMonitoring(t => { sent.push(t); return true; }, undefined, true, true, 0, undefined,
+    { onLocalContent: async (guard, data) => { assert.equal(guard(), true); rich.push(data.getPrimaryText()); return result; } });
+  await drain(); env.local('plain'); await drain(); result = true; env.local('rich'); await drain();
+  assert.deepEqual(sent, ['plain']); assert.deepEqual(rich, ['plain', 'rich']);
+});
+test('rich remote delivery runs once while pending and records only its own tagged successful write', async () => {
+  const env = environment(), bridge = env.bridge(), sent = []; let finish, calls = 0;
+  bridge.startMonitoring(t => { sent.push(t); return true; }, undefined, true, true, 0, undefined,
+    { readRemoteSnapshot: () => snapshot(1, '', 'rich'), onRemoteContent: async (_snapshot, guard, tag) => {
+      calls++; await new Promise(resolve => { finish = resolve; });
+      if (!guard()) return false; env.deliver('rich result', tag); return guard();
+    } }); await drain(); env.tick(); env.tick(); env.tick(); await drain();
+  assert.equal(calls, 1); assert.deepEqual(env.writes, []); finish(); await drain();
+  env.tick(); await drain(); assert.equal(calls, 1); assert.deepEqual(env.writes, ['rich result']); assert.deepEqual(sent, []);
+});
+test('a rich hook claiming success without a matching system write cannot advance delivery', async () => {
+  const env = environment(), bridge = env.bridge(); let calls = 0;
+  bridge.startMonitoring(() => true, undefined, true, true, 0, undefined,
+    { readRemoteSnapshot: () => snapshot(1, '', 'rich'), onRemoteContent: async () => { calls++; return true; } });
+  await drain(); env.tick(); await drain(); env.tick(); await drain(); assert.equal(calls, 2); assert.deepEqual(env.writes, []);
+});
+test('new local copy revokes a pending rich delivery before it can overwrite the system', async () => {
+  const env = environment(), bridge = env.bridge(), sent = []; let finish, allowed;
+  bridge.startMonitoring(t => { sent.push(t); return true; }, undefined, true, true, 0, undefined,
+    { readRemoteSnapshot: () => snapshot(1, '', 'rich'), onRemoteContent: async (_snapshot, guard, tag) => {
+      await new Promise(resolve => { finish = resolve; }); allowed = guard();
+      if (allowed) env.deliver('stale', tag); return allowed;
+    } }); await drain(); env.tick(); await drain(); env.local('new local'); await drain(); finish(); await drain();
+  env.tick(); await drain(); assert.equal(allowed, false); assert.deepEqual(env.writes, []); assert.deepEqual(sent, ['new local']);
+});
+test('a newer unpolled native sequence fences pending rich work and then delivers only the latest', async () => {
+  const env = environment(), bridge = env.bridge(); let finish, remote = snapshot(1, '', 'rich'), calls = 0;
+  bridge.startMonitoring(() => true, undefined, true, true, 0, undefined,
+    { readRemoteSnapshot: () => remote, onRemoteContent: async (value, guard, tag) => {
+      calls++; if (value.sequence === 1) await new Promise(resolve => { finish = resolve; });
+      if (!guard()) return false; env.deliver('remote ' + value.sequence, tag); return guard();
+    } }); await drain(); env.tick(); await drain(); remote = snapshot(2, '', 'rich'); finish(); await drain();
+  assert.deepEqual(env.writes, []); env.tick(); await drain(); assert.deepEqual(env.writes, ['remote 2']); assert.equal(calls, 2);
+});
+test('focus epoch change and counter reset independently fence asynchronous rich delivery', async () => {
+  for (const action of ['focus', 'counter']) {
+    const env = environment(), bridge = env.bridge(); let finish, allowed;
+    bridge.startMonitoring(() => true, undefined, true, true, 0, undefined,
+      { readRemoteSnapshot: () => snapshot(1, '', 'rich'), onRemoteContent: async (_snapshot, guard, tag) => {
+        await new Promise(resolve => { finish = resolve; }); allowed = guard(); if (allowed) env.deliver('stale', tag); return allowed;
+      } }); await drain(); env.tick(); await drain();
+    if (action === 'focus') { bridge.setActive(false); bridge.setActive(true); } else env.resetCount();
+    finish(); await drain(); assert.equal(allowed, false); assert.deepEqual(env.writes, []);
+  }
+});
+test('a local change during rich cleanup does not mark the superseded write delivered or replay it', async () => {
+  const env = environment(), bridge = env.bridge(); let finish, calls = 0;
+  bridge.startMonitoring(() => true, undefined, true, true, 0, undefined,
+    { readRemoteSnapshot: () => snapshot(1, '', 'rich'), onRemoteContent: async (_snapshot, guard, tag) => {
+      calls++; if (!guard()) return false; env.deliver('remote', tag);
+      await new Promise(resolve => { finish = resolve; }); return true;
+    } }); await drain(); env.tick(); await drain(); env.local('new local'); await drain(); finish(); await drain();
+  env.tick(); await drain(); assert.equal(calls, 1); assert.equal(bridge.hasRemoteClipboardSource(), false);
+  assert.deepEqual(env.writes, ['remote']);
+});
+test('local rich asynchronous publication receives a guard revoked by newer local data', async () => {
+  const env = environment(), bridge = env.bridge(), checked = []; let finish;
+  bridge.startMonitoring(() => true, undefined, true, true, 0, undefined,
+    { onLocalContent: async (guard, data) => {
+      if (data.getPrimaryText() === 'old') await new Promise(resolve => { finish = resolve; });
+      checked.push([data.getPrimaryText(), guard()]); return guard();
+    } }); await drain(); env.local('old'); await drain(); env.local('new'); finish(); await drain();
+  assert.deepEqual(checked, [['old', false], ['new', true]]);
 });
 (async () => {
   for (const { name, run } of tests) { await run(); console.log('PASS ' + name); }

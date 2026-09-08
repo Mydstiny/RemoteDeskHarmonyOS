@@ -33,6 +33,7 @@
 #include "rdp_remote_file_offer.h"
 #include "rdp_clipboard_receive.h"
 #include "rdp_clipboard_state.h"
+#include "rdp_clipboard_format_queue.h"
 #include "rdp_clipboard_publication_queue.h"
 #include "rdp_graphics_lifecycle.h"
 #include "rdp_keymap.h"
@@ -1557,6 +1558,8 @@ struct FreeRdpAdapter::Impl {
     mutable std::mutex      rdpdrMutex;
     std::string             clipboardText;
     RdpClipboardState       remoteClipboard;
+    RdpClipboardFormatQueue richClipboard;
+    RdpClipboardWireContent localClipboardContent;
     RdpClipboardPublicationQueue clipboardPublications;
     std::atomic<bool> cliprdrMonitorReady {false};
     RdpChannelObserver      driveObserver;
@@ -1838,7 +1841,7 @@ struct FreeRdpAdapter::Impl {
         uint64_t generation = 0;
         {
             std::lock_guard<std::mutex> lock(clipboardMutex);
-            clipboardText.clear(); remoteClipboard.invalidate(); remoteFileOffer = {};
+            clipboardText.clear(); localClipboardContent = {}; remoteClipboard.invalidate(newCarrier); richClipboard.invalidate(); remoteFileOffer = {};
             remoteFileFormatId = 0; lockId = previewClipDataId; previewClipDataId = 0;
             channel = remoteFileChannel; generation = remoteFileGeneration;
             remoteFileChannel = nullptr;
@@ -4976,11 +4979,20 @@ UINT FreeRdpAdapter::cbCliprdrServerFormatList(CliprdrClientContext* context,
     if (responseResult != CHANNEL_RC_OK) return responseResult;
     bool hasText = false;
     bool hasFiles = false;
+    bool hasRich = false;
+    RdpClipboardFormatOffer richOffer;
     uint32_t fileFormatId = 0;
     if (list->numFormats > 4096 || (list->numFormats && !list->formats)) return ERROR_INVALID_DATA;
     for (UINT32 i = 0; i < list->numFormats; ++i) {
         hasText = hasText || list->formats[i].formatId == CF_UNICODETEXT;
         const auto name = list->formats[i].formatName;
+        const auto identified = RdpClipboardContentCodec::identify(list->formats[i].formatId, name);
+        if (identified) {
+            hasRich = hasRich || *identified != RdpClipboardFormat::Text;
+            const auto duplicate = std::find_if(richOffer.formats.begin(), richOffer.formats.end(),
+                [&](const RdpClipboardFormatEntry& entry) { return entry.format == *identified; });
+            if (duplicate == richOffer.formats.end()) richOffer.formats.push_back({*identified, list->formats[i].formatId});
+        }
         if (name && std::strcmp(name, "FileGroupDescriptorW") == 0) { hasFiles = true; fileFormatId = list->formats[i].formatId; }
     }
     uint64_t requestSequence = 0;
@@ -4990,8 +5002,10 @@ UINT FreeRdpAdapter::cbCliprdrServerFormatList(CliprdrClientContext* context,
     std::vector<std::shared_ptr<RdpClipboardReceive>> receivers;
     {
         std::lock_guard<std::mutex> lock(owner->impl_->clipboardMutex);
-        requestSequence = owner->impl_->remoteClipboard.formatList(hasText, hasFiles, list->numFormats == 0);
+        requestSequence = owner->impl_->remoteClipboard.formatList(hasText, hasFiles, list->numFormats == 0, hasRich);
         newSequence = owner->impl_->remoteClipboard.snapshot().sequence;
+        richOffer.sequence = newSequence; owner->impl_->richClipboard.offer(std::move(richOffer));
+        owner->impl_->localClipboardContent = {};
         oldLock = owner->impl_->previewClipDataId; owner->impl_->previewClipDataId = 0;
         owner->impl_->remoteFileFormatId = fileFormatId;
         auto& offer = owner->impl_->remoteFileOffer;
@@ -5051,21 +5065,19 @@ UINT FreeRdpAdapter::cbCliprdrServerFormatDataRequest(CliprdrClientContext* cont
         owner->impl_->fileClipboard->isFileFormat(request->requestedFormatId)) {
         return owner->impl_->fileClipboard->respondToFileFormatRequest(request);
     }
-    if (request->requestedFormatId != CF_UNICODETEXT) {
-        return ERROR_INVALID_PARAMETER;
-    }
-    std::string clipboardText;
+    std::vector<uint8_t> bytes;
+    bool found = false;
     {
         std::lock_guard<std::mutex> lock(owner->impl_->clipboardMutex);
-        clipboardText = owner->impl_->clipboardText;
+        for (const auto& item:owner->impl_->localClipboardContent.items) {
+            if (item.formatId == request->requestedFormatId) { bytes=item.bytes; found=true; break; }
+        }
     }
-    std::vector<uint8_t> wide;
-    if (!RdpClipboardCodec::encode(clipboardText, wide)) return ERROR_INVALID_DATA;
     CLIPRDR_FORMAT_DATA_RESPONSE response {};
     response.common.msgType = CB_FORMAT_DATA_RESPONSE;
-    response.common.msgFlags = CB_RESPONSE_OK;
-    response.requestedFormatData = reinterpret_cast<BYTE*>(wide.data());
-    response.common.dataLen = static_cast<UINT32>(wide.size());
+    response.common.msgFlags = found ? CB_RESPONSE_OK : CB_RESPONSE_FAIL;
+    response.requestedFormatData = bytes.empty() ? nullptr : bytes.data();
+    response.common.dataLen = static_cast<UINT32>(bytes.size());
     return context->ClientFormatDataResponse(context, &response);
 }
 
@@ -5087,13 +5099,15 @@ UINT FreeRdpAdapter::cbCliprdrServerFormatDataResponse(CliprdrClientContext* con
         pending = owner->impl_->remoteClipboard.pendingRequest();
     }
     std::string text;
-    const bool valid = enabled && !pending.files && response->common.msgFlags == CB_RESPONSE_OK &&
+    const bool valid = enabled && !pending.files && !pending.richRequestId && response->common.msgFlags == CB_RESPONSE_OK &&
         RdpClipboardCodec::decode(response->requestedFormatData, response->common.dataLen, text);
     uint64_t requestSequence = 0;
     uint32_t failedLock = 0;
     {
         std::lock_guard<std::mutex> lock(owner->impl_->clipboardMutex);
-        if (!enabled) owner->impl_->remoteClipboard.invalidate();
+        if (!enabled) { owner->impl_->remoteClipboard.invalidate(); owner->impl_->richClipboard.invalidate(); }
+        if (pending.richRequestId) owner->impl_->richClipboard.response(pending.richRequestId,
+            enabled && response->common.msgFlags == CB_RESPONSE_OK, response->requestedFormatData, response->common.dataLen);
         if (enabled && pending.files && pending.sequence == owner->impl_->remoteClipboard.snapshot().sequence &&
             owner->impl_->remoteFileOffer.state == "loading") {
             const auto flags = owner->impl_->fileClipboard->remoteFlags();
@@ -5110,6 +5124,11 @@ UINT FreeRdpAdapter::cbCliprdrServerFormatDataResponse(CliprdrClientContext* con
             failedLock = owner->impl_->previewClipDataId; owner->impl_->previewClipDataId = 0;
         }
         requestSequence = owner->impl_->remoteClipboard.response(valid, std::move(text));
+        while (requestSequence) {
+            const auto next = owner->impl_->remoteClipboard.pendingRequest();
+            if (!next.richRequestId || owner->impl_->richClipboard.loading(next.richRequestId)) break;
+            requestSequence = owner->impl_->remoteClipboard.response(false, "");
+        }
     }
     if (failedLock && context->ClientUnlockClipboardData) {
         CLIPRDR_UNLOCK_CLIPBOARD_DATA unlock {}; unlock.common.msgType = CB_UNLOCK_CLIPDATA; unlock.clipDataId = failedLock;
@@ -5125,6 +5144,8 @@ UINT FreeRdpAdapter::cbCliprdrServerFormatDataResponse(CliprdrClientContext* con
         const UINT result = context->ClientFormatDataRequest(context, &request);
         if (result != CHANNEL_RC_OK) {
             std::lock_guard<std::mutex> lock(owner->impl_->clipboardMutex);
+            const auto failed=owner->impl_->remoteClipboard.pendingRequest();
+            if (failed.richRequestId) owner->impl_->richClipboard.failed(failed.richRequestId);
             owner->impl_->remoteClipboard.requestFailed(requestSequence);
         }
         return result;
@@ -9080,9 +9101,58 @@ uint64_t FreeRdpAdapter::publishClipboardTracked(const uint8_t* data, uint32_t l
     if (len) job.text.assign(reinterpret_cast<const char*>(data), len);
     std::vector<uint8_t> encoded;
     if (!RdpClipboardCodec::encode(job.text, encoded)) return 0;
+    RdpClipboardContent content; content.textUtf8=job.text;
+    if (!RdpClipboardContentCodec::encode(content,job.content)) return 0;
     const auto id = impl_->clipboardPublications.enqueue(std::move(job));
     dispatchClipboardPublication();
     return id;
+}
+uint64_t FreeRdpAdapter::publishClipboardContentTracked(const RdpClipboardContent& content) {
+    std::lock_guard<std::mutex> operationLock(impl_->clipboardOperationMutex);
+    if (!impl_->rdpClipboardEnabled() || !impl_->fileClipboard || !impl_->fileClipboard->attached()) return 0;
+    RdpClipboardPublicationQueue::Job job;
+    if (!RdpClipboardContentCodec::encode(content,job.content)) return 0;
+    if (content.textUtf8) job.text=*content.textUtf8;
+    const auto id=impl_->clipboardPublications.enqueue(std::move(job));
+    dispatchClipboardPublication(); return id;
+}
+RdpClipboardFormatOffer FreeRdpAdapter::getRemoteClipboardFormats() {
+    std::lock_guard<std::mutex> lock(impl_->clipboardMutex); return impl_->richClipboard.currentOffer();
+}
+uint64_t FreeRdpAdapter::requestRemoteClipboardFormat(uint64_t sequence,RdpClipboardFormat format) {
+    std::lock_guard<std::mutex> operationLock(impl_->clipboardOperationMutex);
+    std::lock_guard<std::mutex> channelLock(impl_->cliprdrMutex);
+    auto* channel=impl_->cliprdr;
+    if (!channel || !impl_->rdpClipboardEnabled() || !channel->ClientFormatDataRequest) return 0;
+    auto lease=acquireRdpChannelCallbackContext(channel);
+    if (!acquireCurrentRdpCallbackOwnerLease(lease)) return 0;
+    uint64_t id=0; uint32_t formatId=0; bool sendNow=false;
+    {
+        std::lock_guard<std::mutex> lock(impl_->clipboardMutex);
+        formatId=impl_->richClipboard.formatId(sequence,format);
+        if (!formatId) return 0;
+        id=impl_->richClipboard.request(sequence,format);
+        sendNow=impl_->remoteClipboard.pendingRequest().sequence==0;
+        if (!impl_->remoteClipboard.requestRich(sequence,formatId,id)) { impl_->richClipboard.release(id); return 0; }
+    }
+    if (sendNow) {
+        CLIPRDR_FORMAT_DATA_REQUEST request {}; request.common.msgType=CB_FORMAT_DATA_REQUEST; request.requestedFormatId=formatId;
+        if (channel->ClientFormatDataRequest(channel,&request)!=CHANNEL_RC_OK) {
+            std::lock_guard<std::mutex> lock(impl_->clipboardMutex); impl_->richClipboard.failed(id);
+            // The channel may have enqueued bytes before reporting failure. Drain its untagged response.
+        }
+    }
+    return id;
+}
+RdpClipboardFormatResult FreeRdpAdapter::getRemoteClipboardFormatResult(uint64_t id) {
+    std::lock_guard<std::mutex> lock(impl_->clipboardMutex);
+    auto result=impl_->richClipboard.result(id);
+    if (result.state!="loading") impl_->remoteClipboard.cancelQueuedRichRequest(id);
+    return result;
+}
+bool FreeRdpAdapter::releaseRemoteClipboardFormat(uint64_t id) {
+    std::lock_guard<std::mutex> lock(impl_->clipboardMutex);
+    impl_->remoteClipboard.cancelQueuedRichRequest(id); return impl_->richClipboard.release(id);
 }
 bool FreeRdpAdapter::setClipboardFiles(const std::vector<std::string>& paths) {
     return publishClipboardFilesTracked(paths) != 0;
@@ -9109,12 +9179,23 @@ void FreeRdpAdapter::dispatchClipboardPublication() {
     bool attempted = false;
     bool sent = false;
     if (job->files) {
+        { std::lock_guard<std::mutex> lock(impl_->clipboardMutex); impl_->localClipboardContent = {}; }
         sent = impl_->fileClipboard->publishLocalFiles(job->paths, &attempted) == RdpFileClipboardOfferResult::Ready;
     } else {
-        { std::lock_guard<std::mutex> lock(impl_->clipboardMutex); impl_->clipboardText = job->text; }
+        if (job->content.items.empty()) {
+            RdpClipboardContent initial; initial.textUtf8=job->text;
+            if (!RdpClipboardContentCodec::encode(initial,job->content)) {
+                impl_->clipboardPublications.sendFailed(job->id,false); return;
+            }
+        }
+        for (auto& item:job->content.items) if (!item.name.empty()) {
+            item.formatId=impl_->fileClipboard->registerContentFormat(item.name);
+            if (!item.formatId) { impl_->clipboardPublications.sendFailed(job->id,false); return; }
+        }
+        { std::lock_guard<std::mutex> lock(impl_->clipboardMutex); impl_->clipboardText = job->text; impl_->localClipboardContent=job->content; }
         impl_->fileClipboard->clearLocalFiles();
         attempted = true;
-        sent = impl_->fileClipboard->sendCurrentFormatList(true) == CHANNEL_RC_OK;
+        sent = impl_->fileClipboard->sendContentFormatList(job->content) == CHANNEL_RC_OK;
     }
     if (!sent) impl_->clipboardPublications.sendFailed(job->id, attempted);
 }
@@ -9917,6 +9998,11 @@ RdpDriveStatus FreeRdpAdapter::getRdpDriveStatus() { return {}; }
 std::vector<RdpReceivedFileFact> FreeRdpAdapter::getRdpReceivedFileFacts() { return {}; }
 bool FreeRdpAdapter::disableRdpDrive() { return false; }
 RemoteClipboardFileOffer FreeRdpAdapter::getRemoteClipboardFiles() { return {}; }
+uint64_t FreeRdpAdapter::publishClipboardContentTracked(const RdpClipboardContent&) { return 0; }
+RdpClipboardFormatOffer FreeRdpAdapter::getRemoteClipboardFormats() { return {}; }
+uint64_t FreeRdpAdapter::requestRemoteClipboardFormat(uint64_t, RdpClipboardFormat) { return 0; }
+RdpClipboardFormatResult FreeRdpAdapter::getRemoteClipboardFormatResult(uint64_t) { return {}; }
+bool FreeRdpAdapter::releaseRemoteClipboardFormat(uint64_t) { return false; }
 bool FreeRdpAdapter::requestRemoteClipboardFiles(uint64_t) { return false; }
 bool FreeRdpAdapter::startRemoteClipboardReceive(uint64_t, uint64_t, const std::vector<uint32_t>&, int) { return false; }
 RemoteClipboardReceiveStatus FreeRdpAdapter::getRemoteClipboardReceiveStatus(uint64_t) { return {}; }

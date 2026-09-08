@@ -117,6 +117,10 @@ extern "C" {
         uint64_t totalBytes; uint32_t diagnosticCode; };
     bool  rustdesk_get_transfer_status(void* handle, RustDeskFfiTransferStatus* out_status);
     int rustdesk_send_file_fd(void*, uint64_t, const char*, int, uint32_t);
+    int rustdesk_create_remote_directory(void*, uint64_t, const char*);
+    bool rustdesk_get_transfer_authentication(void*, uint64_t, RustDeskTransferAuthSnapshot*);
+    bool rustdesk_submit_transfer_authentication(void*, uint64_t, uint64_t, uint32_t, const uint8_t*, size_t);
+    bool rustdesk_get_transfer_result(void*, uint64_t, RustDeskTransferResult*);
     int rustdesk_read_remote_directory(void*, uint64_t, const char*);
     int rustdesk_download_file_fd(void*, uint64_t, const char*, int, uint64_t, uint64_t);
     struct RustDeskFfiRemoteFileMetadata { uint32_t type; uint64_t size; uint64_t modified; };
@@ -4199,6 +4203,50 @@ int64_t RustDeskBridge::sendFileFromFd(const std::string& remotePath, int fd, in
             }
             return result > 0;
         });
+#endif
+    return result;
+}
+
+static_assert(sizeof(RustDeskTransferAuthSnapshot) == 40, "Rust file auth ABI");
+static_assert(sizeof(RustDeskTransferResult) == 32, "Rust file result ABI");
+int64_t RustDeskBridge::createRemoteDirectory(const std::string& remotePath) {
+    int64_t result = -1;
+#ifdef RUSTDESK_USE_REAL_CORE
+    (void)rdDispatchFfiOutbound(impl_.get(), mode_, RustDeskFfiOutboundLane::File,
+        [this, &remotePath, &result](void* handle) {
+            const uint64_t id = impl_->nextTransferId.fetch_add(1);
+            if (rustdesk_create_remote_directory(handle, id, remotePath.c_str()) == 0) { result = static_cast<int64_t>(id); }
+            return result > 0;
+        });
+#endif
+    return result;
+}
+RustDeskTransferAuthSnapshot RustDeskBridge::getTransferAuthentication(uint64_t id) {
+    RustDeskTransferAuthSnapshot result {};
+#ifdef RUSTDESK_USE_REAL_CORE
+    (void)rdDispatchFfiTransferManagement(impl_.get(), mode_, [id, &result](void* handle) {
+        return rustdesk_get_transfer_authentication(handle, id, &result);
+    });
+#endif
+    return result;
+}
+bool RustDeskBridge::submitTransferAuthentication(uint64_t id, uint64_t challengeId, uint32_t responseKind, const std::string& secret) {
+    bool result = false;
+#ifdef RUSTDESK_USE_REAL_CORE
+    (void)rdDispatchFfiTransferManagement(impl_.get(), mode_, [id, challengeId, responseKind, &secret, &result](void* handle) {
+        result = rustdesk_submit_transfer_authentication(handle, id, challengeId, responseKind,
+            reinterpret_cast<const uint8_t*>(secret.data()), secret.size());
+        return result;
+    });
+#endif
+    return result;
+}
+RustDeskTransferResult RustDeskBridge::getTransferResult(uint64_t id) {
+    RustDeskTransferResult result {};
+#ifdef RUSTDESK_USE_REAL_CORE
+    (void)rdDispatchFfiTransferManagement(impl_.get(), mode_, [id, &result](void* handle) {
+        return rustdesk_get_transfer_result(handle, id, &result);
+    });
 #endif
     return result;
 }

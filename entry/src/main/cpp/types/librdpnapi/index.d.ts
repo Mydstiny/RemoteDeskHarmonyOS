@@ -1105,6 +1105,30 @@ export interface SessionRdpClipboardFileEntry {
   sizeKnown: boolean;
   size: number;
 }
+export interface SessionRdpClipboardContent {
+  textUtf8?: string;
+  png?: ArrayBuffer;
+  htmlUtf8?: string;
+  rtfBytes?: ArrayBuffer;
+  rgbaStraight?: ArrayBuffer;
+  width?: number;
+  height?: number;
+}
+export interface SessionRdpClipboardFormats { sequence: number; formats: number[]; }
+export interface SessionRdpClipboardFormatResult {
+  requestId: number;
+  sequence: number;
+  format: number;
+  state: string;
+  diagnosticCode: string;
+  content: SessionRdpClipboardContent;
+}
+export const publishSessionRdpClipboardContent: (sessionId: number, generation: number, content: SessionRdpClipboardContent) => ClipboardPublicationResult;
+export const getSessionRdpClipboardFormats: (sessionId: number, generation: number) => SessionRdpClipboardFormats;
+export const requestSessionRdpClipboardFormat: (sessionId: number, generation: number, sequence: number, format: number) => number;
+export const getSessionRdpClipboardFormatResult: (sessionId: number, generation: number, requestId: number) => SessionRdpClipboardFormatResult;
+export const releaseSessionRdpClipboardFormat: (sessionId: number, generation: number, requestId: number) => boolean;
+
 export interface SessionRdpClipboardFiles {
   sequence: number;
   state: string;
@@ -1156,6 +1180,32 @@ export interface SessionRdpDrive {
 }
 export const getSessionRdpDrive: (sessionId: number, generation: number) => SessionRdpDrive;
 export const disableSessionRdpDrive: (sessionId: number, generation: number) => boolean;
+
+/** Only accepts a directory FD already opened through the authorized local provider. */
+export const openExclusiveTransferDirectory: (parentFd: number, leaf: string) => number;
+export const openExclusiveTransferFile: (rootFd: number, relativePath: string) => number;
+export const ensureTransferExportDirectory: (rootFd: number, relativePath: string) => boolean;
+
+export interface SessionTransferAuthentication {
+  transferId: number;
+  challengeId: number;
+  kind: number;
+  state: number;
+  expiresInMs: number;
+  attemptsRemaining: number;
+  diagnosticCode: number;
+}
+export interface SessionTransferResult {
+  operationKind: number;
+  sourceMetadataAvailable: boolean;
+  sourceSize: number;
+  sourceModifiedTime: number;
+  remoteOperationAcknowledged: boolean;
+}
+export const createSessionRemoteDirectory: (sessionId: number, generation: number, path: string) => number;
+export const getSessionTransferAuthentication: (sessionId: number, generation: number, transferId: number) => SessionTransferAuthentication;
+export const submitSessionTransferAuthentication: (sessionId: number, generation: number, transferId: number, challengeId: number, kind: number, secret: string) => boolean;
+export const getSessionTransferResult: (sessionId: number, generation: number, transferId: number) => SessionTransferResult;
 
 export interface SessionRemoteFileEntry {
   name: string;

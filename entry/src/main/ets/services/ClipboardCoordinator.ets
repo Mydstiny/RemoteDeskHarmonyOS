@@ -13,7 +13,7 @@ export interface ClipboardLease {
 export interface RemoteClipboardSnapshot {
   sequence: number;
   text: string;
-  kind: 'none' | 'text' | 'files' | 'unsupported';
+  kind: 'none' | 'text' | 'files' | 'rich' | 'unsupported';
   ready: boolean;
 }
 

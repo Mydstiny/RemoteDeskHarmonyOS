@@ -22,13 +22,14 @@ function loadPolicy(file) {
   }).outputText;
   vm.runInNewContext(code, {module, exports: module.exports}); return module.exports;
 }
+function sameRemoteTransferDirectory(a,b) { return a === b; }
 const paths = loadPolicy('entry/src/main/ets/services/TransferRemotePathPolicy.ets');
 function fixture() {
   const scope = {ownerScopeId:'scope-a',generation:1};
   const owner = {sessionId:7,generation:11,ownerToken:19,facadeGeneration:2};
   const state = { sent:[], closes:[], releases:[], updates:[], control:true, status:6,
-    context:{}, nextPicker:null, fileSize:0, afterOpen:null, openPanel:0, artifactSequence:0, offers:[], batchReleases:0,
-    publicationState:2, localCount:1, remoteSequence:0, nextUnified:null, permission:Promise.resolve(true) };
+    context:{filesDir:'/owned'}, nextPicker:null, fileSize:0, afterOpen:null, openPanel:0, artifactSequence:0, offers:[], batchReleases:0,
+    platformComplete:0,platformRetained:0,platformUris:[],platformOffers:[], publicationState:2, metadata:{operationKind:0,sourceMetadataAvailable:false}, auth:{transferId:0}, nativePublications:[], localCount:1, remoteSequence:0, nextUnified:null, permission:Promise.resolve(true) };
   const control = { taskId:'test-task', attemptId:1, isCurrent:()=>state.control,
     isCancellationRequested:()=>!state.control, update:value=>{state.updates.push(value);return true;},
     onCancel:callback=>{state.cancel=callback;} };
@@ -38,19 +39,30 @@ function fixture() {
     return { accepted:true,taskId:'test-task',attemptId:1,result:runner(control) };
   }};
   const methods=['transferRouteIdentity','captureTransferLease','transferLeaseIsCurrent','clipboardLeaseIsCurrent',
-    'waitClipboardPublication','publishClipboardForLease','cancelAndDrainNativeTransfer','submitFileToRustDesk','pickAndSendFile','prepareAndOfferRdpFiles',
-    'handleRdpSystemFilePaste','transferClipboardSourceIsCurrent'];
+    'releaseNativeTransfer','observeTransferAuthentication','clearTransferAuthentication','submitTransferAuthentication','waitClipboardPublication','publishClipboardForLease','cancelAndDrainNativeTransfer','sendRustDeskFile','submitFileToRustDesk','pickAndSendFile','prepareAndOfferRdpFiles',
+    'handleRdpSystemFilePaste','transferClipboardSourceIsCurrent','startDeferredRdpFileDrop','createTransferArtifactBatch'];
   const module={exports:{}};
   const code=ts.transpileModule('export class Harness {\n'+methods.map(extract).join('\n')+'\n}',{
     compilerOptions:{target:ts.ScriptTarget.ES2021,module:ts.ModuleKind.CommonJS}
   }).outputText;
   const fileIo={OpenMode:{READ_ONLY:0,NOFOLLOW:32},open:async()=>{if(state.afterOpen)await state.afterOpen();return {fd:42};},
     stat:async()=>({size:state.fileSize,isFile:()=>true}),close:async file=>state.closes.push(file.fd),
-    openSync:()=>({fd:42}),statSync:()=>({size:state.fileSize}),closeSync:file=>state.closes.push(file.fd)};
+    openSync:()=>({fd:42}),statSync:()=>({size:state.fileSize,isFile:()=>true}),closeSync:file=>state.closes.push(file.fd)};
   vm.runInNewContext(code,{module,exports:module.exports,AccountSessionCoordinator:{getInstance:()=>({currentScope:()=>scope})},
+    TransferArtifactBatch:class {
+      constructor(){this.id='incoming';}
+      createPlatformIncomingSync(){return {path:'/owned/incoming',complete:async uris=>{state.platformComplete++;state.platformUris=uris;
+        return [{id:'root',name:'folder',relativePath:'folder',path:'/owned/incoming/folder',directory:true,size:0},
+          {id:'child',name:'file',relativePath:'folder/file',path:'/owned/incoming/folder/file',size:4}];},
+        retainPartial:async()=>{state.platformRetained++;}};}
+      release(){state.batchReleases++;}
+    },transferScopeKey:()=> 'scopehash',fileUri:{getUriFromPath:p=>'file://'+p},
+    DragResult:{DRAG_FAILED:0,DRAG_SUCCESSFUL:1},uniformTypeDescriptor:{UniformDataType:{FILE_URI:'file'}},
+    unifiedDataChannel:{FileConflictOptions:{OVERWRITE:1},ProgressIndicator:{DEFAULT:0}},
+    TransferArtifactPublicationService:{getInstance:()=>({registerNativeOffer:(_batch,native)=>state.nativePublications.push(native)})},
     ManagedTransferTaskService:{getInstance:()=>service},rdpRouteIdentity:host=>'rdp:'+host.host,
-    util:{TextEncoder},RDP_FILE_MAX_BYTES:2147483648,picker:{DocumentViewPicker:class{select(){return state.nextPicker;}}},
-    fileIo,joinRemoteTransferPath:paths.joinRemoteTransferPath,remoteTransferPathIsAbsolute:paths.remoteTransferPathIsAbsolute,
+    util:{TextEncoder},RDP_FILE_MAX_BYTES:2147483648,picker:{DocumentSelectMode:{FILE:0},DocumentViewPicker:class{select(){return state.nextPicker;}}},
+    sameRemoteTransferDirectory,renamedRemoteTransferFileName:paths.renamedRemoteTransferFileName,fileIo,joinRemoteTransferPath:paths.joinRemoteTransferPath,remoteTransferPathIsAbsolute:paths.remoteTransferPathIsAbsolute,
     promptAction:{showToast(){}},hilog:{info(){},warn(){},error(){}},RD_DOMAIN:0,RD_TAG:'test',
     FILE_TRANSFER_DIAG_PICK:'pick',FILE_TRANSFER_DIAG_RUSTDESK_SEND:'send',KEYCODE_CTRL_LEFT:2072,KEY_V:2038,
     pasteboard:{getSystemPasteboard:()=>({getChangeCount:()=>state.localCount,getUnifiedData:()=>state.nextUnified})},Date,
@@ -61,7 +73,8 @@ function fixture() {
     sessionWindowId:'window-a',harmonyShortcutCaptureOwner:'capture-a',sessionWindowActive:true,sessionWindowMinimized:false,
     pendingHost:{id:'host-a',protocol:'rustdesk',host:'relay.invalid',port:21116,customHostname:'peer',
       rustdeskDirectEnabled:false,rustdeskDirectHost:'',rustdeskDirectPort:21118,rustdeskRelayId:'relay-a'},
-    physicalModifierKeyCodesDown:[],rustdeskFilePasteEnabled:true,fileTransferBusy:false,remoteTransferDirectory:'/home/test',clipboardBridge:null,
+    nativeDisconnectIdentity:owner,transferAuth:{transferId:0},transferAuthLease:null,transferAuthSecret:'',
+    transferControlClient:()=>({list:async()=>state.remoteDirectory}),physicalModifierKeyCodesDown:[],rustdeskFilePasteEnabled:true,fileTransferBusy:false,remoteTransferDirectory:'/home/test',clipboardBridge:null,
     ensurePasteboardReadPermission:()=>state.permission,transferSourcesFromUnifiedData:data=>data.sources,
     currentProtocolName(){return this.pendingHost.protocol;},currentAbilityBackgroundState:()=>false,
     clipboardBridgeEnabledForSession:()=>true,currentSessionCapabilities:()=>({clipboardSend:{enabled:true},fileUpload:{enabled:true}}),
@@ -73,6 +86,8 @@ function fixture() {
     }]]),keyDispatcher:{sendShortcutSequence:(_loader,sid)=>state.sent.push({paste:sid})},
     loader:{captureDisconnectIdentity:()=>({...owner}),ownsDisconnectIdentity:lease=>lease.sessionId===owner.sessionId&&lease.generation===owner.generation&&lease.ownerToken===owner.ownerToken,
       sendSessionFileFromFd:(sid,generation,remotePath,fd,conflict)=>{state.sent.push({sid,generation,remotePath,fd,conflict});return 29;},
+      getSessionTransferAuthentication:()=>state.auth,getSessionTransferResult:()=>state.metadata,
+      submitSessionTransferAuthentication:(...args)=>{state.authSubmitted=args;return true;},
       getSessionFileTransfer:()=>({transferId:29,rustdeskTransferState:state.status,transferredBytes:state.fileSize,totalBytes:state.fileSize}),
       cancelSessionFileTransfer:()=>true,releaseSessionFileTransfer:(sid,generation,id)=>state.releases.push({sid,generation,id}),
       getSessionClipboardSnapshot:()=>({sequence:state.remoteSequence}),publishSessionClipboardFiles:(sid,_gen,files)=>{state.offers.push({sid,files});return {publicationId:1,state:state.publicationState};},
@@ -115,6 +130,63 @@ test('RDP batch publishes distinct artifacts once and leaves target unconfirmed'
   assert.equal(await f.page.prepareAndOfferRdpFiles(files,lease,'picker'),true);
   assert.equal(f.state.offers.length,1);assert.deepEqual(Array.from(f.state.offers[0].files),['/private/file-1','/private/file-2']);
   assert.equal(f.state.updates.at(-1).stage,'offered');
+});
+test('verified source metadata is distinct from sender-only completion',async()=>{
+  const f=fixture();f.state.fileSize=42;
+  f.state.metadata={operationKind:1,sourceMetadataAvailable:true,sourceSize:42,sourceModifiedTime:1700000000};
+  f.state.remoteDirectory={path:'/home/test',entries:[{name:'test.bin',type:4,size:42,modifiedTime:1700000000}]};
+  assert.equal(await f.page.submitFileToRustDesk('uri','test.bin',42),'senderCompleted');
+  assert.equal(f.state.updates.at(-1).verifiedBytes,42);
+  const g=fixture();g.state.fileSize=42;g.state.metadata=f.state.metadata;
+  g.state.remoteDirectory={path:'/home/test',entries:[{name:'test.bin',type:4,size:42,modifiedTime:1700000001}]};
+  await g.page.submitFileToRustDesk('uri','test.bin',42);
+  assert.equal(g.state.updates.some(u=>u.verifiedBytes!==undefined),false);
+});
+test('metadata query that completes after owner change never records verification',async()=>{
+  const f=fixture();f.state.metadata={operationKind:1,sourceMetadataAvailable:true,sourceSize:0,sourceModifiedTime:1};
+  f.page.transferControlClient=()=>({list:async()=>{f.owner.generation++;return {entries:[{name:'a',type:4,size:0,modifiedTime:1}]};}});
+  await f.page.submitFileToRustDesk('uri','a',0);
+  assert.equal(f.state.updates.some(u=>u.verifiedBytes!==undefined),false);
+});
+test('overwrite is explicit and frozen before the file picker yields',async()=>{
+  const f=fixture();let resolve;f.state.nextPicker=new Promise(r=>resolve=r);f.page.transferAllowOverwrite=true;
+  const pending=f.page.pickAndSendFile();assert.equal(f.page.transferAllowOverwrite,false);
+  resolve(['authorized://test']);await pending;assert.equal(f.state.sent[0].conflict,1);
+  const g=fixture();g.state.nextPicker=Promise.resolve(['authorized://test']);
+  await g.page.pickAndSendFile();assert.equal(g.state.sent[0].conflict,0);
+});
+test('duplicate selected target names are rejected before any RustDesk upload',async()=>{
+  const f=fixture();f.state.nextPicker=Promise.resolve(['uri:one','uri:two']);
+  await f.page.pickAndSendFile();assert.equal(f.state.sent.length,0);
+});
+test('authentication submits exact challenge and clears transient secret',()=>{
+  const f=fixture(),lease=f.page.captureTransferLease();
+  f.page.observeTransferAuthentication(lease,{transferId:29,challengeId:87,kind:2,state:1});
+  f.page.transferAuthSecret='123456';f.page.submitTransferAuthentication(2);
+  assert.deepEqual(f.state.authSubmitted,[7,11,29,87,2,'123456']);assert.equal(f.page.transferAuthSecret,'');
+  f.state.authSubmitted=null;f.page.transferAuthSecret='654321';f.owner.generation++;
+  f.page.submitTransferAuthentication(2);assert.equal(f.state.authSubmitted,null);assert.equal(f.page.transferAuthSecret,'');
+});
+test('platform data loading starts synchronously and publishes each directory root only once',async()=>{
+ const f=fixture();f.page.pendingHost.protocol='rdp';let listener,started=false;
+ f.page.prepareAndOfferRdpFiles=async(sources,_lease,origin,_expected,batch,artifacts)=>{
+  f.state.platformOffers.push({sources,origin,artifacts});return true;};
+ const event={startDataLoading(options){started=true;listener=options.dataProgressListener;},setResult(){}};
+ const returned=f.page.startDeferredRdpFileDrop(event);assert.equal(returned,undefined);assert.equal(started,true);
+ const data={getRecords:()=>[{getEntry:()=>({oriUri:'file:///owned/incoming/folder'})}]};
+ listener({progress:100},data);listener({progress:100},data);
+ for(let i=0;i<15;i++)await Promise.resolve();
+ assert.equal(f.state.platformComplete,1);assert.equal(f.state.platformOffers.length,1);
+ assert.equal(f.state.platformOffers[0].sources.length,1);assert.equal(f.state.platformOffers[0].artifacts[0].id,'root');
+});
+test('late platform completion settles old storage without publishing into a replacement session',async()=>{
+ const f=fixture();f.page.pendingHost.protocol='rdp';let listener;
+ f.page.prepareAndOfferRdpFiles=async()=>{f.state.platformOffers.push(1);return true;};
+ f.page.startDeferredRdpFileDrop({startDataLoading(o){listener=o.dataProgressListener;},setResult(){}});
+ listener({progress:-1},null);for(let i=0;i<5;i++)await Promise.resolve();
+ f.owner.generation++;listener({progress:100},{getRecords:()=>[{getEntry:()=>({oriUri:'file:///owned/incoming/file'})}]});
+ for(let i=0;i<15;i++)await Promise.resolve();
+ assert.equal(f.state.platformRetained,1);assert.equal(f.state.platformComplete,1);assert.equal(f.state.platformOffers.length,0);
 });
 test('Windows/Linux remote target joining rejects relative and traversal inputs',()=>{
   assert.equal(paths.joinRemoteTransferPath('C:\\Users\\Test','a.txt'),'C:\\Users\\Test\\a.txt');

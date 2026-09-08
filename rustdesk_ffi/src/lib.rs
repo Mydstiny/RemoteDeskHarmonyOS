@@ -29,6 +29,8 @@ pub mod crypto;
 pub mod crypto_channel;
 mod cursor_state;
 mod file_transfer;
+mod file_auth;
+mod file_clipboard;
 mod clipboard_publication;
 mod net;
 #[cfg(feature = "opus-audio")]
@@ -2146,6 +2148,7 @@ fn rustdesk_connect_impl(
             finish_connect_epoch(connect_epoch, connection_id);
             // 登录成功 — 创建可合并的控制收件箱，用于后续控制。
             let controls = Arc::new(ControlInbox::default());
+            controls.file_clipboard.bind_controls(&controls);
             let stream_controls = Arc::clone(&controls);
             let shutdown_stream = c.try_clone_stream().ok();
             let peer_platform = c.peer_platform();
@@ -2168,8 +2171,7 @@ fn rustdesk_connect_impl(
                 return std::ptr::null_mut();
             }
             let callback_user_data = user_data as usize;
-            let remote_clipboard = Arc::new(Mutex::new(ClipboardSnapshot::default()));
-            let stream_remote_clipboard = Arc::clone(&remote_clipboard);
+            let remote_clipboard = Arc::clone(&controls.remote_clipboard);
             let display_state = Arc::new(Mutex::new(c.peer_display_state()));
             let (mut remote_width, mut remote_height) = display_state
                 .lock()
@@ -2239,7 +2241,7 @@ fn rustdesk_connect_impl(
                     privacy_mode,
                     audio_enabled,
                     effective_fps,
-                    stream_controls,
+                    Arc::clone(&stream_controls),
                     stream_stats_for_thread,
                     quality_state_for_thread,
                     stream_display_state,
@@ -2260,11 +2262,7 @@ fn rustdesk_connect_impl(
                             audio_pipeline.borrow_mut().push_frame(audio);
                         }
                     },
-                    |content| {
-                        if let Ok(mut clipboard) = stream_remote_clipboard.lock() {
-                            clipboard.update(content);
-                        }
-                    },
+                    |_content| {},
                     |cursor| {
                         dispatch_cursor_update(cursor, on_cursor, callback_user_data);
                     },
@@ -2277,6 +2275,7 @@ fn rustdesk_connect_impl(
                     },
                 );
 
+                stream_controls.file_clipboard.close();
                 // Drain the bounded callback queue before the stream thread
                 // reports disconnect. This preserves FIFO frame order and
                 // keeps callback context lifetime valid through the final
@@ -3500,6 +3499,92 @@ pub extern "C" fn rustdesk_send_file_fd(
 }
 
 #[no_mangle]
+pub extern "C" fn rustdesk_create_remote_directory(
+    handle: *mut c_void,
+    id: u64,
+    path: *const c_char,
+) -> i32 {
+    start_file_operation(
+        handle,
+        id,
+        path,
+        file_transfer::FileOperation::CreateDirectory,
+    )
+}
+fn find_transfer_job(handle: *mut c_void, id: u64) -> Option<Arc<file_transfer::TransferJob>> {
+    if handle.is_null() || id == 0 {
+        return None;
+    }
+    let ctx = unsafe { &*(handle as *const RustDeskClient) };
+    ctx.transfers.lock().ok()?.get(id)
+}
+#[no_mangle]
+pub extern "C" fn rustdesk_get_transfer_authentication(
+    handle: *mut c_void,
+    id: u64,
+    out: *mut file_auth::FileAuthSnapshot,
+) -> bool {
+    if out.is_null() {
+        return false;
+    }
+    let Some(job) = find_transfer_job(handle, id) else {
+        return false;
+    };
+    unsafe {
+        *out = job.auth.snapshot();
+    }
+    true
+}
+#[no_mangle]
+pub extern "C" fn rustdesk_submit_transfer_authentication(
+    handle: *mut c_void,
+    id: u64,
+    challenge: u64,
+    kind: u32,
+    secret: *const u8,
+    len: usize,
+) -> bool {
+    if len > 4096 || (secret.is_null() && len != 0) {
+        return false;
+    }
+    let Some(job) = find_transfer_job(handle, id) else {
+        return false;
+    };
+    if job.check().is_err() {
+        return false;
+    }
+    let bytes = if len == 0 {
+        &[][..]
+    } else {
+        unsafe { std::slice::from_raw_parts(secret, len) }
+    };
+    let Ok(value) = std::str::from_utf8(bytes) else {
+        return false;
+    };
+    job.auth.submit(challenge, kind, value)
+}
+#[no_mangle]
+pub extern "C" fn rustdesk_get_transfer_result(
+    handle: *mut c_void,
+    id: u64,
+    out: *mut file_transfer::FileOperationResult,
+) -> bool {
+    if out.is_null() {
+        return false;
+    }
+    let Some(job) = find_transfer_job(handle, id) else {
+        return false;
+    };
+    let Ok(result) = job.result.lock() else {
+        return false;
+    };
+    unsafe {
+        *out = *result;
+    }
+    true
+}
+
+#[no_mangle]
 pub extern "C" fn rustdesk_read_remote_directory(
     handle: *mut c_void,
     id: u64,
@@ -3672,6 +3757,14 @@ fn start_file_operation(
         Some(job) => job,
         None => return -2,
     };
+    if let Ok(mut result) = job.result.lock() {
+        result.operation_kind = match &operation {
+            file_transfer::FileOperation::Upload { .. } => 1,
+            file_transfer::FileOperation::List => 2,
+            file_transfer::FileOperation::Download(_) => 3,
+            file_transfer::FileOperation::CreateDirectory => 4,
+        };
+    }
     job.bind_permissions(Arc::clone(&ctx.controls));
     if let Err(error) = job.check() {
         job.finish(Err(error));
@@ -3710,6 +3803,7 @@ fn start_file_operation(
                 let mut connector = if direct_connection {
                     let mut candidate =
                         connector::RustDeskConnector::new_with_connection_id(connection_id, connect_epoch);
+                    candidate.set_file_auth(Arc::clone(&job.auth));
                     candidate.connect_file_transfer_direct(&host, port, &password, &remote_dir)?;
                     candidate
                 } else {
@@ -3728,6 +3822,7 @@ fn start_file_operation(
                     for conn_type in route_types {
                         let mut candidate =
                             connector::RustDeskConnector::new_with_connection_id(connection_id, connect_epoch);
+                        candidate.set_file_auth(Arc::clone(&job.auth));
                         match candidate.connect_file_transfer(
                             &host,
                             port,
@@ -3799,6 +3894,9 @@ fn start_file_operation(
                             .lock()
                             .map_err(|_| io::Error::other("directory result lock"))? = Some(entries);
                         Ok(())
+                    }
+                    file_transfer::FileOperation::CreateDirectory => {
+                        connector.create_remote_directory(&remote_path_owned, &job)
                     }
                     file_transfer::FileOperation::Download(sink) => {
                         connector.download_file_stream(&remote_path_owned, sink, &job)
@@ -3917,16 +4015,22 @@ pub extern "C" fn rustdesk_get_transfer_error_by_id(
 }
 
 #[derive(Default)]
-struct ClipboardSnapshot {
+pub(crate) struct ClipboardSnapshot {
     revision: u64,
     content: Vec<u8>,
     unsupported: bool,
+    files: bool,
 }
 impl ClipboardSnapshot {
     fn update(&mut self, content: Option<&[u8]>) {
+        self.files = false;
         self.revision = self.revision.wrapping_add(1).max(1);
         self.unsupported = content.is_none();
         self.content = content.unwrap_or_default().to_vec();
+    }
+    fn update_files(&mut self) {
+        self.update(Some(&[]));
+        self.files = true;
     }
 }
 #[no_mangle]
@@ -3952,7 +4056,9 @@ pub extern "C" fn rustdesk_get_clipboard_snapshot(
             ptr::copy_nonoverlapping(snapshot.content.as_ptr(), buffer, snapshot.content.len());
         }
     }
-    if snapshot.unsupported {
+    if snapshot.files {
+        usize::MAX - 1
+    } else if snapshot.unsupported {
         usize::MAX
     } else {
         snapshot.content.len()

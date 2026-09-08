@@ -1,3 +1,4 @@
+#include "transfer/transfer_export_files.h"
 #include "render/decoder_attempt_napi.h"
 /**
  * extension_loader_napi.cpp — 扩展加载器 NAPI 桥接
@@ -8416,6 +8417,133 @@ static std::shared_ptr<ProtocolAdapter> TransferAdapterForOwner(
     return session->adapter;
 }
 
+static bool ReadClipboardContentBytes(napi_env env, napi_value object, const char* name,
+                                      size_t limit, std::vector<uint8_t>& output) {
+    bool present = false;
+    if (napi_has_named_property(env, object, name, &present) != napi_ok) return false;
+    if (!present) return true;
+    napi_value value; bool isBuffer = false; void* bytes = nullptr; size_t size = 0;
+    if (napi_get_named_property(env, object, name, &value) != napi_ok ||
+        napi_is_arraybuffer(env, value, &isBuffer) != napi_ok || !isBuffer ||
+        napi_get_arraybuffer_info(env, value, &bytes, &size) != napi_ok || size > limit ||
+        (size > 0 && bytes == nullptr)) return false;
+    if (size > 0) output.assign(static_cast<uint8_t*>(bytes), static_cast<uint8_t*>(bytes) + size);
+    return true;
+}
+static bool ReadClipboardContentText(napi_env env, napi_value object, const char* name,
+                                     size_t limit, std::optional<std::string>& output) {
+    bool present = false;
+    if (napi_has_named_property(env, object, name, &present) != napi_ok) return false;
+    if (!present) return true;
+    napi_value value; std::string text;
+    if (napi_get_named_property(env, object, name, &value) != napi_ok ||
+        !ReadBoundedNapiStringValue(env, value, limit, text)) return false;
+    output = std::move(text); return true;
+}
+static bool ReadClipboardContentDimension(napi_env env, napi_value object, const char* name, uint32_t& result) {
+    bool present = false;
+    if (napi_has_named_property(env, object, name, &present) != napi_ok) return false;
+    if (!present) return true;
+    napi_value value; int32_t dimension = 0;
+    if (napi_get_named_property(env, object, name, &value) != napi_ok ||
+        !ReadStrictNapiInt32Value(env, value, dimension) || dimension < 0 || dimension > 8192) return false;
+    result = static_cast<uint32_t>(dimension); return true;
+}
+static void WriteClipboardContentBytes(napi_env env, napi_value object, const char* name,
+                                       const std::vector<uint8_t>& bytes, size_t limit) {
+    if (bytes.empty() || bytes.size() > limit) return;
+    napi_value buffer; void* output = nullptr;
+    if (napi_create_arraybuffer(env, bytes.size(), &output, &buffer) != napi_ok || output == nullptr) return;
+    memcpy(output, bytes.data(), bytes.size()); napi_set_named_property(env, object, name, buffer);
+}
+static napi_value WriteRdpClipboardContent(napi_env env, const RdpClipboardContent& content) {
+    napi_value result; napi_create_object(env, &result);
+    if (content.textUtf8 && content.textUtf8->size() <= 65536) SetObjectString(env, result, "textUtf8", *content.textUtf8);
+    if (content.htmlUtf8 && content.htmlUtf8->size() <= 1024 * 1024) SetObjectString(env, result, "htmlUtf8", *content.htmlUtf8);
+    WriteClipboardContentBytes(env, result, "png", content.png, 8 * 1024 * 1024);
+    WriteClipboardContentBytes(env, result, "rtfBytes", content.rtfBytes, 1024 * 1024);
+    WriteClipboardContentBytes(env, result, "rgbaStraight", content.rgbaStraight, 16 * 1024 * 1024);
+    SetObjectInt64(env, result, "width", content.width); SetObjectInt64(env, result, "height", content.height);
+    return result;
+}
+napi_value NapiPublishSessionRdpClipboardContent(napi_env env, napi_callback_info info) {
+    napi_value args[4]; uint64_t id = 0;
+    if (ReadExactNapiCallbackArgs(env, info, 3, args, 4)) {
+        auto adapter = TransferAdapterForOwner(env, args[0], args[1]);
+        auto* rdp = adapter ? dynamic_cast<FreeRdpAdapter*>(adapter.get()) : nullptr;
+        napi_valuetype type = napi_undefined; RdpClipboardContent content;
+        try {
+            if (rdp && napi_typeof(env, args[2], &type) == napi_ok && type == napi_object &&
+                ReadClipboardContentText(env, args[2], "textUtf8", 65536, content.textUtf8) &&
+                ReadClipboardContentText(env, args[2], "htmlUtf8", 1024 * 1024, content.htmlUtf8) &&
+                ReadClipboardContentBytes(env, args[2], "png", 8 * 1024 * 1024, content.png) &&
+                ReadClipboardContentBytes(env, args[2], "rtfBytes", 1024 * 1024, content.rtfBytes) &&
+                ReadClipboardContentBytes(env, args[2], "rgbaStraight", 16 * 1024 * 1024, content.rgbaStraight) &&
+                ReadClipboardContentDimension(env, args[2], "width", content.width) &&
+                ReadClipboardContentDimension(env, args[2], "height", content.height)) {
+                id = rdp->publishClipboardContentTracked(content);
+            }
+        } catch (...) { id = 0; }
+    }
+    napi_value result; napi_create_object(env, &result);
+    SetObjectInt64(env, result, "publicationId", static_cast<int64_t>(id));
+    SetObjectInt64(env, result, "state", id > 0 ? 1 : 3); return result;
+}
+napi_value NapiGetSessionRdpClipboardFormats(napi_env env, napi_callback_info info) {
+    napi_value args[3]; RdpClipboardFormatOffer offer;
+    if (ReadExactNapiCallbackArgs(env, info, 2, args, 3)) {
+        auto adapter = TransferAdapterForOwner(env, args[0], args[1]);
+        auto* rdp = adapter ? dynamic_cast<FreeRdpAdapter*>(adapter.get()) : nullptr;
+        if (rdp) offer = rdp->getRemoteClipboardFormats();
+    }
+    napi_value result, formats; napi_create_object(env, &result); napi_create_array(env, &formats);
+    SetObjectInt64(env, result, "sequence", static_cast<int64_t>(offer.sequence));
+    for (size_t i = 0; i < offer.formats.size() && i < 5; ++i) {
+        napi_value value; napi_create_uint32(env, static_cast<uint32_t>(offer.formats[i].format), &value);
+        napi_set_element(env, formats, i, value);
+    }
+    napi_set_named_property(env, result, "formats", formats); return result;
+}
+napi_value NapiRequestSessionRdpClipboardFormat(napi_env env, napi_callback_info info) {
+    napi_value args[5]; uint64_t id = 0; int64_t sequence = 0; int32_t format = 0;
+    if (ReadExactNapiCallbackArgs(env, info, 4, args, 5)) {
+        auto adapter = TransferAdapterForOwner(env, args[0], args[1]);
+        auto* rdp = adapter ? dynamic_cast<FreeRdpAdapter*>(adapter.get()) : nullptr;
+        if (rdp && ReadStrictNapiInt64Value(env, args[2], sequence) && sequence > 0 &&
+            ReadStrictNapiInt32Value(env, args[3], format) && format >= 1 && format <= 5)
+            id = rdp->requestRemoteClipboardFormat(static_cast<uint64_t>(sequence), static_cast<RdpClipboardFormat>(format));
+    }
+    napi_value result; napi_create_int64(env, static_cast<int64_t>(id), &result); return result;
+}
+napi_value NapiGetSessionRdpClipboardFormatResult(napi_env env, napi_callback_info info) {
+    napi_value args[4]; int64_t id = 0; RdpClipboardFormatResult response;
+    if (ReadExactNapiCallbackArgs(env, info, 3, args, 4)) {
+        auto adapter = TransferAdapterForOwner(env, args[0], args[1], false);
+        auto* rdp = adapter ? dynamic_cast<FreeRdpAdapter*>(adapter.get()) : nullptr;
+        if (rdp && ReadStrictNapiInt64Value(env, args[2], id) && id > 0)
+            response = rdp->getRemoteClipboardFormatResult(static_cast<uint64_t>(id));
+    }
+    napi_value result; napi_create_object(env, &result);
+    SetObjectInt64(env, result, "requestId", static_cast<int64_t>(response.requestId));
+    SetObjectInt64(env, result, "sequence", static_cast<int64_t>(response.sequence));
+    SetObjectInt64(env, result, "format", static_cast<uint32_t>(response.format));
+    SetObjectString(env, result, "state", response.state); SetObjectString(env, result, "diagnosticCode", response.diagnosticCode);
+    const RdpClipboardContent empty;
+    const RdpClipboardContent& content = response.state == "ready" ? response.content : empty;
+    napi_set_named_property(env, result, "content", WriteRdpClipboardContent(env, content));
+    return result;
+}
+napi_value NapiReleaseSessionRdpClipboardFormat(napi_env env, napi_callback_info info) {
+    napi_value args[4]; int64_t id = 0; bool released = false;
+    if (ReadExactNapiCallbackArgs(env, info, 3, args, 4)) {
+        auto adapter = TransferAdapterForOwner(env, args[0], args[1], false);
+        auto* rdp = adapter ? dynamic_cast<FreeRdpAdapter*>(adapter.get()) : nullptr;
+        if (rdp && ReadStrictNapiInt64Value(env, args[2], id) && id > 0)
+            released = rdp->releaseRemoteClipboardFormat(static_cast<uint64_t>(id));
+    }
+    napi_value result; napi_get_boolean(env, released, &result); return result;
+}
+
 napi_value NapiGetSessionRdpClipboardFiles(napi_env env, napi_callback_info info) {
     napi_value args[3]; RemoteClipboardFileOffer offer;
     if (ReadExactNapiCallbackArgs(env, info, 2, args, 3)) {
@@ -8603,6 +8731,93 @@ napi_value NapiGetSessionTransferPermissions(napi_env env, napi_callback_info in
     SetObjectBool(env, result, "available", available);
     SetObjectInt32(env, result, "knownMask", static_cast<int32_t>(known));
     SetObjectInt32(env, result, "enabledMask", static_cast<int32_t>(enabled));
+    return result;
+}
+
+napi_value NapiOpenExclusiveTransferDirectory(napi_env env, napi_callback_info info) {
+    napi_value args[3]; int32_t parent = -1; std::string name; int fd = -1;
+    if (ReadExactNapiCallbackArgs(env, info, 2, args, 3) && ReadStrictNapiInt32Value(env, args[0], parent) && parent >= 0 &&
+        ReadBoundedNapiStringValue(env, args[1], 4096, name) && name.find('\0') == std::string::npos)
+        fd = openExclusiveTransferDirectory(parent, name);
+    napi_value result; napi_create_int32(env, fd, &result); return result;
+}
+napi_value NapiOpenExclusiveTransferFile(napi_env env, napi_callback_info info) {
+    napi_value args[3]; int32_t parent = -1; std::string path; int fd = -1;
+    if (ReadExactNapiCallbackArgs(env, info, 2, args, 3) && ReadStrictNapiInt32Value(env, args[0], parent) && parent >= 0 &&
+        ReadBoundedNapiStringValue(env, args[1], 4096, path) && path.find('\0') == std::string::npos)
+        fd = openExclusiveTransferFile(parent, path);
+    napi_value result; napi_create_int32(env, fd, &result); return result;
+}
+napi_value NapiEnsureTransferExportDirectory(napi_env env, napi_callback_info info) {
+    napi_value args[3]; int32_t parent = -1; std::string path; bool accepted = false;
+    if (ReadExactNapiCallbackArgs(env, info, 2, args, 3) && ReadStrictNapiInt32Value(env, args[0], parent) && parent >= 0 &&
+        ReadBoundedNapiStringValue(env, args[1], 4096, path) && path.find('\0') == std::string::npos)
+        accepted = ensureTransferExportDirectory(parent, path);
+    napi_value result; napi_get_boolean(env, accepted, &result); return result;
+}
+
+napi_value NapiCreateSessionRemoteDirectory(napi_env env, napi_callback_info info) {
+    napi_value args[4]; int64_t id = -1;
+    if (ReadExactNapiCallbackArgs(env, info, 3, args, 4)) {
+        auto adapter = TransferAdapterForOwner(env, args[0], args[1]);
+        auto* bridge = adapter ? dynamic_cast<RustDeskBridge*>(adapter.get()) : nullptr;
+        std::string path;
+        if (bridge && ReadBoundedNapiStringValue(env, args[2], 32768, path) && !path.empty() &&
+            path.find('\0') == std::string::npos) id = bridge->createRemoteDirectory(path);
+    }
+    napi_value result; napi_create_int64(env, id, &result); return result;
+}
+napi_value NapiGetSessionTransferAuthentication(napi_env env, napi_callback_info info) {
+    napi_value args[4], result; napi_create_object(env, &result);
+    RustDeskTransferAuthSnapshot snapshot;
+    if (ReadExactNapiCallbackArgs(env, info, 3, args, 4)) {
+        auto adapter = TransferAdapterForOwner(env, args[0], args[1]);
+        auto* bridge = adapter ? dynamic_cast<RustDeskBridge*>(adapter.get()) : nullptr;
+        int64_t id = 0;
+        if (bridge && ReadStrictNapiInt64Value(env, args[2], id) && id > 0)
+            snapshot = bridge->getTransferAuthentication(static_cast<uint64_t>(id));
+    }
+    SetObjectInt64(env, result, "transferId", snapshot.transferId);
+    SetObjectInt64(env, result, "challengeId", snapshot.challengeId);
+    SetObjectInt32(env, result, "kind", snapshot.kind);
+    SetObjectInt32(env, result, "state", snapshot.state);
+    SetObjectInt64(env, result, "expiresInMs", snapshot.expiresInMs);
+    SetObjectInt32(env, result, "attemptsRemaining", snapshot.attemptsRemaining);
+    SetObjectInt32(env, result, "diagnosticCode", snapshot.diagnosticCode);
+    return result;
+}
+napi_value NapiSubmitSessionTransferAuthentication(napi_env env, napi_callback_info info) {
+    napi_value args[7]; bool accepted = false;
+    if (ReadExactNapiCallbackArgs(env, info, 6, args, 7)) {
+        auto adapter = TransferAdapterForOwner(env, args[0], args[1]);
+        auto* bridge = adapter ? dynamic_cast<RustDeskBridge*>(adapter.get()) : nullptr;
+        int64_t id = 0, challenge = 0; int32_t kind = 0; std::string secret;
+        if (bridge && ReadStrictNapiInt64Value(env, args[2], id) && id > 0 &&
+            ReadStrictNapiInt64Value(env, args[3], challenge) && challenge > 0 &&
+            ReadStrictNapiInt32Value(env, args[4], kind) && kind >= 1 && kind <= 3 &&
+            ReadBoundedNapiStringValue(env, args[5], 1024, secret) && secret.find('\0') == std::string::npos &&
+            (kind != 3 || secret.empty()))
+            accepted = bridge->submitTransferAuthentication(id, challenge, kind, secret);
+        // Do not keep a second plaintext copy after synchronous FFI submission.
+        volatile char* bytes = secret.empty() ? nullptr : &secret[0];
+        for (size_t i = 0; i < secret.size(); ++i) bytes[i] = 0;
+    }
+    napi_value result; napi_get_boolean(env, accepted, &result); return result;
+}
+napi_value NapiGetSessionTransferResult(napi_env env, napi_callback_info info) {
+    napi_value args[4], result; napi_create_object(env, &result); RustDeskTransferResult snapshot;
+    if (ReadExactNapiCallbackArgs(env, info, 3, args, 4)) {
+        auto adapter = TransferAdapterForOwner(env, args[0], args[1], false);
+        auto* bridge = adapter ? dynamic_cast<RustDeskBridge*>(adapter.get()) : nullptr;
+        int64_t id = 0;
+        if (bridge && ReadStrictNapiInt64Value(env, args[2], id) && id > 0)
+            snapshot = bridge->getTransferResult(static_cast<uint64_t>(id));
+    }
+    SetObjectInt32(env, result, "operationKind", snapshot.operationKind);
+    SetObjectBool(env, result, "sourceMetadataAvailable", snapshot.sourceMetadataAvailable != 0);
+    SetObjectInt64(env, result, "sourceSize", snapshot.sourceSize);
+    SetObjectInt64(env, result, "sourceModifiedTime", snapshot.sourceModifiedTime);
+    SetObjectBool(env, result, "remoteOperationAcknowledged", snapshot.remoteOperationAcknowledged != 0);
     return result;
 }
 
@@ -12828,12 +13043,36 @@ napi_value ExtensionLoaderNapi::Init(napi_env env, napi_value exports) {
     napi_create_function(env, "setSessionClipboardFiles", NAPI_AUTO_LENGTH,
                          NapiSetSessionClipboardFiles, nullptr, &fn);
     napi_set_named_property(env, exports, "setSessionClipboardFiles", fn);
+    napi_create_function(env, "openExclusiveTransferDirectory", NAPI_AUTO_LENGTH, NapiOpenExclusiveTransferDirectory, nullptr, &fn);
+    napi_set_named_property(env, exports, "openExclusiveTransferDirectory", fn);
+    napi_create_function(env, "openExclusiveTransferFile", NAPI_AUTO_LENGTH, NapiOpenExclusiveTransferFile, nullptr, &fn);
+    napi_set_named_property(env, exports, "openExclusiveTransferFile", fn);
+    napi_create_function(env, "ensureTransferExportDirectory", NAPI_AUTO_LENGTH, NapiEnsureTransferExportDirectory, nullptr, &fn);
+    napi_set_named_property(env, exports, "ensureTransferExportDirectory", fn);
+    napi_create_function(env, "createSessionRemoteDirectory", NAPI_AUTO_LENGTH, NapiCreateSessionRemoteDirectory, nullptr, &fn);
+    napi_set_named_property(env, exports, "createSessionRemoteDirectory", fn);
+    napi_create_function(env, "getSessionTransferAuthentication", NAPI_AUTO_LENGTH, NapiGetSessionTransferAuthentication, nullptr, &fn);
+    napi_set_named_property(env, exports, "getSessionTransferAuthentication", fn);
+    napi_create_function(env, "submitSessionTransferAuthentication", NAPI_AUTO_LENGTH, NapiSubmitSessionTransferAuthentication, nullptr, &fn);
+    napi_set_named_property(env, exports, "submitSessionTransferAuthentication", fn);
+    napi_create_function(env, "getSessionTransferResult", NAPI_AUTO_LENGTH, NapiGetSessionTransferResult, nullptr, &fn);
+    napi_set_named_property(env, exports, "getSessionTransferResult", fn);
     napi_create_function(env, "requestSessionRemoteDirectory", NAPI_AUTO_LENGTH, NapiRequestSessionRemoteDirectory, nullptr, &fn);
     napi_set_named_property(env, exports, "requestSessionRemoteDirectory", fn);
     napi_create_function(env, "getSessionRemoteDirectory", NAPI_AUTO_LENGTH, NapiGetSessionRemoteDirectory, nullptr, &fn);
     napi_set_named_property(env, exports, "getSessionRemoteDirectory", fn);
     napi_create_function(env, "downloadSessionFileToFd", NAPI_AUTO_LENGTH, NapiDownloadSessionFileToFd, nullptr, &fn);
     napi_set_named_property(env, exports, "downloadSessionFileToFd", fn);
+    napi_create_function(env, "publishSessionRdpClipboardContent", NAPI_AUTO_LENGTH, NapiPublishSessionRdpClipboardContent, nullptr, &fn);
+    napi_set_named_property(env, exports, "publishSessionRdpClipboardContent", fn);
+    napi_create_function(env, "getSessionRdpClipboardFormats", NAPI_AUTO_LENGTH, NapiGetSessionRdpClipboardFormats, nullptr, &fn);
+    napi_set_named_property(env, exports, "getSessionRdpClipboardFormats", fn);
+    napi_create_function(env, "requestSessionRdpClipboardFormat", NAPI_AUTO_LENGTH, NapiRequestSessionRdpClipboardFormat, nullptr, &fn);
+    napi_set_named_property(env, exports, "requestSessionRdpClipboardFormat", fn);
+    napi_create_function(env, "getSessionRdpClipboardFormatResult", NAPI_AUTO_LENGTH, NapiGetSessionRdpClipboardFormatResult, nullptr, &fn);
+    napi_set_named_property(env, exports, "getSessionRdpClipboardFormatResult", fn);
+    napi_create_function(env, "releaseSessionRdpClipboardFormat", NAPI_AUTO_LENGTH, NapiReleaseSessionRdpClipboardFormat, nullptr, &fn);
+    napi_set_named_property(env, exports, "releaseSessionRdpClipboardFormat", fn);
     napi_create_function(env, "getSessionRdpClipboardFiles", NAPI_AUTO_LENGTH, NapiGetSessionRdpClipboardFiles, nullptr, &fn);
     napi_set_named_property(env, exports, "getSessionRdpClipboardFiles", fn);
     napi_create_function(env, "requestSessionRdpClipboardFiles", NAPI_AUTO_LENGTH, NapiRequestSessionRdpClipboardFiles, nullptr, &fn);

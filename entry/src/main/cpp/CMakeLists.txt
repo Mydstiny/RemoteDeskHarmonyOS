@@ -65,6 +65,8 @@ set(PROTOCOL_SOURCES
     rdp/rdp_channel_observer.cpp
     rdp/rdp_remote_file_offer.cpp
     rdp/rdp_clipboard_receive.cpp
+    transfer/transfer_export_files.cpp
+    rdp/rdp_clipboard_content.cpp
     rdp/rdp_file_clipboard_offer.cpp
     rustdesk/rustdesk_bridge.cpp
 )
@@ -356,6 +358,9 @@ if(RDP_BUILD_TESTS)
         test/rdp_input_queue_test.cpp
         test/rdp_file_clipboard_offer_test.cpp
         test/rdp_clipboard_codec_test.cpp
+        test/transfer_export_files_test.cpp
+        test/rdp_clipboard_content_test.cpp
+        test/rdp_clipboard_format_queue_test.cpp
         test/rdp_clipboard_state_test.cpp
         test/rdp_clipboard_publication_queue_test.cpp
         test/rdp_clipboard_receive_test.cpp

@@ -41,8 +41,13 @@ import {
   ClipboardPublicationResult,
   SessionTransferPermissions,
   SessionRemoteDirectory,
+  SessionTransferAuthentication,
+  SessionTransferResult,
   SessionRdpDrive,
   SessionRdpClipboardFiles,
+  SessionRdpClipboardContent,
+  SessionRdpClipboardFormats,
+  SessionRdpClipboardFormatResult,
   SessionRdpClipboardReceive,
   SshCommandResult,
   SshTerminalDiagnosticsSnapshot,
@@ -997,6 +1002,27 @@ export class ExtensionLoader {
     }
   }
 
+  publishSessionRdpClipboardContent(sessionId: number, generation: number, content: SessionRdpClipboardContent): ClipboardPublicationResult {
+    try { return rdpnapi.publishSessionRdpClipboardContent(sessionId, generation, content) as ClipboardPublicationResult; }
+    catch (_error) { return { publicationId: 0, state: 3 }; }
+  }
+  getSessionRdpClipboardFormats(sessionId: number, generation: number): SessionRdpClipboardFormats {
+    try { return rdpnapi.getSessionRdpClipboardFormats(sessionId, generation) as SessionRdpClipboardFormats; }
+    catch (_error) { return { sequence: 0, formats: [] }; }
+  }
+  requestSessionRdpClipboardFormat(sessionId: number, generation: number, sequence: number, format: number): number {
+    try { return rdpnapi.requestSessionRdpClipboardFormat(sessionId, generation, sequence, format) as number; }
+    catch (_error) { return 0; }
+  }
+  getSessionRdpClipboardFormatResult(sessionId: number, generation: number, requestId: number): SessionRdpClipboardFormatResult {
+    try { return rdpnapi.getSessionRdpClipboardFormatResult(sessionId, generation, requestId) as SessionRdpClipboardFormatResult; }
+    catch (_error) { return { requestId, sequence: 0, format: 0, state: 'unavailable', diagnosticCode: 'clipboard_owner_unavailable', content: {} }; }
+  }
+  releaseSessionRdpClipboardFormat(sessionId: number, generation: number, requestId: number): boolean {
+    try { return rdpnapi.releaseSessionRdpClipboardFormat(sessionId, generation, requestId) === true; }
+    catch (_error) { return false; }
+  }
+
   getSessionRdpClipboardFiles(sessionId: number, generation: number): SessionRdpClipboardFiles {
     try { return rdpnapi.getSessionRdpClipboardFiles(sessionId, generation) as SessionRdpClipboardFiles; }
     catch (_err) { return { sequence: 0, state: 'unavailable', streamSupported: false, lockSupported: false,
@@ -1036,6 +1062,34 @@ export class ExtensionLoader {
   disableSessionRdpDrive(sessionId: number, generation: number): boolean {
     try { return rdpnapi.disableSessionRdpDrive(sessionId, generation) === true; }
     catch (_err) { return false; }
+  }
+
+  openExclusiveTransferDirectory(parentFd: number, leaf: string): number {
+    try { return rdpnapi.openExclusiveTransferDirectory(parentFd, leaf); } catch (_error) { return -1; }
+  }
+  openExclusiveTransferFile(rootFd: number, relativePath: string): number {
+    try { return rdpnapi.openExclusiveTransferFile(rootFd, relativePath); } catch (_error) { return -1; }
+  }
+  ensureTransferExportDirectory(rootFd: number, relativePath: string): boolean {
+    try { return rdpnapi.ensureTransferExportDirectory(rootFd, relativePath) === true; } catch (_error) { return false; }
+  }
+
+  createSessionRemoteDirectory(sessionId: number, generation: number, path: string): number {
+    try { return rdpnapi.createSessionRemoteDirectory(sessionId, generation, path); }
+    catch (_err) { return -1; }
+  }
+  getSessionTransferAuthentication(sessionId: number, generation: number, id: number): SessionTransferAuthentication {
+    try { return rdpnapi.getSessionTransferAuthentication(sessionId, generation, id) as SessionTransferAuthentication; }
+    catch (_err) { return { transferId: 0, challengeId: 0, kind: 0, state: 0, expiresInMs: 0, attemptsRemaining: 0, diagnosticCode: 0 }; }
+  }
+  submitSessionTransferAuthentication(sessionId: number, generation: number, id: number,
+    challengeId: number, kind: number, secret: string): boolean {
+    try { return rdpnapi.submitSessionTransferAuthentication(sessionId, generation, id, challengeId, kind, secret) === true; }
+    catch (_err) { return false; }
+  }
+  getSessionTransferResult(sessionId: number, generation: number, id: number): SessionTransferResult {
+    try { return rdpnapi.getSessionTransferResult(sessionId, generation, id) as SessionTransferResult; }
+    catch (_err) { return { operationKind: 0, sourceMetadataAvailable: false, sourceSize: 0, sourceModifiedTime: 0, remoteOperationAcknowledged: false }; }
   }
 
   requestSessionRemoteDirectory(sessionId: number, generation: number, path: string): number {

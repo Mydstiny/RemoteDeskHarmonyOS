@@ -8,6 +8,7 @@
 
 #ifndef FREERDP_ADAPTER_H
 #define FREERDP_ADAPTER_H
+#include "rdp_clipboard_content.h"
 #include "rdp_transfer_types.h"
 
 
@@ -113,6 +114,11 @@ public:
     uint64_t publishClipboardTracked(const uint8_t* data, uint32_t len);
     uint64_t publishClipboardFilesTracked(const std::vector<std::string>& paths);
     int getClipboardPublicationState(uint64_t publicationId);
+    uint64_t publishClipboardContentTracked(const RdpClipboardContent& content);
+    RdpClipboardFormatOffer getRemoteClipboardFormats();
+    uint64_t requestRemoteClipboardFormat(uint64_t sequence, RdpClipboardFormat format);
+    RdpClipboardFormatResult getRemoteClipboardFormatResult(uint64_t requestId);
+    bool releaseRemoteClipboardFormat(uint64_t requestId);
     bool        isClipboardReceiveReady() override;
     bool        setSessionClipboardEnabled(bool enabled) override;
     bool        supportsFileTransfer() override;

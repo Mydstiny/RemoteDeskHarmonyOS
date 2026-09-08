@@ -218,6 +218,23 @@ struct RustDeskRemoteFileEntry {
     uint64_t modifiedTime = 0;
 };
 
+struct RustDeskTransferAuthSnapshot {
+    uint64_t transferId = 0;
+    uint64_t challengeId = 0;
+    uint32_t kind = 0;
+    uint32_t state = 0;
+    uint64_t expiresInMs = 0;
+    uint32_t attemptsRemaining = 0;
+    uint32_t diagnosticCode = 0;
+};
+struct RustDeskTransferResult {
+    uint32_t operationKind = 0;
+    uint32_t sourceMetadataAvailable = 0;
+    uint64_t sourceSize = 0;
+    uint64_t sourceModifiedTime = 0;
+    uint32_t remoteOperationAcknowledged = 0;
+};
+
 class RustDeskBridge : public ProtocolAdapter {
 public:
     // The real-core lifetime helpers need the incomplete type while keeping
@@ -280,6 +297,10 @@ public:
     SessionTransferStatus getTransferStatusById(uint64_t transferId);
     bool cancelTransfer(uint64_t transferId);
     bool releaseTransfer(uint64_t transferId);
+    int64_t createRemoteDirectory(const std::string& remotePath);
+    RustDeskTransferAuthSnapshot getTransferAuthentication(uint64_t transferId);
+    bool submitTransferAuthentication(uint64_t transferId, uint64_t challengeId, uint32_t responseKind, const std::string& secret);
+    RustDeskTransferResult getTransferResult(uint64_t transferId);
     int64_t requestRemoteDirectory(const std::string& remotePath);
     std::string getRemoteDirectoryPath(uint64_t transferId);
     std::vector<RustDeskRemoteFileEntry> getRemoteDirectoryEntries(uint64_t transferId);

@@ -12,7 +12,7 @@ const sha = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
 function environment() {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'transfer-artifact-test-'));
   const filesDir = path.join(directory, 'app'); fs.mkdirSync(filesDir);
-  const descriptors = new Map(), deleted = [];
+  const descriptors = new Map(), deleted = [], locks = new Map();
   let maxWrite = Infinity, maxRead = Infinity, free = 12 * 1024 ** 3, manifestFail = false;
   let readHook = null, writeHook = null, corruptWrites = false, now = Date.now();
   const target = input => typeof input === 'string' && input.startsWith('file://') ? fileURLToPath(input) : input;
@@ -32,9 +32,12 @@ function environment() {
     if (mode & 0o1000) flags |= fs.constants.O_TRUNC;
     if (mode & 0o400000) flags |= fs.constants.O_NOFOLLOW;
     if (mode & 0o200000) flags |= fs.constants.O_DIRECTORY;
-    const fd = fs.openSync(name, flags, 0o600); descriptors.set(fd, name); return { fd, path: name, name: path.basename(name) };
+    const fd = fs.openSync(name, flags, 0o600); descriptors.set(fd, name); return { fd, path: name, name: path.basename(name),
+      tryLock() { if (locks.has(name) && locks.get(name) !== fd) throw Error('synthetic lock busy'); locks.set(name, fd); },
+      unlock() { if (locks.get(name) === fd) locks.delete(name); } };
   }
-  function close(file) { const fd = typeof file === 'number' ? file : file.fd; fs.closeSync(fd); descriptors.delete(fd); }
+  function close(file) { const fd = typeof file === 'number' ? file : file.fd;
+    const name = descriptors.get(fd); if (locks.get(name) === fd) locks.delete(name); fs.closeSync(fd); descriptors.delete(fd); }
   function read(fd, buffer) {
     const count = fs.readSync(fd, Buffer.from(buffer), 0, Math.min(buffer.byteLength, maxRead), null);
     if (readHook) readHook(descriptors.get(fd), count); return count;
@@ -69,13 +72,23 @@ function environment() {
   }).outputText;
   class FakeDate extends Date { static now() { return now; } }
   vm.runInNewContext(source, { module, exports: module.exports, Date: FakeDate, require(id) {
-    if (id === '@kit.CoreFileKit') return { fileIo, statfs: { getFreeSize: async () => free } };
+    if (id === '@kit.CoreFileKit') return { fileIo, fileUri: { FileUri: class { constructor(uri) { this.path = fileURLToPath(uri); } } }, statfs: { getFreeSize: async () => free, getFreeSizeSync: () => free } };
     if (id === '@kit.ArkTS') return { util };
     if (id === '@kit.CryptoArchitectureKit') return { cryptoFramework };
     throw Error('Unexpected module ' + id);
   } }, { filename: file });
   const api = module.exports, scope = api.transferScopeKey('account', 'host');
-  return { api, directory, filesDir, scope, deleted, descriptors,
+  const publicationModule = { exports: {} };
+  const publicationCode = ts.transpileModule(fs.readFileSync(path.join(root, 'entry/src/main/ets/services/TransferArtifactPublicationService.ets'), 'utf8'),
+    { compilerOptions: { target: ts.ScriptTarget.ES2021, module: ts.ModuleKind.CommonJS } }).outputText;
+  vm.runInNewContext(publicationCode, { module: publicationModule, exports: publicationModule.exports, require(id) {
+    if (id === '@kit.ArkTS') return { util }; if (id === './TransferArtifactStore') return api;
+    throw Error('Unexpected publication dependency ' + id); } });
+  return { api, directory, filesDir, scope, deleted,
+    get descriptors() { return new Map([...descriptors].filter(([_fd, name]) => !name.endsWith('/lease.lock'))); },
+    get leaseDescriptors() { return new Map([...descriptors].filter(([_fd, name]) => name.endsWith('/lease.lock'))); },
+    publisher() { return new publicationModule.exports.TransferArtifactPublicationService(); },
+    claimBatchLock(batch) { const file = open(path.join(batch.directory, 'lease.lock'), 2); file.tryLock(true); return () => close(file); },
     batch(purpose = 'clipboard') { return new api.TransferArtifactBatch(filesDir, scope, purpose); },
     source(name, bytes) { const target = path.join(directory, name); fs.writeFileSync(target, bytes); return target; },
     limitWrite(n) { maxWrite = n; }, limitRead(n) { maxRead = n; }, freeSpace(n) { free = n; },
@@ -280,7 +293,7 @@ test('NFC-equivalent display names receive distinct names and recover from disk'
   const first = await batch.stage(source, '\u00e9.txt', 3, () => true, () => {});
   const second = await batch.stage(source, 'e\u0301.txt', 3, () => true, () => {});
   assert.notEqual(first.name.normalize('NFC').toLowerCase(), second.name.normalize('NFC').toLowerCase());
-  env.api.TransferArtifactBatch.batches.clear();
+  batch.release(); env.api.TransferArtifactBatch.batches.clear();
   const recovered = env.api.recoverTransferArtifactBatches(env.filesDir, env.scope, 'clipboard');
   assert.equal(recovered.length, 1); assert.equal(recovered[0].getArtifacts().length, 2);
   recovered[0].release(); env.advance(10000);
@@ -291,7 +304,7 @@ test('manifest failure preserves empty attempt directory ownership for later suc
   const batch = env.batch(), source = env.source('source', Buffer.from('abc'));
   env.failManifest(true); await assert.rejects(batch.stage(source, 'file', 3, () => true, () => {}));
   env.failManifest(false); const artifact = await batch.stage(source, 'file', 3, () => true, () => {});
-  env.api.TransferArtifactBatch.batches.clear();
+  batch.release(); env.api.TransferArtifactBatch.batches.clear();
   const recovered = env.api.recoverTransferArtifactBatches(env.filesDir, env.scope, 'clipboard');
   assert.equal(recovered.length, 1); assert.equal(recovered[0].getArtifacts().length, 1);
   recovered[0].release(); env.advance(10000);
@@ -307,6 +320,264 @@ test('guard failure after attempt manifest retains cleanup ownership without pub
   batch.release(); env.advance(10000); const cleanup = await batch.cleanupExpired(0);
   assert.equal(cleanup.invalidBatches, 0); assert.equal(cleanup.removedFiles, 1);
   assert.equal(fs.existsSync(artifact.path), false); assert.ok(fs.existsSync(source));
+}));
+const publicationOwner = (generation = 11) => ({ sessionId: 7, generation, ownerToken: 19,
+  facadeGeneration: 2, rendererHandle: 31, decoderHandle: 32, audioPlayerHandle: 33 });
+test('scope inventory restores completed received artifacts and explicit cleanup retains external exports', () => using(async env => {
+  const batch = env.batch('received'), source = env.source('source', Buffer.from('abc'));
+  const artifact = await batch.stage(source, 'file', 3, () => true, () => {});
+  const target = path.join(env.directory, 'saved'); assert.equal((await env.api.exportTransferArtifact(artifact, target, () => true, () => {})).status, 'saved');
+  batch.release(); assert.equal(env.leaseDescriptors.size, 0); env.api.TransferArtifactBatch.batches.clear();
+  const inventory = env.api.recoverTransferArtifactInventory(env.filesDir, env.scope);
+  assert.equal(inventory.artifacts.length, 1); assert.equal(inventory.batches[0].canCleanup, true);
+  const otherScope = env.api.transferScopeKey('other-account', 'host');
+  assert.equal(env.api.recoverTransferArtifactInventory(env.filesDir, otherScope).artifacts.length, 0);
+  assert.equal((await env.api.cleanupOwnedTransferArtifactBatch(env.filesDir, otherScope, 'received', batch.id)).invalidBatches, 1);
+  assert.equal((await env.api.cleanupOwnedTransferArtifactBatch(env.filesDir, env.scope, 'received', batch.id)).removedFiles, 1);
+  assert.equal(fs.existsSync(artifact.path), false); assert.equal(fs.readFileSync(source, 'utf8'), 'abc'); assert.equal(fs.readFileSync(target, 'utf8'), 'abc');
+}));
+test('recovered holders stay unknown even if a caller can acquire the lease lock', () => using(async env => {
+  const batch = env.batch('received'), source = env.source('source', Buffer.from('abc'));
+  await batch.stage(source, 'file', 3, () => true, () => {});
+  batch.closeMutationLock(); env.api.TransferArtifactBatch.batches.clear(); // Simulate loss of runtime ownership, not a success receipt.
+  const recovered = env.api.recoverTransferArtifactBatches(env.filesDir, env.scope, 'received')[0];
+  const info = recovered.getInfo(); assert.equal(info.held, true); assert.equal(info.unknown, true); assert.equal(info.canCleanup, false);
+  assert.throws(() => recovered.release()); await assert.rejects(recovered.beginReceive('new', 0, () => true));
+  assert.equal((await env.api.cleanupOwnedTransferArtifactBatch(env.filesDir, env.scope, 'received', batch.id)).removedFiles, 0);
+}));
+test('a contended file lock blocks cleanup of an otherwise unheld batch', () => using(async env => {
+  const batch = env.batch('received'), source = env.source('source', Buffer.from('abc'));
+  const artifact = await batch.stage(source, 'file', 3, () => true, () => {}); batch.release();
+  const unlock = env.claimBatchLock(batch);
+  assert.equal((await env.api.cleanupOwnedTransferArtifactBatch(env.filesDir, env.scope, 'received', batch.id)).removedFiles, 0);
+  assert.ok(fs.existsSync(artifact.path)); unlock();
+  assert.equal((await env.api.cleanupOwnedTransferArtifactBatch(env.filesDir, env.scope, 'received', batch.id)).removedFiles, 1);
+}));
+test('native publication retirement requires every exact owner field and successful teardown', () => using(async env => {
+  const batch = env.batch(), publisher = env.publisher(), owner = publicationOwner();
+  const source = env.source('source', Buffer.from('abc')); await batch.stage(source, 'file', 3, () => true, () => {});
+  publisher.registerNativeOffer(batch, owner); batch.release();
+  assert.equal(batch.getInfo().published, true); assert.equal(publisher.completeNativeTeardown(owner, false), 0);
+  for (const key of Object.keys(owner)) assert.equal(publisher.completeNativeTeardown({ ...owner, [key]: owner[key] + 1 }, true), 0);
+  assert.equal((await batch.cleanupExpired(0)).removedFiles, 0);
+  assert.equal(publisher.completeNativeTeardown(owner, true), 1); assert.equal(batch.getInfo().canCleanup, true);
+  assert.equal(publisher.completeNativeTeardown(owner, true), 0); assert.equal((await batch.cleanupExpired(0)).removedFiles, 1);
+}));
+test('system clipboard leases survive native teardown and retire only after observed replacement', () => using(async env => {
+  const batch = env.batch(), publisher = env.publisher(), owner = publicationOwner();
+  publisher.registerNativeOffer(batch, owner); const system = publisher.registerSystemClipboard(batch);
+  const tag = publisher.systemClipboardTag(system); assert.equal(publisher.confirmSystemClipboard(system, tag, 10), true); batch.release();
+  assert.equal(publisher.completeNativeTeardown(owner, true), 1); assert.equal(batch.getInfo().published, true);
+  assert.equal(publisher.observeSystemClipboard(tag, 11), 0); assert.equal(publisher.observeSystemClipboard('other', 10), 0);
+  assert.equal(publisher.releaseSystemClipboard(system, false), false);
+  assert.equal(publisher.observeSystemClipboard('other', 11), 1); assert.equal(batch.getInfo().published, false);
+}));
+test('unknown runtime publications and failed durable release never become cleanable', () => using(async env => {
+  const batch = env.batch(), publisher = env.publisher(), owner = publicationOwner();
+  publisher.registerNativeOffer(batch, owner); batch.release();
+  assert.equal(env.publisher().completeNativeTeardown(owner, true), 0);
+  env.failManifest(true); assert.equal(publisher.completeNativeTeardown(owner, true), 0); env.failManifest(false);
+  assert.equal(batch.getInfo().published, true);
+  batch.closeMutationLock(); env.api.TransferArtifactBatch.batches.clear();
+  const inventory = env.api.recoverTransferArtifactInventory(env.filesDir, env.scope, 'clipboard');
+  assert.equal(inventory.batches[0].unknown, true); assert.equal(inventory.batches[0].retentionReason, 'publication-owner-unknown');
+  assert.equal(inventory.batches[0].canCleanup, false);
+}));
+test('platform incoming completion hashes the controlled directory once and preserves roots and empty folders', () => using(async env => {
+  const batch = env.batch(), slot = await batch.createPlatformIncoming(() => true, 6);
+  for (const directory of ['a', 'b', 'empty']) fs.mkdirSync(path.join(slot.path, directory));
+  fs.writeFileSync(path.join(slot.path, 'a/item%20.bin'), 'abc'); fs.writeFileSync(path.join(slot.path, 'b/item%20.bin'), 'def');
+  const artifacts = await slot.complete(['a', 'b', 'empty'].map(name => pathToFileURL(path.join(slot.path, name)).href));
+  assert.deepEqual(Array.from(artifacts, item => item.relativePath), ['a', 'a/item%20.bin', 'b', 'b/item%20.bin', 'empty']);
+  assert.equal(artifacts[1].sha256, sha('abc')); assert.ok(artifacts[1].path.startsWith(slot.path + '/')); // No second staged copy.
+  batch.release(); env.api.TransferArtifactBatch.batches.clear();
+  const inventory = env.api.recoverTransferArtifactInventory(env.filesDir, env.scope, 'clipboard');
+  assert.equal(inventory.artifacts.length, 5); assert.equal(inventory.batches[0].canCleanup, true);
+  const cleanup = await env.api.cleanupOwnedTransferArtifactBatch(env.filesDir, env.scope, 'clipboard', batch.id);
+  assert.equal(cleanup.removedFiles, 2); assert.equal(cleanup.invalidBatches, 0); assert.ok(fs.statSync(path.join(slot.path, 'empty')).isDirectory());
+}));
+test('platform cancellation preserves an active producer and a later genuine completion can settle ownership', () => using(async env => {
+  const batch = env.batch(), slot = await batch.createPlatformIncoming(() => true, 3);
+  await slot.retainPartial(); batch.release(); fs.writeFileSync(path.join(slot.path, 'late'), 'abc');
+  assert.equal(batch.getInfo().retentionReason, 'platform-writer-unknown'); assert.equal((await batch.cleanupExpired(0)).removedFiles, 0);
+  const artifacts = await slot.complete([pathToFileURL(path.join(slot.path, 'late')).href]);
+  assert.equal(artifacts.length, 1); assert.equal(batch.getInfo().canCleanup, true);
+  assert.equal((await batch.cleanupExpired(0)).removedFiles, 1);
+}));
+test('platform import rejects external URIs, symlinks and undeclared payloads without deleting anything', async () => {
+  for (const kind of ['external', 'symlink', 'unexpected']) await using(async env => {
+    const batch = env.batch(), slot = await batch.createPlatformIncoming(() => true, 3), source = env.source('outside', 'abc');
+    const item = path.join(slot.path, 'item'); if (kind === 'symlink') fs.symlinkSync(source, item); else fs.writeFileSync(item, 'abc');
+    if (kind === 'unexpected') fs.writeFileSync(path.join(slot.path, 'extra'), 'keep');
+    await assert.rejects(slot.complete([pathToFileURL(kind === 'external' ? source : item).href])); batch.release();
+    assert.equal((await batch.cleanupExpired(0)).removedFiles, 0); assert.equal(fs.readFileSync(source, 'utf8'), 'abc'); assert.ok(fs.existsSync(item));
+  });
+});
+test('logical directory APIs separate storage paths, preserve duplicate roots and survive disk recovery', () => using(async env => {
+  const batch = env.batch('received'), source = env.source('source', Buffer.from('abc'));
+  const first = await batch.createDirectoryRoot('目录', () => true), second = await batch.createDirectoryRoot('目录', () => true);
+  assert.notEqual(first.relativePath, second.relativePath); await batch.createDirectory(first.relativePath + '/empty', () => true);
+  const a = await batch.stageRelative(source, first.relativePath + '/same.txt', 3, () => true, () => {});
+  const slot = await batch.beginNativeReceiveRelative(second.relativePath + '/same.txt', 3, () => true); fs.writeSync(slot.fd, Buffer.from('def'));
+  const b = await slot.commit(); assert.notEqual(a.path, b.path); assert.equal(a.relativePath, first.relativePath + '/same.txt');
+  await assert.rejects(batch.createDirectory(a.relativePath + '/child', () => true));
+  await assert.rejects(batch.stageRelative(source, first.relativePath, 3, () => true, () => {}));
+  await assert.rejects(batch.stageRelative(source, '../escape', 3, () => true, () => {}));
+  batch.release(); env.api.TransferArtifactBatch.batches.clear();
+  const inventory = env.api.recoverTransferArtifactInventory(env.filesDir, env.scope);
+  assert.equal(inventory.artifacts.length, 5); assert.equal(inventory.batches[0].directoryCount, 3);
+  assert.equal((await env.api.cleanupOwnedTransferArtifactBatch(env.filesDir, env.scope, 'received', batch.id)).removedFiles, 2);
+  assert.ok(fs.existsSync(source));
+}));
+test('logical batches exceed the flat 15-file cap but reserve at most 2GiB in total', () => using(async env => {
+  const batch = env.batch('received'), source = env.source('source', Buffer.alloc(0));
+  for (let index = 0; index < 20; index++) await batch.stageRelative(source, 'root/file-' + index, 0, () => true, () => {});
+  const one = env.source('one', Buffer.from('x')); await batch.stageRelative(one, 'root/one', 1, () => true, () => {});
+  await assert.rejects(batch.beginNativeReceiveRelative('root/too-large', 2 * 1024 ** 3, () => true));
+  const limit = await batch.beginNativeReceiveRelative('root/remaining', 2 * 1024 ** 3 - 1, () => true); await limit.abort();
+  assert.equal(batch.getArtifacts().length, 21);
+}));
+test('malformed manifests appear as unknown inventory entries and cannot be explicitly cleaned', () => using(async env => {
+  const batch = env.batch('received'), source = env.source('source', 'abc');
+  const artifact = await batch.stage(source, 'file', 3, () => true, () => {}); batch.release();
+  fs.writeFileSync(path.join(batch.directory, 'manifest.json'), '{corrupt'); env.api.TransferArtifactBatch.batches.clear();
+  const inventory = env.api.recoverTransferArtifactInventory(env.filesDir, env.scope);
+  assert.equal(inventory.invalidBatches, 1); assert.equal(inventory.batches.length, 1);
+  assert.equal(inventory.batches[0].retentionReason, 'ownership-manifest-invalid'); assert.equal(inventory.batches[0].canCleanup, false);
+  assert.equal((await env.api.cleanupOwnedTransferArtifactBatch(env.filesDir, env.scope, 'received', batch.id)).removedFiles, 0);
+  assert.ok(fs.existsSync(artifact.path));
+}));
+test('publication registration failure refuses admission and unrelated exact native owners stay held', () => using(async env => {
+  const a = env.batch(), b = env.batch(), publisher = env.publisher(), first = publicationOwner(), second = publicationOwner(12);
+  env.failManifest(true); assert.throws(() => publisher.registerNativeOffer(a, first)); env.failManifest(false);
+  assert.equal(a.getInfo().published, false);
+  publisher.registerNativeOffer(a, first); publisher.registerNativeOffer(b, second); a.release(); b.release();
+  assert.equal(publisher.completeNativeTeardown(first, true), 1); assert.equal(b.getInfo().published, true);
+  assert.equal(publisher.completeNativeTeardown(second, true), 1); assert.equal(b.getInfo().published, false);
+}));
+test('legacy published state cannot be cleared by a recovered runtime and unknown exports release only their own locks', () => using(async env => {
+  const batch = env.batch('received'), source = env.source('source', 'abc');
+  const artifact = await batch.stage(source, 'file', 3, () => true, () => {}); batch.setPublished(true); batch.release();
+  batch.closeMutationLock(); env.api.TransferArtifactBatch.batches.clear();
+  const recovered = env.api.recoverTransferArtifactBatches(env.filesDir, env.scope, 'received')[0];
+  assert.throws(() => recovered.setPublished(false)); assert.equal(env.leaseDescriptors.size, 0);
+  const output = path.join(env.directory, 'exported'); assert.equal((await env.api.exportTransferArtifact(artifact, output, () => true, () => {})).status, 'saved');
+  assert.equal(env.leaseDescriptors.size, 0); assert.equal(recovered.getInfo().published, true); assert.equal(recovered.getInfo().unknown, true);
+}));
+test('explicit cleanup clears empty-directory records without recursive removal', () => using(async env => {
+  const batch = env.batch('received'), directory = await batch.createDirectory('root/empty', () => true); batch.release();
+  assert.equal((await env.api.cleanupOwnedTransferArtifactBatch(env.filesDir, env.scope, 'received', batch.id)).invalidBatches, 0);
+  assert.ok(fs.statSync(directory.path).isDirectory()); assert.equal(env.api.recoverTransferArtifactInventory(env.filesDir, env.scope).artifacts.length, 0);
+}));
+test('platform admission is synchronous for onDrop and enforces the same space reservation', () => using(async env => {
+  const batch = env.batch(); env.freeSpace(32 * 1024 * 1024 + 2);
+  assert.throws(() => batch.createPlatformIncomingSync(() => true, 3));
+  env.freeSpace(12 * 1024 ** 3); const slot = batch.createPlatformIncomingSync(() => true, 3);
+  assert.equal(typeof slot.then, 'undefined'); assert.ok(fs.statSync(slot.path).isDirectory());
+  fs.writeFileSync(path.join(slot.path, 'item'), 'abc'); await slot.complete([pathToFileURL(path.join(slot.path, 'item')).href]);
+  batch.release(); assert.equal(batch.getInfo().canCleanup, true);
+}));
+test('platform trees over 1024 entries are rejected and preserved before any hashing or publication', () => using(async env => {
+  const batch = env.batch(), slot = batch.createPlatformIncomingSync(() => true, 0), directory = path.join(slot.path, 'root');
+  fs.mkdirSync(directory); for (let index = 0; index < 1024; index++) fs.writeFileSync(path.join(directory, 'file-' + index), '');
+  await assert.rejects(slot.complete([pathToFileURL(directory).href])); batch.release();
+  assert.equal(batch.getArtifacts().length, 0); assert.equal(batch.getInfo().canCleanup, false); assert.equal(fs.readdirSync(directory).length, 1024);
+}));
+function localTreeSources(directory, rootName) {
+  const result = [];
+  const visit = (target, relativePath) => {
+    const info = fs.lstatSync(target), isDirectory = info.isDirectory();
+    result.push({ uri: pathToFileURL(target).href, relativePath, directory: isDirectory, size: isDirectory ? 0 : info.size, mtime: info.mtimeMs });
+    if (isDirectory) for (const name of fs.readdirSync(target)) visit(path.join(target, name), relativePath + '/' + name);
+  };
+  visit(directory, rootName); return result;
+}
+test('local folder stages directly into one physical hierarchy with exact hashes and owned TTL', () => using(async env => {
+  const sourceRoot = path.join(env.directory, 'Source %20'); fs.mkdirSync(path.join(sourceRoot, 'nested'), { recursive: true });
+  fs.mkdirSync(path.join(sourceRoot, 'empty')); fs.writeFileSync(path.join(sourceRoot, 'a%20.txt'), 'alpha');
+  fs.writeFileSync(path.join(sourceRoot, 'nested', 'a%20.txt'), 'beta'); fs.writeFileSync(path.join(sourceRoot, 'zero'), '');
+  const batch = env.batch(), sources = localTreeSources(sourceRoot, '原根😀'); let payloadWrites = 0; const progress = [];
+  env.onWrite((name, count) => { if (name.includes('/native-')) payloadWrites += count; });
+  env.onRead((name) => { if (name.includes('/native-')) { assert.equal(batch.getArtifacts().length, 0); assert.ok(progress.every(([copied, total]) => copied < total)); } });
+  const artifacts = await batch.stageLocalDirectoryTree(sources, () => true, (copied, total) => progress.push([copied, total]));
+  env.onRead(null); env.onWrite(null); const root = artifacts.find(item => item.relativePath === '原根😀');
+  assert.equal(root.directory, true); assert.equal(fs.readFileSync(path.join(root.path, 'a%20.txt'), 'utf8'), 'alpha');
+  assert.equal(fs.readFileSync(path.join(root.path, 'nested', 'a%20.txt'), 'utf8'), 'beta'); assert.ok(fs.statSync(path.join(root.path, 'empty')).isDirectory());
+  assert.equal(payloadWrites, 9); assert.equal(artifacts.find(item => item.relativePath.endsWith('/zero')).sha256, sha(''));
+  assert.deepEqual(progress.at(-1), [9, 9]); assert.equal(env.descriptors.size, 0);
+  const manifest = JSON.parse(fs.readFileSync(path.join(batch.directory, 'manifest.json'), 'utf8'));
+  assert.ok(manifest.artifacts.every(item => item.state === 'complete' && item.storageRelativePath.startsWith('native-')));
+  assert.equal(manifest.platformDirectories.length, 0); assert.equal(manifest.nativeDirectories[0].state, 'complete');
+  assert.equal(env.api.recoverTransferArtifactBatches(env.filesDir, env.scope, 'clipboard')[0].getArtifacts().length, 6);
+  batch.release(); const cleaned = await batch.cleanupExpired(0); assert.equal(cleaned.invalidBatches, 0); assert.equal(cleaned.removedFiles, 3);
+  assert.equal(fs.readFileSync(path.join(sourceRoot, 'a%20.txt'), 'utf8'), 'alpha'); assert.ok(fs.existsSync(sourceRoot));
+}));
+test('local folder plan rejects malformed topology, outside URIs and NFC collisions before allocating a physical root', () => using(async env => {
+  const sourceRoot = path.join(env.directory, 'source'); fs.mkdirSync(path.join(sourceRoot, 'nested'), { recursive: true });
+  fs.writeFileSync(path.join(sourceRoot, 'a'), 'x'); fs.writeFileSync(path.join(sourceRoot, 'nested', 'b'), 'y');
+  const original = localTreeSources(sourceRoot, 'Root');
+  const mutations = [
+    entries => { entries.at(-1).relativePath = 'Root/../escape'; },
+    entries => { entries.at(-1).uri = pathToFileURL(path.join(env.directory, 'outside')).href; },
+    entries => { entries.splice(entries.findIndex(item => item.relativePath === 'Root/nested'), 1); },
+    entries => { entries[1].relativePath = 'Root/é'; entries.at(-1).relativePath = 'Root/e\u0301'; },
+    entries => { entries.at(-1).size = 2 * 1024 ** 3 + 1; },
+    entries => { entries[0].directory = false; }
+  ];
+  for (const mutate of mutations) {
+    const batch = env.batch(), entries = original.map(item => ({ ...item })); mutate(entries);
+    await assert.rejects(batch.stageLocalDirectoryTree(entries, () => true, () => {}));
+    assert.equal(fs.readdirSync(batch.directory).filter(name => name.startsWith('native-')).length, 0); batch.release();
+  }
+}));
+test('local tree copies short reads/writes and more than fifteen files without flattening', () => using(async env => {
+  const sourceRoot = path.join(env.directory, 'many'); fs.mkdirSync(sourceRoot);
+  for (let index = 0; index < 16; index++) fs.writeFileSync(path.join(sourceRoot, String(index)), 'abcdefghij');
+  env.limitRead(3); env.limitWrite(2); const batch = env.batch();
+  const artifacts = await batch.stageLocalDirectoryTree(localTreeSources(sourceRoot, 'Root'), () => true, () => {});
+  assert.equal(artifacts.length, 17); const root = artifacts.find(item => item.directory);
+  for (let index = 0; index < 16; index++) assert.equal(fs.readFileSync(path.join(root.path, String(index)), 'utf8'), 'abcdefghij');
+  assert.equal(env.descriptors.size, 0); batch.release();
+}));
+test('local tree source mutation aborts the whole offer, retains attributable partial bytes and permits owned cleanup', () => using(async env => {
+  const sourceRoot = path.join(env.directory, 'mutable'); fs.mkdirSync(sourceRoot); const file = path.join(sourceRoot, 'a'); fs.writeFileSync(file, 'abc');
+  const sources = localTreeSources(sourceRoot, 'Root'), batch = env.batch(); let changed = false;
+  env.onRead(name => { if (!changed && name === file) { changed = true; fs.appendFileSync(file, 'extra'); } });
+  await assert.rejects(batch.stageLocalDirectoryTree(sources, () => true, () => {})); env.onRead(null);
+  assert.equal(batch.getArtifacts().length, 0); assert.equal(env.descriptors.size, 0);
+  const manifest = JSON.parse(fs.readFileSync(path.join(batch.directory, 'manifest.json'), 'utf8'));
+  assert.equal(manifest.nativeDirectories[0].state, 'aborted'); assert.ok(manifest.artifacts.every(item => item.state === 'partial'));
+  batch.release(); assert.equal(batch.getInfo().canCleanup, true);
+  const cleaned = await batch.cleanupExpired(0); assert.equal(cleaned.invalidBatches, 0); assert.equal(cleaned.removedFiles, 1);
+  assert.equal(fs.readFileSync(file, 'utf8'), 'abcextra');
+}));
+test('local tree cancellation after a payload write closes FDs and records the actual partial for cleanup', () => using(async env => {
+  const sourceRoot = path.join(env.directory, 'cancel'); fs.mkdirSync(sourceRoot); fs.writeFileSync(path.join(sourceRoot, 'a'), 'abc');
+  const batch = env.batch(); let active = true;
+  env.onWrite(name => { if (name.includes('/native-')) active = false; });
+  await assert.rejects(batch.stageLocalDirectoryTree(localTreeSources(sourceRoot, 'Root'), () => active, () => {})); env.onWrite(null);
+  assert.equal(env.descriptors.size, 0); assert.equal(batch.getArtifacts().length, 0); batch.release();
+  const cleaned = await batch.cleanupExpired(0); assert.equal(cleaned.removedBytes, 3); assert.equal(cleaned.invalidBatches, 0);
+  assert.equal(fs.readFileSync(path.join(sourceRoot, 'a'), 'utf8'), 'abc');
+}));
+test('local tree manifest failure preserves partial ownership until persistence recovers', () => using(async env => {
+  const sourceRoot = path.join(env.directory, 'manifest'); fs.mkdirSync(sourceRoot); fs.writeFileSync(path.join(sourceRoot, 'a'), 'abc');
+  const batch = env.batch(); env.onRead(name => { if (name.includes('/native-')) env.failManifest(true); });
+  await assert.rejects(batch.stageLocalDirectoryTree(localTreeSources(sourceRoot, 'Root'), () => true, () => {}));
+  env.onRead(null); env.failManifest(false); assert.equal(batch.getArtifacts().length, 0); assert.equal(env.descriptors.size, 0);
+  batch.release(); const recovered = env.api.recoverTransferArtifactBatches(env.filesDir, env.scope, 'clipboard'); assert.equal(recovered.length, 1);
+  const cleaned = await batch.cleanupExpired(0); assert.equal(cleaned.invalidBatches, 0); assert.equal(cleaned.removedFiles, 1);
+}));
+test('local tree rejects unlisted children and directory symlinks and supports a truly empty root', () => using(async env => {
+  const sourceRoot = path.join(env.directory, 'tree'); fs.mkdirSync(sourceRoot); fs.writeFileSync(path.join(sourceRoot, 'hidden'), 'secret');
+  const batch = env.batch(), entries = localTreeSources(sourceRoot, 'Root'); entries.pop();
+  await assert.rejects(batch.stageLocalDirectoryTree(entries, () => true, () => {})); assert.equal(batch.getArtifacts().length, 0);
+  fs.unlinkSync(path.join(sourceRoot, 'hidden')); const sources = localTreeSources(sourceRoot, 'Root');
+  fs.symlinkSync(env.directory, path.join(sourceRoot, 'link'));
+  await assert.rejects(batch.stageLocalDirectoryTree(sources, () => true, () => {})); fs.unlinkSync(path.join(sourceRoot, 'link'));
+  const progress = []; const artifacts = await batch.stageLocalDirectoryTree(localTreeSources(sourceRoot, 'Root'), () => true, (a, b) => progress.push([a, b]));
+  assert.equal(artifacts.length, 1); assert.ok(artifacts[0].directory); assert.equal(fs.readdirSync(artifacts[0].path).length, 0);
+  assert.deepEqual(progress, [[0, 0]]); batch.release();
 }));
 (async () => { for (const { name, run } of tests) { await run(); console.log('PASS ' + name); }
   console.log(`PASS ${tests.length} real-filesystem artifact regressions`);

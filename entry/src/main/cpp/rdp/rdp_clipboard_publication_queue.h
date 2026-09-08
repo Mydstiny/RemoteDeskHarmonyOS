@@ -1,6 +1,7 @@
 #ifndef RDP_CLIPBOARD_PUBLICATION_QUEUE_H
 #define RDP_CLIPBOARD_PUBLICATION_QUEUE_H
 
+#include "rdp_clipboard_content.h"
 #include <chrono>
 #include <cstdint>
 #include <map>
@@ -19,6 +20,7 @@ public:
         bool files = false;
         std::string text;
         std::vector<std::string> paths;
+        RdpClipboardWireContent content;
     };
     uint64_t enqueue(Job job, Clock::time_point now = Clock::now()) {
         std::lock_guard<std::mutex> lock(mutex_);

@@ -98,7 +98,7 @@ impl CryptoChannel {
         if let Some(writer) = self.streaming_writer.as_ref() {
             return writer.enqueue_control_with_receipt(plaintext, Some(receipt));
         }
-        if !receipt.pending() {
+        if !receipt.begin_write() {
             return Err(io::Error::new(
                 io::ErrorKind::Interrupted,
                 "clipboard publication expired",
@@ -501,7 +501,7 @@ impl StreamingWriter {
                 tx_nonce,
             };
             while let Some(payload) = thread_shared.take_next() {
-                if payload.publication.as_ref().is_some_and(|receipt| !receipt.pending()) { continue; }
+                if payload.publication.as_ref().is_some_and(|receipt| !receipt.begin_write()) { continue; }
                 if let Err(error) = writer.send(&payload.bytes) {
                     thread_shared.set_error(error);
                     break;

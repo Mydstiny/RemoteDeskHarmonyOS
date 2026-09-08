@@ -262,6 +262,25 @@ UINT RdpFileClipboardBridge::notifyServerFormatList() {
     return cliprdr_file_context_notify_new_server_format_list(fileContext_);
 }
 
+UINT32 RdpFileClipboardBridge::registerContentFormat(const std::string& name) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return clipboard_ ? ClipboardRegisterFormat(clipboard_, name.c_str()) : 0;
+}
+UINT RdpFileClipboardBridge::sendContentFormatList(const RdpClipboardWireContent& content) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!enabled_ || !channel_ || !channel_->ClientFormatList || content.items.empty()) return ERROR_INVALID_PARAMETER;
+    std::vector<CLIPRDR_FORMAT> formats;
+    for (const auto& item:content.items) {
+        if (!item.formatId) return ERROR_INVALID_DATA;
+        formats.push_back({item.formatId,item.name.empty()?nullptr:const_cast<char*>(item.name.c_str())});
+    }
+    const UINT notified=cliprdr_file_context_notify_new_client_format_list(fileContext_);
+    if (notified!=CHANNEL_RC_OK) return notified;
+    CLIPRDR_FORMAT_LIST list {}; list.common.msgType=CB_FORMAT_LIST;
+    list.numFormats=static_cast<UINT32>(formats.size()); list.formats=formats.data();
+    return channel_->ClientFormatList(channel_,&list);
+}
+
 UINT RdpFileClipboardBridge::sendCurrentFormatList(bool includeText) {
     std::lock_guard<std::mutex> lock(mutex_);
     return sendCurrentFormatListLocked(includeText);

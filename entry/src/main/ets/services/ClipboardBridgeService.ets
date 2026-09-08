@@ -27,6 +27,20 @@ export interface ClipboardBridgeOptions {
   lease?: ClipboardLease;
   isCurrent?: () => boolean;
   readRemoteSnapshot?: () => RemoteClipboardSnapshot | null;
+  onLocalContent?: (isCurrent: () => boolean, data: pasteboard.PasteData) => Promise<boolean | null>;
+  onRemoteContent?: (snapshot: RemoteClipboardSnapshot, isCurrent: () => boolean, remoteTag: string) => Promise<boolean>;
+}
+
+interface ClipboardSystemSnapshot extends LocalClipboardSnapshot { data?: pasteboard.PasteData; }
+interface RemoteContentFence {
+  generation: number;
+  epoch: number;
+  remoteRevision: number;
+  localRevision: number;
+  sequence: number;
+  changeCount: number;
+  tag: string;
+  writeObserved: boolean;
 }
 
 const TAG = 'ClipboardBridge';
@@ -78,6 +92,8 @@ export class ClipboardBridgeService {
   private sourceState: ClipboardSourceState = new ClipboardSourceState();
   private options: ClipboardBridgeOptions = {};
   private pendingLocalRetry: boolean = false;
+  private remoteContentInFlight: boolean = false;
+  private remoteContentFence: RemoteContentFence | null = null;
 
   private active(): boolean {
     return this.enabled && this.coordinator.owns(this.ownerId) &&
@@ -159,8 +175,8 @@ export class ClipboardBridgeService {
     return snapshot.ok && snapshot.hasText ? snapshot.text : '';
   }
 
-  private getSystemSnapshot(): Promise<LocalClipboardSnapshot> {
-    return new Promise<LocalClipboardSnapshot>((resolve) => {
+  private getSystemSnapshot(): Promise<ClipboardSystemSnapshot> {
+    return new Promise<ClipboardSystemSnapshot>((resolve) => {
       const failed: LocalClipboardSnapshot = {
         ok: false, hasText: false, text: '', tag: '', changeCount: 0
       };
@@ -179,7 +195,7 @@ export class ClipboardBridgeService {
             if (before !== after) { resolve(failed); return; }
             const text: string | undefined = pd?.getPrimaryText();
             resolve({ ok: true, hasText: pd.hasType(pasteboard.MIMETYPE_TEXT_PLAIN),
-              text: typeof text === 'string' ? text : '', tag: pd.getTag(), changeCount: after });
+              text: typeof text === 'string' ? text : '', tag: pd.getTag(), changeCount: after, data: pd });
           } catch (error) { resolve(failed); }
         });
       } catch (error) { resolve(failed); }
@@ -210,9 +226,10 @@ export class ClipboardBridgeService {
     const epoch: number = this.coordinator.currentEpoch();
     const revision: number = this.remoteRevision;
     const localRevision: number = this.localRevision;
-    const snapshot: LocalClipboardSnapshot = await this.getSystemSnapshot();
-    if (!this.currentRead(generation, epoch, revision, localRevision, snapshot.changeCount) || !snapshot.ok || !snapshot.hasText) { return false; }
-    return this.sendLocalText(snapshot.text);
+    const snapshot: ClipboardSystemSnapshot = await this.getSystemSnapshot();
+    if (!this.currentRead(generation, epoch, revision, localRevision, snapshot.changeCount) || !snapshot.ok) { return false; }
+    const guard: () => boolean = (): boolean => this.currentRead(generation, epoch, revision, localRevision, snapshot.changeCount);
+    return (await this.sendLocalSnapshot(snapshot, guard)) === true && guard();
   }
 
   private currentRead(generation: number, epoch: number, revision: number,
@@ -221,6 +238,18 @@ export class ClipboardBridgeService {
     return this.active() && this.generation === generation && this.remoteRevision === revision &&
       this.localRevision === localRevision && (expectedChangeCount < 0 ||
       this.systemChangeCount() === expectedChangeCount) && this.coordinator.isCurrent(this.ownerId, epoch);
+  }
+
+  private async sendLocalSnapshot(snapshot: ClipboardSystemSnapshot, isCurrent: () => boolean): Promise<boolean | null> {
+    if (!isCurrent()) { return false; }
+    if (this.options.onLocalContent && snapshot.data !== undefined) {
+      const accepted: boolean | null = await this.options.onLocalContent(isCurrent, snapshot.data);
+      if (!isCurrent()) { return false; }
+      if (accepted !== null) { return accepted; }
+    }
+    if (!snapshot.hasText || !validateClipboardText(snapshot.text, true).ok) { return null; }
+    const accepted: boolean = await this.sendLocalText(snapshot.text);
+    return accepted && isCurrent();
   }
 
   private async sendLocalText(text: string): Promise<boolean> {
@@ -262,6 +291,8 @@ export class ClipboardBridgeService {
       this.lastRemoteHash = initialRemoteHash;
       this.systemReadInFlight = false;
       this.systemReadPending = false;
+      this.remoteContentInFlight = false;
+      this.remoteContentFence = null;
 
       const localMonitoringStarted: boolean = localReadEnabled &&
         this.enableLocalMonitoring();
@@ -309,6 +340,9 @@ export class ClipboardBridgeService {
       const generation: number = this.generation;
       this.systemUpdateCallback = (): void => {
         if (this.generation !== generation) { return; }
+        // Our exact tagged rich write is the only allowed system-count
+        // transition in this async delivery. Other updates revoke its fence.
+        if (this.remoteContentFence !== null && this.recordOwnRemoteWrite(this.remoteContentFence)) { return; }
         this.observeSystemUpdateBoundary();
         this.localRevision++;
         this.readLocalClipboard(false);
@@ -348,6 +382,8 @@ export class ClipboardBridgeService {
     this.systemReadInFlight = false;
     this.systemReadPending = false;
     this.pendingLocalRetry = false;
+    this.remoteContentInFlight = false;
+    this.remoteContentFence = null;
     this.lastRemoteHash = 0;
     hilog.info(0x0001, TAG, 'monitoring stopped');
   }
@@ -360,8 +396,12 @@ export class ClipboardBridgeService {
         const snapshot: RemoteClipboardSnapshot | null = this.options.readRemoteSnapshot();
         if (snapshot === null || snapshot.sequence <= 0) { return; }
         this.observeRemoteSnapshot(snapshot);
-        if (!this.sourceState.remoteSource || !snapshot.ready || snapshot.sequence === this.sourceState.deliveredSequence ||
-          (snapshot.kind !== 'text' && snapshot.kind !== 'none')) { return; }
+        if (!this.sourceState.remoteSource || !snapshot.ready || snapshot.sequence === this.sourceState.deliveredSequence) { return; }
+        if (snapshot.kind === 'rich') {
+          if (this.options.onRemoteContent && !this.remoteContentInFlight) { this.deliverRemoteContent(snapshot); }
+          return;
+        }
+        if (snapshot.kind !== 'text' && snapshot.kind !== 'none') { return; }
         const text: string = snapshot.kind === 'none' ? '' : snapshot.text;
         if (this.setSystemText(text)) {
           this.sourceState.deliveredSequence = snapshot.sequence;
@@ -389,6 +429,67 @@ export class ClipboardBridgeService {
     }
   }
 
+  private recordOwnRemoteWrite(fence: RemoteContentFence): boolean {
+    if (this.remoteContentFence !== fence || this.generation !== fence.generation) { return false; }
+    try {
+      const board: pasteboard.SystemPasteboard = pasteboard.getSystemPasteboard();
+      const count: number = board.getChangeCount();
+      if (!board.hasDataSync()) { return false; }
+      const data: pasteboard.PasteData = board.getDataSync();
+      if (data.getTag() !== fence.tag || board.getChangeCount() !== count) { return false; }
+      if (fence.writeObserved && count !== fence.changeCount) { return false; }
+      if (!fence.writeObserved && count === fence.changeCount) { return false; }
+      fence.writeObserved = true;
+      fence.changeCount = count;
+      this.sourceState.systemChangeCount = count;
+      this.sourceState.remoteSource = true;
+      this.pendingLocalRetry = false;
+      return true;
+    } catch (_error) { return false; }
+  }
+
+  private currentRemoteContent(fence: RemoteContentFence): boolean {
+    if (this.remoteContentFence !== fence || !this.active() || this.generation !== fence.generation ||
+      !this.coordinator.isCurrent(this.ownerId, fence.epoch)) { return false; }
+    try {
+      const current: RemoteClipboardSnapshot | null = this.options.readRemoteSnapshot?.() ?? null;
+      if (current === null) { return false; }
+      this.observeRemoteSnapshot(current);
+      if (current.sequence !== fence.sequence || current.kind !== 'rich' || !current.ready) { return false; }
+    } catch (_error) { return false; }
+    if (this.remoteRevision !== fence.remoteRevision || this.localRevision !== fence.localRevision ||
+      !this.sourceState.remoteSource) { return false; }
+    if (this.systemChangeCount() !== fence.changeCount && !this.recordOwnRemoteWrite(fence)) { return false; }
+    return this.systemChangeCount() === fence.changeCount;
+  }
+
+  private async deliverRemoteContent(snapshot: RemoteClipboardSnapshot): Promise<void> {
+    const callback: ((snapshot: RemoteClipboardSnapshot, isCurrent: () => boolean, remoteTag: string) => Promise<boolean>) | undefined = this.options.onRemoteContent;
+    if (!callback || this.remoteContentInFlight) { return; }
+    const fence: RemoteContentFence = { generation: this.generation, epoch: this.coordinator.currentEpoch(),
+      remoteRevision: this.remoteRevision, localRevision: this.localRevision, sequence: snapshot.sequence,
+      changeCount: this.systemChangeCount(), tag: this.coordinator.remoteTag(this.ownerId), writeObserved: false };
+    this.remoteContentInFlight = true;
+    this.remoteContentFence = fence;
+    try {
+      const guard: () => boolean = (): boolean => this.currentRemoteContent(fence);
+      if (!guard()) { return; }
+      const delivered: boolean = await callback(snapshot, guard, fence.tag);
+      if (delivered && guard() && fence.writeObserved) {
+        this.sourceState.deliveredSequence = snapshot.sequence;
+        this.sourceState.remoteSource = true;
+        this.sourceState.systemChangeCount = fence.changeCount;
+      }
+    } catch (_error) {
+      hilog.warn(0x0001, TAG, 'rich clipboard delivery unavailable');
+    } finally {
+      if (this.generation === fence.generation && this.remoteContentFence === fence) {
+        this.remoteContentInFlight = false;
+        this.remoteContentFence = null;
+      }
+    }
+  }
+
   /** Merge notifications; no content hash suppresses genuine repeated copies. */
   private readLocalClipboard(baselineOnly: boolean): void {
     if (!this.active() || !this.localMonitoringEnabled || !this.onLocalTextChanged) { return; }
@@ -398,7 +499,7 @@ export class ClipboardBridgeService {
     const epoch: number = this.coordinator.currentEpoch();
     const revision: number = this.remoteRevision;
     const localRevision: number = this.localRevision;
-    this.getSystemSnapshot().then(async (snapshot: LocalClipboardSnapshot): Promise<void> => {
+    this.getSystemSnapshot().then(async (snapshot: ClipboardSystemSnapshot): Promise<void> => {
       if (!this.currentRead(generation, epoch, revision, localRevision)) { return; }
       if (!snapshot.ok) { this.pendingLocalRetry = !baselineOnly; return; }
       if (baselineOnly) {
@@ -417,12 +518,9 @@ export class ClipboardBridgeService {
       }
       this.sourceState.remoteSource = false;
       this.sourceState.systemChangeCount = snapshot.changeCount;
-      if (!snapshot.hasText || !validateClipboardText(snapshot.text, true).ok) {
-        this.pendingLocalRetry = false;
-        return;
-      }
-      const accepted: boolean = await this.sendLocalText(snapshot.text);
-      if (this.currentRead(generation, epoch, revision, localRevision)) { this.pendingLocalRetry = !accepted; }
+      const guard: () => boolean = (): boolean => this.currentRead(generation, epoch, revision, localRevision, snapshot.changeCount);
+      const accepted: boolean | null = await this.sendLocalSnapshot(snapshot, guard);
+      if (guard()) { this.pendingLocalRetry = accepted === false; }
     }).catch(() => {
       if (this.currentRead(generation, epoch, revision, localRevision)) { this.pendingLocalRetry = !baselineOnly; }
     }).finally(() => {

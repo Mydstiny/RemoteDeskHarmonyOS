@@ -8,7 +8,7 @@ const root = path.resolve(__dirname, '../..');
 const tests = [], test = (name, run) => tests.push({ name, run });
 async function drain() { for (let i = 0; i < 80; i++) await Promise.resolve(); }
 function deferred() { let resolve, reject; const promise = new Promise((a, b) => { resolve = a; reject = b; }); return { resolve, reject, promise }; }
-function environment(seed = new Map()) {
+function environment(seed = new Map(), deviceType = '2in1') {
   const cache = new Map(), timers = new Map(), starts = [], stops = [], notifications = [], startContexts = [], stopContexts = [];
   let now = 100000, timer = 0, task = 0, uuid = 0, startGate = null;
   let stopFailures = 0, prefFailure = false, flushFailure = false, publishFailure = false;
@@ -41,7 +41,7 @@ function environment(seed = new Map()) {
       if (id === '@kit.AbilityKit') return { wantAgent: { getWantAgent: async () => ({}),
         OperationType: { START_ABILITY: 1 }, WantAgentFlags: { UPDATE_PRESENT_FLAG: 1 } } };
       if (id === '@kit.BackgroundTasksKit') return { backgroundTaskManager: background };
-      if (id === '@kit.BasicServicesKit') return {};
+      if (id === '@kit.BasicServicesKit') return { deviceInfo: { deviceType } };
       if (id === '@kit.PerformanceAnalysisKit') return { hilog: { info() {}, warn() {} } };
       if (id === '@kit.NotificationKit') return { notificationManager: { publish: async request => {
         if (publishFailure) throw { code: 201 }; notifications.push(request);
@@ -218,6 +218,25 @@ test('notification rejection cannot fail successful data transfer', async () => 
   const env = environment(), service = env.service(); env.failPublish(true);
   const handle = service.enqueue(options(), async c => { c.update({ stage: 'transferring', sentBytes: 8 }); return outcome(); });
   assert.equal((await handle.result).stage, 'completed'); await drain(); assert.equal(env.stops.length, 1);
+});
+test('phone defaults to one active data task while PC admits two', async () => {
+  for (const [deviceType, expected] of [['phone', 1], ['2in1', 2]]) {
+    const env = environment(new Map(), deviceType), service = env.service(), gate = deferred(); let active = 0;
+    const handles = [1,2,3].map(i => service.enqueue(options({taskId:'budget-'+i}), async () => { active++; return gate.promise; }));
+    await drain(); assert.equal(active, expected); gate.resolve(outcome());
+    await Promise.all(handles.map(h=>h.result)); await drain(); assert.equal(env.stops.length,3);
+  }
+});
+test('100 queued attempts converge exactly once with isolated progress and notifications', async () => {
+  const env = environment(), service = env.service(); let finalized=0;
+  const handles = Array.from({length:100},(_,i)=>service.enqueue(options({taskId:'replay-'+i,onFinalize:()=>{finalized++;}}),async c=>{
+    c.update({stage:'transferring',sentBytes:4}); await Promise.resolve();
+    c.update({sentBytes:8}); return outcome();
+  }));
+  const results=await Promise.all(handles.map(h=>h.result)); await drain();
+  assert.equal(results.filter(r=>r.stage==='completed').length,100);assert.equal(finalized,100);
+  assert.equal(new Set(env.starts).size,100);assert.equal(new Set(env.stops).size,100);
+  assert.equal(service.active.size,0);assert.equal(service.queue.length,0);
 });
 (async () => {
   for (const { name, run } of tests) { await run(); console.log('PASS ' + name); }

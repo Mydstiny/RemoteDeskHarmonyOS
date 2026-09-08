@@ -1,7 +1,7 @@
 use crate::ControlMsg;
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 pub(crate) const CONTROL_BATCH_LIMIT: usize = 8;
 pub(crate) const PERMISSION_KEYBOARD: u32 = 1 << 0;
@@ -41,6 +41,8 @@ pub(crate) struct ControlInboxSnapshot {
 
 pub(crate) struct ControlInbox {
     shutdown: AtomicBool,
+    pub remote_clipboard: Arc<Mutex<crate::ClipboardSnapshot>>,
+    pub file_clipboard: Arc<crate::file_clipboard::FileClipboard>,
     permission_known: AtomicU32,
     permission_enabled: AtomicU32,
     state: Mutex<ControlInboxState>,
@@ -133,7 +135,11 @@ impl Default for ControlInboxState {
 
 impl Default for ControlInbox {
     fn default() -> Self {
+        let remote_clipboard = Arc::new(Mutex::new(crate::ClipboardSnapshot::default()));
+        let file_clipboard = Arc::new(crate::file_clipboard::FileClipboard::new(remote_clipboard.clone()));
         Self {
+            remote_clipboard,
+            file_clipboard,
             shutdown: AtomicBool::new(false),
             permission_known: AtomicU32::new(0),
             permission_enabled: AtomicU32::new(0),
@@ -346,6 +352,7 @@ impl ControlInbox {
 
     pub(crate) fn request_shutdown(&self) {
         self.shutdown.store(true, Ordering::Release);
+        self.file_clipboard.close();
     }
 
     pub(crate) fn shutdown_requested(&self) -> bool {
@@ -372,6 +379,9 @@ impl ControlInbox {
 
         if enabled {
             return;
+        }
+        if permission & (PERMISSION_FILE | PERMISSION_CLIPBOARD) != 0 {
+            self.file_clipboard.permission_denied();
         }
         let Ok(mut state) = self.state.lock() else {
             return;

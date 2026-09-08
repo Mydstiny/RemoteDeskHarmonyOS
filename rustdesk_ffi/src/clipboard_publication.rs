@@ -1,16 +1,17 @@
 //! Publication identity and a write receipt, separate from incoming clipboard state.
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 
 struct Receipt {
     state: AtomicU32,
     created: Instant,
+    writing: AtomicBool,
 }
 impl Receipt {
     fn state(&self) -> u32 {
-        if self.created.elapsed() >= Duration::from_secs(5) {
+        if self.created.elapsed() >= Duration::from_secs(5) && !self.writing.load(Ordering::Acquire) {
             self.fail();
         }
         self.state.load(Ordering::Acquire)
@@ -25,18 +26,33 @@ impl Receipt {
 pub(crate) struct PublicationToken(
     Arc<Receipt>,
     Option<Weak<crate::control_inbox::ControlInbox>>,
+    u32,
+    Option<Weak<AtomicBool>>,
 );
+#[derive(Clone)]
+pub(crate) struct PublicationObservation(Arc<Receipt>);
+impl PublicationObservation { pub fn state(&self) -> u32 { self.0.state() } }
 impl PublicationToken {
+    pub fn for_file_clipboard(controls: Weak<crate::control_inbox::ControlInbox>, permission_mask: u32, gate: Weak<AtomicBool>) -> (PublicationObservation, Self) {
+        let receipt = Arc::new(Receipt { state: AtomicU32::new(1), created: Instant::now(), writing: AtomicBool::new(false) });
+        (PublicationObservation(receipt.clone()), Self(receipt, Some(controls), permission_mask, Some(gate)))
+    }
+    pub fn begin_write(&self) -> bool {
+        if !self.pending() { return false; }
+        self.0.writing.store(true, Ordering::Release);
+        self.pending()
+    }
     pub fn bind_controls(&mut self, controls: Arc<crate::control_inbox::ControlInbox>) {
         self.1 = Some(Arc::downgrade(&controls));
     }
     pub fn pending(&self) -> bool {
+        if self.3.as_ref().is_some_and(|gate| !gate.upgrade().is_some_and(|v| v.load(Ordering::Acquire))) { self.0.fail(); }
         if let Some(owner) = &self.1 {
             if let Some(controls) = owner.upgrade() {
                 let p = controls.permission_snapshot();
-                let clipboard = crate::control_inbox::PERMISSION_CLIPBOARD;
+                let clipboard = self.2;
                 if controls.shutdown_requested()
-                    || (p.known_mask & clipboard != 0 && p.enabled_mask & clipboard == 0)
+                    || (p.known_mask & clipboard & !p.enabled_mask != 0)
                 {
                     self.0.fail();
                 }
@@ -77,9 +93,10 @@ impl Publications {
         let receipt = Arc::new(Receipt {
             state: AtomicU32::new(1),
             created: Instant::now(),
+            writing: AtomicBool::new(false),
         });
         self.receipts.insert(self.next, receipt.clone());
-        Some((self.next, PublicationToken(receipt, None)))
+        Some((self.next, PublicationToken(receipt, None, crate::control_inbox::PERMISSION_CLIPBOARD, None)))
     }
     pub fn state(&self, id: u64, shutdown: bool) -> u32 {
         self.receipts
@@ -130,8 +147,9 @@ mod tests {
         let receipt = Arc::new(Receipt {
             state: AtomicU32::new(1),
             created: Instant::now() - Duration::from_secs(6),
+            writing: AtomicBool::new(false),
         });
-        let token = PublicationToken(receipt, None);
+        let token = PublicationToken(receipt, None, crate::control_inbox::PERMISSION_CLIPBOARD, None);
         assert!(!token.pending());
         token.written();
         assert_eq!(token.0.state(), 3);
