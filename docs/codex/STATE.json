@@ -515,7 +515,36 @@
       "reviewReceiptIds": [
         "remote-ai4-native-ui-7bdf00f6-2026-09-08",
         "remote-ai4-services-integration-7bdf00f6-2026-09-08"
-      ]
+      ],
+      "uiParity": {
+        "planPath": "docs/codex/plans/2026-09-08-remote-ai-ui-parity.md",
+        "base": "9733a624d",
+        "status": "code-complete-device-acceptance-pending",
+        "reviewTaskId": "/root/review_native_dsh",
+        "scope": [
+          "entry/src/main/ets/components/ai/AiActionButton.ets",
+          "entry/src/main/ets/components/ai/AiFormField.ets",
+          "entry/src/main/ets/components/ai/AiHostEditor.ets",
+          "entry/src/main/ets/pages/AiSettingsPage.ets",
+          "entry/src/main/ets/pages/HostListPage.ets",
+          "entry/src/main/ets/pages/RemoteAiWorkspace.ets",
+          "scripts/tests/test_ai_ui_lifecycle.cjs"
+        ],
+        "validation": {
+          "uiParity": "PASS 15/15 actual methods/callbacks and layout declarations; ArkUI rendering not emulated",
+          "lifecycle": "PASS 6/6",
+          "entries": "PASS 3 groups",
+          "testCompile": "PASS exit 0; BUILD SUCCESSFUL in 7 s 171 ms",
+          "assembleHap": "PASS exit 0; signed BUILD SUCCESSFUL in 8 s 418 ms; SignHap 819 ms",
+          "compliance": "PASS Light/diff",
+          "device": "NOT RUN; Phone/Pad/PC fonts, IME, real UI, pairing and LAN remain open",
+          "closureGates": "PASS exit 0; testCompile 5 s 540 ms; signed assembleHap 7 s 45 ms (SignHap 1 s 31 ms); Light/diff/state PASS"
+        },
+        "head": "066493a7ac6951d6bbb404879165a148a12c9587",
+        "reviewStatus": "PASS exact commit; both review findings closed",
+        "reviewReceiptId": "remote-ai-ui-parity-066493a7-2026-09-08",
+        "regressionScript": "scripts/tests/test_ai_ui_parity.cjs"
+      }
     }
   },
   "skillDelivery": {

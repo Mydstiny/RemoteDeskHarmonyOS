@@ -1,0 +1,227 @@
+'use strict';
+// Actual non-Builder methods and callback expressions; no ArkUI renderer/device.
+// Run at repo root, AI_TYPESCRIPT_PATH=... node this-file.cjs.
+// Optional AI_REVIEW_REF selects immutable Git source; AI_REPO_ROOT sets root.
+const fs = require('node:fs'), path = require('node:path'), vm = require('node:vm');
+const assert = require('node:assert/strict'), crypto = require('node:crypto');
+const { execFileSync } = require('node:child_process');
+const ts = require(process.env.AI_TYPESCRIPT_PATH || 'typescript');
+const root = process.env.AI_REPO_ROOT || process.cwd(), ref = process.env.AI_REVIEW_REF || '';
+const cache = new Map(), hashes = new Map();
+function read(file) {
+  if (!cache.has(file)) {
+    const text = ref ? execFileSync('git', ['show', ref + ':' + file], { cwd: root, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 }) : fs.readFileSync(path.join(root, file), 'utf8');
+    cache.set(file, text); hashes.set(file, crypto.createHash('sha256').update(text).digest('hex'));
+  }
+  return cache.get(file);
+}
+function compile(source, context) {
+  vm.runInContext(ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2021, module: ts.ModuleKind.CommonJS } }).outputText, context);
+}
+const modules = new Map();
+function loadModule(file) {
+  if (modules.has(file)) return modules.get(file);
+  const module = { exports: {} };
+  const context = vm.createContext({ module, exports: module.exports, Date, JSON, Math,
+    require: name => { assert.ok(name.startsWith('.'), 'Only pure relative modules may load'); return loadModule(path.posix.normalize(path.posix.join(path.posix.dirname(file), name)) + '.ets'); } });
+  compile(read(file), context); modules.set(file, module.exports); return module.exports;
+}
+const models = loadModule('entry/src/main/ets/services/ai/AiModels.ets');
+function loadClass(file, name, mocks) {
+  const original = read(file);
+  const cuts = [original.indexOf('  @Builder'), original.indexOf('  build() {')].filter(value => value >= 0);
+  assert.ok(cuts.length); const end = Math.min(...cuts);
+  const source = (original.slice(0, end) + '\n}\n')
+    .replace(/^import .*;\n/gm, '').replace(/^@(Entry|Component)\s*$/gm, '')
+    .replace(/@(?:StorageProp|StorageLink|Watch)\([^\n]*?\)\s*/g, '')
+    .replace(/@(?:State|Prop|Link)\s+/g, '').replace('export struct ' + name, 'class ' + name);
+  const context = vm.createContext({ Date, JSON, Math, setTimeout, clearTimeout, ...mocks });
+  compile(source + '\nglobalThis.Target = ' + name + ';', context); return new context.Target();
+}
+// Extract an existing balanced call argument rather than reimplement its callback.
+function argument(source, needle, last = false) {
+  const at = last ? source.lastIndexOf(needle) : source.indexOf(needle);
+  assert.ok(at >= 0, 'Missing production expression: ' + needle);
+  const start = at + needle.length;
+  const scanner = ts.createScanner(ts.ScriptTarget.ESNext, true, ts.LanguageVariant.Standard, source);
+  scanner.setTextPos(start); let depth = 1, token;
+  while ((token = scanner.scan()) !== ts.SyntaxKind.EndOfFileToken) {
+    if (token === ts.SyntaxKind.OpenParenToken) depth++;
+    if (token === ts.SyntaxKind.CloseParenToken && --depth === 0) return source.slice(start, scanner.getTokenPos());
+  }
+  throw new Error('Unbalanced production expression');
+}
+function evaluate(expression, owner, globals = {}) {
+  const context = vm.createContext({ Math, ...globals });
+  compile('globalThis.make = function () { return (' + expression + '); };', context);
+  return context.make.call(owner);
+}
+function callback(file, needle, owner) { return evaluate(argument(read(file), needle, false), owner); }
+function deferred() { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; }
+async function bounded(promise) {
+  let timer; try { return await Promise.race([promise, new Promise((_done, reject) => { timer = setTimeout(() => reject(Error('fixture timed out')), 2000); })]); }
+  finally { clearTimeout(timer); }
+}
+function authority() {
+  const state = { owner: 'owner-' + 'a'.repeat(64), granted: true, callbacks: [] };
+  const access = { capture: () => ({ owner: state.owner, generation: 1, lifecycle: 1 }),
+    current: lease => lease !== null && lease.owner === state.owner,
+    assertCurrent: lease => { if (!access.current(lease)) throw Error('AI_ACCOUNT_CHANGED'); },
+    executable: () => state.granted,
+    subscribe: cb => { state.callbacks.push(cb); cb(); return () => { state.callbacks = state.callbacks.filter(value => value !== cb); }; } };
+  state.access = access; state.publish = () => { for (const cb of state.callbacks.slice()) cb(); }; return state;
+}
+const editorFile = 'entry/src/main/ets/components/ai/AiHostEditor.ets';
+const workspaceFile = 'entry/src/main/ets/pages/RemoteAiWorkspace.ets';
+function editor({ blocked = false } = {}) {
+  const state = authority(), gate = deferred();
+  Object.assign(state, { pairs: [], saves: [], completions: [], backs: 0, closes: 0 });
+  state.page = loadClass(editorFile, 'AiHostEditor', {
+    ...models, aiRandomId: () => 'fixture-host', AiAccess: { getInstance: () => state.access },
+    AiLocalStore: { getInstance: () => ({ initialize: () => blocked ? gate.promise : Promise.resolve(),
+      saveHost: async (_lease, host) => { state.saves.push(JSON.parse(JSON.stringify(host))); } }) },
+    AiBridgeClient: { pair: async (host, invitation) => {
+      assert.ok(state.granted, 'Pair called without current access'); state.pairs.push({ host: JSON.parse(JSON.stringify(host)), invitation });
+    } }, getContext: () => ({}), aiErrorText: value => value
+  });
+  state.release = gate.resolve; state.page.aboutToAppear();
+  state.page.label = 'Fixture'; state.page.address = '192.0.2.1';
+  state.page.onSaved = (id, connect) => state.completions.push({ id, connect });
+  state.page.onBackToProtocols = () => { state.backs++; }; state.page.onClose = () => { state.closes++; };
+  return state;
+}
+function workspace() {
+  const state = authority(); Object.assign(state, { background: false, closes: 0, appCallbacks: new Set() });
+  const app = { on: (_name, cb) => { state.appCallbacks.add(cb); state.application = cb; }, off: (_name, cb) => state.appCallbacks.delete(cb) };
+  class Controller {
+    constructor() { this.onChange = () => {}; this.stop = () => {}; this.reset(); }
+    reset() { Object.assign(this, { title: '', status: '', error: '', projects: [], sessions: [], transcript: { items: [] }, approvals: [], operations: [], terminals: [], models: [], allowed: false, archived: false, sessionId: '', projectId: '', historyCursor: '', lease: '', leaseExpires: 0, diff: '', client: null }); }
+    close() { state.closes++; this.stop(); this.stop = () => {}; this.reset(); }
+    async connect(host) {
+      this.close(); const account = state.access.capture(); this.client = { account, host };
+      this.title = 'Fixture session'; this.sessionId = 'fixture-session'; this.projectId = 'fixture-project'; this.allowed = state.granted;
+      this.stop = state.access.subscribe(() => { if (!state.access.current(account)) this.close(); else this.allowed = state.granted; this.onChange(); });
+    }
+  }
+  state.page = loadClass(workspaceFile, 'RemoteAiWorkspace', {
+    AiWorkspaceController: Controller, AiAccess: { getInstance: () => state.access },
+    AiLocalStore: { getInstance: () => ({ settings: async () => ({ showExecution: true, reconnectOnForeground: false, textSize: 15 }) }) },
+    AiHostService: { getInstance: () => ({ refresh: async () => {}, find: () => ({ id: 'fixture-host', owner: state.owner, label: 'Fixture A host', backend: 'codex' }) }) },
+    getContext: () => ({ getApplicationContext: () => app }), AppStorage: { get: () => state.background },
+    router: { getParams: () => ({ hostId: 'fixture-host' }) }, aiErrorText: value => value, aiStatusLabel: value => value
+  }); return state;
+}
+function fillDrafts(page) {
+  for (const key of ['draft', 'newTitle', 'model', 'provider', 'effort', 'permission', 'collaboration']) page[key] = 'fixture draft';
+  page.attachments = ['fixture']; page.efforts = ['high']; page.approval = { id: 'fixture' }; page.questions = [{ id: 'fixture' }];
+  page.showDetails = true; page.showApproval = true; page.showApprovalDetails = true; page.showSessionPicker = true;
+}
+function cleanDrafts(page) {
+  for (const key of ['draft', 'newTitle', 'model', 'provider', 'effort', 'permission', 'collaboration']) assert.equal(page[key], '', key);
+  for (const key of ['attachments', 'efforts', 'questions']) assert.equal(page[key].length, 0, key);
+  for (const key of ['showDetails', 'showApproval', 'showApprovalDetails', 'showSessionPicker']) assert.equal(page[key], false, key);
+  assert.equal(page.approval, null);
+}
+const cases = [
+  ['modern validation, two-step return and FAB protocol return', async () => {
+    const state = editor(), page = state.page; page.modern = true; page.canReturnToProtocols = true;
+    page.address = ''; page.nextStep(); assert.equal(page.step, 1);
+    page.address = '192.0.2.1'; page.nextStep(); assert.equal(page.step, 2);
+    page.previousStep(); assert.equal(page.step, 1); assert.equal(state.backs, 0);
+    page.invite = 'fixture'; page.previousStep(); assert.equal(state.backs, 1); assert.equal(page.invite, '');
+    page.canReturnToProtocols = false; page.previousStep(); assert.equal(state.backs, 1);
+    assert.equal(state.saves.length + state.pairs.length, 0); page.aboutToDisappear();
+  }],
+  ['classic full form and modern step visibility declarations', async () => {
+    const source = read(editorFile);
+    const host = source.match(/if \(([^\n]+)\) \{ this\.hostFields\(\) \}/)[1];
+    const pair = source.match(/if \(([^\n]+)\) \{ this\.pairingFields\(\) \}/)[1];
+    assert.equal(evaluate(host, { modern: false, step: 1 }), true); assert.equal(evaluate(pair, { modern: false, step: 1 }), true);
+    assert.equal(evaluate(host, { modern: true, step: 1 }), true); assert.equal(evaluate(pair, { modern: true, step: 1 }), false);
+    assert.equal(evaluate(host, { modern: true, step: 2 }), false); assert.equal(evaluate(pair, { modern: true, step: 2 }), true);
+  }],
+  ['same backend keeps custom port and busy methods cannot switch', async () => {
+    const state = editor(), page = state.page; page.port = '12345'; page.invite = 'fixture'; page.selectBackend('codex');
+    assert.equal(page.port, '12345'); assert.equal(page.invite, 'fixture');
+    page.busy = true; page.selectBackend('dsh'); page.nextStep(); page.previousStep(); await page.save(true);
+    assert.equal(page.backend, 'codex'); assert.equal(page.step, 1); assert.equal(state.pairs.length + state.saves.length, 0);
+    page.busy = false; page.selectBackend('dsh'); assert.equal(page.port, '9444'); assert.equal(page.invite, ''); page.aboutToDisappear();
+  }],
+  ['save freezes both host and invitation before initialization', async () => {
+    const state = editor({ blocked: true }), page = state.page; page.invite = 'original invitation';
+    const saving = page.save(true); page.invite = 'replacement invitation'; page.label = 'replacement label'; state.release(); await bounded(saving);
+    assert.equal(state.pairs.length, 1); assert.equal(state.pairs[0].invitation, 'original invitation');
+    assert.equal(state.pairs[0].host.label, 'Fixture'); assert.equal(state.saves.length, 0); assert.equal(state.completions.length, 1); page.aboutToDisappear();
+  }],
+  ...['background', 'exit', 'revoke_restore', 'account'].map(reason => [reason + ' during initialization cannot downgrade or dispatch the old save', async () => {
+    const state = editor({ blocked: true }), page = state.page; page.invite = 'fixture invitation'; const saving = page.save(true);
+    if (reason === 'background') { page.inBackground = true; page.onBackgroundChanged(); page.inBackground = false; }
+    if (reason === 'exit') page.aboutToDisappear();
+    if (reason === 'revoke_restore') { state.granted = false; state.publish(); state.granted = true; state.publish(); }
+    if (reason === 'account') { state.owner = 'owner-' + 'b'.repeat(64); state.publish(); }
+    state.release(); await bounded(saving); assert.equal(state.pairs.length, 0); assert.equal(state.saves.length, 0); assert.equal(state.completions.length, 0); assert.equal(page.invite, '');
+    if (reason !== 'exit') page.aboutToDisappear();
+  }]),
+  ['late invitation IME callbacks honor alive, background, busy and access', async () => {
+    const state = editor(), page = state.page, change = callback(editorFile, '.onChange(', page);
+    for (const [key, value] of [['alive', false], ['inBackground', true], ['busy', true], ['allowed', false]]) {
+      Object.assign(page, { alive: true, inBackground: false, busy: false, allowed: true, invite: '' }); page[key] = value;
+      change('late fixture invitation'); assert.equal(page.invite, '', key);
+    }
+    Object.assign(page, { alive: true, inBackground: false, busy: false, allowed: true }); change('accepted fixture'); assert.equal(page.invite, 'accepted fixture'); page.aboutToDisappear();
+  }],
+  ['shared field/action callbacks respect disabled controls', async () => {
+    const field = { isEnabled: false, calls: 0, onChange() { this.calls++; } };
+    const action = { isEnabled: false, calls: 0, onAction() { this.calls++; } };
+    const change = callback('entry/src/main/ets/components/ai/AiFormField.ets', '.onChange(', field);
+    const click = callback('entry/src/main/ets/components/ai/AiActionButton.ets', '.onClick(', action);
+    change('fixture'); click(); assert.equal(field.calls, 0); assert.equal(action.calls, 0);
+    field.isEnabled = true; action.isEnabled = true; change('fixture'); click(); assert.equal(field.calls, 1); assert.equal(action.calls, 1);
+  }],
+  ['workspace account invalidation clears own drafts, sheets and old host fallback', async () => {
+    const state = workspace(); await bounded(state.page.aboutToAppear()); fillDrafts(state.page);
+    state.owner = 'owner-' + 'b'.repeat(64); state.publish(); cleanDrafts(state.page);
+    assert.equal(state.page.host, null); assert.equal(state.page.title, '远程 AI'); state.page.aboutToDisappear(); assert.equal(state.callbacks.length, 0);
+  }],
+  ['workspace revoke and restore cannot bring cleared drafts back', async () => {
+    const state = workspace(); await bounded(state.page.aboutToAppear()); fillDrafts(state.page);
+    state.granted = false; state.publish(); cleanDrafts(state.page); state.granted = true; state.publish(); cleanDrafts(state.page); state.page.aboutToDisappear();
+  }],
+  ['independent page access listener survives background close and clears later account data', async () => {
+    const state = workspace(); await bounded(state.page.aboutToAppear()); fillDrafts(state.page);
+    state.background = true; state.application.onApplicationBackground(); cleanDrafts(state.page); assert.equal(state.callbacks.length, 1);
+    state.owner = 'owner-' + 'b'.repeat(64); state.publish(); cleanDrafts(state.page); assert.equal(state.page.host, null);
+    assert.equal(state.page.resumeAccount, null); assert.equal(state.page.resumeSession, ''); assert.equal(state.page.title, '远程 AI');
+    state.page.aboutToDisappear(); assert.equal(state.callbacks.length, 0); assert.equal(state.appCallbacks.size, 0);
+  }],
+  ['small-height declarations keep one scrollable natural-height tree and a bounded list', async () => {
+    const source = read(workspaceFile), body = source.slice(source.indexOf('  @Builder private workspace()'), source.indexOf('  build() {'));
+    assert.ok(source.includes('.scrollable(ScrollDirection.Vertical)')); assert.ok(!source.includes('ScrollDirection.None'));
+    assert.equal((source.match(/Scroll\(\) \{ this\.workspace\(\) \}/g) || []).length, 1);
+    const suffix = body.slice(body.lastIndexOf("}.width('100%')")); assert.ok(suffix.includes('minHeight:')); assert.ok(!suffix.includes('.height('));
+    const height = argument(body, '}.height('); // The transcript List's production expression.
+    for (const pageHeight of [160, 320, 399, 400, 480, 800]) for (const topInset of [0, 32, 80]) for (const sessionId of ['', 'fixture']) {
+      const value = evaluate(height, { pageHeight, topInset, sessionId }); assert.ok(Number.isFinite(value) && value >= 180);
+    }
+  }],
+  ['settings editor honors saved style and the shared sheet keyboard policy', async () => {
+    const source = read('entry/src/main/ets/pages/AiSettingsPage.ets');
+    const style = loadModule('entry/src/main/ets/services/FabAddStylePolicy.ets');
+    const modern = source.match(/AiHostEditor\(\{ host: this\.editing, modern: ([^\n]+),/)[1];
+    for (const isDesktopDevice of [false, true]) {
+      assert.equal(evaluate(modern, { fabAddStyle: 'classic', isDesktopDevice }, style), false);
+      assert.equal(evaluate(modern, { fabAddStyle: 'modern', isDesktopDevice }, style), true);
+    }
+    assert.ok(source.includes("@StorageProp('hostAddMode')")); assert.ok(source.includes('height: SheetSize.FIT_CONTENT'));
+    assert.ok(source.includes('keyboardAvoidMode: SheetKeyboardAvoidMode.TRANSLATE_AND_SCROLL'));
+  }]
+];
+(async () => {
+  let passed = 0;
+  for (const [name, run] of cases) {
+    try { await bounded(run()); passed++; console.log('PASS ' + name); }
+    catch (error) { process.exitCode = 1; console.error('FAIL ' + name + ': ' + error.message); }
+  }
+  console.log(passed + '/' + cases.length + ' UI polish cases passed; declaration checks are not rendered-device acceptance');
+  for (const [file, hash] of hashes) if (/components\/ai|pages\/(AiSettingsPage|RemoteAiWorkspace)/.test(file)) console.log(file + ' sha256=' + hash);
+})().catch(error => { console.error(error.stack); process.exitCode = 1; });
