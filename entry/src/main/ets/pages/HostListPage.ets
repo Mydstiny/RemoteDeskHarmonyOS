@@ -19082,6 +19082,8 @@ struct HostListPage {
       })
     } else if (this.activeHostAddProtocol() === 'ai') {
       AiHostEditor({ host: this.aiEditingHost, modern: resolveFabAddStyle(this.fabAddStyle, this.isDesktopDevice) === 'modern',
+        canReturnToProtocols: this.aiEditingHost === null && resolveFabAddStyle(this.fabAddStyle, this.isDesktopDevice) === 'modern',
+        onBackToProtocols: (): void => { this.modernAddProtocol = ''; this.addSheetShowsModernPicker = true; },
         onClose: (): void => { this.requestAddSheetClose(); },
         onSaved: (id: string, connect: boolean): void => {
           const generation = this.aiSheetGeneration, account = this.aiSheetAccount;

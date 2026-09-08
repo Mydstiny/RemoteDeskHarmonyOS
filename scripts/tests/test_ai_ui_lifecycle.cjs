@@ -97,6 +97,7 @@ function workspaceFixture(reconnect, {
     off: () => { state.removed++; }
   };
   const access = { capture: () => account, current: lease => lease === account,
+    subscribe: callback => { callback(); return () => {}; }, executable: () => true,
     assertCurrent: lease => assert.equal(lease, account) };
   class Controller {
     constructor() {
