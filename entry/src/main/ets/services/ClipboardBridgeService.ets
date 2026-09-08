@@ -132,6 +132,27 @@ export class ClipboardBridgeService {
     this.pendingLocalRetry = false;
   }
 
+  /** Record native events already present when a newer system update is delivered. */
+  private observeSystemUpdateBoundary(): void {
+    if (!this.active()) { return; }
+    try {
+      const remote: RemoteClipboardSnapshot | null = this.options.readRemoteSnapshot?.() ?? null;
+      if (remote !== null) { this.observeRemoteSnapshot(remote); }
+    } catch (_error) { /* A later successful observation still fences the read. */ }
+    // A pending async local read must not let the next poll deliver an older
+    // native event. Tagged remote writes keep their provenance immediately.
+    this.sourceState.remoteSource = false;
+    try {
+      const board: pasteboard.SystemPasteboard = this.systemPasteboard ?? pasteboard.getSystemPasteboard();
+      const count: number = board.getChangeCount();
+      const data: pasteboard.PasteData | null = board.hasDataSync() ? board.getDataSync() : null;
+      if (board.getChangeCount() === count) {
+        this.sourceState.remoteSource = data !== null && this.coordinator.isRemoteTag(data.getTag());
+        this.sourceState.systemChangeCount = count;
+      }
+    } catch (_error) { /* Async read retries classification; do not restore the older remote event. */ }
+  }
+
   /** Compatibility helper; internal reads retain failure/type/provenance. */
   async getSystemText(): Promise<string> {
     const snapshot: LocalClipboardSnapshot = await this.getSystemSnapshot();
@@ -288,6 +309,7 @@ export class ClipboardBridgeService {
       const generation: number = this.generation;
       this.systemUpdateCallback = (): void => {
         if (this.generation !== generation) { return; }
+        this.observeSystemUpdateBoundary();
         this.localRevision++;
         this.readLocalClipboard(false);
       };
@@ -388,6 +410,8 @@ export class ClipboardBridgeService {
         return;
       }
       if (this.coordinator.isRemoteOrigin(snapshot)) {
+        this.sourceState.remoteSource = true;
+        this.sourceState.systemChangeCount = snapshot.changeCount;
         this.pendingLocalRetry = false;
         return;
       }

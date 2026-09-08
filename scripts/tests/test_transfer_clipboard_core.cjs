@@ -221,6 +221,38 @@ test('full lease current guard revocation blocks pending explicit send and remot
   env.hold(true); const pending = bridge.readAndSendCurrentText(); current = false; env.flush(); await drain();
   assert.equal(await pending, false); env.tick(); assert.deepEqual(sent, []); assert.deepEqual(env.writes, []);
 });
+test('local update supersedes an earlier native event that has not reached the periodic poll', async () => {
+  const env = environment(), bridge = env.bridge(), sent = []; let remote = null;
+  bridge.startMonitoring(text => { sent.push(text); return true; }, undefined, true, true, 0, undefined,
+    { readRemoteSnapshot: () => remote }); await drain();
+  remote = snapshot(1, 'older remote'); env.local('newer local'); await drain();
+  env.tick(); await drain();
+  assert.deepEqual({ sent, writes: env.writes }, { sent: ['newer local'], writes: [] });
+});
+test('periodic poll cannot apply a pre-existing native event while the newer local read is pending', async () => {
+  const env = environment(), bridge = env.bridge(), sent = []; let remote = null;
+  bridge.startMonitoring(text => { sent.push(text); return true; }, undefined, true, true, 0, undefined,
+    { readRemoteSnapshot: () => remote }); await drain();
+  remote = snapshot(1, 'older remote'); env.hold(true); env.local('newer local');
+  env.tick(); await drain(); assert.deepEqual(env.writes, []);
+  env.flush(); await drain(); assert.deepEqual(sent, ['newer local']);
+});
+test('a genuinely newer native event during the local read still supersedes the local event boundary', async () => {
+  const env = environment(), bridge = env.bridge(), sent = []; let remote = null;
+  bridge.startMonitoring(text => { sent.push(text); return true; }, undefined, true, true, 0, undefined,
+    { readRemoteSnapshot: () => remote }); await drain();
+  remote = snapshot(1, 'older remote'); env.hold(true); env.local('middle local');
+  remote = snapshot(2, 'newest remote'); env.flush(); await drain(); assert.deepEqual(sent, []);
+  env.tick(); await drain(); assert.deepEqual(env.writes, ['newest remote']);
+});
+test('local classification failure retries without letting an older unpolled native event overwrite the system', async () => {
+  const env = environment(), bridge = env.bridge(), sent = []; let remote = null;
+  bridge.startMonitoring(text => { sent.push(text); return true; }, undefined, true, true, 0, undefined,
+    { readRemoteSnapshot: () => remote }); await drain();
+  remote = snapshot(1, 'older remote'); env.failReads(true); env.local('newer local'); await drain();
+  env.tick(); await drain(); assert.deepEqual(env.writes, []);
+  env.failReads(false); env.tick(); await drain(); assert.deepEqual(sent, ['newer local']);
+});
 (async () => {
   for (const { name, run } of tests) { await run(); console.log('PASS ' + name); }
   console.log(`PASS ${tests.length} transfer clipboard core regressions`);
