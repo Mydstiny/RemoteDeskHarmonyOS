@@ -22,6 +22,11 @@ class ActiveTransferTask {
   continuousTaskId: number = -1;
   liveTaskStarted: boolean = false;
   fallbackOnly: boolean = false;
+  finishing: boolean = false;
+  tail: Promise<void> = Promise.resolve();
+  finishPromise: Promise<void> | null = null;
+  stopRetry: number = -1;
+  stopAttempts: number = 0;
 }
 
 export class FileTransferLiveTaskService {
@@ -37,40 +42,54 @@ export class FileTransferLiveTaskService {
   }
 
   async begin(context: common.UIAbilityContext, snapshot: FileTransferProgressSnapshot): Promise<void> {
+    const key: string = this.taskKey(snapshot);
+    const existing: ActiveTransferTask | undefined = this.activeTasks.get(key);
+    if (existing !== undefined) { await existing.tail; return; }
     const task: ActiveTransferTask = new ActiveTransferTask();
-    task.taskId = snapshot.taskId;
+    task.taskId = key;
     task.notificationId = this.allocateNotificationId();
-    this.activeTasks.set(snapshot.taskId, task);
-    await this.startLiveTask(context, task);
-    await this.publishProgress(task, snapshot);
+    this.activeTasks.set(key, task);
+    task.tail = this.startLiveTask(context, task).then(async (): Promise<void> => {
+      if (!task.finishing) { await this.publishProgress(task, snapshot); }
+    });
+    await task.tail;
   }
 
   async update(snapshot: FileTransferProgressSnapshot): Promise<void> {
-    const task: ActiveTransferTask | undefined = this.activeTasks.get(snapshot.taskId);
-    if (!task) {
-      return;
-    }
-    await this.publishProgress(task, snapshot);
+    const task: ActiveTransferTask | undefined = this.activeTasks.get(this.taskKey(snapshot));
+    if (task === undefined || task.finishing) { return; }
+    task.tail = task.tail.then(async (): Promise<void> => {
+      if (!task.finishing) { await this.publishProgress(task, snapshot); }
+    });
+    await task.tail;
   }
 
   async complete(context: common.UIAbilityContext, snapshot: FileTransferProgressSnapshot): Promise<void> {
-    const task: ActiveTransferTask | undefined = this.activeTasks.get(snapshot.taskId);
-    if (!task) {
-      return;
-    }
-    await this.publishProgress(task, snapshot);
-    await this.stopLiveTask(context, task);
-    this.activeTasks.delete(snapshot.taskId);
+    await this.finish(context, snapshot);
   }
 
   async fail(context: common.UIAbilityContext, snapshot: FileTransferProgressSnapshot): Promise<void> {
-    const task: ActiveTransferTask | undefined = this.activeTasks.get(snapshot.taskId);
-    if (!task) {
-      return;
-    }
-    await this.publishProgress(task, snapshot);
-    await this.stopLiveTask(context, task);
-    this.activeTasks.delete(snapshot.taskId);
+    await this.finish(context, snapshot);
+  }
+
+  private taskKey(snapshot: FileTransferProgressSnapshot): string {
+    return JSON.stringify([snapshot.accountScopeId ?? '', snapshot.taskId,
+      (snapshot.attemptId === undefined ? 0 : snapshot.attemptId).toString()]);
+  }
+
+  private async finish(context: common.UIAbilityContext, snapshot: FileTransferProgressSnapshot): Promise<void> {
+    const key: string = this.taskKey(snapshot);
+    const task: ActiveTransferTask | undefined = this.activeTasks.get(key);
+    if (task === undefined) { return; }
+    if (task.finishPromise !== null) { await task.finishPromise; return; }
+    // Close update admission synchronously, then drain startup and pending publish.
+    task.finishing = true;
+    task.finishPromise = task.tail.then(async (): Promise<void> => {
+      await this.publishProgress(task, snapshot);
+      await this.releaseTask(context, task);
+    });
+    task.tail = task.finishPromise;
+    await task.finishPromise;
   }
 
   private allocateNotificationId(): number {
@@ -93,9 +112,14 @@ export class FileTransferLiveTaskService {
         wantAgentFlags: [wantAgent.WantAgentFlags.UPDATE_PRESENT_FLAG]
       };
       const agent: WantAgent = await wantAgent.getWantAgent(agentInfo);
-      const modes: string[] = ['dataTransfer'];
+      // API 21+ request overload allocates independent task IDs; the old array
+      // overload permits only one continuous task per UIAbility.
+      const request: backgroundTaskManager.ContinuousTaskRequest = new backgroundTaskManager.ContinuousTaskRequest();
+      request.backgroundTaskModes = [backgroundTaskManager.BackgroundTaskMode.MODE_DATA_TRANSFER];
+      request.wantAgent = agent;
+      request.combinedTaskNotification = false;
       const res: backgroundTaskManager.ContinuousTaskNotification =
-        await backgroundTaskManager.startBackgroundRunning(context, modes, agent);
+        await backgroundTaskManager.startBackgroundRunning(context, request);
       task.notificationId = res.notificationId;
       task.continuousTaskId = res.continuousTaskId === undefined ? -1 : res.continuousTaskId;
       task.liveTaskStarted = true;
@@ -105,21 +129,36 @@ export class FileTransferLiveTaskService {
       const be: BusinessError = err as BusinessError;
       task.fallbackOnly = true;
       hilog.warn(0x0001, TAG, '[FILE-LIVE-START] live task unavailable code=' +
-        be.code.toString() + ' message=' + be.message);
+        (typeof be.code === 'number' ? be.code.toString() : 'unknown'));
     }
   }
 
-  private async stopLiveTask(context: common.UIAbilityContext, task: ActiveTransferTask): Promise<void> {
-    if (!task.liveTaskStarted || task.continuousTaskId < 0) {
+  private async releaseTask(context: common.UIAbilityContext, task: ActiveTransferTask): Promise<void> {
+    if (await this.stopLiveTask(context, task)) {
+      if (this.activeTasks.get(task.taskId) === task) { this.activeTasks.delete(task.taskId); }
       return;
     }
+    // A failed stop remains owned and retries with bounded backoff, never a global stop.
+    task.stopAttempts++;
+    task.stopRetry = setTimeout(() => {
+      task.stopRetry = -1;
+      this.releaseTask(context, task).catch(() => {});
+    }, Math.min(60000, 1000 * Math.pow(2, Math.min(6, task.stopAttempts - 1))));
+  }
+
+  private async stopLiveTask(context: common.UIAbilityContext, task: ActiveTransferTask): Promise<boolean> {
+    if (!task.liveTaskStarted) { return true; }
+    if (task.continuousTaskId < 0) { return false; }
     try {
       await backgroundTaskManager.stopBackgroundRunning(context, task.continuousTaskId);
+      task.liveTaskStarted = false;
       hilog.info(0x0001, TAG, 'live task stopped id=' + task.continuousTaskId.toString());
+      return true;
     } catch (err) {
       const be: BusinessError = err as BusinessError;
       hilog.warn(0x0001, TAG, '[FILE-LIVE-STOP] stop failed code=' +
-        be.code.toString() + ' message=' + be.message);
+        (typeof be.code === 'number' ? be.code.toString() : 'unknown'));
+      return false;
     }
   }
 
@@ -132,7 +171,7 @@ export class FileTransferLiveTaskService {
         const be: BusinessError = err as BusinessError;
         task.fallbackOnly = true;
         hilog.warn(0x0001, TAG, '[FILE-LIVE-PUBLISH] live publish failed code=' +
-          be.code.toString() + ' message=' + be.message);
+          (typeof be.code === 'number' ? be.code.toString() : 'unknown'));
       }
     }
 
@@ -141,7 +180,7 @@ export class FileTransferLiveTaskService {
     } catch (err2) {
       const be2: BusinessError = err2 as BusinessError;
       hilog.warn(0x0001, TAG, '[FILE-NOTIFY-PUBLISH] fallback publish failed code=' +
-        be2.code.toString() + ' message=' + be2.message);
+        (typeof be2.code === 'number' ? be2.code.toString() : 'unknown'));
     }
   }
 
@@ -198,9 +237,9 @@ export class FileTransferLiveTaskService {
       id: notificationId,
       notificationSlotType: notificationManager.SlotType.SERVICE_INFORMATION,
       template,
-      tapDismissed: snapshot.state === 'completed' || snapshot.state === 'failed',
+      tapDismissed: snapshot.state === 'completed' || snapshot.state === 'failed' || snapshot.state === 'cancelled',
       isAlertOnce: true,
-      autoDeletedTime: snapshot.state === 'completed' || snapshot.state === 'failed' ? Date.now() + 6000 : 0
+      autoDeletedTime: snapshot.state === 'completed' || snapshot.state === 'failed' || snapshot.state === 'cancelled' ? Date.now() + 6000 : 0
     };
   }
 }

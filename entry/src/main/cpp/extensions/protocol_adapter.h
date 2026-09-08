@@ -75,6 +75,16 @@ enum class RdpRestrictedAdminSecretSource {
 // 数据结构
 // ============================================================
 
+// A protocol event identity, not a hash of its payload. A text offer can be
+// observed before its data response is ready; consumers must not treat that
+// interval as an empty clipboard. Local publication never changes this record.
+struct ClipboardSnapshot {
+    uint64_t sequence = 0;
+    std::string kind = "none";
+    std::string text;
+    bool ready = false;
+};
+
 /** 连接配置 — 建立远程连接所需的全部参数 */
 struct ConnectionConfig {
     std::string host;            // 远程主机 IP 或域名
@@ -551,6 +561,10 @@ public:
 
     /** 获取剪贴板文本（从远程同步到本地） */
     virtual std::string getClipboardText() { return ""; }
+    virtual ClipboardSnapshot getClipboardSnapshot() { return {}; }
+    // True means accepted by this live protocol's publication path. It does
+    // not prove the peer pasted or persisted the contents.
+    virtual bool publishClipboard(const uint8_t* /*data*/, uint32_t /*len*/) { return false; }
     virtual bool isClipboardReceiveReady() { return false; }
 
     /**

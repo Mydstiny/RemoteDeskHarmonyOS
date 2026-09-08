@@ -84,6 +84,8 @@ public:
     void        sendClipboardData(const uint8_t* data, uint32_t len) override;
     void        requestFrameRefresh() override;
     std::string getClipboardText() override;
+    ClipboardSnapshot getClipboardSnapshot() override;
+    bool publishClipboard(const uint8_t* data, uint32_t len) override;
     bool        isClipboardReceiveReady() override;
     bool        supportsNatTraversal() override;
     bool        supportsFileTransfer() override;

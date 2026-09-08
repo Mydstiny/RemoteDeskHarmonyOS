@@ -28,6 +28,8 @@ use codec_evidence::RustDeskCodecEvidence;
 pub mod crypto;
 pub mod crypto_channel;
 mod cursor_state;
+mod file_transfer;
+mod clipboard_publication;
 mod net;
 #[cfg(feature = "opus-audio")]
 pub mod opus_ffi;
@@ -1347,6 +1349,10 @@ pub(crate) enum ControlMsg {
     Clipboard {
         content: Vec<u8>,
     },
+    ClipboardTracked {
+        content: Vec<u8>,
+        receipt: clipboard_publication::PublicationToken,
+    },
     ChangeDisplayResolution {
         display: i32,
         width: i32,
@@ -1406,9 +1412,9 @@ struct RustDeskClient {
     controls: Arc<ControlInbox>,
     shutdown_stream: Option<PeerStream>,
     stream_handle: Option<std::thread::JoinHandle<io::Result<()>>>,
-    transfer_status: Arc<Mutex<RustDeskTransferStatus>>,
-    transfer_error: Arc<Mutex<String>>,
-    remote_clipboard: Arc<Mutex<Vec<u8>>>,
+    transfers: Arc<Mutex<file_transfer::TransferRegistry>>,
+    remote_clipboard: Arc<Mutex<ClipboardSnapshot>>,
+    publications: Mutex<clipboard_publication::Publications>,
     stream_stats: Arc<Mutex<RustDeskStreamStats>>,
     quality_state: Arc<Mutex<RustDeskQualityState>>,
     codec_evidence: Arc<Mutex<RustDeskCodecEvidence>>,
@@ -2162,7 +2168,7 @@ fn rustdesk_connect_impl(
                 return std::ptr::null_mut();
             }
             let callback_user_data = user_data as usize;
-            let remote_clipboard = Arc::new(Mutex::new(Vec::<u8>::new()));
+            let remote_clipboard = Arc::new(Mutex::new(ClipboardSnapshot::default()));
             let stream_remote_clipboard = Arc::clone(&remote_clipboard);
             let display_state = Arc::new(Mutex::new(c.peer_display_state()));
             let (mut remote_width, mut remote_height) = display_state
@@ -2199,8 +2205,7 @@ fn rustdesk_connect_impl(
                 update_status: 1,
                 ..RustDeskQualityState::default()
             }));
-            let transfer_status = Arc::new(Mutex::new(RustDeskTransferStatus::default()));
-            let transfer_error = Arc::new(Mutex::new(String::new()));
+            let transfers = Arc::new(Mutex::new(file_transfer::TransferRegistry::default()));
             let stream_stats_for_thread = Arc::clone(&stream_stats);
             let quality_state_for_thread = Arc::clone(&quality_state);
             let stream_display_state = Arc::clone(&display_state);
@@ -2257,8 +2262,7 @@ fn rustdesk_connect_impl(
                     },
                     |content| {
                         if let Ok(mut clipboard) = stream_remote_clipboard.lock() {
-                            clipboard.clear();
-                            clipboard.extend_from_slice(&content[..content.len().min(65536)]);
+                            clipboard.update(content);
                         }
                     },
                     |cursor| {
@@ -2324,9 +2328,9 @@ fn rustdesk_connect_impl(
                 controls,
                 shutdown_stream,
                 stream_handle: Some(stream_handle),
-                transfer_status,
-                transfer_error,
+                transfers,
                 remote_clipboard,
+                publications: Mutex::new(clipboard_publication::Publications::default()),
                 stream_stats,
                 quality_state,
                 codec_evidence,
@@ -3446,25 +3450,232 @@ pub extern "C" fn rustdesk_send_file(
     data: *const u8,
     len: u32,
 ) -> i32 {
-    if handle.is_null() || remote_path.is_null() || data.is_null() || len == 0 {
+    if (data.is_null() && len != 0) || len > 16 * 1024 * 1024 {
+        return -1;
+    }
+    let bytes = if len == 0 {
+        Vec::new()
+    } else {
+        unsafe { std::slice::from_raw_parts(data, len as usize) }.to_vec()
+    };
+    start_file_upload(
+        handle,
+        transfer_id,
+        remote_path,
+        file_transfer::UploadSource::Memory(bytes),
+        true,
+    )
+}
+
+/// Duplicates the descriptor before returning; caller retains its descriptor and offset.
+/// conflict_policy: 0=fail/skip existing (fails closed if absence unknown), 1=overwrite.
+#[no_mangle]
+pub extern "C" fn rustdesk_send_file_fd(
+    handle: *mut c_void,
+    transfer_id: u64,
+    remote_path: *const c_char,
+    fd: i32,
+    conflict_policy: u32,
+) -> i32 {
+    use std::os::fd::FromRawFd;
+    if fd < 0 || conflict_policy > 1 {
+        return -1;
+    }
+    let duplicated = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 0) };
+    if duplicated < 0 {
+        return -1;
+    }
+    let file = unsafe { std::fs::File::from_raw_fd(duplicated) };
+    let source = match file_transfer::UploadSource::file(file) {
+        Ok(source) => source,
+        Err(_) => return -1,
+    };
+    start_file_upload(
+        handle,
+        transfer_id,
+        remote_path,
+        source,
+        conflict_policy == 1,
+    )
+}
+
+#[no_mangle]
+pub extern "C" fn rustdesk_read_remote_directory(
+    handle: *mut c_void,
+    id: u64,
+    path: *const c_char,
+) -> i32 {
+    start_file_operation(handle, id, path, file_transfer::FileOperation::List)
+}
+#[no_mangle]
+pub extern "C" fn rustdesk_download_file_fd(
+    handle: *mut c_void,
+    id: u64,
+    path: *const c_char,
+    fd: i32,
+    expected_size: u64,
+    modified: u64,
+) -> i32 {
+    use std::os::fd::FromRawFd;
+    if fd < 0 {
+        return -1;
+    }
+    let duplicated = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 0) };
+    if duplicated < 0 {
+        return -1;
+    }
+    let file = unsafe { std::fs::File::from_raw_fd(duplicated) };
+    let sink = match file_transfer::DownloadSink::new(file, expected_size, modified) {
+        Ok(sink) => sink,
+        Err(_) => return -1,
+    };
+    start_file_operation(
+        handle,
+        id,
+        path,
+        file_transfer::FileOperation::Download(sink),
+    )
+}
+#[repr(C)]
+pub struct RustDeskRemoteFileMetadata {
+    pub entry_type: u32,
+    pub size: u64,
+    pub modified: u64,
+}
+#[no_mangle]
+pub extern "C" fn rustdesk_get_remote_directory_count(handle: *mut c_void, id: u64) -> i32 {
+    if handle.is_null() || id == 0 {
         return -1;
     }
     let ctx = unsafe { &*(handle as *const RustDeskClient) };
-    let path = unsafe { CStr::from_ptr(remote_path) }
-        .to_string_lossy()
-        .into_owned();
-    let file_data = unsafe { std::slice::from_raw_parts(data, len as usize) }.to_vec();
-    if let Ok(mut status) = ctx.transfer_status.lock() {
-        *status = RustDeskTransferStatus {
-            state: 2,
-            transfer_id,
-            transferred_bytes: 0,
-            total_bytes: len as u64,
-            diagnostic_code: 0,
+    ctx.transfers
+        .lock()
+        .ok()
+        .and_then(|r| r.get(id))
+        .and_then(|job| {
+            job.directory
+                .lock()
+                .ok()
+                .and_then(|d| d.as_ref().map(|v| v.entries.len() as i32))
+        })
+        .unwrap_or(-1)
+}
+#[no_mangle]
+pub extern "C" fn rustdesk_get_remote_directory_entry(
+    handle: *mut c_void,
+    id: u64,
+    index: u32,
+    name: *mut c_char,
+    capacity: usize,
+    metadata: *mut RustDeskRemoteFileMetadata,
+) -> bool {
+    if handle.is_null() || id == 0 || name.is_null() || metadata.is_null() {
+        return false;
+    }
+    let ctx = unsafe { &*(handle as *const RustDeskClient) };
+    let Some(job) = ctx.transfers.lock().ok().and_then(|r| r.get(id)) else {
+        return false;
+    };
+    let Ok(directory) = job.directory.lock() else {
+        return false;
+    };
+    let Some(entry) = directory
+        .as_ref()
+        .and_then(|v| v.entries.get(index as usize))
+    else {
+        return false;
+    };
+    if capacity <= entry.name.len() {
+        return false;
+    }
+    unsafe {
+        ptr::copy_nonoverlapping(entry.name.as_ptr(), name.cast(), entry.name.len());
+        *name.add(entry.name.len()) = 0;
+        *metadata = RustDeskRemoteFileMetadata {
+            entry_type: entry.entry_type,
+            size: entry.size,
+            modified: entry.modified,
         };
     }
-    if let Ok(mut error) = ctx.transfer_error.lock() {
-        error.clear();
+    true
+}
+
+#[no_mangle]
+pub extern "C" fn rustdesk_get_remote_directory_path(
+    handle: *mut c_void,
+    id: u64,
+    buffer: *mut c_char,
+    capacity: usize,
+) -> usize {
+    if handle.is_null() || id == 0 {
+        return 0;
+    }
+    let ctx = unsafe { &*(handle as *const RustDeskClient) };
+    let Some(job) = ctx.transfers.lock().ok().and_then(|r| r.get(id)) else {
+        return 0;
+    };
+    let Ok(directory) = job.directory.lock() else {
+        return 0;
+    };
+    let Some(directory) = directory.as_ref() else {
+        return 0;
+    };
+    let bytes = directory.path.as_bytes();
+    if !buffer.is_null() && capacity > bytes.len() {
+        unsafe {
+            ptr::copy_nonoverlapping(bytes.as_ptr(), buffer.cast(), bytes.len());
+            *buffer.add(bytes.len()) = 0;
+        }
+    }
+    bytes.len()
+}
+
+fn start_file_upload(
+    handle: *mut c_void,
+    transfer_id: u64,
+    remote_path: *const c_char,
+    source: file_transfer::UploadSource,
+    overwrite: bool,
+) -> i32 {
+    start_file_operation(
+        handle,
+        transfer_id,
+        remote_path,
+        file_transfer::FileOperation::Upload { source, overwrite },
+    )
+}
+
+fn start_file_operation(
+    handle: *mut c_void,
+    transfer_id: u64,
+    remote_path: *const c_char,
+    operation: file_transfer::FileOperation,
+) -> i32 {
+    if handle.is_null() || remote_path.is_null() {
+        return -1;
+    }
+    let ctx = unsafe { &*(handle as *const RustDeskClient) };
+    let path = match unsafe { CStr::from_ptr(remote_path) }.to_str() {
+        Ok(path)
+            if !path.is_empty() || matches!(&operation, file_transfer::FileOperation::List) =>
+        {
+            path.to_owned()
+        }
+        _ => return -1,
+    };
+    let job = match ctx
+        .transfers
+        .lock()
+        .ok()
+        .and_then(|mut registry| registry.insert(transfer_id, operation.size()).ok())
+    {
+        Some(job) => job,
+        None => return -2,
+    };
+    job.bind_permissions(Arc::clone(&ctx.controls));
+    if let Err(error) = job.check() {
+        job.finish(Err(error));
+        return -1;
     }
     let host = ctx.host.clone();
     let port = ctx.port;
@@ -3480,181 +3691,135 @@ pub extern "C" fn rustdesk_send_file(
     let nat_config = ctx.nat_config;
     let connection_id = ctx.connection_id;
     let remote_path_owned = path.clone();
-    let remote_dir = split_remote_file_path(&path).0.to_string();
-    let transfer_status = Arc::clone(&ctx.transfer_status);
-    let transfer_error = Arc::clone(&ctx.transfer_error);
-    let spawn_failure_status = Arc::clone(&ctx.transfer_status);
-    let spawn_failure_error = Arc::clone(&ctx.transfer_error);
+    let remote_dir = if matches!(&operation, file_transfer::FileOperation::List) {
+        path.clone()
+    } else {
+        split_remote_file_path(&path).0.to_string()
+    };
+    let spawn_failure_job = Arc::clone(&job);
     // The shared production launcher reserves synchronously while native
     // still holds continuity admission and the client-handle lease.
     let spawn_result = spawn_reserved_file_transfer_worker(
         transfer_id,
         connection_id,
         move |connect_epoch| {
+            job.bind_epoch(connect_epoch);
             let route_deadline = connector::route_deadline_for_strategy(connection_strategy);
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let mut connector = if direct_connection {
-                let mut candidate = connector::RustDeskConnector::new_with_connection_id(
-                    connection_id,
-                    connect_epoch,
-                );
-                candidate.connect_file_transfer_direct(
-                    &host,
-                    port,
-                    &password,
-                    &remote_dir,
-                )?;
-                candidate
-            } else {
-                // Modern peers advertise FILE_TRANSFER at rendezvous. HarmonyOS
-                // 1.0.7 used DEFAULT_CONN for the route and then identified the
-                // dedicated file session in LoginRequest.file_transfer. Keep the
-                // official modern route first, but retry a fresh connection with
-                // the proven 1.0.7 route when an older/custom hbbs does not answer.
-                let route_types = [
-                    protocol::rendezvous_proto::ConnType::FILE_TRANSFER,
-                    protocol::rendezvous_proto::ConnType::DEFAULT_CONN,
-                ];
-                let mut connected = None;
-                let mut route_errors = Vec::new();
-                let mut last_route_kind = std::io::ErrorKind::NotConnected;
-                for conn_type in route_types {
-                    let mut candidate = connector::RustDeskConnector::new_with_connection_id(
-                        connection_id,
-                        connect_epoch,
-                    );
-                    match candidate.connect_file_transfer(
-                        &host,
-                        port,
-                        relay_fallback_port,
-                        &server_key,
-                        &api_token,
-                        &peer_id,
-                        &password,
-                        &remote_dir,
-                        request_approval,
-                        shared_access_key,
-                        conn_type,
-                        connection_strategy,
-                        nat_config,
-                        route_deadline,
-                    ) {
-                        Ok(()) => {
-                            eprintln!(
-                                "[RustDesk-FFI] file-transfer route connected conn_type={:?}",
-                                conn_type
-                            );
-                            connected = Some(candidate);
-                            break;
-                        }
-                        Err(err) => {
-                            last_route_kind = err.kind();
-                            let fallback = should_retry_file_transfer_compat_route(
-                                conn_type,
-                                candidate.state(),
-                                err.kind(),
-                            );
-                            eprintln!(
-                                "[RustDesk-FFI] file-transfer route failed conn_type={:?} stage={:?} kind={:?} fallback={}",
-                                conn_type,
-                                candidate.state(),
-                                err.kind(),
-                                fallback
-                            );
-                            route_errors.push(format!("{:?}:{:?}", conn_type, err.kind()));
-                            // Compatibility mode is only a rendezvous/relay
-                            // fallback. Never retry an authentication, peer-key,
-                            // permission, or upload failure as DEFAULT_CONN.
-                            if !fallback {
+                job.check()?;
+                let mut connector = if direct_connection {
+                    let mut candidate =
+                        connector::RustDeskConnector::new_with_connection_id(connection_id, connect_epoch);
+                    candidate.connect_file_transfer_direct(&host, port, &password, &remote_dir)?;
+                    candidate
+                } else {
+                    // Modern peers advertise FILE_TRANSFER at rendezvous. HarmonyOS
+                    // 1.0.7 used DEFAULT_CONN for the route and then identified the
+                    // dedicated file session in LoginRequest.file_transfer. Keep the
+                    // official modern route first, but retry a fresh connection with
+                    // the proven 1.0.7 route when an older/custom hbbs does not answer.
+                    let route_types = [
+                        protocol::rendezvous_proto::ConnType::FILE_TRANSFER,
+                        protocol::rendezvous_proto::ConnType::DEFAULT_CONN,
+                    ];
+                    let mut connected = None;
+                    let mut route_errors = Vec::new();
+                    let mut last_route_kind = std::io::ErrorKind::NotConnected;
+                    for conn_type in route_types {
+                        let mut candidate =
+                            connector::RustDeskConnector::new_with_connection_id(connection_id, connect_epoch);
+                        match candidate.connect_file_transfer(
+                            &host,
+                            port,
+                            relay_fallback_port,
+                            &server_key,
+                            &api_token,
+                            &peer_id,
+                            &password,
+                            &remote_dir,
+                            request_approval,
+                            shared_access_key,
+                            conn_type,
+                            connection_strategy,
+                            nat_config,
+                            route_deadline,
+                        ) {
+                            Ok(()) => {
+                                eprintln!(
+                                    "[RustDesk-FFI] file-transfer route connected conn_type={:?}",
+                                    conn_type
+                                );
+                                connected = Some(candidate);
                                 break;
+                            }
+                            Err(err) => {
+                                last_route_kind = err.kind();
+                                let fallback = should_retry_file_transfer_compat_route(
+                                    conn_type,
+                                    candidate.state(),
+                                    err.kind(),
+                                );
+                                eprintln!(
+                                            "[RustDesk-FFI] file-transfer route failed conn_type={:?} stage={:?} kind={:?} fallback={}",
+                                            conn_type,
+                                            candidate.state(),
+                                            err.kind(),
+                                            fallback
+                                        );
+                                route_errors.push(format!("{:?}:{:?}", conn_type, err.kind()));
+                                // Compatibility mode is only a rendezvous/relay
+                                // fallback. Never retry an authentication, peer-key,
+                                // permission, or upload failure as DEFAULT_CONN.
+                                if !fallback {
+                                    break;
+                                }
                             }
                         }
                     }
+                    connected.ok_or_else(|| {
+                        std::io::Error::new(
+                            last_route_kind,
+                            format!(
+                                "file-transfer route failed for modern and 1.0.7 compatibility modes [{}]",
+                                route_errors.join(" | ")
+                            ),
+                        )
+                    })?
+                };
+                // Login owns its approval / 2FA deadlines; data idle time starts after authentication.
+                job.progress(0);
+                let cancel_remote_read = matches!(&operation, file_transfer::FileOperation::Download(_));
+                let operation_result = match operation {
+                    file_transfer::FileOperation::Upload { source, overwrite } => {
+                        connector.upload_file_stream(&remote_path_owned, source, &job, overwrite)
+                    }
+                    file_transfer::FileOperation::List => {
+                        let entries = connector.read_remote_directory(&remote_path_owned, &job)?;
+                        *job.directory
+                            .lock()
+                            .map_err(|_| io::Error::other("directory result lock"))? = Some(entries);
+                        Ok(())
+                    }
+                    file_transfer::FileOperation::Download(sink) => {
+                        connector.download_file_stream(&remote_path_owned, sink, &job)
+                    }
+                };
+                if operation_result.is_err() && (cancel_remote_read || job.remote_write_started()) {
+                    connector.cancel_file_transfer_job();
                 }
-                connected.ok_or_else(|| {
-                    std::io::Error::new(
-                        last_route_kind,
-                        format!(
-                            "file-transfer route failed for modern and 1.0.7 compatibility modes [{}]",
-                            route_errors.join(" | ")
-                        ),
-                    )
-                })?
-            };
-            connector.upload_file_once(
-                &remote_path_owned,
-                file_data,
-                Duration::from_secs(30),
-            )
-        }))
-        .unwrap_or_else(|_| {
-            Err(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                "file-transfer worker panic",
-            ))
-        });
-            match result {
-                Ok(()) => {
-                    if let Ok(mut error) = transfer_error.lock() {
-                        error.clear();
-                    }
-                    if let Ok(mut status) = transfer_status.lock() {
-                        *status = RustDeskTransferStatus {
-                            state: 3,
-                            transfer_id,
-                            transferred_bytes: len as u64,
-                            total_bytes: len as u64,
-                            diagnostic_code: 0,
-                        };
-                    }
-                }
-                Err(err) => {
-                    let (code, detail) =
-                        pipeline_error_classification("file_transfer_failed", &err);
-                    let message = structured_error("file_transfer", code, detail, transfer_id);
-                    set_last_error(message.clone());
-                    eprintln!(
-                        "[RustDesk-FFI] file-transfer failed transfer_id={} kind={:?} code={}",
-                        transfer_id,
-                        err.kind(),
-                        code
-                    );
-                    if let Ok(mut error) = transfer_error.lock() {
-                        *error = message;
-                    }
-                    if let Ok(mut status) = transfer_status.lock() {
-                        *status = RustDeskTransferStatus {
-                            state: 4,
-                            transfer_id,
-                            transferred_bytes: 0,
-                            total_bytes: len as u64,
-                            diagnostic_code: 1,
-                        };
-                    }
-                }
-            }
+                operation_result
+            }))
+            .unwrap_or_else(|_| {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    "file-transfer worker panic",
+                ))
+            });
+            job.finish(result);
         },
     );
     if let Err(error) = spawn_result {
-        let message = structured_error(
-            "file_transfer",
-            "worker_unavailable",
-            error.to_string(),
-            transfer_id,
-        );
-        set_last_error(message.clone());
-        if let Ok(mut transfer_error) = spawn_failure_error.lock() {
-            *transfer_error = message;
-        }
-        if let Ok(mut status) = spawn_failure_status.lock() {
-            *status = RustDeskTransferStatus {
-                state: 4,
-                transfer_id,
-                transferred_bytes: 0,
-                total_bytes: len as u64,
-                diagnostic_code: 1,
-            };
-        }
+        spawn_failure_job.finish(Err(error));
         return -2;
     }
     0
@@ -3668,23 +3833,65 @@ pub extern "C" fn rustdesk_get_transfer_status(
     if handle.is_null() || out_status.is_null() {
         return false;
     }
-    let ctx = unsafe { &*(handle as *const RustDeskClient) };
-    let status = match ctx.transfer_status.lock() {
-        Ok(value) => *value,
-        Err(_) => return false,
-    };
-    unsafe {
-        *out_status = status;
-    }
-    true
+    rustdesk_get_transfer_status_by_id(handle, 0, out_status)
 }
 
-/// Copy the failure owned by the current file-transfer worker. Unlike the
-/// process-wide last-error string, this value cannot be overwritten by normal
-/// mouse, keyboard, refresh, or video-control traffic on the desktop session.
+#[no_mangle]
+pub extern "C" fn rustdesk_get_transfer_status_by_id(
+    handle: *mut c_void,
+    id: u64,
+    out_status: *mut RustDeskTransferStatus,
+) -> bool {
+    if handle.is_null() || out_status.is_null() {
+        return false;
+    }
+    let ctx = unsafe { &*(handle as *const RustDeskClient) };
+    let job = ctx.transfers.lock().ok().and_then(|r| r.get(id));
+    if let Some(job) = job {
+        if let Ok(status) = job.status.lock() {
+            unsafe {
+                *out_status = status.0;
+            }
+            return true;
+        }
+    }
+    false
+}
+#[no_mangle]
+pub extern "C" fn rustdesk_cancel_transfer(handle: *mut c_void, id: u64) -> bool {
+    if handle.is_null() || id == 0 {
+        return false;
+    }
+    let ctx = unsafe { &*(handle as *const RustDeskClient) };
+    if let Some(job) = ctx.transfers.lock().ok().and_then(|r| r.get(id)) {
+        job.cancel();
+        return true;
+    }
+    false
+}
+#[no_mangle]
+pub extern "C" fn rustdesk_release_transfer(handle: *mut c_void, id: u64) -> bool {
+    if handle.is_null() || id == 0 {
+        return false;
+    }
+    let ctx = unsafe { &*(handle as *const RustDeskClient) };
+    ctx.transfers
+        .lock()
+        .map(|mut r| r.release(id))
+        .unwrap_or(false)
+}
 #[no_mangle]
 pub extern "C" fn rustdesk_get_transfer_error(
     handle: *mut c_void,
+    buffer: *mut c_char,
+    buffer_len: usize,
+) -> usize {
+    rustdesk_get_transfer_error_by_id(handle, 0, buffer, buffer_len)
+}
+#[no_mangle]
+pub extern "C" fn rustdesk_get_transfer_error_by_id(
+    handle: *mut c_void,
+    id: u64,
     buffer: *mut c_char,
     buffer_len: usize,
 ) -> usize {
@@ -3693,30 +3900,122 @@ pub extern "C" fn rustdesk_get_transfer_error(
     }
     let ctx = unsafe { &*(handle as *const RustDeskClient) };
     let message = ctx
-        .transfer_error
+        .transfers
         .lock()
-        .map(|error| error.clone())
-        .unwrap_or_else(|_| "file-transfer error lock poisoned".to_string());
-    let bytes = message.as_bytes();
+        .ok()
+        .and_then(|r| r.get(id))
+        .and_then(|job| job.status.lock().ok().map(|s| s.1.clone()))
+        .unwrap_or_default();
     if !buffer.is_null() && buffer_len > 0 {
-        let copy_len = bytes.len().min(buffer_len - 1);
+        let count = message.len().min(buffer_len - 1);
         unsafe {
-            ptr::copy_nonoverlapping(bytes.as_ptr(), buffer as *mut u8, copy_len);
-            *buffer.add(copy_len) = 0;
+            ptr::copy_nonoverlapping(message.as_ptr(), buffer.cast(), count);
+            *buffer.add(count) = 0;
         }
     }
-    bytes.len()
+    message.len()
+}
+
+#[derive(Default)]
+struct ClipboardSnapshot {
+    revision: u64,
+    content: Vec<u8>,
+    unsupported: bool,
+}
+impl ClipboardSnapshot {
+    fn update(&mut self, content: Option<&[u8]>) {
+        self.revision = self.revision.wrapping_add(1).max(1);
+        self.unsupported = content.is_none();
+        self.content = content.unwrap_or_default().to_vec();
+    }
+}
+#[no_mangle]
+pub extern "C" fn rustdesk_get_clipboard_snapshot(
+    handle: *mut c_void,
+    buffer: *mut u8,
+    capacity: usize,
+    revision: *mut u64,
+) -> usize {
+    if handle.is_null() || revision.is_null() {
+        return 0;
+    }
+    let ctx = unsafe { &*(handle as *const RustDeskClient) };
+    let snapshot = match ctx.remote_clipboard.lock() {
+        Ok(s) => s,
+        Err(_) => return 0,
+    };
+    unsafe {
+        *revision = snapshot.revision;
+    }
+    if !buffer.is_null() && capacity >= snapshot.content.len() {
+        unsafe {
+            ptr::copy_nonoverlapping(snapshot.content.as_ptr(), buffer, snapshot.content.len());
+        }
+    }
+    if snapshot.unsupported {
+        usize::MAX
+    } else {
+        snapshot.content.len()
+    }
 }
 
 /// 发送剪贴板内容到远程
 #[no_mangle]
 pub extern "C" fn rustdesk_send_clipboard(handle: *mut c_void, data: *const u8, len: u32) {
-    if handle.is_null() || data.is_null() || len == 0 {
-        return;
+    rustdesk_publish_clipboard(handle, data, len);
+}
+
+#[no_mangle]
+pub extern "C" fn rustdesk_publish_clipboard(
+    handle: *mut c_void,
+    data: *const u8,
+    len: u32,
+) -> bool {
+    rustdesk_publish_clipboard_tracked(handle, data, len) != 0
+}
+
+#[no_mangle]
+pub extern "C" fn rustdesk_publish_clipboard_tracked(
+    handle: *mut c_void,
+    data: *const u8,
+    len: u32,
+) -> u64 {
+    if handle.is_null() || (data.is_null() && len > 0) || len > 65536 {
+        return 0;
     }
     let ctx = unsafe { &*(handle as *const RustDeskClient) };
-    let content = unsafe { std::slice::from_raw_parts(data, len as usize) }.to_vec();
-    ctx.controls.enqueue(ControlMsg::Clipboard { content });
+    if ctx.controls.shutdown_requested() {
+        return 0;
+    }
+    let Some((id, mut receipt)) = ctx.publications.lock().ok().and_then(|mut p| p.reserve()) else {
+        return 0;
+    };
+    receipt.bind_controls(Arc::clone(&ctx.controls));
+    let content = if len == 0 {
+        Vec::new()
+    } else {
+        unsafe { std::slice::from_raw_parts(data, len as usize) }.to_vec()
+    };
+    if ctx
+        .controls
+        .enqueue(ControlMsg::ClipboardTracked { content, receipt })
+    {
+        id
+    } else {
+        0
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn rustdesk_get_clipboard_publication_state(handle: *mut c_void, id: u64) -> u32 {
+    if handle.is_null() || id == 0 {
+        return 0;
+    }
+    let ctx = unsafe { &*(handle as *const RustDeskClient) };
+    ctx.publications
+        .lock()
+        .map(|p| p.state(id, ctx.controls.shutdown_requested()))
+        .unwrap_or(0)
 }
 
 #[no_mangle]
@@ -3728,19 +4027,8 @@ pub extern "C" fn rustdesk_get_clipboard(
     if handle.is_null() {
         return 0;
     }
-    let ctx = unsafe { &*(handle as *const RustDeskClient) };
-    let clipboard = match ctx.remote_clipboard.lock() {
-        Ok(value) => value,
-        Err(_) => return 0,
-    };
-    let full_len = clipboard.len();
-    if !buffer.is_null() && buffer_len > 0 {
-        let copy_len = full_len.min(buffer_len);
-        unsafe {
-            std::ptr::copy_nonoverlapping(clipboard.as_ptr(), buffer, copy_len);
-        }
-    }
-    full_len
+    let mut revision = 0;
+    rustdesk_get_clipboard_snapshot(handle, buffer, buffer_len, &mut revision)
 }
 
 /// 获取版本号
@@ -4103,9 +4391,9 @@ mod tests {
             controls: Arc::new(ControlInbox::default()),
             shutdown_stream: None,
             stream_handle: None,
-            transfer_status: Arc::new(Mutex::new(RustDeskTransferStatus::default())),
-            transfer_error: Arc::new(Mutex::new(String::new())),
-            remote_clipboard: Arc::new(Mutex::new(Vec::new())),
+            transfers: Arc::new(Mutex::new(file_transfer::TransferRegistry::default())),
+            remote_clipboard: Arc::new(Mutex::new(ClipboardSnapshot::default())),
+            publications: Mutex::new(clipboard_publication::Publications::default()),
             stream_stats: Arc::new(Mutex::new(RustDeskStreamStats::default())),
             codec_evidence: Arc::new(Mutex::new(RustDeskCodecEvidence::default())),
             quality_state: Arc::new(Mutex::new(RustDeskQualityState::default())),
@@ -4981,5 +5269,17 @@ mod tests {
         };
 
         assert_eq!(resolve_stream_params_for_config(&cfg).effective_fps, 60);
+    }
+}
+
+#[cfg(test)]
+mod clipboard_snapshot_tests {
+    use super::ClipboardSnapshot;
+    #[test] fn clipboard_revision_tracks_repeated_content_clear_and_unsupported() {
+        let mut snapshot = ClipboardSnapshot::default();
+        snapshot.update(Some(b"same")); assert_eq!(snapshot.revision, 1);
+        snapshot.update(Some(b"same")); assert_eq!(snapshot.revision, 2);
+        snapshot.update(Some(b"")); assert_eq!(snapshot.revision, 3); assert!(snapshot.content.is_empty()); assert!(!snapshot.unsupported);
+        snapshot.update(None); assert_eq!(snapshot.revision, 4); assert!(snapshot.unsupported);
     }
 }

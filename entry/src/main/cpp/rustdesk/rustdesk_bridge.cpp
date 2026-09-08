@@ -116,6 +116,21 @@ extern "C" {
     struct RustDeskFfiTransferStatus { uint32_t state; uint64_t transferId; uint64_t transferredBytes;
         uint64_t totalBytes; uint32_t diagnosticCode; };
     bool  rustdesk_get_transfer_status(void* handle, RustDeskFfiTransferStatus* out_status);
+    int rustdesk_send_file_fd(void*, uint64_t, const char*, int, uint32_t);
+    int rustdesk_read_remote_directory(void*, uint64_t, const char*);
+    int rustdesk_download_file_fd(void*, uint64_t, const char*, int, uint64_t, uint64_t);
+    struct RustDeskFfiRemoteFileMetadata { uint32_t type; uint64_t size; uint64_t modified; };
+    int rustdesk_get_remote_directory_count(void*, uint64_t);
+    size_t rustdesk_get_remote_directory_path(void*, uint64_t, char*, size_t);
+    bool rustdesk_get_remote_directory_entry(void*, uint64_t, uint32_t, char*, size_t, RustDeskFfiRemoteFileMetadata*);
+    bool rustdesk_get_transfer_status_by_id(void*, uint64_t, RustDeskFfiTransferStatus*);
+    size_t rustdesk_get_transfer_error_by_id(void*, uint64_t, char*, size_t);
+    bool rustdesk_cancel_transfer(void*, uint64_t);
+    bool rustdesk_release_transfer(void*, uint64_t);
+    bool rustdesk_publish_clipboard(void*, const unsigned char*, unsigned int);
+    uint64_t rustdesk_publish_clipboard_tracked(void*, const unsigned char*, unsigned int);
+    uint32_t rustdesk_get_clipboard_publication_state(void*, uint64_t);
+    size_t rustdesk_get_clipboard_snapshot(void*, unsigned char*, size_t, uint64_t*);
     size_t rustdesk_get_transfer_error(void* handle, char* buffer, size_t buffer_len);
     void  rustdesk_send_clipboard(void* handle, const unsigned char* data, unsigned int len);
     size_t rustdesk_get_clipboard(void* handle, unsigned char* buffer, size_t buffer_len);
@@ -253,6 +268,8 @@ static_assert(offsetof(RustDeskFfiQualityState, fps) == 20);
 static_assert(offsetof(RustDeskFfiQualityState, requestedGeneration) == 24);
 static_assert(offsetof(RustDeskFfiQualityState, appliedGeneration) == 32);
 static_assert(offsetof(RustDeskFfiQualityState, updateStatus) == 40);
+static_assert(sizeof(RustDeskFfiTransferStatus) == 40, "RustDesk transfer status ABI mismatch");
+static_assert(sizeof(RustDeskFfiRemoteFileMetadata) == 24, "RustDesk remote file metadata ABI mismatch");
 static_assert(sizeof(RustDeskFfiPermissionState) == 16,
               "RustDeskPermissionState ABI size changed; update both sides together");
 static_assert(alignof(RustDeskFfiPermissionState) == 4,
@@ -962,6 +979,16 @@ static bool rdDispatchFfiOutbound(
         impl->continuityAdmissionMutex,
         [impl, lane]() { return rdIsFfiOutboundAllowed(impl, lane); },
         std::forward<Operation>(operation));
+}
+
+template<typename Operation>
+static bool rdDispatchFfiTransferManagement(
+    RustDeskBridge::Impl* impl, RustDeskMode mode, Operation&& operation) {
+    if (impl == nullptr || mode != RustDeskMode::FFI) {
+        return false;
+    }
+    return impl->displayControl.dispatchExistingWork(
+        impl->continuityAdmissionMutex, std::forward<Operation>(operation));
 }
 
 #ifdef RUSTDESK_USE_REAL_CORE
@@ -4161,44 +4188,202 @@ int RustDeskBridge::sendFileData(const std::string& remotePath, const uint8_t* d
     return -1;
 }
 
-SessionTransferStatus RustDeskBridge::getSessionTransferStatus() {
+int64_t RustDeskBridge::sendFileFromFd(const std::string& remotePath, int fd, int conflictPolicy) {
+    int64_t result = -1;
 #ifdef RUSTDESK_USE_REAL_CORE
-    (void)rdDispatchFfiOutbound(
-        impl_.get(), mode_, RustDeskFfiOutboundLane::File,
-        [this](void* handle) {
-            RustDeskFfiTransferStatus ffi {};
-            if (rustdesk_get_transfer_status(handle, &ffi)) {
-                if (ffi.state == 3) {
-                    impl_->transferStatus.markRustDeskConfirmed(
-                        ffi.transferId, ffi.totalBytes);
-                } else if (ffi.state == 4) {
-                    char errorBuffer[512] = {0};
-                    rustdesk_get_transfer_error(
-                        handle, errorBuffer, sizeof(errorBuffer));
-                    const std::string diagnostic = errorBuffer[0] != '\0'
-                        ? std::string(errorBuffer)
-                        : "remote_transfer_failed";
-                    const SessionTransferStatus current =
-                        impl_->transferStatus.snapshot();
-                    if (current.rustdeskTransfer != TransferRuntimeState::FAILED ||
-                        current.transferId != ffi.transferId ||
-                        current.diagnosticCode != diagnostic) {
-                        OH_LOG_ERROR(LOG_APP,
-                            "[RustDesk-FFI] file transfer failed id=%{public}llu detail=%{public}s",
-                            static_cast<unsigned long long>(ffi.transferId),
-                            diagnostic.c_str());
-                    }
-                    impl_->transferStatus.markRustDeskFailed(
-                        ffi.transferId, diagnostic);
-                } else if (ffi.state == 2) {
-                    impl_->transferStatus.markRustDeskProgress(
-                        ffi.transferId, ffi.transferredBytes, ffi.totalBytes);
+    (void)rdDispatchFfiOutbound(impl_.get(), mode_, RustDeskFfiOutboundLane::File,
+        [this, &remotePath, fd, conflictPolicy, &result](void* handle) {
+            const uint64_t id = impl_->nextTransferId.fetch_add(1);
+            if (rustdesk_send_file_fd(handle, id, remotePath.c_str(), fd, conflictPolicy) == 0) {
+                result = static_cast<int64_t>(id);
+            }
+            return result > 0;
+        });
+#endif
+    return result;
+}
+
+int64_t RustDeskBridge::requestRemoteDirectory(const std::string& remotePath) {
+    int64_t result = -1;
+#ifdef RUSTDESK_USE_REAL_CORE
+    (void)rdDispatchFfiOutbound(impl_.get(), mode_, RustDeskFfiOutboundLane::File,
+        [this, &remotePath, &result](void* handle) {
+            const uint64_t id = impl_->nextTransferId.fetch_add(1);
+            if (rustdesk_read_remote_directory(handle, id, remotePath.c_str()) == 0) {
+                result = static_cast<int64_t>(id);
+            }
+            return result > 0;
+        });
+#endif
+    return result;
+}
+
+int64_t RustDeskBridge::downloadFileToFd(const std::string& remotePath, int fd, uint64_t expectedSize, uint64_t modifiedTime) {
+    int64_t result = -1;
+#ifdef RUSTDESK_USE_REAL_CORE
+    (void)rdDispatchFfiOutbound(impl_.get(), mode_, RustDeskFfiOutboundLane::File,
+        [this, &remotePath, fd, expectedSize, modifiedTime, &result](void* handle) {
+            const uint64_t id = impl_->nextTransferId.fetch_add(1);
+            if (rustdesk_download_file_fd(handle, id, remotePath.c_str(), fd, expectedSize, modifiedTime) == 0) {
+                result = static_cast<int64_t>(id);
+            }
+            return result > 0;
+        });
+#endif
+    return result;
+}
+
+std::string RustDeskBridge::getRemoteDirectoryPath(uint64_t id) {
+    std::string result;
+#ifdef RUSTDESK_USE_REAL_CORE
+    (void)rdDispatchFfiTransferManagement(impl_.get(), mode_,
+        [id, &result](void* handle) {
+            std::vector<char> path(32769, '\0');
+            const size_t length = rustdesk_get_remote_directory_path(handle, id, path.data(), path.size());
+            if (length < path.size()) { result.assign(path.data(), length); return true; }
+            return false;
+        });
+#endif
+    return result;
+}
+
+std::vector<RustDeskRemoteFileEntry> RustDeskBridge::getRemoteDirectoryEntries(uint64_t id) {
+    std::vector<RustDeskRemoteFileEntry> result;
+#ifdef RUSTDESK_USE_REAL_CORE
+    (void)rdDispatchFfiTransferManagement(impl_.get(), mode_,
+        [id, &result](void* handle) {
+            const int count = rustdesk_get_remote_directory_count(handle, id);
+            if (count < 0 || count > 4096) { return false; }
+            result.reserve(static_cast<size_t>(count));
+            for (int i = 0; i < count; ++i) {
+                char name[4097] = {};
+                RustDeskFfiRemoteFileMetadata metadata {};
+                if (!rustdesk_get_remote_directory_entry(handle, id, i, name, sizeof(name), &metadata)) {
+                    result.clear(); return false;
                 }
+                result.push_back({name, metadata.type, metadata.size, metadata.modified});
             }
             return true;
         });
 #endif
-    return impl_->transferStatus.snapshot();
+    return result;
+}
+
+SessionTransferStatus RustDeskBridge::getTransferStatusById(uint64_t id) {
+    SessionTransferStatus result;
+    result.diagnosticCode = "transfer_owner_unavailable";
+#ifdef RUSTDESK_USE_REAL_CORE
+    (void)rdDispatchFfiTransferManagement(impl_.get(), mode_,
+        [id, &result](void* handle) {
+            RustDeskFfiTransferStatus ffi {};
+            if (!rustdesk_get_transfer_status_by_id(handle, id, &ffi)) {
+                result.diagnosticCode = "transfer_not_found";
+                return false;
+            }
+            result.diagnosticCode.clear();
+            result.transferId = ffi.transferId;
+            result.transferredBytes = ffi.transferredBytes;
+            result.totalBytes = ffi.totalBytes;
+            switch (ffi.state) {
+                case 2: result.rustdeskTransfer = TransferRuntimeState::TRANSFERRING; break;
+                case 3: result.rustdeskTransfer = TransferRuntimeState::CONFIRMED; break;
+                case 4: result.rustdeskTransfer = TransferRuntimeState::FAILED; break;
+                case 5: result.rustdeskTransfer = TransferRuntimeState::CANCELLED; break;
+                case 6: result.rustdeskTransfer = TransferRuntimeState::SENT_UNVERIFIED; break;
+                default: break;
+            }
+            if (ffi.state == 4 || ffi.state == 5) {
+                char error[512] = {};
+                rustdesk_get_transfer_error_by_id(handle, ffi.transferId, error, sizeof(error));
+                result.diagnosticCode = error;
+            }
+            return true;
+        });
+#endif
+    return result;
+}
+
+SessionTransferStatus RustDeskBridge::getSessionTransferStatus() {
+    return getTransferStatusById(0);
+}
+
+bool RustDeskBridge::cancelTransfer(uint64_t id) {
+#ifdef RUSTDESK_USE_REAL_CORE
+    return rdDispatchFfiTransferManagement(impl_.get(), mode_,
+        [id](void* handle) { return rustdesk_cancel_transfer(handle, id); });
+#else
+    return false;
+#endif
+}
+
+bool RustDeskBridge::releaseTransfer(uint64_t id) {
+#ifdef RUSTDESK_USE_REAL_CORE
+    return rdDispatchFfiTransferManagement(impl_.get(), mode_,
+        [id](void* handle) { return rustdesk_release_transfer(handle, id); });
+#else
+    return false;
+#endif
+}
+
+bool RustDeskBridge::getTransferPermissionSnapshot(uint32_t& knownMask, uint32_t& enabledMask) {
+    knownMask = 0; enabledMask = 0;
+#ifdef RUSTDESK_USE_REAL_CORE
+    return rdDispatchFfiOutbound(impl_.get(), mode_, RustDeskFfiOutboundLane::File,
+        [&knownMask, &enabledMask](void* handle) {
+            RustDeskFfiPermissionState state {};
+            if (!rustdesk_get_permission_state(handle, &state)) { return false; }
+            knownMask = state.knownMask; enabledMask = state.enabledMask; return true;
+        });
+#else
+    return false;
+#endif
+}
+
+bool RustDeskBridge::publishClipboard(const uint8_t* data, uint32_t len) {
+    return publishClipboardTracked(data, len) != 0;
+}
+
+uint64_t RustDeskBridge::publishClipboardTracked(const uint8_t* data, uint32_t len) {
+    uint64_t id = 0;
+#ifdef RUSTDESK_USE_REAL_CORE
+    (void)rdDispatchFfiOutbound(impl_.get(), mode_, RustDeskFfiOutboundLane::Clipboard,
+        [data, len, &id](void* handle) { id = rustdesk_publish_clipboard_tracked(handle, data, len); return id != 0; });
+#endif
+    return id;
+}
+
+uint32_t RustDeskBridge::getClipboardPublicationState(uint64_t id) {
+    uint32_t state = 0;
+#ifdef RUSTDESK_USE_REAL_CORE
+    (void)rdDispatchFfiTransferManagement(impl_.get(), mode_,
+        [id, &state](void* handle) { state = rustdesk_get_clipboard_publication_state(handle, id); return true; });
+#endif
+    return state;
+}
+
+ClipboardSnapshot RustDeskBridge::getClipboardSnapshot() {
+    ClipboardSnapshot snapshot;
+#ifdef RUSTDESK_USE_REAL_CORE
+    (void)rdDispatchFfiOutbound(impl_.get(), mode_, RustDeskFfiOutboundLane::Clipboard,
+        [&snapshot](void* handle) {
+            RustDeskFfiPermissionState permission {};
+            if (!rustdesk_get_permission_state(handle, &permission) ||
+                ((permission.knownMask & kRustDeskPermissionClipboard) != 0 &&
+                 (permission.enabledMask & kRustDeskPermissionClipboard) == 0)) { return false; }
+            std::vector<unsigned char> buffer(65536);
+            uint64_t revision = 0;
+            const size_t length = rustdesk_get_clipboard_snapshot(handle, buffer.data(), buffer.size(), &revision);
+            snapshot.sequence = revision;
+            snapshot.ready = revision != 0;
+            if (length > buffer.size()) { snapshot.kind = "unsupported"; }
+            else if (length > 0) {
+                snapshot.kind = "text";
+                snapshot.text.assign(reinterpret_cast<const char*>(buffer.data()), length);
+            }
+            return true;
+        });
+#endif
+    return snapshot;
 }
 
 void RustDeskBridge::sendClipboardData(const uint8_t* data, uint32_t len) {
@@ -4217,34 +4402,19 @@ void RustDeskBridge::sendClipboardData(const uint8_t* data, uint32_t len) {
 }
 
 std::string RustDeskBridge::getClipboardText() {
-#ifdef RUSTDESK_USE_REAL_CORE
-    std::string text;
-    (void)rdDispatchFfiOutbound(
-        impl_.get(), mode_, RustDeskFfiOutboundLane::Clipboard,
-        [&text](void* handle) {
-            const size_t length = rustdesk_get_clipboard(handle, nullptr, 0);
-            if (length == 0 || length > 65536) {
-                return true;
-            }
-            std::vector<unsigned char> buffer(length);
-            const size_t copied =
-                rustdesk_get_clipboard(handle, buffer.data(), buffer.size());
-            if (copied == length) {
-                text.assign(
-                    reinterpret_cast<const char*>(buffer.data()), buffer.size());
-            }
-            return true;
-        });
-    return text;
-#endif
-    return "";
+    return getClipboardSnapshot().text;
 }
 
 bool RustDeskBridge::isClipboardReceiveReady() {
 #ifdef RUSTDESK_USE_REAL_CORE
     return rdDispatchFfiOutbound(
         impl_.get(), mode_, RustDeskFfiOutboundLane::Clipboard,
-        [](void*) { return true; });
+        [](void* handle) {
+            RustDeskFfiPermissionState permission {};
+            return rustdesk_get_permission_state(handle, &permission) &&
+                ((permission.knownMask & kRustDeskPermissionClipboard) == 0 ||
+                 (permission.enabledMask & kRustDeskPermissionClipboard) != 0);
+        });
 #else
     return false;
 #endif

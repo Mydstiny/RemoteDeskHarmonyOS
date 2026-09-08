@@ -458,8 +458,7 @@ impl RustDeskConnector {
             }
             content.to_vec()
         };
-        if bytes.is_empty()
-            || bytes.len() > MAX_REMOTE_CLIPBOARD_TEXT_BYTES
+        if bytes.len() > MAX_REMOTE_CLIPBOARD_TEXT_BYTES
             || std::str::from_utf8(&bytes).is_err()
         {
             return None;
@@ -468,6 +467,7 @@ impl RustDeskConnector {
     }
 
     fn decode_remote_clipboard_formats(clipboards: &[Clipboard]) -> Option<Vec<u8>> {
+        if clipboards.is_empty() { return Some(Vec::new()); }
         if clipboards.len() > MAX_REMOTE_CLIPBOARD_FORMATS {
             return None;
         }
@@ -1481,6 +1481,477 @@ impl RustDeskConnector {
         Ok(())
     }
 
+    /// Dedicated streaming upload. A successful return proves sender completion only.
+    pub(crate) fn upload_file_stream(
+        &mut self,
+        remote_path: &str,
+        source: crate::file_transfer::UploadSource,
+        job: &crate::file_transfer::TransferJob,
+        overwrite: bool,
+    ) -> io::Result<()> {
+        job.check()?;
+        if self.state != ConnState::Connected {
+            return Err(io::Error::new(
+                ErrorKind::NotConnected,
+                "file session not connected",
+            ));
+        }
+        let crypto = self
+            .crypto_channel
+            .as_mut()
+            .ok_or_else(|| io::Error::new(ErrorKind::NotConnected, "file channel unavailable"))?;
+        crypto.set_read_timeout(Some(Duration::from_millis(250)))?;
+        crypto.set_write_timeout(Some(Duration::from_secs(10)))?;
+        let (dir, name) = Self::split_remote_file_path(remote_path);
+        if name.is_empty() || name == "." || name == ".." {
+            return Err(io::Error::new(
+                ErrorKind::InvalidInput,
+                "invalid remote filename",
+            ));
+        }
+        // Each upload owns a dedicated authenticated channel, so a fixed wire id is isolated.
+        let id = 1;
+        let modified = source.modified();
+        let mut entry = FileEntry::new();
+        entry.set_entry_type(FileType::File);
+        entry.set_name(name.to_owned());
+        entry.set_size(source.size());
+        entry.set_modified_time(modified);
+        let mut receive = FileTransferReceiveRequest::new();
+        receive.set_id(id);
+        receive.set_path(dir.to_owned());
+        receive.set_file_num(0);
+        receive.set_total_size(source.size());
+        receive.mut_files().push(entry);
+        let mut action = FileAction::new();
+        action.union = Some(FileAction_oneof_union::receive(receive));
+        let mut message = Message::new();
+        message.union = Some(Message_oneof_union::file_action(action));
+        Self::send_message_encrypted(crypto, &message)?;
+        // Official CM only checks target existence after the sender publishes its
+        // source digest. NewWrite alone does not produce a confirmation.
+        let mut digest = crate::protocol::message_proto::FileTransferDigest::new();
+        digest.set_id(id);
+        digest.set_file_num(0);
+        digest.set_file_size(source.size());
+        digest.set_last_modified(modified);
+        digest.set_is_resume(false);
+        let mut response = FileResponse::new();
+        response.union = Some(FileResponse_oneof_union::digest(digest));
+        let mut message = Message::new();
+        message.union = Some(Message_oneof_union::file_response(response));
+        Self::send_message_encrypted(crypto, &message)?;
+        let waiting = Instant::now();
+        loop {
+            job.check()?;
+            if waiting.elapsed() >= Duration::from_secs(30) {
+                return Err(io::Error::new(
+                    ErrorKind::TimedOut,
+                    "file confirmation deadline",
+                ));
+            }
+            match crypto.recv_with_pump(|_| job.check()) {
+                Ok(bytes) => {
+                    let message: Message = protobuf::parse_from_bytes(&bytes)
+                        .map_err(|e| io::Error::new(ErrorKind::InvalidData, e))?;
+                    if Self::file_message_denies_permission(&message) {
+                        return Err(io::Error::new(
+                            ErrorKind::PermissionDenied,
+                            "file permission denied",
+                        ));
+                    }
+                    match message.union {
+                        Some(Message_oneof_union::file_response(response)) => {
+                            match response.union {
+                                Some(FileResponse_oneof_union::error(error))
+                                    if error.get_id() == id =>
+                                {
+                                    return Err(io::Error::new(
+                                        ErrorKind::PermissionDenied,
+                                        "remote upload rejected",
+                                    ))
+                                }
+                                Some(FileResponse_oneof_union::digest(digest))
+                                    if digest.get_id() == id && digest.get_file_num() == 0 =>
+                                {
+                                    // Any digest means an existing destination. Refuse implicit resume/overwrite.
+                                    let mut confirm = FileTransferSendConfirmRequest::new();
+                                    confirm.set_id(id);
+                                    confirm.set_file_num(0);
+                                    if overwrite {
+                                        confirm.set_offset_blk(0);
+                                    } else {
+                                        confirm.set_skip(true);
+                                    }
+                                    let mut action = FileAction::new();
+                                    action.union =
+                                        Some(FileAction_oneof_union::send_confirm(confirm));
+                                    let mut message = Message::new();
+                                    message.union = Some(Message_oneof_union::file_action(action));
+                                    Self::send_message_encrypted(crypto, &message)?;
+                                    if !overwrite {
+                                        return Err(io::Error::new(
+                                            ErrorKind::AlreadyExists,
+                                            "remote target exists",
+                                        ));
+                                    }
+                                    break;
+                                }
+                                _ => {}
+                            }
+                        }
+                        Some(Message_oneof_union::file_action(action)) => {
+                            if let Some(FileAction_oneof_union::send_confirm(confirm)) =
+                                action.union
+                            {
+                                if confirm.get_id() == id && confirm.get_file_num() == 0 {
+                                    if confirm.get_skip() {
+                                        return Err(io::Error::new(
+                                            ErrorKind::AlreadyExists,
+                                            "remote target skipped",
+                                        ));
+                                    }
+                                    if confirm.get_offset_blk() != 0 {
+                                        return Err(io::Error::new(
+                                            ErrorKind::InvalidData,
+                                            "unverified resume offset",
+                                        ));
+                                    }
+                                    break;
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                Err(error)
+                    if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) =>
+                {
+                    // Upstream does not send a positive reply for a new file. Its receive job
+                    // is ready immediately. Existing-target digest must be handled first.
+                    if overwrite && waiting.elapsed() >= Duration::from_millis(1500) {
+                        break;
+                    }
+                }
+                Err(error) => {
+                    job.check()?;
+                    return Err(error);
+                }
+            }
+            if waiting.elapsed() >= Duration::from_secs(30) {
+                return Err(io::Error::new(
+                    ErrorKind::TimedOut,
+                    "file confirmation deadline",
+                ));
+            }
+        }
+        crate::file_transfer::pump_upload(&source, job, |index, data| {
+            let mut block = FileTransferBlock::new();
+            block.set_id(id);
+            block.set_file_num(0);
+            block.set_data(data.to_vec());
+            block.set_blk_id(index);
+            block.set_compressed(false);
+            let mut response = FileResponse::new();
+            response.union = Some(FileResponse_oneof_union::block(block));
+            let mut message = Message::new();
+            message.union = Some(Message_oneof_union::file_response(response));
+            Self::send_message_encrypted(crypto, &message)?;
+            job.mark_remote_write_started();
+            Ok(())
+        })?;
+        job.check()?;
+        if source.size() == 0 {
+            // Official receiver opens the destination on the first block, even for an empty file.
+            let mut block = FileTransferBlock::new();
+            block.set_id(id);
+            block.set_file_num(0);
+            let mut response = FileResponse::new();
+            response.union = Some(FileResponse_oneof_union::block(block));
+            let mut message = Message::new();
+            message.union = Some(Message_oneof_union::file_response(response));
+            Self::send_message_encrypted(crypto, &message)?;
+            job.mark_remote_write_started();
+        }
+        job.check()?;
+        let mut done = FileTransferDone::new();
+        done.set_id(id);
+        done.set_file_num(0);
+        let mut response = FileResponse::new();
+        response.union = Some(FileResponse_oneof_union::done(done));
+        let mut message = Message::new();
+        message.union = Some(Message_oneof_union::file_response(response));
+        Self::send_message_encrypted(crypto, &message)
+    }
+
+    /// Best effort cleanup only after this operation sent a data block, or for its read job.
+    pub(crate) fn cancel_file_transfer_job(&mut self) {
+        if let Some(crypto) = self.crypto_channel.as_mut() {
+            let _ = crypto.set_write_timeout(Some(Duration::from_secs(1)));
+            let mut cancel = crate::protocol::message_proto::FileTransferCancel::new();
+            cancel.set_id(1);
+            let mut action = FileAction::new();
+            action.union = Some(FileAction_oneof_union::cancel(cancel));
+            let mut message = Message::new();
+            message.union = Some(Message_oneof_union::file_action(action));
+            let _ = Self::send_message_encrypted(crypto, &message);
+        }
+    }
+
+    fn prepare_file_channel(&mut self) -> io::Result<&mut CryptoChannel> {
+        if self.state != ConnState::Connected {
+            return Err(io::Error::new(
+                ErrorKind::NotConnected,
+                "file session not connected",
+            ));
+        }
+        let crypto = self
+            .crypto_channel
+            .as_mut()
+            .ok_or_else(|| io::Error::new(ErrorKind::NotConnected, "file channel unavailable"))?;
+        crypto.set_read_timeout(Some(Duration::from_millis(250)))?;
+        crypto.set_write_timeout(Some(Duration::from_secs(10)))?;
+        Ok(crypto)
+    }
+
+    fn file_message_denies_permission(message: &Message) -> bool {
+        if let Some(Message_oneof_union::misc(misc)) = &message.union {
+            if let Some(Misc_oneof_union::permission_info(permission)) = &misc.union {
+                return permission_mask(permission.get_permission())
+                    == crate::control_inbox::PERMISSION_FILE
+                    && !permission.get_enabled();
+            }
+        }
+        false
+    }
+
+    pub(crate) fn read_remote_directory(
+        &mut self,
+        path: &str,
+        job: &crate::file_transfer::TransferJob,
+    ) -> io::Result<crate::file_transfer::RemoteDirectory> {
+        job.check()?;
+        let crypto = self.prepare_file_channel()?;
+        let mut request = crate::protocol::message_proto::ReadDir::new();
+        request.set_path(path.to_owned());
+        request.set_include_hidden(false);
+        let mut action = FileAction::new();
+        action.union = Some(FileAction_oneof_union::read_dir(request));
+        let mut message = Message::new();
+        message.union = Some(Message_oneof_union::file_action(action));
+        Self::send_message_encrypted(crypto, &message)?;
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            job.check()?;
+            if Instant::now() >= deadline {
+                return Err(io::Error::new(
+                    ErrorKind::TimedOut,
+                    "directory reply deadline",
+                ));
+            }
+            match crypto.recv_with_pump(|_| job.check()) {
+                Ok(bytes) => {
+                    let message: Message = protobuf::parse_from_bytes(&bytes)
+                        .map_err(|e| io::Error::new(ErrorKind::InvalidData, e))?;
+                    if Self::file_message_denies_permission(&message) {
+                        return Err(io::Error::new(
+                            ErrorKind::PermissionDenied,
+                            "file permission denied",
+                        ));
+                    }
+                    if let Some(Message_oneof_union::file_response(response)) = message.union {
+                        match response.union {
+                            Some(FileResponse_oneof_union::dir(directory))
+                                if directory.get_id() == 0 =>
+                            {
+                                if directory.get_path().len() > 32768
+                                    || directory.get_path().contains('\0')
+                                    || directory.get_entries().len() > 4096
+                                {
+                                    return Err(io::Error::new(
+                                        ErrorKind::InvalidData,
+                                        "directory entry limit",
+                                    ));
+                                }
+                                let mut result = Vec::new();
+                                for entry in directory.get_entries() {
+                                    let name = entry.get_name();
+                                    if name.is_empty()
+                                        || name == "."
+                                        || name == ".."
+                                        || name.len() > 4096
+                                        || name.contains('\0')
+                                        || (entry.get_entry_type() != FileType::DirDrive
+                                            && (name.contains('/') || name.contains('\\')))
+                                    {
+                                        return Err(io::Error::new(
+                                            ErrorKind::InvalidData,
+                                            "unsafe remote directory entry",
+                                        ));
+                                    }
+                                    result.push(crate::file_transfer::RemoteFileEntry {
+                                        name: name.to_owned(),
+                                        entry_type: entry.get_entry_type() as u32,
+                                        size: entry.get_size(),
+                                        modified: entry.get_modified_time(),
+                                    });
+                                }
+                                return Ok(crate::file_transfer::RemoteDirectory {
+                                    path: directory.get_path().to_owned(),
+                                    entries: result,
+                                });
+                            }
+                            Some(FileResponse_oneof_union::error(_)) => {
+                                return Err(io::Error::new(
+                                    ErrorKind::PermissionDenied,
+                                    "directory request rejected",
+                                ))
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                Err(error)
+                    if matches!(error.kind(), ErrorKind::TimedOut | ErrorKind::WouldBlock) =>
+                {
+                    continue
+                }
+                Err(error) => {
+                    job.check()?;
+                    return Err(error);
+                }
+            }
+        }
+    }
+
+    pub(crate) fn download_file_stream(
+        &mut self,
+        path: &str,
+        mut sink: crate::file_transfer::DownloadSink,
+        job: &crate::file_transfer::TransferJob,
+    ) -> io::Result<()> {
+        job.check()?;
+        let crypto = self.prepare_file_channel()?;
+        let mut request = crate::protocol::message_proto::FileTransferSendRequest::new();
+        request.set_id(1);
+        request.set_path(path.to_owned());
+        request.set_file_num(0);
+        request.set_include_hidden(true);
+        let mut action = FileAction::new();
+        action.union = Some(FileAction_oneof_union::send(request));
+        let mut message = Message::new();
+        message.union = Some(Message_oneof_union::file_action(action));
+        Self::send_message_encrypted(crypto, &message)?;
+        let mut metadata_received = false;
+        let mut file_ended = false;
+        loop {
+            job.check()?;
+            match crypto.recv_with_pump(|_| job.check()) {
+                Ok(bytes) => {
+                    let message: Message = protobuf::parse_from_bytes(&bytes)
+                        .map_err(|e| io::Error::new(ErrorKind::InvalidData, e))?;
+                    if Self::file_message_denies_permission(&message) {
+                        return Err(io::Error::new(
+                            ErrorKind::PermissionDenied,
+                            "file permission denied",
+                        ));
+                    }
+                    if let Some(Message_oneof_union::file_response(response)) = message.union {
+                        match response.union {
+                            Some(FileResponse_oneof_union::dir(directory))
+                                if directory.get_id() == 1 =>
+                            {
+                                if metadata_received
+                                    || directory.get_path() != path
+                                    || directory.get_entries().len() != 1
+                                {
+                                    return Err(io::Error::new(
+                                        ErrorKind::InvalidData,
+                                        "download requires one matching file",
+                                    ));
+                                }
+                                let entry = &directory.get_entries()[0];
+                                if entry.get_entry_type() != FileType::File
+                                    || (!entry.get_name().is_empty()
+                                        && entry.get_name() != Self::split_remote_file_path(path).1)
+                                    || entry.get_size() != sink.expected_size
+                                    || entry.get_modified_time() != sink.modified
+                                {
+                                    return Err(io::Error::new(
+                                        ErrorKind::InvalidData,
+                                        "download source metadata changed",
+                                    ));
+                                }
+                                metadata_received = true;
+                            }
+                            Some(FileResponse_oneof_union::digest(digest))
+                                if digest.get_id() == 1 =>
+                            {
+                                if !metadata_received
+                                    || digest.get_file_num() != 0
+                                    || digest.get_is_upload()
+                                    || digest.get_file_size() != sink.expected_size
+                                    || digest.get_last_modified() != sink.modified
+                                {
+                                    return Err(io::Error::new(
+                                        ErrorKind::InvalidData,
+                                        "download digest differs from selected source",
+                                    ));
+                                }
+                                let mut confirm = FileTransferSendConfirmRequest::new();
+                                confirm.set_id(1);
+                                confirm.set_file_num(0);
+                                confirm.set_offset_blk(0);
+                                let mut action = FileAction::new();
+                                action.union = Some(FileAction_oneof_union::send_confirm(confirm));
+                                let mut message = Message::new();
+                                message.union = Some(Message_oneof_union::file_action(action));
+                                Self::send_message_encrypted(crypto, &message)?;
+                            }
+                            Some(FileResponse_oneof_union::block(block)) if block.get_id() == 1 => {
+                                if !metadata_received || block.get_file_num() != 0 || file_ended {
+                                    return Err(io::Error::new(
+                                        ErrorKind::InvalidData,
+                                        "unexpected download block",
+                                    ));
+                                }
+                                if block.get_data().is_empty() {
+                                    file_ended = true;
+                                }
+                                sink.write_block(block.get_data(), block.get_compressed(), job)?;
+                            }
+                            Some(FileResponse_oneof_union::done(done)) if done.get_id() == 1 => {
+                                if !metadata_received || !(0..=1).contains(&done.get_file_num()) {
+                                    return Err(io::Error::new(
+                                        ErrorKind::InvalidData,
+                                        "unexpected download completion",
+                                    ));
+                                }
+                                return sink.complete(job);
+                            }
+                            Some(FileResponse_oneof_union::error(error)) if error.get_id() == 1 => {
+                                return Err(io::Error::new(
+                                    ErrorKind::PermissionDenied,
+                                    "download rejected by peer",
+                                ))
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                Err(error)
+                    if matches!(error.kind(), ErrorKind::TimedOut | ErrorKind::WouldBlock) =>
+                {
+                    continue
+                }
+                Err(error) => {
+                    job.check()?;
+                    return Err(error);
+                }
+            }
+        }
+    }
+
     pub fn upload_file_once(
         &mut self,
         remote_path: &str,
@@ -1905,6 +2376,16 @@ impl RustDeskConnector {
                         }
                     }
                 }
+                crate::ControlMsg::ClipboardTracked { content, receipt } => {
+                    let permission = controls.permission_snapshot();
+                    let clipboard = crate::control_inbox::PERMISSION_CLIPBOARD;
+                    if !controls.shutdown_requested() && receipt.pending() &&
+                        !(permission.known_mask & clipboard != 0 && permission.enabled_mask & clipboard == 0) {
+                        let mut cb = Clipboard::new(); cb.set_format(ClipboardFormat::Text); cb.set_content(content);
+                        let mut msg = Message::new(); msg.union = Some(Message_oneof_union::clipboard(cb));
+                        if let Ok(bytes) = msg.write_to_bytes() { let _ = crypto.send_with_publication(&bytes, receipt); }
+                    }
+                }
                 crate::ControlMsg::Clipboard { content } => {
                     let mut cb = Clipboard::new();
                     cb.set_format(ClipboardFormat::Text);
@@ -1997,7 +2478,7 @@ impl RustDeskConnector {
         VF: FnMut(&VideoFrame),
         AFF: FnMut(&AudioFormat),
         AF: FnMut(&AudioFrame),
-        CF: FnMut(&[u8]),
+        CF: FnMut(Option<&[u8]>),
         CU: FnMut(CursorStreamUpdate),
         DS: FnMut(),
     {
@@ -2479,20 +2960,14 @@ impl RustDeskConnector {
                 Some(Message_oneof_union::clipboard(ref clipboard)) => {
                     last_msg_kind = "clipboard";
                     *msg_stats.entry("clipboard").or_default() += 1;
-                    if let Some(text) =
-                        Self::decode_remote_clipboard_formats(std::slice::from_ref(clipboard))
-                    {
-                        on_clipboard(&text);
-                    }
+                    let text = Self::decode_remote_clipboard_formats(std::slice::from_ref(clipboard));
+                    on_clipboard(text.as_deref());
                 }
                 Some(Message_oneof_union::multi_clipboards(ref clipboards)) => {
                     last_msg_kind = "multi_clipboards";
                     *msg_stats.entry("multi_clipboards").or_default() += 1;
-                    if let Some(text) =
-                        Self::decode_remote_clipboard_formats(clipboards.get_clipboards())
-                    {
-                        on_clipboard(&text);
-                    }
+                    let text = Self::decode_remote_clipboard_formats(clipboards.get_clipboards());
+                    on_clipboard(text.as_deref());
                 }
                 // switch_display / message_query 等其他类型由 _ arm 统一处理
                 Some(Message_oneof_union::cursor_position(position)) => {
@@ -3011,7 +3486,7 @@ impl RustDeskConnector {
                 io::ErrorKind::Other,
                 "SendFile handled by streaming loop",
             )),
-            crate::ControlMsg::Clipboard { .. } => Err(io::Error::new(
+            crate::ControlMsg::Clipboard { .. } | crate::ControlMsg::ClipboardTracked { .. } => Err(io::Error::new(
                 io::ErrorKind::Other,
                 "Clipboard handled by streaming loop",
             )),
@@ -3035,7 +3510,7 @@ impl RustDeskConnector {
             crate::ControlMsg::MouseWheel2D { .. } => "mouse_wheel_2d",
             crate::ControlMsg::Text { .. } => "text",
             crate::ControlMsg::SendFile { .. } => "send_file",
-            crate::ControlMsg::Clipboard { .. } => "clipboard",
+            crate::ControlMsg::Clipboard { .. } | crate::ControlMsg::ClipboardTracked { .. } => "clipboard",
             crate::ControlMsg::ChangeDisplayResolution { .. } => "change_display_resolution",
             crate::ControlMsg::TouchScale { .. } => "touch_scale",
             crate::ControlMsg::TouchPanStart { .. } => "touch_pan_start",
@@ -4692,6 +5167,13 @@ mod tests {
     }
 
     #[test]
+    fn remote_clipboard_preserves_explicit_empty_events() {
+        let empty = clipboard(ClipboardFormat::Text, Vec::new(), false);
+        assert_eq!(RustDeskConnector::decode_remote_clipboard_formats(&[empty]), Some(Vec::new()));
+        assert_eq!(RustDeskConnector::decode_remote_clipboard_formats(&[]), Some(Vec::new()));
+    }
+
+    #[test]
     fn remote_clipboard_decodes_bounded_compressed_text() {
         let encoded_frames = [
             zstd::bulk::compress(b"compressed text", 3)
@@ -6205,6 +6687,575 @@ mod tests {
     }
 
     #[test]
+    fn file_transfer_directory_response_keeps_types_and_rejects_traversal() {
+        use crate::file_transfer::TransferRegistry;
+        use crate::protocol::message_proto::{
+            FileDirectory, FileEntry, FileResponse, FileResponse_oneof_union, FileType,
+        };
+        for unsafe_name in [false, true] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = listener.local_addr().unwrap();
+            let peer = thread::spawn(move || {
+                let (mut socket, _) = listener.accept().unwrap();
+                socket
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
+                let request: Message =
+                    protobuf::parse_from_bytes(&wire::read_frame(&mut socket).unwrap()).unwrap();
+                assert!(matches!(
+                    request.union,
+                    Some(Message_oneof_union::file_action(_))
+                ));
+                let mut directory = FileDirectory::new();
+                directory.set_path("/home/test".to_owned());
+                let mut entry = FileEntry::new();
+                entry.set_entry_type(FileType::File);
+                entry.set_size(99);
+                entry.set_modified_time(1_700_000_123);
+                entry.set_name(if unsafe_name { "../escape" } else { "one.txt" }.to_owned());
+                directory.mut_entries().push(entry);
+                let mut response = FileResponse::new();
+                response.union = Some(FileResponse_oneof_union::dir(directory));
+                let mut message = Message::new();
+                message.union = Some(Message_oneof_union::file_response(response));
+                wire::write_frame(&mut socket, &message.write_to_bytes().unwrap()).unwrap();
+            });
+            let mut connector = RustDeskConnector::new();
+            connector.state = super::ConnState::Connected;
+            connector.crypto_channel = Some(CryptoChannel::new_plain(
+                TcpStream::connect(address).unwrap(),
+            ));
+            let job = TransferRegistry::default().insert(1, 0).unwrap();
+            let result = connector.read_remote_directory("", &job);
+            if unsafe_name {
+                assert!(result.is_err());
+            } else {
+                let directory = result.unwrap();
+                assert_eq!(directory.path, "/home/test");
+                assert_eq!(directory.entries.len(), 1);
+                assert_eq!(directory.entries[0].name, "one.txt");
+                assert_eq!(directory.entries[0].size, 99);
+            }
+            peer.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn file_transfer_download_rejects_metadata_errors_overrun_early_done_and_cancel() {
+        use crate::file_transfer::{DownloadSink, TransferRegistry};
+        use crate::protocol::message_proto::{
+            FileDirectory, FileEntry, FileResponse, FileResponse_oneof_union, FileTransferBlock,
+            FileTransferDigest, FileTransferDone, FileType, Misc, Misc_oneof_union, PermissionInfo,
+            PermissionInfo_Permission,
+        };
+        for scenario in [
+            "name",
+            "metadata",
+            "file_num",
+            "overrun",
+            "short_done",
+            "digest",
+            "cancel",
+            "permission",
+        ] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = listener.local_addr().unwrap();
+            let job = TransferRegistry::default().insert(1, 5).unwrap();
+            let peer_job = job.clone();
+            let peer = thread::spawn(move || {
+                let (mut socket, _) = listener.accept().unwrap();
+                socket
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
+                wire::read_frame(&mut socket).unwrap();
+                let mut directory = FileDirectory::new();
+                directory.set_id(1);
+                directory.set_path("/home/file.bin".into());
+                let mut entry = FileEntry::new();
+                entry.set_entry_type(FileType::File);
+                entry.set_size(if scenario == "metadata" { 6 } else { 5 });
+                entry.set_modified_time(123);
+                if scenario == "name" {
+                    entry.set_name("../escape".into());
+                }
+                directory.mut_entries().push(entry);
+                let mut response = FileResponse::new();
+                response.union = Some(FileResponse_oneof_union::dir(directory));
+                let mut message = Message::new();
+                message.union = Some(Message_oneof_union::file_response(response));
+                wire::write_frame(&mut socket, &message.write_to_bytes().unwrap()).unwrap();
+                if scenario == "name" || scenario == "metadata" {
+                    return;
+                }
+                let mut response = FileResponse::new();
+                let mut message = Message::new();
+                match scenario {
+                    "short_done" => {
+                        let mut done = FileTransferDone::new();
+                        done.set_id(1);
+                        done.set_file_num(1);
+                        response.union = Some(FileResponse_oneof_union::done(done));
+                    }
+                    "digest" => {
+                        let mut digest = FileTransferDigest::new();
+                        digest.set_id(1);
+                        digest.set_file_size(4);
+                        digest.set_last_modified(123);
+                        response.union = Some(FileResponse_oneof_union::digest(digest));
+                    }
+                    "permission" => {
+                        let mut permission = PermissionInfo::new();
+                        permission.set_permission(PermissionInfo_Permission::File);
+                        permission.set_enabled(false);
+                        let mut misc = Misc::new();
+                        misc.union = Some(Misc_oneof_union::permission_info(permission));
+                        message.union = Some(Message_oneof_union::misc(misc));
+                    }
+                    _ => {
+                        if scenario == "cancel" {
+                            peer_job.cancel();
+                        }
+                        let mut block = FileTransferBlock::new();
+                        block.set_id(1);
+                        block.set_file_num(if scenario == "file_num" { 1 } else { 0 });
+                        block.set_data(vec![5; if scenario == "overrun" { 6 } else { 5 }]);
+                        response.union = Some(FileResponse_oneof_union::block(block));
+                    }
+                }
+                if scenario != "permission" {
+                    message.union = Some(Message_oneof_union::file_response(response));
+                }
+                let _ = wire::write_frame(&mut socket, &message.write_to_bytes().unwrap());
+            });
+            let mut connector = RustDeskConnector::new();
+            connector.state = super::ConnState::Connected;
+            connector.crypto_channel = Some(CryptoChannel::new_plain(
+                TcpStream::connect(address).unwrap(),
+            ));
+            let path = std::env::temp_dir().join(format!(
+                "rd-download-reject-{}-{}.bin",
+                std::process::id(),
+                scenario
+            ));
+            let file = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create_new(true)
+                .open(&path)
+                .unwrap();
+            std::fs::remove_file(path).unwrap();
+            let sink = DownloadSink::new(file.try_clone().unwrap(), 5, 123).unwrap();
+            let error = connector
+                .download_file_stream("/home/file.bin", sink, &job)
+                .unwrap_err();
+            assert_eq!(
+                error.kind(),
+                match scenario {
+                    "short_done" => std::io::ErrorKind::UnexpectedEof,
+                    "cancel" => std::io::ErrorKind::Interrupted,
+                    "permission" => std::io::ErrorKind::PermissionDenied,
+                    _ => std::io::ErrorKind::InvalidData,
+                },
+                "scenario {}",
+                scenario
+            );
+            assert_eq!(file.metadata().unwrap().len(), 0);
+            peer.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn file_transfer_download_wire_accepts_official_digest_compressed_blocks_and_done() {
+        use crate::file_transfer::{DownloadSink, TransferRegistry};
+        use crate::protocol::message_proto::{
+            FileAction_oneof_union, FileDirectory, FileEntry, FileResponse,
+            FileResponse_oneof_union, FileTransferBlock, FileTransferDigest, FileTransferDone,
+            FileType,
+        };
+        for size in [0usize, 150_000] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = listener.local_addr().unwrap();
+            let peer = thread::spawn(move || {
+                let (mut socket, _) = listener.accept().unwrap();
+                socket
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
+                let request: Message =
+                    protobuf::parse_from_bytes(&wire::read_frame(&mut socket).unwrap()).unwrap();
+                match request.union {
+                    Some(Message_oneof_union::file_action(action)) => match action.union {
+                        Some(FileAction_oneof_union::send(request)) => {
+                            assert_eq!(request.get_id(), 1);
+                            assert_eq!(request.get_path(), "/home/file.bin");
+                        }
+                        _ => panic!("send request required"),
+                    },
+                    _ => panic!("action required"),
+                }
+                let mut directory = FileDirectory::new();
+                directory.set_id(1);
+                directory.set_path("/home/file.bin".into());
+                let mut entry = FileEntry::new();
+                entry.set_entry_type(FileType::File);
+                entry.set_size(size as u64);
+                entry.set_modified_time(1_700_000_123);
+                directory.mut_entries().push(entry);
+                let mut response = FileResponse::new();
+                response.union = Some(FileResponse_oneof_union::dir(directory));
+                let mut message = Message::new();
+                message.union = Some(Message_oneof_union::file_response(response));
+                wire::write_frame(&mut socket, &message.write_to_bytes().unwrap()).unwrap();
+                let mut digest = FileTransferDigest::new();
+                digest.set_id(1);
+                digest.set_file_size(size as u64);
+                digest.set_last_modified(1_700_000_123);
+                let mut response = FileResponse::new();
+                response.union = Some(FileResponse_oneof_union::digest(digest));
+                let mut message = Message::new();
+                message.union = Some(Message_oneof_union::file_response(response));
+                wire::write_frame(&mut socket, &message.write_to_bytes().unwrap()).unwrap();
+                let confirmation: Message =
+                    protobuf::parse_from_bytes(&wire::read_frame(&mut socket).unwrap()).unwrap();
+                match confirmation.union {
+                    Some(Message_oneof_union::file_action(action)) => match action.union {
+                        Some(FileAction_oneof_union::send_confirm(confirm)) => {
+                            assert_eq!(confirm.get_offset_blk(), 0);
+                            assert!(!confirm.get_skip());
+                        }
+                        _ => panic!("confirm required"),
+                    },
+                    _ => panic!("confirm action required"),
+                }
+                let payload = vec![17; size];
+                for chunk in payload.chunks(128 * 1024) {
+                    let mut block = FileTransferBlock::new();
+                    block.set_id(1);
+                    block.set_data(zstd::bulk::compress(chunk, 1).unwrap());
+                    block.set_compressed(true);
+                    let mut response = FileResponse::new();
+                    response.union = Some(FileResponse_oneof_union::block(block));
+                    let mut message = Message::new();
+                    message.union = Some(Message_oneof_union::file_response(response));
+                    wire::write_frame(&mut socket, &message.write_to_bytes().unwrap()).unwrap();
+                }
+                let mut block = FileTransferBlock::new();
+                block.set_id(1);
+                let mut response = FileResponse::new();
+                response.union = Some(FileResponse_oneof_union::block(block));
+                let mut message = Message::new();
+                message.union = Some(Message_oneof_union::file_response(response));
+                wire::write_frame(&mut socket, &message.write_to_bytes().unwrap()).unwrap();
+                let mut done = FileTransferDone::new();
+                done.set_id(1);
+                done.set_file_num(1);
+                let mut response = FileResponse::new();
+                response.union = Some(FileResponse_oneof_union::done(done));
+                let mut message = Message::new();
+                message.union = Some(Message_oneof_union::file_response(response));
+                wire::write_frame(&mut socket, &message.write_to_bytes().unwrap()).unwrap();
+            });
+            let mut connector = RustDeskConnector::new();
+            connector.state = super::ConnState::Connected;
+            connector.crypto_channel = Some(CryptoChannel::new_plain(
+                TcpStream::connect(address).unwrap(),
+            ));
+            let path = std::env::temp_dir().join(format!(
+                "rd-download-wire-{}-{}.bin",
+                std::process::id(),
+                size
+            ));
+            let file = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create_new(true)
+                .open(&path)
+                .unwrap();
+            std::fs::remove_file(path).unwrap();
+            let sink =
+                DownloadSink::new(file.try_clone().unwrap(), size as u64, 1_700_000_123).unwrap();
+            let job = TransferRegistry::default().insert(1, size as u64).unwrap();
+            connector
+                .download_file_stream("/home/file.bin", sink, &job)
+                .unwrap();
+            assert_eq!(file.metadata().unwrap().len(), size as u64);
+            let mut bytes = vec![0; size];
+            std::os::unix::fs::FileExt::read_exact_at(&file, &mut bytes, 0).unwrap();
+            assert!(bytes.iter().all(|b| *b == 17));
+            assert_eq!(
+                file.metadata()
+                    .unwrap()
+                    .modified()
+                    .unwrap()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs(),
+                1_700_000_123
+            );
+            assert_eq!(job.status.lock().unwrap().0.transferred_bytes, size as u64);
+            peer.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn file_transfer_empty_upload_creates_a_block_and_cleanup_uses_its_job_id() {
+        use crate::file_transfer::{TransferRegistry, UploadSource};
+        use crate::protocol::message_proto::{
+            FileAction, FileAction_oneof_union, FileResponse_oneof_union,
+            FileTransferSendConfirmRequest,
+        };
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let peer = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            wire::read_frame(&mut socket).unwrap();
+            wire::read_frame(&mut socket).unwrap();
+            let mut confirm = FileTransferSendConfirmRequest::new();
+            confirm.set_id(1);
+            confirm.set_offset_blk(0);
+            let mut action = FileAction::new();
+            action.union = Some(FileAction_oneof_union::send_confirm(confirm));
+            let mut message = Message::new();
+            message.union = Some(Message_oneof_union::file_action(action));
+            wire::write_frame(&mut socket, &message.write_to_bytes().unwrap()).unwrap();
+            let creation: Message =
+                protobuf::parse_from_bytes(&wire::read_frame(&mut socket).unwrap()).unwrap();
+            match creation.union {
+                Some(Message_oneof_union::file_response(response)) => match response.union {
+                    Some(FileResponse_oneof_union::block(block)) => {
+                        assert_eq!(block.get_id(), 1);
+                        assert!(block.get_data().is_empty());
+                    }
+                    _ => panic!("empty creation block required"),
+                },
+                _ => panic!("response required"),
+            }
+            let done: Message =
+                protobuf::parse_from_bytes(&wire::read_frame(&mut socket).unwrap()).unwrap();
+            assert!(matches!(
+                done.union,
+                Some(Message_oneof_union::file_response(_))
+            ));
+            let cleanup: Message =
+                protobuf::parse_from_bytes(&wire::read_frame(&mut socket).unwrap()).unwrap();
+            match cleanup.union {
+                Some(Message_oneof_union::file_action(action)) => match action.union {
+                    Some(FileAction_oneof_union::cancel(cancel)) => assert_eq!(cancel.get_id(), 1),
+                    _ => panic!("cancel required"),
+                },
+                _ => panic!("cancel action required"),
+            }
+        });
+        let mut connector = RustDeskConnector::new();
+        connector.state = super::ConnState::Connected;
+        connector.crypto_channel = Some(CryptoChannel::new_plain(
+            TcpStream::connect(address).unwrap(),
+        ));
+        let job = TransferRegistry::default().insert(1, 0).unwrap();
+        connector
+            .upload_file_stream("/home/empty", UploadSource::Memory(Vec::new()), &job, false)
+            .unwrap();
+        assert!(job.remote_write_started());
+        assert_eq!(job.status.lock().unwrap().0.transferred_bytes, 0);
+        connector.cancel_file_transfer_job();
+        peer.join().unwrap();
+    }
+
+    #[test]
+    fn file_transfer_stream_conflict_resume_and_cancellation_never_send_file_data() {
+        use crate::file_transfer::{TransferRegistry, UploadSource};
+        use crate::protocol::message_proto::{
+            FileAction, FileAction_oneof_union, FileResponse, FileResponse_oneof_union,
+            FileTransferDigest, FileTransferSendConfirmRequest,
+        };
+        for scenario in ["conflict", "resume", "cancel"] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = listener.local_addr().unwrap();
+            let mut registry = TransferRegistry::default();
+            let job = registry.insert(1, 3).unwrap();
+            let peer_job = job.clone();
+            let peer = thread::spawn(move || {
+                let (mut socket, _) = listener.accept().unwrap();
+                socket
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
+                wire::read_frame(&mut socket).unwrap();
+                wire::read_frame(&mut socket).unwrap(); // source digest triggers official conflict check
+                let mut message = Message::new();
+                match scenario {
+                    "conflict" => {
+                        let mut digest = FileTransferDigest::new();
+                        digest.set_id(1);
+                        digest.set_file_size(5);
+                        let mut response = FileResponse::new();
+                        response.union = Some(FileResponse_oneof_union::digest(digest));
+                        message.union = Some(Message_oneof_union::file_response(response));
+                        wire::write_frame(&mut socket, &message.write_to_bytes().unwrap()).unwrap();
+                        let confirm: Message =
+                            protobuf::parse_from_bytes(&wire::read_frame(&mut socket).unwrap())
+                                .unwrap();
+                        match confirm.union {
+                            Some(Message_oneof_union::file_action(action)) => match action.union {
+                                Some(FileAction_oneof_union::send_confirm(confirm)) => {
+                                    assert!(confirm.get_skip())
+                                }
+                                _ => panic!("skip required"),
+                            },
+                            _ => panic!("skip action required"),
+                        }
+                    }
+                    "resume" => {
+                        let mut confirm = FileTransferSendConfirmRequest::new();
+                        confirm.set_id(1);
+                        confirm.set_offset_blk(99);
+                        let mut action = FileAction::new();
+                        action.union = Some(FileAction_oneof_union::send_confirm(confirm));
+                        message.union = Some(Message_oneof_union::file_action(action));
+                        wire::write_frame(&mut socket, &message.write_to_bytes().unwrap()).unwrap();
+                    }
+                    _ => peer_job.cancel(),
+                }
+                assert!(
+                    wire::read_frame(&mut socket).is_err(),
+                    "must not send block or Done"
+                );
+            });
+            let socket = TcpStream::connect(address).unwrap();
+            let mut connector = RustDeskConnector::new();
+            connector.state = super::ConnState::Connected;
+            connector.crypto_channel = Some(CryptoChannel::new_plain(socket));
+            let error = connector
+                .upload_file_stream(
+                    "/tmp/file.bin",
+                    UploadSource::Memory(vec![1; 3]),
+                    &job,
+                    false,
+                )
+                .unwrap_err();
+            assert_eq!(
+                error.kind(),
+                match scenario {
+                    "conflict" => std::io::ErrorKind::AlreadyExists,
+                    "resume" => std::io::ErrorKind::InvalidData,
+                    _ => std::io::ErrorKind::Interrupted,
+                }
+            );
+            assert_eq!(job.status.lock().unwrap().0.transferred_bytes, 0);
+            drop(connector);
+            peer.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn file_transfer_stream_wire_has_bounded_blocks_correct_metadata_and_sender_only_done() {
+        use crate::file_transfer::{TransferRegistry, UploadSource};
+        use crate::protocol::message_proto::{
+            FileAction, FileAction_oneof_union, FileResponse_oneof_union,
+            FileTransferSendConfirmRequest,
+        };
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let peer = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
+            let request: Message =
+                protobuf::parse_from_bytes(&wire::read_frame(&mut socket).unwrap()).unwrap();
+            if let Some(Message_oneof_union::file_action(action)) = request.union {
+                if let Some(FileAction_oneof_union::receive(receive)) = action.union {
+                    assert_eq!(receive.get_path(), "/tmp");
+                    assert_eq!(receive.get_total_size(), 150_000);
+                    assert_eq!(receive.get_files()[0].get_name(), "file.bin");
+                    assert_eq!(receive.get_files()[0].get_modified_time(), 1_700_000_123);
+                } else {
+                    panic!("receive required");
+                }
+            } else {
+                panic!("file action required");
+            }
+            let digest: Message =
+                protobuf::parse_from_bytes(&wire::read_frame(&mut socket).unwrap()).unwrap();
+            if let Some(Message_oneof_union::file_response(response)) = digest.union {
+                if let Some(FileResponse_oneof_union::digest(digest)) = response.union {
+                    assert_eq!(digest.get_file_size(), 150_000);
+                    assert_eq!(digest.get_last_modified(), 1_700_000_123);
+                } else {
+                    panic!("source digest required");
+                }
+            } else {
+                panic!("digest response required");
+            }
+            let mut confirm = FileTransferSendConfirmRequest::new();
+            confirm.set_id(1);
+            let mut action = FileAction::new();
+            action.union = Some(FileAction_oneof_union::send_confirm(confirm));
+            let mut message = Message::new();
+            message.union = Some(Message_oneof_union::file_action(action));
+            wire::write_frame(&mut socket, &message.write_to_bytes().unwrap()).unwrap();
+            let mut bytes = 0;
+            let mut blocks = 0;
+            loop {
+                let message: Message =
+                    protobuf::parse_from_bytes(&wire::read_frame(&mut socket).unwrap()).unwrap();
+                if let Some(Message_oneof_union::file_response(response)) = message.union {
+                    match response.union {
+                        Some(FileResponse_oneof_union::block(block)) => {
+                            assert_eq!(block.get_blk_id(), blocks);
+                            assert!(block.get_data().len() <= 65536);
+                            assert!(block.get_data().iter().all(|b| *b == 13));
+                            blocks += 1;
+                            bytes += block.get_data().len();
+                        }
+                        Some(FileResponse_oneof_union::done(done)) => {
+                            assert_eq!(done.get_id(), 1);
+                            break;
+                        }
+                        _ => panic!("unexpected response"),
+                    }
+                } else {
+                    panic!("response required");
+                }
+            }
+            assert_eq!((bytes, blocks), (150_000, 3));
+            // No receiver Done is emitted: return value must not claim verification.
+        });
+        let socket = TcpStream::connect(address).unwrap();
+        let mut connector = RustDeskConnector::new();
+        connector.state = super::ConnState::Connected;
+        connector.crypto_channel = Some(CryptoChannel::new_plain(socket));
+        let mut registry = TransferRegistry::default();
+        let job = registry.insert(1, 150_000).unwrap();
+        let path = std::env::temp_dir().join(format!("rd-wire-{}.bin", std::process::id()));
+        let mut file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .unwrap();
+        std::fs::remove_file(path).unwrap();
+        file.write_all(&vec![13; 150_000]).unwrap();
+        file.set_times(
+            std::fs::FileTimes::new()
+                .set_modified(std::time::UNIX_EPOCH + Duration::from_secs(1_700_000_123)),
+        )
+        .unwrap();
+        let result = connector.upload_file_stream(
+            "/tmp/file.bin",
+            UploadSource::file(file).unwrap(),
+            &job,
+            true,
+        );
+        assert!(result.is_ok());
+        job.finish(result);
+        assert_eq!(job.status.lock().unwrap().0.state, 6);
+        assert_eq!(job.status.lock().unwrap().0.transferred_bytes, 150_000);
+        peer.join().unwrap();
+    }
+
+    #[test]
     fn direct_file_transfer_uses_plain_login_with_file_transfer_mode() {
         let listener = TcpListener::bind("127.0.0.1:0").expect("listener bind failed");
         let port = listener
@@ -6241,7 +7292,8 @@ mod tests {
             wire::write_frame(&mut stream, &response_message.write_to_bytes().unwrap()).unwrap();
         });
 
-        RustDeskConnector::new()
+        let reservation = crate::ConnectEpochReservation::new(0x71090012);
+        RustDeskConnector::new_with_connection_id(0x71090012, reservation.epoch())
             .connect_file_transfer_direct("127.0.0.1", port, "", r"C:\Users\Public\Documents")
             .expect("direct file transfer should use the peer login protocol");
         accept_thread.join().expect("accept thread panicked");

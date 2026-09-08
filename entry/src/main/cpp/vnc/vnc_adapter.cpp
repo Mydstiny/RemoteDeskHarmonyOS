@@ -1673,6 +1673,14 @@ std::string VncAdapter::getClipboardText() {
     std::lock_guard<std::mutex> lock(impl_->mutex);
     return impl_->engine ? impl_->engine->clipboardText() : "";
 }
+ClipboardSnapshot VncAdapter::getClipboardSnapshot() {
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    return impl_->engine ? impl_->engine->clipboardSnapshot() : ClipboardSnapshot{};
+}
+bool VncAdapter::publishClipboard(const uint8_t* data, uint32_t len) {
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    return impl_->engine && impl_->engine->sendClipboard(data, len);
+}
 bool VncAdapter::isClipboardReceiveReady() {
     std::lock_guard<std::mutex> lock(impl_->mutex);
     return impl_->engine && impl_->engine->clipboardReady();

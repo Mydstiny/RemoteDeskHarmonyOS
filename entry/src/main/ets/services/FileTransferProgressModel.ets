@@ -10,6 +10,8 @@ export type TransferState = TransferStage;
 
 export interface FileTransferProgressSnapshot {
   taskId: string;
+  attemptId?: number;
+  accountScopeId?: string;
   protocol: TransferProtocol;
   fileName: string;
   transferred: number;
@@ -20,7 +22,7 @@ export interface FileTransferProgressSnapshot {
 }
 
 export function clampTransferProgress(transferred: number, total: number): number {
-  if (total <= 0 || transferred <= 0) {
+  if (!Number.isFinite(total) || !Number.isFinite(transferred) || total <= 0 || transferred <= 0) {
     return 0;
   }
   if (transferred >= total) {
@@ -59,6 +61,15 @@ export function makeTransferStatusText(snapshot: FileTransferProgressSnapshot): 
     return snapshot.statusText;
   }
   const percent: string = snapshot.progressValue.toString() + '%';
+  if (snapshot.state === 'offered' || snapshot.state === 'ready') { return '文件已准备好，等待远端读取 ' + snapshot.fileName; }
+  if (snapshot.state === 'senderCompleted') { return '发送结束，尚未验证目标 ' + snapshot.fileName; }
+  if (snapshot.state === 'verifying') { return '正在校验 ' + snapshot.fileName; }
+  if (snapshot.state === 'committing') { return '正在保存 ' + snapshot.fileName; }
+  if (snapshot.state === 'commitUnknown') { return '目标保存结果待确认 ' + snapshot.fileName; }
+  if (snapshot.state === 'waitingConnection') { return '等待重新连接 ' + snapshot.fileName; }
+  if (snapshot.state === 'cancelling') { return '正在取消 ' + snapshot.fileName; }
+  if (snapshot.state === 'expired') { return '文件任务已过期 ' + snapshot.fileName; }
+  if (snapshot.state === 'paused') { return '文件任务已暂停 ' + snapshot.fileName; }
   if (snapshot.state === 'preparing') {
     return '正在准备 ' + snapshot.fileName;
   }

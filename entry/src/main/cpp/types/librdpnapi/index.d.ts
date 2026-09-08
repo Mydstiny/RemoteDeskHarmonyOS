@@ -409,7 +409,7 @@ export const VERSION: SessionVersionInfo;
   export function renameRemotePath(sessionId: number, oldPath: string, newPath: string): number;
   export function renameRemotePathAsync(sessionId: number, oldPath: string,
     newPath: string, atomic?: boolean, expectedGeneration?: number): Promise<SftpMutationAsyncResult>;
-  export function sendClipboard(sessionId: number, data: ArrayBuffer): void;
+  export function sendClipboard(sessionId: number, data: ArrayBuffer): boolean;
   export function setSessionClipboardFiles(sessionId: number, paths: string[]): boolean;
   export function getSessionClipboardText(sessionId: number): string;
   export function isSessionClipboardReady(sessionId: number): boolean;
@@ -500,6 +500,13 @@ export const VERSION: SessionVersionInfo;
   export function sendRustDeskTouchPan(sessionId: number, phase: number, x: number, y: number): boolean;
   export function getLocalResourceStats(includePro?: boolean): LocalResourceStats;
   export function getSessionTransferStatus(sessionId: number): SessionTransferStatus;
+  export function getSessionClipboardSnapshot(sessionId: number): SessionClipboardSnapshot;
+  export function sendSessionFileFromFd(sessionId: number, generation: number, remotePath: string, fd: number, conflictPolicy: number): number;
+  export function getSessionFileTransfer(sessionId: number, generation: number, transferId: number): SessionTransferStatus;
+  export function cancelSessionFileTransfer(sessionId: number, generation: number, transferId: number): boolean;
+  export function releaseSessionFileTransfer(sessionId: number, generation: number, transferId: number): boolean;
+  export function publishSessionClipboard(sessionId: number, generation: number, data: ArrayBuffer): ClipboardPublicationResult;
+  export function getSessionClipboardPublicationState(sessionId: number, generation: number, publicationId: number): number;
   export function setRdpBackgroundVideoPrewarm(sessionId: number, enabled: boolean, intervalMs: number): boolean;
   export function presentRdpCachedFrame(sessionId: number): boolean;
 
@@ -1089,6 +1096,98 @@ export interface RemoteCursorSnapshot {
   positionRevision: number;
   visibilityRevision: number;
   rgba: ArrayBuffer;
+}
+
+export interface SessionRdpClipboardFileEntry {
+  index: number;
+  relativeName: string;
+  directory: boolean;
+  sizeKnown: boolean;
+  size: number;
+}
+export interface SessionRdpClipboardFiles {
+  sequence: number;
+  state: string;
+  streamSupported: boolean;
+  lockSupported: boolean;
+  totalKnown: boolean;
+  totalBytes: number;
+  diagnosticCode: string;
+  entries: SessionRdpClipboardFileEntry[];
+}
+export interface SessionRdpClipboardArtifact {
+  index: number;
+  relativeName: string;
+  directory: boolean;
+  size: number;
+}
+export interface SessionRdpClipboardReceive {
+  taskId: number;
+  sequence: number;
+  phase: string;
+  transferredBytes: number;
+  totalBytes: number;
+  totalKnown: boolean;
+  diagnosticCode: string;
+  artifacts: SessionRdpClipboardArtifact[];
+}
+export const getSessionRdpClipboardFiles: (sessionId: number, generation: number) => SessionRdpClipboardFiles;
+export const requestSessionRdpClipboardFiles: (sessionId: number, generation: number, sequence: number) => boolean;
+export const startSessionRdpClipboardReceive: (sessionId: number, generation: number, sequence: number, selectedIndices: number[], directoryFd: number) => number;
+export const getSessionRdpClipboardReceive: (sessionId: number, generation: number, id: number) => SessionRdpClipboardReceive;
+export const cancelSessionRdpClipboardReceive: (sessionId: number, generation: number, id: number) => boolean;
+export const releaseSessionRdpClipboardReceive: (sessionId: number, generation: number, id: number) => boolean;
+export const publishSessionClipboardFiles: (sessionId: number, generation: number, paths: string[]) => ClipboardPublicationResult;
+
+export interface SessionRdpReceivedFileFact {
+  relativePath: string;
+  writeGeneration: number;
+  writtenBytes: number;
+  activeHandles: number;
+  remoteClosed: boolean;
+  uncertain: boolean;
+}
+export interface SessionRdpDrive {
+  phase: string;
+  generation: number;
+  evidenceComplete: boolean;
+  diagnosticCode: string;
+  entries: SessionRdpReceivedFileFact[];
+}
+export const getSessionRdpDrive: (sessionId: number, generation: number) => SessionRdpDrive;
+export const disableSessionRdpDrive: (sessionId: number, generation: number) => boolean;
+
+export interface SessionRemoteFileEntry {
+  name: string;
+  type: number;
+  size: number;
+  modifiedTime: number;
+}
+export interface SessionRemoteDirectory {
+  path: string;
+  entries: SessionRemoteFileEntry[];
+}
+export const requestSessionRemoteDirectory: (sessionId: number, generation: number, path: string) => number;
+export const getSessionRemoteDirectory: (sessionId: number, generation: number, transferId: number) => SessionRemoteDirectory;
+export const downloadSessionFileToFd: (sessionId: number, generation: number, path: string, fd: number, size: number, modifiedTime: number) => number;
+
+export interface SessionTransferPermissions {
+  available: boolean;
+  knownMask: number;
+  enabledMask: number;
+}
+export const getSessionTransferPermissions: (sessionId: number, generation: number) => SessionTransferPermissions;
+
+export interface ClipboardPublicationResult {
+  publicationId: number;
+  state: number;
+}
+
+export interface SessionClipboardSnapshot {
+  sequence: number;
+  kind: string;
+  text: string;
+  ready: boolean;
 }
 
 export interface SessionTransferStatus {

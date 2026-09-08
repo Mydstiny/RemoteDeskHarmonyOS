@@ -37,6 +37,13 @@ import {
   LocalResourceStats,
   RemoteCursorSnapshot,
   SessionTransferStatus,
+  SessionClipboardSnapshot,
+  ClipboardPublicationResult,
+  SessionTransferPermissions,
+  SessionRemoteDirectory,
+  SessionRdpDrive,
+  SessionRdpClipboardFiles,
+  SessionRdpClipboardReceive,
   SshCommandResult,
   SshTerminalDiagnosticsSnapshot,
   SshTerminalInputEnqueueResult,
@@ -988,6 +995,100 @@ export class ExtensionLoader {
       return { rdpDriveMounted: false, rustdeskTransferState: 0, transferId: 0,
         transferredBytes: 0, totalBytes: 0, diagnosticCode: 'status_unavailable' };
     }
+  }
+
+  getSessionRdpClipboardFiles(sessionId: number, generation: number): SessionRdpClipboardFiles {
+    try { return rdpnapi.getSessionRdpClipboardFiles(sessionId, generation) as SessionRdpClipboardFiles; }
+    catch (_err) { return { sequence: 0, state: 'unavailable', streamSupported: false, lockSupported: false,
+      totalKnown: false, totalBytes: 0, diagnosticCode: 'unavailable', entries: [] }; }
+  }
+  requestSessionRdpClipboardFiles(sessionId: number, generation: number, sequence: number): boolean {
+    try { return rdpnapi.requestSessionRdpClipboardFiles(sessionId, generation, sequence) === true; }
+    catch (_err) { return false; }
+  }
+  startSessionRdpClipboardReceive(sessionId: number, generation: number, sequence: number,
+    indices: number[], directoryFd: number): number {
+    try { return rdpnapi.startSessionRdpClipboardReceive(sessionId, generation, sequence, indices, directoryFd); }
+    catch (_err) { return -1; }
+  }
+  getSessionRdpClipboardReceive(sessionId: number, generation: number, id: number): SessionRdpClipboardReceive {
+    try { return rdpnapi.getSessionRdpClipboardReceive(sessionId, generation, id) as SessionRdpClipboardReceive; }
+    catch (_err) { return { taskId: id, sequence: 0, phase: 'unavailable', transferredBytes: 0,
+      totalBytes: 0, totalKnown: false, diagnosticCode: 'unavailable', artifacts: [] }; }
+  }
+  cancelSessionRdpClipboardReceive(sessionId: number, generation: number, id: number): boolean {
+    try { return rdpnapi.cancelSessionRdpClipboardReceive(sessionId, generation, id) === true; }
+    catch (_err) { return false; }
+  }
+  releaseSessionRdpClipboardReceive(sessionId: number, generation: number, id: number): boolean {
+    try { return rdpnapi.releaseSessionRdpClipboardReceive(sessionId, generation, id) === true; }
+    catch (_err) { return false; }
+  }
+  publishSessionClipboardFiles(sessionId: number, generation: number, paths: string[]): ClipboardPublicationResult {
+    try { return rdpnapi.publishSessionClipboardFiles(sessionId, generation, paths) as ClipboardPublicationResult; }
+    catch (_err) { return { publicationId: 0, state: 0 }; }
+  }
+
+  getSessionRdpDrive(sessionId: number, generation: number): SessionRdpDrive {
+    try { return rdpnapi.getSessionRdpDrive(sessionId, generation) as SessionRdpDrive; }
+    catch (_err) { return { phase: 'unavailable', generation: 0, evidenceComplete: false, diagnosticCode: 'unavailable', entries: [] }; }
+  }
+  disableSessionRdpDrive(sessionId: number, generation: number): boolean {
+    try { return rdpnapi.disableSessionRdpDrive(sessionId, generation) === true; }
+    catch (_err) { return false; }
+  }
+
+  requestSessionRemoteDirectory(sessionId: number, generation: number, path: string): number {
+    try { return rdpnapi.requestSessionRemoteDirectory(sessionId, generation, path); }
+    catch (_err) { return -1; }
+  }
+  getSessionRemoteDirectory(sessionId: number, generation: number, transferId: number): SessionRemoteDirectory {
+    try { return rdpnapi.getSessionRemoteDirectory(sessionId, generation, transferId) as SessionRemoteDirectory; }
+    catch (_err) { return { path: '', entries: [] }; }
+  }
+  downloadSessionFileToFd(sessionId: number, generation: number, path: string, fd: number,
+    size: number, modifiedTime: number): number {
+    try { return rdpnapi.downloadSessionFileToFd(sessionId, generation, path, fd, size, modifiedTime); }
+    catch (_err) { return -1; }
+  }
+
+  getSessionTransferPermissions(sessionId: number, generation: number): SessionTransferPermissions {
+    try { return rdpnapi.getSessionTransferPermissions(sessionId, generation) as SessionTransferPermissions; }
+    catch (_err) { return { available: false, knownMask: 0, enabledMask: 0 }; }
+  }
+
+  sendSessionFileFromFd(sessionId: number, generation: number, remotePath: string,
+    fd: number, conflictPolicy: number = 0): number {
+    try { return rdpnapi.sendSessionFileFromFd(sessionId, generation, remotePath, fd, conflictPolicy); }
+    catch (_err) { return -1; }
+  }
+
+  getSessionFileTransfer(sessionId: number, generation: number, transferId: number): SessionTransferStatus {
+    try { return rdpnapi.getSessionFileTransfer(sessionId, generation, transferId) as SessionTransferStatus; }
+    catch (_err) {
+      return { rdpDriveMounted: false, rustdeskTransferState: 0, transferId,
+        transferredBytes: 0, totalBytes: 0, diagnosticCode: 'transfer_status_unavailable' };
+    }
+  }
+
+  cancelSessionFileTransfer(sessionId: number, generation: number, transferId: number): boolean {
+    try { return rdpnapi.cancelSessionFileTransfer(sessionId, generation, transferId) === true; }
+    catch (_err) { return false; }
+  }
+
+  releaseSessionFileTransfer(sessionId: number, generation: number, transferId: number): boolean {
+    try { return rdpnapi.releaseSessionFileTransfer(sessionId, generation, transferId) === true; }
+    catch (_err) { return false; }
+  }
+
+  publishSessionClipboard(sessionId: number, generation: number, data: ArrayBuffer): ClipboardPublicationResult {
+    try { return rdpnapi.publishSessionClipboard(sessionId, generation, data) as ClipboardPublicationResult; }
+    catch (_err) { return { publicationId: 0, state: 0 }; }
+  }
+
+  getSessionClipboardPublicationState(sessionId: number, generation: number, publicationId: number): number {
+    try { return rdpnapi.getSessionClipboardPublicationState(sessionId, generation, publicationId); }
+    catch (_err) { return 0; }
   }
 
   getSessionId(): number { return this.currentSessionId; }
@@ -2468,11 +2569,20 @@ export class ExtensionLoader {
     }
   }
 
-  sendClipboard(sessionId: number, data: ArrayBuffer): void {
+  sendClipboard(sessionId: number, data: ArrayBuffer): boolean {
     try {
-      rdpnapi.sendClipboard(sessionId, data);
+      return rdpnapi.sendClipboard(sessionId, data) === true;
     } catch (err) {
       hilog.error(DOMAIN, TAG, '[ExtensionLoader] sendClipboard: ' + JSON.stringify(err));
+      return false;
+    }
+  }
+
+  getSessionClipboardSnapshot(sessionId: number): SessionClipboardSnapshot {
+    try {
+      return rdpnapi.getSessionClipboardSnapshot(sessionId) as SessionClipboardSnapshot;
+    } catch (_err) {
+      return { sequence: 0, kind: 'none', text: '', ready: false };
     }
   }
 

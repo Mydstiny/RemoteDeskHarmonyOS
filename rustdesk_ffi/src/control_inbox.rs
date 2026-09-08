@@ -657,7 +657,7 @@ fn required_permission(message: &ControlMsg) -> Option<u32> {
         | ControlMsg::TouchPanStart { .. }
         | ControlMsg::TouchPanUpdate { .. }
         | ControlMsg::TouchPanEnd { .. } => Some(PERMISSION_KEYBOARD),
-        ControlMsg::Clipboard { .. } => Some(PERMISSION_CLIPBOARD),
+        ControlMsg::Clipboard { .. } | ControlMsg::ClipboardTracked { .. } => Some(PERMISSION_CLIPBOARD),
         ControlMsg::SendFile { .. } => Some(PERMISSION_FILE),
         _ => None,
     }

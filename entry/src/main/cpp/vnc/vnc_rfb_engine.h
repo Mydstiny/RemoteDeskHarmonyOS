@@ -60,7 +60,8 @@ public:
     void sendMouse(int x, int y, MouseButton button, bool pressed);
     void sendMouseWheel(int x, int y, int delta);
     void sendText(const std::string& text);
-    void sendClipboard(const uint8_t* data, uint32_t len);
+    bool sendClipboard(const uint8_t* data, uint32_t len);
+    ClipboardSnapshot clipboardSnapshot() const;
     std::string clipboardText() const;
     bool clipboardReady() const;
     void requestFrameRefresh();
@@ -125,6 +126,7 @@ private:
     mutable std::mutex callbackMutex_;
     mutable std::mutex clipboardMutex_;
     std::string clipboardText_;
+    uint64_t clipboardSequence_ = 0;
     std::atomic<bool> clipboardReady_ {false};
     std::atomic<ConnectionState> state_ {ConnectionState::DISCONNECTED};
     std::atomic<bool> stopRequested_ {false};

@@ -62,6 +62,9 @@ set(PROTOCOL_SOURCES
     rdp/rdp_graphics_lifecycle.cpp
     rdp/rdp_frame_pump.cpp
     rdp/rdp_file_clipboard_bridge.cpp
+    rdp/rdp_channel_observer.cpp
+    rdp/rdp_remote_file_offer.cpp
+    rdp/rdp_clipboard_receive.cpp
     rdp/rdp_file_clipboard_offer.cpp
     rustdesk/rustdesk_bridge.cpp
 )
@@ -352,6 +355,12 @@ if(RDP_BUILD_TESTS)
         test/transfer_runtime_status_test.cpp
         test/rdp_input_queue_test.cpp
         test/rdp_file_clipboard_offer_test.cpp
+        test/rdp_clipboard_codec_test.cpp
+        test/rdp_clipboard_state_test.cpp
+        test/rdp_clipboard_publication_queue_test.cpp
+        test/rdp_clipboard_receive_test.cpp
+        test/rdp_channel_observer_test.cpp
+        test/rdp_remote_file_offer_test.cpp
         test/gl_surface_lifecycle_policy_test.cpp
         test/native_image_context_policy_test.cpp
         test/renderer_resize_redraw_policy_test.cpp

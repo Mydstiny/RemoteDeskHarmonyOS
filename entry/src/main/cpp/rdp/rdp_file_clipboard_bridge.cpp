@@ -65,6 +65,11 @@ bool RdpFileClipboardBridge::attach(CliprdrClientContext* channel) {
         channel_ = nullptr;
         return false;
     }
+    helperRequest_ = channel_->ServerFileContentsRequest;
+    helperLock_ = channel_->ServerLockClipboardData;
+    helperUnlock_ = channel_->ServerUnlockClipboardData;
+    helperResponse_ = channel_->ServerFileContentsResponse;
+    enabled_ = true;
     cliprdr_file_context_remote_set_flags(fileContext_, 0);
     return true;
 }
@@ -96,8 +101,10 @@ bool RdpFileClipboardBridge::attached() const {
 }
 
 RdpFileClipboardOfferResult RdpFileClipboardBridge::publishLocalFiles(
-    const std::vector<std::string>& paths) {
+    const std::vector<std::string>& paths, bool* formatListAttempted) {
+    if (formatListAttempted) *formatListAttempted = false;
     std::lock_guard<std::mutex> lock(mutex_);
+    if (!enabled_) return RdpFileClipboardOfferResult::InvalidPath;
     const auto result = offer_.replace(paths);
     if (result != RdpFileClipboardOfferResult::Ready) {
         return result;
@@ -107,16 +114,21 @@ RdpFileClipboardOfferResult RdpFileClipboardBridge::publishLocalFiles(
         return RdpFileClipboardOfferResult::InvalidPath;
     }
     const auto snapshot = offer_.snapshot();
+    // WinPR's URI-list converter decodes percent escapes, while FreeRDP's
+    // local-stream helper takes literal filesystem paths and does not decode.
+    std::string helperPaths;
+    for (const auto& path : snapshot.paths) { helperPaths.append(path); helperPaths.push_back('\n'); }
     ClipboardEmpty(clipboard_);
     if (ClipboardSetData(clipboard_, uriListFormatId_, snapshot.uriList.data(),
                          static_cast<UINT32>(snapshot.uriList.size())) != TRUE ||
-        cliprdr_file_context_update_client_data(fileContext_, snapshot.uriList.data(),
-                                                snapshot.uriList.size()) != TRUE) {
+        cliprdr_file_context_update_client_data(fileContext_, helperPaths.data(),
+                                                helperPaths.size()) != TRUE) {
         offer_.clear();
         cliprdr_file_context_clear(fileContext_);
         ClipboardEmpty(clipboard_);
         return RdpFileClipboardOfferResult::InvalidPath;
     }
+    if (formatListAttempted) *formatListAttempted = true;
     if (sendCurrentFormatListLocked(false) != CHANNEL_RC_OK) {
         offer_.clear();
         cliprdr_file_context_clear(fileContext_);
@@ -135,6 +147,67 @@ void RdpFileClipboardBridge::clearLocalFiles() {
     if (clipboard_) {
         ClipboardEmpty(clipboard_);
     }
+}
+
+// This mutex is the admission/drain barrier for every helper callback. Disable
+// waits for admitted synchronous I/O to finish, then destroys even locked streams.
+// Keeping only cliprdr_file_context_clear() would retain locked source handles.
+void RdpFileClipboardBridge::setEnabled(bool enabled) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    enabled_ = enabled;
+    if (enabled) return;
+    offer_.clear();
+    if (clipboard_) ClipboardEmpty(clipboard_);
+    if (!fileContext_) return;
+    cliprdr_file_context_clear(fileContext_);
+    if (!channel_) return;
+    const auto request = channel_->ServerFileContentsRequest;
+    const auto lockCallback = channel_->ServerLockClipboardData;
+    const auto unlockCallback = channel_->ServerUnlockClipboardData;
+    const auto response = channel_->ServerFileContentsResponse;
+    cliprdr_file_context_uninit(fileContext_, channel_);
+    cliprdr_file_context_init(fileContext_, channel_);
+    // init installs FreeRDP helpers; retain our owner-lease wrappers instead.
+    channel_->ServerFileContentsRequest = request;
+    channel_->ServerLockClipboardData = lockCallback;
+    channel_->ServerUnlockClipboardData = unlockCallback;
+    channel_->ServerFileContentsResponse = response;
+}
+
+UINT RdpFileClipboardBridge::handleFileContentsRequest(
+    CliprdrClientContext* context, const CLIPRDR_FILE_CONTENTS_REQUEST* request) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (context != channel_ || !request) return ERROR_INVALID_PARAMETER;
+    if (!enabled_ || !helperRequest_) {
+        if (!context->ClientFileContentsResponse) return ERROR_INVALID_PARAMETER;
+        CLIPRDR_FILE_CONTENTS_RESPONSE response {};
+        response.common.msgType = CB_FILECONTENTS_RESPONSE;
+        response.common.msgFlags = CB_RESPONSE_FAIL;
+        response.streamId = request->streamId;
+        return context->ClientFileContentsResponse(context, &response);
+    }
+    return helperRequest_(context, request);
+}
+
+UINT RdpFileClipboardBridge::handleLock(
+    CliprdrClientContext* context, const CLIPRDR_LOCK_CLIPBOARD_DATA* request) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (context != channel_ || !request) return ERROR_INVALID_PARAMETER;
+    return enabled_ && helperLock_ ? helperLock_(context, request) : CHANNEL_RC_OK;
+}
+
+UINT RdpFileClipboardBridge::handleUnlock(
+    CliprdrClientContext* context, const CLIPRDR_UNLOCK_CLIPBOARD_DATA* request) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (context != channel_ || !request) return ERROR_INVALID_PARAMETER;
+    return enabled_ && helperUnlock_ ? helperUnlock_(context, request) : CHANNEL_RC_OK;
+}
+
+UINT RdpFileClipboardBridge::handleFileContentsResponse(
+    CliprdrClientContext* context, const CLIPRDR_FILE_CONTENTS_RESPONSE* response) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (context != channel_ || !response) return ERROR_INVALID_PARAMETER;
+    return enabled_ && helperResponse_ ? helperResponse_(context, response) : CHANNEL_RC_OK;
 }
 
 UINT RdpFileClipboardBridge::updateServerCapabilities(
@@ -195,7 +268,7 @@ UINT RdpFileClipboardBridge::sendCurrentFormatList(bool includeText) {
 }
 
 UINT RdpFileClipboardBridge::sendCurrentFormatListLocked(bool includeText) {
-    if (!channel_ || !channel_->ClientFormatList) {
+    if (!enabled_ || !channel_ || !channel_->ClientFormatList) {
         return ERROR_INVALID_PARAMETER;
     }
     std::vector<CLIPRDR_FORMAT> formats;
@@ -222,6 +295,11 @@ UINT RdpFileClipboardBridge::sendCurrentFormatListLocked(bool includeText) {
     return channel_->ClientFormatList(channel_, &list);
 }
 
+UINT32 RdpFileClipboardBridge::remoteFlags() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return fileContext_ ? cliprdr_file_context_remote_get_flags(fileContext_) : 0;
+}
+
 bool RdpFileClipboardBridge::isFileFormat(UINT32 formatId) const {
     return formatId != 0 && formatId == fileDescriptorFormatId_;
 }
@@ -229,7 +307,7 @@ bool RdpFileClipboardBridge::isFileFormat(UINT32 formatId) const {
 UINT RdpFileClipboardBridge::respondToFileFormatRequest(
     const CLIPRDR_FORMAT_DATA_REQUEST* request) {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (!request || !channel_ || !channel_->ClientFormatDataResponse ||
+    if (!enabled_ || !request || !channel_ || !channel_->ClientFormatDataResponse ||
         !isFileFormat(request->requestedFormatId) || !offer_.snapshot().ready()) {
         return ERROR_INVALID_PARAMETER;
     }

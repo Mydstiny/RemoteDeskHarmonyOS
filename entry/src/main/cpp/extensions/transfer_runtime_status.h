@@ -6,7 +6,10 @@
 #include <mutex>
 #include <string>
 
-enum class TransferRuntimeState { UNAVAILABLE, READY, TRANSFERRING, CONFIRMED, FAILED };
+enum class TransferRuntimeState {
+    UNAVAILABLE = 0, READY = 1, TRANSFERRING = 2, CONFIRMED = 3, FAILED = 4,
+    CANCELLED = 5, SENT_UNVERIFIED = 6
+};
 
 struct SessionTransferStatus {
     bool rdpDriveMounted = false;

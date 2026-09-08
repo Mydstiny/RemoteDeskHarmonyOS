@@ -228,6 +228,12 @@ import {
   shouldStartClipboardBridge,
   shouldStopClipboardBridgeForBackground
 } from '../services/ClipboardSyncPolicy';
+import { ClipboardCoordinator, ClipboardLease, RemoteClipboardSnapshot } from '../services/ClipboardCoordinator';
+import { TransferArtifact, TransferArtifactBatch, TransferReceivedArtifactWriter, TransferNativeReceiveDirectory, TransferNativeReceivedEntry, exportTransferArtifact, ensureTransferScopeDirectory, safeTransferFileName, transferScopeKey } from '../services/TransferArtifactStore';
+import { ManagedTransferTaskService, ManagedTransferControl } from '../services/ManagedTransferTaskService';
+import { FileTransferTaskList } from '../components/FileTransferTaskList';
+import { joinRemoteTransferPath, remoteTransferPathIsAbsolute, parentRemoteTransferPath, remoteTransferEntryPath } from '../services/TransferRemotePathPolicy';
+import { ManagedTransferOutcome } from '../services/ManagedTransferTaskPolicy';
 import { AppCloneContext } from '../services/AppCloneContext';
 import { FileTransferLiveTaskService } from '../services/FileTransferLiveTaskService';
 import { RemoteSessionBackgroundTaskService, RemoteSessionBgInfo } from '../services/RemoteSessionBackgroundTaskService';
@@ -641,7 +647,15 @@ import {
   RustDeskMultiCanvasPreviewSnapshot,
   RustDeskDiagnosticsSnapshot,
   SessionConfig,
-  SessionTransferStatus
+  SessionTransferStatus,
+  SessionRemoteFileEntry,
+  ClipboardPublicationResult,
+  SessionRdpClipboardFiles,
+  SessionRdpClipboardFileEntry,
+  SessionRdpClipboardReceive,
+  SessionRdpClipboardArtifact,
+  SessionRdpDrive,
+  SessionRdpReceivedFileFact
 } from '../types/rdpnapi';
 import {
   resolveRustDeskHostEndpoint,
@@ -747,16 +761,9 @@ const TOUCHPAD_MAX_LOCAL_STEP_VP = 420;
 const TOUCH_INDICATOR_BUTTON_RIGHT = 2;
 const TOUCH_INDICATOR_BUTTON_DRAG = 3;
 const RUSTDESK_ADAPTIVE_MAX_EDGE_PX = 1600;
-const REMOTE_FILE_CHUNK_BYTES = 256 * 1024;
-const RUSTDESK_FILE_MAX_BYTES = 100 * 1024 * 1024;
 const RDP_FILE_MAX_BYTES = 2 * 1024 * 1024 * 1024;
-const RDP_TRANSFER_DIR_NAME = 'rdp_transfer';
 const RDP_TRANSFER_DRIVE_NAME = 'RemoteDesktop';
 const RDP_DRIVE_REDIRECTION_ENABLED = true;
-// A FileTransfer login requires its initial directory to exist already. The
-// RustDesk upload path does not create the former `RemoteDesktop` child first,
-// so a clean Windows peer rejected every transfer before any block was sent.
-const RUSTDESK_TRANSFER_DIR = 'C:\\Users\\Public\\Documents';
 const FILE_TRANSFER_DIAG_RDP_DIR = 'E-RDP-FILE-DIR';
 const FILE_TRANSFER_DIAG_FILE_NAME = 'E-FILE-NAME';
 const FILE_TRANSFER_DIAG_LIVE_CONTEXT = 'E-FILE-LIVE-CONTEXT';
@@ -826,6 +833,17 @@ const KEY_F12 = 2101;
 const KEYCODE_NUM_LOCK = 2102;
 const KEY_F13 = 2816;
 const KEY_F24 = 2827;
+
+interface TransferFileSource {
+  uri: string;
+  name: string;
+  size: number;
+}
+
+interface RemoteTransferLease extends ClipboardLease {
+  accountGeneration: number;
+  nativeOwner: NativeDisconnectIdentity;
+}
 
 interface RemoteDesktopSurfaceListener {
   onSurfaceCreated(surfaceId: string): void;
@@ -1172,6 +1190,23 @@ struct RemoteDesktop {
   private nativeHandles: NativeSessionHandles =
     new NativeSessionHandles(new ProductionNativeHandleAdapter((): ExtensionLoader => this.loader));
   private clipboardBridge: ClipboardBridgeService | null = null;
+  @State private showFileTransferPanel: boolean = false;
+  @State private remoteTransferDirectory: string = '';
+  @State private remoteTransferPathInput: string = '';
+  @State private remoteTransferEntries: SessionRemoteFileEntry[] = [];
+  @State private receivedTransferArtifacts: TransferArtifact[] = [];
+  @State private rdpReceiveOffer: SessionRdpClipboardFiles = { sequence: 0, state: 'unavailable',
+    streamSupported: false, lockSupported: false, totalKnown: false, totalBytes: 0, diagnosticCode: '', entries: [] };
+  @State private rdpSharedDrive: SessionRdpDrive = { phase: 'unavailable', generation: 0,
+    evidenceComplete: false, diagnosticCode: '', entries: [] };
+  @State private rdpReceiveMessage: string = '';
+  private rdpOfferRequestGeneration: number = 0;
+  @State private remoteTransferBrowserBusy: boolean = false;
+  @State private remoteTransferBrowserMessage: string = '';
+  private transferPanelLease: RemoteTransferLease | null = null;
+  private transferPanelAccountUnsubscribe: (() => void) | null = null;
+  private transferDirectoryRequestGeneration: number = 0;
+  private transferArtifactBatches: Map<string, TransferArtifactBatch> = new Map<string, TransferArtifactBatch>();
   private clipboardBridgeStartGeneration: number = 0;
   private remoteClipboardCheckpoint: RemoteClipboardDeliveryCheckpoint = {
     sessionId: -1,
@@ -4238,6 +4273,11 @@ struct RemoteDesktop {
     const rustDeskDisplaySupported: boolean = this.rustDeskDisplayCapabilities.supported &&
       (this.rustDeskDisplayCapabilities.displays.length > 0 ||
         this.rustDeskDisplayCapabilities.resolutions.length > 0);
+    const nativeOwner: NativeDisconnectIdentity | null = this.loader.captureDisconnectIdentity(this.sessionId);
+    const permissions = this.loader.getSessionTransferPermissions(this.sessionId,
+      nativeOwner !== null ? nativeOwner.generation : 0);
+    const clipboardAllowed: boolean = (permissions.knownMask & 4) === 0 || (permissions.enabledMask & 4) !== 0;
+    const filesAllowed: boolean = (permissions.knownMask & 16) === 0 || (permissions.enabledMask & 16) !== 0;
     return resolveSessionCapabilities({
       protocol: this.currentProtocolName(),
       connected: this.connected,
@@ -4247,7 +4287,11 @@ struct RemoteDesktop {
       sftpConnected: false,
       rustDeskVerifiedPeer: this.connected && this.currentProtocolName() === 'rustdesk',
       rustDeskInboundClipboard: clipboardReady && this.currentProtocolName() === 'rustdesk',
-      rustDeskTransferConfirmed: this.connected && this.currentProtocolName() === 'rustdesk',
+      rustDeskTransferConfirmed: false,
+      rustDeskFileSessionAvailable: permissions.available,
+      rustDeskClipboardPermissionAllowed: clipboardAllowed,
+      rustDeskFilePermissionAllowed: filesAllowed,
+      rustDeskDownloadAvailable: permissions.available,
       rustDeskDisplaySupported,
       vncClipboardEnabled: this.isVncSession() &&
         this.pendingVncHost !== null && this.pendingVncHost.clipboardEnabled,
@@ -5093,7 +5137,11 @@ struct RemoteDesktop {
   private setRdpDrivePreference(enabled: boolean): void {
     this.rdpDriveEnabled = enabled;
     this.persistSessionPref('rdpDriveEnabled', enabled);
-    this.showRdpReconnectPreferenceToast('共享文件夹');
+    const lease: RemoteTransferLease | null = this.captureTransferLease();
+    if (!enabled && lease !== null && lease.protocol === 'rdp') {
+      this.loader.disableSessionRdpDrive(lease.sessionId, lease.nativeGeneration);
+      this.rdpDriveMounted = false; this.refreshRdpSharedFiles();
+    } else { this.showRdpReconnectPreferenceToast('共享文件夹'); }
   }
 
   private setRdpDriveNamePreference(value: string): void {
@@ -6789,7 +6837,7 @@ struct RemoteDesktop {
         this.closeRemoteKeyboardSurface();
       },
       onOpenFileTransfer: (): void => {
-        this.pickAndSendFile();
+        this.openFileTransferPanel();
       },
       onCtrlAltDel: (): void => {
         this.sendCtrlAltDel();
@@ -7967,6 +8015,9 @@ struct RemoteDesktop {
             hilog.info(RD_DOMAIN, RD_TAG, 'session window input inactive event=' +
               event.toString());
             this.closeRemoteInputForWindowTransition('window-inactive');
+            this.stopClipboardBridge();
+          } else if (!wasActive && this.sessionWindowActive) {
+            this.restartClipboardBridgeIfActiveForeground();
           }
         };
         try {
@@ -7989,6 +8040,7 @@ struct RemoteDesktop {
             this.harmonyShortcutWindowFocusKnown = false;
           }
           this.syncHarmonyShortcutCapture('window-focus-initial');
+          if (!this.sessionWindowActive) { this.stopClipboardBridge(); }
         }
         this.kbDisplayIdCb = (displayId: number): void => {
           if (!remoteInputWindowListenerIsCurrent(generation, this.kbListenerGeneration)) {
@@ -16170,14 +16222,84 @@ struct RemoteDesktop {
     this.clearCurrentAbilityBackgroundState();
   }
 
+  private transferRouteIdentity(): string {
+    const host: RemoteHost | null = this.pendingHost;
+    if (host !== null) {
+      if (host.protocol === 'rdp') { return rdpRouteIdentity(host); }
+      return JSON.stringify([host.id, host.protocol, host.host, host.port.toString(),
+        host.customHostname, host.rustdeskDirectEnabled ? 'direct' : 'relay',
+        host.rustdeskDirectHost, host.rustdeskDirectPort.toString(), host.rustdeskRelayId]);
+    }
+    return this.currentProtocolName() + ':' + this.hostId;
+  }
+
+  private captureTransferLease(): RemoteTransferLease | null {
+    if (!this.connected || this.cleanupStarted || this.sessionId <= 0) { return null; }
+    const owner: NativeDisconnectIdentity | null = this.loader.captureDisconnectIdentity(this.sessionId);
+    if (owner === null) { return null; }
+    const scope = AccountSessionCoordinator.getInstance().currentScope();
+    return { accountScopeId: scope.ownerScopeId, accountGeneration: scope.generation,
+      windowId: this.sessionWindowId || this.harmonyShortcutCaptureOwner,
+      hostId: this.hostId, protocol: this.currentProtocolName(),
+      routeIdentity: this.transferRouteIdentity(), sessionId: this.sessionId,
+      attemptId: this.connectAttemptId, nativeGeneration: owner.generation, nativeOwner: owner };
+  }
+
+  private transferLeaseIsCurrent(lease: RemoteTransferLease | null): boolean {
+    if (lease === null || !this.connected || this.cleanupStarted ||
+      this.sessionId !== lease.sessionId || this.connectAttemptId !== lease.attemptId ||
+      this.hostId !== lease.hostId || this.currentProtocolName() !== lease.protocol ||
+      this.transferRouteIdentity() !== lease.routeIdentity ||
+      (this.sessionWindowId || this.harmonyShortcutCaptureOwner) !== lease.windowId) { return false; }
+    const scope = AccountSessionCoordinator.getInstance().currentScope();
+    return scope.ownerScopeId === lease.accountScopeId && scope.generation === lease.accountGeneration &&
+      this.loader.ownsDisconnectIdentity(lease.nativeOwner);
+  }
+
+  private clipboardLeaseIsCurrent(lease: RemoteTransferLease): boolean {
+    return this.transferLeaseIsCurrent(lease) && this.sessionWindowActive && !this.sessionWindowMinimized &&
+      !this.currentAbilityBackgroundState() && this.clipboardBridgeEnabledForSession();
+  }
+
+  private async waitClipboardPublication(lease: RemoteTransferLease, receipt: ClipboardPublicationResult,
+    isCurrent: () => boolean): Promise<boolean> {
+    if (receipt.publicationId <= 0 || !isCurrent()) { return false; }
+    if (receipt.state === 2) { return true; }
+    if (receipt.state !== 1) { return false; }
+    const deadline: number = Date.now() + (lease.protocol === 'rdp' ? 15500 : 5500);
+    while (Date.now() < deadline && isCurrent()) {
+      await this.yieldUi(25);
+      if (!isCurrent()) { return false; }
+      const state: number = this.loader.getSessionClipboardPublicationState(
+        lease.sessionId, lease.nativeGeneration, receipt.publicationId);
+      if (state === 2) { return true; }
+      if (state !== 1) { return false; }
+    }
+    return false;
+  }
+
+  private async publishClipboardForLease(lease: RemoteTransferLease, text: string): Promise<boolean> {
+    if (!this.clipboardLeaseIsCurrent(lease) || !this.currentSessionCapabilities().clipboardSend.enabled) {
+      return false;
+    }
+    const bytes: Uint8Array = new util.TextEncoder().encode(text);
+    if (bytes.byteLength > 65536) { return false; }
+    const receipt = this.loader.publishSessionClipboard(lease.sessionId, lease.nativeGeneration,
+      bytes.buffer as ArrayBuffer);
+    return await this.waitClipboardPublication(lease, receipt,
+      (): boolean => this.clipboardLeaseIsCurrent(lease) && this.currentSessionCapabilities().clipboardSend.enabled);
+  }
+
   private startClipboardBridgeBestEffort(sessionId: number, attemptId: number, enabled: boolean): void {
     if (!enabled || !this.clipboardBridgeEnabledForSession()) {
       return;
     }
+    const lease: RemoteTransferLease | null = this.captureTransferLease();
+    if (lease === null || lease.sessionId !== sessionId || lease.attemptId !== attemptId) { return; }
     const startGeneration: number = ++this.clipboardBridgeStartGeneration;
     const deadlineMs: number = Date.now() + 10000;
     const tryStart = async (): Promise<void> => {
-      if (!shouldStartClipboardBridge({
+      if (!this.clipboardLeaseIsCurrent(lease) || !shouldStartClipboardBridge({
         requestedGeneration: startGeneration,
         currentGeneration: this.clipboardBridgeStartGeneration,
         requestedSessionId: sessionId,
@@ -16212,7 +16334,7 @@ struct RemoteDesktop {
             this.getUIContext().getHostContext() as common.UIAbilityContext;
           readAccess = await ensureSystemPasteboardReadAccess(context);
         }
-        if (!shouldStartClipboardBridge({
+        if (!this.clipboardLeaseIsCurrent(lease) || !shouldStartClipboardBridge({
           requestedGeneration: startGeneration,
           currentGeneration: this.clipboardBridgeStartGeneration,
           requestedSessionId: sessionId,
@@ -16231,30 +16353,18 @@ struct RemoteDesktop {
         }
         const bridge: ClipboardBridgeService = new ClipboardBridgeService();
         this.clipboardBridge = bridge;
-        const initialRemoteHash: number = remoteClipboardHashForSession(
-          this.remoteClipboardCheckpoint, sessionId, attemptId);
-        const localMonitoringStarted: boolean = bridge.startMonitoring((text: string): void => {
-          try {
-            if (this.sessionId !== sessionId || this.connectAttemptId !== attemptId || !this.connected ||
-              !this.clipboardBridgeEnabledForSession()) {
-              return;
+        const localMonitoringStarted: boolean = bridge.startMonitoring(
+          (text: string): Promise<boolean> => this.publishClipboardForLease(lease, text),
+          (): string => '', readAccess?.granted === true, activation.requestLocalRead, 0, undefined,
+          { lease, isCurrent: (): boolean => this.clipboardLeaseIsCurrent(lease),
+            readRemoteSnapshot: (): RemoteClipboardSnapshot | null => {
+              if (!this.clipboardLeaseIsCurrent(lease)) { return null; }
+              const value = this.loader.getSessionClipboardSnapshot(lease.sessionId);
+              const kind: 'none' | 'text' | 'files' | 'unsupported' = value.kind === 'none' ||
+                value.kind === 'text' || value.kind === 'files' ? value.kind : 'unsupported';
+              return { sequence: value.sequence, kind, text: value.text, ready: value.ready };
             }
-            const encoder = new util.TextEncoder();
-            const data: Uint8Array = encoder.encode(text);
-            this.loader.sendClipboard(sessionId, data.buffer as ArrayBuffer);
-          } catch (err) {
-            hilog.warn(RD_DOMAIN, RD_TAG, 'clipboard bridge push skipped: ' + JSON.stringify(err));
-          }
-        }, (): string => this.clipboardBridgeEnabledForSession()
-          ? this.loader.getSessionClipboardText(sessionId) : '',
-        readAccess?.granted === true, activation.requestLocalRead,
-        initialRemoteHash, (deliveredHash: number): void => {
-          if (this.sessionId !== sessionId || this.connectAttemptId !== attemptId) {
-            return;
-          }
-          this.remoteClipboardCheckpoint = remoteClipboardCheckpointAfterDelivery(
-            this.remoteClipboardCheckpoint, sessionId, attemptId, deliveredHash);
-        });
+          });
         if (!activation.requestLocalRead) {
           hilog.info(RD_DOMAIN, RD_TAG,
             'clipboard bridge started in receive-only mode: ' + capabilities.clipboardSend.reason);
@@ -16277,7 +16387,7 @@ struct RemoteDesktop {
         hilog.warn(RD_DOMAIN, RD_TAG, 'clipboard bridge start skipped: ' + JSON.stringify(err));
       }
     };
-    setTimeout((): void => { void tryStart(); }, 1500);
+    setTimeout((): void => { void tryStart(); }, 0);
   }
 
   private stopClipboardBridge(): void {
@@ -16289,6 +16399,7 @@ struct RemoteDesktop {
   }
 
   private restartClipboardBridgeIfActiveForeground(): void {
+    if (!this.sessionWindowActive) { return; }
     if (shouldRestartClipboardBridge({
       connected: this.connected,
       sessionId: this.sessionId,
@@ -16569,16 +16680,15 @@ struct RemoteDesktop {
     }, TOUCH_DIRECT_RIGHT_CLICK_MS);
   }
 
+  private transferStorageScope(): string {
+    const scope = AccountSessionCoordinator.getInstance().currentScope();
+    return transferScopeKey(scope.ownerScopeId, this.hostId + ':' + this.transferRouteIdentity());
+  }
+
   private ensureRdpTransferDir(): string {
     try {
       const ctx: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
-      const dir: string = ctx.filesDir + '/' + RDP_TRANSFER_DIR_NAME + '_' + this.sanitizedRdpDriveName();
-      try {
-        fileIo.mkdirSync(dir);
-      } catch (_err) {
-        // 目录已存在时会抛错；后续打开目标文件会验证路径是否真实可用。
-      }
-      return dir;
+      return ensureTransferScopeDirectory(ctx.filesDir, this.transferStorageScope(), 'rdp-shared');
     } catch (_err) {
       hilog.error(RD_DOMAIN, RD_TAG, 'file transfer diagnostic=' + FILE_TRANSFER_DIAG_RDP_DIR);
       return '';
@@ -16586,20 +16696,12 @@ struct RemoteDesktop {
   }
 
   private createRdpClipboardBatchDir(): string {
-    const root: string = this.ensureRdpTransferDir();
-    if (root.length === 0) {
-      return '';
-    }
-    this.rdpClipboardBatchSequence = (this.rdpClipboardBatchSequence + 1) % 1000000;
-    const dir: string = root + '/clip_' + Date.now().toString() + '_' +
-      this.rdpClipboardBatchSequence.toString();
     try {
-      fileIo.mkdirSync(dir);
-      return dir;
-    } catch (_err) {
-      hilog.error(RD_DOMAIN, RD_TAG, 'failed to create isolated RDP clipboard batch');
-      return '';
-    }
+      const ctx: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
+      const batch: TransferArtifactBatch = new TransferArtifactBatch(ctx.filesDir, this.transferStorageScope());
+      this.transferArtifactBatches.set(batch.directory, batch);
+      return batch.directory;
+    } catch (_err) { return ''; }
   }
 
   private sanitizedRdpDriveName(): string {
@@ -16640,15 +16742,7 @@ struct RemoteDesktop {
   }
 
   private sanitizeTransferFileName(name: string): string {
-    const trimmed: string = name.trim();
-    const source: string = trimmed.length > 0 ? trimmed : 'file';
-    const illegal: string = '\\/:*?"<>|';
-    let out: string = '';
-    for (let i = 0; i < source.length; i++) {
-      const ch: string = source.charAt(i);
-      out += illegal.indexOf(ch) >= 0 ? '_' : ch;
-    }
-    return out.length > 0 ? out : 'file';
+    return safeTransferFileName(name);
   }
 
   private formatTransferSize(size: number): string {
@@ -16737,167 +16831,564 @@ struct RemoteDesktop {
       createTransferSnapshot(taskId, protocol, fileName, total, total, 'completed', statusText));
   }
 
-  private async stageFileForRdpClipboard(uri: string, fileName: string, fileSize: number,
-    batchDir: string = '', observedSessionId: number = this.sessionId,
-    observedAttemptId: number = this.connectAttemptId): Promise<string> {
-    if (!this.rdpFileTransferEnabledForSession(observedSessionId, observedAttemptId)) {
-      return '';
+  private async prepareAndOfferRdpFiles(sources: TransferFileSource[], lease: RemoteTransferLease,
+    origin: string): Promise<boolean> {
+    if (!this.transferLeaseIsCurrent(lease) || sources.length === 0 || sources.length > 15 ||
+      !this.rdpFileTransferEnabledForSession(lease.sessionId, lease.attemptId)) { return false; }
+    const context: common.UIAbilityContext | null = this.getFileTransferContext();
+    if (context === null) { return false; }
+    const service: ManagedTransferTaskService = ManagedTransferTaskService.getInstance();
+    if (!service.init(context)) { return false; }
+    let total: number = 0;
+    for (const source of sources) {
+      if (!Number.isSafeInteger(source.size) || source.size < 0 || source.size > RDP_FILE_MAX_BYTES) { return false; }
+      total += source.size;
     }
-    const dir: string = batchDir.length > 0 ? batchDir : this.createRdpClipboardBatchDir();
-    if (dir.length === 0) {
-      this.setFileTransferStatus('[RDP-FILE] RDP 文件传输准备失败', -1, false);
-      return '';
+    if (total > RDP_FILE_MAX_BYTES) { return false; }
+    const initialRemoteSequence: number = this.loader.getSessionClipboardSnapshot(lease.sessionId).sequence;
+    const localChangeCount: number = origin === 'system-clipboard' ?
+      pasteboard.getSystemPasteboard().getChangeCount() : 0;
+    const sourceCurrent = (): boolean => origin !== 'system-clipboard' ||
+      (this.loader.getSessionClipboardSnapshot(lease.sessionId).sequence === initialRemoteSequence &&
+        pasteboard.getSystemPasteboard().getChangeCount() === localChangeCount);
+    const directory: string = this.createRdpClipboardBatchDir();
+    const batch: TransferArtifactBatch | undefined = this.transferArtifactBatches.get(directory);
+    if (batch === undefined) { return false; }
+    const handle = service.enqueue({ accountScopeId: lease.accountScopeId, hostId: lease.hostId,
+      protocol: 'rdp', direction: 'upload', batchId: batch.id, fileName: sources.length === 1 ? sources[0].name :
+        sources.length.toString() + ' 个文件', totalBytes: total, sourceKind: origin,
+      isCurrent: (): boolean => this.transferLeaseIsCurrent(lease) && sourceCurrent() &&
+        this.rdpFileTransferEnabledForSession(lease.sessionId, lease.attemptId) },
+      async (control: ManagedTransferControl): Promise<ManagedTransferOutcome> => {
+        const paths: string[] = [];
+        let prepared: number = 0;
+        try {
+          for (const source of sources) {
+            if (!control.isCurrent()) { return { stage: 'cancelled', evidence: 'none' }; }
+            const artifact = await batch.stage(source.uri, source.name, source.size, control.isCurrent,
+              (copied: number, _total: number): void => {
+                control.update({ readBytes: prepared + copied, writtenBytes: prepared + copied });
+                if (control.isCurrent()) {
+                  this.setFileTransferStatus('正在准备本机文件副本', total > 0 ? (prepared + copied) / total : 0, true);
+                }
+              });
+            paths.push(artifact.path); prepared += artifact.size;
+          }
+          if (!control.isCurrent()) { return { stage: 'cancelled', evidence: 'none' }; }
+          batch.setPublished(true);
+          const receipt: ClipboardPublicationResult = this.loader.publishSessionClipboardFiles(
+            lease.sessionId, lease.nativeGeneration, paths);
+          if (!await this.waitClipboardPublication(lease, receipt, control.isCurrent)) {
+            return { stage: 'paused', evidence: 'none', diagnosticCode: 'offer_ack_unconfirmed' };
+          }
+          control.update({ stage: 'offered', readBytes: total, writtenBytes: total });
+          if (this.clipboardLeaseIsCurrent(lease)) {
+            this.keyDispatcher.sendShortcutSequence(this.loader, lease.sessionId,
+              [KEYCODE_CTRL_LEFT, KEY_V], 'RDP file paste');
+          }
+          if (this.clipboardLeaseIsCurrent(lease)) {
+            for (const key of this.physicalModifierKeyCodesDown) {
+              this.loader.sendKey(lease.sessionId, this.mapPhysicalKeyCode(key), true);
+            }
+          }
+          // CLIPRDR offer/read success does not acknowledge destination persistence.
+          return { stage: 'paused', evidence: 'offered', diagnosticCode: 'target_write_unconfirmed' };
+        } catch (_err) {
+          return { stage: control.isCancellationRequested() ? 'cancelled' : 'failed', evidence: 'none',
+            diagnosticCode: 'staging_incomplete' };
+        } finally {
+          // Published offers retain their durable hold independently of preparation.
+          try { batch.release(); } catch (_err) {}
+        }
+      });
+    if (!handle.accepted) { try { batch.release(); } catch (_err) {} }
+    const outcome: ManagedTransferOutcome = await handle.result;
+    const offered: boolean = outcome.evidence === 'offered';
+    if (this.transferLeaseIsCurrent(lease)) {
+      this.setFileTransferStatus(offered ? '已提供给远端读取，尚未确认目标写入' : '文件准备已停止或失败',
+        offered ? 1 : -1, false);
     }
-    if (fileSize <= 0 || fileSize > RDP_FILE_MAX_BYTES) {
-      this.setFileTransferStatus('[RDP-FILE] 文件为空或超过 2GB', -1, false);
-      return '';
-    }
-    let src: fileIo.File | null = null;
-    let dst: fileIo.File | null = null;
-    let liveTaskId: string = '';
-    let copied: number = 0;
-    let lastLiveProgress: number = -1;
-    try {
-      const targetPath: string = dir + '/' + fileName;
-      src = fileIo.openSync(uri, fileIo.OpenMode.READ_ONLY);
-      dst = fileIo.openSync(targetPath,
-        fileIo.OpenMode.READ_WRITE | fileIo.OpenMode.CREATE | fileIo.OpenMode.TRUNC);
+    return offered;
+  }
 
-      this.setFileTransferStatus('RDP 文件传输进行中 0%', 0, true);
-      liveTaskId = await this.beginLiveFileTransfer('rdp', '文件', fileSize,
-        'RDP 文件传输进行中');
-      while (copied < fileSize) {
-        const chunkSize: number = Math.min(REMOTE_FILE_CHUNK_BYTES, fileSize - copied);
-        const chunk = new ArrayBuffer(chunkSize);
-        const readLen: number = fileIo.readSync(src.fd, chunk);
-        if (readLen <= 0) {
-          this.setFileTransferStatus('[RDP-FILE] 文件读取中断', -1, false);
-          await this.finishLiveFileTransfer(liveTaskId, 'rdp', '文件', copied, fileSize, true,
-            '[RDP-FILE] 文件读取中断');
-          return '';
-        }
-        const payload: ArrayBuffer = readLen === chunkSize ? chunk : chunk.slice(0, readLen);
-        const written: number = fileIo.writeSync(dst.fd, payload);
-        if (written !== readLen) {
-          this.setFileTransferStatus('[RDP-FILE] RDP 文件传输写入不完整', -1, false);
-          await this.finishLiveFileTransfer(liveTaskId, 'rdp', '文件', copied, fileSize, true,
-            '[RDP-FILE] RDP 文件传输写入不完整');
-          return '';
-        }
-        copied += readLen;
-        const progress: number = Math.min(1, copied / fileSize);
-        const progressPercent: number = Math.floor(progress * 100);
-        this.setFileTransferStatus('RDP 文件传输进行中 ' + progressPercent.toString() + '%', progress, true);
-        if (progressPercent !== lastLiveProgress) {
-          lastLiveProgress = progressPercent;
-          await this.updateLiveFileTransfer(liveTaskId, 'rdp', '文件', copied, fileSize, 'transferring',
-            'RDP 文件传输进行中 ' + progressPercent.toString() + '%');
-        }
-        await this.yieldUi(0);
-        if (!this.rdpFileTransferEnabledForSession(observedSessionId, observedAttemptId)) {
-          return '';
-        }
+  private async cancelAndDrainNativeTransfer(lease: RemoteTransferLease,
+    transferId: number): Promise<SessionTransferStatus | null> {
+    if (transferId <= 0) { return null; }
+    this.loader.cancelSessionFileTransfer(lease.sessionId, lease.nativeGeneration, transferId);
+    const deadline: number = Date.now() + 5000;
+    while (Date.now() < deadline) {
+      const status: SessionTransferStatus = this.loader.getSessionFileTransfer(
+        lease.sessionId, lease.nativeGeneration, transferId);
+      if (status.transferId === transferId && [3, 4, 5, 6].indexOf(status.rustdeskTransferState) >= 0) {
+        return status;
       }
-      if (!this.rdpFileTransferEnabledForSession(observedSessionId, observedAttemptId)) {
-        return '';
+      if (status.rustdeskTransferState === 0) {
+        // Unobservable retirement is not proof of drain. Retain native-owned partials.
+        return null;
       }
-      const readyStatus: string = 'RDP 文件已暂存，正在发布到远端剪贴板';
-      await this.finishLiveFileTransfer(liveTaskId, 'rdp', '文件', fileSize, fileSize, false, readyStatus);
-      hilog.info(RD_DOMAIN, RD_TAG, 'rdp clipboard file staged size=' + fileSize.toString());
-      return targetPath;
-    } catch (_err) {
-      this.setFileTransferStatus('[RDP-FILE] 文件传输失败 [' + FILE_TRANSFER_DIAG_RDP_COPY + ']', -1, false);
-      await this.finishLiveFileTransfer(liveTaskId, 'rdp', '文件', copied, fileSize, true,
-        '[RDP-FILE] 文件传输失败 [' + FILE_TRANSFER_DIAG_RDP_COPY + ']');
-      hilog.error(RD_DOMAIN, RD_TAG, 'file transfer diagnostic=' + FILE_TRANSFER_DIAG_RDP_COPY);
-      return '';
-    } finally {
-      if (src !== null) {
-        try { fileIo.closeSync(src); } catch (_err2) { /* ignore */ }
+      await this.yieldUi(250);
+    }
+    return null;
+  }
+
+  private async submitFileToRustDesk(uri: string, fileName: string, fileSize: number,
+    lease: RemoteTransferLease | null = this.captureTransferLease(),
+    targetDirectory: string = this.remoteTransferDirectory): Promise<TransferState> {
+    if (lease === null || !this.transferLeaseIsCurrent(lease) || !Number.isSafeInteger(fileSize) ||
+      fileSize < 0 || fileSize > RDP_FILE_MAX_BYTES || !this.currentSessionCapabilities().fileUpload.enabled) {
+      return 'failed';
+    }
+    const remotePath: string = joinRemoteTransferPath(targetDirectory, fileName);
+    if (remotePath.length === 0) {
+      this.openFileTransferPanel();
+      this.remoteTransferBrowserMessage = '请先选择远端目标文件夹，再发送文件';
+      return 'failed';
+    }
+    const context: common.UIAbilityContext | null = this.getFileTransferContext();
+    if (context === null) { return 'failed'; }
+    const service: ManagedTransferTaskService = ManagedTransferTaskService.getInstance();
+    if (!service.init(context)) { return 'failed'; }
+    const handle = service.enqueue({ accountScopeId: lease.accountScopeId, hostId: lease.hostId,
+      protocol: 'rustdesk', direction: 'upload', fileName, totalBytes: fileSize,
+      sourceKind: 'authorized-file', leaseId: lease.nativeGeneration.toString(),
+      isCurrent: (): boolean => this.transferLeaseIsCurrent(lease) && this.rustdeskFilePasteEnabled &&
+        this.currentSessionCapabilities().fileUpload.enabled },
+      async (control: ManagedTransferControl): Promise<ManagedTransferOutcome> => {
+        let file: fileIo.File | null = null;
+        let transferId: number = -1;
+        let drained: boolean = false;
+        try {
+          if (!control.isCurrent()) { return { stage: 'cancelled', evidence: 'none' }; }
+          file = await fileIo.open(uri, fileIo.OpenMode.READ_ONLY | fileIo.OpenMode.NOFOLLOW);
+          const info: fileIo.Stat = await fileIo.stat(file.fd);
+          if (!control.isCurrent() || !info.isFile() || info.size !== fileSize) {
+            return { stage: 'failed', evidence: 'none', diagnosticCode: 'source_changed' };
+          }
+          // Native duplicates the FD and validates source identity while streaming.
+          transferId = this.loader.sendSessionFileFromFd(lease.sessionId, lease.nativeGeneration,
+            remotePath, file.fd, 0);
+          if (transferId <= 0) { return { stage: 'failed', evidence: 'none', diagnosticCode: 'enqueue_failed' }; }
+          control.onCancel((): void => {
+            this.loader.cancelSessionFileTransfer(lease.sessionId, lease.nativeGeneration, transferId);
+          });
+          await fileIo.close(file); file = null;
+          control.update({ stage: 'transferring' });
+          while (true) {
+            const status: SessionTransferStatus = this.loader.getSessionFileTransfer(
+              lease.sessionId, lease.nativeGeneration, transferId);
+            if (status.transferId !== transferId || status.rustdeskTransferState === 0) {
+              return { stage: 'paused', evidence: 'none', diagnosticCode: 'transfer_owner_unavailable' };
+            }
+            const state: number = status.rustdeskTransferState;
+            control.update({ sentBytes: status.transferredBytes });
+            if (control.isCurrent()) {
+              const progress: number = fileSize > 0 ? status.transferredBytes / fileSize : 0;
+              this.setFileTransferStatus('正在发送 ' + fileName + ' ' +
+                this.formatTransferSize(status.transferredBytes) + '/' + this.formatTransferSize(fileSize), progress, true);
+            }
+            if (state === 3 || state === 6) {
+              drained = true;
+              return { stage: 'completed', evidence: 'senderCompleted' };
+            }
+            if (state === 4 || state === 5) {
+              drained = true;
+              return { stage: state === 5 ? 'cancelled' : 'failed', evidence: 'none',
+                diagnosticCode: 'native_transfer_ended' };
+            }
+            if (!control.isCurrent()) {
+              const finalStatus: SessionTransferStatus | null = await this.cancelAndDrainNativeTransfer(lease, transferId);
+              drained = finalStatus !== null;
+              if (finalStatus !== null && (finalStatus.rustdeskTransferState === 3 || finalStatus.rustdeskTransferState === 6)) {
+                return { stage: 'completed', evidence: 'senderCompleted' };
+              }
+              return { stage: drained ? 'cancelled' : 'paused', evidence: 'none', diagnosticCode: 'session_changed' };
+            }
+            if (control.isCancellationRequested()) {
+              this.loader.cancelSessionFileTransfer(lease.sessionId, lease.nativeGeneration, transferId);
+            }
+            await this.yieldUi(250);
+          }
+        } catch (_err) {
+          if (transferId > 0) {
+            const finalStatus: SessionTransferStatus | null = await this.cancelAndDrainNativeTransfer(lease, transferId);
+            drained = finalStatus !== null;
+            if (finalStatus !== null && (finalStatus.rustdeskTransferState === 3 || finalStatus.rustdeskTransferState === 6)) {
+              return { stage: 'completed', evidence: 'senderCompleted' };
+            }
+          }
+          return { stage: transferId > 0 && !drained ? 'paused' : 'failed', evidence: 'none', diagnosticCode: 'file_transfer_failed' };
+        } finally {
+          if (file !== null) { try { await fileIo.close(file); } catch (_err) {} }
+          if (drained && transferId > 0) {
+            this.loader.releaseSessionFileTransfer(lease.sessionId, lease.nativeGeneration, transferId);
+          }
+        }
+      });
+    const outcome: ManagedTransferOutcome = await handle.result;
+    if (this.transferLeaseIsCurrent(lease)) {
+      this.setFileTransferStatus(outcome.stage === 'completed' ?
+        '发送端已发送全部数据，目标文件尚未校验' : '文件传输已停止，可在任务记录中查看',
+        outcome.stage === 'completed' ? 1 : -1, false);
+    }
+    return outcome.stage === 'completed' ? 'senderCompleted' : 'failed';
+  }
+
+  private async requestRdpRemoteClipboardFiles(): Promise<void> {
+    const lease: RemoteTransferLease | null = this.transferPanelLease;
+    if (lease === null || lease.protocol !== 'rdp' || !this.transferLeaseIsCurrent(lease)) { return; }
+    const generation: number = ++this.rdpOfferRequestGeneration;
+    const sequence: number = this.loader.getSessionClipboardSnapshot(lease.sessionId).sequence;
+    if (!this.loader.requestSessionRdpClipboardFiles(lease.sessionId, lease.nativeGeneration, sequence)) {
+      this.rdpReceiveMessage = '请先在远端复制文件，并确认文件剪贴板已启用'; return;
+    }
+    this.rdpReceiveMessage = '正在读取远端文件清单';
+    const deadline: number = Date.now() + 16000;
+    while (Date.now() < deadline && this.transferLeaseIsCurrent(lease) && generation === this.rdpOfferRequestGeneration) {
+      const offer: SessionRdpClipboardFiles = this.loader.getSessionRdpClipboardFiles(lease.sessionId, lease.nativeGeneration);
+      if (offer.sequence !== sequence) { this.rdpReceiveMessage = '远端剪贴板已变化，请重新读取'; return; }
+      if (offer.state === 'ready') {
+        this.rdpReceiveOffer = offer;
+        this.rdpReceiveMessage = '选择接收后可另存到本机。跨设备剪切按复制处理，源文件保留。'; return;
       }
-      if (dst !== null) {
-        try { fileIo.closeSync(dst); } catch (_err3) { /* ignore */ }
-      }
+      if (offer.state !== 'loading') { this.rdpReceiveMessage = '远端文件清单不可用或已失效'; return; }
+      await this.yieldUi(100);
+    }
+    if (this.transferLeaseIsCurrent(lease)) { this.rdpReceiveMessage = '文件清单读取超时'; }
+  }
+
+  private async cancelAndDrainRdpReceive(lease: RemoteTransferLease, id: number): Promise<boolean> {
+    this.loader.cancelSessionRdpClipboardReceive(lease.sessionId, lease.nativeGeneration, id);
+    while (true) {
+      const status: SessionRdpClipboardReceive = this.loader.getSessionRdpClipboardReceive(lease.sessionId, lease.nativeGeneration, id);
+      if (status.taskId === id && ['completed', 'failed', 'cancelled'].indexOf(status.phase) >= 0) { return true; }
+      if (status.phase === 'unavailable') { return false; }
+      await this.yieldUi(250);
     }
   }
 
-  private async submitFileToRustDesk(uri: string, fileName: string, fileSize: number): Promise<TransferState> {
-    if (fileSize <= 0 || fileSize > RUSTDESK_FILE_MAX_BYTES) {
-      this.setFileTransferStatus('[RustDesk-FILE] 文件为空或超过 100MB', -1, false);
-      return 'failed';
+  private async receiveRdpClipboardEntries(entries: SessionRdpClipboardFileEntry[]): Promise<void> {
+    const lease: RemoteTransferLease | null = this.transferPanelLease;
+    const offer: SessionRdpClipboardFiles = this.rdpReceiveOffer;
+    if (lease === null || !this.transferLeaseIsCurrent(lease) || lease.protocol !== 'rdp' ||
+      offer.state !== 'ready' || entries.length === 0 || entries.length > 1024 ||
+      (offer.totalKnown && offer.totalBytes > RDP_FILE_MAX_BYTES)) {
+      this.rdpReceiveMessage = '接收清单无效或单批超过 2GB'; return;
     }
-    let file: fileIo.File | null = null;
-    let liveTaskId: string = '';
-    let readLen: number = 0;
+    const context: common.UIAbilityContext | null = this.getFileTransferContext();
+    if (context === null) { return; }
+    const service: ManagedTransferTaskService = ManagedTransferTaskService.getInstance();
+    if (!service.init(context)) { return; }
+    const batch: TransferArtifactBatch = new TransferArtifactBatch(context.filesDir,
+      transferScopeKey(lease.accountScopeId, lease.hostId + ':' + lease.routeIdentity), 'received');
+    this.transferArtifactBatches.set(batch.directory, batch);
+    const handle = service.enqueue({ accountScopeId: lease.accountScopeId, hostId: lease.hostId, protocol: 'rdp',
+      direction: 'download', fileName: entries.length === 1 ? safeTransferFileName(entries[0].relativeName.split('/').pop() || '文件') :
+        entries.length.toString() + ' 个远端条目', batchId: batch.id, totalBytes: offer.totalKnown ? offer.totalBytes : 0,
+      sourceKind: 'remote-clipboard', isCurrent: (): boolean => this.transferLeaseIsCurrent(lease) &&
+        this.rdpFileTransferEnabledForSession(lease.sessionId, lease.attemptId) },
+      async (control: ManagedTransferControl): Promise<ManagedTransferOutcome> => {
+        let slot: TransferNativeReceiveDirectory | null = null;
+        let id: number = -1; let drained: boolean = false; let committed: boolean = false;
+        try {
+          slot = await batch.createNativeReceiveDirectory(control.isCurrent,
+            offer.totalKnown ? offer.totalBytes : RDP_FILE_MAX_BYTES);
+          if (!control.isCurrent()) { return { stage: 'cancelled', evidence: 'none' }; }
+          id = this.loader.startSessionRdpClipboardReceive(lease.sessionId, lease.nativeGeneration, offer.sequence,
+            entries.map((entry: SessionRdpClipboardFileEntry): number => entry.index), slot.fd);
+          if (id <= 0) { return { stage: 'failed', evidence: 'none', diagnosticCode: 'receive_rejected' }; }
+          control.onCancel((): void => { this.loader.cancelSessionRdpClipboardReceive(lease.sessionId, lease.nativeGeneration, id); });
+          control.update({ stage: 'transferring' });
+          while (true) {
+            const status: SessionRdpClipboardReceive = this.loader.getSessionRdpClipboardReceive(lease.sessionId, lease.nativeGeneration, id);
+            control.update({ writtenBytes: status.transferredBytes, totalBytes: status.totalKnown ? status.totalBytes : 0 });
+            if (status.phase === 'completed') {
+              drained = true;
+              if (!control.isCurrent()) { return { stage: 'cancelled', evidence: 'none' }; }
+              control.update({ stage: 'verifying' });
+              if (!await control.enterCommit()) { return { stage: 'cancelled', evidence: 'none' }; }
+              const expected: TransferNativeReceivedEntry[] = status.artifacts.map((entry: SessionRdpClipboardArtifact): TransferNativeReceivedEntry => {
+                return { index: entry.index, relativeName: entry.relativeName, directory: entry.directory, size: entry.size };
+              });
+              const artifacts: TransferArtifact[] = await slot.commit(expected); committed = true;
+              if (this.transferLeaseIsCurrent(lease)) { this.receivedTransferArtifacts = this.receivedTransferArtifacts.concat(artifacts); }
+              return { stage: 'completed', evidence: 'metadataVerified' };
+            }
+            if (status.phase === 'failed' || status.phase === 'cancelled') {
+              drained = true;
+              return { stage: status.phase, evidence: 'none', diagnosticCode: 'receive_incomplete' };
+            }
+            if (!control.isCurrent() || status.phase === 'unavailable') {
+              drained = await this.cancelAndDrainRdpReceive(lease, id);
+              return { stage: drained ? 'cancelled' : 'paused', evidence: 'none', diagnosticCode: 'receive_retired' };
+            }
+            await this.yieldUi(250);
+          }
+        } catch (_err) {
+          if (id > 0 && !drained) { drained = await this.cancelAndDrainRdpReceive(lease, id); }
+          return { stage: id > 0 && !drained ? 'paused' : 'failed', evidence: 'none', diagnosticCode: 'receive_failed' };
+        } finally {
+          if (id > 0 && drained) { this.loader.releaseSessionRdpClipboardReceive(lease.sessionId, lease.nativeGeneration, id); }
+          if (slot !== null && !committed) {
+            if (id <= 0 || drained) { await slot.abort(); } else { await slot.retainPartial(); }
+          }
+          if (id <= 0 || drained) { batch.release(); }
+        }
+      });
+    if (!handle.accepted) { batch.release(); }
+    const outcome: ManagedTransferOutcome = await handle.result;
+    if (this.transferLeaseIsCurrent(lease)) {
+      this.rdpReceiveMessage = outcome.stage === 'completed' ? '已接收到本机副本，目录结构保留' : '接收未完成，源文件保留';
+    }
+  }
+
+  private refreshRdpSharedFiles(): void {
+    const lease: RemoteTransferLease | null = this.transferPanelLease;
+    if (lease === null || !this.transferLeaseIsCurrent(lease) || lease.protocol !== 'rdp') { return; }
+    this.rdpSharedDrive = this.loader.getSessionRdpDrive(lease.sessionId, lease.nativeGeneration);
+  }
+
+  private async freezeRdpSharedFile(fact: SessionRdpReceivedFileFact): Promise<void> {
+    const lease: RemoteTransferLease | null = this.transferPanelLease;
+    if (lease === null || !this.transferLeaseIsCurrent(lease) || !fact.remoteClosed || fact.activeHandles > 0 || fact.uncertain) { return; }
+    const root: string = this.ensureRdpTransferDir();
+    const relative: string = fact.relativePath.replace(/\\/g, '/').replace(/^\/+/, '');
+    const path: string = root + '/' + relative;
+    if (!this.controlledDropPathIsSafe(root, path)) { return; }
+    const context: common.UIAbilityContext | null = this.getFileTransferContext();
+    if (context === null) { return; }
+    const stillClosed = (): boolean => {
+      if (!this.transferLeaseIsCurrent(lease)) { return false; }
+      const current: SessionRdpDrive = this.loader.getSessionRdpDrive(lease.sessionId, lease.nativeGeneration);
+      return current.evidenceComplete && current.entries.some((entry: SessionRdpReceivedFileFact): boolean =>
+        entry.relativePath === fact.relativePath && entry.writeGeneration === fact.writeGeneration &&
+          entry.activeHandles === 0 && entry.remoteClosed && !entry.uncertain);
+    };
+    const service: ManagedTransferTaskService = ManagedTransferTaskService.getInstance();
+    if (!service.init(context)) { return; }
     try {
-      this.setFileTransferStatus('正在读取 ' + fileName + ' 0%', 0, true);
-      liveTaskId = await this.beginLiveFileTransfer('rustdesk', fileName, fileSize,
-        '正在读取 ' + fileName);
-      file = fileIo.openSync(uri, fileIo.OpenMode.READ_ONLY);
-      const buf = new ArrayBuffer(fileSize);
-      readLen = fileIo.readSync(file.fd, buf);
-      if (readLen !== fileSize) {
-        this.setFileTransferStatus('[RustDesk-FILE] 文件读取不完整', -1, false);
-        await this.finishLiveFileTransfer(liveTaskId, 'rustdesk', fileName, readLen, fileSize, true,
-          '[RustDesk-FILE] 文件读取不完整');
-        return 'failed';
-      }
-      this.setFileTransferStatus('正在提交到 RustDesk core ' + fileName, 0.9, true);
-      await this.updateLiveFileTransfer(liveTaskId, 'rustdesk', fileName, Math.floor(fileSize * 0.9),
-        fileSize, 'transferring', '正在提交到 RustDesk core ' + fileName);
-      await this.yieldUi(0);
-      const remotePath: string = RUSTDESK_TRANSFER_DIR + '\\' + fileName;
-      const ret: number = this.loader.sendFile(this.sessionId, remotePath, buf);
-      if (ret < 0) {
-        const ffiError: string = this.loader.getRustDeskLastError();
-        hilog.error(RD_DOMAIN, RD_TAG, 'RustDesk file transfer enqueue failed detail=' +
-          (ffiError.length > 0 ? ffiError : 'unavailable'));
-        this.setFileTransferStatus('[RustDesk-FILE] 文件传输失败 [' + FILE_TRANSFER_DIAG_RUSTDESK_SEND + ']', -1, false);
-        await this.finishLiveFileTransfer(liveTaskId, 'rustdesk', fileName, readLen, fileSize, true,
-          '[RustDesk-FILE] 文件传输失败 [' + FILE_TRANSFER_DIAG_RUSTDESK_SEND + ']');
-        return 'failed';
-      }
-      this.setFileTransferStatus('正在等待 RustDesk 文件传输确认 ' + fileName, 0.95, true);
-      await this.updateLiveFileTransfer(liveTaskId, 'rustdesk', fileName, Math.floor(fileSize * 0.95),
-        fileSize, 'waitingRemote', '正在等待 RustDesk 文件传输确认 ' + fileName);
-      const deadline: number = Date.now() + 30000;
-      while (Date.now() < deadline) {
-        await this.yieldUi(500);
-        const status: SessionTransferStatus = this.loader.getSessionTransferStatus(this.sessionId);
-        if (status.transferId !== ret) { continue; }
-        if (status.rustdeskTransferState === 3) {
-          this.setFileTransferStatus('RustDesk 文件传输已确认', 1, false);
-          await this.updateLiveFileTransfer(liveTaskId, 'rustdesk', fileName, fileSize,
-            fileSize, 'completed', 'RustDesk 文件传输已确认');
-          return 'completed';
+      const info: fileIo.Stat = await fileIo.lstat(path);
+      if (!stillClosed() || !info.isFile() || info.isSymbolicLink()) { return; }
+      const batch: TransferArtifactBatch = new TransferArtifactBatch(context.filesDir,
+        transferScopeKey(lease.accountScopeId, lease.hostId + ':' + lease.routeIdentity), 'received');
+      this.transferArtifactBatches.set(batch.directory, batch);
+      const handle = service.enqueue({ accountScopeId: lease.accountScopeId, hostId: lease.hostId,
+        protocol: 'rdp', direction: 'download', fileName: safeTransferFileName(this.fileBaseName(path)),
+        totalBytes: info.size, batchId: batch.id, sourceKind: 'shared-drive', isCurrent: stillClosed,
+        onFinalize: (): void => { batch.release(); } },
+        async (control: ManagedTransferControl): Promise<ManagedTransferOutcome> => {
+          try {
+            control.update({ stage: 'transferring' });
+            const artifact: TransferArtifact = await batch.stage(path, this.fileBaseName(path), info.size, control.isCurrent,
+              (bytes: number, _total: number): void => { control.update({ writtenBytes: bytes }); });
+            if (!control.isCurrent()) { return { stage: 'failed', evidence: 'none', diagnosticCode: 'shared_file_changed' }; }
+            this.receivedTransferArtifacts = this.receivedTransferArtifacts.concat([artifact]);
+            return { stage: 'completed', evidence: 'metadataVerified' };
+          } catch (_err) { return { stage: 'failed', evidence: 'none', diagnosticCode: 'shared_file_changed' }; }
+        });
+      if (!handle.accepted) { batch.release(); }
+      await handle.result;
+    } catch (_err) { this.rdpReceiveMessage = '共享文件仍在变化或无法读取'; }
+  }
+
+  private async downloadRustDeskFile(entry: SessionRemoteFileEntry): Promise<void> {
+    const lease: RemoteTransferLease | null = this.transferPanelLease;
+    const remotePath: string = joinRemoteTransferPath(this.remoteTransferDirectory, entry.name);
+    if (lease === null || !this.transferLeaseIsCurrent(lease) || lease.protocol !== 'rustdesk' ||
+      entry.type !== 4 || remotePath.length === 0 || !this.currentSessionCapabilities().fileUpload.enabled) { return; }
+    const context: common.UIAbilityContext | null = this.getFileTransferContext();
+    if (context === null) { return; }
+    const service: ManagedTransferTaskService = ManagedTransferTaskService.getInstance();
+    if (!service.init(context)) { return; }
+    const batch: TransferArtifactBatch = new TransferArtifactBatch(context.filesDir,
+      transferScopeKey(lease.accountScopeId, lease.hostId + ':' + lease.routeIdentity), 'received');
+    this.transferArtifactBatches.set(batch.directory, batch);
+    const handle = service.enqueue({ accountScopeId: lease.accountScopeId, hostId: lease.hostId,
+      protocol: 'rustdesk', direction: 'download', fileName: safeTransferFileName(entry.name),
+      batchId: batch.id, totalBytes: entry.size, sourceKind: 'remote-directory',
+      isCurrent: (): boolean => this.transferLeaseIsCurrent(lease) && this.currentSessionCapabilities().fileUpload.enabled },
+      async (control: ManagedTransferControl): Promise<ManagedTransferOutcome> => {
+        let slot: TransferReceivedArtifactWriter | null = null;
+        let id: number = -1;
+        let drained: boolean = false;
+        let committed: boolean = false;
+        try {
+          slot = await batch.beginNativeReceive(entry.name, entry.size, control.isCurrent);
+          if (!control.isCurrent()) { return { stage: 'cancelled', evidence: 'none' }; }
+          id = this.loader.downloadSessionFileToFd(lease.sessionId, lease.nativeGeneration,
+            remotePath, slot.fd, entry.size, entry.modifiedTime);
+          if (id <= 0) { return { stage: 'failed', evidence: 'none', diagnosticCode: 'download_rejected' }; }
+          control.onCancel((): void => { this.loader.cancelSessionFileTransfer(lease.sessionId, lease.nativeGeneration, id); });
+          control.update({ stage: 'transferring' });
+          while (true) {
+            const status: SessionTransferStatus = this.loader.getSessionFileTransfer(lease.sessionId, lease.nativeGeneration, id);
+            control.update({ writtenBytes: status.transferredBytes });
+            if (status.rustdeskTransferState === 6 || status.rustdeskTransferState === 3) {
+              drained = true;
+              if (!control.isCurrent()) { return { stage: 'cancelled', evidence: 'none' }; }
+              control.update({ stage: 'verifying', writtenBytes: entry.size });
+              if (!await control.enterCommit()) { return { stage: 'cancelled', evidence: 'none' }; }
+              const artifact: TransferArtifact = await slot.commit(entry.modifiedTime);
+              committed = true;
+              if (this.transferLeaseIsCurrent(lease)) {
+                this.receivedTransferArtifacts = this.receivedTransferArtifacts.concat([artifact]);
+              }
+              return { stage: 'completed', evidence: 'metadataVerified' };
+            }
+            if (status.rustdeskTransferState === 4 || status.rustdeskTransferState === 5) {
+              drained = true;
+              return { stage: status.rustdeskTransferState === 5 ? 'cancelled' : 'failed', evidence: 'none',
+                diagnosticCode: 'download_incomplete' };
+            }
+            if (!control.isCurrent() || status.rustdeskTransferState === 0) {
+              drained = (await this.cancelAndDrainNativeTransfer(lease, id)) !== null;
+              return { stage: drained ? 'cancelled' : 'paused', evidence: 'none', diagnosticCode: 'download_retired' };
+            }
+            await this.yieldUi(250);
+          }
+        } catch (_err) {
+          if (id > 0 && !drained) { drained = (await this.cancelAndDrainNativeTransfer(lease, id)) !== null; }
+          return { stage: id > 0 && !drained ? 'paused' : 'failed', evidence: 'none', diagnosticCode: 'download_failed' };
+        } finally {
+          if (id > 0 && drained) { this.loader.releaseSessionFileTransfer(lease.sessionId, lease.nativeGeneration, id); }
+          if (slot !== null && !committed) {
+            if (id <= 0 || drained) { await slot.abort(); }
+            else { await slot.retainPartial(); }
+          }
+          if (id <= 0 || drained) { batch.release(); }
         }
-        if (status.rustdeskTransferState === 4) {
-          const ffiError: string = this.loader.getRustDeskLastError();
-          const transferDetail: string = status.diagnosticCode.length > 0 ?
-            status.diagnosticCode : ffiError;
-          hilog.error(RD_DOMAIN, RD_TAG, 'RustDesk file transfer failed transferId=' +
-            ret.toString() + ' detail=' + (transferDetail.length > 0 ? transferDetail : 'unavailable'));
-          this.setFileTransferStatus('[RustDesk-FILE] 远端未确认文件传输', -1, false);
-          await this.finishLiveFileTransfer(liveTaskId, 'rustdesk', fileName,
-            status.transferredBytes, fileSize, true, '[RustDesk-FILE] 远端未确认文件传输');
-          return 'failed';
-        }
+      });
+    if (!handle.accepted) { batch.release(); }
+    const outcome: ManagedTransferOutcome = await handle.result;
+    if (this.transferLeaseIsCurrent(lease)) {
+      this.setFileTransferStatus(outcome.stage === 'completed' ? '已接收到本机副本，可另存或复制到剪贴板' :
+        '接收未完成，源文件保留', outcome.stage === 'completed' ? 1 : -1, false);
+    }
+  }
+
+  private async saveReceivedTransferArtifact(artifact: TransferArtifact): Promise<void> {
+    const lease: RemoteTransferLease | null = this.transferPanelLease;
+    if (lease === null || artifact.directory === true || !this.transferLeaseIsCurrent(lease)) { return; }
+    const context: common.UIAbilityContext | null = this.getFileTransferContext();
+    if (context === null) { return; }
+    try {
+      const options: picker.DocumentSaveOptions = { newFileNames: [artifact.name] };
+      const targets: string[] = await new picker.DocumentViewPicker().save(options);
+      if (!this.transferLeaseIsCurrent(lease) || targets.length !== 1) { return; }
+      const target: string = targets[0];
+      const service: ManagedTransferTaskService = ManagedTransferTaskService.getInstance();
+      if (!service.init(context)) { return; }
+      const protocol: TransferProtocol = lease.protocol === 'rdp' ? 'rdp' : 'rustdesk';
+      const handle = service.enqueue({ accountScopeId: lease.accountScopeId, hostId: lease.hostId,
+        protocol, direction: 'download', fileName: artifact.name, totalBytes: artifact.size, sourceKind: 'local-export',
+        isCurrent: (): boolean => this.transferLeaseIsCurrent(lease) },
+        async (control: ManagedTransferControl): Promise<ManagedTransferOutcome> => {
+          if (!await control.enterCommit()) { return { stage: 'cancelled', evidence: 'none' }; }
+          const result = await exportTransferArtifact(artifact, target, control.isCurrent,
+            (written: number, _total: number): void => { control.update({ writtenBytes: written }); });
+          if (result.status === 'saved') { return { stage: 'completed', evidence: 'exported' }; }
+          return { stage: result.status, evidence: 'none', diagnosticCode: result.diagnosticCode };
+        });
+      const result: ManagedTransferOutcome = await handle.result;
+      if (this.transferLeaseIsCurrent(lease)) {
+        this.setFileTransferStatus(result.stage === 'completed' ? '文件已保存，本机接收副本保留' :
+          result.stage === 'commitUnknown' ? '保存结果未知，请检查所选目标；本机副本保留' : '保存未完成，本机副本保留',
+          result.stage === 'completed' ? 1 : -1, false);
       }
-      this.setFileTransferStatus('RustDesk 文件传输仍在等待远端确认', 0.95, false);
-      return 'waitingRemote';
-    } catch (err) {
-      const ffiError: string = this.loader.getRustDeskLastError();
-      hilog.error(RD_DOMAIN, RD_TAG, 'RustDesk file transfer exception=' + JSON.stringify(err) +
-        ' detail=' + (ffiError.length > 0 ? ffiError : 'unavailable'));
-      this.setFileTransferStatus('[RustDesk-FILE] 文件传输失败 [' + FILE_TRANSFER_DIAG_RUSTDESK_SEND + ']', -1, false);
-      await this.finishLiveFileTransfer(liveTaskId, 'rustdesk', fileName, readLen, fileSize, true,
-        '[RustDesk-FILE] 文件传输失败 [' + FILE_TRANSFER_DIAG_RUSTDESK_SEND + ']');
-      hilog.error(RD_DOMAIN, RD_TAG, 'file transfer diagnostic=' + FILE_TRANSFER_DIAG_RUSTDESK_SEND);
-      return 'failed';
+    } catch (_err) {
+      if (this.transferLeaseIsCurrent(lease)) { this.setFileTransferStatus('无法保存文件，本机副本保留', -1, false); }
+    }
+  }
+
+  private publishReceivedTransferArtifact(artifact: TransferArtifact): void {
+    const lease: RemoteTransferLease | null = this.transferPanelLease;
+    if (lease === null || artifact.directory === true || !this.clipboardLeaseIsCurrent(lease)) { return; }
+    const batch: TransferArtifactBatch | null = TransferArtifactBatch.owner(artifact);
+    if (batch === null) { return; }
+    try {
+      batch.setPublished(true);
+      const data: pasteboard.PasteData = pasteboard.createUriData(fileUri.getUriFromPath(artifact.path));
+      const property: pasteboard.PasteDataProperty = data.getProperty();
+      property.tag = ClipboardCoordinator.getInstance().remoteTag(0);
+      data.setProperty(property);
+      if (!this.clipboardLeaseIsCurrent(lease)) { return; }
+      pasteboard.getSystemPasteboard().setDataSync(data);
+      promptAction.showToast({ message: '已复制接收文件，可在本机文件管理器粘贴', duration: 2200 });
+    } catch (_err) { promptAction.showToast({ message: '无法发布文件剪贴板，本机副本保留', duration: 2200 }); }
+  }
+
+  private openFileTransferPanel(): void {
+    const lease: RemoteTransferLease | null = this.captureTransferLease();
+    if (lease === null) { return; }
+    const sameOwner: boolean = this.transferPanelLease !== null &&
+      this.transferPanelLease.nativeGeneration === lease.nativeGeneration &&
+      this.transferPanelLease.sessionId === lease.sessionId &&
+      this.transferPanelLease.accountScopeId === lease.accountScopeId;
+    this.transferPanelLease = lease;
+    if (!sameOwner) {
+      this.remoteTransferDirectory = '';
+      this.remoteTransferPathInput = '';
+      this.remoteTransferEntries = [];
+      this.receivedTransferArtifacts = [];
+      this.rdpReceiveOffer = { sequence: 0, state: 'unavailable', streamSupported: false, lockSupported: false,
+        totalKnown: false, totalBytes: 0, diagnosticCode: '', entries: [] };
+    }
+    this.transferPanelAccountUnsubscribe?.();
+    this.transferPanelAccountUnsubscribe = AccountSessionCoordinator.getInstance().onChange((scope): void => {
+      if (scope.ownerScopeId !== lease.accountScopeId || scope.generation !== lease.accountGeneration) {
+        this.showFileTransferPanel = false;
+        this.remoteTransferEntries = [];
+        this.receivedTransferArtifacts = [];
+        this.remoteTransferDirectory = '';
+      }
+    });
+    this.showFileTransferPanel = true;
+    if (lease.protocol === 'rdp') { this.refreshRdpSharedFiles(); }
+    if (lease.protocol === 'rustdesk' && this.remoteTransferDirectory.length === 0) {
+      void this.browseRemoteTransferDirectory('');
+    }
+  }
+
+  private async browseRemoteTransferDirectory(path: string): Promise<void> {
+    const lease: RemoteTransferLease | null = this.transferPanelLease;
+    if (lease === null || !this.transferLeaseIsCurrent(lease) || lease.protocol !== 'rustdesk') { return; }
+    if (path.length > 0 && !remoteTransferPathIsAbsolute(path)) {
+      this.remoteTransferBrowserMessage = '请输入远端绝对目录'; return;
+    }
+    const generation: number = ++this.transferDirectoryRequestGeneration;
+    this.remoteTransferBrowserBusy = true;
+    this.remoteTransferBrowserMessage = '正在读取远端目录';
+    const id: number = this.loader.requestSessionRemoteDirectory(lease.sessionId, lease.nativeGeneration, path);
+    if (id <= 0) { this.remoteTransferBrowserBusy = false; this.remoteTransferBrowserMessage = '远端目录请求未获准'; return; }
+    let terminal: boolean = false;
+    const deadline: number = Date.now() + 120000;
+    try {
+      while (Date.now() < deadline && generation === this.transferDirectoryRequestGeneration &&
+        this.transferLeaseIsCurrent(lease) && this.showFileTransferPanel) {
+        const status: SessionTransferStatus = this.loader.getSessionFileTransfer(lease.sessionId, lease.nativeGeneration, id);
+        if (status.rustdeskTransferState === 6 || status.rustdeskTransferState === 3) {
+          terminal = true;
+          const directory = this.loader.getSessionRemoteDirectory(lease.sessionId, lease.nativeGeneration, id);
+          if (!remoteTransferPathIsAbsolute(directory.path)) {
+            this.remoteTransferBrowserMessage = '远端未返回可用目录，请输入绝对目录后重试'; return;
+          }
+          this.remoteTransferDirectory = directory.path;
+          this.remoteTransferPathInput = directory.path;
+          this.remoteTransferEntries = directory.entries.filter((entry: SessionRemoteFileEntry): boolean =>
+            remoteTransferEntryPath(directory.path, entry.name, entry.type).length > 0 &&
+              (entry.type === 0 || entry.type === 3 || entry.type === 4));
+          this.remoteTransferBrowserMessage = '新文件将发送到当前所选目录；同名文件保留';
+          return;
+        }
+        if (status.rustdeskTransferState === 4 || status.rustdeskTransferState === 5) {
+          terminal = true; this.remoteTransferBrowserMessage = '目录读取未完成，请检查文件会话授权'; return;
+        }
+        await this.yieldUi(250);
+      }
+      this.remoteTransferBrowserMessage = '目录读取已停止';
     } finally {
-      if (file !== null) {
-        try { fileIo.closeSync(file); } catch (_err2) { /* ignore */ }
-      }
+      if (!terminal) { terminal = (await this.cancelAndDrainNativeTransfer(lease, id)) !== null; }
+      if (terminal) { this.loader.releaseSessionFileTransfer(lease.sessionId, lease.nativeGeneration, id); }
+      if (generation === this.transferDirectoryRequestGeneration) { this.remoteTransferBrowserBusy = false; }
     }
   }
 
@@ -16924,13 +17415,21 @@ struct RemoteDesktop {
       promptAction.showToast({ message: 'RustDesk 文件粘贴已禁用', duration: 1600 });
       return;
     }
-    const observedSessionId: number = this.sessionId;
-    const observedAttemptId: number = this.connectAttemptId;
+    const lease: RemoteTransferLease | null = this.captureTransferLease();
+    if (lease === null) { return; }
+    const observedSessionId: number = lease.sessionId;
+    const observedAttemptId: number = lease.attemptId;
+    const targetDirectory: string = this.remoteTransferDirectory;
+    if (lease.protocol === 'rustdesk' && !remoteTransferPathIsAbsolute(targetDirectory)) {
+      this.openFileTransferPanel();
+      this.remoteTransferBrowserMessage = '请选择远端目标文件夹';
+      return;
+    }
     let metaFile: fileIo.File | null = null;
     try {
       const docPicker = new picker.DocumentViewPicker();
       const uris: string[] = await docPicker.select();
-      if (!uris || uris.length === 0) {
+      if (!this.transferLeaseIsCurrent(lease) || !uris || uris.length === 0) {
         hilog.info(RD_DOMAIN, RD_TAG, 'file transfer picker cancelled');
         return;
       }
@@ -16943,21 +17442,10 @@ struct RemoteDesktop {
       fileIo.closeSync(metaFile);
       metaFile = null;
 
-      if (this.pendingHost.protocol === 'rdp') {
-        const stagedPath: string = await this.stageFileForRdpClipboard(uri, fileName, fileSize, '',
-          observedSessionId, observedAttemptId);
-        if (stagedPath.length === 0 ||
-          !this.rdpFileTransferEnabledForSession(observedSessionId, observedAttemptId) ||
-          !this.loader.setSessionClipboardFiles(observedSessionId, [stagedPath])) {
-          this.setFileTransferStatus('[RDP-FILE] 远端文件剪贴板发布失败', -1, false);
-          return;
-        }
-        this.keyDispatcher.sendShortcutSequence(this.loader, this.sessionId,
-          [KEYCODE_CTRL_LEFT, KEY_V], 'RDP file paste');
-        this.setFileTransferStatus('已发送到远端当前位置，Windows 正在读取文件', 1, false);
-        promptAction.showToast({ message: '已发送到远端当前位置', duration: 2200 });
-      } else if (this.pendingHost.protocol === 'rustdesk') {
-        await this.submitFileToRustDesk(uri, fileName, fileSize);
+      if (lease.protocol === 'rdp') {
+        await this.prepareAndOfferRdpFiles([{ uri, name: fileName, size: fileSize }], lease, 'picker');
+      } else if (lease.protocol === 'rustdesk') {
+        await this.submitFileToRustDesk(uri, fileName, fileSize, lease, targetDirectory);
       } else {
         this.setFileTransferStatus('当前协议暂不支持远程桌面文件传输', -1, false);
       }
@@ -16967,6 +17455,37 @@ struct RemoteDesktop {
     } finally {
       if (metaFile !== null) {
         try { fileIo.closeSync(metaFile); } catch (_err2) { /* ignore */ }
+      }
+    }
+  }
+
+  private async pasteCurrentLocalText(lease: RemoteTransferLease, modifier: number): Promise<void> {
+    try {
+      if (!this.clipboardLeaseIsCurrent(lease)) { return; }
+      if (this.clipboardBridge === null) { this.restartClipboardBridgeIfActiveForeground(); }
+      const deadline: number = Date.now() + 2500;
+      while (this.clipboardBridge === null && Date.now() < deadline && this.clipboardLeaseIsCurrent(lease)) {
+        await this.yieldUi(25);
+      }
+      const bridge: ClipboardBridgeService | null = this.clipboardBridge;
+      if (bridge === null || !this.clipboardLeaseIsCurrent(lease)) { return; }
+      if (bridge.hasRemoteClipboardSource()) {
+        this.keyDispatcher.sendShortcutSequence(this.loader, lease.sessionId, [modifier, KEY_V], 'remote paste');
+        return;
+      }
+      const sent: boolean = await bridge.readAndSendCurrentText();
+      if (!this.clipboardLeaseIsCurrent(lease)) { return; }
+      if (sent) {
+        this.keyDispatcher.sendShortcutSequence(this.loader, lease.sessionId, [modifier, KEY_V], 'local text paste');
+      } else {
+        promptAction.showToast({ message: '本机内容尚未同步，请确认剪贴板权限后重试', duration: 2200 });
+      }
+    } finally {
+      // Restore only physically held modifiers and only to the captured owner.
+      if (this.clipboardLeaseIsCurrent(lease)) {
+        for (const key of this.physicalModifierKeyCodesDown) {
+          this.loader.sendKey(lease.sessionId, this.mapPhysicalKeyCode(key), true);
+        }
       }
     }
   }
@@ -16996,153 +17515,97 @@ struct RemoteDesktop {
   }
 
   private async handleRdpSystemFilePaste(): Promise<void> {
-    if (this.fileTransferBusy || !this.connected || this.sessionId <= 0 ||
-      !this.pendingHost || this.pendingHost.protocol !== 'rdp' || !this.rdpClipboardEnabled) {
-      return;
-    }
-    const observedSessionId: number = this.sessionId;
-    const observedAttemptId: number = this.connectAttemptId;
-    const capability = this.currentSessionCapabilities().fileUpload;
-    if (!capability.enabled) {
-      promptAction.showToast({ message: capability.reason, duration: 2200 });
-      return;
-    }
-    if (!await this.ensurePasteboardReadPermission()) {
-      promptAction.showToast({ message: '需要剪贴板权限才能粘贴本机文件', duration: 2600 });
-      return;
-    }
-    if (!this.rdpFileTransferEnabledForSession(observedSessionId, observedAttemptId)) {
-      return;
-    }
+    const lease: RemoteTransferLease | null = this.captureTransferLease();
+    if (lease === null || this.fileTransferBusy || !this.rdpFileTransferEnabledForSession()) { return; }
+    if (!await this.ensurePasteboardReadPermission() || !this.transferLeaseIsCurrent(lease)) { return; }
     try {
-      const data: unifiedDataChannel.UnifiedData =
-        await pasteboard.getSystemPasteboard().getUnifiedData();
-      const records: Array<unifiedDataChannel.UnifiedRecord> = data.getRecords();
-      if (records.length === 0 || records.length > 15) {
-        this.setFileTransferStatus(records.length > 15 ?
-          '[RDP-FILE] 单次最多粘贴 15 个文件' : '[RDP-FILE] 剪贴板中没有可传输文件', -1, false);
-        return;
-      }
-      const batchDir: string = this.createRdpClipboardBatchDir();
-      if (batchDir.length === 0) {
-        return;
-      }
-      const stagedPaths: string[] = [];
-      for (const record of records) {
-        if (!this.rdpFileTransferEnabledForSession(observedSessionId, observedAttemptId)) {
-          return;
-        }
-        const fileUriEntry: uniformDataStruct.FileUri =
-          record.getEntry(uniformTypeDescriptor.UniformDataType.FILE_URI) as uniformDataStruct.FileUri;
-        const uri: string = fileUriEntry && fileUriEntry.oriUri ? fileUriEntry.oriUri : '';
-        if (uri.length === 0) {
-          continue;
-        }
-        let metaFile: fileIo.File | null = null;
-        try {
-          metaFile = fileIo.openSync(uri, fileIo.OpenMode.READ_ONLY);
-          const fileSize: number = fileIo.statSync(metaFile.fd).size;
-          fileIo.closeSync(metaFile);
-          metaFile = null;
-          const stagedPath: string = await this.stageFileForRdpClipboard(
-            uri, this.fileBaseName(uri), fileSize, batchDir, observedSessionId, observedAttemptId);
-          if (stagedPath.length > 0) {
-            stagedPaths.push(stagedPath);
-          }
-        } catch (_err) {
-          hilog.warn(RD_DOMAIN, RD_TAG, 'RDP clipboard file metadata unavailable');
-        } finally {
-          if (metaFile !== null) {
-            try { fileIo.closeSync(metaFile); } catch (_err2) { /* ignore */ }
-          }
-        }
-      }
-      if (stagedPaths.length === 0 ||
-        !this.rdpFileTransferEnabledForSession(observedSessionId, observedAttemptId) ||
-        !this.loader.setSessionClipboardFiles(observedSessionId, stagedPaths)) {
-        this.setFileTransferStatus('[RDP-FILE] 远端文件剪贴板发布失败', -1, false);
-        return;
-      }
-      this.keyDispatcher.sendShortcutSequence(this.loader, this.sessionId,
-        [KEYCODE_CTRL_LEFT, KEY_V], 'RDP system file paste');
-      this.setFileTransferStatus('Windows 正在从本机读取 ' + stagedPaths.length.toString() + ' 个文件', 1, false);
+      const data: unifiedDataChannel.UnifiedData = await pasteboard.getSystemPasteboard().getUnifiedData();
+      if (!this.transferLeaseIsCurrent(lease)) { return; }
+      const sources: TransferFileSource[] = this.transferSourcesFromUnifiedData(data);
+      if (sources.length === 0) { promptAction.showToast({ message: '剪贴板中没有可传输的普通文件', duration: 2200 }); return; }
+      await this.prepareAndOfferRdpFiles(sources, lease, 'system-clipboard');
     } catch (_err) {
-      this.setFileTransferStatus('[RDP-FILE] 无法读取系统文件剪贴板', -1, false);
+      if (this.transferLeaseIsCurrent(lease)) { this.setFileTransferStatus('无法读取本机文件剪贴板', -1, false); }
     }
+  }
+
+  private transferSourcesFromUnifiedData(data: unifiedDataChannel.UnifiedData,
+    controlledRoot: string = ''): TransferFileSource[] {
+    const records: unifiedDataChannel.UnifiedRecord[] = data.getRecords();
+    if (records.length === 0 || records.length > 15) { throw new Error('file_count_limit'); }
+    const result: TransferFileSource[] = [];
+    for (const record of records) {
+      const entry = record.getEntry(uniformTypeDescriptor.UniformDataType.FILE_URI) as uniformDataStruct.FileUri;
+      if (!entry || !entry.oriUri) { continue; }
+      const uri: string = entry.oriUri;
+      if (controlledRoot.length > 0 && !this.controlledDropPathIsSafe(controlledRoot, new fileUri.FileUri(uri).path)) {
+        throw new Error('unowned_drop_path');
+      }
+      const file: fileIo.File = fileIo.openSync(uri, fileIo.OpenMode.READ_ONLY | fileIo.OpenMode.NOFOLLOW);
+      try {
+        const stat: fileIo.Stat = fileIo.statSync(file.fd);
+        if (!stat.isFile()) { throw new Error('unsupported_file_type'); }
+        result.push({ uri, name: this.fileBaseName(uri), size: stat.size });
+      } finally { fileIo.closeSync(file); }
+    }
+    return result;
   }
 
   private async publishDeferredRdpDrop(data: unifiedDataChannel.UnifiedData,
-    observedSessionId: number, observedAttemptId: number): Promise<void> {
+    observedSessionId: number, observedAttemptId: number,
+    lease: RemoteTransferLease, ownedDirectory: string): Promise<void> {
+    if (!this.transferLeaseIsCurrent(lease) ||
+      !this.rdpFileTransferEnabledForSession(observedSessionId, observedAttemptId)) { return; }
     try {
-      if (!this.rdpFileTransferEnabledForSession(observedSessionId, observedAttemptId)) {
-        return;
-      }
-      const records: Array<unifiedDataChannel.UnifiedRecord> = data.getRecords();
-      if (records.length === 0 || records.length > 15) {
-        this.setFileTransferStatus(records.length > 15 ?
-          '[RDP-FILE] 单次最多拖入 15 个文件' : '[RDP-FILE] 文件中转站未返回文件', -1, false);
-        return;
-      }
-      const stableDir: string = this.ensureRdpTransferDir();
-      const stablePrefix: string = stableDir + '/';
-      const paths: string[] = [];
-      for (const record of records) {
-        if (!this.rdpFileTransferEnabledForSession(observedSessionId, observedAttemptId)) {
-          return;
-        }
-        const entry: uniformDataStruct.FileUri =
-          record.getEntry(uniformTypeDescriptor.UniformDataType.FILE_URI) as uniformDataStruct.FileUri;
-        const uri: string = entry && entry.oriUri ? entry.oriUri : '';
-        if (uri.length === 0) {
-          continue;
-        }
-        const path: string = new fileUri.FileUri(uri).path;
-        if (!path.startsWith(stablePrefix)) {
-          hilog.warn(RD_DOMAIN, RD_TAG, 'deferred RDP drop returned path outside staging directory');
-          continue;
-        }
-        const stat = fileIo.statSync(path);
-        if (stat.size > 0 && stat.size <= RDP_FILE_MAX_BYTES) {
-          paths.push(path);
-        }
-      }
-      if (paths.length === 0 ||
-        !this.rdpFileTransferEnabledForSession(observedSessionId, observedAttemptId) ||
-        !this.loader.setSessionClipboardFiles(observedSessionId, paths)) {
-        this.setFileTransferStatus('[RDP-FILE] 文件中转站内容发布失败', -1, false);
-        return;
-      }
-      this.keyDispatcher.sendShortcutSequence(this.loader, this.sessionId,
-        [KEYCODE_CTRL_LEFT, KEY_V], 'RDP SuperHub file paste');
-      this.setFileTransferStatus('Windows 正在读取文件中转站的 ' + paths.length.toString() + ' 个文件', 1, false);
+      const sources: TransferFileSource[] = this.transferSourcesFromUnifiedData(data, ownedDirectory);
+      await this.prepareAndOfferRdpFiles(sources, lease, 'deferred-drop');
     } catch (_err) {
-      this.setFileTransferStatus('[RDP-FILE] 文件中转站数据处理失败', -1, false);
+      if (this.transferLeaseIsCurrent(lease)) { this.setFileTransferStatus('文件中转站数据处理失败', -1, false); }
     }
   }
 
+  private controlledDropPathIsSafe(root: string, path: string): boolean {
+    if (!path.startsWith(root + '/')) { return false; }
+    const parts: string[] = path.substring(root.length + 1).split('/');
+    let current: string = root;
+    try {
+      for (const part of parts) {
+        if (part === '' || part === '.' || part === '..' || part.indexOf('\\') >= 0) { return false; }
+        current += '/' + part;
+        if (fileIo.lstatSync(current).isSymbolicLink()) { return false; }
+      }
+      return true;
+    } catch (_err) { return false; }
+  }
+
   private startDeferredRdpFileDrop(event: DragEvent): void {
-    const observedSessionId: number = this.sessionId;
-    const observedAttemptId: number = this.connectAttemptId;
-    if (!this.rdpFileTransferEnabledForSession(observedSessionId, observedAttemptId)) {
+    const lease: RemoteTransferLease | null = this.captureTransferLease();
+    if (lease === null) { return; }
+    const observedSessionId: number = lease.sessionId;
+    const observedAttemptId: number = lease.attemptId;
+    if (!this.transferLeaseIsCurrent(lease) || !this.rdpFileTransferEnabledForSession(observedSessionId, observedAttemptId)) {
       this.setFileTransferStatus('移动端文件中转站当前仅支持 RDP', -1, false);
       event.setResult(DragResult.DRAG_FAILED);
       return;
     }
-    const destPath: string = this.createRdpClipboardBatchDir();
-    if (destPath.length === 0) {
+    const batchPath: string = this.createRdpClipboardBatchDir();
+    const destPath: string = batchPath + '/incoming';
+    if (batchPath.length === 0) {
       event.setResult(DragResult.DRAG_FAILED);
       return;
     }
+    try { fileIo.mkdirSync(destPath); } catch (_err) { event.setResult(DragResult.DRAG_FAILED); return; }
     const listener: unifiedDataChannel.DataProgressListener =
       (progress: unifiedDataChannel.ProgressInfo,
         data: unifiedDataChannel.UnifiedData | null): void => {
+        if (!this.transferLeaseIsCurrent(lease)) { return; }
         if (progress.progress >= 0 && progress.progress < 100) {
           this.setFileTransferStatus('正在从文件中转站获取文件 ' +
             progress.progress.toString() + '%', progress.progress / 100, true);
         }
         if (progress.progress === 100 && data !== null) {
           if (this.rdpFileTransferEnabledForSession(observedSessionId, observedAttemptId)) {
-            this.publishDeferredRdpDrop(data, observedSessionId, observedAttemptId);
+            void this.publishDeferredRdpDrop(data, observedSessionId, observedAttemptId, lease, destPath);
           }
         } else if (progress.progress < 0) {
           this.setFileTransferStatus('[RDP-FILE] 文件中转站数据获取失败', -1, false);
@@ -17166,138 +17629,40 @@ struct RemoteDesktop {
 
   // PC 模式: 拖拽文件到远程桌面 → 自动传输
   private async handleFileDrop(event: DragEvent): Promise<void> {
-    if (this.fileTransferBusy || !this.connected || !this.pendingHost || this.sessionId <= 0) {
-      return;
-    }
-    const capability = this.currentSessionCapabilities().fileUpload;
-    if (!capability.enabled) {
-      promptAction.showToast({ message: capability.reason, duration: 2200 });
-      return;
-    }
-    if (this.pendingHost.protocol === 'rustdesk' && !this.rustdeskFilePasteEnabled) {
-      promptAction.showToast({ message: 'RustDesk 文件粘贴已禁用', duration: 1600 });
-      return;
-    }
-    const observedSessionId: number = this.sessionId;
-    const observedAttemptId: number = this.connectAttemptId;
-    if (this.pendingHost.protocol === 'rdp' &&
-      !this.rdpFileTransferEnabledForSession(observedSessionId, observedAttemptId)) {
-      return;
-    }
-    if (!this.isDesktopDevice || this.breakpoint !== 'xl') {
-      this.startDeferredRdpFileDrop(event);
+    const lease: RemoteTransferLease | null = this.captureTransferLease();
+    if (lease === null || this.fileTransferBusy || !this.currentSessionCapabilities().fileUpload.enabled) { return; }
+    const targetDirectory: string = this.remoteTransferDirectory;
+    if (lease.protocol === 'rustdesk' && (!this.rustdeskFilePasteEnabled || !remoteTransferPathIsAbsolute(targetDirectory))) {
+      this.openFileTransferPanel();
+      this.remoteTransferBrowserMessage = '请选择远端目标文件夹后重新拖入文件';
       return;
     }
     try {
       const data: unifiedDataChannel.UnifiedData = event.getData();
-      const records: Array<unifiedDataChannel.UnifiedRecord> = data.getRecords();
-      const totalCount: number = records.length;
-      if (totalCount <= 0) {
-        return;
-      }
-      if (this.pendingHost.protocol === 'rdp' && totalCount > 15) {
-        this.setFileTransferStatus('[RDP-FILE] 单次最多拖入 15 个文件', -1, false);
-        promptAction.showToast({ message: '单次最多拖入 15 个文件', duration: 2200 });
-        return;
-      }
-      hilog.info(RD_DOMAIN, RD_TAG, 'drop-files count=' + totalCount.toString() +
-        ' protocol=' + this.pendingHost.protocol);
-      let completedCount: number = 0;
-      let pendingRemoteCount: number = 0;
-      const rdpBatchDir: string = this.pendingHost.protocol === 'rdp' ?
-        this.createRdpClipboardBatchDir() : '';
-      if (this.pendingHost.protocol === 'rdp' && rdpBatchDir.length === 0) {
-        return;
-      }
-      const rdpStagedPaths: string[] = [];
-      for (const record of records) {
-        if (this.pendingHost.protocol === 'rdp' &&
-          !this.rdpFileTransferEnabledForSession(observedSessionId, observedAttemptId)) {
-          return;
+      const sources: TransferFileSource[] = this.transferSourcesFromUnifiedData(data);
+      if (lease.protocol === 'rdp') {
+        const offered: boolean = await this.prepareAndOfferRdpFiles(sources, lease, 'drop');
+        event.setResult(offered ? DragResult.DRAG_SUCCESSFUL : DragResult.DRAG_FAILED);
+      } else if (lease.protocol === 'rustdesk') {
+        let sent: number = 0;
+        for (const source of sources) {
+          if (!this.transferLeaseIsCurrent(lease)) { return; }
+          const result: TransferState = await this.submitFileToRustDesk(source.uri, source.name, source.size, lease, targetDirectory);
+          if (result === 'senderCompleted') { sent++; }
         }
-        // UDMF: 文件数据存储在 FILE_URI 条目中
-        const fileUriEntry: uniformDataStruct.FileUri =
-          record.getEntry(uniformTypeDescriptor.UniformDataType.FILE_URI) as uniformDataStruct.FileUri;
-        let uri: string = fileUriEntry && fileUriEntry.oriUri ?
-          fileUriEntry.oriUri : '';
-        if (uri.length === 0) {
-          hilog.warn(RD_DOMAIN, RD_TAG, 'file transfer diagnostic=' + FILE_TRANSFER_DIAG_DROP_URI);
-          continue;
+        event.setResult(sent === sources.length && sent > 0 ? DragResult.DRAG_SUCCESSFUL : DragResult.DRAG_FAILED);
+        if (this.transferLeaseIsCurrent(lease)) {
+          this.setFileTransferStatus('发送端完成 ' + sent.toString() + '/' + sources.length.toString() +
+            ' 个文件，目标文件尚未校验', sent > 0 ? 1 : -1, false);
         }
-        const fileName: string = this.fileBaseName(uri);
-        let metaFile: fileIo.File | null = null;
-        let fileSize: number = 0;
-        try {
-          metaFile = fileIo.openSync(uri, fileIo.OpenMode.READ_ONLY);
-          const stat = fileIo.statSync(metaFile.fd);
-          fileSize = stat.size;
-        } catch (_err) {
-          hilog.error(RD_DOMAIN, RD_TAG, 'file transfer diagnostic=' + FILE_TRANSFER_DIAG_DROP_META);
-          continue;
-        } finally {
-          if (metaFile !== null) {
-            try { fileIo.closeSync(metaFile); } catch (_err2) { /* ignore */ }
-          }
-        }
-        if (totalCount > 1) {
-          if (this.pendingHost.protocol === 'rdp') {
-            this.setFileTransferStatus(
-              '[' + (completedCount + 1).toString() + '/' + totalCount.toString() + '] 正在暂存 ' +
-              fileName + ' (' + this.formatTransferSize(fileSize) + ')',
-              completedCount / totalCount, true);
-          } else {
-            this.setFileTransferStatus(
-              '[' + (completedCount + 1).toString() + '/' + totalCount.toString() + '] 正在传输 ' +
-              fileName + ' (' + this.formatTransferSize(fileSize) + ')',
-              completedCount / totalCount, true);
-          }
-        }
-        let transferState: TransferState = 'failed';
-        if (this.pendingHost.protocol === 'rdp') {
-          const stagedPath: string = await this.stageFileForRdpClipboard(
-            uri, fileName, fileSize, rdpBatchDir, observedSessionId, observedAttemptId);
-          if (stagedPath.length > 0) {
-            rdpStagedPaths.push(stagedPath);
-            transferState = 'completed';
-          }
-        } else if (this.pendingHost.protocol === 'rustdesk') {
-          transferState = await this.submitFileToRustDesk(uri, fileName, fileSize);
-        } else {
-          this.setFileTransferStatus('当前协议暂不支持远程桌面文件传输', -1, false);
-          break;
-        }
-        if (isRemoteCompletionConfirmed(transferState)) {
-          completedCount++;
-        } else if (transferState === 'waitingRemote') {
-          pendingRemoteCount++;
-        }
-      }
-      if (this.pendingHost.protocol === 'rdp' && rdpStagedPaths.length > 0) {
-        if (!this.rdpFileTransferEnabledForSession(observedSessionId, observedAttemptId) ||
-          !this.loader.setSessionClipboardFiles(observedSessionId, rdpStagedPaths)) {
-          this.setFileTransferStatus('[RDP-FILE] 远端文件剪贴板发布失败', -1, false);
-          return;
-        }
-        this.keyDispatcher.sendShortcutSequence(this.loader, this.sessionId,
-          [KEYCODE_CTRL_LEFT, KEY_V], 'RDP drop file paste');
-        this.setFileTransferStatus('已发送到远端当前位置，Windows 正在读取 ' +
-          rdpStagedPaths.length.toString() + ' 个文件', 1, false);
-      }
-      if (completedCount > 0) {
-        event.setResult(DragResult.DRAG_SUCCESSFUL);
-        if (totalCount > 1) {
-          this.setFileTransferStatus(
-            '已完成 ' + completedCount.toString() + '/' + totalCount.toString() + ' 个文件传输', 1, false);
-        }
-      }
-      if (pendingRemoteCount > 0) {
-        this.setFileTransferStatus(
-          '已提交 ' + pendingRemoteCount.toString() + '/' + totalCount.toString() +
-            ' 个文件，正在等待 RustDesk 远端确认', 0.95, true);
       }
     } catch (_err) {
-      hilog.error(RD_DOMAIN, RD_TAG, 'file transfer diagnostic=' + FILE_TRANSFER_DIAG_DROP);
-      this.setFileTransferStatus('[DROP] 拖拽传输失败 [' + FILE_TRANSFER_DIAG_DROP + ']', -1, false);
+      if (lease.protocol === 'rdp' && this.transferLeaseIsCurrent(lease)) {
+        this.startDeferredRdpFileDrop(event);
+      } else {
+        event.setResult(DragResult.DRAG_FAILED);
+        if (this.transferLeaseIsCurrent(lease)) { this.setFileTransferStatus('无法取得拖入文件的读取授权', -1, false); }
+      }
     }
   }
 
@@ -18933,12 +19298,26 @@ struct RemoteDesktop {
         !this.physicalAltDown && !this.physicalShiftDown && !this.physicalWinDown &&
         this.physicalKeyboardLayout === RemoteKeyboardLayout.WINDOWS &&
         this.pendingHost !== null && this.pendingHost.protocol === 'rdp' &&
-        this.rdpClipboardEnabled &&
+        this.rdpClipboardEnabled && this.clipboardBridge !== null &&
+        !this.clipboardBridge.hasRemoteClipboardSource() &&
         this.systemPasteboardHasFileUri()) {
+        if (this.rdpFilePasteKeyIntercepted) { return true; }
         this.rdpFilePasteKeyIntercepted = true;
-        this.loader.sendKey(this.sessionId, this.mapPhysicalKeyCode(KEYCODE_CTRL_LEFT), false);
-        this.loader.sendKey(this.sessionId, this.mapPhysicalKeyCode(KEYCODE_CTRL_RIGHT), false);
-        this.handleRdpSystemFilePaste();
+        void this.handleRdpSystemFilePaste();
+        return true;
+      }
+
+      const pasteModifier: number = this.physicalKeyboardLayout === RemoteKeyboardLayout.MACOS ?
+        KEYCODE_META_LEFT : KEYCODE_CTRL_LEFT;
+      const localPasteChord: boolean = this.physicalKeyboardLayout === RemoteKeyboardLayout.MACOS ?
+        this.physicalWinDown && !this.physicalCtrlDown : this.physicalCtrlDown && !this.physicalWinDown;
+      if (kc === KEY_V && isDown && localPasteChord && !this.physicalAltDown && !this.physicalShiftDown &&
+        this.clipboardBridgeEnabledForSession() && !(this.clipboardBridge?.hasRemoteClipboardSource() === true)) {
+        if (this.rdpFilePasteKeyIntercepted) { return true; }
+        const lease: RemoteTransferLease | null = this.captureTransferLease();
+        if (lease === null) { return true; }
+        this.rdpFilePasteKeyIntercepted = true;
+        void this.pasteCurrentLocalText(lease, pasteModifier);
         return true;
       }
 
@@ -20254,7 +20633,7 @@ struct RemoteDesktop {
                 .color(this.accentColor)
                 .margin({ right: 8 })
             } else {
-              Text(this.fileTransferProgress >= 0 ? '完成' : '失败')
+              Text(this.fileTransferProgress >= 0 ? '状态' : '未完成')
                 .fontSize(12)
                 .fontColor(this.fileTransferProgress >= 0 ? this.accentColor : this.pal().danger)
                 .margin({ right: 8 })
@@ -20489,11 +20868,111 @@ struct RemoteDesktop {
     .width('100%').height('100%')
     .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
     .overlay(this.passphraseOverlay(), { align: Alignment.Top })
+    .bindSheet($$this.showFileTransferPanel, this.fileTransferPanelBuilder(), {
+      preferType: SheetType.CENTER, backgroundColor: this.pal().sheetBg,
+      onDisappear: (): void => {
+        this.transferDirectoryRequestGeneration++;
+        this.rdpOfferRequestGeneration++;
+        this.transferPanelAccountUnsubscribe?.(); this.transferPanelAccountUnsubscribe = null;
+      }
+    })
     .bindSheet($$this.showControlPanel, this.controlPanelBuilder(), {
       preferType: SheetType.CENTER,
       backgroundColor: this.pal().sheetBg,
       onDisappear: (): void => { this.handleControlPanelDisappear(); }
     })
+  }
+
+  @Builder private fileTransferPanelBuilder() {
+    Scroll() {
+      Column({ space: 14 }) {
+        Text('文件传输').fontSize(22).fontWeight(FontWeight.Bold).width('100%')
+        if (this.currentProtocolName() === 'rustdesk') {
+          Row({ space: 8 }) {
+            TextInput({ text: this.remoteTransferPathInput, placeholder: '远端目标文件夹' })
+              .layoutWeight(1).onChange((value: string): void => { this.remoteTransferPathInput = value; })
+            Button('打开').enabled(!this.remoteTransferBrowserBusy).onClick((): void => {
+              void this.browseRemoteTransferDirectory(this.remoteTransferPathInput);
+            })
+          }.width('100%')
+          Text(this.remoteTransferBrowserMessage).fontSize(12).fontColor(this.pal().text2).width('100%')
+          Row({ space: 8 }) {
+            Button('上一级').enabled(!this.remoteTransferBrowserBusy && this.remoteTransferDirectory.length > 0)
+              .onClick((): void => { void this.browseRemoteTransferDirectory(parentRemoteTransferPath(this.remoteTransferDirectory)); })
+            Button('发送本机文件到此处').enabled(!this.remoteTransferBrowserBusy && this.remoteTransferDirectory.length > 0)
+              .onClick((): void => { void this.pickAndSendFile(); })
+          }.width('100%')
+          ForEach(this.remoteTransferEntries, (entry: SessionRemoteFileEntry) => {
+            Row({ space: 8 }) {
+              Text((entry.type === 3 ? '驱动器  ' : entry.type === 0 ? '文件夹  ' : '文件  ') + entry.name)
+                .fontSize(14).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).layoutWeight(1)
+              if (entry.type === 0 || entry.type === 3) {
+                Button('打开').fontSize(12).onClick((): void => {
+                  void this.browseRemoteTransferDirectory(remoteTransferEntryPath(this.remoteTransferDirectory, entry.name, entry.type));
+                })
+              } else {
+                Button('接收').fontSize(12).onClick((): void => { void this.downloadRustDeskFile(entry); })
+              }
+            }.width('100%').padding(8)
+          }, (entry: SessionRemoteFileEntry): string => entry.type.toString() + ':' + entry.name)
+        } else if (this.currentProtocolName() === 'rdp') {
+          Text('本机文件将提供给远端当前窗口读取。跨设备剪切按复制处理，源文件保留。')
+            .fontSize(13).fontColor(this.pal().text2).width('100%')
+          Button('选择本机文件').onClick((): void => { void this.pickAndSendFile(); })
+          Button('粘贴本机文件').onClick((): void => { void this.handleRdpSystemFilePaste(); })
+          Button('读取远端已复制文件').onClick((): void => { void this.requestRdpRemoteClipboardFiles(); })
+          Text(this.rdpReceiveMessage).fontSize(13).fontColor(this.pal().text2).width('100%')
+          if (this.rdpReceiveOffer.state === 'ready') {
+            Button('接收清单中的全部文件').onClick((): void => { void this.receiveRdpClipboardEntries(this.rdpReceiveOffer.entries); })
+            ForEach(this.rdpReceiveOffer.entries, (entry: SessionRdpClipboardFileEntry) => {
+              Row({ space: 8 }) {
+                Text(entry.relativeName).fontSize(13).maxLines(2).layoutWeight(1)
+                Button('接收').fontSize(12).onClick((): void => { void this.receiveRdpClipboardEntries([entry]); })
+              }.width('100%')
+            }, (entry: SessionRdpClipboardFileEntry): string => entry.index.toString())
+          }
+          Text('共享文件夹').fontSize(16).fontWeight(FontWeight.Medium).width('100%')
+          Text(this.rdpSharedDrive.phase === 'serverAccepted' ? '远端已接受当前主机的共享文件夹' :
+            this.rdpSharedDrive.phase === 'rejected' ? '远端拒绝共享文件夹' : '共享文件夹尚不可用')
+            .fontSize(13).fontColor(this.pal().text2).width('100%')
+          Row({ space: 8 }) {
+            Button('刷新').onClick((): void => { this.refreshRdpSharedFiles(); })
+            if (this.rdpSharedDrive.phase === 'serverAccepted') {
+              Button('关闭共享').onClick((): void => { this.setRdpDrivePreference(false); })
+            }
+          }.width('100%')
+          ForEach(this.rdpSharedDrive.entries, (fact: SessionRdpReceivedFileFact) => {
+            Row({ space: 8 }) {
+              Text(fact.relativePath + (fact.remoteClosed && !fact.uncertain ? '' : '（可能仍在写入）'))
+                .fontSize(13).maxLines(2).layoutWeight(1)
+              Button('提取副本').fontSize(12).enabled(fact.remoteClosed && fact.activeHandles === 0 && !fact.uncertain)
+                .onClick((): void => { void this.freezeRdpSharedFile(fact); })
+            }.width('100%')
+          }, (fact: SessionRdpReceivedFileFact): string => fact.relativePath)
+
+        }
+        if (this.receivedTransferArtifacts.length > 0) {
+          Text('已接收文件').fontSize(16).fontWeight(FontWeight.Medium).width('100%')
+          ForEach(this.receivedTransferArtifacts, (artifact: TransferArtifact) => {
+            Column({ space: 6 }) {
+              Text(artifact.relativePath || artifact.name).fontSize(14).width('100%').maxLines(2)
+              if (artifact.directory !== true) {
+                Row({ space: 8 }) {
+                Button('另存').fontSize(12).onClick((): void => { void this.saveReceivedTransferArtifact(artifact); })
+                Button('复制到本机剪贴板').fontSize(12).onClick((): void => { this.publishReceivedTransferArtifact(artifact); })
+                }.width('100%')
+              } else {
+                Text('目录结构已保留，文件可逐项另存').fontSize(12).fontColor(this.pal().text2)
+              }
+            }.width('100%')
+          }, (artifact: TransferArtifact): string => artifact.id)
+        }
+        if (this.transferPanelLease !== null) {
+          FileTransferTaskList({ accountScopeId: this.transferPanelLease.accountScopeId,
+            hostId: this.transferPanelLease.hostId })
+        }
+      }.width('100%').padding(20)
+    }.width('100%').height('85%')
   }
 
   pageTransition() {
@@ -20685,7 +21164,7 @@ struct RemoteDesktop {
           SymbolGlyph($r('sys.symbol.doc'))
             .fontSize(22).fontColor([this.pal().primary])
             .margin({ right: 10 })
-          Text('发送文件到桌面')
+          Text('文件传输与任务记录')
             .fontSize(16).fontColor(this.pal().text)
         }
         .width('100%').height(52)
@@ -20697,7 +21176,7 @@ struct RemoteDesktop {
         .enabled(!this.fileTransferBusy && this.connected)
         .onClick(() => {
           this.showControlPanel = false;
-          this.pickAndSendFile();
+          this.openFileTransferPanel();
         })
       }
     }

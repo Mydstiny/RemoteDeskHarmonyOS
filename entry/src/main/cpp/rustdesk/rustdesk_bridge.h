@@ -211,6 +211,13 @@ enum class RustDeskMode {
 /**
  * RustDeskBridge — RustDesk 协议适配器
  */
+struct RustDeskRemoteFileEntry {
+    std::string name;
+    uint32_t type = 0;
+    uint64_t size = 0;
+    uint64_t modifiedTime = 0;
+};
+
 class RustDeskBridge : public ProtocolAdapter {
 public:
     // The real-core lifetime helpers need the incomplete type while keeping
@@ -269,6 +276,19 @@ public:
     bool sendTouchPan(int phase, int x, int y);
     int  sendFileData(const std::string& remotePath, const uint8_t* data, uint32_t len) override;
     SessionTransferStatus getSessionTransferStatus() override;
+    int64_t sendFileFromFd(const std::string& remotePath, int fd, int conflictPolicy);
+    SessionTransferStatus getTransferStatusById(uint64_t transferId);
+    bool cancelTransfer(uint64_t transferId);
+    bool releaseTransfer(uint64_t transferId);
+    int64_t requestRemoteDirectory(const std::string& remotePath);
+    std::string getRemoteDirectoryPath(uint64_t transferId);
+    std::vector<RustDeskRemoteFileEntry> getRemoteDirectoryEntries(uint64_t transferId);
+    int64_t downloadFileToFd(const std::string& remotePath, int fd, uint64_t expectedSize, uint64_t modifiedTime);
+    bool getTransferPermissionSnapshot(uint32_t& knownMask, uint32_t& enabledMask);
+    ClipboardSnapshot getClipboardSnapshot() override;
+    bool publishClipboard(const uint8_t* data, uint32_t len) override;
+    uint64_t publishClipboardTracked(const uint8_t* data, uint32_t len);
+    uint32_t getClipboardPublicationState(uint64_t publicationId);
     void sendClipboardData(const uint8_t* data, uint32_t len) override;
     std::string getClipboardText() override;
     bool isClipboardReceiveReady() override;

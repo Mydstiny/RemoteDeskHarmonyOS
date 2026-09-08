@@ -8,6 +8,8 @@
 
 #ifndef FREERDP_ADAPTER_H
 #define FREERDP_ADAPTER_H
+#include "rdp_transfer_types.h"
+
 
 #include "extensions/protocol_adapter.h"
 #include "render/video_perf_counters.h"
@@ -106,10 +108,25 @@ public:
     bool        setClipboardFiles(const std::vector<std::string>& paths) override;
     void        sendClipboardData(const uint8_t* data, uint32_t len) override;
     std::string getClipboardText() override;
+    ClipboardSnapshot getClipboardSnapshot() override;
+    bool publishClipboard(const uint8_t* data, uint32_t len) override;
+    uint64_t publishClipboardTracked(const uint8_t* data, uint32_t len);
+    uint64_t publishClipboardFilesTracked(const std::vector<std::string>& paths);
+    int getClipboardPublicationState(uint64_t publicationId);
     bool        isClipboardReceiveReady() override;
     bool        setSessionClipboardEnabled(bool enabled) override;
     bool        supportsFileTransfer() override;
     SessionTransferStatus getSessionTransferStatus() override;
+    RdpDriveStatus getRdpDriveStatus();
+    std::vector<RdpReceivedFileFact> getRdpReceivedFileFacts();
+    bool disableRdpDrive();
+    RemoteClipboardFileOffer getRemoteClipboardFiles();
+    bool requestRemoteClipboardFiles(uint64_t expectedSequence);
+    bool startRemoteClipboardReceive(uint64_t taskId, uint64_t expectedSequence,
+        const std::vector<uint32_t>& selectedIndices, int privateStageDirectoryFd);
+    RemoteClipboardReceiveStatus getRemoteClipboardReceiveStatus(uint64_t taskId);
+    bool cancelRemoteClipboardReceive(uint64_t taskId);
+    bool releaseRemoteClipboardReceive(uint64_t taskId);
 
 #if defined(RDP_NATIVE_CALLBACK_TESTING) && defined(USE_REAL_FREERDP)
     void SetEndPaintBarrierForTesting(std::function<void()> barrier);
@@ -279,6 +296,18 @@ private:
                                      UINT32 maxMonitorAreaFactorA,
                                      UINT32 maxMonitorAreaFactorB);
 #endif
+    bool sendRemoteClipboardRequest(CliprdrClientContext* expectedChannel,
+        uint64_t generation, const struct RdpClipboardFileRequest& request);
+    void releaseRemoteClipboardLock(CliprdrClientContext* expectedChannel,
+        uint64_t generation, uint32_t clipDataId);
+    static BOOL cbObservedSendChannelData(freerdp*, UINT16, const BYTE*, size_t);
+    static BOOL cbObservedReceiveChannelData(freerdp*, UINT16, const BYTE*, size_t, UINT32, size_t);
+    static UINT cbCliprdrFileContentsRequest(CliprdrClientContext*, const CLIPRDR_FILE_CONTENTS_REQUEST*);
+    static UINT cbCliprdrLock(CliprdrClientContext*, const CLIPRDR_LOCK_CLIPBOARD_DATA*);
+    static UINT cbCliprdrUnlock(CliprdrClientContext*, const CLIPRDR_UNLOCK_CLIPBOARD_DATA*);
+    static UINT cbCliprdrFileContentsResponse(CliprdrClientContext*, const CLIPRDR_FILE_CONTENTS_RESPONSE*);
+    void dispatchClipboardPublication();
+    static UINT cbCliprdrServerFormatListResponse(CliprdrClientContext*, const CLIPRDR_FORMAT_LIST_RESPONSE*);
     static UINT cbCliprdrMonitorReady(CliprdrClientContext* context, const CLIPRDR_MONITOR_READY* ready);
     static UINT cbCliprdrServerCapabilities(CliprdrClientContext* context,
                                            const CLIPRDR_CAPABILITIES* capabilities);

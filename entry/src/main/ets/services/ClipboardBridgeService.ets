@@ -3,7 +3,7 @@
  *
  * 复用项目中已有的 pasteboard API 模式 (SshTerminal / KeyVaultPage / SshKeyCard)。
  * 轮询检测本地系统剪贴板变化并推送远端；接收远端剪贴板并写入本地系统剪贴板。
- * 防回环: setSystemText 后 1.2s 窗口期内忽略轮询到的相同/相似内容。
+ * 唯一活动窗口拥有同步权；系统来源 tag 与 native 事件序号防止跨会话回环。
  */
 import {
   abilityAccessCtrl,
@@ -16,11 +16,18 @@ import { hilog } from '@kit.PerformanceAnalysisKit';
 import {
   ClipboardReadAccessDecision,
   clipboardReadPermissionErrorCode,
-  remoteClipboardHashAfterDelivery,
   resolveClipboardReadAccess,
-  shouldAttemptRemoteClipboard,
   validateClipboardText
 } from './ClipboardSyncPolicy';
+
+import { ClipboardCoordinator, ClipboardLease, ClipboardSourceState, LocalClipboardSnapshot,
+  RemoteClipboardSnapshot } from './ClipboardCoordinator';
+
+export interface ClipboardBridgeOptions {
+  lease?: ClipboardLease;
+  isCurrent?: () => boolean;
+  readRemoteSnapshot?: () => RemoteClipboardSnapshot | null;
+}
 
 const TAG = 'ClipboardBridge';
 const READ_PASTEBOARD_PERMISSION: Permissions =
@@ -54,79 +61,183 @@ export class ClipboardBridgeService {
   private systemUpdateCallback?: () => void;
   private systemReadInFlight: boolean = false;
   private systemReadPending: boolean = false;
-  private lastHash: number = 0;
-  private remoteSetAt: number = 0;
-  private remoteSetHash: number = 0;
-  private onLocalTextChanged?: (text: string) => void;
+  private onLocalTextChanged?: (text: string) => boolean | void | Promise<boolean>;
   private enabled: boolean = false;
   private localMonitoringEnabled: boolean = false;
   private permissionManager: abilityAccessCtrl.AtManager | null = null;
   private permissionStateCallback?: (info: abilityAccessCtrl.PermissionStateChangeInfo) => void;
   private readRemoteText?: () => string;
   private lastRemoteHash: number = 0;
+  private lastRemoteText: string | null = null;
   private onRemoteTextDelivered?: (hash: number) => void;
+  private coordinator: ClipboardCoordinator = ClipboardCoordinator.getInstance();
+  private ownerId: number = this.coordinator.allocate();
+  private generation: number = 0;
+  private remoteRevision: number = 0;
+  private localRevision: number = 0;
+  private sourceState: ClipboardSourceState = new ClipboardSourceState();
+  private options: ClipboardBridgeOptions = {};
+  private pendingLocalRetry: boolean = false;
 
-  /** 读系统剪贴板纯文本 (异步) */
-  getSystemText(): Promise<string> {
-    return new Promise<string>((resolve) => {
+  private active(): boolean {
+    return this.enabled && this.coordinator.owns(this.ownerId) &&
+      (this.options.isCurrent === undefined || this.options.isCurrent());
+  }
+
+  /** Called by the owning window's focus/foreground lifecycle. */
+  setActive(active: boolean): void {
+    if (active && this.enabled) { this.coordinator.activate(this.ownerId); }
+    else { this.coordinator.release(this.ownerId); }
+  }
+
+  hasRemoteClipboardSource(): boolean {
+    if (this.active() && this.options.readRemoteSnapshot) {
+      try {
+        const snapshot: RemoteClipboardSnapshot | null = this.options.readRemoteSnapshot();
+        if (snapshot !== null) { this.observeRemoteSnapshot(snapshot); }
+      } catch (error) { /* Poll will retry; retain the last known provenance. */ }
+    }
+    if (this.active() && this.localMonitoringEnabled) {
+      try {
+        const board: pasteboard.SystemPasteboard = pasteboard.getSystemPasteboard();
+        const count: number = board.getChangeCount();
+        if (count !== this.sourceState.systemChangeCount) {
+          // The update callback's async read may not have completed before Ctrl+V.
+          // Only inspect data on a changed count, and retain remote provenance for
+          // another runtime's tagged write. A read failure stays conservative.
+          const data: pasteboard.PasteData | null = board.hasDataSync() ? board.getDataSync() : null;
+          const tag: string = data === null ? '' : data.getTag();
+          const remote: boolean = this.coordinator.isRemoteTag(tag);
+          if (board.getChangeCount() === count) {
+            this.sourceState.remoteSource = remote;
+            this.sourceState.systemChangeCount = count;
+          }
+        }
+      } catch (error) { /* Existing asynchronous listener can resolve provenance later. */ }
+    }
+    return this.sourceState.remoteSource;
+  }
+
+  private systemChangeCount(): number {
+    try { return pasteboard.getSystemPasteboard().getChangeCount(); }
+    catch (error) { return -1; }
+  }
+
+  private observeRemoteSnapshot(snapshot: RemoteClipboardSnapshot): void {
+    if (snapshot.sequence <= 0 || snapshot.sequence === this.sourceState.observedSequence) { return; }
+    this.sourceState.observedSequence = snapshot.sequence;
+    this.remoteRevision++;
+    this.sourceState.remoteSource = true;
+    this.sourceState.systemChangeCount = this.systemChangeCount();
+    this.pendingLocalRetry = false;
+  }
+
+  /** Compatibility helper; internal reads retain failure/type/provenance. */
+  async getSystemText(): Promise<string> {
+    const snapshot: LocalClipboardSnapshot = await this.getSystemSnapshot();
+    return snapshot.ok && snapshot.hasText ? snapshot.text : '';
+  }
+
+  private getSystemSnapshot(): Promise<LocalClipboardSnapshot> {
+    return new Promise<LocalClipboardSnapshot>((resolve) => {
+      const failed: LocalClipboardSnapshot = {
+        ok: false, hasText: false, text: '', tag: '', changeCount: 0
+      };
       try {
         const sysPb: pasteboard.SystemPasteboard = this.systemPasteboard ?? pasteboard.getSystemPasteboard();
+        const before: number = sysPb.getChangeCount();
+        if (!sysPb.hasDataSync()) {
+          resolve({ ok: true, hasText: true, text: '', tag: '', changeCount: before });
+          return;
+        }
         sysPb.getData((err: BusinessError, pd: pasteboard.PasteData) => {
-          if (err) {
-            hilog.warn(0x0001, TAG, `getData failed: ${err.code} ${err.message}`);
-            resolve('');
-            return;
-          }
+          if (err) { resolve(failed); return; }
           try {
-            // Some system versions return an undefined primary value for an
-            // empty pasteboard despite the SDK's non-null string signature.
+            const after: number = sysPb.getChangeCount();
+            // A changed count (including reset) makes the asynchronous read stale.
+            if (before !== after) { resolve(failed); return; }
             const text: string | undefined = pd?.getPrimaryText();
-            resolve(typeof text === 'string' ? text : '');
-          } catch (e) {
-            resolve('');
-          }
+            resolve({ ok: true, hasText: pd.hasType(pasteboard.MIMETYPE_TEXT_PLAIN),
+              text: typeof text === 'string' ? text : '', tag: pd.getTag(), changeCount: after });
+          } catch (error) { resolve(failed); }
         });
-      } catch (e) {
-        resolve('');
-      }
+      } catch (error) { resolve(failed); }
     });
   }
 
-  /** 写系统剪贴板纯文本 (来自远端) — 同时标记防回环窗口 */
+  /** A tagged empty text record explicitly clears text without losing provenance. */
   setSystemText(text: string): boolean {
-    if (!validateClipboardText(text).ok) {
-      return false;
-    }
+    if (!this.active() || !validateClipboardText(text, true).ok) { return false; }
     try {
       const pd: pasteboard.PasteData = pasteboard.createData(pasteboard.MIMETYPE_TEXT_PLAIN, text);
-      // The Promise overload can reject after this method returns; the old
-      // fire-and-forget call then marked the value as delivered even though
-      // HarmonyOS never changed the pasteboard.  The API 23 synchronous
-      // overload gives the bridge an atomic success/failure boundary.
+      const property: pasteboard.PasteDataProperty = pd.getProperty();
+      property.tag = this.coordinator.remoteTag(this.ownerId);
+      pd.setProperty(property);
       pasteboard.getSystemPasteboard().setDataSync(pd);
-      this.remoteSetAt = Date.now();
-      this.remoteSetHash = this.hashText(text);
-      hilog.info(0x0001, TAG, `setSystemText: ${text.length} chars, antiLoop=true`);
+      this.sourceState.systemChangeCount = this.systemChangeCount();
       return true;
-    } catch (err) {
-      hilog.warn(0x0001, TAG, `setSystemText failed: ${JSON.stringify(err)}`);
+    } catch (error) {
+      hilog.warn(0x0001, TAG, 'system clipboard delivery failed');
+      return false;
+    }
+  }
+
+  /** Explicit paste always reads current content, even when startup only took a baseline. */
+  async readAndSendCurrentText(): Promise<boolean> {
+    if (!this.active() || !this.localMonitoringEnabled) { return false; }
+    const generation: number = this.generation;
+    const epoch: number = this.coordinator.currentEpoch();
+    const revision: number = this.remoteRevision;
+    const localRevision: number = this.localRevision;
+    const snapshot: LocalClipboardSnapshot = await this.getSystemSnapshot();
+    if (!this.currentRead(generation, epoch, revision, localRevision, snapshot.changeCount) || !snapshot.ok || !snapshot.hasText) { return false; }
+    return this.sendLocalText(snapshot.text);
+  }
+
+  private currentRead(generation: number, epoch: number, revision: number,
+    localRevision: number, expectedChangeCount: number = -1): boolean {
+    this.hasRemoteClipboardSource();
+    return this.active() && this.generation === generation && this.remoteRevision === revision &&
+      this.localRevision === localRevision && (expectedChangeCount < 0 ||
+      this.systemChangeCount() === expectedChangeCount) && this.coordinator.isCurrent(this.ownerId, epoch);
+  }
+
+  private async sendLocalText(text: string): Promise<boolean> {
+    if (!this.active() || !this.onLocalTextChanged || !validateClipboardText(text, true).ok) { return false; }
+    try {
+      // Legacy void callbacks mean accepted. New callers return explicit admission.
+      const generation: number = this.generation;
+      const epoch: number = this.coordinator.currentEpoch();
+      const revision: number = this.remoteRevision;
+      const localRevision: number = this.localRevision;
+      const changeCount: number = this.systemChangeCount();
+      const accepted: boolean | void = await Promise.resolve(this.onLocalTextChanged(text));
+      return accepted !== false && this.currentRead(generation, epoch, revision, localRevision, changeCount);
+    } catch (error) {
+      hilog.warn(0x0001, TAG, 'local clipboard callback failed');
       return false;
     }
   }
 
   /** 启动监听 (定时轮询) */
-  startMonitoring(callback: (text: string) => void, readRemoteText?: () => string,
+  startMonitoring(callback: (text: string) => boolean | void | Promise<boolean>, readRemoteText?: () => string,
     localReadEnabled: boolean = true, localReadAllowed: boolean = true,
-    initialRemoteHash: number = 0, onRemoteTextDelivered?: (hash: number) => void): boolean {
+    initialRemoteHash: number = 0, onRemoteTextDelivered?: (hash: number) => void,
+    options: ClipboardBridgeOptions = {}): boolean {
     if (this.enabled) {
       return this.localMonitoringEnabled;
     }
     try {
       this.enabled = true;
+      this.generation++;
+      this.options = options;
+      this.sourceState = this.coordinator.sourceState(options.lease, this.ownerId);
+      this.coordinator.activate(this.ownerId);
       this.onLocalTextChanged = callback;
       this.readRemoteText = readRemoteText;
       this.onRemoteTextDelivered = onRemoteTextDelivered;
-      this.lastHash = 0;
+      this.lastRemoteText = null;
+      this.pendingLocalRetry = false;
       this.lastRemoteHash = initialRemoteHash;
       this.systemReadInFlight = false;
       this.systemReadPending = false;
@@ -143,6 +254,7 @@ export class ClipboardBridgeService {
       // for more than 100ms on an empty pasteboard and must not run every 500ms.
       this.pollingTimer = setInterval(() => {
         this.pollRemoteOnce();
+        if (this.pendingLocalRetry) { this.readLocalClipboard(false); }
       }, 500);
       hilog.info(0x0001, TAG, localMonitoringStarted
         ? 'monitoring started (local update event + 500ms remote poll)'
@@ -150,6 +262,8 @@ export class ClipboardBridgeService {
       return localMonitoringStarted;
     } catch (err) {
       this.enabled = false;
+      this.coordinator.release(this.ownerId);
+      this.generation++;
       this.onLocalTextChanged = undefined;
       this.readRemoteText = undefined;
       this.onRemoteTextDelivered = undefined;
@@ -171,7 +285,10 @@ export class ClipboardBridgeService {
     try {
       const sysPb: pasteboard.SystemPasteboard = pasteboard.getSystemPasteboard();
       this.systemPasteboard = sysPb;
+      const generation: number = this.generation;
       this.systemUpdateCallback = (): void => {
+        if (this.generation !== generation) { return; }
+        this.localRevision++;
         this.readLocalClipboard(false);
       };
       sysPb.on('update', this.systemUpdateCallback);
@@ -194,6 +311,8 @@ export class ClipboardBridgeService {
       return;
     }
     this.enabled = false;
+    this.generation++;
+    this.coordinator.release(this.ownerId);
     this.onLocalTextChanged = undefined;
     this.readRemoteText = undefined;
     this.onRemoteTextDelivered = undefined;
@@ -206,79 +325,87 @@ export class ClipboardBridgeService {
     this.localMonitoringEnabled = false;
     this.systemReadInFlight = false;
     this.systemReadPending = false;
-    this.remoteSetAt = 0;
-    this.remoteSetHash = 0;
+    this.pendingLocalRetry = false;
     this.lastRemoteHash = 0;
     hilog.info(0x0001, TAG, 'monitoring stopped');
   }
 
-  /** 轮询 native 会话内的远程剪贴板，不读系统剪贴板。 */
+  /** Remote event identity advances independently from successful delivery. */
   private pollRemoteOnce(): void {
-    if (!this.enabled || !this.onLocalTextChanged) {
-      return;
-    }
-    if (this.readRemoteText) {
-      const remoteText: string = this.readRemoteText();
-      const remoteHash: number = this.hashText(remoteText);
-      if (shouldAttemptRemoteClipboard(this.lastRemoteHash, remoteHash,
-        validateClipboardText(remoteText).ok)) {
-        const delivered: boolean = this.setSystemText(remoteText);
-        this.lastRemoteHash = remoteClipboardHashAfterDelivery(
-          this.lastRemoteHash, remoteHash, delivered);
-        if (delivered && this.onRemoteTextDelivered) {
-          this.onRemoteTextDelivered(this.lastRemoteHash);
+    if (!this.active()) { return; }
+    try {
+      if (this.options.readRemoteSnapshot) {
+        const snapshot: RemoteClipboardSnapshot | null = this.options.readRemoteSnapshot();
+        if (snapshot === null || snapshot.sequence <= 0) { return; }
+        this.observeRemoteSnapshot(snapshot);
+        if (!this.sourceState.remoteSource || !snapshot.ready || snapshot.sequence === this.sourceState.deliveredSequence ||
+          (snapshot.kind !== 'text' && snapshot.kind !== 'none')) { return; }
+        const text: string = snapshot.kind === 'none' ? '' : snapshot.text;
+        if (this.setSystemText(text)) {
+          this.sourceState.deliveredSequence = snapshot.sequence;
+          this.lastRemoteHash = this.hashText(text);
+          if (this.onRemoteTextDelivered) { this.onRemoteTextDelivered(this.lastRemoteHash); }
         }
+        return;
       }
+      // Old adapters have no sequence: exact text comparison avoids hash collision,
+      // but only the snapshot API can represent identical new remote events.
+      if (!this.readRemoteText) { return; }
+      const text: string = this.readRemoteText();
+      const hash: number = this.hashText(text);
+      if (this.lastRemoteText === text || (this.lastRemoteText === null &&
+        (text.length === 0 || hash === this.lastRemoteHash))) { return; }
+      if (this.setSystemText(text)) {
+        this.lastRemoteText = text;
+        this.lastRemoteHash = hash;
+        this.sourceState.remoteSource = true;
+        this.remoteRevision++;
+        if (this.onRemoteTextDelivered) { this.onRemoteTextDelivered(hash); }
+      }
+    } catch (error) {
+      hilog.warn(0x0001, TAG, 'remote clipboard snapshot unavailable');
     }
   }
 
-  /** 合并系统 update 事件，任何时刻最多一个 getData 在途。 */
+  /** Merge notifications; no content hash suppresses genuine repeated copies. */
   private readLocalClipboard(baselineOnly: boolean): void {
-    if (!this.enabled || !this.localMonitoringEnabled || !this.onLocalTextChanged) {
-      return;
-    }
-    if (this.systemReadInFlight) {
-      this.systemReadPending = true;
-      return;
-    }
+    if (!this.active() || !this.localMonitoringEnabled || !this.onLocalTextChanged) { return; }
+    if (this.systemReadInFlight) { this.systemReadPending = true; return; }
     this.systemReadInFlight = true;
-    this.getSystemText().then((text: string) => {
-      if (!this.enabled) {
-        return;
-      }
-      const hash: number = this.hashText(text);
+    const generation: number = this.generation;
+    const epoch: number = this.coordinator.currentEpoch();
+    const revision: number = this.remoteRevision;
+    const localRevision: number = this.localRevision;
+    this.getSystemSnapshot().then(async (snapshot: LocalClipboardSnapshot): Promise<void> => {
+      if (!this.currentRead(generation, epoch, revision, localRevision)) { return; }
+      if (!snapshot.ok) { this.pendingLocalRetry = !baselineOnly; return; }
       if (baselineOnly) {
-        this.lastHash = hash;
+        if (!this.coordinator.isRemoteOrigin(snapshot) &&
+          snapshot.changeCount !== this.sourceState.systemChangeCount) {
+          this.sourceState.remoteSource = false;
+        }
+        this.sourceState.systemChangeCount = snapshot.changeCount;
         return;
       }
-
-      // 防回环: 远端写入后 1200ms 内忽略匹配的本地变化
-      if (this.remoteSetAt > 0) {
-        const elapsed: number = Date.now() - this.remoteSetAt;
-        if (elapsed < 1200 && (hash === this.remoteSetHash || hash === 0)) {
-          return;
-        }
-        if (elapsed >= 1200) {
-          this.remoteSetAt = 0;
-          this.remoteSetHash = 0;
-        }
+      if (this.coordinator.isRemoteOrigin(snapshot)) {
+        this.pendingLocalRetry = false;
+        return;
       }
-
-      // 内容变化且非空 → 推送到远端
-      if (hash !== this.lastHash && text.length > 0) {
-        if (!validateClipboardText(text).ok) { return; }
-        this.lastHash = hash;
-        try {
-          this.onLocalTextChanged!(text);
-        } catch (err) {
-          hilog.warn(0x0001, TAG, `local clipboard callback failed: ${JSON.stringify(err)}`);
-        }
+      this.sourceState.remoteSource = false;
+      this.sourceState.systemChangeCount = snapshot.changeCount;
+      if (!snapshot.hasText || !validateClipboardText(snapshot.text, true).ok) {
+        this.pendingLocalRetry = false;
+        return;
       }
-    }).catch((err: Error) => {
-      hilog.warn(0x0001, TAG, `clipboard poll failed: ${err.message}`);
+      const accepted: boolean = await this.sendLocalText(snapshot.text);
+      if (this.currentRead(generation, epoch, revision, localRevision)) { this.pendingLocalRetry = !accepted; }
+    }).catch(() => {
+      if (this.currentRead(generation, epoch, revision, localRevision)) { this.pendingLocalRetry = !baselineOnly; }
     }).finally(() => {
+      // An old completion must not clear a new generation's in-flight flag.
+      if (this.generation !== generation) { return; }
       this.systemReadInFlight = false;
-      if (this.enabled && this.systemReadPending) {
+      if (this.active() && this.systemReadPending) {
         this.systemReadPending = false;
         this.readLocalClipboard(false);
       }
@@ -304,8 +431,9 @@ export class ClipboardBridgeService {
     }
     try {
       const manager: abilityAccessCtrl.AtManager = abilityAccessCtrl.createAtManager();
+      const generation: number = this.generation;
       const callback = (info: abilityAccessCtrl.PermissionStateChangeInfo): void => {
-        if (!this.enabled || info.permissionName !== READ_PASTEBOARD_PERMISSION ||
+        if (this.generation !== generation || !this.enabled || info.permissionName !== READ_PASTEBOARD_PERMISSION ||
           info.change !== abilityAccessCtrl.PermissionStateChangeType.PERMISSION_GRANTED_OPER) {
           return;
         }

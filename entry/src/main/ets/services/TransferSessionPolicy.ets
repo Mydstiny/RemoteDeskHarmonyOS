@@ -5,7 +5,16 @@ export type TransferStage =
   | 'waitingRemote'
   | 'completed'
   | 'failed'
-  | 'cancelled';
+  | 'cancelled'
+  | 'ready'
+  | 'offered'
+  | 'senderCompleted'
+  | 'verifying'
+  | 'committing'
+  | 'waitingConnection'
+  | 'cancelling'
+  | 'commitUnknown'
+  | 'expired';
 
 export interface TransferSession {
   id: string;

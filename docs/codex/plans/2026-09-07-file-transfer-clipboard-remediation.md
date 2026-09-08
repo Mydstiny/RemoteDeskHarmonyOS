@@ -1,8 +1,8 @@
 **文件传输与剪贴板完整优化、修复及验收计划**
 
-状态：PLAN_ONLY / 待用户授权实施。制定日期：2026-09-07。
+状态：IMPLEMENTATION_IN_PROGRESS / 用户于 2026-09-08 授权完整执行，允许与其他任务并行。制定日期：2026-09-07。
 
-本次用户要求是制定并保存实体计划，暂时不改代码。本文件中的模块、接口、任务、测试及开关均为后续实施安排，不能据此认为功能已实现、已通过设备测试或已获准删除文件。当前只修改此计划及共享状态文档。
+2026-09-07 首次交付为纯计划，记录保留在第 12 节。2026-09-08 用户授权完整执行及并行处理；从 T0 开始逐项实施、当次验证、提交与独立复核。具体完成状态以执行记录为准，计划条目本身不表示功能或设备验收已通过；移动仍须满足目标验证和源文件删除条件。
 
 **1. 目标与范围**
 
@@ -125,7 +125,7 @@ RustDesk 使用已有远端 clipboard/file permission 快照，不能 connected 
 
 **5. 工作包、依赖及逐项实施步骤**
 
-依赖顺序：`T0 → T1 → T2 → T3 → T4/T5/T6 → T7 → T8 → T9`。斜线表示可分别验收，实施是否并行取决于同一工作区的文件冲突；不创建持久 worktree，不同时改同一页面/native 文件。未获得后续实施授权时，所有 T0–T9 保持 pending。
+依赖顺序：`T0 → T1 → T2 → T3 → T4/T5/T6 → T7 → T8 → T9`。斜线表示可分别验收，实施是否并行取决于同一工作区的文件冲突；不创建持久 worktree，不同时改同一页面/native 文件。实施授权已取得；按以下依赖逐项验收，不能把独立开发中的模块直接视为可公开使用。
 
 **T0：冻结复核证据与可执行回归基线**
 
@@ -337,14 +337,14 @@ ArkTS 测试模块受影响时另加 `ohosTest@OhosTestCompileArkTS`；若任务
 
 | 工作包 | 当前状态 | 已关闭诊断项 | 剩余条件 |
 |---|---|---|---|
-| 计划实体文件 | 已编写；文档验证与复核结果见本文末尾及 CURRENT | 无实现项关闭 | 用户尚未授权实施 |
-| T0 | pending | 无 | 开始实施授权、重新确认基线 |
-| T1 | pending | 无 | T0 |
-| T2 | pending | 无 | T1 |
-| T3 | pending | 无 | T1/T2 |
-| T4 | pending | 无 | T1–T3 |
-| T5 | pending | 无 | T1–T3 |
-| T6 | pending | 无 | T1–T3 |
+| 计划实体文件 | 已交付并复核，实施已授权 | 无实现项关闭 | 按 T0–T9 执行 |
+| T0 | in_progress | 无 | 已授权；基线刷新、生产回归与性能测量 |
+| T1 | first_increment_in_progress | 尚无代码审查收据 | T0 |
+| T2 | first_increment_in_progress | 尚无代码审查收据 | T1 |
+| T3 | first_increment_in_progress | 尚无代码审查收据 | T1/T2 |
+| T4 | first_increment_in_progress | 尚无代码审查收据 | T1–T3 |
+| T5 | first_increment_in_progress | 尚无代码审查收据 | T1–T3 |
+| T6 | first_increment_in_progress | 尚无代码审查收据 | T1–T3 |
 | T7 | pending | 无 | 所开放协议对应的 T5/T6 |
 | T8 | pending | 无 | 相应方向具备验证与条件删除能力 |
 | T9 | pending | 无 | 已实施增量与对应设备/网络验收 |
@@ -378,3 +378,11 @@ ArkTS 测试模块受影响时另加 `ohosTest@OhosTestCompileArkTS`；若任务
 - 独立计划 reviewer：`/root/review_transfer_plan`；结论及最终文件 hash 记录在 `REVIEW_RECEIPTS.jsonl` 的 `file-transfer-clipboard/plan` 范围。该审查不覆盖并发 Pro 实现。
 - 验证时共享工作区 HEAD 为 `bbc7fb535`；原诊断重点源码相对计划编写基线无变化。构建结果仅说明当次共享源码可编译/签名，不表示本计划的功能已经实现。
 - 设备、协议网络传输、功能修复验收：NOT RUN，所有 T0–T9 保持 pending。
+
+### 2026-09-08 首批实现验证记录（未关闭工作包）
+
+已接通会话/账号/窗口/route/native 所有者、远端事件来源与 RDP 实际 FormatList ACK 后粘贴；私有文件副本/清单、受管任务；RDP DEVICE_REPLY/写入句柄事实与远端文件接收；RustDesk 有界 FD 上传、显式远端目录与下载；接收后完整性校验、另存和已接收文件 URI 发布。源文件不自动删除。
+
+定向验证：RDP native 50 项及双 ABI 10 项语法检查；Rust 289 项与 arm64-v8a/x86_64 源码构建；剪贴板 18、任务 16、真实文件系统 19、生产页面所有者/ACK/取消 12 项通过。首轮 testCompile 18 s 833 ms、签名 assembleHap 21 s 137 ms，均 exit 0；最后取消/释放修复后的 testCompile 7 s 112 ms、签名 assembleHap 8 s 578 ms（SignHap 909 ms）均 exit 0；Light/diff PASS。
+
+本记录不是整体完成或独立代码审查通过。缓存恢复/发布租约回收、目录批次与冲突策略、RustDesk Cliprdr、图片/富文本、复制意图策略及真机/性能验收继续实施。没有安装/操作在用设备或对用户文件进行网络传输。

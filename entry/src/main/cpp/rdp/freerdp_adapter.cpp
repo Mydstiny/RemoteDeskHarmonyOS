@@ -26,6 +26,14 @@
 #include "rdp_display_layout_policy.h"
 #include "rdp_frame_pump.h"
 #include "rdp_file_clipboard_bridge.h"
+#include "rdp_clipboard_codec.h"
+#include "rdp_clipboard_features.h"
+#include "rdp_channel_observer.h"
+#include "rdp_channel_forwarder.h"
+#include "rdp_remote_file_offer.h"
+#include "rdp_clipboard_receive.h"
+#include "rdp_clipboard_state.h"
+#include "rdp_clipboard_publication_queue.h"
 #include "rdp_graphics_lifecycle.h"
 #include "rdp_keymap.h"
 #include "rdp_negotiation_parser.h"
@@ -1540,6 +1548,7 @@ struct FreeRdpAdapter::Impl {
     UINT32                  pendingErrorInfoCode = 0;
     std::string             pendingErrorInfoMessage;
     std::mutex              clipboardMutex;
+    std::mutex              clipboardOperationMutex;
     // cliprdr is owned by FreeRDP and may be replaced by a reconnect while
     // UI clipboard operations are still in flight.  Protect the carrier
     // pointer and channel attach/detach transition separately from the text
@@ -1547,6 +1556,18 @@ struct FreeRdpAdapter::Impl {
     mutable std::mutex      cliprdrMutex;
     mutable std::mutex      rdpdrMutex;
     std::string             clipboardText;
+    RdpClipboardState       remoteClipboard;
+    RdpClipboardPublicationQueue clipboardPublications;
+    std::atomic<bool> cliprdrMonitorReady {false};
+    RdpChannelObserver      driveObserver;
+    std::atomic<bool>       driveExplicitlyDisabled {false};
+    RemoteClipboardFileOffer remoteFileOffer;
+    uint32_t                remoteFileFormatId = 0;
+    uint32_t                previewClipDataId = 0;
+    CliprdrClientContext*    remoteFileChannel = nullptr;
+    uint64_t                remoteFileGeneration = 0;
+    std::chrono::steady_clock::time_point remoteOfferRequestedAt;
+    std::map<uint64_t, std::shared_ptr<RdpClipboardReceive>> clipboardReceivers;
     CliprdrClientContext*   cliprdr = nullptr;
     RdpdrClientContext*     rdpdr = nullptr;
     std::unique_ptr<RdpFileClipboardBridge> fileClipboard;
@@ -1782,11 +1803,13 @@ struct FreeRdpAdapter::Impl {
     bool publishRdpDriveMounted(uint64_t generation, uint32_t deviceId) {
         std::lock_guard<std::mutex> lock(transferStatusMutex);
         if (sessionGeneration.load(std::memory_order_acquire) != generation ||
-            stopRequested.load(std::memory_order_acquire)) {
+            stopRequested.load(std::memory_order_acquire) || driveExplicitlyDisabled.load(std::memory_order_acquire)) {
             return false;
         }
         driveDeviceId = deviceId;
-        transferStatus.markRdpDriveMounted();
+        driveObserver.registered(deviceId);
+        // Local registration is not a DEVICE_REPLY acceptance.
+        transferStatus.markRdpDriveUnavailable("awaiting_server_drive_acceptance");
         return true;
     }
 
@@ -1797,6 +1820,7 @@ struct FreeRdpAdapter::Impl {
             return false;
         }
         transferStatus.markRdpDriveUnavailable(diagnosticCode);
+        driveObserver.unavailable(diagnosticCode);
         return true;
     }
 
@@ -1805,14 +1829,27 @@ struct FreeRdpAdapter::Impl {
         return config.rdClipboardEnabled;
     }
 
-    void clearClipboardState() {
+    void clearClipboardState(bool newCarrier = true) {
+        clipboardPublications.invalidate(newCarrier);
+        if (newCarrier) cliprdrMonitorReady.store(false, std::memory_order_release);
+        std::vector<std::shared_ptr<RdpClipboardReceive>> receivers;
+        uint32_t lockId = 0;
+        CliprdrClientContext* channel = nullptr;
+        uint64_t generation = 0;
         {
             std::lock_guard<std::mutex> lock(clipboardMutex);
-            clipboardText.clear();
+            clipboardText.clear(); remoteClipboard.invalidate(); remoteFileOffer = {};
+            remoteFileFormatId = 0; lockId = previewClipDataId; previewClipDataId = 0;
+            channel = remoteFileChannel; generation = remoteFileGeneration;
+            remoteFileChannel = nullptr;
+            for (const auto& entry : clipboardReceivers) receivers.push_back(entry.second);
         }
-        if (fileClipboard) {
-            fileClipboard->clearLocalFiles();
+        for (const auto& receiver : receivers) receiver->cancel("clipboard_unavailable");
+        if (lockId) {
+            auto retained = lifetime.lock();
+            if (retained) retained->releaseRemoteClipboardLock(channel, generation, lockId);
         }
+        if (fileClipboard) fileClipboard->clearLocalFiles();
     }
 
     Render::DecoderSessionIdentity ownerSnapshot() const {
@@ -2742,7 +2779,12 @@ struct RdpCallbackLease {
     explicit operator bool() const { return adapter != nullptr && static_cast<bool>(lease); }
 };
 
+struct RdpObservedChannelHooks {
+    pSendChannelData send = nullptr;
+    pReceiveChannelData receive = nullptr;
+};
 static std::mutex g_rdpCallbackRegistryMutex;
+static std::unordered_map<freerdp*, RdpObservedChannelHooks> g_rdpObservedChannelHooks;
 static std::unordered_map<rdpContext*, RdpCallbackRegistryEntry> g_rdpCallbackRegistry;
 static std::unordered_map<freerdp*, rdpContext*> g_rdpCallbackInstanceRegistry;
 static std::unordered_map<CliprdrClientContext*, RdpCallbackRegistryEntry>
@@ -2833,6 +2875,10 @@ static bool confirmRdpCallbackSourceRevoked(rdpContext* context) {
 
 static bool rdpCallbackSourcesAreCleared(
     freerdp* instance, rdpContext* context, CliprdrClientContext* cliprdr) {
+    {
+        std::lock_guard<std::mutex> lock(g_rdpCallbackRegistryMutex);
+        if (g_rdpObservedChannelHooks.count(instance)) return false;
+    }
     if (context == nullptr) {
         return false;
     }
@@ -2855,8 +2901,13 @@ static bool rdpCallbackSourcesAreCleared(
         (cliprdr->ServerCapabilities != nullptr ||
          cliprdr->MonitorReady != nullptr ||
          cliprdr->ServerFormatList != nullptr ||
+         cliprdr->ServerFormatListResponse != nullptr ||
          cliprdr->ServerFormatDataRequest != nullptr ||
-         cliprdr->ServerFormatDataResponse != nullptr)) {
+         cliprdr->ServerFormatDataResponse != nullptr ||
+         cliprdr->ServerFileContentsRequest != nullptr ||
+         cliprdr->ServerFileContentsResponse != nullptr ||
+         cliprdr->ServerLockClipboardData != nullptr ||
+         cliprdr->ServerUnlockClipboardData != nullptr)) {
         return false;
     }
     if (instance != nullptr &&
@@ -2886,6 +2937,16 @@ static bool revokeRdpCallbackSources(
     if (context == nullptr) {
         return false;
     }
+    {
+        std::lock_guard<std::mutex> lock(g_rdpCallbackRegistryMutex);
+        const auto hooks = g_rdpObservedChannelHooks.find(instance);
+        if (hooks != g_rdpObservedChannelHooks.end()) {
+            // Restore transport defaults; they contain no adapter-owned callback.
+            instance->SendChannelData = hooks->second.send;
+            instance->ReceiveChannelData = hooks->second.receive;
+            g_rdpObservedChannelHooks.erase(hooks);
+        }
+    }
     if (context->update != nullptr) {
         context->update->BeginPaint = nullptr;
         context->update->EndPaint = nullptr;
@@ -2905,8 +2966,13 @@ static bool revokeRdpCallbackSources(
         cliprdr->ServerCapabilities = nullptr;
         cliprdr->MonitorReady = nullptr;
         cliprdr->ServerFormatList = nullptr;
+        cliprdr->ServerFormatListResponse = nullptr;
         cliprdr->ServerFormatDataRequest = nullptr;
         cliprdr->ServerFormatDataResponse = nullptr;
+        cliprdr->ServerFileContentsRequest = nullptr;
+        cliprdr->ServerFileContentsResponse = nullptr;
+        cliprdr->ServerLockClipboardData = nullptr;
+        cliprdr->ServerUnlockClipboardData = nullptr;
     }
     if (instance != nullptr) {
         instance->VerifyCertificate = nullptr;
@@ -4598,12 +4664,19 @@ void FreeRdpAdapter::cbChannelConnected(void* context, const ChannelConnectedEve
     }
 #endif
     if (std::strcmp(e->name, CLIPRDR_SVC_CHANNEL_NAME) == 0 && e->pInterface) {
+        std::lock_guard<std::mutex> operationLock(owner->impl_->clipboardOperationMutex);
         auto* cliprdr = reinterpret_cast<CliprdrClientContext*>(e->pInterface);
         if (!isRdpCallbackLeaseRegistered(callbackLease) ||
             !owner->isCallbackOwnerCurrent(callbackLease.owner,
                                            callbackLease.generation)) {
             return;
         }
+        bool replacesCarrier = false;
+        {
+            std::lock_guard<std::mutex> channelLock(owner->impl_->cliprdrMutex);
+            replacesCarrier = owner->impl_->cliprdr != cliprdr;
+        }
+        if (replacesCarrier) owner->impl_->clearClipboardState();
         std::lock_guard<std::mutex> channelLock(owner->impl_->cliprdrMutex);
         if (!owner->impl_->rdpClipboardEnabled()) {
             const auto previous = owner->impl_->cliprdr;
@@ -4634,9 +4707,18 @@ void FreeRdpAdapter::cbChannelConnected(void* context, const ChannelConnectedEve
             owner->impl_->cliprdr = cliprdr;
             cliprdr->ServerCapabilities = cbCliprdrServerCapabilities;
             cliprdr->MonitorReady = cbCliprdrMonitorReady;
+            cliprdr->ServerFormatListResponse = cbCliprdrServerFormatListResponse;
             cliprdr->ServerFormatList = cbCliprdrServerFormatList;
             cliprdr->ServerFormatDataRequest = cbCliprdrServerFormatDataRequest;
             cliprdr->ServerFormatDataResponse = cbCliprdrServerFormatDataResponse;
+            cliprdr->ServerFileContentsRequest = cbCliprdrFileContentsRequest;
+            cliprdr->ServerFileContentsResponse = cbCliprdrFileContentsResponse;
+            cliprdr->ServerLockClipboardData = cbCliprdrLock;
+            cliprdr->ServerUnlockClipboardData = cbCliprdrUnlock;
+            {
+                std::lock_guard<std::mutex> lock(owner->impl_->clipboardMutex);
+                owner->impl_->remoteClipboard.invalidate(true);
+            }
         } else {
             if (attached && owner->impl_->fileClipboard) {
                 owner->impl_->fileClipboard->detach();
@@ -4717,24 +4799,130 @@ void FreeRdpAdapter::cbChannelConnected(void* context, const ChannelConnectedEve
 #endif
 }
 
+BOOL FreeRdpAdapter::cbObservedSendChannelData(freerdp* instance, UINT16 channelId,
+    const BYTE* bytes, size_t size) {
+    auto lease = acquireRdpCallbackInstance(instance);
+    if (!acquireCurrentRdpCallbackOwnerLease(lease)) return FALSE;
+    pSendChannelData original = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(g_rdpCallbackRegistryMutex);
+        const auto hooks = g_rdpObservedChannelHooks.find(instance);
+        if (hooks != g_rdpObservedChannelHooks.end()) original = hooks->second.send;
+    }
+    if (!original) return FALSE;
+    const char* name = freerdp_channels_get_name_by_id(instance, channelId);
+    auto* observer = name && std::strcmp(name, RDPDR_CHANNEL_NAME) == 0 ? &lease.adapter->impl_->driveObserver : nullptr;
+    return RdpChannelForwarder::send(observer, bytes, size,
+        [&] { return original(instance, channelId, bytes, size); });
+}
+BOOL FreeRdpAdapter::cbObservedReceiveChannelData(freerdp* instance, UINT16 channelId,
+    const BYTE* bytes, size_t size, UINT32 flags, size_t totalSize) {
+    auto lease = acquireRdpCallbackInstance(instance);
+    if (!acquireCurrentRdpCallbackOwnerLease(lease)) return FALSE;
+    pReceiveChannelData original = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(g_rdpCallbackRegistryMutex);
+        const auto hooks = g_rdpObservedChannelHooks.find(instance);
+        if (hooks != g_rdpObservedChannelHooks.end()) original = hooks->second.receive;
+    }
+    if (!original) return FALSE;
+    const char* name = freerdp_channels_get_name_by_id(instance, channelId);
+    auto* observer = name && std::strcmp(name, RDPDR_CHANNEL_NAME) == 0 ? &lease.adapter->impl_->driveObserver : nullptr;
+    return RdpChannelForwarder::receive(observer, bytes, size, flags, totalSize,
+        [&] { return original(instance, channelId, bytes, size, flags, totalSize); });
+}
+
+UINT FreeRdpAdapter::cbCliprdrFileContentsRequest(CliprdrClientContext* context,
+    const CLIPRDR_FILE_CONTENTS_REQUEST* request) {
+    auto callbackLease = acquireRdpChannelCallbackContext(context);
+    if (!acquireCurrentRdpCallbackOwnerLease(callbackLease)) return ERROR_INVALID_PARAMETER;
+    auto* owner = callbackLease.adapter;
+    if (!owner || !owner->impl_ || !owner->impl_->fileClipboard ||
+        !isRdpCallbackLeaseCurrent(callbackLease)) return ERROR_INVALID_PARAMETER;
+    std::lock_guard<std::mutex> operationLock(owner->impl_->clipboardOperationMutex);
+    if (!isRdpCallbackLeaseCurrent(callbackLease)) return ERROR_INVALID_PARAMETER;
+    return owner->impl_->fileClipboard->handleFileContentsRequest(context, request);
+}
+
+UINT FreeRdpAdapter::cbCliprdrLock(CliprdrClientContext* context,
+    const CLIPRDR_LOCK_CLIPBOARD_DATA* request) {
+    auto callbackLease = acquireRdpChannelCallbackContext(context);
+    if (!acquireCurrentRdpCallbackOwnerLease(callbackLease)) return ERROR_INVALID_PARAMETER;
+    auto* owner = callbackLease.adapter;
+    if (!owner || !owner->impl_ || !owner->impl_->fileClipboard ||
+        !isRdpCallbackLeaseCurrent(callbackLease)) return ERROR_INVALID_PARAMETER;
+    std::lock_guard<std::mutex> operationLock(owner->impl_->clipboardOperationMutex);
+    if (!isRdpCallbackLeaseCurrent(callbackLease)) return ERROR_INVALID_PARAMETER;
+    return owner->impl_->fileClipboard->handleLock(context, request);
+}
+
+UINT FreeRdpAdapter::cbCliprdrUnlock(CliprdrClientContext* context,
+    const CLIPRDR_UNLOCK_CLIPBOARD_DATA* request) {
+    auto callbackLease = acquireRdpChannelCallbackContext(context);
+    if (!acquireCurrentRdpCallbackOwnerLease(callbackLease)) return ERROR_INVALID_PARAMETER;
+    auto* owner = callbackLease.adapter;
+    if (!owner || !owner->impl_ || !owner->impl_->fileClipboard ||
+        !isRdpCallbackLeaseCurrent(callbackLease)) return ERROR_INVALID_PARAMETER;
+    std::lock_guard<std::mutex> operationLock(owner->impl_->clipboardOperationMutex);
+    if (!isRdpCallbackLeaseCurrent(callbackLease)) return ERROR_INVALID_PARAMETER;
+    return owner->impl_->fileClipboard->handleUnlock(context, request);
+}
+
+UINT FreeRdpAdapter::cbCliprdrFileContentsResponse(CliprdrClientContext* context,
+    const CLIPRDR_FILE_CONTENTS_RESPONSE* request) {
+    auto callbackLease = acquireRdpChannelCallbackContext(context);
+    if (!acquireCurrentRdpCallbackOwnerLease(callbackLease)) return ERROR_INVALID_PARAMETER;
+    auto* owner = callbackLease.adapter;
+    if (!owner || !owner->impl_ || !owner->impl_->fileClipboard ||
+        !isRdpCallbackLeaseCurrent(callbackLease)) return ERROR_INVALID_PARAMETER;
+    std::lock_guard<std::mutex> operationLock(owner->impl_->clipboardOperationMutex);
+    if (!isRdpCallbackLeaseCurrent(callbackLease)) return ERROR_INVALID_PARAMETER;
+    if (!request) return ERROR_INVALID_PARAMETER;
+    std::vector<std::shared_ptr<RdpClipboardReceive>> receivers;
+    {
+        std::lock_guard<std::mutex> lock(owner->impl_->clipboardMutex);
+        for (const auto& entry : owner->impl_->clipboardReceivers) receivers.push_back(entry.second);
+    }
+    for (const auto& receiver : receivers) {
+        if (receiver->response(request->streamId, request->common.msgFlags == CB_RESPONSE_OK,
+                request->requestedData, request->cbRequested)) return CHANNEL_RC_OK;
+    }
+    // Unknown/stale stream IDs are discarded, not offered to an implicit FUSE receiver.
+    return CHANNEL_RC_OK;
+}
+
+UINT FreeRdpAdapter::cbCliprdrServerFormatListResponse(
+    CliprdrClientContext* context, const CLIPRDR_FORMAT_LIST_RESPONSE* response) {
+    auto callbackLease = acquireRdpChannelCallbackContext(context);
+    if (!acquireCurrentRdpCallbackOwnerLease(callbackLease)) return ERROR_INVALID_PARAMETER;
+    auto* owner = callbackLease.adapter;
+    if (!owner || !owner->impl_ || !response || !isRdpCallbackLeaseCurrent(callbackLease))
+        return ERROR_INVALID_PARAMETER;
+    std::lock_guard<std::mutex> operationLock(owner->impl_->clipboardOperationMutex);
+    if (!isRdpCallbackLeaseCurrent(callbackLease)) return ERROR_INVALID_PARAMETER;
+    owner->impl_->clipboardPublications.acknowledge(response->common.msgFlags == CB_RESPONSE_OK);
+    owner->dispatchClipboardPublication();
+    return CHANNEL_RC_OK;
+}
+
 UINT FreeRdpAdapter::cbCliprdrMonitorReady(CliprdrClientContext* context,
                                            const CLIPRDR_MONITOR_READY*) {
     auto callbackLease = acquireRdpChannelCallbackContext(context);
-    if (!acquireCurrentRdpCallbackOwnerLease(callbackLease)) {
-        return ERROR_INVALID_PARAMETER;
-    }
+    if (!acquireCurrentRdpCallbackOwnerLease(callbackLease)) return ERROR_INVALID_PARAMETER;
     auto* owner = callbackLease.adapter;
-    if (!owner || !owner->impl_ || !owner->impl_->fileClipboard) {
-        return ERROR_INVALID_PARAMETER;
+    if (!owner || !owner->impl_ || !owner->impl_->fileClipboard) return ERROR_INVALID_PARAMETER;
+    std::lock_guard<std::mutex> operationLock(owner->impl_->clipboardOperationMutex);
+    if (!isRdpCallbackLeaseCurrent(callbackLease)) return ERROR_INVALID_PARAMETER;
+    const UINT result = owner->impl_->fileClipboard->sendClientCapabilities();
+    if (result != CHANNEL_RC_OK) return result;
+    owner->impl_->cliprdrMonitorReady.store(true, std::memory_order_release);
+    if (owner->impl_->rdpClipboardEnabled() && !owner->impl_->clipboardPublications.hasWork()) {
+        RdpClipboardPublicationQueue::Job initial;
+        { std::lock_guard<std::mutex> lock(owner->impl_->clipboardMutex); initial.text = owner->impl_->clipboardText; }
+        owner->impl_->clipboardPublications.enqueue(std::move(initial));
     }
-    if (!owner->impl_->rdpClipboardEnabled()) {
-        return ERROR_INVALID_PARAMETER;
-    }
-    const UINT capabilityResult = owner->impl_->fileClipboard->sendClientCapabilities();
-    if (capabilityResult != CHANNEL_RC_OK) {
-        return capabilityResult;
-    }
-    return owner->impl_->fileClipboard->sendCurrentFormatList(true);
+    owner->dispatchClipboardPublication();
+    return CHANNEL_RC_OK;
 }
 
 UINT FreeRdpAdapter::cbCliprdrServerCapabilities(
@@ -4747,6 +4935,8 @@ UINT FreeRdpAdapter::cbCliprdrServerCapabilities(
     if (!owner || !owner->impl_ || !owner->impl_->fileClipboard) {
         return ERROR_INVALID_PARAMETER;
     }
+    std::lock_guard<std::mutex> operationLock(owner->impl_->clipboardOperationMutex);
+    if (!isRdpCallbackLeaseCurrent(callbackLease)) return ERROR_INVALID_PARAMETER;
     if (!owner->impl_->rdpClipboardEnabled()) {
         return ERROR_INVALID_PARAMETER;
     }
@@ -4765,9 +4955,16 @@ UINT FreeRdpAdapter::cbCliprdrServerFormatList(CliprdrClientContext* context,
         !context->ClientFormatListResponse) {
         return ERROR_INVALID_PARAMETER;
     }
+    std::lock_guard<std::mutex> operationLock(owner->impl_->clipboardOperationMutex);
+    if (!isRdpCallbackLeaseCurrent(callbackLease)) return ERROR_INVALID_PARAMETER;
     if (!owner->impl_->rdpClipboardEnabled()) {
-        return ERROR_INVALID_PARAMETER;
+        CLIPRDR_FORMAT_LIST_RESPONSE response {};
+        response.common.msgType = CB_FORMAT_LIST_RESPONSE;
+        response.common.msgFlags = CB_RESPONSE_OK;
+        return context->ClientFormatListResponse(context, &response);
     }
+    if (list->numFormats > 4096 || (list->numFormats && !list->formats)) return ERROR_INVALID_DATA;
+    owner->impl_->clipboardPublications.invalidate();
     const UINT notifyResult = owner->impl_->fileClipboard->notifyServerFormatList();
     if (notifyResult != CHANNEL_RC_OK) {
         return notifyResult;
@@ -4776,16 +4973,57 @@ UINT FreeRdpAdapter::cbCliprdrServerFormatList(CliprdrClientContext* context,
     response.common.msgType = CB_FORMAT_LIST_RESPONSE;
     response.common.msgFlags = CB_RESPONSE_OK;
     const UINT responseResult = context->ClientFormatListResponse(context, &response);
-    if (responseResult != CHANNEL_RC_OK || !context->ClientFormatDataRequest) {
-        return responseResult;
-    }
+    if (responseResult != CHANNEL_RC_OK) return responseResult;
+    bool hasText = false;
+    bool hasFiles = false;
+    uint32_t fileFormatId = 0;
+    if (list->numFormats > 4096 || (list->numFormats && !list->formats)) return ERROR_INVALID_DATA;
     for (UINT32 i = 0; i < list->numFormats; ++i) {
-        if (list->formats[i].formatId == CF_UNICODETEXT) {
-            CLIPRDR_FORMAT_DATA_REQUEST request {};
-            request.common.msgType = CB_FORMAT_DATA_REQUEST;
-            request.requestedFormatId = CF_UNICODETEXT;
-            return context->ClientFormatDataRequest(context, &request);
+        hasText = hasText || list->formats[i].formatId == CF_UNICODETEXT;
+        const auto name = list->formats[i].formatName;
+        if (name && std::strcmp(name, "FileGroupDescriptorW") == 0) { hasFiles = true; fileFormatId = list->formats[i].formatId; }
+    }
+    uint64_t requestSequence = 0;
+    uint64_t newSequence = 0;
+    uint32_t oldLock = 0;
+    const uint32_t flags = owner->impl_->fileClipboard->remoteFlags();
+    std::vector<std::shared_ptr<RdpClipboardReceive>> receivers;
+    {
+        std::lock_guard<std::mutex> lock(owner->impl_->clipboardMutex);
+        requestSequence = owner->impl_->remoteClipboard.formatList(hasText, hasFiles, list->numFormats == 0);
+        newSequence = owner->impl_->remoteClipboard.snapshot().sequence;
+        oldLock = owner->impl_->previewClipDataId; owner->impl_->previewClipDataId = 0;
+        owner->impl_->remoteFileFormatId = fileFormatId;
+        auto& offer = owner->impl_->remoteFileOffer;
+        offer = {}; offer.sequence = newSequence;
+        offer.streamSupported = (flags & CB_STREAM_FILECLIP_ENABLED) != 0;
+        offer.lockSupported = (flags & CB_CAN_LOCK_CLIPDATA) != 0;
+        offer.hugeFileSupported = (flags & CB_HUGE_FILE_SUPPORT_ENABLED) != 0;
+        offer.state = hasFiles && offer.streamSupported ? "available" : "unavailable";
+        owner->impl_->remoteFileChannel = context;
+        owner->impl_->remoteFileGeneration = callbackLease.generation;
+        for (const auto& entry : owner->impl_->clipboardReceivers) receivers.push_back(entry.second);
+    }
+    if (oldLock && context->ClientUnlockClipboardData) {
+        CLIPRDR_UNLOCK_CLIPBOARD_DATA unlock {}; unlock.common.msgType = CB_UNLOCK_CLIPDATA; unlock.clipDataId = oldLock;
+        (void)context->ClientUnlockClipboardData(context, &unlock);
+    }
+    for (const auto& receiver : receivers) receiver->offerChanged(newSequence);
+    if (requestSequence != 0) {
+        if (!context->ClientFormatDataRequest) {
+            std::lock_guard<std::mutex> lock(owner->impl_->clipboardMutex);
+            owner->impl_->remoteClipboard.requestFailed(requestSequence);
+            return CHANNEL_RC_OK;
         }
+        CLIPRDR_FORMAT_DATA_REQUEST request {};
+        request.common.msgType = CB_FORMAT_DATA_REQUEST;
+        request.requestedFormatId = CF_UNICODETEXT;
+        const UINT result = context->ClientFormatDataRequest(context, &request);
+        if (result != CHANNEL_RC_OK) {
+            std::lock_guard<std::mutex> lock(owner->impl_->clipboardMutex);
+            owner->impl_->remoteClipboard.requestFailed(requestSequence);
+        }
+        return result;
     }
     return CHANNEL_RC_OK;
 }
@@ -4801,8 +5039,13 @@ UINT FreeRdpAdapter::cbCliprdrServerFormatDataRequest(CliprdrClientContext* cont
         !context->ClientFormatDataResponse || !request) {
         return ERROR_INVALID_PARAMETER;
     }
+    std::lock_guard<std::mutex> operationLock(owner->impl_->clipboardOperationMutex);
+    if (!isRdpCallbackLeaseCurrent(callbackLease)) return ERROR_INVALID_PARAMETER;
     if (!owner->impl_->rdpClipboardEnabled()) {
-        return ERROR_INVALID_PARAMETER;
+        CLIPRDR_FORMAT_DATA_RESPONSE response {};
+        response.common.msgType = CB_FORMAT_DATA_RESPONSE;
+        response.common.msgFlags = CB_RESPONSE_FAIL;
+        return context->ClientFormatDataResponse(context, &response);
     }
     if (owner->impl_->fileClipboard &&
         owner->impl_->fileClipboard->isFileFormat(request->requestedFormatId)) {
@@ -4816,13 +5059,13 @@ UINT FreeRdpAdapter::cbCliprdrServerFormatDataRequest(CliprdrClientContext* cont
         std::lock_guard<std::mutex> lock(owner->impl_->clipboardMutex);
         clipboardText = owner->impl_->clipboardText;
     }
-    std::vector<uint16_t> wide = utf8ToUtf16(clipboardText);
-    wide.push_back(0);
+    std::vector<uint8_t> wide;
+    if (!RdpClipboardCodec::encode(clipboardText, wide)) return ERROR_INVALID_DATA;
     CLIPRDR_FORMAT_DATA_RESPONSE response {};
     response.common.msgType = CB_FORMAT_DATA_RESPONSE;
     response.common.msgFlags = CB_RESPONSE_OK;
     response.requestedFormatData = reinterpret_cast<BYTE*>(wide.data());
-    response.common.dataLen = static_cast<UINT32>(wide.size() * sizeof(uint16_t));
+    response.common.dataLen = static_cast<UINT32>(wide.size());
     return context->ClientFormatDataResponse(context, &response);
 }
 
@@ -4834,26 +5077,57 @@ UINT FreeRdpAdapter::cbCliprdrServerFormatDataResponse(CliprdrClientContext* con
     }
     auto* owner = callbackLease.adapter;
     if (!owner || !owner->impl_ || !isRdpCallbackLeaseCurrent(callbackLease) ||
-        !response || !response->requestedFormatData) return ERROR_INVALID_PARAMETER;
-    if (!owner->impl_->rdpClipboardEnabled()) {
-        return ERROR_INVALID_PARAMETER;
-    }
-    const auto* data = reinterpret_cast<const uint16_t*>(response->requestedFormatData);
-    const size_t count = response->common.dataLen / sizeof(uint16_t);
-    std::string text;
-    text.reserve(count);
-    for (size_t i = 0; i < count && data[i] != 0 && text.size() < 65536; ++i) {
-        const uint32_t cp = data[i];
-        if (cp < 0x80) text.push_back(static_cast<char>(cp));
-        else if (cp < 0x800) { text.push_back(static_cast<char>(0xC0 | (cp >> 6)));
-            text.push_back(static_cast<char>(0x80 | (cp & 0x3F))); }
-        else { text.push_back(static_cast<char>(0xE0 | (cp >> 12)));
-            text.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
-            text.push_back(static_cast<char>(0x80 | (cp & 0x3F))); }
-    }
+        !response) return ERROR_INVALID_PARAMETER;
+    std::lock_guard<std::mutex> operationLock(owner->impl_->clipboardOperationMutex);
+    if (!isRdpCallbackLeaseCurrent(callbackLease)) return ERROR_INVALID_PARAMETER;
+    const bool enabled = owner->impl_->rdpClipboardEnabled();
+    RdpClipboardFormatRequest pending;
     {
         std::lock_guard<std::mutex> lock(owner->impl_->clipboardMutex);
-        owner->impl_->clipboardText = std::move(text);
+        pending = owner->impl_->remoteClipboard.pendingRequest();
+    }
+    std::string text;
+    const bool valid = enabled && !pending.files && response->common.msgFlags == CB_RESPONSE_OK &&
+        RdpClipboardCodec::decode(response->requestedFormatData, response->common.dataLen, text);
+    uint64_t requestSequence = 0;
+    uint32_t failedLock = 0;
+    {
+        std::lock_guard<std::mutex> lock(owner->impl_->clipboardMutex);
+        if (!enabled) owner->impl_->remoteClipboard.invalidate();
+        if (enabled && pending.files && pending.sequence == owner->impl_->remoteClipboard.snapshot().sequence &&
+            owner->impl_->remoteFileOffer.state == "loading") {
+            const auto flags = owner->impl_->fileClipboard->remoteFlags();
+            if (response->common.msgFlags == CB_RESPONSE_OK) {
+                owner->impl_->remoteFileOffer = RdpRemoteFileOffer::parse(response->requestedFormatData,
+                    response->common.dataLen, pending.sequence, flags);
+            } else {
+                owner->impl_->remoteFileOffer.state = "failed";
+                owner->impl_->remoteFileOffer.diagnosticCode = "remote_descriptor_failed";
+            }
+        }
+        if (pending.files && owner->impl_->remoteFileOffer.state == "failed" &&
+            owner->impl_->remoteFileOffer.sequence == pending.sequence) {
+            failedLock = owner->impl_->previewClipDataId; owner->impl_->previewClipDataId = 0;
+        }
+        requestSequence = owner->impl_->remoteClipboard.response(valid, std::move(text));
+    }
+    if (failedLock && context->ClientUnlockClipboardData) {
+        CLIPRDR_UNLOCK_CLIPBOARD_DATA unlock {}; unlock.common.msgType = CB_UNLOCK_CLIPDATA; unlock.clipDataId = failedLock;
+        (void)context->ClientUnlockClipboardData(context, &unlock);
+    }
+    if (requestSequence != 0 && context->ClientFormatDataRequest) {
+        CLIPRDR_FORMAT_DATA_REQUEST request {};
+        request.common.msgType = CB_FORMAT_DATA_REQUEST;
+        {
+            std::lock_guard<std::mutex> lock(owner->impl_->clipboardMutex);
+            request.requestedFormatId = owner->impl_->remoteClipboard.pendingRequest().formatId;
+        }
+        const UINT result = context->ClientFormatDataRequest(context, &request);
+        if (result != CHANNEL_RC_OK) {
+            std::lock_guard<std::mutex> lock(owner->impl_->clipboardMutex);
+            owner->impl_->remoteClipboard.requestFailed(requestSequence);
+        }
+        return result;
     }
     return CHANNEL_RC_OK;
 }
@@ -4908,8 +5182,10 @@ void FreeRdpAdapter::cbChannelDisconnected(void* context, const ChannelDisconnec
     }
 #endif
     if (std::strcmp(e->name, CLIPRDR_SVC_CHANNEL_NAME) == 0) {
+        std::lock_guard<std::mutex> operationLock(owner->impl_->clipboardOperationMutex);
         if (owner && owner->impl_) {
             std::lock_guard<std::mutex> channelLock(owner->impl_->cliprdrMutex);
+            if (e->pInterface && owner->impl_->cliprdr != reinterpret_cast<CliprdrClientContext*>(e->pInterface)) return;
             const auto channel = owner->impl_->cliprdr;
             owner->impl_->cliprdr = nullptr;
             if (channel) {
@@ -4919,12 +5195,14 @@ void FreeRdpAdapter::cbChannelDisconnected(void* context, const ChannelDisconnec
                 owner->impl_->fileClipboard->detach();
             }
         }
+        owner->impl_->clearClipboardState();
     }
     if (std::strcmp(e->name, RDPDR_SVC_CHANNEL_NAME) == 0) {
         std::lock_guard<std::mutex> rdpdrLock(owner->impl_->rdpdrMutex);
         if (!e->pInterface ||
             owner->impl_->rdpdr == reinterpret_cast<RdpdrClientContext*>(e->pInterface)) {
             owner->impl_->rdpdr = nullptr;
+            owner->impl_->driveObserver.unavailable("rdpdr_disconnected");
         }
         OH_LOG_INFO(LOG_APP, "[RDP] device-redirection channel interface detached");
     }
@@ -6200,14 +6478,16 @@ void FreeRdpAdapter::mountDriveAfterConnected(const std::string& driveName,
                                               uint64_t generation) {
     // Give the event loop and rdpdr plugin a short window to finish post-connect setup.
     for (int i = 0; i < 10; i++) {
-        if (impl_->stopRequested.load(std::memory_order_acquire) ||
+        if (impl_->driveExplicitlyDisabled.load(std::memory_order_acquire) ||
+            impl_->stopRequested.load(std::memory_order_acquire) ||
             impl_->sessionGeneration.load(std::memory_order_acquire) != generation) {
             OH_LOG_INFO(LOG_APP, "[RDP] redirected drive async mount canceled before start");
             return;
         }
         usleep(100000);
     }
-    if (impl_->stopRequested.load(std::memory_order_acquire) ||
+    if (impl_->driveExplicitlyDisabled.load(std::memory_order_acquire) ||
+            impl_->stopRequested.load(std::memory_order_acquire) ||
         impl_->sessionGeneration.load(std::memory_order_acquire) != generation ||
         getState() != ConnectionState::CONNECTED) {
         OH_LOG_INFO(LOG_APP, "[RDP] redirected drive async mount skipped: session no longer connected");
@@ -6222,7 +6502,8 @@ void FreeRdpAdapter::mountDriveAfterConnected(const std::string& driveName,
         // after the shutdown budget expires and leave this call dereferencing
         // freed FreeRDP storage.
         std::lock_guard<std::mutex> lock(impl_->instanceMutex);
-        if (impl_->stopRequested.load(std::memory_order_acquire) ||
+        if (impl_->driveExplicitlyDisabled.load(std::memory_order_acquire) ||
+            impl_->stopRequested.load(std::memory_order_acquire) ||
             impl_->sessionGeneration.load(std::memory_order_acquire) != generation ||
             !instance_ || !instance_->context) {
             OH_LOG_INFO(LOG_APP, "[RDP] redirected drive async mount skipped: instance unavailable");
@@ -6242,6 +6523,7 @@ void FreeRdpAdapter::mountDriveAfterConnected(const std::string& driveName,
                 driveRc = CHANNEL_RC_NO_MEMORY;
             } else {
                 driveRc = rdpdr->RdpdrRegisterDevice(rdpdr, drive, &driveId);
+                if (driveRc == CHANNEL_RC_OK) impl_->driveObserver.registered(driveId);
                 freerdp_device_free(drive);
             }
         }
@@ -6255,9 +6537,9 @@ void FreeRdpAdapter::mountDriveAfterConnected(const std::string& driveName,
         }
         const std::string drivePathId = SafeLog::HashForLog(drivePath);
         OH_LOG_INFO(LOG_APP,
-                    "[RDP] redirected drive mounted asynchronously: \\\\tsclient\\%{public}s drivePathId=%{public}s id=%{public}u",
+                    "[RDP] redirected drive registered, server acceptance pending: \\\\tsclient\\%{public}s drivePathId=%{public}s id=%{public}u",
                     driveName.c_str(), drivePathId.c_str(), driveId);
-        impl_->setState(ConnectionState::CONNECTED, "RDP session established; drive redirection mounted");
+        impl_->setState(ConnectionState::CONNECTED, "RDP session established; drive registration sent, acceptance pending");
     } else {
         if (!impl_->publishRdpDriveUnavailable(generation, "drive_unavailable")) {
             return;
@@ -6465,6 +6747,7 @@ void FreeRdpAdapter::cleanupInstance(
         secureClearString(impl_->config.rdpRestrictedAdminHash);
     }
     impl_->resetRdpTransferStatus();
+    impl_->driveObserver.unavailable("session_closed");
     impl_->clearClipboardState();
     {
         std::lock_guard<std::mutex> rdpdrLock(impl_->rdpdrMutex);
@@ -7399,6 +7682,16 @@ void FreeRdpAdapter::connectThreadFunc(
         return;
     }
 
+    impl_->driveExplicitlyDisabled.store(false, std::memory_order_release);
+    impl_->driveObserver.reset(expectedGeneration);
+    {
+        std::lock_guard<std::mutex> lock(g_rdpCallbackRegistryMutex);
+        g_rdpObservedChannelHooks.emplace(instance_, RdpObservedChannelHooks {
+            instance_->SendChannelData, instance_->ReceiveChannelData});
+        instance_->SendChannelData = cbObservedSendChannelData;
+        instance_->ReceiveChannelData = cbObservedReceiveChannelData;
+    }
+
     const int port = route.targetPort;
 
     // ---- 配置 FreeRDP settings (完整映射 ConnectionConfig) ----
@@ -7611,9 +7904,7 @@ void FreeRdpAdapter::connectThreadFunc(
     freerdp_settings_set_bool(s, FreeRDP_DeviceRedirection,
                               (cfg.rdAudioEnabled || driveEnabled) ? TRUE : FALSE);
     freerdp_settings_set_bool(s, FreeRDP_RedirectClipboard, cfg.rdClipboardEnabled ? TRUE : FALSE);
-    const UINT32 clipboardFeatureMask = cfg.rdClipboardEnabled ?
-        (CLIPRDR_FLAG_LOCAL_TO_REMOTE | CLIPRDR_FLAG_REMOTE_TO_LOCAL |
-         CLIPRDR_FLAG_LOCAL_TO_REMOTE_FILES) : 0;
+    const UINT32 clipboardFeatureMask = rdpClipboardFeatureMask(cfg.rdClipboardEnabled);
     freerdp_settings_set_uint32(s, FreeRDP_ClipboardFeatureMask, clipboardFeatureMask);
     const std::string driveName = sanitizeRdpDriveName(cfg.rdDriveName);
     // 不在连接握手前注册自定义 drive。rdpdr 通道加载后由异步线程 post-connected 挂载。
@@ -8775,29 +9066,57 @@ void FreeRdpAdapter::setConnectionStateCallback(ConnectionStateCallback cb) {
     impl_->stateCallback = std::move(cb);
 }
 
-void FreeRdpAdapter::setClipboardText(const std::string& t) {
-    if (!impl_->rdpClipboardEnabled()) {
-        OH_LOG_INFO(LOG_APP, "[RDP] clipboard send ignored because the setting is disabled");
-        return;
-    }
-    {
-        std::lock_guard<std::mutex> lock(impl_->clipboardMutex);
-        impl_->clipboardText = t;
-    }
-    if (impl_->fileClipboard) {
-        impl_->fileClipboard->clearLocalFiles();
-        if (impl_->rdpClipboardEnabled() && impl_->fileClipboard->attached()) {
-            impl_->fileClipboard->sendCurrentFormatList(true);
-        }
-    }
+void FreeRdpAdapter::setClipboardText(const std::string& text) {
+    publishClipboard(reinterpret_cast<const uint8_t*>(text.data()), static_cast<uint32_t>(text.size()));
+}
+bool FreeRdpAdapter::publishClipboard(const uint8_t* data, uint32_t len) {
+    return publishClipboardTracked(data, len) != 0;
+}
+uint64_t FreeRdpAdapter::publishClipboardTracked(const uint8_t* data, uint32_t len) {
+    std::lock_guard<std::mutex> operationLock(impl_->clipboardOperationMutex);
+    if ((!data && len != 0) || len > RdpClipboardCodec::kMaxUtf8Bytes ||
+        !impl_->rdpClipboardEnabled() || !impl_->fileClipboard || !impl_->fileClipboard->attached()) return 0;
+    RdpClipboardPublicationQueue::Job job;
+    if (len) job.text.assign(reinterpret_cast<const char*>(data), len);
+    std::vector<uint8_t> encoded;
+    if (!RdpClipboardCodec::encode(job.text, encoded)) return 0;
+    const auto id = impl_->clipboardPublications.enqueue(std::move(job));
+    dispatchClipboardPublication();
+    return id;
 }
 bool FreeRdpAdapter::setClipboardFiles(const std::vector<std::string>& paths) {
-    if (!impl_->rdpClipboardEnabled() || !impl_->fileClipboard ||
-        !impl_->fileClipboard->attached()) {
-        return false;
+    return publishClipboardFilesTracked(paths) != 0;
+}
+uint64_t FreeRdpAdapter::publishClipboardFilesTracked(const std::vector<std::string>& paths) {
+    std::lock_guard<std::mutex> operationLock(impl_->clipboardOperationMutex);
+    if (!impl_->rdpClipboardEnabled() || !impl_->fileClipboard || !impl_->fileClipboard->attached()) return 0;
+    RdpFileClipboardOffer validation;
+    if (validation.replace(paths) != RdpFileClipboardOfferResult::Ready) return 0;
+    RdpClipboardPublicationQueue::Job job; job.files = true; job.paths = paths;
+    const auto id = impl_->clipboardPublications.enqueue(std::move(job));
+    dispatchClipboardPublication();
+    return id;
+}
+int FreeRdpAdapter::getClipboardPublicationState(uint64_t publicationId) {
+    std::lock_guard<std::mutex> operationLock(impl_->clipboardOperationMutex);
+    return impl_->clipboardPublications.state(publicationId);
+}
+void FreeRdpAdapter::dispatchClipboardPublication() {
+    if (!impl_->rdpClipboardEnabled() || !impl_->cliprdrMonitorReady.load(std::memory_order_acquire) ||
+        !impl_->fileClipboard || !impl_->fileClipboard->attached()) return;
+    auto job = impl_->clipboardPublications.takeNext();
+    if (!job) return;
+    bool attempted = false;
+    bool sent = false;
+    if (job->files) {
+        sent = impl_->fileClipboard->publishLocalFiles(job->paths, &attempted) == RdpFileClipboardOfferResult::Ready;
+    } else {
+        { std::lock_guard<std::mutex> lock(impl_->clipboardMutex); impl_->clipboardText = job->text; }
+        impl_->fileClipboard->clearLocalFiles();
+        attempted = true;
+        sent = impl_->fileClipboard->sendCurrentFormatList(true) == CHANNEL_RC_OK;
     }
-    return impl_->fileClipboard->publishLocalFiles(paths) ==
-        RdpFileClipboardOfferResult::Ready;
+    if (!sent) impl_->clipboardPublications.sendFailed(job->id, attempted);
 }
 void FreeRdpAdapter::sendClipboardData(const uint8_t* data, uint32_t len) {
     if (data == nullptr || len == 0) return;
@@ -8808,13 +9127,19 @@ std::string FreeRdpAdapter::getClipboardText() {
         return {};
     }
     std::lock_guard<std::mutex> lock(impl_->clipboardMutex);
-    return impl_->clipboardText;
+    const auto& snapshot = impl_->remoteClipboard.snapshot();
+    return snapshot.ready && snapshot.kind == "text" ? snapshot.text : std::string();
+}
+ClipboardSnapshot FreeRdpAdapter::getClipboardSnapshot() {
+    std::lock_guard<std::mutex> lock(impl_->clipboardMutex);
+    return impl_->remoteClipboard.snapshot();
 }
 bool FreeRdpAdapter::isClipboardReceiveReady() {
     return impl_->rdpClipboardEnabled() && impl_->fileClipboard &&
         impl_->fileClipboard->attached();
 }
 bool FreeRdpAdapter::setSessionClipboardEnabled(bool enabled) {
+    std::lock_guard<std::mutex> operationLock(impl_->clipboardOperationMutex);
     const ConnectionState state = getState();
     if (state != ConnectionState::CONNECTING && state != ConnectionState::CONNECTED) {
         return false;
@@ -8823,12 +9148,13 @@ bool FreeRdpAdapter::setSessionClipboardEnabled(bool enabled) {
         std::lock_guard<std::mutex> lock(impl_->configMutex);
         impl_->config.rdClipboardEnabled = enabled;
     }
+    if (impl_->fileClipboard) impl_->fileClipboard->setEnabled(enabled);
     if (!enabled) {
         // Keep the negotiated cliprdr carrier attached so a later enable can
         // resume without renegotiating the session. Every callback checks the
         // setting before reading or writing channel data, and clearing the
         // bridge removes already-offered local file/text state.
-        impl_->clearClipboardState();
+        impl_->clearClipboardState(false);
     }
     OH_LOG_INFO(LOG_APP, "[RDP] session clipboard setting=%{public}s",
                 enabled ? "enabled" : "disabled");
@@ -8837,8 +9163,190 @@ bool FreeRdpAdapter::setSessionClipboardEnabled(bool enabled) {
 bool FreeRdpAdapter::supportsFileTransfer() { return true; }
 SessionTransferStatus FreeRdpAdapter::getSessionTransferStatus() {
     std::lock_guard<std::mutex> lock(impl_->transferStatusMutex);
-    return impl_->transferStatus.snapshot();
+    auto status = impl_->transferStatus.snapshot();
+    status.rdpDriveMounted = impl_->driveObserver.status().phase == "serverAccepted";
+    return status;
 }
+RdpDriveStatus FreeRdpAdapter::getRdpDriveStatus() { return impl_->driveObserver.status(); }
+std::vector<RdpReceivedFileFact> FreeRdpAdapter::getRdpReceivedFileFacts() { return impl_->driveObserver.files(); }
+bool FreeRdpAdapter::disableRdpDrive() {
+    impl_->driveExplicitlyDisabled.store(true, std::memory_order_release);
+    std::lock_guard<std::mutex> lock(impl_->instanceMutex);
+    std::lock_guard<std::mutex> channelLock(impl_->rdpdrMutex);
+    const uint32_t id = impl_->driveObserver.status().deviceId;
+    impl_->driveObserver.unavailable("disabled");
+    if (!id || !impl_->rdpdr) return true;
+    if (!impl_->rdpdr->RdpdrUnregisterDevice) return false;
+    return impl_->rdpdr->RdpdrUnregisterDevice(impl_->rdpdr, 1, &id) == CHANNEL_RC_OK;
+}
+
+bool FreeRdpAdapter::sendRemoteClipboardRequest(CliprdrClientContext* expectedChannel,
+    uint64_t generation, const RdpClipboardFileRequest& value) {
+    std::lock_guard<std::mutex> channelLock(impl_->cliprdrMutex);
+    if (!expectedChannel || impl_->cliprdr != expectedChannel ||
+        impl_->sessionGeneration.load(std::memory_order_acquire) != generation || !impl_->rdpClipboardEnabled()) return false;
+    auto lease = acquireRdpChannelCallbackContext(expectedChannel);
+    if (!acquireCurrentRdpCallbackOwnerLease(lease) || !expectedChannel->ClientFileContentsRequest) return false;
+    CLIPRDR_FILE_CONTENTS_REQUEST request {};
+    request.common.msgType = CB_FILECONTENTS_REQUEST;
+    request.streamId = value.streamId; request.listIndex = value.index;
+    request.dwFlags = value.sizeQuery ? FILECONTENTS_SIZE : FILECONTENTS_RANGE;
+    request.nPositionLow = uint32_t(value.offset); request.nPositionHigh = uint32_t(value.offset >> 32);
+    request.cbRequested = value.requested; request.haveClipDataId = value.clipDataId ? TRUE : FALSE;
+    request.clipDataId = value.clipDataId;
+    return expectedChannel->ClientFileContentsRequest(expectedChannel, &request) == CHANNEL_RC_OK;
+}
+void FreeRdpAdapter::releaseRemoteClipboardLock(CliprdrClientContext* expectedChannel,
+    uint64_t generation, uint32_t clipDataId) {
+    std::lock_guard<std::mutex> channelLock(impl_->cliprdrMutex);
+    if (!clipDataId || !expectedChannel || impl_->cliprdr != expectedChannel ||
+        impl_->sessionGeneration.load(std::memory_order_acquire) != generation) return;
+    auto lease = acquireRdpChannelCallbackContext(expectedChannel);
+    if (!acquireCurrentRdpCallbackOwnerLease(lease) || !expectedChannel->ClientUnlockClipboardData) return;
+    CLIPRDR_UNLOCK_CLIPBOARD_DATA request {};
+    request.common.msgType = CB_UNLOCK_CLIPDATA; request.clipDataId = clipDataId;
+    (void)expectedChannel->ClientUnlockClipboardData(expectedChannel, &request);
+}
+RemoteClipboardFileOffer FreeRdpAdapter::getRemoteClipboardFiles() {
+    uint32_t expiredLock = 0;
+    CliprdrClientContext* channel = nullptr;
+    uint64_t generation = 0;
+    RemoteClipboardFileOffer offer;
+    {
+        std::lock_guard<std::mutex> lock(impl_->clipboardMutex);
+        const auto elapsed = std::chrono::steady_clock::now() - impl_->remoteOfferRequestedAt;
+        const bool expired = (impl_->remoteFileOffer.state == "loading" && elapsed > std::chrono::seconds(15)) ||
+            (impl_->remoteFileOffer.state == "ready" && impl_->previewClipDataId && elapsed > std::chrono::seconds(120));
+        if (expired) {
+            impl_->remoteFileOffer.state = "failed";
+            impl_->remoteFileOffer.diagnosticCode = "clipboard_offer_expired";
+            impl_->remoteFileOffer.entries.clear();
+            impl_->remoteClipboard.cancelQueuedFileRequest(impl_->remoteFileOffer.sequence);
+            expiredLock = impl_->previewClipDataId; impl_->previewClipDataId = 0;
+            channel = impl_->remoteFileChannel; generation = impl_->remoteFileGeneration;
+        }
+        offer = impl_->remoteFileOffer;
+    }
+    if (expiredLock) releaseRemoteClipboardLock(channel, generation, expiredLock);
+    return offer;
+}
+bool FreeRdpAdapter::requestRemoteClipboardFiles(uint64_t expectedSequence) {
+    (void)getRemoteClipboardFiles();
+    std::lock_guard<std::mutex> operationLock(impl_->clipboardOperationMutex);
+    std::lock_guard<std::mutex> channelLock(impl_->cliprdrMutex);
+    auto* channel = impl_->cliprdr;
+    if (!channel || !impl_->rdpClipboardEnabled() || !impl_->fileClipboard || !channel->ClientFormatDataRequest) return false;
+    auto lease = acquireRdpChannelCallbackContext(channel);
+    if (!acquireCurrentRdpCallbackOwnerLease(lease)) return false;
+    uint32_t formatId = 0;
+    bool supportsLock = false;
+    {
+        std::lock_guard<std::mutex> lock(impl_->clipboardMutex);
+        if (impl_->remoteClipboard.snapshot().sequence != expectedSequence ||
+            impl_->remoteClipboard.snapshot().kind != "files" || !impl_->remoteFileFormatId ||
+            !impl_->remoteFileOffer.streamSupported) return false;
+        if (impl_->remoteFileOffer.state == "ready" || impl_->remoteFileOffer.state == "loading") return true;
+        const auto pending = impl_->remoteClipboard.pendingRequest();
+        if (pending.files && pending.sequence == expectedSequence) return false;
+        formatId = impl_->remoteFileFormatId; supportsLock = impl_->remoteFileOffer.lockSupported;
+    }
+    uint32_t lockId = 0;
+    if (supportsLock) {
+        static std::atomic<uint64_t> nextLock {1};
+        const uint64_t id = nextLock.fetch_add(1, std::memory_order_relaxed);
+        if (id > UINT32_MAX || !channel->ClientLockClipboardData || !channel->ClientUnlockClipboardData) return false;
+        lockId = uint32_t(id);
+        CLIPRDR_LOCK_CLIPBOARD_DATA lock {}; lock.common.msgType = CB_LOCK_CLIPDATA; lock.clipDataId = lockId;
+        if (channel->ClientLockClipboardData(channel, &lock) != CHANNEL_RC_OK) return false;
+    }
+    bool sendNow = false;
+    {
+        std::lock_guard<std::mutex> lock(impl_->clipboardMutex);
+        sendNow = impl_->remoteClipboard.pendingRequest().sequence == 0;
+        if (!impl_->remoteClipboard.requestFiles(expectedSequence, formatId)) return false;
+        impl_->remoteFileOffer.state = "loading"; impl_->remoteFileOffer.diagnosticCode.clear();
+        impl_->previewClipDataId = lockId; impl_->remoteFileChannel = channel;
+        impl_->remoteFileGeneration = lease.generation; impl_->remoteOfferRequestedAt = std::chrono::steady_clock::now();
+    }
+    if (!sendNow) return true;
+    CLIPRDR_FORMAT_DATA_REQUEST request {}; request.common.msgType = CB_FORMAT_DATA_REQUEST; request.requestedFormatId = formatId;
+    const UINT result = channel->ClientFormatDataRequest(channel, &request);
+    if (result == CHANNEL_RC_OK) return true;
+    {
+        std::lock_guard<std::mutex> lock(impl_->clipboardMutex);
+        impl_->remoteClipboard.requestFailed(expectedSequence); impl_->remoteFileOffer.state = "failed";
+        impl_->remoteFileOffer.diagnosticCode = "descriptor_request_send_failed"; impl_->previewClipDataId = 0;
+    }
+    if (lockId) {
+        CLIPRDR_UNLOCK_CLIPBOARD_DATA unlock {}; unlock.common.msgType = CB_UNLOCK_CLIPDATA; unlock.clipDataId = lockId;
+        (void)channel->ClientUnlockClipboardData(channel, &unlock);
+    }
+    return false;
+}
+bool FreeRdpAdapter::startRemoteClipboardReceive(uint64_t taskId, uint64_t expectedSequence,
+    const std::vector<uint32_t>& selectedIndices, int privateStageDirectoryFd) {
+    (void)getRemoteClipboardFiles();
+    std::lock_guard<std::mutex> operationLock(impl_->clipboardOperationMutex);
+    if (!impl_->rdpClipboardEnabled()) return false;
+    const auto weak = weak_from_this();
+    if (weak.expired()) return false;
+    std::lock_guard<std::mutex> lock(impl_->clipboardMutex);
+    if (!taskId || impl_->remoteFileOffer.sequence != expectedSequence || impl_->remoteFileOffer.state != "ready" ||
+        impl_->clipboardReceivers.count(taskId) || impl_->clipboardReceivers.size() >= 32) return false;
+    for (const auto& entry : impl_->clipboardReceivers) {
+        const auto phase = entry.second->status().phase;
+        if (phase != "completed" && phase != "failed" && phase != "cancelled") return false;
+    }
+    const auto channel = impl_->remoteFileChannel;
+    const auto generation = impl_->remoteFileGeneration;
+    auto receiver = std::make_shared<RdpClipboardReceive>();
+    impl_->clipboardReceivers.emplace(taskId, receiver);
+    const bool started = receiver->start(taskId, impl_->remoteFileOffer, selectedIndices, privateStageDirectoryFd,
+        impl_->previewClipDataId,
+        [weak, channel, generation](const RdpClipboardFileRequest& request) {
+            auto retained = weak.lock();
+            return retained && retained->sendRemoteClipboardRequest(channel, generation, request);
+        },
+        [weak, channel, generation](uint32_t lockId) {
+            auto retained = weak.lock();
+            if (retained) retained->releaseRemoteClipboardLock(channel, generation, lockId);
+        });
+    if (!started) { impl_->clipboardReceivers.erase(taskId); return false; }
+    impl_->previewClipDataId = 0; // Receiver now owns the lock and its single release.
+    impl_->remoteFileOffer.state = "consumed";
+    return true;
+}
+RemoteClipboardReceiveStatus FreeRdpAdapter::getRemoteClipboardReceiveStatus(uint64_t taskId) {
+    std::shared_ptr<RdpClipboardReceive> receiver;
+    {
+        std::lock_guard<std::mutex> lock(impl_->clipboardMutex);
+        const auto found = impl_->clipboardReceivers.find(taskId);
+        if (found != impl_->clipboardReceivers.end()) receiver = found->second;
+    }
+    return receiver ? receiver->status() : RemoteClipboardReceiveStatus {};
+}
+bool FreeRdpAdapter::cancelRemoteClipboardReceive(uint64_t taskId) {
+    std::shared_ptr<RdpClipboardReceive> receiver;
+    {
+        std::lock_guard<std::mutex> lock(impl_->clipboardMutex);
+        const auto found = impl_->clipboardReceivers.find(taskId);
+        if (found != impl_->clipboardReceivers.end()) receiver = found->second;
+    }
+    return receiver && receiver->cancel();
+}
+bool FreeRdpAdapter::releaseRemoteClipboardReceive(uint64_t taskId) {
+    std::shared_ptr<RdpClipboardReceive> receiver;
+    {
+        std::lock_guard<std::mutex> lock(impl_->clipboardMutex);
+        const auto found = impl_->clipboardReceivers.find(taskId);
+        if (found == impl_->clipboardReceivers.end()) return false;
+        const auto phase = found->second->status().phase;
+        if (phase != "completed" && phase != "failed" && phase != "cancelled") return false;
+        receiver = found->second; impl_->clipboardReceivers.erase(found);
+    }
+    return true;
+}
+
 
 void registerFreeRdpAdapter() {
     auto adapter = std::shared_ptr<FreeRdpAdapter>(new FreeRdpAdapter());
@@ -9389,6 +9897,9 @@ void FreeRdpAdapter::setConnectionStateCallback(ConnectionStateCallback cb) { im
 
 void FreeRdpAdapter::setClipboardText(const std::string& t) { impl_->clipboardText = t; }
 bool FreeRdpAdapter::setClipboardFiles(const std::vector<std::string>&) { return false; }
+uint64_t FreeRdpAdapter::publishClipboardTracked(const uint8_t*, uint32_t) { return 0; }
+uint64_t FreeRdpAdapter::publishClipboardFilesTracked(const std::vector<std::string>&) { return 0; }
+int FreeRdpAdapter::getClipboardPublicationState(uint64_t) { return 0; }
 bool FreeRdpAdapter::setSessionClipboardEnabled(bool enabled) {
     (void)enabled;
     return false;
@@ -9398,8 +9909,19 @@ void FreeRdpAdapter::sendClipboardData(const uint8_t* data, uint32_t len) {
     setClipboardText(std::string(reinterpret_cast<const char*>(data), len));
 }
 std::string FreeRdpAdapter::getClipboardText() { return impl_->clipboardText; }
+ClipboardSnapshot FreeRdpAdapter::getClipboardSnapshot() { return {}; }
+bool FreeRdpAdapter::publishClipboard(const uint8_t*, uint32_t) { return false; }
 bool FreeRdpAdapter::isClipboardReceiveReady() { return false; }
 bool FreeRdpAdapter::supportsFileTransfer() { return false; }
+RdpDriveStatus FreeRdpAdapter::getRdpDriveStatus() { return {}; }
+std::vector<RdpReceivedFileFact> FreeRdpAdapter::getRdpReceivedFileFacts() { return {}; }
+bool FreeRdpAdapter::disableRdpDrive() { return false; }
+RemoteClipboardFileOffer FreeRdpAdapter::getRemoteClipboardFiles() { return {}; }
+bool FreeRdpAdapter::requestRemoteClipboardFiles(uint64_t) { return false; }
+bool FreeRdpAdapter::startRemoteClipboardReceive(uint64_t, uint64_t, const std::vector<uint32_t>&, int) { return false; }
+RemoteClipboardReceiveStatus FreeRdpAdapter::getRemoteClipboardReceiveStatus(uint64_t) { return {}; }
+bool FreeRdpAdapter::cancelRemoteClipboardReceive(uint64_t) { return false; }
+bool FreeRdpAdapter::releaseRemoteClipboardReceive(uint64_t) { return false; }
 SessionTransferStatus FreeRdpAdapter::getSessionTransferStatus() {
     // The no-real build has no cliprdr/rdpdr channel; report the neutral
     // status instead of claiming a transfer capability it cannot service.

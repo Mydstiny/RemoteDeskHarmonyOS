@@ -588,3 +588,31 @@ RDP_TEST_CASE(rustdesk_outbound_lanes_fail_closed_behind_network_retirement) {
     RDP_ASSERT_EQ(clipboardCalls.load(std::memory_order_acquire), 0);
     RDP_ASSERT_EQ(control.detachHandle(), static_cast<void*>(&fakeHandle));
 }
+
+RDP_TEST_CASE(rustdesk_existing_jobs_remain_manageable_until_handle_detaches) {
+    RustDeskDisplayControlPlane control;
+    int fakeHandle = 31;
+    RDP_ASSERT(control.attachHandle(&fakeHandle));
+    std::mutex admissionMutex;
+    int sends = 0;
+    int managementCalls = 0;
+
+    // Main-stream loss closes producers while a dedicated file worker may
+    // still own the retained context. It must be possible to cancel and drain.
+    RDP_ASSERT(!control.dispatchOutbound(admissionMutex, []() { return false; },
+        [&](void*) { ++sends; return true; }));
+    RDP_ASSERT(control.dispatchExistingWork(admissionMutex, [&](void* handle) {
+        RDP_ASSERT_EQ(handle, static_cast<void*>(&fakeHandle));
+        ++managementCalls;
+        return true;
+    }));
+    RDP_ASSERT_EQ(sends, 0);
+    RDP_ASSERT_EQ(managementCalls, 1);
+
+    RDP_ASSERT_EQ(control.detachHandle(), static_cast<void*>(&fakeHandle));
+    RDP_ASSERT(!control.dispatchExistingWork(admissionMutex, [&](void*) {
+        ++managementCalls;
+        return true;
+    }));
+    RDP_ASSERT_EQ(managementCalls, 1);
+}

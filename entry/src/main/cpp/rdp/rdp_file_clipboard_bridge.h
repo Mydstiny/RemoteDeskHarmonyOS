@@ -26,14 +26,20 @@ public:
     /** True only while a live cliprdr carrier is attached to this bridge. */
     bool attached() const;
 
-    RdpFileClipboardOfferResult publishLocalFiles(const std::vector<std::string>& paths);
+    RdpFileClipboardOfferResult publishLocalFiles(const std::vector<std::string>& paths, bool* formatListAttempted = nullptr);
     void clearLocalFiles();
+    void setEnabled(bool enabled);
+    UINT handleFileContentsRequest(CliprdrClientContext*, const CLIPRDR_FILE_CONTENTS_REQUEST*);
+    UINT handleLock(CliprdrClientContext*, const CLIPRDR_LOCK_CLIPBOARD_DATA*);
+    UINT handleUnlock(CliprdrClientContext*, const CLIPRDR_UNLOCK_CLIPBOARD_DATA*);
+    UINT handleFileContentsResponse(CliprdrClientContext*, const CLIPRDR_FILE_CONTENTS_RESPONSE*);
 
     UINT updateServerCapabilities(const CLIPRDR_CAPABILITIES* capabilities);
     UINT notifyServerFormatList();
     UINT sendClientCapabilities();
     UINT sendCurrentFormatList(bool includeText);
     bool isFileFormat(UINT32 formatId) const;
+    UINT32 remoteFlags() const;
     UINT respondToFileFormatRequest(const CLIPRDR_FORMAT_DATA_REQUEST* request);
 
     static void* ownerFromContext(CliprdrClientContext* context);
@@ -50,6 +56,11 @@ private:
     UINT32 uriListFormatId_ = 0;
     UINT32 fileDescriptorFormatId_ = 0;
     RdpFileClipboardOffer offer_;
+    bool enabled_ = true;
+    pcCliprdrServerFileContentsRequest helperRequest_ = nullptr;
+    pcCliprdrServerLockClipboardData helperLock_ = nullptr;
+    pcCliprdrServerUnlockClipboardData helperUnlock_ = nullptr;
+    pcCliprdrServerFileContentsResponse helperResponse_ = nullptr;
 };
 
 #endif // USE_REAL_FREERDP

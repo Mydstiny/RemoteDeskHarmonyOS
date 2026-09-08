@@ -1147,6 +1147,7 @@ bool VncRfbEngine::receiveServerCutText(std::string& error) {
     if (config_.vncClipboardEnabled) {
         std::lock_guard<std::mutex> lock(clipboardMutex_);
         clipboardText_ = std::move(text);
+        ++clipboardSequence_;
         clipboardReady_.store(true, std::memory_order_release);
     }
     return true;
@@ -1364,10 +1365,10 @@ void VncRfbEngine::sendText(const std::string& text) {
     }
 }
 
-void VncRfbEngine::sendClipboard(const uint8_t* data, uint32_t len) {
-    if (data == nullptr || len == 0 || len > kMaxClipboardBytes ||
+bool VncRfbEngine::sendClipboard(const uint8_t* data, uint32_t len) {
+    if ((data == nullptr && len != 0) || len > 65536 ||
         config_.vncViewOnly || !config_.vncClipboardEnabled ||
-        state() != ConnectionState::CONNECTED) return;
+        state() != ConnectionState::CONNECTED) return false;
     std::vector<uint8_t> packet;
     packet.reserve(8 + len);
     packet.push_back(6); // ClientCutText
@@ -1375,9 +1376,19 @@ void VncRfbEngine::sendClipboard(const uint8_t* data, uint32_t len) {
     packet.push_back(0);
     packet.push_back(0);
     appendU32(packet, len);
-    packet.insert(packet.end(), data, data + len);
+    if (len != 0) packet.insert(packet.end(), data, data + len);
     std::string error;
-    writeBytes(packet.data(), packet.size(), error);
+    return writeBytes(packet.data(), packet.size(), error);
+}
+
+ClipboardSnapshot VncRfbEngine::clipboardSnapshot() const {
+    std::lock_guard<std::mutex> lock(clipboardMutex_);
+    ClipboardSnapshot snapshot;
+    snapshot.sequence = clipboardSequence_;
+    snapshot.kind = clipboardText_.empty() ? "none" : "text";
+    snapshot.text = clipboardText_;
+    snapshot.ready = clipboardSequence_ != 0;
+    return snapshot;
 }
 
 std::string VncRfbEngine::clipboardText() const {
