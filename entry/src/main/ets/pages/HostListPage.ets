@@ -1,3 +1,5 @@
+import { AppSettingsActionRow } from '../components/AppSettingsActionRow';
+import { AppUiMetrics } from '../common/AppUiMetrics';
 import { AiHostEditor } from '../components/ai/AiHostEditor';
 import { AiHostService, projectAiHost, aiHostId } from '../services/ai/AiHostService';
 import { AiHost } from '../services/ai/AiModels';
@@ -15449,134 +15451,95 @@ struct HostListPage {
 
   @Builder settingsAccordionHeader(section: string, icon: Resource, title: string, subtitle: string,
     terminalStyle: boolean = false, moonlightStyle: boolean = false) {
-    Row() {
-      Stack({ alignContent: Alignment.Center }) {
-        Column()
-          .width(34)
-          .height(34)
-          .borderRadius(10)
-          .backgroundColor(this.pal().surface)
-          .opacity(this.settingsSectionExpanded(section) ? 1 : 0)
-          .scale({ x: this.settingsSectionExpanded(section) ? 1 : 0.92,
-            y: this.settingsSectionExpanded(section) ? 1 : 0.92 })
-          .animation({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn })
-
-        if (moonlightStyle) {
-          MoonlightBrandIcon({
-            iconSize: 21,
-            tint: this.settingsSectionExpanded(section) ? this.accentColor : this.pal().text,
-            accessibilityLabel: 'Moonlight'
-          })
-        } else if (terminalStyle) {
-          Image($r('app.media.icon_terminal'))
-            .width(21).height(21).fillColor(this.pal().text)
-            .opacity(this.settingsSectionExpanded(section) ? 0 : 1)
-            .scale({ x: this.settingsSectionExpanded(section) ? 0.92 : 1,
-              y: this.settingsSectionExpanded(section) ? 0.92 : 1 })
-            .animation({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn })
-          Image($r('app.media.icon_terminal'))
-            .width(21).height(21).fillColor(this.accentColor)
+    Button({ type: ButtonType.Normal }) {
+      Row() {
+        Stack({ alignContent: Alignment.Center }) {
+          Column()
+            .width(34)
+            .height(34)
+            .borderRadius(10)
+            .backgroundColor(this.pal().surface)
             .opacity(this.settingsSectionExpanded(section) ? 1 : 0)
             .scale({ x: this.settingsSectionExpanded(section) ? 1 : 0.92,
               y: this.settingsSectionExpanded(section) ? 1 : 0.92 })
             .animation({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn })
-        } else {
-          SymbolGlyph(icon)
-            .fontSize(21)
-            .fontColor([this.pal().text])
-            .opacity(this.settingsSectionExpanded(section) ? 0 : 1)
-            .scale({ x: this.settingsSectionExpanded(section) ? 0.92 : 1,
-              y: this.settingsSectionExpanded(section) ? 0.92 : 1 })
-            .animation({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn })
 
-          SymbolGlyph(icon)
-            .fontSize(21)
-            .fontColor([this.accentColor])
-            .opacity(this.settingsSectionExpanded(section) ? 1 : 0)
-            .scale({ x: this.settingsSectionExpanded(section) ? 1 : 0.92,
-              y: this.settingsSectionExpanded(section) ? 1 : 0.92 })
-            .animation({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn })
+          if (moonlightStyle) {
+            MoonlightBrandIcon({
+              iconSize: 21,
+              tint: this.settingsSectionExpanded(section) ? this.accentColor : this.pal().text,
+              accessibilityLabel: 'Moonlight'
+            })
+          } else if (terminalStyle) {
+            Image($r('app.media.icon_terminal'))
+              .width(21).height(21).fillColor(this.pal().text)
+              .opacity(this.settingsSectionExpanded(section) ? 0 : 1)
+              .scale({ x: this.settingsSectionExpanded(section) ? 0.92 : 1,
+                y: this.settingsSectionExpanded(section) ? 0.92 : 1 })
+              .animation({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn })
+            Image($r('app.media.icon_terminal'))
+              .width(21).height(21).fillColor(this.accentColor)
+              .opacity(this.settingsSectionExpanded(section) ? 1 : 0)
+              .scale({ x: this.settingsSectionExpanded(section) ? 1 : 0.92,
+                y: this.settingsSectionExpanded(section) ? 1 : 0.92 })
+              .animation({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn })
+          } else {
+            SymbolGlyph(icon)
+              .fontSize(21)
+              .fontColor([this.pal().text])
+              .opacity(this.settingsSectionExpanded(section) ? 0 : 1)
+              .scale({ x: this.settingsSectionExpanded(section) ? 0.92 : 1,
+                y: this.settingsSectionExpanded(section) ? 0.92 : 1 })
+              .animation({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn })
+
+            SymbolGlyph(icon)
+              .fontSize(21)
+              .fontColor([this.accentColor])
+              .opacity(this.settingsSectionExpanded(section) ? 1 : 0)
+              .scale({ x: this.settingsSectionExpanded(section) ? 1 : 0.92,
+                y: this.settingsSectionExpanded(section) ? 1 : 0.92 })
+              .animation({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn })
+          }
         }
-      }
-      .width(34).height(34).borderRadius(10)
-      .margin({ right: 12 })
+        .width(34).height(34).borderRadius(10)
+        .margin({ right: 12 })
 
-      Column() {
-        Text(title)
-          .fontSize(16)
-          .fontWeight(FontWeight.Medium)
-          .fontColor(this.pal().text)
-          .fontFamily(this.font())
-        Text(subtitle)
-          .fontSize(11)
-          .fontColor(this.pal().text3)
-          .fontFamily(this.font())
-          .maxLines(1)
-          .textOverflow({ overflow: TextOverflow.Ellipsis })
-          .margin({ top: 2 })
-      }
-      .alignItems(HorizontalAlign.Start)
-      .layoutWeight(1)
+        Column() {
+          Text(title)
+            .fontSize(16)
+            .fontWeight(FontWeight.Medium)
+            .fontColor(this.pal().text)
+            .fontFamily(this.font())
+          Text(subtitle)
+            .fontSize(12)
+            .fontColor(this.pal().text2)
+            .fontFamily(this.font())
+            .margin({ top: 2 })
+        }
+        .alignItems(HorizontalAlign.Start)
+        .layoutWeight(1)
 
-      SymbolGlyph($r('sys.symbol.chevron_right'))
-        .fontSize(18)
-        .fontColor([this.pal().text3])
-        .rotate({ angle: this.settingsSectionExpanded(section) ? 90 : 0 })
-        .animation({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn })
+        SymbolGlyph($r('sys.symbol.chevron_right'))
+          .fontSize(18)
+          .fontColor([this.pal().text3])
+          .rotate({ angle: this.settingsSectionExpanded(section) ? 90 : 0 })
+          .animation({ duration: SETTINGS_ACCORDION_ANIMATION_MS, curve: Curve.FastOutSlowIn })
+      }.width('100%').constraintSize({ minHeight: AppUiMetrics.sheetHeaderMinHeight })
+        .padding({ left: 16, right: 18, top: 12, bottom: 12 })
     }
     .width('100%')
-    .height(64)
-    .padding({ left: 16, right: 18 })
+    .padding(0)
     .borderRadius(20)
     .backgroundColor(this.pal().card)
     .backgroundBlurStyle(BlurStyle.Regular)
     .shadow({ radius: 12, color: 'rgba(0,0,0,0.035)', offsetY: 3 })
     .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
+    .focusable(true).accessibilityText(title + (this.settingsSectionExpanded(section) ? '，已展开' : '，已折叠') + '，' + subtitle)
     .onClick((): void => { this.toggleSettingsSection(section); })
   }
 
   @Builder settingsActionHeader(icon: Resource, title: string, subtitle: string, action: () => void, imageIcon: boolean = false) {
-    Row() {
-      Row() {
-        if (imageIcon) {
-          Image(icon).width(21).height(21).fillColor(this.pal().text)
-        } else {
-          SymbolGlyph(icon).fontSize(21).fontColor([this.pal().text])
-        }
-      }
-      .width(34).height(34).borderRadius(10)
-      .justifyContent(FlexAlign.Center)
-      .backgroundColor(this.pal().surface)
-      .margin({ right: 12 })
-
-      Column() {
-        Text(title)
-          .fontSize(16)
-          .fontWeight(FontWeight.Medium)
-          .fontColor(this.pal().text)
-          .fontFamily(this.font())
-        Text(subtitle)
-          .fontSize(11)
-          .fontColor(this.pal().text3)
-          .fontFamily(this.font())
-          .maxLines(1)
-          .textOverflow({ overflow: TextOverflow.Ellipsis })
-          .margin({ top: 2 })
-      }
-      .alignItems(HorizontalAlign.Start)
-      .layoutWeight(1)
-
-      SymbolGlyph($r('sys.symbol.chevron_right')).fontSize(18).fontColor([this.pal().text3])
-    }
-    .width('100%')
-    .height(64)
-    .padding({ left: 16, right: 18 })
-    .borderRadius(20)
-    .backgroundColor(this.pal().card)
-    .backgroundBlurStyle(BlurStyle.Regular)
-    .shadow({ radius: 12, color: 'rgba(0,0,0,0.035)', offsetY: 3 })
-    .border({ width: 0.5, color: this.pal().cardBorder, style: BorderStyle.Solid })
-    .onClick(action)
+    AppSettingsActionRow({ icon, title, detail: subtitle, imageIcon, onAction: action })
   }
 
   @Builder settingsContent() {
@@ -19163,19 +19126,21 @@ struct HostListPage {
       Column() {
         Text(label).fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
           .fontColor(this.pal().text).fontFamily(this.font())
-        Text(detail).fontSize(11).fontColor(this.pal().text3).fontFamily(this.font())
-          .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+        Text(detail).fontSize(12).fontColor(this.pal().text2).fontFamily(this.font())
+          .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
       }.alignItems(HorizontalAlign.Start).layoutWeight(1).margin({ left: 4 })
       Toggle({ type: ToggleType.Switch, isOn: isOn })
         .selectedColor(this.accentColor)
-        .scale({ x: 0.88, y: 0.88 })
+        .constraintSize({ minWidth: 52, minHeight: AppUiMetrics.minTouchTarget })
+        .focusable(true).accessibilityText(label)
         .enabled(enabled)
         .onChange((on: boolean) => {
           animateTo({ duration: 250, curve: Curve.FastOutSlowIn }, () => {
             onToggle(on);
           })
         })
-    }.width('100%').height(64).padding({ left: 16, right: 16 })
+    }.width('100%').constraintSize({ minHeight: AppUiMetrics.sheetHeaderMinHeight })
+      .padding({ left: 16, right: 16, top: 8, bottom: 8 })
   }
 
   /** 灵动岛模式选择行: 类似 radio 按钮的视觉效果 */

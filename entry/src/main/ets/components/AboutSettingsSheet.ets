@@ -5,6 +5,10 @@
  * 通过 @StorageLink/@StorageProp 接入主题系统。
  */
 import { common, Want } from '@kit.AbilityKit';
+import { AppSheetHeader } from './AppSheetHeader';
+import { AppSettingsActionRow } from './AppSettingsActionRow';
+import { AppUiMetrics } from '../common/AppUiMetrics';
+import { appUiButtonFill, appUiButtonText } from '../common/AppUiColorPolicy';
 import { AppConfig, AppTheme, Palette, buildLight, buildDark } from '../common/Theme';
 import { GUIDE_ALWAYS_VISIBLE_STORAGE_KEY } from '../services/GuideVisibilityPolicy';
 import { GuideVisibilityService } from '../services/GuideVisibilityService';
@@ -164,13 +168,8 @@ export struct AboutSettingsSheet {
 
   @Builder releaseNotesSheet() {
     Column() {
-      Row() {
-        Text('本版本更新日志').fontSize(20).fontWeight(FontWeight.Bold)
-          .fontColor(this.pal().text).fontFamily(this.font())
-        Blank()
-        SymbolGlyph($r('sys.symbol.xmark')).fontSize(18).fontColor([this.pal().text2])
-          .width(36).height(36).onClick((): void => { this.onClose(); })
-      }.width('100%').padding({ left: 24, right: 20, top: 20 }).margin({ bottom: 4 })
+      AppSheetHeader({ title: '本版本更新日志',
+        horizontalPadding: AppUiMetrics.sheetPadding, onClose: this.onClose })
 
       Swiper(this.releaseNotesController) {
         ForEach(this.releaseNotesItems, (item: ReleaseNotePage, index: number) => {
@@ -206,8 +205,10 @@ export struct AboutSettingsSheet {
       .height(this.usageGuideHeight())
 
       Row() {
-        Text(this.releaseNotesIndex > 0 ? '上一步' : '关闭')
-          .fontSize(14).fontColor(this.pal().text2).width(72).textAlign(TextAlign.Start)
+        Button(this.releaseNotesIndex > 0 ? '上一步' : '关闭')
+          .fontSize(14).fontColor(this.pal().text2).width(80)
+          .constraintSize({ minHeight: AppUiMetrics.minTouchTarget })
+          .padding({ left: 8, right: 8 }).backgroundColor(Color.Transparent)
           .onClick((): void => {
             if (this.releaseNotesIndex > 0) {
               this.releaseNotesController.showPrevious();
@@ -220,9 +221,10 @@ export struct AboutSettingsSheet {
           this.releaseNotesItems.length.toString())
           .fontSize(13).fontWeight(FontWeight.Medium).fontColor(this.pal().text3)
         Blank()
-        Text(this.releaseNotesIndex < this.releaseNotesItems.length - 1 ? '下一步' : '完成')
-          .fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.accentColor)
-          .width(72).textAlign(TextAlign.End)
+        Button(this.releaseNotesIndex < this.releaseNotesItems.length - 1 ? '下一步' : '完成')
+          .fontSize(14).fontWeight(FontWeight.Medium).fontColor(appUiButtonText(this.accentColor))
+          .width(80).constraintSize({ minHeight: AppUiMetrics.minTouchTarget })
+          .padding({ left: 8, right: 8 }).backgroundColor(appUiButtonFill(this.accentColor))
           .onClick((): void => {
             if (this.releaseNotesIndex < this.releaseNotesItems.length - 1) {
               this.releaseNotesController.showNext();
@@ -243,13 +245,8 @@ export struct AboutSettingsSheet {
 
   @Builder usageGuideSheet() {
     Column() {
-      Row() {
-        Text('快速认识应用').fontSize(20).fontWeight(FontWeight.Bold)
-          .fontColor(this.pal().text).fontFamily(this.font())
-        Blank()
-        SymbolGlyph($r('sys.symbol.xmark')).fontSize(18).fontColor([this.pal().text2])
-          .width(36).height(36).onClick((): void => { this.onClose(); })
-      }.width('100%').padding({ left: 24, right: 20, top: 20 }).margin({ bottom: 4 })
+      AppSheetHeader({ title: '快速认识应用',
+        horizontalPadding: AppUiMetrics.sheetPadding, onClose: this.onClose })
 
       Swiper(this.usageGuideController) {
         ForEach(this.usageGuideItems(), (item: GuideContentPage, index: number) => {
@@ -288,8 +285,10 @@ export struct AboutSettingsSheet {
       .height(this.usageGuideHeight())
 
       Row() {
-        Text(this.usageGuideIndex > 0 ? '上一步' : '关闭')
-          .fontSize(14).fontColor(this.pal().text2).width(72).textAlign(TextAlign.Start)
+        Button(this.usageGuideIndex > 0 ? '上一步' : '关闭')
+          .fontSize(14).fontColor(this.pal().text2).width(80)
+          .constraintSize({ minHeight: AppUiMetrics.minTouchTarget })
+          .padding({ left: 8, right: 8 }).backgroundColor(Color.Transparent)
           .onClick((): void => {
             if (this.usageGuideIndex > 0) {
               this.usageGuideController.showPrevious();
@@ -307,9 +306,10 @@ export struct AboutSettingsSheet {
           }, (_dot: GuideContentPage) => _dot.id)
         }
         Blank()
-        Text(this.usageGuideIndex < this.usageGuideItems().length - 1 ? '下一步' : '完成')
-          .fontSize(14).fontWeight(FontWeight.Medium).fontColor(this.accentColor)
-          .width(72).textAlign(TextAlign.End)
+        Button(this.usageGuideIndex < this.usageGuideItems().length - 1 ? '下一步' : '完成')
+          .fontSize(14).fontWeight(FontWeight.Medium).fontColor(appUiButtonText(this.accentColor))
+          .width(80).constraintSize({ minHeight: AppUiMetrics.minTouchTarget })
+          .padding({ left: 8, right: 8 }).backgroundColor(appUiButtonFill(this.accentColor))
           .onClick((): void => {
             if (this.usageGuideIndex < this.usageGuideItems().length - 1) {
               this.usageGuideController.showNext();
@@ -330,19 +330,8 @@ export struct AboutSettingsSheet {
 
   @Builder handsOnGuideSheet() {
     Column() {
-      Row() {
-        Column() {
-          Text('操作引导中心').fontSize(20).fontWeight(FontWeight.Bold)
-            .fontColor(this.pal().text).fontFamily(this.font())
-          Text('按设备与协议定位，不必从头读完')
-            .fontSize(12).fontColor(this.pal().text3).fontFamily(this.font()).margin({ top: 3 })
-        }.alignItems(HorizontalAlign.Start).layoutWeight(1)
-        Blank()
-        SymbolGlyph($r('sys.symbol.xmark')).fontSize(18).fontColor([this.pal().text2])
-          .width(36).height(36).onClick((): void => { this.onClose(); })
-      }.width('100%').padding({
-        left: 24, right: 20, top: this.operationGuideLayout().compact ? 12 : 20
-      }).margin({ bottom: this.operationGuideLayout().compact ? 8 : 12 })
+      AppSheetHeader({ title: '操作引导中心', subtitle: '按设备与协议定位，不必从头读完',
+        horizontalPadding: AppUiMetrics.sheetPadding, onClose: this.onClose })
 
       Column() {
         Row() {
@@ -380,9 +369,9 @@ export struct AboutSettingsSheet {
             .lineHeight(16).width('100%').margin({ top: 3 })
         }.alignItems(HorizontalAlign.Start).layoutWeight(1)
         Button(this.guideAlwaysVisible ? '始终显示：开' : '始终显示')
-          .height(34).fontSize(11).borderRadius(10).margin({ left: 12 })
-          .backgroundColor(this.guideAlwaysVisible ? this.accentColor : this.pal().card)
-          .fontColor(this.guideAlwaysVisible ? Color.White : this.accentColor)
+          .constraintSize({ minHeight: AppUiMetrics.minTouchTarget }).fontSize(12).borderRadius(10).margin({ left: 12 })
+          .backgroundColor(this.guideAlwaysVisible ? appUiButtonFill(this.accentColor) : this.pal().card)
+          .fontColor(this.guideAlwaysVisible ? appUiButtonText(this.accentColor) : this.pal().text2)
           .onClick((): void => { this.toggleGuideAlwaysVisible(); })
           .accessibilityText(this.guideAlwaysVisible ? '关闭始终显示引导' : '开启始终显示引导')
       }
@@ -398,7 +387,8 @@ export struct AboutSettingsSheet {
           }, (option: GuideProtocolOption): string => option.id)
         }.padding({ left: 20, right: 20 })
       }
-      .width('100%').height(this.operationGuideLayout().compact ? 62 : 72)
+      .width('100%').height('auto')
+      .constraintSize({ minHeight: this.operationGuideLayout().compact ? 62 : 72 })
       .scrollable(ScrollDirection.Horizontal)
       .scrollBar(BarState.Off)
 
@@ -430,12 +420,12 @@ export struct AboutSettingsSheet {
   }
 
   @Builder guideDeviceChip(device: GuideDevice) {
-    Text(device === 'phone' ? '手机' : (device === 'tablet' ? 'Pad' : 'PC'))
+    Button(device === 'phone' ? '手机' : (device === 'tablet' ? 'Pad' : 'PC'))
       .fontSize(12).fontWeight(this.guideDevice === device ? FontWeight.Medium : FontWeight.Normal)
-      .fontColor(this.guideDevice === device ? Color.White : this.pal().text2)
-      .textAlign(TextAlign.Center).layoutWeight(1)
+      .fontColor(this.guideDevice === device ? appUiButtonText(this.accentColor) : this.pal().text2)
+      .layoutWeight(1).constraintSize({ minHeight: AppUiMetrics.minTouchTarget })
       .padding({ top: 8, bottom: 8 })
-      .backgroundColor(this.guideDevice === device ? this.accentColor : this.pal().card)
+      .backgroundColor(this.guideDevice === device ? appUiButtonFill(this.accentColor) : this.pal().card)
       .borderRadius(10)
       .onClick((): void => {
         this.guideDevice = device;
@@ -444,19 +434,21 @@ export struct AboutSettingsSheet {
   }
 
   @Builder guideProtocolChip(option: GuideProtocolOption) {
-    Column() {
-      Text(option.label)
-        .fontSize(13).fontWeight(FontWeight.Medium)
-        .fontColor(this.guideProtocol === option.id ? Color.White : this.pal().text)
-        .fontFamily(this.font())
-      Text(option.summary)
-        .fontSize(10).fontColor(this.guideProtocol === option.id ? '#EAF3FF' : this.pal().text3)
-        .fontFamily(this.font()).margin({ top: 2 })
+    Button({ type: ButtonType.Normal }) {
+      Column() {
+        Text(option.label)
+          .fontSize(13).fontWeight(FontWeight.Medium)
+          .fontColor(this.guideProtocol === option.id ? appUiButtonText(this.accentColor) : this.pal().text)
+          .fontFamily(this.font())
+        Text(option.summary)
+          .fontSize(11).fontColor(this.guideProtocol === option.id ? appUiButtonText(this.accentColor) : this.pal().text2)
+          .fontFamily(this.font()).margin({ top: 2 })
+      }
     }
-    .constraintSize({ minWidth: option.id === 'ssh' || option.id === 'moonlight' ? 112 : 92 })
-    .height(58).justifyContent(FlexAlign.Center)
-    .padding({ left: 12, right: 12 }).borderRadius(14)
-    .backgroundColor(this.guideProtocol === option.id ? this.accentColor : this.pal().surface)
+    .constraintSize({ minWidth: option.id === 'ssh' || option.id === 'moonlight' ? 112 : 92,
+      minHeight: AppUiMetrics.minTouchTarget })
+    .padding({ left: 12, right: 12, top: 10, bottom: 10 }).borderRadius(14)
+    .backgroundColor(this.guideProtocol === option.id ? appUiButtonFill(this.accentColor) : this.pal().surface)
     .border({ width: 0.5,
       color: this.guideProtocol === option.id ? this.accentColor : this.pal().cardBorder,
       style: BorderStyle.Solid })
@@ -468,18 +460,23 @@ export struct AboutSettingsSheet {
 
   @Builder guideLessonCard(lesson: GuideLesson) {
     Column() {
-      Row() {
-        Column() {
-          Text(lesson.title).fontSize(15).fontWeight(FontWeight.Medium)
-            .fontColor(this.pal().text).fontFamily(this.font()).width('100%')
-          Text(lesson.summary).fontSize(11).fontColor(this.pal().text3)
-            .fontFamily(this.font()).width('100%').margin({ top: 4 })
-        }.alignItems(HorizontalAlign.Start).layoutWeight(1)
-        SymbolGlyph(this.expandedGuideLessonId === lesson.id ?
-          $r('sys.symbol.chevron_up') : $r('sys.symbol.chevron_down'))
-          .fontSize(16).fontColor([this.pal().text3]).margin({ left: 10 })
+      Button({ type: ButtonType.Normal }) {
+        Row() {
+          Column() {
+            Text(lesson.title).fontSize(15).fontWeight(FontWeight.Medium)
+              .fontColor(this.pal().text).fontFamily(this.font()).width('100%')
+            Text(lesson.summary).fontSize(12).fontColor(this.pal().text2)
+              .fontFamily(this.font()).width('100%').margin({ top: 4 })
+          }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+          SymbolGlyph(this.expandedGuideLessonId === lesson.id ?
+            $r('sys.symbol.chevron_up') : $r('sys.symbol.chevron_down'))
+            .fontSize(16).fontColor([this.pal().text2]).margin({ left: 10 })
+            .accessibilityLevel('no')
+        }.width('100%').constraintSize({ minHeight: AppUiMetrics.minTouchTarget })
       }
       .width('100%').padding({ left: 16, right: 16, top: 15, bottom: 15 })
+      .backgroundColor(Color.Transparent).borderRadius(16).focusable(true)
+      .accessibilityText(lesson.title + (this.expandedGuideLessonId === lesson.id ? '，已展开' : '，已折叠'))
       .onClick((): void => {
         this.expandedGuideLessonId = this.expandedGuideLessonId === lesson.id ? '' : lesson.id;
         this.guideLessonContentHeight = 0;
@@ -492,9 +489,9 @@ export struct AboutSettingsSheet {
           ForEach(lesson.steps, (step: string, index: number): void => {
             Row() {
               Text((index + 1).toString())
-                .fontSize(11).fontWeight(FontWeight.Bold).fontColor(Color.White)
+                .fontSize(11).fontWeight(FontWeight.Bold).fontColor(appUiButtonText(this.accentColor))
                 .width(22).height(22).textAlign(TextAlign.Center)
-                .backgroundColor(this.accentColor).borderRadius(11)
+                .backgroundColor(appUiButtonFill(this.accentColor)).borderRadius(11)
               Text(step).fontSize(13).fontColor(this.pal().text2).lineHeight(20)
                 .fontFamily(this.font()).layoutWeight(1).margin({ left: 10 })
             }.width('100%').alignItems(VerticalAlign.Top).margin({ bottom: 11 })
@@ -519,13 +516,8 @@ export struct AboutSettingsSheet {
 
   @Builder aboutAppSheet() {
     Column() {
-      Row() {
-        Text('关于应用').fontSize(20).fontWeight(FontWeight.Bold)
-          .fontColor(this.pal().text).fontFamily(this.font())
-        Blank()
-        SymbolGlyph($r('sys.symbol.xmark')).fontSize(18).fontColor([this.pal().text2])
-          .width(36).height(36).onClick((): void => { this.onClose(); })
-      }.width('100%').margin({ bottom: 14 })
+      AppSheetHeader({ title: '关于应用',
+        horizontalPadding: 0, onClose: this.onClose })
 
       Scroll() {
         Column() {
@@ -576,8 +568,8 @@ export struct AboutSettingsSheet {
         }.width('100%')
       }.height(this.breakpoint === 'sm' ? 220 : 280)
 
-      Button('我知道了').width('100%').height(44).fontSize(14)
-        .backgroundColor(this.accentColor).fontColor('#FFFFFF').borderRadius(12)
+      Button('我知道了').width('100%').constraintSize({ minHeight: AppUiMetrics.minTouchTarget }).fontSize(14)
+        .backgroundColor(appUiButtonFill(this.accentColor)).fontColor(appUiButtonText(this.accentColor)).borderRadius(12)
         .margin({ top: 18 })
         .onClick((): void => { this.onClose(); })
     }
@@ -592,13 +584,8 @@ export struct AboutSettingsSheet {
 
   @Builder privacyPolicySheet() {
     Column() {
-      Row() {
-        Text('隐私政策').fontSize(20).fontWeight(FontWeight.Bold)
-          .fontColor(this.pal().text).fontFamily(this.font())
-        Blank()
-        SymbolGlyph($r('sys.symbol.xmark')).fontSize(18).fontColor([this.pal().text2])
-          .width(36).height(36).onClick((): void => { this.onClose(); })
-      }.width('100%').padding({ left: 24, right: 20, top: 20 }).margin({ bottom: 8 })
+      AppSheetHeader({ title: '隐私政策',
+        horizontalPadding: AppUiMetrics.sheetPadding, onClose: this.onClose })
 
       Scroll() {
         Column() {
@@ -621,20 +608,9 @@ export struct AboutSettingsSheet {
           this.policySection('联系我们',
             '如有隐私或数据处理问题，请发送邮件至 lijiong1219@petalmail.com。')
 
-          Row() {
-            Text('完整隐私政策').fontSize(AppTheme.fontSize.body).fontWeight(FontWeight.Medium)
-              .fontColor(this.pal().text).fontFamily(this.font())
-            Blank()
-            Text('在浏览器中打开 >')
-              .fontSize(12).fontColor(this.accentColor).fontFamily(this.font())
-          }
-          .width('100%')
-          .padding({ left: 14, right: 14, top: 14, bottom: 14 })
-          .borderRadius(16).backgroundColor(this.pal().surface)
-          .margin({ bottom: 12 })
-          .onClick((): void => {
-            this.openUrl('https://mydstiny.github.io/RemoteDeskHarmonyOS/privacy/');
-          })
+          AppSettingsActionRow({ title: '完整隐私政策', detail: '在浏览器中打开',
+            onAction: (): void => { this.openUrl('https://mydstiny.github.io/RemoteDeskHarmonyOS/privacy/'); } })
+            .margin({ bottom: 12 })
         }.width('100%').padding({ left: 24, right: 24, bottom: 22 })
       }.height(this.breakpoint === 'sm' ? 440 : 520)
     }
@@ -649,49 +625,20 @@ export struct AboutSettingsSheet {
   /** 连接前准备 — 五协议服务端与网络检查 */
   @Builder preRequisiteSheet() {
     Column() {
-      Row() {
-        Text('连接前准备').fontSize(20).fontWeight(FontWeight.Bold)
-          .fontColor(this.pal().text).fontFamily(this.font())
-        Blank()
-        SymbolGlyph($r('sys.symbol.xmark')).fontSize(18).fontColor([this.pal().text2])
-          .width(36).height(36).onClick((): void => { this.onClose(); })
-      }.width('100%').margin({ bottom: 8 })
+      AppSheetHeader({ title: '连接前准备',
+        horizontalPadding: 0, onClose: this.onClose })
 
       Scroll() {
         Column() {
           // Windows RDP 设置指南（可点击链接）
-          Column() {
-            Text('Windows RDP 设置指南')
-              .fontSize(15).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
-              .fontFamily(this.font()).width('100%').margin({ bottom: 4 })
-            Text('配置 Windows 远程桌面、用户、网络与安全策略')
-              .fontSize(12).fontColor(this.pal().text3).lineHeight(18)
-              .fontFamily(this.font()).width('100%')
-          }
-          .alignItems(HorizontalAlign.Start).width('100%')
-          .padding({ left: 14, right: 14, top: 14, bottom: 14 })
-          .borderRadius(16).backgroundColor(this.pal().surface)
-          .margin({ bottom: 12 })
-          .onClick((): void => {
-            this.openUrl('https://lijiong.online/2026/06/22/RDP%E8%AE%BE%E7%BD%AE%E6%8C%87%E5%8D%97/');
-          })
+          AppSettingsActionRow({ title: 'Windows RDP 设置指南', detail: '配置 Windows 远程桌面、用户、网络与安全策略',
+            onAction: (): void => { this.openUrl('https://lijiong.online/2026/06/22/RDP%E8%AE%BE%E7%BD%AE%E6%8C%87%E5%8D%97/'); } })
+            .margin({ bottom: 12 })
 
           // RustDesk 部署教程 (可点击链接)
-          Column() {
-            Text('RustDesk 部署教程')
-              .fontSize(15).fontWeight(FontWeight.Medium).fontColor(this.pal().text)
-              .fontFamily(this.font()).width('100%').margin({ bottom: 4 })
-            Text('自建 RustDesk 中继服务器，告别公共服务器延迟与限制')
-              .fontSize(12).fontColor(this.pal().text3).lineHeight(18)
-              .fontFamily(this.font()).width('100%')
-          }
-          .alignItems(HorizontalAlign.Start).width('100%')
-          .padding({ left: 14, right: 14, top: 14, bottom: 14 })
-          .borderRadius(16).backgroundColor(this.pal().surface)
-          .margin({ bottom: 12 })
-          .onClick((): void => {
-            this.openUrl('https://lijiong.online/2026/06/22/RustDesk%E8%87%AA%E5%BB%BA%E6%9C%8D%E5%8A%A1%E5%99%A8%E6%95%99%E7%A8%8B/');
-          })
+          AppSettingsActionRow({ title: 'RustDesk 部署教程', detail: '自建 RustDesk 中继服务器，告别公共服务器延迟与限制',
+            onAction: (): void => { this.openUrl('https://lijiong.online/2026/06/22/RustDesk%E8%87%AA%E5%BB%BA%E6%9C%8D%E5%8A%A1%E5%99%A8%E6%95%99%E7%A8%8B/'); } })
+            .margin({ bottom: 12 })
 
           this.preReqSection('Windows RDP 前置操作',
             '1. 右键"此电脑" → "属性" → "远程桌面"，开启"启用远程桌面"。\n' +
@@ -724,8 +671,8 @@ export struct AboutSettingsSheet {
         }.width('100%').padding({ left: 24, right: 24, bottom: 22 })
       }.layoutWeight(1).scrollBar(BarState.Auto)
 
-      Button('我知道了').width('100%').height(44).fontSize(14)
-        .backgroundColor(this.accentColor).fontColor('#FFFFFF').borderRadius(12)
+      Button('我知道了').width('100%').constraintSize({ minHeight: AppUiMetrics.minTouchTarget }).fontSize(14)
+        .backgroundColor(appUiButtonFill(this.accentColor)).fontColor(appUiButtonText(this.accentColor)).borderRadius(12)
         .margin({ top: 18 })
         .onClick((): void => { this.onClose(); })
     }

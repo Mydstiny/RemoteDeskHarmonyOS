@@ -109,5 +109,12 @@ U1 首个代码增量：新增免费 `AppSheetHeader`，接入反馈页和 Pro �
 - 标题支持副标题和独立主操作，文字自然换行；设置说明改用现有 text2，避免原 text3 的低对比度。保持卡片/滚动布局和当前主题偏好。
 - 填色操作保留规范的自选六位 RGB 主题色，并在黑/白文字中选择对比更高的一项，覆盖纯白等浅色预设；不重写用户已保存的主题。计算依据为 [W3C 相对亮度与对比度定义](https://www.w3.org/WAI/WCAG22/Understanding/contrast-minimum.html)。此计算不等于整页无障碍实机验收。
 - 本地 SDK 中 ComposeTitleBarV2/ComposeListItemV2 自 API26 提供。当前公共控件继续使用 API23 已有的 Row/Text/Button/Toggle；不引入 API26-only 冷导入，V2 候选保留到跨版本加载与设备行为验证后再决定。装饰图标的 accessibilityLevel('no') 已核对 SDK since12。
-- 本轮代码门禁：default@OhosTestCompileArkTS `BUILD SUCCESSFUL in 9 s 469 ms`；signed assembleHap `BUILD SUCCESSFUL in 1 min 3 s 511 ms`、SignHap 982 ms；两项 exit 0。Light/diff PASS；五页全部状态块及 40 个原业务/辅助方法逐字不变，实际颜色策略 4352 个 RGB 样本及无效输入边界 PASS。九个本批代码文件在最终代码门禁前后哈希一致。当前待 checkpoint 后独立代码复核；共享 HAP 中并行 AI/文件传输源不在本批复核范围。
+- 本轮代码门禁：default@OhosTestCompileArkTS `BUILD SUCCESSFUL in 9 s 469 ms`；signed assembleHap `BUILD SUCCESSFUL in 1 min 3 s 511 ms`、SignHap 982 ms；两项 exit 0。Light/diff PASS；五页全部状态块及 40 个原业务/辅助方法逐字不变，实际颜色策略 4352 个 RGB 样本及无效输入边界 PASS。九个本批代码文件在最终代码门禁前后哈希一致。精确 checkpoint `c8240fd9` 已独立复核 PASS；复核额外确认第 41 个布局辅助方法仍相同，并独立执行 65800 个颜色样本。记录更新后另两门 PASS：testCompile 590 ms，signed assembleHap 1 min 8 s 189 ms、SignHap 1 s 109 ms；共享 HAP 中并行 AI/文件传输源不在本批复核范围。
 - 未改变免费/Pro/离线权限，也未完成小窗口、字体缩放、读屏、键鼠、性能和真实 API23/26 设备矩阵。首页、其他设置、导航和 U3/U4 继续推进。
+
+## U2 公共导航与其余叶页第二批（2026-09-08）
+
+- 新增免费原生 Button 导航行 `AppSettingsActionRow`，用于设置顶级入口及关于页的三处外链卡片。主页面仅定点修改 `settingsAccordionHeader`、`settingsActionHeader`、`rustdeskSwitchRow` 与两个公共导入；保留 AI 接线、路由、展开状态、保存动画和业务回调。
+- 关于页六类标题统一复用公共标题栏；翻页、设备/协议/课程选择改用原生按钮，保留原控制器与数据。键盘设置复用公共标题/开关，组合键类别改为两行，按键与常规操作最小高度 44 vp，现有滚动区承载内容；不改键码、存储、平台差异或系统输入法调用。
+- VNC scaffold 保留原布局密度、action-only 和 FIT_CONTENT/滚动/页脚模式。返回/关闭按钮 44 vp，紧凑头上下各 4 vp，总按钮头 52 vp，与原 compact header estimate 一致；保持底部安全区和回调。
+- 按钮填色沿用原主题选择并使用公共黑白前景策略；设置说明可换行，原生焦点和读屏名称补齐。当前最终代码门禁：testCompile `BUILD SUCCESSFUL in 11 s 644 ms`；signed assembleHap `BUILD SUCCESSFUL in 1 min 7 s 852 ms`、SignHap 1 s 169 ms；两项 exit 0。Light、About AGPL 展示检查和 diff PASS；三叶页全部状态块和 54 个原业务/辅助方法未改，外链目标不变。四完整源码及 HostList 三方法 hash 在最终两门前后固定；尚待 checkpoint 后独立复核，不宣称真实设备视觉、字体或性能完成。

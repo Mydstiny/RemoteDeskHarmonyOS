@@ -1,4 +1,5 @@
 import { Palette, buildDark, buildLight } from '../../common/Theme';
+import { AppUiMetrics } from '../../common/AppUiMetrics';
 import { protocolIcon } from '../../services/ProtocolIconPolicy';
 import {
   resolveVncSheetLayout,
@@ -55,21 +56,24 @@ export struct VncSheetScaffold {
           SymbolGlyph($r('sys.symbol.chevron_left'))
             .fontSize(this.compactHeight() ? 16 : 18).fontColor([this.pal().text2])
         }
-        .width(this.compactHeight() ? 32 : 36).height(this.compactHeight() ? 32 : 36)
-        .borderRadius(this.compactHeight() ? 16 : 18).padding(0).backgroundColor(this.pal().surface)
+        .width(AppUiMetrics.minTouchTarget).height(AppUiMetrics.minTouchTarget)
+        .borderRadius(22).padding(0).backgroundColor(this.pal().surface)
+        .focusable(true).accessibilityText('返回' + this.title)
         .onClick((): void => { this.onLeadingAction(); })
       } else {
         SymbolGlyph(protocolIcon('vnc'))
           .fontSize(this.compactHeight() ? 21 : 24).fontColor([this.accentColor])
+          .accessibilityLevel('no')
       }
       Column() {
         Text(this.title).fontSize(this.compactHeight() ? 17 : 19)
           .fontWeight(FontWeight.Bold).fontColor(this.pal().text)
+          .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
         if (this.stepText !== '') {
           Text(this.stepText).fontSize(this.compactHeight() ? 11 : 12)
-            .fontColor(this.pal().text3).margin({ top: this.compactHeight() ? 2 : 3 })
+            .fontColor(this.pal().text2).margin({ top: this.compactHeight() ? 2 : 3 })
         } else if (this.subtitle !== '' && !this.compactHeight()) {
-          Text(this.subtitle).fontSize(11).fontColor(this.pal().text3).margin({ top: 4 })
+          Text(this.subtitle).fontSize(12).fontColor(this.pal().text2).margin({ top: 4 })
         }
       }.alignItems(HorizontalAlign.Start).layoutWeight(1)
         .margin({ left: this.compactHeight() ? 9 : 12 })
@@ -78,15 +82,16 @@ export struct VncSheetScaffold {
           SymbolGlyph($r('sys.symbol.xmark'))
             .fontSize(this.compactHeight() ? 16 : 18).fontColor([this.pal().text2])
         }
-        .width(this.compactHeight() ? 32 : 36).height(this.compactHeight() ? 32 : 36)
-        .borderRadius(this.compactHeight() ? 16 : 18).padding(0).backgroundColor(this.pal().surface)
+        .width(AppUiMetrics.minTouchTarget).height(AppUiMetrics.minTouchTarget)
+        .borderRadius(22).padding(0).backgroundColor(this.pal().surface)
+        .focusable(true).accessibilityText('关闭' + this.title)
         .onClick((): void => { this.onLeadingAction(); })
       }
     }.width('100%').padding({
       left: 20,
       right: 20,
-      top: this.compactHeight() ? 8 : 18,
-      bottom: this.compactHeight() ? 6 : 14
+      top: this.compactHeight() ? 4 : 18,
+      bottom: this.compactHeight() ? 4 : 14
     })
   }
 
@@ -94,7 +99,7 @@ export struct VncSheetScaffold {
   private body(inlineFooter: boolean) {
     Column() {
       if (this.subtitle !== '' && (this.stepText !== '' || this.compactHeight())) {
-        Text(this.subtitle).fontSize(11).fontColor(this.pal().text3)
+        Text(this.subtitle).fontSize(12).fontColor(this.pal().text2)
           .lineHeight(17).width('100%')
           .margin({ bottom: this.compactHeight() ? 8 : 14 })
       }
