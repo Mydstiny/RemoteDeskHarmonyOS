@@ -145,9 +145,13 @@ export struct ColorPickerSheet {
   }
 
   private onColorPlaneGesture(event: GestureEvent): void {
-    if (event.fingerList.length === 0) { return; }
-    this.onSatBriTap(event.fingerList[0].localX, event.fingerList[0].localY,
-      this.colorPlaneWidth, this.colorPlaneHeight);
+    for (let index: number = 0; index < event.fingerList.length; index++) {
+      const finger: FingerInfo | undefined = event.fingerList[index];
+      if (finger !== undefined && finger !== null) {
+        this.onSatBriTap(finger.localX, finger.localY, this.colorPlaneWidth, this.colorPlaneHeight);
+        return;
+      }
+    }
   }
 
   private scrollMaxHeight(): number {
