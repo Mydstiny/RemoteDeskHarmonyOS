@@ -1186,6 +1186,24 @@ export const openExclusiveTransferDirectory: (parentFd: number, leaf: string) =>
 export const openExclusiveTransferFile: (rootFd: number, relativePath: string) => number;
 export const ensureTransferExportDirectory: (rootFd: number, relativePath: string) => boolean;
 
+export interface RustDeskClipboardSnapshot {
+  revision: number; state: number; capable: boolean; enabled: boolean; entryCount: number; diagnosticCode: number;
+}
+export interface RustDeskClipboardEntry {
+  index: number; name: string; isDirectory: boolean; size: number; modifiedTime: number;
+}
+export interface RustDeskClipboardSource { name: string; fd: number; isDirectory: boolean; }
+export interface RustDeskClipboardPublication {
+  publicationId: number; state: number; diagnosticCode: number; requestedBytes: number; drained: boolean;
+}
+export const configureSessionRustDeskFileClipboard: (sid: number, generation: number, enabled: boolean) => boolean;
+export const getSessionRustDeskFileClipboard: (sid: number, generation: number) => RustDeskClipboardSnapshot;
+export const getSessionRustDeskClipboardEntries: (sid: number, generation: number, revision: number) => RustDeskClipboardEntry[];
+export const publishSessionRustDeskClipboardFiles: (sid: number, generation: number, sources: RustDeskClipboardSource[]) => number;
+export const getSessionRustDeskClipboardPublication: (sid: number, generation: number, id: number) => RustDeskClipboardPublication;
+export const revokeSessionRustDeskClipboardPublication: (sid: number, generation: number, id: number) => boolean;
+export const receiveSessionRustDeskClipboardFile: (sid: number, generation: number, revision: number, index: number, fd: number) => number;
+
 export interface SessionTransferAuthentication {
   transferId: number;
   challengeId: number;

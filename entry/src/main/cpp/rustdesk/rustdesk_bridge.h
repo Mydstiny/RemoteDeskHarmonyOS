@@ -218,6 +218,33 @@ struct RustDeskRemoteFileEntry {
     uint64_t modifiedTime = 0;
 };
 
+struct RustDeskFileClipboardSnapshot {
+    uint64_t revision = 0;
+    uint32_t state = 0;
+    uint32_t capable = 0;
+    uint32_t enabled = 0;
+    uint32_t entryCount = 0;
+    uint32_t diagnosticCode = 0;
+};
+struct RustDeskFileClipboardPublication {
+    uint64_t publicationId = 0;
+    uint32_t state = 0;
+    uint32_t diagnosticCode = 0;
+    uint64_t requestedBytes = 0;
+    uint32_t drained = 0;
+};
+struct RustDeskFileClipboardEntry {
+    std::string name;
+    bool isDirectory = false;
+    uint64_t size = 0;
+    uint64_t modifiedTime = 0;
+};
+struct RustDeskFileClipboardSource {
+    std::string name;
+    int fd = -1;
+    bool isDirectory = false;
+};
+
 struct RustDeskTransferAuthSnapshot {
     uint64_t transferId = 0;
     uint64_t challengeId = 0;
@@ -297,6 +324,13 @@ public:
     SessionTransferStatus getTransferStatusById(uint64_t transferId);
     bool cancelTransfer(uint64_t transferId);
     bool releaseTransfer(uint64_t transferId);
+    bool configureFileClipboard(bool enabled);
+    RustDeskFileClipboardSnapshot getFileClipboardSnapshot();
+    std::vector<RustDeskFileClipboardEntry> getFileClipboardEntries(uint64_t revision);
+    uint64_t publishFileClipboard(const std::vector<RustDeskFileClipboardSource>& sources);
+    RustDeskFileClipboardPublication getFileClipboardPublication(uint64_t publicationId);
+    bool revokeFileClipboardPublication(uint64_t publicationId);
+    int64_t receiveFileClipboardToFd(uint64_t revision, uint32_t index, int fd);
     int64_t createRemoteDirectory(const std::string& remotePath);
     RustDeskTransferAuthSnapshot getTransferAuthentication(uint64_t transferId);
     bool submitTransferAuthentication(uint64_t transferId, uint64_t challengeId, uint32_t responseKind, const std::string& secret);

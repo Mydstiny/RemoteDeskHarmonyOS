@@ -1,3 +1,4 @@
+import { RustDeskClipboardNative } from './RustDeskClipboardClient';
 /**
  * ExtensionLoader.ets — NAPI 桥接门面
  *
@@ -36,6 +37,7 @@ import {
   RustDeskDiagnosticsSnapshot,
   LocalResourceStats,
   RemoteCursorSnapshot,
+  RustDeskClipboardSnapshot, RustDeskClipboardEntry, RustDeskClipboardSource, RustDeskClipboardPublication,
   SessionTransferStatus,
   SessionClipboardSnapshot,
   ClipboardPublicationResult,
@@ -247,7 +249,7 @@ export interface NativeDisconnectSubmission extends
 export interface NativeDisconnectIdentity extends
   RemoteSessionExactDisconnectIdentity {}
 
-export class ExtensionLoader {
+export class ExtensionLoader implements RustDeskClipboardNative {
   private static instance: ExtensionLoader;
   private static nextFacadeGeneration: number = 1;
   private static nextSshOperationId: number = 1;
@@ -1072,6 +1074,31 @@ export class ExtensionLoader {
   }
   ensureTransferExportDirectory(rootFd: number, relativePath: string): boolean {
     try { return rdpnapi.ensureTransferExportDirectory(rootFd, relativePath) === true; } catch (_error) { return false; }
+  }
+
+  configureSessionRustDeskFileClipboard(sid: number, generation: number, enabled: boolean): boolean {
+    try { return rdpnapi.configureSessionRustDeskFileClipboard(sid, generation, enabled) === true; } catch (_error) { return false; }
+  }
+  getSessionRustDeskFileClipboard(sid: number, generation: number): RustDeskClipboardSnapshot {
+    try { return rdpnapi.getSessionRustDeskFileClipboard(sid, generation) as RustDeskClipboardSnapshot; }
+    catch (_error) { return { revision: 0, state: 0, capable: false, enabled: false, entryCount: 0, diagnosticCode: 0 }; }
+  }
+  getSessionRustDeskClipboardEntries(sid: number, generation: number, revision: number): RustDeskClipboardEntry[] {
+    try { return rdpnapi.getSessionRustDeskClipboardEntries(sid, generation, revision) as RustDeskClipboardEntry[]; }
+    catch (_error) { return []; }
+  }
+  publishSessionRustDeskClipboardFiles(sid: number, generation: number, sources: RustDeskClipboardSource[]): number {
+    try { return rdpnapi.publishSessionRustDeskClipboardFiles(sid, generation, sources); } catch (_error) { return -1; }
+  }
+  getSessionRustDeskClipboardPublication(sid: number, generation: number, id: number): RustDeskClipboardPublication {
+    try { return rdpnapi.getSessionRustDeskClipboardPublication(sid, generation, id) as RustDeskClipboardPublication; }
+    catch (_error) { return { publicationId: 0, state: 0, diagnosticCode: 0, requestedBytes: 0, drained: false }; }
+  }
+  revokeSessionRustDeskClipboardPublication(sid: number, generation: number, id: number): boolean {
+    try { return rdpnapi.revokeSessionRustDeskClipboardPublication(sid, generation, id) === true; } catch (_error) { return false; }
+  }
+  receiveSessionRustDeskClipboardFile(sid: number, generation: number, revision: number, index: number, fd: number): number {
+    try { return rdpnapi.receiveSessionRustDeskClipboardFile(sid, generation, revision, index, fd); } catch (_error) { return -1; }
   }
 
   createSessionRemoteDirectory(sessionId: number, generation: number, path: string): number {

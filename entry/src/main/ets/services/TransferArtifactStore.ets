@@ -58,6 +58,7 @@ interface ArtifactPublicationManifest {
 interface NativeDirectoryManifest {
   id: string;
   state: 'active' | 'retained' | 'complete' | 'aborted';
+  layout?: 'rdpReceive' | 'localTree';
 }
 export interface TransferNativeReceivedEntry {
   index: number;
@@ -273,6 +274,7 @@ function readManifest(filesDir: string, scopeKey: string, purpose: ArtifactPurpo
     artifacts.push({ id: item.id, name: item.name, size: item.size, mtime: item.mtime, sha256: item.sha256, state, storageRelativePath, relativePath, directory });
     names.push(artifactNameKey(relativePath));
   }
+  resolveNativeDirectoryLayouts(nativeDirectories, artifacts);
   return { schemaVersion: 2, id: batchId, createdAt: parsed.createdAt,
     updatedAt: legacy ? parsed.createdAt : parsed.updatedAt, scopeKey, purpose,
     published: legacy || parsed.published || publications.length > 0, holders: legacy ? ['legacy-unknown'] : parsed.holders.slice(), artifacts, nativeDirectories, platformDirectories, publications,
@@ -284,10 +286,41 @@ function parseOwnedDirectories(value: NativeDirectoryManifest[] | undefined): Na
   if (!Array.isArray(value) || value.length > 15) { throw new Error('transfer_manifest_invalid'); }
   for (const item of value) {
     if (item === null || !validId(item.id) || ['active', 'retained', 'complete', 'aborted'].indexOf(item.state) < 0 ||
+      (item.layout !== undefined && item.layout !== 'rdpReceive' && item.layout !== 'localTree') ||
       result.some((other: NativeDirectoryManifest): boolean => other.id === item.id)) { throw new Error('transfer_manifest_invalid'); }
-    result.push({ id: item.id, state: item.state });
+    const owner: NativeDirectoryManifest = { id: item.id, state: item.state };
+    if (item.layout !== undefined) { owner.layout = item.layout; }
+    result.push(owner);
   }
   return result;
+}
+/** Schema 2 predates the layout discriminator. Its recorded path mapping is
+ * sufficient to distinguish old local trees from RDP receive-N/files trees.
+ * Mixed/forged mappings remain invalid; an empty old container uses the stricter
+ * RDP layout, which cannot authorize deleting any unrecorded object.
+ */
+function resolveNativeDirectoryLayouts(owners: NativeDirectoryManifest[], artifacts: ArtifactManifestEntry[]): void {
+  for (const owner of owners) {
+    const prefix: string = 'native-' + owner.id + '/';
+    const entries: ArtifactManifestEntry[] = artifacts.filter((entry: ArtifactManifestEntry): boolean =>
+      entry.storageRelativePath.startsWith(prefix));
+    const local: boolean = entries.every((entry: ArtifactManifestEntry): boolean =>
+      entry.storageRelativePath === prefix + entry.relativePath);
+    const rdp: boolean = entries.every((entry: ArtifactManifestEntry): boolean => {
+      const path: string = entry.storageRelativePath.substring(prefix.length);
+      const parts: string[] = path.split('/');
+      return parts.length >= 3 && /^receive-[0-9]+$/.test(parts[0]) && parts[1] === 'files' &&
+        parts.slice(2).join('/') === entry.relativePath;
+    });
+    if (owner.layout === undefined) {
+      if (entries.length > 0 && local) { owner.layout = 'localTree'; }
+      else if (rdp) { owner.layout = 'rdpReceive'; }
+      else { throw new Error('transfer_manifest_layout_invalid'); }
+    }
+    if ((owner.layout === 'localTree' && !local) || (owner.layout === 'rdpReceive' && !rdp)) {
+      throw new Error('transfer_manifest_layout_invalid');
+    }
+  }
 }
 function validRelativeTransferPath(value: string, maxDepth: number = 32, maxBytes: number = 1024): boolean {
   if (typeof value !== 'string' || value.length === 0 || new util.TextEncoder().encode(value).byteLength > maxBytes) { return false; }
@@ -758,7 +791,7 @@ export class TransferArtifactBatch {
       assertLocalTreeListing(plan); checkCurrent(isCurrent);
       const ownedRoot: string = this.directory + '/native-' + id;
       this.assertPath(); fileIo.mkdirSync(ownedRoot);
-      owner = { id, state: 'active' }; this.manifest.nativeDirectories.push(owner); this.retain(holder);
+      owner = { id, state: 'active', layout: 'localTree' }; this.manifest.nativeDirectories.push(owner); this.retain(holder);
       for (const identity of identities) {
         checkCurrent(isCurrent); const source: TransferLocalTreeSource = identity.source;
         const parents: LocalTreeSourceIdentity[] = identities.filter((item: LocalTreeSourceIdentity): boolean =>
@@ -850,7 +883,7 @@ export class TransferArtifactBatch {
       if (this.manifest.purpose !== 'received' || this.manifest.nativeDirectories.length >= 15 || !validId(id)) { throw new Error('transfer_receive_scope_invalid'); }
       await this.reserve(expectedBytes, isCurrent); reserved = true;
       const path: string = this.directory + '/native-' + id; fileIo.mkdirSync(path);
-      this.manifest.nativeDirectories.push({ id, state: 'active' }); this.retain('native-directory:' + id);
+      this.manifest.nativeDirectories.push({ id, state: 'active', layout: 'rdpReceive' }); this.retain('native-directory:' + id);
       file = await fileIo.open(path, fileIo.OpenMode.READ_ONLY | fileIo.OpenMode.DIR | fileIo.OpenMode.NOFOLLOW);
       checkCurrent(isCurrent); return new TransferNativeReceiveDirectory(this, id, file, expectedBytes, isCurrent);
     } catch (_error) {
@@ -1152,9 +1185,11 @@ export class TransferArtifactBatch {
           relative = relative.length === 0 ? parts[i] : relative + '/' + parts[i];
           if (nativeAllowed.indexOf(relative) < 0) { nativeAllowed.push(relative); }
         }
-        if (nativeAllowed.indexOf(parts[0] + '/partial') < 0) { nativeAllowed.push(parts[0] + '/partial'); }
+        if (native.layout === 'rdpReceive' && nativeAllowed.indexOf(parts[0] + '/partial') < 0) {
+          nativeAllowed.push(parts[0] + '/partial');
+        }
       }
-      validateNativeTreeListing(nativeRoot, '', nativeAllowed, true);
+      validateNativeTreeListing(nativeRoot, '', nativeAllowed, native.layout === 'rdpReceive');
     }
     for (const platform of this.manifest.platformDirectories) {
       if (platform.state !== 'complete' && platform.state !== 'aborted') { result.retainedBatches++; return result; }

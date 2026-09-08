@@ -8756,6 +8756,112 @@ napi_value NapiEnsureTransferExportDirectory(napi_env env, napi_callback_info in
     napi_value result; napi_get_boolean(env, accepted, &result); return result;
 }
 
+napi_value NapiConfigureSessionRustDeskFileClipboard(napi_env env, napi_callback_info info) {
+    napi_value args[4]; bool enabled = false, accepted = false;
+    if (ReadExactNapiCallbackArgs(env, info, 3, args, 4) && napi_get_value_bool(env, args[2], &enabled) == napi_ok) {
+        auto adapter = TransferAdapterForOwner(env, args[0], args[1], enabled);
+        auto* bridge = adapter ? dynamic_cast<RustDeskBridge*>(adapter.get()) : nullptr;
+        if (bridge) accepted = bridge->configureFileClipboard(enabled);
+    }
+    napi_value result; napi_get_boolean(env, accepted, &result); return result;
+}
+napi_value NapiGetSessionRustDeskFileClipboard(napi_env env, napi_callback_info info) {
+    napi_value args[3], result; RustDeskFileClipboardSnapshot snapshot;
+    if (ReadExactNapiCallbackArgs(env, info, 2, args, 3)) {
+        auto adapter = TransferAdapterForOwner(env, args[0], args[1]);
+        auto* bridge = adapter ? dynamic_cast<RustDeskBridge*>(adapter.get()) : nullptr;
+        if (bridge) snapshot = bridge->getFileClipboardSnapshot();
+    }
+    napi_create_object(env, &result);
+    SetObjectInt64(env, result, "revision", snapshot.revision);
+    SetObjectInt32(env, result, "state", snapshot.state);
+    SetObjectBool(env, result, "capable", snapshot.capable != 0);
+    SetObjectBool(env, result, "enabled", snapshot.enabled != 0);
+    SetObjectInt32(env, result, "entryCount", snapshot.entryCount);
+    SetObjectInt32(env, result, "diagnosticCode", snapshot.diagnosticCode);
+    return result;
+}
+napi_value NapiGetSessionRustDeskClipboardEntries(napi_env env, napi_callback_info info) {
+    napi_value args[4], result; napi_create_array(env, &result); int64_t revision = 0;
+    if (ReadExactNapiCallbackArgs(env, info, 3, args, 4) && ReadStrictNapiInt64Value(env, args[2], revision) && revision > 0) {
+        auto adapter = TransferAdapterForOwner(env, args[0], args[1]);
+        auto* bridge = adapter ? dynamic_cast<RustDeskBridge*>(adapter.get()) : nullptr;
+        if (bridge) {
+            const auto entries = bridge->getFileClipboardEntries(revision);
+            if (entries.size() > 256) return result;
+            for (size_t i = 0; i < entries.size(); ++i) {
+                napi_value entry; napi_create_object(env, &entry);
+                SetObjectInt32(env, entry, "index", static_cast<int32_t>(i));
+                SetObjectString(env, entry, "name", entries[i].name);
+                SetObjectBool(env, entry, "isDirectory", entries[i].isDirectory);
+                SetObjectInt64(env, entry, "size", entries[i].size);
+                SetObjectInt64(env, entry, "modifiedTime", entries[i].modifiedTime);
+                napi_set_element(env, result, static_cast<uint32_t>(i), entry);
+            }
+        }
+    }
+    return result;
+}
+napi_value NapiPublishSessionRustDeskClipboardFiles(napi_env env, napi_callback_info info) {
+    napi_value args[4]; int64_t id = -1; bool array = false; uint32_t count = 0;
+    if (ReadExactNapiCallbackArgs(env, info, 3, args, 4) && napi_is_array(env, args[2], &array) == napi_ok && array &&
+        napi_get_array_length(env, args[2], &count) == napi_ok && count > 0 && count <= 256) {
+        std::vector<RustDeskFileClipboardSource> sources; bool valid = true;
+        for (uint32_t i = 0; i < count && valid; ++i) {
+            napi_value item, name, fd, directory; RustDeskFileClipboardSource source;
+            valid = napi_get_element(env, args[2], i, &item) == napi_ok &&
+                napi_get_named_property(env, item, "name", &name) == napi_ok &&
+                ReadBoundedNapiStringValue(env, name, 1024, source.name) && !source.name.empty() && source.name.find('\0') == std::string::npos &&
+                napi_get_named_property(env, item, "fd", &fd) == napi_ok && ReadStrictNapiInt32Value(env, fd, source.fd) &&
+                napi_get_named_property(env, item, "isDirectory", &directory) == napi_ok &&
+                napi_get_value_bool(env, directory, &source.isDirectory) == napi_ok &&
+                (source.isDirectory ? source.fd == -1 : source.fd >= 0);
+            if (valid) sources.push_back(std::move(source));
+        }
+        if (valid) {
+            auto adapter = TransferAdapterForOwner(env, args[0], args[1]);
+            auto* bridge = adapter ? dynamic_cast<RustDeskBridge*>(adapter.get()) : nullptr;
+            if (bridge) id = bridge->publishFileClipboard(sources);
+        }
+    }
+    napi_value result; napi_create_int64(env, id, &result); return result;
+}
+napi_value NapiGetSessionRustDeskClipboardPublication(napi_env env, napi_callback_info info) {
+    napi_value args[4], result; int64_t id = 0; RustDeskFileClipboardPublication snapshot;
+    if (ReadExactNapiCallbackArgs(env, info, 3, args, 4) && ReadStrictNapiInt64Value(env, args[2], id) && id > 0) {
+        auto adapter = TransferAdapterForOwner(env, args[0], args[1], false);
+        auto* bridge = adapter ? dynamic_cast<RustDeskBridge*>(adapter.get()) : nullptr;
+        if (bridge) snapshot = bridge->getFileClipboardPublication(id);
+    }
+    napi_create_object(env, &result);
+    SetObjectInt64(env, result, "publicationId", snapshot.publicationId);
+    SetObjectInt32(env, result, "state", snapshot.state);
+    SetObjectInt32(env, result, "diagnosticCode", snapshot.diagnosticCode);
+    SetObjectInt64(env, result, "requestedBytes", snapshot.requestedBytes);
+    SetObjectBool(env, result, "drained", snapshot.drained != 0);
+    return result;
+}
+napi_value NapiRevokeSessionRustDeskClipboardPublication(napi_env env, napi_callback_info info) {
+    napi_value args[4]; int64_t id = 0; bool accepted = false;
+    if (ReadExactNapiCallbackArgs(env, info, 3, args, 4) && ReadStrictNapiInt64Value(env, args[2], id) && id > 0) {
+        auto adapter = TransferAdapterForOwner(env, args[0], args[1], false);
+        auto* bridge = adapter ? dynamic_cast<RustDeskBridge*>(adapter.get()) : nullptr;
+        if (bridge) accepted = bridge->revokeFileClipboardPublication(id);
+    }
+    napi_value result; napi_get_boolean(env, accepted, &result); return result;
+}
+napi_value NapiReceiveSessionRustDeskClipboardFile(napi_env env, napi_callback_info info) {
+    napi_value args[6]; int64_t revision = 0, id = -1; int32_t index = -1, fd = -1;
+    if (ReadExactNapiCallbackArgs(env, info, 5, args, 6) && ReadStrictNapiInt64Value(env, args[2], revision) && revision > 0 &&
+        ReadStrictNapiInt32Value(env, args[3], index) && index >= 0 && index < 256 &&
+        ReadStrictNapiInt32Value(env, args[4], fd) && fd >= 0) {
+        auto adapter = TransferAdapterForOwner(env, args[0], args[1]);
+        auto* bridge = adapter ? dynamic_cast<RustDeskBridge*>(adapter.get()) : nullptr;
+        if (bridge) id = bridge->receiveFileClipboardToFd(revision, static_cast<uint32_t>(index), fd);
+    }
+    napi_value result; napi_create_int64(env, id, &result); return result;
+}
+
 napi_value NapiCreateSessionRemoteDirectory(napi_env env, napi_callback_info info) {
     napi_value args[4]; int64_t id = -1;
     if (ReadExactNapiCallbackArgs(env, info, 3, args, 4)) {
@@ -13049,6 +13155,20 @@ napi_value ExtensionLoaderNapi::Init(napi_env env, napi_value exports) {
     napi_set_named_property(env, exports, "openExclusiveTransferFile", fn);
     napi_create_function(env, "ensureTransferExportDirectory", NAPI_AUTO_LENGTH, NapiEnsureTransferExportDirectory, nullptr, &fn);
     napi_set_named_property(env, exports, "ensureTransferExportDirectory", fn);
+    napi_create_function(env, "configureSessionRustDeskFileClipboard", NAPI_AUTO_LENGTH, NapiConfigureSessionRustDeskFileClipboard, nullptr, &fn);
+    napi_set_named_property(env, exports, "configureSessionRustDeskFileClipboard", fn);
+    napi_create_function(env, "getSessionRustDeskFileClipboard", NAPI_AUTO_LENGTH, NapiGetSessionRustDeskFileClipboard, nullptr, &fn);
+    napi_set_named_property(env, exports, "getSessionRustDeskFileClipboard", fn);
+    napi_create_function(env, "getSessionRustDeskClipboardEntries", NAPI_AUTO_LENGTH, NapiGetSessionRustDeskClipboardEntries, nullptr, &fn);
+    napi_set_named_property(env, exports, "getSessionRustDeskClipboardEntries", fn);
+    napi_create_function(env, "publishSessionRustDeskClipboardFiles", NAPI_AUTO_LENGTH, NapiPublishSessionRustDeskClipboardFiles, nullptr, &fn);
+    napi_set_named_property(env, exports, "publishSessionRustDeskClipboardFiles", fn);
+    napi_create_function(env, "getSessionRustDeskClipboardPublication", NAPI_AUTO_LENGTH, NapiGetSessionRustDeskClipboardPublication, nullptr, &fn);
+    napi_set_named_property(env, exports, "getSessionRustDeskClipboardPublication", fn);
+    napi_create_function(env, "revokeSessionRustDeskClipboardPublication", NAPI_AUTO_LENGTH, NapiRevokeSessionRustDeskClipboardPublication, nullptr, &fn);
+    napi_set_named_property(env, exports, "revokeSessionRustDeskClipboardPublication", fn);
+    napi_create_function(env, "receiveSessionRustDeskClipboardFile", NAPI_AUTO_LENGTH, NapiReceiveSessionRustDeskClipboardFile, nullptr, &fn);
+    napi_set_named_property(env, exports, "receiveSessionRustDeskClipboardFile", fn);
     napi_create_function(env, "createSessionRemoteDirectory", NAPI_AUTO_LENGTH, NapiCreateSessionRemoteDirectory, nullptr, &fn);
     napi_set_named_property(env, exports, "createSessionRemoteDirectory", fn);
     napi_create_function(env, "getSessionTransferAuthentication", NAPI_AUTO_LENGTH, NapiGetSessionTransferAuthentication, nullptr, &fn);

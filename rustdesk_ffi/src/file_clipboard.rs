@@ -795,20 +795,23 @@ impl FileClipboard {
         });
         Ok(())
     }
+    fn observe_text_locked(&self, s: &mut State, content: Option<&[u8]>) {
+        if let Ok(mut clipboard) = self.clipboard.lock() {
+            clipboard.update(content);
+            s.snapshot.revision = clipboard.revision;
+        }
+        s.remote_entries.clear();
+        s.remote_format = None;
+        s.snapshot.entry_count = 0;
+        s.snapshot.state = if s.enabled { 1 } else { 0 };
+        Self::fail_pending(s, io::ErrorKind::Interrupted);
+        if let Some(id) = s.active_offer {
+            let _ = Self::revoke(s, id);
+        }
+    }
     pub fn observe_text(&self, content: Option<&[u8]>) {
         if let Ok(mut s) = self.state.lock() {
-            if let Ok(mut clipboard) = self.clipboard.lock() {
-                clipboard.update(content);
-                s.snapshot.revision = clipboard.revision;
-            }
-            s.remote_entries.clear();
-            s.remote_format = None;
-            s.snapshot.entry_count = 0;
-            s.snapshot.state = if s.enabled { 1 } else { 0 };
-            Self::fail_pending(&mut s, io::ErrorKind::Interrupted);
-            if let Some(id) = s.active_offer {
-                let _ = Self::revoke(&mut s, id);
-            }
+            self.observe_text_locked(&mut s, content);
         }
         self.wake.notify_all();
     }
@@ -939,13 +942,11 @@ impl FileClipboard {
         offer.gate.store(false, Ordering::Release);
         offer.status.state = 4;
         offer.revoke_at = Some(Instant::now());
-        // No Lock/Unlock Clipboard PDUs exist in RustDesk's Cliprdr schema. Once an untagged
-        // index was used, a late request cannot be distinguished from the next offer's index.
-        // Never substitute new file bytes for that old paste. Reconnect is the safe reset.
-        if offer.legacy_read_seen || !offer.format_ack {
-            s.outbound_blocked = true;
-            offer.status.diagnostic_code = 8;
-        }
+        // Cliprdr has no Lock/Unlock handshake binding even a first-seen clip_data_id
+        // to a descriptor publication. A delayed old paste can introduce a new ID
+        // after revocation, so no successor FD may be offered on this carrier.
+        s.outbound_blocked = true;
+        offer.status.diagnostic_code = 8;
         s.retired_clip_ids
             .extend(offer.clip_data_ids.iter().copied());
         s.ever_revoked = true;
@@ -1168,8 +1169,12 @@ impl FileClipboard {
             return;
         }
         if let Some(Cliprdr_oneof_union::try_empty(_)) = &clip.union {
+            let owns_files = self.clipboard.lock().map(|v| v.files).unwrap_or(false);
+            if owns_files {
+                self.observe_text_locked(&mut s, Some(&[]));
+            }
             drop(s);
-            self.observe_text(Some(&[]));
+            self.wake.notify_all();
             return;
         }
         if !s.enabled || !Self::allowed(&s) {
@@ -1739,6 +1744,19 @@ mod tests {
         flush(engine);
         engine.handle_message(&ack());
         assert_eq!(engine.publication(id).state, 5);
+        assert!(engine.publish(vec![source("two.bin", b"two")]).is_err());
+        engine.handle_message(&content_request(0, 0, 3, Some(10)));
+        assert_eq!(
+            flush(engine)[0]
+                .get_cliprdr()
+                .get_file_contents_response()
+                .get_msg_flags(),
+            2
+        );
+        // Only a new carrier resets outbound admission; permissions still revoke
+        // queued source writes on that new carrier.
+        let controls = enabled();
+        let engine = &controls.file_clipboard;
         let next = engine.publish(vec![source("two.bin", b"two")]).unwrap();
         let format = flush(engine)[0]
             .get_cliprdr()
@@ -1748,14 +1766,6 @@ mod tests {
         engine.handle_message(&ack());
         engine.handle_message(&descriptor_request(format));
         flush(engine);
-        engine.handle_message(&content_request(0, 0, 3, Some(10)));
-        assert_eq!(
-            flush(engine)[0]
-                .get_cliprdr()
-                .get_file_contents_response()
-                .get_msg_flags(),
-            2
-        );
         engine.handle_message(&content_request(0, 0, 3, Some(11)));
         let queued = engine.take_outputs();
         controls.update_permission(crate::control_inbox::PERMISSION_FILE, false);
@@ -2002,5 +2012,106 @@ mod tests {
             }
             assert_eq!(job.status.lock().unwrap().0.transferred_bytes, 0);
         }
+    }
+    #[test]
+    fn cliprdr_late_unseen_tag_after_revoke_cannot_read_a_successor_publication() {
+        let controls = enabled();
+        let engine = &controls.file_clipboard;
+        let first = engine.publish(vec![source("old.bin", b"old")]).unwrap();
+        let format = flush(engine)[0]
+            .get_cliprdr()
+            .get_format_list()
+            .get_formats()[0]
+            .get_id();
+        engine.handle_message(&ack());
+        engine.handle_message(&descriptor_request(format));
+        flush(engine);
+        assert!(engine.revoke_publication(first));
+        flush(engine);
+        engine.handle_message(&ack());
+        assert_eq!(engine.publication(first).state, 5);
+        assert_eq!(engine.publication(first).drained, 1);
+        assert!(engine.publish(vec![source("new.bin", b"NEW")]).is_err());
+        engine.handle_message(&content_request(0, 0, 3, Some(123)));
+        let messages = flush(engine);
+        let response = messages[0].get_cliprdr().get_file_contents_response();
+        assert_eq!(response.get_msg_flags(), 2);
+        assert!(response.get_requested_data().is_empty());
+        // A settings toggle cannot pretend to be a new authenticated carrier.
+        assert!(engine.configure(false));
+        assert!(engine.configure(true));
+        flush(engine);
+        assert!(engine
+            .publish(vec![source("still-new.bin", b"NEW")])
+            .is_err());
+    }
+
+    #[test]
+    fn cliprdr_late_try_empty_does_not_replace_newer_remote_text() {
+        let controls = enabled();
+        let engine = &controls.file_clipboard;
+        engine.handle_message(&list(50001));
+        engine.observe_text(Some(b"new text"));
+        let revision = controls.remote_clipboard.lock().unwrap().revision;
+        let mut empty = Cliprdr::new();
+        empty.set_try_empty(CliprdrTryEmpty::new());
+        engine.handle_message(&empty);
+        let current = controls.remote_clipboard.lock().unwrap();
+        assert_eq!(current.revision, revision);
+        assert_eq!(current.content, b"new text");
+        drop(current);
+        engine.handle_message(&list(50002));
+        let revision = controls.remote_clipboard.lock().unwrap().revision;
+        engine.handle_message(&empty);
+        let current = controls.remote_clipboard.lock().unwrap();
+        assert_eq!(current.revision, revision + 1);
+        assert!(!current.files);
+        assert!(current.content.is_empty());
+    }
+
+    #[test]
+    fn cliprdr_revoke_retains_source_until_inflight_content_write_finishes() {
+        let controls = enabled();
+        let engine = &controls.file_clipboard;
+        let id = engine.publish(vec![source("one.bin", b"one")]).unwrap();
+        let format = flush(engine)[0]
+            .get_cliprdr()
+            .get_format_list()
+            .get_formats()[0]
+            .get_id();
+        engine.handle_message(&ack());
+        engine.handle_message(&descriptor_request(format));
+        flush(engine);
+        engine.handle_message(&content_request(0, 0, 3, Some(77)));
+        let output = engine.take_outputs().pop().unwrap();
+        assert!(output.receipt.begin_write());
+        assert!(engine.revoke_publication(id));
+        flush(engine);
+        engine.handle_message(&ack());
+        assert_eq!(engine.publication(id).drained, 0);
+        assert_eq!(
+            engine
+                .state
+                .lock()
+                .unwrap()
+                .offers
+                .get(&id)
+                .unwrap()
+                .sources
+                .len(),
+            1
+        );
+        output.receipt.written();
+        drop(output);
+        assert_eq!(engine.publication(id).drained, 1);
+        assert!(engine
+            .state
+            .lock()
+            .unwrap()
+            .offers
+            .get(&id)
+            .unwrap()
+            .sources
+            .is_empty());
     }
 }

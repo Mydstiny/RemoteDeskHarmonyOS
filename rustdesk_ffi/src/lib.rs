@@ -3498,6 +3498,219 @@ pub extern "C" fn rustdesk_send_file_fd(
     )
 }
 
+#[repr(C)]
+pub struct RustDeskFileClipboardSource {
+    pub name: *const c_char,
+    pub fd: i32,
+    pub is_directory: u32,
+}
+#[no_mangle]
+pub extern "C" fn rustdesk_configure_file_clipboard(handle: *mut c_void, enabled: bool) -> bool {
+    if handle.is_null() {
+        return false;
+    }
+    let ctx = unsafe { &*(handle as *const RustDeskClient) };
+    ctx.controls.file_clipboard.configure(enabled)
+}
+#[no_mangle]
+pub extern "C" fn rustdesk_get_file_clipboard_snapshot(
+    handle: *mut c_void,
+    out: *mut file_clipboard::FileClipboardSnapshot,
+) -> bool {
+    if handle.is_null() || out.is_null() {
+        return false;
+    }
+    let ctx = unsafe { &*(handle as *const RustDeskClient) };
+    unsafe {
+        *out = ctx.controls.file_clipboard.snapshot();
+    }
+    true
+}
+#[no_mangle]
+pub extern "C" fn rustdesk_get_file_clipboard_entry(
+    handle: *mut c_void,
+    revision: u64,
+    index: u32,
+    name: *mut c_char,
+    capacity: usize,
+    metadata: *mut RustDeskRemoteFileMetadata,
+) -> bool {
+    if handle.is_null() || name.is_null() || metadata.is_null() || capacity == 0 {
+        return false;
+    }
+    let ctx = unsafe { &*(handle as *const RustDeskClient) };
+    let Some(entries) = ctx.controls.file_clipboard.entries(revision) else {
+        return false;
+    };
+    let Some(entry) = entries.get(index as usize) else {
+        return false;
+    };
+    if entry.name.len() >= capacity {
+        return false;
+    }
+    unsafe {
+        ptr::copy_nonoverlapping(entry.name.as_ptr(), name.cast(), entry.name.len());
+        *name.add(entry.name.len()) = 0;
+        *metadata = RustDeskRemoteFileMetadata {
+            entry_type: if entry.is_directory { 0 } else { 4 },
+            size: entry.size,
+            modified: entry.modified,
+        };
+    }
+    true
+}
+#[no_mangle]
+pub extern "C" fn rustdesk_publish_file_clipboard(
+    handle: *mut c_void,
+    entries: *const RustDeskFileClipboardSource,
+    count: u32,
+) -> u64 {
+    use std::os::fd::FromRawFd;
+    if handle.is_null()
+        || entries.is_null()
+        || count == 0
+        || count as usize > file_clipboard::MAX_ENTRIES
+    {
+        return 0;
+    }
+    let ctx = unsafe { &*(handle as *const RustDeskClient) };
+    let mut sources = Vec::with_capacity(count as usize);
+    for input in unsafe { std::slice::from_raw_parts(entries, count as usize) } {
+        if input.name.is_null() || input.is_directory > 1 {
+            return 0;
+        }
+        let length = unsafe { libc::strnlen(input.name, 4097) };
+        if length == 0 || length > 4096 {
+            return 0;
+        }
+        let name = match std::str::from_utf8(unsafe {
+            std::slice::from_raw_parts(input.name.cast::<u8>(), length)
+        }) {
+            Ok(v) => v.to_owned(),
+            Err(_) => return 0,
+        };
+        let (source, size, modified) = if input.is_directory == 1 {
+            (None, 0, 0)
+        } else {
+            if input.fd < 0 {
+                return 0;
+            }
+            let fd = unsafe { libc::fcntl(input.fd, libc::F_DUPFD_CLOEXEC, 0) };
+            if fd < 0 {
+                return 0;
+            }
+            let file = unsafe { std::fs::File::from_raw_fd(fd) };
+            let source = match file_transfer::UploadSource::file(file) {
+                Ok(v) => v,
+                Err(_) => return 0,
+            };
+            let size = source.size();
+            let modified = source.modified();
+            (Some(source), size, modified)
+        };
+        sources.push(file_clipboard::ClipboardFileSource {
+            entry: file_clipboard::ClipboardFileEntry {
+                name,
+                is_directory: input.is_directory == 1,
+                size,
+                modified,
+            },
+            source,
+        });
+    }
+    ctx.controls.file_clipboard.publish(sources).unwrap_or(0)
+}
+#[no_mangle]
+pub extern "C" fn rustdesk_get_file_clipboard_publication(
+    handle: *mut c_void,
+    id: u64,
+    out: *mut file_clipboard::FileClipboardPublication,
+) -> bool {
+    if handle.is_null() || out.is_null() || id == 0 {
+        return false;
+    }
+    let ctx = unsafe { &*(handle as *const RustDeskClient) };
+    let status = ctx.controls.file_clipboard.publication(id);
+    if status.publication_id != id {
+        return false;
+    }
+    unsafe {
+        *out = status;
+    }
+    true
+}
+#[no_mangle]
+pub extern "C" fn rustdesk_revoke_file_clipboard_publication(handle: *mut c_void, id: u64) -> bool {
+    if handle.is_null() || id == 0 {
+        return false;
+    }
+    let ctx = unsafe { &*(handle as *const RustDeskClient) };
+    ctx.controls.file_clipboard.revoke_publication(id)
+}
+#[no_mangle]
+pub extern "C" fn rustdesk_receive_file_clipboard_fd(
+    handle: *mut c_void,
+    id: u64,
+    revision: u64,
+    index: u32,
+    fd: i32,
+) -> i32 {
+    use std::os::fd::FromRawFd;
+    if handle.is_null() || id == 0 || fd < 0 {
+        return -1;
+    }
+    let ctx = unsafe { &*(handle as *const RustDeskClient) };
+    let engine = Arc::clone(&ctx.controls.file_clipboard);
+    let Some(entries) = engine.entries(revision) else {
+        return -1;
+    };
+    let Some(entry) = entries.get(index as usize) else {
+        return -1;
+    };
+    if entry.is_directory {
+        return -1;
+    }
+    let duplicated = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 0) };
+    if duplicated < 0 {
+        return -1;
+    }
+    let file = unsafe { std::fs::File::from_raw_fd(duplicated) };
+    let sink = match file_transfer::DownloadSink::new(file, entry.size, entry.modified) {
+        Ok(v) => v,
+        Err(_) => return -1,
+    };
+    let job = match ctx
+        .transfers
+        .lock()
+        .ok()
+        .and_then(|mut registry| registry.insert(id, entry.size).ok())
+    {
+        Some(v) => v,
+        None => return -2,
+    };
+    job.bind_permissions(Arc::clone(&ctx.controls));
+    if let Ok(mut result) = job.result.lock() {
+        result.operation_kind = 5;
+    }
+    let failed_job = Arc::clone(&job);
+    let spawn = spawn_reserved_file_transfer_worker(id, ctx.connection_id, move |epoch| {
+        job.bind_epoch(epoch);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            engine.receive_into(revision, index as usize, sink, &job)
+        }))
+        .unwrap_or_else(|_| Err(io::Error::other("file clipboard receive worker panic")));
+        job.finish(result);
+    });
+    if let Err(error) = spawn {
+        failed_job.finish(Err(error));
+        if let Ok(mut registry) = ctx.transfers.lock() {
+            registry.release(id);
+        }
+        return -2;
+    }
+    0
+}
+
 #[no_mangle]
 pub extern "C" fn rustdesk_create_remote_directory(
     handle: *mut c_void,
@@ -4479,7 +4692,240 @@ mod tests {
         assert!(error.contains("attempt=92001"));
     }
 
+    #[test]
+    fn file_clipboard_public_ffi_owns_source_fd_and_receives_through_reserved_worker() {
+        use crate::protocol::message_proto::*;
+        use std::ffi::CString;
+        use std::io::{Read, Write};
+        use std::os::fd::AsRawFd;
+        fn drain(engine: &file_clipboard::FileClipboard) -> Vec<Message> {
+            engine
+                .take_outputs()
+                .into_iter()
+                .map(|output| {
+                    assert!(output.receipt.begin_write());
+                    output.receipt.written();
+                    protobuf::parse_from_bytes(&output.bytes).unwrap()
+                })
+                .collect()
+        }
+        fn setup(client: &RustDeskClient) {
+            client
+                .controls
+                .file_clipboard
+                .bind_controls(&client.controls);
+            let mut peer = PeerInfo::new();
+            peer.set_platform("Windows".into());
+            peer.set_version("1.4.7".into());
+            peer.set_platform_additions("{\"has_file_clipboard\":true}".into());
+            client.controls.file_clipboard.update_peer(&peer);
+            let handle = client as *const RustDeskClient as *mut c_void;
+            assert!(rustdesk_configure_file_clipboard(handle, true));
+            assert_eq!(drain(&client.controls.file_clipboard).len(), 2);
+        }
+        assert_eq!(std::mem::size_of::<RustDeskFileClipboardSource>(), 16);
+        assert_eq!(
+            std::mem::size_of::<file_clipboard::FileClipboardSnapshot>(),
+            32
+        );
+        assert_eq!(
+            std::mem::size_of::<file_clipboard::FileClipboardPublication>(),
+            32
+        );
+        let sender = test_client_with_display_state(RustDeskDisplayState::default());
+        setup(&sender);
+        let handle = &sender as *const RustDeskClient as *mut c_void;
+        let path = std::env::temp_dir().join(format!("rd-ffi-source-{}", rand::random::<u64>()));
+        let mut file = std::fs::OpenOptions::new()
+            .create_new(true)
+            .read(true)
+            .write(true)
+            .open(&path)
+            .unwrap();
+        file.write_all(b"source bytes").unwrap();
+        file.sync_all().unwrap();
+        let name = CString::new("file.bin").unwrap();
+        let input = RustDeskFileClipboardSource {
+            name: name.as_ptr(),
+            fd: file.as_raw_fd(),
+            is_directory: 0,
+        };
+        let bad = CString::new("../outside").unwrap();
+        let invalid = RustDeskFileClipboardSource {
+            name: bad.as_ptr(),
+            fd: file.as_raw_fd(),
+            is_directory: 0,
+        };
+        assert_eq!(rustdesk_publish_file_clipboard(handle, &invalid, 1), 0);
+        assert_eq!(rustdesk_publish_file_clipboard(handle, &input, 257), 0);
+        let id = rustdesk_publish_file_clipboard(handle, &input, 1);
+        assert!(id > 0);
+        drop(file); // Native publication owns its synchronous dup before returning.
+        std::fs::remove_file(&path).unwrap();
+        let sent = drain(&sender.controls.file_clipboard);
+        let format_list = sent[0].get_cliprdr().clone();
+        let format = format_list.get_format_list().get_formats()[0].get_id();
+        let mut ack = Cliprdr::new();
+        let mut response = CliprdrServerFormatListResponse::new();
+        response.set_msg_flags(1);
+        ack.set_format_list_response(response);
+        sender.controls.file_clipboard.handle_message(&ack);
+        let mut request = Cliprdr::new();
+        let mut data = CliprdrServerFormatDataRequest::new();
+        data.set_requested_format_id(format);
+        request.set_format_data_request(data);
+        sender.controls.file_clipboard.handle_message(&request);
+        let descriptor = drain(&sender.controls.file_clipboard)[0]
+            .get_cliprdr()
+            .clone();
+        let mut request = Cliprdr::new();
+        let mut data = CliprdrFileContentsRequest::new();
+        data.set_stream_id(401);
+        data.set_list_index(0);
+        data.set_dw_flags(2);
+        data.set_cb_requested(12);
+        data.set_have_clip_data_id(true);
+        data.set_clip_data_id(5);
+        request.set_file_contents_request(data);
+        sender.controls.file_clipboard.handle_message(&request);
+        assert_eq!(
+            drain(&sender.controls.file_clipboard)[0]
+                .get_cliprdr()
+                .get_file_contents_response()
+                .get_requested_data(),
+            b"source bytes"
+        );
+        let mut status = file_clipboard::FileClipboardPublication::default();
+        assert!(rustdesk_get_file_clipboard_publication(
+            handle,
+            id,
+            &mut status
+        ));
+        assert_eq!(status.requested_bytes, 12);
+        let mut receiver = test_client_with_display_state(RustDeskDisplayState::default());
+        receiver.connection_id = 88229101;
+        setup(&receiver);
+        let target = &receiver as *const RustDeskClient as *mut c_void;
+        assert!(!rustdesk_get_file_clipboard_publication(
+            target,
+            id,
+            &mut status
+        ));
+        receiver
+            .controls
+            .file_clipboard
+            .handle_message(&format_list);
+        drain(&receiver.controls.file_clipboard);
+        receiver.controls.file_clipboard.handle_message(&descriptor);
+        let mut snapshot = file_clipboard::FileClipboardSnapshot::default();
+        assert!(rustdesk_get_file_clipboard_snapshot(target, &mut snapshot));
+        assert_eq!(snapshot.state, 3);
+        assert_eq!(snapshot.entry_count, 1);
+        let mut name_buffer = [0 as c_char; 32];
+        let mut metadata = RustDeskRemoteFileMetadata {
+            entry_type: 0,
+            size: 0,
+            modified: 0,
+        };
+        assert!(!rustdesk_get_file_clipboard_entry(
+            target,
+            snapshot.revision,
+            0,
+            name_buffer.as_mut_ptr(),
+            2,
+            &mut metadata
+        ));
+        assert!(rustdesk_get_file_clipboard_entry(
+            target,
+            snapshot.revision,
+            0,
+            name_buffer.as_mut_ptr(),
+            name_buffer.len(),
+            &mut metadata
+        ));
+        assert_eq!(metadata.entry_type, 4);
+        assert_eq!(metadata.size, 12);
+        assert_eq!(
+            unsafe { CStr::from_ptr(name_buffer.as_ptr()) }
+                .to_str()
+                .unwrap(),
+            "file.bin"
+        );
+        let destination =
+            std::env::temp_dir().join(format!("rd-ffi-target-{}", rand::random::<u64>()));
+        let stage = std::fs::OpenOptions::new()
+            .create_new(true)
+            .read(true)
+            .write(true)
+            .open(&destination)
+            .unwrap();
+        assert_eq!(
+            rustdesk_receive_file_clipboard_fd(
+                target,
+                9001,
+                snapshot.revision + 1,
+                0,
+                stage.as_raw_fd()
+            ),
+            -1
+        );
+        assert_eq!(
+            rustdesk_receive_file_clipboard_fd(
+                target,
+                9001,
+                snapshot.revision,
+                0,
+                stage.as_raw_fd()
+            ),
+            0
+        );
+        drop(stage); // Receiver retains a dup independently from the caller.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        loop {
+            for message in drain(&receiver.controls.file_clipboard) {
+                let request = message.get_cliprdr().get_file_contents_request();
+                assert!(request.get_stream_id() > 0);
+                let mut data = CliprdrFileContentsResponse::new();
+                data.set_stream_id(request.get_stream_id());
+                data.set_msg_flags(1);
+                data.set_requested_data(if request.get_dw_flags() == 1 {
+                    12u64.to_le_bytes().to_vec()
+                } else {
+                    b"source bytes".to_vec()
+                });
+                let mut response = Cliprdr::new();
+                response.set_file_contents_response(data);
+                receiver.controls.file_clipboard.handle_message(&response);
+            }
+            let status = receiver.transfers.lock().unwrap().get(9001).unwrap();
+            if status.status.lock().unwrap().0.state != 2 {
+                assert_eq!(status.status.lock().unwrap().0.state, 6);
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        let mut output = Vec::new();
+        std::fs::File::open(&destination)
+            .unwrap()
+            .read_to_end(&mut output)
+            .unwrap();
+        assert_eq!(output, b"source bytes");
+        assert!(rustdesk_release_transfer(target, 9001));
+        std::fs::remove_file(destination).unwrap();
+        assert!(rustdesk_revoke_file_clipboard_publication(handle, id));
+        drain(&sender.controls.file_clipboard);
+        sender.controls.file_clipboard.handle_message(&ack);
+        assert!(rustdesk_get_file_clipboard_publication(
+            handle,
+            id,
+            &mut status
+        ));
+        assert_eq!(status.drained, 1);
+    }
+
     fn test_client_with_display_state(display_state: RustDeskDisplayState) -> RustDeskClient {
+        let controls = Arc::new(ControlInbox::default());
         RustDeskClient {
             connection_id: 0,
             peer_id: String::new(),
@@ -4494,11 +4940,11 @@ mod tests {
             direct_connection: false,
             connection_strategy: connector::RustDeskConnectionStrategy::ForceRelay,
             nat_config: connector::RustDeskNatTraversalConfig::default(),
-            controls: Arc::new(ControlInbox::default()),
+            controls: Arc::clone(&controls),
             shutdown_stream: None,
             stream_handle: None,
             transfers: Arc::new(Mutex::new(file_transfer::TransferRegistry::default())),
-            remote_clipboard: Arc::new(Mutex::new(ClipboardSnapshot::default())),
+            remote_clipboard: Arc::clone(&controls.remote_clipboard),
             publications: Mutex::new(clipboard_publication::Publications::default()),
             stream_stats: Arc::new(Mutex::new(RustDeskStreamStats::default())),
             codec_evidence: Arc::new(Mutex::new(RustDeskCodecEvidence::default())),

@@ -144,6 +144,13 @@ impl TransferJob {
     }
     pub fn cancel(&self) {
         self.auth.finish(false);
+        // Serialize cancellation with the terminal status decision.
+        let Ok(status) = self.status.lock() else {
+            return;
+        };
+        if status.0.state != 2 {
+            return;
+        }
         self.cancelled.store(true, Ordering::SeqCst);
         if let Ok(epoch) = self.epoch.lock() {
             if *epoch != 0 {
@@ -209,7 +216,7 @@ impl TransferJob {
             if status.0.state != 2 {
                 return;
             }
-            match result {
+            match result.and_then(|()| self.check()) {
                 Ok(()) => status.0.state = 6, // operation complete (download fsynced); remote content unverified
                 Err(error) => {
                     status.0.state = if error.kind() == io::ErrorKind::Interrupted {
@@ -673,5 +680,18 @@ mod tests {
             assert!(registry.release(n * 2));
             assert!(registry.release(n * 2 + 1));
         }
+    }
+    #[test]
+    fn cancellation_before_terminal_commit_cannot_be_reported_complete() {
+        let job = TransferJob::new(991234, 0);
+        job.cancel();
+        job.finish(Ok(()));
+        assert_eq!(job.status.lock().unwrap().0.state, 5);
+        job.finish(Ok(()));
+        assert_eq!(job.status.lock().unwrap().0.state, 5);
+        let completed = TransferJob::new(991235, 0);
+        completed.finish(Ok(()));
+        completed.cancel();
+        assert_eq!(completed.status.lock().unwrap().0.state, 6);
     }
 }

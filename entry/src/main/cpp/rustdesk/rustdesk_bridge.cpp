@@ -126,6 +126,14 @@ extern "C" {
     struct RustDeskFfiRemoteFileMetadata { uint32_t type; uint64_t size; uint64_t modified; };
     int rustdesk_get_remote_directory_count(void*, uint64_t);
     size_t rustdesk_get_remote_directory_path(void*, uint64_t, char*, size_t);
+    struct RustDeskFfiFileClipboardSource { const char* name; int32_t fd; uint32_t isDirectory; };
+    bool rustdesk_configure_file_clipboard(void*, bool);
+    bool rustdesk_get_file_clipboard_snapshot(void*, RustDeskFileClipboardSnapshot*);
+    bool rustdesk_get_file_clipboard_entry(void*, uint64_t, uint32_t, char*, size_t, RustDeskFfiRemoteFileMetadata*);
+    uint64_t rustdesk_publish_file_clipboard(void*, const RustDeskFfiFileClipboardSource*, uint32_t);
+    bool rustdesk_get_file_clipboard_publication(void*, uint64_t, RustDeskFileClipboardPublication*);
+    bool rustdesk_revoke_file_clipboard_publication(void*, uint64_t);
+    int rustdesk_receive_file_clipboard_fd(void*, uint64_t, uint64_t, uint32_t, int);
     bool rustdesk_get_remote_directory_entry(void*, uint64_t, uint32_t, char*, size_t, RustDeskFfiRemoteFileMetadata*);
     bool rustdesk_get_transfer_status_by_id(void*, uint64_t, RustDeskFfiTransferStatus*);
     size_t rustdesk_get_transfer_error_by_id(void*, uint64_t, char*, size_t);
@@ -4207,6 +4215,102 @@ int64_t RustDeskBridge::sendFileFromFd(const std::string& remotePath, int fd, in
     return result;
 }
 
+static_assert(sizeof(RustDeskFileClipboardSnapshot) == 32, "Rust file clipboard snapshot ABI");
+static_assert(sizeof(RustDeskFileClipboardPublication) == 32, "Rust file clipboard publication ABI");
+bool RustDeskBridge::configureFileClipboard(bool enabled) {
+#ifdef RUSTDESK_USE_REAL_CORE
+    if (enabled) {
+        return rdDispatchFfiOutbound(impl_.get(), mode_, RustDeskFfiOutboundLane::File,
+            [enabled](void* handle) { return rustdesk_configure_file_clipboard(handle, enabled); });
+    }
+    return rdDispatchFfiTransferManagement(impl_.get(), mode_,
+        [enabled](void* handle) { return rustdesk_configure_file_clipboard(handle, enabled); });
+#else
+    return false;
+#endif
+}
+RustDeskFileClipboardSnapshot RustDeskBridge::getFileClipboardSnapshot() {
+    RustDeskFileClipboardSnapshot result {};
+#ifdef RUSTDESK_USE_REAL_CORE
+    (void)rdDispatchFfiTransferManagement(impl_.get(), mode_, [&result](void* handle) {
+        return rustdesk_get_file_clipboard_snapshot(handle, &result);
+    });
+#endif
+    return result;
+}
+std::vector<RustDeskFileClipboardEntry> RustDeskBridge::getFileClipboardEntries(uint64_t revision) {
+    std::vector<RustDeskFileClipboardEntry> result;
+#ifdef RUSTDESK_USE_REAL_CORE
+    (void)rdDispatchFfiTransferManagement(impl_.get(), mode_, [revision, &result](void* handle) {
+        RustDeskFileClipboardSnapshot snapshot {};
+        if (!rustdesk_get_file_clipboard_snapshot(handle, &snapshot) || snapshot.revision != revision ||
+            snapshot.state != 3 || snapshot.entryCount > 256) { return false; }
+        result.reserve(snapshot.entryCount);
+        for (uint32_t index = 0; index < snapshot.entryCount; ++index) {
+            char name[4097] = {};
+            RustDeskFfiRemoteFileMetadata metadata {};
+            if (!rustdesk_get_file_clipboard_entry(handle, revision, index, name, sizeof(name), &metadata)) {
+                result.clear(); return false;
+            }
+            result.push_back({name, metadata.type == 0, metadata.size, metadata.modified});
+        }
+        return true;
+    });
+#endif
+    return result;
+}
+uint64_t RustDeskBridge::publishFileClipboard(const std::vector<RustDeskFileClipboardSource>& sources) {
+    uint64_t result = 0;
+#ifdef RUSTDESK_USE_REAL_CORE
+    if (sources.empty() || sources.size() > 256) { return 0; }
+    (void)rdDispatchFfiOutbound(impl_.get(), mode_, RustDeskFfiOutboundLane::File,
+        [&sources, &result](void* handle) {
+            std::vector<RustDeskFfiFileClipboardSource> inputs;
+            inputs.reserve(sources.size());
+            for (const auto& source : sources) {
+                if (source.name.empty() || source.name.size() > 4096 || source.name.find('\0') != std::string::npos ||
+                    (!source.isDirectory && source.fd < 0)) { return false; }
+                inputs.push_back({source.name.c_str(), source.fd, source.isDirectory ? 1u : 0u});
+            }
+            result = rustdesk_publish_file_clipboard(handle, inputs.data(), static_cast<uint32_t>(inputs.size()));
+            return result != 0;
+        });
+#endif
+    return result;
+}
+RustDeskFileClipboardPublication RustDeskBridge::getFileClipboardPublication(uint64_t id) {
+    RustDeskFileClipboardPublication result {};
+#ifdef RUSTDESK_USE_REAL_CORE
+    (void)rdDispatchFfiTransferManagement(impl_.get(), mode_, [id, &result](void* handle) {
+        return rustdesk_get_file_clipboard_publication(handle, id, &result);
+    });
+#endif
+    return result;
+}
+bool RustDeskBridge::revokeFileClipboardPublication(uint64_t id) {
+#ifdef RUSTDESK_USE_REAL_CORE
+    return rdDispatchFfiTransferManagement(impl_.get(), mode_, [id](void* handle) {
+        return rustdesk_revoke_file_clipboard_publication(handle, id);
+    });
+#else
+    return false;
+#endif
+}
+int64_t RustDeskBridge::receiveFileClipboardToFd(uint64_t revision, uint32_t index, int fd) {
+    int64_t result = -1;
+#ifdef RUSTDESK_USE_REAL_CORE
+    (void)rdDispatchFfiOutbound(impl_.get(), mode_, RustDeskFfiOutboundLane::File,
+        [this, revision, index, fd, &result](void* handle) {
+            const uint64_t id = impl_->nextTransferId.fetch_add(1);
+            if (rustdesk_receive_file_clipboard_fd(handle, id, revision, index, fd) == 0) {
+                result = static_cast<int64_t>(id);
+            }
+            return result > 0;
+        });
+#endif
+    return result;
+}
+
 static_assert(sizeof(RustDeskTransferAuthSnapshot) == 40, "Rust file auth ABI");
 static_assert(sizeof(RustDeskTransferResult) == 32, "Rust file result ABI");
 int64_t RustDeskBridge::createRemoteDirectory(const std::string& remotePath) {
@@ -4423,7 +4527,12 @@ ClipboardSnapshot RustDeskBridge::getClipboardSnapshot() {
             const size_t length = rustdesk_get_clipboard_snapshot(handle, buffer.data(), buffer.size(), &revision);
             snapshot.sequence = revision;
             snapshot.ready = revision != 0;
-            if (length > buffer.size()) { snapshot.kind = "unsupported"; }
+            if (length == SIZE_MAX - 1) {
+                RustDeskFileClipboardSnapshot files {};
+                snapshot.kind = "files";
+                snapshot.ready = rustdesk_get_file_clipboard_snapshot(handle, &files) &&
+                    files.revision == revision && files.state == 3;
+            } else if (length > buffer.size()) { snapshot.kind = "unsupported"; }
             else if (length > 0) {
                 snapshot.kind = "text";
                 snapshot.text.assign(reinterpret_cast<const char*>(buffer.data()), length);

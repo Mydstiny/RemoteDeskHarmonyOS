@@ -579,6 +579,57 @@ test('local tree rejects unlisted children and directory symlinks and supports a
   assert.equal(artifacts.length, 1); assert.ok(artifacts[0].directory); assert.equal(fs.readdirSync(artifacts[0].path).length, 0);
   assert.deepEqual(progress, [[0, 0]]); batch.release();
 }));
+test('local tree partial filename uses persisted local layout and remains cleanable after recovery', () => using(async env => {
+  const sourceRoot = path.join(env.directory, 'ordinary'); fs.mkdirSync(sourceRoot); fs.writeFileSync(path.join(sourceRoot, 'partial'), 'abc');
+  const batch = env.batch(), artifacts = await batch.stageLocalDirectoryTree(localTreeSources(sourceRoot, 'Root'), () => true, () => {});
+  batch.release(); const disk = JSON.parse(fs.readFileSync(path.join(batch.directory, 'manifest.json'), 'utf8'));
+  assert.equal(disk.nativeDirectories[0].layout, 'localTree'); env.api.TransferArtifactBatch.batches.clear();
+  const recovered = env.api.recoverTransferArtifactBatches(env.filesDir, env.scope, 'clipboard'); assert.equal(recovered.length, 1);
+  assert.equal(recovered[0].getInfo().canCleanup, true); const cleaned = await recovered[0].cleanupExpired(0);
+  assert.equal(cleaned.removedFiles, 1); assert.equal(cleaned.removedBytes, 3); assert.equal(cleaned.invalidBatches, 0);
+  assert.equal(fs.existsSync(artifacts.find(item => !item.directory).path), false); assert.equal(fs.readFileSync(path.join(sourceRoot, 'partial'), 'utf8'), 'abc');
+}));
+test('old schema-2 local trees infer layout from exact stored/logical paths and persist the discriminator', () => using(async env => {
+  const sourceRoot = path.join(env.directory, 'legacy-local'); fs.mkdirSync(sourceRoot); fs.writeFileSync(path.join(sourceRoot, 'partial'), 'abc');
+  const batch = env.batch(); await batch.stageLocalDirectoryTree(localTreeSources(sourceRoot, 'receive-42'), () => true, () => {}); batch.release();
+  const manifest = path.join(batch.directory, 'manifest.json'), disk = JSON.parse(fs.readFileSync(manifest, 'utf8'));
+  delete disk.nativeDirectories[0].layout; fs.writeFileSync(manifest, JSON.stringify(disk)); env.api.TransferArtifactBatch.batches.clear();
+  const recovered = env.api.recoverTransferArtifactBatches(env.filesDir, env.scope, 'clipboard'); assert.equal(recovered.length, 1);
+  const cleaned = await recovered[0].cleanupExpired(0); assert.equal(cleaned.removedFiles, 1); assert.equal(cleaned.invalidBatches, 0);
+  assert.equal(JSON.parse(fs.readFileSync(manifest, 'utf8')).nativeDirectories[0].layout, 'localTree');
+}));
+test('old RDP layouts remain strict and never treat their protocol partial directory as a local file', () => using(async env => {
+  for (const corrupt of [false, true]) {
+    const batch = env.batch('received'), slot = await batch.createNativeReceiveDirectory(() => true, 3);
+    const expected = nativeTree(slot, [{ name: 'Root/file', bytes: Buffer.from('abc') }]);
+    const artifacts = await slot.commit(expected); batch.release();
+    const manifest = path.join(batch.directory, 'manifest.json'), disk = JSON.parse(fs.readFileSync(manifest, 'utf8'));
+    assert.equal(disk.nativeDirectories[0].layout, 'rdpReceive'); delete disk.nativeDirectories[0].layout;
+    fs.writeFileSync(manifest, JSON.stringify(disk));
+    if (corrupt) { const partial = path.join(slot.path, 'receive-42/partial'); fs.rmdirSync(partial); fs.writeFileSync(partial, 'unexpected'); }
+    env.api.TransferArtifactBatch.batches.clear();
+    const recovered = env.api.TransferArtifactBatch.recover(env.filesDir, env.scope, 'received', batch.id); assert.ok(recovered);
+    if (corrupt) { await assert.rejects(recovered.cleanupExpired(0)); assert.ok(fs.existsSync(artifacts[0].path)); }
+    else { assert.equal((await recovered.cleanupExpired(0)).removedFiles, 1); }
+  }
+}));
+test('forged or conflicting explicit layouts fail closed without deleting payloads', () => using(async env => {
+  const sourceRoot = path.join(env.directory, 'conflict'); fs.mkdirSync(sourceRoot); fs.writeFileSync(path.join(sourceRoot, 'partial'), 'abc');
+  const batch = env.batch(), artifacts = await batch.stageLocalDirectoryTree(localTreeSources(sourceRoot, 'Root'), () => true, () => {}); batch.release();
+  const manifest = path.join(batch.directory, 'manifest.json'), original = JSON.parse(fs.readFileSync(manifest, 'utf8'));
+  for (const layout of ['rdpReceive', 'anything']) {
+    const disk = structuredClone(original); disk.nativeDirectories[0].layout = layout; fs.writeFileSync(manifest, JSON.stringify(disk));
+    assert.equal(env.api.TransferArtifactBatch.recover(env.filesDir, env.scope, 'clipboard', batch.id), null);
+    assert.ok(fs.existsSync(artifacts.find(item => !item.directory).path));
+  }
+}));
+test('aborted local partial filename retains ownership and uses local layout during cleanup', () => using(async env => {
+  const sourceRoot = path.join(env.directory, 'cancel-partial'); fs.mkdirSync(sourceRoot); fs.writeFileSync(path.join(sourceRoot, 'partial'), 'abc');
+  const batch = env.batch(); let active = true; env.onWrite(name => { if (name.includes('/native-')) active = false; });
+  await assert.rejects(batch.stageLocalDirectoryTree(localTreeSources(sourceRoot, 'Root'), () => active, () => {})); env.onWrite(null); batch.release();
+  env.api.TransferArtifactBatch.batches.clear(); const recovered = env.api.TransferArtifactBatch.recover(env.filesDir, env.scope, 'clipboard', batch.id); assert.ok(recovered);
+  const cleaned = await recovered.cleanupExpired(0); assert.equal(cleaned.removedFiles, 1); assert.equal(cleaned.removedBytes, 3); assert.equal(cleaned.invalidBatches, 0);
+}));
 (async () => { for (const { name, run } of tests) { await run(); console.log('PASS ' + name); }
   console.log(`PASS ${tests.length} real-filesystem artifact regressions`);
 })().catch(error => { console.error(error); process.exitCode = 1; });
