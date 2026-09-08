@@ -1,7 +1,7 @@
 # RustDesk「控制手机」官方体验对齐计划（用户显式选择限定）
 
 - 日期：2026-09-08。
-- 状态：IMPLEMENTING；用户随后明确“开始执行我们的计划”，S0–S4 手机限定代码已落盘，正在完成检查点与独立复核；S5 真机验收未执行。
+- 状态：BLOCKED_SCOPE_DEPENDENCY；用户已授权实施，检查点 `08ccf6b6` 独立复核 FAIL。两项范围内修复已提交 `35d3855c` 并经同一 reviewer 确认；来源证明与实际呈现帧身份需要下述最小边界授权。新增入口已关闭，S0–S4 不声明完成；S5 真机验收未执行。
 - 用户硬边界：仅涵盖用户选择「控制手机」的情况，不允许扩散或影响其他情况、功能模组。
 - 本计划取代此前临时评估中的宽范围实施建议；临时评估只保留调查参考价值，不构成执行授权。
 - 工作区基线：`codex/pro-purchase-foundation@cdc193958`，本地 main 为 `8edc18786`。Pro 与文件/剪贴板任务有并行改动；实施前刷新相关路径差量，不覆盖、不混合提交。
@@ -195,3 +195,32 @@ pwsh -NoProfile -File scripts/verify_open_source_release.ps1 -Mode Light -Reposi
 - 构建环境处理：仅逐字节核验并移出 `resource_str` 四个语言目录中的重复生成 `string 2.json` 至临时备份，未修改源资源或全局构建配置；前两次重跑先后被 base/en_US 重复资源阻断。
 - S5：设备条件已询问，尚未收到。本记录不宣称实际点击误差、手势符号/速度、旧版 Android 返回、软键盘、熄屏、LAN/中继、性能 A/B 或非目标协议完整设备矩阵通过。
 - 并行边界：同一工作区另有 Pro/RDP 接续与独立呈现指标改动；手机提交只包含本计划 hunks，不为这些任务授予范围或写审查结论。活动分支尚有其他任务，不能以本增量代替整分支 PR/合并闭环。
+
+
+## 9. 独立复核阻塞与待授权最小范围（2026-09-08）
+
+`/root/review_explicit_phone` 对 `08ccf6b6` 的独立复核为 FAIL：
+
+1. 共享 renderer 的零上下文选择暂存造成提交快照函数错位。工作树构建成功未覆盖此快照；已从索引快照重建正确函数位置，并用准确索引 cpp/header 完成 arm64-v8a/x86_64 syntax 检查。后续不得将含并行变更的工作树构建等同独立提交验证。
+2. 来源证明不足：生产 `RemoteHost.fromJSON` 会将缺失/空 sourceType 归一化成 manual；旧记录 target=phone 因而误被判为显式选择。14 项原 host 检查没有覆盖这条生产归一化链，不能证明 N02。
+3. 旧 batch 重放：仅 bool 几何门无法淘汰 sender 已 dequeue 的旧输入。已加手机专用 epoch，dequeue 在手机门锁内捕获，关闭递增，发送持锁核对；close/reopen 后旧 batch 回归检查通过，Rust 全量 313 PASS。普通会话保留现有队列行为。
+4. 实际呈现证明不足：新 540×1200 通知/编码帧之后，旧 1080×2400 纹理因同宽高比可误确认新 epoch。需将真实解码输出身份带到成功呈现回执，不能以最新全局 epoch 或当前 Decode 调用代替输出帧身份。
+
+当前保护：`explicitPhoneImplementationReady()` 固定 false，连接配置先检查此门；这批新手机策略不进入应用会话。现有控制手机行为继续使用原路径。此保护并非问题 2/4 已修复，也不作为功能验收 PASS。
+
+计划第 1.4 节禁止“为确认来源而修改 Pro、导入/同步或存储结构”，第 2 节排除了“编解码器”。现有作用域无法提供上述两项证明，先保留检查点，不扩大修改。拟请求的最小扩展仅为：
+
+- **选择证据边界**：允许在现有用户选项及记录反序列化边界传递手机专用选择来源证据；缺失/默认/自动推导保持未知，未知只能由用户重新明确选择获得。仅消费者为本计划手机入口，不改 Pro 推断、存量字段含义、其他主机行为、数据库 schema，不批量迁移。
+- **呈现证据边界**：允许在 RAW/硬件解码输出与 renderer 成功呈现之间增加手机专用帧身份旁路回执；RAW 使用实际输出 AVFrame PTS，硬件核对输出 PTS 和已 Update 的 NativeImage timestamp。保留纹理重绘沿用原身份；映射未知持续阻断，不改 codec 算法、全局变换或非手机帧路由。
+
+硬件 SDK 的现有头文件没有证明 NativeImage timestamp 与输入 PTS/AtTime 的映射，不能假定直接相等或固定倍数。授权后仍须官方证据/定向验证及真机证明；不能用构建成功替代。
+
+S5 全部真机正例及 N01–N12 隔离负例仍 NOT RUN。当前不 push/merge 整个含并行未完成 Pro 工作的活动分支。
+
+### 本轮检查点结果
+
+- 修复提交：`35d3855c`；同一 reviewer 窄复查确认快照错位修复、已出队旧 batch 拒绝、正常新连接新增入口关闭。整体仍 BLOCKED，原来源/画面问题没有冒充解决。
+- 验证：15 phone host checks；Rust 313 PASS（reviewer 独立重跑 stale batch 定向 1 PASS）；arm64-v8a/x86_64 Rust 构建 PASS；准确索引 renderer cpp/header 双 ABI syntax PASS；testCompile 16 s 36 ms、signed assembleHap 1 min 6 s 16 ms（SignHap 1 s 17 ms），exit 0；Light/diff PASS。
+- 编译限制：App 两门运行于共享工作树，含并行 Pro/RDP 未审变更；单独提交 renderer 另做了准确索引语法检查。没有对整个共享 HAP 作代码审查或设备验收声明。
+- 无存储扩展的来源替代方案：允许范围内的 RemoteDesktop 连接边界可要求用户作一次明确的“本次控制手机”选择，凭证只绑定 attempt/目标/配置，取消或更换即失效；不从归一化 manual 恢复证明。该替代会增加连接选择步骤，尚未实施；跨重启免确认则需要选择产生点到持久化的完整证据链，不能只修 policy。
+- 页面禁用门不撤销此前已启用的 native 会话，也不是阻止内部直接构造 native 配置的全局开关。本轮未安装或运行此检查点到设备。

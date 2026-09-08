@@ -1051,7 +1051,7 @@
     }
   },
   "rustDeskExplicitPhone": {
-    "status": "code-checkpoint-pending",
+    "status": "blocked-scope-dependency-new-entry-disabled",
     "base": "4719e6dcd",
     "plan": "docs/codex/plans/2026-09-08-rustdesk-explicit-phone-control-parity.md",
     "scope": [
@@ -1077,19 +1077,33 @@
       "rustdesk_ffi/src/control_inbox.rs",
       "scripts/tests/test_rustdesk_explicit_phone.cjs"
     ],
-    "reviewStatus": "REVIEW_REQUIRED",
+    "reviewStatus": "RESUME_REVIEW",
     "validation": {
-      "host": "14 phone + 18 RDP checks PASS",
+      "host": "PASS 15 phone host checks; 18 RDP checks retained from first increment",
       "native": "18 display/phone gate checks PASS",
-      "rust": "4 android_phone tests PASS",
-      "testCompile": "PASS exit 0; BUILD SUCCESSFUL in 7 s 904 ms",
-      "assembleHap": "PASS exit 0; signed BUILD SUCCESSFUL in 1 min 6 s 929 ms; SignHap 960 ms",
-      "light": "PASS",
-      "diff": "PASS"
+      "rust": "PASS 313 full no-default-features tests including stale dequeued batch after close/reopen",
+      "testCompile": "PASS exit 0; BUILD SUCCESSFUL in 16 s 36 ms",
+      "assembleHap": "PASS exit 0; signed BUILD SUCCESSFUL in 1 min 6 s 16 ms; SignHap 1 s 17 ms",
+      "light": "PASS Light",
+      "diff": "PASS",
+      "exactRenderer": "PASS indexed renderer cpp/header syntax arm64-v8a and x86_64",
+      "rustAbi": "PASS arm64-v8a and x86_64; current Rust phone epoch fix included"
     },
-    "next": "Finish current dual ABI, checkpoint and independent scoped review; then S5 official-client device A/B and N01-N12 device isolation. Preserve unrelated branch work.",
+    "next": "Keep new admission disabled; finish local fix checkpoint and obtain plan section 9 minimal boundary authorization. Resume same reviewer; S5 NOT RUN.",
     "blockers": [
-      "S5 device/Android peer details and authorization for actual device interaction are unavailable; no runtime acceptance claim."
-    ]
+      "Unverified sourceType normalization can falsely grant explicit choice; source evidence needs narrowly authorized boundary changes without storage schema migration.",
+      "Aspect-only old texture can confirm new geometry; actual decoded-frame identity requires narrowly authorized decoder/presentation metadata path.",
+      "S5 device/Android peer details unavailable; no runtime acceptance.",
+      "Shared active branch has unrelated unfinished Pro work; no aggregate push/merge."
+    ],
+    "stageCommit": "35d3855cad78966470e07c2cea75a63cca6c8b39",
+    "reviewerTaskId": "/root/review_explicit_phone",
+    "reviewResult": "BLOCKED: independent review confirms snapshot and stale-batch fixes and normal new-connection admission disabled; source provenance and output-frame identity remain unresolved",
+    "reviewReceiptId": "rustdesk-explicit-phone-blocked-35d3855c-2026-09-08",
+    "metadataVerification": {
+      "testCompile": "PASS exit 0; BUILD SUCCESSFUL in 4 s 807 ms",
+      "assembleHap": "PASS exit 0; signed BUILD SUCCESSFUL in 5 s 427 ms",
+      "compliance": "PASS Light/diff/state"
+    }
   }
 }

@@ -4,7 +4,7 @@ Updated: 2026-09-08 Asia/Shanghai
 
 ## Now
 
-- RustDesk explicit phone: complete scoped checkpoint/independent review of S0–S4, then [S5 official A/B and isolation matrix](plans/2026-09-08-rustdesk-explicit-phone-control-parity.md). Device details requested; no hardware acceptance claim. Do not expand into inferred/Pro phone, ordinary RustDesk, other protocols or shared queue/renderer redesign.
+- RustDesk explicit phone: scope-blocked after independent FAIL; keep new admission disabled. Local snapshot/epoch fixes `35d3855c` independently confirmed; obtain [section 9 minimal source/frame evidence boundary authorization](plans/2026-09-08-rustdesk-explicit-phone-control-parity.md), then resume the same reviewer and S5 device A/B. No other protocol/Pro/storage schema or decoder algorithm expansion.
 
 - RDP direct touch: accept text caret placement with slight finger jitter, real dragging, long-press right click, mouse in all three modes, keyboard open/closed and zoom after code repair `da9ad958`; device acceptance remains pending.
 
