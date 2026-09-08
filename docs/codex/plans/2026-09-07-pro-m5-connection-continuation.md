@@ -32,7 +32,7 @@
 - Share Kit 的 Promise 完成只表示信息交给系统，不是目标 SSH-ready 回执；发送端不提供据此关闭会话的路径。跨账号确认回执、PC 官方 continuation、RDP 适配及设备矩阵仍未完成。
 - `ProConnectionShareConfiguration` 暂返回空字符串：真实域名/App Link 声明/AGC 应用关联/系统 fragment 交付核验完成前，发送与接收均拒绝执行，不虚构生产地址。目录条目保持 experimental，不进入正式权益销售。
 
-本轮当前 host 验证：27 项分享检查执行生产 policy/sender/receiver 和实际 Want、保存、路由、PC 交接、SFTP 恢复方法；34 项接续与 14 项文件碰一碰回归 PASS。最终 Hvigor/Light/Release 与独立代码复核待后续记录；没有真实跨设备分享成功结论。
+本轮当前 host 验证：27 项分享检查执行生产 policy/sender/receiver 和实际 Want、保存、路由、PC 交接、SFTP 恢复方法；34 项接续与 14 项文件碰一碰回归 PASS。代码提交 eca8f8aa 已由原 reviewer 独立复核 PASS，另追加 3 项真实源页面/发送异步边界检查 PASS；没有真实跨设备分享成功结论。
 
 官方依据：[手机与 PC 互碰分享](https://developer.huawei.com/consumer/cn/doc/harmonyos-guides/knock-share-pc-phones-mutually)、[通过 App Linking 拉起应用](https://developer.huawei.com/consumer/cn/doc/harmonyos-guides/app-linking-startupapp)、[分享链接](https://developer.huawei.com/consumer/cn/doc/harmonyos-guides/share-utd-link)。API 声明按当前 DevEco SDK 的 `@hms.collaboration.harmonyShare.d.ts` 与 `@hms.collaboration.systemShare.d.ts` 核对。
 
@@ -61,3 +61,5 @@
 修正后当次门禁：default 测试编译 BUILD SUCCESSFUL in 11 s 201 ms；signed Debug BUILD SUCCESSFUL in 30 s 278 ms；Release BUILD SUCCESSFUL in 55 s 966 ms，全部 exit 0。33 项 connection（含真实页面方法）、49 项 SSH、Light/diff 与 Release 审计 PASS；ABC SHA-256 e617e8f253a95b570e0a892f6fc6207d08d7533dd355cec8963c8597a4e9d328。修正独立复核待进行。
 
 最终独立复核 PASS：精确 ed537821 + 27716d2d + c64efc8e；最后补充按事务 ID 条件取消，旧页面迟到不能取消新目标。34 项 connection（含真实页面方法）独立通过；最终 compile24s782、signedDebug36s942、Release49s746，Light/diff/Runtime 实包剪枝 PASS。ABC 1211b5ab54a2090731ee37b3836aa89a14d7a2221e054ed11a1c6e1267d6a9db。共享构建当时包含正在开发的 M6 Debug USB 探针，不把该代码计入 M5 审查；全 M5 与真机跨设备仍未完成。
+
+本增量最终门禁：testCompile BUILD SUCCESSFUL in 21 s 270 ms；signed Debug BUILD SUCCESSFUL in 1 min 13 s 939 ms；Release BUILD SUCCESSFUL in 1 min 18 s 655 ms，全部 exit 0。Light/diff PASS。独立 Release 模拟/USB/sandbox 剪枝与空 App Link getter 审计 PASS，ABC 87648ef2ddb21f6ecd3d515c8ae96cba673d090c38b083b36798edb05488b519。产物包含并行 AI/文件传输开发代码，审查只覆盖上述增量与 Pro 剪枝。

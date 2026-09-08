@@ -23,6 +23,8 @@ Updated: 2026-09-08 Asia/Shanghai
 
 - Base UI: ca929ceb free header sample implemented and independently reviewed. Complete U0 performance/device baseline and U1 API23/26 visual/keyboard acceptance before broader migration; public UI never requires Pro.
 
+- M5 SSH Share Kit eca8f8aa independently PASS (code and Pro Release checks). Configure and verify the real App Link/fragment path; PC continuation, RDP and cross-device acceptance remain open. Continue free public UI in parallel with these external prerequisites.
+
 0. Pro M5/M6/M7: proceed with connection sharing/official continuation, USB FIDO2 and phone-passkey feasibility, then trusted production purchase/restore/offline/refunds. ACL/App Linking and backend configuration are not confirmed; production checkout and unaccepted features remain disabled.
 
 1. Triage any consolidated device findings against the committed item boundary; use the schema-v5 generation/matrix chain for flip issues, verify RustDesk H.265 with `preflight config=H265`, `ffiCfg codec=5(H265)` and actual frame `codec=1`, and use the new RDP `source`/`code` classification to identify the original intermittent-disconnect source. Preserve the exact protocol, device type, window mode, decoder and reproduction sequence.

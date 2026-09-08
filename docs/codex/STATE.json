@@ -3,13 +3,13 @@
   "task": "pro-purchase-foundation",
   "branch": "codex/pro-purchase-foundation",
   "base": "8edc187868e94ed41634e8a6c4c4c072e3a48679",
-  "head": "42a0258bb1868c7c32749429503534535c2c3298",
-  "phase": "pro-m7-package-reviewed-awaiting-deployment",
+  "head": "eca8f8aaafa9a9659d7eb6cf3ded89e08cef7d57",
+  "phase": "free-ui-public-controls-validation",
   "status": "in-progress",
-  "next": "Upload the reviewed private sandbox package after explicit transfer consent and browser file-access enablement; configure the protected API and timer-only worker, verify native authorization/IAP, then continue the remaining roadmap.",
+  "next": "Validate, commit and independently review free shared headers and native settings rows; continue remaining public UI and M5/M6 roadmap while App Linking configuration and M7 deployment consent are pending.",
   "blockers": [
     "M3/U0-U4 device matrix and M4 PC real Share Kit/SFTP file-integrity acceptance remain unverified.",
-    "M5 KNOCK_COLLABORATION provision and App Linking setup unconfirmed; M6 USBManager path still needs authenticator/native proof, DDK-specific ACL is not assumed mandatory.",
+    "M5 Share Kit App Linking domain, association and actual fragment delivery remain unverified; ServiceInteraction ACL is a separate path. M6 USB/RDP authenticator and phone-passkey RP/origin proof remain pending.",
     "M7 native cloud entry and AGC package independently PASS. Upload consent/browser file access, full AGC deployment, notification endpoint and real device purchase/refund remain open."
   ],
   "planPaths": [
@@ -71,20 +71,32 @@
       ".gitattributes",
       "NOTICE",
       "REUSE.toml",
-      "THIRD_PARTY_NOTICES.md"
+      "THIRD_PARTY_NOTICES.md",
+      "entry/src/main/ets/common/SshAddBasicFields.ets",
+      "entry/src/main/ets/components/ProConnectionShareControls.ets",
+      "entry/src/main/ets/components/hostadd/SshAddFlow.ets",
+      "scripts/tests/test_pro_connection_share.cjs",
+      "entry/src/main/ets/common/AppUiMetrics.ets",
+      "entry/src/main/ets/common/AppUiColorPolicy.ets",
+      "entry/src/main/ets/components/AppSettingsSwitchRow.ets",
+      "entry/src/main/ets/components/RemoteWheelDirectionSettingsSheet.ets",
+      "entry/src/main/ets/components/RemotePinchZoomSettingsSheet.ets",
+      "entry/src/main/ets/components/RemoteSessionControlBarSettingsSheet.ets",
+      "entry/src/main/ets/components/SecretVisibilitySettingsSheet.ets",
+      "entry/src/main/ets/components/DiagnosticCaptureSettingsSheet.ets"
     ],
     "findings": [],
-    "reviewedHead": "42a0258bb1868c7c32749429503534535c2c3298",
-    "reason": "M7 native entry and package increments independently PASS through 42a0258b. Aggregate roadmap, deployment and device acceptance remain incomplete; scoped receipts do not imply aggregate PASS."
+    "reviewedHead": "eca8f8aaafa9a9659d7eb6cf3ded89e08cef7d57",
+    "reason": "Exact M5 SSH sharing checkpoint eca8f8aa independently PASS; free public UI increment is under development. Scoped evidence does not close aggregate roadmap or device/deployment acceptance."
   },
   "lastVerification": {
-    "testCompile": "PASS exit 0; BUILD SUCCESSFUL in 6 s 68 ms",
-    "assembleHap": "PASS exit 0; signed BUILD SUCCESSFUL in 9 s 287 ms",
-    "hostChecks": "PASS 78 public server checks independently rerun; additional close/cleanup failure checks PASS",
-    "linuxRuntime": "Actual Linux Node22 cold start/control-only snapshot, protected API rejection, worker callback and zero-order reconciliation PASS",
-    "compliance": "PASS Light/diff; OpenSSL and linked runtime licenses/provenance verified",
-    "gateCoordination": "Package fix sources frozen before the current shared Remote-AI documentation build and matched afterward; final logs independently verified",
-    "scopeBoundary": "Deployment packaging and local Linux/control-only checks; no actual full AGC deployment, native user-code exchange or real IAP acceptance"
+    "hostChecks": "Independent 27 share + 34 continuation + 14 knock + 26 runtime PASS; three extra actual source-page/transport checks PASS",
+    "testCompile": "PASS exit 0; BUILD SUCCESSFUL in 21 s 270 ms",
+    "assembleHap": "PASS exit 0; signed BUILD SUCCESSFUL in 1 min 13 s 939 ms",
+    "release": "PASS exit 0; BUILD SUCCESSFUL in 1 min 18 s 655 ms; independent simulation/USB/sandbox pruning and empty App Link getter audit PASS",
+    "releaseAbcSha256": "87648ef2ddb21f6ecd3d515c8ae96cba673d090c38b083b36798edb05488b519",
+    "compliance": "PASS Light/diff",
+    "boundary": "Unconfigured direct SSH code increment only; shared HAP includes other unreviewed work. Domain/manifest/fragment/cross-device/PC acceptance, PC continuation and RDP remain open."
   },
   "updated": "2026-09-08 Asia/Shanghai",
   "roadmapPaths": [
@@ -311,7 +323,8 @@
       "M7Ledger": "ab3a60ac19cc891bcfa8a7554d939c053ebbfd64",
       "M7LedgerFix": "bbc7fb535275e4db465111df8ed44d2aeb808fb3",
       "M7AppClient": "e3f47078a8ccc5039ec4fe4955a1a56a27bcec3f",
-      "M7AppClientReviewFix": "c5b647ff46bff91749d3bfc9d31e15fa11ba9cca"
+      "M7AppClientReviewFix": "c5b647ff46bff91749d3bfc9d31e15fa11ba9cca",
+      "M5Share": "eca8f8aaafa9a9659d7eb6cf3ded89e08cef7d57"
     },
     "commitPolicy": "One separate commit after each completed stage; checkpoint incomplete work explicitly.",
     "reviewerTaskId": "/root/review_pro_plan",
@@ -356,10 +369,10 @@
       }
     },
     "m5": {
-      "status": "first-direct-ssh-code-reviewed-device-pending",
+      "status": "continuation-and-sharing-code-reviewed-device-pending",
       "planPath": "docs/codex/plans/2026-09-07-pro-m5-connection-continuation.md",
       "availability": "experimental",
-      "scope": "Phone/Pad direct SSH via EntryAbility; sharing/PC/RDP still open",
+      "scope": "Reviewed Phone/Pad direct SSH continuation; new Share Kit SSH sender/free receiver and authenticated PC window view handoff under validation. App Link configuration, PC continuation and RDP remain open.",
       "reviewerTaskId": "/root/review_pro_plan",
       "reviewStatus": "PASS",
       "findings": [],
@@ -378,6 +391,27 @@
         "compliance": "Light/diff PASS",
         "device": "NOT RUN",
         "scopeBoundary": "Shared HAP includes uncommitted M6 probe; M5 review covers only exact continuation code and Runtime pruning, not M6."
+      },
+      "sharing": {
+        "status": "code-and-artifact-reviewed-configuration-device-pending",
+        "availability": "experimental",
+        "configuredAppLink": false,
+        "reviewStatus": "PASS",
+        "reviewerTaskId": "/root/review_pro_plan",
+        "hostChecks": "PASS 27 sharing, 34 continuation, 14 knock, 26 runtime; mocks and actual page methods only",
+        "deviceAcceptance": "NOT RUN; no real App Linking fragment, Share Kit delivery or PC target acceptance",
+        "sourceClose": "No close path from Share Kit result; source remains connected",
+        "reviewedCommit": "eca8f8aaafa9a9659d7eb6cf3ded89e08cef7d57",
+        "findings": [],
+        "verification": {
+          "hostChecks": "Independent 27 share + 34 continuation + 14 knock + 26 runtime PASS; three extra actual source-page/transport checks PASS",
+          "testCompile": "PASS exit 0; BUILD SUCCESSFUL in 21 s 270 ms",
+          "assembleHap": "PASS exit 0; signed BUILD SUCCESSFUL in 1 min 13 s 939 ms",
+          "release": "PASS exit 0; BUILD SUCCESSFUL in 1 min 18 s 655 ms; independent simulation/USB/sandbox pruning and empty App Link getter audit PASS",
+          "releaseAbcSha256": "87648ef2ddb21f6ecd3d515c8ae96cba673d090c38b083b36798edb05488b519",
+          "compliance": "PASS Light/diff",
+          "boundary": "Unconfigured direct SSH code increment only; shared HAP includes other unreviewed work. Domain/manifest/fragment/cross-device/PC acceptance, PC continuation and RDP remain open."
+        }
       }
     },
     "m6": {
