@@ -22,7 +22,7 @@ Updated: 2026-09-08 Asia/Shanghai
 
 
 
-- Base UI: four controls/navigation/toolbar/homepage increments independently PASS; homepage swipe conflict closed. Natural grouped cards have current compile/signed/Light, unchanged 318-event audit and 8 group-policy checks; checkpoint/review next, then theme color/forms and U0-U4 device/performance. Emulator license confirmation pending; public UI free.
+- Base UI: five controls/navigation/toolbar/homepage/grouped-card increments independently PASS. Theme color has current compile/signed and actual-method coordinate/invalid-input checks; checkpoint/review next, then primary settings/forms and U0-U4 device/performance. Emulator license confirmation pending; public UI free.
 
 - M5 SSH Share Kit eca8f8aa independently PASS (code and Pro Release checks). Configure and verify the real App Link/fragment path; PC continuation, RDP and cross-device acceptance remain open. Continue free public UI in parallel with these external prerequisites.
 

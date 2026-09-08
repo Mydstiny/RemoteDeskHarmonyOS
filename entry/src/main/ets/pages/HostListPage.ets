@@ -19222,7 +19222,8 @@ struct HostListPage {
   }
 
   @Builder colorPickerSheet() {
-    ColorPickerSheet()
+    ColorPickerSheet({ availableHeight: Math.max(120, this.pageViewportHeight - 48),
+      onClose: (): void => { this.closeSettingsLeafSheet(); } })
   }
 
   // ==================== Sheet builder ====================
