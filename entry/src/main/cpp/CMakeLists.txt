@@ -307,6 +307,7 @@ if(RDP_BUILD_TESTS)
         test/software_decode_latency_policy_test.cpp
         test/remote_cursor_snapshot_test.cpp
         test/rustdesk_display_switch_gate_test.cpp
+        test/rustdesk_phone_frame_receipt_test.cpp
         test/video_perf_counters_test.cpp
         test/ssh_terminal_diagnostics_test.cpp
         test/ssh_auth_policy_test.cpp

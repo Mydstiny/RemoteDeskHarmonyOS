@@ -1640,6 +1640,11 @@ void RustDeskBridge::onFfiFrame(const void* framePtr, void* userData) {
         frame.timestamp = ffiFrame->timestamp;
         frame.isKeyFrame = ffiFrame->isKeyFrame;
         frame.display = ffiFrame->display;
+        if (impl->explicitPhone.load(std::memory_order_acquire)) {
+            frame.phoneStreamEpoch = context->admissionEpoch;
+            frame.phoneGeometryEpoch = impl->phoneGeometry.epochForFrame(
+                frame.display, frame.width, frame.height);
+        }
         cb(frame);
     }
         });
@@ -3215,15 +3220,18 @@ int64_t RustDeskBridge::phoneControl(uint64_t generation, uint64_t ownerToken, i
 #endif
 }
 
-void RustDeskBridge::observePhonePresentation(uint64_t generation, uint64_t ownerToken,
-    uint64_t streamEpoch, int width, int height) {
-    if (impl_->explicitPhone.load(std::memory_order_acquire) && generation != 0 && ownerToken != 0 &&
-        generation == impl_->cursorGeneration.load(std::memory_order_acquire) &&
-        ownerToken == impl_->ownerToken.load(std::memory_order_acquire) &&
-        streamEpoch != 0 && streamEpoch == impl_->ffiAdmissionEpoch.load(std::memory_order_acquire) &&
+void RustDeskBridge::observePhonePresentation(const Render::PhoneFrameIdentity& frame,
+    int textureWidth, int textureHeight) {
+    std::lock_guard<std::mutex> admissionLock(impl_->continuityAdmissionMutex);
+    if (impl_->explicitPhone.load(std::memory_order_acquire) &&
+        frame.sessionId != 0 && frame.sessionId == impl_->sessionId.load(std::memory_order_acquire) &&
+        frame.generation != 0 && frame.generation == impl_->cursorGeneration.load(std::memory_order_acquire) &&
+        frame.ownerToken != 0 && frame.ownerToken == impl_->ownerToken.load(std::memory_order_acquire) &&
+        frame.streamEpoch != 0 && frame.streamEpoch == impl_->ffiAdmissionEpoch.load(std::memory_order_acquire) &&
         !impl_->disconnectRequested.load(std::memory_order_acquire) &&
         !impl_->ffiStreamEnded.load(std::memory_order_acquire)) {
-        impl_->phoneGeometry.observePresented(width, height);
+        impl_->phoneGeometry.observePresented(frame.geometryEpoch, frame.display, frame.width, frame.height,
+                                              textureWidth, textureHeight);
     }
 }
 

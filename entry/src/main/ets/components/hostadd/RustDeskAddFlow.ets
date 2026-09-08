@@ -49,6 +49,7 @@ export struct RustDeskAddFlow {
   @State totpAutoSubmit: boolean = false;
   @State errorText: string = '';
   @State targetDevice: RustDeskTargetDevice = 'computer';
+  @State phoneChoiceVersion: number = 0;
   @State adaptiveOrientation: boolean = false;
 
   aboutToAppear(): void {
@@ -84,6 +85,7 @@ export struct RustDeskAddFlow {
     this.totpEntryId = draft.totpEntryId;
     this.totpAutoSubmit = draft.totpAutoSubmit && draft.totpEntryId !== '';
     this.targetDevice = draft.targetDevice;
+    this.phoneChoiceVersion = draft.phoneChoiceVersion;
     this.adaptiveOrientation = draft.adaptiveOrientation;
     this.errorText = '';
   }
@@ -105,6 +107,7 @@ export struct RustDeskAddFlow {
     draft.totpEntryId = this.totpEntryId;
     draft.totpAutoSubmit = this.totpAutoSubmit && this.totpEntryId !== '';
     draft.targetDevice = this.targetDevice;
+    draft.phoneChoiceVersion = this.phoneChoiceVersion;
     draft.adaptiveOrientation = this.adaptiveOrientation;
     return draft;
   }
@@ -154,6 +157,7 @@ export struct RustDeskAddFlow {
     host.rustdeskTotpAutoSubmit = this.totpAutoSubmit && this.totpEntryId !== '';
     host.rustdeskDirectEnabled = this.direct;
     host.rustdeskTargetDevice = this.targetDevice;
+    host.rustdeskPhoneChoiceVersion = this.targetDevice === 'phone' && this.phoneChoiceVersion === 1 ? 1 : 0;
     host.rustdeskAdaptiveOrientation = this.targetDevice === 'phone' && this.adaptiveOrientation;
     if (this.direct) {
       const canonicalHost: string = endpointTransportHost(directEndpoint.endpoint);
@@ -218,6 +222,7 @@ export struct RustDeskAddFlow {
       .backgroundColor(this.targetDevice === target ? this.accentColor : this.pal().surface)
       .onClick((): void => {
         this.targetDevice = target;
+        this.phoneChoiceVersion = target === 'phone' ? 1 : 0;
         if (target === 'computer') { this.adaptiveOrientation = false; }
       })
   }

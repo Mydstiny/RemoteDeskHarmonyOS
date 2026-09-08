@@ -424,8 +424,10 @@ void HardwareDecoder::OnNewOutputBuffer(OH_AVCodec* codec, uint32_t index,
         target.decoder->recordAttempt(Render::DecoderAttemptStage::FirstOutput, 1);
     }
     OH_AVCodecBufferAttr attr {};
+    const auto phoneTracker = std::atomic_load(&target.decoder->phoneFrameTracker_);
     if (buffer != nullptr && OH_AVBuffer_GetBufferAttr(buffer, &attr) == AV_ERR_OK) {
         target.decoder->recordOutputLatency(attr.pts);
+        if (phoneTracker) phoneTracker->decoded(attr.pts);
     }
     OH_AVErrCode ret = AV_ERR_OK;
     if (Render::ShouldRenderNativeImageImmediately(
@@ -446,6 +448,7 @@ void HardwareDecoder::OnNewOutputBuffer(OH_AVCodec* codec, uint32_t index,
             codec, index, renderTimestampNs);
     }
     if (ret != AV_ERR_OK) {
+        if (phoneTracker) phoneTracker->discard(attr.pts);
         std::lock_guard<std::mutex> telemetryLock(target.decoder->telemetryMutex_);
         SaturatingAdd(target.decoder->renderOutputFailureCount_, 1);
         OH_LOG_WARN(LOG_APP, "[Decoder] RenderOutputBuffer failed: %{public}d index=%{public}u",
@@ -930,14 +933,15 @@ size_t HardwareDecoder::dropOldestNonKeyFramesLocked(size_t count) {
     return dropped;
 }
 
-int HardwareDecoder::Decode(const uint8_t* data, size_t size, uint64_t timestamp, bool isKeyFrame) {
+int HardwareDecoder::Decode(const uint8_t* data, size_t size, uint64_t timestamp, bool isKeyFrame,
+                            const Render::PhoneFrameReceiptPtr& phoneReceipt) {
     HardwareDecodeAdmission admission = HardwareDecodeAdmission::Failed;
-    return DecodeOwned(data, size, timestamp, isKeyFrame, admission);
+    return DecodeOwned(data, size, timestamp, isKeyFrame, admission, phoneReceipt);
 }
 
 int HardwareDecoder::DecodeOwned(
     const uint8_t* data, size_t size, uint64_t timestamp, bool isKeyFrame,
-    HardwareDecodeAdmission& ownedAdmission) {
+    HardwareDecodeAdmission& ownedAdmission, const Render::PhoneFrameReceiptPtr& phoneReceipt) {
     ownedAdmission = HardwareDecodeAdmission::Failed;
     if (!initialized_) {
         OH_LOG_WARN(LOG_APP, "[Decoder] 解码器未初始化");
@@ -956,6 +960,14 @@ int HardwareDecoder::DecodeOwned(
         return -1;
     }
     std::memcpy(copy, data, size);
+
+    int64_t decodeTimestamp = static_cast<int64_t>(timestamp);
+    std::shared_ptr<Render::PhoneFrameTracker> phoneTracker;
+    if (phoneReceipt) {
+        phoneTracker = Render::EnsurePhoneFrameTracker(phoneFrameTracker_);
+        decodeTimestamp = phoneTracker->submit(phoneReceipt);
+        if (decodeTimestamp <= 0) { delete[] copy; return -1; }
+    }
 
     size_t queued = 0;
     size_t droppedQueued = 0;
@@ -1025,7 +1037,7 @@ int HardwareDecoder::DecodeOwned(
                 recoveryTotal = SaturatingAdd(keyframeRecoveryCount_, 1);
             }
             if (!droppedIncomingForCapacity) {
-                inputQueue_.push_back({copy, size, static_cast<int64_t>(timestamp), isKeyFrame});
+                inputQueue_.push_back({copy, size, decodeTimestamp, isKeyFrame});
                 copy = nullptr;
                 queued = inputQueue_.size();
             }
@@ -1033,6 +1045,7 @@ int HardwareDecoder::DecodeOwned(
     }
 
     if (copy != nullptr) {
+        if (phoneTracker) phoneTracker->discard(decodeTimestamp);
         delete[] copy;
     }
 
@@ -1572,6 +1585,14 @@ void HardwareDecoder::handleOutputBuffer(uint32_t /*index*/) {
                 Render::NativeImageUpdateRetryDelayMs(retryCount)));
         }
         if (updated) {
+            // This runs on the existing GL owner thread, after a successful
+            // UpdateSurfaceImage. AtTime scheduling is a separate timestamp.
+            // Unknown platform mappings stay unmatched: no scale/nearest guess.
+            const auto phoneTracker = std::atomic_load(&phoneFrameTracker_);
+            if (phoneTracker) {
+                std::atomic_store(&phoneRetainedFrame_,
+                    phoneTracker->takeDecoded(OH_NativeImage_GetTimestamp(nativeImage_)));
+            }
             std::lock_guard<std::mutex> lk(mutex_);
             // Consume all notifications observed before this update as one
             // latest-frame hint. A callback racing after the snapshot remains
@@ -1650,7 +1671,8 @@ void HardwareDecoder::handleOutputBuffer(uint32_t /*index*/) {
     }
 
     // 通知渲染器: 纹理就绪
-    frameCallbackGate_.Invoke(textureId_, width_, height_, textureTransform_);
+    frameCallbackGate_.Invoke(textureId_, width_, height_, textureTransform_,
+                              std::atomic_load(&phoneRetainedFrame_));
     uint64_t count = 0;
     {
         std::lock_guard<std::mutex> telemetryLock(telemetryMutex_);
@@ -1855,6 +1877,8 @@ void HardwareDecoder::RequestRedraw() {
 }
 
 void HardwareDecoder::Flush() {
+    Render::ClearPhoneFrameTracker(phoneFrameTracker_);
+    std::atomic_store(&phoneRetainedFrame_, Render::PhoneDecodedFramePtr());
     const bool restartInput = inputThread_.joinable() &&
         !inputThreadStop_.load(std::memory_order_acquire);
     if (restartInput && !stopInputThread()) {
@@ -2006,6 +2030,8 @@ void HardwareDecoder::ResetTelemetryCounters() {
 }
 
 void HardwareDecoder::Destroy() {
+    Render::ClearPhoneFrameTracker(phoneFrameTracker_);
+    std::atomic_store(&phoneRetainedFrame_, Render::PhoneDecodedFramePtr());
     // Stop admission before stopping/destroying OH_AVCodec or NativeImage.
     // The platform may still invoke a raw userData callback after its source
     // is stopped; the stable context remains valid until the source has
@@ -2093,6 +2119,8 @@ bool HardwareDecoder::FinishDeferredDestroy() {
 }
 
 void HardwareDecoder::SetFrameCallback(DecoderFrameCallback callback) {
+    Render::ClearPhoneFrameTracker(phoneFrameTracker_);
+    std::atomic_store(&phoneRetainedFrame_, Render::PhoneDecodedFramePtr());
     frameCallbackGate_.Set(std::move(callback));
 }
 
@@ -2440,7 +2468,7 @@ void StartSoftwareWorkerIfNeeded(DecoderContext* ctx) {
             }
             const int ret = ctx->softwareDecoder->Decode(item.frame.data, item.frame.size,
                                                          item.frame.timestamp, item.frame.isKeyFrame,
-                                                         presentOutput);
+                                                         presentOutput, item.frame.phonePresentation);
             const uint64_t decoded = ctx->softDecoded.fetch_add(1) + 1;
             const bool skippedLogDue = !presentOutput &&
                 (skippedPresent <= 8 || skippedPresent % 120 == 0);
@@ -2577,11 +2605,29 @@ bool ConfigurePipeline(const std::shared_ptr<DecoderContext>& ctx,
             }
         }
         ctx->softRendererHandle.store(rendererHandle, std::memory_order_release);
-        ctx->softwareDecoder->SetFrameCallback([owner](const uint8_t* data, size_t size,
-                                                         int width, int height, int stride) {
-            return RendererNapi::RenderRawBgraActive(owner, data, size, width, height, stride);
-        });
         const std::weak_ptr<DecoderContext> weakContext = ctx;
+        const uint64_t phoneDecoderGeneration = ctx->decoderGeneration;
+        const uint64_t phoneRendererGeneration = ownerLeaseAlreadyHeld ?
+            RendererNapi::GetActiveRendererGenerationUnderOwnerLease(rendererHandle, owner) :
+            RendererNapi::GetActiveRendererGeneration(rendererHandle, owner);
+        ctx->softwareDecoder->SetFrameCallback(
+            [owner, weakContext, rendererHandle, phoneDecoderGeneration, phoneRendererGeneration](
+                const uint8_t* data, size_t size, int width, int height, int stride,
+                const Render::PhoneDecodedFramePtr& phoneFrame) {
+            const int result = RendererNapi::RenderRawBgraActive(owner, data, size, width, height, stride);
+            if (phoneFrame && result == static_cast<int>(RdpPresentResult::Presented) &&
+                phoneRendererGeneration != 0) {
+                if (const auto context = weakContext.lock()) {
+                    if (context->videoPipelineAttached.load(std::memory_order_acquire) &&
+                        context->softRendererHandle.load(std::memory_order_acquire) == rendererHandle &&
+                        context->presentationDecoderGeneration.load(std::memory_order_acquire) == phoneDecoderGeneration &&
+                        RendererNapi::GetActiveRendererGeneration(rendererHandle, owner) == phoneRendererGeneration) {
+                        phoneFrame->presented(width, height);
+                    }
+                }
+            }
+            return result;
+        });
         if (ownerLeaseAlreadyHeld) {
             RendererNapi::SetRendererRedrawCallback(rendererHandle, [weakContext]() {
                 if (const auto context = weakContext.lock()) {
@@ -2663,8 +2709,9 @@ bool ConfigurePipeline(const std::shared_ptr<DecoderContext>& ctx,
     ctx->decoder->SetFrameCallback(
         [rendererHandle, owner, weakContext, rendererGeneration,
          presentationDecoderGeneration](
-            GLuint textureId, int, int,
-            const Render::NativeImageTransform& textureTransform) {
+            GLuint textureId, int width, int height,
+            const Render::NativeImageTransform& textureTransform,
+            const Render::PhoneDecodedFramePtr& phoneFrame) {
             const RdpPresentMetrics present = RendererNapi::PresentNative(
                 rendererHandle, owner, textureId, textureTransform);
             if (!present.presented() || present.generation != rendererGeneration) {
@@ -2681,6 +2728,7 @@ bool ConfigurePipeline(const std::shared_ptr<DecoderContext>& ctx,
                     return;
                 }
                 SaturatingAdd(context->rendererPresentedFrames, 1);
+                if (phoneFrame) phoneFrame->presented(width, height);
             }
         });
     const std::weak_ptr<HardwareDecoder> weakDecoder = ctx->decoder;
@@ -2961,9 +3009,9 @@ int DecodeNativeLocked(const std::shared_ptr<DecoderContext>& ctx, const VideoFr
     const int decodeResult = ownedHardwareAdmission != nullptr
         ? ctx->decoder->DecodeOwned(
               frame.data, frame.size, frame.timestamp, frame.isKeyFrame,
-              *ownedHardwareAdmission)
+              *ownedHardwareAdmission, frame.phonePresentation)
         : ctx->decoder->Decode(
-              frame.data, frame.size, frame.timestamp, frame.isKeyFrame);
+              frame.data, frame.size, frame.timestamp, frame.isKeyFrame, frame.phonePresentation);
     return decodeResult == HardwareDecoder::kDecodeKeyframeRequired ?
         DecoderNapi::kDecodeHardwareKeyframeRequired : decodeResult;
 }
@@ -4278,8 +4326,9 @@ OwnedDecoderCreationResult DecoderNapi::CreateOwnedAuxHardwareDecoder(
     const uint64_t decoderGeneration = context->decoderGeneration;
     decoder->SetFrameCallback(
         [rendererHandle, owner, weakContext, rendererGeneration,
-         decoderGeneration](GLuint textureId, int, int,
-                            const Render::NativeImageTransform& textureTransform) {
+         decoderGeneration](GLuint textureId, int width, int height,
+                            const Render::NativeImageTransform& textureTransform,
+                            const Render::PhoneDecodedFramePtr& phoneFrame) {
             const RdpPresentMetrics present = RendererNapi::PresentNative(
                 rendererHandle, owner, textureId, textureTransform);
             if (!present.presented() || present.generation != rendererGeneration) {
@@ -4291,6 +4340,7 @@ OwnedDecoderCreationResult DecoderNapi::CreateOwnedAuxHardwareDecoder(
                         rendererGeneration &&
                     current->videoPipelineAttached.load(std::memory_order_acquire)) {
                     SaturatingAdd(current->rendererPresentedFrames, 1);
+                    if (phoneFrame) phoneFrame->presented(width, height);
                 }
             }
         });

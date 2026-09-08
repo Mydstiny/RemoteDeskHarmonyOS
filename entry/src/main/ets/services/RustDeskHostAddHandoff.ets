@@ -22,6 +22,7 @@ export class RustDeskHostAddDraft {
   totpEntryId: string = '';
   totpAutoSubmit: boolean = false;
   targetDevice: RustDeskTargetDevice = 'computer';
+  phoneChoiceVersion: number = 0;
   adaptiveOrientation: boolean = false;
 }
 
@@ -55,6 +56,7 @@ export function cloneRustDeskHostAddDraft(
   result.totpEntryId = source.totpEntryId;
   result.totpAutoSubmit = source.totpAutoSubmit && result.totpEntryId !== '';
   result.targetDevice = source.targetDevice;
+  result.phoneChoiceVersion = source.targetDevice === 'phone' && source.phoneChoiceVersion === 1 ? 1 : 0;
   result.adaptiveOrientation =
     source.targetDevice === 'phone' && source.adaptiveOrientation;
   return result;

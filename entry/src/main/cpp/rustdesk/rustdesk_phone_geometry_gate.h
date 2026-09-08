@@ -33,12 +33,20 @@ public:
         presented_ = committed_ = false;
         return true;
     }
-    void observePresented(int textureWidth, int textureHeight) {
+    uint32_t epochForFrame(int display, int width, int height) const {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (!enabled_ || epoch_ == 0 || textureWidth <= 0 || textureHeight <= 0 ||
+        return enabled_ && display == display_ && width == width_ && height == height_ &&
+            frameDisplay_ == display && frameWidth_ == width && frameHeight_ == height ? epoch_ : 0;
+    }
+    void observePresented(uint32_t frameEpoch, int display, int encodedWidth, int encodedHeight,
+                          int textureWidth, int textureHeight) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!enabled_ || frameEpoch == 0 || frameEpoch != epoch_ ||
+            display != display_ || encodedWidth != width_ || encodedHeight != height_ ||
+            textureWidth <= 0 || textureHeight <= 0 ||
             frameDisplay_ != display_ || frameWidth_ != width_ || frameHeight_ != height_) return;
         // Software decoding can downsample by an integer ratio. Allow one
-        // output-pixel rounding error, but never accept the old rotated aspect.
+        // output-pixel rounding error within the SAME actual frame identity.
         const int64_t cross = int64_t(textureWidth) * height_ - int64_t(textureHeight) * width_;
         if (std::abs(cross) <= std::max(width_, height_)) presented_ = true;
     }

@@ -5779,17 +5779,22 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
             }
             return;
         }
+        VideoFrame decodeFrame = frame;
         if (session->explicitPhone) {
             const auto bridge = GetRustDeskAdapter(session);
             const auto owner = session->identity();
-            const uint64_t epoch = bridge ? bridge->phoneStreamEpoch() : 0;
             std::weak_ptr<RustDeskBridge> weakBridge = bridge;
-            RendererNapi::SetActivePhonePresentationObserver(owner,
-                [weakBridge, owner, epoch](int width, int height) {
+            auto receipt = std::make_shared<Render::PhoneFrameReceipt>();
+            receipt->identity = {owner.sessionId, owner.generation, owner.ownerToken,
+                frame.phoneStreamEpoch, frame.phoneGeometryEpoch, frame.display, frame.width, frame.height};
+            receipt->originalTimestamp = frame.timestamp;
+            receipt->didPresent =
+                [weakBridge](const Render::PhoneFrameIdentity& identity, int width, int height) {
                     if (const auto phone = weakBridge.lock()) {
-                        phone->observePhonePresentation(owner.generation, owner.ownerToken, epoch, width, height);
+                        phone->observePhonePresentation(identity, width, height);
                     }
-                });
+                };
+            decodeFrame.phonePresentation = std::move(receipt);
         }
         if (frame.width > 0 && frame.height > 0) {
             RendererNapi::SetActiveSourceSize(session->identity(), frame.width, frame.height);
@@ -5818,7 +5823,7 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
         if (previousCodec >= 0 && previousCodec != observedCodec) {
             session->diagnostics.codecChanges.fetch_add(1, std::memory_order_relaxed);
         }
-        int ret = DecoderNapi::DecodeActiveNative(session->identity(), frame);
+        int ret = DecoderNapi::DecodeActiveNative(session->identity(), decodeFrame);
         session->diagnostics.lastDecodeResult.store(ret, std::memory_order_release);
         const int64_t decodeElapsedUs = std::chrono::duration_cast<std::chrono::microseconds>(
             std::chrono::steady_clock::now() - decodeStartedAt).count();
@@ -5827,7 +5832,7 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
             // create/bind the shared decoder. Retain a keyframe across that
             // short owner-pipeline gap so the first visible frame is not
             // dependent on a later remote refresh.
-            RememberPendingRustDeskKeyFrame(session, frame);
+            RememberPendingRustDeskKeyFrame(session, decodeFrame);
         }
         if (ret == DecoderNapi::kDecodeInactiveDisplay ||
             ret == DecoderNapi::kDecodeInactiveSession) {

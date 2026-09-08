@@ -203,6 +203,7 @@ import {
   RemoteHostLegacyPersonalization,
   remoteHostLocalPersonalizationValues
 } from './HostLocalPersonalizationPolicy';
+import { hasExplicitRustDeskPhoneChoice, restoreLocalRustDeskPhoneChoice } from './RustDeskExplicitPhonePolicy';
 import {
   decodeRustDeskPeerTwoFactorLegacyBackupRows,
   decodeRustDeskPeerTwoFactorLegacyDisplayConfig,
@@ -11581,6 +11582,7 @@ try { this.rollbackTrackedTransaction(); } catch (_ignored) {}
           host.sshProxyKeyPassphrase = this.decryptIfReady(
             DataCrypto.getInstance(), DYNAMIC_LAN_HOST_AAD_TABLE, host.id,
             'sshproxykeypassphrase', storedProxyPassphrase);
+          restoreLocalRustDeskPhoneChoice(host, values['localrustdeskphonechoice']);
           result.push(host);
         } catch (rowError) {
           hilog.warn(0x0001, 'CloudSync',
@@ -11831,6 +11833,9 @@ try { this.rollbackTrackedTransaction(); } catch (_ignored) {}
     values['schemaversion'] = '1';
     values['ownerid'] = this.currentOwnerScopeId();
     values['hostjson'] = JSON.stringify(this.dynamicLanHostJSON(host));
+    if (hasExplicitRustDeskPhoneChoice(host)) {
+      values['localrustdeskphonechoice'] = '1';
+    }
     values['password'] = this.encryptIfReady(
       crypto, DYNAMIC_LAN_HOST_AAD_TABLE, host.id, 'password',
       remoteHostPersistentPasswordAllowed(host) ? host.password : '');

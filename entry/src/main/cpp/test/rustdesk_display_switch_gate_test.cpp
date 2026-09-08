@@ -625,13 +625,13 @@ RDP_TEST_CASE(explicit_phone_geometry_needs_display_frame_swap_and_page) {
     gate.reset(true);
     RDP_ASSERT(!gate.allowed());
     RDP_ASSERT(gate.observeDisplay(0, 1, 1080, 2400));
-    gate.observePresented(1080, 2400);
+    gate.observePresented(1, 0, 1080, 2400, 1080, 2400);
     RDP_ASSERT(!gate.commit(1)); // Texture without encoded-frame agreement.
     RDP_ASSERT(gate.observeFrame(0, 1080, 2400));
     RDP_ASSERT(!gate.commit(1)); // A queued frame is not a presented frame.
-    gate.observePresented(2400, 1080);
+    gate.observePresented(1, 0, 1080, 2400, 2400, 1080);
     RDP_ASSERT(!gate.commit(1));
-    gate.observePresented(540, 1200); // Downscaled software decoding.
+    gate.observePresented(1, 0, 1080, 2400, 540, 1200); // Downscaled software decoding.
     RDP_ASSERT(!gate.commit(2)); // Stale page geometry.
     RDP_ASSERT(gate.commit(1));
     RDP_ASSERT(gate.allowed());
@@ -643,18 +643,18 @@ RDP_TEST_CASE(explicit_phone_geometry_rotation_notification_first_and_frame_firs
         gate.reset(true);
         gate.observeDisplay(0, 1, 1080, 2400);
         gate.observeFrame(0, 1080, 2400);
-        gate.observePresented(1080, 2400);
+        gate.observePresented(1, 0, 1080, 2400, 1080, 2400);
         RDP_ASSERT(gate.commit(1));
         if (frameFirst) gate.observeFrame(0, 2400, 1080);
         else gate.observeDisplay(0, 2, 2400, 1080);
         RDP_ASSERT(!gate.allowed());
-        gate.observePresented(1080, 2400);
+        gate.observePresented(1, 0, 1080, 2400, 1080, 2400);
         RDP_ASSERT(!gate.commit(1));
         if (frameFirst) gate.observeDisplay(0, 2, 2400, 1080);
         else gate.observeFrame(0, 2400, 1080);
-        gate.observePresented(1080, 2400);
+        gate.observePresented(1, 0, 1080, 2400, 1080, 2400);
         RDP_ASSERT(!gate.commit(2));
-        gate.observePresented(2400, 1080);
+        gate.observePresented(2, 0, 2400, 1080, 2400, 1080);
         RDP_ASSERT(gate.commit(2));
         gate.observeDisplay(0, 3, 1080, 2400);
         RDP_ASSERT(!gate.allowed());

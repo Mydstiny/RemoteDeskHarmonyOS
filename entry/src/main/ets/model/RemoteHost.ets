@@ -421,6 +421,8 @@ export class RemoteHost implements LanHostAddressView {
   rustdeskDirectHost: string = ''; // 直连 peer IP 地址
   rustdeskDirectPort: number = 21118; // 直连端口 (默认 21118; RustDesk peer TCP)
   rustdeskTargetDevice: string = 'computer'; // 控制目标: computer | phone
+  // Runtime mirror of device-local choice evidence; never imported from host JSON.
+  rustdeskPhoneChoiceVersion: number = 0;
   rustdeskAdaptiveOrientation: boolean = false; // 手机目标的自适应翻转，默认关闭
   rustdeskDesktopFlipMode: RustDeskDesktopFlipMode = 'reset'; // PC 查看器的本机按主机翻转覆盖
   // Peer 2FA 绑定的运行时投影。权威值位于 owner/device 本地 Preferences，
@@ -865,6 +867,7 @@ export class RemoteHost implements LanHostAddressView {
   /** Clone serialized fields while retaining process-only secret presence. */
   runtimeClone(): RemoteHost {
     const host: RemoteHost = RemoteHost.fromJSON(this.toJSON());
+    host.rustdeskPhoneChoiceVersion = this.rustdeskPhoneChoiceVersion === 1 ? 1 : 0;
     const redactsRdpSessionCredential: boolean = this.protocol === 'rdp' &&
       normalizeRdpAuthMode(this.rdpAuthMode) === 'password' &&
       normalizeRdpCredentialStorageMode(this.rdpCredentialStorageMode) === 'connect_time';

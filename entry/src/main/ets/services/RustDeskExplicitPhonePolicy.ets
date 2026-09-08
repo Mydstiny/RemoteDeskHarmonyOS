@@ -1,11 +1,23 @@
 /** Session-only opt-in. Peer platform never grants the user-choice scope. */
 import { RemoteHost } from '../model/RemoteHost';
 
-export function hasExplicitRustDeskPhoneChoice(host: RemoteHost): boolean {
+/** Candidate only. A normalized manual source is never selection evidence. */
+export function isManualRustDeskPhoneTarget(host: RemoteHost): boolean {
   return host.protocol === 'rustdesk' && host.rustdeskTargetDevice === 'phone' &&
     host.sourceType === 'manual' && !host.rustdeskProManaged &&
     host.rustdeskProAccountId === '' && host.rustdeskProPeerId === '' &&
     host.rustdeskProPlatform === '';
+}
+
+export function hasExplicitRustDeskPhoneChoice(host: RemoteHost): boolean {
+  return isManualRustDeskPhoneTarget(host) && host.rustdeskPhoneChoiceVersion === 1;
+}
+
+/** Only the owner-scoped local extension reader may restore this evidence. */
+export function restoreLocalRustDeskPhoneChoice(host: RemoteHost, version: string | undefined): void {
+  if (host.protocol === 'rustdesk') {
+    host.rustdeskPhoneChoiceVersion = isManualRustDeskPhoneTarget(host) && version === '1' ? 1 : 0;
+  }
 }
 
 export function explicitPhoneControlMode(selected: boolean, savedMode: number): number {
@@ -17,7 +29,7 @@ export function explicitPhonePanDelta(previous: number, next: number): number {
   return Math.round(previous - next);
 }
 
-/** Fail closed until source provenance and decoded-frame identity pass review. */
+/** Rollout boundary; selection proof and native frame readiness remain mandatory. */
 export function explicitPhoneImplementationReady(): boolean {
-  return false;
+  return true;
 }

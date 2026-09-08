@@ -449,6 +449,7 @@ import {
   normalizeRustDeskTargetDevice,
   RustDeskTargetDevice
 } from '../services/RemoteOrientationPolicy';
+import { hasExplicitRustDeskPhoneChoice, isManualRustDeskPhoneTarget, explicitPhoneImplementationReady } from '../services/RustDeskExplicitPhonePolicy';
 import { resolveFabAddStyle } from '../services/FabAddStylePolicy';
 import { shouldPrepareClassicVncEditor } from '../services/VncHostFlowPolicy';
 import { resolveRustDeskBadges } from '../services/RustDeskCardBadgePolicy';
@@ -1257,6 +1258,7 @@ struct HostListPage {
   @State sheetRustdeskTotpEntryId: string = '';
   @State sheetRustdeskTotpAutoSubmit: boolean = false;
   @State sheetRustdeskTargetDevice: RustDeskTargetDevice = 'computer';
+  @State sheetRustdeskPhoneChoiceVersion: number = 0;
   @State sheetRustdeskAdaptiveOrientation: boolean = false;
   @State sheetSshProxyEditorValue: SshProxyEditorValue = defaultSshProxyEditorValue();
   @StorageLink('currentBreakpoint') @Watch('onBreakpointChange') breakpoint: string = 'sm';
@@ -10258,6 +10260,7 @@ struct HostListPage {
       codec: rustDeskCodecConfigValue(this.rustdeskCodec),
       multiMonitor: false, monitorCount: 1, colorDepth: 32,
       authMethod: 'password', privateKeyPem: '', privateKeyPassphrase: '',
+      rdExplicitPhone: explicitPhoneImplementationReady() && hasExplicitRustDeskPhoneChoice(host),
       rdImageQuality: this.rustdeskImageQuality, rdDirectIp: direct,
       rdConnectionStrategy: rustDeskConnectionStrategyForHost(direct),
       rdDirectPort: endpoint.port,
@@ -10858,6 +10861,7 @@ struct HostListPage {
     this.sheetRustdeskTargetDevice = proPlatformKnown ?
       (isRustDeskMobilePlatform(latestHost.rustdeskProPlatform) ? 'phone' : 'computer') :
       normalizeRustDeskTargetDevice(latestHost.rustdeskTargetDevice);
+    this.sheetRustdeskPhoneChoiceVersion = hasExplicitRustDeskPhoneChoice(latestHost) ? 1 : 0;
     this.sheetRustdeskAdaptiveOrientation = canUseRustDeskAdaptiveOrientation(
       latestHost.protocol, this.sheetRustdeskTargetDevice, latestHost.rustdeskAdaptiveOrientation,
       latestHost.sourceType, latestHost.rustdeskProManaged, latestHost.rustdeskProPlatform);
@@ -10964,14 +10968,22 @@ struct HostListPage {
           .fontColor(this.effectiveSheetRustDeskTargetDevice() === 'computer' ? Color.White : this.pal().text2)
           .onClick((): void => {
             this.sheetRustdeskTargetDevice = 'computer';
+            this.sheetRustdeskPhoneChoiceVersion = 0;
             this.sheetRustdeskAdaptiveOrientation = false;
           })
         Button('控制手机').layoutWeight(1).height(34).fontSize(11).borderRadius(8).margin({ left: 6 })
           .backgroundColor(this.effectiveSheetRustDeskTargetDevice() === 'phone' ?
             this.accentColor : this.pal().surface)
           .fontColor(this.effectiveSheetRustDeskTargetDevice() === 'phone' ? Color.White : this.pal().text2)
-          .onClick((): void => { this.sheetRustdeskTargetDevice = 'phone'; })
+          .onClick((): void => {
+            this.sheetRustdeskTargetDevice = 'phone';
+            this.sheetRustdeskPhoneChoiceVersion = 1;
+          })
       }.width('100%').margin({ bottom: 6 })
+      if (this.sheetRustdeskTargetDevice === 'phone' && this.sheetRustdeskPhoneChoiceVersion !== 1) {
+        Text('请重新点选“控制手机”，保存后启用手机操作')
+          .fontSize(10).fontColor(this.pal().text3).fontFamily(this.font()).margin({ bottom: 6 })
+      }
     }
     Row() {
       Column() {
@@ -20992,6 +21004,7 @@ struct HostListPage {
     this.sheetRustdeskDirectHost = '';
     this.sheetRustdeskDirectPort = RUSTDESK_PEER_TCP_PORT;
     this.sheetRustdeskTargetDevice = 'computer';
+    this.sheetRustdeskPhoneChoiceVersion = 0;
     this.sheetRustdeskAdaptiveOrientation = false;
     this.sheetRustdeskTotpEntryId = '';
     this.sheetRustdeskTotpAutoSubmit = false;
@@ -21190,6 +21203,8 @@ struct HostListPage {
         h.rustdeskProSyncError = existingHost.rustdeskProSyncError;
       }
       h.rustdeskTargetDevice = this.effectiveSheetRustDeskTargetDevice();
+      h.rustdeskPhoneChoiceVersion = isManualRustDeskPhoneTarget(h) &&
+        this.sheetRustdeskPhoneChoiceVersion === 1 ? 1 : 0;
       h.rustdeskAdaptiveOrientation = canUseRustDeskAdaptiveOrientation(
         h.protocol, h.rustdeskTargetDevice, this.sheetRustdeskAdaptiveOrientation,
         h.sourceType, h.rustdeskProManaged, h.rustdeskProPlatform);

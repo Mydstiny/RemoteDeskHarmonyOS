@@ -20,6 +20,7 @@
 #include "transfer_runtime_status.h"
 #include "rdp/rdp_gateway_policy.h"
 #include "ssh/ssh_route_policy.h"
+#include "render/phone_frame_receipt.h"
 
 // ============================================================
 // 枚举与常量
@@ -254,6 +255,10 @@ struct VideoFrame {
     int            dirtyHeight;
     int            colorDepth;  // RAW_BGRA source's negotiated VNC color depth; otherwise 0
     int            sourceEncoding; // RFB encoding for RAW_BGRA; otherwise -1
+    // Only explicit RustDesk phone frames carry ingress geometry and a decoder receipt.
+    uint64_t phoneStreamEpoch = 0;
+    uint32_t phoneGeometryEpoch = 0;
+    Render::PhoneFrameReceiptPtr phonePresentation;
 
     VideoFrame()
         : data(nullptr), size(0), width(0), height(0),

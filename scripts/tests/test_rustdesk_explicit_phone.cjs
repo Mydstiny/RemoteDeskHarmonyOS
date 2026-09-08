@@ -23,7 +23,7 @@ function test(name, run) { run(); console.log('PASS ' + name); ++count; }
 function host(overrides = {}) {
   return { protocol: 'rustdesk', rustdeskTargetDevice: 'phone', sourceType: 'manual',
     rustdeskProManaged: false, rustdeskProAccountId: '', rustdeskProPeerId: '',
-    rustdeskProPlatform: '', ...overrides };
+    rustdeskProPlatform: '', rustdeskPhoneChoiceVersion: 1, ...overrides };
 }
 test('only saved manual phone choice enters; peer Android and controller type never grant scope', () => {
   assert(policy.hasExplicitRustDeskPhoneChoice(host()));
@@ -37,10 +37,12 @@ test('only saved manual phone choice enters; peer Android and controller type ne
     {rustdeskProPeerId: 'peer'}, {rustdeskProPlatform: 'Android'}])
     assert(!policy.hasExplicitRustDeskPhoneChoice(host(overrides)));
 });
-test('unresolved review blockers keep the entire new phone path disabled at connection admission', () => {
-  assert.equal(policy.explicitPhoneImplementationReady(), false);
+test('both direct and preauthenticated connection admission require explicit phone choice', () => {
+  assert.equal(policy.explicitPhoneImplementationReady(), true);
   const pageSource = fs.readFileSync(path.join(root, 'entry/src/main/ets/pages/RemoteDesktop.ets'), 'utf8');
   assert(pageSource.includes('rdExplicitPhone: explicitPhoneImplementationReady() && hasExplicitRustDeskPhoneChoice(host),'));
+  const hostPage = fs.readFileSync(path.join(root, 'entry/src/main/ets/pages/HostListPage.ets'), 'utf8');
+  assert(hostPage.includes('rdExplicitPhone: explicitPhoneImplementationReady() && hasExplicitRustDeskPhoneChoice(host),'));
 });
 test('temporary phone mode preserves every saved mode and host field', () => {
   const selected = host(); const before = JSON.stringify(selected);

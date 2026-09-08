@@ -211,7 +211,7 @@ enum class REMOTEDESK_DECODER_INTERNAL HardwareDecodeAdmission : uint8_t {
 
 /** 解码帧就绪回调 */
 using DecoderFrameCallback = std::function<void(GLuint textureId, int width, int height,
-    const Render::NativeImageTransform& textureTransform)>;
+    const Render::NativeImageTransform& textureTransform, const Render::PhoneDecodedFramePtr& phoneFrame)>;
 using DecoderMakeCurrentCallback = std::function<void()>;
 using DecoderReleaseCurrentCallback = std::function<void()>;
 
@@ -277,10 +277,11 @@ public:
      * @param timestamp  时间戳 (微秒)
      * @return 0=成功
      */
-    int Decode(const uint8_t* data, size_t size, uint64_t timestamp, bool isKeyFrame = false);
+    int Decode(const uint8_t* data, size_t size, uint64_t timestamp, bool isKeyFrame = false,
+               const Render::PhoneFrameReceiptPtr& phoneReceipt = {});
     REMOTEDESK_DECODER_INTERNAL int DecodeOwned(
         const uint8_t* data, size_t size, uint64_t timestamp, bool isKeyFrame,
-        HardwareDecodeAdmission& admission);
+        HardwareDecodeAdmission& admission, const Render::PhoneFrameReceiptPtr& phoneReceipt = {});
 
     /** Bind the opaque DecoderContext token before OH_AVCodec is started. */
     bool SetCallbackIdentity(int64_t token, const DecoderSessionIdentity& owner,
@@ -419,6 +420,8 @@ private:
     bool            initialized_ = false;
 
     DecoderCallbackGate<DecoderFrameCallback> frameCallbackGate_;
+    std::shared_ptr<Render::PhoneFrameTracker> phoneFrameTracker_;
+    Render::PhoneDecodedFramePtr phoneRetainedFrame_;
     DecoderCallbackGate<DecoderMakeCurrentCallback> makeCurrentCallbackGate_;
     DecoderCallbackGate<DecoderReleaseCurrentCallback> releaseCurrentCallbackGate_;
     DecoderCallbackGate<DecoderErrorCallback> errorCallbackGate_;
