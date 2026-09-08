@@ -149,6 +149,7 @@ type DiagnosticConnectionEventKind = 'request' | 'state' | 'disconnect';
 interface DiagnosticConnectionObservation {
   captureId: string;
   state: number;
+  vncFailureRecorded?: boolean;
 }
 
 function diagnosticConnectionModule(protocol: string): DiagnosticConnectionModule | null {
@@ -418,12 +419,16 @@ export class ExtensionLoader implements RustDeskClipboardNative {
       }
       const previous: DiagnosticConnectionObservation | undefined =
         this.diagnosticConnectionStates.get(sessionId);
-      if (previous !== undefined && previous.captureId === captureId &&
-        previous.state === state) { return; }
-      this.diagnosticConnectionStates.set(sessionId, { captureId, state });
-      this.recordDiagnosticConnection(moduleId, 'state', 'state', sessionId, 0, state);
-      if (moduleId === 'connection.vnc' && state === 4) {
-        recordVncUpdateFailure(sessionId,
+      const repeated: boolean = previous !== undefined && previous.captureId === captureId &&
+        previous.state === state;
+      const observation: DiagnosticConnectionObservation = repeated && previous !== undefined ?
+        previous : { captureId, state };
+      this.diagnosticConnectionStates.set(sessionId, observation);
+      if (!repeated) {
+        this.recordDiagnosticConnection(moduleId, 'state', 'state', sessionId, 0, state);
+      }
+      if (moduleId === 'connection.vnc' && state === 4 && observation.vncFailureRecorded !== true) {
+        observation.vncFailureRecorded = recordVncUpdateFailure(sessionId,
           rdpnapi.getConnectionLastMessage(sessionId) as string);
       }
     } catch (_err) {
@@ -457,7 +462,8 @@ export class ExtensionLoader implements RustDeskClipboardNative {
       try {
         target.diagnosticConnectionStates.set(sessionId, {
           captureId: observation.captureId,
-          state: observation.state
+          state: observation.state,
+          vncFailureRecorded: observation.vncFailureRecorded
         });
       } catch (_err) {}
     }

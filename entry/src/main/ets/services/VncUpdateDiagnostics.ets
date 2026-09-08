@@ -21,10 +21,10 @@ export function parseVncUpdateFailure(message: string): VncUpdateFailureFacts | 
   return { reason: Number(match[1]), advertised, processed, encoding };
 }
 
-export function recordVncUpdateFailure(sessionId: number, message: string): void {
+export function recordVncUpdateFailure(sessionId: number, message: string): boolean {
   try {
     const facts: VncUpdateFailureFacts | null = parseVncUpdateFailure(message);
-    if (facts === null) { return; }
+    if (facts === null) { return false; }
     // Header event: code = failure stage, count = advertised rectangle count.
     // Progress event: code = failing encoding (0 if header incomplete),
     // count = fully processed non-LastRect rectangles. Both share sessionRef.
@@ -32,7 +32,9 @@ export function recordVncUpdateFailure(sessionId: number, message: string): void
       sessionId, 0, facts.reason, 0, facts.advertised);
     recordDiagnosticEvent('connection.vnc', 'vnc_update_progress', 'failed',
       sessionId, 0, facts.encoding, 0, facts.processed);
+    return true;
   } catch (_err) {
     // Diagnosis must not change connection polling or teardown.
+    return false;
   }
 }

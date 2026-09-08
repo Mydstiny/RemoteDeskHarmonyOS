@@ -5,6 +5,7 @@
 #include <signal.h>
 #include <cerrno>
 #include <cstdlib>
+#include <future>
 #include <iostream>
 #include <thread>
 #include <vector>
@@ -95,5 +96,30 @@ int main() {
     test("ZRLE in LastRect update does not pipeline early",[]{ Bytes b; header(b,65535); zrle(b); last(b); Fixture f(b); f.good(1); CHECK(f.frames[0][0]==0x33); });
     test("single ZRLE retains next-request pipeline",[]{ Bytes b; header(b,1); zrle(b); Fixture f(b); f.good(1,true); });
     test("ZRLE compressed bound retained",[]{ Bytes b; header(b,65535); rectangle(b,16); u32(b,0xffffffff); Fixture f(b); f.bad("VNC ZRLE compressed length exceeds the rectangle-safe limit"); });
+    test("ERROR message published before delayed external callback",[]{
+        std::promise<void> entered, release;
+        auto enteredFuture=entered.get_future(); auto releaseFuture=release.get_future();
+        ConnectionConfig config{};
+        auto engine=std::make_shared<VncRfbEngine>(config,nullptr,
+            [&](ConnectionState state,const std::string&) {
+                if(state==ConnectionState::ERROR) { entered.set_value(); releaseFuture.wait(); }
+            },nullptr);
+        const std::string message="VNC update contains too many rectangles [VNC-FBU reason=1 advertised=65535 processed=4096 encoding=0]";
+        std::thread worker([&] { engine->emitStateForTesting(ConnectionState::ERROR,message); });
+        CHECK(enteredFuture.wait_for(std::chrono::seconds(2))==std::future_status::ready);
+        CHECK(engine->state()==ConnectionState::ERROR);
+        CHECK(engine->lastStateMessage()==message);
+        release.set_value(); worker.join();
+    });
+    test("state callback can reenter without stale message overwrite",[]{
+        ConnectionConfig config{}; std::shared_ptr<VncRfbEngine> engine;
+        engine=std::make_shared<VncRfbEngine>(config,nullptr,
+            [&](ConnectionState state,const std::string&) {
+                CHECK(!engine->lastStateMessage().empty());
+                if(state==ConnectionState::ERROR) engine->emitStateForTesting(ConnectionState::DISCONNECTED,"cancelled");
+            },nullptr);
+        engine->emitStateForTesting(ConnectionState::ERROR,"error");
+        CHECK(engine->state()==ConnectionState::DISCONNECTED); CHECK(engine->lastStateMessage()=="cancelled");
+    });
     std::cout << cases << " native VNC update checks passed\n";
 }

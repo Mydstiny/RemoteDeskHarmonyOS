@@ -401,6 +401,11 @@ ConnectionState VncRfbEngine::state() const {
     return state_.load(std::memory_order_acquire);
 }
 
+std::string VncRfbEngine::lastStateMessage() const {
+    std::lock_guard<std::mutex> lock(stateMessageMutex_);
+    return lastStateMessage_;
+}
+
 bool VncRfbEngine::keepsLocalCursorDuringBootstrap() const {
     return keepLocalCursorDuringBootstrap_.load(std::memory_order_acquire);
 }
@@ -1588,7 +1593,13 @@ bool VncRfbEngine::isTimeout(const std::string& error) {
 }
 
 void VncRfbEngine::setState(ConnectionState state, const std::string& message) {
-    state_.store(state, std::memory_order_release);
+    {
+        std::lock_guard<std::mutex> lock(stateMessageMutex_);
+        // A poll that observes ERROR must already be able to read its reason,
+        // even while the external state callback is delayed or reentrant.
+        lastStateMessage_ = message;
+        state_.store(state, std::memory_order_release);
+    }
     StateCallback callback;
     {
         std::lock_guard<std::mutex> lock(callbackMutex_);

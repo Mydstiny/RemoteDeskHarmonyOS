@@ -35,6 +35,7 @@ public:
     int         connect(const ConnectionConfig& cfg) override;
     void        disconnect() override;
     ConnectionState getState() override;
+    std::string getConnectionLastMessage();
     void        onNetworkChanged(bool available,
                                  uint64_t networkGeneration) override;
     void        setSessionIdentity(uint64_t sessionId) override;

@@ -10924,8 +10924,14 @@ napi_value NapiGetConnectionLastMessage(napi_env env, napi_callback_info info) {
     std::string message;
     auto it = g_sessionRegistry.find(sessionId);
     if (it != g_sessionRegistry.end()) {
-        std::lock_guard<std::mutex> lock(it->second->messageMutex);
-        message = it->second->lastStateMessage;
+        if (it->second->protocolName == "vnc" && it->second->adapter) {
+            auto* vnc = dynamic_cast<VncAdapter*>(it->second->adapter.get());
+            if (vnc) message = vnc->getConnectionLastMessage();
+        }
+        if (message.empty()) {
+            std::lock_guard<std::mutex> lock(it->second->messageMutex);
+            message = it->second->lastStateMessage;
+        }
     }
 
     napi_value result;

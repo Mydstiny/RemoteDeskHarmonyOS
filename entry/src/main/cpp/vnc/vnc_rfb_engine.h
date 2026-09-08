@@ -55,6 +55,7 @@ public:
     static bool shutdownDeferredJoinsWithin(std::chrono::milliseconds timeout);
     static std::size_t deferredJoinRemaining();
     ConnectionState state() const;
+    std::string lastStateMessage() const;
     bool keepsLocalCursorDuringBootstrap() const;
     void sendKey(uint32_t keyCode, bool pressed);
     void sendMouse(int x, int y, MouseButton button, bool pressed);
@@ -127,6 +128,8 @@ private:
     StateCallback stateCallback_;
     CursorCallback cursorCallback_;
     mutable std::mutex callbackMutex_;
+    mutable std::mutex stateMessageMutex_;
+    std::string lastStateMessage_;
     mutable std::mutex clipboardMutex_;
     std::string clipboardText_;
     uint64_t clipboardSequence_ = 0;

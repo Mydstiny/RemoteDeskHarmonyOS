@@ -1380,6 +1380,13 @@ ConnectionState VncAdapter::getState() {
     return impl_->state;
 }
 
+std::string VncAdapter::getConnectionLastMessage() {
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    // Follow the same active engine as getState(), not the asynchronous
+    // external callback's cached message. Detached states use the NAPI cache.
+    return impl_->engine ? impl_->engine->lastStateMessage() : std::string();
+}
+
 void VncAdapter::sendKey(uint32_t scancode, bool pressed) {
     std::lock_guard<std::mutex> lock(impl_->mutex);
     if (impl_->engine) impl_->engine->sendKey(scancode, pressed);

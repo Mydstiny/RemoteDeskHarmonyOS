@@ -79,7 +79,10 @@ function facade() {
   const calls=[]; let captureId='capture-1'; let message=marker; let reads=0;
   const context={module:{exports:{}}, diagnosticCaptureIdForModule: () => captureId,
     rdpnapi:{getConnectionLastMessage:() => {reads++; if(message===null) throw Error('native unavailable'); return message;}},
-    recordVncUpdateFailure:(...args)=>calls.push(args)};
+    recordVncUpdateFailure:(...args)=>{
+      if (!diag.parseVncUpdateFailure(args[1])) return false;
+      calls.push(args); return true;
+    }};
   vm.runInNewContext(facadeJs,context);
   const f=new context.module.exports(); f.diagnosticConnectionStates=new Map();
   f.diagnosticModuleForSession=()=>'connection.vnc'; f.recordDiagnosticConnection=()=>{};
@@ -99,5 +102,15 @@ test('other protocols and disabled capture do not read VNC failure', () => {
 test('native diagnostic read failure cannot escape polling', () => {
   const x=facade(); x.setMessage(null); assert.doesNotThrow(()=>x.f.recordDiagnosticConnectionState(1,4));
   assert.equal(x.calls.length,0);
+  x.setMessage(marker); x.f.recordDiagnosticConnectionState(1,4);
+  assert.equal(x.calls.length,1);
+});
+test('late error message is retried without duplicating state or successful facts', () => {
+  const x=facade(); const states=[]; x.f.recordDiagnosticConnection=(...args)=>states.push(args);
+  x.setMessage('VNC 已连接'); x.f.recordDiagnosticConnectionState(1,4);
+  assert.equal(x.calls.length,0); assert.equal(states.length,1);
+  x.setMessage(marker); x.f.recordDiagnosticConnectionState(1,4);
+  x.f.recordDiagnosticConnectionState(1,4);
+  assert.equal(x.reads(),2); assert.equal(x.calls.length,1); assert.equal(states.length,1);
 });
 console.log(cases + ' VNC diagnostic checks passed');
