@@ -1,12 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { generateKeyPairSync, randomBytes, createHash } from 'node:crypto';
-import { mkdtemp, readFile, writeFile, rm, symlink } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile, rm, stat, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readSandboxConfiguration } from '../../server/pro-entitlement/agc/runtime.mjs';
-import { buildSandboxPackage } from '../../server/pro-entitlement/agc/build-package.mjs';
+import { buildSandboxPackage, publishSandboxArchive } from '../../server/pro-entitlement/agc/build-package.mjs';
 
 const agc = fileURLToPath(new URL('../../server/pro-entitlement/agc/', import.meta.url));
 const configuration = { applicationId: '1000000000000000001', productId: 'RemoteDesktop_Pro_Test', environment: 'SANDBOX',
@@ -74,4 +74,50 @@ test('every bundled PKIX license matches its declared hash and the binary is abs
     assert.equal(createHash('sha256').update(bytes).digest('hex'), hash);
   }
   await assert.rejects(() => readFile(join(agc, 'pkix/bin/openssl')), { code: 'ENOENT' });
+});
+
+for (const failingPath of ['test.zip', 'test.zip.sha256']) {
+  test(`partial write of ${failingPath} closes handles and removes only owned files`, async () => {
+    const files = new Map(); const handles = [];
+    const io = {
+      async open(path, flags, mode) {
+        assert.equal(flags, 'wx'); assert.equal(mode, 0o600);
+        assert.equal(files.has(path), false); files.set(path, Buffer.alloc(0));
+        const handle = {
+          closed: false,
+          async writeFile(bytes) {
+            files.set(path, Buffer.from(bytes).subarray(0, 3));
+            if (path === failingPath) throw Object.assign(new Error('simulated disk full'), { code: 'ENOSPC' });
+            files.set(path, Buffer.from(bytes));
+          },
+          async close() { this.closed = true; }
+        };
+        handles.push(handle); return handle;
+      },
+      async remove(path) { assert.equal(handles.every(handle => handle.closed), true); files.delete(path); }
+    };
+    await assert.rejects(() => publishSandboxArchive('test.zip', Buffer.from('non-secret test archive'), io), { code: 'ENOSPC' });
+    assert.equal(files.size, 0); assert.equal(handles.every(handle => handle.closed), true);
+  });
+}
+
+test('real archive publication preserves existing files and writes a private checksum pair', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'pro-package-output-test-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const output = join(directory, 'test.zip'); const archive = Buffer.from('non-secret test archive');
+  await writeFile(output, 'existing archive');
+  await assert.rejects(() => publishSandboxArchive(output, archive), { code: 'EEXIST' });
+  assert.equal(await readFile(output, 'utf8'), 'existing archive');
+  await rm(output);
+  await writeFile(output + '.sha256', 'existing checksum');
+  await assert.rejects(() => publishSandboxArchive(output, archive), { code: 'EEXIST' });
+  await assert.rejects(() => readFile(output), { code: 'ENOENT' });
+  assert.equal(await readFile(output + '.sha256', 'utf8'), 'existing checksum');
+  await rm(output + '.sha256');
+  await publishSandboxArchive(output, archive);
+  assert.deepEqual(await readFile(output), archive);
+  assert.equal(await readFile(output + '.sha256', 'utf8'), createHash('sha256').update(archive).digest('hex') + '\n');
+  if (process.platform !== 'win32') {
+    for (const path of [output, output + '.sha256']) assert.equal((await stat(path)).mode & 0o777, 0o600);
+  }
 });

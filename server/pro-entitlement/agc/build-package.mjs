@@ -1,4 +1,4 @@
-import { chmod, copyFile, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises';
+import { chmod, copyFile, lstat, mkdir, mkdtemp, open as openFile, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises';
 import { createHash, X509Certificate } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -44,6 +44,29 @@ async function inventory(directory, prefix = '') {
 function outside(path, parent) {
   const part = relative(parent, path);
   return part.startsWith('..' + sep) || part === '..' || isAbsolute(part);
+}
+
+export async function publishSandboxArchive(output, archive, io = {
+  open: openFile, remove: path => rm(path, { force: true })
+}) {
+  const owned = [];
+  try {
+    for (const [path, bytes] of [[output, archive], [output + '.sha256', digest(archive) + '\n']]) {
+      const handle = await io.open(path, 'wx', 0o600);
+      // Record ownership immediately after creation, before any data is written.
+      owned.push({ path, handle });
+      await handle.writeFile(bytes);
+    }
+    const closed = await Promise.allSettled(owned.map(file => file.handle.close()));
+    const failure = closed.find(result => result.status === 'rejected');
+    if (failure) throw failure.reason;
+  } catch (error) {
+    await Promise.allSettled(owned.map(file => file.handle.close()));
+    const removed = await Promise.allSettled(owned.map(file => io.remove(file.path)));
+    const failures = removed.filter(result => result.status === 'rejected').map(result => result.reason);
+    if (failures.length > 0) throw new AggregateError([error, ...failures], 'private_package_cleanup_failed');
+    throw error;
+  }
 }
 
 export async function buildSandboxPackage({ privateDirectory, pkixDirectory, output }) {
@@ -101,15 +124,7 @@ export async function buildSandboxPackage({ privateDirectory, pkixDirectory, out
     const temporaryZip = join(stage, 'deployment.zip');
     await runFile('zip', ['-q', '-r', temporaryZip, '.', '-x', 'deployment.zip'], { cwd: stage, timeout: 60000, maxBuffer: 1024 * 1024 });
     const archive = await readFile(temporaryZip);
-    await writeFile(output, archive, { flag: 'wx', mode: 0o600 });
-    try {
-      await writeFile(output + '.sha256', digest(archive) + '\n', { flag: 'wx', mode: 0o600 });
-    } catch (error) {
-      // Only remove the archive created by this invocation. Never overwrite an
-      // earlier package or leave a new secret-bearing ZIP after a failed build.
-      await rm(output, { force: true });
-      throw error;
-    }
+    await publishSandboxArchive(output, archive);
     return { output, sha256: digest(archive), bytes: archive.length, sourceFiles: Object.keys(files).length,
       privateFileCount: privateFiles.length, environment: 'SANDBOX' };
   } finally { await rm(stage, { recursive: true, force: true }); }
