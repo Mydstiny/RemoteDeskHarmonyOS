@@ -1,4 +1,5 @@
 import { RemoteSessionCapabilities, resolveSessionCapabilities } from './RemoteSessionCapabilityPolicy';
+import { AppUiMetrics } from '../common/AppUiMetrics';
 
 export type RemoteTopBarDeviceClass = 'pc' | 'pad' | 'phone';
 
@@ -277,7 +278,7 @@ export interface RemoteTopBarActionAvailability {
  * without requesting the privileged SYSTEM_FLOAT_WINDOW capability.
  */
 export const REMOTE_SESSION_COLLAPSED_RAIL_WIDTH: number = 22;
-export const REMOTE_SESSION_COLLAPSED_RAIL_TOUCH_WIDTH: number = 40;
+export const REMOTE_SESSION_COLLAPSED_RAIL_TOUCH_WIDTH: number = AppUiMetrics.minTouchTarget;
 export const REMOTE_SESSION_COLLAPSED_RAIL_HEIGHT: number = 72;
 export const REMOTE_SESSION_COLLAPSED_RAIL_BACKGROUND: string =
   'rgba(248,250,252,0.52)';
@@ -287,7 +288,7 @@ export const REMOTE_SESSION_COLLAPSED_RAIL_BORDER: string =
   'rgba(255,255,255,0.48)';
 /** PC equivalent of the right-edge affordance, rotated onto the top edge. */
 export const REMOTE_SESSION_COLLAPSED_TOP_WIDTH: number = 72;
-export const REMOTE_SESSION_COLLAPSED_TOP_TOUCH_HEIGHT: number = 40;
+export const REMOTE_SESSION_COLLAPSED_TOP_TOUCH_HEIGHT: number = AppUiMetrics.minTouchTarget;
 export const REMOTE_SESSION_COLLAPSED_TOP_HEIGHT: number = 22;
 
 export function remoteSessionControlBarHidden(protocol: string,

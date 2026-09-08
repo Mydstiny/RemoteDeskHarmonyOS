@@ -1,7 +1,7 @@
 # API 26 基础版本 UI 升级与优化计划
 
 - 日期：2026-09-07。
-- 状态：U0 清点与 U1 公共标题栏样例已推进；正在将公共标题/操作/开关规范用于五类免费设置。API23/26 视觉、键盘及性能矩阵仍待验收，不能标记 U1/U2 完成。
+- 状态：U1/U2 公共控件与导航两批代码已提交并独立复核；继续 U3 工具栏和其余首页/表单。U0 基线及 API23/26 视觉、键盘、性能矩阵仍待验收，不能标记 U0-U4 完成。
 - 权益归属：基础版本免费升级，所有用户可用，不属于 Pro，不要求购买、登录、联网验单或开启模拟 Pro。
 - 关联：[总体路线图](2026-09-06-pro-product-roadmap.md)、[Pro M1/M2 实施准备](2026-09-07-pro-m1-m2-implementation.md)。
 
@@ -117,4 +117,12 @@ U1 首个代码增量：新增免费 `AppSheetHeader`，接入反馈页和 Pro �
 - 新增免费原生 Button 导航行 `AppSettingsActionRow`，用于设置顶级入口及关于页的三处外链卡片。主页面仅定点修改 `settingsAccordionHeader`、`settingsActionHeader`、`rustdeskSwitchRow` 与两个公共导入；保留 AI 接线、路由、展开状态、保存动画和业务回调。
 - 关于页六类标题统一复用公共标题栏；翻页、设备/协议/课程选择改用原生按钮，保留原控制器与数据。键盘设置复用公共标题/开关，组合键类别改为两行，按键与常规操作最小高度 44 vp，现有滚动区承载内容；不改键码、存储、平台差异或系统输入法调用。
 - VNC scaffold 保留原布局密度、action-only 和 FIT_CONTENT/滚动/页脚模式。返回/关闭按钮 44 vp，紧凑头上下各 4 vp，总按钮头 52 vp，与原 compact header estimate 一致；保持底部安全区和回调。
-- 按钮填色沿用原主题选择并使用公共黑白前景策略；设置说明可换行，原生焦点和读屏名称补齐。当前最终代码门禁：testCompile `BUILD SUCCESSFUL in 11 s 644 ms`；signed assembleHap `BUILD SUCCESSFUL in 1 min 7 s 852 ms`、SignHap 1 s 169 ms；两项 exit 0。Light、About AGPL 展示检查和 diff PASS；三叶页全部状态块和 54 个原业务/辅助方法未改，外链目标不变。四完整源码及 HostList 三方法 hash 在最终两门前后固定；尚待 checkpoint 后独立复核，不宣称真实设备视觉、字体或性能完成。
+- 按钮填色沿用原主题选择并使用公共黑白前景策略；设置说明可换行，原生焦点和读屏名称补齐。当前最终代码门禁：testCompile `BUILD SUCCESSFUL in 11 s 644 ms`；signed assembleHap `BUILD SUCCESSFUL in 1 min 7 s 852 ms`、SignHap 1 s 169 ms；两项 exit 0。Light、About AGPL 展示检查和 diff PASS；三叶页全部状态块和 54 个原业务/辅助方法未改，外链目标不变。四完整源码及 HostList 三方法 hash 在最终两门前后固定；精确 checkpoint `d6e0f11c` 已独立复核 PASS。复核确认 HostList 仅约定三 helper/两导入，54 声明及完整状态段未改、原四个外链均保留，VNC compact 52 vp 与估算一致。记录后两门另 PASS：testCompile 18 s 295 ms；signed assembleHap 19 s 348 ms、SignHap 932 ms。不宣称真实设备视觉、字体或性能完成。
+
+## U3 会话工具栏第三批（2026-09-08）
+
+- VNC 填色按钮共用主题色与黑白前景策略，修正白色等浅主题下不可读的图标/文字；手机浅色侧栏的“只读”提示改为深色。手机/PC 收起动作使用原生 Button，PC 收起最小高度补到 44 vp。
+- Moonlight 侧栏操作/固定/收起按钮从 40 vp 补到公共 44 vp；滚动预算同步扣除两个固定按钮、两处间隔、外侧 padding 与 border，避免小窗口退出/收起被推出边界。现有 176 vp 展开阈值、菜单、自动收起和所有业务回调保留。
+- 四协议复用的收起手柄点击范围由 40 vp 统一为公共 44 vp；22 vp 可见手柄不变，现有位置计算随常量更新。维持原 focusable(false)、focusOnTouch(false)、远程输入平面及现有 hit-test 约定，不用普通设置页焦点规则替换会话输入。
+- 当前代码门禁 testCompile `BUILD SUCCESSFUL in 9 s 412 ms`，signed assembleHap `BUILD SUCCESSFUL in 11 s 276 ms`、SignHap 912 ms，均 exit 0；Light/diff PASS。34 个原普通方法、两组件状态块和事件/焦点/命中调用行未改；实际滚动函数 24600 个布局组合（176–1200 vp、1–24 操作）通过固定操作区边界验证。三代码 hash 留存用于后续元数据门禁与 checkpoint 核对；独立复核待提交。
+- U0 模拟器进展：在任务临时目录创建独立 API24 Phone 实例，未使用用户现有模拟器数据。启动被华为许可确认阻止，已向用户申请，尚未接受、安装 App 或取得布局证据。API24 可补充兼容布局证据，不能代替要求的 API23/26、真实设备或协议输入验收。

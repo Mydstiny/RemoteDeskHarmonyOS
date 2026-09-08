@@ -1,4 +1,6 @@
 import { curves } from '@kit.ArkUI';
+import { AppUiMetrics } from '../common/AppUiMetrics';
+import { appUiButtonFill, appUiButtonText } from '../common/AppUiColorPolicy';
 import { OverlayPlacement, emptyOverlayPlacement } from '../services/RemoteOverlayViewportPolicy';
 import {
   REMOTE_SESSION_COLLAPSED_RAIL_BACKGROUND,
@@ -66,20 +68,25 @@ export struct VncSessionToolbar {
     onCollapsedPointerMove: (_x: number, _y: number): void => {}
   };
 
+  private actionButtonFill(active: boolean, danger: boolean): string {
+    return appUiButtonFill(danger ? '#D93B3B' : (active ? '#168C78' : this.accentColor));
+  }
+
   @Builder
   private actionButton(icon: Resource, label: string, active: boolean,
     action: () => void, danger: boolean = false) {
     Button() {
       Column() {
-        SymbolGlyph(icon).fontSize(17).fontColor([Color.White])
-        Text(label).fontSize(8).fontColor('#FFFFFF').maxLines(1)
+        SymbolGlyph(icon).fontSize(17)
+          .fontColor([appUiButtonText(this.actionButtonFill(active, danger))])
+        Text(label).fontSize(8).fontColor(appUiButtonText(this.actionButtonFill(active, danger))).maxLines(1)
           .textOverflow({ overflow: TextOverflow.Ellipsis }).margin({ top: 2 })
       }.justifyContent(FlexAlign.Center)
     }
     .width(56)
-    .height(44)
+    .height(AppUiMetrics.minTouchTarget)
     .padding(0).borderRadius(9)
-    .backgroundColor(danger ? '#D93B3B' : (active ? '#168C78' : this.accentColor))
+    .backgroundColor(this.actionButtonFill(active, danger))
     .focusable(false).focusOnTouch(false)
     .accessibilityText(label)
     .onClick(action)
@@ -231,7 +238,7 @@ export struct VncSessionToolbar {
   @Builder
   private mobileExpandedRail() {
     Column({ space: 5 }) {
-      Stack() {
+      Button({ type: ButtonType.Normal }) {
         Row() {
           SymbolGlyph(this.placement.side === 'left' ?
             $r('sys.symbol.chevron_left') : $r('sys.symbol.chevron_right'))
@@ -241,9 +248,9 @@ export struct VncSessionToolbar {
         .justifyContent(FlexAlign.Center)
         .backgroundColor('rgba(255,255,255,0.92)')
         .borderRadius(7)
-        .position({ x: 0, y: 7 })
       }
-      .width('100%').height(44)
+      .width('100%').height(AppUiMetrics.minTouchTarget).padding(0)
+      .backgroundColor(Color.Transparent)
       .focusable(false).focusOnTouch(false)
       .accessibilityText('收起 VNC 会话工具栏')
       .onClick((): void => { this.actions.onCollapse(); })
@@ -251,8 +258,8 @@ export struct VncSessionToolbar {
         Column({ space: 5 }) {
           if (this.viewOnly) {
             Row() {
-              SymbolGlyph($r('sys.symbol.eye')).fontSize(13).fontColor(['#FFFFFF'])
-              Text('只读').fontSize(10).fontColor('#FFFFFF').margin({ left: 4 })
+              SymbolGlyph($r('sys.symbol.eye')).fontSize(13).fontColor(['#343A46'])
+              Text('只读').fontSize(10).fontColor('#343A46').margin({ left: 4 })
             }
             .height(24).width('100%').justifyContent(FlexAlign.Center)
           }
@@ -345,10 +352,10 @@ export struct VncSessionToolbar {
       .scrollable(ScrollDirection.Horizontal)
       .scrollBar(BarState.Auto)
       .edgeEffect(EdgeEffect.Spring)
-      Row() {
+      Button({ type: ButtonType.Normal }) {
         SymbolGlyph($r('sys.symbol.chevron_up')).fontSize(16).fontColor(['#444444'])
       }
-      .width(56).height(28).justifyContent(FlexAlign.Center)
+      .width(56).height(AppUiMetrics.minTouchTarget).padding(0)
       .borderRadius({ topLeft: 0, topRight: 0, bottomLeft: 8, bottomRight: 8 })
       .backgroundColor(REMOTE_SESSION_COLLAPSED_RAIL_BACKGROUND)
       .backdropBlur(16)

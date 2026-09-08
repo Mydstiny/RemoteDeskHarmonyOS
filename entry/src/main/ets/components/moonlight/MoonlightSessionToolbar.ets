@@ -1,5 +1,6 @@
 import { curves } from '@kit.ArkUI';
 import { Palette, buildDark } from '../../common/Theme';
+import { AppUiMetrics } from '../../common/AppUiMetrics';
 import {
   MoonlightToolbarAction,
   MoonlightToolbarItem,
@@ -277,10 +278,13 @@ export struct MoonlightSessionToolbar {
   }
 
   private railScrollMaxHeight(layout: MoonlightToolbarLayout): number {
-    const contentHeight: number = this.railItems().length * 40 +
-      Math.max(0, this.railItems().length - 1) * layout.itemGap;
-    return Math.max(1, Math.min(contentHeight, Math.max(1, layout.maxHeight - 92),
-      Math.max(1, this.availableHeight - 102)));
+    const count: number = this.railItems().length;
+    const contentHeight: number = count * AppUiMetrics.minTouchTarget +
+      Math.max(0, count - 1) * layout.itemGap;
+    // Two fixed buttons, two gaps, 7vp outer padding and 1vp border on each side.
+    const fixedHeight: number = AppUiMetrics.minTouchTarget * 2 + layout.itemGap * 2 + 16;
+    return Math.max(1, Math.min(contentHeight, Math.max(1, layout.maxHeight - fixedHeight),
+      Math.max(1, this.availableHeight - fixedHeight)));
   }
 
   private pcExpandedToolbarWidth(): number {
@@ -310,7 +314,7 @@ export struct MoonlightSessionToolbar {
       .alignItems(HorizontalAlign.Center)
     }
     .width(layout.edgeRail ? layout.iconSize + 18 : 50)
-    .height(layout.edgeRail ? 40 : 50).padding(0).borderRadius(12)
+    .height(layout.edgeRail ? AppUiMetrics.minTouchTarget : 50).padding(0).borderRadius(12)
     .backgroundColor(item.dangerous ? 'rgba(255,92,92,0.16)' :
       (this.itemActive(item) ? 'rgba(91,143,249,0.24)' : this.pal().surface))
     .enabled(true)
@@ -325,7 +329,7 @@ export struct MoonlightSessionToolbar {
       SymbolGlyph(this.pinned ? $r('sys.symbol.pin_fill') : $r('sys.symbol.pin'))
         .fontSize(17).fontColor([this.pinned ? this.accentColor : this.pal().text])
     }.width(layout.edgeRail ? layout.iconSize + 18 : 44)
-      .height(layout.edgeRail ? 40 : 50).padding(0).borderRadius(12)
+      .height(layout.edgeRail ? AppUiMetrics.minTouchTarget : 50).padding(0).borderRadius(12)
       .backgroundColor(this.pal().surface)
       .focusable(false).focusOnTouch(false)
       .onClick((): void => { this.pinned = !this.pinned; this.scheduleHide(); })
@@ -337,7 +341,7 @@ export struct MoonlightSessionToolbar {
       SymbolGlyph(layout.edgeRail ? $r('sys.symbol.arrow_right') : $r('sys.symbol.chevron_up'))
         .fontSize(17).fontColor([this.pal().text])
     }.width(layout.edgeRail ? layout.iconSize + 18 : 44)
-      .height(layout.edgeRail ? 40 : 50).padding(0).borderRadius(12)
+      .height(layout.edgeRail ? AppUiMetrics.minTouchTarget : 50).padding(0).borderRadius(12)
       .backgroundColor(this.pal().surface)
       .focusable(false).focusOnTouch(false)
       .onClick((): void => {

@@ -21,7 +21,7 @@ Updated: 2026-09-08 Asia/Shanghai
 - File transfer / clipboard: [F01-F17 / T0-T9 remediation plan](plans/2026-09-07-file-transfer-clipboard-remediation.md) saved and independently reviewed. Await explicit implementation authorization; first refresh the baseline, then session/clipboard isolation, RDP safety and shared task lifecycle before bidirectional transfer and conditional move. No implementation item is closed.
 
 
-- Base UI: c8240fd9 first increment independently PASS. Second About/keyboard/VNC/navigation helpers have current compile/signed/Light/AGPL/behavior gates; checkpoint and review next. Continue homepage, U3/U4 and device/performance matrix; public UI remains free.
+- Base UI: c8240fd9 controls and d6e0f11c navigation independently PASS. Toolbar contrast/44vp targets and height budget have current compile/signed/Light/behavior gates; checkpoint/review next. Continue homepage/forms and U0-U4 device/performance matrix; emulator license confirmation pending. Public UI remains free.
 
 - M5 SSH Share Kit eca8f8aa independently PASS (code and Pro Release checks). Configure and verify the real App Link/fragment path; PC continuation, RDP and cross-device acceptance remain open. Continue free public UI in parallel with these external prerequisites.
 

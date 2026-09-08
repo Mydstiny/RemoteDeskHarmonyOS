@@ -3,10 +3,10 @@
   "task": "pro-purchase-foundation",
   "branch": "codex/pro-purchase-foundation",
   "base": "8edc187868e94ed41634e8a6c4c4c072e3a48679",
-  "head": "c8240fd91923aa68f8def57a46c0d282d677f22c",
-  "phase": "free-ui-navigation-controls-checkpoint-pending",
+  "head": "d6e0f11cf1430822d8605348a5e7c4fea107692d",
+  "phase": "free-ui-session-toolbar-checkpoint-pending",
   "status": "in-progress",
-  "next": "Validate and independently review the second public UI increment (About/keyboard/VNC scaffold and three settings rendering helpers), then continue homepage, remaining settings, U3/U4 and the Pro roadmap.",
+  "next": "Commit and independently review the toolbar increment, then continue homepage/remaining forms and U0-U4 device/performance acceptance plus M5/M6/M7 external prerequisites.",
   "blockers": [
     "M3/U0-U4 device matrix and M4 PC real Share Kit/SFTP file-integrity acceptance remain unverified.",
     "M5 Share Kit App Linking domain, association and actual fragment delivery remain unverified; ServiceInteraction ACL is a separate path. M6 USB/RDP authenticator and phone-passkey RP/origin proof remain pending.",
@@ -87,20 +87,24 @@
       "entry/src/main/ets/components/AppSettingsActionRow.ets",
       "entry/src/main/ets/components/AboutSettingsSheet.ets",
       "entry/src/main/ets/components/VirtualKeyboardSettingsSheet.ets",
-      "entry/src/main/ets/components/vnc/VncSheetScaffold.ets"
+      "entry/src/main/ets/components/vnc/VncSheetScaffold.ets",
+      "entry/src/main/ets/components/VncSessionToolbar.ets",
+      "entry/src/main/ets/components/moonlight/MoonlightSessionToolbar.ets",
+      "entry/src/main/ets/services/RemoteSessionTopBarPolicy.ets"
     ],
     "findings": [],
-    "reviewedHead": "c8240fd91923aa68f8def57a46c0d282d677f22c",
-    "reason": "Exact first public controls c8240fd9 independently PASS; second navigation increment under validation. Aggregate roadmap, release and device acceptance remain incomplete."
+    "reviewedHead": "d6e0f11cf1430822d8605348a5e7c4fea107692d",
+    "reason": "Exact d6e0f11c navigation and earlier public UI increments independently PASS; toolbar checkpoint/review next. Aggregate roadmap and device/deployment acceptance remain incomplete."
   },
   "lastVerification": {
-    "testCompile": "PASS exit 0; BUILD SUCCESSFUL in 11 s 644 ms",
-    "assembleHap": "PASS exit 0; signed BUILD SUCCESSFUL in 1 min 7 s 852 ms; SignHap 1 s 169 ms",
-    "compliance": "PASS Light, About AGPL disclosure and git diff --check",
-    "behavior": "PASS identical state and 54 original business/helper methods in About/keyboard/VNC; exact About URL destinations preserved; HostList only three rendering helpers and two public imports",
-    "sourceIntegrity": "Four complete source files and three HostList helper hashes frozen across final gates",
-    "device": "NOT RUN; device layout/fonts/keyboard/reader/performance and remaining U0-U4 remain pending",
-    "scopeBoundary": "Only free UI increment; concurrent AI/Transfer source is outside this code review and device acceptance."
+    "testCompile": "PASS exit 0; BUILD SUCCESSFUL in 9 s 412 ms",
+    "assembleHap": "PASS exit 0; signed BUILD SUCCESSFUL in 11 s 276 ms; SignHap 912 ms",
+    "compliance": "PASS Light and git diff --check",
+    "behavior": "PASS 34 original ordinary methods, both component state blocks and event/focus/hit-test lines unchanged; shared policy changes only two touch constants and common import",
+    "geometry": "PASS 24600 actual scroll-function layouts across 176..1200vp and 1..24 actions; fixed buttons fit viewport and rail maximum",
+    "sourceIntegrity": "Three exact source hashes captured after successful code gates; retained for metadata gate and checkpoint comparison",
+    "device": "NOT RUN; temporary API24 emulator created, startup requires user acceptance of Huawei license. API23/26/real remote-input/fonts/keyboard/reader/performance remain pending",
+    "scopeBoundary": "Free UI toolbar increment only; other shared task changes are outside this review and device acceptance."
   },
   "updated": "2026-09-08 Asia/Shanghai",
   "roadmapPaths": [
@@ -146,10 +150,10 @@
   "baseUiPreparation": {
     "planPath": "docs/codex/plans/2026-09-07-api26-base-ui-upgrade.md",
     "entitlement": "free",
-    "status": "u1-u2-first-controls-reviewed-navigation-in-progress",
+    "status": "u1-u2-controls-navigation-reviewed-u3-toolbar-in-progress",
     "codeImplemented": true,
     "reviewerTaskId": "/root/review_pro_plan",
-    "reviewResult": "PASS ca929ceb and c8240fd9 scoped public UI code; next increment and device/performance acceptance remain open",
+    "reviewResult": "PASS ca929ceb, c8240fd9 and d6e0f11c scoped public UI increments; toolbar and device/performance acceptance remain open",
     "stageCommit": "ca929ceb3c419ef0336818074c19637f96137e7b",
     "publicControls": {
       "status": "code-independently-reviewed-device-pending",
@@ -184,7 +188,7 @@
       "findings": []
     },
     "navigationControls": {
-      "status": "code-gates-passed-review-pending",
+      "status": "code-independently-reviewed-device-pending",
       "scope": [
         "entry/src/main/ets/components/AppSettingsActionRow.ets",
         "entry/src/main/ets/components/AboutSettingsSheet.ets",
@@ -198,7 +202,7 @@
         "rustdeskSwitchRow",
         "two public UI imports"
       ],
-      "reviewStatus": "REVIEW_REQUIRED",
+      "reviewStatus": "PASS",
       "device": "NOT RUN",
       "verification": {
         "testCompile": "PASS exit 0; BUILD SUCCESSFUL in 11 s 644 ms",
@@ -206,8 +210,36 @@
         "compliance": "PASS Light, About AGPL disclosure and git diff --check",
         "behavior": "PASS identical state and 54 original business/helper methods in About/keyboard/VNC; exact About URL destinations preserved; HostList only three rendering helpers and two public imports",
         "sourceIntegrity": "Four complete source files and three HostList helper hashes frozen across final gates",
-        "device": "NOT RUN; device layout/fonts/keyboard/reader/performance and remaining U0-U4 remain pending"
+        "device": "NOT RUN; device layout/fonts/keyboard/reader/performance and remaining U0-U4 remain pending",
+        "independentReview": "Independent exact ten-file increment PASS. Four complete sources and three helpers match frozen commit hashes; reconstructed HostList confirms only agreed helpers/imports. All 54 original declarations and complete state blocks, callbacks, persistence/platform keys, four existing external links and VNC density/fitContent/safe-area semantics preserved. Other task state subtrees unchanged."
+      },
+      "reviewedCommit": "d6e0f11cf1430822d8605348a5e7c4fea107692d",
+      "reviewerTaskId": "/root/review_pro_plan",
+      "reviewReceiptId": "base-ui-navigation-d6e0f11c-2026-09-08",
+      "findings": []
+    },
+    "sessionToolbar": {
+      "status": "code-gates-passed-review-pending",
+      "scope": [
+        "entry/src/main/ets/components/VncSessionToolbar.ets",
+        "entry/src/main/ets/components/moonlight/MoonlightSessionToolbar.ets",
+        "entry/src/main/ets/services/RemoteSessionTopBarPolicy.ets"
+      ],
+      "reviewStatus": "REVIEW_REQUIRED",
+      "verification": {
+        "testCompile": "PASS exit 0; BUILD SUCCESSFUL in 9 s 412 ms",
+        "assembleHap": "PASS exit 0; signed BUILD SUCCESSFUL in 11 s 276 ms; SignHap 912 ms",
+        "compliance": "PASS Light and git diff --check",
+        "behavior": "PASS 34 original ordinary methods, both component state blocks and event/focus/hit-test lines unchanged; shared policy changes only two touch constants and common import",
+        "geometry": "PASS 24600 actual scroll-function layouts across 176..1200vp and 1..24 actions; fixed buttons fit viewport and rail maximum",
+        "sourceIntegrity": "Three exact source hashes captured after successful code gates; retained for metadata gate and checkpoint comparison",
+        "device": "NOT RUN; temporary API24 emulator created, startup requires user acceptance of Huawei license. API23/26/real remote-input/fonts/keyboard/reader/performance remain pending"
       }
+    },
+    "deviceBaseline": {
+      "physicalDevice": "API26 phone in active SSH use; no installation/control consent received",
+      "temporaryEmulator": "API24 Phone instance created in task temporary directory; no app installed or runtime acceptance. Huawei license acceptance awaits user approval",
+      "requiredMatrix": "API23/26 Phone/Pad/PC startup, layout, fonts, input, accessibility and quantitative performance remain open"
     }
   },
   "remoteAiPreparation": {
