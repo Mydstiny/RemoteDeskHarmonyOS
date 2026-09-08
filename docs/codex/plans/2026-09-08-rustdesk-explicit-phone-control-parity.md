@@ -1,7 +1,7 @@
 # RustDesk「控制手机」官方体验对齐计划（用户显式选择限定）
 
 - 日期：2026-09-08。
-- 状态：BLOCKED_SCOPE_DEPENDENCY；用户已授权实施，检查点 `08ccf6b6` 独立复核 FAIL。两项范围内修复已提交 `35d3855c` 并经同一 reviewer 确认；来源证明与实际呈现帧身份需要下述最小边界授权。新增入口已关闭，S0–S4 不声明完成；S5 真机验收未执行。
+- 状态：CODE_COMPLETE_REVIEW_PASS_DEVICE_PENDING；用户已授权并实施两条必要证据边界，手机新增入口仅接受本机真实点击证明。初次复核问题及追加的备份/帧队列问题均已修复，独立 `/root/review_explicit_phone` 对最终手机提交 `b97808f5` 正式 PASS。S5 真机验收未执行，整份计划不声明完成。
 - 用户硬边界：仅涵盖用户选择「控制手机」的情况，不允许扩散或影响其他情况、功能模组。
 - 本计划取代此前临时评估中的宽范围实施建议；临时评估只保留调查参考价值，不构成执行授权。
 - 工作区基线：`codex/pro-purchase-foundation@cdc193958`，本地 main 为 `8edc18786`。Pro 与文件/剪贴板任务有并行改动；实施前刷新相关路径差量，不覆盖、不混合提交。
@@ -197,7 +197,7 @@ pwsh -NoProfile -File scripts/verify_open_source_release.ps1 -Mode Light -Reposi
 - 并行边界：同一工作区另有 Pro/RDP 接续与独立呈现指标改动；手机提交只包含本计划 hunks，不为这些任务授予范围或写审查结论。活动分支尚有其他任务，不能以本增量代替整分支 PR/合并闭环。
 
 
-## 9. 独立复核阻塞与待授权最小范围（2026-09-08）
+## 9. 初次独立复核阻塞与最小范围授权过程（历史，2026-09-08）
 
 `/root/review_explicit_phone` 对 `08ccf6b6` 的独立复核为 FAIL：
 
@@ -206,7 +206,7 @@ pwsh -NoProfile -File scripts/verify_open_source_release.ps1 -Mode Light -Reposi
 3. 旧 batch 重放：仅 bool 几何门无法淘汰 sender 已 dequeue 的旧输入。已加手机专用 epoch，dequeue 在手机门锁内捕获，关闭递增，发送持锁核对；close/reopen 后旧 batch 回归检查通过，Rust 全量 313 PASS。普通会话保留现有队列行为。
 4. 实际呈现证明不足：新 540×1200 通知/编码帧之后，旧 1080×2400 纹理因同宽高比可误确认新 epoch。需将真实解码输出身份带到成功呈现回执，不能以最新全局 epoch 或当前 Decode 调用代替输出帧身份。
 
-当前保护：`explicitPhoneImplementationReady()` 固定 false，连接配置先检查此门；这批新手机策略不进入应用会话。现有控制手机行为继续使用原路径。此保护并非问题 2/4 已修复，也不作为功能验收 PASS。
+当时检查点保护（已由第 10 节授权修复取代）：`explicitPhoneImplementationReady()` 固定 false，连接配置先检查此门；这批新手机策略不进入应用会话。现有控制手机行为继续使用原路径。此保护并非问题 2/4 已修复，也不作为功能验收 PASS。
 
 计划第 1.4 节禁止“为确认来源而修改 Pro、导入/同步或存储结构”，第 2 节排除了“编解码器”。现有作用域无法提供上述两项证明，先保留检查点，不扩大修改。拟请求的最小扩展仅为：
 
@@ -224,3 +224,24 @@ S5 全部真机正例及 N01–N12 隔离负例仍 NOT RUN。当前不 push/merg
 - 编译限制：App 两门运行于共享工作树，含并行 Pro/RDP 未审变更；单独提交 renderer 另做了准确索引语法检查。没有对整个共享 HAP 作代码审查或设备验收声明。
 - 无存储扩展的来源替代方案：允许范围内的 RemoteDesktop 连接边界可要求用户作一次明确的“本次控制手机”选择，凭证只绑定 attempt/目标/配置，取消或更换即失效；不从归一化 manual 恢复证明。该替代会增加连接选择步骤，尚未实施；跨重启免确认则需要选择产生点到持久化的完整证据链，不能只修 policy。
 - 页面禁用门不撤销此前已启用的 native 会话，也不是阻止内部直接构造 native 配置的全局开关。本轮未安装或运行此检查点到设备。
+
+
+## 10. 两条证据边界已授权（2026-09-08）
+
+用户在听取“持久化真实选择标记 + 手机专用实际解码/呈现帧回执”的推荐方案后明确回复“可以”。这仅覆盖下列必要调用边界，不扩展其他协议/Pro 行为、解码算法、输出调度或全局渲染规则。
+
+- 选择标记由经典/新版添加编辑界面的真实“控制手机”点击产生，本机 localextensions 保存；RemoteHost 只保留运行时镜像，通用 toJSON/fromJSON 不序列化或恢复标记。因此缺省、导入和云端字段无法产生选择证明，旧记录需重新点击一次。动态 LAN 本机记录也保存独立标记。无数据库 schema 或云端表变更。
+- 手机解码输入使用单调且不复用的内部 PTS token；原始 timestamp 留在 ingress/receipt 中用于诊断。有限映射保存该帧 owner、transport、geometry、display 与编码尺寸；RAW 查实际 AVFrame::pts，硬解先确认实际输出 attr.pts，再以成功 UpdateSurfaceImage 后的 GetTimestamp 原值匹配。未知映射不猜测、不放行。
+- 已成功呈现后才回执；旧纹理保留旧 ticket，decoder clear/rebind 使旧 ticket 失效。帧身份只在 phone receipt 非空时创建，普通输入 timestamp 与即时/AtTime 调度维持原实现。
+- 手机新增 GLRenderer observer 全部撤去，回执放到 decoder 现有的成功呈现 callback，避免污染其他会话和并行 Pro 指标。
+- 公开 OpenHarmony 证据：HDecoder `7ed395e1fc920c2cae2bd2834437c48eac5b8d6b` 的 FlushBuffer 使用输出 PTS 原值作为 timestamp，AtTime 的 desiredPresentTimestamp 单独保存；SurfaceImage `46a11e91c9709942196ad2a7afea2e0fcd1349f3` 保存实际 Acquire buffer 的 timestamp。它们是公开旧快照，不能替代 HarmonyOS API23/26 真机证据；实现严格匹配原值，失败保持输入关闭。
+
+### 10.1 追加复核问题与修复
+
+- 本机标记不能进入便携备份。remotehosts 导出 payload 仅剔除 `localrustdeskphonechoice`；完整/脱敏备份可用且不能恢复选择证明。两个本机 rollback snapshot 校验入口仅允许该字段严格为 `'1'`，保留同设备事务回滚；portable/import 默认仍拒绝。生产 create/validate 及来源恢复回归通过，源本机数据未被导出操作修改。
+- 帧 epoch 必须在 Rust socket/ACK 路径入队时与 display/width/height 在同一锁下捕获，不能出队后按当前几何补标签。V2 回调期间通过线程、帧指针和 userData 精确匹配的 RAII 旁路读取不可变 epoch，退出恢复前值，跨线程/错误身份/缺失符号返回 0。V1/V2 ABI 仍为 48/56 字节，普通队列、解码调度与回调签名 ABI 保持原有契约。
+- 生产 dispatch→worker queue→A/B/A 通知→实际出队回调回归，验证旧 A 不会被贴为新 A；独立复核已重跑。C++ 的手机 receipt 立即捕获该值，不再调用当前 gate 推导 epoch。
+- 代码检查点 `f37ecffe8` 的 26 个完整目标文件已提交；额外四文件修复已单独提交 `b97808f5`。准确索引 native 五个 cpp 及头文件完成 arm64-v8a/x86_64 syntax 验证，未将共享工作树构建等同独立提交快照。
+- 当前定向证据：15 手机宿主、9 来源/备份宿主、30 native、Rust 全量 315 检查通过。同一 reviewer 独立复跑来源/备份 9、策略 15、native 30、Rust phone_geometry 3 通过。最终当次 testCompile `BUILD SUCCESSFUL in 5 s 918 ms`、签名 assembleHap `BUILD SUCCESSFUL in 7 s 301 ms`（SignHap 1 s 86 ms），均 exit 0；Light/diff PASS。两个 ABI 的实际 librdpnapi.so 中 `rustdesk_current_phone_frame_geometry_epoch_v1` 均为已定义 T 符号。同一 reviewer 正式 PASS 绑定 `b97808f5c6ccaef1cda879e263d27f09f231273d`，沿用 `08ccf6b6 → 35d3855c → f37ecffe` 的范围复核；无剩余代码问题。
+
+S5 真机仍未验收：A01–A20 与 N01–N12 的设备矩阵、实际 NativeImage timestamp 映射、精度/速度、首帧/反馈 p50/p95、API23/26 PC/Pad/Phone 与 Android 厂商/版本、LAN/中继均不得以以上宿主或构建证据替代。

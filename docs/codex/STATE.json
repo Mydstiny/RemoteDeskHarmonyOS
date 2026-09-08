@@ -1124,7 +1124,7 @@
     }
   },
   "rustDeskExplicitPhone": {
-    "status": "blocked-scope-dependency-new-entry-disabled",
+    "status": "code-complete-reviewed-device-acceptance-pending",
     "base": "4719e6dcd",
     "plan": "docs/codex/plans/2026-09-08-rustdesk-explicit-phone-control-parity.md",
     "scope": [
@@ -1148,35 +1148,52 @@
       "rustdesk_ffi/src/lib.rs",
       "rustdesk_ffi/src/connector.rs",
       "rustdesk_ffi/src/control_inbox.rs",
-      "scripts/tests/test_rustdesk_explicit_phone.cjs"
+      "scripts/tests/test_rustdesk_explicit_phone.cjs",
+      "entry/src/main/cpp/CMakeLists.txt",
+      "entry/src/main/cpp/render/frame_callback_gate.h",
+      "entry/src/main/cpp/render/hw_decoder.cpp",
+      "entry/src/main/cpp/render/hw_decoder.h",
+      "entry/src/main/cpp/render/software_decoder.cpp",
+      "entry/src/main/cpp/render/software_decoder.h",
+      "entry/src/main/cpp/render/phone_frame_receipt.h",
+      "entry/src/main/cpp/test/software_decoder_callback_gate_test.cpp",
+      "entry/src/main/cpp/test/rustdesk_phone_frame_receipt_test.cpp",
+      "entry/src/main/ets/components/hostadd/RustDeskAddFlow.ets",
+      "entry/src/main/ets/model/RemoteHost.ets",
+      "entry/src/main/ets/pages/HostListPage.ets",
+      "entry/src/main/ets/services/CloudStore.ets",
+      "entry/src/main/ets/services/HostLocalPersonalizationPolicy.ets",
+      "entry/src/main/ets/services/RustDeskHostAddHandoff.ets",
+      "scripts/tests/test_rustdesk_phone_choice.cjs",
+      "entry/src/main/ets/services/LocalBackupPolicy.ets"
     ],
-    "reviewStatus": "RESUME_REVIEW",
+    "reviewStatus": "PASS",
     "validation": {
-      "host": "PASS 15 phone host checks; 18 RDP checks retained from first increment",
-      "native": "18 display/phone gate checks PASS",
-      "rust": "PASS 313 full no-default-features tests including stale dequeued batch after close/reopen",
-      "testCompile": "PASS exit 0; BUILD SUCCESSFUL in 16 s 36 ms",
-      "assembleHap": "PASS exit 0; signed BUILD SUCCESSFUL in 1 min 6 s 16 ms; SignHap 1 s 17 ms",
+      "host": "PASS 15 phone policy/page/action checks and 9 production model/local persistence/backup checks; reviewer independently reran both",
+      "native": "PASS 30 display/phone geometry/frame identity/callback gate checks; independent fresh compile and rerun PASS",
+      "rust": "PASS 315 full no-default-features tests; same reviewer independently ran 3 phone_geometry tests",
+      "testCompile": "PASS exit 0; BUILD SUCCESSFUL in 5 s 918 ms",
+      "assembleHap": "PASS exit 0; signed BUILD SUCCESSFUL in 7 s 301 ms; SignHap 1 s 86 ms",
       "light": "PASS Light",
       "diff": "PASS",
-      "exactRenderer": "PASS indexed renderer cpp/header syntax arm64-v8a and x86_64",
-      "rustAbi": "PASS arm64-v8a and x86_64; current Rust phone epoch fix included"
+      "exactNative": "PASS f37ecffe exact indexed five cpp/header syntax arm64-v8a and x86_64; final bridge compiled in both current HAP ABIs",
+      "rustAbi": "PASS arm64-v8a and x86_64; actual final librdpnapi.so defines rustdesk_current_phone_frame_geometry_epoch_v1 as T on both",
+      "device": "NOT RUN; S5 A01-A20 and N01-N12 remain device acceptance, including actual NativeImage timestamps and official client A/B"
     },
-    "next": "Keep new admission disabled; finish local fix checkpoint and obtain plan section 9 minimal boundary authorization. Resume same reviewer; S5 NOT RUN.",
+    "next": "S5 Android/HarmonyOS official-client A/B and non-target device isolation matrix; await device details. Preserve unfinished shared branch.",
     "blockers": [
-      "Unverified sourceType normalization can falsely grant explicit choice; source evidence needs narrowly authorized boundary changes without storage schema migration.",
-      "Aspect-only old texture can confirm new geometry; actual decoded-frame identity requires narrowly authorized decoder/presentation metadata path.",
       "S5 device/Android peer details unavailable; no runtime acceptance.",
       "Shared active branch has unrelated unfinished Pro work; no aggregate push/merge."
     ],
-    "stageCommit": "35d3855cad78966470e07c2cea75a63cca6c8b39",
+    "stageCommit": "b97808f5c6ccaef1cda879e263d27f09f231273d",
     "reviewerTaskId": "/root/review_explicit_phone",
-    "reviewResult": "BLOCKED: independent review confirms snapshot and stale-batch fixes and normal new-connection admission disabled; source provenance and output-frame identity remain unresolved",
-    "reviewReceiptId": "rustdesk-explicit-phone-blocked-35d3855c-2026-09-08",
+    "reviewResult": "PASS same independent reviewer; all original and follow-up findings closed; exact phone commits only, device matrix NOT RUN",
+    "reviewReceiptId": "rustdesk-explicit-phone-b97808f5-2026-09-08",
+    "boundaryAuthorization": "2026-09-08 user approved persistent explicit choice evidence and phone-only decoded-frame presentation receipts; no other protocol/decoder algorithm/global transform expansion",
     "metadataVerification": {
-      "testCompile": "PASS exit 0; BUILD SUCCESSFUL in 4 s 807 ms",
-      "assembleHap": "PASS exit 0; signed BUILD SUCCESSFUL in 5 s 427 ms",
-      "compliance": "PASS Light/diff/state"
+      "testCompile": "PASS exit 0; BUILD SUCCESSFUL in 5 s 170 ms",
+      "assembleHap": "PASS exit 0; signed BUILD SUCCESSFUL in 6 s 127 ms; SignHap 944 ms",
+      "compliance": "PASS Light/diff/state; phone source unchanged after reviewed b97808f5"
     }
   }
 }
