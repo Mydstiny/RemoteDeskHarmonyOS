@@ -4,6 +4,8 @@ Updated: 2026-09-08 Asia/Shanghai
 
 ## Now
 
+- RDP direct touch: accept text caret placement with slight finger jitter, real dragging, long-press right click, mouse in all three modes, keyboard open/closed and zoom after code repair `da9ad958`; device acceptance remains pending.
+
 - File transfer / clipboard: [T0-T9 evidence and matrix](plans/2026-09-07-file-transfer-clipboard-remediation.md), implemented scopes independently reviewed through `42718408`. Next authorized device/peer/target acceptance, real content SHA-256, network/background/performance matrix. Copy-only/no-blind-resume boundaries remain; same branch awaits parallel Pro/AI/UI closure.
 
 - Remote AI: [AI4 client integration](plans/2026-09-08-remote-ai-client-integration.md) implemented with passing code gates; checkpoint `7bdf00f6` independently reviewed; next actual HarmonyOS pairing/model/LAN and Phone/Pad/PC acceptance. Native v0.3.0 hosts remain released/deployed; RustDesk transport later.

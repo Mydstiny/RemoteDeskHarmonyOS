@@ -3,7 +3,7 @@
   "task": "pro-purchase-foundation",
   "branch": "codex/pro-purchase-foundation",
   "base": "8edc187868e94ed41634e8a6c4c4c072e3a48679",
-  "head": "87e384cc0915a7babc6f7e03cb4f22f5d13841b3",
+  "head": "da9ad9585344516e2ff6e1b34453ae37e3059126",
   "phase": "free-ui-color-panel-checkpoint-pending",
   "status": "in-progress",
   "next": "Commit/review color panel, then primary setting controls/forms and M5 PC/RDP/M6; complete U0-U4/M7 runtime work when external prerequisites are supplied.",
@@ -942,6 +942,31 @@
       "testCompile": "PASS exit 0; BUILD SUCCESSFUL in 4 s 93 ms",
       "assembleHap": "PASS exit 0; signed BUILD SUCCESSFUL in 5 s 390 ms; SignHap 875 ms",
       "compliance": "Light/diff/state validation PASS; five document hashes unchanged through gates before recording these results"
+    }
+  },
+  "rdpTouchRepair": {
+    "task": "rdp-direct-touch-text-placement",
+    "head": "da9ad9585344516e2ff6e1b34453ae37e3059126",
+    "status": "code-complete-reviewed-device-pending",
+    "reviewTaskId": "/root/review_rdp_touch",
+    "scope": [
+      "entry/src/main/ets/pages/RemoteDesktop.ets",
+      "scripts/tests/test_rdp_direct_touch.cjs"
+    ],
+    "validation": {
+      "hostChecks": "PASS 18 actual page-method checks; independent rerun and old-source negative control PASS",
+      "testCompile": "PASS exit 0; BUILD SUCCESSFUL in 7 s 795 ms",
+      "assembleHap": "PASS exit 0; signed BUILD SUCCESSFUL in 9 s 461 ms; SignHap 946 ms",
+      "compliance": "PASS Light and git diff --check",
+      "device": "NOT RUN; text caret/drag/long press, physical source delivery and keyboard/scale matrix remain pending"
+    },
+    "next": "Device text caret/drag/long-press, keyboard/scale and actual event-source acceptance. Keep active branch for unfinished parallel work.",
+    "reviewStatus": "PASS",
+    "reviewReceiptId": "rdp-direct-touch-da9ad958-2026-09-08",
+    "metadataVerification": {
+      "testCompile": "PASS exit 0; BUILD SUCCESSFUL in 4 s 504 ms",
+      "assembleHap": "PASS exit 0; signed BUILD SUCCESSFUL in 6 s 257 ms; SignHap 1 s 20 ms",
+      "compliance": "PASS Light/diff/state; reviewed source unchanged"
     }
   }
 }
