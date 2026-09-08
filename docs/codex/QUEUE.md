@@ -4,7 +4,7 @@ Updated: 2026-09-08 Asia/Shanghai
 
 ## Now
 
-- Remote AI: computer plugins v0.2.0 are released and public. [Agent installation prompts](plans/2026-09-07-remote-ai-agent-install.md) and future settings copy/pairing behavior are prepared. Client implementation awaits authorization: TLS/key handling, App UI/Pro, real-device pairing and dual-machine LAN; RustDesk transport remains later. No App AI UI is available yet.
+- Remote AI: native Codex/DSH v0.3.0 released and permanently deployed locally; no Docker. [Pinned installation prompts](plans/2026-09-07-remote-ai-agent-install.md) and [AI4 handoff](plans/2026-09-08-remote-ai-native-host-handoff.md) ready. Next client stage: strict TLS/key handling, RPC/SSE, settings/Pro and real-device pairing; two-device LAN and RustDesk later. No App AI UI implemented.
 
 0. Pro M7: vendor protocol, HTTP, CloudDB and signed App client independently reviewed (e3f47078+c5b647ff). Short-session 0b237613 independently PASS; dynamic CRL 78fc9fce independently PASS; review native cloud entry and deploy complete sandbox backend with restored browser login. Runtime probe, protected zone, project SDK credential and application OAuth client verified; Control-only empty snapshots and four concurrent transactions passed real SDK verification; PKIX runtime/dynamic CRL deployment remain pending. AGC test product/key verified and user-specified tester saved; actual IAP device acceptance pending. Continue free UI. M6 USB INIT 3ea2859e+ff31ef7d scoped code/Release review PASS; actual authentication still pending. First M5 direct SSH continuation ed537821+27716d2d+c64efc8e code review PASS; full sharing/PC/RDP and actual cross-device/PC knock/icon/UI acceptance remain open.
 

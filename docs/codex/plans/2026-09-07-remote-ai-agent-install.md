@@ -1,48 +1,48 @@
 # 远程 AI：给电脑端 Agent 的安装提示词
 
-日期：2026-09-07。状态：提示词与设置页接入规范已准备；本次不实现鸿蒙页面。
+日期：2026-09-08。状态：提示词与设置页接入规范已准备；本次不实现鸿蒙页面。
 
 电脑端 Agent 可以执行部署。它需要主机终端/文件权限、发行仓库访问权限及用户选定的项目范围。正在承载对话的 DSH 不应为了部署而自行停止：默认安装到独立 RemoteDesk profile，先完成电脑端验收。若用户明确要求接管已有 web profile，则先交付可审阅的切换步骤，再由其他终端或服务管理器完成交接。
 
 ## 1. 已发布版本与可信入口
 
-以下信息来自已合并并发布的电脑端 v0.2.0，不能把旧 AI0 探针文档当作当前部署步骤。两个仓库已按用户要求转为公开仓库，发行页和固定版本文档可匿名获取；部署提示词不要求用户提供 GitHub token。
+以下信息来自已合并并发布的电脑端 v0.3.0，不能把旧 AI0 探针文档当作当前部署步骤。两个仓库已按用户要求转为公开仓库，发行页和固定版本文档可匿名获取；部署提示词不要求用户提供 GitHub token。
 
 | 项目 | Codex | DSH |
 | --- | --- | --- |
 | 仓库 | `Mydstiny/remotedesk-codex-plugin` | `Mydstiny/remotedesk-dsh-plugin` |
-| 插件版本 / 协议 | `0.2.0` / `v1` | `0.2.0` / `v1` |
+| 插件版本 / 协议 | `0.3.0` / `v1` | `0.3.0` / `v1` |
 | 固定引擎版本 | Codex CLI `0.153.4` | DSH `0.1.2-rc.1`，其余组件按 compatibility.json |
-| v0.2.0 对应提交 | `ea56d52b38187b3451f82b57d18433bacaa7f42e` | `5fae39d71aa3cd1f9a64217ca8cfa0f7730fd7f3` |
-| 发行资产 | `remotedesk-codex-plugin-0.2.0.tgz` | `remotedesk-dsh-plugin-0.2.0.tgz` |
-| 资产 SHA256 | `c31fe76fb906fb098eb4d4b5c20852179ad40862962c14e4ae5cdf0bc49f83b4` | `280b9bc96b1da2e3c47e7aae384193abebefe4c2ac5cc554472fa5bf052fc7a0` |
+| v0.3.0 对应提交 | `87203937ff20c8d527ef2fe09a0b7e4a2ce0af4d` | `c75f6b8e1e904bb4406e46bd476b8849108622c0` |
+| 发行资产 | `remotedesk-codex-plugin-0.3.0.tgz` | `remotedesk-dsh-plugin-0.3.0.tgz` |
+| 资产 SHA256 | `d2559c8d9a560740355fdbb6ad1a55ea332891d32126f6914449d8636fc1a67f` | `c17d0e05fc656ceee96fffdad175dfd702f8ebe45ccdcae457d0aff12ada873e` |
 
-- Codex：[发行页](https://github.com/Mydstiny/remotedesk-codex-plugin/releases/tag/v0.2.0)、[固定提交部署说明](https://github.com/Mydstiny/remotedesk-codex-plugin/blob/ea56d52b38187b3451f82b57d18433bacaa7f42e/docs/agent-deploy.md)、[操作手册](https://github.com/Mydstiny/remotedesk-codex-plugin/blob/ea56d52b38187b3451f82b57d18433bacaa7f42e/docs/operations.md)。
-- DSH：[发行页](https://github.com/Mydstiny/remotedesk-dsh-plugin/releases/tag/v0.2.0)、[固定提交部署说明](https://github.com/Mydstiny/remotedesk-dsh-plugin/blob/5fae39d71aa3cd1f9a64217ca8cfa0f7730fd7f3/docs/agent-deploy.md)、[操作手册](https://github.com/Mydstiny/remotedesk-dsh-plugin/blob/5fae39d71aa3cd1f9a64217ca8cfa0f7730fd7f3/docs/operations.md)。
+- Codex：[发行页](https://github.com/Mydstiny/remotedesk-codex-plugin/releases/tag/v0.3.0)、[固定提交部署说明](https://github.com/Mydstiny/remotedesk-codex-plugin/blob/87203937ff20c8d527ef2fe09a0b7e4a2ce0af4d/docs/agent-deploy.md)、[操作手册](https://github.com/Mydstiny/remotedesk-codex-plugin/blob/87203937ff20c8d527ef2fe09a0b7e4a2ce0af4d/docs/operations.md)。
+- DSH：[发行页](https://github.com/Mydstiny/remotedesk-dsh-plugin/releases/tag/v0.3.0)、[固定提交部署说明](https://github.com/Mydstiny/remotedesk-dsh-plugin/blob/c75f6b8e1e904bb4406e46bd476b8849108622c0/docs/agent-deploy.md)、[操作手册](https://github.com/Mydstiny/remotedesk-dsh-plugin/blob/c75f6b8e1e904bb4406e46bd476b8849108622c0/docs/operations.md)。
 
-同一仓库提供的 checksum 是文件完整性证据，不是独立签名认证。发布包不含官方引擎或 Docker；Node >=22.16、OpenSSL 3、本机 Docker Linux 容器和对应引擎须可用，DSH 原生安装另需 pnpm。现有全局引擎版本不兼容时，不擅自降级或覆盖正在使用的安装。
+同一仓库提供的 checksum 是文件完整性证据，不是独立签名认证。发布包不含官方引擎；需要 Node >=22.16、OpenSSL 3 和对应引擎，DSH 原生安装另需 pnpm。0.3.0 使用原生工具、沙箱和审批，无需 Docker。现有全局引擎版本不兼容时，不擅自降级或覆盖正在使用的安装。
 
 ## 2. 可直接交给 DSH 的提示词
 
 这段文字无需预填路径；缺少项目或网卡选择时由电脑上的 Agent 集中询问。它不会把当前工作目录自动视为已经授权。
 
 ```text
-请在这台电脑上为我部署 RemoteDesk DSH 插件 0.2.0，并完成电脑端连接验收。
+请在这台电脑上为我部署 RemoteDesk DSH 插件 0.3.0，并完成电脑端连接验收。
 
 可信仓库：Mydstiny/remotedesk-dsh-plugin。
-发行页：https://github.com/Mydstiny/remotedesk-dsh-plugin/releases/tag/v0.2.0
-固定提交：5fae39d71aa3cd1f9a64217ca8cfa0f7730fd7f3。
+发行页：https://github.com/Mydstiny/remotedesk-dsh-plugin/releases/tag/v0.3.0
+固定提交：c75f6b8e1e904bb4406e46bd476b8849108622c0。
 先阅读该提交的 docs/agent-deploy.md、docs/operations.md、SECURITY.md 和 compatibility.json。
-下载资产 remotedesk-dsh-plugin-0.2.0.tgz 及 SHA256SUMS，核对 tag 对应上述提交，资产 SHA256 必须为 280b9bc96b1da2e3c47e7aae384193abebefe4c2ac5cc554472fa5bf052fc7a0。不要执行浮动远程脚本。
+下载资产 remotedesk-dsh-plugin-0.3.0.tgz 及 SHA256SUMS，核对 tag 对应上述提交，资产 SHA256 必须为 c17d0e05fc656ceee96fffdad175dfd702f8ebe45ccdcae457d0aff12ada873e。不要执行浮动远程脚本。
 
 请按以下要求执行：
 1. 检测操作系统、架构和依赖。当前支持 DSH 0.1.2-rc.1，其他组件按兼容表检查。直接从公开发行页下载；网络或限流导致无法获取时报告具体问题，不索取或显示 token。不要擅自降级现有引擎。
-2. 集中确认允许远程操作的项目目录，以及仅本机验收还是局域网连接；局域网还需确定监听网卡和端口。不要自动授权整个主目录或当前工作目录。缺少这些信息时先完成独立的兼容性检查。
+2. 集中确认允许远程操作的项目目录，以及仅本机验收还是局域网连接；局域网还需确定监听网卡和端口。不要自动授权整个主目录或当前工作目录。缺少这些信息时先完成独立的兼容性检查。 同时核对原生主机权限：项目登记不保证只能读取该目录；DSH 的读取和网络遵循宿主行为，Windows 原生限制仍有部分边界。项目文本、原生指令和工具输出可能交给已配置的模型提供方。仅对尚未获准的权限、项目或模型使用范围集中补充确认，已有明确授权不重复询问。
 3. 安装到持久版本目录，创建项目之外的私有 state，使用用户级服务。默认使用独立的新 RemoteDesk profile；不要停止承载当前对话的 DSH，不接管或重复启动现有 web profile。若我另行明确选择现有 web，请先准备交接步骤，再由其他终端执行停启。
 4. 保留现有会话和模型配置。使用所选 profile 中已配置的 provider/model；若新 profile 无法使用现有登录，通过 DSH 原生流程让我配置或登录，不读取、复制或打印账号密钥。不要关闭权限检查或把原生引擎端口直接暴露到网络。
-5. 按操作手册构建并固定本机 Docker Linux 镜像、初始化证书和项目，再用发布 tarball 执行 plugin-install。先检查已有 state/profile 的归属，重复部署按文档升级或恢复，不覆盖整个配置。联网构建镜像与远程任务容器无网络是两回事。
+5. 按操作手册初始化证书和项目，再用发布 tarball 执行 plugin-install。无需容器或镜像。先检查已有 state/profile 的归属，重复部署按文档升级或恢复，保留原来的证书、设备、项目和历史；更换版本路径前卸载旧服务注册，不覆盖整个配置。使用原生标准工具和逐次审批，不开启远程扩展或子 Agent 委派。
 6. 自动完成以上已经授权的普通安装和验证步骤。额外软件安装、模型调用费用、自启动和网络变更先列明；需我补充预算或授权时只询问具体缺项。防火墙、公网、账号或系统权限的未授权改变不得擅自执行。
-7. 使用独立测试项目和包内参考客户端，通过真实 HTTPS 验证配对、项目列表、创建会话、任务和历史、命令审批接受/拒绝、取消及停启恢复。按我允许的模型预算执行；不能把 doctor 成功当作模型或手机验收通过。unknown/超时保留原操作 ID 和回执，不自动换 ID 重发。
+7. 使用独立测试项目和包内参考客户端，通过真实 HTTPS 验证配对、项目列表、创建会话、任务和历史、原生命令/文件审批接受与拒绝、结构化问答、取消、受管理后台终端及停启历史恢复。按我允许的模型预算执行；不能把 doctor 成功当作模型或手机验收通过。unknown/超时保留原操作 ID 和回执，不自动换 ID 重发。
 8. 前台验收成功后安装并检查已授权的用户后台服务。邀请只写入私有文件，不粘贴到聊天或日志；只向目标客户端通过可信渠道交付。客户端私钥不离开客户端。
 9. 最后给我：安装版本、安装/state 路径、服务状态、监听端点、CA 指纹、授权项目、实际验收结果、启动/停止/升级/卸载命令及剩余待办。不能宣称尚未执行的鸿蒙配对或双机连接已完成。当前鸿蒙入口尚未实现时，交付“电脑端就绪，等待 App 配对”即可，不开发鸿蒙代码。
 ```
@@ -50,19 +50,19 @@
 ## 3. 可直接交给 Codex 的提示词
 
 ```text
-请在这台电脑上为我部署 RemoteDesk Codex 插件 0.2.0，并完成电脑端连接验收。
+请在这台电脑上为我部署 RemoteDesk Codex 插件 0.3.0，并完成电脑端连接验收。
 
 可信仓库：Mydstiny/remotedesk-codex-plugin。
-发行页：https://github.com/Mydstiny/remotedesk-codex-plugin/releases/tag/v0.2.0
-固定提交：ea56d52b38187b3451f82b57d18433bacaa7f42e。
+发行页：https://github.com/Mydstiny/remotedesk-codex-plugin/releases/tag/v0.3.0
+固定提交：87203937ff20c8d527ef2fe09a0b7e4a2ce0af4d。
 先阅读该提交的 docs/agent-deploy.md、docs/operations.md、SECURITY.md 和 compatibility.json。
-下载资产 remotedesk-codex-plugin-0.2.0.tgz 及 SHA256SUMS，核对 tag 对应上述提交，资产 SHA256 必须为 c31fe76fb906fb098eb4d4b5c20852179ad40862962c14e4ae5cdf0bc49f83b4。不要执行浮动远程脚本。
+下载资产 remotedesk-codex-plugin-0.3.0.tgz 及 SHA256SUMS，核对 tag 对应上述提交，资产 SHA256 必须为 d2559c8d9a560740355fdbb6ad1a55ea332891d32126f6914449d8636fc1a67f。不要执行浮动远程脚本。
 
-检测系统、架构和依赖；当前支持 Codex CLI 0.153.4。直接从公开发行页下载；遇到网络或限流问题时如实报告，不索取 token，不擅自替换正在使用的引擎。集中确认允许远程操作的项目目录及仅本机/局域网模式；局域网需确定网卡和端口，不自动授权当前目录或整个主目录。
+检测系统、架构和依赖；当前支持 Codex CLI 0.153.4。直接从公开发行页下载；遇到网络或限流问题时如实报告，不索取 token，不擅自替换正在使用的引擎。集中确认允许远程操作的项目目录及仅本机/局域网模式；局域网需确定网卡和端口，不自动授权当前目录或整个主目录。项目登记不等于读取隔离：Codex workspace-write 可能无需逐次提示就写入沙箱内文件，批准原生提权可扩大宿主访问；项目文本、原生指令和工具输出可能交给已配置的模型提供方。部署前单独核对这项原生主机权限，仅对尚未获准的范围集中补充确认，已有明确授权不重复询问。
 
-使用持久版本目录、项目之外的私有 state、本机 Docker Linux 容器及普通用户服务。保持当前 Codex 会话、账号与配置，通过受支持的现有登录使用 provider/model；不复制或打印密钥，不覆盖整个 Codex 配置。不要把原生 App Server 端口暴露到网络。检查现有安装归属，按操作手册初始化或升级。
+使用持久版本目录、项目之外的私有 state 及普通用户服务。无需 Docker；使用原生工具、只读默认沙箱和按需审批。其他权限由控制端明确选择，不开启远程扩展或子 Agent 委派。保持当前 Codex 会话、账号与配置，通过受支持的现有登录使用 provider/model；不复制或打印密钥，不覆盖整个 Codex 配置。不要把原生 App Server 端口暴露到网络。检查现有安装归属，按操作手册初始化或升级；更换版本路径前卸载旧服务注册，保留 state、设备、项目和历史。
 
-自动完成已授权的安装与验证。需要额外软件、自启动、模型费用或网络变更时先列明具体影响，只询问缺少的预算或授权。前台启动，用独立测试项目和包内参考客户端验证真实 HTTPS 配对、项目列表、会话、任务、审批接受/拒绝、取消及停启恢复。unknown/超时保留原 ID 和回执，不自动换 ID 重发。不能把 doctor 成功当作模型或手机验收通过。
+自动完成已授权的安装与验证。需要额外软件、自启动、模型费用或网络变更时先列明具体影响，只询问缺少的预算或授权。前台启动，用独立测试项目和包内参考客户端验证真实 HTTPS 配对、项目列表、会话、任务、原生命令/文件审批接受与拒绝、结构化问答、取消、受管理后台终端及停启历史恢复。unknown/超时保留原 ID 和回执，不自动换 ID 重发。不能把 doctor 成功当作模型或手机验收通过。
 
 前台验收成功后安装已授权的用户后台服务。邀请保存在私有文件，只通过可信渠道交给目标客户端；不在聊天/日志显示邀请或私钥。最后交付安装版本和路径、state 路径、服务状态、端点、CA 指纹、授权项目、验收结果、启停/升级/卸载方法及待办。保留用户项目、原生会话和账号。鸿蒙入口尚未实现时，报告“电脑端就绪，等待 App 配对”，不宣称手机已连通，也不在本任务开发鸿蒙代码。
 ```
@@ -86,7 +86,7 @@
 
 提示词不包含邀请、客户端私钥、模型 token、现有聊天内容或用户项目文件。配对凭据只出现在单独的短时配对流程，不随“复制安装提示词”复制。CA 指纹属于公开核对信息，不能单靠 Agent 口述就替代可信来源核对。
 
-0.2.0 没有计划草案中的 `install --dry-run` 一体化命令，也没有可用的鸿蒙扫码页面；Agent 必须执行实际 operations 中的独立命令，不臆造安装参数。依赖检测通过、服务就绪和已完成双机验收分别报告。
+0.3.0 没有计划草案中的 `install --dry-run` 一体化命令，也没有可用的鸿蒙扫码页面；Agent 必须执行实际 operations 中的独立命令，不臆造安装参数。依赖检测通过、服务就绪和已完成双机验收分别报告。
 
 ## 5. 接入时的验收
 
@@ -96,4 +96,4 @@
 4. 安装失败/只有 doctor 通过/只有后台进程存在时，不显示“已连接”；配对和真实任务必须经协议证据更新状态。
 5. 手机/平板/PC 上检查长文本预览、选择复制、字体缩放、键盘与返回行为；仅 UI 模拟不替代实际主机部署和 TLS/密钥设备验收。
 
-已知边界：电脑端实际引擎、三平台 CI 与本机真实 Docker/mTLS 流程已有通过证据；测试模型为确定性本地响应。网页点击受浏览器客户端拦截，Windows Docker Desktop 实机、用户实际 provider 账号以及鸿蒙双机连接仍分别待验收。
+已知边界：电脑端原生引擎、三平台 CI、独立 profile 和本机真实模型/mTLS 已有通过证据；电脑已准备，并不表示鸿蒙客户端、双机 LAN 或 RustDesk 中继已验收。原生权限边界与容器不同；取消仅确认原生受管理活动，不保证终止任意自行脱离的后代进程。客户端按 capabilities 和版本合同实现，不假设所有后端能力完全相同。详见[鸿蒙端开发交接](2026-09-08-remote-ai-native-host-handoff.md)。
