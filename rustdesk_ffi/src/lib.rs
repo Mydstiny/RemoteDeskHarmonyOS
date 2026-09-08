@@ -22,6 +22,7 @@ use std::sync::{Arc, Condvar, LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
 pub mod connector;
+mod android_phone;
 mod control_inbox;
 mod codec_evidence;
 use codec_evidence::RustDeskCodecEvidence;
@@ -1308,6 +1309,7 @@ impl VideoCallbackWorker {
 /// 线程间控制消息
 pub(crate) enum ControlMsg {
     Shutdown,
+    AndroidPhone { action: i32, modern_back: bool },
     RefreshVideo,
     VideoPressure {
         level: u32,
@@ -1397,6 +1399,8 @@ pub(crate) enum ControlMsg {
 
 /// 客户端上下文 — 通过 FFI 不透明指针传递
 struct RustDeskClient {
+    android_capabilities: u32,
+    android_held_action: Mutex<Option<i32>>,
     connection_id: u64,
     #[allow(dead_code)]
     peer_id: String,
@@ -2152,6 +2156,7 @@ fn rustdesk_connect_impl(
             let stream_controls = Arc::clone(&controls);
             let shutdown_stream = c.try_clone_stream().ok();
             let peer_platform = c.peer_platform();
+            let android_capabilities = android_phone::capabilities(&peer_platform, &c.peer_version());
             let peer_platform_label = if peer_platform.is_empty() {
                 "unknown"
             } else {
@@ -2311,6 +2316,8 @@ fn rustdesk_connect_impl(
             });
 
             let ctx = Box::new(RustDeskClient {
+                android_capabilities,
+                android_held_action: Mutex::new(None),
                 connection_id,
                 peer_id,
                 host,
@@ -3264,6 +3271,40 @@ pub extern "C" fn rustdesk_send_touch_scale(handle: *mut c_void, scale: c_int) -
     }
     let ctx = unsafe { &*(handle as *const RustDeskClient) };
     ctx.controls.enqueue(ControlMsg::TouchScale { scale })
+}
+
+#[no_mangle]
+pub extern "C" fn rustdesk_set_phone_geometry_ready(handle: *mut c_void, ready: bool) -> bool {
+    if handle.is_null() { return false; }
+    let ctx = unsafe { &*(handle as *const RustDeskClient) };
+    if !ready {
+        if let Ok(mut held) = ctx.android_held_action.lock() { *held = None; }
+    }
+    ctx.controls.set_phone_geometry_ready(ready)
+}
+
+#[no_mangle]
+pub extern "C" fn rustdesk_android_capabilities(handle: *mut c_void) -> u32 {
+    if handle.is_null() { return 0; }
+    let ctx = unsafe { &*(handle as *const RustDeskClient) };
+    ctx.android_capabilities
+}
+
+#[no_mangle]
+pub extern "C" fn rustdesk_send_android_action(handle: *mut c_void, action: i32) -> bool {
+    if handle.is_null() { return false; }
+    let ctx = unsafe { &*(handle as *const RustDeskClient) };
+    if !android_phone::allows(ctx.android_capabilities, action) { return false; }
+    let Ok(mut held) = ctx.android_held_action.lock() else { return false; };
+    if action >= 3 && action % 2 == 1 {
+        if *held != Some(action - 1) { return false; }
+        *held = None;
+    } else if held.is_some() { return false; }
+    let accepted = ctx.controls.enqueue(ControlMsg::AndroidPhone {
+        action, modern_back: ctx.android_capabilities & 8 != 0,
+    });
+    if accepted && action >= 2 && action % 2 == 0 { *held = Some(action); }
+    accepted
 }
 
 #[no_mangle]
@@ -4924,9 +4965,34 @@ mod tests {
         assert_eq!(status.drained, 1);
     }
 
+    #[test]
+    fn android_phone_ffi_transactions_and_permission_gate() {
+        let mut client = test_client_with_display_state(RustDeskDisplayState::default());
+        let handle = &mut client as *mut RustDeskClient as *mut c_void;
+        assert!(!rustdesk_send_android_action(handle, 1));
+        client.android_capabilities = 14;
+        assert!(!rustdesk_send_android_action(handle, 3)); // No matching down.
+        assert!(rustdesk_send_android_action(handle, 2));
+        assert!(!rustdesk_send_android_action(handle, 2));
+        assert!(!rustdesk_send_android_action(handle, 1));
+        assert!(rustdesk_send_android_action(handle, 3));
+        assert!(!rustdesk_send_android_action(handle, 3));
+        client.controls.update_permission(control_inbox::PERMISSION_KEYBOARD, false);
+        assert!(client.controls.take_batch(8).is_empty());
+        assert!(!rustdesk_send_android_action(handle, 1));
+        assert!(rustdesk_set_phone_geometry_ready(handle, false));
+        client.controls.update_permission(control_inbox::PERMISSION_KEYBOARD, true);
+        assert!(!rustdesk_send_android_action(handle, 1));
+        assert!(rustdesk_set_phone_geometry_ready(handle, true));
+        assert!(rustdesk_send_android_action(handle, 1));
+        assert!(!rustdesk_send_android_action(handle, 10));
+    }
+
     fn test_client_with_display_state(display_state: RustDeskDisplayState) -> RustDeskClient {
         let controls = Arc::new(ControlInbox::default());
         RustDeskClient {
+            android_capabilities: 0,
+            android_held_action: Mutex::new(None),
             connection_id: 0,
             peer_id: String::new(),
             host: String::new(),

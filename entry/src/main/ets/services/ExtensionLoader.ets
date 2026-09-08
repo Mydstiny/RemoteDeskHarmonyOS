@@ -1,3 +1,4 @@
+import { RustDeskPhoneOwner } from './RustDeskPhoneActions';
 import { RustDeskClipboardNative } from './RustDeskClipboardClient';
 /**
  * ExtensionLoader.ets — NAPI 桥接门面
@@ -2273,6 +2274,13 @@ export class ExtensionLoader implements RustDeskClipboardNative {
       hilog.warn(DOMAIN, TAG, '[ExtensionLoader] sendRustDeskTouchScale unavailable: ' + JSON.stringify(err));
       return false;
     }
+  }
+
+  rustDeskPhoneControl(identity: RustDeskPhoneOwner, operation: number, x: number = 0, y: number = 0): number {
+    try {
+      return rdpnapi.rustDeskPhoneControl(identity.sessionId, identity.generation,
+        identity.ownerToken, operation, x, y, identity.streamEpoch) as number;
+    } catch (_err) { return 0; }
   }
 
   sendRustDeskTouchPan(sessionId: number, phase: number, x: number, y: number): boolean {

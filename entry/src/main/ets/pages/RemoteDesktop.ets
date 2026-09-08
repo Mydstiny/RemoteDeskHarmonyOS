@@ -16,6 +16,8 @@ import {
   NativeDisconnectIdentity,
   NativeDisconnectSubmission
 } from '../services/ExtensionLoader';
+import { hasExplicitRustDeskPhoneChoice, explicitPhoneControlMode, explicitPhonePanDelta } from '../services/RustDeskExplicitPhonePolicy';
+import { RustDeskPhoneActions, RustDeskPhoneOwner } from '../services/RustDeskPhoneActions';
 import { RustDeskProSyncService } from '../services/RustDeskProSyncService';
 import { KeyVaultService } from '../services/KeyVaultService';
 import {
@@ -1381,6 +1383,24 @@ struct RemoteDesktop {
   private registryPresentationRestorePending: boolean = false;
   private registryRestoreAdoption: ActiveRemoteSessionRestoreAdoption | null = null;
   private registryTermination: ActiveRemoteSessionTermination | null = null;
+  @State private explicitPhoneSessionId: number = 0;
+  @State private explicitPhoneCapabilities: number = 0;
+  @State private explicitPhoneGeometryReady: boolean = false;
+  private explicitPhoneStreamEpoch: number = 0;
+  @State private explicitPhoneStatus: string = '';
+  @State private phoneAdaptiveOrientation: boolean = false;
+  private phoneActions: RustDeskPhoneActions = new RustDeskPhoneActions(
+    (owner: RustDeskPhoneOwner, operation: number): number =>
+      this.loader.rustDeskPhoneControl(owner, operation));
+  private phonePanStarted: boolean = false;
+  private phonePanOwner: RustDeskPhoneOwner | null = null;
+  private phonePanTransform: RemoteSurfaceTransform | null = null;
+  private phonePanLocalX: number = 0;
+  private phonePanLocalY: number = 0;
+  private phonePanRemoteX: number = 0;
+  private phonePanRemoteY: number = 0;
+  private phoneAxisPinchScale: number = 1;
+  private phoneAxisPinching: boolean = false;
   private nativeDisconnectIdentity: NativeDisconnectIdentity | null = null;
   private cleanupDisconnectIdentity: NativeDisconnectIdentity | null = null;
   private registryPipPredecessorLease: RemoteSessionServiceLease | null = null;
@@ -1859,6 +1879,7 @@ struct RemoteDesktop {
   }
 
   private promptSwitchToKeyboardMouseMode(deviceName: string): void {
+    if (this.isExplicitPhoneSession()) { return; }
     if (this.inputDevicePromptVisible || this.externalInputPromptedThisSession) {
       return;
     }
@@ -1930,7 +1951,9 @@ struct RemoteDesktop {
     const host: RemoteHost | null = this.pendingHost;
     if (host === null) { return 0; }
     if (host.protocol === 'rdp') { return this.rdpControlMode; }
-    if (host.protocol === 'rustdesk') { return this.rustdeskControlMode; }
+    if (host.protocol === 'rustdesk') {
+      return explicitPhoneControlMode(this.isExplicitPhoneSession(), this.rustdeskControlMode);
+    }
     if (host.protocol === 'vnc') {
       return Math.max(0, Math.min(2, Math.floor(this.vncControlMode)));
     }
@@ -2467,6 +2490,85 @@ struct RemoteDesktop {
     return host !== null && host.protocol === 'rustdesk';
   }
 
+  private currentExplicitPhoneOwner(): RustDeskPhoneOwner | null {
+    const identity: NativeDisconnectIdentity | null = this.loader.captureDisconnectIdentity(this.sessionId);
+    if (identity === null) { return null; }
+    const owner: RustDeskPhoneOwner = {
+      sessionId: identity.sessionId, generation: identity.generation,
+      ownerToken: identity.ownerToken, streamEpoch: 0
+    };
+    owner.streamEpoch = this.loader.rustDeskPhoneControl(owner, -2);
+    return owner.streamEpoch > 0 ? owner : null;
+  }
+
+  private isExplicitPhoneSession(): boolean {
+    return this.isRustDeskSession() && this.sessionId > 0 &&
+      this.explicitPhoneSessionId === this.sessionId;
+  }
+
+  private syncExplicitPhoneScope(): void {
+    if (!this.isRustDeskSession() || this.sessionId <= 0) { return; }
+    const owner: RustDeskPhoneOwner | null = this.currentExplicitPhoneOwner();
+    const capabilities: number = owner === null ? 0 : this.loader.rustDeskPhoneControl(owner, -1);
+    if ((capabilities & 1) !== 0 && this.explicitPhoneSessionId !== this.sessionId) {
+      this.explicitPhoneSessionId = this.sessionId;
+      this.phoneAdaptiveOrientation = this.pendingHost !== null && this.pendingHost.rustdeskAdaptiveOrientation;
+    }
+    if (!this.isExplicitPhoneSession()) { return; }
+    const epoch: number = owner === null ? 0 : owner.streamEpoch;
+    if (epoch !== this.explicitPhoneStreamEpoch ||
+      (this.explicitPhoneGeometryReady && (capabilities & 16) === 0)) {
+      this.releaseRustDeskInputBeforeBlock('phone-stream-or-geometry');
+    }
+    this.explicitPhoneStreamEpoch = epoch;
+    this.explicitPhoneGeometryReady = (capabilities & 16) !== 0;
+    if (capabilities !== this.explicitPhoneCapabilities) { this.cancelExplicitPhoneInput(); }
+    this.explicitPhoneCapabilities = capabilities;
+    this.explicitPhoneStatus = !this.connected ? '正在连接手机' :
+      this.rustdeskBrowseMode ? '仅观看：手机输入已暂停' :
+      this.rustDeskRemoteInputPermissionKnown && !this.rustDeskRemoteInputAllowed ?
+      '输入已暂停：请在被控手机开启 RustDesk 输入控制 / 无障碍权限' :
+      (capabilities & 2) === 0 ?
+      (this.rustDeskPeerPlatformCategory === 'unknown' ? '正在核验被控平台' : '被控平台不支持 Android 手机操作') :
+      !this.explicitPhoneGeometryReady ? '画面方向或尺寸变化，等待新画面就绪' :
+      (capabilities & 4) === 0 ? '直接触控 · 本地画布缩放 · 版本未知，返回不可用' :
+      '直接触控 · 双指缩放本地画布';
+  }
+
+  private syncExplicitPhoneGeometry(): void {
+    if (!this.isExplicitPhoneSession()) { return; }
+    const owner: RustDeskPhoneOwner | null = this.currentExplicitPhoneOwner();
+    const display: RustDeskDisplayCapabilities = this.rustDeskDisplayCapabilities;
+    if (owner === null || display.geometryEpoch <= 0 || display.inputBlocked ||
+      display.width !== this.remoteWidth || display.height !== this.remoteHeight ||
+      display.width !== this.rendererSourceWidth || display.height !== this.rendererSourceHeight) {
+      this.explicitPhoneGeometryReady = false;
+      return;
+    }
+    this.explicitPhoneGeometryReady = this.loader.rustDeskPhoneControl(owner, 13, display.geometryEpoch) === 1;
+  }
+
+  private performExplicitPhoneAction(action: number): void {
+    if (!this.isExplicitPhoneSession() || !this.canForwardInput('phone-action')) { return; }
+    const owner: RustDeskPhoneOwner | null = this.currentExplicitPhoneOwner();
+    if (owner === null || !this.phoneActions.start(owner, action, this.explicitPhoneCapabilities)) {
+      promptAction.showToast({ message: '当前手机操作不可用，请等待上一操作结束或核验被控端版本与权限', duration: 1600 });
+    }
+  }
+
+  private cancelExplicitPhoneInput(): void {
+    this.phoneActions.cancel();
+    const owner: RustDeskPhoneOwner | null = this.phonePanOwner;
+    this.phonePanOwner = null;
+    this.phonePanTransform = null;
+    this.phoneAxisPinchScale = 1;
+    this.phoneAxisPinching = false;
+    if (owner !== null && this.phonePanStarted) {
+      this.loader.rustDeskPhoneControl(owner, 12, this.phonePanRemoteX, this.phonePanRemoteY);
+    }
+    this.phonePanStarted = false;
+  }
+
   private isRustDeskPhoneSession(): boolean {
     const host: RemoteHost | null = this.pendingHost;
     return host !== null && host.protocol === 'rustdesk' &&
@@ -2534,7 +2636,7 @@ struct RemoteDesktop {
     const host: RemoteHost | null = this.pendingHost;
     if (!host || !this.connected) { return false; }
     if (host.protocol === 'rdp') { return this.rdpControlMode === 0; }
-    if (host.protocol === 'rustdesk') { return this.rustdeskControlMode === 0; }
+    if (host.protocol === 'rustdesk') { return this.currentControlMode() === 0; }
     if (host.protocol === 'vnc') { return this.vncControlMode === 0; }
     return false;
   }
@@ -6128,6 +6230,7 @@ struct RemoteDesktop {
   }
 
   private shouldUseRustDeskRemoteAppTouchScale(): boolean {
+    if (this.isExplicitPhoneSession()) { return false; }
     return this.rustdeskRemoteAppTouchScaleEnabled && this.isRustDeskSession() &&
       this.connected && this.sessionId > 0;
   }
@@ -6681,6 +6784,7 @@ struct RemoteDesktop {
 
   /** Release gesture ownership from every terminal path; safe to call repeatedly. */
   private releaseCanvasPinchInput(reason: string): void {
+    this.cancelExplicitPhoneInput();
     if (reason.indexOf('page-') === 0 || reason.indexOf('disconnect-') === 0 ||
       reason === 'zoom-setting-change') {
       this.clearPhysicalPointerCanvasFollow(true);
@@ -6841,6 +6945,13 @@ struct RemoteDesktop {
 
   private remoteSessionTopBarActions(): RemoteSessionTopBarActions {
     return {
+      onPhoneAction: (action: number): void => { this.performExplicitPhoneAction(action); },
+      onPhoneOrientation: (enabled: boolean): void => {
+        if (!this.isExplicitPhoneSession()) { return; }
+        this.releaseRustDeskInputBeforeBlock('phone-orientation-choice');
+        this.phoneAdaptiveOrientation = enabled;
+        void this.applyRustDeskOrientationPolicy('phone-session-choice');
+      },
       onDisconnect: (): void => {
         this.disconnectAndCleanup(this.currentProtocolName() + '-session-toolbar-close');
         this.goBack();
@@ -10837,8 +10948,10 @@ struct RemoteDesktop {
         return;
       }
       this.syncRustDeskPeerInputState(sessionId);
+      this.syncExplicitPhoneScope();
       this.syncRustDeskDisplayCatalog();
       this.syncRustDeskLogicalSizeFromRenderer();
+      this.syncExplicitPhoneGeometry();
     };
     sync();
     this.rustDeskGeometrySyncTimer = setInterval(sync, REMOTE_GEOMETRY_SYNC_MS);
@@ -11488,6 +11601,7 @@ struct RemoteDesktop {
         ' restoreInProgress=' + (this.restoreInProgress ? '1' : '0'));
       return false;
     }
+    if (this.isExplicitPhoneSession() && !this.explicitPhoneGeometryReady) { return false; }
     if (this.isVncViewOnlySession()) {
       const now: number = Date.now();
       if (source !== 'mouseMove' && now - this.lastVncViewOnlyBlockedToastMs > 2200) {
@@ -14144,6 +14258,7 @@ struct RemoteDesktop {
           host.sshJumpHostKeyFingerprintSha256 : '',
         // RustDesk fields are deliberately neutral for VNC.  VNC settings do
         // not read or inherit RustDesk/RDP preferences.
+        rdExplicitPhone: hasExplicitRustDeskPhoneChoice(host),
         rdImageQuality: host.protocol === 'rustdesk' ? (AppStorage.get<number>('rustdeskImageQuality') ?? 1) : 1,
         rdDirectIp: rustDeskDirect,
         rdConnectionStrategy: host.protocol === 'rustdesk' ? rustDeskStrategy : 'force_relay',
@@ -14340,6 +14455,13 @@ struct RemoteDesktop {
         throw new Error(errMsg);
       }
       attemptedSessionId = sid;
+      this.cancelExplicitPhoneInput();
+      this.explicitPhoneSessionId = cfg.rdExplicitPhone === true ? sid : 0;
+      this.explicitPhoneCapabilities = 0;
+      this.explicitPhoneGeometryReady = false;
+      this.explicitPhoneStreamEpoch = 0;
+      this.phoneAdaptiveOrientation = host.rustdeskAdaptiveOrientation;
+      this.explicitPhoneStatus = '';
       this.sessionId = sid;
       this.nativeDisconnectIdentity =
         this.loader.captureDisconnectIdentity(sid);
@@ -14643,7 +14765,8 @@ struct RemoteDesktop {
   private async applyRustDeskOrientationPolicy(reason: string, sessionPending: boolean = false): Promise<void> {
     const host: RemoteHost | null = this.pendingHost;
     const protocol: string = host === null ? '' : host.protocol;
-    const adaptiveOrientationEnabled: boolean = host !== null &&
+    const adaptiveOrientationEnabled: boolean = this.isExplicitPhoneSession() ?
+      this.phoneAdaptiveOrientation : host !== null &&
       canUseRustDeskAdaptiveOrientation(protocol, host.rustdeskTargetDevice,
         host.rustdeskAdaptiveOrientation, host.sourceType, host.rustdeskProManaged,
         host.rustdeskProPlatform);
@@ -14734,7 +14857,7 @@ struct RemoteDesktop {
         const targetNavigationHidden: boolean = hidden &&
           shouldHideRemoteNavigation(protocol, this.connected);
         const targetStatusBarHidden: boolean = hidden && shouldHideRemoteStatusBar(protocol, this.connected,
-          this.isDesktopDevice, this.breakpoint, this.rustdeskControlMode);
+          this.isDesktopDevice, this.breakpoint, this.currentControlMode());
         const forceApply: boolean = reason === 'foreground-restore' || reason === 'page-appear' ||
           reason.indexOf('orientation-') === 0;
         if (!forceApply && this.remoteNavigationHidden === targetNavigationHidden &&
@@ -20285,18 +20408,21 @@ struct RemoteDesktop {
   }
 
   private resetRustDeskPhysicalTouchpadState(): void {
+    this.cancelExplicitPhoneInput();
     this.physicalTouchpadWheelState = resetPhysicalTouchpadWheelState();
     this.physicalTouchpadPinchState = resetPhysicalTouchpadPinchState();
     this.physicalTouchpadPinchSendCount = 0;
   }
 
   private isRustDeskPhysicalTouchpadAxis(event: AxisEvent): boolean {
+    if (this.isExplicitPhoneSession() && event.sourceTool === SourceTool.TOUCHPAD) { return true; }
     return shouldUseRustDeskPhysicalTouchpad(
       this.currentProtocolName(), this.isDesktopDevice, this.currentControlMode(),
       event.sourceTool === SourceTool.TOUCHPAD);
   }
 
   private sendRustDeskPhysicalTouchpadZoom(steps: number): void {
+    if (this.isExplicitPhoneSession()) { return; }
     if (steps === 0 || !this.canForwardInput('physical-touchpad-pinch')) {
       return;
     }
@@ -20342,7 +20468,79 @@ struct RemoteDesktop {
       this.physicalTouchpadPinchSendCount.toString());
   }
 
+  private handleExplicitPhoneAxis(event: AxisEvent): void {
+    if (!this.isExplicitPhoneSession()) { return; }
+    if (event.action === AxisAction.END || event.action === AxisAction.CANCEL ||
+      !this.canForwardInput('phone-touchpad') || (this.explicitPhoneCapabilities & 2) === 0) {
+      this.cancelExplicitPhoneInput();
+      return;
+    }
+    if (event.action === AxisAction.BEGIN) {
+      this.cancelExplicitPhoneInput();
+      const owner: RustDeskPhoneOwner | null = this.currentExplicitPhoneOwner();
+      if (owner === null) { return; }
+      const transform: RemoteSurfaceTransform = this.currentRemoteSurfaceTransform();
+      const point: MappedPoint = this.mapInputPointWithTransform(event.x, event.y, transform);
+      if (!point.inside) { return; }
+      this.phonePanOwner = owner;
+      this.phonePanTransform = transform;
+      this.phonePanLocalX = event.x;
+      this.phonePanLocalY = event.y;
+      this.phonePanRemoteX = point.x;
+      this.phonePanRemoteY = point.y;
+    }
+    const owner: RustDeskPhoneOwner | null = this.phonePanOwner;
+    const transform: RemoteSurfaceTransform | null = this.phonePanTransform;
+    if (owner === null || transform === null) { return; }
+    const rawScale: number = event.hasAxis(AxisType.PINCH_AXIS) ? event.getPinchAxisScaleValue() : 1;
+    if (Number.isFinite(rawScale) && rawScale > 0 && (rawScale !== 1 || this.phoneAxisPinching)) {
+      if (this.phonePanStarted) {
+        this.loader.rustDeskPhoneControl(owner, 12, this.phonePanRemoteX, this.phonePanRemoteY);
+        this.phonePanStarted = false;
+      }
+      this.phoneAxisPinching = true;
+      if (this.canvasGestureZoomEnabledForCurrentProtocol()) {
+        if (!this.canvasTransformInitialized) { this.resetCanvasToDisplayDefault(); }
+        const viewport: CanvasViewport = this.currentCanvasViewport();
+        this.captureCanvasGestureDensity(viewport);
+        this.canvasTransform = pinchCanvasTransform(this.canvasTransform, viewport,
+          this.canvasGestureVpToPx(event.x), this.canvasGestureVpToPx(event.y),
+          rawScale / this.phoneAxisPinchScale, 0, 0);
+        this.refreshCanvasTransformModified(viewport);
+        this.applyCanvasTransform();
+      }
+      this.phoneAxisPinchScale = rawScale;
+      return;
+    }
+    if (this.phoneAxisPinching) { return; }
+    const rawX: number = event.getHorizontalAxisValue();
+    const rawY: number = event.getVerticalAxisValue();
+    if (!Number.isFinite(rawX) || !Number.isFinite(rawY) || (rawX === 0 && rawY === 0)) { return; }
+    const speed: number = Number.isFinite(this.rustdeskTouchpadSpeed) && this.rustdeskTouchpadSpeed > 0 ?
+      this.rustdeskTouchpadSpeed : 1;
+    // Axis scroll distance is opposite to the desired finger displacement.
+    // Mapping absolute endpoints also handles canvas rotation and fractional motion.
+    this.phonePanLocalX -= rawX * speed;
+    this.phonePanLocalY -= rawY * speed;
+    const point: MappedPoint = this.mapInputPointWithTransform(this.phonePanLocalX, this.phonePanLocalY, transform);
+    const dx: number = explicitPhonePanDelta(this.phonePanRemoteX, point.x);
+    const dy: number = explicitPhonePanDelta(this.phonePanRemoteY, point.y);
+    if (dx === 0 && dy === 0) { return; }
+    if (!this.phonePanStarted) {
+      if (this.loader.rustDeskPhoneControl(owner, 10, this.phonePanRemoteX, this.phonePanRemoteY) !== 1) {
+        this.cancelExplicitPhoneInput(); return;
+      }
+      this.phonePanStarted = true;
+    }
+    if (this.loader.rustDeskPhoneControl(owner, 11, dx, dy) !== 1) {
+      this.cancelExplicitPhoneInput(); return;
+    }
+    this.phonePanRemoteX = point.x;
+    this.phonePanRemoteY = point.y;
+  }
+
   private handleRustDeskPhysicalTouchpadAxis(event: AxisEvent): void {
+    if (this.isExplicitPhoneSession()) { this.handleExplicitPhoneAxis(event); return; }
     const endsGesture: boolean = event.action === AxisAction.END ||
       event.action === AxisAction.CANCEL;
     if (!this.canForwardInput('physical-touchpad-axis')) {
@@ -21213,6 +21411,10 @@ struct RemoteDesktop {
           swapMouseButtons: this.rustdeskSwapMouseButtons,
           touchpadSpeed: this.rustdeskTouchpadSpeed,
           rustDeskPhoneTarget: this.isRustDeskPhoneSession(),
+          explicitPhone: this.isExplicitPhoneSession(),
+          phoneStatus: this.explicitPhoneStatus,
+          phoneCapabilities: this.explicitPhoneCapabilities,
+          phoneAdaptiveOrientation: this.phoneAdaptiveOrientation,
           rustDeskDesktopFlipMode: this.rustDeskDesktopFlipMode,
           keyboardOpen: this.keyboardOpen || this.keyboardImeActive,
           shortcutsOpen: this.modifierPanelVisible || this.shortcutPanelVisible ||
@@ -21226,6 +21428,16 @@ struct RemoteDesktop {
           capabilities: this.currentSessionCapabilities(),
           actions: this.remoteSessionTopBarActions()
         })
+      }
+
+      if (this.isExplicitPhoneSession() && this.connected &&
+        (this.rustdeskBrowseMode || !this.rustDeskRemoteInputAllowed ||
+        (this.explicitPhoneCapabilities & 2) === 0 || !this.explicitPhoneGeometryReady)) {
+        Text(this.explicitPhoneStatus).fontSize(13).fontColor(Color.White)
+          .backgroundColor('rgba(35,35,35,0.85)').padding(10).borderRadius(8)
+          .constraintSize({ maxWidth: '90%' }).align(Alignment.Bottom)
+          .margin({ bottom: 24 })
+          .hitTestBehavior(HitTestMode.None)
       }
 
       if (this.showRustDeskDisplayResolutionMenu) {

@@ -2604,6 +2604,8 @@ impl RustDeskConnector {
 
         Self::pump_file_clipboard(crypto, controls, false)?;
         for control in Self::next_control_batch(controls) {
+            let phone_input_lease = controls.phone_input_lease(&control);
+            if phone_input_lease.as_ref().is_some_and(|ready| !**ready) { continue; }
             if controls.shutdown_requested() {
                 return Err(io::Error::new(
                     ErrorKind::Interrupted,
@@ -3695,6 +3697,12 @@ impl RustDeskConnector {
     ) -> io::Result<()> {
         match control {
             crate::ControlMsg::Shutdown => Ok(()),
+            crate::ControlMsg::AndroidPhone { action, modern_back } => {
+                for message in crate::android_phone::messages(action, modern_back) {
+                    Self::send_message_encrypted(crypto, &message)?;
+                }
+                Ok(())
+            }
             crate::ControlMsg::RefreshVideo => {
                 crate::set_last_error("send refresh video");
                 Session::send_refresh_video(crypto)
@@ -3816,6 +3824,7 @@ impl RustDeskConnector {
     fn control_msg_kind(control: &crate::ControlMsg) -> &'static str {
         match control {
             crate::ControlMsg::Shutdown => "shutdown",
+            crate::ControlMsg::AndroidPhone { .. } => "android_phone",
             crate::ControlMsg::RefreshVideo => "refresh_video",
             crate::ControlMsg::SwitchDisplay { .. } => "switch_display",
             crate::ControlMsg::DisplaySwitch { .. } => "display_switch",
@@ -5052,6 +5061,10 @@ impl RustDeskConnector {
     /** Platform reported by the authenticated RustDesk PeerInfo handshake. */
     pub(crate) fn codec_evidence(&self) -> Arc<Mutex<crate::codec_evidence::RustDeskCodecEvidence>> {
         Arc::clone(&self.session.codec_evidence)
+    }
+
+    pub fn peer_version(&self) -> String {
+        self.session.peer_info().map(|info| info.get_version().to_string()).unwrap_or_default()
     }
 
     pub fn peer_platform(&self) -> String {

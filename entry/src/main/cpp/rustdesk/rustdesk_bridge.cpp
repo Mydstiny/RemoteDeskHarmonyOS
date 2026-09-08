@@ -13,6 +13,8 @@
  */
 
 #include "rustdesk_bridge.h"
+#include "rustdesk_phone_geometry_gate.h"
+#include "rustdesk_phone_scope.h"
 #include "rustdesk_display_control_plane.h"
 #include "rustdesk_ffi_lifetime_policy.h"
 #include "rustdesk_ipc.h"
@@ -110,6 +112,9 @@ extern "C" {
     void  rustdesk_send_text(void* handle, const char* text);
     bool  rustdesk_change_display_resolution(void* handle, int display, int width, int height);
     bool  rustdesk_send_touch_scale(void* handle, int scale);
+    bool rustdesk_set_phone_geometry_ready(void* handle, bool ready);
+    uint32_t rustdesk_android_capabilities(void* handle);
+    bool rustdesk_send_android_action(void* handle, int action);
     bool  rustdesk_send_touch_pan(void* handle, int phase, int x, int y);
     int   rustdesk_send_file(void* handle, uint64_t transfer_id, const char* remote_path,
                              const unsigned char* data, unsigned int len);
@@ -832,6 +837,8 @@ struct RustDeskBridge::Impl {
     std::function<void()> displayCapabilitiesBeforeSnapshotHook;
     std::function<bool(uint64_t, const std::string&)> twoFactorFfiHook;
 #endif
+    std::atomic<bool> explicitPhone {false};
+    RustDeskPhoneGeometryGate phoneGeometry;
     std::atomic<uint64_t>   callbackVideoFrames {0};
     std::atomic<uint64_t>   callbackVideoBytes {0};
     std::atomic<uint64_t>   callbackKeyframes {0};
@@ -969,7 +976,8 @@ static bool rdIsFfiOutboundAllowed(
     }
     switch (lane) {
         case RustDeskFfiOutboundLane::Input:
-            return impl->continuityQuiesce.inputAllowed();
+            return impl->continuityQuiesce.inputAllowed() &&
+                (!impl->explicitPhone.load(std::memory_order_acquire) || impl->phoneGeometry.allowed());
         case RustDeskFfiOutboundLane::Clipboard:
             return impl->continuityQuiesce.clipboardAllowed();
         case RustDeskFfiOutboundLane::File:
@@ -1004,6 +1012,14 @@ static bool rdDispatchFfiTransferManagement(
 }
 
 #ifdef RUSTDESK_USE_REAL_CORE
+static void rdClosePhoneGeometryInput(RustDeskBridge::Impl* impl) {
+    if (!impl->explicitPhone.load(std::memory_order_acquire)) return;
+    impl->displayControl.dispatchExistingWork(impl->continuityAdmissionMutex, [](void* handle) {
+        rustdesk_set_phone_geometry_ready(handle, false);
+        return rustdesk_request_frame_refresh(handle);
+    });
+}
+
 static RustDeskFfiLifetime::CallbackContextRegistry<
     RustDeskFfiCallbackContext>& rdFfiCallbackRegistry() {
     // Deliberately leak the registry at process exit. Native callbacks can be
@@ -1529,6 +1545,10 @@ void RustDeskBridge::onFfiFrame(const void* framePtr, void* userData) {
         return;
     }
 
+    if (impl->explicitPhone.load(std::memory_order_acquire) &&
+        impl->phoneGeometry.observeFrame(ffiFrame->display, ffiFrame->width, ffiFrame->height)) {
+        rdClosePhoneGeometryInput(impl);
+    }
     uint64_t index = ++g_ffiVideoFrameCount;
     impl->callbackVideoFrames.fetch_add(1, std::memory_order_relaxed);
     impl->callbackVideoBytes.fetch_add(static_cast<uint64_t>(ffiFrame->size), std::memory_order_relaxed);
@@ -1840,6 +1860,11 @@ void RustDeskBridge::onFfiDisplay(const void* snapshotPtr, void* userData) {
         return;
     }
 
+    if (impl->explicitPhone.load(std::memory_order_acquire) &&
+        impl->phoneGeometry.observeDisplay(snapshot->currentDisplay, snapshot->geometryEpoch,
+            snapshot->width, snapshot->height)) {
+        rdClosePhoneGeometryInput(impl);
+    }
     impl->displayControl.dispatchDisplay(
         snapshot->currentDisplay,
         [&]() {
@@ -2279,6 +2304,7 @@ RustDeskBridge::RustDeskBridge(RustDeskMode mode)
                 return;
             }
             impl_->ffiAdmissionEpoch.fetch_add(1, std::memory_order_acq_rel);
+        if (impl_->explicitPhone.load(std::memory_order_acquire)) impl_->phoneGeometry.reset(true);
             impl_->ffiStreamEnded.store(true, std::memory_order_release);
             impl_->continuityAttemptToken.store(0, std::memory_order_release);
             impl_->continuityNetworkCallCancelled.store(
@@ -2331,6 +2357,7 @@ void RustDeskBridge::setSessionIdentity(uint64_t sessionId) {
         std::lock_guard<std::mutex> admissionLock(impl_->continuityAdmissionMutex);
         impl_->continuityActionEpoch.fetch_add(1, std::memory_order_acq_rel);
         impl_->ffiAdmissionEpoch.fetch_add(1, std::memory_order_acq_rel);
+        if (impl_->explicitPhone.load(std::memory_order_acquire)) impl_->phoneGeometry.reset(true);
         impl_->continuityNetworkObservationSeen = false;
         impl_->continuityNetworkGeneration = 0;
         impl_->continuityNetworkAvailable = true;
@@ -2493,6 +2520,7 @@ RustDeskBridge::prepareContinuityAttempt(
         // rejected without dropping the active video pipeline.
         const uint64_t admissionEpoch =
             impl_->ffiAdmissionEpoch.fetch_add(1, std::memory_order_acq_rel) + 1;
+        if (impl_->explicitPhone.load(std::memory_order_acquire)) impl_->phoneGeometry.reset(true);
         impl_->continuityAttemptToken.store(attemptToken, std::memory_order_release);
         impl_->ffiStreamEnded.store(true, std::memory_order_release);
         impl_->awaitingFirstGenerationFrame.store(
@@ -3152,6 +3180,58 @@ bool RustDeskBridge::sendTouchPan(int phase, int x, int y) {
     return false;
 }
 
+// operation -1 reads capability bits (bit 0 selected, bit 1 Android, bit 2 known version).
+// All action calls also fence the generation inside the serialized FFI dispatch.
+int64_t RustDeskBridge::phoneControl(uint64_t generation, uint64_t ownerToken, int operation, int x, int y, uint64_t streamEpoch) {
+#ifdef RUSTDESK_USE_REAL_CORE
+    int64_t result = 0;
+    if (!impl_->explicitPhone.load(std::memory_order_acquire)) return result;
+    rdDispatchFfiOutbound(impl_.get(), mode_,
+        operation < 0 || operation == 13 ? RustDeskFfiOutboundLane::Control : RustDeskFfiOutboundLane::Input,
+        [this, generation, ownerToken, operation, x, y, streamEpoch, &result](void* handle) {
+            const uint64_t currentEpoch = impl_->ffiAdmissionEpoch.load(std::memory_order_acquire);
+            if (!RustDeskPhoneRequestAllowed(impl_->explicitPhone.load(std::memory_order_acquire),
+                impl_->cursorGeneration.load(std::memory_order_acquire),
+                impl_->ownerToken.load(std::memory_order_acquire), currentEpoch,
+                generation, ownerToken, streamEpoch, operation)) return false;
+            if (operation == -2) { result = static_cast<int64_t>(currentEpoch); return true; }
+            if (operation == 13) {
+                result = x > 0 && impl_->phoneGeometry.commit(static_cast<uint32_t>(x)) &&
+                    rustdesk_set_phone_geometry_ready(handle, true) ? 1 : 0;
+                return result != 0;
+            }
+            if (operation >= 10 && operation <= 12) {
+                result = (rustdesk_android_capabilities(handle) & 2) != 0 &&
+                    rustdesk_send_touch_pan(handle, operation - 10, x, y) ? 1 : 0;
+                return result != 0;
+            }
+            result = operation == -1 ? static_cast<int>(1 | rustdesk_android_capabilities(handle) | (impl_->phoneGeometry.allowed() ? 16 : 0)) :
+                (rustdesk_send_android_action(handle, operation) ? 1 : 0);
+            return true;
+        });
+    return result;
+#else
+    return 0;
+#endif
+}
+
+void RustDeskBridge::observePhonePresentation(uint64_t generation, uint64_t ownerToken,
+    uint64_t streamEpoch, int width, int height) {
+    if (impl_->explicitPhone.load(std::memory_order_acquire) && generation != 0 && ownerToken != 0 &&
+        generation == impl_->cursorGeneration.load(std::memory_order_acquire) &&
+        ownerToken == impl_->ownerToken.load(std::memory_order_acquire) &&
+        streamEpoch != 0 && streamEpoch == impl_->ffiAdmissionEpoch.load(std::memory_order_acquire) &&
+        !impl_->disconnectRequested.load(std::memory_order_acquire) &&
+        !impl_->ffiStreamEnded.load(std::memory_order_acquire)) {
+        impl_->phoneGeometry.observePresented(width, height);
+    }
+}
+
+uint64_t RustDeskBridge::phoneStreamEpoch() const {
+    return impl_->explicitPhone.load(std::memory_order_acquire) ?
+        impl_->ffiAdmissionEpoch.load(std::memory_order_acquire) : 0;
+}
+
 RemoteCursorSnapshot RustDeskBridge::getRemoteCursorSnapshot(bool includePixels) {
     return impl_->cursorStore.snapshot(includePixels);
 }
@@ -3367,6 +3447,8 @@ int RustDeskBridge::connectInternal(
     {
         std::lock_guard<std::mutex> lock(impl_->mutex);
         impl_->config = cfg;
+        impl_->explicitPhone.store(cfg.rdExplicitPhone, std::memory_order_release);
+        impl_->phoneGeometry.reset(cfg.rdExplicitPhone);
     }
     const uint64_t serial = ++impl_->connectSerial;
     impl_->setState(ConnectionState::CONNECTING, "Connecting...", connectAdmission);
@@ -3606,6 +3688,7 @@ int RustDeskBridge::connectInternal(
                 onFfiDisplay, onFfiAuth, onFfiProgress, onFfiPeerPlatform,
                 callbackUserData);
             if (ffiHandle != nullptr) {
+                if (cfg.rdExplicitPhone) rustdesk_set_phone_geometry_ready(ffiHandle, false);
                 handleReservation.transferToHandleOwner();
             }
             bool discardHandle = serial != impl->connectSerial.load() ||
@@ -3782,6 +3865,7 @@ void RustDeskBridge::disconnectImpl(bool cancelContinuity) {
         std::lock_guard<std::mutex> admissionLock(impl_->continuityAdmissionMutex);
         impl_->continuityActionEpoch.fetch_add(1, std::memory_order_acq_rel);
         impl_->ffiAdmissionEpoch.fetch_add(1, std::memory_order_acq_rel);
+        if (impl_->explicitPhone.load(std::memory_order_acquire)) impl_->phoneGeometry.reset(true);
         impl_->disconnectRequested.store(true, std::memory_order_release);
         impl_->ffiStreamEnded.store(true, std::memory_order_release);
         impl_->continuityAttemptToken.store(0, std::memory_order_release);
@@ -4916,6 +5000,7 @@ void RustDeskBridge::ArmFirstGenerationFrameForTesting() {
     {
         std::lock_guard<std::mutex> admissionLock(impl_->continuityAdmissionMutex);
         impl_->ffiAdmissionEpoch.fetch_add(1, std::memory_order_acq_rel);
+        if (impl_->explicitPhone.load(std::memory_order_acquire)) impl_->phoneGeometry.reset(true);
         impl_->disconnectRequested.store(false, std::memory_order_release);
         impl_->ffiStreamEnded.store(false, std::memory_order_release);
         impl_->continuityAttemptToken.store(0, std::memory_order_release);

@@ -4,6 +4,8 @@ Updated: 2026-09-08 Asia/Shanghai
 
 ## Now
 
+- RustDesk explicit phone: complete scoped checkpoint/independent review of S0–S4, then [S5 official A/B and isolation matrix](plans/2026-09-08-rustdesk-explicit-phone-control-parity.md). Device details requested; no hardware acceptance claim. Do not expand into inferred/Pro phone, ordinary RustDesk, other protocols or shared queue/renderer redesign.
+
 - RDP direct touch: accept text caret placement with slight finger jitter, real dragging, long-press right click, mouse in all three modes, keyboard open/closed and zoom after code repair `da9ad958`; device acceptance remains pending.
 
 - File transfer / clipboard: [T0-T9 evidence and matrix](plans/2026-09-07-file-transfer-clipboard-remediation.md), implemented scopes independently reviewed through `42718408`. Next authorized device/peer/target acceptance, real content SHA-256, network/background/performance matrix. Copy-only/no-blind-resume boundaries remain; same branch awaits parallel Pro/AI/UI closure.

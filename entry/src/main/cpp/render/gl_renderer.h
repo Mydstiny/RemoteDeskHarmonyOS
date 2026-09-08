@@ -114,6 +114,7 @@ public:
     void SetRedrawCallback(std::function<void()> callback);
     /** Register the active RDP session wake callback independently of decoder ownership. */
     void SetSessionRedrawCallback(std::function<void()> callback);
+    void SetPhonePresentationObserver(std::function<void(int, int)> callback);
     /** Redraw the retained raw frame on the caller's renderer-owner thread. */
     void RenderRetainedFrame(uint64_t expectedGeneration = 0);
     /** Same retained redraw with a generation-safe presentation result. */
@@ -266,6 +267,7 @@ private:
     RdpPresentationMetrics presentationMetrics_;
 
     // 内部方法
+    std::function<void(int, int)> phonePresentationObserver_; // protected by lifecycleMutex_
     bool InitEGL(const std::string& xcomponentId);
     bool InitGL();
     GLuint CompileShader(GLenum type, const char* source);
@@ -400,6 +402,8 @@ namespace RendererNapi {
     RdpPresentationMetricsSnapshot GetActivePresentationStats();
     RdpPresentationMetricsSnapshot GetActivePresentationStats(
         const Render::DecoderSessionIdentity& owner);
+    void SetActivePhonePresentationObserver(const Render::DecoderSessionIdentity& owner,
+        std::function<void(int, int)> callback);
     bool SetActivePboUpload(bool enabled);
     bool SetActivePboUpload(const Render::DecoderSessionIdentity& owner, bool enabled);
     void InvalidateActivePresentation();

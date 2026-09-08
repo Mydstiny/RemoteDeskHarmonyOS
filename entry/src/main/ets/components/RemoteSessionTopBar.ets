@@ -82,6 +82,8 @@ const EMPTY_RUSTDESK_DISPLAY_RESOLUTION: RustDeskDisplayResolution = {
 };
 
 export interface RemoteSessionTopBarActions {
+  onPhoneAction: (action: number) => void;
+  onPhoneOrientation: (enabled: boolean) => void;
   onDisconnect: () => void;
   onHideTopBar: () => void;
   onRefreshFrame: () => void;
@@ -118,6 +120,10 @@ export interface RemoteSessionTopBarActions {
 @Component
 export struct RemoteSessionTopBar {
   @Prop protocol: string = 'rustdesk';
+  @Prop explicitPhone: boolean = false;
+  @Prop phoneStatus: string = '';
+  @Prop phoneCapabilities: number = 0;
+  @Prop phoneAdaptiveOrientation: boolean = false;
   @Prop layout: RemoteTopBarLayout = {
     deviceClass: 'pc',
     iconSize: 44,
@@ -169,6 +175,8 @@ export struct RemoteSessionTopBar {
   private autoCollapseTimer: number = -1;
 
   actions: RemoteSessionTopBarActions = {
+    onPhoneAction: (_action: number): void => {},
+    onPhoneOrientation: (_enabled: boolean): void => {},
     onDisconnect: (): void => {},
     onHideTopBar: (): void => {},
     onRefreshFrame: (): void => {},
@@ -332,7 +340,8 @@ export struct RemoteSessionTopBar {
 
   private toolbarWidth(): number {
     const actionCount: number = remoteSessionPrimaryActionIds(
-      this.protocol, this.layout.deviceClass, this.rustDeskPhoneTarget).length;
+      this.protocol, this.layout.deviceClass, this.rustDeskPhoneTarget).length +
+      (this.protocol === 'rustdesk' && this.explicitPhone ? 1 : 0);
     const count: number = Math.max(1, Math.min(this.layout.maxVisibleButtons, actionCount));
     return count * this.layout.iconSize + (count + 1) * this.layout.itemGap;
   }
@@ -401,7 +410,8 @@ export struct RemoteSessionTopBar {
 
   private edgeRailButtonCount(): number {
     return remoteSessionPrimaryActionIds(
-      this.protocol, this.layout.deviceClass, this.rustDeskPhoneTarget).length;
+      this.protocol, this.layout.deviceClass, this.rustDeskPhoneTarget).length +
+      (this.protocol === 'rustdesk' && this.explicitPhone ? 1 : 0);
   }
 
   private edgeRailHeight(): number {
@@ -716,6 +726,49 @@ export struct RemoteSessionTopBar {
     .width('100%').height(this.menuHeaderHeight())
     .padding({ left: this.menuPadding(), right: this.menuPadding() })
     .border({ width: { bottom: 0.5 }, color: 'rgba(17,24,39,0.10)' })
+  }
+
+  @Builder
+  private phoneButton(label: string, action: number) {
+    Button(label).width('100%').height(this.menuItemHeight())
+      .fontSize(15).fontColor('#222222').backgroundColor(Color.Transparent)
+      .enabled((this.phoneCapabilities & 3) === 3 && !this.browseMode &&
+        (action !== 0 || (this.phoneCapabilities & 4) !== 0))
+      .onClick((): void => { this.noteUserActivity(); this.actions.onPhoneAction(action); })
+  }
+
+  @Builder
+  private phoneMenu() {
+    Column() {
+      this.menuHeader('手机操作', $r('sys.symbol.gearshape_fill'))
+      Scroll() {
+        Column() {
+          Text(this.phoneStatus).fontSize(12).fontColor('#555555').width('100%').padding(8)
+          this.phoneButton('返回', 0)
+          this.phoneButton('主页', 1)
+          this.phoneButton('最近应用', 2)
+          this.phoneButton('音量 +', 4)
+          this.phoneButton('音量 −', 6)
+          this.phoneButton('电源菜单', 8)
+          if (this.layout.deviceClass !== 'pc') {
+            Button(this.phoneAdaptiveOrientation ? '方向：跟随设备' : '方向：横屏')
+              .width('100%').height(this.menuItemHeight()).fontSize(15)
+              .onClick((): void => {
+                this.actions.onPhoneOrientation(!this.phoneAdaptiveOrientation);
+                this.noteUserActivity();
+              })
+          }
+          Text('缩放只改变本地画布。方向选择仅用于本次会话。')
+            .fontSize(12).fontColor('#666666').width('100%').padding(8)
+        }.width('100%').padding(this.menuPadding())
+      }.width('100%').constraintSize({ maxHeight: this.menuScrollMaxHeight() })
+        .scrollable(ScrollDirection.Vertical).scrollBar(BarState.Auto)
+    }.width(this.effectiveMenuWidth())
+      .constraintSize({ maxHeight: this.sidebarMenuMaxHeight() })
+      .backgroundColor('rgba(255,255,255,0.96)').borderRadius(16).clip(true)
+      .shadow({ radius: 10, color: 'rgba(0,0,0,0.22)', offsetY: 2 })
+      .position({ x: this.menuLeft(), y: this.menuTop() })
+      .hitTestBehavior(HitTestMode.BLOCK_HIERARCHY)
   }
 
   @Builder
@@ -1140,6 +1193,10 @@ export struct RemoteSessionTopBar {
           (actionId: RemoteSessionPrimaryActionId): void => {
             this.primaryActionButton(actionId)
           }, (actionId: RemoteSessionPrimaryActionId): string => actionId)
+        if (this.protocol === 'rustdesk' && this.explicitPhone) {
+          this.iconButton($r('sys.symbol.gearshape_fill'), this.accentColor,
+            (): void => { this.toggleMenu('phone'); }, 18, '打开手机操作')
+        }
       }
     } else {
       Row({ space: this.layout.itemGap }) {
@@ -1148,6 +1205,10 @@ export struct RemoteSessionTopBar {
           (actionId: RemoteSessionPrimaryActionId): void => {
             this.primaryActionButton(actionId)
           }, (actionId: RemoteSessionPrimaryActionId): string => actionId)
+        if (this.protocol === 'rustdesk' && this.explicitPhone) {
+          this.iconButton($r('sys.symbol.gearshape_fill'), this.accentColor,
+            (): void => { this.toggleMenu('phone'); }, 18, '打开手机操作')
+        }
       }
     }
   }
@@ -1186,6 +1247,9 @@ export struct RemoteSessionTopBar {
         this.closeMenus();
       })
 
+      if (this.protocol === 'rustdesk' && this.explicitPhone && this.activeMenu === 'phone') {
+        this.phoneMenu()
+      }
       if (this.activeMenu === 'control') {
         this.controlMenu()
       }
@@ -1259,6 +1323,9 @@ export struct RemoteSessionTopBar {
         .onActionCancel((): void => { this.resetRailSwipe(); }))
       .hitTestBehavior(HitTestMode.BLOCK_HIERARCHY)
 
+      if (this.protocol === 'rustdesk' && this.explicitPhone && this.activeMenu === 'phone') {
+        this.phoneMenu()
+      }
       if (this.activeMenu === 'control') {
         this.controlMenu()
       }

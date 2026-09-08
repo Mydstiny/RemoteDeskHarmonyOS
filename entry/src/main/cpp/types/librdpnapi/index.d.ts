@@ -497,6 +497,7 @@ export const VERSION: SessionVersionInfo;
   export function changeRustDeskDisplayResolution(sessionId: number, display: number,
     width: number, height: number): boolean;
   export function sendRustDeskTouchScale(sessionId: number, scale: number): boolean;
+  export function rustDeskPhoneControl(sessionId: number, generation: number, ownerToken: number, operation: number, x: number, y: number, streamEpoch: number): number;
   export function sendRustDeskTouchPan(sessionId: number, phase: number, x: number, y: number): boolean;
   export function getLocalResourceStats(includePro?: boolean): LocalResourceStats;
   export function getSessionTransferStatus(sessionId: number): SessionTransferStatus;
@@ -1341,6 +1342,7 @@ export interface SessionConfig {
   // RustDesk 扩展字段
   rdImageQuality?: number;   // 0=fast, 1=balanced, 2=quality
   rdDirectIp?: boolean;      // 直连IP模式
+  rdExplicitPhone?: boolean; // session-only verified manual target choice
   rdConnectionStrategy?: 'force_relay' | 'direct_ip' | 'auto';
   rdDirectPort?: number;     // 直连端口
   rdLanDiscovery?: boolean;  // LAN发现

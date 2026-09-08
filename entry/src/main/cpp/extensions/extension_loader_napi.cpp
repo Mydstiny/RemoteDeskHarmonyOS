@@ -418,6 +418,7 @@ struct SessionContext {
 
     std::shared_ptr<ProtocolAdapter> adapter;
     std::string protocolName;
+    bool explicitPhone = false; // immutable connection choice
     mutable std::mutex adapterMutex;
     // One logical key transaction owns this lane from its first down through
     // its final up. Teardown claims the same lane before changing lifecycle,
@@ -5129,6 +5130,7 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
     bool hasRdDirectPort = false;
     bool hasRdRelayPort = false;
     if (isRustDesk) {
+        if (protocolName == "rustdesk") getBool("rdExplicitPhone", cfg.rdExplicitPhone);
         getInt("rdImageQuality", cfg.rdImageQuality);
         getBool("rdDirectIp", cfg.rdDirectIp);
         getString("rdConnectionStrategy", cfg.rdConnectionStrategy);
@@ -5412,6 +5414,7 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
     auto session = std::shared_ptr<SessionContext>(new SessionContext());
     session->adapter = adapter;
     session->protocolName = protocolName;
+    session->explicitPhone = protocolName == "rustdesk" && cfg.rdExplicitPhone;
     if (protocolName == "vnc") {
         session->vncConnectionPath =
             cfg.vncTransport == "ultravnc_repeater" ? "repeater" : "direct";
@@ -5773,6 +5776,18 @@ napi_value NapiConnect(napi_env env, napi_callback_info info) {
                     static_cast<unsigned long long>(dropped));
             }
             return;
+        }
+        if (session->explicitPhone) {
+            const auto bridge = GetRustDeskAdapter(session);
+            const auto owner = session->identity();
+            const uint64_t epoch = bridge ? bridge->phoneStreamEpoch() : 0;
+            std::weak_ptr<RustDeskBridge> weakBridge = bridge;
+            RendererNapi::SetActivePhonePresentationObserver(owner,
+                [weakBridge, owner, epoch](int width, int height) {
+                    if (const auto phone = weakBridge.lock()) {
+                        phone->observePhonePresentation(owner.generation, owner.ownerToken, epoch, width, height);
+                    }
+                });
         }
         if (frame.width > 0 && frame.height > 0) {
             RendererNapi::SetActiveSourceSize(session->identity(), frame.width, frame.height);
@@ -8237,6 +8252,35 @@ napi_value NapiSendRustDeskTouchScale(napi_env env, napi_callback_info info) {
     }
     napi_value result;
     napi_get_boolean(env, accepted, &result);
+    return result;
+}
+
+/** Phone-only ingress. No selection setter is exposed on an existing session. */
+napi_value NapiRustDeskPhoneControl(napi_env env, napi_callback_info info) {
+    size_t argc = 7;
+    napi_value args[7];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    int32_t sid = 0, operation = -2, x = 0, y = 0;
+    int64_t generation = 0, owner = 0, streamEpoch = 0;
+    int64_t value = 0;
+    if (argc == 7 && napi_get_value_int32(env, args[0], &sid) == napi_ok &&
+        napi_get_value_int64(env, args[1], &generation) == napi_ok &&
+        napi_get_value_int64(env, args[2], &owner) == napi_ok &&
+        napi_get_value_int32(env, args[3], &operation) == napi_ok &&
+        napi_get_value_int32(env, args[4], &x) == napi_ok &&
+        napi_get_value_int32(env, args[5], &y) == napi_ok &&
+        napi_get_value_int64(env, args[6], &streamEpoch) == napi_ok &&
+        generation > 0 && owner > 0 && operation >= -2 && operation <= 13) {
+        auto it = g_sessionRegistry.find(sid);
+        if (it != g_sessionRegistry.end() && it->second &&
+            it->second->generation.load(std::memory_order_acquire) == static_cast<uint64_t>(generation) &&
+            it->second->ownerToken == static_cast<uint64_t>(owner)) {
+            auto bridge = GetRustDeskAdapter(it->second);
+            if (bridge) value = bridge->phoneControl(generation, owner, operation, x, y, streamEpoch);
+        }
+    }
+    napi_value result;
+    napi_create_int64(env, value, &result);
     return result;
 }
 
@@ -13074,6 +13118,8 @@ napi_value ExtensionLoaderNapi::Init(napi_env env, napi_value exports) {
                          NapiSendRustDeskTouchScale, nullptr, &fn);
     napi_set_named_property(env, exports, "sendRustDeskTouchScale", fn);
 
+    napi_create_function(env, "rustDeskPhoneControl", NAPI_AUTO_LENGTH, NapiRustDeskPhoneControl, nullptr, &fn);
+    napi_set_named_property(env, exports, "rustDeskPhoneControl", fn);
     napi_create_function(env, "sendRustDeskTouchPan", NAPI_AUTO_LENGTH,
                          NapiSendRustDeskTouchPan, nullptr, &fn);
     napi_set_named_property(env, exports, "sendRustDeskTouchPan", fn);

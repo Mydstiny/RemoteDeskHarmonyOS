@@ -318,6 +318,9 @@ public:
     bool changeDisplayResolution(int display, int width, int height);
     bool sendTouchScale(int scale);
     bool sendTouchPan(int phase, int x, int y);
+    void observePhonePresentation(uint64_t generation, uint64_t ownerToken, uint64_t streamEpoch, int width, int height);
+    uint64_t phoneStreamEpoch() const;
+    int64_t phoneControl(uint64_t generation, uint64_t ownerToken, int operation, int x, int y, uint64_t streamEpoch);
     int  sendFileData(const std::string& remotePath, const uint8_t* data, uint32_t len) override;
     SessionTransferStatus getSessionTransferStatus() override;
     int64_t sendFileFromFd(const std::string& remotePath, int fd, int conflictPolicy);
