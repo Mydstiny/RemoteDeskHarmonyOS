@@ -1,0 +1,57 @@
+{
+  "schema": 1,
+  "name": "OpenSSL static PKIX runtime",
+  "version": "3.5.8",
+  "platform": "linux",
+  "architecture": "x64",
+  "binary": {
+    "path": "bin/openssl",
+    "sha256": "6e19cf9d386056d618c1066a71f8b949c394902c4c703542bdafd1519c0fe488",
+    "bytes": 8403352
+  },
+  "source": {
+    "url": "https://github.com/openssl/openssl/releases/download/openssl-3.5.8/openssl-3.5.8.tar.gz",
+    "sha256": "a8f84a39918ec6415ce765d9b429d313ba97b8143169c172e734b9514464f5b2"
+  },
+  "builder": {
+    "image": "alpine@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b",
+    "platform": "linux/amd64",
+    "musl": "1.2.6-r2",
+    "gcc": "15.2.0-r5",
+    "configure": "linux-x86_64 no-shared no-module no-tests no-zlib --prefix=/opt/remotedesk-pro/openssl -static",
+    "buildPackages": "build-packages.txt",
+    "buildScript": "build-openssl.sh"
+  },
+  "rootCertificate": {
+    "file": "RootCaG2Ecdsa.cer",
+    "url": "https://pki.consumer.huawei.com/ca/cer/RootCaG2Ecdsa.cer",
+    "sha256": "df21a3c09f7954579305f85c64f80cad86f79853ee3a887c1dec95d218df3a37"
+  },
+  "licenses": {
+    "licenses/GCC-GPL-3.0.txt": "8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903",
+    "licenses/GCC-RUNTIME-EXCEPTION.txt": "9d6b43ce4d8de0c878bf16b54d8e7a10d9bd42b75178153e3af6a815bdc90f74",
+    "licenses/OpenSSL-LICENSE.txt": "7d5450cb2d142651b8afa315b5f238efc805dad827d91ba367d8516bc9d49e7a",
+    "licenses/fortify-LICENSE.txt": "f9c890cf570f24fefbe1605a073b430630b0ff63e8d9fc53591bb5528120d424",
+    "licenses/musl-COPYRIGHT.txt": "b870108ec5e7790e9f9919064f1b9421d62d5f9b0e6c230c6adf7ea2da62e97b"
+  },
+  "sources": [
+    {
+      "name": "musl",
+      "version": "1.2.6",
+      "url": "https://musl.libc.org/releases/musl-1.2.6.tar.gz",
+      "sha256": "d585fd3b613c66151fc3249e8ed44f77020cb5e6c1e635a616d3f9f82460512a"
+    },
+    {
+      "name": "GCC runtime exception",
+      "url": "https://raw.githubusercontent.com/gcc-mirror/gcc/releases/gcc-15.2.0/COPYING.RUNTIME"
+    },
+    {
+      "name": "GCC GPL license",
+      "url": "https://raw.githubusercontent.com/gcc-mirror/gcc/releases/gcc-15.2.0/COPYING3"
+    },
+    {
+      "name": "fortify headers license",
+      "url": "https://raw.githubusercontent.com/jvoisin/fortify-headers/3.0.1/LICENSE"
+    }
+  ]
+}

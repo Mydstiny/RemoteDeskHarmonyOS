@@ -15,6 +15,10 @@ The separately deployable Pro entitlement server sources use external Node.js
 and OpenSSL host runtimes. They are not bundled in the HAP or redistributed in
 the server source directory. Runtime scope, validation versions and upstream
 notices are recorded in server/pro-entitlement/PROVENANCE.md and its SBOM.
+The private AGC deployment additionally packages a separately verified static
+OpenSSL executable with musl and the GCC runtime. Its manifest, separate SBOM,
+full upstream notices and build provenance are in server/pro-entitlement/agc/pkix/.
+That executable and private deployment archive are not committed or bundled in the HAP.
 
 The optional AGC deployment uses the Huawei Cloud Server SDK and locked npm
 dependencies. Their separate SBOM and full notices are in

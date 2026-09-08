@@ -48,3 +48,11 @@ and its npm dependencies. Per-package versions, archive SHA-512 hashes and
 license notices are in `server/pro-entitlement/agc/SBOM.spdx.json` and
 `server/pro-entitlement/agc/THIRD_PARTY_NOTICES.md`. Installation scripts are
 disabled; the HAP dependency set is unchanged.
+
+The private AGC ZIP separately carries OpenSSL 3.5.8 (Apache-2.0), statically
+linked with musl 1.2.6 (MIT) and the GCC 15.2 runtime (GPL-3.0-or-later WITH
+GCC-exception-3.1). Its binary hash, source archive hash, build image digest,
+build package list and complete notices are in `server/pro-entitlement/agc/pkix/`.
+The build-time fortify-headers 3.0.1 notice (0BSD) is retained there as well.
+Only the manifest and notices are committed; the executable is verified while
+preparing the private deployment package and never added to the HAP.

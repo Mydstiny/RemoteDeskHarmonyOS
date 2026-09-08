@@ -1,0 +1,106 @@
+{
+  "spdxVersion": "SPDX-2.3",
+  "dataLicense": "CC0-1.0",
+  "SPDXID": "SPDXRef-DOCUMENT",
+  "name": "RemoteDesk Pro AGC static PKIX runtime",
+  "documentNamespace": "https://github.com/Mydstiny/RemoteDeskHarmonyOS/spdx/pro-agc-pkix/6e19cf9d386056d618c1066a71f8b949c394902c4c703542bdafd1519c0fe488",
+  "creationInfo": {
+    "creators": [
+      "Tool: RemoteDesk Pro deployment inventory"
+    ],
+    "created": "2026-09-08T02:30:00Z"
+  },
+  "packages": [
+    {
+      "SPDXID": "SPDXRef-OpenSSL",
+      "name": "OpenSSL",
+      "versionInfo": "3.5.8",
+      "downloadLocation": "https://github.com/openssl/openssl/releases/download/openssl-3.5.8/openssl-3.5.8.tar.gz",
+      "filesAnalyzed": false,
+      "licenseDeclared": "Apache-2.0",
+      "licenseConcluded": "Apache-2.0",
+      "copyrightText": "See included upstream license and copyright notices",
+      "comment": "License files: licenses/OpenSSL-LICENSE.txt",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "a8f84a39918ec6415ce765d9b429d313ba97b8143169c172e734b9514464f5b2"
+        }
+      ]
+    },
+    {
+      "SPDXID": "SPDXRef-musl",
+      "name": "musl",
+      "versionInfo": "1.2.6-r2",
+      "downloadLocation": "https://musl.libc.org/releases/musl-1.2.6.tar.gz",
+      "filesAnalyzed": false,
+      "licenseDeclared": "MIT",
+      "licenseConcluded": "MIT",
+      "copyrightText": "See included upstream license and copyright notices",
+      "comment": "License files: licenses/musl-COPYRIGHT.txt"
+    },
+    {
+      "SPDXID": "SPDXRef-GCC-libgcc",
+      "name": "GCC-libgcc",
+      "versionInfo": "15.2.0-r5",
+      "downloadLocation": "https://gcc.gnu.org/releases.html",
+      "filesAnalyzed": false,
+      "licenseDeclared": "GPL-3.0-or-later WITH GCC-exception-3.1",
+      "licenseConcluded": "GPL-3.0-or-later WITH GCC-exception-3.1",
+      "copyrightText": "See included upstream license and copyright notices",
+      "comment": "License files: licenses/GCC-GPL-3.0.txt, licenses/GCC-RUNTIME-EXCEPTION.txt"
+    },
+    {
+      "SPDXID": "SPDXRef-fortify-headers",
+      "name": "fortify-headers",
+      "versionInfo": "3.0.1-r2",
+      "downloadLocation": "https://github.com/jvoisin/fortify-headers/tree/3.0.1",
+      "filesAnalyzed": false,
+      "licenseDeclared": "0BSD",
+      "licenseConcluded": "0BSD",
+      "copyrightText": "See included upstream license and copyright notices",
+      "comment": "License files: licenses/fortify-LICENSE.txt"
+    }
+  ],
+  "files": [
+    {
+      "SPDXID": "SPDXRef-OpenSSL-binary",
+      "fileName": "./bin/openssl",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "6e19cf9d386056d618c1066a71f8b949c394902c4c703542bdafd1519c0fe488"
+        }
+      ],
+      "licenseConcluded": "Apache-2.0 AND MIT AND (GPL-3.0-or-later WITH GCC-exception-3.1)",
+      "copyrightText": "OpenSSL Project Authors; Rich Felker et al.; Free Software Foundation, Inc."
+    }
+  ],
+  "relationships": [
+    {
+      "spdxElementId": "SPDXRef-DOCUMENT",
+      "relationshipType": "DESCRIBES",
+      "relatedSpdxElement": "SPDXRef-OpenSSL-binary"
+    },
+    {
+      "spdxElementId": "SPDXRef-OpenSSL-binary",
+      "relationshipType": "GENERATED_FROM",
+      "relatedSpdxElement": "SPDXRef-OpenSSL"
+    },
+    {
+      "spdxElementId": "SPDXRef-OpenSSL",
+      "relationshipType": "STATIC_LINK",
+      "relatedSpdxElement": "SPDXRef-musl"
+    },
+    {
+      "spdxElementId": "SPDXRef-OpenSSL",
+      "relationshipType": "STATIC_LINK",
+      "relatedSpdxElement": "SPDXRef-GCC-libgcc"
+    },
+    {
+      "spdxElementId": "SPDXRef-fortify-headers",
+      "relationshipType": "BUILD_DEPENDENCY_OF",
+      "relatedSpdxElement": "SPDXRef-OpenSSL"
+    }
+  ]
+}
