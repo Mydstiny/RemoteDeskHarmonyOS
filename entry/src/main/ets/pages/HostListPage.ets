@@ -1,4 +1,7 @@
 import { ProIncomingContinuationCard } from '../components/ProContinuationControls';
+import { ProIncomingConnectionShareCard } from '../components/ProConnectionShareControls';
+import { ProConnectionShareReceiver } from '../services/pro/ProConnectionShareReceiver';
+import { SshAddBasicFields } from '../common/SshAddBasicFields';
 import { ProContinuationService } from '../services/pro/ProContinuationService';
 import { SshConnectionPreflightSheet } from '../components/SshConnectionPreflightSheet';
 import { SshAuthenticatedHandoff } from '../services/ssh/auth/SshAuthenticatedHandoff';
@@ -1173,6 +1176,7 @@ struct HostListPage {
   private preserveFormOnAddSheetDisappear: boolean = false;
   // 保存并连接必须等新增主机 Sheet 的 native onDisappear 后再交给鉴权 Sheet。
   private pendingAddSheetConnectHostId: string = '';
+  private pendingAddSheetShareId: string = '';
   private pendingVncConnectHostId: string = '';
   private pendingVncConnectUserId: string = '';
   private moonlightCatalogHandoffGeneration: number = 0;
@@ -1893,12 +1897,21 @@ struct HostListPage {
   @State proIncomingContinuationVisible: boolean = false;
   private proContinuationStop: (() => void) | null = null;
   private proContinuationAttemptId: string = '';
+  @State proIncomingConnectionShareVisible: boolean = false;
+  @State proConnectionShareBasicFields: SshAddBasicFields | null = null;
+  private proConnectionShareStop: (() => void) | null = null;
+  private proConnectionShareDraftId: string = '';
+  private proConnectionShareAttemptId: string = '';
 
   async aboutToAppear(): Promise<void> {
     this.pageActive = true;
     this.proContinuationStop?.();
     this.proContinuationStop = ProContinuationService.getInstance().subscribe((): void => {
       this.proIncomingContinuationVisible = ProContinuationService.getInstance().snapshot().incoming;
+    });
+    this.proConnectionShareStop?.();
+    this.proConnectionShareStop = ProConnectionShareReceiver.getInstance().subscribe((): void => {
+      this.proIncomingConnectionShareVisible = ProConnectionShareReceiver.getInstance().snapshot().visible;
     });
     this.proUnsubscribe?.();
     this.proUnsubscribe = ProAppRuntime.getInstance().runtime.subscribe((): void => {
@@ -2644,6 +2657,11 @@ struct HostListPage {
 
   private saveSshHostFromAddFlow(host: RemoteHost, connectNow: boolean,
     proxyProfile: SshProxyProfileV1): void {
+    const sharedId = this.proConnectionShareDraftId;
+    const shared = ProConnectionShareReceiver.getInstance();
+    if (sharedId !== '' && !shared.draftCurrent(sharedId)) {
+      promptAction.showToast({ message: '分享已过期或账号已变化，请重新接收连接信息', duration: 2400 }); return;
+    }
     if (!shouldAcceptHostAddSave(this.addSheetClosing, this.pendingAddSheetConnectHostId)) {
       hilog.info(0x0001, 'HostList', 'ignored repeated SSH add-host save while Sheet is closing');
       return;
@@ -2660,7 +2678,36 @@ struct HostListPage {
     }
     this.refreshHostSnapshotAfterMutation();
     this.pendingAddSheetConnectHostId = pendingHostIdForHostAddSave(connectNow, host.id);
+    if (sharedId !== '') {
+      const bound = connectNow && shared.bindSaved(sharedId, host, getContext(this) as common.Context);
+      this.pendingAddSheetShareId = bound ? sharedId : '';
+      if (!bound) { shared.cancel(sharedId); }
+      this.proConnectionShareDraftId = ''; this.proConnectionShareBasicFields = null;
+    }
     this.requestAddSheetClose();
+  }
+
+  private clearProConnectionShareDraft(): void {
+    if (this.proConnectionShareDraftId !== '') {
+      ProConnectionShareReceiver.getInstance().cancel(this.proConnectionShareDraftId);
+    }
+    this.proConnectionShareDraftId = ''; this.proConnectionShareBasicFields = null;
+  }
+
+  private openProConnectionShareImport(id: string): void {
+    if (!this.pageActive || this.appInBackground || this.showAddSheet || this.addSheetClosing ||
+        this.showRemoteHostSheet || this.remoteHostSheetClosing || this.hostSelectionMode) { return; }
+    this.resetForm();
+    const service = ProConnectionShareReceiver.getInstance();
+    const fields = service.accept(id);
+    if (fields === null) { return; }
+    this.proConnectionShareDraftId = id; this.proConnectionShareBasicFields = fields;
+    this.modernAddProtocol = 'ssh'; this.addSheetShowsModernPicker = false;
+    this.openSheetSafely((): void => {
+      if (this.pageActive && !this.appInBackground && this.proConnectionShareDraftId === id && service.draftCurrent(id)) {
+        this.showAddSheet = true;
+      } else { this.clearProConnectionShareDraft(); }
+    });
   }
 
   private prepareVncAddFlow(): void {
@@ -3903,6 +3950,8 @@ struct HostListPage {
     this.pendingVncConnectUserId = '';
     const pendingHostId: string = this.pendingAddSheetConnectHostId;
     this.pendingAddSheetConnectHostId = '';
+    const pendingShareId: string = this.pendingAddSheetShareId;
+    this.pendingAddSheetShareId = '';
     const pendingMoonlightDestination: HostAddPostSaveHandoff =
       this.pendingMoonlightCatalogHandoff;
     this.pendingMoonlightCatalogHandoff = emptyHostAddPostSaveHandoff();
@@ -4002,6 +4051,7 @@ struct HostListPage {
 
     if (!shouldStartHostAddConnectionAfterDisappear(
       this.pageActive, this.addSheetClosing, pendingHostId)) {
+      if (pendingShareId !== '') { ProConnectionShareReceiver.getInstance().cancel(pendingShareId); }
       if (pendingHostId !== '') {
         this.releaseConnectionAttempt(pendingHostId);
       }
@@ -4009,6 +4059,7 @@ struct HostListPage {
     }
     const host: RemoteHost | undefined = this.srv.getHost(pendingHostId);
     if (!host) {
+      if (pendingShareId !== '') { ProConnectionShareReceiver.getInstance().cancel(pendingShareId); }
       hilog.warn(0x0001, 'HostList', 'saved host disappeared before connect id=' + pendingHostId);
       this.releaseConnectionAttempt(pendingHostId);
       return;
@@ -4016,7 +4067,8 @@ struct HostListPage {
     // 只保存稳定 ID，交接时重新读取，确保直连地址、端口、密码和密码类型
     // 都来自刚刚持久化的主机记录，而不是 Sheet 回调中的旧对象副本。
     hilog.info(0x0001, 'HostList', 'add-host Sheet disappeared; starting saved connection host=' + pendingHostId);
-    this.handleHostCardClick(host);
+    if (pendingShareId !== '') { void this.connectToHost(host, '', pendingShareId); }
+    else { this.handleHostCardClick(host); }
   }
 
   private resumeRustDeskHostAddFromRelayDirectory(
@@ -5157,6 +5209,12 @@ struct HostListPage {
 
   aboutToDisappear(): void {
     this.proContinuationStop?.(); this.proContinuationStop = null;
+    this.proConnectionShareStop?.(); this.proConnectionShareStop = null;
+    this.clearProConnectionShareDraft();
+    if (this.pendingAddSheetShareId !== '') {
+      ProConnectionShareReceiver.getInstance().cancel(this.pendingAddSheetShareId);
+      this.pendingAddSheetShareId = '';
+    }
     this.proUnsubscribe?.(); this.proUnsubscribe = null;
     this.pageActive = false;
     this.sheetReleaseFenceGeneration += 1;
@@ -6242,6 +6300,14 @@ struct HostListPage {
       params['proConnectionTransferId'] = this.proContinuationAttemptId;
     }
     this.proContinuationAttemptId = '';
+    if (this.proConnectionShareAttemptId !== '' && url === 'pages/SshTerminal') {
+      const sharedHost = this.srv.getHost((params['hostId'] as string) || '');
+      if (sharedHost !== undefined && ProConnectionShareReceiver.getInstance().restoreView(
+        this.proConnectionShareAttemptId, sharedHost) !== null) {
+        params['proConnectionShareId'] = this.proConnectionShareAttemptId;
+      }
+    }
+    this.proConnectionShareAttemptId = '';
     const rawRdpAttemptGeneration: Object | undefined =
       params['rdpConnectionAttemptGeneration'];
     const rdpAttemptGeneration: number = typeof rawRdpAttemptGeneration === 'number' &&
@@ -6475,10 +6541,12 @@ struct HostListPage {
     });
   }
 
-  private async connectToHost(host: RemoteHost, continuationId: string = ''): Promise<void> {
+  private async connectToHost(host: RemoteHost, continuationId: string = '', shareId: string = ''): Promise<void> {
     // Every explicit new attempt replaces the previous local continuation route token.
     this.proContinuationAttemptId = continuationId;
     if (continuationId === '') { ProContinuationService.getInstance().cancelIncoming(); }
+    this.proConnectionShareAttemptId = shareId;
+    if (shareId === '') { ProConnectionShareReceiver.getInstance().cancel(); }
 
     if (!this.pageActive || this.appInBackground) {
       this.clearPendingVncCredentialForRemoteHost(host);
@@ -14446,6 +14514,11 @@ struct HostListPage {
               })
             }
           }
+          if (this.proIncomingConnectionShareVisible) {
+            ListItem() {
+              ProIncomingConnectionShareCard({ onImport: (id: string): void => { this.openProConnectionShareImport(id); } })
+            }
+          }
           if (!this.groupedHostCardsActive()) {
             ListItem() { this.HostWorkspaceFilterBar() }
           }
@@ -19246,7 +19319,10 @@ struct HostListPage {
     } else if (this.modernAddProtocol === 'ssh') {
       SshAddFlow({
         keys: this.keyVault.getAllSshKeys(),
-        onBackToProtocols: (): void => { this.modernAddProtocol = ''; this.addSheetShowsModernPicker = true; },
+        initialBasicFields: this.proConnectionShareBasicFields,
+        onBackToProtocols: (): void => {
+          this.clearProConnectionShareDraft(); this.modernAddProtocol = ''; this.addSheetShowsModernPicker = true;
+        },
         onClose: (): void => { this.requestAddSheetClose(); },
         onSave: (host: RemoteHost, connectNow: boolean, proxyProfile: SshProxyProfileV1): void => {
           this.saveSshHostFromAddFlow(host, connectNow, proxyProfile);
@@ -21021,6 +21097,7 @@ struct HostListPage {
   }
 
   private resetForm(): void {
+    this.clearProConnectionShareDraft();
     this.editingHostId = '';
     this.label = ''; this.proto = 'rdp'; this.hostAddr = ''; this.portVal = 3389;
     this.rdpPortVal = 3389; this.sshPortVal = 22;

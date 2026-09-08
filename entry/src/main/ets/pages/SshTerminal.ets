@@ -1,4 +1,8 @@
 import { ProContinuationControls } from '../components/ProContinuationControls';
+import { ProConnectionShareControls } from '../components/ProConnectionShareControls';
+import { ProConnectionShareSender } from '../services/pro/ProConnectionShareSender';
+import { ProConnectionShareReceiver } from '../services/pro/ProConnectionShareReceiver';
+import { proConnectionShareBase } from '../services/pro/ProConnectionShareConfiguration';
 import { ProContinuationService } from '../services/pro/ProContinuationService';
 import { ProConnectionDescription } from '../services/pro/ProConnectionEnvelope';
 import { describeProSshConnection } from '../services/pro/ProConnectionHostAdapter';
@@ -994,6 +998,10 @@ struct SshTerminal {
   private proConnectionTransferId: string = '';
   private proContinuationWindowId: number = 0;
   private proContinuationRestoreRunning: boolean = false;
+  private proConnectionShareWindowId: number = 0;
+  private proConnectionShareEpoch: number = 0;
+  private proConnectionShareId: string = '';
+  private proConnectionShareRestoreRunning: boolean = false;
   private sftpKnockReceiver: ProKnockReceiver = new ProKnockReceiver();
   private sftpShareStager: SshSftpShareStager = new SshSftpShareStager();
   private sftpKnockStopPro: (() => void) | null = null;
@@ -7037,6 +7045,9 @@ struct SshTerminal {
         if (this.connected && !this.isDesktopDevice) {
           ProContinuationControls({ onPrepare: (): void => { void this.prepareProContinuation(); } })
         }
+        if (this.connected) {
+          ProConnectionShareControls({ onPrepare: (): void => { void this.prepareProConnectionShare(); } })
+        }
         this.SshHeaderActionRow('常用命令', this.sshProductivityReady
           ? this.sshProductivityDocument.snippets.length.toString() + ' 条 · 可新增、编辑和插入'
           : '本地存储不可用；若已启用加密，请先解锁', 'quick-commands')
@@ -8771,6 +8782,94 @@ struct SshTerminal {
     } finally { this.proContinuationRestoreRunning = false; }
   }
 
+  private stopProConnectionShare(): void {
+    this.proConnectionShareEpoch++;
+    if (this.proConnectionShareWindowId > 0) {
+      ProConnectionShareSender.getInstance().stop(this.proConnectionShareWindowId);
+      this.proConnectionShareWindowId = 0;
+    }
+  }
+
+  private async prepareProConnectionShare(): Promise<void> {
+    this.showSshHeaderActionPopup = false;
+    this.stopSftpKnock();
+    if (proConnectionShareBase() === '') {
+      promptAction.showToast({ message: '连接分享正在完成应用链接配置与设备验证，暂未开放', duration: 2600 }); return;
+    }
+    const host = HostSyncService.getInstance().getHost(this.hostId);
+    if (host === undefined) { return; }
+    const page = this.pageGeneration; const binding = this.sshBindingGeneration;
+    const session = this.sessionId; const generation = this.sshSessionGeneration;
+    const pane = this.showSftpPanel ? 'files' : 'terminal';
+    const directory = this.sftpPath.startsWith('/') ? this.sftpPath : '';
+    const epoch = this.proConnectionShareEpoch;
+    const current = (): boolean => epoch === this.proConnectionShareEpoch &&
+      !this.sshContextualGuideInBackground() && this.proContinuationSessionCurrent(page, binding, session, generation, host.id) &&
+      (pane === 'files' ? (this.showSftpPanel && !this.sftpRootSheetClosing && this.sftpPath === directory) : !this.showSftpPanel);
+    if (!current() || (pane === 'files' && directory === '')) { return; }
+    const context = getContext(this) as common.UIAbilityContext;
+    const description = describeProSshConnection(host, pane, directory, context);
+    if (description === null) {
+      promptAction.showToast({ message: '目前仅支持分享直连 SSH，代理连接暂未开放', duration: 2200 }); return;
+    }
+    const preview = '主机：' + description.label + '\n地址：' + description.host + ':' + description.port.toString() +
+      '\n用户名：' + description.username + (directory === '' ? '' : '\n目录：' + directory) +
+      '\n以上信息将发送给接收设备；密码和密钥需由对方自行填写。本端会话继续保留。';
+    try {
+      const ownWindow = window.findWindow(this.getUIContext().getWindowName());
+      const answer = await this.getUIContext().getPromptAction().showDialog({ title: '准备分享 SSH 连接', message: preview,
+        buttons: [{ text: '取消', color: this.pal().text2 }, { text: '准备分享', color: this.accentColor }] });
+      if (answer.index !== 1 || !current()) { return; }
+      this.proConnectionShareWindowId = ownWindow.getWindowProperties().id;
+      const armed = ProConnectionShareSender.getInstance().arm({ windowId: this.proConnectionShareWindowId,
+        context, description, isCurrent: current,
+        confirm: async (point: KnockPoint | null): Promise<boolean> => {
+          if (!current()) { return false; }
+          const rect = ownWindow.getWindowProperties().windowRect;
+          const match = matchKnockWindow(point, { left: rect.left, top: rect.top, width: rect.width, height: rect.height });
+          if (match === 'outside') { return false; }
+          const confirmation = await this.getUIContext().getPromptAction().showDialog({
+            title: '发送给碰一碰设备', message: (match === 'unknown' ? '未取得有效碰点，请确认分享的是当前窗口。\n' : '') + preview,
+            buttons: [{ text: '取消', color: this.pal().text2 }, { text: '发送连接信息', color: this.accentColor }] });
+          return confirmation.index === 1 && current();
+        }
+      });
+      promptAction.showToast({ message: armed ? '已准备分享，请在 2 分钟内碰一碰当前窗口' :
+        '无法准备分享，请检查 Pro、系统分享能力和当前连接', duration: 2400 });
+    } catch (_error) { this.stopProConnectionShare(); }
+  }
+
+  private async restoreProConnectionShare(): Promise<void> {
+    if (this.proConnectionShareRestoreRunning || this.proConnectionShareId === '' || !this.connected ||
+        this.sessionId <= 0 || this.terminalClosing) { return; }
+    const host = HostSyncService.getInstance().getHost(this.hostId);
+    if (host === undefined) { return; }
+    const service = ProConnectionShareReceiver.getInstance();
+    const id = this.proConnectionShareId;
+    const view = service.restoreView(id, host);
+    if (view === null) { service.cancel(id); this.proConnectionShareId = ''; return; }
+    this.proConnectionShareRestoreRunning = true;
+    const page = this.pageGeneration; const binding = this.sshBindingGeneration; const session = this.sessionId;
+    const generation = this.sshSessionGeneration;
+    try {
+      let restored: boolean = true;
+      if (view.sshPane === 'files') { this.openSftpPanel(); restored = this.showSftpPanel; }
+      const paneEpoch = this.proContinuationPaneEpoch;
+      if (view.sshDirectory !== '') { restored = (await this.refreshSftp(view.sshDirectory)) && restored; }
+      if (this.proConnectionShareId !== id || service.incomingId() !== id) { return; }
+      restored = restored && this.proContinuationSessionCurrent(page, binding, session, generation, host.id) &&
+        paneEpoch === this.proContinuationPaneEpoch &&
+        (view.sshPane === 'files' ? (this.showSftpPanel && !this.sftpRootSheetClosing &&
+          !this.sftpCloseRootAfterPeerPicker) : !this.showSftpPanel) &&
+        (view.sshDirectory === '' || this.sftpPath === this.normalizeRemoteDir(view.sshDirectory));
+      if (!restored || !service.complete(id, host)) {
+        service.cancel(id);
+        promptAction.showToast({ message: 'SSH 已连接，分享目录未恢复；可在 SFTP 中手动打开', duration: 2400 });
+      }
+      this.proConnectionShareId = '';
+    } finally { this.proConnectionShareRestoreRunning = false; }
+  }
+
   private sftpKnockContext(): ProAccessContext {
     const context: ProAccessContext = ProAppRuntime.getInstance().context('ssh');
     if (proKnockSupported()) { context.capabilities = [KNOCK_SHARE_CAPABILITY]; }
@@ -8778,6 +8877,7 @@ struct SshTerminal {
   }
 
   private stopSftpKnock(): void {
+    this.stopProConnectionShare();
     this.sftpKnockEpoch++;
     this.sftpKnockReceiver.stop();
     if (this.sftpKnockActive) { this.sftpKnockStatus = '已停止接收投递，未入队文件会在本机接收结束后清理'; }
@@ -10312,6 +10412,10 @@ struct SshTerminal {
       routeParams['authenticated'] = true;
       routeParams['sshWindowPreauthenticated'] = true;
       routeParams['sshInitialTranscript'] = transcript;
+      const sharedId = this.proConnectionShareId;
+      if (sharedId !== '' && ProConnectionShareReceiver.getInstance().restoreView(sharedId, host) !== null) {
+        routeParams['proConnectionShareId'] = sharedId;
+      }
       const request: RemoteSessionWindowRequest = {
         target: 'ssh_terminal',
         protocol: 'ssh',
@@ -10326,6 +10430,10 @@ struct SshTerminal {
         context, request,
         new RemoteSessionWindowNativeHandoff(this.loader, sourceRegistry, active));
       if (!opened) { throw new Error('independent SSH ability launch rejected'); }
+
+      // The target owns the same authenticated native session and the one-use
+      // view token. Removing the carrier page must not cancel its restoration.
+      if (this.proConnectionShareId === sharedId) { this.proConnectionShareId = ''; }
 
       this.pcWindowHandoffComplete = true;
       // Remove only the transferred source tab. Other SSH tabs remain owned by
@@ -10559,6 +10667,9 @@ struct SshTerminal {
     const continuationValue: Object | undefined = (routeParams as Record<string, Object>)?.['proConnectionTransferId'];
     this.proConnectionTransferId = typeof continuationValue === 'string' ? continuationValue : '';
     this.proContinuationRestoreRunning = false;
+    const shareValue: Object | undefined = (routeParams as Record<string, Object>)?.['proConnectionShareId'];
+    this.proConnectionShareId = typeof shareValue === 'string' && /^[a-f0-9]{32}$/.test(shareValue) ? shareValue : '';
+    this.proConnectionShareRestoreRunning = false;
     this.bindIndependentSessionWindow(routeParams);
     this.stageIndependentWindowAfterAuthentication(routeParams);
     this.stopSshAuthPromptPolling(true);
@@ -11017,6 +11128,10 @@ struct SshTerminal {
       this.proContinuationWindowId = 0;
     }
     this.stopSftpKnock();
+    if (this.proConnectionShareId !== '') {
+      ProConnectionShareReceiver.getInstance().cancel(this.proConnectionShareId);
+      this.proConnectionShareId = '';
+    }
     this.sftpKnockStopPro?.();
     this.sftpKnockStopPro = null;
     // Scrub page-local authentication material before any asynchronous
@@ -12485,6 +12600,7 @@ struct SshTerminal {
     // Receipt restoration starts only after callback, SFTP generation and the
     // authenticated page binding are committed, never from a raw CONNECTED poll.
     void this.restoreProContinuation();
+    void this.restoreProConnectionShare();
     this.startLatencyProbe();
     void this.prepareSshPip(pageGeneration, bindingGeneration, bindingHostId);
 

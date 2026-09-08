@@ -1,5 +1,6 @@
 import { Palette, buildDark, buildLight } from '../../common/Theme';
 import { RemoteHost } from '../../model/RemoteHost';
+import { SshAddBasicFields } from '../../common/SshAddBasicFields';
 import { SshKey } from '../../model/SshKey';
 import { KeyVaultService } from '../../services/KeyVaultService';
 import { ModernKeyVaultAddFlow } from '../resourceadd/modern/ModernKeyVaultAddFlow';
@@ -24,6 +25,7 @@ export struct SshAddFlow {
   @StorageProp('currentTheme') theme: string = 'light';
   @StorageProp('accentColor') accentColor: string = '#007DFF';
   @Prop @Watch('onKeysChanged') keys: SshKey[] = [];
+  @Prop initialBasicFields: SshAddBasicFields | null = null;
   onBackToProtocols: () => void = (): void => {};
   onClose: () => void = (): void => {};
   onSave: (host: RemoteHost, connectNow: boolean, proxyProfile: SshProxyProfileV1) => void =
@@ -44,6 +46,14 @@ export struct SshAddFlow {
 
   private keyVault = KeyVaultService.getInstance();
   private pendingProxyProfile: SshProxyProfileV1 | null = null;
+
+  aboutToAppear(): void {
+    const fields = this.initialBasicFields;
+    if (fields !== null) {
+      this.label = fields.label; this.address = fields.address;
+      this.portText = fields.port.toString(); this.username = fields.username;
+    }
+  }
 
   private onKeysChanged(): void {
     this.newlyAddedKeys = [];

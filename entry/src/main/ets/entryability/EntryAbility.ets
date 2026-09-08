@@ -1,4 +1,6 @@
 import { ProContinuationService, PRO_CONTINUATION_PARAM } from '../services/pro/ProContinuationService';
+import { ProConnectionShareReceiver } from '../services/pro/ProConnectionShareReceiver';
+import { ProConnectionShareSender } from '../services/pro/ProConnectionShareSender';
 import { ProAppRuntime } from '../services/pro/ProAppRuntime';
 /**
  * EntryAbility.ets — 应用入口 UIAbility
@@ -218,6 +220,7 @@ export default class EntryAbility extends UIAbility {
     ProAppRuntime.getInstance();
     ProContinuationService.getInstance().initializeMission(this.context);
     if (!this.acceptProContinuationWant(want, launchParam)) { return; }
+    this.acceptProConnectionShareWant(want, launchParam);
     try {
       const appClone: AppCloneContext = AppCloneContext.getInstance();
       appClone.init(this.context);
@@ -371,6 +374,20 @@ export default class EntryAbility extends UIAbility {
 
   onNewWant(want: Want, launch: AbilityConstant.LaunchParam): void {
     this.acceptProContinuationWant(want, launch);
+    this.acceptProConnectionShareWant(want, launch);
+  }
+
+  private acceptProConnectionShareWant(want: Want, launch: AbilityConstant.LaunchParam): void {
+    if (launch.launchReason === AbilityConstant.LaunchReason.CONTINUATION ||
+        want.action !== 'ohos.want.action.viewData' || typeof want.uri !== 'string' ||
+        !ProConnectionShareReceiver.getInstance().ingest(want.uri)) { return; }
+    if (this.windowStage !== null) {
+      try {
+        this.windowStage.getMainWindowSync().getUIContext().getPromptAction().showToast({
+          message: '收到连接分享，请在主机列表核对并添加', duration: 3000
+        });
+      } catch (_error) {}
+    }
   }
 
   async onContinue(parameters: Record<string, Object>): Promise<AbilityConstant.OnContinueResult> {
@@ -418,6 +435,8 @@ export default class EntryAbility extends UIAbility {
   onDestroy(): void {
     ProContinuationService.getInstance().cancelSource();
     ProContinuationService.getInstance().cancelIncoming();
+    ProConnectionShareSender.getInstance().stop();
+    ProConnectionShareReceiver.getInstance().cancel();
     // 最终销毁 — 必须完全断连所有远程会话 + 移除灵动岛
     this.requestShutdown('ability-destroy');
     hilog.info(DOMAIN, TAG, 'Ability onDestroy');

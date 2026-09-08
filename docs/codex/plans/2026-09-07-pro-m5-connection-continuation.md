@@ -17,9 +17,24 @@
 
 ## 后续 M5 增量与外部前提
 
-- Share Kit + 官方 App Linking 需要已配置的关联域名。API26 ServiceInteraction KNOCK 消息通道需要 KNOCK_COLLABORATION 的签名准入，SDK 权限表声明 phone；不能从存在 windowId 推断 PC 准入。
-- 仍待用户确认域名/准入。不得编造公网邀请服务或加入未授权凭据传输；邀请本身不授予接收者 Pro。
-- PC 独立会话、RDP 视图及其他协议按各自可恢复状态补充适配，不能把第一增量当作全部 M5。
+- Share Kit 的 knockShare / HYPERLINK + 官方 App Linking 需要已配置的关联域名；本路径没有 KNOCK_COLLABORATION 权限要求。API26 ServiceInteraction 的 KNOCK 消息通道属于另一条能力路径，其签名准入和 phone 声明不能混用，也不能从 windowId 推断 PC 准入。
+- 关联域名和真实 fragment 投递仍待确认。不得编造公网邀请服务或加入未授权凭据传输；分享内容本身不授予接收者 Pro。
+- PC 官方同账号接续、RDP 视图及其他协议按各自可恢复状态补充适配，不能把直连 SSH 增量当作全部 M5。
+
+## 第二增量：直连 SSH 碰一碰分享
+
+- 官方 API23+ Share Kit `on('knockShare', {windowId, sendOnly: true}, callback)`；API26 才读取 getInfo 坐标，坐标缺失时明确确认当前窗口，外部碰点拒绝。只撤销本模块注册的对象和 callback，不全局 off。
+- 源端先预览地址、用户名、名称、目录并准备两分钟，碰一碰后再确认发送；当前窗口/页面、native SSH generation、账号 transition、Pro 运行时、目录和重新读取的持久 direct route 均需有效。单次 callback 先占用，异步及迟到重复不能复用。
+- 只复制既有白名单模型；share purpose 必须清空账号 owner 和本地主机引用。固定编译期 HTTPS App Link + canonical `#rd=` fragment，拒绝其他域名、路径、query、非规范编码、过大与过期数据。fragment 不进入网站 HTTP 请求，但系统分享及 App Linking 是否完整保留仍需真机验证。
+- 普通 SSH 接收免费。EntryAbility 只处理 viewData Want；冷启动保留正常初始化，热启动提示主机页确认，CONTINUATION Want 不进入分享路径。收件卡片不自动连接；确认后仅向新 SSH 表单预填基础字段，密码/私钥由接收者在本机填写。
+- 接收确认绑定本机账号 generation；过期/账号切换阻止旧表单写入。用户修改端点或代理后可以按普通流程保存，分享目录不再自动恢复。仅对新保存的稳定 host ID 绑定短时本机标识，依旧经过原锁定、指纹、密码/密钥/MFA 流程。
+- 手机/平板原路由和 PC 已认证独立窗口交接携带该短时标识。只有实际 SSH attach 和 SFTP 目录成功后才消费；PC 窗口启动不等于目录完成，移除鉴权载体页也不取消目标标识。原生 generation、页面、文件窗格或账号变化使旧恢复失效。
+- Share Kit 的 Promise 完成只表示信息交给系统，不是目标 SSH-ready 回执；发送端不提供据此关闭会话的路径。跨账号确认回执、PC 官方 continuation、RDP 适配及设备矩阵仍未完成。
+- `ProConnectionShareConfiguration` 暂返回空字符串：真实域名/App Link 声明/AGC 应用关联/系统 fragment 交付核验完成前，发送与接收均拒绝执行，不虚构生产地址。目录条目保持 experimental，不进入正式权益销售。
+
+本轮当前 host 验证：27 项分享检查执行生产 policy/sender/receiver 和实际 Want、保存、路由、PC 交接、SFTP 恢复方法；34 项接续与 14 项文件碰一碰回归 PASS。最终 Hvigor/Light/Release 与独立代码复核待后续记录；没有真实跨设备分享成功结论。
+
+官方依据：[手机与 PC 互碰分享](https://developer.huawei.com/consumer/cn/doc/harmonyos-guides/knock-share-pc-phones-mutually)、[通过 App Linking 拉起应用](https://developer.huawei.com/consumer/cn/doc/harmonyos-guides/app-linking-startupapp)、[分享链接](https://developer.huawei.com/consumer/cn/doc/harmonyos-guides/share-utd-link)。API 声明按当前 DevEco SDK 的 `@hms.collaboration.harmonyShare.d.ts` 与 `@hms.collaboration.systemShare.d.ts` 核对。
 
 ## 本轮验收
 
