@@ -1112,6 +1112,28 @@
       "remoteDesktopDrag": "requires peer-side source-object and lifecycle protocol extension; not implemented",
       "directories": "complete cache and explicit tree export; no system directory paste claim",
       "device": "NOT RUN"
+    },
+    "rustDeskParityPlan": {
+      "path": "docs/codex/plans/2026-09-08-rustdesk-file-transfer-parity.md",
+      "status": "plan-only-independently-reviewed",
+      "requestedAt": "2026-09-08 Asia/Shanghai",
+      "baselineHead": "9733a624d4762a63f3c2265cd72665f5b848db79",
+      "implementationStarted": false,
+      "mainExit": "Bidirectional repeated file/folder system copy/paste on validated capability profiles; drag-out is independent.",
+      "stockBoundary": "No proven safe different-successor publication on same legacy carrier; current inbound late descriptor quarantine has a bounded evidence-based recovery design.",
+      "enhancedPeer": "Snapshot/request identity must be implemented at both endpoints; existing official peer support is not assumed.",
+      "platformBoundary": "Folder representation is available but actual system folder paste and child URI authority require API23/26 device proof.",
+      "next": "P0 peer proof and P1 platform experiments after implementation scope/targets are available; no device operations in this planning turn.",
+      "review": "PASS independent plan review; no new implementation or device acceptance",
+      "validation": {
+        "testCompile": "PASS exit 0; BUILD SUCCESSFUL in 558 ms",
+        "assembleHap": "PASS exit 0; signed BUILD SUCCESSFUL in 32 s 275 ms; SignHap 914 ms",
+        "compliance": "Light/diff/state PASS; 20 relative links valid",
+        "device": "NOT RUN; planning only"
+      },
+      "reviewerTaskId": "/root/clipboard_core",
+      "reviewReceiptId": "rustdesk-file-transfer-parity-plan-20260908",
+      "reviewedPlanSha256": "e6e5cfdc416f5fe4e95123f3dc0f01b52db652fd4ff62b296942106e23feb10c"
     }
   },
   "rdpTouchRepair": {

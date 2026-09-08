@@ -8,7 +8,7 @@ Updated: 2026-09-08 Asia/Shanghai
 
 - RDP direct touch: accept text caret placement with slight finger jitter, real dragging, long-press right click, mouse in all three modes, keyboard open/closed and zoom after code repair `da9ad958`; device acceptance remains pending.
 
-- File transfer / clipboard: `d3a4500d` continuous sync and PC automatic file preparation independently reviewed; [section 14](plans/2026-09-07-file-transfer-clipboard-remediation.md). Next actual device/system URI/background acceptance and resolve remote drag source + RustDesk successor file carrier. These prevent full requested capability closure; preserve copy-only and shared active branch.
+- File transfer / clipboard: `d3a4500d` implemented scope reviewed; new [RustDesk parity plan](plans/2026-09-08-rustdesk-file-transfer-parity.md) is PLAN_ONLY. Next P0 peer identity/compatibility and P1 system folder/URI validation, then P2-P6; continuous successor files need verified peer binding. Real drag-out is separate. Existing copy-only/shared branch boundaries remain.
 
 - Remote AI: [AI4 client integration](plans/2026-09-08-remote-ai-client-integration.md) implemented with passing code gates; checkpoint `7bdf00f6` independently reviewed; next actual HarmonyOS pairing/model/LAN and Phone/Pad/PC acceptance. Native v0.3.0 hosts remain released/deployed; RustDesk transport later.
 

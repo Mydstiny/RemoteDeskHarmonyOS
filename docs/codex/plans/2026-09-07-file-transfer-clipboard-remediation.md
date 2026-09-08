@@ -438,3 +438,7 @@ ArkTS 测试模块受影响时另加 `ohosTest@OhosTestCompileArkTS`；若任务
 代码 checkpoint `d3a4500d`，两份非作者收据在状态短卡记录；保留同一共享活动分支。上述两个协议/系统边界及设备验收没有完成，因此不把本次追加要求标为全部实现，不 push/PR/merge 尚有并行未完成任务的整个分支。
 
 本增量文档收口当次门禁：`default@OhosTestCompileArkTS` exit 0，`BUILD SUCCESSFUL in 4 s 809 ms`；签名 `assembleHap` exit 0，`BUILD SUCCESSFUL in 6 s 841 ms`（SignHap 1 s 92 ms）；Light/diff/state PASS。仅提交本任务五个文档范围；共享工作区同时存在的 Phone/renderer 变化由其所属任务独立提交与审查。
+
+**15. 2026-09-08 RustDesk 文件体验后续详细方案**
+
+用户要求结合当前代码和官方制定详细方案，见 [RustDesk 文件复制粘贴体验补齐方案](2026-09-08-rustdesk-file-transfer-parity.md)。此次仅制定计划；明确官方兼容与增强 peer 的连续批次边界、入站晚响应恢复、鸿蒙目录/供数验证、P0–P6 与独立拖出项 D。PC 原要求为拖出或复制粘贴，因此主线以复制粘贴验收，真实拖出单独报告，不作为主线完成前提。新协议、目录 publisher、远端组件和新增设备验收尚未实施；本节不改变第 14 节已有代码状态。
