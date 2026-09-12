@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1280" height="460" viewBox="0 0 1280 460" fill="none" role="img" aria-labelledby="title desc">
-  <title id="title">RemoteDesk — Your workspace, within reach.</title>
+  <title id="title">RemoteDesktop — Your workspace, within reach.</title>
   <desc id="desc">HarmonyOS NEXT remote connections: RDP, RustDesk, SSH / SFTP, VNC and Moonlight. A conceptual connection diagram, not an application screenshot.</desc>
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="1280" y2="460" gradientUnits="userSpaceOnUse"><stop stop-color="#0A1830"/><stop offset="1" stop-color="#102E55"/></linearGradient>
@@ -14,7 +14,7 @@
     <rect x="64" y="60" width="184" height="30" rx="15" fill="#162F4D" stroke="#365775"/>
     <circle cx="81" cy="75" r="3" fill="#7CD7FF"/>
     <text x="94" y="80" fill="#BDDEFA" font-size="12" letter-spacing="1.6">HARMONYOS NEXT</text>
-    <text x="60" y="180" fill="#FFFFFF" font-size="76" font-weight="700" letter-spacing="-3">RemoteDesk</text>
+    <text x="60" y="180" fill="#FFFFFF" font-size="76" font-weight="700" letter-spacing="-3">RemoteDesktop</text>
     <text x="64" y="231" fill="#DAE9FA" font-size="28" font-weight="400">Your workspace, within reach.</text>
     <text x="64" y="276" fill="#9EB8D5" font-size="18">Desktop. Terminal. Files. Streaming.</text>
     <path d="M64 314H608" stroke="#36516F"/>
