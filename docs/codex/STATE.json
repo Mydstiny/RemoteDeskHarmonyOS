@@ -1654,6 +1654,27 @@
     "mergeCommit": "e7b3c4d6670230288e236d276a99a025ac42945c",
     "pullRequest": "https://github.com/Mydstiny/RemoteDeskHarmonyOS/pull/55",
     "publicationReviewReceiptId": "github-presentation-publish-b9ca24d3-20260912",
-    "authorization": "2026-09-12 user explicitly allowed a separate documentation-only publication branch and PR/merge while preserving unfinished Pro work."
+    "authorization": "2026-09-12 user explicitly allowed a separate documentation-only publication branch and PR/merge while preserving unfinished Pro work.",
+    "appName": "RemoteDesktop",
+    "detailUpdate": {
+      "status": "published",
+      "request": "Use full application name RemoteDesktop; retain a concise opening and show detailed introduction further down the page.",
+      "sourceCommit": "363e16829e59a67f9d42079d6ced5714a885794d",
+      "publicationCommit": "d65feca895603140c54cf8704e3315de98f62b70",
+      "mergeCommit": "f341a37958e6642aa53a96c46957f230729d7e7f",
+      "pullRequest": "https://github.com/Mydstiny/RemoteDeskHarmonyOS/pull/56",
+      "scope": [
+        "README.md",
+        "docs/assets/readme-hero.svg"
+      ],
+      "reviewTaskId": "/root/review_github_presentation",
+      "reviewReceiptId": "github-details-d65feca8-20260912",
+      "verification": {
+        "testCompile": "PASS exit 0; BUILD SUCCESSFUL in 4 s 849 ms in preserved shared workspace",
+        "assembleHap": "PASS exit 0; signed BUILD SUCCESSFUL in 5 s 893 ms in preserved shared workspace",
+        "compliance": "PASS exact-push Light, diff, required open-source-compliance (33 s)",
+        "presentation": "PASS 36 paths/anchors, valid SVG/HTML; actual GitHub detail navigation and full-name hero rendering"
+      }
+    }
   }
 }
