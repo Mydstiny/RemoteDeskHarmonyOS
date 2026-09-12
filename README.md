@@ -1,258 +1,143 @@
-# RemoteDeskHarmonyOS
+<div align="center">
 
-面向 HarmonyOS NEXT 的原生多协议远程桌面客户端。当前版本为
-**1.1.5.1**（`versionCode 1001006`），在一个 ArkUI 工作台中提供 RDP、
-RustDesk、SSH/SFTP、VNC 和 Moonlight 连接；同时集成华为云数据同步、
-本地加密与备份、后台视频、画中画以及手机、Pad、PC 响应式体验。
+<img src="docs/assets/readme-hero.svg" alt="RemoteDesk：面向 HarmonyOS NEXT 的原生远程连接工作台，支持 RDP、RustDesk、SSH/SFTP、VNC 和 Moonlight。" width="100%" />
 
-> 当前仓库仍处于测试与发布验证阶段。GitHub 中标记为 `unsigned` 的 HAP
-> 未经应用签名，仅用于开发测试；它不是 AppGallery 或生产分发安装包。
+# RemoteDesk · 鸿蒙远程桌面
 
-## 功能概览
+**远程桌面、终端、文件与串流，一个工作台就够。**
 
-| 能力 | 当前实现 |
-|---|---|
-| RDP | 基于 FreeRDP/WinPR，支持证书预检、Microsoft/Azure AD 凭据、音视频、输入、纯文本剪贴板和共享目录 |
-| RustDesk | 原生 Rust FFI 客户端链路，支持 rendezvous/relay/direct、视频、音频、输入、纯文本剪贴板和文件传输，并改进异步会话恢复 |
-| SSH/SFTP | 多标签与多窗格终端、密钥/密码认证、搜索/命令/广播、隧道转发、SFTP 双栏与传输中心 |
-| VNC | 标准 VNC 连接、TLS/明文预检、证书与凭据确认、画面输入、剪贴板和网关配置 |
-| Moonlight | Sunshine 发现、配对、应用目录与启动，支持串流、键鼠/触控/控制器输入和会话生命周期管理 |
-| 主机工作台 | 主机添加与编辑、工作组、连接入口、协议筛选与真实能力状态 |
-| 数据与安全 | RDB、本地 AES-256-GCM 数据保护、HUKS/生物认证集成、备份恢复与主机安全锁建设 |
-| 华为云同步 | 八张固定业务表与可选 Moonlight 数据的显式同步、选择控制、重试、下载回滚与本地恢复隔离 |
-| HarmonyOS 体验 | PC/Pad/Phone 响应式布局、沉浸式浮动导航、后台视频、画中画与前后台恢复 |
-| 1.1.5.1 更新 | 集中修复 PC 画面翻转、RDP 凭据/输入/缩放/断线归因、RustDesk 工具栏/监控/剪贴板、SSH 常用命令、退出保护、列表避让和鸿蒙快捷键屏蔽 |
-| 1.1.2 更新 | 汇总 1.1.1 以来的 Moonlight、SSH 工作台、输入、安全校验与自适应引导改进 |
-| 反馈与社区 | 设置内支持邮箱反馈、获取远程更新的畅联群聊二维码以及保存到相册 |
+面向 HarmonyOS NEXT 的原生多协议客户端，为手机、平板与 PC 打造。
 
-部分能力依赖远端服务器配置、HarmonyOS 设备形态、系统权限和本地私有
-AGConnect 配置。正式 Release 还需要通过完整五协议设备矩阵与凭据轮换
-确认；仓库不会把未完成的外部验证描述为已经通过。
+[![HarmonyOS NEXT](https://img.shields.io/badge/HarmonyOS-NEXT-147DFF?style=flat-square)](#连接你的工作空间) [![ArkTS + Rust + C++](https://img.shields.io/badge/ArkTS%20%2B%20Rust%20%2B%20C%2B%2B-Native-334155?style=flat-square)](docs/DEVELOPMENT.md) [![License: AGPL v3+](https://img.shields.io/badge/License-AGPL--3.0--or--later-2563EB?style=flat-square)](LICENSE) [![Open source compliance](https://github.com/Mydstiny/RemoteDeskHarmonyOS/actions/workflows/open-source-compliance.yml/badge.svg?branch=main)](https://github.com/Mydstiny/RemoteDeskHarmonyOS/actions/workflows/open-source-compliance.yml)
 
-## 支持平台与技术栈
+[使用指南](docs/app-store/USER_GUIDE.md) · [从源码构建](docs/DEVELOPMENT.md) · [版本与发布](https://github.com/Mydstiny/RemoteDeskHarmonyOS/releases) · [反馈问题](https://github.com/Mydstiny/RemoteDeskHarmonyOS/issues)
 
-- HarmonyOS NEXT，项目以 API 23 SDK 为当前开发基线。
-- ArkTS + ArkUI 声明式 UI，使用 HarmonyOS 原生 Kit。
-- C/C++ NAPI 扩展承载 FreeRDP、VNC、音视频、渲染和输入桥接。
-- Rust 承载 RustDesk 协议桥和 SSH 终端相关逻辑。
-- 构建系统为 DevEco Studio Hvigor；当前产物覆盖 ARM64 与 x86_64 原生库。
+</div>
 
-## 架构
+---
 
-```text
-ArkUI pages/components
-        │
-        ├── services / policies / RDB / cloud coordination
-        │
-        └── rdpnapi (NAPI boundary)
-              ├── FreeRDP / WinPR ── RDP
-              ├── rustdesk_ffi ───── RustDesk
-              ├── libssh2 / terminal core ── SSH/SFTP
-              ├── VNC adapter
-              ├── Moonlight / Sunshine runtime
-              └── decoder / renderer / audio / input bridges
-```
+## 连接你的工作空间
 
-协议会话、渲染、音频、输入、剪贴板和文件传输保持明确边界。可选能力失败
-不应破坏已经建立的桌面会话；云同步和加密写入必须先确认本地事务成功，
-再更新缓存或请求推送。
+在 Windows 桌面上继续工作，在服务器终端中处理任务，或通过 Sunshine 串流应用。
+RemoteDesk 将不同连接方式放进统一的主机工作台，按工作组整理、按协议筛选，让常用设备更容易找到。
 
-## 仓库结构
+| 连接方式 | 适用场景 | 主要能力 |
+| :--- | :--- | :--- |
+| **RDP** | Windows 远程办公 | FreeRDP / WinPR、证书预检、Microsoft / Azure AD 凭据、音视频、文本剪贴板与共享目录 |
+| **RustDesk** | 跨平台远程控制 | ID / 中继 / 直连、远程画面与音频、键鼠输入、文本剪贴板与文件传输 |
+| **SSH / SFTP** | 服务器维护与文件管理 | 多标签与多窗格终端、密钥认证、跳板机、端口转发、双栏文件工作区与传输中心 |
+| **VNC** | 连接已有 VNC 服务 | TLS / 明文预检、证书与凭据确认、远程画面、输入、文本剪贴板与网关配置 |
+| **Moonlight** | 通过 Sunshine 串流 | 主机发现、PIN 配对、应用目录、画面与音频、键鼠 / 触控 / 控制器输入 |
 
-| 路径 | 用途 |
-|---|---|
-| `AppScope/` | 应用级清单、版本与资源 |
-| `entry/src/main/ets/` | ArkTS 页面、组件、模型、服务和策略 |
-| `entry/src/main/cpp/` | NAPI、协议适配、渲染、音视频与原生测试 |
-| `rustdesk_ffi/` | RustDesk Rust FFI、协议会话与 Rust 测试 |
-| `freerdp/` | 指向本仓库公开 `freerdp-ohos` 基线的 FreeRDP 子模块；OHOS 差异位于 `patches/freerdp-ohos/` |
-| `scripts/` | 依赖构建、SBOM、合规、clean-clone 和 Git hook 脚本 |
-| `docs/compliance/` | SPDX SBOM、来源、发布门禁、回滚和开源合规记录 |
-| `LICENSES/` | 项目与第三方许可证文本 |
+## 为鸿蒙日常使用而设计
 
-## 获取源码
+<table>
+<tr>
+<td width="50%" valign="top">
 
-```powershell
+### 多设备，自然适配
+
+ArkTS + ArkUI 原生界面，适配 Phone、Pad 与 PC。结合窗口尺寸调整布局，提供远程键盘、浮动控制栏、画中画与前后台恢复。
+
+</td>
+<td width="50%" valign="top">
+
+### 终端与文件，一起处理
+
+SSH 多标签、多窗格、搜索和常用命令，搭配 SFTP 双栏浏览与传输中心，让终端操作和文件管理衔接起来。
+
+</td>
+</tr>
+<tr>
+<td width="50%" valign="top">
+
+### 数据保护，掌握在自己手中
+
+支持本地 AES-256-GCM 数据保护、HUKS / 生物认证集成、密钥库、TOTP 验证器与备份恢复。连接时核对远端身份，按需管理凭据。
+
+</td>
+<td width="50%" valign="top">
+
+### 离线使用，按需同步
+
+可离线管理本机数据；登录华为账号并完成云服务配置后，按需选择同步内容，提供显式同步、重试与本地恢复隔离。
+
+</td>
+</tr>
+</table>
+
+> 各项能力受远端服务、设备形态、系统权限和配置影响；剪贴板、文件传输等以当前协议与会话的实际可用状态为准。
+
+## 开始使用
+
+**了解产品** → 阅读[使用指南](docs/app-store/USER_GUIDE.md)，了解首次使用、添加主机与各协议的操作方式。
+
+**准备连接** → 在远端启用对应服务，在 RemoteDesk 添加主机，核对证书或主机指纹；Moonlight 需先完成 Sunshine 配对。
+
+**参与开发** → 克隆源码，按[开发与构建指南](docs/DEVELOPMENT.md)配置 DevEco Studio、本地依赖和私有构建文件。
+
+```sh
 git clone --recurse-submodules https://github.com/Mydstiny/RemoteDeskHarmonyOS.git
-Set-Location RemoteDeskHarmonyOS
+cd RemoteDeskHarmonyOS
 ```
 
-如果已普通 clone，执行 `git submodule update --init --recursive`。FreeRDP
-公开基线位于同一 GitHub 仓库的 `freerdp-ohos` 分支；主分支以 gitlink
-固定基线，并通过仓库内有序 patch 系列重建经过复核的 OHOS 源码 tree。
+> [!NOTE]
+> 仓库当前版本为 **1.1.5.1**，仍处于测试与发布验证阶段。安装包可用性以 [Releases](https://github.com/Mydstiny/RemoteDeskHarmonyOS/releases) 为准；标记为 `unsigned` 的 HAP 未经应用签名，仅用于开发测试，不是 AppGallery 或生产分发安装包。
 
-## Windows/macOS 双端协作
+<details>
+<summary><strong>1.1.5.1 更新摘要</strong></summary>
 
-源码、Git 历史和子模块可以通过 GitHub 在 Windows 与 MacBook 间迁移；跨设备共享的脱敏任务状态位于
-`docs/codex/`。本机 Codex 原始记忆、DevEco SDK、签名材料、AGConnect secret、构建缓存、日志和真实用户数据不进入仓库。
-完整流程见 [`docs/CROSS_DEVICE_GITHUB_WORKFLOW.md`](docs/CROSS_DEVICE_GITHUB_WORKFLOW.md)。
+- PC 画面：改进画面翻转处理及诊断。
+- RDP：改进凭据、输入、缩放和断线原因展示。
+- RustDesk：改进工具栏、监控与文本剪贴板。
+- SSH：改进常用命令和会话操作体验。
+- 通用体验：改进退出保护、列表避让和鸿蒙快捷键设置。
 
-Mac 首次 clone 后执行：
+详细变更及历史版本说明见[使用指南](docs/app-store/USER_GUIDE.md)。设备与协议矩阵验证仍在持续推进。
 
-```sh
-git config core.hooksPath .githooks
-chmod +x scripts/sync_workspace.sh .githooks/pre-push
-source scripts/macos_env.sh
-./scripts/sync_workspace.sh status
-```
+</details>
 
-`scripts/macos_env.sh` 会自动发现 DevEco Studio SDK、内置 JBR/Java、
-Node/Hvigor/ohpm、OHOS LLVM/CMake/Ninja 和 rustup 管理的 cargo/rustc。它只
-设置当前 shell，不会写入私有配置；PowerShell 7 仍需单独安装，或通过
-`POWERSHELL_COMMAND` 指定用户级 `pwsh` 路径。
-
-每次开始任务必须从干净的 `main` 同步远端并创建任务分支。Windows 使用：
-
-```powershell
-pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/dev_workflow.ps1 start -Task <lowercase-kebab-task>
-```
-
-macOS/Linux 使用：
-
-```sh
-./scripts/sync_workspace.sh start <lowercase-kebab-task>
-```
-
-两个入口都会执行 `fetch --prune`、`pull --ff-only origin main`、递归子模块同步、工作区脏检查和活动分支检查；不会自动覆盖或 stash 未提交修改。Mac 端需要 PowerShell 7，以便 pre-push hook 运行同一套开源合规门禁；hook 也会发现用户级 `pwsh` 安装。
-
-没有网络时，可在已有副本运行 `scripts/create_migration_bundle.ps1` 生成包含公开 `main` Git bundle、源码归档、FreeRDP 子模块归档和迁移清单的脱敏包；它不包含私钥、SDK、日志、构建产物或私有 Codex 记忆。
-
-## 本地私有配置
-
-仓库不会跟踪签名证书、口令、AGConnect secret、API key、本机 SDK 路径
-或真实用户数据。首次构建时按示例创建本地文件：
-
-- `build-profile.example.json5` → 本地 `build-profile.json5`
-- `local.properties.example` → 本地 `local.properties`
-- `entry/src/main/resources/rawfile/agconnect-services.example.json` → 本地
-  `agconnect-services.json`
-
-真实值只能保存在本机安全路径或 CI secrets。不要把这些文件加入 Git，
-也不要在 issue、日志或截图中公开它们。
-
-## 构建依赖
-
-1. 安装 DevEco Studio 和 HarmonyOS API 23 SDK。
-2. 安装 Git、PowerShell 7、Rust/Cargo，以及项目脚本所需的 C/C++ 工具链。
-3. 准备上述本地私有配置。
-4. 首次 clean clone 或 RustDesk/Opus 输入变化后构建双 ABI 原生依赖：
+## 原生界面，多协议内核
 
 ```text
-bash scripts/build_opus_ohos.sh all
-bash scripts/build_rustdesk_ffi_ohos.sh all
+                     ArkTS · ArkUI
+                页面 / 组件 / 响应式交互
+                           │
+               服务 · 策略 · 本地数据 · 云同步
+                           │
+                      NAPI / FFI
+                           │
+       ┌─────────┬─────────┼─────────┬──────────┐
+     FreeRDP   RustDesk   libssh2    VNC     Moonlight
+       RDP     Rust FFI   SSH/SFTP           Sunshine
+       └─────────┴─────────┼─────────┴──────────┘
+                  渲染 · 音频 · 输入桥接
 ```
 
-macOS 可先执行 `source scripts/macos_env.sh`；原生依赖脚本会自动使用
-`/Applications/DevEco-Studio.app/Contents/sdk`（或 `DEVECO_SDK_HOME`）以及
-独立的 API 23 native SDK（或 `OHOS_SDK_HOME`），并兼容 macOS 的 `shasum`
-和 CPU 并行数。Hvigor 使用完整 HarmonyOS SDK，CMake/Rust native 使用 API 23
-native SDK，两者不要互换。
+原生库覆盖 **ARM64 / x86_64**。开发基准为 **API 26**，应用兼容目标与 native ABI 工具链分别核对；具体环境与构建步骤见[开发指南](docs/DEVELOPMENT.md)。
 
-FreeRDP、FFmpeg 或其他原生依赖变化时，使用 `scripts/` 下对应的 OHOS 构建
-脚本，并同步更新来源、许可证、SBOM 和产物哈希。
+## 文档与参与
 
-## 构建 HAP
+| 我想… | 入口 |
+| :--- | :--- |
+| 了解使用方法与版本变化 | [用户指南](docs/app-store/USER_GUIDE.md) |
+| 搭建环境、查看架构与构建命令 | [开发与构建](docs/DEVELOPMENT.md) |
+| 在 Windows / macOS 间协作 | [跨设备工作流](docs/CROSS_DEVICE_GITHUB_WORKFLOW.md) |
+| 贡献代码或改进文档 | [贡献指南](CONTRIBUTING.md) |
+| 提交问题或功能建议 | [GitHub Issues](https://github.com/Mydstiny/RemoteDeskHarmonyOS/issues) |
+| 私密报告安全问题 | [安全政策](SECURITY.md) |
+| 了解隐私与数据处理 | [隐私政策](docs/app-store/PRIVACY_POLICY.md) |
 
-在 Windows PowerShell 中：
+欢迎贡献文档、问题复现和改进建议。反馈时请说明协议、设备类型、版本与复现步骤，并移除凭据、主机地址、证书和用户数据。
 
-```powershell
-$env:DEVECO_SDK_HOME = 'C:\Program Files\Huawei\DevEco Studio\sdk'
-$env:OHOS_SDK_HOME = $env:DEVECO_SDK_HOME
-& 'C:\Program Files\Huawei\DevEco Studio\tools\node\node.exe' `
-  'C:\Program Files\Huawei\DevEco Studio\tools\hvigor\bin\hvigorw.js' `
-  --mode module -p module=entry -p product=default assembleHap `
-  --analyze=normal --parallel --incremental --daemon
-```
+## 开源与致谢
 
-在 macOS shell 中：
+项目自有组合发行版采用 **[AGPL-3.0-or-later](LICENSE)**。感谢 FreeRDP / WinPR、RustDesk、libssh2、Moonlight、FFmpeg、OpenSSL、Mbed TLS、Opus 及其他上游项目；各依赖保留自己的许可证与分发条件。
 
-```sh
-source scripts/macos_env.sh
-hvigorw --mode module -p module=entry -p product=default assembleHap \
-  --analyze=normal --parallel --incremental --daemon
-```
+[第三方声明](THIRD_PARTY_NOTICES.md) · [NOTICE](NOTICE) · [许可证文本](LICENSES/) · [SPDX SBOM](docs/compliance/SBOM.spdx.json) · [对应源码](docs/compliance/SOURCE_OFFER.md) · [网络源码提供政策](docs/compliance/AGPL_NETWORK_SOURCE_OFFER_POLICY.md)
 
-常见输出目录：
+---
 
-```text
-entry/build/default/outputs/default/entry-default-unsigned.hap
-entry/build/default/outputs/default/entry-default-signed.hap
-```
-
-签名产物仅属于本地私有发布流程，不得上传到本仓库的 unsigned 测试
-Release。
-
-## 测试与验证
-
-```powershell
-# 开源合规轻量门禁
-pwsh -File scripts/verify_open_source_release.ps1 -Mode Light
-
-# 安装并确认本地 pre-push hook
-pwsh -File scripts/install_git_hooks.ps1
-git config --get core.hooksPath
-```
-
-其他主要验证入口：
-
-- ArkTS：`default@OhosTestCompileArkTS` 与 `onDeviceTest` 任务图。
-- Native：项目生成的 `rdp_native_tests` 测试程序。
-- Rust：在 `rustdesk_ffi/` 执行 `cargo test --lib --no-default-features`。
-- Clean clone：`scripts/verify_clean_clone_build.ps1`。
-- 正式发布：`scripts/verify_open_source_release.ps1 -Mode Release`。
-
-Release 模式还要求凭据轮换、完整设备矩阵和私有构建配置，不能用一次
-Light 通过或一次本地 HAP 构建代替。
-
-## 开发与 Push 流程
-
-项目唯一标准工作区为：
-
-```text
-C:\Users\14288\DevEcoStudioProjects\RemoteDesktop
-```
-
-维护者和自动化 session 必须从公开、干净的 `main` 开始，并在同一工作区
-创建 `codex/...` 功能分支：
-
-```powershell
-git switch main
-git pull --ff-only
-git switch -c codex/<task-name>
-# 修改、测试、构建、运行 Light gate
-git push -u origin codex/<task-name>
-```
-
-之后创建 PR，等待 required `open-source-compliance` 通过，再合入受保护的
-`main`。合并后执行 `git switch main` 和 `git pull --ff-only`。
-
-禁止从旧 worktree 或旧私有历史继续开发，禁止 `git push --all`、直接
-推送 `main`、force-push 或恢复旧 tag。依赖、proto、许可证和构建输入
-变化必须在同一 PR 更新 SBOM、NOTICE、provenance 与哈希。
-
-## 开源许可证与对应源码
-
-项目自有组合发行版采用 **AGPL-3.0-or-later**。FreeRDP、OpenSSL、
-FFmpeg、libssh2、Mbed TLS、Opus、Rust crates 与 Huawei/OpenHarmony 包
-保留各自许可证和分发条件。
-
-请阅读：
-
-- `LICENSE` 与 `LICENSES/`
-- `NOTICE` 与 `THIRD_PARTY_NOTICES.md`
-- `docs/compliance/SBOM.spdx.json`
-- `docs/compliance/SOURCE_OFFER.md`
-- `docs/compliance/AGPL_NETWORK_SOURCE_OFFER_POLICY.md`
-
-公开二进制版本必须能够对应到完整源码、构建脚本、SBOM、第三方来源和
-明确的源码修订。未发布的 unsigned draft 不代表正式 Release 验收完成。
-
-## 参与贡献与安全报告
-
-贡献要求见 `CONTRIBUTING.md`。提交默认采用 AGPL-3.0-or-later，并使用
-Developer Certificate of Origin sign-off；PR 必须说明协议、ABI、schema、
-权限和用户行为变化及相应验证证据。
-
-安全问题请优先通过 GitHub Security Advisory 私密报告；备用联系方式与
-敏感信息处理规则见 `SECURITY.md`。请勿在公开 issue 中提交凭据、主机
-地址、证书、数据库备份或原始远程日志。
+<div align="center">
+<sub>RemoteDeskHarmonyOS · 让远程工作，融入鸿蒙日常。</sub>
+</div>

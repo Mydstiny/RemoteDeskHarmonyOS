@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="460" viewBox="0 0 1280 460" fill="none" role="img" aria-labelledby="title desc">
+  <title id="title">RemoteDesk — Your workspace, within reach.</title>
+  <desc id="desc">HarmonyOS NEXT remote connections: RDP, RustDesk, SSH / SFTP, VNC and Moonlight. A conceptual connection diagram, not an application screenshot.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1280" y2="460" gradientUnits="userSpaceOnUse"><stop stop-color="#0A1830"/><stop offset="1" stop-color="#102E55"/></linearGradient>
+    <linearGradient id="blue" x1="760" y1="100" x2="1130" y2="360" gradientUnits="userSpaceOnUse"><stop stop-color="#6BD7FF"/><stop offset="1" stop-color="#4E87FF"/></linearGradient>
+    <radialGradient id="glow"><stop stop-color="#328DFF" stop-opacity=".2"/><stop offset="1" stop-color="#328DFF" stop-opacity="0"/></radialGradient>
+    <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse"><path d="M40 0H0V40" stroke="#94C9FF" stroke-opacity=".045"/></pattern>
+  </defs>
+  <rect width="1280" height="460" rx="24" fill="url(#bg)"/>
+  <rect width="1280" height="460" rx="24" fill="url(#grid)"/>
+  <ellipse cx="980" cy="230" rx="390" ry="290" fill="url(#glow)"/>
+  <g font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif">
+    <rect x="64" y="60" width="184" height="30" rx="15" fill="#162F4D" stroke="#365775"/>
+    <circle cx="81" cy="75" r="3" fill="#7CD7FF"/>
+    <text x="94" y="80" fill="#BDDEFA" font-size="12" letter-spacing="1.6">HARMONYOS NEXT</text>
+    <text x="60" y="180" fill="#FFFFFF" font-size="76" font-weight="700" letter-spacing="-3">RemoteDesk</text>
+    <text x="64" y="231" fill="#DAE9FA" font-size="28" font-weight="400">Your workspace, within reach.</text>
+    <text x="64" y="276" fill="#9EB8D5" font-size="18">Desktop. Terminal. Files. Streaming.</text>
+    <path d="M64 314H608" stroke="#36516F"/>
+    <text x="64" y="356" fill="#E6F3FF" font-size="17" font-weight="600">RDP</text>
+    <circle cx="117" cy="350" r="2" fill="#6383A5"/>
+    <text x="133" y="356" fill="#E6F3FF" font-size="17" font-weight="600">RustDesk</text>
+    <circle cx="225" cy="350" r="2" fill="#6383A5"/>
+    <text x="241" y="356" fill="#E6F3FF" font-size="17" font-weight="600">SSH / SFTP</text>
+    <circle cx="350" cy="350" r="2" fill="#6383A5"/>
+    <text x="366" y="356" fill="#E6F3FF" font-size="17" font-weight="600">VNC</text>
+    <circle cx="422" cy="350" r="2" fill="#6383A5"/>
+    <text x="438" y="356" fill="#E6F3FF" font-size="17" font-weight="600">Moonlight</text>
+    <text x="64" y="409" fill="#8DAAC9" font-size="13" letter-spacing="2">NATIVE EXPERIENCE · OPEN SOURCE</text>
+    <!-- Abstract device illustration; intentionally not a product UI mockup. -->
+    <path d="M944 246V343H1120V314M850 343H792V302" stroke="#5FBAFF" stroke-opacity=".5" stroke-width="2" stroke-dasharray="5 7"/>
+    <circle cx="944" cy="343" r="5" fill="#73CDFF"/>
+    <rect x="791" y="104" width="366" height="224" rx="15" fill="#0C203A" stroke="#648FBD" stroke-width="2"/>
+    <rect x="806" y="119" width="336" height="181" rx="7" fill="#132F51"/>
+    <path d="M927 329V356M1021 329V356M903 357H1045" stroke="#719AC5" stroke-width="3" stroke-linecap="round"/>
+    <rect x="863" y="161" width="221" height="97" rx="14" fill="#183D66" stroke="#3F72A3"/>
+    <path d="M908 194L924 210L908 226M938 225H967" stroke="url(#blue)" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M1007 193H1037M1007 210H1049M1007 227H1030" stroke="#6C99C6" stroke-width="4" stroke-linecap="round"/>
+    <rect x="720" y="244" width="150" height="114" rx="12" fill="#0D2340" stroke="#78B3E1" stroke-width="2"/>
+    <rect x="730" y="254" width="130" height="94" rx="6" fill="#173D63"/>
+    <path d="M762 301H828M800 278L823 301L800 324" stroke="url(#blue)" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+    <rect x="1090" y="252" width="80" height="132" rx="14" fill="#0D2340" stroke="#78B3E1" stroke-width="2"/>
+    <rect x="1099" y="264" width="62" height="107" rx="7" fill="#173D63"/>
+    <path d="M1120 305L1130 315L1143 297" stroke="#80DCFF" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M1120 275H1140" stroke="#729EC7" stroke-width="3" stroke-linecap="round"/>
+    <text x="884" y="410" fill="#9EB8D5" font-size="13" letter-spacing="2">PHONE / PAD / PC</text>
+  </g>
+</svg>
