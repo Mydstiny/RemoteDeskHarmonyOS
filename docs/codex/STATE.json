@@ -1627,7 +1627,7 @@
     }
   },
   "githubPresentation": {
-    "status": "reviewed-local-commit-publication-pending",
+    "status": "published",
     "commit": "3576f931c0c0282b4ac9f36fa36244f0149f6a95",
     "scope": [
       "README.md",
@@ -1641,10 +1641,19 @@
       "testCompile": "PASS exit 0; BUILD SUCCESSFUL in 4 s 597 ms",
       "assembleHap": "PASS exit 0; signed BUILD SUCCESSFUL in 5 s 617 ms",
       "light": "PASS Light",
-      "presentation": "PASS GitHub Markdown rendering, image loading, 27 commit-relative links, SVG XML and diff check"
+      "presentation": "PASS GitHub Markdown rendering, image loading, 27 commit-relative links, SVG XML and diff check",
+      "publicationTestCompile": "PASS exit 0; BUILD SUCCESSFUL in 4 s 640 ms in existing shared workspace",
+      "publicationAssembleHap": "PASS exit 0; signed BUILD SUCCESSFUL in 5 s 961 ms in existing shared workspace",
+      "requiredCheck": "PASS open-source-compliance, PR #55, 37 s",
+      "publicationIdentity": "PASS main has exactly the three reviewed blobs; no Pro history included"
     },
     "githubMetadata": "Updated and read back: five-connection description and 12 repository topics.",
-    "blocker": "Default-branch README unchanged. Existing unfinished Pro branch cannot be merged; separate documentation-only publication branch requires explicit exception to one-active-branch rule.",
-    "next": "Request exception to publish only the three reviewed presentation files via a PR based on public main; preserve all unfinished Pro changes."
+    "blocker": null,
+    "next": "Presentation publication complete; preserve and continue the original unfinished Pro task.",
+    "publicationCommit": "b9ca24d3f2901d82ad21e5f560b89b15d1a1add4",
+    "mergeCommit": "e7b3c4d6670230288e236d276a99a025ac42945c",
+    "pullRequest": "https://github.com/Mydstiny/RemoteDeskHarmonyOS/pull/55",
+    "publicationReviewReceiptId": "github-presentation-publish-b9ca24d3-20260912",
+    "authorization": "2026-09-12 user explicitly allowed a separate documentation-only publication branch and PR/merge while preserving unfinished Pro work."
   }
 }
