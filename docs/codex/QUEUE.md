@@ -4,7 +4,7 @@ Updated: 2026-09-19 Asia/Shanghai
 
 ## Now
 
-- Overall Pro remainder: [2026-09-19 audit](plans/2026-09-19-pro-remaining.md); M3-M7 exit conditions, UI device/forms and AI acceptance/relay remain open. Immediate work: resolve actual backend PKIX failure after successful real sandbox payment (session200, reconcile503, iap_verification_failed). Original UI and simulation crash repaired; then manual delivery, restart/restore/refund acceptance.
+- Overall Pro remainder: [2026-09-19 audit](plans/2026-09-19-pro-remaining.md); M3-M7 exit conditions, UI device/forms and AI acceptance/relay remain open. Immediate work: resolve current CRL transport failure after successful sandbox payment; bounded CloudDB backoff and fenced restore lookup deployed, signed activation still absent. Original UI and simulation crash repaired; then manual delivery, restart/restore/refund acceptance.
 
 - VNC LastRect: `e67724ac` + `21da46aa` code and independent review PASS; next original failing peer first/repeated updates and reconnect acceptance. [Repair scope](plans/2026-09-08-vnc-lastrect-update-repair.md).
 

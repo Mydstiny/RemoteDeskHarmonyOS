@@ -3,12 +3,12 @@
   "task": "pro-purchase-foundation",
   "branch": "codex/pro-purchase-foundation",
   "base": "8edc187868e94ed41634e8a6c4c4c072e3a48679",
-  "head": "fdc07e5589428e0a5f4bd3a19f68a31f6c98761f",
-  "phase": "Sandbox payment succeeded; actual reconcile fails in backend PKIX verification; diagnostic staging under test",
+  "head": "6975799b14a9dd7d0bc8501a63160091293d00b3",
+  "phase": "Sandbox payment succeeded; live restore reaches CRL download after bounded CloudDB retry and fenced batch lookup",
   "status": "in-progress",
-  "next": "Deploy independently reviewed bounded diagnostics; repair actual order verification, then signed activation/manual delivery/restart/restore/refund tests.",
+  "next": "Resolve actual CRL transport failure, verify signed activation, manual delivery and restart/restore/refund behavior.",
   "blockers": [
-    "Actual phone session200 and reconcile503; cloud logs show iap_verification_failed. Signed activation, manual delivery, restart/restore and refund acceptance remain open.",
+    "Actual restore still returns503; latest cloud request fails at PKIX stage3 CRL download. No signed activation/order ledger grant yet.",
     "M3/U0-U4 device matrix and M4 PC real Share Kit/SFTP file-integrity acceptance remain unverified.",
     "M5 Share Kit App Linking domain, association and actual fragment delivery remain unverified; ServiceInteraction ACL is a separate path. M6 USB/RDP authenticator and phone-passkey RP/origin proof remain pending.",
     "Sandbox API/worker deployed, native auth/product/payment passed. Numeric-version publication and notification endpoint remain open; worker timer disabled."
@@ -1221,7 +1221,7 @@
       ],
       "hostChecks": "30 PASS; 17 ledger checks independently PASS",
       "productionSaleEnabled": false,
-      "deployment": "Protected API and timer-only worker deployed; native account session, sandbox product and payment passed. Actual signed activation failing; bounded diagnostics increment under review.",
+      "deployment": "Protected API and timer-only worker deployed; native auth/product/payment passed. Current API includes CRL mapping, bounded CloudDB backoff and fenced restore lookup; actual activation unresolved.",
       "agcSandbox": {
         "productId": "RemoteDesktop_Pro_Test",
         "productType": "nonconsumable",
@@ -1392,10 +1392,12 @@
           "workerEntry": "handler.myWorker",
           "workerTimerEnabled": false,
           "apiConsoleSmoke": "PASS business 401 account_login_required",
-          "workerConsoleSmoke": "PASS status200 checked0 successful0 busyfalse",
+          "workerConsoleSmoke": "PASS refreshed worker manual status200 checked0 successful0 busyfalse; timer disabled",
           "numericVersion": "AGC publish unknown error twice; explicit Debug sandbox uses $latest",
-          "device": "Native sandbox/product/account/payment passed;915b6c9b preserve-data install; signed activation remains blocked in PKIX",
-          "evidence": "docs/codex/archive/2026-09/2026-09-19-pro-m7-sandbox-deployment.md"
+          "device": "915b6c9b preserve-data installed; native sandbox/product/auth/payment passed; latest restore fails CRL download, no grant",
+          "evidence": "docs/codex/archive/2026-09/2026-09-19-pro-m7-sandbox-deployment.md",
+          "apiPackageSha256": "c0185f421318af67d71858b93cd98c8d0d244884cffcb60cbe1b8c7af32118e8",
+          "workerPackageSha256": "f0074361089ba35149bb3750d376cf9c909244db99ae8ec4687409d4251b3df4"
         }
       },
       "devicePurchaseAcceptance": {
@@ -1405,18 +1407,18 @@
         "accountSessionAndIntent": "PASS checkout reached after native authorization and server intent",
         "payment": "User confirmed successful no-charge sandbox purchase",
         "restore": "Actual query finds order; activation false",
-        "ledger": "Read-only count: one unbound intent and one control, no order",
+        "ledger": "Live count3: two unbound intents, one control; no order/account/token grant",
         "workerTimer": "DISABLED",
-        "remaining": "Repair verification, verify signed activation, manual delivery, restart/restore and refund",
-        "failure": "Phone session200/reconcile503; cloud iap_verification_failed on actual restored order"
+        "remaining": "Repair live transport and verify activation, manual delivery, restart/restore/refund",
+        "failure": "Latest restore PKIX stage3 CRL download failure; earlier CloudDB3007009 terminalReference read2 was addressed with bounded retries and exact batched control/order query"
       },
       "diagnostics": {
-        "commit": "fdc07e5589428e0a5f4bd3a19f68a31f6c98761f",
-        "reviewTaskId": "/root/review_pro_plan",
-        "reviewStatus": "PASS exact3-file and ZIP",
-        "packageSha256": "6d825abdc7bf1305568fb0739bf7888c6d7be6eaf4add492ae9496386f3a8c29",
+        "commit": "6975799b14a9dd7d0bc8501a63160091293d00b3",
+        "reviewTaskId": "/root/review_pro_ui8",
+        "reviewStatus": "PASS exact5-file/ZIP,36tests+84independent boundaries",
+        "packageSha256": "c0185f421318af67d71858b93cd98c8d0d244884cffcb60cbe1b8c7af32118e8",
         "privateIdentity": "Eight inputs unchanged from authorized deployment",
-        "deployment": "Invocation logger1c02e089 deployed and actual logs verified. PKIX stages fdc07e55 reviewed; upload pending browser availability."
+        "deployment": "Deployed; exported AGC ZIP hash matches c0185f42 exactly. Waiting for new-runtime device diagnostic; newest responses still showed older fields."
       }
     },
     "simulationCrash": {

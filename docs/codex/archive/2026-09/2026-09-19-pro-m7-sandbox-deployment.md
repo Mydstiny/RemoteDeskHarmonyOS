@@ -49,3 +49,32 @@
 - Client915b6c9b independently PASS (41tests+28boundary checks), preserve-data installed. Actual phone logs: session200, reconcile503, reconcile stage1. No repeated purchase, no activation claim.
 - PKIX stage diagnosticfdc07e55 independently PASS:81server+19real PKIX and30reviewer HTTP/PKIX checks; compile4s683/signed5s922 SignHap913, Light/diff PASS. Package sha2566d825abdc7bf1305568fb0739bf7888c6d7be6eaf4add492ae9496386f3a8c29;851public files,8private bytes unchanged. Upload pending browser availability.
 - Release22s434 SignHap851 and dual-ABI/ABC sandbox/simulation/USB pruning PASS; ABC562d71b605f49e9a23277d95d57cc347fb4ac759b60330cddec471c3cdbd0c07.
+
+## Actual CRL failure, 17:01–17:12
+
+- fdc07e55 deployed. Actual restore reported cryptoStage3 / iap_crl_distribution_unsupported; pinned strict chain and ES256 signature passed before CRL preparation.
+- Public Huawei root CRL candidate was independently fetched from https://h5hosting.dbankcdn.com/cch5/crl/pki_CRL_root_g2_crl/root_g2_crl.crl (HTTP200, no redirect,375-byte DER). It verifies against the existing pinned RootCaG2Ecdsa, valid2026-06-08–2027-07-18. Candidate is not yet proof of the actual IAP distribution point. Original cpki endpoint redirects; generic redirect following remains forbidden.
+- 4a199ae5 scoped review PASS:12HTTP+19realPKIX;82server,compile4s867/signed6s203 SignHap1s020,Light/diff. Deployed ZIP exported and byte-identical;8private inputs unchanged. Its Huawei-only log filter still omitted actual distribution points.
+- 1a902dfc logs bounded safe-ASCII public CA addresses from the already-verified certificate; download rules unchanged.82server,compile4s916/signed5s973 SignHap976,Light/diff PASS. ZIP sha2569e557b98f9cdc744cee1a9d3d2c095be603da2c1aeb1b74b7edd17c2ca19cfed;8private inputs unchanged. Uploaded and submitted, actual new log pending.
+
+- Actual17:12 CDP: http://h5hosting-drcn.dbankcdn.cn/cch5/crl/haicag3/HuaweiCBGHAIG3crl.crl. Fixed HTTPS direct download independently returned200,326-byte DER; signature is still enforced against the verified IAP chain at runtime.
+- ae46a178 exact two-file independent PASS;20PKIX+83server tests,compile4s905/signed5s995 SignHap905,Light/diff PASS. ZIP1c3dc84cfa6e1466b117b0cd5fb5cbed99b2703c3af1c2216593be9699dc82c4 deployed;8private unchanged.17:17 actual restore progressed from PKIX failure to unclassified error. No order/activation yet; read-only count3rows (2unbound intents+control).
+- 16629880 adds bounded official CloudDB numeric code and known local source location diagnostics, no raw error or record.84server,compile4s754/signed5s773 SignHap878,Light/diff PASS. ZIP418497a65e4dcc1f16e52b843555aa1cb1741f10cdc7869ffb8908b9860a8a6f uploaded/submitted.
+
+### CloudDB rate-limit diagnosis and repair
+
+- 17:26 real restore failed at CRL download; the next completed request at 17:27 passed PKIX and returned `cloud_database_failed / 3007009`. The bundled official SDK declares this as `TOO_MANY_REQUESTS`.
+- `1a29c711`: exact CloudDB throttle errors share a three-retry 1/2/3-second budget across transaction reads and rejected commits. Other errors are not retried. Every replay starts fresh reads and preserves the control-row fence, ownership and token binding.
+- 86 server tests PASS, including read/commit throttling, one durable binding, cross-account rejection, exhaustion, non-throttle and ambiguous-network failures. Current compile4s635; signed assemble5s797 (SignHap942ms); Light/diff PASS.
+- Package `pro-sandbox-throttle.zip`: SHA256 `f0074361089ba35149bb3750d376cf9c909244db99ae8ec4687409d4251b3df4`, 851 source files and 8 unchanged private inputs; API upload in progress. Worker schedule stays disabled. No additional purchase was made.
+
+- Post-deployment restores at17:33/17:36 still returned3007009 after bounded backoff. Independent SDK review confirms one logical rejected query can issue primary+backup requests; 3 retries can total8 HTTP reads. SDK can fold commit errors into false; no blanket claim that all throttling is solved.
+- Same-project local diagnostic (no order creation): live references(owner,true), terminalReference for a synthetic nonexistent order, and snapshot all PASS with2 transaction reads each; snapshot noEntitlement. This does not prove where the cloud request fails or exclude hot-query limits.
+- `695c80de` adds fixed operation name and bounded read-step diagnostics only.87serverPASS; compile4s861/signed5s680 SignHap855/Light/diffPASS. ZIP3fd8c650968c389ac2583c9c42fc3fa94ec02b50f33156cda86c924de0581ef8,851public/8private. Uploaded for precise failure localization; no private payload/message logged.
+
+- Latest17:42 cloud diagnostic:3007009 at terminalReference, ledgerRead2. This is before IAP refresh in this request; prior statements inferring that every CloudDB error followed PKIX were insufficient. Actual locked SDK commit3007009 is folded into false and ultimately ledger_transaction_conflict in offline reproduction, making the second order read the supported failure location.
+- Updated worker(throttle package) manual execution PASS status200/checked0/successful0/busyfalse. Timer remains disabled; no order has been delivered yet.
+- `7f39b715`: batch terminalReference control+order primary keys in one transactional in-query, explicitly reject unexpected/duplicate rows, retain control-row version check/write for absent-key safety.88serverPASS; local actual SDK references2reads/terminal1read/snapshot2reads PASS. Compile5s405/signed7s600 SignHap1s107/Light/diffPASS. ZIP368e21009b94aaad57d29d906f72c0b977c05e0ff3c1a0c7b08158ff330e6e25,851public/8private. Cloud effect still requires actual restoration.
+
+-17:46/17:47 after batch lookup: restore advanced through the ledger precheck, then cryptoStage3/iap_crl_download_failed. No grant persisted. Local exact leaf and candidate root HTTPS endpoints both returned200(<0.2s); the actual second certificate URL still needs live identification.
+-6975799b adds bounded CRL download index/category/status and strictly limited public PKI URL diagnostics. Fetch targets, redirect:error,5s/2MiB bounds, signature/chain/revocation checks and cache admission are unchanged.90serverPASS; compile4s970/signed5s863 Sign906/Light/diffPASS. ZIPc0185f421318af67d71858b93cd98c8d0d244884cffcb60cbe1b8c7af32118e8,851public/8private deployed to API. Independent review in progress.
