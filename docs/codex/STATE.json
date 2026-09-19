@@ -3,7 +3,7 @@
   "task": "pro-purchase-foundation",
   "branch": "codex/pro-purchase-foundation",
   "base": "8edc187868e94ed41634e8a6c4c4c072e3a48679",
-  "head": "dc19ebcf7aeb23ccba2b34de11990e0e0180cdf3",
+  "head": "12f342cbb97f2b8941ff0dfddc1e4c0aaf886fbe",
   "phase": "Full roadmap active; M6 real-library USB capability probe implemented, checkpoint review and hardware/RDPEWA acceptance pending",
   "status": "in-progress",
   "next": "Independently review the M6 library probe, then implement authenticated RDPEWA/session/PIN transport and remaining free forms; complete available device and M7 deployment acceptance.",
@@ -208,7 +208,8 @@
       "scripts/tests/test_pro_fido_napi.cjs",
       "scripts/tests/test_pro_fido_native.py",
       "scripts/verify_fido2_dependencies.py",
-      "scripts/verify_open_source_release.ps1"
+      "scripts/verify_open_source_release.ps1",
+      "entry/src/main/ets/components/hostadd/HostProtocolPicker.ets"
     ],
     "findings": [],
     "reviewedHead": "13413239bd7475539ade4deaae522a3d6a2e753e",
@@ -228,7 +229,7 @@
     "device": "NOT RUN; actual Phone/Pad/PC system flow, EGL presentation, Windows authentication/resume and DDO receipt acceptance remain open.",
     "scope": "M5 RDP continuation increment and its fence correction only"
   },
-  "updated": "2026-09-08 Asia/Shanghai",
+  "updated": "2026-09-19 Asia/Shanghai",
   "roadmapPaths": [
     "docs/codex/plans/2026-09-06-pro-product-roadmap.md",
     "docs/codex/plans/2026-09-07-pro-remote-ai-workspace.md"
@@ -272,7 +273,7 @@
   "baseUiPreparation": {
     "planPath": "docs/codex/plans/2026-09-07-api26-base-ui-upgrade.md",
     "entitlement": "free",
-    "status": "u1-u3-eight-increments-code-reviewed-device-pending",
+    "status": "u1-u3-nine-increments-code-reviewed-device-pending",
     "codeImplemented": true,
     "reviewerTaskId": "/root/review_pro_plan",
     "reviewResult": "Eight public UI batches independently PASS through dc19ebcf Pro panels; remaining forms and U0-U4 device/performance acceptance remain open.",
@@ -498,6 +499,31 @@
       },
       "reviewReceiptId": "base-ui-pro-panels-dc19ebcf-20260908",
       "reviewResult": "PASS exact two-file delta; 35 state/method declarations, 8 click and 8 enabled expressions preserved; independent callback/boundary execution, 27 runtime checks and actual Release evidence PASS. Device and shared M6 work excluded."
+    },
+    "hostAddActions": {
+      "status": "code-independently-reviewed-device-pending",
+      "base": "5ddda2ce8",
+      "head": "12f342cbb97f2b8941ff0dfddc1e4c0aaf886fbe",
+      "scope": [
+        "entry/src/main/ets/components/hostadd/HostProtocolPicker.ets",
+        "entry/src/main/ets/components/hostadd/SshAddFlow.ets"
+      ],
+      "reviewTaskId": "/root/review_pro_ui8",
+      "reviewStatus": "PASS",
+      "validation": {
+        "testCompile": "PASS exit 0; BUILD SUCCESSFUL in 9 s 741 ms",
+        "assembleHap": "PASS exit 0; signed BUILD SUCCESSFUL in 11 s 346 ms; SignHap 938 ms",
+        "hostChecks": "PASS 49 SSH and 27 connection-share checks; state/business and 11 click/1 change/1 error callbacks unchanged",
+        "compliance": "PASS Light and git diff --check",
+        "device": "NOT RUN; input controls, proxy subform and actual Sheet keyboard/scrolling/font/reader acceptance remain open",
+        "metadataGates": {
+          "testCompile": "PASS exit 0; BUILD SUCCESSFUL in 4 s 777 ms",
+          "assembleHap": "PASS exit 0; signed BUILD SUCCESSFUL in 5 s 991 ms; SignHap 914 ms",
+          "compliance": "PASS Light, diff and state validation"
+        }
+      },
+      "reviewResult": "PASS exact 5ddda2ce8..12f342cb two-file scope; no findings. Independently verified 38 state/business declarations and 11 click/1 change/1 error callbacks unchanged; executed 24 protocol states, all SSH actions, five invalid-input categories and four password/key save combinations using production endpoint/proxy/business code with mocked model/vault. Independently reran 49 SSH and 27 share checks; current compile/signed HAP/Light logs and API23 compatibility verified. Device, original inputs/proxy editor/Sheet scrolling and shared M6 changes excluded.",
+      "reviewReceiptId": "base-ui-host-actions-12f342cb-20260919"
     }
   },
   "remoteAiPreparation": {
@@ -1676,5 +1702,22 @@
         "presentation": "PASS 36 paths/anchors, valid SVG/HTML; actual GitHub detail navigation and full-name hero rendering"
       }
     }
+  },
+  "roadmapRemainingAudit": {
+    "path": "docs/codex/plans/2026-09-19-pro-remaining.md",
+    "updated": "2026-09-19",
+    "proMilestonesTotal": 7,
+    "codeClosedMilestones": [
+      "M1",
+      "M2"
+    ],
+    "milestonesWithOpenExitConditions": [
+      "M3",
+      "M4",
+      "M5",
+      "M6",
+      "M7"
+    ],
+    "boundary": "No effort percentage or overall device/release completion claim; UI and remote AI are additional open tracks"
   }
 }

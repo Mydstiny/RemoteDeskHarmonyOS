@@ -1,7 +1,7 @@
 # API 26 基础版本 UI 升级与优化计划
 
 - 日期：2026-09-07。
-- 状态：公共控件、导航、工具栏、首页及分组卡片五批代码已提交并独立复核；主题色已有当前代码门禁，继续其余设置与表单。U0 基线及 API23/26 视觉、键盘、性能矩阵仍待验收，不能标记 U0-U4 完成。
+- 状态：前八批公共 UI 代码已提交并独立复核；第九批协议选择和 SSH 表单操作控件也已提交并独立复核。U0 基线及 API23/26 视觉、键盘、性能矩阵仍待验收，不能标记 U0-U4 完成。
 - 权益归属：基础版本免费升级，所有用户可用，不属于 Pro，不要求购买、登录、联网验单或开启模拟 Pro。
 - 关联：[总体路线图](2026-09-06-pro-product-roadmap.md)、[Pro M1/M2 实施准备](2026-09-07-pro-m1-m2-implementation.md)。
 
@@ -172,3 +172,14 @@ U1 首个代码增量：新增免费 `AppSheetHeader`，接入反馈页和 Pro �
 - 本地 API23/API26 SDK 均支持所用 Flex wrap/space（space since12）、LengthMetrics 和公共尺寸属性；没有新增权限、协议或依赖。
 - 定向 27 项 Pro runtime/policy 检查 PASS，平台调用为 mock。testCompile `BUILD SUCCESSFUL in 9 s 785 ms`；signed assembleHap `BUILD SUCCESSFUL in 8 s 865 ms`、SignHap 890 ms，均 exit 0；Light/diff PASS。
 - 代码 checkpoint `dc19ebcf`；Release `BUILD SUCCESSFUL in 23 s 437 ms`、SignHap 890 ms，exit 0；冻结实包的 Pro runtime、USB Debug 与 sandbox 门剪枝 PASS，ABC `321c5bed296f91fff81120bc0793ff88ece658ff2996fcb2a129de9e5f0500a4`。独立 `/root/review_pro_ui8` 对精确两文件 PASS，无待修 finding：35 个状态/普通方法声明、8 个点击回调、8 个 enabled 条件保持；独立执行全部点击回调与 busy/product/testing 边界，27 runtime 通过，冻结 Release ABC 哈希与日志一致。实际 API23/26 Phone/Pad/PC 大字体、窄窗/矮窗、触控/键盘/读屏和图标状态未验收；本批不代表 U0–U4 全量完成。
+
+
+## U2/U3 主机入口与 SSH 表单第九批（2026-09-19）
+
+- 范围：`HostProtocolPicker.ets` 与 `SshAddFlow.ets`；checkpoint `12f342cb`，基线 `5ddda2ce8`。协议及密钥卡片改用原生 Button，协议状态放入可换行内容列；SSH 六个操作按钮改为自然高度、最小 44vp，保留父 Sheet 的 FIT_CONTENT/键盘滚动控制。
+- 共享字体、主按钮黑白对比色、返回/关闭 44vp 与读屏名称、认证/密钥选中语义。状态/业务方法逐字一致；11 个 onClick、1 个 onChange 和 1 个 onError 回调 token 一致。没有主动连接、读剪贴板或云写入。
+- 当前代码门禁：testCompile `BUILD SUCCESSFUL in 9 s 741 ms`；signed assembleHap `BUILD SUCCESSFUL in 11 s 346 ms`、SignHap 938 ms，均 exit 0；49 SSH + 27 分享回归、Light 和 diff PASS。
+- API23/26 原生 Button/constraintSize/focusable/accessibilityText/accessibilitySelected 已核对本地声明；不引入 API26 专属依赖。实际大字体、键盘、系统 Sheet 滚动、键鼠、读屏与设备验收 NOT RUN；输入框和代理子表单并未在本批全量改造。
+- 独立复核：`/root/review_pro_ui8` 复用做本次精确两文件审查，精确两文件 PASS，无待修 finding；原 M6 未提交硬化及他人审查凭据不属于本批。
+
+- 独立复核结果：PASS exact 5ddda2ce8..12f342cb two-file scope; no findings. Independently verified 38 state/business declarations and 11 click/1 change/1 error callbacks unchanged; executed 24 protocol states, all SSH actions, five invalid-input categories and four password/key save combinations using production endpoint/proxy/business code with mocked model/vault. Independently reran 49 SSH and 27 share checks; current compile/signed HAP/Light logs and API23 compatibility verified. Device, original inputs/proxy editor/Sheet scrolling and shared M6 changes excluded.

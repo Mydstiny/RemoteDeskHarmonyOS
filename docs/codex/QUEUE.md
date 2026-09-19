@@ -1,8 +1,10 @@
 # RemoteDesk Queue
 
-Updated: 2026-09-08 Asia/Shanghai
+Updated: 2026-09-19 Asia/Shanghai
 
 ## Now
+
+- Overall Pro remainder: [2026-09-19 audit](plans/2026-09-19-pro-remaining.md); M3-M7 exit conditions, UI device/forms and AI acceptance/relay remain open. Next local work: remaining host/resource forms; device acceptance stays open.
 
 - VNC LastRect: `e67724ac` + `21da46aa` code and independent review PASS; next original failing peer first/repeated updates and reconnect acceptance. [Repair scope](plans/2026-09-08-vnc-lastrect-update-repair.md).
 
@@ -18,7 +20,7 @@ Updated: 2026-09-08 Asia/Shanghai
 
 - Remote AI: [AI4 client integration](plans/2026-09-08-remote-ai-client-integration.md) implemented with passing code gates; checkpoint `7bdf00f6` independently reviewed; next actual HarmonyOS pairing/model/LAN and Phone/Pad/PC acceptance. Native v0.3.0 hosts remain released/deployed; RustDesk transport later.
 
-0. Pro M7: vendor protocol, HTTP, CloudDB and signed App client independently reviewed (e3f47078+c5b647ff). Short-session 0b237613 independently PASS; dynamic CRL 78fc9fce independently PASS; native cloud entry cdc193958 and complete AGC package 2e0e7da8+42a0258b independently PASS. Upload consent/browser file access pending; next deploy protected sandbox API and timer-only worker, pin App configuration and accept native authorization/IAP. Real SDK control-only snapshots, four concurrent transactions and packaged Linux PKIX/API/worker checks PASS; actual full AGC deployment and notification endpoint pending. AGC test product/key verified and user-specified tester saved; actual IAP device acceptance pending. Continue free UI. M6 USB INIT 3ea2859e+ff31ef7d scoped PASS; new real libfido2/libcbor capability probe passes code/provenance/Release gates and awaits independent checkpoint review. USB hardware/RDPEWA/PIN and phone authentication remain pending. First M5 direct SSH continuation ed537821+27716d2d+c64efc8e code review PASS; full sharing/PC/RDP and actual cross-device/PC knock/icon/UI acceptance remain open.
+0. Pro M7: vendor protocol, HTTP, CloudDB and signed App client independently reviewed (e3f47078+c5b647ff). Short-session 0b237613 independently PASS; dynamic CRL 78fc9fce independently PASS; native cloud entry cdc193958 and complete AGC package 2e0e7da8+42a0258b independently PASS. Upload consent/browser file access pending; next deploy protected sandbox API and timer-only worker, pin App configuration and accept native authorization/IAP. Real SDK control-only snapshots, four concurrent transactions and packaged Linux PKIX/API/worker checks PASS; actual full AGC deployment and notification endpoint pending. AGC test product/key verified and user-specified tester saved; actual IAP device acceptance pending. Continue free UI. M6 USB INIT 3ea2859e+ff31ef7d scoped PASS; new real libfido2/libcbor capability probe passes code/provenance/Release gates and awaits independent checkpoint review. USB hardware/RDPEWA/PIN and phone authentication remain pending. First M5 direct SSH continuation ed537821+27716d2d+c64efc8e code review PASS; SSH sharing/PC/RDP code is also independently reviewed; actual cross-device/PC knock/icon/UI acceptance remains open.
 
 1. Run one consolidated feedback-batch device acceptance on HarmonyOS PC: Moonlight/RustDesk hardware-decoder flip and four visual/control combinations; RDP transient credentials, fullscreen pointer mapping, resolution negotiation/scaling and black-border behavior; Dock minimize input fencing; RustDesk nested toolbar, explicit H.265 negotiation/hardware decode, codec telemetry and bidirectional clipboard; SSH authentication-before-navigation, compact phone More menu, common commands and adaptive command-editor sizing/keyboard behavior; button-only exit; long classic host list; and the simplified Harmony shortcut settings, including the icon, current-device tab, explicit open/close wording, PC first-use four-protocol default and persistence after manual changes.
 2. If a user later reports a flip, export the schema-v5 diagnostic JSONL before reconnecting and use the PC flip menu to mark normal/upside-down/horizontal-mirror orientation. Real-device acceptance is unavailable and does not block the committed repair. Verify it contains one coherent redacted producer class, raw producer matrix, decoder-applied matrix, presentation mode, renderer manual transform, renderer registry generation and decoder binding generation; attach the capture for root-cause classification.
@@ -32,7 +34,7 @@ Updated: 2026-09-08 Asia/Shanghai
 
 
 
-- Base UI: eight public batches independently PASS through Pro panels dc19ebcf; this batch awaits device typography/window/input/reader acceptance. Continue remaining forms and API23/26 Phone/Pad/PC fonts, keyboard, reader and performance. Native emulator awaits Huawei agreement acceptance.
+- Base UI: nine public batches independently PASS through host/SSH controls 12f342cb; this batch awaits device typography/window/input/reader acceptance. Continue remaining forms and API23/26 Phone/Pad/PC fonts, keyboard, reader and performance. Native emulator awaits Huawei agreement acceptance.
 
 - M5 SSH Share Kit eca8f8aa, PC SSH 3fc4a578 and RDP 35e38224 + 13413239 independently PASS. RDP paired-fence finding closed. Real App Link/fragment, Windows and Phone/Pad/PC cross-device acceptance remain open.
 
