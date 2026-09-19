@@ -46,6 +46,8 @@ issue('cdnLeaf', 'intermediate', leafExtensions.replace('http://pki.consumer.hua
   '1.3.6.1.4.1.2011.2.415.1.1=ASN1:NULL\n');
 issue('rootCdpLeaf', 'intermediate', leafExtensions.replace('http://pki.consumer.huawei.com/ca/crl/intermediate.crl', actualRootCdp) +
   '1.3.6.1.4.1.2011.2.415.1.1=ASN1:NULL\n');
+issue('legacyRootCdpLeaf', 'intermediate', leafExtensions.replace('http://pki.consumer.huawei.com/ca/crl/intermediate.crl',
+  'http://pki.consumer.huawei.com/ca/crl/root_g2_crl.crl') + '1.3.6.1.4.1.2011.2.415.1.1=ASN1:NULL\n');
 for (const [name, url] of [['cdnOtherPath', actualLeafCdp.replace('HuaweiCBGHAIG3crl.crl','other.crl')],
   ['cdnQuery', actualLeafCdp+'?redirect=1'], ['cdnPort', actualLeafCdp.replace('.cn/', '.cn:80/')],
   ['rootQuery', actualRootCdp.replace('certype=10','certype=11')]]) {
@@ -244,7 +246,8 @@ test('signed notifications bind the environment and return a query reference ins
 
 test('exact observed Huawei CDPs use fixed HTTPS targets with unchanged full CRL verification', async () => {
   for (const [name, target] of [['cdnLeaf', actualLeafCdp.replace('http:', 'https:')],
-    ['rootCdpLeaf','https://h5hosting.dbankcdn.com/cch5/crl/pki_CRL_root_g2_crl/root_g2_crl.crl']]) {
+    ['rootCdpLeaf','https://h5hosting.dbankcdn.com/cch5/crl/pki_CRL_root_g2_crl/root_g2_crl.crl'],
+    ['legacyRootCdpLeaf','https://h5hosting.dbankcdn.com/cch5/crl/pki_CRL_root_g2_crl/root_g2_crl.crl']]) {
     const calls=[];
     const source=new HuaweiIapCrlSource(async (url, options) => {
       calls.push(url); assert.equal(options.redirect,'error');

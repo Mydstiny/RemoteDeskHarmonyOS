@@ -11,6 +11,8 @@ const FIXED_CRL_URLS = new Map([
   ['https://h5hosting-drcn.dbankcdn.cn/cch5/crl/haicag3/HuaweiCBGHAIG3crl.crl',
     'https://h5hosting-drcn.dbankcdn.cn/cch5/crl/haicag3/HuaweiCBGHAIG3crl.crl'],
   ['http://cpki-caweb.huawei.com/cpki/servlet/crlFileDown.crl?certype=10&/root_g2_crl.crl',
+    'https://h5hosting.dbankcdn.com/cch5/crl/pki_CRL_root_g2_crl/root_g2_crl.crl'],
+  ['http://pki.consumer.huawei.com/ca/crl/root_g2_crl.crl',
     'https://h5hosting.dbankcdn.com/cch5/crl/pki_CRL_root_g2_crl/root_g2_crl.crl']
 ]);
 function supportedUrl(value) {
