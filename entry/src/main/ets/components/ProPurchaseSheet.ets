@@ -41,6 +41,7 @@ export struct ProPurchaseSheet {
     this.testing = ProAppRuntime.getInstance().sandboxSelected();
     this.syncBilling();
     this.unsubscribe = ProAppRuntime.getInstance().runtime.subscribe((): void => {
+      this.syncBilling();
       const snapshot = ProAppRuntime.getInstance().runtime.snapshot();
       this.proLabel = snapshot.label;
       this.debugMode = snapshot.mode;
@@ -53,8 +54,15 @@ export struct ProPurchaseSheet {
 
   private syncBilling(): void {
     const runtime = ProAppRuntime.getInstance();
-    this.productId = runtime.billingProductId();
-    this.billingReady = runtime.billingAvailable();
+    const productId = runtime.billingProductId();
+    const ready = runtime.billingAvailable();
+    const testing = runtime.sandboxSelected();
+    if (this.productId === productId && this.billingReady === ready && this.testing === testing) { return; }
+    this.generation++;
+    this.busy = false;
+    this.testing = testing;
+    this.productId = productId;
+    this.billingReady = ready;
     this.product = null; this.storePrice = ''; this.storeName = '';
     this.message = this.billingReady ? '读取商品价格后可购买；已购买的账号可直接恢复权益。' :
       'Pro 正在准备中，当前版本的功能继续免费使用。';

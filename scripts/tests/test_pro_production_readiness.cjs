@@ -58,3 +58,34 @@ test('Debug cannot charge production, Release cannot use sandbox, and cancelled 
   assert.equal((await f.provider.purchase({}, release.productId, () => true)).verified, false);
   assert.equal(f.calls.some(x => Array.isArray(x) && x[0] === 'purchase'), false);
 });
+
+
+test('purchase sheet observes delayed backend readiness without discarding a loaded product on entitlement updates', async () => {
+  const fs = require('node:fs'), vm = require('node:vm'), path = require('node:path');
+  const ts = require(process.env.PRO_TYPESCRIPT_PATH || 'typescript');
+  const original = fs.readFileSync(path.join(__dirname, '../../entry/src/main/ets/components/ProPurchaseSheet.ets'), 'utf8');
+  const source = (original.slice(0, original.indexOf('  @Builder')) + '\n}')
+    .replace(/^import[\s\S]*?;\n/gm, '').replace(/^@Component\s*$/gm, '')
+    .replace(/@StorageProp\([^\n]*?\)\s*/g, '').replace(/@State\s+/g, '')
+    .replace('export struct ProPurchaseSheet', 'class ProPurchaseSheet');
+  let ready = false, listener, active = false, productCalls = 0;
+  const runtime = { sandboxSelected: () => false, billingProductId: () => 'fixture.pro', billingAvailable: () => ready,
+    runtime: { subscribe(cb) { listener = cb; cb(); return () => {}; },
+      snapshot: () => ({ realState: active ? 'active' : 'free', label: active ? 'Pro' : '免费版', mode: 'real' }) } };
+  const context = vm.createContext({ DEBUG: false, ProAppRuntime: { getInstance: () => runtime },
+    HuaweiProBillingProvider: class { async product() { productCalls++; return { id: 'fixture.pro', price: '¥1', name: 'Fixture' }; } },
+    ProPurchaseCoordinator: { enter: () => true, leave: () => {} },
+    ProPurchaseLifecycle: { capture: () => 1, current: () => true }, getContext: () => ({}) });
+  vm.runInContext(ts.transpileModule(source + '\nglobalThis.page = new ProPurchaseSheet();', {
+    compilerOptions: { target: ts.ScriptTarget.ES2021, module: ts.ModuleKind.CommonJS } }).outputText, context);
+  const page = context.page;
+  page.aboutToAppear(); assert.equal(page.billingReady, false);
+  ready = true; listener(); assert.equal(page.billingReady, true);
+  await page.operate('load'); assert.equal(productCalls, 1); assert.equal(page.storePrice, '¥1');
+  const product = page.product, generation = page.generation;
+  active = true; listener(); assert.equal(page.purchased, true);
+  assert.equal(page.product, product); assert.equal(page.storePrice, '¥1'); assert.equal(page.generation, generation);
+  ready = false; listener(); assert.equal(page.billingReady, false); assert.equal(page.product, null);
+  assert.equal(page.storePrice, ''); assert.ok(page.generation > generation);
+  page.aboutToDisappear();
+});
