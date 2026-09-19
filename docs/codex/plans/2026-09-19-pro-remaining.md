@@ -16,7 +16,7 @@
 | M3 图标 | 默认及白底/透明预设、免费恢复默认 | 真机桌面/Dock/最近任务、重启升级和 API23 回退验收 |
 | M4 碰一碰传文件 | Debug PC SSH/SFTP 接收、暂存与目录租约、校验清理 | PC/手机/目标文件完整性、异常/大文件实测；路线图扩展协议交付能力 |
 | M5 分享和接续 | SSH 分享、Phone/Pad/PC SSH、RDP 身份与视图接续分批复核 | App Linking/域名/fragment、同账号跨设备与独立权益、Windows/RDP/DDO/EGL 验收 |
-| M6 安全密钥 | USB INIT 已复核；真实 libfido2/libcbor 双 ABI 能力探测 checkpoint | 未提交硬化收口与原 checkpoint 独立复核；RDPEWA、PIN、会话/取消/拔出、USB 硬件、Windows 注册认证、手机 RP/origin 路径 |
+| M6 安全密钥 | USB INIT 已复核；真实 libfido2/libcbor 双 ABI 能力探测及 CBOR 防护已独立复核 | RDPEWA、PIN、会话/取消/拔出、USB 硬件、Windows 注册认证、手机 RP/origin 路径 |
 | M7 购买 | 验签、账本/退款/outbox、CloudDB、客户端缓存、短会话、AGC 完整包 | 完整后端部署与通知回调、App 固定配置、真实授权码/购买/恢复/退款闭环、生产商品与开放条件 |
 | 免费 UI | 公共控件、导航、工具栏、首页/分组、主题、设置、Pro 面板 | 其余主机/资源表单、U0 可比截图和性能基线、API23/26 Phone/Pad/PC 字体/键盘/读屏/窗口/性能 |
 | 远程 AI | 原生主机、HarmonyOS 客户端、UI、安装指引 | 真机 mTLS 配对、模型/会话、多设备租约、断连/撤销/恢复和三端 UX；RustDesk 传输 |

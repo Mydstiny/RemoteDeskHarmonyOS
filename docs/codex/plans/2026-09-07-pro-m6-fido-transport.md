@@ -45,3 +45,13 @@
 此增量仍不是 RDPEWA：现有 FreeRDP CANCEL_CUR_OP/阻塞等待/内部 FIDO worker 生命周期必须先修正，再加入会话绑定、远端 RP 信息的本地确认、PIN 安全交互与实际 Windows 注册/认证。USB 真机拔插/取消/系统授权和手机官方 RP/origin 证据仍缺失；生产安全功能继续 planned。
 
 状态记录门：testCompile 4 s 940 ms；signed assembleHap 5 s 928 ms（SignHap 881 ms），均 exit 0。完整上游分发字节通过 `.gitattributes` 禁止 EOL 自动改写；工作区并行变更不计入本增量审查。
+
+
+## 第二增量收口与 CBOR 预算防护（2026-09-19）
+
+- `a5672b069` 收口已有三文件防护，并修复 N-API 测试一次性 Poll snapshot 被状态检查提前消费的竞态；生产一次性交付行为不变。
+- 在库打开时的隐式 GetInfo 和第二次显式 GetInfo 解码前，先完整重组并检查 CBOR：最多 7609 字节、8 层深度、512 节点、单容器 64 项，拒绝不定长/超额声明/尾部垃圾。分片仍受原代次、取消、期限和请求数量限制。
+- 当前 19 ArkTS + 31 真实库 native 用例通过，ASan/UBSan PASS，最大 CBOR 分配 80 字节；实际 N-API 参数、单次交付、跨环境/代次、清理和 Release stub PASS。旧 transport 的负对照分别被 trailing-cbor 和超额分配检查拦住；测试分配器拒绝 >1 MiB 请求，未实际制造 OOM。
+- 当次 testCompile `BUILD SUCCESSFUL in 4 s 962 ms`，signed Debug `BUILD SUCCESSFUL in 5 s 946 ms`（SignHap 894 ms），signed Release `BUILD SUCCESSFUL in 23 s 412 ms`（SignHap 872 ms），均 exit 0；Light/diff PASS。
+- 独立 `/root/review_pro_plan` 对原 `c3c4738e → e10acf211` 的 FIDO 增量及本次四文件修正 PASS，无待修 finding。双 ABI 78 个输出/manifest 独立再生逐字节一致；provenance、6 类不安全归档、4 类篡改和实际 SBOM 再生 PASS。冻结 Release 双 ABI worker/库隔离及 ArkTS USB/库/模拟/sandbox 剪枝独立 PASS；ABC SHA256 `b2d5504ba0de2a49273505b440ade57c41f1c97370a27b64dc6a2de8d1198ad6`。
+- 这关闭了第二增量的代码审查缺口。USB 真机、RDPEWA/PIN、Windows 注册认证和手机官方 RP/origin 仍待完成；原两份类型声明重排及其他并行工作不在本审查范围。未部署、配对或操作真实凭据。
