@@ -43,7 +43,7 @@ export struct ProContinuationControls {
     }.width('100%').padding(12)
   }
   build() {
-    ProFeatureGate({ featureId: 'pro.connection.continuation', context: proContinuationContext(this.protocol), content: this.controls })
+    ProFeatureGate({ featureId: 'pro.connection.continuation', context: proContinuationContext(this.protocol), content: (): void => { this.controls(); } })
   }
 }
 

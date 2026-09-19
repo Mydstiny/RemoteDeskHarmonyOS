@@ -74,7 +74,7 @@ export struct ProAppIconPanel {
       Column({ space: 12 }) {
         Text('应用图标').fontSize(16).fontWeight(FontWeight.Medium).fontColor(this.pal().text).width('100%')
         Text('当前：' + this.name()).fontSize(13).fontColor(this.pal().text2).width('100%')
-        ProFeatureGate({ featureId: 'pro.personalization.appIcon', content: this.presets })
+        ProFeatureGate({ featureId: 'pro.personalization.appIcon', content: (): void => { this.presets(); } })
         if (!this.state.loaded || this.state.currentName !== '') {
           Button('恢复默认图标').fontSize(13).fontColor(this.accent).backgroundColor(this.pal().surface)
             .constraintSize({ minHeight: 44 }).enabled(!this.state.busy)

@@ -35,7 +35,7 @@ export struct ProConnectionShareControls {
     }.width('100%').padding(12)
   }
   build() {
-    ProFeatureGate({ featureId: 'pro.connection.knockShare', context: proConnectionShareContext(), content: this.controls })
+    ProFeatureGate({ featureId: 'pro.connection.knockShare', context: proConnectionShareContext(), content: (): void => { this.controls(); } })
   }
 }
 
