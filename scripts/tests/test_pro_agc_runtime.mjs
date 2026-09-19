@@ -121,3 +121,28 @@ test('real archive publication preserves existing files and writes a private che
     for (const path of [output, output + '.sha256']) assert.equal((await stat(path)).mode & 0o777, 0o600);
   }
 });
+
+test('AGC entry preserves only its bounded diagnostic logger while suppressing SDK console output', async t => {
+  const { execFile } = await import('node:child_process');
+  const { promisify } = await import('node:util');
+  const { mkdir, copyFile } = await import('node:fs/promises');
+  const directory = await mkdtemp(join(tmpdir(), 'pro-handler-log-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  await mkdir(join(directory, 'agc'));
+  await copyFile(join(agc, 'handler.cjs'), join(directory, 'handler.cjs'));
+  await writeFile(join(directory, 'agc/runtime.mjs'), `
+    export async function createSandboxRuntime({ diagnostic }) {
+      console.info('private-sdk-details'); console.error('private-sdk-error');
+      return { api: { async handle() { diagnostic({ code: 'invalid_jws' });
+        return { version: 1, status: 503, body: '{"error":"verification_unavailable"}' }; } },
+        async worker() { return { checked: 0, successful: 0, busy: false }; } };
+    }
+  `);
+  const script = `const assert=require('node:assert/strict'); const handler=require('./handler.cjs');
+    handler.myHandler({}, {}, reply => { assert.equal(reply.status,503);
+      handler.myWorker({}, {}, result => { assert.equal(result.result.checked,0); }); });`;
+  const { stdout, stderr } = await promisify(execFile)(process.execPath, ['-e', script], { cwd: directory });
+  assert.equal(stderr, '');
+  assert.deepEqual(stdout.trim().split('\n').map(line => JSON.parse(line)),
+    [{ event: 'pro_verification_failure', code: 'invalid_jws' }]);
+});

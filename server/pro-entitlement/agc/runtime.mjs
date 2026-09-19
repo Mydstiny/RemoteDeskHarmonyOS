@@ -64,7 +64,7 @@ export async function readSandboxConfiguration(directory) {
   return { configuration, oauth, ledgerKey, sessionKey, iapKey, signer };
 }
 
-export async function createSandboxRuntime({ privateDirectory = join(root, 'private'), pkixDirectory = join(root, 'pkix') } = {}) {
+export async function createSandboxRuntime({ privateDirectory = join(root, 'private'), pkixDirectory = join(root, 'pkix'), diagnostic = () => {} } = {}) {
   if (process.platform !== 'linux' || process.arch !== 'x64' || Number(process.versions.node.split('.')[0]) < 22) {
     throw new Error('unsupported_sandbox_runtime');
   }
@@ -90,9 +90,7 @@ export async function createSandboxRuntime({ privateDirectory = join(root, 'priv
   const iap = new HuaweiIapClient({ ...identity, issuerId: identity.iapIssuerId, keyId: identity.iapKeyId, privateKey: iapKey }, verifier);
   const fulfillment = new ProFulfillmentService(ledger, iap, signer);
   const sessions = new ProSessionService(identity, new HuaweiAuthorizationCodeVerifier(oauth.clientId, oauth.clientSecret), sessionKey);
-  const api = new ProCloudApi(new ProHttpApi(fulfillment, sessions, 4, diagnostic => {
-    process.stdout.write(JSON.stringify({ event: 'pro_verification_failure', ...diagnostic }) + '\n');
-  }));
+  const api = new ProCloudApi(new ProHttpApi(fulfillment, sessions, 4, diagnostic));
   let working = false;
   return { api, async worker() {
     if (working) return { checked: 0, successful: 0, busy: true };

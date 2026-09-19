@@ -3,10 +3,11 @@
 // Each AGC function runs this dedicated deployment. The SDK may log raw error
 // objects, so suppress its console output before import. Our callbacks expose
 // only bounded business replies or fixed errors; events/secrets are never logged.
+const diagnosticLog = console.info.bind(console);
 for (const method of ['log', 'info', 'debug', 'warn', 'error']) console[method] = () => {};
 let pending;
 function runtime() {
-  if (!pending) pending = import('./agc/runtime.mjs').then(module => module.createSandboxRuntime())
+  if (!pending) pending = import('./agc/runtime.mjs').then(module => module.createSandboxRuntime({ diagnostic: value => diagnosticLog(JSON.stringify({ event: 'pro_verification_failure', ...value })) }))
     .catch(() => { pending = undefined; throw new Error('sandbox_startup_failed'); });
   return pending;
 }
