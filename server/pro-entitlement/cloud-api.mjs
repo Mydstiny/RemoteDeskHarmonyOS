@@ -2,7 +2,8 @@ import { jsonBytes, object } from './iap-crypto.mjs';
 
 const MAX_BODY = 1024 * 1024;
 const MAX_ENVELOPE = 2 * MAX_BODY + 16384;
-const routes = Object.freeze({ session: '/v1/pro/session', intents: '/v1/pro/intents', reconcile: '/v1/pro/reconcile' });
+const routes = Object.freeze({ session: '/v1/pro/session', intents: '/v1/pro/intents', reconcile: '/v1/pro/reconcile',
+  'refund-order': '/v1/pro/refund-order' });
 const reply = (status, error) => ({ version: 1, status, body: JSON.stringify({ error }) });
 
 function envelope(event) {

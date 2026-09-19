@@ -16,6 +16,7 @@ export interface ProBillingBackend {
   intent(lease: ProClientLease, isCurrent: () => boolean): Promise<ProPurchaseIntent>;
   retain(lease: ProClientLease, records: string[]): Promise<void>;
   pending(lease: ProClientLease): Promise<string[]>;
+  refundOrder(lease: ProClientLease, isCurrent: () => boolean): Promise<string>;
   reconcile(lease: ProClientLease, records: string[]): Promise<ProReconciliationOutcome>;
 }
 export interface ProBillingProvider {
@@ -198,6 +199,12 @@ export class HuaweiProBillingProvider implements ProBillingProvider {
         seen.push(cursor);
       }
     } while (cursor);
+    // API 26 explicitly omits delivered sandbox non-consumables, even in ALL.
+    // Recover only the current authenticated owner's freshly verified order.
+    if (orders.size === 0) {
+      if (!current()) { return { verified: false, records: 0 }; }
+      orders.add(await this.backend.refundOrder(lease, current));
+    }
     if (orders.size !== 1) { throw new Error('Refund order not unique'); }
     if (!current()) { return { verified: false, records: 0 }; }
     await iap.createRefundRequest(context, Array.from(orders)[0]);

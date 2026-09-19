@@ -12,14 +12,16 @@ import { ownerForUnionId } from '../../server/pro-entitlement/huawei-api.mjs';
 
 const owner = ownerForUnionId('unit-test-user');
 const otherOwner = ownerForUnionId('other-test-user');
-const configuration = { applicationId: 'test-app', environment: 'NORMAL', productId: 'test-pro',
+const globalConfiguration = { applicationId: 'test-app', environment: 'NORMAL', productId: 'test-pro',
   issuer: 'test-remote-desk-pro', keyId: 'test-grant-key' };
+const configuration = globalConfiguration;
 const signing = generateKeyPairSync('rsa', { modulusLength: 2048 });
 function receipt(reference) {
   const segment = value => Buffer.from(JSON.stringify(value)).toString('base64url');
   return JSON.stringify({ jwsPurchaseOrder: segment({ alg: 'ES256' }) + '.' + segment(reference) + '.eA' });
 }
-function fixture(t) {
+function fixture(t, configurationOverride = {}) {
+  const configuration = { ...globalConfiguration, ...configurationOverride };
   const directory = mkdtempSync(join(tmpdir(), 'pro-ledger-test-'));
   const database = join(directory, 'orders.db');
   const key = randomBytes(32);
@@ -61,6 +63,29 @@ function fixture(t) {
       service = new ProFulfillmentService(ledger, iap, signer, () => state.now); }
   };
 }
+test('sandbox refund route finds the delivered owner order without granting, finishing or refunding it', async t => {
+  const f = fixture(t, { environment: 'SANDBOX' }); const order = f.makeOrder();
+  await f.reconcile(owner, [receipt(order)]); await f.service.reconcileDue();
+  const revision = f.ledger.snapshot(owner).revision; const queries = f.state.queries;
+  assert.deepEqual(await f.service.refundOrder(owner), { owner, applicationId: 'test-app', productId: 'test-pro',
+    environment: 'SANDBOX', purchaseOrderId: 'order-1' });
+  assert.equal(f.state.queries, queries + 1); assert.equal(f.state.confirms, 1);
+  assert.equal(f.ledger.snapshot(owner).revision, revision);
+  await assert.rejects(f.service.refundOrder(otherOwner), /refund_order_not_unique/);
+  f.state.networkDown = true; await assert.rejects(f.service.refundOrder(owner), /offline/);
+  f.state.networkDown = false; order.revoked = true; f.state.now++;
+  await assert.rejects(f.service.refundOrder(owner), /refund_order_not_unique/);
+  assert.equal(f.ledger.snapshot(owner).status, 'revoked');
+});
+test('refund route rejects production, ambiguous orders and cancelled lookups', async t => {
+  const production = fixture(t);
+  await assert.rejects(production.service.refundOrder(owner), /sandbox_refund_required/);
+  assert.equal(production.state.queries, 0);
+  const f = fixture(t, { environment: 'SANDBOX' });
+  await f.reconcile(owner, [receipt(f.makeOrder()), receipt(f.makeOrder('order-2'))]);
+  await assert.rejects(f.service.refundOrder(owner), /refund_order_not_unique/);
+  await assert.rejects(f.service.refundOrder(owner, AbortSignal.abort()), /reconciliation_cancelled/);
+});
 test('grant and immutable owner binding are durable before any delivery confirmation', async t => {
   const f = fixture(t); const order = f.makeOrder();
   const result = await f.reconcile(owner, [receipt(order)]);

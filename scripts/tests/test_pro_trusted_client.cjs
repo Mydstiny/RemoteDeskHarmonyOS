@@ -35,6 +35,7 @@ async function fixture(t, options = {}) {
   const lease = client.lease();
   const backend = { lease: id => id === config.productId ? client.lease() : null, current: value => client.current(value),
     intent: (value, current) => client.intent(value, current), retain: (value, records) => client.retain(value, records),
+    refundOrder: (value, current) => client.refundOrder(value, current),
     pending: value => client.pending(value), reconcile: (value, records) => client.current(value) ? service.reconcileResult(records) :
       Promise.resolve({ current: false, online: false, active: false }) };
   return { ...host, store, clock, signer, transport, client, service, lease, backend, protocol: state, proPurchaseBatches,
@@ -374,7 +375,7 @@ async function refundFixture(t, options = {}) {
 test('sandbox refund opens only the unique matching native order; a successful UI does not locally revoke', async t => {
   const f = await refundFixture(t);
   f.iap.queryPurchases = async (_context, query) => {
-    assert.equal(query.queryType, 0, 'delivered sandbox purchases must be found through history');
+    assert.equal(query.queryType, 0, 'native history is queried before the authenticated server fallback');
     return { purchaseDataList: [refundReceipt(), refundReceipt(),
       refundReceipt({ productId: 'other-product', purchaseOrderId: 'other-order' }),
       refundReceipt({ purchaseOrderId: 'refunded-order', revocationTime: 1000 }),
@@ -403,7 +404,9 @@ test('refund fails closed for wrong application/environment/type, malformed, abs
   for (const records of cases) {
     const f = await refundFixture(t, { iap: { queryPurchases: async () => ({ purchaseDataList: records }) } });
     await assert.rejects(f.provider.refund({}, config.productId, () => true));
-    assert.equal(f.calls.length, 0); assert.equal(f.protocol.calls.length, 0);
+    assert.equal(f.calls.length, 0);
+    assert.equal(f.protocol.calls.length, records.length === 0 ? 1 : 0);
+    if (records.length === 0) assert.equal(f.protocol.calls[0].operation, 'refund-order');
   }
 });
 test('refund rejects pagination cycles and enforces the cumulative 100-record limit', async t => {
@@ -444,6 +447,35 @@ test('refund diagnostics distinguish cancellation/refused/already-refunded witho
     const message = f.proRefundError({ code, message: 'private-order-token' });
     assert.ok(!message.includes('private-order-token'));
     if (code === 1001860000) assert.ok(message.includes('取消退款'));
+  }
+});
+function refundRoute(overrides = {}) {
+  return JSON.stringify({ owner, applicationId: config.applicationId, productId: config.productId,
+    environment: 'SANDBOX', purchaseOrderId: 'delivered-sandbox-order', ...overrides });
+}
+test('empty sandbox native history recovers a delivered order through the authenticated account route', async t => {
+  const f = await refundFixture(t, { iap: { queryPurchases: async () => ({ purchaseDataList: [] }) } });
+  const original = f.transport.post;
+  f.transport.post = async (operation, body, current) => operation === 'refund-order' ? refundRoute() : original(operation, body, current);
+  assert.equal((await f.provider.refund({}, config.productId, () => true)).verified, true);
+  assert.deepEqual(f.calls, [['refund', 'delivered-sandbox-order']]);
+  assert.equal(f.protocol.calls.length, 1); assert.equal(f.protocol.calls[0].operation, 'reconcile');
+});
+test('refund routing rejects wrong scope, malformed IDs, extra secrets, Release and stale account/UI callbacks', async t => {
+  for (const overrides of [{ owner: other }, { applicationId: 'other' }, { productId: 'other' },
+    { environment: 'NORMAL' }, { purchaseOrderId: '' }, { purchaseOrderId: 'bad\norder' }, { purchaseToken: 'secret' }]) {
+    const f = await fixture(t); f.protocol.override = () => refundRoute(overrides);
+    await assert.rejects(f.client.refundOrder(f.lease, () => true));
+    assert.equal(f.service.snapshot().state, 'free');
+  }
+  for (const mode of ['account', 'dismiss', 'release']) {
+    const f = await fixture(t, { debug: mode !== 'release' }); let current = true;
+    f.protocol.override = () => {
+      if (mode === 'account') f.rebind(other, 2); else current = false;
+      return refundRoute();
+    };
+    await assert.rejects(f.client.refundOrder(f.lease, () => current));
+    if (mode === 'release') assert.equal(f.protocol.calls.length, 0);
   }
 });
 

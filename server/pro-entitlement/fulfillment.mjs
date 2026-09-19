@@ -26,6 +26,12 @@ export class ProGrantSigner {
       Buffer.from(JSON.stringify(payload)).toString('base64url');
     return input + '.' + sign('RSA-SHA256', Buffer.from(input), this.#key).toString('base64url');
   }
+  sandboxRefundRoute(owner, purchaseOrderId) {
+    if (this.#configuration.environment !== 'SANDBOX' || !/^owner-[a-f0-9]{64}$/.test(owner)) fail('sandbox_refund_required');
+    if (typeof purchaseOrderId !== 'string' || !/^[^\s\u0000-\u001f\u007f]{1,256}$/.test(purchaseOrderId)) fail('invalid_refund_order');
+    return { owner, applicationId: this.#configuration.applicationId, productId: this.#configuration.productId,
+      environment: 'SANDBOX', purchaseOrderId };
+  }
 }
 
 export class ProFulfillmentService {
@@ -38,6 +44,23 @@ export class ProFulfillmentService {
     this.#ledger = ledger; this.#iap = iap; this.#signer = signer; this.#now = now;
   }
   createIntent(owner) { return this.#ledger.createIntent(owner, this.#now()); }
+  async refundOrder(owner, signal) {
+    // Only an authenticated sandbox owner may obtain a routing hint. No token,
+    // purchase payload, grant, refund or delivery operation leaves this path.
+    this.#signer.sandboxRefundRoute(owner, 'scope-check');
+    const references = await this.#ledger.references(owner, true);
+    if (references.length > 100) fail('account_order_limit');
+    for (const reference of references) {
+      if (signal?.aborted) fail('reconciliation_cancelled');
+      await this.#refresh(reference, owner);
+    }
+    const current = await this.#ledger.references(owner, true);
+    if (signal?.aborted) fail('reconciliation_cancelled');
+    if (current.length !== 1 || !references.some(reference => reference.purchaseOrderId === current[0].purchaseOrderId)) {
+      fail('refund_order_not_unique');
+    }
+    return this.#signer.sandboxRefundRoute(owner, current[0].purchaseOrderId);
+  }
   async #exclusive(reference, action) {
     const key = reference.purchaseOrderId;
     while (this.#operations.has(key)) await this.#operations.get(key).catch(() => {});

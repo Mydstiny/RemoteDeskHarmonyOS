@@ -7,13 +7,14 @@ import { ProEntitlementClock } from './ProEntitlementClock';
 import { ProCachedRecord, ProEntitlementStorePort, ProStoreScope } from './ProEntitlementStore';
 import { ProSignedEntitlementVerifier, ProTrustConfiguration, ProTrustedSnapshot } from './ProSignedEntitlement';
 
-export type ProBackendOperation = 'intents' | 'reconcile';
+export type ProBackendOperation = 'intents' | 'reconcile' | 'refund-order';
 export interface ProBackendTransport {
   post(operation: ProBackendOperation, body: string, isCurrent: () => boolean): Promise<string>;
   cancel(): void;
 }
 export interface ProPurchaseIntent { developerPayload: string; expiresAt: number; productId: string; environment: string; }
 interface ProBackendReply { signedEntitlement: string; pendingDelivery: boolean; }
+interface ProRefundRoute { owner: string; applicationId: string; productId: string; environment: string; purchaseOrderId: string; }
 export interface ProClientLease { scope: ProStoreScope; generation: number; }
 
 export function proPurchaseBatches(records: string[]): string[][] {
@@ -215,6 +216,23 @@ export class ProTrustedEntitlementClient implements ProOrderVerifier {
       throw new Error('Invalid Pro purchase intent');
     }
     return value;
+  }
+  async refundOrder(lease: ProClientLease, isCurrent: () => boolean): Promise<string> {
+    if (!DEBUG || lease.scope.environment !== 'sandbox' || !this.current(lease) || !isCurrent()) {
+      throw new Error('Pro service unavailable');
+    }
+    const text = await this.transport.post('refund-order', '{}', (): boolean => this.current(lease) && isCurrent());
+    if (!this.current(lease) || !isCurrent() || typeof text !== 'string' || text.length > 4096) {
+      throw new Error('Pro purchase cancelled');
+    }
+    // Authenticated cloud response routes Huawei's UI only. Entitlement changes
+    // still require the separate signed reconciliation protocol.
+    const value = JSON.parse(text) as ProRefundRoute;
+    if (!value || Object.keys(value).length !== 5 || value.owner !== lease.scope.owner ||
+      value.applicationId !== lease.scope.applicationId || value.productId !== lease.scope.productId ||
+      value.environment !== 'SANDBOX' || typeof value.purchaseOrderId !== 'string' ||
+      !/^[^\s\u0000-\u001f\u007f]{1,256}$/.test(value.purchaseOrderId)) { throw new Error('Invalid refund record'); }
+    return value.purchaseOrderId;
   }
   // A late checkout callback may persist to its captured old account, but can
   // never be rebound to the new login. These records contain no local grant.

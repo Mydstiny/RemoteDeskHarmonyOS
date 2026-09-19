@@ -25,7 +25,7 @@ PKIX 输入目录只需 `bin/openssl` 与 `RootCaG2Ecdsa.cer`；程序字节和�
 - 请求函数：Node22 或兼容的受管 Linux x64 运行时，事件调用，入口 `handler.myHandler`，同步超时至少 30 秒。HTTP 触发器使用「API客户端鉴权（Client适用）」。App 原生 Cloud Foundation SDK 固定函数名与版本；短会话在业务信封内验证，网关身份不能提供账号归属。
 - 发货函数：同一部署包，入口 `handler.myWorker`，仅定时触发器，建议一分钟一次、异步超时 600 秒。不得配置公开 HTTP 触发器。每批最多检查 20 单，单进程防重入，数据库发货租约跨实例保护确认操作。
 - 运行结果通过 `callback` 返回，不能仅返回 Promise。SDK 可能输出未经脱敏的错误对象，故该专用函数在加载 SDK 前关闭 console 原始日志；业务只返回固定错误、已验证响应和计数。验单失败使用 AGC 入口第四参数 logger.info（兼容 context.logger/global.logger）写入固定白名单分类（直接 stdout、原 console 与当前运行时 global.logger 未产生日志）；IAP 厂商错误仅保留最多 12 位数字错误码，不记录请求、响应、账号、订单、令牌、原始异常或堆栈。
-- 通知回调继续关闭。华为通知需要独立、已验证签名和持久化后空 HTTP200 的入口；本包的三种客户端操作不提供通知或 worker 分发。
+- 通知回调继续关闭。华为通知需要独立、已验证签名和持久化后空 HTTP200 的入口；本包的四种客户端操作（含仅沙盒的订单退款路由查询）不提供通知或 worker 分发。
 
 ## PKIX 来源与验证
 

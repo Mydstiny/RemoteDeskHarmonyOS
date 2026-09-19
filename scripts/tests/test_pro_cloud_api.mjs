@@ -25,7 +25,7 @@ test('AGC JSON, object and base64 event bodies reach the same trusted account se
   }
   assert.equal((await f.api.handle(input())).status, 200);
 });
-test('only session, intents and reconcile are routable and caller metadata never supplies an owner', async () => {
+test('only allowlisted account operations are routable and caller metadata never supplies an owner', async () => {
   const f = fixture();
   const session = await f.api.handle(input('session', JSON.stringify({ authorizationCode: 'native-code', challenge })));
   assert.equal(session.status, 200); assert.deepEqual(f.calls.at(-1), ['session', 'native-code', challenge]);
@@ -49,6 +49,18 @@ test('bad envelopes, browser origins, encoded/compressed data and limits fail be
     assert.equal((await f.api.handle(event)).status, 400);
   }
   assert.deepEqual(f.calls, []);
+});
+test('refund lookup accepts only the authenticated owner and no caller order identifiers', async () => {
+  const f = fixture();
+  f.service.refundOrder = async owner => { f.calls.push(['refund-route', owner]); return { purchaseOrderId: 'test-order' }; };
+  assert.equal((await f.api.handle(input('refund-order'))).status, 200);
+  assert.deepEqual(f.calls, [['refund-route', 'trusted-owner']]);
+  for (const body of [{ owner: 'attacker' }, { purchaseOrderId: 'foreign-order' }, { purchaseToken: 'foreign-token' }]) {
+    assert.equal((await f.api.handle(input('refund-order', JSON.stringify(body)))).status, 400);
+  }
+  assert.equal((await f.api.handle({ ...input('refund-order'), sessionToken: '' })).status, 400);
+  assert.equal((await f.api.handle({ ...input('refund-order'), sessionToken: 'e30.e30.' + 'a'.repeat(43) })).status, 401);
+  assert.equal(f.calls.length, 1);
 });
 test('cloud errors and oversized responses cannot reflect credentials or create a successful grant', async () => {
   const f = fixture();

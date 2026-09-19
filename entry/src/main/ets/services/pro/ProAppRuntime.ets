@@ -126,6 +126,11 @@ export class ProAppRuntime implements ProBillingBackend {
     if (client === null) { return Promise.reject(new Error('Pro service unavailable')); }
     return client.pending(lease);
   }
+  refundOrder(lease: ProClientLease, isCurrent: () => boolean): Promise<string> {
+    const client = this.bridge.client;
+    if (!DEBUG || client === null || !client.current(lease)) { return Promise.reject(new Error('Pro service unavailable')); }
+    return client.refundOrder(lease, isCurrent);
+  }
   reconcile(lease: ProClientLease, records: string[]): Promise<ProReconciliationOutcome> {
     if (!this.current(lease)) { return Promise.resolve<ProReconciliationOutcome>({ current: false, online: false, active: false }); }
     return this.entitlement.reconcileResult(records);

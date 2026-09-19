@@ -122,7 +122,7 @@ export class ProHttpApi {
     const url = new URL(request.url);
     if (url.search || url.hash) return response(404, { error: 'not_found' });
     if (request.method === 'GET' && url.pathname === '/healthz') return response(200, { status: 'running' });
-    if (!['/v1/pro/session', '/v1/pro/intents', '/v1/pro/reconcile', '/v1/iap/notifications'].includes(url.pathname)) {
+    if (!['/v1/pro/session', '/v1/pro/intents', '/v1/pro/reconcile', '/v1/pro/refund-order', '/v1/iap/notifications'].includes(url.pathname)) {
       return response(404, { error: 'not_found' });
     }
     if (request.method !== 'POST') return response(405, { error: 'post_required' });
@@ -157,6 +157,10 @@ export class ProHttpApi {
       if (url.pathname === '/v1/pro/intents') {
         onlyKeys(body, []);
         return response(200, await this.#service.createIntent(owner));
+      }
+      if (url.pathname === '/v1/pro/refund-order') {
+        onlyKeys(body, []);
+        return response(200, await this.#service.refundOrder(owner, request.signal));
       }
       onlyKeys(body, ['purchaseDataList', 'challenge']);
       if (typeof body.challenge !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(body.challenge) ||

@@ -38,7 +38,7 @@ export class ProCloudTransport implements ProBackendTransport {
   }
   async post(operation: ProBackendOperation, body: string, isCurrent: () => boolean): Promise<string> {
     if (!isCurrent() || ProCloudTransport.pendingCalls >= 4 ||
-      !['intents', 'reconcile'].includes(operation) || new util.TextEncoder().encodeInto(body).length > 1024 * 1024) {
+      !['intents', 'reconcile', 'refund-order'].includes(operation) || new util.TextEncoder().encodeInto(body).length > 1024 * 1024) {
       throw new Error('Pro request cancelled');
     }
     const account = AccountSessionCoordinator.getInstance().currentScope();
