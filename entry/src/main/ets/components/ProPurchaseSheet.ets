@@ -83,7 +83,8 @@ export struct ProPurchaseSheet {
         const outcome = await this.provider.restore(this.context(), this.productId, (): boolean =>
           this.live && generation === this.generation && ProPurchaseLifecycle.current(epoch));
         if (!this.live || generation !== this.generation || !ProPurchaseLifecycle.current(epoch)) { return; }
-        this.message = outcome.verified ? '沙盒权益已验证并恢复。' : outcome.records > 0 ?
+        this.message = outcome.verified ? '沙盒权益已验证并恢复。' :
+          ProAppRuntime.getInstance().runtime.snapshot().realState === 'revoked' ? '服务端已确认沙盒 Pro 权益撤销。' : outcome.records > 0 ?
           '已查询到订单，本次尚未恢复有效沙盒权益，请稍后重试。' : '当前未恢复到有效的沙盒 Pro 权益。';
       }
     } catch (error) {

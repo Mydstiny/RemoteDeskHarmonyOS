@@ -446,7 +446,10 @@ test('refund diagnostics distinguish cancellation/refused/already-refunded witho
   for (const code of [1001860000, 1001860061, 1001860062, 123]) {
     const message = f.proRefundError({ code, message: 'private-order-token' });
     assert.ok(!message.includes('private-order-token'));
-    if (code === 1001860000) assert.ok(message.includes('取消退款'));
+    if (code === 1001860000) {
+      assert.ok(message.includes('退出退款页面'));
+      assert.ok(message.includes('退出不代表退款未生效'));
+    }
   }
 });
 function refundRoute(overrides = {}) {

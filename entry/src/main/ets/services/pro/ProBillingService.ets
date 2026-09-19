@@ -57,7 +57,7 @@ function sandboxRefundOrder(record: string, lease: ProClientLease): string {
 }
 
 export function proRefundError(error: BusinessError): string {
-  if (error.code === 1001860000) { return '已取消退款申请，权益仍以服务端核验结果为准。'; }
+  if (error.code === 1001860000) { return '已退出退款页面，请使用恢复购买核验最新权益；退出不代表退款未生效。'; }
   if (error.code === 1001860061) { return '该订单已退款或正在退款，请使用恢复购买同步最新权益。'; }
   if (error.code === 1001860062) { return '华为暂不允许此订单退款，请在华为支付页面查看订单状态。'; }
   if (error.message === 'Refund order not unique') { return '未找到唯一的当前沙盒 Pro 订单，无法自动选择退款订单。'; }
