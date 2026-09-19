@@ -4,6 +4,8 @@ Updated: 2026-09-19 Asia/Shanghai
 
 ## Now
 
+- Current Pad increment: Pro badges + AI card/add/edit/settings parity, gated production wiring and Release default-denial checker independently PASS. Authorized full backup/Debug migration and same-account signed sandbox restore PASS; restart/repeated restore/live settings summary and basic AI device UI checks PASS; remaining actual AI pairing/session and full matrix open. [Evidence](archive/2026-09/2026-09-19-pro-ai-pad-functional.md). Production configuration and worker timer remain off.
+
 - Overall Pro remainder: [2026-09-19 audit](plans/2026-09-19-pro-remaining.md); M3-M7 exit conditions, UI device/forms and AI acceptance/relay remain open. Actual sandbox purchase/auth/activation/manual delivery/restart/restore now PASS. Refund recovery0a4f9c21 and authenticated delivered-order route1c466f39 reviewed. Updated client restore passed; newest Debug installed. API route deployed; actual user refund, signed revocation, restart and repeat restore PASS despite vendor UI timeout. Next: cross-account/offline matrix, notification and numeric version, then production prerequisites. Original UI and simulation crash repaired.
 
 - VNC LastRect: `e67724ac` + `21da46aa` code and independent review PASS; next original failing peer first/repeated updates and reconnect acceptance. [Repair scope](plans/2026-09-08-vnc-lastrect-update-repair.md).
