@@ -31,6 +31,8 @@ interface ProRefundOrderHint {
   productType: string;
   environment: string;
   purchaseOrderId: string;
+  revocationTime?: number;
+  purchaseOrderRevocationReasonCode?: string;
 }
 
 // Native IAP supplies this routing hint solely to open Huawei's refund UI.
@@ -49,6 +51,7 @@ function sandboxRefundOrder(record: string, lease: ProClientLease): string {
     typeof hint.purchaseOrderId !== 'string' || !/^[^\s\u0000-\u001f\u007f]{1,256}$/.test(hint.purchaseOrderId)) {
     throw new Error('Invalid refund record');
   }
+  if (hint.revocationTime !== undefined || hint.purchaseOrderRevocationReasonCode !== undefined) { return ''; }
   return hint.purchaseOrderId;
 }
 
@@ -180,7 +183,7 @@ export class HuaweiProBillingProvider implements ProBillingProvider {
     do {
       if (!current()) { return { verified: false, records: 0 }; }
       const result: iap.QueryPurchaseResult = await iap.queryPurchases(context, { productType: iap.ProductType.NONCONSUMABLE,
-        queryType: iap.PurchaseQueryType.CURRENT_ENTITLEMENT, continuationToken: cursor });
+        queryType: iap.PurchaseQueryType.ALL, continuationToken: cursor });
       if (!current()) { return { verified: false, records: 0 }; }
       proPurchaseBatches(result.purchaseDataList);
       count += result.purchaseDataList.length;

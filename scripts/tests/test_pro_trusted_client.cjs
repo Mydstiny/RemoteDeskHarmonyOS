@@ -361,7 +361,7 @@ function refundReceipt(overrides = {}) {
 }
 async function refundFixture(t, options = {}) {
   const calls = []; let f;
-  const iap = { ProductType: { NONCONSUMABLE: 1 }, PurchaseQueryType: { CURRENT_ENTITLEMENT: 2 },
+  const iap = { ProductType: { NONCONSUMABLE: 1 }, PurchaseQueryType: { CURRENT_ENTITLEMENT: 2, ALL: 0 },
     isSandboxActivated: async () => true,
     queryPurchases: async (_context, query) => { calls.push(['query', query]); return { purchaseDataList: [refundReceipt()] }; },
     createRefundRequest: async (_context, id) => { calls.push(['refund', id]); },
@@ -373,9 +373,14 @@ async function refundFixture(t, options = {}) {
 }
 test('sandbox refund opens only the unique matching native order; a successful UI does not locally revoke', async t => {
   const f = await refundFixture(t);
-  f.iap.queryPurchases = async (_context, query) => ({ purchaseDataList: [refundReceipt(), refundReceipt(),
-    refundReceipt({ productId: 'other-product', purchaseOrderId: 'other-order' })],
-    continuationToken: query.continuationToken ? undefined : 'second-page' });
+  f.iap.queryPurchases = async (_context, query) => {
+    assert.equal(query.queryType, 0, 'delivered sandbox purchases must be found through history');
+    return { purchaseDataList: [refundReceipt(), refundReceipt(),
+      refundReceipt({ productId: 'other-product', purchaseOrderId: 'other-order' }),
+      refundReceipt({ purchaseOrderId: 'refunded-order', revocationTime: 1000 }),
+      refundReceipt({ purchaseOrderId: 'revoked-order', purchaseOrderRevocationReasonCode: '0' })],
+      continuationToken: query.continuationToken ? undefined : 'second-page' };
+  };
   const result = await f.provider.refund({}, config.productId, () => true);
   assert.deepEqual(f.calls, [['refund', 'sandbox-order-1']]);
   assert.equal(result.verified, true); assert.equal(f.service.snapshot().state, 'active');
