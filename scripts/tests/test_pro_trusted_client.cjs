@@ -341,3 +341,15 @@ test('actual App runtime renews daily, retries an offline boundary and keeps Rel
     }
   }
 });
+
+test('billing diagnostics distinguish authorization, login and product failures without exposing native details', t => {
+  const f = proClientHost({ mocks: { '@kit.IAPKit': { iap: {} } } }); t.after(() => f.close());
+  const { proBillingError } = f.load('ProBillingService');
+  for (const [code, expected] of [[1001860002, /1001860002.*签名指纹/],
+    [1001860050, /登录.*华为账号/], [1001860003, /商品.*ID/]]) {
+    const message = proBillingError({ code, message: 'private-native-detail' });
+    assert.match(message, expected); assert.equal(message.includes('private-native-detail'), false);
+  }
+  assert.match(proBillingError(new Error('Product unavailable')), /商品暂不可用/);
+  assert.match(proBillingError({ code: -1, message: 'private-native-detail' }), /未能完成权益验证/);
+});

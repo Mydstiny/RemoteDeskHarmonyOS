@@ -46,6 +46,9 @@ function recordsForProduct(records: string[], productId: string): string[] {
 export function proBillingError(error: BusinessError): string {
   if (error.message === 'Pro service unavailable') { return '沙盒验证服务尚未就绪，请确认服务部署和华为账号登录。'; }
   if (error.message === 'Sandbox required') { return '当前未启用支付沙盒，请检查测试账号和 debug 签名。'; }
+  if (error.code === 1001860002) { return '当前测试包未获支付授权（1001860002），请检查 AGC 签名指纹与 IAP 服务配置。'; }
+  if (error.code === 1001860050) { return '请先在设备上登录用于沙盒测试的华为账号。'; }
+  if (error.code === 1001860003 || error.message === 'Product unavailable') { return '测试商品暂不可用，请检查商品 ID、类型与上架状态。'; }
   if (error.code === 1001860000) { return '已取消购买，你可以稍后再试。'; }
   if (error.code === 1001860057) { return '请安装配置正确的 debug 测试包。'; }
   if (error.code === 1001860058) { return '请在设备上登录已加入 AGC 沙盒名单的华为账号。'; }
