@@ -1,4 +1,5 @@
 #include "fido_probe_transport.h"
+#include <cbor.h>
 #include <algorithm>
 #include <cstdlib>
 #include <deque>
@@ -11,6 +12,18 @@
 using namespace ProFido;
 using namespace std::chrono_literals;
 using Report = std::array<uint8_t, 64>;
+std::atomic<size_t> maximumCborAllocation{0};
+void RecordAllocation(size_t size) {
+    size_t previous = maximumCborAllocation.load();
+    while (previous < size && !maximumCborAllocation.compare_exchange_weak(previous, size)) {}
+}
+// Test-only hooks refuse unsafe allocations rather than reproducing an OOM.
+void* BoundedMalloc(size_t size) {
+    RecordAllocation(size); return size > 1048576 ? nullptr : std::malloc(size);
+}
+void* BoundedRealloc(void* pointer, size_t size) {
+    RecordAllocation(size); return size > 1048576 ? nullptr : std::realloc(pointer, size);
+}
 void Check(bool value, const char* message) { if (!value) throw std::runtime_error(message); }
 
 std::deque<Report> Frames(uint32_t cid, uint8_t command, const std::vector<uint8_t>& payload) {
@@ -68,6 +81,13 @@ ProbeStatus Run(const std::string& scenario) {
         Check(!probe.Reply(request.id + 1, request.report.data(), 64, true), "foreign request accepted");
         if (priorRequest) Check(!probe.Reply(priorRequest, request.report.data(), 64, true), "late reply accepted");
         priorRequest = request.id;
+        if (!request.write && writes == 2 && incoming.size() == 1 &&
+            (scenario == "cancel-fragment" || scenario == "timeout-fragment")) {
+            if (scenario == "cancel-fragment") probe.Cancel();
+            else std::this_thread::sleep_for(600ms);
+            Check(!probe.Reply(request.id, request.report.data(), 64, true), "expired fragment reply accepted");
+            continue;
+        }
         if (scenario == "cancel") {
             probe.Cancel();
             Check(!probe.Reply(request.id, request.report.data(), 64, true), "cancelled reply accepted");
@@ -92,8 +112,23 @@ ProbeStatus Run(const std::string& scenario) {
                       "GetInfo must use the allocated channel");
                 Check(reply[4] == 0x90 && reply[5] == 0 && reply[6] == 1 && reply[7] == 4,
                       "unexpected non-capability command");
-                auto payload = Info(scenario == "fragmented" || scenario == "bad-sequence", scenario == "empty-versions");
+                auto payload = Info(scenario == "fragmented" || scenario == "bad-sequence" ||
+                    scenario == "cancel-fragment" || scenario == "timeout-fragment", scenario == "empty-versions");
                 if (scenario == "malformed-cbor") payload = {0, 0xff};
+                if (scenario == "huge-array" || (scenario == "huge-array-second" && writes == 3))
+                    payload = {0, 0xa1, 1, 0x9a, 0x40, 0, 0, 0};
+                if (scenario == "huge-map") payload = {0, 0xba, 0x40, 0, 0, 0};
+                if (scenario == "huge-string") payload = {0, 0xa1, 1, 0x7a, 0x40, 0, 0, 0};
+                if (scenario == "huge-bytes") payload = {0, 0xa1, 3, 0x5a, 0x40, 0, 0, 0};
+                if (scenario == "deep-tree") {
+                    payload = {0, 0xa1, 0x18, 32}; payload.insert(payload.end(), 10, 0x81); payload.push_back(0);
+                }
+                if (scenario == "node-budget") {
+                    payload = {0, 0xa1, 0x18, 32, 0x98, 64};
+                    for (unsigned i = 0; i < 64; ++i) { payload.push_back(0x88); payload.insert(payload.end(), 8, 0); }
+                }
+                if (scenario == "indefinite") payload = {0, 0xbf, 1, 0x9f, 0xff, 0xff};
+                if (scenario == "trailing-cbor") payload.push_back(0);
                 if (scenario == "ctap-error") payload = {0x2e};
                 incoming = Frames(0x10203040, 0x90, payload);
                 if (scenario == "oversized") { incoming.front()[5] = 255; incoming.front()[6] = 255; }
@@ -115,6 +150,7 @@ ProbeStatus Run(const std::string& scenario) {
 }
 
 int main() {
+    cbor_set_allocs(BoundedMalloc, BoundedRealloc, std::free);
     try {
         unsigned count = 0;
         for (const auto* scenario : {"normal", "fragmented", "keepalive", "foreign-channel"}) {
@@ -122,10 +158,12 @@ int main() {
         }
         for (const auto* scenario : {"wrong-nonce", "zero-channel", "broadcast-channel", "old-protocol", "no-cbor",
                 "empty-versions", "malformed-cbor", "ctap-error", "oversized", "bad-sequence", "changed-write",
-                "short-report", "usb-error"}) {
+                "short-report", "usb-error", "huge-array", "huge-array-second", "huge-map", "huge-string",
+                "huge-bytes", "deep-tree", "node-budget", "indefinite", "trailing-cbor", "timeout-fragment"}) {
             Check(Run(scenario) == ProbeStatus::Failed, scenario); ++count;
         }
         Check(Run("cancel") == ProbeStatus::Cancelled, "cancel"); ++count;
+        Check(Run("cancel-fragment") == ProbeStatus::Cancelled, "cancel-fragment"); ++count;
         {
             ProbeTransport ignored(15ms);
             std::this_thread::sleep_for(30ms);
@@ -138,7 +176,9 @@ int main() {
             waiting.reset();
             Check(std::chrono::steady_clock::now() - started < 1s, "cleanup depended on a JS callback"); ++count;
         }
-        std::cout << "PASS " << count << " real-libfido2 transport cases (no hardware acceptance)\n";
+        Check(maximumCborAllocation.load() <= 1048576, "unbounded CBOR declaration reached the allocator");
+        std::cout << "PASS " << count << " real-libfido2 transport cases; maximum CBOR allocation "
+                  << maximumCborAllocation.load() << " bytes (no hardware acceptance)\n";
         return 0;
     } catch (const std::exception& error) {
         std::cerr << "FAIL " << error.what() << '\n';

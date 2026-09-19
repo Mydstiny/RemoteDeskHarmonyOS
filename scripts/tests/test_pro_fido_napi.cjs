@@ -58,9 +58,13 @@ if (!isMainThread) {
     assert.equal(api.proFidoProbeReply(id, read.requestId, read.data, true), false);
     assert.equal(api.proFidoProbePoll(id).status, 3);
     const next = await until(() => api.proFidoProbeStart()); assert.ok(next > id);
-    api.proFidoProbeCancel(id); assert.equal(api.proFidoProbePoll(next).status, 0);
-    assert.equal(api.proFidoProbePoll(id).status, 4);
     const nextRequest = await until(() => { const value = api.proFidoProbePoll(next); return value.requestId ? value : null; });
+    // Poll delivers each request once. Keep its snapshot before checking that
+    // cancelling an old generation cannot affect this waiting operation.
+    api.proFidoProbeCancel(id);
+    const stillRunning = api.proFidoProbePoll(next);
+    assert.equal(stillRunning.status, 0); assert.equal(stillRunning.requestId, 0);
+    assert.equal(api.proFidoProbePoll(id).status, 4);
     assert.equal(api.proFidoProbeReply(next, nextRequest.requestId, new Uint8Array(0), false), true);
     await until(() => api.proFidoProbePoll(next).status === 2);
     // Retire the failed native worker before moving ownership to a new env.

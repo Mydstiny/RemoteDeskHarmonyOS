@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <mutex>
 #include <thread>
+#include <vector>
 
 namespace ProFido {
 
@@ -45,6 +46,8 @@ private:
     static int Read(void* handle, unsigned char* bytes, size_t length, int timeoutMs);
     static int Write(void* handle, const unsigned char* bytes, size_t length);
     bool Exchange(bool write, std::array<uint8_t, 64>& report, int timeoutMs);
+    bool ReadReport(std::array<uint8_t, 64>& report, std::chrono::steady_clock::time_point limit);
+    bool BufferInfo(const std::array<uint8_t, 64>& first, std::chrono::steady_clock::time_point limit);
     void Run();
     bool CurrentLocked() const;
 
@@ -69,6 +72,8 @@ private:
     uint32_t channel_ = 0;
     unsigned readCount_ = 0;
     std::array<uint8_t, 8> nonce_{};
+    std::vector<std::array<uint8_t, 64>> validatedReports_;
+    size_t nextValidatedReport_ = 0;
 };
 
 } // namespace ProFido
