@@ -1,4 +1,5 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from 'node:crypto';
+import { setTimeout as delay } from 'node:timers/promises';
 import { boundedString, fail, object } from './iap-crypto.mjs';
 
 const NEVER = Number.MAX_SAFE_INTEGER;
@@ -65,12 +66,14 @@ export class ProCloudOrderLedger {
   #key;
   #configuration;
   #identity;
-  constructor(collection, configuration, encryptionKey) {
+  #wait;
+  constructor(collection, configuration, encryptionKey, wait = delay) {
     if (!Buffer.isBuffer(encryptionKey) || encryptionKey.length !== 32) fail('ledger_key_required');
     this.#configuration = Object.freeze({ applicationId: boundedString(configuration.applicationId),
       productId: boundedString(configuration.productId), environment: boundedString(configuration.environment) });
     if (!['NORMAL', 'SANDBOX'].includes(this.#configuration.environment)) fail('invalid_environment');
     this.#collection = collection; this.#key = Buffer.from(encryptionKey); this.#identity = JSON.stringify(this.#configuration);
+    this.#wait = wait;
   }
   #encrypt(value, aad) {
     const iv = randomBytes(12); const cipher = createCipheriv('aes-256-gcm', this.#key, iv);
@@ -93,11 +96,25 @@ export class ProCloudOrderLedger {
   }
   async #transaction(action) {
     let result;
-    const committed = await this.#collection.runTransaction({ apply: async transaction => {
+    // The official SDK reports a rejected rate-limited request as 3007009.
+    // Share one bounded backoff budget between reads and transaction commits;
+    // never retry an ambiguous network failure or bypass the control fence.
+    let retries = 0;
+    const retryThrottle = async operation => {
+      for (;;) {
+        try { return await operation(); }
+        catch (error) {
+          if (error?.name !== 'database-server' || error?.errorCode?.code !== '3007009' || retries >= 3) throw error;
+          await this.#wait(1000 * ++retries);
+        }
+      }
+    };
+    const committed = await retryThrottle(() => this.#collection.runTransaction({ apply: async transaction => {
+      const query = value => retryThrottle(() => transaction.executeQuery(value));
       const cache = new Map();
       const read = async id => {
         if (!cache.has(id)) {
-          const rows = await transaction.executeQuery(this.#collection.query().equalTo('id', id).limit(2));
+          const rows = await query(this.#collection.query().equalTo('id', id).limit(2));
           if (rows.length > 1 || (rows[0] && rows[0].id !== id)) fail('ledger_integrity_error');
           cache.set(id, rows[0]);
         }
@@ -107,12 +124,12 @@ export class ProCloudOrderLedger {
       if (control.schema !== 1 || control.identity !== this.#identity ||
           this.#decrypt(control.keyCheck, CONTROL_ID) !== this.#identity) fail('ledger_configuration_mismatch');
       const writes = [];
-      result = await action({ read, query: query => transaction.executeQuery(query), writes });
+      result = await action({ read, query, writes });
       // Queue writes only after all reads: the SDK rejects queries after upsert.
       control.commit = randomUUID();
       transaction.executeUpsert([...writes, record(CONTROL_ID, 'control', '', control)]);
       return true;
-    } });
+    } }));
     if (committed !== true) fail('ledger_transaction_conflict');
     return result;
   }

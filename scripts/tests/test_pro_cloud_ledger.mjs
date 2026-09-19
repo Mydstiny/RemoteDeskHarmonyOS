@@ -219,3 +219,40 @@ test('disconnect during the awaited cloud snapshot never signs a new grant', asy
   assert.equal((await snapshot(owner)).status, 'verified');
   assert.equal(f.state.confirms, 0);
 });
+
+function throttleError(code = '3007009') {
+  return Object.assign(new Error('private database response'), { name: 'database-server', errorCode: { code } });
+}
+test('CloudDB throttled reads and rejected commit share a bounded retry budget and preserve one binding', async t => {
+  const f = fixture(t); const order = await f.order(); const waits = [];
+  const original = f.collection.runTransaction.bind(f.collection);
+  let reads = 0; let commits = 0;
+  f.collection.runTransaction = action => original({ apply: tx => action.apply({
+    executeQuery: query => { if (++reads === 2) throw throttleError(); return tx.executeQuery(query); },
+    executeUpsert: rows => tx.executeUpsert(rows)
+  }) });
+  f.collection.beforeCommit = () => { if (++commits === 1) throw throttleError(); };
+  const ledger = new ProCloudOrderLedger(f.collection, config, f.key, async ms => waits.push(ms));
+  t.after(() => ledger.close());
+  await ledger.applyCurrentOrder(order, owner, f.state.now);
+  assert.deepEqual(waits, [1000, 2000]);
+  assert.equal((await ledger.snapshot(owner)).revision, 1);
+  assert.equal((await ledger.references(owner)).length, 1);
+  assert.equal([...f.collection.rows.values()].filter(({ row }) => row.kind === 'token').length, 1);
+  await assert.rejects(() => ledger.applyCurrentOrder(order, other, f.state.now), /another_account/);
+});
+test('CloudDB persistent throttle terminates and other errors or false commits are never retried', async t => {
+  const f = fixture(t);
+  for (const error of [throttleError(), throttleError('3007004'), new Error('network timeout')]) {
+    const waits = []; let calls = 0;
+    f.collection.runTransaction = async () => { calls++; throw error; };
+    const ledger = new ProCloudOrderLedger(f.collection, config, f.key, async ms => waits.push(ms));
+    await assert.rejects(() => ledger.snapshot(owner), thrown => thrown === error);
+    const throttled = error.errorCode?.code === '3007009';
+    assert.equal(calls, throttled ? 4 : 1);
+    assert.deepEqual(waits, throttled ? [1000, 2000, 3000] : []);
+    ledger.close();
+  }
+  f.collection.runTransaction = async () => false;
+  await assert.rejects(() => f.ledger.snapshot(owner), /ledger_transaction_conflict/);
+});
