@@ -26,14 +26,16 @@ SQLite/本机 HTTP 运行环境：Node.js 24+、OpenSSL 3（必须支持 `verify
 
 协议依据、运行时许可证与当前测试版本见 [PROVENANCE.md](PROVENANCE.md) 和 [SBOM.spdx.json](SBOM.spdx.json)。未复制华为服务端示例源码；项目自有实现适用仓库 AGPL-3.0-or-later。
 
-App 的 `services/pro/ProTrustedEntitlementClient.ets` 验证固定 RS256 公钥、账号/应用/环境/商品、revision 和时效。`ProEntitlementStore.ets` 使用独立 S3 加密 RDB，同一事务写缓存并移除已验证的精确订单；未完成订单和 CloudStore/E2EE 相互独立。启动/账号转换/前台重验受代际约束，关闭购买页后的回调只保留到捕获的原账号，客户端不调用 `finishPurchase`。
+App 的 `services/pro/ProTrustedEntitlementClient.ets` 验证固定 RS256 公钥、账号/应用/环境/商品、revision 和时效。`ProEntitlementStore.ets` 使用独立 S3 加密 RDB，正向权益同一事务写缓存并移除已验证的精确订单；退款等负向状态先持久化，再独立清理订单，清理失败保留恢复凭据；未完成订单和 CloudStore/E2EE 相互独立。启动/账号转换/前台重验受代际约束，关闭购买页后的回调只保留到捕获的原账号，客户端不调用 `finishPurchase`。
 
-本地最高观察时间、签名 revision 和退款墓碑阻断普通重启/回拨/旧记录替换；进程内另记录已观察退款，持久化失败立即撤销当前权益。系统备份禁用且可携带备份不含本数据库；此设计不声称具备可信硬件计数器或对整机特权快照回滚的防护。设备系统时钟异常需要成功在线重验，服务不可用不会给旧签名续期。
+本地最高观察时间、签名 revision 和退款墓碑阻断普通重启/回拨/旧记录替换；进程内另记录已观察退款，验签后的缓存读写失败也立即撤销当前权益。schema 2 在联网核验前持久化验证屏障；普通断网可以清除本次新屏障，崩溃遗留或负向结果落盘失败的屏障必须经成功在线核验才能解除。屏障无法写入时不启动网络核验，避免已观察退款在离线重启后复活。系统备份禁用且可携带备份不含本数据库；此设计不声称具备可信硬件计数器或对整机特权快照回滚的防护。设备系统时钟异常需要成功在线重验，服务不可用不会给旧签名续期。
 
-设置 `PRO_TYPESCRIPT_PATH` 指向已安装 DevEco 的 TypeScript 模块，再用 Node 24+ 执行 `node --test scripts/tests/test_pro_signed_client.cjs scripts/tests/test_pro_trusted_client.cjs scripts/tests/test_pro_account_session.cjs`（仓库根）可复现 38 项 App 协议、真实 RSA、SQLite 事务和短期会话适配测试；`scripts/tests/test_pro_runtime.cjs` 覆盖现有权益/账号/图标策略。主机适配不等于原生 Account Kit、CryptoFramework、加密 RDB 或 IAP 实机验收。
+设置 `PRO_TYPESCRIPT_PATH` 指向已安装 DevEco 的 TypeScript 模块，再用 Node 24+ 执行 `node --test scripts/tests/test_pro_signed_client.cjs scripts/tests/test_pro_trusted_client.cjs scripts/tests/test_pro_account_session.cjs`（仓库根）可复现 52 项 App 协议、真实 RSA、SQLite 事务和短期会话适配测试；`scripts/tests/test_pro_runtime.cjs` 覆盖现有权益/账号/图标策略。主机适配不等于原生 Account Kit、CryptoFramework、加密 RDB 或 IAP 实机验收。
 
 请求会话只保留在进程内；按墙上时钟与包含休眠的运行时间双重到期，提前 30 秒更新，时钟回拨也触发重建。账号/环境转换清空会话并取消请求；401 最多重新授权一次。每日权益边界由真实运行时定时器触发在线重验，暂时失败后最多五分钟重试，原签名离线期限保持不变。
 
 AGC App 入口使用原生 Cloud Foundation Kit 的 `cloudFunction.call` 和固定函数名/版本。HTTP 触发器保持客户端网关鉴权；`cloud-api.mjs` 接收版本化请求，仅映射 `session`、`intents`、`reconcile` 到原有可信 HTTP 业务。业务状态包含在 `{version,status,body}` 回包中，SDK 网关成功不代表购买或验权成功。通知和发货 worker 不属于这三个公开操作。SDK 没有请求取消 API；App 在账号切换或本地 20 秒期限后立即拒绝回包，四个原生并发名额直到底层 Promise 结束才释放。函数身份和验签公钥在完整部署验收前继续留空。
 
 完整沙盒的打包与函数入口见 [agc/DEPLOYMENT.md](agc/DEPLOYMENT.md)。`build-package.mjs` 只向 Git 外部私有路径生成 ZIP，校验既有沙盒身份与密钥，锁定 npm 依赖、静态 OpenSSL 和华为根证书。函数冷启动先检查二进制哈希与版本、现有数据库控制记录，再提供账号会话或独立发货 worker；初始化绝不创建业务订单或重置控制记录。
+
+Debug 沙盒区域提供华为 `iap.createRefundRequest` 入口（API15起，兼容API23）。只从当前账号原生查询结果选择唯一的当前应用/SANDBOX/非消耗型 Pro 订单，分页、账号代次和关闭页面均有检查。该查询内容仅用于打开华为退款页，不作为权益依据；退款页返回也不代表退款批准，权益由服务端签名核验决定。Release 入口恒拒绝。

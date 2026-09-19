@@ -3,12 +3,12 @@
   "task": "pro-purchase-foundation",
   "branch": "codex/pro-purchase-foundation",
   "base": "8edc187868e94ed41634e8a6c4c4c072e3a48679",
-  "head": "50cac0f2cc5ebff8341a87059ff0246f8a9d243f",
-  "phase": "Sandbox payment, signed activation, manual delivery and restart/restore verified on actual device",
+  "head": "0a4f9c216ac973c1ea56f72703e5ef6b5fb95b72",
+  "phase": "Sandbox core flow passed; refund fault-recovery fix and Debug refund entry reviewed; updated device locked",
   "status": "in-progress",
-  "next": "Complete actual refund/cross-account/device acceptance and notification/version/production prerequisites; keep formal checkout and worker timer disabled.",
+  "next": "Unlock phone and verify updated client migration/refund/offline; need USB and second sandbox account for remaining device matrix; notification and immutable-version prerequisites remain.",
   "blockers": [
-    "Actual sandbox core flow PASS. Refund, cross-account/offline device matrix, server notification and production merchant/product release acceptance remain open.",
+    "New Debug refund build installed preserving data; phone locked (aa start 10106102). Await unlock, USB and second sandbox account. Actual refund/offline/cross-account and notification acceptance remain open.",
     "M3/U0-U4 device matrix and M4 PC real Share Kit/SFTP file-integrity acceptance remain unverified.",
     "M5 Share Kit App Linking domain, association and actual fragment delivery remain unverified; ServiceInteraction ACL is a separate path. M6 USB/RDP authenticator and phone-passkey RP/origin proof remain pending.",
     "Sandbox core device flow passed. Numeric-version publication, notification endpoint and formal merchant/product release remain open; worker timer disabled."
