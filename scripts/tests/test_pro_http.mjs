@@ -160,3 +160,13 @@ test('verified public PKI URL diagnostics reject credentials, controls and unbou
     'http://pki.consumer.huawei.com/a.crl\nsecret',url+'a'.repeat(256),{ token: 'secret' }] };
   assert.deepEqual(proFailureDiagnostic(new Error('iap_verification_failed',{cause})).distributionPoints,[url,'http://public-ca.example/a.crl']);
 });
+
+test('CloudDB diagnostics retain only the official numeric code and bounded local source frame', () => {
+  const error = Object.assign(new Error('private account and record'),
+    { name: 'database-server', errorCode: { code: '10001', message: 'private data' } });
+  assert.deepEqual(proFailureDiagnostic(error), { code: 'cloud_database_failed', vendorCode: '10001' });
+  error.errorCode.code = 'private';
+  assert.equal(JSON.stringify(proFailureDiagnostic(error)).includes('private'), false);
+  const type = new TypeError('private order'); type.stack = 'TypeError: private order\n at fn (/secret/home/cloud-ledger.mjs:113:9)';
+  assert.deepEqual(proFailureDiagnostic(type), { code:'unclassified',errorType:'TypeError',module:'cloud-ledger',line:113 });
+});

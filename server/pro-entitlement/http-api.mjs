@@ -47,9 +47,21 @@ const DIAGNOSTIC_CODES = new Set(['invalid_purchase_data', 'invalid_jws', 'inval
   'invalid_finish_status', 'invalid_finish_requirement', 'invalid_revocation', 'purchase_not_completed',
   'purchase_intent_not_found', 'order_belongs_to_another_account', 'order_binding_mismatch',
   'purchase_token_already_bound', 'ledger_integrity_error', 'ledger_transaction_conflict',
-  'ledger_configuration_mismatch', 'stale_order_response', 'verification_busy']);
+  'ledger_configuration_mismatch', 'ledger_order_scope_invalid', 'invalid_owner', 'invalid_time',
+  'conflicting_order_reference', 'restore_order_limit', 'account_order_limit', 'invalid_grant',
+  'reconciliation_cancelled', 'stale_order_response', 'verification_busy']);
 export function proFailureDiagnostic(error) {
   const code = DIAGNOSTIC_CODES.has(error?.message) ? error.message : 'unclassified';
+  const databaseCode = error?.name === 'database-server' ? error?.errorCode?.code : undefined;
+  if (typeof databaseCode === 'string' && /^[0-9]{1,12}$/.test(databaseCode)) {
+    return { code: 'cloud_database_failed', vendorCode: databaseCode };
+  }
+  if (code === 'unclassified') {
+    const errorType = ['TypeError', 'RangeError', 'SyntaxError'].includes(error?.name) ? error.name : 'Error';
+    const frame = typeof error?.stack === 'string' ?
+      /\/(iap-crypto|iap-crl|huawei-api|cloud-ledger|fulfillment|http-api)\.mjs:([0-9]{1,5}):[0-9]{1,5}/.exec(error.stack) : null;
+    return { code, errorType, ...(frame ? { module: frame[1], line: Number(frame[2]) } : {}) };
+  }
   const vendorCode = code === 'iap_request_failed' && typeof error?.cause === 'string' &&
     /^[0-9]{1,12}$/.test(error.cause) ? error.cause : undefined;
   if (code === 'iap_verification_failed' && Number.isInteger(error?.cause?.stage) &&
