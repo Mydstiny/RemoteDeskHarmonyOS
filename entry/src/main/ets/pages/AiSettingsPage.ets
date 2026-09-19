@@ -30,7 +30,9 @@ export struct AiSettingsPage {
   @StorageProp('topRectHeight') topInset: number = 0;
   @State settings: AiSettings = defaultAiSettings();
   @State section: string = '';
-  private savedSettings: AiSettings = defaultAiSettings();
+  private savedSettings: AiSettings | null = null;
+  private savedSettingsAccount: AiAccountLease | null = null;
+  @State settingsReady: boolean = false;
   @State hosts: AiHost[] = [];
   @State error: string = '';
   @State busy: boolean = false;
@@ -62,7 +64,8 @@ export struct AiSettingsPage {
     this.alive = true;
     this.stop = AiAccess.getInstance().subscribe((): void => {
       this.accessText = AiAccess.getInstance().executable('codex') ? 'Pro 远程 AI 已开放' : 'Pro 实验功能 · 以 Pro 功能页开放状态为准';
-      if (this.account !== null && !AiAccess.getInstance().current(this.account)) { this.hosts = []; this.settings = defaultAiSettings(); this.showEditor = false; this.editing = null;
+      if (this.account !== null && !AiAccess.getInstance().current(this.account)) { this.hosts = []; this.settings = defaultAiSettings();
+        this.savedSettings = null; this.savedSettingsAccount = null; this.settingsReady = false; this.showEditor = false; this.editing = null;
         this.pendingConnect = ''; this.pendingAccount = null; this.editorAccount = null; this.editorGeneration++;
         this.pendingReload = true;
         if (!this.busy) { this.pendingReload = false; void this.run(async (): Promise<void> => { await this.load(); }); } }
@@ -72,11 +75,15 @@ export struct AiSettingsPage {
   aboutToDisappear(): void { this.alive = false; this.stop(); }
   private async load(): Promise<void> {
     const account = AiAccess.getInstance().capture();
+    if (this.savedSettingsAccount === null || !AiAccess.getInstance().current(this.savedSettingsAccount)) {
+      this.savedSettings = null; this.savedSettingsAccount = null; this.settingsReady = false;
+    }
     this.account = account;
     await AiLocalStore.getInstance().initialize(getContext(this) as common.UIAbilityContext);
     const settings = await AiLocalStore.getInstance().settings(account);
     const hosts = await AiLocalStore.getInstance().hosts(account);
-    if (this.alive && AiAccess.getInstance().current(account)) { this.account = account; this.settings = settings; this.savedSettings = JSON.parse(JSON.stringify(settings)) as AiSettings; this.hosts = hosts; }
+    if (this.alive && AiAccess.getInstance().current(account)) { this.account = account; this.settings = settings; this.savedSettings = JSON.parse(JSON.stringify(settings)) as AiSettings; this.savedSettingsAccount = account;
+      this.settingsReady = true; this.hosts = hosts; }
   }
   private async run(work: () => Promise<void>): Promise<void> {
     if (this.busy) { return; } this.busy = true; this.error = '';
@@ -88,15 +95,17 @@ export struct AiSettingsPage {
   }
   private save(): void {
     const account = this.account;
-    if (account === null || this.busy) { return; }
+    if (account === null || this.busy || !this.settingsReady || this.savedSettings === null ||
+      this.savedSettingsAccount === null || !AiAccess.getInstance().current(this.savedSettingsAccount)) { return; }
+    const previous = JSON.parse(JSON.stringify(this.savedSettings)) as AiSettings;
     const next = JSON.parse(JSON.stringify(this.settings)) as AiSettings;
     void this.run(async (): Promise<void> => {
       try {
         await AiLocalStore.getInstance().saveSettings(account, next);
-        if (this.alive && AiAccess.getInstance().current(account)) { this.savedSettings = next; }
+        if (this.alive && AiAccess.getInstance().current(account)) { this.savedSettings = next; this.savedSettingsAccount = account; }
       } catch (error) {
         if (this.alive && AiAccess.getInstance().current(account)) {
-          this.settings = JSON.parse(JSON.stringify(this.savedSettings)) as AiSettings;
+          this.settings = JSON.parse(JSON.stringify(previous)) as AiSettings;
         }
         throw error as Error;
       }
@@ -145,9 +154,9 @@ export struct AiSettingsPage {
           this.sectionTitle('默认 AI', '仅影响新主机，已有连接保持原来的 AI。')
           Row({ space: 8 }) {
             AppSettingsChoiceButton({ label: 'Codex', isSelected: this.settings.defaultBackend === 'codex',
-              onSelect: (): void => { if (!this.busy) { this.settings.defaultBackend = 'codex'; this.save(); } } }).layoutWeight(1).enabled(!this.busy)
+              onSelect: (): void => { if (!this.busy && this.settingsReady) { this.settings.defaultBackend = 'codex'; this.save(); } } }).layoutWeight(1).enabled(!this.busy && this.settingsReady)
             AppSettingsChoiceButton({ label: 'DSH', isSelected: this.settings.defaultBackend === 'dsh',
-              onSelect: (): void => { if (!this.busy) { this.settings.defaultBackend = 'dsh'; this.save(); } } }).layoutWeight(1).enabled(!this.busy)
+              onSelect: (): void => { if (!this.busy && this.settingsReady) { this.settings.defaultBackend = 'dsh'; this.save(); } } }).layoutWeight(1).enabled(!this.busy && this.settingsReady)
           }.width('100%')
           this.sectionTitle('主机与配对', '局域网直连 · RustDesk 中继将在后续版本开放')
           if (this.hosts.length === 0) {
@@ -166,12 +175,12 @@ export struct AiSettingsPage {
           this.sectionTitle('显示与恢复')
           Column() {
             AppSettingsSwitchRow({ title: '显示工具执行过程', detail: '在会话中查看工具调用与执行记录',
-              isOn: this.settings.showExecution, isEnabled: !this.busy, onChange: (value: boolean): void => {
+              isOn: this.settings.showExecution, isEnabled: !this.busy && this.settingsReady, onChange: (value: boolean): void => {
                 this.settings.showExecution = value; this.save();
               } })
             Divider().strokeWidth(0.5).color(this.pal().divider)
             AppSettingsSwitchRow({ title: '回到前台后恢复查看', detail: '重新校验服务并读取会话，控制权仍需手动取得',
-              isOn: this.settings.reconnectOnForeground, isEnabled: !this.busy, onChange: (value: boolean): void => {
+              isOn: this.settings.reconnectOnForeground, isEnabled: !this.busy && this.settingsReady, onChange: (value: boolean): void => {
                 this.settings.reconnectOnForeground = value; this.save();
               } })
             Divider().strokeWidth(0.5).color(this.pal().divider)
@@ -181,8 +190,8 @@ export struct AiSettingsPage {
               Text('文字预览 · 远程 AI 工作区').fontSize(this.settings.textSize).fontFamily(AppConfig.fontFamily)
                 .fontColor(this.pal().text2).width('100%')
               Slider({ value: this.settings.textSize, min: 12, max: 22, step: 1 }).selectedColor(this.accent)
-                .enabled(!this.busy).accessibilityText('会话文字大小').onChange((value: number, mode: SliderChangeMode): void => {
-                  if (this.busy) { return; } this.settings.textSize = value; if (mode === SliderChangeMode.End) { this.save(); }
+                .enabled(!this.busy && this.settingsReady).accessibilityText('会话文字大小').onChange((value: number, mode: SliderChangeMode): void => {
+                  if (this.busy || !this.settingsReady) { return; } this.settings.textSize = value; if (mode === SliderChangeMode.End) { this.save(); }
                 })
             }.padding(16).width('100%')
           }.width('100%').backgroundColor(this.pal().card).borderRadius(20).border({ width: 0.5, color: this.pal().cardBorder })

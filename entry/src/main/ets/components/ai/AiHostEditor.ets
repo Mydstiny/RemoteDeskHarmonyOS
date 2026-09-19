@@ -50,7 +50,6 @@ export struct AiHostEditor {
       this.groupId = this.draft.groupId; this.label = this.draft.label; this.address = this.draft.address; this.port = this.draft.port.toString();
       this.serverName = this.draft.serverName; this.backend = this.draft.backend;
     } catch (error) { this.error = aiErrorText((error as Error).message); }
-    if (this.host === null && this.account !== null) { void this.loadDefaults(); }
     this.unsubscribe = AiAccess.getInstance().subscribe((): void => {
       this.allowed = AiAccess.getInstance().executable(this.backend);
       if (!this.allowed) { this.editGeneration++; this.invite = ''; }
@@ -59,6 +58,7 @@ export struct AiHostEditor {
         this.serverName = ''; this.draft = null; this.error = '账号已变化，请关闭后重新打开';
       }
     });
+    if (this.host === null && this.account !== null) { void this.loadDefaults(); }
   }
   aboutToDisappear(): void { this.alive = false; this.editGeneration++; this.invite = ''; this.unsubscribe(); }
   private onBackgroundChanged(): void { if (this.inBackground) { this.editGeneration++; this.invite = ''; } }

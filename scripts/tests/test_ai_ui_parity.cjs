@@ -73,8 +73,8 @@ function authority() {
 }
 const editorFile = 'entry/src/main/ets/components/ai/AiHostEditor.ets';
 const workspaceFile = 'entry/src/main/ets/pages/RemoteAiWorkspace.ets';
-async function editor({ blocked = false, defaultsBlocked = false, defaultBackend = 'codex' } = {}) {
-  const state = authority(), gate = deferred(); let initializes = 0;
+async function editor({ blocked = false, defaultsBlocked = false, defaultBackend = 'codex', granted = true } = {}) {
+  const state = authority(), gate = deferred(); state.granted = granted; let initializes = 0;
   Object.assign(state, { pairs: [], saves: [], completions: [], backs: 0, closes: 0 });
   state.page = loadClass(editorFile, 'AiHostEditor', {
     ...models, aiRandomId: () => 'fixture-host', AiAccess: { getInstance: () => state.access },
@@ -136,13 +136,36 @@ const cases = [
           throw Error('storage unavailable');
         } }) }
       });
-      page.alive = true; page.account = state.access.capture();
+      page.alive = true; page.account = state.access.capture(); page.savedSettingsAccount = page.account;
+      page.settingsReady = true; page.savedSettings = models.defaultAiSettings();
       page.settings = { ...models.defaultAiSettings(), textSize: 19, defaultBackend: 'dsh' }; page.save();
       for (let i = 0; i < 8; i++) await Promise.resolve();
       assert.equal(attempted.defaultBackend, 'dsh'); assert.equal(attempted.textSize, 19);
       assert.equal(page.settings.textSize, changeAccount ? 21 : 15);
       assert.equal(page.busy, false); assert.equal(page.error, 'storage unavailable');
     }
+  }],
+  ['failed new-account load blocks saving and cannot reuse previous account rollback data', async () => {
+    const state = authority(); let failRead = false; const writes = [];
+    const store = { initialize: async () => {}, settings: async () => {
+      if (failRead) throw Error('read failure');
+      return { ...models.defaultAiSettings(), defaultBackend: 'dsh', textSize: 21 };
+    }, hosts: async () => [], saveSettings: async (lease, next) => { writes.push({ lease, next }); } };
+    const page = loadClass('entry/src/main/ets/pages/AiSettingsPage.ets', 'AiSettingsPage', {
+      ...models, AiAccess: { getInstance: () => state.access }, AiLocalStore: { getInstance: () => store },
+      getContext: () => ({}), aiErrorText: value => value
+    });
+    await page.aboutToAppear(); assert.equal(page.settingsReady, true);
+    failRead = true; state.owner = 'owner-' + 'b'.repeat(64); state.publish();
+    for (let i = 0; i < 12; i++) await Promise.resolve();
+    assert.equal(page.settingsReady, false); assert.equal(page.savedSettings, null); assert.equal(page.savedSettingsAccount, null);
+    page.settings.textSize = 17; page.save(); for (let i = 0; i < 5; i++) await Promise.resolve();
+    assert.equal(writes.length, 0); page.aboutToDisappear();
+  }],
+  ['free users still receive their saved default AI for local configuration', async () => {
+    const state = await editor({ defaultBackend: 'dsh', granted: false });
+    assert.equal(state.page.backend, 'dsh'); assert.equal(state.page.port, '9444');
+    assert.equal(state.page.allowed, false); state.page.aboutToDisappear();
   }],
   ['new host uses saved default backend and matching port', async () => {
     const state = await editor({ defaultBackend: 'dsh' });
