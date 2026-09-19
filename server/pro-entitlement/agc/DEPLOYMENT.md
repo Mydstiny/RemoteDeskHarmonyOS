@@ -24,7 +24,7 @@ PKIX 输入目录只需 `bin/openssl` 与 `RootCaG2Ecdsa.cer`；程序字节和�
 - 数据库：ProSandbox / ProLedgerRecord，仅 Administrator 读写。全新空区的 `control-v1` 已由一次性初始化建立；运行时只校验，不补建或覆盖。每次冷启动以控制记录事务验证应用、环境及加密密钥。
 - 请求函数：Node22 或兼容的受管 Linux x64 运行时，事件调用，入口 `handler.myHandler`，同步超时至少 30 秒。HTTP 触发器使用「API客户端鉴权（Client适用）」。App 原生 Cloud Foundation SDK 固定函数名与版本；短会话在业务信封内验证，网关身份不能提供账号归属。
 - 发货函数：同一部署包，入口 `handler.myWorker`，仅定时触发器，建议一分钟一次、异步超时 600 秒。不得配置公开 HTTP 触发器。每批最多检查 20 单，单进程防重入，数据库发货租约跨实例保护确认操作。
-- 运行结果通过 `callback` 返回，不能仅返回 Promise。SDK 可能输出未经脱敏的错误对象，故该专用函数在加载 SDK 前关闭 console 原始日志；业务只返回固定错误、已验证响应和计数。验单失败使用初始化前保留的受管 console.info 入口写入固定白名单分类（AGC 未采集直接 stdout 输出）；IAP 厂商错误仅保留最多 12 位数字错误码，不记录请求、响应、账号、订单、令牌、原始异常或堆栈。
+- 运行结果通过 `callback` 返回，不能仅返回 Promise。SDK 可能输出未经脱敏的错误对象，故该专用函数在加载 SDK 前关闭 console 原始日志；业务只返回固定错误、已验证响应和计数。验单失败使用 AGC 官方 global.logger.info 入口写入固定白名单分类（AGC 未采集直接 stdout 或原 console 输出）；IAP 厂商错误仅保留最多 12 位数字错误码，不记录请求、响应、账号、订单、令牌、原始异常或堆栈。
 - 通知回调继续关闭。华为通知需要独立、已验证签名和持久化后空 HTTP200 的入口；本包的三种客户端操作不提供通知或 worker 分发。
 
 ## PKIX 来源与验证
@@ -34,3 +34,5 @@ PKIX 输入目录只需 `bin/openssl` 与 `RootCaG2Ecdsa.cer`；程序字节和�
 随包保留 OpenSSL Apache-2.0、musl MIT 完整版权文件、GCC GPL 与 Runtime Library Exception 3.1，以及构建期 fortify-headers 的 0BSD 通知。对应来源见 manifest。受管 Node22/系统由 AGC 提供，未复制到部署包；不能把此包的 SBOM 宣称为华为整个运行镜像的 SBOM。
 
 实际 Linux Node22 使用该静态程序已通过既有 19 项 PKIX/JWS/厂商协议检查。正式启用前仍须在 AGC 验证冷启动、控制记录、业务 401、空 worker、原生授权码交换，以及沙盒真实购买/恢复/确认发货/退款。主机或部署探针成功不等于 IAP 支付验收。
+
+日志入口依据：[AGC Node.js 日志记录](https://developer.huawei.com/consumer/cn/doc/AppGallery-connect-Guides/develop-func-nodejs-0000001713076049)，2026-09-19 核对官方 global.logger 声明。

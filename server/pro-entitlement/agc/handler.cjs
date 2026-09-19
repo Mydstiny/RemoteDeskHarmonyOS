@@ -3,7 +3,9 @@
 // Each AGC function runs this dedicated deployment. The SDK may log raw error
 // objects, so suppress its console output before import. Our callbacks expose
 // only bounded business replies or fixed errors; events/secrets are never logged.
-const diagnosticLog = console.info.bind(console);
+const diagnosticLog = message => {
+  if (global.logger && typeof global.logger.info === 'function') global.logger.info(message);
+};
 for (const method of ['log', 'info', 'debug', 'warn', 'error']) console[method] = () => {};
 let pending;
 function runtime() {

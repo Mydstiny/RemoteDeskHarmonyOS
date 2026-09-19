@@ -122,7 +122,7 @@ test('real archive publication preserves existing files and writes a private che
   }
 });
 
-test('AGC entry preserves only its bounded diagnostic logger while suppressing SDK console output', async t => {
+test('AGC entry uses the platform logger only for bounded diagnostics while suppressing SDK console output', async t => {
   const { execFile } = await import('node:child_process');
   const { promisify } = await import('node:util');
   const { mkdir, copyFile } = await import('node:fs/promises');
@@ -138,7 +138,9 @@ test('AGC entry preserves only its bounded diagnostic logger while suppressing S
         async worker() { return { checked: 0, successful: 0, busy: false }; } };
     }
   `);
-  const script = `const assert=require('node:assert/strict'); const handler=require('./handler.cjs');
+  const script = `const assert=require('node:assert/strict');
+    global.logger={info:message=>process.stdout.write(message+'\\n')};
+    const handler=require('./handler.cjs');
     handler.myHandler({}, {}, reply => { assert.equal(reply.status,503);
       handler.myWorker({}, {}, result => { assert.equal(result.result.checked,0); }); });`;
   const { stdout, stderr } = await promisify(execFile)(process.execPath, ['-e', script], { cwd: directory });
