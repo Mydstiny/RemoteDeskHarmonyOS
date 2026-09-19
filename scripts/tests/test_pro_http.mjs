@@ -152,3 +152,11 @@ test('PKIX diagnostics retain only bounded stage and numeric verification errors
       { stage: 3, reason: 'iap_crl_download_failed', opensslError } })).opensslError, undefined);
   }
 });
+
+test('public PKI URL diagnostics reject credentials, foreign hosts, controls and unbounded values', () => {
+  const url = 'http://cpki-caweb.huawei.com/cpki/servlet/crlFileDown.crl?certype=10&/root_g2_crl.crl';
+  const cause = { stage: 3, reason: 'iap_crl_distribution_unsupported', distributionPoints: [url,
+    'http://user:secret@pki.consumer.huawei.com/a.crl','http://evil.example/a.crl',
+    'http://pki.consumer.huawei.com/a.crl\nsecret',url+'a'.repeat(256),{ token: 'secret' }] };
+  assert.deepEqual(proFailureDiagnostic(new Error('iap_verification_failed',{cause})).distributionPoints,[url]);
+});

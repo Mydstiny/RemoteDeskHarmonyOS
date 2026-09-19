@@ -43,8 +43,9 @@ export class HuaweiIapCrlSource {
   async prepare(certificates) {
     if (!Array.isArray(certificates) || certificates.length !== 2) fail('iap_crl_path_required');
     const urls = [...new Set(certificates.map(certificate => {
-      const url = certificateCrlUrls(certificate).find(supportedUrl);
-      if (!url) fail('iap_crl_distribution_unsupported');
+      const distributions = certificateCrlUrls(certificate);
+      const url = distributions.find(supportedUrl);
+      if (!url) throw new Error('iap_crl_distribution_unsupported', { cause: distributions });
       return url;
     }))];
     const now = this.#now();

@@ -58,8 +58,16 @@ export function proFailureDiagnostic(error) {
       'iap_crl_download_failed', 'iap_crls_required', 'invalid_certificate', 'ENOENT', 'EACCES'].includes(error.cause.reason)
       ? error.cause.reason : 'unclassified';
     const opensslError = error.cause.opensslError;
+    // These are public PKI addresses from a pinned, verified certificate, not
+    // order fields. Restrict logging to bounded Huawei URLs and safe ASCII.
+    const points = error.cause.distributionPoints;
+    const distributionPoints = reason === 'iap_crl_distribution_unsupported' && Array.isArray(points) ?
+      points.filter(value => typeof value === 'string' && value.length <= 256 &&
+        /^https?:\/\/[a-z0-9.-]+\.huawei\.com\/[A-Za-z0-9_./?=&%-]+$/.test(value)).slice(0,8) : [];
+
     return { code, cryptoStage: error.cause.stage, reason,
-      ...(Number.isInteger(opensslError) && opensslError >= 0 && opensslError <= 999 ? { opensslError } : {}) };
+      ...(Number.isInteger(opensslError) && opensslError >= 0 && opensslError <= 999 ? { opensslError } : {}),
+      ...(distributionPoints.length ? { distributionPoints } : {}) };
   }
   return vendorCode === undefined ? { code } : { code, vendorCode };
 }
