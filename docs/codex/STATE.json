@@ -3,12 +3,12 @@
   "task": "pro-purchase-foundation",
   "branch": "codex/pro-purchase-foundation",
   "base": "8edc187868e94ed41634e8a6c4c4c072e3a48679",
-  "head": "0a4f9c216ac973c1ea56f72703e5ef6b5fb95b72",
-  "phase": "Sandbox core flow passed; refund fault-recovery fix and Debug refund entry reviewed; updated device locked",
+  "head": "1c466f3956fe133da9fd0b8b6879564736b1b2d5",
+  "phase": "Sandbox core flow passed; delivered-order refund route reviewed; AGC login expired before deployment",
   "status": "in-progress",
-  "next": "Unlock phone and verify updated client migration/refund/offline; need USB and second sandbox account for remaining device matrix; notification and immutable-version prerequisites remain.",
+  "next": "Restore AGC login, deploy reviewed refund-route package, then actual Huawei refund/revocation/restart tests; USB and second sandbox account needed for offline/cross-account.",
   "blockers": [
-    "New Debug refund build installed preserving data; phone locked (aa start 10106102). Await unlock, USB and second sandbox account. Actual refund/offline/cross-account and notification acceptance remain open.",
+    "AGC session expired during package selection; refund-route deployment NOT confirmed. New Debug installed preserving data. Actual refund, offline and cross-account remain open; USB and second sandbox account unavailable.",
     "M3/U0-U4 device matrix and M4 PC real Share Kit/SFTP file-integrity acceptance remain unverified.",
     "M5 Share Kit App Linking domain, association and actual fragment delivery remain unverified; ServiceInteraction ACL is a separate path. M6 USB/RDP authenticator and phone-passkey RP/origin proof remain pending.",
     "Sandbox core device flow passed. Numeric-version publication, notification endpoint and formal merchant/product release remain open; worker timer disabled."
@@ -222,14 +222,14 @@
     "reason": "Latest public UI restoration needs independent exact-checkpoint review; prior scoped receipts remain historical."
   },
   "lastVerification": {
-    "scope": "PKIX stage diagnostic fdc07e55 and client diagnostic915b6c9b, independently PASS",
-    "testCompile": "PASS exit0; BUILD SUCCESSFUL in4s683",
-    "assembleHap": "PASS exit0; signed BUILD SUCCESSFUL in5s922; SignHap913ms",
-    "hostChecks": "81server+19real PKIX;41client+28independent client boundaries;30independent HTTP/PKIX PASS",
+    "scope": "1c466f39 refund route",
+    "testCompile": "PASS exit0 BUILD SUCCESSFUL in700ms",
+    "assembleHap": "PASS exit0 signed BUILD SUCCESSFUL in12s407; SignHap863ms",
+    "release": "PASS exit0 signed BUILD SUCCESSFUL in22s815; SignHap846ms",
+    "hostChecks": "93 server +54 client PASS; independent92 +3 boundaries PASS",
     "compliance": "Light/diff PASS",
-    "device": "Preserve-data915b6c9b installed; session200/reconcile503/stage1 observed; server iap_verification_failed; activation not complete",
-    "release": "PASS22s434 SignHap851; dual ABI/ABC sandbox/simulation/USB pruning; ABC562d71b605f49e9a23277d95d57cc347fb4ac759b60330cddec471c3cdbd0c07",
-    "progressRecordGates": "PASS compile5s257; signed6s226 SignHap919; Light/diff/state"
+    "device": "0a4f updated client started with preserved original UI/data and restored signed real sandbox grant;46bb native history still no unique order;1c466 Debug preserve-data installed. Refund route not yet deployed.",
+    "progressRecordGates": "PASS compile 4 s 877 ms; signed assembleHap5s774 Sign872ms; Light/diff PASS"
   },
   "updated": "2026-09-19 Asia/Shanghai",
   "roadmapPaths": [
@@ -1422,6 +1422,31 @@
         "packageSha256": "c0185f421318af67d71858b93cd98c8d0d244884cffcb60cbe1b8c7af32118e8",
         "privateIdentity": "Eight inputs unchanged from authorized deployment",
         "deployment": "Actual failure diagnosed and resolved. API/worker current50cac0f2 package; exact mappings and logger retained."
+      },
+      "refundRoute": {
+        "commit": "1c466f3956fe133da9fd0b8b6879564736b1b2d5",
+        "status": "reviewed-installed-awaiting-agc-login",
+        "reviewTaskId": "/root/review_pro_plan",
+        "reviewStatus": "PASS",
+        "cause": "API26 queryPurchases documentation at lines1435-1436 excludes delivered sandbox non-consumables; ALL query did not recover the real delivered order.",
+        "scope": "Authenticated sandbox-only refund-order lookup; session owner, empty request body, fresh vendor verification, one active ledger order, five non-token route fields; client Debug/scope/generation guards. No grant/refund/delivery authority.",
+        "verification": {
+          "server": "93 PASS",
+          "client": "54 PASS (35 trusted,11 session,8 signed)",
+          "independent": "92 related tests plus3 extra CloudDB concurrency boundaries PASS",
+          "testCompile": "PASS exit0 BUILD SUCCESSFUL in700ms",
+          "assembleHap": "PASS exit0 signed BUILD SUCCESSFUL in12s407; SignHap863ms",
+          "release": "PASS exit0 signed BUILD SUCCESSFUL in22s815; SignHap846ms",
+          "compliance": "Light and diff PASS",
+          "package": "851 public source files;8 same authorized private inputs; Linux Node22 cold-start PASS; forged refund-order session401",
+          "releasePruning": "PASS both ABI/sandbox/simulation/USB gates; ProAppRuntime refundOrder rejects unconditionally; client refundOrder constant-true rejection precedes transport (unreachable async body remains).",
+          "recordGates": "PASS compile 4 s 877 ms; signed assembleHap5s774 Sign872ms; Light/diff PASS"
+        },
+        "packageSha256": "88b910e2b6976e6f23685bda0f56db67093c0782b7ca28ac086c6f387de9cb6a",
+        "debugHapSha256": "b0fb8d9dfca51e136fd202e9bbbc857032b5aef950550450b0108352511ee7ba",
+        "device": "0a4f updated client started with preserved original UI/data and restored signed real sandbox grant;46bb native history still no unique order;1c466 Debug preserve-data installed. Refund route not yet deployed. Latest launch again returned10106102 after automatic screen lock; do not disable device lock.",
+        "boundary": "Worker timer and formal checkout OFF; no full-plan or refund acceptance claim.",
+        "releaseAbcSha256": "3b7dc1ef9841ebf0059e8700582b0658120cab62e39731dace4fb03200af301e"
       }
     },
     "simulationCrash": {
@@ -1828,6 +1853,6 @@
     "checked": "2026-09-19",
     "method": "User-authorized HDC screenshot/click/log/install",
     "listedTargets": 1,
-    "scope": "API26 Mate 80 Pro Max; preserve-data Debug install, simulation crash retest, native sandbox product and payment; signed activation not yet passing"
+    "scope": "API26 Mate 80 Pro Max; preserve-data Debug installs; native sandbox payment, signed activation, manual delivery, restart and restore passed; new refund route runtime pending deployment."
   }
 }

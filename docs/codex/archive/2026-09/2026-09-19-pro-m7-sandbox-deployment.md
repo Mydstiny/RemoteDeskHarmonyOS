@@ -105,3 +105,29 @@
 - Numeric version publication of the accepted deployment still returns AGC unknown error; no numeric version created. Existing deployed $latest service remains operational. Worker timer and notification configuration remain disabled; formal checkout still disabled.
 
 - Refund record final gates: testCompile4s843; signed assembleHap5s615 Sign838ms, exit0; Light/diff/state PASS. Phone still locked at final probe; USB not present.
+
+
+## Delivered sandbox order refund lookup
+
+{
+  "commit": "1c466f3956fe133da9fd0b8b6879564736b1b2d5",
+  "status": "reviewed-installed-awaiting-agc-login",
+  "reviewTaskId": "/root/review_pro_plan",
+  "reviewStatus": "PASS",
+  "cause": "API26 queryPurchases documentation at lines1435-1436 excludes delivered sandbox non-consumables; ALL query did not recover the real delivered order.",
+  "scope": "Authenticated sandbox-only refund-order lookup; session owner, empty request body, fresh vendor verification, one active ledger order, five non-token route fields; client Debug/scope/generation guards. No grant/refund/delivery authority.",
+  "verification": {
+    "server": "93 PASS",
+    "client": "54 PASS (35 trusted,11 session,8 signed)",
+    "independent": "92 related tests plus3 extra CloudDB concurrency boundaries PASS",
+    "testCompile": "PASS exit0 BUILD SUCCESSFUL in700ms",
+    "assembleHap": "PASS exit0 signed BUILD SUCCESSFUL in12s407; SignHap863ms",
+    "release": "PASS exit0 signed BUILD SUCCESSFUL in22s815; SignHap846ms",
+    "compliance": "Light and diff PASS",
+    "package": "851 public source files;8 same authorized private inputs; Linux Node22 cold-start PASS; forged refund-order session401"
+  },
+  "packageSha256": "88b910e2b6976e6f23685bda0f56db67093c0782b7ca28ac086c6f387de9cb6a",
+  "debugHapSha256": "b0fb8d9dfca51e136fd202e9bbbc857032b5aef950550450b0108352511ee7ba",
+  "device": "0a4f updated client started with preserved original UI/data and restored signed real sandbox grant;46bb native history still no unique order;1c466 Debug preserve-data installed. Refund route not yet deployed.",
+  "boundary": "Worker timer and formal checkout OFF; no full-plan or refund acceptance claim."
+}
