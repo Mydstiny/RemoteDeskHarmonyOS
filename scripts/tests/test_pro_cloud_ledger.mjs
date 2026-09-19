@@ -18,6 +18,7 @@ class VersionedCollection {
       query[method] = (field, value) => { query.filters.push(row => compare(row[field], value)); return query; };
     }
     query.limit = count => { query.maximum = count; return query; };
+    query.in = (field, values) => { query.filters.push(row => values.includes(row[field])); return query; };
     query.orderByAsc = field => { query.sort = field; return query; };
     return query;
   }
@@ -256,4 +257,28 @@ test('CloudDB persistent throttle terminates and other errors or false commits a
   }
   f.collection.runTransaction = async () => false;
   await assert.rejects(() => f.ledger.snapshot(owner), /ledger_transaction_conflict/);
+});
+
+test('terminal lookup batches exactly control and order keys with version checks and rejects corrupt results', async t => {
+  const f = fixture(t); const order = await f.order();
+  await f.ledger.applyCurrentOrder({...order,revoked:true,needsFinish:false}, owner, f.state.now);
+  const original=f.collection.runTransaction.bind(f.collection); let queries=0;
+  f.collection.runTransaction=action=>original({apply:tx=>action.apply({
+    executeQuery:async q=>{queries++;return tx.executeQuery(q);},executeUpsert:rows=>tx.executeUpsert(rows)
+  })});
+  assert.equal(await f.ledger.terminalReference(owner,order),true); assert.equal(queries,1);
+  queries=0;
+  assert.equal(await f.ledger.terminalReference(owner,{purchaseOrderId:'not-present',purchaseToken:'none'}),false);
+  assert.equal(queries,1);
+  await assert.rejects(()=>f.ledger.terminalReference(other,order),/another_account/);
+  for(const corrupt of ['duplicate','unrequested','missing-control']) {
+    f.collection.runTransaction=action=>original({apply:tx=>action.apply({
+      executeQuery:async q=>{const rows=await tx.executeQuery(q);
+        if(corrupt==='duplicate')return [...rows,rows[0]];
+        if(corrupt==='unrequested')return [...rows,new ProLedgerRecord({id:'unrequested'})];
+        return rows.filter(row=>row.id!=='control-v1');
+      },executeUpsert:rows=>tx.executeUpsert(rows)
+    })});
+    await assert.rejects(()=>f.ledger.terminalReference(owner,order),/ledger_integrity/);
+  }
 });

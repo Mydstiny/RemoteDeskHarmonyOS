@@ -94,7 +94,7 @@ export class ProCloudOrderLedger {
     return record(CONTROL_ID, 'control', '', { schema: 1, identity: this.#identity,
       keyCheck: this.#encrypt(this.#identity, CONTROL_ID), commit: randomUUID() });
   }
-  async #transaction(operation, action) {
+  async #transaction(operation, action, prefetch = []) {
     let result; let step = 0;
     // The official SDK reports a rejected rate-limited request as 3007009.
     // Share one bounded backoff budget between reads and transaction commits;
@@ -114,6 +114,18 @@ export class ProCloudOrderLedger {
       step = 0;
       const query = value => { step++; return retryThrottle(() => transaction.executeQuery(value)); };
       const cache = new Map();
+      // Batch known primary keys with the control fence in the same versioned
+      // transaction query. Missing keys remain protected by the control write.
+      if (prefetch.length) {
+        const ids = [...new Set([CONTROL_ID, ...prefetch])];
+        ids.forEach(id => cache.set(id, undefined));
+        const rows = await query(this.#collection.query().in('id', ids).limit(ids.length + 1));
+        const seen = new Set();
+        for (const row of rows) {
+          if (!cache.has(row.id) || seen.has(row.id)) fail('ledger_integrity_error');
+          seen.add(row.id); cache.set(row.id, row);
+        }
+      }
       const read = async id => {
         if (!cache.has(id)) {
           const rows = await query(this.#collection.query().equalTo('id', id).limit(2));
@@ -236,7 +248,7 @@ export class ProCloudOrderLedger {
     return this.#transaction('terminalReference', async ({ read }) => {
       const row = await read(key('order', reference.purchaseOrderId)); if (!row) return false;
       const order = content(row); this.#binding(order, reference, owner); return order.revoked === true;
-    });
+    }, [key('order', reference.purchaseOrderId)]);
   }
   async snapshot(owner) {
     ownerId(owner);
